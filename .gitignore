@@ -1,0 +1,59 @@
+# Go build and test output
+/bin/
+/dist/
+/edc
+*.test
+*.out
+*.prof
+/coverage/
+/coverage.html
+/go.work
+/go.work.sum
+
+# EDC runtime output
+/report*.json
+/*.pcap
+/*.pcapng
+
+# Local environment and credentials
+.env
+.env.*
+!.env.example
+!.env.*.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.ppk
+id_rsa*
+id_dsa*
+id_ecdsa*
+id_ed25519*
+credentials.json
+service-account*.json
+
+# Python helper output
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+
+# Editor, OS, and agent state
+.idea/
+.vscode/
+.cursor/
+.claude/
+.kiro/
+.xm/
+.omc/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db

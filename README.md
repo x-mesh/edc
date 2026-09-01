@@ -30,6 +30,8 @@ make install PREFIX=/usr/local
 # 실시간 host resource 모니터 (Ctrl-C로 종료)
 ./bin/edc top
 ./bin/edc top --interval 2s --count 10
+# sample당 한 줄 JSON
+./bin/edc top --count 5 --json -
 
 # system/network/disk 정보
 ./bin/edc info
@@ -42,6 +44,8 @@ make install PREFIX=/usr/local
 # machine-readable report 저장 (기본 redaction, 파일 mode 0600)
 ./bin/edc doctor --json report.json https://example.com
 ./bin/edc report show report.json
+# 두 report 비교 (악화된 probe가 있으면 exit 1)
+./bin/edc report diff before.json after.json
 
 # bandwidth/responsiveness 측정을 포함한 종합 진단
 ./bin/edc doctor --profile full --timeout 60s example.com
@@ -50,16 +54,47 @@ make install PREFIX=/usr/local
 ./bin/edc dns lookup example.com
 ./bin/edc tcp check example.com:443
 ./bin/edc tls check example.com:443
+./bin/edc tls check --min-days 14 example.com:443
 ./bin/edc http check https://example.com
+./bin/edc http check --expect-status 200 https://example.com
 ./bin/edc net route example.com
 ./bin/edc net ping example.com
 ./bin/edc net trace example.com
 ./bin/edc net interfaces
 ./bin/edc sockets
 ./bin/edc quality --timeout 60s
+
+# shell completion
+source <(./bin/edc completion zsh)
 ```
 
 공통 option은 `--timeout`, `--json <path|->`, `--verbose`, `--redact=true|false`입니다. Go `flag` 규칙에 따라 option은 target 앞에 둡니다.
+
+## Probe thresholds
+
+`edc tls check` gives a warning when the certificate expires in less than 30 days. Set `--min-days` to make an earlier expiry a failure.
+
+`edc http check` gives a warning for a 4xx response and a failure for a 5xx response. Set `--expect-status` to accept one status code only. A different code is a failure.
+
+```bash
+./bin/edc tls check --min-days 14 example.com:443
+./bin/edc http check --expect-status 200 https://example.com/health
+```
+
+A failure returns exit code `1`. Use these options in cron to get a synthetic check.
+
+## Report diff
+
+`edc report diff` compares two JSON reports by probe name. It shows the status change and the scalar metric differences of each probe.
+
+```bash
+./bin/edc doctor --json before.json https://example.com
+./bin/edc doctor --json after.json https://example.com
+./bin/edc report diff before.json after.json
+./bin/edc report diff --json diff.json before.json after.json
+```
+
+The output marks a probe as `WORSE` when the status changes from pass to warn or fail, or from warn to fail. If one probe gets worse, the exit code is `1`. Arrays and objects in `metrics` do not appear in the diff.
 
 ## Top thresholds
 
@@ -78,9 +113,19 @@ To remove the colors, set `NO_COLOR`. A pipe or a file gets no colors.
 
 On macOS, `edc` reads the memory usage from `vm_stat`. It subtracts the free, speculative, and inactive pages. This matches `MemAvailable` on Linux. The `PhysMem` line of `top` includes the cache, so it stays above 97 percent.
 
+## Top JSON output
+
+Use `--json` to write one JSON object for each sample. Use `-` for stdout. A path gets a new file with mode 0600.
+
+```bash
+./bin/edc top --count 5 --json -
+```
+
+Each line has `time`, `hostname`, `cores`, the network and disk rates in bytes per second, the CPU values in percent, `load1`, and `memory_pct`. The `--json` option removes the table and the header.
+
 ## Remote recipes
 
-`remote run` executes a YAML recipe on an inventory group. It uses local OpenSSH configuration, agents, and known host checks.
+`edc remote <group>` executes a YAML recipe on an inventory group. It uses local OpenSSH configuration, agents, and known host checks.
 
 Each command loads the remote account default shell in interactive mode. Shell startup output and prompt hooks stay hidden.
 
@@ -89,6 +134,51 @@ Store no passwords or private keys in inventory and recipe files. Configure SSH 
 Each step needs `name` and `command`. The `verify` field is optional. If `verify` is absent, the exit code of `command` decides the step result.
 
 Keep `name` for group references. If `target` is absent, `edc` uses `name` as the SSH target.
+
+### Command shape
+
+The group is a positional argument. The `--group` flag is an alias for the same value. Use only one of the two.
+
+```bash
+cp examples/remote/inventory.yaml ./inventory.yaml
+./bin/edc remote              # select the group, then confirm
+./bin/edc remote daily        # name the group, then confirm
+./bin/edc remote daily -f     # name the group and skip the confirmation
+```
+
+`edc` finds `./inventory.yaml` first. The fallback path is `os.UserConfigDir()/edc/inventory.yaml`. This path follows the operating system. The `recipe.yaml` file uses the same order.
+
+The `--inventory` and `--recipe` flags win over the found files.
+
+If you name a group, `edc` asks no path questions. It shows the plan and requests the confirmation only.
+
+If you name no group, `edc` selects the group first. It then shows the inventory path, selects the recipe, and requests confirmation.
+
+The interactive group selector uses the up and down arrow keys. Press Enter to select a group.
+
+Use `-f` or `--force` to skip the confirmation. Combine it with `-v` for streaming output. If you name no group, `-f` needs an inventory with exactly one group.
+
+These group names are reserved for future subcommands: `run`, `list`, `plan`, `hosts`, `groups`. An inventory that uses one of them fails to load.
+
+The earlier `edc remote run` form is gone. Use `edc remote <group>`.
+
+### Dry run and inventory listing
+
+Use `-n` or `--dry-run` to print the plan and exit. `edc` opens no SSH connection. Add `--json` to get the plan as JSON.
+
+```bash
+./bin/edc remote daily --dry-run
+./bin/edc remote daily --dry-run --json -
+```
+
+Use `-l` or `--list` to print the groups and hosts of the inventory. Name a group to limit the output to that group.
+
+```bash
+./bin/edc remote --list
+./bin/edc remote daily --list --json -
+```
+
+The `--dry-run` and `--list` options do not combine with `-f`. The JSON output hides IP addresses when `--redact` is on. Use `--redact=false` to keep them.
 
 ### Host tags
 
@@ -123,37 +213,23 @@ A host that does not match a step gets no result for that step. The report keeps
 
 If no host in the group matches the tags of a step, `edc` prints a warning to stderr and continues. Check the tag spelling.
 
-Copy the inventory example into the current directory. The interactive command finds `./inventory.yaml` before the user configuration directory.
+### Automation
 
-The fallback path is `os.UserConfigDir()/edc/inventory.yaml`. This path follows the operating system.
-
-```bash
-cp examples/remote/inventory.yaml ./inventory.yaml
-./bin/edc remote run
-```
-
-The interactive command selects the group first. It then shows the inventory path, selects the recipe, and requests confirmation.
-
-Use all flags for cron or launchd. A non-terminal command never waits for input.
+Use all flags for cron or launchd. A non-terminal command never waits for input. It also skips the confirmation.
 
 ```bash
-./bin/edc remote run \
+./bin/edc remote daily \
   --inventory ./inventory.yaml \
   --recipe ./examples/remote/daily-update.yaml \
-  --group daily \
   --parallel 2 \
   --json ./remote-report.json
 ```
 
-Use `-v` or `--verbose` to stream each remote command. These global flags keep the interactive selector when target flags are absent.
+A non-terminal command needs a group. Name it as the positional argument or with `--group`.
+
+Use `-v` or `--verbose` to stream each remote command.
 
 `edc` prints the PASS or FAIL line at the end of each step. The final output shows the failures and the summary.
-
-The interactive group selector uses the up and down arrow keys. Press Enter to select a group.
-
-Use `-f` or `--force` to run without questions. Combine it with `-v` for streaming output.
-
-The `-f` command asks no path questions. It needs one inventory group, a found inventory file, and `./recipe.yaml`.
 
 Set `parallel` in the inventory to run hosts concurrently. Use `group_options.<group>.parallel` for one group.
 
@@ -178,14 +254,27 @@ If a step fails, `edc` skips later steps on that host. The next host still runs.
 
 PCAP에는 credential과 개인정보가 포함될 수 있습니다. JSON redaction은 PCAP payload에 적용되지 않습니다.
 
+## Shell completion
+
+`edc completion` prints a completion script. The script completes commands, options, and the group names of the inventory that `edc` finds.
+
+```bash
+source <(edc completion zsh)
+source <(edc completion bash)
+```
+
+For zsh, you can also save the script as `_edc` in a directory of `fpath`.
+
+`edc completion groups` prints the group names of the inventory, one per line. The scripts call it.
+
 ## Exit code
 
 - `0`: 성공 또는 warning만 존재
-- `1`: 하나 이상의 probe 실패
+- `1`: 하나 이상의 probe 실패, 또는 `report diff`에서 악화된 probe 존재
 - `2`: argument, config, report parse 등 실행 오류
 - `3`: privileged 작업의 권한 부족
 - `4`: 사용자 취소
 
 ## 현재 범위
 
-`top`과 `info`는 Linux와 macOS를 지원합니다. Linux에서는 `/proc`과 `/sys`, macOS에서는 system command adapter를 사용합니다. 나머지 상세 network command는 현재 macOS 우선이며 read-only 진단에 집중합니다. DNS flush, interface reset, firewall 변경 같은 자동 복구는 하지 않습니다.
+`top`, `info`, `doctor`와 개별 network probe는 Linux와 macOS를 지원합니다. Linux에서는 `/proc`, `/sys`, `ip`, `ss`, `ping`, `traceroute` 또는 `tracepath`, `/etc/resolv.conf`를 읽고, `resolvectl`이 있으면 `resolvectl status`를 evidence로 덧붙입니다. macOS에서는 system command adapter를 사용합니다. `quality`와 `capture`는 macOS 전용입니다. 모든 command는 read-only 진단에 집중하며, DNS flush, interface reset, firewall 변경 같은 자동 복구는 하지 않습니다.

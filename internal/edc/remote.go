@@ -2,6 +2,7 @@ package edc
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -15,69 +16,89 @@ import (
 const remoteOutputLimit = 64 * 1024
 
 func runRemote(args []string, version string) int {
-	if len(args) == 0 || args[0] != "run" {
-		fmt.Fprintln(os.Stderr, "사용법: edc remote run [--inventory <file> --recipe <file> --group <name>]")
-		return 2
-	}
-	return runRemoteRun(args[1:], version)
+	group, rest := splitRemoteGroupArgument(args)
+	return runRemoteRun(group, rest, version)
 }
 
-func runRemoteRun(args []string, version string) int {
+// splitRemoteGroupArgument는 맨 앞의 positional group을 떼어낸다.
+// flag 패키지는 첫 non-flag에서 파싱을 멈추므로 group 뒤에 오는 flag를 남겨 두어야 한다.
+func splitRemoteGroupArgument(args []string) (string, []string) {
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		return args[0], args[1:]
+	}
+	return "", args
+}
+
+// remoteGroupArgument는 positional group, --group, 남은 positional을 하나로 합친다.
+func remoteGroupArgument(leading, flagValue string, rest []string) (string, error) {
+	candidates := make([]string, 0, 2+len(rest))
+	if leading != "" {
+		candidates = append(candidates, leading)
+	}
+	if flagValue != "" {
+		candidates = append(candidates, flagValue)
+	}
+	candidates = append(candidates, rest...)
+	if len(candidates) > 1 {
+		return "", errors.New("group은 positional argument나 --group 중 하나로 한 번만 지정합니다")
+	}
+	if len(candidates) == 0 {
+		return "", nil
+	}
+	if remoteReservedGroup(candidates[0]) {
+		return "", errors.New(remoteReservedGroupHint(candidates[0]))
+	}
+	return candidates[0], nil
+}
+
+func remoteReservedGroupHint(name string) string {
+	if name == "run" {
+		return "edc remote run은 edc remote <group>으로 바뀌었습니다. 인자 없이 edc remote를 실행하면 group을 선택합니다"
+	}
+	return fmt.Sprintf("%q는 하위 command 이름으로 예약되어 있어 group으로 쓸 수 없습니다", name)
+}
+
+func runRemoteRun(group string, args []string, version string) int {
 	options := commonOptions{timeout: 10 * time.Minute, redact: true}
 	remoteOptions := remoteRunOptions{}
 	connectTimeout := 10 * time.Second
 	outputLimit := remoteOutputLimit
 	parallelOverride := 0
 	force := false
-	interactiveArgs := len(args) == 0 || onlyRemoteInteractiveFlags(args)
-	if interactiveArgs {
-		if !isTerminal(os.Stdin) || !isTerminal(os.Stdout) {
-			fmt.Fprintln(os.Stderr, "인자가 없는 edc remote run은 terminal에서만 실행할 수 있습니다")
-			return 2
-		}
-		cwd, err := os.Getwd()
-		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			return 2
-		}
-		configDir, err := os.UserConfigDir()
-		if err != nil {
-			configDir = ""
-		}
-		for _, argument := range args {
-			if argument == "-v" || argument == "--verbose" {
-				options.verbose = true
-			}
-			if argument == "-f" || argument == "--force" {
-				force = true
-			}
-		}
-		remoteOptions, err = promptRemoteOptions(os.Stdin, os.Stdout, cwd, configDir, options.timeout, options.verbose, force)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			if err == errRemoteCancelled {
-				return 4
-			}
-			return 2
-		}
-		options.verbose = remoteOptions.verbose
-	} else {
-		set := flag.NewFlagSet("remote run", flag.ContinueOnError)
-		set.SetOutput(os.Stderr)
-		bindCommon(set, &options)
-		set.StringVar(&remoteOptions.inventoryPath, "inventory", "", "inventory YAML 경로")
-		set.StringVar(&remoteOptions.recipePath, "recipe", "", "recipe YAML 경로")
-		set.StringVar(&remoteOptions.group, "group", "", "실행할 inventory group")
-		set.DurationVar(&connectTimeout, "connect-timeout", connectTimeout, "SSH 연결 제한 시간")
-		set.IntVar(&outputLimit, "output-limit", outputLimit, "command별 출력 byte 상한")
-		set.IntVar(&parallelOverride, "parallel", 0, "동시에 실행할 host 수, inventory 설정 override")
-		if err := set.Parse(args); err != nil {
-			return 2
-		}
-		if set.NArg() != 0 || remoteOptions.inventoryPath == "" || remoteOptions.recipePath == "" || remoteOptions.group == "" {
-			fmt.Fprintln(os.Stderr, "--inventory, --recipe, --group이 모두 필요하며 positional argument는 허용하지 않습니다")
-			return 2
-		}
+	dryRun := false
+	list := false
+	groupFlag := ""
+	set := flag.NewFlagSet("remote", flag.ContinueOnError)
+	set.SetOutput(os.Stderr)
+	bindCommon(set, &options)
+	set.StringVar(&remoteOptions.inventoryPath, "inventory", "", "inventory YAML 경로")
+	set.StringVar(&remoteOptions.recipePath, "recipe", "", "recipe YAML 경로")
+	set.StringVar(&groupFlag, "group", "", "실행할 inventory group, positional argument의 별칭")
+	set.DurationVar(&connectTimeout, "connect-timeout", connectTimeout, "SSH 연결 제한 시간")
+	set.IntVar(&outputLimit, "output-limit", outputLimit, "command별 출력 byte 상한")
+	set.IntVar(&parallelOverride, "parallel", 0, "동시에 실행할 host 수, inventory 설정 override")
+	set.BoolVar(&force, "force", false, "계획 확인 프롬프트 생략")
+	set.BoolVar(&force, "f", false, "--force 단축 option")
+	set.BoolVar(&dryRun, "dry-run", false, "실행 계획만 출력하고 종료")
+	set.BoolVar(&dryRun, "n", false, "--dry-run 단축 option")
+	set.BoolVar(&list, "list", false, "inventory의 group과 host를 출력하고 종료")
+	set.BoolVar(&list, "l", false, "--list 단축 option")
+	if err := set.Parse(args); err != nil {
+		return 2
+	}
+	resolvedGroup, err := remoteGroupArgument(group, groupFlag, set.Args())
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 2
+	}
+	remoteOptions.group = resolvedGroup
+	if dryRun && force {
+		fmt.Fprintln(os.Stderr, "--dry-run과 -f는 같이 쓸 수 없습니다")
+		return 2
+	}
+	if list && (dryRun || force) {
+		fmt.Fprintln(os.Stderr, "--list는 --dry-run, -f와 같이 쓸 수 없습니다")
+		return 2
 	}
 	if options.timeout <= 0 || options.timeout > remoteMaxTimeout || connectTimeout <= 0 || connectTimeout > remoteMaxTimeout {
 		fmt.Fprintf(os.Stderr, "--timeout과 --connect-timeout은 0보다 크고 %s 이하여야 합니다\n", remoteMaxTimeout)
@@ -91,6 +112,34 @@ func runRemoteRun(args []string, version string) int {
 		fmt.Fprintf(os.Stderr, "--parallel은 1에서 %d 사이여야 합니다\n", remoteHostLimit)
 		return 2
 	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 2
+	}
+	configDir, err := os.UserConfigDir()
+	if err != nil {
+		configDir = ""
+	}
+	if list {
+		return runRemoteList(options, remoteOptions, cwd, configDir)
+	}
+	promptOutput := io.Writer(os.Stdout)
+	if options.jsonPath == "-" {
+		// stdout으로 나가는 JSON에 계획과 프롬프트가 섞이지 않게 한다.
+		promptOutput = os.Stderr
+	}
+	remoteOptions.verbose = options.verbose
+	promptFlags := remotePromptFlags{force: force, dryRun: dryRun, interactive: isTerminal(os.Stdin) && isTerminal(os.Stdout)}
+	remoteOptions, err = promptRemoteOptions(os.Stdin, promptOutput, cwd, configDir, options.timeout, remoteOptions, promptFlags)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		if err == errRemoteCancelled {
+			return 4
+		}
+		return 2
+	}
+	options.verbose = remoteOptions.verbose
 	inventory, err := loadRemoteInventory(remoteOptions.inventoryPath)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -113,6 +162,9 @@ func runRemoteRun(args []string, version string) int {
 	}
 	started := time.Now()
 	parallel := remoteParallelForGroup(inventory, remoteOptions.group, parallelOverride)
+	if dryRun {
+		return emitRemotePlan(options, remoteOptions, hosts, recipe, parallel)
+	}
 	terminalOutput := options.jsonPath == ""
 	display := newRemoteDisplay(os.Stdout, remoteDisplayOptions{
 		verbose: options.verbose && terminalOutput,
@@ -129,15 +181,6 @@ func runRemoteRun(args []string, version string) int {
 		return exitCode(report.Results)
 	}
 	return emit(options, report)
-}
-
-func onlyRemoteInteractiveFlags(args []string) bool {
-	for _, argument := range args {
-		if argument != "-v" && argument != "--verbose" && argument != "-f" && argument != "--force" {
-			return false
-		}
-	}
-	return true
 }
 
 func isTerminal(file *os.File) bool {

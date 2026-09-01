@@ -119,6 +119,7 @@ func TestRemoteConfigRejectsInvalidInput(t *testing.T) {
 		{"unknown member", "hosts: [{name: one, target: one}]\ngroups: {all: [two]}\n", "알 수 없는 host"},
 		{"empty tag", "hosts: [{name: one, tags: [mac, \"  \"]}]\ngroups: {all: [one]}\n", "tag는 비어 있을 수 없습니다"},
 		{"duplicate tag", "hosts: [{name: one, tags: [mac, mac]}]\ngroups: {all: [one]}\n", "중복 tag"},
+		{"reserved group", "hosts: [{name: one}]\ngroups: {run: [one]}\n", "예약되어 있습니다"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

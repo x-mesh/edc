@@ -155,3 +155,18 @@ func TestCaptureOutputDoesNotOverwrite(t *testing.T) {
 		t.Fatal("existing capture file must not be overwritten")
 	}
 }
+
+func TestProbeHTTPExpectStatus(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+	matched := probeHTTPWithOptions(context.Background(), server.URL, httpCheckOptions{expectStatus: http.StatusNotFound})
+	if matched.Status != StatusPass || matched.Metrics["expected_status"] != http.StatusNotFound {
+		t.Fatalf("expected status must pass: %#v", matched)
+	}
+	mismatched := probeHTTPWithOptions(context.Background(), server.URL, httpCheckOptions{expectStatus: http.StatusOK})
+	if mismatched.Status != StatusFail || mismatched.Error == nil || mismatched.Error.Kind != "status" || !strings.Contains(mismatched.Summary, "기대값 200") {
+		t.Fatalf("mismatch must fail: %#v", mismatched)
+	}
+}

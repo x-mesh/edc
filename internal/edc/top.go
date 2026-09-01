@@ -2,9 +2,11 @@ package edc
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"os/signal"
 	"strings"
@@ -18,11 +20,12 @@ func runTop(args []string) int {
 	interval := set.Duration("interval", time.Second, "sampling interval")
 	count := set.Int("count", 0, "출력 row 수, 0은 계속 실행")
 	noHeader := set.Bool("no-header", false, "host와 column header 생략")
+	jsonPath := set.String("json", "", "sample당 한 줄 JSON 출력 경로, stdout은 -")
 	if err := set.Parse(args); err != nil {
 		return 2
 	}
 	if set.NArg() != 0 {
-		fmt.Fprintln(os.Stderr, "사용법: edc top [--interval 1s] [--count N]")
+		fmt.Fprintln(os.Stderr, "사용법: edc top [--interval 1s] [--count N] [--json <path|->]")
 		return 2
 	}
 	if *interval < 200*time.Millisecond {
@@ -33,19 +36,75 @@ func runTop(args []string) int {
 		fmt.Fprintln(os.Stderr, "--count는 0 이상이어야 합니다")
 		return 2
 	}
+	var writer io.Writer = os.Stdout
+	if *jsonPath != "" && *jsonPath != "-" {
+		file, err := os.OpenFile(*jsonPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 2
+		}
+		defer file.Close()
+		writer = file
+	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
-	return streamTop(ctx, os.Stdout, *interval, *count, !*noHeader, isTerminal(os.Stdout) && os.Getenv("NO_COLOR") == "")
+	jsonOutput := *jsonPath != ""
+	return streamTop(ctx, writer, topOptions{
+		interval: *interval, count: *count, json: jsonOutput,
+		header: !*noHeader && !jsonOutput,
+		color:  !jsonOutput && isTerminal(os.Stdout) && os.Getenv("NO_COLOR") == "",
+	})
 }
 
-func streamTop(ctx context.Context, writer io.Writer, interval time.Duration, count int, header, color bool) int {
+type topOptions struct {
+	interval time.Duration
+	count    int
+	header   bool
+	color    bool
+	json     bool // sample당 한 줄 JSON을 쓰고 표와 중지 메시지는 생략한다
+}
+
+// topSample은 --json이 sample마다 한 줄로 내는 값이다. rate는 bytes/s와 percent다.
+type topSample struct {
+	Time       time.Time `json:"time"`
+	Hostname   string    `json:"hostname"`
+	Cores      int       `json:"cores"`
+	NetIn      float64   `json:"net_in_bytes_per_s"`
+	NetOut     float64   `json:"net_out_bytes_per_s"`
+	PacketsIn  float64   `json:"packets_in_per_s"`
+	PacketsOut float64   `json:"packets_out_per_s"`
+	Load1      float64   `json:"load1"`
+	CPUUser    float64   `json:"cpu_user_pct"`
+	CPUSystem  float64   `json:"cpu_system_pct"`
+	CPUIOWait  float64   `json:"cpu_iowait_pct"`
+	DiskRead   float64   `json:"disk_read_bytes_per_s"`
+	DiskWrite  float64   `json:"disk_write_bytes_per_s"`
+	MemoryPct  float64   `json:"memory_pct"`
+}
+
+func newTopSample(details hostDetails, at time.Time, rate resourceRate) topSample {
+	return topSample{
+		Time: at.UTC(), Hostname: details.Hostname, Cores: details.Cores,
+		NetIn: roundTopValue(rate.NetIn), NetOut: roundTopValue(rate.NetOut),
+		PacketsIn: roundTopValue(rate.PacketsIn), PacketsOut: roundTopValue(rate.PacketsOut),
+		Load1: roundTopValue(rate.Load1), CPUUser: roundTopValue(rate.CPUUser), CPUSystem: roundTopValue(rate.CPUSystem), CPUIOWait: roundTopValue(rate.CPUIOWait),
+		DiskRead: roundTopValue(rate.DiskRead), DiskWrite: roundTopValue(rate.DiskWrite), MemoryPct: roundTopValue(rate.MemoryPercent),
+	}
+}
+
+// roundTopValue는 소수점 둘째 자리까지만 남겨 JSON 한 줄을 짧게 유지한다.
+func roundTopValue(value float64) float64 {
+	return math.Round(value*100) / 100
+}
+
+func streamTop(ctx context.Context, writer io.Writer, options topOptions) int {
 	details, err := collectHostDetails()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "host 정보를 읽지 못했습니다: %v\n", err)
 		return 1
 	}
-	limits := newTopLimits(details.Cores, color)
-	if header {
+	limits := newTopLimits(details.Cores, options.color)
+	if options.header {
 		printTopHeader(writer, details)
 	}
 	previous, err := collectResourceSnapshot()
@@ -53,13 +112,16 @@ func streamTop(ctx context.Context, writer io.Writer, interval time.Duration, co
 		fmt.Fprintf(os.Stderr, "resource를 읽지 못했습니다: %v\n", err)
 		return 1
 	}
-	ticker := time.NewTicker(interval)
+	encoder := json.NewEncoder(writer)
+	ticker := time.NewTicker(options.interval)
 	defer ticker.Stop()
 	printed := 0
-	for count == 0 || printed < count {
+	for options.count == 0 || printed < options.count {
 		select {
 		case <-ctx.Done():
-			fmt.Fprintln(writer, "\n중지됨")
+			if !options.json {
+				fmt.Fprintln(writer, "\n중지됨")
+			}
 			return 0
 		case <-ticker.C:
 			current, err := collectResourceSnapshot()
@@ -67,7 +129,15 @@ func streamTop(ctx context.Context, writer io.Writer, interval time.Duration, co
 				fmt.Fprintf(os.Stderr, "resource를 읽지 못했습니다: %v\n", err)
 				return 1
 			}
-			printTopRow(writer, current.TakenAt, calculateRate(previous, current), limits)
+			rate := calculateRate(previous, current)
+			if options.json {
+				if err := encoder.Encode(newTopSample(details, current.TakenAt, rate)); err != nil {
+					fmt.Fprintln(os.Stderr, err)
+					return 1
+				}
+			} else {
+				printTopRow(writer, current.TakenAt, rate, limits)
+			}
 			previous = current
 			printed++
 		}

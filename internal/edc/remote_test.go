@@ -145,23 +145,70 @@ func TestRemoteExecOutputLimit(t *testing.T) {
 	}
 }
 
-func TestRemoteRunRejectsNonTerminalAndPartialFlags(t *testing.T) {
-	if code := runRemoteRun(nil, "test"); code != 2 {
+func TestRemoteRunRejectsNonTerminalWithoutGroup(t *testing.T) {
+	if code := runRemoteRun("", nil, "test"); code != 2 {
 		t.Fatalf("non-terminal no-argument exit code = %d", code)
 	}
-	if code := runRemoteRun([]string{"--inventory", "inventory.yaml"}, "test"); code != 2 {
-		t.Fatalf("partial flag exit code = %d", code)
+	if code := runRemoteRun("", []string{"--inventory", "inventory.yaml"}, "test"); code != 2 {
+		t.Fatalf("missing recipe and group exit code = %d", code)
 	}
 }
 
-func TestRemoteInteractiveFlagDetection(t *testing.T) {
-	for _, args := range [][]string{nil, {"-v"}, {"--verbose"}, {"-f"}, {"--force"}, {"-f", "-v"}} {
-		if !onlyRemoteInteractiveFlags(args) {
-			t.Fatalf("args %v must keep interactive mode", args)
+func TestRemoteGroupArgumentSplit(t *testing.T) {
+	cases := []struct {
+		args  []string
+		group string
+		rest  []string
+	}{
+		{args: nil, group: "", rest: nil},
+		{args: []string{"daily"}, group: "daily", rest: []string{}},
+		{args: []string{"daily", "-f"}, group: "daily", rest: []string{"-f"}},
+		{args: []string{"daily", "--recipe", "brew.yaml"}, group: "daily", rest: []string{"--recipe", "brew.yaml"}},
+		{args: []string{"-f", "daily"}, group: "", rest: []string{"-f", "daily"}},
+		{args: []string{"--group", "daily"}, group: "", rest: []string{"--group", "daily"}},
+	}
+	for _, item := range cases {
+		group, rest := splitRemoteGroupArgument(item.args)
+		if group != item.group || strings.Join(rest, " ") != strings.Join(item.rest, " ") {
+			t.Fatalf("args %v split into %q and %v", item.args, group, rest)
 		}
 	}
-	if onlyRemoteInteractiveFlags([]string{"-v", "--parallel", "2"}) {
-		t.Fatal("non-global flags must use explicit mode")
+}
+
+func TestRemoteGroupArgumentResolution(t *testing.T) {
+	for _, item := range []struct {
+		leading   string
+		flagValue string
+		rest      []string
+		group     string
+	}{
+		{group: ""},
+		{leading: "daily", group: "daily"},
+		{flagValue: "daily", group: "daily"},
+		{rest: []string{"daily"}, group: "daily"},
+	} {
+		group, err := remoteGroupArgument(item.leading, item.flagValue, item.rest)
+		if err != nil || group != item.group {
+			t.Fatalf("resolution of %#v = %q, %v", item, group, err)
+		}
+	}
+	for _, item := range []struct {
+		leading   string
+		flagValue string
+		rest      []string
+		message   string
+	}{
+		{leading: "daily", flagValue: "daily", message: "한 번만"},
+		{leading: "daily", rest: []string{"weekly"}, message: "한 번만"},
+		{rest: []string{"daily", "weekly"}, message: "한 번만"},
+		{leading: "run", message: "edc remote <group>"},
+		{leading: "list", message: "예약"},
+		{flagValue: "groups", message: "예약"},
+	} {
+		group, err := remoteGroupArgument(item.leading, item.flagValue, item.rest)
+		if err == nil || !strings.Contains(err.Error(), item.message) {
+			t.Fatalf("resolution of %#v = %q, %v", item, group, err)
+		}
 	}
 }
 

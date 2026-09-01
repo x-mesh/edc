@@ -26,10 +26,23 @@ func buildReport(version string, started time.Time, target map[string]interface{
 	return report
 }
 
-func writeJSON(writer io.Writer, report Report) error {
+func writeJSON(writer io.Writer, value interface{}) error {
 	encoder := json.NewEncoder(writer)
 	encoder.SetIndent("", "  ")
-	return encoder.Encode(report)
+	return encoder.Encode(value)
+}
+
+// writeJSONOutput은 "-"면 stdout에, 아니면 mode 0600으로 만든 파일에 JSON을 쓴다.
+func writeJSONOutput(path string, value interface{}) error {
+	if path == "-" {
+		return writeJSON(os.Stdout, value)
+	}
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	return writeJSON(file, value)
 }
 
 func printTerminal(writer io.Writer, results []Result, verbose bool) {

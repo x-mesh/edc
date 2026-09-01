@@ -50,7 +50,22 @@ func probeTCP(ctx context.Context, address string) Result {
 	}
 }
 
+// certificateWarnDays는 --min-days와 무관하게 항상 적용되는 만료 경고 기준이다.
+const certificateWarnDays = 30
+
+type tlsCheckOptions struct {
+	minDays int // 인증서 남은 일수가 이 값보다 작으면 fail, 0은 비활성
+}
+
+type httpCheckOptions struct {
+	expectStatus int // 0이면 4xx warn, 5xx fail 기본 규칙을 쓴다
+}
+
 func probeTLS(ctx context.Context, address, serverName string) Result {
+	return probeTLSWithOptions(ctx, address, serverName, tlsCheckOptions{})
+}
+
+func probeTLSWithOptions(ctx context.Context, address, serverName string, options tlsCheckOptions) Result {
 	started := time.Now()
 	dialer := &tls.Dialer{Config: &tls.Config{ServerName: serverName, MinVersion: tls.VersionTLS12}}
 	connection, err := dialer.DialContext(ctx, "tcp", address)
@@ -63,24 +78,67 @@ func probeTLS(ctx context.Context, address, serverName string) Result {
 		"address": address, "server_name": serverName,
 		"version": tlsVersion(state.Version), "cipher_suite": tls.CipherSuiteName(state.CipherSuite),
 	}
-	status := StatusPass
-	summary := fmt.Sprintf("%s, %s", tlsVersion(state.Version), tls.CipherSuiteName(state.CipherSuite))
-	var warnings []string
+	result := Result{
+		Probe: "tls.check", Status: StatusPass, StartedAt: started.UTC(),
+		Summary: fmt.Sprintf("%s, %s", tlsVersion(state.Version), tls.CipherSuiteName(state.CipherSuite)),
+		Metrics: metrics,
+	}
 	if len(state.PeerCertificates) > 0 {
 		certificate := state.PeerCertificates[0]
 		days := int(time.Until(certificate.NotAfter).Hours() / 24)
 		metrics["certificate_subject"] = certificate.Subject.CommonName
 		metrics["certificate_expires_at"] = certificate.NotAfter.UTC()
 		metrics["certificate_days_remaining"] = days
-		if days < 30 {
-			status = StatusWarn
-			warnings = append(warnings, fmt.Sprintf("인증서 만료까지 %d일 남았습니다", days))
+		if options.minDays > 0 {
+			metrics["min_days"] = options.minDays
+		}
+		var warning string
+		result.Status, warning, result.Error = certificateVerdict(days, options.minDays)
+		if warning != "" {
+			result.Warnings = append(result.Warnings, warning)
+		}
+		if result.Error != nil {
+			result.Summary = result.Error.Message
 		}
 	}
-	return Result{Probe: "tls.check", Status: status, StartedAt: started.UTC(), DurationMS: time.Since(started).Milliseconds(), Summary: summary, Metrics: metrics, Warnings: warnings}
+	result.DurationMS = time.Since(started).Milliseconds()
+	return result
+}
+
+// certificateVerdict는 남은 일수를 --min-days 기준과 기본 경고 기준에 차례로 비교한다.
+func certificateVerdict(days, minDays int) (Status, string, *DiagnosticError) {
+	if minDays > 0 && days < minDays {
+		message := fmt.Sprintf("인증서 만료까지 %d일 남아 기준 %d일보다 짧습니다", days, minDays)
+		return StatusFail, "", &DiagnosticError{Kind: "expiry", Message: message}
+	}
+	if days < certificateWarnDays {
+		return StatusWarn, fmt.Sprintf("인증서 만료까지 %d일 남았습니다", days), nil
+	}
+	return StatusPass, "", nil
+}
+
+// httpStatusVerdict는 기대 status가 있으면 일치 여부만 보고, 없으면 4xx warn, 5xx fail 규칙을 쓴다.
+func httpStatusVerdict(code, expected int) (Status, *DiagnosticError) {
+	if expected > 0 {
+		if code != expected {
+			return StatusFail, &DiagnosticError{Kind: "status", Message: fmt.Sprintf("HTTP %d, 기대값 %d", code, expected)}
+		}
+		return StatusPass, nil
+	}
+	switch {
+	case code >= 500:
+		return StatusFail, nil
+	case code >= 400:
+		return StatusWarn, nil
+	}
+	return StatusPass, nil
 }
 
 func probeHTTP(ctx context.Context, rawURL string) Result {
+	return probeHTTPWithOptions(ctx, rawURL, httpCheckOptions{})
+}
+
+func probeHTTPWithOptions(ctx context.Context, rawURL string, options httpCheckOptions) Result {
 	started := time.Now()
 	var dnsStart, connectStart, tlsStart, wroteRequest time.Time
 	timings := map[string]int64{}
@@ -117,17 +175,19 @@ func probeHTTP(ctx context.Context, rawURL string) Result {
 		return resultFromError("http.check", started, "response", readErr)
 	}
 	total := time.Since(started)
-	status := StatusPass
-	if response.StatusCode >= 500 {
-		status = StatusFail
-	} else if response.StatusCode >= 400 {
-		status = StatusWarn
-	}
+	status, diagnostic := httpStatusVerdict(response.StatusCode, options.expectStatus)
 	metrics := map[string]interface{}{"url": rawURL, "final_url": response.Request.URL.String(), "status_code": response.StatusCode, "bytes_read": bytesRead, "total_ms": total.Milliseconds()}
+	if options.expectStatus > 0 {
+		metrics["expected_status"] = options.expectStatus
+	}
 	for key, value := range timings {
 		metrics[key] = value
 	}
-	return Result{Probe: "http.check", Status: status, StartedAt: started.UTC(), DurationMS: total.Milliseconds(), Summary: fmt.Sprintf("HTTP %d, %s, %d bytes", response.StatusCode, total.Round(time.Millisecond), bytesRead), Metrics: metrics}
+	summary := fmt.Sprintf("HTTP %d, %s, %d bytes", response.StatusCode, total.Round(time.Millisecond), bytesRead)
+	if diagnostic != nil {
+		summary = fmt.Sprintf("%s, %s, %d bytes", diagnostic.Message, total.Round(time.Millisecond), bytesRead)
+	}
+	return Result{Probe: "http.check", Status: status, StartedAt: started.UTC(), DurationMS: total.Milliseconds(), Summary: summary, Metrics: metrics, Error: diagnostic}
 }
 
 func normalizeTarget(input string) (host, address, rawURL string, err error) {

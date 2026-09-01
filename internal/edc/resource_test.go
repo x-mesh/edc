@@ -1,6 +1,7 @@
 package edc
 
 import (
+	"encoding/json"
 	"regexp"
 	"strings"
 	"testing"
@@ -125,5 +126,23 @@ func TestFormatRateStaysShort(t *testing.T) {
 		if len(got) > 5 {
 			t.Fatalf("formatRate(%v) = %q is wider than 5 columns", input, got)
 		}
+	}
+}
+
+func TestTopSampleJSON(t *testing.T) {
+	at := time.Date(2026, 1, 1, 11, 36, 44, 0, time.FixedZone("KST", 9*3600))
+	sample := newTopSample(hostDetails{Hostname: "host", Cores: 8}, at, resourceRate{NetIn: 1234.567, CPUUser: 12.3456, MemoryPercent: 11.8, Load1: 0.5})
+	data, err := json.Marshal(sample)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	for _, expected := range []string{`"time":"2026-01-01T02:36:44Z"`, `"hostname":"host"`, `"cores":8`, `"net_in_bytes_per_s":1234.57`, `"cpu_user_pct":12.35`, `"memory_pct":11.8`, `"load1":0.5`} {
+		if !strings.Contains(text, expected) {
+			t.Fatalf("sample %s does not contain %s", text, expected)
+		}
+	}
+	if strings.Contains(text, "\n") {
+		t.Fatalf("sample must stay on one line: %q", text)
 	}
 }

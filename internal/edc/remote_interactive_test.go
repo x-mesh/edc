@@ -16,7 +16,7 @@ func TestRemoteInteractiveOrderAndDiscovery(t *testing.T) {
 	writeRemoteFixture(t, inventoryPath, "hosts: [{name: one, target: one}]\ngroups: {daily: [one]}\n")
 	writeRemoteFixture(t, recipePath, "name: daily\nsteps: [{name: gk, command: gk update, verify: gk --version}]\n")
 	var output strings.Builder
-	options, err := promptRemoteOptions(strings.NewReader("1\n\nn\ny\n"), &output, cwd, t.TempDir(), 10*time.Minute)
+	options, err := promptRemoteOptions(strings.NewReader("1\n\nn\ny\n"), &output, cwd, t.TempDir(), 10*time.Minute, remoteRunOptions{}, remotePromptFlags{interactive: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,6 +72,83 @@ func TestRemoteInventoryDiscoveryFallback(t *testing.T) {
 	}
 }
 
+func TestRemoteRecipeDiscoveryPrecedenceAndFallback(t *testing.T) {
+	cwd := t.TempDir()
+	config := t.TempDir()
+	configPath := filepath.Join(config, "edc", "recipe.yaml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeRemoteFixture(t, configPath, "name: config\nsteps: [{name: gk, command: gk update}]\n")
+	path, found := discoverRemoteRecipe(cwd, config)
+	if !found || path != configPath {
+		t.Fatalf("fallback path = %q, found = %v", path, found)
+	}
+	cwdPath := filepath.Join(cwd, "recipe.yaml")
+	writeRemoteFixture(t, cwdPath, "name: cwd\nsteps: [{name: gk, command: gk update}]\n")
+	path, found = discoverRemoteRecipe(cwd, config)
+	if !found || path != cwdPath {
+		t.Fatalf("path = %q, found = %v", path, found)
+	}
+}
+
+// group을 인자로 받으면 terminal이 아니어도 inventory와 recipe를 탐색해 실행할 수 있어야 한다.
+func TestRemoteGroupArgumentDiscoversFilesWithoutTerminal(t *testing.T) {
+	cwd := t.TempDir()
+	writeRemoteFixture(t, filepath.Join(cwd, "inventory.yaml"), "hosts: [{name: one}]\ngroups: {daily: [one], weekly: [one]}\n")
+	writeRemoteFixture(t, filepath.Join(cwd, "recipe.yaml"), "name: daily\nsteps: [{name: gk, command: git-kit update}]\n")
+	var output strings.Builder
+	seed := remoteRunOptions{group: "weekly"}
+	options, err := promptRemoteOptions(strings.NewReader(""), &output, cwd, t.TempDir(), 10*time.Minute, seed, remotePromptFlags{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if options.group != "weekly" || options.inventoryPath != filepath.Join(cwd, "inventory.yaml") || options.recipePath != filepath.Join(cwd, "recipe.yaml") {
+		t.Fatalf("options = %#v", options)
+	}
+	if output.String() != "" {
+		t.Fatalf("non-terminal run wrote output: %q", output.String())
+	}
+}
+
+// group을 인자로 주면 group이 여러 개여도 -f가 동작하고 streaming 질문을 하지 않는다.
+func TestRemoteForceWithGroupArgumentSkipsSelection(t *testing.T) {
+	cwd := t.TempDir()
+	writeRemoteFixture(t, filepath.Join(cwd, "inventory.yaml"), "hosts: [{name: one}]\ngroups: {daily: [one], weekly: [one]}\n")
+	writeRemoteFixture(t, filepath.Join(cwd, "recipe.yaml"), "name: daily\nsteps: [{name: gk, command: git-kit update}]\n")
+	var output strings.Builder
+	seed := remoteRunOptions{group: "weekly"}
+	options, err := promptRemoteOptions(strings.NewReader(""), &output, cwd, t.TempDir(), 10*time.Minute, seed, remotePromptFlags{force: true, interactive: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if options.group != "weekly" {
+		t.Fatalf("options = %#v", options)
+	}
+	if strings.Contains(output.String(), "(y/N)") {
+		t.Fatalf("force prompted: %q", output.String())
+	}
+}
+
+// group을 인자로 준 실행은 계획과 확인만 거치고 streaming 질문은 건너뛴다.
+func TestRemoteGroupArgumentSkipsStreamingQuestion(t *testing.T) {
+	cwd := t.TempDir()
+	writeRemoteFixture(t, filepath.Join(cwd, "inventory.yaml"), "hosts: [{name: one}]\ngroups: {daily: [one]}\n")
+	writeRemoteFixture(t, filepath.Join(cwd, "recipe.yaml"), "name: daily\nsteps: [{name: gk, command: git-kit update}]\n")
+	var output strings.Builder
+	seed := remoteRunOptions{group: "daily"}
+	if _, err := promptRemoteOptions(strings.NewReader("y\n"), &output, cwd, t.TempDir(), 10*time.Minute, seed, remotePromptFlags{interactive: true}); err != nil {
+		t.Fatal(err)
+	}
+	text := output.String()
+	if strings.Contains(text, "streaming") {
+		t.Fatalf("group argument still asks the streaming question: %q", text)
+	}
+	if !strings.Contains(text, "실행 계획") || !strings.Contains(text, "실행할까요?") {
+		t.Fatalf("output = %q", text)
+	}
+}
+
 func TestRemoteInteractiveWithoutDiscoveredInventory(t *testing.T) {
 	cwd := t.TempDir()
 	inventoryPath := filepath.Join(cwd, "custom.yaml")
@@ -79,7 +156,7 @@ func TestRemoteInteractiveWithoutDiscoveredInventory(t *testing.T) {
 	writeRemoteFixture(t, inventoryPath, "hosts: [{name: one, target: one}]\ngroups: {daily: [one]}\n")
 	writeRemoteFixture(t, recipePath, "name: daily\nsteps: [{name: gk, command: gk update, verify: gk --version}]\n")
 	input := inventoryPath + "\n1\n" + recipePath + "\nn\ny\n"
-	options, err := promptRemoteOptions(strings.NewReader(input), &strings.Builder{}, cwd, t.TempDir(), 10*time.Minute)
+	options, err := promptRemoteOptions(strings.NewReader(input), &strings.Builder{}, cwd, t.TempDir(), 10*time.Minute, remoteRunOptions{}, remotePromptFlags{interactive: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,13 +168,13 @@ func TestRemoteInteractiveWithoutDiscoveredInventory(t *testing.T) {
 func TestRemoteInteractiveRejectsSelectionAndCancellation(t *testing.T) {
 	cwd := t.TempDir()
 	writeRemoteFixture(t, filepath.Join(cwd, "inventory.yaml"), "hosts: [{name: one, target: one}]\ngroups: {daily: [one]}\n")
-	if _, err := promptRemoteOptions(strings.NewReader("2\n"), &strings.Builder{}, cwd, t.TempDir(), 10*time.Minute); err == nil || !strings.Contains(err.Error(), "group 번호") {
+	if _, err := promptRemoteOptions(strings.NewReader("2\n"), &strings.Builder{}, cwd, t.TempDir(), 10*time.Minute, remoteRunOptions{}, remotePromptFlags{interactive: true}); err == nil || !strings.Contains(err.Error(), "group 번호") {
 		t.Fatalf("invalid selection error = %v", err)
 	}
 
 	recipePath := filepath.Join(cwd, "recipe.yaml")
 	writeRemoteFixture(t, recipePath, "name: daily\nsteps: [{name: gk, command: gk update, verify: gk --version}]\n")
-	if _, err := promptRemoteOptions(strings.NewReader("1\n\nn\nn\n"), &strings.Builder{}, cwd, t.TempDir(), 10*time.Minute); !errors.Is(err, errRemoteCancelled) {
+	if _, err := promptRemoteOptions(strings.NewReader("1\n\nn\nn\n"), &strings.Builder{}, cwd, t.TempDir(), 10*time.Minute, remoteRunOptions{}, remotePromptFlags{interactive: true}); !errors.Is(err, errRemoteCancelled) {
 		t.Fatalf("cancel error = %v", err)
 	}
 }
@@ -108,7 +185,7 @@ func TestRemoteInteractiveValidatesRecipeBeforeConfirmation(t *testing.T) {
 	invalidRecipe := filepath.Join(cwd, "invalid.yaml")
 	writeRemoteFixture(t, invalidRecipe, "name: daily\nsteps: [{name: gk, verify: gk --version}]\n")
 	var output strings.Builder
-	_, err := promptRemoteOptions(strings.NewReader("1\n"+invalidRecipe+"\n"), &output, cwd, t.TempDir(), 10*time.Minute)
+	_, err := promptRemoteOptions(strings.NewReader("1\n"+invalidRecipe+"\n"), &output, cwd, t.TempDir(), 10*time.Minute, remoteRunOptions{}, remotePromptFlags{interactive: true})
 	if err == nil || !strings.Contains(err.Error(), "command") {
 		t.Fatalf("error = %v", err)
 	}
@@ -142,7 +219,7 @@ func TestRemoteForceSkipsQuestions(t *testing.T) {
 	writeRemoteFixture(t, filepath.Join(cwd, "inventory.yaml"), "hosts: [{name: one}]\ngroups: {daily: [one]}\n")
 	writeRemoteFixture(t, filepath.Join(cwd, "recipe.yaml"), "name: daily\nsteps: [{name: gk, command: git-kit update, verify: git-kit --version}]\n")
 	var output strings.Builder
-	options, err := promptRemoteOptions(strings.NewReader(""), &output, cwd, t.TempDir(), 10*time.Minute, false, true)
+	options, err := promptRemoteOptions(strings.NewReader(""), &output, cwd, t.TempDir(), 10*time.Minute, remoteRunOptions{}, remotePromptFlags{force: true, interactive: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -159,11 +236,11 @@ func TestRemoteForceSkipsQuestions(t *testing.T) {
 
 func TestRemoteForceRequiresDiscoveredFiles(t *testing.T) {
 	cwd := t.TempDir()
-	if _, err := promptRemoteOptions(strings.NewReader(""), &strings.Builder{}, cwd, t.TempDir(), 10*time.Minute, false, true); err == nil || !strings.Contains(err.Error(), "inventory.yaml") {
+	if _, err := promptRemoteOptions(strings.NewReader(""), &strings.Builder{}, cwd, t.TempDir(), 10*time.Minute, remoteRunOptions{}, remotePromptFlags{force: true, interactive: true}); err == nil || !strings.Contains(err.Error(), "inventory.yaml") {
 		t.Fatalf("missing inventory error = %v", err)
 	}
 	writeRemoteFixture(t, filepath.Join(cwd, "inventory.yaml"), "hosts: [{name: one}]\ngroups: {daily: [one]}\n")
-	_, err := promptRemoteOptions(strings.NewReader(""), &strings.Builder{}, cwd, t.TempDir(), 10*time.Minute, false, true)
+	_, err := promptRemoteOptions(strings.NewReader(""), &strings.Builder{}, cwd, t.TempDir(), 10*time.Minute, remoteRunOptions{}, remotePromptFlags{force: true, interactive: true})
 	if err == nil || !strings.Contains(err.Error(), filepath.Join(cwd, "recipe.yaml")) {
 		t.Fatalf("missing recipe error = %v", err)
 	}
@@ -172,7 +249,7 @@ func TestRemoteForceRequiresDiscoveredFiles(t *testing.T) {
 func TestRemoteForceRejectsAmbiguousGroups(t *testing.T) {
 	cwd := t.TempDir()
 	writeRemoteFixture(t, filepath.Join(cwd, "inventory.yaml"), "hosts: [{name: one}]\ngroups: {daily: [one], weekly: [one]}\n")
-	_, err := promptRemoteOptions(strings.NewReader(""), &strings.Builder{}, cwd, t.TempDir(), 10*time.Minute, false, true)
+	_, err := promptRemoteOptions(strings.NewReader(""), &strings.Builder{}, cwd, t.TempDir(), 10*time.Minute, remoteRunOptions{}, remotePromptFlags{force: true, interactive: true})
 	if err == nil || !strings.Contains(err.Error(), "group이 하나") {
 		t.Fatalf("error = %v", err)
 	}

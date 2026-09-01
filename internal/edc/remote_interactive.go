@@ -7,7 +7,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -24,10 +23,29 @@ type remoteRunOptions struct {
 	verbose       bool
 }
 
+// remotePromptFlags는 비어 있는 option을 프롬프트로 채울지 결정한다.
+type remotePromptFlags struct {
+	force       bool // 선택과 확인 프롬프트를 생략한다
+	dryRun      bool // 계획 출력과 확인을 caller에 맡기고 option만 채운다
+	interactive bool // stdin과 stdout이 모두 terminal이다
+}
+
+func remoteInventoryNotFound(cwd string) error {
+	return fmt.Errorf("inventory.yaml을 찾을 수 없습니다: %s. --inventory로 경로를 지정하세요", filepath.Join(cwd, "inventory.yaml"))
+}
+
 func discoverRemoteInventory(cwd, configDir string) (string, bool) {
-	paths := []string{filepath.Join(cwd, "inventory.yaml")}
+	return discoverRemoteFile(cwd, configDir, "inventory.yaml")
+}
+
+func discoverRemoteRecipe(cwd, configDir string) (string, bool) {
+	return discoverRemoteFile(cwd, configDir, "recipe.yaml")
+}
+
+func discoverRemoteFile(cwd, configDir, name string) (string, bool) {
+	paths := []string{filepath.Join(cwd, name)}
 	if configDir != "" {
-		paths = append(paths, filepath.Join(configDir, "edc", "inventory.yaml"))
+		paths = append(paths, filepath.Join(configDir, "edc", name))
 	}
 	for _, path := range paths {
 		info, err := os.Stat(path)
@@ -38,92 +56,103 @@ func discoverRemoteInventory(cwd, configDir string) (string, bool) {
 	return "", false
 }
 
-func promptRemoteOptions(input io.Reader, output io.Writer, cwd, configDir string, defaultTimeout time.Duration, flags ...bool) (remoteRunOptions, error) {
+// promptRemoteOptions는 seed에서 비어 있는 항목만 자동 탐색이나 프롬프트로 채운다.
+func promptRemoteOptions(input io.Reader, output io.Writer, cwd, configDir string, defaultTimeout time.Duration, seed remoteRunOptions, flags remotePromptFlags) (remoteRunOptions, error) {
 	reader := bufio.NewReader(input)
-	forceVerbose := len(flags) > 0 && flags[0]
-	forceRun := len(flags) > 1 && flags[1]
-	inventoryPath, found := discoverRemoteInventory(cwd, configDir)
-	if !found {
-		if forceRun {
-			return remoteRunOptions{}, errors.New("-f 자동 실행에는 inventory.yaml을 찾을 수 없습니다")
-		}
-		var err error
-		inventoryPath, err = promptRemoteText(reader, output, "inventory 경로", "")
-		if err != nil {
-			return remoteRunOptions{}, err
-		}
-	}
-	inventory, err := loadRemoteInventory(inventoryPath)
-	if err != nil {
-		return remoteRunOptions{}, err
-	}
-	group, err := promptRemoteGroup(input, reader, output, inventory, forceRun)
-	if err != nil {
-		return remoteRunOptions{}, err
-	}
-	fmt.Fprintf(output, "inventory 경로: %s\n", inventoryPath)
-	recipeDefault := filepath.Join(cwd, "recipe.yaml")
-	if _, err := os.Stat(recipeDefault); err != nil {
-		recipeDefault = ""
-	}
-	var recipePath string
-	if forceRun {
-		if recipeDefault == "" {
-			return remoteRunOptions{}, fmt.Errorf("-f 자동 실행에는 %s가 필요합니다", filepath.Join(cwd, "recipe.yaml"))
-		}
-		recipePath = recipeDefault
-		fmt.Fprintf(output, "recipe 경로: %s\n", recipePath)
-	} else {
-		recipePath, err = promptRemoteText(reader, output, "recipe 경로", recipeDefault)
-		if err != nil {
-			return remoteRunOptions{}, err
-		}
-	}
-	recipe, err := loadRemoteRecipe(recipePath, defaultTimeout)
-	if err != nil {
-		return remoteRunOptions{}, err
-	}
-	hosts, err := hostsForRemoteGroup(inventory, group)
-	if err != nil {
-		return remoteRunOptions{}, err
-	}
-	printRemotePlan(output, group, hosts, recipe)
-	verbose := forceVerbose
-	if !verbose {
-		if forceRun {
-			verbose = false
-		} else {
-			verbose, err = promptRemoteYesNo(reader, output, "상세 출력을 streaming으로 볼까요? (y/N)")
+	resolved := seed
+	// group을 인자로 받은 실행은 경로와 streaming을 묻지 않고 확인만 거친다.
+	askQuestions := seed.group == "" && flags.interactive && !flags.force
+	if resolved.inventoryPath == "" {
+		path, found := discoverRemoteInventory(cwd, configDir)
+		if !found {
+			if !askQuestions {
+				return remoteRunOptions{}, remoteInventoryNotFound(cwd)
+			}
+			var err error
+			path, err = promptRemoteText(reader, output, "inventory 경로", "")
 			if err != nil {
 				return remoteRunOptions{}, err
 			}
 		}
+		resolved.inventoryPath = path
 	}
-	confirmed := forceRun
-	if !forceRun {
-		confirmed, err = promptRemoteYesNo(reader, output, "실행할까요? (y/N)")
+	inventory, err := loadRemoteInventory(resolved.inventoryPath)
+	if err != nil {
+		return remoteRunOptions{}, err
 	}
+	if resolved.group == "" {
+		resolved.group, err = promptRemoteGroup(input, reader, output, inventory, flags)
+		if err != nil {
+			return remoteRunOptions{}, err
+		}
+	}
+	hosts, err := hostsForRemoteGroup(inventory, resolved.group)
+	if err != nil {
+		return remoteRunOptions{}, err
+	}
+	if flags.interactive {
+		fmt.Fprintf(output, "inventory 경로: %s\n", resolved.inventoryPath)
+	}
+	if resolved.recipePath == "" {
+		path, found := discoverRemoteRecipe(cwd, configDir)
+		if askQuestions {
+			if !found {
+				path = ""
+			}
+			path, err = promptRemoteText(reader, output, "recipe 경로", path)
+			if err != nil {
+				return remoteRunOptions{}, err
+			}
+		} else {
+			if !found {
+				return remoteRunOptions{}, fmt.Errorf("recipe.yaml을 찾을 수 없습니다: %s. --recipe로 경로를 지정하세요", filepath.Join(cwd, "recipe.yaml"))
+			}
+			if flags.interactive {
+				fmt.Fprintf(output, "recipe 경로: %s\n", path)
+			}
+		}
+		resolved.recipePath = path
+	}
+	recipe, err := loadRemoteRecipe(resolved.recipePath, defaultTimeout)
+	if err != nil {
+		return remoteRunOptions{}, err
+	}
+	if !flags.interactive || flags.dryRun {
+		return resolved, nil
+	}
+	printRemotePlan(output, resolved.group, hosts, recipe)
+	if !resolved.verbose && askQuestions {
+		resolved.verbose, err = promptRemoteYesNo(reader, output, "상세 출력을 streaming으로 볼까요? (y/N)")
+		if err != nil {
+			return remoteRunOptions{}, err
+		}
+	}
+	if flags.force {
+		return resolved, nil
+	}
+	confirmed, err := promptRemoteYesNo(reader, output, "실행할까요? (y/N)")
 	if err != nil {
 		return remoteRunOptions{}, err
 	}
 	if !confirmed {
 		return remoteRunOptions{}, errRemoteCancelled
 	}
-	return remoteRunOptions{inventoryPath: inventoryPath, recipePath: recipePath, group: group, verbose: verbose}, nil
+	return resolved, nil
 }
 
-func promptRemoteGroup(input io.Reader, reader *bufio.Reader, output io.Writer, inventory remoteInventory, force ...bool) (string, error) {
-	groups := make([]string, 0, len(inventory.Groups))
-	for group := range inventory.Groups {
-		groups = append(groups, group)
-	}
-	sort.Strings(groups)
-	if len(force) > 0 && force[0] {
+func promptRemoteGroup(input io.Reader, reader *bufio.Reader, output io.Writer, inventory remoteInventory, flags remotePromptFlags) (string, error) {
+	groups := remoteGroupNames(inventory)
+	if flags.force {
 		if len(groups) != 1 {
-			return "", fmt.Errorf("-f 자동 실행에는 inventory group이 하나만 있어야 합니다")
+			return "", errors.New("-f 자동 실행에는 inventory group이 하나만 있어야 합니다. edc remote <group>으로 지정하세요")
 		}
-		fmt.Fprintf(output, "group(대상): %s\n", groups[0])
+		if flags.interactive {
+			fmt.Fprintf(output, "group(대상): %s\n", groups[0])
+		}
 		return groups[0], nil
+	}
+	if !flags.interactive {
+		return "", fmt.Errorf("group을 지정하세요: edc remote <group>. inventory group: %s", strings.Join(groups, ", "))
 	}
 	if file, ok := input.(*os.File); ok && term.IsTerminal(int(file.Fd())) {
 		return selectRemoteGroup(file, output, groups)

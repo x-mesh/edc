@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -19,6 +20,16 @@ const (
 	remoteTagLimit    = 20
 	remoteMaxTimeout  = 24 * time.Hour
 )
+
+// remoteReservedGroups는 edc remote의 positional 자리를 나중에 하위 command로 쓸 여지를 남긴다.
+var remoteReservedGroups = map[string]struct{}{
+	"run": {}, "list": {}, "plan": {}, "hosts": {}, "groups": {},
+}
+
+func remoteReservedGroup(name string) bool {
+	_, reserved := remoteReservedGroups[name]
+	return reserved
+}
 
 type remoteHost struct {
 	Name   string   `yaml:"name"`
@@ -111,6 +122,9 @@ func loadRemoteInventory(path string) (remoteInventory, error) {
 		if strings.TrimSpace(group) == "" || len(members) == 0 {
 			return inventory, errors.New("group 이름과 member는 비어 있을 수 없습니다")
 		}
+		if remoteReservedGroup(group) {
+			return inventory, fmt.Errorf("group 이름 %q는 하위 command 이름으로 예약되어 있습니다", group)
+		}
 		seen := make(map[string]struct{}, len(members))
 		for _, member := range members {
 			if _, exists := hosts[member]; !exists {
@@ -131,6 +145,15 @@ func loadRemoteInventory(path string) (remoteInventory, error) {
 		}
 	}
 	return inventory, nil
+}
+
+func remoteGroupNames(inventory remoteInventory) []string {
+	groups := make([]string, 0, len(inventory.Groups))
+	for group := range inventory.Groups {
+		groups = append(groups, group)
+	}
+	sort.Strings(groups)
+	return groups
 }
 
 func remoteParallelForGroup(inventory remoteInventory, group string, override int) int {

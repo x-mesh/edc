@@ -2,7 +2,7 @@ package edc
 
 import (
 	"context"
-	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -58,6 +58,8 @@ func Run(args []string, version string) int {
 		return runReport(args[1:])
 	case "remote":
 		return runRemote(args[1:], version)
+	case "completion":
+		return runCompletion(args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "알 수 없는 command: %s\n", args[0])
 		printHelp(os.Stderr)
@@ -145,24 +147,50 @@ func runTCP(args []string, version string) int {
 
 func runTLS(args []string, version string) int {
 	if len(args) == 0 || args[0] != "check" {
-		fmt.Fprintln(os.Stderr, "사용법: edc tls check <host:port>")
+		fmt.Fprintln(os.Stderr, "사용법: edc tls check [--min-days N] <host:port>")
 		return 2
 	}
-	return runTargetProbe(args[1:], version, "tls check", func(ctx context.Context, target string) Result {
+	minDays := 0
+	flags := probeFlags{
+		bind: func(set *flag.FlagSet) {
+			set.IntVar(&minDays, "min-days", 0, "인증서 남은 일수가 이 값보다 작으면 fail, 0은 비활성")
+		},
+		check: func() error {
+			if minDays < 0 {
+				return errors.New("--min-days는 0 이상이어야 합니다")
+			}
+			return nil
+		},
+	}
+	return runTargetProbeWithFlags(args[1:], version, "tls check", flags, func(ctx context.Context, target string) Result {
 		host, _, err := net.SplitHostPort(target)
 		if err != nil {
 			return resultFromError("tls.check", time.Now(), "input", fmt.Errorf("host:port 형식이 필요합니다: %s", target))
 		}
-		return probeTLS(ctx, target, host)
+		return probeTLSWithOptions(ctx, target, host, tlsCheckOptions{minDays: minDays})
 	})
 }
 
 func runHTTP(args []string, version string) int {
 	if len(args) == 0 || args[0] != "check" {
-		fmt.Fprintln(os.Stderr, "사용법: edc http check <URL>")
+		fmt.Fprintln(os.Stderr, "사용법: edc http check [--expect-status N] <URL>")
 		return 2
 	}
-	return runTargetProbe(args[1:], version, "http check", func(ctx context.Context, target string) Result { return probeHTTP(ctx, target) })
+	expectStatus := 0
+	flags := probeFlags{
+		bind: func(set *flag.FlagSet) {
+			set.IntVar(&expectStatus, "expect-status", 0, "기대하는 HTTP status code, 다르면 fail, 0은 기본 규칙")
+		},
+		check: func() error {
+			if expectStatus != 0 && (expectStatus < 100 || expectStatus > 599) {
+				return errors.New("--expect-status는 100에서 599 사이여야 합니다")
+			}
+			return nil
+		},
+	}
+	return runTargetProbeWithFlags(args[1:], version, "http check", flags, func(ctx context.Context, target string) Result {
+		return probeHTTPWithOptions(ctx, target, httpCheckOptions{expectStatus: expectStatus})
+	})
 }
 
 func runNet(args []string, version string) int {
@@ -185,13 +213,32 @@ func runNet(args []string, version string) int {
 	}
 }
 
+// probeFlags는 command별 추가 flag를 공통 flag 옆에 붙이고 parse 뒤에 값을 검사한다.
+type probeFlags struct {
+	bind  func(*flag.FlagSet)
+	check func() error
+}
+
 func runTargetProbe(args []string, version, name string, probe func(context.Context, string) Result) int {
+	return runTargetProbeWithFlags(args, version, name, probeFlags{}, probe)
+}
+
+func runTargetProbeWithFlags(args []string, version, name string, extra probeFlags, probe func(context.Context, string) Result) int {
 	options := commonOptions{timeout: 15 * time.Second, redact: true}
 	set := flag.NewFlagSet(name, flag.ContinueOnError)
 	set.SetOutput(os.Stderr)
 	bindCommon(set, &options)
+	if extra.bind != nil {
+		extra.bind(set)
+	}
 	if err := set.Parse(args); err != nil {
 		return 2
+	}
+	if extra.check != nil {
+		if err := extra.check(); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 2
+		}
 	}
 	if set.NArg() != 1 {
 		fmt.Fprintf(os.Stderr, "%s에는 target 하나가 필요합니다\n", name)
@@ -233,23 +280,9 @@ func bindCommon(set *flag.FlagSet, options *commonOptions) {
 func emit(options commonOptions, report Report) int {
 	if options.jsonPath == "" {
 		printTerminalWithColor(os.Stdout, report.Results, options.verbose, isTerminal(os.Stdout) && os.Getenv("NO_COLOR") == "")
-	} else {
-		var writer io.Writer = os.Stdout
-		var file *os.File
-		if options.jsonPath != "-" {
-			var err error
-			file, err = os.OpenFile(options.jsonPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
-			if err != nil {
-				fmt.Fprintln(os.Stderr, err)
-				return 2
-			}
-			defer file.Close()
-			writer = file
-		}
-		if err := writeJSON(writer, report); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			return 2
-		}
+	} else if err := writeJSONOutput(options.jsonPath, report); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 2
 	}
 	return exitCode(report.Results)
 }
@@ -271,50 +304,53 @@ func runParallel(ctx context.Context, probes []func(context.Context) Result) []R
 }
 
 func printHelp(writer io.Writer) {
-	fmt.Fprint(writer, `edc - macOS 우선 SE/SRE 진단 툴킷
+	fmt.Fprint(writer, `edc - macOS와 Linux용 SE/SRE 진단 툴킷
 
 사용법:
-  edc top [--interval 1s] [--count N]
+  edc top [--interval 1s] [--count N] [--json <path|->]
   edc info [--public]
   edc doctor [--profile default|full] [options] <host|URL>
   edc net <interfaces|route|ping|trace> ...
   edc dns <lookup|config> ...
   edc tcp check <host:port>
-  edc tls check <host:port>
-  edc http check <URL>
+  edc tls check [--min-days N] <host:port>
+  edc http check [--expect-status N] <URL>
   edc quality [options]
   edc sockets [options]
   edc capture [options]
   edc report show <file>
-  edc remote run [--inventory <file> --recipe <file> --group <name>]
+  edc report diff [--json <path|->] <before> <after>
+  edc remote [<group>] [--inventory <file>] [--recipe <file>] [-n|--dry-run] [-l|--list]
+  edc completion <zsh|bash|groups>
   edc version
 
 공통 options: --timeout 15s --json <path|-> -v|--verbose --redact=true
-remote interactive: -f|--force는 발견된 inventory/recipe와 단일 group으로 질문 없이 실행
+tls: --min-days N은 인증서 남은 일수가 N보다 작으면 fail로 처리합니다
+http: --expect-status N은 응답 code가 N과 다르면 fail로 처리합니다
+report diff: probe별 status 변화와 metric 차이를 보여 주고, 악화된 probe가 있으면 exit 1입니다
+remote: group을 생략하면 선택기를 띄웁니다. inventory.yaml과 recipe.yaml은 현재 디렉터리와 config 디렉터리에서 찾습니다
+remote: -f|--force는 실행 계획 확인을 생략하고, -n|--dry-run은 계획만 출력하며, -l|--list는 inventory를 보여 줍니다
+completion: source <(edc completion zsh) 또는 source <(edc completion bash)
 `)
 }
 
 func runReport(args []string) int {
-	if len(args) != 2 || args[0] != "show" {
-		fmt.Fprintln(os.Stderr, "사용법: edc report show <file>")
+	const usage = "사용법: edc report show <file> | edc report diff [--json <path|->] <before> <after>"
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, usage)
 		return 2
 	}
-	file, err := os.Open(args[1])
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
+	switch args[0] {
+	case "show":
+		if len(args) != 2 {
+			fmt.Fprintln(os.Stderr, usage)
+			return 2
+		}
+		return runReportShow(args[1])
+	case "diff":
+		return runReportDiff(args[1:])
+	default:
+		fmt.Fprintln(os.Stderr, usage)
 		return 2
 	}
-	defer file.Close()
-	var report Report
-	decoder := json.NewDecoder(io.LimitReader(file, 20*1024*1024))
-	if err := decoder.Decode(&report); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return 2
-	}
-	if report.SchemaVersion != "1.0" {
-		fmt.Fprintf(os.Stderr, "지원하지 않는 schema version: %s\n", report.SchemaVersion)
-		return 2
-	}
-	printTerminal(os.Stdout, report.Results, false)
-	return exitCode(report.Results)
 }

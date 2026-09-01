@@ -27,9 +27,19 @@ func TestRemoteInteractiveOrderAndDiscovery(t *testing.T) {
 	groupIndex := strings.Index(text, "group(대상)")
 	inventoryIndex := strings.Index(text, "inventory 경로")
 	recipeIndex := strings.Index(text, "recipe 경로")
+	planIndex := strings.Index(text, "실행 계획")
+	streamIndex := strings.Index(text, "상세 출력을 streaming으로 볼까요?")
 	confirmIndex := strings.Index(text, "실행할까요?")
-	if groupIndex < 0 || !(groupIndex < inventoryIndex && inventoryIndex < recipeIndex && recipeIndex < confirmIndex) {
+	if groupIndex < 0 || !(groupIndex < inventoryIndex && inventoryIndex < recipeIndex && recipeIndex < planIndex && planIndex < streamIndex && streamIndex < confirmIndex) {
 		t.Fatalf("prompt order = %q", text)
+	}
+	for _, expected := range []string{"실행 계획  daily → one", "1. gk", "command  gk update", "verify   gk --version"} {
+		if !strings.Contains(text, expected) {
+			t.Fatalf("output %q does not contain %q", text, expected)
+		}
+	}
+	if strings.Contains(text, "실행 대상: group=") {
+		t.Fatalf("output repeats file paths: %q", text)
 	}
 }
 

@@ -65,9 +65,15 @@ func promptRemoteOptions(input io.Reader, output io.Writer, cwd, configDir strin
 	if err != nil {
 		return remoteRunOptions{}, err
 	}
-	if _, err := loadRemoteRecipe(recipePath, defaultTimeout); err != nil {
+	recipe, err := loadRemoteRecipe(recipePath, defaultTimeout)
+	if err != nil {
 		return remoteRunOptions{}, err
 	}
+	hosts, err := hostsForRemoteGroup(inventory, group)
+	if err != nil {
+		return remoteRunOptions{}, err
+	}
+	printRemotePlan(output, group, hosts, recipe)
 	verbose := len(forceVerbose) > 0 && forceVerbose[0]
 	if !verbose {
 		verbose, err = promptRemoteYesNo(reader, output, "상세 출력을 streaming으로 볼까요? (y/N)")
@@ -75,7 +81,7 @@ func promptRemoteOptions(input io.Reader, output io.Writer, cwd, configDir strin
 			return remoteRunOptions{}, err
 		}
 	}
-	confirmed, err := promptRemoteConfirm(reader, output, group, inventoryPath, recipePath)
+	confirmed, err := promptRemoteYesNo(reader, output, "실행할까요? (y/N)")
 	if err != nil {
 		return remoteRunOptions{}, err
 	}
@@ -129,9 +135,18 @@ func promptRemoteText(reader *bufio.Reader, output io.Writer, label, defaultValu
 	return value, nil
 }
 
-func promptRemoteConfirm(reader *bufio.Reader, output io.Writer, group, inventory, recipe string) (bool, error) {
-	fmt.Fprintf(output, "실행 대상: group=%s inventory=%s recipe=%s\n", group, inventory, recipe)
-	return promptRemoteYesNo(reader, output, "실행할까요? (y/N)")
+func printRemotePlan(output io.Writer, group string, hosts []remoteHost, recipe remoteRecipe) {
+	hostNames := make([]string, 0, len(hosts))
+	for _, host := range hosts {
+		hostNames = append(hostNames, host.Name)
+	}
+	fmt.Fprintf(output, "\n실행 계획  %s → %s\n", group, strings.Join(hostNames, ", "))
+	for index, step := range recipe.Steps {
+		fmt.Fprintf(output, "  %d. %s\n", index+1, step.Name)
+		fmt.Fprintf(output, "     command  %s\n", step.Command)
+		fmt.Fprintf(output, "     verify   %s\n", step.Verify)
+	}
+	fmt.Fprintln(output)
 }
 
 func promptRemoteYesNo(reader *bufio.Reader, output io.Writer, label string) (bool, error) {

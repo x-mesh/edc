@@ -1,6 +1,7 @@
 package edc
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -47,8 +48,82 @@ func TestVisibleDisks(t *testing.T) {
 
 func TestPrintTopRow(t *testing.T) {
 	var output strings.Builder
-	printTopRow(&output, time.Date(2026, 1, 1, 11, 36, 44, 0, time.UTC), resourceRate{NetIn: 0.04 * 1024 * 1024, CPUUser: 1, MemoryPercent: 11.8})
-	if !strings.Contains(output.String(), "11:36:44") || !strings.Contains(output.String(), "0.04M") || !strings.Contains(output.String(), "11.8%") {
-		t.Fatalf("row = %s", output.String())
+	printTopRow(&output, time.Date(2026, 1, 1, 11, 36, 44, 0, time.UTC), resourceRate{NetIn: 0.04 * 1024 * 1024, CPUUser: 1, MemoryPercent: 11.8}, newTopLimits(8, false))
+	row := strings.TrimRight(output.String(), "\n")
+	for _, expected := range []string{"11:36:44", "0.04M", " 11.8"} {
+		if !strings.Contains(row, expected) {
+			t.Fatalf("row %q does not contain %q", row, expected)
+		}
+	}
+	if width := len([]rune(row)); width != topTableWidth {
+		t.Fatalf("row width = %d, want %d", width, topTableWidth)
+	}
+}
+
+func TestTopTableFitsTargetWidth(t *testing.T) {
+	var output strings.Builder
+	printTopHeader(&output, hostDetails{Hostname: "host", Model: "model", Cores: 8, MemoryTotal: 16 * 1024 * 1024 * 1024})
+	for _, line := range strings.Split(strings.TrimRight(output.String(), "\n"), "\n") {
+		if width := topDisplayWidth(line); width != topTableWidth {
+			t.Fatalf("line %q width = %d, want %d", line, width, topTableWidth)
+		}
+	}
+}
+
+func TestTopLoadThresholdFollowsCores(t *testing.T) {
+	limits := newTopLimits(16, false)
+	if limits.load.warn != 11.2 || limits.load.danger != 16 {
+		t.Fatalf("load threshold = %#v", limits.load)
+	}
+	if single := newTopLimits(0, false); single.load.danger != 1 {
+		t.Fatalf("unknown core count must fall back to one core: %#v", single.load)
+	}
+}
+
+func TestTopRowColorsByRiskLevel(t *testing.T) {
+	limits := newTopLimits(10, true)
+	tests := []struct {
+		name  string
+		rate  resourceRate
+		color string
+	}{
+		{"normal load", resourceRate{Load1: 3}, topColorNormal},
+		{"warn load", resourceRate{Load1: 7.5}, topColorWarn},
+		{"danger load", resourceRate{Load1: 12}, topColorDanger},
+		{"danger cpu", resourceRate{CPUUser: 95}, topColorDanger},
+		{"warn iowait", resourceRate{CPUIOWait: 12}, topColorWarn},
+		{"danger memory", resourceRate{MemoryPercent: 99.4}, topColorDanger},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var output strings.Builder
+			printTopRow(&output, time.Now(), test.rate, limits)
+			if !strings.Contains(output.String(), test.color) {
+				t.Fatalf("row %q does not use color %q", output.String(), test.color)
+			}
+		})
+	}
+}
+
+func TestTopRowKeepsWidthWithColor(t *testing.T) {
+	var output strings.Builder
+	printTopRow(&output, time.Now(), resourceRate{Load1: 12, MemoryPercent: 99.4}, newTopLimits(4, true))
+	plain := regexp.MustCompile(`\033\[[0-9;]*m`).ReplaceAllString(strings.TrimRight(output.String(), "\n"), "")
+	if width := len([]rune(plain)); width != topTableWidth {
+		t.Fatalf("row width without color codes = %d, want %d", width, topTableWidth)
+	}
+}
+
+func TestFormatRateStaysShort(t *testing.T) {
+	const mib = 1024 * 1024
+	tests := map[float64]string{0.04 * mib: "0.04M", 12.3 * mib: "12.3M", 512 * mib: "512M", 2048 * mib: "2.00G", 300 * 1024 * mib: "300G"}
+	for input, want := range tests {
+		got := formatRate(input)
+		if got != want {
+			t.Fatalf("formatRate(%v) = %q, want %q", input, got, want)
+		}
+		if len(got) > 5 {
+			t.Fatalf("formatRate(%v) = %q is wider than 5 columns", input, got)
+		}
 	}
 }

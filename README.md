@@ -61,6 +61,23 @@ make install PREFIX=/usr/local
 
 공통 option은 `--timeout`, `--json <path|->`, `--verbose`, `--redact=true|false`입니다. Go `flag` 규칙에 따라 option은 target 앞에 둡니다.
 
+## Top thresholds
+
+`edc top` gives a color to the load, CPU, iowait, and memory values. White is normal. Orange is a warning. Red is a risk.
+
+The load thresholds follow the core count of the host.
+
+| value | warning | risk |
+|---|---|---|
+| load | 0.7 × cores | 1.0 × cores |
+| usr%, sys% | 70 | 90 |
+| i/o | 10 | 25 |
+| mem_% | 90 | 95 |
+
+To remove the colors, set `NO_COLOR`. A pipe or a file gets no colors.
+
+On macOS, `edc` reads the memory usage from `vm_stat`. It subtracts the free, speculative, and inactive pages. This matches `MemAvailable` on Linux. The `PhysMem` line of `top` includes the cache, so it stays above 97 percent.
+
 ## Remote recipes
 
 `remote run` executes a YAML recipe on an inventory group. It uses local OpenSSH configuration, agents, and known host checks.

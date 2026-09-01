@@ -64,6 +64,7 @@ func collectResourceSnapshot() (resourceSnapshot, error) {
 			snapshot.NetOutBytes += parseUnsigned(fields[9])
 		}
 	}
+	applyDarwinMemory(&snapshot)
 	if storage, err := exec.Command("/usr/sbin/ioreg", "-r", "-c", "IOBlockStorageDriver", "-l").Output(); err == nil {
 		if match := diskBytePattern.FindStringSubmatch(string(storage)); match != nil {
 			if match[1] != "" {
@@ -74,6 +75,45 @@ func collectResourceSnapshot() (resourceSnapshot, error) {
 		}
 	}
 	return snapshot, nil
+}
+
+// applyDarwinMemory는 top의 PhysMem 대신 vm_stat의 회수 가능 page를 빼서 Linux MemAvailable과 같은 기준으로 사용량을 구한다.
+// top의 used는 캐시와 compressor를 포함해 평상시에도 97% 이상으로 나온다.
+func applyDarwinMemory(snapshot *resourceSnapshot) {
+	total, err := strconv.ParseUint(commandValue("/usr/sbin/sysctl", "-n", "hw.memsize"), 10, 64)
+	if err != nil || total == 0 {
+		return
+	}
+	output, err := exec.Command("/usr/bin/vm_stat").Output()
+	if err != nil {
+		return
+	}
+	available := parseDarwinAvailableMemory(string(output))
+	if available == 0 || available > total {
+		return
+	}
+	snapshot.MemoryTotal, snapshot.MemoryUsed = total, total-available
+}
+
+// parseDarwinAvailableMemory는 즉시 회수 가능한 free, speculative, inactive page를 합친다.
+func parseDarwinAvailableMemory(output string) uint64 {
+	pageSize := uint64(4096)
+	pages := make(map[string]uint64, 16)
+	for _, line := range strings.Split(output, "\n") {
+		if strings.HasPrefix(line, "Mach Virtual Memory Statistics") {
+			var size uint64
+			if _, err := fmt.Sscanf(line, "Mach Virtual Memory Statistics: (page size of %d bytes)", &size); err == nil && size > 0 {
+				pageSize = size
+			}
+			continue
+		}
+		name, value, found := strings.Cut(line, ":")
+		if !found {
+			continue
+		}
+		pages[strings.TrimSpace(name)] = parseUnsigned(strings.TrimSuffix(strings.TrimSpace(value), "."))
+	}
+	return (pages["Pages free"] + pages["Pages speculative"] + pages["Pages inactive"]) * pageSize
 }
 
 var diskBytePattern = regexp.MustCompile(`"Bytes \(Read\)"=([0-9]+)[^}]*"Bytes \(Write\)"=([0-9]+)|"Bytes \(Write\)"=([0-9]+)[^}]*"Bytes \(Read\)"=([0-9]+)`)

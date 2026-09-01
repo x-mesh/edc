@@ -99,7 +99,23 @@ func delta(current, previous uint64) uint64 {
 	return current - previous
 }
 
-func formatRate(bytes float64) string { return fmt.Sprintf("%.2fM", bytes/(1024*1024)) }
+// formatRate는 5자를 넘지 않도록 값 크기에 따라 단위와 소수 자릿수를 줄인다.
+func formatRate(bytes float64) string {
+	value := bytes / (1024 * 1024)
+	unit := "M"
+	if value >= 1024 {
+		value /= 1024
+		unit = "G"
+	}
+	switch {
+	case value >= 100:
+		return fmt.Sprintf("%.0f%s", value, unit)
+	case value >= 10:
+		return fmt.Sprintf("%.1f%s", value, unit)
+	default:
+		return fmt.Sprintf("%.2f%s", value, unit)
+	}
+}
 func formatBytes(bytes uint64) string {
 	const (
 		gib = 1024 * 1024 * 1024

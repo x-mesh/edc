@@ -33,19 +33,80 @@ func writeJSON(writer io.Writer, report Report) error {
 }
 
 func printTerminal(writer io.Writer, results []Result, verbose bool) {
+	printTerminalWithColor(writer, results, verbose, false)
+}
+
+func printTerminalWithColor(writer io.Writer, results []Result, verbose, color bool) {
+	remote := len(results) > 0 && isRemoteResult(results[0])
+	if remote {
+		fmt.Fprintln(writer)
+	}
 	for _, result := range results {
-		fmt.Fprintf(writer, "%-4s  %-16s  %s\n", strings.ToUpper(string(result.Status)), result.Probe, result.Summary)
+		status := terminalStatus(result.Status, color)
+		probe := result.Probe
+		if remote {
+			probe = strings.TrimPrefix(probe, "remote.")
+		}
+		fmt.Fprintf(writer, "%-4s  %-24s  %s\n", status, probe, result.Summary)
+		if result.Status == StatusFail {
+			printFailureBox(writer, probe, result, color)
+		}
 		for _, warning := range result.Warnings {
 			fmt.Fprintf(writer, "      warning: %s\n", warning)
 		}
-		if verbose {
+		if verbose && result.Status != StatusFail && !isRemoteResult(result) {
 			for _, evidence := range result.Evidence {
 				fmt.Fprintf(writer, "      %s:\n%s\n", evidence.Label, indent(evidence.Value, "        "))
 			}
 		}
 	}
 	s := summarize(results)
-	fmt.Fprintf(writer, "\nsummary: %d pass, %d warn, %d fail, %d skip\n", s.Pass, s.Warn, s.Fail, s.Skip)
+	fmt.Fprintf(writer, "\n%d pass  ·  %d warn  ·  %d fail  ·  %d skip\n", s.Pass, s.Warn, s.Fail, s.Skip)
+}
+
+func printFailureBox(writer io.Writer, probe string, result Result, color bool) {
+	title := "ERROR  " + probe
+	if color {
+		title = "\033[31m" + title + "\033[0m"
+	}
+	fmt.Fprintf(writer, "┌─ %s\n", title)
+	if result.Error != nil {
+		fmt.Fprintf(writer, "│ phase   %s\n", result.Error.Kind)
+		fmt.Fprintf(writer, "│ cause   %s\n", result.Error.Message)
+	}
+	for _, evidence := range result.Evidence {
+		fmt.Fprintf(writer, "│\n│ %s\n", evidence.Label)
+		for _, line := range strings.Split(strings.TrimRight(evidence.Value, "\n"), "\n") {
+			fmt.Fprintf(writer, "│   %s\n", line)
+		}
+	}
+	fmt.Fprintln(writer, "└─")
+}
+
+func terminalStatus(status Status, color bool) string {
+	label := strings.ToUpper(string(status))
+	if !color {
+		return label
+	}
+	code := ""
+	switch status {
+	case StatusPass:
+		code = "32"
+	case StatusFail:
+		code = "31"
+	case StatusWarn:
+		code = "33"
+	case StatusSkip:
+		code = "90"
+	}
+	if code == "" {
+		return label
+	}
+	return "\033[" + code + "m" + label + "\033[0m"
+}
+
+func isRemoteResult(result Result) bool {
+	return strings.HasPrefix(result.Probe, "remote.")
 }
 
 func redactReport(report *Report) {

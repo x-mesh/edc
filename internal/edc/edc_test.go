@@ -96,6 +96,42 @@ func TestBuildReportAndExitCode(t *testing.T) {
 	}
 }
 
+func TestPrintTerminalShowsFailureDetails(t *testing.T) {
+	results := []Result{{
+		Probe: "remote.server.update", Status: StatusFail, Summary: "command가 실패했습니다",
+		Error:    &DiagnosticError{Kind: "command", Message: "exit status 127"},
+		Evidence: []Evidence{{Label: "command output", Value: "gk: command not found"}},
+	}}
+	var output strings.Builder
+	printTerminal(&output, results, false)
+	for _, expected := range []string{"┌─ ERROR  server.update", "│ phase   command", "│ cause   exit status 127", "│ command output", "│   gk: command not found", "└─\n"} {
+		if !strings.Contains(output.String(), expected) {
+			t.Fatalf("output %q does not contain %q", output.String(), expected)
+		}
+	}
+}
+
+func TestPrintTerminalDoesNotRepeatStreamedRemoteEvidence(t *testing.T) {
+	results := []Result{{Probe: "remote.server.update", Status: StatusPass, Summary: "ok", Evidence: []Evidence{{Label: "output", Value: "streamed"}}}}
+	var output strings.Builder
+	printTerminal(&output, results, true)
+	if strings.Contains(output.String(), "streamed") {
+		t.Fatalf("remote evidence repeated: %q", output.String())
+	}
+}
+
+func TestTerminalStatusColor(t *testing.T) {
+	if got := terminalStatus(StatusPass, true); got != "\033[32mPASS\033[0m" {
+		t.Fatalf("pass color = %q", got)
+	}
+	if got := terminalStatus(StatusFail, true); got != "\033[31mFAIL\033[0m" {
+		t.Fatalf("fail color = %q", got)
+	}
+	if got := terminalStatus(StatusPass, false); got != "PASS" {
+		t.Fatalf("plain status = %q", got)
+	}
+}
+
 func TestCaptureOutputDoesNotOverwrite(t *testing.T) {
 	file, err := os.CreateTemp(t.TempDir(), "existing")
 	if err != nil {

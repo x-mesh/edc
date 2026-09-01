@@ -1,4 +1,6 @@
 # Go build and test output
+inventory.yaml
+recipe.yaml
 /bin/
 /dist/
 /edc

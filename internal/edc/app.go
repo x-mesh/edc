@@ -56,6 +56,8 @@ func Run(args []string, version string) int {
 		return runCapture(args[1:])
 	case "report":
 		return runReport(args[1:])
+	case "remote":
+		return runRemote(args[1:], version)
 	default:
 		fmt.Fprintf(os.Stderr, "알 수 없는 command: %s\n", args[0])
 		printHelp(os.Stderr)
@@ -224,12 +226,13 @@ func bindCommon(set *flag.FlagSet, options *commonOptions) {
 	set.StringVar(&options.jsonPath, "json", "", "JSON 출력 경로, stdout은 -")
 	set.DurationVar(&options.timeout, "timeout", options.timeout, "실행 제한 시간")
 	set.BoolVar(&options.verbose, "verbose", false, "상세 evidence 출력")
+	set.BoolVar(&options.verbose, "v", false, "--verbose 단축 option")
 	set.BoolVar(&options.redact, "redact", options.redact, "JSON 민감정보 redaction")
 }
 
 func emit(options commonOptions, report Report) int {
 	if options.jsonPath == "" {
-		printTerminal(os.Stdout, report.Results, options.verbose)
+		printTerminalWithColor(os.Stdout, report.Results, options.verbose, isTerminal(os.Stdout) && os.Getenv("NO_COLOR") == "")
 	} else {
 		var writer io.Writer = os.Stdout
 		var file *os.File
@@ -283,9 +286,10 @@ func printHelp(writer io.Writer) {
   edc sockets [options]
   edc capture [options]
   edc report show <file>
+  edc remote run [--inventory <file> --recipe <file> --group <name>]
   edc version
 
-공통 options: --timeout 15s --json <path|-> --verbose --redact=true
+공통 options: --timeout 15s --json <path|-> -v|--verbose --redact=true
 `)
 }
 

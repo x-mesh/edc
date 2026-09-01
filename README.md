@@ -11,6 +11,19 @@ make build VERSION=0.1.0-dev
 ./bin/edc version
 ```
 
+Install `edc` in `~/.local/bin`.
+
+```bash
+make install VERSION=0.1.0-dev
+~/.local/bin/edc version
+```
+
+Set `PREFIX` or `BINDIR` to use another install path.
+
+```bash
+make install PREFIX=/usr/local
+```
+
 ## 빠른 시작
 
 ```bash
@@ -47,6 +60,48 @@ make build VERSION=0.1.0-dev
 ```
 
 공통 option은 `--timeout`, `--json <path|->`, `--verbose`, `--redact=true|false`입니다. Go `flag` 규칙에 따라 option은 target 앞에 둡니다.
+
+## Remote recipes
+
+`remote run` executes a YAML recipe on an inventory group. It uses local OpenSSH configuration, agents, and known host checks.
+
+Each command loads the remote account default shell in interactive mode. Shell startup output and prompt hooks stay hidden.
+
+Store no passwords or private keys in inventory and recipe files. Configure SSH aliases in `~/.ssh/config`.
+
+Copy the inventory example into the current directory. The interactive command finds `./inventory.yaml` before the user configuration directory.
+
+The fallback path is `os.UserConfigDir()/edc/inventory.yaml`. This path follows the operating system.
+
+```bash
+cp examples/remote/inventory.yaml ./inventory.yaml
+./bin/edc remote run
+```
+
+The interactive command selects the group first. It then shows the inventory path, selects the recipe, and requests confirmation.
+
+Use all flags for cron or launchd. A non-terminal command never waits for input.
+
+```bash
+./bin/edc remote run \
+  --inventory ./inventory.yaml \
+  --recipe ./examples/remote/daily-update.yaml \
+  --group daily \
+  --parallel 2 \
+  --json ./remote-report.json
+```
+
+Use `-v` or `--verbose` to stream each remote command. These global flags keep the interactive selector when target flags are absent.
+
+The interactive group selector uses the up and down arrow keys. Press Enter to select a group.
+
+Set `parallel` in the inventory to run hosts concurrently. Use `group_options.<group>.parallel` for one group.
+
+The `--parallel` option overrides both inventory values. Each host still runs its steps in order.
+
+Each host runs in inventory order. Each step runs its command and verify command in recipe order.
+
+If a step fails, `edc` skips later steps on that host. The next host still runs. Any failure returns exit code `1`.
 
 ## Packet capture
 

@@ -1,0 +1,10 @@
+name: daily-update
+steps:
+  - name: git-kit
+    command: git-kit update
+    verify: git-kit --version
+    timeout: 5m
+  - name: x-mesh
+    command: xm update
+    verify: xm version
+    timeout: 5m

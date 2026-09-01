@@ -69,6 +69,43 @@ Each command loads the remote account default shell in interactive mode. Shell s
 
 Store no passwords or private keys in inventory and recipe files. Configure SSH aliases in `~/.ssh/config`.
 
+Each step needs `name` and `command`. The `verify` field is optional. If `verify` is absent, the exit code of `command` decides the step result.
+
+Keep `name` for group references. If `target` is absent, `edc` uses `name` as the SSH target.
+
+### Host tags
+
+Add `tags` to a host and to a step. A step without `tags` runs on every host of the group. A step with `tags` runs only on the hosts that carry one of the same tags. Use this to send different work to macOS and Linux hosts in one recipe.
+
+```yaml
+# inventory.yaml
+hosts:
+  - name: build-server
+    tags: [linux]
+  - name: workstation
+    tags: [mac]
+```
+
+```yaml
+# recipe.yaml
+steps:
+  - name: git-kit          # no tags, so every host runs this step
+    command: git-kit update
+    verify: git-kit --version
+  - name: brew
+    tags: [mac]
+    command: brew update && brew upgrade
+    verify: brew --version
+  - name: apt
+    tags: [linux]
+    command: apt-get update && apt-get -y upgrade
+    verify: apt-get --version
+```
+
+A host that does not match a step gets no result for that step. The report keeps the skip count for failed hosts only.
+
+If no host in the group matches the tags of a step, `edc` prints a warning to stderr and continues. Check the tag spelling.
+
 Copy the inventory example into the current directory. The interactive command finds `./inventory.yaml` before the user configuration directory.
 
 The fallback path is `os.UserConfigDir()/edc/inventory.yaml`. This path follows the operating system.
@@ -93,7 +130,13 @@ Use all flags for cron or launchd. A non-terminal command never waits for input.
 
 Use `-v` or `--verbose` to stream each remote command. These global flags keep the interactive selector when target flags are absent.
 
+`edc` prints the PASS or FAIL line at the end of each step. The final output shows the failures and the summary.
+
 The interactive group selector uses the up and down arrow keys. Press Enter to select a group.
+
+Use `-f` or `--force` to run without questions. Combine it with `-v` for streaming output.
+
+The `-f` command asks no path questions. It needs one inventory group, a found inventory file, and `./recipe.yaml`.
 
 Set `parallel` in the inventory to run hosts concurrently. Use `group_options.<group>.parallel` for one group.
 

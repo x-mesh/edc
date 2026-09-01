@@ -62,6 +62,79 @@ func TestRemoteRunSequentialAndContinue(t *testing.T) {
 	}
 }
 
+func TestRemoteTaggedStepsRunOnMatchingHostsOnly(t *testing.T) {
+	hosts := []remoteHost{{Name: "server", Target: "server", Tags: []string{"linux"}}, {Name: "laptop", Target: "laptop", Tags: []string{"mac"}}}
+	recipe := remoteRecipe{Name: "daily", Steps: []remoteStep{
+		{Name: "git-kit", Command: "git-kit update", Verify: "git-kit --version", Timeout: time.Minute},
+		{Name: "brew", Command: "brew upgrade", Verify: "brew --version", Timeout: time.Minute, Tags: []string{"mac"}},
+	}}
+	runner := &fakeRemoteRunner{results: map[string]remoteCommandResult{}}
+	results := executeRemoteRecipe(context.Background(), hosts, recipe, runner)
+	want := []string{"remote.server.git-kit", "remote.laptop.git-kit", "remote.laptop.brew"}
+	if len(results) != len(want) {
+		t.Fatalf("results = %#v", results)
+	}
+	for index, probe := range want {
+		if results[index].Probe != probe {
+			t.Fatalf("probe %d = %q, want %q", index, results[index].Probe, probe)
+		}
+	}
+	for _, call := range runner.calls {
+		if strings.HasPrefix(call, "server|brew") {
+			t.Fatalf("tagged step reached the wrong host: %#v", runner.calls)
+		}
+	}
+}
+
+func TestRemoteStepWithoutVerifyUsesCommandResult(t *testing.T) {
+	hosts := []remoteHost{{Name: "one", Target: "one"}}
+	recipe := remoteRecipe{Name: "daily", Steps: []remoteStep{
+		{Name: "brew", Command: "brew update", Timeout: time.Minute},
+		{Name: "broken", Command: "missing", Timeout: time.Minute},
+	}}
+	runner := &fakeRemoteRunner{results: map[string]remoteCommandResult{"one|missing": {ExitCode: 127, Err: errors.New("not found")}}}
+	results := executeRemoteRecipe(context.Background(), hosts, recipe, runner)
+	if len(runner.calls) != 2 {
+		t.Fatalf("verify must not run: %#v", runner.calls)
+	}
+	if results[0].Status != StatusPass || results[0].Metrics["verify_status"] != "none" {
+		t.Fatalf("result = %#v", results[0])
+	}
+	if !strings.Contains(results[0].Summary, "command를 실행했습니다") {
+		t.Fatalf("summary = %q", results[0].Summary)
+	}
+	if results[1].Status != StatusFail {
+		t.Fatalf("command failure must fail the step: %#v", results[1])
+	}
+}
+
+func TestRemoteResultsStreamWhileRunning(t *testing.T) {
+	hosts := []remoteHost{{Name: "one", Target: "one"}}
+	recipe := remoteRecipe{Name: "daily", Steps: []remoteStep{{Name: "gk", Command: "gk update", Verify: "gk --version", Timeout: time.Minute}, {Name: "xm", Command: "xm update", Verify: "xm --version", Timeout: time.Minute}}}
+	runner := &fakeRemoteRunner{results: map[string]remoteCommandResult{"one|xm update": {ExitCode: 1, Err: errors.New("boom")}}}
+	var output strings.Builder
+	display := newRemoteDisplay(&output, remoteDisplayOptions{results: true})
+	results := executeRemoteRecipeWithOptions(context.Background(), hosts, recipe, runner, 1, display)
+	display.Close()
+	text := output.String()
+	passIndex := strings.Index(text, "PASS  one.gk")
+	failIndex := strings.Index(text, "FAIL  one.xm")
+	if passIndex < 0 || failIndex < passIndex {
+		t.Fatalf("streamed results = %q", text)
+	}
+	if strings.Contains(text, "pass  ·") || strings.Contains(text, "ERROR  one.xm") {
+		t.Fatalf("streamed output must carry result lines only: %q", text)
+	}
+	var tail strings.Builder
+	printRemoteTail(&tail, results, false)
+	if strings.Contains(tail.String(), "PASS  one.gk") {
+		t.Fatalf("final output repeats result lines: %q", tail.String())
+	}
+	if !strings.Contains(tail.String(), "ERROR  one.xm") || !strings.Contains(tail.String(), "1 pass") {
+		t.Fatalf("final output = %q", tail.String())
+	}
+}
+
 func TestRemoteExecOutputLimit(t *testing.T) {
 	buffer := &remoteLimitedBuffer{limit: 4}
 	if written, err := buffer.Write([]byte("abcdef")); err != nil || written != 6 {
@@ -82,7 +155,7 @@ func TestRemoteRunRejectsNonTerminalAndPartialFlags(t *testing.T) {
 }
 
 func TestRemoteInteractiveFlagDetection(t *testing.T) {
-	for _, args := range [][]string{nil, {"-v"}, {"--verbose"}} {
+	for _, args := range [][]string{nil, {"-v"}, {"--verbose"}, {"-f"}, {"--force"}, {"-f", "-v"}} {
 		if !onlyRemoteInteractiveFlags(args) {
 			t.Fatalf("args %v must keep interactive mode", args)
 		}

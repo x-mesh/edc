@@ -106,13 +106,74 @@ func TestRemoteInteractiveValidatesRecipeBeforeConfirmation(t *testing.T) {
 	cwd := t.TempDir()
 	writeRemoteFixture(t, filepath.Join(cwd, "inventory.yaml"), "hosts: [{name: one, target: one}]\ngroups: {daily: [one]}\n")
 	invalidRecipe := filepath.Join(cwd, "invalid.yaml")
-	writeRemoteFixture(t, invalidRecipe, "name: daily\nsteps: [{name: gk, command: gk update}]\n")
+	writeRemoteFixture(t, invalidRecipe, "name: daily\nsteps: [{name: gk, verify: gk --version}]\n")
 	var output strings.Builder
 	_, err := promptRemoteOptions(strings.NewReader("1\n"+invalidRecipe+"\n"), &output, cwd, t.TempDir(), 10*time.Minute)
-	if err == nil || !strings.Contains(err.Error(), "verify") {
+	if err == nil || !strings.Contains(err.Error(), "command") {
 		t.Fatalf("error = %v", err)
 	}
 	if strings.Contains(output.String(), "실행할까요?") {
 		t.Fatalf("invalid recipe reached confirmation: %q", output.String())
+	}
+}
+
+func TestRemotePlanShowsTaggedHosts(t *testing.T) {
+	hosts := []remoteHost{{Name: "server", Tags: []string{"linux"}}, {Name: "laptop", Tags: []string{"mac"}}}
+	recipe := remoteRecipe{Name: "daily", Steps: []remoteStep{
+		{Name: "git-kit", Command: "git-kit update", Verify: "git-kit --version"},
+		{Name: "brew", Command: "brew upgrade", Verify: "brew --version", Tags: []string{"mac"}},
+		{Name: "apt", Command: "apt-get update", Verify: "apt-get --version", Tags: []string{"bsd"}},
+	}}
+	var output strings.Builder
+	printRemotePlan(&output, "daily", hosts, recipe)
+	text := output.String()
+	if strings.Contains(text, "1. git-kit\n     hosts") {
+		t.Fatalf("untagged step must not list hosts: %q", text)
+	}
+	for _, expected := range []string{"hosts    laptop", "대상 없음  tag bsd"} {
+		if !strings.Contains(text, expected) {
+			t.Fatalf("plan %q does not contain %q", text, expected)
+		}
+	}
+}
+
+func TestRemoteForceSkipsQuestions(t *testing.T) {
+	cwd := t.TempDir()
+	writeRemoteFixture(t, filepath.Join(cwd, "inventory.yaml"), "hosts: [{name: one}]\ngroups: {daily: [one]}\n")
+	writeRemoteFixture(t, filepath.Join(cwd, "recipe.yaml"), "name: daily\nsteps: [{name: gk, command: git-kit update, verify: git-kit --version}]\n")
+	var output strings.Builder
+	options, err := promptRemoteOptions(strings.NewReader(""), &output, cwd, t.TempDir(), 10*time.Minute, false, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if options.group != "daily" {
+		t.Fatalf("options = %#v", options)
+	}
+	if options.recipePath != filepath.Join(cwd, "recipe.yaml") {
+		t.Fatalf("options = %#v", options)
+	}
+	if strings.Contains(output.String(), "(y/N)") || strings.Contains(output.String(), "group 번호") || strings.Contains(output.String(), "recipe 경로 [") {
+		t.Fatalf("force prompted: %q", output.String())
+	}
+}
+
+func TestRemoteForceRequiresDiscoveredFiles(t *testing.T) {
+	cwd := t.TempDir()
+	if _, err := promptRemoteOptions(strings.NewReader(""), &strings.Builder{}, cwd, t.TempDir(), 10*time.Minute, false, true); err == nil || !strings.Contains(err.Error(), "inventory.yaml") {
+		t.Fatalf("missing inventory error = %v", err)
+	}
+	writeRemoteFixture(t, filepath.Join(cwd, "inventory.yaml"), "hosts: [{name: one}]\ngroups: {daily: [one]}\n")
+	_, err := promptRemoteOptions(strings.NewReader(""), &strings.Builder{}, cwd, t.TempDir(), 10*time.Minute, false, true)
+	if err == nil || !strings.Contains(err.Error(), filepath.Join(cwd, "recipe.yaml")) {
+		t.Fatalf("missing recipe error = %v", err)
+	}
+}
+
+func TestRemoteForceRejectsAmbiguousGroups(t *testing.T) {
+	cwd := t.TempDir()
+	writeRemoteFixture(t, filepath.Join(cwd, "inventory.yaml"), "hosts: [{name: one}]\ngroups: {daily: [one], weekly: [one]}\n")
+	_, err := promptRemoteOptions(strings.NewReader(""), &strings.Builder{}, cwd, t.TempDir(), 10*time.Minute, false, true)
+	if err == nil || !strings.Contains(err.Error(), "group이 하나") {
+		t.Fatalf("error = %v", err)
 	}
 }

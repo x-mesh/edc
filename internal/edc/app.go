@@ -290,6 +290,7 @@ func printHelp(writer io.Writer) {
   edc version
 
 공통 options: --timeout 15s --json <path|-> -v|--verbose --redact=true
+remote interactive: -f|--force는 발견된 inventory/recipe와 단일 group으로 질문 없이 실행
 `)
 }
 

@@ -38,10 +38,15 @@ func discoverRemoteInventory(cwd, configDir string) (string, bool) {
 	return "", false
 }
 
-func promptRemoteOptions(input io.Reader, output io.Writer, cwd, configDir string, defaultTimeout time.Duration, forceVerbose ...bool) (remoteRunOptions, error) {
+func promptRemoteOptions(input io.Reader, output io.Writer, cwd, configDir string, defaultTimeout time.Duration, flags ...bool) (remoteRunOptions, error) {
 	reader := bufio.NewReader(input)
+	forceVerbose := len(flags) > 0 && flags[0]
+	forceRun := len(flags) > 1 && flags[1]
 	inventoryPath, found := discoverRemoteInventory(cwd, configDir)
 	if !found {
+		if forceRun {
+			return remoteRunOptions{}, errors.New("-f 자동 실행에는 inventory.yaml을 찾을 수 없습니다")
+		}
 		var err error
 		inventoryPath, err = promptRemoteText(reader, output, "inventory 경로", "")
 		if err != nil {
@@ -52,7 +57,7 @@ func promptRemoteOptions(input io.Reader, output io.Writer, cwd, configDir strin
 	if err != nil {
 		return remoteRunOptions{}, err
 	}
-	group, err := promptRemoteGroup(input, reader, output, inventory)
+	group, err := promptRemoteGroup(input, reader, output, inventory, forceRun)
 	if err != nil {
 		return remoteRunOptions{}, err
 	}
@@ -61,9 +66,18 @@ func promptRemoteOptions(input io.Reader, output io.Writer, cwd, configDir strin
 	if _, err := os.Stat(recipeDefault); err != nil {
 		recipeDefault = ""
 	}
-	recipePath, err := promptRemoteText(reader, output, "recipe 경로", recipeDefault)
-	if err != nil {
-		return remoteRunOptions{}, err
+	var recipePath string
+	if forceRun {
+		if recipeDefault == "" {
+			return remoteRunOptions{}, fmt.Errorf("-f 자동 실행에는 %s가 필요합니다", filepath.Join(cwd, "recipe.yaml"))
+		}
+		recipePath = recipeDefault
+		fmt.Fprintf(output, "recipe 경로: %s\n", recipePath)
+	} else {
+		recipePath, err = promptRemoteText(reader, output, "recipe 경로", recipeDefault)
+		if err != nil {
+			return remoteRunOptions{}, err
+		}
 	}
 	recipe, err := loadRemoteRecipe(recipePath, defaultTimeout)
 	if err != nil {
@@ -74,14 +88,21 @@ func promptRemoteOptions(input io.Reader, output io.Writer, cwd, configDir strin
 		return remoteRunOptions{}, err
 	}
 	printRemotePlan(output, group, hosts, recipe)
-	verbose := len(forceVerbose) > 0 && forceVerbose[0]
+	verbose := forceVerbose
 	if !verbose {
-		verbose, err = promptRemoteYesNo(reader, output, "상세 출력을 streaming으로 볼까요? (y/N)")
-		if err != nil {
-			return remoteRunOptions{}, err
+		if forceRun {
+			verbose = false
+		} else {
+			verbose, err = promptRemoteYesNo(reader, output, "상세 출력을 streaming으로 볼까요? (y/N)")
+			if err != nil {
+				return remoteRunOptions{}, err
+			}
 		}
 	}
-	confirmed, err := promptRemoteYesNo(reader, output, "실행할까요? (y/N)")
+	confirmed := forceRun
+	if !forceRun {
+		confirmed, err = promptRemoteYesNo(reader, output, "실행할까요? (y/N)")
+	}
 	if err != nil {
 		return remoteRunOptions{}, err
 	}
@@ -91,12 +112,19 @@ func promptRemoteOptions(input io.Reader, output io.Writer, cwd, configDir strin
 	return remoteRunOptions{inventoryPath: inventoryPath, recipePath: recipePath, group: group, verbose: verbose}, nil
 }
 
-func promptRemoteGroup(input io.Reader, reader *bufio.Reader, output io.Writer, inventory remoteInventory) (string, error) {
+func promptRemoteGroup(input io.Reader, reader *bufio.Reader, output io.Writer, inventory remoteInventory, force ...bool) (string, error) {
 	groups := make([]string, 0, len(inventory.Groups))
 	for group := range inventory.Groups {
 		groups = append(groups, group)
 	}
 	sort.Strings(groups)
+	if len(force) > 0 && force[0] {
+		if len(groups) != 1 {
+			return "", fmt.Errorf("-f 자동 실행에는 inventory group이 하나만 있어야 합니다")
+		}
+		fmt.Fprintf(output, "group(대상): %s\n", groups[0])
+		return groups[0], nil
+	}
 	if file, ok := input.(*os.File); ok && term.IsTerminal(int(file.Fd())) {
 		return selectRemoteGroup(file, output, groups)
 	}
@@ -143,8 +171,18 @@ func printRemotePlan(output io.Writer, group string, hosts []remoteHost, recipe 
 	fmt.Fprintf(output, "\n실행 계획  %s → %s\n", group, strings.Join(hostNames, ", "))
 	for index, step := range recipe.Steps {
 		fmt.Fprintf(output, "  %d. %s\n", index+1, step.Name)
+		if len(step.Tags) > 0 {
+			targets := stepHostNames(step, hosts)
+			if len(targets) == 0 {
+				fmt.Fprintf(output, "     hosts    대상 없음  tag %s\n", strings.Join(step.Tags, ", "))
+			} else {
+				fmt.Fprintf(output, "     hosts    %s\n", strings.Join(targets, ", "))
+			}
+		}
 		fmt.Fprintf(output, "     command  %s\n", step.Command)
-		fmt.Fprintf(output, "     verify   %s\n", step.Verify)
+		if step.Verify != "" {
+			fmt.Fprintf(output, "     verify   %s\n", step.Verify)
+		}
 	}
 	fmt.Fprintln(output)
 }

@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -27,6 +28,7 @@ func runRemoteRun(args []string, version string) int {
 	connectTimeout := 10 * time.Second
 	outputLimit := remoteOutputLimit
 	parallelOverride := 0
+	force := false
 	interactiveArgs := len(args) == 0 || onlyRemoteInteractiveFlags(args)
 	if interactiveArgs {
 		if !isTerminal(os.Stdin) || !isTerminal(os.Stdout) {
@@ -46,8 +48,11 @@ func runRemoteRun(args []string, version string) int {
 			if argument == "-v" || argument == "--verbose" {
 				options.verbose = true
 			}
+			if argument == "-f" || argument == "--force" {
+				force = true
+			}
 		}
-		remoteOptions, err = promptRemoteOptions(os.Stdin, os.Stdout, cwd, configDir, options.timeout, options.verbose)
+		remoteOptions, err = promptRemoteOptions(os.Stdin, os.Stdout, cwd, configDir, options.timeout, options.verbose, force)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			if err == errRemoteCancelled {
@@ -101,18 +106,34 @@ func runRemoteRun(args []string, version string) int {
 		fmt.Fprintln(os.Stderr, err)
 		return 2
 	}
+	for _, step := range recipe.Steps {
+		if len(stepHostNames(step, hosts)) == 0 {
+			fmt.Fprintf(os.Stderr, "경고: step %q의 tag(%s)와 일치하는 host가 group %q에 없습니다\n", step.Name, strings.Join(step.Tags, ", "), remoteOptions.group)
+		}
+	}
 	started := time.Now()
 	parallel := remoteParallelForGroup(inventory, remoteOptions.group, parallelOverride)
-	display := newRemoteDisplay(os.Stdout, options.verbose && options.jsonPath == "", options.jsonPath == "" && isTerminal(os.Stdout) && os.Getenv("NO_COLOR") == "")
+	terminalOutput := options.jsonPath == ""
+	display := newRemoteDisplay(os.Stdout, remoteDisplayOptions{
+		verbose: options.verbose && terminalOutput,
+		spinner: terminalOutput && isTerminal(os.Stdout) && os.Getenv("NO_COLOR") == "",
+		results: terminalOutput,
+		redact:  options.redact,
+	})
 	results := executeRemoteRecipeWithOptions(context.Background(), hosts, recipe, sshRemoteRunner{connectTimeout: connectTimeout, outputLimit: outputLimit}, parallel, display)
 	display.Close()
 	target := map[string]interface{}{"group": remoteOptions.group, "inventory": remoteOptions.inventoryPath, "recipe": remoteOptions.recipePath, "recipe_name": recipe.Name, "parallel": parallel}
-	return emit(options, buildReport(version, started, target, results, options.redact))
+	report := buildReport(version, started, target, results, options.redact)
+	if terminalOutput {
+		printRemoteTail(os.Stdout, report.Results, display.color)
+		return exitCode(report.Results)
+	}
+	return emit(options, report)
 }
 
 func onlyRemoteInteractiveFlags(args []string) bool {
 	for _, argument := range args {
-		if argument != "-v" && argument != "--verbose" {
+		if argument != "-v" && argument != "--verbose" && argument != "-f" && argument != "--force" {
 			return false
 		}
 	}
@@ -176,10 +197,15 @@ func executeRemoteHost(ctx context.Context, host remoteHost, recipe remoteRecipe
 	results := make([]Result, 0, len(recipe.Steps))
 	hostFailed := false
 	for _, step := range recipe.Steps {
+		if !stepRunsOnHost(step, host) {
+			continue
+		}
 		started := time.Now()
 		probe := fmt.Sprintf("remote.%s.%s", host.Name, step.Name)
 		if hostFailed {
-			results = append(results, Result{Probe: probe, Status: StatusSkip, StartedAt: started.UTC(), Summary: "이 host의 이전 step이 실패해 건너뛰었습니다", Metrics: map[string]interface{}{"host": host.Name, "step": step.Name, "command_status": "skip", "verify_status": "skip"}})
+			skipped := Result{Probe: probe, Status: StatusSkip, StartedAt: started.UTC(), Summary: "이 host의 이전 step이 실패해 건너뛰었습니다", Metrics: map[string]interface{}{"host": host.Name, "step": step.Name, "command_status": "skip", "verify_status": "skip"}}
+			results = append(results, skipped)
+			display.Result(skipped)
 			continue
 		}
 		if display != nil {
@@ -205,11 +231,21 @@ func executeRemoteHost(ctx context.Context, host remoteHost, recipe remoteRecipe
 			result.Metrics["command_exit_code"] = commandResult.ExitCode
 			result.DurationMS = time.Since(started).Milliseconds()
 			results = append(results, result)
+			display.Result(result)
 			hostFailed = true
 			continue
 		}
 		result.Metrics["command_status"] = "pass"
 		result.Metrics["command_exit_code"] = 0
+		if step.Verify == "" {
+			result.Status = StatusPass
+			result.Summary = fmt.Sprintf("%s에서 %s command를 실행했습니다", host.Name, step.Name)
+			result.Metrics["verify_status"] = "none"
+			result.DurationMS = time.Since(started).Milliseconds()
+			results = append(results, result)
+			display.Result(result)
+			continue
+		}
 		if display != nil {
 			display.Start(host.Name, step.Name, "verify")
 		}
@@ -233,6 +269,7 @@ func executeRemoteHost(ctx context.Context, host remoteHost, recipe remoteRecipe
 		}
 		result.DurationMS = time.Since(started).Milliseconds()
 		results = append(results, result)
+		display.Result(result)
 	}
 	return results
 }

@@ -85,6 +85,19 @@ func TestRedactReport(t *testing.T) {
 	}
 }
 
+func TestRedactReportPreservesUsernameInsideRemoteHost(t *testing.T) {
+	username := os.Getenv("USER")
+	if username == "" {
+		t.Skip("USER is empty")
+	}
+	host := username + "s-macbook-pro"
+	report := Report{Host: map[string]interface{}{"hostname": "local-host"}, Results: []Result{{Probe: "remote." + host + ".update", Summary: host}}}
+	redactReport(&report)
+	if report.Results[0].Probe != "remote."+host+".update" || report.Results[0].Summary != host {
+		t.Fatalf("remote host was redacted: %#v", report.Results[0])
+	}
+}
+
 func TestBuildReportAndExitCode(t *testing.T) {
 	results := []Result{{Probe: "a", Status: StatusPass}, {Probe: "b", Status: StatusFail}}
 	report := buildReport("test", time.Now(), nil, results, false)

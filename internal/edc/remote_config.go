@@ -16,12 +16,14 @@ const (
 	remoteHostLimit   = 1000
 	remoteGroupLimit  = 100
 	remoteStepLimit   = 100
+	remoteTagLimit    = 20
 	remoteMaxTimeout  = 24 * time.Hour
 )
 
 type remoteHost struct {
-	Name   string `yaml:"name"`
-	Target string `yaml:"target"`
+	Name   string   `yaml:"name"`
+	Target string   `yaml:"target"`
+	Tags   []string `yaml:"tags"`
 }
 
 type remoteInventory struct {
@@ -40,6 +42,7 @@ type remoteStep struct {
 	Command string
 	Verify  string
 	Timeout time.Duration
+	Tags    []string
 }
 
 type remoteRecipe struct {
@@ -53,10 +56,11 @@ type remoteRecipeFile struct {
 }
 
 type remoteStepFile struct {
-	Name    string `yaml:"name"`
-	Command string `yaml:"command"`
-	Verify  string `yaml:"verify"`
-	Timeout string `yaml:"timeout"`
+	Name    string   `yaml:"name"`
+	Command string   `yaml:"command"`
+	Verify  string   `yaml:"verify"`
+	Timeout string   `yaml:"timeout"`
+	Tags    []string `yaml:"tags"`
 }
 
 func loadRemoteInventory(path string) (remoteInventory, error) {
@@ -84,8 +88,11 @@ func loadRemoteInventory(path string) (remoteInventory, error) {
 		host := &inventory.Hosts[index]
 		host.Name = strings.TrimSpace(host.Name)
 		host.Target = strings.TrimSpace(host.Target)
-		if host.Name == "" || host.Target == "" {
-			return inventory, fmt.Errorf("host %d의 name과 target은 비어 있을 수 없습니다", index+1)
+		if host.Name == "" {
+			return inventory, fmt.Errorf("host %d의 name은 비어 있을 수 없습니다", index+1)
+		}
+		if host.Target == "" {
+			host.Target = host.Name
 		}
 		if strings.HasPrefix(host.Target, "-") {
 			return inventory, fmt.Errorf("host %q의 target은 '-'로 시작할 수 없습니다", host.Name)
@@ -93,6 +100,11 @@ func loadRemoteInventory(path string) (remoteInventory, error) {
 		if _, exists := hosts[host.Name]; exists {
 			return inventory, fmt.Errorf("중복 host: %s", host.Name)
 		}
+		tags, err := normalizeRemoteTags(host.Tags, fmt.Sprintf("host %q", host.Name))
+		if err != nil {
+			return inventory, err
+		}
+		host.Tags = tags
 		hosts[host.Name] = struct{}{}
 	}
 	for group, members := range inventory.Groups {
@@ -152,13 +164,18 @@ func loadRemoteRecipe(path string, defaultTimeout time.Duration) (remoteRecipe, 
 	seen := make(map[string]struct{}, len(file.Steps))
 	for index, value := range file.Steps {
 		step := remoteStep{Name: strings.TrimSpace(value.Name), Command: strings.TrimSpace(value.Command), Verify: strings.TrimSpace(value.Verify), Timeout: defaultTimeout}
-		if step.Name == "" || step.Command == "" || step.Verify == "" {
-			return remoteRecipe{}, fmt.Errorf("step %d의 name, command, verify는 비어 있을 수 없습니다", index+1)
+		if step.Name == "" || step.Command == "" {
+			return remoteRecipe{}, fmt.Errorf("step %d의 name과 command는 비어 있을 수 없습니다", index+1)
 		}
 		if _, exists := seen[step.Name]; exists {
 			return remoteRecipe{}, fmt.Errorf("중복 step: %s", step.Name)
 		}
 		seen[step.Name] = struct{}{}
+		tags, err := normalizeRemoteTags(value.Tags, fmt.Sprintf("step %q", step.Name))
+		if err != nil {
+			return remoteRecipe{}, err
+		}
+		step.Tags = tags
 		if value.Timeout != "" {
 			duration, err := time.ParseDuration(value.Timeout)
 			if err != nil || duration <= 0 || duration > remoteMaxTimeout {
@@ -169,6 +186,51 @@ func loadRemoteRecipe(path string, defaultTimeout time.Duration) (remoteRecipe, 
 		recipe.Steps = append(recipe.Steps, step)
 	}
 	return recipe, nil
+}
+
+func normalizeRemoteTags(tags []string, owner string) ([]string, error) {
+	if len(tags) > remoteTagLimit {
+		return nil, fmt.Errorf("%s의 tag 수는 %d개를 초과할 수 없습니다", owner, remoteTagLimit)
+	}
+	normalized := make([]string, 0, len(tags))
+	seen := make(map[string]struct{}, len(tags))
+	for _, tag := range tags {
+		tag = strings.TrimSpace(tag)
+		if tag == "" {
+			return nil, fmt.Errorf("%s의 tag는 비어 있을 수 없습니다", owner)
+		}
+		if _, exists := seen[tag]; exists {
+			return nil, fmt.Errorf("%s의 중복 tag: %s", owner, tag)
+		}
+		seen[tag] = struct{}{}
+		normalized = append(normalized, tag)
+	}
+	return normalized, nil
+}
+
+// stepRunsOnHost는 tag가 없는 step을 모든 host에서 실행하고, tag가 있으면 같은 tag를 가진 host에서만 실행한다.
+func stepRunsOnHost(step remoteStep, host remoteHost) bool {
+	if len(step.Tags) == 0 {
+		return true
+	}
+	for _, tag := range step.Tags {
+		for _, hostTag := range host.Tags {
+			if tag == hostTag {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func stepHostNames(step remoteStep, hosts []remoteHost) []string {
+	names := make([]string, 0, len(hosts))
+	for _, host := range hosts {
+		if stepRunsOnHost(step, host) {
+			names = append(names, host.Name)
+		}
+	}
+	return names
 }
 
 func decodeRemoteYAML(path string, target interface{}) error {

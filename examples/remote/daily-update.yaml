@@ -1,5 +1,6 @@
 name: daily-update
 steps:
+  # No tags. This step runs on every host of the group.
   - name: git-kit
     command: git-kit update
     verify: git-kit --version
@@ -8,3 +9,14 @@ steps:
     command: xm update
     verify: xm version
     timeout: 5m
+  # Tagged steps run only on the hosts that carry one of the tags.
+  - name: brew
+    tags: [mac]
+    command: brew update && brew upgrade
+    verify: brew --version
+    timeout: 10m
+  - name: apt
+    tags: [linux]
+    command: apt-get update && apt-get -y upgrade
+    verify: apt-get --version
+    timeout: 10m

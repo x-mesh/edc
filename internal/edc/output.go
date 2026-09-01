@@ -37,31 +37,49 @@ func printTerminal(writer io.Writer, results []Result, verbose bool) {
 }
 
 func printTerminalWithColor(writer io.Writer, results []Result, verbose, color bool) {
-	remote := len(results) > 0 && isRemoteResult(results[0])
-	if remote {
+	if len(results) > 0 && isRemoteResult(results[0]) {
 		fmt.Fprintln(writer)
 	}
 	for _, result := range results {
-		status := terminalStatus(result.Status, color)
-		probe := result.Probe
-		if remote {
-			probe = strings.TrimPrefix(probe, "remote.")
-		}
-		fmt.Fprintf(writer, "%-4s  %-24s  %s\n", status, probe, result.Summary)
-		if result.Status == StatusFail {
-			printFailureBox(writer, probe, result, color)
-		}
-		for _, warning := range result.Warnings {
-			fmt.Fprintf(writer, "      warning: %s\n", warning)
-		}
-		if verbose && result.Status != StatusFail && !isRemoteResult(result) {
-			for _, evidence := range result.Evidence {
-				fmt.Fprintf(writer, "      %s:\n%s\n", evidence.Label, indent(evidence.Value, "        "))
-			}
+		fmt.Fprint(writer, formatResultLine(result, color))
+		printResultDetail(writer, result, verbose, color)
+	}
+	printResultSummary(writer, results)
+}
+
+// printRemoteTail은 결과 줄을 실행 중에 이미 출력한 remote run의 마무리 출력이다.
+func printRemoteTail(writer io.Writer, results []Result, color bool) {
+	for _, result := range results {
+		printResultDetail(writer, result, false, color)
+	}
+	printResultSummary(writer, results)
+}
+
+func formatResultLine(result Result, color bool) string {
+	return fmt.Sprintf("%-4s  %-24s  %s\n", terminalStatus(result.Status, color), resultLabel(result), result.Summary)
+}
+
+func printResultDetail(writer io.Writer, result Result, verbose, color bool) {
+	if result.Status == StatusFail {
+		printFailureBox(writer, resultLabel(result), result, color)
+	}
+	for _, warning := range result.Warnings {
+		fmt.Fprintf(writer, "      warning: %s\n", warning)
+	}
+	if verbose && result.Status != StatusFail && !isRemoteResult(result) {
+		for _, evidence := range result.Evidence {
+			fmt.Fprintf(writer, "      %s:\n%s\n", evidence.Label, indent(evidence.Value, "        "))
 		}
 	}
+}
+
+func printResultSummary(writer io.Writer, results []Result) {
 	s := summarize(results)
 	fmt.Fprintf(writer, "\n%d pass  ·  %d warn  ·  %d fail  ·  %d skip\n", s.Pass, s.Warn, s.Fail, s.Skip)
+}
+
+func resultLabel(result Result) string {
+	return strings.TrimPrefix(result.Probe, "remote.")
 }
 
 func printFailureBox(writer io.Writer, probe string, result Result, color bool) {
@@ -111,8 +129,7 @@ func isRemoteResult(result Result) bool {
 
 func redactReport(report *Report) {
 	hostname, _ := report.Host["hostname"].(string)
-	username := os.Getenv("USER")
-	patterns := []struct{ value, label string }{{hostname, "host"}, {username, "user"}}
+	patterns := []struct{ value, label string }{{hostname, "host"}}
 	data, _ := json.Marshal(report)
 	text := string(data)
 	for _, pattern := range patterns {

@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: check (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Test and vet
+        run: make check
+
+      - name: Build
+        run: make build VERSION=ci
+
+  cross:
+    name: cross build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # release가 쓰는 것과 같은 target을 미리 빌드해 태그 뒤에 실패하지 않게 한다.
+      - name: Build every release target
+        run: make dist VERSION=ci
+
+      - name: Verify checksums
+        working-directory: dist
+        run: sha256sum --check checksums.txt

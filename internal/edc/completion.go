@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 )
 
 func runCompletion(args []string) int {
@@ -14,9 +15,9 @@ func runCompletion(args []string) int {
 	}
 	switch args[0] {
 	case "zsh":
-		fmt.Fprint(os.Stdout, zshCompletion)
+		fmt.Fprint(os.Stdout, renderCompletion(zshCompletion, zshCommandList()))
 	case "bash":
-		fmt.Fprint(os.Stdout, bashCompletion)
+		fmt.Fprint(os.Stdout, renderCompletion(bashCompletion, bashCommandList()))
 	case "groups":
 		cwd, err := os.Getwd()
 		if err != nil {
@@ -33,6 +34,25 @@ func runCompletion(args []string) int {
 		return 2
 	}
 	return 0
+}
+
+// renderCompletion은 script의 명령 목록 자리를 commandDocs에서 만든 목록으로 채운다.
+// help 출력과 completion이 같은 표를 읽으므로 설명이 서로 어긋나지 않는다.
+func renderCompletion(script, commands string) string {
+	return strings.Replace(script, "@@COMMANDS@@", commands, 1)
+}
+
+func zshCommandList() string {
+	var builder strings.Builder
+	for _, doc := range commandSummaries() {
+		fmt.Fprintf(&builder, "        '%s:%s'\n", doc.name, doc.summary)
+	}
+	builder.WriteString("        'help:도움말'")
+	return builder.String()
+}
+
+func bashCommandList() string {
+	return strings.Join(append(commandNames(), "help"), " ")
 }
 
 // writeCompletionGroups는 shell completion이 읽도록 inventory group 이름을 한 줄에 하나씩 쓴다.
@@ -79,23 +99,7 @@ _edc() {
     command)
       local -a commands
       commands=(
-        'top:실시간 host resource 모니터'
-        'info:system, network, disk 정보'
-        'doctor:종합 network 진단'
-        'dns:DNS lookup과 resolver 설정'
-        'tcp:TCP 연결 확인'
-        'tls:TLS handshake와 인증서 확인'
-        'http:HTTP 응답 확인'
-        'net:interfaces, route, ping, trace'
-        'sockets:listening socket 목록'
-        'quality:macOS networkQuality 측정'
-        'capture:packet capture'
-        'report:저장한 JSON report 보기와 비교'
-        'remote:inventory group에 recipe 실행'
-        'completion:shell completion 출력'
-        'update:GitHub release에서 최신 버전 설치'
-        'version:버전 출력'
-        'help:도움말'
+@@COMMANDS@@
       )
       _describe -t commands 'edc command' commands
       ;;
@@ -166,7 +170,7 @@ _edc() {
   local cur prev command
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD-1]}"
-  local commands="top info doctor dns tcp tls http net sockets quality capture report remote completion update version help"
+  local commands="@@COMMANDS@@"
   local common="--timeout --json --verbose -v --redact"
   if [[ $COMP_CWORD -eq 1 ]]; then
     COMPREPLY=($(compgen -W "$commands" -- "$cur"))

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"io"
 	"net"
 	"os"
 	"strings"
@@ -23,10 +22,21 @@ type commonOptions struct {
 func Run(args []string, version string) int {
 	if len(args) == 0 {
 		printHelp(os.Stdout)
-		return 2
+		return 0
+	}
+	// `edc <command> --help`도 같은 상세 화면으로 보낸다. flag의 기본 usage와 어긋나지 않게 한다.
+	if len(args) > 1 && (args[1] == "--help" || args[1] == "-h") && printCommandHelp(os.Stdout, args[0]) {
+		return 0
 	}
 	switch args[0] {
 	case "help", "-h", "--help":
+		if len(args) > 1 {
+			if !printCommandHelp(os.Stdout, args[1]) {
+				fmt.Fprintf(os.Stderr, "알 수 없는 command: %s\n", args[1])
+				return 2
+			}
+			return 0
+		}
 		printHelp(os.Stdout)
 		return 0
 	case "version":
@@ -64,7 +74,7 @@ func Run(args []string, version string) int {
 		return runUpdate(args[1:], version)
 	default:
 		fmt.Fprintf(os.Stderr, "알 수 없는 command: %s\n", args[0])
-		printHelp(os.Stderr)
+		fmt.Fprintln(os.Stderr, "edc help로 명령 목록을 봅니다")
 		return 2
 	}
 }
@@ -336,43 +346,6 @@ func runParallelWith(ctx context.Context, probes []func(context.Context) Result,
 	}
 	sortResults(results)
 	return results
-}
-
-func printHelp(writer io.Writer) {
-	fmt.Fprint(writer, `edc - macOS와 Linux용 SE/SRE 진단 툴킷
-
-사용법:
-  edc top [--interval 1s] [--count N] [--json <path|->]
-  edc info [--public=false] [--timeout 3s]
-  edc doctor [--profile default|full] [options] <host|URL>
-  edc net <interfaces|route|ping|trace> ...
-  edc dns <lookup|config> ...
-  edc tcp check <host:port>
-  edc tls check [--min-days N] <host:port>
-  edc http check [--expect-status N] <URL>
-  edc quality [options]
-  edc sockets [options]
-  edc capture [options]
-  edc report show <file>
-  edc report diff [--json <path|->] <before> <after>
-  edc remote [<group>] [--inventory <file>] [--recipe <file>] [-n|--dry-run] [-l|--list]
-  edc completion <zsh|bash|groups>
-  edc update [--check] [--yes]
-  edc version
-
-공통 options: --timeout 15s --json <path|-> -v|--verbose --redact=true
-tls: --min-days N은 인증서 남은 일수가 N보다 작으면 fail로 처리합니다
-http: --expect-status N은 응답 code가 N과 다르면 fail로 처리합니다
-report diff: probe별 status 변화와 metric 차이를 보여 주고, 악화된 probe가 있으면 exit 1입니다
-report: terminal에서는 뷰어로 엽니다. f 필터, e 상세, q 종료
-remote: group을 생략하면 선택기를 띄웁니다. inventory.yaml과 recipe.yaml은 현재 디렉터리와 config 디렉터리에서 찾습니다
-remote: 계획과 결과가 host×step 표 하나를 씁니다. -f|--force는 확인을 생략하고, -n|--dry-run은 계획만 출력하며, -l|--list는 inventory를 보여 줍니다
-info: public IP를 기본으로 조회하고, 제한 시간 안에 응답이 없으면 그 줄을 뺍니다. --public=false로 끕니다
-top: terminal에서는 대시보드로 실행합니다. q 종료, p 일시정지, +/- interval
-remote와 doctor: terminal에서는 실시간 화면으로 실행하고 Ctrl-C로 취소합니다 (exit 4)
-completion: source <(edc completion zsh) 또는 source <(edc completion bash)
-update: GitHub release에서 최신 버전을 받아 실행 파일을 바꿉니다. --check는 확인만 합니다
-`)
 }
 
 func runReport(args []string) int {

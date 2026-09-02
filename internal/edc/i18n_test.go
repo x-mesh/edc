@@ -3,6 +3,7 @@ package edc
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -275,4 +276,56 @@ func equalStrings(left, right []string) bool {
 		}
 	}
 	return true
+}
+
+// %w는 fmt.Errorf 전용이라 번역자가 다룰 것이 아니다.
+// 번역에서 빠지면 원인 error가 조용히 사라지므로, 래핑은 코드가 맡고 catalog에는 두지 않는다.
+func TestCatalogHoldsNoErrorWrapVerb(t *testing.T) {
+	loadCatalogs()
+	for _, language := range supportedLanguages {
+		for _, key := range catalogKeys(language) {
+			text, ok := catalogs[language].text(key)
+			if !ok {
+				continue
+			}
+			if strings.Contains(text, "%w") {
+				t.Errorf("%s %q holds %%w: %q", language, key, text)
+			}
+		}
+	}
+}
+
+// 코드가 부르는 키가 catalog에 없으면 화면에 키 문자열이 그대로 나온다.
+// help의 command.* 만 검사하면 cli.*, remote.*, observe.* 의 누락을 놓치므로,
+// 소스에서 리터럴 키를 모아 한 번에 잰다.
+func TestEveryReferencedKeyExists(t *testing.T) {
+	// 닫는 괄호나 쉼표가 바로 오는 형태만 본다.
+	// T("command." + name + ".summary") 같은 조합은 앞 조각만 잡히므로 제외한다.
+	pattern := regexp.MustCompile(`\bT(?:List)?\("([^"]+)"\s*[,)]`)
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := 0
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		content, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, match := range pattern.FindAllStringSubmatch(string(content), -1) {
+			key := match[1]
+			seen++
+			if !hasMessage(defaultLanguage, key) {
+				t.Errorf("%s calls %q, which %s misses", name, key, defaultLanguage)
+			}
+		}
+	}
+	if seen == 0 {
+		t.Fatal("the scan found no keys, so it guards nothing")
+	}
+	t.Logf("checked %d referenced keys", seen)
 }

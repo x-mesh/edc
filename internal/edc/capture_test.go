@@ -9,6 +9,17 @@ import (
 )
 
 func TestCapturePlanDetailListsEveryCondition(t *testing.T) {
+	// wide 문자가 섞이는 언어까지 돌려야 열 정렬을 실제로 잰다.
+	restore := currentLanguage()
+	defer setLanguage(restore)
+	for _, language := range supportedLanguages {
+		setLanguage(language)
+		t.Run(language, func(t *testing.T) { assertCapturePlanDetail(t) })
+	}
+}
+
+func assertCapturePlanDetail(t *testing.T) {
+	t.Helper()
 	plan := capturePlan{interfaceName: "en0", duration: 15 * time.Second, count: 500, outputPath: "/tmp/incident.pcap"}
 	detail := plan.detail()
 	if !strings.HasPrefix(detail, T("cli.capture.plan_title")+"\n") || !strings.Contains(detail, capturePayloadWarning()) {

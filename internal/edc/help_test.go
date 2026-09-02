@@ -85,9 +85,15 @@ func TestEveryCommandDocIsComplete(t *testing.T) {
 			t.Errorf("%s has group %q, which printHelp never prints", doc.name, doc.group)
 		}
 		// zsh completion은 이름과 설명을 콜론으로 나누므로 설명에 콜론이 있으면 깨진다.
-		if strings.ContainsAny(doc.summary(), ":'") {
-			t.Errorf("%s summary must hold no colon or quote: %q", doc.name, doc.summary())
+		// summary가 언어마다 다르므로 세 언어를 모두 본다.
+		restore := currentLanguage()
+		for _, language := range supportedLanguages {
+			setLanguage(language)
+			if strings.ContainsAny(doc.summary(), ":'") {
+				t.Errorf("%s summary of %s must hold no colon or quote: %q", language, doc.name, doc.summary())
+			}
 		}
+		setLanguage(restore)
 	}
 }
 

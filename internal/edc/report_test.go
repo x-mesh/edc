@@ -120,7 +120,9 @@ func TestCertificateVerdict(t *testing.T) {
 	if status, warning, err := certificateVerdict(90, 0); status != StatusPass || warning != "" || err != nil {
 		t.Fatalf("healthy certificate = %v %q %#v", status, warning, err)
 	}
-	if status, warning, err := certificateVerdict(10, 0); status != StatusWarn || warning != T("observe.probe.certificate_expiring", 10) || err != nil {
+	status, warning, err := certificateVerdict(10, 0)
+	// 번역 template이 인자를 잃어도 알아채도록 남은 일수가 문구에 실제로 들어갔는지 본다.
+	if status != StatusWarn || err != nil || !strings.Contains(warning, "10") {
 		t.Fatalf("default warning = %v %q %#v", status, warning, err)
 	}
 	if status, warning, err := certificateVerdict(10, 14); status != StatusFail || warning != "" || err == nil || err.Kind != "expiry" {

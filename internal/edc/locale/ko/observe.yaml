@@ -11,6 +11,7 @@ observe:
     unreachable: "닿지 않음"
     error:
       resolve: "이름을 풀지 못했습니다"
+      timeout: "시간 안에 닿지 못했습니다"
       connect: "연결하지 못했습니다"
     heading:
       location: "위치"

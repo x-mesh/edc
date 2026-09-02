@@ -2,6 +2,7 @@ package edc
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -23,6 +24,8 @@ const (
 	whereProbePort = "443"
 	// whereParallel은 동시에 여는 연결 수다. 너무 높이면 마지막 마일이 스스로 혼잡해져 값이 흐려진다.
 	whereParallel = 8
+	// whereDialTimeout은 handshake 하나의 상한이다. 공용 예산을 한 endpoint가 다 쓰지 못하게 막는다.
+	whereDialTimeout = 4 * time.Second
 	// cloudflareTraceURL은 anycast로 받은 PoP 코드를 돌려준다. 위치를 좁히는 데 쓴다.
 	cloudflareTraceURL = "https://cloudflare.com/cdn-cgi/trace"
 )
@@ -239,9 +242,20 @@ func measureEndpoint(ctx context.Context, endpoint regionEndpoint, count int) wh
 		measurement.Error = T("observe.where.error.resolve")
 		return measurement
 	}
-	target := net.JoinHostPort(addresses[0].IP.String(), whereProbePort)
 
-	var samples []time.Duration
+	// 첫 주소만 쓰면 IPv6이 앞에 오는 이름에서 IPv4만 되는 host가 전부 unreachable로 보인다.
+	// 닿는 주소를 하나 찾을 때까지 넘어가고, 찾은 뒤에는 그 주소로만 반복해 값이 섞이지 않게 한다.
+	target, err := firstReachableAddress(ctx, addresses)
+	if err != nil {
+		if isCancelled(ctx) {
+			measurement.Error = T("observe.where.error.timeout")
+		} else {
+			measurement.Error = T("observe.where.error.connect")
+		}
+		return measurement
+	}
+
+	samples := []time.Duration{}
 	for attempt := 0; attempt < count; attempt++ {
 		elapsed, err := dialOnce(ctx, target)
 		if err != nil {
@@ -250,7 +264,8 @@ func measureEndpoint(ctx context.Context, endpoint regionEndpoint, count int) wh
 		samples = append(samples, elapsed)
 	}
 	if len(samples) == 0 {
-		measurement.Error = T("observe.where.error.connect")
+		// 여기까지 왔다면 첫 연결은 됐다는 뜻이므로, 남은 원인은 예산 소진뿐이다.
+		measurement.Error = T("observe.where.error.timeout")
 		return measurement
 	}
 	sort.Slice(samples, func(i, j int) bool { return samples[i] < samples[j] })
@@ -264,9 +279,36 @@ func measureEndpoint(ctx context.Context, endpoint regionEndpoint, count int) wh
 	return measurement
 }
 
+// firstReachableAddress는 닿는 주소를 하나 고른다. 그 주소로 잰 첫 값은 버린다.
+func firstReachableAddress(ctx context.Context, addresses []net.IPAddr) (string, error) {
+	var lastErr error
+	for _, address := range addresses {
+		if isCancelled(ctx) {
+			return "", ctx.Err()
+		}
+		target := net.JoinHostPort(address.IP.String(), whereProbePort)
+		if _, err := dialOnce(ctx, target); err != nil {
+			lastErr = err
+			continue
+		}
+		return target, nil
+	}
+	if lastErr == nil {
+		lastErr = errors.New(T("observe.where.error.connect"))
+	}
+	return "", lastErr
+}
+
+func isCancelled(ctx context.Context) bool { return ctx.Err() != nil }
+
+// dialOnce는 handshake 하나에만 시간을 준다.
+// 개별 상한이 없으면 SYN이 버려지는 endpoint 하나가 전체 예산을 다 쓰고,
+// 실제로 닿는 지역까지 unreachable로 보고된다.
 func dialOnce(ctx context.Context, target string) (time.Duration, error) {
+	attempt, cancel := context.WithTimeout(ctx, whereDialTimeout)
+	defer cancel()
 	started := time.Now()
-	conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", target)
+	conn, err := (&net.Dialer{}).DialContext(attempt, "tcp", target)
 	if err != nil {
 		return 0, err
 	}

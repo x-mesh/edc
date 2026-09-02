@@ -11,6 +11,7 @@ observe:
     unreachable: "到達不可"
     error:
       resolve: "名前を解決できませんでした"
+      timeout: "時間内に到達できませんでした"
       connect: "接続できませんでした"
     heading:
       location: "位置"

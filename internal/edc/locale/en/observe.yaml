@@ -11,6 +11,7 @@ observe:
     unreachable: "no reply"
     error:
       resolve: "edc did not resolve the name"
+      timeout: "edc ran out of time before it reached this region"
       connect: "edc did not connect"
     heading:
       location: "location"

@@ -50,14 +50,14 @@ func runInfo(args []string, version string) int {
 			public = &value
 		}
 	}
-	printInfo(os.Stdout, version, details, interfaces, disks, public)
+	printInfo(os.Stdout, version, details, interfaces, disks, public, isTerminal(os.Stdout) && os.Getenv("NO_COLOR") == "")
 	if interfaceErr != nil || diskErr != nil {
 		return 1
 	}
 	return 0
 }
 
-func printInfo(writer io.Writer, version string, details hostDetails, interfaces []interfaceDetails, disks []diskDetails, public *publicNetworkInfo) {
+func printInfo(writer io.Writer, version string, details hostDetails, interfaces []interfaceDetails, disks []diskDetails, public *publicNetworkInfo, color bool) {
 	fmt.Fprintf(writer, "Description : This command displays server resource information.\nVersion     : %s\nAuthor      : %s\n\n%s\n\n", version, author, strings.Repeat("-", 50))
 	fmt.Fprintln(writer, "🖥️  System Information")
 	fmt.Fprintf(writer, "├── Hostname: %s\n├── System: %s\n├── OS: %s\n├── Version: %s\n├── Release: %s\n├── Machine: %s\n├── Processor: %s\n├── Python Version: %s\n├── Go Version: %s\n├── Model: %s\n├── Cores: %d\n├── Memory: %s\n", details.Hostname, details.System, details.OS, details.Version, details.Release, details.Machine, details.Processor, details.PythonVersion, runtime.Version(), details.Model, details.Cores, formatBytes(details.MemoryTotal))
@@ -92,8 +92,32 @@ func printInfo(writer io.Writer, version string, details hostDetails, interfaces
 		if index == len(visible)-1 {
 			branch = "└──"
 		}
-		fmt.Fprintf(writer, "%s %-12s %-18s: %9s / %9s (%.2f%%)\n", branch, disk.Mount, disk.Device, formatBytes(disk.Used), formatBytes(disk.Total), disk.Percent)
+		fmt.Fprintf(writer, "%s %-12s %-18s: %9s / %9s %s\n", branch, disk.Mount, disk.Device, formatBytes(disk.Used), formatBytes(disk.Total), formatUsageBar(disk.Percent, color))
 	}
+}
+
+const (
+	// diskBarWidth는 사용률 막대의 칸 수다. 한 칸이 5%다.
+	diskBarWidth = 20
+	diskBarFull  = "█"
+	diskBarEmpty = "░"
+)
+
+// diskLimits는 디스크 사용률의 경고와 위험 기준이다. top의 memory 기준과 같다.
+var diskLimits = topThreshold{warn: 90, danger: 95}
+
+// formatUsageBar는 사용률을 막대와 백분율로 그린다. 색을 못 쓰면 막대만으로도 정도를 알 수 있다.
+func formatUsageBar(percent float64, color bool) string {
+	filled := int(percent / 100 * diskBarWidth)
+	if filled < 0 {
+		filled = 0
+	}
+	if filled > diskBarWidth {
+		filled = diskBarWidth
+	}
+	bar := strings.Repeat(diskBarFull, filled) + strings.Repeat(diskBarEmpty, diskBarWidth-filled)
+	text := fmt.Sprintf("%s %6.2f%%", bar, percent)
+	return topLimits{memory: diskLimits, color: color}.paint(text, diskLimits, percent)
 }
 
 func fetchPublicNetworkInfo(ctx context.Context) (publicNetworkInfo, error) {

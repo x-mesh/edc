@@ -69,12 +69,12 @@ func buildRemotePlan(options remoteRunOptions, hosts []remoteHost, recipe remote
 	return plan
 }
 
-func emitRemotePlan(options commonOptions, remoteOptions remoteRunOptions, hosts []remoteHost, recipe remoteRecipe, parallel int) int {
+func emitRemotePlan(options commonOptions, remoteOptions remoteRunOptions, plan remotePlanView, parallel int) int {
 	if options.jsonPath == "" {
-		printRemotePlan(os.Stdout, remoteOptions.group, hosts, recipe)
+		printRemotePlan(os.Stdout, plan)
 		return 0
 	}
-	return emitRemoteJSON(options, buildRemotePlan(remoteOptions, hosts, recipe, parallel))
+	return emitRemoteJSON(options, buildRemotePlan(remoteOptions, plan.hosts, plan.recipe, parallel))
 }
 
 // emitRemoteJSON은 redaction이 켜져 있으면 IP 주소만 가린다. host 이름은 실행 대상을 식별하는 데 필요하므로 남긴다.

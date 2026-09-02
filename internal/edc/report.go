@@ -12,7 +12,11 @@ import (
 	"time"
 )
 
-const reportSizeLimit = 20 * 1024 * 1024
+const (
+	reportSizeLimit = 20 * 1024 * 1024
+	// diffLabelWidth는 SAME, WORSE 같은 변화 label 열의 폭이다.
+	diffLabelWidth = 8
+)
 
 func loadReport(path string) (Report, error) {
 	file, err := os.Open(path)
@@ -35,6 +39,14 @@ func runReportShow(path string) int {
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 2
+	}
+	if liveTerminal() {
+		title := reportViewerTitle("report show", path, summaryLine(report.Results))
+		if err := runReportViewer(title, resultEntries(report.Results, true), resultFilters()); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 2
+		}
+		return exitCode(report.Results)
 	}
 	printTerminal(os.Stdout, report.Results, false)
 	return exitCode(report.Results)
@@ -62,11 +74,20 @@ func runReportDiff(args []string) int {
 		return 2
 	}
 	diff := diffReports(set.Arg(0), before, set.Arg(1), after)
-	if *jsonPath == "" {
-		printReportDiff(os.Stdout, diff, isTerminal(os.Stdout) && os.Getenv("NO_COLOR") == "")
-	} else if err := writeJSONOutput(*jsonPath, diff); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return 2
+	switch {
+	case *jsonPath != "":
+		if err := writeJSONOutput(*jsonPath, diff); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 2
+		}
+	case liveTerminal():
+		title := reportViewerTitle("report diff", set.Arg(0)+" → "+set.Arg(1), diffSummaryLine(diff.Summary))
+		if err := runReportViewer(title, diffEntries(diff, true), diffFilters()); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 2
+		}
+	default:
+		printReportDiff(os.Stdout, diff, false)
 	}
 	if diff.Summary.Regressed > 0 {
 		return 1
@@ -273,34 +294,44 @@ func printReportDiff(writer io.Writer, diff reportDiff, color bool) {
 	fmt.Fprintf(writer, "diff  %s → %s\n", diff.Before.Path, diff.After.Path)
 	fmt.Fprintf(writer, "run   %s %s → %s %s\n\n", diff.Before.RunID, diff.Before.StartedAt.Format(time.RFC3339), diff.After.RunID, diff.After.StartedAt.Format(time.RFC3339))
 	for _, entry := range diff.Entries {
-		label := strings.ToUpper(string(entry.Change))
-		if entry.Regressed {
-			label = "WORSE"
-			if color {
-				label = "\033[31m" + label + "\033[0m"
-			}
-		}
-		probe := strings.TrimPrefix(entry.Probe, "remote.")
-		switch entry.Change {
-		case changeSame:
-			fmt.Fprintf(writer, "%-8s %-24s  %s\n", label, probe, terminalStatus(entry.AfterStatus, color))
-		case changeChanged:
-			fmt.Fprintf(writer, "%-8s %-24s  %s → %s  %s\n", label, probe, terminalStatus(entry.BeforeStatus, color), terminalStatus(entry.AfterStatus, color), entry.AfterSummary)
-		case changeAdded:
-			fmt.Fprintf(writer, "%-8s %-24s  %s  %s\n", label, probe, terminalStatus(entry.AfterStatus, color), entry.AfterSummary)
-		case changeRemoved:
-			fmt.Fprintf(writer, "%-8s %-24s  %s  %s\n", label, probe, terminalStatus(entry.BeforeStatus, color), entry.BeforeSummary)
-		}
-		for _, metric := range entry.Metrics {
-			if metric.Delta != nil {
-				fmt.Fprintf(writer, "         %-24s  %v → %v (%s)\n", metric.Key, metric.Before, metric.After, formatDelta(*metric.Delta))
-			} else {
-				fmt.Fprintf(writer, "         %-24s  %v → %v\n", metric.Key, metric.Before, metric.After)
-			}
+		printReportDiffEntry(writer, writer, entry, color)
+	}
+	fmt.Fprintf(writer, "\n%s\n", diffSummaryLine(diff.Summary))
+}
+
+func diffSummaryLine(s reportDiffSummary) string {
+	return fmt.Sprintf("%d changed  ·  %d same  ·  %d added  ·  %d removed  ·  %d worse", s.Changed, s.Same, s.Added, s.Removed, s.Regressed)
+}
+
+// printReportDiffEntry는 요약 줄과 metric 상세를 나눠 쓴다. 뷰어는 둘을 따로 접고 편다.
+func printReportDiffEntry(line, detail io.Writer, entry reportDiffEntry, color bool) {
+	label := strings.ToUpper(string(entry.Change))
+	if entry.Regressed {
+		label = "WORSE"
+		if color {
+			label = "\033[31m" + label + "\033[0m"
 		}
 	}
-	s := diff.Summary
-	fmt.Fprintf(writer, "\n%d changed  ·  %d same  ·  %d added  ·  %d removed  ·  %d worse\n", s.Changed, s.Same, s.Added, s.Removed, s.Regressed)
+	probe := strings.TrimPrefix(entry.Probe, "remote.")
+	// label에 색이 붙으면 byte 폭이 달라지므로 표시 폭으로 채운다. summary는 여러 줄일 수 있어 첫 줄만 쓴다.
+	padded := liveCell(label, diffLabelWidth)
+	switch entry.Change {
+	case changeSame:
+		fmt.Fprintf(line, "%s %-24s  %s\n", padded, probe, terminalStatus(entry.AfterStatus, color))
+	case changeChanged:
+		fmt.Fprintf(line, "%s %-24s  %s → %s  %s\n", padded, probe, terminalStatus(entry.BeforeStatus, color), terminalStatus(entry.AfterStatus, color), firstLine(entry.AfterSummary))
+	case changeAdded:
+		fmt.Fprintf(line, "%s %-24s  %s  %s\n", padded, probe, terminalStatus(entry.AfterStatus, color), firstLine(entry.AfterSummary))
+	case changeRemoved:
+		fmt.Fprintf(line, "%s %-24s  %s  %s\n", padded, probe, terminalStatus(entry.BeforeStatus, color), firstLine(entry.BeforeSummary))
+	}
+	for _, metric := range entry.Metrics {
+		if metric.Delta != nil {
+			fmt.Fprintf(detail, "         %-24s  %v → %v (%s)\n", metric.Key, metric.Before, metric.After, formatDelta(*metric.Delta))
+		} else {
+			fmt.Fprintf(detail, "         %-24s  %v → %v\n", metric.Key, metric.Before, metric.After)
+		}
+	}
 }
 
 func formatDelta(delta float64) string {

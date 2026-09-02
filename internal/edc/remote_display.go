@@ -1,52 +1,82 @@
 package edc
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
 	"strings"
 	"sync"
-	"time"
+
+	tea "charm.land/bubbletea/v2"
 )
 
 type remoteDisplayOptions struct {
 	verbose bool
-	spinner bool
+	live    bool // 실시간 매트릭스 화면을 쓴다
+	confirm bool // 실행 전에 화면에서 확인을 받는다
 	results bool
 	redact  bool
+	plan    remotePlanView
+	cancel  context.CancelFunc
 }
 
 type remoteDisplay struct {
-	mu      sync.Mutex
-	output  io.Writer
-	verbose bool
-	spinner bool
-	status  bool
-	color   bool
-	results bool
-	redact  bool
-	label   string
-	stop    chan struct{}
-	done    chan struct{}
+	mu       sync.Mutex
+	output   io.Writer
+	verbose  bool
+	color    bool
+	results  bool
+	redact   bool
+	live     *liveProgram
+	answered chan bool // 화면이 확인 답을 보내는 통로
 }
 
 func newRemoteDisplay(output io.Writer, options remoteDisplayOptions) *remoteDisplay {
-	terminal := options.spinner && os.Getenv("NO_COLOR") == ""
 	display := &remoteDisplay{
-		output: output, verbose: options.verbose, spinner: terminal && !options.verbose,
-		status: terminal, color: terminal, results: options.results, redact: options.redact,
+		output: output, verbose: options.verbose,
+		color: options.live, results: options.results, redact: options.redact,
 	}
-	if display.status {
-		display.stop = make(chan struct{})
-		display.done = make(chan struct{})
-		go display.spin()
+	if !options.live {
+		return display
+	}
+	model := newRemoteModel(options.plan, options.confirm, true, options.verbose, options.cancel)
+	live, err := startLiveProgram(model, options.cancel, tea.WithInput(os.Stdin), tea.WithOutput(output))
+	if err != nil {
+		// TTY를 열지 못하면 결과 줄만 흘려 보내는 기존 출력으로 내려간다.
+		fmt.Fprintf(os.Stderr, "실시간 화면을 표시하지 못했습니다: %v\n", err)
+		return display
+	}
+	display.live = live
+	if options.confirm {
+		// 확인을 받을 때만 답을 기다린다. 채널을 항상 달아 두면 -f 실행이 답을 기다리다 멈춘다.
+		display.answered = model.answered
 	}
 	return display
 }
 
-// Result는 step이 끝날 때마다 PASS/FAIL 줄을 바로 출력한다. 최종 출력은 실패 상세와 요약만 남는다.
+// awaitConfirm은 화면이 확인 답을 보낼 때까지 기다린다. 화면이 없거나 확인을 받지 않으면 바로 실행한다.
+func (display *remoteDisplay) awaitConfirm() bool {
+	if display == nil || display.live == nil || display.answered == nil {
+		return true
+	}
+	select {
+	case answer := <-display.answered:
+		return answer
+	case <-display.live.done:
+		return false
+	}
+}
+
+// Result는 step이 끝날 때마다 상태를 전달한다. 실시간 화면이 없으면 PASS/FAIL 줄을 바로 출력한다.
 func (display *remoteDisplay) Result(result Result) {
 	if display == nil || !display.results {
+		return
+	}
+	if display.live != nil {
+		host, _ := result.Metrics["host"].(string)
+		step, _ := result.Metrics["step"].(string)
+		display.live.send(remoteResultMsg{host: host, step: step, status: result.Status})
 		return
 	}
 	line := formatResultLine(result, display.color)
@@ -55,32 +85,40 @@ func (display *remoteDisplay) Result(result Result) {
 	}
 	display.mu.Lock()
 	defer display.mu.Unlock()
-	display.clearStatusLocked()
 	fmt.Fprint(display.output, line)
-	display.renderStatusLocked(0)
 }
 
 func (display *remoteDisplay) Start(host, step, phase string) {
+	if display == nil {
+		return
+	}
+	if display.live != nil {
+		display.live.send(remoteStartMsg{host: host, step: step, phase: phase})
+		return
+	}
+	if !display.verbose {
+		return
+	}
 	display.mu.Lock()
 	defer display.mu.Unlock()
-	display.label = fmt.Sprintf("%s / %s / %s", host, step, phase)
-	if display.verbose {
-		display.clearStatusLocked()
-		fmt.Fprintf(display.output, "\n%s\n", display.phaseLabel(host, step, phase))
-		display.renderStatusLocked(0)
-	}
+	fmt.Fprintf(display.output, "\n%s\n", display.phaseLabel(host, step, phase))
 }
 
 func (display *remoteDisplay) WriteLine(prefix, line string) {
+	if display == nil {
+		return
+	}
+	if display.live != nil {
+		display.live.send(remoteLogMsg{prefix: prefix, line: line})
+		return
+	}
 	display.mu.Lock()
 	defer display.mu.Unlock()
-	display.clearStatusLocked()
 	if display.color {
 		fmt.Fprintf(display.output, "\033[90m  %-30s │\033[0m %s\n", prefix, line)
 	} else {
 		fmt.Fprintf(display.output, "  %-30s | %s\n", prefix, line)
 	}
-	display.renderStatusLocked(0)
 }
 
 func (display *remoteDisplay) phaseLabel(host, step, phase string) string {
@@ -92,46 +130,13 @@ func (display *remoteDisplay) phaseLabel(host, step, phase string) string {
 }
 
 func (display *remoteDisplay) Close() {
-	if !display.status {
+	if display == nil || display.live == nil {
 		return
 	}
-	close(display.stop)
-	<-display.done
-	display.mu.Lock()
-	display.clearStatusLocked()
-	display.mu.Unlock()
-}
-
-func (display *remoteDisplay) spin() {
-	defer close(display.done)
-	ticker := time.NewTicker(100 * time.Millisecond)
-	defer ticker.Stop()
-	index := 0
-	for {
-		select {
-		case <-display.stop:
-			return
-		case <-ticker.C:
-			display.mu.Lock()
-			display.renderStatusLocked(index)
-			display.mu.Unlock()
-			index++
-		}
+	if _, err := display.live.finish(remoteDoneMsg{}); err != nil {
+		fmt.Fprintf(os.Stderr, "실시간 화면이 오류로 끝났습니다: %v\n", err)
 	}
-}
-
-func (display *remoteDisplay) clearStatusLocked() {
-	if display.status {
-		fmt.Fprint(display.output, "\r\033[2K")
-	}
-}
-
-func (display *remoteDisplay) renderStatusLocked(frame int) {
-	if !display.status || display.label == "" {
-		return
-	}
-	frames := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
-	fmt.Fprintf(display.output, "\r\033[2K\033[97m%s  running  %s\033[0m", frames[frame%len(frames)], display.label)
+	display.live = nil
 }
 
 type remoteStreamWriter struct {

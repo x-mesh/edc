@@ -4,7 +4,11 @@
 
 ## 빌드
 
-Go 1.23 이상이 필요합니다. 외부 Go dependency는 없습니다.
+Go 1.25 이상이 필요합니다. 실시간 화면은 다음 dependency를 씁니다.
+
+- `charm.land/bubbletea/v2`
+- `charm.land/bubbles/v2`
+- `charm.land/lipgloss/v2`
 
 ```bash
 make build VERSION=0.1.0-dev
@@ -27,8 +31,9 @@ make install PREFIX=/usr/local
 ## 빠른 시작
 
 ```bash
-# 실시간 host resource 모니터 (Ctrl-C로 종료)
+# 실시간 host resource 대시보드 (q로 종료)
 ./bin/edc top
+# 표를 흘려 보내는 기존 출력
 ./bin/edc top --interval 2s --count 10
 # sample당 한 줄 JSON
 ./bin/edc top --count 5 --json -
@@ -96,6 +101,21 @@ A failure returns exit code `1`. Use these options in cron to get a synthetic ch
 
 The output marks a probe as `WORSE` when the status changes from pass to warn or fail, or from warn to fail. If one probe gets worse, the exit code is `1`. Arrays and objects in `metrics` do not appear in the diff.
 
+## Report viewer
+
+If stdin and stdout are terminals, `edc report show` and `edc report diff` open a full screen viewer.
+
+| key | action |
+|---|---|
+| `f` | change the filter |
+| `e` | show or hide the details |
+| `↑` `↓` `PgUp` `PgDn` | scroll |
+| `q` | quit |
+
+`edc report show` filters by 전체, 실패와 경고, then 실패만. `edc report diff` filters by 전체, 바뀐 것, then 악화된 것.
+
+The viewer leaves no output on the screen. The exit code stays the same. A pipe, a file, or `--json` gets the earlier output.
+
 ## Top thresholds
 
 `edc top` gives a color to the load, CPU, iowait, and memory values. White is normal. Orange is a warning. Red is a risk.
@@ -111,7 +131,32 @@ The load thresholds follow the core count of the host.
 
 To remove the colors, set `NO_COLOR`. A pipe or a file gets no colors.
 
+`edc info` draws a bar for each disk. The bar uses the same thresholds as `mem_%`. One block is 5 percent. The bar shows the level without color, so a pipe keeps the information.
+
 On macOS, `edc` reads the memory usage from `vm_stat`. It subtracts the free, speculative, and inactive pages. This matches `MemAvailable` on Linux. The `PhysMem` line of `top` includes the cache, so it stays above 97 percent.
+
+## Top dashboard
+
+If stdin and stdout are terminals, `edc top` opens a full-screen dashboard. The dashboard needs no `--count` limit.
+
+| key | action |
+|---|---|
+| `q` | quit |
+| `p` | pause and resume |
+| `+` | make the interval longer |
+| `-` | make the interval shorter |
+
+The interval moves between 200ms, 500ms, 1s, 2s, 5s, 10s, 30s, and 1m. While the dashboard is paused, the arrow and page keys scroll the earlier rows.
+
+The dashboard quits to the previous screen and leaves no rows behind. Use `--json` to keep the values.
+
+`edc top` prints the earlier table instead of the dashboard in these cases:
+
+- The command uses `--count` or `--json`.
+- stdin or stdout is not a terminal.
+- `NO_COLOR` is set.
+
+The first row after a pause shows the average rate of the paused period.
 
 ## Top JSON output
 
@@ -154,7 +199,21 @@ If you name a group, `edc` asks no path questions. It shows the plan and request
 
 If you name no group, `edc` selects the group first. It then shows the inventory path, selects the recipe, and requests confirmation.
 
-The interactive group selector uses the up and down arrow keys. Press Enter to select a group.
+The interactive selectors draw the list in place. Use the up and down arrow keys, or `j` and `k`. Press Enter to select. Press `q` or Esc to cancel. A cancelled selection returns exit code `4`.
+
+While you choose, `edc` reverses the colors of the row under the cursor and puts a `▌` bar on its left. The reverse makes the row clear in a black and white terminal too.
+
+The list stays on the screen after you select. The bar stays on the item you chose, without the reverse, and the first line keeps the name of the question.
+
+```
+inventory 파일
+  lab-hosts.yaml  ·  group 1개, host 1개
+▌ prod-hosts.yaml  ·  group 2개, host 2개
+```
+
+If `edc` finds no `inventory.yaml`, it lists the YAML files of the search directories that read as an inventory. The list shows the group and host counts. The recipe list shows the recipe name and the step count. `edc` hides a YAML file that does not read as an inventory or a recipe. If the list is empty, `edc` asks for a path.
+
+The confirmation questions put the question, the two answers, and the key help on one line. Move with the left and right arrow keys and press Enter, or press `y` or `n` to answer at once. The answer you point at gets a `▌` bar and reversed colors. The default answer is no.
 
 Use `-f` or `--force` to skip the confirmation. Combine it with `-v` for streaming output. If you name no group, `-f` needs an inventory with exactly one group.
 
@@ -213,6 +272,45 @@ A host that does not match a step gets no result for that step. The report keeps
 
 If no host in the group matches the tags of a step, `edc` prints a warning to stderr and continues. Check the tag spelling.
 
+### One table
+
+`edc remote` uses one table for the plan and the results. The rows are the hosts and the columns are the steps. The table starts with `·` in every cell, and each cell changes when the step of that host ends. A cell shows `–` if the tags of the step do not match the host.
+
+```
+edc remote  daily  ·  host 3  ·  step 3  ·  실행 8
+inventory  ./inventory.yaml      recipe  ./recipe.yaml
+
+host        git-kit  x-mesh  brew
+jw-server   PASS     PASS       –
+jwserver68  PASS     ⠋          –
+mac-sub     PASS     ·          ·
+
+⠋  jwserver68 / x-mesh / command  ·  4/8 완료  6.6s
+
+git-kit  git-kit update  →  git-kit --version
+x-mesh   xm update  →  xm version
+brew     brew update && brew upgrade -f   tags mac
+```
+
+The line under the table names the host, the step, and the phase that runs now. The lines below it give the command of each step.
+
+If stdin and stdout are terminals, the confirmation question appears right under this table, above the command list. The answer you point at gets a `▌` bar and reversed colors. Answer with the left and right arrow keys and Enter, or with `y` or `n`. The same line then becomes the progress line and the table fills in. Use `-f` to skip the question.
+
+```
+host   uname  uptime
+alpha  ·      ·
+
+실행할까요?     예   ▌ 아니오       ←/→ 이동   Enter 선택   y/n 바로 답하기
+```
+
+The table fits the terminal width. `edc` first shortens the column names, then changes `PASS` and `FAIL` to `✓` and `✗` with a legend, and last shortens the host names.
+
+Add `-v` to show the last output lines below the table.
+
+Press Ctrl-C to cancel. `edc` stops the running commands, marks the remaining steps as `SKIP`, prints the summary, and returns exit code `4`. Press Ctrl-C again to close the screen at once.
+
+`edc` prints the earlier result lines instead of the table if stdin or stdout is not a terminal, if `--json` is set, or if `NO_COLOR` is set.
+
 ### Automation
 
 Use all flags for cron or launchd. A non-terminal command never waits for input. It also skips the confirmation.
@@ -229,7 +327,7 @@ A non-terminal command needs a group. Name it as the positional argument or with
 
 Use `-v` or `--verbose` to stream each remote command.
 
-`edc` prints the PASS or FAIL line at the end of each step. The final output shows the failures and the summary.
+`edc` prints the PASS or FAIL line at the end of each step. The final output shows the failures and one summary line with the counts and the elapsed time.
 
 Set `parallel` in the inventory to run hosts concurrently. Use `group_options.<group>.parallel` for one group.
 
@@ -238,6 +336,28 @@ The `--parallel` option overrides both inventory values. Each host still runs it
 Each host runs in inventory order. Each step runs its command and verify command in recipe order.
 
 If a step fails, `edc` skips later steps on that host. The next host still runs. Any failure returns exit code `1`.
+
+## Probe live line
+
+A single probe command shows one progress line if stdin and stdout are terminals. The line has the probe name, the target, the elapsed time, and the last output line of the command.
+
+```
+⠋     net.trace                 example.com  2.9s  ·   4  <ip:778fad8d>  5.573 ms
+```
+
+`edc` starts this line only if the probe runs longer than 300 milliseconds. A fast probe prints the result and nothing else.
+
+Press Ctrl-C to cancel. `edc` stops the command and returns exit code `4`.
+
+The line is always one line. Long output gets a cut at the terminal width.
+
+## Doctor live screen
+
+If stdin and stdout are terminals, `edc doctor` shows one line for each probe and updates the line when the probe ends. The finished lines stay on the screen. The details and the summary follow.
+
+Press Ctrl-C to cancel. `edc` stops the running probes and returns exit code `4`.
+
+`edc` waits and prints all lines at the end if stdin or stdout is not a terminal, if `--json` is set, or if `NO_COLOR` is set.
 
 ## Packet capture
 
@@ -253,6 +373,10 @@ If a step fails, `edc` skips later steps on that host. The next host still runs.
 ```
 
 PCAP에는 credential과 개인정보가 포함될 수 있습니다. JSON redaction은 PCAP payload에 적용되지 않습니다.
+
+`edc capture` shows the plan before it starts. The plan has the interface, the duration, the packet limit, the filter, the output path, and the privilege that `edc` uses. Answer the question with the left and right arrow keys and Enter, or with `y` or `n`. The plan stays on the screen above the `tcpdump` output.
+
+Use `--yes` to skip the question. A non-terminal command prints the plan and reads `y` or `n` from stdin.
 
 ## Shell completion
 
@@ -273,7 +397,7 @@ For zsh, you can also save the script as `_edc` in a directory of `fpath`.
 - `1`: 하나 이상의 probe 실패, 또는 `report diff`에서 악화된 probe 존재
 - `2`: argument, config, report parse 등 실행 오류
 - `3`: privileged 작업의 권한 부족
-- `4`: 사용자 취소
+- `4`: 사용자 취소 (선택 취소, `remote`와 `doctor`의 Ctrl-C 포함)
 
 ## 현재 범위
 

@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
 	"runtime"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -33,13 +35,75 @@ func probeInterfaces() Result {
 	return Result{Probe: "net.interfaces", Status: StatusPass, StartedAt: started.UTC(), DurationMS: time.Since(started).Milliseconds(), Summary: fmt.Sprintf("interface %d개", len(rows)), Metrics: map[string]interface{}{"interfaces": rows}}
 }
 
-// commandOutput은 stdout과 stderr를 합쳐 1MB까지만 남기고 앞뒤 공백을 제거한다.
+// probeOutputLimit은 command 출력을 이 크기까지만 남긴다.
+const probeOutputLimit = 1 << 20
+
+// probeLineObserver는 command가 한 줄을 낼 때마다 호출된다. 실시간 화면이 진행을 보여 주는 데 쓴다.
+type probeLineObserver func(line string)
+
+type probeObserverKey struct{}
+
+// withProbeObserver는 probe 실행 전체에 걸리는 출력 관찰자를 context에 싣는다.
+// probe 함수의 signature를 바꾸지 않고 stream 여부만 실행 시점에 정하기 위한 것이다.
+func withProbeObserver(ctx context.Context, observe probeLineObserver) context.Context {
+	return context.WithValue(ctx, probeObserverKey{}, observe)
+}
+
+func probeObserverFrom(ctx context.Context) probeLineObserver {
+	observe, _ := ctx.Value(probeObserverKey{}).(probeLineObserver)
+	return observe
+}
+
+// commandOutput은 stdout과 stderr를 합쳐 상한까지만 남기고 앞뒤 공백을 제거한다.
+// observer가 있으면 줄 단위로 흘려 보내면서 같은 내용을 모은다.
 func commandOutput(ctx context.Context, path string, args ...string) (string, error) {
-	output, err := exec.CommandContext(ctx, path, args...).CombinedOutput()
-	if len(output) > 1<<20 {
-		output = output[:1<<20]
+	command := exec.CommandContext(ctx, path, args...)
+	observe := probeObserverFrom(ctx)
+	if observe == nil {
+		output, err := command.CombinedOutput()
+		if len(output) > probeOutputLimit {
+			output = output[:probeOutputLimit]
+		}
+		return strings.TrimSpace(string(output)), err
 	}
-	return strings.TrimSpace(string(output)), err
+	buffer := &remoteLimitedBuffer{limit: probeOutputLimit}
+	lines := &probeLineWriter{observe: observe}
+	writer := io.MultiWriter(buffer, lines)
+	command.Stdout, command.Stderr = writer, writer
+	err := command.Run()
+	lines.Flush()
+	return strings.TrimSpace(buffer.String()), err
+}
+
+// probeLineWriter는 들어온 byte를 줄로 잘라 observer에 넘긴다.
+type probeLineWriter struct {
+	mu      sync.Mutex
+	observe probeLineObserver
+	pending string
+}
+
+func (writer *probeLineWriter) Write(data []byte) (int, error) {
+	writer.mu.Lock()
+	defer writer.mu.Unlock()
+	writer.pending += string(data)
+	for {
+		index := strings.IndexByte(writer.pending, '\n')
+		if index < 0 {
+			break
+		}
+		writer.observe(strings.TrimRight(writer.pending[:index], "\r"))
+		writer.pending = writer.pending[index+1:]
+	}
+	return len(data), nil
+}
+
+func (writer *probeLineWriter) Flush() {
+	writer.mu.Lock()
+	defer writer.mu.Unlock()
+	if writer.pending != "" {
+		writer.observe(writer.pending)
+		writer.pending = ""
+	}
 }
 
 func probeCommand(ctx context.Context, probe, path string, args ...string) Result {

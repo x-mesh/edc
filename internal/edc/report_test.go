@@ -145,3 +145,25 @@ func TestHTTPStatusVerdict(t *testing.T) {
 		t.Fatalf("default 5xx = %v", status)
 	}
 }
+
+func TestPrintReportDiffEntryKeepsColumnsAligned(t *testing.T) {
+	entries := []reportDiffEntry{
+		{Probe: "dns.lookup", Change: changeSame, AfterStatus: StatusPass},
+		{Probe: "net.ping", Change: changeChanged, Regressed: true, BeforeStatus: StatusPass, AfterStatus: StatusFail, AfterSummary: "signal: killed: PING example.com\n64 bytes from example.com"},
+	}
+	column := -1
+	for _, entry := range entries {
+		var line, detail strings.Builder
+		printReportDiffEntry(&line, &detail, entry, true)
+		text := strings.TrimRight(line.String(), "\n")
+		if strings.Contains(text, "64 bytes") {
+			t.Fatalf("line must keep only the first summary line: %q", text)
+		}
+		probe := strings.TrimPrefix(entry.Probe, "remote.")
+		start := liveWidth(text[:strings.Index(text, probe)])
+		if column >= 0 && start != column {
+			t.Fatalf("probe column = %d, want %d in %q", start, column, text)
+		}
+		column = start
+	}
+}

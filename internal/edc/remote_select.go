@@ -1,76 +1,51 @@
 package edc
 
 import (
-	"fmt"
+	"errors"
 	"io"
 	"os"
 
-	"golang.org/x/term"
+	tea "charm.land/bubbletea/v2"
 )
 
 func selectRemoteGroup(input *os.File, output io.Writer, groups []string) (string, error) {
-	state, err := term.MakeRaw(int(input.Fd()))
-	if err != nil {
-		return "", err
-	}
-	defer term.Restore(int(input.Fd()), state)
-	selected := 0
-	fmt.Fprintln(output, "group(대상)을 선택하세요. ↑/↓ 이동, Enter 선택")
-	renderRemoteGroups(output, groups, selected, false, false)
-	buffer := make([]byte, 3)
-	for {
-		count, err := input.Read(buffer[:1])
-		if err != nil {
-			return "", err
-		}
-		if count == 0 {
-			continue
-		}
-		switch buffer[0] {
-		case '\r', '\n':
-			renderRemoteGroups(output, groups, selected, true, true)
-			return groups[selected], nil
-		case 3:
-			return "", errRemoteCancelled
-		case 27:
-			if _, err := io.ReadFull(input, buffer[1:3]); err != nil {
-				return "", err
-			}
-			if buffer[1] != '[' {
-				continue
-			}
-			switch buffer[2] {
-			case 'A':
-				selected = (selected - 1 + len(groups)) % len(groups)
-			case 'B':
-				selected = (selected + 1) % len(groups)
-			default:
-				continue
-			}
-			renderRemoteGroups(output, groups, selected, false, true)
-		}
-	}
+	return runSelect(input, output, newSelectModel(selectGroupTitle, selectGroupLabel, selectItemsFromValues(groups)))
 }
 
-func renderRemoteGroups(output io.Writer, groups []string, selected int, final, moveUp bool) {
-	if final {
-		if moveUp && len(groups) > 0 {
-			fmt.Fprintf(output, "\033[%dA", len(groups))
+// runSelect는 선택기를 띄우고 취소를 errRemoteCancelled로 통일한다.
+func runSelect(input *os.File, output io.Writer, model selectModel) (string, error) {
+	program := tea.NewProgram(model, tea.WithInput(input), tea.WithOutput(output))
+	final, err := program.Run()
+	if err != nil {
+		if errors.Is(err, tea.ErrInterrupted) || errors.Is(err, tea.ErrProgramKilled) {
+			return "", errRemoteCancelled
 		}
-		fmt.Fprintf(output, "\r\033[2Kgroup(대상): %s\r\n", groups[selected])
-		for index := 1; index < len(groups); index++ {
-			fmt.Fprint(output, "\r\033[2K\r\n")
+		return "", err
+	}
+	chosen, ok := final.(selectModel)
+	if !ok {
+		return "", errRemoteCancelled
+	}
+	// 고른 값은 실행 머리말이 다시 정확히 보여 주므로 따로 남기지 않는다.
+	return chosen.choice()
+}
+
+// runConfirm은 확인 위젯을 띄운다. 취소는 errRemoteCancelled다.
+func runConfirm(input *os.File, output io.Writer, question string, initial bool) (bool, error) {
+	return runConfirmModel(input, output, newConfirmModel(question, initial))
+}
+
+func runConfirmModel(input *os.File, output io.Writer, model confirmModel) (bool, error) {
+	final, err := tea.NewProgram(model, tea.WithInput(input), tea.WithOutput(output)).Run()
+	if err != nil {
+		if errors.Is(err, tea.ErrInterrupted) || errors.Is(err, tea.ErrProgramKilled) {
+			return false, errRemoteCancelled
 		}
-		return
+		return false, err
 	}
-	if moveUp && len(groups) > 0 {
-		fmt.Fprintf(output, "\033[%dA", len(groups))
+	answered, ok := final.(confirmModel)
+	if !ok || answered.cancelled {
+		return false, errRemoteCancelled
 	}
-	for index, group := range groups {
-		marker := "  "
-		if index == selected {
-			marker = "› "
-		}
-		fmt.Fprintf(output, "\r\033[2K%s%s\r\n", marker, group)
-	}
+	return answered.yes, nil
 }

@@ -146,3 +146,34 @@ func TestTopSampleJSON(t *testing.T) {
 		t.Fatalf("sample must stay on one line: %q", text)
 	}
 }
+
+func TestFormatUsageBar(t *testing.T) {
+	tests := map[float64]string{0: strings.Repeat(diskBarEmpty, diskBarWidth), 50: strings.Repeat(diskBarFull, 10) + strings.Repeat(diskBarEmpty, 10), 100: strings.Repeat(diskBarFull, diskBarWidth)}
+	for percent, bar := range tests {
+		got := formatUsageBar(percent, false)
+		if !strings.HasPrefix(got, bar) {
+			t.Fatalf("formatUsageBar(%v) = %q, want the bar %q", percent, got, bar)
+		}
+		if !strings.HasSuffix(got, "%") || len([]rune(got)) != diskBarWidth+8 {
+			t.Fatalf("formatUsageBar(%v) = %q has an unexpected width", percent, got)
+		}
+	}
+	// 범위를 벗어난 값도 막대를 넘지 않는다.
+	for _, percent := range []float64{-5, 140} {
+		if width := len([]rune(formatUsageBar(percent, false))); width != diskBarWidth+8 {
+			t.Fatalf("formatUsageBar(%v) width = %d", percent, width)
+		}
+	}
+}
+
+func TestFormatUsageBarColorsByThreshold(t *testing.T) {
+	tests := map[float64]string{40: topColorNormal, 92: topColorWarn, 97: topColorDanger}
+	for percent, code := range tests {
+		if got := formatUsageBar(percent, true); !strings.Contains(got, code) {
+			t.Fatalf("formatUsageBar(%v) = %q does not use %q", percent, got, code)
+		}
+	}
+	if strings.Contains(formatUsageBar(97, false), "\033[") {
+		t.Fatal("색을 끄면 escape가 없어야 한다")
+	}
+}

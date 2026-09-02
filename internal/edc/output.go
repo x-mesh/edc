@@ -60,16 +60,28 @@ func printTerminalWithColor(writer io.Writer, results []Result, verbose, color b
 	printResultSummary(writer, results)
 }
 
-// printRemoteTail은 결과 줄을 실행 중에 이미 출력한 remote run의 마무리 출력이다.
-func printRemoteTail(writer io.Writer, results []Result, color bool) {
-	for _, result := range results {
-		printResultDetail(writer, result, false, color)
-	}
+// printResultTail은 결과 줄을 실행 중에 이미 출력한 실행의 마무리 출력이다.
+func printResultTail(writer io.Writer, results []Result, verbose, color bool) {
+	printResultDetails(writer, results, verbose, color)
 	printResultSummary(writer, results)
 }
 
+// printResultDetails는 요약 없이 경고와 실패 상세만 출력한다. 요약을 직접 만드는 caller가 쓴다.
+func printResultDetails(writer io.Writer, results []Result, verbose, color bool) {
+	for _, result := range results {
+		printResultDetail(writer, result, verbose, color)
+	}
+}
+
+// resultLineFormat은 결과 줄과 실시간 화면의 대기 줄이 같은 열을 쓰게 한다.
+const (
+	resultLineFormat  = "%-4s  %-24s  %s\n"
+	resultStatusWidth = 4
+)
+
 func formatResultLine(result Result, color bool) string {
-	return fmt.Sprintf("%-4s  %-24s  %s\n", terminalStatus(result.Status, color), resultLabel(result), result.Summary)
+	// command 오류 summary는 여러 줄일 수 있다. 목록의 한 줄을 유지하려고 첫 줄만 쓴다. 전문은 실패 상자에 남는다.
+	return fmt.Sprintf(resultLineFormat, terminalStatus(result.Status, color), resultLabel(result), firstLine(result.Summary))
 }
 
 func printResultDetail(writer io.Writer, result Result, verbose, color bool) {
@@ -87,8 +99,18 @@ func printResultDetail(writer io.Writer, result Result, verbose, color bool) {
 }
 
 func printResultSummary(writer io.Writer, results []Result) {
+	fmt.Fprintf(writer, "\n%s\n", resultCounts(results))
+}
+
+func resultCounts(results []Result) string {
 	s := summarize(results)
-	fmt.Fprintf(writer, "\n%d pass  ·  %d warn  ·  %d fail  ·  %d skip\n", s.Pass, s.Warn, s.Fail, s.Skip)
+	return fmt.Sprintf("%d pass  ·  %d warn  ·  %d fail  ·  %d skip", s.Pass, s.Warn, s.Fail, s.Skip)
+}
+
+// compactResultCounts는 완료 줄 뒤에 붙는 짧은 개수 표기다. 구분점을 겹쳐 쓰지 않는다.
+func compactResultCounts(results []Result) string {
+	s := summarize(results)
+	return fmt.Sprintf("%d pass  %d warn  %d fail  %d skip", s.Pass, s.Warn, s.Fail, s.Skip)
 }
 
 func resultLabel(result Result) string {

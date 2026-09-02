@@ -49,9 +49,9 @@ func Run(args []string, version string) int {
 	case "net":
 		return runNet(args[1:], version)
 	case "sockets":
-		return runSimple(args[1:], version, "sockets", func(ctx context.Context) Result { return probeSockets(ctx) })
+		return runSimple(args[1:], version, "sockets", "sockets", probeSockets)
 	case "quality":
-		return runSimple(args[1:], version, "quality", func(ctx context.Context) Result { return probeQuality(ctx) })
+		return runSimple(args[1:], version, "quality", "net.quality", probeQuality)
 	case "capture":
 		return runCapture(args[1:])
 	case "report":
@@ -90,29 +90,34 @@ func runDoctor(args []string, version string) int {
 		return 2
 	}
 	started := time.Now()
-	ctx, cancel := context.WithTimeout(context.Background(), options.timeout)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	probes := []func(context.Context) Result{
-		func(ctx context.Context) Result { return probeInterfaces() },
-		func(ctx context.Context) Result { return probeRoute(ctx, host) },
-		func(ctx context.Context) Result { return probeDNSConfig(ctx) },
-		func(ctx context.Context) Result { return probeDNS(ctx, host) },
-		func(ctx context.Context) Result { return probePing(ctx, host) },
-		func(ctx context.Context) Result { return probeTCP(ctx, address) },
-		func(ctx context.Context) Result {
+	deadline, cancelDeadline := context.WithTimeout(ctx, options.timeout)
+	defer cancelDeadline()
+	probes := []doctorProbe{
+		{name: "net.interfaces", run: func(context.Context) Result { return probeInterfaces() }},
+		{name: "net.route", run: func(ctx context.Context) Result { return probeRoute(ctx, host) }},
+		{name: "dns.config", run: probeDNSConfig},
+		{name: "dns.lookup", run: func(ctx context.Context) Result { return probeDNS(ctx, host) }},
+		{name: "net.ping", run: func(ctx context.Context) Result { return probePing(ctx, host) }},
+		{name: "tcp.check", run: func(ctx context.Context) Result { return probeTCP(ctx, address) }},
+		{name: "tls.check", run: func(ctx context.Context) Result {
 			if strings.HasPrefix(rawURL, "http://") {
 				return unsupported("tls.check", "HTTP target에는 TLS를 적용하지 않습니다")
 			}
 			return probeTLS(ctx, address, host)
-		},
-		func(ctx context.Context) Result { return probeHTTP(ctx, rawURL) },
-		func(ctx context.Context) Result { return probeSockets(ctx) },
+		}},
+		{name: "http.check", run: func(ctx context.Context) Result { return probeHTTP(ctx, rawURL) }},
+		{name: "sockets", run: probeSockets},
 	}
 	if *profile == "full" {
-		probes = append(probes, func(ctx context.Context) Result { return probeQuality(ctx) })
+		probes = append(probes, doctorProbe{name: "net.quality", run: probeQuality})
 	}
-	results := runParallel(ctx, probes)
 	target := map[string]interface{}{"input": set.Arg(0), "host": host, "address": address, "url": rawURL}
+	if options.jsonPath == "" && liveTerminal() {
+		return runDoctorLive(deadline, cancel, probes, options, version, started, set.Arg(0), target)
+	}
+	results := runParallel(deadline, doctorProbeFuncs(probes))
 	return emit(options, buildReport(version, started, target, results, options.redact))
 }
 
@@ -123,9 +128,9 @@ func runDNS(args []string, version string) int {
 	}
 	switch args[0] {
 	case "lookup":
-		return runTargetProbe(args[1:], version, "dns lookup", func(ctx context.Context, target string) Result { return probeDNS(ctx, target) })
+		return runTargetProbe(args[1:], version, "dns lookup", "dns.lookup", probeDNS)
 	case "config":
-		return runSimple(args[1:], version, "dns config", probeDNSConfig)
+		return runSimple(args[1:], version, "dns config", "dns.config", probeDNSConfig)
 	default:
 		fmt.Fprintln(os.Stderr, "사용법: edc dns <lookup|config> ...")
 		return 2
@@ -137,7 +142,7 @@ func runTCP(args []string, version string) int {
 		fmt.Fprintln(os.Stderr, "사용법: edc tcp check <host:port>")
 		return 2
 	}
-	return runTargetProbe(args[1:], version, "tcp check", func(ctx context.Context, target string) Result {
+	return runTargetProbe(args[1:], version, "tcp check", "tcp.check", func(ctx context.Context, target string) Result {
 		if _, _, err := net.SplitHostPort(target); err != nil {
 			return resultFromError("tcp.check", time.Now(), "input", fmt.Errorf("host:port 형식이 필요합니다: %s", target))
 		}
@@ -162,7 +167,7 @@ func runTLS(args []string, version string) int {
 			return nil
 		},
 	}
-	return runTargetProbeWithFlags(args[1:], version, "tls check", flags, func(ctx context.Context, target string) Result {
+	return runTargetProbeWithFlags(args[1:], version, "tls check", "tls.check", flags, func(ctx context.Context, target string) Result {
 		host, _, err := net.SplitHostPort(target)
 		if err != nil {
 			return resultFromError("tls.check", time.Now(), "input", fmt.Errorf("host:port 형식이 필요합니다: %s", target))
@@ -188,7 +193,7 @@ func runHTTP(args []string, version string) int {
 			return nil
 		},
 	}
-	return runTargetProbeWithFlags(args[1:], version, "http check", flags, func(ctx context.Context, target string) Result {
+	return runTargetProbeWithFlags(args[1:], version, "http check", "http.check", flags, func(ctx context.Context, target string) Result {
 		return probeHTTPWithOptions(ctx, target, httpCheckOptions{expectStatus: expectStatus})
 	})
 }
@@ -200,13 +205,13 @@ func runNet(args []string, version string) int {
 	}
 	switch args[0] {
 	case "interfaces":
-		return runSimple(args[1:], version, "net interfaces", func(context.Context) Result { return probeInterfaces() })
+		return runSimple(args[1:], version, "net interfaces", "net.interfaces", func(context.Context) Result { return probeInterfaces() })
 	case "route":
-		return runTargetProbe(args[1:], version, "net route", probeRoute)
+		return runTargetProbe(args[1:], version, "net route", "net.route", probeRoute)
 	case "ping":
-		return runTargetProbe(args[1:], version, "net ping", probePing)
+		return runTargetProbe(args[1:], version, "net ping", "net.ping", probePing)
 	case "trace":
-		return runTargetProbe(args[1:], version, "net trace", probeTrace)
+		return runTargetProbe(args[1:], version, "net trace", "net.trace", probeTrace)
 	default:
 		fmt.Fprintln(os.Stderr, "사용법: edc net <interfaces|route|ping|trace>")
 		return 2
@@ -219,11 +224,11 @@ type probeFlags struct {
 	check func() error
 }
 
-func runTargetProbe(args []string, version, name string, probe func(context.Context, string) Result) int {
-	return runTargetProbeWithFlags(args, version, name, probeFlags{}, probe)
+func runTargetProbe(args []string, version, name, probeID string, probe func(context.Context, string) Result) int {
+	return runTargetProbeWithFlags(args, version, name, probeID, probeFlags{}, probe)
 }
 
-func runTargetProbeWithFlags(args []string, version, name string, extra probeFlags, probe func(context.Context, string) Result) int {
+func runTargetProbeWithFlags(args []string, version, name, probeID string, extra probeFlags, probe func(context.Context, string) Result) int {
 	options := commonOptions{timeout: 15 * time.Second, redact: true}
 	set := flag.NewFlagSet(name, flag.ContinueOnError)
 	set.SetOutput(os.Stderr)
@@ -245,13 +250,25 @@ func runTargetProbeWithFlags(args []string, version, name string, extra probeFla
 		return 2
 	}
 	started := time.Now()
-	ctx, cancel := context.WithTimeout(context.Background(), options.timeout)
+	ctx, cancel, deadline := probeContext(options.timeout)
 	defer cancel()
-	result := probe(ctx, set.Arg(0))
-	return emit(options, buildReport(version, started, map[string]interface{}{"input": set.Arg(0)}, []Result{result}, options.redact))
+	defer deadline()
+	target := map[string]interface{}{"input": set.Arg(0)}
+	run := func(ctx context.Context) Result { return probe(ctx, set.Arg(0)) }
+	if options.jsonPath == "" && liveTerminal() {
+		return runProbeLive(ctx, cancel, probeID, set.Arg(0), options, version, started, target, run)
+	}
+	return emit(options, buildReport(version, started, target, []Result{run(ctx)}, options.redact))
 }
 
-func runSimple(args []string, version, name string, probe func(context.Context) Result) int {
+// probeContext는 사용자 취소용 cancel과 timeout을 분리해 돌려준다.
+func probeContext(timeout time.Duration) (context.Context, context.CancelFunc, context.CancelFunc) {
+	base, cancel := context.WithCancel(context.Background())
+	ctx, deadline := context.WithTimeout(base, timeout)
+	return ctx, cancel, deadline
+}
+
+func runSimple(args []string, version, name, probeID string, probe func(context.Context) Result) int {
 	options := commonOptions{timeout: 15 * time.Second, redact: true}
 	set := flag.NewFlagSet(name, flag.ContinueOnError)
 	set.SetOutput(os.Stderr)
@@ -264,8 +281,12 @@ func runSimple(args []string, version, name string, probe func(context.Context) 
 		return 2
 	}
 	started := time.Now()
-	ctx, cancel := context.WithTimeout(context.Background(), options.timeout)
+	ctx, cancel, deadline := probeContext(options.timeout)
 	defer cancel()
+	defer deadline()
+	if options.jsonPath == "" && liveTerminal() {
+		return runProbeLive(ctx, cancel, probeID, "", options, version, started, nil, probe)
+	}
 	return emit(options, buildReport(version, started, nil, []Result{probe(ctx)}, options.redact))
 }
 
@@ -288,12 +309,24 @@ func emit(options commonOptions, report Report) int {
 }
 
 func runParallel(ctx context.Context, probes []func(context.Context) Result) []Result {
+	return runParallelWith(ctx, probes, nil)
+}
+
+// runParallelWith는 probe를 병렬로 실행하고, observe가 있으면 결과가 나올 때마다 probe goroutine에서 호출한다.
+func runParallelWith(ctx context.Context, probes []func(context.Context) Result, observe func(index int, result Result)) []Result {
 	results := make([]Result, 0, len(probes))
 	channel := make(chan Result, len(probes))
 	var group sync.WaitGroup
-	for _, probe := range probes {
+	for index, probe := range probes {
 		group.Add(1)
-		go func(run func(context.Context) Result) { defer group.Done(); channel <- run(ctx) }(probe)
+		go func(index int, run func(context.Context) Result) {
+			defer group.Done()
+			result := run(ctx)
+			if observe != nil {
+				observe(index, result)
+			}
+			channel <- result
+		}(index, probe)
 	}
 	go func() { group.Wait(); close(channel) }()
 	for result := range channel {
@@ -328,8 +361,11 @@ func printHelp(writer io.Writer) {
 tls: --min-days N은 인증서 남은 일수가 N보다 작으면 fail로 처리합니다
 http: --expect-status N은 응답 code가 N과 다르면 fail로 처리합니다
 report diff: probe별 status 변화와 metric 차이를 보여 주고, 악화된 probe가 있으면 exit 1입니다
+report: terminal에서는 뷰어로 엽니다. f 필터, e 상세, q 종료
 remote: group을 생략하면 선택기를 띄웁니다. inventory.yaml과 recipe.yaml은 현재 디렉터리와 config 디렉터리에서 찾습니다
-remote: -f|--force는 실행 계획 확인을 생략하고, -n|--dry-run은 계획만 출력하며, -l|--list는 inventory를 보여 줍니다
+remote: 계획과 결과가 host×step 표 하나를 씁니다. -f|--force는 확인을 생략하고, -n|--dry-run은 계획만 출력하며, -l|--list는 inventory를 보여 줍니다
+top: terminal에서는 대시보드로 실행합니다. q 종료, p 일시정지, +/- interval
+remote와 doctor: terminal에서는 실시간 화면으로 실행하고 Ctrl-C로 취소합니다 (exit 4)
 completion: source <(edc completion zsh) 또는 source <(edc completion bash)
 `)
 }

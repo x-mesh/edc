@@ -170,3 +170,14 @@ func TestProbeHTTPExpectStatus(t *testing.T) {
 		t.Fatalf("mismatch must fail: %#v", mismatched)
 	}
 }
+
+func TestFormatResultLineKeepsOneLine(t *testing.T) {
+	result := Result{Probe: "net.ping", Status: StatusFail, Summary: "signal: killed: PING example.com\n64 bytes from example.com"}
+	line := formatResultLine(result, false)
+	if strings.Count(line, "\n") != 1 {
+		t.Fatalf("line must stay on one line: %q", line)
+	}
+	if !strings.Contains(line, "signal: killed") || strings.Contains(line, "64 bytes") {
+		t.Fatalf("line = %q", line)
+	}
+}

@@ -24,22 +24,23 @@ func TestRemoteInteractiveOrderAndDiscovery(t *testing.T) {
 		t.Fatalf("options = %#v", options)
 	}
 	text := output.String()
-	groupIndex := strings.Index(text, "group(대상)")
-	inventoryIndex := strings.Index(text, "inventory 경로")
-	recipeIndex := strings.Index(text, "recipe 경로")
-	planIndex := strings.Index(text, "실행 계획")
+	groupIndex := strings.Index(text, selectGroupLabel)
+	recipeIndex := strings.Index(text, "recipe 파일")
+	headerIndex := strings.Index(text, "edc remote  daily")
 	streamIndex := strings.Index(text, "상세 출력을 streaming으로 볼까요?")
 	confirmIndex := strings.Index(text, "실행할까요?")
-	if groupIndex < 0 || !(groupIndex < inventoryIndex && inventoryIndex < recipeIndex && recipeIndex < planIndex && planIndex < streamIndex && streamIndex < confirmIndex) {
+	if groupIndex < 0 || !(groupIndex < recipeIndex && recipeIndex < headerIndex && headerIndex < streamIndex && streamIndex < confirmIndex) {
 		t.Fatalf("prompt order = %q", text)
 	}
-	for _, expected := range []string{"실행 계획  daily → one", "1. gk", "command  gk update", "verify   gk --version"} {
+	// 머리말이 경로를 한 번만 보여 주고, 계획은 결과 표와 같은 배치로 나온다.
+	for _, expected := range []string{"inventory  ./inventory.yaml", "recipe  ./recipe.yaml", "host  gk", "one   ·", "gk  gk update  →  gk --version"} {
 		if !strings.Contains(text, expected) {
 			t.Fatalf("output %q does not contain %q", text, expected)
 		}
 	}
-	if strings.Contains(text, "실행 대상: group=") {
-		t.Fatalf("output repeats file paths: %q", text)
+	// 예전처럼 경로를 따로 한 번 더 알리지 않는다.
+	if strings.Contains(text, "inventory 경로:") || strings.Count(text, "edc remote  daily") != 1 {
+		t.Fatalf("header must state the paths once: %q", text)
 	}
 }
 
@@ -144,7 +145,7 @@ func TestRemoteGroupArgumentSkipsStreamingQuestion(t *testing.T) {
 	if strings.Contains(text, "streaming") {
 		t.Fatalf("group argument still asks the streaming question: %q", text)
 	}
-	if !strings.Contains(text, "실행 계획") || !strings.Contains(text, "실행할까요?") {
+	if !strings.Contains(text, "edc remote  daily") || !strings.Contains(text, "실행할까요?") {
 		t.Fatalf("output = %q", text)
 	}
 }
@@ -202,12 +203,9 @@ func TestRemotePlanShowsTaggedHosts(t *testing.T) {
 		{Name: "apt", Command: "apt-get update", Verify: "apt-get --version", Tags: []string{"bsd"}},
 	}}
 	var output strings.Builder
-	printRemotePlan(&output, "daily", hosts, recipe)
+	printRemotePlan(&output, remotePlanView{group: "daily", inventoryPath: "/tmp/inventory.yaml", recipePath: "/tmp/recipe.yaml", hosts: hosts, recipe: recipe, width: 100})
 	text := output.String()
-	if strings.Contains(text, "1. git-kit\n     hosts") {
-		t.Fatalf("untagged step must not list hosts: %q", text)
-	}
-	for _, expected := range []string{"hosts    laptop", "대상 없음  tag bsd"} {
+	for _, expected := range []string{"edc remote  daily  ·  host 2  ·  step 3", "host", "server", "laptop", "brew upgrade", "tags mac", "tags bsd (대상 없음)"} {
 		if !strings.Contains(text, expected) {
 			t.Fatalf("plan %q does not contain %q", text, expected)
 		}

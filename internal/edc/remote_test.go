@@ -17,6 +17,7 @@ type fakeRemoteRunner struct {
 	delay   time.Duration
 	active  int
 	maxSeen int
+	onRun   func()
 }
 
 func (runner *fakeRemoteRunner) Run(_ context.Context, target, command string, _ time.Duration, stream io.Writer) remoteCommandResult {
@@ -28,7 +29,11 @@ func (runner *fakeRemoteRunner) Run(_ context.Context, target, command string, _
 	if runner.active > runner.maxSeen {
 		runner.maxSeen = runner.active
 	}
+	onRun := runner.onRun
 	runner.mu.Unlock()
+	if onRun != nil {
+		onRun()
+	}
 	if runner.delay > 0 {
 		time.Sleep(runner.delay)
 	}
@@ -126,12 +131,38 @@ func TestRemoteResultsStreamWhileRunning(t *testing.T) {
 		t.Fatalf("streamed output must carry result lines only: %q", text)
 	}
 	var tail strings.Builder
-	printRemoteTail(&tail, results, false)
+	printResultTail(&tail, results, false, false)
 	if strings.Contains(tail.String(), "PASS  one.gk") {
 		t.Fatalf("final output repeats result lines: %q", tail.String())
 	}
 	if !strings.Contains(tail.String(), "ERROR  one.xm") || !strings.Contains(tail.String(), "1 pass") {
 		t.Fatalf("final output = %q", tail.String())
+	}
+}
+
+// 취소된 실행은 ssh 실패가 아니라 SKIP으로 남아야 한다.
+func TestRemoteCancelledStepsAreSkipped(t *testing.T) {
+	hosts := []remoteHost{{Name: "one", Target: "one"}}
+	recipe := remoteRecipe{Name: "daily", Steps: []remoteStep{
+		{Name: "gk", Command: "gk update", Timeout: time.Minute},
+		{Name: "xm", Command: "xm update", Timeout: time.Minute},
+	}}
+	ctx, cancel := context.WithCancel(context.Background())
+	runner := &fakeRemoteRunner{results: map[string]remoteCommandResult{}, onRun: cancel}
+	results := executeRemoteRecipe(ctx, hosts, recipe, runner)
+	if len(runner.calls) != 1 {
+		t.Fatalf("cancellation must stop later steps: %#v", runner.calls)
+	}
+	if len(results) != 2 {
+		t.Fatalf("results = %#v", results)
+	}
+	for _, result := range results {
+		if result.Status != StatusSkip || result.Metrics["command_status"] != "cancelled" {
+			t.Fatalf("result = %#v", result)
+		}
+	}
+	if exitCode(results) != 0 {
+		t.Fatal("cancelled steps must not report a probe failure")
 	}
 }
 

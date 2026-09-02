@@ -11,6 +11,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"golang.org/x/term"
 )
 
 const (
@@ -60,9 +62,11 @@ func runCapture(args []string) int {
 		fmt.Fprintln(os.Stderr, err)
 		return 2
 	}
-	fmt.Printf("interface: %s\nduration: %s\npacket limit: %d\nfilter: %s\noutput: %s\n", *interfaceName, *duration, *count, emptyAs(*filter, "(none)"), outputPath)
-	fmt.Println("주의: packet payload에는 credential이나 개인정보가 포함될 수 있습니다.")
-	if !*yes && !confirm(os.Stdin, os.Stdout) {
+	plan := capturePlan{
+		interfaceName: *interfaceName, duration: *duration, count: *count,
+		filter: *filter, outputPath: outputPath, privileged: os.Geteuid() == 0,
+	}
+	if !*yes && !confirmCapture(os.Stdin, os.Stdout, plan) {
 		fmt.Fprintln(os.Stderr, "capture를 취소했습니다")
 		return 4
 	}
@@ -146,6 +150,57 @@ func captureOutputPath(requested string) (string, error) {
 		return "", err
 	}
 	return path, nil
+}
+
+// capturePlan은 확인 화면이 보여 주는 실행 조건이다.
+type capturePlan struct {
+	interfaceName string
+	duration      time.Duration
+	count         int
+	filter        string
+	outputPath    string
+	privileged    bool // 이미 root라 sudo를 쓰지 않는다
+}
+
+const (
+	capturePayloadWarning = "주의: packet payload에는 credential이나 개인정보가 포함될 수 있습니다."
+	// captureLabelWidth는 한글 label도 값 열이 어긋나지 않게 표시 폭으로 맞춘다.
+	captureLabelWidth = 14
+)
+
+func (plan capturePlan) detail() string {
+	rows := [][2]string{
+		{"interface", plan.interfaceName},
+		{"duration", plan.duration.String()},
+		{"packet limit", fmt.Sprint(plan.count)},
+		{"filter", emptyAs(plan.filter, "(none)")},
+		{"output", plan.outputPath},
+		{"권한", plan.privilegeLabel()},
+	}
+	var builder strings.Builder
+	builder.WriteString("capture 계획\n")
+	for _, row := range rows {
+		builder.WriteString("  " + liveCell(row[0], captureLabelWidth) + row[1] + "\n")
+	}
+	builder.WriteString(capturePayloadWarning + "\n")
+	return builder.String()
+}
+
+func (plan capturePlan) privilegeLabel() string {
+	if plan.privileged {
+		return "root로 실행합니다"
+	}
+	return "sudo로 tcpdump를 실행합니다"
+}
+
+// confirmCapture는 terminal에서는 확인 화면을, 그 외에는 y/N 입력을 쓴다.
+func confirmCapture(input *os.File, output *os.File, plan capturePlan) bool {
+	if term.IsTerminal(int(input.Fd())) {
+		answer, err := runConfirmModel(input, output, newDetailedConfirmModel(plan.detail(), "capture를 실행할까요?", false))
+		return err == nil && answer
+	}
+	fmt.Fprint(output, plan.detail())
+	return confirm(input, output)
 }
 
 func confirm(input *os.File, output *os.File) bool {

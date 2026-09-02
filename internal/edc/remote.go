@@ -130,7 +130,8 @@ func runRemoteRun(group string, args []string, version string) int {
 		promptOutput = os.Stderr
 	}
 	remoteOptions.verbose = options.verbose
-	promptFlags := remotePromptFlags{force: force, dryRun: dryRun, interactive: isTerminal(os.Stdin) && isTerminal(os.Stdout)}
+	interactive := isTerminal(os.Stdin) && isTerminal(os.Stdout)
+	promptFlags := remotePromptFlags{force: force, dryRun: dryRun, live: !dryRun && !list && options.jsonPath == "" && liveTerminal(), interactive: interactive}
 	remoteOptions, err = promptRemoteOptions(os.Stdin, promptOutput, cwd, configDir, options.timeout, remoteOptions, promptFlags)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -162,25 +163,50 @@ func runRemoteRun(group string, args []string, version string) int {
 	}
 	started := time.Now()
 	parallel := remoteParallelForGroup(inventory, remoteOptions.group, parallelOverride)
+	plan := remotePlanView{
+		group: remoteOptions.group, inventoryPath: remoteOptions.inventoryPath, recipePath: remoteOptions.recipePath,
+		cwd: cwd, hosts: hosts, recipe: recipe, width: terminalWidth(),
+	}
 	if dryRun {
-		return emitRemotePlan(options, remoteOptions, hosts, recipe, parallel)
+		return emitRemotePlan(options, remoteOptions, plan, parallel)
 	}
 	terminalOutput := options.jsonPath == ""
+	// Ctrl-C는 raw mode에서 signal이 아니라 키로 오므로 실행 중인 ssh는 context로만 끊을 수 있다.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	live := terminalOutput && liveTerminal()
 	display := newRemoteDisplay(os.Stdout, remoteDisplayOptions{
 		verbose: options.verbose && terminalOutput,
-		spinner: terminalOutput && isTerminal(os.Stdout) && os.Getenv("NO_COLOR") == "",
+		live:    live,
+		confirm: live && !force,
 		results: terminalOutput,
 		redact:  options.redact,
+		plan:    plan,
+		cancel:  cancel,
 	})
-	results := executeRemoteRecipeWithOptions(context.Background(), hosts, recipe, sshRemoteRunner{connectTimeout: connectTimeout, outputLimit: outputLimit}, parallel, display)
+	// 확인은 실행 표와 같은 화면에서 받는다. 거절하면 아무것도 실행하지 않는다.
+	if !display.awaitConfirm() {
+		display.Close()
+		fmt.Fprintln(os.Stderr, errRemoteCancelled)
+		return 4
+	}
+	results := executeRemoteRecipeWithOptions(ctx, hosts, recipe, sshRemoteRunner{connectTimeout: connectTimeout, outputLimit: outputLimit}, parallel, display)
+	// Close가 실시간 화면을 끝내면 onExit이 cancel을 부르므로, 사용자 취소 여부는 그 전에 읽는다.
+	cancelled := ctx.Err() != nil
 	display.Close()
 	target := map[string]interface{}{"group": remoteOptions.group, "inventory": remoteOptions.inventoryPath, "recipe": remoteOptions.recipePath, "recipe_name": recipe.Name, "parallel": parallel}
 	report := buildReport(version, started, target, results, options.redact)
 	if terminalOutput {
-		printRemoteTail(os.Stdout, report.Results, display.color)
-		return exitCode(report.Results)
+		printResultDetails(os.Stdout, report.Results, options.verbose, display.color)
+		fmt.Fprintf(os.Stdout, "\n%s  %d/%d  %s  ·  %s\n", remoteOutcome(cancelled), completedSteps(report.Results), len(report.Results), time.Since(started).Round(100*time.Millisecond), compactResultCounts(report.Results))
+	} else if code := emit(options, report); !cancelled {
+		return code
 	}
-	return emit(options, report)
+	if cancelled {
+		fmt.Fprintln(os.Stderr, errRemoteCancelled)
+		return 4
+	}
+	return exitCode(report.Results)
 }
 
 func isTerminal(file *os.File) bool {
@@ -245,6 +271,14 @@ func executeRemoteHost(ctx context.Context, host remoteHost, recipe remoteRecipe
 		}
 		started := time.Now()
 		probe := fmt.Sprintf("remote.%s.%s", host.Name, step.Name)
+		if ctx.Err() != nil {
+			// 취소가 이전 step 실패보다 우선한다. 취소된 step을 ssh 실패로 남기지 않는다.
+			cancelled := remoteCancelledResult(probe, host.Name, step.Name, started)
+			results = append(results, cancelled)
+			display.Result(cancelled)
+			hostFailed = true
+			continue
+		}
 		if hostFailed {
 			skipped := Result{Probe: probe, Status: StatusSkip, StartedAt: started.UTC(), Summary: "이 host의 이전 step이 실패해 건너뛰었습니다", Metrics: map[string]interface{}{"host": host.Name, "step": step.Name, "command_status": "skip", "verify_status": "skip"}}
 			results = append(results, skipped)
@@ -257,6 +291,13 @@ func executeRemoteHost(ctx context.Context, host remoteHost, recipe remoteRecipe
 		commandStream := streamWriter(display, host.Name, step.Name, "command")
 		commandResult := runner.Run(ctx, host.Target, step.Command, step.Timeout, commandStream)
 		flushRemoteStream(commandStream)
+		if ctx.Err() != nil {
+			cancelled := remoteCancelledResult(probe, host.Name, step.Name, started)
+			results = append(results, cancelled)
+			display.Result(cancelled)
+			hostFailed = true
+			continue
+		}
 		result := Result{
 			Probe: probe, StartedAt: started.UTC(),
 			Metrics: map[string]interface{}{
@@ -315,6 +356,34 @@ func executeRemoteHost(ctx context.Context, host remoteHost, recipe remoteRecipe
 		display.Result(result)
 	}
 	return results
+}
+
+// remoteOutcome은 마지막 줄의 첫 낱말이다.
+func remoteOutcome(cancelled bool) string {
+	if cancelled {
+		return "취소"
+	}
+	return "완료"
+}
+
+// completedSteps는 실제로 실행해 결과가 난 step 수다. skip은 세지 않는다.
+func completedSteps(results []Result) int {
+	count := 0
+	for _, result := range results {
+		if result.Status != StatusSkip {
+			count++
+		}
+	}
+	return count
+}
+
+// remoteCancelledResult는 사용자가 취소해 실행하지 못한 step을 남긴다.
+func remoteCancelledResult(probe, host, step string, started time.Time) Result {
+	return Result{
+		Probe: probe, Status: StatusSkip, StartedAt: started.UTC(), DurationMS: time.Since(started).Milliseconds(),
+		Summary: "사용자가 취소해 중단했습니다",
+		Metrics: map[string]interface{}{"host": host, "step": step, "command_status": "cancelled", "verify_status": "skip"},
+	}
 }
 
 func streamWriter(display *remoteDisplay, host, step, phase string) io.Writer {

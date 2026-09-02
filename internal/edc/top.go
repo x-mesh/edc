@@ -28,8 +28,8 @@ func runTop(args []string) int {
 		fmt.Fprintln(os.Stderr, "사용법: edc top [--interval 1s] [--count N] [--json <path|->]")
 		return 2
 	}
-	if *interval < 200*time.Millisecond {
-		fmt.Fprintln(os.Stderr, "--interval은 200ms 이상이어야 합니다")
+	if *interval < topMinInterval {
+		fmt.Fprintf(os.Stderr, "--interval은 %s 이상이어야 합니다\n", topMinInterval)
 		return 2
 	}
 	if *count < 0 {
@@ -46,9 +46,13 @@ func runTop(args []string) int {
 		defer file.Close()
 		writer = file
 	}
+	jsonOutput := *jsonPath != ""
+	// 대시보드는 무한 실행에만 쓴다. --count와 --json은 표와 JSON을 그대로 흘려 보낸다.
+	if !jsonOutput && *count == 0 && liveTerminal() {
+		return runTopDashboard(*interval)
+	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
-	jsonOutput := *jsonPath != ""
 	return streamTop(ctx, writer, topOptions{
 		interval: *interval, count: *count, json: jsonOutput,
 		header: !*noHeader && !jsonOutput,
@@ -145,16 +149,36 @@ func streamTop(ctx context.Context, writer io.Writer, options topOptions) int {
 	return 0
 }
 
-// topTableWidth는 80칼럼 터미널에서 줄이 접히지 않도록 표 전체 폭을 고정한다.
-const topTableWidth = 80
+const (
+	// topTableWidth는 80칼럼 터미널에서 줄이 접히지 않도록 표 전체 폭을 고정한다.
+	topTableWidth = 80
+	// topMinInterval은 sampling이 host에 부담을 주지 않는 하한이다.
+	topMinInterval = 200 * time.Millisecond
+	topMaxInterval = time.Minute
+	// topDashboardHistory는 대시보드가 되돌아볼 수 있는 row 수다.
+	topDashboardHistory = 500
+	// topDashboardFixedLines는 header 3줄, column header 1줄, 상태줄 1줄이다.
+	topDashboardFixedLines = 5
+)
+
+// topIntervalLadder는 +와 -로 옮겨 다니는 interval 단계다.
+var topIntervalLadder = []time.Duration{
+	topMinInterval, 500 * time.Millisecond, time.Second, 2 * time.Second,
+	5 * time.Second, 10 * time.Second, 30 * time.Second, topMaxInterval,
+}
+
+const topColumnHeader = "│    time│net_in│net_out│ pk_in│pk_out│load│ usr%│ sys%│  i/o│dsk_r│dsk_w│mem_%│"
 
 func printTopHeader(writer io.Writer, details hostDetails) {
+	fmt.Fprint(writer, formatTopHeader(details))
+}
+
+func formatTopHeader(details hostDetails) string {
 	title := fmt.Sprintf("🐰 %s <%s, %d cores, %s> 🐰", details.Hostname, details.Model, details.Cores, formatBytes(details.MemoryTotal))
 	titleWidth := topDisplayWidth(title)
 	width := max(topTableWidth, titleWidth+4)
 	border := strings.Repeat("─", width-2)
-	fmt.Fprintf(writer, "╭%s╮\n│ %s%s │\n╰%s╯\n", border, title, strings.Repeat(" ", width-4-titleWidth), border)
-	fmt.Fprintln(writer, "│    time│net_in│net_out│ pk_in│pk_out│load│ usr%│ sys%│  i/o│dsk_r│dsk_w│mem_%│")
+	return fmt.Sprintf("╭%s╮\n│ %s%s │\n╰%s╯\n%s\n", border, title, strings.Repeat(" ", width-4-titleWidth), border, topColumnHeader)
 }
 
 const (
@@ -200,7 +224,11 @@ func (limits topLimits) paint(text string, threshold topThreshold, value float64
 }
 
 func printTopRow(writer io.Writer, at time.Time, rate resourceRate, limits topLimits) {
-	fmt.Fprintf(writer, "│%8s│%6s│%7s│%6.0f│%6.0f│%s│%s│%s│%s│%5s│%5s│%s│\n",
+	fmt.Fprintln(writer, formatTopRow(at, rate, limits))
+}
+
+func formatTopRow(at time.Time, rate resourceRate, limits topLimits) string {
+	return fmt.Sprintf("│%8s│%6s│%7s│%6.0f│%6.0f│%s│%s│%s│%s│%5s│%5s│%s│",
 		at.Format("15:04:05"), formatRate(rate.NetIn), formatRate(rate.NetOut), rate.PacketsIn, rate.PacketsOut,
 		limits.paint(fmt.Sprintf("%4.1f", rate.Load1), limits.load, rate.Load1),
 		limits.paint(fmt.Sprintf("%5.1f", rate.CPUUser), limits.cpu, rate.CPUUser),

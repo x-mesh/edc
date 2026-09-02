@@ -1,16 +1,18 @@
+**English** | [한국어](README.ko.md)
+
 # edc
 
-`edc`는 SE/SRE 네트워크·시스템 진단 CLI입니다. Linux/macOS resource monitoring과 host 정보를 제공하며, DNS, TCP, TLS, HTTP, route, interface, socket과 macOS `networkQuality`를 공통 결과 형식으로 실행합니다.
+`edc` is a network and system diagnostic CLI for SE and SRE work. It reports host resources and host information on Linux and macOS. It runs DNS, TCP, TLS, HTTP, route, interface, and socket probes. It also runs macOS `networkQuality`. Every probe uses one common result format.
 
-![edc doctor https://example.com이 probe 9개를 차례로 실행하고 9 pass 요약을 출력하는 화면](docs/media/doctor.gif)
+![edc doctor https://example.com runs nine probes in order and prints a 9 pass summary](docs/media/doctor.gif)
 
-`edc doctor`는 DNS, TCP, TLS, HTTP, route, ping, interface, socket을 한 번에 실행하고 결과를 한 화면에 모읍니다.
+`edc doctor` runs DNS, TCP, TLS, HTTP, route, ping, interface, and socket probes at once. It collects the results on one screen.
 
-각 데모의 소스는 [`docs/tape/`](docs/tape) 아래 `.tape` 파일입니다. `vhs docs/tape/doctor.tape`처럼 실행하면 다시 만듭니다.
+The source of each demo is a `.tape` file under [`docs/tape/`](docs/tape). To build one again, run `vhs docs/tape/doctor.tape`.
 
-## 빌드
+## Build
 
-Go 1.25 이상이 필요합니다. 실시간 화면은 다음 dependency를 씁니다.
+`edc` needs Go 1.25 or later. The live screens use these dependencies.
 
 - `charm.land/bubbletea/v2`
 - `charm.land/bubbles/v2`
@@ -34,34 +36,34 @@ Set `PREFIX` or `BINDIR` to use another install path.
 make install PREFIX=/usr/local
 ```
 
-## 빠른 시작
+## Quick start
 
 ```bash
-# 실시간 host resource 대시보드 (q로 종료)
+# live host resource dashboard (press q to quit)
 ./bin/edc top
-# 표를 흘려 보내는 기존 출력
+# the earlier table output
 ./bin/edc top --interval 2s --count 10
-# sample당 한 줄 JSON
+# one JSON line for each sample
 ./bin/edc top --count 5 --json -
 
-# system/network/disk 정보
+# system, network, and disk information
 ./bin/edc info
-# public IP/지역/ASN은 외부 ipinfo.io 요청을 명시적으로 허용할 때만 조회
+# --public queries ipinfo.io, so allow the request on purpose
 ./bin/edc info --public
 
-# 기본 종합 진단
+# default diagnosis
 ./bin/edc doctor https://example.com
 
-# machine-readable report 저장 (기본 redaction, 파일 mode 0600)
+# save a machine-readable report (redaction on, file mode 0600)
 ./bin/edc doctor --json report.json https://example.com
 ./bin/edc report show report.json
-# 두 report 비교 (악화된 probe가 있으면 exit 1)
+# compare two reports (exit 1 if one probe gets worse)
 ./bin/edc report diff before.json after.json
 
-# bandwidth/responsiveness 측정을 포함한 종합 진단
+# full diagnosis with bandwidth and responsiveness
 ./bin/edc doctor --profile full --timeout 60s example.com
 
-# 개별 probe
+# single probes
 ./bin/edc dns lookup example.com
 ./bin/edc tcp check example.com:443
 ./bin/edc tls check example.com:443
@@ -79,23 +81,23 @@ make install PREFIX=/usr/local
 source <(./bin/edc completion zsh)
 ```
 
-공통 option은 `--timeout`, `--json <path|->`, `--verbose`, `--redact=true|false`입니다. Go `flag` 규칙에 따라 option은 target 앞에 둡니다.
+The common options are `--timeout`, `--json <path|->`, `--verbose`, and `--redact=true|false`. Go `flag` rules put an option before the target.
 
-### 이름 조회
+### Name lookup
 
-![edc dns lookup example.com이 주소 목록을, edc dns config가 resolver 설정을 각각 PASS로 출력하는 화면](docs/media/dns.gif)
+![edc dns lookup example.com prints the address list and edc dns config prints the resolver setup, both as PASS](docs/media/dns.gif)
 
-`--redact`가 기본으로 켜져 있어 IP는 `<ip:...>` 형태로 가려집니다.
+`--redact` is on by default, so `edc` hides an IP address as `<ip:...>`.
 
-### 연결 확인
+### Connection check
 
-![edc tcp check가 example.com:443 연결에 성공하고, 닫힌 port에서는 timeout phase와 함께 FAIL을 출력하는 화면](docs/media/tcp.gif)
+![edc tcp check connects to example.com:443 and then fails on a closed port with a timeout phase](docs/media/tcp.gif)
 
-실패한 probe는 phase와 cause를 ERROR 블록으로 보여 주고 exit code `1`을 돌려줍니다.
+A failed probe shows the phase and the cause in an ERROR block. It returns exit code `1`.
 
-### 경로와 interface
+### Route and interfaces
 
-![edc net interfaces, edc net route example.com, edc net ping example.com이 각각 PASS와 결과 한 줄을 출력하는 화면](docs/media/net.gif)
+![edc net interfaces, edc net route example.com, and edc net ping example.com each print PASS and one result line](docs/media/net.gif)
 
 ## Probe thresholds
 
@@ -110,9 +112,9 @@ source <(./bin/edc completion zsh)
 
 A failure returns exit code `1`. Use these options in cron to get a synthetic check.
 
-![edc tls check가 PASS를 준 뒤, --min-days 90이 인증서 남은 일수를 기준 미달로 판정해 FAIL과 ERROR 블록을 출력하는 화면](docs/media/tls.gif)
+![edc tls check passes and then --min-days 90 fails because the certificate expiry is under the threshold](docs/media/tls.gif)
 
-![edc http check가 HTTP 200으로 PASS를 준 뒤, --expect-status 404가 기대값 불일치로 FAIL을 출력하는 화면](docs/media/http.gif)
+![edc http check passes with HTTP 200 and then --expect-status 404 fails on the status mismatch](docs/media/http.gif)
 
 The demo shows one pass and one threshold failure for each command.
 
@@ -144,7 +146,7 @@ If stdin and stdout are terminals, `edc report show` and `edc report diff` open 
 
 The viewer leaves no output on the screen. The exit code stays the same. A pipe, a file, or `--json` gets the earlier output.
 
-![edc report show 뷰어에서 f로 필터를 바꾸고 e로 상세를 펼친 뒤, edc report diff가 probe별 duration_ms 차이를 보여 주는 화면](docs/media/report.gif)
+![the edc report show viewer changes the filter with f and shows the details with e, then edc report diff shows the duration_ms difference of each probe](docs/media/report.gif)
 
 The demo opens the viewer, changes the filter, shows the details, and then compares two reports.
 
@@ -212,7 +214,7 @@ Each step needs `name` and `command`. The `verify` field is optional. If `verify
 
 Keep `name` for group references. If `target` is absent, `edc` uses `name` as the SSH target.
 
-![edc remote daily --dry-run이 SSH 연결 없이 host x step 계획 표를 출력하고, tags가 맞지 않는 step을 –로 표시하는 화면](docs/media/remote.gif)
+![edc remote daily --dry-run prints the host by step plan table without an SSH connection and marks an unmatched step with –](docs/media/remote.gif)
 
 The demo shows the tags of a recipe and the plan table that `--dry-run` prints.
 
@@ -397,7 +399,7 @@ Press Ctrl-C to cancel. `edc` stops the running probes and returns exit code `4`
 
 ## Packet capture
 
-`capture`만 privileged 작업이며, `doctor`는 `sudo`를 사용하지 않습니다. Capture에는 강제 상한(duration 60초, packet 10,000개)이 있고 기존 파일을 덮어쓰지 않습니다.
+Only `capture` uses a privilege. `doctor` does not use `sudo`. Capture keeps hard limits of 60 seconds and 10,000 packets. Capture does not overwrite an existing file.
 
 ```bash
 ./bin/edc capture \
@@ -408,7 +410,7 @@ Press Ctrl-C to cancel. `edc` stops the running probes and returns exit code `4`
   --output incident.pcap
 ```
 
-PCAP에는 credential과 개인정보가 포함될 수 있습니다. JSON redaction은 PCAP payload에 적용되지 않습니다.
+A PCAP file can hold credentials and personal data. The JSON redaction does not apply to the PCAP payload.
 
 `edc capture` shows the plan before it starts. The plan has the interface, the duration, the packet limit, the filter, the output path, and the privilege that `edc` uses. Answer the question with the left and right arrow keys and Enter, or with `y` or `n`. The plan stays on the screen above the `tcpdump` output.
 
@@ -429,12 +431,18 @@ For zsh, you can also save the script as `_edc` in a directory of `fpath`.
 
 ## Exit code
 
-- `0`: 성공 또는 warning만 존재
-- `1`: 하나 이상의 probe 실패, 또는 `report diff`에서 악화된 probe 존재
-- `2`: argument, config, report parse 등 실행 오류
-- `3`: privileged 작업의 권한 부족
-- `4`: 사용자 취소 (선택 취소, `remote`와 `doctor`의 Ctrl-C 포함)
+- `0`: success, or warnings only
+- `1`: one probe fails or more, or `report diff` finds a worse probe
+- `2`: a run error, such as an argument, a config, or a report parse error
+- `3`: not enough privilege for a privileged task
+- `4`: user cancel, which includes a cancelled selection and Ctrl-C in `remote` and `doctor`
 
-## 현재 범위
+## Current scope
 
-`top`, `info`, `doctor`와 개별 network probe는 Linux와 macOS를 지원합니다. Linux에서는 `/proc`, `/sys`, `ip`, `ss`, `ping`, `traceroute` 또는 `tracepath`, `/etc/resolv.conf`를 읽고, `resolvectl`이 있으면 `resolvectl status`를 evidence로 덧붙입니다. macOS에서는 system command adapter를 사용합니다. `quality`와 `capture`는 macOS 전용입니다. 모든 command는 read-only 진단에 집중하며, DNS flush, interface reset, firewall 변경 같은 자동 복구는 하지 않습니다.
+`top`, `info`, `doctor`, and the single network probes support Linux and macOS.
+
+On Linux, `edc` reads `/proc`, `/sys`, `ip`, `ss`, `ping`, `traceroute` or `tracepath`, and `/etc/resolv.conf`. If `resolvectl` exists, `edc` adds `resolvectl status` as evidence.
+
+On macOS, `edc` uses a system command adapter. Only macOS runs `quality` and `capture`.
+
+Every command keeps to a read-only diagnosis. `edc` runs no automatic repair, such as a DNS flush, an interface reset, or a firewall change.

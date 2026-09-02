@@ -1,4 +1,4 @@
-module github.com/jinwoo/edc
+module github.com/x-mesh/edc
 
 go 1.25.0
 

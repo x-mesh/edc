@@ -3,7 +3,7 @@ package main
 import (
 	"os"
 
-	"github.com/jinwoo/edc/internal/edc"
+	"github.com/x-mesh/edc/internal/edc"
 )
 
 var version = "dev"

@@ -96,6 +96,8 @@ var commandDocs = []commandDoc{
 		notes: []string{
 			"terminal에서는 대시보드로 엽니다. q 종료, p 일시정지, +/- interval.",
 			"--count나 --json을 주거나, 비 terminal이거나, NO_COLOR면 표로 출력합니다.",
+			"macOS의 CPU 값은 top이 채우므로 약 1초마다 바뀝니다.",
+			"그보다 짧은 interval에서는 나머지 값만 빠르게 갱신됩니다.",
 		},
 	},
 	{

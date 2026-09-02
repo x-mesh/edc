@@ -47,7 +47,7 @@ func zshCommandList() string {
 	for _, doc := range commandSummaries() {
 		fmt.Fprintf(&builder, "        '%s:%s'\n", doc.name, doc.summary())
 	}
-	builder.WriteString("        'help:" + T("help.detail_label") + "'")
+	builder.WriteString("        'help:" + T("help.help_command_summary") + "'")
 	return builder.String()
 }
 

@@ -5,6 +5,7 @@ help:
   usage: "edc <command> [options] [target]"
   common_label: "공통"
   detail_label: "자세히"
+  help_command_summary: "명령 목록 보기"
   detail_hint: "edc help <command>"
   options_label: "options"
   common_options_label: "공통 options"
@@ -78,7 +79,8 @@ command:
       provider: "측정할 사업자: all, aws, gcp"
       count: "지역마다 측정할 횟수"
     notes:
-      - "공개 endpoint에 TCP handshake만 보내고 끊습니다. 인증도 본문 전송도 없습니다."
+      - "공개 endpoint에 TCP handshake만 보내고 끊습니다."
+      - "요청을 보내지 않고 본문도 읽지 않습니다."
       - "이름을 먼저 풀고 그 주소로만 연결하므로 DNS 시간이 거리 값에 섞이지 않습니다."
       - "public IP와 ASN, Cloudflare PoP, NAT와 tunnel 여부를 함께 보여 줍니다."
       - "화면에는 주소를 그대로 쓰고, --json에만 --redact를 적용합니다."
@@ -122,7 +124,8 @@ command:
       parallel: "동시에 실행할 host 수"
     notes:
       - "group을 생략하면 선택기를 띄웁니다."
-      - "inventory.yaml과 recipe.yaml은 현재 디렉터리와 config 디렉터리에서 찾습니다."
+      - "inventory.yaml과 recipe.yaml을 찾습니다."
+      - "현재 디렉터리를 먼저 보고, 다음으로 config 디렉터리를 봅니다."
       - "계획과 결과가 host×step 표 하나를 씁니다."
       - "Ctrl-C로 취소하면 남은 step을 SKIP으로 표시하고 exit code 4를 돌려줍니다."
   completion:
@@ -137,7 +140,8 @@ command:
       yes: "확인 질문 생략"
       timeout: "network 제한 시간"
     notes:
-      - "GitHub release에서 asset을 받아 SHA-256을 확인한 다음 실행 파일을 바꿉니다."
+      - "GitHub release에서 asset을 받아 SHA-256을 확인합니다."
+      - "그다음 실행 파일을 바꿉니다."
       - "새 파일을 옆에 쓰고 이름을 바꾸므로 실패해도 기존 파일이 남습니다."
       - "설치 디렉터리에 쓸 권한이 없으면 내려받기 전에 exit code 3으로 멈춥니다."
   version:

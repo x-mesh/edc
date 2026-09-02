@@ -87,15 +87,19 @@ func mergeTree(into, from map[string]interface{}) {
 // 우선순위는 EDC_LANG, config의 lang, 그리고 기본값 en이다.
 func initLanguage() {
 	loadCatalogs()
-	if language, ok := normalizeLanguage(os.Getenv(languageEnv)); ok {
-		activeLang = language
-		return
+	activeLang = resolveLanguage(os.Getenv(languageEnv), readConfigLanguage())
+}
+
+// resolveLanguage는 두 후보에서 쓸 언어를 고른다.
+// 환경을 읽지 않는 순수 함수라 test가 사용자의 실제 설정에 기대지 않는다.
+func resolveLanguage(fromEnv, fromConfig string) string {
+	if language, ok := normalizeLanguage(fromEnv); ok {
+		return language
 	}
-	if language, ok := normalizeLanguage(readConfigLanguage()); ok {
-		activeLang = language
-		return
+	if language, ok := normalizeLanguage(fromConfig); ok {
+		return language
 	}
-	activeLang = defaultLanguage
+	return defaultLanguage
 }
 
 // normalizeLanguage는 ko_KR.UTF-8 같은 값에서 앞의 언어 코드만 본다.
@@ -262,8 +266,12 @@ func configPath() string {
 
 // readConfigLanguage는 설정 파일의 lang을 읽는다.
 // 파일이 없거나 읽지 못하면 빈 값을 주고, 다음 단계가 기본값을 쓴다.
-func readConfigLanguage() string {
-	path := configPath()
+func readConfigLanguage() string { return readConfigLanguageAt(configPath()) }
+
+// readConfigLanguageAt은 경로를 받아 읽는다.
+// os.UserConfigDir은 macOS에서 XDG_CONFIG_HOME을 보지 않으므로,
+// test가 환경변수로 격리하려 하면 개발자의 실제 설정을 읽게 된다. 경로를 넘겨 그 문제를 없앤다.
+func readConfigLanguageAt(path string) string {
 	if path == "" {
 		return ""
 	}

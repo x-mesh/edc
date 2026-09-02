@@ -5,6 +5,7 @@ help:
   usage: "edc <command> [options] [target]"
   common_label: "common"
   detail_label: "detail"
+  help_command_summary: "Show the command list"
   detail_hint: "edc help <command>"
   options_label: "options"
   common_options_label: "common options"
@@ -123,7 +124,8 @@ command:
       parallel: "hosts to run at the same time"
     notes:
       - "Without a group, edc opens a selector."
-      - "edc finds inventory.yaml and recipe.yaml here and in the config directory."
+      - "edc finds inventory.yaml and recipe.yaml."
+      - "It looks here first, then in the config directory."
       - "The plan and the results share one host by step table."
       - "Ctrl-C marks the remaining steps as SKIP and returns exit code 4."
   completion:
@@ -138,7 +140,8 @@ command:
       yes: "skip the question"
       timeout: "network time limit"
     notes:
-      - "edc reads the release asset, checks the SHA-256, and replaces the running file."
+      - "edc reads the release asset and checks the SHA-256."
+      - "It then replaces the running file."
       - "edc writes the new file beside the old one, so a failure keeps the earlier file."
       - "Without write permission, edc stops with exit code 3 before it downloads."
   version:

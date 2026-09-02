@@ -5,6 +5,7 @@ help:
   usage: "edc <command> [options] [target]"
   common_label: "共通"
   detail_label: "詳細"
+  help_command_summary: "command の一覧を表示"
   detail_hint: "edc help <command>"
   options_label: "options"
   common_options_label: "共通 options"
@@ -78,7 +79,8 @@ command:
       provider: "測定する事業者: all、aws、gcp"
       count: "地域ごとの測定回数"
     notes:
-      - "公開 endpoint に TCP handshake だけを開いて閉じます。要求も本文もありません。"
+      - "公開 endpoint に TCP handshake だけを開いて閉じます。"
+      - "要求を送らず、本文も読みません。"
       - "名前は先に一度だけ解決するので、DNS の時間が距離の値に混ざりません。"
       - "public IP と ASN、Cloudflare PoP、NAT と tunnel の有無もあわせて示します。"
       - "画面にはアドレスをそのまま出し、--redact は --json にだけ効きます。"

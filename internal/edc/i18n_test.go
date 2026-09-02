@@ -3,6 +3,7 @@ package edc
 import (
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -115,45 +116,163 @@ func TestTranslationFormatsArguments(t *testing.T) {
 	}
 }
 
-func TestReadConfigLanguage(t *testing.T) {
-	directory := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", directory)
-	if err := os.MkdirAll(filepath.Join(directory, "edc"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	path := filepath.Join(directory, "edc", "config.yaml")
+// 경로를 직접 넘겨 개발자의 실제 설정을 읽지 않게 한다.
+func TestReadConfigLanguageAt(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
 	if err := os.WriteFile(path, []byte("lang: ja\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	// macOS는 XDG_CONFIG_HOME을 보지 않으므로 값이 다를 수 있다. 읽었을 때만 확인한다.
-	if configPath() == path {
-		if got := readConfigLanguage(); got != "ja" {
-			t.Fatalf("config lang = %q", got)
+	if got := readConfigLanguageAt(path); got != "ja" {
+		t.Fatalf("config lang = %q", got)
+	}
+	if got := readConfigLanguageAt(filepath.Join(t.TempDir(), "absent.yaml")); got != "" {
+		t.Fatalf("a missing config must give an empty value, got %q", got)
+	}
+	broken := filepath.Join(t.TempDir(), "broken.yaml")
+	if err := os.WriteFile(broken, []byte("lang: [1, 2\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := readConfigLanguageAt(broken); got != "" {
+		t.Fatalf("a broken config must give an empty value, got %q", got)
+	}
+}
+
+func TestConfigPathSitsUnderTheUserConfigDirectory(t *testing.T) {
+	path := configPath()
+	if path == "" {
+		t.Skip("this platform has no user config directory")
+	}
+	if filepath.Base(path) != "config.yaml" || filepath.Base(filepath.Dir(path)) != "edc" {
+		t.Fatalf("config path = %q", path)
+	}
+}
+
+func TestResolveLanguagePrefersTheEnvironment(t *testing.T) {
+	for _, row := range []struct{ env, config, want string }{
+		{"ja", "ko", "ja"},
+		{"", "ko", "ko"},
+		{"", "", defaultLanguage},
+		{"fr", "ko", "ko"},
+		{"fr", "de", defaultLanguage},
+		{"ko_KR.UTF-8", "", "ko"},
+	} {
+		if got := resolveLanguage(row.env, row.config); got != row.want {
+			t.Errorf("resolveLanguage(%q, %q) = %q, want %q", row.env, row.config, got, row.want)
 		}
 	}
 }
 
-func TestReadConfigLanguageWithoutFile(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	if got := readConfigLanguage(); got != "" {
-		t.Fatalf("a missing config must give an empty value, got %q", got)
+// 포맷 지정자가 언어마다 다르면 인자가 어긋나 %!d(MISSING) 같은 출력이 사용자에게 간다.
+// 키 집합만 맞추는 검사로는 잡히지 않으므로 지정자까지 잰다.
+func TestFormatVerbsMatchAcrossLanguages(t *testing.T) {
+	loadCatalogs()
+	for _, key := range catalogKeys(defaultLanguage) {
+		base, ok := catalogs[defaultLanguage].text(key)
+		if !ok {
+			continue
+		}
+		want := formatVerbs(base)
+		for _, language := range supportedLanguages {
+			if language == defaultLanguage {
+				continue
+			}
+			text, ok := catalogs[language].text(key)
+			if !ok {
+				continue
+			}
+			if got := formatVerbs(text); !equalStrings(got, want) {
+				t.Errorf("%s %q has verbs %v, but %s has %v", language, key, got, defaultLanguage, want)
+			}
+		}
 	}
 }
 
-func TestEnvironmentWinsOverConfig(t *testing.T) {
+// 목록 길이가 다르면 어떤 언어에서만 줄이 사라진다. capture의 개인정보 경고가 그런 줄이다.
+func TestListLengthsMatchAcrossLanguages(t *testing.T) {
+	loadCatalogs()
+	for _, key := range catalogKeys(defaultLanguage) {
+		base, ok := catalogs[defaultLanguage].list(key)
+		if !ok {
+			continue
+		}
+		for _, language := range supportedLanguages {
+			if language == defaultLanguage {
+				continue
+			}
+			items, ok := catalogs[language].list(key)
+			if !ok {
+				t.Errorf("%s misses the list %q", language, key)
+				continue
+			}
+			if len(items) != len(base) {
+				t.Errorf("%s %q has %d lines, but %s has %d", language, key, len(items), defaultLanguage, len(base))
+			}
+		}
+	}
+}
+
+// help가 읽는 notes는 없어도 화면이 조용히 짧아질 뿐이라 누락을 알아채기 어렵다.
+func TestCommandNotesResolveInEveryLanguage(t *testing.T) {
 	restore := currentLanguage()
 	defer setLanguage(restore)
 
-	t.Setenv(languageEnv, "ja")
-	initLanguage()
-	if currentLanguage() != "ja" {
-		t.Fatalf("EDC_LANG must win, got %q", currentLanguage())
+	for _, doc := range commandDocs {
+		key := "command." + doc.name + ".notes"
+		if !hasMessage(defaultLanguage, key) {
+			continue
+		}
+		for _, language := range supportedLanguages {
+			setLanguage(language)
+			notes := doc.notes()
+			if len(notes) == 0 {
+				t.Errorf("%s resolves no notes for %s", language, doc.name)
+			}
+			for index, note := range notes {
+				if strings.TrimSpace(note) == "" || strings.HasPrefix(note, "command.") {
+					t.Errorf("%s note %d of %s is unresolved: %q", language, index, doc.name, note)
+				}
+			}
+		}
 	}
+}
 
-	t.Setenv(languageEnv, "fr")
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	initLanguage()
-	if currentLanguage() != defaultLanguage {
-		t.Fatalf("an unknown language must fall back to %s, got %q", defaultLanguage, currentLanguage())
+func formatVerbs(text string) []string {
+	var verbs []string
+	for index := 0; index < len(text)-1; index++ {
+		if text[index] != '%' {
+			continue
+		}
+		rest := text[index+1:]
+		if rest[0] == '%' {
+			index++
+			continue
+		}
+		end := 0
+		for end < len(rest) && !isVerbLetter(rest[end]) {
+			end++
+		}
+		if end < len(rest) {
+			// 인덱스(%[1]s)는 순서를 바꾸려는 표시이므로 지정자 글자만 남긴다.
+			verbs = append(verbs, string(rest[end]))
+			index += end
+		}
 	}
+	sort.Strings(verbs)
+	return verbs
+}
+
+func isVerbLetter(value byte) bool {
+	return (value >= 'a' && value <= 'z') || (value >= 'A' && value <= 'Z')
+}
+
+func equalStrings(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
 }

@@ -33,7 +33,7 @@ func Run(args []string, version string) int {
 	case "help", "-h", "--help":
 		if len(args) > 1 {
 			if !printCommandHelp(os.Stdout, args[1]) {
-				fmt.Fprintf(os.Stderr, "알 수 없는 command: %s\n", args[1])
+				fmt.Fprintln(os.Stderr, T("cli.error.unknown_command", args[1]))
 				return 2
 			}
 			return 0
@@ -76,8 +76,8 @@ func Run(args []string, version string) int {
 	case "update":
 		return runUpdate(args[1:], version)
 	default:
-		fmt.Fprintf(os.Stderr, "알 수 없는 command: %s\n", args[0])
-		fmt.Fprintln(os.Stderr, "edc help로 명령 목록을 봅니다")
+		fmt.Fprintln(os.Stderr, T("cli.error.unknown_command", args[0]))
+		fmt.Fprintln(os.Stderr, T("cli.error.help_hint"))
 		return 2
 	}
 }
@@ -87,16 +87,16 @@ func runDoctor(args []string, version string) int {
 	set := flag.NewFlagSet("doctor", flag.ContinueOnError)
 	set.SetOutput(os.Stderr)
 	bindCommon(set, &options)
-	profile := set.String("profile", "default", "default 또는 full")
+	profile := set.String("profile", "default", T("cli.flag.doctor.profile"))
 	if err := set.Parse(args); err != nil {
 		return 2
 	}
 	if set.NArg() != 1 {
-		fmt.Fprintln(os.Stderr, "사용법: edc doctor [options] <host|URL>")
+		fmt.Fprintln(os.Stderr, T("cli.usage", "edc doctor [options] <host|URL>"))
 		return 2
 	}
 	if *profile != "default" && *profile != "full" {
-		fmt.Fprintln(os.Stderr, "--profile은 default 또는 full이어야 합니다")
+		fmt.Fprintln(os.Stderr, T("cli.error.profile_value"))
 		return 2
 	}
 	host, address, rawURL, err := normalizeTarget(set.Arg(0))
@@ -118,7 +118,7 @@ func runDoctor(args []string, version string) int {
 		{name: "tcp.check", run: func(ctx context.Context) Result { return probeTCP(ctx, address) }},
 		{name: "tls.check", run: func(ctx context.Context) Result {
 			if strings.HasPrefix(rawURL, "http://") {
-				return unsupported("tls.check", "HTTP target에는 TLS를 적용하지 않습니다")
+				return unsupported("tls.check", T("cli.doctor.tls_skipped_for_http"))
 			}
 			return probeTLS(ctx, address, host)
 		}},
@@ -138,7 +138,7 @@ func runDoctor(args []string, version string) int {
 
 func runDNS(args []string, version string) int {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "사용법: edc dns <lookup|config> ...")
+		fmt.Fprintln(os.Stderr, T("cli.usage", "edc dns <lookup|config> ..."))
 		return 2
 	}
 	switch args[0] {
@@ -147,19 +147,19 @@ func runDNS(args []string, version string) int {
 	case "config":
 		return runSimple(args[1:], version, "dns config", "dns.config", probeDNSConfig)
 	default:
-		fmt.Fprintln(os.Stderr, "사용법: edc dns <lookup|config> ...")
+		fmt.Fprintln(os.Stderr, T("cli.usage", "edc dns <lookup|config> ..."))
 		return 2
 	}
 }
 
 func runTCP(args []string, version string) int {
 	if len(args) == 0 || args[0] != "check" {
-		fmt.Fprintln(os.Stderr, "사용법: edc tcp check <host:port>")
+		fmt.Fprintln(os.Stderr, T("cli.usage", "edc tcp check <host:port>"))
 		return 2
 	}
 	return runTargetProbe(args[1:], version, "tcp check", "tcp.check", func(ctx context.Context, target string) Result {
 		if _, _, err := net.SplitHostPort(target); err != nil {
-			return resultFromError("tcp.check", time.Now(), "input", fmt.Errorf("host:port 형식이 필요합니다: %s", target))
+			return resultFromError("tcp.check", time.Now(), "input", errors.New(T("cli.error.host_port_required", target)))
 		}
 		return probeTCP(ctx, target)
 	})
@@ -167,17 +167,17 @@ func runTCP(args []string, version string) int {
 
 func runTLS(args []string, version string) int {
 	if len(args) == 0 || args[0] != "check" {
-		fmt.Fprintln(os.Stderr, "사용법: edc tls check [--min-days N] <host:port>")
+		fmt.Fprintln(os.Stderr, T("cli.usage", "edc tls check [--min-days N] <host:port>"))
 		return 2
 	}
 	minDays := 0
 	flags := probeFlags{
 		bind: func(set *flag.FlagSet) {
-			set.IntVar(&minDays, "min-days", 0, "인증서 남은 일수가 이 값보다 작으면 fail, 0은 비활성")
+			set.IntVar(&minDays, "min-days", 0, T("cli.flag.tls.min_days"))
 		},
 		check: func() error {
 			if minDays < 0 {
-				return errors.New("--min-days는 0 이상이어야 합니다")
+				return errors.New(T("cli.error.min_days_range"))
 			}
 			return nil
 		},
@@ -185,7 +185,7 @@ func runTLS(args []string, version string) int {
 	return runTargetProbeWithFlags(args[1:], version, "tls check", "tls.check", flags, func(ctx context.Context, target string) Result {
 		host, _, err := net.SplitHostPort(target)
 		if err != nil {
-			return resultFromError("tls.check", time.Now(), "input", fmt.Errorf("host:port 형식이 필요합니다: %s", target))
+			return resultFromError("tls.check", time.Now(), "input", errors.New(T("cli.error.host_port_required", target)))
 		}
 		return probeTLSWithOptions(ctx, target, host, tlsCheckOptions{minDays: minDays})
 	})
@@ -193,17 +193,17 @@ func runTLS(args []string, version string) int {
 
 func runHTTP(args []string, version string) int {
 	if len(args) == 0 || args[0] != "check" {
-		fmt.Fprintln(os.Stderr, "사용법: edc http check [--expect-status N] <URL>")
+		fmt.Fprintln(os.Stderr, T("cli.usage", "edc http check [--expect-status N] <URL>"))
 		return 2
 	}
 	expectStatus := 0
 	flags := probeFlags{
 		bind: func(set *flag.FlagSet) {
-			set.IntVar(&expectStatus, "expect-status", 0, "기대하는 HTTP status code, 다르면 fail, 0은 기본 규칙")
+			set.IntVar(&expectStatus, "expect-status", 0, T("cli.flag.http.expect_status"))
 		},
 		check: func() error {
 			if expectStatus != 0 && (expectStatus < 100 || expectStatus > 599) {
-				return errors.New("--expect-status는 100에서 599 사이여야 합니다")
+				return errors.New(T("cli.error.expect_status_range"))
 			}
 			return nil
 		},
@@ -215,7 +215,7 @@ func runHTTP(args []string, version string) int {
 
 func runNet(args []string, version string) int {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "사용법: edc net <interfaces|route|ping|trace>")
+		fmt.Fprintln(os.Stderr, T("cli.usage", "edc net <interfaces|route|ping|trace>"))
 		return 2
 	}
 	switch args[0] {
@@ -228,7 +228,7 @@ func runNet(args []string, version string) int {
 	case "trace":
 		return runTargetProbe(args[1:], version, "net trace", "net.trace", probeTrace)
 	default:
-		fmt.Fprintln(os.Stderr, "사용법: edc net <interfaces|route|ping|trace>")
+		fmt.Fprintln(os.Stderr, T("cli.usage", "edc net <interfaces|route|ping|trace>"))
 		return 2
 	}
 }
@@ -261,7 +261,7 @@ func runTargetProbeWithFlags(args []string, version, name, probeID string, extra
 		}
 	}
 	if set.NArg() != 1 {
-		fmt.Fprintf(os.Stderr, "%s에는 target 하나가 필요합니다\n", name)
+		fmt.Fprintln(os.Stderr, T("cli.error.one_target_required", name))
 		return 2
 	}
 	started := time.Now()
@@ -292,7 +292,7 @@ func runSimple(args []string, version, name, probeID string, probe func(context.
 		return 2
 	}
 	if set.NArg() != 0 {
-		fmt.Fprintf(os.Stderr, "%s는 positional argument를 받지 않습니다\n", name)
+		fmt.Fprintln(os.Stderr, T("cli.error.no_positional", name))
 		return 2
 	}
 	started := time.Now()
@@ -306,11 +306,11 @@ func runSimple(args []string, version, name, probeID string, probe func(context.
 }
 
 func bindCommon(set *flag.FlagSet, options *commonOptions) {
-	set.StringVar(&options.jsonPath, "json", "", "JSON 출력 경로, stdout은 -")
-	set.DurationVar(&options.timeout, "timeout", options.timeout, "실행 제한 시간")
-	set.BoolVar(&options.verbose, "verbose", false, "상세 evidence 출력")
-	set.BoolVar(&options.verbose, "v", false, "--verbose 단축 option")
-	set.BoolVar(&options.redact, "redact", options.redact, "JSON 민감정보 redaction")
+	set.StringVar(&options.jsonPath, "json", "", T("cli.flag.common.json"))
+	set.DurationVar(&options.timeout, "timeout", options.timeout, T("cli.flag.common.timeout"))
+	set.BoolVar(&options.verbose, "verbose", false, T("cli.flag.common.verbose"))
+	set.BoolVar(&options.verbose, "v", false, T("cli.flag.common.verbose_short"))
+	set.BoolVar(&options.redact, "redact", options.redact, T("cli.flag.common.redact"))
 }
 
 func emit(options commonOptions, report Report) int {
@@ -352,7 +352,7 @@ func runParallelWith(ctx context.Context, probes []func(context.Context) Result,
 }
 
 func runReport(args []string) int {
-	const usage = "사용법: edc report show <file> | edc report diff [--json <path|->] <before> <after>"
+	usage := T("cli.usage", "edc report show <file> | edc report diff [--json <path|->] <before> <after>")
 	if len(args) == 0 {
 		fmt.Fprintln(os.Stderr, usage)
 		return 2

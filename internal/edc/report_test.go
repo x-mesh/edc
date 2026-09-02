@@ -120,7 +120,7 @@ func TestCertificateVerdict(t *testing.T) {
 	if status, warning, err := certificateVerdict(90, 0); status != StatusPass || warning != "" || err != nil {
 		t.Fatalf("healthy certificate = %v %q %#v", status, warning, err)
 	}
-	if status, warning, err := certificateVerdict(10, 0); status != StatusWarn || !strings.Contains(warning, "10일") || err != nil {
+	if status, warning, err := certificateVerdict(10, 0); status != StatusWarn || warning != T("observe.probe.certificate_expiring", 10) || err != nil {
 		t.Fatalf("default warning = %v %q %#v", status, warning, err)
 	}
 	if status, warning, err := certificateVerdict(10, 14); status != StatusFail || warning != "" || err == nil || err.Kind != "expiry" {

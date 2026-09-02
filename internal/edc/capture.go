@@ -2,6 +2,7 @@ package edc
 
 import (
 	"bufio"
+	"errors"
 	"flag"
 	"fmt"
 	"net"
@@ -22,38 +23,38 @@ const (
 
 func runCapture(args []string) int {
 	if runtime.GOOS != "darwin" {
-		fmt.Fprintln(os.Stderr, "capture는 현재 macOS만 지원합니다")
+		fmt.Fprintln(os.Stderr, T("cli.capture.macos_only"))
 		return 2
 	}
 	set := flag.NewFlagSet("capture", flag.ContinueOnError)
 	set.SetOutput(os.Stderr)
-	interfaceName := set.String("interface", "", "capture할 network interface (필수)")
-	duration := set.Duration("duration", 15*time.Second, "capture 시간 (최대 60s)")
-	count := set.Int("count", 500, "packet 수 (최대 10000)")
-	filter := set.String("filter", "", "BPF filter")
-	output := set.String("output", "", "pcap 저장 경로")
-	yes := set.Bool("yes", false, "interactive 확인 생략")
+	interfaceName := set.String("interface", "", T("cli.flag.capture.interface"))
+	duration := set.Duration("duration", 15*time.Second, T("cli.flag.capture.duration"))
+	count := set.Int("count", 500, T("cli.flag.capture.count"))
+	filter := set.String("filter", "", T("cli.flag.capture.filter"))
+	output := set.String("output", "", T("cli.flag.capture.output"))
+	yes := set.Bool("yes", false, T("cli.flag.capture.yes"))
 	if err := set.Parse(args); err != nil {
 		return 2
 	}
 	if set.NArg() != 0 {
-		fmt.Fprintln(os.Stderr, "알 수 없는 positional argument가 있습니다. BPF expression은 --filter로 전달하세요")
+		fmt.Fprintln(os.Stderr, T("cli.capture.unexpected_positional"))
 		return 2
 	}
 	if *interfaceName == "" {
-		fmt.Fprintln(os.Stderr, "--interface가 필요합니다")
+		fmt.Fprintln(os.Stderr, T("cli.capture.interface_required"))
 		return 2
 	}
 	if *duration <= 0 || *duration > maxCaptureDuration {
-		fmt.Fprintln(os.Stderr, "--duration은 0초보다 크고 60초 이하여야 합니다")
+		fmt.Fprintln(os.Stderr, T("cli.capture.duration_range"))
 		return 2
 	}
 	if *count <= 0 || *count > maxCapturePackets {
-		fmt.Fprintln(os.Stderr, "--count는 1 이상 10000 이하여야 합니다")
+		fmt.Fprintln(os.Stderr, T("cli.capture.count_range"))
 		return 2
 	}
 	if !validInterface(*interfaceName) {
-		fmt.Fprintf(os.Stderr, "존재하지 않는 interface: %s\n", *interfaceName)
+		fmt.Fprintln(os.Stderr, T("cli.capture.unknown_interface", *interfaceName))
 		return 2
 	}
 
@@ -67,7 +68,7 @@ func runCapture(args []string) int {
 		filter: *filter, outputPath: outputPath, privileged: os.Geteuid() == 0,
 	}
 	if !*yes && !confirmCapture(os.Stdin, os.Stdout, plan) {
-		fmt.Fprintln(os.Stderr, "capture를 취소했습니다")
+		fmt.Fprintln(os.Stderr, T("cli.capture.cancelled"))
 		return 4
 	}
 
@@ -87,14 +88,14 @@ func runCapture(args []string) int {
 		if exit, ok := err.(*exec.ExitError); ok && exit.ExitCode() == 1 {
 			return 3
 		}
-		fmt.Fprintf(os.Stderr, "capture 실패: %v\n", err)
+		fmt.Fprintln(os.Stderr, T("cli.capture.failed", err))
 		return 1
 	}
 	if err := os.Chmod(outputPath, 0o600); err != nil {
-		fmt.Fprintf(os.Stderr, "capture는 완료됐지만 권한 설정에 실패했습니다: %v\n", err)
+		fmt.Fprintln(os.Stderr, T("cli.capture.chmod_failed", err))
 		return 1
 	}
-	fmt.Printf("capture 완료: %s\n", outputPath)
+	fmt.Println(T("cli.capture.done", outputPath))
 	return 0
 }
 
@@ -132,7 +133,7 @@ func captureOutputPath(requested string) (string, error) {
 			return "", err
 		}
 		if _, err := os.Stat(absolute); err == nil {
-			return "", fmt.Errorf("기존 파일을 덮어쓰지 않습니다: %s", absolute)
+			return "", errors.New(T("cli.capture.output_exists", absolute))
 		} else if !os.IsNotExist(err) {
 			return "", err
 		}
@@ -162,11 +163,11 @@ type capturePlan struct {
 	privileged    bool // 이미 root라 sudo를 쓰지 않는다
 }
 
-const (
-	capturePayloadWarning = "주의: packet payload에는 credential이나 개인정보가 포함될 수 있습니다."
-	// captureLabelWidth는 한글 label도 값 열이 어긋나지 않게 표시 폭으로 맞춘다.
-	captureLabelWidth = 14
-)
+// captureLabelWidth는 한글 label도 값 열이 어긋나지 않게 표시 폭으로 맞춘다.
+const captureLabelWidth = 14
+
+// capturePayloadWarning은 payload가 무엇을 담을 수 있는지 알리는 경고다.
+func capturePayloadWarning() string { return T("cli.capture.payload_warning") }
 
 func (plan capturePlan) detail() string {
 	rows := [][2]string{
@@ -175,28 +176,28 @@ func (plan capturePlan) detail() string {
 		{"packet limit", fmt.Sprint(plan.count)},
 		{"filter", emptyAs(plan.filter, "(none)")},
 		{"output", plan.outputPath},
-		{"권한", plan.privilegeLabel()},
+		{T("cli.capture.label.privilege"), plan.privilegeLabel()},
 	}
 	var builder strings.Builder
-	builder.WriteString("capture 계획\n")
+	builder.WriteString(T("cli.capture.plan_title") + "\n")
 	for _, row := range rows {
 		builder.WriteString("  " + liveCell(row[0], captureLabelWidth) + row[1] + "\n")
 	}
-	builder.WriteString(capturePayloadWarning + "\n")
+	builder.WriteString(capturePayloadWarning() + "\n")
 	return builder.String()
 }
 
 func (plan capturePlan) privilegeLabel() string {
 	if plan.privileged {
-		return "root로 실행합니다"
+		return T("cli.capture.privilege_root")
 	}
-	return "sudo로 tcpdump를 실행합니다"
+	return T("cli.capture.privilege_sudo")
 }
 
 // confirmCapture는 terminal에서는 확인 화면을, 그 외에는 y/N 입력을 쓴다.
 func confirmCapture(input *os.File, output *os.File, plan capturePlan) bool {
 	if term.IsTerminal(int(input.Fd())) {
-		answer, err := runConfirmModel(input, output, newDetailedConfirmModel(plan.detail(), "capture를 실행할까요?", false))
+		answer, err := runConfirmModel(input, output, newDetailedConfirmModel(plan.detail(), T("cli.capture.confirm"), false))
 		return err == nil && answer
 	}
 	fmt.Fprint(output, plan.detail())
@@ -204,7 +205,7 @@ func confirmCapture(input *os.File, output *os.File, plan capturePlan) bool {
 }
 
 func confirm(input *os.File, output *os.File) bool {
-	fmt.Fprint(output, "계속하시겠습니까? [y/N] ")
+	fmt.Fprint(output, T("cli.confirm"))
 	line, err := bufio.NewReader(input).ReadString('\n')
 	if err != nil {
 		return false

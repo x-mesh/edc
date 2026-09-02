@@ -2,6 +2,7 @@ package edc
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -29,7 +30,7 @@ func loadReport(path string) (Report, error) {
 		return Report{}, fmt.Errorf("%s: %w", path, err)
 	}
 	if report.SchemaVersion != "1.0" {
-		return Report{}, fmt.Errorf("%s: 지원하지 않는 schema version: %s", path, report.SchemaVersion)
+		return Report{}, errors.New(T("cli.report.unsupported_schema", path, report.SchemaVersion))
 	}
 	return report, nil
 }
@@ -55,12 +56,12 @@ func runReportShow(path string) int {
 func runReportDiff(args []string) int {
 	set := flag.NewFlagSet("report diff", flag.ContinueOnError)
 	set.SetOutput(os.Stderr)
-	jsonPath := set.String("json", "", "JSON 출력 경로, stdout은 -")
+	jsonPath := set.String("json", "", T("cli.flag.common.json"))
 	if err := set.Parse(args); err != nil {
 		return 2
 	}
 	if set.NArg() != 2 {
-		fmt.Fprintln(os.Stderr, "사용법: edc report diff [--json <path|->] <before> <after>")
+		fmt.Fprintln(os.Stderr, T("cli.usage", "edc report diff [--json <path|->] <before> <after>"))
 		return 2
 	}
 	before, err := loadReport(set.Arg(0))

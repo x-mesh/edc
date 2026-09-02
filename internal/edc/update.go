@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -28,6 +29,8 @@ const (
 	updateChecksumName = "checksums.txt"
 	// maxUpdateAsset은 내려받는 asset의 상한이다. 잘못된 asset으로 memory를 다 쓰지 않게 막는다.
 	maxUpdateAsset = 64 << 20
+	// updateLabelWidth는 번역된 label이 섞여도 값 열이 어긋나지 않게 맞추는 표시 폭이다.
+	updateLabelWidth = 10
 )
 
 type updateRelease struct {
@@ -45,14 +48,14 @@ type updateAsset struct {
 func runUpdate(args []string, version string) int {
 	set := flag.NewFlagSet("update", flag.ContinueOnError)
 	set.SetOutput(os.Stderr)
-	check := set.Bool("check", false, "새 버전만 확인하고 설치하지 않습니다")
-	yes := set.Bool("yes", false, "interactive 확인 생략")
-	timeout := set.Duration("timeout", 60*time.Second, "network timeout")
+	check := set.Bool("check", false, T("cli.flag.update.check"))
+	yes := set.Bool("yes", false, T("cli.flag.update.yes"))
+	timeout := set.Duration("timeout", 60*time.Second, T("cli.flag.update.timeout"))
 	if err := set.Parse(args); err != nil {
 		return 2
 	}
 	if set.NArg() != 0 {
-		fmt.Fprintln(os.Stderr, "사용법: edc update [--check] [--yes] [--timeout 60s]")
+		fmt.Fprintln(os.Stderr, T("cli.usage", "edc update [--check] [--yes] [--timeout 60s]"))
 		return 2
 	}
 
@@ -68,15 +71,15 @@ func runUpdate(args []string, version string) int {
 	latest := strings.TrimPrefix(release.TagName, "v")
 	current := strings.TrimPrefix(version, "v")
 	if latest == "" {
-		fmt.Fprintln(os.Stderr, "release에 tag가 없습니다")
+		fmt.Fprintln(os.Stderr, T("cli.update.no_tag"))
 		return 2
 	}
 	if latest == current {
-		fmt.Printf("edc %s는 이미 최신입니다\n", current)
+		fmt.Println(T("cli.update.already_latest", current))
 		return 0
 	}
 
-	fmt.Printf("현재 %s  ·  최신 %s\n", current, latest)
+	fmt.Println(T("cli.update.versions", current, latest))
 	if *check {
 		fmt.Println(release.HTMLURL)
 		return 0
@@ -85,12 +88,12 @@ func runUpdate(args []string, version string) int {
 	assetName := updateAssetName(latest)
 	asset, ok := findAsset(release.Assets, assetName)
 	if !ok {
-		fmt.Fprintf(os.Stderr, "이 platform의 asset이 release에 없습니다: %s\n", assetName)
+		fmt.Fprintln(os.Stderr, T("cli.update.asset_missing", assetName))
 		return 2
 	}
 	sums, ok := findAsset(release.Assets, updateChecksumName)
 	if !ok {
-		fmt.Fprintf(os.Stderr, "release에 %s가 없어 checksum을 확인할 수 없습니다\n", updateChecksumName)
+		fmt.Fprintln(os.Stderr, T("cli.update.checksums_missing", updateChecksumName))
 		return 2
 	}
 
@@ -100,12 +103,12 @@ func runUpdate(args []string, version string) int {
 		return 2
 	}
 	if err := checkWritable(filepath.Dir(target)); err != nil {
-		fmt.Fprintf(os.Stderr, "%s에 쓸 권한이 없습니다: %v\n", filepath.Dir(target), err)
+		fmt.Fprintln(os.Stderr, T("cli.update.not_writable", filepath.Dir(target), err))
 		return 3
 	}
 
 	if !*yes && !confirmUpdate(os.Stdin, os.Stdout, updateDetail(current, latest, assetName, target)) {
-		fmt.Fprintln(os.Stderr, "update를 취소했습니다")
+		fmt.Fprintln(os.Stderr, T("cli.update.cancelled"))
 		return 4
 	}
 
@@ -134,7 +137,7 @@ func runUpdate(args []string, version string) int {
 		return 2
 	}
 
-	fmt.Printf("edc %s로 업데이트했습니다  ·  %s\n", latest, target)
+	fmt.Println(T("cli.update.replaced", latest, target))
 	return 0
 }
 
@@ -159,7 +162,7 @@ func latestRelease(ctx context.Context, version string) (updateRelease, error) {
 	}
 	var release updateRelease
 	if err := json.Unmarshal(body, &release); err != nil {
-		return updateRelease{}, fmt.Errorf("release 정보를 읽지 못했습니다: %w", err)
+		return updateRelease{}, fmt.Errorf("%s: %w", T("cli.update.release_read_failed"), err)
 	}
 	return release, nil
 }
@@ -171,7 +174,7 @@ func downloadAsset(ctx context.Context, url, version string) ([]byte, error) {
 func fetch(ctx context.Context, url, version string, headers map[string]string) ([]byte, error) {
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return nil, fmt.Errorf("요청을 만들지 못했습니다: %w", err)
+		return nil, fmt.Errorf("%s: %w", T("cli.update.request_failed"), err)
 	}
 	request.Header.Set("User-Agent", "edc/"+version)
 	for key, value := range headers {
@@ -180,19 +183,19 @@ func fetch(ctx context.Context, url, version string, headers map[string]string) 
 
 	response, err := http.DefaultClient.Do(request)
 	if err != nil {
-		return nil, fmt.Errorf("%s 요청이 실패했습니다: %w", url, err)
+		return nil, fmt.Errorf("%s: %w", T("cli.update.fetch_failed", url), err)
 	}
 	defer response.Body.Close()
 
 	if response.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("%s가 HTTP %d를 돌려주었습니다", url, response.StatusCode)
+		return nil, errors.New(T("cli.update.http_status", url, response.StatusCode))
 	}
 	body, err := io.ReadAll(io.LimitReader(response.Body, maxUpdateAsset+1))
 	if err != nil {
-		return nil, fmt.Errorf("응답을 읽지 못했습니다: %w", err)
+		return nil, fmt.Errorf("%s: %w", T("cli.update.response_read_failed"), err)
 	}
 	if int64(len(body)) > maxUpdateAsset {
-		return nil, fmt.Errorf("asset이 상한 %d bytes를 넘습니다", int64(maxUpdateAsset))
+		return nil, errors.New(T("cli.update.asset_too_large", int64(maxUpdateAsset)))
 	}
 	return body, nil
 }
@@ -208,12 +211,12 @@ func verifyChecksum(data []byte, name string, list []byte) error {
 		}
 	}
 	if want == "" {
-		return fmt.Errorf("%s의 checksum이 %s에 없습니다", name, updateChecksumName)
+		return errors.New(T("cli.update.checksum_missing", name, updateChecksumName))
 	}
 	sum := sha256.Sum256(data)
 	got := hex.EncodeToString(sum[:])
 	if got != want {
-		return fmt.Errorf("checksum이 맞지 않습니다: 기대 %s, 실제 %s", want, got)
+		return errors.New(T("cli.update.checksum_mismatch", want, got))
 	}
 	return nil
 }
@@ -222,7 +225,7 @@ func verifyChecksum(data []byte, name string, list []byte) error {
 func extractBinary(archive []byte) ([]byte, error) {
 	reader, err := gzip.NewReader(bytes.NewReader(archive))
 	if err != nil {
-		return nil, fmt.Errorf("asset을 열지 못했습니다: %w", err)
+		return nil, fmt.Errorf("%s: %w", T("cli.update.asset_open_failed"), err)
 	}
 	defer reader.Close()
 
@@ -233,31 +236,31 @@ func extractBinary(archive []byte) ([]byte, error) {
 			break
 		}
 		if err != nil {
-			return nil, fmt.Errorf("asset을 읽지 못했습니다: %w", err)
+			return nil, fmt.Errorf("%s: %w", T("cli.update.asset_read_failed"), err)
 		}
 		if header.Typeflag != tar.TypeReg || filepath.Base(header.Name) != "edc" {
 			continue
 		}
 		binary, err := io.ReadAll(io.LimitReader(tarReader, maxUpdateAsset))
 		if err != nil {
-			return nil, fmt.Errorf("실행 파일을 읽지 못했습니다: %w", err)
+			return nil, fmt.Errorf("%s: %w", T("cli.update.binary_read_failed"), err)
 		}
 		if len(binary) == 0 {
-			return nil, fmt.Errorf("asset의 edc 실행 파일이 비어 있습니다")
+			return nil, errors.New(T("cli.update.binary_empty"))
 		}
 		return binary, nil
 	}
-	return nil, fmt.Errorf("asset에 edc 실행 파일이 없습니다")
+	return nil, errors.New(T("cli.update.binary_absent"))
 }
 
 func updateTargetPath() (string, error) {
 	path, err := os.Executable()
 	if err != nil {
-		return "", fmt.Errorf("실행 파일 경로를 찾지 못했습니다: %w", err)
+		return "", fmt.Errorf("%s: %w", T("cli.update.executable_path_failed"), err)
 	}
 	resolved, err := filepath.EvalSymlinks(path)
 	if err != nil {
-		return "", fmt.Errorf("실행 파일 경로를 확인하지 못했습니다: %w", err)
+		return "", fmt.Errorf("%s: %w", T("cli.update.executable_resolve_failed"), err)
 	}
 	return resolved, nil
 }
@@ -280,43 +283,48 @@ func replaceBinary(target string, data []byte) error {
 	dir := filepath.Dir(target)
 	file, err := os.CreateTemp(dir, ".edc-update-*")
 	if err != nil {
-		return fmt.Errorf("임시 파일을 만들지 못했습니다: %w", err)
+		return fmt.Errorf("%s: %w", T("cli.update.temp_create_failed"), err)
 	}
 	temp := file.Name()
 
 	if _, err := file.Write(data); err != nil {
 		file.Close()
 		os.Remove(temp)
-		return fmt.Errorf("임시 파일에 쓰지 못했습니다: %w", err)
+		return fmt.Errorf("%s: %w", T("cli.update.temp_write_failed"), err)
 	}
 	if err := file.Close(); err != nil {
 		os.Remove(temp)
-		return fmt.Errorf("임시 파일을 닫지 못했습니다: %w", err)
+		return fmt.Errorf("%s: %w", T("cli.update.temp_close_failed"), err)
 	}
 	if err := os.Chmod(temp, 0o755); err != nil {
 		os.Remove(temp)
-		return fmt.Errorf("실행 권한을 주지 못했습니다: %w", err)
+		return fmt.Errorf("%s: %w", T("cli.update.chmod_failed"), err)
 	}
 	if err := os.Rename(temp, target); err != nil {
 		os.Remove(temp)
-		return fmt.Errorf("%s를 바꾸지 못했습니다: %w", target, err)
+		return fmt.Errorf("%s: %w", T("cli.update.rename_failed", target), err)
 	}
 	return nil
 }
 
 func updateDetail(current, latest, assetName, target string) string {
+	rows := [][2]string{
+		{T("cli.update.label.current"), current},
+		{T("cli.update.label.latest"), latest},
+		{T("cli.update.label.asset"), assetName},
+		{T("cli.update.label.target"), target},
+	}
 	var builder strings.Builder
-	fmt.Fprintf(&builder, "현재      %s\n", current)
-	fmt.Fprintf(&builder, "최신      %s\n", latest)
-	fmt.Fprintf(&builder, "asset     %s\n", assetName)
-	fmt.Fprintf(&builder, "설치 경로 %s\n", target)
+	for _, row := range rows {
+		builder.WriteString(liveCell(row[0], updateLabelWidth) + row[1] + "\n")
+	}
 	return builder.String()
 }
 
 // confirmUpdate는 terminal에서는 확인 화면을, 그 외에는 y/N 입력을 쓴다.
 func confirmUpdate(input *os.File, output *os.File, detail string) bool {
 	if term.IsTerminal(int(input.Fd())) {
-		answer, err := runConfirmModel(input, output, newDetailedConfirmModel(detail, "업데이트할까요?", false))
+		answer, err := runConfirmModel(input, output, newDetailedConfirmModel(detail, T("cli.update.confirm"), false))
 		return err == nil && answer
 	}
 	fmt.Fprint(output, detail)

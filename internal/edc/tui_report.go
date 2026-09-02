@@ -19,8 +19,11 @@ type viewerEntry struct {
 	keep   map[string]bool // 필터 이름별로 이 항목을 남길지
 }
 
+// viewerFilter는 목록을 거르는 기준이다.
+// name은 entry.keep의 키라 언어와 상관없이 같고, label만 화면에 보인다.
 type viewerFilter struct {
-	name string
+	name  string
+	label string
 }
 
 type viewerModel struct {
@@ -93,7 +96,7 @@ func (model viewerModel) body() string {
 		}
 	}
 	if shown == 0 {
-		builder.WriteString("이 필터에 해당하는 항목이 없습니다\n")
+		builder.WriteString(T("cli.report.filter_empty") + "\n")
 	}
 	return builder.String()
 }
@@ -105,11 +108,11 @@ func (model viewerModel) View() tea.View {
 }
 
 func (model viewerModel) help() string {
-	state := "필터: " + model.filters[model.filter].name
+	state := T("cli.report.filter_label") + model.filters[model.filter].label
 	if model.expanded {
-		state += "  ·  상세 펼침"
+		state += T("cli.report.detail_open")
 	}
-	return state + "  ·  f 필터, e 상세, ↑/↓ 이동, q 종료"
+	return state + T("cli.report.viewer_help")
 }
 
 // runReportViewer는 목록을 alt screen으로 보여 준다. 종료하면 화면이 원래대로 돌아온다.
@@ -166,19 +169,27 @@ func splitDetailLines(value string) []string {
 }
 
 const (
-	viewerFilterAll      = "전체"
-	viewerFilterFail     = "실패만"
-	viewerFilterProblems = "실패와 경고"
-	viewerFilterChanged  = "바뀐 것"
-	viewerFilterWorse    = "악화된 것"
+	viewerFilterAll      = "all"
+	viewerFilterFail     = "fail"
+	viewerFilterProblems = "problems"
+	viewerFilterChanged  = "changed"
+	viewerFilterWorse    = "worse"
 )
 
 func resultFilters() []viewerFilter {
-	return []viewerFilter{{name: viewerFilterAll}, {name: viewerFilterProblems}, {name: viewerFilterFail}}
+	return []viewerFilter{
+		{name: viewerFilterAll, label: T("cli.report.filter.all")},
+		{name: viewerFilterProblems, label: T("cli.report.filter.problems")},
+		{name: viewerFilterFail, label: T("cli.report.filter.fail")},
+	}
 }
 
 func diffFilters() []viewerFilter {
-	return []viewerFilter{{name: viewerFilterAll}, {name: viewerFilterChanged}, {name: viewerFilterWorse}}
+	return []viewerFilter{
+		{name: viewerFilterAll, label: T("cli.report.filter.all")},
+		{name: viewerFilterChanged, label: T("cli.report.filter.changed")},
+		{name: viewerFilterWorse, label: T("cli.report.filter.worse")},
+	}
 }
 
 func reportViewerTitle(label, path string, summary string) string {

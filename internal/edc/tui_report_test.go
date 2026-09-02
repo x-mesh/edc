@@ -62,7 +62,7 @@ func TestViewerExpandShowsDetail(t *testing.T) {
 			t.Fatalf("expanded body %q does not contain %q", expanded.body(), expected)
 		}
 	}
-	if !strings.Contains(expanded.help(), "상세 펼침") {
+	if !strings.Contains(expanded.help(), T("cli.report.detail_open")) {
 		t.Fatalf("help = %q", expanded.help())
 	}
 }
@@ -71,7 +71,7 @@ func TestViewerReportsEmptyFilter(t *testing.T) {
 	results := []Result{{Probe: "dns.lookup", Status: StatusPass, Summary: "ok"}}
 	model := newViewerModel("report show a.json", resultEntries(results, false), resultFilters())
 	failures := viewerAfter(t, viewerAfter(t, model, "f"), "f")
-	if !strings.Contains(failures.body(), "해당하는 항목이 없습니다") {
+	if !strings.Contains(failures.body(), T("cli.report.filter_empty")) {
 		t.Fatalf("body = %q", failures.body())
 	}
 }

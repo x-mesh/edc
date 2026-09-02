@@ -22,21 +22,21 @@ type publicNetworkInfo struct {
 func runInfo(args []string, version string) int {
 	set := flag.NewFlagSet("info", flag.ContinueOnError)
 	set.SetOutput(os.Stderr)
-	includePublic := set.Bool("public", true, "외부 ipinfo.io 조회로 public IP/지역/ASN 표시, --public=false로 끕니다")
-	timeout := set.Duration("timeout", 3*time.Second, "public 조회 제한 시간")
+	includePublic := set.Bool("public", true, T("cli.flag.info.public"))
+	timeout := set.Duration("timeout", 3*time.Second, T("cli.flag.info.timeout"))
 	var verbose bool
-	set.BoolVar(&verbose, "verbose", false, "public 조회 실패 원인 출력")
-	set.BoolVar(&verbose, "v", false, "--verbose 단축 option")
+	set.BoolVar(&verbose, "verbose", false, T("cli.flag.info.verbose"))
+	set.BoolVar(&verbose, "v", false, T("cli.flag.common.verbose_short"))
 	if err := set.Parse(args); err != nil {
 		return 2
 	}
 	if set.NArg() != 0 {
-		fmt.Fprintln(os.Stderr, "사용법: edc info [--public=false] [--timeout 3s] [-v]")
+		fmt.Fprintln(os.Stderr, T("cli.usage", "edc info [--public=false] [--timeout 3s] [-v]"))
 		return 2
 	}
 	details, err := collectHostDetails()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "system 정보를 읽지 못했습니다: %v\n", err)
+		fmt.Fprintln(os.Stderr, T("cli.info.host_failed", err))
 		return 1
 	}
 	defaultInterface, gateway := collectDefaultRoute()
@@ -50,7 +50,7 @@ func runInfo(args []string, version string) int {
 		// 조회는 기본 동작이므로 실패해도 줄만 빼고 진단은 계속한다. 원인은 -v로 본다.
 		if err != nil {
 			if verbose {
-				fmt.Fprintf(os.Stderr, "public network 조회 실패: %v\n", err)
+				fmt.Fprintln(os.Stderr, T("cli.info.public_failed", err))
 			}
 		} else {
 			public = &value

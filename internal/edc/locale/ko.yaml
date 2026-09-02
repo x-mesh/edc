@@ -1,0 +1,146 @@
+# 한국어 메시지. 빠진 키는 en.yaml로 내려간다.
+help:
+  tagline: "everyday carry for SE/SRE"
+  usage_label: "사용법"
+  usage: "edc <command> [options] [target]"
+  common_label: "공통"
+  detail_label: "자세히"
+  detail_hint: "edc help <command>"
+  options_label: "options"
+  common_options_label: "공통 options"
+  group:
+    diagnose: "진단"
+    observe: "관측"
+    record: "기록·원격"
+    tool: "도구"
+
+option:
+  timeout: "실행 제한 시간"
+  json: "JSON 출력 경로, stdout은 -"
+  verbose: "상세 evidence 출력"
+  redact: "JSON 민감정보 redaction"
+
+command:
+  doctor:
+    summary: "DNS·TCP·TLS·HTTP를 한 번에 확인"
+    option:
+      profile: "full은 bandwidth와 responsiveness를 더합니다"
+    notes:
+      - "probe 9개를 한 번에 실행하고 결과를 같은 형식으로 모읍니다."
+      - "terminal에서는 probe마다 한 줄씩 실시간으로 갱신합니다."
+      - "Ctrl-C로 취소하면 exit code 4를 돌려줍니다."
+  dns:
+    summary: "이름 조회와 resolver 설정"
+    notes:
+      - "lookup은 주소를, config는 이 host의 resolver 설정을 봅니다."
+  tcp:
+    summary: "TCP 연결 확인"
+    notes:
+      - "연결하지 못하면 phase와 cause를 남기고 exit code 1을 돌려줍니다."
+  tls:
+    summary: "인증서와 handshake 확인"
+    option:
+      min_days: "남은 일수가 N보다 작으면 fail로 처리합니다"
+    notes:
+      - "기본값은 30일 미만일 때 warning입니다. --min-days는 그 기준을 fail로 올립니다."
+  http:
+    summary: "HTTP 응답 확인"
+    option:
+      expect_status: "응답 code가 N과 다르면 fail로 처리합니다"
+    notes:
+      - "기본값은 4xx가 warning, 5xx가 fail입니다."
+  net:
+    summary: "interface, route, ping, trace"
+  top:
+    summary: "실시간 resource 대시보드"
+    option:
+      interval: "sampling 간격"
+      count: "출력할 row 수, 0은 계속 실행"
+      no_header: "host와 column header 생략"
+      json: "sample당 한 줄 JSON, stdout은 -"
+    notes:
+      - "terminal에서는 대시보드로 엽니다. q 종료, p 일시정지, +/- interval."
+      - "--count나 --json을 주거나, 비 terminal이거나, NO_COLOR면 표로 출력합니다."
+      - "macOS의 CPU 값은 top이 채우므로 약 1초마다 바뀝니다."
+      - "그보다 짧은 interval에서는 나머지 값만 빠르게 갱신됩니다."
+  info:
+    summary: "system, network, disk 정보"
+    option:
+      public: "외부 ipinfo.io 조회를 끕니다"
+      timeout: "public 조회 제한 시간"
+      verbose: "public 조회 실패 원인 출력"
+    notes:
+      - "public IP를 기본으로 조회하고, 제한 시간 안에 응답이 없으면 그 줄을 뺍니다."
+      - "disk 사용량은 전체 크기에서 남은 공간을 뺀 값입니다."
+  where:
+    summary: "가까운 지역과 이 망의 모습"
+    option:
+      provider: "측정할 사업자: all, aws, gcp"
+      count: "지역마다 측정할 횟수"
+    notes:
+      - "공개 endpoint에 TCP handshake만 보내고 끊습니다. 인증도 본문 전송도 없습니다."
+      - "이름을 먼저 풀고 그 주소로만 연결하므로 DNS 시간이 거리 값에 섞이지 않습니다."
+      - "public IP와 ASN, Cloudflare PoP, NAT와 tunnel 여부를 함께 보여 줍니다."
+      - "화면에는 주소를 그대로 쓰고, --json에만 --redact를 적용합니다."
+      - "terminal에서는 진행 줄로 몇 곳을 확인했는지 보여 주고 q로 취소합니다."
+      - "-v를 주면 사업자별 값을 모두 펼칩니다."
+  sockets:
+    summary: "열린 socket 목록"
+    notes:
+      - "-v를 주면 목록 전체를 상세로 펼칩니다."
+  quality:
+    summary: "networkQuality 측정 (macOS)"
+    notes:
+      - "macOS의 networkQuality를 씁니다. 측정에 수십 초가 걸립니다."
+  capture:
+    summary: "packet capture (macOS)"
+    option:
+      interface: "capture할 interface (필수)"
+      duration: "capture 시간, 최대 60s"
+      count: "packet 수, 최대 10000"
+      filter: "BPF filter"
+      output: "pcap 저장 경로"
+      yes: "확인 질문 생략"
+    notes:
+      - "privileged 작업입니다. 시작 전에 계획을 보여 주고 확인을 받습니다."
+      - "PCAP에는 credential과 개인정보가 들어갈 수 있습니다."
+      - "JSON redaction은 PCAP payload에 적용되지 않습니다."
+  report:
+    summary: "저장한 JSON report 보기와 비교"
+    notes:
+      - "terminal에서는 뷰어로 엽니다. f 필터, e 상세, q 종료."
+      - "diff는 probe별 status 변화와 metric 차이를 보여 줍니다."
+      - "악화된 probe가 있으면 exit code 1을 돌려줍니다."
+  remote:
+    summary: "inventory group에 recipe 실행"
+    option:
+      inventory: "inventory YAML 경로"
+      recipe: "recipe YAML 경로"
+      dry_run: "계획만 출력하고 종료"
+      list: "inventory의 group과 host 출력"
+      force: "확인 질문 생략"
+      parallel: "동시에 실행할 host 수"
+    notes:
+      - "group을 생략하면 선택기를 띄웁니다."
+      - "inventory.yaml과 recipe.yaml은 현재 디렉터리와 config 디렉터리에서 찾습니다."
+      - "계획과 결과가 host×step 표 하나를 씁니다."
+      - "Ctrl-C로 취소하면 남은 step을 SKIP으로 표시하고 exit code 4를 돌려줍니다."
+  completion:
+    summary: "shell completion 출력"
+    notes:
+      - "source <(edc completion zsh) 또는 source <(edc completion bash)."
+      - "groups는 inventory의 group 이름을 한 줄에 하나씩 출력합니다."
+  update:
+    summary: "최신 release 설치"
+    option:
+      check: "새 버전만 확인하고 설치하지 않습니다"
+      yes: "확인 질문 생략"
+      timeout: "network 제한 시간"
+    notes:
+      - "GitHub release에서 asset을 받아 SHA-256을 확인한 다음 실행 파일을 바꿉니다."
+      - "새 파일을 옆에 쓰고 이름을 바꾸므로 실패해도 기존 파일이 남습니다."
+      - "설치 디렉터리에 쓸 권한이 없으면 내려받기 전에 exit code 3으로 멈춥니다."
+  version:
+    summary: "버전 출력"
+    notes:
+      - "terminal에서는 banner로, 그 밖에서는 한 줄로 출력합니다."

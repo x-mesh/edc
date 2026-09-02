@@ -1,0 +1,147 @@
+# English messages. This file is the base: a key that another language misses falls back to here.
+help:
+  tagline: "everyday carry for SE/SRE"
+  usage_label: "usage"
+  usage: "edc <command> [options] [target]"
+  common_label: "common"
+  detail_label: "detail"
+  detail_hint: "edc help <command>"
+  options_label: "options"
+  common_options_label: "common options"
+  group:
+    diagnose: "diagnose"
+    observe: "observe"
+    record: "record and remote"
+    tool: "tools"
+
+option:
+  timeout: "run time limit"
+  json: "JSON output path, - for stdout"
+  verbose: "print the detailed evidence"
+  redact: "hide sensitive values in JSON"
+
+command:
+  doctor:
+    summary: "Check DNS, TCP, TLS, and HTTP at once"
+    option:
+      profile: "full adds bandwidth and responsiveness"
+    notes:
+      - "edc runs nine probes together and prints them in one format."
+      - "In a terminal, each probe keeps one line and updates it."
+      - "Press Ctrl-C to cancel. edc returns exit code 4."
+  dns:
+    summary: "Name lookup and resolver setup"
+    notes:
+      - "lookup reads the addresses. config reads the resolver setup of this host."
+  tcp:
+    summary: "TCP connection check"
+    notes:
+      - "A failure keeps the phase and the cause, and returns exit code 1."
+  tls:
+    summary: "Certificate and handshake check"
+    option:
+      min_days: "a shorter remaining life than N is a failure"
+    notes:
+      - "Less than 30 days is a warning. --min-days makes an earlier expiry a failure."
+  http:
+    summary: "HTTP response check"
+    option:
+      expect_status: "a different status code is a failure"
+    notes:
+      - "A 4xx response is a warning. A 5xx response is a failure."
+  net:
+    summary: "Interfaces, route, ping, and trace"
+  top:
+    summary: "Live resource dashboard"
+    option:
+      interval: "time between samples"
+      count: "rows to print, 0 runs until you quit"
+      no_header: "drop the host and column header"
+      json: "one JSON line for each sample, - for stdout"
+    notes:
+      - "In a terminal, edc opens a dashboard. q quits, p pauses, +/- moves the interval."
+      - "--count, --json, a pipe, or NO_COLOR gives the table instead."
+      - "On macOS, top fills the CPU values, so they change about once a second."
+      - "A shorter interval still updates the other columns on time."
+  info:
+    summary: "System, network, and disk information"
+    option:
+      public: "skip the ipinfo.io request"
+      timeout: "time limit of the public lookup"
+      verbose: "print the cause of a failed lookup"
+    notes:
+      - "edc asks for the public IP by default and drops the line after the time limit."
+      - "Disk usage is the total size minus the available space."
+  where:
+    summary: "The near region and the shape of this network"
+    option:
+      provider: "providers to measure: all, aws, gcp"
+      count: "measurements for each region"
+    notes:
+      - "edc opens a TCP handshake to a public endpoint and closes it."
+      - "It sends no request and reads no body."
+      - "edc resolves each name once, so the DNS time stays out of the distance."
+      - "It also reports the public IP, the ASN, the Cloudflare PoP, NAT, and a tunnel."
+      - "The screen keeps the addresses. --redact applies to --json only."
+      - "In a terminal, a progress line counts the regions. Press q to cancel."
+      - "-v opens every provider row."
+  sockets:
+    summary: "Open socket list"
+    notes:
+      - "-v opens the whole list as the detail."
+  quality:
+    summary: "networkQuality measurement (macOS)"
+    notes:
+      - "edc uses networkQuality on macOS. The measurement needs tens of seconds."
+  capture:
+    summary: "Packet capture (macOS)"
+    option:
+      interface: "interface to capture (required)"
+      duration: "capture time, 60s at most"
+      count: "packets, 10000 at most"
+      filter: "BPF filter"
+      output: "pcap output path"
+      yes: "skip the question"
+    notes:
+      - "This task needs a privilege. edc shows the plan and asks before it starts."
+      - "A PCAP file can hold credentials and personal data."
+      - "The JSON redaction does not apply to the PCAP payload."
+  report:
+    summary: "Read and compare saved JSON reports"
+    notes:
+      - "In a terminal, edc opens a viewer. f filters, e shows the details, q quits."
+      - "diff shows the status change and the metric difference of each probe."
+      - "A worse probe returns exit code 1."
+  remote:
+    summary: "Run a recipe on an inventory group"
+    option:
+      inventory: "inventory YAML path"
+      recipe: "recipe YAML path"
+      dry_run: "print the plan and exit"
+      list: "print the groups and hosts of the inventory"
+      force: "skip the question"
+      parallel: "hosts to run at the same time"
+    notes:
+      - "Without a group, edc opens a selector."
+      - "edc finds inventory.yaml and recipe.yaml here and in the config directory."
+      - "The plan and the results share one host by step table."
+      - "Ctrl-C marks the remaining steps as SKIP and returns exit code 4."
+  completion:
+    summary: "Print the shell completion script"
+    notes:
+      - "source <(edc completion zsh) or source <(edc completion bash)."
+      - "groups prints the group names of the inventory, one per line."
+  update:
+    summary: "Install the latest release"
+    option:
+      check: "print the versions and install nothing"
+      yes: "skip the question"
+      timeout: "network time limit"
+    notes:
+      - "edc reads the release asset, checks the SHA-256, and replaces the running file."
+      - "edc writes the new file beside the old one, so a failure keeps the earlier file."
+      - "Without write permission, edc stops with exit code 3 before it downloads."
+  version:
+    summary: "Print the version"
+    notes:
+      - "A terminal gets the banner. Everything else gets one line."

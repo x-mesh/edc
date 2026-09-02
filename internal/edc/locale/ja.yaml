@@ -1,0 +1,148 @@
+# 日本語メッセージ。欠けたキーは en.yaml に落ちる。
+help:
+  tagline: "everyday carry for SE/SRE"
+  usage_label: "使い方"
+  usage: "edc <command> [options] [target]"
+  common_label: "共通"
+  detail_label: "詳細"
+  detail_hint: "edc help <command>"
+  options_label: "options"
+  common_options_label: "共通 options"
+  group:
+    diagnose: "診断"
+    observe: "観測"
+    record: "記録・遠隔"
+    tool: "ツール"
+
+option:
+  timeout: "実行の制限時間"
+  json: "JSON の出力先、stdout は -"
+  verbose: "詳細な evidence を表示"
+  redact: "JSON の機微な値を伏せる"
+
+command:
+  doctor:
+    summary: "DNS・TCP・TLS・HTTP をまとめて確認"
+    option:
+      profile: "full は bandwidth と responsiveness を加える"
+    notes:
+      - "probe を 9 つまとめて実行し、同じ形式で並べます。"
+      - "terminal では probe ごとに 1 行を保ち、その場で更新します。"
+      - "Ctrl-C で中断すると exit code 4 を返します。"
+  dns:
+    summary: "名前解決と resolver 設定"
+    notes:
+      - "lookup はアドレスを、config はこの host の resolver 設定を見ます。"
+  tcp:
+    summary: "TCP 接続の確認"
+    notes:
+      - "接続できないと phase と cause を残し、exit code 1 を返します。"
+  tls:
+    summary: "証明書と handshake の確認"
+    option:
+      min_days: "残り日数が N より少なければ fail にします"
+    notes:
+      - "既定では残り 30 日未満が warning です。--min-days はその基準を fail に上げます。"
+  http:
+    summary: "HTTP 応答の確認"
+    option:
+      expect_status: "応答 code が N と違えば fail にします"
+    notes:
+      - "既定では 4xx が warning、5xx が fail です。"
+  net:
+    summary: "interface、route、ping、trace"
+  top:
+    summary: "リアルタイムの resource ダッシュボード"
+    option:
+      interval: "sampling の間隔"
+      count: "表示する行数、0 は継続実行"
+      no_header: "host と列見出しを省く"
+      json: "sample ごとに 1 行の JSON、stdout は -"
+    notes:
+      - "terminal ではダッシュボードを開きます。q 終了、p 一時停止、+/- interval。"
+      - "--count か --json を渡すか、terminal でないか、NO_COLOR なら表で出力します。"
+      - "macOS の CPU 値は top が埋めるため、およそ 1 秒ごとに変わります。"
+      - "それより短い interval では、ほかの値だけが速く更新されます。"
+  info:
+    summary: "system、network、disk の情報"
+    option:
+      public: "外部 ipinfo.io への問い合わせを止める"
+      timeout: "public 取得の制限時間"
+      verbose: "public 取得に失敗した理由を表示"
+    notes:
+      - "既定で public IP を取得し、制限時間内に応答がなければその行を外します。"
+      - "disk 使用量は全体から空き容量を引いた値です。"
+  where:
+    summary: "近い地域とこの網の姿"
+    option:
+      provider: "測定する事業者: all、aws、gcp"
+      count: "地域ごとの測定回数"
+    notes:
+      - "公開 endpoint に TCP handshake だけを開いて閉じます。要求も本文もありません。"
+      - "名前は先に一度だけ解決するので、DNS の時間が距離の値に混ざりません。"
+      - "public IP と ASN、Cloudflare PoP、NAT と tunnel の有無もあわせて示します。"
+      - "画面にはアドレスをそのまま出し、--redact は --json にだけ効きます。"
+      - "terminal では進捗行が確認できた地域の数を示します。q で中断します。"
+      - "-v を渡すと事業者ごとの値をすべて開きます。"
+  sockets:
+    summary: "開いている socket の一覧"
+    notes:
+      - "-v を渡すと一覧全体を詳細として開きます。"
+  quality:
+    summary: "networkQuality の測定 (macOS)"
+    notes:
+      - "macOS の networkQuality を使います。測定には数十秒かかります。"
+  capture:
+    summary: "packet capture (macOS)"
+    option:
+      interface: "capture する interface (必須)"
+      duration: "capture 時間、最大 60s"
+      count: "packet 数、最大 10000"
+      filter: "BPF filter"
+      output: "pcap の保存先"
+      yes: "確認を省く"
+    notes:
+      - "権限が要る操作です。開始前に計画を示して確認を取ります。"
+      - "PCAP には credential や個人情報が入ることがあります。"
+      - "JSON の redaction は PCAP の payload には効きません。"
+  report:
+    summary: "保存した JSON report の閲覧と比較"
+    notes:
+      - "terminal ではビューアを開きます。f 絞り込み、e 詳細、q 終了。"
+      - "diff は probe ごとの status の変化と metric の差を示します。"
+      - "悪化した probe があれば exit code 1 を返します。"
+  remote:
+    summary: "inventory group で recipe を実行"
+    option:
+      inventory: "inventory YAML の場所"
+      recipe: "recipe YAML の場所"
+      dry_run: "計画だけを出して終了"
+      list: "inventory の group と host を表示"
+      force: "確認を省く"
+      parallel: "同時に動かす host 数"
+    notes:
+      - "group を省くと選択画面を出します。"
+      - "inventory.yaml と recipe.yaml を探します。"
+      - "現在のディレクトリ、次に config ディレクトリの順です。"
+      - "計画と結果は host×step の表 1 つを使います。"
+      - "Ctrl-C で中断すると残りの step を SKIP にし、exit code 4 を返します。"
+  completion:
+    summary: "shell completion の出力"
+    notes:
+      - "source <(edc completion zsh) または source <(edc completion bash)。"
+      - "groups は inventory の group 名を 1 行ずつ出します。"
+  update:
+    summary: "最新 release の導入"
+    option:
+      check: "新しい版を確認するだけで導入しない"
+      yes: "確認を省く"
+      timeout: "network の制限時間"
+    notes:
+      - "GitHub release から asset を取り、SHA-256 を確かめます。"
+      - "そのうえで実行ファイルを置き換えます。"
+      - "新しいファイルを隣に書いて名前を変えるため、失敗しても元のファイルが残ります。"
+      - "書き込む権限がなければ、取得の前に exit code 3 で止まります。"
+  version:
+    summary: "版の表示"
+    notes:
+      - "terminal では banner、それ以外では 1 行で出します。"

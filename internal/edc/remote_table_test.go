@@ -9,8 +9,8 @@ import (
 
 func tableFixture(width int) (remoteTable, []remoteHost, remoteRecipe) {
 	hosts := []remoteHost{
-		{Name: "jw-server", Tags: []string{"linux"}},
-		{Name: "jinwoos-macbook-pro", Tags: []string{"mac"}},
+		{Name: "build-server", Tags: []string{"linux"}},
+		{Name: "workstation-macbook", Tags: []string{"mac"}},
 	}
 	recipe := remoteRecipe{Name: "daily", Steps: []remoteStep{
 		{Name: "git-kit", Command: "git-kit update", Verify: "git-kit --version", Timeout: time.Minute},
@@ -29,7 +29,7 @@ func TestRemoteTableUsesWordsWhenTheyFit(t *testing.T) {
 	if !strings.HasPrefix(header, remoteHostHeader) || !strings.Contains(header, "brew update") {
 		t.Fatalf("header = %q", header)
 	}
-	row := table.row("jw-server", []string{terminalStatus(StatusPass, false), terminalStatus(StatusFail, false), remoteGlyphAbsent})
+	row := table.row("build-server", []string{terminalStatus(StatusPass, false), terminalStatus(StatusFail, false), remoteGlyphAbsent})
 	if !strings.Contains(row, "PASS") || !strings.Contains(row, remoteGlyphAbsent) {
 		t.Fatalf("row = %q", row)
 	}

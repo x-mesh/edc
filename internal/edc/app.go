@@ -30,7 +30,7 @@ func Run(args []string, version string) int {
 		printHelp(os.Stdout)
 		return 0
 	case "version":
-		fmt.Printf("edc %s (schema 1.0)\n", version)
+		printVersion(os.Stdout, version)
 		return 0
 	case "top":
 		return runTop(args[1:])

@@ -110,6 +110,10 @@ make install PREFIX=/usr/local
 ./bin/edc sockets
 ./bin/edc quality --timeout 60s
 
+# 어느 지역이 가깝고 이 망은 어떤 모습인지
+./bin/edc where
+./bin/edc where --provider aws --count 5
+
 # shell completion
 source <(./bin/edc completion zsh)
 
@@ -136,6 +140,35 @@ source <(./bin/edc completion zsh)
 ### 경로와 interface
 
 ![edc net interfaces, edc net route example.com, edc net ping example.com이 각각 PASS와 결과 한 줄을 출력하는 화면](docs/media/net.gif)
+
+## 어디에 있는가
+
+`edc where`는 두 질문에 한 번에 답합니다. 이 host에서 어느 클라우드 지역이 가까운지, 그리고 이 망이 어떤 모습인지.
+
+```bash
+./bin/edc where
+./bin/edc where --provider aws        # 사업자 하나만
+./bin/edc where --count 5 -v          # 더 여러 번 재고 사업자별로 모두 보기
+```
+
+`edc`는 지역마다 공개 endpoint에 TCP handshake만 열고 끊습니다. 요청을 보내지 않고 본문도 읽지 않으므로 값에는 왕복 시간만 남습니다. 이름은 한 번만 풀고 그 주소로 연결해 DNS 시간이 거리 값에 섞이지 않게 합니다.
+
+표는 endpoint를 도시로 묶고 도시마다 가장 빠른 사업자를 남깁니다. 사업자별 값을 모두 보려면 `-v`를 씁니다.
+
+| 사업자 | endpoint |
+|---|---|
+| `aws` | `s3.<region>.amazonaws.com` |
+| `gcp` | `storage.<region>.rep.googleapis.com` |
+
+Azure는 넣지 않았습니다. 리전 이름이 붙은 공개 주소가 실제로 그 리전에서 끝나지 않아 값이 거리를 따르지 않습니다.
+
+`edc where`는 public IP와 ASN, anycast가 고른 Cloudflare PoP, 그리고 로컬 망의 모습도 함께 보여 줍니다.
+
+- NAT 뒤인지, 아니면 interface가 public 주소를 직접 쓰는지
+- carrier-grade NAT 뒤인지. `100.64.0.0/10` 대역이 그 표시입니다
+- tunnel을 지나는지. 기본 경로 interface가 그 표시입니다
+
+`edc`는 확인한 것만 밝힙니다. 지터로 회선 종류를 짐작하지 않습니다. 지터는 숫자로 남기고 판단은 사용자에게 맡깁니다.
 
 ## Probe 임계값
 

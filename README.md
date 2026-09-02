@@ -110,6 +110,10 @@ make install PREFIX=/usr/local
 ./bin/edc sockets
 ./bin/edc quality --timeout 60s
 
+# which region is near, and what shape is this network
+./bin/edc where
+./bin/edc where --provider aws --count 5
+
 # shell completion
 source <(./bin/edc completion zsh)
 
@@ -136,6 +140,35 @@ A failed probe shows the phase and the cause in an ERROR block. It returns exit 
 ### Route and interfaces
 
 ![edc net interfaces, edc net route example.com, and edc net ping example.com each print PASS and one result line](docs/media/net.gif)
+
+## Where am I
+
+`edc where` answers two questions at once: which cloud region is near this host, and what shape the network has.
+
+```bash
+./bin/edc where
+./bin/edc where --provider aws        # one provider only
+./bin/edc where --count 5 -v          # more samples, every provider row
+```
+
+`edc` opens a TCP handshake to a public endpoint of each region and closes it. It sends no request and reads no body, so the number holds the round trip and nothing else. `edc` resolves each name once and connects to that address, which keeps the DNS time out of the distance value.
+
+The table groups the endpoints by city and keeps the fastest provider of each city. Use `-v` to see every provider.
+
+| provider | endpoint |
+|---|---|
+| `aws` | `s3.<region>.amazonaws.com` |
+| `gcp` | `storage.<region>.rep.googleapis.com` |
+
+Azure is absent. Its public addresses that carry a region name do not terminate in that region, so the numbers do not follow distance.
+
+`edc where` also reports the public IP with its ASN, the Cloudflare PoP that anycast picks, and the shape of the local network:
+
+- behind NAT, or a public address on the interface
+- behind carrier-grade NAT, which `100.64.0.0/10` shows
+- through a tunnel, which the default route interface shows
+
+`edc` states only what it confirms. It does not guess the line type from the jitter. The jitter column holds the number, and the reading stays with you.
 
 ## Probe thresholds
 

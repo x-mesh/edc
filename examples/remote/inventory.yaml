@@ -1,0 +1,12 @@
+hosts:
+  - name: workstation
+    tags: [mac]
+  - name: build-server
+    target: build-server
+    tags: [linux]
+groups:
+  daily:
+    - workstation
+    - build-server
+
+parallel: 2

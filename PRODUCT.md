@@ -10,6 +10,8 @@ SE와 SRE가 terminal에서 여러 시스템을 진단하고 반복 유지보수
 
 ## Product Purpose
 
+`edc`는 everyday carry의 줄임말입니다. 주머니에 넣고 다니는 도구처럼, SE와 SRE가 terminal에서 가장 먼저 꺼내 쓰는 진단 도구를 지향합니다.
+
 `edc`는 로컬 및 원격 시스템 작업을 일관된 CLI로 실행하고 검증합니다. 성공은 사용자가 작업 진행과 최종 결과를 다시 읽지 않고 이해하는 것입니다.
 
 ## Brand Personality

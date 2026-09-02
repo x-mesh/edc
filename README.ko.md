@@ -2,11 +2,15 @@
 
 # edc
 
-`edc`는 SE/SRE 네트워크·시스템 진단 CLI입니다. Linux/macOS resource monitoring과 host 정보를 제공하며, DNS, TCP, TLS, HTTP, route, interface, socket과 macOS `networkQuality`를 공통 결과 형식으로 실행합니다.
+`edc`는 **everyday carry**의 줄임말입니다. everyday carry는 주머니에 넣고 다니면서 가장 먼저 꺼내 쓰는 작은 도구 모음을 뜻합니다. `edc`는 SE와 SRE가 terminal에서 그렇게 쓰는 도구입니다.
+
+장애가 나면 첫 질문은 하나입니다. 원인이 내 쪽인지, 네트워크인지, 상대편인지. `edc`는 명령 하나로 답합니다. DNS, TCP, TLS, HTTP, route, ping, interface, socket을 한 번에 확인하고 결과를 모두 같은 형식으로 출력합니다. Linux와 macOS의 host resource와 host 정보도 함께 보여 주며, macOS에서는 `networkQuality`를 실행합니다.
+
+모든 command는 read-only입니다. `edc`는 원인을 찾는 데서 멈춥니다. DNS flush, interface reset, firewall 변경 같은 자동 복구를 하지 않으므로 운영 중인 host에서도 그대로 씁니다.
 
 ![edc doctor https://example.com이 probe 9개를 차례로 실행하고 9 pass 요약을 출력하는 화면](docs/media/doctor.gif)
 
-`edc doctor`는 DNS, TCP, TLS, HTTP, route, ping, interface, socket을 한 번에 실행하고 결과를 한 화면에 모읍니다.
+한 번 실행에 3초쯤 걸립니다. 각 줄은 probe 이름, 대상, 결과를 같은 열에 맞추므로 열 하나만 따라 내려가면 실패한 probe가 보입니다.
 
 각 데모의 소스는 [`docs/tape/`](docs/tape) 아래 `.tape` 파일입니다. `vhs docs/tape/doctor.tape`처럼 실행하면 다시 만듭니다.
 

@@ -2,11 +2,15 @@
 
 # edc
 
-`edc` is a network and system diagnostic CLI for SE and SRE work. It reports host resources and host information on Linux and macOS. It runs DNS, TCP, TLS, HTTP, route, interface, and socket probes. It also runs macOS `networkQuality`. Every probe uses one common result format.
+`edc` is short for **everyday carry**. An everyday carry is the small kit you keep in a pocket and reach for first. `edc` is that kit for SE and SRE work in a terminal.
+
+An incident starts with one question: is the fault here, in the network, or at the far end? `edc` answers it with one command. It runs DNS, TCP, TLS, HTTP, route, ping, interface, and socket probes in one pass, and every probe prints the same result format. It also reports host resources and host information on Linux and macOS, and it runs macOS `networkQuality`.
+
+Every command is read-only. `edc` finds the fault and stops there. It runs no DNS flush, no interface reset, and no firewall change, so it stays safe on a production host.
 
 ![edc doctor https://example.com runs nine probes in order and prints a 9 pass summary](docs/media/doctor.gif)
 
-`edc doctor` runs DNS, TCP, TLS, HTTP, route, ping, interface, and socket probes at once. It collects the results on one screen.
+The whole run takes about three seconds. Each line keeps the probe name, the target, and the result in the same columns, so you read down one column to find the failure.
 
 The source of each demo is a `.tape` file under [`docs/tape/`](docs/tape). To build one again, run `vhs docs/tape/doctor.tape`.
 

@@ -11,7 +11,11 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
+
+	"charm.land/bubbles/v2/spinner"
+	tea "charm.land/bubbletea/v2"
 )
 
 const (
@@ -125,6 +129,7 @@ func runWhere(args []string, version string) int {
 	ctx, cancel := context.WithTimeout(context.Background(), options.timeout)
 	defer cancel()
 
+	progress := startWhereProgress(len(endpoints), cancel)
 	var (
 		group        sync.WaitGroup
 		location     whereLocation
@@ -132,17 +137,21 @@ func runWhere(args []string, version string) int {
 	)
 	group.Add(2)
 	go func() { defer group.Done(); location = collectWhereLocation(ctx) }()
-	go func() { defer group.Done(); measurements = measureRegions(ctx, endpoints, *count) }()
+	go func() {
+		defer group.Done()
+		measurements = measureRegions(ctx, endpoints, *count, progress.advance)
+	}()
 	group.Wait()
+	progress.finish()
 
-	if options.redact {
-		location.PublicIP = redactIPAddresses(location.PublicIP)
-		location.LocalAddress = redactIPAddresses(location.LocalAddress)
-		location.Gateway = redactIPAddresses(location.Gateway)
-	}
 	report := whereReport{Location: location, Regions: measurements}
 
+	// 화면에서는 자기 주소를 그대로 보여 준다. 이 명령은 그 값을 보려고 실행한다.
+	// 공유되는 산출물인 JSON에만 --redact를 적용해 edc info와 규칙을 맞춘다.
 	if options.jsonPath != "" {
+		if options.redact {
+			report.Location = redactWhereLocation(report.Location)
+		}
 		if err := writeJSONOutput(options.jsonPath, report); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			return 2
@@ -151,6 +160,13 @@ func runWhere(args []string, version string) int {
 	}
 	printWhere(os.Stdout, report, options.verbose)
 	return whereExitCode(measurements)
+}
+
+func redactWhereLocation(location whereLocation) whereLocation {
+	location.PublicIP = redactIPAddresses(location.PublicIP)
+	location.LocalAddress = redactIPAddresses(location.LocalAddress)
+	location.Gateway = redactIPAddresses(location.Gateway)
+	return location
 }
 
 // whereExitCode는 하나도 재지 못했을 때만 실패로 본다. 일부 지역이 막혀 있는 것은 흔한 일이다.
@@ -182,10 +198,13 @@ func selectRegionEndpoints(provider string) ([]regionEndpoint, error) {
 
 // measureRegions는 endpoint마다 TCP handshake 시간을 여러 번 잰다.
 // 이름은 먼저 한 번만 풀고 그 주소로만 연결해, DNS 시간이 거리 값에 섞이지 않게 한다.
-func measureRegions(ctx context.Context, endpoints []regionEndpoint, count int) []whereMeasurement {
+func measureRegions(ctx context.Context, endpoints []regionEndpoint, count int, advance func(int)) []whereMeasurement {
 	results := make([]whereMeasurement, len(endpoints))
 	tokens := make(chan struct{}, whereParallel)
-	var group sync.WaitGroup
+	var (
+		group     sync.WaitGroup
+		completed atomic.Int64
+	)
 
 	for index, endpoint := range endpoints {
 		group.Add(1)
@@ -194,6 +213,9 @@ func measureRegions(ctx context.Context, endpoints []regionEndpoint, count int) 
 			tokens <- struct{}{}
 			defer func() { <-tokens }()
 			results[index] = measureEndpoint(ctx, endpoint, count)
+			if advance != nil {
+				advance(int(completed.Add(1)))
+			}
 		}(index, endpoint)
 	}
 	group.Wait()
@@ -567,4 +589,87 @@ func whereConclusion(rows []cityRow, location whereLocation) string {
 	}
 	return fmt.Sprintf("가장 가까운 지역은 %s입니다. 두 번째 %s까지는 %s 더 걸립니다.",
 		nearest.city, reached[1].city, formatMillis(gap))
+}
+
+// whereProgressModel은 측정이 도는 동안 한 줄로 진행을 보여 준다.
+// where는 지역 수만큼 handshake를 열어 1초 넘게 걸리므로, 멈춘 것처럼 보이지 않게 한다.
+type whereProgressModel struct {
+	spinner spinner.Model
+	done    int
+	total   int
+	started time.Time
+	now     func() time.Time
+	cancel  context.CancelFunc
+	stopped bool
+}
+
+type whereProgressMsg struct{ done int }
+
+type whereFinishedMsg struct{}
+
+func newWhereProgressModel(total int, cancel context.CancelFunc) whereProgressModel {
+	return whereProgressModel{
+		spinner: liveSpinner(), total: total, started: time.Now(),
+		now: time.Now, cancel: cancel,
+	}
+}
+
+func (model whereProgressModel) Init() tea.Cmd { return model.spinner.Tick }
+
+func (model whereProgressModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch value := msg.(type) {
+	case whereProgressMsg:
+		model.done = value.done
+		return model, nil
+	case whereFinishedMsg:
+		model.stopped = true
+		return model, tea.Quit
+	case tea.KeyPressMsg:
+		if key := value.String(); key == "ctrl+c" || key == "q" || key == "esc" {
+			if model.cancel != nil {
+				model.cancel()
+			}
+			model.stopped = true
+			return model, tea.Quit
+		}
+	}
+	var command tea.Cmd
+	model.spinner, command = model.spinner.Update(msg)
+	return model, command
+}
+
+func (model whereProgressModel) View() tea.View {
+	if model.stopped {
+		// 진행 줄은 결과를 가리지 않도록 화면에서 지운다.
+		return liveFrame("", 1)
+	}
+	elapsed := model.now().Sub(model.started).Seconds()
+	line := fmt.Sprintf("%s  지역 확인  %d/%d  ·  %.1fs", model.spinner.View(), model.done, model.total, elapsed)
+	return liveFrame(line, 1)
+}
+
+// whereProgress는 진행 화면을 감싼다. terminal이 아니면 아무것도 하지 않는다.
+type whereProgress struct{ live *liveProgram }
+
+func startWhereProgress(total int, cancel context.CancelFunc) *whereProgress {
+	if !liveTerminal() {
+		return &whereProgress{}
+	}
+	live, err := startLiveProgram(newWhereProgressModel(total, cancel), func() {})
+	if err != nil {
+		return &whereProgress{}
+	}
+	return &whereProgress{live: live}
+}
+
+func (progress *whereProgress) advance(done int) {
+	if progress.live != nil {
+		progress.live.send(whereProgressMsg{done: done})
+	}
+}
+
+func (progress *whereProgress) finish() {
+	if progress.live != nil {
+		_, _ = progress.live.finish(whereFinishedMsg{})
+	}
 }

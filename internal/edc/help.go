@@ -125,6 +125,8 @@ var commandDocs = []commandDoc{
 			"공개 endpoint에 TCP handshake만 보내고 끊습니다. 인증도 본문 전송도 없습니다.",
 			"이름을 먼저 풀고 그 주소로만 연결하므로 DNS 시간이 거리 값에 섞이지 않습니다.",
 			"public IP와 ASN, Cloudflare PoP, NAT와 tunnel 여부를 함께 보여 줍니다.",
+			"화면에는 주소를 그대로 쓰고, --json에만 --redact를 적용합니다.",
+			"terminal에서는 진행 줄로 몇 곳을 확인했는지 보여 주고 q로 취소합니다.",
 			"-v를 주면 사업자별 값을 모두 펼칩니다.",
 		},
 	},

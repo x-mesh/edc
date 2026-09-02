@@ -182,3 +182,50 @@ func TestWhereExitCodeFailsOnlyWhenNothingIsReached(t *testing.T) {
 		t.Fatalf("no success must give 1, got %d", code)
 	}
 }
+
+func TestWhereProgressModelShowsCountAndElapsed(t *testing.T) {
+	model := newWhereProgressModel(23, nil)
+	model.now = func() time.Time { return model.started.Add(1400 * time.Millisecond) }
+
+	view := model.View().Content
+	if !strings.Contains(view, "0/23") || !strings.Contains(view, "1.4s") {
+		t.Fatalf("initial view = %q", view)
+	}
+	if liveLineCount(view) != 1 {
+		t.Fatalf("the progress line must stay on one line: %q", view)
+	}
+
+	advanced, _ := model.Update(whereProgressMsg{done: 7})
+	moved := advanced.(whereProgressModel)
+	moved.now = model.now
+	if got := moved.View().Content; !strings.Contains(got, "7/23") {
+		t.Fatalf("view after progress = %q", got)
+	}
+}
+
+func TestWhereProgressModelClearsItselfWhenDone(t *testing.T) {
+	model := newWhereProgressModel(4, nil)
+	finished, cmd := model.Update(whereFinishedMsg{})
+	done := finished.(whereProgressModel)
+	if !done.stopped || cmd == nil {
+		t.Fatalf("model = %#v, cmd = %v", done, cmd)
+	}
+	// 진행 줄이 결과 위에 남으면 안 된다.
+	if content := strings.TrimSpace(done.View().Content); content != "" {
+		t.Fatalf("finished view must be blank, got %q", content)
+	}
+}
+
+func TestRedactWhereLocationHidesEveryAddress(t *testing.T) {
+	location := redactWhereLocation(whereLocation{
+		PublicIP: "203.0.113.7", LocalAddress: "192.168.1.10", Gateway: "192.168.1.1", Org: "AS64500 Example",
+	})
+	for _, value := range []string{location.PublicIP, location.LocalAddress, location.Gateway} {
+		if !strings.HasPrefix(value, "<ip:") {
+			t.Fatalf("address stayed visible: %q", value)
+		}
+	}
+	if location.Org != "AS64500 Example" {
+		t.Fatalf("the ASN is not an address: %q", location.Org)
+	}
+}

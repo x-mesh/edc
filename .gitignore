@@ -51,7 +51,7 @@ htmlcov/
 .idea/
 .vscode/
 .cursor/
-.claude/
+.claude/settings.local.json
 .kiro/
 .xm/
 .omc/

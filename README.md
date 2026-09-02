@@ -168,6 +168,10 @@ Azure is absent. Its public addresses that carry a region name do not terminate 
 - behind carrier-grade NAT, which `100.64.0.0/10` shows
 - through a tunnel, which the default route interface shows
 
+In a terminal, `edc` shows a progress line with the number of regions it has reached. Press `q` to cancel.
+
+The screen keeps the addresses as they are, because you run this command to read them. `--redact` applies to the `--json` output only, which is the artifact you share.
+
 `edc` states only what it confirms. It does not guess the line type from the jitter. The jitter column holds the number, and the reading stays with you.
 
 ## Probe thresholds

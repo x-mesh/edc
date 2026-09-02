@@ -1,9 +1,6 @@
 # English messages of the observe area: where, top, probe, doctor, and the live screen.
 observe:
   where:
-    option:
-      provider: "providers to measure: all, aws, gcp"
-      count: "measurements for each region"
     usage: "usage: edc where [--provider all|aws|gcp] [--count 3] [options]"
     count_minimum: "--count must be 1 or more"
     unknown_provider: "unknown provider: %s (all, aws, gcp)"
@@ -36,11 +33,6 @@ observe:
       clear: "The nearest region is %s. The second one, %s, takes %s more."
 
   top:
-    option:
-      interval: "time between samples"
-      count: "rows to print, 0 runs until you quit"
-      no_header: "drop the host and column header"
-      json: "one JSON line for each sample, - for stdout"
     usage: "usage: edc top [--interval 1s] [--count N] [--json <path|->]"
     interval_minimum: "--interval must be %s or more"
     count_minimum: "--count must be 0 or more"

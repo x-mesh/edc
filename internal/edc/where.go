@@ -110,8 +110,8 @@ func runWhere(args []string, version string) int {
 	set := flag.NewFlagSet("where", flag.ContinueOnError)
 	set.SetOutput(os.Stderr)
 	bindCommon(set, &options)
-	provider := set.String("provider", "all", T("observe.where.option.provider"))
-	count := set.Int("count", 3, T("observe.where.option.count"))
+	provider := set.String("provider", "all", T("command.where.option.provider"))
+	count := set.Int("count", 3, T("command.where.option.count"))
 	if err := set.Parse(args); err != nil {
 		return 2
 	}

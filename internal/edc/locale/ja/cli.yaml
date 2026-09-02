@@ -13,34 +13,6 @@ cli:
     expect_status_range: "--expect-status は 100 から 599 の間です"
   doctor:
     tls_skipped_for_http: "HTTP target には TLS を適用しません"
-  flag:
-    common:
-      json: "JSON の出力先、stdout は -"
-      timeout: "実行の制限時間"
-      verbose: "詳細な evidence を表示"
-      verbose_short: "--verbose の短い option"
-      redact: "JSON の機微な値を伏せる"
-    doctor:
-      profile: "default か full"
-    tls:
-      min_days: "証明書の残り日数がこの値より少なければ fail、0 は無効"
-    http:
-      expect_status: "期待する HTTP status code、違えば fail、0 は既定の規則"
-    info:
-      public: "外部の ipinfo.io から public IP・地域・ASN を表示、--public=false で止めます"
-      timeout: "public 取得の制限時間"
-      verbose: "public 取得に失敗した理由を表示"
-    capture:
-      interface: "capture する network interface (必須)"
-      duration: "capture 時間 (最大 60s)"
-      count: "packet 数 (最大 10000)"
-      filter: "BPF filter"
-      output: "pcap の保存先"
-      yes: "interactive な確認を省く"
-    update:
-      check: "新しい版を確認するだけで導入しない"
-      yes: "interactive な確認を省く"
-      timeout: "network の制限時間"
   info:
     host_failed: "system の情報を読めませんでした: %v"
     public_failed: "public network の取得に失敗しました: %v"

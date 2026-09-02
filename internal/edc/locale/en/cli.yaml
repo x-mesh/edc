@@ -13,34 +13,6 @@ cli:
     expect_status_range: "--expect-status must be between 100 and 599"
   doctor:
     tls_skipped_for_http: "edc applies no TLS to an HTTP target"
-  flag:
-    common:
-      json: "JSON output path, - for stdout"
-      timeout: "run time limit"
-      verbose: "print the detailed evidence"
-      verbose_short: "short option of --verbose"
-      redact: "hide sensitive values in JSON"
-    doctor:
-      profile: "default or full"
-    tls:
-      min_days: "a shorter certificate life than this value is a failure, 0 turns the check off"
-    http:
-      expect_status: "expected HTTP status code, a different code is a failure, 0 keeps the default rule"
-    info:
-      public: "show the public IP, the region, and the ASN from ipinfo.io, --public=false turns it off"
-      timeout: "time limit of the public lookup"
-      verbose: "print the cause of a failed public lookup"
-    capture:
-      interface: "network interface to capture (required)"
-      duration: "capture time (60s at most)"
-      count: "packets (10000 at most)"
-      filter: "BPF filter"
-      output: "pcap output path"
-      yes: "skip the interactive question"
-    update:
-      check: "check the new version and install nothing"
-      yes: "skip the interactive question"
-      timeout: "network timeout"
   info:
     host_failed: "edc did not read the system information: %v"
     public_failed: "the public network lookup failed: %v"

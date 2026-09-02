@@ -1,18 +1,5 @@
 # edc remote の日本語メッセージ。欠けたキーは en/remote.yaml に落ちる。
 remote:
-  flag:
-    inventory: "inventory YAML の場所"
-    recipe: "recipe YAML の場所"
-    group: "実行する inventory group、positional argument の別名"
-    connect_timeout: "SSH 接続の制限時間"
-    output_limit: "command ごとの出力 byte 上限"
-    parallel: "同時に動かす host 数、inventory の設定を上書き"
-    force: "計画の確認を省く"
-    force_short: "--force の短縮 option"
-    dry_run: "計画だけを出して終了"
-    dry_run_short: "--dry-run の短縮 option"
-    list: "inventory の group と host を出して終了"
-    list_short: "--list の短縮 option"
 
   error:
     group_once: "group は positional argument か --group のどちらかで一度だけ指定します"

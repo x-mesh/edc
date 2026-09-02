@@ -150,6 +150,9 @@ var commandDocs = []commandDoc{
 			{"-l, --list", "command.remote.option.list"},
 			{"-f, --force", "command.remote.option.force"},
 			{"--parallel N", "command.remote.option.parallel"},
+			{"--group <name>", "command.remote.option.group"},
+			{"--connect-timeout", "command.remote.option.connect_timeout"},
+			{"--output-limit N", "command.remote.option.output_limit"},
 		},
 	},
 	{

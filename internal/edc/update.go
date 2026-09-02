@@ -48,9 +48,9 @@ type updateAsset struct {
 func runUpdate(args []string, version string) int {
 	set := flag.NewFlagSet("update", flag.ContinueOnError)
 	set.SetOutput(os.Stderr)
-	check := set.Bool("check", false, T("cli.flag.update.check"))
-	yes := set.Bool("yes", false, T("cli.flag.update.yes"))
-	timeout := set.Duration("timeout", 60*time.Second, T("cli.flag.update.timeout"))
+	check := set.Bool("check", false, T("command.update.option.check"))
+	yes := set.Bool("yes", false, T("command.update.option.yes"))
+	timeout := set.Duration("timeout", 60*time.Second, T("command.update.option.timeout"))
 	if err := set.Parse(args); err != nil {
 		return 2
 	}

@@ -1,18 +1,5 @@
 # English messages for edc remote. This file is the base: a key that another language misses falls back to here.
 remote:
-  flag:
-    inventory: "inventory YAML path"
-    recipe: "recipe YAML path"
-    group: "inventory group to run, an alias of the positional argument"
-    connect_timeout: "SSH connection time limit"
-    output_limit: "output byte limit for each command"
-    parallel: "hosts to run at the same time, overrides the inventory value"
-    force: "skip the plan confirmation prompt"
-    force_short: "short option for --force"
-    dry_run: "print the plan and stop"
-    dry_run_short: "short option for --dry-run"
-    list: "print the groups and hosts of the inventory and stop"
-    list_short: "short option for --list"
 
   error:
     group_once: "set the group once, with a positional argument or with --group"

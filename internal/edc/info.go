@@ -22,11 +22,11 @@ type publicNetworkInfo struct {
 func runInfo(args []string, version string) int {
 	set := flag.NewFlagSet("info", flag.ContinueOnError)
 	set.SetOutput(os.Stderr)
-	includePublic := set.Bool("public", true, T("cli.flag.info.public"))
-	timeout := set.Duration("timeout", 3*time.Second, T("cli.flag.info.timeout"))
+	includePublic := set.Bool("public", true, T("command.info.option.public"))
+	timeout := set.Duration("timeout", 3*time.Second, T("command.info.option.timeout"))
 	var verbose bool
-	set.BoolVar(&verbose, "verbose", false, T("cli.flag.info.verbose"))
-	set.BoolVar(&verbose, "v", false, T("cli.flag.common.verbose_short"))
+	set.BoolVar(&verbose, "verbose", false, T("command.info.option.verbose"))
+	set.BoolVar(&verbose, "v", false, T("option.verbose"))
 	if err := set.Parse(args); err != nil {
 		return 2
 	}

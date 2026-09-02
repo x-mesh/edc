@@ -122,6 +122,9 @@ command:
       list: "inventory の group と host を表示"
       force: "確認を省く"
       parallel: "同時に動かす host 数"
+      group: "positional な group 引数の別名"
+      connect_timeout: "SSH 接続の制限時間"
+      output_limit: "command ごとの出力 byte 上限"
     notes:
       - "group を省くと選択画面を出します。"
       - "inventory.yaml と recipe.yaml を探します。"

@@ -87,7 +87,7 @@ func runDoctor(args []string, version string) int {
 	set := flag.NewFlagSet("doctor", flag.ContinueOnError)
 	set.SetOutput(os.Stderr)
 	bindCommon(set, &options)
-	profile := set.String("profile", "default", T("cli.flag.doctor.profile"))
+	profile := set.String("profile", "default", T("command.doctor.option.profile"))
 	if err := set.Parse(args); err != nil {
 		return 2
 	}
@@ -173,7 +173,7 @@ func runTLS(args []string, version string) int {
 	minDays := 0
 	flags := probeFlags{
 		bind: func(set *flag.FlagSet) {
-			set.IntVar(&minDays, "min-days", 0, T("cli.flag.tls.min_days"))
+			set.IntVar(&minDays, "min-days", 0, T("command.tls.option.min_days"))
 		},
 		check: func() error {
 			if minDays < 0 {
@@ -199,7 +199,7 @@ func runHTTP(args []string, version string) int {
 	expectStatus := 0
 	flags := probeFlags{
 		bind: func(set *flag.FlagSet) {
-			set.IntVar(&expectStatus, "expect-status", 0, T("cli.flag.http.expect_status"))
+			set.IntVar(&expectStatus, "expect-status", 0, T("command.http.option.expect_status"))
 		},
 		check: func() error {
 			if expectStatus != 0 && (expectStatus < 100 || expectStatus > 599) {
@@ -306,11 +306,11 @@ func runSimple(args []string, version, name, probeID string, probe func(context.
 }
 
 func bindCommon(set *flag.FlagSet, options *commonOptions) {
-	set.StringVar(&options.jsonPath, "json", "", T("cli.flag.common.json"))
-	set.DurationVar(&options.timeout, "timeout", options.timeout, T("cli.flag.common.timeout"))
-	set.BoolVar(&options.verbose, "verbose", false, T("cli.flag.common.verbose"))
-	set.BoolVar(&options.verbose, "v", false, T("cli.flag.common.verbose_short"))
-	set.BoolVar(&options.redact, "redact", options.redact, T("cli.flag.common.redact"))
+	set.StringVar(&options.jsonPath, "json", "", T("option.json"))
+	set.DurationVar(&options.timeout, "timeout", options.timeout, T("option.timeout"))
+	set.BoolVar(&options.verbose, "verbose", false, T("option.verbose"))
+	set.BoolVar(&options.verbose, "v", false, T("option.verbose"))
+	set.BoolVar(&options.redact, "redact", options.redact, T("option.redact"))
 }
 
 func emit(options commonOptions, report Report) int {

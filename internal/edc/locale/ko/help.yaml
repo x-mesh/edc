@@ -122,6 +122,9 @@ command:
       list: "inventory의 group과 host 출력"
       force: "확인 질문 생략"
       parallel: "동시에 실행할 host 수"
+      group: "positional group argument의 별칭"
+      connect_timeout: "SSH 연결 제한 시간"
+      output_limit: "command별 출력 byte 상한"
     notes:
       - "group을 생략하면 선택기를 띄웁니다."
       - "inventory.yaml과 recipe.yaml을 찾습니다."

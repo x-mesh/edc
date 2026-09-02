@@ -1,9 +1,6 @@
 # 관측 영역의 한국어 메시지. 빠진 키는 en으로 내려간다.
 observe:
   where:
-    option:
-      provider: "측정할 사업자: all, aws, gcp"
-      count: "지역마다 측정할 횟수"
     usage: "사용법: edc where [--provider all|aws|gcp] [--count 3] [options]"
     count_minimum: "--count는 1 이상이어야 합니다"
     unknown_provider: "알 수 없는 provider: %s (all, aws, gcp)"
@@ -36,11 +33,6 @@ observe:
       clear: "가장 가까운 지역은 %s입니다. 두 번째 %s까지는 %s 더 걸립니다."
 
   top:
-    option:
-      interval: "sampling 간격"
-      count: "출력 row 수, 0은 계속 실행"
-      no_header: "host와 column header 생략"
-      json: "sample당 한 줄 JSON 출력 경로, stdout은 -"
     usage: "사용법: edc top [--interval 1s] [--count N] [--json <path|->]"
     interval_minimum: "--interval은 %s 이상이어야 합니다"
     count_minimum: "--count는 0 이상이어야 합니다"

@@ -17,10 +17,10 @@ import (
 func runTop(args []string) int {
 	set := flag.NewFlagSet("top", flag.ContinueOnError)
 	set.SetOutput(os.Stderr)
-	interval := set.Duration("interval", time.Second, T("observe.top.option.interval"))
-	count := set.Int("count", 0, T("observe.top.option.count"))
-	noHeader := set.Bool("no-header", false, T("observe.top.option.no_header"))
-	jsonPath := set.String("json", "", T("observe.top.option.json"))
+	interval := set.Duration("interval", time.Second, T("command.top.option.interval"))
+	count := set.Int("count", 0, T("command.top.option.count"))
+	noHeader := set.Bool("no-header", false, T("command.top.option.no_header"))
+	jsonPath := set.String("json", "", T("command.top.option.json"))
 	if err := set.Parse(args); err != nil {
 		return 2
 	}

@@ -1,18 +1,5 @@
 # edc remote의 한국어 메시지. 빠진 키는 en/remote.yaml로 내려간다.
 remote:
-  flag:
-    inventory: "inventory YAML 경로"
-    recipe: "recipe YAML 경로"
-    group: "실행할 inventory group, positional argument의 별칭"
-    connect_timeout: "SSH 연결 제한 시간"
-    output_limit: "command별 출력 byte 상한"
-    parallel: "동시에 실행할 host 수, inventory 설정 override"
-    force: "계획 확인 프롬프트 생략"
-    force_short: "--force 단축 option"
-    dry_run: "실행 계획만 출력하고 종료"
-    dry_run_short: "--dry-run 단축 option"
-    list: "inventory의 group과 host를 출력하고 종료"
-    list_short: "--list 단축 option"
 
   error:
     group_once: "group은 positional argument나 --group 중 하나로 한 번만 지정합니다"

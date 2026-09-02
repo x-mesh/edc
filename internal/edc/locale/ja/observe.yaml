@@ -1,9 +1,6 @@
 # 観測領域の日本語メッセージ。欠けたキーは en に落ちる。
 observe:
   where:
-    option:
-      provider: "測定する事業者: all、aws、gcp"
-      count: "地域ごとの測定回数"
     usage: "使い方: edc where [--provider all|aws|gcp] [--count 3] [options]"
     count_minimum: "--count は 1 以上にしてください"
     unknown_provider: "不明な provider: %s (all、aws、gcp)"
@@ -36,11 +33,6 @@ observe:
       clear: "最も近い地域は %s です。2 番目の %s までは %s 多くかかります。"
 
   top:
-    option:
-      interval: "sampling の間隔"
-      count: "表示する行数、0 は継続実行"
-      no_header: "host と列見出しを省く"
-      json: "sample ごとに 1 行の JSON の出力先、stdout は -"
     usage: "使い方: edc top [--interval 1s] [--count N] [--json <path|->]"
     interval_minimum: "--interval は %s 以上にしてください"
     count_minimum: "--count は 0 以上にしてください"

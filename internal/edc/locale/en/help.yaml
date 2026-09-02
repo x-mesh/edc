@@ -122,6 +122,9 @@ command:
       list: "print the groups and hosts of the inventory"
       force: "skip the question"
       parallel: "hosts to run at the same time"
+      group: "an alias for the group argument"
+      connect_timeout: "SSH connection time limit"
+      output_limit: "output byte limit for each command"
     notes:
       - "Without a group, edc opens a selector."
       - "edc finds inventory.yaml and recipe.yaml."

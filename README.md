@@ -2,6 +2,12 @@
 
 `edc`는 SE/SRE 네트워크·시스템 진단 CLI입니다. Linux/macOS resource monitoring과 host 정보를 제공하며, DNS, TCP, TLS, HTTP, route, interface, socket과 macOS `networkQuality`를 공통 결과 형식으로 실행합니다.
 
+![edc doctor https://example.com이 probe 9개를 차례로 실행하고 9 pass 요약을 출력하는 화면](docs/media/doctor.gif)
+
+`edc doctor`는 DNS, TCP, TLS, HTTP, route, ping, interface, socket을 한 번에 실행하고 결과를 한 화면에 모읍니다.
+
+각 데모의 소스는 [`docs/tape/`](docs/tape) 아래 `.tape` 파일입니다. `vhs docs/tape/doctor.tape`처럼 실행하면 다시 만듭니다.
+
 ## 빌드
 
 Go 1.25 이상이 필요합니다. 실시간 화면은 다음 dependency를 씁니다.
@@ -75,6 +81,22 @@ source <(./bin/edc completion zsh)
 
 공통 option은 `--timeout`, `--json <path|->`, `--verbose`, `--redact=true|false`입니다. Go `flag` 규칙에 따라 option은 target 앞에 둡니다.
 
+### 이름 조회
+
+![edc dns lookup example.com이 주소 목록을, edc dns config가 resolver 설정을 각각 PASS로 출력하는 화면](docs/media/dns.gif)
+
+`--redact`가 기본으로 켜져 있어 IP는 `<ip:...>` 형태로 가려집니다.
+
+### 연결 확인
+
+![edc tcp check가 example.com:443 연결에 성공하고, 닫힌 port에서는 timeout phase와 함께 FAIL을 출력하는 화면](docs/media/tcp.gif)
+
+실패한 probe는 phase와 cause를 ERROR 블록으로 보여 주고 exit code `1`을 돌려줍니다.
+
+### 경로와 interface
+
+![edc net interfaces, edc net route example.com, edc net ping example.com이 각각 PASS와 결과 한 줄을 출력하는 화면](docs/media/net.gif)
+
 ## Probe thresholds
 
 `edc tls check` gives a warning when the certificate expires in less than 30 days. Set `--min-days` to make an earlier expiry a failure.
@@ -87,6 +109,12 @@ source <(./bin/edc completion zsh)
 ```
 
 A failure returns exit code `1`. Use these options in cron to get a synthetic check.
+
+![edc tls check가 PASS를 준 뒤, --min-days 90이 인증서 남은 일수를 기준 미달로 판정해 FAIL과 ERROR 블록을 출력하는 화면](docs/media/tls.gif)
+
+![edc http check가 HTTP 200으로 PASS를 준 뒤, --expect-status 404가 기대값 불일치로 FAIL을 출력하는 화면](docs/media/http.gif)
+
+The demo shows one pass and one threshold failure for each command.
 
 ## Report diff
 
@@ -115,6 +143,10 @@ If stdin and stdout are terminals, `edc report show` and `edc report diff` open 
 `edc report show` filters by 전체, 실패와 경고, then 실패만. `edc report diff` filters by 전체, 바뀐 것, then 악화된 것.
 
 The viewer leaves no output on the screen. The exit code stays the same. A pipe, a file, or `--json` gets the earlier output.
+
+![edc report show 뷰어에서 f로 필터를 바꾸고 e로 상세를 펼친 뒤, edc report diff가 probe별 duration_ms 차이를 보여 주는 화면](docs/media/report.gif)
+
+The demo opens the viewer, changes the filter, shows the details, and then compares two reports.
 
 ## Top thresholds
 
@@ -179,6 +211,10 @@ Store no passwords or private keys in inventory and recipe files. Configure SSH 
 Each step needs `name` and `command`. The `verify` field is optional. If `verify` is absent, the exit code of `command` decides the step result.
 
 Keep `name` for group references. If `target` is absent, `edc` uses `name` as the SSH target.
+
+![edc remote daily --dry-run이 SSH 연결 없이 host x step 계획 표를 출력하고, tags가 맞지 않는 step을 –로 표시하는 화면](docs/media/remote.gif)
+
+The demo shows the tags of a recipe and the plan table that `--dry-run` prints.
 
 ### Command shape
 

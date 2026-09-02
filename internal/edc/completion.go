@@ -93,6 +93,7 @@ _edc() {
         'report:저장한 JSON report 보기와 비교'
         'remote:inventory group에 recipe 실행'
         'completion:shell completion 출력'
+        'update:GitHub release에서 최신 버전 설치'
         'version:버전 출력'
         'help:도움말'
       )
@@ -165,7 +166,7 @@ _edc() {
   local cur prev command
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD-1]}"
-  local commands="top info doctor dns tcp tls http net sockets quality capture report remote completion version help"
+  local commands="top info doctor dns tcp tls http net sockets quality capture report remote completion update version help"
   local common="--timeout --json --verbose -v --redact"
   if [[ $COMP_CWORD -eq 1 ]]; then
     COMPREPLY=($(compgen -W "$commands" -- "$cur"))
@@ -188,6 +189,7 @@ _edc() {
       if [[ $COMP_CWORD -eq 2 ]]; then COMPREPLY=($(compgen -W "interfaces route ping trace" -- "$cur")); else COMPREPLY=($(compgen -W "$common" -- "$cur")); fi ;;
     sockets|quality) COMPREPLY=($(compgen -W "$common" -- "$cur")) ;;
     capture) COMPREPLY=($(compgen -W "--interface --duration --count --filter --output --yes" -- "$cur")) ;;
+    update) COMPREPLY=($(compgen -W "--check --yes --timeout" -- "$cur")) ;;
     report)
       if [[ $COMP_CWORD -eq 2 ]]; then COMPREPLY=($(compgen -W "show diff" -- "$cur"))
       elif [[ $cur == -* ]]; then COMPREPLY=($(compgen -W "--json" -- "$cur"))

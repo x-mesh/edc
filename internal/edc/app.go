@@ -60,6 +60,8 @@ func Run(args []string, version string) int {
 		return runRemote(args[1:], version)
 	case "completion":
 		return runCompletion(args[1:])
+	case "update":
+		return runUpdate(args[1:], version)
 	default:
 		fmt.Fprintf(os.Stderr, "알 수 없는 command: %s\n", args[0])
 		printHelp(os.Stderr)
@@ -355,6 +357,7 @@ func printHelp(writer io.Writer) {
   edc report diff [--json <path|->] <before> <after>
   edc remote [<group>] [--inventory <file>] [--recipe <file>] [-n|--dry-run] [-l|--list]
   edc completion <zsh|bash|groups>
+  edc update [--check] [--yes]
   edc version
 
 공통 options: --timeout 15s --json <path|-> -v|--verbose --redact=true
@@ -367,6 +370,7 @@ remote: 계획과 결과가 host×step 표 하나를 씁니다. -f|--force는 �
 top: terminal에서는 대시보드로 실행합니다. q 종료, p 일시정지, +/- interval
 remote와 doctor: terminal에서는 실시간 화면으로 실행하고 Ctrl-C로 취소합니다 (exit 4)
 completion: source <(edc completion zsh) 또는 source <(edc completion bash)
+update: GitHub release에서 최신 버전을 받아 실행 파일을 바꿉니다. --check는 확인만 합니다
 `)
 }
 

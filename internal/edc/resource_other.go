@@ -10,90 +10,183 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
-func collectResourceSnapshot() (resourceSnapshot, error) {
-	snapshot := resourceSnapshot{TakenAt: time.Now(), CPUInstant: true}
+// darwinCPU는 process가 사는 동안 top을 배경에서 돌려 CPU 사용률을 최신으로 유지한다.
+var darwinCPU darwinCPUSampler
+
+// darwinCPUSample은 top이 읽어 온 CPU 사용률 한 벌이다.
+type darwinCPUSample struct {
+	user, system, idle, total uint64
+	valid                     bool
+}
+
+// darwinCPUSampler는 top 호출을 snapshot 수집에서 떼어 낸다.
+// top -l 1은 CPU 델타를 재려고 1초 넘게 기다리므로, 같은 goroutine에서 부르면
+// --interval을 200ms로 줄여도 화면은 그만큼 늦게 갱신된다.
+// 첫 값만 동기로 받고 그다음부터는 배경 goroutine이 채운 값을 즉시 돌려준다.
+type darwinCPUSampler struct {
+	mutex  sync.RWMutex
+	sample darwinCPUSample
+	start  sync.Once
+}
+
+func (sampler *darwinCPUSampler) latest() darwinCPUSample {
+	sampler.start.Do(func() {
+		// 첫 화면에 0%가 뜨지 않도록 한 번은 기다린다.
+		sampler.refresh()
+		go func() {
+			// top 자체가 1초 넘게 걸리므로 따로 쉬지 않는다. process가 끝나면 함께 사라진다.
+			for {
+				sampler.refresh()
+			}
+		}()
+	})
+	sampler.mutex.RLock()
+	defer sampler.mutex.RUnlock()
+	return sampler.sample
+}
+
+func (sampler *darwinCPUSampler) refresh() {
 	output, err := exec.Command("/usr/bin/top", "-l", "1", "-n", "0").Output()
 	if err != nil {
-		return snapshot, err
+		return
 	}
-	for _, line := range strings.Split(string(output), "\n") {
-		if strings.HasPrefix(line, "CPU usage:") {
-			var user, system, idle float64
-			fmt.Sscanf(line, "CPU usage: %f%% user, %f%% sys, %f%% idle", &user, &system, &idle)
-			snapshot.CPUUser, snapshot.CPUSystem, snapshot.CPUIdle = uint64(user*100), uint64(system*100), uint64(idle*100)
-			snapshot.CPUTotal = 10000
-		}
-		if strings.HasPrefix(line, "Load Avg:") {
-			fmt.Sscanf(line, "Load Avg: %f,", &snapshot.Load1)
-		}
-		if strings.HasPrefix(line, "PhysMem:") {
-			fields := strings.Fields(line)
-			if len(fields) >= 4 {
-				snapshot.MemoryUsed = parseHumanBytes(fields[1])
-				snapshot.MemoryTotal = snapshot.MemoryUsed + parseHumanBytes(fields[len(fields)-2])
-			}
-		}
-		if strings.HasPrefix(line, "Networks:") {
-			var inPackets, outPackets uint64
-			var inBytes, outBytes string
-			fmt.Sscanf(line, "Networks: packets: %d/%s in, %d/%s out.", &inPackets, &inBytes, &outPackets, &outBytes)
-			snapshot.PacketsIn, snapshot.PacketsOut = inPackets, outPackets
-			snapshot.NetInBytes, snapshot.NetOutBytes = parseHumanBytes(inBytes), parseHumanBytes(outBytes)
-		}
-		if strings.HasPrefix(line, "Disks:") {
-			var reads, writes uint64
-			var readBytes, writeBytes string
-			fmt.Sscanf(line, "Disks: %d/%s read, %d/%s written.", &reads, &readBytes, &writes, &writeBytes)
-			snapshot.DiskRead, snapshot.DiskWrite = parseHumanBytes(readBytes), parseHumanBytes(writeBytes)
-		}
+	sample, ok := parseDarwinCPU(string(output))
+	if !ok {
+		return
 	}
-	if network, err := exec.Command("/usr/sbin/netstat", "-ibn").Output(); err == nil {
-		seen := map[string]bool{}
-		for _, line := range strings.Split(string(network), "\n") {
-			fields := strings.Fields(line)
-			if len(fields) < 10 || fields[2] == "Network" || !strings.HasPrefix(fields[2], "<Link#") || fields[0] == "lo0" || strings.HasSuffix(fields[0], "*") || seen[fields[0]] {
-				continue
-			}
-			seen[fields[0]] = true
-			snapshot.PacketsIn += parseUnsigned(fields[4])
-			snapshot.NetInBytes += parseUnsigned(fields[6])
-			snapshot.PacketsOut += parseUnsigned(fields[7])
-			snapshot.NetOutBytes += parseUnsigned(fields[9])
+	sampler.mutex.Lock()
+	sampler.sample = sample
+	sampler.mutex.Unlock()
+}
+
+// parseDarwinCPU는 top의 CPU usage 줄을 읽는다. 백분율이므로 total은 10000(=100.00%)이다.
+func parseDarwinCPU(output string) (darwinCPUSample, bool) {
+	for _, line := range strings.Split(output, "\n") {
+		if !strings.HasPrefix(line, "CPU usage:") {
+			continue
 		}
+		var user, system, idle float64
+		if _, err := fmt.Sscanf(line, "CPU usage: %f%% user, %f%% sys, %f%% idle", &user, &system, &idle); err != nil {
+			return darwinCPUSample{}, false
+		}
+		return darwinCPUSample{
+			user: uint64(user * 100), system: uint64(system * 100), idle: uint64(idle * 100),
+			total: 10000, valid: true,
+		}, true
 	}
-	applyDarwinMemory(&snapshot)
-	if storage, err := exec.Command("/usr/sbin/ioreg", "-r", "-c", "IOBlockStorageDriver", "-l").Output(); err == nil {
-		if match := diskBytePattern.FindStringSubmatch(string(storage)); match != nil {
-			if match[1] != "" {
-				snapshot.DiskRead, snapshot.DiskWrite = parseUnsigned(match[1]), parseUnsigned(match[2])
-			} else {
-				snapshot.DiskWrite, snapshot.DiskRead = parseUnsigned(match[3]), parseUnsigned(match[4])
-			}
-		}
+	return darwinCPUSample{}, false
+}
+
+type darwinNetwork struct{ packetsIn, packetsOut, bytesIn, bytesOut uint64 }
+type darwinDisk struct{ read, write uint64 }
+type darwinMemory struct{ total, used uint64 }
+
+func collectResourceSnapshot() (resourceSnapshot, error) {
+	snapshot := resourceSnapshot{TakenAt: time.Now(), CPUInstant: true}
+
+	// 남은 값은 서로 독립이므로 함께 읽는다. 차례로 부르면 0.6초가 그대로 주기에 붙는다.
+	var (
+		group   sync.WaitGroup
+		network darwinNetwork
+		disk    darwinDisk
+		memory  darwinMemory
+		load    float64
+	)
+	group.Add(4)
+	go func() { defer group.Done(); network = readDarwinNetwork() }()
+	go func() { defer group.Done(); disk = readDarwinDisk() }()
+	go func() { defer group.Done(); memory = readDarwinMemory() }()
+	go func() { defer group.Done(); load = readDarwinLoad() }()
+	group.Wait()
+
+	snapshot.PacketsIn, snapshot.PacketsOut = network.packetsIn, network.packetsOut
+	snapshot.NetInBytes, snapshot.NetOutBytes = network.bytesIn, network.bytesOut
+	snapshot.DiskRead, snapshot.DiskWrite = disk.read, disk.write
+	snapshot.MemoryTotal, snapshot.MemoryUsed = memory.total, memory.used
+	snapshot.Load1 = load
+
+	if sample := darwinCPU.latest(); sample.valid {
+		snapshot.CPUUser, snapshot.CPUSystem = sample.user, sample.system
+		snapshot.CPUIdle, snapshot.CPUTotal = sample.idle, sample.total
 	}
 	return snapshot, nil
 }
 
+func readDarwinLoad() float64 {
+	var load float64
+	fmt.Sscanf(commandValue("/usr/sbin/sysctl", "-n", "vm.loadavg"), "{ %f", &load)
+	return load
+}
+
+func readDarwinNetwork() darwinNetwork {
+	var counters darwinNetwork
+	output, err := exec.Command("/usr/sbin/netstat", "-ibn").Output()
+	if err != nil {
+		return counters
+	}
+	seen := map[string]bool{}
+	for _, line := range strings.Split(string(output), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 10 || fields[2] == "Network" || !strings.HasPrefix(fields[2], "<Link#") || fields[0] == "lo0" || strings.HasSuffix(fields[0], "*") || seen[fields[0]] {
+			continue
+		}
+		seen[fields[0]] = true
+		counters.packetsIn += parseUnsigned(fields[4])
+		counters.bytesIn += parseUnsigned(fields[6])
+		counters.packetsOut += parseUnsigned(fields[7])
+		counters.bytesOut += parseUnsigned(fields[9])
+	}
+	return counters
+}
+
+func readDarwinDisk() darwinDisk {
+	var counters darwinDisk
+	output, err := exec.Command("/usr/sbin/ioreg", "-r", "-c", "IOBlockStorageDriver", "-l").Output()
+	if err != nil {
+		return counters
+	}
+	match := diskBytePattern.FindStringSubmatch(string(output))
+	if match == nil {
+		return counters
+	}
+	if match[1] != "" {
+		counters.read, counters.write = parseUnsigned(match[1]), parseUnsigned(match[2])
+	} else {
+		counters.write, counters.read = parseUnsigned(match[3]), parseUnsigned(match[4])
+	}
+	return counters
+}
+
 // applyDarwinMemory는 top의 PhysMem 대신 vm_stat의 회수 가능 page를 빼서 Linux MemAvailable과 같은 기준으로 사용량을 구한다.
 // top의 used는 캐시와 compressor를 포함해 평상시에도 97% 이상으로 나온다.
-func applyDarwinMemory(snapshot *resourceSnapshot) {
-	total, err := strconv.ParseUint(commandValue("/usr/sbin/sysctl", "-n", "hw.memsize"), 10, 64)
-	if err != nil || total == 0 {
-		return
+func readDarwinMemory() darwinMemory {
+	total := darwinMemoryTotal()
+	if total == 0 {
+		return darwinMemory{}
 	}
 	output, err := exec.Command("/usr/bin/vm_stat").Output()
 	if err != nil {
-		return
+		return darwinMemory{}
 	}
 	available := parseDarwinAvailableMemory(string(output))
 	if available == 0 || available > total {
-		return
+		return darwinMemory{}
 	}
-	snapshot.MemoryTotal, snapshot.MemoryUsed = total, total-available
+	return darwinMemory{total: total, used: total - available}
 }
+
+// darwinMemoryTotal은 바뀌지 않는 값이라 한 번만 읽는다. sample마다 sysctl을 부르면 그만큼 주기가 길어진다.
+var darwinMemoryTotal = sync.OnceValue(func() uint64 {
+	total, err := strconv.ParseUint(commandValue("/usr/sbin/sysctl", "-n", "hw.memsize"), 10, 64)
+	if err != nil {
+		return 0
+	}
+	return total
+})
 
 // parseDarwinAvailableMemory는 즉시 회수 가능한 free, speculative, inactive page를 합친다.
 func parseDarwinAvailableMemory(output string) uint64 {

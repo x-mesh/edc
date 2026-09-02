@@ -1,0 +1,87 @@
+# English messages of the observe area: where, top, probe, doctor, and the live screen.
+observe:
+  where:
+    option:
+      provider: "providers to measure: all, aws, gcp"
+      count: "measurements for each region"
+    usage: "usage: edc where [--provider all|aws|gcp] [--count 3] [options]"
+    count_minimum: "--count must be 1 or more"
+    unknown_provider: "unknown provider: %s (all, aws, gcp)"
+    progress: "checking regions"
+    unreachable: "no reply"
+    error:
+      resolve: "edc did not resolve the name"
+      connect: "edc did not connect"
+    heading:
+      location: "location"
+      nearest: "near regions"
+    label:
+      route: "route"
+      network: "network"
+    column:
+      min: "min"
+      median: "median"
+      jitter: "jitter"
+      provider: "provider"
+    shape:
+      carrier_grade_nat: "behind carrier-grade NAT"
+      nat: "behind NAT"
+      public_direct: "public address in use"
+      tunnel: "through a tunnel"
+    conclusion:
+      none: "edc reached no region."
+      only: "%s is the only region edc measured."
+      close: "The two nearest regions %s and %s differ by %s only. The order can change on each run."
+      clear: "The nearest region is %s. The second one, %s, takes %s more."
+
+  top:
+    option:
+      interval: "time between samples"
+      count: "rows to print, 0 runs until you quit"
+      no_header: "drop the host and column header"
+      json: "one JSON line for each sample, - for stdout"
+    usage: "usage: edc top [--interval 1s] [--count N] [--json <path|->]"
+    interval_minimum: "--interval must be %s or more"
+    count_minimum: "--count must be 0 or more"
+    stopped: "stopped"
+    paused: "paused"
+    help_line: "q quit  p pause  +/- interval"
+    error:
+      host: "edc did not read the host information: %v"
+      resource: "edc did not read the resource values: %v"
+
+  probe:
+    cancelled: "edc cancelled the probe."
+    tcp_connected: "%s connected (%s)"
+    certificate_below_minimum: "the certificate expires in %d days, which is below the %d day limit"
+    certificate_expiring: "the certificate expires in %d days"
+    status_mismatch: "HTTP %d, expected %d"
+    too_many_redirects: "the request passed more than 10 redirects"
+    invalid_url: "invalid URL: %s"
+    unsupported_scheme: "edc supports http and https URLs only: %s"
+    cancelling: "cancelling, edc stops the running command"
+
+  system:
+    unsupported_os: "edc supports macOS and Linux only"
+    interfaces: "%d interfaces"
+    command_missing: "edc did not find the %s command"
+    address_missing: "edc did not find an address of %s"
+    no_nameserver: "%s holds no nameserver"
+    nameserver_warning: "without a nameserver line, the resolver uses localhost"
+    resolvectl_failed: "resolvectl status failed: %s"
+    quality_darwin_only: "networkQuality runs on macOS only"
+    quality_done: "networkQuality measurement complete"
+    trace_missing: "edc did not find the traceroute or tracepath command"
+
+  doctor:
+    cancelled: "edc cancelled the diagnosis."
+    completed: "%d/%d done"
+    cancelling: "cancelling, edc stops the running probes"
+
+  live:
+    start_failed: "edc did not open the live screen: %v"
+    exit_error: "the live screen ended with an error: %v"
+    exited_immediately: "the live screen ended right after it started"
+
+  banner:
+    tag: "SE/SRE diagnostic toolkit"

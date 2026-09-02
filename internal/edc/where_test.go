@@ -79,7 +79,7 @@ func TestNetworkShapeDetection(t *testing.T) {
 
 func TestWhereNetworkShapeReportsOnlyFacts(t *testing.T) {
 	shape := whereNetworkShape(whereLocation{PublicIP: "203.0.113.7", LocalAddress: "192.168.1.10", BehindNAT: true, Tunnel: true})
-	if !strings.Contains(shape, "NAT 뒤") || !strings.Contains(shape, "tunnel") {
+	if !strings.Contains(shape, T("observe.where.shape.nat")) || !strings.Contains(shape, "tunnel") {
 		t.Fatalf("shape = %q", shape)
 	}
 	cgnat := whereNetworkShape(whereLocation{PublicIP: "100.64.0.1", CarrierGradeNAT: true, BehindNAT: true})
@@ -107,7 +107,7 @@ func TestGroupByCityKeepsTheFastestProvider(t *testing.T) {
 		{City: "Tokyo", Provider: "aws", Min: 30 * time.Millisecond},
 		{City: "Seoul", Provider: "aws", Min: 14 * time.Millisecond},
 		{City: "Seoul", Provider: "gcp", Min: 6 * time.Millisecond},
-		{City: "Paris", Provider: "aws", Error: "연결하지 못했습니다"},
+		{City: "Paris", Provider: "aws", Error: T("observe.where.error.connect")},
 	}
 	rows := groupByCity(measurements)
 	if len(rows) != 3 {
@@ -130,7 +130,7 @@ func TestGroupByCityKeepsTheFastestProvider(t *testing.T) {
 
 func TestWhereConclusion(t *testing.T) {
 	none := whereConclusion(nil, whereLocation{})
-	if !strings.Contains(none, "닿지 못했습니다") {
+	if none != T("observe.where.conclusion.none") {
 		t.Fatalf("empty result = %q", none)
 	}
 
@@ -143,7 +143,7 @@ func TestWhereConclusion(t *testing.T) {
 		{city: "Seoul", reached: true, best: whereMeasurement{Min: 6 * time.Millisecond}},
 		{city: "Tokyo", reached: true, best: whereMeasurement{Min: 40 * time.Millisecond}},
 	}, whereLocation{})
-	if !strings.Contains(clear, "Seoul입니다") || !strings.Contains(clear, "34.0ms") {
+	if clear != T("observe.where.conclusion.clear", "Seoul", "Tokyo", "34.0ms") {
 		t.Fatalf("clear winner = %q", clear)
 	}
 
@@ -152,7 +152,7 @@ func TestWhereConclusion(t *testing.T) {
 		{city: "Seoul", reached: true, best: whereMeasurement{Min: 6 * time.Millisecond}},
 		{city: "Tokyo", reached: true, best: whereMeasurement{Min: 8 * time.Millisecond}},
 	}, whereLocation{})
-	if !strings.Contains(close, "순위가 바뀔 수 있습니다") {
+	if close != T("observe.where.conclusion.close", "Seoul", "Tokyo", "2.0ms") {
 		t.Fatalf("close race = %q", close)
 	}
 }

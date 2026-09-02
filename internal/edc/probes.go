@@ -42,7 +42,7 @@ func probeTCP(ctx context.Context, address string) Result {
 	return Result{
 		Probe: "tcp.check", Status: latencyStatus(duration), StartedAt: started.UTC(),
 		DurationMS: duration.Milliseconds(),
-		Summary:    fmt.Sprintf("%s 연결 성공 (%s)", address, duration.Round(time.Millisecond)),
+		Summary:    T("observe.probe.tcp_connected", address, duration.Round(time.Millisecond)),
 		Metrics: map[string]interface{}{
 			"address": address, "connect_ms": duration.Milliseconds(),
 			"local_address": connection.LocalAddr().String(), "remote_address": connection.RemoteAddr().String(),
@@ -108,11 +108,11 @@ func probeTLSWithOptions(ctx context.Context, address, serverName string, option
 // certificateVerdict는 남은 일수를 --min-days 기준과 기본 경고 기준에 차례로 비교한다.
 func certificateVerdict(days, minDays int) (Status, string, *DiagnosticError) {
 	if minDays > 0 && days < minDays {
-		message := fmt.Sprintf("인증서 만료까지 %d일 남아 기준 %d일보다 짧습니다", days, minDays)
+		message := T("observe.probe.certificate_below_minimum", days, minDays)
 		return StatusFail, "", &DiagnosticError{Kind: "expiry", Message: message}
 	}
 	if days < certificateWarnDays {
-		return StatusWarn, fmt.Sprintf("인증서 만료까지 %d일 남았습니다", days), nil
+		return StatusWarn, T("observe.probe.certificate_expiring", days), nil
 	}
 	return StatusPass, "", nil
 }
@@ -121,7 +121,7 @@ func certificateVerdict(days, minDays int) (Status, string, *DiagnosticError) {
 func httpStatusVerdict(code, expected int) (Status, *DiagnosticError) {
 	if expected > 0 {
 		if code != expected {
-			return StatusFail, &DiagnosticError{Kind: "status", Message: fmt.Sprintf("HTTP %d, 기대값 %d", code, expected)}
+			return StatusFail, &DiagnosticError{Kind: "status", Message: T("observe.probe.status_mismatch", code, expected)}
 		}
 		return StatusPass, nil
 	}
@@ -160,7 +160,7 @@ func probeHTTPWithOptions(ctx context.Context, rawURL string, options httpCheckO
 		Transport: &http.Transport{Proxy: http.ProxyFromEnvironment},
 		CheckRedirect: func(_ *http.Request, via []*http.Request) error {
 			if len(via) >= 10 {
-				return fmt.Errorf("redirect가 10회를 초과했습니다")
+				return fmt.Errorf("%s", T("observe.probe.too_many_redirects"))
 			}
 			return nil
 		},
@@ -194,10 +194,10 @@ func normalizeTarget(input string) (host, address, rawURL string, err error) {
 	if strings.Contains(input, "://") {
 		parsed, parseErr := url.Parse(input)
 		if parseErr != nil || parsed.Hostname() == "" {
-			return "", "", "", fmt.Errorf("유효하지 않은 URL: %s", input)
+			return "", "", "", fmt.Errorf("%s", T("observe.probe.invalid_url", input))
 		}
 		if parsed.Scheme != "http" && parsed.Scheme != "https" {
-			return "", "", "", fmt.Errorf("http 또는 https URL만 지원합니다: %s", input)
+			return "", "", "", fmt.Errorf("%s", T("observe.probe.unsupported_scheme", input))
 		}
 		host = parsed.Hostname()
 		port := parsed.Port()

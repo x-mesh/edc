@@ -47,7 +47,7 @@ func TestDoctorModelUpdatesRows(t *testing.T) {
 	if updated.completed() != 1 {
 		t.Fatalf("completed = %d", updated.completed())
 	}
-	if !strings.Contains(view, "1/2 완료") {
+	if !strings.Contains(view, T("observe.doctor.completed", 1, 2)) {
 		t.Fatalf("status line missing progress: %q", view)
 	}
 }
@@ -98,7 +98,7 @@ func TestDoctorModelFinishDropsStatusLine(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("done must quit the program")
 	}
-	if strings.Contains(final.View().Content, "완료") {
+	if strings.Contains(final.View().Content, T("observe.doctor.completed", 0, 1)) {
 		t.Fatalf("final view kept the status line: %q", final.View().Content)
 	}
 }
@@ -110,7 +110,7 @@ func TestDoctorModelCancelsOnCtrlC(t *testing.T) {
 	if !cancelled || !first.cancelling {
 		t.Fatalf("first ctrl+c did not cancel: %v %#v", cancelled, first.cancelling)
 	}
-	if !strings.Contains(first.View().Content, "취소 중") {
+	if !strings.Contains(first.View().Content, T("observe.doctor.cancelling")) {
 		t.Fatalf("view = %q", first.View().Content)
 	}
 	if _, cmd := first.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl}); cmd == nil {

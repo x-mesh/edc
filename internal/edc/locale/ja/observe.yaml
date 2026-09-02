@@ -1,0 +1,87 @@
+# 観測領域の日本語メッセージ。欠けたキーは en に落ちる。
+observe:
+  where:
+    option:
+      provider: "測定する事業者: all、aws、gcp"
+      count: "地域ごとの測定回数"
+    usage: "使い方: edc where [--provider all|aws|gcp] [--count 3] [options]"
+    count_minimum: "--count は 1 以上にしてください"
+    unknown_provider: "不明な provider: %s (all、aws、gcp)"
+    progress: "地域を確認"
+    unreachable: "到達不可"
+    error:
+      resolve: "名前を解決できませんでした"
+      connect: "接続できませんでした"
+    heading:
+      location: "位置"
+      nearest: "近い地域"
+    label:
+      route: "経路"
+      network: "ネットワーク"
+    column:
+      min: "最小"
+      median: "中央"
+      jitter: "ジッター"
+      provider: "事業者"
+    shape:
+      carrier_grade_nat: "carrier-grade NAT の内側"
+      nat: "NAT の内側"
+      public_direct: "public アドレスを直接使用"
+      tunnel: "tunnel 経由"
+    conclusion:
+      none: "どの地域にも到達できませんでした。"
+      only: "測定できた地域は %s だけです。"
+      close: "最も近い 2 つの地域 %s と %s の差は %s しかありません。実行ごとに順位が変わることがあります。"
+      clear: "最も近い地域は %s です。2 番目の %s までは %s 多くかかります。"
+
+  top:
+    option:
+      interval: "sampling の間隔"
+      count: "表示する行数、0 は継続実行"
+      no_header: "host と列見出しを省く"
+      json: "sample ごとに 1 行の JSON の出力先、stdout は -"
+    usage: "使い方: edc top [--interval 1s] [--count N] [--json <path|->]"
+    interval_minimum: "--interval は %s 以上にしてください"
+    count_minimum: "--count は 0 以上にしてください"
+    stopped: "停止しました"
+    paused: "一時停止"
+    help_line: "q 終了  p 一時停止  +/- interval"
+    error:
+      host: "host の情報を読めませんでした: %v"
+      resource: "resource を読めませんでした: %v"
+
+  probe:
+    cancelled: "probe を中断しました"
+    tcp_connected: "%s に接続しました (%s)"
+    certificate_below_minimum: "証明書の残りは %d 日で、基準の %d 日より短いです"
+    certificate_expiring: "証明書の残りは %d 日です"
+    status_mismatch: "HTTP %d、期待値 %d"
+    too_many_redirects: "redirect が 10 回を超えました"
+    invalid_url: "正しくない URL: %s"
+    unsupported_scheme: "http または https の URL だけに対応します: %s"
+    cancelling: "中断中、実行中の command を終了します"
+
+  system:
+    unsupported_os: "現在 macOS と Linux だけに対応します"
+    interfaces: "interface %d 個"
+    command_missing: "%s コマンドが見つかりません"
+    address_missing: "%s のアドレスが見つかりません"
+    no_nameserver: "%s に nameserver がありません"
+    nameserver_warning: "nameserver の行がないと resolver は localhost を使います"
+    resolvectl_failed: "resolvectl status に失敗しました: %s"
+    quality_darwin_only: "networkQuality は macOS 専用です"
+    quality_done: "networkQuality の測定が完了しました"
+    trace_missing: "traceroute または tracepath コマンドが見つかりません"
+
+  doctor:
+    cancelled: "診断を中断しました"
+    completed: "%d/%d 完了"
+    cancelling: "中断中、実行中の probe を終了します"
+
+  live:
+    start_failed: "リアルタイム画面を表示できませんでした: %v"
+    exit_error: "リアルタイム画面がエラーで終わりました: %v"
+    exited_immediately: "リアルタイム画面が開始直後に終了しました"
+
+  banner:
+    tag: "SE/SRE 診断ツールキット"

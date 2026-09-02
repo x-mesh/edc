@@ -107,17 +107,17 @@ func runWhere(args []string, version string) int {
 	set := flag.NewFlagSet("where", flag.ContinueOnError)
 	set.SetOutput(os.Stderr)
 	bindCommon(set, &options)
-	provider := set.String("provider", "all", "측정할 사업자: all, aws, gcp")
-	count := set.Int("count", 3, "지역마다 측정할 횟수")
+	provider := set.String("provider", "all", T("observe.where.option.provider"))
+	count := set.Int("count", 3, T("observe.where.option.count"))
 	if err := set.Parse(args); err != nil {
 		return 2
 	}
 	if set.NArg() != 0 {
-		fmt.Fprintln(os.Stderr, "사용법: edc where [--provider all|aws|gcp] [--count 3] [options]")
+		fmt.Fprintln(os.Stderr, T("observe.where.usage"))
 		return 2
 	}
 	if *count < 1 {
-		fmt.Fprintln(os.Stderr, "--count는 1 이상이어야 합니다")
+		fmt.Fprintln(os.Stderr, T("observe.where.count_minimum"))
 		return 2
 	}
 	endpoints, err := selectRegionEndpoints(*provider)
@@ -191,7 +191,7 @@ func selectRegionEndpoints(provider string) ([]regionEndpoint, error) {
 		}
 	}
 	if len(selected) == 0 {
-		return nil, fmt.Errorf("알 수 없는 provider: %s (all, aws, gcp)", provider)
+		return nil, fmt.Errorf("%s", T("observe.where.unknown_provider", provider))
 	}
 	return selected, nil
 }
@@ -236,7 +236,7 @@ func measureEndpoint(ctx context.Context, endpoint regionEndpoint, count int) wh
 	}
 	addresses, err := net.DefaultResolver.LookupIPAddr(ctx, endpoint.host)
 	if err != nil || len(addresses) == 0 {
-		measurement.Error = "이름을 풀지 못했습니다"
+		measurement.Error = T("observe.where.error.resolve")
 		return measurement
 	}
 	target := net.JoinHostPort(addresses[0].IP.String(), whereProbePort)
@@ -250,7 +250,7 @@ func measureEndpoint(ctx context.Context, endpoint regionEndpoint, count int) wh
 		samples = append(samples, elapsed)
 	}
 	if len(samples) == 0 {
-		measurement.Error = "연결하지 못했습니다"
+		measurement.Error = T("observe.where.error.connect")
 		return measurement
 	}
 	sort.Slice(samples, func(i, j int) bool { return samples[i] < samples[j] })
@@ -439,7 +439,7 @@ func printWhere(writer io.Writer, report whereReport, verbose bool) {
 	printWhereLocation(writer, report.Location)
 
 	rows := groupByCity(report.Regions)
-	fmt.Fprintf(writer, "\n가까운 지역\n")
+	fmt.Fprintf(writer, "\n%s\n", T("observe.where.heading.nearest"))
 	if verbose {
 		printWhereDetail(writer, rows)
 	} else {
@@ -450,15 +450,26 @@ func printWhere(writer io.Writer, report whereReport, verbose bool) {
 	}
 }
 
-const whereLabelWidth = 12
+// whereLabelWidth는 라벨 열의 폭이다. 번역마다 라벨 길이가 달라 실행 시점에 잰다.
+// 가장 긴 라벨 뒤에 두 칸을 남겨 값이 라벨에 붙지 않게 한다.
+func whereLabelWidth() int {
+	width := 0
+	for _, label := range []string{"public IP", "Cloudflare", T("observe.where.label.route"), T("observe.where.label.network")} {
+		if value := liveWidth(label); value > width {
+			width = value
+		}
+	}
+	return width + 2
+}
 
 func printWhereLocation(writer io.Writer, location whereLocation) {
-	fmt.Fprintln(writer, "위치")
+	fmt.Fprintln(writer, T("observe.where.heading.location"))
+	width := whereLabelWidth()
 	line := func(label, value string) {
 		if value == "" {
 			return
 		}
-		fmt.Fprintf(writer, "  %s %s\n", padRight(label, whereLabelWidth), value)
+		fmt.Fprintf(writer, "  %s %s\n", padRight(label, width), value)
 	}
 	line("public IP", joinFields(location.PublicIP, whereGeography(location), location.Org))
 	if location.CloudflarePoP != "" {
@@ -472,9 +483,9 @@ func printWhereLocation(writer io.Writer, location whereLocation) {
 		if location.Gateway != "" {
 			route += " → " + location.Gateway
 		}
-		line("경로", route)
+		line(T("observe.where.label.route"), route)
 	}
-	line("망", whereNetworkShape(location))
+	line(T("observe.where.label.network"), whereNetworkShape(location))
 }
 
 // whereGeography는 나라, 광역, 도시를 잇는다. ipinfo가 광역과 도시에 같은 이름을 주는 곳이 있어 중복은 뺀다.
@@ -490,14 +501,14 @@ func whereNetworkShape(location whereLocation) string {
 	var parts []string
 	switch {
 	case location.CarrierGradeNAT:
-		parts = append(parts, "carrier-grade NAT 뒤")
+		parts = append(parts, T("observe.where.shape.carrier_grade_nat"))
 	case location.BehindNAT:
-		parts = append(parts, "NAT 뒤")
+		parts = append(parts, T("observe.where.shape.nat"))
 	case location.PublicIP != "" && location.LocalAddress == location.PublicIP:
-		parts = append(parts, "public 주소 직접 사용")
+		parts = append(parts, T("observe.where.shape.public_direct"))
 	}
 	if location.Tunnel {
-		parts = append(parts, "tunnel 경유")
+		parts = append(parts, T("observe.where.shape.tunnel"))
 	}
 	return strings.Join(parts, "  ·  ")
 }
@@ -512,42 +523,72 @@ func joinFields(values ...string) string {
 	return strings.Join(kept, "  ·  ")
 }
 
-const whereValueWidth = 9
+const (
+	// whereValueMinWidth는 "1234.5ms" 같은 값이 들어갈 최소 폭이다.
+	whereValueMinWidth = 9
+	// whereProviderMinWidth는 aws, gcp 같은 사업자 이름이 들어갈 최소 폭이다.
+	whereProviderMinWidth = 8
+)
+
+// whereValueWidth는 숫자 열의 폭이다. 번역한 머리글이 최소 폭보다 넓으면 그만큼 넓힌다.
+func whereValueWidth() int {
+	width := whereValueMinWidth
+	for _, label := range []string{
+		T("observe.where.column.min"), T("observe.where.column.median"),
+		T("observe.where.column.jitter"), T("observe.where.unreachable"),
+	} {
+		if value := liveWidth(label); value > width {
+			width = value
+		}
+	}
+	return width
+}
+
+func whereProviderWidth() int {
+	width := whereProviderMinWidth
+	if value := liveWidth(T("observe.where.column.provider")); value > width {
+		width = value
+	}
+	return width
+}
 
 func printWhereSummary(writer io.Writer, rows []cityRow) {
 	width := cityColumnWidth(rows)
+	value := whereValueWidth()
 	fmt.Fprintf(writer, "  %s  %s  %s  %s  %s\n", padRight("", width),
-		padLeft("최소", whereValueWidth), padLeft("중앙", whereValueWidth),
-		padLeft("지터", whereValueWidth), "사업자")
+		padLeft(T("observe.where.column.min"), value), padLeft(T("observe.where.column.median"), value),
+		padLeft(T("observe.where.column.jitter"), value), T("observe.where.column.provider"))
 	for _, row := range rows {
 		if !row.reached {
-			fmt.Fprintf(writer, "  %s  %s\n", padRight(row.city, width), padLeft("닿지 않음", whereValueWidth))
+			fmt.Fprintf(writer, "  %s  %s\n", padRight(row.city, width), padLeft(T("observe.where.unreachable"), value))
 			continue
 		}
 		fmt.Fprintf(writer, "  %s  %s  %s  %s  %s\n", padRight(row.city, width),
-			padLeft(formatMillis(row.best.Min), whereValueWidth),
-			padLeft(formatMillis(row.best.Median), whereValueWidth),
-			padLeft(formatMillis(row.best.Jitter), whereValueWidth), row.best.Provider)
+			padLeft(formatMillis(row.best.Min), value),
+			padLeft(formatMillis(row.best.Median), value),
+			padLeft(formatMillis(row.best.Jitter), value), row.best.Provider)
 	}
 }
 
 func printWhereDetail(writer io.Writer, rows []cityRow) {
 	width := cityColumnWidth(rows)
-	fmt.Fprintf(writer, "  %s  %s  %s  %s  %s  %s\n", padRight("", width), padRight("사업자", 8),
-		padLeft("최소", whereValueWidth), padLeft("중앙", whereValueWidth),
-		padLeft("지터", whereValueWidth), "region")
+	value := whereValueWidth()
+	provider := whereProviderWidth()
+	fmt.Fprintf(writer, "  %s  %s  %s  %s  %s  %s\n", padRight("", width), padRight(T("observe.where.column.provider"), provider),
+		padLeft(T("observe.where.column.min"), value), padLeft(T("observe.where.column.median"), value),
+		padLeft(T("observe.where.column.jitter"), value), "region")
 	for _, row := range rows {
 		for _, measurement := range row.all {
 			if measurement.Error != "" {
 				fmt.Fprintf(writer, "  %s  %s  %s  %s\n", padRight(row.city, width),
-					padRight(measurement.Provider, 8), padLeft("–", whereValueWidth), measurement.Error)
+					padRight(measurement.Provider, provider), padLeft("–", value), measurement.Error)
 				continue
 			}
 			fmt.Fprintf(writer, "  %s  %s  %s  %s  %s  %s\n", padRight(row.city, width),
-				padRight(measurement.Provider, 8),
-				padLeft(formatMillis(measurement.Min), whereValueWidth),
-				padLeft(formatMillis(measurement.Median), whereValueWidth),
-				padLeft(formatMillis(measurement.Jitter), whereValueWidth), measurement.Region)
+				padRight(measurement.Provider, provider),
+				padLeft(formatMillis(measurement.Min), value),
+				padLeft(formatMillis(measurement.Median), value),
+				padLeft(formatMillis(measurement.Jitter), value), measurement.Region)
 		}
 	}
 }
@@ -576,19 +617,17 @@ func whereConclusion(rows []cityRow, location whereLocation) string {
 		}
 	}
 	if len(reached) == 0 {
-		return "어느 지역에도 닿지 못했습니다."
+		return T("observe.where.conclusion.none")
 	}
 	nearest := reached[0]
 	if len(reached) == 1 {
-		return fmt.Sprintf("측정에 성공한 지역은 %s 하나입니다.", nearest.city)
+		return T("observe.where.conclusion.only", nearest.city)
 	}
 	gap := reached[1].best.Min - nearest.best.Min
 	if gap < 5*time.Millisecond {
-		return fmt.Sprintf("가장 가까운 두 지역 %s, %s의 차이가 %s뿐입니다. 실행마다 순위가 바뀔 수 있습니다.",
-			nearest.city, reached[1].city, formatMillis(gap))
+		return T("observe.where.conclusion.close", nearest.city, reached[1].city, formatMillis(gap))
 	}
-	return fmt.Sprintf("가장 가까운 지역은 %s입니다. 두 번째 %s까지는 %s 더 걸립니다.",
-		nearest.city, reached[1].city, formatMillis(gap))
+	return T("observe.where.conclusion.clear", nearest.city, reached[1].city, formatMillis(gap))
 }
 
 // whereProgressModel은 측정이 도는 동안 한 줄로 진행을 보여 준다.
@@ -644,7 +683,7 @@ func (model whereProgressModel) View() tea.View {
 		return liveFrame("", 1)
 	}
 	elapsed := model.now().Sub(model.started).Seconds()
-	line := fmt.Sprintf("%s  지역 확인  %d/%d  ·  %.1fs", model.spinner.View(), model.done, model.total, elapsed)
+	line := fmt.Sprintf("%s  %s  %d/%d  ·  %.1fs", model.spinner.View(), T("observe.where.progress"), model.done, model.total, elapsed)
 	return liveFrame(line, 1)
 }
 

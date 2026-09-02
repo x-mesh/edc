@@ -166,7 +166,7 @@ func TestProbeHTTPExpectStatus(t *testing.T) {
 		t.Fatalf("expected status must pass: %#v", matched)
 	}
 	mismatched := probeHTTPWithOptions(context.Background(), server.URL, httpCheckOptions{expectStatus: http.StatusOK})
-	if mismatched.Status != StatusFail || mismatched.Error == nil || mismatched.Error.Kind != "status" || !strings.Contains(mismatched.Summary, "기대값 200") {
+	if mismatched.Status != StatusFail || mismatched.Error == nil || mismatched.Error.Kind != "status" || !strings.Contains(mismatched.Summary, T("observe.probe.status_mismatch", http.StatusNotFound, http.StatusOK)) {
 		t.Fatalf("mismatch must fail: %#v", mismatched)
 	}
 }

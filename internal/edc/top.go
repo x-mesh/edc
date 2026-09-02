@@ -17,23 +17,23 @@ import (
 func runTop(args []string) int {
 	set := flag.NewFlagSet("top", flag.ContinueOnError)
 	set.SetOutput(os.Stderr)
-	interval := set.Duration("interval", time.Second, "sampling interval")
-	count := set.Int("count", 0, "출력 row 수, 0은 계속 실행")
-	noHeader := set.Bool("no-header", false, "host와 column header 생략")
-	jsonPath := set.String("json", "", "sample당 한 줄 JSON 출력 경로, stdout은 -")
+	interval := set.Duration("interval", time.Second, T("observe.top.option.interval"))
+	count := set.Int("count", 0, T("observe.top.option.count"))
+	noHeader := set.Bool("no-header", false, T("observe.top.option.no_header"))
+	jsonPath := set.String("json", "", T("observe.top.option.json"))
 	if err := set.Parse(args); err != nil {
 		return 2
 	}
 	if set.NArg() != 0 {
-		fmt.Fprintln(os.Stderr, "사용법: edc top [--interval 1s] [--count N] [--json <path|->]")
+		fmt.Fprintln(os.Stderr, T("observe.top.usage"))
 		return 2
 	}
 	if *interval < topMinInterval {
-		fmt.Fprintf(os.Stderr, "--interval은 %s 이상이어야 합니다\n", topMinInterval)
+		fmt.Fprintln(os.Stderr, T("observe.top.interval_minimum", topMinInterval))
 		return 2
 	}
 	if *count < 0 {
-		fmt.Fprintln(os.Stderr, "--count는 0 이상이어야 합니다")
+		fmt.Fprintln(os.Stderr, T("observe.top.count_minimum"))
 		return 2
 	}
 	var writer io.Writer = os.Stdout
@@ -104,7 +104,7 @@ func roundTopValue(value float64) float64 {
 func streamTop(ctx context.Context, writer io.Writer, options topOptions) int {
 	details, err := collectHostDetails()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "host 정보를 읽지 못했습니다: %v\n", err)
+		fmt.Fprintln(os.Stderr, T("observe.top.error.host", err))
 		return 1
 	}
 	limits := newTopLimits(details.Cores, options.color)
@@ -113,7 +113,7 @@ func streamTop(ctx context.Context, writer io.Writer, options topOptions) int {
 	}
 	previous, err := collectResourceSnapshot()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "resource를 읽지 못했습니다: %v\n", err)
+		fmt.Fprintln(os.Stderr, T("observe.top.error.resource", err))
 		return 1
 	}
 	encoder := json.NewEncoder(writer)
@@ -124,13 +124,13 @@ func streamTop(ctx context.Context, writer io.Writer, options topOptions) int {
 		select {
 		case <-ctx.Done():
 			if !options.json {
-				fmt.Fprintln(writer, "\n중지됨")
+				fmt.Fprintln(writer, "\n"+T("observe.top.stopped"))
 			}
 			return 0
 		case <-ticker.C:
 			current, err := collectResourceSnapshot()
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "resource를 읽지 못했습니다: %v\n", err)
+				fmt.Fprintln(os.Stderr, T("observe.top.error.resource", err))
 				return 1
 			}
 			rate := calculateRate(previous, current)

@@ -40,7 +40,7 @@ func runDoctorLive(ctx context.Context, cancel context.CancelFunc, probes []doct
 	model := newDoctorModel(target, doctorProbeNames(probes), true, options.redact, cancel)
 	live, err := startLiveProgram(model, cancel, tea.WithInput(os.Stdin), tea.WithOutput(os.Stdout))
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "실시간 화면을 표시하지 못했습니다: %v\n", err)
+		fmt.Fprintln(os.Stderr, T("observe.live.start_failed", err))
 		results := runParallel(ctx, doctorProbeFuncs(probes))
 		return emit(options, buildReport(version, started, targetInfo, results, options.redact))
 	}
@@ -50,7 +50,7 @@ func runDoctorLive(ctx context.Context, cancel context.CancelFunc, probes []doct
 	// finish가 Run을 끝내면 onExit이 cancel을 부르므로, 사용자 취소 여부는 그 전에 읽는다.
 	cancelled := ctx.Err() != nil
 	if _, err := live.finish(doctorDoneMsg{}); err != nil {
-		fmt.Fprintf(os.Stderr, "실시간 화면이 오류로 끝났습니다: %v\n", err)
+		fmt.Fprintln(os.Stderr, T("observe.live.exit_error", err))
 	}
 	report := buildReport(version, started, targetInfo, results, options.redact)
 	printResultTail(os.Stdout, report.Results, options.verbose, true)
@@ -164,9 +164,10 @@ func (model doctorModel) View() tea.View {
 
 func (model doctorModel) statusLine() string {
 	if model.cancelling {
-		return "취소 중, 실행 중인 probe를 종료합니다\n"
+		return T("observe.doctor.cancelling") + "\n"
 	}
-	return fmt.Sprintf("%s  %s  %d/%d 완료  %s\n", model.spinner.View(), model.target, model.completed(), len(model.rows), model.elapsed())
+	return fmt.Sprintf("%s  %s  %s  %s\n", model.spinner.View(), model.target,
+		T("observe.doctor.completed", model.completed(), len(model.rows)), model.elapsed())
 }
 
 func (model doctorModel) completed() int {

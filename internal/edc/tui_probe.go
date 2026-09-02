@@ -98,7 +98,7 @@ func (model probeModel) View() tea.View {
 
 func (model probeModel) detail() string {
 	if model.cancelling {
-		return "취소 중, 실행 중인 command를 종료합니다"
+		return T("observe.probe.cancelling")
 	}
 	detail := model.elapsed()
 	if model.target != "" {
@@ -179,7 +179,7 @@ func runProbeLive(ctx context.Context, cancel context.CancelFunc, probeID, targe
 	model := newProbeModel(probeID, target, progress.snapshot(), true, options.redact, cancel)
 	live, err := startLiveProgram(model, cancel, tea.WithInput(os.Stdin), tea.WithOutput(os.Stdout))
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "실시간 화면을 표시하지 못했습니다: %v\n", err)
+		fmt.Fprintln(os.Stderr, T("observe.live.start_failed", err))
 		return emit(options, buildReport(version, started, targetInfo, []Result{<-finished}, options.redact))
 	}
 	if latest := progress.attach(live); latest != "" {
@@ -189,7 +189,7 @@ func runProbeLive(ctx context.Context, cancel context.CancelFunc, probeID, targe
 	// finish가 Run을 끝내면 onExit이 cancel을 부르므로, 사용자 취소 여부는 그 전에 읽는다.
 	cancelled := ctx.Err() != nil
 	if _, err := live.finish(probeResultMsg{result: result}); err != nil {
-		fmt.Fprintf(os.Stderr, "실시간 화면이 오류로 끝났습니다: %v\n", err)
+		fmt.Fprintln(os.Stderr, T("observe.live.exit_error", err))
 	}
 	report := buildReport(version, started, targetInfo, []Result{result}, options.redact)
 	printResultTail(os.Stdout, report.Results, options.verbose, true)

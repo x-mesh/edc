@@ -23,7 +23,7 @@ func TestFormatBannerShape(t *testing.T) {
 	}
 	// 오른쪽 설명은 두 줄에서 같은 열에 선다.
 	want := bannerWidth + liveWidth(bannerSideGap)
-	for index, side := range map[int]string{1: bannerTag, 2: "0.1.0"} {
+	for index, side := range map[int]string{1: T("observe.banner.tag"), 2: "0.1.0"} {
 		line := lines[index]
 		at := strings.Index(line, side)
 		if at < 0 {
@@ -33,7 +33,7 @@ func TestFormatBannerShape(t *testing.T) {
 			t.Fatalf("line %q starts %q at column %d, want %d", line, side, got, want)
 		}
 	}
-	if !strings.Contains(plain, bannerTag) || !strings.Contains(plain, "0.1.0") {
+	if !strings.Contains(plain, T("observe.banner.tag")) || !strings.Contains(plain, "0.1.0") {
 		t.Fatalf("banner must carry the tagline and the version: %q", plain)
 	}
 	if strings.Contains(plain, "\033[") {

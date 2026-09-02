@@ -74,7 +74,7 @@ func startLiveProgram(model tea.Model, onExit func(), options ...tea.ProgramOpti
 		if live.err != nil {
 			return nil, live.err
 		}
-		return nil, fmt.Errorf("실시간 화면이 시작하자마자 종료했습니다")
+		return nil, fmt.Errorf("%s", T("observe.live.exited_immediately"))
 	}
 }
 

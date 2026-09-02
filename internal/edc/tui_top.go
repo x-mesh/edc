@@ -15,12 +15,12 @@ import (
 func runTopDashboard(interval time.Duration) int {
 	details, err := collectHostDetails()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "host 정보를 읽지 못했습니다: %v\n", err)
+		fmt.Fprintln(os.Stderr, T("observe.top.error.host", err))
 		return 1
 	}
 	first, err := collectResourceSnapshot()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "resource를 읽지 못했습니다: %v\n", err)
+		fmt.Fprintln(os.Stderr, T("observe.top.error.resource", err))
 		return 1
 	}
 	model := newTopModel(details, first, interval, collectResourceSnapshot)
@@ -30,7 +30,7 @@ func runTopDashboard(interval time.Duration) int {
 		return 1
 	}
 	if dashboard, ok := final.(topModel); ok && dashboard.err != nil {
-		fmt.Fprintf(os.Stderr, "resource를 읽지 못했습니다: %v\n", dashboard.err)
+		fmt.Fprintln(os.Stderr, T("observe.top.error.resource", dashboard.err))
 		return 1
 	}
 	return 0
@@ -175,7 +175,7 @@ func (model topModel) View() tea.View {
 func (model topModel) statusLine() string {
 	state := "interval " + model.interval.String()
 	if model.paused {
-		state = "일시정지  ·  " + state
+		state = T("observe.top.paused") + "  ·  " + state
 	}
-	return fmt.Sprintf("%s  ·  q 종료  p 일시정지  +/- interval", state)
+	return fmt.Sprintf("%s  ·  %s", state, T("observe.top.help_line"))
 }

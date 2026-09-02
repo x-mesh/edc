@@ -13,7 +13,6 @@ const (
 	bannerAccent  = "\033[38;5;87m"
 	bannerGap     = " "
 	bannerSideGap = "   "
-	bannerTag     = "SE/SRE 진단 툴킷"
 	// bannerWidth는 글자 세 개와 그 사이 여백의 폭이다.
 	bannerWidth = 3*3 + 2
 )
@@ -34,7 +33,7 @@ var bannerRows = [][]bannerLetter{
 
 // formatBanner는 3줄 banner를 만든다. 오른쪽에는 설명과 버전을 둔다.
 func formatBanner(version string, color bool) string {
-	side := []string{"", bannerTag, version}
+	side := []string{"", T("observe.banner.tag"), version}
 	var builder strings.Builder
 	for index, row := range bannerRows {
 		letters := make([]string, 0, len(row))

@@ -47,7 +47,7 @@ func TestTopModelAppendsRowsFromSamples(t *testing.T) {
 	if !view.AltScreen {
 		t.Fatal("dashboard must use the alt screen")
 	}
-	for _, expected := range []string{topColumnHeader, "q 종료", "interval 1s"} {
+	for _, expected := range []string{topColumnHeader, T("observe.top.help_line"), "interval 1s"} {
 		if !strings.Contains(view.Content, expected) {
 			t.Fatalf("view %q does not contain %q", view.Content, expected)
 		}
@@ -89,7 +89,7 @@ func TestTopModelPauseStopsSampling(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("resuming must schedule the next sample")
 	}
-	if !strings.Contains(model.View().Content, "일시정지") {
+	if !strings.Contains(model.View().Content, T("observe.top.paused")) {
 		t.Fatalf("view = %q", model.View().Content)
 	}
 }

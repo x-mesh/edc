@@ -30,7 +30,7 @@ func TestProbeResolvConfWarnsWithoutNameserver(t *testing.T) {
 		t.Fatal(err)
 	}
 	result := probeResolvConf(context.Background(), path)
-	if result.Status != StatusWarn || !strings.Contains(result.Summary, "nameserver가 없습니다") {
+	if result.Status != StatusWarn || result.Summary != T("observe.system.no_nameserver", path) {
 		t.Fatalf("result = %#v", result)
 	}
 	if len(result.Evidence) == 0 || result.Evidence[0].Label != path {

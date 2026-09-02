@@ -107,7 +107,7 @@ func TestProbeModelCancelsOnCtrlC(t *testing.T) {
 	if !cancelled || !model.cancelling {
 		t.Fatalf("first ctrl+c did not cancel: %v %#v", cancelled, model.cancelling)
 	}
-	if !strings.Contains(model.View().Content, "취소 중") {
+	if !strings.Contains(model.View().Content, T("observe.probe.cancelling")) {
 		t.Fatalf("view = %q", model.View().Content)
 	}
 	if _, cmd := model.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl}); cmd == nil {

@@ -75,10 +75,10 @@ make install PREFIX=/usr/local
 # sample당 한 줄 JSON
 ./bin/edc top --count 5 --json -
 
-# system/network/disk 정보
+# system/network/disk 정보와 public IP
 ./bin/edc info
-# public IP/지역/ASN은 외부 ipinfo.io 요청을 명시적으로 허용할 때만 조회
-./bin/edc info --public
+# 외부 ipinfo.io 요청 없이 실행
+./bin/edc info --public=false
 
 # 기본 종합 진단
 ./bin/edc doctor https://example.com
@@ -114,6 +114,8 @@ source <(./bin/edc completion zsh)
 ```
 
 공통 option은 `--timeout`, `--json <path|->`, `--verbose`, `--redact=true|false`입니다. Go `flag` 규칙에 따라 option은 target 앞에 둡니다.
+
+`edc info`는 public IP를 기본으로 ipinfo.io에 조회합니다. 3초 안에 응답이 없으면 요청을 멈추고 그 줄을 빼고 출력합니다. 요청을 끄려면 `--public=false`를, 제한 시간을 바꾸려면 `--timeout`을, 실패 원인을 보려면 `-v`를 씁니다.
 
 ### 이름 조회
 
@@ -198,6 +200,8 @@ load 임계값은 host의 core 수를 따릅니다.
 색을 끄려면 `NO_COLOR`를 설정합니다. 파이프와 파일에는 색이 들어가지 않습니다.
 
 `edc info`는 disk마다 막대를 그립니다. 막대는 `mem_%`와 같은 임계값을 쓰고 한 칸이 5퍼센트입니다. 막대는 색 없이도 수준을 보여 주므로 파이프에서도 정보가 남습니다.
+
+`edc info`는 disk 사용량을 전체 크기에서 남은 공간을 뺀 값으로 셉니다. macOS에서는 여러 APFS volume이 container 하나를 나눠 쓰므로, volume 하나의 `Used` 열만 보면 다른 volume이 차지한 공간이 빠집니다.
 
 macOS에서 `edc`는 memory 사용량을 `vm_stat`에서 읽습니다. free, speculative, inactive page를 빼는데, 이는 Linux의 `MemAvailable`과 같은 기준입니다. `top`의 `PhysMem` 줄은 cache를 포함하므로 97퍼센트 위에 머뭅니다.
 

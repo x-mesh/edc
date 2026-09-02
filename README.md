@@ -75,10 +75,10 @@ make install PREFIX=/usr/local
 # one JSON line for each sample
 ./bin/edc top --count 5 --json -
 
-# system, network, and disk information
+# system, network, and disk information, with the public IP
 ./bin/edc info
-# --public queries ipinfo.io, so allow the request on purpose
-./bin/edc info --public
+# skip the ipinfo.io request
+./bin/edc info --public=false
 
 # default diagnosis
 ./bin/edc doctor https://example.com
@@ -114,6 +114,8 @@ source <(./bin/edc completion zsh)
 ```
 
 The common options are `--timeout`, `--json <path|->`, `--verbose`, and `--redact=true|false`. Go `flag` rules put an option before the target.
+
+`edc info` asks ipinfo.io for the public IP by default. The request stops after 3 seconds and the line disappears. Use `--public=false` to skip the request, `--timeout` to change the limit, and `-v` to print the cause of a failure.
 
 ### Name lookup
 
@@ -198,6 +200,8 @@ The load thresholds follow the core count of the host.
 To remove the colors, set `NO_COLOR`. A pipe or a file gets no colors.
 
 `edc info` draws a bar for each disk. The bar uses the same thresholds as `mem_%`. One block is 5 percent. The bar shows the level without color, so a pipe keeps the information.
+
+`edc info` counts the disk usage as the total minus the available space. On macOS, several APFS volumes share one container, so the `Used` column of a single volume misses the space that the other volumes take.
 
 On macOS, `edc` reads the memory usage from `vm_stat`. It subtracts the free, speculative, and inactive pages. This matches `MemAvailable` on Linux. The `PhysMem` line of `top` includes the cache, so it stays above 97 percent.
 

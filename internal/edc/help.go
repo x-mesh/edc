@@ -114,6 +114,21 @@ var commandDocs = []commandDoc{
 		},
 	},
 	{
+		name: "where", group: "관측", summary: "가까운 지역과 이 망의 모습",
+		usage: []string{"edc where [--provider all|aws|gcp] [--count 3] [options]"},
+		options: []optionDoc{
+			{"--provider all", "측정할 사업자: all, aws, gcp"},
+			{"--count 3", "지역마다 측정할 횟수"},
+		},
+		usesCommon: true,
+		notes: []string{
+			"공개 endpoint에 TCP handshake만 보내고 끊습니다. 인증도 본문 전송도 없습니다.",
+			"이름을 먼저 풀고 그 주소로만 연결하므로 DNS 시간이 거리 값에 섞이지 않습니다.",
+			"public IP와 ASN, Cloudflare PoP, NAT와 tunnel 여부를 함께 보여 줍니다.",
+			"-v를 주면 사업자별 값을 모두 펼칩니다.",
+		},
+	},
+	{
 		name: "sockets", group: "관측", summary: "열린 socket 목록",
 		usage: []string{"edc sockets [options]"}, usesCommon: true,
 		notes: []string{"-v를 주면 목록 전체를 상세로 펼칩니다."},

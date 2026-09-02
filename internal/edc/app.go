@@ -58,6 +58,8 @@ func Run(args []string, version string) int {
 		return runHTTP(args[1:], version)
 	case "net":
 		return runNet(args[1:], version)
+	case "where":
+		return runWhere(args[1:], version)
 	case "sockets":
 		return runSimple(args[1:], version, "sockets", "sockets", probeSockets)
 	case "quality":

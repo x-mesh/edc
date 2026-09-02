@@ -3,6 +3,7 @@ package edc
 import (
 	"embed"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -12,7 +13,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-//go:embed locale/*.yaml
+//go:embed locale
 var localeFiles embed.FS
 
 const (
@@ -37,21 +38,49 @@ var (
 	activeLang  = defaultLanguage
 )
 
+// loadCatalogs는 언어마다 locale/<lang> 아래의 파일을 모두 읽어 하나로 합친다.
+// 영역별로 파일을 나누면 여러 사람이 같은 파일을 고치지 않는다.
 func loadCatalogs() {
 	catalogOnce.Do(func() {
 		catalogs = make(map[string]catalog, len(supportedLanguages))
 		for _, language := range supportedLanguages {
-			data, err := localeFiles.ReadFile("locale/" + language + ".yaml")
+			paths, err := fs.Glob(localeFiles, "locale/"+language+"/*.yaml")
 			if err != nil {
 				continue
 			}
-			var tree map[string]interface{}
-			if err := yaml.Unmarshal(data, &tree); err != nil {
-				continue
+			sort.Strings(paths)
+			tree := map[string]interface{}{}
+			for _, path := range paths {
+				data, err := localeFiles.ReadFile(path)
+				if err != nil {
+					continue
+				}
+				var part map[string]interface{}
+				if err := yaml.Unmarshal(data, &part); err != nil {
+					continue
+				}
+				mergeTree(tree, part)
 			}
 			catalogs[language] = catalog{language: language, tree: tree}
 		}
 	})
+}
+
+// mergeTree는 나무 둘을 깊이 합친다. 같은 키가 겹치면 나중에 읽은 파일이 이긴다.
+func mergeTree(into, from map[string]interface{}) {
+	for key, value := range from {
+		branch, isBranch := value.(map[string]interface{})
+		if !isBranch {
+			into[key] = value
+			continue
+		}
+		existing, ok := into[key].(map[string]interface{})
+		if !ok {
+			existing = map[string]interface{}{}
+			into[key] = existing
+		}
+		mergeTree(existing, branch)
+	}
 }
 
 // initLanguage는 환경변수와 config 파일을 보고 쓸 언어를 정한다.

@@ -10,6 +10,35 @@
 
 The source of each demo is a `.tape` file under [`docs/tape/`](docs/tape). To build one again, run `vhs docs/tape/doctor.tape`.
 
+## Install
+
+Install the latest release with the script. It reads the operating system and the architecture, checks the SHA-256, and installs the binary.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/x-mesh/edc/main/install.sh | sh
+```
+
+The script installs `edc` in `~/.local/bin`. Set `BINDIR` for another directory. Set `EDC_VERSION` for an earlier version.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/x-mesh/edc/main/install.sh | BINDIR=/usr/local/bin sh
+curl -fsSL https://raw.githubusercontent.com/x-mesh/edc/main/install.sh | EDC_VERSION=0.1.0 sh
+```
+
+A release holds binaries for Linux and macOS on `amd64` and `arm64`.
+
+## Update
+
+`edc update` reads the latest release, checks the SHA-256, and replaces the running binary.
+
+```bash
+edc update           # confirm, then replace
+edc update --check   # print the two versions only
+edc update --yes     # skip the confirmation
+```
+
+`edc` writes the new file next to the old one and renames it. A failed download leaves the earlier binary in place. If the directory needs a privilege, `edc` stops with exit code `3` before it downloads anything.
+
 ## Build
 
 `edc` needs Go 1.25 or later. The live screens use these dependencies.
@@ -79,6 +108,9 @@ make install PREFIX=/usr/local
 
 # shell completion
 source <(./bin/edc completion zsh)
+
+# update to the latest release
+./bin/edc update --check
 ```
 
 The common options are `--timeout`, `--json <path|->`, `--verbose`, and `--redact=true|false`. Go `flag` rules put an option before the target.
@@ -318,12 +350,12 @@ If no host in the group matches the tags of a step, `edc` prints a warning to st
 edc remote  daily  ·  host 3  ·  step 3  ·  실행 8
 inventory  ./inventory.yaml      recipe  ./recipe.yaml
 
-host        git-kit  x-mesh  brew
-jw-server   PASS     PASS       –
-jwserver68  PASS     ⠋          –
-mac-sub     PASS     ·          ·
+host          git-kit  x-mesh  brew
+build-server  PASS     PASS       –
+ci-runner     PASS     ⠋          –
+workstation   PASS     ·          ·
 
-⠋  jwserver68 / x-mesh / command  ·  4/8 완료  6.6s
+⠋  ci-runner / x-mesh / command  ·  4/8 완료  6.6s
 
 git-kit  git-kit update  →  git-kit --version
 x-mesh   xm update  →  xm version
@@ -446,3 +478,7 @@ On Linux, `edc` reads `/proc`, `/sys`, `ip`, `ss`, `ping`, `traceroute` or `trac
 On macOS, `edc` uses a system command adapter. Only macOS runs `quality` and `capture`.
 
 Every command keeps to a read-only diagnosis. `edc` runs no automatic repair, such as a DNS flush, an interface reset, or a firewall change.
+
+## License
+
+MIT. See [LICENSE](LICENSE).

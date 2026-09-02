@@ -10,6 +10,35 @@
 
 각 데모의 소스는 [`docs/tape/`](docs/tape) 아래 `.tape` 파일입니다. `vhs docs/tape/doctor.tape`처럼 실행하면 다시 만듭니다.
 
+## 설치
+
+script로 최신 release를 설치합니다. script는 운영체제와 architecture를 읽고, SHA-256을 확인한 다음 실행 파일을 설치합니다.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/x-mesh/edc/main/install.sh | sh
+```
+
+script는 `edc`를 `~/.local/bin`에 설치합니다. 다른 디렉터리에 넣으려면 `BINDIR`을, 이전 버전을 받으려면 `EDC_VERSION`을 지정합니다.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/x-mesh/edc/main/install.sh | BINDIR=/usr/local/bin sh
+curl -fsSL https://raw.githubusercontent.com/x-mesh/edc/main/install.sh | EDC_VERSION=0.1.0 sh
+```
+
+release에는 Linux와 macOS의 `amd64`, `arm64` 실행 파일이 들어 있습니다.
+
+## 업데이트
+
+`edc update`는 최신 release를 읽고 SHA-256을 확인한 다음 실행 중인 파일을 바꿉니다.
+
+```bash
+edc update           # 확인한 다음 교체
+edc update --check   # 두 버전만 출력
+edc update --yes     # 확인 생략
+```
+
+`edc`는 새 파일을 기존 파일 옆에 쓰고 이름을 바꿉니다. 내려받기가 실패하면 기존 실행 파일이 그대로 남습니다. 디렉터리에 쓸 권한이 없으면 내려받기 전에 exit code `3`으로 멈춥니다.
+
 ## 빌드
 
 Go 1.25 이상이 필요합니다. 실시간 화면은 다음 dependency를 씁니다.
@@ -79,6 +108,9 @@ make install PREFIX=/usr/local
 
 # shell completion
 source <(./bin/edc completion zsh)
+
+# 최신 release로 업데이트
+./bin/edc update --check
 ```
 
 공통 option은 `--timeout`, `--json <path|->`, `--verbose`, `--redact=true|false`입니다. Go `flag` 규칙에 따라 option은 target 앞에 둡니다.
@@ -318,12 +350,12 @@ group의 어떤 host도 step의 tag와 맞지 않으면 `edc`는 stderr에 경�
 edc remote  daily  ·  host 3  ·  step 3  ·  실행 8
 inventory  ./inventory.yaml      recipe  ./recipe.yaml
 
-host        git-kit  x-mesh  brew
-jw-server   PASS     PASS       –
-jwserver68  PASS     ⠋          –
-mac-sub     PASS     ·          ·
+host          git-kit  x-mesh  brew
+build-server  PASS     PASS       –
+ci-runner     PASS     ⠋          –
+workstation   PASS     ·          ·
 
-⠋  jwserver68 / x-mesh / command  ·  4/8 완료  6.6s
+⠋  ci-runner / x-mesh / command  ·  4/8 완료  6.6s
 
 git-kit  git-kit update  →  git-kit --version
 x-mesh   xm update  →  xm version
@@ -440,3 +472,7 @@ zsh에서는 script를 `fpath`의 디렉터리에 `_edc`라는 이름으로 저�
 ## 현재 범위
 
 `top`, `info`, `doctor`와 개별 network probe는 Linux와 macOS를 지원합니다. Linux에서는 `/proc`, `/sys`, `ip`, `ss`, `ping`, `traceroute` 또는 `tracepath`, `/etc/resolv.conf`를 읽고, `resolvectl`이 있으면 `resolvectl status`를 evidence로 덧붙입니다. macOS에서는 system command adapter를 사용합니다. `quality`와 `capture`는 macOS 전용입니다. 모든 command는 read-only 진단에 집중하며, DNS flush, interface reset, firewall 변경 같은 자동 복구는 하지 않습니다.
+
+## 라이선스
+
+MIT입니다. [LICENSE](LICENSE)를 보십시오.

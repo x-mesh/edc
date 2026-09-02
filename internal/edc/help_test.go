@@ -17,7 +17,7 @@ func TestPrintHelpListsEveryCommandOnce(t *testing.T) {
 		if strings.Count(text, "  "+doc.name+" ") != 1 {
 			t.Errorf("command %q must appear once in the first screen", doc.name)
 		}
-		if !strings.Contains(text, doc.summary) {
+		if !strings.Contains(text, doc.summary()) {
 			t.Errorf("summary of %q is missing", doc.name)
 		}
 	}
@@ -26,17 +26,24 @@ func TestPrintHelpListsEveryCommandOnce(t *testing.T) {
 	}
 }
 
+// 번역이 길어지면 화면이 접히므로 세 언어를 모두 잰다.
 func TestHelpScreensStayWithinTheLineLimit(t *testing.T) {
-	var first strings.Builder
-	printHelp(&first)
-	assertWidth(t, "printHelp", first.String())
+	restore := currentLanguage()
+	defer setLanguage(restore)
 
-	for _, doc := range commandDocs {
-		var detail strings.Builder
-		if !printCommandHelp(&detail, doc.name) {
-			t.Fatalf("printCommandHelp(%q) returned false", doc.name)
+	for _, language := range supportedLanguages {
+		setLanguage(language)
+		var first strings.Builder
+		printHelp(&first)
+		assertWidth(t, language+" printHelp", first.String())
+
+		for _, doc := range commandDocs {
+			var detail strings.Builder
+			if !printCommandHelp(&detail, doc.name) {
+				t.Fatalf("printCommandHelp(%q) returned false", doc.name)
+			}
+			assertWidth(t, language+" help "+doc.name, detail.String())
 		}
-		assertWidth(t, "help "+doc.name, detail.String())
 	}
 }
 
@@ -71,15 +78,15 @@ func TestEveryCommandDocIsComplete(t *testing.T) {
 			t.Errorf("duplicate command doc: %s", doc.name)
 		}
 		seen[doc.name] = true
-		if doc.summary == "" || len(doc.usage) == 0 {
+		if doc.summary() == "" || len(doc.usage) == 0 {
 			t.Errorf("%s needs a summary and a usage line", doc.name)
 		}
 		if !groups[doc.group] {
 			t.Errorf("%s has group %q, which printHelp never prints", doc.name, doc.group)
 		}
 		// zsh completion은 이름과 설명을 콜론으로 나누므로 설명에 콜론이 있으면 깨진다.
-		if strings.ContainsAny(doc.summary, ":'") {
-			t.Errorf("%s summary must hold no colon or quote: %q", doc.name, doc.summary)
+		if strings.ContainsAny(doc.summary(), ":'") {
+			t.Errorf("%s summary must hold no colon or quote: %q", doc.name, doc.summary())
 		}
 	}
 }
@@ -90,7 +97,7 @@ func TestCompletionScriptsFollowTheCommandTable(t *testing.T) {
 	bash := renderCompletion(bashCompletion, bashCommandList())
 
 	for _, doc := range commandDocs {
-		if !strings.Contains(zsh, "'"+doc.name+":"+doc.summary+"'") {
+		if !strings.Contains(zsh, "'"+doc.name+":"+doc.summary()+"'") {
 			t.Errorf("zsh completion misses %q with its summary", doc.name)
 		}
 		if !strings.Contains(bash, doc.name) {

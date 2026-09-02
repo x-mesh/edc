@@ -45,9 +45,9 @@ func renderCompletion(script, commands string) string {
 func zshCommandList() string {
 	var builder strings.Builder
 	for _, doc := range commandSummaries() {
-		fmt.Fprintf(&builder, "        '%s:%s'\n", doc.name, doc.summary)
+		fmt.Fprintf(&builder, "        '%s:%s'\n", doc.name, doc.summary())
 	}
-	builder.WriteString("        'help:도움말'")
+	builder.WriteString("        'help:" + T("help.detail_label") + "'")
 	return builder.String()
 }
 

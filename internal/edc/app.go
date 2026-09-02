@@ -20,6 +20,7 @@ type commonOptions struct {
 }
 
 func Run(args []string, version string) int {
+	initLanguage()
 	if len(args) == 0 {
 		printHelp(os.Stdout)
 		return 0

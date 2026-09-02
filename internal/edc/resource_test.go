@@ -177,3 +177,54 @@ func TestFormatUsageBarColorsByThreshold(t *testing.T) {
 		t.Fatal("색을 끄면 escape가 없어야 한다")
 	}
 }
+
+// APFS는 container 하나를 여러 volume이 나눠 쓴다. `/`의 Used 열은 system volume이 쓴 양만 세므로
+// 그 값을 그대로 쓰면 926GB 중 16GB만 쓴 것처럼 보인다. 남은 공간에서 계산해야 실제 사용률이 나온다.
+func TestParseDiskUsageCountsSharedAPFSContainer(t *testing.T) {
+	output := `Filesystem     1024-blocks      Used Available Capacity  Mounted on
+/dev/disk3s1s1   971350180  16689044  42274080    29%    /
+/dev/disk3s5     971350180 886182012  42274080    96%    /System/Volumes/Data
+`
+	disks, err := parseDiskUsage(strings.NewReader(output))
+	if err != nil {
+		t.Fatalf("parse returned %v", err)
+	}
+	if len(disks) != 2 {
+		t.Fatalf("disks = %d", len(disks))
+	}
+	root := disks[0]
+	if root.Mount != "/" || root.Device != "/dev/disk3s1s1" {
+		t.Fatalf("root = %#v", root)
+	}
+	if root.Percent < 95.6 || root.Percent > 95.7 {
+		t.Fatalf("percent = %.2f, want about 95.65", root.Percent)
+	}
+	if root.Used != (971350180-42274080)*1024 {
+		t.Fatalf("used = %d", root.Used)
+	}
+	// 같은 container를 공유하므로 두 volume의 사용률이 같아야 한다.
+	if disks[1].Percent != root.Percent {
+		t.Fatalf("volumes of one container disagree: %.2f vs %.2f", disks[1].Percent, root.Percent)
+	}
+}
+
+func TestParseDiskUsageSkipsUnusableRows(t *testing.T) {
+	output := `Filesystem 1024-blocks Used Available Capacity Mounted on
+devfs 200 200 0 100% /dev
+map -hosts 0 0 0 100% /net
+/dev/disk1 0 0 0 100% /empty
+/dev/disk2 abc 10 20 50% /bad
+/dev/disk3 100 10 200 10% /over
+/dev/disk4 1000 250 750 25% /ok
+`
+	disks, err := parseDiskUsage(strings.NewReader(output))
+	if err != nil {
+		t.Fatalf("parse returned %v", err)
+	}
+	if len(disks) != 1 || disks[0].Mount != "/ok" {
+		t.Fatalf("disks = %#v", disks)
+	}
+	if disks[0].Percent != 25 {
+		t.Fatalf("percent = %.2f, want 25", disks[0].Percent)
+	}
+}

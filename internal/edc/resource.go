@@ -3,6 +3,7 @@ package edc
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"net"
 	"os/exec"
 	"runtime"
@@ -172,8 +173,14 @@ func collectDisksFromDF() ([]diskDetails, error) {
 	if err != nil {
 		return nil, err
 	}
+	return parseDiskUsage(strings.NewReader(string(output)))
+}
+
+// parseDiskUsage는 `df -kP`의 POSIX 출력을 읽는다.
+// 열은 Filesystem, 1024-blocks, Used, Available, Capacity, Mounted on 순서다.
+func parseDiskUsage(reader io.Reader) ([]diskDetails, error) {
 	var disks []diskDetails
-	scanner := bufio.NewScanner(strings.NewReader(string(output)))
+	scanner := bufio.NewScanner(reader)
 	for scanner.Scan() {
 		fields := strings.Fields(scanner.Text())
 		if len(fields) < 6 || fields[0] == "Filesystem" {
@@ -183,10 +190,13 @@ func collectDisksFromDF() ([]diskDetails, error) {
 			continue
 		}
 		totalKB, err1 := strconv.ParseUint(fields[1], 10, 64)
-		usedKB, err2 := strconv.ParseUint(fields[2], 10, 64)
-		if err1 != nil || err2 != nil || totalKB == 0 {
+		availableKB, err2 := strconv.ParseUint(fields[3], 10, 64)
+		if err1 != nil || err2 != nil || totalKB == 0 || availableKB > totalKB {
 			continue
 		}
+		// APFS는 container 하나를 여러 volume이 나눠 쓰므로 volume의 Used 열은 그 volume이 쓴 양만 센다.
+		// 남은 공간에서 거꾸로 계산해야 disk 전체 사용률이 나온다.
+		usedKB := totalKB - availableKB
 		disks = append(disks, diskDetails{Mount: strings.Join(fields[5:], " "), Device: fields[0], Total: totalKB * 1024, Used: usedKB * 1024, Percent: float64(usedKB) / float64(totalKB) * 100})
 	}
 	return disks, scanner.Err()

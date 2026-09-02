@@ -69,6 +69,25 @@ make install VERSION=0.1.0-dev
 make install PREFIX=/usr/local
 ```
 
+## 언어
+
+`edc`는 기본으로 영어를 씁니다. 한국어와 일본어도 함께 담고 있습니다.
+
+언어는 설정 파일에서 정합니다. `edc`는 `os.UserConfigDir()/edc/config.yaml`을 읽습니다. Linux에서는 `~/.config/edc/config.yaml`, macOS에서는 `~/Library/Application Support/edc/config.yaml`입니다.
+
+```yaml
+# config.yaml
+lang: ko
+```
+
+한 번만 다른 언어로 보려면 `EDC_LANG`을 씁니다. 설정 파일보다 우선합니다.
+
+```bash
+EDC_LANG=ja edc where
+```
+
+`en`, `ko`, `ja`를 받습니다. `ko_KR.UTF-8` 같은 locale 이름을 주면 앞의 언어 부분만 봅니다. 모르는 값은 영어로 내려가고, 어떤 언어에 빠진 메시지도 영어로 내려갑니다.
+
 ## 빠른 시작
 
 ```bash

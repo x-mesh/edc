@@ -69,6 +69,25 @@ Set `PREFIX` or `BINDIR` to use another install path.
 make install PREFIX=/usr/local
 ```
 
+## Language
+
+`edc` prints English by default. It also carries Korean and Japanese.
+
+Set the language in the config file. `edc` reads it from `os.UserConfigDir()/edc/config.yaml`, which is `~/.config/edc/config.yaml` on Linux and `~/Library/Application Support/edc/config.yaml` on macOS.
+
+```yaml
+# config.yaml
+lang: ko
+```
+
+Set `EDC_LANG` to change the language for one run. It wins over the config file.
+
+```bash
+EDC_LANG=ja edc where
+```
+
+`edc` accepts `en`, `ko`, and `ja`. It reads a locale name such as `ko_KR.UTF-8` and keeps the language part. An unknown value falls back to English, and so does a message that a language misses.
+
 ## Quick start
 
 ```bash

@@ -1,0 +1,110 @@
+# English messages for edc remote. This file is the base: a key that another language misses falls back to here.
+remote:
+  flag:
+    inventory: "inventory YAML path"
+    recipe: "recipe YAML path"
+    group: "inventory group to run, an alias of the positional argument"
+    connect_timeout: "SSH connection time limit"
+    output_limit: "output byte limit for each command"
+    parallel: "hosts to run at the same time, overrides the inventory value"
+    force: "skip the plan confirmation prompt"
+    force_short: "short option for --force"
+    dry_run: "print the plan and stop"
+    dry_run_short: "short option for --dry-run"
+    list: "print the groups and hosts of the inventory and stop"
+    list_short: "short option for --list"
+
+  error:
+    group_once: "set the group once, with a positional argument or with --group"
+    run_renamed: "edc remote run is now edc remote <group>. Run edc remote with no argument to select a group"
+    reserved_group: "%q is reserved as a subcommand name and cannot be a group"
+    dry_run_with_force: "--dry-run and -f do not work together"
+    list_with_force: "--list does not work with --dry-run or -f"
+    timeout_range: "--timeout and --connect-timeout must be more than 0 and not more than %s"
+    output_limit_range: "--output-limit must be between 1 and %d"
+    parallel_range: "--parallel must be between 1 and %d"
+    cancelled: "the remote run is cancelled"
+    inventory_not_found: "edc cannot find inventory.yaml: %s. Use --inventory to give the path"
+    recipe_not_found: "edc cannot find recipe.yaml: %s. Use --recipe to give the path"
+    force_needs_single_group: "-f needs exactly one inventory group. Use edc remote <group> to select one"
+    group_required: "give the group: edc remote <group>. inventory groups: %s"
+    invalid_group_number: "invalid group number: %s"
+    value_empty: "%s cannot be empty"
+    inventory_no_host: "the inventory needs one host or more"
+    inventory_host_limit: "the inventory cannot have more than %d hosts"
+    inventory_no_group: "the inventory needs one group or more"
+    inventory_group_limit: "the inventory cannot have more than %d groups"
+    inventory_parallel_range: "the inventory parallel value must be between 0 and %d"
+    host_name_empty: "the name of host %d cannot be empty"
+    host_target_dash: "the target of host %q cannot start with '-'"
+    duplicate_host: "duplicate host: %s"
+    group_empty: "the group name and its members cannot be empty"
+    group_reserved: "the group name %q is reserved as a subcommand name"
+    group_unknown_host: "unknown host in group %q: %s"
+    group_duplicate_host: "duplicate host in group %q: %s"
+    options_unknown_group: "unknown group in group_options: %s"
+    group_parallel_range: "the parallel value of group %q must be between 1 and %d"
+    default_timeout_range: "the default timeout must be more than 0 and not more than %s"
+    recipe_name_empty: "the recipe name cannot be empty"
+    recipe_step_range: "the recipe must have between 1 and %d steps"
+    step_name_command_empty: "the name and the command of step %d cannot be empty"
+    duplicate_step: "duplicate step: %s"
+    step_timeout_invalid: "the timeout of step %q is not correct: %s"
+    tag_limit: "%s cannot have more than %d tags"
+    tag_empty: "%s cannot have an empty tag"
+    duplicate_tag: "duplicate tag in %s: %s"
+    file_too_large: "the file size cannot be more than %d bytes"
+    single_document: "edc accepts one YAML document only"
+    unknown_group: "unknown group: %s"
+    ssh_not_found: "edc cannot find the ssh executable: %w"
+    live_start_failed: "edc cannot show the live screen: %v"
+    live_end_failed: "the live screen stopped with an error: %v"
+
+  warn:
+    step_no_host: "warning: step %q has tags (%s) that match no host in group %q"
+    output_truncated: "edc cut %s at the output limit"
+
+  result:
+    skipped_after_failure: "an earlier step on this host failed, so edc skipped this step"
+    command_failed: "the %[2]s command failed on %[1]s"
+    command_ran: "edc ran the %[2]s command on %[1]s"
+    verify_failed: "the %[2]s verify failed on %[1]s"
+    verify_passed: "edc confirmed the %[2]s install state on %[1]s"
+    cancelled: "the user cancelled the run"
+
+  outcome:
+    done: "done"
+    cancelled: "cancelled"
+
+  confirm:
+    run: "Run?"
+    stream: "Stream the detailed output?"
+
+  prompt:
+    choose_group: "Select %s:"
+    group_number: "group number"
+
+  label:
+    group: "target group"
+    inventory_file: "inventory file"
+    recipe_file: "recipe file"
+    inventory_candidate: "%s  ·  %d groups, %d hosts"
+    recipe_candidate: "%s  ·  %s, %d steps"
+    no_target: "(no target)"
+    hidden_hosts: "…and %d more host"
+    completed_count: "%d/%d done"
+
+  header:
+    summary: "edc remote  %s  ·  host %d  ·  step %d  ·  run %d"
+
+  legend:
+    symbols: "✓ pass   ✗ fail   ! warn   ~ skip   – none   · waiting"
+
+  select:
+    group_title: "Select the target group   ↑/↓ move   Enter select   q cancel"
+    inventory_title: "Select the inventory file   ↑/↓ move   Enter select   q cancel"
+    recipe_title: "Select the recipe file   ↑/↓ move   Enter select   q cancel"
+    cancelled: "%s: cancelled"
+
+  status:
+    cancelling: "edc cancels the run and stops the commands"

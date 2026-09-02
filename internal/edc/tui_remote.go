@@ -248,10 +248,10 @@ func (model remoteModel) View() tea.View {
 		builder.WriteString(model.table.row(host, cells) + "\n")
 	}
 	if hidden := len(model.table.hosts) - len(visible); hidden > 0 {
-		builder.WriteString(fmt.Sprintf("…외 %d host\n", hidden))
+		builder.WriteString(T("remote.label.hidden_hosts", hidden) + "\n")
 	}
 	if model.table.symbols {
-		builder.WriteString(remoteSymbolLegend + "\n")
+		builder.WriteString(remoteSymbolLegend() + "\n")
 	}
 	// 확인과 진행 상황은 표 바로 아래에 둔다. 실행 대상을 본 자리에서 답하고, 같은 자리가 상태줄로 바뀐다.
 	builder.WriteString("\n")
@@ -271,7 +271,7 @@ func (model remoteModel) View() tea.View {
 // bottom은 표 바로 아래 한 줄이다. 확인 중에는 질문, 실행 중에는 상태줄이다.
 func (model remoteModel) bottom() string {
 	if model.stage == remoteStageConfirm {
-		return confirmPrompt("실행할까요?", model.confirmYes, model.color) + "\n"
+		return confirmPrompt(T("remote.confirm.run"), model.confirmYes, model.color) + "\n"
 	}
 	return model.statusLine()
 }
@@ -314,14 +314,15 @@ func (model remoteModel) cellText(cell remoteCell) string {
 
 func (model remoteModel) statusLine() string {
 	if model.cancelling && !model.finished {
-		return "취소 중, 실행 중인 command를 종료합니다\n"
+		return T("remote.status.cancelling") + "\n"
 	}
 	if model.finished {
 		return "\n"
 	}
-	line := fmt.Sprintf("%s  %d/%d 완료  %s", model.spinner.View(), model.completed, model.total, model.elapsed())
+	completed := T("remote.label.completed_count", model.completed, model.total)
+	line := fmt.Sprintf("%s  %s  %s", model.spinner.View(), completed, model.elapsed())
 	if model.running != "" {
-		line = fmt.Sprintf("%s  %s  ·  %d/%d 완료  %s", model.spinner.View(), model.running, model.completed, model.total, model.elapsed())
+		line = fmt.Sprintf("%s  %s  ·  %s  %s", model.spinner.View(), model.running, completed, model.elapsed())
 	}
 	return line + "\n"
 }

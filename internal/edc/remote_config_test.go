@@ -1,6 +1,7 @@
 package edc
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -115,11 +116,11 @@ func TestRemoteConfigRejectsInvalidInput(t *testing.T) {
 		name, content, want string
 	}{
 		{"unknown field", "hosts: []\ngroups: {}\nsecret: value\n", "field secret not found"},
-		{"duplicate host", "hosts:\n- {name: one, target: one}\n- {name: one, target: two}\ngroups: {all: [one]}\n", "중복 host"},
-		{"unknown member", "hosts: [{name: one, target: one}]\ngroups: {all: [two]}\n", "알 수 없는 host"},
-		{"empty tag", "hosts: [{name: one, tags: [mac, \"  \"]}]\ngroups: {all: [one]}\n", "tag는 비어 있을 수 없습니다"},
-		{"duplicate tag", "hosts: [{name: one, tags: [mac, mac]}]\ngroups: {all: [one]}\n", "중복 tag"},
-		{"reserved group", "hosts: [{name: one}]\ngroups: {run: [one]}\n", "예약되어 있습니다"},
+		{"duplicate host", "hosts:\n- {name: one, target: one}\n- {name: one, target: two}\ngroups: {all: [one]}\n", T("remote.error.duplicate_host", "one")},
+		{"unknown member", "hosts: [{name: one, target: one}]\ngroups: {all: [two]}\n", T("remote.error.group_unknown_host", "all", "two")},
+		{"empty tag", "hosts: [{name: one, tags: [mac, \"  \"]}]\ngroups: {all: [one]}\n", T("remote.error.tag_empty", fmt.Sprintf("host %q", "one"))},
+		{"duplicate tag", "hosts: [{name: one, tags: [mac, mac]}]\ngroups: {all: [one]}\n", T("remote.error.duplicate_tag", fmt.Sprintf("host %q", "one"), "mac")},
+		{"reserved group", "hosts: [{name: one}]\ngroups: {run: [one]}\n", T("remote.error.group_reserved", "run")},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -136,7 +137,7 @@ func TestRemoteConfigRejectsInvalidInput(t *testing.T) {
 func TestRemoteRecipeRejectsDuplicateTag(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "recipe.yaml")
 	writeRemoteFixture(t, path, "name: daily\nsteps: [{name: brew, command: brew upgrade, verify: brew --version, tags: [mac, mac]}]\n")
-	if _, err := loadRemoteRecipe(path, time.Minute); err == nil || !strings.Contains(err.Error(), "중복 tag") {
+	if _, err := loadRemoteRecipe(path, time.Minute); err == nil || !strings.Contains(err.Error(), T("remote.error.duplicate_tag", fmt.Sprintf("step %q", "brew"), "mac")) {
 		t.Fatalf("error = %v", err)
 	}
 }
@@ -166,7 +167,7 @@ func TestRemoteConfigRejectsLimits(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "inventory.yaml")
 		content := strings.Repeat("#", remoteConfigLimit+1)
 		writeRemoteFixture(t, path, content)
-		if _, err := loadRemoteInventory(path); err == nil || !strings.Contains(err.Error(), "파일 크기") {
+		if _, err := loadRemoteInventory(path); err == nil || !strings.Contains(err.Error(), T("remote.error.file_too_large", remoteConfigLimit)) {
 			t.Fatalf("error = %v", err)
 		}
 	})

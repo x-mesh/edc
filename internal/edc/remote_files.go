@@ -1,7 +1,6 @@
 package edc
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -60,7 +59,7 @@ func remoteInventoryCandidates(cwd, configDir string) []selectItem {
 			continue
 		}
 		items = append(items, selectItem{
-			label: fmt.Sprintf("%s  ·  group %d개, host %d개", remoteDisplayPath(cwd, path), len(inventory.Groups), len(inventory.Hosts)),
+			label: T("remote.label.inventory_candidate", remoteDisplayPath(cwd, path), len(inventory.Groups), len(inventory.Hosts)),
 			value: path,
 		})
 	}
@@ -76,7 +75,7 @@ func remoteRecipeCandidates(cwd, configDir string, defaultTimeout time.Duration)
 			continue
 		}
 		items = append(items, selectItem{
-			label: fmt.Sprintf("%s  ·  %s, step %d개", remoteDisplayPath(cwd, path), recipe.Name, len(recipe.Steps)),
+			label: T("remote.label.recipe_candidate", remoteDisplayPath(cwd, path), recipe.Name, len(recipe.Steps)),
 			value: path,
 		})
 	}

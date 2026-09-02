@@ -85,7 +85,7 @@ func TestSelectModelEnterChooses(t *testing.T) {
 	if view.AltScreen {
 		t.Fatal("selector must stay inline")
 	}
-	if !strings.HasPrefix(view.Content, selectGroupLabel+"\n") {
+	if !strings.HasPrefix(view.Content, T(selectGroupLabel)+"\n") {
 		t.Fatalf("final view = %q", view.Content)
 	}
 	if !strings.Contains(view.Content, liveSelectedBar+" weekly") {
@@ -115,7 +115,7 @@ func TestSelectModelCancels(t *testing.T) {
 			t.Fatalf("%s choice error = %v", key, err)
 		}
 		content := final.View().Content
-		if !strings.HasPrefix(content, selectGroupLabel+": 취소\n") {
+		if !strings.HasPrefix(content, T("remote.select.cancelled", T(selectGroupLabel))+"\n") {
 			t.Fatalf("%s view = %q", key, content)
 		}
 		if strings.Contains(content, liveSelectedBar) || strings.Contains(content, liveReverse) {
@@ -149,7 +149,7 @@ func TestSelectModelViewListsItems(t *testing.T) {
 	model := newSelectModel(selectGroupTitle, selectGroupLabel, selectItemsFromValues([]string{"daily", "weekly"}))
 	view := model.View().Content
 	// 고른 줄은 막대와 반전으로, 나머지는 그대로 그린다.
-	for _, expected := range []string{selectGroupTitle + "\n", liveReverse + liveSelectedBar + " daily", "  weekly\n"} {
+	for _, expected := range []string{T(selectGroupTitle) + "\n", liveReverse + liveSelectedBar + " daily", "  weekly\n"} {
 		if !strings.Contains(view, expected) {
 			t.Fatalf("view %q does not contain %q", view, expected)
 		}

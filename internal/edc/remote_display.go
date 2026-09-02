@@ -44,7 +44,7 @@ func newRemoteDisplay(output io.Writer, options remoteDisplayOptions) *remoteDis
 	live, err := startLiveProgram(model, options.cancel, tea.WithInput(os.Stdin), tea.WithOutput(output))
 	if err != nil {
 		// TTY를 열지 못하면 결과 줄만 흘려 보내는 기존 출력으로 내려간다.
-		fmt.Fprintf(os.Stderr, "실시간 화면을 표시하지 못했습니다: %v\n", err)
+		fmt.Fprintln(os.Stderr, T("remote.error.live_start_failed", err))
 		return display
 	}
 	display.live = live
@@ -134,7 +134,7 @@ func (display *remoteDisplay) Close() {
 		return
 	}
 	if _, err := display.live.finish(remoteDoneMsg{}); err != nil {
-		fmt.Fprintf(os.Stderr, "실시간 화면이 오류로 끝났습니다: %v\n", err)
+		fmt.Fprintln(os.Stderr, T("remote.error.live_end_failed", err))
 	}
 	display.live = nil
 }

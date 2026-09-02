@@ -32,7 +32,8 @@ const (
 	remoteGlyphPending = "·"
 )
 
-const remoteSymbolLegend = "✓ pass   ✗ fail   ! warn   ~ skip   – 해당 없음   · 대기"
+// remoteSymbolLegend는 기호 표기의 뜻을 한 줄로 알린다.
+func remoteSymbolLegend() string { return T("remote.legend.symbols") }
 
 // remoteTable은 host를 행, step을 열로 놓은 표의 배치다. 계획과 실행 결과가 같은 배치를 쓴다.
 type remoteTable struct {
@@ -249,7 +250,7 @@ func remoteStepLegend(recipe remoteRecipe, hosts []remoteHost) []string {
 		if len(step.Tags) > 0 {
 			line += "   tags " + strings.Join(step.Tags, ", ")
 			if len(stepHostNames(step, hosts)) == 0 {
-				line += " (대상 없음)"
+				line += " " + T("remote.label.no_target")
 			}
 		}
 		lines = append(lines, line)
@@ -267,6 +268,7 @@ func remoteRunHeader(group, inventoryPath, recipePath, cwd string, hosts []remot
 			}
 		}
 	}
-	return fmt.Sprintf("edc remote  %s  ·  host %d  ·  step %d  ·  실행 %d\ninventory  %s      recipe  %s\n",
-		group, len(hosts), len(recipe.Steps), planned, shortPath(cwd, inventoryPath), shortPath(cwd, recipePath))
+	return fmt.Sprintf("%s\ninventory  %s      recipe  %s\n",
+		T("remote.header.summary", group, len(hosts), len(recipe.Steps), planned),
+		shortPath(cwd, inventoryPath), shortPath(cwd, recipePath))
 }

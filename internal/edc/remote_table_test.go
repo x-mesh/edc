@@ -89,7 +89,7 @@ func TestRemoteRunHeaderCountsPlannedSteps(t *testing.T) {
 	cwd := t.TempDir()
 	header := remoteRunHeader("daily", filepath.Join(cwd, "inventory.yaml"), "/etc/edc/recipe.yaml", cwd, hosts, recipe)
 	// host 2개 × step 3개 중 brew는 mac 1대만 대상이라 5개다.
-	if !strings.Contains(header, "host 2  ·  step 3  ·  실행 5") {
+	if !strings.Contains(header, T("remote.header.summary", "daily", 2, 3, 5)) {
 		t.Fatalf("header = %q", header)
 	}
 	if !strings.Contains(header, "inventory  ./inventory.yaml") {
@@ -109,12 +109,12 @@ func TestRemoteStepLegendShowsCommandsAndTags(t *testing.T) {
 	if !strings.Contains(lines[0], "git-kit update  →  git-kit --version") {
 		t.Fatalf("legend[0] = %q", lines[0])
 	}
-	if !strings.Contains(lines[2], "tags mac") || strings.Contains(lines[2], "대상 없음") {
+	if !strings.Contains(lines[2], "tags mac") || strings.Contains(lines[2], T("remote.label.no_target")) {
 		t.Fatalf("legend[2] = %q", lines[2])
 	}
 	// 어느 host와도 맞지 않는 tag는 그 사실을 밝힌다.
 	orphan := remoteRecipe{Name: "daily", Steps: []remoteStep{{Name: "apt", Command: "apt-get update", Tags: []string{"bsd"}}}}
-	if got := remoteStepLegend(orphan, hosts); !strings.Contains(got[0], "tags bsd (대상 없음)") {
+	if got := remoteStepLegend(orphan, hosts); !strings.Contains(got[0], "tags bsd "+T("remote.label.no_target")) {
 		t.Fatalf("orphan legend = %q", got[0])
 	}
 }

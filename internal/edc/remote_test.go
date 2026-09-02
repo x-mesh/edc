@@ -105,7 +105,7 @@ func TestRemoteStepWithoutVerifyUsesCommandResult(t *testing.T) {
 	if results[0].Status != StatusPass || results[0].Metrics["verify_status"] != "none" {
 		t.Fatalf("result = %#v", results[0])
 	}
-	if !strings.Contains(results[0].Summary, "command를 실행했습니다") {
+	if !strings.Contains(results[0].Summary, T("remote.result.command_ran", "one", "brew")) {
 		t.Fatalf("summary = %q", results[0].Summary)
 	}
 	if results[1].Status != StatusFail {
@@ -229,12 +229,12 @@ func TestRemoteGroupArgumentResolution(t *testing.T) {
 		rest      []string
 		message   string
 	}{
-		{leading: "daily", flagValue: "daily", message: "한 번만"},
-		{leading: "daily", rest: []string{"weekly"}, message: "한 번만"},
-		{rest: []string{"daily", "weekly"}, message: "한 번만"},
+		{leading: "daily", flagValue: "daily", message: T("remote.error.group_once")},
+		{leading: "daily", rest: []string{"weekly"}, message: T("remote.error.group_once")},
+		{rest: []string{"daily", "weekly"}, message: T("remote.error.group_once")},
 		{leading: "run", message: "edc remote <group>"},
-		{leading: "list", message: "예약"},
-		{flagValue: "groups", message: "예약"},
+		{leading: "list", message: T("remote.error.reserved_group", "list")},
+		{flagValue: "groups", message: T("remote.error.reserved_group", "groups")},
 	} {
 		group, err := remoteGroupArgument(item.leading, item.flagValue, item.rest)
 		if err == nil || !strings.Contains(err.Error(), item.message) {

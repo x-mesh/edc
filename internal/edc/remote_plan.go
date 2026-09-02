@@ -2,6 +2,7 @@ package edc
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -125,7 +126,7 @@ func buildRemoteListing(path string, inventory remoteInventory, group string) (r
 	names := remoteGroupNames(inventory)
 	if group != "" {
 		if _, exists := inventory.Groups[group]; !exists {
-			return remoteListing{}, fmt.Errorf("알 수 없는 group: %s", group)
+			return remoteListing{}, errors.New(T("remote.error.unknown_group", group))
 		}
 		names = []string{group}
 	}

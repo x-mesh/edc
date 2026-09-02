@@ -6,14 +6,15 @@ import (
 	tea "charm.land/bubbletea/v2"
 )
 
+// 선택기의 제목과 이름표는 언어팩 키다. 패키지 상수는 언어 설정보다 먼저 만들어지므로
+// 문구를 미리 굳히지 않고, 화면을 만들 때 newSelectModel이 옮긴다.
 const (
-	selectGroupLabel     = "group(대상)"
-	selectInventoryLabel = "inventory 파일"
-	selectRecipeLabel    = "recipe 파일"
-	selectHelp           = "을 선택하세요   ↑/↓ 이동   Enter 선택   q 취소"
-	selectGroupTitle     = selectGroupLabel + selectHelp
-	selectInventoryTitle = selectInventoryLabel + selectHelp
-	selectRecipeTitle    = selectRecipeLabel + selectHelp
+	selectGroupLabel     = "remote.label.group"
+	selectInventoryLabel = "remote.label.inventory_file"
+	selectRecipeLabel    = "remote.label.recipe_file"
+	selectGroupTitle     = "remote.select.group_title"
+	selectInventoryTitle = "remote.select.inventory_title"
+	selectRecipeTitle    = "remote.select.recipe_title"
 )
 
 // selectItem은 화면에 보이는 설명과 실제로 고른 값을 나눈다. 경로 선택에서 둘이 다르다.
@@ -40,8 +41,9 @@ type selectModel struct {
 	cancelled bool
 }
 
-func newSelectModel(title, label string, items []selectItem) selectModel {
-	return selectModel{title: title, label: label, items: items, color: true}
+// newSelectModel은 제목과 이름표를 언어팩 키로 받는다.
+func newSelectModel(titleKey, labelKey string, items []selectItem) selectModel {
+	return selectModel{title: T(titleKey), label: T(labelKey), items: items, color: true}
 }
 
 // withCursorAt은 기본값이 있는 목록에서 그 항목에 커서를 올려 둔다.
@@ -117,7 +119,7 @@ func (model selectModel) rowWidth() int {
 func (model selectModel) headline() string {
 	switch {
 	case model.cancelled:
-		return model.label + ": 취소"
+		return T("remote.select.cancelled", model.label)
 	case model.done:
 		return model.label
 	default:

@@ -40,7 +40,7 @@ func remoteGroupArgument(leading, flagValue string, rest []string) (string, erro
 	}
 	candidates = append(candidates, rest...)
 	if len(candidates) > 1 {
-		return "", errors.New("group은 positional argument나 --group 중 하나로 한 번만 지정합니다")
+		return "", errors.New(T("remote.error.group_once"))
 	}
 	if len(candidates) == 0 {
 		return "", nil
@@ -53,9 +53,9 @@ func remoteGroupArgument(leading, flagValue string, rest []string) (string, erro
 
 func remoteReservedGroupHint(name string) string {
 	if name == "run" {
-		return "edc remote run은 edc remote <group>으로 바뀌었습니다. 인자 없이 edc remote를 실행하면 group을 선택합니다"
+		return T("remote.error.run_renamed")
 	}
-	return fmt.Sprintf("%q는 하위 command 이름으로 예약되어 있어 group으로 쓸 수 없습니다", name)
+	return T("remote.error.reserved_group", name)
 }
 
 func runRemoteRun(group string, args []string, version string) int {
@@ -71,18 +71,18 @@ func runRemoteRun(group string, args []string, version string) int {
 	set := flag.NewFlagSet("remote", flag.ContinueOnError)
 	set.SetOutput(os.Stderr)
 	bindCommon(set, &options)
-	set.StringVar(&remoteOptions.inventoryPath, "inventory", "", "inventory YAML 경로")
-	set.StringVar(&remoteOptions.recipePath, "recipe", "", "recipe YAML 경로")
-	set.StringVar(&groupFlag, "group", "", "실행할 inventory group, positional argument의 별칭")
-	set.DurationVar(&connectTimeout, "connect-timeout", connectTimeout, "SSH 연결 제한 시간")
-	set.IntVar(&outputLimit, "output-limit", outputLimit, "command별 출력 byte 상한")
-	set.IntVar(&parallelOverride, "parallel", 0, "동시에 실행할 host 수, inventory 설정 override")
-	set.BoolVar(&force, "force", false, "계획 확인 프롬프트 생략")
-	set.BoolVar(&force, "f", false, "--force 단축 option")
-	set.BoolVar(&dryRun, "dry-run", false, "실행 계획만 출력하고 종료")
-	set.BoolVar(&dryRun, "n", false, "--dry-run 단축 option")
-	set.BoolVar(&list, "list", false, "inventory의 group과 host를 출력하고 종료")
-	set.BoolVar(&list, "l", false, "--list 단축 option")
+	set.StringVar(&remoteOptions.inventoryPath, "inventory", "", T("remote.flag.inventory"))
+	set.StringVar(&remoteOptions.recipePath, "recipe", "", T("remote.flag.recipe"))
+	set.StringVar(&groupFlag, "group", "", T("remote.flag.group"))
+	set.DurationVar(&connectTimeout, "connect-timeout", connectTimeout, T("remote.flag.connect_timeout"))
+	set.IntVar(&outputLimit, "output-limit", outputLimit, T("remote.flag.output_limit"))
+	set.IntVar(&parallelOverride, "parallel", 0, T("remote.flag.parallel"))
+	set.BoolVar(&force, "force", false, T("remote.flag.force"))
+	set.BoolVar(&force, "f", false, T("remote.flag.force_short"))
+	set.BoolVar(&dryRun, "dry-run", false, T("remote.flag.dry_run"))
+	set.BoolVar(&dryRun, "n", false, T("remote.flag.dry_run_short"))
+	set.BoolVar(&list, "list", false, T("remote.flag.list"))
+	set.BoolVar(&list, "l", false, T("remote.flag.list_short"))
 	if err := set.Parse(args); err != nil {
 		return 2
 	}
@@ -93,23 +93,23 @@ func runRemoteRun(group string, args []string, version string) int {
 	}
 	remoteOptions.group = resolvedGroup
 	if dryRun && force {
-		fmt.Fprintln(os.Stderr, "--dry-run과 -f는 같이 쓸 수 없습니다")
+		fmt.Fprintln(os.Stderr, T("remote.error.dry_run_with_force"))
 		return 2
 	}
 	if list && (dryRun || force) {
-		fmt.Fprintln(os.Stderr, "--list는 --dry-run, -f와 같이 쓸 수 없습니다")
+		fmt.Fprintln(os.Stderr, T("remote.error.list_with_force"))
 		return 2
 	}
 	if options.timeout <= 0 || options.timeout > remoteMaxTimeout || connectTimeout <= 0 || connectTimeout > remoteMaxTimeout {
-		fmt.Fprintf(os.Stderr, "--timeout과 --connect-timeout은 0보다 크고 %s 이하여야 합니다\n", remoteMaxTimeout)
+		fmt.Fprintln(os.Stderr, T("remote.error.timeout_range", remoteMaxTimeout))
 		return 2
 	}
 	if outputLimit <= 0 || outputLimit > remoteConfigLimit {
-		fmt.Fprintf(os.Stderr, "--output-limit은 1에서 %d 사이여야 합니다\n", remoteConfigLimit)
+		fmt.Fprintln(os.Stderr, T("remote.error.output_limit_range", remoteConfigLimit))
 		return 2
 	}
 	if parallelOverride < 0 || parallelOverride > remoteHostLimit {
-		fmt.Fprintf(os.Stderr, "--parallel은 1에서 %d 사이여야 합니다\n", remoteHostLimit)
+		fmt.Fprintln(os.Stderr, T("remote.error.parallel_range", remoteHostLimit))
 		return 2
 	}
 	cwd, err := os.Getwd()
@@ -158,7 +158,7 @@ func runRemoteRun(group string, args []string, version string) int {
 	}
 	for _, step := range recipe.Steps {
 		if len(stepHostNames(step, hosts)) == 0 {
-			fmt.Fprintf(os.Stderr, "경고: step %q의 tag(%s)와 일치하는 host가 group %q에 없습니다\n", step.Name, strings.Join(step.Tags, ", "), remoteOptions.group)
+			fmt.Fprintln(os.Stderr, T("remote.warn.step_no_host", step.Name, strings.Join(step.Tags, ", "), remoteOptions.group))
 		}
 	}
 	started := time.Now()
@@ -280,7 +280,7 @@ func executeRemoteHost(ctx context.Context, host remoteHost, recipe remoteRecipe
 			continue
 		}
 		if hostFailed {
-			skipped := Result{Probe: probe, Status: StatusSkip, StartedAt: started.UTC(), Summary: "이 host의 이전 step이 실패해 건너뛰었습니다", Metrics: map[string]interface{}{"host": host.Name, "step": step.Name, "command_status": "skip", "verify_status": "skip"}}
+			skipped := Result{Probe: probe, Status: StatusSkip, StartedAt: started.UTC(), Summary: T("remote.result.skipped_after_failure"), Metrics: map[string]interface{}{"host": host.Name, "step": step.Name, "command_status": "skip", "verify_status": "skip"}}
 			results = append(results, skipped)
 			display.Result(skipped)
 			continue
@@ -309,7 +309,7 @@ func executeRemoteHost(ctx context.Context, host remoteHost, recipe remoteRecipe
 		appendRemoteOutput(&result, "command output", commandResult)
 		if commandResult.Err != nil {
 			result.Status = StatusFail
-			result.Summary = fmt.Sprintf("%s에서 %s command가 실패했습니다", host.Name, step.Name)
+			result.Summary = T("remote.result.command_failed", host.Name, step.Name)
 			result.Error = remoteExecutionError("command", step.Timeout, commandResult)
 			result.Metrics["command_status"] = "fail"
 			result.Metrics["command_exit_code"] = commandResult.ExitCode
@@ -323,7 +323,7 @@ func executeRemoteHost(ctx context.Context, host remoteHost, recipe remoteRecipe
 		result.Metrics["command_exit_code"] = 0
 		if step.Verify == "" {
 			result.Status = StatusPass
-			result.Summary = fmt.Sprintf("%s에서 %s command를 실행했습니다", host.Name, step.Name)
+			result.Summary = T("remote.result.command_ran", host.Name, step.Name)
 			result.Metrics["verify_status"] = "none"
 			result.DurationMS = time.Since(started).Milliseconds()
 			results = append(results, result)
@@ -342,13 +342,13 @@ func executeRemoteHost(ctx context.Context, host remoteHost, recipe remoteRecipe
 		appendRemoteOutput(&result, "verify output", verifyResult)
 		if verifyResult.Err != nil {
 			result.Status = StatusFail
-			result.Summary = fmt.Sprintf("%s에서 %s verify가 실패했습니다", host.Name, step.Name)
+			result.Summary = T("remote.result.verify_failed", host.Name, step.Name)
 			result.Error = remoteExecutionError("verify", step.Timeout, verifyResult)
 			result.Metrics["verify_status"] = "fail"
 			hostFailed = true
 		} else {
 			result.Status = StatusPass
-			result.Summary = fmt.Sprintf("%s에서 %s 설치 상태를 확인했습니다", host.Name, step.Name)
+			result.Summary = T("remote.result.verify_passed", host.Name, step.Name)
 			result.Metrics["verify_status"] = "pass"
 		}
 		result.DurationMS = time.Since(started).Milliseconds()
@@ -361,9 +361,9 @@ func executeRemoteHost(ctx context.Context, host remoteHost, recipe remoteRecipe
 // remoteOutcome은 마지막 줄의 첫 낱말이다.
 func remoteOutcome(cancelled bool) string {
 	if cancelled {
-		return "취소"
+		return T("remote.outcome.cancelled")
 	}
-	return "완료"
+	return T("remote.outcome.done")
 }
 
 // completedSteps는 실제로 실행해 결과가 난 step 수다. skip은 세지 않는다.
@@ -381,7 +381,7 @@ func completedSteps(results []Result) int {
 func remoteCancelledResult(probe, host, step string, started time.Time) Result {
 	return Result{
 		Probe: probe, Status: StatusSkip, StartedAt: started.UTC(), DurationMS: time.Since(started).Milliseconds(),
-		Summary: "사용자가 취소해 중단했습니다",
+		Summary: T("remote.result.cancelled"),
 		Metrics: map[string]interface{}{"host": host, "step": step, "command_status": "cancelled", "verify_status": "skip"},
 	}
 }
@@ -404,7 +404,7 @@ func appendRemoteOutput(result *Result, label string, command remoteCommandResul
 		result.Evidence = append(result.Evidence, Evidence{Label: label, Value: command.Output})
 	}
 	if command.Truncated {
-		result.Warnings = append(result.Warnings, label+"이 제한에 도달해 잘렸습니다")
+		result.Warnings = append(result.Warnings, T("remote.warn.output_truncated", label))
 	}
 }
 

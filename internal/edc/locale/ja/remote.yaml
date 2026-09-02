@@ -1,0 +1,110 @@
+# edc remote の日本語メッセージ。欠けたキーは en/remote.yaml に落ちる。
+remote:
+  flag:
+    inventory: "inventory YAML の場所"
+    recipe: "recipe YAML の場所"
+    group: "実行する inventory group、positional argument の別名"
+    connect_timeout: "SSH 接続の制限時間"
+    output_limit: "command ごとの出力 byte 上限"
+    parallel: "同時に動かす host 数、inventory の設定を上書き"
+    force: "計画の確認を省く"
+    force_short: "--force の短縮 option"
+    dry_run: "計画だけを出して終了"
+    dry_run_short: "--dry-run の短縮 option"
+    list: "inventory の group と host を出して終了"
+    list_short: "--list の短縮 option"
+
+  error:
+    group_once: "group は positional argument か --group のどちらかで一度だけ指定します"
+    run_renamed: "edc remote run は edc remote <group> に変わりました。引数なしで edc remote を実行すると group を選べます"
+    reserved_group: "%q は下位 command 名として予約されているため group に使えません"
+    dry_run_with_force: "--dry-run と -f は同時に使えません"
+    list_with_force: "--list は --dry-run や -f と同時に使えません"
+    timeout_range: "--timeout と --connect-timeout は 0 より大きく %s 以下にします"
+    output_limit_range: "--output-limit は 1 から %d の間にします"
+    parallel_range: "--parallel は 1 から %d の間にします"
+    cancelled: "遠隔実行を中止しました"
+    inventory_not_found: "inventory.yaml が見つかりません: %s。--inventory で場所を指定してください"
+    recipe_not_found: "recipe.yaml が見つかりません: %s。--recipe で場所を指定してください"
+    force_needs_single_group: "-f の自動実行には inventory group が 1 つだけ必要です。edc remote <group> で指定してください"
+    group_required: "group を指定してください: edc remote <group>。inventory group: %s"
+    invalid_group_number: "正しくない group 番号: %s"
+    value_empty: "%s は空にできません"
+    inventory_no_host: "inventory には host が 1 つ以上必要です"
+    inventory_host_limit: "inventory の host 数は %d を超えられません"
+    inventory_no_group: "inventory には group が 1 つ以上必要です"
+    inventory_group_limit: "inventory の group 数は %d を超えられません"
+    inventory_parallel_range: "inventory の parallel は 0 から %d の間にします"
+    host_name_empty: "host %d の name は空にできません"
+    host_target_dash: "host %q の target は '-' で始められません"
+    duplicate_host: "重複した host: %s"
+    group_empty: "group 名と member は空にできません"
+    group_reserved: "group 名 %q は下位 command 名として予約されています"
+    group_unknown_host: "group %q の未知の host: %s"
+    group_duplicate_host: "group %q の重複した host: %s"
+    options_unknown_group: "group_options の未知の group: %s"
+    group_parallel_range: "group %q の parallel は 1 から %d の間にします"
+    default_timeout_range: "既定の timeout は 0 より大きく %s 以下にします"
+    recipe_name_empty: "recipe の name は空にできません"
+    recipe_step_range: "recipe の step 数は 1 から %d の間にします"
+    step_name_command_empty: "step %d の name と command は空にできません"
+    duplicate_step: "重複した step: %s"
+    step_timeout_invalid: "step %q の timeout が正しくありません: %s"
+    tag_limit: "%s の tag 数は %d を超えられません"
+    tag_empty: "%s の tag は空にできません"
+    duplicate_tag: "%s の重複した tag: %s"
+    file_too_large: "ファイルの大きさは %d bytes を超えられません"
+    single_document: "YAML document は 1 つだけ扱えます"
+    unknown_group: "未知の group: %s"
+    ssh_not_found: "ssh executable が見つかりません: %w"
+    live_start_failed: "リアルタイム画面を表示できませんでした: %v"
+    live_end_failed: "リアルタイム画面が異常終了しました: %v"
+
+  warn:
+    step_no_host: "警告: step %q の tag(%s) に一致する host が group %q にありません"
+    output_truncated: "%s が上限に達したため切り詰めました"
+
+  result:
+    skipped_after_failure: "この host の前の step が失敗したため飛ばしました"
+    command_failed: "%[1]s で %[2]s の command が失敗しました"
+    command_ran: "%[1]s で %[2]s の command を実行しました"
+    verify_failed: "%[1]s で %[2]s の verify が失敗しました"
+    verify_passed: "%[1]s で %[2]s の導入状態を確認しました"
+    cancelled: "利用者が中止したため止めました"
+
+  outcome:
+    done: "完了"
+    cancelled: "中止"
+
+  confirm:
+    run: "実行しますか?"
+    stream: "詳細な出力を streaming で見ますか?"
+
+  prompt:
+    choose_group: "%s を選択してください:"
+    group_number: "group 番号"
+
+  label:
+    group: "group(対象)"
+    inventory_file: "inventory ファイル"
+    recipe_file: "recipe ファイル"
+    inventory_candidate: "%s  ·  group %d 個、host %d 個"
+    recipe_candidate: "%s  ·  %s、step %d 個"
+    no_target: "(対象なし)"
+    hidden_hosts: "…ほか %d host"
+    completed_count: "%d/%d 完了"
+
+  header:
+    summary: "edc remote  %s  ·  host %d  ·  step %d  ·  実行 %d"
+
+  legend:
+    symbols: "✓ pass   ✗ fail   ! warn   ~ skip   – 対象外   · 待機"
+
+  select:
+    group_title: "group(対象) を選択してください   ↑/↓ 移動   Enter 決定   q 中止"
+    inventory_title: "inventory ファイルを選択してください   ↑/↓ 移動   Enter 決定   q 中止"
+    recipe_title: "recipe ファイルを選択してください   ↑/↓ 移動   Enter 決定   q 中止"
+    cancelled: "%s: 中止"
+
+  status:
+    cancelling: "中止中、実行中の command を終了します"

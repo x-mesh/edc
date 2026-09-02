@@ -1,0 +1,110 @@
+# edc remote의 한국어 메시지. 빠진 키는 en/remote.yaml로 내려간다.
+remote:
+  flag:
+    inventory: "inventory YAML 경로"
+    recipe: "recipe YAML 경로"
+    group: "실행할 inventory group, positional argument의 별칭"
+    connect_timeout: "SSH 연결 제한 시간"
+    output_limit: "command별 출력 byte 상한"
+    parallel: "동시에 실행할 host 수, inventory 설정 override"
+    force: "계획 확인 프롬프트 생략"
+    force_short: "--force 단축 option"
+    dry_run: "실행 계획만 출력하고 종료"
+    dry_run_short: "--dry-run 단축 option"
+    list: "inventory의 group과 host를 출력하고 종료"
+    list_short: "--list 단축 option"
+
+  error:
+    group_once: "group은 positional argument나 --group 중 하나로 한 번만 지정합니다"
+    run_renamed: "edc remote run은 edc remote <group>으로 바뀌었습니다. 인자 없이 edc remote를 실행하면 group을 선택합니다"
+    reserved_group: "%q는 하위 command 이름으로 예약되어 있어 group으로 쓸 수 없습니다"
+    dry_run_with_force: "--dry-run과 -f는 같이 쓸 수 없습니다"
+    list_with_force: "--list는 --dry-run, -f와 같이 쓸 수 없습니다"
+    timeout_range: "--timeout과 --connect-timeout은 0보다 크고 %s 이하여야 합니다"
+    output_limit_range: "--output-limit은 1에서 %d 사이여야 합니다"
+    parallel_range: "--parallel은 1에서 %d 사이여야 합니다"
+    cancelled: "원격 실행을 취소했습니다"
+    inventory_not_found: "inventory.yaml을 찾을 수 없습니다: %s. --inventory로 경로를 지정하세요"
+    recipe_not_found: "recipe.yaml을 찾을 수 없습니다: %s. --recipe로 경로를 지정하세요"
+    force_needs_single_group: "-f 자동 실행에는 inventory group이 하나만 있어야 합니다. edc remote <group>으로 지정하세요"
+    group_required: "group을 지정하세요: edc remote <group>. inventory group: %s"
+    invalid_group_number: "올바르지 않은 group 번호: %s"
+    value_empty: "%s은 비어 있을 수 없습니다"
+    inventory_no_host: "inventory에는 host가 하나 이상 필요합니다"
+    inventory_host_limit: "inventory host 수는 %d개를 초과할 수 없습니다"
+    inventory_no_group: "inventory에는 group이 하나 이상 필요합니다"
+    inventory_group_limit: "inventory group 수는 %d개를 초과할 수 없습니다"
+    inventory_parallel_range: "inventory parallel은 0에서 %d 사이여야 합니다"
+    host_name_empty: "host %d의 name은 비어 있을 수 없습니다"
+    host_target_dash: "host %q의 target은 '-'로 시작할 수 없습니다"
+    duplicate_host: "중복 host: %s"
+    group_empty: "group 이름과 member는 비어 있을 수 없습니다"
+    group_reserved: "group 이름 %q는 하위 command 이름으로 예약되어 있습니다"
+    group_unknown_host: "group %q의 알 수 없는 host: %s"
+    group_duplicate_host: "group %q의 중복 host: %s"
+    options_unknown_group: "group_options의 알 수 없는 group: %s"
+    group_parallel_range: "group %q의 parallel은 1에서 %d 사이여야 합니다"
+    default_timeout_range: "기본 timeout은 0보다 크고 %s 이하여야 합니다"
+    recipe_name_empty: "recipe name은 비어 있을 수 없습니다"
+    recipe_step_range: "recipe step 수는 1에서 %d 사이여야 합니다"
+    step_name_command_empty: "step %d의 name과 command는 비어 있을 수 없습니다"
+    duplicate_step: "중복 step: %s"
+    step_timeout_invalid: "step %q의 timeout이 올바르지 않습니다: %s"
+    tag_limit: "%s의 tag 수는 %d개를 초과할 수 없습니다"
+    tag_empty: "%s의 tag는 비어 있을 수 없습니다"
+    duplicate_tag: "%s의 중복 tag: %s"
+    file_too_large: "파일 크기는 %d bytes를 초과할 수 없습니다"
+    single_document: "YAML document는 하나만 허용됩니다"
+    unknown_group: "알 수 없는 group: %s"
+    ssh_not_found: "ssh executable을 찾을 수 없습니다: %w"
+    live_start_failed: "실시간 화면을 표시하지 못했습니다: %v"
+    live_end_failed: "실시간 화면이 오류로 끝났습니다: %v"
+
+  warn:
+    step_no_host: "경고: step %q의 tag(%s)와 일치하는 host가 group %q에 없습니다"
+    output_truncated: "%s이 제한에 도달해 잘렸습니다"
+
+  result:
+    skipped_after_failure: "이 host의 이전 step이 실패해 건너뛰었습니다"
+    command_failed: "%[1]s에서 %[2]s command가 실패했습니다"
+    command_ran: "%[1]s에서 %[2]s command를 실행했습니다"
+    verify_failed: "%[1]s에서 %[2]s verify가 실패했습니다"
+    verify_passed: "%[1]s에서 %[2]s 설치 상태를 확인했습니다"
+    cancelled: "사용자가 취소해 중단했습니다"
+
+  outcome:
+    done: "완료"
+    cancelled: "취소"
+
+  confirm:
+    run: "실행할까요?"
+    stream: "상세 출력을 streaming으로 볼까요?"
+
+  prompt:
+    choose_group: "%s을 선택하세요:"
+    group_number: "group 번호"
+
+  label:
+    group: "group(대상)"
+    inventory_file: "inventory 파일"
+    recipe_file: "recipe 파일"
+    inventory_candidate: "%s  ·  group %d개, host %d개"
+    recipe_candidate: "%s  ·  %s, step %d개"
+    no_target: "(대상 없음)"
+    hidden_hosts: "…외 %d host"
+    completed_count: "%d/%d 완료"
+
+  header:
+    summary: "edc remote  %s  ·  host %d  ·  step %d  ·  실행 %d"
+
+  legend:
+    symbols: "✓ pass   ✗ fail   ! warn   ~ skip   – 해당 없음   · 대기"
+
+  select:
+    group_title: "group(대상)을 선택하세요   ↑/↓ 이동   Enter 선택   q 취소"
+    inventory_title: "inventory 파일을 선택하세요   ↑/↓ 이동   Enter 선택   q 취소"
+    recipe_title: "recipe 파일을 선택하세요   ↑/↓ 이동   Enter 선택   q 취소"
+    cancelled: "%s: 취소"
+
+  status:
+    cancelling: "취소 중, 실행 중인 command를 종료합니다"

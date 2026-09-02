@@ -36,14 +36,14 @@ func TestRemoteCandidatesKeepReadableFilesOnly(t *testing.T) {
 	if len(inventories) != 1 || inventories[0].value != filepath.Join(cwd, "inventory.yaml") {
 		t.Fatalf("inventory candidates = %#v", inventories)
 	}
-	if !strings.Contains(inventories[0].label, "inventory.yaml  ·  group 2개, host 2개") {
+	if !strings.Contains(inventories[0].label, T("remote.label.inventory_candidate", "inventory.yaml", 2, 2)) {
 		t.Fatalf("inventory label = %q", inventories[0].label)
 	}
 	recipes := remoteRecipeCandidates(cwd, "", time.Minute)
 	if len(recipes) != 1 || recipes[0].value != filepath.Join(cwd, "recipe.yaml") {
 		t.Fatalf("recipe candidates = %#v", recipes)
 	}
-	if !strings.Contains(recipes[0].label, "recipe.yaml  ·  daily-update, step 2개") {
+	if !strings.Contains(recipes[0].label, T("remote.label.recipe_candidate", "recipe.yaml", "daily-update", 2)) {
 		t.Fatalf("recipe label = %q", recipes[0].label)
 	}
 }
@@ -75,7 +75,7 @@ func TestSelectModelStartsAtDefaultValue(t *testing.T) {
 	}
 	// 고른 값은 › 표시가 보여 주고 첫 줄은 이름표만 남는다.
 	content := chosen.(selectModel).View().Content
-	if !strings.HasPrefix(content, selectRecipeLabel+"\n") || !strings.Contains(content, liveSelectedBar+" b") {
+	if !strings.HasPrefix(content, T(selectRecipeLabel)+"\n") || !strings.Contains(content, liveSelectedBar+" b") {
 		t.Fatalf("final view = %q", content)
 	}
 }

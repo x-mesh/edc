@@ -80,7 +80,7 @@ func TestRemoteModelTracksStartAndResult(t *testing.T) {
 		t.Fatalf("completed = %d", model.completed)
 	}
 	view := model.View().Content
-	for _, expected := range []string{"host", "git-kit", "workstation", "PASS", "FAIL", "2/3 완료"} {
+	for _, expected := range []string{"host", "git-kit", "workstation", "PASS", "FAIL", T("remote.label.completed_count", 2, 3)} {
 		if !strings.Contains(view, expected) {
 			t.Fatalf("view %q does not contain %q", view, expected)
 		}
@@ -122,7 +122,7 @@ func TestRemoteModelCancelsOnCtrlC(t *testing.T) {
 	if !cancelled || !model.cancelling {
 		t.Fatalf("first ctrl+c did not cancel: %v %#v", cancelled, model.cancelling)
 	}
-	if !strings.Contains(model.View().Content, "취소 중") {
+	if !strings.Contains(model.View().Content, T("remote.status.cancelling")) {
 		t.Fatalf("view = %q", model.View().Content)
 	}
 	if _, cmd := model.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl}); cmd == nil {
@@ -139,7 +139,7 @@ func TestRemoteModelFinishShowsSummaryLine(t *testing.T) {
 		t.Fatalf("model = %#v, cmd = %v", updated, cmd)
 	}
 	// 마지막 요약 줄은 표 아래에서 한 번만 나온다. model은 자리만 비운다.
-	if strings.Contains(final.View().Content, "완료") {
+	if strings.Contains(final.View().Content, T("remote.label.completed_count", 0, 3)) {
 		t.Fatalf("final view must not repeat the summary: %q", final.View().Content)
 	}
 }
@@ -149,7 +149,7 @@ func TestRemoteModelTrimsHostsToScreenHeight(t *testing.T) {
 	if len(model.visibleHosts()) != 1 {
 		t.Fatalf("visible hosts = %#v", model.visibleHosts())
 	}
-	if !strings.Contains(model.View().Content, "…외 1 host") {
+	if !strings.Contains(model.View().Content, T("remote.label.hidden_hosts", 1)) {
 		t.Fatalf("view = %q", model.View().Content)
 	}
 }
@@ -195,7 +195,7 @@ func TestRemoteModelColumnsStayAligned(t *testing.T) {
 func TestRemoteModelConfirmsOnTheSameTable(t *testing.T) {
 	model := remoteConfirmModel(nil)
 	view := model.View().Content
-	for _, expected := range []string{"edc remote  daily  ·  host 2  ·  step 2", "inventory  /tmp/inventory.yaml", "host", "workstation", "git-kit  git-kit update", "실행할까요?", confirmHelp} {
+	for _, expected := range []string{T("remote.header.summary", "daily", 2, 2, 3), "inventory  /tmp/inventory.yaml", "host", "workstation", "git-kit  git-kit update", T("remote.confirm.run"), confirmHelp()} {
 		if !strings.Contains(view, expected) {
 			t.Fatalf("confirm view %q does not contain %q", view, expected)
 		}
@@ -209,7 +209,7 @@ func TestRemoteModelConfirmsOnTheSameTable(t *testing.T) {
 		t.Fatalf("y must confirm: %#v", running.stage)
 	}
 	runningView := running.View().Content
-	if strings.Contains(runningView, "실행할까요?") || !strings.Contains(runningView, "0/3 완료") {
+	if strings.Contains(runningView, T("remote.confirm.run")) || !strings.Contains(runningView, T("remote.label.completed_count", 0, 3)) {
 		t.Fatalf("running view = %q", runningView)
 	}
 	// 확인 블록이 상태줄로 바뀌어도 화면 높이는 그대로여야 한다.

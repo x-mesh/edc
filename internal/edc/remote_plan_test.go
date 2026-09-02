@@ -69,7 +69,7 @@ func TestRemoteDryRunSkipsConfirmation(t *testing.T) {
 		t.Fatalf("options = %#v", options)
 	}
 	text := output.String()
-	if strings.Contains(text, "(y/N)") || strings.Contains(text, "실행 계획") {
+	if strings.Contains(text, "(y/N)") || strings.Contains(text, "edc remote  weekly") {
 		t.Fatalf("dry-run must leave the plan and confirmation to the caller: %q", text)
 	}
 }

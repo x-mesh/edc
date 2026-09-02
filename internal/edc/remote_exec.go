@@ -39,7 +39,7 @@ func (runner sshRemoteRunner) Run(parent context.Context, target, command string
 	}
 	path, err := exec.LookPath(executable)
 	if err != nil {
-		return remoteCommandResult{ExitCode: -1, Duration: time.Since(started), Err: fmt.Errorf("ssh executable을 찾을 수 없습니다: %w", err)}
+		return remoteCommandResult{ExitCode: -1, Duration: time.Since(started), Err: fmt.Errorf(T("remote.error.ssh_not_found"), err)}
 	}
 	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()

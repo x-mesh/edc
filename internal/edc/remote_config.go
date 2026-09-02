@@ -80,19 +80,19 @@ func loadRemoteInventory(path string) (remoteInventory, error) {
 		return inventory, fmt.Errorf("inventory %q: %w", path, err)
 	}
 	if len(inventory.Hosts) == 0 {
-		return inventory, errors.New("inventory에는 host가 하나 이상 필요합니다")
+		return inventory, errors.New(T("remote.error.inventory_no_host"))
 	}
 	if len(inventory.Hosts) > remoteHostLimit {
-		return inventory, fmt.Errorf("inventory host 수는 %d개를 초과할 수 없습니다", remoteHostLimit)
+		return inventory, errors.New(T("remote.error.inventory_host_limit", remoteHostLimit))
 	}
 	if len(inventory.Groups) == 0 {
-		return inventory, errors.New("inventory에는 group이 하나 이상 필요합니다")
+		return inventory, errors.New(T("remote.error.inventory_no_group"))
 	}
 	if len(inventory.Groups) > remoteGroupLimit {
-		return inventory, fmt.Errorf("inventory group 수는 %d개를 초과할 수 없습니다", remoteGroupLimit)
+		return inventory, errors.New(T("remote.error.inventory_group_limit", remoteGroupLimit))
 	}
 	if inventory.Parallel < 0 || inventory.Parallel > remoteHostLimit {
-		return inventory, fmt.Errorf("inventory parallel은 0에서 %d 사이여야 합니다", remoteHostLimit)
+		return inventory, errors.New(T("remote.error.inventory_parallel_range", remoteHostLimit))
 	}
 	hosts := make(map[string]struct{}, len(inventory.Hosts))
 	for index := range inventory.Hosts {
@@ -100,16 +100,16 @@ func loadRemoteInventory(path string) (remoteInventory, error) {
 		host.Name = strings.TrimSpace(host.Name)
 		host.Target = strings.TrimSpace(host.Target)
 		if host.Name == "" {
-			return inventory, fmt.Errorf("host %d의 name은 비어 있을 수 없습니다", index+1)
+			return inventory, errors.New(T("remote.error.host_name_empty", index+1))
 		}
 		if host.Target == "" {
 			host.Target = host.Name
 		}
 		if strings.HasPrefix(host.Target, "-") {
-			return inventory, fmt.Errorf("host %q의 target은 '-'로 시작할 수 없습니다", host.Name)
+			return inventory, errors.New(T("remote.error.host_target_dash", host.Name))
 		}
 		if _, exists := hosts[host.Name]; exists {
-			return inventory, fmt.Errorf("중복 host: %s", host.Name)
+			return inventory, errors.New(T("remote.error.duplicate_host", host.Name))
 		}
 		tags, err := normalizeRemoteTags(host.Tags, fmt.Sprintf("host %q", host.Name))
 		if err != nil {
@@ -120,28 +120,28 @@ func loadRemoteInventory(path string) (remoteInventory, error) {
 	}
 	for group, members := range inventory.Groups {
 		if strings.TrimSpace(group) == "" || len(members) == 0 {
-			return inventory, errors.New("group 이름과 member는 비어 있을 수 없습니다")
+			return inventory, errors.New(T("remote.error.group_empty"))
 		}
 		if remoteReservedGroup(group) {
-			return inventory, fmt.Errorf("group 이름 %q는 하위 command 이름으로 예약되어 있습니다", group)
+			return inventory, errors.New(T("remote.error.group_reserved", group))
 		}
 		seen := make(map[string]struct{}, len(members))
 		for _, member := range members {
 			if _, exists := hosts[member]; !exists {
-				return inventory, fmt.Errorf("group %q의 알 수 없는 host: %s", group, member)
+				return inventory, errors.New(T("remote.error.group_unknown_host", group, member))
 			}
 			if _, exists := seen[member]; exists {
-				return inventory, fmt.Errorf("group %q의 중복 host: %s", group, member)
+				return inventory, errors.New(T("remote.error.group_duplicate_host", group, member))
 			}
 			seen[member] = struct{}{}
 		}
 	}
 	for group, options := range inventory.Options {
 		if _, exists := inventory.Groups[group]; !exists {
-			return inventory, fmt.Errorf("group_options의 알 수 없는 group: %s", group)
+			return inventory, errors.New(T("remote.error.options_unknown_group", group))
 		}
 		if options.Parallel < 1 || options.Parallel > remoteHostLimit {
-			return inventory, fmt.Errorf("group %q의 parallel은 1에서 %d 사이여야 합니다", group, remoteHostLimit)
+			return inventory, errors.New(T("remote.error.group_parallel_range", group, remoteHostLimit))
 		}
 	}
 	return inventory, nil
@@ -171,27 +171,27 @@ func remoteParallelForGroup(inventory remoteInventory, group string, override in
 
 func loadRemoteRecipe(path string, defaultTimeout time.Duration) (remoteRecipe, error) {
 	if defaultTimeout <= 0 || defaultTimeout > remoteMaxTimeout {
-		return remoteRecipe{}, fmt.Errorf("기본 timeout은 0보다 크고 %s 이하여야 합니다", remoteMaxTimeout)
+		return remoteRecipe{}, errors.New(T("remote.error.default_timeout_range", remoteMaxTimeout))
 	}
 	var file remoteRecipeFile
 	if err := decodeRemoteYAML(path, &file); err != nil {
 		return remoteRecipe{}, fmt.Errorf("recipe %q: %w", path, err)
 	}
 	if strings.TrimSpace(file.Name) == "" {
-		return remoteRecipe{}, errors.New("recipe name은 비어 있을 수 없습니다")
+		return remoteRecipe{}, errors.New(T("remote.error.recipe_name_empty"))
 	}
 	if len(file.Steps) == 0 || len(file.Steps) > remoteStepLimit {
-		return remoteRecipe{}, fmt.Errorf("recipe step 수는 1에서 %d 사이여야 합니다", remoteStepLimit)
+		return remoteRecipe{}, errors.New(T("remote.error.recipe_step_range", remoteStepLimit))
 	}
 	recipe := remoteRecipe{Name: strings.TrimSpace(file.Name), Steps: make([]remoteStep, 0, len(file.Steps))}
 	seen := make(map[string]struct{}, len(file.Steps))
 	for index, value := range file.Steps {
 		step := remoteStep{Name: strings.TrimSpace(value.Name), Command: strings.TrimSpace(value.Command), Verify: strings.TrimSpace(value.Verify), Timeout: defaultTimeout}
 		if step.Name == "" || step.Command == "" {
-			return remoteRecipe{}, fmt.Errorf("step %d의 name과 command는 비어 있을 수 없습니다", index+1)
+			return remoteRecipe{}, errors.New(T("remote.error.step_name_command_empty", index+1))
 		}
 		if _, exists := seen[step.Name]; exists {
-			return remoteRecipe{}, fmt.Errorf("중복 step: %s", step.Name)
+			return remoteRecipe{}, errors.New(T("remote.error.duplicate_step", step.Name))
 		}
 		seen[step.Name] = struct{}{}
 		tags, err := normalizeRemoteTags(value.Tags, fmt.Sprintf("step %q", step.Name))
@@ -202,7 +202,7 @@ func loadRemoteRecipe(path string, defaultTimeout time.Duration) (remoteRecipe, 
 		if value.Timeout != "" {
 			duration, err := time.ParseDuration(value.Timeout)
 			if err != nil || duration <= 0 || duration > remoteMaxTimeout {
-				return remoteRecipe{}, fmt.Errorf("step %q의 timeout이 올바르지 않습니다: %s", step.Name, value.Timeout)
+				return remoteRecipe{}, errors.New(T("remote.error.step_timeout_invalid", step.Name, value.Timeout))
 			}
 			step.Timeout = duration
 		}
@@ -213,17 +213,17 @@ func loadRemoteRecipe(path string, defaultTimeout time.Duration) (remoteRecipe, 
 
 func normalizeRemoteTags(tags []string, owner string) ([]string, error) {
 	if len(tags) > remoteTagLimit {
-		return nil, fmt.Errorf("%s의 tag 수는 %d개를 초과할 수 없습니다", owner, remoteTagLimit)
+		return nil, errors.New(T("remote.error.tag_limit", owner, remoteTagLimit))
 	}
 	normalized := make([]string, 0, len(tags))
 	seen := make(map[string]struct{}, len(tags))
 	for _, tag := range tags {
 		tag = strings.TrimSpace(tag)
 		if tag == "" {
-			return nil, fmt.Errorf("%s의 tag는 비어 있을 수 없습니다", owner)
+			return nil, errors.New(T("remote.error.tag_empty", owner))
 		}
 		if _, exists := seen[tag]; exists {
-			return nil, fmt.Errorf("%s의 중복 tag: %s", owner, tag)
+			return nil, errors.New(T("remote.error.duplicate_tag", owner, tag))
 		}
 		seen[tag] = struct{}{}
 		normalized = append(normalized, tag)
@@ -267,7 +267,7 @@ func decodeRemoteYAML(path string, target interface{}) error {
 		return err
 	}
 	if len(data) > remoteConfigLimit {
-		return fmt.Errorf("파일 크기는 %d bytes를 초과할 수 없습니다", remoteConfigLimit)
+		return errors.New(T("remote.error.file_too_large", remoteConfigLimit))
 	}
 	decoder := yaml.NewDecoder(strings.NewReader(string(data)))
 	decoder.KnownFields(true)
@@ -277,7 +277,7 @@ func decodeRemoteYAML(path string, target interface{}) error {
 	var extra interface{}
 	if err := decoder.Decode(&extra); err != io.EOF {
 		if err == nil {
-			return errors.New("YAML document는 하나만 허용됩니다")
+			return errors.New(T("remote.error.single_document"))
 		}
 		return err
 	}
@@ -287,7 +287,7 @@ func decodeRemoteYAML(path string, target interface{}) error {
 func hostsForRemoteGroup(inventory remoteInventory, group string) ([]remoteHost, error) {
 	members, exists := inventory.Groups[group]
 	if !exists {
-		return nil, fmt.Errorf("알 수 없는 group: %s", group)
+		return nil, errors.New(T("remote.error.unknown_group", group))
 	}
 	selected := make(map[string]struct{}, len(members))
 	for _, member := range members {

@@ -56,7 +56,7 @@ remote:
     file_too_large: "the file size cannot be more than %d bytes"
     single_document: "edc accepts one YAML document only"
     unknown_group: "unknown group: %s"
-    ssh_not_found: "edc cannot find the ssh executable: %w"
+    ssh_not_found: "edc cannot find the ssh executable"
     live_start_failed: "edc cannot show the live screen: %v"
     live_end_failed: "the live screen stopped with an error: %v"
 

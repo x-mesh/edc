@@ -56,7 +56,7 @@ remote:
     file_too_large: "파일 크기는 %d bytes를 초과할 수 없습니다"
     single_document: "YAML document는 하나만 허용됩니다"
     unknown_group: "알 수 없는 group: %s"
-    ssh_not_found: "ssh executable을 찾을 수 없습니다: %w"
+    ssh_not_found: "ssh executable을 찾을 수 없습니다"
     live_start_failed: "실시간 화면을 표시하지 못했습니다: %v"
     live_end_failed: "실시간 화면이 오류로 끝났습니다: %v"
 

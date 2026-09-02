@@ -34,7 +34,7 @@ func TestConfirmModelMovesAndAccepts(t *testing.T) {
 	if !accepted.done || !accepted.yes || cmd == nil {
 		t.Fatalf("model = %#v", accepted)
 	}
-	if !strings.HasPrefix(accepted.View().Content, "실행할까요? 예\n") {
+	if !strings.HasPrefix(accepted.View().Content, "실행할까요? "+confirmYesLabel()+"\n") {
 		t.Fatalf("final view = %q", accepted.View().Content)
 	}
 	if liveLineCount(accepted.View().Content) != accepted.frameHeight() {
@@ -51,7 +51,7 @@ func TestConfirmModelShortcuts(t *testing.T) {
 	if !no.done || no.yes || cmd == nil {
 		t.Fatalf("n = %#v", no)
 	}
-	if !strings.HasPrefix(no.View().Content, "실행할까요? 아니오\n") {
+	if !strings.HasPrefix(no.View().Content, "실행할까요? "+confirmNoLabel()+"\n") {
 		t.Fatalf("final view = %q", no.View().Content)
 	}
 }
@@ -71,7 +71,7 @@ func TestConfirmModelCancels(t *testing.T) {
 func TestConfirmModelViewShowsBothOptions(t *testing.T) {
 	view := newConfirmModel("실행할까요?", false).View().Content
 	// 질문과 선택지, 키 안내가 한 줄에 있고 고른 쪽만 반전된다.
-	for _, expected := range []string{"실행할까요?", confirmYesLabel, liveReverse + liveSelectedBar + " " + confirmNoLabel, confirmHelp} {
+	for _, expected := range []string{"실행할까요?", confirmYesLabel(), liveReverse + liveSelectedBar + " " + confirmNoLabel(), confirmHelp()} {
 		if !strings.Contains(view, expected) {
 			t.Fatalf("view %q does not contain %q", view, expected)
 		}

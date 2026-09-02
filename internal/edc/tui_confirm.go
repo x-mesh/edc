@@ -6,11 +6,12 @@ import (
 	tea "charm.land/bubbletea/v2"
 )
 
-const (
-	confirmYesLabel = "예"
-	confirmNoLabel  = "아니오"
-	confirmHelp     = "←/→ 이동   Enter 선택   y/n 바로 답하기"
-)
+// 확인 화면의 낱말은 capture, remote, update가 함께 쓰므로 ui 영역에 둔다.
+func confirmYesLabel() string { return T("ui.confirm.yes") }
+
+func confirmNoLabel() string { return T("ui.confirm.no") }
+
+func confirmHelp() string { return T("ui.confirm.help") }
 
 type confirmModel struct {
 	detail    string // 질문 위에 남기는 설명. 확인 뒤에도 화면에 남는다.
@@ -76,16 +77,16 @@ func (model confirmModel) frameHeight() int {
 
 // confirmPrompt는 질문과 선택지, 키 안내를 한 줄에 담는다. 고른 쪽은 반전으로 칠한다.
 func confirmPrompt(question string, yes, color bool) string {
-	return question + "   " + confirmOption(confirmYesLabel, yes, color) +
-		"  " + confirmOption(confirmNoLabel, !yes, color) +
-		"      " + liveMuted(confirmHelp, color)
+	return question + "   " + confirmOption(confirmYesLabel(), yes, color) +
+		"  " + confirmOption(confirmNoLabel(), !yes, color) +
+		"      " + liveMuted(confirmHelp(), color)
 }
 
 func (model confirmModel) answerLabel() string {
 	if model.yes {
-		return confirmYesLabel
+		return confirmYesLabel()
 	}
-	return confirmNoLabel
+	return confirmNoLabel()
 }
 
 // confirmOption은 선택지 하나를 그린다. 고른 쪽은 막대와 반전으로 표시한다.

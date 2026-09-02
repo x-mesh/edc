@@ -14,10 +14,13 @@ import (
 	"golang.org/x/term"
 )
 
+// remoteMessageError는 문구를 출력하는 시점의 언어로 만든다.
+// 패키지 변수는 언어 설정보다 먼저 만들어지므로 메시지를 미리 굳히지 않는다.
 var (
-	errRemoteCancelled = errors.New("원격 실행을 취소했습니다")
-	errDoctorCancelled = errors.New("진단을 취소했습니다")
-	errProbeCancelled  = errors.New("probe를 취소했습니다")
+	errRemoteCancelled error = &messageError{key: "remote.error.cancelled"}
+	// doctor와 probe의 취소는 tui_doctor.go, tui_probe.go가 쓴다. 정의만 여기 모아 둔다.
+	errDoctorCancelled error = &messageError{key: "observe.doctor.cancelled"}
+	errProbeCancelled  error = &messageError{key: "observe.probe.cancelled"}
 )
 
 type remoteRunOptions struct {
@@ -36,7 +39,7 @@ type remotePromptFlags struct {
 }
 
 func remoteInventoryNotFound(cwd string) error {
-	return fmt.Errorf("inventory.yaml을 찾을 수 없습니다: %s. --inventory로 경로를 지정하세요", filepath.Join(cwd, "inventory.yaml"))
+	return errors.New(T("remote.error.inventory_not_found", filepath.Join(cwd, "inventory.yaml")))
 }
 
 func discoverRemoteInventory(cwd, configDir string) (string, bool) {
@@ -75,8 +78,8 @@ func promptRemoteOptions(input io.Reader, output io.Writer, cwd, configDir strin
 			}
 			var err error
 			path, err = promptRemoteFile(input, reader, output, remoteFilePrompt{
-				title:      selectInventoryTitle,
-				label:      selectInventoryLabel,
+				titleKey:   selectInventoryTitle,
+				labelKey:   selectInventoryLabel,
 				candidates: remoteInventoryCandidates(cwd, configDir),
 			})
 			if err != nil {
@@ -106,8 +109,8 @@ func promptRemoteOptions(input io.Reader, output io.Writer, cwd, configDir strin
 				path = ""
 			}
 			path, err = promptRemoteFile(input, reader, output, remoteFilePrompt{
-				title:        selectRecipeTitle,
-				label:        selectRecipeLabel,
+				titleKey:     selectRecipeTitle,
+				labelKey:     selectRecipeLabel,
 				candidates:   remoteRecipeCandidates(cwd, configDir, defaultTimeout),
 				defaultValue: path,
 			})
@@ -116,7 +119,7 @@ func promptRemoteOptions(input io.Reader, output io.Writer, cwd, configDir strin
 			}
 		} else {
 			if !found {
-				return remoteRunOptions{}, fmt.Errorf("recipe.yaml을 찾을 수 없습니다: %s. --recipe로 경로를 지정하세요", filepath.Join(cwd, "recipe.yaml"))
+				return remoteRunOptions{}, errors.New(T("remote.error.recipe_not_found", filepath.Join(cwd, "recipe.yaml")))
 			}
 		}
 		resolved.recipePath = path
@@ -133,7 +136,7 @@ func promptRemoteOptions(input io.Reader, output io.Writer, cwd, configDir strin
 		cwd: cwd, hosts: hosts, recipe: recipe, width: terminalWidth(),
 	})
 	if !resolved.verbose && askQuestions {
-		resolved.verbose, err = askRemoteYesNo(input, reader, output, "상세 출력을 streaming으로 볼까요?")
+		resolved.verbose, err = askRemoteYesNo(input, reader, output, T("remote.confirm.stream"))
 		if err != nil {
 			return remoteRunOptions{}, err
 		}
@@ -141,7 +144,7 @@ func promptRemoteOptions(input io.Reader, output io.Writer, cwd, configDir strin
 	if flags.force {
 		return resolved, nil
 	}
-	confirmed, err := askRemoteYesNo(input, reader, output, "실행할까요?")
+	confirmed, err := askRemoteYesNo(input, reader, output, T("remote.confirm.run"))
 	if err != nil {
 		return remoteRunOptions{}, err
 	}
@@ -152,9 +155,10 @@ func promptRemoteOptions(input io.Reader, output io.Writer, cwd, configDir strin
 }
 
 // remoteFilePrompt는 경로 질문 하나를 설명한다. candidates가 비면 경로를 직접 입력받는다.
+// titleKey와 labelKey는 언어팩 키다.
 type remoteFilePrompt struct {
-	title        string
-	label        string
+	titleKey     string
+	labelKey     string
 	candidates   []selectItem
 	defaultValue string
 }
@@ -162,10 +166,10 @@ type remoteFilePrompt struct {
 // promptRemoteFile은 terminal에서는 목록에서 고르고, 그 외에는 경로를 입력받는다.
 func promptRemoteFile(input io.Reader, reader *bufio.Reader, output io.Writer, prompt remoteFilePrompt) (string, error) {
 	if file, ok := terminalInput(input); ok && len(prompt.candidates) > 0 {
-		model := newSelectModel(prompt.title, prompt.label, prompt.candidates)
+		model := newSelectModel(prompt.titleKey, prompt.labelKey, prompt.candidates)
 		return runSelect(file, output, model.withCursorAt(prompt.defaultValue))
 	}
-	return promptRemoteText(reader, output, prompt.label, prompt.defaultValue)
+	return promptRemoteText(reader, output, T(prompt.labelKey), prompt.defaultValue)
 }
 
 // askRemoteYesNo는 terminal에서는 확인 위젯을, 그 외에는 y/N 입력을 쓴다.
@@ -189,30 +193,30 @@ func promptRemoteGroup(input io.Reader, reader *bufio.Reader, output io.Writer, 
 	groups := remoteGroupNames(inventory)
 	if flags.force {
 		if len(groups) != 1 {
-			return "", errors.New("-f 자동 실행에는 inventory group이 하나만 있어야 합니다. edc remote <group>으로 지정하세요")
+			return "", errors.New(T("remote.error.force_needs_single_group"))
 		}
 		if flags.interactive {
-			fmt.Fprintf(output, "group(대상): %s\n", groups[0])
+			fmt.Fprintf(output, "%s: %s\n", T(selectGroupLabel), groups[0])
 		}
 		return groups[0], nil
 	}
 	if !flags.interactive {
-		return "", fmt.Errorf("group을 지정하세요: edc remote <group>. inventory group: %s", strings.Join(groups, ", "))
+		return "", errors.New(T("remote.error.group_required", strings.Join(groups, ", ")))
 	}
 	if file, ok := terminalInput(input); ok {
 		return selectRemoteGroup(file, output, groups)
 	}
-	fmt.Fprintln(output, "group(대상)을 선택하세요:")
+	fmt.Fprintln(output, T("remote.prompt.choose_group", T(selectGroupLabel)))
 	for index, group := range groups {
 		fmt.Fprintf(output, "  %d) %s\n", index+1, group)
 	}
-	value, err := promptRemoteText(reader, output, "group 번호", "")
+	value, err := promptRemoteText(reader, output, T("remote.prompt.group_number"), "")
 	if err != nil {
 		return "", err
 	}
 	index, err := strconv.Atoi(value)
 	if err != nil || index < 1 || index > len(groups) {
-		return "", fmt.Errorf("올바르지 않은 group 번호: %s", value)
+		return "", errors.New(T("remote.error.invalid_group_number", value))
 	}
 	return groups[index-1], nil
 }
@@ -232,7 +236,7 @@ func promptRemoteText(reader *bufio.Reader, output io.Writer, label, defaultValu
 		value = defaultValue
 	}
 	if value == "" {
-		return "", fmt.Errorf("%s은 비어 있을 수 없습니다", label)
+		return "", errors.New(T("remote.error.value_empty", label))
 	}
 	return value, nil
 }

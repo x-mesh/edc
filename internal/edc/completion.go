@@ -8,7 +8,7 @@ import (
 )
 
 func runCompletion(args []string) int {
-	const usage = "사용법: edc completion <zsh|bash|groups>"
+	usage := T("cli.usage", "edc completion <zsh|bash|groups>")
 	if len(args) != 1 {
 		fmt.Fprintln(os.Stderr, usage)
 		return 2

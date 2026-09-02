@@ -24,11 +24,11 @@ func TestRemoteInteractiveOrderAndDiscovery(t *testing.T) {
 		t.Fatalf("options = %#v", options)
 	}
 	text := output.String()
-	groupIndex := strings.Index(text, selectGroupLabel)
-	recipeIndex := strings.Index(text, "recipe 파일")
+	groupIndex := strings.Index(text, T(selectGroupLabel))
+	recipeIndex := strings.Index(text, T(selectRecipeLabel))
 	headerIndex := strings.Index(text, "edc remote  daily")
-	streamIndex := strings.Index(text, "상세 출력을 streaming으로 볼까요?")
-	confirmIndex := strings.Index(text, "실행할까요?")
+	streamIndex := strings.Index(text, T("remote.confirm.stream"))
+	confirmIndex := strings.Index(text, T("remote.confirm.run"))
 	if groupIndex < 0 || !(groupIndex < recipeIndex && recipeIndex < headerIndex && headerIndex < streamIndex && streamIndex < confirmIndex) {
 		t.Fatalf("prompt order = %q", text)
 	}
@@ -142,10 +142,10 @@ func TestRemoteGroupArgumentSkipsStreamingQuestion(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := output.String()
-	if strings.Contains(text, "streaming") {
+	if strings.Contains(text, T("remote.confirm.stream")) {
 		t.Fatalf("group argument still asks the streaming question: %q", text)
 	}
-	if !strings.Contains(text, "edc remote  daily") || !strings.Contains(text, "실행할까요?") {
+	if !strings.Contains(text, "edc remote  daily") || !strings.Contains(text, T("remote.confirm.run")) {
 		t.Fatalf("output = %q", text)
 	}
 }
@@ -169,7 +169,7 @@ func TestRemoteInteractiveWithoutDiscoveredInventory(t *testing.T) {
 func TestRemoteInteractiveRejectsSelectionAndCancellation(t *testing.T) {
 	cwd := t.TempDir()
 	writeRemoteFixture(t, filepath.Join(cwd, "inventory.yaml"), "hosts: [{name: one, target: one}]\ngroups: {daily: [one]}\n")
-	if _, err := promptRemoteOptions(strings.NewReader("2\n"), &strings.Builder{}, cwd, t.TempDir(), 10*time.Minute, remoteRunOptions{}, remotePromptFlags{interactive: true}); err == nil || !strings.Contains(err.Error(), "group 번호") {
+	if _, err := promptRemoteOptions(strings.NewReader("2\n"), &strings.Builder{}, cwd, t.TempDir(), 10*time.Minute, remoteRunOptions{}, remotePromptFlags{interactive: true}); err == nil || !strings.Contains(err.Error(), T("remote.prompt.group_number")) {
 		t.Fatalf("invalid selection error = %v", err)
 	}
 
@@ -190,7 +190,7 @@ func TestRemoteInteractiveValidatesRecipeBeforeConfirmation(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "command") {
 		t.Fatalf("error = %v", err)
 	}
-	if strings.Contains(output.String(), "실행할까요?") {
+	if strings.Contains(output.String(), T("remote.confirm.run")) {
 		t.Fatalf("invalid recipe reached confirmation: %q", output.String())
 	}
 }
@@ -205,7 +205,7 @@ func TestRemotePlanShowsTaggedHosts(t *testing.T) {
 	var output strings.Builder
 	printRemotePlan(&output, remotePlanView{group: "daily", inventoryPath: "/tmp/inventory.yaml", recipePath: "/tmp/recipe.yaml", hosts: hosts, recipe: recipe, width: 100})
 	text := output.String()
-	for _, expected := range []string{"edc remote  daily  ·  host 2  ·  step 3", "host", "server", "laptop", "brew upgrade", "tags mac", "tags bsd (대상 없음)"} {
+	for _, expected := range []string{T("remote.header.summary", "daily", 2, 3, 3), "host", "server", "laptop", "brew upgrade", "tags mac", "tags bsd " + T("remote.label.no_target")} {
 		if !strings.Contains(text, expected) {
 			t.Fatalf("plan %q does not contain %q", text, expected)
 		}
@@ -227,7 +227,7 @@ func TestRemoteForceSkipsQuestions(t *testing.T) {
 	if options.recipePath != filepath.Join(cwd, "recipe.yaml") {
 		t.Fatalf("options = %#v", options)
 	}
-	if strings.Contains(output.String(), "(y/N)") || strings.Contains(output.String(), "group 번호") || strings.Contains(output.String(), "recipe 경로 [") {
+	if strings.Contains(output.String(), "(y/N)") || strings.Contains(output.String(), T("remote.prompt.group_number")) || strings.Contains(output.String(), T(selectRecipeLabel)+" [") {
 		t.Fatalf("force prompted: %q", output.String())
 	}
 }
@@ -248,7 +248,7 @@ func TestRemoteForceRejectsAmbiguousGroups(t *testing.T) {
 	cwd := t.TempDir()
 	writeRemoteFixture(t, filepath.Join(cwd, "inventory.yaml"), "hosts: [{name: one}]\ngroups: {daily: [one], weekly: [one]}\n")
 	_, err := promptRemoteOptions(strings.NewReader(""), &strings.Builder{}, cwd, t.TempDir(), 10*time.Minute, remoteRunOptions{}, remotePromptFlags{force: true, interactive: true})
-	if err == nil || !strings.Contains(err.Error(), "group이 하나") {
+	if err == nil || !strings.Contains(err.Error(), T("remote.error.force_needs_single_group")) {
 		t.Fatalf("error = %v", err)
 	}
 }

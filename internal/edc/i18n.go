@@ -192,6 +192,13 @@ func T(key string, args ...interface{}) string {
 	return fmt.Sprintf(text, args...)
 }
 
+// messageError는 package 변수로 두는 error다.
+// errors.New(T(...))로 만들면 언어를 정하기 전에 문구가 굳으므로, Error()를 부를 때 번역한다.
+// 값이 아니라 pointer를 비교하므로 errors.Is는 그대로 동작한다.
+type messageError struct{ key string }
+
+func (err *messageError) Error() string { return T(err.key) }
+
 // TList는 여러 줄짜리 메시지를 돌려준다. usage와 notes가 이 형태다.
 func TList(key string) []string {
 	loadCatalogs()

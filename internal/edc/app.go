@@ -343,7 +343,7 @@ func printHelp(writer io.Writer) {
 
 사용법:
   edc top [--interval 1s] [--count N] [--json <path|->]
-  edc info [--public]
+  edc info [--public=false] [--timeout 3s]
   edc doctor [--profile default|full] [options] <host|URL>
   edc net <interfaces|route|ping|trace> ...
   edc dns <lookup|config> ...
@@ -367,6 +367,7 @@ report diff: probe별 status 변화와 metric 차이를 보여 주고, 악화된
 report: terminal에서는 뷰어로 엽니다. f 필터, e 상세, q 종료
 remote: group을 생략하면 선택기를 띄웁니다. inventory.yaml과 recipe.yaml은 현재 디렉터리와 config 디렉터리에서 찾습니다
 remote: 계획과 결과가 host×step 표 하나를 씁니다. -f|--force는 확인을 생략하고, -n|--dry-run은 계획만 출력하며, -l|--list는 inventory를 보여 줍니다
+info: public IP를 기본으로 조회하고, 제한 시간 안에 응답이 없으면 그 줄을 뺍니다. --public=false로 끕니다
 top: terminal에서는 대시보드로 실행합니다. q 종료, p 일시정지, +/- interval
 remote와 doctor: terminal에서는 실시간 화면으로 실행하고 Ctrl-C로 취소합니다 (exit 4)
 completion: source <(edc completion zsh) 또는 source <(edc completion bash)

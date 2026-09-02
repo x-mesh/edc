@@ -105,7 +105,7 @@ _edc() {
           _arguments '--interval[sampling interval]:duration' '--count[출력 row 수]:count' '--no-header[header 생략]' '--json[sample당 한 줄 JSON 출력 경로]:path:_files'
           ;;
         info)
-          _arguments '--public[public IP, 지역, ASN 조회]' '--timeout[public 조회 제한 시간]:duration'
+          _arguments '--public[public IP, 지역, ASN 조회. --public=false로 끕니다]' '--timeout[public 조회 제한 시간]:duration' '(-v --verbose)'{-v,--verbose}'[조회 실패 원인 출력]'
           ;;
         doctor)
           _arguments $common '--profile[default 또는 full]:profile:(default full)' '1:host or URL:_hosts'
@@ -175,7 +175,7 @@ _edc() {
   command="${COMP_WORDS[1]}"
   case "$command" in
     top) COMPREPLY=($(compgen -W "--interval --count --no-header --json" -- "$cur")) ;;
-    info) COMPREPLY=($(compgen -W "--public --timeout" -- "$cur")) ;;
+    info) COMPREPLY=($(compgen -W "--public --timeout --verbose -v" -- "$cur")) ;;
     doctor) COMPREPLY=($(compgen -W "$common --profile" -- "$cur")) ;;
     dns)
       if [[ $COMP_CWORD -eq 2 ]]; then COMPREPLY=($(compgen -W "lookup config" -- "$cur")); else COMPREPLY=($(compgen -W "$common" -- "$cur")); fi ;;

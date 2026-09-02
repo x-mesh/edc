@@ -22,13 +22,16 @@ type publicNetworkInfo struct {
 func runInfo(args []string, version string) int {
 	set := flag.NewFlagSet("info", flag.ContinueOnError)
 	set.SetOutput(os.Stderr)
-	includePublic := set.Bool("public", false, "외부 ipinfo.io 조회로 public IP/지역/ASN 표시")
-	timeout := set.Duration("timeout", 5*time.Second, "public 조회 제한 시간")
+	includePublic := set.Bool("public", true, "외부 ipinfo.io 조회로 public IP/지역/ASN 표시, --public=false로 끕니다")
+	timeout := set.Duration("timeout", 3*time.Second, "public 조회 제한 시간")
+	var verbose bool
+	set.BoolVar(&verbose, "verbose", false, "public 조회 실패 원인 출력")
+	set.BoolVar(&verbose, "v", false, "--verbose 단축 option")
 	if err := set.Parse(args); err != nil {
 		return 2
 	}
 	if set.NArg() != 0 {
-		fmt.Fprintln(os.Stderr, "사용법: edc info [--public]")
+		fmt.Fprintln(os.Stderr, "사용법: edc info [--public=false] [--timeout 3s] [-v]")
 		return 2
 	}
 	details, err := collectHostDetails()
@@ -44,8 +47,11 @@ func runInfo(args []string, version string) int {
 		ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 		defer cancel()
 		value, err := fetchPublicNetworkInfo(ctx)
+		// 조회는 기본 동작이므로 실패해도 줄만 빼고 진단은 계속한다. 원인은 -v로 본다.
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "public network 조회 실패: %v\n", err)
+			if verbose {
+				fmt.Fprintf(os.Stderr, "public network 조회 실패: %v\n", err)
+			}
 		} else {
 			public = &value
 		}
@@ -68,10 +74,9 @@ func printInfo(writer io.Writer, version string, details hostDetails, interfaces
 	}
 	fmt.Fprintf(writer, "├── Swap Usage: %s / %s (%.2f%%)\n├── CPU Load: %.2f, %.2f, %.2f (1, 5, 15 minutes)\n└── Uptime: %s\n\n", formatBytes(details.SwapUsed), formatBytes(details.SwapTotal), swapPercent, details.Load[0], details.Load[1], details.Load[2], formatDuration(details.Uptime))
 	fmt.Fprintln(writer, "🛜 Network Interface")
+	// 조회하지 못하면 줄 자체를 빼서 없는 값을 설명하지 않는다.
 	if public != nil {
 		fmt.Fprintf(writer, "├── Public IP: %s\n│   ├── Region: %s, %s, %s, Timezone=%s\n│   └── ASN/ORG: %s\n", public.IP, public.Country, public.Region, public.City, public.Timezone, public.Org)
-	} else {
-		fmt.Fprintln(writer, "├── Public IP: (use --public to query ipinfo.io)")
 	}
 	fmt.Fprintln(writer, "└── Local IP")
 	for index, iface := range interfaces {

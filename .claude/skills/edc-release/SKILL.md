@@ -1,5 +1,5 @@
 ---
-name: release
+name: edc-release
 description: Cut an edc release — pick the version, verify locally, tag, and let GitHub Actions publish the assets. Use when the user asks to release edc, cut a version, publish a tag, or fix a failed release run.
 ---
 

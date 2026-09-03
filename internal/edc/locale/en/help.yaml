@@ -113,6 +113,16 @@ command:
       - "In a terminal, edc opens a viewer. f filters, e shows the details, q quits."
       - "diff shows the status change and the metric difference of each probe."
       - "A worse probe returns exit code 1."
+  log:
+    summary: "Append one command stream to a log file"
+    option:
+      stream: "stream to capture (required)"
+      output: "log file to append (required)"
+      command_display: "command detail in markers"
+    notes:
+      - "Only the selected stream goes to the file; the other stream stays unchanged."
+      - "Commands using the same file run one at a time."
+      - "Use name or none when arguments can contain credentials."
   remote:
     summary: "Run a recipe on an inventory group"
     option:

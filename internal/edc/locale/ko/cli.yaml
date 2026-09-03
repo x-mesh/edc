@@ -16,6 +16,19 @@ cli:
   info:
     host_failed: "system 정보를 읽지 못했습니다: %v"
     public_failed: "public network 조회 실패: %v"
+  log:
+    stream_value: "--stream은 stdout 또는 stderr여야 합니다"
+    output_required: "--output이 필요합니다"
+    output_file_required: "--output에는 -가 아닌 file을 지정해야 합니다"
+    command_display_value: "--command-display는 full, name, none 중 하나여야 합니다"
+    command_required: "-- 뒤에 command가 필요합니다"
+    open_failed: "log file %s를 열지 못했습니다: %v"
+    lock_failed: "log file %s를 잠그지 못했습니다: %v"
+    write_failed: "log file %s에 쓰지 못했습니다: %v"
+    sync_failed: "log file %s를 sync하지 못했습니다: %v"
+    start_failed: "command를 시작하지 못했습니다: %v"
+    wait_failed: "command 종료를 기다리지 못했습니다: %v"
+    signal_failed: "signal을 전달하지 못했습니다: %v"
   capture:
     macos_only: "capture는 현재 macOS만 지원합니다"
     unexpected_positional: "알 수 없는 positional argument가 있습니다. BPF expression은 --filter로 전달하세요"

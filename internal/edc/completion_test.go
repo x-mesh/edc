@@ -8,11 +8,17 @@ import (
 
 func TestCompletionScriptsCoverCommandsAndRemoteFlags(t *testing.T) {
 	for name, script := range map[string]string{"zsh": zshCompletion, "bash": bashCompletion} {
-		for _, expected := range []string{"remote", "--dry-run", "--list", "--min-days", "--expect-status", "report", "diff", "edc completion groups"} {
+		for _, expected := range []string{"remote", "--dry-run", "--list", "--min-days", "--expect-status", "report", "diff", "edc completion groups", "log", "--stream", "--command-display", "stdout stderr", "full name none"} {
 			if !strings.Contains(script, expected) {
 				t.Fatalf("%s completion does not mention %q", name, expected)
 			}
 		}
+	}
+	if !strings.Contains(zshCompletion, "1:separator:(--)") {
+		t.Fatal("zsh log completion must require -- before the child command")
+	}
+	if !strings.Contains(bashCompletion, "COMP_WORDS[index]} == --") {
+		t.Fatal("bash completion must stop parsing edc options after --")
 	}
 	if !strings.HasPrefix(zshCompletion, "#compdef edc\n") {
 		t.Fatalf("zsh script must start with #compdef: %q", zshCompletion[:20])

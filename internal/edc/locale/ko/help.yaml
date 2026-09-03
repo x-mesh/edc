@@ -113,6 +113,16 @@ command:
       - "terminal에서는 뷰어로 엽니다. f 필터, e 상세, q 종료."
       - "diff는 probe별 status 변화와 metric 차이를 보여 줍니다."
       - "악화된 probe가 있으면 exit code 1을 돌려줍니다."
+  log:
+    summary: "command stream 하나를 log file에 append"
+    option:
+      stream: "capture할 stream (필수)"
+      output: "append할 log file (필수)"
+      command_display: "marker에 기록할 command 범위"
+    notes:
+      - "선택한 stream만 file로 보내고 다른 stream은 그대로 둡니다."
+      - "같은 file을 쓰는 command는 한 번에 하나씩 실행합니다."
+      - "argument에 credential이 있으면 name 또는 none을 쓰십시오."
   remote:
     summary: "inventory group에 recipe 실행"
     option:

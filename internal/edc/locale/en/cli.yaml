@@ -16,6 +16,19 @@ cli:
   info:
     host_failed: "edc did not read the system information: %v"
     public_failed: "the public network lookup failed: %v"
+  log:
+    stream_value: "--stream must be stdout or stderr"
+    output_required: "--output is required"
+    output_file_required: "--output must name a file, not -"
+    command_display_value: "--command-display must be full, name, or none"
+    command_required: "a command is required after --"
+    open_failed: "could not open log file %s: %v"
+    lock_failed: "could not lock log file %s: %v"
+    write_failed: "could not write log file %s: %v"
+    sync_failed: "could not sync log file %s: %v"
+    start_failed: "could not start command: %v"
+    wait_failed: "could not wait for command: %v"
+    signal_failed: "could not forward signal: %v"
   capture:
     macos_only: "capture runs on macOS only"
     unexpected_positional: "edc found an unknown positional argument. Pass the BPF expression with --filter"

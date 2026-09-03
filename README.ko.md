@@ -516,6 +516,18 @@ PCAP에는 credential과 개인정보가 포함될 수 있습니다. JSON redact
 
 질문을 건너뛰려면 `--yes`를 씁니다. terminal이 아닌 실행은 계획을 출력하고 stdin에서 `y`나 `n`을 읽습니다.
 
+## Cron과 application log
+
+`edc log`는 command의 `stdout` 또는 `stderr` 한쪽을 file에 append합니다. 선택한 stream은 file로만 보내고, 다른 stream과 `stdin`은 cron 또는 호출 terminal에 그대로 연결합니다. application에 logging 기능이 없어도 조용히 실패한 cron 실행을 확인할 수 있습니다.
+
+```cron
+* * * * * /usr/local/bin/edc log --stream stderr --output /var/log/job.log -- /usr/local/bin/job --daily
+```
+
+실행마다 시간, duration, exit status를 담은 ASCII start/end marker를 남깁니다. 새 file은 mode `0600`으로 만들고 기존 file은 내용과 mode를 유지합니다. 같은 file을 대상으로 하는 실행은 서로 기다리므로 log block이 섞이지 않습니다. Child의 exit code와 signal status는 `edc`가 그대로 전달합니다.
+
+기본값 `--command-display full`은 start marker에 argument 전체를 기록합니다. argument에 credential이 들어갈 수 있으면 `--command-display name` 또는 `none`을 사용하십시오. `edc log`는 append만 하며 rotation, compression, retention은 제공하지 않습니다. 보관 정책은 system log rotation service로 설정하십시오.
+
 ## Shell completion
 
 `edc completion`은 completion script를 출력합니다. script는 command, option, 그리고 `edc`가 찾은 inventory의 group 이름을 완성합니다.
@@ -533,13 +545,13 @@ zsh에서는 script를 `fpath`의 디렉터리에 `_edc`라는 이름으로 저�
 
 - `0`: 성공 또는 warning만 존재
 - `1`: 하나 이상의 probe 실패, 또는 `report diff`에서 악화된 probe 존재
-- `2`: argument, config, report parse 등 실행 오류
+- `2`: argument, config, log 시작, report parse 등 실행 오류
 - `3`: privileged 작업의 권한 부족
 - `4`: 사용자 취소 (선택 취소, `remote`와 `doctor`의 Ctrl-C 포함)
 
 ## 현재 범위
 
-`top`, `info`, `doctor`와 개별 network probe는 Linux와 macOS를 지원합니다. Linux에서는 `/proc`, `/sys`, `ip`, `ss`, `ping`, `traceroute` 또는 `tracepath`, `/etc/resolv.conf`를 읽고, `resolvectl`이 있으면 `resolvectl status`를 evidence로 덧붙입니다. macOS에서는 system command adapter를 사용합니다. `quality`와 `capture`는 macOS 전용입니다. 모든 command는 read-only 진단에 집중하며, DNS flush, interface reset, firewall 변경 같은 자동 복구는 하지 않습니다.
+`top`, `info`, `doctor`와 개별 network probe는 Linux와 macOS를 지원합니다. Linux에서는 `/proc`, `/sys`, `ip`, `ss`, `ping`, `traceroute` 또는 `tracepath`, `/etc/resolv.conf`를 읽고, `resolvectl`이 있으면 `resolvectl status`를 evidence로 덧붙입니다. macOS에서는 system command adapter를 사용합니다. `quality`와 `capture`는 macOS 전용입니다. 진단 command는 read-only 관측에 집중하며, DNS flush, interface reset, firewall 변경 같은 자동 복구는 하지 않습니다. `edc log`는 명시한 output file만 씁니다.
 
 ## 라이선스
 

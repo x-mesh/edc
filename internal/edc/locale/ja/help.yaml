@@ -113,6 +113,16 @@ command:
       - "terminal ではビューアを開きます。f 絞り込み、e 詳細、q 終了。"
       - "diff は probe ごとの status の変化と metric の差を示します。"
       - "悪化した probe があれば exit code 1 を返します。"
+  log:
+    summary: "command の stream を一つ log file に追記"
+    option:
+      stream: "capture する stream (必須)"
+      output: "追記する log file (必須)"
+      command_display: "marker に残す command の範囲"
+    notes:
+      - "選んだ stream だけを file に送り、もう一方はそのままにします。"
+      - "同じ file を使う command は一つずつ実行します。"
+      - "argument に credential がある場合は name か none を使います。"
   remote:
     summary: "inventory group で recipe を実行"
     option:

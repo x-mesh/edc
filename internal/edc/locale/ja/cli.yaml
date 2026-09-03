@@ -16,6 +16,19 @@ cli:
   info:
     host_failed: "system の情報を読めませんでした: %v"
     public_failed: "public network の取得に失敗しました: %v"
+  log:
+    stream_value: "--stream は stdout か stderr です"
+    output_required: "--output が必要です"
+    output_file_required: "--output には - ではなく file を指定します"
+    command_display_value: "--command-display は full、name、none のいずれかです"
+    command_required: "-- の後に command が必要です"
+    open_failed: "log file %s を開けませんでした: %v"
+    lock_failed: "log file %s を lock できませんでした: %v"
+    write_failed: "log file %s に書けませんでした: %v"
+    sync_failed: "log file %s を sync できませんでした: %v"
+    start_failed: "command を開始できませんでした: %v"
+    wait_failed: "command の終了を待てませんでした: %v"
+    signal_failed: "signal を転送できませんでした: %v"
   capture:
     macos_only: "capture は今のところ macOS だけで動きます"
     unexpected_positional: "不明な positional argument があります。BPF expression は --filter で渡してください"

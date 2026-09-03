@@ -141,6 +141,18 @@ var commandDocs = []commandDoc{
 		},
 	},
 	{
+		name: "log", group: "record",
+		usage: []string{
+			"edc log --stream stdout|stderr --output <file>",
+			"        [--command-display full|name|none] -- <command> [args...]",
+		},
+		options: []optionDoc{
+			{"--stream stdout|stderr", "command.log.option.stream"},
+			{"--output <file>", "command.log.option.output"},
+			{"--command-display full|name|none", "command.log.option.command_display"},
+		},
+	},
+	{
 		name: "remote", group: "record",
 		usage: []string{"edc remote [<group>] [options]"},
 		options: []optionDoc{

@@ -69,6 +69,8 @@ func Run(args []string, version string) int {
 		return runCapture(args[1:])
 	case "report":
 		return runReport(args[1:])
+	case "log":
+		return runLog(args[1:])
 	case "remote":
 		return runRemote(args[1:], version)
 	case "completion":

@@ -514,6 +514,18 @@ A PCAP file can hold credentials and personal data. The JSON redaction does not 
 
 Use `--yes` to skip the question. A non-terminal command prints the plan and reads `y` or `n` from stdin.
 
+## Cron and application logs
+
+`edc log` appends either `stdout` or `stderr` from a command to a file. The selected stream goes only to the file; the other stream and `stdin` stay connected to cron or the calling terminal. This makes a quiet cron failure visible without requiring logging support in the application.
+
+```cron
+* * * * * /usr/local/bin/edc log --stream stderr --output /var/log/job.log -- /usr/local/bin/job --daily
+```
+
+Each run gets ASCII start and end markers with its time, duration, and exit status. A new file is mode `0600`; an existing file keeps its contents and mode. Runs targeting the same file wait for each other, so their blocks do not mix. The child exit code and signal status pass through `edc`.
+
+The default `--command-display full` puts the complete argument list in the start marker. Use `--command-display name` or `none` when arguments may contain credentials. `edc log` only appends: it does not rotate, compress, or remove logs. Configure retention with the system log rotation service.
+
 ## Shell completion
 
 `edc completion` prints a completion script. The script completes commands, options, and the group names of the inventory that `edc` finds.
@@ -531,7 +543,7 @@ For zsh, you can also save the script as `_edc` in a directory of `fpath`.
 
 - `0`: success, or warnings only
 - `1`: one probe fails or more, or `report diff` finds a worse probe
-- `2`: a run error, such as an argument, a config, or a report parse error
+- `2`: a run error, such as an argument, a config, a log start, or a report parse error
 - `3`: not enough privilege for a privileged task
 - `4`: user cancel, which includes a cancelled selection and Ctrl-C in `remote` and `doctor`
 
@@ -543,7 +555,7 @@ On Linux, `edc` reads `/proc`, `/sys`, `ip`, `ss`, `ping`, `traceroute` or `trac
 
 On macOS, `edc` uses a system command adapter. Only macOS runs `quality` and `capture`.
 
-Every command keeps to a read-only diagnosis. `edc` runs no automatic repair, such as a DNS flush, an interface reset, or a firewall change.
+Every diagnostic command keeps to read-only inspection. `edc` runs no automatic repair, such as a DNS flush, an interface reset, or a firewall change. `edc log` only writes its explicit output file.
 
 ## License
 

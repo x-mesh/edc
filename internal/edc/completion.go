@@ -135,6 +135,9 @@ _edc() {
         capture)
           _arguments '--interface[capture할 interface]:interface' '--duration[capture 시간]:duration' '--count[packet 수]:count' '--filter[BPF filter]:filter' '--output[pcap 저장 경로]:path:_files' '--yes[확인 생략]'
           ;;
+        log)
+          _arguments -S '--stream[capture할 stream]:stream:(stdout stderr)' '--output[append log 경로]:path:_files' '--command-display[marker에 기록할 command 범위]:mode:(full name none)' '1:separator:(--)' '2:command:_command_names -e' '*::command argument'
+          ;;
         report)
           _arguments '--json[JSON 출력 경로]:path:_files' '1:subcommand:(show diff)' '*:report file:_files -g "*.json"'
           ;;
@@ -167,7 +170,7 @@ fi
 
 const bashCompletion = `# edc completion bash 출력. source <(edc completion bash)로 읽는다.
 _edc() {
-  local cur prev command
+  local cur prev command index
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD-1]}"
   local commands="@@COMMANDS@@"
@@ -193,6 +196,20 @@ _edc() {
       if [[ $COMP_CWORD -eq 2 ]]; then COMPREPLY=($(compgen -W "interfaces route ping trace" -- "$cur")); else COMPREPLY=($(compgen -W "$common" -- "$cur")); fi ;;
     sockets|quality) COMPREPLY=($(compgen -W "$common" -- "$cur")) ;;
     capture) COMPREPLY=($(compgen -W "--interface --duration --count --filter --output --yes" -- "$cur")) ;;
+    log)
+      for ((index=2; index<COMP_CWORD; index++)); do
+        if [[ ${COMP_WORDS[index]} == -- ]]; then
+          COMPREPLY=()
+          if [[ $index -eq $((COMP_CWORD-1)) ]]; then COMPREPLY=($(compgen -c -- "$cur")); fi
+          return
+        fi
+      done
+      case "$prev" in
+        --stream) COMPREPLY=($(compgen -W "stdout stderr" -- "$cur")); return ;;
+        --command-display) COMPREPLY=($(compgen -W "full name none" -- "$cur")); return ;;
+        --output) COMPREPLY=($(compgen -f -- "$cur")); return ;;
+      esac
+      if [[ $cur == -* ]]; then COMPREPLY=($(compgen -W "--stream --output --command-display --" -- "$cur")); fi ;;
     update) COMPREPLY=($(compgen -W "--check --yes --timeout" -- "$cur")) ;;
     report)
       if [[ $COMP_CWORD -eq 2 ]]; then COMPREPLY=($(compgen -W "show diff" -- "$cur"))

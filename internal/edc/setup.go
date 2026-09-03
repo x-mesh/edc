@@ -77,6 +77,9 @@ func runSetupWithIO(args []string, input io.Reader, output, stderr io.Writer, te
 		}},
 		{"log", func() error {
 			config.Defaults.Log = mergeConfigSection(config.Defaults.Log, recommended.Defaults.Log)
+			if config.Defaults.Log.Output != nil && *config.Defaults.Log.Output == legacyRecommendedLogOutput {
+				config.Defaults.Log.Output = stringPointer(recommendedLogOutputPath())
+			}
 			return editLogSetup(reader, output, &config.Defaults.Log)
 		}},
 		{"top", func() error {

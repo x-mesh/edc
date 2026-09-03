@@ -105,6 +105,23 @@ func TestSetupUpdatesLogAndPreservesExistingValues(t *testing.T) {
 	}
 }
 
+func TestSetupMigratesTheLegacyRecommendedLogPath(t *testing.T) {
+	path := writeConfigFixture(t, "lang: en\ndefaults:\n  log: {stream: stderr, output: /var/log/job.log, command_display: full}\n")
+	// language; common no; log yes, retain all migrated values; remaining sections no; save.
+	input := "\nn\ny\n\n\n\n" + strings.Repeat("n\n", 9) + "y\n"
+	var output, stderr strings.Builder
+	if code := runSetupWithIO(nil, strings.NewReader(input), &output, &stderr, true, path); code != 0 {
+		t.Fatalf("exit=%d stderr=%q output=%q", code, stderr.String(), output.String())
+	}
+	config, err := loadConfigAt(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.Defaults.Log.Output == nil || *config.Defaults.Log.Output != recommendedLogOutputPath() {
+		t.Fatalf("legacy output was not migrated: %#v", config.Defaults.Log.Output)
+	}
+}
+
 func TestSetupRepromptsInvalidValue(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "edc", "config.yaml")
 	// invalid language is followed by ko, then skip sections and save.

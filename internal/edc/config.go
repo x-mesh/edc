@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -14,6 +15,8 @@ import (
 )
 
 const maxConfigBytes = 1024 * 1024
+
+const legacyRecommendedLogOutput = "/var/log/job.log"
 
 var configScalarTypes = map[string]string{
 	"lang": "!!str", "defaults.common.json": "!!str", "defaults.doctor.profile": "!!str",
@@ -364,8 +367,32 @@ func recommendedConfig() edcConfig {
 		Capture: captureConfig{Interface: stringPointer(""), Duration: durationPointer(15 * time.Second), Count: intPointer(500), Filter: stringPointer(""), Output: stringPointer("")},
 		Remote:  remoteConfig{Inventory: stringPointer(""), Recipe: stringPointer(""), ConnectTimeout: durationPointer(10 * time.Second), OutputLimit: intPointer(remoteOutputLimit), Parallel: intPointer(0)},
 		Update:  updateConfig{Timeout: durationPointer(60 * time.Second)},
-		Log:     logConfig{Stream: stringPointer("stderr"), Output: stringPointer("/var/log/job.log"), CommandDisplay: stringPointer("full")},
+		Log:     logConfig{Stream: stringPointer("stderr"), Output: stringPointer(recommendedLogOutputPath()), CommandDisplay: stringPointer("full")},
 	}}
+}
+
+func recommendedLogOutputPath() string {
+	home, _ := os.UserHomeDir()
+	return recommendedLogOutputPathFor(runtime.GOOS, home, os.Getenv("XDG_STATE_HOME"))
+}
+
+func recommendedLogOutputPathFor(goos, home, stateHome string) string {
+	switch goos {
+	case "darwin":
+		if home != "" {
+			return filepath.Join(home, "Library", "Logs", "edc.log")
+		}
+	case "linux":
+		base := stateHome
+		if base == "" || !filepath.IsAbs(base) {
+			if home == "" {
+				return ""
+			}
+			base = filepath.Join(home, ".local", "state")
+		}
+		return filepath.Join(base, "edc", "edc.log")
+	}
+	return ""
 }
 
 func mergeConfigSection[T any](existing, fallback T) T {

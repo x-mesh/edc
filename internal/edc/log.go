@@ -45,6 +45,10 @@ func runLogWithStreams(args []string, streams logStreams) int {
 	if !ok {
 		return 2
 	}
+	if err := ensureRecommendedLogDirectory(options.output); err != nil {
+		fmt.Fprintln(streams.stderr, T("cli.log.open_failed", options.output, err))
+		return 2
+	}
 
 	logFile, err := openLogFile(options.output)
 	if err != nil {
@@ -145,6 +149,17 @@ waitLoop:
 		return 2
 	}
 	return exitCode
+}
+
+func ensureRecommendedLogDirectory(output string) error {
+	return ensureRecommendedLogDirectoryFor(output, recommendedLogOutputPath())
+}
+
+func ensureRecommendedLogDirectoryFor(output, recommended string) error {
+	if recommended == "" || output != recommended {
+		return nil
+	}
+	return os.MkdirAll(filepath.Dir(output), 0o700)
 }
 
 func parseLogOptions(args []string, stderr io.Writer) (logOptions, bool) {

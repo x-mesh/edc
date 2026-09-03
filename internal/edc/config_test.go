@@ -58,6 +58,21 @@ defaults:
 	}
 }
 
+func TestRecommendedLogOutputPathFollowsThePlatform(t *testing.T) {
+	if got := recommendedLogOutputPathFor("darwin", "/Users/one", ""); got != "/Users/one/Library/Logs/edc.log" {
+		t.Fatalf("darwin path = %q", got)
+	}
+	if got := recommendedLogOutputPathFor("linux", "/home/one", "/state"); got != "/state/edc/edc.log" {
+		t.Fatalf("linux XDG path = %q", got)
+	}
+	if got := recommendedLogOutputPathFor("linux", "/home/one", "relative"); got != "/home/one/.local/state/edc/edc.log" {
+		t.Fatalf("linux fallback path = %q", got)
+	}
+	if got := recommendedLogOutputPathFor("windows", "C:/Users/one", ""); got != "" {
+		t.Fatalf("unsupported path = %q", got)
+	}
+}
+
 func TestConfigRejectsUnknownTypeAndRange(t *testing.T) {
 	for _, content := range []string{
 		"defaults: {log: {unknown: true}}\n",

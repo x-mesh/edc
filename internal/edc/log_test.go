@@ -177,6 +177,24 @@ func TestLogAppendsAndPreservesFileModes(t *testing.T) {
 	}
 }
 
+func TestLogCreatesOnlyTheRecommendedParentDirectory(t *testing.T) {
+	root := t.TempDir()
+	recommended := filepath.Join(root, "state", "edc", "edc.log")
+	if err := ensureRecommendedLogDirectoryFor(recommended, recommended); err != nil {
+		t.Fatal(err)
+	}
+	if info, err := os.Stat(filepath.Dir(recommended)); err != nil || !info.IsDir() {
+		t.Fatalf("recommended parent: info=%v err=%v", info, err)
+	}
+	custom := filepath.Join(root, "custom", "job.log")
+	if err := ensureRecommendedLogDirectoryFor(custom, recommended); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Dir(custom)); !os.IsNotExist(err) {
+		t.Fatalf("custom parent was created: %v", err)
+	}
+}
+
 func TestLogCommandDisplayModesAndASCII(t *testing.T) {
 	base := logOptions{stream: "stderr", command: []string{"/tmp/실행 파일", "--token", "秘密"}}
 	for _, row := range []struct {

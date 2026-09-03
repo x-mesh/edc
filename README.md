@@ -107,10 +107,12 @@ defaults:
   capture: {interface: "", duration: 15s, count: 500, filter: "", output: ""}
   remote: {inventory: "", recipe: "", connect_timeout: 10s, output_limit: 65536, parallel: 0}
   update: {timeout: 60s}
-  log: {stream: stderr, output: /var/log/job.log, command_display: full}
+  log: {stream: stderr, output: /absolute/path/to/edc.log, command_display: full}
 ```
 
 Command-specific values override `defaults.common`. Positional targets, URLs, hosts, and remote groups are never stored, nor are action options such as `yes`, `force`, `dry-run`, `list`, and `check`. Persisted remote inventory and recipe paths must be absolute. Empty path values disable that default.
+
+The setup wizard recommends `~/Library/Logs/edc.log` on macOS and `${XDG_STATE_HOME:-~/.local/state}/edc/edc.log` on Linux. `edc log` creates the parent directory only for this generated default; custom output paths must already have a parent directory.
 
 ## Quick start
 

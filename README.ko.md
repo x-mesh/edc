@@ -109,10 +109,12 @@ defaults:
   capture: {interface: "", duration: 15s, count: 500, filter: "", output: ""}
   remote: {inventory: "", recipe: "", connect_timeout: 10s, output_limit: 65536, parallel: 0}
   update: {timeout: 60s}
-  log: {stream: stderr, output: /var/log/job.log, command_display: full}
+  log: {stream: stderr, output: /absolute/path/to/edc.log, command_display: full}
 ```
 
 command별 값은 `defaults.common`을 덮습니다. positional target, URL, host, remote group과 `yes`, `force`, `dry-run`, `list`, `check` 같은 action option은 저장하지 않습니다. 저장하는 remote inventory와 recipe는 absolute path여야 합니다. 빈 path 값은 해당 기본값을 사용하지 않는다는 뜻입니다.
+
+Setup wizard는 macOS에서 `~/Library/Logs/edc.log`, Linux에서 `${XDG_STATE_HOME:-~/.local/state}/edc/edc.log`를 추천합니다. 이 추천값에 한해 `edc log`가 parent directory를 만들며, 직접 지정한 output path는 parent directory가 이미 있어야 합니다.
 
 ## 빠른 시작
 

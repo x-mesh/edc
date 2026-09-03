@@ -42,3 +42,12 @@ func TestCompletionGroupsListInventoryGroups(t *testing.T) {
 		t.Fatalf("missing inventory exit code = %d", code)
 	}
 }
+
+func TestCompletionGroupsUsesConfiguredInventory(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "custom.yaml")
+	writeRemoteFixture(t, path, "hosts: [{name: one}]\ngroups: {configured: [one]}\n")
+	var output strings.Builder
+	if code := writeCompletionGroupsWithPath(&output, t.TempDir(), t.TempDir(), path); code != 0 || output.String() != "configured\n" {
+		t.Fatalf("code=%d output=%q", code, output.String())
+	}
+}

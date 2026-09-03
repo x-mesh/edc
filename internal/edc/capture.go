@@ -28,11 +28,12 @@ func runCapture(args []string) int {
 	}
 	set := flag.NewFlagSet("capture", flag.ContinueOnError)
 	set.SetOutput(os.Stderr)
-	interfaceName := set.String("interface", "", T("command.capture.option.interface"))
-	duration := set.Duration("duration", 15*time.Second, T("command.capture.option.duration"))
-	count := set.Int("count", 500, T("command.capture.option.count"))
-	filter := set.String("filter", "", T("command.capture.option.filter"))
-	output := set.String("output", "", T("command.capture.option.output"))
+	config := activeConfig.Defaults.Capture
+	interfaceName := set.String("interface", configuredString(config.Interface, ""), T("command.capture.option.interface"))
+	duration := set.Duration("duration", configuredDuration(config.Duration, 15*time.Second), T("command.capture.option.duration"))
+	count := set.Int("count", configuredInt(config.Count, 500), T("command.capture.option.count"))
+	filter := set.String("filter", configuredString(config.Filter, ""), T("command.capture.option.filter"))
+	output := set.String("output", configuredString(config.Output, ""), T("command.capture.option.output"))
 	yes := set.Bool("yes", false, T("command.capture.option.yes"))
 	if err := set.Parse(args); err != nil {
 		return 2

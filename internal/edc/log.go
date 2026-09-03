@@ -148,7 +148,12 @@ waitLoop:
 }
 
 func parseLogOptions(args []string, stderr io.Writer) (logOptions, bool) {
-	var options logOptions
+	config := activeConfig.Defaults.Log
+	options := logOptions{
+		stream:         configuredString(config.Stream, ""),
+		output:         configuredString(config.Output, ""),
+		commandDisplay: configuredString(config.CommandDisplay, "full"),
+	}
 	separator := -1
 	for index, argument := range args {
 		if argument == "--" {
@@ -162,9 +167,9 @@ func parseLogOptions(args []string, stderr io.Writer) (logOptions, bool) {
 	}
 	set := flag.NewFlagSet("log", flag.ContinueOnError)
 	set.SetOutput(stderr)
-	set.StringVar(&options.stream, "stream", "", T("command.log.option.stream"))
-	set.StringVar(&options.output, "output", "", T("command.log.option.output"))
-	set.StringVar(&options.commandDisplay, "command-display", "full", T("command.log.option.command_display"))
+	set.StringVar(&options.stream, "stream", options.stream, T("command.log.option.stream"))
+	set.StringVar(&options.output, "output", options.output, T("command.log.option.output"))
+	set.StringVar(&options.commandDisplay, "command-display", options.commandDisplay, T("command.log.option.command_display"))
 	if err := set.Parse(args[:separator]); err != nil {
 		return logOptions{}, false
 	}

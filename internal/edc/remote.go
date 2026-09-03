@@ -59,11 +59,12 @@ func remoteReservedGroupHint(name string) string {
 }
 
 func runRemoteRun(group string, args []string, version string) int {
-	options := commonOptions{timeout: 10 * time.Minute, redact: true}
-	remoteOptions := remoteRunOptions{}
-	connectTimeout := 10 * time.Second
-	outputLimit := remoteOutputLimit
-	parallelOverride := 0
+	options := configuredCommon(10 * time.Minute)
+	config := activeConfig.Defaults.Remote
+	remoteOptions := remoteRunOptions{inventoryPath: configuredString(config.Inventory, ""), recipePath: configuredString(config.Recipe, "")}
+	connectTimeout := configuredDuration(config.ConnectTimeout, 10*time.Second)
+	outputLimit := configuredInt(config.OutputLimit, remoteOutputLimit)
+	parallelOverride := configuredInt(config.Parallel, 0)
 	force := false
 	dryRun := false
 	list := false
@@ -71,12 +72,12 @@ func runRemoteRun(group string, args []string, version string) int {
 	set := flag.NewFlagSet("remote", flag.ContinueOnError)
 	set.SetOutput(os.Stderr)
 	bindCommon(set, &options)
-	set.StringVar(&remoteOptions.inventoryPath, "inventory", "", T("command.remote.option.inventory"))
-	set.StringVar(&remoteOptions.recipePath, "recipe", "", T("command.remote.option.recipe"))
+	set.StringVar(&remoteOptions.inventoryPath, "inventory", remoteOptions.inventoryPath, T("command.remote.option.inventory"))
+	set.StringVar(&remoteOptions.recipePath, "recipe", remoteOptions.recipePath, T("command.remote.option.recipe"))
 	set.StringVar(&groupFlag, "group", "", T("command.remote.option.group"))
 	set.DurationVar(&connectTimeout, "connect-timeout", connectTimeout, T("command.remote.option.connect_timeout"))
 	set.IntVar(&outputLimit, "output-limit", outputLimit, T("command.remote.option.output_limit"))
-	set.IntVar(&parallelOverride, "parallel", 0, T("command.remote.option.parallel"))
+	set.IntVar(&parallelOverride, "parallel", parallelOverride, T("command.remote.option.parallel"))
 	set.BoolVar(&force, "force", false, T("command.remote.option.force"))
 	set.BoolVar(&force, "f", false, T("command.remote.option.force"))
 	set.BoolVar(&dryRun, "dry-run", false, T("command.remote.option.dry_run"))

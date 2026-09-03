@@ -106,12 +106,12 @@ type whereReport struct {
 }
 
 func runWhere(args []string, version string) int {
-	options := commonOptions{timeout: 20 * time.Second, redact: true}
+	options := configuredCommon(20 * time.Second)
 	set := flag.NewFlagSet("where", flag.ContinueOnError)
 	set.SetOutput(os.Stderr)
 	bindCommon(set, &options)
-	provider := set.String("provider", "all", T("command.where.option.provider"))
-	count := set.Int("count", 3, T("command.where.option.count"))
+	provider := set.String("provider", configuredString(activeConfig.Defaults.Where.Provider, "all"), T("command.where.option.provider"))
+	count := set.Int("count", configuredInt(activeConfig.Defaults.Where.Count, 3), T("command.where.option.count"))
 	if err := set.Parse(args); err != nil {
 		return 2
 	}

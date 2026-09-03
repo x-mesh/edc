@@ -22,11 +22,12 @@ type publicNetworkInfo struct {
 func runInfo(args []string, version string) int {
 	set := flag.NewFlagSet("info", flag.ContinueOnError)
 	set.SetOutput(os.Stderr)
-	includePublic := set.Bool("public", true, T("command.info.option.public"))
-	timeout := set.Duration("timeout", 3*time.Second, T("command.info.option.timeout"))
-	var verbose bool
-	set.BoolVar(&verbose, "verbose", false, T("command.info.option.verbose"))
-	set.BoolVar(&verbose, "v", false, T("option.verbose"))
+	config := activeConfig.Defaults.Info
+	includePublic := set.Bool("public", configuredBool(config.Public, true), T("command.info.option.public"))
+	timeout := set.Duration("timeout", configuredDurationFallback(config.Timeout, activeConfig.Defaults.Common.Timeout, 3*time.Second), T("command.info.option.timeout"))
+	verbose := configuredBoolFallback(config.Verbose, activeConfig.Defaults.Common.Verbose, false)
+	set.BoolVar(&verbose, "verbose", verbose, T("command.info.option.verbose"))
+	set.BoolVar(&verbose, "v", verbose, T("option.verbose"))
 	if err := set.Parse(args); err != nil {
 		return 2
 	}

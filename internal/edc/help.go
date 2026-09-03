@@ -143,7 +143,7 @@ var commandDocs = []commandDoc{
 	{
 		name: "log", group: "record",
 		usage: []string{
-			"edc log --stream stdout|stderr --output <file>",
+			"edc log [--stream stdout|stderr] [--output <file>]",
 			"        [--command-display full|name|none] -- <command> [args...]",
 		},
 		options: []optionDoc{
@@ -170,6 +170,10 @@ var commandDocs = []commandDoc{
 	{
 		name: "completion", group: "tool",
 		usage: []string{"edc completion <zsh|bash|groups>"},
+	},
+	{
+		name: "setup", group: "tool",
+		usage: []string{"edc setup"},
 	},
 	{
 		name: "update", group: "tool",

@@ -116,13 +116,14 @@ command:
   log:
     summary: "Append one command stream to a log file"
     option:
-      stream: "stream to capture (required)"
-      output: "log file to append (required)"
+      stream: "stream to capture; config can provide it"
+      output: "log file to append; config can provide it"
       command_display: "command detail in markers"
     notes:
       - "Only the selected stream goes to the file; the other stream stays unchanged."
       - "Commands using the same file run one at a time."
       - "Use name or none when arguments can contain credentials."
+      - "Run edc setup to configure a short edc log -- command form."
   remote:
     summary: "Run a recipe on an inventory group"
     option:
@@ -146,6 +147,12 @@ command:
     notes:
       - "source <(edc completion zsh) or source <(edc completion bash)."
       - "groups prints the group names of the inventory, one per line."
+  setup:
+    summary: "Configure command defaults"
+    notes:
+      - "The wizard keeps existing values and edits selected sections."
+      - "It previews config.yaml before an atomic save."
+      - "Setup needs a terminal; cancel returns exit code 4."
   update:
     summary: "Install the latest release"
     option:

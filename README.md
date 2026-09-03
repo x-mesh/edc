@@ -88,6 +88,30 @@ EDC_LANG=ja edc where
 
 `edc` accepts `en`, `ko`, and `ja`. It reads a locale name such as `ko_KR.UTF-8` and keeps the language part. An unknown value falls back to English, and so does a message that a language misses.
 
+## Command defaults
+
+The same config file can hold repeat-safe command defaults. Precedence is built-in default, config, then an explicit CLI option. An explicit boolean such as `--redact=false` overrides `redact: true`. Invalid keys, types, or ranges stop the command with exit code `2` instead of being ignored.
+
+Run `edc setup` in a terminal to create or update the file. The wizard configures one section at a time, keeps existing values on Enter, removes an optional value with `!clear`, previews the complete YAML, and asks before an atomic mode `0600` save. The config directory is mode `0700`; cancel returns exit code `4`.
+
+```yaml
+lang: en
+defaults:
+  common: {timeout: 15s, json: "", verbose: false, redact: true}
+  doctor: {profile: default}
+  tls: {min_days: 14}
+  http: {expect_status: 200}
+  top: {interval: 2s, count: 10, no_header: false, json: ""}
+  info: {public: false, timeout: 3s, verbose: false}
+  where: {provider: all, count: 3}
+  capture: {interface: "", duration: 15s, count: 500, filter: "", output: ""}
+  remote: {inventory: "", recipe: "", connect_timeout: 10s, output_limit: 65536, parallel: 0}
+  update: {timeout: 60s}
+  log: {stream: stderr, output: /var/log/job.log, command_display: full}
+```
+
+Command-specific values override `defaults.common`. Positional targets, URLs, hosts, and remote groups are never stored, nor are action options such as `yes`, `force`, `dry-run`, `list`, and `check`. Persisted remote inventory and recipe paths must be absolute. Empty path values disable that default.
+
 ## Quick start
 
 ```bash
@@ -519,8 +543,10 @@ Use `--yes` to skip the question. A non-terminal command prints the plan and rea
 `edc log` appends either `stdout` or `stderr` from a command to a file. The selected stream goes only to the file; the other stream and `stdin` stay connected to cron or the calling terminal. This makes a quiet cron failure visible without requiring logging support in the application.
 
 ```cron
-* * * * * /usr/local/bin/edc log --stream stderr --output /var/log/job.log -- /usr/local/bin/job --daily
+* * * * * /usr/local/bin/edc log -- /usr/local/bin/job --daily
 ```
+
+The short form uses `defaults.log.stream`, `output`, and `command_display`. Each value can still be overridden with its CLI option. Without a configured or explicit stream and output, `edc log` keeps reporting them as required.
 
 Each run gets ASCII start and end markers with its time, duration, and exit status. A new file is mode `0600`; an existing file keeps its contents and mode. Runs targeting the same file wait for each other, so their blocks do not mix. The child exit code and signal status pass through `edc`.
 

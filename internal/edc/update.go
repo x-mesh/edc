@@ -50,7 +50,7 @@ func runUpdate(args []string, version string) int {
 	set.SetOutput(os.Stderr)
 	check := set.Bool("check", false, T("command.update.option.check"))
 	yes := set.Bool("yes", false, T("command.update.option.yes"))
-	timeout := set.Duration("timeout", 60*time.Second, T("command.update.option.timeout"))
+	timeout := set.Duration("timeout", configuredDurationFallback(activeConfig.Defaults.Update.Timeout, activeConfig.Defaults.Common.Timeout, 60*time.Second), T("command.update.option.timeout"))
 	if err := set.Parse(args); err != nil {
 		return 2
 	}

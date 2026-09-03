@@ -116,13 +116,14 @@ command:
   log:
     summary: "command の stream を一つ log file に追記"
     option:
-      stream: "capture する stream (必須)"
-      output: "追記する log file (必須)"
+      stream: "capture する stream。config でも指定できます"
+      output: "追記する log file。config でも指定できます"
       command_display: "marker に残す command の範囲"
     notes:
       - "選んだ stream だけを file に送り、もう一方はそのままにします。"
       - "同じ file を使う command は一つずつ実行します。"
       - "argument に credential がある場合は name か none を使います。"
+      - "edc setup で edc log -- command の短い形式を設定します。"
   remote:
     summary: "inventory group で recipe を実行"
     option:
@@ -146,6 +147,12 @@ command:
     notes:
       - "source <(edc completion zsh) または source <(edc completion bash)。"
       - "groups は inventory の group 名を 1 行ずつ出します。"
+  setup:
+    summary: "command デフォルトの設定"
+    notes:
+      - "wizard は既存値を保ち、選択した section だけを変更します。"
+      - "config.yaml 全体を表示してから atomic に保存します。"
+      - "terminal が必要で、取消は exit code 4 です。"
   update:
     summary: "最新 release の導入"
     option:

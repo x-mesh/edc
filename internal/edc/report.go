@@ -56,7 +56,7 @@ func runReportShow(path string) int {
 func runReportDiff(args []string) int {
 	set := flag.NewFlagSet("report diff", flag.ContinueOnError)
 	set.SetOutput(os.Stderr)
-	jsonPath := set.String("json", "", T("option.json"))
+	jsonPath := set.String("json", configuredString(activeConfig.Defaults.Common.JSON, ""), T("option.json"))
 	if err := set.Parse(args); err != nil {
 		return 2
 	}

@@ -90,6 +90,30 @@ EDC_LANG=ja edc where
 
 `en`, `ko`, `ja`를 받습니다. `ko_KR.UTF-8` 같은 locale 이름을 주면 앞의 언어 부분만 봅니다. 모르는 값은 영어로 내려가고, 어떤 언어에 빠진 메시지도 영어로 내려갑니다.
 
+## Command 기본값
+
+같은 config file에 반복 실행해도 안전한 command 기본값을 둘 수 있습니다. 우선순위는 built-in, config, 명시한 CLI option 순서입니다. `--redact=false`처럼 명시한 boolean도 config의 `redact: true`를 덮습니다. 모르는 key, 잘못된 type이나 범위가 있으면 조용히 무시하지 않고 command 실행 전에 exit code `2`로 멈춥니다.
+
+terminal에서 `edc setup`을 실행하면 file을 만들거나 수정하는 wizard가 열립니다. section별로 설정하고 Enter로 기존 값을 유지하며, optional 값은 `!clear`로 제거합니다. 전체 YAML을 미리 보여 준 뒤 확인을 받아 mode `0600`으로 atomic 저장합니다. config directory는 mode `0700`이며 취소하면 exit code `4`입니다.
+
+```yaml
+lang: ko
+defaults:
+  common: {timeout: 15s, json: "", verbose: false, redact: true}
+  doctor: {profile: default}
+  tls: {min_days: 14}
+  http: {expect_status: 200}
+  top: {interval: 2s, count: 10, no_header: false, json: ""}
+  info: {public: false, timeout: 3s, verbose: false}
+  where: {provider: all, count: 3}
+  capture: {interface: "", duration: 15s, count: 500, filter: "", output: ""}
+  remote: {inventory: "", recipe: "", connect_timeout: 10s, output_limit: 65536, parallel: 0}
+  update: {timeout: 60s}
+  log: {stream: stderr, output: /var/log/job.log, command_display: full}
+```
+
+command별 값은 `defaults.common`을 덮습니다. positional target, URL, host, remote group과 `yes`, `force`, `dry-run`, `list`, `check` 같은 action option은 저장하지 않습니다. 저장하는 remote inventory와 recipe는 absolute path여야 합니다. 빈 path 값은 해당 기본값을 사용하지 않는다는 뜻입니다.
+
 ## 빠른 시작
 
 ```bash
@@ -521,8 +545,10 @@ PCAP에는 credential과 개인정보가 포함될 수 있습니다. JSON redact
 `edc log`는 command의 `stdout` 또는 `stderr` 한쪽을 file에 append합니다. 선택한 stream은 file로만 보내고, 다른 stream과 `stdin`은 cron 또는 호출 terminal에 그대로 연결합니다. application에 logging 기능이 없어도 조용히 실패한 cron 실행을 확인할 수 있습니다.
 
 ```cron
-* * * * * /usr/local/bin/edc log --stream stderr --output /var/log/job.log -- /usr/local/bin/job --daily
+* * * * * /usr/local/bin/edc log -- /usr/local/bin/job --daily
 ```
+
+짧은 형식은 `defaults.log.stream`, `output`, `command_display`를 사용합니다. 각 값은 기존 CLI option으로 다시 덮을 수 있습니다. config와 CLI 어디에도 stream과 output이 없으면 기존처럼 필수 option 오류를 냅니다.
 
 실행마다 시간, duration, exit status를 담은 ASCII start/end marker를 남깁니다. 새 file은 mode `0600`으로 만들고 기존 file은 내용과 mode를 유지합니다. 같은 file을 대상으로 하는 실행은 서로 기다리므로 log block이 섞이지 않습니다. Child의 exit code와 signal status는 `edc`가 그대로 전달합니다.
 

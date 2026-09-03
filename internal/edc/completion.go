@@ -28,7 +28,7 @@ func runCompletion(args []string) int {
 		if err != nil {
 			configDir = ""
 		}
-		return writeCompletionGroups(os.Stdout, cwd, configDir)
+		return writeCompletionGroupsWithPath(os.Stdout, cwd, configDir, configuredString(activeConfig.Defaults.Remote.Inventory, ""))
 	default:
 		fmt.Fprintln(os.Stderr, usage)
 		return 2
@@ -57,7 +57,15 @@ func bashCommandList() string {
 
 // writeCompletionGroups는 shell completion이 읽도록 inventory group 이름을 한 줄에 하나씩 쓴다.
 func writeCompletionGroups(writer io.Writer, cwd, configDir string) int {
-	path, found := discoverRemoteInventory(cwd, configDir)
+	return writeCompletionGroupsWithPath(writer, cwd, configDir, "")
+}
+
+func writeCompletionGroupsWithPath(writer io.Writer, cwd, configDir, configuredPath string) int {
+	path := configuredPath
+	found := path != ""
+	if !found {
+		path, found = discoverRemoteInventory(cwd, configDir)
+	}
 	if !found {
 		fmt.Fprintln(os.Stderr, remoteInventoryNotFound(cwd))
 		return 2
@@ -157,6 +165,9 @@ _edc() {
         completion)
           _arguments '1:shell:(zsh bash groups)'
           ;;
+        setup)
+          _arguments
+          ;;
       esac
       ;;
   esac
@@ -226,6 +237,7 @@ _edc() {
         COMPREPLY=($(compgen -W "$(edc completion groups 2>/dev/null)" -- "$cur"))
       fi ;;
     completion) COMPREPLY=($(compgen -W "zsh bash groups" -- "$cur")) ;;
+    setup) COMPREPLY=() ;;
   esac
 }
 complete -F _edc edc

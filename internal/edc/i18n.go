@@ -3,6 +3,7 @@ package edc
 import (
 	"embed"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -250,11 +251,6 @@ func catalogKeys(language string) []string {
 	return keys
 }
 
-// edcConfig는 사용자 설정이다. 지금은 언어만 담는다.
-type edcConfig struct {
-	Lang string `yaml:"lang"`
-}
-
 // configPath는 os.UserConfigDir 아래의 설정 경로다. inventory와 같은 자리를 쓴다.
 func configPath() string {
 	directory, err := os.UserConfigDir()
@@ -272,16 +268,24 @@ func readConfigLanguage() string { return readConfigLanguageAt(configPath()) }
 // os.UserConfigDir은 macOS에서 XDG_CONFIG_HOME을 보지 않으므로,
 // test가 환경변수로 격리하려 하면 개발자의 실제 설정을 읽게 된다. 경로를 넘겨 그 문제를 없앤다.
 func readConfigLanguageAt(path string) string {
-	if path == "" {
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() || info.Size() > maxConfigBytes {
 		return ""
 	}
-	data, err := os.ReadFile(path)
+	file, err := os.Open(path)
 	if err != nil {
 		return ""
 	}
-	var config edcConfig
-	if err := yaml.Unmarshal(data, &config); err != nil {
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, maxConfigBytes+1))
+	if err != nil || len(data) > maxConfigBytes {
 		return ""
 	}
-	return config.Lang
+	var header struct {
+		Lang string `yaml:"lang"`
+	}
+	if err := yaml.Unmarshal(data, &header); err != nil {
+		return ""
+	}
+	return header.Lang
 }

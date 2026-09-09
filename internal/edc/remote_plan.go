@@ -16,12 +16,19 @@ type remotePlanHost struct {
 }
 
 type remotePlanStep struct {
-	Name    string   `json:"name"`
-	Command string   `json:"command"`
-	Verify  string   `json:"verify,omitempty"`
-	Timeout string   `json:"timeout"`
-	Tags    []string `json:"tags"`
-	Hosts   []string `json:"hosts"`
+	Name    string            `json:"name"`
+	Command string            `json:"command"`
+	Upload  *remotePlanUpload `json:"upload,omitempty"`
+	Verify  string            `json:"verify,omitempty"`
+	Timeout string            `json:"timeout"`
+	Tags    []string          `json:"tags"`
+	Hosts   []string          `json:"hosts"`
+}
+
+type remotePlanUpload struct {
+	Source      string `json:"source"`
+	Destination string `json:"destination"`
+	Mode        string `json:"mode,omitempty"`
 }
 
 // remotePlan은 --dry-run --json이 내는 실행 계획이다. 실행 결과 report와 schema를 공유하지 않는다.
@@ -62,10 +69,14 @@ func buildRemotePlan(options remoteRunOptions, hosts []remoteHost, recipe remote
 		plan.Hosts = append(plan.Hosts, remotePlanHost{Name: host.Name, Target: host.Target, Tags: nonNilStrings(host.Tags)})
 	}
 	for _, step := range recipe.Steps {
-		plan.Steps = append(plan.Steps, remotePlanStep{
+		planStep := remotePlanStep{
 			Name: step.Name, Command: step.Command, Verify: step.Verify, Timeout: step.Timeout.String(),
 			Tags: nonNilStrings(step.Tags), Hosts: stepHostNames(step, hosts),
-		})
+		}
+		if step.Upload != nil {
+			planStep.Upload = &remotePlanUpload{Source: step.Upload.Source, Destination: step.Upload.Destination, Mode: step.Upload.Mode}
+		}
+		plan.Steps = append(plan.Steps, planStep)
 	}
 	return plan
 }

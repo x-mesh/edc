@@ -58,6 +58,41 @@ func TestRemoteExecTimeoutAndMissingExecutable(t *testing.T) {
 	}
 }
 
+func TestRemoteUploadArgumentsAndMode(t *testing.T) {
+	scp := writeRemoteExecutable(t, "#!/bin/sh\nprintf '%s\\n' \"$@\"\n")
+	ssh := writeRemoteExecutable(t, "#!/bin/sh\nprintf '%s\\n' \"$@\"\n")
+	runner := sshRemoteRunner{executable: ssh, scpExecutable: scp, connectTimeout: 1500 * time.Millisecond, outputLimit: 256}
+	result := runner.Upload(context.Background(), "server-alias", "./app.yaml", "/etc/myapp/app.yaml", "0644", time.Second, nil)
+	if result.Err != nil {
+		t.Fatal(result.Err)
+	}
+	for _, value := range []string{"BatchMode=yes", "ConnectTimeout=2", "./app.yaml", "server-alias:/etc/myapp/app.yaml", "chmod", "0644"} {
+		if !strings.Contains(result.Output, value) {
+			t.Fatalf("output %q does not contain %q", result.Output, value)
+		}
+	}
+}
+
+func TestRemoteUploadExpandsTildePaths(t *testing.T) {
+	scp := writeRemoteExecutable(t, "#!/bin/sh\nprintf '%s\\n' \"$@\"\n")
+	ssh := writeRemoteExecutable(t, "#!/bin/sh\nprintf '%s\\n' \"$@\"\n")
+	runner := sshRemoteRunner{executable: ssh, scpExecutable: scp, connectTimeout: time.Second, outputLimit: 512}
+	result := runner.Upload(context.Background(), "server-alias", "~/.claude/CLAUDE.md", "~/.claude/CLAUDE.md", "0644", time.Second, nil)
+	if result.Err != nil {
+		t.Fatal(result.Err)
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result.Output, filepath.Join(home, ".claude", "CLAUDE.md")) {
+		t.Fatalf("local source was not expanded: %q", result.Output)
+	}
+	if !strings.Contains(result.Output, "chmod 0644 ~/") {
+		t.Fatalf("remote destination was not preserved for tilde expansion: %q", result.Output)
+	}
+}
+
 func writeRemoteExecutable(t *testing.T, content string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "fake-ssh")

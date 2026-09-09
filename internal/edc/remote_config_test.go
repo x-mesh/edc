@@ -162,6 +162,47 @@ func TestRemoteRecipeAllowsMissingVerify(t *testing.T) {
 	}
 }
 
+func TestRemoteRecipeLoadsUpload(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "recipe.yaml")
+	writeRemoteFixture(t, path, `name: deploy
+steps:
+  - name: config
+    upload:
+      source: ./config/app.yaml
+      destination: /etc/myapp/app.yaml
+      mode: "0644"
+    timeout: 30s
+`)
+	recipe, err := loadRemoteRecipe(path, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	step := recipe.Steps[0]
+	if step.Upload == nil || step.Upload.Source != "./config/app.yaml" || step.Upload.Destination != "/etc/myapp/app.yaml" || step.Upload.Mode != "0644" || step.Timeout != 30*time.Second {
+		t.Fatalf("step = %#v", step)
+	}
+}
+
+func TestRemoteRecipeRejectsInvalidUpload(t *testing.T) {
+	tests := []struct {
+		name, content, want string
+	}{
+		{"missing path", "name: deploy\nsteps: [{name: config, upload: {source: ./app.yaml}}]\n", "upload"},
+		{"command and upload", "name: deploy\nsteps: [{name: config, command: echo ok, upload: {source: ./app.yaml, destination: /tmp/app.yaml}}]\n", "command"},
+		{"source option", "name: deploy\nsteps: [{name: config, upload: {source: -app.yaml, destination: /tmp/app.yaml}}]\n", "source"},
+		{"mode", "name: deploy\nsteps: [{name: config, upload: {source: ./app.yaml, destination: /tmp/app.yaml, mode: 9999}}]\n", "mode"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "recipe.yaml")
+			writeRemoteFixture(t, path, test.content)
+			if _, err := loadRemoteRecipe(path, time.Minute); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("error = %v, want %q", err, test.want)
+			}
+		})
+	}
+}
+
 func TestRemoteConfigRejectsLimits(t *testing.T) {
 	t.Run("oversized inventory", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "inventory.yaml")

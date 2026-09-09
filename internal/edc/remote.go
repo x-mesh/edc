@@ -286,11 +286,20 @@ func executeRemoteHost(ctx context.Context, host remoteHost, recipe remoteRecipe
 			display.Result(skipped)
 			continue
 		}
-		if display != nil {
-			display.Start(host.Name, step.Name, "command")
+		phase := "command"
+		if step.Upload != nil {
+			phase = "upload"
 		}
-		commandStream := streamWriter(display, host.Name, step.Name, "command")
-		commandResult := runner.Run(ctx, host.Target, step.Command, step.Timeout, commandStream)
+		if display != nil {
+			display.Start(host.Name, step.Name, phase)
+		}
+		commandStream := streamWriter(display, host.Name, step.Name, phase)
+		var commandResult remoteCommandResult
+		if step.Upload != nil {
+			commandResult = runner.Upload(ctx, host.Target, step.Upload.Source, step.Upload.Destination, step.Upload.Mode, step.Timeout, commandStream)
+		} else {
+			commandResult = runner.Run(ctx, host.Target, step.Command, step.Timeout, commandStream)
+		}
 		flushRemoteStream(commandStream)
 		if ctx.Err() != nil {
 			cancelled := remoteCancelledResult(probe, host.Name, step.Name, started)
@@ -310,8 +319,12 @@ func executeRemoteHost(ctx context.Context, host remoteHost, recipe remoteRecipe
 		appendRemoteOutput(&result, "command output", commandResult)
 		if commandResult.Err != nil {
 			result.Status = StatusFail
-			result.Summary = T("remote.result.command_failed", host.Name, step.Name)
-			result.Error = remoteExecutionError("command", step.Timeout, commandResult)
+			if step.Upload != nil {
+				result.Summary = T("remote.result.upload_failed", host.Name, step.Name)
+			} else {
+				result.Summary = T("remote.result.command_failed", host.Name, step.Name)
+			}
+			result.Error = remoteExecutionError(phase, step.Timeout, commandResult)
 			result.Metrics["command_status"] = "fail"
 			result.Metrics["command_exit_code"] = commandResult.ExitCode
 			result.DurationMS = time.Since(started).Milliseconds()
@@ -324,7 +337,11 @@ func executeRemoteHost(ctx context.Context, host remoteHost, recipe remoteRecipe
 		result.Metrics["command_exit_code"] = 0
 		if step.Verify == "" {
 			result.Status = StatusPass
-			result.Summary = T("remote.result.command_ran", host.Name, step.Name)
+			if step.Upload != nil {
+				result.Summary = T("remote.result.uploaded", host.Name, step.Name)
+			} else {
+				result.Summary = T("remote.result.command_ran", host.Name, step.Name)
+			}
 			result.Metrics["verify_status"] = "none"
 			result.DurationMS = time.Since(started).Milliseconds()
 			results = append(results, result)

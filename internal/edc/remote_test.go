@@ -46,6 +46,14 @@ func (runner *fakeRemoteRunner) Run(_ context.Context, target, command string, _
 	return result
 }
 
+func (runner *fakeRemoteRunner) Upload(ctx context.Context, target, source, destination, mode string, timeout time.Duration, stream io.Writer) remoteCommandResult {
+	command := "upload " + source + " → " + destination
+	if mode != "" {
+		command += " mode " + mode
+	}
+	return runner.Run(ctx, target, command, timeout, stream)
+}
+
 func TestRemoteRunSequentialAndContinue(t *testing.T) {
 	hosts := []remoteHost{{Name: "one", Target: "one-alias"}, {Name: "two", Target: "two-alias"}}
 	recipe := remoteRecipe{Name: "daily", Steps: []remoteStep{{Name: "gk", Command: "gk update", Verify: "gk --version", Timeout: time.Minute}, {Name: "xm", Command: "xm update", Verify: "xm --version", Timeout: time.Minute}}}
@@ -110,6 +118,29 @@ func TestRemoteStepWithoutVerifyUsesCommandResult(t *testing.T) {
 	}
 	if results[1].Status != StatusFail {
 		t.Fatalf("command failure must fail the step: %#v", results[1])
+	}
+}
+
+func TestRemoteUploadRunsAndVerifies(t *testing.T) {
+	hosts := []remoteHost{{Name: "one", Target: "one-alias"}}
+	recipe := remoteRecipe{Name: "deploy", Steps: []remoteStep{{
+		Name: "config", Command: "upload ./app.yaml → /tmp/app.yaml  mode 0644",
+		Upload: &remoteUpload{Source: "./app.yaml", Destination: "/tmp/app.yaml", Mode: "0644"},
+		Verify: "test -f /tmp/app.yaml", Timeout: time.Minute,
+	}}}
+	runner := &fakeRemoteRunner{results: map[string]remoteCommandResult{}}
+	results := executeRemoteRecipe(context.Background(), hosts, recipe, runner)
+	if len(results) != 1 || results[0].Status != StatusPass {
+		t.Fatalf("results = %#v", results)
+	}
+	wantCalls := []string{"one-alias|upload ./app.yaml → /tmp/app.yaml mode 0644", "one-alias|test -f /tmp/app.yaml"}
+	if len(runner.calls) != len(wantCalls) {
+		t.Fatalf("calls = %#v", runner.calls)
+	}
+	for index, want := range wantCalls {
+		if runner.calls[index] != want {
+			t.Fatalf("calls = %#v", runner.calls)
+		}
 	}
 }
 

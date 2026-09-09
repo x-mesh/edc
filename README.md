@@ -334,7 +334,11 @@ Each command loads the remote account default shell in interactive mode. Shell s
 
 Store no passwords or private keys in inventory and recipe files. Configure SSH aliases in `~/.ssh/config`.
 
-Each step needs `name` and `command`. The `verify` field is optional. If `verify` is absent, the exit code of `command` decides the step result.
+Each step needs `name` and either `command` or `upload`. The `verify` field is optional. If `verify` is absent, the action result decides the step result.
+
+Use `upload` instead of `command` to send a local file. Use `source` for the local file and `destination` for the remote path. The `mode` field is an optional octal permission.
+
+`upload` runs OpenSSH `scp`. If you set `mode`, `edc` runs remote `chmod` after the transfer.
 
 Keep `name` for group references. If `target` is absent, `edc` uses `name` as the SSH target.
 

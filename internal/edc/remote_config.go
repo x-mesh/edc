@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -51,9 +52,16 @@ type remoteGroupOpts struct {
 type remoteStep struct {
 	Name    string
 	Command string
+	Upload  *remoteUpload
 	Verify  string
 	Timeout time.Duration
 	Tags    []string
+}
+
+type remoteUpload struct {
+	Source      string
+	Destination string
+	Mode        string
 }
 
 type remoteRecipe struct {
@@ -67,11 +75,18 @@ type remoteRecipeFile struct {
 }
 
 type remoteStepFile struct {
-	Name    string   `yaml:"name"`
-	Command string   `yaml:"command"`
-	Verify  string   `yaml:"verify"`
-	Timeout string   `yaml:"timeout"`
-	Tags    []string `yaml:"tags"`
+	Name    string            `yaml:"name"`
+	Command string            `yaml:"command"`
+	Upload  *remoteUploadFile `yaml:"upload"`
+	Verify  string            `yaml:"verify"`
+	Timeout string            `yaml:"timeout"`
+	Tags    []string          `yaml:"tags"`
+}
+
+type remoteUploadFile struct {
+	Source      string `yaml:"source"`
+	Destination string `yaml:"destination"`
+	Mode        string `yaml:"mode"`
 }
 
 func loadRemoteInventory(path string) (remoteInventory, error) {
@@ -187,7 +202,32 @@ func loadRemoteRecipe(path string, defaultTimeout time.Duration) (remoteRecipe, 
 	seen := make(map[string]struct{}, len(file.Steps))
 	for index, value := range file.Steps {
 		step := remoteStep{Name: strings.TrimSpace(value.Name), Command: strings.TrimSpace(value.Command), Verify: strings.TrimSpace(value.Verify), Timeout: defaultTimeout}
-		if step.Name == "" || step.Command == "" {
+		if step.Name == "" {
+			return remoteRecipe{}, errors.New(T("remote.error.step_name_command_empty", index+1))
+		}
+		if step.Command != "" && value.Upload != nil {
+			return remoteRecipe{}, errors.New(T("remote.error.step_action_once", index+1))
+		}
+		if value.Upload != nil {
+			source := strings.TrimSpace(value.Upload.Source)
+			destination := strings.TrimSpace(value.Upload.Destination)
+			if source == "" || destination == "" {
+				return remoteRecipe{}, errors.New(T("remote.error.upload_path_empty", index+1))
+			}
+			if strings.HasPrefix(source, "-") {
+				return remoteRecipe{}, errors.New(T("remote.error.upload_source_dash", index+1))
+			}
+			mode, err := normalizeRemoteUploadMode(strings.TrimSpace(value.Upload.Mode))
+			if err != nil {
+				return remoteRecipe{}, errors.New(T("remote.error.upload_mode_invalid", index+1, value.Upload.Mode))
+			}
+			step.Upload = &remoteUpload{Source: source, Destination: destination, Mode: mode}
+			step.Command = fmt.Sprintf("upload %s → %s", source, destination)
+			if mode != "" {
+				step.Command += "  mode " + mode
+			}
+		}
+		if step.Command == "" {
 			return remoteRecipe{}, errors.New(T("remote.error.step_name_command_empty", index+1))
 		}
 		if _, exists := seen[step.Name]; exists {
@@ -209,6 +249,19 @@ func loadRemoteRecipe(path string, defaultTimeout time.Duration) (remoteRecipe, 
 		recipe.Steps = append(recipe.Steps, step)
 	}
 	return recipe, nil
+}
+
+func normalizeRemoteUploadMode(mode string) (string, error) {
+	if mode == "" {
+		return "", nil
+	}
+	if (len(mode) != 3 && len(mode) != 4) || (len(mode) == 4 && mode[0] != '0') {
+		return "", errors.New("invalid mode")
+	}
+	if _, err := strconv.ParseUint(mode, 8, 12); err != nil {
+		return "", err
+	}
+	return mode, nil
 }
 
 func normalizeRemoteTags(tags []string, owner string) ([]string, error) {

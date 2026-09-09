@@ -336,9 +336,24 @@ macOS에서 `edc`는 CPU 값을 `top`에서 읽는데, `top`은 sample 하나에
 
 inventory와 recipe 파일에는 비밀번호와 개인 키를 넣지 않습니다. SSH alias는 `~/.ssh/config`에 설정합니다.
 
-step마다 `name`과 `command`가 필요합니다. `verify`는 선택입니다. `verify`가 없으면 `command`의 exit code가 step 결과를 정합니다.
+step마다 `name`과 `command` 또는 `upload` 중 하나가 필요합니다. `verify`는 선택입니다. `verify`가 없으면 action 결과가 step 결과를 정합니다.
+
+파일을 전송하려면 `command` 대신 `upload`를 씁니다. `source`는 로컬 파일이고 `destination`은 원격 경로입니다. `mode`는 선택적인 octal 권한입니다.
+
+`upload`는 OpenSSH의 `scp`를 실행합니다. `mode`를 지정하면 전송 후 원격에서 `chmod`를 실행합니다.
 
 group에서 참조하려면 `name`을 유지합니다. `target`이 없으면 `edc`는 `name`을 SSH target으로 씁니다.
+
+```yaml
+name: deploy
+steps:
+  - name: upload-config
+    upload:
+      source: ./config/app.yaml
+      destination: /etc/myapp/app.yaml
+      mode: "0644"
+    verify: test -f /etc/myapp/app.yaml
+```
 
 ![edc remote daily --dry-run이 SSH 연결 없이 host x step 계획 표를 출력하고, tags가 맞지 않는 step을 –로 표시하는 화면](docs/media/remote.gif)
 

@@ -4,7 +4,7 @@
 Output docs/media/dns.gif
 
 Source docs/tape/_settings.tape
-Set Height 270
+Set Height 480
 
 Source docs/tape/_setup.tape
 

@@ -8,7 +8,7 @@
 Output docs/media/info.gif
 
 Source docs/tape/_settings.tape
-Set Height 850
+Set Height 1380
 
 Source docs/tape/_setup.tape
 

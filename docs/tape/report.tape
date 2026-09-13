@@ -4,7 +4,7 @@
 Output docs/media/report.gif
 
 Source docs/tape/_settings.tape
-Set Height 540
+Set Height 890
 
 Source docs/tape/_setup.tape
 

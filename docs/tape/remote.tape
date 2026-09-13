@@ -7,7 +7,7 @@
 Output docs/media/remote.gif
 
 Source docs/tape/_settings.tape
-Set Height 550
+Set Height 920
 
 Source docs/tape/_setup.tape
 

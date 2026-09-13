@@ -4,7 +4,7 @@
 Output docs/media/tls.gif
 
 Source docs/tape/_settings.tape
-Set Height 340
+Set Height 600
 
 Source docs/tape/_setup.tape
 

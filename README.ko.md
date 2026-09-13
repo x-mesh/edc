@@ -219,6 +219,10 @@ terminal에서는 몇 곳을 확인했는지 진행 줄로 보여 줍니다. `q`
 
 화면에는 주소를 그대로 씁니다. 이 명령은 그 값을 보려고 실행하기 때문입니다. `--redact`는 공유하는 산출물인 `--json` 출력에만 적용합니다.
 
+![edc where가 public IP와 ASN, Cloudflare PoP, route, NAT 모습, 왕복 시간 순으로 가까운 지역을 보여 주는 화면](docs/media/where.gif)
+
+데모 화면은 public IP를 `222.XXX.XXX.XXX`로 가리고, route 주소를 사설 예시 주소로 바꿨습니다.
+
 `edc`는 확인한 것만 밝힙니다. 지터로 회선 종류를 짐작하지 않습니다. 지터는 숫자로 남기고 판단은 사용자에게 맡깁니다.
 
 ## Probe 임계값

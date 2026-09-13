@@ -8,7 +8,7 @@
 Output docs/media/sockets.gif
 
 Source docs/tape/_settings.tape
-Set Height 700
+Set Height 1150
 
 Source docs/tape/_setup.tape
 

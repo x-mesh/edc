@@ -3,6 +3,7 @@
 package edc
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -84,6 +85,23 @@ func parseDarwinCPU(output string) (darwinCPUSample, bool) {
 type darwinNetwork struct{ packetsIn, packetsOut, bytesIn, bytesOut uint64 }
 type darwinDisk struct{ read, write uint64 }
 type darwinMemory struct{ total, used uint64 }
+
+// darwinProcessTimeout은 ps 한 번을 기다리는 한도다. refresh 간격보다 짧아 다음 갱신과 겹치지 않는다.
+const darwinProcessTimeout = 800 * time.Millisecond
+
+// newTopProcessReader는 macOS ps를 쓴다. macOS의 %cpu는 최근 사용률의 감쇠 평균이라 그대로 쓸 수 있다.
+func newTopProcessReader() func() ([]topProcess, bool) {
+	return func() ([]topProcess, bool) {
+		ctx, cancel := context.WithTimeout(context.Background(), darwinProcessTimeout)
+		defer cancel()
+		output, err := exec.CommandContext(ctx, "/bin/ps", "-Ao", "pid=,pcpu=,rss=,comm=").Output()
+		if err != nil {
+			return nil, false
+		}
+		processes := parseTopProcesses(string(output))
+		return processes, len(processes) > 0
+	}
+}
 
 func collectResourceSnapshot() (resourceSnapshot, error) {
 	snapshot := resourceSnapshot{TakenAt: time.Now(), CPUInstant: true}

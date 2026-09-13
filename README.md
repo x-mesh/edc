@@ -305,8 +305,25 @@ If stdin and stdout are terminals, `edc top` opens a full-screen dashboard. The 
 | `p` | pause and resume |
 | `+` | make the interval longer |
 | `-` | make the interval shorter |
+| `1`, `c`, `m`, `d`, `n` | switch to all, CPU, memory, disk, or network columns |
+| `s` | switch to Linux pressure columns |
+| `↑`, `↓`, `End` | select an earlier row or return to the latest row |
+| `Enter` | show details for the selected time |
+| `h` | show the load, CPU, iowait, and memory peaks from the last 60 seconds, each with its time |
 
-The interval moves between 200ms, 500ms, 1s, 2s, 5s, 10s, 30s, and 1m. While the dashboard is paused, the arrow and page keys scroll the earlier rows.
+The default table has a `signal` column. It shows the highest-priority warning among load, CPU, iowait, memory, and Linux disk await, network errors, or drops, followed by the number of other warnings. Network errors and drops count as a warning from 1 per second. Use the network view for packet counts. Sampling continues while an earlier row is selected; press `End` to follow the latest row again. A temporary sampling error keeps the last row and retries on the next interval.
+
+At 132 columns or wider, the default table automatically uses the wide layout. It shows packet in/out, network errors and drops, the hot core, and disk IOPS, await, and busy values on the same row. Reducing the terminal width immediately restores the 80-column table.
+
+On Linux, the disk view also shows IOPS, average `await`, and aggregate `busy%` across physical disks; the network view shows interface errors and drops; the memory view shows memory pressure next to `mem%`. Aggregate `busy%` can exceed 100 when multiple disks are busy at once. macOS shows `—` for these Linux-only values.
+
+Press `s` for Linux pressure. It shows CPU, memory, and I/O `some avg10`: the percentage of the last ten seconds during which at least some tasks waited for that resource. The CPU view shows the hottest core and an ASCII bar; on machines with more than 24 cores, the bar shows the first 24.
+
+The detail view also lists the top three processes by CPU. The list refreshes in the background at most once a second, so it does not lengthen the observation interval. Only the dashboard collects it; the table and `--json` output skip it. On Linux, `edc` compares the CPU ticks in `/proc/<pid>/stat` with the previous refresh, so the value covers the time since that refresh. On macOS, it uses the recent decaying average that `ps` reports.
+
+On macOS and Linux, a process at 80% CPU or more appears first in the default `signal` column with its name and CPU value, followed by the number of other warnings. CPU is measured as 100% per core, so `node 185%` means roughly 1.85 cores in use.
+
+The interval moves between 200ms, 500ms, 1s, 2s, 5s, 10s, 30s, and 1m. Resuming first creates a new baseline, and later rows show rates.
 
 The dashboard quits to the previous screen and leaves no rows behind. Use `--json` to keep the values.
 
@@ -315,8 +332,6 @@ The dashboard quits to the previous screen and leaves no rows behind. Use `--jso
 - The command uses `--count` or `--json`.
 - stdin or stdout is not a terminal.
 - `NO_COLOR` is set.
-
-The first row after a pause shows the average rate of the paused period.
 
 On macOS, `edc` reads the CPU values from `top`, which needs about one second for each sample. `edc` runs `top` in the background, so a shorter interval still updates the network, disk, memory, and load values on time. The CPU columns hold the same value until the next `top` sample arrives. On Linux, `edc` reads `/proc/stat` directly and every column follows the interval.
 
@@ -328,7 +343,7 @@ Use `--json` to write one JSON object for each sample. Use `-` for stdout. A pat
 ./bin/edc top --count 5 --json -
 ```
 
-Each line has `time`, `hostname`, `cores`, the network and disk rates in bytes per second, the CPU values in percent, `load1`, and `memory_pct`. The `--json` option removes the table and the header.
+Each line has `time`, `hostname`, `cores`, the network and disk rates in bytes per second, the CPU values in percent, `load1`, and `memory_pct`. Linux additionally emits network errors and drops, disk IOPS, await and busy values, and PSI `some avg10`; `*_health_supported` and `psi_supported` tell consumers whether those values are supported. The `--json` option removes the table and the header.
 
 ## Remote recipes
 

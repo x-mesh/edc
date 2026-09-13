@@ -307,8 +307,25 @@ stdin과 stdout이 모두 terminal이면 `edc top`은 전체 화면 대시보드
 | `p` | 일시정지와 재개 |
 | `+` | interval 늘리기 |
 | `-` | interval 줄이기 |
+| `1`, `c`, `m`, `d`, `n` | 전체, CPU, memory, disk, network 열로 전환 |
+| `s` | Linux pressure 열로 전환 |
+| `↑`, `↓`, `End` | 과거 행 선택, 최신 행 추적 재개 |
+| `Enter` | 선택한 시점의 상세 표시 |
+| `h` | 최근 60초의 load, CPU, iowait, memory 최고치를 각각 시각과 함께 표시 |
 
-interval은 200ms, 500ms, 1s, 2s, 5s, 10s, 30s, 1m 사이를 오갑니다. 일시정지 중에는 방향키와 page키로 지난 행을 스크롤합니다.
+기본 표의 `signal` 열은 load, CPU, iowait, memory, Linux의 disk await, network errors·drops 중 가장 심각한 항목과 추가 개수를 보여 줍니다. network errors·drops는 초당 1개부터 경고로 셉니다. 패킷 수는 network 보기에서 확인합니다. 과거 행을 선택해도 수집은 계속되며 `End`로 최신 행을 다시 따라갑니다. 수집이 잠시 실패하면 마지막 행을 유지하고 다음 interval에 다시 시도합니다.
+
+terminal 폭이 132열 이상이면 기본 표는 자동으로 wide 레이아웃으로 바뀝니다. 이 레이아웃은 packet in/out, network errors·drops, hot core, disk IOPS·await·busy를 같은 행에 표시합니다. 폭이 줄면 80열 기본 표로 즉시 돌아갑니다.
+
+Linux의 disk 보기에는 IOPS, 평균 `await`와 모든 물리 disk의 합산 `busy%`가, network 보기에는 interface의 errors·drops가, memory 보기에는 `mem%` 옆에 memory pressure가 추가됩니다. 합산 `busy%`는 여러 disk가 동시에 바쁘면 100%를 넘을 수 있습니다. macOS에서는 이 값들을 `—`로 표시합니다.
+
+`s`는 Linux pressure 보기입니다. CPU, memory, I/O의 `some avg10`을 퍼센트로 표시하며, 최근 10초 동안 일부 작업이 그 자원을 기다린 시간의 비율입니다. CPU 보기의 `hot core`와 ASCII 막대는 코어별 사용률을 보여 주고, 24개보다 많은 코어는 앞 24개만 막대로 표시합니다.
+
+상세 보기에는 CPU 사용률 기준 상위 세 process도 표시합니다. 목록은 관측 주기를 늘리지 않도록 최대 1초마다 백그라운드에서 갱신하며, 대시보드에서만 수집하고 표와 `--json` 출력에서는 수집하지 않습니다. Linux에서는 `/proc/<pid>/stat`의 CPU tick을 직전 갱신과 비교하므로 값은 그 사이 구간의 사용률입니다. macOS에서는 `ps`가 제공하는 최근 감쇠 평균을 씁니다.
+
+macOS와 Linux 모두 process 하나가 CPU 80% 이상이면 기본 `signal` 열 맨 앞에 process 이름과 CPU%를 표시하고, 나머지 경고 개수를 뒤에 붙입니다. 이 값은 core 하나를 100%로 계산하므로 `node 185%`는 약 1.85개 core를 사용했다는 뜻입니다.
+
+interval은 200ms, 500ms, 1s, 2s, 5s, 10s, 30s, 1m 사이를 오갑니다. 일시정지를 풀면 먼저 새 기준점을 만들고, 그 다음 행부터 rate를 표시합니다.
 
 대시보드는 이전 화면으로 빠져나가며 행을 남기지 않습니다. 값을 남기려면 `--json`을 씁니다.
 
@@ -317,8 +334,6 @@ interval은 200ms, 500ms, 1s, 2s, 5s, 10s, 30s, 1m 사이를 오갑니다. 일�
 - `--count`나 `--json`을 지정한 경우
 - stdin이나 stdout이 terminal이 아닌 경우
 - `NO_COLOR`가 설정된 경우
-
-일시정지를 푼 뒤 나오는 첫 행은 멈춰 있던 구간의 평균 rate를 보여 줍니다.
 
 macOS에서 `edc`는 CPU 값을 `top`에서 읽는데, `top`은 sample 하나에 1초쯤 걸립니다. `edc`는 `top`을 배경에서 돌리므로 interval을 줄이면 network, disk, memory, load는 그대로 빠르게 갱신됩니다. CPU 열은 다음 `top` sample이 올 때까지 같은 값을 유지합니다. Linux에서는 `/proc/stat`을 직접 읽어 모든 열이 interval을 따릅니다.
 
@@ -330,7 +345,7 @@ macOS에서 `edc`는 CPU 값을 `top`에서 읽는데, `top`은 sample 하나에
 ./bin/edc top --count 5 --json -
 ```
 
-각 줄에는 `time`, `hostname`, `cores`, 초당 byte 단위 network·disk rate, 퍼센트 단위 CPU 값, `load1`, `memory_pct`가 들어갑니다. `--json`은 표와 헤더를 없앱니다.
+각 줄에는 `time`, `hostname`, `cores`, 초당 byte 단위 network·disk rate, 퍼센트 단위 CPU 값, `load1`, `memory_pct`가 들어갑니다. Linux에서는 network errors·drops와 disk IOPS·await·busy, PSI `some avg10`도 추가되며, `*_health_supported`와 `psi_supported`가 지원 여부를 표시합니다. `--json`은 표와 헤더를 없앱니다.
 
 ## Remote recipe
 

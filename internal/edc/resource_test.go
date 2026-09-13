@@ -21,6 +21,95 @@ func TestCalculateRate(t *testing.T) {
 	}
 }
 
+func TestCalculateRateIncludesHealthCounters(t *testing.T) {
+	start := time.Unix(0, 0)
+	previous := resourceSnapshot{TakenAt: start, DiskOps: 10, DiskWaitMS: 100, DiskBusyMS: 500, NetErrors: 4, NetDrops: 2, DiskHealthValid: true, NetHealthValid: true}
+	current := resourceSnapshot{TakenAt: start.Add(2 * time.Second), DiskOps: 30, DiskWaitMS: 500, DiskBusyMS: 1300, NetErrors: 10, NetDrops: 6, DiskHealthValid: true, NetHealthValid: true}
+	rate := calculateRate(previous, current)
+	if rate.DiskIOPS != 10 || rate.DiskAwait != 20 || rate.DiskBusy != 40 || rate.NetErrors != 3 || rate.NetDrops != 2 {
+		t.Fatalf("health rate = %#v", rate)
+	}
+	if !rate.DiskHealthValid || !rate.NetHealthValid {
+		t.Fatalf("health validity = %#v", rate)
+	}
+}
+
+func TestCalculateRateIncludesCoreAndPressure(t *testing.T) {
+	start := time.Unix(0, 0)
+	previous := resourceSnapshot{TakenAt: start, Cores: []resourceCPU{{Total: 100, Idle: 40}, {Total: 100, Idle: 90}}}
+	current := resourceSnapshot{TakenAt: start.Add(time.Second), Cores: []resourceCPU{{Total: 200, Idle: 60}, {Total: 200, Idle: 150}}, PSICPU: 2.5, PSIMemory: 4.5, PSIIO: 12.5, PSIValid: true}
+	rate := calculateRate(previous, current)
+	if len(rate.CoreCPU) != 2 || rate.CoreCPU[0] != 80 || rate.CoreCPU[1] != 40 {
+		t.Fatalf("core rate = %#v", rate.CoreCPU)
+	}
+	if !rate.PSIValid || rate.PSIIO != 12.5 {
+		t.Fatalf("pressure rate = %#v", rate)
+	}
+}
+
+func TestParsePressureAvg10(t *testing.T) {
+	input := "some avg10=1.25 avg60=0.20 avg300=0.10 total=123\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n"
+	if value, ok := parsePressureAvg10(input); !ok || value != 1.25 {
+		t.Fatalf("pressure = %v, %v", value, ok)
+	}
+	if _, ok := parsePressureAvg10("full avg10=1.0"); ok {
+		t.Fatal("missing some row must not be valid")
+	}
+}
+
+func TestParseTopProcesses(t *testing.T) {
+	processes := parseTopProcesses(" 9 12.5 2048 node server.js\n 2 99.0 1024 java -jar app.jar\n")
+	if len(processes) != 2 || processes[0].PID != 2 || processes[0].RSS != 1024*1024 || processes[1].Command != "node server.js" {
+		t.Fatalf("processes = %#v", processes)
+	}
+}
+
+func TestParseLinuxProcessStat(t *testing.T) {
+	data := "1234 (my (odd) proc) S 1 1234 1234 0 -1 4194560 100 0 0 0 250 50 0 0 20 0 1 0 100 1000000 2048 18446744073709551615\n"
+	stat, ok := parseLinuxProcessStat(1234, data)
+	if !ok || stat.Command != "my (odd) proc" || stat.Ticks != 300 || stat.RSSPages != 2048 {
+		t.Fatalf("stat = %#v, %v", stat, ok)
+	}
+	if _, ok := parseLinuxProcessStat(1, "1 (short) S 1 2"); ok {
+		t.Fatal("truncated stat must not be valid")
+	}
+}
+
+func TestTopProcessTrackerUsesRecentTicks(t *testing.T) {
+	tracker := &topProcessTracker{clockTicks: 100, pageSize: 4096}
+	start := time.Unix(0, 0)
+	if _, ok := tracker.update(start, []linuxProcessStat{{PID: 1, Command: "old", Ticks: 1_000_000}, {PID: 2, Command: "idle", Ticks: 50}}); ok {
+		t.Fatal("the first read must only set a baseline")
+	}
+	// 오래 산 process가 방금 2초 동안 core 1.5개를 썼다. 수명 평균이었다면 거의 0이다.
+	processes, ok := tracker.update(start.Add(2*time.Second), []linuxProcessStat{{PID: 1, Command: "old", Ticks: 1_000_300, RSSPages: 10}, {PID: 2, Command: "idle", Ticks: 50}, {PID: 3, Command: "new", Ticks: 999}})
+	if !ok || len(processes) != 2 || processes[0].PID != 1 || processes[0].CPU != 150 || processes[0].RSS != 40960 || processes[1].CPU != 0 {
+		t.Fatalf("processes = %#v", processes)
+	}
+}
+
+func TestTopProcessSamplerDropsStaleListOnFailure(t *testing.T) {
+	succeed := true
+	sampler := &topProcessSampler{read: func() ([]topProcess, bool) {
+		if succeed {
+			return []topProcess{{PID: 1, CPU: 90, Command: "node"}}, true
+		}
+		return nil, false
+	}}
+	sampler.refresh()
+	if processes, valid := sampler.latest(); !valid || len(processes) != 1 {
+		t.Fatalf("first refresh = %#v, %v", processes, valid)
+	}
+	succeed = false
+	sampler.refresh()
+	if processes, valid := sampler.latest(); valid || len(processes) != 0 {
+		t.Fatalf("failed refresh kept a stale list: %#v, %v", processes, valid)
+	}
+	if sampler.running {
+		t.Fatal("a failed refresh must still wait for the refresh interval")
+	}
+}
+
 func TestCalculateInstantCPU(t *testing.T) {
 	previous := resourceSnapshot{TakenAt: time.Now()}
 	current := resourceSnapshot{TakenAt: previous.TakenAt.Add(time.Second), CPUInstant: true, CPUUser: 1234, CPUSystem: 567, CPUIOWait: 89}
@@ -131,13 +220,13 @@ func TestFormatRateStaysShort(t *testing.T) {
 
 func TestTopSampleJSON(t *testing.T) {
 	at := time.Date(2026, 1, 1, 11, 36, 44, 0, time.FixedZone("KST", 9*3600))
-	sample := newTopSample(hostDetails{Hostname: "host", Cores: 8}, at, resourceRate{NetIn: 1234.567, CPUUser: 12.3456, MemoryPercent: 11.8, Load1: 0.5})
+	sample := newTopSample(hostDetails{Hostname: "host", Cores: 8}, at, resourceRate{NetIn: 1234.567, NetDrops: 2.2, NetHealthValid: true, DiskAwait: 15.555, DiskHealthValid: true, PSIIO: 3.3, PSIValid: true, CPUUser: 12.3456, MemoryPercent: 11.8, Load1: 0.5})
 	data, err := json.Marshal(sample)
 	if err != nil {
 		t.Fatal(err)
 	}
 	text := string(data)
-	for _, expected := range []string{`"time":"2026-01-01T02:36:44Z"`, `"hostname":"host"`, `"cores":8`, `"net_in_bytes_per_s":1234.57`, `"cpu_user_pct":12.35`, `"memory_pct":11.8`, `"load1":0.5`} {
+	for _, expected := range []string{`"time":"2026-01-01T02:36:44Z"`, `"hostname":"host"`, `"cores":8`, `"net_in_bytes_per_s":1234.57`, `"network_drops_per_s":2.2`, `"network_health_supported":true`, `"disk_await_ms":15.56`, `"disk_health_supported":true`, `"psi_io_some_avg10_pct":3.3`, `"psi_supported":true`, `"cpu_user_pct":12.35`, `"memory_pct":11.8`, `"load1":0.5`} {
 		if !strings.Contains(text, expected) {
 			t.Fatalf("sample %s does not contain %s", text, expected)
 		}

@@ -14,13 +14,44 @@ import (
 	"time"
 )
 
+// linuxClockTicks는 /proc이 CPU 시간을 세는 단위(USER_HZ)다. kernel HZ와 달리 userspace에는 100으로 고정돼 나온다.
+const linuxClockTicks = 100
+
+// newTopProcessReader는 /proc/<pid>/stat의 CPU tick을 직전 읽기와 비교한다. 첫 읽기는 기준점만 만든다.
+func newTopProcessReader() func() ([]topProcess, bool) {
+	tracker := &topProcessTracker{clockTicks: linuxClockTicks, pageSize: uint64(os.Getpagesize())}
+	return func() ([]topProcess, bool) {
+		entries, err := os.ReadDir("/proc")
+		if err != nil {
+			return nil, false
+		}
+		stats := make([]linuxProcessStat, 0, len(entries))
+		for _, entry := range entries {
+			pid, err := strconv.Atoi(entry.Name())
+			if err != nil {
+				continue
+			}
+			// 목록을 읽은 뒤 끝난 process는 파일이 없다.
+			data, err := os.ReadFile("/proc/" + entry.Name() + "/stat")
+			if err != nil {
+				continue
+			}
+			if stat, ok := parseLinuxProcessStat(pid, string(data)); ok {
+				stats = append(stats, stat)
+			}
+		}
+		return tracker.update(time.Now(), stats)
+	}
+}
+
 func collectResourceSnapshot() (resourceSnapshot, error) {
 	snapshot := resourceSnapshot{TakenAt: time.Now()}
 	stat, err := os.ReadFile("/proc/stat")
 	if err != nil {
 		return snapshot, err
 	}
-	fields := strings.Fields(strings.SplitN(string(stat), "\n", 2)[0])
+	lines := strings.Split(string(stat), "\n")
+	fields := strings.Fields(lines[0])
 	if len(fields) < 8 {
 		return snapshot, fmt.Errorf("invalid /proc/stat cpu line")
 	}
@@ -33,6 +64,24 @@ func collectResourceSnapshot() (resourceSnapshot, error) {
 	snapshot.CPUSystem = values[2] + values[5] + values[6]
 	snapshot.CPUIdle = values[3]
 	snapshot.CPUIOWait = values[4]
+	for _, line := range lines[1:] {
+		parts := strings.Fields(line)
+		if len(parts) < 5 || !strings.HasPrefix(parts[0], "cpu") || len(parts[0]) == 3 {
+			continue
+		}
+		core := resourceCPU{}
+		for _, value := range parts[1:] {
+			core.Total += parseUint(value)
+		}
+		core.Idle = parseUint(parts[4])
+		snapshot.Cores = append(snapshot.Cores, core)
+	}
+	psiCPU, okCPU := readLinuxPressure("/proc/pressure/cpu")
+	psiMemory, okMemory := readLinuxPressure("/proc/pressure/memory")
+	psiIO, okIO := readLinuxPressure("/proc/pressure/io")
+	if okCPU && okMemory && okIO {
+		snapshot.PSICPU, snapshot.PSIMemory, snapshot.PSIIO, snapshot.PSIValid = psiCPU, psiMemory, psiIO, true
+	}
 	if loads, err := os.ReadFile("/proc/loadavg"); err == nil {
 		fmt.Sscan(string(loads), &snapshot.Load1)
 	}
@@ -48,8 +97,11 @@ func collectResourceSnapshot() (resourceSnapshot, error) {
 			}
 			snapshot.NetInBytes += parseUint(parts[1])
 			snapshot.PacketsIn += parseUint(parts[2])
+			snapshot.NetErrors += parseUint(parts[3]) + parseUint(parts[11])
+			snapshot.NetDrops += parseUint(parts[4]) + parseUint(parts[12])
 			snapshot.NetOutBytes += parseUint(parts[9])
 			snapshot.PacketsOut += parseUint(parts[10])
+			snapshot.NetHealthValid = true
 		}
 	}
 	if disks, err := os.ReadFile("/proc/diskstats"); err == nil {
@@ -60,9 +112,21 @@ func collectResourceSnapshot() (resourceSnapshot, error) {
 			}
 			snapshot.DiskRead += parseUint(parts[5]) * 512
 			snapshot.DiskWrite += parseUint(parts[9]) * 512
+			snapshot.DiskOps += parseUint(parts[3]) + parseUint(parts[7])
+			snapshot.DiskWaitMS += parseUint(parts[6]) + parseUint(parts[10])
+			snapshot.DiskBusyMS += parseUint(parts[12])
+			snapshot.DiskHealthValid = true
 		}
 	}
 	return snapshot, nil
+}
+
+func readLinuxPressure(path string) (float64, bool) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return 0, false
+	}
+	return parsePressureAvg10(string(data))
 }
 
 func collectHostDetails() (hostDetails, error) {

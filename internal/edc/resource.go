@@ -10,34 +10,187 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
 type resourceSnapshot struct {
-	TakenAt     time.Time
-	CPUUser     uint64
-	CPUSystem   uint64
-	CPUIOWait   uint64
-	CPUIdle     uint64
-	CPUTotal    uint64
-	NetInBytes  uint64
-	NetOutBytes uint64
-	PacketsIn   uint64
-	PacketsOut  uint64
-	DiskRead    uint64
-	DiskWrite   uint64
-	MemoryUsed  uint64
-	MemoryTotal uint64
-	Load1       float64
-	CPUInstant  bool
+	TakenAt         time.Time
+	CPUUser         uint64
+	CPUSystem       uint64
+	CPUIOWait       uint64
+	CPUIdle         uint64
+	CPUTotal        uint64
+	NetInBytes      uint64
+	NetOutBytes     uint64
+	PacketsIn       uint64
+	PacketsOut      uint64
+	NetErrors       uint64
+	NetDrops        uint64
+	DiskRead        uint64
+	DiskWrite       uint64
+	DiskOps         uint64
+	DiskWaitMS      uint64
+	DiskBusyMS      uint64
+	MemoryUsed      uint64
+	MemoryTotal     uint64
+	Load1           float64
+	CPUInstant      bool
+	Cores           []resourceCPU
+	PSICPU          float64
+	PSIMemory       float64
+	PSIIO           float64
+	PSIValid        bool
+	Processes       []topProcess
+	ProcessesValid  bool
+	NetHealthValid  bool
+	DiskHealthValid bool
 }
 
+type topProcess struct {
+	PID     int
+	CPU     float64
+	RSS     uint64
+	Command string
+}
+
+const (
+	// topProcessRefresh는 process 목록을 다시 읽는 최소 간격이다. 관측 주기가 짧아도 host 부담을 묶어 둔다.
+	topProcessRefresh = time.Second
+	// topProcessLimit은 CPU 순으로 남기는 process 수다.
+	topProcessLimit = 5
+)
+
+// topProcessSampler는 process 목록을 배경에서 갱신한다. 대시보드 tick은 마지막 결과만 받아 가므로
+// process 수집 시간이 관측 주기에 붙지 않는다.
+type topProcessSampler struct {
+	mutex          sync.Mutex
+	processes      []topProcess
+	valid, running bool
+	updated        time.Time
+	read           func() ([]topProcess, bool)
+}
+
+var processSampler = &topProcessSampler{read: newTopProcessReader()}
+
+func (sampler *topProcessSampler) latest() ([]topProcess, bool) {
+	sampler.mutex.Lock()
+	defer sampler.mutex.Unlock()
+	if !sampler.running && time.Since(sampler.updated) >= topProcessRefresh {
+		sampler.running = true
+		go sampler.refresh()
+	}
+	return append([]topProcess(nil), sampler.processes...), sampler.valid
+}
+
+func (sampler *topProcessSampler) refresh() {
+	processes, valid := sampler.read()
+	sampler.mutex.Lock()
+	defer sampler.mutex.Unlock()
+	// 실패해도 시각과 결과를 남긴다. 수집기가 없는 host에서 매 tick 다시 돌지 않고, 낡은 목록이 유효하게 남지 않는다.
+	sampler.processes, sampler.valid, sampler.updated, sampler.running = processes, valid, time.Now(), false
+}
+
+func topProcessesByCPU(processes []topProcess) []topProcess {
+	sort.Slice(processes, func(i, j int) bool { return processes[i].CPU > processes[j].CPU })
+	if len(processes) > topProcessLimit {
+		processes = processes[:topProcessLimit]
+	}
+	return processes
+}
+
+// linuxProcessStat은 /proc/<pid>/stat 한 줄에서 CPU tick과 RSS page 수만 뽑은 값이다.
+type linuxProcessStat struct {
+	PID      int
+	Command  string
+	Ticks    uint64
+	RSSPages uint64
+}
+
+// parseLinuxProcessStat은 /proc/<pid>/stat을 읽는다. comm에는 공백과 괄호가 들어갈 수 있어 마지막 ')' 뒤를 나눈다.
+// ')' 뒤 첫 필드가 3번 state이므로 utime(14)·stime(15)·rss(24)는 11·12·21번째다.
+func parseLinuxProcessStat(pid int, data string) (linuxProcessStat, bool) {
+	const utimeField, stimeField, rssField = 11, 12, 21
+	open, end := strings.IndexByte(data, '('), strings.LastIndexByte(data, ')')
+	if open < 0 || end < open {
+		return linuxProcessStat{}, false
+	}
+	fields := strings.Fields(data[end+1:])
+	if len(fields) <= rssField {
+		return linuxProcessStat{}, false
+	}
+	utime, e1 := strconv.ParseUint(fields[utimeField], 10, 64)
+	stime, e2 := strconv.ParseUint(fields[stimeField], 10, 64)
+	rss, e3 := strconv.ParseUint(fields[rssField], 10, 64)
+	if e1 != nil || e2 != nil || e3 != nil {
+		return linuxProcessStat{}, false
+	}
+	return linuxProcessStat{PID: pid, Command: data[open+1 : end], Ticks: utime + stime, RSSPages: rss}, true
+}
+
+// topProcessTracker는 두 번 읽은 CPU tick 차이로 최근 CPU%를 구한다. Linux ps의 pcpu는
+// process 수명 전체 평균이라 방금 바빠진 오래된 process를 놓친다.
+type topProcessTracker struct {
+	clockTicks float64
+	pageSize   uint64
+	previousAt time.Time
+	previous   map[int]uint64
+}
+
+func (tracker *topProcessTracker) update(at time.Time, stats []linuxProcessStat) ([]topProcess, bool) {
+	current := make(map[int]uint64, len(stats))
+	processes := []topProcess{}
+	seconds := at.Sub(tracker.previousAt).Seconds()
+	for _, stat := range stats {
+		current[stat.PID] = stat.Ticks
+		before, seen := tracker.previous[stat.PID]
+		if !seen || seconds <= 0 || stat.Ticks < before {
+			// 새 process나 pid 재사용은 비교할 기준이 없다.
+			continue
+		}
+		cpu := float64(stat.Ticks-before) / tracker.clockTicks / seconds * 100
+		processes = append(processes, topProcess{PID: stat.PID, CPU: cpu, RSS: stat.RSSPages * tracker.pageSize, Command: stat.Command})
+	}
+	hadBaseline := tracker.previous != nil
+	tracker.previous, tracker.previousAt = current, at
+	if !hadBaseline {
+		return nil, false
+	}
+	return topProcessesByCPU(processes), true
+}
+
+func parseTopProcesses(output string) []topProcess {
+	processes := []topProcess{}
+	for _, line := range strings.Split(output, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 4 {
+			continue
+		}
+		pid, e1 := strconv.Atoi(fields[0])
+		cpu, e2 := strconv.ParseFloat(strings.ReplaceAll(fields[1], ",", "."), 64)
+		rss, e3 := strconv.ParseUint(fields[2], 10, 64)
+		if e1 != nil || e2 != nil || e3 != nil {
+			continue
+		}
+		processes = append(processes, topProcess{pid, cpu, rss * 1024, strings.Join(fields[3:], " ")})
+	}
+	return topProcessesByCPU(processes)
+}
+
+type resourceCPU struct{ Total, Idle uint64 }
+
 type resourceRate struct {
-	NetIn, NetOut                 float64
-	PacketsIn, PacketsOut         float64
-	DiskRead, DiskWrite           float64
-	CPUUser, CPUSystem, CPUIOWait float64
-	MemoryPercent, Load1          float64
+	NetIn, NetOut                   float64
+	PacketsIn, PacketsOut           float64
+	NetErrors, NetDrops             float64
+	DiskRead, DiskWrite             float64
+	DiskIOPS, DiskAwait, DiskBusy   float64
+	CPUUser, CPUSystem, CPUIOWait   float64
+	MemoryPercent, Load1            float64
+	NetHealthValid, DiskHealthValid bool
+	CoreCPU                         []float64
+	PSICPU, PSIMemory, PSIIO        float64
+	PSIValid                        bool
 }
 
 type hostDetails struct {
@@ -80,17 +233,57 @@ func calculateRate(previous, current resourceSnapshot) resourceRate {
 		NetOut:     float64(delta(current.NetOutBytes, previous.NetOutBytes)) / seconds,
 		PacketsIn:  float64(delta(current.PacketsIn, previous.PacketsIn)) / seconds,
 		PacketsOut: float64(delta(current.PacketsOut, previous.PacketsOut)) / seconds,
+		NetErrors:  float64(delta(current.NetErrors, previous.NetErrors)) / seconds,
+		NetDrops:   float64(delta(current.NetDrops, previous.NetDrops)) / seconds,
 		DiskRead:   float64(delta(current.DiskRead, previous.DiskRead)) / seconds,
 		DiskWrite:  float64(delta(current.DiskWrite, previous.DiskWrite)) / seconds,
+		DiskIOPS:   float64(delta(current.DiskOps, previous.DiskOps)) / seconds,
 		CPUUser:    percent(current.CPUUser, previous.CPUUser), CPUSystem: percent(current.CPUSystem, previous.CPUSystem), CPUIOWait: percent(current.CPUIOWait, previous.CPUIOWait),
 		MemoryPercent: memoryPercent, Load1: current.Load1,
+	}
+	rate.NetHealthValid = current.NetHealthValid && previous.NetHealthValid
+	rate.DiskHealthValid = current.DiskHealthValid && previous.DiskHealthValid
+	if operations := delta(current.DiskOps, previous.DiskOps); operations > 0 && rate.DiskHealthValid {
+		rate.DiskAwait = float64(delta(current.DiskWaitMS, previous.DiskWaitMS)) / float64(operations)
+	}
+	if rate.DiskHealthValid {
+		rate.DiskBusy = float64(delta(current.DiskBusyMS, previous.DiskBusyMS)) / seconds / 10
 	}
 	if current.CPUInstant {
 		rate.CPUUser = float64(current.CPUUser) / 100
 		rate.CPUSystem = float64(current.CPUSystem) / 100
 		rate.CPUIOWait = float64(current.CPUIOWait) / 100
 	}
+	if len(current.Cores) == len(previous.Cores) {
+		rate.CoreCPU = make([]float64, len(current.Cores))
+		for index, currentCore := range current.Cores {
+			previousCore := previous.Cores[index]
+			if total := delta(currentCore.Total, previousCore.Total); total > 0 {
+				rate.CoreCPU[index] = float64(delta(currentCore.Total-currentCore.Idle, previousCore.Total-previousCore.Idle)) / float64(total) * 100
+			}
+		}
+	}
+	rate.PSICPU, rate.PSIMemory, rate.PSIIO, rate.PSIValid = current.PSICPU, current.PSIMemory, current.PSIIO, current.PSIValid
 	return rate
+}
+
+// parsePressureAvg10은 /proc/pressure/*의 some 행에서 최근 10초 stall 비율을 읽는다.
+func parsePressureAvg10(input string) (float64, bool) {
+	for _, line := range strings.Split(input, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 0 || fields[0] != "some" {
+			continue
+		}
+		for _, field := range fields[1:] {
+			key, value, found := strings.Cut(field, "=")
+			if key != "avg10" || !found {
+				continue
+			}
+			parsed, err := strconv.ParseFloat(value, 64)
+			return parsed, err == nil
+		}
+	}
+	return 0, false
 }
 
 func delta(current, previous uint64) uint64 {

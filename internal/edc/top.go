@@ -78,12 +78,23 @@ type topSample struct {
 	NetOut     float64   `json:"net_out_bytes_per_s"`
 	PacketsIn  float64   `json:"packets_in_per_s"`
 	PacketsOut float64   `json:"packets_out_per_s"`
+	NetErrors  float64   `json:"network_errors_per_s"`
+	NetDrops   float64   `json:"network_drops_per_s"`
+	NetHealth  bool      `json:"network_health_supported"`
 	Load1      float64   `json:"load1"`
 	CPUUser    float64   `json:"cpu_user_pct"`
 	CPUSystem  float64   `json:"cpu_system_pct"`
 	CPUIOWait  float64   `json:"cpu_iowait_pct"`
 	DiskRead   float64   `json:"disk_read_bytes_per_s"`
 	DiskWrite  float64   `json:"disk_write_bytes_per_s"`
+	DiskIOPS   float64   `json:"disk_iops"`
+	DiskAwait  float64   `json:"disk_await_ms"`
+	DiskBusy   float64   `json:"disk_busy_pct"`
+	DiskHealth bool      `json:"disk_health_supported"`
+	PSICPU     float64   `json:"psi_cpu_some_avg10_pct"`
+	PSIMemory  float64   `json:"psi_memory_some_avg10_pct"`
+	PSIIO      float64   `json:"psi_io_some_avg10_pct"`
+	PSIValid   bool      `json:"psi_supported"`
 	MemoryPct  float64   `json:"memory_pct"`
 }
 
@@ -91,9 +102,9 @@ func newTopSample(details hostDetails, at time.Time, rate resourceRate) topSampl
 	return topSample{
 		Time: at.UTC(), Hostname: details.Hostname, Cores: details.Cores,
 		NetIn: roundTopValue(rate.NetIn), NetOut: roundTopValue(rate.NetOut),
-		PacketsIn: roundTopValue(rate.PacketsIn), PacketsOut: roundTopValue(rate.PacketsOut),
+		PacketsIn: roundTopValue(rate.PacketsIn), PacketsOut: roundTopValue(rate.PacketsOut), NetErrors: roundTopValue(rate.NetErrors), NetDrops: roundTopValue(rate.NetDrops), NetHealth: rate.NetHealthValid,
 		Load1: roundTopValue(rate.Load1), CPUUser: roundTopValue(rate.CPUUser), CPUSystem: roundTopValue(rate.CPUSystem), CPUIOWait: roundTopValue(rate.CPUIOWait),
-		DiskRead: roundTopValue(rate.DiskRead), DiskWrite: roundTopValue(rate.DiskWrite), MemoryPct: roundTopValue(rate.MemoryPercent),
+		DiskRead: roundTopValue(rate.DiskRead), DiskWrite: roundTopValue(rate.DiskWrite), DiskIOPS: roundTopValue(rate.DiskIOPS), DiskAwait: roundTopValue(rate.DiskAwait), DiskBusy: roundTopValue(rate.DiskBusy), DiskHealth: rate.DiskHealthValid, PSICPU: roundTopValue(rate.PSICPU), PSIMemory: roundTopValue(rate.PSIMemory), PSIIO: roundTopValue(rate.PSIIO), PSIValid: rate.PSIValid, MemoryPct: roundTopValue(rate.MemoryPercent),
 	}
 }
 
@@ -158,8 +169,6 @@ const (
 	topMaxInterval = time.Minute
 	// topDashboardHistory는 대시보드가 되돌아볼 수 있는 row 수다.
 	topDashboardHistory = 500
-	// topDashboardFixedLines는 header 3줄, column header 1줄, 상태줄 1줄이다.
-	topDashboardFixedLines = 5
 )
 
 // topIntervalLadder는 +와 -로 옮겨 다니는 interval 단계다.
@@ -191,10 +200,11 @@ const (
 
 type topThreshold struct{ warn, danger float64 }
 
-// topLimits는 값의 위험도를 나누는 임계치다. load만 core 수에 비례하고 나머지는 백분율이다.
+// topLimits는 값의 위험도를 나누는 임계치다. load는 core 수에 비례하고, await는 ms,
+// network는 초당 error·drop 수이며 나머지는 백분율이다.
 type topLimits struct {
-	load, cpu, io, memory topThreshold
-	color                 bool
+	load, cpu, io, memory, await, psi, network topThreshold
+	color                                      bool
 }
 
 func newTopLimits(cores int, color bool) topLimits {
@@ -206,7 +216,11 @@ func newTopLimits(cores int, color bool) topLimits {
 		cpu:    topThreshold{warn: 70, danger: 90},
 		io:     topThreshold{warn: 10, danger: 25},
 		memory: topThreshold{warn: 90, danger: 95},
-		color:  color,
+		await:  topThreshold{warn: 20, danger: 50},
+		psi:    topThreshold{warn: 10, danger: 25},
+		// 가상 interface는 drop이 조금씩 꾸준히 난다. 1/s 미만은 잡음으로 보고, 50/s에서 memory 위험과 같은 무게가 된다.
+		network: topThreshold{warn: 1, danger: 50},
+		color:   color,
 	}
 }
 

@@ -123,7 +123,7 @@ func collectResourceSnapshot() (resourceSnapshot, error) {
 			snapshot.DiskOps += parseUint(parts[3]) + parseUint(parts[7])
 			snapshot.DiskWaitMS += parseUint(parts[6]) + parseUint(parts[10])
 			snapshot.DiskBusyMS += parseUint(parts[12])
-			snapshot.DiskHealthValid = true
+			snapshot.DiskHealthValid, snapshot.DiskBusyValid = true, true
 		}
 	} else {
 		snapshot.DiskMissing = true

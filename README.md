@@ -311,11 +311,11 @@ If stdin and stdout are terminals, `edc top` opens a full-screen dashboard. The 
 | `Enter` | show details for the selected time |
 | `h` | show the load, CPU, iowait, and memory peaks from the last 60 seconds, each with its time |
 
-The default table has a `signal` column. It shows the highest-priority warning among load, CPU, iowait, memory, Linux disk await, and network errors or drops, followed by the number of other warnings. Network errors and drops count as a warning from 1 per second. Use the network view for packet counts. Sampling continues while an earlier row is selected; press `End` to follow the latest row again. A temporary sampling error keeps the last row and retries on the next interval.
+The default table has a `signal` column. It shows the highest-priority warning among load, CPU, iowait, memory, disk await, and network errors or drops, followed by the number of other warnings. Network errors and drops count as a warning from 1 per second. Use the network view for packet counts. Sampling continues while an earlier row is selected; press `End` to follow the latest row again. A temporary sampling error keeps the last row and retries on the next interval.
 
 At 132 columns or wider, the default table automatically uses the wide layout. It shows packet in/out, network errors and drops, the hot core, and disk IOPS, await, and busy values on the same row. Reducing the terminal width immediately restores the 80-column table.
 
-On Linux, the disk view also shows IOPS, average `await`, and aggregate `busy%` across physical disks; the memory view shows memory pressure next to `mem%`. Aggregate `busy%` can exceed 100 when multiple disks are busy at once. macOS shows `—` for these Linux-only values. On macOS and Linux, the network view shows interface errors and drops. On macOS, `edc` reads them from the interface statistics of the kernel (`net.link.generic.ifdata`). On macOS and Linux, the memory view shows `swap/s`, the bytes per second that the kernel moves out to swap. A value above zero shows that the host is short of memory.
+On macOS and Linux, the disk view also shows IOPS and average `await` across physical disks. On Linux, the disk view also shows aggregate `busy%`, and the memory view shows memory pressure next to `mem%`. Aggregate `busy%` can exceed 100 when multiple disks are busy at once. macOS does not report the time that a disk is busy, so macOS shows `—` for these Linux-only values. On macOS and Linux, the network view shows interface errors and drops. On macOS, `edc` reads them from the interface statistics of the kernel (`net.link.generic.ifdata`). On macOS and Linux, the memory view shows `swap/s`, the bytes per second that the kernel moves out to swap. A value above zero shows that the host is short of memory.
 
 Press `s` for Linux pressure. It shows CPU, memory, and I/O `some avg10`: the percentage of the last ten seconds during which at least some tasks waited for that resource. The CPU view shows the hottest core and an ASCII bar; on machines with more than 24 cores, the bar shows the first 24.
 
@@ -343,7 +343,7 @@ Use `--json` to write one JSON object for each sample. Use `-` for stdout. A pat
 ./bin/edc top --count 5 --json -
 ```
 
-Each line has `time`, `hostname`, `cores`, the network and disk rates in bytes per second, the CPU values in percent, `load1`, `memory_pct`, and `swap_out_bytes_per_s`. macOS and Linux emit network errors and drops. Linux additionally emits disk IOPS, await and busy values, and PSI `some avg10`; `*_health_supported` and `psi_supported` tell consumers whether those values are supported. The `--json` option removes the table and the header.
+Each line has `time`, `hostname`, `cores`, the network and disk rates in bytes per second, the CPU values in percent, `load1`, `memory_pct`, and `swap_out_bytes_per_s`. macOS and Linux emit network errors and drops, and disk IOPS and await values. Linux additionally emits disk busy values and PSI `some avg10`; `*_health_supported`, `disk_busy_supported`, and `psi_supported` tell consumers whether those values are supported. The `--json` option removes the table and the header.
 
 ## Remote recipes
 

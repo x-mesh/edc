@@ -313,11 +313,11 @@ stdin과 stdout이 모두 terminal이면 `edc top`은 전체 화면 대시보드
 | `Enter` | 선택한 시점의 상세 표시 |
 | `h` | 최근 60초의 load, CPU, iowait, memory 최고치를 각각 시각과 함께 표시 |
 
-기본 표의 `signal` 열은 load, CPU, iowait, memory, network errors·drops, Linux의 disk await 중 가장 심각한 항목과 추가 개수를 보여 줍니다. network errors·drops는 초당 1개부터 경고로 셉니다. 패킷 수는 network 보기에서 확인합니다. 과거 행을 선택해도 수집은 계속되며 `End`로 최신 행을 다시 따라갑니다. 수집이 잠시 실패하면 마지막 행을 유지하고 다음 interval에 다시 시도합니다.
+기본 표의 `signal` 열은 load, CPU, iowait, memory, disk await, network errors·drops 중 가장 심각한 항목과 추가 개수를 보여 줍니다. network errors·drops는 초당 1개부터 경고로 셉니다. 패킷 수는 network 보기에서 확인합니다. 과거 행을 선택해도 수집은 계속되며 `End`로 최신 행을 다시 따라갑니다. 수집이 잠시 실패하면 마지막 행을 유지하고 다음 interval에 다시 시도합니다.
 
 terminal 폭이 132열 이상이면 기본 표는 자동으로 wide 레이아웃으로 바뀝니다. 이 레이아웃은 packet in/out, network errors·drops, hot core, disk IOPS·await·busy를 같은 행에 표시합니다. 폭이 줄면 80열 기본 표로 즉시 돌아갑니다.
 
-Linux의 disk 보기에는 IOPS, 평균 `await`와 모든 물리 disk의 합산 `busy%`가, memory 보기에는 `mem%` 옆에 memory pressure가 추가됩니다. 합산 `busy%`는 여러 disk가 동시에 바쁘면 100%를 넘을 수 있습니다. macOS에서는 이 값들을 `—`로 표시합니다. network 보기의 interface errors·drops는 macOS와 Linux 모두 표시하며, macOS에서는 kernel의 interface 통계(`net.link.generic.ifdata`)에서 읽습니다. memory 보기의 `swap/s`는 kernel이 초당 swap으로 내보낸 byte이며, 0보다 크면 memory가 부족하다는 뜻입니다.
+disk 보기에는 macOS와 Linux 모두 물리 disk의 IOPS와 평균 `await`가 추가됩니다. Linux에서는 모든 물리 disk의 합산 `busy%`와, memory 보기의 `mem%` 옆 memory pressure도 추가됩니다. 합산 `busy%`는 여러 disk가 동시에 바쁘면 100%를 넘을 수 있습니다. macOS는 disk가 바빴던 시간을 제공하지 않으므로 이 Linux 전용 값들을 `—`로 표시합니다. network 보기의 interface errors·drops는 macOS와 Linux 모두 표시하며, macOS에서는 kernel의 interface 통계(`net.link.generic.ifdata`)에서 읽습니다. memory 보기의 `swap/s`는 kernel이 초당 swap으로 내보낸 byte이며, 0보다 크면 memory가 부족하다는 뜻입니다.
 
 `s`는 Linux pressure 보기입니다. CPU, memory, I/O의 `some avg10`을 퍼센트로 표시하며, 최근 10초 동안 일부 작업이 그 자원을 기다린 시간의 비율입니다. CPU 보기의 `hot core`와 ASCII 막대는 코어별 사용률을 보여 주고, 24개보다 많은 코어는 앞 24개만 막대로 표시합니다.
 
@@ -345,7 +345,7 @@ macOS에서 `edc`는 Mach `host_processor_info` 호출로 kernel에서 core별 C
 ./bin/edc top --count 5 --json -
 ```
 
-각 줄에는 `time`, `hostname`, `cores`, 초당 byte 단위 network·disk rate, 퍼센트 단위 CPU 값, `load1`, `memory_pct`, 초당 byte 단위 `swap_out_bytes_per_s`가 들어갑니다. macOS와 Linux 모두 network errors·drops를 내보냅니다. Linux에서는 disk IOPS·await·busy, PSI `some avg10`도 추가되며, `*_health_supported`와 `psi_supported`가 지원 여부를 표시합니다. `--json`은 표와 헤더를 없앱니다.
+각 줄에는 `time`, `hostname`, `cores`, 초당 byte 단위 network·disk rate, 퍼센트 단위 CPU 값, `load1`, `memory_pct`, 초당 byte 단위 `swap_out_bytes_per_s`가 들어갑니다. macOS와 Linux 모두 network errors·drops와 disk IOPS·await를 내보냅니다. Linux에서는 disk busy와 PSI `some avg10`도 추가되며, `*_health_supported`, `disk_busy_supported`, `psi_supported`가 지원 여부를 표시합니다. `--json`은 표와 헤더를 없앱니다.
 
 ## Remote recipe
 

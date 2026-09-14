@@ -44,6 +44,8 @@ type resourceSnapshot struct {
 	ProcessesValid  bool
 	NetHealthValid  bool
 	DiskHealthValid bool
+	// DiskBusyValid는 busy 시간을 읽었는지다. macOS는 IOPS와 await는 주지만 I/O가 진행 중이던 시간은 주지 않는다.
+	DiskBusyValid bool
 	// NetMissing과 DiskMissing은 이 sample이 누적 counter를 읽지 못했다는 뜻이다.
 	// 0으로 남은 counter를 기준으로 다음 rate를 구하면 부팅 뒤 누적값 전체가 한 구간에 몰린다.
 	NetMissing  bool
@@ -195,6 +197,7 @@ type resourceRate struct {
 	MemoryPercent, Load1            float64
 	SwapOut                         float64
 	NetHealthValid, DiskHealthValid bool
+	DiskBusyValid                   bool
 	CoreCPU                         []float64
 	PSICPU, PSIMemory, PSIIO        float64
 	PSIValid                        bool
@@ -250,10 +253,11 @@ func calculateRate(previous, current resourceSnapshot) resourceRate {
 	}
 	rate.NetHealthValid = current.NetHealthValid && previous.NetHealthValid
 	rate.DiskHealthValid = current.DiskHealthValid && previous.DiskHealthValid
+	rate.DiskBusyValid = rate.DiskHealthValid && current.DiskBusyValid && previous.DiskBusyValid
 	if operations := delta(current.DiskOps, previous.DiskOps); operations > 0 && rate.DiskHealthValid {
 		rate.DiskAwait = float64(delta(current.DiskWaitMS, previous.DiskWaitMS)) / float64(operations)
 	}
-	if rate.DiskHealthValid {
+	if rate.DiskBusyValid {
 		rate.DiskBusy = float64(delta(current.DiskBusyMS, previous.DiskBusyMS)) / seconds / 10
 	}
 	// 한쪽 sample이 counter를 읽지 못했으면 이 구간의 rate는 알 수 없다. 0으로 남은 counter와 비교하지 않는다.
@@ -261,7 +265,7 @@ func calculateRate(previous, current resourceSnapshot) resourceRate {
 		rate.NetIn, rate.NetOut, rate.PacketsIn, rate.PacketsOut, rate.NetErrors, rate.NetDrops, rate.NetHealthValid = 0, 0, 0, 0, 0, 0, false
 	}
 	if previous.DiskMissing || current.DiskMissing {
-		rate.DiskRead, rate.DiskWrite, rate.DiskIOPS, rate.DiskAwait, rate.DiskBusy, rate.DiskHealthValid = 0, 0, 0, 0, 0, false
+		rate.DiskRead, rate.DiskWrite, rate.DiskIOPS, rate.DiskAwait, rate.DiskBusy, rate.DiskHealthValid, rate.DiskBusyValid = 0, 0, 0, 0, 0, false, false
 	}
 	if !previous.SwapMissing && !current.SwapMissing {
 		rate.SwapOut = float64(delta(current.SwapOutBytes, previous.SwapOutBytes)) / seconds

@@ -388,7 +388,7 @@ func topViewCells(rate resourceRate, view topView, signal string) []string {
 	case topViewMemory:
 		return []string{fmt.Sprintf("%.1f", rate.MemoryPercent), formatRate(rate.SwapOut), topOptionalValue(rate.PSIValid, "%.1f", rate.PSIMemory), fmt.Sprintf("%.1f", rate.Load1), signal}
 	case topViewDisk:
-		return []string{formatRate(rate.DiskRead), formatRate(rate.DiskWrite), topOptionalValue(rate.DiskHealthValid, "%.0f", rate.DiskIOPS), topOptionalValue(rate.DiskHealthValid, "%.1f", rate.DiskAwait), topOptionalValue(rate.DiskHealthValid, "%.0f", rate.DiskBusy), signal}
+		return []string{formatRate(rate.DiskRead), formatRate(rate.DiskWrite), topOptionalValue(rate.DiskHealthValid, "%.0f", rate.DiskIOPS), topOptionalValue(rate.DiskHealthValid, "%.1f", rate.DiskAwait), topOptionalValue(rate.DiskBusyValid, "%.0f", rate.DiskBusy), signal}
 	case topViewNetwork:
 		return []string{formatRate(rate.NetIn), formatRate(rate.NetOut), fmt.Sprintf("%.0f", rate.PacketsIn), fmt.Sprintf("%.0f", rate.PacketsOut), topOptionalValue(rate.NetHealthValid, "%.0f", rate.NetErrors), topOptionalValue(rate.NetHealthValid, "%.0f", rate.NetDrops), signal}
 	case topViewPressure:
@@ -450,7 +450,7 @@ func formatTopDashboardRow(row topDashboardRow, view topView, limits topLimits, 
 	}
 	if wide {
 		errors, drops := topOptionalValue(rate.NetHealthValid, "%.0f", rate.NetErrors), topOptionalValue(rate.NetHealthValid, "%.0f", rate.NetDrops)
-		iops, await, busy := topOptionalValue(rate.DiskHealthValid, "%.0f", rate.DiskIOPS), topOptionalValue(rate.DiskHealthValid, "%.1f", rate.DiskAwait), topOptionalValue(rate.DiskHealthValid, "%.0f", rate.DiskBusy)
+		iops, await, busy := topOptionalValue(rate.DiskHealthValid, "%.0f", rate.DiskIOPS), topOptionalValue(rate.DiskHealthValid, "%.1f", rate.DiskAwait), topOptionalValue(rate.DiskBusyValid, "%.0f", rate.DiskBusy)
 		line := fmt.Sprintf("%8s │%5s %6s %6.0f %6.0f %5s %5s│%4.1f %5.1f %5.1f %4.1f %-8s│%5.1f│%5s %5s %5s %5s %5s│%-15s", at, formatRate(rate.NetIn), formatRate(rate.NetOut), rate.PacketsIn, rate.PacketsOut, errors, drops, rate.Load1, rate.CPUUser, rate.CPUSystem, rate.CPUIOWait, topHotCore(rate.CoreCPU), rate.MemoryPercent, formatRate(rate.DiskRead), formatRate(rate.DiskWrite), iops, await, busy, signal)
 		return topDashboardFitWidth(line, topWideTableWidth)
 	}
@@ -599,7 +599,11 @@ func topDiskDetail(rate resourceRate) string {
 	if !rate.DiskHealthValid {
 		return "disk health —"
 	}
-	return fmt.Sprintf("disk %.0f iops %.1fms %.0f%% busy", rate.DiskIOPS, rate.DiskAwait, rate.DiskBusy)
+	busy := "busy —"
+	if rate.DiskBusyValid {
+		busy = fmt.Sprintf("%.0f%% busy", rate.DiskBusy)
+	}
+	return fmt.Sprintf("disk %.0f iops %.1fms %s", rate.DiskIOPS, rate.DiskAwait, busy)
 }
 
 func topNetworkDetail(rate resourceRate) string {

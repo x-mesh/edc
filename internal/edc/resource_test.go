@@ -41,14 +41,19 @@ func TestCalculateRateSkipsCountersAfterMissingRead(t *testing.T) {
 
 func TestCalculateRateIncludesHealthCounters(t *testing.T) {
 	start := time.Unix(0, 0)
-	previous := resourceSnapshot{TakenAt: start, DiskOps: 10, DiskWaitMS: 100, DiskBusyMS: 500, NetErrors: 4, NetDrops: 2, DiskHealthValid: true, NetHealthValid: true}
-	current := resourceSnapshot{TakenAt: start.Add(2 * time.Second), DiskOps: 30, DiskWaitMS: 500, DiskBusyMS: 1300, NetErrors: 10, NetDrops: 6, DiskHealthValid: true, NetHealthValid: true}
+	previous := resourceSnapshot{TakenAt: start, DiskOps: 10, DiskWaitMS: 100, DiskBusyMS: 500, NetErrors: 4, NetDrops: 2, DiskHealthValid: true, DiskBusyValid: true, NetHealthValid: true}
+	current := resourceSnapshot{TakenAt: start.Add(2 * time.Second), DiskOps: 30, DiskWaitMS: 500, DiskBusyMS: 1300, NetErrors: 10, NetDrops: 6, DiskHealthValid: true, DiskBusyValid: true, NetHealthValid: true}
 	rate := calculateRate(previous, current)
 	if rate.DiskIOPS != 10 || rate.DiskAwait != 20 || rate.DiskBusy != 40 || rate.NetErrors != 3 || rate.NetDrops != 2 {
 		t.Fatalf("health rate = %#v", rate)
 	}
-	if !rate.DiskHealthValid || !rate.NetHealthValid {
+	if !rate.DiskHealthValid || !rate.DiskBusyValid || !rate.NetHealthValid {
 		t.Fatalf("health validity = %#v", rate)
+	}
+	// macOS는 busy 시간을 주지 않으므로 IOPS와 await만 계산한다.
+	previous.DiskBusyValid, current.DiskBusyValid = false, false
+	if rate := calculateRate(previous, current); rate.DiskIOPS != 10 || rate.DiskAwait != 20 || rate.DiskBusy != 0 || rate.DiskBusyValid || !rate.DiskHealthValid {
+		t.Fatalf("rate without busy time = %#v", rate)
 	}
 }
 
@@ -257,7 +262,7 @@ func TestTopSampleJSON(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(data)
-	for _, expected := range []string{`"time":"2026-01-01T02:36:44Z"`, `"hostname":"host"`, `"cores":8`, `"net_in_bytes_per_s":1234.57`, `"network_drops_per_s":2.2`, `"network_health_supported":true`, `"disk_await_ms":15.56`, `"disk_health_supported":true`, `"psi_io_some_avg10_pct":3.3`, `"psi_supported":true`, `"cpu_user_pct":12.35`, `"memory_pct":11.8`, `"load1":0.5`, `"swap_out_bytes_per_s":20480.46`} {
+	for _, expected := range []string{`"time":"2026-01-01T02:36:44Z"`, `"hostname":"host"`, `"cores":8`, `"net_in_bytes_per_s":1234.57`, `"network_drops_per_s":2.2`, `"network_health_supported":true`, `"disk_await_ms":15.56`, `"disk_health_supported":true`, `"psi_io_some_avg10_pct":3.3`, `"psi_supported":true`, `"cpu_user_pct":12.35`, `"memory_pct":11.8`, `"load1":0.5`, `"swap_out_bytes_per_s":20480.46`, `"disk_busy_supported":false`} {
 		if !strings.Contains(text, expected) {
 			t.Fatalf("sample %s does not contain %s", text, expected)
 		}

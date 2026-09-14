@@ -16,7 +16,7 @@ import (
 )
 
 type darwinNetwork struct{ packetsIn, packetsOut, bytesIn, bytesOut, errors, drops uint64 }
-type darwinDisk struct{ read, write uint64 }
+type darwinDisk struct{ read, write, operations, waitNS uint64 }
 type darwinMemory struct {
 	total, used, swapOut uint64
 	swapOK               bool
@@ -69,6 +69,7 @@ func collectResourceSnapshot() (resourceSnapshot, error) {
 	snapshot.NetInBytes, snapshot.NetOutBytes = network.bytesIn, network.bytesOut
 	snapshot.NetErrors, snapshot.NetDrops, snapshot.NetHealthValid = network.errors, network.drops, networkOK
 	snapshot.DiskRead, snapshot.DiskWrite = disk.read, disk.write
+	snapshot.DiskOps, snapshot.DiskWaitMS, snapshot.DiskHealthValid = disk.operations, disk.waitNS/uint64(time.Millisecond), diskOK
 	snapshot.MemoryTotal, snapshot.MemoryUsed = memory.total, memory.used
 	snapshot.SwapOutBytes, snapshot.SwapMissing = memory.swapOut, !memory.swapOK
 	snapshot.Load1 = load
@@ -111,7 +112,7 @@ func readDarwinDisk() (darwinDisk, bool) {
 	return parseDarwinDisk(string(output))
 }
 
-// parseDarwinDisk는 device마다 driver의 누적 byte를 더한다. 첫 device는 빈 SD card reader일 수 있어 하나만 읽으면 0이 된다.
+// parseDarwinDisk는 device마다 driver의 누적 counter를 더한다. 첫 device는 빈 SD card reader일 수 있어 하나만 읽으면 0이 된다.
 // disk image의 I/O는 image 파일이 있는 물리 disk에서 이미 세므로 Virtual Interface device는 뺀다.
 func parseDarwinDisk(output string) (darwinDisk, bool) {
 	var counters darwinDisk
@@ -120,18 +121,20 @@ func parseDarwinDisk(output string) (darwinDisk, bool) {
 		if strings.Contains(device, `"Physical Interconnect"="Virtual Interface"`) {
 			continue
 		}
-		match := diskBytePattern.FindStringSubmatch(device)
-		if match == nil {
+		statistics := diskStatisticsPattern.FindStringSubmatch(device)
+		if statistics == nil {
 			continue
 		}
 		found = true
-		if match[1] != "" {
-			counters.read += parseUnsigned(match[1])
-			counters.write += parseUnsigned(match[2])
-		} else {
-			counters.write += parseUnsigned(match[3])
-			counters.read += parseUnsigned(match[4])
+		values := map[string]uint64{}
+		for _, pair := range diskCounterPattern.FindAllStringSubmatch(statistics[1], -1) {
+			values[pair[1]] = parseUnsigned(pair[2])
 		}
+		counters.read += values["Bytes (Read)"]
+		counters.write += values["Bytes (Write)"]
+		counters.operations += values["Operations (Read)"] + values["Operations (Write)"]
+		// Total Time은 요청마다 걸린 시간을 ns로 누적한 값이다. 읽기 한 번에 약 0.19ms로 NVMe 지연과 맞는다.
+		counters.waitNS += values["Total Time (Read)"] + values["Total Time (Write)"]
 	}
 	return counters, found
 }
@@ -169,7 +172,10 @@ func darwinMemoryFromStatistics(stats darwinVMStatistics64, pageSize, total uint
 	return memory
 }
 
-var diskBytePattern = regexp.MustCompile(`"Bytes \(Read\)"=([0-9]+)[^}]*"Bytes \(Write\)"=([0-9]+)|"Bytes \(Write\)"=([0-9]+)[^}]*"Bytes \(Read\)"=([0-9]+)`)
+var (
+	diskStatisticsPattern = regexp.MustCompile(`"Statistics" = \{([^}]*)\}`)
+	diskCounterPattern    = regexp.MustCompile(`"([^"]+)"=([0-9]+)`)
+)
 
 func collectHostDetails() (hostDetails, error) {
 	var details hostDetails

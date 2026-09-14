@@ -323,6 +323,17 @@ func TestTopViewsShowDashForUnsupportedValues(t *testing.T) {
 	}
 }
 
+func TestTopDiskViewShowsDashOnlyForBusyWithoutBusyTime(t *testing.T) {
+	row := topDashboardRow{at: time.Unix(1, 0), rate: resourceRate{DiskHealthValid: true, DiskIOPS: 321, DiskAwait: 4.5}}
+	disk := formatTopDashboardRow(row, topViewDisk, newTopLimits(8, false), false)
+	if strings.Count(disk, "—") != 1 || !strings.Contains(disk, "321") || !strings.Contains(disk, "4.5") {
+		t.Fatalf("disk row must show iops and await with — for busy: %q", disk)
+	}
+	if detail := topDiskDetail(row.rate); !strings.Contains(detail, "321 iops") || !strings.Contains(detail, "busy —") {
+		t.Fatalf("disk detail = %q", detail)
+	}
+}
+
 func TestTopModelKeepsSelectedTimeWhenHistoryIsTrimmed(t *testing.T) {
 	model := topFixtureModel(nil)
 	model.rows = make([]topDashboardRow, topDashboardHistory)
@@ -422,7 +433,7 @@ func TestTopAllViewUsesTheSameGroupBoundariesForHeaderAndRow(t *testing.T) {
 }
 
 func TestTopWideLayoutAddsPacketsAndHealth(t *testing.T) {
-	row := topDashboardRow{at: time.Unix(1, 0), rate: resourceRate{PacketsIn: 123, PacketsOut: 456, NetErrors: 2, NetDrops: 3, NetHealthValid: true, DiskIOPS: 789, DiskAwait: 12.3, DiskBusy: 80, DiskHealthValid: true}}
+	row := topDashboardRow{at: time.Unix(1, 0), rate: resourceRate{PacketsIn: 123, PacketsOut: 456, NetErrors: 2, NetDrops: 3, NetHealthValid: true, DiskIOPS: 789, DiskAwait: 12.3, DiskBusy: 80, DiskHealthValid: true, DiskBusyValid: true}}
 	headers := topDashboardHeaders(topViewAll, true)
 	line := formatTopDashboardRow(row, topViewAll, newTopLimits(8, false), true)
 	if len(headers) != 2 || len([]rune(line)) != topWideTableWidth || !strings.Contains(headers[1], "pk_in") {

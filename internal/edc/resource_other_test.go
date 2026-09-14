@@ -105,7 +105,7 @@ func TestParseDarwinDiskSumsPhysicalDevices(t *testing.T) {
   |
   +-o IOBlockStorageDriver  <class IOBlockStorageDriver, registered, matched, active>
       {
-        "Statistics" = {"Bytes (Write)"=300,"Operations (Read)"=5,"Bytes (Read)"=1000}
+        "Statistics" = {"Operations (Write)"=40,"Total Time (Read)"=6000000,"Bytes (Write)"=300,"Operations (Read)"=60,"Total Time (Write)"=4000000,"Bytes (Read)"=1000}
       }
 +-o IOBlockStorageServices  <class IOBlockStorageServices, registered, matched, active>
   | {
@@ -114,7 +114,7 @@ func TestParseDarwinDiskSumsPhysicalDevices(t *testing.T) {
   |
   +-o IOBlockStorageDriver  <class IOBlockStorageDriver, registered, matched, active>
       {
-        "Statistics" = {"Bytes (Read)"=20,"Bytes (Write)"=10}
+        "Statistics" = {"Bytes (Read)"=20,"Operations (Read)"=2,"Total Time (Read)"=3000000,"Bytes (Write)"=10,"Operations (Write)"=3,"Total Time (Write)"=2000000}
       }
 +-o AppleDiskImageDevice@0  <class AppleDiskImageDevice, registered, matched, active>
   | {
@@ -123,10 +123,11 @@ func TestParseDarwinDiskSumsPhysicalDevices(t *testing.T) {
   |
   +-o IOBlockStorageDriver  <class IOBlockStorageDriver, registered, matched, active>
       {
-        "Statistics" = {"Bytes (Read)"=7000,"Bytes (Write)"=7000}
+        "Statistics" = {"Bytes (Read)"=7000,"Bytes (Write)"=7000,"Operations (Read)"=70,"Total Time (Read)"=9000000}
       }
 `
-	if got, ok := parseDarwinDisk(output); !ok || got != (darwinDisk{read: 1020, write: 310}) {
+	want := darwinDisk{read: 1020, write: 310, operations: 105, waitNS: 15000000}
+	if got, ok := parseDarwinDisk(output); !ok || got != want {
 		t.Fatalf("disk = %#v, %v", got, ok)
 	}
 	if _, ok := parseDarwinDisk("unexpected output"); ok {

@@ -91,6 +91,7 @@ type topSample struct {
 	DiskAwait  float64   `json:"disk_await_ms"`
 	DiskBusy   float64   `json:"disk_busy_pct"`
 	DiskHealth bool      `json:"disk_health_supported"`
+	DiskBusyOK bool      `json:"disk_busy_supported"`
 	PSICPU     float64   `json:"psi_cpu_some_avg10_pct"`
 	PSIMemory  float64   `json:"psi_memory_some_avg10_pct"`
 	PSIIO      float64   `json:"psi_io_some_avg10_pct"`
@@ -105,7 +106,7 @@ func newTopSample(details hostDetails, at time.Time, rate resourceRate) topSampl
 		NetIn: roundTopValue(rate.NetIn), NetOut: roundTopValue(rate.NetOut),
 		PacketsIn: roundTopValue(rate.PacketsIn), PacketsOut: roundTopValue(rate.PacketsOut), NetErrors: roundTopValue(rate.NetErrors), NetDrops: roundTopValue(rate.NetDrops), NetHealth: rate.NetHealthValid,
 		Load1: roundTopValue(rate.Load1), CPUUser: roundTopValue(rate.CPUUser), CPUSystem: roundTopValue(rate.CPUSystem), CPUIOWait: roundTopValue(rate.CPUIOWait),
-		DiskRead: roundTopValue(rate.DiskRead), DiskWrite: roundTopValue(rate.DiskWrite), DiskIOPS: roundTopValue(rate.DiskIOPS), DiskAwait: roundTopValue(rate.DiskAwait), DiskBusy: roundTopValue(rate.DiskBusy), DiskHealth: rate.DiskHealthValid, PSICPU: roundTopValue(rate.PSICPU), PSIMemory: roundTopValue(rate.PSIMemory), PSIIO: roundTopValue(rate.PSIIO), PSIValid: rate.PSIValid, MemoryPct: roundTopValue(rate.MemoryPercent), SwapOut: roundTopValue(rate.SwapOut),
+		DiskRead: roundTopValue(rate.DiskRead), DiskWrite: roundTopValue(rate.DiskWrite), DiskIOPS: roundTopValue(rate.DiskIOPS), DiskAwait: roundTopValue(rate.DiskAwait), DiskBusy: roundTopValue(rate.DiskBusy), DiskHealth: rate.DiskHealthValid, DiskBusyOK: rate.DiskBusyValid, PSICPU: roundTopValue(rate.PSICPU), PSIMemory: roundTopValue(rate.PSIMemory), PSIIO: roundTopValue(rate.PSIIO), PSIValid: rate.PSIValid, MemoryPct: roundTopValue(rate.MemoryPercent), SwapOut: roundTopValue(rate.SwapOut),
 	}
 }
 

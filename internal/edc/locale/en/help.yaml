@@ -62,8 +62,6 @@ command:
     notes:
       - "In a terminal, edc opens a dashboard. q quits, p pauses, +/- moves the interval."
       - "--count, --json, a pipe, or NO_COLOR gives the table instead."
-      - "On macOS, top fills the CPU values, so they change about once a second."
-      - "A shorter interval still updates the other columns on time."
   info:
     summary: "System, network, and disk information"
     option:

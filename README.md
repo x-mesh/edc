@@ -333,7 +333,7 @@ The dashboard quits to the previous screen and leaves no rows behind. Use `--jso
 - stdin or stdout is not a terminal.
 - `NO_COLOR` is set.
 
-On macOS, `edc` reads the CPU values from `top`, which needs about one second for each sample. `edc` runs `top` in the background, so a shorter interval still updates the network, disk, memory, and load values on time. The CPU columns hold the same value until the next `top` sample arrives. On Linux, `edc` reads `/proc/stat` directly and every column follows the interval.
+On macOS, `edc` reads the CPU ticks of each core from the kernel with the Mach `host_processor_info` call. On Linux, `edc` reads `/proc/stat`. On both systems, every column follows the interval.
 
 ## Top JSON output
 

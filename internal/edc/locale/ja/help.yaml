@@ -62,8 +62,6 @@ command:
     notes:
       - "terminal ではダッシュボードを開きます。q 終了、p 一時停止、+/- interval。"
       - "--count か --json を渡すか、terminal でないか、NO_COLOR なら表で出力します。"
-      - "macOS の CPU 値は top が埋めるため、およそ 1 秒ごとに変わります。"
-      - "それより短い interval では、ほかの値だけが速く更新されます。"
   info:
     summary: "system、network、disk の情報"
     option:

@@ -15,73 +15,6 @@ import (
 	"time"
 )
 
-// darwinCPU는 process가 사는 동안 top을 배경에서 돌려 CPU 사용률을 최신으로 유지한다.
-var darwinCPU darwinCPUSampler
-
-// darwinCPUSample은 top이 읽어 온 CPU 사용률 한 벌이다.
-type darwinCPUSample struct {
-	user, system, idle, total uint64
-	valid                     bool
-}
-
-// darwinCPUSampler는 top 호출을 snapshot 수집에서 떼어 낸다.
-// top -l 1은 CPU 델타를 재려고 1초 넘게 기다리므로, 같은 goroutine에서 부르면
-// --interval을 200ms로 줄여도 화면은 그만큼 늦게 갱신된다.
-// 첫 값만 동기로 받고 그다음부터는 배경 goroutine이 채운 값을 즉시 돌려준다.
-type darwinCPUSampler struct {
-	mutex  sync.RWMutex
-	sample darwinCPUSample
-	start  sync.Once
-}
-
-func (sampler *darwinCPUSampler) latest() darwinCPUSample {
-	sampler.start.Do(func() {
-		// 첫 화면에 0%가 뜨지 않도록 한 번은 기다린다.
-		sampler.refresh()
-		go func() {
-			// top 자체가 1초 넘게 걸리므로 따로 쉬지 않는다. process가 끝나면 함께 사라진다.
-			for {
-				sampler.refresh()
-			}
-		}()
-	})
-	sampler.mutex.RLock()
-	defer sampler.mutex.RUnlock()
-	return sampler.sample
-}
-
-func (sampler *darwinCPUSampler) refresh() {
-	output, err := exec.Command("/usr/bin/top", "-l", "1", "-n", "0").Output()
-	if err != nil {
-		return
-	}
-	sample, ok := parseDarwinCPU(string(output))
-	if !ok {
-		return
-	}
-	sampler.mutex.Lock()
-	sampler.sample = sample
-	sampler.mutex.Unlock()
-}
-
-// parseDarwinCPU는 top의 CPU usage 줄을 읽는다. 백분율이므로 total은 10000(=100.00%)이다.
-func parseDarwinCPU(output string) (darwinCPUSample, bool) {
-	for _, line := range strings.Split(output, "\n") {
-		if !strings.HasPrefix(line, "CPU usage:") {
-			continue
-		}
-		var user, system, idle float64
-		if _, err := fmt.Sscanf(line, "CPU usage: %f%% user, %f%% sys, %f%% idle", &user, &system, &idle); err != nil {
-			return darwinCPUSample{}, false
-		}
-		return darwinCPUSample{
-			user: uint64(user * 100), system: uint64(system * 100), idle: uint64(idle * 100),
-			total: 10000, valid: true,
-		}, true
-	}
-	return darwinCPUSample{}, false
-}
-
 type darwinNetwork struct{ packetsIn, packetsOut, bytesIn, bytesOut uint64 }
 type darwinDisk struct{ read, write uint64 }
 type darwinMemory struct{ total, used uint64 }
@@ -104,7 +37,12 @@ func newTopProcessReader() func() ([]topProcess, bool) {
 }
 
 func collectResourceSnapshot() (resourceSnapshot, error) {
-	snapshot := resourceSnapshot{TakenAt: time.Now(), CPUInstant: true}
+	snapshot := resourceSnapshot{TakenAt: time.Now()}
+	cores, err := readDarwinCoreTicks()
+	if err != nil {
+		return snapshot, err
+	}
+	addDarwinCoreTicks(&snapshot, cores)
 
 	// 남은 값은 서로 독립이므로 함께 읽는다. 차례로 부르면 0.6초가 그대로 주기에 붙는다.
 	var (
@@ -126,12 +64,19 @@ func collectResourceSnapshot() (resourceSnapshot, error) {
 	snapshot.DiskRead, snapshot.DiskWrite = disk.read, disk.write
 	snapshot.MemoryTotal, snapshot.MemoryUsed = memory.total, memory.used
 	snapshot.Load1 = load
-
-	if sample := darwinCPU.latest(); sample.valid {
-		snapshot.CPUUser, snapshot.CPUSystem = sample.user, sample.system
-		snapshot.CPUIdle, snapshot.CPUTotal = sample.idle, sample.total
-	}
 	return snapshot, nil
+}
+
+// addDarwinCoreTicks는 core별 tick을 /proc/stat과 같은 누적 tick으로 합친다. nice는 Linux처럼 user에 넣는다.
+func addDarwinCoreTicks(snapshot *resourceSnapshot, cores []darwinCoreTicks) {
+	for _, core := range cores {
+		total := core.User + core.System + core.Idle + core.Nice
+		snapshot.CPUUser += core.User + core.Nice
+		snapshot.CPUSystem += core.System
+		snapshot.CPUIdle += core.Idle
+		snapshot.CPUTotal += total
+		snapshot.Cores = append(snapshot.Cores, resourceCPU{Total: total, Idle: core.Idle})
+	}
 }
 
 func readDarwinLoad() float64 {

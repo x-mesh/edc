@@ -335,7 +335,7 @@ interval은 200ms, 500ms, 1s, 2s, 5s, 10s, 30s, 1m 사이를 오갑니다. 일�
 - stdin이나 stdout이 terminal이 아닌 경우
 - `NO_COLOR`가 설정된 경우
 
-macOS에서 `edc`는 CPU 값을 `top`에서 읽는데, `top`은 sample 하나에 1초쯤 걸립니다. `edc`는 `top`을 배경에서 돌리므로 interval을 줄이면 network, disk, memory, load는 그대로 빠르게 갱신됩니다. CPU 열은 다음 `top` sample이 올 때까지 같은 값을 유지합니다. Linux에서는 `/proc/stat`을 직접 읽어 모든 열이 interval을 따릅니다.
+macOS에서 `edc`는 Mach `host_processor_info` 호출로 kernel에서 core별 CPU tick을 직접 읽고, Linux에서는 `/proc/stat`을 읽습니다. 두 운영체제 모두 모든 열이 interval을 따릅니다.
 
 ## Top JSON 출력
 

@@ -370,7 +370,7 @@ func topViewColumns(view topView) []topColumn {
 	case topViewCPU:
 		return []topColumn{{title: "load", width: 5}, {title: "usr%", width: 5}, {title: "sys%", width: 5}, {title: "io%", width: 5}, {title: "hot core", width: 8, left: true}, {title: "cores", width: topCoreBarLimit, left: true}, signal}
 	case topViewMemory:
-		return []topColumn{{title: "mem%", width: 6}, {title: "psi mem", width: 7}, {title: "load", width: 6}, signal}
+		return []topColumn{{title: "mem%", width: 6}, {title: "swap/s", width: 7}, {title: "psi mem", width: 7}, {title: "load", width: 6}, signal}
 	case topViewDisk:
 		return []topColumn{{title: "read/s", width: 7}, {title: "write/s", width: 7}, {title: "iops", width: 6}, {title: "await", width: 6}, {title: "busy%", width: 6}, signal}
 	case topViewNetwork:
@@ -386,7 +386,7 @@ func topViewCells(rate resourceRate, view topView, signal string) []string {
 	case topViewCPU:
 		return []string{fmt.Sprintf("%.1f", rate.Load1), fmt.Sprintf("%.1f", rate.CPUUser), fmt.Sprintf("%.1f", rate.CPUSystem), fmt.Sprintf("%.1f", rate.CPUIOWait), topHotCore(rate.CoreCPU), topCoreBar(rate.CoreCPU), signal}
 	case topViewMemory:
-		return []string{fmt.Sprintf("%.1f", rate.MemoryPercent), topOptionalValue(rate.PSIValid, "%.1f", rate.PSIMemory), fmt.Sprintf("%.1f", rate.Load1), signal}
+		return []string{fmt.Sprintf("%.1f", rate.MemoryPercent), formatRate(rate.SwapOut), topOptionalValue(rate.PSIValid, "%.1f", rate.PSIMemory), fmt.Sprintf("%.1f", rate.Load1), signal}
 	case topViewDisk:
 		return []string{formatRate(rate.DiskRead), formatRate(rate.DiskWrite), topOptionalValue(rate.DiskHealthValid, "%.0f", rate.DiskIOPS), topOptionalValue(rate.DiskHealthValid, "%.1f", rate.DiskAwait), topOptionalValue(rate.DiskHealthValid, "%.0f", rate.DiskBusy), signal}
 	case topViewNetwork:

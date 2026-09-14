@@ -3,7 +3,10 @@
 package edc
 
 import (
+	"encoding/binary"
 	"fmt"
+	"net"
+	"strings"
 	"sync"
 	"syscall"
 	"unsafe"
@@ -76,4 +79,161 @@ func readDarwinCoreTicks() ([]darwinCoreTicks, error) {
 		return nil, fmt.Errorf("vm_deallocate: kern_return_t %d", int32(result))
 	}
 	return cores, nil
+}
+
+var hostStatistics64Addr uintptr
+
+//go:cgo_import_dynamic libc_host_statistics64 host_statistics64 "/usr/lib/libSystem.B.dylib"
+
+var hostPageSizeAddr uintptr
+
+//go:cgo_import_dynamic libc_host_page_size host_page_size "/usr/lib/libSystem.B.dylib"
+
+var sysctlbynameAddr uintptr
+
+//go:cgo_import_dynamic libc_sysctlbyname sysctlbyname "/usr/lib/libSystem.B.dylib"
+
+const machHostVMInfo64 = 4 // HOST_VM_INFO64
+
+// darwinVMStatistics64는 <mach/vm_statistics.h>의 vm_statistics64와 같은 순서와 크기(152 byte)다.
+// vm_stat 출력과 값을 대조해 offset을 확인했다. vm_stat의 "Pages free"는 FreeCount에서 SpeculativeCount를 뺀 값이다.
+type darwinVMStatistics64 struct {
+	FreeCount, ActiveCount, InactiveCount, WireCount                                          uint32
+	ZeroFillCount, Reactivations, Pageins, Pageouts, Faults, CowFaults, Lookups, Hits, Purges uint64
+	PurgeableCount, SpeculativeCount                                                          uint32
+	Decompressions, Compressions, Swapins, Swapouts                                           uint64
+	CompressorPageCount, ThrottledCount, ExternalPageCount, InternalPageCount                 uint32
+	TotalUncompressedPagesInCompressor                                                        uint64
+}
+
+// darwinPageSize는 kernel page 크기다. Rosetta의 amd64 process에서 hw.pagesize는 4096이지만
+// host_statistics64의 page 수는 kernel page(Apple Silicon 16384) 단위라 host_page_size를 쓴다.
+var darwinPageSize = sync.OnceValues(func() (uint64, error) {
+	var size uintptr
+	result, _, _ := darwinSyscall6(hostPageSizeAddr, uintptr(darwinHostPort()), uintptr(unsafe.Pointer(&size)), 0, 0, 0, 0)
+	if code := int32(result); code != 0 {
+		return 0, fmt.Errorf("host_page_size: kern_return_t %d", code)
+	}
+	return uint64(size), nil
+})
+
+// readDarwinVMStatistics는 host_statistics64로 page 단위 memory 통계를 읽는다.
+func readDarwinVMStatistics() (darwinVMStatistics64, error) {
+	var stats darwinVMStatistics64
+	count := uint32(unsafe.Sizeof(stats) / unsafe.Sizeof(int32(0)))
+	result, _, _ := darwinSyscall6(hostStatistics64Addr, uintptr(darwinHostPort()), machHostVMInfo64, uintptr(unsafe.Pointer(&stats)), uintptr(unsafe.Pointer(&count)), 0, 0)
+	if code := int32(result); code != 0 {
+		return darwinVMStatistics64{}, fmt.Errorf("host_statistics64: kern_return_t %d", code)
+	}
+	return stats, nil
+}
+
+// darwinSysctl은 sysctlbyname으로 고정 크기 값을 읽는다. kernel이 준 길이가 다르면 구조를 잘못 안 것이므로 실패로 본다.
+func darwinSysctl(name string, value unsafe.Pointer, size uintptr) error {
+	cname, err := syscall.BytePtrFromString(name)
+	if err != nil {
+		return err
+	}
+	length := size
+	if result, _, errno := darwinSyscall6(sysctlbynameAddr, uintptr(unsafe.Pointer(cname)), uintptr(value), uintptr(unsafe.Pointer(&length)), 0, 0, 0); int32(result) != 0 {
+		return fmt.Errorf("sysctlbyname %s: %w", name, errno)
+	}
+	if length != size {
+		return fmt.Errorf("sysctlbyname %s: %d bytes, want %d", name, length, size)
+	}
+	return nil
+}
+
+// darwinLoadAverage는 <sys/sysctl.h>의 struct loadavg다. fixpt_t 세 개 뒤에 long fscale이 온다.
+type darwinLoadAverage struct {
+	Load  [3]uint32
+	Scale int64
+}
+
+// readDarwinLoad1은 vm.loadavg에서 1분 load average를 읽는다.
+func readDarwinLoad1() (float64, error) {
+	var load darwinLoadAverage
+	if err := darwinSysctl("vm.loadavg", unsafe.Pointer(&load), unsafe.Sizeof(load)); err != nil {
+		return 0, err
+	}
+	if load.Scale == 0 {
+		return 0, fmt.Errorf("vm.loadavg: zero fscale")
+	}
+	return float64(load.Load[0]) / float64(load.Scale), nil
+}
+
+// readDarwinMemorySize는 hw.memsize, 곧 물리 memory byte 수를 읽는다.
+func readDarwinMemorySize() (uint64, error) {
+	var total uint64
+	err := darwinSysctl("hw.memsize", unsafe.Pointer(&total), unsafe.Sizeof(total))
+	return total, err
+}
+
+var sysctlAddr uintptr
+
+//go:cgo_import_dynamic libc_sysctl sysctl "/usr/lib/libSystem.B.dylib"
+
+const (
+	// darwinIfmibDataSize는 <net/if_mib.h>의 ifmibdata 크기다. 이름 16 byte와 u_int 9개 뒤에 if_data64(128 byte)가 온다.
+	darwinIfmibDataSize = 180
+	// darwinIfDataOffset은 if_data64의 시작이다. <net/if.h>의 pack(4) 때문에 8의 배수가 아닌 52에서 시작한다.
+	// netstat -ibnd와 MTU, packet, byte, drop을 대조해 확인했다.
+	darwinIfDataOffset = 52
+)
+
+// readDarwinNetworkCounters는 켜진 non-loopback interface의 kernel 통계를 더한다.
+// NET_RT_IFLIST2의 byte counter는 32비트에서 넘어간 뒤 반올림된 값이라 쓰지 않고 net.link.generic.ifdata를 읽는다.
+func readDarwinNetworkCounters() (darwinNetwork, error) {
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		return darwinNetwork{}, err
+	}
+	var total darwinNetwork
+	for _, iface := range interfaces {
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		data, err := readDarwinInterfaceData(iface.Index)
+		if err != nil {
+			return darwinNetwork{}, fmt.Errorf("%s: %w", iface.Name, err)
+		}
+		// 목록을 읽은 뒤 interface가 사라지고 index가 재사용되면 다른 interface를 더하게 된다.
+		if name := strings.TrimRight(string(data[:16]), "\x00"); name != iface.Name {
+			return darwinNetwork{}, fmt.Errorf("ifdata %d is %q, want %q", iface.Index, name, iface.Name)
+		}
+		counters := parseDarwinInterfaceData(data)
+		total.packetsIn += counters.packetsIn
+		total.packetsOut += counters.packetsOut
+		total.bytesIn += counters.bytesIn
+		total.bytesOut += counters.bytesOut
+		total.errors += counters.errors
+		total.drops += counters.drops
+	}
+	return total, nil
+}
+
+// readDarwinInterfaceData는 interface 하나의 ifmibdata를 읽는다.
+func readDarwinInterfaceData(index int) ([]byte, error) {
+	// CTL_NET, PF_LINK, NETLINK_GENERIC, IFMIB_IFDATA, interface index, IFDATA_GENERAL
+	mib := [6]int32{4, 18, 0, 2, int32(index), 1}
+	data := make([]byte, darwinIfmibDataSize)
+	length := uintptr(len(data))
+	if result, _, errno := darwinSyscall6(sysctlAddr, uintptr(unsafe.Pointer(&mib[0])), uintptr(len(mib)), uintptr(unsafe.Pointer(&data[0])), uintptr(unsafe.Pointer(&length)), 0, 0); int32(result) != 0 {
+		return nil, fmt.Errorf("sysctl ifdata %d: %w", index, errno)
+	}
+	if length != darwinIfmibDataSize {
+		return nil, fmt.Errorf("sysctl ifdata %d: %d bytes, want %d", index, length, darwinIfmibDataSize)
+	}
+	return data, nil
+}
+
+// parseDarwinInterfaceData는 ifmibdata에서 send queue drop과 if_data64의 packet, error, byte counter를 읽는다.
+func parseDarwinInterfaceData(data []byte) darwinNetwork {
+	counter := func(offset int) uint64 { return binary.LittleEndian.Uint64(data[darwinIfDataOffset+offset:]) }
+	return darwinNetwork{
+		packetsIn: counter(24), packetsOut: counter(40),
+		bytesIn: counter(64), bytesOut: counter(72),
+		errors: counter(32) + counter(48),
+		drops:  uint64(binary.LittleEndian.Uint32(data[32:36])),
+	}
 }

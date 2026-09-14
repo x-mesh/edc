@@ -40,6 +40,8 @@ func runInfo(args []string, version string) int {
 		fmt.Fprintln(os.Stderr, T("cli.info.host_failed", err))
 		return 1
 	}
+	// python 확인은 shim에 따라 수백 ms가 걸리므로 host 정보를 함께 쓰는 top 시작에서 빼고 info에서만 한다.
+	details.PythonVersion = detectPythonVersion()
 	defaultInterface, gateway := collectDefaultRoute()
 	interfaces, interfaceErr := networkInterfaces(defaultInterface, gateway)
 	disks, diskErr := collectDisks()

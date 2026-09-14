@@ -89,6 +89,12 @@ func collectResourceSnapshot() (resourceSnapshot, error) {
 		snapshot.MemoryTotal = memory["MemTotal"]
 		snapshot.MemoryUsed = snapshot.MemoryTotal - memory["MemAvailable"]
 	}
+	if vmstat, err := os.ReadFile("/proc/vmstat"); err == nil {
+		pages, ok := parseLinuxSwapOutPages(string(vmstat))
+		snapshot.SwapOutBytes, snapshot.SwapMissing = pages*uint64(os.Getpagesize()), !ok
+	} else {
+		snapshot.SwapMissing = true
+	}
 	if network, err := os.ReadFile("/proc/net/dev"); err == nil {
 		for _, line := range strings.Split(string(network), "\n") {
 			parts := strings.Fields(strings.Replace(line, ":", " ", 1))
@@ -103,6 +109,8 @@ func collectResourceSnapshot() (resourceSnapshot, error) {
 			snapshot.PacketsOut += parseUint(parts[10])
 			snapshot.NetHealthValid = true
 		}
+	} else {
+		snapshot.NetMissing = true
 	}
 	if disks, err := os.ReadFile("/proc/diskstats"); err == nil {
 		for _, line := range strings.Split(string(disks), "\n") {
@@ -117,6 +125,8 @@ func collectResourceSnapshot() (resourceSnapshot, error) {
 			snapshot.DiskBusyMS += parseUint(parts[12])
 			snapshot.DiskHealthValid = true
 		}
+	} else {
+		snapshot.DiskMissing = true
 	}
 	return snapshot, nil
 }
@@ -155,7 +165,6 @@ func collectHostDetails() (hostDetails, error) {
 		}
 	}
 	details.Cores = runtime.NumCPU()
-	details.PythonVersion = detectPythonVersion()
 	memory, err := readMemInfo()
 	if err != nil {
 		return details, err

@@ -21,6 +21,24 @@ func TestCalculateRate(t *testing.T) {
 	}
 }
 
+func TestCalculateRateSkipsCountersAfterMissingRead(t *testing.T) {
+	start := time.Unix(0, 0)
+	// 앞 sample은 network를 읽지 못해 counter가 0이고 disk만 읽었다.
+	previous := resourceSnapshot{TakenAt: start, NetMissing: true, DiskRead: 1000, DiskWrite: 1000}
+	current := resourceSnapshot{TakenAt: start.Add(time.Second), NetInBytes: 5 << 40, NetOutBytes: 4 << 40, PacketsIn: 1 << 30, PacketsOut: 1 << 30, DiskRead: 3000, DiskWrite: 5000}
+	rate := calculateRate(previous, current)
+	if rate.NetIn != 0 || rate.NetOut != 0 || rate.PacketsIn != 0 || rate.PacketsOut != 0 || rate.NetHealthValid {
+		t.Fatalf("network rate after a missing read = %#v", rate)
+	}
+	if rate.DiskRead != 2000 || rate.DiskWrite != 4000 {
+		t.Fatalf("disk rate must not depend on the network read: %#v", rate)
+	}
+	previous.DiskMissing, previous.DiskRead, previous.DiskWrite = true, 0, 0
+	if rate := calculateRate(previous, current); rate.DiskRead != 0 || rate.DiskWrite != 0 || rate.DiskHealthValid {
+		t.Fatalf("disk rate after a missing read = %#v", rate)
+	}
+}
+
 func TestCalculateRateIncludesHealthCounters(t *testing.T) {
 	start := time.Unix(0, 0)
 	previous := resourceSnapshot{TakenAt: start, DiskOps: 10, DiskWaitMS: 100, DiskBusyMS: 500, NetErrors: 4, NetDrops: 2, DiskHealthValid: true, NetHealthValid: true}
@@ -107,15 +125,6 @@ func TestTopProcessSamplerDropsStaleListOnFailure(t *testing.T) {
 	}
 	if sampler.running {
 		t.Fatal("a failed refresh must still wait for the refresh interval")
-	}
-}
-
-func TestCalculateInstantCPU(t *testing.T) {
-	previous := resourceSnapshot{TakenAt: time.Now()}
-	current := resourceSnapshot{TakenAt: previous.TakenAt.Add(time.Second), CPUInstant: true, CPUUser: 1234, CPUSystem: 567, CPUIOWait: 89}
-	rate := calculateRate(previous, current)
-	if rate.CPUUser != 12.34 || rate.CPUSystem != 5.67 || rate.CPUIOWait != .89 {
-		t.Fatalf("instant CPU = %#v", rate)
 	}
 }
 
@@ -218,15 +227,37 @@ func TestFormatRateStaysShort(t *testing.T) {
 	}
 }
 
+func TestParseLinuxSwapOutPages(t *testing.T) {
+	if pages, ok := parseLinuxSwapOutPages("pswpin 12\npswpout 345\npgfault 9\n"); !ok || pages != 345 {
+		t.Fatalf("pswpout = %d, %v", pages, ok)
+	}
+	if _, ok := parseLinuxSwapOutPages("pgfault 9\n"); ok {
+		t.Fatal("vmstat without pswpout must report a missing read")
+	}
+}
+
+func TestCalculateRateSwapOut(t *testing.T) {
+	start := time.Unix(0, 0)
+	previous := resourceSnapshot{TakenAt: start, SwapOutBytes: 1 << 30}
+	current := resourceSnapshot{TakenAt: start.Add(2 * time.Second), SwapOutBytes: 1<<30 + 4096*10}
+	if rate := calculateRate(previous, current); rate.SwapOut != 4096*5 {
+		t.Fatalf("swap out = %v", rate.SwapOut)
+	}
+	previous = resourceSnapshot{TakenAt: start, SwapMissing: true}
+	if rate := calculateRate(previous, current); rate.SwapOut != 0 {
+		t.Fatalf("swap out after a missing read = %v", rate.SwapOut)
+	}
+}
+
 func TestTopSampleJSON(t *testing.T) {
 	at := time.Date(2026, 1, 1, 11, 36, 44, 0, time.FixedZone("KST", 9*3600))
-	sample := newTopSample(hostDetails{Hostname: "host", Cores: 8}, at, resourceRate{NetIn: 1234.567, NetDrops: 2.2, NetHealthValid: true, DiskAwait: 15.555, DiskHealthValid: true, PSIIO: 3.3, PSIValid: true, CPUUser: 12.3456, MemoryPercent: 11.8, Load1: 0.5})
+	sample := newTopSample(hostDetails{Hostname: "host", Cores: 8}, at, resourceRate{NetIn: 1234.567, NetDrops: 2.2, NetHealthValid: true, DiskAwait: 15.555, DiskHealthValid: true, PSIIO: 3.3, PSIValid: true, CPUUser: 12.3456, MemoryPercent: 11.8, Load1: 0.5, SwapOut: 20480.456})
 	data, err := json.Marshal(sample)
 	if err != nil {
 		t.Fatal(err)
 	}
 	text := string(data)
-	for _, expected := range []string{`"time":"2026-01-01T02:36:44Z"`, `"hostname":"host"`, `"cores":8`, `"net_in_bytes_per_s":1234.57`, `"network_drops_per_s":2.2`, `"network_health_supported":true`, `"disk_await_ms":15.56`, `"disk_health_supported":true`, `"psi_io_some_avg10_pct":3.3`, `"psi_supported":true`, `"cpu_user_pct":12.35`, `"memory_pct":11.8`, `"load1":0.5`} {
+	for _, expected := range []string{`"time":"2026-01-01T02:36:44Z"`, `"hostname":"host"`, `"cores":8`, `"net_in_bytes_per_s":1234.57`, `"network_drops_per_s":2.2`, `"network_health_supported":true`, `"disk_await_ms":15.56`, `"disk_health_supported":true`, `"psi_io_some_avg10_pct":3.3`, `"psi_supported":true`, `"cpu_user_pct":12.35`, `"memory_pct":11.8`, `"load1":0.5`, `"swap_out_bytes_per_s":20480.46`} {
 		if !strings.Contains(text, expected) {
 			t.Fatalf("sample %s does not contain %s", text, expected)
 		}

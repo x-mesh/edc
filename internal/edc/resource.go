@@ -35,7 +35,6 @@ type resourceSnapshot struct {
 	MemoryUsed      uint64
 	MemoryTotal     uint64
 	Load1           float64
-	CPUInstant      bool
 	Cores           []resourceCPU
 	PSICPU          float64
 	PSIMemory       float64
@@ -45,6 +44,13 @@ type resourceSnapshot struct {
 	ProcessesValid  bool
 	NetHealthValid  bool
 	DiskHealthValid bool
+	// NetMissing과 DiskMissing은 이 sample이 누적 counter를 읽지 못했다는 뜻이다.
+	// 0으로 남은 counter를 기준으로 다음 rate를 구하면 부팅 뒤 누적값 전체가 한 구간에 몰린다.
+	NetMissing  bool
+	DiskMissing bool
+	// SwapOutBytes는 부팅 뒤 memory가 모자라 kernel이 swap으로 내보낸 누적 byte다.
+	SwapOutBytes uint64
+	SwapMissing  bool
 }
 
 type topProcess struct {
@@ -187,6 +193,7 @@ type resourceRate struct {
 	DiskIOPS, DiskAwait, DiskBusy   float64
 	CPUUser, CPUSystem, CPUIOWait   float64
 	MemoryPercent, Load1            float64
+	SwapOut                         float64
 	NetHealthValid, DiskHealthValid bool
 	CoreCPU                         []float64
 	PSICPU, PSIMemory, PSIIO        float64
@@ -249,10 +256,15 @@ func calculateRate(previous, current resourceSnapshot) resourceRate {
 	if rate.DiskHealthValid {
 		rate.DiskBusy = float64(delta(current.DiskBusyMS, previous.DiskBusyMS)) / seconds / 10
 	}
-	if current.CPUInstant {
-		rate.CPUUser = float64(current.CPUUser) / 100
-		rate.CPUSystem = float64(current.CPUSystem) / 100
-		rate.CPUIOWait = float64(current.CPUIOWait) / 100
+	// 한쪽 sample이 counter를 읽지 못했으면 이 구간의 rate는 알 수 없다. 0으로 남은 counter와 비교하지 않는다.
+	if previous.NetMissing || current.NetMissing {
+		rate.NetIn, rate.NetOut, rate.PacketsIn, rate.PacketsOut, rate.NetErrors, rate.NetDrops, rate.NetHealthValid = 0, 0, 0, 0, 0, 0, false
+	}
+	if previous.DiskMissing || current.DiskMissing {
+		rate.DiskRead, rate.DiskWrite, rate.DiskIOPS, rate.DiskAwait, rate.DiskBusy, rate.DiskHealthValid = 0, 0, 0, 0, 0, false
+	}
+	if !previous.SwapMissing && !current.SwapMissing {
+		rate.SwapOut = float64(delta(current.SwapOutBytes, previous.SwapOutBytes)) / seconds
 	}
 	if len(current.Cores) == len(previous.Cores) {
 		rate.CoreCPU = make([]float64, len(current.Cores))
@@ -265,6 +277,18 @@ func calculateRate(previous, current resourceSnapshot) resourceRate {
 	}
 	rate.PSICPU, rate.PSIMemory, rate.PSIIO, rate.PSIValid = current.PSICPU, current.PSIMemory, current.PSIIO, current.PSIValid
 	return rate
+}
+
+// parseLinuxSwapOutPages는 /proc/vmstat의 pswpout, 곧 부팅 뒤 swap으로 내보낸 page 수를 읽는다.
+func parseLinuxSwapOutPages(input string) (uint64, bool) {
+	for _, line := range strings.Split(input, "\n") {
+		name, value, found := strings.Cut(line, " ")
+		if found && name == "pswpout" {
+			pages, err := strconv.ParseUint(strings.TrimSpace(value), 10, 64)
+			return pages, err == nil
+		}
+	}
+	return 0, false
 }
 
 // parsePressureAvg10은 /proc/pressure/*의 some 행에서 최근 10초 stall 비율을 읽는다.

@@ -7,7 +7,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -23,8 +22,10 @@ import (
 )
 
 const (
-	updateRepo      = "x-mesh/edc"
-	updateLatestURL = "https://api.github.com/repos/" + updateRepo + "/releases/latest"
+	updateRepo = "x-mesh/edc"
+	// updateReleasesURL은 github.com의 release 경로다. api.github.com의 익명 요청은 IP마다 시간당 60회로 제한되어,
+	// 같은 IP의 다른 도구가 한도를 쓰면 edc update가 403으로 멈췄다. latest redirect와 download 경로는 이 한도를 쓰지 않는다.
+	updateReleasesURL = "https://github.com/" + updateRepo + "/releases"
 	// updateChecksumName은 release가 함께 올리는 SHA-256 목록이다.
 	updateChecksumName = "checksums.txt"
 	// maxUpdateAsset은 내려받는 asset의 상한이다. 잘못된 asset으로 memory를 다 쓰지 않게 막는다.
@@ -32,18 +33,6 @@ const (
 	// updateLabelWidth는 번역된 label이 섞여도 값 열이 어긋나지 않게 맞추는 표시 폭이다.
 	updateLabelWidth = 10
 )
-
-type updateRelease struct {
-	TagName string        `json:"tag_name"`
-	HTMLURL string        `json:"html_url"`
-	Assets  []updateAsset `json:"assets"`
-}
-
-type updateAsset struct {
-	Name string `json:"name"`
-	URL  string `json:"browser_download_url"`
-	Size int64  `json:"size"`
-}
 
 func runUpdate(args []string, version string) int {
 	set := flag.NewFlagSet("update", flag.ContinueOnError)
@@ -62,18 +51,14 @@ func runUpdate(args []string, version string) int {
 	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 	defer cancel()
 
-	release, err := latestRelease(ctx, version)
+	tag, err := latestReleaseTag(ctx, updateReleasesURL, version)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 2
 	}
 
-	latest := strings.TrimPrefix(release.TagName, "v")
+	latest := strings.TrimPrefix(tag, "v")
 	current := strings.TrimPrefix(version, "v")
-	if latest == "" {
-		fmt.Fprintln(os.Stderr, T("cli.update.no_tag"))
-		return 2
-	}
 	if latest == current {
 		fmt.Println(T("cli.update.already_latest", current))
 		return 0
@@ -81,19 +66,20 @@ func runUpdate(args []string, version string) int {
 
 	fmt.Println(T("cli.update.versions", current, latest))
 	if *check {
-		fmt.Println(release.HTMLURL)
+		fmt.Println(updateReleasesURL + "/tag/" + tag)
 		return 0
 	}
 
 	assetName := updateAssetName(latest)
-	asset, ok := findAsset(release.Assets, assetName)
-	if !ok {
-		fmt.Fprintln(os.Stderr, T("cli.update.asset_missing", assetName))
+	downloadURL := updateReleasesURL + "/download/" + tag + "/"
+	// checksums.txt는 release의 모든 archive를 한 줄씩 담는다. 확인을 묻기 전에 받아 이 platform의 asset이 있는지 본다.
+	sumList, err := downloadAsset(ctx, downloadURL+updateChecksumName, version)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
 		return 2
 	}
-	sums, ok := findAsset(release.Assets, updateChecksumName)
-	if !ok {
-		fmt.Fprintln(os.Stderr, T("cli.update.checksums_missing", updateChecksumName))
+	if checksumFor(sumList, assetName) == "" {
+		fmt.Fprintln(os.Stderr, T("cli.update.asset_missing", assetName))
 		return 2
 	}
 
@@ -112,12 +98,7 @@ func runUpdate(args []string, version string) int {
 		return 4
 	}
 
-	archive, err := downloadAsset(ctx, asset.URL, version)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return 2
-	}
-	sumList, err := downloadAsset(ctx, sums.URL, version)
+	archive, err := downloadAsset(ctx, downloadURL+assetName, version)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 2
@@ -146,40 +127,42 @@ func updateAssetName(version string) string {
 	return fmt.Sprintf("edc_%s_%s_%s.tar.gz", version, runtime.GOOS, runtime.GOARCH)
 }
 
-func findAsset(assets []updateAsset, name string) (updateAsset, bool) {
-	for _, asset := range assets {
-		if asset.Name == name {
-			return asset, true
-		}
-	}
-	return updateAsset{}, false
-}
-
-func latestRelease(ctx context.Context, version string) (updateRelease, error) {
-	body, err := fetch(ctx, updateLatestURL, version, map[string]string{"Accept": "application/vnd.github+json"})
+// latestReleaseTag는 releases/latest가 돌려주는 redirect의 Location에서 tag를 읽는다.
+// redirect를 따라가지 않으므로 release 페이지 본문은 받지 않는다.
+func latestReleaseTag(ctx context.Context, releasesURL, version string) (string, error) {
+	latestURL := releasesURL + "/latest"
+	request, err := http.NewRequestWithContext(ctx, http.MethodHead, latestURL, nil)
 	if err != nil {
-		return updateRelease{}, err
+		return "", fmt.Errorf("%s: %w", T("cli.update.request_failed"), err)
 	}
-	var release updateRelease
-	if err := json.Unmarshal(body, &release); err != nil {
-		return updateRelease{}, fmt.Errorf("%s: %w", T("cli.update.release_read_failed"), err)
+	request.Header.Set("User-Agent", "edc/"+version)
+	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	response, err := client.Do(request)
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", T("cli.update.fetch_failed", latestURL), err)
 	}
-	return release, nil
+	response.Body.Close()
+	location, err := response.Location()
+	if err != nil {
+		return "", errors.New(T("cli.update.http_status", latestURL, response.StatusCode))
+	}
+	_, tag, found := strings.Cut(location.Path, "/releases/tag/")
+	if !found || tag == "" || strings.Contains(tag, "/") {
+		return "", errors.New(T("cli.update.no_tag"))
+	}
+	return tag, nil
 }
 
 func downloadAsset(ctx context.Context, url, version string) ([]byte, error) {
-	return fetch(ctx, url, version, nil)
+	return fetch(ctx, url, version)
 }
 
-func fetch(ctx context.Context, url, version string, headers map[string]string) ([]byte, error) {
+func fetch(ctx context.Context, url, version string) ([]byte, error) {
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", T("cli.update.request_failed"), err)
 	}
 	request.Header.Set("User-Agent", "edc/"+version)
-	for key, value := range headers {
-		request.Header.Set(key, value)
-	}
 
 	response, err := http.DefaultClient.Do(request)
 	if err != nil {
@@ -200,16 +183,20 @@ func fetch(ctx context.Context, url, version string, headers map[string]string) 
 	return body, nil
 }
 
-// verifyChecksum은 `<sha256>  <name>` 형식의 목록에서 name의 줄을 찾아 대조한다.
-func verifyChecksum(data []byte, name string, list []byte) error {
-	want := ""
+// checksumFor는 `<sha256>  <name>` 형식의 목록에서 name의 digest를 찾는다. 없으면 빈 문자열이다.
+func checksumFor(list []byte, name string) string {
 	for _, line := range strings.Split(string(list), "\n") {
 		fields := strings.Fields(line)
 		if len(fields) == 2 && strings.TrimPrefix(fields[1], "*") == name {
-			want = strings.ToLower(fields[0])
-			break
+			return strings.ToLower(fields[0])
 		}
 	}
+	return ""
+}
+
+// verifyChecksum은 목록에서 name의 줄을 찾아 data의 SHA-256과 대조한다.
+func verifyChecksum(data []byte, name string, list []byte) error {
+	want := checksumFor(list, name)
 	if want == "" {
 		return errors.New(T("cli.update.checksum_missing", name, updateChecksumName))
 	}

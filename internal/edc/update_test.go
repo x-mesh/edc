@@ -4,9 +4,12 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -22,14 +25,38 @@ func TestUpdateAssetNameMatchesReleaseNaming(t *testing.T) {
 	}
 }
 
-func TestFindAsset(t *testing.T) {
-	assets := []updateAsset{{Name: "checksums.txt", URL: "u1"}, {Name: "edc_1.0.0_linux_amd64.tar.gz", URL: "u2"}}
-	asset, ok := findAsset(assets, "edc_1.0.0_linux_amd64.tar.gz")
-	if !ok || asset.URL != "u2" {
-		t.Fatalf("asset = %#v, ok = %v", asset, ok)
+// latestReleaseTag는 redirect를 따라가지 않는다. 따라가면 tag 페이지 경로가 403을 돌려 test가 실패한다.
+func TestLatestReleaseTagReadsRedirect(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/tagged/latest":
+			http.Redirect(writer, request, "/x-mesh/edc/releases/tag/v1.2.3", http.StatusFound)
+		case "/untagged/latest":
+			http.Redirect(writer, request, "/x-mesh/edc/releases", http.StatusFound)
+		default:
+			writer.WriteHeader(http.StatusForbidden)
+		}
+	}))
+	defer server.Close()
+	ctx := context.Background()
+	if tag, err := latestReleaseTag(ctx, server.URL+"/tagged", "test"); err != nil || tag != "v1.2.3" {
+		t.Fatalf("tag = %q, err = %v", tag, err)
 	}
-	if _, ok := findAsset(assets, "edc_1.0.0_darwin_arm64.tar.gz"); ok {
-		t.Fatal("missing asset must not match")
+	if _, err := latestReleaseTag(ctx, server.URL+"/untagged", "test"); err == nil || err.Error() != T("cli.update.no_tag") {
+		t.Fatalf("redirect without a tag returned %v", err)
+	}
+	if _, err := latestReleaseTag(ctx, server.URL+"/blocked", "test"); err == nil || !strings.Contains(err.Error(), "403") {
+		t.Fatalf("a response without redirect returned %v", err)
+	}
+}
+
+func TestChecksumForFindsListedAsset(t *testing.T) {
+	list := []byte("ABCD  edc_1.0.0_linux_amd64.tar.gz\n")
+	if got := checksumFor(list, "edc_1.0.0_linux_amd64.tar.gz"); got != "abcd" {
+		t.Fatalf("listed digest = %q", got)
+	}
+	if got := checksumFor(list, "edc_1.0.0_darwin_arm64.tar.gz"); got != "" {
+		t.Fatalf("unlisted digest = %q", got)
 	}
 }
 

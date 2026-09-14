@@ -272,3 +272,25 @@ func remoteRunHeader(group, inventoryPath, recipePath, cwd string, hosts []remot
 		T("remote.header.summary", group, len(hosts), len(recipe.Steps), planned),
 		shortPath(cwd, inventoryPath), shortPath(cwd, recipePath))
 }
+
+// remoteSearchLine은 -v에서 remote 파일을 찾는 디렉터리 순서를 한 줄로 보여 준다.
+// 없는 디렉터리와 .gitignore가 없는 .edc/를 표시해, 파일이 어디서 왔는지와 git에 올라갈 수 있는지를 함께 알린다.
+func remoteSearchLine(cwd, configDir string) string {
+	var parts []string
+	for _, directory := range remoteSearchDirectories(cwd, configDir) {
+		label := shortPath(cwd, directory)
+		if directory == cwd {
+			label = "."
+		}
+		label += "/"
+		if info, err := os.Stat(directory); err != nil || !info.IsDir() {
+			label += " (" + T("remote.label.search_missing") + ")"
+		} else if directory == filepath.Join(cwd, remoteProjectDirectory) {
+			if _, err := os.Stat(filepath.Join(directory, ".gitignore")); err != nil {
+				label += " (" + T("remote.label.search_no_gitignore") + ")"
+			}
+		}
+		parts = append(parts, label)
+	}
+	return "search     " + strings.Join(parts, "  →  ") + "\n"
+}

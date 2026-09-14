@@ -2,6 +2,7 @@ package edc
 
 import (
 	"errors"
+	"flag"
 	"os"
 	"path/filepath"
 	"strings"
@@ -90,6 +91,24 @@ func TestRemoteRecipeDiscoveryPrecedenceAndFallback(t *testing.T) {
 	path, found = discoverRemoteRecipe(cwd, config)
 	if !found || path != cwdPath {
 		t.Fatalf("path = %q, found = %v", path, found)
+	}
+}
+
+func TestRemoteProjectDirectoryDiscoveryPrecedence(t *testing.T) {
+	cwd := t.TempDir()
+	project := filepath.Join(cwd, remoteProjectDirectory)
+	if err := os.MkdirAll(project, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"inventory.yaml", "recipe.yaml"} {
+		writeRemoteFixture(t, filepath.Join(cwd, name), "cwd\n")
+		writeRemoteFixture(t, filepath.Join(project, name), "project\n")
+	}
+	if path, found := discoverRemoteInventory(cwd, t.TempDir()); !found || path != filepath.Join(project, "inventory.yaml") {
+		t.Fatalf("inventory path = %q, found = %v", path, found)
+	}
+	if path, found := discoverRemoteRecipe(cwd, t.TempDir()); !found || path != filepath.Join(project, "recipe.yaml") {
+		t.Fatalf("recipe path = %q, found = %v", path, found)
 	}
 }
 
@@ -229,6 +248,81 @@ func TestRemoteForceSkipsQuestions(t *testing.T) {
 	}
 	if strings.Contains(output.String(), "(y/N)") || strings.Contains(output.String(), T("remote.prompt.group_number")) || strings.Contains(output.String(), T(selectRecipeLabel)+" [") {
 		t.Fatalf("force prompted: %q", output.String())
+	}
+}
+
+// -v로 받은 실행은 계획 머리말에 탐색 디렉터리 줄을 붙이고, -v가 없으면 붙이지 않는다.
+func TestRemotePlanShowsSearchLineOnlyWhenVerbose(t *testing.T) {
+	cwd := t.TempDir()
+	writeRemoteFixture(t, filepath.Join(cwd, "inventory.yaml"), "hosts: [{name: one}]\ngroups: {daily: [one]}\n")
+	writeRemoteFixture(t, filepath.Join(cwd, "recipe.yaml"), "name: daily\nsteps: [{name: gk, command: git-kit update}]\n")
+	for _, verbose := range []bool{true, false} {
+		var output strings.Builder
+		if _, err := promptRemoteOptions(strings.NewReader(""), &output, cwd, t.TempDir(), 10*time.Minute, remoteRunOptions{verbose: verbose}, remotePromptFlags{force: true, interactive: true}); err != nil {
+			t.Fatal(err)
+		}
+		if got := strings.Contains(output.String(), "search     ./.edc/ ("+T("remote.label.search_missing")+")  →  ./  →  "); got != verbose {
+			t.Fatalf("verbose = %v, output = %q", verbose, output.String())
+		}
+	}
+}
+
+// group을 고른 실행은 선택 결과와 직접 준 flag를 담은 edc 명령을 머리말 바로 위에 둔다.
+func TestRemotePlanShowsReuseCommandForSelectedGroup(t *testing.T) {
+	cwd := t.TempDir()
+	writeRemoteFixture(t, filepath.Join(cwd, "inventory.yaml"), "hosts: [{name: one}]\ngroups: {daily: [one]}\n")
+	writeRemoteFixture(t, filepath.Join(cwd, "recipe.yaml"), "name: daily\nsteps: [{name: gk, command: git-kit update}]\n")
+	want := "edc remote daily --inventory ./inventory.yaml --recipe ./recipe.yaml --timeout 5m0s -v"
+	var output strings.Builder
+	seed := remoteRunOptions{flags: []string{"--timeout", "5m0s", "-v"}}
+	options, err := promptRemoteOptions(strings.NewReader(""), &output, cwd, t.TempDir(), 10*time.Minute, seed, remotePromptFlags{force: true, interactive: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	summary := T("remote.header.summary", "daily", 1, 1, 1)
+	if options.command != want || !strings.Contains(output.String(), want+"\n"+summary) {
+		t.Fatalf("command = %q, output = %q", options.command, output.String())
+	}
+	hosts := []remoteHost{{Name: "one"}}
+	recipe := remoteRecipe{Name: "daily", Steps: []remoteStep{{Name: "gk", Command: "git-kit update"}}}
+	model := newRemoteModel(remotePlanView{group: "daily", hosts: hosts, recipe: recipe, width: 100, command: want}, false, false, false, nil)
+	if !strings.HasPrefix(model.View().Content, want+"\n"+summary) {
+		t.Fatalf("live header = %q", model.View().Content)
+	}
+	// group을 직접 준 실행은 사용자가 이미 명령을 알고 있으므로 재현 명령을 두지 않는다.
+	output.Reset()
+	named, err := promptRemoteOptions(strings.NewReader(""), &output, cwd, t.TempDir(), 10*time.Minute, remoteRunOptions{group: "daily"}, remotePromptFlags{force: true, interactive: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if named.command != "" || strings.Contains(output.String(), "edc remote daily --") {
+		t.Fatalf("named group must not print a command: %q", output.String())
+	}
+}
+
+func TestRemoteReuseCommandQuotesShellWords(t *testing.T) {
+	cwd := t.TempDir()
+	options := remoteRunOptions{group: "daily", inventoryPath: "/Library/Application Support/edc/inventory.yaml", recipePath: filepath.Join(cwd, ".edc", "it's.yaml")}
+	want := `edc remote daily --inventory '/Library/Application Support/edc/inventory.yaml' --recipe './.edc/it'"'"'s.yaml'`
+	if got := remoteReuseCommand(cwd, options); got != want {
+		t.Fatalf("command = %q, want %q", got, want)
+	}
+}
+
+func TestRemoteCommandFlagsKeepsExplicitFlags(t *testing.T) {
+	set := flag.NewFlagSet("remote", flag.ContinueOnError)
+	var verbose, redact bool
+	var timeout time.Duration
+	var recipe string
+	set.BoolVar(&verbose, "v", false, "")
+	set.BoolVar(&redact, "redact", true, "")
+	set.DurationVar(&timeout, "timeout", time.Minute, "")
+	set.StringVar(&recipe, "recipe", "", "")
+	if err := set.Parse([]string{"--timeout", "5m", "-v", "--redact=false", "--recipe", "x.yaml"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(remoteCommandFlags(set), " "); got != "--redact=false --timeout 5m0s -v" {
+		t.Fatalf("flags = %q", got)
 	}
 }
 

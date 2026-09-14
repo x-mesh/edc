@@ -87,6 +87,8 @@ remote:
     no_target: "(대상 없음)"
     hidden_hosts: "…외 %d host"
     completed_count: "%d/%d 완료"
+    search_missing: "없음"
+    search_no_gitignore: ".gitignore 없음"
 
   header:
     summary: "edc remote  %s  ·  host %d  ·  step %d  ·  실행 %d"

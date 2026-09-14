@@ -27,6 +27,21 @@ func TestRemoteYAMLFilesScansBothDirectories(t *testing.T) {
 	}
 }
 
+func TestRemoteYAMLFilesPutProjectDirectoryFirst(t *testing.T) {
+	cwd := t.TempDir()
+	project := filepath.Join(cwd, remoteProjectDirectory)
+	if err := os.MkdirAll(project, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeRemoteFixture(t, filepath.Join(cwd, "a.yaml"), "name: a\n")
+	writeRemoteFixture(t, filepath.Join(project, "z.yaml"), "name: z\n")
+	paths := remoteYAMLFiles(cwd, "")
+	want := []string{filepath.Join(project, "z.yaml"), filepath.Join(cwd, "a.yaml")}
+	if strings.Join(paths, ",") != strings.Join(want, ",") {
+		t.Fatalf("paths = %#v, want %#v", paths, want)
+	}
+}
+
 func TestRemoteCandidatesKeepReadableFilesOnly(t *testing.T) {
 	cwd := t.TempDir()
 	writeRemoteFixture(t, filepath.Join(cwd, "inventory.yaml"), "hosts: [{name: one}, {name: two}]\ngroups: {daily: [one], weekly: [two]}\n")

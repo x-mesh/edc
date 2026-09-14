@@ -376,13 +376,39 @@ cp examples/remote/inventory.yaml ./inventory.yaml
 ./bin/edc remote daily -f     # name the group and skip the confirmation
 ```
 
-`edc` finds `./inventory.yaml` first. The fallback path is `os.UserConfigDir()/edc/inventory.yaml`. This path follows the operating system. The `recipe.yaml` file uses the same order.
+`edc` finds `inventory.yaml` in these directories, in this order:
+
+1. `./.edc/`
+2. `./`
+3. `os.UserConfigDir()/edc/`. This path follows the operating system.
+
+The `recipe.yaml` file uses the same order. The file selectors list the YAML files of the same directories, in the same order.
+
+Keep the remote files of a project in `./.edc/`. Then the project root stays clean. To keep the directory out of git, put a `.gitignore` file in it. `edc` does not make this file.
+
+```bash
+mkdir -p .edc
+printf '*\n' > .edc/.gitignore
+```
+
+If you want to commit the files, remove `.edc/.gitignore`.
+
+A relative `upload.source` path starts from the directory where you run `edc`. It does not start from the directory of the recipe file.
+
+Add `-v` to show the search order. The line marks a directory that does not exist. It also marks a `./.edc/` directory that has no `.gitignore` file. `--list -v` shows the same line.
+
+```
+inventory  ./.edc/inventory.yaml      recipe  ./.edc/recipe.yaml
+search     ./.edc/  →  ./  →  /home/me/.config/edc/ (missing)
+```
 
 The `--inventory` and `--recipe` flags win over the found files.
 
 If you name a group, `edc` asks no path questions. It shows the plan and requests the confirmation only.
 
 If you name no group, `edc` selects the group first. It then shows the inventory path, selects the recipe, and requests confirmation.
+
+After the selection, the plan starts with an `edc remote` command. The command names the group, the inventory, and the recipe that you selected. It also keeps the flags that you gave. Run this command to use the same selection again. `edc` then requests the confirmation only.
 
 The interactive selectors draw the list in place. Use the up and down arrow keys, or `j` and `k`. Press Enter to select. Press `q` or Esc to cancel. A cancelled selection returns exit code `4`.
 

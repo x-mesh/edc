@@ -389,13 +389,39 @@ cp examples/remote/inventory.yaml ./inventory.yaml
 ./bin/edc remote daily -f     # group을 지정하고 확인을 생략
 ```
 
-`edc`는 `./inventory.yaml`을 먼저 찾습니다. 없으면 `os.UserConfigDir()/edc/inventory.yaml`을 봅니다. 이 경로는 운영체제를 따릅니다. `recipe.yaml`도 같은 순서로 찾습니다.
+`edc`는 다음 디렉터리에서 차례로 `inventory.yaml`을 찾습니다.
+
+1. `./.edc/`
+2. `./`
+3. `os.UserConfigDir()/edc/`. 이 경로는 운영체제를 따릅니다.
+
+`recipe.yaml`도 같은 순서로 찾습니다. 파일 선택기도 같은 디렉터리의 YAML 파일을 같은 순서로 나열합니다.
+
+프로젝트의 remote 파일을 `./.edc/`에 모으면 프로젝트 루트에 YAML이 쌓이지 않습니다. 이 디렉터리를 git에서 빼려면 안에 `.gitignore`를 둡니다. `edc`는 이 파일을 만들지 않습니다.
+
+```bash
+mkdir -p .edc
+printf '*\n' > .edc/.gitignore
+```
+
+파일을 커밋하려면 `.edc/.gitignore`를 지웁니다.
+
+recipe의 `upload.source`에 쓴 상대 경로는 recipe 파일이 있는 디렉터리가 아니라 `edc`를 실행한 디렉터리를 기준으로 합니다.
+
+`-v`를 더하면 탐색 순서를 보여 줍니다. 없는 디렉터리와 `.gitignore`가 없는 `./.edc/`에는 표시가 붙습니다. `--list -v`도 같은 줄을 보여 줍니다.
+
+```
+inventory  ./.edc/inventory.yaml      recipe  ./.edc/recipe.yaml
+search     ./.edc/  →  ./  →  /home/me/.config/edc/ (없음)
+```
 
 `--inventory`와 `--recipe`는 찾은 파일보다 우선합니다.
 
 group을 지정하면 `edc`는 경로를 묻지 않습니다. 계획을 보여 주고 확인만 받습니다.
 
 group을 지정하지 않으면 `edc`는 group부터 고릅니다. 그다음 inventory 경로를 보여 주고, recipe를 고르고, 확인을 받습니다.
+
+선택을 마치면 계획 맨 위에 `edc remote` 명령이 나옵니다. 이 명령에는 고른 group, inventory, recipe와 직접 입력한 flag가 들어갑니다. 이 명령을 실행하면 같은 선택으로 확인만 받습니다.
 
 대화형 선택기는 목록을 그 자리에 그립니다. 위아래 방향키나 `j`, `k`로 움직입니다. Enter로 선택하고, `q`나 Esc로 취소합니다. 취소하면 exit code `4`를 돌려줍니다.
 

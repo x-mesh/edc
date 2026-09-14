@@ -1,6 +1,7 @@
 package edc
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -97,6 +98,23 @@ func TestRemoteRunHeaderCountsPlannedSteps(t *testing.T) {
 	}
 	if !strings.Contains(header, "recipe  /etc/edc/recipe.yaml") {
 		t.Fatalf("outside path must stay absolute: %q", header)
+	}
+}
+
+func TestRemoteSearchLineMarksDirectories(t *testing.T) {
+	cwd := t.TempDir()
+	config := t.TempDir()
+	project := filepath.Join(cwd, remoteProjectDirectory)
+	if err := os.MkdirAll(project, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	want := "search     ./.edc/ (" + T("remote.label.search_no_gitignore") + ")  →  ./  →  " + filepath.Join(config, "edc") + "/ (" + T("remote.label.search_missing") + ")\n"
+	if line := remoteSearchLine(cwd, config); line != want {
+		t.Fatalf("line = %q, want %q", line, want)
+	}
+	writeRemoteFixture(t, filepath.Join(project, ".gitignore"), "*\n")
+	if line := remoteSearchLine(cwd, config); !strings.HasPrefix(line, "search     ./.edc/  →  ./  →  ") {
+		t.Fatalf("ignored project directory must have no mark: %q", line)
 	}
 }
 

@@ -28,6 +28,8 @@ type remoteRunOptions struct {
 	recipePath    string
 	group         string
 	verbose       bool
+	flags         []string // 명령줄에서 직접 준 flag. 재현 명령 뒤에 그대로 붙인다
+	command       string   // group을 대화형으로 고른 실행을 다시 돌리는 edc 명령
 }
 
 // remotePromptFlags는 비어 있는 option을 프롬프트로 채울지 결정한다.
@@ -50,12 +52,22 @@ func discoverRemoteRecipe(cwd, configDir string) (string, bool) {
 	return discoverRemoteFile(cwd, configDir, "recipe.yaml")
 }
 
-func discoverRemoteFile(cwd, configDir, name string) (string, bool) {
-	paths := []string{filepath.Join(cwd, name)}
+// remoteProjectDirectory는 프로젝트의 remote 파일을 모으는 디렉터리다.
+// 파일이 늘어도 git에서는 이 디렉터리 하나만 무시하면 된다.
+const remoteProjectDirectory = ".edc"
+
+// remoteSearchDirectories는 remote 파일을 찾는 순서다. 기존 cwd 파일보다 .edc/를 먼저 본다.
+func remoteSearchDirectories(cwd, configDir string) []string {
+	directories := []string{filepath.Join(cwd, remoteProjectDirectory), cwd}
 	if configDir != "" {
-		paths = append(paths, filepath.Join(configDir, "edc", name))
+		directories = append(directories, filepath.Join(configDir, "edc"))
 	}
-	for _, path := range paths {
+	return directories
+}
+
+func discoverRemoteFile(cwd, configDir, name string) (string, bool) {
+	for _, directory := range remoteSearchDirectories(cwd, configDir) {
+		path := filepath.Join(directory, name)
 		info, err := os.Stat(path)
 		if err == nil && !info.IsDir() {
 			return path, true
@@ -128,13 +140,20 @@ func promptRemoteOptions(input io.Reader, output io.Writer, cwd, configDir strin
 	if err != nil {
 		return remoteRunOptions{}, err
 	}
+	if seed.group == "" {
+		resolved.command = remoteReuseCommand(cwd, resolved)
+	}
 	if !flags.interactive || flags.dryRun || flags.live {
 		return resolved, nil
 	}
-	printRemotePlan(output, remotePlanView{
+	plan := remotePlanView{
 		group: resolved.group, inventoryPath: resolved.inventoryPath, recipePath: resolved.recipePath,
-		cwd: cwd, hosts: hosts, recipe: recipe, width: terminalWidth(),
-	})
+		cwd: cwd, hosts: hosts, recipe: recipe, width: terminalWidth(), command: resolved.command,
+	}
+	if resolved.verbose {
+		plan.search = remoteSearchLine(cwd, configDir)
+	}
+	printRemotePlan(output, plan)
 	if !resolved.verbose && askQuestions {
 		resolved.verbose, err = askRemoteYesNo(input, reader, output, T("remote.confirm.stream"))
 		if err != nil {
@@ -250,12 +269,41 @@ type remotePlanView struct {
 	hosts         []remoteHost
 	recipe        remoteRecipe
 	width         int
+	search        string // -v일 때만 채우는 탐색 디렉터리 줄
+	command       string // group을 대화형으로 고른 실행에서만 채우는 재현 명령
+}
+
+// remoteReuseCommand는 고른 group과 파일을 명시한 edc 명령을 만든다.
+// 경로를 탐색에 맡기지 않아야 나중에 .edc/나 cwd의 파일이 바뀌어도 같은 파일로 실행된다.
+func remoteReuseCommand(cwd string, options remoteRunOptions) string {
+	words := []string{"edc", "remote", options.group, "--inventory", shortPath(cwd, options.inventoryPath), "--recipe", shortPath(cwd, options.recipePath)}
+	words = append(words, options.flags...)
+	for index, word := range words {
+		words[index] = quoteLocalShellWord(word)
+	}
+	return strings.Join(words, " ")
+}
+
+// quoteLocalShellWord는 셸이 다르게 읽을 문자가 있을 때만 따옴표로 감싼다. 복사할 명령을 짧게 유지한다.
+func quoteLocalShellWord(word string) string {
+	if word == "" {
+		return "''"
+	}
+	for _, char := range word {
+		if (char < 'a' || char > 'z') && (char < 'A' || char > 'Z') && (char < '0' || char > '9') && !strings.ContainsRune("-_./=:,+@%", char) {
+			return quoteRemoteShell(word)
+		}
+	}
+	return word
 }
 
 // printRemotePlan은 머리말, 빈 표, 명령 범례를 차례로 출력한다.
 // 실행이 시작되면 같은 배치의 표가 채워지므로 눈이 대응을 다시 만들지 않아도 된다.
 func printRemotePlan(output io.Writer, plan remotePlanView) {
-	fmt.Fprint(output, remoteRunHeader(plan.group, plan.inventoryPath, plan.recipePath, plan.cwd, plan.hosts, plan.recipe))
+	if plan.command != "" {
+		fmt.Fprintln(output, plan.command)
+	}
+	fmt.Fprint(output, remoteRunHeader(plan.group, plan.inventoryPath, plan.recipePath, plan.cwd, plan.hosts, plan.recipe)+plan.search)
 	table := newRemoteTable(plan.hosts, plan.recipe, plan.width)
 	fmt.Fprintf(output, "\n%s\n", table.header())
 	for _, host := range plan.hosts {

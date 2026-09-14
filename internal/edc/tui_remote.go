@@ -84,9 +84,14 @@ func newRemoteModel(view remotePlanView, confirm bool, color, verbose bool, canc
 	if confirm {
 		stage = remoteStageConfirm
 	}
+	header := remoteRunHeader(group, view.inventoryPath, view.recipePath, view.cwd, hosts, recipe) + view.search
+	if view.command != "" {
+		// 재현 명령은 복사해 갈 값이고 실행 상태가 아니므로 흐리게 둔다.
+		header = liveMuted(view.command, color) + "\n" + header
+	}
 	model := remoteModel{
 		group: group, stage: stage, answered: make(chan bool, 1),
-		header:    remoteRunHeader(group, view.inventoryPath, view.recipePath, view.cwd, hosts, recipe),
+		header:    header,
 		legend:    remoteStepLegend(recipe, hosts),
 		table:     newRemoteTable(hosts, recipe, view.width),
 		hostIndex: make(map[string]int, len(hosts)), stepIndex: make(map[string]int, len(recipe.Steps)),
@@ -280,8 +285,8 @@ func (model remoteModel) bottom() string {
 func (model remoteModel) visibleHosts() []string {
 	limit := len(model.table.hosts)
 	if model.height > 0 {
-		// header 2줄, 빈 줄 3개, 표 header, 범례, 아래 블록을 뺀 만큼만 host를 보여 준다.
-		available := model.height - 6 - len(model.legend) - remoteBottomLines
+		// header 줄, 빈 줄 3개, 표 header, 범례, 아래 블록을 뺀 만큼만 host를 보여 준다. -v면 header에 탐색 줄이 붙는다.
+		available := model.height - strings.Count(model.header, "\n") - 4 - len(model.legend) - remoteBottomLines
 		if model.verbose {
 			available -= len(model.logs)
 		}

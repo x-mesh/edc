@@ -58,6 +58,31 @@ func remoteReservedGroupHint(name string) string {
 	return T("remote.error.reserved_group", name)
 }
 
+// remoteCommandFlags는 명령줄에서 직접 준 flag를 재현 명령의 단어로 옮긴다.
+// group과 파일 경로는 대화형으로 고른 값이 우선하므로 따로 적는다.
+func remoteCommandFlags(set *flag.FlagSet) []string {
+	var words []string
+	set.Visit(func(visited *flag.Flag) {
+		if visited.Name == "inventory" || visited.Name == "recipe" || visited.Name == "group" {
+			return
+		}
+		name := "--" + visited.Name
+		if len(visited.Name) == 1 {
+			name = "-" + visited.Name
+		}
+		if boolean, ok := visited.Value.(interface{ IsBoolFlag() bool }); ok && boolean.IsBoolFlag() {
+			if visited.Value.String() == "true" {
+				words = append(words, name)
+			} else {
+				words = append(words, name+"="+visited.Value.String())
+			}
+			return
+		}
+		words = append(words, name, visited.Value.String())
+	})
+	return words
+}
+
 func runRemoteRun(group string, args []string, version string) int {
 	options := configuredCommon(10 * time.Minute)
 	config := activeConfig.Defaults.Remote
@@ -87,6 +112,7 @@ func runRemoteRun(group string, args []string, version string) int {
 	if err := set.Parse(args); err != nil {
 		return 2
 	}
+	remoteOptions.flags = remoteCommandFlags(set)
 	resolvedGroup, err := remoteGroupArgument(group, groupFlag, set.Args())
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -166,7 +192,10 @@ func runRemoteRun(group string, args []string, version string) int {
 	parallel := remoteParallelForGroup(inventory, remoteOptions.group, parallelOverride)
 	plan := remotePlanView{
 		group: remoteOptions.group, inventoryPath: remoteOptions.inventoryPath, recipePath: remoteOptions.recipePath,
-		cwd: cwd, hosts: hosts, recipe: recipe, width: terminalWidth(),
+		cwd: cwd, hosts: hosts, recipe: recipe, width: terminalWidth(), command: remoteOptions.command,
+	}
+	if options.verbose {
+		plan.search = remoteSearchLine(cwd, configDir)
 	}
 	if dryRun {
 		return emitRemotePlan(options, remoteOptions, plan, parallel)

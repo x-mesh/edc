@@ -90,8 +90,8 @@ func TestRemoteListWritesInventory(t *testing.T) {
 		t.Fatalf("listing = %#v", listing)
 	}
 	var output strings.Builder
-	printRemoteListing(&output, listing)
-	for _, expected := range []string{"inventory  " + inventoryPath, "group  daily  (parallel 1, host 2)", "  server  → build.internal  [linux]", "  laptop\n", "group  weekly  (parallel 3, host 1)"} {
+	printRemoteListing(&output, listing, "search     ./\n")
+	for _, expected := range []string{"inventory  " + inventoryPath + "\nsearch     ./\n", "group  daily  (parallel 1, host 2)", "  server  → build.internal  [linux]", "  laptop\n", "group  weekly  (parallel 3, host 1)"} {
 		if !strings.Contains(output.String(), expected) {
 			t.Fatalf("listing %q does not contain %q", output.String(), expected)
 		}

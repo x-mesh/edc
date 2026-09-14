@@ -126,7 +126,11 @@ func runRemoteList(options commonOptions, remoteOptions remoteRunOptions, cwd, c
 		return 2
 	}
 	if options.jsonPath == "" {
-		printRemoteListing(os.Stdout, listing)
+		search := ""
+		if options.verbose {
+			search = remoteSearchLine(cwd, configDir)
+		}
+		printRemoteListing(os.Stdout, listing, search)
 		return 0
 	}
 	return emitRemoteJSON(options, listing)
@@ -156,8 +160,10 @@ func buildRemoteListing(path string, inventory remoteInventory, group string) (r
 	return listing, nil
 }
 
-func printRemoteListing(writer io.Writer, listing remoteListing) {
+// printRemoteListing은 search가 있으면 inventory 줄 바로 아래에 둔다. search는 JSON에 넣지 않는다.
+func printRemoteListing(writer io.Writer, listing remoteListing, search string) {
 	fmt.Fprintf(writer, "inventory  %s\n", listing.Inventory)
+	fmt.Fprint(writer, search)
 	for _, group := range listing.Groups {
 		fmt.Fprintf(writer, "group  %s  (parallel %d, host %d)\n", group.Name, group.Parallel, len(group.Hosts))
 		for _, host := range group.Hosts {

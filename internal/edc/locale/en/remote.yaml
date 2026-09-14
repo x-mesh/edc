@@ -87,6 +87,8 @@ remote:
     no_target: "(no target)"
     hidden_hosts: "…and %d more host"
     completed_count: "%d/%d done"
+    search_missing: "missing"
+    search_no_gitignore: "no .gitignore"
 
   header:
     summary: "edc remote  %s  ·  host %d  ·  step %d  ·  run %d"

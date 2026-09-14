@@ -11,15 +11,11 @@ import (
 // remoteCandidateLimit는 디렉터리에 YAML이 많아도 선택기가 길어지지 않게 한다.
 const remoteCandidateLimit = 30
 
-// remoteYAMLFiles는 탐색 디렉터리의 YAML 파일 경로를 모은다. cwd가 config 디렉터리보다 앞선다.
+// remoteYAMLFiles는 탐색 디렉터리의 YAML 파일 경로를 기본 파일 탐색과 같은 순서로 모은다.
 func remoteYAMLFiles(cwd, configDir string) []string {
-	directories := []string{cwd}
-	if configDir != "" {
-		directories = append(directories, filepath.Join(configDir, "edc"))
-	}
 	var paths []string
 	seen := make(map[string]struct{})
-	for _, directory := range directories {
+	for _, directory := range remoteSearchDirectories(cwd, configDir) {
 		entries, err := os.ReadDir(directory)
 		if err != nil {
 			continue

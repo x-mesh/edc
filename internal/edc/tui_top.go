@@ -352,7 +352,8 @@ func (model topModel) statusLines() []string {
 	}
 	views := fmt.Sprintf("1 all c cpu m mem d disk n net s pressure · %s", state)
 	actions := "keys  ↑↓ history  End latest  Enter detail  h peaks  ·  q quit  p pause  +/-"
-	return []string{topDashboardFit(views), topDashboardFit(actions)}
+	// 폭을 먼저 맞춘다. escape가 rune 수에 들어가면 잘리는 위치가 어긋난다.
+	return []string{liveMuted(topDashboardFit(views), model.limits.color), liveMuted(topDashboardFit(actions), model.limits.color)}
 }
 
 // topColumn은 보기별 표의 한 칸이다. 헤더와 행이 같은 정의로 그려져 구분선이 어긋나지 않는다.

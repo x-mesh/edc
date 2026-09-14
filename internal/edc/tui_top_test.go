@@ -352,6 +352,22 @@ func TestTopSelectionMarkerKeepsTheTime(t *testing.T) {
 	}
 }
 
+func TestTopStatusLinesAreMuted(t *testing.T) {
+	model := topFixtureModel(nil)
+	for _, line := range model.statusLines() {
+		if !strings.HasPrefix(line, liveDim) || !strings.HasSuffix(line, liveReset) {
+			t.Fatalf("status line is not muted: %q", line)
+		}
+		if got := liveWidth(line); got != topTableWidth {
+			t.Fatalf("status line is %d wide: %q", got, line)
+		}
+	}
+	model.limits.color = false
+	if line := model.statusLines()[1]; strings.Contains(line, "\033[") {
+		t.Fatalf("status line has escape without color: %q", line)
+	}
+}
+
 func TestTopPanelsFitTheTableWidth(t *testing.T) {
 	processes := []topProcess{{CPU: 185, RSS: 2 << 30, Command: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome Helper (Renderer)"}, {CPU: 99, RSS: 300 << 20, Command: "postgres"}, {CPU: 12, RSS: 1 << 20, Command: "node"}}
 	rate := resourceRate{Load1: 12.5, CPUUser: 100, CPUSystem: 100, CPUIOWait: 30, MemoryPercent: 97.5, DiskHealthValid: true, DiskIOPS: 1234, DiskAwait: 12.3, DiskBusy: 100, NetHealthValid: true, NetErrors: 1, NetDrops: 2, PSIValid: true, PSICPU: 1, PSIMemory: 2, PSIIO: 3}

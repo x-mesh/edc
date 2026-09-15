@@ -272,12 +272,12 @@ func TestTopProcessNameStripsPathsAndControlCharacters(t *testing.T) {
 func TestTopDashboardRowsFitTargetWidth(t *testing.T) {
 	row := topDashboardRow{at: time.Unix(1, 0), rate: resourceRate{NetIn: 12 * 1024 * 1024, NetOut: 2 * 1024 * 1024, PacketsIn: 42, PacketsOut: 99, Load1: 2.5, CPUUser: 12, CPUSystem: 4, CPUIOWait: 1, DiskRead: 3 * 1024 * 1024, DiskWrite: 4 * 1024 * 1024, MemoryPercent: 55}}
 	for _, view := range []topView{topViewAll, topViewCPU, topViewMemory, topViewDisk, topViewNetwork, topViewPressure} {
-		for _, header := range topDashboardHeaders(view, false) {
+		for _, header := range topDashboardHeaders(view, topTableWidth) {
 			if got := len([]rune(header)); got > topTableWidth {
 				t.Fatalf("%s header width = %d", view, got)
 			}
 		}
-		if got := len([]rune(formatTopDashboardRow(row, view, newTopLimits(8, false), false))); got > topTableWidth {
+		if got := len([]rune(formatTopDashboardRow(row, view, newTopLimits(8, false), topTableWidth))); got > topTableWidth {
 			t.Fatalf("%s row width = %d", view, got)
 		}
 	}
@@ -296,28 +296,29 @@ func topDividerColumns(line string) []int {
 func TestTopViewHeadersUseTheSameColumnsAsRows(t *testing.T) {
 	row := topDashboardRow{at: time.Unix(1, 0), rate: resourceRate{CoreCPU: []float64{10, 95}, DiskHealthValid: true, DiskIOPS: 12, NetHealthValid: true, PSIValid: true}}
 	for _, view := range []topView{topViewCPU, topViewMemory, topViewDisk, topViewNetwork, topViewPressure} {
-		header := topDividerColumns(topDashboardHeaders(view, false)[0])
-		value := topDividerColumns(formatTopDashboardRow(row, view, newTopLimits(8, false), false))
+		header := topDividerColumns(topDashboardHeaders(view, topTableWidth)[0])
+		value := topDividerColumns(formatTopDashboardRow(row, view, newTopLimits(8, false), topTableWidth))
 		if !reflect.DeepEqual(header, value) {
 			t.Fatalf("%s dividers: header %v row %v", view, header, value)
 		}
 	}
-	// 첫 헤더 줄의 group 구분선도 둘째 헤더 줄과 같은 칸에 있어야 한다.
-	for _, wide := range []bool{false, true} {
-		headers := topDashboardHeaders(topViewAll, wide)
-		if top, bottom := topDividerColumns(headers[0]), topDividerColumns(headers[1]); !reflect.DeepEqual(top, bottom) {
-			t.Fatalf("wide=%v group header %v, column header %v", wide, top, bottom)
+	// all 보기는 폭마다 칸 구성이 달라진다. 폭마다 두 헤더 줄과 행의 구분선이 같은 칸에 있어야 한다.
+	for _, width := range []int{topTableWidth, 84, 96, 110, 120, 125, 160} {
+		headers := topDashboardHeaders(topViewAll, width)
+		value := topDividerColumns(formatTopDashboardRow(row, topViewAll, newTopLimits(8, false), width))
+		if top, bottom := topDividerColumns(headers[0]), topDividerColumns(headers[1]); !reflect.DeepEqual(top, bottom) || !reflect.DeepEqual(bottom, value) {
+			t.Fatalf("width %d dividers: group %v, column %v, row %v", width, top, bottom, value)
 		}
 	}
 }
 
 func TestTopViewsShowDashForUnsupportedValues(t *testing.T) {
 	row := topDashboardRow{at: time.Unix(1, 0), rate: resourceRate{MemoryPercent: 99}}
-	memory := formatTopDashboardRow(row, topViewMemory, newTopLimits(8, false), false)
+	memory := formatTopDashboardRow(row, topViewMemory, newTopLimits(8, false), topTableWidth)
 	if strings.Contains(memory, "ok") || !strings.Contains(memory, "—") {
 		t.Fatalf("memory row = %q", memory)
 	}
-	disk := formatTopDashboardRow(row, topViewDisk, newTopLimits(8, false), false)
+	disk := formatTopDashboardRow(row, topViewDisk, newTopLimits(8, false), topTableWidth)
 	if strings.Count(disk, "—") != 3 {
 		t.Fatalf("disk row must show — for iops, await and busy: %q", disk)
 	}
@@ -325,7 +326,7 @@ func TestTopViewsShowDashForUnsupportedValues(t *testing.T) {
 
 func TestTopDiskViewShowsDashOnlyForBusyWithoutBusyTime(t *testing.T) {
 	row := topDashboardRow{at: time.Unix(1, 0), rate: resourceRate{DiskHealthValid: true, DiskIOPS: 321, DiskAwait: 4.5}}
-	disk := formatTopDashboardRow(row, topViewDisk, newTopLimits(8, false), false)
+	disk := formatTopDashboardRow(row, topViewDisk, newTopLimits(8, false), topTableWidth)
 	if strings.Count(disk, "—") != 1 || !strings.Contains(disk, "321") || !strings.Contains(disk, "4.5") {
 		t.Fatalf("disk row must show iops and await with — for busy: %q", disk)
 	}
@@ -421,39 +422,144 @@ func TestTopPeaksTrackEachMetricSeparately(t *testing.T) {
 	}
 }
 
-func TestTopAllViewUsesTheSameGroupBoundariesForHeaderAndRow(t *testing.T) {
-	row := topDashboardRow{at: time.Unix(1, 0), rate: resourceRate{MemoryPercent: 55}}
-	header := []rune(topDashboardHeaders(topViewAll, false)[1])
-	value := []rune(formatTopDashboardRow(row, topViewAll, newTopLimits(8, false), false))
-	for _, column := range []int{9, 22, 44, 56, 62} {
-		if header[column] != '│' || value[column] != '│' {
-			t.Fatalf("group boundary %d: header %q row %q", column, header[column], value[column])
+func TestTopAllViewAddsColumnsAsTheTerminalWidens(t *testing.T) {
+	row := topDashboardRow{at: time.Unix(1, 0), rate: resourceRate{PacketsIn: 123, PacketsOut: 456, NetErrors: 2, NetDrops: 3, NetHealthValid: true, CoreCPU: []float64{10, 95}, DiskIOPS: 789, DiskAwait: 12.3, DiskBusy: 80, DiskHealthValid: true, DiskBusyValid: true}}
+	steps := []struct {
+		width         int
+		shown, hidden []string
+	}{
+		{topTableWidth, []string{"in", "mem%", "write"}, []string{"hot core", "iops", "pk_in", "drop", "busy"}},
+		{83, nil, []string{"hot core"}},
+		{84, []string{"hot core"}, []string{"iops"}},
+		{96, []string{"iops", "await"}, []string{"pk_in"}},
+		{110, []string{"pk_in", "pk_out"}, []string{"drop"}},
+		{120, []string{"err", "drop"}, []string{"busy"}},
+		{125, []string{"busy"}, nil},
+	}
+	for _, step := range steps {
+		header := topDashboardHeaders(topViewAll, step.width)[1]
+		line := formatTopDashboardRow(row, topViewAll, newTopLimits(8, false), step.width)
+		if got := len([]rune(line)); got != step.width {
+			t.Fatalf("width %d row is %d wide: %q", step.width, got, line)
+		}
+		for _, title := range step.shown {
+			if !strings.Contains(header, title) {
+				t.Fatalf("width %d header %q does not contain %q", step.width, header, title)
+			}
+		}
+		for _, title := range step.hidden {
+			if strings.Contains(header, title) {
+				t.Fatalf("width %d header %q must not contain %q yet", step.width, header, title)
+			}
 		}
 	}
-}
-
-func TestTopWideLayoutAddsPacketsAndHealth(t *testing.T) {
-	row := topDashboardRow{at: time.Unix(1, 0), rate: resourceRate{PacketsIn: 123, PacketsOut: 456, NetErrors: 2, NetDrops: 3, NetHealthValid: true, DiskIOPS: 789, DiskAwait: 12.3, DiskBusy: 80, DiskHealthValid: true, DiskBusyValid: true}}
-	headers := topDashboardHeaders(topViewAll, true)
-	line := formatTopDashboardRow(row, topViewAll, newTopLimits(8, false), true)
-	if len(headers) != 2 || len([]rune(line)) != topWideTableWidth || !strings.Contains(headers[1], "pk_in") {
-		t.Fatalf("wide layout = %#v / %q", headers, line)
-	}
-	for _, expected := range []string{"123", "456", "789", "12.3", "80"} {
+	line := formatTopDashboardRow(row, topViewAll, newTopLimits(8, false), 125)
+	for _, expected := range []string{"123", "456", "789", "12.3", "80", "1 95%"} {
 		if !strings.Contains(line, expected) {
-			t.Fatalf("wide row %q does not contain %q", line, expected)
+			t.Fatalf("widest row %q does not contain %q", line, expected)
 		}
 	}
 }
 
-func TestTopWideHeaderUsesTheSameColumnsAsRows(t *testing.T) {
-	row := topDashboardRow{at: time.Unix(1, 0)}
-	header := []rune(topDashboardHeaders(topViewAll, true)[1])
-	value := []rune(formatTopDashboardRow(row, topViewAll, newTopLimits(8, false), true))
-	for _, column := range []int{9, 48, 79, 85, 115} {
-		if header[column] != '│' || value[column] != '│' {
-			t.Fatalf("wide boundary %d: header %q row %q", column, header[column], value[column])
+func TestTopCompactCountKeepsTheColumnWidth(t *testing.T) {
+	for input, want := range map[float64]string{42: "42", 9999: "9999", 12345: "12k", 1234567: "1M"} {
+		if got := topCompactCount(input, 4); got != want {
+			t.Fatalf("topCompactCount(%v, 4) = %q, want %q", input, got, want)
 		}
+	}
+}
+
+func TestTopAllViewListsSignalsInTheSpareWidth(t *testing.T) {
+	signals := []topSignalItem{{text: "node 185%"}, {text: "mem 96%"}, {text: "load 10.0"}}
+	for width, want := range map[int]string{13: "node 185% +2", 24: "node 185% · mem 96% +1", 40: "node 185% · mem 96% · load 10.0"} {
+		if got := formatTopSignalsWidth(signals, width); got != want {
+			t.Fatalf("width %d signals = %q, want %q", width, got, want)
+		}
+	}
+	if got := formatTopSignalsWidth(nil, 40); got != "-" {
+		t.Fatalf("empty signals = %q", got)
+	}
+}
+
+func TestTopDashboardTitleAddsHostDetailsAsTheTerminalWidens(t *testing.T) {
+	model := topFixtureModel(nil)
+	model.details = hostDetails{Hostname: "host", System: "Linux", OS: "ubuntu", Version: "Ubuntu 24.04.1 LTS", Model: "Intel(R) Xeon(R) Platinum 8375C CPU @ 2.90GHz", Cores: 8, MemoryTotal: 64 << 30}
+	steps := []struct {
+		width         int
+		shown, hidden []string
+	}{
+		{topTableWidth, []string{"🐰 host · Ubuntu 24.04.1 LTS · 8 cores · 64.00 GB"}, []string{"Xeon"}},
+		{120, []string{"🐰 host · Ubuntu 24.04.1 LTS · Intel(R) Xeon(R) Platinum 8375C CPU @ 2.90GHz · 8 cores · 64.00 GB"}, nil},
+	}
+	for _, step := range steps {
+		model.width = step.width
+		title := model.dashboardTitle()
+		// 상태는 표 오른쪽 끝에 붙으므로 제목 폭이 표 폭과 같다.
+		if got := topDisplayWidth(title); got != step.width || !strings.HasSuffix(title, "  view all · live 🐰") {
+			t.Fatalf("width %d title is %d wide: %q", step.width, got, title)
+		}
+		for _, text := range step.shown {
+			if !strings.HasPrefix(title, text) {
+				t.Fatalf("width %d title %q does not start with %q", step.width, title, text)
+			}
+		}
+		for _, text := range step.hidden {
+			if strings.Contains(title, text) {
+				t.Fatalf("width %d title %q must not contain %q", step.width, title, text)
+			}
+		}
+	}
+	// edc 버전은 OS와 memory 다음에 들어가므로, 폭이 모자라면 긴 CPU 모델보다 먼저 남는다.
+	model.version, model.width = "0.9.0", 120
+	if title := model.dashboardTitle(); !strings.HasSuffix(title, "  view all · live · edc 0.9.0 🐰") || strings.Contains(title, "Xeon") {
+		t.Fatalf("title with version = %q", title)
+	}
+	model.version = ""
+	// 다른 보기의 표는 80열이므로 상태도 80열 끝에 둔다.
+	model.view, model.width = topViewCPU, 160
+	if title := model.dashboardTitle(); topDisplayWidth(title) != topTableWidth || !strings.HasSuffix(title, "view cpu · live 🐰") {
+		t.Fatalf("cpu view title = %q", title)
+	}
+	// host 이름이 길어 양쪽으로 뗄 수 없으면 한 줄로 잇는다.
+	model.view, model.width = topViewAll, topTableWidth
+	model.details.Hostname = strings.Repeat("h", 70)
+	if title := model.dashboardTitle(); !strings.HasSuffix(title, " · 8 cores · view all · live 🐰") {
+		t.Fatalf("long host title = %q", title)
+	}
+	if got := topHostOS(hostDetails{System: "darwin", OS: "macOS", Version: "26.0"}); got != "macOS 26.0" {
+		t.Fatalf("macOS name = %q", got)
+	}
+}
+
+func TestTopModelPagesThroughHistory(t *testing.T) {
+	model := topFixtureModel(nil)
+	model.rows = make([]topDashboardRow, 100)
+	for index := range model.rows {
+		model.rows[index].at = time.Unix(int64(index), 0)
+	}
+	model.selected = len(model.rows) - 1
+	page := model.bodyLines()
+	up := topAfter(t, model, tea.KeyPressMsg{Code: tea.KeyPgUp})
+	if up.follow || up.selected != 99-page {
+		t.Fatalf("PgUp selected %d, want %d", up.selected, 99-page)
+	}
+	first := up
+	for range 20 {
+		first = topAfter(t, first, tea.KeyPressMsg{Code: tea.KeyPgUp})
+	}
+	if first.selected != 0 || first.follow {
+		t.Fatalf("PgUp must stop at the first row: %d", first.selected)
+	}
+	down := topAfter(t, first, tea.KeyPressMsg{Code: tea.KeyPgDown})
+	if down.selected != page || down.follow {
+		t.Fatalf("PgDn selected %d, want %d", down.selected, page)
+	}
+	last := down
+	for range 20 {
+		last = topAfter(t, last, tea.KeyPressMsg{Code: tea.KeyPgDown})
+	}
+	if last.selected != 99 || !last.follow {
+		t.Fatalf("PgDn must return to the live row: selected %d, follow %v", last.selected, last.follow)
 	}
 }
 

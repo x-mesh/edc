@@ -69,7 +69,7 @@ func Run(args []string, version string) int {
 		printVersion(os.Stdout, version)
 		return 0
 	case "top":
-		return runTop(args[1:])
+		return runTop(args[1:], version)
 	case "info":
 		return runInfo(args[1:], version)
 	case "doctor":

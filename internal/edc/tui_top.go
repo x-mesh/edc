@@ -12,7 +12,7 @@ import (
 )
 
 // runTopDashboard는 alt screen 대시보드를 실행한다. 종료하면 화면이 원래대로 돌아온다.
-func runTopDashboard(interval time.Duration) int {
+func runTopDashboard(interval time.Duration, version string) int {
 	details, err := collectHostDetails()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, T("observe.top.error.host", err))
@@ -23,7 +23,9 @@ func runTopDashboard(interval time.Duration) int {
 		fmt.Fprintln(os.Stderr, T("observe.top.error.resource", err))
 		return 1
 	}
-	if _, err := tea.NewProgram(newTopModel(details, first, interval, sampleTopDashboard), tea.WithInput(os.Stdin), tea.WithOutput(os.Stdout)).Run(); err != nil {
+	model := newTopModel(details, first, interval, sampleTopDashboard)
+	model.version = version
+	if _, err := tea.NewProgram(model, tea.WithInput(os.Stdin), tea.WithOutput(os.Stdout)).Run(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
@@ -50,7 +52,8 @@ const (
 )
 
 const (
-	topWideTableWidth = 132
+	// topSignalMinWidth는 all 보기에 칸을 더할 때 signal에 남기는 최소 폭이다. "node 185% +2"와 "await 65ms +1"이 들어간다.
+	topSignalMinWidth = 13
 	// topPeakWindow는 h 패널이 지표별 최고치를 찾는 구간이다.
 	topPeakWindow = time.Minute
 	// topSelectionColumn은 행에서 "15:04:05" 바로 뒤 공백 자리다. 선택 표시가 시각을 가리지 않는다.
@@ -91,6 +94,7 @@ type topModel struct {
 	sample        func() (resourceSnapshot, error)
 	seq           int
 	lastErr       error
+	version       string
 }
 
 // topSampleMsg는 tick마다 수집한 snapshot이다. seq가 다르면 interval이 바뀐 뒤의 낡은 tick이다.
@@ -203,6 +207,16 @@ func (model topModel) updateKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			model.selected++
 			model.follow = model.selected == len(model.rows)-1
 		}
+	case "pgup":
+		if model.selected > 0 {
+			model.selected = max(0, model.selected-model.bodyLines())
+			model.follow = false
+		}
+	case "pgdown":
+		if model.selected < len(model.rows)-1 {
+			model.selected = min(len(model.rows)-1, model.selected+model.bodyLines())
+			model.follow = model.selected == len(model.rows)-1
+		}
 	case "end", "g":
 		if len(model.rows) > 0 {
 			model.selected, model.follow = len(model.rows)-1, true
@@ -250,17 +264,24 @@ func (model topModel) selectedRow() (topDashboardRow, bool) {
 	return model.rows[model.selected], true
 }
 
+// bodyLines는 표 본문에 쓸 수 있는 줄 수다. View와 PgUp·PgDn이 같은 값을 써서 한 화면씩 넘긴다.
+func (model topModel) bodyLines() int {
+	headers := len(topDashboardHeaders(model.view, max(topTableWidth, model.width)))
+	return max(1, model.height-1-headers-len(model.panelLines())-len(model.statusLines()))
+}
+
 func (model topModel) View() tea.View {
-	wide := model.view == topViewAll && model.width >= topWideTableWidth
-	lines := append([]string{model.dashboardTitle()}, topDashboardHeaders(model.view, wide)...)
+	// 창 크기를 받기 전(width 0)이나 80열보다 좁을 때도 80열 표를 그리고 넘치는 부분은 renderer가 자른다.
+	width := max(topTableWidth, model.width)
+	lines := append([]string{model.dashboardTitle()}, topDashboardHeaders(model.view, width)...)
 	panel, status := model.panelLines(), model.statusLines()
-	bodyLines := max(1, model.height-len(lines)-len(panel)-len(status))
+	bodyLines := model.bodyLines()
 	start := max(0, len(model.rows)-bodyLines)
 	if !model.follow && len(model.rows) > bodyLines {
 		start = min(model.selected, len(model.rows)-bodyLines)
 	}
 	for index := start; index < len(model.rows) && index < start+bodyLines; index++ {
-		line := formatTopDashboardRow(model.rows[index], model.view, model.limits, wide)
+		line := formatTopDashboardRow(model.rows[index], model.view, model.limits, width)
 		if index == model.selected && !model.follow {
 			line = line[:topSelectionColumn] + ">" + line[topSelectionColumn+1:]
 		}
@@ -290,14 +311,77 @@ func (model topModel) panelLines() []string {
 }
 
 func (model topModel) dashboardTitle() string {
-	state := "latest"
+	state := "live"
 	if !model.follow {
 		state = "history"
 	}
 	if model.lastErr != nil {
 		state += " · sample error"
 	}
-	return fmt.Sprintf("🐰 %s · %d cores · %s · %s 🐰", model.details.Hostname, model.details.Cores, model.view, state)
+	// 왼쪽은 host 정보, 오른쪽은 보기와 상태다. priority 0은 항상 보이고, 나머지는 폭이 허락하는 만큼
+	// OS, memory, edc 버전, CPU 모델 순서로 더한다. 자리는 slice 순서를 따르므로 상태가 바뀌어도 host 정보가 움직이지 않는다.
+	type titlePart struct {
+		text     string
+		priority int
+	}
+	version := ""
+	if model.version != "" {
+		version = "edc " + model.version
+	}
+	leftParts := []titlePart{
+		{model.details.Hostname, 0},
+		{topHostOS(model.details), 1},
+		{model.details.Model, 4},
+		{fmt.Sprintf("%d cores", model.details.Cores), 0},
+		{topMemorySize(model.details.MemoryTotal), 2},
+	}
+	// "all latest"를 버전으로 읽는 일이 없게 보기 이름 앞에 view를 붙인다.
+	rightParts := []titlePart{{"view " + string(model.view), 0}, {state, 0}, {version, 3}}
+	join := func(parts []titlePart, priority int) string {
+		texts := []string{}
+		for _, part := range parts {
+			if part.priority <= priority && part.text != "" {
+				texts = append(texts, part.text)
+			}
+		}
+		return strings.Join(texts, " · ")
+	}
+	// 상태를 표 오른쪽 끝에 맞춘다. all 보기의 표는 terminal 폭을 쓰고, 다른 보기의 표는 80열이다.
+	width := topTableWidth
+	if model.view == topViewAll {
+		width = max(topTableWidth, model.width)
+	}
+	// 두 부분 사이에 최소 두 칸을 둔다. 한 칸이면 이어진 문장처럼 읽힌다.
+	const gap = 2
+	title := ""
+	for priority := 0; priority <= 4; priority++ {
+		left, right := "🐰 "+join(leftParts, priority), join(rightParts, priority)+" 🐰"
+		space := width - topDisplayWidth(left) - topDisplayWidth(right)
+		if space < gap {
+			break
+		}
+		title = left + strings.Repeat(" ", space) + right
+	}
+	if title == "" {
+		// host 이름이 길어 양쪽으로 뗄 수 없으면 한 줄로 잇는다. 넘치는 부분은 renderer가 자른다.
+		title = "🐰 " + join(leftParts, 0) + " · " + join(rightParts, 0) + " 🐰"
+	}
+	return title
+}
+
+// topHostOS는 제목에 쓸 OS 이름이다. Linux의 Version은 os-release의 PRETTY_NAME이라 배포판 이름을 이미 담고 있다.
+func topHostOS(details hostDetails) string {
+	if details.System == "Linux" && details.Version != "" {
+		return details.Version
+	}
+	return strings.TrimSpace(details.OS + " " + details.Version)
+}
+
+func topMemorySize(total uint64) string {
+	if total == 0 {
+		return ""
+	}
+	return formatBytes(total)
 }
 
 func (model topModel) detailLines() []string {
@@ -351,7 +435,8 @@ func (model topModel) statusLines() []string {
 		state = fmt.Sprintf("history · %d new · %s", max(0, len(model.rows)-1-model.selected), state)
 	}
 	views := fmt.Sprintf("1 all c cpu m mem d disk n net s pressure · %s", state)
-	actions := "keys  ↑↓ history  End latest  Enter detail  h peaks  ·  q quit  p pause  +/-"
+	// PgUp/Dn을 넣어도 80열에서 끝의 +/-가 잘리지 않게 구분 공백을 두 칸으로 맞췄다.
+	actions := "keys ↑↓ PgUp/Dn history  End live  Enter detail  h peaks  q quit  p pause  +/-"
 	// 폭을 먼저 맞춘다. escape가 rune 수에 들어가면 잘리는 위치가 어긋난다.
 	return []string{liveMuted(topDashboardFit(views), model.limits.color), liveMuted(topDashboardFit(actions), model.limits.color)}
 }
@@ -421,7 +506,151 @@ func formatTopColumns(at string, columns []topColumn, cells []string) string {
 	return topDashboardFit(line.String())
 }
 
-func topDashboardHeaders(view topView, wide bool) []string {
+// topAllColumn은 all 보기의 한 칸이다. tier 0은 항상 보이고, 나머지는 terminal이 넓어질수록 tier 순서대로 추가된다.
+// 순서는 진단에 쓸모가 큰 값부터다: hot core, disk iops·await, packet, network err·drop, disk busy.
+type topAllColumn struct {
+	group string
+	title string
+	width int
+	tier  int
+	left  bool
+	cell  func(rate resourceRate) string
+}
+
+var topAllColumns = []topAllColumn{
+	{group: "network", title: "in", width: 5, cell: func(rate resourceRate) string { return formatRate(rate.NetIn) }},
+	{group: "network", title: "out", width: 5, cell: func(rate resourceRate) string { return formatRate(rate.NetOut) }},
+	{group: "network", title: "pk_in", width: 6, tier: 3, cell: func(rate resourceRate) string { return topCompactCount(rate.PacketsIn, 6) }},
+	{group: "network", title: "pk_out", width: 6, tier: 3, cell: func(rate resourceRate) string { return topCompactCount(rate.PacketsOut, 6) }},
+	{group: "network", title: "err", width: 4, tier: 4, cell: func(rate resourceRate) string { return topOptionalCount(rate.NetHealthValid, rate.NetErrors, 4) }},
+	{group: "network", title: "drop", width: 4, tier: 4, cell: func(rate resourceRate) string { return topOptionalCount(rate.NetHealthValid, rate.NetDrops, 4) }},
+	{group: "cpu", title: "load", width: 4, cell: func(rate resourceRate) string { return fmt.Sprintf("%.1f", rate.Load1) }},
+	{group: "cpu", title: "usr%", width: 5, cell: func(rate resourceRate) string { return fmt.Sprintf("%.1f", rate.CPUUser) }},
+	{group: "cpu", title: "sys%", width: 5, cell: func(rate resourceRate) string { return fmt.Sprintf("%.1f", rate.CPUSystem) }},
+	{group: "cpu", title: "i/o", width: 4, cell: func(rate resourceRate) string { return fmt.Sprintf("%.1f", rate.CPUIOWait) }},
+	{group: "cpu", title: "hot core", width: 8, tier: 1, left: true, cell: func(rate resourceRate) string { return topHotCore(rate.CoreCPU) }},
+	{group: "mem", title: "mem%", width: 5, cell: func(rate resourceRate) string { return fmt.Sprintf("%.1f", rate.MemoryPercent) }},
+	{group: "disk", title: "read", width: 5, cell: func(rate resourceRate) string { return formatRate(rate.DiskRead) }},
+	{group: "disk", title: "write", width: 5, cell: func(rate resourceRate) string { return formatRate(rate.DiskWrite) }},
+	{group: "disk", title: "iops", width: 5, tier: 2, cell: func(rate resourceRate) string { return topOptionalCount(rate.DiskHealthValid, rate.DiskIOPS, 5) }},
+	{group: "disk", title: "await", width: 5, tier: 2, cell: func(rate resourceRate) string { return topOptionalValue(rate.DiskHealthValid, "%.1f", rate.DiskAwait) }},
+	{group: "disk", title: "busy", width: 4, tier: 5, cell: func(rate resourceRate) string { return topOptionalValue(rate.DiskBusyValid, "%.0f", rate.DiskBusy) }},
+}
+
+// topAllLayout은 width 안에 signal 최소 폭까지 들어가는 가장 높은 tier의 칸을 고르고, 남는 폭을 signal에 준다.
+func topAllLayout(width int) ([]topAllColumn, int) {
+	chosen := topAllColumnsUpTo(0)
+	for tier := 1; tier <= topAllMaxTier(); tier++ {
+		candidate := topAllColumnsUpTo(tier)
+		if topAllLineWidth(candidate)+topSignalMinWidth > width {
+			break
+		}
+		chosen = candidate
+	}
+	return chosen, max(topSignalMinWidth, width-topAllLineWidth(chosen))
+}
+
+func topAllMaxTier() int {
+	tier := 0
+	for _, column := range topAllColumns {
+		tier = max(tier, column.tier)
+	}
+	return tier
+}
+
+func topAllColumnsUpTo(tier int) []topAllColumn {
+	columns := []topAllColumn{}
+	for _, column := range topAllColumns {
+		if column.tier <= tier {
+			columns = append(columns, column)
+		}
+	}
+	return columns
+}
+
+// topAllLineWidth는 signal 앞까지의 폭이다. 시각 뒤 " │"에 이어 같은 group 칸 사이 공백과 group 끝 구분선이 붙는다.
+func topAllLineWidth(columns []topAllColumn) int {
+	width := topSelectionColumn + 2
+	for index, column := range columns {
+		if index > 0 && columns[index-1].group == column.group {
+			width++
+		}
+		width += column.width
+		if index == len(columns)-1 || columns[index+1].group != column.group {
+			width++
+		}
+	}
+	return width
+}
+
+// formatTopAllLine은 둘째 헤더 줄과 행을 같은 규칙으로 그려 구분선 위치를 맞춘다.
+func formatTopAllLine(first string, columns []topAllColumn, cells []string, signal string, signalWidth int) string {
+	var line strings.Builder
+	fmt.Fprintf(&line, "%8s │", first)
+	for index, column := range columns {
+		if index > 0 && columns[index-1].group == column.group {
+			line.WriteByte(' ')
+		}
+		if column.left {
+			fmt.Fprintf(&line, "%-*s", column.width, cells[index])
+		} else {
+			fmt.Fprintf(&line, "%*s", column.width, cells[index])
+		}
+		if index == len(columns)-1 || columns[index+1].group != column.group {
+			line.WriteString("│")
+		}
+	}
+	line.WriteString(signal)
+	return topDashboardFitWidth(line.String(), topAllLineWidth(columns)+signalWidth)
+}
+
+// formatTopAllGroupHeader는 첫 헤더 줄이다. group 이름이 그 group 칸들을 합친 폭을 차지한다.
+func formatTopAllGroupHeader(columns []topAllColumn, signalWidth int) string {
+	var line strings.Builder
+	fmt.Fprintf(&line, "%8s │", "time")
+	for start := 0; start < len(columns); {
+		end, span := start, columns[start].width
+		for end+1 < len(columns) && columns[end+1].group == columns[start].group {
+			end++
+			span += 1 + columns[end].width
+		}
+		line.WriteString(topGroupTitle(columns[start].group, span))
+		line.WriteString("│")
+		start = end + 1
+	}
+	line.WriteString("signal")
+	return topDashboardFitWidth(line.String(), topAllLineWidth(columns)+signalWidth)
+}
+
+// topGroupTitle은 group 이름을 폭 가운데에 두고 양옆을 -로 채운다. 여유가 없으면 이름만 왼쪽에 둔다.
+func topGroupTitle(name string, width int) string {
+	dashes := width - len(name) - 2
+	if dashes < 2 {
+		return fmt.Sprintf("%-*s", width, name)
+	}
+	return strings.Repeat("-", dashes/2) + " " + name + " " + strings.Repeat("-", dashes-dashes/2)
+}
+
+// topCompactCount는 칸보다 긴 초당 개수를 k, M 단위로 줄여 열 정렬을 지킨다.
+func topCompactCount(value float64, width int) string {
+	text := fmt.Sprintf("%.0f", value)
+	if len(text) > width {
+		text = fmt.Sprintf("%.0fk", value/1e3)
+	}
+	if len(text) > width {
+		text = fmt.Sprintf("%.0fM", value/1e6)
+	}
+	return text
+}
+
+func topOptionalCount(valid bool, value float64, width int) string {
+	if !valid {
+		return "—"
+	}
+	return topCompactCount(value, width)
+}
+
+func topDashboardHeaders(view topView, width int) []string {
 	if view != topViewAll {
 		columns := topViewColumns(view)
 		titles := make([]string, len(columns))
@@ -430,31 +659,27 @@ func topDashboardHeaders(view topView, wide bool) []string {
 		}
 		return []string{formatTopColumns("time", columns, titles)}
 	}
-	if wide {
-		return []string{
-			topDashboardFitWidth(fmt.Sprintf("%8s │%-38s│%-30s│%-5s│%-29s│%-15s", "time", "------------ network -----------", "----------- cpu ------------", "mem", "---------- disk ----------", "signal"), topWideTableWidth),
-			topDashboardFitWidth(fmt.Sprintf("%8s │%5s %6s %6s %6s %5s %5s│%4s %5s %5s %4s %-8s│%5s│%5s %5s %5s %5s %5s│%-15s", "", "in", "out", "pk_in", "pk_out", "err", "drop", "load", "usr%", "sys%", "i/o", "hot core", "mem%", "read", "write", "iops", "await", "busy", ""), topWideTableWidth),
-		}
+	columns, signalWidth := topAllLayout(width)
+	titles := make([]string, len(columns))
+	for index, column := range columns {
+		titles[index] = column.title
 	}
-	return []string{
-		topDashboardFit(fmt.Sprintf("%8s │%-12s│%-21s│%-11s│%-5s│%-18s", "time", "- network -", "------ cpu ------", "-- disk --", "mem", "signal")),
-		topDashboardFit(fmt.Sprintf("%8s │%-12s│%-21s│%-11s│%-5s│", "", "in      out", "load usr% sys% i/o", "dsk_r dsk_w", "mem%")),
-	}
+	return []string{formatTopAllGroupHeader(columns, signalWidth), formatTopAllLine("", columns, titles, "", signalWidth)}
 }
 
-func formatTopDashboardRow(row topDashboardRow, view topView, limits topLimits, wide bool) string {
-	signal := topDashboardSignal(row.rate, row.processes, row.processesValid, limits)
+// formatTopDashboardRow의 width는 all 보기에만 쓴다. 다른 보기는 80열 고정 칸이다.
+func formatTopDashboardRow(row topDashboardRow, view topView, limits topLimits, width int) string {
 	at, rate := row.at.Format("15:04:05"), row.rate
 	if view != topViewAll {
-		return formatTopColumns(at, topViewColumns(view), topViewCells(rate, view, signal))
+		return formatTopColumns(at, topViewColumns(view), topViewCells(rate, view, topDashboardSignal(rate, row.processes, row.processesValid, limits)))
 	}
-	if wide {
-		errors, drops := topOptionalValue(rate.NetHealthValid, "%.0f", rate.NetErrors), topOptionalValue(rate.NetHealthValid, "%.0f", rate.NetDrops)
-		iops, await, busy := topOptionalValue(rate.DiskHealthValid, "%.0f", rate.DiskIOPS), topOptionalValue(rate.DiskHealthValid, "%.1f", rate.DiskAwait), topOptionalValue(rate.DiskBusyValid, "%.0f", rate.DiskBusy)
-		line := fmt.Sprintf("%8s │%5s %6s %6.0f %6.0f %5s %5s│%4.1f %5.1f %5.1f %4.1f %-8s│%5.1f│%5s %5s %5s %5s %5s│%-15s", at, formatRate(rate.NetIn), formatRate(rate.NetOut), rate.PacketsIn, rate.PacketsOut, errors, drops, rate.Load1, rate.CPUUser, rate.CPUSystem, rate.CPUIOWait, topHotCore(rate.CoreCPU), rate.MemoryPercent, formatRate(rate.DiskRead), formatRate(rate.DiskWrite), iops, await, busy, signal)
-		return topDashboardFitWidth(line, topWideTableWidth)
+	columns, signalWidth := topAllLayout(width)
+	cells := make([]string, len(columns))
+	for index, column := range columns {
+		cells[index] = column.cell(rate)
 	}
-	return topDashboardFit(fmt.Sprintf("%8s │%5s %6s│%4.1f %5.1f %5.1f %4.1f│%5s %5s│%5.1f│%-18s", at, formatRate(rate.NetIn), formatRate(rate.NetOut), rate.Load1, rate.CPUUser, rate.CPUSystem, rate.CPUIOWait, formatRate(rate.DiskRead), formatRate(rate.DiskWrite), rate.MemoryPercent, signal))
+	signals := topDashboardSignalItems(rate, row.processes, row.processesValid, limits)
+	return formatTopAllLine(at, columns, cells, formatTopSignalsWidth(signals, signalWidth), signalWidth)
 }
 
 // topSignalItem은 signal 후보다. score는 값을 danger 임계치로 나눈 값이라 단위가 다른 지표끼리 비교된다.
@@ -464,12 +689,39 @@ type topSignalItem struct {
 }
 
 func topDashboardSignal(rate resourceRate, processes []topProcess, valid bool, limits topLimits) string {
+	return formatTopSignals(topDashboardSignalItems(rate, processes, valid, limits))
+}
+
+func topDashboardSignalItems(rate resourceRate, processes []topProcess, valid bool, limits topLimits) []topSignalItem {
 	signals := topSignals(rate, limits)
 	if process, ok := topProcessSignal(processes, valid); ok {
 		// process는 원인을 바로 가리키므로 점수와 상관없이 맨 앞에 두고, 나머지 경고는 개수로 남긴다.
 		signals = append([]topSignalItem{{text: process}}, signals...)
 	}
-	return formatTopSignals(signals)
+	return signals
+}
+
+// formatTopSignalsWidth는 폭 안에 들어가는 만큼 경고를 " · "로 잇고, 넣지 못한 경고는 +N으로 센다.
+// 첫 경고는 폭이 좁아도 남겨 가장 중요한 원인을 가리지 않는다.
+func formatTopSignalsWidth(signals []topSignalItem, width int) string {
+	if len(signals) <= 1 {
+		return formatTopSignals(signals)
+	}
+	text, shown := signals[0].text, 1
+	for shown < len(signals) {
+		next, tail := text+" · "+signals[shown].text, ""
+		if rest := len(signals) - shown - 1; rest > 0 {
+			tail = fmt.Sprintf(" +%d", rest)
+		}
+		if len([]rune(next+tail)) > width {
+			break
+		}
+		text, shown = next, shown+1
+	}
+	if rest := len(signals) - shown; rest > 0 {
+		text += fmt.Sprintf(" +%d", rest)
+	}
+	return text
 }
 
 // ps의 CPU%는 core 하나를 100%로 계산한다. 80%부터 signal에 보여 주어

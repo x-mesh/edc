@@ -14,7 +14,7 @@ import (
 	"time"
 )
 
-func runTop(args []string) int {
+func runTop(args []string, version string) int {
 	set := flag.NewFlagSet("top", flag.ContinueOnError)
 	set.SetOutput(os.Stderr)
 	config := activeConfig.Defaults.Top
@@ -50,7 +50,7 @@ func runTop(args []string) int {
 	jsonOutput := *jsonPath != ""
 	// 대시보드는 무한 실행에만 쓴다. --count와 --json은 표와 JSON을 그대로 흘려 보낸다.
 	if !jsonOutput && *count == 0 && liveTerminal() {
-		return runTopDashboard(*interval)
+		return runTopDashboard(*interval, version)
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()

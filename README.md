@@ -307,13 +307,23 @@ If stdin and stdout are terminals, `edc top` opens a full-screen dashboard. The 
 | `-` | make the interval shorter |
 | `1`, `c`, `m`, `d`, `n` | switch to all, CPU, memory, disk, or network columns |
 | `s` | switch to Linux pressure columns |
-| `↑`, `↓`, `End` | select an earlier row or return to the latest row |
+| `↑`, `↓`, `PgUp`, `PgDn`, `End` | select an earlier row, move one screen, or return to the live row |
 | `Enter` | show details for the selected time |
 | `h` | show the load, CPU, iowait, and memory peaks from the last 60 seconds, each with its time |
 
 The default table has a `signal` column. It shows the highest-priority warning among load, CPU, iowait, memory, disk await, and network errors or drops, followed by the number of other warnings. Network errors and drops count as a warning from 1 per second. Use the network view for packet counts. Sampling continues while an earlier row is selected; press `End` to follow the latest row again. A temporary sampling error keeps the last row and retries on the next interval.
 
-At 132 columns or wider, the default table automatically uses the wide layout. It shows packet in/out, network errors and drops, the hot core, and disk IOPS, await, and busy values on the same row. Reducing the terminal width immediately restores the 80-column table.
+The default table follows the terminal width. If the terminal is wider than 80 columns, the table adds columns in this order:
+
+| terminal width | added columns |
+|---|---|
+| 84 | hot core |
+| 96 | disk IOPS and `await` |
+| 110 | packet in/out |
+| 120 | network errors and drops |
+| 125 | disk `busy` |
+
+The `signal` column takes the remaining width and lists more warnings. The title line also adds the OS name, the memory size, and the CPU model when the terminal has room. The right edge of the title shows the view and `live` or `history`. It adds the edc version when the terminal has room. If the terminal becomes narrower, the table removes those columns immediately.
 
 On macOS and Linux, the disk view also shows IOPS and average `await` across physical disks. On Linux, the disk view also shows aggregate `busy%`, and the memory view shows memory pressure next to `mem%`. Aggregate `busy%` can exceed 100 when multiple disks are busy at once. macOS does not report the time that a disk is busy, so macOS shows `—` for these Linux-only values. On macOS and Linux, the network view shows interface errors and drops. On macOS, `edc` reads them from the interface statistics of the kernel (`net.link.generic.ifdata`). On macOS and Linux, the memory view shows `swap/s`, the bytes per second that the kernel moves out to swap. A value above zero shows that the host is short of memory.
 

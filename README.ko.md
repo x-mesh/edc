@@ -309,13 +309,23 @@ stdin과 stdout이 모두 terminal이면 `edc top`은 전체 화면 대시보드
 | `-` | interval 줄이기 |
 | `1`, `c`, `m`, `d`, `n` | 전체, CPU, memory, disk, network 열로 전환 |
 | `s` | Linux pressure 열로 전환 |
-| `↑`, `↓`, `End` | 과거 행 선택, 최신 행 추적 재개 |
+| `↑`, `↓`, `PgUp`, `PgDn`, `End` | 과거 행 선택, 한 화면씩 이동, 실시간 행 추적 재개 |
 | `Enter` | 선택한 시점의 상세 표시 |
 | `h` | 최근 60초의 load, CPU, iowait, memory 최고치를 각각 시각과 함께 표시 |
 
 기본 표의 `signal` 열은 load, CPU, iowait, memory, disk await, network errors·drops 중 가장 심각한 항목과 추가 개수를 보여 줍니다. network errors·drops는 초당 1개부터 경고로 셉니다. 패킷 수는 network 보기에서 확인합니다. 과거 행을 선택해도 수집은 계속되며 `End`로 최신 행을 다시 따라갑니다. 수집이 잠시 실패하면 마지막 행을 유지하고 다음 interval에 다시 시도합니다.
 
-terminal 폭이 132열 이상이면 기본 표는 자동으로 wide 레이아웃으로 바뀝니다. 이 레이아웃은 packet in/out, network errors·drops, hot core, disk IOPS·await·busy를 같은 행에 표시합니다. 폭이 줄면 80열 기본 표로 즉시 돌아갑니다.
+기본 표는 terminal 폭에 맞춰 열을 늘립니다. 80열보다 넓으면 다음 순서로 열을 추가합니다.
+
+| terminal 폭 | 추가되는 열 |
+|---|---|
+| 84 | hot core |
+| 96 | disk IOPS, `await` |
+| 110 | packet in/out |
+| 120 | network errors·drops |
+| 125 | disk `busy` |
+
+`signal` 열은 남는 폭을 모두 쓰며 경고를 더 많이 나열합니다. 제목 줄도 폭에 여유가 있으면 OS 이름, memory 크기, CPU 모델을 함께 표시합니다. 제목 오른쪽 끝에는 보기와 `live` 또는 `history`를 표시하고, 폭에 여유가 있으면 edc 버전도 붙입니다. 폭이 줄면 추가한 열을 바로 뺍니다.
 
 disk 보기에는 macOS와 Linux 모두 물리 disk의 IOPS와 평균 `await`가 추가됩니다. Linux에서는 모든 물리 disk의 합산 `busy%`와, memory 보기의 `mem%` 옆 memory pressure도 추가됩니다. 합산 `busy%`는 여러 disk가 동시에 바쁘면 100%를 넘을 수 있습니다. macOS는 disk가 바빴던 시간을 제공하지 않으므로 이 Linux 전용 값들을 `—`로 표시합니다. network 보기의 interface errors·drops는 macOS와 Linux 모두 표시하며, macOS에서는 kernel의 interface 통계(`net.link.generic.ifdata`)에서 읽습니다. memory 보기의 `swap/s`는 kernel이 초당 swap으로 내보낸 byte이며, 0보다 크면 memory가 부족하다는 뜻입니다.
 

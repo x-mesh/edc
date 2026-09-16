@@ -80,54 +80,51 @@ func runRouteCheck(args []string, version string) int {
 	ctx, cancel, deadline := probeContext(options.timeout)
 	defer cancel()
 	defer deadline()
-	runner, _ := newRouteRunner() // ok=false(다른 OS)면 runner는 nil이고, 각 probe가 unsupported로 건너뛴다.
+	deps, _ := newRouteDeps() // ok=false(다른 OS)면 runner는 nil이고, 각 probe가 unsupported로 건너뛴다.
 	cwd, _ := os.Getwd()
 	configDir, _ := os.UserConfigDir()
 	sshConnection := os.Getenv("SSH_CONNECTION")
-	results := runRouteCheckResults(ctx, runner, routeDefaultDest, sshConnection, cwd, configDir)
+	results := runRouteCheckResults(ctx, deps, routeDefaultDest, sshConnection, cwd, configDir)
 	return emit(options, buildReport(version, started, nil, results, options.redact))
 }
 
 // runRouteCheckResults는 check의 네 probe를 병렬로 돌린다. runner를 주입받으므로 darwin에서도 가짜
 // runner로 이 함수를 그대로 테스트한다.
-func runRouteCheckResults(ctx context.Context, runner routeRunner, dest, sshConnection, cwd, configDir string) []Result {
+func runRouteCheckResults(ctx context.Context, deps routeDeps, dest, sshConnection, cwd, configDir string) []Result {
 	return runParallel(ctx, []func(context.Context) Result{
-		func(ctx context.Context) Result { return probeRouteTable(ctx, runner) },
+		func(ctx context.Context) Result { return probeRouteTable(ctx, deps) },
 		func(ctx context.Context) Result {
-			return probeRouteTarget(ctx, runner, dest, sshConnection, cwd, configDir)
+			return probeRouteTarget(ctx, deps, dest, sshConnection, cwd, configDir)
 		},
-		func(ctx context.Context) Result { return probeRouteLockout(ctx, runner, dest, sshConnection) },
-		func(ctx context.Context) Result { return probeRouteGuard(ctx, runner) },
-		func(ctx context.Context) Result { return probeRouteReach(ctx, runner, dest, cwd, configDir) },
+		func(ctx context.Context) Result { return probeRouteLockout(ctx, deps, dest, sshConnection) },
+		func(ctx context.Context) Result { return probeRouteGuard(ctx, deps) },
+		func(ctx context.Context) Result { return probeRouteReach(ctx, deps, dest, cwd, configDir) },
 	})
 }
 
 // probeRouteReach는 현재 출구와 exits.yaml에 정의된 출구들의 L2 도달성을 본다. next-hop의 이웃
 // 항목이 INCOMPLETE나 FAILED면 그 출구로 바꾸는 순간 반드시 실패하므로, 깨뜨린 뒤 되돌리는 대신
 // 미리 거를 수 있다. 다만 lladdr이 정상 형태이기만 하면 그 너머가 살아있는지는 L2에서 알 수 없다.
-func probeRouteReach(ctx context.Context, runner routeRunner, dest, cwd, configDir string) Result {
+func probeRouteReach(ctx context.Context, deps routeDeps, dest, cwd, configDir string) Result {
 	started := time.Now()
-	if runner == nil {
+	if deps.backend == nil {
 		return unsupported(routeProbeReach, T("route.skip.linux_only"))
 	}
-	neighborText, err := runner.run(ctx, "ip", "neigh", "show")
+	neighbors, err := deps.backend.Neighbors(ctx)
 	if err != nil {
-		return resultFromError(routeProbeReach, started, "command", fmt.Errorf("ip neigh show: %w", err))
+		return resultFromError(routeProbeReach, started, "netlink", fmt.Errorf("neighbors: %w", err))
 	}
-	linkText, err := runner.run(ctx, "ip", "-o", "link", "show")
+	links, err := deps.backend.Links(ctx)
 	if err != nil {
-		return resultFromError(routeProbeReach, started, "command", fmt.Errorf("ip -o link show: %w", err))
+		return resultFromError(routeProbeReach, started, "netlink", fmt.Errorf("links: %w", err))
 	}
-	tableText, err := runner.run(ctx, "ip", "route", "show", "table", "all")
+	entries, err := deps.backend.Routes(ctx)
 	if err != nil {
-		return resultFromError(routeProbeReach, started, "command", fmt.Errorf("ip route show table all: %w", err))
+		return resultFromError(routeProbeReach, started, "netlink", fmt.Errorf("routes: %w", err))
 	}
-	neighbors := parseNeighbors(neighborText)
-	links := parseLinks(linkText)
 
 	type candidate struct{ name, via, dev string }
 	var candidates []candidate
-	entries, _ := parseRouteTable(tableText)
 	if current := entriesForDest(entries, dest); len(current) > 0 && current[0].Via != "" {
 		candidates = append(candidates, candidate{T("route.reach.current"), current[0].Via, current[0].Dev})
 	}
@@ -176,52 +173,40 @@ func probeRouteReach(ctx context.Context, runner routeRunner, dest, cwd, configD
 
 // probeRouteTable은 `ip route show table all`과 `ip rule show` 원문을 모두 읽어 스냅샷 범위가
 // main table만이 아니라는 것(R09)을 check 시점에도 확인한다.
-func probeRouteTable(ctx context.Context, runner routeRunner) Result {
+func probeRouteTable(ctx context.Context, deps routeDeps) Result {
 	started := time.Now()
-	if runner == nil {
+	if deps.backend == nil {
 		return unsupported(routeProbeTable, T("route.skip.linux_only"))
 	}
-	tableText, err := runner.run(ctx, "ip", "route", "show", "table", "all")
+	entries, err := deps.backend.Routes(ctx)
 	if err != nil {
-		return resultFromError(routeProbeTable, started, "command", fmt.Errorf("ip route show table all: %w", err))
+		return resultFromError(routeProbeTable, started, "netlink", fmt.Errorf("routes: %w", err))
 	}
-	ruleText, err := runner.run(ctx, "ip", "rule", "show")
+	rules, err := deps.backend.Rules(ctx)
 	if err != nil {
-		return resultFromError(routeProbeTable, started, "command", fmt.Errorf("ip rule show: %w", err))
+		return resultFromError(routeProbeTable, started, "netlink", fmt.Errorf("rules: %w", err))
 	}
-	entries, parseErrors := parseRouteTable(tableText)
-	rules, ruleErr := parseIPRule(ruleText)
-	status := StatusPass
-	var warnings []string
-	if len(parseErrors) > 0 {
-		status = StatusWarn
-		warnings = append(warnings, T("route.table.warn.parse_errors", len(parseErrors)))
-	}
-	if ruleErr != nil {
-		status = StatusWarn
-		warnings = append(warnings, T("route.table.warn.rule_parse_error", ruleErr))
-	}
+	// netlink에서 읽으면 해석하지 못한 줄이라는 개념이 없다. 사람이 읽을 수 있는 형태는 렌더러가
+	// 다시 만든다.
 	return Result{
-		Probe: routeProbeTable, Status: status, StartedAt: started.UTC(), DurationMS: time.Since(started).Milliseconds(),
+		Probe: routeProbeTable, Status: StatusPass, StartedAt: started.UTC(), DurationMS: time.Since(started).Milliseconds(),
 		Summary:  T("route.table.summary", len(entries), len(rules)),
-		Metrics:  map[string]interface{}{"entries": len(entries), "rules": len(rules), "parse_errors": len(parseErrors)},
-		Evidence: []Evidence{{Label: "ip route show table all", Value: tableText}, {Label: "ip rule show", Value: ruleText}},
-		Warnings: warnings,
+		Metrics:  map[string]interface{}{"entries": len(entries), "rules": len(rules)},
+		Evidence: []Evidence{{Label: "routes", Value: renderRouteEntries(entries)}, {Label: "rules", Value: renderIPRules(rules)}},
 	}
 }
 
 // probeRouteTarget은 전환 뒤 검증에 쓸 후보 주소마다 ip route get을 대조해, 더 구체적인 전용 경로가
 // 있어 바꾼 경로를 타지 않는 주소를 미리 가려낸다(R04).
-func probeRouteTarget(ctx context.Context, runner routeRunner, dest, sshConnection, cwd, configDir string) Result {
+func probeRouteTarget(ctx context.Context, deps routeDeps, dest, sshConnection, cwd, configDir string) Result {
 	started := time.Now()
-	if runner == nil {
+	if deps.backend == nil {
 		return unsupported(routeProbeTarget, T("route.skip.linux_only"))
 	}
-	tableText, err := runner.run(ctx, "ip", "route", "show", "table", "all")
+	entries, err := deps.backend.Routes(ctx)
 	if err != nil {
-		return resultFromError(routeProbeTarget, started, "command", err)
+		return resultFromError(routeProbeTarget, started, "netlink", err)
 	}
-	entries, _ := parseRouteTable(tableText)
 	targetEntries := entriesForDest(entries, dest)
 	if len(targetEntries) == 0 {
 		return resultFromError(routeProbeTarget, started, "route", errors.New(T("route.target.error.no_route", dest)))
@@ -235,14 +220,9 @@ func probeRouteTarget(ctx context.Context, runner routeRunner, dest, sshConnecti
 
 	var matched, excluded []string
 	for _, address := range routeVerificationCandidates(sshConnection) {
-		output, err := runner.run(ctx, "ip", "route", "get", address)
+		get, err := deps.backend.RouteTo(ctx, address)
 		if err != nil {
 			warnings = append(warnings, T("route.target.warn.get_failed", address, err))
-			continue
-		}
-		get, err := parseRouteGet(output)
-		if err != nil {
-			warnings = append(warnings, T("route.target.warn.get_unparsed", address))
 			continue
 		}
 		if routeGetMatches(get, targetEntry) {
@@ -294,27 +274,26 @@ func dedupeStrings(values []string) []string {
 
 // probeRouteLockout은 자기 차단 위험을 매긴다(R07). SSH_CONNECTION이 없으면(로컬 콘솔) 판정할 대상이
 // 없으므로 skip한다.
-func probeRouteLockout(ctx context.Context, runner routeRunner, dest, sshConnection string) Result {
+func probeRouteLockout(ctx context.Context, deps routeDeps, dest, sshConnection string) Result {
 	started := time.Now()
-	if runner == nil {
+	if deps.backend == nil {
 		return unsupported(routeProbeLockout, T("route.skip.linux_only"))
 	}
 	client, _, ok := parseSSHConnection(sshConnection)
 	if !ok {
 		return Result{Probe: routeProbeLockout, Status: StatusSkip, StartedAt: started.UTC(), Summary: T("route.lockout.skip.no_ssh_connection")}
 	}
-	tableText, err := runner.run(ctx, "ip", "route", "show", "table", "all")
+	entries, err := deps.backend.Routes(ctx)
 	if err != nil {
-		return resultFromError(routeProbeLockout, started, "command", err)
+		return resultFromError(routeProbeLockout, started, "netlink", err)
 	}
-	entries, _ := parseRouteTable(tableText)
 	targetEntries := entriesForDest(entries, dest)
 	if len(targetEntries) == 0 {
 		return resultFromError(routeProbeLockout, started, "route", errors.New(T("route.target.error.no_route", dest)))
 	}
 	targetEntry := targetEntries[0]
 
-	risk, reasonKey, sessionDev, err := assessRouteLockout(ctx, runner, targetEntry, client)
+	risk, reasonKey, sessionDev, err := assessRouteLockout(ctx, deps, targetEntry, client)
 	if err != nil {
 		return resultFromError(routeProbeLockout, started, "command", err)
 	}
@@ -334,12 +313,8 @@ func probeRouteLockout(ctx context.Context, runner routeRunner, dest, sshConnect
 // assessRouteLockout은 client 주소로 ip route get을 해 lockoutRisk를 매긴다. 터널 underlay
 // endpoint를 알아낼 도구가 없으므로(이 명령군은 ip, systemd-run, systemctl만 부른다) 확인하지 못한
 // 것으로 보고 위험을 낮추지 않는다(R07). probeRouteLockout과 switch가 함께 쓴다.
-func assessRouteLockout(ctx context.Context, runner routeRunner, targetEntry routeEntry, client string) (risk, reason, sessionDev string, err error) {
-	output, err := runner.run(ctx, "ip", "route", "get", client)
-	if err != nil {
-		return "", "", "", err
-	}
-	sessionGet, err := parseRouteGet(output)
+func assessRouteLockout(ctx context.Context, deps routeDeps, targetEntry routeEntry, client string) (risk, reason, sessionDev string, err error) {
+	sessionGet, err := deps.backend.RouteTo(ctx, client)
 	if err != nil {
 		return "", "", "", err
 	}
@@ -386,11 +361,11 @@ func runRouteRollback(args []string, version string) int {
 	ctx, cancel, deadline := probeContext(options.timeout)
 	defer cancel()
 	defer deadline()
-	runner, ok := newRouteRunner()
+	deps, ok := newRouteDeps()
 	if !ok {
 		return emit(options, buildReport(version, started, nil, []Result{unsupported("route.rollback", T("route.skip.linux_only"))}, options.redact))
 	}
-	outcome := executeRouteRollback(ctx, runner, *statePath, snapshot)
+	outcome := executeRouteRollback(ctx, deps, *statePath, snapshot)
 	if outcome.Result.Status == StatusFail {
 		for _, command := range outcome.RemainingCommands {
 			fmt.Fprintln(os.Stderr, "ip "+strings.Join(command, " "))
@@ -402,35 +377,34 @@ func runRouteRollback(args []string, version string) int {
 // executeRouteRollback은 원래 스펙을 되돌리는 replace와 잔존 경로를 지우는 del을 순서대로 실행한 뒤,
 // 테이블과 rule을 다시 읽어 기준선과 대조한다. 성공했을 때만 타이머를 해제하고 상태 파일에 완료
 // 표시를 남긴다(R11).
-func executeRouteRollback(ctx context.Context, runner routeRunner, statePath string, snapshot routeSnapshot) routeRollbackOutcome {
+func executeRouteRollback(ctx context.Context, deps routeDeps, statePath string, snapshot routeSnapshot) routeRollbackOutcome {
 	started := time.Now()
-	currentTable, err := runner.run(ctx, "ip", "route", "show", "table", "all")
+	currentEntries, err := deps.backend.Routes(ctx)
 	if err != nil {
-		return routeRollbackOutcome{Result: resultFromError("route.rollback", started, "command", err)}
+		return routeRollbackOutcome{Result: resultFromError("route.rollback", started, "netlink", err)}
 	}
-	commands, err := rollbackCommands(snapshot, currentTable)
+	commands, err := rollbackCommands(snapshot, currentEntries)
 	if err != nil {
 		return routeRollbackOutcome{Result: resultFromError("route.rollback", started, "route", err)}
 	}
 	for index, command := range commands {
-		if _, err := runner.run(ctx, "ip", command...); err != nil {
+		if _, err := deps.runner.run(ctx, "ip", command...); err != nil {
 			return routeRollbackOutcome{
 				Result:            resultFromError("route.rollback", started, "command", fmt.Errorf("ip %s: %w", strings.Join(command, " "), err)),
 				RemainingCommands: commands[index:],
 			}
 		}
 	}
-	afterTable, err := runner.run(ctx, "ip", "route", "show", "table", "all")
+	afterEntries, err := deps.backend.Routes(ctx)
 	if err != nil {
-		return routeRollbackOutcome{Result: resultFromError("route.rollback", started, "command", err)}
+		return routeRollbackOutcome{Result: resultFromError("route.rollback", started, "netlink", err)}
 	}
-	afterRule, err := runner.run(ctx, "ip", "rule", "show")
+	afterRules, err := deps.backend.Rules(ctx)
 	if err != nil {
-		return routeRollbackOutcome{Result: resultFromError("route.rollback", started, "command", err)}
+		return routeRollbackOutcome{Result: resultFromError("route.rollback", started, "netlink", err)}
 	}
-	afterEntries, _ := parseRouteTable(afterTable)
 	count := routeCountFor(afterEntries, snapshot.Dest)
-	if count != snapshot.CountBaseline || afterRule != snapshot.IPRuleText {
+	if count != snapshot.CountBaseline || renderIPRules(afterRules) != snapshot.IPRuleText {
 		// 원래 경로를 정확히 복원해도 기준선을 넘는 잔존 경로가 남으면 여전히 깨진 상태다(R11).
 		// 성공을 보고하지 않고, 처음부터 다시 실행할 수 있도록 전체 복구 명령을 남긴다.
 		return routeRollbackOutcome{
@@ -438,7 +412,7 @@ func executeRouteRollback(ctx context.Context, runner routeRunner, statePath str
 			RemainingCommands: commands,
 		}
 	}
-	warning := disarmGuard(ctx, runner, snapshot.UnitName)
+	warning := disarmGuard(ctx, deps.runner, snapshot.UnitName)
 	completedAt := time.Now().UTC()
 	snapshot.CompletedAt = &completedAt
 	if err := writeRouteState(statePath, snapshot); err != nil {
@@ -457,9 +431,9 @@ func executeRouteRollback(ctx context.Context, runner routeRunner, statePath str
 // probeRouteGuard는 check 동안 실제로 무장하지 않는다. systemd-run을 부르면 실제 transient timer가
 // 생기는 부작용이 있어(R06), 읽기 전용이어야 하는 check에서는 쓸 수 없다. 등급은 switch 실행 시점에만
 // 확인된다.
-func probeRouteGuard(ctx context.Context, runner routeRunner) Result {
+func probeRouteGuard(ctx context.Context, deps routeDeps) Result {
 	started := time.Now()
-	if runner == nil {
+	if deps.backend == nil {
 		return unsupported(routeProbeGuard, T("route.skip.linux_only"))
 	}
 	return Result{
@@ -488,7 +462,7 @@ type routeConfirmFunc func(detail, question string, initial bool) (bool, error)
 // routeSwitchDeps는 switch가 쓰는 부수효과 있는 의존성이다. 구조체로 모아 테스트가 모두 가짜로
 // 바꿔치기할 수 있게 한다.
 type routeSwitchDeps struct {
-	runner        routeRunner
+	routeDeps
 	confirm       routeConfirmFunc
 	fetchPublicIP func(context.Context) (publicNetworkInfo, error)
 	signals       <-chan os.Signal
@@ -554,7 +528,7 @@ func runRouteSwitch(args []string, version string) int {
 	ctx, cancel, deadline := probeContext(options.timeout)
 	defer cancel()
 	defer deadline()
-	runner, ok := newRouteRunner()
+	deps, ok := newRouteDeps()
 	if !ok {
 		return emit(options, buildReport(version, started, nil, []Result{unsupported("route.switch", T("route.skip.linux_only"))}, options.redact))
 	}
@@ -573,15 +547,15 @@ func runRouteSwitch(args []string, version string) int {
 		edcPath: edcPath, execID: execID, statePath: routeStatePath(execID),
 		sshConnection: os.Getenv("SSH_CONNECTION"),
 	}
-	deps := routeSwitchDeps{
-		runner: runner, signals: signals,
+	switchDeps := routeSwitchDeps{
+		routeDeps: deps, signals: signals,
 		confirm:       routeSwitchTerminalConfirm,
 		fetchPublicIP: fetchPublicNetworkInfo,
 	}
 	if *yes {
-		deps.confirm = routeSwitchAutoConfirm
+		switchDeps.confirm = routeSwitchAutoConfirm
 	}
-	outcome := executeRouteSwitch(ctx, deps, input)
+	outcome := executeRouteSwitch(ctx, switchDeps, input)
 	if outcome.Cancelled {
 		fmt.Fprintln(os.Stderr, outcome.Message)
 		return 4
@@ -597,15 +571,15 @@ func executeRouteSwitch(ctx context.Context, deps routeSwitchDeps, input routeSw
 	started := time.Now()
 	const probe = "route.switch"
 
-	tableText, err := deps.runner.run(ctx, "ip", "route", "show", "table", "all")
+	entries, err := deps.backend.Routes(ctx)
 	if err != nil {
-		return routeSwitchOutcome{Result: resultFromError(probe, started, "command", err)}
+		return routeSwitchOutcome{Result: resultFromError(probe, started, "netlink", err)}
 	}
-	ruleText, err := deps.runner.run(ctx, "ip", "rule", "show")
+	rules, err := deps.backend.Rules(ctx)
 	if err != nil {
-		return routeSwitchOutcome{Result: resultFromError(probe, started, "command", err)}
+		return routeSwitchOutcome{Result: resultFromError(probe, started, "netlink", err)}
 	}
-	entries, _ := parseRouteTable(tableText)
+	tableText, ruleText := renderRouteEntries(entries), renderIPRules(rules)
 	targetEntries := entriesForDest(entries, input.dest)
 	if len(targetEntries) == 0 {
 		return routeSwitchOutcome{Result: resultFromError(probe, started, "route", errors.New(T("route.target.error.no_route", input.dest)))}
@@ -615,7 +589,7 @@ func executeRouteSwitch(ctx context.Context, deps routeSwitchDeps, input routeSw
 
 	// 프리플라이트: next-hop이 L2에서 확정 실패면 바꿔도 반드시 끊긴다. 아직 아무것도 만들지 않았으니
 	// 깨뜨린 뒤 되돌리는 대신 여기서 끝낸다. 항목이 없는 경우는 실패가 아니라 미확인이므로 막지 않는다.
-	reachState, neighborDetail, linkDetail, mtu := routeExitReachability(ctx, deps.runner, input.exit.Via, input.exit.Dev)
+	reachState, neighborDetail, linkDetail, mtu := routeExitReachability(ctx, deps.routeDeps, input.exit.Via, input.exit.Dev)
 	if reachState == reachBroken && !input.force {
 		return routeSwitchOutcome{Result: resultFromError(probe, started, "reach",
 			errors.New(T("route.switch.error.exit_unreachable", input.exit.Name, emptyAs(neighborDetail, "-"), emptyAs(linkDetail, "-"))))}
@@ -651,7 +625,7 @@ func executeRouteSwitch(ctx context.Context, deps routeSwitchDeps, input routeSw
 	// 않고 높음으로 본다(R07의 안전 기본값을 그대로 적용한다).
 	risk := "high"
 	if client, _, ok := parseSSHConnection(input.sshConnection); ok {
-		if measured, _, _, err := assessRouteLockout(ctx, deps.runner, targetEntry, client); err == nil {
+		if measured, _, _, err := assessRouteLockout(ctx, deps.routeDeps, targetEntry, client); err == nil {
 			risk = measured
 		}
 	}
@@ -666,26 +640,25 @@ func executeRouteSwitch(ctx context.Context, deps routeSwitchDeps, input routeSw
 	tier := detectGuardTier(guardProbe)
 	allow, reason := guardDecision(tier, risk, input.force)
 	if !allow {
-		return routeSwitchOutcome{Result: abortRouteSwitch(ctx, deps.runner, input.statePath, snapshot, probe, started, T("route.switch.error.guard_denied", reason))}
+		return routeSwitchOutcome{Result: abortRouteSwitch(ctx, deps.routeDeps, input.statePath, snapshot, probe, started, T("route.switch.error.guard_denied", reason))}
 	}
 
 	replaceArgs, err := routeReplaceArgs(targetEntry, input.exit.Via)
 	if err != nil {
-		return routeSwitchOutcome{Result: abortRouteSwitch(ctx, deps.runner, input.statePath, snapshot, probe, started, err.Error())}
+		return routeSwitchOutcome{Result: abortRouteSwitch(ctx, deps.routeDeps, input.statePath, snapshot, probe, started, err.Error())}
 	}
 	if _, err := deps.runner.run(ctx, "ip", replaceArgs...); err != nil {
-		return routeSwitchOutcome{Result: abortRouteSwitch(ctx, deps.runner, input.statePath, snapshot, probe, started, err.Error())}
+		return routeSwitchOutcome{Result: abortRouteSwitch(ctx, deps.routeDeps, input.statePath, snapshot, probe, started, err.Error())}
 	}
 
 	// 경로를 바꾼 뒤의 실패는 여기부터 rollback 경로를 그대로 부른다(R03, R16).
-	afterTable, err := deps.runner.run(ctx, "ip", "route", "show", "table", "all")
+	afterEntries, err := deps.backend.Routes(ctx)
 	if err != nil {
-		return routeSwitchOutcome{Result: routeSwitchRollbackAndFail(ctx, deps.runner, input.statePath, snapshot, probe, started, err.Error())}
+		return routeSwitchOutcome{Result: routeSwitchRollbackAndFail(ctx, deps.routeDeps, input.statePath, snapshot, probe, started, err.Error())}
 	}
-	afterEntries, _ := parseRouteTable(afterTable)
 	if count := routeCountFor(afterEntries, input.dest); count != baseline {
 		reason := T("route.rollback.error.verify_failed", baseline, count)
-		return routeSwitchOutcome{Result: routeSwitchRollbackAndFail(ctx, deps.runner, input.statePath, snapshot, probe, started, reason)}
+		return routeSwitchOutcome{Result: routeSwitchRollbackAndFail(ctx, deps.routeDeps, input.statePath, snapshot, probe, started, reason)}
 	}
 
 	identity := "skipped"
@@ -693,11 +666,11 @@ func executeRouteSwitch(ctx context.Context, deps routeSwitchDeps, input routeSw
 		info, err := deps.fetchPublicIP(ctx)
 		if err != nil {
 			reason := T("route.switch.error.identity_check_failed", err)
-			return routeSwitchOutcome{Result: routeSwitchRollbackAndFail(ctx, deps.runner, input.statePath, snapshot, probe, started, reason)}
+			return routeSwitchOutcome{Result: routeSwitchRollbackAndFail(ctx, deps.routeDeps, input.statePath, snapshot, probe, started, reason)}
 		}
 		if info.IP != input.exit.ExpectPublicIP {
 			reason := T("route.switch.error.identity_mismatch", input.exit.ExpectPublicIP, info.IP)
-			return routeSwitchOutcome{Result: routeSwitchRollbackAndFail(ctx, deps.runner, input.statePath, snapshot, probe, started, reason)}
+			return routeSwitchOutcome{Result: routeSwitchRollbackAndFail(ctx, deps.routeDeps, input.statePath, snapshot, probe, started, reason)}
 		}
 		identity = "matched"
 	}
@@ -711,7 +684,7 @@ func executeRouteSwitch(ctx context.Context, deps routeSwitchDeps, input routeSw
 		if confirmErr != nil {
 			message = confirmErr.Error() // 신호 케이스는 이미 번역된 문자열을 담고 있다.
 		}
-		rollbackResult := executeRouteRollback(ctx, deps.runner, input.statePath, snapshot)
+		rollbackResult := executeRouteRollback(ctx, deps.routeDeps, input.statePath, snapshot)
 		return routeSwitchOutcome{Result: rollbackResult.Result, Cancelled: true, Message: message}
 	}
 
@@ -733,8 +706,8 @@ func executeRouteSwitch(ctx context.Context, deps routeSwitchDeps, input routeSw
 
 // abortRouteSwitch는 경로를 하나도 바꾸지 않은 단계에서 멈출 때 쓴다. 방어적으로 타이머를 해제하고
 // 상태 파일을 완료로 표시해, 아직 아무 일도 일어나지 않은 채로 남지 않게 한다.
-func abortRouteSwitch(ctx context.Context, runner routeRunner, statePath string, snapshot routeSnapshot, probe string, started time.Time, reason string) Result {
-	disarmGuard(ctx, runner, snapshot.UnitName)
+func abortRouteSwitch(ctx context.Context, deps routeDeps, statePath string, snapshot routeSnapshot, probe string, started time.Time, reason string) Result {
+	disarmGuard(ctx, deps.runner, snapshot.UnitName)
 	completedAt := time.Now().UTC()
 	snapshot.CompletedAt = &completedAt
 	_ = writeRouteState(statePath, snapshot)
@@ -742,8 +715,8 @@ func abortRouteSwitch(ctx context.Context, runner routeRunner, statePath string,
 }
 
 // routeSwitchRollbackAndFail은 경로를 이미 바꾼 뒤의 실패에서 rollback 경로를 그대로 부른다.
-func routeSwitchRollbackAndFail(ctx context.Context, runner routeRunner, statePath string, snapshot routeSnapshot, probe string, started time.Time, reason string) Result {
-	rollbackOutcome := executeRouteRollback(ctx, runner, statePath, snapshot)
+func routeSwitchRollbackAndFail(ctx context.Context, deps routeDeps, statePath string, snapshot routeSnapshot, probe string, started time.Time, reason string) Result {
+	rollbackOutcome := executeRouteRollback(ctx, deps, statePath, snapshot)
 	result := resultFromError(probe, started, "verify", errors.New(reason))
 	result.Evidence = rollbackOutcome.Result.Evidence
 	result.Warnings = append(result.Warnings, rollbackOutcome.Result.Summary)
@@ -813,17 +786,17 @@ func runRouteStatus(args []string, version string) int {
 	ctx, cancel, deadline := probeContext(options.timeout)
 	defer cancel()
 	defer deadline()
-	runner, ok := newRouteRunner()
+	deps, ok := newRouteDeps()
 	if !ok {
 		return emit(options, buildReport(version, started, nil, []Result{unsupported("route.status", T("route.skip.linux_only"))}, options.redact))
 	}
-	results := routeStatusResults(ctx, runner, routeStateDirectory)
+	results := routeStatusResults(ctx, deps, routeStateDirectory)
 	return emit(options, buildReport(version, started, nil, results, options.redact))
 }
 
 // routeStatusResults는 상태 디렉터리의 상태 파일마다 하나씩 Result를 만든다. 하나도 없으면 fail이
 // 아니라 skip 사유를 남긴다(R12).
-func routeStatusResults(ctx context.Context, runner routeRunner, stateDir string) []Result {
+func routeStatusResults(ctx context.Context, deps routeDeps, stateDir string) []Result {
 	paths, err := listRouteStateFiles(stateDir)
 	if err != nil {
 		return []Result{resultFromError("route.status", time.Now(), "state", err)}
@@ -833,7 +806,7 @@ func routeStatusResults(ctx context.Context, runner routeRunner, stateDir string
 	}
 	results := make([]Result, 0, len(paths))
 	for _, path := range paths {
-		results = append(results, routeStatusForFile(ctx, runner, path))
+		results = append(results, routeStatusForFile(ctx, deps, path))
 	}
 	return results
 }
@@ -863,7 +836,7 @@ func listRouteStateFiles(dir string) ([]string, error) {
 // routeStatusForFile은 상태 파일 하나를 읽어 진행 중이거나 최근에 끝난 전환의 상태를 보고한다.
 // 아직 완료되지 않았는데 가리키는 타이머가 active가 아니면 상태 파일과 타이머가 어긋난 것이라
 // warn으로 표시한다.
-func routeStatusForFile(ctx context.Context, runner routeRunner, path string) Result {
+func routeStatusForFile(ctx context.Context, deps routeDeps, path string) Result {
 	started := time.Now()
 	probe := "route.status." + strings.TrimSuffix(strings.TrimPrefix(filepath.Base(path), "route-"), ".json")
 	snapshot, err := readRouteState(path)
@@ -874,7 +847,7 @@ func routeStatusForFile(ctx context.Context, runner routeRunner, path string) Re
 	status := StatusPass
 	var warnings []string
 	if !completed {
-		output, runErr := runner.run(ctx, "systemctl", "is-active", snapshot.UnitName+".timer")
+		output, runErr := deps.runner.run(ctx, "systemctl", "is-active", snapshot.UnitName+".timer")
 		if runErr != nil || !parseIsActive(output) {
 			status = StatusWarn
 			warnings = append(warnings, T("route.status.warn.timer_mismatch", snapshot.UnitName))

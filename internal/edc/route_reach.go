@@ -148,16 +148,19 @@ func linkReach(links []linkInfo, name string) (state string, detail string, mtu 
 
 // routeExitReachability는 출구 하나의 도달성을 실제 호스트에서 읽어 판정한다. 명령이 실패하면
 // 판정을 못 한 것이므로 unknown으로 두고 전환을 막지 않는다. 막아야 하는 것은 확정 실패뿐이다.
-func routeExitReachability(ctx context.Context, runner routeRunner, via, dev string) (state, neighborDetail, linkDetail string, mtu int) {
-	neighborText, err := runner.run(ctx, "ip", "neigh", "show")
+func routeExitReachability(ctx context.Context, deps routeDeps, via, dev string) (state, neighborDetail, linkDetail string, mtu int) {
+	if deps.backend == nil {
+		return reachUnknown, "", "", 0
+	}
+	neighbors, err := deps.backend.Neighbors(ctx)
 	if err != nil {
 		return reachUnknown, "", "", 0
 	}
-	linkText, err := runner.run(ctx, "ip", "-o", "link", "show")
+	links, err := deps.backend.Links(ctx)
 	if err != nil {
 		return reachUnknown, "", "", 0
 	}
-	return exitReach(parseNeighbors(neighborText), parseLinks(linkText), via, dev)
+	return exitReach(neighbors, links, via, dev)
 }
 
 // exitReach는 next-hop과 장치를 함께 보고 출구 하나의 도달성을 정한다. 둘 중 하나라도 확정 실패면

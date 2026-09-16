@@ -10,17 +10,22 @@ import (
 	"time"
 )
 
-// routeCheckFakeRunner는 실측 fixture를 흉내 낸 응답을 돌려주는 route check용 가짜 runner다.
-func routeCheckFakeRunner() *fakeRouteRunner {
-	return &fakeRouteRunner{
-		outputs: map[string]string{
-			"ip route show table all": routeTableFixture,
-			"ip rule show":            ipRuleFixture,
-			"ip route get 100.64.0.2": "100.64.0.2 via 10.20.1.1 dev enp1s0 src 10.20.1.5 uid 0",
-			"ip route get 100.64.0.1": "100.64.0.1 via 10.20.1.1 dev enp1s0 src 10.20.1.5 uid 0",
-			"ip route get 8.8.8.8":    "8.8.8.8 via 192.0.2.254 dev enp1s0 src 10.20.1.5 uid 0",
+// routeCheckFakeDeps는 실측 fixture를 백엔드 값으로 바꿔 주는 route check용 가짜 의존성이다.
+// 커널 읽기는 백엔드가, systemd는 runner가 맡는다.
+func routeCheckFakeDeps() (routeDeps, *fakeRouteRunner) {
+	runner := &fakeRouteRunner{outputs: map[string]string{}}
+	backend := &fakeRouteBackend{
+		routeText:    routeTableFixture,
+		ruleText:     ipRuleFixture,
+		neighborText: neighborFixture,
+		linkText:     linkFixture,
+		getResults: map[string]string{
+			"100.64.0.2": "100.64.0.2 via 10.20.1.1 dev enp1s0 src 10.20.1.5 uid 0",
+			"100.64.0.1": "100.64.0.1 via 10.20.1.1 dev enp1s0 src 10.20.1.5 uid 0",
+			"8.8.8.8":    "8.8.8.8 via 192.0.2.254 dev enp1s0 src 10.20.1.5 uid 0",
 		},
 	}
+	return routeDeps{backend: backend, runner: runner}, runner
 }
 
 const routeCheckSSHConnection = "100.64.0.2 50015 100.64.0.1 22"
@@ -30,8 +35,8 @@ func TestRunRouteCheckResultsNeverMutates(t *testing.T) {
 	defer setLanguage(restore)
 	setLanguage(defaultLanguage)
 
-	runner := routeCheckFakeRunner()
-	results := runRouteCheckResults(context.Background(), runner, routeDefaultDest, routeCheckSSHConnection, t.TempDir(), "")
+	deps, runner := routeCheckFakeDeps()
+	results := runRouteCheckResults(context.Background(), deps, routeDefaultDest, routeCheckSSHConnection, t.TempDir(), "")
 	if len(results) != 5 {
 		t.Fatalf("results = %d, want 5: %#v", len(results), results)
 	}
@@ -61,8 +66,8 @@ func TestRunRouteCheckResultsReportsRestDespiteMissingExits(t *testing.T) {
 	defer setLanguage(restore)
 	setLanguage(defaultLanguage)
 
-	runner := routeCheckFakeRunner()
-	results := runRouteCheckResults(context.Background(), runner, routeDefaultDest, routeCheckSSHConnection, t.TempDir(), "")
+	deps, _ := routeCheckFakeDeps()
+	results := runRouteCheckResults(context.Background(), deps, routeDefaultDest, routeCheckSSHConnection, t.TempDir(), "")
 	var target, table, lockout, guard Result
 	for _, result := range results {
 		switch result.Probe {
@@ -112,8 +117,8 @@ func TestProbeRouteTargetExcludesMoreSpecificRoute(t *testing.T) {
 	defer setLanguage(restore)
 	setLanguage(defaultLanguage)
 
-	runner := routeCheckFakeRunner()
-	result := probeRouteTarget(context.Background(), runner, routeDefaultDest, routeCheckSSHConnection, t.TempDir(), "")
+	deps, _ := routeCheckFakeDeps()
+	result := probeRouteTarget(context.Background(), deps, routeDefaultDest, routeCheckSSHConnection, t.TempDir(), "")
 	excluded, ok := result.Metrics["excluded"].([]string)
 	if !ok || len(excluded) != 1 || !strings.HasPrefix(excluded[0], "8.8.8.8") {
 		t.Fatalf("excluded = %#v, want exactly one entry starting with 8.8.8.8", result.Metrics["excluded"])
@@ -132,8 +137,8 @@ func TestProbeRouteLockoutHighWhenSessionRidesTarget(t *testing.T) {
 	defer setLanguage(restore)
 	setLanguage(defaultLanguage)
 
-	runner := routeCheckFakeRunner()
-	result := probeRouteLockout(context.Background(), runner, routeDefaultDest, routeCheckSSHConnection)
+	deps, _ := routeCheckFakeDeps()
+	result := probeRouteLockout(context.Background(), deps, routeDefaultDest, routeCheckSSHConnection)
 	if result.Status != StatusWarn {
 		t.Fatalf("status = %v, want warn (risk high)", result.Status)
 	}
@@ -143,16 +148,16 @@ func TestProbeRouteLockoutHighWhenSessionRidesTarget(t *testing.T) {
 }
 
 func TestProbeRouteLockoutSkipsWithoutSSHConnection(t *testing.T) {
-	runner := routeCheckFakeRunner()
-	result := probeRouteLockout(context.Background(), runner, routeDefaultDest, "")
+	deps, _ := routeCheckFakeDeps()
+	result := probeRouteLockout(context.Background(), deps, routeDefaultDest, "")
 	if result.Status != StatusSkip {
 		t.Fatalf("status = %v, want skip", result.Status)
 	}
 }
 
 func TestProbeRouteGuardNeverArmsDuringCheck(t *testing.T) {
-	runner := routeCheckFakeRunner()
-	result := probeRouteGuard(context.Background(), runner)
+	deps, runner := routeCheckFakeDeps()
+	result := probeRouteGuard(context.Background(), deps)
 	if result.Status != StatusSkip {
 		t.Fatalf("status = %v, want skip", result.Status)
 	}
@@ -161,13 +166,19 @@ func TestProbeRouteGuardNeverArmsDuringCheck(t *testing.T) {
 	}
 }
 
-func TestRunRouteCheckResultsUnsupportedWithoutRunner(t *testing.T) {
-	results := runRouteCheckResults(context.Background(), nil, routeDefaultDest, "", t.TempDir(), "")
+func TestRunRouteCheckResultsUnsupportedWithoutBackend(t *testing.T) {
+	results := runRouteCheckResults(context.Background(), routeDeps{}, routeDefaultDest, "", t.TempDir(), "")
 	for _, result := range results {
 		if result.Status != StatusSkip {
 			t.Fatalf("probe %s status = %v, want skip when the OS is unsupported", result.Probe, result.Status)
 		}
 	}
+}
+
+// renderedRuleFixture는 프로덕션이 스냅샷에 저장하는 형태와 같은 렌더링 결과를 만든다.
+func renderedRuleFixture() string {
+	rules, _ := parseIPRule(ipRuleFixture)
+	return renderIPRules(rules)
 }
 
 func metricTrapSnapshot() routeSnapshot {
@@ -178,7 +189,7 @@ func metricTrapSnapshot() routeSnapshot {
 		CreatedAt:      time.Now().UTC(),
 		Dest:           "8.8.8.8",
 		RouteTableText: routeMetricTrapFixture,
-		IPRuleText:     ipRuleFixture,
+		IPRuleText:     renderedRuleFixture(),
 		TargetEntry:    entries[0],
 		NewVia:         "192.0.2.254",
 		CountBaseline:  1,
@@ -191,16 +202,11 @@ func metricTrapSnapshot() routeSnapshot {
 func TestExecuteRouteRollbackRestoresAndDisarms(t *testing.T) {
 	snapshot := metricTrapSnapshot()
 	restoredTable := "8.8.8.8 via 10.20.1.1 dev enp1s0 metric 100\n"
-	runner := &fakeRouteRunner{
-		sequences: map[string][]string{
-			"ip route show table all": {routeMetricTrapFixture, restoredTable},
-		},
-		outputs: map[string]string{
-			"ip rule show": ipRuleFixture,
-		},
-	}
+	runner := &fakeRouteRunner{outputs: map[string]string{}}
+	backend := &fakeRouteBackend{routeSequence: []string{routeMetricTrapFixture, restoredTable}, ruleText: ipRuleFixture}
+	deps := routeDeps{backend: backend, runner: runner}
 	statePath := filepath.Join(t.TempDir(), "route.json")
-	outcome := executeRouteRollback(context.Background(), runner, statePath, snapshot)
+	outcome := executeRouteRollback(context.Background(), deps, statePath, snapshot)
 	if outcome.Result.Status != StatusPass {
 		t.Fatalf("outcome = %#v", outcome)
 	}
@@ -227,17 +233,11 @@ func TestExecuteRouteRollbackRestoresAndDisarms(t *testing.T) {
 
 func TestExecuteRouteRollbackFailsWhenBaselineNotRestored(t *testing.T) {
 	snapshot := metricTrapSnapshot()
-	runner := &fakeRouteRunner{
-		sequences: map[string][]string{
-			// del을 실행해도 여전히 두 줄을 돌려주는, 고쳐지지 않은 테이블을 흉내 낸다.
-			"ip route show table all": {routeMetricTrapFixture, routeMetricTrapFixture},
-		},
-		outputs: map[string]string{
-			"ip rule show": ipRuleFixture,
-		},
-	}
+	// del을 실행해도 여전히 두 줄을 돌려주는, 고쳐지지 않은 테이블을 흉내 낸다.
+	backend := &fakeRouteBackend{routeSequence: []string{routeMetricTrapFixture, routeMetricTrapFixture}, ruleText: ipRuleFixture}
+	deps := routeDeps{backend: backend, runner: &fakeRouteRunner{outputs: map[string]string{}}}
 	statePath := filepath.Join(t.TempDir(), "route.json")
-	outcome := executeRouteRollback(context.Background(), runner, statePath, snapshot)
+	outcome := executeRouteRollback(context.Background(), deps, statePath, snapshot)
 	if outcome.Result.Status != StatusFail {
 		t.Fatalf("outcome.Result.Status = %v, want fail", outcome.Result.Status)
 	}
@@ -301,15 +301,9 @@ func TestExecuteRouteSwitchRefusesUnreachableExit(t *testing.T) {
 	statePath := filepath.Join(t.TempDir(), "route.json")
 	input := routeSwitchTestInput(statePath)
 	input.exit = routeExit{Name: "dead", Via: "192.0.2.253", Dev: "enp1s0", ExpectPublicIP: "203.0.113.20"}
-	runner := &fakeRouteRunner{
-		outputs: map[string]string{
-			"ip route show table all": routeTableFixture,
-			"ip rule show":            ipRuleFixture,
-			"ip neigh show":           neighborFixture,
-			"ip -o link show":         linkFixture,
-		},
-	}
-	outcome := executeRouteSwitch(context.Background(), routeSwitchDeps{runner: runner, signals: make(chan os.Signal)}, input)
+	runner := &fakeRouteRunner{outputs: map[string]string{}}
+	backend := &fakeRouteBackend{routeText: routeTableFixture, ruleText: ipRuleFixture, neighborText: neighborFixture, linkText: linkFixture}
+	outcome := executeRouteSwitch(context.Background(), routeSwitchDeps{routeDeps: routeDeps{backend: backend, runner: runner}, signals: make(chan os.Signal)}, input)
 	if outcome.Result.Status != StatusFail {
 		t.Fatalf("outcome = %#v, want fail", outcome.Result)
 	}
@@ -335,15 +329,9 @@ func TestExecuteRouteSwitchForceOverridesUnreachableExit(t *testing.T) {
 	input.exit = routeExit{Name: "dead", Via: "192.0.2.253", Dev: "enp1s0"}
 	input.force = true
 	input.dryRun = true // 실제 변경까지 가지 않고 프리플라이트를 통과했는지만 본다.
-	runner := &fakeRouteRunner{
-		outputs: map[string]string{
-			"ip route show table all": routeTableFixture,
-			"ip rule show":            ipRuleFixture,
-			"ip neigh show":           neighborFixture,
-			"ip -o link show":         linkFixture,
-		},
-	}
-	outcome := executeRouteSwitch(context.Background(), routeSwitchDeps{runner: runner, signals: make(chan os.Signal)}, input)
+	runner := &fakeRouteRunner{outputs: map[string]string{}}
+	backend := &fakeRouteBackend{routeText: routeTableFixture, ruleText: ipRuleFixture, neighborText: neighborFixture, linkText: linkFixture}
+	outcome := executeRouteSwitch(context.Background(), routeSwitchDeps{routeDeps: routeDeps{backend: backend, runner: runner}, signals: make(chan os.Signal)}, input)
 	if outcome.Result.Status != StatusPass {
 		t.Fatalf("outcome = %#v, want pass with --force", outcome.Result)
 	}
@@ -358,15 +346,9 @@ func TestExecuteRouteSwitchDryRunChangesNothing(t *testing.T) {
 	statePath := filepath.Join(t.TempDir(), "route.json")
 	input := routeSwitchTestInput(statePath)
 	input.dryRun = true
-	runner := &fakeRouteRunner{
-		outputs: map[string]string{
-			"ip route show table all": routeTableFixture,
-			"ip rule show":            ipRuleFixture,
-			"ip neigh show":           neighborFixture,
-			"ip -o link show":         linkFixture,
-		},
-	}
-	outcome := executeRouteSwitch(context.Background(), routeSwitchDeps{runner: runner, signals: make(chan os.Signal)}, input)
+	runner := &fakeRouteRunner{outputs: map[string]string{}}
+	backend := &fakeRouteBackend{routeText: routeTableFixture, ruleText: ipRuleFixture, neighborText: neighborFixture, linkText: linkFixture}
+	outcome := executeRouteSwitch(context.Background(), routeSwitchDeps{routeDeps: routeDeps{backend: backend, runner: runner}, signals: make(chan os.Signal)}, input)
 	if outcome.Result.Status != StatusPass {
 		t.Fatalf("outcome = %#v, want pass", outcome.Result)
 	}
@@ -404,19 +386,21 @@ func TestExecuteRouteSwitchSuccess(t *testing.T) {
 	armArgs := systemdRunArgs(unit, input.seconds, input.statePath, input.edcPath)
 	runner := &fakeRouteRunner{
 		outputs: map[string]string{
-			"ip route show table all": routeTableFixture,
-			"ip rule show":            ipRuleFixture,
-			// 192.0.2.254를 타는 전용 경로라 원래 default entry(via 10.20.1.1)와 어긋난다 => risk low.
-			"ip route get 100.64.0.2":                "100.64.0.2 via 192.0.2.254 dev enp1s0 src 10.20.1.5 uid 0",
 			"systemctl is-active " + unit + ".timer": "active",
 		},
 		errors: map[string]error{
 			"systemd-run " + strings.Join(armArgs, " "): nil,
 		},
 	}
+	backend := &fakeRouteBackend{
+		routeText: routeTableFixture, ruleText: ipRuleFixture,
+		neighborText: neighborFixture, linkText: linkFixture,
+		// 192.0.2.254를 타는 전용 경로라 원래 default entry(via 10.20.1.1)와 어긋난다 => risk low.
+		getResults: map[string]string{"100.64.0.2": "100.64.0.2 via 192.0.2.254 dev enp1s0 src 10.20.1.5 uid 0"},
+	}
 	confirmed := false
 	deps := routeSwitchDeps{
-		runner: runner,
+		routeDeps: routeDeps{backend: backend, runner: runner},
 		confirm: func(detail, question string, initial bool) (bool, error) {
 			confirmed = true
 			return true, nil
@@ -461,16 +445,16 @@ func TestExecuteRouteSwitchStopsBeforeReplaceWhenGuardUnconfirmed(t *testing.T) 
 	unit := routeRollbackUnitName(routeSwitchTestExecID)
 	runner := &fakeRouteRunner{
 		outputs: map[string]string{
-			"ip route show table all": routeTableFixture,
-			"ip rule show":            ipRuleFixture,
-			// 10.20.1.1은 원래 default entry의 via와 같다 => 세션이 그 경로를 그대로 탄다 => risk high.
-			"ip route get 100.64.0.2":                "100.64.0.2 via 10.20.1.1 dev enp1s0 src 10.20.1.5 uid 0",
 			"systemctl is-active " + unit + ".timer": "inactive",
 		},
 	}
+	backend := &fakeRouteBackend{
+		routeText: routeTableFixture, ruleText: ipRuleFixture, neighborText: neighborFixture, linkText: linkFixture,
+		getResults: map[string]string{"100.64.0.2": "100.64.0.2 via 10.20.1.1 dev enp1s0 src 10.20.1.5 uid 0"},
+	}
 	deps := routeSwitchDeps{
-		runner:  runner,
-		confirm: func(string, string, bool) (bool, error) { t.Fatal("confirm must not be called"); return false, nil },
+		routeDeps: routeDeps{backend: backend, runner: runner},
+		confirm:   func(string, string, bool) (bool, error) { t.Fatal("confirm must not be called"); return false, nil },
 		fetchPublicIP: func(context.Context) (publicNetworkInfo, error) {
 			t.Fatal("identity check must not run")
 			return publicNetworkInfo{}, nil
@@ -502,21 +486,22 @@ func TestExecuteRouteSwitchRollsBackWhenCountInvariantBreaks(t *testing.T) {
 	brokenTable := "default via 10.20.1.1 dev enp1s0 metric 100\ndefault via 192.0.2.254 dev enp1s0\n"
 	restoredTable := "default via 10.20.1.1 dev enp1s0 metric 100\n"
 	runner := &fakeRouteRunner{
-		sequences: map[string][]string{
-			"ip route show table all": {routeTableFixture, brokenTable, brokenTable, restoredTable},
-		},
 		outputs: map[string]string{
-			"ip rule show":                           ipRuleFixture,
-			"ip route get 100.64.0.2":                "100.64.0.2 via 192.0.2.254 dev enp1s0 src 10.20.1.5 uid 0",
 			"systemctl is-active " + unit + ".timer": "active",
 		},
 		errors: map[string]error{
 			"systemd-run " + strings.Join(armArgs, " "): nil,
 		},
 	}
+	backend := &fakeRouteBackend{
+		// 스냅샷 → 변경 후(두 줄) → rollback 후(한 줄) 순으로 읽힌다.
+		routeSequence: []string{routeTableFixture, brokenTable, brokenTable, restoredTable},
+		ruleText:      ipRuleFixture, neighborText: neighborFixture, linkText: linkFixture,
+		getResults: map[string]string{"100.64.0.2": "100.64.0.2 via 192.0.2.254 dev enp1s0 src 10.20.1.5 uid 0"},
+	}
 	deps := routeSwitchDeps{
-		runner:  runner,
-		confirm: func(string, string, bool) (bool, error) { t.Fatal("confirm must not be called"); return false, nil },
+		routeDeps: routeDeps{backend: backend, runner: runner},
+		confirm:   func(string, string, bool) (bool, error) { t.Fatal("confirm must not be called"); return false, nil },
 		fetchPublicIP: func(context.Context) (publicNetworkInfo, error) {
 			t.Fatal("identity check must not run")
 			return publicNetworkInfo{}, nil
@@ -549,18 +534,19 @@ func TestExecuteRouteSwitchRollsBackOnIdentityMismatch(t *testing.T) {
 	armArgs := systemdRunArgs(unit, input.seconds, input.statePath, input.edcPath)
 	runner := &fakeRouteRunner{
 		outputs: map[string]string{
-			"ip route show table all":                routeTableFixture,
-			"ip rule show":                           ipRuleFixture,
-			"ip route get 100.64.0.2":                "100.64.0.2 via 192.0.2.254 dev enp1s0 src 10.20.1.5 uid 0",
 			"systemctl is-active " + unit + ".timer": "active",
 		},
 		errors: map[string]error{
 			"systemd-run " + strings.Join(armArgs, " "): nil,
 		},
 	}
+	backend := &fakeRouteBackend{
+		routeText: routeTableFixture, ruleText: ipRuleFixture, neighborText: neighborFixture, linkText: linkFixture,
+		getResults: map[string]string{"100.64.0.2": "100.64.0.2 via 192.0.2.254 dev enp1s0 src 10.20.1.5 uid 0"},
+	}
 	deps := routeSwitchDeps{
-		runner:  runner,
-		confirm: func(string, string, bool) (bool, error) { t.Fatal("confirm must not be called"); return false, nil },
+		routeDeps: routeDeps{backend: backend, runner: runner},
+		confirm:   func(string, string, bool) (bool, error) { t.Fatal("confirm must not be called"); return false, nil },
 		fetchPublicIP: func(context.Context) (publicNetworkInfo, error) {
 			return publicNetworkInfo{IP: "198.51.100.9"}, nil // exit.ExpectPublicIP와 다르다.
 		},
@@ -584,18 +570,19 @@ func TestExecuteRouteSwitchSkipsIdentityCheckWithoutExpectedIP(t *testing.T) {
 	armArgs := systemdRunArgs(unit, input.seconds, input.statePath, input.edcPath)
 	runner := &fakeRouteRunner{
 		outputs: map[string]string{
-			"ip route show table all":                routeTableFixture,
-			"ip rule show":                           ipRuleFixture,
-			"ip route get 100.64.0.2":                "100.64.0.2 via 192.0.2.254 dev enp1s0 src 10.20.1.5 uid 0",
 			"systemctl is-active " + unit + ".timer": "active",
 		},
 		errors: map[string]error{
 			"systemd-run " + strings.Join(armArgs, " "): nil,
 		},
 	}
+	backend := &fakeRouteBackend{
+		routeText: routeTableFixture, ruleText: ipRuleFixture, neighborText: neighborFixture, linkText: linkFixture,
+		getResults: map[string]string{"100.64.0.2": "100.64.0.2 via 192.0.2.254 dev enp1s0 src 10.20.1.5 uid 0"},
+	}
 	var seenInitial *bool
 	deps := routeSwitchDeps{
-		runner: runner,
+		routeDeps: routeDeps{backend: backend, runner: runner},
 		confirm: func(detail, question string, initial bool) (bool, error) {
 			seenInitial = &initial
 			return true, nil
@@ -628,20 +615,21 @@ func TestExecuteRouteSwitchRollsBackOnSignalBeforeConfirm(t *testing.T) {
 			armArgs := systemdRunArgs(unit, input.seconds, input.statePath, input.edcPath)
 			runner := &fakeRouteRunner{
 				outputs: map[string]string{
-					"ip route show table all":                routeTableFixture,
-					"ip rule show":                           ipRuleFixture,
-					"ip route get 100.64.0.2":                "100.64.0.2 via 192.0.2.254 dev enp1s0 src 10.20.1.5 uid 0",
 					"systemctl is-active " + unit + ".timer": "active",
 				},
 				errors: map[string]error{
 					"systemd-run " + strings.Join(armArgs, " "): nil,
 				},
 			}
+			backend := &fakeRouteBackend{
+				routeText: routeTableFixture, ruleText: ipRuleFixture, neighborText: neighborFixture, linkText: linkFixture,
+				getResults: map[string]string{"100.64.0.2": "100.64.0.2 via 192.0.2.254 dev enp1s0 src 10.20.1.5 uid 0"},
+			}
 			signals := make(chan os.Signal, 1)
 			signals <- signal
 			never := make(chan struct{})
 			deps := routeSwitchDeps{
-				runner: runner,
+				routeDeps: routeDeps{backend: backend, runner: runner},
 				confirm: func(string, string, bool) (bool, error) {
 					<-never // 확정 대기를 흉내 낸다: 신호가 먼저 도착해야 한다.
 					return true, nil
@@ -717,7 +705,7 @@ func TestRouteStatusResultsSkipsWhenDirectoryMissing(t *testing.T) {
 	defer setLanguage(restore)
 	setLanguage(defaultLanguage)
 
-	results := routeStatusResults(context.Background(), &fakeRouteRunner{}, filepath.Join(t.TempDir(), "absent"))
+	results := routeStatusResults(context.Background(), routeDeps{runner: &fakeRouteRunner{}}, filepath.Join(t.TempDir(), "absent"))
 	if len(results) != 1 || results[0].Status != StatusSkip {
 		t.Fatalf("results = %#v, want a single skip result", results)
 	}
@@ -750,7 +738,7 @@ func TestRouteStatusResultsReportsPendingAndCompleted(t *testing.T) {
 			"systemctl is-active edc-route-rollback-pend1.timer": "active",
 		},
 	}
-	results := routeStatusResults(context.Background(), runner, dir)
+	results := routeStatusResults(context.Background(), routeDeps{runner: runner}, dir)
 	if len(results) != 2 {
 		t.Fatalf("results = %#v, want 2", results)
 	}
@@ -789,7 +777,7 @@ func TestRouteStatusForFileWarnsOnTimerMismatch(t *testing.T) {
 			"systemctl is-active edc-route-rollback-mismatch1.timer": "inactive",
 		},
 	}
-	result := routeStatusForFile(context.Background(), runner, path)
+	result := routeStatusForFile(context.Background(), routeDeps{runner: runner}, path)
 	if result.Status != StatusWarn {
 		t.Fatalf("status = %v, want warn", result.Status)
 	}

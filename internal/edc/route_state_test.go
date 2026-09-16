@@ -88,7 +88,7 @@ func TestRollbackCommandsRestoresAndDeletesResidual(t *testing.T) {
 		TargetEntry:   entries[0], // metric 100 via 10.20.1.1
 		CountBaseline: 1,
 	}
-	commands, err := rollbackCommands(snapshot, routeMetricTrapFixture)
+	commands, err := rollbackCommands(snapshot, mustParseRoutes(routeMetricTrapFixture))
 	if err != nil {
 		t.Fatalf("rollbackCommands error: %v", err)
 	}
@@ -112,11 +112,18 @@ func TestRollbackCommandsSkipsDeleteWhenCountMatchesBaseline(t *testing.T) {
 		TargetEntry:   entries[0],
 		CountBaseline: 1,
 	}
-	commands, err := rollbackCommands(snapshot, routeTableFixture)
+	commands, err := rollbackCommands(snapshot, mustParseRoutes(routeTableFixture))
 	if err != nil {
 		t.Fatalf("rollbackCommands error: %v", err)
 	}
 	if len(commands) != 1 {
 		t.Fatalf("commands = %#v, want only the restore command", commands)
 	}
+}
+
+// mustParseRoutes는 실측 텍스트 fixture를 백엔드가 돌려주는 형태로 바꾼다. 프로덕션은 netlink에서
+// 읽지만 테스트 입력은 실제 출력이라야 한다.
+func mustParseRoutes(text string) []routeEntry {
+	entries, _ := parseRouteTable(text)
+	return entries
 }

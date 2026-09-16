@@ -95,13 +95,12 @@ func routeEntrySpecEqual(a, b routeEntry) bool {
 
 // rollbackCommands는 스냅샷의 원래 스펙을 되돌리는 replace 하나와, 현재 테이블에서 기준선을 넘는
 // 잔존 경로를 지우는 del들을 순서대로 돌려준다. 사람의 rollback과 무장한 타이머가 이 결과를 그대로 실행한다.
-func rollbackCommands(snapshot routeSnapshot, currentTableText string) ([][]string, error) {
+func rollbackCommands(snapshot routeSnapshot, entries []routeEntry) ([][]string, error) {
 	restoreArgs, err := routeReplaceArgs(snapshot.TargetEntry, snapshot.TargetEntry.Via)
 	if err != nil {
 		return nil, fmt.Errorf("restore command: %w", err)
 	}
 	commands := [][]string{restoreArgs}
-	entries, _ := parseRouteTable(currentTableText)
 	matched := entriesForDest(entries, snapshot.Dest)
 	if len(matched) <= snapshot.CountBaseline {
 		return commands, nil

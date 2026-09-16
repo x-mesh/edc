@@ -1,10 +1,12 @@
 package edc
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -116,4 +118,68 @@ func rollbackCommands(snapshot routeSnapshot, entries []routeEntry) ([][]string,
 		commands = append(commands, deleteArgs)
 	}
 	return commands, nil
+}
+
+// routeOp는 원복이 실행할 조작 하나다. 실행은 netlink으로 하고, 표시와 사람이 손으로 복구할 근거는
+// 같은 값을 ip 명령 형태로 렌더링해 남긴다.
+type routeOp struct {
+	Kind   string // "replace" 또는 "delete"
+	Entry  routeEntry
+	NewVia string
+}
+
+// rollbackOps는 스냅샷의 원래 스펙을 되돌리는 replace 하나와, 현재 테이블에서 기준선을 넘는 잔존
+// 경로를 지우는 delete들을 순서대로 돌려준다.
+func rollbackOps(snapshot routeSnapshot, entries []routeEntry) ([]routeOp, error) {
+	if snapshot.TargetEntry.Dest == "" {
+		return nil, fmt.Errorf("snapshot carries no target route")
+	}
+	ops := []routeOp{{Kind: "replace", Entry: snapshot.TargetEntry, NewVia: snapshot.TargetEntry.Via}}
+	matched := entriesForDest(entries, snapshot.Dest)
+	if len(matched) <= snapshot.CountBaseline {
+		return ops, nil
+	}
+	for _, entry := range matched {
+		if routeEntrySpecEqual(entry, snapshot.TargetEntry) {
+			continue
+		}
+		ops = append(ops, routeOp{Kind: "delete", Entry: entry})
+	}
+	return ops, nil
+}
+
+func applyRouteOp(ctx context.Context, backend routeBackend, op routeOp) error {
+	if op.Kind == "delete" {
+		return backend.DeleteRoute(ctx, op.Entry)
+	}
+	return backend.ReplaceRoute(ctx, op.Entry, op.NewVia)
+}
+
+// routeOpArgs는 조작 하나를 ip에 넘길 argv로 만든다. 실행은 netlink으로 하지만, 사람이 손으로
+// 복구할 때 그대로 쓸 수 있는 형태를 남기는 것이 안전 도구로서 중요하다.
+func routeOpArgs(op routeOp) []string {
+	var args []string
+	var err error
+	if op.Kind == "delete" {
+		args, err = routeDeleteArgs(op.Entry)
+	} else {
+		args, err = routeReplaceArgs(op.Entry, op.NewVia)
+	}
+	if err != nil {
+		return []string{"route", op.Kind, op.Entry.Dest}
+	}
+	return args
+}
+
+// renderRouteOp은 오류 메시지에 쓸 한 줄이다.
+func renderRouteOp(op routeOp) string {
+	return "ip " + strings.Join(routeOpArgs(op), " ")
+}
+
+func renderRouteOps(ops []routeOp) [][]string {
+	out := make([][]string, 0, len(ops))
+	for _, op := range ops {
+		out = append(out, routeOpArgs(op))
+	}
+	return out
 }

@@ -17,6 +17,10 @@ type routeBackend interface {
 	Rules(ctx context.Context) ([]ipRule, error)
 	Neighbors(ctx context.Context) ([]neighborEntry, error)
 	Links(ctx context.Context) ([]linkInfo, error)
+	// ReplaceRoute는 entry가 가리키는 경로를 newVia로 바꾼다. newVia가 비면 entry의 via를 그대로 쓴다.
+	// entry의 키 필드가 그대로 전달되므로 replace가 add로 바뀌는 일이 없다.
+	ReplaceRoute(ctx context.Context, entry routeEntry, newVia string) error
+	DeleteRoute(ctx context.Context, entry routeEntry) error
 }
 
 // routeDeps는 route 명령이 바깥 세계와 닿는 두 통로다. 커널 상태는 netlink으로 읽고, systemd는

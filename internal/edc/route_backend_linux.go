@@ -192,6 +192,8 @@ func routeEntryFromNetlink(route netlink.Route, names map[int]string) routeEntry
 		Metric: strconv.Itoa(route.Priority),
 		// ip route show는 metric 0을 생략한다. 커널에서 priority 0과 metric 없음은 같은 상태다.
 		HasMetric: route.Priority != 0,
+		Tos:       route.Tos,
+		Scope:     routeScopeName(route.Scope),
 	}
 	if route.Gw != nil {
 		entry.Via = route.Gw.String()
@@ -204,6 +206,22 @@ func routeEntryFromNetlink(route netlink.Route, names map[int]string) routeEntry
 	}
 	entry.Raw = renderRouteEntry(entry)
 	return entry
+}
+
+// routeScopeName은 scope를 ip route show와 같은 이름으로 바꾼다. global(universe)은 생략한다.
+func routeScopeName(scope netlink.Scope) string {
+	switch int(scope) {
+	case unix.RT_SCOPE_HOST:
+		return "host"
+	case unix.RT_SCOPE_LINK:
+		return "link"
+	case unix.RT_SCOPE_SITE:
+		return "site"
+	case unix.RT_SCOPE_NOWHERE:
+		return "nowhere"
+	default:
+		return ""
+	}
 }
 
 func routeTableName(table int) string {
@@ -298,3 +316,141 @@ func linkFlagNames(raw uint32) []string {
 }
 
 func newRouteBackend() (routeBackend, bool) { return netlinkBackend{}, true }
+
+// netlinkRouteFrom은 routeEntry를 netlink.Route로 되돌린다. rollback은 별도 프로세스라 JSON 스냅샷만
+// 보고 경로를 재구성해야 하므로, 이 변환이 키 필드를 하나도 잃지 않아야 한다.
+func netlinkRouteFrom(entry routeEntry, newVia string) (*netlink.Route, error) {
+	route := &netlink.Route{
+		Table: routeTableValue(entry.Table),
+		Type:  routeTypeValue(entry.Type),
+		Tos:   entry.Tos,
+		Scope: netlink.Scope(routeScopeValue(entry.Scope)),
+	}
+	if entry.Dest != "default" {
+		dst, err := parseRouteDest(entry.Dest)
+		if err != nil {
+			return nil, err
+		}
+		route.Dst = dst
+	}
+	via := newVia
+	if via == "" {
+		via = entry.Via
+	}
+	if via != "" {
+		if route.Gw = net.ParseIP(via); route.Gw == nil {
+			return nil, fmt.Errorf("not an IP address: %s", via)
+		}
+	}
+	if entry.Dev != "" {
+		link, err := netlink.LinkByName(entry.Dev)
+		if err != nil {
+			return nil, fmt.Errorf("device %s: %w", entry.Dev, err)
+		}
+		route.LinkIndex = link.Attrs().Index
+	}
+	if entry.Src != "" {
+		route.Src = net.ParseIP(entry.Src)
+	}
+	if entry.HasMetric {
+		priority, err := strconv.Atoi(entry.Metric)
+		if err != nil {
+			return nil, fmt.Errorf("metric %q: %w", entry.Metric, err)
+		}
+		route.Priority = priority
+	}
+	route.Protocol = netlink.RouteProtocol(routeProtocolValue(entry.Proto))
+	return route, nil
+}
+
+func (netlinkBackend) ReplaceRoute(_ context.Context, entry routeEntry, newVia string) error {
+	route, err := netlinkRouteFrom(entry, newVia)
+	if err != nil {
+		return err
+	}
+	return netlink.RouteReplace(route)
+}
+
+func (netlinkBackend) DeleteRoute(_ context.Context, entry routeEntry) error {
+	route, err := netlinkRouteFrom(entry, "")
+	if err != nil {
+		return err
+	}
+	return netlink.RouteDel(route)
+}
+
+func routeTableValue(name string) int {
+	switch name {
+	case "", "main":
+		return unix.RT_TABLE_MAIN
+	case "local":
+		return unix.RT_TABLE_LOCAL
+	case "default":
+		return unix.RT_TABLE_DEFAULT
+	default:
+		value, err := strconv.Atoi(name)
+		if err != nil {
+			return unix.RT_TABLE_MAIN
+		}
+		return value
+	}
+}
+
+func routeTypeValue(name string) int {
+	switch name {
+	case "local":
+		return unix.RTN_LOCAL
+	case "broadcast":
+		return unix.RTN_BROADCAST
+	case "anycast":
+		return unix.RTN_ANYCAST
+	case "multicast":
+		return unix.RTN_MULTICAST
+	case "blackhole":
+		return unix.RTN_BLACKHOLE
+	case "unreachable":
+		return unix.RTN_UNREACHABLE
+	case "prohibit":
+		return unix.RTN_PROHIBIT
+	case "throw":
+		return unix.RTN_THROW
+	case "nat":
+		return unix.RTN_NAT
+	default:
+		return unix.RTN_UNICAST
+	}
+}
+
+func routeScopeValue(name string) int {
+	switch name {
+	case "host":
+		return unix.RT_SCOPE_HOST
+	case "link":
+		return unix.RT_SCOPE_LINK
+	case "site":
+		return unix.RT_SCOPE_SITE
+	case "nowhere":
+		return unix.RT_SCOPE_NOWHERE
+	default:
+		return unix.RT_SCOPE_UNIVERSE
+	}
+}
+
+func routeProtocolValue(name string) int {
+	switch name {
+	case "kernel":
+		return unix.RTPROT_KERNEL
+	case "dhcp":
+		return unix.RTPROT_DHCP
+	case "static":
+		return unix.RTPROT_STATIC
+	case "ra":
+		return unix.RTPROT_RA
+	case "bgp":
+		return unix.RTPROT_BGP
+	case "ospf":
+		return unix.RTPROT_OSPF
+	default:
+		return unix.RTPROT_BOOT
+	}
+}

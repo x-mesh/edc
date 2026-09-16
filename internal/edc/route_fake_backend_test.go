@@ -19,6 +19,7 @@ type fakeRouteBackend struct {
 	errs map[string]error
 	// routeSequence는 호출마다 다른 상태를 돌려준다. 변경 전후를 비교하는 경로를 재현할 때 쓴다.
 	routeSequence []string
+	writes        []fakeRouteWrite
 }
 
 func (backend *fakeRouteBackend) Routes(context.Context) ([]routeEntry, error) {
@@ -64,4 +65,40 @@ func (backend *fakeRouteBackend) RouteTo(_ context.Context, address string) (rou
 		return routeGetResult{}, fmt.Errorf("no route to %s", address)
 	}
 	return parseRouteGet(text)
+}
+
+// writes는 백엔드가 받은 쓰기 조작을 순서대로 기록한다. 테스트는 이 목록으로 무엇이 실행됐는지 본다.
+type fakeRouteWrite struct {
+	Kind   string
+	Entry  routeEntry
+	NewVia string
+}
+
+func (backend *fakeRouteBackend) ReplaceRoute(_ context.Context, entry routeEntry, newVia string) error {
+	backend.writes = append(backend.writes, fakeRouteWrite{Kind: "replace", Entry: entry, NewVia: newVia})
+	return backend.errs["replace"]
+}
+
+func (backend *fakeRouteBackend) DeleteRoute(_ context.Context, entry routeEntry) error {
+	backend.writes = append(backend.writes, fakeRouteWrite{Kind: "delete", Entry: entry})
+	return backend.errs["delete"]
+}
+
+// wroteReplace는 기록된 쓰기 중 목적지와 새 via가 맞는 replace가 있는지 본다.
+func (backend *fakeRouteBackend) wroteReplace(dest, newVia string) bool {
+	for _, write := range backend.writes {
+		if write.Kind == "replace" && write.Entry.Dest == dest && write.NewVia == newVia {
+			return true
+		}
+	}
+	return false
+}
+
+func (backend *fakeRouteBackend) wroteDelete(dest, via string) bool {
+	for _, write := range backend.writes {
+		if write.Kind == "delete" && write.Entry.Dest == dest && write.Entry.Via == via {
+			return true
+		}
+	}
+	return false
 }

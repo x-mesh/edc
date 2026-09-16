@@ -20,6 +20,9 @@ func renderRouteEntry(entry routeEntry) string {
 	if entry.Proto != "" {
 		parts = append(parts, "proto", entry.Proto)
 	}
+	if entry.Scope != "" {
+		parts = append(parts, "scope", entry.Scope)
+	}
 	if entry.Src != "" {
 		parts = append(parts, "src", entry.Src)
 	}

@@ -383,15 +383,15 @@ func executeRouteRollback(ctx context.Context, deps routeDeps, statePath string,
 	if err != nil {
 		return routeRollbackOutcome{Result: resultFromError("route.rollback", started, "netlink", err)}
 	}
-	commands, err := rollbackCommands(snapshot, currentEntries)
+	ops, err := rollbackOps(snapshot, currentEntries)
 	if err != nil {
 		return routeRollbackOutcome{Result: resultFromError("route.rollback", started, "route", err)}
 	}
-	for index, command := range commands {
-		if _, err := deps.runner.run(ctx, "ip", command...); err != nil {
+	for index, op := range ops {
+		if err := applyRouteOp(ctx, deps.backend, op); err != nil {
 			return routeRollbackOutcome{
-				Result:            resultFromError("route.rollback", started, "command", fmt.Errorf("ip %s: %w", strings.Join(command, " "), err)),
-				RemainingCommands: commands[index:],
+				Result:            resultFromError("route.rollback", started, "netlink", fmt.Errorf("%s: %w", renderRouteOp(op), err)),
+				RemainingCommands: renderRouteOps(ops[index:]),
 			}
 		}
 	}
@@ -409,7 +409,7 @@ func executeRouteRollback(ctx context.Context, deps routeDeps, statePath string,
 		// 성공을 보고하지 않고, 처음부터 다시 실행할 수 있도록 전체 복구 명령을 남긴다.
 		return routeRollbackOutcome{
 			Result:            resultFromError("route.rollback", started, "verify", errors.New(T("route.rollback.error.verify_failed", snapshot.CountBaseline, count))),
-			RemainingCommands: commands,
+			RemainingCommands: renderRouteOps(ops),
 		}
 	}
 	warning := disarmGuard(ctx, deps.runner, snapshot.UnitName)
@@ -643,11 +643,7 @@ func executeRouteSwitch(ctx context.Context, deps routeSwitchDeps, input routeSw
 		return routeSwitchOutcome{Result: abortRouteSwitch(ctx, deps.routeDeps, input.statePath, snapshot, probe, started, T("route.switch.error.guard_denied", reason))}
 	}
 
-	replaceArgs, err := routeReplaceArgs(targetEntry, input.exit.Via)
-	if err != nil {
-		return routeSwitchOutcome{Result: abortRouteSwitch(ctx, deps.routeDeps, input.statePath, snapshot, probe, started, err.Error())}
-	}
-	if _, err := deps.runner.run(ctx, "ip", replaceArgs...); err != nil {
+	if err := deps.backend.ReplaceRoute(ctx, targetEntry, input.exit.Via); err != nil {
 		return routeSwitchOutcome{Result: abortRouteSwitch(ctx, deps.routeDeps, input.statePath, snapshot, probe, started, err.Error())}
 	}
 

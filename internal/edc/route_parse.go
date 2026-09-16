@@ -6,6 +6,9 @@ import (
 )
 
 // routeEntry는 `ip route show table all` 한 줄을 담는다. 원문 줄을 남겨 재구성 실패를 진단할 수 있게 한다.
+// 필드는 두 종류다. 커널이 경로를 찾는 키(Dest, Table, Metric, Tos)와 그 경로에 붙은 속성
+// (Via, Dev, Proto, Src, Scope, Type)이다. 키가 하나라도 빠지면 replace가 엉뚱한 경로를 건드리거나
+// 새 경로를 만든다. metric을 빠뜨렸을 때 실제로 그 일이 일어났다.
 type routeEntry struct {
 	Dest      string
 	Type      string
@@ -13,8 +16,10 @@ type routeEntry struct {
 	Dev       string
 	Proto     string
 	Src       string
+	Scope     string
 	Metric    string
 	HasMetric bool
+	Tos       int
 	Table     string
 	Raw       string
 }

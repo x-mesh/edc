@@ -213,14 +213,9 @@ func TestExecuteRouteRollbackRestoresAndDisarms(t *testing.T) {
 	if len(outcome.RemainingCommands) != 0 {
 		t.Fatalf("RemainingCommands = %#v, want none on success", outcome.RemainingCommands)
 	}
-	foundDelete := false
-	for _, call := range runner.calls {
-		if strings.Join(call, " ") == "ip route del 8.8.8.8 via 192.0.2.254 dev enp1s0" {
-			foundDelete = true
-		}
-	}
-	if !foundDelete {
-		t.Fatalf("expected the residual route to be deleted: calls=%#v", runner.calls)
+	// 실행은 netlink이므로 runner가 아니라 백엔드가 받은 쓰기를 확인한다.
+	if !backend.wroteDelete("8.8.8.8", "192.0.2.254") {
+		t.Fatalf("expected the residual route to be deleted: writes=%#v", backend.writes)
 	}
 	loaded, err := readRouteState(statePath)
 	if err != nil {
@@ -417,14 +412,8 @@ func TestExecuteRouteSwitchSuccess(t *testing.T) {
 	if !confirmed {
 		t.Fatal("expected the confirm function to be called")
 	}
-	foundReplace := false
-	for _, call := range runner.calls {
-		if strings.Join(call, " ") == "ip route replace default via 192.0.2.254 dev enp1s0 metric 100" {
-			foundReplace = true
-		}
-	}
-	if !foundReplace {
-		t.Fatalf("expected a replace call: %#v", runner.calls)
+	if !backend.wroteReplace("default", "192.0.2.254") {
+		t.Fatalf("expected a replace write: %#v", backend.writes)
 	}
 	loaded, err := readRouteState(statePath)
 	if err != nil {
@@ -512,14 +501,8 @@ func TestExecuteRouteSwitchRollsBackWhenCountInvariantBreaks(t *testing.T) {
 	if outcome.Cancelled || outcome.Result.Status != StatusFail {
 		t.Fatalf("outcome = %#v", outcome)
 	}
-	foundDelete := false
-	for _, call := range runner.calls {
-		if strings.Join(call, " ") == "ip route del default via 192.0.2.254 dev enp1s0" {
-			foundDelete = true
-		}
-	}
-	if !foundDelete {
-		t.Fatalf("expected the rollback path to delete the residual route: calls=%#v", runner.calls)
+	if !backend.wroteDelete("default", "192.0.2.254") {
+		t.Fatalf("expected the rollback path to delete the residual route: writes=%#v", backend.writes)
 	}
 }
 
@@ -643,14 +626,8 @@ func TestExecuteRouteSwitchRollsBackOnSignalBeforeConfirm(t *testing.T) {
 			if !outcome.Cancelled {
 				t.Fatalf("outcome = %#v, want Cancelled=true", outcome)
 			}
-			foundRestore := false
-			for _, call := range runner.calls {
-				if strings.Join(call, " ") == "ip route replace default via 10.20.1.1 dev enp1s0 metric 100" {
-					foundRestore = true
-				}
-			}
-			if !foundRestore {
-				t.Fatalf("expected the rollback restore command: calls=%#v", runner.calls)
+			if !backend.wroteReplace("default", "10.20.1.1") {
+				t.Fatalf("expected the rollback restore write: writes=%#v", backend.writes)
 			}
 		})
 	}

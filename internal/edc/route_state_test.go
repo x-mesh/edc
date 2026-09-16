@@ -88,18 +88,18 @@ func TestRollbackCommandsRestoresAndDeletesResidual(t *testing.T) {
 		TargetEntry:   entries[0], // metric 100 via 10.20.1.1
 		CountBaseline: 1,
 	}
-	commands, err := rollbackCommands(snapshot, mustParseRoutes(routeMetricTrapFixture))
+	ops, err := rollbackOps(snapshot, mustParseRoutes(routeMetricTrapFixture))
 	if err != nil {
-		t.Fatalf("rollbackCommands error: %v", err)
+		t.Fatalf("rollbackOps error: %v", err)
 	}
-	if len(commands) != 2 {
-		t.Fatalf("commands = %#v, want 2 (restore + delete residual)", commands)
+	if len(renderRouteOps(ops)) != 2 {
+		t.Fatalf("renderRouteOps(ops) = %#v, want 2 (restore + delete residual)", renderRouteOps(ops))
 	}
-	restore := strings.Join(commands[0], " ")
+	restore := strings.Join(renderRouteOps(ops)[0], " ")
 	if restore != "route replace 8.8.8.8 via 10.20.1.1 dev enp1s0 metric 100" {
 		t.Fatalf("restore command = %q", restore)
 	}
-	deleteResidual := strings.Join(commands[1], " ")
+	deleteResidual := strings.Join(renderRouteOps(ops)[1], " ")
 	if deleteResidual != "route del 8.8.8.8 via 192.0.2.254 dev enp1s0" {
 		t.Fatalf("delete command = %q", deleteResidual)
 	}
@@ -112,12 +112,12 @@ func TestRollbackCommandsSkipsDeleteWhenCountMatchesBaseline(t *testing.T) {
 		TargetEntry:   entries[0],
 		CountBaseline: 1,
 	}
-	commands, err := rollbackCommands(snapshot, mustParseRoutes(routeTableFixture))
+	ops, err := rollbackOps(snapshot, mustParseRoutes(routeTableFixture))
 	if err != nil {
-		t.Fatalf("rollbackCommands error: %v", err)
+		t.Fatalf("rollbackOps error: %v", err)
 	}
-	if len(commands) != 1 {
-		t.Fatalf("commands = %#v, want only the restore command", commands)
+	if len(renderRouteOps(ops)) != 1 {
+		t.Fatalf("renderRouteOps(ops) = %#v, want only the restore command", renderRouteOps(ops))
 	}
 }
 
@@ -126,4 +126,32 @@ func TestRollbackCommandsSkipsDeleteWhenCountMatchesBaseline(t *testing.T) {
 func mustParseRoutes(text string) []routeEntry {
 	entries, _ := parseRouteTable(text)
 	return entries
+}
+
+// rollback은 별도 프로세스다. systemd 타이머가 edc route rollback --state를 부르므로 그 프로세스는
+// JSON 스냅샷만 보고 경로를 재구성한다. 커널이 경로를 찾는 키(dest, table, metric, tos)가 왕복에서
+// 하나라도 사라지면 replace가 엉뚱한 경로를 건드리거나 새 경로를 만든다.
+func TestRouteEntryKeyFieldsSurviveTheStateFile(t *testing.T) {
+	original := routeEntry{
+		Dest: "default", Type: "unicast", Via: "192.0.2.1", Dev: "enp1s0",
+		Proto: "dhcp", Src: "192.0.2.13", Scope: "link",
+		Metric: "100", HasMetric: true, Tos: 4, Table: "52",
+	}
+	snapshot := routeSnapshot{
+		SchemaVersion: routeStateSchemaVersion, RunID: "t1", CreatedAt: time.Now().UTC(),
+		Dest: "default", RouteTableText: "default via 192.0.2.1 dev enp1s0\n",
+		TargetEntry: original, NewVia: "192.0.2.254", CountBaseline: 1,
+		UnitName: "edc-route-rollback-t1",
+	}
+	path := filepath.Join(t.TempDir(), "route.json")
+	if err := writeRouteState(path, snapshot); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := readRouteState(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.TargetEntry != original {
+		t.Fatalf("target entry changed across the state file:\n got %#v\nwant %#v", loaded.TargetEntry, original)
+	}
 }

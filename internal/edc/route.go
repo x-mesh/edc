@@ -404,13 +404,20 @@ func executeRouteRollback(ctx context.Context, deps routeDeps, statePath string,
 		return routeRollbackOutcome{Result: resultFromError("route.rollback", started, "netlink", err)}
 	}
 	count := routeCountFor(afterEntries, snapshot.Dest)
-	if count != snapshot.CountBaseline || renderIPRules(afterRules) != snapshot.IPRuleText {
+	if count != snapshot.CountBaseline {
 		// 원래 경로를 정확히 복원해도 기준선을 넘는 잔존 경로가 남으면 여전히 깨진 상태다(R11).
 		// 성공을 보고하지 않고, 처음부터 다시 실행할 수 있도록 전체 복구 명령을 남긴다.
 		return routeRollbackOutcome{
 			Result:            resultFromError("route.rollback", started, "verify", errors.New(T("route.rollback.error.verify_failed", snapshot.CountBaseline, count))),
 			RemainingCommands: renderRouteOps(ops),
 		}
+	}
+	// 정책 라우팅 변화는 경로 복원 성공과 별개다. Tailscale처럼 ip rule을 관리하는 소프트웨어는
+	// 연결 상태가 바뀌면 rule을 재구성하는데, 경로 전환이 바로 그 연결 상태를 바꾼다. 이걸 실패로
+	// 보면 경로는 제대로 돌아왔는데 실패를 보고하는 오경보가 난다. 사실은 알리되 판정은 분리한다.
+	var rulesWarning string
+	if renderIPRules(afterRules) != snapshot.IPRuleText {
+		rulesWarning = T("route.rollback.warn.rules_changed")
 	}
 	warning := disarmGuard(ctx, deps.runner, snapshot.UnitName)
 	completedAt := time.Now().UTC()
@@ -421,6 +428,10 @@ func executeRouteRollback(ctx context.Context, deps routeDeps, statePath string,
 	result := Result{
 		Probe: "route.rollback", Status: StatusPass, StartedAt: started.UTC(), DurationMS: time.Since(started).Milliseconds(),
 		Summary: T("route.rollback.summary", snapshot.Dest, count),
+	}
+	if rulesWarning != "" {
+		result.Status = StatusWarn
+		result.Warnings = append(result.Warnings, rulesWarning)
 	}
 	if warning != "" {
 		result.Warnings = append(result.Warnings, warning)

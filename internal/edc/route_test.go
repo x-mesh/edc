@@ -762,3 +762,62 @@ func TestRouteStatusForFileWarnsOnTimerMismatch(t *testing.T) {
 		t.Fatal("expected a warning describing the timer/state mismatch")
 	}
 }
+
+// 정책 라우팅 변화는 경로 복원 성공과 별개다. Tailscale처럼 ip rule을 관리하는 소프트웨어는 연결
+// 상태가 바뀌면 rule을 재구성하는데, 경로 전환이 바로 그 연결 상태를 바꾼다. 실패로 보면 경로는
+// 제대로 돌아왔는데 실패를 보고하는 오경보가 난다.
+func TestExecuteRouteRollbackWarnsButSucceedsWhenOnlyRulesChanged(t *testing.T) {
+	restore := currentLanguage()
+	defer setLanguage(restore)
+	setLanguage(defaultLanguage)
+
+	snapshot := metricTrapSnapshot()
+	restoredTable := "8.8.8.8 via 10.20.1.1 dev enp1s0 metric 100\n"
+	// 롤백 뒤 읽는 rule이 스냅샷과 다르다. 경로 개수는 기준선과 같다.
+	changedRules := ipRuleFixture + "9000:\tfrom all lookup 99\n"
+	runner := &fakeRouteRunner{outputs: map[string]string{}}
+	backend := &fakeRouteBackend{
+		routeSequence: []string{routeMetricTrapFixture, restoredTable},
+		ruleText:      changedRules,
+	}
+	deps := routeDeps{backend: backend, runner: runner}
+	outcome := executeRouteRollback(context.Background(), deps, filepath.Join(t.TempDir(), "route.json"), snapshot)
+	if outcome.Result.Status != StatusWarn {
+		t.Fatalf("status = %v, want warn: %#v", outcome.Result.Status, outcome.Result)
+	}
+	if len(outcome.RemainingCommands) != 0 {
+		t.Fatalf("rule 변화만으로 수동 복구 명령을 남기면 안 된다: %#v", outcome.RemainingCommands)
+	}
+	found := false
+	for _, warning := range outcome.Result.Warnings {
+		if warning == T("route.rollback.warn.rules_changed") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("rule 변화를 경고로 알려야 한다: %#v", outcome.Result.Warnings)
+	}
+}
+
+// 경로 개수 불변식이 깨지면 여전히 실패다. 메시지도 개수를 말하므로 이제 내용이 맞는다.
+func TestExecuteRouteRollbackStillFailsOnCountInvariant(t *testing.T) {
+	restore := currentLanguage()
+	defer setLanguage(restore)
+	setLanguage(defaultLanguage)
+
+	snapshot := metricTrapSnapshot()
+	runner := &fakeRouteRunner{outputs: map[string]string{}}
+	backend := &fakeRouteBackend{
+		// 롤백 뒤에도 두 줄이 남는다.
+		routeSequence: []string{routeMetricTrapFixture, routeMetricTrapFixture},
+		ruleText:      ipRuleFixture,
+	}
+	deps := routeDeps{backend: backend, runner: runner}
+	outcome := executeRouteRollback(context.Background(), deps, filepath.Join(t.TempDir(), "route.json"), snapshot)
+	if outcome.Result.Status != StatusFail {
+		t.Fatalf("status = %v, want fail", outcome.Result.Status)
+	}
+	if len(outcome.RemainingCommands) == 0 {
+		t.Fatal("개수 불변식 실패에는 수동 복구 명령을 남겨야 한다")
+	}
+}

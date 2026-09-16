@@ -62,6 +62,8 @@ route:
       state_unreadable: "route 状態ファイル %s を読み取れませんでした: %s"
       already_completed: "route 状態ファイル %s はすでに完了しています"
       verify_failed: "rollback が基準値を復元できませんでした: 期待 %d 件、実際 %d 件"
+    warn:
+      rules_changed: "切り替えが開いている間にポリシールーティングの rule が変わりました。経路自体は復元されています"
     summary: "%s を %d 経路に戻しました"
   table:
     summary: "経路 %d 件、rule %d 件"

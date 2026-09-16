@@ -62,6 +62,8 @@ route:
       state_unreadable: "route 상태 파일 %s을(를) 읽지 못했습니다: %s"
       already_completed: "route 상태 파일 %s은(는) 이미 완료 표시가 있습니다"
       verify_failed: "rollback이 기준선을 복원하지 못했습니다: 기대 %d개, 실제 %d개"
+    warn:
+      rules_changed: "전환이 열려 있는 동안 정책 라우팅 rule이 바뀌었습니다. 경로 자체는 복원됐습니다"
     summary: "%s을(를) %d개 경로로 되돌렸습니다"
   table:
     summary: "경로 %d개, rule %d개"

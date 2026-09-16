@@ -62,6 +62,8 @@ route:
       state_unreadable: "edc could not read the route state %s: %s"
       already_completed: "the route state %s is already marked complete"
       verify_failed: "rollback did not restore the baseline: want %d route(s), got %d"
+    warn:
+      rules_changed: "the policy routing rules changed while the switch was open; the route itself was restored"
     summary: "rolled back %s to %d route(s)"
   table:
     summary: "%d routes, %d rules"

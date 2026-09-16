@@ -158,7 +158,8 @@ _edc() {
                 '--seconds[롤백 유예(초), 10-900]:seconds' \
                 '--exits[exits.yaml 경로]:path:_files' \
                 '--force[자기 차단 위험이 높고 안전장치가 미확인이어도 전환]' \
-                '--yes[신원 확인이 일치하면 확인 생략]'
+                '--yes[신원 확인이 일치하면 확인 생략]' \
+                '(-n --dry-run)'{-n,--dry-run}'[아무것도 바꾸지 않고 계획만 출력]'
               ;;
             rollback)
               _arguments '--state[route 상태 파일 경로]:path:_files'
@@ -262,7 +263,7 @@ _edc() {
               --to) COMPREPLY=($(compgen -W "$(_edc_route_exit_names)" -- "$cur")); return ;;
               --exits) COMPREPLY=($(compgen -f -- "$cur")); return ;;
             esac
-            if [[ $cur == -* ]]; then COMPREPLY=($(compgen -W "--to --seconds --exits --force --yes" -- "$cur")); fi ;;
+            if [[ $cur == -* ]]; then COMPREPLY=($(compgen -W "--to --seconds --exits --force --yes --dry-run" -- "$cur")); fi ;;
           rollback)
             case "$prev" in
               --state) COMPREPLY=($(compgen -f -- "$cur")); return ;;

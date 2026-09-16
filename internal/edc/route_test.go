@@ -32,14 +32,14 @@ func TestRunRouteCheckResultsNeverMutates(t *testing.T) {
 
 	runner := routeCheckFakeRunner()
 	results := runRouteCheckResults(context.Background(), runner, routeDefaultDest, routeCheckSSHConnection, t.TempDir(), "")
-	if len(results) != 4 {
-		t.Fatalf("results = %d, want 4: %#v", len(results), results)
+	if len(results) != 5 {
+		t.Fatalf("results = %d, want 5: %#v", len(results), results)
 	}
 	names := map[string]Result{}
 	for _, result := range results {
 		names[result.Probe] = result
 	}
-	for _, probe := range []string{routeProbeTable, routeProbeTarget, routeProbeLockout, routeProbeGuard} {
+	for _, probe := range []string{routeProbeTable, routeProbeTarget, routeProbeLockout, routeProbeGuard, routeProbeReach} {
 		if _, ok := names[probe]; !ok {
 			t.Fatalf("missing probe %s in %#v", probe, results)
 		}
@@ -288,6 +288,108 @@ func routeSwitchTestInput(statePath string) routeSwitchInput {
 		dest: routeDefaultDest, exit: routeSwitchTestExit, seconds: routeDefaultRollbackSeconds,
 		edcPath: "/usr/local/bin/edc", execID: routeSwitchTestExecID, statePath: statePath,
 		sshConnection: routeCheckSSHConnection,
+	}
+}
+
+// 프리플라이트는 확정 실패만 막는다. next-hop이 INCOMPLETE나 FAILED면 바꿔도 반드시 끊기므로
+// 깨뜨린 뒤 되돌리는 대신 아무것도 만들지 않고 끝내야 한다.
+func TestExecuteRouteSwitchRefusesUnreachableExit(t *testing.T) {
+	restore := currentLanguage()
+	defer setLanguage(restore)
+	setLanguage(defaultLanguage)
+
+	statePath := filepath.Join(t.TempDir(), "route.json")
+	input := routeSwitchTestInput(statePath)
+	input.exit = routeExit{Name: "dead", Via: "192.0.2.253", Dev: "enp1s0", ExpectPublicIP: "203.0.113.20"}
+	runner := &fakeRouteRunner{
+		outputs: map[string]string{
+			"ip route show table all": routeTableFixture,
+			"ip rule show":            ipRuleFixture,
+			"ip neigh show":           neighborFixture,
+			"ip -o link show":         linkFixture,
+		},
+	}
+	outcome := executeRouteSwitch(context.Background(), routeSwitchDeps{runner: runner, signals: make(chan os.Signal)}, input)
+	if outcome.Result.Status != StatusFail {
+		t.Fatalf("outcome = %#v, want fail", outcome.Result)
+	}
+	for _, call := range runner.calls {
+		joined := strings.Join(call, " ")
+		if strings.Contains(joined, "replace") || strings.Contains(joined, "systemd-run") {
+			t.Fatalf("an unreachable exit must not arm or mutate anything: %#v", runner.calls)
+		}
+	}
+	if _, err := os.Stat(statePath); err == nil {
+		t.Fatal("an unreachable exit must not leave a state file behind")
+	}
+}
+
+// --force는 프리플라이트를 넘길 수 있어야 한다. 판정이 틀렸을 때 운영자가 막히면 안 된다.
+func TestExecuteRouteSwitchForceOverridesUnreachableExit(t *testing.T) {
+	restore := currentLanguage()
+	defer setLanguage(restore)
+	setLanguage(defaultLanguage)
+
+	statePath := filepath.Join(t.TempDir(), "route.json")
+	input := routeSwitchTestInput(statePath)
+	input.exit = routeExit{Name: "dead", Via: "192.0.2.253", Dev: "enp1s0"}
+	input.force = true
+	input.dryRun = true // 실제 변경까지 가지 않고 프리플라이트를 통과했는지만 본다.
+	runner := &fakeRouteRunner{
+		outputs: map[string]string{
+			"ip route show table all": routeTableFixture,
+			"ip rule show":            ipRuleFixture,
+			"ip neigh show":           neighborFixture,
+			"ip -o link show":         linkFixture,
+		},
+	}
+	outcome := executeRouteSwitch(context.Background(), routeSwitchDeps{runner: runner, signals: make(chan os.Signal)}, input)
+	if outcome.Result.Status != StatusPass {
+		t.Fatalf("outcome = %#v, want pass with --force", outcome.Result)
+	}
+}
+
+// dry-run은 계획만 보여주고 아무것도 바꾸지 않아야 한다. 위험한 명령일수록 먼저 볼 수 있어야 한다.
+func TestExecuteRouteSwitchDryRunChangesNothing(t *testing.T) {
+	restore := currentLanguage()
+	defer setLanguage(restore)
+	setLanguage(defaultLanguage)
+
+	statePath := filepath.Join(t.TempDir(), "route.json")
+	input := routeSwitchTestInput(statePath)
+	input.dryRun = true
+	runner := &fakeRouteRunner{
+		outputs: map[string]string{
+			"ip route show table all": routeTableFixture,
+			"ip rule show":            ipRuleFixture,
+			"ip neigh show":           neighborFixture,
+			"ip -o link show":         linkFixture,
+		},
+	}
+	outcome := executeRouteSwitch(context.Background(), routeSwitchDeps{runner: runner, signals: make(chan os.Signal)}, input)
+	if outcome.Result.Status != StatusPass {
+		t.Fatalf("outcome = %#v, want pass", outcome.Result)
+	}
+	for _, call := range runner.calls {
+		joined := strings.Join(call, " ")
+		for _, forbidden := range []string{"replace", "del", "systemd-run", "systemctl"} {
+			if strings.Contains(joined, forbidden) {
+				t.Fatalf("dry-run must not run %q: %#v", forbidden, runner.calls)
+			}
+		}
+	}
+	if _, err := os.Stat(statePath); err == nil {
+		t.Fatal("dry-run must not write a state file")
+	}
+	// 실행될 argv를 그대로 보여 줘야 계획으로서 쓸모가 있다.
+	foundApply := false
+	for _, evidence := range outcome.Result.Evidence {
+		if strings.Contains(evidence.Value, "ip route replace default via 192.0.2.254 dev enp1s0 metric 100") {
+			foundApply = true
+		}
+	}
+	if !foundApply {
+		t.Fatalf("dry-run must show the exact replace argv: %#v", outcome.Result.Evidence)
 	}
 }
 

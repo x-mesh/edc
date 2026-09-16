@@ -9,6 +9,15 @@ route:
     exits: "path of exits.yaml, overrides the default search"
     force: "switch despite a high, unconfirmed lockout risk"
     yes: "skip the confirmation when the identity check matched"
+    dry_run: "print the plan and exit, changing nothing"
+  reach:
+    current: "current exit"
+    summary: "%d exit(s) usable, %d unknown, %d broken"
+    detail: "via %s dev %s: %s (neighbor %s, link %s, mtu %d)"
+    skip:
+      no_candidate: "edc found no exit to examine: the route carries no via and exits.yaml is absent"
+    warn:
+      broken: "these exits cannot carry traffic now: %s"
   exits:
     error:
       not_found: "edc found no exits.yaml"
@@ -22,6 +31,16 @@ route:
       guard_denied: "the rollback guard denied the switch: %s"
       identity_check_failed: "the exit identity check failed: %s"
       identity_mismatch: "the exit identity check does not match: expected %s, got %s"
+      exit_unreachable: "exit %s cannot carry traffic now (neighbor %s, link %s); --force overrides this"
+    dry_run:
+      summary: "plan only, nothing changed: exit %s with a %d second rollback timer"
+      guard: "systemd-run --collect --on-active=%[2]d --timer-property=AccuracySec=1s --unit=%[1]s"
+      label:
+        current: "current route"
+        apply: "apply"
+        rollback: "rollback"
+        guard: "guard"
+        reach: "reach"
     cancelled:
       signal: "edc received a signal before confirmation and rolled back"
       declined: "edc rolled back because the switch was not confirmed"

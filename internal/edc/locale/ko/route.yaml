@@ -9,6 +9,15 @@ route:
     exits: "exits.yaml 경로. 기본 탐색을 덮어씁니다"
     force: "자기 차단 위험이 높고 안전장치가 확인되지 않아도 전환합니다"
     yes: "출구 신원 확인이 일치하면 확인을 건너뜁니다"
+    dry_run: "아무것도 바꾸지 않고 계획만 출력합니다"
+  reach:
+    current: "현재 출구"
+    summary: "사용 가능 %d개, 미확인 %d개, 실패 %d개"
+    detail: "via %s dev %s: %s (이웃 %s, 장치 %s, mtu %d)"
+    skip:
+      no_candidate: "살펴볼 출구가 없습니다. 경로에 via가 없고 exits.yaml도 없습니다"
+    warn:
+      broken: "지금 트래픽을 보낼 수 없는 출구: %s"
   exits:
     error:
       not_found: "exits.yaml을 찾지 못했습니다"
@@ -22,6 +31,16 @@ route:
       guard_denied: "롤백 안전장치가 전환을 거부했습니다: %s"
       identity_check_failed: "출구 신원 확인에 실패했습니다: %s"
       identity_mismatch: "출구 신원이 일치하지 않습니다: 기대 %s, 실제 %s"
+      exit_unreachable: "출구 %s로는 지금 트래픽을 보낼 수 없습니다(이웃 %s, 장치 %s). --force로 넘길 수 있습니다"
+    dry_run:
+      summary: "계획만 확인했고 아무것도 바꾸지 않았습니다: 출구 %s, 롤백 유예 %d초"
+      guard: "systemd-run --collect --on-active=%[2]d --timer-property=AccuracySec=1s --unit=%[1]s"
+      label:
+        current: "현재 경로"
+        apply: "적용"
+        rollback: "롤백"
+        guard: "안전장치"
+        reach: "도달성"
     cancelled:
       signal: "확정 전에 신호를 받아 원복했습니다"
       declined: "확정하지 않아 원복했습니다"

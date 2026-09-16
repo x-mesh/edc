@@ -25,6 +25,7 @@ const (
 	routeProbeTarget  = "route.target"
 	routeProbeLockout = "route.lockout"
 	routeProbeGuard   = "route.guard"
+	routeProbeReach   = "route.reach"
 )
 
 // 롤백 유예 범위(A06). 기본 120초, 10초에서 900초 사이로 --seconds가 조정한다.
@@ -97,7 +98,80 @@ func runRouteCheckResults(ctx context.Context, runner routeRunner, dest, sshConn
 		},
 		func(ctx context.Context) Result { return probeRouteLockout(ctx, runner, dest, sshConnection) },
 		func(ctx context.Context) Result { return probeRouteGuard(ctx, runner) },
+		func(ctx context.Context) Result { return probeRouteReach(ctx, runner, dest, cwd, configDir) },
 	})
+}
+
+// probeRouteReach는 현재 출구와 exits.yaml에 정의된 출구들의 L2 도달성을 본다. next-hop의 이웃
+// 항목이 INCOMPLETE나 FAILED면 그 출구로 바꾸는 순간 반드시 실패하므로, 깨뜨린 뒤 되돌리는 대신
+// 미리 거를 수 있다. 다만 lladdr이 정상 형태이기만 하면 그 너머가 살아있는지는 L2에서 알 수 없다.
+func probeRouteReach(ctx context.Context, runner routeRunner, dest, cwd, configDir string) Result {
+	started := time.Now()
+	if runner == nil {
+		return unsupported(routeProbeReach, T("route.skip.linux_only"))
+	}
+	neighborText, err := runner.run(ctx, "ip", "neigh", "show")
+	if err != nil {
+		return resultFromError(routeProbeReach, started, "command", fmt.Errorf("ip neigh show: %w", err))
+	}
+	linkText, err := runner.run(ctx, "ip", "-o", "link", "show")
+	if err != nil {
+		return resultFromError(routeProbeReach, started, "command", fmt.Errorf("ip -o link show: %w", err))
+	}
+	tableText, err := runner.run(ctx, "ip", "route", "show", "table", "all")
+	if err != nil {
+		return resultFromError(routeProbeReach, started, "command", fmt.Errorf("ip route show table all: %w", err))
+	}
+	neighbors := parseNeighbors(neighborText)
+	links := parseLinks(linkText)
+
+	type candidate struct{ name, via, dev string }
+	var candidates []candidate
+	entries, _ := parseRouteTable(tableText)
+	if current := entriesForDest(entries, dest); len(current) > 0 && current[0].Via != "" {
+		candidates = append(candidates, candidate{T("route.reach.current"), current[0].Via, current[0].Dev})
+	}
+	if exits, _, err := loadRouteExits(cwd, configDir, ""); err == nil {
+		for _, exit := range exits.Exits {
+			candidates = append(candidates, candidate{exit.Name, exit.Via, exit.Dev})
+		}
+	}
+	if len(candidates) == 0 {
+		return Result{Probe: routeProbeReach, Status: StatusSkip, StartedAt: started.UTC(), Summary: T("route.reach.skip.no_candidate")}
+	}
+
+	var broken, unknown []string
+	var evidence []Evidence
+	for _, item := range candidates {
+		state, neighborDetail, linkDetail, mtu := exitReach(neighbors, links, item.via, item.dev)
+		evidence = append(evidence, Evidence{
+			Label: item.name,
+			Value: T("route.reach.detail", item.via, item.dev, state, emptyAs(neighborDetail, "-"), emptyAs(linkDetail, "-"), mtu),
+		})
+		switch state {
+		case reachBroken:
+			broken = append(broken, item.name)
+		case reachUnknown:
+			unknown = append(unknown, item.name)
+		}
+	}
+	status := StatusPass
+	if len(unknown) > 0 {
+		status = StatusWarn
+	}
+	if len(broken) > 0 {
+		status = StatusFail
+	}
+	result := Result{
+		Probe: routeProbeReach, Status: status, StartedAt: started.UTC(), DurationMS: time.Since(started).Milliseconds(),
+		Summary:  T("route.reach.summary", len(candidates)-len(broken)-len(unknown), len(unknown), len(broken)),
+		Metrics:  map[string]interface{}{"broken": broken, "unknown": unknown},
+		Evidence: evidence,
+	}
+	if len(broken) > 0 {
+		result.Warnings = append(result.Warnings, T("route.reach.warn.broken", strings.Join(broken, ", ")))
+	}
+	return result
 }
 
 // probeRouteTable은 `ip route show table all`과 `ip rule show` 원문을 모두 읽어 스냅샷 범위가
@@ -400,6 +474,7 @@ type routeSwitchInput struct {
 	exit          routeExit
 	seconds       int
 	force         bool
+	dryRun        bool
 	edcPath       string
 	execID        string
 	statePath     string
@@ -437,6 +512,8 @@ func runRouteSwitch(args []string, version string) int {
 	exitsPath := set.String("exits", "", T("route.flag.exits"))
 	force := set.Bool("force", false, T("route.flag.force"))
 	yes := set.Bool("yes", false, T("route.flag.yes"))
+	dryRun := set.Bool("dry-run", false, T("route.flag.dry_run"))
+	set.BoolVar(dryRun, "n", false, T("route.flag.dry_run"))
 	if err := set.Parse(args); err != nil {
 		return 2
 	}
@@ -467,7 +544,8 @@ func runRouteSwitch(args []string, version string) int {
 		return 2
 	}
 	// 내부에서 sudo를 붙이지 않는다(A03). root가 아니면 어떤 명령도 부르지 않고 끝낸다.
-	if os.Geteuid() != 0 {
+	// --dry-run은 읽기만 하므로 이 확인에서 제외한다. 위험한 명령일수록 권한 없이도 계획을 볼 수 있어야 한다.
+	if os.Geteuid() != 0 && !*dryRun {
 		fmt.Fprintln(os.Stderr, T("route.switch.error.root_required"))
 		return 3
 	}
@@ -491,7 +569,7 @@ func runRouteSwitch(args []string, version string) int {
 	defer signal.Stop(signals)
 
 	input := routeSwitchInput{
-		dest: exits.Dest, exit: exit, seconds: *seconds, force: *force,
+		dest: exits.Dest, exit: exit, seconds: *seconds, force: *force, dryRun: *dryRun,
 		edcPath: edcPath, execID: execID, statePath: routeStatePath(execID),
 		sshConnection: os.Getenv("SSH_CONNECTION"),
 	}
@@ -534,6 +612,33 @@ func executeRouteSwitch(ctx context.Context, deps routeSwitchDeps, input routeSw
 	}
 	targetEntry := targetEntries[0]
 	baseline := len(targetEntries)
+
+	// 프리플라이트: next-hop이 L2에서 확정 실패면 바꿔도 반드시 끊긴다. 아직 아무것도 만들지 않았으니
+	// 깨뜨린 뒤 되돌리는 대신 여기서 끝낸다. 항목이 없는 경우는 실패가 아니라 미확인이므로 막지 않는다.
+	reachState, neighborDetail, linkDetail, mtu := routeExitReachability(ctx, deps.runner, input.exit.Via, input.exit.Dev)
+	if reachState == reachBroken && !input.force {
+		return routeSwitchOutcome{Result: resultFromError(probe, started, "reach",
+			errors.New(T("route.switch.error.exit_unreachable", input.exit.Name, emptyAs(neighborDetail, "-"), emptyAs(linkDetail, "-"))))}
+	}
+
+	if input.dryRun {
+		replaceArgs, err := routeReplaceArgs(targetEntry, input.exit.Via)
+		if err != nil {
+			return routeSwitchOutcome{Result: resultFromError(probe, started, "plan", err)}
+		}
+		unit := routeRollbackUnitName(input.execID)
+		return routeSwitchOutcome{Result: Result{
+			Probe: probe, Status: StatusPass, StartedAt: started.UTC(), DurationMS: time.Since(started).Milliseconds(),
+			Summary: T("route.switch.dry_run.summary", input.exit.Name, input.seconds),
+			Evidence: []Evidence{
+				{Label: T("route.switch.dry_run.label.current"), Value: strings.TrimSpace(targetEntry.Raw)},
+				{Label: T("route.switch.dry_run.label.apply"), Value: "ip " + strings.Join(replaceArgs, " ")},
+				{Label: T("route.switch.dry_run.label.rollback"), Value: input.edcPath + " route rollback --state " + input.statePath},
+				{Label: T("route.switch.dry_run.label.guard"), Value: T("route.switch.dry_run.guard", unit, input.seconds)},
+				{Label: T("route.switch.dry_run.label.reach"), Value: T("route.reach.detail", input.exit.Via, input.exit.Dev, reachState, emptyAs(neighborDetail, "-"), emptyAs(linkDetail, "-"), mtu)},
+			},
+		}}
+	}
 
 	snapshot := routeSnapshot{
 		SchemaVersion: routeStateSchemaVersion, RunID: input.execID, CreatedAt: time.Now().UTC(),

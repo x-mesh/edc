@@ -100,6 +100,7 @@ var commandDocs = []commandDoc{
 			{"--exits <file>", "route.flag.exits"},
 			{"--force", "route.flag.force"},
 			{"--yes", "route.flag.yes"},
+			{"-n, --dry-run", "route.flag.dry_run"},
 		},
 		usesCommon: true,
 	},

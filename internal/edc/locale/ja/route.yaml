@@ -9,6 +9,15 @@ route:
     exits: "exits.yaml のパス。既定の検索を上書きします"
     force: "自己遮断リスクが高く安全装置が未確認でも切り替えます"
     yes: "出口の身元確認が一致した場合に確認を省略します"
+    dry_run: "何も変更せず計画のみを出力します"
+  reach:
+    current: "現在の出口"
+    summary: "利用可能 %d 件、未確認 %d 件、失敗 %d 件"
+    detail: "via %s dev %s: %s (近傍 %s、装置 %s、mtu %d)"
+    skip:
+      no_candidate: "調べる出口がありません。経路に via がなく exits.yaml もありません"
+    warn:
+      broken: "今トラフィックを送れない出口: %s"
   exits:
     error:
       not_found: "exits.yaml が見つかりません"
@@ -22,6 +31,16 @@ route:
       guard_denied: "ロールバック安全装置が切り替えを拒否しました: %s"
       identity_check_failed: "出口の身元確認に失敗しました: %s"
       identity_mismatch: "出口の身元が一致しません: 期待 %s、実際 %s"
+      exit_unreachable: "出口 %s では今トラフィックを送れません(近傍 %s、装置 %s)。--force で上書きできます"
+    dry_run:
+      summary: "計画のみで何も変更していません: 出口 %s、ロールバック猶予 %d 秒"
+      guard: "systemd-run --collect --on-active=%[2]d --timer-property=AccuracySec=1s --unit=%[1]s"
+      label:
+        current: "現在の経路"
+        apply: "適用"
+        rollback: "ロールバック"
+        guard: "安全装置"
+        reach: "到達性"
     cancelled:
       signal: "確定前にシグナルを受け取ったためロールバックしました"
       declined: "確定されなかったためロールバックしました"

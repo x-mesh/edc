@@ -571,6 +571,61 @@ host는 inventory 순서로 돕니다. step은 recipe 순서로 command와 verif
 
 step이 실패하면 `edc`는 그 host의 나머지 step을 건너뜁니다. 다음 host는 그대로 진행합니다. 실패가 하나라도 있으면 exit code `1`을 돌려줍니다.
 
+## Route 전환
+
+`edc route`는 gateway VM의 기본 경로를 바꾸고, 실패하면 되돌립니다. Linux에서만 동작합니다. `switch`와 `rollback`은 root 권한이 필요하고 `edc`가 `sudo`를 붙이지 않습니다.
+
+이 명령은 경로를 바꿀 gateway VM에서 직접 실행합니다. 원격에서 조종하는 방식이 아닙니다. `edc`가 `SSH_CONNECTION`을 읽어 그 변경이 지금 세션을 끊는지 판정하기 때문입니다.
+
+```bash
+edc route check                 # 현재 상태만 살펴봅니다. 아무것도 바꾸지 않습니다
+edc route switch --to <name>    # 전환하고, 롤백 타이머를 무장하고, 검증하고, 확정합니다
+edc route status                # 진행 중이거나 끝난 전환을 보여 줍니다
+edc route rollback --state <f>  # 상태 파일 하나를 되돌립니다
+```
+
+`rollback`이 별도 명령인 이유는 무장한 타이머가 이 명령을 부르기 때문입니다. 타이머와 사람이 같은 코드 경로를 씁니다.
+
+### 출구 목록
+
+`switch --to`는 `exits.yaml`에 적힌 이름만 받습니다. next-hop 주소를 직접 입력하면 오타가 나도 커널이 exit code `0`을 돌려주기 때문에 실수가 드러나지 않습니다. 이름 목록이 그 실수를 막습니다.
+
+```yaml
+dest: default
+exits:
+  - name: lab-nat-01
+    via: 10.0.2.1
+    dev: ens3
+    expect_public_ip: 203.0.113.10
+  - name: lab-nat-02
+    via: 10.0.3.1
+    dev: ens3
+    expect_public_ip: 203.0.113.20
+```
+
+`edc`는 `inventory.yaml`과 같은 순서로 `exits.yaml`을 찾습니다. `--exits <file>`로 다른 경로를 지정할 수 있습니다.
+
+`expect_public_ip`는 그 출구가 인터넷에 내보이는 주소입니다. `edc`가 전환 뒤 공인 주소를 읽어 이 값과 대조합니다. 이 항목이 없으면 신원 확인을 건너뛰고 사람이 확정하게 남겨 둡니다.
+
+### 안전장치
+
+`edc`는 세 겹으로 막습니다. 각각 다른 실패를 잡습니다.
+
+1. **프리플라이트.** next-hop의 이웃 항목을 읽습니다. `INCOMPLETE`나 `FAILED`면 바꿔도 반드시 실패하므로 거부하고 아무것도 바꾸지 않습니다. 항목이 아예 없는 것은 실패가 아니라 미확인이므로 막지 않습니다. `--force`로 거부를 넘길 수 있습니다.
+2. **롤백 타이머.** 경로를 바꾸기 **전에** `edc route rollback`을 실행할 systemd 타이머를 무장합니다. 타이머는 PID 1이 들고 있어서 `edc` 프로세스가 죽어도 발화합니다. 무장에 실패하면 경로를 건드리지 않습니다.
+3. **검증.** 변경 전후의 경로 개수를 비교하고, 목적지가 실제로 바뀐 경로를 타는지 대조하고, 새 출구의 공인 주소를 확인합니다.
+
+`--seconds`로 롤백 유예를 정합니다. 10에서 900 사이이고 기본값은 120입니다.
+
+```bash
+edc route switch --to lab-nat-02 --dry-run   # 계획만 출력하고 아무것도 바꾸지 않습니다
+edc route switch --to lab-nat-02 --seconds 60
+```
+
+`--dry-run`은 어떤 경로를 바꾸는지, 실행할 명령이 무엇인지, 어떤 타이머를 무장하는지, 출구가 닿는지를 보여 줍니다. root 권한이 없어도 됩니다.
+
+전환은 기존 연결을 끊습니다. NAT 상태가 이전 출구에 남아 있어 이미 맺어진 흐름은 멈춥니다. 새로 맺는 흐름만 새 출구를 씁니다.
+
 ## Probe 진행 줄
 
 stdin과 stdout이 모두 terminal이면 단일 probe command는 진행 줄 하나를 보여 줍니다. 그 줄에는 probe 이름, target, 경과 시간, command의 마지막 출력 줄이 들어갑니다.

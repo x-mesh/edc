@@ -558,6 +558,61 @@ Each host runs in inventory order. Each step runs its command and verify command
 
 If a step fails, `edc` skips later steps on that host. The next host still runs. Any failure returns exit code `1`.
 
+## Route switching
+
+`edc route` changes the default route of a gateway VM and rolls the change back when it fails. Linux only. `switch` and `rollback` need root. `edc` does not add `sudo` itself.
+
+Run this command on the gateway VM, not from a remote machine. `edc` reads `SSH_CONNECTION` to judge whether the change cuts your own session.
+
+```bash
+edc route check                 # inspect the current state, change nothing
+edc route switch --to <name>    # switch, arm a rollback timer, verify, confirm
+edc route status                # show a pending or finished switch
+edc route rollback --state <f>  # restore one state file
+```
+
+`rollback` is a separate command because the armed timer runs it. The timer and a person call the same code path.
+
+### Exit list
+
+`switch --to` takes a name from `exits.yaml`. A name list prevents a typo in a next-hop address. A wrong next-hop still returns exit code `0` from the kernel, so free-form input hides the mistake.
+
+```yaml
+dest: default
+exits:
+  - name: lab-nat-01
+    via: 10.0.2.1
+    dev: ens3
+    expect_public_ip: 203.0.113.10
+  - name: lab-nat-02
+    via: 10.0.3.1
+    dev: ens3
+    expect_public_ip: 203.0.113.20
+```
+
+`edc` finds `exits.yaml` in the same directories as `inventory.yaml`. Use `--exits <file>` to name another path.
+
+`expect_public_ip` is the address that the exit presents to the internet. `edc` reads the public address after the switch and compares it. Without this field `edc` skips the identity check and asks a person to confirm.
+
+### Safety
+
+`edc` runs three guards. Each one stops a different failure.
+
+1. **Preflight.** `edc` reads the neighbor entry of the next-hop. An `INCOMPLETE` or `FAILED` entry means the change fails for certain, so `edc` refuses it and changes nothing. An absent entry is unknown, not broken, so `edc` allows it. Use `--force` to override a refusal.
+2. **Rollback timer.** Before the change, `edc` arms a systemd timer that runs `edc route rollback`. The timer lives in PID 1, so it fires even after the `edc` process dies. If the arming fails, `edc` changes nothing.
+3. **Verification.** `edc` compares the route count before and after, confirms that the destination still uses the changed route, and checks the public address of the new exit.
+
+Use `--seconds` to set the rollback grace period, between 10 and 900. The default is 120.
+
+```bash
+edc route switch --to lab-nat-02 --dry-run   # print the plan, change nothing
+edc route switch --to lab-nat-02 --seconds 60
+```
+
+`--dry-run` prints the route that `edc` replaces, the exact commands, the timer that it arms, and the reachability of the exit. It needs no root.
+
+A switch breaks existing connections. The NAT state stays on the old exit, so established flows stop. New flows use the new exit.
+
 ## Probe live line
 
 A single probe command shows one progress line if stdin and stdout are terminals. The line has the probe name, the target, the elapsed time, and the last output line of the command.

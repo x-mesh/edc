@@ -54,6 +54,16 @@ observe:
     unsupported_scheme: "edc supports http and https URLs only: %s"
     cancelling: "cancelling, edc stops the running command"
 
+  listen:
+    label: "listening sockets"
+    column:
+      port: "PORT"
+      proto: "PROTO"
+      address: "ADDRESS"
+      process: "PROCESS"
+    warn:
+      unparsed: "%d socket line(s) could not be read"
+
   system:
     unsupported_os: "edc supports macOS and Linux only"
     interfaces: "%d interfaces"

@@ -54,6 +54,16 @@ observe:
     unsupported_scheme: "http 또는 https URL만 지원합니다: %s"
     cancelling: "취소 중, 실행 중인 command를 종료합니다"
 
+  listen:
+    label: "연결을 기다리는 소켓"
+    column:
+      port: "포트"
+      proto: "프로토콜"
+      address: "주소"
+      process: "프로세스"
+    warn:
+      unparsed: "소켓 %d줄을 읽지 못했습니다"
+
   system:
     unsupported_os: "현재 macOS와 Linux만 지원합니다"
     interfaces: "interface %d개"

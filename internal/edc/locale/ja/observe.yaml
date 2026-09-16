@@ -54,6 +54,16 @@ observe:
     unsupported_scheme: "http または https の URL だけに対応します: %s"
     cancelling: "中断中、実行中の command を終了します"
 
+  listen:
+    label: "接続を待つソケット"
+    column:
+      port: "ポート"
+      proto: "プロトコル"
+      address: "アドレス"
+      process: "プロセス"
+    warn:
+      unparsed: "ソケット %d 行を読み取れませんでした"
+
   system:
     unsupported_os: "現在 macOS と Linux だけに対応します"
     interfaces: "interface %d 個"

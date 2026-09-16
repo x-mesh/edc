@@ -232,53 +232,40 @@ const listenProbeID = "listen"
 // probeListen은 연결을 기다리는 소켓을 본다. 연결된 소켓과 유닉스 도메인 소켓은 대상이 아니다.
 // udp가 참이면 바인드된 UDP 소켓도 함께 본다. UDP에는 LISTEN 상태가 없지만 ss -ul과 마찬가지로
 // 바인드되어 수신을 기다리는 소켓을 같은 관점으로 다룬다.
+//
+// 두 플랫폼 모두 기계용 출력을 쓴다. lsof -F는 필드마다 한 줄을 쓰고, ss는 -t와 -u를 함께 주면
+// 프로토콜 열이 생겨 형식이 하나로 고정된다. 사람용 표를 열로 쪼개지 않는다.
 func probeListen(ctx context.Context, udp bool) Result {
 	var result Result
+	var sockets []listenSocket
+	var unparsed int
 	switch runtime.GOOS {
 	case "darwin":
-		if udp {
-			// lsof는 -sTCP:LISTEN을 UDP에 적용하지 않으므로 TCP LISTEN과 UDP를 따로 묻고 합친다.
-			result = mergeListenResults(
-				probeCommand(ctx, listenProbeID, "/usr/sbin/lsof", "-nP", "-iTCP", "-sTCP:LISTEN"),
-				probeCommand(ctx, listenProbeID, "/usr/sbin/lsof", "-nP", "-iUDP"),
-			)
-		} else {
-			result = probeCommand(ctx, listenProbeID, "/usr/sbin/lsof", "-nP", "-iTCP", "-sTCP:LISTEN")
+		result = probeCommand(ctx, listenProbeID, "/usr/sbin/lsof", "-nP", "-i", "-FpcnPT")
+		if result.Status != StatusPass {
+			return result
 		}
+		sockets, unparsed = parseLsofFields(socketOutput(result), udp)
 	case "linux":
-		if udp {
-			result = probeCommand(ctx, listenProbeID, "ss", "-tulnp")
-		} else {
-			result = probeCommand(ctx, listenProbeID, "ss", "-tlnp")
+		// TCP만 볼 때도 -tu로 물어 프로토콜 열을 얻는다. 형식이 하나면 파서도 하나다.
+		result = probeCommand(ctx, listenProbeID, "ss", "-Htulnp")
+		if result.Status != StatusPass {
+			return result
 		}
+		sockets, unparsed = parseSSRows(socketOutput(result), udp)
 	default:
 		return unsupported(listenProbeID, unsupportedOSReason())
 	}
-	if result.Status != StatusPass {
-		return result
+	sockets = dedupeListenSockets(sockets)
+	result.Summary = T("observe.system.listen", len(sockets))
+	result.Metrics = map[string]interface{}{"listening": len(sockets)}
+	// 표를 먼저 두고 원문은 뒤에 남긴다. 읽지 못한 줄은 조용히 버리지 않고 경고로 드러낸다.
+	result.Evidence = append([]Evidence{{Label: T("observe.listen.label"), Value: formatListenTable(sockets)}}, result.Evidence...)
+	if unparsed > 0 {
+		result.Status = StatusWarn
+		result.Warnings = append(result.Warnings, T("observe.listen.warn.unparsed", unparsed))
 	}
-	// probeCommand의 기본 요약은 출력 첫 줄인데, lsof와 ss의 첫 줄은 열 제목이라 정보가 없다.
-	// 열 제목만 보이면 소켓을 하나도 찾지 못한 것처럼 읽힌다. 개수를 대신 보여 준다.
-	count := countSocketRows(socketOutput(result))
-	result.Summary = T("observe.system.listen", count)
-	result.Metrics = map[string]interface{}{"listening": count}
 	return result
-}
-
-// mergeListenResults는 두 번 물어 얻은 출력을 하나로 합친다. 둘째 출력의 열 제목은 뺀다.
-func mergeListenResults(first, second Result) Result {
-	if first.Status != StatusPass {
-		return first
-	}
-	if second.Status != StatusPass {
-		return second
-	}
-	merged := first
-	firstText, secondText := socketOutput(first), socketOutput(second)
-	if rows := strings.SplitN(strings.TrimRight(secondText, "\n"), "\n", 2); len(rows) == 2 {
-		merged.Evidence = []Evidence{{Label: "output", Value: strings.TrimRight(firstText, "\n") + "\n" + rows[1] + "\n"}}
-	}
-	return merged
 }
 
 // socketOutput은 probeCommand가 남긴 원문을 꺼낸다.

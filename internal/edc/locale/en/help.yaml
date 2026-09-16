@@ -92,8 +92,10 @@ command:
       - "In a terminal, a progress line counts the regions. Press q to cancel."
       - "-v opens every provider row."
   sockets:
-    summary: "Open socket list"
+    summary: "Listening TCP socket list"
     notes:
+      - "It shows TCP sockets in the LISTEN state only."
+      - "It skips connected sockets, UDP, and unix domain sockets."
       - "-v opens the whole list as the detail."
   quality:
     summary: "networkQuality measurement (macOS)"

@@ -92,8 +92,10 @@ command:
       - "terminal では進捗行が確認できた地域の数を示します。q で中断します。"
       - "-v を渡すと事業者ごとの値をすべて開きます。"
   sockets:
-    summary: "開いている socket の一覧"
+    summary: "listen 中の TCP socket 一覧"
     notes:
+      - "LISTEN 状態の TCP socket のみを表示します。"
+      - "接続済み socket、UDP、unix domain socket は対象外です。"
       - "-v を渡すと一覧全体を詳細として開きます。"
   quality:
     summary: "networkQuality の測定 (macOS)"

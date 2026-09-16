@@ -88,3 +88,26 @@ func TestResolveRouteAddressKeepsLiterals(t *testing.T) {
 		}
 	}
 }
+
+// lsof와 ss의 첫 줄은 열 제목이라 정보가 없다. 제목만 요약에 내보내면 소켓을 하나도 찾지 못한
+// 것처럼 읽힌다. 개수는 제목을 빼고 세되, 소켓이 없으면 제목 줄 자체가 없다.
+func TestCountSocketRows(t *testing.T) {
+	cases := []struct {
+		name string
+		text string
+		want int
+	}{
+		{"빈 출력", "", 0},
+		{"공백만", "\n\n", 0},
+		{"제목만", "COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME\n", 0},
+		{"제목 + 2줄", "COMMAND PID USER\nrapportd 947 jinwoo\nControlCe 1027 jinwoo\n", 2},
+		{"끝에 개행 없음", "COMMAND PID\nrapportd 947", 1},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			if got := countSocketRows(testCase.text); got != testCase.want {
+				t.Fatalf("countSocketRows = %d, want %d", got, testCase.want)
+			}
+		})
+	}
+}

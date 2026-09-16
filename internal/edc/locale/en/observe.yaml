@@ -57,6 +57,7 @@ observe:
   system:
     unsupported_os: "edc supports macOS and Linux only"
     interfaces: "%d interfaces"
+    sockets: "%d listening TCP sockets"
     command_missing: "edc did not find the %s command"
     address_missing: "edc did not find an address of %s"
     no_nameserver: "%s holds no nameserver"

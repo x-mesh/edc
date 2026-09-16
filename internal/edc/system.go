@@ -225,15 +225,51 @@ func probeResolvConf(ctx context.Context, path string) Result {
 	return result
 }
 
+// probeSockets는 LISTEN 상태의 TCP 소켓만 본다. 연결된 소켓, UDP, 유닉스 도메인 소켓은 대상이 아니다.
 func probeSockets(ctx context.Context) Result {
+	var result Result
 	switch runtime.GOOS {
 	case "darwin":
-		return probeCommand(ctx, "sockets", "/usr/sbin/lsof", "-nP", "-iTCP", "-sTCP:LISTEN")
+		result = probeCommand(ctx, "sockets", "/usr/sbin/lsof", "-nP", "-iTCP", "-sTCP:LISTEN")
 	case "linux":
-		return probeCommand(ctx, "sockets", "ss", "-tlnp")
+		result = probeCommand(ctx, "sockets", "ss", "-tlnp")
 	default:
 		return unsupported("sockets", unsupportedOSReason())
 	}
+	if result.Status != StatusPass {
+		return result
+	}
+	// probeCommand의 기본 요약은 출력 첫 줄인데, lsof와 ss의 첫 줄은 열 제목이라 정보가 없다.
+	// 열 제목만 보이면 소켓을 하나도 찾지 못한 것처럼 읽힌다. 개수를 대신 보여 준다.
+	count := countSocketRows(socketOutput(result))
+	result.Summary = T("observe.system.sockets", count)
+	result.Metrics = map[string]interface{}{"listening": count}
+	return result
+}
+
+// socketOutput은 probeCommand가 남긴 원문을 꺼낸다.
+func socketOutput(result Result) string {
+	for _, evidence := range result.Evidence {
+		if evidence.Label == "output" {
+			return evidence.Value
+		}
+	}
+	return ""
+}
+
+// countSocketRows는 열 제목을 뺀 소켓 줄 수를 센다. 소켓이 하나도 없으면 lsof는 아무 줄도 내지
+// 않으므로 제목을 빼지 않는다.
+func countSocketRows(text string) int {
+	rows := 0
+	for _, line := range strings.Split(text, "\n") {
+		if strings.TrimSpace(line) != "" {
+			rows++
+		}
+	}
+	if rows == 0 {
+		return 0
+	}
+	return rows - 1
 }
 
 func probeQuality(ctx context.Context) Result {

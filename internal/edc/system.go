@@ -243,7 +243,7 @@ func probeListen(ctx context.Context, families listenFamilies) Result {
 	case "darwin":
 		// -i와 -U는 선택 조건이라 함께 주면 합집합이 된다. 유닉스 소켓에는 P(프로토콜) 필드가 없어
 		// t(종류) 필드를 함께 받는다.
-		args := []string{"-nP", "-FpcntPT"}
+		args := []string{"-nP", "-FpcntPTL"}
 		if families.TCP || families.UDP {
 			args = append(args, "-i")
 		}
@@ -257,9 +257,10 @@ func probeListen(ctx context.Context, families listenFamilies) Result {
 		sockets, unparsed = parseLsofFields(socketOutput(result), families)
 	case "linux":
 		// TCP만 볼 때도 -tu로 물어 프로토콜 열을 얻는다. 형식이 하나면 파서도 하나다.
-		flags := "-Htulnp"
+		// -e는 uid를 붙인다. 계정 이름은 -v에서만 쓰지만 한 형식으로 물어야 파서가 하나로 남는다.
+		flags := "-Htulnpe"
 		if families.Unix {
-			flags = "-Htulxnp"
+			flags = "-Htulxnpe"
 		}
 		result = probeCommand(ctx, listenProbeID, "ss", flags)
 		if result.Status != StatusPass {
@@ -424,21 +425,23 @@ func runListen(args []string, version string) int {
 	}
 	color := isTerminal(os.Stdout) && os.Getenv("NO_COLOR") == ""
 	fmt.Fprint(os.Stdout, formatResultLine(result, color))
-	printResultDetail(os.Stdout, result, options.verbose, color)
+	// evidence는 lsof -F와 ss의 원문, 곧 파서의 입력이다. 사람에게 그것을 펼치면 표가 감추려던
+	// 형식을 도로 보여 주는 셈이므로 화면에서는 열지 않는다. 원문은 --json에 그대로 남는다.
+	printResultDetail(os.Stdout, result, false, color)
 	// 표는 화면에서 언제나 보여 준다. 개수 한 줄로는 "어느 포트가 열려 있나"에 답이 되지 않는다.
 	// 화면에서는 주소를 그대로 쓴다. 이 명령은 그 값을 보려고 실행하기 때문이다. --redact는
 	// 공유하는 산출물인 JSON에만 적용한다(where, info와 같은 규칙).
-	if table := listenTableOf(result); table != "" {
+	if table := listenTableOf(result, options.verbose); table != "" {
 		fmt.Fprint(os.Stdout, "\n"+table)
 	}
 	return exitCode([]Result{result})
 }
 
 // listenTableOf는 결과의 metrics에 담아 둔 목록으로 표를 만든다.
-func listenTableOf(result Result) string {
+func listenTableOf(result Result, detail bool) string {
 	sockets, ok := result.Metrics["sockets"].([]listenSocket)
 	if !ok || len(sockets) == 0 {
 		return ""
 	}
-	return formatListenTable(sockets)
+	return formatListenTable(sockets, detail)
 }

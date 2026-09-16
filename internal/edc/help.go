@@ -140,6 +140,7 @@ var commandDocs = []commandDoc{
 			{"-u, --udp", "command.listen.option.udp"},
 			{"--unix", "command.listen.option.unix"},
 			{"--all", "command.listen.option.all"},
+			{"-v, --verbose", "command.listen.option.verbose"},
 		},
 		usesCommon: true,
 	},
@@ -301,7 +302,7 @@ func printCommandHelp(writer io.Writer, name string) bool {
 	}
 	if doc.usesCommon {
 		fmt.Fprintf(writer, "\n%s\n", T("help.common_options_label"))
-		printOptionDocs(writer, commonOptionDocs)
+		printOptionDocs(writer, uncoveredCommonOptions(doc.options))
 	}
 	if notes := doc.notes(); len(notes) > 0 {
 		fmt.Fprintln(writer)
@@ -310,6 +311,22 @@ func printCommandHelp(writer io.Writer, name string) bool {
 		}
 	}
 	return true
+}
+
+// uncoveredCommonOptions는 명령이 직접 설명한 공용 flag를 공용 목록에서 뺀다. 같은 flag가 뜻이 다른
+// 두 줄로 나오면 어느 쪽이 맞는지 알 수 없다. 명령이 적은 설명이 이긴다.
+func uncoveredCommonOptions(own []optionDoc) []optionDoc {
+	covered := make(map[string]bool, len(own))
+	for _, option := range own {
+		covered[option.flag] = true
+	}
+	remaining := make([]optionDoc, 0, len(commonOptionDocs))
+	for _, option := range commonOptionDocs {
+		if !covered[option.flag] {
+			remaining = append(remaining, option)
+		}
+	}
+	return remaining
 }
 
 func printOptionDocs(writer io.Writer, options []optionDoc) {

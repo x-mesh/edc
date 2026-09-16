@@ -98,6 +98,7 @@ command:
       udp: "バインドされた UDP socket だけを表示します"
       unix: "unix domain socket だけを表示します"
       all: "TCP と UDP、unix domain socket をすべて表示します"
+      verbose: "アカウントと descriptor、キューの列を開きます"
     notes:
       - "既定は LISTEN 状態の TCP socket とバインドされた UDP socket です。"
       - "種類の flag は加算ではなく filter です。--tcp は TCP だけ残します。"
@@ -105,7 +106,10 @@ command:
       - "unix socket は port がなく、経路を住所に書き port 列は - にします。"
       - "macOS の lsof は unix socket の状態を返さないため近似です。"
       - "接続済み socket は対象外です。"
-      - "-v を渡すと一覧全体を詳細として開きます。"
+      - "-v はアカウントと file descriptor、キューの列を開きます。"
+      - "キューは Recv-Q/Send-Q で、TCP listener では accept キューです。"
+      - "キューを返すのは Linux だけで、macOS では - になります。"
+      - "-v が増やすのは列だけです。行は変わりません。"
   quality:
     summary: "networkQuality の測定 (macOS)"
     notes:

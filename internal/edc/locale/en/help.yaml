@@ -98,6 +98,7 @@ command:
       udp: "show bound UDP sockets only"
       unix: "show unix domain sockets only"
       all: "show TCP, UDP and unix domain sockets"
+      verbose: "add the account, the descriptor and the queue columns"
     notes:
       - "It shows TCP LISTEN sockets and bound UDP sockets."
       - "A family flag is a filter. --tcp keeps TCP and drops the rest."
@@ -105,7 +106,10 @@ command:
       - "A unix socket has a path, not a port. The port column shows -."
       - "On macOS, lsof gives no unix socket state. The list is approximate."
       - "It skips connected sockets."
-      - "-v opens the whole list as the detail."
+      - "-v adds the account, the file descriptor and the queue."
+      - "The queue is Recv-Q/Send-Q. For a TCP listener it is the accept queue."
+      - "Only Linux gives the queue. On macOS the column shows -."
+      - "-v adds columns only. The rows stay the same."
   quality:
     summary: "networkQuality measurement (macOS)"
     notes:

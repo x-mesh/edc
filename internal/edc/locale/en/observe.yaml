@@ -61,6 +61,9 @@ observe:
       proto: "PROTO"
       address: "ADDRESS"
       process: "PROCESS"
+      user: "USER"
+      fd: "FD"
+      queue: "QUEUE"
     warn:
       unparsed: "%d socket line(s) could not be read"
       unix_state: "on macOS lsof gives no state for a unix socket, so the list is approximate"

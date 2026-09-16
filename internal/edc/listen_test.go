@@ -1,14 +1,18 @@
 package edc
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // lsofFieldsFixture는 실제 macOS 호스트의 `lsof -nP -i -U -FpcntPT` 출력 형태다. 주소만 문서용
 // 대역으로 바꿨다. LISTEN, ESTABLISHED, UDP 대기, 연결된 UDP(QUIC), 포트가 없는 *:*, 이름에 공백이
-// 있는 프로세스, 경로를 가진 유닉스 소켓과 익명 유닉스 쌍을 모두 담는다.
+// 있는 프로세스, 경로를 가진 유닉스 소켓과 익명 유닉스 쌍을 모두 담는다. L은 소켓의 소유 계정이다.
 //
 // 유닉스 소켓에는 P(프로토콜) 필드가 없다. t(종류) 필드만 unix라고 알려 준다.
 const lsofFieldsFixture = `p733
 cssh-agent
+Lexample
 f3
 tunix
 n/Users/example/.ssh/agent/s.sock
@@ -17,6 +21,7 @@ tunix
 n->0x98a30dc8a2a5fd7d
 p947
 crapportd
+Lexample
 f12
 tIPv4
 PTCP
@@ -33,6 +38,7 @@ PUDP
 n*:3722
 p6149
 cGoogle Chrome Helper
+Lexample
 f88
 tIPv4
 PUDP
@@ -43,6 +49,7 @@ PUDP
 n*:*
 p28171
 cOrbStack Helper
+Lexample
 f7
 tIPv4
 PTCP
@@ -50,15 +57,15 @@ n*:3306
 TST=LISTEN
 `
 
-// ssRowsFixture는 실제 Ubuntu 호스트의 `ss -Htulxnp` 출력이다. -t와 -u를 함께 주면 맨 앞에 프로토콜
+// ssRowsFixture는 실제 Ubuntu 호스트의 `ss -Htulxnpe` 출력이다. -t와 -u를 함께 주면 맨 앞에 프로토콜
 // 열이 생긴다. %iface 표기와 IPv6 [::], 그리고 유닉스 소켓 줄도 그대로 담는다.
-const ssRowsFixture = `udp UNCONN 0      0                       192.0.2.54:53    0.0.0.0:* users:(("systemd-resolve",pid=19605,fd=16))
-udp UNCONN 0      0                    192.0.2.53%lo:53    0.0.0.0:* users:(("systemd-resolve",pid=19605,fd=14))
-udp UNCONN 0      0                          0.0.0.0:41641 0.0.0.0:* users:(("tailscaled",pid=2166,fd=20))
-udp UNCONN 0      0                             [::]:41641    [::]:* users:(("tailscaled",pid=2166,fd=19))
-tcp LISTEN 0      4096                       0.0.0.0:22    0.0.0.0:* users:(("sshd",pid=21571,fd=3),("systemd",pid=1,fd=219))
-tcp LISTEN 0      4096                          [::]:22       [::]:* users:(("sshd",pid=21571,fd=4))
-u_str LISTEN 0    4096     /run/systemd/private 14023   * 0 users:(("systemd",pid=1,fd=17))
+const ssRowsFixture = `udp UNCONN 0      0                       192.0.2.54:53    0.0.0.0:* users:(("systemd-resolve",pid=19605,fd=16)) uid:991 ino:64696 sk:7 <->
+udp UNCONN 0      0                    192.0.2.53%lo:53    0.0.0.0:* users:(("systemd-resolve",pid=19605,fd=14)) uid:991 ino:64694 sk:8 <->
+udp UNCONN 0      0                          0.0.0.0:41641 0.0.0.0:* users:(("tailscaled",pid=2166,fd=20)) ino:20034 sk:9 <->
+udp UNCONN 0      0                             [::]:41641    [::]:* users:(("tailscaled",pid=2166,fd=19)) ino:20035 sk:a <->
+tcp LISTEN 0      4096                       0.0.0.0:22    0.0.0.0:* users:(("sshd",pid=21571,fd=3),("systemd",pid=1,fd=219)) ino:31017 sk:b <->
+tcp LISTEN 0      4096                          [::]:22       [::]:* users:(("sshd",pid=21571,fd=4)) ino:31019 sk:c <->
+u_str LISTEN 0    4096     /run/systemd/private 14023   * 0 users:(("systemd",pid=1,fd=17)) ino:14023 sk:d
 u_str ESTAB  0    0        /run/dbus/system_bus_socket 18894 * 18893 users:(("dbus-daemon",pid=888,fd=9))
 u_dgr UNCONN 0    0        /run/systemd/journal/socket 13998 * 0 users:(("systemd",pid=1,fd=11))
 `
@@ -248,5 +255,76 @@ func TestSelectedListenFamilies(t *testing.T) {
 				t.Fatalf("selectedListenFamilies = %#v, want %#v", got, testCase.want)
 			}
 		})
+	}
+}
+
+// -v는 열을 늘릴 뿐 줄을 늘리지 않는다. fd가 식별에 끼면 같은 소켓이 두 줄이 되어 -v를 준 화면과
+// 주지 않은 화면의 개수가 달라진다.
+func TestDedupeListenSocketsIgnoresDetailFields(t *testing.T) {
+	same := listenSocket{Proto: "tcp", Address: "0.0.0.0", Port: 22, Process: "sshd", PID: "1"}
+	other := same
+	other.FD, other.RecvQ, other.HasQueue = "9", 3, true
+	unique := dedupeListenSockets([]listenSocket{same, other})
+	if len(unique) != 1 {
+		t.Fatalf("sockets = %#v, want 1", unique)
+	}
+}
+
+// accept 큐는 사용 깊이와 한계다. Linux의 ss만 준다.
+func TestParseSSRowsReadsQueueUserAndFD(t *testing.T) {
+	sockets, unparsed := parseSSRows(ssRowsFixture, listenFamilies{TCP: true})
+	if unparsed != 0 {
+		t.Fatalf("unparsed = %d, want 0", unparsed)
+	}
+	socket := sockets[0]
+	if !socket.HasQueue || socket.RecvQ != 0 || socket.SendQ != 4096 {
+		t.Fatalf("queue = %#v", socket)
+	}
+	// users:(( 첫 항목의 fd를 쓴다. 그 포트를 연 쪽이 첫 번째다.
+	if socket.FD != "3" {
+		t.Fatalf("fd = %q, want 3", socket.FD)
+	}
+	// 이 줄에는 uid: 필드가 없다. ss가 uid 0을 적지 않기 때문이며 곧 root라는 뜻이다.
+	// 계정 db가 없는 환경에서는 이름을 못 찾아 번호가 남는다. 둘 다 "모름"은 아니다.
+	if socket.User != "root" && socket.User != "0" {
+		t.Fatalf("user = %q, want root 또는 0", socket.User)
+	}
+	// uid를 적은 줄은 그 번호로 찾는다.
+	udp, _ := parseSSRows(ssRowsFixture, listenFamilies{UDP: true})
+	if udp[0].User == "" {
+		t.Fatalf("uid를 적은 줄에서 계정을 못 읽었다: %#v", udp[0])
+	}
+}
+
+func TestParseLsofFieldsReadsOwnerAndFD(t *testing.T) {
+	sockets, _ := parseLsofFields(lsofFieldsFixture, listenFamilies{TCP: true})
+	if sockets[0].User != "example" || sockets[0].FD != "12" {
+		t.Fatalf("socket 0 = %#v", sockets[0])
+	}
+	// lsof는 큐를 주지 않는다. 0으로 아는 척하면 안 된다.
+	if sockets[0].HasQueue {
+		t.Fatalf("lsof에 없는 큐를 아는 것으로 표시했다: %#v", sockets[0])
+	}
+}
+
+func TestFormatListenTableDetailColumns(t *testing.T) {
+	sockets := []listenSocket{
+		{Proto: "tcp", Address: "0.0.0.0", Port: 22, Process: "sshd", PID: "1", User: "root", FD: "3", RecvQ: 0, SendQ: 4096, HasQueue: true},
+		{Proto: "unix", Address: "/run/docker.sock", Process: "dockerd", PID: "895"},
+	}
+	plain := formatListenTable(sockets, false)
+	if strings.Contains(plain, "4096") {
+		t.Fatalf("-v가 없는데 상세 열이 나왔다:\n%s", plain)
+	}
+	detail := formatListenTable(sockets, true)
+	if !strings.Contains(detail, "0/4096") {
+		t.Fatalf("큐 열이 없다:\n%s", detail)
+	}
+	// 값이 없는 칸은 빈 칸이 아니라 없음이다. 빈 칸은 0인지 모르는지를 구별해 주지 않는다.
+	if !strings.Contains(detail, "-  ") {
+		t.Fatalf("없는 값을 빈 칸으로 두었다:\n%s", detail)
+	}
+	if len(strings.Split(strings.TrimRight(plain, "\n"), "\n")) != len(strings.Split(strings.TrimRight(detail, "\n"), "\n")) {
+		t.Fatalf("-v가 줄 수를 바꿨다")
 	}
 }

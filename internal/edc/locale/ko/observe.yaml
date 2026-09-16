@@ -61,6 +61,9 @@ observe:
       proto: "프로토콜"
       address: "주소"
       process: "프로세스"
+      user: "계정"
+      fd: "FD"
+      queue: "큐"
     warn:
       unparsed: "소켓 %d줄을 읽지 못했습니다"
       unix_state: "macOS의 lsof는 유닉스 소켓 상태를 알려 주지 않아 목록이 근사치입니다"

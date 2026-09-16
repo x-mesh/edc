@@ -1,0 +1,79 @@
+# route コマンド群(check、switch、status、rollback)の日本語メッセージ。欠けたキーは en に落ちる。
+route:
+  skip:
+    linux_only: "edc は Linux でのみ経路を変更します"
+  flag:
+    state: "復元する route 状態ファイルのパス"
+    to: "exits.yaml から選ぶ切り替え先の出口名"
+    seconds: "ロールバック猶予時間(秒、10〜900)"
+    exits: "exits.yaml のパス。既定の検索を上書きします"
+    force: "自己遮断リスクが高く安全装置が未確認でも切り替えます"
+    yes: "出口の身元確認が一致した場合に確認を省略します"
+  exits:
+    error:
+      not_found: "exits.yaml が見つかりません"
+      incomplete_entry: "%s: すべての出口に name、via、dev が必要です"
+  switch:
+    error:
+      to_required: "--to が必要です"
+      seconds_range: "--seconds は %d から %d の間にしてください"
+      root_required: "edc route switch には root 権限が必要です"
+      unknown_exit: "不明な出口 %s、利用可能: %s"
+      guard_denied: "ロールバック安全装置が切り替えを拒否しました: %s"
+      identity_check_failed: "出口の身元確認に失敗しました: %s"
+      identity_mismatch: "出口の身元が一致しません: 期待 %s、実際 %s"
+    cancelled:
+      signal: "確定前にシグナルを受け取ったためロールバックしました"
+      declined: "確定されなかったためロールバックしました"
+    confirm:
+      question: "この経路変更を維持しますか?"
+      detail: "出口 %s に切り替えました(身元確認: %s)。確定しないと武装したタイマーが %d 秒後にロールバックします(安全装置等級 %d)。既存の接続は新しい接続がこの経路を使う前に切断されます。"
+    summary: "出口 %s に切り替えました(身元確認: %s)"
+  status:
+    skip:
+      none: "route 状態ファイルがありません。進行中または記録された切り替えはありません"
+    warn:
+      timer_mismatch: "状態ファイルはまだ進行中ですが、ロールバックタイマー %s が active ではありません"
+    summary:
+      pending: "出口 %s(実行 %s)が確定またはロールバックを待っています"
+      completed: "出口 %s(実行 %s)が完了しました"
+  rollback:
+    error:
+      state_required: "--state が必要です"
+      state_unreadable: "route 状態ファイル %s を読み取れませんでした: %s"
+      already_completed: "route 状態ファイル %s はすでに完了しています"
+      verify_failed: "rollback が基準値を復元できませんでした: 期待 %d 件、実際 %d 件"
+    summary: "%s を %d 経路に戻しました"
+  table:
+    summary: "経路 %d 件、rule %d 件"
+    warn:
+      parse_errors: "ip route show table all の %d 行を読み取れませんでした"
+      rule_parse_error: "%s"
+  target:
+    summary: "検証対象 %d 件確認、%d 件除外"
+    error:
+      no_route: "%s への経路が見つかりません"
+    warn:
+      exits_missing: "exits.yaml が見つからないため、出口ベースの検証対象を省略します"
+      get_failed: "ip route get %s に失敗しました: %s"
+      get_unparsed: "%s の ip route get 出力を読み取れませんでした"
+      excluded: "除外(より具体的な経路を通ります): %s"
+  lockout:
+    reason:
+      session_rides: "セッションのトラフィックが変更対象の経路を通ります"
+      session_clear: "セッションのトラフィックは変更対象の経路を通りません"
+      underlay_unresolved: "セッションがトンネルを通りますが underlay エンドポイントを解決できないため、リスクを高いままにします"
+      underlay_rides: "トンネルの underlay トラフィックが変更対象の経路を通ります"
+      underlay_clear: "トンネルの underlay トラフィックは変更対象の経路を通りません"
+    skip:
+      no_ssh_connection: "SSH_CONNECTION が設定されていないため、このセッションの自己遮断リスクを判定できません"
+    summary:
+      high: "自己遮断リスクは高い: %s"
+      low: "自己遮断リスクは低い: %s"
+  guard:
+    reason:
+      allowed: "安全装置 %d 級、自己遮断リスク %s"
+      forced: "--force が安全装置 %d 級と自己遮断リスク %s を上書きします"
+      denied: "自己遮断リスクが高く、安全装置 %d 級では確認済みのロールバックタイマーが得られません"
+    skip:
+      check_only: "ロールバックタイマーの確認は switch 実行時のみ行います。check は武装しません"

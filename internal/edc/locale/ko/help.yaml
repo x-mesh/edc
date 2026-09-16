@@ -52,6 +52,13 @@ command:
       - "기본값은 4xx가 warning, 5xx가 fail입니다."
   net:
     summary: "interface, route, ping, trace"
+  route:
+    summary: "gateway VM의 default route를 점검·전환·원복"
+    notes:
+      - "경로를 바꾸는 gateway VM에서 로컬로 실행하는 명령입니다."
+      - "switch와 rollback은 root 권한이 필요합니다. sudo는 붙이지 않습니다."
+      - "check는 경로를 바꾸지 않습니다. switch는 먼저 롤백 타이머를 무장합니다."
+      - "status는 /run/edc를 읽고, rollback --state는 파일 하나를 다시 실행합니다."
   top:
     summary: "실시간 resource 대시보드"
     option:

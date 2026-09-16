@@ -52,6 +52,13 @@ command:
       - "A 4xx response is a warning. A 5xx response is a failure."
   net:
     summary: "Interfaces, route, ping, and trace"
+  route:
+    summary: "Check, switch, and roll back the default route on a gateway VM"
+    notes:
+      - "This command runs locally on the gateway VM whose route it changes."
+      - "switch and rollback need root. edc does not add sudo itself."
+      - "check never changes a route. switch arms a rollback timer first."
+      - "status reads /run/edc. rollback --state repeats one state file."
   top:
     summary: "Live resource dashboard"
     option:

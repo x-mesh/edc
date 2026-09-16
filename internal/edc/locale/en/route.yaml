@@ -1,0 +1,79 @@
+# English messages for the route command group (check, switch, status, rollback).
+route:
+  skip:
+    linux_only: "edc changes routes on Linux only"
+  flag:
+    state: "path of the route state file to restore"
+    to: "name of the exit to switch to, from exits.yaml"
+    seconds: "rollback grace period in seconds (10-900)"
+    exits: "path of exits.yaml, overrides the default search"
+    force: "switch despite a high, unconfirmed lockout risk"
+    yes: "skip the confirmation when the identity check matched"
+  exits:
+    error:
+      not_found: "edc found no exits.yaml"
+      incomplete_entry: "%s: every exit needs a name, a via, and a dev"
+  switch:
+    error:
+      to_required: "--to is required"
+      seconds_range: "--seconds must be between %d and %d"
+      root_required: "edc route switch needs root"
+      unknown_exit: "unknown exit %s, available: %s"
+      guard_denied: "the rollback guard denied the switch: %s"
+      identity_check_failed: "the exit identity check failed: %s"
+      identity_mismatch: "the exit identity check does not match: expected %s, got %s"
+    cancelled:
+      signal: "edc received a signal before confirmation and rolled back"
+      declined: "edc rolled back because the switch was not confirmed"
+    confirm:
+      question: "keep this route change?"
+      detail: "switched to exit %s (identity check: %s). A pending timer rolls back in %d second(s) unless confirmed (guard tier %d). Existing connections break before the new ones use this route."
+    summary: "switched to exit %s (identity check: %s)"
+  status:
+    skip:
+      none: "edc found no route state file, no switch is pending or recorded"
+    warn:
+      timer_mismatch: "the rollback timer %s is not active, though the state file is still pending"
+    summary:
+      pending: "exit %s (run %s) is pending confirmation or rollback"
+      completed: "exit %s (run %s) finished"
+  rollback:
+    error:
+      state_required: "--state is required"
+      state_unreadable: "edc could not read the route state %s: %s"
+      already_completed: "the route state %s is already marked complete"
+      verify_failed: "rollback did not restore the baseline: want %d route(s), got %d"
+    summary: "rolled back %s to %d route(s)"
+  table:
+    summary: "%d routes, %d rules"
+    warn:
+      parse_errors: "%d line(s) of ip route show table all could not be parsed"
+      rule_parse_error: "%s"
+  target:
+    summary: "%d verification target(s) confirmed, %d excluded"
+    error:
+      no_route: "edc found no route to %s"
+    warn:
+      exits_missing: "edc found no exits.yaml, so exit-based verification targets are skipped"
+      get_failed: "ip route get %s failed: %s"
+      get_unparsed: "edc could not read the ip route get output for %s"
+      excluded: "excluded (a more specific route takes them): %s"
+  lockout:
+    reason:
+      session_rides: "the session traffic rides the route being changed"
+      session_clear: "the session traffic does not ride the route being changed"
+      underlay_unresolved: "the session runs over a tunnel and edc could not resolve its underlay endpoint, so the risk stays high"
+      underlay_rides: "the tunnel underlay traffic rides the route being changed"
+      underlay_clear: "the tunnel underlay traffic does not ride the route being changed"
+    skip:
+      no_ssh_connection: "SSH_CONNECTION is not set, so edc cannot judge the lockout risk of this session"
+    summary:
+      high: "lockout risk is high: %s"
+      low: "lockout risk is low: %s"
+  guard:
+    reason:
+      allowed: "guard tier %d, lockout risk %s"
+      forced: "--force overrides guard tier %d with lockout risk %s"
+      denied: "the lockout risk is high and guard tier %d gives no confirmed rollback timer"
+    skip:
+      check_only: "edc confirms the rollback timer only during switch; check does not arm it"

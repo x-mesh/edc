@@ -52,6 +52,13 @@ command:
       - "既定では 4xx が warning、5xx が fail です。"
   net:
     summary: "interface、route、ping、trace"
+  route:
+    summary: "gateway VM の default route を点検・切り替え・ロールバック"
+    notes:
+      - "経路を変更する gateway VM 上でローカルに実行するコマンドです。"
+      - "switch と rollback には root 権限が必要です。sudo は付けません。"
+      - "check は経路を変更しません。switch はまずタイマーを武装します。"
+      - "status は /run/edc を読み、rollback --state は 1 件を再実行します。"
   top:
     summary: "リアルタイムの resource ダッシュボード"
     option:

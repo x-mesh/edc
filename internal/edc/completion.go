@@ -92,6 +92,19 @@ _edc_remote_groups() {
   (( ${#groups} )) && _describe -t groups 'inventory group' groups
 }
 
+# exits.yaml은 로그인마다 바뀌지 않는 로컬 파일이라, remote group처럼 edc를 부르지 않고 grep으로
+# 이름만 뽑는다. .edc/exits.yaml을 cwd/exits.yaml보다 먼저 본다(discoverRemoteFile과 같은 순서).
+_edc_route_exits() {
+  local -a exits
+  local file
+  for file in .edc/exits.yaml exits.yaml; do
+    [[ -f $file ]] || continue
+    exits=(${(f)"$(grep -E '^[[:space:]]*-?[[:space:]]*name:' "$file" 2>/dev/null | sed -E 's/.*name:[[:space:]]*//')"})
+    break
+  done
+  (( ${#exits} )) && _describe -t exits 'exit name' exits
+}
+
 _edc() {
   local curcontext="$curcontext" state line
   typeset -A opt_args
@@ -137,6 +150,27 @@ _edc() {
         net)
           _arguments $common '1:subcommand:(interfaces route ping trace)' '2:host:_hosts'
           ;;
+        route)
+          case $words[2] in
+            switch)
+              _arguments \
+                '--to[전환할 출구 이름]:name:_edc_route_exits' \
+                '--seconds[롤백 유예(초), 10-900]:seconds' \
+                '--exits[exits.yaml 경로]:path:_files' \
+                '--force[자기 차단 위험이 높고 안전장치가 미확인이어도 전환]' \
+                '--yes[신원 확인이 일치하면 확인 생략]'
+              ;;
+            rollback)
+              _arguments '--state[route 상태 파일 경로]:path:_files'
+              ;;
+            check|status)
+              _arguments $common
+              ;;
+            *)
+              _arguments '1:subcommand:(check switch status rollback)'
+              ;;
+          esac
+          ;;
         sockets|quality)
           _arguments $common
           ;;
@@ -180,6 +214,19 @@ fi
 `
 
 const bashCompletion = `# edc completion bash 출력. source <(edc completion bash)로 읽는다.
+
+# exits.yaml은 로컬 파일이므로 remote group의 edc 왕복 대신 grep으로 이름만 뽑는다.
+# .edc/exits.yaml을 exits.yaml보다 먼저 본다(discoverRemoteFile과 같은 순서).
+_edc_route_exit_names() {
+  local file
+  for file in .edc/exits.yaml exits.yaml; do
+    if [[ -f $file ]]; then
+      grep -E '^[[:space:]]*-?[[:space:]]*name:' "$file" 2>/dev/null | sed -E 's/.*name:[[:space:]]*//'
+      return
+    fi
+  done
+}
+
 _edc() {
   local cur prev command index
   cur="${COMP_WORDS[COMP_CWORD]}"
@@ -205,6 +252,26 @@ _edc() {
       if [[ $COMP_CWORD -eq 2 ]]; then COMPREPLY=($(compgen -W "check" -- "$cur")); else COMPREPLY=($(compgen -W "$common --expect-status" -- "$cur")); fi ;;
     net)
       if [[ $COMP_CWORD -eq 2 ]]; then COMPREPLY=($(compgen -W "interfaces route ping trace" -- "$cur")); else COMPREPLY=($(compgen -W "$common" -- "$cur")); fi ;;
+    route)
+      if [[ $COMP_CWORD -eq 2 ]]; then
+        COMPREPLY=($(compgen -W "check switch status rollback" -- "$cur"))
+      else
+        case "${COMP_WORDS[2]}" in
+          switch)
+            case "$prev" in
+              --to) COMPREPLY=($(compgen -W "$(_edc_route_exit_names)" -- "$cur")); return ;;
+              --exits) COMPREPLY=($(compgen -f -- "$cur")); return ;;
+            esac
+            if [[ $cur == -* ]]; then COMPREPLY=($(compgen -W "--to --seconds --exits --force --yes" -- "$cur")); fi ;;
+          rollback)
+            case "$prev" in
+              --state) COMPREPLY=($(compgen -f -- "$cur")); return ;;
+            esac
+            if [[ $cur == -* ]]; then COMPREPLY=($(compgen -W "--state" -- "$cur")); fi ;;
+          check|status)
+            COMPREPLY=($(compgen -W "$common" -- "$cur")) ;;
+        esac
+      fi ;;
     sockets|quality) COMPREPLY=($(compgen -W "$common" -- "$cur")) ;;
     capture) COMPREPLY=($(compgen -W "--interface --duration --count --filter --output --yes" -- "$cur")) ;;
     log)

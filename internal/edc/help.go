@@ -86,6 +86,24 @@ var commandDocs = []commandDoc{
 		usesCommon: true,
 	},
 	{
+		name: "route", group: "diagnose",
+		usage: []string{
+			"edc route check [options]",
+			"edc route switch --to <name> [options]",
+			"edc route status [options]",
+			"edc route rollback --state <file>",
+		},
+		options: []optionDoc{
+			{"--to <name>", "route.flag.to"},
+			{"--seconds N", "route.flag.seconds"},
+			{"--state <file>", "route.flag.state"},
+			{"--exits <file>", "route.flag.exits"},
+			{"--force", "route.flag.force"},
+			{"--yes", "route.flag.yes"},
+		},
+		usesCommon: true,
+	},
+	{
 		name: "top", group: "observe",
 		usage: []string{"edc top [--interval 1s] [--count N] [--json <path|->]"},
 		options: []optionDoc{

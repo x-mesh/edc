@@ -9,11 +9,11 @@ import (
 // listenSocket은 연결을 기다리는 소켓 하나다. 사람이 묻는 것은 "무엇이 열려 있나"이므로 포트와
 // 그 포트를 잡은 프로세스를 함께 담는다.
 type listenSocket struct {
-	Proto   string
-	Address string
-	Port    int
-	Process string
-	PID     string
+	Proto   string `json:"proto"`
+	Address string `json:"address"`
+	Port    int    `json:"port"`
+	Process string `json:"process"`
+	PID     string `json:"pid"`
 }
 
 // parseLsofFields는 `lsof -F` 출력을 읽는다. -F는 필드마다 한 줄을 쓰고 앞 글자로 종류를 표시하므로

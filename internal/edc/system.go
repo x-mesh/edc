@@ -258,9 +258,9 @@ func probeListen(ctx context.Context, udp bool) Result {
 	}
 	sockets = dedupeListenSockets(sockets)
 	result.Summary = T("observe.system.listen", len(sockets))
-	result.Metrics = map[string]interface{}{"listening": len(sockets)}
-	// 표를 먼저 두고 원문은 뒤에 남긴다. 읽지 못한 줄은 조용히 버리지 않고 경고로 드러낸다.
-	result.Evidence = append([]Evidence{{Label: T("observe.listen.label"), Value: formatListenTable(sockets)}}, result.Evidence...)
+	// 표는 화면에 직접 그리므로 evidence에 넣지 않는다. 넣으면 -v에서 두 번 나온다.
+	// JSON에는 사람이 읽는 표 대신 구조화된 목록을 담는다.
+	result.Metrics = map[string]interface{}{"listening": len(sockets), "sockets": sockets}
 	if unparsed > 0 {
 		result.Status = StatusWarn
 		result.Warnings = append(result.Warnings, T("observe.listen.warn.unparsed", unparsed))
@@ -375,6 +375,9 @@ func sortResults(results []Result) {
 }
 
 // runListen은 listen 명령을 실행한다. --udp는 바인드된 UDP 소켓을 함께 본다.
+//
+// 이 명령의 주 출력은 표다. 사람이 묻는 것이 "어느 포트가 열려 있나"이므로 개수 한 줄로는 답이
+// 되지 않는다. where와 마찬가지로 JSON이면 JSON을, 터미널이면 표를 직접 그린다.
 func runListen(args []string, version string) int {
 	options := configuredCommon(15 * time.Second)
 	set := flag.NewFlagSet(listenProbeID, flag.ContinueOnError)
@@ -393,9 +396,27 @@ func runListen(args []string, version string) int {
 	ctx, cancel, deadline := probeContext(options.timeout)
 	defer cancel()
 	defer deadline()
-	run := func(ctx context.Context) Result { return probeListen(ctx, *udp) }
-	if options.jsonPath == "" && liveTerminal() {
-		return runProbeLive(ctx, cancel, listenProbeID, "", options, version, started, nil, run)
+	result := probeListen(ctx, *udp)
+	if options.jsonPath != "" {
+		return emit(options, buildReport(version, started, nil, []Result{result}, options.redact))
 	}
-	return emit(options, buildReport(version, started, nil, []Result{run(ctx)}, options.redact))
+	color := isTerminal(os.Stdout) && os.Getenv("NO_COLOR") == ""
+	fmt.Fprint(os.Stdout, formatResultLine(result, color))
+	printResultDetail(os.Stdout, result, options.verbose, color)
+	// 표는 화면에서 언제나 보여 준다. 개수 한 줄로는 "어느 포트가 열려 있나"에 답이 되지 않는다.
+	// 화면에서는 주소를 그대로 쓴다. 이 명령은 그 값을 보려고 실행하기 때문이다. --redact는
+	// 공유하는 산출물인 JSON에만 적용한다(where, info와 같은 규칙).
+	if table := listenTableOf(result); table != "" {
+		fmt.Fprint(os.Stdout, "\n"+table)
+	}
+	return exitCode([]Result{result})
+}
+
+// listenTableOf는 결과의 metrics에 담아 둔 목록으로 표를 만든다.
+func listenTableOf(result Result) string {
+	sockets, ok := result.Metrics["sockets"].([]listenSocket)
+	if !ok || len(sockets) == 0 {
+		return ""
+	}
+	return formatListenTable(sockets)
 }

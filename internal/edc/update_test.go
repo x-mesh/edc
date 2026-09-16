@@ -163,6 +163,39 @@ func TestUpdateDetailListsVersionsAndTarget(t *testing.T) {
 	}
 }
 
+func TestConfirmUpdateDefaultsToYesOutsideATerminal(t *testing.T) {
+	cases := []struct {
+		name  string
+		input string
+		want  bool
+	}{
+		{"empty answer accepts the update", "\n", true},
+		{"explicit no declines despite the default", "n\n", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			inRead, inWrite, err := os.Pipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer inRead.Close()
+			if _, err := inWrite.WriteString(c.input); err != nil {
+				t.Fatal(err)
+			}
+			inWrite.Close()
+			outRead, outWrite, err := os.Pipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer outRead.Close()
+			defer outWrite.Close()
+			if got := confirmUpdate(inRead, outWrite, "detail\n"); got != c.want {
+				t.Fatalf("confirmUpdate(%q) = %v, want %v", c.input, got, c.want)
+			}
+		})
+	}
+}
+
 func buildArchive(t *testing.T, files map[string]string) []byte {
 	t.Helper()
 	var buffer bytes.Buffer

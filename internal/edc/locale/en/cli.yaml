@@ -146,6 +146,7 @@ cli:
     asset_missing: "the release carries no asset for this platform: %s"
     not_writable: "edc cannot write to %s: %v"
     confirm: "Run the update?"
+    prompt: "continue? [Y/n] "
     cancelled: "edc cancelled the update"
     replaced: "edc updated to %s  ·  %s"
     label:

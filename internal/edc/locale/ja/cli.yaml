@@ -146,6 +146,7 @@ cli:
     asset_missing: "この platform の asset が release にありません: %s"
     not_writable: "%s に書き込む権限がありません: %v"
     confirm: "更新しますか?"
+    prompt: "続けますか? [Y/n] "
     cancelled: "update を取り消しました"
     replaced: "edc %s に更新しました  ·  %s"
     label:

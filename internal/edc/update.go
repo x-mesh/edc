@@ -308,12 +308,12 @@ func updateDetail(current, latest, assetName, target string) string {
 	return builder.String()
 }
 
-// confirmUpdate는 terminal에서는 확인 화면을, 그 외에는 y/N 입력을 쓴다.
+// confirmUpdate는 terminal에서는 확인 화면을, 그 외에는 Y/n 입력을 쓴다. 기본은 업데이트(예)다.
 func confirmUpdate(input *os.File, output *os.File, detail string) bool {
 	if term.IsTerminal(int(input.Fd())) {
-		answer, err := runConfirmModel(input, output, newDetailedConfirmModel(detail, T("cli.update.confirm"), false))
+		answer, err := runConfirmModel(input, output, newDetailedConfirmModel(detail, T("cli.update.confirm"), true))
 		return err == nil && answer
 	}
 	fmt.Fprint(output, detail)
-	return confirm(input, output)
+	return confirm(input, output, T("cli.update.prompt"), true)
 }

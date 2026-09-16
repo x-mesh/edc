@@ -202,16 +202,23 @@ func confirmCapture(input *os.File, output *os.File, plan capturePlan) bool {
 		return err == nil && answer
 	}
 	fmt.Fprint(output, plan.detail())
-	return confirm(input, output)
+	return confirm(input, output, T("cli.confirm"), false)
 }
 
-func confirm(input *os.File, output *os.File) bool {
-	fmt.Fprint(output, T("cli.confirm"))
+// confirm은 y/N 또는 Y/n 입력을 읽는다. 빈 입력(enter만 누름)은 defaultYes를 따른다.
+func confirm(input *os.File, output *os.File, prompt string, defaultYes bool) bool {
+	fmt.Fprint(output, prompt)
 	line, err := bufio.NewReader(input).ReadString('\n')
 	if err != nil {
 		return false
 	}
 	answer := strings.ToLower(strings.TrimSpace(line))
+	if answer == "" {
+		return defaultYes
+	}
+	if defaultYes {
+		return answer != "n" && answer != "no"
+	}
 	return answer == "y" || answer == "yes"
 }
 

@@ -146,6 +146,7 @@ cli:
     asset_missing: "이 platform의 asset이 release에 없습니다: %s"
     not_writable: "%s에 쓸 권한이 없습니다: %v"
     confirm: "업데이트할까요?"
+    prompt: "계속하시겠습니까? [Y/n] "
     cancelled: "update를 취소했습니다"
     replaced: "edc %s로 업데이트했습니다  ·  %s"
     label:

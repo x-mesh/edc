@@ -133,8 +133,9 @@ var commandDocs = []commandDoc{
 		usesCommon: true,
 	},
 	{
-		name: "sockets", group: "observe",
-		usage: []string{"edc sockets [options]"}, usesCommon: true,
+		name: listenProbeID, group: "observe",
+		usage:   []string{"edc listen [options]"},
+		options: []optionDoc{{"-u, --udp", "command.listen.option.udp"}}, usesCommon: true,
 	},
 	{
 		name: "quality", group: "observe",

@@ -91,11 +91,14 @@ command:
       - "The screen keeps the addresses. --redact applies to --json only."
       - "In a terminal, a progress line counts the regions. Press q to cancel."
       - "-v opens every provider row."
-  sockets:
-    summary: "Listening TCP socket list"
+  listen:
+    summary: "Sockets that wait for a connection"
+    option:
+      udp: "also show bound UDP sockets"
     notes:
-      - "It shows TCP sockets in the LISTEN state only."
-      - "It skips connected sockets, UDP, and unix domain sockets."
+      - "It shows TCP sockets in the LISTEN state."
+      - "Add --udp to also show bound UDP sockets."
+      - "It skips connected sockets and unix domain sockets."
       - "-v opens the whole list as the detail."
   quality:
     summary: "networkQuality measurement (macOS)"

@@ -154,7 +154,7 @@ Setup wizard는 macOS에서 `~/Library/Logs/edc.log`, Linux에서 `${XDG_STATE_H
 ./bin/edc net ping example.com
 ./bin/edc net trace example.com
 ./bin/edc net interfaces
-./bin/edc sockets
+./bin/edc listen              # 연결을 기다리는 socket, --udp로 UDP 포함
 ./bin/edc quality --timeout 60s
 
 # 어느 지역이 가깝고 이 망은 어떤 모습인지

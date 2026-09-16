@@ -88,8 +88,8 @@ func Run(args []string, version string) int {
 		return runRoute(args[1:], version)
 	case "where":
 		return runWhere(args[1:], version)
-	case "sockets":
-		return runSimple(args[1:], version, "sockets", "sockets", probeSockets)
+	case "listen":
+		return runListen(args[1:], version)
 	case "quality":
 		return runSimple(args[1:], version, "quality", "net.quality", probeQuality)
 	case "capture":
@@ -152,7 +152,7 @@ func runDoctor(args []string, version string) int {
 			return probeTLS(ctx, address, host)
 		}},
 		{name: "http.check", run: func(ctx context.Context) Result { return probeHTTP(ctx, rawURL) }},
-		{name: "sockets", run: probeSockets},
+		{name: listenProbeID, run: func(ctx context.Context) Result { return probeListen(ctx, false) }},
 	}
 	if *profile == "full" {
 		probes = append(probes, doctorProbe{name: "net.quality", run: probeQuality})

@@ -57,7 +57,7 @@ observe:
   system:
     unsupported_os: "現在 macOS と Linux だけに対応します"
     interfaces: "interface %d 個"
-    sockets: "listen 中の TCP ソケット %d 件"
+    listen: "接続を待つソケット %d 件"
     command_missing: "%s コマンドが見つかりません"
     address_missing: "%s のアドレスが見つかりません"
     no_nameserver: "%s に nameserver がありません"

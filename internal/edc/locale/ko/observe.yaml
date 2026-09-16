@@ -57,7 +57,7 @@ observe:
   system:
     unsupported_os: "현재 macOS와 Linux만 지원합니다"
     interfaces: "interface %d개"
-    sockets: "listen 중인 TCP 소켓 %d개"
+    listen: "연결을 기다리는 소켓 %d개"
     command_missing: "%s 명령을 찾을 수 없습니다"
     address_missing: "%s의 주소를 찾을 수 없습니다"
     no_nameserver: "%s에 nameserver가 없습니다"

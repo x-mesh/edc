@@ -3,6 +3,7 @@ package edc
 import (
 	"context"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io"
 	"net"
@@ -225,16 +226,33 @@ func probeResolvConf(ctx context.Context, path string) Result {
 	return result
 }
 
-// probeSockets는 LISTEN 상태의 TCP 소켓만 본다. 연결된 소켓, UDP, 유닉스 도메인 소켓은 대상이 아니다.
-func probeSockets(ctx context.Context) Result {
+// listenProbeID는 명령 이름이자 JSON과 doctor 결과에 나가는 probe ID다. 둘을 같은 값으로 둔다.
+const listenProbeID = "listen"
+
+// probeListen은 연결을 기다리는 소켓을 본다. 연결된 소켓과 유닉스 도메인 소켓은 대상이 아니다.
+// udp가 참이면 바인드된 UDP 소켓도 함께 본다. UDP에는 LISTEN 상태가 없지만 ss -ul과 마찬가지로
+// 바인드되어 수신을 기다리는 소켓을 같은 관점으로 다룬다.
+func probeListen(ctx context.Context, udp bool) Result {
 	var result Result
 	switch runtime.GOOS {
 	case "darwin":
-		result = probeCommand(ctx, "sockets", "/usr/sbin/lsof", "-nP", "-iTCP", "-sTCP:LISTEN")
+		if udp {
+			// lsof는 -sTCP:LISTEN을 UDP에 적용하지 않으므로 TCP LISTEN과 UDP를 따로 묻고 합친다.
+			result = mergeListenResults(
+				probeCommand(ctx, listenProbeID, "/usr/sbin/lsof", "-nP", "-iTCP", "-sTCP:LISTEN"),
+				probeCommand(ctx, listenProbeID, "/usr/sbin/lsof", "-nP", "-iUDP"),
+			)
+		} else {
+			result = probeCommand(ctx, listenProbeID, "/usr/sbin/lsof", "-nP", "-iTCP", "-sTCP:LISTEN")
+		}
 	case "linux":
-		result = probeCommand(ctx, "sockets", "ss", "-tlnp")
+		if udp {
+			result = probeCommand(ctx, listenProbeID, "ss", "-tulnp")
+		} else {
+			result = probeCommand(ctx, listenProbeID, "ss", "-tlnp")
+		}
 	default:
-		return unsupported("sockets", unsupportedOSReason())
+		return unsupported(listenProbeID, unsupportedOSReason())
 	}
 	if result.Status != StatusPass {
 		return result
@@ -242,9 +260,25 @@ func probeSockets(ctx context.Context) Result {
 	// probeCommand의 기본 요약은 출력 첫 줄인데, lsof와 ss의 첫 줄은 열 제목이라 정보가 없다.
 	// 열 제목만 보이면 소켓을 하나도 찾지 못한 것처럼 읽힌다. 개수를 대신 보여 준다.
 	count := countSocketRows(socketOutput(result))
-	result.Summary = T("observe.system.sockets", count)
+	result.Summary = T("observe.system.listen", count)
 	result.Metrics = map[string]interface{}{"listening": count}
 	return result
+}
+
+// mergeListenResults는 두 번 물어 얻은 출력을 하나로 합친다. 둘째 출력의 열 제목은 뺀다.
+func mergeListenResults(first, second Result) Result {
+	if first.Status != StatusPass {
+		return first
+	}
+	if second.Status != StatusPass {
+		return second
+	}
+	merged := first
+	firstText, secondText := socketOutput(first), socketOutput(second)
+	if rows := strings.SplitN(strings.TrimRight(secondText, "\n"), "\n", 2); len(rows) == 2 {
+		merged.Evidence = []Evidence{{Label: "output", Value: strings.TrimRight(firstText, "\n") + "\n" + rows[1] + "\n"}}
+	}
+	return merged
 }
 
 // socketOutput은 probeCommand가 남긴 원문을 꺼낸다.
@@ -351,4 +385,30 @@ func classifyCommandError(ctx context.Context, err error) string {
 
 func sortResults(results []Result) {
 	sort.Slice(results, func(i, j int) bool { return results[i].Probe < results[j].Probe })
+}
+
+// runListen은 listen 명령을 실행한다. --udp는 바인드된 UDP 소켓을 함께 본다.
+func runListen(args []string, version string) int {
+	options := configuredCommon(15 * time.Second)
+	set := flag.NewFlagSet(listenProbeID, flag.ContinueOnError)
+	set.SetOutput(os.Stderr)
+	bindCommon(set, &options)
+	udp := set.Bool("udp", false, T("command.listen.option.udp"))
+	set.BoolVar(udp, "u", false, T("command.listen.option.udp"))
+	if err := set.Parse(args); err != nil {
+		return 2
+	}
+	if set.NArg() != 0 {
+		fmt.Fprintln(os.Stderr, T("cli.error.no_positional", listenProbeID))
+		return 2
+	}
+	started := time.Now()
+	ctx, cancel, deadline := probeContext(options.timeout)
+	defer cancel()
+	defer deadline()
+	run := func(ctx context.Context) Result { return probeListen(ctx, *udp) }
+	if options.jsonPath == "" && liveTerminal() {
+		return runProbeLive(ctx, cancel, listenProbeID, "", options, version, started, nil, run)
+	}
+	return emit(options, buildReport(version, started, nil, []Result{run(ctx)}, options.redact))
 }

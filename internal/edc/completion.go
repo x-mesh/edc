@@ -172,7 +172,10 @@ _edc() {
               ;;
           esac
           ;;
-        sockets|quality)
+        listen)
+          _arguments $common '(-u --udp)'{-u,--udp}'[바인드된 UDP socket도 함께 봅니다]'
+          ;;
+        quality)
           _arguments $common
           ;;
         capture)
@@ -273,7 +276,8 @@ _edc() {
             COMPREPLY=($(compgen -W "$common" -- "$cur")) ;;
         esac
       fi ;;
-    sockets|quality) COMPREPLY=($(compgen -W "$common" -- "$cur")) ;;
+    listen) COMPREPLY=($(compgen -W "$common --udp" -- "$cur")) ;;
+    quality) COMPREPLY=($(compgen -W "$common" -- "$cur")) ;;
     capture) COMPREPLY=($(compgen -W "--interface --duration --count --filter --output --yes" -- "$cur")) ;;
     log)
       for ((index=2; index<COMP_CWORD; index++)); do

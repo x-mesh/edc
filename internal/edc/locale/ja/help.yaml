@@ -91,11 +91,14 @@ command:
       - "画面にはアドレスをそのまま出し、--redact は --json にだけ効きます。"
       - "terminal では進捗行が確認できた地域の数を示します。q で中断します。"
       - "-v を渡すと事業者ごとの値をすべて開きます。"
-  sockets:
-    summary: "listen 中の TCP socket 一覧"
+  listen:
+    summary: "接続を待つ socket の一覧"
+    option:
+      udp: "バインドされた UDP socket も表示します"
     notes:
-      - "LISTEN 状態の TCP socket のみを表示します。"
-      - "接続済み socket、UDP、unix domain socket は対象外です。"
+      - "LISTEN 状態の TCP socket を表示します。"
+      - "--udp でバインドされた UDP socket も表示します。"
+      - "接続済み socket と unix domain socket は対象外です。"
       - "-v を渡すと一覧全体を詳細として開きます。"
   quality:
     summary: "networkQuality の測定 (macOS)"

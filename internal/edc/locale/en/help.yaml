@@ -94,11 +94,17 @@ command:
   listen:
     summary: "Sockets that wait for a connection"
     option:
-      udp: "also show bound UDP sockets"
+      tcp: "show TCP sockets only"
+      udp: "show bound UDP sockets only"
+      unix: "show unix domain sockets only"
+      all: "show TCP, UDP and unix domain sockets"
     notes:
-      - "It shows TCP sockets in the LISTEN state."
-      - "Add --udp to also show bound UDP sockets."
-      - "It skips connected sockets and unix domain sockets."
+      - "It shows TCP LISTEN sockets and bound UDP sockets."
+      - "A family flag is a filter. --tcp keeps TCP and drops the rest."
+      - "Two flags keep both. --all adds unix domain sockets."
+      - "A unix socket has a path, not a port. The port column shows -."
+      - "On macOS, lsof gives no unix socket state. The list is approximate."
+      - "It skips connected sockets."
       - "-v opens the whole list as the detail."
   quality:
     summary: "networkQuality measurement (macOS)"

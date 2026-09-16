@@ -134,8 +134,14 @@ var commandDocs = []commandDoc{
 	},
 	{
 		name: listenProbeID, group: "observe",
-		usage:   []string{"edc listen [options]"},
-		options: []optionDoc{{"-u, --udp", "command.listen.option.udp"}}, usesCommon: true,
+		usage: []string{"edc listen [options]"},
+		options: []optionDoc{
+			{"--tcp", "command.listen.option.tcp"},
+			{"-u, --udp", "command.listen.option.udp"},
+			{"--unix", "command.listen.option.unix"},
+			{"--all", "command.listen.option.all"},
+		},
+		usesCommon: true,
 	},
 	{
 		name: "quality", group: "observe",

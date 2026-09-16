@@ -63,6 +63,7 @@ observe:
       process: "プロセス"
     warn:
       unparsed: "ソケット %d 行を読み取れませんでした"
+      unix_state: "macOS の lsof は unix socket の状態を返さないため一覧は近似です"
 
   system:
     unsupported_os: "現在 macOS と Linux だけに対応します"

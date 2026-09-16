@@ -63,6 +63,7 @@ observe:
       process: "프로세스"
     warn:
       unparsed: "소켓 %d줄을 읽지 못했습니다"
+      unix_state: "macOS의 lsof는 유닉스 소켓 상태를 알려 주지 않아 목록이 근사치입니다"
 
   system:
     unsupported_os: "현재 macOS와 Linux만 지원합니다"

@@ -94,11 +94,17 @@ command:
   listen:
     summary: "연결을 기다리는 socket 목록"
     option:
-      udp: "바인드된 UDP socket도 함께 봅니다"
+      tcp: "TCP socket만 봅니다"
+      udp: "바인드된 UDP socket만 봅니다"
+      unix: "unix domain socket만 봅니다"
+      all: "TCP와 UDP, unix domain socket을 모두 봅니다"
     notes:
-      - "LISTEN 상태의 TCP socket을 보여 줍니다."
-      - "--udp를 주면 바인드된 UDP socket도 함께 봅니다."
-      - "연결된 socket과 unix domain socket은 대상이 아닙니다."
+      - "기본은 LISTEN 상태의 TCP socket과 바인드된 UDP socket입니다."
+      - "종류 flag는 더하기가 아니라 filter입니다. --tcp는 TCP만 남깁니다."
+      - "둘을 함께 주면 둘 다 남고 --all은 unix domain socket까지 봅니다."
+      - "unix socket은 포트가 없어 경로를 주소에 적고 포트 열은 -로 둡니다."
+      - "macOS의 lsof는 unix socket 상태를 알려 주지 않아 근사치입니다."
+      - "연결된 socket은 대상이 아닙니다."
       - "-v를 주면 목록 전체를 상세로 펼칩니다."
   quality:
     summary: "networkQuality 측정 (macOS)"

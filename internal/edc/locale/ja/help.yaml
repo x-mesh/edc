@@ -94,11 +94,17 @@ command:
   listen:
     summary: "接続を待つ socket の一覧"
     option:
-      udp: "バインドされた UDP socket も表示します"
+      tcp: "TCP socket だけを表示します"
+      udp: "バインドされた UDP socket だけを表示します"
+      unix: "unix domain socket だけを表示します"
+      all: "TCP と UDP、unix domain socket をすべて表示します"
     notes:
-      - "LISTEN 状態の TCP socket を表示します。"
-      - "--udp でバインドされた UDP socket も表示します。"
-      - "接続済み socket と unix domain socket は対象外です。"
+      - "既定は LISTEN 状態の TCP socket とバインドされた UDP socket です。"
+      - "種類の flag は加算ではなく filter です。--tcp は TCP だけ残します。"
+      - "二つ渡せば両方残り、--all は unix domain socket まで表示します。"
+      - "unix socket は port がなく、経路を住所に書き port 列は - にします。"
+      - "macOS の lsof は unix socket の状態を返さないため近似です。"
+      - "接続済み socket は対象外です。"
       - "-v を渡すと一覧全体を詳細として開きます。"
   quality:
     summary: "networkQuality の測定 (macOS)"

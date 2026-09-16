@@ -229,30 +229,43 @@ func probeResolvConf(ctx context.Context, path string) Result {
 // listenProbeID는 명령 이름이자 JSON과 doctor 결과에 나가는 probe ID다. 둘을 같은 값으로 둔다.
 const listenProbeID = "listen"
 
-// probeListen은 연결을 기다리는 소켓을 본다. 연결된 소켓과 유닉스 도메인 소켓은 대상이 아니다.
-// udp가 참이면 바인드된 UDP 소켓도 함께 본다. UDP에는 LISTEN 상태가 없지만 ss -ul과 마찬가지로
-// 바인드되어 수신을 기다리는 소켓을 같은 관점으로 다룬다.
+// probeListen은 연결을 기다리는 소켓을 본다. 연결된 소켓은 대상이 아니다. families가 볼 종류를
+// 정한다. UDP에는 LISTEN 상태가 없지만 ss -ul과 마찬가지로 바인드되어 수신을 기다리는 소켓을 같은
+// 관점으로 다룬다.
 //
 // 두 플랫폼 모두 기계용 출력을 쓴다. lsof -F는 필드마다 한 줄을 쓰고, ss는 -t와 -u를 함께 주면
 // 프로토콜 열이 생겨 형식이 하나로 고정된다. 사람용 표를 열로 쪼개지 않는다.
-func probeListen(ctx context.Context, udp bool) Result {
+func probeListen(ctx context.Context, families listenFamilies) Result {
 	var result Result
 	var sockets []listenSocket
 	var unparsed int
 	switch runtime.GOOS {
 	case "darwin":
-		result = probeCommand(ctx, listenProbeID, "/usr/sbin/lsof", "-nP", "-i", "-FpcnPT")
+		// -i와 -U는 선택 조건이라 함께 주면 합집합이 된다. 유닉스 소켓에는 P(프로토콜) 필드가 없어
+		// t(종류) 필드를 함께 받는다.
+		args := []string{"-nP", "-FpcntPT"}
+		if families.TCP || families.UDP {
+			args = append(args, "-i")
+		}
+		if families.Unix {
+			args = append(args, "-U")
+		}
+		result = probeCommand(ctx, listenProbeID, "/usr/sbin/lsof", args...)
 		if result.Status != StatusPass {
 			return result
 		}
-		sockets, unparsed = parseLsofFields(socketOutput(result), udp)
+		sockets, unparsed = parseLsofFields(socketOutput(result), families)
 	case "linux":
 		// TCP만 볼 때도 -tu로 물어 프로토콜 열을 얻는다. 형식이 하나면 파서도 하나다.
-		result = probeCommand(ctx, listenProbeID, "ss", "-Htulnp")
+		flags := "-Htulnp"
+		if families.Unix {
+			flags = "-Htulxnp"
+		}
+		result = probeCommand(ctx, listenProbeID, "ss", flags)
 		if result.Status != StatusPass {
 			return result
 		}
-		sockets, unparsed = parseSSRows(socketOutput(result), udp)
+		sockets, unparsed = parseSSRows(socketOutput(result), families)
 	default:
 		return unsupported(listenProbeID, unsupportedOSReason())
 	}
@@ -264,6 +277,11 @@ func probeListen(ctx context.Context, udp bool) Result {
 	if unparsed > 0 {
 		result.Status = StatusWarn
 		result.Warnings = append(result.Warnings, T("observe.listen.warn.unparsed", unparsed))
+	}
+	// lsof는 유닉스 소켓의 상태를 알려 주지 않는다. 경로를 가진 소켓과 정말로 연결을 기다리는 소켓을
+	// 가를 수 없으므로 근사치임을 밝힌다. 상태를 알 수 없는 것과 목록이 틀린 것은 다르다.
+	if families.Unix && runtime.GOOS == "darwin" {
+		result.Warnings = append(result.Warnings, T("observe.listen.warn.unix_state"))
 	}
 	return result
 }
@@ -374,7 +392,8 @@ func sortResults(results []Result) {
 	sort.Slice(results, func(i, j int) bool { return results[i].Probe < results[j].Probe })
 }
 
-// runListen은 listen 명령을 실행한다. --udp는 바인드된 UDP 소켓을 함께 본다.
+// runListen은 listen 명령을 실행한다. 종류 플래그는 더하기가 아니라 필터다. --tcp는 TCP를 켜는 것이
+// 아니라 TCP만 남기고, 아무것도 주지 않으면 기본 집합을 본다.
 //
 // 이 명령의 주 출력은 표다. 사람이 묻는 것이 "어느 포트가 열려 있나"이므로 개수 한 줄로는 답이
 // 되지 않는다. where와 마찬가지로 JSON이면 JSON을, 터미널이면 표를 직접 그린다.
@@ -383,8 +402,11 @@ func runListen(args []string, version string) int {
 	set := flag.NewFlagSet(listenProbeID, flag.ContinueOnError)
 	set.SetOutput(os.Stderr)
 	bindCommon(set, &options)
+	tcp := set.Bool("tcp", false, T("command.listen.option.tcp"))
 	udp := set.Bool("udp", false, T("command.listen.option.udp"))
 	set.BoolVar(udp, "u", false, T("command.listen.option.udp"))
+	unix := set.Bool("unix", false, T("command.listen.option.unix"))
+	all := set.Bool("all", false, T("command.listen.option.all"))
 	if err := set.Parse(args); err != nil {
 		return 2
 	}
@@ -396,7 +418,7 @@ func runListen(args []string, version string) int {
 	ctx, cancel, deadline := probeContext(options.timeout)
 	defer cancel()
 	defer deadline()
-	result := probeListen(ctx, *udp)
+	result := probeListen(ctx, selectedListenFamilies(*tcp, *udp, *unix, *all))
 	if options.jsonPath != "" {
 		return emit(options, buildReport(version, started, nil, []Result{result}, options.redact))
 	}

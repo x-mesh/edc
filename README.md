@@ -152,7 +152,7 @@ The setup wizard recommends `~/Library/Logs/edc.log` on macOS and `${XDG_STATE_H
 ./bin/edc net ping example.com
 ./bin/edc net trace example.com
 ./bin/edc net interfaces
-./bin/edc listen              # listening sockets, --udp adds UDP
+./bin/edc listen              # open ports, --unix or --all adds unix sockets
 ./bin/edc quality --timeout 60s
 
 # which region is near, and what shape is this network

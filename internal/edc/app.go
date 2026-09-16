@@ -152,7 +152,7 @@ func runDoctor(args []string, version string) int {
 			return probeTLS(ctx, address, host)
 		}},
 		{name: "http.check", run: func(ctx context.Context) Result { return probeHTTP(ctx, rawURL) }},
-		{name: listenProbeID, run: func(ctx context.Context) Result { return probeListen(ctx, false) }},
+		{name: listenProbeID, run: func(ctx context.Context) Result { return probeListen(ctx, defaultListenFamilies()) }},
 	}
 	if *profile == "full" {
 		probes = append(probes, doctorProbe{name: "net.quality", run: probeQuality})

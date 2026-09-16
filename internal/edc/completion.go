@@ -173,7 +173,7 @@ _edc() {
           esac
           ;;
         listen)
-          _arguments $common '(-u --udp)'{-u,--udp}'[바인드된 UDP socket도 함께 봅니다]'
+          _arguments $common '--tcp[TCP socket만 봅니다]' '(-u --udp)'{-u,--udp}'[바인드된 UDP socket만 봅니다]' '--unix[unix domain socket만 봅니다]' '--all[TCP와 UDP, unix domain socket을 모두 봅니다]'
           ;;
         quality)
           _arguments $common
@@ -276,7 +276,7 @@ _edc() {
             COMPREPLY=($(compgen -W "$common" -- "$cur")) ;;
         esac
       fi ;;
-    listen) COMPREPLY=($(compgen -W "$common --udp" -- "$cur")) ;;
+    listen) COMPREPLY=($(compgen -W "$common --tcp --udp --unix --all" -- "$cur")) ;;
     quality) COMPREPLY=($(compgen -W "$common" -- "$cur")) ;;
     capture) COMPREPLY=($(compgen -W "--interface --duration --count --filter --output --yes" -- "$cur")) ;;
     log)

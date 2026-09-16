@@ -42,7 +42,7 @@ These four must agree. If one changes, check the others.
    ```bash
    ls docs/tape/*.tape
    ```
-   Do not render `info`, `sockets`, or `top`. Those tapes leave host information on the screen.
+   Do not render `info`, `listen`, or `top`. Those tapes leave host information on the screen.
 6. Create the tag and push it. Push the tag only after the branch is pushed.
    ```bash
    git tag -a v<version> -m "edc v<version>"

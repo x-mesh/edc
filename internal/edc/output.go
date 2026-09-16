@@ -165,6 +165,12 @@ func isRemoteResult(result Result) bool {
 func redactReport(report *Report) {
 	hostname, _ := report.Host["hostname"].(string)
 	patterns := []struct{ value, label string }{{hostname, "host"}}
+	// listen --unix가 홈 아래의 소켓 경로를 내보내면 그 경로에 계정 이름이 들어간다. 주소만 가리고
+	// 경로를 그대로 두면 같은 정보가 다른 열로 새어 나간다. 이름만 지우면 root처럼 짧고 흔한 계정에서
+	// 관계없는 낱말까지 바뀌므로 홈 경로 전체를 가린다.
+	if home, err := os.UserHomeDir(); err == nil && home != "" && home != "/" {
+		patterns = append(patterns, struct{ value, label string }{home, "home"})
+	}
 	data, _ := json.Marshal(report)
 	text := string(data)
 	for _, pattern := range patterns {

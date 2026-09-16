@@ -63,6 +63,7 @@ observe:
       process: "PROCESS"
     warn:
       unparsed: "%d socket line(s) could not be read"
+      unix_state: "on macOS lsof gives no state for a unix socket, so the list is approximate"
 
   system:
     unsupported_os: "edc supports macOS and Linux only"

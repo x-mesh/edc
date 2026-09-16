@@ -11,7 +11,13 @@ import (
 )
 
 // routeStateSchemaVersion이 바뀌면 readRouteState는 옛 스키마의 상태 파일을 거부한다.
-const routeStateSchemaVersion = 1
+//
+// routeEntry의 키 필드가 늘어나면 반드시 올려야 한다. 옛 파일은 그 필드가 비어 있는 채로 읽히는데,
+// 예를 들어 Tos가 0으로 채워지면 rollback이 tos로 구분되는 다른 경로를 복원한다. 거부하면 rollback이
+// 실패를 보고하고 RemainingCommands에 손으로 실행할 ip 명령을 남기므로, 조용히 틀리는 것보다 낫다.
+//
+// 2: Scope와 Tos 추가(netlink 전환).
+const routeStateSchemaVersion = 2
 
 // routeSnapshot은 switch가 시작할 때 찍는 스냅샷이자, rollback이 원복 근거로 쓰는 상태 파일의 내용이다.
 // 사람과 systemd 타이머가 같은 파일 형식을 읽고 쓴다.
@@ -93,31 +99,6 @@ func readRouteState(path string) (routeSnapshot, error) {
 // routeEntrySpecEqual은 두 entry가 같은 경로를 가리키는지 본다. via·dev·metric·table이 모두 같아야 한다.
 func routeEntrySpecEqual(a, b routeEntry) bool {
 	return a.Via == b.Via && a.Dev == b.Dev && a.HasMetric == b.HasMetric && a.Metric == b.Metric && a.Table == b.Table
-}
-
-// rollbackCommands는 스냅샷의 원래 스펙을 되돌리는 replace 하나와, 현재 테이블에서 기준선을 넘는
-// 잔존 경로를 지우는 del들을 순서대로 돌려준다. 사람의 rollback과 무장한 타이머가 이 결과를 그대로 실행한다.
-func rollbackCommands(snapshot routeSnapshot, entries []routeEntry) ([][]string, error) {
-	restoreArgs, err := routeReplaceArgs(snapshot.TargetEntry, snapshot.TargetEntry.Via)
-	if err != nil {
-		return nil, fmt.Errorf("restore command: %w", err)
-	}
-	commands := [][]string{restoreArgs}
-	matched := entriesForDest(entries, snapshot.Dest)
-	if len(matched) <= snapshot.CountBaseline {
-		return commands, nil
-	}
-	for _, entry := range matched {
-		if routeEntrySpecEqual(entry, snapshot.TargetEntry) {
-			continue
-		}
-		deleteArgs, err := routeDeleteArgs(entry)
-		if err != nil {
-			return nil, fmt.Errorf("delete residual route: %w", err)
-		}
-		commands = append(commands, deleteArgs)
-	}
-	return commands, nil
 }
 
 // routeOp는 원복이 실행할 조작 하나다. 실행은 netlink으로 하고, 표시와 사람이 손으로 복구할 근거는

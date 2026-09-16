@@ -1,10 +1,6 @@
 package edc
 
-import (
-	"context"
-	"strconv"
-	"strings"
-)
+import "context"
 
 // neighborEntry는 `ip neigh show <addr>` 한 줄을 담는다.
 type neighborEntry struct {
@@ -35,40 +31,6 @@ const (
 // neighborBrokenStates는 lladdr 없이 확정적으로 전달이 실패하는 상태다.
 var neighborBrokenStates = map[string]bool{"INCOMPLETE": true, "FAILED": true}
 
-// parseNeighbors는 `ip neigh show` 출력을 항목 목록으로 바꾼다.
-func parseNeighbors(text string) []neighborEntry {
-	var entries []neighborEntry
-	for _, line := range strings.Split(text, "\n") {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" {
-			continue
-		}
-		tokens := strings.Fields(trimmed)
-		entry := neighborEntry{Dest: tokens[0], Raw: line}
-		for index := 1; index < len(tokens); index++ {
-			switch tokens[index] {
-			case "dev":
-				if index+1 < len(tokens) {
-					entry.Dev = tokens[index+1]
-					index++
-				}
-			case "lladdr":
-				if index+1 < len(tokens) {
-					entry.LLAddr = tokens[index+1]
-					index++
-				}
-			default:
-				// 상태는 값 없이 마지막에 대문자로 온다.
-				if tokens[index] == strings.ToUpper(tokens[index]) {
-					entry.State = tokens[index]
-				}
-			}
-		}
-		entries = append(entries, entry)
-	}
-	return entries
-}
-
 // neighborReach는 next-hop의 L2 도달성을 셋으로 나눈다.
 func neighborReach(entries []neighborEntry, dest string) (state string, detail string) {
 	for _, entry := range entries {
@@ -84,43 +46,6 @@ func neighborReach(entries []neighborEntry, dest string) (state string, detail s
 		return reachUsable, entry.State
 	}
 	return reachUnknown, ""
-}
-
-// parseLinks는 `ip -o link show` 출력을 장치 목록으로 바꾼다. -o는 한 줄에 한 장치를 담지만 link/ether
-// 뒤쪽은 백슬래시로 이어 붙으므로 앞쪽만 읽는다.
-func parseLinks(text string) []linkInfo {
-	var links []linkInfo
-	for _, line := range strings.Split(text, "\n") {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" {
-			continue
-		}
-		head, _, _ := strings.Cut(trimmed, "\\")
-		tokens := strings.Fields(head)
-		if len(tokens) < 3 {
-			continue
-		}
-		info := linkInfo{Raw: line}
-		// "2: enp1s0: <BROADCAST,UP,LOWER_UP> mtu 1500 ... state UP ..."
-		info.Name = strings.TrimSuffix(tokens[1], ":")
-		if open := strings.Index(head, "<"); open >= 0 {
-			if close := strings.Index(head[open:], ">"); close > 0 {
-				info.Flags = strings.Split(head[open+1:open+close], ",")
-			}
-		}
-		for index := 0; index+1 < len(tokens); index++ {
-			switch tokens[index] {
-			case "mtu":
-				if value, err := strconv.Atoi(tokens[index+1]); err == nil {
-					info.MTU = value
-				}
-			case "state":
-				info.State = tokens[index+1]
-			}
-		}
-		links = append(links, info)
-	}
-	return links
 }
 
 // linkReach는 장치가 트래픽을 내보낼 수 있는 상태인지 본다. tailscale0나 lo처럼 터널·가상 장치는

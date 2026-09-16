@@ -155,3 +155,23 @@ func TestRouteEntryKeyFieldsSurviveTheStateFile(t *testing.T) {
 		t.Fatalf("target entry changed across the state file:\n got %#v\nwant %#v", loaded.TargetEntry, original)
 	}
 }
+
+// 옛 스키마 파일은 거부해야 한다. 그대로 받아들이면 새로 생긴 키 필드가 0으로 채워져 rollback이
+// 다른 경로를 복원한다. 거부는 시끄럽게 실패하고 손으로 복구할 명령을 남기므로 조용히 틀리는 것보다 낫다.
+func TestReadRouteStateRejectsOlderSchema(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "route.json")
+	old := `{
+		"schema_version": 1,
+		"run_id": "old1",
+		"dest": "default",
+		"route_table_text": "default via 192.0.2.1 dev enp1s0\n",
+		"target_entry": {"Dest": "default", "Via": "192.0.2.1", "Dev": "enp1s0"},
+		"count_baseline": 1
+	}`
+	if err := os.WriteFile(path, []byte(old), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readRouteState(path); err == nil {
+		t.Fatal("a state file from an older schema must be rejected, not silently filled in")
+	}
+}

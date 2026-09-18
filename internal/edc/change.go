@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -18,7 +19,9 @@ const (
 	changeKindAuthorizedKeys = "authorized-keys"
 	changeKindIPTables       = "iptables"
 	changeStateDirectory     = "/run/edc"
-	changeStateSchemaVersion = 2
+	// 3에서 authorized-keys 상태에 소유자(uid, gid)를 더했다. 2로 쓴 상태를 3으로 읽으면 uid가 0으로
+	// 채워져 root 소유로 복원하므로, 올려서 옛 상태를 거부한다.
+	changeStateSchemaVersion = 3
 	changeDefaultSeconds     = 120
 	changeMinSeconds         = 10
 	changeMaxSeconds         = 900
@@ -37,6 +40,8 @@ type changeSnapshot struct {
 	Path          string     `json:"path,omitempty"`
 	Existed       bool       `json:"existed"`
 	Mode          uint32     `json:"mode,omitempty"`
+	UID           int        `json:"uid"`
+	GID           int        `json:"gid"`
 	Data          []byte     `json:"data"`
 	AppliedData   []byte     `json:"applied_data"`
 	AppliedState  []byte     `json:"applied_state,omitempty"`
@@ -263,6 +268,18 @@ func prepareChangeSnapshot(ctx context.Context, runner changeRunner, input chang
 			return changeSnapshot{}, err
 		}
 		snapshot.Path, snapshot.Existed, snapshot.Mode, snapshot.Data = path, before.Existed, before.Mode, before.Data
+		snapshot.UID, snapshot.GID = before.UID, before.GID
+		if !before.Existed {
+			// 새로 만드는 파일은 그 디렉터리 주인의 것으로 둔다. root 소유로 만들면 sshd는 받아들여도
+			// 계정 주인이 자기 authorized_keys를 고칠 수 없게 된다.
+			info, err := os.Stat(filepath.Dir(path))
+			if err != nil {
+				return changeSnapshot{}, err
+			}
+			if snapshot.UID, snapshot.GID, err = fileOwner(info); err != nil {
+				return changeSnapshot{}, err
+			}
+		}
 		snapshot.AppliedData = append([]byte(nil), content...)
 	case changeKindIPTables:
 		rules, err := os.ReadFile(input.rulesFile)
@@ -288,7 +305,21 @@ func prepareChangeSnapshot(ctx context.Context, runner changeRunner, input chang
 type changeFile struct {
 	Existed bool
 	Mode    uint32
+	UID     int
+	GID     int
 	Data    []byte
+}
+
+func (file changeFile) ownedAs(snapshot changeSnapshot) bool {
+	return file.UID == snapshot.UID && file.GID == snapshot.GID
+}
+
+func fileOwner(info os.FileInfo) (uid, gid int, err error) {
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return 0, 0, fmt.Errorf("cannot read the owner of %s", info.Name())
+	}
+	return int(stat.Uid), int(stat.Gid), nil
 }
 
 func readChangeFile(path string) (changeFile, error) {
@@ -306,13 +337,17 @@ func readChangeFile(path string) (changeFile, error) {
 	if err != nil {
 		return changeFile{}, err
 	}
-	return changeFile{Existed: true, Mode: uint32(info.Mode().Perm()), Data: data}, nil
+	uid, gid, err := fileOwner(info)
+	if err != nil {
+		return changeFile{}, err
+	}
+	return changeFile{Existed: true, Mode: uint32(info.Mode().Perm()), UID: uid, GID: gid, Data: data}, nil
 }
 
 func applyChange(ctx context.Context, runner changeRunner, input changeInput, snapshot changeSnapshot) error {
 	switch input.kind {
 	case changeKindAuthorizedKeys:
-		return writeChangeFile(snapshot.Path, snapshot.AppliedData, snapshot.Mode)
+		return writeChangeFile(snapshot.Path, snapshot.AppliedData, snapshot.Mode, snapshot.UID, snapshot.GID)
 	case changeKindIPTables:
 		if _, err := runner.runInput(ctx, snapshot.AppliedData, "iptables-restore"); err != nil {
 			return fmt.Errorf("iptables-restore: %w", err)
@@ -334,7 +369,7 @@ func rollbackChange(ctx context.Context, runner changeRunner, snapshot changeSna
 			if !current.Existed {
 				return nil
 			}
-			if !bytes.Equal(current.Data, snapshot.AppliedData) || current.Mode != changeAppliedMode(snapshot) {
+			if !bytes.Equal(current.Data, snapshot.AppliedData) || current.Mode != changeAppliedMode(snapshot) || !current.ownedAs(snapshot) {
 				return errors.New(T("change.error.rollback_target_changed"))
 			}
 			if err := os.Remove(snapshot.Path); err != nil && !os.IsNotExist(err) {
@@ -342,20 +377,20 @@ func rollbackChange(ctx context.Context, runner changeRunner, snapshot changeSna
 			}
 			return nil
 		}
-		if current.Existed && bytes.Equal(current.Data, snapshot.Data) && current.Mode == snapshot.Mode {
+		if current.Existed && bytes.Equal(current.Data, snapshot.Data) && current.Mode == snapshot.Mode && current.ownedAs(snapshot) {
 			return nil
 		}
-		if !current.Existed || !bytes.Equal(current.Data, snapshot.AppliedData) || current.Mode != snapshot.Mode {
+		if !current.Existed || !bytes.Equal(current.Data, snapshot.AppliedData) || current.Mode != snapshot.Mode || !current.ownedAs(snapshot) {
 			return errors.New(T("change.error.rollback_target_changed"))
 		}
-		if err := writeChangeFile(snapshot.Path, snapshot.Data, snapshot.Mode); err != nil {
+		if err := writeChangeFile(snapshot.Path, snapshot.Data, snapshot.Mode, snapshot.UID, snapshot.GID); err != nil {
 			return err
 		}
 		current, err = readChangeFile(snapshot.Path)
 		if err != nil {
 			return err
 		}
-		if !current.Existed || !bytes.Equal(current.Data, snapshot.Data) || current.Mode != snapshot.Mode {
+		if !current.Existed || !bytes.Equal(current.Data, snapshot.Data) || current.Mode != snapshot.Mode || !current.ownedAs(snapshot) {
 			return errors.New(T("change.error.rollback_verify"))
 		}
 		return nil
@@ -364,10 +399,10 @@ func rollbackChange(ctx context.Context, runner changeRunner, snapshot changeSna
 		if err != nil {
 			return fmt.Errorf("iptables-save: %w", err)
 		}
-		if strings.TrimSpace(current) == strings.TrimSpace(string(snapshot.Data)) {
+		if canonicalIPTables(current) == canonicalIPTables(string(snapshot.Data)) {
 			return nil
 		}
-		if len(snapshot.AppliedState) > 0 && strings.TrimSpace(current) != strings.TrimSpace(string(snapshot.AppliedState)) {
+		if len(snapshot.AppliedState) > 0 && canonicalIPTables(current) != canonicalIPTables(string(snapshot.AppliedState)) {
 			return errors.New(T("change.error.rollback_target_changed"))
 		}
 		if _, err := runner.runInput(ctx, snapshot.Data, "iptables-restore"); err != nil {
@@ -377,13 +412,34 @@ func rollbackChange(ctx context.Context, runner changeRunner, snapshot changeSna
 		if err != nil {
 			return fmt.Errorf("iptables-save: %w", err)
 		}
-		if strings.TrimSpace(current) != strings.TrimSpace(string(snapshot.Data)) {
+		if canonicalIPTables(current) != canonicalIPTables(string(snapshot.Data)) {
 			return errors.New(T("change.error.rollback_verify"))
 		}
 		return nil
 	default:
 		return errors.New(T("change.error.kind"))
 	}
+}
+
+// canonicalIPTables는 iptables-save 출력에서 규칙이 아닌 부분을 뺀다. 이 명령은 실행할 때마다 시각
+// 주석과 체인의 패킷·바이트 카운터를 새로 적는다. 원문을 그대로 비교하면 규칙이 같아도 늘 다르다고
+// 나와, 타이머의 롤백이 모든 호스트에서 외부 변경으로 보고 거부했다(검증 VM에서 재현).
+func canonicalIPTables(text string) string {
+	lines := strings.Split(text, "\n")
+	kept := make([]string, 0, len(lines))
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if strings.HasPrefix(line, ":") && strings.HasSuffix(line, "]") {
+			if index := strings.LastIndex(line, " ["); index > 0 {
+				line = line[:index]
+			}
+		}
+		kept = append(kept, line)
+	}
+	return strings.Join(kept, "\n")
 }
 
 func changeAppliedMode(snapshot changeSnapshot) uint32 {
@@ -393,7 +449,9 @@ func changeAppliedMode(snapshot changeSnapshot) uint32 {
 	return 0o600
 }
 
-func writeChangeFile(path string, data []byte, mode uint32) error {
+// writeChangeFile은 임시 파일에 쓴 뒤 이름을 바꿔 원자적으로 교체한다. 임시 파일은 edc(root)의 것으로
+// 생기므로 소유자를 명시해 넘기지 않으면 교체와 롤백 모두 대상을 root 소유로 바꾼다(검증 VM에서 재현).
+func writeChangeFile(path string, data []byte, mode uint32, uid, gid int) error {
 	if _, err := readChangeFile(path); err != nil {
 		return err
 	}
@@ -407,6 +465,10 @@ func writeChangeFile(path string, data []byte, mode uint32) error {
 		mode = 0o600
 	}
 	if err := temp.Chmod(os.FileMode(mode)); err != nil {
+		temp.Close()
+		return err
+	}
+	if err := temp.Chown(uid, gid); err != nil {
 		temp.Close()
 		return err
 	}
@@ -481,7 +543,13 @@ func confirmChange(ctx context.Context, runner changeRunner, statePath string) e
 			return errors.New(T("change.error.already_completed"))
 		}
 		if warning := disarmGuard(ctx, runner, snapshot.UnitName); warning != "" {
-			return errors.New(warning)
+			// 타이머가 이미 발화했거나 거둬졌으면 systemctl stop이 실패하지만 멈출 것이 없다. 이때까지
+			// 막으면 롤백도 확정도 못 하는 대기 상태가 남아 이후 apply가 모두 막힌다. 확정을 거부할
+			// 것은 멈추지 못한 타이머가 아직 살아 있어 확정 뒤에도 롤백이 발화할 때뿐이다.
+			output, _ := runner.run(ctx, "systemctl", "is-active", snapshot.UnitName+".timer")
+			if parseIsActive(output) {
+				return errors.New(warning)
+			}
 		}
 		return markChangeCompleted(statePath, snapshot)
 	})

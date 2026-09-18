@@ -59,6 +59,8 @@ command:
       - "switch と rollback には root 権限が必要です。sudo は付けません。"
       - "check は経路を変更しません。switch はまずタイマーを武装します。"
       - "status は /run/edc を読み、rollback --state は 1 件を再実行します。"
+  change:
+    summary: "自動ロールバック付きのホスト変更"
   top:
     summary: "リアルタイムの resource ダッシュボード"
     option:

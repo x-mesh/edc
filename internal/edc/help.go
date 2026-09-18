@@ -105,6 +105,25 @@ var commandDocs = []commandDoc{
 		usesCommon: true,
 	},
 	{
+		name: "change", group: "tool",
+		usage: []string{
+			"edc change apply --kind authorized-keys|iptables [options]",
+			"edc change status [options]",
+			"edc change confirm --state <file>",
+			"edc change rollback --state <file>",
+		},
+		options: []optionDoc{
+			{"--kind authorized-keys|iptables", "change.flag.kind"},
+			{"--path <authorized_keys>", "change.flag.path"},
+			{"--content-file <file>", "change.flag.content_file"},
+			{"--rules-file <file>", "change.flag.rules_file"},
+			{"--seconds N", "change.flag.seconds"},
+			{"--state <file>", "change.flag.state"},
+			{"--yes", "change.flag.yes"},
+		},
+		usesCommon: true,
+	},
+	{
 		name: "top", group: "observe",
 		usage: []string{"edc top [--interval 1s] [--count N] [--json <path|->]"},
 		options: []optionDoc{

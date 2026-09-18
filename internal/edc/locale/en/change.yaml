@@ -1,0 +1,45 @@
+change:
+  summary: "Protected host changes with automatic rollback"
+  flag:
+    kind: "adapter: authorized-keys or iptables"
+    path: "authorized_keys target path"
+    content_file: "new authorized_keys content file"
+    rules_file: "iptables-restore rules file"
+    seconds: "rollback grace period in seconds (10-900)"
+    state: "change state file path"
+    yes: "confirm after apply"
+  skip:
+    linux_only: "edc applies protected host changes on Linux only"
+  error:
+    kind: "--kind must be authorized-keys or iptables"
+    seconds_range: "--seconds must be between %d and %d"
+    authorized_keys_args: "authorized-keys needs --path and --content-file"
+    authorized_keys_path: "--path must name authorized_keys or authorized_keys2"
+    input_unreadable: "could not read input file %s: %s"
+    rules_required: "iptables needs --rules-file"
+    rules_empty: "the iptables rules file is empty"
+    invalid_authorized_keys: "the authorized_keys file is empty or contains a private key"
+    rules_invalid: "iptables-restore rejected the rules"
+    target_not_regular: "the authorized_keys target must be a regular file, not a symlink"
+    root_required: "edc change needs root"
+    pending: "another change is waiting for confirmation or rollback"
+    guard_failed: "the rollback timer was not confirmed active, so edc changed nothing"
+    state_required: "--state is required"
+    state_path: "--state must name a change file under /run/edc"
+    already_completed: "the change state is already complete"
+    invalid_state: "the change state is invalid or unsupported"
+    rollback_verify: "rollback did not restore the saved state"
+    rollback_target_changed: "the target changed after edc applied it, so edc did not overwrite the new state"
+    locked: "another process is handling this change state"
+  apply:
+    pending: "%s change %s is pending confirmation and will roll back in %d second(s)"
+    confirmed: "%s change was applied and confirmed"
+  confirm:
+    done: "change confirmed and rollback timer stopped"
+  rollback:
+    done: "change rolled back and rollback timer stopped"
+  status:
+    none: "no change state file exists"
+    timer_mismatch: "the rollback timer %s is not active, though the change is still pending"
+    pending: "%s change %s is pending confirmation or rollback"
+    completed: "%s change %s is complete"

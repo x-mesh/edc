@@ -1,0 +1,45 @@
+change:
+  summary: "自動ロールバック付きのホスト変更"
+  flag:
+    kind: "adapter: authorized-keys または iptables"
+    path: "authorized_keys の対象パス"
+    content_file: "新しい authorized_keys の内容ファイル"
+    rules_file: "iptables-restore のルールファイル"
+    seconds: "ロールバック猶予時間（秒、10-900）"
+    state: "change 状態ファイルのパス"
+    yes: "適用後に確定"
+  skip:
+    linux_only: "edc のホスト変更保護機能は Linux でのみ動作します"
+  error:
+    kind: "--kind は authorized-keys または iptables にしてください"
+    seconds_range: "--seconds は %d から %d の範囲にしてください"
+    authorized_keys_args: "authorized-keys には --path と --content-file が必要です"
+    authorized_keys_path: "--path は authorized_keys または authorized_keys2 にしてください"
+    input_unreadable: "入力ファイル %s を読めません: %s"
+    rules_required: "iptables には --rules-file が必要です"
+    rules_empty: "iptables ルールファイルが空です"
+    invalid_authorized_keys: "authorized_keys が空か秘密鍵を含んでいます"
+    rules_invalid: "iptables-restore がルールを拒否しました"
+    target_not_regular: "authorized_keys の対象は symlink でない通常ファイルにしてください"
+    root_required: "edc change には root 権限が必要です"
+    pending: "確認またはロールバック待ちの change が別にあります"
+    guard_failed: "ロールバックタイマーを active と確認できないため変更しませんでした"
+    state_required: "--state が必要です"
+    state_path: "--state は /run/edc の change ファイルを指定してください"
+    already_completed: "change 状態はすでに完了しています"
+    invalid_state: "change 状態が不正か未対応です"
+    rollback_verify: "ロールバック後に保存状態を確認できませんでした"
+    rollback_target_changed: "edc の適用後に対象が変更されたため、新しい状態を上書きしませんでした"
+    locked: "別のプロセスがこの change 状態を処理中です"
+  apply:
+    pending: "%s change %s は確認待ちです。%d 秒後にロールバックします"
+    confirmed: "%s change を適用して確定しました"
+  confirm:
+    done: "change を確定してロールバックタイマーを停止しました"
+  rollback:
+    done: "change をロールバックしてロールバックタイマーを停止しました"
+  status:
+    none: "change 状態ファイルはありません"
+    timer_mismatch: "change は保留中ですがロールバックタイマー %s は active ではありません"
+    pending: "%s change %s は確認またはロールバック待ちです"
+    completed: "%s change %s は完了しています"

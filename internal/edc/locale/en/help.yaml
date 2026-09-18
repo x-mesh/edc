@@ -59,6 +59,8 @@ command:
       - "switch and rollback need root. edc does not add sudo itself."
       - "check never changes a route. switch arms a rollback timer first."
       - "status reads /run/edc. rollback --state repeats one state file."
+  change:
+    summary: "Protected host changes with automatic rollback"
   top:
     summary: "Live resource dashboard"
     option:

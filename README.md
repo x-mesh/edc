@@ -613,6 +613,55 @@ edc route switch --to lab-nat-02 --seconds 60
 
 A switch breaks existing connections. The NAT state stays on the old exit, so established flows stop. New flows use the new exit.
 
+## Protected host changes
+
+Use `edc change` for host changes that can block access. Linux only. Run it on the host as root.
+
+Before `edc` changes the target, it saves the current state and arms a systemd timer. If no confirmation arrives, the timer runs the rollback command.
+
+Change an SSH public key file:
+
+```bash
+edc change apply \
+  --kind authorized-keys \
+  --path /home/<user>/.ssh/authorized_keys \
+  --content-file /path/to/authorized_keys \
+  --seconds 120
+```
+
+Change the IPv4 firewall rules:
+
+```bash
+edc change apply \
+  --kind iptables \
+  --rules-file /path/to/rules.v4 \
+  --seconds 120
+```
+
+Use the run ID from the apply result to confirm the change:
+
+```bash
+edc change confirm --state /run/edc/change-<run-id>.json
+```
+
+Use the same state path to roll back before the timer fires:
+
+```bash
+edc change rollback --state /run/edc/change-<run-id>.json
+```
+
+Inspect pending changes and their remaining time:
+
+```bash
+edc change status
+```
+
+`authorized-keys` accepts a regular file with public keys. `iptables` validates the rules with `iptables-restore --test` before it arms the timer.
+
+Run only one protected change at a time. If the target changes after apply, `edc` refuses to overwrite the new state during rollback.
+
+Use `--yes` to confirm immediately. This removes the rollback window.
+
 ## Probe live line
 
 A single probe command shows one progress line if stdin and stdout are terminals. The line has the probe name, the target, the elapsed time, and the last output line of the command.

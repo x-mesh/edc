@@ -1,0 +1,45 @@
+change:
+  summary: "롤백 보호를 제공하는 시스템 변경"
+  flag:
+    kind: "adapter: authorized-keys 또는 iptables"
+    path: "authorized_keys 대상 경로"
+    content_file: "새 authorized_keys 내용 파일"
+    rules_file: "iptables-restore 규칙 파일"
+    seconds: "롤백 유예 시간(초, 10~900)"
+    state: "change 상태 파일 경로"
+    yes: "적용 뒤 확정"
+  skip:
+    linux_only: "edc host 변경 보호 기능은 Linux에서만 동작합니다"
+  error:
+    kind: "--kind는 authorized-keys 또는 iptables여야 합니다"
+    seconds_range: "--seconds는 %d에서 %d 사이여야 합니다"
+    authorized_keys_args: "authorized-keys에는 --path와 --content-file이 필요합니다"
+    authorized_keys_path: "--path는 authorized_keys 또는 authorized_keys2여야 합니다"
+    input_unreadable: "입력 파일 %s을(를) 읽지 못했습니다: %s"
+    rules_required: "iptables에는 --rules-file이 필요합니다"
+    rules_empty: "iptables 규칙 파일이 비어 있습니다"
+    invalid_authorized_keys: "authorized_keys가 비어 있거나 private key를 포함합니다"
+    rules_invalid: "iptables-restore가 규칙을 거부했습니다"
+    target_not_regular: "authorized_keys 대상은 symlink가 아닌 일반 파일이어야 합니다"
+    root_required: "edc change에는 root 권한이 필요합니다"
+    pending: "확정 또는 롤백을 기다리는 다른 change가 있습니다"
+    guard_failed: "롤백 타이머가 active임을 확인하지 못해 아무것도 바꾸지 않았습니다"
+    state_required: "--state가 필요합니다"
+    state_path: "--state는 /run/edc 아래의 change 파일이어야 합니다"
+    already_completed: "change 상태가 이미 완료되었습니다"
+    invalid_state: "change 상태가 잘못되었거나 지원되지 않습니다"
+    rollback_verify: "롤백 후 저장한 상태를 확인하지 못했습니다"
+    rollback_target_changed: "edc 적용 뒤 대상이 바뀌어 새 상태를 덮어쓰지 않았습니다"
+    locked: "다른 프로세스가 이 change 상태를 처리 중입니다"
+  apply:
+    pending: "%s change %s가 확정을 기다립니다. %d초 뒤 롤백합니다"
+    confirmed: "%s change를 적용하고 확정했습니다"
+  confirm:
+    done: "change를 확정하고 롤백 타이머를 중지했습니다"
+  rollback:
+    done: "change를 롤백하고 롤백 타이머를 중지했습니다"
+  status:
+    none: "change 상태 파일이 없습니다"
+    timer_mismatch: "change가 대기 중이지만 롤백 타이머 %s가 active가 아닙니다"
+    pending: "%s change %s가 확정 또는 롤백을 기다립니다"
+    completed: "%s change %s가 완료되었습니다"

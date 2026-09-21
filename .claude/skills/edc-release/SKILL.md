@@ -1,6 +1,6 @@
 ---
 name: edc-release
-description: Cut an edc release — pick the version, verify locally, tag, and let GitHub Actions publish the assets. Use when the user asks to release edc, cut a version, publish a tag, or fix a failed release run.
+description: Cut an edc release — pick the version, verify locally, tag, let GitHub Actions publish the assets, and write the release notes. Use when the user asks to release edc, cut a version, publish a tag, write release notes, or fix a failed release run.
 ---
 
 # edc release
@@ -49,21 +49,41 @@ These four must agree. If one changes, check the others.
    git push origin main
    git push origin v<version>
    ```
-7. Watch the release run.
+7. Watch the release run. `gh run watch` needs the run ID, so read it first.
    ```bash
-   gh run watch --exit-status
+   gh run list --limit 3
+   gh run watch <run-id> --exit-status --compact
    gh release view v<version>
    ```
-8. Verify the published release from the outside.
+8. Write the release notes. See [Release notes](#release-notes) for the shape.
+   ```bash
+   gh release edit v<version> --notes-file <path>
+   gh release view v<version> --json body -q .body
+   ```
+9. Verify the published release from the outside.
    ```bash
    curl -fsSL https://raw.githubusercontent.com/x-mesh/edc/main/install.sh | BINDIR=/tmp/edc-check sh
    /tmp/edc-check/edc version
    ```
-9. Verify the update path from the previous version. Install the earlier version, then update.
-   ```bash
-   EDC_VERSION=<previous> BINDIR=/tmp/edc-old sh install.sh
-   /tmp/edc-old/edc update --check
-   ```
+10. Verify the update path from the previous version. Install the earlier version, then update.
+    ```bash
+    EDC_VERSION=<previous> BINDIR=/tmp/edc-old sh install.sh
+    /tmp/edc-old/edc update --check
+    ```
+
+## Release notes
+
+The workflow writes only a `Full Changelog` link. Replace the body with notes that a user reads before an update.
+
+Write one `##` section for each change that a user sees. Name the command in the heading. Order the sections by the size of the change for a user.
+
+In each section, write what the user gets, then why it changed. For a fix, name the defect and the effect on a host. For a new command, write what it does and the platform that it needs.
+
+State every change that a user must act on: a state schema bump, a renamed flag, a changed default.
+
+Keep the `Full Changelog` line at the end. Leave out a host name, an IP address, a user name, and an identifier that a user cannot see.
+
+Read the `v0.12.0` notes for the shape.
 
 ## If the release run fails
 

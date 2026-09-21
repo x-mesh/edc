@@ -580,3 +580,108 @@ func TestFormatTopRowMatchesPrintedRow(t *testing.T) {
 		t.Fatalf("printed row and formatted row differ: %q", output.String())
 	}
 }
+
+// topAlertRate는 임계치를 넘긴 값만 모은 표본이다. core 8 기준으로 load·cpu·io·mem·await·err·psi가 모두 경고나 위험이다.
+func topAlertRate() resourceRate {
+	return resourceRate{
+		Load1: 12, CPUUser: 95, CPUSystem: 75, CPUIOWait: 30, MemoryPercent: 97, CoreCPU: []float64{10, 99},
+		DiskHealthValid: true, DiskIOPS: 900, DiskAwait: 80,
+		NetHealthValid: true, NetErrors: 60, NetDrops: 5,
+		PSIValid: true, PSICPU: 30, PSIMemory: 12, PSIIO: 40,
+	}
+}
+
+func topDashboardViews() []topView {
+	return []topView{topViewAll, topViewCPU, topViewMemory, topViewDisk, topViewNetwork, topViewPressure}
+}
+
+func topColoredRow(view topView, rate resourceRate, width int) string {
+	return formatTopDashboardRow(topDashboardRow{at: time.Unix(1, 0), rate: rate}, view, newTopLimits(8, true), width)
+}
+
+func TestTopDashboardPaintsValuesOverTheThreshold(t *testing.T) {
+	tests := []struct {
+		name string
+		view topView
+		want string
+	}{
+		{"all load danger", topViewAll, topColorDanger + "12.0" + topColorReset},
+		{"all system warn", topViewAll, topColorWarn + " 75.0" + topColorReset},
+		{"all memory danger", topViewAll, topColorDanger + " 97.0" + topColorReset},
+		{"memory percent danger", topViewMemory, topColorDanger + "  97.0" + topColorReset},
+		{"disk await danger", topViewDisk, topColorDanger + "  80.0" + topColorReset},
+		{"network drop warn", topViewNetwork, topColorWarn + "     5" + topColorReset},
+		{"pressure memory warn", topViewPressure, topColorWarn + "   12.0" + topColorReset},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			line := topColoredRow(test.view, topAlertRate(), topTableWidth)
+			if !strings.Contains(line, test.want) {
+				t.Fatalf("%s row %q does not contain %q", test.view, line, test.want)
+			}
+		})
+	}
+}
+
+func TestTopDashboardLeavesNormalValuesUncolored(t *testing.T) {
+	rate := resourceRate{Load1: 1, CPUUser: 5, CPUSystem: 2, CPUIOWait: 1, MemoryPercent: 30, CoreCPU: []float64{10, 20},
+		DiskHealthValid: true, DiskIOPS: 12, DiskAwait: 3, NetHealthValid: true, PSIValid: true, PSICPU: 1}
+	for _, view := range topDashboardViews() {
+		if line := topColoredRow(view, rate, topTableWidth); strings.Contains(line, "\033[") {
+			t.Fatalf("%s row colors a normal value: %q", view, line)
+		}
+	}
+}
+
+// 대시보드는 platform이 주지 않는 값을 —로 그린다. 값이 없으므로 색도 없어야 한다.
+func TestTopDashboardDoesNotPaintUnsupportedValues(t *testing.T) {
+	rate := resourceRate{DiskAwait: 80, NetErrors: 60, PSIIO: 40}
+	for _, view := range topDashboardViews() {
+		if line := topColoredRow(view, rate, 160); strings.Contains(line, "\033[") {
+			t.Fatalf("%s row colors an unsupported value: %q", view, line)
+		}
+	}
+}
+
+// 색을 입혀도 칸이 밀리면 안 된다. escape를 폭 계산에서 빼고 색 없는 줄과 같은 폭인지 본다.
+func TestTopDashboardKeepsTheWidthWithColor(t *testing.T) {
+	row := topDashboardRow{at: time.Unix(1, 0), rate: topAlertRate()}
+	for _, width := range []int{topTableWidth, 84, 96, 110, 120, 125, 160} {
+		for _, view := range topDashboardViews() {
+			plain := formatTopDashboardRow(row, view, newTopLimits(8, false), width)
+			colored := formatTopDashboardRow(row, view, newTopLimits(8, true), width)
+			if strings.Contains(plain, "\033[") {
+				t.Fatalf("%s row has an escape without color: %q", view, plain)
+			}
+			if !strings.Contains(colored, "\033[") {
+				t.Fatalf("%s row at width %d has no color: %q", view, width, colored)
+			}
+			if liveWidth(colored) != liveWidth(plain) {
+				t.Fatalf("%s row at width %d is %d wide, want %d: %q", view, width, liveWidth(colored), liveWidth(plain), colored)
+			}
+			for _, header := range topDashboardHeaders(view, width) {
+				if strings.Contains(header, "\033[") {
+					t.Fatalf("%s header has an escape: %q", view, header)
+				}
+			}
+		}
+	}
+}
+
+// hot core는 core 하나의 사용률이라 host의 cpu 임계치보다 늦게 켜고 위험 단계를 두지 않는다.
+func TestTopDashboardWarnsOnlyForAFullHotCore(t *testing.T) {
+	tests := map[float64]string{72: "", 89: "", 90: topColorWarn, 100: topColorWarn}
+	for usage, want := range tests {
+		rate := resourceRate{CoreCPU: []float64{10, usage}}
+		line := topColoredRow(topViewCPU, rate, topTableWidth)
+		if want == "" {
+			if strings.Contains(line, "\033[") {
+				t.Fatalf("hot core %.0f%% must stay uncolored: %q", usage, line)
+			}
+			continue
+		}
+		if !strings.Contains(line, want) || strings.Contains(line, topColorDanger) {
+			t.Fatalf("hot core %.0f%% must warn only: %q", usage, line)
+		}
+	}
+}

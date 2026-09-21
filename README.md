@@ -276,7 +276,9 @@ The demo opens the viewer, changes the filter, shows the details, and then compa
 
 ## Top thresholds
 
-`edc top` gives a color to the load, CPU, iowait, and memory values. White is normal. Orange is a warning. Red is a risk.
+`edc top` uses two colors. Yellow is a warning. Red is a risk. A normal value keeps the terminal color, so a color marks only a value that needs attention.
+
+The table colors load, `usr%`, `sys%`, `i/o`, and `mem_%`. The dashboard colors these values and also `hot core`, `await`, `err`, `drop`, and the pressure values.
 
 The load thresholds follow the core count of the host.
 
@@ -286,6 +288,14 @@ The load thresholds follow the core count of the host.
 | usr%, sys% | 70 | 90 |
 | i/o | 10 | 25 |
 | mem_% | 90 | 95 |
+| await | 20 ms | 50 ms |
+| err, drop | 1/s | 50/s |
+| psi | 10 | 25 |
+| hot core | 90 | — |
+
+`hot core` shows the usage of one core, so it gets a warning at 90 and no risk level. A host with many cores keeps room when one core is full.
+
+The dashboard gives no color to `iops`, `busy%`, `swap/s`, the byte and packet rates, and the `signal` column. These values have no threshold, or they show the level without a color. Aggregate `busy%` goes above 100 on a host with more than one busy disk, so a fixed threshold gives a wrong signal. The `cores` bar shows the level with `.`, `:`, `*`, and `#`.
 
 To remove the colors, set `NO_COLOR`. A pipe or a file gets no colors.
 

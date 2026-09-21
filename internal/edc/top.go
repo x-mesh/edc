@@ -193,14 +193,35 @@ func formatTopHeader(details hostDetails) string {
 	return fmt.Sprintf("╭%s╮\n│ %s%s │\n╰%s╯\n%s\n", border, title, strings.Repeat(" ", width-4-titleWidth), border, topColumnHeader)
 }
 
+// 색은 둘뿐이다. 정상값은 terminal 기본색으로 두어야 경고와 위험만 눈에 들어온다.
 const (
-	topColorNormal = "\033[97m"
-	topColorWarn   = "\033[38;5;208m"
+	// 경고는 terminal 팔레트의 yellow다. 고정 색은 밝은 배경에서 묻히고, 주황은 적록색약에서
+	// 위험의 빨강과 명도까지 비슷해져 붙는다. terminalStatus의 WARN과도 같은 색이다.
+	topColorWarn   = "\033[33m"
 	topColorDanger = "\033[91m"
 	topColorReset  = "\033[0m"
 )
 
 type topThreshold struct{ warn, danger float64 }
+
+// topLevel은 값이 임계치를 넘은 정도다. 색 문자열과 나눠 두어야 칸의 폭을 먼저 맞춘 뒤 색을 입힐 수 있다.
+type topLevel int
+
+const (
+	topLevelNormal topLevel = iota
+	topLevelWarn
+	topLevelDanger
+)
+
+func (threshold topThreshold) level(value float64) topLevel {
+	switch {
+	case value >= threshold.danger:
+		return topLevelDanger
+	case value >= threshold.warn:
+		return topLevelWarn
+	}
+	return topLevelNormal
+}
 
 // topLimits는 값의 위험도를 나누는 임계치다. load는 core 수에 비례하고, await는 ms,
 // network는 초당 error·drop 수이며 나머지는 백분율이다.
@@ -227,15 +248,17 @@ func newTopLimits(cores int, color bool) topLimits {
 }
 
 func (limits topLimits) paint(text string, threshold topThreshold, value float64) string {
-	if !limits.color {
+	return topPaint(text, threshold.level(value), limits.color)
+}
+
+// topPaint는 폭을 이미 맞춘 칸에 색을 입힌다.
+func topPaint(text string, level topLevel, color bool) string {
+	if !color || level == topLevelNormal {
 		return text
 	}
-	code := topColorNormal
-	switch {
-	case value >= threshold.danger:
+	code := topColorWarn
+	if level == topLevelDanger {
 		code = topColorDanger
-	case value >= threshold.warn:
-		code = topColorWarn
 	}
 	return code + text + topColorReset
 }

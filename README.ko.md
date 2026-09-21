@@ -278,7 +278,9 @@ stdin과 stdout이 모두 terminal이면 `edc report show`와 `edc report diff`�
 
 ## Top 임계값
 
-`edc top`은 load, CPU, iowait, memory 값에 색을 넣습니다. 흰색은 정상, 주황색은 경고, 빨간색은 위험입니다.
+`edc top`은 색을 둘만 씁니다. 노란색은 경고, 빨간색은 위험입니다. 정상 값은 terminal 기본색으로 두므로 색이 붙은 값만 살피면 됩니다.
+
+표는 load, `usr%`, `sys%`, `i/o`, `mem_%`에 색을 넣습니다. 대시보드는 이 값에 더해 `hot core`, `await`, `err`, `drop`, pressure 값에도 색을 넣습니다.
 
 load 임계값은 host의 core 수를 따릅니다.
 
@@ -288,6 +290,14 @@ load 임계값은 host의 core 수를 따릅니다.
 | usr%, sys% | 70 | 90 |
 | i/o | 10 | 25 |
 | mem_% | 90 | 95 |
+| await | 20 ms | 50 ms |
+| err, drop | 1/s | 50/s |
+| psi | 10 | 25 |
+| hot core | 90 | — |
+
+`hot core`는 core 하나의 사용률이므로 90부터 경고만 주고 위험 단계가 없습니다. core가 여럿이면 하나가 포화해도 host 전체에는 여유가 있습니다.
+
+대시보드는 `iops`, `busy%`, `swap/s`, 바이트와 패킷 속도, `signal` 열에는 색을 넣지 않습니다. 임계값이 없거나 색 없이도 수준이 드러나는 값입니다. 집계 `busy%`는 바쁜 disk가 여럿이면 100을 넘으므로 고정 임계값이 잘못된 신호를 줍니다. `cores` 막대는 `.`, `:`, `*`, `#`로 수준을 보여 줍니다.
 
 색을 끄려면 `NO_COLOR`를 설정합니다. 파이프와 파일에는 색이 들어가지 않습니다.
 

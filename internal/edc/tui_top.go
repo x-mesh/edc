@@ -66,6 +66,9 @@ const (
 	topProcessSignalCPU = 80
 	// topCoreBarLimit는 CPU 보기 막대에 그리는 최대 core 수다.
 	topCoreBarLimit = 24
+	// topHotCoreWarn은 hot core 칸에 경고를 주는 사용률이다. core 하나가 포화해도 core가 여럿이면
+	// host 전체는 여유가 있으므로 host의 cpu 임계치보다 늦게 켜고 위험 단계를 두지 않는다.
+	topHotCoreWarn = 90
 )
 
 // topDashboardRow는 포맷 문자열 대신 측정값을 보존한다. 같은 시점을 다른 렌즈로
@@ -466,18 +469,48 @@ func topViewColumns(view topView) []topColumn {
 	return nil
 }
 
-func topViewCells(rate resourceRate, view topView, signal string) []string {
+// topCell은 칸 하나의 표시 문자열과 위험도다. 둘을 따로 들고 있어야 폭을 먼저 맞춘 뒤 색을 입힐 수 있다.
+type topCell struct {
+	text  string
+	level topLevel
+}
+
+// topPlainCell은 임계치가 없어 색을 쓰지 않는 칸이다.
+func topPlainCell(text string) topCell {
+	return topCell{text: text}
+}
+
+func topValueCell(format string, value float64, threshold topThreshold) topCell {
+	return topCell{text: fmt.Sprintf(format, value), level: threshold.level(value)}
+}
+
+func topOptionalCell(valid bool, format string, value float64, threshold topThreshold) topCell {
+	if !valid {
+		return topPlainCell("—")
+	}
+	return topValueCell(format, value, threshold)
+}
+
+// topValidLevel은 platform이 주지 않는 값을 정상으로 둔다. —에는 색이 붙지 않는다.
+func topValidLevel(valid bool, threshold topThreshold, value float64) topLevel {
+	if !valid {
+		return topLevelNormal
+	}
+	return threshold.level(value)
+}
+
+func topViewCells(rate resourceRate, view topView, signal string, limits topLimits) []topCell {
 	switch view {
 	case topViewCPU:
-		return []string{fmt.Sprintf("%.1f", rate.Load1), fmt.Sprintf("%.1f", rate.CPUUser), fmt.Sprintf("%.1f", rate.CPUSystem), fmt.Sprintf("%.1f", rate.CPUIOWait), topHotCore(rate.CoreCPU), topCoreBar(rate.CoreCPU), signal}
+		return []topCell{topValueCell("%.1f", rate.Load1, limits.load), topValueCell("%.1f", rate.CPUUser, limits.cpu), topValueCell("%.1f", rate.CPUSystem, limits.cpu), topValueCell("%.1f", rate.CPUIOWait, limits.io), {text: topHotCore(rate.CoreCPU), level: topHotCoreLevel(rate.CoreCPU)}, topPlainCell(topCoreBar(rate.CoreCPU)), topPlainCell(signal)}
 	case topViewMemory:
-		return []string{fmt.Sprintf("%.1f", rate.MemoryPercent), formatRate(rate.SwapOut), topOptionalValue(rate.PSIValid, "%.1f", rate.PSIMemory), fmt.Sprintf("%.1f", rate.Load1), signal}
+		return []topCell{topValueCell("%.1f", rate.MemoryPercent, limits.memory), topPlainCell(formatRate(rate.SwapOut)), topOptionalCell(rate.PSIValid, "%.1f", rate.PSIMemory, limits.psi), topValueCell("%.1f", rate.Load1, limits.load), topPlainCell(signal)}
 	case topViewDisk:
-		return []string{formatRate(rate.DiskRead), formatRate(rate.DiskWrite), topOptionalValue(rate.DiskHealthValid, "%.0f", rate.DiskIOPS), topOptionalValue(rate.DiskHealthValid, "%.1f", rate.DiskAwait), topOptionalValue(rate.DiskBusyValid, "%.0f", rate.DiskBusy), signal}
+		return []topCell{topPlainCell(formatRate(rate.DiskRead)), topPlainCell(formatRate(rate.DiskWrite)), topPlainCell(topOptionalValue(rate.DiskHealthValid, "%.0f", rate.DiskIOPS)), topOptionalCell(rate.DiskHealthValid, "%.1f", rate.DiskAwait, limits.await), topPlainCell(topOptionalValue(rate.DiskBusyValid, "%.0f", rate.DiskBusy)), topPlainCell(signal)}
 	case topViewNetwork:
-		return []string{formatRate(rate.NetIn), formatRate(rate.NetOut), fmt.Sprintf("%.0f", rate.PacketsIn), fmt.Sprintf("%.0f", rate.PacketsOut), topOptionalValue(rate.NetHealthValid, "%.0f", rate.NetErrors), topOptionalValue(rate.NetHealthValid, "%.0f", rate.NetDrops), signal}
+		return []topCell{topPlainCell(formatRate(rate.NetIn)), topPlainCell(formatRate(rate.NetOut)), topPlainCell(fmt.Sprintf("%.0f", rate.PacketsIn)), topPlainCell(fmt.Sprintf("%.0f", rate.PacketsOut)), topOptionalCell(rate.NetHealthValid, "%.0f", rate.NetErrors, limits.network), topOptionalCell(rate.NetHealthValid, "%.0f", rate.NetDrops, limits.network), topPlainCell(signal)}
 	case topViewPressure:
-		return []string{topOptionalValue(rate.PSIValid, "%.1f", rate.PSICPU), topOptionalValue(rate.PSIValid, "%.1f", rate.PSIMemory), topOptionalValue(rate.PSIValid, "%.1f", rate.PSIIO), fmt.Sprintf("%.1f", rate.Load1), fmt.Sprintf("%.1f", rate.MemoryPercent), signal}
+		return []topCell{topOptionalCell(rate.PSIValid, "%.1f", rate.PSICPU, limits.psi), topOptionalCell(rate.PSIValid, "%.1f", rate.PSIMemory, limits.psi), topOptionalCell(rate.PSIValid, "%.1f", rate.PSIIO, limits.psi), topValueCell("%.1f", rate.Load1, limits.load), topValueCell("%.1f", rate.MemoryPercent, limits.memory), topPlainCell(signal)}
 	}
 	return nil
 }
@@ -490,20 +523,38 @@ func topOptionalValue(valid bool, format string, value float64) string {
 	return fmt.Sprintf(format, value)
 }
 
-func formatTopColumns(at string, columns []topColumn, cells []string) string {
+// formatTopColumns는 칸마다 폭을 먼저 맞춘 뒤 색을 입힌다. 줄 전체를 나중에 자르면
+// escape가 rune 수에 섞여 자르는 위치가 어긋나므로 줄 단위 절단을 쓰지 않는다.
+func formatTopColumns(at string, columns []topColumn, cells []topCell, color bool) string {
 	var line strings.Builder
 	fmt.Fprintf(&line, "%8s │", at)
+	used := topSelectionColumn + 2
 	for index, column := range columns {
 		if index > 0 {
 			line.WriteString("│")
+			used++
 		}
-		if column.left {
-			fmt.Fprintf(&line, "%-*s", column.width, cells[index])
-		} else {
-			fmt.Fprintf(&line, "%*s", column.width, cells[index])
+		width := column.width
+		if width == 0 {
+			width = max(0, topTableWidth-used)
 		}
+		used += width
+		line.WriteString(topPaint(topFitCell(cells[index].text, width, column.left), cells[index].level, color))
 	}
-	return topDashboardFit(line.String())
+	return line.String()
+}
+
+// topFitCell은 칸 하나를 폭에 맞춘다. 색이 붙기 전이라 rune 단위로 잘라도 escape가 끊기지 않는다.
+func topFitCell(text string, width int, left bool) string {
+	runes := []rune(text)
+	if len(runes) > width {
+		return string(runes[:width])
+	}
+	gap := strings.Repeat(" ", width-len(runes))
+	if left {
+		return text + gap
+	}
+	return gap + text
 }
 
 // topAllColumn은 all 보기의 한 칸이다. tier 0은 항상 보이고, 나머지는 terminal이 넓어질수록 tier 순서대로 추가된다.
@@ -515,6 +566,8 @@ type topAllColumn struct {
 	tier  int
 	left  bool
 	cell  func(rate resourceRate) string
+	// level은 칸을 칠할 위험도다. nil이면 임계치가 없어 색을 쓰지 않는 칸이다.
+	level func(limits topLimits, rate resourceRate) topLevel
 }
 
 var topAllColumns = []topAllColumn{
@@ -522,18 +575,33 @@ var topAllColumns = []topAllColumn{
 	{group: "network", title: "out", width: 5, cell: func(rate resourceRate) string { return formatRate(rate.NetOut) }},
 	{group: "network", title: "pk_in", width: 6, tier: 3, cell: func(rate resourceRate) string { return topCompactCount(rate.PacketsIn, 6) }},
 	{group: "network", title: "pk_out", width: 6, tier: 3, cell: func(rate resourceRate) string { return topCompactCount(rate.PacketsOut, 6) }},
-	{group: "network", title: "err", width: 4, tier: 4, cell: func(rate resourceRate) string { return topOptionalCount(rate.NetHealthValid, rate.NetErrors, 4) }},
-	{group: "network", title: "drop", width: 4, tier: 4, cell: func(rate resourceRate) string { return topOptionalCount(rate.NetHealthValid, rate.NetDrops, 4) }},
-	{group: "cpu", title: "load", width: 4, cell: func(rate resourceRate) string { return fmt.Sprintf("%.1f", rate.Load1) }},
-	{group: "cpu", title: "usr%", width: 5, cell: func(rate resourceRate) string { return fmt.Sprintf("%.1f", rate.CPUUser) }},
-	{group: "cpu", title: "sys%", width: 5, cell: func(rate resourceRate) string { return fmt.Sprintf("%.1f", rate.CPUSystem) }},
-	{group: "cpu", title: "i/o", width: 4, cell: func(rate resourceRate) string { return fmt.Sprintf("%.1f", rate.CPUIOWait) }},
-	{group: "cpu", title: "hot core", width: 8, tier: 1, left: true, cell: func(rate resourceRate) string { return topHotCore(rate.CoreCPU) }},
-	{group: "mem", title: "mem%", width: 5, cell: func(rate resourceRate) string { return fmt.Sprintf("%.1f", rate.MemoryPercent) }},
+	{group: "network", title: "err", width: 4, tier: 4, cell: func(rate resourceRate) string { return topOptionalCount(rate.NetHealthValid, rate.NetErrors, 4) },
+		level: func(limits topLimits, rate resourceRate) topLevel {
+			return topValidLevel(rate.NetHealthValid, limits.network, rate.NetErrors)
+		}},
+	{group: "network", title: "drop", width: 4, tier: 4, cell: func(rate resourceRate) string { return topOptionalCount(rate.NetHealthValid, rate.NetDrops, 4) },
+		level: func(limits topLimits, rate resourceRate) topLevel {
+			return topValidLevel(rate.NetHealthValid, limits.network, rate.NetDrops)
+		}},
+	{group: "cpu", title: "load", width: 4, cell: func(rate resourceRate) string { return fmt.Sprintf("%.1f", rate.Load1) },
+		level: func(limits topLimits, rate resourceRate) topLevel { return limits.load.level(rate.Load1) }},
+	{group: "cpu", title: "usr%", width: 5, cell: func(rate resourceRate) string { return fmt.Sprintf("%.1f", rate.CPUUser) },
+		level: func(limits topLimits, rate resourceRate) topLevel { return limits.cpu.level(rate.CPUUser) }},
+	{group: "cpu", title: "sys%", width: 5, cell: func(rate resourceRate) string { return fmt.Sprintf("%.1f", rate.CPUSystem) },
+		level: func(limits topLimits, rate resourceRate) topLevel { return limits.cpu.level(rate.CPUSystem) }},
+	{group: "cpu", title: "i/o", width: 4, cell: func(rate resourceRate) string { return fmt.Sprintf("%.1f", rate.CPUIOWait) },
+		level: func(limits topLimits, rate resourceRate) topLevel { return limits.io.level(rate.CPUIOWait) }},
+	{group: "cpu", title: "hot core", width: 8, tier: 1, left: true, cell: func(rate resourceRate) string { return topHotCore(rate.CoreCPU) },
+		level: func(limits topLimits, rate resourceRate) topLevel { return topHotCoreLevel(rate.CoreCPU) }},
+	{group: "mem", title: "mem%", width: 5, cell: func(rate resourceRate) string { return fmt.Sprintf("%.1f", rate.MemoryPercent) },
+		level: func(limits topLimits, rate resourceRate) topLevel { return limits.memory.level(rate.MemoryPercent) }},
 	{group: "disk", title: "read", width: 5, cell: func(rate resourceRate) string { return formatRate(rate.DiskRead) }},
 	{group: "disk", title: "write", width: 5, cell: func(rate resourceRate) string { return formatRate(rate.DiskWrite) }},
 	{group: "disk", title: "iops", width: 5, tier: 2, cell: func(rate resourceRate) string { return topOptionalCount(rate.DiskHealthValid, rate.DiskIOPS, 5) }},
-	{group: "disk", title: "await", width: 5, tier: 2, cell: func(rate resourceRate) string { return topOptionalValue(rate.DiskHealthValid, "%.1f", rate.DiskAwait) }},
+	{group: "disk", title: "await", width: 5, tier: 2, cell: func(rate resourceRate) string { return topOptionalValue(rate.DiskHealthValid, "%.1f", rate.DiskAwait) },
+		level: func(limits topLimits, rate resourceRate) topLevel {
+			return topValidLevel(rate.DiskHealthValid, limits.await, rate.DiskAwait)
+		}},
 	{group: "disk", title: "busy", width: 4, tier: 5, cell: func(rate resourceRate) string { return topOptionalValue(rate.DiskBusyValid, "%.0f", rate.DiskBusy) }},
 }
 
@@ -584,24 +652,21 @@ func topAllLineWidth(columns []topAllColumn) int {
 }
 
 // formatTopAllLine은 둘째 헤더 줄과 행을 같은 규칙으로 그려 구분선 위치를 맞춘다.
-func formatTopAllLine(first string, columns []topAllColumn, cells []string, signal string, signalWidth int) string {
+func formatTopAllLine(first string, columns []topAllColumn, cells []topCell, signal string, signalWidth int, color bool) string {
 	var line strings.Builder
 	fmt.Fprintf(&line, "%8s │", first)
 	for index, column := range columns {
 		if index > 0 && columns[index-1].group == column.group {
 			line.WriteByte(' ')
 		}
-		if column.left {
-			fmt.Fprintf(&line, "%-*s", column.width, cells[index])
-		} else {
-			fmt.Fprintf(&line, "%*s", column.width, cells[index])
-		}
+		line.WriteString(topPaint(topFitCell(cells[index].text, column.width, column.left), cells[index].level, color))
 		if index == len(columns)-1 || columns[index+1].group != column.group {
 			line.WriteString("│")
 		}
 	}
-	line.WriteString(signal)
-	return topDashboardFitWidth(line.String(), topAllLineWidth(columns)+signalWidth)
+	// 칸마다 폭을 맞췄으므로 여기까지가 정확히 topAllLineWidth다. signal만 남은 폭에 맞춘다.
+	line.WriteString(topFitCell(signal, signalWidth, true))
+	return line.String()
 }
 
 // formatTopAllGroupHeader는 첫 헤더 줄이다. group 이름이 그 group 칸들을 합친 폭을 차지한다.
@@ -653,33 +718,37 @@ func topOptionalCount(valid bool, value float64, width int) string {
 func topDashboardHeaders(view topView, width int) []string {
 	if view != topViewAll {
 		columns := topViewColumns(view)
-		titles := make([]string, len(columns))
+		titles := make([]topCell, len(columns))
 		for index, column := range columns {
-			titles[index] = column.title
+			titles[index] = topPlainCell(column.title)
 		}
-		return []string{formatTopColumns("time", columns, titles)}
+		return []string{formatTopColumns("time", columns, titles, false)}
 	}
 	columns, signalWidth := topAllLayout(width)
-	titles := make([]string, len(columns))
+	titles := make([]topCell, len(columns))
 	for index, column := range columns {
-		titles[index] = column.title
+		titles[index] = topPlainCell(column.title)
 	}
-	return []string{formatTopAllGroupHeader(columns, signalWidth), formatTopAllLine("", columns, titles, "", signalWidth)}
+	return []string{formatTopAllGroupHeader(columns, signalWidth), formatTopAllLine("", columns, titles, "", signalWidth, false)}
 }
 
 // formatTopDashboardRow의 width는 all 보기에만 쓴다. 다른 보기는 80열 고정 칸이다.
 func formatTopDashboardRow(row topDashboardRow, view topView, limits topLimits, width int) string {
 	at, rate := row.at.Format("15:04:05"), row.rate
 	if view != topViewAll {
-		return formatTopColumns(at, topViewColumns(view), topViewCells(rate, view, topDashboardSignal(rate, row.processes, row.processesValid, limits)))
+		signal := topDashboardSignal(rate, row.processes, row.processesValid, limits)
+		return formatTopColumns(at, topViewColumns(view), topViewCells(rate, view, signal, limits), limits.color)
 	}
 	columns, signalWidth := topAllLayout(width)
-	cells := make([]string, len(columns))
+	cells := make([]topCell, len(columns))
 	for index, column := range columns {
-		cells[index] = column.cell(rate)
+		cells[index] = topPlainCell(column.cell(rate))
+		if column.level != nil {
+			cells[index].level = column.level(limits, rate)
+		}
 	}
 	signals := topDashboardSignalItems(rate, row.processes, row.processesValid, limits)
-	return formatTopAllLine(at, columns, cells, formatTopSignalsWidth(signals, signalWidth), signalWidth)
+	return formatTopAllLine(at, columns, cells, formatTopSignalsWidth(signals, signalWidth), signalWidth, limits.color)
 }
 
 // topSignalItem은 signal 후보다. score는 값을 danger 임계치로 나눈 값이라 단위가 다른 지표끼리 비교된다.
@@ -753,6 +822,25 @@ func topProcessName(command string, width int) string {
 		return "proc"
 	}
 	return name
+}
+
+// topHotCoreLevel은 hot core 칸의 위험도다. 위험 단계 없이 경고만 준다.
+func topHotCoreLevel(cores []float64) topLevel {
+	if topHotCoreUsage(cores) >= topHotCoreWarn {
+		return topLevelWarn
+	}
+	return topLevelNormal
+}
+
+// topHotCoreUsage는 가장 바쁜 core의 사용률이다.
+func topHotCoreUsage(cores []float64) float64 {
+	usage := 0.0
+	for _, value := range cores {
+		if value > usage {
+			usage = value
+		}
+	}
+	return usage
 }
 
 func topHotCore(cores []float64) string {

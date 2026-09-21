@@ -191,17 +191,24 @@ func TestTopRowColorsByRiskLevel(t *testing.T) {
 		rate  resourceRate
 		color string
 	}{
-		{"normal load", resourceRate{Load1: 3}, topColorNormal},
+		{"normal load", resourceRate{Load1: 3}, ""},
 		{"warn load", resourceRate{Load1: 7.5}, topColorWarn},
 		{"danger load", resourceRate{Load1: 12}, topColorDanger},
 		{"danger cpu", resourceRate{CPUUser: 95}, topColorDanger},
 		{"warn iowait", resourceRate{CPUIOWait: 12}, topColorWarn},
 		{"danger memory", resourceRate{MemoryPercent: 99.4}, topColorDanger},
 	}
+	// color가 비면 정상값이라 escape가 하나도 없어야 한다. 색은 경고와 위험 둘뿐이다.
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			var output strings.Builder
 			printTopRow(&output, time.Now(), test.rate, limits)
+			if test.color == "" {
+				if strings.Contains(output.String(), "\033[") {
+					t.Fatalf("normal row must have no escape: %q", output.String())
+				}
+				return
+			}
 			if !strings.Contains(output.String(), test.color) {
 				t.Fatalf("row %q does not use color %q", output.String(), test.color)
 			}
@@ -292,11 +299,14 @@ func TestFormatUsageBar(t *testing.T) {
 }
 
 func TestFormatUsageBarColorsByThreshold(t *testing.T) {
-	tests := map[float64]string{40: topColorNormal, 92: topColorWarn, 97: topColorDanger}
+	tests := map[float64]string{92: topColorWarn, 97: topColorDanger}
 	for percent, code := range tests {
 		if got := formatUsageBar(percent, true); !strings.Contains(got, code) {
 			t.Fatalf("formatUsageBar(%v) = %q does not use %q", percent, got, code)
 		}
+	}
+	if got := formatUsageBar(40, true); strings.Contains(got, "\033[") {
+		t.Fatalf("normal bar must have no escape: %q", got)
 	}
 	if strings.Contains(formatUsageBar(97, false), "\033[") {
 		t.Fatal("색을 끄면 escape가 없어야 한다")

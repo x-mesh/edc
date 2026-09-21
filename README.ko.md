@@ -231,6 +231,8 @@ terminal에서는 몇 곳을 확인했는지 진행 줄로 보여 줍니다. `q`
 
 `edc http check`는 4xx 응답에 warning을, 5xx 응답에 실패를 냅니다. `--expect-status`를 지정하면 그 code만 통과하고 나머지는 실패입니다.
 
+대상에 scheme이 없으면 `edc http check`는 `http://`를 붙입니다. `edc http check naver.com`은 `http://naver.com`을 요청하고 redirect를 따라갑니다. `url` metric에는 실제로 요청한 주소가 남습니다. TLS endpoint를 바로 확인하려면 `https://`를 씁니다.
+
 ```bash
 ./bin/edc tls check --min-days 14 example.com:443
 ./bin/edc http check --expect-status 200 https://example.com/health

@@ -181,3 +181,41 @@ func TestFormatResultLineKeepsOneLine(t *testing.T) {
 		t.Fatalf("line = %q", line)
 	}
 }
+
+// 스킴 없는 입력은 http://로 본다. 지금까지는 `unsupported protocol scheme ""`로 실패했다.
+// 지표의 url이 실제로 요청한 주소여야 report만 보고도 무엇을 쳤는지 알 수 있다.
+func TestProbeHTTPAddsTheSchemeWhenItIsMissing(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+	bare := strings.TrimPrefix(server.URL, "http://")
+	result := probeHTTP(context.Background(), bare)
+	if result.Status != StatusPass {
+		t.Fatalf("status = %s, error = %#v", result.Status, result.Error)
+	}
+	if result.Metrics["url"] != server.URL {
+		t.Errorf("url = %#v, want %q", result.Metrics["url"], server.URL)
+	}
+}
+
+func TestWithHTTPScheme(t *testing.T) {
+	tests := map[string]string{
+		"naver.com":             "http://naver.com",
+		"naver.com:8080/health": "http://naver.com:8080/health",
+		"127.0.0.1:3000":        "http://127.0.0.1:3000",
+		"[::1]:8080":            "http://[::1]:8080",
+		// 대괄호가 없는 IPv6는 URL에 그대로 쓸 수 없다. normalizeTarget과 같이 감싼다.
+		"::1": "http://[::1]",
+		// 스킴이 있으면 손대지 않는다. 지원하지 않는 스킴은 기존 오류가 알려 준다.
+		"https://naver.com": "https://naver.com",
+		"http://naver.com":  "http://naver.com",
+		"HTTP://naver.com":  "HTTP://naver.com",
+		"ftp://naver.com":   "ftp://naver.com",
+	}
+	for input, want := range tests {
+		if got := withHTTPScheme(input); got != want {
+			t.Errorf("withHTTPScheme(%q) = %q, want %q", input, got, want)
+		}
+	}
+}

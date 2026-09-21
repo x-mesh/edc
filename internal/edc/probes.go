@@ -140,6 +140,7 @@ func probeHTTP(ctx context.Context, rawURL string) Result {
 
 func probeHTTPWithOptions(ctx context.Context, rawURL string, options httpCheckOptions) Result {
 	started := time.Now()
+	rawURL = withHTTPScheme(rawURL)
 	var dnsStart, connectStart, tlsStart, wroteRequest time.Time
 	timings := map[string]int64{}
 	trace := &httptrace.ClientTrace{
@@ -188,6 +189,19 @@ func probeHTTPWithOptions(ctx context.Context, rawURL string, options httpCheckO
 		summary = fmt.Sprintf("%s, %s, %d bytes", diagnostic.Message, total.Round(time.Millisecond), bytesRead)
 	}
 	return Result{Probe: "http.check", Status: status, StartedAt: started.UTC(), DurationMS: total.Milliseconds(), Summary: summary, Metrics: metrics, Error: diagnostic}
+}
+
+// withHTTPScheme은 스킴이 없는 입력에 http://를 붙인다. http.NewRequest는 스킴 없는 주소를
+// `unsupported protocol scheme ""`으로 거부하므로, `edc http check naver.com`이 실패했다.
+// 스킴은 url.Parse가 아니라 "://"로 찾는다. "naver.com:8080"을 Parse하면 "naver.com"이 스킴으로 읽힌다.
+func withHTTPScheme(input string) string {
+	if strings.Contains(input, "://") {
+		return input
+	}
+	if net.ParseIP(input) != nil && strings.Contains(input, ":") {
+		return "http://[" + input + "]"
+	}
+	return "http://" + input
 }
 
 func normalizeTarget(input string) (host, address, rawURL string, err error) {

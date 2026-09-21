@@ -63,3 +63,22 @@ func TestPrintVersionStaysMachineReadableOffTerminal(t *testing.T) {
 		t.Fatalf("파이프 출력 = %q", output.String())
 	}
 }
+
+func TestPrintInfoStartsWithTheBanner(t *testing.T) {
+	var output strings.Builder
+	printInfo(&output, "1.2.3", hostDetails{Hostname: "host"}, nil, nil, nil, false)
+	text := output.String()
+	if !strings.HasPrefix(text, bannerRows[0][0].stem) {
+		t.Fatalf("info must start with the banner: %q", strings.SplitN(text, "\n", 2)[0])
+	}
+	if !strings.Contains(text, "1.2.3") {
+		t.Fatalf("the banner must carry the version: %q", text)
+	}
+	// banner가 버전을 보여 주므로 머리말의 Version 줄은 중복이다.
+	if strings.Contains(text, "Version     :") {
+		t.Fatalf("the version line duplicates the banner: %q", text)
+	}
+	if strings.Contains(text, "\033[") {
+		t.Fatalf("색을 끄면 escape가 없어야 한다: %q", text)
+	}
+}

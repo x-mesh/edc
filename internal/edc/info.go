@@ -67,7 +67,8 @@ func runInfo(args []string, version string) int {
 }
 
 func printInfo(writer io.Writer, version string, details hostDetails, interfaces []interfaceDetails, disks []diskDetails, public *publicNetworkInfo, color bool) {
-	fmt.Fprintf(writer, "Description : This command displays server resource information.\nVersion     : %s\nAuthor      : %s\n\n%s\n\n", version, author, strings.Repeat("-", 50))
+	// banner가 이미 버전을 담으므로 Version 줄을 따로 두지 않는다.
+	fmt.Fprintf(writer, "%s\nDescription : This command displays server resource information.\nAuthor      : %s\n\n%s\n\n", formatBanner(version, color), author, strings.Repeat("-", 50))
 	fmt.Fprintln(writer, "🖥️  System Information")
 	fmt.Fprintf(writer, "├── Hostname: %s\n├── System: %s\n├── OS: %s\n├── Version: %s\n├── Release: %s\n├── Machine: %s\n├── Processor: %s\n├── Python Version: %s\n├── Go Version: %s\n├── Model: %s\n├── Cores: %d\n├── Memory: %s\n", details.Hostname, details.System, details.OS, details.Version, details.Release, details.Machine, details.Processor, details.PythonVersion, runtime.Version(), details.Model, details.Cores, formatBytes(details.MemoryTotal))
 	fmt.Fprintf(writer, "├── Resource limit\n│   ├── Soft: %s\n│   └── Hard: %s\n", formatLimit(details.RLimitSoft), formatLimit(details.RLimitHard))

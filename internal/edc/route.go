@@ -46,8 +46,13 @@ func routeStatePath(execID string) string {
 func runRoute(args []string, version string) int {
 	usage := T("cli.usage", "edc route <check|switch|status|rollback> ...")
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, usage)
-		return 2
+		// 하위 command만 고르게 한다. switch와 rollback의 값은 flag로만 받아 재현할 수 있게 둔다.
+		choice, ok := promptMissingChoice("edc route", []string{"check", "switch", "status", "rollback"})
+		if !ok {
+			fmt.Fprintln(os.Stderr, usage)
+			return 2
+		}
+		args = []string{choice}
 	}
 	switch args[0] {
 	case "check":
@@ -341,6 +346,12 @@ func runRouteRollback(args []string, version string) int {
 	if set.NArg() != 0 {
 		fmt.Fprintln(os.Stderr, T("cli.error.no_positional", "route rollback"))
 		return 2
+	}
+	if *statePath == "" {
+		paths, _ := listRouteStateFiles(routeStateDirectory)
+		if value, ok := promptStatePath("edc route rollback", paths); ok {
+			*statePath = value
+		}
 	}
 	if *statePath == "" {
 		fmt.Fprintln(os.Stderr, T("route.rollback.error.state_required"))

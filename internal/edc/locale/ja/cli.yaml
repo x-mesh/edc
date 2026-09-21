@@ -2,6 +2,21 @@
 cli:
   usage: "使い方: %s"
   confirm: "続けますか? [y/N] "
+  prompt:
+    target: "対象 (host または URL)"
+    host: "host"
+    host_port: "host:port"
+    url: "URL"
+    subcommand_title: "どの command を実行しますか?"
+    subcommand_label: "command"
+    state_title: "どの保留中の変更を使いますか?"
+    state_label: "state"
+    report_title: "どの report を表示しますか?"
+    report_label: "report"
+    report_before_title: "前の report はどれですか?"
+    report_before_label: "前"
+    report_after_title: "後の report はどれですか?"
+    report_after_label: "後"
   config:
     invalid: "config が正しくありません: %v"
   error:
@@ -112,6 +127,9 @@ cli:
     macos_only: "capture は今のところ macOS だけで動きます"
     unexpected_positional: "不明な positional argument があります。BPF expression は --filter で渡してください"
     interface_required: "--interface が必要です"
+    select_title: "どの interface を取得しますか?"
+    select_label: "interface"
+    default_route: "デフォルト経路"
     duration_range: "--duration は 0 秒より大きく 60 秒以下です"
     count_range: "--count は 1 以上 10000 以下です"
     unknown_interface: "存在しない interface: %s"

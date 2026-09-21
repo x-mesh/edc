@@ -688,6 +688,36 @@ Press Ctrl-C to cancel. `edc` stops the command and returns exit code `4`.
 
 The line is always one line. Long output gets a cut at the terminal width.
 
+## Missing arguments
+
+If you run a command with no target and stdin is a terminal, `edc` asks for the value. `edc` then prints the command with the value, so you type it directly next time.
+
+```bash
+$ edc doctor
+target (host or URL): example.com
+→ edc doctor example.com
+```
+
+`edc doctor` and the single probe commands ask for a target. The question uses the form from the usage line. `edc tcp check` asks for `host:port`, and `edc http check` asks for a `URL`.
+
+`edc capture` needs `--interface`. Without it, `edc` lists the interfaces that carry an address and marks the one that the default route uses. You pick a line instead of a name.
+
+```bash
+$ edc capture
+which interface do you want to capture?
+> en0        192.168.1.92   default route
+  bridge100  192.168.139.3
+→ edc capture --interface en0
+```
+
+A command group asks which command to run. `edc dns`, `edc net`, `edc report`, `edc route`, `edc change`, and `edc completion` show their commands. `edc report show` and `edc report diff` then list the reports in the current directory.
+
+`edc change confirm`, `edc change rollback`, and `edc route rollback` list the changes that still wait. You pick one instead of copying a run id.
+
+If stdin is not a terminal, `edc` prints the usage and returns exit code `2`. A script keeps the same behavior. `edc` asks only for a value that the command needs. It never asks for an optional setting such as `--duration` or `--filter`.
+
+`edc change apply` and `edc route switch` are the exception. They change a host, so they take every value from a flag. A command that you cannot undo must stay a command that you can type again.
+
 ## Doctor live screen
 
 If stdin and stdout are terminals, `edc doctor` shows one line for each probe and updates the line when the probe ends. The finished lines stay on the screen. The details and the summary follow.

@@ -42,10 +42,7 @@ func runCapture(args []string) int {
 		fmt.Fprintln(os.Stderr, T("cli.capture.unexpected_positional"))
 		return 2
 	}
-	if *interfaceName == "" {
-		fmt.Fprintln(os.Stderr, T("cli.capture.interface_required"))
-		return 2
-	}
+	// 값을 고르게 하기 전에 나머지 flag를 먼저 검사한다. 고른 뒤에 flag 오류로 끝내면 헛수고가 된다.
 	if *duration <= 0 || *duration > maxCaptureDuration {
 		fmt.Fprintln(os.Stderr, T("cli.capture.duration_range"))
 		return 2
@@ -53,6 +50,14 @@ func runCapture(args []string) int {
 	if *count <= 0 || *count > maxCapturePackets {
 		fmt.Fprintln(os.Stderr, T("cli.capture.count_range"))
 		return 2
+	}
+	if *interfaceName == "" {
+		name, ok := promptCaptureInterface(args)
+		if !ok {
+			fmt.Fprintln(os.Stderr, T("cli.capture.interface_required"))
+			return 2
+		}
+		*interfaceName = name
 	}
 	if !validInterface(*interfaceName) {
 		fmt.Fprintln(os.Stderr, T("cli.capture.unknown_interface", *interfaceName))
@@ -98,6 +103,59 @@ func runCapture(args []string) int {
 	}
 	fmt.Println(T("cli.capture.done", outputPath))
 	return 0
+}
+
+// promptCaptureInterface는 --interface가 빠졌을 때 terminal에서 고르게 한다. interface 이름은
+// 외우는 값이 아니라 host마다 다르므로, 자유 입력보다 목록이 맞다.
+func promptCaptureInterface(args []string) (string, bool) {
+	file, ok := terminalInput(os.Stdin)
+	if !ok {
+		return "", false
+	}
+	items := captureInterfaceItems()
+	if len(items) == 0 {
+		return "", false
+	}
+	value, err := runSelect(file, os.Stdout, newSelectModel("cli.capture.select_title", "cli.capture.select_label", items))
+	if err != nil {
+		return "", false
+	}
+	promptEcho(os.Stdout, strings.TrimSpace("edc capture "+strings.Join(args, " "))+" --interface "+value)
+	return value, true
+}
+
+// captureInterfaceItems는 목록에 보여 줄 interface다. edc info와 같은 목록을 쓰므로 올라와 있고
+// IPv4 주소가 붙은 것만 나온다. 나머지도 --interface로 직접 지정할 수 있다.
+func captureInterfaceItems() []selectItem {
+	defaultInterface, gateway := collectDefaultRoute()
+	interfaces, err := networkInterfaces(defaultInterface, gateway)
+	if err != nil {
+		return nil
+	}
+	return captureSelectItems(interfaces, defaultInterface)
+}
+
+// captureSelectItems는 목록 만들기만 떼어 둔 것이다. host의 실제 interface 없이 검사할 수 있다.
+func captureSelectItems(interfaces []interfaceDetails, defaultInterface string) []selectItem {
+	width := 0
+	for _, iface := range interfaces {
+		width = max(width, liveWidth(iface.Name))
+	}
+	items, seen := []selectItem{}, map[string]bool{}
+	for _, iface := range interfaces {
+		// 주소가 여럿인 interface는 목록에 여러 번 나온다. 고르는 값은 이름이라 첫 줄만 남긴다.
+		if seen[iface.Name] {
+			continue
+		}
+		seen[iface.Name] = true
+		label := liveCell(iface.Name, width) + "  " + iface.Address
+		// 기본 경로가 나가는 interface가 대개 잡으려는 대상이다.
+		if iface.Name == defaultInterface {
+			label += "  " + T("cli.capture.default_route")
+		}
+		items = append(items, selectItem{label: label, value: iface.Name})
+	}
+	return items
 }
 
 func validInterface(name string) bool {

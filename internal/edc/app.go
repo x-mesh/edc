@@ -122,15 +122,24 @@ func runDoctor(args []string, version string) int {
 	if err := set.Parse(args); err != nil {
 		return 2
 	}
-	if set.NArg() != 1 {
-		fmt.Fprintln(os.Stderr, T("cli.usage", "edc doctor [options] <host|URL>"))
-		return 2
-	}
+	// flag를 먼저 검사한다. 값을 물어본 뒤에 flag 오류로 끝내면 사용자가 헛되이 입력한다.
 	if *profile != "default" && *profile != "full" {
 		fmt.Fprintln(os.Stderr, T("cli.error.profile_value"))
 		return 2
 	}
-	host, address, rawURL, err := normalizeTarget(set.Arg(0))
+	input := set.Arg(0)
+	if set.NArg() == 0 {
+		values, ok := promptMissingArgs("edc doctor", T("cli.prompt.target"))
+		if !ok {
+			fmt.Fprintln(os.Stderr, T("cli.usage", "edc doctor [options] <host|URL>"))
+			return 2
+		}
+		input = values[0]
+	} else if set.NArg() != 1 {
+		fmt.Fprintln(os.Stderr, T("cli.usage", "edc doctor [options] <host|URL>"))
+		return 2
+	}
+	host, address, rawURL, err := normalizeTarget(input)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 2
@@ -159,9 +168,9 @@ func runDoctor(args []string, version string) int {
 	if *profile == "full" {
 		probes = append(probes, doctorProbe{name: "net.quality", run: probeQuality})
 	}
-	target := map[string]interface{}{"input": set.Arg(0), "host": host, "address": address, "url": rawURL}
+	target := map[string]interface{}{"input": input, "host": host, "address": address, "url": rawURL}
 	if options.jsonPath == "" && liveTerminal() {
-		return runDoctorLive(deadline, cancel, probes, options, version, started, set.Arg(0), target)
+		return runDoctorLive(deadline, cancel, probes, options, version, started, input, target)
 	}
 	results := runParallel(deadline, doctorProbeFuncs(probes))
 	return emit(options, buildReport(version, started, target, results, options.redact))
@@ -169,12 +178,16 @@ func runDoctor(args []string, version string) int {
 
 func runDNS(args []string, version string) int {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, T("cli.usage", "edc dns <lookup|config> ..."))
-		return 2
+		choice, ok := promptMissingChoice("edc dns", []string{"lookup", "config"})
+		if !ok {
+			fmt.Fprintln(os.Stderr, T("cli.usage", "edc dns <lookup|config> ..."))
+			return 2
+		}
+		args = []string{choice}
 	}
 	switch args[0] {
 	case "lookup":
-		return runTargetProbe(args[1:], version, "dns lookup", "dns.lookup", probeDNS)
+		return runTargetProbe(args[1:], version, "dns lookup", "dns.lookup", T("cli.prompt.host"), probeDNS)
 	case "config":
 		return runSimple(args[1:], version, "dns config", "dns.config", probeDNSConfig)
 	default:
@@ -184,11 +197,19 @@ func runDNS(args []string, version string) int {
 }
 
 func runTCP(args []string, version string) int {
-	if len(args) == 0 || args[0] != "check" {
+	if len(args) == 0 {
+		choice, ok := promptMissingChoice("edc tcp", []string{"check"})
+		if !ok {
+			fmt.Fprintln(os.Stderr, T("cli.usage", "edc tcp check <host:port>"))
+			return 2
+		}
+		args = []string{choice}
+	}
+	if args[0] != "check" {
 		fmt.Fprintln(os.Stderr, T("cli.usage", "edc tcp check <host:port>"))
 		return 2
 	}
-	return runTargetProbe(args[1:], version, "tcp check", "tcp.check", func(ctx context.Context, target string) Result {
+	return runTargetProbe(args[1:], version, "tcp check", "tcp.check", T("cli.prompt.host_port"), func(ctx context.Context, target string) Result {
 		if _, _, err := net.SplitHostPort(target); err != nil {
 			return resultFromError("tcp.check", time.Now(), "input", errors.New(T("cli.error.host_port_required", target)))
 		}
@@ -197,7 +218,15 @@ func runTCP(args []string, version string) int {
 }
 
 func runTLS(args []string, version string) int {
-	if len(args) == 0 || args[0] != "check" {
+	if len(args) == 0 {
+		choice, ok := promptMissingChoice("edc tls", []string{"check"})
+		if !ok {
+			fmt.Fprintln(os.Stderr, T("cli.usage", "edc tls check [--min-days N] <host:port>"))
+			return 2
+		}
+		args = []string{choice}
+	}
+	if args[0] != "check" {
 		fmt.Fprintln(os.Stderr, T("cli.usage", "edc tls check [--min-days N] <host:port>"))
 		return 2
 	}
@@ -212,6 +241,7 @@ func runTLS(args []string, version string) int {
 			}
 			return nil
 		},
+		prompt: T("cli.prompt.host_port"),
 	}
 	return runTargetProbeWithFlags(args[1:], version, "tls check", "tls.check", flags, func(ctx context.Context, target string) Result {
 		host, _, err := net.SplitHostPort(target)
@@ -223,7 +253,15 @@ func runTLS(args []string, version string) int {
 }
 
 func runHTTP(args []string, version string) int {
-	if len(args) == 0 || args[0] != "check" {
+	if len(args) == 0 {
+		choice, ok := promptMissingChoice("edc http", []string{"check"})
+		if !ok {
+			fmt.Fprintln(os.Stderr, T("cli.usage", "edc http check [--expect-status N] <URL>"))
+			return 2
+		}
+		args = []string{choice}
+	}
+	if args[0] != "check" {
 		fmt.Fprintln(os.Stderr, T("cli.usage", "edc http check [--expect-status N] <URL>"))
 		return 2
 	}
@@ -238,6 +276,7 @@ func runHTTP(args []string, version string) int {
 			}
 			return nil
 		},
+		prompt: T("cli.prompt.url"),
 	}
 	return runTargetProbeWithFlags(args[1:], version, "http check", "http.check", flags, func(ctx context.Context, target string) Result {
 		return probeHTTPWithOptions(ctx, target, httpCheckOptions{expectStatus: expectStatus})
@@ -246,18 +285,22 @@ func runHTTP(args []string, version string) int {
 
 func runNet(args []string, version string) int {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, T("cli.usage", "edc net <interfaces|route|ping|trace>"))
-		return 2
+		choice, ok := promptMissingChoice("edc net", []string{"interfaces", "route", "ping", "trace"})
+		if !ok {
+			fmt.Fprintln(os.Stderr, T("cli.usage", "edc net <interfaces|route|ping|trace>"))
+			return 2
+		}
+		args = []string{choice}
 	}
 	switch args[0] {
 	case "interfaces":
 		return runSimple(args[1:], version, "net interfaces", "net.interfaces", func(context.Context) Result { return probeInterfaces() })
 	case "route":
-		return runTargetProbe(args[1:], version, "net route", "net.route", probeRoute)
+		return runTargetProbe(args[1:], version, "net route", "net.route", T("cli.prompt.host"), probeRoute)
 	case "ping":
-		return runTargetProbe(args[1:], version, "net ping", "net.ping", probePing)
+		return runTargetProbe(args[1:], version, "net ping", "net.ping", T("cli.prompt.host"), probePing)
 	case "trace":
-		return runTargetProbe(args[1:], version, "net trace", "net.trace", probeTrace)
+		return runTargetProbe(args[1:], version, "net trace", "net.trace", T("cli.prompt.host"), probeTrace)
 	default:
 		fmt.Fprintln(os.Stderr, T("cli.usage", "edc net <interfaces|route|ping|trace>"))
 		return 2
@@ -268,10 +311,12 @@ func runNet(args []string, version string) int {
 type probeFlags struct {
 	bind  func(*flag.FlagSet)
 	check func() error
+	// prompt는 target이 빠졌을 때 terminal에서 물어볼 값의 이름이다. usage의 인자 형태와 같은 말을 쓴다.
+	prompt string
 }
 
-func runTargetProbe(args []string, version, name, probeID string, probe func(context.Context, string) Result) int {
-	return runTargetProbeWithFlags(args, version, name, probeID, probeFlags{}, probe)
+func runTargetProbe(args []string, version, name, probeID, prompt string, probe func(context.Context, string) Result) int {
+	return runTargetProbeWithFlags(args, version, name, probeID, probeFlags{prompt: prompt}, probe)
 }
 
 func runTargetProbeWithFlags(args []string, version, name, probeID string, extra probeFlags, probe func(context.Context, string) Result) int {
@@ -291,7 +336,15 @@ func runTargetProbeWithFlags(args []string, version, name, probeID string, extra
 			return 2
 		}
 	}
-	if set.NArg() != 1 {
+	input := set.Arg(0)
+	if set.NArg() == 0 && extra.prompt != "" {
+		values, ok := promptMissingArgs("edc "+name, extra.prompt)
+		if !ok {
+			fmt.Fprintln(os.Stderr, T("cli.error.one_target_required", name))
+			return 2
+		}
+		input = values[0]
+	} else if set.NArg() != 1 {
 		fmt.Fprintln(os.Stderr, T("cli.error.one_target_required", name))
 		return 2
 	}
@@ -299,10 +352,10 @@ func runTargetProbeWithFlags(args []string, version, name, probeID string, extra
 	ctx, cancel, deadline := probeContext(options.timeout)
 	defer cancel()
 	defer deadline()
-	target := map[string]interface{}{"input": set.Arg(0)}
-	run := func(ctx context.Context) Result { return probe(ctx, set.Arg(0)) }
+	target := map[string]interface{}{"input": input}
+	run := func(ctx context.Context) Result { return probe(ctx, input) }
 	if options.jsonPath == "" && liveTerminal() {
-		return runProbeLive(ctx, cancel, probeID, set.Arg(0), options, version, started, target, run)
+		return runProbeLive(ctx, cancel, probeID, input, options, version, started, target, run)
 	}
 	return emit(options, buildReport(version, started, target, []Result{run(ctx)}, options.redact))
 }
@@ -385,11 +438,24 @@ func runParallelWith(ctx context.Context, probes []func(context.Context) Result,
 func runReport(args []string) int {
 	usage := T("cli.usage", "edc report show <file> | edc report diff [--json <path|->] <before> <after>")
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, usage)
-		return 2
+		choice, ok := promptMissingChoice("edc report", []string{"show", "diff"})
+		if !ok {
+			fmt.Fprintln(os.Stderr, usage)
+			return 2
+		}
+		args = []string{choice}
 	}
 	switch args[0] {
 	case "show":
+		if len(args) == 1 {
+			values, ok := promptReportPaths("edc report show",
+				[]string{T("cli.prompt.report_title")}, []string{T("cli.prompt.report_label")})
+			if !ok {
+				fmt.Fprintln(os.Stderr, usage)
+				return 2
+			}
+			return runReportShow(values[0])
+		}
 		if len(args) != 2 {
 			fmt.Fprintln(os.Stderr, usage)
 			return 2

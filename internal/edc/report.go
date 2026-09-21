@@ -1,6 +1,7 @@
 package edc
 
 import (
+	"bufio"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -8,6 +9,7 @@ import (
 	"io"
 	"math"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -17,7 +19,56 @@ const (
 	reportSizeLimit = 20 * 1024 * 1024
 	// diffLabelWidth는 SAME, WORSE 같은 변화 label 열의 폭이다.
 	diffLabelWidth = 8
+	// reportCandidateLimit은 목록에 올리는 report 파일 수다. 디렉터리에 JSON이 많아도
+	// 고르는 화면이 한 눈에 들어와야 한다.
+	reportCandidateLimit = 20
 )
+
+// promptReportPaths는 report 경로가 빠졌을 때 terminal에서 받아 온다. 현재 디렉터리에 report가
+// 있으면 목록에서 고르고, 없으면 경로를 직접 입력받는다. titles와 labels는 같은 길이다.
+func promptReportPaths(command string, titles, labels []string) ([]string, bool) {
+	file, ok := terminalInput(os.Stdin)
+	if !ok {
+		return nil, false
+	}
+	values := make([]string, 0, len(titles))
+	for index, title := range titles {
+		value, err := promptReportValue(file, title, labels[index])
+		if err != nil {
+			return nil, false
+		}
+		values = append(values, value)
+	}
+	promptEcho(os.Stdout, command+" "+strings.Join(values, " "))
+	return values, true
+}
+
+func promptReportValue(file *os.File, title, label string) (string, error) {
+	if candidates := reportCandidates(); len(candidates) > 0 {
+		return runSelect(file, os.Stdout, selectModel{title: title, label: label, items: candidates, color: true})
+	}
+	return promptRemoteText(bufio.NewReader(file), os.Stdout, label, "")
+}
+
+// reportCandidates는 현재 디렉터리에서 report로 읽히는 JSON 파일이다. 방금 저장한 report를
+// 경로 없이 고를 수 있다. 읽히지 않는 JSON은 report가 아니므로 뺀다.
+func reportCandidates() []selectItem {
+	entries, err := filepath.Glob("*.json")
+	if err != nil {
+		return nil
+	}
+	items := []selectItem{}
+	for _, entry := range entries {
+		if len(items) >= reportCandidateLimit {
+			break
+		}
+		if _, err := loadReport(entry); err != nil {
+			continue
+		}
+		items = append(items, selectItem{label: entry, value: entry})
+	}
+	return items
+}
 
 func loadReport(path string) (Report, error) {
 	file, err := os.Open(path)
@@ -60,21 +111,31 @@ func runReportDiff(args []string) int {
 	if err := set.Parse(args); err != nil {
 		return 2
 	}
-	if set.NArg() != 2 {
+	first, second := set.Arg(0), set.Arg(1)
+	if set.NArg() == 0 {
+		values, ok := promptReportPaths("edc report diff",
+			[]string{T("cli.prompt.report_before_title"), T("cli.prompt.report_after_title")},
+			[]string{T("cli.prompt.report_before_label"), T("cli.prompt.report_after_label")})
+		if !ok {
+			fmt.Fprintln(os.Stderr, T("cli.usage", "edc report diff [--json <path|->] <before> <after>"))
+			return 2
+		}
+		first, second = values[0], values[1]
+	} else if set.NArg() != 2 {
 		fmt.Fprintln(os.Stderr, T("cli.usage", "edc report diff [--json <path|->] <before> <after>"))
 		return 2
 	}
-	before, err := loadReport(set.Arg(0))
+	before, err := loadReport(first)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 2
 	}
-	after, err := loadReport(set.Arg(1))
+	after, err := loadReport(second)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 2
 	}
-	diff := diffReports(set.Arg(0), before, set.Arg(1), after)
+	diff := diffReports(first, before, second, after)
 	switch {
 	case *jsonPath != "":
 		if err := writeJSONOutput(*jsonPath, diff); err != nil {
@@ -82,7 +143,7 @@ func runReportDiff(args []string) int {
 			return 2
 		}
 	case liveTerminal():
-		title := reportViewerTitle("report diff", set.Arg(0)+" → "+set.Arg(1), diffSummaryLine(diff.Summary))
+		title := reportViewerTitle("report diff", first+" → "+second, diffSummaryLine(diff.Summary))
 		if err := runReportViewer(title, diffEntries(diff, true), diffFilters()); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			return 2

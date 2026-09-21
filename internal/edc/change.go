@@ -84,8 +84,14 @@ func normalizeChangeKind(value string) (string, bool) {
 func runChange(args []string, version string) int {
 	usage := T("cli.usage", "edc change <apply|status|confirm|rollback> ...")
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, usage)
-		return 2
+		// 하위 command만 고르게 한다. apply의 값은 flag로만 받는다. 되돌릴 수 없는 변경은
+		// 다시 칠 수 있는 명령으로 남아야 안전하다.
+		choice, ok := promptMissingChoice("edc change", []string{"apply", "status", "confirm", "rollback"})
+		if !ok {
+			fmt.Fprintln(os.Stderr, usage)
+			return 2
+		}
+		args = []string{choice}
 	}
 	switch args[0] {
 	case "apply":
@@ -498,6 +504,13 @@ func runChangeStateCommand(args []string, version, name string) int {
 	if set.NArg() != 0 {
 		fmt.Fprintln(os.Stderr, T("cli.error.no_positional", "change "+name))
 		return 2
+	}
+	if *statePath == "" {
+		// 무엇을 할지는 이미 정해졌고 어느 변경인지만 고른다. 값은 echo로 남아 다시 칠 수 있다.
+		paths, _ := listChangeStateFiles(changeStateDirectory)
+		if value, ok := promptStatePath("edc change "+name, paths); ok {
+			*statePath = value
+		}
 	}
 	if *statePath == "" {
 		fmt.Fprintln(os.Stderr, T("change.error.state_required"))

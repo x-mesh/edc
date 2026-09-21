@@ -89,3 +89,33 @@ func TestCaptureConfirmTextFallback(t *testing.T) {
 		t.Fatal("plain fallback must keep the payload warning")
 	}
 }
+
+func TestCaptureSelectItemsNamesTheDefaultRoute(t *testing.T) {
+	interfaces := []interfaceDetails{
+		{Name: "bridge100", Address: "192.168.139.3"},
+		{Name: "en0", Address: "192.168.1.92", Gateway: "192.168.1.1"},
+		// 주소가 둘인 interface는 목록에 두 번 나온다.
+		{Name: "en0", Address: "10.0.0.5"},
+	}
+	items := captureSelectItems(interfaces, "en0")
+	if len(items) != 2 {
+		t.Fatalf("주소가 여럿인 interface는 한 줄이어야 한다: %#v", items)
+	}
+	if items[0].value != "bridge100" || items[1].value != "en0" {
+		t.Fatalf("고르는 값은 interface 이름이어야 한다: %#v", items)
+	}
+	if !strings.Contains(items[1].label, "192.168.1.92") {
+		t.Fatalf("이름만으로는 어느 것인지 알 수 없다: %q", items[1].label)
+	}
+	if !strings.Contains(items[1].label, T("cli.capture.default_route")) {
+		t.Fatalf("기본 경로 interface에 표시가 없다: %q", items[1].label)
+	}
+	if strings.Contains(items[0].label, T("cli.capture.default_route")) {
+		t.Fatalf("기본 경로가 아닌 interface에 표시가 붙었다: %q", items[0].label)
+	}
+	// 이름 열 폭을 맞춰야 주소를 세로로 훑을 수 있다.
+	first, second := strings.Index(items[0].label, "192.168.139.3"), strings.Index(items[1].label, "192.168.1.92")
+	if first != second {
+		t.Fatalf("주소가 같은 열에서 시작하지 않는다: %q / %q", items[0].label, items[1].label)
+	}
+}

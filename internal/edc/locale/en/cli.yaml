@@ -2,6 +2,21 @@
 cli:
   usage: "usage: %s"
   confirm: "continue? [y/N] "
+  prompt:
+    target: "target (host or URL)"
+    host: "host"
+    host_port: "host:port"
+    url: "URL"
+    subcommand_title: "which command do you want to run?"
+    subcommand_label: "command"
+    state_title: "which pending change do you want to use?"
+    state_label: "state"
+    report_title: "which report do you want to show?"
+    report_label: "report"
+    report_before_title: "which report is the earlier one?"
+    report_before_label: "before"
+    report_after_title: "which report is the later one?"
+    report_after_label: "after"
   config:
     invalid: "invalid config: %v"
   error:
@@ -112,6 +127,9 @@ cli:
     macos_only: "capture runs on macOS only"
     unexpected_positional: "edc found an unknown positional argument. Pass the BPF expression with --filter"
     interface_required: "--interface is required"
+    select_title: "which interface do you want to capture?"
+    select_label: "interface"
+    default_route: "default route"
     duration_range: "--duration must be more than 0s and 60s at most"
     count_range: "--count must be between 1 and 10000"
     unknown_interface: "unknown interface: %s"

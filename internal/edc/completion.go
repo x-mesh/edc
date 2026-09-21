@@ -9,6 +9,14 @@ import (
 
 func runCompletion(args []string) int {
 	usage := T("cli.usage", "edc completion <zsh|bash|groups>")
+	if len(args) == 0 {
+		choice, ok := promptMissingChoice("edc completion", []string{"zsh", "bash", "groups"})
+		if !ok {
+			fmt.Fprintln(os.Stderr, usage)
+			return 2
+		}
+		args = []string{choice}
+	}
 	if len(args) != 1 {
 		fmt.Fprintln(os.Stderr, usage)
 		return 2

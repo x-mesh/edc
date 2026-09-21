@@ -652,6 +652,36 @@ stdin과 stdout이 모두 terminal이면 단일 probe command는 진행 줄 하�
 
 이 줄은 언제나 한 줄입니다. 긴 출력은 terminal 너비에서 잘립니다.
 
+## 빠진 인자
+
+인자 없이 command를 실행하고 stdin이 terminal이면 `edc`는 값을 묻습니다. 그 뒤에 값을 넣은 명령을 출력하므로 다음부터는 바로 칠 수 있습니다.
+
+```bash
+$ edc doctor
+대상 (host 또는 URL): example.com
+→ edc doctor example.com
+```
+
+`edc doctor`와 개별 probe command가 대상을 묻습니다. 질문에는 usage에 나오는 인자 형태를 그대로 씁니다. `edc tcp check`는 `host:port`를, `edc http check`는 `URL`을 묻습니다.
+
+`edc capture`는 `--interface`가 필요합니다. 없으면 주소가 붙은 interface를 나열하고 기본 경로가 쓰는 것을 표시합니다. 이름을 치는 대신 줄을 고릅니다.
+
+```bash
+$ edc capture
+어느 interface를 잡을까요?
+> en0        192.168.1.92   기본 경로
+  bridge100  192.168.139.3
+→ edc capture --interface en0
+```
+
+command 묶음은 어떤 command를 실행할지 묻습니다. `edc dns`, `edc net`, `edc report`, `edc route`, `edc change`, `edc completion`이 각자의 command를 보여 줍니다. `edc report show`와 `edc report diff`는 이어서 현재 디렉터리의 report를 나열합니다.
+
+`edc change confirm`, `edc change rollback`, `edc route rollback`은 아직 대기 중인 변경을 나열합니다. run id를 옮겨 적는 대신 고릅니다.
+
+stdin이 terminal이 아니면 `edc`는 usage를 출력하고 exit code `2`를 돌려줍니다. script의 동작은 그대로입니다. `edc`는 command에 꼭 필요한 값만 묻고, `--duration`이나 `--filter` 같은 선택 설정은 묻지 않습니다.
+
+`edc change apply`와 `edc route switch`는 예외입니다. host를 바꾸므로 값을 모두 flag로 받습니다. 되돌릴 수 없는 command는 다시 칠 수 있는 형태로 남아야 합니다.
+
 ## Doctor 실시간 화면
 
 stdin과 stdout이 모두 terminal이면 `edc doctor`는 probe마다 줄 하나를 보여 주고 probe가 끝날 때 그 줄을 갱신합니다. 끝난 줄은 화면에 남습니다. 그 뒤에 상세와 요약이 따라옵니다.

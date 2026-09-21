@@ -2,6 +2,21 @@
 cli:
   usage: "사용법: %s"
   confirm: "계속하시겠습니까? [y/N] "
+  prompt:
+    target: "대상 (host 또는 URL)"
+    host: "host"
+    host_port: "host:port"
+    url: "URL"
+    subcommand_title: "어떤 command를 실행할까요?"
+    subcommand_label: "command"
+    state_title: "어느 대기 중인 변경을 쓸까요?"
+    state_label: "state"
+    report_title: "어떤 report를 볼까요?"
+    report_label: "report"
+    report_before_title: "이전 report는 어느 것인가요?"
+    report_before_label: "이전"
+    report_after_title: "이후 report는 어느 것인가요?"
+    report_after_label: "이후"
   config:
     invalid: "잘못된 config: %v"
   error:
@@ -112,6 +127,9 @@ cli:
     macos_only: "capture는 현재 macOS만 지원합니다"
     unexpected_positional: "알 수 없는 positional argument가 있습니다. BPF expression은 --filter로 전달하세요"
     interface_required: "--interface가 필요합니다"
+    select_title: "어느 interface를 잡을까요?"
+    select_label: "interface"
+    default_route: "기본 경로"
     duration_range: "--duration은 0초보다 크고 60초 이하여야 합니다"
     count_range: "--count는 1 이상 10000 이하여야 합니다"
     unknown_interface: "존재하지 않는 interface: %s"

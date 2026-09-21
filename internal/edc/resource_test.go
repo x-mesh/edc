@@ -363,3 +363,57 @@ map -hosts 0 0 0 100% /net
 		t.Fatalf("percent = %.2f, want 25", disks[0].Percent)
 	}
 }
+
+// 실제 Linux 호스트의 `df -kP`다. tmpfs와 overlay, snap image가 실제 디스크 두 대를 열두 줄로 늘렸다.
+// loop device 자체는 숨기지 않으므로 직접 붙인 image는 남아야 한다.
+func TestHiddenDiskKeepsOnlyStorageFileSystems(t *testing.T) {
+	output := `Filesystem     1024-blocks       Used  Available Capacity Mounted on
+tmpfs               6421252       1928    6419324       1% /run
+/dev/sda3         104805396   76540120   23000000      77% /
+tmpfs                  5120          0       5120       0% /run/lock
+tmpfs              32106260    2077696   30028564       7% /tmp
+/dev/sda5        2223999552 1127219200 1096780352      51% /app
+tmpfs                   128          8        120       7% /run/credentials/getty@tty1.service
+tmpfs               6421252       9216    6412036       1% /run/user/0
+tmpfs                   128          8        120       7% /run/credentials/systemd-journald.service
+overlay           104805396   76540120   23000000      77% /var/lib/docker/rootfs/overlayfs/dd6a96448ca90dc9dc72b383c1224a5d7dc10a49207be1a4012af3c79bf25cd0
+/dev/loop0           130944     130944          0     100% /snap/core22/1963
+/dev/loop1            12345      12345          0     100% /snap/snapd/21759
+/dev/loop2           102400      50000      52400      49% /mnt/image
+`
+	disks, err := parseDiskUsage(strings.NewReader(output))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var kept []string
+	for _, disk := range disks {
+		if !hiddenDisk(disk) {
+			kept = append(kept, disk.Mount)
+		}
+	}
+	if got := strings.Join(kept, " "); got != "/ /app /mnt/image" {
+		t.Fatalf("kept = %q, want %q", got, "/ /app /mnt/image")
+	}
+}
+
+// 고정 폭은 긴 mount 경로나 LVM 장치 이름에서 뒤 열을 밀어낸다. 열 폭을 값에서 재야 표가 선다.
+func TestPrintDiskUsageKeepsColumnsAligned(t *testing.T) {
+	disks := []diskDetails{
+		{Mount: "/", Device: "/dev/sda3", Total: 100 << 30, Used: 73 << 30, Percent: 73},
+		{Mount: t.TempDir(), Device: "/dev/mapper/ubuntu--vg-ubuntu--lv", Total: 2 << 40, Used: 1 << 40, Percent: 50},
+	}
+	var output strings.Builder
+	printDiskUsage(&output, disks, false)
+	columns, rows := map[int]bool{}, 0
+	for _, line := range strings.Split(output.String(), "\n") {
+		index := strings.Index(line, ": ")
+		if index < 0 {
+			continue
+		}
+		rows++
+		columns[liveWidth(line[:index])] = true
+	}
+	if rows != 2 || len(columns) != 1 {
+		t.Fatalf("disk columns are not aligned (rows %d, columns %v):\n%s", rows, columns, output.String())
+	}
+}

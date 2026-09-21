@@ -94,14 +94,24 @@ func printInfo(writer io.Writer, version string, details hostDetails, interfaces
 		}
 		fmt.Fprintf(writer, "    %s %-15s: %s / %s%s\n", branch, iface.Name, iface.Address, iface.Mask, gateway)
 	}
+	printDiskUsage(writer, disks, color)
+}
+
+func printDiskUsage(writer io.Writer, disks []diskDetails, color bool) {
 	fmt.Fprintln(writer, "\n💾 Disk Usage")
 	visible := visibleDisks(disks)
+	// 열 폭을 값에서 잰다. 고정 폭은 긴 mount 경로나 LVM 장치 이름에서 뒤 열을 모두 밀어낸다.
+	mountWidth, deviceWidth := diskMountWidth, diskDeviceWidth
+	for _, disk := range visible {
+		mountWidth = max(mountWidth, liveWidth(disk.Mount))
+		deviceWidth = max(deviceWidth, liveWidth(disk.Device))
+	}
 	for index, disk := range visible {
 		branch := "├──"
 		if index == len(visible)-1 {
 			branch = "└──"
 		}
-		fmt.Fprintf(writer, "%s %-12s %-18s: %9s / %9s %s\n", branch, disk.Mount, disk.Device, formatBytes(disk.Used), formatBytes(disk.Total), formatUsageBar(disk.Percent, color))
+		fmt.Fprintf(writer, "%s %s %s: %9s / %9s %s\n", branch, liveCell(disk.Mount, mountWidth), liveCell(disk.Device, deviceWidth), formatBytes(disk.Used), formatBytes(disk.Total), formatUsageBar(disk.Percent, color))
 	}
 }
 
@@ -110,7 +120,39 @@ const (
 	diskBarWidth = 20
 	diskBarFull  = "█"
 	diskBarEmpty = "░"
+	// diskMountWidth와 diskDeviceWidth는 두 열의 최소 폭이다. 값이 짧아도 열이 흔들리지 않는다.
+	diskMountWidth  = 12
+	diskDeviceWidth = 18
 )
+
+// diskPseudoDevices는 저장 장치를 쓰지 않는 파일 시스템이다. tmpfs는 램을 쓰고,
+// overlay는 container layer라 그 아래 디스크를 다시 센다.
+var diskPseudoDevices = map[string]bool{"tmpfs": true, "devtmpfs": true, "overlay": true, "shm": true}
+
+// diskHiddenPrefixes는 숨기는 mount 경로다. snap은 package마다 읽기 전용 image를 하나씩 붙여
+// 디스크 한 대를 수십 줄로 늘린다. loop device 자체는 숨기지 않으므로 직접 붙인 image는 남는다.
+var diskHiddenPrefixes = []string{"/System/Volumes/", "/private/var/run/", "/snap/"}
+
+// diskHiddenRoots는 그 자신과 하위 경로를 모두 숨기는 mount다.
+var diskHiddenRoots = []string{"/dev", "/proc", "/sys"}
+
+// hiddenDisk는 실제 저장 장치를 나타내지 않는 항목이다. os.Stat을 쓰지 않아 어느 platform에서도 검사할 수 있다.
+func hiddenDisk(disk diskDetails) bool {
+	if disk.Total == 0 || diskPseudoDevices[disk.Device] {
+		return true
+	}
+	for _, prefix := range diskHiddenPrefixes {
+		if strings.HasPrefix(disk.Mount, prefix) {
+			return true
+		}
+	}
+	for _, root := range diskHiddenRoots {
+		if disk.Mount == root || strings.HasPrefix(disk.Mount, root+"/") {
+			return true
+		}
+	}
+	return false
+}
 
 // diskLimits는 디스크 사용률의 경고와 위험 기준이다. top의 memory 기준과 같다.
 var diskLimits = topThreshold{warn: 90, danger: 95}
@@ -152,7 +194,7 @@ func fetchPublicNetworkInfo(ctx context.Context) (publicNetworkInfo, error) {
 func visibleDisks(disks []diskDetails) []diskDetails {
 	result := make([]diskDetails, 0, len(disks))
 	for _, disk := range disks {
-		if disk.Total == 0 || strings.HasPrefix(disk.Mount, "/System/Volumes/") || strings.HasPrefix(disk.Mount, "/private/var/run/") || disk.Mount == "/dev" || strings.HasPrefix(disk.Mount, "/dev/") || disk.Mount == "/proc" || strings.HasPrefix(disk.Mount, "/proc/") || disk.Mount == "/sys" || strings.HasPrefix(disk.Mount, "/sys/") {
+		if hiddenDisk(disk) {
 			continue
 		}
 		if info, err := os.Stat(disk.Mount); err != nil || !info.IsDir() {

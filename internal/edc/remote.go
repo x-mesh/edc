@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/term"
 )
 
 const remoteOutputLimit = 64 * 1024
@@ -239,9 +241,10 @@ func runRemoteRun(group string, args []string, version string) int {
 	return exitCode(report.Results)
 }
 
+// isTerminal은 실제 terminal인지 확인한다. mode에서 character device만 보면 /dev/null도
+// terminal로 잡혀, 출력을 /dev/null로 돌린 실행이 키 입력을 기다리는 화면에서 멈춘다.
 func isTerminal(file *os.File) bool {
-	info, err := file.Stat()
-	return err == nil && info.Mode()&os.ModeCharDevice != 0
+	return term.IsTerminal(int(file.Fd()))
 }
 
 func executeRemoteRecipe(ctx context.Context, hosts []remoteHost, recipe remoteRecipe, runner remoteCommandRunner) []Result {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -297,5 +298,27 @@ func TestRemoteRunParallelHostsAndStableResults(t *testing.T) {
 		if results[index].Metrics["host"] != host.Name {
 			t.Fatalf("results are not in inventory order: %#v", results)
 		}
+	}
+}
+
+// /dev/null과 pipe는 character device이거나 그렇게 보이지만 terminal이 아니다. mode만 보면
+// 출력을 /dev/null로 돌린 실행이 키 입력을 기다리는 화면에서 멈춘다.
+func TestIsTerminalRejectsNonTerminals(t *testing.T) {
+	devNull, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer devNull.Close()
+	if isTerminal(devNull) {
+		t.Fatal("/dev/null must not count as a terminal")
+	}
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	defer writer.Close()
+	if isTerminal(writer) {
+		t.Fatal("a pipe must not count as a terminal")
 	}
 }

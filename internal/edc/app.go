@@ -96,6 +96,8 @@ func Run(args []string, version string) int {
 		return runSimple(args[1:], version, "quality", "net.quality", probeQuality)
 	case "capture":
 		return runCapture(args[1:])
+	case "trace":
+		return runTrace(args[1:])
 	case "report":
 		return runReport(args[1:])
 	case "log":

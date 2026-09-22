@@ -117,8 +117,9 @@ command:
     notes:
       - "edc uses networkQuality on macOS. The measurement needs tens of seconds."
   capture:
-    summary: "Packet capture (macOS)"
+    summary: "Packet capture (Linux and macOS)"
     option:
+      mode: "capture mode: pcap or events"
       interface: "interface to capture (required)"
       duration: "capture time, 60s at most"
       count: "packets, 10000 at most"
@@ -129,6 +130,25 @@ command:
       - "This task needs a privilege. edc shows the plan and asks before it starts."
       - "A PCAP file can hold credentials and personal data."
       - "The JSON redaction does not apply to the PCAP payload."
+  trace:
+    summary: "Print TCP or UDP events in real time and group them into summaries"
+    option:
+      duration: "trace time, max 60s. Omit for Ctrl-C"
+      raw: "print raw event JSONL"
+      live: "compatibility flag. Trace is live by default"
+      group_by: "group events by source or target"
+      process: "filter by process name"
+      destination: "filter by destination host and port"
+      yes: "skip the question"
+    notes:
+      - "The default output opens a full-screen trace view in a terminal."
+      - "Use / to filter process, destination, event, or source text."
+      - "Press s for source rows, t for target rows, or g for events."
+      - "Use --group-by source or --group-by target for grouped live rows."
+      - "Grouped rows label the event count rate EVENT/s and show payload traffic."
+      - "B/s is a byte rate. bps and Mbps are bit rates. Mbps is bps / 1,000,000."
+      - "Press Ctrl-C to stop a trace without --duration."
+      - "Use --raw for JSONL events."
   report:
     summary: "Read and compare saved JSON reports"
     notes:

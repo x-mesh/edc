@@ -117,8 +117,9 @@ command:
     notes:
       - "macOS の networkQuality を使います。測定には数十秒かかります。"
   capture:
-    summary: "packet capture (macOS)"
+    summary: "packet capture (Linux と macOS)"
     option:
+      mode: "capture mode (pcap、events)"
       interface: "capture する interface (必須)"
       duration: "capture 時間、最大 60s"
       count: "packet 数、最大 10000"
@@ -129,6 +130,25 @@ command:
       - "権限が要る操作です。開始前に計画を示して確認を取ります。"
       - "PCAP には credential や個人情報が入ることがあります。"
       - "JSON の redaction は PCAP の payload には効きません。"
+  trace:
+    summary: "TCP または UDP event をリアルタイムに表示して summary にまとめる"
+    option:
+      duration: "trace 時間、最大 60s。省略で Ctrl-C"
+      raw: "raw event JSONL を表示"
+      live: "互換 flag。trace は既定でリアルタイムに実行"
+      group_by: "source または target ごとに event をまとめます"
+      process: "process 名で絞る"
+      destination: "宛先 host と port で絞る"
+      yes: "確認を省く"
+    notes:
+      - "terminal では既定で全画面の trace を開きます。"
+      - "/ で process、destination、event、source を絞り込みます。"
+      - "s は source 行、t は target 行、g は event のスクロールを表示します。"
+      - "--group-by source または --group-by target で group live 行を表示します。"
+      - "グループ画面は event 数を EVENT/s、socket payload traffic を表示します。"
+      - "B/s は byte rate、bps と Mbps は bit rate です。Mbps は bps / 1,000,000 です。"
+      - "--duration を省略した場合は Ctrl-C で trace を終了します。"
+      - "JSONL event には --raw を使います。"
   report:
     summary: "保存した JSON report の閲覧と比較"
     notes:

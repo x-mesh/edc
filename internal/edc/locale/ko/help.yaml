@@ -117,8 +117,9 @@ command:
     notes:
       - "macOS의 networkQuality를 씁니다. 측정에 수십 초가 걸립니다."
   capture:
-    summary: "packet capture (macOS)"
+    summary: "packet capture (Linux와 macOS)"
     option:
+      mode: "capture mode (pcap, events)"
       interface: "capture할 interface (필수)"
       duration: "capture 시간, 최대 60s"
       count: "packet 수, 최대 10000"
@@ -129,6 +130,25 @@ command:
       - "privileged 작업입니다. 시작 전에 계획을 보여 주고 확인을 받습니다."
       - "PCAP에는 credential과 개인정보가 들어갈 수 있습니다."
       - "JSON redaction은 PCAP payload에 적용되지 않습니다."
+  trace:
+    summary: "TCP 또는 UDP event를 실시간 출력하고 summary를 만듭니다"
+    option:
+      duration: "trace 시간, 최대 60s. 생략하면 Ctrl-C"
+      raw: "raw event JSONL 출력"
+      live: "호환성 flag. trace는 기본으로 실시간 실행"
+      group_by: "source 또는 target별 event를 묶습니다"
+      process: "process 이름으로 필터"
+      destination: "destination host와 port로 필터"
+      yes: "확인 질문 생략"
+    notes:
+      - "terminal에서는 기본으로 전체 화면 trace를 엽니다."
+      - "/를 누르면 process, destination, event, source를 필터할 수 있습니다."
+      - "s는 source 행, t는 target 행, g는 event 스크롤을 표시합니다."
+      - "--group-by source 또는 --group-by target으로 group live 행을 표시합니다."
+      - "그룹 화면은 event 수를 EVENT/s로 표시하고 socket payload traffic을 표시합니다."
+      - "B/s는 byte rate이며 bps와 Mbps는 bit rate입니다. Mbps는 bps / 1,000,000입니다."
+      - "--duration을 생략하면 Ctrl-C로 trace를 종료합니다."
+      - "JSONL event가 필요하면 --raw를 사용합니다."
   report:
     summary: "저장한 JSON report 보기와 비교"
     notes:

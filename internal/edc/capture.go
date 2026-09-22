@@ -22,13 +22,14 @@ const (
 )
 
 func runCapture(args []string) int {
-	if runtime.GOOS != "darwin" {
-		fmt.Fprintln(os.Stderr, T("cli.capture.macos_only"))
+	if !captureSupportedOS(runtime.GOOS) {
+		fmt.Fprintln(os.Stderr, T("cli.capture.supported_platforms"))
 		return 2
 	}
 	set := flag.NewFlagSet("capture", flag.ContinueOnError)
 	set.SetOutput(os.Stderr)
 	config := activeConfig.Defaults.Capture
+	mode := set.String("mode", "pcap", T("command.capture.option.mode"))
 	interfaceName := set.String("interface", configuredString(config.Interface, ""), T("command.capture.option.interface"))
 	duration := set.Duration("duration", configuredDuration(config.Duration, 15*time.Second), T("command.capture.option.duration"))
 	count := set.Int("count", configuredInt(config.Count, 500), T("command.capture.option.count"))
@@ -41,6 +42,13 @@ func runCapture(args []string) int {
 	if set.NArg() != 0 {
 		fmt.Fprintln(os.Stderr, T("cli.capture.unexpected_positional"))
 		return 2
+	}
+	if *mode != "pcap" && *mode != "events" {
+		fmt.Fprintln(os.Stderr, T("cli.capture.unknown_mode", *mode))
+		return 2
+	}
+	if *mode == "events" {
+		return runCaptureEvents(captureEventsOptions{duration: *duration, output: *output, yes: *yes})
 	}
 	// 값을 고르게 하기 전에 나머지 flag를 먼저 검사한다. 고른 뒤에 flag 오류로 끝내면 헛수고가 된다.
 	if *duration <= 0 || *duration > maxCaptureDuration {
@@ -82,11 +90,10 @@ func runCapture(args []string) int {
 	if *filter != "" {
 		tcpdumpArgs = append(tcpdumpArgs, strings.Fields(*filter)...)
 	}
-	commandPath := "/usr/sbin/tcpdump"
-	commandArgs := tcpdumpArgs
-	if os.Geteuid() != 0 {
-		commandPath = "/usr/bin/sudo"
-		commandArgs = append([]string{"/usr/sbin/tcpdump"}, tcpdumpArgs...)
+	commandPath, commandArgs, err := captureCommand(tcpdumpArgs)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
 	}
 	command := exec.Command(commandPath, commandArgs...)
 	command.Stdin, command.Stdout, command.Stderr = os.Stdin, os.Stdout, os.Stderr
@@ -103,6 +110,28 @@ func runCapture(args []string) int {
 	}
 	fmt.Println(T("cli.capture.done", outputPath))
 	return 0
+}
+
+func captureSupportedOS(goos string) bool {
+	return goos == "darwin" || goos == "linux"
+}
+
+var captureLookPath = exec.LookPath
+var captureGeteuid = os.Geteuid
+
+func captureCommand(args []string) (string, []string, error) {
+	tcpdumpPath, err := captureLookPath("tcpdump")
+	if err != nil {
+		return "", nil, errors.New(T("cli.capture.tcpdump_missing"))
+	}
+	if captureGeteuid() == 0 {
+		return tcpdumpPath, args, nil
+	}
+	sudoPath, err := captureLookPath("sudo")
+	if err != nil {
+		return "", nil, errors.New(T("cli.capture.sudo_missing"))
+	}
+	return sudoPath, append([]string{tcpdumpPath}, args...), nil
 }
 
 // promptCaptureInterface는 --interface가 빠졌을 때 terminal에서 고르게 한다. interface 이름은

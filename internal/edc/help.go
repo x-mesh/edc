@@ -171,12 +171,27 @@ var commandDocs = []commandDoc{
 		name: "capture", group: "observe",
 		usage: []string{"edc capture --interface <name> [options]"},
 		options: []optionDoc{
+			{"--mode pcap|events", "command.capture.option.mode"},
 			{"--interface <name>", "command.capture.option.interface"},
 			{"--duration 15s", "command.capture.option.duration"},
 			{"--count 500", "command.capture.option.count"},
 			{"--filter <expr>", "command.capture.option.filter"},
 			{"--output <path>", "command.capture.option.output"},
 			{"--yes", "command.capture.option.yes"},
+		},
+	},
+	{
+		name: "trace", group: "observe",
+		usage: []string{"edc trace <tcp|udp> [options]"},
+		options: []optionDoc{
+			{"--duration 15s", "command.trace.option.duration"},
+			{"--json <path|->", "option.json"},
+			{"--raw", "command.trace.option.raw"},
+			{"--live", "command.trace.option.live"},
+			{"--group-by <source|target>", "command.trace.option.group_by"},
+			{"--process <name>", "command.trace.option.process"},
+			{"--destination <host:port>", "command.trace.option.destination"},
+			{"--yes", "command.trace.option.yes"},
 		},
 	},
 	{

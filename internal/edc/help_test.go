@@ -47,6 +47,24 @@ func TestHelpScreensStayWithinTheLineLimit(t *testing.T) {
 	}
 }
 
+func TestTraceHelpDescribesSourceTargetAndEventKeys(t *testing.T) {
+	restore := currentLanguage()
+	defer setLanguage(restore)
+	for _, language := range supportedLanguages {
+		setLanguage(language)
+		var output strings.Builder
+		if !printCommandHelp(&output, "trace") {
+			t.Fatalf("trace help is missing for %s", language)
+		}
+		text := output.String()
+		for _, value := range []string{"--group-by <source|target>", "source", "target", "g"} {
+			if !strings.Contains(text, value) {
+				t.Fatalf("%s trace help misses %q: %q", language, value, text)
+			}
+		}
+	}
+}
+
 func assertWidth(t *testing.T, label, text string) {
 	t.Helper()
 	for index, line := range strings.Split(strings.TrimRight(text, "\n"), "\n") {

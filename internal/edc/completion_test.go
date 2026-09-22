@@ -26,6 +26,12 @@ func TestCompletionScriptsCoverCommandsAndRemoteFlags(t *testing.T) {
 	if !strings.HasSuffix(strings.TrimSpace(bashCompletion), "complete -F _edc edc") {
 		t.Fatal("bash script must register the completion function")
 	}
+	if !strings.Contains(zshCompletion, "--group-by[그룹 기준]:group:(source target)") {
+		t.Fatal("zsh trace completion must offer source and target group values")
+	}
+	if !strings.Contains(bashCompletion, "--group-by") {
+		t.Fatal("bash trace completion must keep the group-by flag")
+	}
 }
 
 func TestCompletionGroupsListInventoryGroups(t *testing.T) {

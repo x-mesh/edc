@@ -730,7 +730,26 @@ Press Ctrl-C to cancel. `edc` stops the running probes and returns exit code `4`
 
 ## Packet capture
 
-Only `capture` uses a privilege. `doctor` does not use `sudo`. Capture keeps hard limits of 60 seconds and 10,000 packets. Capture does not overwrite an existing file.
+Only `capture` uses a privilege. `doctor` does not use `sudo`. Capture supports Linux and macOS. Capture keeps hard limits of 60 seconds and 10,000 packets. Capture does not overwrite an existing file. Install `tcpdump` and keep it in `PATH`.
+
+Use `--mode events` on Linux to record TCP socket state, retransmission, reset, and destroy events with process metadata. The mode writes JSONL and requires BTF and eBPF capabilities. It does not create a PCAP file.
+
+Use `trace tcp` or `trace udp` on Linux to print network events as they arrive. The default terminal view scrolls through events. The command runs until you press Ctrl-C. It then prints a summary.
+
+```bash
+./bin/edc trace tcp
+./bin/edc trace tcp --duration 15s
+./bin/edc trace tcp --process slackbot --destination 100.66.11.194:443 --json trace.json
+./bin/edc trace tcp --raw
+./bin/edc trace udp --duration 15s
+./bin/edc trace udp --group-by target
+./bin/edc trace udp --group-by source
+```
+
+Use `--raw` to print JSONL events as they arrive. Use `--json` to write the connection summary after Ctrl-C.
+Use `--duration 15s` to stop after 15 seconds. `--live` remains accepted for compatibility.
+Use `--group-by source` or `--group-by target` to show one live row for each selected dimension. TCP rows show connect, retransmission, reset, and traffic values. UDP rows show TX and RX traffic values. `EVENT/s` is an event count rate. TX and RX bytes are socket payload bytes. B/s is a byte rate. bps and Mbps are bit rates. Mbps uses decimal units: bps / 1,000,000.
+In the full-screen terminal view, press `s` for source rows, `t` for target rows, or `g` for scrolling events.
 
 ```bash
 ./bin/edc capture \
@@ -788,7 +807,7 @@ For zsh, you can also save the script as `_edc` in a directory of `fpath`.
 
 On Linux, `edc` reads `/proc`, `/sys`, `ip`, `ss`, `ping`, `traceroute` or `tracepath`, and `/etc/resolv.conf`. If `resolvectl` exists, `edc` adds `resolvectl status` as evidence.
 
-On macOS, `edc` uses a system command adapter. Only macOS runs `quality` and `capture`.
+On macOS, `edc` uses a system command adapter. Linux and macOS run `capture`. Only macOS runs `quality`.
 
 Every diagnostic command keeps to read-only inspection. `edc` runs no automatic repair, such as a DNS flush, an interface reset, or a firewall change. `edc log` only writes its explicit output file.
 

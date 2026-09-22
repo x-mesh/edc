@@ -217,8 +217,12 @@ func traceEventMatches(event captureEvent, process, destination string) bool {
 	return destination == "" || event.Destination == destination || event.Target == destination
 }
 
+// captureEventName은 TCP 상태 전이를 이름 붙인다. 상태 값은 kernel의 enum과 같다:
+// 1 ESTABLISHED, 2 SYN_SENT, 3 SYN_RECV, 7 CLOSE, 10 LISTEN.
 func captureEventName(oldState, newState uint32) string {
-	if newState == 2 && oldState == 10 {
+	// accept는 새로 만든 소켓이 SYN_RECV에서 ESTABLISHED로 바뀌는 전이다. 듣고 있던
+	// 소켓 자체는 LISTEN에 그대로 남으므로 LISTEN→SYN_SENT는 나타나지 않는다.
+	if newState == 1 && oldState == 3 {
 		return "tcp_accept"
 	}
 	if newState == 1 && oldState == 2 {

@@ -12,6 +12,7 @@ typedef __u32 __wsum;
 
 #include "bpf_helpers.h"
 #include "bpf_core_read.h"
+#include "bpf_endian.h"
 
 #define AF_INET 2
 #define AF_INET6 10
@@ -91,6 +92,11 @@ static __always_inline struct event *start_event(void *ctx, __u32 type) {
 		}
 		return 0;
 	}
+	// bpf_ringbuf_reserve는 slot을 0으로 밀지 않는다. 랩어라운드된 slot에는 그 전에
+	// 그 자리를 쓴 무관한 event의 값이 남아 있으므로, 여기서 한 번에 지운다.
+	// 이 뒤로는 각 emit_* 함수가 실제로 아는 field만 채우면 되고, 모르는 field는
+	// 항상 0이지 stale 값이 아니다.
+	__builtin_memset(event, 0, sizeof(*event));
 	event->timestamp_ns = bpf_ktime_get_ns();
 	event->event_type = type;
 	event->pid = bpf_get_current_pid_tgid() >> 32;
@@ -214,7 +220,7 @@ static __always_inline int emit_length_event(struct sock_length_ctx *ctx, __u32 
 	event->bytes = (__u64)ctx->ret;
 	event->family = BPF_CORE_READ(ctx->sk, __sk_common.skc_family);
 	event->sport = BPF_CORE_READ(ctx->sk, __sk_common.skc_num);
-	event->dport = BPF_CORE_READ(ctx->sk, __sk_common.skc_dport);
+	event->dport = bpf_ntohs(BPF_CORE_READ(ctx->sk, __sk_common.skc_dport));
 	if (event->family == AF_INET) {
 		__be32 source = BPF_CORE_READ(ctx->sk, __sk_common.skc_rcv_saddr);
 		__be32 destination = BPF_CORE_READ(ctx->sk, __sk_common.skc_daddr);

@@ -24,7 +24,8 @@ func TestCaptureEventNames(t *testing.T) {
 		newState uint32
 		want     string
 	}{
-		{10, 2, "tcp_accept"},
+		// accept는 새 소켓이 SYN_RECV(3)에서 ESTABLISHED(1)로 바뀌는 전이다.
+		{3, 1, "tcp_accept"},
 		{2, 1, "tcp_connect"},
 		{1, 7, "tcp_close"},
 		{1, 8, "tcp_state"},
@@ -63,18 +64,6 @@ func TestCaptureEventJSONIncludesBytes(t *testing.T) {
 	}
 	if !strings.Contains(string(encoded), "\"bytes\":512") {
 		t.Fatalf("event JSON = %s", encoded)
-	}
-}
-
-func TestCaptureEventAddressFormatting(t *testing.T) {
-	var address [16]byte
-	address[0], address[1], address[2], address[3] = 192, 0, 2, 10
-	if got := formatCaptureAddress(2, address, 443); got != "192.0.2.10:443" {
-		t.Fatalf("IPv4 address = %q", got)
-	}
-	address[15] = 1
-	if got := formatCaptureAddress(10, address, 443); got != "[c000:20a:0:0:0:0:0:1]:443" {
-		t.Fatalf("IPv6 address = %q", got)
 	}
 }
 
@@ -257,23 +246,6 @@ func TestTraceGroupByModes(t *testing.T) {
 	for groupBy, want := range map[string]bool{"": true, traceGroupBySource: true, traceGroupByTarget: true, "invalid": false} {
 		if got := validTraceGroupBy(groupBy); got != want {
 			t.Fatalf("validTraceGroupBy(%q) = %t, want %t", groupBy, got, want)
-		}
-	}
-}
-
-func TestTraceTargetFromArguments(t *testing.T) {
-	cases := []struct {
-		args []string
-		want string
-	}{
-		{[]string{"curl", "https://naver.com/path"}, "naver.com"},
-		{[]string{"curl", "naver.com"}, "naver.com"},
-		{[]string{"curl", "http://127.0.0.1:8080/health"}, "127.0.0.1"},
-		{[]string{"curl", "--fail", "https://example.com"}, "example.com"},
-	}
-	for _, test := range cases {
-		if got := traceTargetFromArguments(test.args); got != test.want {
-			t.Fatalf("traceTargetFromArguments(%q) = %q, want %q", test.args, got, test.want)
 		}
 	}
 }

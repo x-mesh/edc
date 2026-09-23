@@ -83,7 +83,13 @@ func buildRemotePlan(options remoteRunOptions, hosts []remoteHost, recipe remote
 
 func emitRemotePlan(options commonOptions, remoteOptions remoteRunOptions, plan remotePlanView, parallel int) int {
 	if options.jsonPath == "" {
-		printRemotePlan(os.Stdout, plan)
+		if options.redact {
+			var output strings.Builder
+			printRemotePlan(&output, plan)
+			fmt.Fprint(os.Stdout, redactIPAddresses(output.String()))
+		} else {
+			printRemotePlan(os.Stdout, plan)
+		}
 		return 0
 	}
 	return emitRemoteJSON(options, buildRemotePlan(remoteOptions, plan.hosts, plan.recipe, parallel))
@@ -130,7 +136,13 @@ func runRemoteList(options commonOptions, remoteOptions remoteRunOptions, cwd, c
 		if options.verbose {
 			search = remoteSearchLine(cwd, configDir)
 		}
-		printRemoteListing(os.Stdout, listing, search)
+		if options.redact {
+			var output strings.Builder
+			printRemoteListing(&output, listing, search)
+			fmt.Fprint(os.Stdout, redactIPAddresses(output.String()))
+		} else {
+			printRemoteListing(os.Stdout, listing, search)
+		}
 		return 0
 	}
 	return emitRemoteJSON(options, listing)

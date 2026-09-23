@@ -19,21 +19,25 @@ option:
   timeout: "실행 제한 시간"
   json: "JSON 출력 경로, stdout은 -"
   verbose: "상세 evidence 출력"
-  redact: "JSON 민감정보 redaction"
+  redact: "출력의 민감정보 가리기"
 
 command:
   doctor:
     summary: "DNS·TCP·TLS·HTTP를 한 번에 확인"
     option:
       profile: "full은 bandwidth와 responsiveness를 더합니다"
+      all_ips: "DNS 응답의 모든 IP를 검사하고 ASN holder를 조회합니다"
     notes:
       - "probe 9개를 한 번에 실행하고 결과를 같은 형식으로 모읍니다."
       - "terminal에서는 probe마다 한 줄씩 실시간으로 갱신합니다."
       - "Ctrl-C로 취소하면 exit code 4를 돌려줍니다."
   dns:
     summary: "이름 조회와 resolver 설정"
+    option:
+      resolver: "비교할 DNS 서버; 여러 번 지정할 수 있습니다"
     notes:
-      - "lookup은 주소를, config는 이 host의 resolver 설정을 봅니다."
+      - "lookup은 주소를, compare는 system DNS와 다른 resolver를 비교합니다."
+      - "compare는 --resolver가 없으면 1.1.1.1을 사용합니다."
   tcp:
     summary: "TCP 연결 확인"
     notes:
@@ -71,6 +75,14 @@ command:
     notes:
       - "terminal에서는 대시보드로 엽니다. q 종료, p 일시정지, +/- interval."
       - "--count나 --json을 주거나, 비 terminal이거나, NO_COLOR면 표로 출력합니다."
+  watch:
+    summary: "중단할 때까지 HTTP 상태 반복 관측"
+    option:
+      interval: "sample 간격(초), 최소 0.1"
+      duration: "지정한 시간이 지나면 종료; 생략하면 Ctrl-C까지 실행"
+    notes:
+      - "매번 HTTP status, body byte, 소요 시간을 출력합니다."
+      - "--json은 sample마다 JSON 한 줄과 마지막 요약을 씁니다."
   info:
     summary: "system, network, disk 정보"
     option:
@@ -90,7 +102,7 @@ command:
       - "요청을 보내지 않고 본문도 읽지 않습니다."
       - "이름을 먼저 풀고 그 주소로만 연결하므로 DNS 시간이 거리 값에 섞이지 않습니다."
       - "public IP와 ASN, Cloudflare PoP, NAT와 tunnel 여부를 함께 보여 줍니다."
-      - "화면에는 주소를 그대로 쓰고, --json에만 --redact를 적용합니다."
+      - "기본 출력에는 주소를 보여 줍니다. --redact를 주면 화면과 JSON에서 가립니다."
       - "terminal에서는 진행 줄로 몇 곳을 확인했는지 보여 주고 q로 취소합니다."
       - "-v를 주면 사업자별 값을 모두 펼칩니다."
   listen:
@@ -100,6 +112,7 @@ command:
       udp: "바인드된 UDP socket만 봅니다"
       unix: "unix domain socket만 봅니다"
       all: "TCP와 UDP, unix domain socket을 모두 봅니다"
+      watch: "중단할 때까지 열린 포트의 변화를 보여 줍니다"
       verbose: "계정과 descriptor, 큐 열을 함께 엽니다"
     notes:
       - "기본은 LISTEN 상태의 TCP socket과 바인드된 UDP socket입니다."
@@ -193,7 +206,7 @@ command:
     summary: "command 기본값 설정"
     notes:
       - "wizard는 기존 값을 유지하며 선택한 section만 수정합니다."
-      - "config.yaml 전체를 보여 준 뒤 atomic하게 저장합니다."
+      - "config 전체를 보여 준 뒤 atomic하게 저장합니다."
       - "terminal이 필요하며 취소하면 exit code 4입니다."
   update:
     summary: "최신 release 설치"

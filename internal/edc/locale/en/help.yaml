@@ -19,21 +19,25 @@ option:
   timeout: "run time limit"
   json: "JSON output path, - for stdout"
   verbose: "print the detailed evidence"
-  redact: "hide sensitive values in JSON"
+  redact: "hide sensitive values in output"
 
 command:
   doctor:
     summary: "Check DNS, TCP, TLS, and HTTP at once"
     option:
       profile: "full adds bandwidth and responsiveness"
+      all_ips: "check each DNS IP and look up its ASN holder"
     notes:
       - "edc runs nine probes together and prints them in one format."
       - "In a terminal, each probe keeps one line and updates it."
       - "Press Ctrl-C to cancel. edc returns exit code 4."
   dns:
     summary: "Name lookup and resolver setup"
+    option:
+      resolver: "compare against this DNS server; repeat for more"
     notes:
-      - "lookup reads the addresses. config reads the resolver setup of this host."
+      - "lookup reads addresses; compare checks system DNS against other resolvers."
+      - "compare uses 1.1.1.1 unless --resolver is given."
   tcp:
     summary: "TCP connection check"
     notes:
@@ -71,6 +75,14 @@ command:
     notes:
       - "In a terminal, edc opens a dashboard. q quits, p pauses, +/- moves the interval."
       - "--count, --json, a pipe, or NO_COLOR gives the table instead."
+  watch:
+    summary: "Repeat an HTTP check until interrupted"
+    option:
+      interval: "seconds between samples (minimum 0.1)"
+      duration: "stop after this time; omit to run until Ctrl-C"
+    notes:
+      - "Each sample prints HTTP status, body bytes, and elapsed time."
+      - "--json writes one JSON object per sample and a final summary."
   info:
     summary: "System, network, and disk information"
     option:
@@ -90,7 +102,7 @@ command:
       - "It sends no request and reads no body."
       - "edc resolves each name once, so the DNS time stays out of the distance."
       - "It also reports the public IP, the ASN, the Cloudflare PoP, NAT, and a tunnel."
-      - "The screen keeps the addresses. --redact applies to --json only."
+      - "Addresses are visible by default. --redact hides them in screen and JSON output."
       - "In a terminal, a progress line counts the regions. Press q to cancel."
       - "-v opens every provider row."
   listen:
@@ -100,6 +112,7 @@ command:
       udp: "show bound UDP sockets only"
       unix: "show unix domain sockets only"
       all: "show TCP, UDP and unix domain sockets"
+      watch: "show ports opening and closing until interrupted"
       verbose: "add the account, the descriptor and the queue columns"
     notes:
       - "It shows TCP LISTEN sockets and bound UDP sockets."
@@ -193,7 +206,7 @@ command:
     summary: "Configure command defaults"
     notes:
       - "The wizard keeps existing values and edits selected sections."
-      - "It previews config.yaml before an atomic save."
+      - "It previews the config before an atomic save."
       - "Setup needs a terminal; cancel returns exit code 4."
   update:
     summary: "Install the latest release"

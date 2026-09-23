@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pelletier/go-toml/v2"
 	"gopkg.in/yaml.v3"
 )
 
@@ -43,7 +44,7 @@ func runSetupWithIO(args []string, input io.Reader, output, stderr io.Writer, te
 	}
 	existing, err := loadConfigAt(path)
 	if err != nil {
-		fmt.Fprintln(stderr, T("cli.setup.recovering", configError(path, err)))
+		fmt.Fprintln(stderr, T("cli.setup.recovering", configError(configReadPath(path), err)))
 		existing = edcConfig{}
 	}
 	recommended := recommendedConfig()
@@ -134,7 +135,12 @@ func runSetupWithIO(args []string, input io.Reader, output, stderr io.Writer, te
 		fmt.Fprintln(stderr, T("cli.config.invalid", err))
 		return 2
 	}
-	data, err := yaml.Marshal(config)
+	var data []byte
+	if filepath.Ext(path) == ".toml" {
+		data, err = toml.Marshal(config)
+	} else {
+		data, err = yaml.Marshal(config)
+	}
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 2

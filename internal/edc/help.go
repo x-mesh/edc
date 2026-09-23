@@ -41,7 +41,7 @@ var commonOptionDocs = []optionDoc{
 	{"--timeout 15s", "option.timeout"},
 	{"--json <path|->", "option.json"},
 	{"-v, --verbose", "option.verbose"},
-	{"--redact=true", "option.redact"},
+	{"--redact", "option.redact"},
 }
 
 // commandDocs는 help와 completion이 함께 읽는 한 벌의 명령 목록이다.
@@ -49,13 +49,14 @@ var commonOptionDocs = []optionDoc{
 var commandDocs = []commandDoc{
 	{
 		name: "doctor", group: "diagnose",
-		usage:      []string{"edc doctor [--profile default|full] [options] <host|URL>"},
-		options:    []optionDoc{{"--profile default|full", "command.doctor.option.profile"}},
+		usage:      []string{"edc doctor [--profile default|full] [--all-ips] [options] <host|URL>"},
+		options:    []optionDoc{{"--profile default|full", "command.doctor.option.profile"}, {"--all-ips", "command.doctor.option.all_ips"}},
 		usesCommon: true,
 	},
 	{
 		name: "dns", group: "diagnose",
-		usage:      []string{"edc dns lookup [options] <host>", "edc dns config [options]"},
+		usage:      []string{"edc dns lookup [options] <host>", "edc dns compare [--resolver IP] [options] <host>", "edc dns config [options]"},
+		options:    []optionDoc{{"--resolver IP[:port]", "command.dns.option.resolver"}},
 		usesCommon: true,
 	},
 	{
@@ -134,6 +135,16 @@ var commandDocs = []commandDoc{
 		},
 	},
 	{
+		name: "watch", group: "observe",
+		usage: []string{"edc watch [-i seconds] [--duration 1m] [options] <host|URL>"},
+		options: []optionDoc{
+			{"-i, --interval 0.1", "command.watch.option.interval"},
+			{"--duration 1m", "command.watch.option.duration"},
+			{"--expect-status N", "command.http.option.expect_status"},
+		},
+		usesCommon: true,
+	},
+	{
 		name: "info", group: "observe",
 		usage: []string{"edc info [--public=false] [--timeout 3s] [-v]"},
 		options: []optionDoc{
@@ -159,6 +170,9 @@ var commandDocs = []commandDoc{
 			{"-u, --udp", "command.listen.option.udp"},
 			{"--unix", "command.listen.option.unix"},
 			{"--all", "command.listen.option.all"},
+			{"--watch", "command.listen.option.watch"},
+			{"-i, --interval 0.1", "command.watch.option.interval"},
+			{"--duration 1m", "command.watch.option.duration"},
 			{"-v, --verbose", "command.listen.option.verbose"},
 		},
 		usesCommon: true,

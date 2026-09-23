@@ -19,21 +19,25 @@ option:
   timeout: "実行の制限時間"
   json: "JSON の出力先、stdout は -"
   verbose: "詳細な evidence を表示"
-  redact: "JSON の機微な値を伏せる"
+  redact: "出力の機微な値を伏せる"
 
 command:
   doctor:
     summary: "DNS・TCP・TLS・HTTP をまとめて確認"
     option:
       profile: "full は bandwidth と responsiveness を加える"
+      all_ips: "DNS の全 IP を確認し ASN holder を参照します"
     notes:
       - "probe を 9 つまとめて実行し、同じ形式で並べます。"
       - "terminal では probe ごとに 1 行を保ち、その場で更新します。"
       - "Ctrl-C で中断すると exit code 4 を返します。"
   dns:
     summary: "名前解決と resolver 設定"
+    option:
+      resolver: "比較する DNS サーバー。複数指定できます"
     notes:
-      - "lookup はアドレスを、config はこの host の resolver 設定を見ます。"
+      - "lookup はアドレス、compare は system DNS と別の resolver を比較します。"
+      - "compare は --resolver がなければ 1.1.1.1 を使います。"
   tcp:
     summary: "TCP 接続の確認"
     notes:
@@ -71,6 +75,14 @@ command:
     notes:
       - "terminal ではダッシュボードを開きます。q 終了、p 一時停止、+/- interval。"
       - "--count か --json を渡すか、terminal でないか、NO_COLOR なら表で出力します。"
+  watch:
+    summary: "中断するまで HTTP の状態を繰り返し確認"
+    option:
+      interval: "sample 間隔(秒)、最小 0.1"
+      duration: "指定時間で終了。省略時は Ctrl-C まで実行"
+    notes:
+      - "HTTP status、body byte、所要時間を毎回表示します。"
+      - "--json は sample ごとに JSON 1 行と最後に要約を書きます。"
   info:
     summary: "system、network、disk の情報"
     option:
@@ -90,7 +102,7 @@ command:
       - "要求を送らず、本文も読みません。"
       - "名前は先に一度だけ解決するので、DNS の時間が距離の値に混ざりません。"
       - "public IP と ASN、Cloudflare PoP、NAT と tunnel の有無もあわせて示します。"
-      - "画面にはアドレスをそのまま出し、--redact は --json にだけ効きます。"
+      - "通常はアドレスを表示します。--redact は画面と JSON のアドレスを伏せます。"
       - "terminal では進捗行が確認できた地域の数を示します。q で中断します。"
       - "-v を渡すと事業者ごとの値をすべて開きます。"
   listen:
@@ -100,6 +112,7 @@ command:
       udp: "バインドされた UDP socket だけを表示します"
       unix: "unix domain socket だけを表示します"
       all: "TCP と UDP、unix domain socket をすべて表示します"
+      watch: "中断するまで開閉する port を表示"
       verbose: "アカウントと descriptor、キューの列を開きます"
     notes:
       - "既定は LISTEN 状態の TCP socket とバインドされた UDP socket です。"
@@ -193,7 +206,7 @@ command:
     summary: "command デフォルトの設定"
     notes:
       - "wizard は既存値を保ち、選択した section だけを変更します。"
-      - "config.yaml 全体を表示してから atomic に保存します。"
+      - "設定全体を表示してから atomic に保存します。"
       - "terminal が必要で、取消は exit code 4 です。"
   update:
     summary: "最新 release の導入"

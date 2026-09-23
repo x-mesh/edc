@@ -43,11 +43,41 @@ observe:
       host: "host の情報を読めませんでした: %v"
       resource: "resource を読めませんでした: %v"
 
+  watch:
+    interval_invalid: "interval は秒の数値(例 0.1)または Go duration で指定してください"
+    interval_minimum: "interval は最低 %s です"
+    options_invalid: "duration は 0 以上、期待 HTTP status は 100-599 です"
+    summary: "%d 回測定: pass %d、warn %d、fail %d・%s"
+    latency_summary: "遅延 min/avg/p95/max %d/%d/%d/%dms・最長連続失敗 %s"
+
+  dns_compare:
+    resolver_ip: "resolver は IP アドレスを指定してください: %s"
+    summary: "resolver %d 件を比較、一致=%t"
+    details: "resolver ごとの応答"
+
   probe:
     cancelled: "probe を中断しました"
     tcp_connected: "%s に接続しました (%s)"
+    peer_ip: "接続先 IP %s"
+    proxy_peer_ip: "proxy 接続先 IP %s"
+    final_request: "最終リクエスト"
+    days_remaining: "残り %d 日"
+    http_redirect: "redirect %d 回 → %s"
+    ping_loss: "パケット損失 %s%% (受信 %d/%d)"
+    ping_target: "対象 %s"
+    ping_average: "平均 RTT %sms"
+    endpoints_dns_failed: "DNS 参照に失敗したため確認する IP がありません"
+    endpoints_empty: "DNS 応答に IP がありません"
+    endpoints_summary: "IP %d 件: pass %d、warn %d、fail %d、skip %d"
+    endpoints_details: "IP ごとの結果"
+    owner_private: "プライベート/ローカル"
+    owner_unknown: "不明"
+    owner_unavailable: "参照不可"
+    owner_source: "ASN・運用者: RIPEstat の経路/登録情報"
+    lb_unknown: "LB: DNS と endpoint の確認だけでは判定不可"
     certificate_below_minimum: "証明書の残りは %d 日で、基準の %d 日より短いです"
     certificate_expiring: "証明書の残りは %d 日です"
+    certificate_expires_on: "有効期限 %s UTC"
     status_mismatch: "HTTP %d、期待値 %d"
     too_many_redirects: "redirect が 10 回を超えました"
     invalid_url: "正しくない URL: %s"
@@ -56,6 +86,7 @@ observe:
 
   listen:
     label: "接続を待つソケット"
+    watch_summary: "socket 変化: open %d、close %d、error %d・%s"
     column:
       port: "ポート"
       proto: "プロトコル"

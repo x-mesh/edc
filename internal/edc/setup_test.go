@@ -38,6 +38,57 @@ func TestSetupCreatesConfigWithSecureModes(t *testing.T) {
 	}
 }
 
+func TestSetupCreatesTOMLWithSecureModes(t *testing.T) {
+	directory := filepath.Join(t.TempDir(), "edc")
+	path := filepath.Join(directory, "config.toml")
+	var output, stderr strings.Builder
+	if code := runSetupWithIO(nil, strings.NewReader(setupMinimalInput("y")), &output, &stderr, true, path); code != 0 {
+		t.Fatalf("exit=%d stderr=%q output=%q", code, stderr.String(), output.String())
+	}
+	config, err := loadConfigAt(path)
+	if err != nil || config.Lang == "" || config.Defaults.Common.Timeout != nil {
+		t.Fatalf("TOML config = %#v, error = %v", config, err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil || !strings.Contains(string(data), "lang = ") || strings.Contains(string(data), "lang:") {
+		t.Fatalf("TOML file = %q, error = %v", data, err)
+	}
+	fileInfo, _ := os.Stat(path)
+	directoryInfo, _ := os.Stat(directory)
+	if fileInfo.Mode().Perm() != 0o600 || directoryInfo.Mode().Perm() != 0o700 {
+		t.Fatalf("modes file=%o dir=%o", fileInfo.Mode().Perm(), directoryInfo.Mode().Perm())
+	}
+}
+
+func TestSetupMigratesLinuxYAMLToTOML(t *testing.T) {
+	directory := filepath.Join(t.TempDir(), "edc")
+	legacy := filepath.Join(directory, "config.yaml")
+	path := filepath.Join(directory, "config.toml")
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	legacyData := []byte("lang: ja\ndefaults:\n  common: {timeout: 33s}\n")
+	if err := os.WriteFile(legacy, legacyData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var output, stderr strings.Builder
+	if code := runSetupWithIO(nil, strings.NewReader(setupMinimalInput("y")), &output, &stderr, true, path); code != 0 {
+		t.Fatalf("exit=%d stderr=%q output=%q", code, stderr.String(), output.String())
+	}
+	config, err := loadConfigAt(path)
+	if err != nil || config.Lang != "ja" || config.Defaults.Common.Timeout.Duration.String() != "33s" {
+		t.Fatalf("TOML config = %#v, error = %v", config, err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil || !strings.Contains(string(data), "[defaults.common]") {
+		t.Fatalf("TOML file = %q, error = %v", data, err)
+	}
+	remaining, err := os.ReadFile(legacy)
+	if err != nil || string(remaining) != string(legacyData) {
+		t.Fatalf("legacy YAML changed: %q, error = %v", remaining, err)
+	}
+}
+
 func TestSetupOnlyAddsSelectedSections(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "edc", "config.yaml")
 	// language; common no; log yes and retain its three recommended values; remaining sections no; save yes.

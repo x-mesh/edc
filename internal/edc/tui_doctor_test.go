@@ -72,6 +72,14 @@ func TestDoctorModelRedactsAddresses(t *testing.T) {
 	}
 }
 
+func TestDoctorModelShowsAddresses(t *testing.T) {
+	model := newDoctorModel("example.com", []string{"dns.lookup"}, false, false, nil)
+	updated := doctorAfter(t, model, doctorResultMsg{name: "dns.lookup", result: Result{Probe: "dns.lookup", Status: StatusPass, Summary: "example.com → 192.0.2.10"}})
+	if view := updated.View().Content; !strings.Contains(view, "192.0.2.10") {
+		t.Fatalf("view omitted the address: %q", view)
+	}
+}
+
 func TestDoctorModelAddsUnknownProbe(t *testing.T) {
 	model := newDoctorModel("example.com", []string{"dns.lookup"}, false, false, nil)
 	updated := doctorAfter(t, model, doctorResultMsg{name: "net.quality", result: Result{Probe: "net.quality", Status: StatusSkip, Summary: "macOS 전용"}})

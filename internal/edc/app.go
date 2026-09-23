@@ -39,7 +39,7 @@ func Run(args []string, version string) int {
 	config, err := loadConfigAt(configPath())
 	if err != nil {
 		activeLang = resolveLanguage(os.Getenv(languageEnv), readConfigLanguageAt(configPath()))
-		fmt.Fprintln(os.Stderr, T("cli.config.invalid", configError(configPath(), err)))
+		fmt.Fprintln(os.Stderr, T("cli.config.invalid", configError(configReadPath(configPath()), err)))
 		return 2
 	}
 	activeLang = resolveLanguage(os.Getenv(languageEnv), config.Lang)
@@ -70,6 +70,8 @@ func Run(args []string, version string) int {
 		return 0
 	case "top":
 		return runTop(args[1:], version)
+	case "watch":
+		return runWatch(args[1:])
 	case "info":
 		return runInfo(args[1:], version)
 	case "doctor":
@@ -121,6 +123,7 @@ func runDoctor(args []string, version string) int {
 	set.SetOutput(os.Stderr)
 	bindCommon(set, &options)
 	profile := set.String("profile", configuredString(activeConfig.Defaults.Doctor.Profile, "default"), T("command.doctor.option.profile"))
+	allIPs := set.Bool("all-ips", false, T("command.doctor.option.all_ips"))
 	if err := set.Parse(args); err != nil {
 		return 2
 	}
@@ -151,11 +154,12 @@ func runDoctor(args []string, version string) int {
 	defer cancel()
 	deadline, cancelDeadline := context.WithTimeout(ctx, options.timeout)
 	defer cancelDeadline()
+	dnsResult := sync.OnceValue(func() Result { return probeDNS(deadline, host) })
 	probes := []doctorProbe{
 		{name: "net.interfaces", run: func(context.Context) Result { return probeInterfaces() }},
 		{name: "net.route", run: func(ctx context.Context) Result { return probeRoute(ctx, host) }},
 		{name: "dns.config", run: probeDNSConfig},
-		{name: "dns.lookup", run: func(ctx context.Context) Result { return probeDNS(ctx, host) }},
+		{name: "dns.lookup", run: func(context.Context) Result { return dnsResult() }},
 		{name: "net.ping", run: func(ctx context.Context) Result { return probePing(ctx, host) }},
 		{name: "tcp.check", run: func(ctx context.Context) Result { return probeTCP(ctx, address) }},
 		{name: "tls.check", run: func(ctx context.Context) Result {
@@ -170,7 +174,16 @@ func runDoctor(args []string, version string) int {
 	if *profile == "full" {
 		probes = append(probes, doctorProbe{name: "net.quality", run: probeQuality})
 	}
+	if *allIPs {
+		_, port, _ := net.SplitHostPort(address)
+		probes = append(probes, doctorProbe{name: endpointProbeID, run: func(ctx context.Context) Result {
+			return probeAllIPs(ctx, dnsResult(), host, port, rawURL)
+		}})
+	}
 	target := map[string]interface{}{"input": input, "host": host, "address": address, "url": rawURL}
+	if *allIPs {
+		target["all_ips"] = true
+	}
 	if options.jsonPath == "" && liveTerminal() {
 		return runDoctorLive(deadline, cancel, probes, options, version, started, input, target)
 	}
@@ -180,9 +193,9 @@ func runDoctor(args []string, version string) int {
 
 func runDNS(args []string, version string) int {
 	if len(args) == 0 {
-		choice, ok := promptMissingChoice("edc dns", []string{"lookup", "config"})
+		choice, ok := promptMissingChoice("edc dns", []string{"lookup", "compare", "config"})
 		if !ok {
-			fmt.Fprintln(os.Stderr, T("cli.usage", "edc dns <lookup|config> ..."))
+			fmt.Fprintln(os.Stderr, T("cli.usage", "edc dns <lookup|compare|config> ..."))
 			return 2
 		}
 		args = []string{choice}
@@ -192,8 +205,10 @@ func runDNS(args []string, version string) int {
 		return runTargetProbe(args[1:], version, "dns lookup", "dns.lookup", T("cli.prompt.host"), probeDNS)
 	case "config":
 		return runSimple(args[1:], version, "dns config", "dns.config", probeDNSConfig)
+	case "compare":
+		return runDNSCompare(args[1:], version)
 	default:
-		fmt.Fprintln(os.Stderr, T("cli.usage", "edc dns <lookup|config> ..."))
+		fmt.Fprintln(os.Stderr, T("cli.usage", "edc dns <lookup|compare|config> ..."))
 		return 2
 	}
 }

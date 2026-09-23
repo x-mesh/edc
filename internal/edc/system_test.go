@@ -89,6 +89,36 @@ func TestResolveRouteAddressKeepsLiterals(t *testing.T) {
 	}
 }
 
+func TestRouteResultShowsGatewayAndInterface(t *testing.T) {
+	cases := []struct {
+		platform string
+		output   string
+		want     string
+	}{
+		{"darwin", "route to: 192.0.2.10\ngateway: 192.0.2.1\ninterface: en1\n", "route to: 192.0.2.10, via 192.0.2.1, dev en1"},
+		{"linux", "192.0.2.10 via 192.0.2.1 dev eth0 src 192.0.2.2\n", "route to: 192.0.2.10, via 192.0.2.1, dev eth0"},
+		{"linux", "192.0.2.10 dev eth0 src 192.0.2.2\n", "route to: 192.0.2.10, dev eth0"},
+		{"linux", "local 127.0.0.1 dev lo src 127.0.0.1\n", "route to: 127.0.0.1, dev lo"},
+	}
+	for _, test := range cases {
+		result := routeResult(Result{Status: StatusPass, Evidence: []Evidence{{Label: "output", Value: test.output}}}, test.platform)
+		if result.Summary != test.want || result.Metrics["interface"] == nil {
+			t.Fatalf("route result = %#v, want %q", result, test.want)
+		}
+	}
+}
+
+func TestPingResultShowsLossAndAverage(t *testing.T) {
+	failed := pingResult(Result{Status: StatusFail, Summary: "exit status 2: PING host (192.0.2.10): 56 data bytes\n4 packets transmitted, 0 packets received, 100.0% packet loss", Error: &DiagnosticError{Kind: "exit_2"}})
+	if failed.Status != StatusFail || failed.Metrics["packet_loss_percent"] != 100.0 || failed.Metrics["target_ip"] != "192.0.2.10" || !strings.Contains(failed.Summary, "0/4") || failed.Error.Kind != "exit_2" {
+		t.Fatalf("failed ping = %#v", failed)
+	}
+	passed := pingResult(Result{Status: StatusPass, Evidence: []Evidence{{Label: "output", Value: "4 packets transmitted, 4 received, 0% packet loss\nrtt min/avg/max/mdev = 1.0/2.5/3.0/0.5 ms"}}})
+	if passed.Metrics["avg_rtt_ms"] != 2.5 || !strings.Contains(passed.Summary, "2.5ms") {
+		t.Fatalf("passed ping = %#v", passed)
+	}
+}
+
 // lsof와 ss의 첫 줄은 열 제목이라 정보가 없다. 제목만 요약에 내보내면 소켓을 하나도 찾지 못한
 // 것처럼 읽힌다. 개수는 제목을 빼고 세되, 소켓이 없으면 제목 줄 자체가 없다.
 func TestCountSocketRows(t *testing.T) {

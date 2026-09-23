@@ -43,11 +43,41 @@ observe:
       host: "host 정보를 읽지 못했습니다: %v"
       resource: "resource를 읽지 못했습니다: %v"
 
+  watch:
+    interval_invalid: "interval은 초 단위 숫자(예: 0.1) 또는 Go duration이어야 합니다"
+    interval_minimum: "interval은 최소 %s여야 합니다"
+    options_invalid: "duration은 0 이상, 기대 HTTP status는 100-599여야 합니다"
+    summary: "%d회 측정: pass %d, warn %d, fail %d · %s"
+    latency_summary: "지연 min/avg/p95/max %d/%d/%d/%dms · 최장 연속 실패 %s"
+
+  dns_compare:
+    resolver_ip: "resolver는 IP 주소여야 합니다: %s"
+    summary: "resolver %d개 비교, 일치=%t"
+    details: "resolver별 응답"
+
   probe:
     cancelled: "probe를 취소했습니다"
     tcp_connected: "%s 연결 성공 (%s)"
+    peer_ip: "연결 IP %s"
+    proxy_peer_ip: "proxy 연결 IP %s"
+    final_request: "최종 요청"
+    days_remaining: "%d일 남음"
+    http_redirect: "redirect %d회 → %s"
+    ping_loss: "패킷 손실 %s%% (수신 %d/%d)"
+    ping_target: "대상 %s"
+    ping_average: "평균 RTT %sms"
+    endpoints_dns_failed: "DNS 조회 실패로 검사할 IP가 없습니다"
+    endpoints_empty: "DNS 응답에 IP가 없습니다"
+    endpoints_summary: "IP %d개: pass %d, warn %d, fail %d, skip %d"
+    endpoints_details: "IP별 결과"
+    owner_private: "사설/로컬"
+    owner_unknown: "알 수 없음"
+    owner_unavailable: "조회 실패"
+    owner_source: "ASN·운영 주체: RIPEstat 라우팅/등록 정보"
+    lb_unknown: "LB: DNS와 endpoint 검사만으로는 판단할 수 없음"
     certificate_below_minimum: "인증서 만료까지 %d일 남아 기준 %d일보다 짧습니다"
     certificate_expiring: "인증서 만료까지 %d일 남았습니다"
+    certificate_expires_on: "만료일 %s UTC"
     status_mismatch: "HTTP %d, 기대값 %d"
     too_many_redirects: "redirect가 10회를 초과했습니다"
     invalid_url: "유효하지 않은 URL: %s"
@@ -56,6 +86,7 @@ observe:
 
   listen:
     label: "연결을 기다리는 소켓"
+    watch_summary: "socket 변화: 열림 %d, 닫힘 %d, 오류 %d · %s"
     column:
       port: "포트"
       proto: "프로토콜"

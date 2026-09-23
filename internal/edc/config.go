@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pelletier/go-toml/v2"
 	"gopkg.in/yaml.v3"
 )
 
@@ -32,7 +33,6 @@ var configScalarTypes = map[string]string{
 	"defaults.remote.output_limit": "!!int", "defaults.remote.parallel": "!!int",
 }
 
-// configDuration keeps durations human-readable in YAML while still validating them at load time.
 type configDuration struct {
 	Duration time.Duration
 }
@@ -53,85 +53,128 @@ func (duration configDuration) MarshalYAML() (interface{}, error) {
 	return duration.Duration.String(), nil
 }
 
+func (duration *configDuration) UnmarshalText(value []byte) error {
+	parsed, err := time.ParseDuration(string(value))
+	if err != nil {
+		return err
+	}
+	duration.Duration = parsed
+	return nil
+}
+
+func (duration configDuration) MarshalText() ([]byte, error) {
+	return []byte(duration.Duration.String()), nil
+}
+
 type edcConfig struct {
-	Lang     string         `yaml:"lang,omitempty"`
-	Defaults configDefaults `yaml:"defaults,omitempty"`
+	Lang     string         `yaml:"lang,omitempty" toml:"lang,omitempty"`
+	Defaults configDefaults `yaml:"defaults,omitempty" toml:"defaults,omitempty"`
 }
 
 type configDefaults struct {
-	Common  commonConfig  `yaml:"common,omitempty"`
-	Doctor  doctorConfig  `yaml:"doctor,omitempty"`
-	TLS     tlsConfig     `yaml:"tls,omitempty"`
-	HTTP    httpConfig    `yaml:"http,omitempty"`
-	Top     topConfig     `yaml:"top,omitempty"`
-	Info    infoConfig    `yaml:"info,omitempty"`
-	Where   whereConfig   `yaml:"where,omitempty"`
-	Capture captureConfig `yaml:"capture,omitempty"`
-	Remote  remoteConfig  `yaml:"remote,omitempty"`
-	Update  updateConfig  `yaml:"update,omitempty"`
-	Log     logConfig     `yaml:"log,omitempty"`
+	Common  commonConfig  `yaml:"common,omitempty" toml:"common,omitempty"`
+	Doctor  doctorConfig  `yaml:"doctor,omitempty" toml:"doctor,omitempty"`
+	TLS     tlsConfig     `yaml:"tls,omitempty" toml:"tls,omitempty"`
+	HTTP    httpConfig    `yaml:"http,omitempty" toml:"http,omitempty"`
+	Top     topConfig     `yaml:"top,omitempty" toml:"top,omitempty"`
+	Info    infoConfig    `yaml:"info,omitempty" toml:"info,omitempty"`
+	Where   whereConfig   `yaml:"where,omitempty" toml:"where,omitempty"`
+	Capture captureConfig `yaml:"capture,omitempty" toml:"capture,omitempty"`
+	Remote  remoteConfig  `yaml:"remote,omitempty" toml:"remote,omitempty"`
+	Update  updateConfig  `yaml:"update,omitempty" toml:"update,omitempty"`
+	Log     logConfig     `yaml:"log,omitempty" toml:"log,omitempty"`
 }
 
 type commonConfig struct {
-	Timeout *configDuration `yaml:"timeout,omitempty"`
-	JSON    *string         `yaml:"json,omitempty"`
-	Verbose *bool           `yaml:"verbose,omitempty"`
-	Redact  *bool           `yaml:"redact,omitempty"`
+	Timeout *configDuration `yaml:"timeout,omitempty" toml:"timeout,omitempty"`
+	JSON    *string         `yaml:"json,omitempty" toml:"json,omitempty"`
+	Verbose *bool           `yaml:"verbose,omitempty" toml:"verbose,omitempty"`
+	Redact  *bool           `yaml:"redact,omitempty" toml:"redact,omitempty"`
 }
 type doctorConfig struct {
-	Profile *string `yaml:"profile,omitempty"`
+	Profile *string `yaml:"profile,omitempty" toml:"profile,omitempty"`
 }
 type tlsConfig struct {
-	MinDays *int `yaml:"min_days,omitempty"`
+	MinDays *int `yaml:"min_days,omitempty" toml:"min_days,omitempty"`
 }
 type httpConfig struct {
-	ExpectStatus *int `yaml:"expect_status,omitempty"`
+	ExpectStatus *int `yaml:"expect_status,omitempty" toml:"expect_status,omitempty"`
 }
 type topConfig struct {
-	Interval *configDuration `yaml:"interval,omitempty"`
-	Count    *int            `yaml:"count,omitempty"`
-	NoHeader *bool           `yaml:"no_header,omitempty"`
-	JSON     *string         `yaml:"json,omitempty"`
+	Interval *configDuration `yaml:"interval,omitempty" toml:"interval,omitempty"`
+	Count    *int            `yaml:"count,omitempty" toml:"count,omitempty"`
+	NoHeader *bool           `yaml:"no_header,omitempty" toml:"no_header,omitempty"`
+	JSON     *string         `yaml:"json,omitempty" toml:"json,omitempty"`
 }
 type infoConfig struct {
-	Public  *bool           `yaml:"public,omitempty"`
-	Timeout *configDuration `yaml:"timeout,omitempty"`
-	Verbose *bool           `yaml:"verbose,omitempty"`
+	Public  *bool           `yaml:"public,omitempty" toml:"public,omitempty"`
+	Timeout *configDuration `yaml:"timeout,omitempty" toml:"timeout,omitempty"`
+	Verbose *bool           `yaml:"verbose,omitempty" toml:"verbose,omitempty"`
 }
 type whereConfig struct {
-	Provider *string `yaml:"provider,omitempty"`
-	Count    *int    `yaml:"count,omitempty"`
+	Provider *string `yaml:"provider,omitempty" toml:"provider,omitempty"`
+	Count    *int    `yaml:"count,omitempty" toml:"count,omitempty"`
 }
 type captureConfig struct {
-	Interface *string         `yaml:"interface,omitempty"`
-	Duration  *configDuration `yaml:"duration,omitempty"`
-	Count     *int            `yaml:"count,omitempty"`
-	Filter    *string         `yaml:"filter,omitempty"`
-	Output    *string         `yaml:"output,omitempty"`
+	Interface *string         `yaml:"interface,omitempty" toml:"interface,omitempty"`
+	Duration  *configDuration `yaml:"duration,omitempty" toml:"duration,omitempty"`
+	Count     *int            `yaml:"count,omitempty" toml:"count,omitempty"`
+	Filter    *string         `yaml:"filter,omitempty" toml:"filter,omitempty"`
+	Output    *string         `yaml:"output,omitempty" toml:"output,omitempty"`
 }
 type remoteConfig struct {
-	Inventory      *string         `yaml:"inventory,omitempty"`
-	Recipe         *string         `yaml:"recipe,omitempty"`
-	ConnectTimeout *configDuration `yaml:"connect_timeout,omitempty"`
-	OutputLimit    *int            `yaml:"output_limit,omitempty"`
-	Parallel       *int            `yaml:"parallel,omitempty"`
+	Inventory      *string         `yaml:"inventory,omitempty" toml:"inventory,omitempty"`
+	Recipe         *string         `yaml:"recipe,omitempty" toml:"recipe,omitempty"`
+	ConnectTimeout *configDuration `yaml:"connect_timeout,omitempty" toml:"connect_timeout,omitempty"`
+	OutputLimit    *int            `yaml:"output_limit,omitempty" toml:"output_limit,omitempty"`
+	Parallel       *int            `yaml:"parallel,omitempty" toml:"parallel,omitempty"`
 }
 type updateConfig struct {
-	Timeout *configDuration `yaml:"timeout,omitempty"`
+	Timeout *configDuration `yaml:"timeout,omitempty" toml:"timeout,omitempty"`
 }
 type logConfig struct {
-	Stream         *string `yaml:"stream,omitempty"`
-	Output         *string `yaml:"output,omitempty"`
-	CommandDisplay *string `yaml:"command_display,omitempty"`
+	Stream         *string `yaml:"stream,omitempty" toml:"stream,omitempty"`
+	Output         *string `yaml:"output,omitempty" toml:"output,omitempty"`
+	CommandDisplay *string `yaml:"command_display,omitempty" toml:"command_display,omitempty"`
 }
 
 var activeConfig edcConfig
+
+func configReadPath(path string) string {
+	legacyMac := ""
+	if runtime.GOOS == "darwin" && path == configPath() {
+		if directory, err := os.UserConfigDir(); err == nil {
+			legacyMac = filepath.Join(directory, "edc", "config.yaml")
+		}
+	}
+	return configReadPathFor(path, legacyMac)
+}
+
+func configReadPathFor(path, legacyMac string) string {
+	if filepath.Ext(path) != ".toml" {
+		return path
+	}
+	if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+		return path
+	}
+	legacy := strings.TrimSuffix(path, ".toml") + ".yaml"
+	if _, err := os.Lstat(legacy); err == nil {
+		return legacy
+	}
+	if legacyMac != "" {
+		if _, err := os.Lstat(legacyMac); err == nil {
+			return legacyMac
+		}
+	}
+	return path
+}
 
 func loadConfigAt(path string) (edcConfig, error) {
 	var config edcConfig
 	if path == "" {
 		return config, nil
 	}
+	path = configReadPath(path)
 	info, err := os.Lstat(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return config, nil
@@ -154,20 +197,26 @@ func loadConfigAt(path string) (edcConfig, error) {
 	if len(data) > maxConfigBytes {
 		return config, fmt.Errorf("config exceeds %d bytes", maxConfigBytes)
 	}
-	if err := validateConfigStringTypes(data); err != nil {
-		return config, err
-	}
-	decoder := yaml.NewDecoder(bytes.NewReader(data))
-	decoder.KnownFields(true)
-	if err := decoder.Decode(&config); err != nil && !errors.Is(err, io.EOF) {
-		return edcConfig{}, err
-	}
-	var extra interface{}
-	if err := decoder.Decode(&extra); err != io.EOF {
-		if err == nil {
-			err = errors.New("multiple YAML documents are not supported")
+	if filepath.Ext(path) == ".toml" {
+		if err := toml.NewDecoder(bytes.NewReader(data)).DisallowUnknownFields().Decode(&config); err != nil {
+			return edcConfig{}, err
 		}
-		return edcConfig{}, err
+	} else {
+		if err := validateConfigStringTypes(data); err != nil {
+			return config, err
+		}
+		decoder := yaml.NewDecoder(bytes.NewReader(data))
+		decoder.KnownFields(true)
+		if err := decoder.Decode(&config); err != nil && !errors.Is(err, io.EOF) {
+			return edcConfig{}, err
+		}
+		var extra interface{}
+		if err := decoder.Decode(&extra); err != io.EOF {
+			if err == nil {
+				err = errors.New("multiple YAML documents are not supported")
+			}
+			return edcConfig{}, err
+		}
 	}
 	if err := validateConfig(config); err != nil {
 		return edcConfig{}, err
@@ -344,7 +393,7 @@ func configuredCommon(timeout time.Duration) commonOptions {
 		timeout:  configuredDuration(c.Timeout, timeout),
 		jsonPath: configuredString(c.JSON, ""),
 		verbose:  configuredBool(c.Verbose, false),
-		redact:   configuredBool(c.Redact, true),
+		redact:   configuredBool(c.Redact, false),
 	}
 }
 
@@ -359,7 +408,7 @@ func recommendedConfig() edcConfig {
 		lang = defaultLanguage
 	}
 	return edcConfig{Lang: lang, Defaults: configDefaults{
-		Common: commonConfig{Timeout: durationPointer(15 * time.Second), JSON: stringPointer(""), Verbose: boolPointer(false), Redact: boolPointer(true)},
+		Common: commonConfig{Timeout: durationPointer(15 * time.Second), JSON: stringPointer(""), Verbose: boolPointer(false), Redact: boolPointer(false)},
 		Doctor: doctorConfig{Profile: stringPointer("default")}, TLS: tlsConfig{MinDays: intPointer(14)}, HTTP: httpConfig{ExpectStatus: intPointer(200)},
 		Top:     topConfig{Interval: durationPointer(2 * time.Second), Count: intPointer(10), NoHeader: boolPointer(false), JSON: stringPointer("")},
 		Info:    infoConfig{Public: boolPointer(false), Timeout: durationPointer(3 * time.Second), Verbose: boolPointer(false)},

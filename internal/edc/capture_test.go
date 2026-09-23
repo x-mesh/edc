@@ -2,7 +2,8 @@ package edc
 
 import (
 	"encoding/json"
-	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -250,28 +251,67 @@ func TestTraceGroupByModes(t *testing.T) {
 	}
 }
 
-func TestCaptureCommandUsesTcpdumpPath(t *testing.T) {
-	previous := captureLookPath
-	previousEuid := captureGeteuid
-	defer func() {
-		captureLookPath = previous
-		captureGeteuid = previousEuid
-	}()
-	captureGeteuid = func() int { return 0 }
-	captureLookPath = func(name string) (string, error) {
-		if name == "tcpdump" {
-			return "/usr/sbin/tcpdump", nil
+func TestCaptureCommandIgnoresPATH(t *testing.T) {
+	fake := t.TempDir()
+	for _, name := range []string{"tcpdump", "sudo"} {
+		if err := os.WriteFile(filepath.Join(fake, name), []byte("#!/bin/sh\n"), 0o755); err != nil {
+			t.Fatal(err)
 		}
-		return "", errors.New("not found")
 	}
+	t.Setenv("PATH", fake)
+	stubCaptureExecutables(t, "/usr/bin/tcpdump", "/usr/bin/sudo")
 
+	captureGeteuid = func() int { return 1000 }
 	path, args, err := captureCommand([]string{"-i", "eth0"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if path != "/usr/sbin/tcpdump" || strings.Join(args, " ") != "-i eth0" {
+	if path != "/usr/bin/sudo" || strings.Join(args, " ") != "/usr/bin/tcpdump -i eth0" {
 		t.Fatalf("capture command = %q %q", path, args)
 	}
+
+	captureGeteuid = func() int { return 0 }
+	path, args, err = captureCommand([]string{"-i", "eth0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if path != "/usr/bin/tcpdump" || strings.Join(args, " ") != "-i eth0" {
+		t.Fatalf("root capture command = %q %q", path, args)
+	}
+}
+
+func TestCaptureCommandPrefersSbinTcpdump(t *testing.T) {
+	stubCaptureExecutables(t, "/usr/sbin/tcpdump", "/usr/bin/tcpdump")
+	captureGeteuid = func() int { return 0 }
+
+	path, _, err := captureCommand(nil)
+	if err != nil || path != "/usr/sbin/tcpdump" {
+		t.Fatalf("capture command = %q, %v", path, err)
+	}
+}
+
+func TestCaptureCommandReportsMissingBinaries(t *testing.T) {
+	stubCaptureExecutables(t)
+	captureGeteuid = func() int { return 1000 }
+	if _, _, err := captureCommand(nil); err == nil || !strings.Contains(err.Error(), "/usr/sbin/tcpdump") {
+		t.Fatalf("missing tcpdump error = %v", err)
+	}
+
+	stubCaptureExecutables(t, "/usr/sbin/tcpdump")
+	if _, _, err := captureCommand(nil); err == nil || !strings.Contains(err.Error(), "/usr/bin/sudo") {
+		t.Fatalf("missing sudo error = %v", err)
+	}
+}
+
+func stubCaptureExecutables(t *testing.T, present ...string) {
+	t.Helper()
+	previous, previousEuid := captureExecutable, captureGeteuid
+	t.Cleanup(func() { captureExecutable, captureGeteuid = previous, previousEuid })
+	available := map[string]bool{}
+	for _, path := range present {
+		available[path] = true
+	}
+	captureExecutable = func(path string) bool { return available[path] }
 }
 
 func TestCapturePlanDetailListsEveryCondition(t *testing.T) {

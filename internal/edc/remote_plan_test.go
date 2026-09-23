@@ -42,17 +42,17 @@ func TestRemoteDryRunWritesPlanWithoutRunning(t *testing.T) {
 	if plan.Group != "daily" || plan.Parallel != 2 || plan.RecipeName != "daily" || len(plan.Hosts) != 2 || len(plan.Steps) != 2 {
 		t.Fatalf("plan = %#v", plan)
 	}
-	if strings.Contains(string(data), "192.0.2.10") || !strings.HasPrefix(plan.Hosts[0].Target, "<ip:") {
-		t.Fatalf("host address must be redacted: %s", data)
+	if !strings.Contains(string(data), "192.0.2.10") || plan.Hosts[0].Target != "192.0.2.10" {
+		t.Fatalf("host address must be visible by default: %s", data)
 	}
 	if strings.Join(plan.Steps[0].Hosts, ",") != "server,laptop" || strings.Join(plan.Steps[1].Hosts, ",") != "laptop" || plan.Steps[1].Timeout != "30s" {
 		t.Fatalf("steps = %#v", plan.Steps)
 	}
-	if code := runRemoteRun("daily", []string{"--inventory", inventoryPath, "--recipe", recipePath, "--dry-run", "--redact=false", "--json", output}, "test"); code != 0 {
-		t.Fatalf("unredacted dry-run exit code = %d", code)
+	if code := runRemoteRun("daily", []string{"--inventory", inventoryPath, "--recipe", recipePath, "--dry-run", "--redact", "--json", output}, "test"); code != 0 {
+		t.Fatalf("redacted dry-run exit code = %d", code)
 	}
-	if data, _ = os.ReadFile(output); !strings.Contains(string(data), "192.0.2.10") {
-		t.Fatalf("--redact=false must keep the address: %s", data)
+	if data, _ = os.ReadFile(output); strings.Contains(string(data), "192.0.2.10") {
+		t.Fatalf("--redact must hide the address: %s", data)
 	}
 }
 

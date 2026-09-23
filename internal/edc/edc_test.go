@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -48,6 +49,24 @@ func TestProbeHTTP(t *testing.T) {
 	if result.Metrics["status_code"] != http.StatusNoContent {
 		t.Errorf("status_code = %#v", result.Metrics["status_code"])
 	}
+	if result.Metrics["peer_ip"] == "" || !strings.Contains(result.Summary, "TTFB") {
+		t.Errorf("HTTP connection details = %#v", result)
+	}
+}
+
+func TestProbeHTTPRedirectShowsFinalURL(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path == "/start" {
+			http.Redirect(writer, request, "/final", http.StatusFound)
+			return
+		}
+		writer.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+	result := probeHTTP(context.Background(), server.URL+"/start")
+	if result.Status != StatusPass || result.Metrics["redirects"] != 1 || !strings.Contains(result.Summary, server.URL+"/final") || !strings.Contains(result.Summary, "TTFB") || !strings.Contains(result.Summary, T("observe.probe.final_request")) {
+		t.Fatalf("redirect result = %#v", result)
+	}
 }
 
 func TestProbeTLS(t *testing.T) {
@@ -82,6 +101,64 @@ func TestRedactReport(t *testing.T) {
 	address, _ := report.Target["address"].(string)
 	if !strings.Contains(address, "<ip:") {
 		t.Errorf("redaction token missing: %s", address)
+	}
+}
+
+func TestObservationRedactionIsOptIn(t *testing.T) {
+	previousConfig, previousOutput := activeConfig, os.Stdout
+	activeConfig = edcConfig{}
+	defer func() { activeConfig, os.Stdout = previousConfig, previousOutput }()
+	probe := func(context.Context, string) Result {
+		return Result{Probe: "dns.lookup", Status: StatusPass, Summary: "example.test → 192.0.2.10", Metrics: map[string]interface{}{"addresses": []string{"192.0.2.10"}}}
+	}
+	terminal := func(args ...string) string {
+		t.Helper()
+		read, write, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		os.Stdout = write
+		if code := runTargetProbe(args, "test", "dns lookup", "dns.lookup", "host", probe); code != 0 {
+			t.Fatalf("terminal exit code = %d", code)
+		}
+		write.Close()
+		defer read.Close()
+		output, err := io.ReadAll(read)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(output)
+	}
+	if output := terminal("example.test"); !strings.Contains(output, "192.0.2.10") {
+		t.Fatalf("default output = %q", output)
+	}
+	if output := terminal("--redact", "example.test"); strings.Contains(output, "192.0.2.10") || !strings.Contains(output, "<ip:") {
+		t.Fatalf("redacted output = %q", output)
+	}
+	for _, test := range []struct {
+		name   string
+		args   []string
+		redact bool
+	}{
+		{"default", nil, false},
+		{"redacted", []string{"--redact"}, true},
+	} {
+		path := filepath.Join(t.TempDir(), test.name+".json")
+		args := append(append([]string{}, test.args...), "--json", path, "example.test")
+		if code := runTargetProbe(args, "test", "dns lookup", "dns.lookup", "host", probe); code != 0 {
+			t.Fatalf("%s JSON exit code = %d", test.name, code)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var report Report
+		if err := json.Unmarshal(data, &report); err != nil {
+			t.Fatal(err)
+		}
+		if len(report.Results) != 1 || report.Redaction.Enabled != test.redact || strings.Contains(report.Results[0].Summary, "192.0.2.10") == test.redact {
+			t.Fatalf("%s JSON report = %#v", test.name, report)
+		}
 	}
 }
 

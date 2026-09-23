@@ -5,10 +5,12 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/pelletier/go-toml/v2"
 	"gopkg.in/yaml.v3"
 )
 
@@ -56,6 +58,89 @@ defaults:
 	if err != nil || empty.Lang != "" {
 		t.Fatalf("empty: config=%#v err=%v", empty, err)
 	}
+}
+
+func TestTOMLConfigRoundTripAndLegacyFallback(t *testing.T) {
+	directory := t.TempDir()
+	path := filepath.Join(directory, "config.toml")
+	legacy := filepath.Join(directory, "config.yaml")
+	if err := os.WriteFile(legacy, []byte("lang: ja\ndefaults:\n  common: {timeout: 12s}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	config, err := loadConfigAt(path)
+	if err != nil || config.Lang != "ja" || config.Defaults.Common.Timeout.Duration != 12*time.Second {
+		t.Fatalf("legacy config = %#v, error = %v", config, err)
+	}
+	config.Lang = "ko"
+	data, err := toml.Marshal(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "[defaults.common]") || !strings.Contains(string(data), `timeout = '12s'`) && !strings.Contains(string(data), `timeout = "12s"`) {
+		t.Fatalf("TOML output = %q", data)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := loadConfigAt(path)
+	if err != nil || loaded.Lang != "ko" || loaded.Defaults.Common.Timeout.Duration != 12*time.Second {
+		t.Fatalf("TOML config = %#v, error = %v", loaded, err)
+	}
+	if _, err := loadConfigAt(writeTOMLFixture(t, "[defaults.common]\nunknown = true\n")); err == nil {
+		t.Fatal("TOML unknown field was accepted")
+	}
+	if _, err := loadConfigAt(writeTOMLFixture(t, "[defaults.common]\ntimeout = 12\n")); err == nil {
+		t.Fatal("TOML duration without string was accepted")
+	}
+}
+
+func TestTOMLConfigFallsBackToOldMacOSLocation(t *testing.T) {
+	home := t.TempDir()
+	primary := filepath.Join(home, ".config", "edc", "config.toml")
+	legacy := filepath.Join(home, "Library", "Application Support", "edc", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(legacy), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacy, []byte("lang: ja\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := configReadPathFor(primary, legacy); got != legacy {
+		t.Fatalf("legacy path = %q", got)
+	}
+	config, err := loadConfigAt(configReadPathFor(primary, legacy))
+	if err != nil || config.Lang != "ja" {
+		t.Fatalf("legacy config = %#v, error = %v", config, err)
+	}
+	if err := os.MkdirAll(filepath.Dir(primary), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(primary, []byte("lang = 'ko'\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := configReadPathFor(primary, legacy); got != primary {
+		t.Fatalf("primary path = %q", got)
+	}
+}
+
+func TestTOMLRecommendedConfigRoundTrip(t *testing.T) {
+	want := recommendedConfig()
+	data, err := toml.Marshal(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := loadConfigAt(writeTOMLFixture(t, string(data)))
+	if err != nil || !reflect.DeepEqual(got, want) {
+		t.Fatalf("TOML round trip = %#v, want %#v, error = %v", got, want, err)
+	}
+}
+
+func writeTOMLFixture(t *testing.T, content string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
 
 func TestRecommendedLogOutputPathFollowsThePlatform(t *testing.T) {
@@ -133,8 +218,11 @@ func TestConfigPrecedence(t *testing.T) {
 	}
 	activeConfig = edcConfig{}
 	builtIn := parse(nil)
-	if builtIn.timeout != 9*time.Second || builtIn.verbose || !builtIn.redact {
+	if builtIn.timeout != 9*time.Second || builtIn.verbose || builtIn.redact {
 		t.Fatalf("built-in = %#v", builtIn)
+	}
+	if flagEnabled := parse([]string{"--redact"}); !flagEnabled.redact {
+		t.Fatalf("--redact = %#v", flagEnabled)
 	}
 	activeConfig.Defaults.Common = commonConfig{Timeout: durationPointer(12 * time.Second), JSON: stringPointer("report.json"), Verbose: boolPointer(true), Redact: boolPointer(true)}
 	configured := parse(nil)

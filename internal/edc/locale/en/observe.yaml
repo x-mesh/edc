@@ -43,11 +43,41 @@ observe:
       host: "edc did not read the host information: %v"
       resource: "edc did not read the resource values: %v"
 
+  watch:
+    interval_invalid: "interval must be seconds (for example 0.1) or a Go duration"
+    interval_minimum: "interval must be at least %s"
+    options_invalid: "duration must be nonnegative and expected HTTP status must be 100-599"
+    summary: "%d samples: %d pass, %d warn, %d fail in %s"
+    latency_summary: "latency min/avg/p95/max %d/%d/%d/%dms · longest failure %s"
+
+  dns_compare:
+    resolver_ip: "resolver must be an IP address: %s"
+    summary: "%d resolvers compared, matching=%t"
+    details: "resolver answers"
+
   probe:
     cancelled: "edc cancelled the probe."
     tcp_connected: "%s connected (%s)"
+    peer_ip: "peer %s"
+    proxy_peer_ip: "proxy peer %s"
+    final_request: "final request"
+    days_remaining: "%d days left"
+    http_redirect: "%d redirect(s) → %s"
+    ping_loss: "%s%% packet loss (%d/%d received)"
+    ping_target: "target %s"
+    ping_average: "avg RTT %sms"
+    endpoints_dns_failed: "DNS lookup failed; no IP addresses to check"
+    endpoints_empty: "DNS returned no IP addresses"
+    endpoints_summary: "%d IPs: %d pass, %d warn, %d fail, %d skip"
+    endpoints_details: "per-IP results"
+    owner_private: "private/local"
+    owner_unknown: "unknown"
+    owner_unavailable: "lookup unavailable"
+    owner_source: "ASN and owner: RIPEstat routing/registration data"
+    lb_unknown: "LB: cannot determine from DNS and endpoint checks"
     certificate_below_minimum: "the certificate expires in %d days, which is below the %d day limit"
     certificate_expiring: "the certificate expires in %d days"
+    certificate_expires_on: "expires %s UTC"
     status_mismatch: "HTTP %d, expected %d"
     too_many_redirects: "the request passed more than 10 redirects"
     invalid_url: "invalid URL: %s"
@@ -56,6 +86,7 @@ observe:
 
   listen:
     label: "listening sockets"
+    watch_summary: "socket changes: %d opened, %d closed, %d errors in %s"
     column:
       port: "PORT"
       proto: "PROTO"

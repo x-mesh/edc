@@ -75,12 +75,13 @@ make install PREFIX=/usr/local
 
 `edc`는 기본으로 영어를 씁니다. 한국어와 일본어도 함께 담고 있습니다.
 
-언어는 설정 파일에서 정합니다. `edc`는 `os.UserConfigDir()/edc/config.yaml`을 읽습니다. Linux에서는 `~/.config/edc/config.yaml`, macOS에서는 `~/Library/Application Support/edc/config.yaml`입니다.
+언어는 설정 파일에서 정합니다. Linux와 macOS 모두 `$XDG_CONFIG_HOME/edc/config.toml`이 설정되어 있으면 그 경로를, 아니면 `~/.config/edc/config.toml`을 읽습니다.
 
-```yaml
-# config.yaml
-lang: ko
+```toml
+lang = "ko"
 ```
+
+`config.toml`이 없으면 Linux는 `~/.config/edc/config.yaml`, macOS는 `~/Library/Application Support/edc/config.yaml`을 계속 읽습니다. `edc setup`은 기존 값을 유지한 채 새 TOML 파일을 저장하며 YAML 파일은 그대로 둡니다.
 
 한 번만 다른 언어로 보려면 `EDC_LANG`을 씁니다. 설정 파일보다 우선합니다.
 
@@ -92,24 +93,42 @@ EDC_LANG=ja edc where
 
 ## Command 기본값
 
-같은 config file에 반복 실행해도 안전한 command 기본값을 둘 수 있습니다. 우선순위는 built-in, config, 명시한 CLI option 순서입니다. `--redact=false`처럼 명시한 boolean도 config의 `redact: true`를 덮습니다. 모르는 key, 잘못된 type이나 범위가 있으면 조용히 무시하지 않고 command 실행 전에 exit code `2`로 멈춥니다.
+같은 config file에 반복 실행해도 안전한 command 기본값을 둘 수 있습니다. 우선순위는 built-in, config, 명시한 CLI option 순서입니다. 모르는 key, 잘못된 type이나 범위가 있으면 조용히 무시하지 않고 command 실행 전에 exit code `2`로 멈춥니다.
 
-terminal에서 `edc setup`을 실행하면 file을 만들거나 수정하는 wizard가 열립니다. section별로 설정하고 Enter로 기존 값을 유지하며, optional 값은 `!clear`로 제거합니다. 전체 YAML을 미리 보여 준 뒤 확인을 받아 mode `0600`으로 atomic 저장합니다. config directory는 mode `0700`이며 취소하면 exit code `4`입니다.
+terminal에서 `edc setup`을 실행하면 file을 만들거나 수정하는 wizard가 열립니다. section별로 설정하고 Enter로 기존 값을 유지하며, optional 값은 `!clear`로 제거합니다. 전체 config를 미리 보여 준 뒤 확인을 받아 mode `0600`으로 atomic 저장합니다. config directory는 mode `0700`이며 취소하면 exit code `4`입니다.
 
-```yaml
-lang: ko
-defaults:
-  common: {timeout: 15s, json: "", verbose: false, redact: true}
-  doctor: {profile: default}
-  tls: {min_days: 14}
-  http: {expect_status: 200}
-  top: {interval: 2s, count: 10, no_header: false, json: ""}
-  info: {public: false, timeout: 3s, verbose: false}
-  where: {provider: all, count: 3}
-  capture: {interface: "", duration: 15s, count: 500, filter: "", output: ""}
-  remote: {inventory: "", recipe: "", connect_timeout: 10s, output_limit: 65536, parallel: 0}
-  update: {timeout: 60s}
-  log: {stream: stderr, output: /absolute/path/to/edc.log, command_display: full}
+아래 TOML 예시는 Linux와 macOS에 공통으로 적용됩니다.
+
+```toml
+lang = "ko"
+
+[defaults.common]
+timeout = "15s"
+verbose = false
+redact = false
+
+[defaults.doctor]
+profile = "default"
+
+[defaults.tls]
+min_days = 14
+
+[defaults.capture]
+duration = "15s"
+count = 500
+
+[defaults.remote]
+connect_timeout = "10s"
+output_limit = 65536
+parallel = 0
+
+[defaults.update]
+timeout = "60s"
+
+[defaults.log]
+stream = "stderr"
+output = "/absolute/path/to/edc.log"
+command_display = "full"
 ```
 
 command별 값은 `defaults.common`을 덮습니다. positional target, URL, host, remote group과 `yes`, `force`, `dry-run`, `list`, `check` 같은 action option은 저장하지 않습니다. 저장하는 remote inventory와 recipe는 absolute path여야 합니다. 빈 path 값은 해당 기본값을 사용하지 않는다는 뜻입니다.
@@ -134,8 +153,8 @@ Setup wizard는 macOS에서 `~/Library/Logs/edc.log`, Linux에서 `${XDG_STATE_H
 # 기본 종합 진단
 ./bin/edc doctor https://example.com
 
-# machine-readable report 저장 (기본 redaction, 파일 mode 0600)
-./bin/edc doctor --json report.json https://example.com
+# redaction을 적용한 machine-readable report 저장 (파일 mode 0600)
+./bin/edc doctor --redact --json report.json https://example.com
 ./bin/edc report show report.json
 # 두 report 비교 (악화된 probe가 있으면 exit 1)
 ./bin/edc report diff before.json after.json
@@ -145,6 +164,7 @@ Setup wizard는 macOS에서 `~/Library/Logs/edc.log`, Linux에서 `${XDG_STATE_H
 
 # 개별 probe
 ./bin/edc dns lookup example.com
+./bin/edc dns compare example.com
 ./bin/edc tcp check example.com:443
 ./bin/edc tls check example.com:443
 ./bin/edc tls check --min-days 14 example.com:443
@@ -155,7 +175,11 @@ Setup wizard는 macOS에서 `~/Library/Logs/edc.log`, Linux에서 `${XDG_STATE_H
 ./bin/edc net trace example.com
 ./bin/edc net interfaces
 ./bin/edc listen              # 열려 있는 포트, --unix나 --all로 unix socket 포함
+./bin/edc listen --watch -i 0.5 --duration 10s
 ./bin/edc quality --timeout 60s
+
+# 페이지 상태 반복 확인; --duration을 생략하면 Ctrl-C까지 실행
+./bin/edc watch -i 0.1 --duration 10s https://example.com
 
 # 어느 지역이 가깝고 이 망은 어떤 모습인지
 ./bin/edc where
@@ -168,7 +192,7 @@ source <(./bin/edc completion zsh)
 ./bin/edc update --check
 ```
 
-공통 option은 `--timeout`, `--json <path|->`, `--verbose`, `--redact=true|false`입니다. Go `flag` 규칙에 따라 option은 target 앞에 둡니다.
+공통 option은 `--timeout`, `--json <path|->`, `--verbose`, `--redact`입니다. Go `flag` 규칙에 따라 option은 target 앞에 둡니다.
 
 `edc info`는 public IP를 기본으로 ipinfo.io에 조회합니다. 3초 안에 응답이 없으면 요청을 멈추고 그 줄을 빼고 출력합니다. 요청을 끄려면 `--public=false`를, 제한 시간을 바꾸려면 `--timeout`을, 실패 원인을 보려면 `-v`를 씁니다.
 
@@ -176,13 +200,19 @@ source <(./bin/edc completion zsh)
 
 ![edc dns lookup example.com이 주소 목록을, edc dns config가 resolver 설정을 각각 PASS로 출력하는 화면](docs/media/dns.gif)
 
-`--redact`가 기본으로 켜져 있어 IP는 `<ip:...>` 형태로 가려집니다.
+기본적으로 터미널과 JSON에 실제 IP 주소를 보여줍니다. `--redact`를 주면 `<ip:...>`로 가립니다.
+
+`edc dns compare example.com`은 system resolver와 `1.1.1.1`을 비교합니다. 다른 DNS 서버를 쓰려면 `--resolver IP[:port]`를 반복해서 지정합니다. A, AAAA, CNAME, 응답 상태를 비교하고, 직접 지정한 resolver의 TTL도 보여 주되 TTL 차이만으로 불일치 처리하지는 않습니다. 응답이 다르면 WARN, system 조회가 실패하면 FAIL입니다.
 
 ### 연결 확인
 
 ![edc tcp check가 example.com:443 연결에 성공하고, 닫힌 port에서는 timeout phase와 함께 FAIL을 출력하는 화면](docs/media/tcp.gif)
 
 실패한 probe는 phase와 cause를 ERROR 블록으로 보여 주고 exit code `1`을 돌려줍니다.
+
+`edc watch -i 0.1 https://example.com`은 Ctrl-C까지 페이지를 반복 확인합니다. `-i`는 초 단위 소수(최소 `0.1`)나 `100ms` 같은 duration을 받으며, `--duration 1m`으로 종료 시각을 정할 수 있습니다. 매 sample에 HTTP status, 읽은 body byte(최대 10 MiB), 소요 시간과 수집된 DNS/TCP/TLS/TTFB 시간을 표시합니다. DNS의 IP 집합이 바뀌면 새 목록을 보여 줍니다. 마지막에는 min/avg/p95/max 지연과 최장 연속 실패 시간을 요약합니다. `--json <path|->`는 마지막 요약을 포함한 JSON Lines를 출력합니다. 실패한 sample이 있으면 최종 exit code는 `1`입니다.
+
+`edc listen --watch`는 현재 listener를 한 번 출력한 뒤 socket의 생성·종료·소유 process 변경을 알려 줍니다. 변경 줄은 터미널에서 반전 표시합니다. 같은 interval·duration 옵션을 받으며, `--json`은 초기 snapshot·event·요약을 JSON Lines로 출력합니다.
 
 ### 경로와 interface
 
@@ -217,7 +247,7 @@ Azure는 넣지 않았습니다. 리전 이름이 붙은 공개 주소가 실제
 
 terminal에서는 몇 곳을 확인했는지 진행 줄로 보여 줍니다. `q`로 취소합니다.
 
-화면에는 주소를 그대로 씁니다. 이 명령은 그 값을 보려고 실행하기 때문입니다. `--redact`는 공유하는 산출물인 `--json` 출력에만 적용합니다.
+기본 화면에는 주소를 그대로 씁니다. `--redact`를 주면 화면과 JSON 출력에서 가립니다.
 
 ![edc where가 public IP와 ASN, Cloudflare PoP, route, NAT 모습, 왕복 시간 순으로 가까운 지역을 보여 주는 화면](docs/media/where.gif)
 
@@ -485,7 +515,7 @@ inventory 파일
 ./bin/edc remote daily --list --json -
 ```
 
-`--dry-run`과 `--list`는 `-f`와 함께 쓰지 못합니다. `--redact`가 켜져 있으면 JSON 출력에서 IP 주소를 가립니다. 그대로 두려면 `--redact=false`를 씁니다.
+`--dry-run`과 `--list`는 `-f`와 함께 쓰지 못합니다. `--redact`를 주면 출력에서 IP 주소를 가립니다.
 
 ### Host tag
 
@@ -687,6 +717,8 @@ stdin이 terminal이 아니면 `edc`는 usage를 출력하고 exit code `2`를 �
 ## Doctor 실시간 화면
 
 stdin과 stdout이 모두 terminal이면 `edc doctor`는 probe마다 줄 하나를 보여 주고 probe가 끝날 때 그 줄을 갱신합니다. 끝난 줄은 화면에 남습니다. 그 뒤에 상세와 요약이 따라옵니다.
+
+`edc doctor --all-ips example.com`은 DNS가 반환한 IP마다 직접 접속해 TCP·TLS·HTTP 결과를 보여 줍니다. Host와 TLS SNI는 원래 hostname을 유지합니다. 이 HTTP 검사는 응답 header까지만 읽고 redirect를 따라가거나 proxy를 사용하지 않습니다. 공개 IP의 origin ASN과 등록된 ASN holder는 RIPEstat에서 조회하며, 조회 실패는 endpoint 상태에 영향을 주지 않습니다. IP 하나라도 실패하면 `endpoints.check`가 실패합니다. 이 검사로 LB 존재 여부나 서버의 실제 물리적 위치를 확정할 수는 없습니다.
 
 취소하려면 Ctrl-C를 누릅니다. `edc`는 돌던 probe를 멈추고 exit code `4`를 돌려줍니다.
 

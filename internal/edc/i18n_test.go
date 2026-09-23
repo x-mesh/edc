@@ -136,6 +136,20 @@ func TestReadConfigLanguageAt(t *testing.T) {
 	if got := readConfigLanguageAt(broken); got != "" {
 		t.Fatalf("a broken config must give an empty value, got %q", got)
 	}
+	tomlPath := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(tomlPath, []byte("lang = 'ko'\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := readConfigLanguageAt(tomlPath); got != "ko" {
+		t.Fatalf("TOML config lang = %q", got)
+	}
+	legacyPath := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(legacyPath, []byte("lang: ja\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := readConfigLanguageAt(strings.TrimSuffix(legacyPath, ".yaml") + ".toml"); got != "ja" {
+		t.Fatalf("legacy config lang = %q", got)
+	}
 }
 
 func TestConfigPathSitsUnderTheUserConfigDirectory(t *testing.T) {
@@ -143,8 +157,23 @@ func TestConfigPathSitsUnderTheUserConfigDirectory(t *testing.T) {
 	if path == "" {
 		t.Skip("this platform has no user config directory")
 	}
-	if filepath.Base(path) != "config.yaml" || filepath.Base(filepath.Dir(path)) != "edc" {
+	if filepath.Base(path) != "config.toml" || filepath.Base(filepath.Dir(path)) != "edc" {
 		t.Fatalf("config path = %q", path)
+	}
+}
+
+func TestConfigPathForPlatform(t *testing.T) {
+	home := t.TempDir()
+	directory := filepath.Join(home, ".config")
+	if got := configPathFor("linux", directory, home, ""); got != filepath.Join(directory, "edc", "config.toml") {
+		t.Fatalf("Linux path = %q", got)
+	}
+	if got := configPathFor("darwin", filepath.Join(home, "Library", "Application Support"), home, ""); got != filepath.Join(directory, "edc", "config.toml") {
+		t.Fatalf("macOS path = %q", got)
+	}
+	xdg := filepath.Join(home, "custom-config")
+	if got := configPathFor("darwin", filepath.Join(home, "Library", "Application Support"), home, xdg); got != filepath.Join(xdg, "edc", "config.toml") {
+		t.Fatalf("macOS XDG path = %q", got)
 	}
 }
 

@@ -148,13 +148,10 @@ func runWhere(args []string, version string) int {
 	progress.finish()
 
 	report := whereReport{Location: location, Regions: measurements}
-
-	// 화면에서는 자기 주소를 그대로 보여 준다. 이 명령은 그 값을 보려고 실행한다.
-	// 공유되는 산출물인 JSON에만 --redact를 적용해 edc info와 규칙을 맞춘다.
+	if options.redact {
+		report.Location = redactWhereLocation(report.Location)
+	}
 	if options.jsonPath != "" {
-		if options.redact {
-			report.Location = redactWhereLocation(report.Location)
-		}
 		if err := writeJSONOutput(options.jsonPath, report); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			return 2

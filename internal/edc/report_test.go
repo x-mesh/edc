@@ -133,6 +133,13 @@ func TestCertificateVerdict(t *testing.T) {
 	}
 }
 
+func TestCertificateExpiryLabelUsesUTCDate(t *testing.T) {
+	expires := time.Date(2026, time.October, 5, 5, 30, 0, 0, time.FixedZone("KST", 9*60*60))
+	if label := certificateExpiryLabel(expires); !strings.Contains(label, "2026-10-04 20:30 UTC") {
+		t.Fatalf("certificate expiry label = %q", label)
+	}
+}
+
 func TestHTTPStatusVerdict(t *testing.T) {
 	if status, err := httpStatusVerdict(404, 404); status != StatusPass || err != nil {
 		t.Fatalf("expected 404 = %v %#v", status, err)

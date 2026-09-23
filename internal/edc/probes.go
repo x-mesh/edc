@@ -3,6 +3,7 @@ package edc
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"io"
@@ -12,6 +13,7 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -42,7 +44,7 @@ func probeTCP(ctx context.Context, address string) Result {
 	return Result{
 		Probe: "tcp.check", Status: latencyStatus(duration), StartedAt: started.UTC(),
 		DurationMS: duration.Milliseconds(),
-		Summary:    T("observe.probe.tcp_connected", address, duration.Round(time.Millisecond)),
+		Summary:    T("observe.probe.tcp_connected", address, duration.Round(time.Millisecond)) + ", " + T("observe.probe.peer_ip", peerIP(connection.RemoteAddr())),
 		Metrics: map[string]interface{}{
 			"address": address, "connect_ms": duration.Milliseconds(),
 			"local_address": connection.LocalAddr().String(), "remote_address": connection.RemoteAddr().String(),
@@ -55,10 +57,15 @@ const certificateWarnDays = 30
 
 type tlsCheckOptions struct {
 	minDays int // 인증서 남은 일수가 이 값보다 작으면 fail, 0은 비활성
+	rootCAs *x509.CertPool
 }
 
 type httpCheckOptions struct {
 	expectStatus int // 0이면 4xx warn, 5xx fail 기본 규칙을 쓴다
+	dialAddress  string
+	noRedirect   bool
+	rootCAs      *x509.CertPool
+	headersOnly  bool
 }
 
 func probeTLS(ctx context.Context, address, serverName string) Result {
@@ -67,7 +74,7 @@ func probeTLS(ctx context.Context, address, serverName string) Result {
 
 func probeTLSWithOptions(ctx context.Context, address, serverName string, options tlsCheckOptions) Result {
 	started := time.Now()
-	dialer := &tls.Dialer{Config: &tls.Config{ServerName: serverName, MinVersion: tls.VersionTLS12}}
+	dialer := &tls.Dialer{Config: &tls.Config{ServerName: serverName, MinVersion: tls.VersionTLS12, RootCAs: options.rootCAs}}
 	connection, err := dialer.DialContext(ctx, "tcp", address)
 	if err != nil {
 		return resultFromError("tls.check", started, "tls", err)
@@ -80,12 +87,14 @@ func probeTLSWithOptions(ctx context.Context, address, serverName string, option
 	}
 	result := Result{
 		Probe: "tls.check", Status: StatusPass, StartedAt: started.UTC(),
-		Summary: fmt.Sprintf("%s, %s", tlsVersion(state.Version), tls.CipherSuiteName(state.CipherSuite)),
+		Summary: fmt.Sprintf("%s, %s, %s", tlsVersion(state.Version), tls.CipherSuiteName(state.CipherSuite), T("observe.probe.peer_ip", peerIP(connection.RemoteAddr()))),
 		Metrics: metrics,
 	}
 	if len(state.PeerCertificates) > 0 {
 		certificate := state.PeerCertificates[0]
 		days := int(time.Until(certificate.NotAfter).Hours() / 24)
+		expiry := certificateExpiryLabel(certificate.NotAfter)
+		result.Summary += ", " + expiry + " (" + T("observe.probe.days_remaining", days) + ")"
 		metrics["certificate_subject"] = certificate.Subject.CommonName
 		metrics["certificate_expires_at"] = certificate.NotAfter.UTC()
 		metrics["certificate_days_remaining"] = days
@@ -98,11 +107,23 @@ func probeTLSWithOptions(ctx context.Context, address, serverName string, option
 			result.Warnings = append(result.Warnings, warning)
 		}
 		if result.Error != nil {
-			result.Summary = result.Error.Message
+			result.Summary = result.Error.Message + ", " + expiry
 		}
 	}
 	result.DurationMS = time.Since(started).Milliseconds()
 	return result
+}
+
+func peerIP(address net.Addr) string {
+	host, _, err := net.SplitHostPort(address.String())
+	if err != nil {
+		return address.String()
+	}
+	return host
+}
+
+func certificateExpiryLabel(expires time.Time) string {
+	return T("observe.probe.certificate_expires_on", expires.UTC().Format("2006-01-02 15:04"))
 }
 
 // certificateVerdict는 남은 일수를 --min-days 기준과 기본 경고 기준에 차례로 비교한다.
@@ -143,26 +164,106 @@ func probeHTTPWithOptions(ctx context.Context, rawURL string, options httpCheckO
 	rawURL = withHTTPScheme(rawURL)
 	var dnsStart, connectStart, tlsStart, wroteRequest time.Time
 	timings := map[string]int64{}
+	var traceMu sync.Mutex
+	var peer string
+	var resolvedHost string
+	var resolvedAddresses []string
 	trace := &httptrace.ClientTrace{
-		DNSStart:             func(httptrace.DNSStartInfo) { dnsStart = time.Now() },
-		DNSDone:              func(httptrace.DNSDoneInfo) { timings["dns_ms"] = time.Since(dnsStart).Milliseconds() },
-		ConnectStart:         func(_, _ string) { connectStart = time.Now() },
-		ConnectDone:          func(_, _ string, _ error) { timings["connect_ms"] = time.Since(connectStart).Milliseconds() },
-		TLSHandshakeStart:    func() { tlsStart = time.Now() },
-		TLSHandshakeDone:     func(tls.ConnectionState, error) { timings["tls_ms"] = time.Since(tlsStart).Milliseconds() },
-		WroteRequest:         func(httptrace.WroteRequestInfo) { wroteRequest = time.Now() },
-		GotFirstResponseByte: func() { timings["ttfb_ms"] = time.Since(wroteRequest).Milliseconds() },
+		GetConn: func(string) {
+			traceMu.Lock()
+			timings = map[string]int64{}
+			dnsStart, connectStart, tlsStart, wroteRequest = time.Time{}, time.Time{}, time.Time{}, time.Time{}
+			peer = ""
+			resolvedHost = ""
+			resolvedAddresses = nil
+			traceMu.Unlock()
+		},
+		DNSStart: func(info httptrace.DNSStartInfo) {
+			traceMu.Lock()
+			dnsStart = time.Now()
+			resolvedHost = info.Host
+			traceMu.Unlock()
+		},
+		DNSDone: func(info httptrace.DNSDoneInfo) {
+			traceMu.Lock()
+			if !dnsStart.IsZero() {
+				timings["dns_ms"] = time.Since(dnsStart).Milliseconds()
+			}
+			resolvedAddresses = make([]string, 0, len(info.Addrs))
+			for _, address := range info.Addrs {
+				resolvedAddresses = append(resolvedAddresses, address.IP.String())
+			}
+			sort.Strings(resolvedAddresses)
+			traceMu.Unlock()
+		},
+		ConnectStart: func(_, _ string) {
+			traceMu.Lock()
+			connectStart = time.Now()
+			traceMu.Unlock()
+		},
+		ConnectDone: func(_, _ string, _ error) {
+			traceMu.Lock()
+			if !connectStart.IsZero() {
+				timings["connect_ms"] = time.Since(connectStart).Milliseconds()
+			}
+			traceMu.Unlock()
+		},
+		TLSHandshakeStart: func() {
+			traceMu.Lock()
+			tlsStart = time.Now()
+			traceMu.Unlock()
+		},
+		TLSHandshakeDone: func(tls.ConnectionState, error) {
+			traceMu.Lock()
+			if !tlsStart.IsZero() {
+				timings["tls_ms"] = time.Since(tlsStart).Milliseconds()
+			}
+			traceMu.Unlock()
+		},
+		GotConn: func(info httptrace.GotConnInfo) {
+			traceMu.Lock()
+			peer = peerIP(info.Conn.RemoteAddr())
+			traceMu.Unlock()
+		},
+		WroteRequest: func(httptrace.WroteRequestInfo) {
+			traceMu.Lock()
+			wroteRequest = time.Now()
+			traceMu.Unlock()
+		},
+		GotFirstResponseByte: func() {
+			traceMu.Lock()
+			if !wroteRequest.IsZero() {
+				timings["ttfb_ms"] = time.Since(wroteRequest).Milliseconds()
+			}
+			traceMu.Unlock()
+		},
 	}
 	request, err := http.NewRequestWithContext(httptrace.WithClientTrace(ctx, trace), http.MethodGet, rawURL, nil)
 	if err != nil {
 		return resultFromError("http.check", started, "input", err)
 	}
+	redirects := 0
+	transport := &http.Transport{Proxy: http.ProxyFromEnvironment}
+	defer transport.CloseIdleConnections()
+	if options.rootCAs != nil {
+		transport.TLSClientConfig = &tls.Config{RootCAs: options.rootCAs, MinVersion: tls.VersionTLS12}
+	}
+	if options.dialAddress != "" {
+		transport.Proxy = nil
+		transport.DialContext = func(ctx context.Context, _, _ string) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, "tcp", options.dialAddress)
+		}
+	}
 	client := &http.Client{
-		Transport: &http.Transport{Proxy: http.ProxyFromEnvironment},
+		Transport: transport,
 		CheckRedirect: func(_ *http.Request, via []*http.Request) error {
+			if options.noRedirect {
+				return http.ErrUseLastResponse
+			}
 			if len(via) >= 10 {
 				return fmt.Errorf("%s", T("observe.probe.too_many_redirects"))
 			}
+			redirects = len(via)
 			return nil
 		},
 	}
@@ -171,9 +272,13 @@ func probeHTTPWithOptions(ctx context.Context, rawURL string, options httpCheckO
 		return resultFromError("http.check", started, classifyNetworkError(err), err)
 	}
 	defer response.Body.Close()
-	bytesRead, readErr := io.Copy(io.Discard, io.LimitReader(response.Body, 10*1024*1024))
-	if readErr != nil {
-		return resultFromError("http.check", started, "response", readErr)
+	var bytesRead int64
+	if !options.headersOnly {
+		var readErr error
+		bytesRead, readErr = io.Copy(io.Discard, io.LimitReader(response.Body, 10*1024*1024))
+		if readErr != nil {
+			return resultFromError("http.check", started, "response", readErr)
+		}
 	}
 	total := time.Since(started)
 	status, diagnostic := httpStatusVerdict(response.StatusCode, options.expectStatus)
@@ -181,12 +286,47 @@ func probeHTTPWithOptions(ctx context.Context, rawURL string, options httpCheckO
 	if options.expectStatus > 0 {
 		metrics["expected_status"] = options.expectStatus
 	}
+	observedTimings := map[string]int64{}
+	traceMu.Lock()
 	for key, value := range timings {
 		metrics[key] = value
+		observedTimings[key] = value
 	}
+	observedPeer := peer
+	observedHost := resolvedHost
+	observedAddresses := append([]string(nil), resolvedAddresses...)
+	if observedPeer != "" {
+		metrics["peer_ip"] = observedPeer
+	}
+	if observedHost != "" {
+		metrics["resolved_host"] = observedHost
+		metrics["resolved_addresses"] = observedAddresses
+	}
+	traceMu.Unlock()
+	metrics["redirects"] = redirects
+	metrics["timing_scope"] = "final_request"
 	summary := fmt.Sprintf("HTTP %d, %s, %d bytes", response.StatusCode, total.Round(time.Millisecond), bytesRead)
 	if diagnostic != nil {
 		summary = fmt.Sprintf("%s, %s, %d bytes", diagnostic.Message, total.Round(time.Millisecond), bytesRead)
+	}
+	if observedPeer != "" {
+		if proxy, _ := http.ProxyFromEnvironment(response.Request); proxy != nil && options.dialAddress == "" {
+			metrics["peer_is_proxy"] = true
+			summary += ", " + T("observe.probe.proxy_peer_ip", observedPeer)
+		} else {
+			summary += ", " + T("observe.probe.peer_ip", observedPeer)
+		}
+	}
+	if redirects > 0 {
+		summary += ", " + T("observe.probe.final_request")
+	}
+	for _, phase := range []struct{ key, label string }{{"dns_ms", "DNS"}, {"connect_ms", "TCP"}, {"tls_ms", "TLS"}, {"ttfb_ms", "TTFB"}} {
+		if value, ok := observedTimings[phase.key]; ok {
+			summary += fmt.Sprintf(", %s %dms", phase.label, value)
+		}
+	}
+	if redirects > 0 {
+		summary += ", " + T("observe.probe.http_redirect", redirects, response.Request.URL.String())
 	}
 	return Result{Probe: "http.check", Status: status, StartedAt: started.UTC(), DurationMS: total.Milliseconds(), Summary: summary, Metrics: metrics, Error: diagnostic}
 }

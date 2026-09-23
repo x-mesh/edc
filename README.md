@@ -73,12 +73,13 @@ make install PREFIX=/usr/local
 
 `edc` prints English by default. It also carries Korean and Japanese.
 
-Set the language in the config file. `edc` reads it from `os.UserConfigDir()/edc/config.yaml`, which is `~/.config/edc/config.yaml` on Linux and `~/Library/Application Support/edc/config.yaml` on macOS.
+Set the language in the config file. On Linux and macOS, `edc` reads `$XDG_CONFIG_HOME/edc/config.toml` when set, or `~/.config/edc/config.toml` by default.
 
-```yaml
-# config.yaml
-lang: ko
+```toml
+lang = "ko"
 ```
+
+If `config.toml` is absent, Linux still reads `~/.config/edc/config.yaml`, and macOS still reads `~/Library/Application Support/edc/config.yaml`. `edc setup` saves a new TOML file and leaves the YAML file intact.
 
 Set `EDC_LANG` to change the language for one run. It wins over the config file.
 
@@ -90,24 +91,42 @@ EDC_LANG=ja edc where
 
 ## Command defaults
 
-The same config file can hold repeat-safe command defaults. Precedence is built-in default, config, then an explicit CLI option. An explicit boolean such as `--redact=false` overrides `redact: true`. Invalid keys, types, or ranges stop the command with exit code `2` instead of being ignored.
+The same config file can hold repeat-safe command defaults. Precedence is built-in default, config, then an explicit CLI option. Invalid keys, types, or ranges stop the command with exit code `2` instead of being ignored.
 
-Run `edc setup` in a terminal to create or update the file. The wizard configures one section at a time, keeps existing values on Enter, removes an optional value with `!clear`, previews the complete YAML, and asks before an atomic mode `0600` save. The config directory is mode `0700`; cancel returns exit code `4`.
+Run `edc setup` in a terminal to create or update the file. The wizard configures one section at a time, keeps existing values on Enter, removes an optional value with `!clear`, previews the complete config, and asks before an atomic mode `0600` save. The config directory is mode `0700`; cancel returns exit code `4`.
 
-```yaml
-lang: en
-defaults:
-  common: {timeout: 15s, json: "", verbose: false, redact: true}
-  doctor: {profile: default}
-  tls: {min_days: 14}
-  http: {expect_status: 200}
-  top: {interval: 2s, count: 10, no_header: false, json: ""}
-  info: {public: false, timeout: 3s, verbose: false}
-  where: {provider: all, count: 3}
-  capture: {interface: "", duration: 15s, count: 500, filter: "", output: ""}
-  remote: {inventory: "", recipe: "", connect_timeout: 10s, output_limit: 65536, parallel: 0}
-  update: {timeout: 60s}
-  log: {stream: stderr, output: /absolute/path/to/edc.log, command_display: full}
+The following TOML example applies to both Linux and macOS.
+
+```toml
+lang = "en"
+
+[defaults.common]
+timeout = "15s"
+verbose = false
+redact = false
+
+[defaults.doctor]
+profile = "default"
+
+[defaults.tls]
+min_days = 14
+
+[defaults.capture]
+duration = "15s"
+count = 500
+
+[defaults.remote]
+connect_timeout = "10s"
+output_limit = 65536
+parallel = 0
+
+[defaults.update]
+timeout = "60s"
+
+[defaults.log]
+stream = "stderr"
+output = "/absolute/path/to/edc.log"
+command_display = "full"
 ```
 
 Command-specific values override `defaults.common`. Positional targets, URLs, hosts, and remote groups are never stored, nor are action options such as `yes`, `force`, `dry-run`, `list`, and `check`. Persisted remote inventory and recipe paths must be absolute. Empty path values disable that default.
@@ -132,8 +151,8 @@ The setup wizard recommends `~/Library/Logs/edc.log` on macOS and `${XDG_STATE_H
 # default diagnosis
 ./bin/edc doctor https://example.com
 
-# save a machine-readable report (redaction on, file mode 0600)
-./bin/edc doctor --json report.json https://example.com
+# save a redacted machine-readable report (file mode 0600)
+./bin/edc doctor --redact --json report.json https://example.com
 ./bin/edc report show report.json
 # compare two reports (exit 1 if one probe gets worse)
 ./bin/edc report diff before.json after.json
@@ -143,6 +162,7 @@ The setup wizard recommends `~/Library/Logs/edc.log` on macOS and `${XDG_STATE_H
 
 # single probes
 ./bin/edc dns lookup example.com
+./bin/edc dns compare example.com
 ./bin/edc tcp check example.com:443
 ./bin/edc tls check example.com:443
 ./bin/edc tls check --min-days 14 example.com:443
@@ -153,7 +173,11 @@ The setup wizard recommends `~/Library/Logs/edc.log` on macOS and `${XDG_STATE_H
 ./bin/edc net trace example.com
 ./bin/edc net interfaces
 ./bin/edc listen              # open ports, --unix or --all adds unix sockets
+./bin/edc listen --watch -i 0.5 --duration 10s
 ./bin/edc quality --timeout 60s
+
+# repeat a page check; omit --duration to run until Ctrl-C
+./bin/edc watch -i 0.1 --duration 10s https://example.com
 
 # which region is near, and what shape is this network
 ./bin/edc where
@@ -166,7 +190,7 @@ source <(./bin/edc completion zsh)
 ./bin/edc update --check
 ```
 
-The common options are `--timeout`, `--json <path|->`, `--verbose`, and `--redact=true|false`. Go `flag` rules put an option before the target.
+The common options are `--timeout`, `--json <path|->`, `--verbose`, and `--redact`. Go `flag` rules put an option before the target.
 
 `edc info` asks ipinfo.io for the public IP by default. The request stops after 3 seconds and the line disappears. Use `--public=false` to skip the request, `--timeout` to change the limit, and `-v` to print the cause of a failure.
 
@@ -174,13 +198,19 @@ The common options are `--timeout`, `--json <path|->`, `--verbose`, and `--redac
 
 ![edc dns lookup example.com prints the address list and edc dns config prints the resolver setup, both as PASS](docs/media/dns.gif)
 
-`--redact` is on by default, so `edc` hides an IP address as `<ip:...>`.
+Terminal and JSON output show actual IP addresses by default. Add `--redact` to hide them as `<ip:...>`.
+
+`edc dns compare example.com` compares the system resolver with `1.1.1.1`. Repeat `--resolver IP[:port]` to choose other DNS servers. It compares A, AAAA, CNAME, and response status; TTL is shown for explicit resolvers but not used to mark a mismatch. A different answer is WARN, and a failed system lookup is FAIL.
 
 ### Connection check
 
 ![edc tcp check connects to example.com:443 and then fails on a closed port with a timeout phase](docs/media/tcp.gif)
 
 A failed probe shows the phase and the cause in an ERROR block. It returns exit code `1`.
+
+`edc watch -i 0.1 https://example.com` checks the page repeatedly until Ctrl-C. `-i` accepts seconds as a decimal (minimum `0.1`) or a duration such as `100ms`; `--duration 1m` stops automatically. Every sample prints HTTP status, body bytes read (up to 10 MiB), elapsed time, and available DNS/TCP/TLS/TTFB timings. The resolved IP set appears when it changes. The final summary includes min/avg/p95/max latency and the longest continuous failure. `--json <path|->` emits JSON Lines with a final summary. A failed sample makes the final exit code `1`.
+
+`edc listen --watch` prints the current listeners once, then reports sockets opening, closing, or changing process. Change lines use reverse video in a terminal. It accepts the same interval and duration options; `--json` emits a snapshot, events, and a summary as JSON Lines.
 
 ### Route and interfaces
 
@@ -215,7 +245,7 @@ Azure is absent. Its public addresses that carry a region name do not terminate 
 
 In a terminal, `edc` shows a progress line with the number of regions it has reached. Press `q` to cancel.
 
-The screen keeps the addresses as they are, because you run this command to read them. `--redact` applies to the `--json` output only, which is the artifact you share.
+The screen keeps the addresses as they are by default. Add `--redact` to hide them in screen or JSON output.
 
 ![edc where shows the public IP with its ASN and Cloudflare PoP, the route, the NAT shape, and the near regions in order of round trip time](docs/media/where.gif)
 
@@ -472,7 +502,7 @@ Use `-l` or `--list` to print the groups and hosts of the inventory. Name a grou
 ./bin/edc remote daily --list --json -
 ```
 
-The `--dry-run` and `--list` options do not combine with `-f`. The JSON output hides IP addresses when `--redact` is on. Use `--redact=false` to keep them.
+The `--dry-run` and `--list` options do not combine with `-f`. Add `--redact` to hide IP addresses in the output.
 
 ### Host tags
 
@@ -723,6 +753,8 @@ If stdin is not a terminal, `edc` prints the usage and returns exit code `2`. A 
 ## Doctor live screen
 
 If stdin and stdout are terminals, `edc doctor` shows one line for each probe and updates the line when the probe ends. The finished lines stay on the screen. The details and the summary follow.
+
+Use `edc doctor --all-ips example.com` to check every address returned by DNS. It connects directly to each IP with the original Host and TLS SNI, then lists TCP, TLS, and HTTP results per IP. These HTTP checks read response headers only and do not follow redirects or use a proxy. The option also asks RIPEstat for each public IP's origin ASN and registered ASN holder; lookup failures do not change endpoint health. If any IP fails, `endpoints.check` fails. The checks test each entry point; they cannot establish whether a load balancer exists or where a server is physically located.
 
 Press Ctrl-C to cancel. `edc` stops the running probes and returns exit code `4`.
 

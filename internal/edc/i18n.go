@@ -7,10 +7,12 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
 
+	"github.com/pelletier/go-toml/v2"
 	"gopkg.in/yaml.v3"
 )
 
@@ -251,13 +253,30 @@ func catalogKeys(language string) []string {
 	return keys
 }
 
-// configPath는 os.UserConfigDir 아래의 설정 경로다. inventory와 같은 자리를 쓴다.
 func configPath() string {
 	directory, err := os.UserConfigDir()
-	if err != nil {
+	if err != nil && runtime.GOOS != "darwin" {
 		return ""
 	}
-	return filepath.Join(directory, "edc", "config.yaml")
+	home, _ := os.UserHomeDir()
+	return configPathFor(runtime.GOOS, directory, home, os.Getenv("XDG_CONFIG_HOME"))
+}
+
+func configPathFor(platform, userConfigDirectory, home, xdgConfigHome string) string {
+	directory := userConfigDirectory
+	if platform == "darwin" {
+		if filepath.IsAbs(xdgConfigHome) {
+			directory = xdgConfigHome
+		} else if home != "" {
+			directory = filepath.Join(home, ".config")
+		} else {
+			return ""
+		}
+	}
+	if directory == "" {
+		return ""
+	}
+	return filepath.Join(directory, "edc", "config.toml")
 }
 
 // readConfigLanguage는 설정 파일의 lang을 읽는다.
@@ -268,6 +287,7 @@ func readConfigLanguage() string { return readConfigLanguageAt(configPath()) }
 // os.UserConfigDir은 macOS에서 XDG_CONFIG_HOME을 보지 않으므로,
 // test가 환경변수로 격리하려 하면 개발자의 실제 설정을 읽게 된다. 경로를 넘겨 그 문제를 없앤다.
 func readConfigLanguageAt(path string) string {
+	path = configReadPath(path)
 	info, err := os.Lstat(path)
 	if err != nil || !info.Mode().IsRegular() || info.Size() > maxConfigBytes {
 		return ""
@@ -282,10 +302,16 @@ func readConfigLanguageAt(path string) string {
 		return ""
 	}
 	var header struct {
-		Lang string `yaml:"lang"`
+		Lang string `yaml:"lang" toml:"lang"`
 	}
-	if err := yaml.Unmarshal(data, &header); err != nil {
-		return ""
+	if filepath.Ext(path) == ".toml" {
+		if err := toml.Unmarshal(data, &header); err != nil {
+			return ""
+		}
+	} else {
+		if err := yaml.Unmarshal(data, &header); err != nil {
+			return ""
+		}
 	}
 	return header.Lang
 }

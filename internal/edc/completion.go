@@ -121,7 +121,7 @@ _edc() {
     '--timeout[실행 제한 시간]:duration'
     '--json[JSON 출력 경로, stdout은 -]:path:_files'
     '(-v --verbose)'{-v,--verbose}'[상세 evidence 출력]'
-    '--redact[JSON 민감정보 redaction]:bool:(true false)'
+    '--redact[민감정보 redaction]'
   )
   _arguments -C '1:command:->command' '*::arg:->args' && return
   case $state in
@@ -137,14 +137,17 @@ _edc() {
         top)
           _arguments '--interval[sampling interval]:duration' '--count[출력 row 수]:count' '--no-header[header 생략]' '--json[sample당 한 줄 JSON 출력 경로]:path:_files'
           ;;
+        watch)
+          _arguments $common '(-i --interval)'{-i,--interval}'[sample 간격(초)]:seconds' '--duration[관측 시간]:duration' '--expect-status[기대 HTTP status]:code' '1:host or URL:_hosts'
+          ;;
         info)
           _arguments '--public[public IP, 지역, ASN 조회. --public=false로 끕니다]' '--timeout[public 조회 제한 시간]:duration' '(-v --verbose)'{-v,--verbose}'[조회 실패 원인 출력]'
           ;;
         doctor)
-          _arguments $common '--profile[default 또는 full]:profile:(default full)' '1:host or URL:_hosts'
+          _arguments $common '--profile[default 또는 full]:profile:(default full)' '--all-ips[DNS 응답 IP별 직접 연결 검사]' '1:host or URL:_hosts'
           ;;
         dns)
-          _arguments $common '1:subcommand:(lookup config)' '2:host:_hosts'
+          _arguments $common '--resolver[비교할 DNS 서버]:IP' '1:subcommand:(lookup compare config)' '2:host:_hosts'
           ;;
         tcp)
           _arguments $common '1:subcommand:(check)' '2:host\:port'
@@ -198,7 +201,7 @@ _edc() {
           ;;
         listen)
           # listen의 -v는 evidence를 펼치지 않고 열을 늘린다. 공용 설명을 빼고 이 명령의 것을 쓴다.
-          _arguments ${common:#*verbose*} '--tcp[TCP socket만 봅니다]' '(-u --udp)'{-u,--udp}'[바인드된 UDP socket만 봅니다]' '--unix[unix domain socket만 봅니다]' '--all[TCP와 UDP, unix domain socket을 모두 봅니다]' '(-v --verbose)'{-v,--verbose}'[계정과 descriptor, 큐 열을 함께 엽니다]'
+          _arguments ${common:#*verbose*} '--tcp[TCP socket만 봅니다]' '(-u --udp)'{-u,--udp}'[바인드된 UDP socket만 봅니다]' '--unix[unix domain socket만 봅니다]' '--all[TCP와 UDP, unix domain socket을 모두 봅니다]' '--watch[포트 변화 관측]' '(-i --interval)'{-i,--interval}'[관측 간격(초)]:seconds' '--duration[관측 시간]:duration' '(-v --verbose)'{-v,--verbose}'[계정과 descriptor, 큐 열을 함께 엽니다]'
           ;;
         quality)
           _arguments $common
@@ -275,10 +278,11 @@ _edc() {
   command="${COMP_WORDS[1]}"
   case "$command" in
     top) COMPREPLY=($(compgen -W "--interval --count --no-header --json" -- "$cur")) ;;
+    watch) COMPREPLY=($(compgen -W "$common -i --interval --duration --expect-status" -- "$cur")) ;;
     info) COMPREPLY=($(compgen -W "--public --timeout --verbose -v" -- "$cur")) ;;
-    doctor) COMPREPLY=($(compgen -W "$common --profile" -- "$cur")) ;;
+    doctor) COMPREPLY=($(compgen -W "$common --profile --all-ips" -- "$cur")) ;;
     dns)
-      if [[ $COMP_CWORD -eq 2 ]]; then COMPREPLY=($(compgen -W "lookup config" -- "$cur")); else COMPREPLY=($(compgen -W "$common" -- "$cur")); fi ;;
+      if [[ $COMP_CWORD -eq 2 ]]; then COMPREPLY=($(compgen -W "lookup compare config" -- "$cur")); else COMPREPLY=($(compgen -W "$common --resolver" -- "$cur")); fi ;;
     tcp)
       if [[ $COMP_CWORD -eq 2 ]]; then COMPREPLY=($(compgen -W "check" -- "$cur")); else COMPREPLY=($(compgen -W "$common" -- "$cur")); fi ;;
     tls)
@@ -318,7 +322,7 @@ _edc() {
           status) COMPREPLY=($(compgen -W "$common" -- "$cur")) ;;
         esac
       fi ;;
-    listen) COMPREPLY=($(compgen -W "$common --tcp --udp --unix --all" -- "$cur")) ;;
+    listen) COMPREPLY=($(compgen -W "$common --tcp --udp --unix --all --watch -i --interval --duration" -- "$cur")) ;;
     quality) COMPREPLY=($(compgen -W "$common" -- "$cur")) ;;
     capture) COMPREPLY=($(compgen -W "--mode --interface --duration --count --filter --output --yes" -- "$cur")) ;;
     trace)

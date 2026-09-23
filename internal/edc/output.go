@@ -91,7 +91,7 @@ func printResultDetail(writer io.Writer, result Result, verbose, color bool) {
 	for _, warning := range result.Warnings {
 		fmt.Fprintf(writer, "      warning: %s\n", warning)
 	}
-	if verbose && result.Status != StatusFail && !isRemoteResult(result) {
+	if (verbose || result.Probe == endpointProbeID || result.Probe == "dns.compare") && result.Status != StatusFail && !isRemoteResult(result) {
 		for _, evidence := range result.Evidence {
 			fmt.Fprintf(writer, "      %s:\n%s\n", evidence.Label, indent(evidence.Value, "        "))
 		}

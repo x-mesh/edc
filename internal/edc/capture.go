@@ -116,22 +116,41 @@ func captureSupportedOS(goos string) bool {
 	return goos == "darwin" || goos == "linux"
 }
 
-var captureLookPath = exec.LookPath
+// tcpdump는 root로, sudo는 password를 받으며 실행되므로 PATH에 끼어든 같은 이름의 binary를
+// 믿지 않는다. 일반 사용자가 쓸 수 있는 /usr/local이나 Homebrew prefix도 넣지 않는다.
+var (
+	captureTcpdumpPaths = []string{"/usr/sbin/tcpdump", "/usr/bin/tcpdump", "/sbin/tcpdump", "/bin/tcpdump"}
+	captureSudoPaths    = []string{"/usr/bin/sudo", "/bin/sudo"}
+)
+
+var captureExecutable = func(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.Mode().IsRegular() && info.Mode().Perm()&0o111 != 0
+}
 var captureGeteuid = os.Geteuid
 
 func captureCommand(args []string) (string, []string, error) {
-	tcpdumpPath, err := captureLookPath("tcpdump")
-	if err != nil {
-		return "", nil, errors.New(T("cli.capture.tcpdump_missing"))
+	tcpdumpPath, ok := captureFirstExecutable(captureTcpdumpPaths)
+	if !ok {
+		return "", nil, errors.New(T("cli.capture.tcpdump_missing", strings.Join(captureTcpdumpPaths, ", ")))
 	}
 	if captureGeteuid() == 0 {
 		return tcpdumpPath, args, nil
 	}
-	sudoPath, err := captureLookPath("sudo")
-	if err != nil {
-		return "", nil, errors.New(T("cli.capture.sudo_missing"))
+	sudoPath, ok := captureFirstExecutable(captureSudoPaths)
+	if !ok {
+		return "", nil, errors.New(T("cli.capture.sudo_missing", strings.Join(captureSudoPaths, ", ")))
 	}
 	return sudoPath, append([]string{tcpdumpPath}, args...), nil
+}
+
+func captureFirstExecutable(paths []string) (string, bool) {
+	for _, path := range paths {
+		if captureExecutable(path) {
+			return path, true
+		}
+	}
+	return "", false
 }
 
 // promptCaptureInterface는 --interface가 빠졌을 때 terminal에서 고르게 한다. interface 이름은

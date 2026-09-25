@@ -145,6 +145,18 @@ func TestSummarizeUDPTrace(t *testing.T) {
 	}
 }
 
+func TestTraceSourceGroupIgnoresEphemeralPort(t *testing.T) {
+	report := summarizeTraceGroups("tcp", traceGroupBySource, []captureEvent{
+		{Protocol: "tcp", Event: "tcp_connect", Source: "10.0.0.2:41000", Destination: "203.0.113.10:443"},
+		{Protocol: "tcp", Event: "tcp_connect", Source: "10.0.0.2:41001", Destination: "203.0.113.10:443"},
+		{Protocol: "tcp", Event: "tcp_connect", Source: "[2001:db8::2]:41002", Destination: "[2001:db8::10]:443"},
+		{Protocol: "tcp", Event: "tcp_connect", Source: "[2001:db8::2]:41003", Destination: "[2001:db8::10]:443"},
+	}, captureSummary{}, time.Second, "", "")
+	if len(report.Groups) != 2 || report.Groups[0].Group != "10.0.0.2" || report.Groups[0].Connect != 2 || report.Groups[1].Group != "2001:db8::2" || report.Groups[1].Connect != 2 {
+		t.Fatalf("source groups = %#v", report.Groups)
+	}
+}
+
 func TestTraceTrafficZeroDurationHasZeroRates(t *testing.T) {
 	report := summarizeTraceGroups("udp", traceGroupBySource, []captureEvent{
 		{Protocol: "udp", Event: "udp_send", Bytes: 500, Source: "10.0.0.2:53"},
@@ -210,7 +222,7 @@ func TestSummarizeTraceGroupsByDimension(t *testing.T) {
 		t.Fatalf("naver dimensions = %#v", naver)
 	}
 	source := summarizeTraceGroups("tcp", traceGroupBySource, events, captureSummary{}, time.Second, "", "")
-	if source.GroupBy != traceGroupBySource || len(source.Groups) != 3 || source.Groups[0].Group != "-" || source.Groups[1].Group != "10.0.0.2:41000" || source.Groups[1].Connect != 1 || source.Groups[1].Retransmissions != 1 || source.Groups[1].Resets != 1 {
+	if source.GroupBy != traceGroupBySource || len(source.Groups) != 3 || source.Groups[0].Group != "-" || source.Groups[1].Group != "10.0.0.2" || source.Groups[1].Connect != 1 || source.Groups[1].Retransmissions != 1 || source.Groups[1].Resets != 1 {
 		t.Fatalf("TCP source groups = %#v", source)
 	}
 	udp := summarizeTraceGroups("udp", traceGroupByTarget, events, captureSummary{}, 2*time.Second, "", "")
@@ -218,7 +230,7 @@ func TestSummarizeTraceGroupsByDimension(t *testing.T) {
 		t.Fatalf("UDP groups = %#v", udp)
 	}
 	udpSource := summarizeTraceGroups("udp", traceGroupBySource, events, captureSummary{}, time.Second, "", "")
-	if len(udpSource.Groups) != 2 || udpSource.Groups[0].Group != "10.0.0.2:53000" || udpSource.Groups[0].Tx != 1 || udpSource.Groups[0].Rx != 1 || udpSource.Groups[1].Group != "10.0.0.3:53001" || udpSource.Groups[1].Tx != 1 || udpSource.Groups[1].Rx != 0 {
+	if len(udpSource.Groups) != 2 || udpSource.Groups[0].Group != "10.0.0.2" || udpSource.Groups[0].Tx != 1 || udpSource.Groups[0].Rx != 1 || udpSource.Groups[1].Group != "10.0.0.3" || udpSource.Groups[1].Tx != 1 || udpSource.Groups[1].Rx != 0 {
 		t.Fatalf("UDP source groups = %#v", udpSource)
 	}
 }

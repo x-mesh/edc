@@ -2,6 +2,7 @@ package edc
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -180,6 +181,25 @@ func TestTraceScreenRateUsesRetainedWindow(t *testing.T) {
 	model.duration = 30 * time.Minute
 	if got := model.windowDuration(now); got != 30*time.Minute {
 		t.Fatalf("capped duration = %s, want 30m", got)
+	}
+}
+
+func TestTraceScreenShowsBusiestGroupsFirst(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	model := newTraceScreenModel("tcp", tcpTraceOptions{groupBy: traceGroupByTarget}, make(chan captureEvent), make(chan traceFinishedMsg), nil)
+	model.width, model.height = 120, 20
+	for index := 0; index < 40; index++ {
+		model.events = append(model.events, captureEvent{Protocol: "tcp", Event: "tcp_send", Bytes: 100, Target: fmt.Sprintf("h%02d.example", index)})
+	}
+	// 이름순으로 맨 앞인 group에 traffic이 가장 많다. 예전에는 뒤쪽만 남겨서 이 group이 보이지 않았다.
+	model.events = append(model.events, captureEvent{Protocol: "tcp", Event: "tcp_send", Bytes: 5000, Target: "h00.example"})
+
+	rows := traceScreenRows(model)
+	if len(rows) != model.height-3 {
+		t.Fatalf("rows = %d, want %d", len(rows), model.height-3)
+	}
+	if !strings.HasPrefix(rows[0], "h00.example ") {
+		t.Fatalf("first row = %q", rows[0])
 	}
 }
 

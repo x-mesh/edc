@@ -764,7 +764,7 @@ Press Ctrl-C to cancel. `edc` stops the running probes and returns exit code `4`
 
 Only `capture` uses a privilege. `doctor` does not use `sudo`. Capture supports Linux and macOS. Capture keeps hard limits of 60 seconds and 10,000 packets. Capture does not overwrite an existing file. Install `tcpdump` in `/usr/sbin`, `/usr/bin`, `/sbin`, or `/bin`. Capture does not search `PATH` for `tcpdump` or `sudo`.
 
-Use `--mode events` on Linux to record TCP socket state, retransmission, reset, and destroy events with process metadata. The mode writes JSONL and requires BTF and eBPF capabilities. It does not create a PCAP file. In each event, `timestamp_ns` is Unix epoch time in nanoseconds, the same clock as the summary line. `boot_time_ns` is the kernel monotonic time since boot.
+Use `--mode events` on Linux to record TCP socket state, retransmission, reset, and destroy events with process metadata. The mode writes JSONL and requires BTF and eBPF capabilities. It does not create a PCAP file. In each event, `timestamp_ns` is Unix epoch time in nanoseconds, the same clock as the summary line. `boot_time_ns` is the kernel monotonic time since boot. If you press Ctrl-C, capture stops collection. It writes the events that it collected and the summary line.
 
 Use `trace tcp` or `trace udp` on Linux to print network events as they arrive. The default terminal view scrolls through events. The command runs until you press Ctrl-C. It then prints a summary.
 
@@ -781,7 +781,10 @@ Use `trace tcp` or `trace udp` on Linux to print network events as they arrive. 
 Use `--raw` to print JSONL events as they arrive. Use `--json` to write the connection summary after Ctrl-C.
 Use `--duration 15s` to stop after 15 seconds. `--live` remains accepted for compatibility.
 Use `--group-by source` or `--group-by target` to show one live row for each selected dimension. TCP rows show connect, retransmission, reset, and traffic values. UDP rows show TX and RX traffic values. `EVENT/s` is an event count rate. TX and RX bytes are socket payload bytes. B/s is a byte rate. bps and Mbps are bit rates. Mbps uses decimal units: bps / 1,000,000.
+`--group-by source` groups events by the source host. It ignores the source port because the OS assigns a new port to each connection.
 In the full-screen terminal view, press `s` for source rows, `t` for target rows, or `g` for scrolling events.
+The full-screen view keeps the last 10,000 events. The live rates use the time that these events cover. The summary after Ctrl-C uses all events.
+Grouped rows in the full-screen view show the groups with the most traffic first. If the rows do not fit the terminal, the view shows the top rows.
 
 ```bash
 ./bin/edc capture \

@@ -149,7 +149,7 @@ command:
       duration: "trace 시간, 최대 60s. 생략하면 Ctrl-C"
       raw: "raw event JSONL 출력"
       live: "호환성 flag. trace는 기본으로 실시간 실행"
-      group_by: "source 또는 target별 event를 묶습니다"
+      group_by: "source host 또는 target별 event를 묶습니다"
       process: "process 이름으로 필터"
       destination: "destination host와 port로 필터"
       yes: "확인 질문 생략"

@@ -157,6 +157,32 @@ func TestTraceSourceGroupIgnoresEphemeralPort(t *testing.T) {
 	}
 }
 
+func TestTraceScreenRateUsesRetainedWindow(t *testing.T) {
+	model := newTraceScreenModel("tcp", tcpTraceOptions{groupBy: traceGroupByTarget}, make(chan captureEvent), make(chan traceFinishedMsg), nil)
+	for index := 0; index <= traceScreenEventLimit; index++ {
+		updated, _ := model.Update(traceEventMsg{event: captureEvent{Protocol: "tcp", Event: "tcp_connect", Target: "example.com"}})
+		model = updated.(traceScreenModel)
+	}
+	if !model.truncated || len(model.events) != traceScreenEventLimit || len(model.arrivals) != traceScreenEventLimit {
+		t.Fatalf("window = truncated %t, %d events, %d arrivals", model.truncated, len(model.events), len(model.arrivals))
+	}
+
+	now := time.Now()
+	model.started = now.Add(-time.Hour)
+	model.arrivals[0] = now.Add(-10 * time.Second)
+	if got := model.windowDuration(now); got != 10*time.Second {
+		t.Fatalf("window duration = %s, want 10s", got)
+	}
+	model.truncated = false
+	if got := model.windowDuration(now); got != time.Hour {
+		t.Fatalf("untruncated duration = %s, want 1h", got)
+	}
+	model.duration = 30 * time.Minute
+	if got := model.windowDuration(now); got != 30*time.Minute {
+		t.Fatalf("capped duration = %s, want 30m", got)
+	}
+}
+
 func TestTraceTrafficZeroDurationHasZeroRates(t *testing.T) {
 	report := summarizeTraceGroups("udp", traceGroupBySource, []captureEvent{
 		{Protocol: "udp", Event: "udp_send", Bytes: 500, Source: "10.0.0.2:53"},

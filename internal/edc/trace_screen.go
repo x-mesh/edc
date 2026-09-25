@@ -33,6 +33,8 @@ type traceScreenModel struct {
 	duration    time.Duration
 	started     time.Time
 	events      []captureEvent
+	arrivals    []time.Time
+	truncated   bool
 	filter      string
 	input       textinput.Model
 	filtering   bool
@@ -84,8 +86,11 @@ func (model traceScreenModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		model.received++
 		if traceProtocol(value.event) == model.protocol {
 			model.events = append(model.events, value.event)
+			model.arrivals = append(model.arrivals, time.Now())
 			if len(model.events) > traceScreenEventLimit {
 				model.events = model.events[len(model.events)-traceScreenEventLimit:]
+				model.arrivals = model.arrivals[len(model.arrivals)-traceScreenEventLimit:]
+				model.truncated = true
 			}
 		}
 		return model, waitTraceMessage(model.eventCh, model.resultCh)
@@ -235,11 +240,24 @@ func (model traceScreenModel) groupReport() traceGroupReport {
 			filtered = append(filtered, event)
 		}
 	}
-	duration := time.Since(model.started)
-	if model.duration > 0 && duration > model.duration {
-		duration = model.duration
+	return summarizeTraceGroups(model.protocol, model.groupBy, filtered, captureSummary{}, model.windowDuration(time.Now()), model.process, model.destination)
+}
+
+// windowDuration은 model.events가 덮는 시간이다. 창이 잘린 뒤에도 session 시작부터 재면 event 수는
+// 고정인데 시간만 늘어서 rate가 0으로 수렴한다.
+func (model traceScreenModel) windowDuration(now time.Time) time.Duration {
+	end := now
+	if limit := model.started.Add(model.duration); model.duration > 0 && limit.Before(end) {
+		end = limit
 	}
-	return summarizeTraceGroups(model.protocol, model.groupBy, filtered, captureSummary{}, duration, model.process, model.destination)
+	start := model.started
+	if model.truncated && len(model.arrivals) > 0 {
+		start = model.arrivals[0]
+	}
+	if end.Before(start) {
+		return 0
+	}
+	return end.Sub(start)
 }
 
 func formatTraceGroupScreenRow(protocol string, group traceGroupSummary, width int) string {

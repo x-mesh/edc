@@ -5,14 +5,17 @@ package edc
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/cilium/ebpf"
@@ -127,8 +130,14 @@ func effectiveCapabilities() (map[int]bool, error) {
 	return nil, errors.New("CapEff is missing")
 }
 
+var captureEventsCollect = collectCaptureEventsUntil
+
 func captureEventsRun(duration time.Duration, output string) error {
-	events, summary, err := collectCaptureEvents(duration, nil)
+	// Ctrl-C가 process를 바로 끝내면 그때까지 모은 event와 output file을 잃는다. trace처럼 수집만
+	// 멈추고 모은 결과를 쓴다.
+	ctx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stopSignals()
+	events, summary, err := captureEventsCollect(duration, nil, ctx.Done())
 	if err != nil {
 		return err
 	}

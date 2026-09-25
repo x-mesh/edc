@@ -149,7 +149,7 @@ command:
       duration: "trace 時間、最大 60s。省略で Ctrl-C"
       raw: "raw event JSONL を表示"
       live: "互換 flag。trace は既定でリアルタイムに実行"
-      group_by: "source または target ごとに event をまとめます"
+      group_by: "source host か target ごとに event をまとめます"
       process: "process 名で絞る"
       destination: "宛先 host と port で絞る"
       yes: "確認を省く"

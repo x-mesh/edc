@@ -149,7 +149,7 @@ command:
       duration: "trace time, max 60s. Omit for Ctrl-C"
       raw: "print raw event JSONL"
       live: "compatibility flag. Trace is live by default"
-      group_by: "group events by source or target"
+      group_by: "group events by source host or target"
       process: "filter by process name"
       destination: "filter by destination host and port"
       yes: "skip the question"

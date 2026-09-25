@@ -10,6 +10,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 func TestCaptureEventAddressFormatting(t *testing.T) {
@@ -82,5 +84,32 @@ func TestCaptureEventsRunWritesEventsAfterSIGINT(t *testing.T) {
 	}
 	if got := len(names); got != 3 || names[0] != "connect" || names[1] != "close" || names[2] != "capture_summary" {
 		t.Fatalf("output events = %q", names)
+	}
+}
+
+func TestCaptureEventUsesWallClockTimestamp(t *testing.T) {
+	raw := captureEventRaw{TimestampNS: 5 * uint64(time.Second), EventType: 1}
+	offset := time.Date(2026, 9, 25, 0, 0, 0, 0, time.UTC).UnixNano()
+	event := raw.event(offset)
+	if event.BootTimeNS != 5*uint64(time.Second) {
+		t.Fatalf("boot_time_ns = %d", event.BootTimeNS)
+	}
+	if want := uint64(offset) + 5*uint64(time.Second); event.TimestampNS != want {
+		t.Fatalf("timestamp_ns = %d, want %d", event.TimestampNS, want)
+	}
+}
+
+func TestCaptureClockOffsetMatchesWallClock(t *testing.T) {
+	offset, err := captureClockOffset()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var monotonic unix.Timespec
+	if err := unix.ClockGettime(unix.CLOCK_MONOTONIC, &monotonic); err != nil {
+		t.Fatal(err)
+	}
+	wall := time.Unix(0, monotonic.Nano()+offset)
+	if drift := time.Since(wall); drift < -time.Second || drift > time.Second {
+		t.Fatalf("monotonic + offset = %s, drift %s", wall, drift)
 	}
 }

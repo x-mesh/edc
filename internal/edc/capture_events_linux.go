@@ -22,6 +22,7 @@ import (
 	"github.com/cilium/ebpf/link"
 	"github.com/cilium/ebpf/ringbuf"
 	"github.com/cilium/ebpf/rlimit"
+	"golang.org/x/sys/unix"
 )
 
 const (
@@ -204,6 +205,10 @@ func collectCaptureEventsUntil(duration time.Duration, onEvent func(captureEvent
 		return nil, captureSummary{}, fmt.Errorf("open event ring: %w", err)
 	}
 	defer reader.Close()
+	clockOffset, err := captureClockOffset()
+	if err != nil {
+		return nil, captureSummary{}, fmt.Errorf("read monotonic clock: %w", err)
+	}
 	if duration > 0 {
 		reader.SetDeadline(time.Now().Add(duration))
 	}
@@ -244,7 +249,7 @@ func collectCaptureEventsUntil(duration time.Duration, onEvent func(captureEvent
 		if err := binary.Read(bytes.NewReader(record.RawSample), binary.LittleEndian, &raw); err != nil {
 			return nil, captureSummary{}, fmt.Errorf("decode event: %w", err)
 		}
-		event := raw.event()
+		event := raw.event(clockOffset)
 		if event.PID != 0 {
 			event.Target = commandTarget(event.PID)
 		}
@@ -288,7 +293,17 @@ type captureEventRaw struct {
 	Bytes       uint64
 }
 
-func (raw captureEventRaw) event() captureEvent {
+// captureClockOffset은 CLOCK_MONOTONIC 값에 더하면 Unix epoch 시각이 되는 차이다.
+// bpf_ktime_get_ns는 부팅 후 monotonic 시간이라, 그대로 두면 요약 줄의 epoch 시각과 기준이 다르다.
+func captureClockOffset() (int64, error) {
+	var monotonic unix.Timespec
+	if err := unix.ClockGettime(unix.CLOCK_MONOTONIC, &monotonic); err != nil {
+		return 0, err
+	}
+	return time.Now().UnixNano() - monotonic.Nano(), nil
+}
+
+func (raw captureEventRaw) event(clockOffset int64) captureEvent {
 	name, protocol := captureEventTypeName(raw.EventType, raw.Protocol)
 	switch raw.EventType {
 	case 1:
@@ -296,7 +311,8 @@ func (raw captureEventRaw) event() captureEvent {
 	}
 	return captureEvent{
 		SocketID:    raw.SkAddr,
-		TimestampNS: raw.TimestampNS,
+		TimestampNS: uint64(int64(raw.TimestampNS) + clockOffset),
+		BootTimeNS:  raw.TimestampNS,
 		Event:       name,
 		Protocol:    protocol,
 		PID:         raw.PID,

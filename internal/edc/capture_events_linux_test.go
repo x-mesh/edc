@@ -2,7 +2,15 @@
 
 package edc
 
-import "testing"
+import (
+	"bufio"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"syscall"
+	"testing"
+	"time"
+)
 
 func TestCaptureEventAddressFormatting(t *testing.T) {
 	var address [16]byte
@@ -30,5 +38,49 @@ func TestTraceTargetFromArguments(t *testing.T) {
 		if got := traceTargetFromArguments(test.args); got != test.want {
 			t.Fatalf("traceTargetFromArguments(%q) = %q, want %q", test.args, got, test.want)
 		}
+	}
+}
+
+func TestCaptureEventsRunWritesEventsAfterSIGINT(t *testing.T) {
+	previous := captureEventsCollect
+	defer func() { captureEventsCollect = previous }()
+	captureEventsCollect = func(duration time.Duration, onEvent func(captureEvent) error, stop <-chan struct{}) ([]captureEvent, captureSummary, error) {
+		if stop == nil {
+			t.Fatal("capture events run without a stop channel")
+		}
+		if err := syscall.Kill(os.Getpid(), syscall.SIGINT); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case <-stop:
+		case <-time.After(5 * time.Second):
+			t.Fatal("SIGINT did not close the stop channel")
+		}
+		events := []captureEvent{{Event: "connect"}, {Event: "close"}}
+		return events, captureSummary{Event: "capture_summary", EventCount: uint64(len(events))}, nil
+	}
+
+	output := filepath.Join(t.TempDir(), "events.jsonl")
+	if err := captureEventsRun(10*time.Minute, output); err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.Open(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	var names []string
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		var line struct {
+			Event string `json:"event"`
+		}
+		if err := json.Unmarshal(scanner.Bytes(), &line); err != nil {
+			t.Fatal(err)
+		}
+		names = append(names, line.Event)
+	}
+	if got := len(names); got != 3 || names[0] != "connect" || names[1] != "close" || names[2] != "capture_summary" {
+		t.Fatalf("output events = %q", names)
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"net"
 	"os"
 	"os/signal"
 	"sort"
@@ -382,10 +383,15 @@ func summarizeTraceGroups(protocol, groupBy string, events []captureEvent, summa
 
 func traceGroupKey(event captureEvent, groupBy string) string {
 	if groupBy == traceGroupBySource {
-		if event.Source != "" {
-			return event.Source
+		if event.Source == "" {
+			return "-"
 		}
-		return "-"
+		// source port는 연결마다 OS가 새로 고르는 ephemeral port라서, 포함하면 같은 host의 연결이
+		// 모두 다른 group이 된다.
+		if host, _, err := net.SplitHostPort(event.Source); err == nil {
+			return host
+		}
+		return event.Source
 	}
 	if event.Target != "" {
 		return event.Target

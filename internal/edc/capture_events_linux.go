@@ -224,6 +224,7 @@ func collectCaptureEventsUntil(duration time.Duration, onEvent func(captureEvent
 		defer close(readerDone)
 	}
 
+	targets := newCommandTargetCache(commandTarget)
 	events := make([]captureEvent, 0)
 	var eventCount uint64
 	for {
@@ -251,7 +252,7 @@ func collectCaptureEventsUntil(duration time.Duration, onEvent func(captureEvent
 		}
 		event := raw.event(clockOffset)
 		if event.PID != 0 {
-			event.Target = commandTarget(event.PID)
+			event.Target = targets.target(event.PID, time.Now())
 		}
 		events = append(events, event)
 		if onEvent != nil {

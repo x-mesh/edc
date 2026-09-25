@@ -113,3 +113,36 @@ func TestCaptureClockOffsetMatchesWallClock(t *testing.T) {
 		t.Fatalf("monotonic + offset = %s, drift %s", wall, drift)
 	}
 }
+
+func TestCommandTargetCacheReusesLookupWithinTTL(t *testing.T) {
+	lookups := map[uint32]int{}
+	cache := newCommandTargetCache(func(pid uint32) string {
+		lookups[pid]++
+		return "example.com"
+	})
+	now := time.Now()
+	for index := 0; index < 100; index++ {
+		if got := cache.target(42, now.Add(time.Duration(index)*time.Millisecond)); got != "example.com" {
+			t.Fatalf("target = %q", got)
+		}
+	}
+	if lookups[42] != 1 {
+		t.Fatalf("lookups within TTL = %d, want 1", lookups[42])
+	}
+	cache.target(42, now.Add(commandTargetTTL))
+	if lookups[42] != 2 {
+		t.Fatalf("lookups after TTL = %d, want 2", lookups[42])
+	}
+}
+
+func TestCommandTargetCacheSweepsExpiredEntries(t *testing.T) {
+	cache := newCommandTargetCache(func(uint32) string { return "" })
+	now := time.Now()
+	for pid := uint32(0); pid < commandTargetSweepSize; pid++ {
+		cache.target(pid, now)
+	}
+	cache.target(commandTargetSweepSize, now.Add(commandTargetTTL))
+	if len(cache.entries) != 1 {
+		t.Fatalf("entries after sweep = %d, want 1", len(cache.entries))
+	}
+}

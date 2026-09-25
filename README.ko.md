@@ -728,7 +728,7 @@ stdin이나 stdout이 terminal이 아니거나, `--json`을 지정했거나, `NO
 
 `capture`만 privileged 작업이며, `doctor`는 `sudo`를 사용하지 않습니다. `capture`는 Linux와 macOS를 지원합니다. Capture에는 강제 상한(duration 60초, packet 10,000개)이 있고 기존 파일을 덮어쓰지 않습니다. `tcpdump`는 `/usr/sbin`, `/usr/bin`, `/sbin`, `/bin` 중 한 곳에 설치되어 있어야 합니다. `capture`는 `tcpdump`와 `sudo`를 `PATH`에서 찾지 않습니다.
 
-Linux에서 `--mode events`를 사용하면 process metadata와 함께 TCP socket state, retransmission, reset, destroy event를 JSONL로 저장합니다. 이 mode는 BTF와 eBPF capability가 필요하며 PCAP 파일을 만들지 않습니다.
+Linux에서 `--mode events`를 사용하면 process metadata와 함께 TCP socket state, retransmission, reset, destroy event를 JSONL로 저장합니다. 이 mode는 BTF와 eBPF capability가 필요하며 PCAP 파일을 만들지 않습니다. 각 event의 `timestamp_ns`는 요약 줄과 같은 Unix epoch 기준 나노초이고, `boot_time_ns`는 부팅 후 kernel monotonic 시간입니다.
 
 ```bash
 ./bin/edc capture \

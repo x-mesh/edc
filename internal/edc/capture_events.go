@@ -14,6 +14,7 @@ type captureEventsOptions struct {
 type captureEvent struct {
 	SocketID    uint64 `json:"-"`
 	TimestampNS uint64 `json:"timestamp_ns"`
+	BootTimeNS  uint64 `json:"boot_time_ns"`
 	Event       string `json:"event"`
 	Protocol    string `json:"protocol"`
 	PID         uint32 `json:"pid"`

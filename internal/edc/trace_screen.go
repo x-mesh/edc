@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"sort"
 	"strings"
 	"sync"
 	"syscall"
@@ -207,8 +208,8 @@ func traceScreenHeader(model traceScreenModel) []string {
 func traceScreenRows(model traceScreenModel) []string {
 	rows := make([]string, 0, model.height)
 	if model.groupBy != "" {
-		report := model.groupReport()
-		for _, group := range report.Groups {
+		groups := traceScreenGroupOrder(model.groupReport().Groups)
+		for _, group := range groups[:min(len(groups), max(0, model.height-3))] {
 			rows = append(rows, formatTraceGroupScreenRow(model.protocol, group, model.width))
 		}
 		return traceScreenPadRows(rows, model.height-3)
@@ -220,6 +221,18 @@ func traceScreenRows(model traceScreenModel) []string {
 		rows = append(rows, formatTraceScreenEvent(event, model.width))
 	}
 	return traceScreenPadRows(rows, model.height-3)
+}
+
+// traceScreenGroupOrder는 화면에 다 들어가지 않을 때 잘릴 group을 정한다. 이름순으로 자르면 같은
+// group이 session 내내 보이지 않으므로, traffic이 많은 group을 위에 둔다.
+func traceScreenGroupOrder(groups []traceGroupSummary) []traceGroupSummary {
+	sort.SliceStable(groups, func(i, j int) bool {
+		if groups[i].TotalBytes != groups[j].TotalBytes {
+			return groups[i].TotalBytes > groups[j].TotalBytes
+		}
+		return groups[i].Events > groups[j].Events
+	})
+	return groups
 }
 
 func traceScreenPadRows(rows []string, available int) []string {

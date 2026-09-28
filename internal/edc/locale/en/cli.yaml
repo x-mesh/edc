@@ -131,6 +131,7 @@ cli:
     events_done: "event capture finished: %s"
     btf_missing: "Linux BTF is not available"
     udp_send_hook_missing: "This kernel has no %s function to trace. It was probably inlined at build time, so edc cannot record UDP sends"
+    tcp_accept_hook_missing: "This kernel has no %s function to trace, so edc cannot link an accepted TCP connection to its server process"
     capability_check_failed: "cannot read Linux capabilities"
     capability_missing: "Linux capability %d is required"
     supported_platforms: "capture runs on Linux and macOS only"

@@ -24,6 +24,8 @@ typedef __u32 __wsum;
 #define BPF_MAP_TYPE_LRU_HASH 9
 #define BPF_MAP_TYPE_RINGBUF 27
 #define TCP_SYN_SENT 2
+#define TCP_CLOSE 7
+#define TCP_LISTEN 10
 
 struct event {
 	__u64 timestamp_ns;
@@ -166,11 +168,16 @@ int inet_sock_set_state(struct inet_sock_set_state_ctx *ctx) {
 	event->skaddr = (__u64)ctx->skaddr;
 	event->old_state = ctx->oldstate;
 	event->new_state = ctx->newstate;
-	// SYN_SENT 전이는 connect() 안에서 일어나므로 현재 태스크가 연결을 거는 프로세스다.
-	if (ctx->newstate == TCP_SYN_SENT && ctx->protocol == IPPROTO_TCP) {
+	// SYN_SENT와 LISTEN 전이는 connect()와 listen() 안에서 일어나므로 현재 태스크가 socket의 주인이다.
+	if ((ctx->newstate == TCP_SYN_SENT || ctx->newstate == TCP_LISTEN) && ctx->protocol == IPPROTO_TCP) {
 		remember_sock_owner(event->skaddr);
 	}
 	apply_sock_owner(event);
+	// listen socket은 tcp_destroy_sock을 거치지 않으므로 닫힐 때 여기서 지운다.
+	if (ctx->oldstate == TCP_LISTEN && ctx->newstate == TCP_CLOSE) {
+		__u64 skaddr = event->skaddr;
+		bpf_map_delete_elem(&sock_owners, &skaddr);
+	}
 	event->family = ctx->family;
 	event->sport = ctx->sport;
 	event->dport = ctx->dport;
@@ -518,6 +525,32 @@ int skb_consume_udp_entry(__u64 *ctx) {
 		bpf_probe_read_kernel(event->destination, 16, network + 8);
 	}
 	finish_event(event);
+	return 0;
+}
+
+// trace 전부터 떠 있던 서버는 listen()을 이미 지났다. accept()의 첫 인자가 listen socket이라 여기서 주인을
+// 배운다. 첫 인자만 읽으므로 6.10에서 바뀐 뒤쪽 인자와 무관하다.
+SEC("fentry/inet_csk_accept")
+int inet_csk_accept_entry(__u64 *ctx) {
+	remember_sock_owner(ctx[0]);
+	return 0;
+}
+
+// tcp_accept event는 서버가 accept()를 부르기 전에 인터럽트 문맥에서 생긴다. 새 socket이 만들어질 때
+// listen socket의 주인을 물려주어야 그 event부터 서버 프로세스로 기록된다.
+SEC("fexit/tcp_create_openreq_child")
+int tcp_create_openreq_child_exit(__u64 *ctx) {
+	__u64 listener = ctx[0];
+	__u64 child = ctx[3];
+	if (!child) {
+		return 0;
+	}
+	struct sock_owner *owner = bpf_map_lookup_elem(&sock_owners, &listener);
+	if (!owner) {
+		return 0;
+	}
+	struct sock_owner copy = *owner;
+	bpf_map_update_elem(&sock_owners, &child, &copy, BPF_ANY);
 	return 0;
 }
 

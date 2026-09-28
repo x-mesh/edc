@@ -131,6 +131,7 @@ cli:
     events_done: "event capture が終わりました: %s"
     btf_missing: "Linux BTF を利用できません"
     udp_send_hook_missing: "この kernel にはトレースできる %s 関数がありません。build 時に inline されたとみられ、edc は UDP 送信を記録できません"
+    tcp_accept_hook_missing: "この kernel にはトレースできる %s 関数がないため、edc は accept した TCP 接続をサーバー process に結び付けられません"
     capability_check_failed: "Linux capability を読めませんでした"
     capability_missing: "Linux capability %d が必要です"
     supported_platforms: "capture は Linux と macOS だけで動きます"

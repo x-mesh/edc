@@ -37,22 +37,24 @@ type captureEventsUdpSendPending struct {
 //
 // Used for safe lookups in a Collection or CollectionSpec.
 const (
-	captureEventsMapEvents              = "events"
-	captureEventsMapLostEvents          = "lost_events"
-	captureEventsMapSockOwners          = "sock_owners"
-	captureEventsMapUdpSendPending      = "udp_send_pending"
-	captureEventsProgInetSockSetState   = "inet_sock_set_state"
-	captureEventsProgSkbConsumeUdpEntry = "skb_consume_udp_entry"
-	captureEventsProgTcpDestroySock     = "tcp_destroy_sock"
-	captureEventsProgTcpReceiveReset    = "tcp_receive_reset"
-	captureEventsProgTcpRecvLength      = "tcp_recv_length"
-	captureEventsProgTcpRetransmitSkb   = "tcp_retransmit_skb"
-	captureEventsProgTcpSendLength      = "tcp_send_length"
-	captureEventsProgTcpSendReset       = "tcp_send_reset"
-	captureEventsProgUdpSendSkbEntry    = "udp_send_skb_entry"
-	captureEventsProgUdpSendSkbExit     = "udp_send_skb_exit"
-	captureEventsProgUdpV6SendSkbEntry  = "udp_v6_send_skb_entry"
-	captureEventsProgUdpV6SendSkbExit   = "udp_v6_send_skb_exit"
+	captureEventsMapEvents                     = "events"
+	captureEventsMapLostEvents                 = "lost_events"
+	captureEventsMapSockOwners                 = "sock_owners"
+	captureEventsMapUdpSendPending             = "udp_send_pending"
+	captureEventsProgInetCskAcceptEntry        = "inet_csk_accept_entry"
+	captureEventsProgInetSockSetState          = "inet_sock_set_state"
+	captureEventsProgSkbConsumeUdpEntry        = "skb_consume_udp_entry"
+	captureEventsProgTcpCreateOpenreqChildExit = "tcp_create_openreq_child_exit"
+	captureEventsProgTcpDestroySock            = "tcp_destroy_sock"
+	captureEventsProgTcpReceiveReset           = "tcp_receive_reset"
+	captureEventsProgTcpRecvLength             = "tcp_recv_length"
+	captureEventsProgTcpRetransmitSkb          = "tcp_retransmit_skb"
+	captureEventsProgTcpSendLength             = "tcp_send_length"
+	captureEventsProgTcpSendReset              = "tcp_send_reset"
+	captureEventsProgUdpSendSkbEntry           = "udp_send_skb_entry"
+	captureEventsProgUdpSendSkbExit            = "udp_send_skb_exit"
+	captureEventsProgUdpV6SendSkbEntry         = "udp_v6_send_skb_entry"
+	captureEventsProgUdpV6SendSkbExit          = "udp_v6_send_skb_exit"
 )
 
 // loadCaptureEvents returns the embedded CollectionSpec for captureEvents.
@@ -97,18 +99,20 @@ type captureEventsSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type captureEventsProgramSpecs struct {
-	InetSockSetState   *ebpf.ProgramSpec `ebpf:"inet_sock_set_state"`
-	SkbConsumeUdpEntry *ebpf.ProgramSpec `ebpf:"skb_consume_udp_entry"`
-	TcpDestroySock     *ebpf.ProgramSpec `ebpf:"tcp_destroy_sock"`
-	TcpReceiveReset    *ebpf.ProgramSpec `ebpf:"tcp_receive_reset"`
-	TcpRecvLength      *ebpf.ProgramSpec `ebpf:"tcp_recv_length"`
-	TcpRetransmitSkb   *ebpf.ProgramSpec `ebpf:"tcp_retransmit_skb"`
-	TcpSendLength      *ebpf.ProgramSpec `ebpf:"tcp_send_length"`
-	TcpSendReset       *ebpf.ProgramSpec `ebpf:"tcp_send_reset"`
-	UdpSendSkbEntry    *ebpf.ProgramSpec `ebpf:"udp_send_skb_entry"`
-	UdpSendSkbExit     *ebpf.ProgramSpec `ebpf:"udp_send_skb_exit"`
-	UdpV6SendSkbEntry  *ebpf.ProgramSpec `ebpf:"udp_v6_send_skb_entry"`
-	UdpV6SendSkbExit   *ebpf.ProgramSpec `ebpf:"udp_v6_send_skb_exit"`
+	InetCskAcceptEntry        *ebpf.ProgramSpec `ebpf:"inet_csk_accept_entry"`
+	InetSockSetState          *ebpf.ProgramSpec `ebpf:"inet_sock_set_state"`
+	SkbConsumeUdpEntry        *ebpf.ProgramSpec `ebpf:"skb_consume_udp_entry"`
+	TcpCreateOpenreqChildExit *ebpf.ProgramSpec `ebpf:"tcp_create_openreq_child_exit"`
+	TcpDestroySock            *ebpf.ProgramSpec `ebpf:"tcp_destroy_sock"`
+	TcpReceiveReset           *ebpf.ProgramSpec `ebpf:"tcp_receive_reset"`
+	TcpRecvLength             *ebpf.ProgramSpec `ebpf:"tcp_recv_length"`
+	TcpRetransmitSkb          *ebpf.ProgramSpec `ebpf:"tcp_retransmit_skb"`
+	TcpSendLength             *ebpf.ProgramSpec `ebpf:"tcp_send_length"`
+	TcpSendReset              *ebpf.ProgramSpec `ebpf:"tcp_send_reset"`
+	UdpSendSkbEntry           *ebpf.ProgramSpec `ebpf:"udp_send_skb_entry"`
+	UdpSendSkbExit            *ebpf.ProgramSpec `ebpf:"udp_send_skb_exit"`
+	UdpV6SendSkbEntry         *ebpf.ProgramSpec `ebpf:"udp_v6_send_skb_entry"`
+	UdpV6SendSkbExit          *ebpf.ProgramSpec `ebpf:"udp_v6_send_skb_exit"`
 }
 
 // captureEventsMapSpecs contains maps before they are loaded into the kernel.
@@ -172,24 +176,28 @@ type captureEventsVariables struct {
 //
 // It can be passed to loadCaptureEventsObjects or ebpf.CollectionSpec.LoadAndAssign.
 type captureEventsPrograms struct {
-	InetSockSetState   *ebpf.Program `ebpf:"inet_sock_set_state"`
-	SkbConsumeUdpEntry *ebpf.Program `ebpf:"skb_consume_udp_entry"`
-	TcpDestroySock     *ebpf.Program `ebpf:"tcp_destroy_sock"`
-	TcpReceiveReset    *ebpf.Program `ebpf:"tcp_receive_reset"`
-	TcpRecvLength      *ebpf.Program `ebpf:"tcp_recv_length"`
-	TcpRetransmitSkb   *ebpf.Program `ebpf:"tcp_retransmit_skb"`
-	TcpSendLength      *ebpf.Program `ebpf:"tcp_send_length"`
-	TcpSendReset       *ebpf.Program `ebpf:"tcp_send_reset"`
-	UdpSendSkbEntry    *ebpf.Program `ebpf:"udp_send_skb_entry"`
-	UdpSendSkbExit     *ebpf.Program `ebpf:"udp_send_skb_exit"`
-	UdpV6SendSkbEntry  *ebpf.Program `ebpf:"udp_v6_send_skb_entry"`
-	UdpV6SendSkbExit   *ebpf.Program `ebpf:"udp_v6_send_skb_exit"`
+	InetCskAcceptEntry        *ebpf.Program `ebpf:"inet_csk_accept_entry"`
+	InetSockSetState          *ebpf.Program `ebpf:"inet_sock_set_state"`
+	SkbConsumeUdpEntry        *ebpf.Program `ebpf:"skb_consume_udp_entry"`
+	TcpCreateOpenreqChildExit *ebpf.Program `ebpf:"tcp_create_openreq_child_exit"`
+	TcpDestroySock            *ebpf.Program `ebpf:"tcp_destroy_sock"`
+	TcpReceiveReset           *ebpf.Program `ebpf:"tcp_receive_reset"`
+	TcpRecvLength             *ebpf.Program `ebpf:"tcp_recv_length"`
+	TcpRetransmitSkb          *ebpf.Program `ebpf:"tcp_retransmit_skb"`
+	TcpSendLength             *ebpf.Program `ebpf:"tcp_send_length"`
+	TcpSendReset              *ebpf.Program `ebpf:"tcp_send_reset"`
+	UdpSendSkbEntry           *ebpf.Program `ebpf:"udp_send_skb_entry"`
+	UdpSendSkbExit            *ebpf.Program `ebpf:"udp_send_skb_exit"`
+	UdpV6SendSkbEntry         *ebpf.Program `ebpf:"udp_v6_send_skb_entry"`
+	UdpV6SendSkbExit          *ebpf.Program `ebpf:"udp_v6_send_skb_exit"`
 }
 
 func (p *captureEventsPrograms) Close() error {
 	return _CaptureEventsClose(
+		p.InetCskAcceptEntry,
 		p.InetSockSetState,
 		p.SkbConsumeUdpEntry,
+		p.TcpCreateOpenreqChildExit,
 		p.TcpDestroySock,
 		p.TcpReceiveReset,
 		p.TcpRecvLength,

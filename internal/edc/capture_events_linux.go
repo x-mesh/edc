@@ -101,20 +101,25 @@ func captureEventsPrerequisites() error {
 			return errors.New(T("cli.capture.capability_missing", capability))
 		}
 	}
-	return captureUDPSendHooksAvailable()
+	return captureTraceHooksAvailable()
 }
 
-// captureUDPSendHooksAvailable은 UDP 송신 훅 대상이 kernel BTF에 있는지 본다. 두 함수는 static이라 kernel
+// captureTraceHooksAvailable은 fentry와 fexit 대상이 kernel BTF에 있는지 본다. UDP 송신 함수는 static이라 kernel
 // build에 따라 inline되어 사라질 수 있다. 확인하지 않으면 object load가 실패해 TCP trace까지 이유 없이 멈춘다.
-func captureUDPSendHooksAvailable() error {
+func captureTraceHooksAvailable() error {
 	kernel, err := btf.LoadKernelSpec()
 	if err != nil {
 		return fmt.Errorf("%s: %w", T("cli.capture.btf_missing"), err)
 	}
-	for _, name := range []string{"udp_send_skb", "udp_v6_send_skb"} {
+	for _, hook := range []struct{ name, message string }{
+		{"udp_send_skb", "cli.capture.udp_send_hook_missing"},
+		{"udp_v6_send_skb", "cli.capture.udp_send_hook_missing"},
+		{"inet_csk_accept", "cli.capture.tcp_accept_hook_missing"},
+		{"tcp_create_openreq_child", "cli.capture.tcp_accept_hook_missing"},
+	} {
 		var function *btf.Func
-		if err := kernel.TypeByName(name, &function); err != nil {
-			return errors.New(T("cli.capture.udp_send_hook_missing", name))
+		if err := kernel.TypeByName(hook.name, &function); err != nil {
+			return errors.New(T(hook.message, hook.name))
 		}
 	}
 	return nil
@@ -209,6 +214,8 @@ func collectCaptureEventsUntil(duration time.Duration, onEvent func(captureEvent
 		{"fentry/udp_v6_send_skb", objects.UdpV6SendSkbEntry},
 		{"fexit/udp_v6_send_skb", objects.UdpV6SendSkbExit},
 		{"fentry/skb_consume_udp", objects.SkbConsumeUdpEntry},
+		{"fentry/inet_csk_accept", objects.InetCskAcceptEntry},
+		{"fexit/tcp_create_openreq_child", objects.TcpCreateOpenreqChildExit},
 	}
 	links := make([]link.Link, 0, len(attachments)+len(tracing))
 	closeLinks := func() {

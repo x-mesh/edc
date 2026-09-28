@@ -13,6 +13,14 @@ import (
 	"github.com/cilium/ebpf"
 )
 
+type captureEventsSockOwner struct {
+	_        structs.HostLayout
+	CgroupId uint64
+	Pid      uint32
+	Comm     [16]int8
+	_        [4]byte
+}
+
 type captureEventsUdpSendPending struct {
 	_           structs.HostLayout
 	Skaddr      uint64
@@ -31,6 +39,7 @@ type captureEventsUdpSendPending struct {
 const (
 	captureEventsMapEvents              = "events"
 	captureEventsMapLostEvents          = "lost_events"
+	captureEventsMapSockOwners          = "sock_owners"
 	captureEventsMapUdpSendPending      = "udp_send_pending"
 	captureEventsProgInetSockSetState   = "inet_sock_set_state"
 	captureEventsProgSkbConsumeUdpEntry = "skb_consume_udp_entry"
@@ -108,6 +117,7 @@ type captureEventsProgramSpecs struct {
 type captureEventsMapSpecs struct {
 	Events         *ebpf.MapSpec `ebpf:"events"`
 	LostEvents     *ebpf.MapSpec `ebpf:"lost_events"`
+	SockOwners     *ebpf.MapSpec `ebpf:"sock_owners"`
 	UdpSendPending *ebpf.MapSpec `ebpf:"udp_send_pending"`
 }
 
@@ -139,6 +149,7 @@ func (o *captureEventsObjects) Close() error {
 type captureEventsMaps struct {
 	Events         *ebpf.Map `ebpf:"events"`
 	LostEvents     *ebpf.Map `ebpf:"lost_events"`
+	SockOwners     *ebpf.Map `ebpf:"sock_owners"`
 	UdpSendPending *ebpf.Map `ebpf:"udp_send_pending"`
 }
 
@@ -146,6 +157,7 @@ func (m *captureEventsMaps) Close() error {
 	return _CaptureEventsClose(
 		m.Events,
 		m.LostEvents,
+		m.SockOwners,
 		m.UdpSendPending,
 	)
 }

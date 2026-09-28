@@ -63,6 +63,39 @@ func (cache *commandTargetCache) target(pid uint32, now time.Time) string {
 	return target
 }
 
+// socketTargetLimit은 destroy event를 놓친 socket이 쌓여도 메모리를 제한한다. BPF의 socket 주인 map과 같은 크기다.
+const socketTargetLimit = 65536
+
+// socketTargetCache는 TCP socket이 한 번 얻은 target을 그 socket의 뒤 event에 이어 준다. 프로세스가 끝난 뒤
+// 도착한 FIN이나 destroy event는 /proc에서 명령줄을 읽을 수 없다.
+type socketTargetCache struct {
+	entries map[uint64]string
+}
+
+func newSocketTargetCache() *socketTargetCache {
+	return &socketTargetCache{entries: map[uint64]string{}}
+}
+
+func (cache *socketTargetCache) target(event captureEvent) string {
+	if event.Protocol != "tcp" || event.SocketID == 0 {
+		return event.Target
+	}
+	target := event.Target
+	if target != "" {
+		if _, ok := cache.entries[event.SocketID]; !ok && len(cache.entries) >= socketTargetLimit {
+			clear(cache.entries)
+		}
+		cache.entries[event.SocketID] = target
+	} else {
+		target = cache.entries[event.SocketID]
+	}
+	// kernel이 해제한 socket 주소를 새 socket에 다시 쓰므로 destroy 뒤에는 남기지 않는다.
+	if event.Event == "tcp_destroy" {
+		delete(cache.entries, event.SocketID)
+	}
+	return target
+}
+
 func traceTargetFromArguments(arguments []string) string {
 	for index := 1; index < len(arguments); index++ {
 		argument := arguments[index]

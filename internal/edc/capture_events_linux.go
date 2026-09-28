@@ -264,6 +264,7 @@ func collectCaptureEventsUntil(duration time.Duration, onEvent func(captureEvent
 	}
 
 	targets := newCommandTargetCache(commandTarget)
+	sockets := newSocketTargetCache()
 	events := make([]captureEvent, 0)
 	var eventCount uint64
 	for {
@@ -293,6 +294,7 @@ func collectCaptureEventsUntil(duration time.Duration, onEvent func(captureEvent
 		if event.PID != 0 {
 			event.Target = targets.target(event.PID, time.Now())
 		}
+		event.Target = sockets.target(event)
 		events = append(events, event)
 		if onEvent != nil {
 			if err := onEvent(event); err != nil {

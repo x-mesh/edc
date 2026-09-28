@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -282,12 +283,12 @@ func TestSummarizeTraceGroupsByDimension(t *testing.T) {
 }
 
 func TestTraceScreenGroupKeys(t *testing.T) {
-	for _, initial := range []string{"", traceGroupBySource, traceGroupByTarget} {
+	for _, initial := range []string{"", traceGroupBySource, traceGroupByTarget, traceGroupByEvent} {
 		model := newTraceScreenModel("tcp", tcpTraceOptions{groupBy: initial}, make(chan captureEvent), make(chan traceFinishedMsg), nil)
 		if model.groupBy != initial {
 			t.Fatalf("initial group mode = %q, want %q", model.groupBy, initial)
 		}
-		for _, transition := range []struct{ key, want string }{{"s", traceGroupBySource}, {"s", traceGroupBySource}, {"t", traceGroupByTarget}, {"t", traceGroupByTarget}, {"g", ""}, {"g", ""}} {
+		for _, transition := range []struct{ key, want string }{{"s", traceGroupBySource}, {"s", traceGroupBySource}, {"t", traceGroupByTarget}, {"t", traceGroupByTarget}, {"e", traceGroupByEvent}, {"e", traceGroupByEvent}, {"g", ""}, {"g", ""}} {
 			next, _ := model.Update(tea.KeyPressMsg{Code: rune(transition.key[0]), Text: transition.key})
 			model = next.(traceScreenModel)
 			if model.groupBy != transition.want {
@@ -301,8 +302,133 @@ func TestTraceScreenGroupKeys(t *testing.T) {
 	}
 }
 
+func TestSummarizeTraceGroupsByEvent(t *testing.T) {
+	report := summarizeTraceGroups("tcp", traceGroupByEvent, []captureEvent{
+		{Protocol: "tcp", Event: "tcp_connect", Destination: "203.0.113.10:443"},
+		{Protocol: "tcp", Event: "tcp_connect", Destination: "203.0.113.20:443"},
+		{Protocol: "tcp", Event: "tcp_retransmit", Destination: "203.0.113.10:443"},
+		{Protocol: "tcp"},
+	}, captureSummary{}, time.Second, "", "")
+	if len(report.Groups) != 3 || report.Groups[0].Group != "-" || report.Groups[1].Group != "tcp_connect" || report.Groups[1].Connect != 2 || report.Groups[2].Group != "tcp_retransmit" || report.Groups[2].Retransmissions != 1 {
+		t.Fatalf("event groups = %#v", report.Groups)
+	}
+	if got := traceGroupDisplayValue(traceGroupByEvent, report.Groups[1]); got != "tcp_connect" {
+		t.Fatalf("event display value = %q, want only the event name", got)
+	}
+}
+
+func TestTraceGroupDisplayValueAddsDestinationOnlyForTargets(t *testing.T) {
+	group := traceGroupSummary{Group: "10.0.0.2", Destinations: []string{"203.0.113.10:443", "203.0.113.20:443"}}
+	if got := traceGroupDisplayValue(traceGroupBySource, group); got != "10.0.0.2" {
+		t.Fatalf("source display value = %q, want only the source host", got)
+	}
+	target := traceGroupSummary{Group: "example.com", Destinations: []string{"203.0.113.10:443"}}
+	if got := traceGroupDisplayValue(traceGroupByTarget, target); got != "example.com (203.0.113.10:443)" {
+		t.Fatalf("target display value = %q", got)
+	}
+}
+
+func TestTraceScreenWidensGroupColumn(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	target := "very-long-service-name.internal.example.com"
+	for _, protocol := range []string{"tcp", "udp"} {
+		model := newTraceScreenModel(protocol, tcpTraceOptions{groupBy: traceGroupByTarget}, make(chan captureEvent), make(chan traceFinishedMsg), nil)
+		model.events = []captureEvent{{Protocol: protocol, Event: protocol + "_send", Bytes: 100, Target: target}}
+
+		model.width, model.height = 200, 10
+		row := traceScreenRows(model)[0]
+		if !strings.HasPrefix(row, target+" ") {
+			t.Fatalf("%s wide row = %q, want the full target", protocol, row)
+		}
+		columns := traceScreenHeader(model)[2]
+		if strings.Index(columns, "EVT")+len("EVT") != strings.Index(row, "    1 ")+len("    1") {
+			t.Fatalf("%s header and row are not aligned:\n%q\n%q", protocol, columns, row)
+		}
+		if width := liveWidth(row); width > model.width {
+			t.Fatalf("%s wide row is %d columns, want at most %d", protocol, width, model.width)
+		}
+
+		model.width = 80
+		for _, line := range append(traceScreenHeader(model), traceScreenRows(model)...) {
+			if liveWidth(strings.TrimRight(line, "\n")) > model.width {
+				t.Fatalf("%s narrow line = %q", protocol, line)
+			}
+		}
+		if row := traceScreenRows(model)[0]; strings.Contains(row, "\n") {
+			t.Fatalf("%s narrow row wraps: %q", protocol, row)
+		}
+		if row := traceScreenRows(model)[0]; !strings.HasPrefix(row, target[:traceGroupMinLabelWidth-1]) || strings.Contains(row, target) {
+			t.Fatalf("%s narrow row = %q, want the old 14-column label", protocol, row)
+		}
+	}
+}
+
+func TestTraceScreenGroupColumnsStayAligned(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	field := regexp.MustCompile(`\S+`)
+	for _, protocol := range []string{"tcp", "udp"} {
+		for _, width := range []int{80, 200} {
+			model := newTraceScreenModel(protocol, tcpTraceOptions{groupBy: traceGroupByTarget}, make(chan captureEvent), make(chan traceFinishedMsg), nil)
+			model.width, model.height = width, 10
+			// 경과 시간을 1ms로 두면 Mbps가 1000을 넘는다. 예전에는 이 값이 5칸을 넘어 뒤 열을 밀었다.
+			model.started = time.Now().Add(-time.Millisecond)
+			// 열마다 길이가 다른 값을 넣는다. 예전에는 195.3KiB 같은 값이 6칸을 넘어 뒤 열을 밀었다.
+			model.events = []captureEvent{
+				{Protocol: protocol, Event: protocol + "_send", Bytes: 200000, Target: "example.com"},
+				{Protocol: protocol, Event: protocol + "_receive", Bytes: 5, Target: "example.com"},
+			}
+			header := field.FindAllStringIndex(traceScreenHeader(model)[2], -1)
+			row := field.FindAllStringIndex(traceScreenRows(model)[0], -1)
+			columns := 8
+			if protocol == "tcp" {
+				columns = 11
+			}
+			if len(header) < columns || len(row) < columns {
+				t.Fatalf("%s width %d: header %d fields, row %d fields", protocol, width, len(header), len(row))
+			}
+			// 첫 열은 왼쪽, 숫자 열은 오른쪽 정렬이다. LAST는 폭이 모자라면 잘리므로 보지 않는다.
+			for index := 1; index < columns-1; index++ {
+				if header[index][1] != row[index][1] {
+					t.Fatalf("%s width %d column %d ends at %d in the header and %d in the row\n%q\n%q", protocol, width, index, header[index][1], row[index][1], traceScreenHeader(model)[2], traceScreenRows(model)[0])
+				}
+			}
+		}
+	}
+}
+
+func TestTraceBytesUsesGiBForLargeValues(t *testing.T) {
+	for bytes, want := range map[uint64]string{0: "0B", 1023: "1023B", 1024: "1.0KiB", 1<<20 - 1: "1024.0KiB", 1 << 20: "1.0MiB", 1<<30 - 1: "1024.0MiB", 1 << 30: "1.0GiB", 10000 << 20: "9.8GiB", 9999 << 30: "9999.0GiB"} {
+		got := traceBytes(bytes)
+		if got != want || len(got) > traceGroupWideByteWidth {
+			t.Fatalf("traceBytes(%d) = %q, want %q", bytes, got, want)
+		}
+	}
+}
+
+func TestTraceCompactBytesFitsNarrowColumn(t *testing.T) {
+	for bytes, want := range map[uint64]string{0: "0B", 999: "999B", 1000: "1.0K", 10188: "9.9K", 10189: "10K", 200000: "195K", 1023487: "999K", 1023488: "1.0M", 5 << 30: "5.0G"} {
+		got := traceCompactBytes(bytes)
+		if got != want || len(got) > traceGroupNarrowByteWidth {
+			t.Fatalf("traceCompactBytes(%d) = %q, want %q", bytes, got, want)
+		}
+	}
+}
+
+func TestTraceScreenRatesFitTheirColumns(t *testing.T) {
+	for rate, want := range map[float64]string{0: "0.0", 9999.9: "9999.9", 9999.95: "10000", 999999.4: "999999", 999999.5: "1000k"} {
+		if got := traceScreenEventRate(rate); got != want || len(got) > 6 {
+			t.Fatalf("traceScreenEventRate(%v) = %q, want %q", rate, got, want)
+		}
+	}
+	for megabits, want := range map[float64]string{0.37: "0.37", 99.99: "99.99", 99.995: "100.0", 999.9: "999.9", 999.95: "1000", 99999.4: "99999", 99999.5: "100G"} {
+		if got := traceScreenMegabits(megabits); got != want || len(got) > 5 {
+			t.Fatalf("traceScreenMegabits(%v) = %q, want %q", megabits, got, want)
+		}
+	}
+}
+
 func TestTraceGroupByModes(t *testing.T) {
-	for groupBy, want := range map[string]bool{"": true, traceGroupBySource: true, traceGroupByTarget: true, "invalid": false} {
+	for groupBy, want := range map[string]bool{"": true, traceGroupBySource: true, traceGroupByTarget: true, traceGroupByEvent: true, "invalid": false} {
 		if got := validTraceGroupBy(groupBy); got != want {
 			t.Fatalf("validTraceGroupBy(%q) = %t, want %t", groupBy, got, want)
 		}

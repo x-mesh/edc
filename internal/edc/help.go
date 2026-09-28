@@ -202,7 +202,7 @@ var commandDocs = []commandDoc{
 			{"--json <path|->", "option.json"},
 			{"--raw", "command.trace.option.raw"},
 			{"--live", "command.trace.option.live"},
-			{"--group-by <source|target>", "command.trace.option.group_by"},
+			{"--group-by <source|target|event>", "command.trace.option.group_by"},
 			{"--process <name>", "command.trace.option.process"},
 			{"--destination <host:port>", "command.trace.option.destination"},
 			{"--yes", "command.trace.option.yes"},

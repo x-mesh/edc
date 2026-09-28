@@ -160,9 +160,9 @@ cli:
     failed: "network trace に失敗しました: %v"
     duration_range: "--duration は省略、0 秒、または 1ns から 60 秒の範囲で指定します"
     raw_json_conflict: "--raw と --json は同時に使えません"
-    group_by_range: "--group-by は source または target で指定します"
+    group_by_range: "--group-by は source、target、event のいずれかで指定します"
     group_by_raw_conflict: "--group-by は --raw と同時に使えません"
-    group_by: "source または target ごとに event をまとめて traffic counter を表示します"
+    group_by: "source、target、event ごとに event をまとめて traffic counter を表示します"
     linux_only: "network trace は Linux でだけ動きます。現在の platform: %s"
   report:
     unsupported_schema: "%s: 対応しない schema version: %s"

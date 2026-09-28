@@ -57,7 +57,7 @@ func TestTraceHelpDescribesSourceTargetAndEventKeys(t *testing.T) {
 			t.Fatalf("trace help is missing for %s", language)
 		}
 		text := output.String()
-		for _, value := range []string{"--group-by <source|target>", "source", "target", "g"} {
+		for _, value := range []string{"--group-by <source|target|event>", "source", "target", "event", "g"} {
 			if !strings.Contains(text, value) {
 				t.Fatalf("%s trace help misses %q: %q", language, value, text)
 			}

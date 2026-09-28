@@ -17,6 +17,7 @@ import (
 const (
 	traceGroupBySource = "source"
 	traceGroupByTarget = "target"
+	traceGroupByEvent  = "event"
 )
 
 func runTrace(args []string) int {
@@ -144,7 +145,7 @@ func runTrace(args []string) int {
 }
 
 func validTraceGroupBy(groupBy string) bool {
-	return groupBy == "" || groupBy == traceGroupBySource || groupBy == traceGroupByTarget
+	return groupBy == "" || groupBy == traceGroupBySource || groupBy == traceGroupByTarget || groupBy == traceGroupByEvent
 }
 
 func printTraceEvent(event captureEvent, color bool) {
@@ -382,6 +383,12 @@ func summarizeTraceGroups(protocol, groupBy string, events []captureEvent, summa
 }
 
 func traceGroupKey(event captureEvent, groupBy string) string {
+	if groupBy == traceGroupByEvent {
+		if event.Event == "" {
+			return "-"
+		}
+		return event.Event
+	}
 	if groupBy == traceGroupBySource {
 		if event.Source == "" {
 			return "-"
@@ -443,8 +450,10 @@ func traceGroupRate(events uint64, duration time.Duration) float64 {
 	return float64(events) / seconds
 }
 
-func traceGroupDisplayValue(group traceGroupSummary) string {
-	if len(group.Destinations) == 0 || group.Destinations[0] == group.Group {
+func traceGroupDisplayValue(groupBy string, group traceGroupSummary) string {
+	// source와 event group에는 destination이 여럿 섞이므로 첫 destination 하나만 붙이면 그 group이 한 곳으로만
+	// 간 것처럼 보인다. target group은 이름이 가리키는 주소를 보여 주려고 괄호를 붙인다.
+	if groupBy != traceGroupByTarget || len(group.Destinations) == 0 || group.Destinations[0] == group.Group {
 		return group.Group
 	}
 	return fmt.Sprintf("%s (%s)", group.Group, group.Destinations[0])
@@ -463,19 +472,23 @@ func printTraceGroupReport(report traceGroupReport) {
 	if report.Protocol == "udp" {
 		fmt.Fprintf(os.Stdout, "\n%s\tEVENTS\tEVENT/s\tTX\tRX\tTOTAL\tB/s\tMbps\tLAST\n", traceGroupLabel(report.GroupBy))
 		for _, group := range report.Groups {
-			fmt.Fprintf(os.Stdout, "%s\t%d\t%.1f\t%s\t%s\t%s\t%s\t%.3f\t%s\n", traceGroupDisplayValue(group), group.Events, group.Rate, traceBytes(group.TXBytes), traceBytes(group.RXBytes), traceBytes(group.TotalBytes), traceBytes(uint64(group.BytesPerSecond)), group.MegabitsPerSecond, group.LastEvent)
+			fmt.Fprintf(os.Stdout, "%s\t%d\t%.1f\t%s\t%s\t%s\t%s\t%.3f\t%s\n", traceGroupDisplayValue(report.GroupBy, group), group.Events, group.Rate, traceBytes(group.TXBytes), traceBytes(group.RXBytes), traceBytes(group.TotalBytes), traceBytes(uint64(group.BytesPerSecond)), group.MegabitsPerSecond, group.LastEvent)
 		}
 		return
 	}
 	fmt.Fprintf(os.Stdout, "\n%s\tEVENTS\tEVENT/s\tTX\tRX\tTOTAL\tB/s\tMbps\tCONNECT\tRETRANS\tRESET\tLAST\n", traceGroupLabel(report.GroupBy))
 	for _, group := range report.Groups {
-		fmt.Fprintf(os.Stdout, "%s\t%d\t%.1f\t%s\t%s\t%s\t%s\t%.3f\t%d\t%d\t%d\t%s\n", traceGroupDisplayValue(group), group.Events, group.Rate, traceBytes(group.TXBytes), traceBytes(group.RXBytes), traceBytes(group.TotalBytes), traceBytes(uint64(group.BytesPerSecond)), group.MegabitsPerSecond, group.Connect, group.Retransmissions, group.Resets, group.LastEvent)
+		fmt.Fprintf(os.Stdout, "%s\t%d\t%.1f\t%s\t%s\t%s\t%s\t%.3f\t%d\t%d\t%d\t%s\n", traceGroupDisplayValue(report.GroupBy, group), group.Events, group.Rate, traceBytes(group.TXBytes), traceBytes(group.RXBytes), traceBytes(group.TotalBytes), traceBytes(uint64(group.BytesPerSecond)), group.MegabitsPerSecond, group.Connect, group.Retransmissions, group.Resets, group.LastEvent)
 	}
 }
 
 func traceBytes(bytes uint64) string {
 	const kib = 1024
 	const mib = 1024 * kib
+	const gib = 1024 * mib
+	if bytes >= gib {
+		return fmt.Sprintf("%.1fGiB", float64(bytes)/gib)
+	}
 	if bytes >= mib {
 		return fmt.Sprintf("%.1fMiB", float64(bytes)/mib)
 	}

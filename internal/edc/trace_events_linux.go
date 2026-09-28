@@ -145,32 +145,38 @@ const socketTargetLimit = 65536
 
 // socketTargetCache는 TCP socket이 한 번 얻은 target을 그 socket의 뒤 event에 이어 준다. 프로세스가 끝난 뒤
 // 도착한 FIN이나 destroy event는 /proc에서 명령줄을 읽을 수 없다.
+type socketTarget struct {
+	target string
+	source string
+}
+
 type socketTargetCache struct {
-	entries map[uint64]string
+	entries map[uint64]socketTarget
 }
 
 func newSocketTargetCache() *socketTargetCache {
-	return &socketTargetCache{entries: map[uint64]string{}}
+	return &socketTargetCache{entries: map[uint64]socketTarget{}}
 }
 
-func (cache *socketTargetCache) target(event captureEvent) string {
+// target은 event의 target과 그 출처를 돌려준다. event에 없으면 같은 socket이 앞서 얻은 값을 쓴다.
+func (cache *socketTargetCache) target(event captureEvent) (string, string) {
 	if event.Protocol != "tcp" || event.SocketID == 0 {
-		return event.Target
+		return event.Target, event.TargetSource
 	}
-	target := event.Target
-	if target != "" {
+	current := socketTarget{target: event.Target, source: event.TargetSource}
+	if current.target != "" {
 		if _, ok := cache.entries[event.SocketID]; !ok && len(cache.entries) >= socketTargetLimit {
 			clear(cache.entries)
 		}
-		cache.entries[event.SocketID] = target
+		cache.entries[event.SocketID] = current
 	} else {
-		target = cache.entries[event.SocketID]
+		current = cache.entries[event.SocketID]
 	}
 	// kernel이 해제한 socket 주소를 새 socket에 다시 쓰므로 destroy 뒤에는 남기지 않는다.
 	if event.Event == "tcp_destroy" {
 		delete(cache.entries, event.SocketID)
 	}
-	return target
+	return current.target, current.source
 }
 
 // traceTargetFromArguments는 명령줄에서 연결 대상으로 보이는 호스트를 고른다. URL이 가장 강한 근거라서

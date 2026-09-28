@@ -6,12 +6,14 @@ import (
 	"bufio"
 	"encoding/binary"
 	"encoding/json"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"syscall"
 	"testing"
 	"time"
 
+	"github.com/miekg/dns"
 	"golang.org/x/sys/unix"
 )
 
@@ -203,6 +205,109 @@ func TestPIDTargetCacheStaysBounded(t *testing.T) {
 	}
 }
 
+func dnsRecordSample(t *testing.T, pid uint32, message *dns.Msg) []byte {
+	t.Helper()
+	payload, err := message.Pack()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sample := make([]byte, dnsRecordPayloadOffset+1024)
+	binary.LittleEndian.PutUint32(sample[8:12], dnsRecordType)
+	binary.LittleEndian.PutUint32(sample[12:16], pid)
+	binary.LittleEndian.PutUint32(sample[16:20], uint32(len(payload)))
+	copy(sample[dnsRecordPayloadOffset:], payload)
+	return sample
+}
+
+func TestDNSAnswersNameTheAddressesThatAProcessResolved(t *testing.T) {
+	question := new(dns.Msg)
+	question.SetQuestion("API.Example.com.", dns.TypeA)
+	answer := new(dns.Msg)
+	answer.SetReply(question)
+	for _, text := range []string{"api.example.com. 60 IN CNAME edge.cdn.example.net.", "edge.cdn.example.net. 60 IN A 203.0.113.10", "edge.cdn.example.net. 60 IN AAAA 2606:4700:10::6814:179a"} {
+		record, err := dns.NewRR(text)
+		if err != nil {
+			t.Fatal(err)
+		}
+		answer.Answer = append(answer.Answer, record)
+	}
+	pid, payload, ok := parseDNSRecord(dnsRecordSample(t, 42, answer))
+	if !ok || pid != 42 {
+		t.Fatalf("parseDNSRecord = %d, %t", pid, ok)
+	}
+	cache := newDNSNameCache()
+	cache.rememberAnswer(pid, dnsAnswerNames(payload))
+	// CNAME을 거쳐도 프로그램이 물어본 이름을 쓰고, event의 축약하지 않은 IPv6 표기와도 맞는다.
+	for _, destination := range []string{"203.0.113.10:443", "[2606:4700:10:0:0:0:6814:179a]:443"} {
+		if name, ok := cache.forProcess(42, destination); !ok || name != "api.example.com" {
+			t.Fatalf("forProcess(%s) = %q, %t", destination, name, ok)
+		}
+	}
+	if _, ok := cache.forProcess(7, "203.0.113.10:443"); ok {
+		t.Fatal("another process must not get a process-level name")
+	}
+	if name, ok := cache.forAddress("203.0.113.10:443"); !ok || name.name != "api.example.com" || name.source != targetSourceDNS {
+		t.Fatalf("forAddress = %#v, %t", name, ok)
+	}
+	if names := dnsAnswerNames(payload[:len(payload)-5]); names != nil {
+		t.Fatalf("a cut answer must not be read: %v", names)
+	}
+	event := make([]byte, 128)
+	binary.LittleEndian.PutUint32(event[8:12], 6)
+	if _, _, ok := parseDNSRecord(event); ok {
+		t.Fatal("a send event was parsed as a DNS record")
+	}
+}
+
+func TestResolverCacheNamesFollowCNAMEs(t *testing.T) {
+	output := `Scope protocol=dns ifindex=212 ifname=tailscale0 DNSSEC=no DNSOverTLS=no
+No entries.
+
+Scope protocol=dns ifindex=3 ifname=eno2 DNSSEC=no DNSOverTLS=no
+ctz.solidwallet.io IN A 104.18.27.64
+api.anthropic.com IN AAAA 2607:6bc0::10
+blob.example.windows.net IN CNAME blob.example.trafficmanager.net
+blob.example.trafficmanager.net IN A 20.60.1.2
+`
+	names := resolverCacheNames(output)
+	for address, want := range map[string]string{"104.18.27.64": "ctz.solidwallet.io", "2607:6bc0::10": "api.anthropic.com", "20.60.1.2": "blob.example.windows.net"} {
+		if got := names[netip.MustParseAddr(address)]; got != want {
+			t.Fatalf("names[%s] = %q, want %q", address, got, want)
+		}
+	}
+}
+
+func TestResolveTraceTargetOrder(t *testing.T) {
+	cache := newDNSNameCache()
+	cache.rememberAnswer(42, map[netip.Addr]string{netip.MustParseAddr("203.0.113.10"): "api.example.com"})
+	cache.rememberAddress(netip.MustParseAddr("203.0.113.20"), "cached.example.com", targetSourceResolverCache)
+	for _, test := range []struct {
+		name           string
+		event          captureEvent
+		command        string
+		target, source string
+	}{
+		{"own lookup beats the command line", captureEvent{PID: 42, Destination: "203.0.113.10:443"}, "app.py", "api.example.com", targetSourceDNS},
+		{"command line beats another lookup", captureEvent{PID: 7, Destination: "203.0.113.10:443"}, "example.org", "example.org", targetSourceCommand},
+		{"another lookup when the command has none", captureEvent{PID: 7, Destination: "203.0.113.10:443"}, "", "api.example.com", targetSourceDNS},
+		{"resolver cache", captureEvent{PID: 7, Destination: "203.0.113.20:443"}, "", "cached.example.com", targetSourceResolverCache},
+		{"nothing known", captureEvent{PID: 7, Destination: "203.0.113.30:443"}, "", "", ""},
+	} {
+		target, source := resolveTraceTarget(test.event, test.command, cache)
+		if target != test.target || source != test.source {
+			t.Fatalf("%s: got %q/%q, want %q/%q", test.name, target, source, test.target, test.source)
+		}
+	}
+}
+
+func TestSocketTargetCacheKeepsTheTargetSource(t *testing.T) {
+	cache := newSocketTargetCache()
+	cache.target(captureEvent{Protocol: "tcp", SocketID: 9, Target: "api.example.com", TargetSource: targetSourceDNS})
+	if target, source := cache.target(captureEvent{Protocol: "tcp", SocketID: 9, Event: "tcp_close"}); target != "api.example.com" || source != targetSourceDNS {
+		t.Fatalf("carried target = %q/%q", target, source)
+	}
+}
+
 func TestSocketTargetCacheKeepsTargetAfterProcessExit(t *testing.T) {
 	cache := newSocketTargetCache()
 	for _, step := range []struct {
@@ -216,7 +321,7 @@ func TestSocketTargetCacheKeepsTargetAfterProcessExit(t *testing.T) {
 		{captureEvent{Protocol: "tcp", SocketID: 7, Event: "tcp_destroy"}, "example.com"},
 		{captureEvent{Protocol: "tcp", SocketID: 7, Event: "tcp_connect"}, ""},
 	} {
-		if got := cache.target(step.event); got != step.want {
+		if got, _ := cache.target(step.event); got != step.want {
 			t.Fatalf("%s on socket %d = %q, want %q", step.event.Event, step.event.SocketID, got, step.want)
 		}
 	}

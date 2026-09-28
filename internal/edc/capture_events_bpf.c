@@ -19,6 +19,7 @@ typedef __u32 __wsum;
 #define IPPROTO_TCP 6
 #define IPPROTO_UDP 17
 #define BPF_ANY 0
+#define BPF_MAP_TYPE_HASH 1
 #define BPF_MAP_TYPE_ARRAY 2
 #define BPF_MAP_TYPE_RINGBUF 27
 
@@ -206,9 +207,10 @@ struct sock_length_ctx {
 	int flags;
 };
 
+// UDP는 udp_sendmsg와 skb_consume_udp 훅이 기록한다. 이 tracepoint는 socket의 연결 상대만 알아서,
+// 연결하지 않은 UDP socket의 목적지를 0.0.0.0:0으로 남긴다.
 static __always_inline int emit_length_event(struct sock_length_ctx *ctx, __u32 type) {
-	if (!ctx || !ctx->sk || ctx->ret <= 0 ||
-	    (ctx->protocol != IPPROTO_TCP && ctx->protocol != IPPROTO_UDP)) {
+	if (!ctx || !ctx->sk || ctx->ret <= 0 || ctx->protocol != IPPROTO_TCP) {
 		return 0;
 	}
 	struct event *event = start_event(ctx, type);
@@ -281,13 +283,183 @@ SEC("tracepoint/tcp/tcp_destroy_sock")
 int tcp_destroy_sock(struct tcp_socket_ctx *ctx) { return emit_socket_event(ctx, 5); }
 
 SEC("tracepoint/sock/sock_send_length")
-int udp_send_length(struct sock_length_ctx *ctx) {
+int tcp_send_length(struct sock_length_ctx *ctx) {
 	return emit_length_event(ctx, 6);
 }
 
 SEC("tracepoint/sock/sock_recv_length")
-int udp_recv_length(struct sock_length_ctx *ctx) {
+int tcp_recv_length(struct sock_length_ctx *ctx) {
 	return emit_length_event(ctx, 7);
+}
+
+struct sk_buff {
+	struct sock *sk;
+	unsigned int len;
+	unsigned char *head;
+	unsigned char *data;
+	__u16 transport_header;
+	__u16 network_header;
+};
+
+union flowi_uli {
+	struct {
+		__be16 dport;
+		__be16 sport;
+	} ports;
+};
+
+struct flowi4 {
+	__be32 saddr;
+	__be32 daddr;
+	union flowi_uli uli;
+};
+
+struct flowi6 {
+	struct in6_addr daddr;
+	struct in6_addr saddr;
+	union flowi_uli uli;
+};
+
+// udp_send_skb는 전송 중에 skb를 해제하므로 fexit에서는 skb를 읽을 수 없다. fentry에서 읽은 값을
+// thread별로 잠시 두고, fexit에서 전송이 성공했을 때만 event로 보낸다.
+struct udp_send_pending {
+	__u64 skaddr;
+	__u64 bytes;
+	__u16 family;
+	__u16 sport;
+	__u16 dport;
+	__u8 source[16];
+	__u8 destination[16];
+};
+
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, 10240);
+	__type(key, __u64);
+	__type(value, struct udp_send_pending);
+} udp_send_pending SEC(".maps");
+
+static __always_inline int remember_udp_send(struct sk_buff *skb, struct flowi4 *fl4, struct flowi6 *fl6) {
+	if (!skb) {
+		return 0;
+	}
+	struct udp_send_pending pending = {};
+	unsigned char *head = BPF_CORE_READ(skb, head);
+	unsigned char *data = BPF_CORE_READ(skb, data);
+	__u16 transport = BPF_CORE_READ(skb, transport_header);
+	// udp_send_skb가 datagram 길이를 구하는 방식과 같다. 끝의 8은 UDP header다.
+	long payload = (long)BPF_CORE_READ(skb, len) - ((long)transport - (data - head)) - 8;
+	if (payload < 0) {
+		return 0;
+	}
+	pending.skaddr = (__u64)BPF_CORE_READ(skb, sk);
+	pending.bytes = (__u64)payload;
+	if (fl4) {
+		pending.family = AF_INET;
+		pending.sport = bpf_ntohs(BPF_CORE_READ(fl4, uli.ports.sport));
+		pending.dport = bpf_ntohs(BPF_CORE_READ(fl4, uli.ports.dport));
+		__be32 source = BPF_CORE_READ(fl4, saddr);
+		__be32 destination = BPF_CORE_READ(fl4, daddr);
+		__builtin_memcpy(pending.source, &source, 4);
+		__builtin_memcpy(pending.destination, &destination, 4);
+	} else {
+		pending.family = AF_INET6;
+		pending.sport = bpf_ntohs(BPF_CORE_READ(fl6, uli.ports.sport));
+		pending.dport = bpf_ntohs(BPF_CORE_READ(fl6, uli.ports.dport));
+		BPF_CORE_READ_INTO(&pending.source, fl6, saddr.in6_u.u6_addr8);
+		BPF_CORE_READ_INTO(&pending.destination, fl6, daddr.in6_u.u6_addr8);
+	}
+	__u64 key = bpf_get_current_pid_tgid();
+	bpf_map_update_elem(&udp_send_pending, &key, &pending, BPF_ANY);
+	return 0;
+}
+
+static __always_inline int emit_udp_send(void *ctx, int ret) {
+	__u64 key = bpf_get_current_pid_tgid();
+	struct udp_send_pending *pending = bpf_map_lookup_elem(&udp_send_pending, &key);
+	if (!pending) {
+		return 0;
+	}
+	// 방화벽이 버린 송신도 여기서 오류로 돌아온다. 보냄으로 세면 차단 문제를 가린다.
+	if (ret == 0) {
+		struct event *event = start_event(ctx, 6);
+		if (event) {
+			event->skaddr = pending->skaddr;
+			event->protocol = IPPROTO_UDP;
+			event->bytes = pending->bytes;
+			event->family = pending->family;
+			event->sport = pending->sport;
+			event->dport = pending->dport;
+			__builtin_memcpy(event->source, pending->source, 16);
+			__builtin_memcpy(event->destination, pending->destination, 16);
+			finish_event(event);
+		}
+	}
+	bpf_map_delete_elem(&udp_send_pending, &key);
+	return 0;
+}
+
+SEC("fentry/udp_send_skb")
+int udp_send_skb_entry(__u64 *ctx) {
+	return remember_udp_send((struct sk_buff *)ctx[0], (struct flowi4 *)ctx[1], 0);
+}
+
+SEC("fexit/udp_send_skb")
+int udp_send_skb_exit(__u64 *ctx) {
+	return emit_udp_send(ctx, (int)ctx[3]);
+}
+
+SEC("fentry/udp_v6_send_skb")
+int udp_v6_send_skb_entry(__u64 *ctx) {
+	return remember_udp_send((struct sk_buff *)ctx[0], 0, (struct flowi6 *)ctx[1]);
+}
+
+SEC("fexit/udp_v6_send_skb")
+int udp_v6_send_skb_exit(__u64 *ctx) {
+	return emit_udp_send(ctx, (int)ctx[3]);
+}
+
+// skb_consume_udp는 udp_recvmsg와 udpv6_recvmsg가 datagram을 복사한 뒤 한 번 부른다. recv()처럼 주소를
+// 받지 않는 호출도 여기서는 header에서 보낸 쪽 주소를 읽을 수 있다.
+SEC("fentry/skb_consume_udp")
+int skb_consume_udp_entry(__u64 *ctx) {
+	struct sock *sk = (struct sock *)ctx[0];
+	struct sk_buff *skb = (struct sk_buff *)ctx[1];
+	int len = (int)ctx[2];
+	if (!sk || !skb || len <= 0) {
+		return 0;
+	}
+	unsigned char *head = BPF_CORE_READ(skb, head);
+	unsigned char *network = head + BPF_CORE_READ(skb, network_header);
+	unsigned char *transport = head + BPF_CORE_READ(skb, transport_header);
+	__u8 version = 0;
+	__be16 ports[2] = {};
+	bpf_probe_read_kernel(&version, sizeof(version), network);
+	bpf_probe_read_kernel(ports, sizeof(ports), transport);
+	version >>= 4;
+	if (version != 4 && version != 6) {
+		return 0;
+	}
+	struct event *event = start_event(ctx, 7);
+	if (!event) {
+		return 0;
+	}
+	event->skaddr = (__u64)sk;
+	event->protocol = IPPROTO_UDP;
+	event->bytes = (__u64)len;
+	event->sport = bpf_ntohs(ports[1]);
+	event->dport = bpf_ntohs(ports[0]);
+	if (version == 4) {
+		event->family = AF_INET;
+		bpf_probe_read_kernel(event->source, 4, network + 16);
+		bpf_probe_read_kernel(event->destination, 4, network + 12);
+	} else {
+		event->family = AF_INET6;
+		bpf_probe_read_kernel(event->source, 16, network + 24);
+		bpf_probe_read_kernel(event->destination, 16, network + 8);
+	}
+	finish_event(event);
+	return 0;
 }
 
 char LICENSE[] SEC("license") = "Dual BSD/GPL";

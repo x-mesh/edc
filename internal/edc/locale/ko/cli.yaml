@@ -130,6 +130,7 @@ cli:
     events_failed: "event capture 실패: %v"
     events_done: "event capture 완료: %s"
     btf_missing: "Linux BTF를 사용할 수 없습니다"
+    udp_send_hook_missing: "이 kernel에는 추적할 %s 함수가 없습니다. build 때 inline된 것으로 보여 edc가 UDP 송신을 기록할 수 없습니다"
     capability_check_failed: "Linux capability를 읽지 못했습니다"
     capability_missing: "Linux capability %d가 필요합니다"
     supported_platforms: "capture는 Linux와 macOS에서만 지원합니다"

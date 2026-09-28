@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/cilium/ebpf"
+	"github.com/cilium/ebpf/btf"
 	"github.com/cilium/ebpf/link"
 	"github.com/cilium/ebpf/ringbuf"
 	"github.com/cilium/ebpf/rlimit"
@@ -98,6 +99,22 @@ func captureEventsPrerequisites() error {
 	for _, capability := range []int{capBPF, capPerfmon, capNetAdmin} {
 		if !capabilities[capability] {
 			return errors.New(T("cli.capture.capability_missing", capability))
+		}
+	}
+	return captureUDPSendHooksAvailable()
+}
+
+// captureUDPSendHooksAvailable은 UDP 송신 훅 대상이 kernel BTF에 있는지 본다. 두 함수는 static이라 kernel
+// build에 따라 inline되어 사라질 수 있다. 확인하지 않으면 object load가 실패해 TCP trace까지 이유 없이 멈춘다.
+func captureUDPSendHooksAvailable() error {
+	kernel, err := btf.LoadKernelSpec()
+	if err != nil {
+		return fmt.Errorf("%s: %w", T("cli.capture.btf_missing"), err)
+	}
+	for _, name := range []string{"udp_send_skb", "udp_v6_send_skb"} {
+		var function *btf.Func
+		if err := kernel.TypeByName(name, &function); err != nil {
+			return errors.New(T("cli.capture.udp_send_hook_missing", name))
 		}
 	}
 	return nil
@@ -180,17 +197,39 @@ func collectCaptureEventsUntil(duration time.Duration, onEvent func(captureEvent
 		{"tcp", "tcp_send_reset", objects.TcpSendReset},
 		{"tcp", "tcp_receive_reset", objects.TcpReceiveReset},
 		{"tcp", "tcp_destroy_sock", objects.TcpDestroySock},
-		{"sock", "sock_send_length", objects.UdpSendLength},
-		{"sock", "sock_recv_length", objects.UdpRecvLength},
+		{"sock", "sock_send_length", objects.TcpSendLength},
+		{"sock", "sock_recv_length", objects.TcpRecvLength},
 	}
-	links := make([]link.Link, 0, len(attachments))
+	tracing := []struct {
+		name string
+		prog *ebpf.Program
+	}{
+		{"fentry/udp_send_skb", objects.UdpSendSkbEntry},
+		{"fexit/udp_send_skb", objects.UdpSendSkbExit},
+		{"fentry/udp_v6_send_skb", objects.UdpV6SendSkbEntry},
+		{"fexit/udp_v6_send_skb", objects.UdpV6SendSkbExit},
+		{"fentry/skb_consume_udp", objects.SkbConsumeUdpEntry},
+	}
+	links := make([]link.Link, 0, len(attachments)+len(tracing))
+	closeLinks := func() {
+		for _, current := range links {
+			_ = current.Close()
+		}
+	}
 	for _, attachment := range attachments {
 		attached, err := link.Tracepoint(attachment.group, attachment.name, attachment.prog, nil)
 		if err != nil {
-			for _, current := range links {
-				_ = current.Close()
-			}
+			closeLinks()
 			return nil, captureSummary{}, fmt.Errorf("attach %s/%s: %w", attachment.group, attachment.name, err)
+		}
+		links = append(links, attached)
+	}
+	for _, attachment := range tracing {
+		attached, err := link.AttachTracing(link.TracingOptions{Program: attachment.prog})
+		if err != nil {
+			closeLinks()
+			// fentry와 fexit는 BPF trampoline이 필요하다. UDP 목적지를 socket 기준으로 대신 기록하면 틀린 값이 나오므로 멈춘다.
+			return nil, captureSummary{}, fmt.Errorf("attach %s (needs BPF trampolines: x86_64 5.5+, arm64 6.0+): %w", attachment.name, err)
 		}
 		links = append(links, attached)
 	}

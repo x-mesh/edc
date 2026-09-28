@@ -317,6 +317,17 @@ func TestSummarizeTraceGroupsByEvent(t *testing.T) {
 	}
 }
 
+func TestTraceGroupDisplayValueAddsDestinationOnlyForTargets(t *testing.T) {
+	group := traceGroupSummary{Group: "10.0.0.2", Destinations: []string{"203.0.113.10:443", "203.0.113.20:443"}}
+	if got := traceGroupDisplayValue(traceGroupBySource, group); got != "10.0.0.2" {
+		t.Fatalf("source display value = %q, want only the source host", got)
+	}
+	target := traceGroupSummary{Group: "example.com", Destinations: []string{"203.0.113.10:443"}}
+	if got := traceGroupDisplayValue(traceGroupByTarget, target); got != "example.com (203.0.113.10:443)" {
+		t.Fatalf("target display value = %q", got)
+	}
+}
+
 func TestTraceScreenWidensGroupColumn(t *testing.T) {
 	t.Setenv("NO_COLOR", "1")
 	target := "very-long-service-name.internal.example.com"

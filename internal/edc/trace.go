@@ -451,8 +451,9 @@ func traceGroupRate(events uint64, duration time.Duration) float64 {
 }
 
 func traceGroupDisplayValue(groupBy string, group traceGroupSummary) string {
-	// event group에는 destination이 여럿 섞이므로 첫 destination 하나만 붙이면 그 event가 한 곳에서만 난 것처럼 보인다.
-	if groupBy == traceGroupByEvent || len(group.Destinations) == 0 || group.Destinations[0] == group.Group {
+	// source와 event group에는 destination이 여럿 섞이므로 첫 destination 하나만 붙이면 그 group이 한 곳으로만
+	// 간 것처럼 보인다. target group은 이름이 가리키는 주소를 보여 주려고 괄호를 붙인다.
+	if groupBy != traceGroupByTarget || len(group.Destinations) == 0 || group.Destinations[0] == group.Group {
 		return group.Group
 	}
 	return fmt.Sprintf("%s (%s)", group.Group, group.Destinations[0])

@@ -37,6 +37,7 @@ type captureEventsUdpSendPending struct {
 //
 // Used for safe lookups in a Collection or CollectionSpec.
 const (
+	captureEventsMapAnnouncedOwners            = "announced_owners"
 	captureEventsMapEvents                     = "events"
 	captureEventsMapLostEvents                 = "lost_events"
 	captureEventsMapSockOwners                 = "sock_owners"
@@ -119,10 +120,11 @@ type captureEventsProgramSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type captureEventsMapSpecs struct {
-	Events         *ebpf.MapSpec `ebpf:"events"`
-	LostEvents     *ebpf.MapSpec `ebpf:"lost_events"`
-	SockOwners     *ebpf.MapSpec `ebpf:"sock_owners"`
-	UdpSendPending *ebpf.MapSpec `ebpf:"udp_send_pending"`
+	AnnouncedOwners *ebpf.MapSpec `ebpf:"announced_owners"`
+	Events          *ebpf.MapSpec `ebpf:"events"`
+	LostEvents      *ebpf.MapSpec `ebpf:"lost_events"`
+	SockOwners      *ebpf.MapSpec `ebpf:"sock_owners"`
+	UdpSendPending  *ebpf.MapSpec `ebpf:"udp_send_pending"`
 }
 
 // captureEventsVariableSpecs contains global variables before they are loaded into the kernel.
@@ -151,14 +153,16 @@ func (o *captureEventsObjects) Close() error {
 //
 // It can be passed to loadCaptureEventsObjects or ebpf.CollectionSpec.LoadAndAssign.
 type captureEventsMaps struct {
-	Events         *ebpf.Map `ebpf:"events"`
-	LostEvents     *ebpf.Map `ebpf:"lost_events"`
-	SockOwners     *ebpf.Map `ebpf:"sock_owners"`
-	UdpSendPending *ebpf.Map `ebpf:"udp_send_pending"`
+	AnnouncedOwners *ebpf.Map `ebpf:"announced_owners"`
+	Events          *ebpf.Map `ebpf:"events"`
+	LostEvents      *ebpf.Map `ebpf:"lost_events"`
+	SockOwners      *ebpf.Map `ebpf:"sock_owners"`
+	UdpSendPending  *ebpf.Map `ebpf:"udp_send_pending"`
 }
 
 func (m *captureEventsMaps) Close() error {
 	return _CaptureEventsClose(
+		m.AnnouncedOwners,
 		m.Events,
 		m.LostEvents,
 		m.SockOwners,

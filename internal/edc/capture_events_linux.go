@@ -272,6 +272,7 @@ func collectCaptureEventsUntil(duration time.Duration, onEvent func(captureEvent
 
 	targets := newCommandTargetCache(commandTarget)
 	sockets := newSocketTargetCache()
+	owners := newPIDTargetCache()
 	events := make([]captureEvent, 0)
 	var eventCount uint64
 	for {
@@ -293,13 +294,23 @@ func collectCaptureEventsUntil(duration time.Duration, onEvent func(captureEvent
 		if err != nil {
 			return nil, captureSummary{}, err
 		}
+		if owner, ok := parseOwnerAnnouncement(record.RawSample); ok {
+			if owner.readable {
+				owners.remember(owner.pid, owner.target)
+			}
+			continue
+		}
 		var raw captureEventRaw
 		if err := binary.Read(bytes.NewReader(record.RawSample), binary.LittleEndian, &raw); err != nil {
 			return nil, captureSummary{}, fmt.Errorf("decode event: %w", err)
 		}
 		event := raw.event(clockOffset)
 		if event.PID != 0 {
-			event.Target = targets.target(event.PID, time.Now())
+			if target, ok := owners.target(event.PID); ok {
+				event.Target = target
+			} else {
+				event.Target = targets.target(event.PID, time.Now())
+			}
 		}
 		event.Target = sockets.target(event)
 		events = append(events, event)

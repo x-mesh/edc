@@ -4,6 +4,7 @@ package edc
 
 import (
 	"bufio"
+	"encoding/binary"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -132,6 +133,55 @@ func TestCommandTargetCacheReusesLookupWithinTTL(t *testing.T) {
 	cache.target(42, now.Add(commandTargetTTL))
 	if lookups[42] != 2 {
 		t.Fatalf("lookups after TTL = %d, want 2", lookups[42])
+	}
+}
+
+func ownerRecord(pid uint32, args string, size uint32) []byte {
+	sample := make([]byte, ownerRecordArgsOffset+512)
+	binary.LittleEndian.PutUint64(sample[0:8], 1)
+	binary.LittleEndian.PutUint32(sample[8:12], ownerRecordType)
+	binary.LittleEndian.PutUint32(sample[12:16], pid)
+	binary.LittleEndian.PutUint32(sample[16:20], size)
+	copy(sample[ownerRecordArgsOffset:], args)
+	return sample
+}
+
+func TestParseOwnerAnnouncement(t *testing.T) {
+	args := "curl\x00-s\x00https://example.com/\x00"
+	owner, ok := parseOwnerAnnouncement(ownerRecord(42, args, uint32(len(args))))
+	if !ok || owner.pid != 42 || !owner.readable || owner.target != "example.com" {
+		t.Fatalf("owner = %#v, %t", owner, ok)
+	}
+	// size 뒤의 바이트는 ring buffer에 남은 이전 값일 수 있으므로 읽지 않는다.
+	truncated, _ := parseOwnerAnnouncement(ownerRecord(42, args+"junk.example.org", uint32(len(args))))
+	if truncated.target != "example.com" {
+		t.Fatalf("target beyond size = %q", truncated.target)
+	}
+	unreadable, ok := parseOwnerAnnouncement(ownerRecord(42, args, 0))
+	if !ok || unreadable.readable {
+		t.Fatalf("unreadable record = %#v, %t", unreadable, ok)
+	}
+	event := make([]byte, 128)
+	binary.LittleEndian.PutUint32(event[8:12], 6)
+	if _, ok := parseOwnerAnnouncement(event); ok {
+		t.Fatal("a send event was parsed as an owner announcement")
+	}
+}
+
+func TestPIDTargetCacheStaysBounded(t *testing.T) {
+	cache := newPIDTargetCache()
+	for pid := uint32(1); pid <= pidTargetLimit; pid++ {
+		cache.remember(pid, "example.com")
+	}
+	if target, ok := cache.target(pidTargetLimit); !ok || target != "example.com" {
+		t.Fatalf("target = %q, %t", target, ok)
+	}
+	cache.remember(pidTargetLimit+1, "")
+	if len(cache.entries) != 1 {
+		t.Fatalf("entries after the limit = %d, want 1", len(cache.entries))
+	}
+	if target, ok := cache.target(pidTargetLimit + 1); !ok || target != "" {
+		t.Fatalf("known empty target = %q, %t", target, ok)
 	}
 }
 

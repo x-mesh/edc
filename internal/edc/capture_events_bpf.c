@@ -153,6 +153,83 @@ static __always_inline void apply_sock_owner(struct event *event) {
 	__builtin_memcpy(event->comm, owner->comm, sizeof(event->comm));
 }
 
+// kernel과 같은 모양으로 이름 없는 구조체 안에 둔다. CO-RE가 이 경로로 kernel의 필드를 찾는다.
+struct mm_struct {
+	struct {
+		unsigned long arg_start;
+		unsigned long arg_end;
+	};
+};
+
+struct task_struct {
+	struct mm_struct *mm;
+};
+
+#define OWNER_ARGS_SIZE 512
+
+// 사용자 공간은 /proc/<pid>/cmdline으로 target을 찾는데, event를 읽을 때 짧게 사는 프로세스는 이미
+// 끝나 있다. 프로세스 문맥에서 명령줄을 함께 보내 두면 읽는 시점과 무관해진다. event_type은 struct
+// event와 같은 위치라서 사용자 공간이 먼저 보고 구분한다.
+struct owner_record {
+	__u64 timestamp_ns;
+	__u32 event_type;
+	__u32 pid;
+	__u32 len;
+	__u32 reserved;
+	char args[OWNER_ARGS_SIZE];
+};
+
+struct {
+	__uint(type, BPF_MAP_TYPE_LRU_HASH);
+	__uint(max_entries, 65536);
+	__type(key, __u64);
+	__type(value, __u32);
+} announced_owners SEC(".maps");
+
+// 프로세스 문맥에서만 부른다. ring buffer는 예약한 순서로 읽히므로, 같은 순간의 event보다 먼저 불러야
+// 사용자 공간이 명령줄을 먼저 받는다.
+static __always_inline void announce_owner(__u64 skaddr) {
+	if (!skaddr) {
+		return;
+	}
+	__u32 pid = bpf_get_current_pid_tgid() >> 32;
+	__u32 *last = bpf_map_lookup_elem(&announced_owners, &skaddr);
+	if (last && *last == pid) {
+		return;
+	}
+	struct task_struct *task = (struct task_struct *)bpf_get_current_task();
+	struct mm_struct *mm = BPF_CORE_READ(task, mm);
+	if (!mm) {
+		return;
+	}
+	unsigned long start = BPF_CORE_READ(mm, arg_start);
+	unsigned long end = BPF_CORE_READ(mm, arg_end);
+	if (end <= start) {
+		return;
+	}
+	struct owner_record *record = bpf_ringbuf_reserve(&events, sizeof(*record), 0);
+	if (!record) {
+		// 알리지 못한 socket은 다음 기회에 다시 알린다. 그 사이 event는 /proc 조회로 target을 찾는다.
+		return;
+	}
+	__u32 len = end - start;
+	if (len > OWNER_ARGS_SIZE) {
+		len = OWNER_ARGS_SIZE;
+	}
+	record->timestamp_ns = bpf_ktime_get_ns();
+	record->event_type = 8;
+	record->pid = pid;
+	record->reserved = 0;
+	record->len = bpf_probe_read_user(record->args, len, (void *)start) == 0 ? len : 0;
+	bpf_ringbuf_submit(record, 0);
+	bpf_map_update_elem(&announced_owners, &skaddr, &pid, BPF_ANY);
+}
+
+static __always_inline void forget_owner(__u64 skaddr) {
+	bpf_map_delete_elem(&sock_owners, &skaddr);
+	bpf_map_delete_elem(&announced_owners, &skaddr);
+}
+
 static __always_inline void finish_event(struct event *event) {
 	if (event) {
 		bpf_ringbuf_submit(event, 0);
@@ -161,6 +238,11 @@ static __always_inline void finish_event(struct event *event) {
 
 SEC("tracepoint/sock/inet_sock_set_state")
 int inet_sock_set_state(struct inet_sock_set_state_ctx *ctx) {
+	// SYN_SENT와 LISTEN 전이는 connect()와 listen() 안에서 일어나므로 현재 태스크가 socket의 주인이다.
+	int owner_context = (ctx->newstate == TCP_SYN_SENT || ctx->newstate == TCP_LISTEN) && ctx->protocol == IPPROTO_TCP;
+	if (owner_context) {
+		announce_owner((__u64)ctx->skaddr);
+	}
 	struct event *event = start_event(ctx, 1);
 	if (!event) {
 		return 0;
@@ -168,15 +250,13 @@ int inet_sock_set_state(struct inet_sock_set_state_ctx *ctx) {
 	event->skaddr = (__u64)ctx->skaddr;
 	event->old_state = ctx->oldstate;
 	event->new_state = ctx->newstate;
-	// SYN_SENT와 LISTEN 전이는 connect()와 listen() 안에서 일어나므로 현재 태스크가 socket의 주인이다.
-	if ((ctx->newstate == TCP_SYN_SENT || ctx->newstate == TCP_LISTEN) && ctx->protocol == IPPROTO_TCP) {
+	if (owner_context) {
 		remember_sock_owner(event->skaddr);
 	}
 	apply_sock_owner(event);
 	// listen socket은 tcp_destroy_sock을 거치지 않으므로 닫힐 때 여기서 지운다.
 	if (ctx->oldstate == TCP_LISTEN && ctx->newstate == TCP_CLOSE) {
-		__u64 skaddr = event->skaddr;
-		bpf_map_delete_elem(&sock_owners, &skaddr);
+		forget_owner(event->skaddr);
 	}
 	event->family = ctx->family;
 	event->sport = ctx->sport;
@@ -269,6 +349,7 @@ static __always_inline int emit_length_event(struct sock_length_ctx *ctx, __u32 
 	if (!ctx || !ctx->sk || ctx->ret <= 0 || ctx->protocol != IPPROTO_TCP) {
 		return 0;
 	}
+	announce_owner((__u64)ctx->sk);
 	struct event *event = start_event(ctx, type);
 	if (!event) {
 		return 0;
@@ -343,8 +424,7 @@ SEC("tracepoint/tcp/tcp_destroy_sock")
 int tcp_destroy_sock(struct tcp_socket_ctx *ctx) {
 	emit_socket_event(ctx, 5);
 	// kernel이 해제한 socket 주소를 새 socket에 다시 쓰므로, 남겨 두면 새 socket에 옛 주인이 붙는다.
-	__u64 skaddr = (__u64)ctx->skaddr;
-	bpf_map_delete_elem(&sock_owners, &skaddr);
+	forget_owner((__u64)ctx->skaddr);
 	return 0;
 }
 
@@ -409,6 +489,7 @@ static __always_inline int remember_udp_send(struct sk_buff *skb, struct flowi4 
 	if (!skb) {
 		return 0;
 	}
+	announce_owner((__u64)BPF_CORE_READ(skb, sk));
 	struct udp_send_pending pending = {};
 	unsigned char *head = BPF_CORE_READ(skb, head);
 	unsigned char *data = BPF_CORE_READ(skb, data);
@@ -506,6 +587,7 @@ int skb_consume_udp_entry(__u64 *ctx) {
 	if (version != 4 && version != 6) {
 		return 0;
 	}
+	announce_owner((__u64)sk);
 	struct event *event = start_event(ctx, 7);
 	if (!event) {
 		return 0;
@@ -532,6 +614,7 @@ int skb_consume_udp_entry(__u64 *ctx) {
 // 배운다. 첫 인자만 읽으므로 6.10에서 바뀐 뒤쪽 인자와 무관하다.
 SEC("fentry/inet_csk_accept")
 int inet_csk_accept_entry(__u64 *ctx) {
+	announce_owner(ctx[0]);
 	remember_sock_owner(ctx[0]);
 	return 0;
 }

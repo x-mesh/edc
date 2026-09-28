@@ -707,6 +707,16 @@ func TestSummarizeTraceGroupsByPort(t *testing.T) {
 	}
 }
 
+func TestBPFSocketOwnerClearsUnknownOwner(t *testing.T) {
+	source, err := os.ReadFile("capture_events_bpf.c")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !regexp.MustCompile(`if \(!owner\) \{\s*event->pid = 0;\s*event->cgroup_id = 0;\s*__builtin_memset\(event->comm, 0, sizeof\(event->comm\)\);\s*return;`).Match(source) {
+		t.Fatal("apply_sock_owner must clear pid, cgroup, and comm when the socket owner is unknown")
+	}
+}
+
 func TestSummarizeTraceGroupsByProcess(t *testing.T) {
 	events := []captureEvent{
 		{Protocol: "tcp", Event: "tcp_connect", Process: "curl", PID: 100, Source: "10.0.0.2:41000", Destination: "203.0.113.10:443"},

@@ -24,8 +24,15 @@ func TestCaptureEventAddressFormatting(t *testing.T) {
 		t.Fatalf("IPv4 address = %q", got)
 	}
 	address[15] = 1
-	if got := formatCaptureAddress(10, address, 443); got != "[c000:20a:0:0:0:0:0:1]:443" {
+	// 사람이 읽는 IPv6는 RFC 5952 축약형이다. 0이 이어진 구간을 ::로 줄인다.
+	if got := formatCaptureAddress(10, address, 443); got != "[c000:20a::1]:443" {
 		t.Fatalf("IPv6 address = %q", got)
+	}
+	if got := formatCaptureAddress(10, [16]byte{15: 1}, 18090); got != "[::1]:18090" {
+		t.Fatalf("IPv6 loopback = %q", got)
+	}
+	if got := formatCaptureAddress(10, [16]byte{}, 0); got != "[::]:0" {
+		t.Fatalf("IPv6 unspecified = %q", got)
 	}
 	// dual-stack socket이 IPv4와 주고받으면 kernel은 IPv4를 ::ffff:a.b.c.d로 담는다. 사람이 읽는 주소는 IPv4다.
 	mapped := [16]byte{10: 0xff, 11: 0xff, 12: 20, 13: 20, 14: 0, 15: 50}
@@ -245,7 +252,7 @@ func TestDNSAnswersNameTheAddressesThatAProcessResolved(t *testing.T) {
 	}
 	cache := newDNSNameCache()
 	cache.rememberAnswer(pid, dnsAnswerNames(payload))
-	// CNAME을 거쳐도 프로그램이 물어본 이름을 쓰고, event의 축약하지 않은 IPv6 표기와도 맞는다.
+	// CNAME을 거쳐도 프로그램이 물어본 이름을 쓰고, IPv6를 풀어 쓴 표기로 들어와도 같은 주소로 본다.
 	for _, destination := range []string{"203.0.113.10:443", "[2606:4700:10:0:0:0:6814:179a]:443"} {
 		if name, ok := cache.forProcess(42, destination); !ok || name != "api.example.com" {
 			t.Fatalf("forProcess(%s) = %q, %t", destination, name, ok)

@@ -162,9 +162,9 @@ cli:
     failed: "network trace 실패: %v"
     duration_range: "--duration은 생략하거나 0초 또는 1ns에서 60초 사이여야 합니다"
     raw_json_conflict: "--raw와 --json은 함께 사용할 수 없습니다"
-    group_by_range: "--group-by는 source, target, event 중 하나여야 합니다"
+    group_by_range: "--group-by는 source, target, port, event 중 하나여야 합니다"
     group_by_raw_conflict: "--group-by는 --raw와 함께 사용할 수 없습니다"
-    group_by: "source, target, event별로 event를 묶고 traffic counter를 표시합니다"
+    group_by: "source, target, port, event별로 event를 묶고 traffic counter를 표시합니다"
     linux_only: "network trace는 Linux에서만 지원합니다. 현재 platform: %s"
   report:
     unsupported_schema: "%s: 지원하지 않는 schema version: %s"

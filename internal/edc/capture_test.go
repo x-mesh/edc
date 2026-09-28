@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -303,12 +304,12 @@ func TestSummarizeTraceGroupsByDimension(t *testing.T) {
 }
 
 func TestTraceScreenGroupKeys(t *testing.T) {
-	for _, initial := range []string{"", traceGroupBySource, traceGroupByTarget, traceGroupByEvent} {
+	for _, initial := range []string{"", traceGroupBySource, traceGroupByTarget, traceGroupByPort, traceGroupByEvent} {
 		model := newTraceScreenModel("tcp", tcpTraceOptions{groupBy: initial}, make(chan captureEvent), make(chan traceFinishedMsg), nil)
 		if model.groupBy != initial {
 			t.Fatalf("initial group mode = %q, want %q", model.groupBy, initial)
 		}
-		for _, transition := range []struct{ key, want string }{{"s", traceGroupBySource}, {"s", traceGroupBySource}, {"t", traceGroupByTarget}, {"t", traceGroupByTarget}, {"e", traceGroupByEvent}, {"e", traceGroupByEvent}, {"g", ""}, {"g", ""}} {
+		for _, transition := range []struct{ key, want string }{{"s", traceGroupBySource}, {"s", traceGroupBySource}, {"t", traceGroupByTarget}, {"t", traceGroupByTarget}, {"p", traceGroupByPort}, {"p", traceGroupByPort}, {"e", traceGroupByEvent}, {"e", traceGroupByEvent}, {"g", ""}, {"g", ""}} {
 			next, _ := model.Update(tea.KeyPressMsg{Code: rune(transition.key[0]), Text: transition.key})
 			model = next.(traceScreenModel)
 			if model.groupBy != transition.want {
@@ -533,14 +534,14 @@ func TestTraceScreenTabCyclesGroupViews(t *testing.T) {
 		model = next.(traceScreenModel)
 	}
 	tab := tea.KeyPressMsg{Code: tea.KeyTab}
-	for _, want := range []string{traceGroupBySource, traceGroupByTarget, traceGroupByEvent, ""} {
+	for _, want := range []string{traceGroupBySource, traceGroupByTarget, traceGroupByPort, traceGroupByEvent, ""} {
 		press(tab)
 		if model.groupBy != want {
 			t.Fatalf("tab = %q, want %q", model.groupBy, want)
 		}
 	}
 	back := tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift}
-	for _, want := range []string{traceGroupByEvent, traceGroupByTarget, traceGroupBySource, ""} {
+	for _, want := range []string{traceGroupByEvent, traceGroupByPort, traceGroupByTarget, traceGroupBySource, ""} {
 		press(back)
 		if model.groupBy != want {
 			t.Fatalf("shift+tab = %q, want %q", model.groupBy, want)
@@ -549,13 +550,13 @@ func TestTraceScreenTabCyclesGroupViews(t *testing.T) {
 	// 단축키로 옮긴 뒤에도 Tab은 그 자리에서 이어서 간다.
 	press(tea.KeyPressMsg{Code: 't', Text: "t"})
 	press(tab)
-	if model.groupBy != traceGroupByEvent {
-		t.Fatalf("tab after t = %q, want %q", model.groupBy, traceGroupByEvent)
+	if model.groupBy != traceGroupByPort {
+		t.Fatalf("tab after t = %q, want %q", model.groupBy, traceGroupByPort)
 	}
 	// 필터를 입력하는 동안 Tab은 보기를 바꾸지 않는다.
 	press(tea.KeyPressMsg{Code: '/', Text: "/"})
 	press(tab)
-	if model.groupBy != traceGroupByEvent || !model.filtering {
+	if model.groupBy != traceGroupByPort || !model.filtering {
 		t.Fatalf("tab while filtering = %q, filtering %t", model.groupBy, model.filtering)
 	}
 }
@@ -676,8 +677,38 @@ func TestBPFLengthEventKeepsClosedSocketPort(t *testing.T) {
 	}
 }
 
+func TestSummarizeTraceGroupsByPort(t *testing.T) {
+	events := []captureEvent{
+		{Protocol: "udp", Event: "udp_send", Bytes: 20, Source: "20.20.0.50:41641", Destination: "102.67.165.185:3478"},
+		{Protocol: "udp", Event: "udp_receive", Bytes: 16, Source: "20.20.0.50:41641", Destination: "102.67.165.185:3478"},
+		{Protocol: "udp", Event: "udp_send", Bytes: 20, Source: "20.20.0.50:41641", Destination: "157.180.28.32:3478", Target: "derp.example.com"},
+		{Protocol: "udp", Event: "udp_send", Bytes: 1088, Source: "20.20.0.50:41641", Destination: "61.74.181.17:35585"},
+		{Protocol: "udp", Event: "udp_send", Bytes: 43, Source: "20.20.0.50:43360", Destination: "20.20.1.1:53"},
+		{Protocol: "udp", Event: "udp_send", Bytes: 32, Source: "127.0.0.53:53", Destination: "127.0.0.1:47732"},
+		{Protocol: "udp", Event: "udp_send", Bytes: 48, Source: "127.0.0.53:53", Destination: "127.0.0.1:50414"},
+		{Protocol: "udp", Event: "udp_send", Bytes: 10, Source: "127.0.0.1:18080", Destination: "0.0.0.0:0"},
+		{Protocol: "udp", Event: "udp_send", Bytes: 30, Source: "20.20.0.50:40000", Destination: "203.0.113.5:443"},
+	}
+	report := summarizeTraceGroups("udp", traceGroupByPort, events, captureSummary{}, time.Second, "", "")
+	labels := []string{}
+	for _, group := range report.Groups {
+		labels = append(labels, traceGroupDisplayValue(traceGroupByPort, group))
+	}
+	// target이 있어도 port로 묶고, 포트는 숫자 순서로 놓는다. 서버 행은 같은 포트의 client 행 뒤에 온다.
+	want := []string{"-", "53 (20.20.1.1:53)", "53 (server)", "443 (203.0.113.5:443)", "3478 (2 peers)", "35585 (61.74.181.17:35585)"}
+	if !slices.Equal(labels, want) {
+		t.Fatalf("port groups = %q, want %q", labels, want)
+	}
+	if stun := report.Groups[4]; stun.Events != 3 || stun.TotalBytes != 56 {
+		t.Fatalf("3478 group = %#v", stun)
+	}
+	if server := report.Groups[2]; !server.Server || server.Events != 2 {
+		t.Fatalf("53 server group = %#v", server)
+	}
+}
+
 func TestTraceGroupByModes(t *testing.T) {
-	for groupBy, want := range map[string]bool{"": true, traceGroupBySource: true, traceGroupByTarget: true, traceGroupByEvent: true, "invalid": false} {
+	for groupBy, want := range map[string]bool{"": true, traceGroupBySource: true, traceGroupByTarget: true, traceGroupByPort: true, traceGroupByEvent: true, "invalid": false} {
 		if got := validTraceGroupBy(groupBy); got != want {
 			t.Fatalf("validTraceGroupBy(%q) = %t, want %t", groupBy, got, want)
 		}

@@ -740,13 +740,15 @@ Linux에서 `trace tcp` 또는 `trace udp`를 사용하면 network event를 발�
 ./bin/edc trace udp --duration 15s
 ./bin/edc trace udp --group-by target
 ./bin/edc trace udp --group-by source
+./bin/edc trace tcp --group-by event
 ```
 
 `--raw`는 JSONL event를 발생 즉시 출력합니다. `--json`은 `Ctrl-C` 후 connection summary를 저장합니다.
 `--duration 15s`를 지정하면 15초 후 종료합니다. `--live`는 호환성을 위해 계속 허용합니다.
-`--group-by source` 또는 `--group-by target`을 사용하면 선택한 기준별 live 행을 표시합니다. TCP 행에는 connect, retransmission, reset과 traffic 값을 표시하고 UDP 행에는 TX, RX traffic 값을 표시합니다. `EVENT/s`는 초당 event 수입니다. TX와 RX byte는 socket payload byte입니다. B/s는 byte rate이며 bps와 Mbps는 bit rate입니다. Mbps는 `bps / 1,000,000`의 decimal 단위를 사용합니다.
+`--group-by source`, `--group-by target`, `--group-by event`를 사용하면 선택한 기준별 live 행을 표시합니다. TCP 행에는 connect, retransmission, reset과 traffic 값을 표시하고 UDP 행에는 TX, RX traffic 값을 표시합니다. `EVENT/s`는 초당 event 수입니다. TX와 RX byte는 socket payload byte입니다. B/s는 byte rate이며 bps와 Mbps는 bit rate입니다. Mbps는 `bps / 1,000,000`의 decimal 단위를 사용합니다.
 `--group-by source`는 source host별로 event를 묶습니다. OS가 연결마다 새 port를 배정하므로 source port는 무시합니다.
-전체 화면 terminal에서는 `s`로 source 행, `t`로 target 행, `g`로 event 스크롤을 표시합니다.
+`--group-by event`는 `tcp_connect`, `tcp_retransmit` 같은 event 이름별로 묶습니다.
+전체 화면 terminal에서는 `s`로 source 행, `t`로 target 행, `e`로 event 행, `g`로 event 스크롤을 표시합니다. terminal 폭이 넓으면 첫 열을 넓혀 group 값을 자르지 않고 표시합니다. 폭이 좁으면 byte 열을 `195K`(195 KiB)처럼 짧은 단위로 표시합니다.
 전체 화면은 최근 event 10,000개를 유지하고, live rate는 이 event들이 걸친 시간으로 계산합니다. `Ctrl-C` 후 summary는 모든 event를 사용합니다.
 전체 화면의 group 행은 traffic이 많은 group부터 표시합니다. 행이 terminal에 다 들어가지 않으면 위쪽 행을 표시합니다.
 

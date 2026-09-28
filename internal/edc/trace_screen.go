@@ -140,6 +140,9 @@ func (model traceScreenModel) updateKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd
 	case "t":
 		model.groupBy = traceGroupByTarget
 		return model, nil
+	case "e":
+		model.groupBy = traceGroupByEvent
+		return model, nil
 	case "g":
 		model.groupBy = ""
 		return model, nil
@@ -182,25 +185,26 @@ func traceScreenHeader(model traceScreenModel) []string {
 		filter = model.filter
 	}
 	line := fmt.Sprintf("edc trace %s", model.protocol)
+	var report traceGroupReport
 	if model.groupBy != "" {
-		report := model.groupReport()
+		report = model.groupReport()
 		line += fmt.Sprintf(" grouped by %s  ·  %s  ·  events %d  ·  %s %d  ·  event/s %.1f  ·  %.1f bps  ·  filter %s", model.groupBy, status, report.Events, model.groupBy, len(report.Groups), report.Rate, report.BitsPerSecond, filter)
 	} else {
 		line += fmt.Sprintf("  ·  %s  ·  events %d  ·  filter %s", status, model.received, filter)
 	}
-	help := "/ filter  s source  t target  g events  enter apply  esc clear  q quit  ctrl-c stop"
+	help := "/ filter  s source  t target  e event  g scroll  enter apply  esc clear  q quit  ctrl-c stop"
 	if model.filtering {
 		help = model.input.View() + "  enter apply  esc cancel"
 	}
 	color := os.Getenv("NO_COLOR") == ""
 	columns := "PROCESS          DESTINATION                       EVENT                SOURCE"
 	if model.groupBy != "" {
-		label := traceGroupLabel(model.groupBy)
-		if model.protocol == "udp" {
-			columns = fmt.Sprintf("%-14s   EVT    E/s     TX     RX    TOT    B/s  Mbps LAST", label)
-		} else {
-			columns = fmt.Sprintf("%-14s   EVT    E/s     TX     RX    TOT    B/s  Mbps CON RET RST LAST", label)
+		layout := traceScreenGroupLayout(model, report)
+		names := []any{"EVT", "E/s", "TX", "RX", "TOT", "B/s", "Mbps"}
+		if model.protocol != "udp" {
+			names = append(names, "CON", "RET", "RST")
 		}
+		columns = liveCell(traceGroupLabel(model.groupBy), layout.labelWidth) + fmt.Sprintf(traceGroupColumns(model.protocol, layout.byteWidth), append(names, "LAST")...)
 	}
 	return []string{liveSelected(traceFit(line, model.width), color), liveMuted(traceFit(help, model.width), color), traceFit(columns, model.width)}
 }
@@ -208,9 +212,10 @@ func traceScreenHeader(model traceScreenModel) []string {
 func traceScreenRows(model traceScreenModel) []string {
 	rows := make([]string, 0, model.height)
 	if model.groupBy != "" {
-		groups := traceScreenGroupOrder(model.groupReport().Groups)
-		for _, group := range groups[:min(len(groups), max(0, model.height-3))] {
-			rows = append(rows, formatTraceGroupScreenRow(model.protocol, group, model.width))
+		report := model.groupReport()
+		layout := traceScreenGroupLayout(model, report)
+		for _, group := range traceScreenVisibleGroups(model, report) {
+			rows = append(rows, formatTraceGroupScreenRow(model.protocol, model.groupBy, group, model.width, layout))
 		}
 		return traceScreenPadRows(rows, model.height-3)
 	}
@@ -273,14 +278,110 @@ func (model traceScreenModel) windowDuration(now time.Time) time.Duration {
 	return end.Sub(start)
 }
 
-func formatTraceGroupScreenRow(protocol string, group traceGroupSummary, width int) string {
-	value := traceGroupDisplayValue(group)
-	var line string
-	if protocol == "udp" {
-		line = liveCell(value, 14) + fmt.Sprintf(" %5d %6.1f %6s %6s %6s %6s %5.2f %s", group.Events, group.Rate, traceBytes(group.TXBytes), traceBytes(group.RXBytes), traceBytes(group.TotalBytes), traceBytes(uint64(group.BytesPerSecond)), group.MegabitsPerSecond, group.LastEvent)
-	} else {
-		line = liveCell(value, 14) + fmt.Sprintf(" %5d %6.1f %6s %6s %6s %6s %5.2f %3d %3d %3d %s", group.Events, group.Rate, traceBytes(group.TXBytes), traceBytes(group.RXBytes), traceBytes(group.TotalBytes), traceBytes(uint64(group.BytesPerSecond)), group.MegabitsPerSecond, group.Connect, group.Retransmissions, group.Resets, group.LastEvent)
+func traceScreenVisibleGroups(model traceScreenModel, report traceGroupReport) []traceGroupSummary {
+	groups := traceScreenGroupOrder(report.Groups)
+	return groups[:min(len(groups), max(0, model.height-3))]
+}
+
+const (
+	traceGroupMinLabelWidth = 14
+	traceGroupLastWidth     = len("tcp_receive_reset")
+	// traceBytes의 가장 긴 값은 1023.9KiB와 9999.9MiB라서 9칸이면 넓은 화면에서 열이 밀리지 않는다.
+	traceGroupWideByteWidth = 9
+	// 좁은 화면은 예전 6칸을 지켜야 TCP의 CON RET RST가 80칸 안에 남는다. 대신 traceCompactBytes로 짧게 쓴다.
+	traceGroupNarrowByteWidth = 6
+)
+
+type traceGroupLayout struct {
+	labelWidth int
+	byteWidth  int
+	bytes      func(uint64) string
+}
+
+// traceGroupColumns는 헤더와 행이 같은 폭을 쓰도록 label 뒤 열 형식을 만든다.
+func traceGroupColumns(protocol string, byteWidth int) string {
+	byteColumn := fmt.Sprintf(" %%%dv", byteWidth)
+	columns := " %5v %6v" + strings.Repeat(byteColumn, 4) + " %5v"
+	if protocol != "udp" {
+		columns += " %3v %3v %3v"
 	}
+	return columns + " %v"
+}
+
+// traceGroupColumnsWidth는 label 뒤 열의 폭이다. LAST 앞의 공백까지 센다.
+func traceGroupColumnsWidth(protocol string, byteWidth int) int {
+	width := 6 + 7 + 4*(byteWidth+1) + 6 + 1
+	if protocol != "udp" {
+		width += 12
+	}
+	return width
+}
+
+// traceScreenGroupLayout은 넓은 terminal에서 byte 열과 group 값을 자르지 않도록 열을 늘린다.
+// 좁은 terminal에서는 예전 폭을 유지한다.
+func traceScreenGroupLayout(model traceScreenModel, report traceGroupReport) traceGroupLayout {
+	layout := traceGroupLayout{byteWidth: traceGroupWideByteWidth, bytes: traceBytes}
+	if model.width < traceGroupMinLabelWidth+traceGroupColumnsWidth(model.protocol, traceGroupWideByteWidth)+traceGroupLastWidth {
+		layout = traceGroupLayout{byteWidth: traceGroupNarrowByteWidth, bytes: traceCompactBytes}
+	}
+	longest := 0
+	for _, group := range traceScreenVisibleGroups(model, report) {
+		longest = max(longest, liveWidth(traceGroupDisplayValue(model.groupBy, group)))
+	}
+	layout.labelWidth = max(traceGroupMinLabelWidth, min(longest, model.width-traceGroupColumnsWidth(model.protocol, layout.byteWidth)-traceGroupLastWidth))
+	return layout
+}
+
+// traceCompactBytes는 byte 값을 4칸 안에 쓴다. 단위는 traceBytes와 같은 1024 배수다.
+func traceCompactBytes(bytes uint64) string {
+	if bytes < 1000 {
+		return fmt.Sprintf("%dB", bytes)
+	}
+	value := float64(bytes)
+	for _, unit := range []string{"K", "M", "G", "T"} {
+		value /= 1024
+		if value < 9.95 {
+			return fmt.Sprintf("%.1f%s", value, unit)
+		}
+		if value < 999.5 {
+			return fmt.Sprintf("%.0f%s", value, unit)
+		}
+	}
+	return fmt.Sprintf("%.0fP", value/1024)
+}
+
+// traceScreenEventRate는 E/s 값을 6칸 안에 쓴다. 값이 크면 소수 자리를 버린다.
+func traceScreenEventRate(rate float64) string {
+	switch {
+	case rate < 9999.95:
+		return fmt.Sprintf("%.1f", rate)
+	case rate < 999999.5:
+		return fmt.Sprintf("%.0f", rate)
+	}
+	return fmt.Sprintf("%.0fk", rate/1000)
+}
+
+// traceScreenMegabits는 Mbps 값을 5칸 안에 쓴다. 1 Gbps를 넘는 traffic에서도 뒤 열이 밀리지 않게 소수 자리를 줄인다.
+func traceScreenMegabits(megabits float64) string {
+	switch {
+	case megabits < 99.995:
+		return fmt.Sprintf("%.2f", megabits)
+	case megabits < 999.95:
+		return fmt.Sprintf("%.1f", megabits)
+	case megabits < 99999.5:
+		return fmt.Sprintf("%.0f", megabits)
+	}
+	return fmt.Sprintf("%.0fG", megabits/1000)
+}
+
+func formatTraceGroupScreenRow(protocol, groupBy string, group traceGroupSummary, width int, layout traceGroupLayout) string {
+	// liveCell은 폭보다 긴 값을 여러 줄로 감싸므로 먼저 자른다.
+	value := liveCell(traceFit(traceGroupDisplayValue(groupBy, group), layout.labelWidth), layout.labelWidth)
+	values := []any{group.Events, traceScreenEventRate(group.Rate), layout.bytes(group.TXBytes), layout.bytes(group.RXBytes), layout.bytes(group.TotalBytes), layout.bytes(uint64(group.BytesPerSecond)), traceScreenMegabits(group.MegabitsPerSecond)}
+	if protocol != "udp" {
+		values = append(values, group.Connect, group.Retransmissions, group.Resets)
+	}
+	line := value + fmt.Sprintf(traceGroupColumns(protocol, layout.byteWidth), append(values, group.LastEvent)...)
 	return traceFit(traceGroupColorLine(line, protocol, group), width)
 }
 
@@ -348,7 +449,8 @@ func traceFit(value string, width int) string {
 	if width <= 0 || liveWidth(value) <= width {
 		return value
 	}
-	return truncateLine(value, width)
+	// truncateLine은 자른 값 끝에 줄바꿈을 붙인다. View가 행을 줄바꿈으로 이으므로 그대로 두면 잘린 행마다 빈 줄이 생긴다.
+	return strings.TrimRight(truncateLine(value, width), "\n")
 }
 
 func runTraceScreen(protocol string, options tcpTraceOptions) int {

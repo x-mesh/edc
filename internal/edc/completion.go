@@ -212,7 +212,7 @@ _edc() {
         trace)
           _arguments '1:subcommand:(tcp udp)'
           case $words[2] in
-            tcp|udp) _arguments '--duration[trace 시간]:duration' '--json[JSON 저장 경로]:path:_files' '--raw[raw event JSONL 출력]' '--live[실시간 event 출력]' '--group-by[그룹 기준]:group:(source target)' '--process[process filter]:process' '--destination[destination filter]:host:port' '--yes[확인 생략]' ;;
+            tcp|udp) _arguments '--duration[trace 시간]:duration' '--json[JSON 저장 경로]:path:_files' '--raw[raw event JSONL 출력]' '--live[실시간 event 출력]' '--group-by[그룹 기준]:group:(source target event)' '--process[process filter]:process' '--destination[destination filter]:host:port' '--yes[확인 생략]' ;;
           esac
           ;;
         log)

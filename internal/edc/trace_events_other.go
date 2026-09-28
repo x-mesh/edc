@@ -8,6 +8,10 @@ import (
 	"time"
 )
 
+func readEphemeralPortRange() (int, int, bool) {
+	return 0, 0, false
+}
+
 func collectTraceEvents(time.Duration) ([]captureEvent, captureSummary, error) {
 	return nil, captureSummary{}, fmt.Errorf("%s", T("cli.trace.linux_only", runtime.GOOS))
 }

@@ -374,9 +374,37 @@ func traceScreenMegabits(megabits float64) string {
 	return fmt.Sprintf("%.0fG", megabits/1000)
 }
 
+const traceServerSuffix = " (server)"
+
+// traceGroupFitLabel은 첫 열을 자를 때 서버 표시를 남긴다. 표시가 잘리면 같은 주소의 client 행과 구분되지
+// 않는다. 주소는 서비스를 가리키는 port 쪽을 남긴다. 앞쪽을 남기면 127.0.0.1:19999와 127.0.0.53:53이
+// 똑같이 127.0…으로 보인다.
+func traceGroupFitLabel(groupBy string, group traceGroupSummary, width int) string {
+	value := traceGroupDisplayValue(groupBy, group)
+	if !group.Server || liveWidth(value) <= width || width <= liveWidth(traceServerSuffix)+1 {
+		return traceFit(value, width)
+	}
+	return traceKeepTail(group.Group, width-liveWidth(traceServerSuffix)) + traceServerSuffix
+}
+
+func traceKeepTail(value string, width int) string {
+	if liveWidth(value) <= width {
+		return value
+	}
+	tail := value
+	if index := strings.LastIndex(value, ":"); index >= 0 && liveWidth(value[index:])+1 <= width {
+		tail = value[index:]
+	}
+	runes := []rune(tail)
+	for len(runes) > 0 && liveWidth(string(runes))+1 > width {
+		runes = runes[1:]
+	}
+	return "…" + string(runes)
+}
+
 func formatTraceGroupScreenRow(protocol, groupBy string, group traceGroupSummary, width int, layout traceGroupLayout) string {
 	// liveCell은 폭보다 긴 값을 여러 줄로 감싸므로 먼저 자른다.
-	value := liveCell(traceFit(traceGroupDisplayValue(groupBy, group), layout.labelWidth), layout.labelWidth)
+	value := liveCell(traceGroupFitLabel(groupBy, group, layout.labelWidth), layout.labelWidth)
 	values := []any{group.Events, traceScreenEventRate(group.Rate), layout.bytes(group.TXBytes), layout.bytes(group.RXBytes), layout.bytes(group.TotalBytes), layout.bytes(uint64(group.BytesPerSecond)), traceScreenMegabits(group.MegabitsPerSecond)}
 	if protocol != "udp" {
 		values = append(values, group.Connect, group.Retransmissions, group.Resets)

@@ -126,6 +126,26 @@ func TestSummarizeTCPTrace(t *testing.T) {
 	}
 }
 
+func TestSummarizeUDPTraceSplitsOneSocketByDestination(t *testing.T) {
+	events := []captureEvent{
+		{SocketID: 1, Protocol: "udp", Event: "udp_send", Bytes: 10, Destination: "127.0.0.1:19999"},
+		{SocketID: 1, Protocol: "udp", Event: "udp_send", Bytes: 20, Destination: "127.0.0.1:19998"},
+		{SocketID: 1, Protocol: "udp", Event: "udp_receive", Bytes: 30, Destination: "127.0.0.1:19999"},
+	}
+	report := summarizeUDPTrace(events, captureSummary{}, time.Second, "", "")
+	if len(report.Flows) != 2 {
+		t.Fatalf("flows = %#v, want one flow for each destination", report.Flows)
+	}
+	for _, flow := range report.Flows {
+		if flow.Destination == "127.0.0.1:19999" && (flow.Sent != 1 || flow.Received != 1 || flow.TotalBytes != 40) {
+			t.Fatalf("19999 flow = %#v", flow)
+		}
+		if flow.Destination == "127.0.0.1:19998" && (flow.Sent != 1 || flow.Received != 0 || flow.TotalBytes != 20) {
+			t.Fatalf("19998 flow = %#v", flow)
+		}
+	}
+}
+
 func TestSummarizeUDPTrace(t *testing.T) {
 	events := []captureEvent{
 		{SocketID: 1, Protocol: "udp", Event: "udp_send", Bytes: 120, Process: "agent", PID: 7, Source: "10.0.0.2:53000", Destination: "203.0.113.53:53", Target: "dns.example"},

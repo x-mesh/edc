@@ -220,16 +220,22 @@ type udpTraceReport struct {
 }
 
 func summarizeUDPTrace(events []captureEvent, summary captureSummary, duration time.Duration, process, destination string) udpTraceReport {
-	flows := make(map[uint64]*udpTraceFlow)
+	// 연결하지 않은 UDP socket 하나가 여러 곳과 주고받으므로 socket만으로 묶으면 목적지가 섞인다.
+	type udpFlowKey struct {
+		socket      uint64
+		destination string
+	}
+	flows := make(map[udpFlowKey]*udpTraceFlow)
 	result := udpTraceReport{DurationMS: duration.Milliseconds(), LostEvents: summary.LostEvents}
 	for _, event := range events {
 		if traceProtocol(event) != "udp" || !traceEventMatches(event, process, destination) {
 			continue
 		}
-		flow := flows[event.SocketID]
+		key := udpFlowKey{socket: event.SocketID, destination: event.Destination}
+		flow := flows[key]
 		if flow == nil {
 			flow = &udpTraceFlow{Process: event.Process, PID: event.PID, Source: event.Source, Destination: event.Destination, Hostname: event.Target}
-			flows[event.SocketID] = flow
+			flows[key] = flow
 		}
 		if flow.Process == "" {
 			flow.Process = event.Process
@@ -239,9 +245,6 @@ func summarizeUDPTrace(events []captureEvent, summary captureSummary, duration t
 		}
 		if flow.Source == "" {
 			flow.Source = event.Source
-		}
-		if flow.Destination == "" {
-			flow.Destination = event.Destination
 		}
 		if flow.Hostname == "" {
 			flow.Hostname = event.Target

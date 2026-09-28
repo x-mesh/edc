@@ -507,6 +507,25 @@ func TestSummarizeTraceGroupsCollectsServerReplies(t *testing.T) {
 	}
 }
 
+func TestTraceGroupFitLabelKeepsServerMark(t *testing.T) {
+	server := traceGroupSummary{Group: "127.0.0.53:53", Server: true, Destinations: []string{"127.0.0.1:41022"}}
+	client := traceGroupSummary{Group: "127.0.0.1:19999", Destinations: []string{"127.0.0.1:19999"}}
+	if got := traceGroupFitLabel(traceGroupByTarget, server, 40); got != "127.0.0.53:53 (server)" {
+		t.Fatalf("wide server label = %q", got)
+	}
+	// 14칸에서는 주소에 5칸만 남는다. 서비스를 가리키는 port를 남겨야 서버 행끼리 구분된다.
+	for group, want := range map[string]string{"127.0.0.53:53": "…:53 (server)", "127.0.0.1:19999": "…9999 (server)"} {
+		server.Group = group
+		got := traceGroupFitLabel(traceGroupByTarget, server, traceGroupMinLabelWidth)
+		if got != want || liveWidth(got) > traceGroupMinLabelWidth {
+			t.Fatalf("narrow server label for %s = %q, want %q", group, got, want)
+		}
+	}
+	if got := traceGroupFitLabel(traceGroupByTarget, client, 10); strings.Contains(got, "server") || liveWidth(got) > 10 {
+		t.Fatalf("narrow client label = %q", got)
+	}
+}
+
 func TestTraceGroupByModes(t *testing.T) {
 	for groupBy, want := range map[string]bool{"": true, traceGroupBySource: true, traceGroupByTarget: true, traceGroupByEvent: true, "invalid": false} {
 		if got := validTraceGroupBy(groupBy); got != want {

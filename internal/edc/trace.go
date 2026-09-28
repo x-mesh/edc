@@ -508,7 +508,7 @@ func traceGroupDisplayValue(groupBy string, group traceGroupSummary) string {
 	// 간 것처럼 보인다. target group은 이름이 가리키는 주소를 보여 주려고 괄호를 붙인다.
 	if group.Server {
 		// 서버 행의 destination은 client port들이라, 하나만 붙이면 한 client만 쓴 것처럼 보인다.
-		return group.Group + " (server)"
+		return group.Group + traceServerSuffix
 	}
 	if groupBy != traceGroupByTarget || len(group.Destinations) == 0 || group.Destinations[0] == group.Group {
 		return group.Group

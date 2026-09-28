@@ -135,6 +135,36 @@ func TestCommandTargetCacheReusesLookupWithinTTL(t *testing.T) {
 	}
 }
 
+func TestSocketTargetCacheKeepsTargetAfterProcessExit(t *testing.T) {
+	cache := newSocketTargetCache()
+	for _, step := range []struct {
+		event captureEvent
+		want  string
+	}{
+		{captureEvent{Protocol: "tcp", SocketID: 7, Event: "tcp_connect", Target: "example.com"}, "example.com"},
+		{captureEvent{Protocol: "tcp", SocketID: 7, Event: "tcp_close"}, "example.com"},
+		{captureEvent{Protocol: "tcp", SocketID: 8, Event: "tcp_close"}, ""},
+		{captureEvent{Protocol: "udp", SocketID: 7, Event: "udp_send"}, ""},
+		{captureEvent{Protocol: "tcp", SocketID: 7, Event: "tcp_destroy"}, "example.com"},
+		{captureEvent{Protocol: "tcp", SocketID: 7, Event: "tcp_connect"}, ""},
+	} {
+		if got := cache.target(step.event); got != step.want {
+			t.Fatalf("%s on socket %d = %q, want %q", step.event.Event, step.event.SocketID, got, step.want)
+		}
+	}
+}
+
+func TestSocketTargetCacheStaysBounded(t *testing.T) {
+	cache := newSocketTargetCache()
+	for socket := uint64(1); socket <= socketTargetLimit; socket++ {
+		cache.target(captureEvent{Protocol: "tcp", SocketID: socket, Target: "example.com"})
+	}
+	cache.target(captureEvent{Protocol: "tcp", SocketID: socketTargetLimit + 1, Target: "example.com"})
+	if len(cache.entries) != 1 {
+		t.Fatalf("entries after the limit = %d, want 1", len(cache.entries))
+	}
+}
+
 func TestCommandTargetCacheSweepsExpiredEntries(t *testing.T) {
 	cache := newCommandTargetCache(func(uint32) string { return "" })
 	now := time.Now()

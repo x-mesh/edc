@@ -21,7 +21,11 @@ typedef __u32 __wsum;
 #define BPF_ANY 0
 #define BPF_MAP_TYPE_HASH 1
 #define BPF_MAP_TYPE_ARRAY 2
+#define BPF_MAP_TYPE_LRU_HASH 9
 #define BPF_MAP_TYPE_RINGBUF 27
+#define TCP_SYN_SENT 2
+#define TCP_CLOSE 7
+#define TCP_LISTEN 10
 
 struct event {
 	__u64 timestamp_ns;
@@ -108,6 +112,47 @@ static __always_inline struct event *start_event(void *ctx, __u32 type) {
 	return event;
 }
 
+// TCP 상태 변화, 재전송, RST는 대개 패킷을 받는 인터럽트 문맥에서 일어난다. 그때 CPU의 태스크는
+// swapper라서 event가 socket을 쓰는 프로세스와 끊긴다. 프로세스 문맥에서 본 주인을 socket별로 둔다.
+struct sock_owner {
+	__u64 cgroup_id;
+	__u32 pid;
+	char comm[16];
+};
+
+struct {
+	__uint(type, BPF_MAP_TYPE_LRU_HASH);
+	__uint(max_entries, 65536);
+	__type(key, __u64);
+	__type(value, struct sock_owner);
+} sock_owners SEC(".maps");
+
+// 프로세스 문맥에서만 부른다. 인터럽트 문맥의 현재 태스크는 socket과 무관하다.
+static __always_inline void remember_sock_owner(__u64 skaddr) {
+	if (!skaddr) {
+		return;
+	}
+	struct sock_owner owner = {};
+	owner.cgroup_id = bpf_get_current_cgroup_id();
+	owner.pid = bpf_get_current_pid_tgid() >> 32;
+	bpf_get_current_comm(&owner.comm, sizeof(owner.comm));
+	bpf_map_update_elem(&sock_owners, &skaddr, &owner, BPF_ANY);
+}
+
+static __always_inline void apply_sock_owner(struct event *event) {
+	__u64 skaddr = event->skaddr;
+	if (!skaddr) {
+		return;
+	}
+	struct sock_owner *owner = bpf_map_lookup_elem(&sock_owners, &skaddr);
+	if (!owner) {
+		return;
+	}
+	event->pid = owner->pid;
+	event->cgroup_id = owner->cgroup_id;
+	__builtin_memcpy(event->comm, owner->comm, sizeof(event->comm));
+}
+
 static __always_inline void finish_event(struct event *event) {
 	if (event) {
 		bpf_ringbuf_submit(event, 0);
@@ -123,6 +168,16 @@ int inet_sock_set_state(struct inet_sock_set_state_ctx *ctx) {
 	event->skaddr = (__u64)ctx->skaddr;
 	event->old_state = ctx->oldstate;
 	event->new_state = ctx->newstate;
+	// SYN_SENT와 LISTEN 전이는 connect()와 listen() 안에서 일어나므로 현재 태스크가 socket의 주인이다.
+	if ((ctx->newstate == TCP_SYN_SENT || ctx->newstate == TCP_LISTEN) && ctx->protocol == IPPROTO_TCP) {
+		remember_sock_owner(event->skaddr);
+	}
+	apply_sock_owner(event);
+	// listen socket은 tcp_destroy_sock을 거치지 않으므로 닫힐 때 여기서 지운다.
+	if (ctx->oldstate == TCP_LISTEN && ctx->newstate == TCP_CLOSE) {
+		__u64 skaddr = event->skaddr;
+		bpf_map_delete_elem(&sock_owners, &skaddr);
+	}
 	event->family = ctx->family;
 	event->sport = ctx->sport;
 	event->dport = ctx->dport;
@@ -154,6 +209,7 @@ static __always_inline int emit_tcp_event(struct tcp_event_ctx *ctx, __u32 type)
 		__builtin_memcpy(event->source, ctx->saddr_v6, 16);
 		__builtin_memcpy(event->destination, ctx->daddr_v6, 16);
 	}
+	apply_sock_owner(event);
 	finish_event(event);
 	return 0;
 }
@@ -222,6 +278,8 @@ static __always_inline int emit_length_event(struct sock_length_ctx *ctx, __u32 
 	struct sock *sk = ctx->sk;
 	event->skaddr = (__u64)sk;
 	event->protocol = ctx->protocol;
+	// sendmsg와 recvmsg 안에서 불리므로, accept한 socket도 첫 입출력부터 주인을 알 수 있다.
+	remember_sock_owner(event->skaddr);
 	event->bytes = (__u64)ctx->ret;
 	event->family = BPF_CORE_READ(sk, __sk_common.skc_family);
 	event->sport = BPF_CORE_READ(sk, __sk_common.skc_num);
@@ -255,6 +313,7 @@ static __always_inline int emit_socket_event(struct tcp_socket_ctx *ctx, __u32 t
 		__builtin_memcpy(event->source, ctx->saddr_v6, 16);
 		__builtin_memcpy(event->destination, ctx->daddr_v6, 16);
 	}
+	apply_sock_owner(event);
 	finish_event(event);
 	return 0;
 }
@@ -266,6 +325,7 @@ static __always_inline int emit_reset_event(struct tcp_reset_ctx *ctx, __u32 typ
 	}
 	event->skaddr = (__u64)ctx->skaddr;
 	event->old_state = ctx->state;
+	apply_sock_owner(event);
 	finish_event(event);
 	return 0;
 }
@@ -280,7 +340,13 @@ SEC("tracepoint/tcp/tcp_receive_reset")
 int tcp_receive_reset(struct tcp_socket_ctx *ctx) { return emit_socket_event(ctx, 4); }
 
 SEC("tracepoint/tcp/tcp_destroy_sock")
-int tcp_destroy_sock(struct tcp_socket_ctx *ctx) { return emit_socket_event(ctx, 5); }
+int tcp_destroy_sock(struct tcp_socket_ctx *ctx) {
+	emit_socket_event(ctx, 5);
+	// kernel이 해제한 socket 주소를 새 socket에 다시 쓰므로, 남겨 두면 새 socket에 옛 주인이 붙는다.
+	__u64 skaddr = (__u64)ctx->skaddr;
+	bpf_map_delete_elem(&sock_owners, &skaddr);
+	return 0;
+}
 
 SEC("tracepoint/sock/sock_send_length")
 int tcp_send_length(struct sock_length_ctx *ctx) {
@@ -459,6 +525,32 @@ int skb_consume_udp_entry(__u64 *ctx) {
 		bpf_probe_read_kernel(event->destination, 16, network + 8);
 	}
 	finish_event(event);
+	return 0;
+}
+
+// trace 전부터 떠 있던 서버는 listen()을 이미 지났다. accept()의 첫 인자가 listen socket이라 여기서 주인을
+// 배운다. 첫 인자만 읽으므로 6.10에서 바뀐 뒤쪽 인자와 무관하다.
+SEC("fentry/inet_csk_accept")
+int inet_csk_accept_entry(__u64 *ctx) {
+	remember_sock_owner(ctx[0]);
+	return 0;
+}
+
+// tcp_accept event는 서버가 accept()를 부르기 전에 인터럽트 문맥에서 생긴다. 새 socket이 만들어질 때
+// listen socket의 주인을 물려주어야 그 event부터 서버 프로세스로 기록된다.
+SEC("fexit/tcp_create_openreq_child")
+int tcp_create_openreq_child_exit(__u64 *ctx) {
+	__u64 listener = ctx[0];
+	__u64 child = ctx[3];
+	if (!child) {
+		return 0;
+	}
+	struct sock_owner *owner = bpf_map_lookup_elem(&sock_owners, &listener);
+	if (!owner) {
+		return 0;
+	}
+	struct sock_owner copy = *owner;
+	bpf_map_update_elem(&sock_owners, &child, &copy, BPF_ANY);
 	return 0;
 }
 

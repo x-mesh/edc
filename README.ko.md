@@ -31,6 +31,12 @@ curl -fsSL https://raw.githubusercontent.com/x-mesh/edc/main/install.sh | BINDIR
 curl -fsSL https://raw.githubusercontent.com/x-mesh/edc/main/install.sh | EDC_VERSION=0.1.0 sh
 ```
 
+설치 디렉터리가 `PATH`에 없으면 script가 사용 중인 shell을 판단해 그 디렉터리를 추가하는 명령을 출력합니다. `EDC_MODIFY_PATH=1`을 지정하면 script가 `~/.zshrc`, `~/.bashrc` 같은 shell 시작 파일에 직접 한 줄을 추가하며, 이미 있으면 다시 넣지 않습니다. 지금 열려 있는 shell에는 새 `PATH`가 반영되지 않으므로, 새 shell을 열거나 script가 출력한 명령을 실행합니다.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/x-mesh/edc/main/install.sh | EDC_MODIFY_PATH=1 sh
+```
+
 release에는 Linux와 macOS의 `amd64`, `arm64` 실행 파일이 들어 있습니다.
 
 ## 업데이트

@@ -3,6 +3,7 @@ package edc
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -82,7 +83,24 @@ func TestCaptureSummaryIncludesCounts(t *testing.T) {
 	}
 }
 
+func setTraceKernelEvents(t *testing.T, value bool) {
+	t.Helper()
+	previous := traceKernelEvents
+	traceKernelEvents = value
+	t.Cleanup(func() { traceKernelEvents = previous })
+}
+
+// setTraceEphemeralPortRange는 서버 응답 판정을 실행하는 host의 port 범위와 떼어 놓는다. macOS와 Linux는
+// 기본 범위가 다르다.
+func setTraceEphemeralPortRange(t *testing.T, low, high int) {
+	t.Helper()
+	previous := traceEphemeralPortRange
+	traceEphemeralPortRange = func() (int, int) { return low, high }
+	t.Cleanup(func() { traceEphemeralPortRange = previous })
+}
+
 func TestSummarizeTCPTrace(t *testing.T) {
+	setTraceKernelEvents(t, true)
 	base := uint64(time.Second)
 	events := []captureEvent{
 		{SocketID: 1, TimestampNS: base, Event: "tcp_state", Process: "worker", Source: "10.0.0.2:41000", Destination: "203.0.113.10:443", OldState: "CLOSE", NewState: "SYN_SENT"},
@@ -94,7 +112,7 @@ func TestSummarizeTCPTrace(t *testing.T) {
 		{SocketID: 2, TimestampNS: base + 83*uint64(time.Millisecond), Event: "tcp_receive_reset", Process: "bot", Destination: "203.0.113.20:443"},
 	}
 	report := summarizeTCPTrace(events, captureSummary{LostEvents: 3}, 15*time.Second, "", "")
-	if report.Attempts != 2 || report.Established != 1 || report.Incomplete != 1 || report.Retransmissions != 1 || report.Resets != 1 || report.LostEvents != 3 {
+	if report.Attempts != 2 || report.Established != 1 || report.Incomplete != 1 || traceOptional(report.Retransmissions, "%d") != "1" || traceOptional(report.Resets, "%d") != "1" || report.LostEvents != 3 {
 		t.Fatalf("report = %#v", report)
 	}
 	var established, reset *tcpTraceConnection
@@ -106,7 +124,7 @@ func TestSummarizeTCPTrace(t *testing.T) {
 			reset = &report.Connections[index]
 		}
 	}
-	if established == nil || established.ConnectMS != 41 || established.Retransmissions != 1 {
+	if established == nil || traceOptional(established.ConnectMS, "%d") != "41" || traceOptional(established.Retransmissions, "%d") != "1" {
 		t.Fatalf("established connection = %#v", established)
 	}
 	if established.TXBytes != 1200 || established.RXBytes != 800 || established.TotalBytes != 2000 {
@@ -118,7 +136,7 @@ func TestSummarizeTCPTrace(t *testing.T) {
 	if established.Hostname != "example.com" || traceDestinationLabel(*established) != "203.0.113.10:443 (example.com)" {
 		t.Fatalf("hostname = %#v", established)
 	}
-	if reset == nil || !reset.Reset {
+	if reset == nil || traceOptional(reset.Reset, "%t") != "true" {
 		t.Fatalf("reset connection = %#v", reset)
 	}
 	filtered := summarizeTCPTrace(events, captureSummary{}, time.Second, "bot", "")
@@ -165,6 +183,73 @@ func TestSummarizeUDPTrace(t *testing.T) {
 	}
 	if flow := report.Flows[0]; flow.TXBytes != 120 || flow.RXBytes != 80 || flow.TotalBytes != 200 {
 		t.Fatalf("UDP flow traffic = %#v", flow.traceTraffic)
+	}
+}
+
+func TestSummarizeUDPTraceCountsCounterPackets(t *testing.T) {
+	events := []captureEvent{
+		{SocketID: 1, Protocol: "udp", Event: "udp_send", Bytes: 640, Packets: 5, Destination: "203.0.113.53:53"},
+		{SocketID: 1, Protocol: "udp", Event: "udp_receive", Bytes: 256, Packets: 2, Destination: "203.0.113.53:53"},
+	}
+	report := summarizeUDPTrace(events, captureSummary{}, time.Second, "", "")
+	if report.Datagrams != 7 || report.Sent != 5 || report.Received != 2 || report.Flows[0].Sent != 5 || report.Flows[0].Received != 2 {
+		t.Fatalf("UDP report = %#v", report)
+	}
+	groups := summarizeTraceGroups("udp", traceGroupByTarget, events, captureSummary{}, time.Second, "", "")
+	if groups.Groups[0].Tx != 5 || groups.Groups[0].Rx != 2 {
+		t.Fatalf("UDP groups = %#v", groups.Groups)
+	}
+}
+
+// counter로 만든 trace에는 RST, 연결 지연, 재전송 횟수가 없다. 0으로 쓰면 관측한 0과 구분되지 않는다.
+func TestTraceMarksUnobservedValues(t *testing.T) {
+	setTraceKernelEvents(t, false)
+	t.Setenv("NO_COLOR", "1")
+	events := []captureEvent{
+		{SocketID: 1, Protocol: "tcp", Event: "tcp_connect", Process: "curl", Destination: "203.0.113.10:443"},
+		{SocketID: 1, Protocol: "tcp", Event: "tcp_retransmit", Bytes: 1448, Process: "curl", Destination: "203.0.113.10:443"},
+		{SocketID: 1, Protocol: "tcp", Event: "tcp_send", Bytes: 1200, Packets: 2, Process: "curl", Destination: "203.0.113.10:443"},
+	}
+	report := summarizeTCPTrace(events, captureSummary{}, time.Second, "", "")
+	connection := report.Connections[0]
+	if report.Retransmissions != nil || report.Resets != nil || connection.ConnectMS != nil || connection.Retransmissions != nil || connection.Reset != nil || connection.Result != "established" {
+		t.Fatalf("report = %#v", report)
+	}
+	encoded, err := json.Marshal(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{"\"retransmissions\":null", "\"resets\":null", "\"connect_ms\":null", "\"reset\":null", "\"tx_bytes\":1200"} {
+		if !strings.Contains(string(encoded), field) {
+			t.Fatalf("report JSON missing %s: %s", field, encoded)
+		}
+	}
+	previousOutput := os.Stdout
+	read, write, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = write
+	printTCPTraceReport(report)
+	os.Stdout = previousOutput
+	write.Close()
+	output, err := io.ReadAll(read)
+	read.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range []string{"Retransmissions: -\n", "Resets: -\n", "\testablished\t-\t1.2KiB\t0B\t-\t-\n"} {
+		if !strings.Contains(string(output), line) {
+			t.Fatalf("report output missing %q:\n%s", line, output)
+		}
+	}
+	group := summarizeTraceGroups("tcp", traceGroupByTarget, events, captureSummary{}, time.Second, "", "").Groups[0]
+	if group.Retransmissions != nil || group.Resets != nil || group.Connect != 1 {
+		t.Fatalf("group = %#v", group)
+	}
+	layout := traceGroupLayout{labelWidth: 14, byteWidth: 6, bytes: traceBytes}
+	if row := formatTraceGroupScreenRow("tcp", traceGroupByTarget, group, 0, layout); !strings.Contains(row, "   1   -   - tcp_send") {
+		t.Fatalf("screen row = %q", row)
 	}
 }
 
@@ -267,6 +352,7 @@ func TestTraceEventMatchesText(t *testing.T) {
 }
 
 func TestSummarizeTraceGroupsByDimension(t *testing.T) {
+	setTraceKernelEvents(t, true)
 	base := uint64(time.Second)
 	events := []captureEvent{
 		{Protocol: "tcp", TimestampNS: base, Event: "tcp_connect", Process: "curl", Source: "10.0.0.2:41000", Target: "naver.com", Destination: "223.130.200.219:80"},
@@ -283,14 +369,14 @@ func TestSummarizeTraceGroupsByDimension(t *testing.T) {
 		t.Fatalf("TCP groups = %#v", report)
 	}
 	naver := report.Groups[2]
-	if naver.Group != "naver.com" || naver.Events != 3 || naver.Connect != 1 || naver.Retransmissions != 1 || naver.Resets != 1 || naver.Rate != 3 {
+	if naver.Group != "naver.com" || naver.Events != 3 || naver.Connect != 1 || traceOptional(naver.Retransmissions, "%d") != "1" || traceOptional(naver.Resets, "%d") != "1" || naver.Rate != 3 {
 		t.Fatalf("naver group = %#v", naver)
 	}
 	if len(naver.Destinations) != 1 || len(naver.Processes) != 1 {
 		t.Fatalf("naver dimensions = %#v", naver)
 	}
 	source := summarizeTraceGroups("tcp", traceGroupBySource, events, captureSummary{}, time.Second, "", "")
-	if source.GroupBy != traceGroupBySource || len(source.Groups) != 3 || source.Groups[0].Group != "-" || source.Groups[1].Group != "10.0.0.2" || source.Groups[1].Connect != 1 || source.Groups[1].Retransmissions != 1 || source.Groups[1].Resets != 1 {
+	if source.GroupBy != traceGroupBySource || len(source.Groups) != 3 || source.Groups[0].Group != "-" || source.Groups[1].Group != "10.0.0.2" || source.Groups[1].Connect != 1 || traceOptional(source.Groups[1].Retransmissions, "%d") != "1" || traceOptional(source.Groups[1].Resets, "%d") != "1" {
 		t.Fatalf("TCP source groups = %#v", source)
 	}
 	udp := summarizeTraceGroups("udp", traceGroupByTarget, events, captureSummary{}, 2*time.Second, "", "")
@@ -324,13 +410,14 @@ func TestTraceScreenGroupKeys(t *testing.T) {
 }
 
 func TestSummarizeTraceGroupsByEvent(t *testing.T) {
+	setTraceKernelEvents(t, true)
 	report := summarizeTraceGroups("tcp", traceGroupByEvent, []captureEvent{
 		{Protocol: "tcp", Event: "tcp_connect", Destination: "203.0.113.10:443"},
 		{Protocol: "tcp", Event: "tcp_connect", Destination: "203.0.113.20:443"},
 		{Protocol: "tcp", Event: "tcp_retransmit", Destination: "203.0.113.10:443"},
 		{Protocol: "tcp"},
 	}, captureSummary{}, time.Second, "", "")
-	if len(report.Groups) != 3 || report.Groups[0].Group != "-" || report.Groups[1].Group != "tcp_connect" || report.Groups[1].Connect != 2 || report.Groups[2].Group != "tcp_retransmit" || report.Groups[2].Retransmissions != 1 {
+	if len(report.Groups) != 3 || report.Groups[0].Group != "-" || report.Groups[1].Group != "tcp_connect" || report.Groups[1].Connect != 2 || report.Groups[2].Group != "tcp_retransmit" || traceOptional(report.Groups[2].Retransmissions, "%d") != "1" {
 		t.Fatalf("event groups = %#v", report.Groups)
 	}
 	if got := traceGroupDisplayValue(traceGroupByEvent, report.Groups[1]); got != "tcp_connect" {
@@ -471,6 +558,7 @@ func TestTraceServerService(t *testing.T) {
 }
 
 func TestSummarizeTraceGroupsCollectsServerReplies(t *testing.T) {
+	setTraceEphemeralPortRange(t, 32768, 60999)
 	events := []captureEvent{
 		{Protocol: "udp", Event: "udp_send", Bytes: 100, Source: "127.0.0.53:53", Destination: "127.0.0.1:41022"},
 		{Protocol: "udp", Event: "udp_send", Bytes: 100, Source: "127.0.0.53:53", Destination: "127.0.0.1:41023"},
@@ -678,6 +766,7 @@ func TestBPFLengthEventKeepsClosedSocketPort(t *testing.T) {
 }
 
 func TestSummarizeTraceGroupsByPort(t *testing.T) {
+	setTraceEphemeralPortRange(t, 32768, 60999)
 	events := []captureEvent{
 		{Protocol: "udp", Event: "udp_send", Bytes: 20, Source: "20.20.0.50:41641", Destination: "102.67.165.185:3478"},
 		{Protocol: "udp", Event: "udp_receive", Bytes: 16, Source: "20.20.0.50:41641", Destination: "102.67.165.185:3478"},
@@ -718,6 +807,7 @@ func TestBPFSocketOwnerClearsUnknownOwner(t *testing.T) {
 }
 
 func TestSummarizeTraceGroupsByProcess(t *testing.T) {
+	setTraceKernelEvents(t, true)
 	events := []captureEvent{
 		{Protocol: "tcp", Event: "tcp_connect", Process: "curl", PID: 100, Source: "10.0.0.2:41000", Destination: "203.0.113.10:443"},
 		{Protocol: "tcp", Event: "tcp_retransmit", Process: "curl", PID: 101, Source: "10.0.0.2:41001", Destination: "203.0.113.20:80"},
@@ -733,7 +823,7 @@ func TestSummarizeTraceGroupsByProcess(t *testing.T) {
 	if want := []string{"-", "agent", "curl"}; !slices.Equal(labels, want) {
 		t.Fatalf("process groups = %q, want %q", labels, want)
 	}
-	if curl := report.Groups[2]; curl.Events != 2 || curl.Connect != 1 || curl.Retransmissions != 1 || len(curl.Destinations) != 2 {
+	if curl := report.Groups[2]; curl.Events != 2 || curl.Connect != 1 || traceOptional(curl.Retransmissions, "%d") != "1" || len(curl.Destinations) != 2 {
 		t.Fatalf("curl group = %#v", curl)
 	}
 }

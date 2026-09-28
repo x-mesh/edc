@@ -730,7 +730,7 @@ stdin이나 stdout이 terminal이 아니거나, `--json`을 지정했거나, `NO
 
 Linux에서 `--mode events`를 사용하면 process metadata와 함께 TCP socket state, retransmission, reset, destroy event를 JSONL로 저장합니다. 이 mode는 BTF와 eBPF capability가 필요하며 PCAP 파일을 만들지 않습니다. 각 event의 `timestamp_ns`는 요약 줄과 같은 Unix epoch 기준 나노초이고, `boot_time_ns`는 부팅 후 kernel monotonic 시간입니다. TCP event의 `pid`와 `process`는 kernel이 packet을 처리할 때 CPU에서 돌던 task가 아니라 그 socket을 쓰는 process입니다. `Ctrl-C`를 누르면 수집을 멈추고, 그때까지 모은 event와 summary 줄을 저장합니다.
 
-Linux에서 `trace tcp` 또는 `trace udp`를 사용하면 network event를 발생 즉시 출력합니다. 기본 terminal 화면은 event를 스크롤합니다. `Ctrl-C`를 누르면 수집을 종료하고 summary를 출력합니다.
+Linux와 macOS에서 `trace tcp` 또는 `trace udp`를 사용하면 network event를 발생 즉시 출력합니다. 기본 terminal 화면은 event를 스크롤합니다. `Ctrl-C`를 누르면 수집을 종료하고 summary를 출력합니다.
 
 ```bash
 ./bin/edc trace tcp
@@ -758,6 +758,22 @@ event의 target은 같은 process가 trace 중에 받은 DNS 응답, process의 
 전체 화면 terminal에서는 `s`로 source 행, `t`로 target 행, `p`로 port 행, `c`로 process 행, `e`로 event 행, `g`로 event 스크롤을 표시합니다. `Tab`은 다음 보기, `Shift+Tab`은 이전 보기로 바꿉니다. terminal 폭이 넓으면 첫 열을 넓혀 group 값을 자르지 않고 표시합니다. 폭이 좁으면 byte 열을 `195K`(195 KiB)처럼 짧은 단위로 표시합니다.
 전체 화면은 최근 event 10,000개를 유지하고, live rate는 이 event들이 걸친 시간으로 계산합니다. `Ctrl-C` 후 summary는 모든 event를 사용합니다.
 전체 화면의 group 행은 traffic이 많은 group부터 표시합니다. 행이 terminal에 다 들어가지 않으면 위쪽 행을 표시합니다.
+
+macOS에서 `trace`는 kernel의 network 통계 interface(`com.apple.network.statistics`)에서 socket별 counter를 읽습니다. `nettop`도 같은 interface를 사용합니다. `edc`는 1초마다 counter를 읽고 직전 값과의 차이로 event를 만듭니다. 이 interface는 공개되지 않은 interface라서 macOS 업데이트로 형식이 바뀔 수 있고, 형식이 바뀌면 trace는 오류를 내고 멈춥니다.
+
+macOS에서는 다음 값을 관측할 수 없어서 텍스트 출력에는 `-`로, JSON 출력에는 `null`로 표시합니다.
+
+- `connect_ms`: counter에 연결 시간이 없습니다.
+- `reset`, `resets`: counter로는 RST packet을 볼 수 없습니다.
+- `retransmissions`: counter는 재전송한 packet 수가 아니라 byte 수를 줍니다. 이 byte 수는 `--raw` 출력에서 `tcp_retransmit` event의 `bytes` 필드에 담깁니다.
+
+macOS의 event 하나는 직전에 읽은 값 이후의 변화를 나타냅니다. `bytes` 필드에는 byte 수를, `packets` 필드에는 packet 수를 담습니다. UDP의 `sent`와 `received`는 packet 수를 셉니다. `EVENTS`와 `EVENT/s`는 socket 호출이 아니라 이렇게 만든 event의 수를 셉니다. byte 합계와 traffic rate는 정확합니다.
+
+macOS의 process 이름은 32 byte까지 보관됩니다. ephemeral port 범위는 `net.inet.ip.portrange.first`와 `net.inet.ip.portrange.last`에서 읽습니다.
+
+root 권한 없이 실행하면 macOS trace는 현재 사용자의 kernel socket만 표시합니다. macOS의 사용자 공간 network stack이 처리하는 연결은 표시하지 않으며, Network.framework는 이 stack으로 traffic을 보낼 수 있습니다. `target` hostname도 표시하지 않으므로 이때 `--group-by target`은 목적지 주소로 event를 묶습니다.
+
+`sudo`로 실행하면 모든 사용자의 process와 사용자 공간 network stack의 연결을 표시하고, macOS가 연결마다 기록한 domain 이름을 `target`으로 표시합니다. 이때 `target_source`는 `system`입니다. domain 이름이 없는 연결은 `--group-by target`에서 목적지 주소로 묶습니다. QUIC는 UDP를 사용하므로, 사용자 공간 network stack의 QUIC 연결은 `trace udp`에 표시합니다.
 
 ```bash
 ./bin/edc capture \

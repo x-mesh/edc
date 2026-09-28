@@ -198,13 +198,13 @@ func traceColorLine(line, protocol, event string, color bool) string {
 
 func printTCPTraceReport(report tcpTraceReport) {
 	fmt.Fprintf(os.Stdout, "TCP trace: %s\n\n", (time.Duration(report.DurationMS) * time.Millisecond).String())
-	fmt.Fprintf(os.Stdout, "Attempts: %d\nEstablished: %d\nIncomplete: %d\nRetransmissions: %d\nResets: %d\nTX: %s\nRX: %s\nTotal: %s\nTraffic rate: %s\nLost events: %d\n", report.Attempts, report.Established, report.Incomplete, report.Retransmissions, report.Resets, traceBytes(report.TXBytes), traceBytes(report.RXBytes), traceBytes(report.TotalBytes), traceTrafficRate(report.traceTraffic), report.LostEvents)
+	fmt.Fprintf(os.Stdout, "Attempts: %d\nEstablished: %d\nIncomplete: %d\nRetransmissions: %s\nResets: %s\nTX: %s\nRX: %s\nTotal: %s\nTraffic rate: %s\nLost events: %d\n", report.Attempts, report.Established, report.Incomplete, traceOptional(report.Retransmissions, "%d"), traceOptional(report.Resets, "%d"), traceBytes(report.TXBytes), traceBytes(report.RXBytes), traceBytes(report.TotalBytes), traceTrafficRate(report.traceTraffic), report.LostEvents)
 	if len(report.Connections) == 0 {
 		return
 	}
 	fmt.Fprintln(os.Stdout, "\nPROCESS\tDESTINATION\tRESULT\tCONNECT\tTX\tRX\tRETRANS\tRESET")
 	for _, connection := range report.Connections {
-		fmt.Fprintf(os.Stdout, "%s\t%s\t%s\t%dms\t%s\t%s\t%d\t%t\n", connection.Process, traceDestinationLabel(connection), connection.Result, connection.ConnectMS, traceBytes(connection.TXBytes), traceBytes(connection.RXBytes), connection.Retransmissions, connection.Reset)
+		fmt.Fprintf(os.Stdout, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", connection.Process, traceDestinationLabel(connection), connection.Result, traceOptional(connection.ConnectMS, "%dms"), traceBytes(connection.TXBytes), traceBytes(connection.RXBytes), traceOptional(connection.Retransmissions, "%d"), traceOptional(connection.Reset, "%t"))
 	}
 }
 
@@ -261,11 +261,11 @@ func summarizeUDPTrace(events []captureEvent, summary captureSummary, duration t
 		}
 		switch event.Event {
 		case "udp_send":
-			flow.Sent++
-			result.Sent++
+			flow.Sent += traceEventPackets(event)
+			result.Sent += int(traceEventPackets(event))
 		case "udp_receive":
-			flow.Received++
-			result.Received++
+			flow.Received += traceEventPackets(event)
+			result.Received += int(traceEventPackets(event))
 		}
 		flow.traceTraffic.observe(event)
 		result.traceTraffic.observe(event)
@@ -344,8 +344,8 @@ type traceGroupSummary struct {
 	Tx              uint64   `json:"tx"`
 	Rx              uint64   `json:"rx"`
 	Connect         uint64   `json:"connect"`
-	Retransmissions uint64   `json:"retransmissions"`
-	Resets          uint64   `json:"resets"`
+	Retransmissions *uint64  `json:"retransmissions"`
+	Resets          *uint64  `json:"resets"`
 	LastEvent       string   `json:"last_event,omitempty"`
 	traceTraffic
 }
@@ -391,7 +391,7 @@ func summarizeTraceGroups(protocol, groupBy string, events []captureEvent, summa
 		result.Groups = append(result.Groups, traceGroupSummary{
 			Group: group.Group, Server: group.Server, Destinations: append([]string(nil), group.Destinations...), Processes: append([]string(nil), group.Processes...),
 			Events: group.Events, Rate: traceGroupRate(group.Events, duration), Tx: group.Tx, Rx: group.Rx, Connect: group.Connect,
-			Retransmissions: group.Retransmissions, Resets: group.Resets, LastEvent: group.LastEvent, traceTraffic: group.traceTraffic,
+			Retransmissions: traceObserved(group.Retransmissions), Resets: traceObserved(group.Resets), LastEvent: group.LastEvent, traceTraffic: group.traceTraffic,
 		})
 	}
 	for index := range result.Groups {
@@ -519,9 +519,9 @@ func observeTraceGroup(group *traceGroup, event captureEvent) {
 	}
 	switch event.Event {
 	case "udp_send":
-		group.Tx++
+		group.Tx += traceEventPackets(event)
 	case "udp_receive":
-		group.Rx++
+		group.Rx += traceEventPackets(event)
 	case "tcp_connect", "tcp_accept":
 		group.Connect++
 	case "tcp_retransmit":
@@ -589,8 +589,32 @@ func printTraceGroupReport(report traceGroupReport) {
 	}
 	fmt.Fprintf(os.Stdout, "\n%s\tEVENTS\tEVENT/s\tTX\tRX\tTOTAL\tB/s\tMbps\tCONNECT\tRETRANS\tRESET\tLAST\n", traceGroupLabel(report.GroupBy))
 	for _, group := range report.Groups {
-		fmt.Fprintf(os.Stdout, "%s\t%d\t%.1f\t%s\t%s\t%s\t%s\t%.3f\t%d\t%d\t%d\t%s\n", traceGroupDisplayValue(report.GroupBy, group), group.Events, group.Rate, traceBytes(group.TXBytes), traceBytes(group.RXBytes), traceBytes(group.TotalBytes), traceBytes(uint64(group.BytesPerSecond)), group.MegabitsPerSecond, group.Connect, group.Retransmissions, group.Resets, group.LastEvent)
+		fmt.Fprintf(os.Stdout, "%s\t%d\t%.1f\t%s\t%s\t%s\t%s\t%.3f\t%d\t%s\t%s\t%s\n", traceGroupDisplayValue(report.GroupBy, group), group.Events, group.Rate, traceBytes(group.TXBytes), traceBytes(group.RXBytes), traceBytes(group.TotalBytes), traceBytes(uint64(group.BytesPerSecond)), group.MegabitsPerSecond, group.Connect, traceOptional(group.Retransmissions, "%d"), traceOptional(group.Resets, "%d"), group.LastEvent)
 	}
+}
+
+// traceObserved는 이 platform이 관측하지 못하는 값을 nil로 바꾼다. 0으로 두면 관측한 0과 구분되지 않는다.
+func traceObserved[T any](value T) *T {
+	if !traceKernelEvents {
+		return nil
+	}
+	return &value
+}
+
+func traceOptional[T any](value *T, format string) string {
+	if value == nil {
+		return "-"
+	}
+	return fmt.Sprintf(format, *value)
+}
+
+// traceEventPackets는 event 하나가 나타내는 packet 수다. eBPF event는 호출 한 번이고, counter에서 만든
+// event는 구간 동안의 packet 수를 담는다.
+func traceEventPackets(event captureEvent) uint64 {
+	if event.Packets == 0 {
+		return 1
+	}
+	return event.Packets
 }
 
 func traceBytes(bytes uint64) string {

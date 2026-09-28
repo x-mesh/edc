@@ -707,6 +707,16 @@ func TestSummarizeTraceGroupsByPort(t *testing.T) {
 	}
 }
 
+func TestBPFSocketOwnerClearsUnknownOwner(t *testing.T) {
+	source, err := os.ReadFile("capture_events_bpf.c")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !regexp.MustCompile(`if \(!owner\) \{\s*event->pid = 0;\s*event->cgroup_id = 0;\s*__builtin_memset\(event->comm, 0, sizeof\(event->comm\)\);\s*return;`).Match(source) {
+		t.Fatal("apply_sock_owner must clear pid, cgroup, and comm when the socket owner is unknown")
+	}
+}
+
 func TestTraceGroupByModes(t *testing.T) {
 	for groupBy, want := range map[string]bool{"": true, traceGroupBySource: true, traceGroupByTarget: true, traceGroupByPort: true, traceGroupByEvent: true, "invalid": false} {
 		if got := validTraceGroupBy(groupBy); got != want {

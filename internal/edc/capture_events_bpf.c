@@ -139,13 +139,18 @@ static __always_inline void remember_sock_owner(__u64 skaddr) {
 	bpf_map_update_elem(&sock_owners, &skaddr, &owner, BPF_ANY);
 }
 
+// 주인을 모르면 pid와 comm을 비운다. 이 event들은 대개 인터럽트 문맥이라, 현재 태스크는 swapper나 그때
+// CPU에서 돌던 무관한 프로세스다. trace 전에 connect()한 socket의 재전송이 그런 이름으로 보였다.
 static __always_inline void apply_sock_owner(struct event *event) {
 	__u64 skaddr = event->skaddr;
-	if (!skaddr) {
-		return;
+	struct sock_owner *owner = 0;
+	if (skaddr) {
+		owner = bpf_map_lookup_elem(&sock_owners, &skaddr);
 	}
-	struct sock_owner *owner = bpf_map_lookup_elem(&sock_owners, &skaddr);
 	if (!owner) {
+		event->pid = 0;
+		event->cgroup_id = 0;
+		__builtin_memset(event->comm, 0, sizeof(event->comm));
 		return;
 	}
 	event->pid = owner->pid;

@@ -17,10 +17,11 @@ import (
 )
 
 const (
-	traceGroupBySource = "source"
-	traceGroupByTarget = "target"
-	traceGroupByPort   = "port"
-	traceGroupByEvent  = "event"
+	traceGroupBySource  = "source"
+	traceGroupByTarget  = "target"
+	traceGroupByPort    = "port"
+	traceGroupByProcess = "process"
+	traceGroupByEvent   = "event"
 )
 
 func runTrace(args []string) int {
@@ -148,7 +149,7 @@ func runTrace(args []string) int {
 }
 
 func validTraceGroupBy(groupBy string) bool {
-	return groupBy == "" || groupBy == traceGroupBySource || groupBy == traceGroupByTarget || groupBy == traceGroupByPort || groupBy == traceGroupByEvent
+	return groupBy == "" || groupBy == traceGroupBySource || groupBy == traceGroupByTarget || groupBy == traceGroupByPort || groupBy == traceGroupByProcess || groupBy == traceGroupByEvent
 }
 
 // traceEventDestinationLabel은 목적지 뒤에 명령줄에서 얻은 target을 붙인다. 두 이벤트 화면이 같은 표시를 쓴다.
@@ -411,6 +412,12 @@ func traceGroupKey(event captureEvent, groupBy string) (string, bool) {
 			return "-", false
 		}
 		return event.Event, false
+	}
+	if groupBy == traceGroupByProcess {
+		if event.Process == "" {
+			return "-", false
+		}
+		return event.Process, false
 	}
 	if groupBy == traceGroupBySource {
 		if event.Source == "" {

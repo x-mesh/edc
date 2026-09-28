@@ -304,12 +304,12 @@ func TestSummarizeTraceGroupsByDimension(t *testing.T) {
 }
 
 func TestTraceScreenGroupKeys(t *testing.T) {
-	for _, initial := range []string{"", traceGroupBySource, traceGroupByTarget, traceGroupByPort, traceGroupByEvent} {
+	for _, initial := range []string{"", traceGroupBySource, traceGroupByTarget, traceGroupByPort, traceGroupByProcess, traceGroupByEvent} {
 		model := newTraceScreenModel("tcp", tcpTraceOptions{groupBy: initial}, make(chan captureEvent), make(chan traceFinishedMsg), nil)
 		if model.groupBy != initial {
 			t.Fatalf("initial group mode = %q, want %q", model.groupBy, initial)
 		}
-		for _, transition := range []struct{ key, want string }{{"s", traceGroupBySource}, {"s", traceGroupBySource}, {"t", traceGroupByTarget}, {"t", traceGroupByTarget}, {"p", traceGroupByPort}, {"p", traceGroupByPort}, {"e", traceGroupByEvent}, {"e", traceGroupByEvent}, {"g", ""}, {"g", ""}} {
+		for _, transition := range []struct{ key, want string }{{"s", traceGroupBySource}, {"s", traceGroupBySource}, {"t", traceGroupByTarget}, {"t", traceGroupByTarget}, {"p", traceGroupByPort}, {"p", traceGroupByPort}, {"c", traceGroupByProcess}, {"c", traceGroupByProcess}, {"e", traceGroupByEvent}, {"e", traceGroupByEvent}, {"g", ""}, {"g", ""}} {
 			next, _ := model.Update(tea.KeyPressMsg{Code: rune(transition.key[0]), Text: transition.key})
 			model = next.(traceScreenModel)
 			if model.groupBy != transition.want {
@@ -534,14 +534,14 @@ func TestTraceScreenTabCyclesGroupViews(t *testing.T) {
 		model = next.(traceScreenModel)
 	}
 	tab := tea.KeyPressMsg{Code: tea.KeyTab}
-	for _, want := range []string{traceGroupBySource, traceGroupByTarget, traceGroupByPort, traceGroupByEvent, ""} {
+	for _, want := range []string{traceGroupBySource, traceGroupByTarget, traceGroupByPort, traceGroupByProcess, traceGroupByEvent, ""} {
 		press(tab)
 		if model.groupBy != want {
 			t.Fatalf("tab = %q, want %q", model.groupBy, want)
 		}
 	}
 	back := tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift}
-	for _, want := range []string{traceGroupByEvent, traceGroupByPort, traceGroupByTarget, traceGroupBySource, ""} {
+	for _, want := range []string{traceGroupByEvent, traceGroupByProcess, traceGroupByPort, traceGroupByTarget, traceGroupBySource, ""} {
 		press(back)
 		if model.groupBy != want {
 			t.Fatalf("shift+tab = %q, want %q", model.groupBy, want)
@@ -707,8 +707,29 @@ func TestSummarizeTraceGroupsByPort(t *testing.T) {
 	}
 }
 
+func TestSummarizeTraceGroupsByProcess(t *testing.T) {
+	events := []captureEvent{
+		{Protocol: "tcp", Event: "tcp_connect", Process: "curl", PID: 100, Source: "10.0.0.2:41000", Destination: "203.0.113.10:443"},
+		{Protocol: "tcp", Event: "tcp_retransmit", Process: "curl", PID: 101, Source: "10.0.0.2:41001", Destination: "203.0.113.20:80"},
+		{Protocol: "tcp", Event: "tcp_connect", Process: "agent", PID: 200, Source: "10.0.0.2:41002", Destination: "203.0.113.30:443"},
+		{Protocol: "tcp", Event: "tcp_receive_reset", Source: "10.0.0.2:41003", Destination: "203.0.113.40:443"},
+	}
+	report := summarizeTraceGroups("tcp", traceGroupByProcess, events, captureSummary{}, time.Second, "", "")
+	labels := []string{}
+	for _, group := range report.Groups {
+		labels = append(labels, traceGroupDisplayValue(traceGroupByProcess, group))
+	}
+	// PID가 달라도 이름이 같으면 한 행이다. --process 필터와 같은 기준이다.
+	if want := []string{"-", "agent", "curl"}; !slices.Equal(labels, want) {
+		t.Fatalf("process groups = %q, want %q", labels, want)
+	}
+	if curl := report.Groups[2]; curl.Events != 2 || curl.Connect != 1 || curl.Retransmissions != 1 || len(curl.Destinations) != 2 {
+		t.Fatalf("curl group = %#v", curl)
+	}
+}
+
 func TestTraceGroupByModes(t *testing.T) {
-	for groupBy, want := range map[string]bool{"": true, traceGroupBySource: true, traceGroupByTarget: true, traceGroupByPort: true, traceGroupByEvent: true, "invalid": false} {
+	for groupBy, want := range map[string]bool{"": true, traceGroupBySource: true, traceGroupByTarget: true, traceGroupByPort: true, traceGroupByProcess: true, traceGroupByEvent: true, "invalid": false} {
 		if got := validTraceGroupBy(groupBy); got != want {
 			t.Fatalf("validTraceGroupBy(%q) = %t, want %t", groupBy, got, want)
 		}

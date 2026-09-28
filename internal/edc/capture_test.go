@@ -526,6 +526,40 @@ func TestTraceGroupFitLabelKeepsServerMark(t *testing.T) {
 	}
 }
 
+func TestTraceScreenTabCyclesGroupViews(t *testing.T) {
+	model := newTraceScreenModel("tcp", tcpTraceOptions{}, make(chan captureEvent), make(chan traceFinishedMsg), nil)
+	press := func(key tea.KeyPressMsg) {
+		next, _ := model.Update(key)
+		model = next.(traceScreenModel)
+	}
+	tab := tea.KeyPressMsg{Code: tea.KeyTab}
+	for _, want := range []string{traceGroupBySource, traceGroupByTarget, traceGroupByEvent, ""} {
+		press(tab)
+		if model.groupBy != want {
+			t.Fatalf("tab = %q, want %q", model.groupBy, want)
+		}
+	}
+	back := tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift}
+	for _, want := range []string{traceGroupByEvent, traceGroupByTarget, traceGroupBySource, ""} {
+		press(back)
+		if model.groupBy != want {
+			t.Fatalf("shift+tab = %q, want %q", model.groupBy, want)
+		}
+	}
+	// 단축키로 옮긴 뒤에도 Tab은 그 자리에서 이어서 간다.
+	press(tea.KeyPressMsg{Code: 't', Text: "t"})
+	press(tab)
+	if model.groupBy != traceGroupByEvent {
+		t.Fatalf("tab after t = %q, want %q", model.groupBy, traceGroupByEvent)
+	}
+	// 필터를 입력하는 동안 Tab은 보기를 바꾸지 않는다.
+	press(tea.KeyPressMsg{Code: '/', Text: "/"})
+	press(tab)
+	if model.groupBy != traceGroupByEvent || !model.filtering {
+		t.Fatalf("tab while filtering = %q, filtering %t", model.groupBy, model.filtering)
+	}
+}
+
 func TestTraceGroupByModes(t *testing.T) {
 	for groupBy, want := range map[string]bool{"": true, traceGroupBySource: true, traceGroupByTarget: true, traceGroupByEvent: true, "invalid": false} {
 		if got := validTraceGroupBy(groupBy); got != want {

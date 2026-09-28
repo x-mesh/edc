@@ -157,6 +157,7 @@ command:
       - "The default output opens a full-screen trace view in a terminal."
       - "Use / to filter process, destination, event, or source text."
       - "Press s for source rows, t for target rows, e for event rows, or g to scroll."
+      - "Press Tab for the next view and Shift+Tab for the previous view."
       - "Use --group-by source, target, or event for grouped live rows."
       - "Grouped rows label the event count rate EVENT/s and show payload traffic."
       - "B/s is a byte rate. bps and Mbps are bit rates. Mbps is bps / 1,000,000."

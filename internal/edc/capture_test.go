@@ -560,6 +560,32 @@ func TestTraceScreenTabCyclesGroupViews(t *testing.T) {
 	}
 }
 
+func TestTraceScrollRowsShowTheTarget(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	event := captureEvent{Protocol: "tcp", Event: "tcp_connect", Process: "curl", Destination: "104.18.11.61:443", Source: "20.20.0.50:41022", Target: "jinwoo.rgrg.im"}
+	for _, width := range []int{80, 150, 220} {
+		model := newTraceScreenModel("tcp", tcpTraceOptions{}, make(chan captureEvent), make(chan traceFinishedMsg), nil)
+		model.width, model.height = width, 6
+		model.events = []captureEvent{event}
+		header := traceScreenHeader(model)[2]
+		row := traceScreenRows(model)[0]
+		if strings.Contains(row, "\n") || liveWidth(row) > width {
+			t.Fatalf("width %d row = %q", width, row)
+		}
+		// 목적지 칸이 넓어져도 헤더의 EVENT와 SOURCE는 행의 값과 같은 칸에서 시작한다. "…"가 여러 바이트라 칸으로 센다.
+		column := func(line, value string) int { return liveWidth(line[:strings.Index(line, value)]) }
+		if column(header, "EVENT") != column(row, "tcp_connect") || column(header, "SOURCE") != column(row, "20.20.0.") {
+			t.Fatalf("width %d header and row are not aligned:\n%q\n%q", width, header, row)
+		}
+		if width >= 150 && !strings.Contains(row, "104.18.11.61:443 (jinwoo.rgrg.im)") {
+			t.Fatalf("width %d row misses the target: %q", width, row)
+		}
+		if width == 80 && (!strings.Contains(row, "104.18.11.61:443 (jinwoo.rgrg") || !strings.Contains(row, "…")) {
+			t.Fatalf("narrow row must cut the label in one line: %q", row)
+		}
+	}
+}
+
 func TestTraceGroupByModes(t *testing.T) {
 	for groupBy, want := range map[string]bool{"": true, traceGroupBySource: true, traceGroupByTarget: true, traceGroupByEvent: true, "invalid": false} {
 		if got := validTraceGroupBy(groupBy); got != want {

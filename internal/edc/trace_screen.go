@@ -216,7 +216,8 @@ func traceScreenHeader(model traceScreenModel) []string {
 		help = model.input.View() + "  enter apply  esc cancel"
 	}
 	color := os.Getenv("NO_COLOR") == ""
-	columns := "PROCESS          DESTINATION                       EVENT                SOURCE"
+	destinationWidth, _ := traceScrollColumns(model.width)
+	columns := liveCell("PROCESS", traceScrollProcessWidth) + " " + liveCell("DESTINATION", destinationWidth) + " " + liveCell("EVENT", traceScrollEventWidth) + " SOURCE"
 	if model.groupBy != "" {
 		layout := traceScreenGroupLayout(model, report)
 		names := []any{"EVT", "E/s", "TX", "RX", "TOT", "B/s", "Mbps"}
@@ -457,13 +458,25 @@ func traceEventMatchesText(event captureEvent, filter string) bool {
 	return strings.Contains(text, filter)
 }
 
+const (
+	traceScrollProcessWidth = 16
+	traceScrollEventWidth   = 20
+	// traceScrollSourceWidth는 목적지 칸을 넓힐 때 source 칸에 남기는 폭이다. 100.83.200.248:52406 같은 값이 들어간다.
+	traceScrollSourceWidth = 22
+)
+
+// traceScrollColumns는 스크롤 화면의 목적지와 source 칸 폭이다. 목적지에는 도메인이 붙어 길어지므로 넓은 화면에서
+// 목적지 칸을 늘린다. 좁은 화면에서는 예전처럼 32칸을 지킨다.
+func traceScrollColumns(width int) (int, int) {
+	fixed := traceScrollProcessWidth + traceScrollEventWidth + 3
+	destination := min(60, max(32, width-fixed-traceScrollSourceWidth))
+	return destination, max(8, width-fixed-destination)
+}
+
 func formatTraceScreenEvent(event captureEvent, width int) string {
-	process, destination, name, source := event.Process, event.Destination, event.Event, event.Source
+	process, destination, name, source := event.Process, traceEventDestinationLabel(event), event.Event, event.Source
 	if process == "" {
 		process = "-"
-	}
-	if destination == "" {
-		destination = "-"
 	}
 	if source == "" {
 		source = "-"
@@ -471,8 +484,10 @@ func formatTraceScreenEvent(event captureEvent, width int) string {
 	if width < 72 {
 		return traceFit(strings.Join([]string{process, destination, name, source}, "  "), width)
 	}
-	sourceWidth := max(8, width-72)
-	line := liveCell(process, 16) + " " + liveCell(destination, 32) + " " + liveCell(name, 20) + " " + liveCell(source, sourceWidth)
+	destinationWidth, sourceWidth := traceScrollColumns(width)
+	// liveCell은 칸보다 긴 값을 여러 줄로 감싸므로, 한 행을 지키려고 먼저 자른다.
+	cell := func(value string, width int) string { return liveCell(traceFit(value, width), width) }
+	line := cell(process, traceScrollProcessWidth) + " " + cell(destination, destinationWidth) + " " + cell(name, traceScrollEventWidth) + " " + cell(source, sourceWidth)
 	return traceEventStyle(line, traceProtocol(event), name)
 }
 

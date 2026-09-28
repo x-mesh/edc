@@ -20,6 +20,23 @@ func collectTraceEventsLive(duration time.Duration, onEvent func(captureEvent) e
 	return collectCaptureEventsUntil(duration, onEvent, stop)
 }
 
+func readEphemeralPortRange() (int, int, bool) {
+	data, err := os.ReadFile("/proc/sys/net/ipv4/ip_local_port_range")
+	if err != nil {
+		return 0, 0, false
+	}
+	fields := strings.Fields(string(data))
+	if len(fields) != 2 {
+		return 0, 0, false
+	}
+	low, lowErr := strconv.Atoi(fields[0])
+	high, highErr := strconv.Atoi(fields[1])
+	if lowErr != nil || highErr != nil || low <= 0 || low > high {
+		return 0, 0, false
+	}
+	return low, high, true
+}
+
 func commandTarget(pid uint32) string {
 	data, err := os.ReadFile("/proc/" + strconv.FormatUint(uint64(pid), 10) + "/cmdline")
 	if err != nil {

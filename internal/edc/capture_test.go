@@ -447,6 +447,66 @@ func TestTraceScreenRatesFitTheirColumns(t *testing.T) {
 	}
 }
 
+func TestTraceServerService(t *testing.T) {
+	for _, test := range []struct {
+		name                string
+		source, destination string
+		want                string
+	}{
+		{"resolver reply", "127.0.0.53:53", "127.0.0.1:41022", "127.0.0.53:53"},
+		{"ssh server", "100.83.200.248:22", "100.65.168.177:52406", "100.83.200.248:22"},
+		{"ipv6 server", "[::1]:53", "[::1]:41000", "[::1]:53"},
+		{"resolver client", "127.0.0.1:41022", "127.0.0.53:53", ""},
+		{"both ephemeral", "20.20.0.50:41641", "61.74.181.17:35585", ""},
+		{"both service ports", "20.20.0.50:123", "203.0.113.1:123", ""},
+		{"no peer port", "127.0.0.1:18080", "0.0.0.0:0", ""},
+		{"no address", "", "", ""},
+	} {
+		got, ok := traceServerService(captureEvent{Source: test.source, Destination: test.destination}, 32768, 60999)
+		if got != test.want || ok != (test.want != "") {
+			t.Fatalf("%s: traceServerService = %q, %t, want %q", test.name, got, ok, test.want)
+		}
+	}
+}
+
+func TestSummarizeTraceGroupsCollectsServerReplies(t *testing.T) {
+	events := []captureEvent{
+		{Protocol: "udp", Event: "udp_send", Bytes: 100, Source: "127.0.0.53:53", Destination: "127.0.0.1:41022"},
+		{Protocol: "udp", Event: "udp_send", Bytes: 100, Source: "127.0.0.53:53", Destination: "127.0.0.1:41023"},
+		{Protocol: "udp", Event: "udp_receive", Bytes: 40, Source: "127.0.0.53:53", Destination: "127.0.0.1:41024"},
+		{Protocol: "udp", Event: "udp_send", Bytes: 40, Source: "127.0.0.1:41025", Destination: "127.0.0.53:53"},
+		{Protocol: "udp", Event: "udp_send", Bytes: 40, Source: "127.0.0.1:41026", Destination: "127.0.0.53:53", Target: "n1.example.com"},
+		{Protocol: "udp", Event: "udp_send", Bytes: 70, Source: "127.0.0.53:53", Destination: "127.0.0.1:41027", Target: "named.example.com"},
+	}
+	report := summarizeTraceGroups("udp", traceGroupByTarget, events, captureSummary{}, time.Second, "", "")
+	byLabel := map[string]traceGroupSummary{}
+	for _, group := range report.Groups {
+		byLabel[traceGroupDisplayValue(traceGroupByTarget, group)] = group
+	}
+	server, ok := byLabel["127.0.0.53:53 (server)"]
+	if !ok || !server.Server || server.Events != 3 || server.TotalBytes != 240 {
+		t.Fatalf("server group = %#v, groups = %v", server, byLabel)
+	}
+	// target 없는 client 행은 같은 주소여도 서버 행과 섞이지 않는다.
+	if client, ok := byLabel["127.0.0.53:53"]; !ok || client.Server || client.Events != 1 {
+		t.Fatalf("client group = %#v, groups = %v", client, byLabel)
+	}
+	// target이 있으면 서버 쪽이어도 target으로 묶는다.
+	if _, ok := byLabel["named.example.com (127.0.0.1:41027)"]; !ok {
+		t.Fatalf("named group is missing: %v", byLabel)
+	}
+	if len(report.Groups) != 4 {
+		t.Fatalf("groups = %d, want 4: %v", len(report.Groups), byLabel)
+	}
+	encoded, err := json.Marshal(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(string(encoded), `"server":true`) != 1 {
+		t.Fatalf("JSON must mark only the server group: %s", encoded)
+	}
+}
+
 func TestTraceGroupByModes(t *testing.T) {
 	for groupBy, want := range map[string]bool{"": true, traceGroupBySource: true, traceGroupByTarget: true, traceGroupByEvent: true, "invalid": false} {
 		if got := validTraceGroupBy(groupBy); got != want {

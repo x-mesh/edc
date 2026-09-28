@@ -9,7 +9,9 @@ import (
 	"os"
 	"os/signal"
 	"sort"
+	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -311,6 +313,7 @@ func traceDestinationLabel(connection tcpTraceConnection) string {
 
 type traceGroup struct {
 	Group           string
+	Server          bool
 	Destinations    []string
 	Processes       []string
 	Events          uint64
@@ -325,6 +328,7 @@ type traceGroup struct {
 
 type traceGroupSummary struct {
 	Group           string   `json:"group"`
+	Server          bool     `json:"server,omitempty"`
 	Destinations    []string `json:"destinations,omitempty"`
 	Processes       []string `json:"processes,omitempty"`
 	Events          uint64   `json:"events"`
@@ -356,11 +360,16 @@ func summarizeTraceGroups(protocol, groupBy string, events []captureEvent, summa
 		if traceProtocol(event) != protocol || !traceEventMatches(event, process, destination) {
 			continue
 		}
-		key := traceGroupKey(event, groupBy)
-		group := groups[key]
+		key, server := traceGroupKey(event, groupBy)
+		// 서버 행과 target 없는 client 행이 같은 주소일 수 있다. 섞이지 않도록 map key만 구분한다.
+		mapKey := key
+		if server {
+			mapKey += "\x00server"
+		}
+		group := groups[mapKey]
 		if group == nil {
-			group = &traceGroup{Group: key}
-			groups[key] = group
+			group = &traceGroup{Group: key, Server: server}
+			groups[mapKey] = group
 		}
 		observeTraceGroup(group, event)
 		result.Events++
@@ -372,7 +381,7 @@ func summarizeTraceGroups(protocol, groupBy string, events []captureEvent, summa
 	for _, group := range groups {
 		group.traceTraffic.finalize(duration)
 		result.Groups = append(result.Groups, traceGroupSummary{
-			Group: group.Group, Destinations: append([]string(nil), group.Destinations...), Processes: append([]string(nil), group.Processes...),
+			Group: group.Group, Server: group.Server, Destinations: append([]string(nil), group.Destinations...), Processes: append([]string(nil), group.Processes...),
 			Events: group.Events, Rate: traceGroupRate(group.Events, duration), Tx: group.Tx, Rx: group.Rx, Connect: group.Connect,
 			Retransmissions: group.Retransmissions, Resets: group.Resets, LastEvent: group.LastEvent, traceTraffic: group.traceTraffic,
 		})
@@ -385,31 +394,72 @@ func summarizeTraceGroups(protocol, groupBy string, events []captureEvent, summa
 	return result
 }
 
-func traceGroupKey(event captureEvent, groupBy string) string {
+func traceGroupKey(event captureEvent, groupBy string) (string, bool) {
 	if groupBy == traceGroupByEvent {
 		if event.Event == "" {
-			return "-"
+			return "-", false
 		}
-		return event.Event
+		return event.Event, false
 	}
 	if groupBy == traceGroupBySource {
 		if event.Source == "" {
-			return "-"
+			return "-", false
 		}
 		// source port는 연결마다 OS가 새로 고르는 ephemeral port라서, 포함하면 같은 host의 연결이
 		// 모두 다른 group이 된다.
 		if host, _, err := net.SplitHostPort(event.Source); err == nil {
-			return host
+			return host, false
 		}
-		return event.Source
+		return event.Source, false
 	}
 	if event.Target != "" {
-		return event.Target
+		return event.Target, false
+	}
+	// 서버 socket의 상대는 client마다 새 ephemeral port라서, 상대 주소로 묶으면 요청마다 행이 생긴다.
+	low, high := traceEphemeralPortRange()
+	if service, ok := traceServerService(event, low, high); ok {
+		return service, true
 	}
 	if event.Destination != "" {
-		return event.Destination
+		return event.Destination, false
 	}
-	return "-"
+	return "-", false
+}
+
+// traceEphemeralPortRange는 OS가 client socket에 고르는 port 범위다.
+var traceEphemeralPortRange = sync.OnceValues(func() (int, int) {
+	if low, high, ok := readEphemeralPortRange(); ok {
+		return low, high
+	}
+	// /proc/sys를 읽지 못하는 컨테이너 등에서는 Linux 기본 범위로 판정한다.
+	return 32768, 60999
+})
+
+// traceServerService는 로컬 port가 ephemeral 범위 밖이고 상대 port가 범위 안이면 서버 쪽으로 보고 로컬
+// 주소를 돌려준다. 양쪽 모두 범위 안(P2P)이거나 모두 밖(NTP 123↔123)이면 판정하지 않는다.
+func traceServerService(event captureEvent, low, high int) (string, bool) {
+	local, ok := traceAddressPort(event.Source)
+	if !ok {
+		return "", false
+	}
+	peer, ok := traceAddressPort(event.Destination)
+	if !ok {
+		return "", false
+	}
+	ephemeral := func(port int) bool { return port >= low && port <= high }
+	if ephemeral(local) || !ephemeral(peer) {
+		return "", false
+	}
+	return event.Source, true
+}
+
+func traceAddressPort(address string) (int, bool) {
+	_, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return 0, false
+	}
+	value, err := strconv.Atoi(port)
+	return value, err == nil && value > 0
 }
 
 func observeTraceGroup(group *traceGroup, event captureEvent) {
@@ -456,6 +506,10 @@ func traceGroupRate(events uint64, duration time.Duration) float64 {
 func traceGroupDisplayValue(groupBy string, group traceGroupSummary) string {
 	// source와 event group에는 destination이 여럿 섞이므로 첫 destination 하나만 붙이면 그 group이 한 곳으로만
 	// 간 것처럼 보인다. target group은 이름이 가리키는 주소를 보여 주려고 괄호를 붙인다.
+	if group.Server {
+		// 서버 행의 destination은 client port들이라, 하나만 붙이면 한 client만 쓴 것처럼 보인다.
+		return group.Group + " (server)"
+	}
 	if groupBy != traceGroupByTarget || len(group.Destinations) == 0 || group.Destinations[0] == group.Group {
 		return group.Group
 	}

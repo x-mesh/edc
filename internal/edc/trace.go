@@ -150,7 +150,8 @@ func validTraceGroupBy(groupBy string) bool {
 	return groupBy == "" || groupBy == traceGroupBySource || groupBy == traceGroupByTarget || groupBy == traceGroupByEvent
 }
 
-func printTraceEvent(event captureEvent, color bool) {
+// traceEventDestinationLabel은 목적지 뒤에 명령줄에서 얻은 target을 붙인다. 두 이벤트 화면이 같은 표시를 쓴다.
+func traceEventDestinationLabel(event captureEvent) string {
 	destination := event.Destination
 	if event.Target != "" {
 		destination += " (" + event.Target + ")"
@@ -158,6 +159,11 @@ func printTraceEvent(event captureEvent, color bool) {
 	if destination == "" {
 		destination = "-"
 	}
+	return destination
+}
+
+func printTraceEvent(event captureEvent, color bool) {
+	destination := traceEventDestinationLabel(event)
 	process := event.Process
 	if process == "" {
 		process = "-"

@@ -20,6 +20,8 @@ func collectTraceEventsLive(duration time.Duration, onEvent func(captureEvent) e
 	return collectCaptureEventsUntil(duration, onEvent, stop)
 }
 
+var traceKernelEvents = true
+
 func readEphemeralPortRange() (int, int, bool) {
 	data, err := os.ReadFile("/proc/sys/net/ipv4/ip_local_port_range")
 	if err != nil {

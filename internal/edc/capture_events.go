@@ -22,8 +22,9 @@ type captureEvent struct {
 	PID         uint32 `json:"pid"`
 	Process     string `json:"process"`
 	Target      string `json:"target,omitempty"`
-	// TargetSource는 target을 명령줄(command), 이 프로세스의 DNS 응답(dns), resolver 캐시(resolver-cache) 중
-	// 어디서 얻었는지 알린다. 주소를 여러 이름이 공유하면 dns와 resolver-cache 이름이 틀릴 수 있다.
+	// TargetSource는 target을 명령줄(command), 이 프로세스의 DNS 응답(dns), resolver 캐시(resolver-cache),
+	// macOS가 연결에 기록한 이름(system) 중 어디서 얻었는지 알린다. 주소를 여러 이름이 공유하면 dns와
+	// resolver-cache 이름이 틀릴 수 있다.
 	TargetSource string `json:"target_source,omitempty"`
 	CgroupID     uint64 `json:"cgroup_id"`
 	Source       string `json:"source,omitempty"`
@@ -31,6 +32,7 @@ type captureEvent struct {
 	OldState     string `json:"old_state,omitempty"`
 	NewState     string `json:"new_state,omitempty"`
 	Bytes        uint64 `json:"bytes"`
+	Packets      uint64 `json:"packets,omitempty"`
 	LostEvents   uint64 `json:"lost_events,omitempty"`
 }
 
@@ -42,15 +44,18 @@ type captureSummary struct {
 }
 
 type tcpTraceConnection struct {
-	Process         string `json:"process"`
-	PID             uint32 `json:"pid"`
-	Source          string `json:"source,omitempty"`
-	Destination     string `json:"destination,omitempty"`
-	Hostname        string `json:"hostname,omitempty"`
-	Result          string `json:"result"`
-	ConnectMS       int64  `json:"connect_ms"`
-	Retransmissions uint64 `json:"retransmissions"`
-	Reset           bool   `json:"reset"`
+	Process         string  `json:"process"`
+	PID             uint32  `json:"pid"`
+	Source          string  `json:"source,omitempty"`
+	Destination     string  `json:"destination,omitempty"`
+	Hostname        string  `json:"hostname,omitempty"`
+	Result          string  `json:"result"`
+	ConnectMS       *int64  `json:"connect_ms"`
+	Retransmissions *uint64 `json:"retransmissions"`
+	Reset           *bool   `json:"reset"`
+	connectMS       int64
+	retransmissions uint64
+	reset           bool
 	traceTraffic
 }
 
@@ -59,8 +64,8 @@ type tcpTraceReport struct {
 	Attempts        int                  `json:"attempts"`
 	Established     int                  `json:"established"`
 	Incomplete      int                  `json:"incomplete"`
-	Retransmissions uint64               `json:"retransmissions"`
-	Resets          int                  `json:"resets"`
+	Retransmissions *uint64              `json:"retransmissions"`
+	Resets          *int                 `json:"resets"`
 	LostEvents      uint64               `json:"lost_events"`
 	Connections     []tcpTraceConnection `json:"connections"`
 	traceTraffic
@@ -173,12 +178,12 @@ func summarizeTCPTrace(events []captureEvent, summary captureSummary, duration t
 		case "tcp_connect", "tcp_accept":
 			connection.Result = "established"
 			if firstSeen[event.SocketID] > 0 && event.TimestampNS >= firstSeen[event.SocketID] {
-				connection.ConnectMS = int64(event.TimestampNS-firstSeen[event.SocketID]) / int64(time.Millisecond)
+				connection.connectMS = int64(event.TimestampNS-firstSeen[event.SocketID]) / int64(time.Millisecond)
 			}
 		case "tcp_retransmit":
-			connection.Retransmissions++
+			connection.retransmissions++
 		case "tcp_send_reset", "tcp_receive_reset":
-			connection.Reset = true
+			connection.reset = true
 			connection.Result = "reset"
 		case "tcp_close":
 			if connection.Result == "incomplete" {
@@ -188,13 +193,18 @@ func summarizeTCPTrace(events []captureEvent, summary captureSummary, duration t
 		result.traceTraffic.observe(event)
 	}
 	result.Connections = make([]tcpTraceConnection, 0, len(connections))
+	var retransmissions uint64
+	var resets int
 	for _, connection := range connections {
 		connection.traceTraffic.finalize(duration)
+		connection.ConnectMS = traceObserved(connection.connectMS)
+		connection.Retransmissions = traceObserved(connection.retransmissions)
+		connection.Reset = traceObserved(connection.reset)
 		result.Connections = append(result.Connections, *connection)
 		result.Attempts++
-		result.Retransmissions += connection.Retransmissions
-		if connection.Reset {
-			result.Resets++
+		retransmissions += connection.retransmissions
+		if connection.reset {
+			resets++
 		}
 		if connection.Result == "established" {
 			result.Established++
@@ -202,6 +212,8 @@ func summarizeTCPTrace(events []captureEvent, summary captureSummary, duration t
 			result.Incomplete++
 		}
 	}
+	result.Retransmissions = traceObserved(retransmissions)
+	result.Resets = traceObserved(resets)
 	result.traceTraffic.finalize(duration)
 	sort.Slice(result.Connections, func(i, j int) bool {
 		left, right := result.Connections[i], result.Connections[j]

@@ -457,7 +457,7 @@ func formatTraceGroupScreenRow(protocol, groupBy string, group traceGroupSummary
 	value := liveCell(traceGroupFitLabel(groupBy, group, layout.labelWidth), layout.labelWidth)
 	values := []any{group.Events, traceScreenEventRate(group.Rate), layout.bytes(group.TXBytes), layout.bytes(group.RXBytes), layout.bytes(group.TotalBytes), layout.bytes(uint64(group.BytesPerSecond)), traceScreenMegabits(group.MegabitsPerSecond)}
 	if protocol != "udp" {
-		values = append(values, group.Connect, group.Retransmissions, group.Resets)
+		values = append(values, group.Connect, traceOptional(group.Retransmissions, "%d"), traceOptional(group.Resets, "%d"))
 	}
 	line := value + fmt.Sprintf(traceGroupColumns(protocol, layout.byteWidth), append(values, group.LastEvent)...)
 	return traceFit(traceGroupColorLine(line, protocol, group), width)
@@ -471,9 +471,9 @@ func traceGroupColorLine(line, protocol string, group traceGroupSummary) string 
 	if protocol == "udp" {
 		color = lipgloss.Color("#c084fc")
 	}
-	if group.Resets > 0 {
+	if group.Resets != nil && *group.Resets > 0 {
 		color = lipgloss.Color("#fb7185")
-	} else if group.Retransmissions > 0 {
+	} else if group.Retransmissions != nil && *group.Retransmissions > 0 {
 		color = lipgloss.Color("#fbbf24")
 	}
 	return lipgloss.NewStyle().Foreground(color).Render(line)

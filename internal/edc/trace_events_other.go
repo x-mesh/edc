@@ -1,4 +1,4 @@
-//go:build !linux
+//go:build !linux && !darwin
 
 package edc
 
@@ -7,6 +7,8 @@ import (
 	"runtime"
 	"time"
 )
+
+var traceKernelEvents = true
 
 func readEphemeralPortRange() (int, int, bool) {
 	return 0, 0, false
@@ -18,4 +20,8 @@ func collectTraceEvents(time.Duration) ([]captureEvent, captureSummary, error) {
 
 func collectTraceEventsLive(time.Duration, func(captureEvent) error, <-chan struct{}) ([]captureEvent, captureSummary, error) {
 	return nil, captureSummary{}, fmt.Errorf("%s", T("cli.trace.linux_only", runtime.GOOS))
+}
+
+func captureEventsPrerequisites() error {
+	return fmt.Errorf("%s", T("cli.trace.linux_only", runtime.GOOS))
 }

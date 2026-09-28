@@ -4,8 +4,9 @@
 #   curl -fsSL https://raw.githubusercontent.com/x-mesh/edc/main/install.sh | sh
 #
 # Environment:
-#   EDC_VERSION   version to install, without the leading v (default: latest)
-#   BINDIR        install directory (default: $HOME/.local/bin)
+#   EDC_VERSION      version to install, without the leading v (default: latest)
+#   BINDIR           install directory (default: $HOME/.local/bin)
+#   EDC_MODIFY_PATH  set to 1 to add BINDIR to PATH in the startup file of your shell
 #
 # The script downloads the release asset, checks its SHA-256 against
 # checksums.txt, and then installs the binary.
@@ -99,7 +100,65 @@ mv "$install_path.new" "$install_path" || fail "cannot replace $install_path"
 echo "installed $install_path"
 "$install_path" version
 
+# user_shell names the shell that started the installer. With curl | sh the parent process is that
+# shell. A parent sh is usually a wrapper such as sh -c or a Dockerfile RUN, and sudo is not a shell,
+# so the login shell in $SHELL is the next guess.
+user_shell() {
+	parent=$(cat "/proc/$PPID/comm" 2>/dev/null || ps -o comm= -p "$PPID" 2>/dev/null || true)
+	parent=${parent##*/}
+	parent=${parent#-}
+	case "$parent" in
+	bash | zsh | fish | ksh | mksh | tcsh | csh)
+		echo "$parent"
+		return
+		;;
+	esac
+	login=${SHELL:-sh}
+	echo "${login##*/}"
+}
+
+# startup_file names the file that the shell reads when a terminal opens.
+startup_file() {
+	case "$1" in
+	zsh) echo "${ZDOTDIR:-$HOME}/.zshrc" ;;
+	bash)
+		# macOS Terminal starts bash as a login shell, which reads ~/.bash_profile and not ~/.bashrc.
+		if [ "$os" = darwin ]; then
+			echo "$HOME/.bash_profile"
+		else
+			echo "$HOME/.bashrc"
+		fi
+		;;
+	fish) echo "${XDG_CONFIG_HOME:-$HOME/.config}/fish/config.fish" ;;
+	tcsh) echo "$HOME/.tcshrc" ;;
+	csh) echo "$HOME/.cshrc" ;;
+	*) echo "$HOME/.profile" ;;
+	esac
+}
+
 case ":$PATH:" in
 *":$BINDIR:"*) ;;
-*) echo "add $BINDIR to PATH: export PATH=\"$BINDIR:\$PATH\"" ;;
+*)
+	shell=$(user_shell)
+	file=$(startup_file "$shell")
+	case "$shell" in
+	fish) line="set -gx PATH \"$BINDIR\" \$PATH" ;;
+	tcsh | csh) line="setenv PATH \"$BINDIR:\$PATH\"" ;;
+	*) line="export PATH=\"$BINDIR:\$PATH\"" ;;
+	esac
+	if grep -qsxF "$line" "$file"; then
+		echo "$file already adds $BINDIR to PATH. Open a new $shell or run:"
+		echo "  $line"
+	elif [ "${EDC_MODIFY_PATH:-}" = 1 ]; then
+		mkdir -p "$(dirname "$file")" || fail "cannot create the directory of $file"
+		printf '\n# added by the edc installer\n%s\n' "$line" >>"$file" || fail "cannot write $file"
+		echo "added $BINDIR to PATH in $file. Open a new $shell or run:"
+		echo "  $line"
+	else
+		echo "edc is not on PATH. To add $BINDIR for $shell, run:"
+		echo "  echo '$line' >> \"$file\""
+		echo "  $line"
+		echo "Set EDC_MODIFY_PATH=1 to let the installer add it."
+	fi
+	;;
 esac

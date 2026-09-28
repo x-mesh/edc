@@ -29,6 +29,12 @@ curl -fsSL https://raw.githubusercontent.com/x-mesh/edc/main/install.sh | BINDIR
 curl -fsSL https://raw.githubusercontent.com/x-mesh/edc/main/install.sh | EDC_VERSION=0.1.0 sh
 ```
 
+If the install directory is not on `PATH`, the script finds your shell and prints the commands that add the directory. Set `EDC_MODIFY_PATH=1` to let the script add the line to the startup file of your shell, for example `~/.zshrc` or `~/.bashrc`. The script adds the line only once. The current shell does not get the new `PATH`. Open a new shell, or run the command that the script prints.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/x-mesh/edc/main/install.sh | EDC_MODIFY_PATH=1 sh
+```
+
 A release holds binaries for Linux and macOS on `amd64` and `arm64`.
 
 ## Update

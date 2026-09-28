@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -18,7 +19,7 @@ import (
 
 const traceScreenEventLimit = 10000
 
-type traceEventMsg struct{ event captureEvent }
+type traceEventMsg struct{ events []captureEvent }
 type traceFinishedMsg struct {
 	events  []captureEvent
 	summary captureSummary
@@ -66,14 +67,29 @@ func (model traceScreenModel) Init() tea.Cmd {
 	return waitTraceMessage(model.eventCh, model.resultCh)
 }
 
+// traceEventBatchLimit은 한 메시지에 담는 event 수의 상한이다. 한 번의 Update가 너무 길어져 키 입력이 늦어지지 않게 한다.
+const traceEventBatchLimit = 4096
+
+// waitTraceMessage는 채널에 쌓인 event를 한 메시지로 묶는다. event마다 메시지를 하나씩 보내면 화면이 초당 약
+// 110건만 소화해, 그보다 많은 트래픽에서는 화면이 계속 뒤처지고 수집도 채널에서 막힌다.
 func waitTraceMessage(eventCh <-chan captureEvent, resultCh <-chan traceFinishedMsg) tea.Cmd {
 	return func() tea.Msg {
+		var first captureEvent
 		select {
-		case event := <-eventCh:
-			return traceEventMsg{event: event}
+		case first = <-eventCh:
 		case result := <-resultCh:
 			return result
 		}
+		events := []captureEvent{first}
+		for len(events) < traceEventBatchLimit {
+			select {
+			case event := <-eventCh:
+				events = append(events, event)
+			default:
+				return traceEventMsg{events: events}
+			}
+		}
+		return traceEventMsg{events: events}
 	}
 }
 
@@ -84,15 +100,18 @@ func (model traceScreenModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		model.input.SetWidth(max(20, min(60, value.Width-12)))
 		return model, nil
 	case traceEventMsg:
-		model.received++
-		if traceProtocol(value.event) == model.protocol {
-			model.events = append(model.events, value.event)
-			model.arrivals = append(model.arrivals, time.Now())
-			if len(model.events) > traceScreenEventLimit {
-				model.events = model.events[len(model.events)-traceScreenEventLimit:]
-				model.arrivals = model.arrivals[len(model.arrivals)-traceScreenEventLimit:]
-				model.truncated = true
+		now := time.Now()
+		for _, event := range value.events {
+			model.received++
+			if traceProtocol(event) == model.protocol {
+				model.events = append(model.events, event)
+				model.arrivals = append(model.arrivals, now)
 			}
+		}
+		if len(model.events) > traceScreenEventLimit {
+			model.events = model.events[len(model.events)-traceScreenEventLimit:]
+			model.arrivals = model.arrivals[len(model.arrivals)-traceScreenEventLimit:]
+			model.truncated = true
 		}
 		return model, waitTraceMessage(model.eventCh, model.resultCh)
 	case traceFinishedMsg:
@@ -239,13 +258,18 @@ func traceScreenRows(model traceScreenModel) []string {
 		}
 		return traceScreenPadRows(rows, model.height-3)
 	}
-	for _, event := range model.events {
+	// 화면에 보이는 줄만 뒤에서부터 서식화한다. 보관한 event 전부(최대 10,000건)를 서식화하면 한 번 그리는 데
+	// 300ms가 넘게 걸려, 화면이 event를 따라가지 못하고 키 입력도 늦어진다.
+	available := max(0, model.height-3)
+	for index := len(model.events) - 1; index >= 0 && len(rows) < available; index-- {
+		event := model.events[index]
 		if !traceEventMatchesText(event, model.filter) {
 			continue
 		}
 		rows = append(rows, formatTraceScreenEvent(event, model.width))
 	}
-	return traceScreenPadRows(rows, model.height-3)
+	slices.Reverse(rows)
+	return traceScreenPadRows(rows, available)
 }
 
 // traceScreenGroupOrder는 화면에 다 들어가지 않을 때 잘릴 group을 정한다. 이름순으로 자르면 같은

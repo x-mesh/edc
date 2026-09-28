@@ -666,6 +666,16 @@ func TestBPFCoreReadIntoTakesAnAddress(t *testing.T) {
 	}
 }
 
+func TestBPFLengthEventKeepsClosedSocketPort(t *testing.T) {
+	source, err := os.ReadFile("capture_events_bpf.c")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !regexp.MustCompile(`if \(!event->sport\) \{\s*event->sport = bpf_ntohs\(BPF_CORE_READ\(\(struct inet_sock \*\)sk, inet_sport\)\);`).Match(source) {
+		t.Fatal("TCP send and receive events must read inet_sport when skc_num is cleared on close")
+	}
+}
+
 func TestTraceGroupByModes(t *testing.T) {
 	for groupBy, want := range map[string]bool{"": true, traceGroupBySource: true, traceGroupByTarget: true, traceGroupByEvent: true, "invalid": false} {
 		if got := validTraceGroupBy(groupBy); got != want {

@@ -334,6 +334,10 @@ struct sock {
 	struct sock_common __sk_common;
 };
 
+struct inet_sock {
+	__be16 inet_sport;
+};
+
 struct sock_length_ctx {
 	__u64 unused;
 	struct sock *sk;
@@ -364,6 +368,11 @@ static __always_inline int emit_length_event(struct sock_length_ctx *ctx, __u32 
 	event->bytes = (__u64)ctx->ret;
 	event->family = BPF_CORE_READ(sk, __sk_common.skc_family);
 	event->sport = BPF_CORE_READ(sk, __sk_common.skc_num);
+	// RST를 받아 송수신 중에 닫힌 socket은 kernel이 포트 바인딩을 풀면서 skc_num을 0으로 지운다.
+	// inet_sport는 남아 있어서, 없으면 서버 socket의 마지막 송신이 상대 포트로 따로 묶인다.
+	if (!event->sport) {
+		event->sport = bpf_ntohs(BPF_CORE_READ((struct inet_sock *)sk, inet_sport));
+	}
 	event->dport = bpf_ntohs(BPF_CORE_READ(sk, __sk_common.skc_dport));
 	if (event->family == AF_INET) {
 		__be32 source = BPF_CORE_READ(sk, __sk_common.skc_rcv_saddr);

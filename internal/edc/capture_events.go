@@ -1,5 +1,7 @@
 package edc
 
+//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -go-package edc captureEvents capture_events_bpf.c -- -I./bpf
+
 import (
 	"sort"
 	"time"

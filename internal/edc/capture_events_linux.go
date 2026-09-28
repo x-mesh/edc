@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/cilium/ebpf"
+	"github.com/cilium/ebpf/btf"
 	"github.com/cilium/ebpf/link"
 	"github.com/cilium/ebpf/ringbuf"
 	"github.com/cilium/ebpf/rlimit"
@@ -98,6 +99,22 @@ func captureEventsPrerequisites() error {
 	for _, capability := range []int{capBPF, capPerfmon, capNetAdmin} {
 		if !capabilities[capability] {
 			return errors.New(T("cli.capture.capability_missing", capability))
+		}
+	}
+	return captureUDPSendHooksAvailable()
+}
+
+// captureUDPSendHooksAvailable은 UDP 송신 훅 대상이 kernel BTF에 있는지 본다. 두 함수는 static이라 kernel
+// build에 따라 inline되어 사라질 수 있다. 확인하지 않으면 object load가 실패해 TCP trace까지 이유 없이 멈춘다.
+func captureUDPSendHooksAvailable() error {
+	kernel, err := btf.LoadKernelSpec()
+	if err != nil {
+		return fmt.Errorf("%s: %w", T("cli.capture.btf_missing"), err)
+	}
+	for _, name := range []string{"udp_send_skb", "udp_v6_send_skb"} {
+		var function *btf.Func
+		if err := kernel.TypeByName(name, &function); err != nil {
+			return errors.New(T("cli.capture.udp_send_hook_missing", name))
 		}
 	}
 	return nil
@@ -187,8 +204,10 @@ func collectCaptureEventsUntil(duration time.Duration, onEvent func(captureEvent
 		name string
 		prog *ebpf.Program
 	}{
-		{"fexit/udp_sendmsg", objects.UdpSendmsgExit},
-		{"fexit/udpv6_sendmsg", objects.Udpv6SendmsgExit},
+		{"fentry/udp_send_skb", objects.UdpSendSkbEntry},
+		{"fexit/udp_send_skb", objects.UdpSendSkbExit},
+		{"fentry/udp_v6_send_skb", objects.UdpV6SendSkbEntry},
+		{"fexit/udp_v6_send_skb", objects.UdpV6SendSkbExit},
 		{"fentry/skb_consume_udp", objects.SkbConsumeUdpEntry},
 	}
 	links := make([]link.Link, 0, len(attachments)+len(tracing))

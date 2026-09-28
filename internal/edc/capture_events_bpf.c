@@ -19,6 +19,7 @@ typedef __u32 __wsum;
 #define IPPROTO_TCP 6
 #define IPPROTO_UDP 17
 #define BPF_ANY 0
+#define BPF_MAP_TYPE_HASH 1
 #define BPF_MAP_TYPE_ARRAY 2
 #define BPF_MAP_TYPE_RINGBUF 27
 
@@ -291,100 +292,131 @@ int tcp_recv_length(struct sock_length_ctx *ctx) {
 	return emit_length_event(ctx, 7);
 }
 
-struct msghdr {
-	void *msg_name;
-};
-
 struct sk_buff {
+	struct sock *sk;
+	unsigned int len;
 	unsigned char *head;
+	unsigned char *data;
 	__u16 transport_header;
 	__u16 network_header;
 };
 
-// sockaddr_in과 sockaddr_in6의 앞부분이다. UAPI 배치라 kernel마다 바뀌지 않으므로 CO-RE 없이 읽는다.
-struct udp_sockaddr {
-	__u16 family;
-	__be16 port;
-	union {
-		__u8 v4[4];
-		struct {
-			__u32 flowinfo;
-			__u8 v6[16];
-		};
-	};
+union flowi_uli {
+	struct {
+		__be16 dport;
+		__be16 sport;
+	} ports;
 };
 
-static __always_inline int ipv4_mapped(const __u8 *address) {
-	for (int index = 0; index < 10; index++) {
-		if (address[index] != 0) {
-			return 0;
-		}
-	}
-	return address[10] == 0xff && address[11] == 0xff;
-}
+struct flowi4 {
+	__be32 saddr;
+	__be32 daddr;
+	union flowi_uli uli;
+};
 
-static __always_inline int emit_udp_send(void *ctx, struct sock *sk, struct msghdr *msg, int ret, int ipv6) {
-	if (!sk || !msg || ret <= 0) {
+struct flowi6 {
+	struct in6_addr daddr;
+	struct in6_addr saddr;
+	union flowi_uli uli;
+};
+
+// udp_send_skb는 전송 중에 skb를 해제하므로 fexit에서는 skb를 읽을 수 없다. fentry에서 읽은 값을
+// thread별로 잠시 두고, fexit에서 전송이 성공했을 때만 event로 보낸다.
+struct udp_send_pending {
+	__u64 skaddr;
+	__u64 bytes;
+	__u16 family;
+	__u16 sport;
+	__u16 dport;
+	__u8 source[16];
+	__u8 destination[16];
+};
+
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, 10240);
+	__type(key, __u64);
+	__type(value, struct udp_send_pending);
+} udp_send_pending SEC(".maps");
+
+static __always_inline int remember_udp_send(struct sk_buff *skb, struct flowi4 *fl4, struct flowi6 *fl6) {
+	if (!skb) {
 		return 0;
 	}
-	struct udp_sockaddr address = {};
-	void *name = BPF_CORE_READ(msg, msg_name);
-	if (name) {
-		bpf_probe_read_kernel(&address, sizeof(address), name);
-	}
-	__u8 peer[16] = {};
-	if (ipv6) {
-		// udpv6_sendmsg는 IPv4 목적지(AF_INET 또는 v4-mapped)를 udp_sendmsg로 넘긴다. 그쪽 훅이 기록하므로
-		// 여기서도 세면 같은 datagram을 두 번 센다.
-		if (name) {
-			if (address.family != AF_INET6 || ipv4_mapped(address.v6)) {
-				return 0;
-			}
-			__builtin_memcpy(peer, address.v6, 16);
-		} else {
-			BPF_CORE_READ_INTO(&peer, sk, __sk_common.skc_v6_daddr.in6_u.u6_addr8);
-			if (ipv4_mapped(peer)) {
-				return 0;
-			}
-		}
-	}
-	struct event *event = start_event(ctx, 6);
-	if (!event) {
+	struct udp_send_pending pending = {};
+	unsigned char *head = BPF_CORE_READ(skb, head);
+	unsigned char *data = BPF_CORE_READ(skb, data);
+	__u16 transport = BPF_CORE_READ(skb, transport_header);
+	// udp_send_skb가 datagram 길이를 구하는 방식과 같다. 끝의 8은 UDP header다.
+	long payload = (long)BPF_CORE_READ(skb, len) - ((long)transport - (data - head)) - 8;
+	if (payload < 0) {
 		return 0;
 	}
-	event->skaddr = (__u64)sk;
-	event->protocol = IPPROTO_UDP;
-	event->bytes = (__u64)ret;
-	event->sport = BPF_CORE_READ(sk, __sk_common.skc_num);
-	event->dport = bpf_ntohs(name ? address.port : BPF_CORE_READ(sk, __sk_common.skc_dport));
-	if (ipv6) {
-		event->family = AF_INET6;
-		BPF_CORE_READ_INTO(event->source, sk, __sk_common.skc_v6_rcv_saddr.in6_u.u6_addr8);
-		__builtin_memcpy(event->destination, peer, 16);
+	pending.skaddr = (__u64)BPF_CORE_READ(skb, sk);
+	pending.bytes = (__u64)payload;
+	if (fl4) {
+		pending.family = AF_INET;
+		pending.sport = bpf_ntohs(BPF_CORE_READ(fl4, uli.ports.sport));
+		pending.dport = bpf_ntohs(BPF_CORE_READ(fl4, uli.ports.dport));
+		__be32 source = BPF_CORE_READ(fl4, saddr);
+		__be32 destination = BPF_CORE_READ(fl4, daddr);
+		__builtin_memcpy(pending.source, &source, 4);
+		__builtin_memcpy(pending.destination, &destination, 4);
 	} else {
-		// udp_sendmsg는 AF_UNSPEC 주소의 sin_addr도 목적지로 쓰므로 family를 가리지 않는다.
-		event->family = AF_INET;
-		__be32 source = BPF_CORE_READ(sk, __sk_common.skc_rcv_saddr);
-		__be32 destination = BPF_CORE_READ(sk, __sk_common.skc_daddr);
-		__builtin_memcpy(event->source, &source, 4);
-		if (name) {
-			__builtin_memcpy(event->destination, address.v4, 4);
-		} else {
-			__builtin_memcpy(event->destination, &destination, 4);
-		}
+		pending.family = AF_INET6;
+		pending.sport = bpf_ntohs(BPF_CORE_READ(fl6, uli.ports.sport));
+		pending.dport = bpf_ntohs(BPF_CORE_READ(fl6, uli.ports.dport));
+		BPF_CORE_READ_INTO(&pending.source, fl6, saddr.in6_u.u6_addr8);
+		BPF_CORE_READ_INTO(&pending.destination, fl6, daddr.in6_u.u6_addr8);
 	}
-	finish_event(event);
+	__u64 key = bpf_get_current_pid_tgid();
+	bpf_map_update_elem(&udp_send_pending, &key, &pending, BPF_ANY);
 	return 0;
 }
 
-SEC("fexit/udp_sendmsg")
-int udp_sendmsg_exit(__u64 *ctx) {
-	return emit_udp_send(ctx, (struct sock *)ctx[0], (struct msghdr *)ctx[1], (int)ctx[3], 0);
+static __always_inline int emit_udp_send(void *ctx, int ret) {
+	__u64 key = bpf_get_current_pid_tgid();
+	struct udp_send_pending *pending = bpf_map_lookup_elem(&udp_send_pending, &key);
+	if (!pending) {
+		return 0;
+	}
+	// 방화벽이 버린 송신도 여기서 오류로 돌아온다. 보냄으로 세면 차단 문제를 가린다.
+	if (ret == 0) {
+		struct event *event = start_event(ctx, 6);
+		if (event) {
+			event->skaddr = pending->skaddr;
+			event->protocol = IPPROTO_UDP;
+			event->bytes = pending->bytes;
+			event->family = pending->family;
+			event->sport = pending->sport;
+			event->dport = pending->dport;
+			__builtin_memcpy(event->source, pending->source, 16);
+			__builtin_memcpy(event->destination, pending->destination, 16);
+			finish_event(event);
+		}
+	}
+	bpf_map_delete_elem(&udp_send_pending, &key);
+	return 0;
 }
 
-SEC("fexit/udpv6_sendmsg")
-int udpv6_sendmsg_exit(__u64 *ctx) {
-	return emit_udp_send(ctx, (struct sock *)ctx[0], (struct msghdr *)ctx[1], (int)ctx[3], 1);
+SEC("fentry/udp_send_skb")
+int udp_send_skb_entry(__u64 *ctx) {
+	return remember_udp_send((struct sk_buff *)ctx[0], (struct flowi4 *)ctx[1], 0);
+}
+
+SEC("fexit/udp_send_skb")
+int udp_send_skb_exit(__u64 *ctx) {
+	return emit_udp_send(ctx, (int)ctx[3]);
+}
+
+SEC("fentry/udp_v6_send_skb")
+int udp_v6_send_skb_entry(__u64 *ctx) {
+	return remember_udp_send((struct sk_buff *)ctx[0], 0, (struct flowi6 *)ctx[1]);
+}
+
+SEC("fexit/udp_v6_send_skb")
+int udp_v6_send_skb_exit(__u64 *ctx) {
+	return emit_udp_send(ctx, (int)ctx[3]);
 }
 
 // skb_consume_udp는 udp_recvmsg와 udpv6_recvmsg가 datagram을 복사한 뒤 한 번 부른다. recv()처럼 주소를

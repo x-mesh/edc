@@ -8,9 +8,22 @@ import (
 	_ "embed"
 	"fmt"
 	"io"
+	"structs"
 
 	"github.com/cilium/ebpf"
 )
+
+type captureEventsUdpSendPending struct {
+	_           structs.HostLayout
+	Skaddr      uint64
+	Bytes       uint64
+	Family      uint16
+	Sport       uint16
+	Dport       uint16
+	Source      [16]uint8
+	Destination [16]uint8
+	_           [2]byte
+}
 
 // Names of all BPF objects in the ELF.
 //
@@ -18,6 +31,7 @@ import (
 const (
 	captureEventsMapEvents              = "events"
 	captureEventsMapLostEvents          = "lost_events"
+	captureEventsMapUdpSendPending      = "udp_send_pending"
 	captureEventsProgInetSockSetState   = "inet_sock_set_state"
 	captureEventsProgSkbConsumeUdpEntry = "skb_consume_udp_entry"
 	captureEventsProgTcpDestroySock     = "tcp_destroy_sock"
@@ -26,8 +40,10 @@ const (
 	captureEventsProgTcpRetransmitSkb   = "tcp_retransmit_skb"
 	captureEventsProgTcpSendLength      = "tcp_send_length"
 	captureEventsProgTcpSendReset       = "tcp_send_reset"
-	captureEventsProgUdpSendmsgExit     = "udp_sendmsg_exit"
-	captureEventsProgUdpv6SendmsgExit   = "udpv6_sendmsg_exit"
+	captureEventsProgUdpSendSkbEntry    = "udp_send_skb_entry"
+	captureEventsProgUdpSendSkbExit     = "udp_send_skb_exit"
+	captureEventsProgUdpV6SendSkbEntry  = "udp_v6_send_skb_entry"
+	captureEventsProgUdpV6SendSkbExit   = "udp_v6_send_skb_exit"
 )
 
 // loadCaptureEvents returns the embedded CollectionSpec for captureEvents.
@@ -80,16 +96,19 @@ type captureEventsProgramSpecs struct {
 	TcpRetransmitSkb   *ebpf.ProgramSpec `ebpf:"tcp_retransmit_skb"`
 	TcpSendLength      *ebpf.ProgramSpec `ebpf:"tcp_send_length"`
 	TcpSendReset       *ebpf.ProgramSpec `ebpf:"tcp_send_reset"`
-	UdpSendmsgExit     *ebpf.ProgramSpec `ebpf:"udp_sendmsg_exit"`
-	Udpv6SendmsgExit   *ebpf.ProgramSpec `ebpf:"udpv6_sendmsg_exit"`
+	UdpSendSkbEntry    *ebpf.ProgramSpec `ebpf:"udp_send_skb_entry"`
+	UdpSendSkbExit     *ebpf.ProgramSpec `ebpf:"udp_send_skb_exit"`
+	UdpV6SendSkbEntry  *ebpf.ProgramSpec `ebpf:"udp_v6_send_skb_entry"`
+	UdpV6SendSkbExit   *ebpf.ProgramSpec `ebpf:"udp_v6_send_skb_exit"`
 }
 
 // captureEventsMapSpecs contains maps before they are loaded into the kernel.
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type captureEventsMapSpecs struct {
-	Events     *ebpf.MapSpec `ebpf:"events"`
-	LostEvents *ebpf.MapSpec `ebpf:"lost_events"`
+	Events         *ebpf.MapSpec `ebpf:"events"`
+	LostEvents     *ebpf.MapSpec `ebpf:"lost_events"`
+	UdpSendPending *ebpf.MapSpec `ebpf:"udp_send_pending"`
 }
 
 // captureEventsVariableSpecs contains global variables before they are loaded into the kernel.
@@ -118,14 +137,16 @@ func (o *captureEventsObjects) Close() error {
 //
 // It can be passed to loadCaptureEventsObjects or ebpf.CollectionSpec.LoadAndAssign.
 type captureEventsMaps struct {
-	Events     *ebpf.Map `ebpf:"events"`
-	LostEvents *ebpf.Map `ebpf:"lost_events"`
+	Events         *ebpf.Map `ebpf:"events"`
+	LostEvents     *ebpf.Map `ebpf:"lost_events"`
+	UdpSendPending *ebpf.Map `ebpf:"udp_send_pending"`
 }
 
 func (m *captureEventsMaps) Close() error {
 	return _CaptureEventsClose(
 		m.Events,
 		m.LostEvents,
+		m.UdpSendPending,
 	)
 }
 
@@ -147,8 +168,10 @@ type captureEventsPrograms struct {
 	TcpRetransmitSkb   *ebpf.Program `ebpf:"tcp_retransmit_skb"`
 	TcpSendLength      *ebpf.Program `ebpf:"tcp_send_length"`
 	TcpSendReset       *ebpf.Program `ebpf:"tcp_send_reset"`
-	UdpSendmsgExit     *ebpf.Program `ebpf:"udp_sendmsg_exit"`
-	Udpv6SendmsgExit   *ebpf.Program `ebpf:"udpv6_sendmsg_exit"`
+	UdpSendSkbEntry    *ebpf.Program `ebpf:"udp_send_skb_entry"`
+	UdpSendSkbExit     *ebpf.Program `ebpf:"udp_send_skb_exit"`
+	UdpV6SendSkbEntry  *ebpf.Program `ebpf:"udp_v6_send_skb_entry"`
+	UdpV6SendSkbExit   *ebpf.Program `ebpf:"udp_v6_send_skb_exit"`
 }
 
 func (p *captureEventsPrograms) Close() error {
@@ -161,8 +184,10 @@ func (p *captureEventsPrograms) Close() error {
 		p.TcpRetransmitSkb,
 		p.TcpSendLength,
 		p.TcpSendReset,
-		p.UdpSendmsgExit,
-		p.Udpv6SendmsgExit,
+		p.UdpSendSkbEntry,
+		p.UdpSendSkbExit,
+		p.UdpV6SendSkbEntry,
+		p.UdpV6SendSkbExit,
 	)
 }
 

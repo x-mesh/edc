@@ -648,6 +648,24 @@ func TestTraceScreenRowsShowTheNewestMatchingEvents(t *testing.T) {
 	}
 }
 
+// BPF_CORE_READ_INTO는 읽을 크기를 sizeof(*dst)로 정한다. 배열 필드를 이름으로 넘기면 첫 원소 1바이트만 읽어,
+// TCP 송수신 event의 IPv6 주소가 첫 바이트만 남았다. 대상은 항상 주소로 넘긴다.
+func TestBPFCoreReadIntoTakesAnAddress(t *testing.T) {
+	source, err := os.ReadFile("capture_events_bpf.c")
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := regexp.MustCompile(`BPF_CORE_READ_INTO\(\s*([^,]+),`).FindAllStringSubmatch(string(source), -1)
+	if len(calls) == 0 {
+		t.Fatal("no BPF_CORE_READ_INTO call found")
+	}
+	for _, call := range calls {
+		if !strings.HasPrefix(strings.TrimSpace(call[1]), "&") {
+			t.Errorf("BPF_CORE_READ_INTO(%s, ...) must take the address of its target", call[1])
+		}
+	}
+}
+
 func TestTraceGroupByModes(t *testing.T) {
 	for groupBy, want := range map[string]bool{"": true, traceGroupBySource: true, traceGroupByTarget: true, traceGroupByEvent: true, "invalid": false} {
 		if got := validTraceGroupBy(groupBy); got != want {

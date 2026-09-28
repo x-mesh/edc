@@ -162,9 +162,9 @@ cli:
     failed: "network trace failed: %v"
     duration_range: "--duration must be 0s or between 1ns and 60s"
     raw_json_conflict: "--raw and --json cannot be used together"
-    group_by_range: "--group-by must be source, target, or event"
+    group_by_range: "--group-by must be source, target, port, or event"
     group_by_raw_conflict: "--group-by cannot be used with --raw"
-    group_by: "group events by source, target, or event and show traffic counters"
+    group_by: "group events by source, target, port, or event and show traffic counters"
     linux_only: "network trace requires Linux, not %s"
   report:
     unsupported_schema: "%s: unsupported schema version: %s"

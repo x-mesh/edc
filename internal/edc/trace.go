@@ -19,6 +19,7 @@ import (
 const (
 	traceGroupBySource = "source"
 	traceGroupByTarget = "target"
+	traceGroupByPort   = "port"
 	traceGroupByEvent  = "event"
 )
 
@@ -147,7 +148,7 @@ func runTrace(args []string) int {
 }
 
 func validTraceGroupBy(groupBy string) bool {
-	return groupBy == "" || groupBy == traceGroupBySource || groupBy == traceGroupByTarget || groupBy == traceGroupByEvent
+	return groupBy == "" || groupBy == traceGroupBySource || groupBy == traceGroupByTarget || groupBy == traceGroupByPort || groupBy == traceGroupByEvent
 }
 
 // traceEventDestinationLabel은 목적지 뒤에 명령줄에서 얻은 target을 붙인다. 두 이벤트 화면이 같은 표시를 쓴다.
@@ -396,7 +397,11 @@ func summarizeTraceGroups(protocol, groupBy string, events []captureEvent, summa
 		sort.Strings(result.Groups[index].Destinations)
 		sort.Strings(result.Groups[index].Processes)
 	}
-	sort.Slice(result.Groups, func(i, j int) bool { return result.Groups[i].Group < result.Groups[j].Group })
+	if groupBy == traceGroupByPort {
+		sort.Slice(result.Groups, func(i, j int) bool { return tracePortGroupLess(result.Groups[i], result.Groups[j]) })
+	} else {
+		sort.Slice(result.Groups, func(i, j int) bool { return result.Groups[i].Group < result.Groups[j].Group })
+	}
 	return result
 }
 
@@ -417,6 +422,9 @@ func traceGroupKey(event captureEvent, groupBy string) (string, bool) {
 			return host, false
 		}
 		return event.Source, false
+	}
+	if groupBy == traceGroupByPort {
+		return tracePortGroupKey(event)
 	}
 	if event.Target != "" {
 		return event.Target, false
@@ -457,6 +465,32 @@ func traceServerService(event captureEvent, low, high int) (string, bool) {
 		return "", false
 	}
 	return event.Source, true
+}
+
+// tracePortGroupKey는 상대의 서비스 포트로 묶는다. 서버 socket은 상대 포트가 client마다 달라서 로컬 포트로 묶는다.
+func tracePortGroupKey(event captureEvent) (string, bool) {
+	low, high := traceEphemeralPortRange()
+	if service, ok := traceServerService(event, low, high); ok {
+		port, _ := traceAddressPort(service)
+		return strconv.Itoa(port), true
+	}
+	if port, ok := traceAddressPort(event.Destination); ok {
+		return strconv.Itoa(port), false
+	}
+	return "-", false
+}
+
+// tracePortGroupLess는 포트를 숫자 순서로 놓는다. 문자열 순서면 443이 3478 뒤에 온다.
+func tracePortGroupLess(left, right traceGroupSummary) bool {
+	leftPort, leftErr := strconv.Atoi(left.Group)
+	rightPort, rightErr := strconv.Atoi(right.Group)
+	if (leftErr == nil) != (rightErr == nil) {
+		return leftErr != nil
+	}
+	if leftPort != rightPort {
+		return leftPort < rightPort
+	}
+	return !left.Server && right.Server
 }
 
 func traceAddressPort(address string) (int, bool) {
@@ -511,12 +545,19 @@ func traceGroupRate(events uint64, duration time.Duration) float64 {
 
 func traceGroupDisplayValue(groupBy string, group traceGroupSummary) string {
 	// source와 event group에는 destination이 여럿 섞이므로 첫 destination 하나만 붙이면 그 group이 한 곳으로만
-	// 간 것처럼 보인다. target group은 이름이 가리키는 주소를 보여 주려고 괄호를 붙인다.
+	// 간 것처럼 보인다. target group은 이름이 가리키는 주소를 보여 주려고 괄호를 붙인다. port group은 상대가
+	// 하나면 그 주소를, 여럿이면 상대 수를 붙인다.
 	if group.Server {
 		// 서버 행의 destination은 client port들이라, 하나만 붙이면 한 client만 쓴 것처럼 보인다.
 		return group.Group + traceServerSuffix
 	}
-	if groupBy != traceGroupByTarget || len(group.Destinations) == 0 || group.Destinations[0] == group.Group {
+	if groupBy == traceGroupByPort && group.Group == "-" {
+		return group.Group
+	}
+	if groupBy == traceGroupByPort && len(group.Destinations) > 1 {
+		return fmt.Sprintf("%s (%d peers)", group.Group, len(group.Destinations))
+	}
+	if (groupBy != traceGroupByTarget && groupBy != traceGroupByPort) || len(group.Destinations) == 0 || group.Destinations[0] == group.Group {
 		return group.Group
 	}
 	return fmt.Sprintf("%s (%s)", group.Group, group.Destinations[0])

@@ -159,6 +159,9 @@ func (model traceScreenModel) updateKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd
 	case "t":
 		model.groupBy = traceGroupByTarget
 		return model, nil
+	case "p":
+		model.groupBy = traceGroupByPort
+		return model, nil
 	case "e":
 		model.groupBy = traceGroupByEvent
 		return model, nil
@@ -181,8 +184,8 @@ func (model traceScreenModel) updateKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd
 	return model, nil
 }
 
-// traceGroupCycle은 Tab이 넘겨 가는 순서다. 기본 화면인 event 스크롤에서 시작해 s, t, e 키와 같은 순서로 간다.
-var traceGroupCycle = []string{"", traceGroupBySource, traceGroupByTarget, traceGroupByEvent}
+// traceGroupCycle은 Tab이 넘겨 가는 순서다. 기본 화면인 event 스크롤에서 시작해 s, t, p, e 키와 같은 순서로 간다.
+var traceGroupCycle = []string{"", traceGroupBySource, traceGroupByTarget, traceGroupByPort, traceGroupByEvent}
 
 func nextTraceGroup(current string, step int) string {
 	index := 0
@@ -230,7 +233,7 @@ func traceScreenHeader(model traceScreenModel) []string {
 	} else {
 		line += fmt.Sprintf("  ·  %s  ·  events %d  ·  filter %s", status, model.received, filter)
 	}
-	help := "/ filter  tab view  s source  t target  e event  g scroll  enter apply  esc clear  q quit  ctrl-c stop"
+	help := "/ filter  tab view  s source  t target  p port  e event  g scroll  enter apply  esc clear  q quit  ctrl-c stop"
 	if model.filtering {
 		help = model.input.View() + "  enter apply  esc cancel"
 	}

@@ -123,12 +123,19 @@ startup_file() {
 	case "$1" in
 	zsh) echo "${ZDOTDIR:-$HOME}/.zshrc" ;;
 	bash)
-		# macOS Terminal starts bash as a login shell, which reads ~/.bash_profile and not ~/.bashrc.
-		if [ "$os" = darwin ]; then
-			echo "$HOME/.bash_profile"
-		else
+		if [ "$os" != darwin ]; then
 			echo "$HOME/.bashrc"
+			return
 		fi
+		# macOS Terminal starts bash as a login shell. It reads the first of these files that exists, so
+		# a new ~/.bash_profile would hide an existing ~/.bash_login or ~/.profile.
+		for login in "$HOME/.bash_profile" "$HOME/.bash_login" "$HOME/.profile"; do
+			if [ -e "$login" ]; then
+				echo "$login"
+				return
+			fi
+		done
+		echo "$HOME/.bash_profile"
 		;;
 	fish) echo "${XDG_CONFIG_HOME:-$HOME/.config}/fish/config.fish" ;;
 	tcsh) echo "$HOME/.tcshrc" ;;
@@ -137,16 +144,8 @@ startup_file() {
 	esac
 }
 
-case ":$PATH:" in
-*":$BINDIR:"*) ;;
-*)
-	shell=$(user_shell)
-	file=$(startup_file "$shell")
-	case "$shell" in
-	fish) line="set -gx PATH \"$BINDIR\" \$PATH" ;;
-	tcsh | csh) line="setenv PATH \"$BINDIR:\$PATH\"" ;;
-	*) line="export PATH=\"$BINDIR:\$PATH\"" ;;
-	esac
+# print_path_hint tells the user how to add BINDIR to PATH, or adds it when EDC_MODIFY_PATH=1.
+print_path_hint() {
 	if grep -qsxF "$line" "$file"; then
 		echo "$file already adds $BINDIR to PATH. Open a new $shell or run:"
 		echo "  $line"
@@ -161,5 +160,28 @@ case ":$PATH:" in
 		echo "  $line"
 		echo "Set EDC_MODIFY_PATH=1 to let the installer add it."
 	fi
+}
+
+case ":$PATH:" in
+*":$BINDIR:"*) ;;
+*)
+	shell=$(user_shell)
+	file=$(startup_file "$shell")
+	case "$shell" in
+	fish) line="set -gx PATH \"$BINDIR\" \$PATH" ;;
+	tcsh | csh) line="setenv PATH \"$BINDIR:\$PATH\"" ;;
+	*) line="export PATH=\"$BINDIR:\$PATH\"" ;;
+	esac
+	case "$BINDIR$file" in
+	# The line goes inside double quotes and the command inside single quotes, so these characters
+	# would write a broken startup file.
+	*[\"\'\$\`\\]*)
+		# printf keeps a backslash in the path, and the echo of dash reads it as an escape.
+		printf 'edc is not on PATH. Add %s to PATH in %s by hand.\n' "$BINDIR" "$file"
+		;;
+	*)
+		print_path_hint
+		;;
+	esac
 	;;
 esac

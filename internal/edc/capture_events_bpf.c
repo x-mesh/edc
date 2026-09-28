@@ -441,6 +441,7 @@ int tcp_recv_length(struct sock_length_ctx *ctx) {
 struct sk_buff {
 	struct sock *sk;
 	unsigned int len;
+	unsigned int tail;
 	unsigned char *head;
 	unsigned char *data;
 	__u16 transport_header;
@@ -568,6 +569,45 @@ int udp_v6_send_skb_exit(__u64 *ctx) {
 
 // skb_consume_udp는 udp_recvmsg와 udpv6_recvmsg가 datagram을 복사한 뒤 한 번 부른다. recv()처럼 주소를
 // 받지 않는 호출도 여기서는 header에서 보낸 쪽 주소를 읽을 수 있다.
+#define DNS_PAYLOAD_SIZE 1024
+
+// 명령줄에 대상이 없는 프로그램도 이름을 얻도록 DNS 응답을 사용자 공간에 넘긴다. 받은 프로세스가 곧 조회한
+// 프로세스라서 pid를 함께 보낸다. event_type은 struct event와 같은 위치다.
+struct dns_record {
+	__u64 timestamp_ns;
+	__u32 event_type;
+	__u32 pid;
+	__u32 len;
+	__u32 reserved;
+	__u8 payload[DNS_PAYLOAD_SIZE];
+};
+
+static __always_inline void emit_dns_answer(struct sk_buff *skb, unsigned char *payload, int len) {
+	// 선형 영역 밖의 payload는 page fragment에 있어 head 기준 주소로 읽으면 다른 메모리를 읽는다.
+	unsigned char *linear_end = BPF_CORE_READ(skb, head) + BPF_CORE_READ(skb, tail);
+	long available = linear_end - payload;
+	if (available <= 0) {
+		return;
+	}
+	__u32 size = len;
+	if (size > available) {
+		size = available;
+	}
+	if (size > DNS_PAYLOAD_SIZE) {
+		size = DNS_PAYLOAD_SIZE;
+	}
+	struct dns_record *record = bpf_ringbuf_reserve(&events, sizeof(*record), 0);
+	if (!record) {
+		return;
+	}
+	record->timestamp_ns = bpf_ktime_get_ns();
+	record->event_type = 9;
+	record->pid = bpf_get_current_pid_tgid() >> 32;
+	record->reserved = 0;
+	record->len = bpf_probe_read_kernel(record->payload, size, payload) == 0 ? size : 0;
+	bpf_ringbuf_submit(record, 0);
+}
+
 SEC("fentry/skb_consume_udp")
 int skb_consume_udp_entry(__u64 *ctx) {
 	struct sock *sk = (struct sock *)ctx[0];
@@ -588,6 +628,9 @@ int skb_consume_udp_entry(__u64 *ctx) {
 		return 0;
 	}
 	announce_owner((__u64)sk);
+	if (bpf_ntohs(ports[0]) == 53) {
+		emit_dns_answer(skb, transport + 8, len);
+	}
 	struct event *event = start_event(ctx, 7);
 	if (!event) {
 		return 0;

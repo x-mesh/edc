@@ -186,6 +186,9 @@ func collectCaptureEventsUntil(duration time.Duration, onEvent func(captureEvent
 	if err := rlimit.RemoveMemlock(); err != nil {
 		return nil, captureSummary{}, fmt.Errorf("remove memlock limit: %w", err)
 	}
+	// 프로그램을 붙이기 전에 채워서, 붙인 뒤 첫 event를 읽는 시점을 늦추지 않는다.
+	names := newDNSNameCache()
+	seedResolverCache(names)
 	objects := captureEventsObjects{}
 	if err := loadCaptureEventsObjects(&objects, nil); err != nil {
 		return nil, captureSummary{}, fmt.Errorf("load eBPF objects: %w", err)
@@ -299,6 +302,10 @@ func collectCaptureEventsUntil(duration time.Duration, onEvent func(captureEvent
 		if err != nil {
 			return nil, captureSummary{}, err
 		}
+		if pid, payload, ok := parseDNSRecord(record.RawSample); ok {
+			names.rememberAnswer(pid, dnsAnswerNames(payload))
+			continue
+		}
 		if owner, ok := parseOwnerAnnouncement(record.RawSample); ok {
 			if owner.readable {
 				owners.remember(owner.pid, owner.target)
@@ -310,14 +317,16 @@ func collectCaptureEventsUntil(duration time.Duration, onEvent func(captureEvent
 			return nil, captureSummary{}, fmt.Errorf("decode event: %w", err)
 		}
 		event := raw.event(clockOffset)
+		commandTarget := ""
 		if event.PID != 0 {
 			if target, ok := owners.target(event.PID); ok {
-				event.Target = target
+				commandTarget = target
 			} else {
-				event.Target = targets.target(event.PID, time.Now())
+				commandTarget = targets.target(event.PID, time.Now())
 			}
 		}
-		event.Target = sockets.target(event)
+		event.Target, event.TargetSource = resolveTraceTarget(event, commandTarget, names)
+		event.Target, event.TargetSource = sockets.target(event)
 		events = append(events, event)
 		if onEvent != nil {
 			if err := onEvent(event); err != nil {

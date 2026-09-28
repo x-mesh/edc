@@ -22,13 +22,16 @@ type captureEvent struct {
 	PID         uint32 `json:"pid"`
 	Process     string `json:"process"`
 	Target      string `json:"target,omitempty"`
-	CgroupID    uint64 `json:"cgroup_id"`
-	Source      string `json:"source,omitempty"`
-	Destination string `json:"destination,omitempty"`
-	OldState    string `json:"old_state,omitempty"`
-	NewState    string `json:"new_state,omitempty"`
-	Bytes       uint64 `json:"bytes"`
-	LostEvents  uint64 `json:"lost_events,omitempty"`
+	// TargetSource는 target을 명령줄(command), 이 프로세스의 DNS 응답(dns), resolver 캐시(resolver-cache) 중
+	// 어디서 얻었는지 알린다. 주소를 여러 이름이 공유하면 dns와 resolver-cache 이름이 틀릴 수 있다.
+	TargetSource string `json:"target_source,omitempty"`
+	CgroupID     uint64 `json:"cgroup_id"`
+	Source       string `json:"source,omitempty"`
+	Destination  string `json:"destination,omitempty"`
+	OldState     string `json:"old_state,omitempty"`
+	NewState     string `json:"new_state,omitempty"`
+	Bytes        uint64 `json:"bytes"`
+	LostEvents   uint64 `json:"lost_events,omitempty"`
 }
 
 type captureSummary struct {

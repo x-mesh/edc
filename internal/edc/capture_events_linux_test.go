@@ -27,6 +27,11 @@ func TestCaptureEventAddressFormatting(t *testing.T) {
 	if got := formatCaptureAddress(10, address, 443); got != "[c000:20a:0:0:0:0:0:1]:443" {
 		t.Fatalf("IPv6 address = %q", got)
 	}
+	// dual-stack socket이 IPv4와 주고받으면 kernel은 IPv4를 ::ffff:a.b.c.d로 담는다. 사람이 읽는 주소는 IPv4다.
+	mapped := [16]byte{10: 0xff, 11: 0xff, 12: 20, 13: 20, 14: 0, 15: 50}
+	if got := formatCaptureAddress(10, mapped, 6443); got != "20.20.0.50:6443" {
+		t.Fatalf("IPv4-mapped address = %q", got)
+	}
 }
 
 func TestTraceTargetFromArguments(t *testing.T) {
@@ -56,6 +61,9 @@ func TestTraceTargetFromArguments(t *testing.T) {
 		{[]string{"dig", "a..b"}, ""},
 		{[]string{"dig", "bad-.example.com"}, ""},
 		{[]string{"dig", "example.com."}, "example.com"},
+		{[]string{"etcd", "--advertise-client-urls=https://20.20.0.50:2379", "--data-dir=/var/lib/etcd"}, ""},
+		{[]string{"kube-apiserver", "--etcd-servers=https://127.0.0.1:2379", "--advertise-address=20.20.0.50"}, ""},
+		{[]string{"curl", "--connect-timeout", "5", "https://example.com/"}, "example.com"},
 	}
 	for _, test := range cases {
 		if got := traceTargetFromArguments(test.args); got != test.want {
@@ -292,6 +300,11 @@ func TestResolveTraceTargetOrder(t *testing.T) {
 		{"another lookup when the command has none", captureEvent{PID: 7, Destination: "203.0.113.10:443"}, "", "api.example.com", targetSourceDNS},
 		{"resolver cache", captureEvent{PID: 7, Destination: "203.0.113.20:443"}, "", "cached.example.com", targetSourceResolverCache},
 		{"nothing known", captureEvent{PID: 7, Destination: "203.0.113.30:443"}, "", "", ""},
+		{"IP command target on its own address", captureEvent{PID: 7, Destination: "20.20.0.68:22"}, "20.20.0.68", "20.20.0.68", targetSourceCommand},
+		{"IP command target elsewhere", captureEvent{PID: 7, Destination: "20.20.0.69:2380"}, "20.20.0.68", "", ""},
+		{"user@IP command target on its own address", captureEvent{PID: 7, Destination: "[0:0:0:0:0:ffff:1414:44]:22"}, "root@20.20.0.68", "root@20.20.0.68", targetSourceCommand},
+		{"user@IP command target elsewhere falls back to a DNS name", captureEvent{PID: 7, Destination: "203.0.113.20:443"}, "root@20.20.0.68", "cached.example.com", targetSourceResolverCache},
+		{"host name command target stays process-wide", captureEvent{PID: 7, Destination: "127.0.0.1:8080"}, "example.org", "example.org", targetSourceCommand},
 	} {
 		target, source := resolveTraceTarget(test.event, test.command, cache)
 		if target != test.target || source != test.source {

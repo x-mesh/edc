@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/netip"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -405,6 +406,10 @@ func formatCaptureAddress(family uint16, address [16]byte, port uint16) string {
 		return fmt.Sprintf("%d.%d.%d.%d:%d", address[0], address[1], address[2], address[3], port)
 	}
 	if family == 10 {
+		// dual-stack socket의 IPv4 상대는 ::ffff:a.b.c.d로 담겨 온다. IPv4로 써야 같은 상대가 한 주소로 보인다.
+		if netip.AddrFrom16(address).Is4In6() {
+			return fmt.Sprintf("%d.%d.%d.%d:%d", address[12], address[13], address[14], address[15], port)
+		}
 		parts := make([]string, 0, 8)
 		for offset := 0; offset < 16; offset += 2 {
 			parts = append(parts, fmt.Sprintf("%x", binary.BigEndian.Uint16(address[offset:offset+2])))

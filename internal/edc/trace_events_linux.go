@@ -183,6 +183,11 @@ func (cache *socketTargetCache) target(event captureEvent) (string, string) {
 // 먼저 찾는다. 옵션 값(jq 필터, 헤더, 파일 이름)이 대상으로 잡히지 않도록 호스트 모양을 검사한다.
 func traceTargetFromArguments(arguments []string) string {
 	for index := 1; index < len(arguments); index++ {
+		// 옵션 값 속 URL은 대상이 아니라 설정인 경우가 많다. etcd의 --advertise-client-urls=https://자기주소 처럼
+		// 데몬이 자기 주소를 넣으면 그 프로세스의 모든 연결이 그 이름으로 묶인다.
+		if strings.HasPrefix(arguments[index], "-") {
+			continue
+		}
 		if _, rest, ok := strings.Cut(arguments[index], "://"); ok {
 			if host := traceURLHost(rest); host != "" {
 				return host

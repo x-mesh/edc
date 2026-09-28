@@ -216,11 +216,27 @@ func resolveTraceTarget(event captureEvent, commandTarget string, names *dnsName
 			return name, targetSourceDNS
 		}
 	}
-	if commandTarget != "" {
+	if commandTarget != "" && commandTargetFits(commandTarget, event.Destination) {
 		return commandTarget, targetSourceCommand
 	}
 	if name, ok := names.forAddress(event.Destination); ok {
 		return name.name, name.source
 	}
 	return "", ""
+}
+
+// commandTargetFits는 명령줄 target이 IP(또는 user@IP)이면 그 주소로 가는 event에만 맞다고 본다. 명령줄 target은
+// 프로세스의 모든 event에 붙으므로, IP가 다른 연결에 붙으면 그 연결의 상대를 틀리게 보여 준다. 호스트 이름은
+// 주소를 알 수 없어서 그대로 맞다고 본다.
+func commandTargetFits(commandTarget, destination string) bool {
+	host := commandTarget
+	if _, after, ok := strings.Cut(commandTarget, "@"); ok {
+		host = after
+	}
+	target, err := netip.ParseAddr(host)
+	if err != nil {
+		return true
+	}
+	address, ok := traceDestinationAddress(destination)
+	return ok && address == target.Unmap()
 }

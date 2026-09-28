@@ -215,20 +215,23 @@ static __always_inline int emit_length_event(struct sock_length_ctx *ctx, __u32 
 	if (!event) {
 		return 0;
 	}
-	event->skaddr = (__u64)ctx->sk;
+	// tracepoint ctx는 kernel BTF에 없는 고정 배치다. sk를 먼저 꺼내야 BPF_CORE_READ가
+	// ctx->sk까지 CO-RE relocation으로 잡지 않고, 그렇지 않으면 program load가 실패한다.
+	struct sock *sk = ctx->sk;
+	event->skaddr = (__u64)sk;
 	event->protocol = ctx->protocol;
 	event->bytes = (__u64)ctx->ret;
-	event->family = BPF_CORE_READ(ctx->sk, __sk_common.skc_family);
-	event->sport = BPF_CORE_READ(ctx->sk, __sk_common.skc_num);
-	event->dport = bpf_ntohs(BPF_CORE_READ(ctx->sk, __sk_common.skc_dport));
+	event->family = BPF_CORE_READ(sk, __sk_common.skc_family);
+	event->sport = BPF_CORE_READ(sk, __sk_common.skc_num);
+	event->dport = bpf_ntohs(BPF_CORE_READ(sk, __sk_common.skc_dport));
 	if (event->family == AF_INET) {
-		__be32 source = BPF_CORE_READ(ctx->sk, __sk_common.skc_rcv_saddr);
-		__be32 destination = BPF_CORE_READ(ctx->sk, __sk_common.skc_daddr);
+		__be32 source = BPF_CORE_READ(sk, __sk_common.skc_rcv_saddr);
+		__be32 destination = BPF_CORE_READ(sk, __sk_common.skc_daddr);
 		__builtin_memcpy(event->source, &source, 4);
 		__builtin_memcpy(event->destination, &destination, 4);
 	} else if (event->family == AF_INET6) {
-		BPF_CORE_READ_INTO(event->source, ctx->sk, __sk_common.skc_v6_rcv_saddr.in6_u.u6_addr8);
-		BPF_CORE_READ_INTO(event->destination, ctx->sk, __sk_common.skc_v6_daddr.in6_u.u6_addr8);
+		BPF_CORE_READ_INTO(event->source, sk, __sk_common.skc_v6_rcv_saddr.in6_u.u6_addr8);
+		BPF_CORE_READ_INTO(event->destination, sk, __sk_common.skc_v6_daddr.in6_u.u6_addr8);
 	}
 	finish_event(event);
 	return 0;

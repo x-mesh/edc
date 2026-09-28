@@ -371,8 +371,8 @@ static __always_inline int emit_length_event(struct sock_length_ctx *ctx, __u32 
 		__builtin_memcpy(event->source, &source, 4);
 		__builtin_memcpy(event->destination, &destination, 4);
 	} else if (event->family == AF_INET6) {
-		BPF_CORE_READ_INTO(event->source, sk, __sk_common.skc_v6_rcv_saddr.in6_u.u6_addr8);
-		BPF_CORE_READ_INTO(event->destination, sk, __sk_common.skc_v6_daddr.in6_u.u6_addr8);
+		BPF_CORE_READ_INTO(&event->source, sk, __sk_common.skc_v6_rcv_saddr.in6_u.u6_addr8);
+		BPF_CORE_READ_INTO(&event->destination, sk, __sk_common.skc_v6_daddr.in6_u.u6_addr8);
 	}
 	finish_event(event);
 	return 0;

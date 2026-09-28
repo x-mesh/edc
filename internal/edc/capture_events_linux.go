@@ -410,11 +410,8 @@ func formatCaptureAddress(family uint16, address [16]byte, port uint16) string {
 		if netip.AddrFrom16(address).Is4In6() {
 			return fmt.Sprintf("%d.%d.%d.%d:%d", address[12], address[13], address[14], address[15], port)
 		}
-		parts := make([]string, 0, 8)
-		for offset := 0; offset < 16; offset += 2 {
-			parts = append(parts, fmt.Sprintf("%x", binary.BigEndian.Uint16(address[offset:offset+2])))
-		}
-		return fmt.Sprintf("[%s]:%d", strings.Join(parts, ":"), port)
+		// RFC 5952 축약형으로 쓴다. 풀어 쓰면 ::1이 0:0:0:0:0:0:0:1이 되어 읽기 어렵다.
+		return netip.AddrPortFrom(netip.AddrFrom16(address), port).String()
 	}
 	return ""
 }

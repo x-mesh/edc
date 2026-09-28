@@ -88,8 +88,8 @@ func (cache *dnsNameCache) forAddress(destination string) (dnsName, bool) {
 	return name, ok
 }
 
-// traceDestinationAddress는 event의 host:port에서 주소를 꺼낸다. event는 IPv6를 축약하지 않고 쓰고 DNS는
-// 축약해서 쓰므로 netip로 같은 값으로 맞춘다.
+// traceDestinationAddress는 event의 host:port에서 주소를 꺼낸다. 문자열이 아니라 netip 값으로 비교해야
+// 같은 IPv6 주소의 여러 표기(축약, 풀어 쓴 형태, v4-mapped)가 한 주소로 맞는다.
 func traceDestinationAddress(destination string) (netip.Addr, bool) {
 	host, _, err := net.SplitHostPort(destination)
 	if err != nil {

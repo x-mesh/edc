@@ -182,7 +182,7 @@ func TestTraceSourceGroupIgnoresEphemeralPort(t *testing.T) {
 func TestTraceScreenRateUsesRetainedWindow(t *testing.T) {
 	model := newTraceScreenModel("tcp", tcpTraceOptions{groupBy: traceGroupByTarget}, make(chan captureEvent), make(chan traceFinishedMsg), nil)
 	for index := 0; index <= traceScreenEventLimit; index++ {
-		updated, _ := model.Update(traceEventMsg{event: captureEvent{Protocol: "tcp", Event: "tcp_connect", Target: "example.com"}})
+		updated, _ := model.Update(traceEventMsg{events: []captureEvent{{Protocol: "tcp", Event: "tcp_connect", Target: "example.com"}}})
 		model = updated.(traceScreenModel)
 	}
 	if !model.truncated || len(model.events) != traceScreenEventLimit || len(model.arrivals) != traceScreenEventLimit {
@@ -557,6 +557,68 @@ func TestTraceScreenTabCyclesGroupViews(t *testing.T) {
 	press(tab)
 	if model.groupBy != traceGroupByEvent || !model.filtering {
 		t.Fatalf("tab while filtering = %q, filtering %t", model.groupBy, model.filtering)
+	}
+}
+
+func TestWaitTraceMessageBatchesQueuedEvents(t *testing.T) {
+	eventCh := make(chan captureEvent, traceEventBatchLimit+10)
+	resultCh := make(chan traceFinishedMsg, 1)
+	for index := 0; index < traceEventBatchLimit+10; index++ {
+		eventCh <- captureEvent{Protocol: "tcp", Event: "tcp_send"}
+	}
+	first, ok := waitTraceMessage(eventCh, resultCh)().(traceEventMsg)
+	if !ok || len(first.events) != traceEventBatchLimit {
+		t.Fatalf("first batch = %d events, want %d", len(first.events), traceEventBatchLimit)
+	}
+	second, ok := waitTraceMessage(eventCh, resultCh)().(traceEventMsg)
+	if !ok || len(second.events) != 10 {
+		t.Fatalf("second batch = %d events, want 10", len(second.events))
+	}
+	resultCh <- traceFinishedMsg{}
+	if _, ok := waitTraceMessage(eventCh, resultCh)().(traceFinishedMsg); !ok {
+		t.Fatal("an empty queue must return the finished result")
+	}
+
+	model := newTraceScreenModel("tcp", tcpTraceOptions{}, eventCh, resultCh, nil)
+	next, _ := model.Update(traceEventMsg{events: []captureEvent{{Protocol: "tcp"}, {Protocol: "udp"}, {Protocol: "tcp"}}})
+	model = next.(traceScreenModel)
+	if model.received != 3 || len(model.events) != 2 || len(model.arrivals) != 2 {
+		t.Fatalf("batch update: received %d, kept %d events and %d arrivals", model.received, len(model.events), len(model.arrivals))
+	}
+}
+
+func TestTraceScreenRowsShowTheNewestMatchingEvents(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	model := newTraceScreenModel("tcp", tcpTraceOptions{}, make(chan captureEvent), make(chan traceFinishedMsg), nil)
+	model.width, model.height = 120, 8
+	for index := 0; index < 50; index++ {
+		process := "curl"
+		if index%2 == 1 {
+			process = "wget"
+		}
+		model.events = append(model.events, captureEvent{Protocol: "tcp", Event: "tcp_send", Process: process, Destination: fmt.Sprintf("10.0.0.%d:443", index)})
+	}
+	check := func(want []string) {
+		t.Helper()
+		rows := traceScreenRows(model)
+		if len(rows) != model.height-3 {
+			t.Fatalf("rows = %d, want %d", len(rows), model.height-3)
+		}
+		for index, destination := range want {
+			if !strings.Contains(rows[index], destination) {
+				t.Fatalf("row %d = %q, want %s", index, rows[index], destination)
+			}
+		}
+	}
+	// 가장 최근 event가 맨 아래에 오고, 그 위로 시간 순서를 지킨다.
+	check([]string{"10.0.0.45:443", "10.0.0.46:443", "10.0.0.47:443", "10.0.0.48:443", "10.0.0.49:443"})
+	model.filter = "wget"
+	check([]string{"10.0.0.41:443", "10.0.0.43:443", "10.0.0.45:443", "10.0.0.47:443", "10.0.0.49:443"})
+	model.filter = "nothing-matches"
+	for _, row := range traceScreenRows(model) {
+		if row != "" {
+			t.Fatalf("row without a match = %q", row)
+		}
 	}
 }
 

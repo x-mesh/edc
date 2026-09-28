@@ -255,8 +255,9 @@ func collectCaptureEventsUntil(duration time.Duration, onEvent func(captureEvent
 	if err != nil {
 		return nil, captureSummary{}, fmt.Errorf("read monotonic clock: %w", err)
 	}
+	deadline := time.Now().Add(duration)
 	if duration > 0 {
-		reader.SetDeadline(time.Now().Add(duration))
+		reader.SetDeadline(deadline)
 	}
 	readerDone := make(chan struct{})
 	if stop != nil {
@@ -275,21 +276,25 @@ func collectCaptureEventsUntil(duration time.Duration, onEvent func(captureEvent
 	owners := newPIDTargetCache()
 	events := make([]captureEvent, 0)
 	var eventCount uint64
+	finish := func() ([]captureEvent, captureSummary, error) {
+		var lost uint64
+		if lookupErr := objects.LostEvents.Lookup(uint32(0), &lost); lookupErr != nil {
+			return nil, captureSummary{}, fmt.Errorf("read lost event count: %w", lookupErr)
+		}
+		return events, captureSummary{TimestampNS: uint64(time.Now().UnixNano()), Event: "capture_summary", EventCount: eventCount, LostEvents: lost}, nil
+	}
 	for {
+		// ring buffer reader는 버퍼가 비었을 때만 deadline을 본다. event가 계속 쌓이면 버퍼가 비지 않아
+		// --duration이 지나도 끝나지 않으므로 여기서 직접 확인한다.
+		if duration > 0 && !time.Now().Before(deadline) {
+			return finish()
+		}
 		record, err := reader.Read()
 		if errors.Is(err, os.ErrDeadlineExceeded) {
-			var lost uint64
-			if lookupErr := objects.LostEvents.Lookup(uint32(0), &lost); lookupErr != nil {
-				return nil, captureSummary{}, fmt.Errorf("read lost event count: %w", lookupErr)
-			}
-			return events, captureSummary{TimestampNS: uint64(time.Now().UnixNano()), Event: "capture_summary", EventCount: eventCount, LostEvents: lost}, nil
+			return finish()
 		}
 		if errors.Is(err, os.ErrClosed) && traceStopRequested(stop) {
-			var lost uint64
-			if lookupErr := objects.LostEvents.Lookup(uint32(0), &lost); lookupErr != nil {
-				return nil, captureSummary{}, fmt.Errorf("read lost event count: %w", lookupErr)
-			}
-			return events, captureSummary{TimestampNS: uint64(time.Now().UnixNano()), Event: "capture_summary", EventCount: eventCount, LostEvents: lost}, nil
+			return finish()
 		}
 		if err != nil {
 			return nil, captureSummary{}, err

@@ -259,6 +259,71 @@ func TestNtstatTrackerConnectionLifecycle(t *testing.T) {
 	}
 }
 
+// Linux는 만들기만 하고 연결하지 않은 socket에 event를 내지 않고, 거부된 connect는 tcp_close 하나로 보고한다.
+func TestNtstatTrackerIgnoresSocketsThatNeverConnect(t *testing.T) {
+	unconnected := func(ref uint64, port uint16) ntstatSource {
+		source := ntstatTestSource(ref, "tcp", darwinTCPClosed, port, ntstatCounts{})
+		source.remote = "0.0.0.0:0"
+		return source
+	}
+	tracker := newNtstatTracker()
+	stamp := traceStamp{}
+	tracker.updated(unconnected(20, 50010), stamp)
+	tracker.finishBaseline()
+
+	tracker.added(21)
+	if events := tracker.updated(unconnected(21, 50011), stamp); len(events) != 0 {
+		t.Fatalf("unconnected socket events = %#v", events)
+	}
+	if events := tracker.removed(21, stamp); len(events) != 0 {
+		t.Fatalf("unconnected socket removal = %#v", events)
+	}
+
+	tracker.added(22)
+	if events := tracker.updated(ntstatTestSource(22, "tcp", 2, 50012, ntstatCounts{}), stamp); ntstatEventNames(events) != "tcp_state" {
+		t.Fatalf("SYN_SENT events = %#v", events)
+	}
+	events := tracker.updated(ntstatTestSource(22, "tcp", darwinTCPClosed, 50012, ntstatCounts{}), stamp)
+	if ntstatEventNames(events) != "tcp_close" || events[0].OldState != "SYN_SENT" || events[0].NewState != "CLOSE" {
+		t.Fatalf("refused connect events = %#v", events)
+	}
+	if events := tracker.removed(22, stamp); len(events) != 0 {
+		t.Fatalf("refused connect removal = %#v", events)
+	}
+
+	// poll 사이에 끝난 거부된 connect는 CLOSED로 처음 보이지만, 상대 주소가 남는다.
+	tracker.added(23)
+	events = tracker.updated(ntstatTestSource(23, "tcp", darwinTCPClosed, 50013, ntstatCounts{}), stamp)
+	if ntstatEventNames(events) != "tcp_close" || events[0].OldState != "SYN_SENT" || events[0].NewState != "CLOSE" {
+		t.Fatalf("fast refused connect events = %#v", events)
+	}
+
+	// trace를 시작할 때 CLOSED였던 socket도 나중에 연결하면 connect와 close를 낸다.
+	events = tracker.updated(ntstatTestSource(20, "tcp", darwinTCPEstablished, 50010, ntstatCounts{txPackets: 1, txBytes: 10}), stamp)
+	if ntstatEventNames(events) != "tcp_connect,tcp_send" {
+		t.Fatalf("baseline CLOSED socket events = %s", ntstatEventNames(events))
+	}
+	if events := tracker.removed(20, stamp); ntstatEventNames(events) != "tcp_close" {
+		t.Fatalf("baseline CLOSED socket removal = %#v", events)
+	}
+}
+
+func TestDecodeNtstatUpdateLeavesUnconnectedUDPDestinationEmpty(t *testing.T) {
+	message := ntstatFixture(t, ntstatUDPFixture)
+	remote := message[ntstatUpdateDescriptor+84 : ntstatUpdateDescriptor+112]
+	for index := 2; index < 8; index++ {
+		remote[index] = 0
+	}
+	source, err := decodeNtstatUpdate(message)
+	if err != nil || source.remote != "" || source.local != "127.0.0.1:62487" {
+		t.Fatalf("source = %#v, err = %v", source, err)
+	}
+	tcp, err := decodeNtstatUpdate(ntstatFixture(t, ntstatTCPFixture))
+	if err != nil || tcp.remote != "127.0.0.1:57561" {
+		t.Fatalf("TCP source = %#v, err = %v", tcp, err)
+	}
+}
+
 func TestNtstatTrackerUDPCounters(t *testing.T) {
 	tracker := newNtstatTracker()
 	tracker.finishBaseline()

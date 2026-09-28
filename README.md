@@ -808,6 +808,7 @@ On macOS, some values are not available. The text output shows `-` for these val
 - `connect_ms`: The counters do not give the connection time.
 - `reset` and `resets`: The counters do not show RST packets.
 - `retransmissions`: The counters give retransmitted bytes, not a packet count. In `--raw` output, the `bytes` field of each `tcp_retransmit` event holds these bytes.
+- The destination of an unconnected UDP socket: The kernel does not record the destination of each datagram. The destination is empty, and the tables show `-`.
 
 On macOS, each event holds the change since the previous reading. The `bytes` field holds the bytes, and the `packets` field holds the packet count. UDP `sent` and `received` values count packets. `EVENTS` and `EVENT/s` count these events, not socket calls. The byte totals and traffic rates are exact.
 

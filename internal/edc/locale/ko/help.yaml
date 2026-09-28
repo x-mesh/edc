@@ -157,6 +157,7 @@ command:
       - "terminal에서는 기본으로 전체 화면 trace를 엽니다."
       - "/를 누르면 process, destination, event, source를 필터할 수 있습니다."
       - "s는 source 행, t는 target 행, e는 event 행, g는 event 스크롤을 표시합니다."
+      - "Tab은 다음 보기, Shift+Tab은 이전 보기로 바꿉니다."
       - "--group-by source, target, event로 group live 행을 표시합니다."
       - "그룹 화면은 event 수를 EVENT/s로 표시하고 socket payload traffic을 표시합니다."
       - "B/s는 byte rate이며 bps와 Mbps는 bit rate입니다. Mbps는 bps / 1,000,000입니다."

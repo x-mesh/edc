@@ -157,6 +157,7 @@ command:
       - "terminal では既定で全画面の trace を開きます。"
       - "/ で process、destination、event、source を絞り込みます。"
       - "s は source 行、t は target 行、e は event 行、g はスクロールを表示します。"
+      - "Tab で次の表示、Shift+Tab で前の表示に切り替えます。"
       - "--group-by source、target、event で group live 行を表示します。"
       - "グループ画面は event 数を EVENT/s、socket payload traffic を表示します。"
       - "B/s は byte rate、bps と Mbps は bit rate です。Mbps は bps / 1,000,000 です。"

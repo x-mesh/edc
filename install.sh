@@ -80,7 +80,8 @@ awk -v name="$asset" '$2 == name || $2 == "*" name' "$tmp/checksums.txt" > "$tmp
 (
 	cd "$tmp"
 	if command -v sha256sum >/dev/null 2>&1; then
-		sha256sum --check --quiet expected.txt
+		# BusyBox sha256sum on Alpine takes only the short options. -c prints "OK" lines on stdout.
+		sha256sum -c expected.txt >/dev/null
 	elif command -v shasum >/dev/null 2>&1; then
 		shasum -a 256 --check --status expected.txt
 	else

@@ -286,7 +286,7 @@ func traceScreenVisibleGroups(model traceScreenModel, report traceGroupReport) [
 const (
 	traceGroupMinLabelWidth = 14
 	traceGroupLastWidth     = len("tcp_receive_reset")
-	// traceBytes의 가장 긴 값은 1023.9KiB와 9999.9MiB라서 9칸이면 넓은 화면에서 열이 밀리지 않는다.
+	// traceBytes는 9999.9GiB까지 9칸 안에 쓰므로 넓은 화면에서 byte 열이 밀리지 않는다.
 	traceGroupWideByteWidth = 9
 	// 좁은 화면은 예전 6칸을 지켜야 TCP의 CON RET RST가 80칸 안에 남는다. 대신 traceCompactBytes로 짧게 쓴다.
 	traceGroupNarrowByteWidth = 6

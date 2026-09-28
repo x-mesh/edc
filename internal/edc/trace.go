@@ -484,6 +484,10 @@ func printTraceGroupReport(report traceGroupReport) {
 func traceBytes(bytes uint64) string {
 	const kib = 1024
 	const mib = 1024 * kib
+	const gib = 1024 * mib
+	if bytes >= gib {
+		return fmt.Sprintf("%.1fGiB", float64(bytes)/gib)
+	}
 	if bytes >= mib {
 		return fmt.Sprintf("%.1fMiB", float64(bytes)/mib)
 	}

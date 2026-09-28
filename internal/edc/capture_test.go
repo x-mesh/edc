@@ -385,6 +385,15 @@ func TestTraceScreenGroupColumnsStayAligned(t *testing.T) {
 	}
 }
 
+func TestTraceBytesUsesGiBForLargeValues(t *testing.T) {
+	for bytes, want := range map[uint64]string{0: "0B", 1023: "1023B", 1024: "1.0KiB", 1<<20 - 1: "1024.0KiB", 1 << 20: "1.0MiB", 1<<30 - 1: "1024.0MiB", 1 << 30: "1.0GiB", 10000 << 20: "9.8GiB", 9999 << 30: "9999.0GiB"} {
+		got := traceBytes(bytes)
+		if got != want || len(got) > traceGroupWideByteWidth {
+			t.Fatalf("traceBytes(%d) = %q, want %q", bytes, got, want)
+		}
+	}
+}
+
 func TestTraceCompactBytesFitsNarrowColumn(t *testing.T) {
 	for bytes, want := range map[uint64]string{0: "0B", 999: "999B", 1000: "1.0K", 10188: "9.9K", 10189: "10K", 200000: "195K", 1023487: "999K", 1023488: "1.0M", 5 << 30: "5.0G"} {
 		got := traceCompactBytes(bytes)

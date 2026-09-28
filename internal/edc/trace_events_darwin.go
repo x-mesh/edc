@@ -74,6 +74,7 @@ const (
 const (
 	darwinTCPClosed      = 0
 	darwinTCPListen      = 1
+	darwinTCPSynSent     = 2
 	darwinTCPEstablished = 4
 	darwinTCPTimeWait    = 10
 )
@@ -153,6 +154,11 @@ func decodeNtstatUpdate(message []byte) (ntstatSource, error) {
 	if err != nil {
 		return ntstatSource{}, fmt.Errorf("ntstat %s descriptor (%d bytes): %w", source.protocol, len(descriptor), err)
 	}
+	// 연결하지 않은 UDP socket은 datagram마다 목적지가 달라서 kernel이 비워 둔다. 0.0.0.0:0으로 두면 그 주소로
+	// 보낸 것처럼 보이고, --destination과 target 그룹에서 서로 다른 목적지가 하나로 묶인다.
+	if source.protocol == "udp" && (source.remote == "0.0.0.0:0" || source.remote == "[::]:0") {
+		source.remote = ""
+	}
 	return source, nil
 }
 
@@ -214,7 +220,7 @@ func darwinTCPStateName(state uint32) string {
 		return "CLOSE"
 	case darwinTCPListen:
 		return "LISTEN"
-	case 2:
+	case darwinTCPSynSent:
 		return "SYN_SENT"
 	case 3:
 		return "SYN_RECV"
@@ -257,6 +263,9 @@ type ntstatTrackedSource struct {
 	seen      bool
 	connected bool
 	closed    bool
+	// active는 socket이 CLOSED 말고 다른 상태를 거쳤거나 connect를 시도했는지 나타낸다. 만들기만 하고 연결하지
+	// 않은 socket은 Linux에서 상태 전이 event가 없으므로, 여기서도 event를 만들지 않는다.
+	active bool
 }
 
 type ntstatTracker struct {
@@ -298,6 +307,7 @@ func (tracker *ntstatTracker) updated(source ntstatSource, stamp traceStamp) []c
 		tracked.ntstatSource = source
 		tracked.seen = true
 		tracked.connected = source.state == darwinTCPListen || darwinTCPReached(source)
+		tracked.active = darwinTCPActive(source) || tracked.connected
 		tracked.closed = source.state == darwinTCPTimeWait
 		return nil
 	}
@@ -314,9 +324,16 @@ func (tracker *ntstatTracker) updated(source ntstatSource, stamp traceStamp) []c
 			tracked.connected = true
 			closedFrom = darwinTCPEstablished
 		}
-		// Linux는 TIME_WAIT에 들어갈 때 원래 socket을 CLOSE로 바꾸므로, 이 전이는 tcp_close 하나로만 보고한다.
-		closing = !tracked.closed && (source.state == darwinTCPTimeWait || (source.state == darwinTCPClosed && tracked.connected))
-		if connecting || (!closing && (!tracked.seen || previous.state != source.state)) {
+		active := tracked.active || darwinTCPActive(source) || connecting
+		// 거부되거나 시간이 지난 connect는 두 poll 사이에 SYN_SENT에서 CLOSED로 끝나서 CLOSED로 처음 보인다.
+		// Linux처럼 SYN_SENT에서 닫힌 것으로 보고한다.
+		if !tracked.seen && !connecting && source.state == darwinTCPClosed && darwinTCPActive(source) {
+			closedFrom = darwinTCPSynSent
+		}
+		// Linux는 TIME_WAIT에 들어갈 때 원래 socket을 CLOSE로 바꾸고, 거부된 connect도 CLOSE로 끝나므로
+		// 이 전이는 tcp_close 하나로만 보고한다.
+		closing = active && !tracked.closed && (source.state == darwinTCPTimeWait || source.state == darwinTCPClosed)
+		if connecting || (active && !closing && (!tracked.seen || previous.state != source.state)) {
 			name := "tcp_state"
 			if connecting {
 				name = "tcp_connect"
@@ -334,6 +351,7 @@ func (tracker *ntstatTracker) updated(source ntstatSource, stamp traceStamp) []c
 			}
 			events = append(events, event)
 		}
+		tracked.active = active
 	}
 	send, receive := source.protocol+"_send", source.protocol+"_receive"
 	if bytes, packets := counterDelta(source.counts.txBytes, previous.counts.txBytes), counterDelta(source.counts.txPackets, previous.counts.txPackets); source.carriesData(bytes, packets) {
@@ -362,6 +380,12 @@ func (tracker *ntstatTracker) updated(source ntstatSource, stamp traceStamp) []c
 	return events
 }
 
+// darwinTCPActive는 socket이 연결을 시도했는지 판단한다. connect가 실패해 CLOSED로 끝나도 상대 주소는 남는다.
+// packet counter는 SYN을 세지 않아서 근거가 되지 못한다.
+func darwinTCPActive(source ntstatSource) bool {
+	return source.state != darwinTCPClosed || (source.remote != "" && source.remote != "0.0.0.0:0" && source.remote != "[::]:0")
+}
+
 // darwinTCPReached는 socket이 연결을 맺은 적이 있는지 판단한다. 두 poll 사이에 연결과 종료가 모두
 // 끝나면 마지막 상태가 CLOSED일 수 있으므로, 받은 byte가 있으면 연결을 맺은 것으로 본다.
 func darwinTCPReached(source ntstatSource) bool {
@@ -377,7 +401,7 @@ func (tracker *ntstatTracker) removed(ref uint64, stamp traceStamp) []captureEve
 	if tracked.protocol == "tcp" && tracked.state == darwinTCPListen {
 		delete(tracker.listeners, tracked.localPort)
 	}
-	if tracked.protocol != "tcp" || tracked.closed {
+	if tracked.protocol != "tcp" || tracked.closed || !tracked.active {
 		return nil
 	}
 	return []captureEvent{tracked.closeEvent(tracked.state, stamp)}

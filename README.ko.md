@@ -772,6 +772,7 @@ macOS에서는 다음 값을 관측할 수 없어서 텍스트 출력에는 `-`�
 - `connect_ms`: counter에 연결 시간이 없습니다.
 - `reset`, `resets`: counter로는 RST packet을 볼 수 없습니다.
 - `retransmissions`: counter는 재전송한 packet 수가 아니라 byte 수를 줍니다. 이 byte 수는 `--raw` 출력에서 `tcp_retransmit` event의 `bytes` 필드에 담깁니다.
+- 연결하지 않은 UDP socket의 목적지: kernel이 datagram마다의 목적지를 기록하지 않으므로 목적지를 비워 두고, 표에는 `-`로 표시합니다.
 
 macOS의 event 하나는 직전에 읽은 값 이후의 변화를 나타냅니다. `bytes` 필드에는 byte 수를, `packets` 필드에는 packet 수를 담습니다. UDP의 `sent`와 `received`는 packet 수를 셉니다. `EVENTS`와 `EVENT/s`는 socket 호출이 아니라 이렇게 만든 event의 수를 셉니다. byte 합계와 traffic rate는 정확합니다.
 

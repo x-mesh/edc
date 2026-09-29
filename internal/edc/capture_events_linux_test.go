@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -109,6 +110,36 @@ func TestCaptureAttachmentsFollowTheProtocol(t *testing.T) {
 		if !slices.Equal(gotTracepoints, test.tracepoints) || !slices.Equal(gotTracing, test.tracing) {
 			t.Fatalf("protocol %q: tracepoints %q, tracing %q; want %q, %q", test.protocol, gotTracepoints, gotTracing, test.tracepoints, test.tracing)
 		}
+	}
+}
+
+func TestCaptureEventFiltersFollowTheProtocol(t *testing.T) {
+	for protocol, want := range map[string]captureEventFilter{
+		"":    {udpEvents: true, dnsQueries: true},
+		"tcp": {dnsQueries: true},
+		"udp": {udpEvents: true},
+		"dns": {dnsQueries: true, tcpStatePort: 53},
+	} {
+		if got := captureEventFilterFor(protocol); got != want {
+			t.Fatalf("protocol %q filter = %+v, want %+v", protocol, got, want)
+		}
+	}
+	// 변수 이름과 기본값은 BPF C 코드에 있다. 이름이 어긋나면 kernel에 불러오기 전에 여기서 실패한다.
+	spec, err := loadCaptureEvents()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var variables captureEventsVariableSpecs
+	if err := spec.Assign(&variables); err != nil {
+		t.Fatal(err)
+	}
+	var udpEvents, dnsQueries uint8
+	var tcpStatePort uint16
+	if err := errors.Join(variables.EmitUdpEvents.Get(&udpEvents), variables.EmitDnsQueries.Get(&dnsQueries), variables.TcpStatePort.Get(&tcpStatePort)); err != nil {
+		t.Fatal(err)
+	}
+	if udpEvents != 1 || dnsQueries != 1 || tcpStatePort != 0 {
+		t.Fatalf("BPF defaults = %d, %d, %d; capture needs every event", udpEvents, dnsQueries, tcpStatePort)
 	}
 }
 

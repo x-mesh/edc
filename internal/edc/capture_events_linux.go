@@ -257,6 +257,49 @@ func captureAttachments(objects *captureEventsObjects, protocol string) ([]captu
 	return tracepoints, tracing
 }
 
+// captureEventFilter는 BPF를 불러오기 전에 정하는 event 필터다. protocol이 쓰지 않을 event를 kernel에서 버린다.
+type captureEventFilter struct {
+	udpEvents    bool
+	dnsQueries   bool
+	tcpStatePort uint16
+}
+
+func captureEventFilterFor(protocol string) captureEventFilter {
+	filter := captureEventFilter{udpEvents: true, dnsQueries: true}
+	switch protocol {
+	case "tcp":
+		// skb_consume_udp는 target 이름을 지을 DNS 응답만 보낸다.
+		filter.udpEvents = false
+	case "udp":
+		filter.dnsQueries = false
+	case "dns":
+		filter.udpEvents, filter.tcpStatePort = false, 53
+	}
+	return filter
+}
+
+func loadCaptureEventsFor(protocol string, objects *captureEventsObjects) error {
+	spec, err := loadCaptureEvents()
+	if err != nil {
+		return err
+	}
+	var variables captureEventsVariableSpecs
+	if err := spec.Assign(&variables); err != nil {
+		return err
+	}
+	filter := captureEventFilterFor(protocol)
+	flag := func(on bool) uint8 {
+		if on {
+			return 1
+		}
+		return 0
+	}
+	if err := errors.Join(variables.EmitUdpEvents.Set(flag(filter.udpEvents)), variables.EmitDnsQueries.Set(flag(filter.dnsQueries)), variables.TcpStatePort.Set(filter.tcpStatePort)); err != nil {
+		return err
+	}
+	return spec.LoadAndAssign(objects, nil)
+}
+
 func collectCaptureEventsFor(protocol string, duration time.Duration, onEvent func(captureEvent) error, stop <-chan struct{}) (captureSummary, error) {
 	if err := rlimit.RemoveMemlock(); err != nil {
 		return captureSummary{}, fmt.Errorf("remove memlock limit: %w", err)
@@ -265,7 +308,7 @@ func collectCaptureEventsFor(protocol string, duration time.Duration, onEvent fu
 	names := newDNSNameCache()
 	seedResolverCache(names)
 	objects := captureEventsObjects{}
-	if err := loadCaptureEventsObjects(&objects, nil); err != nil {
+	if err := loadCaptureEventsFor(protocol, &objects); err != nil {
 		return captureSummary{}, fmt.Errorf("load eBPF objects: %w", err)
 	}
 	defer objects.Close()

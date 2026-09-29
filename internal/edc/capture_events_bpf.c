@@ -58,7 +58,8 @@ volatile const __u8 emit_udp_events = 1;
 // server만 켠다. 서버 쪽은 기본으로 끈다. 바쁜 DNS 서버에서는 이 레코드가 client 쪽보다 훨씬 많다.
 volatile const __u8 emit_dns_sent = 1;
 volatile const __u8 emit_dns_server = 0;
-// 0이 아니면 inet_sock_set_state는 상대 port가 이 값인 socket만 본다. trace dns는 53만 본다.
+// 0이 아니면 inet_sock_set_state는 로컬이나 상대 port가 이 값인 socket만 본다. trace dns는 53만 본다. 상대 port는 client 쪽
+// 연결, 로컬 port는 이 host의 DNS 서버가 받은 연결이다.
 volatile const __u16 tcp_state_port = 0;
 
 struct {
@@ -254,7 +255,7 @@ static __always_inline void finish_event(struct event *event) {
 
 SEC("tracepoint/sock/inet_sock_set_state")
 int inet_sock_set_state(struct inet_sock_set_state_ctx *ctx) {
-	if (tcp_state_port && ctx->dport != tcp_state_port) {
+	if (tcp_state_port && ctx->dport != tcp_state_port && ctx->sport != tcp_state_port) {
 		return 0;
 	}
 	// SYN_SENT와 LISTEN 전이는 connect()와 listen() 안에서 일어나므로 현재 태스크가 socket의 주인이다.

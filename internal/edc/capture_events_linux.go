@@ -252,8 +252,9 @@ func captureAttachments(objects *captureEventsObjects, protocol string) ([]captu
 		{[]string{"http"}, "fentry/tcp_sendmsg", objects.TcpSendmsgEntry},
 		{[]string{"http"}, "fentry/tcp_recvmsg", objects.TcpRecvmsgEntry},
 		{[]string{"http"}, "fexit/tcp_recvmsg", objects.TcpRecvmsgExit},
-		{tcp, "fentry/inet_csk_accept", objects.InetCskAcceptEntry},
-		{tcp, "fexit/tcp_create_openreq_child", objects.TcpCreateOpenreqChildExit},
+		// 서버 쪽 DNS over TCP도 받은 연결의 process를 알아야 해서 dns가 함께 쓴다.
+		{[]string{"tcp", "dns"}, "fentry/inet_csk_accept", objects.InetCskAcceptEntry},
+		{[]string{"tcp", "dns"}, "fexit/tcp_create_openreq_child", objects.TcpCreateOpenreqChildExit},
 	}
 	// 빈 protocol은 capture다. capture는 TCP와 UDP hook을 모두 쓰고 DNS 전용 hook은 쓰지 않는다.
 	wanted := []string{protocol}

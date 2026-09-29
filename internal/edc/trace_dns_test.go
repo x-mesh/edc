@@ -352,3 +352,42 @@ func TestDNSLatencySplitsNetworkAndReadDelay(t *testing.T) {
 		t.Fatalf("counts = network %v, read delay %v max %v, latency max %v", finished.NetworkAvgMS, finished.ReadDelayAvgMS, finished.ReadDelayMaxMS, finished.LatencyMaxMS)
 	}
 }
+
+// 서버가 잘린 응답을 보낸 client가 TCP로 다시 연결하면, 서버 쪽 accept event에 그 질의의 이름을 붙인다.
+func TestDNSServerSideTCPAcceptFollowsATruncatedAnswer(t *testing.T) {
+	tracker := newDNSQueryTracker(true)
+	question := new(dns.Msg)
+	question.SetQuestion("big.example.com.", dns.TypeTXT)
+	received := dnsTestPacket(t, question, 1_000_000, "127.0.0.53:53")
+	received.sent, received.destination, received.pid = false, "127.0.0.1:41000", 50
+	tracker.event(received, 0)
+	reply := dnsTestReply(t, question, dns.RcodeSuccess)
+	reply.Truncated = true
+	sent := dnsTestPacket(t, reply, 1_200_000, "127.0.0.53:53")
+	sent.sent, sent.destination, sent.pid = true, "127.0.0.1:41000", 50
+	if answer, ok := tracker.event(sent, 0); !ok || answer.Event != traceDNSTruncatedEvent || answer.Side != traceServerSide {
+		t.Fatalf("server truncated answer = %#v, %t", answer, ok)
+	}
+	// accept event는 socket 주인을 아직 모를 수 있다. pid 없이도 client host로 이름을 찾는다.
+	accept := captureEvent{Protocol: "tcp", Event: "tcp_accept", Source: "127.0.0.53:53", Destination: "127.0.0.1:52000"}
+	event, ok := tracker.tcpEvent(accept)
+	if !ok || event.Event != traceDNSTCPAcceptEvent || event.Side != traceServerSide || event.Target != "big.example.com" || event.QueryType != "TXT" {
+		t.Fatalf("server tcp accept = %#v, %t", event, ok)
+	}
+	for _, other := range []captureEvent{
+		{Protocol: "tcp", Event: "tcp_accept", Source: "127.0.0.1:8080", Destination: "127.0.0.1:52000"},
+		{Protocol: "tcp", Event: "tcp_connect", Source: "127.0.0.1:52000", Destination: "127.0.0.53:53"},
+	} {
+		if dropped, ok := tracker.tcpEvent(other); ok {
+			t.Fatalf("server tracker kept %#v as %#v", other, dropped)
+		}
+	}
+	if client, ok := newDNSQueryTracker(false).tcpEvent(accept); ok {
+		t.Fatalf("client tracker kept a server accept: %#v", client)
+	}
+	var counts traceDNSCounts
+	counts.observe(event)
+	if counts.TCPConnections != 1 || counts.Errors != 0 {
+		t.Fatalf("counts = %#v", counts)
+	}
+}

@@ -21,6 +21,7 @@ const (
 	traceDNSTruncatedEvent  = "dns_truncated"
 	traceDNSTCPConnectEvent = "dns_tcp_connect"
 	traceDNSTCPFailEvent    = "dns_tcp_fail"
+	traceDNSTCPAcceptEvent  = "dns_tcp_accept"
 	traceDNSHeaderSize      = 12
 	// traceDNSPendingLimit은 응답을 기다리는 질의 수의 상한이다. 응답이 오지 않는 질의가 쌓여도 메모리를 제한한다.
 	traceDNSPendingLimit = 65536
@@ -55,10 +56,11 @@ type dnsPendingQuery struct {
 	queryType  string
 }
 
-// dnsTruncatedKey는 잘린 응답을 받은 process와 서버다. 그 process가 같은 서버에 TCP로 다시 물으면 이 이름을 붙인다.
+// dnsTruncatedKey는 잘린 응답이 오간 process와 상대 host다. client 쪽은 응답을 받은 process와 서버, 서버 쪽은 응답을 보낸
+// client다. 그 client가 TCP로 다시 물으면 이 이름을 붙인다. 서버 쪽 accept event는 process를 모를 수 있어 pid를 0으로 둔다.
 type dnsTruncatedKey struct {
-	pid    uint32
-	server string
+	pid  uint32
+	peer string
 }
 
 // dnsQueryTracker는 응답을 같은 로컬 port, 상대, transaction ID의 질의와 짝지어 응답 시간을 잰다. client 쪽은 질의를
@@ -161,38 +163,40 @@ func (tracker *dnsQueryTracker) event(packet dnsPacket, clockOffset int64) (capt
 	// TC bit는 응답이 UDP에 다 들어가지 않았다는 뜻이다. client는 같은 서버에 TCP로 다시 묻는다.
 	if flags&0x0200 != 0 {
 		event.Event = traceDNSTruncatedEvent
-		if server {
-			return event, true
-		}
 		if len(tracker.truncated) >= traceDNSTruncatedLimit {
 			clear(tracker.truncated)
 		}
-		tracker.truncated[dnsTruncatedKey{pid: packet.pid, server: traceDNSServerHost(packet.destination)}] = dnsPendingQuery{name: event.Target, queryType: event.QueryType}
+		tracker.truncated[tracker.truncatedKey(packet.pid, packet.destination)] = dnsPendingQuery{name: event.Target, queryType: event.QueryType}
 	}
 	return event, true
 }
 
-// tcpEvent는 port 53으로 가는 TCP 연결을 DNS event로 바꾼다. TCP로 주고받는 DNS message는 읽지 않는다.
+// tcpEvent는 port 53의 TCP 연결을 DNS event로 바꾼다. client 쪽은 port 53으로 가는 연결과 실패를, 서버 쪽은 로컬 port 53이
+// 받은 연결을 본다. TCP로 주고받는 DNS message는 읽지 않는다.
 func (tracker *dnsQueryTracker) tcpEvent(event captureEvent) (captureEvent, bool) {
-	name := ""
-	switch {
-	case tracker.server || traceProtocol(event) != "tcp":
-		return captureEvent{}, false
-	case event.Event == "tcp_connect":
-		name = traceDNSTCPConnectEvent
-	case event.Event == "tcp_close" && event.OldState == "SYN_SENT":
-		name = traceDNSTCPFailEvent
-	default:
+	if traceProtocol(event) != "tcp" {
 		return captureEvent{}, false
 	}
-	if port, ok := traceAddressPort(event.Destination); !ok || port != 53 {
+	name, port := "", 0
+	switch {
+	case tracker.server && event.Event == "tcp_accept":
+		name, port = traceDNSTCPAcceptEvent, traceDNSPort(event.Source)
+	case !tracker.server && event.Event == "tcp_connect":
+		name, port = traceDNSTCPConnectEvent, traceDNSPort(event.Destination)
+	case !tracker.server && event.Event == "tcp_close" && event.OldState == "SYN_SENT":
+		name, port = traceDNSTCPFailEvent, traceDNSPort(event.Destination)
+	}
+	if port != 53 {
 		return captureEvent{}, false
 	}
 	dnsEvent := captureEvent{
 		TimestampNS: event.TimestampNS, BootTimeNS: event.BootTimeNS, Event: name, Protocol: "dns", PID: event.PID, Process: event.Process,
 		CgroupID: event.CgroupID, Source: event.Source, Destination: event.Destination,
 	}
-	key := dnsTruncatedKey{pid: event.PID, server: traceDNSServerHost(event.Destination)}
+	if tracker.server {
+		dnsEvent.Side = traceServerSide
+	}
+	key := tracker.truncatedKey(event.PID, event.Destination)
 	if query, ok := tracker.truncated[key]; ok {
 		delete(tracker.truncated, key)
 		dnsEvent.Target, dnsEvent.QueryType = query.name, query.queryType
@@ -200,7 +204,19 @@ func (tracker *dnsQueryTracker) tcpEvent(event captureEvent) (captureEvent, bool
 	return dnsEvent, true
 }
 
-func traceDNSServerHost(address string) string {
+func (tracker *dnsQueryTracker) truncatedKey(pid uint32, peer string) dnsTruncatedKey {
+	if tracker.server {
+		pid = 0
+	}
+	return dnsTruncatedKey{pid: pid, peer: traceDNSHost(peer)}
+}
+
+func traceDNSPort(address string) int {
+	port, _ := traceAddressPort(address)
+	return port
+}
+
+func traceDNSHost(address string) string {
 	host, _, err := net.SplitHostPort(address)
 	if err != nil {
 		return address
@@ -226,7 +242,7 @@ func traceDNSAnswerEvent(rcode, answers int) string {
 // traceDNSError는 조회가 실패한 결과다. 잘린 응답과 TCP 연결은 TCP로 다시 묻는 과정이라 오류로 세지 않는다.
 func traceDNSError(event string) bool {
 	switch event {
-	case traceDNSQueryEvent, "dns_noerror", "dns_nodata", traceDNSTruncatedEvent, traceDNSTCPConnectEvent:
+	case traceDNSQueryEvent, "dns_noerror", "dns_nodata", traceDNSTruncatedEvent, traceDNSTCPConnectEvent, traceDNSTCPAcceptEvent:
 		return false
 	}
 	return true
@@ -257,7 +273,7 @@ type traceDNSCounts struct {
 	Answers    uint64 `json:"answers"`
 	Errors     uint64 `json:"errors"`
 	Unanswered uint64 `json:"unanswered"`
-	// TCPConnections는 port 53으로 가는 TCP 연결 시도다. 실패한 연결은 Errors에도 들어간다.
+	// TCPConnections는 port 53의 TCP 연결이다. client 쪽은 연결 시도, 서버 쪽은 받은 연결이다. 실패한 연결은 Errors에도 들어간다.
 	TCPConnections uint64   `json:"tcp_connections"`
 	LatencyAvgMS   *float64 `json:"latency_avg_ms"`
 	LatencyMaxMS   *float64 `json:"latency_max_ms"`
@@ -277,7 +293,7 @@ func (counts *traceDNSCounts) observe(event captureEvent) {
 	case traceDNSQueryEvent:
 		counts.Queries++
 		return
-	case traceDNSTCPConnectEvent, traceDNSTCPFailEvent:
+	case traceDNSTCPConnectEvent, traceDNSTCPFailEvent, traceDNSTCPAcceptEvent:
 		counts.TCPConnections++
 		if traceDNSError(event.Event) {
 			counts.Errors++

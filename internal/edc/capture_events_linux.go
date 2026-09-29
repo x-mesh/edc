@@ -181,8 +181,9 @@ func captureEventsRun(duration time.Duration, output string) error {
 	return encoder.Encode(summary)
 }
 
-// closeCaptureLinks는 link를 동시에 닫는다. 떼어 낼 때마다 kernel이 RCU grace period를 기다려서,
-// 순서대로 닫으면 trace를 끝낼 때마다 1초 넘게 걸렸다. 동시에 닫으면 대기가 겹친다.
+// closeCaptureLinks는 link를 동시에 닫는다. 떼어 낼 때마다 kernel 안에서 기다림이 있어, 순서대로 닫으면
+// trace를 끝낼 때마다 1초 넘게 걸렸다. 동시에 닫으면 tracepoint link의 기다림은 겹친다. fentry와 fexit link는
+// 동시에 닫아도 kernel이 하나씩 떼어 낸다.
 func closeCaptureLinks(links []link.Link) {
 	var wait sync.WaitGroup
 	for _, current := range links {

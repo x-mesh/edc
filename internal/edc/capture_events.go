@@ -3,6 +3,8 @@ package edc
 //go:generate go run github.com/cilium/ebpf/cmd/bpf2go -go-package edc captureEvents capture_events_bpf.c -- -I./bpf
 
 import (
+	"net"
+	"net/netip"
 	"sort"
 	"strings"
 	"time"
@@ -61,6 +63,8 @@ type tcpTraceConnection struct {
 	established     bool
 	handshake       bool
 	listener        bool
+	portSeen        bool
+	portless        bool
 	traceTraffic
 }
 
@@ -70,6 +74,8 @@ func (connection *tcpTraceConnection) result() string {
 	switch {
 	case connection.established:
 		return "established"
+	case connection.unbound():
+		return "failed"
 	case !connection.handshake:
 		return "existing"
 	case connection.closed || connection.reset:
@@ -77,6 +83,26 @@ func (connection *tcpTraceConnection) result() string {
 	default:
 		return "incomplete"
 	}
+}
+
+// unbound는 local port를 한 번도 갖지 못한 socket이다. connect()가 SYN_SENT 전에 실패하면(경로가 없는 IPv6 등)
+// kernel이 port를 되돌려서 destroy만 남는다. 주소가 없는 event만 본 socket은 근거가 없어 여기에 넣지 않는다.
+func (connection *tcpTraceConnection) unbound() bool {
+	return connection.portless && !connection.portSeen && !connection.handshake && !connection.established
+}
+
+// counted는 행과 합계에 넣을 socket이다. listen socket과, connect하지 않고 닫힌 socket은 연결이 아니다.
+func (connection *tcpTraceConnection) counted() bool {
+	return !connection.listener && !(connection.unbound() && traceAddressUnspecified(connection.Destination))
+}
+
+func traceAddressUnspecified(address string) bool {
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		return address == ""
+	}
+	parsed, err := netip.ParseAddr(host)
+	return err == nil && parsed.IsUnspecified()
 }
 
 func tcpTraceHandshakeState(state string) bool {
@@ -275,6 +301,13 @@ func (summarizer *tcpTraceSummarizer) observe(event captureEvent) {
 	if event.NewState == "LISTEN" || event.OldState == "LISTEN" && event.NewState == "CLOSE" {
 		connection.listener = true
 	}
+	if event.Source != "" {
+		if strings.HasSuffix(event.Source, ":0") {
+			connection.portless = true
+		} else {
+			connection.portSeen = true
+		}
+	}
 	switch event.Event {
 	case "tcp_send", "tcp_receive":
 		connection.traceTraffic.observe(event)
@@ -301,7 +334,7 @@ func (summarizer *tcpTraceSummarizer) finish(socket uint64) {
 	connection := summarizer.active[socket]
 	delete(summarizer.active, socket)
 	delete(summarizer.firstSeen, socket)
-	if connection.listener {
+	if !connection.counted() {
 		return
 	}
 	connection.Result = connection.result()
@@ -321,7 +354,7 @@ func (summarizer *tcpTraceSummarizer) report(summary captureSummary, duration ti
 	result.Connections = make([]tcpTraceConnection, 0, len(summarizer.finished)+len(summarizer.active))
 	result.Connections = append(result.Connections, summarizer.finished...)
 	for _, stored := range summarizer.active {
-		if stored.listener {
+		if !stored.counted() {
 			continue
 		}
 		connection := *stored

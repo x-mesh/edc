@@ -120,15 +120,77 @@ type traceScope struct {
 }
 
 func (options tcpTraceOptions) scope(protocol string) traceScope {
-	return traceScope{protocol: protocol, server: options.side == traceDNSServerSide}
+	return traceScope{protocol: protocol, server: options.side == traceServerSide}
 }
 
-// traceLabel은 화면 머리글에 쓰는 trace 이름이다. 서버 쪽 DNS trace는 client 쪽과 같은 event 이름을 쓰므로 머리글로 구분한다.
+// traceLabel은 화면 머리글에 쓰는 trace 이름이다. 서버 쪽 trace는 client 쪽과 같은 event 이름을 쓰므로 머리글로 구분한다.
 func traceLabel(protocol, side string) string {
-	if side == traceDNSServerSide {
+	if side == traceServerSide {
 		return protocol + " --side " + side
 	}
 	return protocol
+}
+
+// traceClientSide와 traceServerSide는 --side 값이다. 서버 쪽 event와 요약에는 Side가 server로 붙는다.
+const (
+	traceClientSide = "client"
+	traceServerSide = "server"
+)
+
+// traceSpan은 두 monotonic 시각 사이의 밀리초다. CPU마다 읽은 시각이 조금 어긋나도 음수로 내지 않는다.
+func traceSpan(start, end uint64) *float64 {
+	span := float64(end-min(end, start)) / float64(time.Millisecond)
+	return &span
+}
+
+// traceSpans는 시간 값의 합, 개수, 최댓값이다.
+type traceSpans struct {
+	total   float64
+	count   uint64
+	maximum float64
+}
+
+func (spans *traceSpans) observe(value *float64) {
+	if value == nil {
+		return
+	}
+	spans.total += *value
+	spans.count++
+	if *value > spans.maximum {
+		spans.maximum = *value
+	}
+}
+
+func (spans traceSpans) summary() (*float64, *float64) {
+	if spans.count == 0 {
+		return nil, nil
+	}
+	average, maximum := spans.total/float64(spans.count), spans.maximum
+	return &average, &maximum
+}
+
+// traceLatency는 밀리초 값을 소수 한 자리로 쓴다. 값이 없으면 -다.
+func traceLatency(latency *float64, unit string) string {
+	if latency == nil {
+		return "-"
+	}
+	return fmt.Sprintf("%.1f%s", *latency, unit)
+}
+
+// traceResultCounts는 결과별 개수를 많은 순서로 잇는다. 예: "noerror 3, nxdomain 1", "200 5, 404 1".
+func traceResultCounts(results map[string]uint64) string {
+	names := slices.Collect(maps.Keys(results))
+	sort.Slice(names, func(i, j int) bool {
+		if results[names[i]] != results[names[j]] {
+			return results[names[i]] > results[names[j]]
+		}
+		return names[i] < names[j]
+	})
+	parts := make([]string, 0, len(names))
+	for _, name := range names {
+		parts = append(parts, fmt.Sprintf("%s %d", name, results[name]))
+	}
+	return emptyAs(strings.Join(parts, ", "), "-")
 }
 
 func knownTraceProtocol(protocol string) bool {
@@ -168,7 +230,7 @@ func runTrace(args []string) int {
 	set.BoolVar(&options.detail, "detail", false, T("command.trace.option.detail"))
 	set.BoolVar(&options.detail, "d", false, T("command.trace.option.detail"))
 	set.BoolVar(&options.yes, "yes", false, T("command.trace.option.yes"))
-	set.StringVar(&options.side, "side", traceDNSClientSide, T("command.trace.option.side"))
+	set.StringVar(&options.side, "side", traceClientSide, T("command.trace.option.side"))
 	if err := set.Parse(args[1:]); err != nil {
 		return 2
 	}
@@ -196,11 +258,11 @@ func runTrace(args []string) int {
 		fmt.Fprintln(os.Stderr, T("cli.trace.group_by_protocol", options.groupBy, args[0]))
 		return 2
 	}
-	if options.side != traceDNSClientSide && options.side != traceDNSServerSide {
+	if options.side != traceClientSide && options.side != traceServerSide {
 		fmt.Fprintln(os.Stderr, T("cli.trace.side_range"))
 		return 2
 	}
-	if options.side == traceDNSServerSide && !traceProtocols[args[0]].serverSide {
+	if options.side == traceServerSide && !traceProtocols[args[0]].serverSide {
 		fmt.Fprintln(os.Stderr, T("cli.trace.side_protocol", args[0]))
 		return 2
 	}
@@ -911,7 +973,7 @@ func traceGroupLabel(groupBy string) string {
 
 func printTraceGroupReport(report traceGroupReport) {
 	title := strings.ToUpper(report.Protocol)
-	if report.Side == traceDNSServerSide {
+	if report.Side == traceServerSide {
 		title += " server"
 	}
 	fmt.Fprintf(os.Stdout, "%s trace grouped by %s: %s\n\n", title, report.GroupBy, (time.Duration(report.DurationMS) * time.Millisecond).String())

@@ -557,7 +557,7 @@ func runTraceScreen(protocol string, options tcpTraceOptions) int {
 	stopCapture := func() { stopOnce.Do(func() { close(stop) }) }
 	started := time.Now()
 	go func() {
-		events, summary, err := collectTraceEventsLive(options.duration, func(event captureEvent) error {
+		events, summary, err := collectTraceEventsLive(protocol, options.duration, func(event captureEvent) error {
 			if traceProtocol(event) != protocol || !traceEventMatches(event, options.process, options.destination) {
 				return nil
 			}

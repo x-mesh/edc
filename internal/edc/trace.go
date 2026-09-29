@@ -84,7 +84,7 @@ func runTrace(args []string) int {
 	} else if options.jsonPath == "" && options.groupBy == "" {
 		printTraceEventHeader(args[0])
 	}
-	events, summary, err = collectTraceEventsLive(options.duration, func(event captureEvent) error {
+	events, summary, err = collectTraceEventsLive(args[0], options.duration, func(event captureEvent) error {
 		if traceProtocol(event) != args[0] {
 			return nil
 		}

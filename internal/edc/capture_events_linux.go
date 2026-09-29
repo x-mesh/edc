@@ -14,8 +14,10 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -179,11 +181,66 @@ func captureEventsRun(duration time.Duration, output string) error {
 	return encoder.Encode(summary)
 }
 
+// closeCaptureLinks는 link를 동시에 닫는다. 떼어 낼 때마다 kernel 안에서 기다림이 있어, 순서대로 닫으면
+// trace를 끝낼 때마다 1초 넘게 걸렸다. 동시에 닫으면 tracepoint link의 기다림은 겹친다. fentry와 fexit link는
+// 동시에 닫아도 kernel이 하나씩 떼어 낸다.
+func closeCaptureLinks(links []link.Link) {
+	var wait sync.WaitGroup
+	for _, current := range links {
+		wait.Go(func() { _ = current.Close() })
+	}
+	wait.Wait()
+}
+
 func collectCaptureEvents(duration time.Duration, onEvent func(captureEvent) error) ([]captureEvent, captureSummary, error) {
 	return collectCaptureEventsUntil(duration, onEvent, nil)
 }
 
 func collectCaptureEventsUntil(duration time.Duration, onEvent func(captureEvent) error, stop <-chan struct{}) ([]captureEvent, captureSummary, error) {
+	return collectCaptureEventsFor("", duration, onEvent, stop)
+}
+
+type captureTracepoint struct {
+	protocol, group, name string
+	prog                  *ebpf.Program
+}
+
+type captureTracing struct {
+	protocol, name string
+	prog           *ebpf.Program
+}
+
+// captureAttachments는 protocol에 필요한 hook만 고른다. fentry와 fexit는 뗄 때 kernel이 하나씩 처리해 hook마다
+// 0.1초 넘게 걸리므로, 쓰지 않는 hook을 붙이면 trace를 끝낼 때마다 그만큼 늦어진다. 빈 protocol은 모든 hook을 고른다.
+func captureAttachments(objects *captureEventsObjects, protocol string) ([]captureTracepoint, []captureTracing) {
+	tracepoints := []captureTracepoint{
+		{"tcp", "sock", "inet_sock_set_state", objects.InetSockSetState},
+		{"tcp", "tcp", "tcp_retransmit_skb", objects.TcpRetransmitSkb},
+		{"tcp", "tcp", "tcp_send_reset", objects.TcpSendReset},
+		{"tcp", "tcp", "tcp_receive_reset", objects.TcpReceiveReset},
+		{"tcp", "tcp", "tcp_destroy_sock", objects.TcpDestroySock},
+		{"tcp", "sock", "sock_send_length", objects.TcpSendLength},
+		{"tcp", "sock", "sock_recv_length", objects.TcpRecvLength},
+	}
+	// skb_consume_udp는 두 protocol이 쓴다. UDP 수신 event와 함께, TCP target의 이름을 짓는 DNS 응답도 이 hook이 읽는다.
+	tracing := []captureTracing{
+		{"udp", "fentry/udp_send_skb", objects.UdpSendSkbEntry},
+		{"udp", "fexit/udp_send_skb", objects.UdpSendSkbExit},
+		{"udp", "fentry/udp_v6_send_skb", objects.UdpV6SendSkbEntry},
+		{"udp", "fexit/udp_v6_send_skb", objects.UdpV6SendSkbExit},
+		{"", "fentry/skb_consume_udp", objects.SkbConsumeUdpEntry},
+		{"tcp", "fentry/inet_csk_accept", objects.InetCskAcceptEntry},
+		{"tcp", "fexit/tcp_create_openreq_child", objects.TcpCreateOpenreqChildExit},
+	}
+	unwanted := func(hookProtocol string) bool {
+		return protocol != "" && hookProtocol != "" && hookProtocol != protocol
+	}
+	tracepoints = slices.DeleteFunc(tracepoints, func(hook captureTracepoint) bool { return unwanted(hook.protocol) })
+	tracing = slices.DeleteFunc(tracing, func(hook captureTracing) bool { return unwanted(hook.protocol) })
+	return tracepoints, tracing
+}
+
+func collectCaptureEventsFor(protocol string, duration time.Duration, onEvent func(captureEvent) error, stop <-chan struct{}) ([]captureEvent, captureSummary, error) {
 	if err := rlimit.RemoveMemlock(); err != nil {
 		return nil, captureSummary{}, fmt.Errorf("remove memlock limit: %w", err)
 	}
@@ -196,37 +253,9 @@ func collectCaptureEventsUntil(duration time.Duration, onEvent func(captureEvent
 	}
 	defer objects.Close()
 
-	attachments := []struct {
-		group string
-		name  string
-		prog  *ebpf.Program
-	}{
-		{"sock", "inet_sock_set_state", objects.InetSockSetState},
-		{"tcp", "tcp_retransmit_skb", objects.TcpRetransmitSkb},
-		{"tcp", "tcp_send_reset", objects.TcpSendReset},
-		{"tcp", "tcp_receive_reset", objects.TcpReceiveReset},
-		{"tcp", "tcp_destroy_sock", objects.TcpDestroySock},
-		{"sock", "sock_send_length", objects.TcpSendLength},
-		{"sock", "sock_recv_length", objects.TcpRecvLength},
-	}
-	tracing := []struct {
-		name string
-		prog *ebpf.Program
-	}{
-		{"fentry/udp_send_skb", objects.UdpSendSkbEntry},
-		{"fexit/udp_send_skb", objects.UdpSendSkbExit},
-		{"fentry/udp_v6_send_skb", objects.UdpV6SendSkbEntry},
-		{"fexit/udp_v6_send_skb", objects.UdpV6SendSkbExit},
-		{"fentry/skb_consume_udp", objects.SkbConsumeUdpEntry},
-		{"fentry/inet_csk_accept", objects.InetCskAcceptEntry},
-		{"fexit/tcp_create_openreq_child", objects.TcpCreateOpenreqChildExit},
-	}
+	attachments, tracing := captureAttachments(&objects, protocol)
 	links := make([]link.Link, 0, len(attachments)+len(tracing))
-	closeLinks := func() {
-		for _, current := range links {
-			_ = current.Close()
-		}
-	}
+	closeLinks := func() { closeCaptureLinks(links) }
 	for _, attachment := range attachments {
 		attached, err := link.Tracepoint(attachment.group, attachment.name, attachment.prog, nil)
 		if err != nil {
@@ -244,11 +273,7 @@ func collectCaptureEventsUntil(duration time.Duration, onEvent func(captureEvent
 		}
 		links = append(links, attached)
 	}
-	defer func() {
-		for _, current := range links {
-			_ = current.Close()
-		}
-	}()
+	defer closeLinks()
 
 	reader, err := ringbuf.NewReader(objects.Events)
 	if err != nil {

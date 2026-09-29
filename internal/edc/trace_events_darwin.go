@@ -634,7 +634,8 @@ func (collector *ntstatCollector) start() error {
 	return nil
 }
 
-func collectTraceEventsLive(duration time.Duration, onEvent func(captureEvent) error, stop <-chan struct{}) ([]captureEvent, captureSummary, error) {
+// protocol은 쓰지 않는다. ntstat는 TCP와 UDP provider를 함께 구독하고, 호출자가 protocol로 거른다.
+func collectTraceEventsLive(_ string, duration time.Duration, onEvent func(captureEvent) error, stop <-chan struct{}) ([]captureEvent, captureSummary, error) {
 	client, err := openNtstat()
 	if err != nil {
 		return nil, captureSummary{}, err

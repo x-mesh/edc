@@ -255,6 +255,9 @@ func captureAttachments(objects *captureEventsObjects, protocol string) ([]captu
 		// 서버 쪽 DNS over TCP도 받은 연결의 process를 알아야 해서 dns가 함께 쓴다.
 		{[]string{"tcp", "dns"}, "fentry/inet_csk_accept", objects.InetCskAcceptEntry},
 		{[]string{"tcp", "dns"}, "fexit/tcp_create_openreq_child", objects.TcpCreateOpenreqChildExit},
+		// SYN_SENT 전에 실패한 connect도 process를 알려고 connect()에서 주인을 배운다. 이 함수는 export되어 inline으로
+		// 사라지지 않으므로 captureTraceHooksAvailable에서 확인하지 않는다.
+		{tcp, "fentry/__inet_stream_connect", objects.InetStreamConnectEntry},
 	}
 	// 빈 protocol은 capture다. capture는 TCP와 UDP hook을 모두 쓰고 DNS 전용 hook은 쓰지 않는다.
 	wanted := []string{protocol}

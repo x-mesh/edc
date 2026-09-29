@@ -96,6 +96,7 @@ const (
 	captureEventsMapUdpSendPending             = "udp_send_pending"
 	captureEventsProgInetCskAcceptEntry        = "inet_csk_accept_entry"
 	captureEventsProgInetSockSetState          = "inet_sock_set_state"
+	captureEventsProgInetStreamConnectEntry    = "inet_stream_connect_entry"
 	captureEventsProgSkbConsumeUdpEntry        = "skb_consume_udp_entry"
 	captureEventsProgTcpCreateOpenreqChildExit = "tcp_create_openreq_child_exit"
 	captureEventsProgTcpDestroySock            = "tcp_destroy_sock"
@@ -165,6 +166,7 @@ type captureEventsSpecs struct {
 type captureEventsProgramSpecs struct {
 	InetCskAcceptEntry        *ebpf.ProgramSpec `ebpf:"inet_csk_accept_entry"`
 	InetSockSetState          *ebpf.ProgramSpec `ebpf:"inet_sock_set_state"`
+	InetStreamConnectEntry    *ebpf.ProgramSpec `ebpf:"inet_stream_connect_entry"`
 	SkbConsumeUdpEntry        *ebpf.ProgramSpec `ebpf:"skb_consume_udp_entry"`
 	TcpCreateOpenreqChildExit *ebpf.ProgramSpec `ebpf:"tcp_create_openreq_child_exit"`
 	TcpDestroySock            *ebpf.ProgramSpec `ebpf:"tcp_destroy_sock"`
@@ -275,6 +277,7 @@ type captureEventsVariables struct {
 type captureEventsPrograms struct {
 	InetCskAcceptEntry        *ebpf.Program `ebpf:"inet_csk_accept_entry"`
 	InetSockSetState          *ebpf.Program `ebpf:"inet_sock_set_state"`
+	InetStreamConnectEntry    *ebpf.Program `ebpf:"inet_stream_connect_entry"`
 	SkbConsumeUdpEntry        *ebpf.Program `ebpf:"skb_consume_udp_entry"`
 	TcpCreateOpenreqChildExit *ebpf.Program `ebpf:"tcp_create_openreq_child_exit"`
 	TcpDestroySock            *ebpf.Program `ebpf:"tcp_destroy_sock"`
@@ -297,6 +300,7 @@ func (p *captureEventsPrograms) Close() error {
 	return _CaptureEventsClose(
 		p.InetCskAcceptEntry,
 		p.InetSockSetState,
+		p.InetStreamConnectEntry,
 		p.SkbConsumeUdpEntry,
 		p.TcpCreateOpenreqChildExit,
 		p.TcpDestroySock,

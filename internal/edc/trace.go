@@ -986,7 +986,11 @@ func printTraceGroupReport(report traceGroupReport) {
 	if !report.hideTraffic() {
 		fmt.Fprintf(os.Stdout, "TX: %s\nRX: %s\nTotal: %s\nTraffic rate: %s\n", traceBytes(report.TXBytes), traceBytes(report.RXBytes), traceBytes(report.TotalBytes), traceTrafficRate(report.traceTraffic))
 	}
-	fmt.Fprintf(os.Stdout, "Lost events: %d\n", report.LostEvents)
+	if report.Protocol == "arp" || report.Protocol == "ndp" {
+		fmt.Fprintf(os.Stdout, "Lost events: %s\n", traceNeighborLost(report.LostEvents))
+	} else {
+		fmt.Fprintf(os.Stdout, "Lost events: %d\n", report.LostEvents)
+	}
 	if len(report.Groups) == 0 {
 		return
 	}

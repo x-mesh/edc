@@ -42,6 +42,8 @@ type traceProtocolSpec struct {
 	linuxOnly bool
 	// scrollLabels는 스크롤 행의 목적지 칸과 event 칸이다. nil이면 목적지와 event 이름을 쓴다.
 	scrollLabels func(event captureEvent) (string, string)
+	// serverSide는 --side server로 로컬 서버 쪽을 볼 수 있는 protocol이다.
+	serverSide bool
 	// prerequisites는 수집 전에 확인할 조건이다. nil이면 확인할 것이 없다. ARP는 netlink만 쓰므로 eBPF 권한이 필요 없다.
 	prerequisites func() error
 	newSummarizer func() traceSummarizer
@@ -77,7 +79,12 @@ var traceProtocols = map[string]traceProtocolSpec{
 	"udp": {ansiColor: "35", screenColor: "#c084fc", prerequisites: captureEventsPrerequisites, newSummarizer: func() traceSummarizer { return newUDPTraceSummarizer() }},
 	"dns": {
 		ansiColor: "32", screenColor: "#4ade80", groupColumns: traceDNSGroupColumns, hideTraffic: true, hiddenViews: []string{traceGroupByPort}, linuxOnly: true,
-		scrollLabels: traceDNSScrollLabels, prerequisites: captureEventsPrerequisites, newSummarizer: func() traceSummarizer { return newDNSTraceSummarizer() },
+		scrollLabels: traceDNSScrollLabels, serverSide: true, prerequisites: captureEventsPrerequisites, newSummarizer: func() traceSummarizer { return newDNSTraceSummarizer() },
+	},
+	// 평문 HTTP/1.x만 본다. TLS 안의 HTTP는 kernel에서 암호문이다.
+	"http": {
+		ansiColor: "95", screenColor: "#f472b6", groupColumns: traceHTTPGroupColumns, hideTraffic: true, linuxOnly: true,
+		scrollLabels: traceHTTPScrollLabels, serverSide: true, prerequisites: httpTracePrerequisites, newSummarizer: func() traceSummarizer { return newHTTPTraceSummarizer() },
 	},
 	// ARP event에는 process와 port가 없다. source는 interface, target은 IP다.
 	"arp": {
@@ -106,14 +113,14 @@ func traceScrollLabels(event captureEvent) (string, string) {
 	return traceEventDestinationLabel(event), event.Event
 }
 
-// traceScope는 collector가 모을 범위다. dnsServer는 trace dns가 로컬 DNS 서버 쪽을 볼 때 켠다.
+// traceScope는 collector가 모을 범위다. server는 --side server로 로컬 서버 쪽을 볼 때 켠다.
 type traceScope struct {
-	protocol  string
-	dnsServer bool
+	protocol string
+	server   bool
 }
 
 func (options tcpTraceOptions) scope(protocol string) traceScope {
-	return traceScope{protocol: protocol, dnsServer: options.side == traceDNSServerSide}
+	return traceScope{protocol: protocol, server: options.side == traceDNSServerSide}
 }
 
 // traceLabel은 화면 머리글에 쓰는 trace 이름이다. 서버 쪽 DNS trace는 client 쪽과 같은 event 이름을 쓰므로 머리글로 구분한다.
@@ -145,7 +152,7 @@ func (report traceGroupReport) hideTraffic() bool { return traceProtocols[report
 
 func runTrace(args []string) int {
 	if len(args) == 0 || !knownTraceProtocol(args[0]) {
-		fmt.Fprintln(os.Stderr, T("cli.usage", "edc trace <tcp|udp|dns|arp> [options]"))
+		fmt.Fprintln(os.Stderr, T("cli.usage", "edc trace <tcp|udp|dns|arp|http> [options]"))
 		return 2
 	}
 	options := tcpTraceOptions{}
@@ -193,7 +200,7 @@ func runTrace(args []string) int {
 		fmt.Fprintln(os.Stderr, T("cli.trace.side_range"))
 		return 2
 	}
-	if options.side == traceDNSServerSide && args[0] != "dns" {
+	if options.side == traceDNSServerSide && !traceProtocols[args[0]].serverSide {
 		fmt.Fprintln(os.Stderr, T("cli.trace.side_protocol", args[0]))
 		return 2
 	}
@@ -316,7 +323,7 @@ func traceColorLine(line, protocol, event string, color bool) string {
 		return line
 	}
 	colorValue := traceProtocols[protocol].ansiColor
-	if strings.Contains(event, "reset") || event == traceARPMACChangeEvent {
+	if strings.Contains(event, "reset") || event == traceARPMACChangeEvent || event == "http_5xx" {
 		colorValue = "31"
 	} else if strings.Contains(event, "retransmit") || strings.Contains(event, "fail") {
 		colorValue = "33"
@@ -581,6 +588,7 @@ type traceGroup struct {
 	LastEvent       string
 	DNS             *traceDNSCounts
 	ARP             *traceARPCounts
+	HTTP            *traceHTTPCounts
 	traceTraffic
 }
 
@@ -599,8 +607,9 @@ type traceGroupSummary struct {
 	LastEvent       string   `json:"last_event,omitempty"`
 	// DNS는 DNS group에만 있다. TCP와 UDP group의 JSON에는 나오지 않는다.
 	DNS *traceDNSCounts `json:"dns,omitempty"`
-	// ARP는 ARP group에만 있다.
-	ARP *traceARPCounts `json:"arp,omitempty"`
+	// ARP는 ARP group에만, HTTP는 HTTP group에만 있다.
+	ARP  *traceARPCounts  `json:"arp,omitempty"`
+	HTTP *traceHTTPCounts `json:"http,omitempty"`
 	traceTraffic
 }
 
@@ -686,9 +695,12 @@ func (summarizer *traceGroupSummarizer) observe(event captureEvent) {
 	observeTraceGroup(group, event)
 	// event 보기는 질의를 dns_query 행에, 응답을 결과 행에 둔다. 응답이 답한 질의를 dns_query 행에서 빼지 않으면
 	// 그 행의 질의가 모두 응답 없음으로 보인다. 다른 보기는 질의와 응답이 같은 행에 들어간다.
-	if summarizer.groupBy == traceGroupByEvent && event.dnsAnswered > 0 {
+	if summarizer.groupBy == traceGroupByEvent && event.answered > 0 {
 		if queries := summarizer.groups[traceDNSQueryEvent]; queries != nil && queries.DNS != nil {
-			queries.DNS.answered += event.dnsAnswered
+			queries.DNS.answered += event.answered
+		}
+		if requests := summarizer.groups[traceHTTPRequestEvent]; requests != nil && requests.HTTP != nil {
+			requests.HTTP.answered += event.answered
 		}
 	}
 	summarizer.events++
@@ -706,7 +718,7 @@ func (summarizer *traceGroupSummarizer) report(summary captureSummary, duration 
 		result.Groups = append(result.Groups, traceGroupSummary{
 			Group: group.Group, Server: group.Server, Destinations: slices.Sorted(maps.Keys(group.Destinations)), Processes: slices.Sorted(maps.Keys(group.Processes)),
 			Events: group.Events, Rate: traceGroupRate(group.Events, duration), Tx: group.Tx, Rx: group.Rx, Connect: group.Connect,
-			Retransmissions: traceObserved(group.Retransmissions), Resets: traceObserved(group.Resets), LastEvent: group.LastEvent, DNS: traceDNSGroupSummary(group.DNS), ARP: traceARPGroupSummary(group.ARP), traceTraffic: traffic,
+			Retransmissions: traceObserved(group.Retransmissions), Resets: traceObserved(group.Resets), LastEvent: group.LastEvent, DNS: traceDNSGroupSummary(group.DNS), ARP: traceARPGroupSummary(group.ARP), HTTP: traceHTTPGroupSummary(group.HTTP), traceTraffic: traffic,
 		})
 	}
 	if summarizer.groupBy == traceGroupByPort {
@@ -851,6 +863,11 @@ func observeTraceGroup(group *traceGroup, event captureEvent) {
 			group.ARP = &traceARPCounts{}
 		}
 		group.ARP.observe(event)
+	case "http":
+		if group.HTTP == nil {
+			group.HTTP = &traceHTTPCounts{}
+		}
+		group.HTTP.observe(event)
 	}
 	group.traceTraffic.observe(event)
 	group.LastEvent = event.Event

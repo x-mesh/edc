@@ -169,7 +169,8 @@ cli:
     group_by_protocol: "--group-by %s は trace %s では使えません"
     protocol_linux_only: "trace %s は Linux でだけ動きます。現在の platform: %s"
     side_range: "--side は client または server で指定します"
-    side_protocol: "--side server は trace dns でだけ使えます。trace %s では使えません"
+    side_protocol: "--side server は trace %s では使えません"
+    http_kernel: "trace http には Linux 6.4 以降が必要です。kernel の iov_iter に %s field がありません"
   report:
     unsupported_schema: "%s: 対応しない schema version: %s"
     filter_label: "絞り込み: "

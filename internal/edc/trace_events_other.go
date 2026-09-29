@@ -25,3 +25,8 @@ func collectTraceEventsLive(traceScope, time.Duration, func(captureEvent) error,
 func captureEventsPrerequisites() error {
 	return fmt.Errorf("%s", T("cli.trace.linux_only", runtime.GOOS))
 }
+
+// httpTracePrerequisites는 protocol 표가 모든 platform에서 참조한다. trace http는 Linux 전용이라 여기까지 오지 않는다.
+func httpTracePrerequisites() error {
+	return captureEventsPrerequisites()
+}

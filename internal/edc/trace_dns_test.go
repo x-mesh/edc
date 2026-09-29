@@ -310,3 +310,45 @@ func TestTraceSideOptionIsOnlyForDNS(t *testing.T) {
 		}
 	}
 }
+
+// 응답 시간은 network 시간과 읽기 지연으로 나뉜다. 수신 큐 시각을 모르면 둘 다 없다.
+func TestDNSLatencySplitsNetworkAndReadDelay(t *testing.T) {
+	approx := func(value *float64, want float64) bool {
+		return value != nil && *value > want-1e-9 && *value < want+1e-9
+	}
+	tracker := newDNSQueryTracker(false)
+	question := new(dns.Msg)
+	question.SetQuestion("example.com.", dns.TypeA)
+	tracker.event(dnsTestPacket(t, question, 1_000_000, "127.0.0.1:41000"), 0)
+	answer := dnsTestPacket(t, dnsTestReply(t, question, dns.RcodeSuccess, "example.com. 60 IN A 203.0.113.10"), 3_500_000, "127.0.0.1:41000")
+	answer.arrivalNS = 3_000_000
+	event, _ := tracker.event(answer, 0)
+	if !approx(event.LatencyMS, 2.5) || !approx(event.NetworkMS, 2) || !approx(event.ReadDelayMS, 0.5) {
+		t.Fatalf("client answer = latency %v, network %v, read delay %v", event.LatencyMS, event.NetworkMS, event.ReadDelayMS)
+	}
+	unknown := answer
+	unknown.arrivalNS = 0
+	if event, _ := tracker.event(unknown, 0); event.NetworkMS != nil || event.ReadDelayMS != nil {
+		t.Fatalf("answer without an arrival time = %#v", event)
+	}
+
+	server := newDNSQueryTracker(true)
+	received := dnsTestPacket(t, question, 1_200_000, "127.0.0.53:53")
+	received.sent, received.destination, received.arrivalNS = false, "127.0.0.1:41000", 1_000_000
+	query, _ := server.event(received, 0)
+	sent := dnsTestPacket(t, dnsTestReply(t, question, dns.RcodeSuccess, "example.com. 60 IN A 203.0.113.10"), 2_200_000, "127.0.0.53:53")
+	sent.sent, sent.destination = true, "127.0.0.1:41000"
+	reply, _ := server.event(sent, 0)
+	if !approx(query.ReadDelayMS, 0.2) || query.NetworkMS != nil || !approx(reply.LatencyMS, 1) || reply.NetworkMS != nil || reply.ReadDelayMS != nil {
+		t.Fatalf("server query read delay %v, answer latency %v network %v", query.ReadDelayMS, reply.LatencyMS, reply.NetworkMS)
+	}
+
+	var counts traceDNSCounts
+	for _, event := range []captureEvent{event, query, reply} {
+		counts.observe(event)
+	}
+	finished := counts.finished()
+	if !approx(finished.NetworkAvgMS, 2) || !approx(finished.ReadDelayAvgMS, 0.35) || !approx(finished.ReadDelayMaxMS, 0.5) || !approx(finished.LatencyMaxMS, 2.5) {
+		t.Fatalf("counts = network %v, read delay %v max %v, latency max %v", finished.NetworkAvgMS, finished.ReadDelayAvgMS, finished.ReadDelayMaxMS, finished.LatencyMaxMS)
+	}
+}

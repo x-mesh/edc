@@ -526,6 +526,8 @@ struct dns_record {
 	__u32 event_type;
 	__u32 pid;
 	__u64 cgroup_id;
+	// arrival_ns는 받은 message가 socket 수신 큐에 들어간 시각이다. 모르면 0이다.
+	__u64 arrival_ns;
 	__u32 len;
 	__u16 family;
 	__u8 direction;
@@ -554,6 +556,15 @@ struct {
 	__type(value, struct dns_record);
 } dns_query_pending SEC(".maps");
 
+// DNS message가 socket 수신 큐에 들어간 시각을 skb 주소로 둔다. process가 읽을 때 같은 skb가 skb_consume_udp에 온다.
+// 큐에서 버려진 skb의 시각은 LRU가 밀어낸다. 같은 주소를 다시 쓰는 skb는 큐에 들어갈 때 값을 덮는다.
+struct {
+	__uint(type, BPF_MAP_TYPE_LRU_HASH);
+	__uint(max_entries, 4096);
+	__type(key, __u64);
+	__type(value, __u64);
+} dns_arrivals SEC(".maps");
+
 // 선형 영역 밖의 payload는 page fragment에 있어 head 기준 주소로 읽으면 다른 메모리를 읽는다.
 static __always_inline __u32 read_dns_payload(struct sk_buff *skb, unsigned char *payload, long len, __u8 *out) {
 	unsigned char *linear_end = BPF_CORE_READ(skb, head) + BPF_CORE_READ(skb, tail);
@@ -581,6 +592,7 @@ static __always_inline void remember_dns_sent(struct sk_buff *skb, struct udp_se
 	record->event_type = 9;
 	record->pid = bpf_get_current_pid_tgid() >> 32;
 	record->cgroup_id = bpf_get_current_cgroup_id();
+	record->arrival_ns = 0;
 	record->family = pending->family;
 	record->direction = DNS_SENT;
 	record->reserved = 0;
@@ -690,6 +702,24 @@ int udp_v6_send_skb_exit(__u64 *ctx) {
 	return emit_udp_send(ctx, (int)ctx[3]);
 }
 
+// __udp_enqueue_schedule_skb는 UDP datagram을 socket 수신 큐에 넣는다. 받은 쪽 process가 읽기 전이다.
+SEC("fentry/__udp_enqueue_schedule_skb")
+int udp_enqueue_entry(__u64 *ctx) {
+	struct sk_buff *skb = (struct sk_buff *)ctx[1];
+	if (!skb) {
+		return 0;
+	}
+	__be16 ports[2] = {};
+	bpf_probe_read_kernel(ports, sizeof(ports), BPF_CORE_READ(skb, head) + BPF_CORE_READ(skb, transport_header));
+	if (bpf_ntohs(ports[0]) != 53 && !(emit_dns_server && bpf_ntohs(ports[1]) == 53)) {
+		return 0;
+	}
+	__u64 key = (__u64)skb;
+	__u64 now = bpf_ktime_get_ns();
+	bpf_map_update_elem(&dns_arrivals, &key, &now, BPF_ANY);
+	return 0;
+}
+
 // skb_consume_udp는 udp_recvmsg와 udpv6_recvmsg가 datagram을 복사한 뒤 한 번 부른다. recv()처럼 주소를
 // 받지 않는 호출도 여기서는 header에서 보낸 쪽 주소를 읽을 수 있다.
 static __always_inline void emit_dns_received(struct sk_buff *skb, unsigned char *network, unsigned char *transport, __u8 version, __be16 *ports, int len) {
@@ -706,6 +736,13 @@ static __always_inline void emit_dns_received(struct sk_buff *skb, unsigned char
 	record->event_type = 9;
 	record->pid = bpf_get_current_pid_tgid() >> 32;
 	record->cgroup_id = bpf_get_current_cgroup_id();
+	record->arrival_ns = 0;
+	__u64 key = (__u64)skb;
+	__u64 *arrival = bpf_map_lookup_elem(&dns_arrivals, &key);
+	if (arrival) {
+		record->arrival_ns = *arrival;
+		bpf_map_delete_elem(&dns_arrivals, &key);
+	}
 	record->direction = DNS_RECEIVED;
 	record->reserved = 0;
 	record->sport = bpf_ntohs(ports[1]);

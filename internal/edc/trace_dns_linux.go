@@ -21,7 +21,7 @@ import (
 const (
 	dnsRecordType          = 9
 	dnsRecordSent          = 1
-	dnsRecordPayloadOffset = 84
+	dnsRecordPayloadOffset = 92
 )
 
 const (
@@ -108,21 +108,22 @@ func parseDNSRecord(sample []byte) (dnsPacket, bool) {
 	if len(sample) < dnsRecordPayloadOffset || binary.LittleEndian.Uint32(sample[8:12]) != dnsRecordType {
 		return dnsPacket{}, false
 	}
-	family := binary.LittleEndian.Uint16(sample[28:30])
+	family := binary.LittleEndian.Uint16(sample[36:38])
 	var source, destination [16]byte
-	copy(source[:], sample[36:52])
-	copy(destination[:], sample[52:68])
+	copy(source[:], sample[44:60])
+	copy(destination[:], sample[60:76])
 	packet := dnsPacket{
 		bootTimeNS:  binary.LittleEndian.Uint64(sample[0:8]),
 		pid:         binary.LittleEndian.Uint32(sample[12:16]),
 		cgroupID:    binary.LittleEndian.Uint64(sample[16:24]),
-		process:     strings.TrimRight(string(sample[68:84]), "\x00"),
-		sent:        sample[30] == dnsRecordSent,
-		source:      formatCaptureAddress(family, source, binary.LittleEndian.Uint16(sample[32:34])),
-		destination: formatCaptureAddress(family, destination, binary.LittleEndian.Uint16(sample[34:36])),
+		arrivalNS:   binary.LittleEndian.Uint64(sample[24:32]),
+		process:     strings.TrimRight(string(sample[76:92]), "\x00"),
+		sent:        sample[38] == dnsRecordSent,
+		source:      formatCaptureAddress(family, source, binary.LittleEndian.Uint16(sample[40:42])),
+		destination: formatCaptureAddress(family, destination, binary.LittleEndian.Uint16(sample[42:44])),
 		payload:     sample[dnsRecordPayloadOffset:],
 	}
-	if size := int(binary.LittleEndian.Uint32(sample[24:28])); size < len(packet.payload) {
+	if size := int(binary.LittleEndian.Uint32(sample[32:36])); size < len(packet.payload) {
 		packet.payload = packet.payload[:size]
 	}
 	return packet, true

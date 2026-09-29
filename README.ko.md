@@ -793,7 +793,7 @@ root 권한 없이 실행하면 macOS trace는 현재 사용자의 kernel socket
 
 `sudo`로 실행하면 모든 사용자의 process와 사용자 공간 network stack의 연결을 표시하고, macOS가 연결마다 기록한 domain 이름을 `target`으로 표시합니다. 이때 `target_source`는 `system`입니다. domain 이름이 없는 연결은 `--group-by target`에서 목적지 주소로 묶습니다. QUIC는 UDP를 사용하므로, 사용자 공간 network stack의 QUIC 연결은 `trace udp`에 표시합니다.
 
-Linux에서 `trace dns`를 사용하면 DNS 질의와 응답을 발생 즉시 출력합니다. `trace udp`와 같은 hook을 사용하며 UDP port 53의 DNS message를 읽습니다.
+Linux에서 `trace dns`를 사용하면 DNS 질의와 응답을 발생 즉시 출력합니다. UDP port 53의 DNS message를 읽고, port 53으로 가는 TCP 연결도 표시합니다.
 
 ```bash
 ./bin/edc trace dns
@@ -802,7 +802,11 @@ Linux에서 `trace dns`를 사용하면 DNS 질의와 응답을 발생 즉시 �
 ./bin/edc trace dns --process curl --destination 127.0.0.53:53
 ```
 
-질의는 `dns_query` event입니다. 응답은 결과 코드를 이름으로 사용합니다. 예를 들어 `dns_noerror`, `dns_nxdomain`, `dns_servfail`입니다. record 없이 성공한 응답은 `dns_nodata`입니다. `Errors`는 `dns_noerror`와 `dns_nodata`를 뺀 응답을 셉니다.
+질의는 `dns_query` event입니다. 응답은 결과 코드를 이름으로 사용합니다. 예를 들어 `dns_noerror`, `dns_nxdomain`, `dns_servfail`입니다. record 없이 성공한 응답은 `dns_nodata`입니다.
+
+TC bit가 있는 응답은 `dns_truncated`입니다. 응답이 UDP에 다 들어가지 않았다는 뜻이며, client는 같은 서버에 TCP로 다시 묻습니다. port 53으로 가는 TCP 연결은 `dns_tcp_connect`이고, 연결에 실패하면 `dns_tcp_fail`입니다. edc는 TCP 연결 안의 DNS message를 읽지 않습니다. 같은 process가 그 서버에서 `dns_truncated` 응답을 받았으면 TCP event에 그 질의의 이름을 붙입니다.
+
+`Errors`는 `dns_noerror`, `dns_nodata`, `dns_truncated`가 아닌 응답과 `dns_tcp_fail`을 셉니다. summary의 `TCP connections`는 `dns_tcp_connect`와 `dns_tcp_fail`을 셉니다.
 
 DNS event의 `target`은 질의한 이름이고 `destination`은 DNS 서버입니다. 스크롤 화면의 `DESTINATION` 열은 이름, record 종류, 서버를, `EVENT` 열은 결과와 응답 시간을 표시합니다. 따라서 `--group-by target`은 이름별로 묶고, `--destination`은 서버로 거릅니다. DNS 서버 port는 항상 53이므로 `trace dns`에는 port 보기가 없습니다.
 
@@ -814,7 +818,7 @@ edc는 로컬 port, 서버, transaction ID가 같은 질의와 응답을 짝짓�
 
 systemd-resolved가 있는 host에서는 조회 하나가 두 번 보일 수 있습니다. 프로그램과 `127.0.0.53` 사이, systemd-resolved와 상위 서버 사이입니다. 프로그램 쪽 행만 있으면 systemd-resolved가 캐시에서 답한 것입니다.
 
-`trace dns`는 UDP port 53의 client 쪽만 표시합니다. DNS over TCP, DNS over TLS, DNS over HTTPS, mDNS, LLMNR은 표시하지 않으며, 로컬 DNS 서버가 받는 질의도 표시하지 않습니다. BPF는 DNS message의 앞 1,024 byte만 읽습니다. 이보다 긴 응답은 header에서 결과 코드를 읽고 이름은 질의에서 가져옵니다. macOS는 socket의 payload를 주지 않으므로 `trace dns`는 Linux에서만 동작합니다.
+`trace dns`는 port 53의 client 쪽만 표시합니다. DNS over TCP는 연결만 표시합니다. DNS over TLS, DNS over HTTPS, mDNS, LLMNR은 표시하지 않으며, 로컬 DNS 서버가 받는 질의도 표시하지 않습니다. BPF는 DNS message의 앞 1,024 byte만 읽습니다. 이보다 긴 응답은 header에서 결과 코드를 읽고 이름은 질의에서 가져옵니다. macOS는 socket의 payload를 주지 않으므로 `trace dns`는 Linux에서만 동작합니다.
 
 ```bash
 ./bin/edc capture \

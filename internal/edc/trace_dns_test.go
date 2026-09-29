@@ -211,3 +211,45 @@ func TestDNSTraceScreenShowsQueryColumns(t *testing.T) {
 		t.Fatalf("dns scroll rows = %q", rows)
 	}
 }
+
+func TestDNSTruncatedAnswerNamesTheTCPRetry(t *testing.T) {
+	tracker := newDNSQueryTracker()
+	question := new(dns.Msg)
+	question.SetQuestion("big.example.com.", dns.TypeTXT)
+	tracker.event(dnsTestPacket(t, question, 1_000_000, "127.0.0.1:41000"), 0)
+	reply := dnsTestReply(t, question, dns.RcodeSuccess)
+	reply.Truncated = true
+	answer, ok := tracker.event(dnsTestPacket(t, reply, 2_000_000, "127.0.0.1:41000"), 0)
+	if !ok || answer.Event != traceDNSTruncatedEvent || answer.LatencyMS == nil || traceDNSError(answer.Event) {
+		t.Fatalf("truncated answer = %#v, %t", answer, ok)
+	}
+	connect := captureEvent{Protocol: "tcp", Event: "tcp_connect", PID: 10, Process: "dig", Source: "127.0.0.1:50000", Destination: "127.0.0.53:53"}
+	retry, ok := tracker.tcpEvent(connect)
+	if !ok || retry.Event != traceDNSTCPConnectEvent || retry.Protocol != "dns" || retry.Process != "dig" || retry.Target != "big.example.com" || retry.QueryType != "TXT" {
+		t.Fatalf("tcp retry = %#v, %t", retry, ok)
+	}
+	// 이름은 한 번만 붙는다. 같은 process의 다음 TCP 연결은 다른 조회다.
+	if again, _ := tracker.tcpEvent(connect); again.Target != "" {
+		t.Fatalf("second tcp connect = %#v", again)
+	}
+	failed, ok := tracker.tcpEvent(captureEvent{Protocol: "tcp", Event: "tcp_close", OldState: "SYN_SENT", NewState: "CLOSE", Destination: "192.0.2.1:53"})
+	if !ok || failed.Event != traceDNSTCPFailEvent || !traceDNSError(failed.Event) {
+		t.Fatalf("failed tcp connect = %#v, %t", failed, ok)
+	}
+	for _, other := range []captureEvent{
+		{Protocol: "tcp", Event: "tcp_connect", Destination: "203.0.113.10:443"},
+		{Protocol: "tcp", Event: "tcp_close", OldState: "ESTABLISHED", Destination: "127.0.0.53:53"},
+		{Protocol: "udp", Event: "udp_send", Destination: "127.0.0.53:53"},
+	} {
+		if event, ok := tracker.tcpEvent(other); ok {
+			t.Fatalf("%#v became a dns event: %#v", other, event)
+		}
+	}
+	var counts traceDNSCounts
+	for _, event := range []captureEvent{answer, retry, failed} {
+		counts.observe(event)
+	}
+	if counts.Answers != 1 || counts.TCPConnections != 2 || counts.Errors != 1 {
+		t.Fatalf("counts = %#v", counts)
+	}
+}

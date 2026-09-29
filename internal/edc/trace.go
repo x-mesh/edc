@@ -173,6 +173,7 @@ func runTrace(args []string) int {
 	var summary captureSummary
 	var err error
 	var encoder *json.Encoder
+	var written uint64
 	aggregate := newTraceAggregate(args[0], options.groupBy)
 	if options.raw {
 		encoder = json.NewEncoder(os.Stdout)
@@ -187,6 +188,7 @@ func runTrace(args []string) int {
 			return nil
 		}
 		if options.raw {
+			written++
 			return encoder.Encode(event)
 		}
 		aggregate.observe(event)
@@ -200,6 +202,8 @@ func runTrace(args []string) int {
 		return 1
 	}
 	if options.raw {
+		// collector는 다른 protocol의 event도 받아 센다. 요약의 event 수는 이 출력에 쓴 줄 수와 같아야 한다.
+		summary.EventCount = written
 		if err := encoder.Encode(summary); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			return 1

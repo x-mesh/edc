@@ -785,18 +785,20 @@ Use `trace tcp` or `trace udp` on Linux or macOS to print network events as they
 ./bin/edc trace udp --group-by port
 ./bin/edc trace tcp --group-by process
 ./bin/edc trace tcp --group-by event
+./bin/edc trace tcp -d
 ```
 
 Use `--raw` to print JSONL events as they arrive. Use `--json` to write the connection summary after Ctrl-C.
-The connection summary shows one row for each socket, from its creation to its destruction. The kernel can give the address of a closed socket to a new socket, so edc starts a new row when a socket is destroyed. The summary keeps the rows of the open connections and of the last 1,000 closed connections. The totals count all connections. `connections_omitted` in the JSON output shows the number of closed connections that have no row.
+The text summary at the end groups the rows by process and peer. A client row shows the destination. A server row shows the local service, for example `127.0.0.1:2379 (server)`, because each client uses a different port. A TCP row shows the number of connections, the connections for each result, the mean connect time, and the traffic. A UDP row shows the datagrams and the traffic. Use `-d` or `--detail` to show one row for each connection or UDP flow. The JSON output always has one row for each connection or flow. The `trace dns` summary always has one row for each name and record type, so `-d` does not change it.
+The connection detail shows one row for each socket, from its creation to its destruction. The kernel can give the address of a closed socket to a new socket, so edc starts a new row when a socket is destroyed. The summary keeps the rows of the open connections and of the last 1,000 closed connections. The totals count all connections. `connections_omitted` in the JSON output shows the number of closed connections that have no row.
 Each row has one of these results:
 
 - `established`: the trace saw the connect or the accept. A later reset does not change the result. The `RESET` column shows the reset.
-- `failed`: the handshake started but the connection closed or got a reset before it was established.
+- `failed`: the connection was not established. The connect failed before the handshake, for example because no route exists, or the connection closed or got a reset during the handshake.
 - `incomplete`: the handshake did not finish before the trace ended.
 - `existing`: the connection was open before the trace started, so the trace did not see its handshake.
 
-`Attempts` counts the connections with a handshake in the trace. It is the sum of `Established` and `Incomplete`, and `Incomplete` counts the `failed` and `incomplete` rows. `Existing` counts the `existing` rows. Listening sockets are not connections, so they have no row.
+`Attempts` counts the connections with a handshake in the trace. It is the sum of `Established` and `Incomplete`, and `Incomplete` counts the `failed` and `incomplete` rows. `Existing` counts the `existing` rows. Listening sockets and sockets that close without a connect are not connections, so they have no row.
 Use `--duration 15s` to stop after 15 seconds. `--live` remains accepted for compatibility.
 Use `--group-by source`, `--group-by target`, `--group-by port`, `--group-by process`, or `--group-by event` to show one live row for each selected dimension. TCP rows show connect, retransmission, reset, and traffic values. UDP rows show TX and RX traffic values. `EVENT/s` is an event count rate. TX and RX bytes are socket payload bytes. B/s is a byte rate. bps and Mbps are bit rates. Mbps uses decimal units: bps / 1,000,000.
 `--group-by source` groups events by the source host. It ignores the source port because the OS assigns a new port to each connection.

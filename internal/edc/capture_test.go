@@ -220,6 +220,12 @@ func TestSummarizeTCPTraceKeepsRecentConnectionRows(t *testing.T) {
 	if !strings.Contains(string(encoded), `"connections_omitted":5`) {
 		t.Fatalf("report JSON misses connections_omitted: %.200s", encoded)
 	}
+	// 묶음 행은 연결별 행에서 빠진 연결도 센다.
+	for _, group := range report.groups {
+		if group.process == "probe" && (group.connections != tcpTraceConnectionLimit+5 || group.established != tcpTraceConnectionLimit+5) {
+			t.Fatalf("probe group = %+v", group)
+		}
+	}
 }
 
 func TestSummarizeTCPTraceClassifiesResults(t *testing.T) {
@@ -245,6 +251,12 @@ func TestSummarizeTCPTraceClassifiesResults(t *testing.T) {
 		{SocketID: 7, TimestampNS: 12, Event: "tcp_state", Source: "10.0.0.2:8080", Destination: "10.0.0.9:50001", OldState: "LISTEN", NewState: "SYN_RECV"},
 		{SocketID: 7, TimestampNS: 13, Event: "tcp_accept", Process: "server", Source: "10.0.0.2:8080", Destination: "10.0.0.9:50001", OldState: "SYN_RECV", NewState: "ESTABLISHED"},
 		{SocketID: 6, TimestampNS: 14, Event: "tcp_close", Source: "10.0.0.2:8080", OldState: "LISTEN", NewState: "CLOSE"},
+		// 경로가 없는 IPv6 connect는 SYN_SENT 전에 실패하고, kernel이 port를 되돌린 destroy만 남는다.
+		{SocketID: 8, TimestampNS: 15, Event: "tcp_destroy", Source: "[::]:0", Destination: "[2001:db8::1]:0"},
+		// connect하지 않고 닫은 socket은 연결이 아니다.
+		{SocketID: 9, TimestampNS: 16, Event: "tcp_destroy", Source: "0.0.0.0:0", Destination: "0.0.0.0:0"},
+		// 주소 없이 RST만 보낸 socket은 판단할 근거가 없어 existing으로 둔다.
+		{SocketID: 10, TimestampNS: 17, Event: "tcp_send_reset", Process: "quiet"},
 	}
 	report := summarizeTCPTrace(events, captureSummary{}, time.Second, "", "")
 	results := map[uint64]string{}
@@ -252,14 +264,17 @@ func TestSummarizeTCPTraceClassifiesResults(t *testing.T) {
 	for _, connection := range report.Connections {
 		byDestination[connection.Destination] = connection
 	}
-	for socket, destination := range map[uint64]string{1: "127.0.0.1:8080", 2: "127.0.0.1:1", 3: "192.0.2.9:443", 4: "192.0.2.1:443", 5: "10.0.0.9:50000", 7: "10.0.0.9:50001"} {
+	for socket, destination := range map[uint64]string{1: "127.0.0.1:8080", 2: "127.0.0.1:1", 3: "192.0.2.9:443", 4: "192.0.2.1:443", 5: "10.0.0.9:50000", 7: "10.0.0.9:50001", 8: "[2001:db8::1]:0", 10: ""} {
 		results[socket] = byDestination[destination].Result
 	}
-	want := map[uint64]string{1: "established", 2: "failed", 3: "failed", 4: "incomplete", 5: "existing", 7: "established"}
-	if !reflect.DeepEqual(results, want) || len(report.Connections) != 6 {
+	want := map[uint64]string{1: "established", 2: "failed", 3: "failed", 4: "incomplete", 5: "existing", 7: "established", 8: "failed", 10: "existing"}
+	if !reflect.DeepEqual(results, want) || len(report.Connections) != 8 {
 		t.Fatalf("results = %v, want %v; rows = %d", results, want, len(report.Connections))
 	}
-	if report.Attempts != 5 || report.Established != 2 || report.Incomplete != 3 || report.Existing != 1 || report.Attempts != report.Established+report.Incomplete {
+	if _, ok := byDestination["0.0.0.0:0"]; ok {
+		t.Fatalf("an unconnected socket has a row: %#v", byDestination["0.0.0.0:0"])
+	}
+	if report.Attempts != 6 || report.Established != 2 || report.Incomplete != 4 || report.Existing != 2 || report.Attempts != report.Established+report.Incomplete {
 		t.Fatalf("totals = %d attempts, %d established, %d incomplete, %d existing", report.Attempts, report.Established, report.Incomplete, report.Existing)
 	}
 	if reset := byDestination["127.0.0.1:8080"]; traceOptional(reset.Reset, "%t") != "true" || reset.ConnectMS == nil {
@@ -269,6 +284,134 @@ func TestSummarizeTCPTraceClassifiesResults(t *testing.T) {
 	for _, destination := range []string{"127.0.0.1:1", "192.0.2.1:443", "10.0.0.9:50000"} {
 		if byDestination[destination].ConnectMS != nil {
 			t.Fatalf("%s has a connect time: %#v", destination, byDestination[destination])
+		}
+	}
+}
+
+// traceCaptureOutput은 f가 os.Stdout이나 os.Stderr에 쓴 내용을 돌려준다.
+func traceCaptureOutput(t *testing.T, target **os.File, f func()) string {
+	t.Helper()
+	read, write, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	previous := *target
+	*target = write
+	f()
+	*target = previous
+	write.Close()
+	defer read.Close()
+	output, err := io.ReadAll(read)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(output)
+}
+
+func TestTCPTraceSummaryGroupsRows(t *testing.T) {
+	setTraceKernelEvents(t, true)
+	setTraceEphemeralPortRange(t, 32768, 60999)
+	t.Setenv("NO_COLOR", "1")
+	ms := uint64(time.Millisecond)
+	events := []captureEvent{}
+	// etcd가 client 포트 셋에서 온 연결을 받는다. 서버 연결은 local 서비스로 묶는다.
+	for index := range 3 {
+		socket := uint64(10 + index)
+		client := fmt.Sprintf("127.0.0.1:%d", 40001+index)
+		events = append(events,
+			captureEvent{SocketID: socket, TimestampNS: uint64(index)*10*ms + 1, Event: "tcp_state", Source: "127.0.0.1:2379", Destination: client, OldState: "LISTEN", NewState: "SYN_RECV"},
+			captureEvent{SocketID: socket, TimestampNS: uint64(index)*10*ms + 2, Event: "tcp_accept", Process: "etcd", Source: "127.0.0.1:2379", Destination: client},
+			captureEvent{SocketID: socket, TimestampNS: uint64(index)*10*ms + 3, Event: "tcp_send", Bytes: 100, Process: "etcd", Source: "127.0.0.1:2379", Destination: client},
+			captureEvent{SocketID: socket, TimestampNS: uint64(index)*10*ms + 4, Event: "tcp_destroy", Source: "127.0.0.1:2379", Destination: client},
+		)
+	}
+	// kubelet의 두 연결은 목적지가 같아 한 행이다. 평균 연결 시간은 2ms와 4ms의 평균이다.
+	for index, connect := range []uint64{2, 4} {
+		socket := uint64(20 + index)
+		source := fmt.Sprintf("10.0.0.2:%d", 45000+index)
+		events = append(events,
+			captureEvent{SocketID: socket, TimestampNS: 100 * ms, Event: "tcp_state", Process: "kubelet", Source: "10.0.0.2:0", Destination: "127.0.0.1:10259", OldState: "CLOSE", NewState: "SYN_SENT"},
+			captureEvent{SocketID: socket, TimestampNS: (100 + connect) * ms, Event: "tcp_connect", Source: source, Destination: "127.0.0.1:10259"},
+		)
+	}
+	events = append(events,
+		captureEvent{SocketID: 21, TimestampNS: 200 * ms, Event: "tcp_receive_reset", Source: "10.0.0.2:45001", Destination: "127.0.0.1:10259"},
+		// trace 전부터 열린 ssh 연결은 서버 쪽이라 local 서비스로 묶고 existing으로 센다.
+		captureEvent{SocketID: 30, TimestampNS: 300 * ms, Event: "tcp_send", Bytes: 50, Process: "sshd", Source: "10.0.0.2:22", Destination: "10.0.0.9:50000"},
+	)
+	report := summarizeTCPTrace(events, captureSummary{}, time.Second, "", "")
+	type row struct {
+		label                                                 string
+		connections, established, incomplete, existing, reset int
+	}
+	got := []row{}
+	for _, group := range report.groups {
+		got = append(got, row{group.process + " " + traceSummaryPeerLabel(group.peer, group.hostname, group.server), group.connections, group.established, group.incomplete, group.existing, group.resets})
+	}
+	want := []row{
+		{"etcd 127.0.0.1:2379 (server)", 3, 3, 0, 0, 0},
+		{"kubelet 127.0.0.1:10259", 2, 2, 0, 0, 1},
+		{"sshd 10.0.0.2:22 (server)", 1, 0, 0, 1, 0},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("groups = %+v, want %+v", got, want)
+	}
+	grouped := traceCaptureOutput(t, &os.Stdout, func() { printTCPTraceReport(report, false) })
+	for _, line := range []string{"PROCESS\tDESTINATION\tCONNS\tEST\tINC\tEXIST\tCONNECT\tTX\tRX\tRETRANS\tRESET", "etcd\t127.0.0.1:2379 (server)\t3\t3\t0\t0\t", "kubelet\t127.0.0.1:10259\t2\t2\t0\t0\t3ms\t", "sshd\t10.0.0.2:22 (server)\t1\t0\t0\t1\t-\t"} {
+		if !strings.Contains(grouped, line) {
+			t.Fatalf("grouped summary misses %q:\n%s", line, grouped)
+		}
+	}
+	detail := traceCaptureOutput(t, &os.Stdout, func() { printTCPTraceReport(report, true) })
+	if strings.Count(detail, "\n127.0.0.1:2379") != 0 || strings.Count(detail, "etcd\t127.0.0.1:4000") != 3 || !strings.Contains(detail, "PROCESS\tDESTINATION\tRESULT") {
+		t.Fatalf("detail summary does not list each connection:\n%s", detail)
+	}
+}
+
+func TestUDPTraceSummaryGroupsRows(t *testing.T) {
+	setTraceEphemeralPortRange(t, 32768, 60999)
+	t.Setenv("NO_COLOR", "1")
+	events := []captureEvent{}
+	// systemd-resolved가 client 포트 셋에 답한다.
+	for index := range 3 {
+		client := fmt.Sprintf("127.0.0.1:%d", 43000+index)
+		events = append(events,
+			captureEvent{Protocol: "udp", SocketID: 1, Event: "udp_receive", Bytes: 40, Process: "systemd-resolve", Source: "127.0.0.53:53", Destination: client},
+			captureEvent{Protocol: "udp", SocketID: 1, Event: "udp_send", Bytes: 90, Process: "systemd-resolve", Source: "127.0.0.53:53", Destination: client},
+		)
+	}
+	// dig는 질의마다 socket을 새로 연다. 같은 목적지라 한 행이다.
+	for socket := uint64(2); socket <= 3; socket++ {
+		events = append(events, captureEvent{Protocol: "udp", SocketID: socket, Event: "udp_send", Bytes: 30, Process: "dig", Source: fmt.Sprintf("10.0.0.2:%d", 50000+socket), Destination: "8.8.8.8:53", Target: "dns.google"})
+	}
+	// 두 쪽 모두 임시 포트인 P2P flow는 서버로 보지 않는다.
+	events = append(events, captureEvent{Protocol: "udp", SocketID: 4, Event: "udp_send", Bytes: 1000, Process: "tailscaled", Source: "10.0.0.2:41641", Destination: "61.74.181.17:35585"})
+	report := summarizeUDPTrace(events, captureSummary{}, time.Second, "", "")
+	grouped := traceCaptureOutput(t, &os.Stdout, func() { printUDPTraceReport(report, false) })
+	for _, line := range []string{"dig\t8.8.8.8:53 (dns.google)\t2\t0\t", "systemd-resolve\t127.0.0.53:53 (server)\t3\t3\t", "tailscaled\t61.74.181.17:35585\t1\t0\t"} {
+		if !strings.Contains(grouped, line) {
+			t.Fatalf("grouped summary misses %q:\n%s", line, grouped)
+		}
+	}
+	if rows := strings.Count(grouped, "\n") - strings.Count(grouped[:strings.Index(grouped, "PROCESS")], "\n") - 1; rows != 3 {
+		t.Fatalf("grouped summary has %d rows:\n%s", rows, grouped)
+	}
+	detail := traceCaptureOutput(t, &os.Stdout, func() { printUDPTraceReport(report, true) })
+	if strings.Count(detail, "systemd-resolve\t127.0.0.1:430") != 3 || strings.Count(detail, "dig\t8.8.8.8:53") != 2 {
+		t.Fatalf("detail summary does not list each flow:\n%s", detail)
+	}
+}
+
+func TestTraceDetailFlagParses(t *testing.T) {
+	for _, flag := range []string{"-d", "--detail"} {
+		stderr := traceCaptureOutput(t, &os.Stderr, func() {
+			if code := runTrace([]string{"tcp", flag, "--group-by", "bogus"}); code != 2 {
+				t.Errorf("%s: exit code = %d, want 2", flag, code)
+			}
+		})
+		// 옵션을 모르면 group-by 검사 전에 flag parse가 실패한다.
+		if strings.Contains(stderr, "not defined") || !strings.Contains(stderr, "--group-by") {
+			t.Fatalf("%s was not parsed: %q", flag, stderr)
 		}
 	}
 }
@@ -358,7 +501,7 @@ func TestTraceMarksUnobservedValues(t *testing.T) {
 		t.Fatal(err)
 	}
 	os.Stdout = write
-	printTCPTraceReport(report)
+	printTCPTraceReport(report, true)
 	os.Stdout = previousOutput
 	write.Close()
 	output, err := io.ReadAll(read)

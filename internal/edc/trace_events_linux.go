@@ -43,6 +43,33 @@ func readEphemeralPortRange() (int, int, bool) {
 	return low, high, true
 }
 
+// readListeningTCPPorts는 edc가 있는 network namespace에서 LISTEN 상태인 TCP port다. /proc/net을 읽지 못하면 빈 목록이고,
+// 서버 판정은 지금처럼 port 범위만 쓴다.
+func readListeningTCPPorts() map[int]bool {
+	ports := map[int]bool{}
+	for _, path := range []string{"/proc/net/tcp", "/proc/net/tcp6"} {
+		if data, err := os.ReadFile(path); err == nil {
+			parseListeningTCPPorts(data, ports)
+		}
+	}
+	return ports
+}
+
+// parseListeningTCPPorts는 /proc/net/tcp 형식에서 st가 0A(LISTEN)인 줄의 로컬 port를 모은다. port는 16진수다.
+func parseListeningTCPPorts(data []byte, ports map[int]bool) {
+	lines := strings.Split(string(data), "\n")
+	for _, line := range lines[min(1, len(lines)):] {
+		fields := strings.Fields(line)
+		if len(fields) < 4 || fields[3] != "0A" {
+			continue
+		}
+		_, hexPort, ok := strings.Cut(fields[1], ":")
+		if port, err := strconv.ParseUint(hexPort, 16, 16); ok && err == nil {
+			ports[int(port)] = true
+		}
+	}
+}
+
 func commandTarget(pid uint32) string {
 	data, err := os.ReadFile("/proc/" + strconv.FormatUint(uint64(pid), 10) + "/cmdline")
 	if err != nil {

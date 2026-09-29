@@ -69,7 +69,7 @@ func (tracker *httpTracker) event(packet httpPacket, clockOffset int64) (capture
 		PID: packet.pid, Process: packet.process, CgroupID: packet.cgroupID, Source: packet.source, Destination: packet.destination, Bytes: uint64(len(packet.payload)),
 	}
 	if server {
-		event.Side = traceDNSServerSide
+		event.Side = traceServerSide
 	}
 	if requestOK {
 		host, path := traceHTTPTarget(target, host)
@@ -93,7 +93,7 @@ func (tracker *httpTracker) event(packet httpPacket, clockOffset int64) (capture
 	event.Method, event.Path, event.Target = request.method, request.path, request.host
 	// 1xx는 중간 응답이다. 최종 응답이 같은 요청에 다시 온다.
 	if status >= 200 {
-		event.LatencyMS = traceDNSSpan(request.bootTimeNS, packet.bootTimeNS)
+		event.LatencyMS = traceSpan(request.bootTimeNS, packet.bootTimeNS)
 		event.answered = 1
 		tracker.pending[packet.socket] = queue[1:]
 		if len(queue) == 1 {
@@ -220,8 +220,8 @@ var traceHTTPGroupColumns = []traceGroupColumn{
 	{screenTitle: "4XX", reportTitle: "4XX", width: 4, value: traceHTTPColumn(func(counts traceHTTPCounts) string { return strconv.FormatUint(counts.ClientErrors, 10) })},
 	{screenTitle: "5XX", reportTitle: "5XX", width: 4, value: traceHTTPColumn(func(counts traceHTTPCounts) string { return strconv.FormatUint(counts.ServerErrors, 10) })},
 	{screenTitle: "NOANS", reportTitle: "UNANSWERED", width: 5, value: traceHTTPColumn(func(counts traceHTTPCounts) string { return strconv.FormatUint(counts.Unanswered, 10) })},
-	{screenTitle: "AVGms", reportTitle: "AVG_MS", width: 6, value: traceHTTPColumn(func(counts traceHTTPCounts) string { return traceDNSLatency(counts.LatencyAvgMS, "") })},
-	{screenTitle: "MAXms", reportTitle: "MAX_MS", width: 6, value: traceHTTPColumn(func(counts traceHTTPCounts) string { return traceDNSLatency(counts.LatencyMaxMS, "") })},
+	{screenTitle: "AVGms", reportTitle: "AVG_MS", width: 6, value: traceHTTPColumn(func(counts traceHTTPCounts) string { return traceLatency(counts.LatencyAvgMS, "") })},
+	{screenTitle: "MAXms", reportTitle: "MAX_MS", width: 6, value: traceHTTPColumn(func(counts traceHTTPCounts) string { return traceLatency(counts.LatencyMaxMS, "") })},
 }
 
 // traceHTTPScrollLabels는 목적지 칸에 method, host, path, 상대 주소를, event 칸에 결과와 상태 코드, 응답 시간을 쓴다.
@@ -235,7 +235,7 @@ func traceHTTPScrollLabels(event captureEvent) (string, string) {
 		label += " " + strconv.Itoa(event.Status)
 	}
 	if event.LatencyMS != nil {
-		label += " " + traceDNSLatency(event.LatencyMS, "ms")
+		label += " " + traceLatency(event.LatencyMS, "ms")
 	}
 	return emptyAs(request, "-"), label
 }
@@ -325,16 +325,16 @@ func (summarizer *httpTraceSummarizer) summarize(summary captureSummary, duratio
 // -d는 연결마다 한 행을 쓰는 option이다. HTTP 요약은 요청 종류마다 한 행이라 같은 표를 쓴다.
 func (report httpTraceReport) print(bool) {
 	title := "HTTP trace"
-	if report.Side == traceDNSServerSide {
+	if report.Side == traceServerSide {
 		title = "HTTP server trace"
 	}
 	fmt.Fprintf(os.Stdout, "%s: %s\n\n", title, (time.Duration(report.DurationMS) * time.Millisecond).String())
-	fmt.Fprintf(os.Stdout, "Requests: %d\nResponses: %d\nClient errors (4xx): %d\nServer errors (5xx): %d\nUnanswered: %d\nLatency avg: %s\nLatency max: %s\nLost events: %d\n", report.Requests, report.Responses, report.ClientErrors, report.ServerErrors, report.Unanswered, traceDNSLatency(report.LatencyAvgMS, "ms"), traceDNSLatency(report.LatencyMaxMS, "ms"), report.LostEvents)
+	fmt.Fprintf(os.Stdout, "Requests: %d\nResponses: %d\nClient errors (4xx): %d\nServer errors (5xx): %d\nUnanswered: %d\nLatency avg: %s\nLatency max: %s\nLost events: %d\n", report.Requests, report.Responses, report.ClientErrors, report.ServerErrors, report.Unanswered, traceLatency(report.LatencyAvgMS, "ms"), traceLatency(report.LatencyMaxMS, "ms"), report.LostEvents)
 	if len(report.Paths) == 0 {
 		return
 	}
 	fmt.Fprintln(os.Stdout, "\nMETHOD\tHOST\tPATH\tREQUESTS\tSTATUS\tUNANSWERED\tAVG\tMAX\tPROCESS")
 	for _, row := range report.Paths {
-		fmt.Fprintf(os.Stdout, "%s\t%s\t%s\t%d\t%s\t%d\t%s\t%s\t%s\n", emptyAs(row.Method, "-"), emptyAs(row.Host, "-"), emptyAs(row.Path, "-"), row.Requests, traceDNSResults(row.Statuses), row.Unanswered, traceDNSLatency(row.LatencyAvgMS, "ms"), traceDNSLatency(row.LatencyMaxMS, "ms"), emptyAs(strings.Join(row.Processes, ","), "-"))
+		fmt.Fprintf(os.Stdout, "%s\t%s\t%s\t%d\t%s\t%d\t%s\t%s\t%s\n", emptyAs(row.Method, "-"), emptyAs(row.Host, "-"), emptyAs(row.Path, "-"), row.Requests, traceResultCounts(row.Statuses), row.Unanswered, traceLatency(row.LatencyAvgMS, "ms"), traceLatency(row.LatencyMaxMS, "ms"), emptyAs(strings.Join(row.Processes, ","), "-"))
 	}
 }

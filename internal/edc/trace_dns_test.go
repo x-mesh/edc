@@ -262,13 +262,13 @@ func TestDNSServerSideMatchesAnswersToClients(t *testing.T) {
 	received := dnsTestPacket(t, question, 1_000_000, "127.0.0.53:53")
 	received.sent, received.process, received.destination = false, "systemd-resolve", "127.0.0.1:41000"
 	query, ok := tracker.event(received, 0)
-	if !ok || query.Event != traceDNSQueryEvent || query.Side != traceDNSServerSide || query.Target != "example.com" || query.Destination != "127.0.0.1:41000" {
+	if !ok || query.Event != traceDNSQueryEvent || query.Side != traceServerSide || query.Target != "example.com" || query.Destination != "127.0.0.1:41000" {
 		t.Fatalf("server query = %#v, %t", query, ok)
 	}
 	sent := dnsTestPacket(t, dnsTestReply(t, question, dns.RcodeNameError), 1_250_000, "127.0.0.53:53")
 	sent.sent, sent.process, sent.destination = true, "systemd-resolve", "127.0.0.1:41000"
 	answer, ok := tracker.event(sent, 0)
-	if !ok || answer.Event != "dns_nxdomain" || answer.Side != traceDNSServerSide || answer.LatencyMS == nil || *answer.LatencyMS != 0.25 || answer.answered != 1 {
+	if !ok || answer.Event != "dns_nxdomain" || answer.Side != traceServerSide || answer.LatencyMS == nil || *answer.LatencyMS != 0.25 || answer.answered != 1 {
 		t.Fatalf("server answer = %#v, %t", answer, ok)
 	}
 	// 각 tracker는 자기 쪽만 기록한다. 서버 쪽 tracker는 client 질의와 port 53 TCP 연결을 버리고, client 쪽은 서버 질의를 버린다.
@@ -295,16 +295,16 @@ func TestDNSServerSideMatchesAnswersToClients(t *testing.T) {
 		groups.observe(event)
 	}
 	report := summarizer.summarize(captureSummary{}, time.Second).(dnsTraceReport)
-	if report.Side != traceDNSServerSide || report.Errors != 1 || report.Unanswered != 1 {
+	if report.Side != traceServerSide || report.Errors != 1 || report.Unanswered != 1 {
 		t.Fatalf("server report = %#v", report)
 	}
-	if side := groups.report(captureSummary{}, time.Second).Side; side != traceDNSServerSide {
+	if side := groups.report(captureSummary{}, time.Second).Side; side != traceServerSide {
 		t.Fatalf("server group report side = %q", side)
 	}
 }
 
 func TestTraceSideOptionIsOnlyForDNS(t *testing.T) {
-	for _, args := range [][]string{{"tcp", "--side", traceDNSServerSide}, {"dns", "--side", "both"}} {
+	for _, args := range [][]string{{"tcp", "--side", traceServerSide}, {"dns", "--side", "both"}} {
 		if code := runTrace(args); code != 2 {
 			t.Fatalf("trace %q exit = %d, want 2", args, code)
 		}

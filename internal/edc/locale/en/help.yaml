@@ -144,7 +144,7 @@ command:
       - "A PCAP file can hold credentials and personal data."
       - "The JSON redaction does not apply to the PCAP payload."
   trace:
-    summary: "Print TCP, UDP, or DNS events in real time and summarize them"
+    summary: "Print TCP, UDP, DNS, or ARP events in real time and summarize them"
     option:
       duration: "trace time, max 60s. Omit for Ctrl-C"
       raw: "print raw event JSONL"
@@ -168,6 +168,7 @@ command:
       - "Use --raw for JSONL events."
       - "The summary groups rows by process and peer. -d lists each connection."
       - "trace dns shows DNS queries and answers on Linux. It has no port view."
+      - "trace arp shows neighbor table changes on Linux. It needs no root."
   report:
     summary: "Read and compare saved JSON reports"
     notes:

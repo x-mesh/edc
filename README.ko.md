@@ -833,6 +833,26 @@ systemd-resolved가 있는 host에서는 조회 하나가 두 번 보일 수 있
 
 `trace dns`는 port 53만 관측합니다. DNS over TCP는 client 쪽에서 연결만 표시합니다. DNS over TLS, DNS over HTTPS, mDNS, LLMNR은 표시하지 않습니다. BPF는 DNS message의 앞 1,024 byte만 읽습니다. 이보다 긴 응답은 header에서 결과 코드를 읽고 이름은 질의에서 가져옵니다. macOS는 socket의 payload를 주지 않으므로 `trace dns`는 Linux에서만 동작합니다.
 
+Linux에서 `trace arp`를 사용하면 IPv4 neighbor table(ARP 캐시)의 변화를 발생 즉시 출력합니다. kernel 알림을 netlink로 읽으므로 root와 eBPF가 필요 없습니다.
+
+```bash
+./bin/edc trace arp
+./bin/edc trace arp --group-by target
+./bin/edc trace arp --json arp.json --duration 30s
+```
+
+trace를 시작할 때 이미 있던 항목은 event로 표시하지 않고, 그 뒤의 변화를 하나씩 표시합니다.
+
+- `arp_new`: 새 항목입니다.
+- `arp_state`: 상태가 바뀌었습니다. 예를 들어 `REACHABLE`에서 `STALE`로 바뀐 경우이며, `old_state`와 `new_state`에 상태가 나옵니다.
+- `arp_mac_change`: IP의 MAC 주소가 바뀌었습니다. `old_mac`과 `mac`에 주소가 나옵니다. gateway 전환, IP 충돌, 위조된 ARP 응답이 원인일 수 있습니다.
+- `arp_failed`: kernel이 그 IP의 응답을 받지 못했습니다.
+- `arp_delete`: kernel이 항목을 지웠습니다.
+
+ARP event의 `target`은 IP 주소이고 `source`는 interface입니다. process와 port가 없으므로 `trace arp`에는 process 보기와 port 보기가 없습니다. `--destination`은 IP 주소로 거릅니다. ARP event에는 process가 없으므로 `--process`를 주면 ARP event가 하나도 남지 않습니다. `Ctrl-C` 후 summary는 interface와 IP마다 한 행을 표시하고, group 행은 MAC 주소 수(`MACS`), MAC 변경(`CHG`), 실패(`FAIL`)를 표시합니다.
+
+kernel은 주소 확인을 시작할 때 알리지 않으므로, 실패한 확인은 `arp_failed`만 표시합니다. IPv6 neighbor(NDP)와 ARP를 쓰지 않는 항목(`NOARP`)은 표시하지 않습니다. `trace arp`는 ARP 패킷이 아니라 neighbor table을 보므로, 다른 host의 요청처럼 table을 바꾸지 않는 ARP 패킷은 표시하지 않습니다. macOS는 아직 지원하지 않습니다.
+
 ```bash
 ./bin/edc capture \
   --interface en0 \

@@ -45,6 +45,9 @@ type captureEvent struct {
 	// 수신 큐에 들어간 때부터 process가 읽은 때까지다. client 쪽은 응답에, 서버 쪽은 질의에 붙는다.
 	NetworkMS   *float64 `json:"network_ms,omitempty"`
 	ReadDelayMS *float64 `json:"read_delay_ms,omitempty"`
+	// MAC과 OldMAC은 ARP event에만 붙는다. OldMAC은 MAC이 바뀌었을 때 이전 값이다.
+	MAC    string `json:"mac,omitempty"`
+	OldMAC string `json:"old_mac,omitempty"`
 	// Side는 로컬 DNS 서버가 받은 질의와 보낸 응답에만 server로 붙는다.
 	Side       string `json:"side,omitempty"`
 	LostEvents uint64 `json:"lost_events,omitempty"`

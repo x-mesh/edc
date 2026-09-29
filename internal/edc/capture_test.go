@@ -310,6 +310,7 @@ func traceCaptureOutput(t *testing.T, target **os.File, f func()) string {
 
 func TestTCPTraceSummaryGroupsRows(t *testing.T) {
 	setTraceKernelEvents(t, true)
+	setTraceEphemeralPortRange(t, 32768, 60999)
 	t.Setenv("NO_COLOR", "1")
 	ms := uint64(time.Millisecond)
 	events := []captureEvent{}
@@ -368,6 +369,7 @@ func TestTCPTraceSummaryGroupsRows(t *testing.T) {
 }
 
 func TestUDPTraceSummaryGroupsRows(t *testing.T) {
+	setTraceEphemeralPortRange(t, 32768, 60999)
 	t.Setenv("NO_COLOR", "1")
 	events := []captureEvent{}
 	// systemd-resolved가 client 포트 셋에 답한다.

@@ -375,7 +375,7 @@ stdin과 stdout이 모두 terminal이면 `edc top`은 전체 화면 대시보드
 | 120 | network errors·drops |
 | 125 | disk `busy` |
 
-`signal` 열은 남는 폭을 모두 쓰며 경고를 더 많이 나열합니다. 제목 줄도 폭에 여유가 있으면 OS 이름, memory 크기, CPU 모델을 함께 표시합니다. 제목 오른쪽 끝에는 보기와 `live` 또는 `history`를 표시하고, 폭에 여유가 있으면 edc 버전도 붙입니다. 폭이 줄면 추가한 열을 바로 뺍니다.
+`signal` 열은 남는 폭을 쓰며 경고를 더 많이 나열합니다. terminal 폭이 169 이상이면 `signal` 열에 40칸을 남기고 다른 열을 최대 3칸씩 넓힙니다. 제목 줄도 폭에 여유가 있으면 OS 이름, memory 크기, CPU 모델을 함께 표시합니다. 제목 오른쪽 끝에는 보기와 `live` 또는 `history`를 표시하고, 폭에 여유가 있으면 edc 버전도 붙입니다. 폭이 줄면 추가한 열을 바로 뺍니다.
 
 disk 보기에는 macOS와 Linux 모두 물리 disk의 IOPS와 평균 `await`가 추가됩니다. Linux에서는 모든 물리 disk의 합산 `busy%`와, memory 보기의 `mem%` 옆 memory pressure도 추가됩니다. 합산 `busy%`는 여러 disk가 동시에 바쁘면 100%를 넘을 수 있습니다. macOS는 disk가 바빴던 시간을 제공하지 않으므로 이 Linux 전용 값들을 `—`로 표시합니다. network 보기의 interface errors·drops는 macOS와 Linux 모두 표시하며, macOS에서는 kernel의 interface 통계(`net.link.generic.ifdata`)에서 읽습니다. memory 보기의 `swap/s`는 kernel이 초당 swap으로 내보낸 byte이며, 0보다 크면 memory가 부족하다는 뜻입니다.
 

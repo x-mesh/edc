@@ -429,6 +429,7 @@ func collectCaptureEventsFor(scope traceScope, duration time.Duration, onEvent f
 			return captureSummary{}, fmt.Errorf("decode event: %w", err)
 		}
 		event := raw.event(clockOffset)
+		event.Source, event.Destination = sockets.addresses(event)
 		commandTarget := ""
 		if event.PID != 0 {
 			if target, ok := owners.target(event.PID); ok {

@@ -149,6 +149,39 @@ func TestCaptureEventFiltersFollowTheProtocol(t *testing.T) {
 	}
 }
 
+func TestSocketTargetCacheFillsAbortedDestroyAddresses(t *testing.T) {
+	cache := newSocketTargetCache()
+	for _, test := range []struct {
+		name        string
+		event       captureEvent
+		source      string
+		destination string
+	}{
+		// connect()의 첫 전이는 port를 배정하기 전이라 채우지도 기억하지도 않는다.
+		{"syn sent", captureEvent{Protocol: "tcp", SocketID: 7, Event: "tcp_state", Source: "127.0.0.1:0", Destination: "127.0.0.1:18099"}, "127.0.0.1:0", "127.0.0.1:18099"},
+		{"send", captureEvent{Protocol: "tcp", SocketID: 7, Event: "tcp_send", Source: "127.0.0.1:55452", Destination: "127.0.0.1:18099", Target: "api.example"}, "127.0.0.1:55452", "127.0.0.1:18099"},
+		// SO_LINGER 0으로 닫으면 kernel이 local 주소와 상대 port를 지운 뒤 socket을 해제한다.
+		{"aborted destroy", captureEvent{Protocol: "tcp", SocketID: 7, Event: "tcp_destroy", Source: "0.0.0.0:55452", Destination: "127.0.0.1:0"}, "127.0.0.1:55452", "127.0.0.1:18099"},
+		// 주소를 본 적이 없는 socket은 connect하지 못한 것이라 그대로 둔다.
+		{"unbound destroy", captureEvent{Protocol: "tcp", SocketID: 8, Event: "tcp_destroy", Source: "[::]:0", Destination: "[2001:db8::1]:0"}, "[::]:0", "[2001:db8::1]:0"},
+		{"udp", captureEvent{Protocol: "udp", SocketID: 9, Event: "udp_send", Source: "0.0.0.0:5353", Destination: "224.0.0.251:5353"}, "0.0.0.0:5353", "224.0.0.251:5353"},
+	} {
+		source, destination := cache.addresses(test.event)
+		if source != test.source || destination != test.destination {
+			t.Fatalf("%s: addresses = %s -> %s, want %s -> %s", test.name, source, destination, test.source, test.destination)
+		}
+		test.event.Source, test.event.Destination = source, destination
+		target, _ := cache.target(test.event)
+		if test.name == "aborted destroy" && target != "api.example" {
+			t.Fatalf("aborted destroy lost the socket target: %q", target)
+		}
+	}
+	// destroy 뒤에는 socket 주소를 새 socket이 다시 쓰므로 기억을 지운다.
+	if source, _ := cache.addresses(captureEvent{Protocol: "tcp", SocketID: 7, Event: "tcp_destroy", Source: "0.0.0.0:1", Destination: "127.0.0.1:0"}); source != "0.0.0.0:1" {
+		t.Fatalf("socket 7 kept its addresses after destroy: %s", source)
+	}
+}
+
 func TestCaptureEventsRunWritesEventsAfterSIGINT(t *testing.T) {
 	previous := captureEventsCollect
 	defer func() { captureEventsCollect = previous }()

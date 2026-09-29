@@ -158,7 +158,7 @@ func traceHTTPTarget(target, host string) (string, string) {
 // traceHTTPSecretHeaders는 --payload에서도 값을 가리는 header다. 인증 정보라서, 출력을 log나 issue에 옮기면 그대로 샌다.
 var traceHTTPSecretHeaders = []string{"authorization", "proxy-authorization", "cookie", "set-cookie"}
 
-// traceHTTPPayload는 --payload로 보여 줄 message 앞부분이다. BPF가 512바이트에서 자르므로 header 끝을 못 봤으면
+// traceHTTPPayload는 --payload로 보여 줄 message 앞부분이다. BPF가 앞부분만 읽으므로 header 끝을 못 봤으면
 // 마지막 header 줄이 CRLF 없이 값 중간에서 끊겨 있다. 그 줄도 header로 보고 가린다.
 func traceHTTPPayload(payload []byte) string {
 	head, body, complete := bytes.Cut(payload, []byte("\r\n\r\n"))
@@ -178,11 +178,31 @@ func traceHTTPPayload(payload []byte) string {
 
 // traceEscapeText는 제어 문자와 UTF-8이 아닌 byte를 \xNN으로 바꾼다. payload는 상대가 보낸 값이라, 그대로 찍으면
 // terminal escape sequence가 실행될 수 있다. 줄바꿈과 tab은 message 모양을 지키려고 남긴다.
+// --payload는 4KB까지 읽으므로 이 함수가 event 처리 시간의 대부분이다. 문자를 하나씩 쓰면 초당 수만 건에서 event를
+// 따라가지 못해, 바꿀 것이 없는 앞부분은 한 번에 복사하고 ASCII는 byte 단위로 처리한다.
 func traceEscapeText(text []byte) string {
+	clean := 0
+	for clean < len(text) && traceTextByteKept(text[clean]) {
+		clean++
+	}
+	if clean == len(text) {
+		return string(text)
+	}
 	var out strings.Builder
-	for len(text) > 0 {
+	out.Grow(len(text) + 16)
+	out.Write(text[:clean])
+	for text = text[clean:]; len(text) > 0; {
+		if value := text[0]; value < utf8.RuneSelf {
+			if traceTextByteKept(value) {
+				out.WriteByte(value)
+			} else {
+				fmt.Fprintf(&out, `\x%02x`, value)
+			}
+			text = text[1:]
+			continue
+		}
 		r, size := utf8.DecodeRune(text)
-		if (r == utf8.RuneError && size == 1) || (r < 0x20 && r != '\r' && r != '\n' && r != '\t') || (r >= 0x7f && r < 0xa0) {
+		if (r == utf8.RuneError && size == 1) || (r >= 0x80 && r < 0xa0) {
 			for _, value := range text[:size] {
 				fmt.Fprintf(&out, `\x%02x`, value)
 			}
@@ -192,6 +212,11 @@ func traceEscapeText(text []byte) string {
 		text = text[size:]
 	}
 	return out.String()
+}
+
+// traceTextByteKept는 그대로 두는 ASCII byte다. UTF-8의 첫 byte(0x80 이상)는 false라서 느린 경로가 확인한다.
+func traceTextByteKept(value byte) bool {
+	return (value >= 0x20 && value < 0x7f) || value == '\r' || value == '\n' || value == '\t'
 }
 
 // traceHTTPPayloadLine은 payload를 event 행 아래 한 줄로 보여 준다. 요청 줄과 상태 줄은 event 행에 이미 있으므로 빼고,

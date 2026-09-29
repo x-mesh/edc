@@ -50,7 +50,7 @@ type captureEventsHttpRecord struct {
 	Source      [16]uint8
 	Destination [16]uint8
 	Comm        [16]int8
-	Payload     [512]uint8
+	Payload     [4096]uint8
 	_           [4]byte
 }
 
@@ -91,6 +91,7 @@ const (
 	captureEventsMapDnsScratch                 = "dns_scratch"
 	captureEventsMapEvents                     = "events"
 	captureEventsMapHttpRecvPending            = "http_recv_pending"
+	captureEventsMapHttpScratch                = "http_scratch"
 	captureEventsMapLostEvents                 = "lost_events"
 	captureEventsMapSockOwners                 = "sock_owners"
 	captureEventsMapUdpSendPending             = "udp_send_pending"
@@ -117,6 +118,7 @@ const (
 	captureEventsVarEmitDnsTcpMessages         = "emit_dns_tcp_messages"
 	captureEventsVarEmitHttpMessages           = "emit_http_messages"
 	captureEventsVarEmitUdpEvents              = "emit_udp_events"
+	captureEventsVarHttpPayloadLimit           = "http_payload_limit"
 	captureEventsVarTcpStatePort               = "tcp_state_port"
 	captureEventsVarUnusedHttpRecord           = "unused_http_record"
 )
@@ -193,6 +195,7 @@ type captureEventsMapSpecs struct {
 	DnsScratch      *ebpf.MapSpec `ebpf:"dns_scratch"`
 	Events          *ebpf.MapSpec `ebpf:"events"`
 	HttpRecvPending *ebpf.MapSpec `ebpf:"http_recv_pending"`
+	HttpScratch     *ebpf.MapSpec `ebpf:"http_scratch"`
 	LostEvents      *ebpf.MapSpec `ebpf:"lost_events"`
 	SockOwners      *ebpf.MapSpec `ebpf:"sock_owners"`
 	UdpSendPending  *ebpf.MapSpec `ebpf:"udp_send_pending"`
@@ -207,6 +210,7 @@ type captureEventsVariableSpecs struct {
 	EmitDnsTcpMessages *ebpf.VariableSpec `ebpf:"emit_dns_tcp_messages"`
 	EmitHttpMessages   *ebpf.VariableSpec `ebpf:"emit_http_messages"`
 	EmitUdpEvents      *ebpf.VariableSpec `ebpf:"emit_udp_events"`
+	HttpPayloadLimit   *ebpf.VariableSpec `ebpf:"http_payload_limit"`
 	TcpStatePort       *ebpf.VariableSpec `ebpf:"tcp_state_port"`
 	UnusedHttpRecord   *ebpf.VariableSpec `ebpf:"unused_http_record"`
 }
@@ -237,6 +241,7 @@ type captureEventsMaps struct {
 	DnsScratch      *ebpf.Map `ebpf:"dns_scratch"`
 	Events          *ebpf.Map `ebpf:"events"`
 	HttpRecvPending *ebpf.Map `ebpf:"http_recv_pending"`
+	HttpScratch     *ebpf.Map `ebpf:"http_scratch"`
 	LostEvents      *ebpf.Map `ebpf:"lost_events"`
 	SockOwners      *ebpf.Map `ebpf:"sock_owners"`
 	UdpSendPending  *ebpf.Map `ebpf:"udp_send_pending"`
@@ -250,6 +255,7 @@ func (m *captureEventsMaps) Close() error {
 		m.DnsScratch,
 		m.Events,
 		m.HttpRecvPending,
+		m.HttpScratch,
 		m.LostEvents,
 		m.SockOwners,
 		m.UdpSendPending,
@@ -265,6 +271,7 @@ type captureEventsVariables struct {
 	EmitDnsTcpMessages *ebpf.Variable `ebpf:"emit_dns_tcp_messages"`
 	EmitHttpMessages   *ebpf.Variable `ebpf:"emit_http_messages"`
 	EmitUdpEvents      *ebpf.Variable `ebpf:"emit_udp_events"`
+	HttpPayloadLimit   *ebpf.Variable `ebpf:"http_payload_limit"`
 	TcpStatePort       *ebpf.Variable `ebpf:"tcp_state_port"`
 	UnusedHttpRecord   *ebpf.Variable `ebpf:"unused_http_record"`
 }

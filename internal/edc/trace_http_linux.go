@@ -16,6 +16,8 @@ const (
 	httpRecordType          = 10
 	httpRecordSent          = 1
 	httpRecordPayloadOffset = 92
+	// httpRecordPayloadMax는 capture_events_bpf.c의 HTTP_PAYLOAD_SIZE다. trace http --payload일 때 BPF가 이만큼 읽는다.
+	httpRecordPayloadMax = 4096
 )
 
 func parseHTTPRecord(sample []byte) (httpPacket, bool) {

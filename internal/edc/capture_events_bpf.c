@@ -61,6 +61,9 @@ volatile const __u8 emit_dns_server = 0;
 // TCP 송수신 hook은 trace http와 trace dns가 함께 쓴다. 불러오기 전에 어느 message를 낼지 정한다.
 volatile const __u8 emit_http_messages = 0;
 volatile const __u8 emit_dns_tcp_messages = 0;
+// http_payload_limit는 HTTP message 앞부분을 읽는 byte 수다. 사용자 공간은 요청 줄과 Host만 쓰므로 512면 된다.
+// trace http --payload만 HTTP_PAYLOAD_SIZE까지 늘린다. 레코드는 읽은 만큼만 ring buffer에 넣는다.
+volatile const __u32 http_payload_limit = 512;
 // 0이 아니면 inet_sock_set_state는 로컬이나 상대 port가 이 값인 socket만 본다. trace dns는 53만 본다. 상대 port는 client 쪽
 // 연결, 로컬 port는 이 host의 DNS 서버가 받은 연결이다.
 volatile const __u16 tcp_state_port = 0;
@@ -851,7 +854,7 @@ int tcp_create_openreq_child_exit(__u64 *ctx) {
 
 // trace http는 TCP로 주고받는 평문 HTTP/1.x message의 앞부분을 읽는다. 요청 줄, Host, 상태 줄이 이 안에 들어간다.
 // 나머지 header와 body는 사용자 공간이 해석한 뒤 버린다.
-#define HTTP_PAYLOAD_SIZE 512
+#define HTTP_PAYLOAD_SIZE 4096
 #define HTTP_RECEIVED 0
 #define HTTP_SENT 1
 #define MSG_PEEK 2
@@ -876,6 +879,14 @@ struct http_record {
 
 // ringbuf에만 쓰는 구조체는 BTF에 남지 않는다. bpf2go -type이 Go 구조체를 만들어 offset을 테스트하도록 남긴다.
 const struct http_record *unused_http_record __attribute__((unused));
+
+// record가 BPF stack(512바이트)보다 커서 CPU별 scratch에서 만든다.
+struct {
+	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+	__uint(max_entries, 1);
+	__type(key, __u32);
+	__type(value, struct http_record);
+} http_scratch SEC(".maps");
 
 struct iovec {
 	void *iov_base;
@@ -943,21 +954,19 @@ static __always_inline void emit_http(struct sock *sk, const void *buffer, __u64
 	if (bpf_probe_read_user(peek, sizeof(peek), buffer) || !http_start(peek)) {
 		return;
 	}
-	struct http_record *record = bpf_ringbuf_reserve(&events, sizeof(*record), 0);
+	__u32 zero = 0;
+	struct http_record *record = bpf_map_lookup_elem(&http_scratch, &zero);
 	if (!record) {
-		__u32 key = 0;
-		__u64 *lost = bpf_map_lookup_elem(&lost_events, &key);
-		if (lost) {
-			__sync_fetch_and_add(lost, 1);
-		}
 		return;
 	}
 	__u32 len = size;
+	if (len > http_payload_limit) {
+		len = http_payload_limit;
+	}
 	if (len > HTTP_PAYLOAD_SIZE) {
 		len = HTTP_PAYLOAD_SIZE;
 	}
 	if (bpf_probe_read_user(record->payload, len, buffer)) {
-		bpf_ringbuf_discard(record, 0);
 		return;
 	}
 	record->timestamp_ns = bpf_ktime_get_ns();
@@ -983,7 +992,12 @@ static __always_inline void emit_http(struct sock *sk, const void *buffer, __u64
 		BPF_CORE_READ_INTO(&record->destination, sk, __sk_common.skc_v6_daddr.in6_u.u6_addr8);
 	}
 	bpf_get_current_comm(record->comm, sizeof(record->comm));
-	bpf_ringbuf_submit(record, 0);
+	if (bpf_ringbuf_output(&events, record, __builtin_offsetof(struct http_record, payload) + len, 0)) {
+		__u64 *lost = bpf_map_lookup_elem(&lost_events, &zero);
+		if (lost) {
+			__sync_fetch_and_add(lost, 1);
+		}
+	}
 }
 
 // DNS over TCP는 로컬이나 상대 port 53의 연결이다. 로컬 53은 이 host의 DNS 서버라서 --side server일 때만 본다.

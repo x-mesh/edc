@@ -121,7 +121,7 @@ func TestSummarizeTCPTrace(t *testing.T) {
 		switch report.Connections[index].Result {
 		case "established":
 			established = &report.Connections[index]
-		case "reset":
+		case "failed":
 			reset = &report.Connections[index]
 		}
 	}
@@ -176,7 +176,7 @@ func TestSummarizeTCPTraceSplitsSocketLives(t *testing.T) {
 		rows[connection.Process+" "+connection.Source] = connection
 	}
 	curl, bot := rows["curl 10.0.0.2:41000"], rows["bot 10.0.0.2:41001"]
-	if curl.Result != "established" || curl.TXBytes != 100 || traceOptional(curl.ConnectMS, "%d") != "2" || bot.Result != "reset" || bot.TXBytes != 0 {
+	if curl.Result != "established" || curl.TXBytes != 100 || traceOptional(curl.ConnectMS, "%d") != "2" || bot.Result != "failed" || bot.TXBytes != 0 {
 		t.Fatalf("rows = %#v", rows)
 	}
 	if _, ok := rows["agent 10.0.0.2:41002"]; !ok {
@@ -200,8 +200,9 @@ func TestSummarizeTCPTraceKeepsRecentConnectionRows(t *testing.T) {
 	}
 	events = append(events, captureEvent{SocketID: 99999, TimestampNS: 1 << 40, Event: "tcp_send", Bytes: 10, Process: "open", Source: "10.0.0.2:50000", Destination: "127.0.0.1:9090"})
 	report := summarizeTCPTrace(events, captureSummary{}, time.Second, "", "")
-	if report.Attempts != tcpTraceConnectionLimit+6 || report.Established != tcpTraceConnectionLimit+5 || report.Incomplete != 1 {
-		t.Fatalf("totals = %d attempts, %d established, %d incomplete", report.Attempts, report.Established, report.Incomplete)
+	// 송수신만 보인 연결은 trace 전부터 열려 있던 것이라 attempts가 아니라 existing으로 센다.
+	if report.Attempts != tcpTraceConnectionLimit+5 || report.Established != tcpTraceConnectionLimit+5 || report.Incomplete != 0 || report.Existing != 1 {
+		t.Fatalf("totals = %d attempts, %d established, %d incomplete, %d existing", report.Attempts, report.Established, report.Incomplete, report.Existing)
 	}
 	// 행은 진행 중인 연결과 최근에 끝난 연결만 남는다. 처음 끝난 다섯 연결이 빠진다.
 	if len(report.Connections) != tcpTraceConnectionLimit+1 || report.ConnectionsOmitted != 5 {
@@ -218,6 +219,57 @@ func TestSummarizeTCPTraceKeepsRecentConnectionRows(t *testing.T) {
 	}
 	if !strings.Contains(string(encoded), `"connections_omitted":5`) {
 		t.Fatalf("report JSON misses connections_omitted: %.200s", encoded)
+	}
+}
+
+func TestSummarizeTCPTraceClassifiesResults(t *testing.T) {
+	setTraceKernelEvents(t, true)
+	events := []captureEvent{
+		// 연결된 뒤 RST로 끝나도 established다.
+		{SocketID: 1, TimestampNS: 1, Event: "tcp_state", Process: "probe", Source: "10.0.0.2:0", Destination: "127.0.0.1:8080", OldState: "CLOSE", NewState: "SYN_SENT"},
+		{SocketID: 1, TimestampNS: 2, Event: "tcp_connect", Source: "10.0.0.2:40001", Destination: "127.0.0.1:8080", OldState: "SYN_SENT", NewState: "ESTABLISHED"},
+		{SocketID: 1, TimestampNS: 3, Event: "tcp_receive_reset", Source: "10.0.0.2:40001", Destination: "127.0.0.1:8080", OldState: "ESTABLISHED"},
+		{SocketID: 1, TimestampNS: 4, Event: "tcp_close", Source: "10.0.0.2:40001", Destination: "127.0.0.1:8080", OldState: "ESTABLISHED", NewState: "CLOSE"},
+		// 닫힌 port로 connect하면 RST를 받고 닫힌다.
+		{SocketID: 2, TimestampNS: 5, Event: "tcp_state", Process: "refused", Source: "10.0.0.2:0", Destination: "127.0.0.1:1", OldState: "CLOSE", NewState: "SYN_SENT"},
+		{SocketID: 2, TimestampNS: 6, Event: "tcp_receive_reset", Source: "10.0.0.2:40002", Destination: "127.0.0.1:1", OldState: "SYN_SENT"},
+		{SocketID: 2, TimestampNS: 7, Event: "tcp_close", Source: "10.0.0.2:40002", Destination: "127.0.0.1:1", OldState: "SYN_SENT", NewState: "CLOSE"},
+		// macOS는 거부된 connect를 처음 볼 때 SYN_SENT에서 닫힌 것으로만 보고한다.
+		{SocketID: 3, TimestampNS: 8, Event: "tcp_close", Process: "mac", Source: "10.0.0.2:40003", Destination: "192.0.2.9:443", OldState: "SYN_SENT", NewState: "CLOSE"},
+		// trace 전에 보낸 SYN을 재전송하고 있고, trace가 끝날 때까지 응답이 없다.
+		{SocketID: 4, TimestampNS: 9, Event: "tcp_retransmit", Source: "10.0.0.2:40004", Destination: "192.0.2.1:443", OldState: "SYN_SENT"},
+		// trace 전부터 열려 있던 연결이다.
+		{SocketID: 5, TimestampNS: 10, Event: "tcp_send", Bytes: 50, Process: "sshd", Source: "10.0.0.2:22", Destination: "10.0.0.9:50000"},
+		// listen socket은 행이 아니다. 자식 socket의 LISTEN→SYN_RECV는 서버의 새 연결이다.
+		{SocketID: 6, TimestampNS: 11, Event: "tcp_state", Process: "server", Source: "10.0.0.2:8080", OldState: "CLOSE", NewState: "LISTEN"},
+		{SocketID: 7, TimestampNS: 12, Event: "tcp_state", Source: "10.0.0.2:8080", Destination: "10.0.0.9:50001", OldState: "LISTEN", NewState: "SYN_RECV"},
+		{SocketID: 7, TimestampNS: 13, Event: "tcp_accept", Process: "server", Source: "10.0.0.2:8080", Destination: "10.0.0.9:50001", OldState: "SYN_RECV", NewState: "ESTABLISHED"},
+		{SocketID: 6, TimestampNS: 14, Event: "tcp_close", Source: "10.0.0.2:8080", OldState: "LISTEN", NewState: "CLOSE"},
+	}
+	report := summarizeTCPTrace(events, captureSummary{}, time.Second, "", "")
+	results := map[uint64]string{}
+	byDestination := map[string]tcpTraceConnection{}
+	for _, connection := range report.Connections {
+		byDestination[connection.Destination] = connection
+	}
+	for socket, destination := range map[uint64]string{1: "127.0.0.1:8080", 2: "127.0.0.1:1", 3: "192.0.2.9:443", 4: "192.0.2.1:443", 5: "10.0.0.9:50000", 7: "10.0.0.9:50001"} {
+		results[socket] = byDestination[destination].Result
+	}
+	want := map[uint64]string{1: "established", 2: "failed", 3: "failed", 4: "incomplete", 5: "existing", 7: "established"}
+	if !reflect.DeepEqual(results, want) || len(report.Connections) != 6 {
+		t.Fatalf("results = %v, want %v; rows = %d", results, want, len(report.Connections))
+	}
+	if report.Attempts != 5 || report.Established != 2 || report.Incomplete != 3 || report.Existing != 1 || report.Attempts != report.Established+report.Incomplete {
+		t.Fatalf("totals = %d attempts, %d established, %d incomplete, %d existing", report.Attempts, report.Established, report.Incomplete, report.Existing)
+	}
+	if reset := byDestination["127.0.0.1:8080"]; traceOptional(reset.Reset, "%t") != "true" || reset.ConnectMS == nil {
+		t.Fatalf("established and reset connection = %#v", reset)
+	}
+	// 연결되지 않은 행에는 연결 시간이 없다.
+	for _, destination := range []string{"127.0.0.1:1", "192.0.2.1:443", "10.0.0.9:50000"} {
+		if byDestination[destination].ConnectMS != nil {
+			t.Fatalf("%s has a connect time: %#v", destination, byDestination[destination])
+		}
 	}
 }
 

@@ -789,6 +789,14 @@ Use `trace tcp` or `trace udp` on Linux or macOS to print network events as they
 
 Use `--raw` to print JSONL events as they arrive. Use `--json` to write the connection summary after Ctrl-C.
 The connection summary shows one row for each socket, from its creation to its destruction. The kernel can give the address of a closed socket to a new socket, so edc starts a new row when a socket is destroyed. The summary keeps the rows of the open connections and of the last 1,000 closed connections. The totals count all connections. `connections_omitted` in the JSON output shows the number of closed connections that have no row.
+Each row has one of these results:
+
+- `established`: the trace saw the connect or the accept. A later reset does not change the result. The `RESET` column shows the reset.
+- `failed`: the handshake started but the connection closed or got a reset before it was established.
+- `incomplete`: the handshake did not finish before the trace ended.
+- `existing`: the connection was open before the trace started, so the trace did not see its handshake.
+
+`Attempts` counts the connections with a handshake in the trace. It is the sum of `Established` and `Incomplete`, and `Incomplete` counts the `failed` and `incomplete` rows. `Existing` counts the `existing` rows. Listening sockets are not connections, so they have no row.
 Use `--duration 15s` to stop after 15 seconds. `--live` remains accepted for compatibility.
 Use `--group-by source`, `--group-by target`, `--group-by port`, `--group-by process`, or `--group-by event` to show one live row for each selected dimension. TCP rows show connect, retransmission, reset, and traffic values. UDP rows show TX and RX traffic values. `EVENT/s` is an event count rate. TX and RX bytes are socket payload bytes. B/s is a byte rate. bps and Mbps are bit rates. Mbps uses decimal units: bps / 1,000,000.
 `--group-by source` groups events by the source host. It ignores the source port because the OS assigns a new port to each connection.

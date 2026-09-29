@@ -152,6 +152,7 @@ command:
       group_by: "source, target, port, process, event별로 묶습니다"
       process: "process 이름으로 필터"
       destination: "destination host와 port로 필터"
+      detail: "요약에 연결이나 flow를 하나씩 표시"
       yes: "확인 질문 생략"
       side: "trace dns: 이 host의 조회 또는 로컬 DNS 서버"
     notes:
@@ -165,6 +166,7 @@ command:
       - "B/s는 byte rate이며 bps와 Mbps는 bit rate입니다. Mbps는 bps / 1,000,000입니다."
       - "--duration을 생략하면 Ctrl-C로 trace를 종료합니다."
       - "JSONL event가 필요하면 --raw를 사용합니다."
+      - "요약은 process와 상대별로 행을 묶습니다. -d는 연결마다 표시합니다."
       - "trace dns는 Linux에서 DNS 질의와 응답을 표시합니다. port 보기는 없습니다."
   report:
     summary: "저장한 JSON report 보기와 비교"

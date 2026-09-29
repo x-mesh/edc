@@ -19,6 +19,7 @@ type captureEventsDnsRecord struct {
 	EventType   uint32
 	Pid         uint32
 	CgroupId    uint64
+	ArrivalNs   uint64
 	Len         uint32
 	Family      uint16
 	Direction   uint8
@@ -57,6 +58,7 @@ type captureEventsUdpSendPending struct {
 // Used for safe lookups in a Collection or CollectionSpec.
 const (
 	captureEventsMapAnnouncedOwners            = "announced_owners"
+	captureEventsMapDnsArrivals                = "dns_arrivals"
 	captureEventsMapDnsQueryPending            = "dns_query_pending"
 	captureEventsMapDnsScratch                 = "dns_scratch"
 	captureEventsMapEvents                     = "events"
@@ -73,6 +75,7 @@ const (
 	captureEventsProgTcpRetransmitSkb          = "tcp_retransmit_skb"
 	captureEventsProgTcpSendLength             = "tcp_send_length"
 	captureEventsProgTcpSendReset              = "tcp_send_reset"
+	captureEventsProgUdpEnqueueEntry           = "udp_enqueue_entry"
 	captureEventsProgUdpSendSkbEntry           = "udp_send_skb_entry"
 	captureEventsProgUdpSendSkbExit            = "udp_send_skb_exit"
 	captureEventsProgUdpV6SendSkbEntry         = "udp_v6_send_skb_entry"
@@ -135,6 +138,7 @@ type captureEventsProgramSpecs struct {
 	TcpRetransmitSkb          *ebpf.ProgramSpec `ebpf:"tcp_retransmit_skb"`
 	TcpSendLength             *ebpf.ProgramSpec `ebpf:"tcp_send_length"`
 	TcpSendReset              *ebpf.ProgramSpec `ebpf:"tcp_send_reset"`
+	UdpEnqueueEntry           *ebpf.ProgramSpec `ebpf:"udp_enqueue_entry"`
 	UdpSendSkbEntry           *ebpf.ProgramSpec `ebpf:"udp_send_skb_entry"`
 	UdpSendSkbExit            *ebpf.ProgramSpec `ebpf:"udp_send_skb_exit"`
 	UdpV6SendSkbEntry         *ebpf.ProgramSpec `ebpf:"udp_v6_send_skb_entry"`
@@ -146,6 +150,7 @@ type captureEventsProgramSpecs struct {
 // It can be passed ebpf.CollectionSpec.Assign.
 type captureEventsMapSpecs struct {
 	AnnouncedOwners *ebpf.MapSpec `ebpf:"announced_owners"`
+	DnsArrivals     *ebpf.MapSpec `ebpf:"dns_arrivals"`
 	DnsQueryPending *ebpf.MapSpec `ebpf:"dns_query_pending"`
 	DnsScratch      *ebpf.MapSpec `ebpf:"dns_scratch"`
 	Events          *ebpf.MapSpec `ebpf:"events"`
@@ -185,6 +190,7 @@ func (o *captureEventsObjects) Close() error {
 // It can be passed to loadCaptureEventsObjects or ebpf.CollectionSpec.LoadAndAssign.
 type captureEventsMaps struct {
 	AnnouncedOwners *ebpf.Map `ebpf:"announced_owners"`
+	DnsArrivals     *ebpf.Map `ebpf:"dns_arrivals"`
 	DnsQueryPending *ebpf.Map `ebpf:"dns_query_pending"`
 	DnsScratch      *ebpf.Map `ebpf:"dns_scratch"`
 	Events          *ebpf.Map `ebpf:"events"`
@@ -196,6 +202,7 @@ type captureEventsMaps struct {
 func (m *captureEventsMaps) Close() error {
 	return _CaptureEventsClose(
 		m.AnnouncedOwners,
+		m.DnsArrivals,
 		m.DnsQueryPending,
 		m.DnsScratch,
 		m.Events,
@@ -229,6 +236,7 @@ type captureEventsPrograms struct {
 	TcpRetransmitSkb          *ebpf.Program `ebpf:"tcp_retransmit_skb"`
 	TcpSendLength             *ebpf.Program `ebpf:"tcp_send_length"`
 	TcpSendReset              *ebpf.Program `ebpf:"tcp_send_reset"`
+	UdpEnqueueEntry           *ebpf.Program `ebpf:"udp_enqueue_entry"`
 	UdpSendSkbEntry           *ebpf.Program `ebpf:"udp_send_skb_entry"`
 	UdpSendSkbExit            *ebpf.Program `ebpf:"udp_send_skb_exit"`
 	UdpV6SendSkbEntry         *ebpf.Program `ebpf:"udp_v6_send_skb_entry"`
@@ -247,6 +255,7 @@ func (p *captureEventsPrograms) Close() error {
 		p.TcpRetransmitSkb,
 		p.TcpSendLength,
 		p.TcpSendReset,
+		p.UdpEnqueueEntry,
 		p.UdpSendSkbEntry,
 		p.UdpSendSkbExit,
 		p.UdpV6SendSkbEntry,

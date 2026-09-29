@@ -33,6 +33,7 @@ const (
 // dnsPacket은 kernel이 port 53으로 주고받은 DNS message 하나다. source는 로컬 쪽, destination은 상대 쪽이다.
 type dnsPacket struct {
 	bootTimeNS  uint64
+	arrivalNS   uint64
 	pid         uint32
 	cgroupID    uint64
 	process     string
@@ -130,6 +131,10 @@ func (tracker *dnsQueryTracker) event(packet dnsPacket, clockOffset int64) (capt
 	if server {
 		event.Side = traceDNSServerSide
 	}
+	// 받은 message만 수신 큐 시각이 있다. client 쪽은 응답을, 서버 쪽은 질의를 받는다.
+	if !packet.sent && packet.arrivalNS != 0 {
+		event.ReadDelayMS = traceDNSSpan(packet.arrivalNS, packet.bootTimeNS)
+	}
 	key := dnsQueryKey{server: server, localPort: localPort, remote: packet.destination, id: id}
 	if query {
 		event.Event = traceDNSQueryEvent
@@ -146,8 +151,10 @@ func (tracker *dnsQueryTracker) event(packet dnsPacket, clockOffset int64) (capt
 	if queries := tracker.pending[key]; len(queries) > 0 {
 		delete(tracker.pending, key)
 		tracker.size -= len(queries)
-		latency := float64(packet.bootTimeNS-min(packet.bootTimeNS, queries[0].bootTimeNS)) / float64(time.Millisecond)
-		event.LatencyMS = &latency
+		event.LatencyMS = traceDNSSpan(queries[0].bootTimeNS, packet.bootTimeNS)
+		if !packet.sent && packet.arrivalNS != 0 {
+			event.NetworkMS = traceDNSSpan(queries[0].bootTimeNS, packet.arrivalNS)
+		}
 		event.dnsAnswered = uint64(len(queries))
 		if event.Target == "" {
 			event.Target, event.QueryType = queries[0].name, queries[0].queryType
@@ -203,6 +210,12 @@ func traceDNSServerHost(address string) string {
 	return host
 }
 
+// traceDNSSpan은 두 monotonic 시각 사이의 밀리초다. CPU마다 읽은 시각이 조금 어긋나도 음수로 내지 않는다.
+func traceDNSSpan(start, end uint64) *float64 {
+	span := float64(end-min(end, start)) / float64(time.Millisecond)
+	return &span
+}
+
 func traceDNSName(name string) string {
 	return strings.ToLower(strings.TrimSuffix(name, "."))
 }
@@ -256,13 +269,44 @@ type traceDNSCounts struct {
 	TCPConnections uint64   `json:"tcp_connections"`
 	LatencyAvgMS   *float64 `json:"latency_avg_ms"`
 	LatencyMaxMS   *float64 `json:"latency_max_ms"`
+	NetworkAvgMS   *float64 `json:"network_avg_ms"`
+	NetworkMaxMS   *float64 `json:"network_max_ms"`
+	ReadDelayAvgMS *float64 `json:"read_delay_avg_ms"`
+	ReadDelayMaxMS *float64 `json:"read_delay_max_ms"`
 	answered       uint64
-	latencyTotal   float64
-	latencies      uint64
-	latencyMax     float64
+	latency        traceDNSSpans
+	network        traceDNSSpans
+	readDelay      traceDNSSpans
+}
+
+// traceDNSSpans는 시간 값의 합, 개수, 최댓값이다.
+type traceDNSSpans struct {
+	total   float64
+	count   uint64
+	maximum float64
+}
+
+func (spans *traceDNSSpans) observe(value *float64) {
+	if value == nil {
+		return
+	}
+	spans.total += *value
+	spans.count++
+	if *value > spans.maximum {
+		spans.maximum = *value
+	}
+}
+
+func (spans traceDNSSpans) summary() (*float64, *float64) {
+	if spans.count == 0 {
+		return nil, nil
+	}
+	average, maximum := spans.total/float64(spans.count), spans.maximum
+	return &average, &maximum
 }
 
 func (counts *traceDNSCounts) observe(event captureEvent) {
+	counts.readDelay.observe(event.ReadDelayMS)
 	switch event.Event {
 	case traceDNSQueryEvent:
 		counts.Queries++
@@ -279,23 +323,17 @@ func (counts *traceDNSCounts) observe(event captureEvent) {
 		counts.Errors++
 	}
 	counts.answered += event.dnsAnswered
-	if event.LatencyMS != nil {
-		counts.latencyTotal += *event.LatencyMS
-		counts.latencies++
-		if *event.LatencyMS > counts.latencyMax {
-			counts.latencyMax = *event.LatencyMS
-		}
-	}
+	counts.latency.observe(event.LatencyMS)
+	counts.network.observe(event.NetworkMS)
 }
 
 // finished는 보여 줄 값을 채운 복사본이다. 쌓은 값은 그대로 두어 같은 요약을 다시 만들 수 있다. 전체 화면은
 // 최근 event만 두므로 질의가 창 밖으로 밀린 응답이 있어 응답 없음을 0 밑으로 내리지 않는다.
 func (counts traceDNSCounts) finished() traceDNSCounts {
 	counts.Unanswered = counts.Queries - min(counts.Queries, counts.answered)
-	if counts.latencies > 0 {
-		average, maximum := counts.latencyTotal/float64(counts.latencies), counts.latencyMax
-		counts.LatencyAvgMS, counts.LatencyMaxMS = &average, &maximum
-	}
+	counts.LatencyAvgMS, counts.LatencyMaxMS = counts.latency.summary()
+	counts.NetworkAvgMS, counts.NetworkMaxMS = counts.network.summary()
+	counts.ReadDelayAvgMS, counts.ReadDelayMaxMS = counts.readDelay.summary()
 	return counts
 }
 
@@ -330,6 +368,8 @@ var traceDNSGroupColumns = []traceGroupColumn{
 	{screenTitle: "NOANS", reportTitle: "UNANSWERED", width: 5, value: traceDNSColumn(func(counts traceDNSCounts) string { return strconv.FormatUint(counts.Unanswered, 10) })},
 	{screenTitle: "AVGms", reportTitle: "AVG_MS", width: 6, value: traceDNSColumn(func(counts traceDNSCounts) string { return traceDNSLatency(counts.LatencyAvgMS, "") })},
 	{screenTitle: "MAXms", reportTitle: "MAX_MS", width: 6, value: traceDNSColumn(func(counts traceDNSCounts) string { return traceDNSLatency(counts.LatencyMaxMS, "") })},
+	{screenTitle: "NETms", reportTitle: "NET_AVG_MS", width: 6, value: traceDNSColumn(func(counts traceDNSCounts) string { return traceDNSLatency(counts.NetworkAvgMS, "") })},
+	{screenTitle: "RDms", reportTitle: "READ_AVG_MS", width: 6, value: traceDNSColumn(func(counts traceDNSCounts) string { return traceDNSLatency(counts.ReadDelayAvgMS, "") })},
 }
 
 // traceDNSScrollLabels는 스크롤 행의 목적지 칸에 조회한 이름, 레코드 종류, 서버를, event 칸에 결과와 응답 시간을 쓴다.
@@ -449,13 +489,14 @@ func (report dnsTraceReport) print(bool) {
 		title = "DNS server trace"
 	}
 	fmt.Fprintf(os.Stdout, "%s: %s\n\n", title, (time.Duration(report.DurationMS) * time.Millisecond).String())
-	fmt.Fprintf(os.Stdout, "Queries: %d\nAnswers: %d\nErrors: %d\nUnanswered: %d\nTCP connections: %d\nLatency avg: %s\nLatency max: %s\nLost events: %d\n", report.Queries, report.Answers, report.Errors, report.Unanswered, report.TCPConnections, traceDNSLatency(report.LatencyAvgMS, "ms"), traceDNSLatency(report.LatencyMaxMS, "ms"), report.LostEvents)
+	fmt.Fprintf(os.Stdout, "Queries: %d\nAnswers: %d\nErrors: %d\nUnanswered: %d\nTCP connections: %d\n", report.Queries, report.Answers, report.Errors, report.Unanswered, report.TCPConnections)
+	fmt.Fprintf(os.Stdout, "Latency avg: %s\nLatency max: %s\nNetwork avg: %s\nNetwork max: %s\nRead delay avg: %s\nRead delay max: %s\nLost events: %d\n", traceDNSLatency(report.LatencyAvgMS, "ms"), traceDNSLatency(report.LatencyMaxMS, "ms"), traceDNSLatency(report.NetworkAvgMS, "ms"), traceDNSLatency(report.NetworkMaxMS, "ms"), traceDNSLatency(report.ReadDelayAvgMS, "ms"), traceDNSLatency(report.ReadDelayMaxMS, "ms"), report.LostEvents)
 	if len(report.Names) == 0 {
 		return
 	}
-	fmt.Fprintln(os.Stdout, "\nNAME\tTYPE\tQUERIES\tANSWERS\tRESULTS\tUNANSWERED\tAVG\tMAX\tPROCESS")
+	fmt.Fprintln(os.Stdout, "\nNAME\tTYPE\tQUERIES\tANSWERS\tRESULTS\tUNANSWERED\tAVG\tMAX\tNET\tREAD\tPROCESS")
 	for _, name := range report.Names {
-		fmt.Fprintf(os.Stdout, "%s\t%s\t%d\t%d\t%s\t%d\t%s\t%s\t%s\n", name.Name, emptyAs(name.Type, "-"), name.Queries, name.Answers, traceDNSResults(name.Results), name.Unanswered, traceDNSLatency(name.LatencyAvgMS, "ms"), traceDNSLatency(name.LatencyMaxMS, "ms"), emptyAs(strings.Join(name.Processes, ","), "-"))
+		fmt.Fprintf(os.Stdout, "%s\t%s\t%d\t%d\t%s\t%d\t%s\t%s\t%s\t%s\t%s\n", name.Name, emptyAs(name.Type, "-"), name.Queries, name.Answers, traceDNSResults(name.Results), name.Unanswered, traceDNSLatency(name.LatencyAvgMS, "ms"), traceDNSLatency(name.LatencyMaxMS, "ms"), traceDNSLatency(name.NetworkAvgMS, "ms"), traceDNSLatency(name.ReadDelayAvgMS, "ms"), emptyAs(strings.Join(name.Processes, ","), "-"))
 	}
 }
 

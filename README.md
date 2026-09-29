@@ -846,11 +846,15 @@ An answer with the TC bit is `dns_truncated`. The answer did not fit in UDP, so 
 
 The `target` of a DNS event is the name in the query. The `destination` is the DNS server. In the scroll view, the `DESTINATION` column shows the name, the record type, and the server. The `EVENT` column shows the result and the latency. So `--group-by target` groups events by name, and `--destination` filters events by server. The DNS server port is always 53, so `trace dns` has no port view.
 
-edc matches an answer to the query with the same local port, server, and transaction ID. `latency_ms` starts when the kernel sends the query and stops when the process reads the answer. If the process reads the answer late, the latency includes that delay. If the process sends the same query again before the answer, the answer counts for all these queries. The latency starts at the first query.
+edc matches an answer to the query with the same local port, server, and transaction ID. `latency_ms` starts when the kernel sends the query and stops when the process reads the answer.
+
+edc also divides this time into two parts. `network_ms` stops when the answer enters the receive queue of the socket. `read_delay_ms` starts at that point and stops when the process reads the answer. A long `read_delay_ms` shows a busy or slow program, not a slow DNS server.
+
+If the process sends the same query again before the answer, the answer counts for all these queries. The latency starts at the first query.
 
 `Unanswered` counts the queries without an answer at the end of the trace. In the full-screen view, `NOANS` counts the queries that wait for an answer.
 
-The summary after Ctrl-C shows one row for each name and record type. Grouped rows show queries, answers, errors, unanswered queries, and the average and maximum latency instead of byte counts.
+The summary after Ctrl-C shows one row for each name and record type. Grouped rows show queries, answers, errors, and unanswered queries instead of byte counts. They also show the average and maximum latency, and the average network time (`NETms`) and read delay (`RDms`).
 
 On a host with systemd-resolved, one lookup can appear two times: between the program and `127.0.0.53`, and between systemd-resolved and the upstream server. If a name has only the program row, systemd-resolved answered from its cache.
 
@@ -861,7 +865,7 @@ Use `--side server` to watch a local DNS server, for example systemd-resolved, d
 ./bin/edc trace dns --side server --group-by target
 ```
 
-On the server side, the latency starts when the server reads the query and stops when the server sends the answer. A short latency usually shows an answer from the cache. A long latency usually shows a query to an upstream server. The server side does not show DNS over TCP.
+On the server side, the latency starts when the server reads the query and stops when the server sends the answer. The `read_delay_ms` of a server query is the time that the query waited in the receive queue of the server. A short latency usually shows an answer from the cache. A long latency usually shows a query to an upstream server. The server side does not show DNS over TCP.
 
 `trace dns` watches only port 53. It shows DNS over TCP only as connections on the client side. It does not show DNS over TLS, DNS over HTTPS, mDNS, or LLMNR. BPF reads the first 1,024 bytes of a DNS message. For a longer answer, edc reads the result code from the header and takes the name from the query. macOS does not give the payload of a socket, so `trace dns` requires Linux.
 

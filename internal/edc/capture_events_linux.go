@@ -245,12 +245,19 @@ func captureAttachments(objects *captureEventsObjects, protocol string) ([]captu
 		{udp, "fexit/udp_send_skb", objects.UdpSendSkbExit},
 		{udp, "fentry/udp_v6_send_skb", objects.UdpV6SendSkbEntry},
 		{udp, "fexit/udp_v6_send_skb", objects.UdpV6SendSkbExit},
+		// DNS 응답 시간을 network와 읽기 지연으로 나누려고 수신 큐에 들어간 시각을 잰다.
+		{[]string{"dns"}, "fentry/__udp_enqueue_schedule_skb", objects.UdpEnqueueEntry},
 		{nil, "fentry/skb_consume_udp", objects.SkbConsumeUdpEntry},
 		{tcp, "fentry/inet_csk_accept", objects.InetCskAcceptEntry},
 		{tcp, "fexit/tcp_create_openreq_child", objects.TcpCreateOpenreqChildExit},
 	}
+	// 빈 protocol은 capture다. capture는 TCP와 UDP hook을 모두 쓰고 DNS 전용 hook은 쓰지 않는다.
+	wanted := []string{protocol}
+	if protocol == "" {
+		wanted = []string{"tcp", "udp"}
+	}
 	unwanted := func(protocols []string) bool {
-		return protocol != "" && protocols != nil && !slices.Contains(protocols, protocol)
+		return protocols != nil && !slices.ContainsFunc(wanted, func(name string) bool { return slices.Contains(protocols, name) })
 	}
 	tracepoints = slices.DeleteFunc(tracepoints, func(hook captureTracepoint) bool { return unwanted(hook.protocols) })
 	tracing = slices.DeleteFunc(tracing, func(hook captureTracing) bool { return unwanted(hook.protocols) })

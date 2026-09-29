@@ -41,6 +41,10 @@ type captureEvent struct {
 	QueryType string   `json:"query_type,omitempty"`
 	Answers   []string `json:"answers,omitempty"`
 	LatencyMS *float64 `json:"latency_ms,omitempty"`
+	// NetworkMS는 client가 질의를 보낸 때부터 응답이 socket 수신 큐에 들어간 때까지다. ReadDelayMS는 받은 message가
+	// 수신 큐에 들어간 때부터 process가 읽은 때까지다. client 쪽은 응답에, 서버 쪽은 질의에 붙는다.
+	NetworkMS   *float64 `json:"network_ms,omitempty"`
+	ReadDelayMS *float64 `json:"read_delay_ms,omitempty"`
 	// Side는 로컬 DNS 서버가 받은 질의와 보낸 응답에만 server로 붙는다.
 	Side       string `json:"side,omitempty"`
 	LostEvents uint64 `json:"lost_events,omitempty"`

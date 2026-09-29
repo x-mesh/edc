@@ -282,12 +282,22 @@ func traceScreenRows(model traceScreenModel) []string {
 	// 화면에 보이는 줄만 뒤에서부터 서식화한다. 보관한 event 전부(최대 10,000건)를 서식화하면 한 번 그리는 데
 	// 300ms가 넘게 걸려, 화면이 event를 따라가지 못하고 키 입력도 늦어진다.
 	available := max(0, model.height-3)
-	for index := len(model.events) - 1; index >= 0 && len(rows) < available; index-- {
+	for index := len(model.events) - 1; index >= 0; index-- {
 		event := model.events[index]
 		if !traceEventMatchesText(event, model.filter) {
 			continue
 		}
-		rows = append(rows, formatTraceScreenEvent(event, model.width))
+		lines := []string{formatTraceScreenEvent(event, model.width)}
+		if event.Payload != "" {
+			lines = append(lines, formatTraceScreenPayload(event.Payload, model.width))
+		}
+		// 넘친 채로 두면 traceScreenPadRows가 위를 잘라 event 행 없이 payload 줄만 남으므로, 두 줄이 다 들어가지 않으면 멈춘다.
+		if len(rows)+len(lines) > available {
+			break
+		}
+		for line := len(lines) - 1; line >= 0; line-- {
+			rows = append(rows, lines[line])
+		}
 	}
 	slices.Reverse(rows)
 	return traceScreenPadRows(rows, available)
@@ -540,6 +550,15 @@ func formatTraceScreenEvent(event captureEvent, width int) string {
 	cell := func(value string, width int) string { return liveCell(traceFit(value, width), width) }
 	line := cell(process, traceScrollProcessWidth) + " " + cell(destination, destinationWidth) + " " + cell(name, traceScrollEventWidth) + " " + cell(source, sourceWidth)
 	return traceEventStyle(line, traceProtocol(event), event.Event)
+}
+
+// formatTraceScreenPayload는 event 행 아래에 목적지 칸부터 payload를 한 줄로 쓴다.
+func formatTraceScreenPayload(payload string, width int) string {
+	line := "↳ " + traceHTTPPayloadLine(payload)
+	if width >= 72 {
+		line = strings.Repeat(" ", traceScrollProcessWidth+1) + line
+	}
+	return liveMuted(traceFit(line, width), os.Getenv("NO_COLOR") == "")
 }
 
 func traceEventStyle(line, protocol, event string) string {

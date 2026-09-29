@@ -170,6 +170,8 @@ cli:
     protocol_linux_only: "trace %s는 Linux에서만 지원합니다. 현재 platform: %s"
     side_range: "--side는 client 또는 server여야 합니다"
     side_protocol: "--side server는 trace %s에서 사용할 수 없습니다"
+    payload_protocol: "--payload는 trace %s에서 사용할 수 없습니다"
+    payload_json_conflict: "--json은 요약만 기록하므로 --payload와 함께 사용할 수 없습니다"
     http_kernel: "trace http는 Linux 6.4 이상이 필요합니다. kernel의 iov_iter에 %s field가 없습니다"
   report:
     unsupported_schema: "%s: 지원하지 않는 schema version: %s"

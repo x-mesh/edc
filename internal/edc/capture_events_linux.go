@@ -383,7 +383,7 @@ func collectCaptureEventsFor(scope traceScope, duration time.Duration, onEvent f
 	sockets := newSocketTargetCache()
 	owners := newPIDTargetCache()
 	queries := newDNSQueryTracker(scope.server)
-	requests := newHTTPTracker(scope.server)
+	requests := newHTTPTracker(scope.server, scope.payload)
 	streams := newDNSTCPStreams()
 	var eventCount uint64
 	finish := func() (captureSummary, error) {

@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 const (
@@ -45,12 +46,13 @@ type httpPendingRequest struct {
 // server는 tracker가 볼 쪽이다. 다른 쪽 message는 기억하지 않는다.
 type httpTracker struct {
 	server  bool
+	payload bool
 	pending map[uint64][]httpPendingRequest
 	size    int
 }
 
-func newHTTPTracker(server bool) *httpTracker {
-	return &httpTracker{server: server, pending: map[uint64][]httpPendingRequest{}}
+func newHTTPTracker(server, payload bool) *httpTracker {
+	return &httpTracker{server: server, payload: payload, pending: map[uint64][]httpPendingRequest{}}
 }
 
 func (tracker *httpTracker) event(packet httpPacket, clockOffset int64) (captureEvent, bool) {
@@ -70,6 +72,9 @@ func (tracker *httpTracker) event(packet httpPacket, clockOffset int64) (capture
 	}
 	if server {
 		event.Side = traceServerSide
+	}
+	if tracker.payload {
+		event.Payload = traceHTTPPayload(packet.payload)
 	}
 	if requestOK {
 		host, path := traceHTTPTarget(target, host)
@@ -148,6 +153,56 @@ func traceHTTPTarget(target, host string) (string, string) {
 		target = target[:index]
 	}
 	return host, target
+}
+
+// traceHTTPSecretHeaders는 --payload에서도 값을 가리는 header다. 인증 정보라서, 출력을 log나 issue에 옮기면 그대로 샌다.
+var traceHTTPSecretHeaders = []string{"authorization", "proxy-authorization", "cookie", "set-cookie"}
+
+// traceHTTPPayload는 --payload로 보여 줄 message 앞부분이다. BPF가 512바이트에서 자르므로 header 끝을 못 봤으면
+// 마지막 header 줄이 CRLF 없이 값 중간에서 끊겨 있다. 그 줄도 header로 보고 가린다.
+func traceHTTPPayload(payload []byte) string {
+	head, body, complete := bytes.Cut(payload, []byte("\r\n\r\n"))
+	lines := bytes.Split(head, []byte("\r\n"))
+	for index := 1; index < len(lines); index++ {
+		name, _, ok := bytes.Cut(lines[index], []byte(":"))
+		if ok && slices.ContainsFunc(traceHTTPSecretHeaders, func(secret string) bool { return strings.EqualFold(string(name), secret) }) {
+			lines[index] = append(slices.Clip(name), ": ***"...)
+		}
+	}
+	text := bytes.Join(lines, []byte("\r\n"))
+	if complete {
+		text = append(append(text, "\r\n\r\n"...), body...)
+	}
+	return traceEscapeText(text)
+}
+
+// traceEscapeText는 제어 문자와 UTF-8이 아닌 byte를 \xNN으로 바꾼다. payload는 상대가 보낸 값이라, 그대로 찍으면
+// terminal escape sequence가 실행될 수 있다. 줄바꿈과 tab은 message 모양을 지키려고 남긴다.
+func traceEscapeText(text []byte) string {
+	var out strings.Builder
+	for len(text) > 0 {
+		r, size := utf8.DecodeRune(text)
+		if (r == utf8.RuneError && size == 1) || (r < 0x20 && r != '\r' && r != '\n' && r != '\t') || (r >= 0x7f && r < 0xa0) {
+			for _, value := range text[:size] {
+				fmt.Fprintf(&out, `\x%02x`, value)
+			}
+		} else {
+			out.Write(text[:size])
+		}
+		text = text[size:]
+	}
+	return out.String()
+}
+
+// traceHTTPPayloadLine은 payload를 event 행 아래 한 줄로 보여 준다. 요청 줄과 상태 줄은 event 행에 이미 있으므로 빼고,
+// 본문이 있으면 본문을, 없으면 header를 보인다. 전체는 --raw의 payload에 있다.
+func traceHTTPPayloadLine(payload string) string {
+	head, body, _ := strings.Cut(payload, "\r\n\r\n")
+	if body != "" {
+		return "body " + strings.NewReplacer("\r\n", " ↵ ", "\n", " ↵ ", "\r", " ", "\t", " ").Replace(body)
+	}
+	_, headers, _ := strings.Cut(head, "\r\n")
+	return "headers " + emptyAs(strings.ReplaceAll(strings.TrimSuffix(headers, "\r\n"), "\r\n", " · "), "-")
 }
 
 // traceHTTPHost는 Host header가 없을 때 쓸 상대 주소다. 서버 쪽 상대는 client라서 로컬 주소를 쓴다.

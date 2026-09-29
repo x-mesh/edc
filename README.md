@@ -900,17 +900,20 @@ Use `trace ndp` for the IPv6 neighbor table (NDP). It works the same way as `tra
 
 On macOS, the kernel puts the interface number into the link-local addresses of the table. `trace ndp` removes it, so a link-local address shows as, for example, `fe80::1`, and the `source` column shows the interface.
 
-Use `trace http` on Linux 6.4 or later to print plain HTTP/1.x requests and responses as they arrive. edc reads the first 512 bytes of each TCP read and write in the kernel. It keeps the method, the `Host` header, the path, and the status code. It drops the other headers, the body, and the query of the path, because they can contain tokens and cookies.
+Use `trace http` on Linux 6.4 or later to print plain HTTP/1.x requests and responses as they arrive. edc reads the first 512 bytes of each TCP read and write in the kernel. It keeps the method, the `Host` header, the path, and the status code. If you do not use `--payload`, it drops the other headers, the body, and the query of the path, because they can contain tokens and cookies.
 
 ```bash
 ./bin/edc trace http
 ./bin/edc trace http --group-by target
 ./bin/edc trace http --side server --process nginx
+./bin/edc trace http --payload
 ```
 
 A request is an `http_request` event. A response is one of `http_1xx` to `http_5xx`, and `status` has the code. HTTP/1.x answers the requests on one connection in order. So a response matches the oldest request on the same connection that has no answer. `latency_ms` starts when the client sends the request and stops when the client reads the response. A `1xx` response does not end the request.
 
 The `target` of an HTTP event is the `Host` header. If there is no `Host` header, the target is the server address. Use `--side server` to watch a local HTTP server. On the server side, `latency_ms` starts when the server reads the request and stops when the server writes the response.
+
+Use `--payload` to see the data of each message. Under each event, edc prints the body. If there is no body, it prints the headers. With `--raw`, the `payload` field has all the data. The data is the first 512 bytes that edc reads, so edc cuts a long body. `--payload` keeps the query, but it hides the values of the `Authorization`, `Proxy-Authorization`, `Cookie`, and `Set-Cookie` headers. edc changes control characters to `\xNN`, so the data cannot change the terminal. `--payload` does not work with `--json`, because `--json` writes only the summary.
 
 The summary after Ctrl-C shows one row for each method, host, and path. Grouped rows show the requests, the responses, the 4xx and 5xx responses, the unanswered requests, and the average and maximum latency.
 

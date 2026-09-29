@@ -44,7 +44,7 @@ func httpTestPacket(payload string, at uint64, sent bool) httpPacket {
 }
 
 func TestHTTPTrackerMatchesResponsesInOrder(t *testing.T) {
-	tracker := newHTTPTracker(false)
+	tracker := newHTTPTracker(false, false)
 	var events []captureEvent
 	for _, packet := range []httpPacket{
 		httpTestPacket("GET /a?x=1 HTTP/1.1\r\nHost: api.example\r\n\r\n", 1_000_000, true),
@@ -108,7 +108,7 @@ func TestHTTPTrackerMatchesResponsesInOrder(t *testing.T) {
 }
 
 func TestHTTPServerSideTimesTheServer(t *testing.T) {
-	tracker := newHTTPTracker(true)
+	tracker := newHTTPTracker(true, false)
 	request, ok := tracker.event(httpTestPacket("GET /health HTTP/1.1\r\n\r\n", 1_000_000, false), 0)
 	if !ok || request.Side != traceServerSide || request.Target != "" || request.Path != "/health" {
 		t.Fatalf("server request = %#v, %t", request, ok)
@@ -119,5 +119,78 @@ func TestHTTPServerSideTimesTheServer(t *testing.T) {
 	}
 	if event, ok := tracker.event(httpTestPacket("GET / HTTP/1.1\r\n\r\n", 2_000_000, true), 0); ok {
 		t.Fatalf("server tracker kept a sent request: %#v", event)
+	}
+}
+
+func TestTraceHTTPPayloadHidesSecretsAndEscapesControls(t *testing.T) {
+	for _, test := range []struct{ name, payload, want string }{
+		{"request with body",
+			"POST /api?token=abc HTTP/1.1\r\nHost: x\r\nauthorization: Bearer s3cret\r\nCOOKIE: a=b\r\nContent-Type: application/json\r\n\r\n{\"k\":\"한글\"}\x1b[31m",
+			"POST /api?token=abc HTTP/1.1\r\nHost: x\r\nauthorization: ***\r\nCOOKIE: ***\r\nContent-Type: application/json\r\n\r\n{\"k\":\"한글\"}\\x1b[31m"},
+		// 512바이트에서 잘린 마지막 header 줄은 CRLF가 없어도 가린다.
+		{"cut in a header", "GET / HTTP/1.1\r\nHost: x\r\nProxy-Authorization: Basic YWxh", "GET / HTTP/1.1\r\nHost: x\r\nProxy-Authorization: ***"},
+		{"response", "HTTP/1.1 200 OK\r\nSet-Cookie: id=1\r\n\r\nok\t\xff\x7f\xc2\x9b\n", "HTTP/1.1 200 OK\r\nSet-Cookie: ***\r\n\r\nok\t\\xff\\x7f\\xc2\\x9b\n"},
+		{"cookie text in the body", "HTTP/1.1 200 OK\r\n\r\nCookie: visible", "HTTP/1.1 200 OK\r\n\r\nCookie: visible"},
+	} {
+		if got := traceHTTPPayload([]byte(test.payload)); got != test.want {
+			t.Fatalf("%s: payload = %q, want %q", test.name, got, test.want)
+		}
+	}
+}
+
+func TestTraceHTTPPayloadLineShowsTheBodyOrTheHeaders(t *testing.T) {
+	for payload, want := range map[string]string{
+		"POST / HTTP/1.1\r\nHost: x\r\n\r\n{\"k\":1}\r\nnext\tline": "body {\"k\":1} ↵ next line",
+		"GET / HTTP/1.1\r\nHost: x\r\nAccept: */*\r\n\r\n":          "headers Host: x · Accept: */*",
+		"GET / HTTP/1.1\r\nHost: x\r\nUser-Agent: cu":               "headers Host: x · User-Agent: cu",
+		"HTTP/1.1 204 No Content\r\n\r\n":                           "headers -",
+	} {
+		if got := traceHTTPPayloadLine(payload); got != want {
+			t.Fatalf("line for %q = %q, want %q", payload, got, want)
+		}
+	}
+}
+
+func TestHTTPTrackerAddsThePayloadOnlyWhenAsked(t *testing.T) {
+	packet := httpTestPacket("GET / HTTP/1.1\r\nHost: x\r\nCookie: a=b\r\n\r\n", 1_000_000, true)
+	if event, _ := newHTTPTracker(false, false).event(packet, 0); event.Payload != "" {
+		t.Fatalf("payload without --payload: %q", event.Payload)
+	}
+	event, _ := newHTTPTracker(false, true).event(packet, 0)
+	if event.Payload != "GET / HTTP/1.1\r\nHost: x\r\nCookie: ***\r\n\r\n" {
+		t.Fatalf("payload = %q", event.Payload)
+	}
+	encoded, err := json.Marshal(event)
+	if err != nil || !strings.Contains(string(encoded), `"payload":"GET / HTTP/1.1\r\nHost: x\r\nCookie: ***\r\n\r\n"`) {
+		t.Fatalf("raw event = %s (%v)", encoded, err)
+	}
+}
+
+func TestHTTPTraceScreenPutsThePayloadUnderItsEvent(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	model := newTraceScreenModel("http", tcpTraceOptions{payload: true}, make(chan captureEvent), make(chan traceFinishedMsg), nil)
+	request := captureEvent{Protocol: "http", Event: traceHTTPRequestEvent, Process: "curl", Method: "POST", Target: "api.example", Path: "/a", Payload: "POST /a HTTP/1.1\r\nHost: api.example\r\n\r\n{\"k\":1}"}
+	plain := captureEvent{Protocol: "http", Event: "http_2xx", Process: "curl", Target: "api.example", Path: "/a", Status: 200}
+	model.events, model.width = []captureEvent{request, request, plain}, 120
+	// 3줄이면 마지막 event와 그 앞 event의 두 줄이 들어간다. 그 앞 요청은 두 줄이 다 들어가지 않으므로 빼야 한다.
+	for height, want := range map[int][]string{6: {"POST api.example/a", "↳ body {\"k\":1}", "http_2xx 200"}, 5: {"http_2xx 200", ""}} {
+		model.height = height
+		rows := traceScreenRows(model)
+		if len(rows) != len(want) {
+			t.Fatalf("height %d rows = %q", height, rows)
+		}
+		for index, text := range want {
+			if !strings.Contains(rows[index], text) || (text == "" && rows[index] != "") {
+				t.Fatalf("height %d row %d = %q, want %q", height, index, rows[index], text)
+			}
+		}
+	}
+}
+
+func TestTracePayloadOptionNeedsHTTPEvents(t *testing.T) {
+	for _, args := range [][]string{{"tcp", "--payload"}, {"dns", "--payload"}, {"http", "--payload", "--json", "-"}} {
+		if code := runTrace(args); code != 2 {
+			t.Fatalf("trace %q exit = %d, want 2", args, code)
+		}
 	}
 }

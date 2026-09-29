@@ -49,6 +49,9 @@ type captureEvent struct {
 	Method string `json:"method,omitempty"`
 	Path   string `json:"path,omitempty"`
 	Status int    `json:"status,omitempty"`
+	// Payload는 trace http --payload일 때만 붙는 message 앞부분이다. 제어 문자를 이미 \xNN으로 바꿔 두어서
+	// jq -r로 terminal에 찍어도 escape sequence가 실행되지 않는다.
+	Payload string `json:"payload,omitempty"`
 	// MAC과 OldMAC은 ARP event에만 붙는다. OldMAC은 MAC이 바뀌었을 때 이전 값이다.
 	MAC    string `json:"mac,omitempty"`
 	OldMAC string `json:"old_mac,omitempty"`
@@ -266,7 +269,8 @@ type tcpTraceOptions struct {
 	detail      bool
 	yes         bool
 	// side는 trace dns가 볼 쪽이다. client는 이 host의 조회, server는 로컬 DNS 서버가 받은 질의다.
-	side string
+	side    string
+	payload bool
 }
 
 func traceProtocol(event captureEvent) string {

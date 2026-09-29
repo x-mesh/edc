@@ -207,6 +207,7 @@ var commandDocs = []commandDoc{
 			{"--destination <host:port>", "command.trace.option.destination"},
 			{"-d, --detail", "command.trace.option.detail"},
 			{"--side client|server", "command.trace.option.side"},
+			{"--payload", "command.trace.option.payload"},
 			{"--yes", "command.trace.option.yes"},
 		},
 	},

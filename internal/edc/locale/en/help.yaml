@@ -155,6 +155,7 @@ command:
       detail: "list each connection or flow in the summary"
       yes: "skip the question"
       side: "trace dns, http: client side or local server"
+      payload: "trace http: first 512 bytes of each message"
     notes:
       - "The default output opens a full-screen trace view in a terminal."
       - "Use / to filter process, destination, event, or source text."
@@ -171,6 +172,7 @@ command:
       - "trace arp shows neighbor table changes on Linux and macOS. It needs no root."
       - "trace ndp does the same for IPv6 neighbors."
       - "trace http shows plain HTTP/1.x requests on Linux 6.4 or later."
+      - "--payload shows the start of each message. It hides Cookie and Authorization."
   report:
     summary: "Read and compare saved JSON reports"
     notes:

@@ -170,6 +170,8 @@ cli:
     protocol_linux_only: "trace %s requires Linux, not %s"
     side_range: "--side must be client or server"
     side_protocol: "--side server is not available for trace %s"
+    payload_protocol: "--payload is not available for trace %s"
+    payload_json_conflict: "--payload and --json cannot be used together because --json writes only the summary"
     http_kernel: "trace http needs Linux 6.4 or later: the kernel iov_iter has no %s field"
   report:
     unsupported_schema: "%s: unsupported schema version: %s"

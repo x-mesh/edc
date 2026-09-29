@@ -98,7 +98,8 @@ func TestCaptureAttachmentsFollowTheProtocol(t *testing.T) {
 		{"udp", []string{}, append(append([]string{}, udpSend...), "fentry/skb_consume_udp")},
 		// DNS 질의는 UDP 송신 hook이, 응답은 skb_consume_udp가, port 53 TCP 연결은 inet_sock_set_state가 알린다.
 		// 수신 큐 hook은 DNS 응답 시간을 나누는 데만 쓴다.
-		{"dns", []string{"sock/inet_sock_set_state"}, append(append(append([]string{}, udpSend...), "fentry/__udp_enqueue_schedule_skb", "fentry/skb_consume_udp"), tcpAccept...)},
+		// DNS over TCP의 message는 HTTP와 같은 TCP 송수신 hook이 읽는다.
+		{"dns", []string{"sock/inet_sock_set_state"}, append(append(append([]string{}, udpSend...), "fentry/__udp_enqueue_schedule_skb", "fentry/skb_consume_udp", "fentry/tcp_sendmsg", "fentry/tcp_recvmsg", "fexit/tcp_recvmsg"), tcpAccept...)},
 		// HTTP는 TCP 송수신의 사용자 버퍼만 읽고 TCP 상태 변화는 쓰지 않는다.
 		{"http", []string{}, []string{"fentry/skb_consume_udp", "fentry/tcp_sendmsg", "fentry/tcp_recvmsg", "fexit/tcp_recvmsg"}},
 	} {
@@ -125,9 +126,9 @@ func TestCaptureEventFiltersFollowTheProtocol(t *testing.T) {
 		{traceScope{}, captureEventFilter{udpEvents: true, dnsSent: true}},
 		{traceScope{protocol: "tcp"}, captureEventFilter{dnsSent: true}},
 		{traceScope{protocol: "udp"}, captureEventFilter{udpEvents: true}},
-		{traceScope{protocol: "dns"}, captureEventFilter{dnsSent: true, tcpStatePort: 53}},
-		{traceScope{protocol: "dns", server: true}, captureEventFilter{dnsSent: true, server: true, tcpStatePort: 53}},
-		{traceScope{protocol: "http"}, captureEventFilter{dnsSent: true}},
+		{traceScope{protocol: "dns"}, captureEventFilter{dnsSent: true, tcpStatePort: 53, dnsTCP: true}},
+		{traceScope{protocol: "dns", server: true}, captureEventFilter{dnsSent: true, server: true, tcpStatePort: 53, dnsTCP: true}},
+		{traceScope{protocol: "http"}, captureEventFilter{dnsSent: true, httpMessages: true}},
 	} {
 		if got := captureEventFilterFor(test.scope); got != test.want {
 			t.Fatalf("scope %+v filter = %+v, want %+v", test.scope, got, test.want)
@@ -336,7 +337,7 @@ func dnsRecordSample(t *testing.T, pid uint32, message *dns.Msg) []byte {
 	sample := make([]byte, dnsRecordPayloadOffset+1024)
 	binary.LittleEndian.PutUint32(sample[8:12], dnsRecordType)
 	binary.LittleEndian.PutUint32(sample[12:16], pid)
-	binary.LittleEndian.PutUint32(sample[32:36], uint32(len(payload)))
+	binary.LittleEndian.PutUint32(sample[40:44], uint32(len(payload)))
 	copy(sample[dnsRecordPayloadOffset:], payload)
 	return sample
 }
@@ -391,14 +392,16 @@ func TestDNSRecordOffsetsMatchTheBPFStruct(t *testing.T) {
 		"pid":         {unsafe.Offsetof(record.Pid), 12},
 		"cgroup_id":   {unsafe.Offsetof(record.CgroupId), 16},
 		"arrival_ns":  {unsafe.Offsetof(record.ArrivalNs), 24},
-		"len":         {unsafe.Offsetof(record.Len), 32},
-		"family":      {unsafe.Offsetof(record.Family), 36},
-		"direction":   {unsafe.Offsetof(record.Direction), 38},
-		"sport":       {unsafe.Offsetof(record.Sport), 40},
-		"dport":       {unsafe.Offsetof(record.Dport), 42},
-		"source":      {unsafe.Offsetof(record.Source), 44},
-		"destination": {unsafe.Offsetof(record.Destination), 60},
-		"comm":        {unsafe.Offsetof(record.Comm), 76},
+		"skaddr":      {unsafe.Offsetof(record.Skaddr), 32},
+		"len":         {unsafe.Offsetof(record.Len), 40},
+		"family":      {unsafe.Offsetof(record.Family), 44},
+		"direction":   {unsafe.Offsetof(record.Direction), 46},
+		"transport":   {unsafe.Offsetof(record.Transport), 47},
+		"sport":       {unsafe.Offsetof(record.Sport), 48},
+		"dport":       {unsafe.Offsetof(record.Dport), 50},
+		"source":      {unsafe.Offsetof(record.Source), 52},
+		"destination": {unsafe.Offsetof(record.Destination), 68},
+		"comm":        {unsafe.Offsetof(record.Comm), 84},
 		"payload":     {unsafe.Offsetof(record.Payload), dnsRecordPayloadOffset},
 	} {
 		if offsets[0] != offsets[1] {
@@ -414,15 +417,16 @@ func TestParseDNSRecordReadsTheQuerySide(t *testing.T) {
 	binary.LittleEndian.PutUint64(sample[0:8], 1_000)
 	binary.LittleEndian.PutUint64(sample[16:24], 99)
 	binary.LittleEndian.PutUint64(sample[24:32], 900)
-	binary.LittleEndian.PutUint16(sample[36:38], 2)
-	sample[38] = dnsRecordSent
-	binary.LittleEndian.PutUint16(sample[40:42], 41000)
-	binary.LittleEndian.PutUint16(sample[42:44], 53)
-	copy(sample[44:48], []byte{10, 0, 0, 2})
-	copy(sample[60:64], []byte{127, 0, 0, 53})
-	copy(sample[76:92], "dig")
+	binary.LittleEndian.PutUint64(sample[32:40], 0xabc)
+	binary.LittleEndian.PutUint16(sample[44:46], 2)
+	sample[46], sample[47] = dnsRecordSent, dnsRecordTCP
+	binary.LittleEndian.PutUint16(sample[48:50], 41000)
+	binary.LittleEndian.PutUint16(sample[50:52], 53)
+	copy(sample[52:56], []byte{10, 0, 0, 2})
+	copy(sample[68:72], []byte{127, 0, 0, 53})
+	copy(sample[84:100], "dig")
 	packet, ok := parseDNSRecord(sample)
-	if !ok || !packet.sent || packet.bootTimeNS != 1_000 || packet.cgroupID != 99 || packet.arrivalNS != 900 || packet.process != "dig" || packet.source != "10.0.0.2:41000" || packet.destination != "127.0.0.53:53" {
+	if !ok || !packet.sent || packet.bootTimeNS != 1_000 || packet.cgroupID != 99 || packet.arrivalNS != 900 || !packet.tcp || packet.socket != 0xabc || packet.process != "dig" || packet.source != "10.0.0.2:41000" || packet.destination != "127.0.0.53:53" {
 		t.Fatalf("parseDNSRecord = %#v, %t", packet, ok)
 	}
 }

@@ -804,7 +804,7 @@ Linux에서 `trace dns`를 사용하면 DNS 질의와 응답을 발생 즉시 �
 
 질의는 `dns_query` event입니다. 응답은 결과 코드를 이름으로 사용합니다. 예를 들어 `dns_noerror`, `dns_nxdomain`, `dns_servfail`입니다. record 없이 성공한 응답은 `dns_nodata`입니다.
 
-TC bit가 있는 응답은 `dns_truncated`입니다. 응답이 UDP에 다 들어가지 않았다는 뜻이며, client는 같은 서버에 TCP로 다시 묻습니다. port 53으로 가는 TCP 연결은 `dns_tcp_connect`이고, 연결에 실패하면 `dns_tcp_fail`입니다. edc는 TCP 연결 안의 DNS message를 읽지 않습니다. 같은 process가 그 서버에서 `dns_truncated` 응답을 받았으면 TCP event에 그 질의의 이름을 붙입니다.
+TC bit가 있는 응답은 `dns_truncated`입니다. 응답이 UDP에 다 들어가지 않았다는 뜻이며, client는 같은 서버에 TCP로 다시 묻습니다. port 53으로 가는 TCP 연결은 `dns_tcp_connect`이고, 연결에 실패하면 `dns_tcp_fail`입니다. TCP 연결 안의 DNS message는 보통의 질의와 응답 event로 표시하며, TCP로 오간 event에는 `"transport": "tcp"`가 붙습니다. 같은 process가 그 서버에서 `dns_truncated` 응답을 받았으면 TCP event에 그 질의의 이름을 붙입니다.
 
 `Errors`는 `dns_noerror`, `dns_nodata`, `dns_truncated`가 아닌 응답과 `dns_tcp_fail`을 셉니다. summary의 `TCP connections`는 `dns_tcp_connect`와 `dns_tcp_fail`을 셉니다.
 
@@ -831,7 +831,7 @@ systemd-resolved가 있는 host에서는 조회 하나가 두 번 보일 수 있
 
 서버 쪽 응답 시간은 서버가 질의를 읽은 때부터 응답을 보낸 때까지입니다. 서버 쪽 질의의 `read_delay_ms`는 질의가 서버의 수신 큐에서 기다린 시간입니다. 응답 시간이 짧으면 대개 캐시에서 답한 것이고, 길면 상위 서버에 물어본 것입니다. 서버 쪽에서는 서버가 port 53으로 받은 TCP 연결을 `dns_tcp_accept`로 표시하고, 서버가 그 client에게 잘린 응답을 보냈으면 그 질의의 이름을 붙입니다. edc는 서버가 `accept()`를 부를 때 listen socket의 process를 알게 되므로, trace 전부터 떠 있던 서버의 첫 연결에는 process가 없을 수 있습니다.
 
-`trace dns`는 port 53만 관측합니다. DNS over TCP는 연결만 표시하고 그 안의 DNS message는 읽지 않습니다. DNS over TLS, DNS over HTTPS, mDNS, LLMNR은 표시하지 않습니다. BPF는 DNS message의 앞 1,024 byte만 읽습니다. 이보다 긴 응답은 header에서 결과 코드를 읽고 이름은 질의에서 가져옵니다. macOS는 socket의 payload를 주지 않으므로 `trace dns`는 Linux에서만 동작합니다.
+`trace dns`는 port 53만 관측합니다. DNS over TCP는 message 앞에 2바이트 길이를 붙입니다. 길이와 message를 두 버퍼로 나눠 쓰거나 두 번에 나눠 읽는 program이 많아, edc는 쓰기의 앞 두 버퍼를 읽고, 2바이트만 읽은 조각은 같은 연결의 다음 읽기와 이어 붙입니다. 한 번의 읽기 중간에서 시작하는 message는 찾지 못합니다. DNS over TLS, DNS over HTTPS, mDNS, LLMNR은 표시하지 않습니다. BPF는 DNS message의 앞 1,024 byte만 읽습니다. 이보다 긴 응답은 header에서 결과 코드를 읽고 이름은 질의에서 가져옵니다. macOS는 socket의 payload를 주지 않으므로 `trace dns`는 Linux에서만 동작합니다.
 
 Linux와 macOS에서 `trace arp`를 사용하면 IPv4 neighbor table(ARP 캐시)의 변화를 출력합니다. root와 eBPF가 필요 없습니다. Linux에서는 kernel 알림을 netlink로 받아 발생 즉시 출력합니다. macOS에서는 `arp -an`과 같은 방법으로 ARP table을 1초마다 읽고 직전 table과 비교합니다.
 

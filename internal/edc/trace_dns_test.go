@@ -371,7 +371,7 @@ func TestDNSServerSideTCPAcceptFollowsATruncatedAnswer(t *testing.T) {
 	// accept event는 socket 주인을 아직 모를 수 있다. pid 없이도 client host로 이름을 찾는다.
 	accept := captureEvent{Protocol: "tcp", Event: "tcp_accept", Source: "127.0.0.53:53", Destination: "127.0.0.1:52000"}
 	event, ok := tracker.tcpEvent(accept)
-	if !ok || event.Event != traceDNSTCPAcceptEvent || event.Side != traceServerSide || event.Target != "big.example.com" || event.QueryType != "TXT" {
+	if !ok || event.Event != traceDNSTCPAcceptEvent || event.Side != traceServerSide || event.Transport != "tcp" || event.Target != "big.example.com" || event.QueryType != "TXT" {
 		t.Fatalf("server tcp accept = %#v, %t", event, ok)
 	}
 	for _, other := range []captureEvent{
@@ -389,5 +389,65 @@ func TestDNSServerSideTCPAcceptFollowsATruncatedAnswer(t *testing.T) {
 	counts.observe(event)
 	if counts.TCPConnections != 1 || counts.Errors != 0 {
 		t.Fatalf("counts = %#v", counts)
+	}
+}
+
+func dnsTCPFrame(t *testing.T, message *dns.Msg) []byte {
+	t.Helper()
+	payload, err := message.Pack()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return append([]byte{byte(len(payload) >> 8), byte(len(payload))}, payload...)
+}
+
+// DNS over TCP는 2바이트 길이 뒤에 message가 온다. program마다 길이와 message를 한 번에, 또는 따로 읽고 쓴다.
+func TestDNSTCPStreamsFindMessagesInChunks(t *testing.T) {
+	question := new(dns.Msg)
+	question.SetQuestion("example.com.", dns.TypeA)
+	frame := dnsTCPFrame(t, question)
+	other := new(dns.Msg)
+	other.SetQuestion("example.org.", dns.TypeAAAA)
+	second := dnsTCPFrame(t, other)
+	sent, received := dnsTCPStreamKey{socket: 1, sent: true}, dnsTCPStreamKey{socket: 1}
+	streams := newDNSTCPStreams()
+	names := func(messages [][]byte) []string {
+		var got []string
+		for _, message := range messages {
+			var parsed dns.Msg
+			if err := parsed.Unpack(message); err != nil || len(parsed.Question) == 0 {
+				got = append(got, "?")
+				continue
+			}
+			got = append(got, parsed.Question[0].Name)
+		}
+		return got
+	}
+	// 한 조각에 길이와 message가 함께 온다.
+	if got := names(streams.messages(sent, frame, 1024)); !slices.Equal(got, []string{"example.com."}) {
+		t.Fatalf("one chunk = %q", got)
+	}
+	// 길이를 먼저 읽고 message를 따로 읽는다. 다른 방향의 조각과 섞이지 않는다.
+	if got := streams.messages(received, frame[:2], 1024); got != nil {
+		t.Fatalf("length chunk = %q", got)
+	}
+	if got := names(streams.messages(sent, second, 1024)); !slices.Equal(got, []string{"example.org."}) {
+		t.Fatalf("other direction = %q", got)
+	}
+	if got := names(streams.messages(received, frame[2:], 1024)); !slices.Equal(got, []string{"example.com."}) {
+		t.Fatalf("body chunk = %q", got)
+	}
+	// 한 조각에 message가 둘 들어 있으면 둘 다 읽는다.
+	if got := names(streams.messages(received, append(append([]byte{}, frame...), second...), 1024)); !slices.Equal(got, []string{"example.com.", "example.org."}) {
+		t.Fatalf("two messages = %q", got)
+	}
+	// 길이 조각 뒤에 길이가 맞지 않는 조각이 오면 그 조각을 새 frame으로 읽는다.
+	streams.messages(received, []byte{0x01, 0x00}, 1024)
+	if got := names(streams.messages(received, frame, 1024)); !slices.Equal(got, []string{"example.com."}) {
+		t.Fatalf("frame after a wrong length = %q", got)
+	}
+	// BPF가 읽는 크기에서 잘린 message는 잘린 채로 넘긴다. header는 남는다.
+	if got := streams.messages(received, frame[:2+traceDNSHeaderSize+3], 2+traceDNSHeaderSize+3); len(got) != 1 || len(got[0]) != traceDNSHeaderSize+3 {
+		t.Fatalf("cut message = %v", got)
 	}
 }

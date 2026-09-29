@@ -199,7 +199,7 @@ func collectCaptureEvents(duration time.Duration, onEvent func(captureEvent) err
 // collectCaptureEventsUntil은 capture가 파일에 쓸 event를 모은다. trace는 event를 모으지 않고 요약만 쌓는다.
 func collectCaptureEventsUntil(duration time.Duration, onEvent func(captureEvent) error, stop <-chan struct{}) ([]captureEvent, captureSummary, error) {
 	events := make([]captureEvent, 0)
-	summary, err := collectCaptureEventsFor("", duration, func(event captureEvent) error {
+	summary, err := collectCaptureEventsFor(traceScope{}, duration, func(event captureEvent) error {
 		events = append(events, event)
 		if onEvent != nil {
 			return onEvent(event)
@@ -260,25 +260,26 @@ func captureAttachments(objects *captureEventsObjects, protocol string) ([]captu
 // captureEventFilter는 BPF를 불러오기 전에 정하는 event 필터다. protocol이 쓰지 않을 event를 kernel에서 버린다.
 type captureEventFilter struct {
 	udpEvents    bool
-	dnsQueries   bool
+	dnsSent      bool
+	dnsServer    bool
 	tcpStatePort uint16
 }
 
-func captureEventFilterFor(protocol string) captureEventFilter {
-	filter := captureEventFilter{udpEvents: true, dnsQueries: true}
-	switch protocol {
+func captureEventFilterFor(scope traceScope) captureEventFilter {
+	filter := captureEventFilter{udpEvents: true, dnsSent: true}
+	switch scope.protocol {
 	case "tcp":
 		// skb_consume_udp는 target 이름을 지을 DNS 응답만 보낸다.
 		filter.udpEvents = false
 	case "udp":
-		filter.dnsQueries = false
+		filter.dnsSent = false
 	case "dns":
-		filter.udpEvents, filter.tcpStatePort = false, 53
+		filter.udpEvents, filter.dnsServer, filter.tcpStatePort = false, scope.dnsServer, 53
 	}
 	return filter
 }
 
-func loadCaptureEventsFor(protocol string, objects *captureEventsObjects) error {
+func loadCaptureEventsFor(scope traceScope, objects *captureEventsObjects) error {
 	spec, err := loadCaptureEvents()
 	if err != nil {
 		return err
@@ -287,20 +288,21 @@ func loadCaptureEventsFor(protocol string, objects *captureEventsObjects) error 
 	if err := spec.Assign(&variables); err != nil {
 		return err
 	}
-	filter := captureEventFilterFor(protocol)
+	filter := captureEventFilterFor(scope)
 	flag := func(on bool) uint8 {
 		if on {
 			return 1
 		}
 		return 0
 	}
-	if err := errors.Join(variables.EmitUdpEvents.Set(flag(filter.udpEvents)), variables.EmitDnsQueries.Set(flag(filter.dnsQueries)), variables.TcpStatePort.Set(filter.tcpStatePort)); err != nil {
+	if err := errors.Join(variables.EmitUdpEvents.Set(flag(filter.udpEvents)), variables.EmitDnsSent.Set(flag(filter.dnsSent)), variables.EmitDnsServer.Set(flag(filter.dnsServer)), variables.TcpStatePort.Set(filter.tcpStatePort)); err != nil {
 		return err
 	}
 	return spec.LoadAndAssign(objects, nil)
 }
 
-func collectCaptureEventsFor(protocol string, duration time.Duration, onEvent func(captureEvent) error, stop <-chan struct{}) (captureSummary, error) {
+func collectCaptureEventsFor(scope traceScope, duration time.Duration, onEvent func(captureEvent) error, stop <-chan struct{}) (captureSummary, error) {
+	protocol := scope.protocol
 	if err := rlimit.RemoveMemlock(); err != nil {
 		return captureSummary{}, fmt.Errorf("remove memlock limit: %w", err)
 	}
@@ -308,7 +310,7 @@ func collectCaptureEventsFor(protocol string, duration time.Duration, onEvent fu
 	names := newDNSNameCache()
 	seedResolverCache(names)
 	objects := captureEventsObjects{}
-	if err := loadCaptureEventsFor(protocol, &objects); err != nil {
+	if err := loadCaptureEventsFor(scope, &objects); err != nil {
 		return captureSummary{}, fmt.Errorf("load eBPF objects: %w", err)
 	}
 	defer objects.Close()
@@ -363,7 +365,7 @@ func collectCaptureEventsFor(protocol string, duration time.Duration, onEvent fu
 	targets := newCommandTargetCache(commandTarget)
 	sockets := newSocketTargetCache()
 	owners := newPIDTargetCache()
-	queries := newDNSQueryTracker()
+	queries := newDNSQueryTracker(scope.dnsServer)
 	var eventCount uint64
 	finish := func() (captureSummary, error) {
 		var lost uint64
@@ -389,13 +391,14 @@ func collectCaptureEventsFor(protocol string, duration time.Duration, onEvent fu
 			return captureSummary{}, err
 		}
 		if packet, ok := parseDNSRecord(record.RawSample); ok {
-			if !packet.query {
+			if !packet.sent {
 				names.rememberAnswer(packet.pid, dnsAnswerNames(packet.payload))
 			}
 			// DNS 레코드는 다른 protocol에서 target 이름에만 쓴다. capture와 trace tcp/udp의 출력에 섞지 않는다.
 			if protocol != "dns" {
 				continue
 			}
+			// 서버 쪽 레코드는 --side server일 때만 BPF가 보낸다. client 쪽 레코드는 늘 오므로 tracker가 다른 쪽을 거른다.
 			event, ok := queries.event(packet, clockOffset)
 			if !ok {
 				continue

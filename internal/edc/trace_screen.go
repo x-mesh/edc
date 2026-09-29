@@ -34,6 +34,7 @@ type traceStopMsg struct{}
 
 type traceScreenModel struct {
 	protocol    string
+	side        string
 	groupBy     string
 	process     string
 	destination string
@@ -62,7 +63,7 @@ func newTraceScreenModel(protocol string, options tcpTraceOptions, eventCh <-cha
 	input.CharLimit = 256
 	input.SetWidth(48)
 	return traceScreenModel{
-		protocol: protocol, groupBy: options.groupBy, process: options.process, destination: options.destination,
+		protocol: protocol, side: options.side, groupBy: options.groupBy, process: options.process, destination: options.destination,
 		duration: options.duration, started: time.Now(), eventCh: eventCh, resultCh: resultCh, stop: stop, input: input,
 		width: 80, height: 24,
 	}
@@ -235,7 +236,7 @@ func traceScreenHeader(model traceScreenModel) []string {
 	if model.filter != "" {
 		filter = model.filter
 	}
-	line := fmt.Sprintf("edc trace %s", model.protocol)
+	line := fmt.Sprintf("edc trace %s", traceLabel(model.protocol, model.side))
 	var report traceGroupReport
 	if model.groupBy != "" {
 		report = model.groupReport()
@@ -579,7 +580,7 @@ func runTraceScreen(protocol string, options tcpTraceOptions) int {
 	// 끝날 때 어느 보기일지 모르므로 모든 보기의 요약을 쌓는다. 수집 goroutine만 쓰고, resultCh를 받은 뒤에 읽는다.
 	aggregate := newTraceAggregate(protocol, traceGroupViews(protocol)...)
 	go func() {
-		summary, err := collectTraceEventsLive(protocol, options.duration, func(event captureEvent) error {
+		summary, err := collectTraceEventsLive(options.scope(protocol), options.duration, func(event captureEvent) error {
 			if traceProtocol(event) != protocol || !traceEventMatches(event, options.process, options.destination) {
 				return nil
 			}

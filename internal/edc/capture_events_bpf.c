@@ -54,7 +54,10 @@ struct {
 // 사용자 공간이 trace protocol에 맞춰 불러오기 전에 정한다. 쓰지 않을 event를 ring buffer에 넣지 않아야 바쁜 host에서
 // 필요한 event가 유실되지 않는다. 기본값은 capture처럼 모든 event를 보낸다.
 volatile const __u8 emit_udp_events = 1;
-volatile const __u8 emit_dns_queries = 1;
+// emit_dns_sent는 송신 경로의 DNS 레코드다. emit_dns_server는 로컬 port 53이 받은 질의와 보낸 응답이며, trace dns --side
+// server만 켠다. 서버 쪽은 기본으로 끈다. 바쁜 DNS 서버에서는 이 레코드가 client 쪽보다 훨씬 많다.
+volatile const __u8 emit_dns_sent = 1;
+volatile const __u8 emit_dns_server = 0;
 // 0이 아니면 inet_sock_set_state는 상대 port가 이 값인 socket만 본다. trace dns는 53만 본다.
 volatile const __u16 tcp_state_port = 0;
 
@@ -512,11 +515,12 @@ struct {
 } udp_send_pending SEC(".maps");
 
 #define DNS_PAYLOAD_SIZE 1024
-#define DNS_ANSWER 0
-#define DNS_QUERY 1
+#define DNS_RECEIVED 0
+#define DNS_SENT 1
 
-// DNS 질의와 응답을 사용자 공간에 넘긴다. 응답은 명령줄에 대상이 없는 프로그램의 target 이름도 짓는다. 받은 프로세스가
-// 곧 조회한 프로세스라서 pid를 함께 보낸다. event_type은 struct event와 같은 위치이고, source는 struct event처럼 로컬 쪽이다.
+// port 53으로 주고받은 DNS message를 사용자 공간에 넘긴다. 질의인지 응답인지, client 쪽인지 서버 쪽인지는 사용자 공간이
+// QR bit와 port로 가린다. 응답은 명령줄에 대상이 없는 프로그램의 target 이름도 짓는다. event_type은 struct event와 같은
+// 위치이고, source는 struct event처럼 로컬 쪽이다.
 struct dns_record {
 	__u64 timestamp_ns;
 	__u32 event_type;
@@ -534,7 +538,7 @@ struct dns_record {
 	__u8 payload[DNS_PAYLOAD_SIZE];
 };
 
-// record가 BPF stack(512바이트)보다 커서 질의는 CPU별 scratch에서 만든다.
+// record가 BPF stack(512바이트)보다 커서 송신 레코드는 CPU별 scratch에서 만든다.
 struct {
 	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
 	__uint(max_entries, 1);
@@ -542,7 +546,7 @@ struct {
 	__type(value, struct dns_record);
 } dns_scratch SEC(".maps");
 
-// UDP 송신처럼 fentry에서 읽은 질의를 thread별로 두고, fexit에서 전송이 성공했을 때만 보낸다.
+// UDP 송신처럼 fentry에서 읽은 message를 thread별로 두고, fexit에서 전송이 성공했을 때만 보낸다.
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
 	__uint(max_entries, 1024);
@@ -567,7 +571,7 @@ static __always_inline __u32 read_dns_payload(struct sk_buff *skb, unsigned char
 	return bpf_probe_read_kernel(out, size, payload) == 0 ? size : 0;
 }
 
-static __always_inline void remember_dns_query(struct sk_buff *skb, struct udp_send_pending *pending, unsigned char *payload, long len) {
+static __always_inline void remember_dns_sent(struct sk_buff *skb, struct udp_send_pending *pending, unsigned char *payload, long len) {
 	__u32 zero = 0;
 	struct dns_record *record = bpf_map_lookup_elem(&dns_scratch, &zero);
 	if (!record) {
@@ -578,7 +582,7 @@ static __always_inline void remember_dns_query(struct sk_buff *skb, struct udp_s
 	record->pid = bpf_get_current_pid_tgid() >> 32;
 	record->cgroup_id = bpf_get_current_cgroup_id();
 	record->family = pending->family;
-	record->direction = DNS_QUERY;
+	record->direction = DNS_SENT;
 	record->reserved = 0;
 	record->sport = pending->sport;
 	record->dport = pending->dport;
@@ -626,8 +630,8 @@ static __always_inline int remember_udp_send(struct sk_buff *skb, struct flowi4 
 	}
 	__u64 key = bpf_get_current_pid_tgid();
 	bpf_map_update_elem(&udp_send_pending, &key, &pending, BPF_ANY);
-	if (pending.dport == 53 && emit_dns_queries) {
-		remember_dns_query(skb, &pending, head + transport + 8, payload);
+	if (emit_dns_sent && (pending.dport == 53 || (emit_dns_server && pending.sport == 53))) {
+		remember_dns_sent(skb, &pending, head + transport + 8, payload);
 	}
 	return 0;
 }
@@ -653,11 +657,11 @@ static __always_inline int emit_udp_send(void *ctx, int ret) {
 			finish_event(event);
 		}
 	}
-	if (pending->dport == 53) {
-		struct dns_record *query = bpf_map_lookup_elem(&dns_query_pending, &key);
-		if (query) {
+	if (pending->dport == 53 || pending->sport == 53) {
+		struct dns_record *sent = bpf_map_lookup_elem(&dns_query_pending, &key);
+		if (sent) {
 			if (ret == 0) {
-				bpf_ringbuf_output(&events, query, sizeof(*query), 0);
+				bpf_ringbuf_output(&events, sent, sizeof(*sent), 0);
 			}
 			bpf_map_delete_elem(&dns_query_pending, &key);
 		}
@@ -688,7 +692,7 @@ int udp_v6_send_skb_exit(__u64 *ctx) {
 
 // skb_consume_udp는 udp_recvmsg와 udpv6_recvmsg가 datagram을 복사한 뒤 한 번 부른다. recv()처럼 주소를
 // 받지 않는 호출도 여기서는 header에서 보낸 쪽 주소를 읽을 수 있다.
-static __always_inline void emit_dns_answer(struct sk_buff *skb, unsigned char *network, unsigned char *transport, __u8 version, __be16 *ports, int len) {
+static __always_inline void emit_dns_received(struct sk_buff *skb, unsigned char *network, unsigned char *transport, __u8 version, __be16 *ports, int len) {
 	struct dns_record *record = bpf_ringbuf_reserve(&events, sizeof(*record), 0);
 	if (!record) {
 		return;
@@ -702,7 +706,7 @@ static __always_inline void emit_dns_answer(struct sk_buff *skb, unsigned char *
 	record->event_type = 9;
 	record->pid = bpf_get_current_pid_tgid() >> 32;
 	record->cgroup_id = bpf_get_current_cgroup_id();
-	record->direction = DNS_ANSWER;
+	record->direction = DNS_RECEIVED;
 	record->reserved = 0;
 	record->sport = bpf_ntohs(ports[1]);
 	record->dport = bpf_ntohs(ports[0]);
@@ -742,8 +746,9 @@ int skb_consume_udp_entry(__u64 *ctx) {
 		return 0;
 	}
 	announce_owner((__u64)sk);
-	if (bpf_ntohs(ports[0]) == 53) {
-		emit_dns_answer(skb, network, transport, version, ports, len);
+	// ports[0]은 보낸 쪽 port, ports[1]은 로컬 port다.
+	if (bpf_ntohs(ports[0]) == 53 || (emit_dns_server && bpf_ntohs(ports[1]) == 53)) {
+		emit_dns_received(skb, network, transport, version, ports, len);
 	}
 	if (!emit_udp_events) {
 		return 0;

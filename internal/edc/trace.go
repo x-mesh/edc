@@ -92,6 +92,24 @@ func traceScrollLabels(event captureEvent) (string, string) {
 	return traceEventDestinationLabel(event), event.Event
 }
 
+// traceScope는 collector가 모을 범위다. dnsServer는 trace dns가 로컬 DNS 서버 쪽을 볼 때 켠다.
+type traceScope struct {
+	protocol  string
+	dnsServer bool
+}
+
+func (options tcpTraceOptions) scope(protocol string) traceScope {
+	return traceScope{protocol: protocol, dnsServer: options.side == traceDNSServerSide}
+}
+
+// traceLabel은 화면 머리글에 쓰는 trace 이름이다. 서버 쪽 DNS trace는 client 쪽과 같은 event 이름을 쓰므로 머리글로 구분한다.
+func traceLabel(protocol, side string) string {
+	if side == traceDNSServerSide {
+		return protocol + " --side " + side
+	}
+	return protocol
+}
+
 func knownTraceProtocol(protocol string) bool {
 	_, ok := traceProtocols[protocol]
 	return ok
@@ -129,6 +147,7 @@ func runTrace(args []string) int {
 	set.BoolVar(&options.detail, "detail", false, T("command.trace.option.detail"))
 	set.BoolVar(&options.detail, "d", false, T("command.trace.option.detail"))
 	set.BoolVar(&options.yes, "yes", false, T("command.trace.option.yes"))
+	set.StringVar(&options.side, "side", traceDNSClientSide, T("command.trace.option.side"))
 	if err := set.Parse(args[1:]); err != nil {
 		return 2
 	}
@@ -156,6 +175,14 @@ func runTrace(args []string) int {
 		fmt.Fprintln(os.Stderr, T("cli.trace.group_by_protocol", options.groupBy, args[0]))
 		return 2
 	}
+	if options.side != traceDNSClientSide && options.side != traceDNSServerSide {
+		fmt.Fprintln(os.Stderr, T("cli.trace.side_range"))
+		return 2
+	}
+	if options.side == traceDNSServerSide && args[0] != "dns" {
+		fmt.Fprintln(os.Stderr, T("cli.trace.side_protocol", args[0]))
+		return 2
+	}
 	if traceProtocols[args[0]].linuxOnly && runtime.GOOS != "linux" {
 		fmt.Fprintln(os.Stderr, T("cli.trace.protocol_linux_only", args[0], runtime.GOOS))
 		return 3
@@ -178,9 +205,9 @@ func runTrace(args []string) int {
 	if options.raw {
 		encoder = json.NewEncoder(os.Stdout)
 	} else if options.jsonPath == "" && options.groupBy == "" {
-		printTraceEventHeader(args[0])
+		printTraceEventHeader(traceLabel(args[0], options.side))
 	}
-	summary, err = collectTraceEventsLive(args[0], options.duration, func(event captureEvent) error {
+	summary, err = collectTraceEventsLive(options.scope(args[0]), options.duration, func(event captureEvent) error {
 		if traceProtocol(event) != args[0] {
 			return nil
 		}
@@ -562,6 +589,7 @@ type traceGroupSummary struct {
 
 type traceGroupReport struct {
 	Protocol   string              `json:"protocol"`
+	Side       string              `json:"side,omitempty"`
 	GroupBy    string              `json:"group_by"`
 	DurationMS int64               `json:"duration_ms"`
 	Events     uint64              `json:"events"`
@@ -612,6 +640,7 @@ func summarizeTraceGroups(protocol, groupBy string, events []captureEvent, summa
 
 type traceGroupSummarizer struct {
 	protocol string
+	side     string
 	groupBy  string
 	groups   map[string]*traceGroup
 	events   uint64
@@ -623,6 +652,9 @@ func newTraceGroupSummarizer(protocol, groupBy string) *traceGroupSummarizer {
 }
 
 func (summarizer *traceGroupSummarizer) observe(event captureEvent) {
+	if event.Side != "" {
+		summarizer.side = event.Side
+	}
 	key, server := traceGroupKey(event, summarizer.groupBy)
 	// 서버 행과 target 없는 client 행이 같은 주소일 수 있다. 섞이지 않도록 map key만 구분한다.
 	mapKey := key
@@ -647,7 +679,7 @@ func (summarizer *traceGroupSummarizer) observe(event captureEvent) {
 }
 
 func (summarizer *traceGroupSummarizer) report(summary captureSummary, duration time.Duration) traceGroupReport {
-	result := traceGroupReport{Protocol: summarizer.protocol, GroupBy: summarizer.groupBy, DurationMS: duration.Milliseconds(), LostEvents: summary.LostEvents, Events: summarizer.events, traceTraffic: summarizer.traffic}
+	result := traceGroupReport{Protocol: summarizer.protocol, Side: summarizer.side, GroupBy: summarizer.groupBy, DurationMS: duration.Milliseconds(), LostEvents: summary.LostEvents, Events: summarizer.events, traceTraffic: summarizer.traffic}
 	result.Rate = traceGroupRate(result.Events, duration)
 	result.traceTraffic.finalize(duration)
 	result.Groups = make([]traceGroupSummary, 0, len(summarizer.groups))
@@ -838,7 +870,11 @@ func traceGroupLabel(groupBy string) string {
 }
 
 func printTraceGroupReport(report traceGroupReport) {
-	fmt.Fprintf(os.Stdout, "%s trace grouped by %s: %s\n\n", strings.ToUpper(report.Protocol), report.GroupBy, (time.Duration(report.DurationMS) * time.Millisecond).String())
+	title := strings.ToUpper(report.Protocol)
+	if report.Side == traceDNSServerSide {
+		title += " server"
+	}
+	fmt.Fprintf(os.Stdout, "%s trace grouped by %s: %s\n\n", title, report.GroupBy, (time.Duration(report.DurationMS) * time.Millisecond).String())
 	fmt.Fprintf(os.Stdout, "Events: %d\n%s groups: %d\nEvent rate: %.1f/s\n", report.Events, report.GroupBy, len(report.Groups), report.Rate)
 	if !report.hideTraffic() {
 		fmt.Fprintf(os.Stdout, "TX: %s\nRX: %s\nTotal: %s\nTraffic rate: %s\n", traceBytes(report.TXBytes), traceBytes(report.RXBytes), traceBytes(report.TotalBytes), traceTrafficRate(report.traceTraffic))

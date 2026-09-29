@@ -154,6 +154,7 @@ command:
       destination: "宛先 host と port で絞る"
       detail: "要約で接続や flow を 1 行ずつ表示"
       yes: "確認を省く"
+      side: "trace dns: この host の照会か local DNS server"
     notes:
       - "terminal では既定で全画面の trace を開きます。"
       - "/ で process、destination、event、source を絞り込みます。"

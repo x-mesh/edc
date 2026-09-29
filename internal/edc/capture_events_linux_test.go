@@ -114,14 +114,18 @@ func TestCaptureAttachmentsFollowTheProtocol(t *testing.T) {
 }
 
 func TestCaptureEventFiltersFollowTheProtocol(t *testing.T) {
-	for protocol, want := range map[string]captureEventFilter{
-		"":    {udpEvents: true, dnsQueries: true},
-		"tcp": {dnsQueries: true},
-		"udp": {udpEvents: true},
-		"dns": {dnsQueries: true, tcpStatePort: 53},
+	for _, test := range []struct {
+		scope traceScope
+		want  captureEventFilter
+	}{
+		{traceScope{}, captureEventFilter{udpEvents: true, dnsSent: true}},
+		{traceScope{protocol: "tcp"}, captureEventFilter{dnsSent: true}},
+		{traceScope{protocol: "udp"}, captureEventFilter{udpEvents: true}},
+		{traceScope{protocol: "dns"}, captureEventFilter{dnsSent: true, tcpStatePort: 53}},
+		{traceScope{protocol: "dns", dnsServer: true}, captureEventFilter{dnsSent: true, dnsServer: true, tcpStatePort: 53}},
 	} {
-		if got := captureEventFilterFor(protocol); got != want {
-			t.Fatalf("protocol %q filter = %+v, want %+v", protocol, got, want)
+		if got := captureEventFilterFor(test.scope); got != test.want {
+			t.Fatalf("scope %+v filter = %+v, want %+v", test.scope, got, test.want)
 		}
 	}
 	// 변수 이름과 기본값은 BPF C 코드에 있다. 이름이 어긋나면 kernel에 불러오기 전에 여기서 실패한다.
@@ -133,13 +137,14 @@ func TestCaptureEventFiltersFollowTheProtocol(t *testing.T) {
 	if err := spec.Assign(&variables); err != nil {
 		t.Fatal(err)
 	}
-	var udpEvents, dnsQueries uint8
+	var udpEvents, dnsSent, dnsServer uint8
 	var tcpStatePort uint16
-	if err := errors.Join(variables.EmitUdpEvents.Get(&udpEvents), variables.EmitDnsQueries.Get(&dnsQueries), variables.TcpStatePort.Get(&tcpStatePort)); err != nil {
+	if err := errors.Join(variables.EmitUdpEvents.Get(&udpEvents), variables.EmitDnsSent.Get(&dnsSent), variables.EmitDnsServer.Get(&dnsServer), variables.TcpStatePort.Get(&tcpStatePort)); err != nil {
 		t.Fatal(err)
 	}
-	if udpEvents != 1 || dnsQueries != 1 || tcpStatePort != 0 {
-		t.Fatalf("BPF defaults = %d, %d, %d; capture needs every event", udpEvents, dnsQueries, tcpStatePort)
+	// capture는 모든 event와 client 쪽 DNS 레코드를 받는다. 서버 쪽 레코드는 trace dns --side server만 켠다.
+	if udpEvents != 1 || dnsSent != 1 || dnsServer != 0 || tcpStatePort != 0 {
+		t.Fatalf("BPF defaults = %d, %d, %d, %d", udpEvents, dnsSent, dnsServer, tcpStatePort)
 	}
 }
 
@@ -311,7 +316,7 @@ func TestDNSAnswersNameTheAddressesThatAProcessResolved(t *testing.T) {
 		answer.Answer = append(answer.Answer, record)
 	}
 	packet, ok := parseDNSRecord(dnsRecordSample(t, 42, answer))
-	if !ok || packet.pid != 42 || packet.query {
+	if !ok || packet.pid != 42 || packet.sent {
 		t.Fatalf("parseDNSRecord = %#v, %t", packet, ok)
 	}
 	payload := packet.payload
@@ -370,14 +375,14 @@ func TestParseDNSRecordReadsTheQuerySide(t *testing.T) {
 	binary.LittleEndian.PutUint64(sample[0:8], 1_000)
 	binary.LittleEndian.PutUint64(sample[16:24], 99)
 	binary.LittleEndian.PutUint16(sample[28:30], 2)
-	sample[30] = dnsRecordQuery
+	sample[30] = dnsRecordSent
 	binary.LittleEndian.PutUint16(sample[32:34], 41000)
 	binary.LittleEndian.PutUint16(sample[34:36], 53)
 	copy(sample[36:40], []byte{10, 0, 0, 2})
 	copy(sample[52:56], []byte{127, 0, 0, 53})
 	copy(sample[68:84], "dig")
 	packet, ok := parseDNSRecord(sample)
-	if !ok || !packet.query || packet.bootTimeNS != 1_000 || packet.cgroupID != 99 || packet.process != "dig" || packet.source != "10.0.0.2:41000" || packet.destination != "127.0.0.53:53" {
+	if !ok || !packet.sent || packet.bootTimeNS != 1_000 || packet.cgroupID != 99 || packet.process != "dig" || packet.source != "10.0.0.2:41000" || packet.destination != "127.0.0.53:53" {
 		t.Fatalf("parseDNSRecord = %#v, %t", packet, ok)
 	}
 }

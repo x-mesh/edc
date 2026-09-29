@@ -38,10 +38,12 @@ type captureEvent struct {
 	Packets      uint64 `json:"packets,omitempty"`
 	// QueryType, Answers, LatencyMS는 DNS event에만 붙는다. LatencyMS는 kernel이 질의를 보낸 때부터 process가
 	// 응답을 읽은 때까지라서 process가 응답을 늦게 읽으면 그만큼 길어진다.
-	QueryType  string   `json:"query_type,omitempty"`
-	Answers    []string `json:"answers,omitempty"`
-	LatencyMS  *float64 `json:"latency_ms,omitempty"`
-	LostEvents uint64   `json:"lost_events,omitempty"`
+	QueryType string   `json:"query_type,omitempty"`
+	Answers   []string `json:"answers,omitempty"`
+	LatencyMS *float64 `json:"latency_ms,omitempty"`
+	// Side는 로컬 DNS 서버가 받은 질의와 보낸 응답에만 server로 붙는다.
+	Side       string `json:"side,omitempty"`
+	LostEvents uint64 `json:"lost_events,omitempty"`
 	// dnsAnswered는 DNS 응답이 답한 질의 수다. 응답 전에 같은 질의를 다시 보냈으면 1보다 크다.
 	dnsAnswered uint64
 }
@@ -250,6 +252,8 @@ type tcpTraceOptions struct {
 	destination string
 	detail      bool
 	yes         bool
+	// side는 trace dns가 볼 쪽이다. client는 이 host의 조회, server는 로컬 DNS 서버가 받은 질의다.
+	side string
 }
 
 func traceProtocol(event captureEvent) string {

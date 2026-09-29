@@ -461,39 +461,43 @@ func TestTopAllViewAddsColumnsAsTheTerminalWidens(t *testing.T) {
 	}
 }
 
-func TestTopAllViewWidensColumnsWithTheSpareWidth(t *testing.T) {
+func TestTopAllViewGivesTheSpareWidthToTheColumns(t *testing.T) {
 	row := topDashboardRow{at: time.Unix(1, 0), rate: resourceRate{CoreCPU: []float64{10, 95}, DiskHealthValid: true, DiskIOPS: 12, NetHealthValid: true}}
 	full := topAllColumnsUpTo(topAllMaxTier())
 	wide := topAllLineWidth(full) + topSignalWideWidth
-	steps := []struct{ width, extra, signal int }{
-		{wide + len(full) - 1, 0, topSignalWideWidth + len(full) - 1},
-		{wide + len(full), 1, topSignalWideWidth},
-		{wide + len(full)*topColumnMaxExtra, topColumnMaxExtra, topSignalWideWidth},
-		{wide + len(full)*topColumnMaxExtra + 50, topColumnMaxExtra, topSignalWideWidth + 50},
-	}
-	for _, step := range steps {
-		columns, signalWidth := topAllLayout(step.width)
+	for _, width := range []int{wide - 1, wide, wide + 1, wide + len(full)*3 + 5, wide + 200} {
+		spare := max(0, width-wide)
+		columns, signalWidth := topAllLayout(width)
+		added, hotCoreExtra := 0, -1
 		for index, column := range columns {
-			if column.width != full[index].width+step.extra {
-				t.Fatalf("width %d %s is %d wide, want %d", step.width, column.title, column.width, full[index].width+step.extra)
+			extra := column.width - full[index].width
+			if extra != column.indent || extra < spare/len(full) || extra > spare/len(full)+1 {
+				t.Fatalf("width %d %s got %d more (indent %d), want %d or %d", width, column.title, extra, column.indent, spare/len(full), spare/len(full)+1)
+			}
+			added += extra
+			if column.title == "hot core" {
+				hotCoreExtra = extra
 			}
 		}
-		if signalWidth != step.signal {
-			t.Fatalf("width %d signal is %d wide, want %d", step.width, signalWidth, step.signal)
+		if added != spare {
+			t.Fatalf("width %d columns got %d more, want all %d spare", width, added, spare)
 		}
-		headers := topDashboardHeaders(topViewAll, step.width)
-		line := formatTopDashboardRow(row, topViewAll, newTopLimits(8, false), step.width)
+		if want := min(topSignalWideWidth, width-topAllLineWidth(full)); signalWidth != want {
+			t.Fatalf("width %d signal is %d wide, want %d", width, signalWidth, want)
+		}
+		headers := topDashboardHeaders(topViewAll, width)
+		line := formatTopDashboardRow(row, topViewAll, newTopLimits(8, false), width)
 		for _, text := range append(headers, line) {
-			if got := len([]rune(text)); got != step.width {
-				t.Fatalf("width %d line is %d wide: %q", step.width, got, text)
+			if got := len([]rune(text)); got != width {
+				t.Fatalf("width %d line is %d wide: %q", width, got, text)
 			}
 		}
 		if top, bottom, value := topDividerColumns(headers[0]), topDividerColumns(headers[1]), topDividerColumns(line); !reflect.DeepEqual(top, bottom) || !reflect.DeepEqual(bottom, value) {
-			t.Fatalf("width %d dividers: group %v, column %v, row %v", step.width, top, bottom, value)
+			t.Fatalf("width %d dividers: group %v, column %v, row %v", width, top, bottom, value)
 		}
 		// 왼쪽 정렬인 hot core도 앞 칸과의 간격이 다른 칸처럼 넓어져야 i/o 값과 붙어 읽히지 않는다.
-		if gap := strings.Repeat(" ", step.extra+1); !strings.Contains(headers[1], gap+"hot core") || !strings.Contains(line, gap+"1 95%") {
-			t.Fatalf("width %d hot core is not indented by %d: %q / %q", step.width, step.extra, headers[1], line)
+		if gap := strings.Repeat(" ", hotCoreExtra+1); !strings.Contains(headers[1], gap+"hot core") || !strings.Contains(line, gap+"1 95%") {
+			t.Fatalf("width %d hot core is not indented by %d: %q / %q", width, hotCoreExtra, headers[1], line)
 		}
 	}
 }

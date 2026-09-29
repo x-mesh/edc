@@ -54,10 +54,8 @@ const (
 const (
 	// topSignalMinWidth는 all 보기에 칸을 더할 때 signal에 남기는 최소 폭이다. "node 185% +2"와 "await 65ms +1"이 들어간다.
 	topSignalMinWidth = 13
-	// topSignalWideWidth는 all 보기가 칸을 넓히기 전에 signal에 남기는 폭이다. 경고 세 개가 들어간다.
-	topSignalWideWidth = 40
-	// topColumnMaxExtra는 all 보기가 칸 하나에 더하는 최대 폭이다. 더 넓히면 숫자 사이가 벌어져 행을 따라 읽기 어렵다.
-	topColumnMaxExtra = 3
+	// topSignalWideWidth는 all 보기가 남는 폭을 칸에 나눌 때 signal에 남기는 폭이다. 경고 하나와 +N이 들어간다.
+	topSignalWideWidth = 16
 	// topPeakWindow는 h 패널이 지표별 최고치를 찾는 구간이다.
 	topPeakWindow = time.Minute
 	// topSelectionColumn은 행에서 "15:04:05" 바로 뒤 공백 자리다. 선택 표시가 시각을 가리지 않는다.
@@ -611,9 +609,10 @@ var topAllColumns = []topAllColumn{
 	{group: "disk", title: "busy", width: 4, tier: 5, cell: func(rate resourceRate) string { return topOptionalValue(rate.DiskBusyValid, "%.0f", rate.DiskBusy) }},
 }
 
-// topAllLayout은 width 안에 signal 최소 폭까지 들어가는 가장 높은 tier의 칸을 고르고, 남는 폭을 signal에 준다.
-// signal에 topSignalWideWidth를 남기고도 폭이 남으면 칸마다 같은 폭을 더한다. signal은 대개 짧아서
-// 남는 폭을 signal에만 주면 넓은 terminal에서 표 오른쪽이 비어 보인다.
+// topAllLayout은 width 안에 signal 최소 폭까지 들어가는 가장 높은 tier의 칸을 고른다.
+// signal은 대개 "-" 한 글자라서 남는 폭을 signal에 주면 넓은 terminal에서 표 오른쪽이 비어 보인다.
+// 그래서 signal에는 topSignalWideWidth만 남기고 나머지는 칸에 나눈다. 나누고 남은 폭도 칸 사이에 1칸씩 흩어서
+// 칸 폭 차이가 1을 넘지 않으면서 표가 오른쪽 끝까지 찬다.
 func topAllLayout(width int) ([]topAllColumn, int) {
 	chosen := topAllColumnsUpTo(0)
 	for tier := 1; tier <= topAllMaxTier(); tier++ {
@@ -623,8 +622,9 @@ func topAllLayout(width int) ([]topAllColumn, int) {
 		}
 		chosen = candidate
 	}
-	extra := min(topColumnMaxExtra, max(0, width-topAllLineWidth(chosen)-topSignalWideWidth)/len(chosen))
+	spare := max(0, width-topAllLineWidth(chosen)-topSignalWideWidth)
 	for index := range chosen {
+		extra := spare*(index+1)/len(chosen) - spare*index/len(chosen)
 		chosen[index].width += extra
 		chosen[index].indent = extra
 	}

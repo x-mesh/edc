@@ -367,6 +367,9 @@ func TestSummarizeTCPTraceClassifiesResults(t *testing.T) {
 		{SocketID: 9, TimestampNS: 16, Event: "tcp_destroy", Source: "0.0.0.0:0", Destination: "0.0.0.0:0"},
 		// 주소 없이 RST만 보낸 socket은 판단할 근거가 없어 existing으로 둔다.
 		{SocketID: 10, TimestampNS: 17, Event: "tcp_send_reset", Process: "quiet"},
+		// bind()로 port만 받고 connect나 listen 없이 닫힌 socket은 상대가 없어 연결이 아니다.
+		{SocketID: 11, TimestampNS: 18, Event: "tcp_destroy", Source: "[::1]:38709", Destination: "[::]:0"},
+		{SocketID: 12, TimestampNS: 19, Event: "tcp_destroy", Source: "127.0.0.1:59487", Destination: "0.0.0.0:0"},
 	}
 	report := summarizeTCPTrace(events, captureSummary{}, time.Second, "", "")
 	results := map[uint64]string{}
@@ -381,8 +384,10 @@ func TestSummarizeTCPTraceClassifiesResults(t *testing.T) {
 	if !reflect.DeepEqual(results, want) || len(report.Connections) != 8 {
 		t.Fatalf("results = %v, want %v; rows = %d", results, want, len(report.Connections))
 	}
-	if _, ok := byDestination["0.0.0.0:0"]; ok {
-		t.Fatalf("an unconnected socket has a row: %#v", byDestination["0.0.0.0:0"])
+	for _, destination := range []string{"0.0.0.0:0", "[::]:0"} {
+		if _, ok := byDestination[destination]; ok {
+			t.Fatalf("an unconnected socket has a row: %#v", byDestination[destination])
+		}
 	}
 	if report.Attempts != 6 || report.Established != 2 || report.Incomplete != 4 || report.Existing != 2 || report.Attempts != report.Established+report.Incomplete {
 		t.Fatalf("totals = %d attempts, %d established, %d incomplete, %d existing", report.Attempts, report.Established, report.Incomplete, report.Existing)

@@ -26,8 +26,64 @@ const (
 	traceGroupByEvent   = "event"
 )
 
+// traceProtocolSpec은 trace가 protocol마다 다르게 보여 주는 부분이다. 수집, filter, group 묶기는 protocol과 상관없이 같다.
+type traceProtocolSpec struct {
+	// ansiColor는 스크롤 출력의 ANSI 색 번호이고 screenColor는 전체 화면에서 쓰는 같은 색이다.
+	ansiColor   string
+	screenColor string
+	// groupColumns는 group 행에서 traffic 열 뒤, LAST 앞에 붙는 열이다.
+	groupColumns  []traceGroupColumn
+	newSummarizer func() traceSummarizer
+}
+
+// traceGroupColumn은 group 행의 protocol 전용 열이다. 전체 화면은 좁은 title을, 끝난 뒤 출력하는 표는 긴 title을 쓴다.
+type traceGroupColumn struct {
+	screenTitle string
+	reportTitle string
+	width       int
+	value       func(group traceGroupSummary) string
+}
+
+// traceSummarizer는 --group-by 없이 끝난 trace의 기본 요약을 쌓는다. 행의 단위가 protocol마다 다르다.
+type traceSummarizer interface {
+	observe(event captureEvent)
+	summarize(summary captureSummary, duration time.Duration) traceReport
+}
+
+type traceReport interface{ print() }
+
+var traceProtocols = map[string]traceProtocolSpec{
+	"tcp": {
+		ansiColor: "36", screenColor: "#22d3ee",
+		groupColumns: []traceGroupColumn{
+			{screenTitle: "CON", reportTitle: "CONNECT", width: 3, value: func(group traceGroupSummary) string { return strconv.FormatUint(group.Connect, 10) }},
+			{screenTitle: "RET", reportTitle: "RETRANS", width: 3, value: func(group traceGroupSummary) string { return traceOptional(group.Retransmissions, "%d") }},
+			{screenTitle: "RST", reportTitle: "RESET", width: 3, value: func(group traceGroupSummary) string { return traceOptional(group.Resets, "%d") }},
+		},
+		newSummarizer: func() traceSummarizer { return newTCPTraceSummarizer() },
+	},
+	"udp": {ansiColor: "35", screenColor: "#c084fc", newSummarizer: func() traceSummarizer { return newUDPTraceSummarizer() }},
+}
+
+func knownTraceProtocol(protocol string) bool {
+	_, ok := traceProtocols[protocol]
+	return ok
+}
+
+func (summarizer *tcpTraceSummarizer) summarize(summary captureSummary, duration time.Duration) traceReport {
+	return summarizer.report(summary, duration)
+}
+
+func (report tcpTraceReport) print() { printTCPTraceReport(report) }
+
+func (summarizer *udpTraceSummarizer) summarize(summary captureSummary, duration time.Duration) traceReport {
+	return summarizer.report(summary, duration)
+}
+
+func (report udpTraceReport) print() { printUDPTraceReport(report) }
+
 func runTrace(args []string) int {
-	if len(args) == 0 || (args[0] != "tcp" && args[0] != "udp") {
+	if len(args) == 0 || !knownTraceProtocol(args[0]) {
 		fmt.Fprintln(os.Stderr, T("cli.usage", "edc trace <tcp|udp> [options]"))
 		return 2
 	}
@@ -127,19 +183,7 @@ func runTrace(args []string) int {
 		printTraceGroupReport(report)
 		return 0
 	}
-	if args[0] == "udp" {
-		report := aggregate.udp.report(summary, traceDuration)
-		if options.jsonPath != "" {
-			if err := writeJSONOutput(options.jsonPath, report); err != nil {
-				fmt.Fprintln(os.Stderr, err)
-				return 2
-			}
-			return 0
-		}
-		printUDPTraceReport(report)
-		return 0
-	}
-	report := aggregate.tcp.report(summary, traceDuration)
+	report := aggregate.summary.summarize(summary, traceDuration)
 	if options.jsonPath != "" {
 		if err := writeJSONOutput(options.jsonPath, report); err != nil {
 			fmt.Fprintln(os.Stderr, err)
@@ -147,7 +191,7 @@ func runTrace(args []string) int {
 		}
 		return 0
 	}
-	printTCPTraceReport(report)
+	report.print()
 	return 0
 }
 
@@ -187,10 +231,7 @@ func traceColorLine(line, protocol, event string, color bool) string {
 	if !color || os.Getenv("NO_COLOR") != "" || !isTerminal(os.Stdout) {
 		return line
 	}
-	colorValue := "36"
-	if protocol == "udp" {
-		colorValue = "35"
-	}
+	colorValue := traceProtocols[protocol].ansiColor
 	if strings.Contains(event, "reset") {
 		colorValue = "31"
 	} else if strings.Contains(event, "retransmit") || strings.Contains(event, "fail") {
@@ -393,32 +434,25 @@ type traceGroupReport struct {
 // traceAggregate는 trace가 끝난 뒤 보여 줄 요약을 event가 올 때마다 쌓는다. event를 모두 두면 긴 trace에서
 // 메모리가 event 수만큼 늘었다. view가 빈 문자열이면 protocol의 기본 요약을, 아니면 그 group 요약을 쌓는다.
 type traceAggregate struct {
-	tcp    *tcpTraceSummarizer
-	udp    *udpTraceSummarizer
-	groups map[string]*traceGroupSummarizer
+	summary traceSummarizer
+	groups  map[string]*traceGroupSummarizer
 }
 
 func newTraceAggregate(protocol string, views ...string) *traceAggregate {
 	aggregate := &traceAggregate{groups: make(map[string]*traceGroupSummarizer)}
 	for _, view := range views {
-		switch {
-		case view != "":
-			aggregate.groups[view] = newTraceGroupSummarizer(protocol, view)
-		case protocol == "udp":
-			aggregate.udp = newUDPTraceSummarizer()
-		default:
-			aggregate.tcp = newTCPTraceSummarizer()
+		if view == "" {
+			aggregate.summary = traceProtocols[protocol].newSummarizer()
+			continue
 		}
+		aggregate.groups[view] = newTraceGroupSummarizer(protocol, view)
 	}
 	return aggregate
 }
 
 func (aggregate *traceAggregate) observe(event captureEvent) {
-	if aggregate.tcp != nil {
-		aggregate.tcp.observe(event)
-	}
-	if aggregate.udp != nil {
-		aggregate.udp.observe(event)
+	if aggregate.summary != nil {
+		aggregate.summary.observe(event)
 	}
 	for _, groups := range aggregate.groups {
 		groups.observe(event)
@@ -652,16 +686,18 @@ func printTraceGroupReport(report traceGroupReport) {
 	if len(report.Groups) == 0 {
 		return
 	}
-	if report.Protocol == "udp" {
-		fmt.Fprintf(os.Stdout, "\n%s\tEVENTS\tEVENT/s\tTX\tRX\tTOTAL\tB/s\tMbps\tLAST\n", traceGroupLabel(report.GroupBy))
-		for _, group := range report.Groups {
-			fmt.Fprintf(os.Stdout, "%s\t%d\t%.1f\t%s\t%s\t%s\t%s\t%.3f\t%s\n", traceGroupDisplayValue(report.GroupBy, group), group.Events, group.Rate, traceBytes(group.TXBytes), traceBytes(group.RXBytes), traceBytes(group.TotalBytes), traceBytes(uint64(group.BytesPerSecond)), group.MegabitsPerSecond, group.LastEvent)
-		}
-		return
+	columns := traceProtocols[report.Protocol].groupColumns
+	titles := []string{traceGroupLabel(report.GroupBy), "EVENTS", "EVENT/s", "TX", "RX", "TOTAL", "B/s", "Mbps"}
+	for _, column := range columns {
+		titles = append(titles, column.reportTitle)
 	}
-	fmt.Fprintf(os.Stdout, "\n%s\tEVENTS\tEVENT/s\tTX\tRX\tTOTAL\tB/s\tMbps\tCONNECT\tRETRANS\tRESET\tLAST\n", traceGroupLabel(report.GroupBy))
+	fmt.Fprintf(os.Stdout, "\n%s\n", strings.Join(append(titles, "LAST"), "\t"))
 	for _, group := range report.Groups {
-		fmt.Fprintf(os.Stdout, "%s\t%d\t%.1f\t%s\t%s\t%s\t%s\t%.3f\t%d\t%s\t%s\t%s\n", traceGroupDisplayValue(report.GroupBy, group), group.Events, group.Rate, traceBytes(group.TXBytes), traceBytes(group.RXBytes), traceBytes(group.TotalBytes), traceBytes(uint64(group.BytesPerSecond)), group.MegabitsPerSecond, group.Connect, traceOptional(group.Retransmissions, "%d"), traceOptional(group.Resets, "%d"), group.LastEvent)
+		values := []string{traceGroupDisplayValue(report.GroupBy, group), strconv.FormatUint(group.Events, 10), fmt.Sprintf("%.1f", group.Rate), traceBytes(group.TXBytes), traceBytes(group.RXBytes), traceBytes(group.TotalBytes), traceBytes(uint64(group.BytesPerSecond)), fmt.Sprintf("%.3f", group.MegabitsPerSecond)}
+		for _, column := range columns {
+			values = append(values, column.value(group))
+		}
+		fmt.Fprintf(os.Stdout, "%s\n", strings.Join(append(values, group.LastEvent), "\t"))
 	}
 }
 

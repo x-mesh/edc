@@ -129,6 +129,8 @@ func TestTraceHTTPPayloadHidesSecretsAndEscapesControls(t *testing.T) {
 			"POST /api?token=abc HTTP/1.1\r\nHost: x\r\nauthorization: ***\r\nCOOKIE: ***\r\nContent-Type: application/json\r\n\r\n{\"k\":\"한글\"}\\x1b[31m"},
 		// 512바이트에서 잘린 마지막 header 줄은 CRLF가 없어도 가린다.
 		{"cut in a header", "GET / HTTP/1.1\r\nHost: x\r\nProxy-Authorization: Basic YWxh", "GET / HTTP/1.1\r\nHost: x\r\nProxy-Authorization: ***"},
+		// 콜론 앞 공백은 HTTP 규칙 위반이라 서버가 거부하지만, 값은 이미 보냈으므로 가린다.
+		{"space before the colon", "GET / HTTP/1.1\r\nHost: x\r\nAuthorization : Basic YWxh\r\n\r\n", "GET / HTTP/1.1\r\nHost: x\r\nAuthorization : ***\r\n\r\n"},
 		{"response", "HTTP/1.1 200 OK\r\nSet-Cookie: id=1\r\n\r\nok\t\xff\x7f\xc2\x9b\n", "HTTP/1.1 200 OK\r\nSet-Cookie: ***\r\n\r\nok\t\\xff\\x7f\\xc2\\x9b\n"},
 		{"cookie text in the body", "HTTP/1.1 200 OK\r\n\r\nCookie: visible", "HTTP/1.1 200 OK\r\n\r\nCookie: visible"},
 	} {

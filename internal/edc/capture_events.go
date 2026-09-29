@@ -128,7 +128,87 @@ type tcpTraceReport struct {
 	Connections     []tcpTraceConnection `json:"connections"`
 	// ConnectionsOmitted는 합계에는 들어갔지만 행을 남기지 않은 끝난 연결의 수다.
 	ConnectionsOmitted int `json:"connections_omitted"`
+	// groups는 텍스트 요약의 기본 행이다. JSON은 연결별 행만 쓴다.
+	groups []tcpTraceGroupRow
 	traceTraffic
+}
+
+// tcpTraceGroupRow는 같은 process가 같은 상대와 맺은 연결을 묶은 행이다. 서버 연결의 상대는 client 포트가
+// 매번 달라서 local 서비스로 묶는다.
+type tcpTraceGroupRow struct {
+	process         string
+	peer            string
+	hostname        string
+	server          bool
+	connections     int
+	established     int
+	incomplete      int
+	existing        int
+	resets          int
+	retransmissions uint64
+	connectTotalMS  int64
+	connectCount    int
+	traceTraffic
+}
+
+type tcpTraceGroupKey struct {
+	process string
+	peer    string
+	server  bool
+}
+
+// traceSummaryPeer는 묶음 행의 상대와 서버 여부다. 그룹 보기의 서버 판정과 같다.
+func traceSummaryPeer(source, destination string) (string, bool) {
+	low, high := traceEphemeralPortRange()
+	if service, ok := traceServerService(captureEvent{Source: source, Destination: destination}, low, high); ok {
+		return service, true
+	}
+	return destination, false
+}
+
+func addTCPTraceGroup(groups map[tcpTraceGroupKey]*tcpTraceGroupRow, connection *tcpTraceConnection) {
+	peer, server := traceSummaryPeer(connection.Source, connection.Destination)
+	key := tcpTraceGroupKey{process: connection.Process, peer: peer, server: server}
+	row := groups[key]
+	if row == nil {
+		row = &tcpTraceGroupRow{process: connection.Process, peer: peer, server: server}
+		groups[key] = row
+	}
+	// 서버 행의 target은 한 client의 이름이라 행 전체를 설명하지 못한다.
+	if row.hostname == "" && !server {
+		row.hostname = connection.Hostname
+	}
+	row.connections++
+	switch connection.Result {
+	case "established":
+		row.established++
+	case "existing":
+		row.existing++
+	default:
+		row.incomplete++
+	}
+	if connection.reset {
+		row.resets++
+	}
+	row.retransmissions += connection.retransmissions
+	if connection.established {
+		row.connectTotalMS += connection.connectMS
+		row.connectCount++
+	}
+	row.TXBytes += connection.TXBytes
+	row.RXBytes += connection.RXBytes
+}
+
+func sortTCPTraceGroups(rows []tcpTraceGroupRow) {
+	sort.Slice(rows, func(i, j int) bool {
+		if rows[i].process != rows[j].process {
+			return rows[i].process < rows[j].process
+		}
+		if rows[i].peer != rows[j].peer {
+			return rows[i].peer < rows[j].peer
+		}
+		return !rows[i].server && rows[j].server
+	})
 }
 
 type traceTraffic struct {
@@ -168,6 +248,7 @@ type tcpTraceOptions struct {
 	groupBy     string
 	process     string
 	destination string
+	detail      bool
 	yes         bool
 }
 
@@ -227,6 +308,7 @@ type tcpTraceSummarizer struct {
 	oldest    int
 	omitted   int
 	totals    tcpTraceTotals
+	groups    map[tcpTraceGroupKey]*tcpTraceGroupRow
 	traffic   traceTraffic
 }
 
@@ -259,7 +341,7 @@ func (totals *tcpTraceTotals) add(connection *tcpTraceConnection) {
 }
 
 func newTCPTraceSummarizer() *tcpTraceSummarizer {
-	return &tcpTraceSummarizer{active: make(map[uint64]*tcpTraceConnection), firstSeen: make(map[uint64]uint64)}
+	return &tcpTraceSummarizer{active: make(map[uint64]*tcpTraceConnection), firstSeen: make(map[uint64]uint64), groups: make(map[tcpTraceGroupKey]*tcpTraceGroupRow)}
 }
 
 // tcpTraceConnectionStarts는 새 socket의 수명이 시작되는 전이다. connect()와 서버의 새 연결이 여기서 시작한다.
@@ -346,6 +428,8 @@ func (summarizer *tcpTraceSummarizer) finish(socket uint64) {
 	}
 	connection.Result = connection.result()
 	summarizer.totals.add(connection)
+	// 묶음 행은 끝난 연결마다 쌓아서, 연결별 행에서 빠진 연결도 들어간다.
+	addTCPTraceGroup(summarizer.groups, connection)
 	if len(summarizer.finished) < tcpTraceConnectionLimit {
 		summarizer.finished = append(summarizer.finished, *connection)
 		return
@@ -358,6 +442,11 @@ func (summarizer *tcpTraceSummarizer) finish(socket uint64) {
 func (summarizer *tcpTraceSummarizer) report(summary captureSummary, duration time.Duration) tcpTraceReport {
 	result := tcpTraceReport{DurationMS: duration.Milliseconds(), LostEvents: summary.LostEvents, ConnectionsOmitted: summarizer.omitted, traceTraffic: summarizer.traffic}
 	totals := summarizer.totals
+	groups := make(map[tcpTraceGroupKey]*tcpTraceGroupRow, len(summarizer.groups))
+	for key, stored := range summarizer.groups {
+		row := *stored
+		groups[key] = &row
+	}
 	result.Connections = make([]tcpTraceConnection, 0, len(summarizer.finished)+len(summarizer.active))
 	result.Connections = append(result.Connections, summarizer.finished...)
 	for _, stored := range summarizer.active {
@@ -367,8 +456,15 @@ func (summarizer *tcpTraceSummarizer) report(summary captureSummary, duration ti
 		connection := *stored
 		connection.Result = connection.result()
 		totals.add(&connection)
+		addTCPTraceGroup(groups, &connection)
 		result.Connections = append(result.Connections, connection)
 	}
+	result.groups = make([]tcpTraceGroupRow, 0, len(groups))
+	for _, row := range groups {
+		row.traceTraffic.finalize(duration)
+		result.groups = append(result.groups, *row)
+	}
+	sortTCPTraceGroups(result.groups)
 	for index := range result.Connections {
 		connection := &result.Connections[index]
 		connection.traceTraffic.finalize(duration)

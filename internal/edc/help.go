@@ -205,6 +205,7 @@ var commandDocs = []commandDoc{
 			{"--group-by <view>", "command.trace.option.group_by"},
 			{"--process <name>", "command.trace.option.process"},
 			{"--destination <host:port>", "command.trace.option.destination"},
+			{"-d, --detail", "command.trace.option.detail"},
 			{"--yes", "command.trace.option.yes"},
 		},
 	},

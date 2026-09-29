@@ -343,7 +343,8 @@ func (summarizer *dnsTraceSummarizer) summarize(summary captureSummary, duration
 	return report
 }
 
-func (report dnsTraceReport) print() {
+// print는 detail과 상관없이 같다. DNS 요약은 이미 이름과 record 종류마다 한 행이고, 질의마다의 행은 두지 않는다.
+func (report dnsTraceReport) print(bool) {
 	fmt.Fprintf(os.Stdout, "DNS trace: %s\n\n", (time.Duration(report.DurationMS) * time.Millisecond).String())
 	fmt.Fprintf(os.Stdout, "Queries: %d\nAnswers: %d\nErrors: %d\nUnanswered: %d\nLatency avg: %s\nLatency max: %s\nLost events: %d\n", report.Queries, report.Answers, report.Errors, report.Unanswered, traceDNSLatency(report.LatencyAvgMS, "ms"), traceDNSLatency(report.LatencyMaxMS, "ms"), report.LostEvents)
 	if len(report.Names) == 0 {

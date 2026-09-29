@@ -59,7 +59,8 @@ type traceSummarizer interface {
 	summarize(summary captureSummary, duration time.Duration) traceReport
 }
 
-type traceReport interface{ print() }
+// traceReport의 print는 detail이 false면 process와 상대별로 묶은 행을, true면 연결이나 flow마다 한 행을 쓴다.
+type traceReport interface{ print(detail bool) }
 
 var traceProtocols = map[string]traceProtocolSpec{
 	"tcp": {
@@ -100,13 +101,13 @@ func (summarizer *tcpTraceSummarizer) summarize(summary captureSummary, duration
 	return summarizer.report(summary, duration)
 }
 
-func (report tcpTraceReport) print() { printTCPTraceReport(report) }
+func (report tcpTraceReport) print(detail bool) { printTCPTraceReport(report, detail) }
 
 func (summarizer *udpTraceSummarizer) summarize(summary captureSummary, duration time.Duration) traceReport {
 	return summarizer.report(summary, duration)
 }
 
-func (report udpTraceReport) print() { printUDPTraceReport(report) }
+func (report udpTraceReport) print(detail bool) { printUDPTraceReport(report, detail) }
 
 func (report traceGroupReport) hideTraffic() bool { return traceProtocols[report.Protocol].hideTraffic }
 
@@ -125,6 +126,8 @@ func runTrace(args []string) int {
 	set.StringVar(&options.groupBy, "group-by", "", T("command.trace.option.group_by"))
 	set.StringVar(&options.process, "process", "", T("command.trace.option.process"))
 	set.StringVar(&options.destination, "destination", "", T("command.trace.option.destination"))
+	set.BoolVar(&options.detail, "detail", false, T("command.trace.option.detail"))
+	set.BoolVar(&options.detail, "d", false, T("command.trace.option.detail"))
 	set.BoolVar(&options.yes, "yes", false, T("command.trace.option.yes"))
 	if err := set.Parse(args[1:]); err != nil {
 		return 2
@@ -227,7 +230,7 @@ func runTrace(args []string) int {
 		}
 		return 0
 	}
-	report.print()
+	report.print(options.detail)
 	return 0
 }
 
@@ -276,9 +279,13 @@ func traceColorLine(line, protocol, event string, color bool) string {
 	return "\033[" + colorValue + "m" + line + "\033[0m"
 }
 
-func printTCPTraceReport(report tcpTraceReport) {
+func printTCPTraceReport(report tcpTraceReport, detail bool) {
 	fmt.Fprintf(os.Stdout, "TCP trace: %s\n\n", (time.Duration(report.DurationMS) * time.Millisecond).String())
 	fmt.Fprintf(os.Stdout, "Attempts: %d\nEstablished: %d\nIncomplete: %d\nExisting: %d\nRetransmissions: %s\nResets: %s\nTX: %s\nRX: %s\nTotal: %s\nTraffic rate: %s\nLost events: %d\n", report.Attempts, report.Established, report.Incomplete, report.Existing, traceOptional(report.Retransmissions, "%d"), traceOptional(report.Resets, "%d"), traceBytes(report.TXBytes), traceBytes(report.RXBytes), traceBytes(report.TotalBytes), traceTrafficRate(report.traceTraffic), report.LostEvents)
+	if !detail {
+		printTCPTraceGroups(report.groups)
+		return
+	}
 	if len(report.Connections) == 0 {
 		return
 	}
@@ -288,6 +295,31 @@ func printTCPTraceReport(report tcpTraceReport) {
 	}
 	if report.ConnectionsOmitted > 0 {
 		fmt.Fprintf(os.Stdout, "%d earlier closed connections are not listed. The totals include them.\n", report.ConnectionsOmitted)
+	}
+}
+
+func printTCPTraceGroups(rows []tcpTraceGroupRow) {
+	if len(rows) == 0 {
+		return
+	}
+	fmt.Fprintln(os.Stdout, "\nPROCESS\tDESTINATION\tCONNS\tEST\tINC\tEXIST\tCONNECT\tTX\tRX\tRETRANS\tRESET")
+	for _, row := range rows {
+		connect := "-"
+		if row.connectCount > 0 {
+			connect = traceOptional(traceObserved(row.connectTotalMS/int64(row.connectCount)), "%dms")
+		}
+		fmt.Fprintf(os.Stdout, "%s\t%s\t%d\t%d\t%d\t%d\t%s\t%s\t%s\t%s\t%s\n", row.process, traceSummaryPeerLabel(row.peer, row.hostname, row.server), row.connections, row.established, row.incomplete, row.existing, connect, traceBytes(row.TXBytes), traceBytes(row.RXBytes), traceOptional(traceObserved(row.retransmissions), "%d"), traceOptional(traceObserved(row.resets), "%d"))
+	}
+}
+
+func traceSummaryPeerLabel(peer, hostname string, server bool) string {
+	switch {
+	case server:
+		return peer + traceServerSuffix
+	case hostname != "":
+		return fmt.Sprintf("%s (%s)", peer, hostname)
+	default:
+		return peer
 	}
 }
 
@@ -309,6 +341,20 @@ type udpTraceReport struct {
 	Received   int            `json:"received"`
 	LostEvents uint64         `json:"lost_events"`
 	Flows      []udpTraceFlow `json:"flows"`
+	// groups는 텍스트 요약의 기본 행이다. JSON은 flow별 행만 쓴다.
+	groups []udpTraceGroupRow
+	traceTraffic
+}
+
+// udpTraceGroupRow는 같은 process가 같은 상대와 주고받은 flow를 묶은 행이다. socket이 달라도 합치고, 서버
+// socket은 client 포트가 매번 달라서 local 서비스로 묶는다.
+type udpTraceGroupRow struct {
+	process  string
+	peer     string
+	hostname string
+	server   bool
+	sent     uint64
+	received uint64
 	traceTraffic
 }
 
@@ -382,7 +428,48 @@ func (summarizer *udpTraceSummarizer) report(summary captureSummary, duration ti
 	}
 	result.traceTraffic.finalize(duration)
 	sortUDPTraceFlows(result.Flows)
+	result.groups = groupUDPTraceFlows(result.Flows, duration)
 	return result
+}
+
+func groupUDPTraceFlows(flows []udpTraceFlow, duration time.Duration) []udpTraceGroupRow {
+	type key struct {
+		process string
+		peer    string
+		server  bool
+	}
+	groups := map[key]*udpTraceGroupRow{}
+	for _, flow := range flows {
+		peer, server := traceSummaryPeer(flow.Source, flow.Destination)
+		row := groups[key{flow.Process, peer, server}]
+		if row == nil {
+			row = &udpTraceGroupRow{process: flow.Process, peer: peer, server: server}
+			groups[key{flow.Process, peer, server}] = row
+		}
+		// 서버 행의 target은 한 client의 이름이라 행 전체를 설명하지 못한다.
+		if row.hostname == "" && !server {
+			row.hostname = flow.Hostname
+		}
+		row.sent += flow.Sent
+		row.received += flow.Received
+		row.TXBytes += flow.TXBytes
+		row.RXBytes += flow.RXBytes
+	}
+	rows := make([]udpTraceGroupRow, 0, len(groups))
+	for _, row := range groups {
+		row.traceTraffic.finalize(duration)
+		rows = append(rows, *row)
+	}
+	sort.Slice(rows, func(i, j int) bool {
+		if rows[i].process != rows[j].process {
+			return rows[i].process < rows[j].process
+		}
+		if rows[i].peer != rows[j].peer {
+			return rows[i].peer < rows[j].peer
+		}
+		return !rows[i].server && rows[j].server
+	})
+	return rows
 }
 
 func sortUDPTraceFlows(flows []udpTraceFlow) {
@@ -397,9 +484,19 @@ func sortUDPTraceFlows(flows []udpTraceFlow) {
 	})
 }
 
-func printUDPTraceReport(report udpTraceReport) {
+func printUDPTraceReport(report udpTraceReport, detail bool) {
 	fmt.Fprintf(os.Stdout, "UDP trace: %s\n\n", (time.Duration(report.DurationMS) * time.Millisecond).String())
 	fmt.Fprintf(os.Stdout, "Datagrams: %d\nSent: %d\nReceived: %d\nTX: %s\nRX: %s\nTotal: %s\nTraffic rate: %s\nLost events: %d\n", report.Datagrams, report.Sent, report.Received, traceBytes(report.TXBytes), traceBytes(report.RXBytes), traceBytes(report.TotalBytes), traceTrafficRate(report.traceTraffic), report.LostEvents)
+	if !detail {
+		if len(report.groups) == 0 {
+			return
+		}
+		fmt.Fprintln(os.Stdout, "\nPROCESS\tDESTINATION\tSENT\tRECEIVED\tTX\tRX")
+		for _, row := range report.groups {
+			fmt.Fprintf(os.Stdout, "%s\t%s\t%d\t%d\t%s\t%s\n", row.process, traceSummaryPeerLabel(row.peer, row.hostname, row.server), row.sent, row.received, traceBytes(row.TXBytes), traceBytes(row.RXBytes))
+		}
+		return
+	}
 	if len(report.Flows) == 0 {
 		return
 	}

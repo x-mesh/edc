@@ -118,7 +118,14 @@ func (connection *tcpTraceConnection) unbound() bool {
 
 // counted는 행과 합계에 넣을 socket이다. listen socket과, connect하지 않고 닫힌 socket은 연결이 아니다.
 func (connection *tcpTraceConnection) counted() bool {
-	return !connection.listener && !(connection.unbound() && traceAddressUnspecified(connection.Destination))
+	return !connection.listener && !(connection.unbound() && traceAddressUnspecified(connection.Destination)) && !connection.bindOnly()
+}
+
+// bindOnly는 bind()로 port만 받고 connect나 listen 없이 닫힌 socket이다. port는 있지만 상대 주소가 모두 0이다.
+// Go 프로그램은 network를 처음 쓸 때 IPv6 지원을 알아보려고 이런 socket을 두 개 만든다. 주소가 아예 없는 socket은
+// 주소 없는 event만 본 것이라 여기에 넣지 않는다.
+func (connection *tcpTraceConnection) bindOnly() bool {
+	return connection.Destination != "" && traceAddressUnspecified(connection.Destination) && !connection.handshake && !connection.established
 }
 
 func traceAddressUnspecified(address string) bool {

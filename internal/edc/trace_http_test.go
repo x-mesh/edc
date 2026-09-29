@@ -110,11 +110,11 @@ func TestHTTPTrackerMatchesResponsesInOrder(t *testing.T) {
 func TestHTTPServerSideTimesTheServer(t *testing.T) {
 	tracker := newHTTPTracker(true)
 	request, ok := tracker.event(httpTestPacket("GET /health HTTP/1.1\r\n\r\n", 1_000_000, false), 0)
-	if !ok || request.Side != traceDNSServerSide || request.Target != "" || request.Path != "/health" {
+	if !ok || request.Side != traceServerSide || request.Target != "" || request.Path != "/health" {
 		t.Fatalf("server request = %#v, %t", request, ok)
 	}
 	response, ok := tracker.event(httpTestPacket("HTTP/1.1 200 OK\r\n\r\n", 1_300_000, true), 0)
-	if !ok || response.Side != traceDNSServerSide || response.LatencyMS == nil || *response.LatencyMS < 0.29 || *response.LatencyMS > 0.31 {
+	if !ok || response.Side != traceServerSide || response.LatencyMS == nil || *response.LatencyMS < 0.29 || *response.LatencyMS > 0.31 {
 		t.Fatalf("server response = %#v, %t", response, ok)
 	}
 	if event, ok := tracker.event(httpTestPacket("GET / HTTP/1.1\r\n\r\n", 2_000_000, true), 0); ok {

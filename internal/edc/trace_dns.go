@@ -22,8 +22,6 @@ const (
 	traceDNSTCPConnectEvent = "dns_tcp_connect"
 	traceDNSTCPFailEvent    = "dns_tcp_fail"
 	traceDNSHeaderSize      = 12
-	traceDNSClientSide      = "client"
-	traceDNSServerSide      = "server"
 	// traceDNSPendingLimit은 응답을 기다리는 질의 수의 상한이다. 응답이 오지 않는 질의가 쌓여도 메모리를 제한한다.
 	traceDNSPendingLimit = 65536
 	// traceDNSTruncatedLimit은 TCP로 다시 물을 이름을 기억하는 수의 상한이다.
@@ -129,11 +127,11 @@ func (tracker *dnsQueryTracker) event(packet dnsPacket, clockOffset int64) (capt
 		event.QueryType = dns.Type(message.Question[0].Qtype).String()
 	}
 	if server {
-		event.Side = traceDNSServerSide
+		event.Side = traceServerSide
 	}
 	// 받은 message만 수신 큐 시각이 있다. client 쪽은 응답을, 서버 쪽은 질의를 받는다.
 	if !packet.sent && packet.arrivalNS != 0 {
-		event.ReadDelayMS = traceDNSSpan(packet.arrivalNS, packet.bootTimeNS)
+		event.ReadDelayMS = traceSpan(packet.arrivalNS, packet.bootTimeNS)
 	}
 	key := dnsQueryKey{server: server, localPort: localPort, remote: packet.destination, id: id}
 	if query {
@@ -151,9 +149,9 @@ func (tracker *dnsQueryTracker) event(packet dnsPacket, clockOffset int64) (capt
 	if queries := tracker.pending[key]; len(queries) > 0 {
 		delete(tracker.pending, key)
 		tracker.size -= len(queries)
-		event.LatencyMS = traceDNSSpan(queries[0].bootTimeNS, packet.bootTimeNS)
+		event.LatencyMS = traceSpan(queries[0].bootTimeNS, packet.bootTimeNS)
 		if !packet.sent && packet.arrivalNS != 0 {
-			event.NetworkMS = traceDNSSpan(queries[0].bootTimeNS, packet.arrivalNS)
+			event.NetworkMS = traceSpan(queries[0].bootTimeNS, packet.arrivalNS)
 		}
 		event.answered = uint64(len(queries))
 		if event.Target == "" {
@@ -208,12 +206,6 @@ func traceDNSServerHost(address string) string {
 		return address
 	}
 	return host
-}
-
-// traceDNSSpan은 두 monotonic 시각 사이의 밀리초다. CPU마다 읽은 시각이 조금 어긋나도 음수로 내지 않는다.
-func traceDNSSpan(start, end uint64) *float64 {
-	span := float64(end-min(end, start)) / float64(time.Millisecond)
-	return &span
 }
 
 func traceDNSName(name string) string {
@@ -279,32 +271,6 @@ type traceDNSCounts struct {
 	readDelay      traceSpans
 }
 
-// traceSpans는 시간 값의 합, 개수, 최댓값이다.
-type traceSpans struct {
-	total   float64
-	count   uint64
-	maximum float64
-}
-
-func (spans *traceSpans) observe(value *float64) {
-	if value == nil {
-		return
-	}
-	spans.total += *value
-	spans.count++
-	if *value > spans.maximum {
-		spans.maximum = *value
-	}
-}
-
-func (spans traceSpans) summary() (*float64, *float64) {
-	if spans.count == 0 {
-		return nil, nil
-	}
-	average, maximum := spans.total/float64(spans.count), spans.maximum
-	return &average, &maximum
-}
-
 func (counts *traceDNSCounts) observe(event captureEvent) {
 	counts.readDelay.observe(event.ReadDelayMS)
 	switch event.Event {
@@ -345,13 +311,6 @@ func traceDNSGroupSummary(counts *traceDNSCounts) *traceDNSCounts {
 	return &finished
 }
 
-func traceDNSLatency(latency *float64, unit string) string {
-	if latency == nil {
-		return "-"
-	}
-	return fmt.Sprintf("%.1f%s", *latency, unit)
-}
-
 func traceDNSColumn(value func(counts traceDNSCounts) string) func(traceGroupSummary) string {
 	return func(group traceGroupSummary) string {
 		if group.DNS == nil {
@@ -366,10 +325,10 @@ var traceDNSGroupColumns = []traceGroupColumn{
 	{screenTitle: "ANS", reportTitle: "ANSWERS", width: 5, value: traceDNSColumn(func(counts traceDNSCounts) string { return strconv.FormatUint(counts.Answers, 10) })},
 	{screenTitle: "ERR", reportTitle: "ERRORS", width: 4, value: traceDNSColumn(func(counts traceDNSCounts) string { return strconv.FormatUint(counts.Errors, 10) })},
 	{screenTitle: "NOANS", reportTitle: "UNANSWERED", width: 5, value: traceDNSColumn(func(counts traceDNSCounts) string { return strconv.FormatUint(counts.Unanswered, 10) })},
-	{screenTitle: "AVGms", reportTitle: "AVG_MS", width: 6, value: traceDNSColumn(func(counts traceDNSCounts) string { return traceDNSLatency(counts.LatencyAvgMS, "") })},
-	{screenTitle: "MAXms", reportTitle: "MAX_MS", width: 6, value: traceDNSColumn(func(counts traceDNSCounts) string { return traceDNSLatency(counts.LatencyMaxMS, "") })},
-	{screenTitle: "NETms", reportTitle: "NET_AVG_MS", width: 6, value: traceDNSColumn(func(counts traceDNSCounts) string { return traceDNSLatency(counts.NetworkAvgMS, "") })},
-	{screenTitle: "RDms", reportTitle: "READ_AVG_MS", width: 6, value: traceDNSColumn(func(counts traceDNSCounts) string { return traceDNSLatency(counts.ReadDelayAvgMS, "") })},
+	{screenTitle: "AVGms", reportTitle: "AVG_MS", width: 6, value: traceDNSColumn(func(counts traceDNSCounts) string { return traceLatency(counts.LatencyAvgMS, "") })},
+	{screenTitle: "MAXms", reportTitle: "MAX_MS", width: 6, value: traceDNSColumn(func(counts traceDNSCounts) string { return traceLatency(counts.LatencyMaxMS, "") })},
+	{screenTitle: "NETms", reportTitle: "NET_AVG_MS", width: 6, value: traceDNSColumn(func(counts traceDNSCounts) string { return traceLatency(counts.NetworkAvgMS, "") })},
+	{screenTitle: "RDms", reportTitle: "READ_AVG_MS", width: 6, value: traceDNSColumn(func(counts traceDNSCounts) string { return traceLatency(counts.ReadDelayAvgMS, "") })},
 }
 
 // traceDNSScrollLabels는 스크롤 행의 목적지 칸에 조회한 이름, 레코드 종류, 서버를, event 칸에 결과와 응답 시간을 쓴다.
@@ -383,7 +342,7 @@ func traceDNSScrollLabels(event captureEvent) (string, string) {
 	}
 	label := event.Event
 	if event.LatencyMS != nil {
-		label += " " + traceDNSLatency(event.LatencyMS, "ms")
+		label += " " + traceLatency(event.LatencyMS, "ms")
 	}
 	return name, label
 }
@@ -485,33 +444,17 @@ func (summarizer *dnsTraceSummarizer) summarize(summary captureSummary, duration
 // print는 detail과 상관없이 같다. DNS 요약은 이미 이름과 record 종류마다 한 행이고, 질의마다의 행은 두지 않는다.
 func (report dnsTraceReport) print(bool) {
 	title := "DNS trace"
-	if report.Side == traceDNSServerSide {
+	if report.Side == traceServerSide {
 		title = "DNS server trace"
 	}
 	fmt.Fprintf(os.Stdout, "%s: %s\n\n", title, (time.Duration(report.DurationMS) * time.Millisecond).String())
 	fmt.Fprintf(os.Stdout, "Queries: %d\nAnswers: %d\nErrors: %d\nUnanswered: %d\nTCP connections: %d\n", report.Queries, report.Answers, report.Errors, report.Unanswered, report.TCPConnections)
-	fmt.Fprintf(os.Stdout, "Latency avg: %s\nLatency max: %s\nNetwork avg: %s\nNetwork max: %s\nRead delay avg: %s\nRead delay max: %s\nLost events: %d\n", traceDNSLatency(report.LatencyAvgMS, "ms"), traceDNSLatency(report.LatencyMaxMS, "ms"), traceDNSLatency(report.NetworkAvgMS, "ms"), traceDNSLatency(report.NetworkMaxMS, "ms"), traceDNSLatency(report.ReadDelayAvgMS, "ms"), traceDNSLatency(report.ReadDelayMaxMS, "ms"), report.LostEvents)
+	fmt.Fprintf(os.Stdout, "Latency avg: %s\nLatency max: %s\nNetwork avg: %s\nNetwork max: %s\nRead delay avg: %s\nRead delay max: %s\nLost events: %d\n", traceLatency(report.LatencyAvgMS, "ms"), traceLatency(report.LatencyMaxMS, "ms"), traceLatency(report.NetworkAvgMS, "ms"), traceLatency(report.NetworkMaxMS, "ms"), traceLatency(report.ReadDelayAvgMS, "ms"), traceLatency(report.ReadDelayMaxMS, "ms"), report.LostEvents)
 	if len(report.Names) == 0 {
 		return
 	}
 	fmt.Fprintln(os.Stdout, "\nNAME\tTYPE\tQUERIES\tANSWERS\tRESULTS\tUNANSWERED\tAVG\tMAX\tNET\tREAD\tPROCESS")
 	for _, name := range report.Names {
-		fmt.Fprintf(os.Stdout, "%s\t%s\t%d\t%d\t%s\t%d\t%s\t%s\t%s\t%s\t%s\n", name.Name, emptyAs(name.Type, "-"), name.Queries, name.Answers, traceDNSResults(name.Results), name.Unanswered, traceDNSLatency(name.LatencyAvgMS, "ms"), traceDNSLatency(name.LatencyMaxMS, "ms"), traceDNSLatency(name.NetworkAvgMS, "ms"), traceDNSLatency(name.ReadDelayAvgMS, "ms"), emptyAs(strings.Join(name.Processes, ","), "-"))
+		fmt.Fprintf(os.Stdout, "%s\t%s\t%d\t%d\t%s\t%d\t%s\t%s\t%s\t%s\t%s\n", name.Name, emptyAs(name.Type, "-"), name.Queries, name.Answers, traceResultCounts(name.Results), name.Unanswered, traceLatency(name.LatencyAvgMS, "ms"), traceLatency(name.LatencyMaxMS, "ms"), traceLatency(name.NetworkAvgMS, "ms"), traceLatency(name.ReadDelayAvgMS, "ms"), emptyAs(strings.Join(name.Processes, ","), "-"))
 	}
-}
-
-// traceDNSResults는 결과를 많은 순서로 잇는다. 예: "noerror 3, nxdomain 1".
-func traceDNSResults(results map[string]uint64) string {
-	names := slices.Collect(maps.Keys(results))
-	sort.Slice(names, func(i, j int) bool {
-		if results[names[i]] != results[names[j]] {
-			return results[names[i]] > results[names[j]]
-		}
-		return names[i] < names[j]
-	})
-	parts := make([]string, 0, len(names))
-	for _, name := range names {
-		parts = append(parts, fmt.Sprintf("%s %d", name, results[name]))
-	}
-	return emptyAs(strings.Join(parts, ", "), "-")
 }

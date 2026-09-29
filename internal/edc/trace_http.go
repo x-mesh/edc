@@ -165,7 +165,7 @@ func traceHTTPPayload(payload []byte) string {
 	lines := bytes.Split(head, []byte("\r\n"))
 	for index := 1; index < len(lines); index++ {
 		name, _, ok := bytes.Cut(lines[index], []byte(":"))
-		if ok && slices.ContainsFunc(traceHTTPSecretHeaders, func(secret string) bool { return strings.EqualFold(string(name), secret) }) {
+		if ok && slices.ContainsFunc(traceHTTPSecretHeaders, func(secret string) bool { return strings.EqualFold(string(bytes.TrimSpace(name)), secret) }) {
 			lines[index] = append(slices.Clip(name), ": ***"...)
 		}
 	}

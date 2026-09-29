@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
-	"strconv"
 	"syscall"
 	"time"
 
@@ -93,21 +92,6 @@ func collectARPEvents(duration time.Duration, onEvent func(captureEvent) error, 
 			eventCount++
 		}
 	}
-}
-
-// arpInterfaceNames는 interface 번호의 이름이다. 사라진 interface는 번호로 쓴다.
-type arpInterfaceNames map[int]string
-
-func (names arpInterfaceNames) name(index int) string {
-	if name, ok := names[index]; ok {
-		return name
-	}
-	name := "if" + strconv.Itoa(index)
-	if iface, err := net.InterfaceByIndex(index); err == nil {
-		name = iface.Name
-	}
-	names[index] = name
-	return name
 }
 
 // parseARPNeighbor는 RTM_NEWNEIGH와 RTM_DELNEIGH의 ndmsg와 속성을 읽는다. ARP를 쓰지 않는 항목(NOARP)과

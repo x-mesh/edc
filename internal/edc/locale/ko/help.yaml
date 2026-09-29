@@ -168,7 +168,7 @@ command:
       - "JSONL event가 필요하면 --raw를 사용합니다."
       - "요약은 process와 상대별로 행을 묶습니다. -d는 연결마다 표시합니다."
       - "trace dns는 Linux에서 DNS 질의와 응답을 표시합니다. port 보기는 없습니다."
-      - "trace arp는 Linux에서 neighbor table 변화를 표시합니다. root가 필요 없습니다."
+      - "trace arp는 Linux와 macOS에서 neighbor table 변화를 표시합니다. root 불필요."
       - "trace http는 Linux 6.4 이상에서 평문 HTTP/1.x 요청을 표시합니다."
   report:
     summary: "저장한 JSON report 보기와 비교"

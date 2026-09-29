@@ -869,7 +869,7 @@ On the server side, the latency starts when the server reads the query and stops
 
 `trace dns` watches only port 53. It shows DNS over TCP only as connections on the client side. It does not show DNS over TLS, DNS over HTTPS, mDNS, or LLMNR. BPF reads the first 1,024 bytes of a DNS message. For a longer answer, edc reads the result code from the header and takes the name from the query. macOS does not give the payload of a socket, so `trace dns` requires Linux.
 
-Use `trace arp` on Linux to print the changes of the IPv4 neighbor table (the ARP cache) as they arrive. It reads kernel notifications through netlink, so it needs no root and no eBPF.
+Use `trace arp` on Linux or macOS to print the changes of the IPv4 neighbor table (the ARP cache). It needs no root and no eBPF. On Linux, it reads kernel notifications through netlink as they arrive. On macOS, it reads the ARP table each second, with the same query as `arp -an`, and compares it with the previous table.
 
 ```bash
 ./bin/edc trace arp
@@ -887,7 +887,7 @@ The entries that exist when the trace starts do not make events. After that, eac
 
 The `target` of an ARP event is the IP address, and the `source` is the interface. ARP events have no process or port, so `trace arp` has no process view and no port view. `--destination` filters events by IP address. ARP events have no process, so `--process` matches no ARP event. The summary after Ctrl-C shows one row for each interface and IP. Grouped rows show the number of MAC addresses (`MACS`), the MAC changes (`CHG`), and the failures (`FAIL`).
 
-The kernel does not report the start of an address lookup, so a failed lookup shows only `arp_failed`. `trace arp` does not show IPv6 neighbors (NDP) or the entries without ARP (`NOARP`). It watches the neighbor table, not the ARP packets. So it does not show ARP packets that do not change the table, for example requests from other hosts. `trace arp` does not support macOS yet.
+The kernel does not report the start of an address lookup, so a failed lookup shows only `arp_failed`. `trace arp` does not show IPv6 neighbors (NDP) or the entries without ARP (`NOARP`). It watches the neighbor table, not the ARP packets. So it does not show ARP packets that do not change the table, for example requests from other hosts. On macOS, a change that starts and ends between two reads does not show, and a lookup that fails again without a change does not show again. macOS has no neighbor states such as `STALE`. `trace arp` shows `COMPLETE` for an entry with a MAC address, `INCOMPLETE` for an entry without one, `PERMANENT` for a static entry, and `FAILED` for an entry that macOS marks as rejected (`RTF_REJECT`).
 
 Use `trace http` on Linux 6.4 or later to print plain HTTP/1.x requests and responses as they arrive. edc reads the first 512 bytes of each TCP read and write in the kernel. It keeps the method, the `Host` header, the path, and the status code. It drops the other headers, the body, and the query of the path, because they can contain tokens and cookies.
 

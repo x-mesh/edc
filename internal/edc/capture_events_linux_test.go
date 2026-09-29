@@ -9,6 +9,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"slices"
 	"syscall"
 	"testing"
 	"time"
@@ -75,6 +76,35 @@ func TestTraceTargetFromArguments(t *testing.T) {
 	for _, test := range cases {
 		if got := traceTargetFromArguments(test.args); got != test.want {
 			t.Fatalf("traceTargetFromArguments(%q) = %q, want %q", test.args, got, test.want)
+		}
+	}
+}
+
+func TestCaptureAttachmentsFollowTheProtocol(t *testing.T) {
+	tcpTracepoints := []string{"sock/inet_sock_set_state", "tcp/tcp_retransmit_skb", "tcp/tcp_send_reset", "tcp/tcp_receive_reset", "tcp/tcp_destroy_sock", "sock/sock_send_length", "sock/sock_recv_length"}
+	udpSend := []string{"fentry/udp_send_skb", "fexit/udp_send_skb", "fentry/udp_v6_send_skb", "fexit/udp_v6_send_skb"}
+	tcpAccept := []string{"fentry/inet_csk_accept", "fexit/tcp_create_openreq_child"}
+	for _, test := range []struct {
+		protocol    string
+		tracepoints []string
+		tracing     []string
+	}{
+		{"", tcpTracepoints, append(append(append([]string{}, udpSend...), "fentry/skb_consume_udp"), tcpAccept...)},
+		// TCP도 DNS 응답으로 target 이름을 지으므로 skb_consume_udp를 붙인다.
+		{"tcp", tcpTracepoints, append([]string{"fentry/skb_consume_udp"}, tcpAccept...)},
+		{"udp", []string{}, append(append([]string{}, udpSend...), "fentry/skb_consume_udp")},
+	} {
+		tracepoints, tracing := captureAttachments(&captureEventsObjects{}, test.protocol)
+		gotTracepoints := []string{}
+		for _, hook := range tracepoints {
+			gotTracepoints = append(gotTracepoints, hook.group+"/"+hook.name)
+		}
+		gotTracing := []string{}
+		for _, hook := range tracing {
+			gotTracing = append(gotTracing, hook.name)
+		}
+		if !slices.Equal(gotTracepoints, test.tracepoints) || !slices.Equal(gotTracing, test.tracing) {
+			t.Fatalf("protocol %q: tracepoints %q, tracing %q; want %q, %q", test.protocol, gotTracepoints, gotTracing, test.tracepoints, test.tracing)
 		}
 	}
 }

@@ -838,7 +838,7 @@ Use `trace dns` on Linux to print DNS queries and answers as they arrive. It use
 
 A query is a `dns_query` event. An answer gets the name of its result code, for example `dns_noerror`, `dns_nxdomain`, or `dns_servfail`. A successful answer without records is `dns_nodata`. `Errors` counts all answers except `dns_noerror` and `dns_nodata`.
 
-The `target` of a DNS event is the name in the query. The `destination` is the DNS server. So `--group-by target` groups events by name, and `--destination` filters events by server. The DNS server port is always 53, so `trace dns` has no port view.
+The `target` of a DNS event is the name in the query. The `destination` is the DNS server. In the scroll view, the `DESTINATION` column shows the name, the record type, and the server. The `EVENT` column shows the result and the latency. So `--group-by target` groups events by name, and `--destination` filters events by server. The DNS server port is always 53, so `trace dns` has no port view.
 
 edc matches an answer to the query with the same local port, server, and transaction ID. `latency_ms` starts when the kernel sends the query and stops when the process reads the answer. If the process reads the answer late, the latency includes that delay. If the process sends the same query again before the answer, the answer counts for all these queries. The latency starts at the first query.
 

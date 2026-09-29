@@ -150,6 +150,18 @@ func TestDNSGroupsCountQueriesAndKeepTCPGroupsUnchanged(t *testing.T) {
 	if len(report.Groups) != 2 || report.Groups[0].Group != "example.com" || report.Groups[0].DNS == nil || report.Groups[0].DNS.Queries != 2 || report.Groups[0].DNS.Unanswered != 1 || report.Groups[1].DNS.Errors != 1 {
 		t.Fatalf("dns groups = %#v", report.Groups)
 	}
+	// event 보기는 질의와 응답을 다른 행에 둔다. 답을 받은 질의는 dns_query 행에서 응답 없음으로 세지 않는다.
+	events := summarizeTraceGroups("dns", traceGroupByEvent, dnsTestEvents(), captureSummary{}, time.Second, "", "")
+	for _, group := range events.Groups {
+		if want := map[string]uint64{traceDNSQueryEvent: 1}[group.Group]; group.DNS.Unanswered != want {
+			t.Fatalf("event view %s unanswered = %d, want %d", group.Group, group.DNS.Unanswered, want)
+		}
+	}
+	for _, group := range summarizeTraceGroups("dns", traceGroupBySource, dnsTestEvents(), captureSummary{}, time.Second, "", "").Groups {
+		if group.DNS.Queries != 3 || group.DNS.Unanswered != 1 {
+			t.Fatalf("source view = %#v", group.DNS)
+		}
+	}
 	data, _ := json.Marshal(summarizeTraceGroups("tcp", traceGroupByTarget, []captureEvent{{Protocol: "tcp", Event: "tcp_connect", Target: "example.com"}}, captureSummary{}, time.Second, "", ""))
 	if strings.Contains(string(data), `"dns"`) {
 		t.Fatalf("tcp group JSON has a dns field: %s", data)

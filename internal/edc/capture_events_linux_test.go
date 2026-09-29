@@ -94,6 +94,8 @@ func TestCaptureAttachmentsFollowTheProtocol(t *testing.T) {
 		// TCP도 DNS 응답으로 target 이름을 지으므로 skb_consume_udp를 붙인다.
 		{"tcp", tcpTracepoints, append([]string{"fentry/skb_consume_udp"}, tcpAccept...)},
 		{"udp", []string{}, append(append([]string{}, udpSend...), "fentry/skb_consume_udp")},
+		// DNS 질의는 UDP 송신 hook이, 응답은 skb_consume_udp가 읽는다.
+		{"dns", []string{}, append(append([]string{}, udpSend...), "fentry/skb_consume_udp")},
 	} {
 		tracepoints, tracing := captureAttachments(&captureEventsObjects{}, test.protocol)
 		gotTracepoints := []string{}

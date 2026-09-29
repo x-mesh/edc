@@ -534,6 +534,13 @@ func (summarizer *traceGroupSummarizer) observe(event captureEvent) {
 		summarizer.groups[mapKey] = group
 	}
 	observeTraceGroup(group, event)
+	// event 보기는 질의를 dns_query 행에, 응답을 결과 행에 둔다. 응답이 답한 질의를 dns_query 행에서 빼지 않으면
+	// 그 행의 질의가 모두 응답 없음으로 보인다. 다른 보기는 질의와 응답이 같은 행에 들어간다.
+	if summarizer.groupBy == traceGroupByEvent && event.dnsAnswered > 0 {
+		if queries := summarizer.groups[traceDNSQueryEvent]; queries != nil && queries.DNS != nil {
+			queries.DNS.answered += event.dnsAnswered
+		}
+	}
 	summarizer.events++
 	summarizer.traffic.observe(event)
 }

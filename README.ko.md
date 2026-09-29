@@ -802,7 +802,7 @@ Linux에서 `trace dns`를 사용하면 DNS 질의와 응답을 발생 즉시 �
 
 질의는 `dns_query` event입니다. 응답은 결과 코드를 이름으로 사용합니다. 예를 들어 `dns_noerror`, `dns_nxdomain`, `dns_servfail`입니다. record 없이 성공한 응답은 `dns_nodata`입니다. `Errors`는 `dns_noerror`와 `dns_nodata`를 뺀 응답을 셉니다.
 
-DNS event의 `target`은 질의한 이름이고 `destination`은 DNS 서버입니다. 따라서 `--group-by target`은 이름별로 묶고, `--destination`은 서버로 거릅니다. DNS 서버 port는 항상 53이므로 `trace dns`에는 port 보기가 없습니다.
+DNS event의 `target`은 질의한 이름이고 `destination`은 DNS 서버입니다. 스크롤 화면의 `DESTINATION` 열은 이름, record 종류, 서버를, `EVENT` 열은 결과와 응답 시간을 표시합니다. 따라서 `--group-by target`은 이름별로 묶고, `--destination`은 서버로 거릅니다. DNS 서버 port는 항상 53이므로 `trace dns`에는 port 보기가 없습니다.
 
 edc는 로컬 port, 서버, transaction ID가 같은 질의와 응답을 짝짓습니다. `latency_ms`는 kernel이 질의를 보낸 때부터 process가 응답을 읽은 때까지이므로, process가 응답을 늦게 읽으면 그만큼 길어집니다. 응답이 오기 전에 같은 질의를 다시 보냈으면 응답 하나가 그 질의에 모두 답한 것으로 보고, 응답 시간은 처음 보낸 질의부터 잽니다.
 

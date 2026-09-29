@@ -629,6 +629,6 @@ func runTraceScreen(protocol string, options tcpTraceOptions) int {
 		printTraceGroupReport(aggregate.groups[screen.groupBy].report(result.summary, duration))
 		return 0
 	}
-	aggregate.summary.summarize(result.summary, duration).print()
+	aggregate.summary.summarize(result.summary, duration).print(options.detail)
 	return 0
 }

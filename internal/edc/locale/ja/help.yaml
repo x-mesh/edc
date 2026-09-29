@@ -155,6 +155,7 @@ command:
       detail: "要約で接続や flow を 1 行ずつ表示"
       yes: "確認を省く"
       side: "trace dns, http: この host か local server"
+      payload: "trace http: 各 message の先頭 512 byte"
     notes:
       - "terminal では既定で全画面の trace を開きます。"
       - "/ で process、destination、event、source を絞り込みます。"
@@ -171,6 +172,7 @@ command:
       - "trace arp は Linux と macOS で neighbor table の変化を表示します。root 不要。"
       - "trace ndp は IPv6 neighbor について同じことをします。"
       - "trace http は Linux 6.4 以降で平文 HTTP/1.x を表示します。"
+      - "--payload は各 message の先頭を表示します。Cookie と Authorization は隠します。"
   report:
     summary: "保存した JSON report の閲覧と比較"
     notes:

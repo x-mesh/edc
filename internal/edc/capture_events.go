@@ -52,6 +52,8 @@ type captureEvent struct {
 	// MAC과 OldMAC은 ARP event에만 붙는다. OldMAC은 MAC이 바뀌었을 때 이전 값이다.
 	MAC    string `json:"mac,omitempty"`
 	OldMAC string `json:"old_mac,omitempty"`
+	// Transport는 TCP로 주고받은 DNS message에만 tcp로 붙는다.
+	Transport string `json:"transport,omitempty"`
 	// Side는 로컬 DNS 서버가 받은 질의와 보낸 응답에만 server로 붙는다.
 	Side       string `json:"side,omitempty"`
 	LostEvents uint64 `json:"lost_events,omitempty"`

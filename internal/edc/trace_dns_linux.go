@@ -21,7 +21,10 @@ import (
 const (
 	dnsRecordType          = 9
 	dnsRecordSent          = 1
-	dnsRecordPayloadOffset = 92
+	dnsRecordTCP           = 1
+	dnsRecordPayloadOffset = 100
+	// dnsRecordPayloadSize는 BPF가 읽는 message 앞부분의 크기다. capture_events_bpf.c의 DNS_PAYLOAD_SIZE와 같다.
+	dnsRecordPayloadSize = 1024
 )
 
 const (
@@ -108,22 +111,24 @@ func parseDNSRecord(sample []byte) (dnsPacket, bool) {
 	if len(sample) < dnsRecordPayloadOffset || binary.LittleEndian.Uint32(sample[8:12]) != dnsRecordType {
 		return dnsPacket{}, false
 	}
-	family := binary.LittleEndian.Uint16(sample[36:38])
+	family := binary.LittleEndian.Uint16(sample[44:46])
 	var source, destination [16]byte
-	copy(source[:], sample[44:60])
-	copy(destination[:], sample[60:76])
+	copy(source[:], sample[52:68])
+	copy(destination[:], sample[68:84])
 	packet := dnsPacket{
 		bootTimeNS:  binary.LittleEndian.Uint64(sample[0:8]),
 		pid:         binary.LittleEndian.Uint32(sample[12:16]),
 		cgroupID:    binary.LittleEndian.Uint64(sample[16:24]),
 		arrivalNS:   binary.LittleEndian.Uint64(sample[24:32]),
-		process:     strings.TrimRight(string(sample[76:92]), "\x00"),
-		sent:        sample[38] == dnsRecordSent,
-		source:      formatCaptureAddress(family, source, binary.LittleEndian.Uint16(sample[40:42])),
-		destination: formatCaptureAddress(family, destination, binary.LittleEndian.Uint16(sample[42:44])),
+		socket:      binary.LittleEndian.Uint64(sample[32:40]),
+		sent:        sample[46] == dnsRecordSent,
+		tcp:         sample[47] == dnsRecordTCP,
+		source:      formatCaptureAddress(family, source, binary.LittleEndian.Uint16(sample[48:50])),
+		destination: formatCaptureAddress(family, destination, binary.LittleEndian.Uint16(sample[50:52])),
+		process:     strings.TrimRight(string(sample[84:100]), "\x00"),
 		payload:     sample[dnsRecordPayloadOffset:],
 	}
-	if size := int(binary.LittleEndian.Uint32(sample[32:36])); size < len(packet.payload) {
+	if size := int(binary.LittleEndian.Uint32(sample[40:44])); size < len(packet.payload) {
 		packet.payload = packet.payload[:size]
 	}
 	return packet, true

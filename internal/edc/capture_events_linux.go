@@ -248,10 +248,10 @@ func captureAttachments(objects *captureEventsObjects, protocol string) ([]captu
 		// DNS 응답 시간을 network와 읽기 지연으로 나누려고 수신 큐에 들어간 시각을 잰다.
 		{[]string{"dns"}, "fentry/__udp_enqueue_schedule_skb", objects.UdpEnqueueEntry},
 		{nil, "fentry/skb_consume_udp", objects.SkbConsumeUdpEntry},
-		// HTTP는 TCP로 주고받는 사용자 버퍼의 앞부분을 읽는다.
-		{[]string{"http"}, "fentry/tcp_sendmsg", objects.TcpSendmsgEntry},
-		{[]string{"http"}, "fentry/tcp_recvmsg", objects.TcpRecvmsgEntry},
-		{[]string{"http"}, "fexit/tcp_recvmsg", objects.TcpRecvmsgExit},
+		// HTTP와 DNS over TCP는 TCP로 주고받는 사용자 버퍼의 앞부분을 읽는다.
+		{[]string{"http", "dns"}, "fentry/tcp_sendmsg", objects.TcpSendmsgEntry},
+		{[]string{"http", "dns"}, "fentry/tcp_recvmsg", objects.TcpRecvmsgEntry},
+		{[]string{"http", "dns"}, "fexit/tcp_recvmsg", objects.TcpRecvmsgExit},
 		// 서버 쪽 DNS over TCP도 받은 연결의 process를 알아야 해서 dns가 함께 쓴다.
 		{[]string{"tcp", "dns"}, "fentry/inet_csk_accept", objects.InetCskAcceptEntry},
 		{[]string{"tcp", "dns"}, "fexit/tcp_create_openreq_child", objects.TcpCreateOpenreqChildExit},
@@ -275,6 +275,8 @@ type captureEventFilter struct {
 	dnsSent      bool
 	server       bool
 	tcpStatePort uint16
+	httpMessages bool
+	dnsTCP       bool
 }
 
 func captureEventFilterFor(scope traceScope) captureEventFilter {
@@ -286,9 +288,9 @@ func captureEventFilterFor(scope traceScope) captureEventFilter {
 	case "udp":
 		filter.dnsSent = false
 	case "dns":
-		filter.udpEvents, filter.server, filter.tcpStatePort = false, scope.server, 53
+		filter.udpEvents, filter.server, filter.tcpStatePort, filter.dnsTCP = false, scope.server, 53, true
 	case "http":
-		filter.udpEvents = false
+		filter.udpEvents, filter.httpMessages = false, true
 	}
 	return filter
 }
@@ -309,7 +311,8 @@ func loadCaptureEventsFor(scope traceScope, objects *captureEventsObjects) error
 		}
 		return 0
 	}
-	if err := errors.Join(variables.EmitUdpEvents.Set(flag(filter.udpEvents)), variables.EmitDnsSent.Set(flag(filter.dnsSent)), variables.EmitDnsServer.Set(flag(filter.server)), variables.TcpStatePort.Set(filter.tcpStatePort)); err != nil {
+	if err := errors.Join(variables.EmitUdpEvents.Set(flag(filter.udpEvents)), variables.EmitDnsSent.Set(flag(filter.dnsSent)), variables.EmitDnsServer.Set(flag(filter.server)), variables.TcpStatePort.Set(filter.tcpStatePort),
+		variables.EmitHttpMessages.Set(flag(filter.httpMessages)), variables.EmitDnsTcpMessages.Set(flag(filter.dnsTCP))); err != nil {
 		return err
 	}
 	return spec.LoadAndAssign(objects, nil)
@@ -381,6 +384,7 @@ func collectCaptureEventsFor(scope traceScope, duration time.Duration, onEvent f
 	owners := newPIDTargetCache()
 	queries := newDNSQueryTracker(scope.server)
 	requests := newHTTPTracker(scope.server)
+	streams := newDNSTCPStreams()
 	var eventCount uint64
 	finish := func() (captureSummary, error) {
 		var lost uint64
@@ -414,16 +418,27 @@ func collectCaptureEventsFor(scope traceScope, duration time.Duration, onEvent f
 				continue
 			}
 			// 서버 쪽 레코드는 --side server일 때만 BPF가 보낸다. client 쪽 레코드는 늘 오므로 tracker가 다른 쪽을 거른다.
-			event, ok := queries.event(packet, clockOffset)
-			if !ok {
-				continue
+			// TCP 조각은 길이와 message를 맞춘 뒤 UDP message와 같은 방법으로 읽는다.
+			messages := [][]byte{packet.payload}
+			if packet.tcp {
+				messages = streams.messages(dnsTCPStreamKey{socket: packet.socket, sent: packet.sent}, packet.payload, dnsRecordPayloadSize)
 			}
-			if onEvent != nil {
-				if err := onEvent(event); err != nil {
-					return captureSummary{}, err
+			for _, message := range messages {
+				packet.payload = message
+				event, ok := queries.event(packet, clockOffset)
+				if !ok {
+					continue
 				}
+				if packet.tcp {
+					event.Transport = "tcp"
+				}
+				if onEvent != nil {
+					if err := onEvent(event); err != nil {
+						return captureSummary{}, err
+					}
+				}
+				eventCount++
 			}
-			eventCount++
 			continue
 		}
 		if packet, ok := parseHTTPRecord(record.RawSample); ok {

@@ -37,6 +37,8 @@ type dnsPacket struct {
 	cgroupID    uint64
 	process     string
 	sent        bool
+	tcp         bool
+	socket      uint64
 	source      string
 	destination string
 	payload     []byte
@@ -191,7 +193,7 @@ func (tracker *dnsQueryTracker) tcpEvent(event captureEvent) (captureEvent, bool
 	}
 	dnsEvent := captureEvent{
 		TimestampNS: event.TimestampNS, BootTimeNS: event.BootTimeNS, Event: name, Protocol: "dns", PID: event.PID, Process: event.Process,
-		CgroupID: event.CgroupID, Source: event.Source, Destination: event.Destination,
+		CgroupID: event.CgroupID, Source: event.Source, Destination: event.Destination, Transport: "tcp",
 	}
 	if tracker.server {
 		dnsEvent.Side = traceServerSide
@@ -222,6 +224,58 @@ func traceDNSHost(address string) string {
 		return address
 	}
 	return host
+}
+
+// dnsTCPStreamLimit은 길이만 읽고 message를 기다리는 조각 수의 상한이다. 닫힌 연결의 조각이 쌓여도 메모리를 제한한다.
+const dnsTCPStreamLimit = 4096
+
+type dnsTCPStreamKey struct {
+	socket uint64
+	sent   bool
+}
+
+// dnsTCPStreams는 TCP로 주고받은 조각에서 DNS message를 꺼낸다. DNS over TCP는 message 앞에 2바이트 길이를 붙인다.
+// 길이와 message를 따로 읽거나 쓰는 program이 많아, 길이만 온 조각은 연결과 방향마다 기억했다가 다음 조각을 message로 본다.
+type dnsTCPStreams struct {
+	pending map[dnsTCPStreamKey]int
+}
+
+func newDNSTCPStreams() *dnsTCPStreams {
+	return &dnsTCPStreams{pending: map[dnsTCPStreamKey]int{}}
+}
+
+// messages는 조각 하나에 든 DNS message다. BPF는 조각의 앞 capacity byte만 읽으므로, 잘린 message는 잘린 채로 돌려준다.
+// 뒤의 해석이 header로 결과를 읽는다.
+func (streams *dnsTCPStreams) messages(key dnsTCPStreamKey, chunk []byte, capacity int) [][]byte {
+	if expected, ok := streams.pending[key]; ok {
+		delete(streams.pending, key)
+		// 앞 조각이 길이였고 이 조각이 그 길이면 message 본문이다. 길이가 맞지 않으면 이 조각을 새로 읽는다.
+		if len(chunk) >= traceDNSHeaderSize && (len(chunk) == expected || (len(chunk) == capacity && expected > capacity)) {
+			return [][]byte{chunk}
+		}
+	}
+	var messages [][]byte
+	for len(chunk) >= 2 {
+		length := int(binary.BigEndian.Uint16(chunk[0:2]))
+		if len(chunk) == 2 {
+			if len(streams.pending) >= dnsTCPStreamLimit {
+				clear(streams.pending)
+			}
+			streams.pending[key] = length
+			break
+		}
+		body := chunk[2:]
+		if length < traceDNSHeaderSize || len(body) < traceDNSHeaderSize {
+			break
+		}
+		if len(body) <= length {
+			messages = append(messages, body)
+			break
+		}
+		messages = append(messages, body[:length])
+		chunk = body[length:]
+	}
+	return messages
 }
 
 func traceDNSName(name string) string {

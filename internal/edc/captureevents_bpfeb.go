@@ -20,10 +20,11 @@ type captureEventsDnsRecord struct {
 	Pid         uint32
 	CgroupId    uint64
 	ArrivalNs   uint64
+	Skaddr      uint64
 	Len         uint32
 	Family      uint16
 	Direction   uint8
-	Reserved    uint8
+	Transport   uint8
 	Sport       uint16
 	Dport       uint16
 	Source      [16]uint8
@@ -113,6 +114,8 @@ const (
 	captureEventsProgUdpV6SendSkbExit          = "udp_v6_send_skb_exit"
 	captureEventsVarEmitDnsSent                = "emit_dns_sent"
 	captureEventsVarEmitDnsServer              = "emit_dns_server"
+	captureEventsVarEmitDnsTcpMessages         = "emit_dns_tcp_messages"
+	captureEventsVarEmitHttpMessages           = "emit_http_messages"
 	captureEventsVarEmitUdpEvents              = "emit_udp_events"
 	captureEventsVarTcpStatePort               = "tcp_state_port"
 	captureEventsVarUnusedHttpRecord           = "unused_http_record"
@@ -199,11 +202,13 @@ type captureEventsMapSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type captureEventsVariableSpecs struct {
-	EmitDnsSent      *ebpf.VariableSpec `ebpf:"emit_dns_sent"`
-	EmitDnsServer    *ebpf.VariableSpec `ebpf:"emit_dns_server"`
-	EmitUdpEvents    *ebpf.VariableSpec `ebpf:"emit_udp_events"`
-	TcpStatePort     *ebpf.VariableSpec `ebpf:"tcp_state_port"`
-	UnusedHttpRecord *ebpf.VariableSpec `ebpf:"unused_http_record"`
+	EmitDnsSent        *ebpf.VariableSpec `ebpf:"emit_dns_sent"`
+	EmitDnsServer      *ebpf.VariableSpec `ebpf:"emit_dns_server"`
+	EmitDnsTcpMessages *ebpf.VariableSpec `ebpf:"emit_dns_tcp_messages"`
+	EmitHttpMessages   *ebpf.VariableSpec `ebpf:"emit_http_messages"`
+	EmitUdpEvents      *ebpf.VariableSpec `ebpf:"emit_udp_events"`
+	TcpStatePort       *ebpf.VariableSpec `ebpf:"tcp_state_port"`
+	UnusedHttpRecord   *ebpf.VariableSpec `ebpf:"unused_http_record"`
 }
 
 // captureEventsObjects contains all objects after they have been loaded into the kernel.
@@ -255,11 +260,13 @@ func (m *captureEventsMaps) Close() error {
 //
 // It can be passed to loadCaptureEventsObjects or ebpf.CollectionSpec.LoadAndAssign.
 type captureEventsVariables struct {
-	EmitDnsSent      *ebpf.Variable `ebpf:"emit_dns_sent"`
-	EmitDnsServer    *ebpf.Variable `ebpf:"emit_dns_server"`
-	EmitUdpEvents    *ebpf.Variable `ebpf:"emit_udp_events"`
-	TcpStatePort     *ebpf.Variable `ebpf:"tcp_state_port"`
-	UnusedHttpRecord *ebpf.Variable `ebpf:"unused_http_record"`
+	EmitDnsSent        *ebpf.Variable `ebpf:"emit_dns_sent"`
+	EmitDnsServer      *ebpf.Variable `ebpf:"emit_dns_server"`
+	EmitDnsTcpMessages *ebpf.Variable `ebpf:"emit_dns_tcp_messages"`
+	EmitHttpMessages   *ebpf.Variable `ebpf:"emit_http_messages"`
+	EmitUdpEvents      *ebpf.Variable `ebpf:"emit_udp_events"`
+	TcpStatePort       *ebpf.Variable `ebpf:"tcp_state_port"`
+	UnusedHttpRecord   *ebpf.Variable `ebpf:"unused_http_record"`
 }
 
 // captureEventsPrograms contains all programs after they have been loaded into the kernel.

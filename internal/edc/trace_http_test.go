@@ -196,3 +196,19 @@ func TestTracePayloadOptionNeedsHTTPEvents(t *testing.T) {
 		}
 	}
 }
+
+func TestTraceEscapeTextKeepsCleanTextAndEscapesAnywhere(t *testing.T) {
+	long := strings.Repeat("x", 3000)
+	for input, want := range map[string]string{
+		long:                  long,
+		"\x1b" + long:         `\x1b` + long,
+		long + "\x07":         long + `\x07`,
+		"a\r\n\tb":            "a\r\n\tb",
+		"한\x00글\xe2\x82":      `한\x00글\xe2\x82`,
+		long + "\xc2\x9b[31m": long + `\xc2\x9b[31m`,
+	} {
+		if got := traceEscapeText([]byte(input)); got != want {
+			t.Fatalf("traceEscapeText(%q) = %q, want %q", input[:min(len(input), 20)], got[:min(len(got), 40)], want[:min(len(want), 40)])
+		}
+	}
+}

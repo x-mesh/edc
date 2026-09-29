@@ -280,6 +280,8 @@ type captureEventFilter struct {
 	tcpStatePort uint16
 	httpMessages bool
 	dnsTCP       bool
+	// httpPayload는 HTTP message를 httpRecordPayloadMax까지 읽는다. 끄면 BPF 기본값인 512바이트만 읽는다.
+	httpPayload bool
 }
 
 func captureEventFilterFor(scope traceScope) captureEventFilter {
@@ -293,7 +295,7 @@ func captureEventFilterFor(scope traceScope) captureEventFilter {
 	case "dns":
 		filter.udpEvents, filter.server, filter.tcpStatePort, filter.dnsTCP = false, scope.server, 53, true
 	case "http":
-		filter.udpEvents, filter.httpMessages = false, true
+		filter.udpEvents, filter.httpMessages, filter.httpPayload = false, true, scope.payload
 	}
 	return filter
 }
@@ -317,6 +319,11 @@ func loadCaptureEventsFor(scope traceScope, objects *captureEventsObjects) error
 	if err := errors.Join(variables.EmitUdpEvents.Set(flag(filter.udpEvents)), variables.EmitDnsSent.Set(flag(filter.dnsSent)), variables.EmitDnsServer.Set(flag(filter.server)), variables.TcpStatePort.Set(filter.tcpStatePort),
 		variables.EmitHttpMessages.Set(flag(filter.httpMessages)), variables.EmitDnsTcpMessages.Set(flag(filter.dnsTCP))); err != nil {
 		return err
+	}
+	if filter.httpPayload {
+		if err := variables.HttpPayloadLimit.Set(uint32(httpRecordPayloadMax)); err != nil {
+			return err
+		}
 	}
 	return spec.LoadAndAssign(objects, nil)
 }

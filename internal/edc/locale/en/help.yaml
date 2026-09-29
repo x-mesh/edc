@@ -155,7 +155,7 @@ command:
       detail: "list each connection or flow in the summary"
       yes: "skip the question"
       side: "trace dns, http: client side or local server"
-      payload: "trace http: first 512 bytes of each message"
+      payload: "trace http: first 4 KiB of each message"
     notes:
       - "The default output opens a full-screen trace view in a terminal."
       - "Use / to filter process, destination, event, or source text."

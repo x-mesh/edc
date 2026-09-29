@@ -155,7 +155,7 @@ command:
       detail: "要約で接続や flow を 1 行ずつ表示"
       yes: "確認を省く"
       side: "trace dns, http: この host か local server"
-      payload: "trace http: 各 message の先頭 512 byte"
+      payload: "trace http: 各 message の先頭 4 KiB"
     notes:
       - "terminal では既定で全画面の trace を開きます。"
       - "/ で process、destination、event、source を絞り込みます。"

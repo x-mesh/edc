@@ -51,6 +51,13 @@ struct {
 	__uint(max_entries, 1 << 24);
 } events SEC(".maps");
 
+// 사용자 공간이 trace protocol에 맞춰 불러오기 전에 정한다. 쓰지 않을 event를 ring buffer에 넣지 않아야 바쁜 host에서
+// 필요한 event가 유실되지 않는다. 기본값은 capture처럼 모든 event를 보낸다.
+volatile const __u8 emit_udp_events = 1;
+volatile const __u8 emit_dns_queries = 1;
+// 0이 아니면 inet_sock_set_state는 상대 port가 이 값인 socket만 본다. trace dns는 53만 본다.
+volatile const __u16 tcp_state_port = 0;
+
 struct {
 	__uint(type, BPF_MAP_TYPE_ARRAY);
 	__uint(max_entries, 1);
@@ -244,6 +251,9 @@ static __always_inline void finish_event(struct event *event) {
 
 SEC("tracepoint/sock/inet_sock_set_state")
 int inet_sock_set_state(struct inet_sock_set_state_ctx *ctx) {
+	if (tcp_state_port && ctx->dport != tcp_state_port) {
+		return 0;
+	}
 	// SYN_SENT와 LISTEN 전이는 connect()와 listen() 안에서 일어나므로 현재 태스크가 socket의 주인이다.
 	int owner_context = (ctx->newstate == TCP_SYN_SENT || ctx->newstate == TCP_LISTEN) && ctx->protocol == IPPROTO_TCP;
 	if (owner_context) {
@@ -616,7 +626,7 @@ static __always_inline int remember_udp_send(struct sk_buff *skb, struct flowi4 
 	}
 	__u64 key = bpf_get_current_pid_tgid();
 	bpf_map_update_elem(&udp_send_pending, &key, &pending, BPF_ANY);
-	if (pending.dport == 53) {
+	if (pending.dport == 53 && emit_dns_queries) {
 		remember_dns_query(skb, &pending, head + transport + 8, payload);
 	}
 	return 0;
@@ -629,7 +639,7 @@ static __always_inline int emit_udp_send(void *ctx, int ret) {
 		return 0;
 	}
 	// 방화벽이 버린 송신도 여기서 오류로 돌아온다. 보냄으로 세면 차단 문제를 가린다.
-	if (ret == 0) {
+	if (ret == 0 && emit_udp_events) {
 		struct event *event = start_event(ctx, 6);
 		if (event) {
 			event->skaddr = pending->skaddr;
@@ -734,6 +744,9 @@ int skb_consume_udp_entry(__u64 *ctx) {
 	announce_owner((__u64)sk);
 	if (bpf_ntohs(ports[0]) == 53) {
 		emit_dns_answer(skb, network, transport, version, ports, len);
+	}
+	if (!emit_udp_events) {
+		return 0;
 	}
 	struct event *event = start_event(ctx, 7);
 	if (!event) {

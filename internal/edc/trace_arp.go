@@ -3,6 +3,7 @@ package edc
 import (
 	"fmt"
 	"maps"
+	"net"
 	"os"
 	"slices"
 	"sort"
@@ -83,6 +84,50 @@ func (tracker *arpTracker) event(neighbor arpNeighbor, timestampNS, bootTimeNS u
 		return captureEvent{}, false
 	}
 	return event, true
+}
+
+// arpInterfaceNames는 interface 번호의 이름이다. 사라진 interface는 번호로 쓴다.
+type arpInterfaceNames map[int]string
+
+func (names arpInterfaceNames) name(index int) string {
+	if name, ok := names[index]; ok {
+		return name
+	}
+	name := "if" + strconv.Itoa(index)
+	if iface, err := net.InterfaceByIndex(index); err == nil {
+		name = iface.Name
+	}
+	names[index] = name
+	return name
+}
+
+// arpSnapshotChanges는 table을 두 번 읽은 사이의 변화다. 새 항목, MAC이나 상태가 바뀐 항목, 사라진 항목을 key 순서로
+// 돌려준다. table을 주기적으로 읽는 macOS가 쓴다. 두 번 읽는 사이에 생겼다 사라진 변화는 보이지 않는다.
+func arpSnapshotChanges(previous, current map[arpNeighborKey]arpNeighbor) []arpNeighbor {
+	keys := slices.Collect(maps.Keys(current))
+	for key := range previous {
+		if _, ok := current[key]; !ok {
+			keys = append(keys, key)
+		}
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		if keys[i].iface != keys[j].iface {
+			return keys[i].iface < keys[j].iface
+		}
+		return keys[i].ip < keys[j].ip
+	})
+	var changes []arpNeighbor
+	for _, key := range keys {
+		neighbor, now := current[key]
+		before, seen := previous[key]
+		switch {
+		case !now:
+			changes = append(changes, arpNeighbor{iface: key.iface, ip: key.ip, deleted: true})
+		case !seen || before.mac != neighbor.mac || before.state != neighbor.state:
+			changes = append(changes, neighbor)
+		}
+	}
+	return changes
 }
 
 // traceARPScrollLabels는 목적지 칸에 IP와 MAC을, event 칸에 event와 새 상태를 쓴다.

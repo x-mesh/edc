@@ -92,3 +92,30 @@ func TestOnlyBPFProtocolsCheckEBPFPrerequisites(t *testing.T) {
 		}
 	}
 }
+
+func TestARPSnapshotChangesFindNewChangedAndGoneEntries(t *testing.T) {
+	previous := map[arpNeighborKey]arpNeighbor{
+		{iface: "en0", ip: "192.0.2.1"}: {iface: "en0", ip: "192.0.2.1", mac: "02:00:00:00:00:01", state: "COMPLETE"},
+		{iface: "en0", ip: "192.0.2.2"}: {iface: "en0", ip: "192.0.2.2", state: "INCOMPLETE"},
+		{iface: "en0", ip: "192.0.2.3"}: {iface: "en0", ip: "192.0.2.3", mac: "02:00:00:00:00:03", state: "COMPLETE"},
+	}
+	current := map[arpNeighborKey]arpNeighbor{
+		{iface: "en0", ip: "192.0.2.1"}: {iface: "en0", ip: "192.0.2.1", mac: "02:00:00:00:00:01", state: "COMPLETE"},
+		{iface: "en0", ip: "192.0.2.2"}: {iface: "en0", ip: "192.0.2.2", mac: "02:00:00:00:00:02", state: "COMPLETE"},
+		{iface: "en1", ip: "192.0.2.4"}: {iface: "en1", ip: "192.0.2.4", mac: "02:00:00:00:00:04", state: "COMPLETE"},
+	}
+	changes := arpSnapshotChanges(previous, current)
+	got := make([]string, 0, len(changes))
+	for _, change := range changes {
+		got = append(got, change.iface+" "+change.ip+" "+map[bool]string{true: "deleted", false: change.state}[change.deleted])
+	}
+	want := []string{"en0 192.0.2.2 COMPLETE", "en0 192.0.2.3 deleted", "en1 192.0.2.4 COMPLETE"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("changes = %q, want %q", got, want)
+	}
+	// 바뀌지 않은 FAILED는 다시 넘기지 않는다. table을 다시 읽을 때마다 실패로 세면 안 된다.
+	failed := map[arpNeighborKey]arpNeighbor{{iface: "en0", ip: "192.0.2.9"}: {iface: "en0", ip: "192.0.2.9", state: traceARPFailedState}}
+	if changes := arpSnapshotChanges(failed, failed); len(changes) != 0 {
+		t.Fatalf("unchanged failed entry = %#v", changes)
+	}
+}

@@ -86,9 +86,9 @@ var traceProtocols = map[string]traceProtocolSpec{
 		ansiColor: "95", screenColor: "#f472b6", groupColumns: traceHTTPGroupColumns, hideTraffic: true, linuxOnly: true,
 		scrollLabels: traceHTTPScrollLabels, serverSide: true, prerequisites: httpTracePrerequisites, newSummarizer: func() traceSummarizer { return newHTTPTraceSummarizer() },
 	},
-	// ARP event에는 process와 port가 없다. source는 interface, target은 IP다.
+	// ARP event에는 process와 port가 없다. source는 interface, target은 IP다. Linux는 netlink 알림을, macOS는 1초마다 읽은 table을 쓴다.
 	"arp": {
-		ansiColor: "34", screenColor: "#60a5fa", groupColumns: traceARPGroupColumns, hideTraffic: true, hiddenViews: []string{traceGroupByPort, traceGroupByProcess}, linuxOnly: true,
+		ansiColor: "34", screenColor: "#60a5fa", groupColumns: traceARPGroupColumns, hideTraffic: true, hiddenViews: []string{traceGroupByPort, traceGroupByProcess},
 		scrollLabels: traceARPScrollLabels, newSummarizer: func() traceSummarizer { return newARPTraceSummarizer() },
 	},
 }

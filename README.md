@@ -885,7 +885,7 @@ The entries that exist when the trace starts do not make events. After that, eac
 - `arp_failed`: the kernel did not get an answer for the IP.
 - `arp_delete`: the kernel removed the entry.
 
-The `target` of an ARP event is the IP address, and the `source` is the interface. ARP events have no process or port, so `trace arp` has no process view and no port view. `--destination` filters events by IP address. The summary after Ctrl-C shows one row for each interface and IP. Grouped rows show the number of MAC addresses (`MACS`), the MAC changes (`CHG`), and the failures (`FAIL`).
+The `target` of an ARP event is the IP address, and the `source` is the interface. ARP events have no process or port, so `trace arp` has no process view and no port view. `--destination` filters events by IP address. ARP events have no process, so `--process` matches no ARP event. The summary after Ctrl-C shows one row for each interface and IP. Grouped rows show the number of MAC addresses (`MACS`), the MAC changes (`CHG`), and the failures (`FAIL`).
 
 The kernel does not report the start of an address lookup, so a failed lookup shows only `arp_failed`. `trace arp` does not show IPv6 neighbors (NDP) or the entries without ARP (`NOARP`). It watches the neighbor table, not the ARP packets. So it does not show ARP packets that do not change the table, for example requests from other hosts. `trace arp` does not support macOS yet.
 

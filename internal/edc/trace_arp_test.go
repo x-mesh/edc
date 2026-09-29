@@ -52,6 +52,9 @@ func TestARPTrackerReportsOnlyChanges(t *testing.T) {
 	if _, label := traceARPScrollLabels(events[0]); label != "arp_state STALE" {
 		t.Fatalf("state label = %q", label)
 	}
+	if destination, label := traceARPScrollLabels(events[len(events)-1]); destination != "192.0.2.1 (02:00:00:00:00:09)" || label != "arp_new REACHABLE" {
+		t.Fatalf("new labels = %q, %q", destination, label)
+	}
 
 	summarizer := newARPTraceSummarizer()
 	for _, event := range events {
@@ -78,5 +81,14 @@ func TestARPTrackerReportsOnlyChanges(t *testing.T) {
 	}
 	if views := traceGroupViews("arp"); slices.Contains(views, traceGroupByPort) || slices.Contains(views, traceGroupByProcess) || !slices.Contains(views, traceGroupBySource) {
 		t.Fatalf("arp views = %q", views)
+	}
+}
+
+// ARP는 netlink만 쓰므로 root 없이 동작한다. eBPF 확인을 붙이면 일반 사용자가 쓸 수 없게 된다.
+func TestOnlyBPFProtocolsCheckEBPFPrerequisites(t *testing.T) {
+	for protocol, spec := range traceProtocols {
+		if (spec.prerequisites == nil) != (protocol == "arp") {
+			t.Fatalf("trace %s prerequisites set = %t", protocol, spec.prerequisites != nil)
+		}
 	}
 }

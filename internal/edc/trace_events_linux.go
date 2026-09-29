@@ -16,8 +16,12 @@ func collectTraceEvents(duration time.Duration) ([]captureEvent, captureSummary,
 	return collectCaptureEvents(duration, nil)
 }
 
-func collectTraceEventsLive(protocol string, duration time.Duration, onEvent func(captureEvent) error, stop <-chan struct{}) (captureSummary, error) {
-	return collectCaptureEventsFor(protocol, duration, onEvent, stop)
+// ARP는 eBPF가 아니라 netlink로 neighbor table의 변화를 받는다.
+func collectTraceEventsLive(scope traceScope, duration time.Duration, onEvent func(captureEvent) error, stop <-chan struct{}) (captureSummary, error) {
+	if scope.protocol == "arp" || scope.protocol == "ndp" {
+		return collectNeighborEvents(scope.protocol, duration, onEvent, stop)
+	}
+	return collectCaptureEventsFor(scope, duration, onEvent, stop)
 }
 
 var traceKernelEvents = true
@@ -145,11 +149,13 @@ func (cache *commandTargetCache) target(pid uint32, now time.Time) string {
 // socketTargetLimit은 destroy event를 놓친 socket이 쌓여도 메모리를 제한한다. BPF의 socket 주인 map과 같은 크기다.
 const socketTargetLimit = 65536
 
-// socketTargetCache는 TCP socket이 한 번 얻은 target을 그 socket의 뒤 event에 이어 준다. 프로세스가 끝난 뒤
+// socketTargetCache는 TCP socket이 한 번 얻은 target과 주소를 그 socket의 뒤 event에 이어 준다. 프로세스가 끝난 뒤
 // 도착한 FIN이나 destroy event는 /proc에서 명령줄을 읽을 수 없다.
 type socketTarget struct {
 	target string
 	source string
+	local  string
+	peer   string
 }
 
 type socketTargetCache struct {
@@ -165,20 +171,46 @@ func (cache *socketTargetCache) target(event captureEvent) (string, string) {
 	if event.Protocol != "tcp" || event.SocketID == 0 {
 		return event.Target, event.TargetSource
 	}
-	current := socketTarget{target: event.Target, source: event.TargetSource}
-	if current.target != "" {
-		if _, ok := cache.entries[event.SocketID]; !ok && len(cache.entries) >= socketTargetLimit {
-			clear(cache.entries)
-		}
-		cache.entries[event.SocketID] = current
-	} else {
-		current = cache.entries[event.SocketID]
+	current := cache.entries[event.SocketID]
+	if event.Target != "" {
+		current.target, current.source = event.Target, event.TargetSource
+		cache.remember(event.SocketID, current)
 	}
 	// kernel이 해제한 socket 주소를 새 socket에 다시 쓰므로 destroy 뒤에는 남기지 않는다.
 	if event.Event == "tcp_destroy" {
 		delete(cache.entries, event.SocketID)
 	}
 	return current.target, current.source
+}
+
+func (cache *socketTargetCache) remember(socket uint64, entry socketTarget) {
+	if _, ok := cache.entries[socket]; !ok && len(cache.entries) >= socketTargetLimit {
+		clear(cache.entries)
+	}
+	cache.entries[socket] = entry
+}
+
+// addresses는 event의 local 주소와 상대 주소를 돌려준다. 연결을 강제로 끊으면(SO_LINGER 0 등) kernel이 local
+// 주소와 상대 port를 지운 뒤 socket을 해제해서, destroy event에 0.0.0.0:port와 addr:0이 남는다. 그때는 같은
+// socket이 앞서 보인 주소를 쓴다. 주소를 본 적이 없는 socket은 connect하지 못한 것이라 그대로 둔다.
+func (cache *socketTargetCache) addresses(event captureEvent) (string, string) {
+	if event.Protocol != "tcp" || event.SocketID == 0 {
+		return event.Source, event.Destination
+	}
+	if traceAddressComplete(event.Source) && traceAddressComplete(event.Destination) {
+		entry := cache.entries[event.SocketID]
+		entry.local, entry.peer = event.Source, event.Destination
+		cache.remember(event.SocketID, entry)
+		return event.Source, event.Destination
+	}
+	if entry := cache.entries[event.SocketID]; event.Event == "tcp_destroy" && entry.local != "" {
+		return entry.local, entry.peer
+	}
+	return event.Source, event.Destination
+}
+
+func traceAddressComplete(address string) bool {
+	return !traceAddressUnspecified(address) && !strings.HasSuffix(address, ":0")
 }
 
 // traceTargetFromArguments는 명령줄에서 연결 대상으로 보이는 호스트를 고른다. URL이 가장 강한 근거라서

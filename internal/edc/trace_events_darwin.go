@@ -634,8 +634,11 @@ func (collector *ntstatCollector) start() error {
 	return nil
 }
 
-// protocol은 쓰지 않는다. ntstat는 TCP와 UDP provider를 함께 구독하고, 호출자가 protocol로 거른다.
-func collectTraceEventsLive(_ string, duration time.Duration, onEvent func(captureEvent) error, stop <-chan struct{}) (captureSummary, error) {
+// ARP는 ARP table을 읽는다. 나머지는 ntstat로 TCP와 UDP provider를 함께 구독하고, 호출자가 protocol로 거른다.
+func collectTraceEventsLive(scope traceScope, duration time.Duration, onEvent func(captureEvent) error, stop <-chan struct{}) (captureSummary, error) {
+	if scope.protocol == "arp" || scope.protocol == "ndp" {
+		return collectNeighborEvents(scope.protocol, duration, onEvent, stop)
+	}
 	client, err := openNtstat()
 	if err != nil {
 		return captureSummary{}, err
@@ -695,4 +698,9 @@ func captureEventsPrerequisites() error {
 	}
 	client.close()
 	return nil
+}
+
+// httpTracePrerequisites는 protocol 표가 모든 platform에서 참조한다. trace http는 Linux 전용이라 여기까지 오지 않는다.
+func httpTracePrerequisites() error {
+	return captureEventsPrerequisites()
 }

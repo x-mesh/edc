@@ -21,6 +21,7 @@ typedef __u32 __wsum;
 #define BPF_ANY 0
 #define BPF_MAP_TYPE_HASH 1
 #define BPF_MAP_TYPE_ARRAY 2
+#define BPF_MAP_TYPE_PERCPU_ARRAY 6
 #define BPF_MAP_TYPE_LRU_HASH 9
 #define BPF_MAP_TYPE_RINGBUF 27
 #define TCP_SYN_SENT 2
@@ -49,6 +50,20 @@ struct {
 	__uint(type, BPF_MAP_TYPE_RINGBUF);
 	__uint(max_entries, 1 << 24);
 } events SEC(".maps");
+
+// 사용자 공간이 trace protocol에 맞춰 불러오기 전에 정한다. 쓰지 않을 event를 ring buffer에 넣지 않아야 바쁜 host에서
+// 필요한 event가 유실되지 않는다. 기본값은 capture처럼 모든 event를 보낸다.
+volatile const __u8 emit_udp_events = 1;
+// emit_dns_sent는 송신 경로의 DNS 레코드다. emit_dns_server는 로컬 port 53이 받은 질의와 보낸 응답이며, trace dns --side
+// server만 켠다. 서버 쪽은 기본으로 끈다. 바쁜 DNS 서버에서는 이 레코드가 client 쪽보다 훨씬 많다.
+volatile const __u8 emit_dns_sent = 1;
+volatile const __u8 emit_dns_server = 0;
+// TCP 송수신 hook은 trace http와 trace dns가 함께 쓴다. 불러오기 전에 어느 message를 낼지 정한다.
+volatile const __u8 emit_http_messages = 0;
+volatile const __u8 emit_dns_tcp_messages = 0;
+// 0이 아니면 inet_sock_set_state는 로컬이나 상대 port가 이 값인 socket만 본다. trace dns는 53만 본다. 상대 port는 client 쪽
+// 연결, 로컬 port는 이 host의 DNS 서버가 받은 연결이다.
+volatile const __u16 tcp_state_port = 0;
 
 struct {
 	__uint(type, BPF_MAP_TYPE_ARRAY);
@@ -243,6 +258,9 @@ static __always_inline void finish_event(struct event *event) {
 
 SEC("tracepoint/sock/inet_sock_set_state")
 int inet_sock_set_state(struct inet_sock_set_state_ctx *ctx) {
+	if (tcp_state_port && ctx->dport != tcp_state_port && ctx->sport != tcp_state_port) {
+		return 0;
+	}
 	// SYN_SENT와 LISTEN 전이는 connect()와 listen() 안에서 일어나므로 현재 태스크가 socket의 주인이다.
 	int owner_context = (ctx->newstate == TCP_SYN_SENT || ctx->newstate == TCP_LISTEN) && ctx->protocol == IPPROTO_TCP;
 	if (owner_context) {
@@ -500,6 +518,106 @@ struct {
 	__type(value, struct udp_send_pending);
 } udp_send_pending SEC(".maps");
 
+#define DNS_PAYLOAD_SIZE 1024
+#define DNS_RECEIVED 0
+#define DNS_SENT 1
+#define DNS_UDP 0
+#define DNS_TCP 1
+
+// port 53으로 주고받은 DNS message를 사용자 공간에 넘긴다. 질의인지 응답인지, client 쪽인지 서버 쪽인지는 사용자 공간이
+// QR bit와 port로 가린다. 응답은 명령줄에 대상이 없는 프로그램의 target 이름도 짓는다. event_type은 struct event와 같은
+// 위치이고, source는 struct event처럼 로컬 쪽이다.
+struct dns_record {
+	__u64 timestamp_ns;
+	__u32 event_type;
+	__u32 pid;
+	__u64 cgroup_id;
+	// arrival_ns는 받은 message가 socket 수신 큐에 들어간 시각이다. 모르면 0이다.
+	__u64 arrival_ns;
+	// skaddr와 transport는 TCP 조각을 연결마다 이어 붙이는 데 쓴다. UDP는 skaddr가 0이다.
+	__u64 skaddr;
+	__u32 len;
+	__u16 family;
+	__u8 direction;
+	__u8 transport;
+	__u16 sport;
+	__u16 dport;
+	__u8 source[16];
+	__u8 destination[16];
+	char comm[16];
+	__u8 payload[DNS_PAYLOAD_SIZE];
+};
+
+// record가 BPF stack(512바이트)보다 커서 송신 레코드는 CPU별 scratch에서 만든다.
+struct {
+	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+	__uint(max_entries, 1);
+	__type(key, __u32);
+	__type(value, struct dns_record);
+} dns_scratch SEC(".maps");
+
+// UDP 송신처럼 fentry에서 읽은 message를 thread별로 두고, fexit에서 전송이 성공했을 때만 보낸다.
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, 1024);
+	__type(key, __u64);
+	__type(value, struct dns_record);
+} dns_query_pending SEC(".maps");
+
+// DNS message가 socket 수신 큐에 들어간 시각을 skb 주소로 둔다. process가 읽을 때 같은 skb가 skb_consume_udp에 온다.
+// 큐에서 버려진 skb의 시각은 LRU가 밀어낸다. 같은 주소를 다시 쓰는 skb는 큐에 들어갈 때 값을 덮는다.
+struct {
+	__uint(type, BPF_MAP_TYPE_LRU_HASH);
+	__uint(max_entries, 4096);
+	__type(key, __u64);
+	__type(value, __u64);
+} dns_arrivals SEC(".maps");
+
+// 선형 영역 밖의 payload는 page fragment에 있어 head 기준 주소로 읽으면 다른 메모리를 읽는다.
+static __always_inline __u32 read_dns_payload(struct sk_buff *skb, unsigned char *payload, long len, __u8 *out) {
+	unsigned char *linear_end = BPF_CORE_READ(skb, head) + BPF_CORE_READ(skb, tail);
+	long available = linear_end - payload;
+	if (available <= 0 || len <= 0) {
+		return 0;
+	}
+	__u32 size = len;
+	if (size > available) {
+		size = available;
+	}
+	if (size > DNS_PAYLOAD_SIZE) {
+		size = DNS_PAYLOAD_SIZE;
+	}
+	return bpf_probe_read_kernel(out, size, payload) == 0 ? size : 0;
+}
+
+static __always_inline void remember_dns_sent(struct sk_buff *skb, struct udp_send_pending *pending, unsigned char *payload, long len) {
+	__u32 zero = 0;
+	struct dns_record *record = bpf_map_lookup_elem(&dns_scratch, &zero);
+	if (!record) {
+		return;
+	}
+	record->timestamp_ns = bpf_ktime_get_ns();
+	record->event_type = 9;
+	record->pid = bpf_get_current_pid_tgid() >> 32;
+	record->cgroup_id = bpf_get_current_cgroup_id();
+	record->arrival_ns = 0;
+	record->family = pending->family;
+	record->direction = DNS_SENT;
+	record->transport = DNS_UDP;
+	record->skaddr = 0;
+	record->sport = pending->sport;
+	record->dport = pending->dport;
+	__builtin_memcpy(record->source, pending->source, 16);
+	__builtin_memcpy(record->destination, pending->destination, 16);
+	bpf_get_current_comm(record->comm, sizeof(record->comm));
+	record->len = read_dns_payload(skb, payload, len, record->payload);
+	if (record->len == 0) {
+		return;
+	}
+	__u64 key = bpf_get_current_pid_tgid();
+	bpf_map_update_elem(&dns_query_pending, &key, record, BPF_ANY);
+}
+
 static __always_inline int remember_udp_send(struct sk_buff *skb, struct flowi4 *fl4, struct flowi6 *fl6) {
 	if (!skb) {
 		return 0;
@@ -533,6 +651,9 @@ static __always_inline int remember_udp_send(struct sk_buff *skb, struct flowi4 
 	}
 	__u64 key = bpf_get_current_pid_tgid();
 	bpf_map_update_elem(&udp_send_pending, &key, &pending, BPF_ANY);
+	if (emit_dns_sent && (pending.dport == 53 || (emit_dns_server && pending.sport == 53))) {
+		remember_dns_sent(skb, &pending, head + transport + 8, payload);
+	}
 	return 0;
 }
 
@@ -543,7 +664,7 @@ static __always_inline int emit_udp_send(void *ctx, int ret) {
 		return 0;
 	}
 	// 방화벽이 버린 송신도 여기서 오류로 돌아온다. 보냄으로 세면 차단 문제를 가린다.
-	if (ret == 0) {
+	if (ret == 0 && emit_udp_events) {
 		struct event *event = start_event(ctx, 6);
 		if (event) {
 			event->skaddr = pending->skaddr;
@@ -555,6 +676,15 @@ static __always_inline int emit_udp_send(void *ctx, int ret) {
 			__builtin_memcpy(event->source, pending->source, 16);
 			__builtin_memcpy(event->destination, pending->destination, 16);
 			finish_event(event);
+		}
+	}
+	if (pending->dport == 53 || pending->sport == 53) {
+		struct dns_record *sent = bpf_map_lookup_elem(&dns_query_pending, &key);
+		if (sent) {
+			if (ret == 0) {
+				bpf_ringbuf_output(&events, sent, sizeof(*sent), 0);
+			}
+			bpf_map_delete_elem(&dns_query_pending, &key);
 		}
 	}
 	bpf_map_delete_elem(&udp_send_pending, &key);
@@ -581,44 +711,65 @@ int udp_v6_send_skb_exit(__u64 *ctx) {
 	return emit_udp_send(ctx, (int)ctx[3]);
 }
 
+// __udp_enqueue_schedule_skb는 UDP datagram을 socket 수신 큐에 넣는다. 받은 쪽 process가 읽기 전이다.
+SEC("fentry/__udp_enqueue_schedule_skb")
+int udp_enqueue_entry(__u64 *ctx) {
+	struct sk_buff *skb = (struct sk_buff *)ctx[1];
+	if (!skb) {
+		return 0;
+	}
+	__be16 ports[2] = {};
+	bpf_probe_read_kernel(ports, sizeof(ports), BPF_CORE_READ(skb, head) + BPF_CORE_READ(skb, transport_header));
+	if (bpf_ntohs(ports[0]) != 53 && !(emit_dns_server && bpf_ntohs(ports[1]) == 53)) {
+		return 0;
+	}
+	__u64 key = (__u64)skb;
+	__u64 now = bpf_ktime_get_ns();
+	bpf_map_update_elem(&dns_arrivals, &key, &now, BPF_ANY);
+	return 0;
+}
+
 // skb_consume_udp는 udp_recvmsg와 udpv6_recvmsg가 datagram을 복사한 뒤 한 번 부른다. recv()처럼 주소를
 // 받지 않는 호출도 여기서는 header에서 보낸 쪽 주소를 읽을 수 있다.
-#define DNS_PAYLOAD_SIZE 1024
-
-// 명령줄에 대상이 없는 프로그램도 이름을 얻도록 DNS 응답을 사용자 공간에 넘긴다. 받은 프로세스가 곧 조회한
-// 프로세스라서 pid를 함께 보낸다. event_type은 struct event와 같은 위치다.
-struct dns_record {
-	__u64 timestamp_ns;
-	__u32 event_type;
-	__u32 pid;
-	__u32 len;
-	__u32 reserved;
-	__u8 payload[DNS_PAYLOAD_SIZE];
-};
-
-static __always_inline void emit_dns_answer(struct sk_buff *skb, unsigned char *payload, int len) {
-	// 선형 영역 밖의 payload는 page fragment에 있어 head 기준 주소로 읽으면 다른 메모리를 읽는다.
-	unsigned char *linear_end = BPF_CORE_READ(skb, head) + BPF_CORE_READ(skb, tail);
-	long available = linear_end - payload;
-	if (available <= 0) {
-		return;
-	}
-	__u32 size = len;
-	if (size > available) {
-		size = available;
-	}
-	if (size > DNS_PAYLOAD_SIZE) {
-		size = DNS_PAYLOAD_SIZE;
-	}
+static __always_inline void emit_dns_received(struct sk_buff *skb, unsigned char *network, unsigned char *transport, __u8 version, __be16 *ports, int len) {
 	struct dns_record *record = bpf_ringbuf_reserve(&events, sizeof(*record), 0);
 	if (!record) {
+		return;
+	}
+	record->len = read_dns_payload(skb, transport + 8, len, record->payload);
+	if (record->len == 0) {
+		bpf_ringbuf_discard(record, 0);
 		return;
 	}
 	record->timestamp_ns = bpf_ktime_get_ns();
 	record->event_type = 9;
 	record->pid = bpf_get_current_pid_tgid() >> 32;
-	record->reserved = 0;
-	record->len = bpf_probe_read_kernel(record->payload, size, payload) == 0 ? size : 0;
+	record->cgroup_id = bpf_get_current_cgroup_id();
+	record->arrival_ns = 0;
+	__u64 key = (__u64)skb;
+	__u64 *arrival = bpf_map_lookup_elem(&dns_arrivals, &key);
+	if (arrival) {
+		record->arrival_ns = *arrival;
+		bpf_map_delete_elem(&dns_arrivals, &key);
+	}
+	record->direction = DNS_RECEIVED;
+	record->transport = DNS_UDP;
+	record->skaddr = 0;
+	record->sport = bpf_ntohs(ports[1]);
+	record->dport = bpf_ntohs(ports[0]);
+	// bpf_ringbuf_reserve는 slot을 지우지 않는다. IPv4는 앞 4바이트만 쓰므로 나머지에 옛 값이 남지 않게 먼저 지운다.
+	__builtin_memset(record->source, 0, sizeof(record->source));
+	__builtin_memset(record->destination, 0, sizeof(record->destination));
+	if (version == 4) {
+		record->family = AF_INET;
+		bpf_probe_read_kernel(record->source, 4, network + 16);
+		bpf_probe_read_kernel(record->destination, 4, network + 12);
+	} else {
+		record->family = AF_INET6;
+		bpf_probe_read_kernel(record->source, 16, network + 24);
+		bpf_probe_read_kernel(record->destination, 16, network + 8);
+	}
+	bpf_get_current_comm(record->comm, sizeof(record->comm));
 	bpf_ringbuf_submit(record, 0);
 }
 
@@ -642,8 +793,12 @@ int skb_consume_udp_entry(__u64 *ctx) {
 		return 0;
 	}
 	announce_owner((__u64)sk);
-	if (bpf_ntohs(ports[0]) == 53) {
-		emit_dns_answer(skb, transport + 8, len);
+	// ports[0]은 보낸 쪽 port, ports[1]은 로컬 port다.
+	if (bpf_ntohs(ports[0]) == 53 || (emit_dns_server && bpf_ntohs(ports[1]) == 53)) {
+		emit_dns_received(skb, network, transport, version, ports, len);
+	}
+	if (!emit_udp_events) {
+		return 0;
 	}
 	struct event *event = start_event(ctx, 7);
 	if (!event) {
@@ -691,6 +846,291 @@ int tcp_create_openreq_child_exit(__u64 *ctx) {
 	}
 	struct sock_owner copy = *owner;
 	bpf_map_update_elem(&sock_owners, &child, &copy, BPF_ANY);
+	return 0;
+}
+
+// trace http는 TCP로 주고받는 평문 HTTP/1.x message의 앞부분을 읽는다. 요청 줄, Host, 상태 줄이 이 안에 들어간다.
+// 나머지 header와 body는 사용자 공간이 해석한 뒤 버린다.
+#define HTTP_PAYLOAD_SIZE 512
+#define HTTP_RECEIVED 0
+#define HTTP_SENT 1
+#define MSG_PEEK 2
+
+struct http_record {
+	__u64 timestamp_ns;
+	__u32 event_type;
+	__u32 pid;
+	__u64 cgroup_id;
+	__u64 skaddr;
+	__u32 len;
+	__u16 family;
+	__u8 direction;
+	__u8 reserved;
+	__u16 sport;
+	__u16 dport;
+	__u8 source[16];
+	__u8 destination[16];
+	char comm[16];
+	__u8 payload[HTTP_PAYLOAD_SIZE];
+};
+
+// ringbuf에만 쓰는 구조체는 BTF에 남지 않는다. bpf2go -type이 Go 구조체를 만들어 offset을 테스트하도록 남긴다.
+const struct http_record *unused_http_record __attribute__((unused));
+
+struct iovec {
+	void *iov_base;
+	__u64 iov_len;
+};
+
+enum iter_type {
+	ITER_UBUF,
+	ITER_IOVEC,
+};
+
+// iter_type은 5.14, ubuf는 6.0, __iov는 6.4에 생겼다. 이 BPF 객체는 모든 trace가 함께 불러오므로, 없는 필드는 CO-RE
+// 존재 확인으로 감싼다. 감싸지 않으면 오래된 kernel에서 trace tcp까지 불러오기에 실패한다.
+struct iov_iter {
+	__u8 iter_type;
+	__u64 iov_offset;
+	__u64 count;
+	const struct iovec *__iov;
+	void *ubuf;
+	__u64 nr_segs;
+};
+
+struct msghdr {
+	struct iov_iter msg_iter;
+};
+
+// http_user_buffer는 사용자 버퍼의 시작과 첫 조각의 길이다. 여러 조각이면 첫 조각만 읽는다. 요청 줄은 첫 조각에 있다.
+static __always_inline void *http_user_buffer(struct msghdr *msg, __u64 *limit) {
+	if (!bpf_core_field_exists(msg->msg_iter.iter_type)) {
+		return 0;
+	}
+	__u8 type = BPF_CORE_READ(msg, msg_iter.iter_type);
+	__u64 offset = BPF_CORE_READ(msg, msg_iter.iov_offset);
+	if (bpf_core_field_exists(msg->msg_iter.ubuf) && bpf_core_enum_value_exists(enum iter_type, ITER_UBUF) &&
+	    type == bpf_core_enum_value(enum iter_type, ITER_UBUF)) {
+		*limit = BPF_CORE_READ(msg, msg_iter.count);
+		return (char *)BPF_CORE_READ(msg, msg_iter.ubuf) + offset;
+	}
+	if (bpf_core_field_exists(msg->msg_iter.__iov) && bpf_core_enum_value_exists(enum iter_type, ITER_IOVEC) &&
+	    type == bpf_core_enum_value(enum iter_type, ITER_IOVEC)) {
+		const struct iovec *iov = BPF_CORE_READ(msg, msg_iter.__iov);
+		__u64 length = BPF_CORE_READ(iov, iov_len);
+		if (length <= offset) {
+			return 0;
+		}
+		*limit = length - offset;
+		return (char *)BPF_CORE_READ(iov, iov_base) + offset;
+	}
+	return 0;
+}
+
+// 모든 TCP 송수신에서 불리므로 앞 4바이트만 먼저 본다. 사용자 공간이 요청 줄과 상태 줄을 다시 확인한다.
+static __always_inline int http_start(const __u8 *p) {
+	return (p[0] == 'G' && p[1] == 'E' && p[2] == 'T' && p[3] == ' ') || (p[0] == 'P' && p[1] == 'O' && p[2] == 'S' && p[3] == 'T') ||
+	       (p[0] == 'P' && p[1] == 'U' && p[2] == 'T' && p[3] == ' ') || (p[0] == 'H' && p[1] == 'E' && p[2] == 'A' && p[3] == 'D') ||
+	       (p[0] == 'D' && p[1] == 'E' && p[2] == 'L' && p[3] == 'E') || (p[0] == 'P' && p[1] == 'A' && p[2] == 'T' && p[3] == 'C') ||
+	       (p[0] == 'O' && p[1] == 'P' && p[2] == 'T' && p[3] == 'I') || (p[0] == 'H' && p[1] == 'T' && p[2] == 'T' && p[3] == 'P');
+}
+
+static __always_inline void emit_http(struct sock *sk, const void *buffer, __u64 size, __u8 direction) {
+	if (!sk || !buffer || size < 4) {
+		return;
+	}
+	__u8 peek[4];
+	if (bpf_probe_read_user(peek, sizeof(peek), buffer) || !http_start(peek)) {
+		return;
+	}
+	struct http_record *record = bpf_ringbuf_reserve(&events, sizeof(*record), 0);
+	if (!record) {
+		__u32 key = 0;
+		__u64 *lost = bpf_map_lookup_elem(&lost_events, &key);
+		if (lost) {
+			__sync_fetch_and_add(lost, 1);
+		}
+		return;
+	}
+	__u32 len = size;
+	if (len > HTTP_PAYLOAD_SIZE) {
+		len = HTTP_PAYLOAD_SIZE;
+	}
+	if (bpf_probe_read_user(record->payload, len, buffer)) {
+		bpf_ringbuf_discard(record, 0);
+		return;
+	}
+	record->timestamp_ns = bpf_ktime_get_ns();
+	record->event_type = 10;
+	record->pid = bpf_get_current_pid_tgid() >> 32;
+	record->cgroup_id = bpf_get_current_cgroup_id();
+	record->skaddr = (__u64)sk;
+	record->len = len;
+	record->direction = direction;
+	record->reserved = 0;
+	record->family = BPF_CORE_READ(sk, __sk_common.skc_family);
+	record->sport = BPF_CORE_READ(sk, __sk_common.skc_num);
+	record->dport = bpf_ntohs(BPF_CORE_READ(sk, __sk_common.skc_dport));
+	__builtin_memset(record->source, 0, sizeof(record->source));
+	__builtin_memset(record->destination, 0, sizeof(record->destination));
+	if (record->family == AF_INET) {
+		__be32 source = BPF_CORE_READ(sk, __sk_common.skc_rcv_saddr);
+		__be32 destination = BPF_CORE_READ(sk, __sk_common.skc_daddr);
+		__builtin_memcpy(record->source, &source, 4);
+		__builtin_memcpy(record->destination, &destination, 4);
+	} else {
+		BPF_CORE_READ_INTO(&record->source, sk, __sk_common.skc_v6_rcv_saddr.in6_u.u6_addr8);
+		BPF_CORE_READ_INTO(&record->destination, sk, __sk_common.skc_v6_daddr.in6_u.u6_addr8);
+	}
+	bpf_get_current_comm(record->comm, sizeof(record->comm));
+	bpf_ringbuf_submit(record, 0);
+}
+
+// DNS over TCP는 로컬이나 상대 port 53의 연결이다. 로컬 53은 이 host의 DNS 서버라서 --side server일 때만 본다.
+static __always_inline int dns_tcp_socket(struct sock *sk) {
+	__u16 local = BPF_CORE_READ(sk, __sk_common.skc_num);
+	__u16 remote = bpf_ntohs(BPF_CORE_READ(sk, __sk_common.skc_dport));
+	return remote == 53 || (emit_dns_server && local == 53);
+}
+
+// emit_dns_tcp는 TCP로 주고받은 조각의 앞부분을 DNS 레코드로 넘긴다. 조각 앞의 2바이트 길이는 그대로 두고, 사용자 공간이
+// 연결마다 길이와 message를 맞춘다.
+static __always_inline void emit_dns_tcp(struct sock *sk, const void *buffer, __u64 size, __u8 direction) {
+	if (!sk || !buffer || size == 0) {
+		return;
+	}
+	struct dns_record *record = bpf_ringbuf_reserve(&events, sizeof(*record), 0);
+	if (!record) {
+		__u32 key = 0;
+		__u64 *lost = bpf_map_lookup_elem(&lost_events, &key);
+		if (lost) {
+			__sync_fetch_and_add(lost, 1);
+		}
+		return;
+	}
+	__u32 len = size;
+	if (len > DNS_PAYLOAD_SIZE) {
+		len = DNS_PAYLOAD_SIZE;
+	}
+	if (bpf_probe_read_user(record->payload, len, buffer)) {
+		bpf_ringbuf_discard(record, 0);
+		return;
+	}
+	record->timestamp_ns = bpf_ktime_get_ns();
+	record->event_type = 9;
+	record->pid = bpf_get_current_pid_tgid() >> 32;
+	record->cgroup_id = bpf_get_current_cgroup_id();
+	record->arrival_ns = 0;
+	record->skaddr = (__u64)sk;
+	record->len = len;
+	record->direction = direction;
+	record->transport = DNS_TCP;
+	record->family = BPF_CORE_READ(sk, __sk_common.skc_family);
+	record->sport = BPF_CORE_READ(sk, __sk_common.skc_num);
+	record->dport = bpf_ntohs(BPF_CORE_READ(sk, __sk_common.skc_dport));
+	__builtin_memset(record->source, 0, sizeof(record->source));
+	__builtin_memset(record->destination, 0, sizeof(record->destination));
+	if (record->family == AF_INET) {
+		__be32 source = BPF_CORE_READ(sk, __sk_common.skc_rcv_saddr);
+		__be32 destination = BPF_CORE_READ(sk, __sk_common.skc_daddr);
+		__builtin_memcpy(record->source, &source, 4);
+		__builtin_memcpy(record->destination, &destination, 4);
+	} else {
+		BPF_CORE_READ_INTO(&record->source, sk, __sk_common.skc_v6_rcv_saddr.in6_u.u6_addr8);
+		BPF_CORE_READ_INTO(&record->destination, sk, __sk_common.skc_v6_daddr.in6_u.u6_addr8);
+	}
+	bpf_get_current_comm(record->comm, sizeof(record->comm));
+	bpf_ringbuf_submit(record, 0);
+}
+
+// iov_second_buffer는 둘째 iovec이다. glibc, systemd-resolved, BIND는 DNS over TCP의 2바이트 길이와 message를 writev로
+// 두 조각에 나눠 쓴다. 첫 조각만 읽으면 message를 놓친다.
+static __always_inline void *iov_second_buffer(struct msghdr *msg, __u64 *limit) {
+	if (!bpf_core_field_exists(msg->msg_iter.iter_type) || !bpf_core_field_exists(msg->msg_iter.__iov) ||
+	    !bpf_core_field_exists(msg->msg_iter.nr_segs) || !bpf_core_enum_value_exists(enum iter_type, ITER_IOVEC)) {
+		return 0;
+	}
+	if (BPF_CORE_READ(msg, msg_iter.iter_type) != bpf_core_enum_value(enum iter_type, ITER_IOVEC) || BPF_CORE_READ(msg, msg_iter.nr_segs) < 2 ||
+	    BPF_CORE_READ(msg, msg_iter.iov_offset) != 0) {
+		return 0;
+	}
+	const struct iovec *iov = BPF_CORE_READ(msg, msg_iter.__iov);
+	*limit = BPF_CORE_READ(iov + 1, iov_len);
+	return BPF_CORE_READ(iov + 1, iov_base);
+}
+
+SEC("fentry/tcp_sendmsg")
+int tcp_sendmsg_entry(__u64 *ctx) {
+	struct sock *sk = (struct sock *)ctx[0];
+	struct msghdr *msg = (struct msghdr *)ctx[1];
+	__u64 size = ctx[2];
+	__u64 limit = 0;
+	void *buffer = http_user_buffer(msg, &limit);
+	__u64 first = size < limit ? size : limit;
+	if (emit_dns_tcp_messages && sk && dns_tcp_socket(sk)) {
+		emit_dns_tcp(sk, buffer, first, DNS_SENT);
+		if (first == 2 && size > 2) {
+			__u64 second_limit = 0;
+			void *second = iov_second_buffer(msg, &second_limit);
+			emit_dns_tcp(sk, second, size - 2 < second_limit ? size - 2 : second_limit, DNS_SENT);
+		}
+		return 0;
+	}
+	if (emit_http_messages) {
+		emit_http(sk, buffer, first, HTTP_SENT);
+	}
+	return 0;
+}
+
+// tcp_recvmsg가 끝나야 사용자 버퍼에 data가 있다. 시작할 때 버퍼 위치를 thread별로 두고 끝날 때 읽는다.
+struct http_recv_pending {
+	__u64 skaddr;
+	__u64 buffer;
+	__u64 limit;
+};
+
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, 10240);
+	__type(key, __u64);
+	__type(value, struct http_recv_pending);
+} http_recv_pending SEC(".maps");
+
+SEC("fentry/tcp_recvmsg")
+int tcp_recvmsg_entry(__u64 *ctx) {
+	// MSG_PEEK로 읽은 data는 다음 recv가 다시 읽는다. 같은 message를 두 번 내지 않는다.
+	if ((int)ctx[3] & MSG_PEEK) {
+		return 0;
+	}
+	struct http_recv_pending pending = {.skaddr = ctx[0]};
+	void *buffer = http_user_buffer((struct msghdr *)ctx[1], &pending.limit);
+	if (!buffer) {
+		return 0;
+	}
+	pending.buffer = (__u64)buffer;
+	__u64 key = bpf_get_current_pid_tgid();
+	bpf_map_update_elem(&http_recv_pending, &key, &pending, BPF_ANY);
+	return 0;
+}
+
+SEC("fexit/tcp_recvmsg")
+int tcp_recvmsg_exit(__u64 *ctx) {
+	__u64 key = bpf_get_current_pid_tgid();
+	struct http_recv_pending *pending = bpf_map_lookup_elem(&http_recv_pending, &key);
+	if (!pending) {
+		return 0;
+	}
+	int copied = (int)ctx[5];
+	if (copied > 0) {
+		__u64 size = (__u64)copied < pending->limit ? (__u64)copied : pending->limit;
+		struct sock *sk = (struct sock *)pending->skaddr;
+		if (emit_dns_tcp_messages && sk && dns_tcp_socket(sk)) {
+			emit_dns_tcp(sk, (void *)pending->buffer, size, DNS_RECEIVED);
+		} else if (emit_http_messages) {
+			emit_http(sk, (void *)pending->buffer, size, HTTP_RECEIVED);
+		}
+	}
+	bpf_map_delete_elem(&http_recv_pending, &key);
 	return 0;
 }
 

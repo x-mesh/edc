@@ -144,7 +144,7 @@ command:
       - "A PCAP file can hold credentials and personal data."
       - "The JSON redaction does not apply to the PCAP payload."
   trace:
-    summary: "Print TCP or UDP events in real time and group them into summaries"
+    summary: "Print TCP, UDP, DNS, ARP, or HTTP events in real time and summarize"
     option:
       duration: "trace time, max 60s. Omit for Ctrl-C"
       raw: "print raw event JSONL"
@@ -152,7 +152,9 @@ command:
       group_by: "group by source, target, port, process, or event"
       process: "filter by process name"
       destination: "filter by destination host and port"
+      detail: "list each connection or flow in the summary"
       yes: "skip the question"
+      side: "trace dns, http: client side or local server"
     notes:
       - "The default output opens a full-screen trace view in a terminal."
       - "Use / to filter process, destination, event, or source text."
@@ -164,6 +166,11 @@ command:
       - "B/s is a byte rate. bps and Mbps are bit rates. Mbps is bps / 1,000,000."
       - "Press Ctrl-C to stop a trace without --duration."
       - "Use --raw for JSONL events."
+      - "The summary groups rows by process and peer. -d lists each connection."
+      - "trace dns shows DNS queries and answers on Linux. It has no port view."
+      - "trace arp shows neighbor table changes on Linux and macOS. It needs no root."
+      - "trace ndp does the same for IPv6 neighbors."
+      - "trace http shows plain HTTP/1.x requests on Linux 6.4 or later."
   report:
     summary: "Read and compare saved JSON reports"
     notes:

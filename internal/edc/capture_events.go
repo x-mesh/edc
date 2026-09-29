@@ -1,8 +1,10 @@
 package edc
 
-//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -go-package edc captureEvents capture_events_bpf.c -- -I./bpf
+//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -go-package edc -type http_record captureEvents capture_events_bpf.c -- -I./bpf
 
 import (
+	"net"
+	"net/netip"
 	"sort"
 	"strings"
 	"time"
@@ -34,7 +36,29 @@ type captureEvent struct {
 	NewState     string `json:"new_state,omitempty"`
 	Bytes        uint64 `json:"bytes"`
 	Packets      uint64 `json:"packets,omitempty"`
-	LostEvents   uint64 `json:"lost_events,omitempty"`
+	// QueryType, Answers, LatencyMS는 DNS event에만 붙는다. LatencyMS는 kernel이 질의를 보낸 때부터 process가
+	// 응답을 읽은 때까지라서 process가 응답을 늦게 읽으면 그만큼 길어진다.
+	QueryType string   `json:"query_type,omitempty"`
+	Answers   []string `json:"answers,omitempty"`
+	LatencyMS *float64 `json:"latency_ms,omitempty"`
+	// NetworkMS는 client가 질의를 보낸 때부터 응답이 socket 수신 큐에 들어간 때까지다. ReadDelayMS는 받은 message가
+	// 수신 큐에 들어간 때부터 process가 읽은 때까지다. client 쪽은 응답에, 서버 쪽은 질의에 붙는다.
+	NetworkMS   *float64 `json:"network_ms,omitempty"`
+	ReadDelayMS *float64 `json:"read_delay_ms,omitempty"`
+	// Method, Path, Status는 HTTP event에만 붙는다. Path에는 query를 넣지 않는다.
+	Method string `json:"method,omitempty"`
+	Path   string `json:"path,omitempty"`
+	Status int    `json:"status,omitempty"`
+	// MAC과 OldMAC은 ARP event에만 붙는다. OldMAC은 MAC이 바뀌었을 때 이전 값이다.
+	MAC    string `json:"mac,omitempty"`
+	OldMAC string `json:"old_mac,omitempty"`
+	// Transport는 TCP로 주고받은 DNS message에만 tcp로 붙는다.
+	Transport string `json:"transport,omitempty"`
+	// Side는 로컬 DNS 서버가 받은 질의와 보낸 응답에만 server로 붙는다.
+	Side       string `json:"side,omitempty"`
+	LostEvents uint64 `json:"lost_events,omitempty"`
+	// answered는 응답이 답한 요청 수다. DNS는 응답 전에 같은 질의를 다시 보냈으면 1보다 크다.
+	answered uint64
 }
 
 type captureSummary struct {
@@ -61,6 +85,8 @@ type tcpTraceConnection struct {
 	established     bool
 	handshake       bool
 	listener        bool
+	portSeen        bool
+	portless        bool
 	traceTraffic
 }
 
@@ -70,6 +96,8 @@ func (connection *tcpTraceConnection) result() string {
 	switch {
 	case connection.established:
 		return "established"
+	case connection.unbound():
+		return "failed"
 	case !connection.handshake:
 		return "existing"
 	case connection.closed || connection.reset:
@@ -77,6 +105,26 @@ func (connection *tcpTraceConnection) result() string {
 	default:
 		return "incomplete"
 	}
+}
+
+// unbound는 local port를 한 번도 갖지 못한 socket이다. connect()가 SYN_SENT 전에 실패하면(경로가 없는 IPv6 등)
+// kernel이 port를 되돌려서 destroy만 남는다. 주소가 없는 event만 본 socket은 근거가 없어 여기에 넣지 않는다.
+func (connection *tcpTraceConnection) unbound() bool {
+	return connection.portless && !connection.portSeen && !connection.handshake && !connection.established
+}
+
+// counted는 행과 합계에 넣을 socket이다. listen socket과, connect하지 않고 닫힌 socket은 연결이 아니다.
+func (connection *tcpTraceConnection) counted() bool {
+	return !connection.listener && !(connection.unbound() && traceAddressUnspecified(connection.Destination))
+}
+
+func traceAddressUnspecified(address string) bool {
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		return address == ""
+	}
+	parsed, err := netip.ParseAddr(host)
+	return err == nil && parsed.IsUnspecified()
 }
 
 func tcpTraceHandshakeState(state string) bool {
@@ -95,7 +143,87 @@ type tcpTraceReport struct {
 	Connections     []tcpTraceConnection `json:"connections"`
 	// ConnectionsOmitted는 합계에는 들어갔지만 행을 남기지 않은 끝난 연결의 수다.
 	ConnectionsOmitted int `json:"connections_omitted"`
+	// groups는 텍스트 요약의 기본 행이다. JSON은 연결별 행만 쓴다.
+	groups []tcpTraceGroupRow
 	traceTraffic
+}
+
+// tcpTraceGroupRow는 같은 process가 같은 상대와 맺은 연결을 묶은 행이다. 서버 연결의 상대는 client 포트가
+// 매번 달라서 local 서비스로 묶는다.
+type tcpTraceGroupRow struct {
+	process         string
+	peer            string
+	hostname        string
+	server          bool
+	connections     int
+	established     int
+	incomplete      int
+	existing        int
+	resets          int
+	retransmissions uint64
+	connectTotalMS  int64
+	connectCount    int
+	traceTraffic
+}
+
+type tcpTraceGroupKey struct {
+	process string
+	peer    string
+	server  bool
+}
+
+// traceSummaryPeer는 묶음 행의 상대와 서버 여부다. 그룹 보기의 서버 판정과 같다.
+func traceSummaryPeer(source, destination string) (string, bool) {
+	low, high := traceEphemeralPortRange()
+	if service, ok := traceServerService(captureEvent{Source: source, Destination: destination}, low, high); ok {
+		return service, true
+	}
+	return destination, false
+}
+
+func addTCPTraceGroup(groups map[tcpTraceGroupKey]*tcpTraceGroupRow, connection *tcpTraceConnection) {
+	peer, server := traceSummaryPeer(connection.Source, connection.Destination)
+	key := tcpTraceGroupKey{process: connection.Process, peer: peer, server: server}
+	row := groups[key]
+	if row == nil {
+		row = &tcpTraceGroupRow{process: connection.Process, peer: peer, server: server}
+		groups[key] = row
+	}
+	// 서버 행의 target은 한 client의 이름이라 행 전체를 설명하지 못한다.
+	if row.hostname == "" && !server {
+		row.hostname = connection.Hostname
+	}
+	row.connections++
+	switch connection.Result {
+	case "established":
+		row.established++
+	case "existing":
+		row.existing++
+	default:
+		row.incomplete++
+	}
+	if connection.reset {
+		row.resets++
+	}
+	row.retransmissions += connection.retransmissions
+	if connection.established {
+		row.connectTotalMS += connection.connectMS
+		row.connectCount++
+	}
+	row.TXBytes += connection.TXBytes
+	row.RXBytes += connection.RXBytes
+}
+
+func sortTCPTraceGroups(rows []tcpTraceGroupRow) {
+	sort.Slice(rows, func(i, j int) bool {
+		if rows[i].process != rows[j].process {
+			return rows[i].process < rows[j].process
+		}
+		if rows[i].peer != rows[j].peer {
+			return rows[i].peer < rows[j].peer
+		}
+		return !rows[i].server && rows[j].server
+	})
 }
 
 type traceTraffic struct {
@@ -135,7 +263,10 @@ type tcpTraceOptions struct {
 	groupBy     string
 	process     string
 	destination string
+	detail      bool
 	yes         bool
+	// side는 trace dns가 볼 쪽이다. client는 이 host의 조회, server는 로컬 DNS 서버가 받은 질의다.
+	side string
 }
 
 func traceProtocol(event captureEvent) string {
@@ -194,6 +325,7 @@ type tcpTraceSummarizer struct {
 	oldest    int
 	omitted   int
 	totals    tcpTraceTotals
+	groups    map[tcpTraceGroupKey]*tcpTraceGroupRow
 	traffic   traceTraffic
 }
 
@@ -226,7 +358,7 @@ func (totals *tcpTraceTotals) add(connection *tcpTraceConnection) {
 }
 
 func newTCPTraceSummarizer() *tcpTraceSummarizer {
-	return &tcpTraceSummarizer{active: make(map[uint64]*tcpTraceConnection), firstSeen: make(map[uint64]uint64)}
+	return &tcpTraceSummarizer{active: make(map[uint64]*tcpTraceConnection), firstSeen: make(map[uint64]uint64), groups: make(map[tcpTraceGroupKey]*tcpTraceGroupRow)}
 }
 
 // tcpTraceConnectionStarts는 새 socket의 수명이 시작되는 전이다. connect()와 서버의 새 연결이 여기서 시작한다.
@@ -275,6 +407,13 @@ func (summarizer *tcpTraceSummarizer) observe(event captureEvent) {
 	if event.NewState == "LISTEN" || event.OldState == "LISTEN" && event.NewState == "CLOSE" {
 		connection.listener = true
 	}
+	if event.Source != "" {
+		if strings.HasSuffix(event.Source, ":0") {
+			connection.portless = true
+		} else {
+			connection.portSeen = true
+		}
+	}
 	switch event.Event {
 	case "tcp_send", "tcp_receive":
 		connection.traceTraffic.observe(event)
@@ -301,11 +440,13 @@ func (summarizer *tcpTraceSummarizer) finish(socket uint64) {
 	connection := summarizer.active[socket]
 	delete(summarizer.active, socket)
 	delete(summarizer.firstSeen, socket)
-	if connection.listener {
+	if !connection.counted() {
 		return
 	}
 	connection.Result = connection.result()
 	summarizer.totals.add(connection)
+	// 묶음 행은 끝난 연결마다 쌓아서, 연결별 행에서 빠진 연결도 들어간다.
+	addTCPTraceGroup(summarizer.groups, connection)
 	if len(summarizer.finished) < tcpTraceConnectionLimit {
 		summarizer.finished = append(summarizer.finished, *connection)
 		return
@@ -318,17 +459,29 @@ func (summarizer *tcpTraceSummarizer) finish(socket uint64) {
 func (summarizer *tcpTraceSummarizer) report(summary captureSummary, duration time.Duration) tcpTraceReport {
 	result := tcpTraceReport{DurationMS: duration.Milliseconds(), LostEvents: summary.LostEvents, ConnectionsOmitted: summarizer.omitted, traceTraffic: summarizer.traffic}
 	totals := summarizer.totals
+	groups := make(map[tcpTraceGroupKey]*tcpTraceGroupRow, len(summarizer.groups))
+	for key, stored := range summarizer.groups {
+		row := *stored
+		groups[key] = &row
+	}
 	result.Connections = make([]tcpTraceConnection, 0, len(summarizer.finished)+len(summarizer.active))
 	result.Connections = append(result.Connections, summarizer.finished...)
 	for _, stored := range summarizer.active {
-		if stored.listener {
+		if !stored.counted() {
 			continue
 		}
 		connection := *stored
 		connection.Result = connection.result()
 		totals.add(&connection)
+		addTCPTraceGroup(groups, &connection)
 		result.Connections = append(result.Connections, connection)
 	}
+	result.groups = make([]tcpTraceGroupRow, 0, len(groups))
+	for _, row := range groups {
+		row.traceTraffic.finalize(duration)
+		result.groups = append(result.groups, *row)
+	}
+	sortTCPTraceGroups(result.groups)
 	for index := range result.Connections {
 		connection := &result.Connections[index]
 		connection.traceTraffic.finalize(duration)

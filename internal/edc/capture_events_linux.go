@@ -199,7 +199,7 @@ func collectCaptureEvents(duration time.Duration, onEvent func(captureEvent) err
 // collectCaptureEventsUntil은 capture가 파일에 쓸 event를 모은다. trace는 event를 모으지 않고 요약만 쌓는다.
 func collectCaptureEventsUntil(duration time.Duration, onEvent func(captureEvent) error, stop <-chan struct{}) ([]captureEvent, captureSummary, error) {
 	events := make([]captureEvent, 0)
-	summary, err := collectCaptureEventsFor("", duration, func(event captureEvent) error {
+	summary, err := collectCaptureEventsFor(traceScope{}, duration, func(event captureEvent) error {
 		events = append(events, event)
 		if onEvent != nil {
 			return onEvent(event)
@@ -212,47 +212,114 @@ func collectCaptureEventsUntil(duration time.Duration, onEvent func(captureEvent
 	return events, summary, nil
 }
 
+// protocols는 hook을 쓰는 trace protocol이다. nil이면 모든 protocol이 쓴다.
 type captureTracepoint struct {
-	protocol, group, name string
-	prog                  *ebpf.Program
+	protocols   []string
+	group, name string
+	prog        *ebpf.Program
 }
 
 type captureTracing struct {
-	protocol, name string
-	prog           *ebpf.Program
+	protocols []string
+	name      string
+	prog      *ebpf.Program
 }
 
 // captureAttachments는 protocol에 필요한 hook만 고른다. fentry와 fexit는 뗄 때 kernel이 하나씩 처리해 hook마다
 // 0.1초 넘게 걸리므로, 쓰지 않는 hook을 붙이면 trace를 끝낼 때마다 그만큼 늦어진다. 빈 protocol은 모든 hook을 고른다.
 func captureAttachments(objects *captureEventsObjects, protocol string) ([]captureTracepoint, []captureTracing) {
+	tcp, udp := []string{"tcp"}, []string{"udp", "dns"}
+	// DNS는 port 53으로 가는 TCP 연결을 inet_sock_set_state로, 질의를 UDP 송신 hook으로 본다.
 	tracepoints := []captureTracepoint{
-		{"tcp", "sock", "inet_sock_set_state", objects.InetSockSetState},
-		{"tcp", "tcp", "tcp_retransmit_skb", objects.TcpRetransmitSkb},
-		{"tcp", "tcp", "tcp_send_reset", objects.TcpSendReset},
-		{"tcp", "tcp", "tcp_receive_reset", objects.TcpReceiveReset},
-		{"tcp", "tcp", "tcp_destroy_sock", objects.TcpDestroySock},
-		{"tcp", "sock", "sock_send_length", objects.TcpSendLength},
-		{"tcp", "sock", "sock_recv_length", objects.TcpRecvLength},
+		{[]string{"tcp", "dns"}, "sock", "inet_sock_set_state", objects.InetSockSetState},
+		{tcp, "tcp", "tcp_retransmit_skb", objects.TcpRetransmitSkb},
+		{tcp, "tcp", "tcp_send_reset", objects.TcpSendReset},
+		{tcp, "tcp", "tcp_receive_reset", objects.TcpReceiveReset},
+		{tcp, "tcp", "tcp_destroy_sock", objects.TcpDestroySock},
+		{tcp, "sock", "sock_send_length", objects.TcpSendLength},
+		{tcp, "sock", "sock_recv_length", objects.TcpRecvLength},
 	}
-	// skb_consume_udp는 두 protocol이 쓴다. UDP 수신 event와 함께, TCP target의 이름을 짓는 DNS 응답도 이 hook이 읽는다.
+	// skb_consume_udp는 모든 protocol이 쓴다. UDP 수신 event와 함께, target 이름을 짓는 DNS 응답도 이 hook이 읽는다.
 	tracing := []captureTracing{
-		{"udp", "fentry/udp_send_skb", objects.UdpSendSkbEntry},
-		{"udp", "fexit/udp_send_skb", objects.UdpSendSkbExit},
-		{"udp", "fentry/udp_v6_send_skb", objects.UdpV6SendSkbEntry},
-		{"udp", "fexit/udp_v6_send_skb", objects.UdpV6SendSkbExit},
-		{"", "fentry/skb_consume_udp", objects.SkbConsumeUdpEntry},
-		{"tcp", "fentry/inet_csk_accept", objects.InetCskAcceptEntry},
-		{"tcp", "fexit/tcp_create_openreq_child", objects.TcpCreateOpenreqChildExit},
+		{udp, "fentry/udp_send_skb", objects.UdpSendSkbEntry},
+		{udp, "fexit/udp_send_skb", objects.UdpSendSkbExit},
+		{udp, "fentry/udp_v6_send_skb", objects.UdpV6SendSkbEntry},
+		{udp, "fexit/udp_v6_send_skb", objects.UdpV6SendSkbExit},
+		// DNS 응답 시간을 network와 읽기 지연으로 나누려고 수신 큐에 들어간 시각을 잰다.
+		{[]string{"dns"}, "fentry/__udp_enqueue_schedule_skb", objects.UdpEnqueueEntry},
+		{nil, "fentry/skb_consume_udp", objects.SkbConsumeUdpEntry},
+		// HTTP와 DNS over TCP는 TCP로 주고받는 사용자 버퍼의 앞부분을 읽는다.
+		{[]string{"http", "dns"}, "fentry/tcp_sendmsg", objects.TcpSendmsgEntry},
+		{[]string{"http", "dns"}, "fentry/tcp_recvmsg", objects.TcpRecvmsgEntry},
+		{[]string{"http", "dns"}, "fexit/tcp_recvmsg", objects.TcpRecvmsgExit},
+		// 서버 쪽 DNS over TCP도 받은 연결의 process를 알아야 해서 dns가 함께 쓴다.
+		{[]string{"tcp", "dns"}, "fentry/inet_csk_accept", objects.InetCskAcceptEntry},
+		{[]string{"tcp", "dns"}, "fexit/tcp_create_openreq_child", objects.TcpCreateOpenreqChildExit},
 	}
-	unwanted := func(hookProtocol string) bool {
-		return protocol != "" && hookProtocol != "" && hookProtocol != protocol
+	// 빈 protocol은 capture다. capture는 TCP와 UDP hook을 모두 쓰고 DNS 전용 hook은 쓰지 않는다.
+	wanted := []string{protocol}
+	if protocol == "" {
+		wanted = []string{"tcp", "udp"}
 	}
-	tracepoints = slices.DeleteFunc(tracepoints, func(hook captureTracepoint) bool { return unwanted(hook.protocol) })
-	tracing = slices.DeleteFunc(tracing, func(hook captureTracing) bool { return unwanted(hook.protocol) })
+	unwanted := func(protocols []string) bool {
+		return protocols != nil && !slices.ContainsFunc(wanted, func(name string) bool { return slices.Contains(protocols, name) })
+	}
+	tracepoints = slices.DeleteFunc(tracepoints, func(hook captureTracepoint) bool { return unwanted(hook.protocols) })
+	tracing = slices.DeleteFunc(tracing, func(hook captureTracing) bool { return unwanted(hook.protocols) })
 	return tracepoints, tracing
 }
 
-func collectCaptureEventsFor(protocol string, duration time.Duration, onEvent func(captureEvent) error, stop <-chan struct{}) (captureSummary, error) {
+// captureEventFilter는 BPF를 불러오기 전에 정하는 event 필터다. protocol이 쓰지 않을 event를 kernel에서 버린다.
+type captureEventFilter struct {
+	udpEvents    bool
+	dnsSent      bool
+	server       bool
+	tcpStatePort uint16
+	httpMessages bool
+	dnsTCP       bool
+}
+
+func captureEventFilterFor(scope traceScope) captureEventFilter {
+	filter := captureEventFilter{udpEvents: true, dnsSent: true}
+	switch scope.protocol {
+	case "tcp":
+		// skb_consume_udp는 target 이름을 지을 DNS 응답만 보낸다.
+		filter.udpEvents = false
+	case "udp":
+		filter.dnsSent = false
+	case "dns":
+		filter.udpEvents, filter.server, filter.tcpStatePort, filter.dnsTCP = false, scope.server, 53, true
+	case "http":
+		filter.udpEvents, filter.httpMessages = false, true
+	}
+	return filter
+}
+
+func loadCaptureEventsFor(scope traceScope, objects *captureEventsObjects) error {
+	spec, err := loadCaptureEvents()
+	if err != nil {
+		return err
+	}
+	var variables captureEventsVariableSpecs
+	if err := spec.Assign(&variables); err != nil {
+		return err
+	}
+	filter := captureEventFilterFor(scope)
+	flag := func(on bool) uint8 {
+		if on {
+			return 1
+		}
+		return 0
+	}
+	if err := errors.Join(variables.EmitUdpEvents.Set(flag(filter.udpEvents)), variables.EmitDnsSent.Set(flag(filter.dnsSent)), variables.EmitDnsServer.Set(flag(filter.server)), variables.TcpStatePort.Set(filter.tcpStatePort),
+		variables.EmitHttpMessages.Set(flag(filter.httpMessages)), variables.EmitDnsTcpMessages.Set(flag(filter.dnsTCP))); err != nil {
+		return err
+	}
+	return spec.LoadAndAssign(objects, nil)
+}
+
+func collectCaptureEventsFor(scope traceScope, duration time.Duration, onEvent func(captureEvent) error, stop <-chan struct{}) (captureSummary, error) {
+	protocol := scope.protocol
 	if err := rlimit.RemoveMemlock(); err != nil {
 		return captureSummary{}, fmt.Errorf("remove memlock limit: %w", err)
 	}
@@ -260,7 +327,7 @@ func collectCaptureEventsFor(protocol string, duration time.Duration, onEvent fu
 	names := newDNSNameCache()
 	seedResolverCache(names)
 	objects := captureEventsObjects{}
-	if err := loadCaptureEventsObjects(&objects, nil); err != nil {
+	if err := loadCaptureEventsFor(scope, &objects); err != nil {
 		return captureSummary{}, fmt.Errorf("load eBPF objects: %w", err)
 	}
 	defer objects.Close()
@@ -315,6 +382,9 @@ func collectCaptureEventsFor(protocol string, duration time.Duration, onEvent fu
 	targets := newCommandTargetCache(commandTarget)
 	sockets := newSocketTargetCache()
 	owners := newPIDTargetCache()
+	queries := newDNSQueryTracker(scope.server)
+	requests := newHTTPTracker(scope.server)
+	streams := newDNSTCPStreams()
 	var eventCount uint64
 	finish := func() (captureSummary, error) {
 		var lost uint64
@@ -339,8 +409,49 @@ func collectCaptureEventsFor(protocol string, duration time.Duration, onEvent fu
 		if err != nil {
 			return captureSummary{}, err
 		}
-		if pid, payload, ok := parseDNSRecord(record.RawSample); ok {
-			names.rememberAnswer(pid, dnsAnswerNames(payload))
+		if packet, ok := parseDNSRecord(record.RawSample); ok {
+			if !packet.sent {
+				names.rememberAnswer(packet.pid, dnsAnswerNames(packet.payload))
+			}
+			// DNS 레코드는 다른 protocol에서 target 이름에만 쓴다. capture와 trace tcp/udp의 출력에 섞지 않는다.
+			if protocol != "dns" {
+				continue
+			}
+			// 서버 쪽 레코드는 --side server일 때만 BPF가 보낸다. client 쪽 레코드는 늘 오므로 tracker가 다른 쪽을 거른다.
+			// TCP 조각은 길이와 message를 맞춘 뒤 UDP message와 같은 방법으로 읽는다.
+			messages := [][]byte{packet.payload}
+			if packet.tcp {
+				messages = streams.messages(dnsTCPStreamKey{socket: packet.socket, sent: packet.sent}, packet.payload, dnsRecordPayloadSize)
+			}
+			for _, message := range messages {
+				packet.payload = message
+				event, ok := queries.event(packet, clockOffset)
+				if !ok {
+					continue
+				}
+				if packet.tcp {
+					event.Transport = "tcp"
+				}
+				if onEvent != nil {
+					if err := onEvent(event); err != nil {
+						return captureSummary{}, err
+					}
+				}
+				eventCount++
+			}
+			continue
+		}
+		if packet, ok := parseHTTPRecord(record.RawSample); ok {
+			event, ok := requests.event(packet, clockOffset)
+			if !ok {
+				continue
+			}
+			if onEvent != nil {
+				if err := onEvent(event); err != nil {
+					return captureSummary{}, err
+				}
+			}
+			eventCount++
 			continue
 		}
 		if owner, ok := parseOwnerAnnouncement(record.RawSample); ok {
@@ -354,6 +465,7 @@ func collectCaptureEventsFor(protocol string, duration time.Duration, onEvent fu
 			return captureSummary{}, fmt.Errorf("decode event: %w", err)
 		}
 		event := raw.event(clockOffset)
+		event.Source, event.Destination = sockets.addresses(event)
 		commandTarget := ""
 		if event.PID != 0 {
 			if target, ok := owners.target(event.PID); ok {
@@ -364,6 +476,11 @@ func collectCaptureEventsFor(protocol string, duration time.Duration, onEvent fu
 		}
 		event.Target, event.TargetSource = resolveTraceTarget(event, commandTarget, names)
 		event.Target, event.TargetSource = sockets.target(event)
+		if protocol == "dns" {
+			if dnsEvent, ok := queries.tcpEvent(event); ok {
+				event = dnsEvent
+			}
+		}
 		if onEvent != nil {
 			if err := onEvent(event); err != nil {
 				return captureSummary{}, err

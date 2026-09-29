@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -13,7 +14,9 @@ import (
 	"syscall"
 	"testing"
 	"time"
+	"unsafe"
 
+	"github.com/cilium/ebpf/btf"
 	"github.com/miekg/dns"
 	"golang.org/x/sys/unix"
 )
@@ -93,6 +96,12 @@ func TestCaptureAttachmentsFollowTheProtocol(t *testing.T) {
 		// TCP도 DNS 응답으로 target 이름을 지으므로 skb_consume_udp를 붙인다.
 		{"tcp", tcpTracepoints, append([]string{"fentry/skb_consume_udp"}, tcpAccept...)},
 		{"udp", []string{}, append(append([]string{}, udpSend...), "fentry/skb_consume_udp")},
+		// DNS 질의는 UDP 송신 hook이, 응답은 skb_consume_udp가, port 53 TCP 연결은 inet_sock_set_state가 알린다.
+		// 수신 큐 hook은 DNS 응답 시간을 나누는 데만 쓴다.
+		// DNS over TCP의 message는 HTTP와 같은 TCP 송수신 hook이 읽는다.
+		{"dns", []string{"sock/inet_sock_set_state"}, append(append(append([]string{}, udpSend...), "fentry/__udp_enqueue_schedule_skb", "fentry/skb_consume_udp", "fentry/tcp_sendmsg", "fentry/tcp_recvmsg", "fexit/tcp_recvmsg"), tcpAccept...)},
+		// HTTP는 TCP 송수신의 사용자 버퍼만 읽고 TCP 상태 변화는 쓰지 않는다.
+		{"http", []string{}, []string{"fentry/skb_consume_udp", "fentry/tcp_sendmsg", "fentry/tcp_recvmsg", "fexit/tcp_recvmsg"}},
 	} {
 		tracepoints, tracing := captureAttachments(&captureEventsObjects{}, test.protocol)
 		gotTracepoints := []string{}
@@ -106,6 +115,75 @@ func TestCaptureAttachmentsFollowTheProtocol(t *testing.T) {
 		if !slices.Equal(gotTracepoints, test.tracepoints) || !slices.Equal(gotTracing, test.tracing) {
 			t.Fatalf("protocol %q: tracepoints %q, tracing %q; want %q, %q", test.protocol, gotTracepoints, gotTracing, test.tracepoints, test.tracing)
 		}
+	}
+}
+
+func TestCaptureEventFiltersFollowTheProtocol(t *testing.T) {
+	for _, test := range []struct {
+		scope traceScope
+		want  captureEventFilter
+	}{
+		{traceScope{}, captureEventFilter{udpEvents: true, dnsSent: true}},
+		{traceScope{protocol: "tcp"}, captureEventFilter{dnsSent: true}},
+		{traceScope{protocol: "udp"}, captureEventFilter{udpEvents: true}},
+		{traceScope{protocol: "dns"}, captureEventFilter{dnsSent: true, tcpStatePort: 53, dnsTCP: true}},
+		{traceScope{protocol: "dns", server: true}, captureEventFilter{dnsSent: true, server: true, tcpStatePort: 53, dnsTCP: true}},
+		{traceScope{protocol: "http"}, captureEventFilter{dnsSent: true, httpMessages: true}},
+	} {
+		if got := captureEventFilterFor(test.scope); got != test.want {
+			t.Fatalf("scope %+v filter = %+v, want %+v", test.scope, got, test.want)
+		}
+	}
+	// 변수 이름과 기본값은 BPF C 코드에 있다. 이름이 어긋나면 kernel에 불러오기 전에 여기서 실패한다.
+	spec, err := loadCaptureEvents()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var variables captureEventsVariableSpecs
+	if err := spec.Assign(&variables); err != nil {
+		t.Fatal(err)
+	}
+	var udpEvents, dnsSent, server uint8
+	var tcpStatePort uint16
+	if err := errors.Join(variables.EmitUdpEvents.Get(&udpEvents), variables.EmitDnsSent.Get(&dnsSent), variables.EmitDnsServer.Get(&server), variables.TcpStatePort.Get(&tcpStatePort)); err != nil {
+		t.Fatal(err)
+	}
+	// capture는 모든 event와 client 쪽 DNS 레코드를 받는다. 서버 쪽 레코드는 trace dns --side server만 켠다.
+	if udpEvents != 1 || dnsSent != 1 || server != 0 || tcpStatePort != 0 {
+		t.Fatalf("BPF defaults = %d, %d, %d, %d", udpEvents, dnsSent, server, tcpStatePort)
+	}
+}
+
+func TestSocketTargetCacheFillsAbortedDestroyAddresses(t *testing.T) {
+	cache := newSocketTargetCache()
+	for _, test := range []struct {
+		name        string
+		event       captureEvent
+		source      string
+		destination string
+	}{
+		// connect()의 첫 전이는 port를 배정하기 전이라 채우지도 기억하지도 않는다.
+		{"syn sent", captureEvent{Protocol: "tcp", SocketID: 7, Event: "tcp_state", Source: "127.0.0.1:0", Destination: "127.0.0.1:18099"}, "127.0.0.1:0", "127.0.0.1:18099"},
+		{"send", captureEvent{Protocol: "tcp", SocketID: 7, Event: "tcp_send", Source: "127.0.0.1:55452", Destination: "127.0.0.1:18099", Target: "api.example"}, "127.0.0.1:55452", "127.0.0.1:18099"},
+		// SO_LINGER 0으로 닫으면 kernel이 local 주소와 상대 port를 지운 뒤 socket을 해제한다.
+		{"aborted destroy", captureEvent{Protocol: "tcp", SocketID: 7, Event: "tcp_destroy", Source: "0.0.0.0:55452", Destination: "127.0.0.1:0"}, "127.0.0.1:55452", "127.0.0.1:18099"},
+		// 주소를 본 적이 없는 socket은 connect하지 못한 것이라 그대로 둔다.
+		{"unbound destroy", captureEvent{Protocol: "tcp", SocketID: 8, Event: "tcp_destroy", Source: "[::]:0", Destination: "[2001:db8::1]:0"}, "[::]:0", "[2001:db8::1]:0"},
+		{"udp", captureEvent{Protocol: "udp", SocketID: 9, Event: "udp_send", Source: "0.0.0.0:5353", Destination: "224.0.0.251:5353"}, "0.0.0.0:5353", "224.0.0.251:5353"},
+	} {
+		source, destination := cache.addresses(test.event)
+		if source != test.source || destination != test.destination {
+			t.Fatalf("%s: addresses = %s -> %s, want %s -> %s", test.name, source, destination, test.source, test.destination)
+		}
+		test.event.Source, test.event.Destination = source, destination
+		target, _ := cache.target(test.event)
+		if test.name == "aborted destroy" && target != "api.example" {
+			t.Fatalf("aborted destroy lost the socket target: %q", target)
+		}
+	}
+	// destroy 뒤에는 socket 주소를 새 socket이 다시 쓰므로 기억을 지운다.
+	if source, _ := cache.addresses(captureEvent{Protocol: "tcp", SocketID: 7, Event: "tcp_destroy", Source: "0.0.0.0:1", Destination: "127.0.0.1:0"}); source != "0.0.0.0:1" {
+		t.Fatalf("socket 7 kept its addresses after destroy: %s", source)
 	}
 }
 
@@ -259,7 +337,7 @@ func dnsRecordSample(t *testing.T, pid uint32, message *dns.Msg) []byte {
 	sample := make([]byte, dnsRecordPayloadOffset+1024)
 	binary.LittleEndian.PutUint32(sample[8:12], dnsRecordType)
 	binary.LittleEndian.PutUint32(sample[12:16], pid)
-	binary.LittleEndian.PutUint32(sample[16:20], uint32(len(payload)))
+	binary.LittleEndian.PutUint32(sample[40:44], uint32(len(payload)))
 	copy(sample[dnsRecordPayloadOffset:], payload)
 	return sample
 }
@@ -276,12 +354,13 @@ func TestDNSAnswersNameTheAddressesThatAProcessResolved(t *testing.T) {
 		}
 		answer.Answer = append(answer.Answer, record)
 	}
-	pid, payload, ok := parseDNSRecord(dnsRecordSample(t, 42, answer))
-	if !ok || pid != 42 {
-		t.Fatalf("parseDNSRecord = %d, %t", pid, ok)
+	packet, ok := parseDNSRecord(dnsRecordSample(t, 42, answer))
+	if !ok || packet.pid != 42 || packet.sent {
+		t.Fatalf("parseDNSRecord = %#v, %t", packet, ok)
 	}
+	payload := packet.payload
 	cache := newDNSNameCache()
-	cache.rememberAnswer(pid, dnsAnswerNames(payload))
+	cache.rememberAnswer(packet.pid, dnsAnswerNames(payload))
 	// CNAME을 거쳐도 프로그램이 물어본 이름을 쓰고, IPv6를 풀어 쓴 표기로 들어와도 같은 주소로 본다.
 	for _, destination := range []string{"203.0.113.10:443", "[2606:4700:10:0:0:0:6814:179a]:443"} {
 		if name, ok := cache.forProcess(42, destination); !ok || name != "api.example.com" {
@@ -299,8 +378,56 @@ func TestDNSAnswersNameTheAddressesThatAProcessResolved(t *testing.T) {
 	}
 	event := make([]byte, 128)
 	binary.LittleEndian.PutUint32(event[8:12], 6)
-	if _, _, ok := parseDNSRecord(event); ok {
+	if _, ok := parseDNSRecord(event); ok {
 		t.Fatal("a send event was parsed as a DNS record")
+	}
+}
+
+// dnsRecordPayloadOffset과 parseDNSRecord의 offset은 BPF의 struct dns_record를 따른다. bpf2go가 만든 Go 구조체와
+// 비교해 C 구조체를 바꾸고 이쪽을 고치지 않으면 여기서 실패한다.
+func TestDNSRecordOffsetsMatchTheBPFStruct(t *testing.T) {
+	var record captureEventsDnsRecord
+	for name, offsets := range map[string][2]uintptr{
+		"event_type":  {unsafe.Offsetof(record.EventType), 8},
+		"pid":         {unsafe.Offsetof(record.Pid), 12},
+		"cgroup_id":   {unsafe.Offsetof(record.CgroupId), 16},
+		"arrival_ns":  {unsafe.Offsetof(record.ArrivalNs), 24},
+		"skaddr":      {unsafe.Offsetof(record.Skaddr), 32},
+		"len":         {unsafe.Offsetof(record.Len), 40},
+		"family":      {unsafe.Offsetof(record.Family), 44},
+		"direction":   {unsafe.Offsetof(record.Direction), 46},
+		"transport":   {unsafe.Offsetof(record.Transport), 47},
+		"sport":       {unsafe.Offsetof(record.Sport), 48},
+		"dport":       {unsafe.Offsetof(record.Dport), 50},
+		"source":      {unsafe.Offsetof(record.Source), 52},
+		"destination": {unsafe.Offsetof(record.Destination), 68},
+		"comm":        {unsafe.Offsetof(record.Comm), 84},
+		"payload":     {unsafe.Offsetof(record.Payload), dnsRecordPayloadOffset},
+	} {
+		if offsets[0] != offsets[1] {
+			t.Fatalf("%s is at %d in the BPF struct, parseDNSRecord reads %d", name, offsets[0], offsets[1])
+		}
+	}
+}
+
+func TestParseDNSRecordReadsTheQuerySide(t *testing.T) {
+	question := new(dns.Msg)
+	question.SetQuestion("example.com.", dns.TypeAAAA)
+	sample := dnsRecordSample(t, 7, question)
+	binary.LittleEndian.PutUint64(sample[0:8], 1_000)
+	binary.LittleEndian.PutUint64(sample[16:24], 99)
+	binary.LittleEndian.PutUint64(sample[24:32], 900)
+	binary.LittleEndian.PutUint64(sample[32:40], 0xabc)
+	binary.LittleEndian.PutUint16(sample[44:46], 2)
+	sample[46], sample[47] = dnsRecordSent, dnsRecordTCP
+	binary.LittleEndian.PutUint16(sample[48:50], 41000)
+	binary.LittleEndian.PutUint16(sample[50:52], 53)
+	copy(sample[52:56], []byte{10, 0, 0, 2})
+	copy(sample[68:72], []byte{127, 0, 0, 53})
+	copy(sample[84:100], "dig")
+	packet, ok := parseDNSRecord(sample)
+	if !ok || !packet.sent || packet.bootTimeNS != 1_000 || packet.cgroupID != 99 || packet.arrivalNS != 900 || !packet.tcp || packet.socket != 0xabc || packet.process != "dig" || packet.source != "10.0.0.2:41000" || packet.destination != "127.0.0.53:53" {
+		t.Fatalf("parseDNSRecord = %#v, %t", packet, ok)
 	}
 }
 
@@ -397,5 +524,141 @@ func TestCommandTargetCacheSweepsExpiredEntries(t *testing.T) {
 	cache.target(commandTargetSweepSize, now.Add(commandTargetTTL))
 	if len(cache.entries) != 1 {
 		t.Fatalf("entries after sweep = %d, want 1", len(cache.entries))
+	}
+}
+
+func neighborNetlinkMessage(messageType uint16, family byte, state uint16, attributes ...[]byte) syscall.NetlinkMessage {
+	data := make([]byte, unix.SizeofNdMsg)
+	data[0] = family
+	binary.NativeEndian.PutUint32(data[4:8], 1)
+	binary.NativeEndian.PutUint16(data[8:10], state)
+	for _, attribute := range attributes {
+		data = append(data, attribute...)
+	}
+	return syscall.NetlinkMessage{Header: syscall.NlMsghdr{Type: messageType}, Data: data}
+}
+
+func neighborNetlinkAttribute(kind uint16, value []byte) []byte {
+	attribute := make([]byte, unix.SizeofRtAttr, (unix.SizeofRtAttr+len(value)+3)&^3)
+	binary.NativeEndian.PutUint16(attribute[0:2], uint16(unix.SizeofRtAttr+len(value)))
+	binary.NativeEndian.PutUint16(attribute[2:4], kind)
+	attribute = append(attribute, value...)
+	return attribute[:cap(attribute)]
+}
+
+func TestParseARPNeighborReadsNetlinkMessages(t *testing.T) {
+	names := neighborInterfaceNames{1: "eth0"}
+	destination := neighborNetlinkAttribute(unix.NDA_DST, []byte{192, 0, 2, 1})
+	address := neighborNetlinkAttribute(unix.NDA_LLADDR, []byte{2, 0, 0, 0, 0, 1})
+	neighbor, ok := parseNeighborMessage(neighborNetlinkMessage(unix.RTM_NEWNEIGH, unix.AF_INET, unix.NUD_REACHABLE, destination, address), unix.AF_INET, names)
+	if !ok || neighbor != (traceNeighbor{iface: "eth0", ip: "192.0.2.1", mac: "02:00:00:00:00:01", state: "REACHABLE"}) {
+		t.Fatalf("new neighbor = %#v, %t", neighbor, ok)
+	}
+	if neighbor, ok := parseNeighborMessage(neighborNetlinkMessage(unix.RTM_DELNEIGH, unix.AF_INET, unix.NUD_FAILED, destination), unix.AF_INET, names); !ok || !neighbor.deleted || neighbor.state != "FAILED" || neighbor.mac != "" {
+		t.Fatalf("deleted neighbor = %#v, %t", neighbor, ok)
+	}
+	for name, message := range map[string]syscall.NetlinkMessage{
+		"noarp":      neighborNetlinkMessage(unix.RTM_NEWNEIGH, unix.AF_INET, unix.NUD_NOARP, destination),
+		"ipv6":       neighborNetlinkMessage(unix.RTM_NEWNEIGH, unix.AF_INET6, unix.NUD_REACHABLE, neighborNetlinkAttribute(unix.NDA_DST, make([]byte, 16))),
+		"no address": neighborNetlinkMessage(unix.RTM_NEWNEIGH, unix.AF_INET, unix.NUD_REACHABLE, address),
+		"route":      {Header: syscall.NlMsghdr{Type: unix.RTM_NEWROUTE}, Data: make([]byte, 64)},
+	} {
+		if neighbor, ok := parseNeighborMessage(message, unix.AF_INET, names); ok {
+			t.Fatalf("%s message made a neighbor: %#v", name, neighbor)
+		}
+	}
+	// NDP는 같은 알림에서 IPv6 항목만 읽는다.
+	global := make([]byte, 16)
+	copy(global, []byte{0x20, 0x01, 0x0d, 0xb8})
+	global[15] = 1
+	if neighbor, ok := parseNeighborMessage(neighborNetlinkMessage(unix.RTM_NEWNEIGH, unix.AF_INET6, unix.NUD_STALE, neighborNetlinkAttribute(unix.NDA_DST, global), address), unix.AF_INET6, names); !ok || neighbor.ip != "2001:db8::1" || neighbor.state != "STALE" {
+		t.Fatalf("IPv6 neighbor = %#v, %t", neighbor, ok)
+	}
+	if _, ok := parseNeighborMessage(neighborNetlinkMessage(unix.RTM_NEWNEIGH, unix.AF_INET, unix.NUD_REACHABLE, destination, address), unix.AF_INET6, names); ok {
+		t.Fatal("an IPv4 neighbor was read for NDP")
+	}
+	for state, want := range map[uint16]string{unix.NUD_STALE: "STALE", unix.NUD_INCOMPLETE: "INCOMPLETE", unix.NUD_PERMANENT: "PERMANENT", 0: "NONE"} {
+		if got := traceNeighborStateName(state); got != want {
+			t.Fatalf("traceNeighborStateName(%#x) = %q, want %q", state, got, want)
+		}
+	}
+}
+
+// root는 SO_RCVBUFFORCE로, root가 아닌 CI는 EPERM 뒤의 SO_RCVBUF로 기본값보다 큰 buffer를 받는다.
+func TestGrowNeighborReceiveBufferExceedsTheDefault(t *testing.T) {
+	open := func() int {
+		fd, err := unix.Socket(unix.AF_NETLINK, unix.SOCK_RAW|unix.SOCK_CLOEXEC, unix.NETLINK_ROUTE)
+		if err != nil {
+			t.Fatalf("open netlink socket: %v", err)
+		}
+		t.Cleanup(func() { unix.Close(fd) })
+		return fd
+	}
+	initial, err := unix.GetsockoptInt(open(), unix.SOL_SOCKET, unix.SO_RCVBUF)
+	if err != nil {
+		t.Fatalf("read default receive buffer: %v", err)
+	}
+	fd := open()
+	if err := growNeighborReceiveBuffer(fd); err != nil {
+		t.Fatalf("growNeighborReceiveBuffer: %v", err)
+	}
+	if grown, err := unix.GetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_RCVBUF); err != nil || grown <= initial {
+		t.Fatalf("receive buffer = %d, %v, want more than the default %d", grown, err, initial)
+	}
+}
+
+func TestHTTPRecordOffsetsMatchTheBPFStruct(t *testing.T) {
+	var record captureEventsHttpRecord
+	for name, offsets := range map[string][2]uintptr{
+		"event_type":  {unsafe.Offsetof(record.EventType), 8},
+		"pid":         {unsafe.Offsetof(record.Pid), 12},
+		"cgroup_id":   {unsafe.Offsetof(record.CgroupId), 16},
+		"skaddr":      {unsafe.Offsetof(record.Skaddr), 24},
+		"len":         {unsafe.Offsetof(record.Len), 32},
+		"family":      {unsafe.Offsetof(record.Family), 36},
+		"direction":   {unsafe.Offsetof(record.Direction), 38},
+		"sport":       {unsafe.Offsetof(record.Sport), 40},
+		"dport":       {unsafe.Offsetof(record.Dport), 42},
+		"source":      {unsafe.Offsetof(record.Source), 44},
+		"destination": {unsafe.Offsetof(record.Destination), 60},
+		"comm":        {unsafe.Offsetof(record.Comm), 76},
+		"payload":     {unsafe.Offsetof(record.Payload), httpRecordPayloadOffset},
+	} {
+		if offsets[0] != offsets[1] {
+			t.Fatalf("%s is at %d in the BPF struct, parseHTTPRecord reads %d", name, offsets[0], offsets[1])
+		}
+	}
+	sample := make([]byte, httpRecordPayloadOffset+16)
+	binary.LittleEndian.PutUint32(sample[8:12], httpRecordType)
+	binary.LittleEndian.PutUint64(sample[24:32], 0xabc)
+	binary.LittleEndian.PutUint32(sample[32:36], 4)
+	binary.LittleEndian.PutUint16(sample[36:38], 2)
+	sample[38] = httpRecordSent
+	binary.LittleEndian.PutUint16(sample[40:42], 40000)
+	binary.LittleEndian.PutUint16(sample[42:44], 80)
+	copy(sample[44:48], []byte{10, 0, 0, 2})
+	copy(sample[60:64], []byte{192, 0, 2, 1})
+	copy(sample[httpRecordPayloadOffset:], "GET /")
+	packet, ok := parseHTTPRecord(sample)
+	if !ok || !packet.sent || packet.socket != 0xabc || packet.source != "10.0.0.2:40000" || packet.destination != "192.0.2.1:80" || string(packet.payload) != "GET " {
+		t.Fatalf("parseHTTPRecord = %#v, %t", packet, ok)
+	}
+}
+
+// ubuf와 __iov는 iov_iter 안의 이름 없는 union에 있다. 이 kernel BTF에서 찾을 수 있어야 trace http가 동작한다.
+func TestHTTPKernelCheckFindsNestedIOVIterFields(t *testing.T) {
+	spec, err := btf.LoadKernelSpec()
+	if err != nil {
+		t.Skipf("no kernel BTF: %v", err)
+	}
+	var iter *btf.Struct
+	if err := spec.TypeByName("iov_iter", &iter); err != nil {
+		t.Skipf("no iov_iter: %v", err)
+	}
+	if !btfHasMember(iter, "iov_offset") || btfHasMember(iter, "no_such_field") {
+		t.Fatal("btfHasMember does not follow the struct members")
+	}
+	if !btfHasMember(iter, "ubuf") && !btfHasMember(iter, "iov") {
+		t.Fatal("btfHasMember does not look into anonymous unions")
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"runtime"
 	"slices"
 	"sort"
 	"strconv"
@@ -26,9 +27,199 @@ const (
 	traceGroupByEvent   = "event"
 )
 
+// traceProtocolSpec은 trace가 protocol마다 다르게 보여 주는 부분이다. 수집, filter, group 묶기는 protocol과 상관없이 같다.
+type traceProtocolSpec struct {
+	// ansiColor는 스크롤 출력의 ANSI 색 번호이고 screenColor는 전체 화면에서 쓰는 같은 색이다.
+	ansiColor   string
+	screenColor string
+	// groupColumns는 group 행에서 traffic 열 뒤, LAST 앞에 붙는 열이다.
+	groupColumns []traceGroupColumn
+	// hideTraffic은 byte 열과 traffic 줄을 뺀다. DNS는 질의 수와 응답 시간이 byte보다 쓸모 있다.
+	hideTraffic bool
+	// hiddenViews는 이 protocol에서 의미가 없는 group 보기다. DNS 서버 port는 늘 53이라 port 보기는 한 행뿐이다.
+	hiddenViews []string
+	// linuxOnly는 macOS가 관측하지 못하는 protocol이다. macOS의 network statistics는 payload를 주지 않는다.
+	linuxOnly bool
+	// scrollLabels는 스크롤 행의 목적지 칸과 event 칸이다. nil이면 목적지와 event 이름을 쓴다.
+	scrollLabels func(event captureEvent) (string, string)
+	// serverSide는 --side server로 로컬 서버 쪽을 볼 수 있는 protocol이다.
+	serverSide bool
+	// prerequisites는 수집 전에 확인할 조건이다. nil이면 확인할 것이 없다. ARP는 netlink만 쓰므로 eBPF 권한이 필요 없다.
+	prerequisites func() error
+	newSummarizer func() traceSummarizer
+}
+
+// traceGroupColumn은 group 행의 protocol 전용 열이다. 전체 화면은 좁은 title을, 끝난 뒤 출력하는 표는 긴 title을 쓴다.
+type traceGroupColumn struct {
+	screenTitle string
+	reportTitle string
+	width       int
+	value       func(group traceGroupSummary) string
+}
+
+// traceSummarizer는 --group-by 없이 끝난 trace의 기본 요약을 쌓는다. 행의 단위가 protocol마다 다르다.
+type traceSummarizer interface {
+	observe(event captureEvent)
+	summarize(summary captureSummary, duration time.Duration) traceReport
+}
+
+// traceReport의 print는 detail이 false면 process와 상대별로 묶은 행을, true면 연결이나 flow마다 한 행을 쓴다.
+type traceReport interface{ print(detail bool) }
+
+var traceProtocols = map[string]traceProtocolSpec{
+	"tcp": {
+		ansiColor: "36", screenColor: "#22d3ee",
+		groupColumns: []traceGroupColumn{
+			{screenTitle: "CON", reportTitle: "CONNECT", width: 3, value: func(group traceGroupSummary) string { return strconv.FormatUint(group.Connect, 10) }},
+			{screenTitle: "RET", reportTitle: "RETRANS", width: 3, value: func(group traceGroupSummary) string { return traceOptional(group.Retransmissions, "%d") }},
+			{screenTitle: "RST", reportTitle: "RESET", width: 3, value: func(group traceGroupSummary) string { return traceOptional(group.Resets, "%d") }},
+		},
+		prerequisites: captureEventsPrerequisites, newSummarizer: func() traceSummarizer { return newTCPTraceSummarizer() },
+	},
+	"udp": {ansiColor: "35", screenColor: "#c084fc", prerequisites: captureEventsPrerequisites, newSummarizer: func() traceSummarizer { return newUDPTraceSummarizer() }},
+	"dns": {
+		ansiColor: "32", screenColor: "#4ade80", groupColumns: traceDNSGroupColumns, hideTraffic: true, hiddenViews: []string{traceGroupByPort}, linuxOnly: true,
+		scrollLabels: traceDNSScrollLabels, serverSide: true, prerequisites: captureEventsPrerequisites, newSummarizer: func() traceSummarizer { return newDNSTraceSummarizer() },
+	},
+	// 평문 HTTP/1.x만 본다. TLS 안의 HTTP는 kernel에서 암호문이다.
+	"http": {
+		ansiColor: "95", screenColor: "#f472b6", groupColumns: traceHTTPGroupColumns, hideTraffic: true, linuxOnly: true,
+		scrollLabels: traceHTTPScrollLabels, serverSide: true, prerequisites: httpTracePrerequisites, newSummarizer: func() traceSummarizer { return newHTTPTraceSummarizer() },
+	},
+	// ARP event에는 process와 port가 없다. source는 interface, target은 IP다. Linux는 netlink 알림을, macOS는 1초마다 읽은 table을 쓴다.
+	"arp": {
+		ansiColor: "34", screenColor: "#60a5fa", groupColumns: traceNeighborGroupColumns, hideTraffic: true, hiddenViews: []string{traceGroupByPort, traceGroupByProcess},
+		scrollLabels: traceNeighborScrollLabels, newSummarizer: func() traceSummarizer { return newNeighborTraceSummarizer("arp") },
+	},
+	// NDP는 IPv6 neighbor table이다. ARP와 같은 원천과 형식을 쓰고, event 이름만 ndp_로 시작한다.
+	"ndp": {
+		ansiColor: "34", screenColor: "#60a5fa", groupColumns: traceNeighborGroupColumns, hideTraffic: true, hiddenViews: []string{traceGroupByPort, traceGroupByProcess},
+		scrollLabels: traceNeighborScrollLabels, newSummarizer: func() traceSummarizer { return newNeighborTraceSummarizer("ndp") },
+	},
+}
+
+func traceProtocolPrerequisites(protocol string) error {
+	if check := traceProtocols[protocol].prerequisites; check != nil {
+		return check()
+	}
+	return nil
+}
+
+// traceGroupViews는 protocol이 쓰는 보기를 Tab 순서로 돌려준다. 첫 값은 event 스크롤이다.
+func traceGroupViews(protocol string) []string {
+	hidden := traceProtocols[protocol].hiddenViews
+	return slices.DeleteFunc(slices.Clone(traceGroupCycle), func(view string) bool { return slices.Contains(hidden, view) })
+}
+
+func traceScrollLabels(event captureEvent) (string, string) {
+	if labels := traceProtocols[traceProtocol(event)].scrollLabels; labels != nil {
+		return labels(event)
+	}
+	return traceEventDestinationLabel(event), event.Event
+}
+
+// traceScope는 collector가 모을 범위다. server는 --side server로 로컬 서버 쪽을 볼 때 켠다.
+type traceScope struct {
+	protocol string
+	server   bool
+}
+
+func (options tcpTraceOptions) scope(protocol string) traceScope {
+	return traceScope{protocol: protocol, server: options.side == traceServerSide}
+}
+
+// traceLabel은 화면 머리글에 쓰는 trace 이름이다. 서버 쪽 trace는 client 쪽과 같은 event 이름을 쓰므로 머리글로 구분한다.
+func traceLabel(protocol, side string) string {
+	if side == traceServerSide {
+		return protocol + " --side " + side
+	}
+	return protocol
+}
+
+// traceClientSide와 traceServerSide는 --side 값이다. 서버 쪽 event와 요약에는 Side가 server로 붙는다.
+const (
+	traceClientSide = "client"
+	traceServerSide = "server"
+)
+
+// traceSpan은 두 monotonic 시각 사이의 밀리초다. CPU마다 읽은 시각이 조금 어긋나도 음수로 내지 않는다.
+func traceSpan(start, end uint64) *float64 {
+	span := float64(end-min(end, start)) / float64(time.Millisecond)
+	return &span
+}
+
+// traceSpans는 시간 값의 합, 개수, 최댓값이다.
+type traceSpans struct {
+	total   float64
+	count   uint64
+	maximum float64
+}
+
+func (spans *traceSpans) observe(value *float64) {
+	if value == nil {
+		return
+	}
+	spans.total += *value
+	spans.count++
+	if *value > spans.maximum {
+		spans.maximum = *value
+	}
+}
+
+func (spans traceSpans) summary() (*float64, *float64) {
+	if spans.count == 0 {
+		return nil, nil
+	}
+	average, maximum := spans.total/float64(spans.count), spans.maximum
+	return &average, &maximum
+}
+
+// traceLatency는 밀리초 값을 소수 한 자리로 쓴다. 값이 없으면 -다.
+func traceLatency(latency *float64, unit string) string {
+	if latency == nil {
+		return "-"
+	}
+	return fmt.Sprintf("%.1f%s", *latency, unit)
+}
+
+// traceResultCounts는 결과별 개수를 많은 순서로 잇는다. 예: "noerror 3, nxdomain 1", "200 5, 404 1".
+func traceResultCounts(results map[string]uint64) string {
+	names := slices.Collect(maps.Keys(results))
+	sort.Slice(names, func(i, j int) bool {
+		if results[names[i]] != results[names[j]] {
+			return results[names[i]] > results[names[j]]
+		}
+		return names[i] < names[j]
+	})
+	parts := make([]string, 0, len(names))
+	for _, name := range names {
+		parts = append(parts, fmt.Sprintf("%s %d", name, results[name]))
+	}
+	return emptyAs(strings.Join(parts, ", "), "-")
+}
+
+func knownTraceProtocol(protocol string) bool {
+	_, ok := traceProtocols[protocol]
+	return ok
+}
+
+func (summarizer *tcpTraceSummarizer) summarize(summary captureSummary, duration time.Duration) traceReport {
+	return summarizer.report(summary, duration)
+}
+
+func (report tcpTraceReport) print(detail bool) { printTCPTraceReport(report, detail) }
+
+func (summarizer *udpTraceSummarizer) summarize(summary captureSummary, duration time.Duration) traceReport {
+	return summarizer.report(summary, duration)
+}
+
+func (report udpTraceReport) print(detail bool) { printUDPTraceReport(report, detail) }
+
+func (report traceGroupReport) hideTraffic() bool { return traceProtocols[report.Protocol].hideTraffic }
+
 func runTrace(args []string) int {
-	if len(args) == 0 || (args[0] != "tcp" && args[0] != "udp") {
-		fmt.Fprintln(os.Stderr, T("cli.usage", "edc trace <tcp|udp> [options]"))
+	if len(args) == 0 || !knownTraceProtocol(args[0]) {
+		fmt.Fprintln(os.Stderr, T("cli.usage", "edc trace <tcp|udp|dns|arp|ndp|http> [options]"))
 		return 2
 	}
 	options := tcpTraceOptions{}
@@ -41,7 +232,10 @@ func runTrace(args []string) int {
 	set.StringVar(&options.groupBy, "group-by", "", T("command.trace.option.group_by"))
 	set.StringVar(&options.process, "process", "", T("command.trace.option.process"))
 	set.StringVar(&options.destination, "destination", "", T("command.trace.option.destination"))
+	set.BoolVar(&options.detail, "detail", false, T("command.trace.option.detail"))
+	set.BoolVar(&options.detail, "d", false, T("command.trace.option.detail"))
 	set.BoolVar(&options.yes, "yes", false, T("command.trace.option.yes"))
+	set.StringVar(&options.side, "side", traceClientSide, T("command.trace.option.side"))
 	if err := set.Parse(args[1:]); err != nil {
 		return 2
 	}
@@ -65,7 +259,23 @@ func runTrace(args []string) int {
 		fmt.Fprintln(os.Stderr, T("cli.trace.group_by_raw_conflict"))
 		return 2
 	}
-	if err := captureEventsPrerequisites(); err != nil {
+	if options.groupBy != "" && !slices.Contains(traceGroupViews(args[0]), options.groupBy) {
+		fmt.Fprintln(os.Stderr, T("cli.trace.group_by_protocol", options.groupBy, args[0]))
+		return 2
+	}
+	if options.side != traceClientSide && options.side != traceServerSide {
+		fmt.Fprintln(os.Stderr, T("cli.trace.side_range"))
+		return 2
+	}
+	if options.side == traceServerSide && !traceProtocols[args[0]].serverSide {
+		fmt.Fprintln(os.Stderr, T("cli.trace.side_protocol", args[0]))
+		return 2
+	}
+	if traceProtocols[args[0]].linuxOnly && runtime.GOOS != "linux" {
+		fmt.Fprintln(os.Stderr, T("cli.trace.protocol_linux_only", args[0], runtime.GOOS))
+		return 3
+	}
+	if err := traceProtocolPrerequisites(args[0]); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 3
 	}
@@ -78,13 +288,14 @@ func runTrace(args []string) int {
 	var summary captureSummary
 	var err error
 	var encoder *json.Encoder
+	var written uint64
 	aggregate := newTraceAggregate(args[0], options.groupBy)
 	if options.raw {
 		encoder = json.NewEncoder(os.Stdout)
 	} else if options.jsonPath == "" && options.groupBy == "" {
-		printTraceEventHeader(args[0])
+		printTraceEventHeader(traceLabel(args[0], options.side))
 	}
-	summary, err = collectTraceEventsLive(args[0], options.duration, func(event captureEvent) error {
+	summary, err = collectTraceEventsLive(options.scope(args[0]), options.duration, func(event captureEvent) error {
 		if traceProtocol(event) != args[0] {
 			return nil
 		}
@@ -92,6 +303,7 @@ func runTrace(args []string) int {
 			return nil
 		}
 		if options.raw {
+			written++
 			return encoder.Encode(event)
 		}
 		aggregate.observe(event)
@@ -105,6 +317,8 @@ func runTrace(args []string) int {
 		return 1
 	}
 	if options.raw {
+		// collector는 다른 protocol의 event도 받아 센다. 요약의 event 수는 이 출력에 쓴 줄 수와 같아야 한다.
+		summary.EventCount = written
 		if err := encoder.Encode(summary); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			return 1
@@ -127,19 +341,7 @@ func runTrace(args []string) int {
 		printTraceGroupReport(report)
 		return 0
 	}
-	if args[0] == "udp" {
-		report := aggregate.udp.report(summary, traceDuration)
-		if options.jsonPath != "" {
-			if err := writeJSONOutput(options.jsonPath, report); err != nil {
-				fmt.Fprintln(os.Stderr, err)
-				return 2
-			}
-			return 0
-		}
-		printUDPTraceReport(report)
-		return 0
-	}
-	report := aggregate.tcp.report(summary, traceDuration)
+	report := aggregate.summary.summarize(summary, traceDuration)
 	if options.jsonPath != "" {
 		if err := writeJSONOutput(options.jsonPath, report); err != nil {
 			fmt.Fprintln(os.Stderr, err)
@@ -147,7 +349,7 @@ func runTrace(args []string) int {
 		}
 		return 0
 	}
-	printTCPTraceReport(report)
+	report.print(options.detail)
 	return 0
 }
 
@@ -168,13 +370,13 @@ func traceEventDestinationLabel(event captureEvent) string {
 }
 
 func printTraceEvent(event captureEvent, color bool) {
-	destination := traceEventDestinationLabel(event)
+	destination, name := traceScrollLabels(event)
 	process := event.Process
 	if process == "" {
 		process = "-"
 	}
 	protocol := traceProtocol(event)
-	line := fmt.Sprintf("%-16s %-32s %-20s %s", process, destination, event.Event, event.Source)
+	line := fmt.Sprintf("%-16s %-32s %-20s %s", process, destination, name, event.Source)
 	fmt.Fprintln(os.Stdout, traceColorLine(line, protocol, event.Event, color))
 }
 
@@ -187,11 +389,8 @@ func traceColorLine(line, protocol, event string, color bool) string {
 	if !color || os.Getenv("NO_COLOR") != "" || !isTerminal(os.Stdout) {
 		return line
 	}
-	colorValue := "36"
-	if protocol == "udp" {
-		colorValue = "35"
-	}
-	if strings.Contains(event, "reset") {
+	colorValue := traceProtocols[protocol].ansiColor
+	if strings.Contains(event, "reset") || strings.HasSuffix(event, "_"+traceNeighborMACChange) || event == "http_5xx" {
 		colorValue = "31"
 	} else if strings.Contains(event, "retransmit") || strings.Contains(event, "fail") {
 		colorValue = "33"
@@ -199,9 +398,13 @@ func traceColorLine(line, protocol, event string, color bool) string {
 	return "\033[" + colorValue + "m" + line + "\033[0m"
 }
 
-func printTCPTraceReport(report tcpTraceReport) {
+func printTCPTraceReport(report tcpTraceReport, detail bool) {
 	fmt.Fprintf(os.Stdout, "TCP trace: %s\n\n", (time.Duration(report.DurationMS) * time.Millisecond).String())
 	fmt.Fprintf(os.Stdout, "Attempts: %d\nEstablished: %d\nIncomplete: %d\nExisting: %d\nRetransmissions: %s\nResets: %s\nTX: %s\nRX: %s\nTotal: %s\nTraffic rate: %s\nLost events: %d\n", report.Attempts, report.Established, report.Incomplete, report.Existing, traceOptional(report.Retransmissions, "%d"), traceOptional(report.Resets, "%d"), traceBytes(report.TXBytes), traceBytes(report.RXBytes), traceBytes(report.TotalBytes), traceTrafficRate(report.traceTraffic), report.LostEvents)
+	if !detail {
+		printTCPTraceGroups(report.groups)
+		return
+	}
 	if len(report.Connections) == 0 {
 		return
 	}
@@ -211,6 +414,31 @@ func printTCPTraceReport(report tcpTraceReport) {
 	}
 	if report.ConnectionsOmitted > 0 {
 		fmt.Fprintf(os.Stdout, "%d earlier closed connections are not listed. The totals include them.\n", report.ConnectionsOmitted)
+	}
+}
+
+func printTCPTraceGroups(rows []tcpTraceGroupRow) {
+	if len(rows) == 0 {
+		return
+	}
+	fmt.Fprintln(os.Stdout, "\nPROCESS\tDESTINATION\tCONNS\tEST\tINC\tEXIST\tCONNECT\tTX\tRX\tRETRANS\tRESET")
+	for _, row := range rows {
+		connect := "-"
+		if row.connectCount > 0 {
+			connect = traceOptional(traceObserved(row.connectTotalMS/int64(row.connectCount)), "%dms")
+		}
+		fmt.Fprintf(os.Stdout, "%s\t%s\t%d\t%d\t%d\t%d\t%s\t%s\t%s\t%s\t%s\n", row.process, traceSummaryPeerLabel(row.peer, row.hostname, row.server), row.connections, row.established, row.incomplete, row.existing, connect, traceBytes(row.TXBytes), traceBytes(row.RXBytes), traceOptional(traceObserved(row.retransmissions), "%d"), traceOptional(traceObserved(row.resets), "%d"))
+	}
+}
+
+func traceSummaryPeerLabel(peer, hostname string, server bool) string {
+	switch {
+	case server:
+		return peer + traceServerSuffix
+	case hostname != "":
+		return fmt.Sprintf("%s (%s)", peer, hostname)
+	default:
+		return peer
 	}
 }
 
@@ -232,6 +460,20 @@ type udpTraceReport struct {
 	Received   int            `json:"received"`
 	LostEvents uint64         `json:"lost_events"`
 	Flows      []udpTraceFlow `json:"flows"`
+	// groups는 텍스트 요약의 기본 행이다. JSON은 flow별 행만 쓴다.
+	groups []udpTraceGroupRow
+	traceTraffic
+}
+
+// udpTraceGroupRow는 같은 process가 같은 상대와 주고받은 flow를 묶은 행이다. socket이 달라도 합치고, 서버
+// socket은 client 포트가 매번 달라서 local 서비스로 묶는다.
+type udpTraceGroupRow struct {
+	process  string
+	peer     string
+	hostname string
+	server   bool
+	sent     uint64
+	received uint64
 	traceTraffic
 }
 
@@ -305,7 +547,48 @@ func (summarizer *udpTraceSummarizer) report(summary captureSummary, duration ti
 	}
 	result.traceTraffic.finalize(duration)
 	sortUDPTraceFlows(result.Flows)
+	result.groups = groupUDPTraceFlows(result.Flows, duration)
 	return result
+}
+
+func groupUDPTraceFlows(flows []udpTraceFlow, duration time.Duration) []udpTraceGroupRow {
+	type key struct {
+		process string
+		peer    string
+		server  bool
+	}
+	groups := map[key]*udpTraceGroupRow{}
+	for _, flow := range flows {
+		peer, server := traceSummaryPeer(flow.Source, flow.Destination)
+		row := groups[key{flow.Process, peer, server}]
+		if row == nil {
+			row = &udpTraceGroupRow{process: flow.Process, peer: peer, server: server}
+			groups[key{flow.Process, peer, server}] = row
+		}
+		// 서버 행의 target은 한 client의 이름이라 행 전체를 설명하지 못한다.
+		if row.hostname == "" && !server {
+			row.hostname = flow.Hostname
+		}
+		row.sent += flow.Sent
+		row.received += flow.Received
+		row.TXBytes += flow.TXBytes
+		row.RXBytes += flow.RXBytes
+	}
+	rows := make([]udpTraceGroupRow, 0, len(groups))
+	for _, row := range groups {
+		row.traceTraffic.finalize(duration)
+		rows = append(rows, *row)
+	}
+	sort.Slice(rows, func(i, j int) bool {
+		if rows[i].process != rows[j].process {
+			return rows[i].process < rows[j].process
+		}
+		if rows[i].peer != rows[j].peer {
+			return rows[i].peer < rows[j].peer
+		}
+		return !rows[i].server && rows[j].server
+	})
+	return rows
 }
 
 func sortUDPTraceFlows(flows []udpTraceFlow) {
@@ -320,9 +603,19 @@ func sortUDPTraceFlows(flows []udpTraceFlow) {
 	})
 }
 
-func printUDPTraceReport(report udpTraceReport) {
+func printUDPTraceReport(report udpTraceReport, detail bool) {
 	fmt.Fprintf(os.Stdout, "UDP trace: %s\n\n", (time.Duration(report.DurationMS) * time.Millisecond).String())
 	fmt.Fprintf(os.Stdout, "Datagrams: %d\nSent: %d\nReceived: %d\nTX: %s\nRX: %s\nTotal: %s\nTraffic rate: %s\nLost events: %d\n", report.Datagrams, report.Sent, report.Received, traceBytes(report.TXBytes), traceBytes(report.RXBytes), traceBytes(report.TotalBytes), traceTrafficRate(report.traceTraffic), report.LostEvents)
+	if !detail {
+		if len(report.groups) == 0 {
+			return
+		}
+		fmt.Fprintln(os.Stdout, "\nPROCESS\tDESTINATION\tSENT\tRECEIVED\tTX\tRX")
+		for _, row := range report.groups {
+			fmt.Fprintf(os.Stdout, "%s\t%s\t%d\t%d\t%s\t%s\n", row.process, traceSummaryPeerLabel(row.peer, row.hostname, row.server), row.sent, row.received, traceBytes(row.TXBytes), traceBytes(row.RXBytes))
+		}
+		return
+	}
 	if len(report.Flows) == 0 {
 		return
 	}
@@ -360,6 +653,9 @@ type traceGroup struct {
 	Retransmissions uint64
 	Resets          uint64
 	LastEvent       string
+	DNS             *traceDNSCounts
+	Neighbor        *traceNeighborCounts
+	HTTP            *traceHTTPCounts
 	traceTraffic
 }
 
@@ -376,11 +672,17 @@ type traceGroupSummary struct {
 	Retransmissions *uint64  `json:"retransmissions"`
 	Resets          *uint64  `json:"resets"`
 	LastEvent       string   `json:"last_event,omitempty"`
+	// DNS는 DNS group에만 있다. TCP와 UDP group의 JSON에는 나오지 않는다.
+	DNS *traceDNSCounts `json:"dns,omitempty"`
+	// Neighbor는 ARP와 NDP group에만, HTTP는 HTTP group에만 있다.
+	Neighbor *traceNeighborCounts `json:"neighbor,omitempty"`
+	HTTP     *traceHTTPCounts     `json:"http,omitempty"`
 	traceTraffic
 }
 
 type traceGroupReport struct {
 	Protocol   string              `json:"protocol"`
+	Side       string              `json:"side,omitempty"`
 	GroupBy    string              `json:"group_by"`
 	DurationMS int64               `json:"duration_ms"`
 	Events     uint64              `json:"events"`
@@ -393,32 +695,25 @@ type traceGroupReport struct {
 // traceAggregate는 trace가 끝난 뒤 보여 줄 요약을 event가 올 때마다 쌓는다. event를 모두 두면 긴 trace에서
 // 메모리가 event 수만큼 늘었다. view가 빈 문자열이면 protocol의 기본 요약을, 아니면 그 group 요약을 쌓는다.
 type traceAggregate struct {
-	tcp    *tcpTraceSummarizer
-	udp    *udpTraceSummarizer
-	groups map[string]*traceGroupSummarizer
+	summary traceSummarizer
+	groups  map[string]*traceGroupSummarizer
 }
 
 func newTraceAggregate(protocol string, views ...string) *traceAggregate {
 	aggregate := &traceAggregate{groups: make(map[string]*traceGroupSummarizer)}
 	for _, view := range views {
-		switch {
-		case view != "":
-			aggregate.groups[view] = newTraceGroupSummarizer(protocol, view)
-		case protocol == "udp":
-			aggregate.udp = newUDPTraceSummarizer()
-		default:
-			aggregate.tcp = newTCPTraceSummarizer()
+		if view == "" {
+			aggregate.summary = traceProtocols[protocol].newSummarizer()
+			continue
 		}
+		aggregate.groups[view] = newTraceGroupSummarizer(protocol, view)
 	}
 	return aggregate
 }
 
 func (aggregate *traceAggregate) observe(event captureEvent) {
-	if aggregate.tcp != nil {
-		aggregate.tcp.observe(event)
-	}
-	if aggregate.udp != nil {
-		aggregate.udp.observe(event)
+	if aggregate.summary != nil {
+		aggregate.summary.observe(event)
 	}
 	for _, groups := range aggregate.groups {
 		groups.observe(event)
@@ -438,6 +733,7 @@ func summarizeTraceGroups(protocol, groupBy string, events []captureEvent, summa
 
 type traceGroupSummarizer struct {
 	protocol string
+	side     string
 	groupBy  string
 	groups   map[string]*traceGroup
 	events   uint64
@@ -449,6 +745,9 @@ func newTraceGroupSummarizer(protocol, groupBy string) *traceGroupSummarizer {
 }
 
 func (summarizer *traceGroupSummarizer) observe(event captureEvent) {
+	if event.Side != "" {
+		summarizer.side = event.Side
+	}
 	key, server := traceGroupKey(event, summarizer.groupBy)
 	// 서버 행과 target 없는 client 행이 같은 주소일 수 있다. 섞이지 않도록 map key만 구분한다.
 	mapKey := key
@@ -461,12 +760,22 @@ func (summarizer *traceGroupSummarizer) observe(event captureEvent) {
 		summarizer.groups[mapKey] = group
 	}
 	observeTraceGroup(group, event)
+	// event 보기는 질의를 dns_query 행에, 응답을 결과 행에 둔다. 응답이 답한 질의를 dns_query 행에서 빼지 않으면
+	// 그 행의 질의가 모두 응답 없음으로 보인다. 다른 보기는 질의와 응답이 같은 행에 들어간다.
+	if summarizer.groupBy == traceGroupByEvent && event.answered > 0 {
+		if queries := summarizer.groups[traceDNSQueryEvent]; queries != nil && queries.DNS != nil {
+			queries.DNS.answered += event.answered
+		}
+		if requests := summarizer.groups[traceHTTPRequestEvent]; requests != nil && requests.HTTP != nil {
+			requests.HTTP.answered += event.answered
+		}
+	}
 	summarizer.events++
 	summarizer.traffic.observe(event)
 }
 
 func (summarizer *traceGroupSummarizer) report(summary captureSummary, duration time.Duration) traceGroupReport {
-	result := traceGroupReport{Protocol: summarizer.protocol, GroupBy: summarizer.groupBy, DurationMS: duration.Milliseconds(), LostEvents: summary.LostEvents, Events: summarizer.events, traceTraffic: summarizer.traffic}
+	result := traceGroupReport{Protocol: summarizer.protocol, Side: summarizer.side, GroupBy: summarizer.groupBy, DurationMS: duration.Milliseconds(), LostEvents: summary.LostEvents, Events: summarizer.events, traceTraffic: summarizer.traffic}
 	result.Rate = traceGroupRate(result.Events, duration)
 	result.traceTraffic.finalize(duration)
 	result.Groups = make([]traceGroupSummary, 0, len(summarizer.groups))
@@ -476,7 +785,7 @@ func (summarizer *traceGroupSummarizer) report(summary captureSummary, duration 
 		result.Groups = append(result.Groups, traceGroupSummary{
 			Group: group.Group, Server: group.Server, Destinations: slices.Sorted(maps.Keys(group.Destinations)), Processes: slices.Sorted(maps.Keys(group.Processes)),
 			Events: group.Events, Rate: traceGroupRate(group.Events, duration), Tx: group.Tx, Rx: group.Rx, Connect: group.Connect,
-			Retransmissions: traceObserved(group.Retransmissions), Resets: traceObserved(group.Resets), LastEvent: group.LastEvent, traceTraffic: traffic,
+			Retransmissions: traceObserved(group.Retransmissions), Resets: traceObserved(group.Resets), LastEvent: group.LastEvent, DNS: traceDNSGroupSummary(group.DNS), Neighbor: traceNeighborGroupSummary(group.Neighbor), HTTP: traceHTTPGroupSummary(group.HTTP), traceTraffic: traffic,
 		})
 	}
 	if summarizer.groupBy == traceGroupByPort {
@@ -610,6 +919,23 @@ func observeTraceGroup(group *traceGroup, event captureEvent) {
 	case "tcp_send_reset", "tcp_receive_reset":
 		group.Resets++
 	}
+	switch event.Protocol {
+	case "dns":
+		if group.DNS == nil {
+			group.DNS = &traceDNSCounts{}
+		}
+		group.DNS.observe(event)
+	case "arp", "ndp":
+		if group.Neighbor == nil {
+			group.Neighbor = &traceNeighborCounts{}
+		}
+		group.Neighbor.observe(event)
+	case "http":
+		if group.HTTP == nil {
+			group.HTTP = &traceHTTPCounts{}
+		}
+		group.HTTP.observe(event)
+	}
 	group.traceTraffic.observe(event)
 	group.LastEvent = event.Event
 }
@@ -630,6 +956,10 @@ func traceGroupDisplayValue(groupBy string, group traceGroupSummary) string {
 		// 서버 행의 destination은 client port들이라, 하나만 붙이면 한 client만 쓴 것처럼 보인다.
 		return group.Group + traceServerSuffix
 	}
+	if group.DNS != nil {
+		// DNS event의 destination은 DNS 서버라서 이름 뒤에 붙이면 그 이름이 가리키는 주소처럼 읽힌다.
+		return group.Group
+	}
 	if groupBy == traceGroupByPort && group.Group == "-" {
 		return group.Group
 	}
@@ -647,21 +977,41 @@ func traceGroupLabel(groupBy string) string {
 }
 
 func printTraceGroupReport(report traceGroupReport) {
-	fmt.Fprintf(os.Stdout, "%s trace grouped by %s: %s\n\n", strings.ToUpper(report.Protocol), report.GroupBy, (time.Duration(report.DurationMS) * time.Millisecond).String())
-	fmt.Fprintf(os.Stdout, "Events: %d\n%s groups: %d\nEvent rate: %.1f/s\nTX: %s\nRX: %s\nTotal: %s\nTraffic rate: %s\nLost events: %d\n", report.Events, report.GroupBy, len(report.Groups), report.Rate, traceBytes(report.TXBytes), traceBytes(report.RXBytes), traceBytes(report.TotalBytes), traceTrafficRate(report.traceTraffic), report.LostEvents)
+	title := strings.ToUpper(report.Protocol)
+	if report.Side == traceServerSide {
+		title += " server"
+	}
+	fmt.Fprintf(os.Stdout, "%s trace grouped by %s: %s\n\n", title, report.GroupBy, (time.Duration(report.DurationMS) * time.Millisecond).String())
+	fmt.Fprintf(os.Stdout, "Events: %d\n%s groups: %d\nEvent rate: %.1f/s\n", report.Events, report.GroupBy, len(report.Groups), report.Rate)
+	if !report.hideTraffic() {
+		fmt.Fprintf(os.Stdout, "TX: %s\nRX: %s\nTotal: %s\nTraffic rate: %s\n", traceBytes(report.TXBytes), traceBytes(report.RXBytes), traceBytes(report.TotalBytes), traceTrafficRate(report.traceTraffic))
+	}
+	if report.Protocol == "arp" || report.Protocol == "ndp" {
+		fmt.Fprintf(os.Stdout, "Lost events: %s\n", traceNeighborLost(report.LostEvents))
+	} else {
+		fmt.Fprintf(os.Stdout, "Lost events: %d\n", report.LostEvents)
+	}
 	if len(report.Groups) == 0 {
 		return
 	}
-	if report.Protocol == "udp" {
-		fmt.Fprintf(os.Stdout, "\n%s\tEVENTS\tEVENT/s\tTX\tRX\tTOTAL\tB/s\tMbps\tLAST\n", traceGroupLabel(report.GroupBy))
-		for _, group := range report.Groups {
-			fmt.Fprintf(os.Stdout, "%s\t%d\t%.1f\t%s\t%s\t%s\t%s\t%.3f\t%s\n", traceGroupDisplayValue(report.GroupBy, group), group.Events, group.Rate, traceBytes(group.TXBytes), traceBytes(group.RXBytes), traceBytes(group.TotalBytes), traceBytes(uint64(group.BytesPerSecond)), group.MegabitsPerSecond, group.LastEvent)
-		}
-		return
+	columns := traceProtocols[report.Protocol].groupColumns
+	titles := []string{traceGroupLabel(report.GroupBy), "EVENTS", "EVENT/s"}
+	if !report.hideTraffic() {
+		titles = append(titles, "TX", "RX", "TOTAL", "B/s", "Mbps")
 	}
-	fmt.Fprintf(os.Stdout, "\n%s\tEVENTS\tEVENT/s\tTX\tRX\tTOTAL\tB/s\tMbps\tCONNECT\tRETRANS\tRESET\tLAST\n", traceGroupLabel(report.GroupBy))
+	for _, column := range columns {
+		titles = append(titles, column.reportTitle)
+	}
+	fmt.Fprintf(os.Stdout, "\n%s\n", strings.Join(append(titles, "LAST"), "\t"))
 	for _, group := range report.Groups {
-		fmt.Fprintf(os.Stdout, "%s\t%d\t%.1f\t%s\t%s\t%s\t%s\t%.3f\t%d\t%s\t%s\t%s\n", traceGroupDisplayValue(report.GroupBy, group), group.Events, group.Rate, traceBytes(group.TXBytes), traceBytes(group.RXBytes), traceBytes(group.TotalBytes), traceBytes(uint64(group.BytesPerSecond)), group.MegabitsPerSecond, group.Connect, traceOptional(group.Retransmissions, "%d"), traceOptional(group.Resets, "%d"), group.LastEvent)
+		values := []string{traceGroupDisplayValue(report.GroupBy, group), strconv.FormatUint(group.Events, 10), fmt.Sprintf("%.1f", group.Rate)}
+		if !report.hideTraffic() {
+			values = append(values, traceBytes(group.TXBytes), traceBytes(group.RXBytes), traceBytes(group.TotalBytes), traceBytes(uint64(group.BytesPerSecond)), fmt.Sprintf("%.3f", group.MegabitsPerSecond))
+		}
+		for _, column := range columns {
+			values = append(values, column.value(group))
+		}
+		fmt.Fprintf(os.Stdout, "%s\n", strings.Join(append(values, group.LastEvent), "\t"))
 	}
 }
 

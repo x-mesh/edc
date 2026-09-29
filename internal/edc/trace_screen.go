@@ -34,6 +34,7 @@ type traceStopMsg struct{}
 
 type traceScreenModel struct {
 	protocol    string
+	side        string
 	groupBy     string
 	process     string
 	destination string
@@ -62,7 +63,7 @@ func newTraceScreenModel(protocol string, options tcpTraceOptions, eventCh <-cha
 	input.CharLimit = 256
 	input.SetWidth(48)
 	return traceScreenModel{
-		protocol: protocol, groupBy: options.groupBy, process: options.process, destination: options.destination,
+		protocol: protocol, side: options.side, groupBy: options.groupBy, process: options.process, destination: options.destination,
 		duration: options.duration, started: time.Now(), eventCh: eventCh, resultCh: resultCh, stop: stop, input: input,
 		width: 80, height: 24,
 	}
@@ -158,29 +159,16 @@ func (model traceScreenModel) updateKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd
 		model.input.SetValue(model.filter)
 		model.filtering = true
 		return model, model.input.Focus()
-	case "s":
-		model.groupBy = traceGroupBySource
-		return model, nil
-	case "t":
-		model.groupBy = traceGroupByTarget
-		return model, nil
-	case "p":
-		model.groupBy = traceGroupByPort
-		return model, nil
-	case "c":
-		model.groupBy = traceGroupByProcess
-		return model, nil
-	case "e":
-		model.groupBy = traceGroupByEvent
-		return model, nil
-	case "g":
-		model.groupBy = ""
+	case "s", "t", "p", "c", "e", "g":
+		if view := traceGroupKeyViews[key.String()]; slices.Contains(traceGroupViews(model.protocol), view) {
+			model.groupBy = view
+		}
 		return model, nil
 	case "tab":
-		model.groupBy = nextTraceGroup(model.groupBy, 1)
+		model.groupBy = nextTraceGroup(traceGroupViews(model.protocol), model.groupBy, 1)
 		return model, nil
 	case "shift+tab":
-		model.groupBy = nextTraceGroup(model.groupBy, -1)
+		model.groupBy = nextTraceGroup(traceGroupViews(model.protocol), model.groupBy, -1)
 		return model, nil
 	case "esc":
 		model.filter = ""
@@ -195,14 +183,29 @@ func (model traceScreenModel) updateKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd
 // traceGroupCycle은 Tab이 넘겨 가는 순서다. 기본 화면인 event 스크롤에서 시작해 s, t, p, c, e 키와 같은 순서로 간다.
 var traceGroupCycle = []string{"", traceGroupBySource, traceGroupByTarget, traceGroupByPort, traceGroupByProcess, traceGroupByEvent}
 
-func nextTraceGroup(current string, step int) string {
+var traceGroupKeyViews = map[string]string{"g": "", "s": traceGroupBySource, "t": traceGroupByTarget, "p": traceGroupByPort, "c": traceGroupByProcess, "e": traceGroupByEvent}
+
+func nextTraceGroup(views []string, current string, step int) string {
 	index := 0
-	for position, groupBy := range traceGroupCycle {
+	for position, groupBy := range views {
 		if groupBy == current {
 			index = position
 		}
 	}
-	return traceGroupCycle[(index+step+len(traceGroupCycle))%len(traceGroupCycle)]
+	return views[(index+step+len(views))%len(views)]
+}
+
+// traceScreenHelp는 protocol이 쓰는 보기의 키만 보여 준다.
+func traceScreenHelp(protocol string) string {
+	keys := []string{"/ filter", "tab view"}
+	for _, view := range traceGroupViews(protocol) {
+		for key, keyView := range traceGroupKeyViews {
+			if view != "" && keyView == view {
+				keys = append(keys, key+" "+view)
+			}
+		}
+	}
+	return strings.Join(append(keys, "g scroll", "enter apply", "esc clear", "q quit", "ctrl-c stop"), "  ")
 }
 
 func (model *traceScreenModel) requestStop() {
@@ -233,15 +236,19 @@ func traceScreenHeader(model traceScreenModel) []string {
 	if model.filter != "" {
 		filter = model.filter
 	}
-	line := fmt.Sprintf("edc trace %s", model.protocol)
+	line := fmt.Sprintf("edc trace %s", traceLabel(model.protocol, model.side))
 	var report traceGroupReport
 	if model.groupBy != "" {
 		report = model.groupReport()
-		line += fmt.Sprintf(" grouped by %s  ·  %s  ·  events %d  ·  %s %d  ·  event/s %.1f  ·  %.1f bps  ·  filter %s", model.groupBy, status, report.Events, model.groupBy, len(report.Groups), report.Rate, report.BitsPerSecond, filter)
+		traffic := fmt.Sprintf("  ·  %.1f bps", report.BitsPerSecond)
+		if report.hideTraffic() {
+			traffic = ""
+		}
+		line += fmt.Sprintf(" grouped by %s  ·  %s  ·  events %d  ·  %s %d  ·  event/s %.1f%s  ·  filter %s", model.groupBy, status, report.Events, model.groupBy, len(report.Groups), report.Rate, traffic, filter)
 	} else {
 		line += fmt.Sprintf("  ·  %s  ·  events %d  ·  filter %s", status, model.received, filter)
 	}
-	help := "/ filter  tab view  s source  t target  p port  c process  e event  g scroll  enter apply  esc clear  q quit  ctrl-c stop"
+	help := traceScreenHelp(model.protocol)
 	if model.filtering {
 		help = model.input.View() + "  enter apply  esc cancel"
 	}
@@ -250,9 +257,12 @@ func traceScreenHeader(model traceScreenModel) []string {
 	columns := liveCell("PROCESS", traceScrollProcessWidth) + " " + liveCell("DESTINATION", destinationWidth) + " " + liveCell("EVENT", traceScrollEventWidth) + " SOURCE"
 	if model.groupBy != "" {
 		layout := traceScreenGroupLayout(model, report)
-		names := []any{"EVT", "E/s", "TX", "RX", "TOT", "B/s", "Mbps"}
-		if model.protocol != "udp" {
-			names = append(names, "CON", "RET", "RST")
+		names := []any{"EVT", "E/s"}
+		if !traceProtocols[model.protocol].hideTraffic {
+			names = append(names, "TX", "RX", "TOT", "B/s", "Mbps")
+		}
+		for _, column := range traceProtocols[model.protocol].groupColumns {
+			names = append(names, column.screenTitle)
 		}
 		columns = liveCell(traceGroupLabel(model.groupBy), layout.labelWidth) + fmt.Sprintf(traceGroupColumns(model.protocol, layout.byteWidth), append(names, "LAST")...)
 	}
@@ -355,19 +365,24 @@ type traceGroupLayout struct {
 
 // traceGroupColumns는 헤더와 행이 같은 폭을 쓰도록 label 뒤 열 형식을 만든다.
 func traceGroupColumns(protocol string, byteWidth int) string {
-	byteColumn := fmt.Sprintf(" %%%dv", byteWidth)
-	columns := " %5v %6v" + strings.Repeat(byteColumn, 4) + " %5v"
-	if protocol != "udp" {
-		columns += " %3v %3v %3v"
+	columns := " %5v %6v"
+	if !traceProtocols[protocol].hideTraffic {
+		columns += strings.Repeat(fmt.Sprintf(" %%%dv", byteWidth), 4) + " %5v"
+	}
+	for _, column := range traceProtocols[protocol].groupColumns {
+		columns += fmt.Sprintf(" %%%dv", column.width)
 	}
 	return columns + " %v"
 }
 
 // traceGroupColumnsWidth는 label 뒤 열의 폭이다. LAST 앞의 공백까지 센다.
 func traceGroupColumnsWidth(protocol string, byteWidth int) int {
-	width := 6 + 7 + 4*(byteWidth+1) + 6 + 1
-	if protocol != "udp" {
-		width += 12
+	width := 6 + 7 + 1
+	if !traceProtocols[protocol].hideTraffic {
+		width += 4*(byteWidth+1) + 6
+	}
+	for _, column := range traceProtocols[protocol].groupColumns {
+		width += column.width + 1
 	}
 	return width
 }
@@ -460,9 +475,12 @@ func traceKeepTail(value string, width int) string {
 func formatTraceGroupScreenRow(protocol, groupBy string, group traceGroupSummary, width int, layout traceGroupLayout) string {
 	// liveCell은 폭보다 긴 값을 여러 줄로 감싸므로 먼저 자른다.
 	value := liveCell(traceGroupFitLabel(groupBy, group, layout.labelWidth), layout.labelWidth)
-	values := []any{group.Events, traceScreenEventRate(group.Rate), layout.bytes(group.TXBytes), layout.bytes(group.RXBytes), layout.bytes(group.TotalBytes), layout.bytes(uint64(group.BytesPerSecond)), traceScreenMegabits(group.MegabitsPerSecond)}
-	if protocol != "udp" {
-		values = append(values, group.Connect, traceOptional(group.Retransmissions, "%d"), traceOptional(group.Resets, "%d"))
+	values := []any{group.Events, traceScreenEventRate(group.Rate)}
+	if !traceProtocols[protocol].hideTraffic {
+		values = append(values, layout.bytes(group.TXBytes), layout.bytes(group.RXBytes), layout.bytes(group.TotalBytes), layout.bytes(uint64(group.BytesPerSecond)), traceScreenMegabits(group.MegabitsPerSecond))
+	}
+	for _, column := range traceProtocols[protocol].groupColumns {
+		values = append(values, column.value(group))
 	}
 	line := value + fmt.Sprintf(traceGroupColumns(protocol, layout.byteWidth), append(values, group.LastEvent)...)
 	return traceFit(traceGroupColorLine(line, protocol, group), width)
@@ -472,13 +490,10 @@ func traceGroupColorLine(line, protocol string, group traceGroupSummary) string 
 	if os.Getenv("NO_COLOR") != "" {
 		return line
 	}
-	color := lipgloss.Color("#22d3ee")
-	if protocol == "udp" {
-		color = lipgloss.Color("#c084fc")
-	}
-	if group.Resets != nil && *group.Resets > 0 {
+	color := lipgloss.Color(traceProtocols[protocol].screenColor)
+	if (group.Resets != nil && *group.Resets > 0) || (group.Neighbor != nil && group.Neighbor.MACChanges > 0) || (group.HTTP != nil && group.HTTP.ServerErrors > 0) {
 		color = lipgloss.Color("#fb7185")
-	} else if group.Retransmissions != nil && *group.Retransmissions > 0 {
+	} else if (group.Retransmissions != nil && *group.Retransmissions > 0) || (group.DNS != nil && group.DNS.Errors > 0) || (group.Neighbor != nil && group.Neighbor.Failures > 0) || (group.HTTP != nil && group.HTTP.ClientErrors > 0) {
 		color = lipgloss.Color("#fbbf24")
 	}
 	return lipgloss.NewStyle().Foreground(color).Render(line)
@@ -509,7 +524,8 @@ func traceScrollColumns(width int) (int, int) {
 }
 
 func formatTraceScreenEvent(event captureEvent, width int) string {
-	process, destination, name, source := event.Process, traceEventDestinationLabel(event), event.Event, event.Source
+	destination, name := traceScrollLabels(event)
+	process, source := event.Process, event.Source
 	if process == "" {
 		process = "-"
 	}
@@ -523,18 +539,15 @@ func formatTraceScreenEvent(event captureEvent, width int) string {
 	// liveCell은 칸보다 긴 값을 여러 줄로 감싸므로, 한 행을 지키려고 먼저 자른다.
 	cell := func(value string, width int) string { return liveCell(traceFit(value, width), width) }
 	line := cell(process, traceScrollProcessWidth) + " " + cell(destination, destinationWidth) + " " + cell(name, traceScrollEventWidth) + " " + cell(source, sourceWidth)
-	return traceEventStyle(line, traceProtocol(event), name)
+	return traceEventStyle(line, traceProtocol(event), event.Event)
 }
 
 func traceEventStyle(line, protocol, event string) string {
 	if os.Getenv("NO_COLOR") != "" {
 		return line
 	}
-	color := lipgloss.Color("#22d3ee")
-	if protocol == "udp" {
-		color = lipgloss.Color("#c084fc")
-	}
-	if strings.Contains(event, "reset") {
+	color := lipgloss.Color(traceProtocols[protocol].screenColor)
+	if strings.Contains(event, "reset") || strings.HasSuffix(event, "_"+traceNeighborMACChange) || event == "http_5xx" {
 		color = lipgloss.Color("#fb7185")
 	} else if strings.Contains(event, "retransmit") || strings.Contains(event, "fail") {
 		color = lipgloss.Color("#fbbf24")
@@ -551,7 +564,7 @@ func traceFit(value string, width int) string {
 }
 
 func runTraceScreen(protocol string, options tcpTraceOptions) int {
-	if err := captureEventsPrerequisites(); err != nil {
+	if err := traceProtocolPrerequisites(protocol); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 3
 	}
@@ -565,9 +578,9 @@ func runTraceScreen(protocol string, options tcpTraceOptions) int {
 	stopCapture := func() { stopOnce.Do(func() { close(stop) }) }
 	started := time.Now()
 	// 끝날 때 어느 보기일지 모르므로 모든 보기의 요약을 쌓는다. 수집 goroutine만 쓰고, resultCh를 받은 뒤에 읽는다.
-	aggregate := newTraceAggregate(protocol, traceGroupCycle...)
+	aggregate := newTraceAggregate(protocol, traceGroupViews(protocol)...)
 	go func() {
-		summary, err := collectTraceEventsLive(protocol, options.duration, func(event captureEvent) error {
+		summary, err := collectTraceEventsLive(options.scope(protocol), options.duration, func(event captureEvent) error {
 			if traceProtocol(event) != protocol || !traceEventMatches(event, options.process, options.destination) {
 				return nil
 			}
@@ -584,7 +597,9 @@ func runTraceScreen(protocol string, options tcpTraceOptions) int {
 	model := newTraceScreenModel(protocol, options, eventCh, resultCh, stopCapture)
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
-	program := tea.NewProgram(model, tea.WithInput(os.Stdin), tea.WithOutput(os.Stdout))
+	// bubbletea의 signal 처리기는 SIGINT를 중단 오류로, SIGTERM을 즉시 종료로 끝내서 수집 결과를 받기 전에
+	// 화면이 닫혔다. 위의 NotifyContext가 대신 수집을 멈추고, 화면은 결과를 받은 뒤 요약과 함께 끝난다.
+	program := tea.NewProgram(model, tea.WithInput(os.Stdin), tea.WithOutput(os.Stdout), tea.WithoutSignalHandler())
 	go func() {
 		<-ctx.Done()
 		stopCapture()
@@ -615,10 +630,6 @@ func runTraceScreen(protocol string, options tcpTraceOptions) int {
 		printTraceGroupReport(aggregate.groups[screen.groupBy].report(result.summary, duration))
 		return 0
 	}
-	if protocol == "udp" {
-		printUDPTraceReport(aggregate.udp.report(result.summary, duration))
-		return 0
-	}
-	printTCPTraceReport(aggregate.tcp.report(result.summary, duration))
+	aggregate.summary.summarize(result.summary, duration).print(options.detail)
 	return 0
 }

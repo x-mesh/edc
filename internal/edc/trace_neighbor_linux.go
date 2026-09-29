@@ -1,0 +1,178 @@
+//go:build linux
+
+package edc
+
+import (
+	"encoding/binary"
+	"errors"
+	"fmt"
+	"net"
+	"net/netip"
+	"syscall"
+	"time"
+
+	"golang.org/x/sys/unix"
+)
+
+// traceNeighborPollInterval은 netlink 수신을 기다리는 최대 시간이다. 이 간격으로 --duration과 Ctrl-C를 확인한다.
+const traceNeighborPollInterval = 200 * time.Millisecond
+
+// traceNeighborReceiveBuffer는 netlink 수신 buffer의 크기다. flush나 timer가 이웃 수천 개의 변화를 한꺼번에 알리면
+// 기본 buffer(net.core.rmem_default)가 넘쳐 kernel이 알림을 버린다.
+const traceNeighborReceiveBuffer = 8 << 20
+
+// collectNeighborEvents는 kernel neighbor table의 변화를 netlink로 받는다. arp는 IPv4, ndp는 IPv6 항목이다.
+// root와 eBPF가 필요 없다.
+func collectNeighborEvents(protocol string, duration time.Duration, onEvent func(captureEvent) error, stop <-chan struct{}) (captureSummary, error) {
+	family := neighborFamily(protocol)
+	fd, err := unix.Socket(unix.AF_NETLINK, unix.SOCK_RAW|unix.SOCK_CLOEXEC, unix.NETLINK_ROUTE)
+	if err != nil {
+		return captureSummary{}, fmt.Errorf("open netlink socket: %w", err)
+	}
+	defer unix.Close(fd)
+	if err := growNeighborReceiveBuffer(fd); err != nil {
+		return captureSummary{}, fmt.Errorf("set netlink receive buffer: %w", err)
+	}
+	if err := unix.Bind(fd, &unix.SockaddrNetlink{Family: unix.AF_NETLINK, Groups: 1 << (unix.RTNLGRP_NEIGH - 1)}); err != nil {
+		return captureSummary{}, fmt.Errorf("subscribe to neighbor changes: %w", err)
+	}
+	timeout := unix.NsecToTimeval(traceNeighborPollInterval.Nanoseconds())
+	if err := unix.SetsockoptTimeval(fd, unix.SOL_SOCKET, unix.SO_RCVTIMEO, &timeout); err != nil {
+		return captureSummary{}, fmt.Errorf("set netlink timeout: %w", err)
+	}
+	names := neighborInterfaceNames{}
+	tracker := newNeighborTracker(protocol)
+	// 구독한 뒤에 table을 읽는다. 먼저 읽으면 그 사이의 변화를 놓친다. 두 번 본 상태는 tracker가 거른다.
+	table, err := syscall.NetlinkRIB(unix.RTM_GETNEIGH, int(family))
+	if err != nil {
+		return captureSummary{}, fmt.Errorf("read neighbor table: %w", err)
+	}
+	messages, err := syscall.ParseNetlinkMessage(table)
+	if err != nil {
+		return captureSummary{}, fmt.Errorf("parse neighbor table: %w", err)
+	}
+	for _, message := range messages {
+		if neighbor, ok := parseNeighborMessage(message, family, names); ok {
+			tracker.baseline(neighbor)
+		}
+	}
+	var eventCount, lost uint64
+	finish := func() (captureSummary, error) {
+		return captureSummary{TimestampNS: uint64(time.Now().UnixNano()), Event: "capture_summary", EventCount: eventCount, LostEvents: lost}, nil
+	}
+	deadline := time.Now().Add(duration)
+	buffer := make([]byte, 1<<16)
+	for {
+		if traceStopRequested(stop) || (duration > 0 && !time.Now().Before(deadline)) {
+			return finish()
+		}
+		size, _, err := unix.Recvfrom(fd, buffer, 0)
+		switch {
+		case errors.Is(err, unix.EAGAIN), errors.Is(err, unix.EINTR):
+			continue
+		case errors.Is(err, unix.ENOBUFS):
+			// 수신 buffer가 넘쳐 kernel이 알림을 버렸다. 버린 수는 알 수 없어 한 번으로 센다.
+			lost++
+			continue
+		case err != nil:
+			return captureSummary{}, fmt.Errorf("read neighbor changes: %w", err)
+		}
+		messages, err := syscall.ParseNetlinkMessage(buffer[:size])
+		if err != nil {
+			return captureSummary{}, fmt.Errorf("parse neighbor changes: %w", err)
+		}
+		now := uint64(time.Now().UnixNano())
+		var monotonic unix.Timespec
+		_ = unix.ClockGettime(unix.CLOCK_MONOTONIC, &monotonic)
+		for _, message := range messages {
+			neighbor, ok := parseNeighborMessage(message, family, names)
+			if !ok {
+				continue
+			}
+			event, ok := tracker.event(neighbor, now, uint64(monotonic.Nano()))
+			if !ok {
+				continue
+			}
+			if onEvent != nil {
+				if err := onEvent(event); err != nil {
+					return captureSummary{}, err
+				}
+			}
+			eventCount++
+		}
+	}
+}
+
+// growNeighborReceiveBuffer는 수신 buffer를 키운다. SO_RCVBUFFORCE는 CAP_NET_ADMIN이 필요하다. root가 아니면 EPERM이
+// 나므로 SO_RCVBUF로 다시 묻고, kernel은 이 값을 net.core.rmem_max까지 줄인다.
+func growNeighborReceiveBuffer(fd int) error {
+	err := unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_RCVBUFFORCE, traceNeighborReceiveBuffer)
+	if errors.Is(err, unix.EPERM) {
+		err = unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_RCVBUF, traceNeighborReceiveBuffer)
+	}
+	return err
+}
+
+// parseNeighborMessage는 RTM_NEWNEIGH와 RTM_DELNEIGH의 ndmsg와 속성을 읽는다. 주소 확인을 쓰지 않는 항목(NOARP)과
+// 다른 family의 항목은 뺀다. netlink는 host byte order다.
+func parseNeighborMessage(message syscall.NetlinkMessage, family byte, names neighborInterfaceNames) (traceNeighbor, bool) {
+	if message.Header.Type != unix.RTM_NEWNEIGH && message.Header.Type != unix.RTM_DELNEIGH {
+		return traceNeighbor{}, false
+	}
+	data := message.Data
+	if len(data) < unix.SizeofNdMsg || data[0] != family {
+		return traceNeighbor{}, false
+	}
+	state := binary.NativeEndian.Uint16(data[8:10])
+	if state&unix.NUD_NOARP != 0 {
+		return traceNeighbor{}, false
+	}
+	neighbor := traceNeighbor{iface: names.name(int(int32(binary.NativeEndian.Uint32(data[4:8])))), state: traceNeighborStateName(state), deleted: message.Header.Type == unix.RTM_DELNEIGH}
+	for attributes := data[unix.SizeofNdMsg:]; len(attributes) >= unix.SizeofRtAttr; {
+		length := int(binary.NativeEndian.Uint16(attributes[0:2]))
+		if length < unix.SizeofRtAttr || length > len(attributes) {
+			break
+		}
+		value := attributes[unix.SizeofRtAttr:length]
+		switch binary.NativeEndian.Uint16(attributes[2:4]) {
+		case unix.NDA_DST:
+			if address, ok := netip.AddrFromSlice(value); ok {
+				neighbor.ip = address.Unmap().String()
+			}
+		case unix.NDA_LLADDR:
+			if len(value) > 0 {
+				neighbor.mac = net.HardwareAddr(value).String()
+			}
+		}
+		attributes = attributes[min(len(attributes), (length+unix.RTA_ALIGNTO-1)&^(unix.RTA_ALIGNTO-1)):]
+	}
+	return neighbor, neighbor.ip != ""
+}
+
+// neighborFamily는 protocol이 보는 주소 family다. 같은 netlink 알림에 두 family가 함께 온다.
+func neighborFamily(protocol string) byte {
+	if protocol == "ndp" {
+		return unix.AF_INET6
+	}
+	return unix.AF_INET
+}
+
+func traceNeighborStateName(state uint16) string {
+	for _, known := range []struct {
+		bit  uint16
+		name string
+	}{
+		{unix.NUD_FAILED, traceNeighborFailedState},
+		{unix.NUD_INCOMPLETE, "INCOMPLETE"},
+		{unix.NUD_REACHABLE, "REACHABLE"},
+		{unix.NUD_STALE, "STALE"},
+		{unix.NUD_DELAY, "DELAY"},
+		{unix.NUD_PROBE, "PROBE"},
+		{unix.NUD_PERMANENT, "PERMANENT"},
+	} {
+		if state&known.bit != 0 {
+			return known.name
+		}
+	}
+	return "NONE"
+}

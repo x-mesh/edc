@@ -196,7 +196,7 @@ var commandDocs = []commandDoc{
 	},
 	{
 		name: "trace", group: "observe",
-		usage: []string{"edc trace <tcp|udp> [options]"},
+		usage: []string{"edc trace <tcp|udp|dns|arp|ndp|http> [options]"},
 		options: []optionDoc{
 			{"--duration 15s", "command.trace.option.duration"},
 			{"--json <path|->", "option.json"},
@@ -205,6 +205,8 @@ var commandDocs = []commandDoc{
 			{"--group-by <view>", "command.trace.option.group_by"},
 			{"--process <name>", "command.trace.option.process"},
 			{"--destination <host:port>", "command.trace.option.destination"},
+			{"-d, --detail", "command.trace.option.detail"},
+			{"--side client|server", "command.trace.option.side"},
 			{"--yes", "command.trace.option.yes"},
 		},
 	},

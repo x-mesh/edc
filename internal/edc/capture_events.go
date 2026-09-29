@@ -4,6 +4,7 @@ package edc
 
 import (
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -56,6 +57,7 @@ type tcpTraceConnection struct {
 	connectMS       int64
 	retransmissions uint64
 	reset           bool
+	closed          bool
 	traceTraffic
 }
 
@@ -68,6 +70,8 @@ type tcpTraceReport struct {
 	Resets          *int                 `json:"resets"`
 	LostEvents      uint64               `json:"lost_events"`
 	Connections     []tcpTraceConnection `json:"connections"`
+	// ConnectionsOmitted는 합계에는 들어갔지만 행을 남기지 않은 끝난 연결의 수다.
+	ConnectionsOmitted int `json:"connections_omitted"`
 	traceTraffic
 }
 
@@ -154,19 +158,63 @@ func summarizeTCPTrace(events []captureEvent, summary captureSummary, duration t
 	return summarizer.report(summary, duration)
 }
 
-// tcpTraceSummarizer는 event를 하나씩 받아 TCP 요약을 쌓는다. trace가 event를 모두 두지 않고 요약만 두도록 한다.
+// tcpTraceConnectionLimit는 요약에 행으로 남길 끝난 연결의 수다. 합계는 모든 연결로 센다. 짧은 연결이 많으면
+// 연결이 분당 수십만 개라, 모두 남기면 메모리와 종료 시 출력이 연결 수만큼 커진다.
+const tcpTraceConnectionLimit = 1000
+
+// tcpTraceSummarizer는 event를 하나씩 받아 TCP 요약을 쌓는다. 연결은 socket의 수명마다 나눈다. SocketID는
+// kernel의 socket 주소라서, socket이 없어진 뒤 새 socket이 같은 값을 다시 쓴다.
 type tcpTraceSummarizer struct {
-	connections map[uint64]*tcpTraceConnection
-	firstSeen   map[uint64]uint64
-	traffic     traceTraffic
+	active    map[uint64]*tcpTraceConnection
+	firstSeen map[uint64]uint64
+	finished  []tcpTraceConnection
+	oldest    int
+	omitted   int
+	totals    tcpTraceTotals
+	traffic   traceTraffic
+}
+
+type tcpTraceTotals struct {
+	attempts        int
+	established     int
+	incomplete      int
+	retransmissions uint64
+	resets          int
+}
+
+func (totals *tcpTraceTotals) add(connection *tcpTraceConnection) {
+	totals.attempts++
+	totals.retransmissions += connection.retransmissions
+	if connection.reset {
+		totals.resets++
+	}
+	if connection.Result == "established" {
+		totals.established++
+	} else {
+		totals.incomplete++
+	}
 }
 
 func newTCPTraceSummarizer() *tcpTraceSummarizer {
-	return &tcpTraceSummarizer{connections: make(map[uint64]*tcpTraceConnection), firstSeen: make(map[uint64]uint64)}
+	return &tcpTraceSummarizer{active: make(map[uint64]*tcpTraceConnection), firstSeen: make(map[uint64]uint64)}
+}
+
+// tcpTraceConnectionStarts는 새 socket의 수명이 시작되는 전이다. connect()와 서버의 새 연결이 여기서 시작한다.
+func tcpTraceConnectionStarts(event captureEvent) bool {
+	return event.Event == "tcp_state" && (event.OldState == "CLOSE" && event.NewState == "SYN_SENT" || event.OldState == "LISTEN" && event.NewState == "SYN_RECV")
 }
 
 func (summarizer *tcpTraceSummarizer) observe(event captureEvent) {
-	connections, firstSeen := summarizer.connections, summarizer.firstSeen
+	summarizer.traffic.observe(event)
+	// socket 없이 보낸 RST처럼 SocketID가 0인 event는 연결이 아니다. 행을 만들면 모두 한 행에 쌓인다.
+	if event.SocketID == 0 {
+		return
+	}
+	// tcp_destroy를 놓쳤어도, 닫힌 socket 주소에 새 연결이 시작되면 다른 socket이다.
+	if connection := summarizer.active[event.SocketID]; connection != nil && connection.closed && tcpTraceConnectionStarts(event) {
+		summarizer.finish(event.SocketID)
+	}
+	connections, firstSeen := summarizer.active, summarizer.firstSeen
 	connection := connections[event.SocketID]
 	if connection == nil {
 		connection = &tcpTraceConnection{Process: event.Process, PID: event.PID, Source: event.Source, Destination: event.Destination, Result: "incomplete"}
@@ -182,7 +230,8 @@ func (summarizer *tcpTraceSummarizer) observe(event captureEvent) {
 	if connection.Hostname == "" && event.Target != "" {
 		connection.Hostname = event.Target
 	}
-	if connection.Source == "" {
+	// connect()의 첫 전이는 port를 배정하기 전이라 source port가 0이다. 뒤 event의 source로 바꾼다.
+	if connection.Source == "" || strings.HasSuffix(connection.Source, ":0") && event.Source != "" && !strings.HasSuffix(event.Source, ":0") {
 		connection.Source = event.Source
 	}
 	if connection.Destination == "" {
@@ -202,38 +251,49 @@ func (summarizer *tcpTraceSummarizer) observe(event captureEvent) {
 		connection.reset = true
 		connection.Result = "reset"
 	case "tcp_close":
+		connection.closed = true
 		if connection.Result == "incomplete" {
 			connection.Result = "closed"
 		}
+	case "tcp_destroy":
+		summarizer.finish(event.SocketID)
 	}
-	summarizer.traffic.observe(event)
+}
+
+// finish는 끝난 연결을 합계에 넣고, 최근 tcpTraceConnectionLimit개만 행으로 남긴다.
+func (summarizer *tcpTraceSummarizer) finish(socket uint64) {
+	connection := summarizer.active[socket]
+	delete(summarizer.active, socket)
+	delete(summarizer.firstSeen, socket)
+	summarizer.totals.add(connection)
+	if len(summarizer.finished) < tcpTraceConnectionLimit {
+		summarizer.finished = append(summarizer.finished, *connection)
+		return
+	}
+	summarizer.finished[summarizer.oldest] = *connection
+	summarizer.oldest = (summarizer.oldest + 1) % tcpTraceConnectionLimit
+	summarizer.omitted++
 }
 
 func (summarizer *tcpTraceSummarizer) report(summary captureSummary, duration time.Duration) tcpTraceReport {
-	result := tcpTraceReport{DurationMS: duration.Milliseconds(), LostEvents: summary.LostEvents, traceTraffic: summarizer.traffic}
-	result.Connections = make([]tcpTraceConnection, 0, len(summarizer.connections))
-	var retransmissions uint64
-	var resets int
-	for _, stored := range summarizer.connections {
-		connection := *stored
+	result := tcpTraceReport{DurationMS: duration.Milliseconds(), LostEvents: summary.LostEvents, ConnectionsOmitted: summarizer.omitted, traceTraffic: summarizer.traffic}
+	totals := summarizer.totals
+	result.Connections = make([]tcpTraceConnection, 0, len(summarizer.finished)+len(summarizer.active))
+	result.Connections = append(result.Connections, summarizer.finished...)
+	for _, connection := range summarizer.active {
+		totals.add(connection)
+		result.Connections = append(result.Connections, *connection)
+	}
+	for index := range result.Connections {
+		connection := &result.Connections[index]
 		connection.traceTraffic.finalize(duration)
 		connection.ConnectMS = traceObserved(connection.connectMS)
 		connection.Retransmissions = traceObserved(connection.retransmissions)
 		connection.Reset = traceObserved(connection.reset)
-		result.Connections = append(result.Connections, connection)
-		result.Attempts++
-		retransmissions += connection.retransmissions
-		if connection.reset {
-			resets++
-		}
-		if connection.Result == "established" {
-			result.Established++
-		} else {
-			result.Incomplete++
-		}
 	}
-	result.Retransmissions = traceObserved(retransmissions)
-	result.Resets = traceObserved(resets)
+	result.Attempts, result.Established, result.Incomplete = totals.attempts, totals.established, totals.incomplete
+	result.Retransmissions = traceObserved(totals.retransmissions)
+	result.Resets = traceObserved(totals.resets)
 	result.traceTraffic.finalize(duration)
 	sort.Slice(result.Connections, func(i, j int) bool {
 		left, right := result.Connections[i], result.Connections[j]

@@ -146,6 +146,81 @@ func TestSummarizeTCPTrace(t *testing.T) {
 	}
 }
 
+func TestSummarizeTCPTraceSplitsSocketLives(t *testing.T) {
+	setTraceKernelEvents(t, true)
+	ms := uint64(time.Millisecond)
+	events := []captureEvent{
+		// kernel이 socket 주소 7을 두 연결에 차례로 쓴다.
+		{SocketID: 7, TimestampNS: 1 * ms, Event: "tcp_state", Process: "curl", Source: "10.0.0.2:0", Destination: "203.0.113.10:443", OldState: "CLOSE", NewState: "SYN_SENT"},
+		{SocketID: 7, TimestampNS: 3 * ms, Event: "tcp_connect", Source: "10.0.0.2:41000", Destination: "203.0.113.10:443"},
+		{SocketID: 7, TimestampNS: 4 * ms, Event: "tcp_send", Bytes: 100, Source: "10.0.0.2:41000", Destination: "203.0.113.10:443"},
+		{SocketID: 7, TimestampNS: 5 * ms, Event: "tcp_close", Source: "10.0.0.2:41000", Destination: "203.0.113.10:443"},
+		{SocketID: 7, TimestampNS: 6 * ms, Event: "tcp_destroy", Source: "10.0.0.2:41000", Destination: "203.0.113.10:443"},
+		{SocketID: 7, TimestampNS: 7 * ms, Event: "tcp_state", Process: "bot", Source: "10.0.0.2:0", Destination: "203.0.113.20:80", OldState: "CLOSE", NewState: "SYN_SENT"},
+		{SocketID: 7, TimestampNS: 8 * ms, Event: "tcp_receive_reset", Source: "10.0.0.2:41001", Destination: "203.0.113.20:80"},
+		{SocketID: 7, TimestampNS: 9 * ms, Event: "tcp_close", Source: "10.0.0.2:41001", Destination: "203.0.113.20:80"},
+		// tcp_destroy를 놓친 socket 8에 새 연결이 시작된다.
+		{SocketID: 8, TimestampNS: 10 * ms, Event: "tcp_connect", Process: "agent", Source: "10.0.0.2:41002", Destination: "203.0.113.30:443"},
+		{SocketID: 8, TimestampNS: 11 * ms, Event: "tcp_close", Source: "10.0.0.2:41002", Destination: "203.0.113.30:443"},
+		{SocketID: 8, TimestampNS: 12 * ms, Event: "tcp_state", Process: "agent", Source: "10.0.0.2:0", Destination: "203.0.113.30:443", OldState: "CLOSE", NewState: "SYN_SENT"},
+		{SocketID: 8, TimestampNS: 14 * ms, Event: "tcp_connect", Source: "10.0.0.2:41003", Destination: "203.0.113.30:443"},
+		// socket 없이 보낸 RST는 연결 행을 만들지 않는다.
+		{SocketID: 0, TimestampNS: 15 * ms, Event: "tcp_send_reset"},
+	}
+	report := summarizeTCPTrace(events, captureSummary{}, time.Second, "", "")
+	if report.Attempts != 4 || report.Established != 3 || report.Incomplete != 1 || traceOptional(report.Resets, "%d") != "1" || report.ConnectionsOmitted != 0 || len(report.Connections) != 4 {
+		t.Fatalf("report = %#v", report)
+	}
+	rows := map[string]tcpTraceConnection{}
+	for _, connection := range report.Connections {
+		rows[connection.Process+" "+connection.Source] = connection
+	}
+	curl, bot := rows["curl 10.0.0.2:41000"], rows["bot 10.0.0.2:41001"]
+	if curl.Result != "established" || curl.TXBytes != 100 || traceOptional(curl.ConnectMS, "%d") != "2" || bot.Result != "reset" || bot.TXBytes != 0 {
+		t.Fatalf("rows = %#v", rows)
+	}
+	if _, ok := rows["agent 10.0.0.2:41002"]; !ok {
+		t.Fatalf("first agent connection is missing: %#v", rows)
+	}
+	if second, ok := rows["agent 10.0.0.2:41003"]; !ok || traceOptional(second.ConnectMS, "%d") != "2" {
+		t.Fatalf("second agent connection = %#v", rows)
+	}
+}
+
+func TestSummarizeTCPTraceKeepsRecentConnectionRows(t *testing.T) {
+	setTraceKernelEvents(t, true)
+	events := []captureEvent{}
+	for index := range tcpTraceConnectionLimit + 5 {
+		socket := uint64(index + 1)
+		source := fmt.Sprintf("10.0.0.2:%d", 30000+index)
+		events = append(events,
+			captureEvent{SocketID: socket, TimestampNS: uint64(index*10 + 1), Event: "tcp_connect", Process: "probe", Source: source, Destination: "127.0.0.1:8080"},
+			captureEvent{SocketID: socket, TimestampNS: uint64(index*10 + 2), Event: "tcp_destroy", Source: source, Destination: "127.0.0.1:8080"},
+		)
+	}
+	events = append(events, captureEvent{SocketID: 99999, TimestampNS: 1 << 40, Event: "tcp_send", Bytes: 10, Process: "open", Source: "10.0.0.2:50000", Destination: "127.0.0.1:9090"})
+	report := summarizeTCPTrace(events, captureSummary{}, time.Second, "", "")
+	if report.Attempts != tcpTraceConnectionLimit+6 || report.Established != tcpTraceConnectionLimit+5 || report.Incomplete != 1 {
+		t.Fatalf("totals = %d attempts, %d established, %d incomplete", report.Attempts, report.Established, report.Incomplete)
+	}
+	// 행은 진행 중인 연결과 최근에 끝난 연결만 남는다. 처음 끝난 다섯 연결이 빠진다.
+	if len(report.Connections) != tcpTraceConnectionLimit+1 || report.ConnectionsOmitted != 5 {
+		t.Fatalf("rows = %d, omitted = %d", len(report.Connections), report.ConnectionsOmitted)
+	}
+	for _, connection := range report.Connections {
+		if connection.Source == "10.0.0.2:30000" || connection.Source == "10.0.0.2:30004" {
+			t.Fatalf("an early connection is still listed: %#v", connection)
+		}
+	}
+	encoded, err := json.Marshal(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(encoded), `"connections_omitted":5`) {
+		t.Fatalf("report JSON misses connections_omitted: %.200s", encoded)
+	}
+}
+
 func TestSummarizeUDPTraceSplitsOneSocketByDestination(t *testing.T) {
 	events := []captureEvent{
 		{SocketID: 1, Protocol: "udp", Event: "udp_send", Bytes: 10, Destination: "127.0.0.1:19999"},

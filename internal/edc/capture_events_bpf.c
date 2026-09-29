@@ -122,6 +122,9 @@ struct task_struct {
 // "HTTP Client", tokio의 "tokio-rt-worker")도 ps와 /proc/<pid>/comm이 보여 주는 process 이름 하나로 묶인다.
 static __always_inline void current_process_name(char (*name)[16]) {
 	struct task_struct *task = (struct task_struct *)bpf_get_current_task();
+	// 문자열 읽기는 NUL까지만 쓴다. HTTP와 DNS 레코드는 CPU별 scratch나 지우지 않은 ring slot이라, 먼저 지우지 않으면
+	// 짧은 이름 뒤에 앞 레코드의 이름이 남는다("ab\0gprocessname").
+	__builtin_memset(name, 0, sizeof(*name));
 	BPF_CORE_READ_STR_INTO(name, task, group_leader, comm);
 }
 

@@ -196,7 +196,7 @@ var commandDocs = []commandDoc{
 	},
 	{
 		name: "trace", group: "observe",
-		usage: []string{"edc trace <tcp|udp|dns|arp|http> [options]"},
+		usage: []string{"edc trace <tcp|udp|dns|arp|ndp|http> [options]"},
 		options: []optionDoc{
 			{"--duration 15s", "command.trace.option.duration"},
 			{"--json <path|->", "option.json"},

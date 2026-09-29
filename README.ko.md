@@ -853,6 +853,22 @@ ARP event의 `target`은 IP 주소이고 `source`는 interface입니다. process
 
 kernel은 주소 확인을 시작할 때 알리지 않으므로, 실패한 확인은 `arp_failed`만 표시합니다. IPv6 neighbor(NDP)와 ARP를 쓰지 않는 항목(`NOARP`)은 표시하지 않습니다. `trace arp`는 ARP 패킷이 아니라 neighbor table을 보므로, 다른 host의 요청처럼 table을 바꾸지 않는 ARP 패킷은 표시하지 않습니다. macOS는 아직 지원하지 않습니다.
 
+Linux 6.4 이상에서 `trace http`를 사용하면 평문 HTTP/1.x 요청과 응답을 발생 즉시 출력합니다. edc는 kernel에서 TCP로 읽고 쓰는 data마다 앞 512 byte를 읽고, method, `Host` header, path, 상태 코드만 남깁니다. 다른 header, body, path의 query에는 token이나 cookie가 들어 있을 수 있어 버립니다.
+
+```bash
+./bin/edc trace http
+./bin/edc trace http --group-by target
+./bin/edc trace http --side server --process nginx
+```
+
+요청은 `http_request` event입니다. 응답은 `http_1xx`부터 `http_5xx`까지이고 `status`에 코드가 나옵니다. HTTP/1.x는 한 연결에서 요청 순서대로 응답하므로, 응답은 같은 연결에서 아직 응답이 없는 가장 오래된 요청과 짝짓습니다. `latency_ms`는 client가 요청을 보낸 때부터 응답을 읽은 때까지입니다. `1xx` 응답은 요청을 끝내지 않습니다.
+
+HTTP event의 `target`은 `Host` header이고, `Host`가 없으면 서버 주소입니다. `--side server`를 사용하면 로컬 HTTP 서버를 관측합니다. 서버 쪽 `latency_ms`는 서버가 요청을 읽은 때부터 응답을 쓴 때까지입니다.
+
+`Ctrl-C` 후 summary는 method, host, path마다 한 행을 표시합니다. group 행은 요청, 응답, 4xx·5xx 응답, 응답 없음, 평균·최대 응답 시간을 표시합니다.
+
+HTTPS, HTTP/2, HTTP/3은 kernel에서 암호문이나 binary frame으로만 보이므로 표시하지 않습니다. edc는 한 번의 읽기나 쓰기가 시작되는 곳에서만 message를 찾습니다. 그래서 한 번의 읽기에 앞 응답의 끝과 다음 응답의 시작이 함께 들어 있으면 다음 응답을 놓칩니다. edc가 읽는 kernel field는 Linux 6.4에 생겼으므로, 더 오래된 kernel에서는 오류를 내고 멈춥니다.
+
 ```bash
 ./bin/edc capture \
   --interface en0 \

@@ -889,6 +889,22 @@ The `target` of an ARP event is the IP address, and the `source` is the interfac
 
 The kernel does not report the start of an address lookup, so a failed lookup shows only `arp_failed`. `trace arp` does not show IPv6 neighbors (NDP) or the entries without ARP (`NOARP`). It watches the neighbor table, not the ARP packets. So it does not show ARP packets that do not change the table, for example requests from other hosts. `trace arp` does not support macOS yet.
 
+Use `trace http` on Linux 6.4 or later to print plain HTTP/1.x requests and responses as they arrive. edc reads the first 512 bytes of each TCP read and write in the kernel. It keeps the method, the `Host` header, the path, and the status code. It drops the other headers, the body, and the query of the path, because they can contain tokens and cookies.
+
+```bash
+./bin/edc trace http
+./bin/edc trace http --group-by target
+./bin/edc trace http --side server --process nginx
+```
+
+A request is an `http_request` event. A response is one of `http_1xx` to `http_5xx`, and `status` has the code. HTTP/1.x answers the requests on one connection in order. So a response matches the oldest request on the same connection that has no answer. `latency_ms` starts when the client sends the request and stops when the client reads the response. A `1xx` response does not end the request.
+
+The `target` of an HTTP event is the `Host` header. If there is no `Host` header, the target is the server address. Use `--side server` to watch a local HTTP server. On the server side, `latency_ms` starts when the server reads the request and stops when the server writes the response.
+
+The summary after Ctrl-C shows one row for each method, host, and path. Grouped rows show the requests, the responses, the 4xx and 5xx responses, the unanswered requests, and the average and maximum latency.
+
+`trace http` does not show HTTPS, HTTP/2, or HTTP/3, because the kernel sees only encrypted data or binary frames. edc finds a message only at the start of a read or a write. If one read has the end of a response and the start of the next response, edc misses the next response. The kernel field that edc reads came in Linux 6.4, so older kernels stop with an error.
+
 ```bash
 ./bin/edc capture \
   --interface en0 \

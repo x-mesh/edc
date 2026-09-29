@@ -248,6 +248,10 @@ func captureAttachments(objects *captureEventsObjects, protocol string) ([]captu
 		// DNS 응답 시간을 network와 읽기 지연으로 나누려고 수신 큐에 들어간 시각을 잰다.
 		{[]string{"dns"}, "fentry/__udp_enqueue_schedule_skb", objects.UdpEnqueueEntry},
 		{nil, "fentry/skb_consume_udp", objects.SkbConsumeUdpEntry},
+		// HTTP는 TCP로 주고받는 사용자 버퍼의 앞부분을 읽는다.
+		{[]string{"http"}, "fentry/tcp_sendmsg", objects.TcpSendmsgEntry},
+		{[]string{"http"}, "fentry/tcp_recvmsg", objects.TcpRecvmsgEntry},
+		{[]string{"http"}, "fexit/tcp_recvmsg", objects.TcpRecvmsgExit},
 		{tcp, "fentry/inet_csk_accept", objects.InetCskAcceptEntry},
 		{tcp, "fexit/tcp_create_openreq_child", objects.TcpCreateOpenreqChildExit},
 	}
@@ -268,7 +272,7 @@ func captureAttachments(objects *captureEventsObjects, protocol string) ([]captu
 type captureEventFilter struct {
 	udpEvents    bool
 	dnsSent      bool
-	dnsServer    bool
+	server       bool
 	tcpStatePort uint16
 }
 
@@ -281,7 +285,9 @@ func captureEventFilterFor(scope traceScope) captureEventFilter {
 	case "udp":
 		filter.dnsSent = false
 	case "dns":
-		filter.udpEvents, filter.dnsServer, filter.tcpStatePort = false, scope.dnsServer, 53
+		filter.udpEvents, filter.server, filter.tcpStatePort = false, scope.server, 53
+	case "http":
+		filter.udpEvents = false
 	}
 	return filter
 }
@@ -302,7 +308,7 @@ func loadCaptureEventsFor(scope traceScope, objects *captureEventsObjects) error
 		}
 		return 0
 	}
-	if err := errors.Join(variables.EmitUdpEvents.Set(flag(filter.udpEvents)), variables.EmitDnsSent.Set(flag(filter.dnsSent)), variables.EmitDnsServer.Set(flag(filter.dnsServer)), variables.TcpStatePort.Set(filter.tcpStatePort)); err != nil {
+	if err := errors.Join(variables.EmitUdpEvents.Set(flag(filter.udpEvents)), variables.EmitDnsSent.Set(flag(filter.dnsSent)), variables.EmitDnsServer.Set(flag(filter.server)), variables.TcpStatePort.Set(filter.tcpStatePort)); err != nil {
 		return err
 	}
 	return spec.LoadAndAssign(objects, nil)
@@ -372,7 +378,8 @@ func collectCaptureEventsFor(scope traceScope, duration time.Duration, onEvent f
 	targets := newCommandTargetCache(commandTarget)
 	sockets := newSocketTargetCache()
 	owners := newPIDTargetCache()
-	queries := newDNSQueryTracker(scope.dnsServer)
+	queries := newDNSQueryTracker(scope.server)
+	requests := newHTTPTracker(scope.server)
 	var eventCount uint64
 	finish := func() (captureSummary, error) {
 		var lost uint64
@@ -407,6 +414,19 @@ func collectCaptureEventsFor(scope traceScope, duration time.Duration, onEvent f
 			}
 			// 서버 쪽 레코드는 --side server일 때만 BPF가 보낸다. client 쪽 레코드는 늘 오므로 tracker가 다른 쪽을 거른다.
 			event, ok := queries.event(packet, clockOffset)
+			if !ok {
+				continue
+			}
+			if onEvent != nil {
+				if err := onEvent(event); err != nil {
+					return captureSummary{}, err
+				}
+			}
+			eventCount++
+			continue
+		}
+		if packet, ok := parseHTTPRecord(record.RawSample); ok {
+			event, ok := requests.event(packet, clockOffset)
 			if !ok {
 				continue
 			}

@@ -155,7 +155,7 @@ func (tracker *dnsQueryTracker) event(packet dnsPacket, clockOffset int64) (capt
 		if !packet.sent && packet.arrivalNS != 0 {
 			event.NetworkMS = traceDNSSpan(queries[0].bootTimeNS, packet.arrivalNS)
 		}
-		event.dnsAnswered = uint64(len(queries))
+		event.answered = uint64(len(queries))
 		if event.Target == "" {
 			event.Target, event.QueryType = queries[0].name, queries[0].queryType
 		}
@@ -274,19 +274,19 @@ type traceDNSCounts struct {
 	ReadDelayAvgMS *float64 `json:"read_delay_avg_ms"`
 	ReadDelayMaxMS *float64 `json:"read_delay_max_ms"`
 	answered       uint64
-	latency        traceDNSSpans
-	network        traceDNSSpans
-	readDelay      traceDNSSpans
+	latency        traceSpans
+	network        traceSpans
+	readDelay      traceSpans
 }
 
-// traceDNSSpans는 시간 값의 합, 개수, 최댓값이다.
-type traceDNSSpans struct {
+// traceSpans는 시간 값의 합, 개수, 최댓값이다.
+type traceSpans struct {
 	total   float64
 	count   uint64
 	maximum float64
 }
 
-func (spans *traceDNSSpans) observe(value *float64) {
+func (spans *traceSpans) observe(value *float64) {
 	if value == nil {
 		return
 	}
@@ -297,7 +297,7 @@ func (spans *traceDNSSpans) observe(value *float64) {
 	}
 }
 
-func (spans traceDNSSpans) summary() (*float64, *float64) {
+func (spans traceSpans) summary() (*float64, *float64) {
 	if spans.count == 0 {
 		return nil, nil
 	}
@@ -322,7 +322,7 @@ func (counts *traceDNSCounts) observe(event captureEvent) {
 	if traceDNSError(event.Event) {
 		counts.Errors++
 	}
-	counts.answered += event.dnsAnswered
+	counts.answered += event.answered
 	counts.latency.observe(event.LatencyMS)
 	counts.network.observe(event.NetworkMS)
 }

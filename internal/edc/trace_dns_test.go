@@ -46,7 +46,7 @@ func TestDNSQueryTrackerMatchesAnswersToQueries(t *testing.T) {
 		}
 	}
 	answer, ok := tracker.event(dnsTestPacket(t, dnsTestReply(t, question, dns.RcodeSuccess, "example.com. 60 IN A 203.0.113.10"), 6_500_000, "127.0.0.1:41000"), 0)
-	if !ok || answer.Event != "dns_noerror" || answer.LatencyMS == nil || *answer.LatencyMS != 5.5 || answer.dnsAnswered != 2 || !slices.Equal(answer.Answers, []string{"203.0.113.10"}) {
+	if !ok || answer.Event != "dns_noerror" || answer.LatencyMS == nil || *answer.LatencyMS != 5.5 || answer.answered != 2 || !slices.Equal(answer.Answers, []string{"203.0.113.10"}) {
 		t.Fatalf("answer event = %#v, %t", answer, ok)
 	}
 	if tracker.size != 0 || len(tracker.pending) != 0 {
@@ -54,7 +54,7 @@ func TestDNSQueryTrackerMatchesAnswersToQueries(t *testing.T) {
 	}
 	// 다른 로컬 port로 온 응답은 짝이 없으므로 응답 시간이 없다.
 	other, _ := tracker.event(dnsTestPacket(t, dnsTestReply(t, question, dns.RcodeSuccess, "example.com. 60 IN A 203.0.113.10"), 7_000_000, "127.0.0.1:42000"), 0)
-	if other.LatencyMS != nil || other.dnsAnswered != 0 {
+	if other.LatencyMS != nil || other.answered != 0 {
 		t.Fatalf("an answer without a query = %#v", other)
 	}
 }
@@ -112,9 +112,9 @@ func dnsTestEvents() []captureEvent {
 	latency := func(value float64) *float64 { return &value }
 	return []captureEvent{
 		{Protocol: "dns", Event: traceDNSQueryEvent, Process: "dig", Target: "example.com", QueryType: "A", Destination: "127.0.0.53:53", Bytes: 40},
-		{Protocol: "dns", Event: "dns_noerror", Process: "dig", Target: "example.com", QueryType: "A", Destination: "127.0.0.53:53", Answers: []string{"203.0.113.10"}, LatencyMS: latency(2), dnsAnswered: 1, Bytes: 56},
+		{Protocol: "dns", Event: "dns_noerror", Process: "dig", Target: "example.com", QueryType: "A", Destination: "127.0.0.53:53", Answers: []string{"203.0.113.10"}, LatencyMS: latency(2), answered: 1, Bytes: 56},
 		{Protocol: "dns", Event: traceDNSQueryEvent, Process: "curl", Target: "missing.invalid", QueryType: "A", Destination: "127.0.0.53:53"},
-		{Protocol: "dns", Event: "dns_nxdomain", Process: "curl", Target: "missing.invalid", QueryType: "A", Destination: "127.0.0.53:53", LatencyMS: latency(6), dnsAnswered: 1},
+		{Protocol: "dns", Event: "dns_nxdomain", Process: "curl", Target: "missing.invalid", QueryType: "A", Destination: "127.0.0.53:53", LatencyMS: latency(6), answered: 1},
 		{Protocol: "dns", Event: traceDNSQueryEvent, Process: "dig", Target: "example.com", QueryType: "A", Destination: "192.0.2.1:53"},
 	}
 }
@@ -268,7 +268,7 @@ func TestDNSServerSideMatchesAnswersToClients(t *testing.T) {
 	sent := dnsTestPacket(t, dnsTestReply(t, question, dns.RcodeNameError), 1_250_000, "127.0.0.53:53")
 	sent.sent, sent.process, sent.destination = true, "systemd-resolve", "127.0.0.1:41000"
 	answer, ok := tracker.event(sent, 0)
-	if !ok || answer.Event != "dns_nxdomain" || answer.Side != traceDNSServerSide || answer.LatencyMS == nil || *answer.LatencyMS != 0.25 || answer.dnsAnswered != 1 {
+	if !ok || answer.Event != "dns_nxdomain" || answer.Side != traceDNSServerSide || answer.LatencyMS == nil || *answer.LatencyMS != 0.25 || answer.answered != 1 {
 		t.Fatalf("server answer = %#v, %t", answer, ok)
 	}
 	// 각 tracker는 자기 쪽만 기록한다. 서버 쪽 tracker는 client 질의와 port 53 TCP 연결을 버리고, client 쪽은 서버 질의를 버린다.

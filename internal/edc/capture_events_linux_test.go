@@ -16,6 +16,7 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/cilium/ebpf/btf"
 	"github.com/miekg/dns"
 	"golang.org/x/sys/unix"
 )
@@ -123,7 +124,7 @@ func TestCaptureEventFiltersFollowTheProtocol(t *testing.T) {
 		{traceScope{protocol: "tcp"}, captureEventFilter{dnsSent: true}},
 		{traceScope{protocol: "udp"}, captureEventFilter{udpEvents: true}},
 		{traceScope{protocol: "dns"}, captureEventFilter{dnsSent: true, tcpStatePort: 53}},
-		{traceScope{protocol: "dns", dnsServer: true}, captureEventFilter{dnsSent: true, dnsServer: true, tcpStatePort: 53}},
+		{traceScope{protocol: "dns", server: true}, captureEventFilter{dnsSent: true, server: true, tcpStatePort: 53}},
 	} {
 		if got := captureEventFilterFor(test.scope); got != test.want {
 			t.Fatalf("scope %+v filter = %+v, want %+v", test.scope, got, test.want)
@@ -138,14 +139,14 @@ func TestCaptureEventFiltersFollowTheProtocol(t *testing.T) {
 	if err := spec.Assign(&variables); err != nil {
 		t.Fatal(err)
 	}
-	var udpEvents, dnsSent, dnsServer uint8
+	var udpEvents, dnsSent, server uint8
 	var tcpStatePort uint16
-	if err := errors.Join(variables.EmitUdpEvents.Get(&udpEvents), variables.EmitDnsSent.Get(&dnsSent), variables.EmitDnsServer.Get(&dnsServer), variables.TcpStatePort.Get(&tcpStatePort)); err != nil {
+	if err := errors.Join(variables.EmitUdpEvents.Get(&udpEvents), variables.EmitDnsSent.Get(&dnsSent), variables.EmitDnsServer.Get(&server), variables.TcpStatePort.Get(&tcpStatePort)); err != nil {
 		t.Fatal(err)
 	}
 	// capture는 모든 event와 client 쪽 DNS 레코드를 받는다. 서버 쪽 레코드는 trace dns --side server만 켠다.
-	if udpEvents != 1 || dnsSent != 1 || dnsServer != 0 || tcpStatePort != 0 {
-		t.Fatalf("BPF defaults = %d, %d, %d, %d", udpEvents, dnsSent, dnsServer, tcpStatePort)
+	if udpEvents != 1 || dnsSent != 1 || server != 0 || tcpStatePort != 0 {
+		t.Fatalf("BPF defaults = %d, %d, %d, %d", udpEvents, dnsSent, server, tcpStatePort)
 	}
 }
 
@@ -530,5 +531,61 @@ func TestParseARPNeighborReadsNetlinkMessages(t *testing.T) {
 		if got := arpStateName(state); got != want {
 			t.Fatalf("arpStateName(%#x) = %q, want %q", state, got, want)
 		}
+	}
+}
+
+func TestHTTPRecordOffsetsMatchTheBPFStruct(t *testing.T) {
+	var record captureEventsHttpRecord
+	for name, offsets := range map[string][2]uintptr{
+		"event_type":  {unsafe.Offsetof(record.EventType), 8},
+		"pid":         {unsafe.Offsetof(record.Pid), 12},
+		"cgroup_id":   {unsafe.Offsetof(record.CgroupId), 16},
+		"skaddr":      {unsafe.Offsetof(record.Skaddr), 24},
+		"len":         {unsafe.Offsetof(record.Len), 32},
+		"family":      {unsafe.Offsetof(record.Family), 36},
+		"direction":   {unsafe.Offsetof(record.Direction), 38},
+		"sport":       {unsafe.Offsetof(record.Sport), 40},
+		"dport":       {unsafe.Offsetof(record.Dport), 42},
+		"source":      {unsafe.Offsetof(record.Source), 44},
+		"destination": {unsafe.Offsetof(record.Destination), 60},
+		"comm":        {unsafe.Offsetof(record.Comm), 76},
+		"payload":     {unsafe.Offsetof(record.Payload), httpRecordPayloadOffset},
+	} {
+		if offsets[0] != offsets[1] {
+			t.Fatalf("%s is at %d in the BPF struct, parseHTTPRecord reads %d", name, offsets[0], offsets[1])
+		}
+	}
+	sample := make([]byte, httpRecordPayloadOffset+16)
+	binary.LittleEndian.PutUint32(sample[8:12], httpRecordType)
+	binary.LittleEndian.PutUint64(sample[24:32], 0xabc)
+	binary.LittleEndian.PutUint32(sample[32:36], 4)
+	binary.LittleEndian.PutUint16(sample[36:38], 2)
+	sample[38] = httpRecordSent
+	binary.LittleEndian.PutUint16(sample[40:42], 40000)
+	binary.LittleEndian.PutUint16(sample[42:44], 80)
+	copy(sample[44:48], []byte{10, 0, 0, 2})
+	copy(sample[60:64], []byte{192, 0, 2, 1})
+	copy(sample[httpRecordPayloadOffset:], "GET /")
+	packet, ok := parseHTTPRecord(sample)
+	if !ok || !packet.sent || packet.socket != 0xabc || packet.source != "10.0.0.2:40000" || packet.destination != "192.0.2.1:80" || string(packet.payload) != "GET " {
+		t.Fatalf("parseHTTPRecord = %#v, %t", packet, ok)
+	}
+}
+
+// ubuf와 __iov는 iov_iter 안의 이름 없는 union에 있다. 이 kernel BTF에서 찾을 수 있어야 trace http가 동작한다.
+func TestHTTPKernelCheckFindsNestedIOVIterFields(t *testing.T) {
+	spec, err := btf.LoadKernelSpec()
+	if err != nil {
+		t.Skipf("no kernel BTF: %v", err)
+	}
+	var iter *btf.Struct
+	if err := spec.TypeByName("iov_iter", &iter); err != nil {
+		t.Skipf("no iov_iter: %v", err)
+	}
+	if !btfHasMember(iter, "iov_offset") || btfHasMember(iter, "no_such_field") {
+		t.Fatal("btfHasMember does not follow the struct members")
+	}
+	if !btfHasMember(iter, "ubuf") && !btfHasMember(iter, "iov") {
+		t.Fatal("btfHasMember does not look into anonymous unions")
 	}
 }

@@ -144,7 +144,7 @@ command:
       - "PCAP には credential や個人情報が入ることがあります。"
       - "JSON の redaction は PCAP の payload には効きません。"
   trace:
-    summary: "TCP、UDP、DNS、ARP event をリアルタイムに表示して summary にまとめる"
+    summary: "TCP、UDP、DNS、ARP、HTTP event を表示して summary にまとめる"
     option:
       duration: "trace 時間、最大 60s。省略で Ctrl-C"
       raw: "raw event JSONL を表示"
@@ -154,7 +154,7 @@ command:
       destination: "宛先 host と port で絞る"
       detail: "要約で接続や flow を 1 行ずつ表示"
       yes: "確認を省く"
-      side: "trace dns: この host の照会か local DNS server"
+      side: "trace dns, http: この host か local server"
     notes:
       - "terminal では既定で全画面の trace を開きます。"
       - "/ で process、destination、event、source を絞り込みます。"
@@ -169,6 +169,7 @@ command:
       - "要約は process と相手ごとに行をまとめます。-d は接続ごとに表示します。"
       - "trace dns は Linux で DNS の問い合わせと応答を表示します。port 表示なし。"
       - "trace arp は Linux で neighbor table の変化を表示します。root 不要。"
+      - "trace http は Linux 6.4 以降で平文 HTTP/1.x を表示します。"
   report:
     summary: "保存した JSON report の閲覧と比較"
     notes:

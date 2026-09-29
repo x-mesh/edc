@@ -144,7 +144,7 @@ command:
       - "PCAP에는 credential과 개인정보가 들어갈 수 있습니다."
       - "JSON redaction은 PCAP payload에 적용되지 않습니다."
   trace:
-    summary: "TCP, UDP, DNS, ARP event를 실시간 출력하고 summary를 만듭니다"
+    summary: "TCP, UDP, DNS, ARP, HTTP event를 실시간 출력하고 summary를 만듭니다"
     option:
       duration: "trace 시간, 최대 60s. 생략하면 Ctrl-C"
       raw: "raw event JSONL 출력"
@@ -154,7 +154,7 @@ command:
       destination: "destination host와 port로 필터"
       detail: "요약에 연결이나 flow를 하나씩 표시"
       yes: "확인 질문 생략"
-      side: "trace dns: 이 host의 조회 또는 로컬 DNS 서버"
+      side: "trace dns, http: 이 host의 client 쪽 또는 로컬 서버"
     notes:
       - "terminal에서는 기본으로 전체 화면 trace를 엽니다."
       - "/를 누르면 process, destination, event, source를 필터할 수 있습니다."
@@ -169,6 +169,7 @@ command:
       - "요약은 process와 상대별로 행을 묶습니다. -d는 연결마다 표시합니다."
       - "trace dns는 Linux에서 DNS 질의와 응답을 표시합니다. port 보기는 없습니다."
       - "trace arp는 Linux에서 neighbor table 변화를 표시합니다. root가 필요 없습니다."
+      - "trace http는 Linux 6.4 이상에서 평문 HTTP/1.x 요청을 표시합니다."
   report:
     summary: "저장한 JSON report 보기와 비교"
     notes:

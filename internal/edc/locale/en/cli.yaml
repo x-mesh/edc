@@ -169,7 +169,8 @@ cli:
     group_by_protocol: "--group-by %s is not available for trace %s"
     protocol_linux_only: "trace %s requires Linux, not %s"
     side_range: "--side must be client or server"
-    side_protocol: "--side server is available only for trace dns, not trace %s"
+    side_protocol: "--side server is not available for trace %s"
+    http_kernel: "trace http needs Linux 6.4 or later: the kernel iov_iter has no %s field"
   report:
     unsupported_schema: "%s: unsupported schema version: %s"
     filter_label: "filter: "

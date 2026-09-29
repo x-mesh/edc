@@ -839,4 +839,196 @@ int tcp_create_openreq_child_exit(__u64 *ctx) {
 	return 0;
 }
 
+// trace http는 TCP로 주고받는 평문 HTTP/1.x message의 앞부분을 읽는다. 요청 줄, Host, 상태 줄이 이 안에 들어간다.
+// 나머지 header와 body는 사용자 공간이 해석한 뒤 버린다.
+#define HTTP_PAYLOAD_SIZE 512
+#define HTTP_RECEIVED 0
+#define HTTP_SENT 1
+#define MSG_PEEK 2
+
+struct http_record {
+	__u64 timestamp_ns;
+	__u32 event_type;
+	__u32 pid;
+	__u64 cgroup_id;
+	__u64 skaddr;
+	__u32 len;
+	__u16 family;
+	__u8 direction;
+	__u8 reserved;
+	__u16 sport;
+	__u16 dport;
+	__u8 source[16];
+	__u8 destination[16];
+	char comm[16];
+	__u8 payload[HTTP_PAYLOAD_SIZE];
+};
+
+// ringbuf에만 쓰는 구조체는 BTF에 남지 않는다. bpf2go -type이 Go 구조체를 만들어 offset을 테스트하도록 남긴다.
+const struct http_record *unused_http_record __attribute__((unused));
+
+struct iovec {
+	void *iov_base;
+	__u64 iov_len;
+};
+
+enum iter_type {
+	ITER_UBUF,
+	ITER_IOVEC,
+};
+
+// iter_type은 5.14, ubuf는 6.0, __iov는 6.4에 생겼다. 이 BPF 객체는 모든 trace가 함께 불러오므로, 없는 필드는 CO-RE
+// 존재 확인으로 감싼다. 감싸지 않으면 오래된 kernel에서 trace tcp까지 불러오기에 실패한다.
+struct iov_iter {
+	__u8 iter_type;
+	__u64 iov_offset;
+	__u64 count;
+	const struct iovec *__iov;
+	void *ubuf;
+};
+
+struct msghdr {
+	struct iov_iter msg_iter;
+};
+
+// http_user_buffer는 사용자 버퍼의 시작과 첫 조각의 길이다. 여러 조각이면 첫 조각만 읽는다. 요청 줄은 첫 조각에 있다.
+static __always_inline void *http_user_buffer(struct msghdr *msg, __u64 *limit) {
+	if (!bpf_core_field_exists(msg->msg_iter.iter_type)) {
+		return 0;
+	}
+	__u8 type = BPF_CORE_READ(msg, msg_iter.iter_type);
+	__u64 offset = BPF_CORE_READ(msg, msg_iter.iov_offset);
+	if (bpf_core_field_exists(msg->msg_iter.ubuf) && bpf_core_enum_value_exists(enum iter_type, ITER_UBUF) &&
+	    type == bpf_core_enum_value(enum iter_type, ITER_UBUF)) {
+		*limit = BPF_CORE_READ(msg, msg_iter.count);
+		return (char *)BPF_CORE_READ(msg, msg_iter.ubuf) + offset;
+	}
+	if (bpf_core_field_exists(msg->msg_iter.__iov) && bpf_core_enum_value_exists(enum iter_type, ITER_IOVEC) &&
+	    type == bpf_core_enum_value(enum iter_type, ITER_IOVEC)) {
+		const struct iovec *iov = BPF_CORE_READ(msg, msg_iter.__iov);
+		__u64 length = BPF_CORE_READ(iov, iov_len);
+		if (length <= offset) {
+			return 0;
+		}
+		*limit = length - offset;
+		return (char *)BPF_CORE_READ(iov, iov_base) + offset;
+	}
+	return 0;
+}
+
+// 모든 TCP 송수신에서 불리므로 앞 4바이트만 먼저 본다. 사용자 공간이 요청 줄과 상태 줄을 다시 확인한다.
+static __always_inline int http_start(const __u8 *p) {
+	return (p[0] == 'G' && p[1] == 'E' && p[2] == 'T' && p[3] == ' ') || (p[0] == 'P' && p[1] == 'O' && p[2] == 'S' && p[3] == 'T') ||
+	       (p[0] == 'P' && p[1] == 'U' && p[2] == 'T' && p[3] == ' ') || (p[0] == 'H' && p[1] == 'E' && p[2] == 'A' && p[3] == 'D') ||
+	       (p[0] == 'D' && p[1] == 'E' && p[2] == 'L' && p[3] == 'E') || (p[0] == 'P' && p[1] == 'A' && p[2] == 'T' && p[3] == 'C') ||
+	       (p[0] == 'O' && p[1] == 'P' && p[2] == 'T' && p[3] == 'I') || (p[0] == 'H' && p[1] == 'T' && p[2] == 'T' && p[3] == 'P');
+}
+
+static __always_inline void emit_http(struct sock *sk, const void *buffer, __u64 size, __u8 direction) {
+	if (!sk || !buffer || size < 4) {
+		return;
+	}
+	__u8 peek[4];
+	if (bpf_probe_read_user(peek, sizeof(peek), buffer) || !http_start(peek)) {
+		return;
+	}
+	struct http_record *record = bpf_ringbuf_reserve(&events, sizeof(*record), 0);
+	if (!record) {
+		__u32 key = 0;
+		__u64 *lost = bpf_map_lookup_elem(&lost_events, &key);
+		if (lost) {
+			__sync_fetch_and_add(lost, 1);
+		}
+		return;
+	}
+	__u32 len = size;
+	if (len > HTTP_PAYLOAD_SIZE) {
+		len = HTTP_PAYLOAD_SIZE;
+	}
+	if (bpf_probe_read_user(record->payload, len, buffer)) {
+		bpf_ringbuf_discard(record, 0);
+		return;
+	}
+	record->timestamp_ns = bpf_ktime_get_ns();
+	record->event_type = 10;
+	record->pid = bpf_get_current_pid_tgid() >> 32;
+	record->cgroup_id = bpf_get_current_cgroup_id();
+	record->skaddr = (__u64)sk;
+	record->len = len;
+	record->direction = direction;
+	record->reserved = 0;
+	record->family = BPF_CORE_READ(sk, __sk_common.skc_family);
+	record->sport = BPF_CORE_READ(sk, __sk_common.skc_num);
+	record->dport = bpf_ntohs(BPF_CORE_READ(sk, __sk_common.skc_dport));
+	__builtin_memset(record->source, 0, sizeof(record->source));
+	__builtin_memset(record->destination, 0, sizeof(record->destination));
+	if (record->family == AF_INET) {
+		__be32 source = BPF_CORE_READ(sk, __sk_common.skc_rcv_saddr);
+		__be32 destination = BPF_CORE_READ(sk, __sk_common.skc_daddr);
+		__builtin_memcpy(record->source, &source, 4);
+		__builtin_memcpy(record->destination, &destination, 4);
+	} else {
+		BPF_CORE_READ_INTO(&record->source, sk, __sk_common.skc_v6_rcv_saddr.in6_u.u6_addr8);
+		BPF_CORE_READ_INTO(&record->destination, sk, __sk_common.skc_v6_daddr.in6_u.u6_addr8);
+	}
+	bpf_get_current_comm(record->comm, sizeof(record->comm));
+	bpf_ringbuf_submit(record, 0);
+}
+
+SEC("fentry/tcp_sendmsg")
+int tcp_sendmsg_entry(__u64 *ctx) {
+	__u64 limit = 0;
+	void *buffer = http_user_buffer((struct msghdr *)ctx[1], &limit);
+	__u64 size = ctx[2];
+	emit_http((struct sock *)ctx[0], buffer, size < limit ? size : limit, HTTP_SENT);
+	return 0;
+}
+
+// tcp_recvmsg가 끝나야 사용자 버퍼에 data가 있다. 시작할 때 버퍼 위치를 thread별로 두고 끝날 때 읽는다.
+struct http_recv_pending {
+	__u64 skaddr;
+	__u64 buffer;
+	__u64 limit;
+};
+
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, 10240);
+	__type(key, __u64);
+	__type(value, struct http_recv_pending);
+} http_recv_pending SEC(".maps");
+
+SEC("fentry/tcp_recvmsg")
+int tcp_recvmsg_entry(__u64 *ctx) {
+	// MSG_PEEK로 읽은 data는 다음 recv가 다시 읽는다. 같은 message를 두 번 내지 않는다.
+	if ((int)ctx[3] & MSG_PEEK) {
+		return 0;
+	}
+	struct http_recv_pending pending = {.skaddr = ctx[0]};
+	void *buffer = http_user_buffer((struct msghdr *)ctx[1], &pending.limit);
+	if (!buffer) {
+		return 0;
+	}
+	pending.buffer = (__u64)buffer;
+	__u64 key = bpf_get_current_pid_tgid();
+	bpf_map_update_elem(&http_recv_pending, &key, &pending, BPF_ANY);
+	return 0;
+}
+
+SEC("fexit/tcp_recvmsg")
+int tcp_recvmsg_exit(__u64 *ctx) {
+	__u64 key = bpf_get_current_pid_tgid();
+	struct http_recv_pending *pending = bpf_map_lookup_elem(&http_recv_pending, &key);
+	if (!pending) {
+		return 0;
+	}
+	int copied = (int)ctx[5];
+	if (copied > 0) {
+		__u64 size = (__u64)copied < pending->limit ? (__u64)copied : pending->limit;
+		emit_http((struct sock *)pending->skaddr, (void *)pending->buffer, size, HTTP_RECEIVED);
+	}
+	bpf_map_delete_elem(&http_recv_pending, &key);
+	return 0;
+}
+
 char LICENSE[] SEC("license") = "Dual BSD/GPL";

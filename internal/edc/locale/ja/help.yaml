@@ -152,6 +152,7 @@ command:
       group_by: "source、target、port、process、event でまとめます"
       process: "process 名で絞る"
       destination: "宛先 host と port で絞る"
+      detail: "要約で接続や flow を 1 行ずつ表示"
       yes: "確認を省く"
     notes:
       - "terminal では既定で全画面の trace を開きます。"
@@ -164,6 +165,7 @@ command:
       - "B/s は byte rate、bps と Mbps は bit rate です。Mbps は bps / 1,000,000 です。"
       - "--duration を省略した場合は Ctrl-C で trace を終了します。"
       - "JSONL event には --raw を使います。"
+      - "要約は process と相手ごとに行をまとめます。-d は接続ごとに表示します。"
   report:
     summary: "保存した JSON report の閲覧と比較"
     notes:

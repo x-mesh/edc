@@ -749,10 +749,12 @@ Linux와 macOS에서 `trace tcp` 또는 `trace udp`를 사용하면 network even
 ./bin/edc trace udp --group-by port
 ./bin/edc trace tcp --group-by process
 ./bin/edc trace tcp --group-by event
+./bin/edc trace tcp -d
 ```
 
 `--raw`는 JSONL event를 발생 즉시 출력합니다. `--json`은 `Ctrl-C` 후 connection summary를 저장합니다.
-connection summary는 socket이 생긴 때부터 없어질 때까지를 한 행으로 표시합니다. kernel은 닫힌 socket의 주소를 새 socket에 다시 쓸 수 있으므로, socket이 없어지면 다음 event부터 새 행으로 셉니다. 행은 열려 있는 연결과 최근에 닫힌 연결 1,000개만 남기고, 합계는 모든 연결로 셉니다. JSON 출력의 `connections_omitted`는 행을 남기지 않은 닫힌 연결의 수입니다.
+끝에 출력하는 텍스트 요약은 process와 상대별로 행을 묶습니다. client 행은 목적지를, server 행은 `127.0.0.1:2379 (server)`처럼 local 서비스를 표시합니다. client마다 포트가 달라서 서버 쪽은 서비스로 묶습니다. TCP 행은 연결 수, 결과별 연결 수, 평균 연결 시간과 traffic을 표시하고, UDP 행은 datagram 수와 traffic을 표시합니다. 연결이나 UDP flow마다 한 행을 보려면 `-d` 또는 `--detail`을 사용합니다. JSON 출력은 항상 연결이나 flow마다 한 행입니다.
+연결별 상세 행은 socket이 생긴 때부터 없어질 때까지를 한 행으로 표시합니다. kernel은 닫힌 socket의 주소를 새 socket에 다시 쓸 수 있으므로, socket이 없어지면 다음 event부터 새 행으로 셉니다. 행은 열려 있는 연결과 최근에 닫힌 연결 1,000개만 남기고, 합계는 모든 연결로 셉니다. JSON 출력의 `connections_omitted`는 행을 남기지 않은 닫힌 연결의 수입니다.
 각 행의 결과는 다음 중 하나입니다.
 
 - `established`: trace가 connect나 accept를 봤습니다. 나중에 reset이 와도 결과는 바뀌지 않고, reset 여부는 `RESET` 열에 표시합니다.

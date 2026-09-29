@@ -18,8 +18,8 @@ func collectTraceEvents(time.Duration) ([]captureEvent, captureSummary, error) {
 	return nil, captureSummary{}, fmt.Errorf("%s", T("cli.trace.linux_only", runtime.GOOS))
 }
 
-func collectTraceEventsLive(string, time.Duration, func(captureEvent) error, <-chan struct{}) ([]captureEvent, captureSummary, error) {
-	return nil, captureSummary{}, fmt.Errorf("%s", T("cli.trace.linux_only", runtime.GOOS))
+func collectTraceEventsLive(string, time.Duration, func(captureEvent) error, <-chan struct{}) (captureSummary, error) {
+	return captureSummary{}, fmt.Errorf("%s", T("cli.trace.linux_only", runtime.GOOS))
 }
 
 func captureEventsPrerequisites() error {

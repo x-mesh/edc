@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"maps"
 	"net"
 	"os"
 	"os/signal"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -319,11 +321,13 @@ func traceDestinationLabel(connection tcpTraceConnection) string {
 	return fmt.Sprintf("%s (%s)", connection.Destination, connection.Hostname)
 }
 
+// traceGroup은 destination과 process를 집합으로 모은다. 목록에서 중복을 찾으면 서버 행처럼 상대가 많은
+// group에서 event 수와 상대 수의 곱만큼 비교해, 긴 trace를 끝낼 때 요약이 수십 초 걸렸다.
 type traceGroup struct {
 	Group           string
 	Server          bool
-	Destinations    []string
-	Processes       []string
+	Destinations    map[string]struct{}
+	Processes       map[string]struct{}
 	Events          uint64
 	Tx              uint64
 	Rx              uint64
@@ -376,7 +380,7 @@ func summarizeTraceGroups(protocol, groupBy string, events []captureEvent, summa
 		}
 		group := groups[mapKey]
 		if group == nil {
-			group = &traceGroup{Group: key, Server: server}
+			group = &traceGroup{Group: key, Server: server, Destinations: map[string]struct{}{}, Processes: map[string]struct{}{}}
 			groups[mapKey] = group
 		}
 		observeTraceGroup(group, event)
@@ -389,14 +393,10 @@ func summarizeTraceGroups(protocol, groupBy string, events []captureEvent, summa
 	for _, group := range groups {
 		group.traceTraffic.finalize(duration)
 		result.Groups = append(result.Groups, traceGroupSummary{
-			Group: group.Group, Server: group.Server, Destinations: append([]string(nil), group.Destinations...), Processes: append([]string(nil), group.Processes...),
+			Group: group.Group, Server: group.Server, Destinations: slices.Sorted(maps.Keys(group.Destinations)), Processes: slices.Sorted(maps.Keys(group.Processes)),
 			Events: group.Events, Rate: traceGroupRate(group.Events, duration), Tx: group.Tx, Rx: group.Rx, Connect: group.Connect,
 			Retransmissions: traceObserved(group.Retransmissions), Resets: traceObserved(group.Resets), LastEvent: group.LastEvent, traceTraffic: group.traceTraffic,
 		})
-	}
-	for index := range result.Groups {
-		sort.Strings(result.Groups[index].Destinations)
-		sort.Strings(result.Groups[index].Processes)
 	}
 	if groupBy == traceGroupByPort {
 		sort.Slice(result.Groups, func(i, j int) bool { return tracePortGroupLess(result.Groups[i], result.Groups[j]) })
@@ -512,10 +512,10 @@ func traceAddressPort(address string) (int, bool) {
 func observeTraceGroup(group *traceGroup, event captureEvent) {
 	group.Events++
 	if event.Destination != "" {
-		group.Destinations = appendUniqueTraceValue(group.Destinations, event.Destination)
+		group.Destinations[event.Destination] = struct{}{}
 	}
 	if event.Process != "" {
-		group.Processes = appendUniqueTraceValue(group.Processes, event.Process)
+		group.Processes[event.Process] = struct{}{}
 	}
 	switch event.Event {
 	case "udp_send":
@@ -531,15 +531,6 @@ func observeTraceGroup(group *traceGroup, event captureEvent) {
 	}
 	group.traceTraffic.observe(event)
 	group.LastEvent = event.Event
-}
-
-func appendUniqueTraceValue(values []string, value string) []string {
-	for _, current := range values {
-		if current == value {
-			return values
-		}
-	}
-	return append(values, value)
 }
 
 func traceGroupRate(events uint64, duration time.Duration) float64 {

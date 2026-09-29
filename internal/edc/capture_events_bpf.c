@@ -364,6 +364,10 @@ struct inet_sock {
 	__be16 inet_sport;
 };
 
+struct socket {
+	struct sock *sk;
+};
+
 struct sock_length_ctx {
 	__u64 unused;
 	struct sock *sk;
@@ -831,6 +835,16 @@ SEC("fentry/inet_csk_accept")
 int inet_csk_accept_entry(__u64 *ctx) {
 	announce_owner(ctx[0]);
 	remember_sock_owner(ctx[0]);
+	return 0;
+}
+
+// 경로가 없는 IPv6 connect()는 SYN_SENT 전에 실패하고, socket을 닫을 때 tcp_destroy만 남긴다. connect()는 부른
+// 프로세스 문맥에서 이 함수를 지나므로 여기서 주인을 배운다. 성공하는 connect는 SYN_SENT에서 같은 주인을 다시 적는다.
+SEC("fentry/__inet_stream_connect")
+int inet_stream_connect_entry(__u64 *ctx) {
+	__u64 sk = (__u64)BPF_CORE_READ((struct socket *)ctx[0], sk);
+	announce_owner(sk);
+	remember_sock_owner(sk);
 	return 0;
 }
 

@@ -196,8 +196,20 @@ func collectCaptureEvents(duration time.Duration, onEvent func(captureEvent) err
 	return collectCaptureEventsUntil(duration, onEvent, nil)
 }
 
+// collectCaptureEventsUntil은 capture가 파일에 쓸 event를 모은다. trace는 event를 모으지 않고 요약만 쌓는다.
 func collectCaptureEventsUntil(duration time.Duration, onEvent func(captureEvent) error, stop <-chan struct{}) ([]captureEvent, captureSummary, error) {
-	return collectCaptureEventsFor("", duration, onEvent, stop)
+	events := make([]captureEvent, 0)
+	summary, err := collectCaptureEventsFor("", duration, func(event captureEvent) error {
+		events = append(events, event)
+		if onEvent != nil {
+			return onEvent(event)
+		}
+		return nil
+	}, stop)
+	if err != nil {
+		return nil, captureSummary{}, err
+	}
+	return events, summary, nil
 }
 
 type captureTracepoint struct {
@@ -240,16 +252,16 @@ func captureAttachments(objects *captureEventsObjects, protocol string) ([]captu
 	return tracepoints, tracing
 }
 
-func collectCaptureEventsFor(protocol string, duration time.Duration, onEvent func(captureEvent) error, stop <-chan struct{}) ([]captureEvent, captureSummary, error) {
+func collectCaptureEventsFor(protocol string, duration time.Duration, onEvent func(captureEvent) error, stop <-chan struct{}) (captureSummary, error) {
 	if err := rlimit.RemoveMemlock(); err != nil {
-		return nil, captureSummary{}, fmt.Errorf("remove memlock limit: %w", err)
+		return captureSummary{}, fmt.Errorf("remove memlock limit: %w", err)
 	}
 	// 프로그램을 붙이기 전에 채워서, 붙인 뒤 첫 event를 읽는 시점을 늦추지 않는다.
 	names := newDNSNameCache()
 	seedResolverCache(names)
 	objects := captureEventsObjects{}
 	if err := loadCaptureEventsObjects(&objects, nil); err != nil {
-		return nil, captureSummary{}, fmt.Errorf("load eBPF objects: %w", err)
+		return captureSummary{}, fmt.Errorf("load eBPF objects: %w", err)
 	}
 	defer objects.Close()
 
@@ -260,7 +272,7 @@ func collectCaptureEventsFor(protocol string, duration time.Duration, onEvent fu
 		attached, err := link.Tracepoint(attachment.group, attachment.name, attachment.prog, nil)
 		if err != nil {
 			closeLinks()
-			return nil, captureSummary{}, fmt.Errorf("attach %s/%s: %w", attachment.group, attachment.name, err)
+			return captureSummary{}, fmt.Errorf("attach %s/%s: %w", attachment.group, attachment.name, err)
 		}
 		links = append(links, attached)
 	}
@@ -269,7 +281,7 @@ func collectCaptureEventsFor(protocol string, duration time.Duration, onEvent fu
 		if err != nil {
 			closeLinks()
 			// fentry와 fexit는 BPF trampoline이 필요하다. UDP 목적지를 socket 기준으로 대신 기록하면 틀린 값이 나오므로 멈춘다.
-			return nil, captureSummary{}, fmt.Errorf("attach %s (needs BPF trampolines: x86_64 5.5+, arm64 6.0+): %w", attachment.name, err)
+			return captureSummary{}, fmt.Errorf("attach %s (needs BPF trampolines: x86_64 5.5+, arm64 6.0+): %w", attachment.name, err)
 		}
 		links = append(links, attached)
 	}
@@ -277,12 +289,12 @@ func collectCaptureEventsFor(protocol string, duration time.Duration, onEvent fu
 
 	reader, err := ringbuf.NewReader(objects.Events)
 	if err != nil {
-		return nil, captureSummary{}, fmt.Errorf("open event ring: %w", err)
+		return captureSummary{}, fmt.Errorf("open event ring: %w", err)
 	}
 	defer reader.Close()
 	clockOffset, err := captureClockOffset()
 	if err != nil {
-		return nil, captureSummary{}, fmt.Errorf("read monotonic clock: %w", err)
+		return captureSummary{}, fmt.Errorf("read monotonic clock: %w", err)
 	}
 	deadline := time.Now().Add(duration)
 	if duration > 0 {
@@ -303,14 +315,13 @@ func collectCaptureEventsFor(protocol string, duration time.Duration, onEvent fu
 	targets := newCommandTargetCache(commandTarget)
 	sockets := newSocketTargetCache()
 	owners := newPIDTargetCache()
-	events := make([]captureEvent, 0)
 	var eventCount uint64
-	finish := func() ([]captureEvent, captureSummary, error) {
+	finish := func() (captureSummary, error) {
 		var lost uint64
 		if lookupErr := objects.LostEvents.Lookup(uint32(0), &lost); lookupErr != nil {
-			return nil, captureSummary{}, fmt.Errorf("read lost event count: %w", lookupErr)
+			return captureSummary{}, fmt.Errorf("read lost event count: %w", lookupErr)
 		}
-		return events, captureSummary{TimestampNS: uint64(time.Now().UnixNano()), Event: "capture_summary", EventCount: eventCount, LostEvents: lost}, nil
+		return captureSummary{TimestampNS: uint64(time.Now().UnixNano()), Event: "capture_summary", EventCount: eventCount, LostEvents: lost}, nil
 	}
 	for {
 		// ring buffer reader는 버퍼가 비었을 때만 deadline을 본다. event가 계속 쌓이면 버퍼가 비지 않아
@@ -326,7 +337,7 @@ func collectCaptureEventsFor(protocol string, duration time.Duration, onEvent fu
 			return finish()
 		}
 		if err != nil {
-			return nil, captureSummary{}, err
+			return captureSummary{}, err
 		}
 		if pid, payload, ok := parseDNSRecord(record.RawSample); ok {
 			names.rememberAnswer(pid, dnsAnswerNames(payload))
@@ -340,7 +351,7 @@ func collectCaptureEventsFor(protocol string, duration time.Duration, onEvent fu
 		}
 		var raw captureEventRaw
 		if err := binary.Read(bytes.NewReader(record.RawSample), binary.LittleEndian, &raw); err != nil {
-			return nil, captureSummary{}, fmt.Errorf("decode event: %w", err)
+			return captureSummary{}, fmt.Errorf("decode event: %w", err)
 		}
 		event := raw.event(clockOffset)
 		commandTarget := ""
@@ -353,10 +364,9 @@ func collectCaptureEventsFor(protocol string, duration time.Duration, onEvent fu
 		}
 		event.Target, event.TargetSource = resolveTraceTarget(event, commandTarget, names)
 		event.Target, event.TargetSource = sockets.target(event)
-		events = append(events, event)
 		if onEvent != nil {
 			if err := onEvent(event); err != nil {
-				return nil, captureSummary{}, err
+				return captureSummary{}, err
 			}
 		}
 		eventCount++

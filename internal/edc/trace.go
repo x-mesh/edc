@@ -75,16 +75,16 @@ func runTrace(args []string) int {
 	ctx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stopSignals()
 	started := time.Now()
-	var events []captureEvent
 	var summary captureSummary
 	var err error
 	var encoder *json.Encoder
+	aggregate := newTraceAggregate(args[0], options.groupBy)
 	if options.raw {
 		encoder = json.NewEncoder(os.Stdout)
 	} else if options.jsonPath == "" && options.groupBy == "" {
 		printTraceEventHeader(args[0])
 	}
-	events, summary, err = collectTraceEventsLive(args[0], options.duration, func(event captureEvent) error {
+	summary, err = collectTraceEventsLive(args[0], options.duration, func(event captureEvent) error {
 		if traceProtocol(event) != args[0] {
 			return nil
 		}
@@ -94,6 +94,7 @@ func runTrace(args []string) int {
 		if options.raw {
 			return encoder.Encode(event)
 		}
+		aggregate.observe(event)
 		if options.jsonPath == "" && options.groupBy == "" {
 			printTraceEvent(event, true)
 		}
@@ -115,7 +116,7 @@ func runTrace(args []string) int {
 		traceDuration = time.Since(started)
 	}
 	if options.groupBy != "" {
-		report := summarizeTraceGroups(args[0], options.groupBy, events, summary, traceDuration, options.process, options.destination)
+		report := aggregate.groups[options.groupBy].report(summary, traceDuration)
 		if options.jsonPath != "" {
 			if err := writeJSONOutput(options.jsonPath, report); err != nil {
 				fmt.Fprintln(os.Stderr, err)
@@ -127,7 +128,7 @@ func runTrace(args []string) int {
 		return 0
 	}
 	if args[0] == "udp" {
-		report := summarizeUDPTrace(events, summary, traceDuration, options.process, options.destination)
+		report := aggregate.udp.report(summary, traceDuration)
 		if options.jsonPath != "" {
 			if err := writeJSONOutput(options.jsonPath, report); err != nil {
 				fmt.Fprintln(os.Stderr, err)
@@ -138,7 +139,7 @@ func runTrace(args []string) int {
 		printUDPTraceReport(report)
 		return 0
 	}
-	report := summarizeTCPTrace(events, summary, traceDuration, options.process, options.destination)
+	report := aggregate.tcp.report(summary, traceDuration)
 	if options.jsonPath != "" {
 		if err := writeJSONOutput(options.jsonPath, report); err != nil {
 			fmt.Fprintln(os.Stderr, err)
@@ -232,51 +233,72 @@ type udpTraceReport struct {
 }
 
 func summarizeUDPTrace(events []captureEvent, summary captureSummary, duration time.Duration, process, destination string) udpTraceReport {
-	// 연결하지 않은 UDP socket 하나가 여러 곳과 주고받으므로 socket만으로 묶으면 목적지가 섞인다.
-	type udpFlowKey struct {
-		socket      uint64
-		destination string
-	}
-	flows := make(map[udpFlowKey]*udpTraceFlow)
-	result := udpTraceReport{DurationMS: duration.Milliseconds(), LostEvents: summary.LostEvents}
+	summarizer := newUDPTraceSummarizer()
 	for _, event := range events {
 		if traceProtocol(event) != "udp" || !traceEventMatches(event, process, destination) {
 			continue
 		}
-		key := udpFlowKey{socket: event.SocketID, destination: event.Destination}
-		flow := flows[key]
-		if flow == nil {
-			flow = &udpTraceFlow{Process: event.Process, PID: event.PID, Source: event.Source, Destination: event.Destination, Hostname: event.Target}
-			flows[key] = flow
-		}
-		if flow.Process == "" {
-			flow.Process = event.Process
-		}
-		if flow.PID == 0 {
-			flow.PID = event.PID
-		}
-		if flow.Source == "" {
-			flow.Source = event.Source
-		}
-		if flow.Hostname == "" {
-			flow.Hostname = event.Target
-		}
-		switch event.Event {
-		case "udp_send":
-			flow.Sent += traceEventPackets(event)
-			result.Sent += int(traceEventPackets(event))
-		case "udp_receive":
-			flow.Received += traceEventPackets(event)
-			result.Received += int(traceEventPackets(event))
-		}
-		flow.traceTraffic.observe(event)
-		result.traceTraffic.observe(event)
+		summarizer.observe(event)
 	}
+	return summarizer.report(summary, duration)
+}
+
+// 연결하지 않은 UDP socket 하나가 여러 곳과 주고받으므로 socket만으로 묶으면 목적지가 섞인다.
+type udpFlowKey struct {
+	socket      uint64
+	destination string
+}
+
+type udpTraceSummarizer struct {
+	flows    map[udpFlowKey]*udpTraceFlow
+	sent     int
+	received int
+	traffic  traceTraffic
+}
+
+func newUDPTraceSummarizer() *udpTraceSummarizer {
+	return &udpTraceSummarizer{flows: make(map[udpFlowKey]*udpTraceFlow)}
+}
+
+func (summarizer *udpTraceSummarizer) observe(event captureEvent) {
+	key := udpFlowKey{socket: event.SocketID, destination: event.Destination}
+	flow := summarizer.flows[key]
+	if flow == nil {
+		flow = &udpTraceFlow{Process: event.Process, PID: event.PID, Source: event.Source, Destination: event.Destination, Hostname: event.Target}
+		summarizer.flows[key] = flow
+	}
+	if flow.Process == "" {
+		flow.Process = event.Process
+	}
+	if flow.PID == 0 {
+		flow.PID = event.PID
+	}
+	if flow.Source == "" {
+		flow.Source = event.Source
+	}
+	if flow.Hostname == "" {
+		flow.Hostname = event.Target
+	}
+	switch event.Event {
+	case "udp_send":
+		flow.Sent += traceEventPackets(event)
+		summarizer.sent += int(traceEventPackets(event))
+	case "udp_receive":
+		flow.Received += traceEventPackets(event)
+		summarizer.received += int(traceEventPackets(event))
+	}
+	flow.traceTraffic.observe(event)
+	summarizer.traffic.observe(event)
+}
+
+func (summarizer *udpTraceSummarizer) report(summary captureSummary, duration time.Duration) udpTraceReport {
+	result := udpTraceReport{DurationMS: duration.Milliseconds(), LostEvents: summary.LostEvents, Sent: summarizer.sent, Received: summarizer.received, traceTraffic: summarizer.traffic}
 	result.Datagrams = result.Sent + result.Received
-	result.Flows = make([]udpTraceFlow, 0, len(flows))
-	for _, flow := range flows {
+	result.Flows = make([]udpTraceFlow, 0, len(summarizer.flows))
+	for _, stored := range summarizer.flows {
+		flow := *stored
 		flow.traceTraffic.finalize(duration)
-		result.Flows = append(result.Flows, *flow)
+		result.Flows = append(result.Flows, flow)
 	}
 	result.traceTraffic.finalize(duration)
 	sortUDPTraceFlows(result.Flows)
@@ -365,40 +387,96 @@ type traceGroupReport struct {
 	traceTraffic
 }
 
+// traceAggregate는 trace가 끝난 뒤 보여 줄 요약을 event가 올 때마다 쌓는다. event를 모두 두면 긴 trace에서
+// 메모리가 event 수만큼 늘었다. view가 빈 문자열이면 protocol의 기본 요약을, 아니면 그 group 요약을 쌓는다.
+type traceAggregate struct {
+	tcp    *tcpTraceSummarizer
+	udp    *udpTraceSummarizer
+	groups map[string]*traceGroupSummarizer
+}
+
+func newTraceAggregate(protocol string, views ...string) *traceAggregate {
+	aggregate := &traceAggregate{groups: make(map[string]*traceGroupSummarizer)}
+	for _, view := range views {
+		switch {
+		case view != "":
+			aggregate.groups[view] = newTraceGroupSummarizer(protocol, view)
+		case protocol == "udp":
+			aggregate.udp = newUDPTraceSummarizer()
+		default:
+			aggregate.tcp = newTCPTraceSummarizer()
+		}
+	}
+	return aggregate
+}
+
+func (aggregate *traceAggregate) observe(event captureEvent) {
+	if aggregate.tcp != nil {
+		aggregate.tcp.observe(event)
+	}
+	if aggregate.udp != nil {
+		aggregate.udp.observe(event)
+	}
+	for _, groups := range aggregate.groups {
+		groups.observe(event)
+	}
+}
+
 func summarizeTraceGroups(protocol, groupBy string, events []captureEvent, summary captureSummary, duration time.Duration, process, destination string) traceGroupReport {
-	groups := make(map[string]*traceGroup)
-	result := traceGroupReport{Protocol: protocol, GroupBy: groupBy, DurationMS: duration.Milliseconds(), LostEvents: summary.LostEvents}
+	summarizer := newTraceGroupSummarizer(protocol, groupBy)
 	for _, event := range events {
 		if traceProtocol(event) != protocol || !traceEventMatches(event, process, destination) {
 			continue
 		}
-		key, server := traceGroupKey(event, groupBy)
-		// 서버 행과 target 없는 client 행이 같은 주소일 수 있다. 섞이지 않도록 map key만 구분한다.
-		mapKey := key
-		if server {
-			mapKey += "\x00server"
-		}
-		group := groups[mapKey]
-		if group == nil {
-			group = &traceGroup{Group: key, Server: server, Destinations: map[string]struct{}{}, Processes: map[string]struct{}{}}
-			groups[mapKey] = group
-		}
-		observeTraceGroup(group, event)
-		result.Events++
-		result.traceTraffic.observe(event)
+		summarizer.observe(event)
 	}
+	return summarizer.report(summary, duration)
+}
+
+type traceGroupSummarizer struct {
+	protocol string
+	groupBy  string
+	groups   map[string]*traceGroup
+	events   uint64
+	traffic  traceTraffic
+}
+
+func newTraceGroupSummarizer(protocol, groupBy string) *traceGroupSummarizer {
+	return &traceGroupSummarizer{protocol: protocol, groupBy: groupBy, groups: make(map[string]*traceGroup)}
+}
+
+func (summarizer *traceGroupSummarizer) observe(event captureEvent) {
+	key, server := traceGroupKey(event, summarizer.groupBy)
+	// 서버 행과 target 없는 client 행이 같은 주소일 수 있다. 섞이지 않도록 map key만 구분한다.
+	mapKey := key
+	if server {
+		mapKey += "\x00server"
+	}
+	group := summarizer.groups[mapKey]
+	if group == nil {
+		group = &traceGroup{Group: key, Server: server, Destinations: map[string]struct{}{}, Processes: map[string]struct{}{}}
+		summarizer.groups[mapKey] = group
+	}
+	observeTraceGroup(group, event)
+	summarizer.events++
+	summarizer.traffic.observe(event)
+}
+
+func (summarizer *traceGroupSummarizer) report(summary captureSummary, duration time.Duration) traceGroupReport {
+	result := traceGroupReport{Protocol: summarizer.protocol, GroupBy: summarizer.groupBy, DurationMS: duration.Milliseconds(), LostEvents: summary.LostEvents, Events: summarizer.events, traceTraffic: summarizer.traffic}
 	result.Rate = traceGroupRate(result.Events, duration)
 	result.traceTraffic.finalize(duration)
-	result.Groups = make([]traceGroupSummary, 0, len(groups))
-	for _, group := range groups {
-		group.traceTraffic.finalize(duration)
+	result.Groups = make([]traceGroupSummary, 0, len(summarizer.groups))
+	for _, group := range summarizer.groups {
+		traffic := group.traceTraffic
+		traffic.finalize(duration)
 		result.Groups = append(result.Groups, traceGroupSummary{
 			Group: group.Group, Server: group.Server, Destinations: slices.Sorted(maps.Keys(group.Destinations)), Processes: slices.Sorted(maps.Keys(group.Processes)),
 			Events: group.Events, Rate: traceGroupRate(group.Events, duration), Tx: group.Tx, Rx: group.Rx, Connect: group.Connect,
-			Retransmissions: traceObserved(group.Retransmissions), Resets: traceObserved(group.Resets), LastEvent: group.LastEvent, traceTraffic: group.traceTraffic,
+			Retransmissions: traceObserved(group.Retransmissions), Resets: traceObserved(group.Resets), LastEvent: group.LastEvent, traceTraffic: traffic,
 		})
 	}
-	if groupBy == traceGroupByPort {
+	if summarizer.groupBy == traceGroupByPort {
 		sort.Slice(result.Groups, func(i, j int) bool { return tracePortGroupLess(result.Groups[i], result.Groups[j]) })
 	} else {
 		sort.Slice(result.Groups, func(i, j int) bool { return result.Groups[i].Group < result.Groups[j].Group })

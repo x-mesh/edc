@@ -354,7 +354,11 @@ func TestNtstatCollectorTracesLoopbackConnection(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer listener.Close()
-	collector := &ntstatCollector{client: client, tracker: newNtstatTracker()}
+	var seen []captureEvent
+	collector := &ntstatCollector{client: client, tracker: newNtstatTracker(), onEvent: func(event captureEvent) error {
+		seen = append(seen, event)
+		return nil
+	}}
 	if err := collector.start(); err != nil {
 		t.Fatal(err)
 	}
@@ -399,7 +403,7 @@ func TestNtstatCollectorTracesLoopbackConnection(t *testing.T) {
 			t.Fatal(err)
 		}
 		names, sent, received, accept = map[string]bool{}, 0, 0, false
-		for _, event := range collector.events {
+		for _, event := range seen {
 			if event.PID != uint32(os.Getpid()) {
 				continue
 			}
@@ -419,7 +423,7 @@ func TestNtstatCollectorTracesLoopbackConnection(t *testing.T) {
 		}
 	}
 	if !names["tcp_connect"] || !names["tcp_close"] || sent != 1000 || received != 300 || !accept {
-		t.Fatalf("client events = %v, sent %d, received %d, accept %t; all events = %#v", names, sent, received, accept, collector.events)
+		t.Fatalf("client events = %v, sent %d, received %d, accept %t; all events = %#v", names, sent, received, accept, seen)
 	}
 }
 
@@ -430,7 +434,7 @@ func TestCollectTraceEventsLiveStops(t *testing.T) {
 	stop := make(chan struct{})
 	time.AfterFunc(300*time.Millisecond, func() { close(stop) })
 	started := time.Now()
-	_, summary, err := collectTraceEventsLive("tcp", 0, nil, stop)
+	summary, err := collectTraceEventsLive("tcp", 0, nil, stop)
 	if err != nil {
 		t.Fatal(err)
 	}

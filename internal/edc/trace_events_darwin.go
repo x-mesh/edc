@@ -532,7 +532,7 @@ type ntstatCollector struct {
 	client      *ntstatClient
 	tracker     *ntstatTracker
 	onEvent     func(captureEvent) error
-	events      []captureEvent
+	eventCount  uint64
 	lostEvents  uint64
 	pendingPoll uint64
 	clockOffset int64
@@ -587,7 +587,7 @@ func (collector *ntstatCollector) handle(message []byte) error {
 
 func (collector *ntstatCollector) emit(events []captureEvent) error {
 	for _, event := range events {
-		collector.events = append(collector.events, event)
+		collector.eventCount++
 		if collector.onEvent != nil {
 			if err := collector.onEvent(event); err != nil {
 				return err
@@ -635,15 +635,15 @@ func (collector *ntstatCollector) start() error {
 }
 
 // protocol은 쓰지 않는다. ntstat는 TCP와 UDP provider를 함께 구독하고, 호출자가 protocol로 거른다.
-func collectTraceEventsLive(_ string, duration time.Duration, onEvent func(captureEvent) error, stop <-chan struct{}) ([]captureEvent, captureSummary, error) {
+func collectTraceEventsLive(_ string, duration time.Duration, onEvent func(captureEvent) error, stop <-chan struct{}) (captureSummary, error) {
 	client, err := openNtstat()
 	if err != nil {
-		return nil, captureSummary{}, err
+		return captureSummary{}, err
 	}
 	defer client.close()
-	collector := &ntstatCollector{client: client, tracker: newNtstatTracker(), onEvent: onEvent, events: make([]captureEvent, 0)}
+	collector := &ntstatCollector{client: client, tracker: newNtstatTracker(), onEvent: onEvent}
 	if err := collector.start(); err != nil {
-		return nil, captureSummary{}, err
+		return captureSummary{}, err
 	}
 	var deadline time.Time
 	if duration > 0 {
@@ -653,21 +653,21 @@ func collectTraceEventsLive(_ string, duration time.Duration, onEvent func(captu
 	for !darwinTraceStopped(stop) && (deadline.IsZero() || time.Now().Before(deadline)) {
 		if !time.Now().Before(nextPoll) {
 			if err := collector.poll(); err != nil {
-				return nil, captureSummary{}, err
+				return captureSummary{}, err
 			}
 			nextPoll = time.Now().Add(ntstatPollInterval)
 			continue
 		}
 		if _, err := client.read(collector.handle); err != nil {
-			return nil, captureSummary{}, err
+			return captureSummary{}, err
 		}
 	}
 	// 마지막 poll 뒤에 쌓인 byte를 잃지 않도록 멈출 때 한 번 더 받는다.
 	if err := collector.poll(); err != nil {
-		return nil, captureSummary{}, err
+		return captureSummary{}, err
 	}
-	summary := captureSummary{TimestampNS: uint64(time.Now().UnixNano()), Event: "capture_summary", EventCount: uint64(len(collector.events)), LostEvents: collector.lostEvents}
-	return collector.events, summary, nil
+	summary := captureSummary{TimestampNS: uint64(time.Now().UnixNano()), Event: "capture_summary", EventCount: collector.eventCount, LostEvents: collector.lostEvents}
+	return summary, nil
 }
 
 func readEphemeralPortRange() (int, int, bool) {

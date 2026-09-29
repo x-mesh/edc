@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"slices"
 	"strings"
@@ -825,6 +826,46 @@ func TestSummarizeTraceGroupsByProcess(t *testing.T) {
 	}
 	if curl := report.Groups[2]; curl.Events != 2 || curl.Connect != 1 || traceOptional(curl.Retransmissions, "%d") != "1" || len(curl.Destinations) != 2 {
 		t.Fatalf("curl group = %#v", curl)
+	}
+}
+
+func TestTraceAggregateMatchesSummaries(t *testing.T) {
+	events := []captureEvent{
+		{Protocol: "tcp", Event: "tcp_connect", SocketID: 1, TimestampNS: 1_000_000, Process: "curl", PID: 10, Source: "10.0.0.2:41000", Destination: "203.0.113.10:443", Target: "example.com"},
+		{Protocol: "tcp", Event: "tcp_send", SocketID: 1, TimestampNS: 3_000_000, Process: "curl", PID: 10, Source: "10.0.0.2:41000", Destination: "203.0.113.10:443", Bytes: 100},
+		{Protocol: "tcp", Event: "tcp_retransmit", SocketID: 1, TimestampNS: 4_000_000, Source: "10.0.0.2:41000", Destination: "203.0.113.10:443"},
+		{Protocol: "tcp", Event: "tcp_accept", SocketID: 2, TimestampNS: 5_000_000, Process: "sshd", PID: 20, Source: "10.0.0.2:22", Destination: "10.0.0.9:50000"},
+		{Protocol: "tcp", Event: "tcp_receive", SocketID: 2, TimestampNS: 6_000_000, Process: "sshd", PID: 20, Source: "10.0.0.2:22", Destination: "10.0.0.9:50000", Bytes: 40},
+		{Protocol: "tcp", Event: "tcp_send_reset", SocketID: 3, TimestampNS: 7_000_000},
+		{Protocol: "udp", Event: "udp_send", SocketID: 4, TimestampNS: 8_000_000, Process: "dig", PID: 30, Source: "10.0.0.2:53000", Destination: "8.8.8.8:53", Bytes: 30},
+		{Protocol: "udp", Event: "udp_receive", SocketID: 4, TimestampNS: 9_000_000, Process: "dig", PID: 30, Source: "10.0.0.2:53000", Destination: "8.8.8.8:53", Bytes: 60},
+	}
+	for _, protocol := range []string{"tcp", "udp"} {
+		aggregate := newTraceAggregate(protocol, traceGroupCycle...)
+		for _, event := range events {
+			if traceProtocol(event) == protocol {
+				aggregate.observe(event)
+			}
+		}
+		summary := captureSummary{LostEvents: 2}
+		for _, view := range traceGroupCycle {
+			var got, want any
+			switch {
+			case view != "":
+				got, want = aggregate.groups[view].report(summary, time.Second), summarizeTraceGroups(protocol, view, events, summary, time.Second, "", "")
+			case protocol == "udp":
+				got, want = aggregate.udp.report(summary, time.Second), summarizeUDPTrace(events, summary, time.Second, "", "")
+			default:
+				got, want = aggregate.tcp.report(summary, time.Second), summarizeTCPTrace(events, summary, time.Second, "", "")
+			}
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("%s view %q: aggregate = %#v, summary = %#v", protocol, view, got, want)
+			}
+		}
+		// report는 쌓은 값을 바꾸지 않는다. 같은 요약을 다시 불러도 같은 값이어야 한다.
+		if protocol == "tcp" && !reflect.DeepEqual(aggregate.tcp.report(summary, time.Second), aggregate.tcp.report(summary, time.Second)) {
+			t.Fatal("tcp report changed on the second call")
+		}
 	}
 }
 

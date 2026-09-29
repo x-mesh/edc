@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"slices"
 	"sort"
 	"strings"
@@ -19,9 +20,13 @@ import (
 
 const traceScreenEventLimit = 10000
 
+// traceScreenGCPercent는 전체 화면 trace의 GC 빈도를 낮춘다. 요약만 쌓으면 heap이 작아 GC가 자주 돌고, 할당이 많은
+// group 화면 갱신이 느려져 초당 수만 event에서 ring buffer 유실이 늘었다. 800이면 유실이 모든 event를 두던
+// 때와 같고, 메모리는 일정하다.
+const traceScreenGCPercent = 800
+
 type traceEventMsg struct{ events []captureEvent }
 type traceFinishedMsg struct {
-	events  []captureEvent
 	summary captureSummary
 	err     error
 }
@@ -550,17 +555,23 @@ func runTraceScreen(protocol string, options tcpTraceOptions) int {
 		fmt.Fprintln(os.Stderr, err)
 		return 3
 	}
+	if os.Getenv("GOGC") == "" {
+		debug.SetGCPercent(traceScreenGCPercent)
+	}
 	eventCh := make(chan captureEvent, 256)
 	resultCh := make(chan traceFinishedMsg, 1)
 	stop := make(chan struct{})
 	var stopOnce sync.Once
 	stopCapture := func() { stopOnce.Do(func() { close(stop) }) }
 	started := time.Now()
+	// 끝날 때 어느 보기일지 모르므로 모든 보기의 요약을 쌓는다. 수집 goroutine만 쓰고, resultCh를 받은 뒤에 읽는다.
+	aggregate := newTraceAggregate(protocol, traceGroupCycle...)
 	go func() {
-		events, summary, err := collectTraceEventsLive(protocol, options.duration, func(event captureEvent) error {
+		summary, err := collectTraceEventsLive(protocol, options.duration, func(event captureEvent) error {
 			if traceProtocol(event) != protocol || !traceEventMatches(event, options.process, options.destination) {
 				return nil
 			}
+			aggregate.observe(event)
 			select {
 			case eventCh <- event:
 				return nil
@@ -568,7 +579,7 @@ func runTraceScreen(protocol string, options tcpTraceOptions) int {
 				return nil
 			}
 		}, stop)
-		resultCh <- traceFinishedMsg{events: events, summary: summary, err: err}
+		resultCh <- traceFinishedMsg{summary: summary, err: err}
 	}()
 	model := newTraceScreenModel(protocol, options, eventCh, resultCh, stopCapture)
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -601,13 +612,13 @@ func runTraceScreen(protocol string, options tcpTraceOptions) int {
 		duration = time.Since(started)
 	}
 	if screen.groupBy != "" {
-		printTraceGroupReport(summarizeTraceGroups(protocol, screen.groupBy, result.events, result.summary, duration, options.process, options.destination))
+		printTraceGroupReport(aggregate.groups[screen.groupBy].report(result.summary, duration))
 		return 0
 	}
 	if protocol == "udp" {
-		printUDPTraceReport(summarizeUDPTrace(result.events, result.summary, duration, options.process, options.destination))
+		printUDPTraceReport(aggregate.udp.report(result.summary, duration))
 		return 0
 	}
-	printTCPTraceReport(summarizeTCPTrace(result.events, result.summary, duration, options.process, options.destination))
+	printTCPTraceReport(aggregate.tcp.report(result.summary, duration))
 	return 0
 }

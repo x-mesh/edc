@@ -144,63 +144,83 @@ func captureEventTypeName(eventType uint32, protocol uint16) (string, string) {
 }
 
 func summarizeTCPTrace(events []captureEvent, summary captureSummary, duration time.Duration, process, destination string) tcpTraceReport {
-	connections := make(map[uint64]*tcpTraceConnection)
-	firstSeen := make(map[uint64]uint64)
-	result := tcpTraceReport{DurationMS: duration.Milliseconds(), LostEvents: summary.LostEvents}
+	summarizer := newTCPTraceSummarizer()
 	for _, event := range events {
 		if traceProtocol(event) != "tcp" || !traceEventMatches(event, process, destination) {
 			continue
 		}
-		connection := connections[event.SocketID]
-		if connection == nil {
-			connection = &tcpTraceConnection{Process: event.Process, PID: event.PID, Source: event.Source, Destination: event.Destination, Result: "incomplete"}
-			connections[event.SocketID] = connection
-			firstSeen[event.SocketID] = event.TimestampNS
-		}
-		if connection.Process == "" && event.Process != "" {
-			connection.Process = event.Process
-		}
-		if connection.PID == 0 && event.PID != 0 {
-			connection.PID = event.PID
-		}
-		if connection.Hostname == "" && event.Target != "" {
-			connection.Hostname = event.Target
-		}
-		if connection.Source == "" {
-			connection.Source = event.Source
-		}
-		if connection.Destination == "" {
-			connection.Destination = event.Destination
-		}
-		switch event.Event {
-		case "tcp_send", "tcp_receive":
-			connection.traceTraffic.observe(event)
-		case "tcp_connect", "tcp_accept":
-			connection.Result = "established"
-			if firstSeen[event.SocketID] > 0 && event.TimestampNS >= firstSeen[event.SocketID] {
-				connection.connectMS = int64(event.TimestampNS-firstSeen[event.SocketID]) / int64(time.Millisecond)
-			}
-		case "tcp_retransmit":
-			connection.retransmissions++
-		case "tcp_send_reset", "tcp_receive_reset":
-			connection.reset = true
-			connection.Result = "reset"
-		case "tcp_close":
-			if connection.Result == "incomplete" {
-				connection.Result = "closed"
-			}
-		}
-		result.traceTraffic.observe(event)
+		summarizer.observe(event)
 	}
-	result.Connections = make([]tcpTraceConnection, 0, len(connections))
+	return summarizer.report(summary, duration)
+}
+
+// tcpTraceSummarizer는 event를 하나씩 받아 TCP 요약을 쌓는다. trace가 event를 모두 두지 않고 요약만 두도록 한다.
+type tcpTraceSummarizer struct {
+	connections map[uint64]*tcpTraceConnection
+	firstSeen   map[uint64]uint64
+	traffic     traceTraffic
+}
+
+func newTCPTraceSummarizer() *tcpTraceSummarizer {
+	return &tcpTraceSummarizer{connections: make(map[uint64]*tcpTraceConnection), firstSeen: make(map[uint64]uint64)}
+}
+
+func (summarizer *tcpTraceSummarizer) observe(event captureEvent) {
+	connections, firstSeen := summarizer.connections, summarizer.firstSeen
+	connection := connections[event.SocketID]
+	if connection == nil {
+		connection = &tcpTraceConnection{Process: event.Process, PID: event.PID, Source: event.Source, Destination: event.Destination, Result: "incomplete"}
+		connections[event.SocketID] = connection
+		firstSeen[event.SocketID] = event.TimestampNS
+	}
+	if connection.Process == "" && event.Process != "" {
+		connection.Process = event.Process
+	}
+	if connection.PID == 0 && event.PID != 0 {
+		connection.PID = event.PID
+	}
+	if connection.Hostname == "" && event.Target != "" {
+		connection.Hostname = event.Target
+	}
+	if connection.Source == "" {
+		connection.Source = event.Source
+	}
+	if connection.Destination == "" {
+		connection.Destination = event.Destination
+	}
+	switch event.Event {
+	case "tcp_send", "tcp_receive":
+		connection.traceTraffic.observe(event)
+	case "tcp_connect", "tcp_accept":
+		connection.Result = "established"
+		if firstSeen[event.SocketID] > 0 && event.TimestampNS >= firstSeen[event.SocketID] {
+			connection.connectMS = int64(event.TimestampNS-firstSeen[event.SocketID]) / int64(time.Millisecond)
+		}
+	case "tcp_retransmit":
+		connection.retransmissions++
+	case "tcp_send_reset", "tcp_receive_reset":
+		connection.reset = true
+		connection.Result = "reset"
+	case "tcp_close":
+		if connection.Result == "incomplete" {
+			connection.Result = "closed"
+		}
+	}
+	summarizer.traffic.observe(event)
+}
+
+func (summarizer *tcpTraceSummarizer) report(summary captureSummary, duration time.Duration) tcpTraceReport {
+	result := tcpTraceReport{DurationMS: duration.Milliseconds(), LostEvents: summary.LostEvents, traceTraffic: summarizer.traffic}
+	result.Connections = make([]tcpTraceConnection, 0, len(summarizer.connections))
 	var retransmissions uint64
 	var resets int
-	for _, connection := range connections {
+	for _, stored := range summarizer.connections {
+		connection := *stored
 		connection.traceTraffic.finalize(duration)
 		connection.ConnectMS = traceObserved(connection.connectMS)
 		connection.Retransmissions = traceObserved(connection.retransmissions)
 		connection.Reset = traceObserved(connection.reset)
-		result.Connections = append(result.Connections, *connection)
+		result.Connections = append(result.Connections, connection)
 		result.Attempts++
 		retransmissions += connection.retransmissions
 		if connection.reset {

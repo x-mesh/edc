@@ -93,9 +93,9 @@ func TestCaptureAttachmentsFollowTheProtocol(t *testing.T) {
 		tracepoints []string
 		tracing     []string
 	}{
-		{"", tcpTracepoints, append(append(append([]string{}, udpSend...), "fentry/skb_consume_udp"), tcpAccept...)},
+		{"", tcpTracepoints, append(append(append(append([]string{}, udpSend...), "fentry/skb_consume_udp"), tcpAccept...), "fentry/__inet_stream_connect")},
 		// TCP도 DNS 응답으로 target 이름을 지으므로 skb_consume_udp를 붙인다.
-		{"tcp", tcpTracepoints, append([]string{"fentry/skb_consume_udp"}, tcpAccept...)},
+		{"tcp", tcpTracepoints, append(append([]string{"fentry/skb_consume_udp"}, tcpAccept...), "fentry/__inet_stream_connect")},
 		{"udp", []string{}, append(append([]string{}, udpSend...), "fentry/skb_consume_udp")},
 		// DNS 질의는 UDP 송신 hook이, 응답은 skb_consume_udp가, port 53 TCP 연결은 inet_sock_set_state가 알린다.
 		// 수신 큐 hook은 DNS 응답 시간을 나누는 데만 쓴다.

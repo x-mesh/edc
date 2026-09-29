@@ -16,10 +16,12 @@ import (
 	"github.com/miekg/dns"
 )
 
-// dnsRecordType은 BPF가 받은 DNS 응답을 넘기는 내부 레코드다. 사용자에게 보일 event가 아니다.
+// dnsRecordType은 BPF가 DNS 질의와 응답을 넘기는 레코드다. trace dns만 이것을 event로 바꾼다.
+// offset은 capture_events_bpf.c의 struct dns_record와 같다.
 const (
 	dnsRecordType          = 9
-	dnsRecordPayloadOffset = 24
+	dnsRecordQuery         = 1
+	dnsRecordPayloadOffset = 84
 )
 
 const (
@@ -102,16 +104,28 @@ func traceDestinationAddress(destination string) (netip.Addr, bool) {
 	return address.Unmap(), true
 }
 
-func parseDNSRecord(sample []byte) (uint32, []byte, bool) {
+func parseDNSRecord(sample []byte) (dnsPacket, bool) {
 	if len(sample) < dnsRecordPayloadOffset || binary.LittleEndian.Uint32(sample[8:12]) != dnsRecordType {
-		return 0, nil, false
+		return dnsPacket{}, false
 	}
-	pid := binary.LittleEndian.Uint32(sample[12:16])
-	payload := sample[dnsRecordPayloadOffset:]
-	if size := int(binary.LittleEndian.Uint32(sample[16:20])); size < len(payload) {
-		payload = payload[:size]
+	family := binary.LittleEndian.Uint16(sample[28:30])
+	var source, destination [16]byte
+	copy(source[:], sample[36:52])
+	copy(destination[:], sample[52:68])
+	packet := dnsPacket{
+		bootTimeNS:  binary.LittleEndian.Uint64(sample[0:8]),
+		pid:         binary.LittleEndian.Uint32(sample[12:16]),
+		cgroupID:    binary.LittleEndian.Uint64(sample[16:24]),
+		process:     strings.TrimRight(string(sample[68:84]), "\x00"),
+		query:       sample[30] == dnsRecordQuery,
+		source:      formatCaptureAddress(family, source, binary.LittleEndian.Uint16(sample[32:34])),
+		destination: formatCaptureAddress(family, destination, binary.LittleEndian.Uint16(sample[34:36])),
+		payload:     sample[dnsRecordPayloadOffset:],
 	}
-	return pid, payload, true
+	if size := int(binary.LittleEndian.Uint32(sample[24:28])); size < len(packet.payload) {
+		packet.payload = packet.payload[:size]
+	}
+	return packet, true
 }
 
 // dnsAnswerNames는 응답의 A와 AAAA 주소를 질의 이름에 연결한다. CNAME을 거쳐도 프로그램이 물어본 이름이
@@ -138,10 +152,6 @@ func dnsAnswerNames(payload []byte) map[netip.Addr]string {
 		}
 	}
 	return names
-}
-
-func traceDNSName(name string) string {
-	return strings.ToLower(strings.TrimSuffix(name, "."))
 }
 
 // seedResolverCache는 trace 전에 조회된 이름을 systemd-resolved 캐시에서 채운다. resolvectl이 없거나

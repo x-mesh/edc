@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"testing"
 	"time"
+	"unsafe"
 
 	"github.com/miekg/dns"
 	"golang.org/x/sys/unix"
@@ -93,6 +94,8 @@ func TestCaptureAttachmentsFollowTheProtocol(t *testing.T) {
 		// TCP도 DNS 응답으로 target 이름을 지으므로 skb_consume_udp를 붙인다.
 		{"tcp", tcpTracepoints, append([]string{"fentry/skb_consume_udp"}, tcpAccept...)},
 		{"udp", []string{}, append(append([]string{}, udpSend...), "fentry/skb_consume_udp")},
+		// DNS 질의는 UDP 송신 hook이, 응답은 skb_consume_udp가 읽는다.
+		{"dns", []string{}, append(append([]string{}, udpSend...), "fentry/skb_consume_udp")},
 	} {
 		tracepoints, tracing := captureAttachments(&captureEventsObjects{}, test.protocol)
 		gotTracepoints := []string{}
@@ -259,7 +262,7 @@ func dnsRecordSample(t *testing.T, pid uint32, message *dns.Msg) []byte {
 	sample := make([]byte, dnsRecordPayloadOffset+1024)
 	binary.LittleEndian.PutUint32(sample[8:12], dnsRecordType)
 	binary.LittleEndian.PutUint32(sample[12:16], pid)
-	binary.LittleEndian.PutUint32(sample[16:20], uint32(len(payload)))
+	binary.LittleEndian.PutUint32(sample[24:28], uint32(len(payload)))
 	copy(sample[dnsRecordPayloadOffset:], payload)
 	return sample
 }
@@ -276,12 +279,13 @@ func TestDNSAnswersNameTheAddressesThatAProcessResolved(t *testing.T) {
 		}
 		answer.Answer = append(answer.Answer, record)
 	}
-	pid, payload, ok := parseDNSRecord(dnsRecordSample(t, 42, answer))
-	if !ok || pid != 42 {
-		t.Fatalf("parseDNSRecord = %d, %t", pid, ok)
+	packet, ok := parseDNSRecord(dnsRecordSample(t, 42, answer))
+	if !ok || packet.pid != 42 || packet.query {
+		t.Fatalf("parseDNSRecord = %#v, %t", packet, ok)
 	}
+	payload := packet.payload
 	cache := newDNSNameCache()
-	cache.rememberAnswer(pid, dnsAnswerNames(payload))
+	cache.rememberAnswer(packet.pid, dnsAnswerNames(payload))
 	// CNAME을 거쳐도 프로그램이 물어본 이름을 쓰고, IPv6를 풀어 쓴 표기로 들어와도 같은 주소로 본다.
 	for _, destination := range []string{"203.0.113.10:443", "[2606:4700:10:0:0:0:6814:179a]:443"} {
 		if name, ok := cache.forProcess(42, destination); !ok || name != "api.example.com" {
@@ -299,8 +303,51 @@ func TestDNSAnswersNameTheAddressesThatAProcessResolved(t *testing.T) {
 	}
 	event := make([]byte, 128)
 	binary.LittleEndian.PutUint32(event[8:12], 6)
-	if _, _, ok := parseDNSRecord(event); ok {
+	if _, ok := parseDNSRecord(event); ok {
 		t.Fatal("a send event was parsed as a DNS record")
+	}
+}
+
+// dnsRecordPayloadOffset과 parseDNSRecord의 offset은 BPF의 struct dns_record를 따른다. bpf2go가 만든 Go 구조체와
+// 비교해 C 구조체를 바꾸고 이쪽을 고치지 않으면 여기서 실패한다.
+func TestDNSRecordOffsetsMatchTheBPFStruct(t *testing.T) {
+	var record captureEventsDnsRecord
+	for name, offsets := range map[string][2]uintptr{
+		"event_type":  {unsafe.Offsetof(record.EventType), 8},
+		"pid":         {unsafe.Offsetof(record.Pid), 12},
+		"cgroup_id":   {unsafe.Offsetof(record.CgroupId), 16},
+		"len":         {unsafe.Offsetof(record.Len), 24},
+		"family":      {unsafe.Offsetof(record.Family), 28},
+		"direction":   {unsafe.Offsetof(record.Direction), 30},
+		"sport":       {unsafe.Offsetof(record.Sport), 32},
+		"dport":       {unsafe.Offsetof(record.Dport), 34},
+		"source":      {unsafe.Offsetof(record.Source), 36},
+		"destination": {unsafe.Offsetof(record.Destination), 52},
+		"comm":        {unsafe.Offsetof(record.Comm), 68},
+		"payload":     {unsafe.Offsetof(record.Payload), dnsRecordPayloadOffset},
+	} {
+		if offsets[0] != offsets[1] {
+			t.Fatalf("%s is at %d in the BPF struct, parseDNSRecord reads %d", name, offsets[0], offsets[1])
+		}
+	}
+}
+
+func TestParseDNSRecordReadsTheQuerySide(t *testing.T) {
+	question := new(dns.Msg)
+	question.SetQuestion("example.com.", dns.TypeAAAA)
+	sample := dnsRecordSample(t, 7, question)
+	binary.LittleEndian.PutUint64(sample[0:8], 1_000)
+	binary.LittleEndian.PutUint64(sample[16:24], 99)
+	binary.LittleEndian.PutUint16(sample[28:30], 2)
+	sample[30] = dnsRecordQuery
+	binary.LittleEndian.PutUint16(sample[32:34], 41000)
+	binary.LittleEndian.PutUint16(sample[34:36], 53)
+	copy(sample[36:40], []byte{10, 0, 0, 2})
+	copy(sample[52:56], []byte{127, 0, 0, 53})
+	copy(sample[68:84], "dig")
+	packet, ok := parseDNSRecord(sample)
+	if !ok || !packet.query || packet.bootTimeNS != 1_000 || packet.cgroupID != 99 || packet.process != "dig" || packet.source != "10.0.0.2:41000" || packet.destination != "127.0.0.53:53" {
+		t.Fatalf("parseDNSRecord = %#v, %t", packet, ok)
 	}
 }
 

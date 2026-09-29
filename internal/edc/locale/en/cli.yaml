@@ -166,6 +166,8 @@ cli:
     group_by_raw_conflict: "--group-by cannot be used with --raw"
     group_by: "group events by source, target, port, process, or event and show traffic counters"
     linux_only: "network trace requires Linux, not %s"
+    group_by_protocol: "--group-by %s is not available for trace %s"
+    protocol_linux_only: "trace %s requires Linux, not %s"
   report:
     unsupported_schema: "%s: unsupported schema version: %s"
     filter_label: "filter: "

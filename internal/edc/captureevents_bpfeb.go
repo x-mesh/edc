@@ -13,6 +13,25 @@ import (
 	"github.com/cilium/ebpf"
 )
 
+type captureEventsDnsRecord struct {
+	_           structs.HostLayout
+	TimestampNs uint64
+	EventType   uint32
+	Pid         uint32
+	CgroupId    uint64
+	Len         uint32
+	Family      uint16
+	Direction   uint8
+	Reserved    uint8
+	Sport       uint16
+	Dport       uint16
+	Source      [16]uint8
+	Destination [16]uint8
+	Comm        [16]int8
+	Payload     [1024]uint8
+	_           [4]byte
+}
+
 type captureEventsSockOwner struct {
 	_        structs.HostLayout
 	CgroupId uint64
@@ -38,6 +57,8 @@ type captureEventsUdpSendPending struct {
 // Used for safe lookups in a Collection or CollectionSpec.
 const (
 	captureEventsMapAnnouncedOwners            = "announced_owners"
+	captureEventsMapDnsQueryPending            = "dns_query_pending"
+	captureEventsMapDnsScratch                 = "dns_scratch"
 	captureEventsMapEvents                     = "events"
 	captureEventsMapLostEvents                 = "lost_events"
 	captureEventsMapSockOwners                 = "sock_owners"
@@ -121,6 +142,8 @@ type captureEventsProgramSpecs struct {
 // It can be passed ebpf.CollectionSpec.Assign.
 type captureEventsMapSpecs struct {
 	AnnouncedOwners *ebpf.MapSpec `ebpf:"announced_owners"`
+	DnsQueryPending *ebpf.MapSpec `ebpf:"dns_query_pending"`
+	DnsScratch      *ebpf.MapSpec `ebpf:"dns_scratch"`
 	Events          *ebpf.MapSpec `ebpf:"events"`
 	LostEvents      *ebpf.MapSpec `ebpf:"lost_events"`
 	SockOwners      *ebpf.MapSpec `ebpf:"sock_owners"`
@@ -154,6 +177,8 @@ func (o *captureEventsObjects) Close() error {
 // It can be passed to loadCaptureEventsObjects or ebpf.CollectionSpec.LoadAndAssign.
 type captureEventsMaps struct {
 	AnnouncedOwners *ebpf.Map `ebpf:"announced_owners"`
+	DnsQueryPending *ebpf.Map `ebpf:"dns_query_pending"`
+	DnsScratch      *ebpf.Map `ebpf:"dns_scratch"`
 	Events          *ebpf.Map `ebpf:"events"`
 	LostEvents      *ebpf.Map `ebpf:"lost_events"`
 	SockOwners      *ebpf.Map `ebpf:"sock_owners"`
@@ -163,6 +188,8 @@ type captureEventsMaps struct {
 func (m *captureEventsMaps) Close() error {
 	return _CaptureEventsClose(
 		m.AnnouncedOwners,
+		m.DnsQueryPending,
+		m.DnsScratch,
 		m.Events,
 		m.LostEvents,
 		m.SockOwners,

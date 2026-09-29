@@ -245,6 +245,12 @@ func TestSummarizeTCPTraceClassifiesResults(t *testing.T) {
 		{SocketID: 7, TimestampNS: 12, Event: "tcp_state", Source: "10.0.0.2:8080", Destination: "10.0.0.9:50001", OldState: "LISTEN", NewState: "SYN_RECV"},
 		{SocketID: 7, TimestampNS: 13, Event: "tcp_accept", Process: "server", Source: "10.0.0.2:8080", Destination: "10.0.0.9:50001", OldState: "SYN_RECV", NewState: "ESTABLISHED"},
 		{SocketID: 6, TimestampNS: 14, Event: "tcp_close", Source: "10.0.0.2:8080", OldState: "LISTEN", NewState: "CLOSE"},
+		// 경로가 없는 IPv6 connect는 SYN_SENT 전에 실패하고, kernel이 port를 되돌린 destroy만 남는다.
+		{SocketID: 8, TimestampNS: 15, Event: "tcp_destroy", Source: "[::]:0", Destination: "[2001:db8::1]:0"},
+		// connect하지 않고 닫은 socket은 연결이 아니다.
+		{SocketID: 9, TimestampNS: 16, Event: "tcp_destroy", Source: "0.0.0.0:0", Destination: "0.0.0.0:0"},
+		// 주소 없이 RST만 보낸 socket은 판단할 근거가 없어 existing으로 둔다.
+		{SocketID: 10, TimestampNS: 17, Event: "tcp_send_reset", Process: "quiet"},
 	}
 	report := summarizeTCPTrace(events, captureSummary{}, time.Second, "", "")
 	results := map[uint64]string{}
@@ -252,14 +258,17 @@ func TestSummarizeTCPTraceClassifiesResults(t *testing.T) {
 	for _, connection := range report.Connections {
 		byDestination[connection.Destination] = connection
 	}
-	for socket, destination := range map[uint64]string{1: "127.0.0.1:8080", 2: "127.0.0.1:1", 3: "192.0.2.9:443", 4: "192.0.2.1:443", 5: "10.0.0.9:50000", 7: "10.0.0.9:50001"} {
+	for socket, destination := range map[uint64]string{1: "127.0.0.1:8080", 2: "127.0.0.1:1", 3: "192.0.2.9:443", 4: "192.0.2.1:443", 5: "10.0.0.9:50000", 7: "10.0.0.9:50001", 8: "[2001:db8::1]:0", 10: ""} {
 		results[socket] = byDestination[destination].Result
 	}
-	want := map[uint64]string{1: "established", 2: "failed", 3: "failed", 4: "incomplete", 5: "existing", 7: "established"}
-	if !reflect.DeepEqual(results, want) || len(report.Connections) != 6 {
+	want := map[uint64]string{1: "established", 2: "failed", 3: "failed", 4: "incomplete", 5: "existing", 7: "established", 8: "failed", 10: "existing"}
+	if !reflect.DeepEqual(results, want) || len(report.Connections) != 8 {
 		t.Fatalf("results = %v, want %v; rows = %d", results, want, len(report.Connections))
 	}
-	if report.Attempts != 5 || report.Established != 2 || report.Incomplete != 3 || report.Existing != 1 || report.Attempts != report.Established+report.Incomplete {
+	if _, ok := byDestination["0.0.0.0:0"]; ok {
+		t.Fatalf("an unconnected socket has a row: %#v", byDestination["0.0.0.0:0"])
+	}
+	if report.Attempts != 6 || report.Established != 2 || report.Incomplete != 4 || report.Existing != 2 || report.Attempts != report.Established+report.Incomplete {
 		t.Fatalf("totals = %d attempts, %d established, %d incomplete, %d existing", report.Attempts, report.Established, report.Incomplete, report.Existing)
 	}
 	if reset := byDestination["127.0.0.1:8080"]; traceOptional(reset.Reset, "%t") != "true" || reset.ConnectMS == nil {

@@ -99,6 +99,8 @@ func TestCaptureAttachmentsFollowTheProtocol(t *testing.T) {
 		// DNS 질의는 UDP 송신 hook이, 응답은 skb_consume_udp가, port 53 TCP 연결은 inet_sock_set_state가 알린다.
 		// 수신 큐 hook은 DNS 응답 시간을 나누는 데만 쓴다.
 		{"dns", []string{"sock/inet_sock_set_state"}, append(append([]string{}, udpSend...), "fentry/__udp_enqueue_schedule_skb", "fentry/skb_consume_udp")},
+		// HTTP는 TCP 송수신의 사용자 버퍼만 읽고 TCP 상태 변화는 쓰지 않는다.
+		{"http", []string{}, []string{"fentry/skb_consume_udp", "fentry/tcp_sendmsg", "fentry/tcp_recvmsg", "fexit/tcp_recvmsg"}},
 	} {
 		tracepoints, tracing := captureAttachments(&captureEventsObjects{}, test.protocol)
 		gotTracepoints := []string{}
@@ -125,6 +127,7 @@ func TestCaptureEventFiltersFollowTheProtocol(t *testing.T) {
 		{traceScope{protocol: "udp"}, captureEventFilter{udpEvents: true}},
 		{traceScope{protocol: "dns"}, captureEventFilter{dnsSent: true, tcpStatePort: 53}},
 		{traceScope{protocol: "dns", server: true}, captureEventFilter{dnsSent: true, server: true, tcpStatePort: 53}},
+		{traceScope{protocol: "http"}, captureEventFilter{dnsSent: true}},
 	} {
 		if got := captureEventFilterFor(test.scope); got != test.want {
 			t.Fatalf("scope %+v filter = %+v, want %+v", test.scope, got, test.want)

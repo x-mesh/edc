@@ -867,7 +867,7 @@ HTTP event의 `target`은 `Host` header이고, `Host`가 없으면 서버 주소
 
 `Ctrl-C` 후 summary는 method, host, path마다 한 행을 표시합니다. group 행은 요청, 응답, 4xx·5xx 응답, 응답 없음, 평균·최대 응답 시간을 표시합니다.
 
-HTTPS, HTTP/2, HTTP/3은 kernel에서 암호문이나 binary frame으로만 보이므로 표시하지 않습니다. edc는 한 번의 읽기나 쓰기가 시작되는 곳에서만 message를 찾습니다. 그래서 한 번의 읽기에 앞 응답의 끝과 다음 응답의 시작이 함께 들어 있으면 다음 응답을 놓칩니다. edc가 읽는 kernel field는 Linux 6.4에 생겼으므로, 더 오래된 kernel에서는 오류를 내고 멈춥니다.
+HTTPS, HTTP/2, HTTP/3은 kernel에서 암호문이나 binary frame으로만 보이므로 표시하지 않습니다. edc는 한 번의 읽기나 쓰기가 시작되는 곳에서만 message를 찾습니다. 그래서 한 번의 읽기에 앞 응답의 끝과 다음 응답의 시작이 함께 들어 있으면 다음 응답을 놓칩니다. 프로그램이 message 하나를 여러 버퍼로 나눠 쓰면 첫 버퍼만 읽으므로, `Host` header는 첫 버퍼의 앞 512 byte 안에 있어야 합니다. 없으면 target은 서버 주소입니다. edc가 읽는 kernel field는 Linux 6.4에 생겼으므로, 더 오래된 kernel에서는 오류를 내고 멈춥니다.
 
 ```bash
 ./bin/edc capture \

@@ -903,7 +903,7 @@ The `target` of an HTTP event is the `Host` header. If there is no `Host` header
 
 The summary after Ctrl-C shows one row for each method, host, and path. Grouped rows show the requests, the responses, the 4xx and 5xx responses, the unanswered requests, and the average and maximum latency.
 
-`trace http` does not show HTTPS, HTTP/2, or HTTP/3, because the kernel sees only encrypted data or binary frames. edc finds a message only at the start of a read or a write. If one read has the end of a response and the start of the next response, edc misses the next response. The kernel field that edc reads came in Linux 6.4, so older kernels stop with an error.
+`trace http` does not show HTTPS, HTTP/2, or HTTP/3, because the kernel sees only encrypted data or binary frames. edc finds a message only at the start of a read or a write. If one read has the end of a response and the start of the next response, edc misses the next response. If a program writes one message from several buffers, edc reads only the first buffer. So the `Host` header must be in the first buffer and in the first 512 bytes. If it is not, the target is the server address. The kernel field that edc reads came in Linux 6.4, so older kernels stop with an error.
 
 ```bash
 ./bin/edc capture \

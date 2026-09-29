@@ -41,7 +41,9 @@ type traceProtocolSpec struct {
 	// linuxOnly는 macOS가 관측하지 못하는 protocol이다. macOS의 network statistics는 payload를 주지 않는다.
 	linuxOnly bool
 	// scrollLabels는 스크롤 행의 목적지 칸과 event 칸이다. nil이면 목적지와 event 이름을 쓴다.
-	scrollLabels  func(event captureEvent) (string, string)
+	scrollLabels func(event captureEvent) (string, string)
+	// prerequisites는 수집 전에 확인할 조건이다. nil이면 확인할 것이 없다. ARP는 netlink만 쓰므로 eBPF 권한이 필요 없다.
+	prerequisites func() error
 	newSummarizer func() traceSummarizer
 }
 
@@ -70,13 +72,25 @@ var traceProtocols = map[string]traceProtocolSpec{
 			{screenTitle: "RET", reportTitle: "RETRANS", width: 3, value: func(group traceGroupSummary) string { return traceOptional(group.Retransmissions, "%d") }},
 			{screenTitle: "RST", reportTitle: "RESET", width: 3, value: func(group traceGroupSummary) string { return traceOptional(group.Resets, "%d") }},
 		},
-		newSummarizer: func() traceSummarizer { return newTCPTraceSummarizer() },
+		prerequisites: captureEventsPrerequisites, newSummarizer: func() traceSummarizer { return newTCPTraceSummarizer() },
 	},
-	"udp": {ansiColor: "35", screenColor: "#c084fc", newSummarizer: func() traceSummarizer { return newUDPTraceSummarizer() }},
+	"udp": {ansiColor: "35", screenColor: "#c084fc", prerequisites: captureEventsPrerequisites, newSummarizer: func() traceSummarizer { return newUDPTraceSummarizer() }},
 	"dns": {
 		ansiColor: "32", screenColor: "#4ade80", groupColumns: traceDNSGroupColumns, hideTraffic: true, hiddenViews: []string{traceGroupByPort}, linuxOnly: true,
-		scrollLabels: traceDNSScrollLabels, newSummarizer: func() traceSummarizer { return newDNSTraceSummarizer() },
+		scrollLabels: traceDNSScrollLabels, prerequisites: captureEventsPrerequisites, newSummarizer: func() traceSummarizer { return newDNSTraceSummarizer() },
 	},
+	// ARP event에는 process와 port가 없다. source는 interface, target은 IP다.
+	"arp": {
+		ansiColor: "34", screenColor: "#60a5fa", groupColumns: traceARPGroupColumns, hideTraffic: true, hiddenViews: []string{traceGroupByPort, traceGroupByProcess}, linuxOnly: true,
+		scrollLabels: traceARPScrollLabels, newSummarizer: func() traceSummarizer { return newARPTraceSummarizer() },
+	},
+}
+
+func traceProtocolPrerequisites(protocol string) error {
+	if check := traceProtocols[protocol].prerequisites; check != nil {
+		return check()
+	}
+	return nil
 }
 
 // traceGroupViews는 protocol이 쓰는 보기를 Tab 순서로 돌려준다. 첫 값은 event 스크롤이다.
@@ -131,7 +145,7 @@ func (report traceGroupReport) hideTraffic() bool { return traceProtocols[report
 
 func runTrace(args []string) int {
 	if len(args) == 0 || !knownTraceProtocol(args[0]) {
-		fmt.Fprintln(os.Stderr, T("cli.usage", "edc trace <tcp|udp|dns> [options]"))
+		fmt.Fprintln(os.Stderr, T("cli.usage", "edc trace <tcp|udp|dns|arp> [options]"))
 		return 2
 	}
 	options := tcpTraceOptions{}
@@ -187,7 +201,7 @@ func runTrace(args []string) int {
 		fmt.Fprintln(os.Stderr, T("cli.trace.protocol_linux_only", args[0], runtime.GOOS))
 		return 3
 	}
-	if err := captureEventsPrerequisites(); err != nil {
+	if err := traceProtocolPrerequisites(args[0]); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 3
 	}
@@ -302,7 +316,7 @@ func traceColorLine(line, protocol, event string, color bool) string {
 		return line
 	}
 	colorValue := traceProtocols[protocol].ansiColor
-	if strings.Contains(event, "reset") {
+	if strings.Contains(event, "reset") || event == traceARPMACChangeEvent {
 		colorValue = "31"
 	} else if strings.Contains(event, "retransmit") || strings.Contains(event, "fail") {
 		colorValue = "33"
@@ -566,6 +580,7 @@ type traceGroup struct {
 	Resets          uint64
 	LastEvent       string
 	DNS             *traceDNSCounts
+	ARP             *traceARPCounts
 	traceTraffic
 }
 
@@ -584,6 +599,8 @@ type traceGroupSummary struct {
 	LastEvent       string   `json:"last_event,omitempty"`
 	// DNS는 DNS group에만 있다. TCP와 UDP group의 JSON에는 나오지 않는다.
 	DNS *traceDNSCounts `json:"dns,omitempty"`
+	// ARP는 ARP group에만 있다.
+	ARP *traceARPCounts `json:"arp,omitempty"`
 	traceTraffic
 }
 
@@ -689,7 +706,7 @@ func (summarizer *traceGroupSummarizer) report(summary captureSummary, duration 
 		result.Groups = append(result.Groups, traceGroupSummary{
 			Group: group.Group, Server: group.Server, Destinations: slices.Sorted(maps.Keys(group.Destinations)), Processes: slices.Sorted(maps.Keys(group.Processes)),
 			Events: group.Events, Rate: traceGroupRate(group.Events, duration), Tx: group.Tx, Rx: group.Rx, Connect: group.Connect,
-			Retransmissions: traceObserved(group.Retransmissions), Resets: traceObserved(group.Resets), LastEvent: group.LastEvent, DNS: traceDNSGroupSummary(group.DNS), traceTraffic: traffic,
+			Retransmissions: traceObserved(group.Retransmissions), Resets: traceObserved(group.Resets), LastEvent: group.LastEvent, DNS: traceDNSGroupSummary(group.DNS), ARP: traceARPGroupSummary(group.ARP), traceTraffic: traffic,
 		})
 	}
 	if summarizer.groupBy == traceGroupByPort {
@@ -823,11 +840,17 @@ func observeTraceGroup(group *traceGroup, event captureEvent) {
 	case "tcp_send_reset", "tcp_receive_reset":
 		group.Resets++
 	}
-	if event.Protocol == "dns" {
+	switch event.Protocol {
+	case "dns":
 		if group.DNS == nil {
 			group.DNS = &traceDNSCounts{}
 		}
 		group.DNS.observe(event)
+	case "arp":
+		if group.ARP == nil {
+			group.ARP = &traceARPCounts{}
+		}
+		group.ARP.observe(event)
 	}
 	group.traceTraffic.observe(event)
 	group.LastEvent = event.Event

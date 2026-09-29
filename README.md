@@ -869,6 +869,26 @@ On the server side, the latency starts when the server reads the query and stops
 
 `trace dns` watches only port 53. It shows DNS over TCP only as connections on the client side. It does not show DNS over TLS, DNS over HTTPS, mDNS, or LLMNR. BPF reads the first 1,024 bytes of a DNS message. For a longer answer, edc reads the result code from the header and takes the name from the query. macOS does not give the payload of a socket, so `trace dns` requires Linux.
 
+Use `trace arp` on Linux to print the changes of the IPv4 neighbor table (the ARP cache) as they arrive. It reads kernel notifications through netlink, so it needs no root and no eBPF.
+
+```bash
+./bin/edc trace arp
+./bin/edc trace arp --group-by target
+./bin/edc trace arp --json arp.json --duration 30s
+```
+
+The entries that exist when the trace starts do not make events. After that, each change is one event:
+
+- `arp_new`: a new entry.
+- `arp_state`: the state changed, for example from `REACHABLE` to `STALE`. `old_state` and `new_state` show the states.
+- `arp_mac_change`: the MAC address of an IP changed. `old_mac` and `mac` show the addresses. A gateway failover, an IP conflict, or a spoofed ARP answer can cause this event.
+- `arp_failed`: the kernel did not get an answer for the IP.
+- `arp_delete`: the kernel removed the entry.
+
+The `target` of an ARP event is the IP address, and the `source` is the interface. ARP events have no process or port, so `trace arp` has no process view and no port view. `--destination` filters events by IP address. The summary after Ctrl-C shows one row for each interface and IP. Grouped rows show the number of MAC addresses (`MACS`), the MAC changes (`CHG`), and the failures (`FAIL`).
+
+The kernel does not report the start of an address lookup, so a failed lookup shows only `arp_failed`. `trace arp` does not show IPv6 neighbors (NDP) or the entries without ARP (`NOARP`). It watches the neighbor table, not the ARP packets. So it does not show ARP packets that do not change the table, for example requests from other hosts. `trace arp` does not support macOS yet.
+
 ```bash
 ./bin/edc capture \
   --interface en0 \

@@ -491,9 +491,9 @@ func traceGroupColorLine(line, protocol string, group traceGroupSummary) string 
 		return line
 	}
 	color := lipgloss.Color(traceProtocols[protocol].screenColor)
-	if group.Resets != nil && *group.Resets > 0 {
+	if (group.Resets != nil && *group.Resets > 0) || (group.ARP != nil && group.ARP.MACChanges > 0) {
 		color = lipgloss.Color("#fb7185")
-	} else if (group.Retransmissions != nil && *group.Retransmissions > 0) || (group.DNS != nil && group.DNS.Errors > 0) {
+	} else if (group.Retransmissions != nil && *group.Retransmissions > 0) || (group.DNS != nil && group.DNS.Errors > 0) || (group.ARP != nil && group.ARP.Failures > 0) {
 		color = lipgloss.Color("#fbbf24")
 	}
 	return lipgloss.NewStyle().Foreground(color).Render(line)
@@ -547,7 +547,7 @@ func traceEventStyle(line, protocol, event string) string {
 		return line
 	}
 	color := lipgloss.Color(traceProtocols[protocol].screenColor)
-	if strings.Contains(event, "reset") {
+	if strings.Contains(event, "reset") || event == traceARPMACChangeEvent {
 		color = lipgloss.Color("#fb7185")
 	} else if strings.Contains(event, "retransmit") || strings.Contains(event, "fail") {
 		color = lipgloss.Color("#fbbf24")
@@ -564,7 +564,7 @@ func traceFit(value string, width int) string {
 }
 
 func runTraceScreen(protocol string, options tcpTraceOptions) int {
-	if err := captureEventsPrerequisites(); err != nil {
+	if err := traceProtocolPrerequisites(protocol); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 3
 	}

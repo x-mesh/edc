@@ -827,7 +827,7 @@ Without root, the macOS trace shows only the kernel sockets of the current user.
 
 If you run the trace with `sudo`, it shows the processes of all users and the connections of the user-space network stack. It also shows the domain name that macOS records for a connection as the `target`, and `target_source` shows `system`. If macOS has no domain name for a connection, `--group-by target` uses the destination address. QUIC uses UDP, so `trace udp` shows the QUIC connections of the user-space network stack.
 
-Use `trace dns` on Linux to print DNS queries and answers as they arrive. It uses the same hooks as `trace udp` and reads the DNS messages of UDP port 53.
+Use `trace dns` on Linux to print DNS queries and answers as they arrive. It reads the DNS messages of UDP port 53 and also shows TCP connections to port 53.
 
 ```bash
 ./bin/edc trace dns
@@ -836,7 +836,11 @@ Use `trace dns` on Linux to print DNS queries and answers as they arrive. It use
 ./bin/edc trace dns --process curl --destination 127.0.0.53:53
 ```
 
-A query is a `dns_query` event. An answer gets the name of its result code, for example `dns_noerror`, `dns_nxdomain`, or `dns_servfail`. A successful answer without records is `dns_nodata`. `Errors` counts all answers except `dns_noerror` and `dns_nodata`.
+A query is a `dns_query` event. An answer gets the name of its result code, for example `dns_noerror`, `dns_nxdomain`, or `dns_servfail`. A successful answer without records is `dns_nodata`.
+
+An answer with the TC bit is `dns_truncated`. The answer did not fit in UDP, so the client asks the same server again over TCP. A TCP connection to port 53 is `dns_tcp_connect`, or `dns_tcp_fail` if the connection fails. edc does not read the DNS messages in the TCP connection. If the same process got a `dns_truncated` answer from that server, the TCP event gets the name of that query.
+
+`Errors` counts `dns_tcp_fail` and all answers except `dns_noerror`, `dns_nodata`, and `dns_truncated`. `TCP connections` in the summary counts `dns_tcp_connect` and `dns_tcp_fail`.
 
 The `target` of a DNS event is the name in the query. The `destination` is the DNS server. In the scroll view, the `DESTINATION` column shows the name, the record type, and the server. The `EVENT` column shows the result and the latency. So `--group-by target` groups events by name, and `--destination` filters events by server. The DNS server port is always 53, so `trace dns` has no port view.
 
@@ -848,7 +852,7 @@ The summary after Ctrl-C shows one row for each name and record type. Grouped ro
 
 On a host with systemd-resolved, one lookup can appear two times: between the program and `127.0.0.53`, and between systemd-resolved and the upstream server. If a name has only the program row, systemd-resolved answered from its cache.
 
-`trace dns` shows only the client side of UDP port 53. It does not show DNS over TCP, DNS over TLS, DNS over HTTPS, mDNS, or LLMNR. It also does not show the queries that a local DNS server receives. BPF reads the first 1,024 bytes of a DNS message. For a longer answer, edc reads the result code from the header and takes the name from the query. macOS does not give the payload of a socket, so `trace dns` requires Linux.
+`trace dns` shows only the client side of port 53. It shows DNS over TCP only as connections. It does not show DNS over TLS, DNS over HTTPS, mDNS, or LLMNR. It also does not show the queries that a local DNS server receives. BPF reads the first 1,024 bytes of a DNS message. For a longer answer, edc reads the result code from the header and takes the name from the query. macOS does not give the payload of a socket, so `trace dns` requires Linux.
 
 ```bash
 ./bin/edc capture \

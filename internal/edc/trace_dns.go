@@ -17,10 +17,15 @@ import (
 )
 
 const (
-	traceDNSQueryEvent = "dns_query"
-	traceDNSHeaderSize = 12
+	traceDNSQueryEvent      = "dns_query"
+	traceDNSTruncatedEvent  = "dns_truncated"
+	traceDNSTCPConnectEvent = "dns_tcp_connect"
+	traceDNSTCPFailEvent    = "dns_tcp_fail"
+	traceDNSHeaderSize      = 12
 	// traceDNSPendingLimit은 응답을 기다리는 질의 수의 상한이다. 응답이 오지 않는 질의가 쌓여도 메모리를 제한한다.
 	traceDNSPendingLimit = 65536
+	// traceDNSTruncatedLimit은 TCP로 다시 물을 이름을 기억하는 수의 상한이다.
+	traceDNSTruncatedLimit = 1024
 )
 
 // dnsPacket은 kernel이 넘긴 DNS 질의나 응답 하나다. source는 로컬 쪽, destination은 DNS 서버다.
@@ -47,15 +52,22 @@ type dnsPendingQuery struct {
 	queryType  string
 }
 
+// dnsTruncatedKey는 잘린 응답을 받은 process와 서버다. 그 process가 같은 서버에 TCP로 다시 물으면 이 이름을 붙인다.
+type dnsTruncatedKey struct {
+	pid    uint32
+	server string
+}
+
 // dnsQueryTracker는 응답을 같은 로컬 port, 서버, transaction ID의 질의와 짝지어 응답 시간을 잰다.
 // 응답 하나는 같은 key로 다시 보낸 질의까지 모두 답한 것으로 보고, 응답 시간은 처음 보낸 질의부터 잰다.
 type dnsQueryTracker struct {
-	pending map[dnsQueryKey][]dnsPendingQuery
-	size    int
+	pending   map[dnsQueryKey][]dnsPendingQuery
+	size      int
+	truncated map[dnsTruncatedKey]dnsPendingQuery
 }
 
 func newDNSQueryTracker() *dnsQueryTracker {
-	return &dnsQueryTracker{pending: map[dnsQueryKey][]dnsPendingQuery{}}
+	return &dnsQueryTracker{pending: map[dnsQueryKey][]dnsPendingQuery{}, truncated: map[dnsTruncatedKey]dnsPendingQuery{}}
 }
 
 func (tracker *dnsQueryTracker) remember(key dnsQueryKey, query dnsPendingQuery) {
@@ -120,7 +132,51 @@ func (tracker *dnsQueryTracker) event(packet dnsPacket, clockOffset int64) (capt
 			event.Target, event.QueryType = queries[0].name, queries[0].queryType
 		}
 	}
+	// TC bit는 응답이 UDP에 다 들어가지 않았다는 뜻이다. client는 같은 서버에 TCP로 다시 묻는다.
+	if flags&0x0200 != 0 {
+		event.Event = traceDNSTruncatedEvent
+		if len(tracker.truncated) >= traceDNSTruncatedLimit {
+			clear(tracker.truncated)
+		}
+		tracker.truncated[dnsTruncatedKey{pid: packet.pid, server: traceDNSServerHost(packet.destination)}] = dnsPendingQuery{name: event.Target, queryType: event.QueryType}
+	}
 	return event, true
+}
+
+// tcpEvent는 port 53으로 가는 TCP 연결을 DNS event로 바꾼다. TCP로 주고받는 DNS message는 읽지 않는다.
+func (tracker *dnsQueryTracker) tcpEvent(event captureEvent) (captureEvent, bool) {
+	name := ""
+	switch {
+	case traceProtocol(event) != "tcp":
+		return captureEvent{}, false
+	case event.Event == "tcp_connect":
+		name = traceDNSTCPConnectEvent
+	case event.Event == "tcp_close" && event.OldState == "SYN_SENT":
+		name = traceDNSTCPFailEvent
+	default:
+		return captureEvent{}, false
+	}
+	if port, ok := traceAddressPort(event.Destination); !ok || port != 53 {
+		return captureEvent{}, false
+	}
+	dnsEvent := captureEvent{
+		TimestampNS: event.TimestampNS, BootTimeNS: event.BootTimeNS, Event: name, Protocol: "dns", PID: event.PID, Process: event.Process,
+		CgroupID: event.CgroupID, Source: event.Source, Destination: event.Destination,
+	}
+	key := dnsTruncatedKey{pid: event.PID, server: traceDNSServerHost(event.Destination)}
+	if query, ok := tracker.truncated[key]; ok {
+		delete(tracker.truncated, key)
+		dnsEvent.Target, dnsEvent.QueryType = query.name, query.queryType
+	}
+	return dnsEvent, true
+}
+
+func traceDNSServerHost(address string) string {
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		return address
+	}
+	return host
 }
 
 func traceDNSName(name string) string {
@@ -138,8 +194,13 @@ func traceDNSAnswerEvent(rcode, answers int) string {
 	return "dns_rcode" + strconv.Itoa(rcode)
 }
 
+// traceDNSError는 조회가 실패한 결과다. 잘린 응답과 TCP 연결은 TCP로 다시 묻는 과정이라 오류로 세지 않는다.
 func traceDNSError(event string) bool {
-	return event != traceDNSQueryEvent && event != "dns_noerror" && event != "dns_nodata"
+	switch event {
+	case traceDNSQueryEvent, "dns_noerror", "dns_nodata", traceDNSTruncatedEvent, traceDNSTCPConnectEvent:
+		return false
+	}
+	return true
 }
 
 func dnsAnswerAddresses(message dns.Msg) []string {
@@ -163,21 +224,30 @@ func dnsAnswerAddresses(message dns.Msg) []string {
 
 // traceDNSCounts는 DNS 질의와 응답의 합계다. DNS group 행과 요약이 함께 쓴다.
 type traceDNSCounts struct {
-	Queries      uint64   `json:"queries"`
-	Answers      uint64   `json:"answers"`
-	Errors       uint64   `json:"errors"`
-	Unanswered   uint64   `json:"unanswered"`
-	LatencyAvgMS *float64 `json:"latency_avg_ms"`
-	LatencyMaxMS *float64 `json:"latency_max_ms"`
-	answered     uint64
-	latencyTotal float64
-	latencies    uint64
-	latencyMax   float64
+	Queries    uint64 `json:"queries"`
+	Answers    uint64 `json:"answers"`
+	Errors     uint64 `json:"errors"`
+	Unanswered uint64 `json:"unanswered"`
+	// TCPConnections는 port 53으로 가는 TCP 연결 시도다. 실패한 연결은 Errors에도 들어간다.
+	TCPConnections uint64   `json:"tcp_connections"`
+	LatencyAvgMS   *float64 `json:"latency_avg_ms"`
+	LatencyMaxMS   *float64 `json:"latency_max_ms"`
+	answered       uint64
+	latencyTotal   float64
+	latencies      uint64
+	latencyMax     float64
 }
 
 func (counts *traceDNSCounts) observe(event captureEvent) {
-	if event.Event == traceDNSQueryEvent {
+	switch event.Event {
+	case traceDNSQueryEvent:
 		counts.Queries++
+		return
+	case traceDNSTCPConnectEvent, traceDNSTCPFailEvent:
+		counts.TCPConnections++
+		if traceDNSError(event.Event) {
+			counts.Errors++
+		}
 		return
 	}
 	counts.Answers++
@@ -345,7 +415,7 @@ func (summarizer *dnsTraceSummarizer) summarize(summary captureSummary, duration
 
 func (report dnsTraceReport) print() {
 	fmt.Fprintf(os.Stdout, "DNS trace: %s\n\n", (time.Duration(report.DurationMS) * time.Millisecond).String())
-	fmt.Fprintf(os.Stdout, "Queries: %d\nAnswers: %d\nErrors: %d\nUnanswered: %d\nLatency avg: %s\nLatency max: %s\nLost events: %d\n", report.Queries, report.Answers, report.Errors, report.Unanswered, traceDNSLatency(report.LatencyAvgMS, "ms"), traceDNSLatency(report.LatencyMaxMS, "ms"), report.LostEvents)
+	fmt.Fprintf(os.Stdout, "Queries: %d\nAnswers: %d\nErrors: %d\nUnanswered: %d\nTCP connections: %d\nLatency avg: %s\nLatency max: %s\nLost events: %d\n", report.Queries, report.Answers, report.Errors, report.Unanswered, report.TCPConnections, traceDNSLatency(report.LatencyAvgMS, "ms"), traceDNSLatency(report.LatencyMaxMS, "ms"), report.LostEvents)
 	if len(report.Names) == 0 {
 		return
 	}

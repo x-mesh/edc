@@ -791,6 +791,29 @@ root 권한 없이 실행하면 macOS trace는 현재 사용자의 kernel socket
 
 `sudo`로 실행하면 모든 사용자의 process와 사용자 공간 network stack의 연결을 표시하고, macOS가 연결마다 기록한 domain 이름을 `target`으로 표시합니다. 이때 `target_source`는 `system`입니다. domain 이름이 없는 연결은 `--group-by target`에서 목적지 주소로 묶습니다. QUIC는 UDP를 사용하므로, 사용자 공간 network stack의 QUIC 연결은 `trace udp`에 표시합니다.
 
+Linux에서 `trace dns`를 사용하면 DNS 질의와 응답을 발생 즉시 출력합니다. `trace udp`와 같은 hook을 사용하며 UDP port 53의 DNS message를 읽습니다.
+
+```bash
+./bin/edc trace dns
+./bin/edc trace dns --duration 15s --json dns.json
+./bin/edc trace dns --group-by target
+./bin/edc trace dns --process curl --destination 127.0.0.53:53
+```
+
+질의는 `dns_query` event입니다. 응답은 결과 코드를 이름으로 사용합니다. 예를 들어 `dns_noerror`, `dns_nxdomain`, `dns_servfail`입니다. record 없이 성공한 응답은 `dns_nodata`입니다. `Errors`는 `dns_noerror`와 `dns_nodata`를 뺀 응답을 셉니다.
+
+DNS event의 `target`은 질의한 이름이고 `destination`은 DNS 서버입니다. 따라서 `--group-by target`은 이름별로 묶고, `--destination`은 서버로 거릅니다. DNS 서버 port는 항상 53이므로 `trace dns`에는 port 보기가 없습니다.
+
+edc는 로컬 port, 서버, transaction ID가 같은 질의와 응답을 짝짓습니다. `latency_ms`는 kernel이 질의를 보낸 때부터 process가 응답을 읽은 때까지이므로, process가 응답을 늦게 읽으면 그만큼 길어집니다. 응답이 오기 전에 같은 질의를 다시 보냈으면 응답 하나가 그 질의에 모두 답한 것으로 보고, 응답 시간은 처음 보낸 질의부터 잽니다.
+
+`Unanswered`는 trace가 끝날 때까지 응답이 없는 질의 수입니다. 전체 화면의 `NOANS`는 아직 응답을 기다리는 질의 수입니다.
+
+`Ctrl-C` 후 summary는 이름과 record 종류마다 한 행을 표시합니다. group 행은 byte 대신 질의, 응답, 오류, 응답 없음, 평균·최대 응답 시간을 표시합니다.
+
+systemd-resolved가 있는 host에서는 조회 하나가 두 번 보일 수 있습니다. 프로그램과 `127.0.0.53` 사이, systemd-resolved와 상위 서버 사이입니다. 프로그램 쪽 행만 있으면 systemd-resolved가 캐시에서 답한 것입니다.
+
+`trace dns`는 UDP port 53의 client 쪽만 표시합니다. DNS over TCP, DNS over TLS, DNS over HTTPS, mDNS, LLMNR은 표시하지 않으며, 로컬 DNS 서버가 받는 질의도 표시하지 않습니다. BPF는 DNS message의 앞 1,024 byte만 읽습니다. 이보다 긴 응답은 header에서 결과 코드를 읽고 이름은 질의에서 가져옵니다. macOS는 socket의 payload를 주지 않으므로 `trace dns`는 Linux에서만 동작합니다.
+
 ```bash
 ./bin/edc capture \
   --interface en0 \

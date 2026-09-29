@@ -144,7 +144,7 @@ command:
       - "PCAP には credential や個人情報が入ることがあります。"
       - "JSON の redaction は PCAP の payload には効きません。"
   trace:
-    summary: "TCP または UDP event をリアルタイムに表示して summary にまとめる"
+    summary: "TCP、UDP、DNS event をリアルタイムに表示して summary にまとめる"
     option:
       duration: "trace 時間、最大 60s。省略で Ctrl-C"
       raw: "raw event JSONL を表示"
@@ -164,6 +164,7 @@ command:
       - "B/s は byte rate、bps と Mbps は bit rate です。Mbps は bps / 1,000,000 です。"
       - "--duration を省略した場合は Ctrl-C で trace を終了します。"
       - "JSONL event には --raw を使います。"
+      - "trace dns は Linux で DNS の問い合わせと応答を表示します。port 表示なし。"
   report:
     summary: "保存した JSON report の閲覧と比較"
     notes:

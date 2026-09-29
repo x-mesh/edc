@@ -21,6 +21,7 @@ typedef __u32 __wsum;
 #define BPF_ANY 0
 #define BPF_MAP_TYPE_HASH 1
 #define BPF_MAP_TYPE_ARRAY 2
+#define BPF_MAP_TYPE_PERCPU_ARRAY 6
 #define BPF_MAP_TYPE_LRU_HASH 9
 #define BPF_MAP_TYPE_RINGBUF 27
 #define TCP_SYN_SENT 2
@@ -500,6 +501,88 @@ struct {
 	__type(value, struct udp_send_pending);
 } udp_send_pending SEC(".maps");
 
+#define DNS_PAYLOAD_SIZE 1024
+#define DNS_ANSWER 0
+#define DNS_QUERY 1
+
+// DNS 질의와 응답을 사용자 공간에 넘긴다. 응답은 명령줄에 대상이 없는 프로그램의 target 이름도 짓는다. 받은 프로세스가
+// 곧 조회한 프로세스라서 pid를 함께 보낸다. event_type은 struct event와 같은 위치이고, source는 struct event처럼 로컬 쪽이다.
+struct dns_record {
+	__u64 timestamp_ns;
+	__u32 event_type;
+	__u32 pid;
+	__u64 cgroup_id;
+	__u32 len;
+	__u16 family;
+	__u8 direction;
+	__u8 reserved;
+	__u16 sport;
+	__u16 dport;
+	__u8 source[16];
+	__u8 destination[16];
+	char comm[16];
+	__u8 payload[DNS_PAYLOAD_SIZE];
+};
+
+// record가 BPF stack(512바이트)보다 커서 질의는 CPU별 scratch에서 만든다.
+struct {
+	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+	__uint(max_entries, 1);
+	__type(key, __u32);
+	__type(value, struct dns_record);
+} dns_scratch SEC(".maps");
+
+// UDP 송신처럼 fentry에서 읽은 질의를 thread별로 두고, fexit에서 전송이 성공했을 때만 보낸다.
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, 1024);
+	__type(key, __u64);
+	__type(value, struct dns_record);
+} dns_query_pending SEC(".maps");
+
+// 선형 영역 밖의 payload는 page fragment에 있어 head 기준 주소로 읽으면 다른 메모리를 읽는다.
+static __always_inline __u32 read_dns_payload(struct sk_buff *skb, unsigned char *payload, long len, __u8 *out) {
+	unsigned char *linear_end = BPF_CORE_READ(skb, head) + BPF_CORE_READ(skb, tail);
+	long available = linear_end - payload;
+	if (available <= 0 || len <= 0) {
+		return 0;
+	}
+	__u32 size = len;
+	if (size > available) {
+		size = available;
+	}
+	if (size > DNS_PAYLOAD_SIZE) {
+		size = DNS_PAYLOAD_SIZE;
+	}
+	return bpf_probe_read_kernel(out, size, payload) == 0 ? size : 0;
+}
+
+static __always_inline void remember_dns_query(struct sk_buff *skb, struct udp_send_pending *pending, unsigned char *payload, long len) {
+	__u32 zero = 0;
+	struct dns_record *record = bpf_map_lookup_elem(&dns_scratch, &zero);
+	if (!record) {
+		return;
+	}
+	record->timestamp_ns = bpf_ktime_get_ns();
+	record->event_type = 9;
+	record->pid = bpf_get_current_pid_tgid() >> 32;
+	record->cgroup_id = bpf_get_current_cgroup_id();
+	record->family = pending->family;
+	record->direction = DNS_QUERY;
+	record->reserved = 0;
+	record->sport = pending->sport;
+	record->dport = pending->dport;
+	__builtin_memcpy(record->source, pending->source, 16);
+	__builtin_memcpy(record->destination, pending->destination, 16);
+	bpf_get_current_comm(record->comm, sizeof(record->comm));
+	record->len = read_dns_payload(skb, payload, len, record->payload);
+	if (record->len == 0) {
+		return;
+	}
+	__u64 key = bpf_get_current_pid_tgid();
+	bpf_map_update_elem(&dns_query_pending, &key, record, BPF_ANY);
+}
+
 static __always_inline int remember_udp_send(struct sk_buff *skb, struct flowi4 *fl4, struct flowi6 *fl6) {
 	if (!skb) {
 		return 0;
@@ -533,6 +616,9 @@ static __always_inline int remember_udp_send(struct sk_buff *skb, struct flowi4 
 	}
 	__u64 key = bpf_get_current_pid_tgid();
 	bpf_map_update_elem(&udp_send_pending, &key, &pending, BPF_ANY);
+	if (pending.dport == 53) {
+		remember_dns_query(skb, &pending, head + transport + 8, payload);
+	}
 	return 0;
 }
 
@@ -555,6 +641,15 @@ static __always_inline int emit_udp_send(void *ctx, int ret) {
 			__builtin_memcpy(event->source, pending->source, 16);
 			__builtin_memcpy(event->destination, pending->destination, 16);
 			finish_event(event);
+		}
+	}
+	if (pending->dport == 53) {
+		struct dns_record *query = bpf_map_lookup_elem(&dns_query_pending, &key);
+		if (query) {
+			if (ret == 0) {
+				bpf_ringbuf_output(&events, query, sizeof(*query), 0);
+			}
+			bpf_map_delete_elem(&dns_query_pending, &key);
 		}
 	}
 	bpf_map_delete_elem(&udp_send_pending, &key);
@@ -583,42 +678,37 @@ int udp_v6_send_skb_exit(__u64 *ctx) {
 
 // skb_consume_udp는 udp_recvmsg와 udpv6_recvmsg가 datagram을 복사한 뒤 한 번 부른다. recv()처럼 주소를
 // 받지 않는 호출도 여기서는 header에서 보낸 쪽 주소를 읽을 수 있다.
-#define DNS_PAYLOAD_SIZE 1024
-
-// 명령줄에 대상이 없는 프로그램도 이름을 얻도록 DNS 응답을 사용자 공간에 넘긴다. 받은 프로세스가 곧 조회한
-// 프로세스라서 pid를 함께 보낸다. event_type은 struct event와 같은 위치다.
-struct dns_record {
-	__u64 timestamp_ns;
-	__u32 event_type;
-	__u32 pid;
-	__u32 len;
-	__u32 reserved;
-	__u8 payload[DNS_PAYLOAD_SIZE];
-};
-
-static __always_inline void emit_dns_answer(struct sk_buff *skb, unsigned char *payload, int len) {
-	// 선형 영역 밖의 payload는 page fragment에 있어 head 기준 주소로 읽으면 다른 메모리를 읽는다.
-	unsigned char *linear_end = BPF_CORE_READ(skb, head) + BPF_CORE_READ(skb, tail);
-	long available = linear_end - payload;
-	if (available <= 0) {
-		return;
-	}
-	__u32 size = len;
-	if (size > available) {
-		size = available;
-	}
-	if (size > DNS_PAYLOAD_SIZE) {
-		size = DNS_PAYLOAD_SIZE;
-	}
+static __always_inline void emit_dns_answer(struct sk_buff *skb, unsigned char *network, unsigned char *transport, __u8 version, __be16 *ports, int len) {
 	struct dns_record *record = bpf_ringbuf_reserve(&events, sizeof(*record), 0);
 	if (!record) {
+		return;
+	}
+	record->len = read_dns_payload(skb, transport + 8, len, record->payload);
+	if (record->len == 0) {
+		bpf_ringbuf_discard(record, 0);
 		return;
 	}
 	record->timestamp_ns = bpf_ktime_get_ns();
 	record->event_type = 9;
 	record->pid = bpf_get_current_pid_tgid() >> 32;
+	record->cgroup_id = bpf_get_current_cgroup_id();
+	record->direction = DNS_ANSWER;
 	record->reserved = 0;
-	record->len = bpf_probe_read_kernel(record->payload, size, payload) == 0 ? size : 0;
+	record->sport = bpf_ntohs(ports[1]);
+	record->dport = bpf_ntohs(ports[0]);
+	// bpf_ringbuf_reserve는 slot을 지우지 않는다. IPv4는 앞 4바이트만 쓰므로 나머지에 옛 값이 남지 않게 먼저 지운다.
+	__builtin_memset(record->source, 0, sizeof(record->source));
+	__builtin_memset(record->destination, 0, sizeof(record->destination));
+	if (version == 4) {
+		record->family = AF_INET;
+		bpf_probe_read_kernel(record->source, 4, network + 16);
+		bpf_probe_read_kernel(record->destination, 4, network + 12);
+	} else {
+		record->family = AF_INET6;
+		bpf_probe_read_kernel(record->source, 16, network + 24);
+		bpf_probe_read_kernel(record->destination, 16, network + 8);
+	}
+	bpf_get_current_comm(record->comm, sizeof(record->comm));
 	bpf_ringbuf_submit(record, 0);
 }
 
@@ -643,7 +733,7 @@ int skb_consume_udp_entry(__u64 *ctx) {
 	}
 	announce_owner((__u64)sk);
 	if (bpf_ntohs(ports[0]) == 53) {
-		emit_dns_answer(skb, transport + 8, len);
+		emit_dns_answer(skb, network, transport, version, ports, len);
 	}
 	struct event *event = start_event(ctx, 7);
 	if (!event) {

@@ -827,6 +827,29 @@ Without root, the macOS trace shows only the kernel sockets of the current user.
 
 If you run the trace with `sudo`, it shows the processes of all users and the connections of the user-space network stack. It also shows the domain name that macOS records for a connection as the `target`, and `target_source` shows `system`. If macOS has no domain name for a connection, `--group-by target` uses the destination address. QUIC uses UDP, so `trace udp` shows the QUIC connections of the user-space network stack.
 
+Use `trace dns` on Linux to print DNS queries and answers as they arrive. It uses the same hooks as `trace udp` and reads the DNS messages of UDP port 53.
+
+```bash
+./bin/edc trace dns
+./bin/edc trace dns --duration 15s --json dns.json
+./bin/edc trace dns --group-by target
+./bin/edc trace dns --process curl --destination 127.0.0.53:53
+```
+
+A query is a `dns_query` event. An answer gets the name of its result code, for example `dns_noerror`, `dns_nxdomain`, or `dns_servfail`. A successful answer without records is `dns_nodata`. `Errors` counts all answers except `dns_noerror` and `dns_nodata`.
+
+The `target` of a DNS event is the name in the query. The `destination` is the DNS server. So `--group-by target` groups events by name, and `--destination` filters events by server. The DNS server port is always 53, so `trace dns` has no port view.
+
+edc matches an answer to the query with the same local port, server, and transaction ID. `latency_ms` starts when the kernel sends the query and stops when the process reads the answer. If the process reads the answer late, the latency includes that delay. If the process sends the same query again before the answer, the answer counts for all these queries. The latency starts at the first query.
+
+`Unanswered` counts the queries without an answer at the end of the trace. In the full-screen view, `NOANS` counts the queries that wait for an answer.
+
+The summary after Ctrl-C shows one row for each name and record type. Grouped rows show queries, answers, errors, unanswered queries, and the average and maximum latency instead of byte counts.
+
+On a host with systemd-resolved, one lookup can appear two times: between the program and `127.0.0.53`, and between systemd-resolved and the upstream server. If a name has only the program row, systemd-resolved answered from its cache.
+
+`trace dns` shows only the client side of UDP port 53. It does not show DNS over TCP, DNS over TLS, DNS over HTTPS, mDNS, or LLMNR. It also does not show the queries that a local DNS server receives. BPF reads the first 1,024 bytes of a DNS message. For a longer answer, edc reads the result code from the header and takes the name from the query. macOS does not give the payload of a socket, so `trace dns` requires Linux.
+
 ```bash
 ./bin/edc capture \
   --interface en0 \

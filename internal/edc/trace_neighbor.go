@@ -289,10 +289,19 @@ func (summarizer *neighborTraceSummarizer) summarize(summary captureSummary, dur
 	return report
 }
 
+// traceNeighborLost는 ARP와 NDP 요약의 Lost events 값이다. Linux에서 이 값은 netlink 수신 buffer가 넘친 횟수이고, 한 번
+// 넘칠 때 여러 알림을 잃을 수 있어 놓친 변화의 수가 아니다.
+func traceNeighborLost(lost uint64) string {
+	if lost == 0 {
+		return "0"
+	}
+	return fmt.Sprintf("%d (buffer overflows; the number of missed changes is unknown)", lost)
+}
+
 // -d는 연결마다 한 행을 쓰는 option이다. ARP와 NDP 요약은 이미 neighbor마다 한 행이라 같은 표를 쓴다.
 func (report neighborTraceReport) print(bool) {
 	fmt.Fprintf(os.Stdout, "%s trace: %s\n\n", strings.ToUpper(report.protocol), (time.Duration(report.DurationMS) * time.Millisecond).String())
-	fmt.Fprintf(os.Stdout, "Events: %d\nNeighbors: %d\nMAC changes: %d\nFailures: %d\nLost events: %d\n", report.Events, len(report.Neighbors), report.MACChanges, report.Failures, report.LostEvents)
+	fmt.Fprintf(os.Stdout, "Events: %d\nNeighbors: %d\nMAC changes: %d\nFailures: %d\nLost events: %s\n", report.Events, len(report.Neighbors), report.MACChanges, report.Failures, traceNeighborLost(report.LostEvents))
 	if len(report.Neighbors) == 0 {
 		return
 	}

@@ -853,6 +853,8 @@ ARP event의 `target`은 IP 주소이고 `source`는 interface입니다. process
 
 kernel은 주소 확인을 시작할 때 알리지 않으므로, 실패한 확인은 `arp_failed`만 표시합니다. ARP를 쓰지 않는 항목(`NOARP`)은 표시하지 않습니다. `trace arp`는 ARP 패킷이 아니라 neighbor table을 보므로, 다른 host의 요청처럼 table을 바꾸지 않는 ARP 패킷은 표시하지 않습니다. macOS에서는 두 번 읽는 사이에 생겼다 사라진 변화와, 상태가 바뀌지 않은 채 다시 실패한 확인은 표시하지 않습니다. macOS에는 `STALE` 같은 neighbor 상태가 없으므로, MAC 주소가 있는 항목은 `COMPLETE`, 없는 항목은 `INCOMPLETE`, 고정 항목은 `PERMANENT`, macOS가 거부 표시(`RTF_REJECT`)를 한 항목은 `FAILED`로 표시합니다.
 
+Linux에서 `trace arp`는 netlink 수신 buffer를 8MB로 요청합니다. table flush처럼 kernel이 많은 변화를 한꺼번에 알리면 buffer가 넘치고, kernel은 넘친 알림을 버립니다. `Lost events`는 버려진 변화의 수가 아니라 buffer가 넘친 횟수입니다. 한 번 넘칠 때 여러 변화를 잃을 수 있으므로, 요약은 놓친 변화의 수를 알 수 없다고 함께 표시합니다. root가 아니면 kernel이 buffer를 `net.core.rmem_max`까지만 허용합니다. root 없이 실행했는데 유실이 보이면 `net.core.rmem_max`를 늘리거나 root로 실행합니다.
+
 IPv6 neighbor table(NDP)은 `trace ndp`로 봅니다. Linux와 macOS에서 `trace arp`와 같은 방식으로 동작하며, event는 `ndp_new`, `ndp_state`, `ndp_mac_change`, `ndp_failed`, `ndp_delete`이고 요약 제목은 `NDP trace`입니다.
 
 ```bash

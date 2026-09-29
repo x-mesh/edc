@@ -17,6 +17,10 @@ import (
 // traceNeighborPollInterval은 netlink 수신을 기다리는 최대 시간이다. 이 간격으로 --duration과 Ctrl-C를 확인한다.
 const traceNeighborPollInterval = 200 * time.Millisecond
 
+// traceNeighborReceiveBuffer는 netlink 수신 buffer의 크기다. flush나 timer가 이웃 수천 개의 변화를 한꺼번에 알리면
+// 기본 buffer(net.core.rmem_default)가 넘쳐 kernel이 알림을 버린다.
+const traceNeighborReceiveBuffer = 8 << 20
+
 // collectNeighborEvents는 kernel neighbor table의 변화를 netlink로 받는다. arp는 IPv4, ndp는 IPv6 항목이다.
 // root와 eBPF가 필요 없다.
 func collectNeighborEvents(protocol string, duration time.Duration, onEvent func(captureEvent) error, stop <-chan struct{}) (captureSummary, error) {
@@ -26,6 +30,9 @@ func collectNeighborEvents(protocol string, duration time.Duration, onEvent func
 		return captureSummary{}, fmt.Errorf("open netlink socket: %w", err)
 	}
 	defer unix.Close(fd)
+	if err := growNeighborReceiveBuffer(fd); err != nil {
+		return captureSummary{}, fmt.Errorf("set netlink receive buffer: %w", err)
+	}
 	if err := unix.Bind(fd, &unix.SockaddrNetlink{Family: unix.AF_NETLINK, Groups: 1 << (unix.RTNLGRP_NEIGH - 1)}); err != nil {
 		return captureSummary{}, fmt.Errorf("subscribe to neighbor changes: %w", err)
 	}
@@ -94,6 +101,16 @@ func collectNeighborEvents(protocol string, duration time.Duration, onEvent func
 			eventCount++
 		}
 	}
+}
+
+// growNeighborReceiveBuffer는 수신 buffer를 키운다. SO_RCVBUFFORCE는 CAP_NET_ADMIN이 필요하다. root가 아니면 EPERM이
+// 나므로 SO_RCVBUF로 다시 묻고, kernel은 이 값을 net.core.rmem_max까지 줄인다.
+func growNeighborReceiveBuffer(fd int) error {
+	err := unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_RCVBUFFORCE, traceNeighborReceiveBuffer)
+	if errors.Is(err, unix.EPERM) {
+		err = unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_RCVBUF, traceNeighborReceiveBuffer)
+	}
+	return err
 }
 
 // parseNeighborMessage는 RTM_NEWNEIGH와 RTM_DELNEIGH의 ndmsg와 속성을 읽는다. 주소 확인을 쓰지 않는 항목(NOARP)과

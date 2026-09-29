@@ -584,6 +584,29 @@ func TestParseARPNeighborReadsNetlinkMessages(t *testing.T) {
 	}
 }
 
+// root는 SO_RCVBUFFORCE로, root가 아닌 CI는 EPERM 뒤의 SO_RCVBUF로 기본값보다 큰 buffer를 받는다.
+func TestGrowNeighborReceiveBufferExceedsTheDefault(t *testing.T) {
+	open := func() int {
+		fd, err := unix.Socket(unix.AF_NETLINK, unix.SOCK_RAW|unix.SOCK_CLOEXEC, unix.NETLINK_ROUTE)
+		if err != nil {
+			t.Fatalf("open netlink socket: %v", err)
+		}
+		t.Cleanup(func() { unix.Close(fd) })
+		return fd
+	}
+	initial, err := unix.GetsockoptInt(open(), unix.SOL_SOCKET, unix.SO_RCVBUF)
+	if err != nil {
+		t.Fatalf("read default receive buffer: %v", err)
+	}
+	fd := open()
+	if err := growNeighborReceiveBuffer(fd); err != nil {
+		t.Fatalf("growNeighborReceiveBuffer: %v", err)
+	}
+	if grown, err := unix.GetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_RCVBUF); err != nil || grown <= initial {
+		t.Fatalf("receive buffer = %d, %v, want more than the default %d", grown, err, initial)
+	}
+}
+
 func TestHTTPRecordOffsetsMatchTheBPFStruct(t *testing.T) {
 	var record captureEventsHttpRecord
 	for name, offsets := range map[string][2]uintptr{

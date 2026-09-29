@@ -15,6 +15,11 @@ func darwinRouteMessage(index uint16, flags uint32, destination []byte, family b
 	sockaddrIn := make([]byte, 16)
 	sockaddrIn[0], sockaddrIn[1] = 16, family
 	copy(sockaddrIn[4:], destination)
+	if family == darwinAFInet6 {
+		sockaddrIn = make([]byte, 28)
+		sockaddrIn[0], sockaddrIn[1] = 28, family
+		copy(sockaddrIn[8:], destination)
+	}
 	sockaddrDL := make([]byte, 20)
 	sockaddrDL[0], sockaddrDL[1] = 20, darwinAFLink
 	binary.LittleEndian.PutUint16(sockaddrDL[2:4], index)
@@ -41,7 +46,7 @@ func TestParseDarwinARPTableReadsEntries(t *testing.T) {
 	} {
 		rib = append(rib, message...)
 	}
-	entries, err := parseDarwinNeighborTable(rib)
+	entries, err := parseDarwinNeighborTable(rib, darwinAFInet)
 	if err != nil || len(entries) != 4 {
 		t.Fatalf("entries = %#v, %v", entries, err)
 	}
@@ -61,8 +66,30 @@ func TestParseDarwinARPTableReadsEntries(t *testing.T) {
 		t.Fatalf("neighbors = %#v", neighbors)
 	}
 	for name, cut := range map[string][]byte{"short header": rib[:1], "cut message": rib[:len(rib)-4]} {
-		if _, err := parseDarwinNeighborTable(cut); err == nil {
+		if _, err := parseDarwinNeighborTable(cut, darwinAFInet); err == nil {
 			t.Fatalf("%s parsed without an error", name)
 		}
+	}
+}
+
+// NDP 항목의 link-local 주소에는 macOS kernel이 interface 번호를 넣어 둔다. 그 byte를 지워야 fe80::1이 된다.
+func TestParseDarwinNeighborTableReadsIPv6Entries(t *testing.T) {
+	linkLocal := []byte{0xfe, 0x80, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}
+	global := []byte{0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2}
+	mac := []byte{2, 0, 0, 0, 0, 1}
+	var rib []byte
+	for _, message := range [][]byte{
+		darwinRouteMessage(4, darwinRTFLLInfo, linkLocal, darwinAFInet6, mac, ""),
+		darwinRouteMessage(4, darwinRTFLLInfo, global, darwinAFInet6, nil, ""),
+		darwinRouteMessage(4, darwinRTFLLInfo, []byte{192, 0, 2, 1}, darwinAFInet, mac, ""),
+	} {
+		rib = append(rib, message...)
+	}
+	entries, err := parseDarwinNeighborTable(rib, darwinAFInet6)
+	if err != nil || len(entries) != 2 || entries[0].ip != "fe80::1" || entries[0].mac != "02:00:00:00:00:01" || entries[1].ip != "2001:db8::2" || darwinNeighborState(entries[1]) != "INCOMPLETE" {
+		t.Fatalf("IPv6 entries = %#v, %v", entries, err)
+	}
+	if entries, err := parseDarwinNeighborTable(rib, darwinAFInet); err != nil || len(entries) != 1 || entries[0].ip != "192.0.2.1" {
+		t.Fatalf("IPv4 entries = %#v, %v", entries, err)
 	}
 }

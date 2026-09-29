@@ -851,7 +851,16 @@ trace를 시작할 때 이미 있던 항목은 event로 표시하지 않고, 그
 
 ARP event의 `target`은 IP 주소이고 `source`는 interface입니다. process와 port가 없으므로 `trace arp`에는 process 보기와 port 보기가 없습니다. `--destination`은 IP 주소로 거릅니다. ARP event에는 process가 없으므로 `--process`를 주면 ARP event가 하나도 남지 않습니다. `Ctrl-C` 후 summary는 interface와 IP마다 한 행을 표시하고, group 행은 MAC 주소 수(`MACS`), MAC 변경(`CHG`), 실패(`FAIL`)를 표시합니다.
 
-kernel은 주소 확인을 시작할 때 알리지 않으므로, 실패한 확인은 `arp_failed`만 표시합니다. IPv6 neighbor(NDP)와 ARP를 쓰지 않는 항목(`NOARP`)은 표시하지 않습니다. `trace arp`는 ARP 패킷이 아니라 neighbor table을 보므로, 다른 host의 요청처럼 table을 바꾸지 않는 ARP 패킷은 표시하지 않습니다. macOS에서는 두 번 읽는 사이에 생겼다 사라진 변화와, 상태가 바뀌지 않은 채 다시 실패한 확인은 표시하지 않습니다. macOS에는 `STALE` 같은 neighbor 상태가 없으므로, MAC 주소가 있는 항목은 `COMPLETE`, 없는 항목은 `INCOMPLETE`, 고정 항목은 `PERMANENT`, macOS가 거부 표시(`RTF_REJECT`)를 한 항목은 `FAILED`로 표시합니다.
+kernel은 주소 확인을 시작할 때 알리지 않으므로, 실패한 확인은 `arp_failed`만 표시합니다. ARP를 쓰지 않는 항목(`NOARP`)은 표시하지 않습니다. `trace arp`는 ARP 패킷이 아니라 neighbor table을 보므로, 다른 host의 요청처럼 table을 바꾸지 않는 ARP 패킷은 표시하지 않습니다. macOS에서는 두 번 읽는 사이에 생겼다 사라진 변화와, 상태가 바뀌지 않은 채 다시 실패한 확인은 표시하지 않습니다. macOS에는 `STALE` 같은 neighbor 상태가 없으므로, MAC 주소가 있는 항목은 `COMPLETE`, 없는 항목은 `INCOMPLETE`, 고정 항목은 `PERMANENT`, macOS가 거부 표시(`RTF_REJECT`)를 한 항목은 `FAILED`로 표시합니다.
+
+IPv6 neighbor table(NDP)은 `trace ndp`로 봅니다. Linux와 macOS에서 `trace arp`와 같은 방식으로 동작하며, event는 `ndp_new`, `ndp_state`, `ndp_mac_change`, `ndp_failed`, `ndp_delete`이고 요약 제목은 `NDP trace`입니다.
+
+```bash
+./bin/edc trace ndp
+./bin/edc trace ndp --group-by target
+```
+
+macOS kernel은 table의 link-local 주소에 interface 번호를 넣어 둡니다. `trace ndp`는 이 번호를 지우므로 link-local 주소는 `fe80::1`처럼 보이고, interface는 `source` 열에 나옵니다.
 
 Linux 6.4 이상에서 `trace http`를 사용하면 평문 HTTP/1.x 요청과 응답을 발생 즉시 출력합니다. edc는 kernel에서 TCP로 읽고 쓰는 data마다 앞 512 byte를 읽고, method, `Host` header, path, 상태 코드만 남깁니다. 다른 header, body, path의 query에는 token이나 cookie가 들어 있을 수 있어 버립니다.
 

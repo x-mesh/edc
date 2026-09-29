@@ -16,6 +16,7 @@ const (
 	darwinRTAGateway   = 0x2
 	darwinAFInet       = 2
 	darwinAFLink       = 18
+	darwinAFInet6      = 30
 	darwinRTFReject    = 0x8
 	darwinRTFLLInfo    = 0x400
 	darwinRTFStatic    = 0x800
@@ -30,8 +31,8 @@ type darwinNeighborEntry struct {
 }
 
 // parseDarwinNeighborTable은 rt_msghdr 뒤에 rtm_addrs의 bit 순서로 이어지는 sockaddr를 읽는다. sockaddr는 4바이트 단위로 붙는다.
-// macOS는 x86_64와 arm64 모두 little endian이다.
-func parseDarwinNeighborTable(rib []byte) ([]darwinNeighborEntry, error) {
+// family는 darwinAFInet이나 darwinAFInet6이고, 다른 family의 항목은 뺀다. macOS는 x86_64와 arm64 모두 little endian이다.
+func parseDarwinNeighborTable(rib []byte, family byte) ([]darwinNeighborEntry, error) {
 	var entries []darwinNeighborEntry
 	for len(rib) > 0 {
 		if len(rib) < 2 {
@@ -64,8 +65,16 @@ func parseDarwinNeighborTable(rib []byte) ([]darwinNeighborEntry, error) {
 			sockaddr := addresses[:size]
 			switch 1 << bit {
 			case darwinRTADst:
-				if size >= 8 && sockaddr[1] == darwinAFInet {
+				switch {
+				case family == darwinAFInet && size >= 8 && sockaddr[1] == darwinAFInet:
 					entry.ip = netip.AddrFrom4([4]byte(sockaddr[4:8])).String()
+				case family == darwinAFInet6 && size >= 24 && sockaddr[1] == darwinAFInet6:
+					address := [16]byte(sockaddr[8:24])
+					// macOS kernel은 link-local 주소의 3·4번째 byte에 interface 번호를 넣어 둔다. ndp -a처럼 지운다.
+					if address[0] == 0xfe && address[1]&0xc0 == 0x80 {
+						address[2], address[3] = 0, 0
+					}
+					entry.ip = netip.AddrFrom16(address).String()
 				}
 			case darwinRTAGateway:
 				if size >= 8 && sockaddr[1] == darwinAFLink {

@@ -89,7 +89,12 @@ var traceProtocols = map[string]traceProtocolSpec{
 	// ARP event에는 process와 port가 없다. source는 interface, target은 IP다. Linux는 netlink 알림을, macOS는 1초마다 읽은 table을 쓴다.
 	"arp": {
 		ansiColor: "34", screenColor: "#60a5fa", groupColumns: traceNeighborGroupColumns, hideTraffic: true, hiddenViews: []string{traceGroupByPort, traceGroupByProcess},
-		scrollLabels: traceNeighborScrollLabels, newSummarizer: func() traceSummarizer { return newNeighborTraceSummarizer() },
+		scrollLabels: traceNeighborScrollLabels, newSummarizer: func() traceSummarizer { return newNeighborTraceSummarizer("arp") },
+	},
+	// NDP는 IPv6 neighbor table이다. ARP와 같은 원천과 형식을 쓰고, event 이름만 ndp_로 시작한다.
+	"ndp": {
+		ansiColor: "34", screenColor: "#60a5fa", groupColumns: traceNeighborGroupColumns, hideTraffic: true, hiddenViews: []string{traceGroupByPort, traceGroupByProcess},
+		scrollLabels: traceNeighborScrollLabels, newSummarizer: func() traceSummarizer { return newNeighborTraceSummarizer("ndp") },
 	},
 }
 
@@ -214,7 +219,7 @@ func (report traceGroupReport) hideTraffic() bool { return traceProtocols[report
 
 func runTrace(args []string) int {
 	if len(args) == 0 || !knownTraceProtocol(args[0]) {
-		fmt.Fprintln(os.Stderr, T("cli.usage", "edc trace <tcp|udp|dns|arp|http> [options]"))
+		fmt.Fprintln(os.Stderr, T("cli.usage", "edc trace <tcp|udp|dns|arp|ndp|http> [options]"))
 		return 2
 	}
 	options := tcpTraceOptions{}
@@ -385,7 +390,7 @@ func traceColorLine(line, protocol, event string, color bool) string {
 		return line
 	}
 	colorValue := traceProtocols[protocol].ansiColor
-	if strings.Contains(event, "reset") || event == traceARPMACChangeEvent || event == "http_5xx" {
+	if strings.Contains(event, "reset") || strings.HasSuffix(event, "_"+traceNeighborMACChange) || event == "http_5xx" {
 		colorValue = "31"
 	} else if strings.Contains(event, "retransmit") || strings.Contains(event, "fail") {
 		colorValue = "33"
@@ -920,7 +925,7 @@ func observeTraceGroup(group *traceGroup, event captureEvent) {
 			group.DNS = &traceDNSCounts{}
 		}
 		group.DNS.observe(event)
-	case "arp":
+	case "arp", "ndp":
 		if group.Neighbor == nil {
 			group.Neighbor = &traceNeighborCounts{}
 		}

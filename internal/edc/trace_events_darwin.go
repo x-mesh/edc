@@ -636,8 +636,8 @@ func (collector *ntstatCollector) start() error {
 
 // ARP는 ARP table을 읽는다. 나머지는 ntstat로 TCP와 UDP provider를 함께 구독하고, 호출자가 protocol로 거른다.
 func collectTraceEventsLive(scope traceScope, duration time.Duration, onEvent func(captureEvent) error, stop <-chan struct{}) (captureSummary, error) {
-	if scope.protocol == "arp" {
-		return collectNeighborEvents(duration, onEvent, stop)
+	if scope.protocol == "arp" || scope.protocol == "ndp" {
+		return collectNeighborEvents(scope.protocol, duration, onEvent, stop)
 	}
 	client, err := openNtstat()
 	if err != nil {

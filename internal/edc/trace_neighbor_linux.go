@@ -17,8 +17,10 @@ import (
 // traceNeighborPollInterval은 netlink 수신을 기다리는 최대 시간이다. 이 간격으로 --duration과 Ctrl-C를 확인한다.
 const traceNeighborPollInterval = 200 * time.Millisecond
 
-// collectNeighborEvents는 kernel neighbor table의 IPv4 변화를 netlink로 받는다. root와 eBPF가 필요 없다.
-func collectNeighborEvents(duration time.Duration, onEvent func(captureEvent) error, stop <-chan struct{}) (captureSummary, error) {
+// collectNeighborEvents는 kernel neighbor table의 변화를 netlink로 받는다. arp는 IPv4, ndp는 IPv6 항목이다.
+// root와 eBPF가 필요 없다.
+func collectNeighborEvents(protocol string, duration time.Duration, onEvent func(captureEvent) error, stop <-chan struct{}) (captureSummary, error) {
+	family := neighborFamily(protocol)
 	fd, err := unix.Socket(unix.AF_NETLINK, unix.SOCK_RAW|unix.SOCK_CLOEXEC, unix.NETLINK_ROUTE)
 	if err != nil {
 		return captureSummary{}, fmt.Errorf("open netlink socket: %w", err)
@@ -32,9 +34,9 @@ func collectNeighborEvents(duration time.Duration, onEvent func(captureEvent) er
 		return captureSummary{}, fmt.Errorf("set netlink timeout: %w", err)
 	}
 	names := neighborInterfaceNames{}
-	tracker := newNeighborTracker()
+	tracker := newNeighborTracker(protocol)
 	// 구독한 뒤에 table을 읽는다. 먼저 읽으면 그 사이의 변화를 놓친다. 두 번 본 상태는 tracker가 거른다.
-	table, err := syscall.NetlinkRIB(unix.RTM_GETNEIGH, unix.AF_INET)
+	table, err := syscall.NetlinkRIB(unix.RTM_GETNEIGH, int(family))
 	if err != nil {
 		return captureSummary{}, fmt.Errorf("read neighbor table: %w", err)
 	}
@@ -43,7 +45,7 @@ func collectNeighborEvents(duration time.Duration, onEvent func(captureEvent) er
 		return captureSummary{}, fmt.Errorf("parse neighbor table: %w", err)
 	}
 	for _, message := range messages {
-		if neighbor, ok := parseNeighborMessage(message, names); ok {
+		if neighbor, ok := parseNeighborMessage(message, family, names); ok {
 			tracker.baseline(neighbor)
 		}
 	}
@@ -76,7 +78,7 @@ func collectNeighborEvents(duration time.Duration, onEvent func(captureEvent) er
 		var monotonic unix.Timespec
 		_ = unix.ClockGettime(unix.CLOCK_MONOTONIC, &monotonic)
 		for _, message := range messages {
-			neighbor, ok := parseNeighborMessage(message, names)
+			neighbor, ok := parseNeighborMessage(message, family, names)
 			if !ok {
 				continue
 			}
@@ -94,14 +96,14 @@ func collectNeighborEvents(duration time.Duration, onEvent func(captureEvent) er
 	}
 }
 
-// parseNeighborMessage는 RTM_NEWNEIGH와 RTM_DELNEIGH의 ndmsg와 속성을 읽는다. ARP를 쓰지 않는 항목(NOARP)과
-// IPv6 neighbor는 뺀다. netlink는 host byte order다.
-func parseNeighborMessage(message syscall.NetlinkMessage, names neighborInterfaceNames) (traceNeighbor, bool) {
+// parseNeighborMessage는 RTM_NEWNEIGH와 RTM_DELNEIGH의 ndmsg와 속성을 읽는다. 주소 확인을 쓰지 않는 항목(NOARP)과
+// 다른 family의 항목은 뺀다. netlink는 host byte order다.
+func parseNeighborMessage(message syscall.NetlinkMessage, family byte, names neighborInterfaceNames) (traceNeighbor, bool) {
 	if message.Header.Type != unix.RTM_NEWNEIGH && message.Header.Type != unix.RTM_DELNEIGH {
 		return traceNeighbor{}, false
 	}
 	data := message.Data
-	if len(data) < unix.SizeofNdMsg || data[0] != unix.AF_INET {
+	if len(data) < unix.SizeofNdMsg || data[0] != family {
 		return traceNeighbor{}, false
 	}
 	state := binary.NativeEndian.Uint16(data[8:10])
@@ -128,6 +130,14 @@ func parseNeighborMessage(message syscall.NetlinkMessage, names neighborInterfac
 		attributes = attributes[min(len(attributes), (length+unix.RTA_ALIGNTO-1)&^(unix.RTA_ALIGNTO-1)):]
 	}
 	return neighbor, neighbor.ip != ""
+}
+
+// neighborFamily는 protocol이 보는 주소 family다. 같은 netlink 알림에 두 family가 함께 온다.
+func neighborFamily(protocol string) byte {
+	if protocol == "ndp" {
+		return unix.AF_INET6
+	}
+	return unix.AF_INET
 }
 
 func traceNeighborStateName(state uint16) string {

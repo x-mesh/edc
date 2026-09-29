@@ -546,11 +546,11 @@ func TestParseARPNeighborReadsNetlinkMessages(t *testing.T) {
 	names := neighborInterfaceNames{1: "eth0"}
 	destination := neighborNetlinkAttribute(unix.NDA_DST, []byte{192, 0, 2, 1})
 	address := neighborNetlinkAttribute(unix.NDA_LLADDR, []byte{2, 0, 0, 0, 0, 1})
-	neighbor, ok := parseNeighborMessage(neighborNetlinkMessage(unix.RTM_NEWNEIGH, unix.AF_INET, unix.NUD_REACHABLE, destination, address), names)
+	neighbor, ok := parseNeighborMessage(neighborNetlinkMessage(unix.RTM_NEWNEIGH, unix.AF_INET, unix.NUD_REACHABLE, destination, address), unix.AF_INET, names)
 	if !ok || neighbor != (traceNeighbor{iface: "eth0", ip: "192.0.2.1", mac: "02:00:00:00:00:01", state: "REACHABLE"}) {
 		t.Fatalf("new neighbor = %#v, %t", neighbor, ok)
 	}
-	if neighbor, ok := parseNeighborMessage(neighborNetlinkMessage(unix.RTM_DELNEIGH, unix.AF_INET, unix.NUD_FAILED, destination), names); !ok || !neighbor.deleted || neighbor.state != "FAILED" || neighbor.mac != "" {
+	if neighbor, ok := parseNeighborMessage(neighborNetlinkMessage(unix.RTM_DELNEIGH, unix.AF_INET, unix.NUD_FAILED, destination), unix.AF_INET, names); !ok || !neighbor.deleted || neighbor.state != "FAILED" || neighbor.mac != "" {
 		t.Fatalf("deleted neighbor = %#v, %t", neighbor, ok)
 	}
 	for name, message := range map[string]syscall.NetlinkMessage{
@@ -559,9 +559,19 @@ func TestParseARPNeighborReadsNetlinkMessages(t *testing.T) {
 		"no address": neighborNetlinkMessage(unix.RTM_NEWNEIGH, unix.AF_INET, unix.NUD_REACHABLE, address),
 		"route":      {Header: syscall.NlMsghdr{Type: unix.RTM_NEWROUTE}, Data: make([]byte, 64)},
 	} {
-		if neighbor, ok := parseNeighborMessage(message, names); ok {
+		if neighbor, ok := parseNeighborMessage(message, unix.AF_INET, names); ok {
 			t.Fatalf("%s message made a neighbor: %#v", name, neighbor)
 		}
+	}
+	// NDP는 같은 알림에서 IPv6 항목만 읽는다.
+	global := make([]byte, 16)
+	copy(global, []byte{0x20, 0x01, 0x0d, 0xb8})
+	global[15] = 1
+	if neighbor, ok := parseNeighborMessage(neighborNetlinkMessage(unix.RTM_NEWNEIGH, unix.AF_INET6, unix.NUD_STALE, neighborNetlinkAttribute(unix.NDA_DST, global), address), unix.AF_INET6, names); !ok || neighbor.ip != "2001:db8::1" || neighbor.state != "STALE" {
+		t.Fatalf("IPv6 neighbor = %#v, %t", neighbor, ok)
+	}
+	if _, ok := parseNeighborMessage(neighborNetlinkMessage(unix.RTM_NEWNEIGH, unix.AF_INET, unix.NUD_REACHABLE, destination, address), unix.AF_INET6, names); ok {
+		t.Fatal("an IPv4 neighbor was read for NDP")
 	}
 	for state, want := range map[uint16]string{unix.NUD_STALE: "STALE", unix.NUD_INCOMPLETE: "INCOMPLETE", unix.NUD_PERMANENT: "PERMANENT", 0: "NONE"} {
 		if got := traceNeighborStateName(state); got != want {

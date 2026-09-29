@@ -169,6 +169,7 @@ command:
       - "The summary groups rows by process and peer. -d lists each connection."
       - "trace dns shows DNS queries and answers on Linux. It has no port view."
       - "trace arp shows neighbor table changes on Linux and macOS. It needs no root."
+      - "trace ndp does the same for IPv6 neighbors."
       - "trace http shows plain HTTP/1.x requests on Linux 6.4 or later."
   report:
     summary: "Read and compare saved JSON reports"

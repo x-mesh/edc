@@ -9,7 +9,7 @@ import (
 )
 
 func TestARPTrackerReportsOnlyChanges(t *testing.T) {
-	tracker := newNeighborTracker()
+	tracker := newNeighborTracker("arp")
 	tracker.baseline(traceNeighbor{iface: "eth0", ip: "192.0.2.1", mac: "02:00:00:00:00:01", state: "REACHABLE"})
 	steps := []struct {
 		neighbor traceNeighbor
@@ -17,14 +17,14 @@ func TestARPTrackerReportsOnlyChanges(t *testing.T) {
 	}{
 		// trace 전부터 있던 항목의 같은 알림은 event가 아니다.
 		{traceNeighbor{iface: "eth0", ip: "192.0.2.1", mac: "02:00:00:00:00:01", state: "REACHABLE"}, ""},
-		{traceNeighbor{iface: "eth0", ip: "192.0.2.1", mac: "02:00:00:00:00:01", state: "STALE"}, traceARPStateEvent},
-		{traceNeighbor{iface: "eth0", ip: "192.0.2.1", mac: "02:00:00:00:00:02", state: "REACHABLE"}, traceARPMACChangeEvent},
+		{traceNeighbor{iface: "eth0", ip: "192.0.2.1", mac: "02:00:00:00:00:01", state: "STALE"}, "arp_state"},
+		{traceNeighbor{iface: "eth0", ip: "192.0.2.1", mac: "02:00:00:00:00:02", state: "REACHABLE"}, "arp_mac_change"},
 		// 실패 알림에 MAC이 없어도 마지막 MAC을 남긴다. 다시 실패하면 확인을 새로 한 것이라 다시 센다.
-		{traceNeighbor{iface: "eth0", ip: "192.0.2.1", state: traceNeighborFailedState}, traceARPFailedEvent},
-		{traceNeighbor{iface: "eth0", ip: "192.0.2.1", state: traceNeighborFailedState}, traceARPFailedEvent},
-		{traceNeighbor{iface: "eth0", ip: "192.0.2.1", deleted: true}, traceARPDeleteEvent},
+		{traceNeighbor{iface: "eth0", ip: "192.0.2.1", state: traceNeighborFailedState}, "arp_failed"},
+		{traceNeighbor{iface: "eth0", ip: "192.0.2.1", state: traceNeighborFailedState}, "arp_failed"},
+		{traceNeighbor{iface: "eth0", ip: "192.0.2.1", deleted: true}, "arp_delete"},
 		{traceNeighbor{iface: "eth0", ip: "192.0.2.1", deleted: true}, ""},
-		{traceNeighbor{iface: "eth1", ip: "192.0.2.1", mac: "02:00:00:00:00:09", state: "REACHABLE"}, traceARPNewEvent},
+		{traceNeighbor{iface: "eth1", ip: "192.0.2.1", mac: "02:00:00:00:00:09", state: "REACHABLE"}, "arp_new"},
 	}
 	var events []captureEvent
 	for index, step := range steps {
@@ -46,7 +46,7 @@ func TestARPTrackerReportsOnlyChanges(t *testing.T) {
 	if deleted.MAC != "02:00:00:00:00:02" || deleted.OldState != traceNeighborFailedState || deleted.NewState != "" {
 		t.Fatalf("deleted = %#v", deleted)
 	}
-	if destination, label := traceNeighborScrollLabels(change); destination != "192.0.2.1 (02:00:00:00:00:01 -> 02:00:00:00:00:02)" || label != traceARPMACChangeEvent {
+	if destination, label := traceNeighborScrollLabels(change); destination != "192.0.2.1 (02:00:00:00:00:01 -> 02:00:00:00:00:02)" || label != "arp_mac_change" {
 		t.Fatalf("mac change labels = %q, %q", destination, label)
 	}
 	if _, label := traceNeighborScrollLabels(events[0]); label != "arp_state STALE" {
@@ -56,7 +56,7 @@ func TestARPTrackerReportsOnlyChanges(t *testing.T) {
 		t.Fatalf("new labels = %q, %q", destination, label)
 	}
 
-	summarizer := newNeighborTraceSummarizer()
+	summarizer := newNeighborTraceSummarizer("arp")
 	for _, event := range events {
 		summarizer.observe(event)
 	}
@@ -84,10 +84,10 @@ func TestARPTrackerReportsOnlyChanges(t *testing.T) {
 	}
 }
 
-// ARP는 netlink만 쓰므로 root 없이 동작한다. eBPF 확인을 붙이면 일반 사용자가 쓸 수 없게 된다.
+// ARP와 NDP는 netlink나 sysctl만 쓰므로 root 없이 동작한다. eBPF 확인을 붙이면 일반 사용자가 쓸 수 없게 된다.
 func TestOnlyBPFProtocolsCheckEBPFPrerequisites(t *testing.T) {
 	for protocol, spec := range traceProtocols {
-		if (spec.prerequisites == nil) != (protocol == "arp") {
+		if (spec.prerequisites == nil) != (protocol == "arp" || protocol == "ndp") {
 			t.Fatalf("trace %s prerequisites set = %t", protocol, spec.prerequisites != nil)
 		}
 	}
@@ -117,5 +117,28 @@ func TestARPSnapshotChangesFindNewChangedAndGoneEntries(t *testing.T) {
 	failed := map[neighborKey]traceNeighbor{{iface: "en0", ip: "192.0.2.9"}: {iface: "en0", ip: "192.0.2.9", state: traceNeighborFailedState}}
 	if changes := neighborSnapshotChanges(failed, failed); len(changes) != 0 {
 		t.Fatalf("unchanged failed entry = %#v", changes)
+	}
+}
+
+// NDP는 ARP와 같은 tracker를 쓰고 event 이름과 요약 제목만 다르다.
+func TestNDPEventsUseTheirOwnNames(t *testing.T) {
+	tracker := newNeighborTracker("ndp")
+	tracker.baseline(traceNeighbor{iface: "eth0", ip: "fe80::1", mac: "02:00:00:00:00:01", state: "REACHABLE"})
+	event, ok := tracker.event(traceNeighbor{iface: "eth0", ip: "fe80::1", mac: "02:00:00:00:00:02", state: "REACHABLE"}, 1, 1)
+	if !ok || event.Event != "ndp_mac_change" || event.Protocol != "ndp" || event.OldMAC != "02:00:00:00:00:01" {
+		t.Fatalf("ndp event = %#v, %t", event, ok)
+	}
+	if traceNeighborKind(event.Event) != traceNeighborMACChange {
+		t.Fatalf("kind of %q = %q", event.Event, traceNeighborKind(event.Event))
+	}
+	summarizer := newNeighborTraceSummarizer("ndp")
+	summarizer.observe(event)
+	report := summarizer.summarize(captureSummary{}, time.Second).(neighborTraceReport)
+	if report.protocol != "ndp" || report.MACChanges != 1 {
+		t.Fatalf("ndp report = %#v", report)
+	}
+	groups := summarizeTraceGroups("ndp", traceGroupByTarget, []captureEvent{event}, captureSummary{}, time.Second, "", "")
+	if len(groups.Groups) != 1 || groups.Groups[0].Neighbor == nil || groups.Groups[0].Neighbor.MACChanges != 1 {
+		t.Fatalf("ndp groups = %#v", groups.Groups)
 	}
 }

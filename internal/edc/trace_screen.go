@@ -547,7 +547,7 @@ func traceEventStyle(line, protocol, event string) string {
 		return line
 	}
 	color := lipgloss.Color(traceProtocols[protocol].screenColor)
-	if strings.Contains(event, "reset") || event == traceARPMACChangeEvent || event == "http_5xx" {
+	if strings.Contains(event, "reset") || strings.HasSuffix(event, "_"+traceNeighborMACChange) || event == "http_5xx" {
 		color = lipgloss.Color("#fb7185")
 	} else if strings.Contains(event, "retransmit") || strings.Contains(event, "fail") {
 		color = lipgloss.Color("#fbbf24")

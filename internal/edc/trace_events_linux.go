@@ -18,8 +18,8 @@ func collectTraceEvents(duration time.Duration) ([]captureEvent, captureSummary,
 
 // ARP는 eBPF가 아니라 netlink로 neighbor table의 변화를 받는다.
 func collectTraceEventsLive(scope traceScope, duration time.Duration, onEvent func(captureEvent) error, stop <-chan struct{}) (captureSummary, error) {
-	if scope.protocol == "arp" {
-		return collectNeighborEvents(duration, onEvent, stop)
+	if scope.protocol == "arp" || scope.protocol == "ndp" {
+		return collectNeighborEvents(scope.protocol, duration, onEvent, stop)
 	}
 	return collectCaptureEventsFor(scope, duration, onEvent, stop)
 }

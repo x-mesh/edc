@@ -8,19 +8,31 @@ import (
 	"slices"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 )
 
+// neighbor event의 종류다. event 이름은 protocol 이름을 앞에 붙인다. 예: arp_mac_change, ndp_failed.
 const (
-	traceARPNewEvent         = "arp_new"
-	traceARPStateEvent       = "arp_state"
-	traceARPMACChangeEvent   = "arp_mac_change"
-	traceARPFailedEvent      = "arp_failed"
-	traceARPDeleteEvent      = "arp_delete"
+	traceNeighborNew         = "new"
+	traceNeighborState       = "state"
+	traceNeighborMACChange   = "mac_change"
+	traceNeighborFailed      = "failed"
+	traceNeighborDelete      = "delete"
 	traceNeighborFailedState = "FAILED"
 )
 
-// traceNeighbor는 kernel neighbor table의 IPv4 항목 하나다. state는 kernel의 NUD 상태 이름이다.
+func traceNeighborEvent(protocol, kind string) string {
+	return protocol + "_" + kind
+}
+
+// traceNeighborKind는 ARP와 NDP event 이름에서 protocol을 뺀 종류다.
+func traceNeighborKind(event string) string {
+	_, kind, _ := strings.Cut(event, "_")
+	return kind
+}
+
+// traceNeighbor는 kernel neighbor table의 항목 하나다. ARP는 IPv4, NDP는 IPv6 항목이다. state는 kernel의 NUD 상태 이름이다.
 type traceNeighbor struct {
 	iface   string
 	ip      string
@@ -37,11 +49,12 @@ type neighborKey struct {
 // neighborTracker는 항목마다 마지막 MAC과 상태를 기억해 바뀐 것만 event로 낸다. kernel은 같은 상태를 여러 번 알리기도 한다.
 // 실패는 예외다. kernel은 주소 확인을 시작할 때 알리지 않으므로, 이미 FAILED인 항목이 다시 실패해도 FAILED만 온다.
 type neighborTracker struct {
-	known map[neighborKey]traceNeighbor
+	protocol string
+	known    map[neighborKey]traceNeighbor
 }
 
-func newNeighborTracker() *neighborTracker {
-	return &neighborTracker{known: map[neighborKey]traceNeighbor{}}
+func newNeighborTracker(protocol string) *neighborTracker {
+	return &neighborTracker{protocol: protocol, known: map[neighborKey]traceNeighbor{}}
 }
 
 // baseline은 trace 시작 때의 table이다. 이미 있던 항목은 event를 내지 않고, 뒤의 변화와 비교하는 데만 쓴다.
@@ -52,7 +65,7 @@ func (tracker *neighborTracker) baseline(neighbor traceNeighbor) {
 func (tracker *neighborTracker) event(neighbor traceNeighbor, timestampNS, bootTimeNS uint64) (captureEvent, bool) {
 	key := neighborKey{iface: neighbor.iface, ip: neighbor.ip}
 	previous, seen := tracker.known[key]
-	event := captureEvent{TimestampNS: timestampNS, BootTimeNS: bootTimeNS, Protocol: "arp", Target: neighbor.ip, Source: neighbor.iface, NewState: neighbor.state}
+	event := captureEvent{TimestampNS: timestampNS, BootTimeNS: bootTimeNS, Protocol: tracker.protocol, Target: neighbor.ip, Source: neighbor.iface, NewState: neighbor.state}
 	if seen {
 		event.OldState = previous.state
 	}
@@ -61,7 +74,7 @@ func (tracker *neighborTracker) event(neighbor traceNeighbor, timestampNS, bootT
 			return captureEvent{}, false
 		}
 		delete(tracker.known, key)
-		event.Event, event.MAC, event.NewState = traceARPDeleteEvent, previous.mac, ""
+		event.Event, event.MAC, event.NewState = traceNeighborEvent(tracker.protocol, traceNeighborDelete), previous.mac, ""
 		return event, true
 	}
 	// 실패 알림에는 MAC이 없기도 하다. 마지막으로 알던 MAC을 남겨야 다음 알림과 비교할 수 있다.
@@ -69,16 +82,16 @@ func (tracker *neighborTracker) event(neighbor traceNeighbor, timestampNS, bootT
 		neighbor.mac = previous.mac
 	}
 	event.MAC = neighbor.mac
+	kind := traceNeighborState
 	switch {
 	case neighbor.state == traceNeighborFailedState:
-		event.Event = traceARPFailedEvent
+		kind = traceNeighborFailed
 	case seen && previous.mac != "" && neighbor.mac != previous.mac:
-		event.Event, event.OldMAC = traceARPMACChangeEvent, previous.mac
+		kind, event.OldMAC = traceNeighborMACChange, previous.mac
 	case !seen:
-		event.Event = traceARPNewEvent
-	default:
-		event.Event = traceARPStateEvent
+		kind = traceNeighborNew
 	}
+	event.Event = traceNeighborEvent(tracker.protocol, kind)
 	tracker.known[key] = neighbor
 	if seen && previous.state == neighbor.state && previous.mac == neighbor.mac && neighbor.state != traceNeighborFailedState {
 		return captureEvent{}, false
@@ -140,7 +153,7 @@ func traceNeighborScrollLabels(event captureEvent) (string, string) {
 		destination += " (" + event.MAC + ")"
 	}
 	label := event.Event
-	if event.Event == traceARPStateEvent || event.Event == traceARPNewEvent {
+	if kind := traceNeighborKind(event.Event); kind == traceNeighborState || kind == traceNeighborNew {
 		label += " " + event.NewState
 	}
 	return destination, label
@@ -164,10 +177,10 @@ func (counts *traceNeighborCounts) observe(event captureEvent) {
 		}
 		counts.macs[mac] = struct{}{}
 	}
-	switch event.Event {
-	case traceARPMACChangeEvent:
+	switch traceNeighborKind(event.Event) {
+	case traceNeighborMACChange:
 		counts.MACChanges++
-	case traceARPFailedEvent:
+	case traceNeighborFailed:
 		counts.Failures++
 	}
 }
@@ -210,6 +223,7 @@ type neighborTraceRow struct {
 }
 
 type neighborTraceReport struct {
+	protocol   string
 	DurationMS int64              `json:"duration_ms"`
 	Events     uint64             `json:"events"`
 	LostEvents uint64             `json:"lost_events"`
@@ -218,15 +232,16 @@ type neighborTraceReport struct {
 	Neighbors  []neighborTraceRow `json:"neighbors"`
 }
 
-// neighborTraceSummarizer는 --group-by 없이 끝난 ARP trace를 interface와 IP마다 한 행으로 묶는다.
+// neighborTraceSummarizer는 --group-by 없이 끝난 ARP나 NDP trace를 interface와 IP마다 한 행으로 묶는다.
 type neighborTraceSummarizer struct {
+	protocol  string
 	neighbors map[neighborKey]*neighborTraceRow
 	counts    map[neighborKey]*traceNeighborCounts
 	events    uint64
 }
 
-func newNeighborTraceSummarizer() *neighborTraceSummarizer {
-	return &neighborTraceSummarizer{neighbors: map[neighborKey]*neighborTraceRow{}, counts: map[neighborKey]*traceNeighborCounts{}}
+func newNeighborTraceSummarizer(protocol string) *neighborTraceSummarizer {
+	return &neighborTraceSummarizer{protocol: protocol, neighbors: map[neighborKey]*neighborTraceRow{}, counts: map[neighborKey]*traceNeighborCounts{}}
 }
 
 func (summarizer *neighborTraceSummarizer) observe(event captureEvent) {
@@ -240,7 +255,7 @@ func (summarizer *neighborTraceSummarizer) observe(event captureEvent) {
 		neighbor.MAC = event.MAC
 	}
 	neighbor.State = event.NewState
-	if event.Event == traceARPDeleteEvent {
+	if traceNeighborKind(event.Event) == traceNeighborDelete {
 		neighbor.State = "deleted"
 	}
 	neighbor.Events++
@@ -249,7 +264,7 @@ func (summarizer *neighborTraceSummarizer) observe(event captureEvent) {
 }
 
 func (summarizer *neighborTraceSummarizer) summarize(summary captureSummary, duration time.Duration) traceReport {
-	report := neighborTraceReport{DurationMS: duration.Milliseconds(), Events: summarizer.events, LostEvents: summary.LostEvents, Neighbors: make([]neighborTraceRow, 0, len(summarizer.neighbors))}
+	report := neighborTraceReport{protocol: summarizer.protocol, DurationMS: duration.Milliseconds(), Events: summarizer.events, LostEvents: summary.LostEvents, Neighbors: make([]neighborTraceRow, 0, len(summarizer.neighbors))}
 	for key, stored := range summarizer.neighbors {
 		neighbor := *stored
 		neighbor.traceNeighborCounts = summarizer.counts[key].finished()
@@ -274,9 +289,9 @@ func (summarizer *neighborTraceSummarizer) summarize(summary captureSummary, dur
 	return report
 }
 
-// -d는 연결마다 한 행을 쓰는 option이다. ARP 요약은 이미 neighbor마다 한 행이라 같은 표를 쓴다.
+// -d는 연결마다 한 행을 쓰는 option이다. ARP와 NDP 요약은 이미 neighbor마다 한 행이라 같은 표를 쓴다.
 func (report neighborTraceReport) print(bool) {
-	fmt.Fprintf(os.Stdout, "ARP trace: %s\n\n", (time.Duration(report.DurationMS) * time.Millisecond).String())
+	fmt.Fprintf(os.Stdout, "%s trace: %s\n\n", strings.ToUpper(report.protocol), (time.Duration(report.DurationMS) * time.Millisecond).String())
 	fmt.Fprintf(os.Stdout, "Events: %d\nNeighbors: %d\nMAC changes: %d\nFailures: %d\nLost events: %d\n", report.Events, len(report.Neighbors), report.MACChanges, report.Failures, report.LostEvents)
 	if len(report.Neighbors) == 0 {
 		return

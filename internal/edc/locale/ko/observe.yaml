@@ -38,7 +38,6 @@ observe:
     count_minimum: "--count는 0 이상이어야 합니다"
     stopped: "중지됨"
     paused: "일시정지"
-    help_line: "q 종료  p 일시정지  +/- interval"
     error:
       host: "host 정보를 읽지 못했습니다: %v"
       resource: "resource를 읽지 못했습니다: %v"

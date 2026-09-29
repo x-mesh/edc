@@ -38,7 +38,6 @@ observe:
     count_minimum: "--count must be 0 or more"
     stopped: "stopped"
     paused: "paused"
-    help_line: "q quit  p pause  +/- interval"
     error:
       host: "edc did not read the host information: %v"
       resource: "edc did not read the resource values: %v"

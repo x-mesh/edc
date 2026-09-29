@@ -397,7 +397,8 @@ func printTraceEvent(event captureEvent, color bool) {
 
 func printTraceEventHeader(protocol string) {
 	fmt.Fprintln(os.Stdout, "PROCESS          DESTINATION                       EVENT                SOURCE")
-	fmt.Fprintf(os.Stdout, "trace %s  ·  Ctrl-C stop  ·  / filter  ·  q quit\n", protocol)
+	// 줄 단위 출력은 키 입력을 받지 않는다. 전체 화면에만 있는 / filter와 q quit은 안내하지 않는다.
+	fmt.Fprintf(os.Stdout, "trace %s  ·  Ctrl-C stop\n", protocol)
 }
 
 func traceColorLine(line, protocol, event string, color bool) string {

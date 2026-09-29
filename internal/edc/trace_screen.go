@@ -158,29 +158,16 @@ func (model traceScreenModel) updateKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd
 		model.input.SetValue(model.filter)
 		model.filtering = true
 		return model, model.input.Focus()
-	case "s":
-		model.groupBy = traceGroupBySource
-		return model, nil
-	case "t":
-		model.groupBy = traceGroupByTarget
-		return model, nil
-	case "p":
-		model.groupBy = traceGroupByPort
-		return model, nil
-	case "c":
-		model.groupBy = traceGroupByProcess
-		return model, nil
-	case "e":
-		model.groupBy = traceGroupByEvent
-		return model, nil
-	case "g":
-		model.groupBy = ""
+	case "s", "t", "p", "c", "e", "g":
+		if view := traceGroupKeyViews[key.String()]; slices.Contains(traceGroupViews(model.protocol), view) {
+			model.groupBy = view
+		}
 		return model, nil
 	case "tab":
-		model.groupBy = nextTraceGroup(model.groupBy, 1)
+		model.groupBy = nextTraceGroup(traceGroupViews(model.protocol), model.groupBy, 1)
 		return model, nil
 	case "shift+tab":
-		model.groupBy = nextTraceGroup(model.groupBy, -1)
+		model.groupBy = nextTraceGroup(traceGroupViews(model.protocol), model.groupBy, -1)
 		return model, nil
 	case "esc":
 		model.filter = ""
@@ -195,14 +182,29 @@ func (model traceScreenModel) updateKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd
 // traceGroupCycle은 Tab이 넘겨 가는 순서다. 기본 화면인 event 스크롤에서 시작해 s, t, p, c, e 키와 같은 순서로 간다.
 var traceGroupCycle = []string{"", traceGroupBySource, traceGroupByTarget, traceGroupByPort, traceGroupByProcess, traceGroupByEvent}
 
-func nextTraceGroup(current string, step int) string {
+var traceGroupKeyViews = map[string]string{"g": "", "s": traceGroupBySource, "t": traceGroupByTarget, "p": traceGroupByPort, "c": traceGroupByProcess, "e": traceGroupByEvent}
+
+func nextTraceGroup(views []string, current string, step int) string {
 	index := 0
-	for position, groupBy := range traceGroupCycle {
+	for position, groupBy := range views {
 		if groupBy == current {
 			index = position
 		}
 	}
-	return traceGroupCycle[(index+step+len(traceGroupCycle))%len(traceGroupCycle)]
+	return views[(index+step+len(views))%len(views)]
+}
+
+// traceScreenHelp는 protocol이 쓰는 보기의 키만 보여 준다.
+func traceScreenHelp(protocol string) string {
+	keys := []string{"/ filter", "tab view"}
+	for _, view := range traceGroupViews(protocol) {
+		for key, keyView := range traceGroupKeyViews {
+			if view != "" && keyView == view {
+				keys = append(keys, key+" "+view)
+			}
+		}
+	}
+	return strings.Join(append(keys, "g scroll", "enter apply", "esc clear", "q quit", "ctrl-c stop"), "  ")
 }
 
 func (model *traceScreenModel) requestStop() {
@@ -237,11 +239,15 @@ func traceScreenHeader(model traceScreenModel) []string {
 	var report traceGroupReport
 	if model.groupBy != "" {
 		report = model.groupReport()
-		line += fmt.Sprintf(" grouped by %s  ·  %s  ·  events %d  ·  %s %d  ·  event/s %.1f  ·  %.1f bps  ·  filter %s", model.groupBy, status, report.Events, model.groupBy, len(report.Groups), report.Rate, report.BitsPerSecond, filter)
+		traffic := fmt.Sprintf("  ·  %.1f bps", report.BitsPerSecond)
+		if report.hideTraffic() {
+			traffic = ""
+		}
+		line += fmt.Sprintf(" grouped by %s  ·  %s  ·  events %d  ·  %s %d  ·  event/s %.1f%s  ·  filter %s", model.groupBy, status, report.Events, model.groupBy, len(report.Groups), report.Rate, traffic, filter)
 	} else {
 		line += fmt.Sprintf("  ·  %s  ·  events %d  ·  filter %s", status, model.received, filter)
 	}
-	help := "/ filter  tab view  s source  t target  p port  c process  e event  g scroll  enter apply  esc clear  q quit  ctrl-c stop"
+	help := traceScreenHelp(model.protocol)
 	if model.filtering {
 		help = model.input.View() + "  enter apply  esc cancel"
 	}
@@ -250,7 +256,10 @@ func traceScreenHeader(model traceScreenModel) []string {
 	columns := liveCell("PROCESS", traceScrollProcessWidth) + " " + liveCell("DESTINATION", destinationWidth) + " " + liveCell("EVENT", traceScrollEventWidth) + " SOURCE"
 	if model.groupBy != "" {
 		layout := traceScreenGroupLayout(model, report)
-		names := []any{"EVT", "E/s", "TX", "RX", "TOT", "B/s", "Mbps"}
+		names := []any{"EVT", "E/s"}
+		if !traceProtocols[model.protocol].hideTraffic {
+			names = append(names, "TX", "RX", "TOT", "B/s", "Mbps")
+		}
 		for _, column := range traceProtocols[model.protocol].groupColumns {
 			names = append(names, column.screenTitle)
 		}
@@ -355,8 +364,10 @@ type traceGroupLayout struct {
 
 // traceGroupColumns는 헤더와 행이 같은 폭을 쓰도록 label 뒤 열 형식을 만든다.
 func traceGroupColumns(protocol string, byteWidth int) string {
-	byteColumn := fmt.Sprintf(" %%%dv", byteWidth)
-	columns := " %5v %6v" + strings.Repeat(byteColumn, 4) + " %5v"
+	columns := " %5v %6v"
+	if !traceProtocols[protocol].hideTraffic {
+		columns += strings.Repeat(fmt.Sprintf(" %%%dv", byteWidth), 4) + " %5v"
+	}
 	for _, column := range traceProtocols[protocol].groupColumns {
 		columns += fmt.Sprintf(" %%%dv", column.width)
 	}
@@ -365,7 +376,10 @@ func traceGroupColumns(protocol string, byteWidth int) string {
 
 // traceGroupColumnsWidth는 label 뒤 열의 폭이다. LAST 앞의 공백까지 센다.
 func traceGroupColumnsWidth(protocol string, byteWidth int) int {
-	width := 6 + 7 + 4*(byteWidth+1) + 6 + 1
+	width := 6 + 7 + 1
+	if !traceProtocols[protocol].hideTraffic {
+		width += 4*(byteWidth+1) + 6
+	}
 	for _, column := range traceProtocols[protocol].groupColumns {
 		width += column.width + 1
 	}
@@ -460,7 +474,10 @@ func traceKeepTail(value string, width int) string {
 func formatTraceGroupScreenRow(protocol, groupBy string, group traceGroupSummary, width int, layout traceGroupLayout) string {
 	// liveCell은 폭보다 긴 값을 여러 줄로 감싸므로 먼저 자른다.
 	value := liveCell(traceGroupFitLabel(groupBy, group, layout.labelWidth), layout.labelWidth)
-	values := []any{group.Events, traceScreenEventRate(group.Rate), layout.bytes(group.TXBytes), layout.bytes(group.RXBytes), layout.bytes(group.TotalBytes), layout.bytes(uint64(group.BytesPerSecond)), traceScreenMegabits(group.MegabitsPerSecond)}
+	values := []any{group.Events, traceScreenEventRate(group.Rate)}
+	if !traceProtocols[protocol].hideTraffic {
+		values = append(values, layout.bytes(group.TXBytes), layout.bytes(group.RXBytes), layout.bytes(group.TotalBytes), layout.bytes(uint64(group.BytesPerSecond)), traceScreenMegabits(group.MegabitsPerSecond))
+	}
 	for _, column := range traceProtocols[protocol].groupColumns {
 		values = append(values, column.value(group))
 	}
@@ -475,7 +492,7 @@ func traceGroupColorLine(line, protocol string, group traceGroupSummary) string 
 	color := lipgloss.Color(traceProtocols[protocol].screenColor)
 	if group.Resets != nil && *group.Resets > 0 {
 		color = lipgloss.Color("#fb7185")
-	} else if group.Retransmissions != nil && *group.Retransmissions > 0 {
+	} else if (group.Retransmissions != nil && *group.Retransmissions > 0) || (group.DNS != nil && group.DNS.Errors > 0) {
 		color = lipgloss.Color("#fbbf24")
 	}
 	return lipgloss.NewStyle().Foreground(color).Render(line)
@@ -506,7 +523,8 @@ func traceScrollColumns(width int) (int, int) {
 }
 
 func formatTraceScreenEvent(event captureEvent, width int) string {
-	process, destination, name, source := event.Process, traceEventDestinationLabel(event), event.Event, event.Source
+	destination, name := traceScrollLabels(event)
+	process, source := event.Process, event.Source
 	if process == "" {
 		process = "-"
 	}
@@ -520,7 +538,7 @@ func formatTraceScreenEvent(event captureEvent, width int) string {
 	// liveCell은 칸보다 긴 값을 여러 줄로 감싸므로, 한 행을 지키려고 먼저 자른다.
 	cell := func(value string, width int) string { return liveCell(traceFit(value, width), width) }
 	line := cell(process, traceScrollProcessWidth) + " " + cell(destination, destinationWidth) + " " + cell(name, traceScrollEventWidth) + " " + cell(source, sourceWidth)
-	return traceEventStyle(line, traceProtocol(event), name)
+	return traceEventStyle(line, traceProtocol(event), event.Event)
 }
 
 func traceEventStyle(line, protocol, event string) string {
@@ -559,7 +577,7 @@ func runTraceScreen(protocol string, options tcpTraceOptions) int {
 	stopCapture := func() { stopOnce.Do(func() { close(stop) }) }
 	started := time.Now()
 	// 끝날 때 어느 보기일지 모르므로 모든 보기의 요약을 쌓는다. 수집 goroutine만 쓰고, resultCh를 받은 뒤에 읽는다.
-	aggregate := newTraceAggregate(protocol, traceGroupCycle...)
+	aggregate := newTraceAggregate(protocol, traceGroupViews(protocol)...)
 	go func() {
 		summary, err := collectTraceEventsLive(protocol, options.duration, func(event captureEvent) error {
 			if traceProtocol(event) != protocol || !traceEventMatches(event, options.process, options.destination) {

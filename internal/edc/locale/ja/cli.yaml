@@ -166,6 +166,8 @@ cli:
     group_by_raw_conflict: "--group-by は --raw と同時に使えません"
     group_by: "source、target、port、process、event ごとに event をまとめて traffic counter を表示します"
     linux_only: "network trace は Linux でだけ動きます。現在の platform: %s"
+    group_by_protocol: "--group-by %s は trace %s では使えません"
+    protocol_linux_only: "trace %s は Linux でだけ動きます。現在の platform: %s"
   report:
     unsupported_schema: "%s: 対応しない schema version: %s"
     filter_label: "絞り込み: "

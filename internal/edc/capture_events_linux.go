@@ -244,8 +244,9 @@ func captureAttachments(objects *captureEventsObjects, protocol string) ([]captu
 		{"tcp", "fentry/inet_csk_accept", objects.InetCskAcceptEntry},
 		{"tcp", "fexit/tcp_create_openreq_child", objects.TcpCreateOpenreqChildExit},
 	}
+	// DNS 질의는 UDP 송신 hook이 읽는다.
 	unwanted := func(hookProtocol string) bool {
-		return protocol != "" && hookProtocol != "" && hookProtocol != protocol
+		return protocol != "" && hookProtocol != "" && hookProtocol != protocol && !(protocol == "dns" && hookProtocol == "udp")
 	}
 	tracepoints = slices.DeleteFunc(tracepoints, func(hook captureTracepoint) bool { return unwanted(hook.protocol) })
 	tracing = slices.DeleteFunc(tracing, func(hook captureTracing) bool { return unwanted(hook.protocol) })
@@ -315,6 +316,7 @@ func collectCaptureEventsFor(protocol string, duration time.Duration, onEvent fu
 	targets := newCommandTargetCache(commandTarget)
 	sockets := newSocketTargetCache()
 	owners := newPIDTargetCache()
+	queries := newDNSQueryTracker()
 	var eventCount uint64
 	finish := func() (captureSummary, error) {
 		var lost uint64
@@ -339,8 +341,24 @@ func collectCaptureEventsFor(protocol string, duration time.Duration, onEvent fu
 		if err != nil {
 			return captureSummary{}, err
 		}
-		if pid, payload, ok := parseDNSRecord(record.RawSample); ok {
-			names.rememberAnswer(pid, dnsAnswerNames(payload))
+		if packet, ok := parseDNSRecord(record.RawSample); ok {
+			if !packet.query {
+				names.rememberAnswer(packet.pid, dnsAnswerNames(packet.payload))
+			}
+			// DNS 레코드는 다른 protocol에서 target 이름에만 쓴다. capture와 trace tcp/udp의 출력에 섞지 않는다.
+			if protocol != "dns" {
+				continue
+			}
+			event, ok := queries.event(packet, clockOffset)
+			if !ok {
+				continue
+			}
+			if onEvent != nil {
+				if err := onEvent(event); err != nil {
+					return captureSummary{}, err
+				}
+			}
+			eventCount++
 			continue
 		}
 		if owner, ok := parseOwnerAnnouncement(record.RawSample); ok {

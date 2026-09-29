@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"maps"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -585,6 +586,20 @@ func TestParseARPNeighborReadsNetlinkMessages(t *testing.T) {
 }
 
 // root는 SO_RCVBUFFORCE로, root가 아닌 CI는 EPERM 뒤의 SO_RCVBUF로 기본값보다 큰 buffer를 받는다.
+func TestParseListeningTCPPortsReadsProcNetTCP(t *testing.T) {
+	ports := map[int]bool{}
+	// 127.0.0.1:10259는 LISTEN(0A)이고, 20.20.0.50:6443 ↔ 20.20.0.69:1956은 연결된(01) socket이다.
+	parseListeningTCPPorts([]byte("  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n"+
+		"   0: 0100007F:2813 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 1 1 0000000000000000 100 0 0 10 0\n"+
+		"   1: 3200140A:192B 4500140A:07A4 01 00000000:00000000 02:000A7B2B 00000000     0        0 2 2 0000000000000000 20 4 30 10 -1\n"), ports)
+	parseListeningTCPPorts([]byte("  sl  local_address                         remote_address                        st tx_queue rx_queue\n"+
+		"   0: 00000000000000000000000000000000:192B 00000000000000000000000000000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 3 1\n"), ports)
+	parseListeningTCPPorts(nil, ports)
+	if want := map[int]bool{10259: true, 6443: true}; !maps.Equal(ports, want) {
+		t.Fatalf("ports = %v, want %v", ports, want)
+	}
+}
+
 func TestGrowNeighborReceiveBufferExceedsTheDefault(t *testing.T) {
 	open := func() int {
 		fd, err := unix.Socket(unix.AF_NETLINK, unix.SOCK_RAW|unix.SOCK_CLOEXEC, unix.NETLINK_ROUTE)

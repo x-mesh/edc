@@ -861,8 +861,12 @@ var traceEphemeralPortRange = sync.OnceValues(func() (int, int) {
 	return 32768, 60999
 })
 
+// traceListeningPorts는 이 host에서 연결을 기다리는 TCP port다. 처음 쓸 때 한 번 읽는다.
+var traceListeningPorts = sync.OnceValue(readListeningTCPPorts)
+
 // traceServerService는 로컬 port가 ephemeral 범위 밖이고 상대 port가 범위 안이면 서버 쪽으로 보고 로컬
-// 주소를 돌려준다. 양쪽 모두 범위 안(P2P)이거나 모두 밖(NTP 123↔123)이면 판정하지 않는다.
+// 주소를 돌려준다. 양쪽 모두 범위 안(P2P)이거나 모두 밖(NTP 123↔123)이면 판정하지 않는다. TCP는 로컬 port가
+// 범위 밖의 listen port이면 상대 port와 관계없이 서버 쪽이다.
 func traceServerService(event captureEvent, low, high int) (string, bool) {
 	local, ok := traceAddressPort(event.Source)
 	if !ok {
@@ -873,6 +877,11 @@ func traceServerService(event captureEvent, low, high int) (string, bool) {
 		return "", false
 	}
 	ephemeral := func(port int) bool { return port >= low && port <= high }
+	// NAT를 거친 client는 상대 port가 범위 밖일 수 있어서, 로컬 port가 이 host의 TCP listen port면 서버 쪽으로 본다.
+	// 범위 안의 listen port는 빼는데, trace는 모든 network namespace를 보고 다른 namespace의 client가 같은 port를 쓸 수 있다.
+	if traceProtocol(event) == "tcp" && !ephemeral(local) && traceListeningPorts()[local] {
+		return event.Source, true
+	}
 	if ephemeral(local) || !ephemeral(peer) {
 		return "", false
 	}

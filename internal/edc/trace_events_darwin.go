@@ -673,6 +673,11 @@ func collectTraceEventsLive(scope traceScope, duration time.Duration, onEvent fu
 	return summary, nil
 }
 
+// readListeningTCPPorts는 macOS에서 LISTEN socket을 읽지 않는다. 서버 판정은 port 범위만 쓴다.
+func readListeningTCPPorts() map[int]bool {
+	return nil
+}
+
 func readEphemeralPortRange() (int, int, bool) {
 	low, lowErr := unix.SysctlUint32("net.inet.ip.portrange.first")
 	high, highErr := unix.SysctlUint32("net.inet.ip.portrange.last")

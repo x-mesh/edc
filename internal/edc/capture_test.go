@@ -91,6 +91,23 @@ func setTraceKernelEvents(t *testing.T, value bool) {
 	t.Cleanup(func() { traceKernelEvents = previous })
 }
 
+func TestMain(m *testing.M) {
+	// 테스트를 실행하는 host의 LISTEN socket이 서버 판정을 바꾸지 않게 한다.
+	traceListeningPorts = func() map[int]bool { return nil }
+	os.Exit(m.Run())
+}
+
+func setTraceListeningPorts(t *testing.T, ports ...int) {
+	t.Helper()
+	previous := traceListeningPorts
+	listening := map[int]bool{}
+	for _, port := range ports {
+		listening[port] = true
+	}
+	traceListeningPorts = func() map[int]bool { return listening }
+	t.Cleanup(func() { traceListeningPorts = previous })
+}
+
 // setTraceEphemeralPortRange는 서버 응답 판정을 실행하는 host의 port 범위와 떼어 놓는다. macOS와 Linux는
 // 기본 범위가 다르다.
 func setTraceEphemeralPortRange(t *testing.T, low, high int) {
@@ -184,6 +201,38 @@ func TestSummarizeTCPTraceSplitsSocketLives(t *testing.T) {
 	}
 	if second, ok := rows["agent 10.0.0.2:41003"]; !ok || traceOptional(second.ConnectMS, "%d") != "2" {
 		t.Fatalf("second agent connection = %#v", rows)
+	}
+}
+
+func TestTraceServerServiceUsesTheListeningPorts(t *testing.T) {
+	setTraceKernelEvents(t, true)
+	setTraceEphemeralPortRange(t, 32768, 60999)
+	setTraceListeningPorts(t, 6443, 10250, 40322)
+	for _, test := range []struct {
+		name   string
+		event  captureEvent
+		server bool
+	}{
+		// NAT를 거친 client의 port는 ephemeral 범위 밖일 수 있다.
+		{"listening port, peer outside the range", captureEvent{Source: "20.20.0.50:6443", Destination: "20.20.0.69:1956"}, true},
+		{"listening port, peer inside the range", captureEvent{Source: "20.20.0.50:10250", Destination: "20.20.0.69:40000"}, true},
+		// 범위 안의 listen port는 다른 network namespace의 client port와 겹칠 수 있다.
+		{"listening port inside the range", captureEvent{Source: "10.244.1.10:40322", Destination: "20.20.0.50:443"}, false},
+		{"port that is not listening", captureEvent{Source: "20.20.0.50:8080", Destination: "20.20.0.69:1956"}, false},
+		{"udp", captureEvent{Protocol: "udp", Source: "20.20.0.50:6443", Destination: "20.20.0.69:1956"}, false},
+	} {
+		if _, server := traceServerService(test.event, 32768, 60999); server != test.server {
+			t.Fatalf("%s: server = %t, want %t", test.name, server, test.server)
+		}
+	}
+	// trace 전부터 열려 있던 서버 연결도 client port와 관계없이 서비스 행으로 묶는다.
+	events := []captureEvent{
+		{SocketID: 1, TimestampNS: 1, Event: "tcp_send", Process: "kube-apiserver", Bytes: 10, Source: "20.20.0.50:6443", Destination: "20.20.0.69:1956"},
+		{SocketID: 2, TimestampNS: 2, Event: "tcp_send", Process: "kube-apiserver", Bytes: 10, Source: "20.20.0.50:6443", Destination: "20.20.0.50:64434"},
+	}
+	report := summarizeTCPTrace(events, captureSummary{}, time.Second, "", "")
+	if len(report.groups) != 1 || !report.groups[0].server || report.groups[0].peer != "20.20.0.50:6443" || report.groups[0].connections != 2 {
+		t.Fatalf("groups = %#v", report.groups)
 	}
 }
 

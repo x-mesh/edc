@@ -482,7 +482,8 @@ func (summarizer *dnsTraceSummarizer) summarize(summary captureSummary, duration
 	return report
 }
 
-func (report dnsTraceReport) print() {
+// print는 detail과 상관없이 같다. DNS 요약은 이미 이름과 record 종류마다 한 행이고, 질의마다의 행은 두지 않는다.
+func (report dnsTraceReport) print(bool) {
 	title := "DNS trace"
 	if report.Side == traceDNSServerSide {
 		title = "DNS server trace"

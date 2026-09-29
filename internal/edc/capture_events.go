@@ -184,7 +184,7 @@ func traceSummaryPeer(source, destination string) (string, bool) {
 	return destination, false
 }
 
-func addTCPTraceGroup(groups map[tcpTraceGroupKey]*tcpTraceGroupRow, connection *tcpTraceConnection) {
+func addTCPTraceGroup(groups map[tcpTraceGroupKey]*tcpTraceGroupRow, connection *tcpTraceConnection) tcpTraceGroupKey {
 	peer, server := traceSummaryPeer(connection.Source, connection.Destination)
 	key := tcpTraceGroupKey{process: connection.Process, peer: peer, server: server}
 	row := groups[key]
@@ -215,6 +215,7 @@ func addTCPTraceGroup(groups map[tcpTraceGroupKey]*tcpTraceGroupRow, connection 
 	}
 	row.TXBytes += connection.TXBytes
 	row.RXBytes += connection.RXBytes
+	return key
 }
 
 func sortTCPTraceGroups(rows []tcpTraceGroupRow) {
@@ -320,6 +321,22 @@ func summarizeTCPTrace(events []captureEvent, summary captureSummary, duration t
 // 연결이 분당 수십만 개라, 모두 남기면 메모리와 종료 시 출력이 연결 수만큼 커진다.
 const tcpTraceConnectionLimit = 1000
 
+// tcpTraceFinishedSocketLimit는 끝난 연결을 기억해 두는 socket 수의 상한이다. 늦은 RST는 해제 직후에 오므로,
+// 넘쳐서 모두 비워도 잃는 RST는 거의 없다.
+const tcpTraceFinishedSocketLimit = 65536
+
+// tcpTraceFinishedSocket은 tcp_destroy로 끝낸 연결이 요약에 남은 자리다. 응용이 닫은 socket에 데이터가 오면 kernel은
+// socket을 해제한 뒤 그 socket으로 RST를 보낸다(reason TCP_ABORT_ON_DATA). 이 RST를 새 연결로 만들면 주소와 process가
+// 빈 행이 생기고, 같은 socket 주소를 다시 쓴 다음 연결이 그 행에 붙어 RST 시각부터 연결 시간을 잰다.
+type tcpTraceFinishedSocket struct {
+	group tcpTraceGroupKey
+	// slot은 finished에서 이 연결의 자리이고, count는 그때까지 끝난 연결 수다. 그 뒤로 tcpTraceConnectionLimit개가
+	// 더 끝나면 다른 연결이 이 자리를 쓴다.
+	slot  int
+	count int
+	reset bool
+}
+
 // tcpTraceSummarizer는 event를 하나씩 받아 TCP 요약을 쌓는다. 연결은 socket의 수명마다 나눈다. SocketID는
 // kernel의 socket 주소라서, socket이 없어진 뒤 새 socket이 같은 값을 다시 쓴다.
 type tcpTraceSummarizer struct {
@@ -331,6 +348,8 @@ type tcpTraceSummarizer struct {
 	totals    tcpTraceTotals
 	groups    map[tcpTraceGroupKey]*tcpTraceGroupRow
 	traffic   traceTraffic
+	// finishedSockets는 tcp_destroy로 끝낸 뒤 아직 새 연결에 쓰이지 않은 socket이다.
+	finishedSockets map[uint64]tcpTraceFinishedSocket
 }
 
 // tcpTraceTotals에서 attempts는 trace 중에 핸드셰이크를 본 연결이고, established와 incomplete의 합이다.
@@ -362,7 +381,7 @@ func (totals *tcpTraceTotals) add(connection *tcpTraceConnection) {
 }
 
 func newTCPTraceSummarizer() *tcpTraceSummarizer {
-	return &tcpTraceSummarizer{active: make(map[uint64]*tcpTraceConnection), firstSeen: make(map[uint64]uint64), groups: make(map[tcpTraceGroupKey]*tcpTraceGroupRow)}
+	return &tcpTraceSummarizer{active: make(map[uint64]*tcpTraceConnection), firstSeen: make(map[uint64]uint64), groups: make(map[tcpTraceGroupKey]*tcpTraceGroupRow), finishedSockets: make(map[uint64]tcpTraceFinishedSocket)}
 }
 
 // tcpTraceConnectionStarts는 새 socket의 수명이 시작되는 전이다. connect()와 서버의 새 연결이 여기서 시작한다.
@@ -375,6 +394,13 @@ func (summarizer *tcpTraceSummarizer) observe(event captureEvent) {
 	// socket 없이 보낸 RST처럼 SocketID가 0인 event는 연결이 아니다. 행을 만들면 모두 한 행에 쌓인다.
 	if event.SocketID == 0 {
 		return
+	}
+	if finished, ok := summarizer.finishedSockets[event.SocketID]; ok && summarizer.active[event.SocketID] == nil {
+		if event.Event == "tcp_send_reset" {
+			summarizer.addLateReset(event.SocketID, finished)
+			return
+		}
+		delete(summarizer.finishedSockets, event.SocketID)
 	}
 	// tcp_destroy를 놓쳤어도, 닫힌 socket 주소에 새 연결이 시작되면 다른 socket이다.
 	if connection := summarizer.active[event.SocketID]; connection != nil && connection.closed && tcpTraceConnectionStarts(event) {
@@ -435,29 +461,51 @@ func (summarizer *tcpTraceSummarizer) observe(event captureEvent) {
 		connection.closed = true
 	case "tcp_destroy":
 		connection.closed = true
-		summarizer.finish(event.SocketID)
+		if finished, ok := summarizer.finish(event.SocketID); ok {
+			if len(summarizer.finishedSockets) >= tcpTraceFinishedSocketLimit {
+				clear(summarizer.finishedSockets)
+			}
+			summarizer.finishedSockets[event.SocketID] = finished
+		}
 	}
 }
 
-// finish는 끝난 연결을 합계에 넣고, 최근 tcpTraceConnectionLimit개만 행으로 남긴다.
-func (summarizer *tcpTraceSummarizer) finish(socket uint64) {
+// addLateReset은 끝난 연결에 해제 뒤 온 RST를 더한다. 합계, 묶음 행, 연결별 행이 모두 그 연결을 reset으로 센다.
+func (summarizer *tcpTraceSummarizer) addLateReset(socket uint64, finished tcpTraceFinishedSocket) {
+	if finished.reset {
+		return
+	}
+	finished.reset = true
+	summarizer.finishedSockets[socket] = finished
+	summarizer.totals.resets++
+	summarizer.groups[finished.group].resets++
+	if len(summarizer.finished)+summarizer.omitted-finished.count < tcpTraceConnectionLimit {
+		summarizer.finished[finished.slot].reset = true
+	}
+}
+
+// finish는 끝난 연결을 합계에 넣고, 최근 tcpTraceConnectionLimit개만 행으로 남긴다. 세지 않는 socket이면 false다.
+func (summarizer *tcpTraceSummarizer) finish(socket uint64) (tcpTraceFinishedSocket, bool) {
 	connection := summarizer.active[socket]
 	delete(summarizer.active, socket)
 	delete(summarizer.firstSeen, socket)
 	if !connection.counted() {
-		return
+		return tcpTraceFinishedSocket{}, false
 	}
 	connection.Result = connection.result()
 	summarizer.totals.add(connection)
 	// 묶음 행은 끝난 연결마다 쌓아서, 연결별 행에서 빠진 연결도 들어간다.
-	addTCPTraceGroup(summarizer.groups, connection)
+	finished := tcpTraceFinishedSocket{group: addTCPTraceGroup(summarizer.groups, connection), slot: summarizer.oldest, reset: connection.reset}
 	if len(summarizer.finished) < tcpTraceConnectionLimit {
+		finished.slot = len(summarizer.finished)
 		summarizer.finished = append(summarizer.finished, *connection)
-		return
+	} else {
+		summarizer.finished[summarizer.oldest] = *connection
+		summarizer.oldest = (summarizer.oldest + 1) % tcpTraceConnectionLimit
+		summarizer.omitted++
 	}
-	summarizer.finished[summarizer.oldest] = *connection
-	summarizer.oldest = (summarizer.oldest + 1) % tcpTraceConnectionLimit
-	summarizer.omitted++
+	finished.count = len(summarizer.finished) + summarizer.omitted
+	return finished, true
 }
 
 func (summarizer *tcpTraceSummarizer) report(summary captureSummary, duration time.Duration) tcpTraceReport {

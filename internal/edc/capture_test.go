@@ -187,6 +187,67 @@ func TestSummarizeTCPTraceSplitsSocketLives(t *testing.T) {
 	}
 }
 
+func TestSummarizeTCPTraceAddsLateResetsToTheFinishedConnection(t *testing.T) {
+	setTraceKernelEvents(t, true)
+	setTraceEphemeralPortRange(t, 32768, 60999)
+	ms, us := uint64(time.Millisecond), uint64(time.Microsecond)
+	lateReset := func(socket, at uint64) captureEvent {
+		return captureEvent{SocketID: socket, TimestampNS: at, Event: "tcp_send_reset", OldState: "CLOSE", NewState: "UNKNOWN"}
+	}
+	events := []captureEvent{
+		// kernel이 socket 7을 해제한 뒤에 그 socket으로 RST를 보내고, 1초 뒤 같은 주소를 새 연결에 쓴다.
+		{SocketID: 7, TimestampNS: 1 * ms, Event: "tcp_state", Process: "kubelet", Source: "127.0.0.1:0", Destination: "127.0.0.1:10259", OldState: "CLOSE", NewState: "SYN_SENT"},
+		{SocketID: 7, TimestampNS: 1*ms + 130*us, Event: "tcp_connect", Process: "kubelet", Source: "127.0.0.1:41000", Destination: "127.0.0.1:10259", OldState: "SYN_SENT", NewState: "ESTABLISHED"},
+		{SocketID: 7, TimestampNS: 5 * ms, Event: "tcp_close", Source: "127.0.0.1:41000", Destination: "127.0.0.1:10259", OldState: "FIN_WAIT2", NewState: "CLOSE"},
+		{SocketID: 7, TimestampNS: 5*ms + 30*us, Event: "tcp_destroy", Source: "127.0.0.1:41000", Destination: "127.0.0.1:10259"},
+		lateReset(7, 5*ms+36*us),
+		{SocketID: 7, TimestampNS: 900 * ms, Event: "tcp_state", Process: "kubelet", Source: "127.0.0.1:0", Destination: "127.0.0.1:10259", OldState: "CLOSE", NewState: "SYN_SENT"},
+		{SocketID: 7, TimestampNS: 900*ms + 130*us, Event: "tcp_connect", Process: "kubelet", Source: "127.0.0.1:41001", Destination: "127.0.0.1:10259", OldState: "SYN_SENT", NewState: "ESTABLISHED"},
+		{SocketID: 7, TimestampNS: 905 * ms, Event: "tcp_close", Source: "127.0.0.1:41001", Destination: "127.0.0.1:10259", OldState: "FIN_WAIT2", NewState: "CLOSE"},
+		{SocketID: 7, TimestampNS: 905*ms + 30*us, Event: "tcp_destroy", Source: "127.0.0.1:41001", Destination: "127.0.0.1:10259"},
+		// socket 8은 늦은 RST 뒤에 다시 쓰이지 않는다.
+		{SocketID: 8, TimestampNS: 10 * ms, Event: "tcp_state", Process: "etcd", Source: "10.0.0.2:0", Destination: "10.0.0.9:2380", OldState: "CLOSE", NewState: "SYN_SENT"},
+		{SocketID: 8, TimestampNS: 10*ms + 300*us, Event: "tcp_connect", Process: "etcd", Source: "10.0.0.2:42000", Destination: "10.0.0.9:2380", OldState: "SYN_SENT", NewState: "ESTABLISHED"},
+		{SocketID: 8, TimestampNS: 12 * ms, Event: "tcp_close", Source: "10.0.0.2:42000", Destination: "10.0.0.9:2380", OldState: "FIN_WAIT2", NewState: "CLOSE"},
+		{SocketID: 8, TimestampNS: 12*ms + 30*us, Event: "tcp_destroy", Source: "10.0.0.2:42000", Destination: "10.0.0.9:2380"},
+		lateReset(8, 12*ms+36*us),
+		// socket 9는 해제 직후 경로가 없는 IPv6 connect에 다시 쓰인다. 이 socket은 destroy만 남긴다.
+		{SocketID: 9, TimestampNS: 20 * ms, Event: "tcp_state", Process: "curl", Source: "10.0.0.2:0", Destination: "203.0.113.10:443", OldState: "CLOSE", NewState: "SYN_SENT"},
+		{SocketID: 9, TimestampNS: 21 * ms, Event: "tcp_connect", Process: "curl", Source: "10.0.0.2:43000", Destination: "203.0.113.10:443", OldState: "SYN_SENT", NewState: "ESTABLISHED"},
+		{SocketID: 9, TimestampNS: 22 * ms, Event: "tcp_close", Source: "10.0.0.2:43000", Destination: "203.0.113.10:443", OldState: "LAST_ACK", NewState: "CLOSE"},
+		{SocketID: 9, TimestampNS: 22*ms + 30*us, Event: "tcp_destroy", Source: "10.0.0.2:43000", Destination: "203.0.113.10:443"},
+		{SocketID: 9, TimestampNS: 22*ms + 100*us, Event: "tcp_destroy", Source: "[::]:0", Destination: "[2001:db8::1]:0"},
+	}
+	report := summarizeTCPTrace(events, captureSummary{}, time.Second, "", "")
+	if report.Attempts != 5 || report.Established != 4 || report.Incomplete != 1 || traceOptional(report.Resets, "%d") != "2" || len(report.Connections) != 5 {
+		t.Fatalf("report = %#v", report)
+	}
+	rows := map[string]tcpTraceConnection{}
+	for _, connection := range report.Connections {
+		if connection.Process == "" && connection.Destination == "" {
+			t.Fatalf("late RST made a connection row: %#v", connection)
+		}
+		rows[connection.Source+" "+connection.Destination] = connection
+	}
+	for key, want := range map[string]struct{ result, connect, reset string }{
+		"127.0.0.1:41000 127.0.0.1:10259": {"established", "0", "true"},
+		"127.0.0.1:41001 127.0.0.1:10259": {"established", "0", "false"},
+		"10.0.0.2:42000 10.0.0.9:2380":    {"established", "0", "true"},
+		"10.0.0.2:43000 203.0.113.10:443": {"established", "1", "false"},
+		"[::]:0 [2001:db8::1]:0":          {"failed", "-", "false"},
+	} {
+		row, ok := rows[key]
+		if !ok || row.Result != want.result || traceOptional(row.ConnectMS, "%d") != want.connect || traceOptional(row.Reset, "%t") != want.reset {
+			t.Fatalf("%s = %#v, want %+v", key, row, want)
+		}
+	}
+	for _, group := range report.groups {
+		if group.process == "kubelet" && (group.connections != 2 || group.resets != 1 || group.connectTotalMS != 0) {
+			t.Fatalf("kubelet group = %#v", group)
+		}
+	}
+}
+
 func TestSummarizeTCPTraceKeepsRecentConnectionRows(t *testing.T) {
 	setTraceKernelEvents(t, true)
 	events := []captureEvent{}

@@ -491,9 +491,9 @@ func traceGroupColorLine(line, protocol string, group traceGroupSummary) string 
 		return line
 	}
 	color := lipgloss.Color(traceProtocols[protocol].screenColor)
-	if (group.Resets != nil && *group.Resets > 0) || (group.ARP != nil && group.ARP.MACChanges > 0) || (group.HTTP != nil && group.HTTP.ServerErrors > 0) {
+	if (group.Resets != nil && *group.Resets > 0) || (group.Neighbor != nil && group.Neighbor.MACChanges > 0) || (group.HTTP != nil && group.HTTP.ServerErrors > 0) {
 		color = lipgloss.Color("#fb7185")
-	} else if (group.Retransmissions != nil && *group.Retransmissions > 0) || (group.DNS != nil && group.DNS.Errors > 0) || (group.ARP != nil && group.ARP.Failures > 0) || (group.HTTP != nil && group.HTTP.ClientErrors > 0) {
+	} else if (group.Retransmissions != nil && *group.Retransmissions > 0) || (group.DNS != nil && group.DNS.Errors > 0) || (group.Neighbor != nil && group.Neighbor.Failures > 0) || (group.HTTP != nil && group.HTTP.ClientErrors > 0) {
 		color = lipgloss.Color("#fbbf24")
 	}
 	return lipgloss.NewStyle().Foreground(color).Render(line)

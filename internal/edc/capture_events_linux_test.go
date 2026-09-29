@@ -523,7 +523,7 @@ func TestCommandTargetCacheSweepsExpiredEntries(t *testing.T) {
 	}
 }
 
-func arpNetlinkMessage(messageType uint16, family byte, state uint16, attributes ...[]byte) syscall.NetlinkMessage {
+func neighborNetlinkMessage(messageType uint16, family byte, state uint16, attributes ...[]byte) syscall.NetlinkMessage {
 	data := make([]byte, unix.SizeofNdMsg)
 	data[0] = family
 	binary.NativeEndian.PutUint32(data[4:8], 1)
@@ -534,7 +534,7 @@ func arpNetlinkMessage(messageType uint16, family byte, state uint16, attributes
 	return syscall.NetlinkMessage{Header: syscall.NlMsghdr{Type: messageType}, Data: data}
 }
 
-func arpNetlinkAttribute(kind uint16, value []byte) []byte {
+func neighborNetlinkAttribute(kind uint16, value []byte) []byte {
 	attribute := make([]byte, unix.SizeofRtAttr, (unix.SizeofRtAttr+len(value)+3)&^3)
 	binary.NativeEndian.PutUint16(attribute[0:2], uint16(unix.SizeofRtAttr+len(value)))
 	binary.NativeEndian.PutUint16(attribute[2:4], kind)
@@ -543,29 +543,29 @@ func arpNetlinkAttribute(kind uint16, value []byte) []byte {
 }
 
 func TestParseARPNeighborReadsNetlinkMessages(t *testing.T) {
-	names := arpInterfaceNames{1: "eth0"}
-	destination := arpNetlinkAttribute(unix.NDA_DST, []byte{192, 0, 2, 1})
-	address := arpNetlinkAttribute(unix.NDA_LLADDR, []byte{2, 0, 0, 0, 0, 1})
-	neighbor, ok := parseARPNeighbor(arpNetlinkMessage(unix.RTM_NEWNEIGH, unix.AF_INET, unix.NUD_REACHABLE, destination, address), names)
-	if !ok || neighbor != (arpNeighbor{iface: "eth0", ip: "192.0.2.1", mac: "02:00:00:00:00:01", state: "REACHABLE"}) {
+	names := neighborInterfaceNames{1: "eth0"}
+	destination := neighborNetlinkAttribute(unix.NDA_DST, []byte{192, 0, 2, 1})
+	address := neighborNetlinkAttribute(unix.NDA_LLADDR, []byte{2, 0, 0, 0, 0, 1})
+	neighbor, ok := parseNeighborMessage(neighborNetlinkMessage(unix.RTM_NEWNEIGH, unix.AF_INET, unix.NUD_REACHABLE, destination, address), names)
+	if !ok || neighbor != (traceNeighbor{iface: "eth0", ip: "192.0.2.1", mac: "02:00:00:00:00:01", state: "REACHABLE"}) {
 		t.Fatalf("new neighbor = %#v, %t", neighbor, ok)
 	}
-	if neighbor, ok := parseARPNeighbor(arpNetlinkMessage(unix.RTM_DELNEIGH, unix.AF_INET, unix.NUD_FAILED, destination), names); !ok || !neighbor.deleted || neighbor.state != "FAILED" || neighbor.mac != "" {
+	if neighbor, ok := parseNeighborMessage(neighborNetlinkMessage(unix.RTM_DELNEIGH, unix.AF_INET, unix.NUD_FAILED, destination), names); !ok || !neighbor.deleted || neighbor.state != "FAILED" || neighbor.mac != "" {
 		t.Fatalf("deleted neighbor = %#v, %t", neighbor, ok)
 	}
 	for name, message := range map[string]syscall.NetlinkMessage{
-		"noarp":      arpNetlinkMessage(unix.RTM_NEWNEIGH, unix.AF_INET, unix.NUD_NOARP, destination),
-		"ipv6":       arpNetlinkMessage(unix.RTM_NEWNEIGH, unix.AF_INET6, unix.NUD_REACHABLE, arpNetlinkAttribute(unix.NDA_DST, make([]byte, 16))),
-		"no address": arpNetlinkMessage(unix.RTM_NEWNEIGH, unix.AF_INET, unix.NUD_REACHABLE, address),
+		"noarp":      neighborNetlinkMessage(unix.RTM_NEWNEIGH, unix.AF_INET, unix.NUD_NOARP, destination),
+		"ipv6":       neighborNetlinkMessage(unix.RTM_NEWNEIGH, unix.AF_INET6, unix.NUD_REACHABLE, neighborNetlinkAttribute(unix.NDA_DST, make([]byte, 16))),
+		"no address": neighborNetlinkMessage(unix.RTM_NEWNEIGH, unix.AF_INET, unix.NUD_REACHABLE, address),
 		"route":      {Header: syscall.NlMsghdr{Type: unix.RTM_NEWROUTE}, Data: make([]byte, 64)},
 	} {
-		if neighbor, ok := parseARPNeighbor(message, names); ok {
+		if neighbor, ok := parseNeighborMessage(message, names); ok {
 			t.Fatalf("%s message made a neighbor: %#v", name, neighbor)
 		}
 	}
 	for state, want := range map[uint16]string{unix.NUD_STALE: "STALE", unix.NUD_INCOMPLETE: "INCOMPLETE", unix.NUD_PERMANENT: "PERMANENT", 0: "NONE"} {
-		if got := arpStateName(state); got != want {
-			t.Fatalf("arpStateName(%#x) = %q, want %q", state, got, want)
+		if got := traceNeighborStateName(state); got != want {
+			t.Fatalf("traceNeighborStateName(%#x) = %q, want %q", state, got, want)
 		}
 	}
 }

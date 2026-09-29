@@ -88,8 +88,8 @@ var traceProtocols = map[string]traceProtocolSpec{
 	},
 	// ARP event에는 process와 port가 없다. source는 interface, target은 IP다. Linux는 netlink 알림을, macOS는 1초마다 읽은 table을 쓴다.
 	"arp": {
-		ansiColor: "34", screenColor: "#60a5fa", groupColumns: traceARPGroupColumns, hideTraffic: true, hiddenViews: []string{traceGroupByPort, traceGroupByProcess},
-		scrollLabels: traceARPScrollLabels, newSummarizer: func() traceSummarizer { return newARPTraceSummarizer() },
+		ansiColor: "34", screenColor: "#60a5fa", groupColumns: traceNeighborGroupColumns, hideTraffic: true, hiddenViews: []string{traceGroupByPort, traceGroupByProcess},
+		scrollLabels: traceNeighborScrollLabels, newSummarizer: func() traceSummarizer { return newNeighborTraceSummarizer() },
 	},
 }
 
@@ -649,7 +649,7 @@ type traceGroup struct {
 	Resets          uint64
 	LastEvent       string
 	DNS             *traceDNSCounts
-	ARP             *traceARPCounts
+	Neighbor        *traceNeighborCounts
 	HTTP            *traceHTTPCounts
 	traceTraffic
 }
@@ -669,9 +669,9 @@ type traceGroupSummary struct {
 	LastEvent       string   `json:"last_event,omitempty"`
 	// DNS는 DNS group에만 있다. TCP와 UDP group의 JSON에는 나오지 않는다.
 	DNS *traceDNSCounts `json:"dns,omitempty"`
-	// ARP는 ARP group에만, HTTP는 HTTP group에만 있다.
-	ARP  *traceARPCounts  `json:"arp,omitempty"`
-	HTTP *traceHTTPCounts `json:"http,omitempty"`
+	// Neighbor는 ARP와 NDP group에만, HTTP는 HTTP group에만 있다.
+	Neighbor *traceNeighborCounts `json:"neighbor,omitempty"`
+	HTTP     *traceHTTPCounts     `json:"http,omitempty"`
 	traceTraffic
 }
 
@@ -780,7 +780,7 @@ func (summarizer *traceGroupSummarizer) report(summary captureSummary, duration 
 		result.Groups = append(result.Groups, traceGroupSummary{
 			Group: group.Group, Server: group.Server, Destinations: slices.Sorted(maps.Keys(group.Destinations)), Processes: slices.Sorted(maps.Keys(group.Processes)),
 			Events: group.Events, Rate: traceGroupRate(group.Events, duration), Tx: group.Tx, Rx: group.Rx, Connect: group.Connect,
-			Retransmissions: traceObserved(group.Retransmissions), Resets: traceObserved(group.Resets), LastEvent: group.LastEvent, DNS: traceDNSGroupSummary(group.DNS), ARP: traceARPGroupSummary(group.ARP), HTTP: traceHTTPGroupSummary(group.HTTP), traceTraffic: traffic,
+			Retransmissions: traceObserved(group.Retransmissions), Resets: traceObserved(group.Resets), LastEvent: group.LastEvent, DNS: traceDNSGroupSummary(group.DNS), Neighbor: traceNeighborGroupSummary(group.Neighbor), HTTP: traceHTTPGroupSummary(group.HTTP), traceTraffic: traffic,
 		})
 	}
 	if summarizer.groupBy == traceGroupByPort {
@@ -921,10 +921,10 @@ func observeTraceGroup(group *traceGroup, event captureEvent) {
 		}
 		group.DNS.observe(event)
 	case "arp":
-		if group.ARP == nil {
-			group.ARP = &traceARPCounts{}
+		if group.Neighbor == nil {
+			group.Neighbor = &traceNeighborCounts{}
 		}
-		group.ARP.observe(event)
+		group.Neighbor.observe(event)
 	case "http":
 		if group.HTTP == nil {
 			group.HTTP = &traceHTTPCounts{}

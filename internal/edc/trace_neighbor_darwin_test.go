@@ -8,7 +8,7 @@ import (
 
 // macOS CI에서 실제 ARP table을 읽는다. 항목 수는 환경마다 달라서 형식만 확인한다.
 func TestReadDarwinARPTableOnThisMac(t *testing.T) {
-	neighbors, err := readDarwinARPTable(arpInterfaceNames{})
+	neighbors, err := readDarwinNeighborTable(neighborInterfaceNames{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -19,8 +19,8 @@ func TestReadDarwinARPTableOnThisMac(t *testing.T) {
 		}
 	}
 	t.Logf("%d IPv4 ARP entries", len(neighbors))
-	summary, err := collectARPEvents(1500*time.Millisecond, nil, nil)
+	summary, err := collectNeighborEvents(1500*time.Millisecond, nil, nil)
 	if err != nil || summary.Event != "capture_summary" {
-		t.Fatalf("collectARPEvents = %#v, %v", summary, err)
+		t.Fatalf("collectNeighborEvents = %#v, %v", summary, err)
 	}
 }

@@ -41,27 +41,27 @@ func TestParseDarwinARPTableReadsEntries(t *testing.T) {
 	} {
 		rib = append(rib, message...)
 	}
-	entries, err := parseDarwinARPTable(rib)
+	entries, err := parseDarwinNeighborTable(rib)
 	if err != nil || len(entries) != 4 {
 		t.Fatalf("entries = %#v, %v", entries, err)
 	}
 	want := []struct{ ip, mac, state string }{
 		{"192.0.2.1", "02:00:00:00:00:01", "COMPLETE"},
 		{"192.0.2.2", "", "INCOMPLETE"},
-		{"192.0.2.3", "", traceARPFailedState},
+		{"192.0.2.3", "", traceNeighborFailedState},
 		{"224.0.0.251", "01:00:5e:00:00:fb", "PERMANENT"},
 	}
 	for index, entry := range entries {
-		if entry.ip != want[index].ip || entry.mac != want[index].mac || darwinARPState(entry) != want[index].state {
-			t.Fatalf("entry %d = %#v state %q, want %+v", index, entry, darwinARPState(entry), want[index])
+		if entry.ip != want[index].ip || entry.mac != want[index].mac || darwinNeighborState(entry) != want[index].state {
+			t.Fatalf("entry %d = %#v state %q, want %+v", index, entry, darwinNeighborState(entry), want[index])
 		}
 	}
-	neighbors := darwinARPNeighbors(entries[:1], arpInterfaceNames{4: "en0"})
-	if neighbor := neighbors[arpNeighborKey{iface: "en0", ip: "192.0.2.1"}]; neighbor.mac != "02:00:00:00:00:01" || neighbor.state != "COMPLETE" {
+	neighbors := darwinNeighbors(entries[:1], neighborInterfaceNames{4: "en0"})
+	if neighbor := neighbors[neighborKey{iface: "en0", ip: "192.0.2.1"}]; neighbor.mac != "02:00:00:00:00:01" || neighbor.state != "COMPLETE" {
 		t.Fatalf("neighbors = %#v", neighbors)
 	}
 	for name, cut := range map[string][]byte{"short header": rib[:1], "cut message": rib[:len(rib)-4]} {
-		if _, err := parseDarwinARPTable(cut); err == nil {
+		if _, err := parseDarwinNeighborTable(cut); err == nil {
 			t.Fatalf("%s parsed without an error", name)
 		}
 	}

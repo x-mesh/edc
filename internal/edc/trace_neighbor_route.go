@@ -21,18 +21,18 @@ const (
 	darwinRTFStatic    = 0x800
 )
 
-// darwinARPEntry는 ARP table의 항목 하나다. index는 interface 번호다.
-type darwinARPEntry struct {
+// darwinNeighborEntry는 ARP table의 항목 하나다. index는 interface 번호다.
+type darwinNeighborEntry struct {
 	index int
 	ip    string
 	mac   string
 	flags uint32
 }
 
-// parseDarwinARPTable은 rt_msghdr 뒤에 rtm_addrs의 bit 순서로 이어지는 sockaddr를 읽는다. sockaddr는 4바이트 단위로 붙는다.
+// parseDarwinNeighborTable은 rt_msghdr 뒤에 rtm_addrs의 bit 순서로 이어지는 sockaddr를 읽는다. sockaddr는 4바이트 단위로 붙는다.
 // macOS는 x86_64와 arm64 모두 little endian이다.
-func parseDarwinARPTable(rib []byte) ([]darwinARPEntry, error) {
-	var entries []darwinARPEntry
+func parseDarwinNeighborTable(rib []byte) ([]darwinNeighborEntry, error) {
+	var entries []darwinNeighborEntry
 	for len(rib) > 0 {
 		if len(rib) < 2 {
 			return nil, errors.New("routing message header is cut")
@@ -47,7 +47,7 @@ func parseDarwinARPTable(rib []byte) ([]darwinARPEntry, error) {
 		if flags&darwinRTFLLInfo == 0 {
 			continue
 		}
-		entry := darwinARPEntry{index: int(binary.LittleEndian.Uint16(message[4:6])), flags: flags}
+		entry := darwinNeighborEntry{index: int(binary.LittleEndian.Uint16(message[4:6])), flags: flags}
 		present := binary.LittleEndian.Uint32(message[12:16])
 		addresses := message[darwinRtMsghdrSize:]
 		for bit := uint32(0); bit < darwinRTAXCount && len(addresses) > 0; bit++ {
@@ -88,11 +88,11 @@ func parseDarwinARPTable(rib []byte) ([]darwinARPEntry, error) {
 	return entries, nil
 }
 
-// darwinARPState는 macOS 항목의 상태다. macOS에는 Linux의 NUD 상태가 없어 flag와 MAC으로 정한다.
-func darwinARPState(entry darwinARPEntry) string {
+// darwinNeighborState는 macOS 항목의 상태다. macOS에는 Linux의 NUD 상태가 없어 flag와 MAC으로 정한다.
+func darwinNeighborState(entry darwinNeighborEntry) string {
 	switch {
 	case entry.flags&darwinRTFReject != 0:
-		return traceARPFailedState
+		return traceNeighborFailedState
 	case entry.mac == "":
 		return "INCOMPLETE"
 	case entry.flags&darwinRTFStatic != 0:
@@ -101,11 +101,11 @@ func darwinARPState(entry darwinARPEntry) string {
 	return "COMPLETE"
 }
 
-func darwinARPNeighbors(entries []darwinARPEntry, names arpInterfaceNames) map[arpNeighborKey]arpNeighbor {
-	neighbors := make(map[arpNeighborKey]arpNeighbor, len(entries))
+func darwinNeighbors(entries []darwinNeighborEntry, names neighborInterfaceNames) map[neighborKey]traceNeighbor {
+	neighbors := make(map[neighborKey]traceNeighbor, len(entries))
 	for _, entry := range entries {
-		neighbor := arpNeighbor{iface: names.name(entry.index), ip: entry.ip, mac: entry.mac, state: darwinARPState(entry)}
-		neighbors[arpNeighborKey{iface: neighbor.iface, ip: neighbor.ip}] = neighbor
+		neighbor := traceNeighbor{iface: names.name(entry.index), ip: entry.ip, mac: entry.mac, state: darwinNeighborState(entry)}
+		neighbors[neighborKey{iface: neighbor.iface, ip: neighbor.ip}] = neighbor
 	}
 	return neighbors
 }

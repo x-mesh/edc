@@ -14,11 +14,11 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// traceARPPollInterval은 netlink 수신을 기다리는 최대 시간이다. 이 간격으로 --duration과 Ctrl-C를 확인한다.
-const traceARPPollInterval = 200 * time.Millisecond
+// traceNeighborPollInterval은 netlink 수신을 기다리는 최대 시간이다. 이 간격으로 --duration과 Ctrl-C를 확인한다.
+const traceNeighborPollInterval = 200 * time.Millisecond
 
-// collectARPEvents는 kernel neighbor table의 IPv4 변화를 netlink로 받는다. root와 eBPF가 필요 없다.
-func collectARPEvents(duration time.Duration, onEvent func(captureEvent) error, stop <-chan struct{}) (captureSummary, error) {
+// collectNeighborEvents는 kernel neighbor table의 IPv4 변화를 netlink로 받는다. root와 eBPF가 필요 없다.
+func collectNeighborEvents(duration time.Duration, onEvent func(captureEvent) error, stop <-chan struct{}) (captureSummary, error) {
 	fd, err := unix.Socket(unix.AF_NETLINK, unix.SOCK_RAW|unix.SOCK_CLOEXEC, unix.NETLINK_ROUTE)
 	if err != nil {
 		return captureSummary{}, fmt.Errorf("open netlink socket: %w", err)
@@ -27,12 +27,12 @@ func collectARPEvents(duration time.Duration, onEvent func(captureEvent) error, 
 	if err := unix.Bind(fd, &unix.SockaddrNetlink{Family: unix.AF_NETLINK, Groups: 1 << (unix.RTNLGRP_NEIGH - 1)}); err != nil {
 		return captureSummary{}, fmt.Errorf("subscribe to neighbor changes: %w", err)
 	}
-	timeout := unix.NsecToTimeval(traceARPPollInterval.Nanoseconds())
+	timeout := unix.NsecToTimeval(traceNeighborPollInterval.Nanoseconds())
 	if err := unix.SetsockoptTimeval(fd, unix.SOL_SOCKET, unix.SO_RCVTIMEO, &timeout); err != nil {
 		return captureSummary{}, fmt.Errorf("set netlink timeout: %w", err)
 	}
-	names := arpInterfaceNames{}
-	tracker := newARPTracker()
+	names := neighborInterfaceNames{}
+	tracker := newNeighborTracker()
 	// 구독한 뒤에 table을 읽는다. 먼저 읽으면 그 사이의 변화를 놓친다. 두 번 본 상태는 tracker가 거른다.
 	table, err := syscall.NetlinkRIB(unix.RTM_GETNEIGH, unix.AF_INET)
 	if err != nil {
@@ -43,7 +43,7 @@ func collectARPEvents(duration time.Duration, onEvent func(captureEvent) error, 
 		return captureSummary{}, fmt.Errorf("parse neighbor table: %w", err)
 	}
 	for _, message := range messages {
-		if neighbor, ok := parseARPNeighbor(message, names); ok {
+		if neighbor, ok := parseNeighborMessage(message, names); ok {
 			tracker.baseline(neighbor)
 		}
 	}
@@ -76,7 +76,7 @@ func collectARPEvents(duration time.Duration, onEvent func(captureEvent) error, 
 		var monotonic unix.Timespec
 		_ = unix.ClockGettime(unix.CLOCK_MONOTONIC, &monotonic)
 		for _, message := range messages {
-			neighbor, ok := parseARPNeighbor(message, names)
+			neighbor, ok := parseNeighborMessage(message, names)
 			if !ok {
 				continue
 			}
@@ -94,21 +94,21 @@ func collectARPEvents(duration time.Duration, onEvent func(captureEvent) error, 
 	}
 }
 
-// parseARPNeighbor는 RTM_NEWNEIGH와 RTM_DELNEIGH의 ndmsg와 속성을 읽는다. ARP를 쓰지 않는 항목(NOARP)과
+// parseNeighborMessage는 RTM_NEWNEIGH와 RTM_DELNEIGH의 ndmsg와 속성을 읽는다. ARP를 쓰지 않는 항목(NOARP)과
 // IPv6 neighbor는 뺀다. netlink는 host byte order다.
-func parseARPNeighbor(message syscall.NetlinkMessage, names arpInterfaceNames) (arpNeighbor, bool) {
+func parseNeighborMessage(message syscall.NetlinkMessage, names neighborInterfaceNames) (traceNeighbor, bool) {
 	if message.Header.Type != unix.RTM_NEWNEIGH && message.Header.Type != unix.RTM_DELNEIGH {
-		return arpNeighbor{}, false
+		return traceNeighbor{}, false
 	}
 	data := message.Data
 	if len(data) < unix.SizeofNdMsg || data[0] != unix.AF_INET {
-		return arpNeighbor{}, false
+		return traceNeighbor{}, false
 	}
 	state := binary.NativeEndian.Uint16(data[8:10])
 	if state&unix.NUD_NOARP != 0 {
-		return arpNeighbor{}, false
+		return traceNeighbor{}, false
 	}
-	neighbor := arpNeighbor{iface: names.name(int(int32(binary.NativeEndian.Uint32(data[4:8])))), state: arpStateName(state), deleted: message.Header.Type == unix.RTM_DELNEIGH}
+	neighbor := traceNeighbor{iface: names.name(int(int32(binary.NativeEndian.Uint32(data[4:8])))), state: traceNeighborStateName(state), deleted: message.Header.Type == unix.RTM_DELNEIGH}
 	for attributes := data[unix.SizeofNdMsg:]; len(attributes) >= unix.SizeofRtAttr; {
 		length := int(binary.NativeEndian.Uint16(attributes[0:2]))
 		if length < unix.SizeofRtAttr || length > len(attributes) {
@@ -130,12 +130,12 @@ func parseARPNeighbor(message syscall.NetlinkMessage, names arpInterfaceNames) (
 	return neighbor, neighbor.ip != ""
 }
 
-func arpStateName(state uint16) string {
+func traceNeighborStateName(state uint16) string {
 	for _, known := range []struct {
 		bit  uint16
 		name string
 	}{
-		{unix.NUD_FAILED, traceARPFailedState},
+		{unix.NUD_FAILED, traceNeighborFailedState},
 		{unix.NUD_INCOMPLETE, "INCOMPLETE"},
 		{unix.NUD_REACHABLE, "REACHABLE"},
 		{unix.NUD_STALE, "STALE"},

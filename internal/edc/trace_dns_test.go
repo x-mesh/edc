@@ -17,7 +17,7 @@ func dnsTestPacket(t *testing.T, message *dns.Msg, at uint64, source string) dns
 	if err != nil {
 		t.Fatal(err)
 	}
-	return dnsPacket{bootTimeNS: at, pid: 10, process: "dig", query: !message.Response, source: source, destination: "127.0.0.53:53", payload: payload}
+	return dnsPacket{bootTimeNS: at, pid: 10, process: "dig", sent: !message.Response, source: source, destination: "127.0.0.53:53", payload: payload}
 }
 
 func dnsTestReply(t *testing.T, question *dns.Msg, rcode int, records ...string) *dns.Msg {
@@ -102,7 +102,7 @@ func TestDNSCutAnswerTakesTheNameFromTheQuery(t *testing.T) {
 	}
 	// 이 host의 DNS 서버가 port 53 client에게 보낸 응답은 질의 hook에 걸려도 client 쪽 질의가 아니다.
 	served := packet
-	served.query = true
+	served.sent = true
 	if _, ok := tracker.event(served, 0); ok {
 		t.Fatal("an answer sent to port 53 was read as a query")
 	}
@@ -251,5 +251,50 @@ func TestDNSTruncatedAnswerNamesTheTCPRetry(t *testing.T) {
 	}
 	if counts.Answers != 1 || counts.TCPConnections != 2 || counts.Errors != 1 {
 		t.Fatalf("counts = %#v", counts)
+	}
+}
+
+// 로컬 DNS 서버는 port 53으로 질의를 받고 응답을 보낸다. 응답 시간은 서버가 질의를 읽은 때부터 응답을 보낸 때까지다.
+func TestDNSServerSideMatchesAnswersToClients(t *testing.T) {
+	tracker := newDNSQueryTracker()
+	question := new(dns.Msg)
+	question.SetQuestion("example.com.", dns.TypeA)
+	received := dnsTestPacket(t, question, 1_000_000, "127.0.0.53:53")
+	received.sent, received.process, received.destination = false, "systemd-resolve", "127.0.0.1:41000"
+	query, ok := tracker.event(received, 0)
+	if !ok || query.Event != traceDNSQueryEvent || query.Side != traceDNSServerSide || query.Target != "example.com" || query.Destination != "127.0.0.1:41000" {
+		t.Fatalf("server query = %#v, %t", query, ok)
+	}
+	sent := dnsTestPacket(t, dnsTestReply(t, question, dns.RcodeNameError), 1_250_000, "127.0.0.53:53")
+	sent.sent, sent.process, sent.destination = true, "systemd-resolve", "127.0.0.1:41000"
+	answer, ok := tracker.event(sent, 0)
+	if !ok || answer.Event != "dns_nxdomain" || answer.Side != traceDNSServerSide || answer.LatencyMS == nil || *answer.LatencyMS != 0.25 || answer.dnsAnswered != 1 {
+		t.Fatalf("server answer = %#v, %t", answer, ok)
+	}
+	// client 쪽 질의는 같은 transaction ID여도 서버 쪽 짝과 섞이지 않는다.
+	client, _ := tracker.event(dnsTestPacket(t, question, 2_000_000, "127.0.0.1:41000"), 0)
+	if client.Side != "" {
+		t.Fatalf("client query side = %q", client.Side)
+	}
+	// 서버가 port 53이 아닌 곳으로 받은 질의와, 서버 port가 아닌 곳에서 보낸 응답은 어느 쪽도 아니다.
+	stray := received
+	stray.source = "127.0.0.1:5353"
+	if event, ok := tracker.event(stray, 0); ok {
+		t.Fatalf("a query on port 5353 made an event: %#v", event)
+	}
+	summarizer := newDNSTraceSummarizer()
+	summarizer.observe(query)
+	summarizer.observe(answer)
+	report := summarizer.summarize(captureSummary{}, time.Second).(dnsTraceReport)
+	if report.Side != traceDNSServerSide || report.Errors != 1 || report.Unanswered != 0 {
+		t.Fatalf("server report = %#v", report)
+	}
+}
+
+func TestTraceSideOptionIsOnlyForDNS(t *testing.T) {
+	for _, args := range [][]string{{"tcp", "--side", traceDNSServerSide}, {"dns", "--side", "both"}} {
+		if code := runTrace(args); code != 2 {
+			t.Fatalf("trace %q exit = %d, want 2", args, code)
+		}
 	}
 }

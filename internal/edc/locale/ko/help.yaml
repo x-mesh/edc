@@ -153,6 +153,7 @@ command:
       process: "process 이름으로 필터"
       destination: "destination host와 port로 필터"
       yes: "확인 질문 생략"
+      side: "trace dns: 이 host의 조회 또는 로컬 DNS 서버"
     notes:
       - "terminal에서는 기본으로 전체 화면 trace를 엽니다."
       - "/를 누르면 process, destination, event, source를 필터할 수 있습니다."

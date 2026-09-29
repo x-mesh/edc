@@ -16,8 +16,8 @@ func collectTraceEvents(duration time.Duration) ([]captureEvent, captureSummary,
 	return collectCaptureEvents(duration, nil)
 }
 
-func collectTraceEventsLive(protocol string, duration time.Duration, onEvent func(captureEvent) error, stop <-chan struct{}) (captureSummary, error) {
-	return collectCaptureEventsFor(protocol, duration, onEvent, stop)
+func collectTraceEventsLive(scope traceScope, duration time.Duration, onEvent func(captureEvent) error, stop <-chan struct{}) (captureSummary, error) {
+	return collectCaptureEventsFor(scope, duration, onEvent, stop)
 }
 
 var traceKernelEvents = true

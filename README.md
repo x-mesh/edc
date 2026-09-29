@@ -852,7 +852,16 @@ The summary after Ctrl-C shows one row for each name and record type. Grouped ro
 
 On a host with systemd-resolved, one lookup can appear two times: between the program and `127.0.0.53`, and between systemd-resolved and the upstream server. If a name has only the program row, systemd-resolved answered from its cache.
 
-`trace dns` shows only the client side of port 53. It shows DNS over TCP only as connections. It does not show DNS over TLS, DNS over HTTPS, mDNS, or LLMNR. It also does not show the queries that a local DNS server receives. BPF reads the first 1,024 bytes of a DNS message. For a longer answer, edc reads the result code from the header and takes the name from the query. macOS does not give the payload of a socket, so `trace dns` requires Linux.
+Use `--side server` to watch a local DNS server, for example systemd-resolved, dnsmasq, or CoreDNS. It shows the queries that the server receives on port 53 and the answers that it sends. The events use the same names as the client side, and JSON events and reports add `"side": "server"`. The `destination` of a server event is the client, and the `process` is the DNS server.
+
+```bash
+./bin/edc trace dns --side server
+./bin/edc trace dns --side server --group-by target
+```
+
+On the server side, the latency starts when the server reads the query and stops when the server sends the answer. A short latency usually shows an answer from the cache. A long latency usually shows a query to an upstream server. The server side does not show DNS over TCP.
+
+`trace dns` watches only port 53. It shows DNS over TCP only as connections on the client side. It does not show DNS over TLS, DNS over HTTPS, mDNS, or LLMNR. BPF reads the first 1,024 bytes of a DNS message. For a longer answer, edc reads the result code from the header and takes the name from the query. macOS does not give the payload of a socket, so `trace dns` requires Linux.
 
 ```bash
 ./bin/edc capture \

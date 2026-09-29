@@ -20,7 +20,7 @@ import (
 // offset은 capture_events_bpf.c의 struct dns_record와 같다.
 const (
 	dnsRecordType          = 9
-	dnsRecordQuery         = 1
+	dnsRecordSent          = 1
 	dnsRecordPayloadOffset = 84
 )
 
@@ -117,7 +117,7 @@ func parseDNSRecord(sample []byte) (dnsPacket, bool) {
 		pid:         binary.LittleEndian.Uint32(sample[12:16]),
 		cgroupID:    binary.LittleEndian.Uint64(sample[16:24]),
 		process:     strings.TrimRight(string(sample[68:84]), "\x00"),
-		query:       sample[30] == dnsRecordQuery,
+		sent:        sample[30] == dnsRecordSent,
 		source:      formatCaptureAddress(family, source, binary.LittleEndian.Uint16(sample[32:34])),
 		destination: formatCaptureAddress(family, destination, binary.LittleEndian.Uint16(sample[34:36])),
 		payload:     sample[dnsRecordPayloadOffset:],

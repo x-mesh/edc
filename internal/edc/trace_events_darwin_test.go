@@ -434,7 +434,7 @@ func TestCollectTraceEventsLiveStops(t *testing.T) {
 	stop := make(chan struct{})
 	time.AfterFunc(300*time.Millisecond, func() { close(stop) })
 	started := time.Now()
-	summary, err := collectTraceEventsLive("tcp", 0, nil, stop)
+	summary, err := collectTraceEventsLive(traceScope{protocol: "tcp"}, 0, nil, stop)
 	if err != nil {
 		t.Fatal(err)
 	}

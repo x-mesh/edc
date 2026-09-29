@@ -77,7 +77,8 @@ const (
 	captureEventsProgUdpSendSkbExit            = "udp_send_skb_exit"
 	captureEventsProgUdpV6SendSkbEntry         = "udp_v6_send_skb_entry"
 	captureEventsProgUdpV6SendSkbExit          = "udp_v6_send_skb_exit"
-	captureEventsVarEmitDnsQueries             = "emit_dns_queries"
+	captureEventsVarEmitDnsSent                = "emit_dns_sent"
+	captureEventsVarEmitDnsServer              = "emit_dns_server"
 	captureEventsVarEmitUdpEvents              = "emit_udp_events"
 	captureEventsVarTcpStatePort               = "tcp_state_port"
 )
@@ -157,9 +158,10 @@ type captureEventsMapSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type captureEventsVariableSpecs struct {
-	EmitDnsQueries *ebpf.VariableSpec `ebpf:"emit_dns_queries"`
-	EmitUdpEvents  *ebpf.VariableSpec `ebpf:"emit_udp_events"`
-	TcpStatePort   *ebpf.VariableSpec `ebpf:"tcp_state_port"`
+	EmitDnsSent   *ebpf.VariableSpec `ebpf:"emit_dns_sent"`
+	EmitDnsServer *ebpf.VariableSpec `ebpf:"emit_dns_server"`
+	EmitUdpEvents *ebpf.VariableSpec `ebpf:"emit_udp_events"`
+	TcpStatePort  *ebpf.VariableSpec `ebpf:"tcp_state_port"`
 }
 
 // captureEventsObjects contains all objects after they have been loaded into the kernel.
@@ -207,9 +209,10 @@ func (m *captureEventsMaps) Close() error {
 //
 // It can be passed to loadCaptureEventsObjects or ebpf.CollectionSpec.LoadAndAssign.
 type captureEventsVariables struct {
-	EmitDnsQueries *ebpf.Variable `ebpf:"emit_dns_queries"`
-	EmitUdpEvents  *ebpf.Variable `ebpf:"emit_udp_events"`
-	TcpStatePort   *ebpf.Variable `ebpf:"tcp_state_port"`
+	EmitDnsSent   *ebpf.Variable `ebpf:"emit_dns_sent"`
+	EmitDnsServer *ebpf.Variable `ebpf:"emit_dns_server"`
+	EmitUdpEvents *ebpf.Variable `ebpf:"emit_udp_events"`
+	TcpStatePort  *ebpf.Variable `ebpf:"tcp_state_port"`
 }
 
 // captureEventsPrograms contains all programs after they have been loaded into the kernel.

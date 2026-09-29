@@ -22,27 +22,31 @@ const (
 	traceDNSTCPConnectEvent = "dns_tcp_connect"
 	traceDNSTCPFailEvent    = "dns_tcp_fail"
 	traceDNSHeaderSize      = 12
+	traceDNSClientSide      = "client"
+	traceDNSServerSide      = "server"
 	// traceDNSPendingLimit은 응답을 기다리는 질의 수의 상한이다. 응답이 오지 않는 질의가 쌓여도 메모리를 제한한다.
 	traceDNSPendingLimit = 65536
 	// traceDNSTruncatedLimit은 TCP로 다시 물을 이름을 기억하는 수의 상한이다.
 	traceDNSTruncatedLimit = 1024
 )
 
-// dnsPacket은 kernel이 넘긴 DNS 질의나 응답 하나다. source는 로컬 쪽, destination은 DNS 서버다.
+// dnsPacket은 kernel이 port 53으로 주고받은 DNS message 하나다. source는 로컬 쪽, destination은 상대 쪽이다.
 type dnsPacket struct {
 	bootTimeNS  uint64
 	pid         uint32
 	cgroupID    uint64
 	process     string
-	query       bool
+	sent        bool
 	source      string
 	destination string
 	payload     []byte
 }
 
+// dnsQueryKey의 remote는 client 쪽이면 DNS 서버, 서버 쪽이면 질의한 client다.
 type dnsQueryKey struct {
+	server    bool
 	localPort string
-	server    string
+	remote    string
 	id        uint16
 }
 
@@ -58,7 +62,8 @@ type dnsTruncatedKey struct {
 	server string
 }
 
-// dnsQueryTracker는 응답을 같은 로컬 port, 서버, transaction ID의 질의와 짝지어 응답 시간을 잰다.
+// dnsQueryTracker는 응답을 같은 로컬 port, 상대, transaction ID의 질의와 짝지어 응답 시간을 잰다. client 쪽은 질의를
+// 보낸 때부터 응답을 읽은 때까지, 서버 쪽은 질의를 읽은 때부터 응답을 보낸 때까지다.
 // 응답 하나는 같은 key로 다시 보낸 질의까지 모두 답한 것으로 보고, 응답 시간은 처음 보낸 질의부터 잰다.
 type dnsQueryTracker struct {
 	pending   map[dnsQueryKey][]dnsPendingQuery
@@ -86,9 +91,17 @@ func (tracker *dnsQueryTracker) event(packet dnsPacket, clockOffset int64) (capt
 	}
 	id := binary.BigEndian.Uint16(packet.payload[0:2])
 	flags := binary.BigEndian.Uint16(packet.payload[2:4])
-	// 질의 hook은 port 53으로 보낸 것을, 응답 hook은 port 53에서 받은 것을 넘긴다. QR bit가 방향과 다르면
-	// 이 host의 DNS 서버가 port 53 client와 주고받은 것이라 client 쪽 trace에서 뺀다.
-	if (flags&0x8000 != 0) == packet.query {
+	_, localPort, _ := net.SplitHostPort(packet.source)
+	_, remotePort, _ := net.SplitHostPort(packet.destination)
+	// client는 port 53으로 질의를 보내고 port 53에서 응답을 받는다. 서버는 로컬 port 53으로 질의를 받고 응답을 보낸다.
+	// QR bit와 방향, port가 어느 쪽에도 맞지 않으면 뺀다.
+	query := flags&0x8000 == 0
+	var server bool
+	switch {
+	case remotePort == "53" && query == packet.sent:
+	case localPort == "53" && query != packet.sent:
+		server = true
+	default:
 		return captureEvent{}, false
 	}
 	event := captureEvent{
@@ -108,9 +121,11 @@ func (tracker *dnsQueryTracker) event(packet dnsPacket, clockOffset int64) (capt
 		event.Target = traceDNSName(message.Question[0].Name)
 		event.QueryType = dns.Type(message.Question[0].Qtype).String()
 	}
-	_, localPort, _ := net.SplitHostPort(packet.source)
-	key := dnsQueryKey{localPort: localPort, server: packet.destination, id: id}
-	if packet.query {
+	if server {
+		event.Side = traceDNSServerSide
+	}
+	key := dnsQueryKey{server: server, localPort: localPort, remote: packet.destination, id: id}
+	if query {
 		event.Event = traceDNSQueryEvent
 		tracker.remember(key, dnsPendingQuery{bootTimeNS: packet.bootTimeNS, name: event.Target, queryType: event.QueryType})
 		return event, true
@@ -135,6 +150,9 @@ func (tracker *dnsQueryTracker) event(packet dnsPacket, clockOffset int64) (capt
 	// TC bit는 응답이 UDP에 다 들어가지 않았다는 뜻이다. client는 같은 서버에 TCP로 다시 묻는다.
 	if flags&0x0200 != 0 {
 		event.Event = traceDNSTruncatedEvent
+		if server {
+			return event, true
+		}
 		if len(tracker.truncated) >= traceDNSTruncatedLimit {
 			clear(tracker.truncated)
 		}
@@ -348,6 +366,7 @@ type dnsTraceName struct {
 }
 
 type dnsTraceReport struct {
+	Side       string            `json:"side,omitempty"`
 	DurationMS int64             `json:"duration_ms"`
 	LostEvents uint64            `json:"lost_events"`
 	Results    map[string]uint64 `json:"results"`
@@ -360,6 +379,7 @@ type dnsTraceSummarizer struct {
 	names   map[dnsTraceNameKey]*dnsTraceNameStats
 	results map[string]uint64
 	counts  traceDNSCounts
+	side    string
 }
 
 func newDNSTraceSummarizer() *dnsTraceSummarizer {
@@ -367,6 +387,7 @@ func newDNSTraceSummarizer() *dnsTraceSummarizer {
 }
 
 func (summarizer *dnsTraceSummarizer) observe(event captureEvent) {
+	summarizer.side = event.Side
 	key := dnsTraceNameKey{name: emptyAs(event.Target, "-"), queryType: event.QueryType}
 	stats := summarizer.names[key]
 	if stats == nil {
@@ -392,7 +413,7 @@ func (summarizer *dnsTraceSummarizer) observe(event captureEvent) {
 }
 
 func (summarizer *dnsTraceSummarizer) summarize(summary captureSummary, duration time.Duration) traceReport {
-	report := dnsTraceReport{DurationMS: duration.Milliseconds(), LostEvents: summary.LostEvents, Results: maps.Clone(summarizer.results), traceDNSCounts: summarizer.counts.finished()}
+	report := dnsTraceReport{Side: summarizer.side, DurationMS: duration.Milliseconds(), LostEvents: summary.LostEvents, Results: maps.Clone(summarizer.results), traceDNSCounts: summarizer.counts.finished()}
 	report.Names = make([]dnsTraceName, 0, len(summarizer.names))
 	for key, stats := range summarizer.names {
 		report.Names = append(report.Names, dnsTraceName{
@@ -414,7 +435,11 @@ func (summarizer *dnsTraceSummarizer) summarize(summary captureSummary, duration
 }
 
 func (report dnsTraceReport) print() {
-	fmt.Fprintf(os.Stdout, "DNS trace: %s\n\n", (time.Duration(report.DurationMS) * time.Millisecond).String())
+	title := "DNS trace"
+	if report.Side == traceDNSServerSide {
+		title = "DNS server trace"
+	}
+	fmt.Fprintf(os.Stdout, "%s: %s\n\n", title, (time.Duration(report.DurationMS) * time.Millisecond).String())
 	fmt.Fprintf(os.Stdout, "Queries: %d\nAnswers: %d\nErrors: %d\nUnanswered: %d\nTCP connections: %d\nLatency avg: %s\nLatency max: %s\nLost events: %d\n", report.Queries, report.Answers, report.Errors, report.Unanswered, report.TCPConnections, traceDNSLatency(report.LatencyAvgMS, "ms"), traceDNSLatency(report.LatencyMaxMS, "ms"), report.LostEvents)
 	if len(report.Names) == 0 {
 		return

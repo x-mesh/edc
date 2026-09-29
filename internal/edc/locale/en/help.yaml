@@ -153,6 +153,7 @@ command:
       process: "filter by process name"
       destination: "filter by destination host and port"
       yes: "skip the question"
+      side: "trace dns: client lookups or the local DNS server"
     notes:
       - "The default output opens a full-screen trace view in a terminal."
       - "Use / to filter process, destination, event, or source text."

@@ -768,7 +768,7 @@ Linux와 macOS에서 `trace tcp` 또는 `trace udp`를 사용하면 network even
 `--group-by source`는 source host별로 event를 묶습니다. OS가 연결마다 새 port를 배정하므로 source port는 무시합니다.
 `--group-by event`는 `tcp_connect`, `tcp_retransmit` 같은 event 이름별로 묶습니다.
 `--group-by port`는 상대 port별로 묶습니다. 서버 socket은 `53 (server)`처럼 로컬 port로 묶습니다. 한 port 행에 상대가 여럿이면 `3478 (65 peers)`처럼 상대 수를 표시합니다.
-`--group-by process`는 process 이름별로 묶습니다. 이름이 같은 process는 PID가 달라도 한 행에 표시하며, `--process` 필터와 같은 이름을 기준으로 합니다. kernel은 이름의 앞 15 byte만 보관합니다. edc가 event의 process를 찾지 못하면 `-` 행에 표시합니다.
+`--group-by process`는 process 이름별로 묶습니다. 이름이 같은 process는 PID가 달라도 한 행에 표시하며, `--process` 필터와 같은 이름을 기준으로 합니다. Linux에서는 event를 만든 thread의 이름이 아니라 `ps`가 보여 주는 process 이름을 씁니다. kernel은 이름의 앞 15 byte만 보관합니다. edc가 event의 process를 찾지 못하면 `-` 행에 표시합니다.
 `--group-by target`은 target이 없는 서버 socket의 event를 `127.0.0.53:53 (server)`처럼 로컬 서비스마다 한 행으로 묶습니다. 로컬 port가 ephemeral port 범위 밖이고 상대 port가 범위 안이면 서버 socket으로 봅니다.
 event의 target은 같은 process가 trace 중에 받은 DNS 응답, process의 명령줄, 그 주소에 대해 다른 DNS 응답이나 systemd-resolved 캐시에서 마지막으로 본 이름 순서로 정합니다. JSON event의 `target_source` 필드에 `dns`, `command`, `resolver-cache` 중 어디서 얻었는지 나옵니다. 한 주소를 여러 이름이 함께 쓸 수 있어서 다른 조회에서 얻은 이름은 틀릴 수 있습니다.
 재전송, reset, 일부 상태 변화는 kernel이 socket을 가진 프로세스 밖에서 기록합니다. trace 중에 그 socket을 쓰는 프로세스를 보지 못했으면 이 event의 process는 `-`로 표시합니다. 예를 들어 trace 전에 연결한 socket은 데이터를 주고받기 전까지 주인을 알 수 없습니다.

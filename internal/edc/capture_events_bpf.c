@@ -105,6 +105,26 @@ struct tcp_event_ctx {
 	__u64 sock_cookie;
 };
 
+struct mm_struct {
+	struct {
+		unsigned long arg_start;
+		unsigned long arg_end;
+	};
+};
+
+struct task_struct {
+	struct mm_struct *mm;
+	struct task_struct *group_leader;
+	char comm[16];
+};
+
+// current_process_name은 현재 thread가 아니라 thread group leader의 이름이다. thread마다 이름을 붙이는 program(Bun의
+// "HTTP Client", tokio의 "tokio-rt-worker")도 ps와 /proc/<pid>/comm이 보여 주는 process 이름 하나로 묶인다.
+static __always_inline void current_process_name(char (*name)[16]) {
+	struct task_struct *task = (struct task_struct *)bpf_get_current_task();
+	BPF_CORE_READ_STR_INTO(name, task, group_leader, comm);
+}
+
 static __always_inline struct event *start_event(void *ctx, __u32 type) {
 	struct event *event = bpf_ringbuf_reserve(&events, sizeof(*event), 0);
 	if (!event) {
@@ -126,7 +146,7 @@ static __always_inline struct event *start_event(void *ctx, __u32 type) {
 	event->cgroup_id = bpf_get_current_cgroup_id();
 	event->protocol = 0;
 	event->bytes = 0;
-	bpf_get_current_comm(&event->comm, sizeof(event->comm));
+	current_process_name(&event->comm);
 	return event;
 }
 
@@ -153,7 +173,7 @@ static __always_inline void remember_sock_owner(__u64 skaddr) {
 	struct sock_owner owner = {};
 	owner.cgroup_id = bpf_get_current_cgroup_id();
 	owner.pid = bpf_get_current_pid_tgid() >> 32;
-	bpf_get_current_comm(&owner.comm, sizeof(owner.comm));
+	current_process_name(&owner.comm);
 	bpf_map_update_elem(&sock_owners, &skaddr, &owner, BPF_ANY);
 }
 
@@ -177,17 +197,6 @@ static __always_inline void apply_sock_owner(struct event *event) {
 }
 
 // kernel과 같은 모양으로 이름 없는 구조체 안에 둔다. CO-RE가 이 경로로 kernel의 필드를 찾는다.
-struct mm_struct {
-	struct {
-		unsigned long arg_start;
-		unsigned long arg_end;
-	};
-};
-
-struct task_struct {
-	struct mm_struct *mm;
-};
-
 #define OWNER_ARGS_SIZE 512
 
 // 사용자 공간은 /proc/<pid>/cmdline으로 target을 찾는데, event를 읽을 때 짧게 사는 프로세스는 이미
@@ -616,7 +625,7 @@ static __always_inline void remember_dns_sent(struct sk_buff *skb, struct udp_se
 	record->dport = pending->dport;
 	__builtin_memcpy(record->source, pending->source, 16);
 	__builtin_memcpy(record->destination, pending->destination, 16);
-	bpf_get_current_comm(record->comm, sizeof(record->comm));
+	current_process_name(&record->comm);
 	record->len = read_dns_payload(skb, payload, len, record->payload);
 	if (record->len == 0) {
 		return;
@@ -776,7 +785,7 @@ static __always_inline void emit_dns_received(struct sk_buff *skb, unsigned char
 		bpf_probe_read_kernel(record->source, 16, network + 24);
 		bpf_probe_read_kernel(record->destination, 16, network + 8);
 	}
-	bpf_get_current_comm(record->comm, sizeof(record->comm));
+	current_process_name(&record->comm);
 	bpf_ringbuf_submit(record, 0);
 }
 
@@ -1005,7 +1014,7 @@ static __always_inline void emit_http(struct sock *sk, const void *buffer, __u64
 		BPF_CORE_READ_INTO(&record->source, sk, __sk_common.skc_v6_rcv_saddr.in6_u.u6_addr8);
 		BPF_CORE_READ_INTO(&record->destination, sk, __sk_common.skc_v6_daddr.in6_u.u6_addr8);
 	}
-	bpf_get_current_comm(record->comm, sizeof(record->comm));
+	current_process_name(&record->comm);
 	if (bpf_ringbuf_output(&events, record, __builtin_offsetof(struct http_record, payload) + len, 0)) {
 		__u64 *lost = bpf_map_lookup_elem(&lost_events, &zero);
 		if (lost) {
@@ -1067,7 +1076,7 @@ static __always_inline void emit_dns_tcp(struct sock *sk, const void *buffer, __
 		BPF_CORE_READ_INTO(&record->source, sk, __sk_common.skc_v6_rcv_saddr.in6_u.u6_addr8);
 		BPF_CORE_READ_INTO(&record->destination, sk, __sk_common.skc_v6_daddr.in6_u.u6_addr8);
 	}
-	bpf_get_current_comm(record->comm, sizeof(record->comm));
+	current_process_name(&record->comm);
 	bpf_ringbuf_submit(record, 0);
 }
 

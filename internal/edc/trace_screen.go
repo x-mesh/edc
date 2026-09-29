@@ -584,7 +584,9 @@ func runTraceScreen(protocol string, options tcpTraceOptions) int {
 	model := newTraceScreenModel(protocol, options, eventCh, resultCh, stopCapture)
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
-	program := tea.NewProgram(model, tea.WithInput(os.Stdin), tea.WithOutput(os.Stdout))
+	// bubbletea의 signal 처리기는 SIGINT를 중단 오류로, SIGTERM을 즉시 종료로 끝내서 수집 결과를 받기 전에
+	// 화면이 닫혔다. 위의 NotifyContext가 대신 수집을 멈추고, 화면은 결과를 받은 뒤 요약과 함께 끝난다.
+	program := tea.NewProgram(model, tea.WithInput(os.Stdin), tea.WithOutput(os.Stdout), tea.WithoutSignalHandler())
 	go func() {
 		<-ctx.Done()
 		stopCapture()

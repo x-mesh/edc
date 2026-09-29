@@ -209,6 +209,9 @@ func printTCPTraceReport(report tcpTraceReport) {
 	for _, connection := range report.Connections {
 		fmt.Fprintf(os.Stdout, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", connection.Process, traceDestinationLabel(connection), connection.Result, traceOptional(connection.ConnectMS, "%dms"), traceBytes(connection.TXBytes), traceBytes(connection.RXBytes), traceOptional(connection.Retransmissions, "%d"), traceOptional(connection.Reset, "%t"))
 	}
+	if report.ConnectionsOmitted > 0 {
+		fmt.Fprintf(os.Stdout, "%d earlier closed connections are not listed. The totals include them.\n", report.ConnectionsOmitted)
+	}
 }
 
 type udpTraceFlow struct {

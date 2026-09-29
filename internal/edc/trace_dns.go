@@ -65,14 +65,17 @@ type dnsTruncatedKey struct {
 // dnsQueryTracker는 응답을 같은 로컬 port, 상대, transaction ID의 질의와 짝지어 응답 시간을 잰다. client 쪽은 질의를
 // 보낸 때부터 응답을 읽은 때까지, 서버 쪽은 질의를 읽은 때부터 응답을 보낸 때까지다.
 // 응답 하나는 같은 key로 다시 보낸 질의까지 모두 답한 것으로 보고, 응답 시간은 처음 보낸 질의부터 잰다.
+// server는 tracker가 볼 쪽이다. 다른 쪽 message는 짝도 기억하지 않는다. --side server에서도 client 쪽 레코드는
+// kernel에서 오므로, 기록하면 쓰지 않을 질의와 잘린 응답이 map을 채운다.
 type dnsQueryTracker struct {
+	server    bool
 	pending   map[dnsQueryKey][]dnsPendingQuery
 	size      int
 	truncated map[dnsTruncatedKey]dnsPendingQuery
 }
 
-func newDNSQueryTracker() *dnsQueryTracker {
-	return &dnsQueryTracker{pending: map[dnsQueryKey][]dnsPendingQuery{}, truncated: map[dnsTruncatedKey]dnsPendingQuery{}}
+func newDNSQueryTracker(server bool) *dnsQueryTracker {
+	return &dnsQueryTracker{server: server, pending: map[dnsQueryKey][]dnsPendingQuery{}, truncated: map[dnsTruncatedKey]dnsPendingQuery{}}
 }
 
 func (tracker *dnsQueryTracker) remember(key dnsQueryKey, query dnsPendingQuery) {
@@ -102,6 +105,9 @@ func (tracker *dnsQueryTracker) event(packet dnsPacket, clockOffset int64) (capt
 	case localPort == "53" && query != packet.sent:
 		server = true
 	default:
+		return captureEvent{}, false
+	}
+	if server != tracker.server {
 		return captureEvent{}, false
 	}
 	event := captureEvent{
@@ -165,7 +171,7 @@ func (tracker *dnsQueryTracker) event(packet dnsPacket, clockOffset int64) (capt
 func (tracker *dnsQueryTracker) tcpEvent(event captureEvent) (captureEvent, bool) {
 	name := ""
 	switch {
-	case traceProtocol(event) != "tcp":
+	case tracker.server || traceProtocol(event) != "tcp":
 		return captureEvent{}, false
 	case event.Event == "tcp_connect":
 		name = traceDNSTCPConnectEvent
@@ -387,7 +393,9 @@ func newDNSTraceSummarizer() *dnsTraceSummarizer {
 }
 
 func (summarizer *dnsTraceSummarizer) observe(event captureEvent) {
-	summarizer.side = event.Side
+	if event.Side != "" {
+		summarizer.side = event.Side
+	}
 	key := dnsTraceNameKey{name: emptyAs(event.Target, "-"), queryType: event.QueryType}
 	stats := summarizer.names[key]
 	if stats == nil {

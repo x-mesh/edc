@@ -555,7 +555,9 @@ func newTraceGroupSummarizer(protocol, groupBy string) *traceGroupSummarizer {
 }
 
 func (summarizer *traceGroupSummarizer) observe(event captureEvent) {
-	summarizer.side = event.Side
+	if event.Side != "" {
+		summarizer.side = event.Side
+	}
 	key, server := traceGroupKey(event, summarizer.groupBy)
 	// 서버 행과 target 없는 client 행이 같은 주소일 수 있다. 섞이지 않도록 map key만 구분한다.
 	mapKey := key

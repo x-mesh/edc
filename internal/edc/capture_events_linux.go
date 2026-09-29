@@ -365,7 +365,7 @@ func collectCaptureEventsFor(scope traceScope, duration time.Duration, onEvent f
 	targets := newCommandTargetCache(commandTarget)
 	sockets := newSocketTargetCache()
 	owners := newPIDTargetCache()
-	queries := newDNSQueryTracker()
+	queries := newDNSQueryTracker(scope.dnsServer)
 	var eventCount uint64
 	finish := func() (captureSummary, error) {
 		var lost uint64
@@ -398,9 +398,9 @@ func collectCaptureEventsFor(scope traceScope, duration time.Duration, onEvent f
 			if protocol != "dns" {
 				continue
 			}
-			// 서버 쪽 레코드는 --side server일 때만 BPF가 보낸다. client 쪽 레코드는 늘 오므로 여기서 거른다.
+			// 서버 쪽 레코드는 --side server일 때만 BPF가 보낸다. client 쪽 레코드는 늘 오므로 tracker가 다른 쪽을 거른다.
 			event, ok := queries.event(packet, clockOffset)
-			if !ok || (event.Side == traceDNSServerSide) != scope.dnsServer {
+			if !ok {
 				continue
 			}
 			if onEvent != nil {
@@ -434,9 +434,6 @@ func collectCaptureEventsFor(scope traceScope, duration time.Duration, onEvent f
 		event.Target, event.TargetSource = sockets.target(event)
 		if protocol == "dns" {
 			if dnsEvent, ok := queries.tcpEvent(event); ok {
-				if scope.dnsServer {
-					continue
-				}
 				event = dnsEvent
 			}
 		}

@@ -35,7 +35,7 @@ func dnsTestReply(t *testing.T, question *dns.Msg, rcode int, records ...string)
 }
 
 func TestDNSQueryTrackerMatchesAnswersToQueries(t *testing.T) {
-	tracker := newDNSQueryTracker()
+	tracker := newDNSQueryTracker(false)
 	question := new(dns.Msg)
 	question.SetQuestion("Example.COM.", dns.TypeA)
 	// 같은 질의를 다시 보낸 뒤 온 응답 하나가 두 질의에 답한다. 응답 시간은 처음 보낸 때부터 잰다.
@@ -73,7 +73,7 @@ func TestDNSAnswerEventsNameTheResult(t *testing.T) {
 		{dns.RcodeServerFailure, nil, "dns_servfail"},
 		{dns.RcodeRefused, nil, "dns_refused"},
 	} {
-		event, ok := newDNSQueryTracker().event(dnsTestPacket(t, dnsTestReply(t, question, test.rcode, test.records...), 1, "127.0.0.1:41000"), 0)
+		event, ok := newDNSQueryTracker(false).event(dnsTestPacket(t, dnsTestReply(t, question, test.rcode, test.records...), 1, "127.0.0.1:41000"), 0)
 		if !ok || event.Event != test.want {
 			t.Fatalf("rcode %d with %d answers = %q, want %q", test.rcode, len(test.records), event.Event, test.want)
 		}
@@ -84,7 +84,7 @@ func TestDNSAnswerEventsNameTheResult(t *testing.T) {
 }
 
 func TestDNSCutAnswerTakesTheNameFromTheQuery(t *testing.T) {
-	tracker := newDNSQueryTracker()
+	tracker := newDNSQueryTracker(false)
 	question := new(dns.Msg)
 	question.SetQuestion("big.example.com.", dns.TypeA)
 	tracker.event(dnsTestPacket(t, question, 1_000_000, "127.0.0.1:41000"), 0)
@@ -213,7 +213,7 @@ func TestDNSTraceScreenShowsQueryColumns(t *testing.T) {
 }
 
 func TestDNSTruncatedAnswerNamesTheTCPRetry(t *testing.T) {
-	tracker := newDNSQueryTracker()
+	tracker := newDNSQueryTracker(false)
 	question := new(dns.Msg)
 	question.SetQuestion("big.example.com.", dns.TypeTXT)
 	tracker.event(dnsTestPacket(t, question, 1_000_000, "127.0.0.1:41000"), 0)
@@ -256,7 +256,7 @@ func TestDNSTruncatedAnswerNamesTheTCPRetry(t *testing.T) {
 
 // 로컬 DNS 서버는 port 53으로 질의를 받고 응답을 보낸다. 응답 시간은 서버가 질의를 읽은 때부터 응답을 보낸 때까지다.
 func TestDNSServerSideMatchesAnswersToClients(t *testing.T) {
-	tracker := newDNSQueryTracker()
+	tracker := newDNSQueryTracker(true)
 	question := new(dns.Msg)
 	question.SetQuestion("example.com.", dns.TypeA)
 	received := dnsTestPacket(t, question, 1_000_000, "127.0.0.53:53")
@@ -271,10 +271,15 @@ func TestDNSServerSideMatchesAnswersToClients(t *testing.T) {
 	if !ok || answer.Event != "dns_nxdomain" || answer.Side != traceDNSServerSide || answer.LatencyMS == nil || *answer.LatencyMS != 0.25 || answer.dnsAnswered != 1 {
 		t.Fatalf("server answer = %#v, %t", answer, ok)
 	}
-	// client 쪽 질의는 같은 transaction ID여도 서버 쪽 짝과 섞이지 않는다.
-	client, _ := tracker.event(dnsTestPacket(t, question, 2_000_000, "127.0.0.1:41000"), 0)
-	if client.Side != "" {
-		t.Fatalf("client query side = %q", client.Side)
+	// 각 tracker는 자기 쪽만 기록한다. 서버 쪽 tracker는 client 질의와 port 53 TCP 연결을 버리고, client 쪽은 서버 질의를 버린다.
+	if event, ok := tracker.event(dnsTestPacket(t, question, 2_000_000, "127.0.0.1:41000"), 0); ok {
+		t.Fatalf("server tracker kept a client query: %#v", event)
+	}
+	if event, ok := tracker.tcpEvent(captureEvent{Protocol: "tcp", Event: "tcp_connect", Destination: "127.0.0.53:53"}); ok {
+		t.Fatalf("server tracker kept a tcp connect: %#v", event)
+	}
+	if event, ok := newDNSQueryTracker(false).event(received, 0); ok {
+		t.Fatalf("client tracker kept a server query: %#v", event)
 	}
 	// 서버가 port 53이 아닌 곳으로 받은 질의와, 서버 port가 아닌 곳에서 보낸 응답은 어느 쪽도 아니다.
 	stray := received
@@ -283,11 +288,18 @@ func TestDNSServerSideMatchesAnswersToClients(t *testing.T) {
 		t.Fatalf("a query on port 5353 made an event: %#v", event)
 	}
 	summarizer := newDNSTraceSummarizer()
-	summarizer.observe(query)
-	summarizer.observe(answer)
+	groups := newTraceGroupSummarizer("dns", traceGroupByTarget)
+	// side가 없는 event가 뒤에 와도 서버 쪽 요약의 side는 그대로다.
+	for _, event := range []captureEvent{query, answer, {Protocol: "dns", Event: traceDNSQueryEvent, Target: "example.com"}} {
+		summarizer.observe(event)
+		groups.observe(event)
+	}
 	report := summarizer.summarize(captureSummary{}, time.Second).(dnsTraceReport)
-	if report.Side != traceDNSServerSide || report.Errors != 1 || report.Unanswered != 0 {
+	if report.Side != traceDNSServerSide || report.Errors != 1 || report.Unanswered != 1 {
 		t.Fatalf("server report = %#v", report)
+	}
+	if side := groups.report(captureSummary{}, time.Second).Side; side != traceDNSServerSide {
+		t.Fatalf("server group report side = %q", side)
 	}
 }
 

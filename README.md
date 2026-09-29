@@ -373,7 +373,7 @@ The default table follows the terminal width. If the terminal is wider than 80 c
 | 120 | network errors and drops |
 | 125 | disk `busy` |
 
-The `signal` column takes the remaining width and lists more warnings. The title line also adds the OS name, the memory size, and the CPU model when the terminal has room. The right edge of the title shows the view and `live` or `history`. It adds the edc version when the terminal has room. If the terminal becomes narrower, the table removes those columns immediately.
+The `signal` column takes the remaining width and lists more warnings. If the terminal width is 169 or more, the table keeps 40 characters for the `signal` column. Then it makes each of the other columns wider, by a maximum of three characters. The title line also adds the OS name, the memory size, and the CPU model when the terminal has room. The right edge of the title shows the view and `live` or `history`. It adds the edc version when the terminal has room. If the terminal becomes narrower, the table removes those columns immediately.
 
 On macOS and Linux, the disk view also shows IOPS and average `await` across physical disks. On Linux, the disk view also shows aggregate `busy%`, and the memory view shows memory pressure next to `mem%`. Aggregate `busy%` can exceed 100 when multiple disks are busy at once. macOS does not report the time that a disk is busy, so macOS shows `—` for these Linux-only values. On macOS and Linux, the network view shows interface errors and drops. On macOS, `edc` reads them from the interface statistics of the kernel (`net.link.generic.ifdata`). On macOS and Linux, the memory view shows `swap/s`, the bytes per second that the kernel moves out to swap. A value above zero shows that the host is short of memory.
 

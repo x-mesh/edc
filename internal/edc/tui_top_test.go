@@ -461,6 +461,43 @@ func TestTopAllViewAddsColumnsAsTheTerminalWidens(t *testing.T) {
 	}
 }
 
+func TestTopAllViewWidensColumnsWithTheSpareWidth(t *testing.T) {
+	row := topDashboardRow{at: time.Unix(1, 0), rate: resourceRate{CoreCPU: []float64{10, 95}, DiskHealthValid: true, DiskIOPS: 12, NetHealthValid: true}}
+	full := topAllColumnsUpTo(topAllMaxTier())
+	wide := topAllLineWidth(full) + topSignalWideWidth
+	steps := []struct{ width, extra, signal int }{
+		{wide + len(full) - 1, 0, topSignalWideWidth + len(full) - 1},
+		{wide + len(full), 1, topSignalWideWidth},
+		{wide + len(full)*topColumnMaxExtra, topColumnMaxExtra, topSignalWideWidth},
+		{wide + len(full)*topColumnMaxExtra + 50, topColumnMaxExtra, topSignalWideWidth + 50},
+	}
+	for _, step := range steps {
+		columns, signalWidth := topAllLayout(step.width)
+		for index, column := range columns {
+			if column.width != full[index].width+step.extra {
+				t.Fatalf("width %d %s is %d wide, want %d", step.width, column.title, column.width, full[index].width+step.extra)
+			}
+		}
+		if signalWidth != step.signal {
+			t.Fatalf("width %d signal is %d wide, want %d", step.width, signalWidth, step.signal)
+		}
+		headers := topDashboardHeaders(topViewAll, step.width)
+		line := formatTopDashboardRow(row, topViewAll, newTopLimits(8, false), step.width)
+		for _, text := range append(headers, line) {
+			if got := len([]rune(text)); got != step.width {
+				t.Fatalf("width %d line is %d wide: %q", step.width, got, text)
+			}
+		}
+		if top, bottom, value := topDividerColumns(headers[0]), topDividerColumns(headers[1]), topDividerColumns(line); !reflect.DeepEqual(top, bottom) || !reflect.DeepEqual(bottom, value) {
+			t.Fatalf("width %d dividers: group %v, column %v, row %v", step.width, top, bottom, value)
+		}
+		// 왼쪽 정렬인 hot core도 앞 칸과의 간격이 다른 칸처럼 넓어져야 i/o 값과 붙어 읽히지 않는다.
+		if gap := strings.Repeat(" ", step.extra+1); !strings.Contains(headers[1], gap+"hot core") || !strings.Contains(line, gap+"1 95%") {
+			t.Fatalf("width %d hot core is not indented by %d: %q / %q", step.width, step.extra, headers[1], line)
+		}
+	}
+}
+
 func TestTopCompactCountKeepsTheColumnWidth(t *testing.T) {
 	for input, want := range map[float64]string{42: "42", 9999: "9999", 12345: "12k", 1234567: "1M"} {
 		if got := topCompactCount(input, 4); got != want {

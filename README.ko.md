@@ -864,7 +864,7 @@ IPv6 neighbor table(NDP)은 `trace ndp`로 봅니다. Linux와 macOS에서 `trac
 
 macOS kernel은 table의 link-local 주소에 interface 번호를 넣어 둡니다. `trace ndp`는 이 번호를 지우므로 link-local 주소는 `fe80::1`처럼 보이고, interface는 `source` 열에 나옵니다.
 
-Linux 6.4 이상에서 `trace http`를 사용하면 평문 HTTP/1.x 요청과 응답을 발생 즉시 출력합니다. edc는 kernel에서 TCP로 읽고 쓰는 data마다 앞 512 byte를 읽고, method, `Host` header, path, 상태 코드만 남깁니다. `--payload`를 쓰지 않으면, 다른 header, body, path의 query에는 token이나 cookie가 들어 있을 수 있어 버립니다.
+Linux 6.4 이상에서 `trace http`를 사용하면 평문 HTTP/1.x 요청과 응답을 발생 즉시 출력합니다. edc는 kernel에서 TCP로 읽고 쓰는 data마다 앞 512 byte를 읽고, method, `Host` header, path, 상태 코드만 남깁니다. path의 query에는 token이 들어 있을 수 있어 뺍니다. `--payload`를 쓰지 않으면 다른 header와 body도 버립니다.
 
 ```bash
 ./bin/edc trace http

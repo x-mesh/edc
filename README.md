@@ -900,7 +900,7 @@ Use `trace ndp` for the IPv6 neighbor table (NDP). It works the same way as `tra
 
 On macOS, the kernel puts the interface number into the link-local addresses of the table. `trace ndp` removes it, so a link-local address shows as, for example, `fe80::1`, and the `source` column shows the interface.
 
-Use `trace http` on Linux 6.4 or later to print plain HTTP/1.x requests and responses as they arrive. edc reads the first 512 bytes of each TCP read and write in the kernel. It keeps the method, the `Host` header, the path, and the status code. If you do not use `--payload`, it drops the other headers, the body, and the query of the path, because they can contain tokens and cookies.
+Use `trace http` on Linux 6.4 or later to print plain HTTP/1.x requests and responses as they arrive. edc reads the first 512 bytes of each TCP read and write in the kernel. It keeps the method, the `Host` header, the path, and the status code. It removes the query from the path, because the query can contain tokens. Without `--payload`, it also drops the other headers and the body.
 
 ```bash
 ./bin/edc trace http

@@ -58,7 +58,29 @@ type tcpTraceConnection struct {
 	retransmissions uint64
 	reset           bool
 	closed          bool
+	established     bool
+	handshake       bool
+	listener        bool
 	traceTraffic
+}
+
+// result는 행의 결과다. 연결된 뒤 RST가 와도 established로 둔다. RST 여부는 Reset이 따로 보여 준다.
+// 핸드셰이크를 보지 못한 연결은 trace 전부터 열려 있던 것이다.
+func (connection *tcpTraceConnection) result() string {
+	switch {
+	case connection.established:
+		return "established"
+	case !connection.handshake:
+		return "existing"
+	case connection.closed || connection.reset:
+		return "failed"
+	default:
+		return "incomplete"
+	}
+}
+
+func tcpTraceHandshakeState(state string) bool {
+	return state == "SYN_SENT" || state == "SYN_RECV"
 }
 
 type tcpTraceReport struct {
@@ -66,6 +88,7 @@ type tcpTraceReport struct {
 	Attempts        int                  `json:"attempts"`
 	Established     int                  `json:"established"`
 	Incomplete      int                  `json:"incomplete"`
+	Existing        int                  `json:"existing"`
 	Retransmissions *uint64              `json:"retransmissions"`
 	Resets          *int                 `json:"resets"`
 	LostEvents      uint64               `json:"lost_events"`
@@ -174,23 +197,30 @@ type tcpTraceSummarizer struct {
 	traffic   traceTraffic
 }
 
+// tcpTraceTotals에서 attempts는 trace 중에 핸드셰이크를 본 연결이고, established와 incomplete의 합이다.
+// trace 전부터 열려 있던 연결은 existing으로 따로 센다.
 type tcpTraceTotals struct {
 	attempts        int
 	established     int
 	incomplete      int
+	existing        int
 	retransmissions uint64
 	resets          int
 }
 
 func (totals *tcpTraceTotals) add(connection *tcpTraceConnection) {
-	totals.attempts++
 	totals.retransmissions += connection.retransmissions
 	if connection.reset {
 		totals.resets++
 	}
-	if connection.Result == "established" {
+	switch connection.Result {
+	case "established":
+		totals.attempts++
 		totals.established++
-	} else {
+	case "existing":
+		totals.existing++
+	default:
+		totals.attempts++
 		totals.incomplete++
 	}
 }
@@ -217,7 +247,7 @@ func (summarizer *tcpTraceSummarizer) observe(event captureEvent) {
 	connections, firstSeen := summarizer.active, summarizer.firstSeen
 	connection := connections[event.SocketID]
 	if connection == nil {
-		connection = &tcpTraceConnection{Process: event.Process, PID: event.PID, Source: event.Source, Destination: event.Destination, Result: "incomplete"}
+		connection = &tcpTraceConnection{Process: event.Process, PID: event.PID, Source: event.Source, Destination: event.Destination}
 		connections[event.SocketID] = connection
 		firstSeen[event.SocketID] = event.TimestampNS
 	}
@@ -237,11 +267,20 @@ func (summarizer *tcpTraceSummarizer) observe(event captureEvent) {
 	if connection.Destination == "" {
 		connection.Destination = event.Destination
 	}
+	// SYN 재전송과 거부된 connect의 close도 이전 상태가 SYN_SENT라서, trace 전에 시작한 시도까지 잡힌다.
+	if tcpTraceHandshakeState(event.OldState) || tcpTraceHandshakeState(event.NewState) {
+		connection.handshake = true
+	}
+	// listen socket은 연결이 아니다. 서버의 새 연결을 알리는 LISTEN→SYN_RECV는 자식 socket의 event다.
+	if event.NewState == "LISTEN" || event.OldState == "LISTEN" && event.NewState == "CLOSE" {
+		connection.listener = true
+	}
 	switch event.Event {
 	case "tcp_send", "tcp_receive":
 		connection.traceTraffic.observe(event)
 	case "tcp_connect", "tcp_accept":
-		connection.Result = "established"
+		connection.established = true
+		connection.handshake = true
 		if firstSeen[event.SocketID] > 0 && event.TimestampNS >= firstSeen[event.SocketID] {
 			connection.connectMS = int64(event.TimestampNS-firstSeen[event.SocketID]) / int64(time.Millisecond)
 		}
@@ -249,13 +288,10 @@ func (summarizer *tcpTraceSummarizer) observe(event captureEvent) {
 		connection.retransmissions++
 	case "tcp_send_reset", "tcp_receive_reset":
 		connection.reset = true
-		connection.Result = "reset"
 	case "tcp_close":
 		connection.closed = true
-		if connection.Result == "incomplete" {
-			connection.Result = "closed"
-		}
 	case "tcp_destroy":
+		connection.closed = true
 		summarizer.finish(event.SocketID)
 	}
 }
@@ -265,6 +301,10 @@ func (summarizer *tcpTraceSummarizer) finish(socket uint64) {
 	connection := summarizer.active[socket]
 	delete(summarizer.active, socket)
 	delete(summarizer.firstSeen, socket)
+	if connection.listener {
+		return
+	}
+	connection.Result = connection.result()
 	summarizer.totals.add(connection)
 	if len(summarizer.finished) < tcpTraceConnectionLimit {
 		summarizer.finished = append(summarizer.finished, *connection)
@@ -280,18 +320,27 @@ func (summarizer *tcpTraceSummarizer) report(summary captureSummary, duration ti
 	totals := summarizer.totals
 	result.Connections = make([]tcpTraceConnection, 0, len(summarizer.finished)+len(summarizer.active))
 	result.Connections = append(result.Connections, summarizer.finished...)
-	for _, connection := range summarizer.active {
-		totals.add(connection)
-		result.Connections = append(result.Connections, *connection)
+	for _, stored := range summarizer.active {
+		if stored.listener {
+			continue
+		}
+		connection := *stored
+		connection.Result = connection.result()
+		totals.add(&connection)
+		result.Connections = append(result.Connections, connection)
 	}
 	for index := range result.Connections {
 		connection := &result.Connections[index]
 		connection.traceTraffic.finalize(duration)
-		connection.ConnectMS = traceObserved(connection.connectMS)
+		// 연결되지 않은 행에 0ms를 쓰면 바로 연결된 것처럼 보인다.
+		connection.ConnectMS = nil
+		if connection.established {
+			connection.ConnectMS = traceObserved(connection.connectMS)
+		}
 		connection.Retransmissions = traceObserved(connection.retransmissions)
 		connection.Reset = traceObserved(connection.reset)
 	}
-	result.Attempts, result.Established, result.Incomplete = totals.attempts, totals.established, totals.incomplete
+	result.Attempts, result.Established, result.Incomplete, result.Existing = totals.attempts, totals.established, totals.incomplete, totals.existing
 	result.Retransmissions = traceObserved(totals.retransmissions)
 	result.Resets = traceObserved(totals.resets)
 	result.traceTraffic.finalize(duration)

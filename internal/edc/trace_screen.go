@@ -251,8 +251,8 @@ func traceScreenHeader(model traceScreenModel) []string {
 	if model.groupBy != "" {
 		layout := traceScreenGroupLayout(model, report)
 		names := []any{"EVT", "E/s", "TX", "RX", "TOT", "B/s", "Mbps"}
-		if model.protocol != "udp" {
-			names = append(names, "CON", "RET", "RST")
+		for _, column := range traceProtocols[model.protocol].groupColumns {
+			names = append(names, column.screenTitle)
 		}
 		columns = liveCell(traceGroupLabel(model.groupBy), layout.labelWidth) + fmt.Sprintf(traceGroupColumns(model.protocol, layout.byteWidth), append(names, "LAST")...)
 	}
@@ -357,8 +357,8 @@ type traceGroupLayout struct {
 func traceGroupColumns(protocol string, byteWidth int) string {
 	byteColumn := fmt.Sprintf(" %%%dv", byteWidth)
 	columns := " %5v %6v" + strings.Repeat(byteColumn, 4) + " %5v"
-	if protocol != "udp" {
-		columns += " %3v %3v %3v"
+	for _, column := range traceProtocols[protocol].groupColumns {
+		columns += fmt.Sprintf(" %%%dv", column.width)
 	}
 	return columns + " %v"
 }
@@ -366,8 +366,8 @@ func traceGroupColumns(protocol string, byteWidth int) string {
 // traceGroupColumnsWidth는 label 뒤 열의 폭이다. LAST 앞의 공백까지 센다.
 func traceGroupColumnsWidth(protocol string, byteWidth int) int {
 	width := 6 + 7 + 4*(byteWidth+1) + 6 + 1
-	if protocol != "udp" {
-		width += 12
+	for _, column := range traceProtocols[protocol].groupColumns {
+		width += column.width + 1
 	}
 	return width
 }
@@ -461,8 +461,8 @@ func formatTraceGroupScreenRow(protocol, groupBy string, group traceGroupSummary
 	// liveCell은 폭보다 긴 값을 여러 줄로 감싸므로 먼저 자른다.
 	value := liveCell(traceGroupFitLabel(groupBy, group, layout.labelWidth), layout.labelWidth)
 	values := []any{group.Events, traceScreenEventRate(group.Rate), layout.bytes(group.TXBytes), layout.bytes(group.RXBytes), layout.bytes(group.TotalBytes), layout.bytes(uint64(group.BytesPerSecond)), traceScreenMegabits(group.MegabitsPerSecond)}
-	if protocol != "udp" {
-		values = append(values, group.Connect, traceOptional(group.Retransmissions, "%d"), traceOptional(group.Resets, "%d"))
+	for _, column := range traceProtocols[protocol].groupColumns {
+		values = append(values, column.value(group))
 	}
 	line := value + fmt.Sprintf(traceGroupColumns(protocol, layout.byteWidth), append(values, group.LastEvent)...)
 	return traceFit(traceGroupColorLine(line, protocol, group), width)
@@ -472,10 +472,7 @@ func traceGroupColorLine(line, protocol string, group traceGroupSummary) string 
 	if os.Getenv("NO_COLOR") != "" {
 		return line
 	}
-	color := lipgloss.Color("#22d3ee")
-	if protocol == "udp" {
-		color = lipgloss.Color("#c084fc")
-	}
+	color := lipgloss.Color(traceProtocols[protocol].screenColor)
 	if group.Resets != nil && *group.Resets > 0 {
 		color = lipgloss.Color("#fb7185")
 	} else if group.Retransmissions != nil && *group.Retransmissions > 0 {
@@ -530,10 +527,7 @@ func traceEventStyle(line, protocol, event string) string {
 	if os.Getenv("NO_COLOR") != "" {
 		return line
 	}
-	color := lipgloss.Color("#22d3ee")
-	if protocol == "udp" {
-		color = lipgloss.Color("#c084fc")
-	}
+	color := lipgloss.Color(traceProtocols[protocol].screenColor)
 	if strings.Contains(event, "reset") {
 		color = lipgloss.Color("#fb7185")
 	} else if strings.Contains(event, "retransmit") || strings.Contains(event, "fail") {
@@ -617,10 +611,6 @@ func runTraceScreen(protocol string, options tcpTraceOptions) int {
 		printTraceGroupReport(aggregate.groups[screen.groupBy].report(result.summary, duration))
 		return 0
 	}
-	if protocol == "udp" {
-		printUDPTraceReport(aggregate.udp.report(result.summary, duration))
-		return 0
-	}
-	printTCPTraceReport(aggregate.tcp.report(result.summary, duration))
+	aggregate.summary.summarize(result.summary, duration).print()
 	return 0
 }

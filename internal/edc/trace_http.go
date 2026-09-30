@@ -58,9 +58,9 @@ type httpPendingRequest struct {
 }
 
 // httpTracker는 socket마다 요청을 순서대로 두고 응답과 짝짓는다. HTTP/1.x는 한 연결에서 요청 순서대로 응답한다.
-// server는 tracker가 볼 쪽이다. 다른 쪽 message는 기억하지 않는다.
+// side는 tracker가 볼 쪽이다. 비어 있으면 두 쪽을 모두 본다. 한 socket은 client와 server 중 한 쪽이므로 짝은 섞이지 않는다.
 type httpTracker struct {
-	server      bool
+	side        string
 	payload     bool
 	showSecrets bool
 	// keepGzip이면 gzip message의 원본 byte를 event에 붙인다. 전체 화면만 켠다.
@@ -69,8 +69,8 @@ type httpTracker struct {
 	size     int
 }
 
-func newHTTPTracker(server, payload, showSecrets bool) *httpTracker {
-	return &httpTracker{server: server, payload: payload, showSecrets: showSecrets, pending: map[uint64][]httpPendingRequest{}}
+func newHTTPTracker(side string, payload, showSecrets bool) *httpTracker {
+	return &httpTracker{side: side, payload: payload, showSecrets: showSecrets, pending: map[uint64][]httpPendingRequest{}}
 }
 
 func (tracker *httpTracker) event(packet httpPacket, clockOffset int64) (captureEvent, bool) {
@@ -81,15 +81,16 @@ func (tracker *httpTracker) event(packet httpPacket, clockOffset int64) (capture
 	}
 	// client는 요청을 보내고 응답을 받는다. 서버는 요청을 받고 응답을 보낸다.
 	server := requestOK != packet.sent
-	if server != tracker.server {
+	side := traceClientSide
+	if server {
+		side = traceServerSide
+	}
+	if tracker.side != "" && side != tracker.side {
 		return captureEvent{}, false
 	}
 	event := captureEvent{
-		SocketID: packet.socket, TimestampNS: uint64(int64(packet.bootTimeNS) + clockOffset), BootTimeNS: packet.bootTimeNS, Protocol: "http",
+		SocketID: packet.socket, TimestampNS: uint64(int64(packet.bootTimeNS) + clockOffset), BootTimeNS: packet.bootTimeNS, Protocol: "http", Side: side,
 		PID: packet.pid, Process: packet.process, CgroupID: packet.cgroupID, Source: packet.source, Destination: packet.destination, Bytes: uint64(len(packet.payload)),
-	}
-	if server {
-		event.Side = traceServerSide
 	}
 	if tracker.payload {
 		event.Payload = traceHTTPPayload(packet.payload, tracker.showSecrets)
@@ -380,11 +381,16 @@ var traceHTTPGroupColumns = []traceGroupColumn{
 	{screenTitle: "MAXms", reportTitle: "MAX_MS", width: 6, value: traceHTTPColumn(func(counts traceHTTPCounts) string { return traceLatency(counts.LatencyMaxMS, "") })},
 }
 
-// traceHTTPScrollLabels는 목적지 칸에 method, host, path, 상대 주소를, event 칸에 결과와 상태 코드, 응답 시간을 쓴다.
+// traceHTTPScrollLabels는 목적지 칸에 쪽, method, host, path, 상대 주소를, event 칸에 결과와 상태 코드, 응답 시간을 쓴다.
+// 한 목록에 두 쪽이 섞이므로 쪽을 앞에 붙인다. event 칸은 모든 protocol이 같은 폭이라 붙이면 잘린다. 글자로 붙여서
+// 전체 화면의 / 필터로 server나 client를 찾을 수 있다.
 func traceHTTPScrollLabels(event captureEvent) (string, string) {
 	request := strings.TrimSpace(event.Method + " " + event.Target + event.Path)
 	if event.Destination != "" && event.Destination != event.Target {
-		request += " (" + event.Destination + ")"
+		request = strings.TrimSpace(request + " (" + event.Destination + ")")
+	}
+	if event.Side != "" {
+		request = event.Side + ": " + emptyAs(request, "-")
 	}
 	label := event.Event
 	if event.Status != 0 {
@@ -397,12 +403,14 @@ func traceHTTPScrollLabels(event captureEvent) (string, string) {
 }
 
 type httpTraceKey struct {
+	side   string
 	method string
 	host   string
 	path   string
 }
 
 type httpTraceRow struct {
+	Side      string            `json:"side,omitempty"`
 	Method    string            `json:"method,omitempty"`
 	Host      string            `json:"host,omitempty"`
 	Path      string            `json:"path,omitempty"`
@@ -417,6 +425,10 @@ type httpTraceReport struct {
 	LostEvents uint64         `json:"lost_events"`
 	Paths      []httpTraceRow `json:"paths"`
 	traceHTTPCounts
+	// Client와 Server는 두 쪽이 섞인 trace의 쪽별 합계다. 한 구간의 client 응답 시간에는 network와 대기가 들어가고
+	// 서버 응답 시간에는 처리만 들어가서, 합친 평균은 뜻이 없다.
+	Client *traceHTTPCounts `json:"client,omitempty"`
+	Server *traceHTTPCounts `json:"server,omitempty"`
 }
 
 type httpTraceRowStats struct {
@@ -425,22 +437,20 @@ type httpTraceRowStats struct {
 	counts    traceHTTPCounts
 }
 
-// httpTraceSummarizer는 --group-by 없이 끝난 HTTP trace를 method, host, path마다 한 행으로 묶는다.
+// httpTraceSummarizer는 --group-by 없이 끝난 HTTP trace를 쪽, method, host, path마다 한 행으로 묶는다.
 type httpTraceSummarizer struct {
 	rows   map[httpTraceKey]*httpTraceRowStats
 	counts traceHTTPCounts
-	side   string
+	// sides는 쪽마다 모은 합계다. 한 쪽만 있으면 보고서의 쪽이 되고, 두 쪽이 있으면 쪽별 합계로 낸다.
+	sides map[string]*traceHTTPCounts
 }
 
 func newHTTPTraceSummarizer() *httpTraceSummarizer {
-	return &httpTraceSummarizer{rows: map[httpTraceKey]*httpTraceRowStats{}}
+	return &httpTraceSummarizer{rows: map[httpTraceKey]*httpTraceRowStats{}, sides: map[string]*traceHTTPCounts{}}
 }
 
 func (summarizer *httpTraceSummarizer) observe(event captureEvent) {
-	if event.Side != "" {
-		summarizer.side = event.Side
-	}
-	key := httpTraceKey{method: event.Method, host: event.Target, path: event.Path}
+	key := httpTraceKey{side: event.Side, method: event.Method, host: event.Target, path: event.Path}
 	stats := summarizer.rows[key]
 	if stats == nil {
 		stats = &httpTraceRowStats{processes: map[string]struct{}{}, statuses: map[string]uint64{}}
@@ -454,13 +464,29 @@ func (summarizer *httpTraceSummarizer) observe(event captureEvent) {
 	}
 	stats.counts.observe(event)
 	summarizer.counts.observe(event)
+	if event.Side != "" {
+		counts := summarizer.sides[event.Side]
+		if counts == nil {
+			counts = &traceHTTPCounts{}
+			summarizer.sides[event.Side] = counts
+		}
+		counts.observe(event)
+	}
 }
 
 func (summarizer *httpTraceSummarizer) summarize(summary captureSummary, duration time.Duration) traceReport {
-	report := httpTraceReport{Side: summarizer.side, DurationMS: duration.Milliseconds(), LostEvents: summary.LostEvents, traceHTTPCounts: summarizer.counts.finished()}
+	report := httpTraceReport{DurationMS: duration.Milliseconds(), LostEvents: summary.LostEvents, traceHTTPCounts: summarizer.counts.finished()}
+	if len(summarizer.sides) == 1 {
+		for side := range summarizer.sides {
+			report.Side = side
+		}
+	} else if len(summarizer.sides) > 1 {
+		// group 행과 같은 방법으로, 끝낸 합계의 복사본을 만든다.
+		report.Client, report.Server = traceHTTPGroupSummary(summarizer.sides[traceClientSide]), traceHTTPGroupSummary(summarizer.sides[traceServerSide])
+	}
 	report.Paths = make([]httpTraceRow, 0, len(summarizer.rows))
 	for key, stats := range summarizer.rows {
-		report.Paths = append(report.Paths, httpTraceRow{Method: key.method, Host: key.host, Path: key.path, Processes: slices.Sorted(maps.Keys(stats.processes)), Statuses: maps.Clone(stats.statuses), traceHTTPCounts: stats.counts.finished()})
+		report.Paths = append(report.Paths, httpTraceRow{Side: key.side, Method: key.method, Host: key.host, Path: key.path, Processes: slices.Sorted(maps.Keys(stats.processes)), Statuses: maps.Clone(stats.statuses), traceHTTPCounts: stats.counts.finished()})
 	}
 	sort.Slice(report.Paths, func(i, j int) bool {
 		left, right := report.Paths[i], report.Paths[j]
@@ -473,7 +499,10 @@ func (summarizer *httpTraceSummarizer) summarize(summary captureSummary, duratio
 		if left.Path != right.Path {
 			return left.Path < right.Path
 		}
-		return left.Method < right.Method
+		if left.Method != right.Method {
+			return left.Method < right.Method
+		}
+		return left.Side < right.Side
 	})
 	return report
 }
@@ -485,12 +514,46 @@ func (report httpTraceReport) print(bool) {
 		title = "HTTP server trace"
 	}
 	fmt.Fprintf(os.Stdout, "%s: %s\n\n", title, (time.Duration(report.DurationMS) * time.Millisecond).String())
-	fmt.Fprintf(os.Stdout, "Requests: %d\nResponses: %d\nClient errors (4xx): %d\nServer errors (5xx): %d\nUnanswered: %d\nLatency avg: %s\nLatency max: %s\nLost events: %d\n", report.Requests, report.Responses, report.ClientErrors, report.ServerErrors, report.Unanswered, traceLatency(report.LatencyAvgMS, "ms"), traceLatency(report.LatencyMaxMS, "ms"), report.LostEvents)
+	mixed := report.Client != nil && report.Server != nil
+	if mixed {
+		for _, side := range []struct {
+			heading string
+			counts  *traceHTTPCounts
+		}{{"Client side (requests that this host sent):", report.Client}, {"Server side (requests that local servers received):", report.Server}} {
+			fmt.Fprintln(os.Stdout, side.heading)
+			printHTTPCounts("  ", *side.counts)
+			fmt.Fprintln(os.Stdout)
+		}
+	} else {
+		printHTTPCounts("", report.traceHTTPCounts)
+	}
+	fmt.Fprintf(os.Stdout, "Lost events: %d\n", report.LostEvents)
 	if len(report.Paths) == 0 {
 		return
 	}
-	fmt.Fprintln(os.Stdout, "\nMETHOD\tHOST\tPATH\tREQUESTS\tSTATUS\tUNANSWERED\tAVG\tMAX\tPROCESS")
+	// 한 쪽만 있으면 SIDE 칸은 모든 행이 같아서 뺀다.
+	sideColumn := func(value string) string {
+		if !mixed {
+			return ""
+		}
+		return value + "\t"
+	}
+	fmt.Fprintln(os.Stdout, "\n"+sideColumn("SIDE")+"METHOD\tHOST\tPATH\tREQUESTS\tSTATUS\tUNANSWERED\tAVG\tMAX\tPROCESS")
 	for _, row := range report.Paths {
-		fmt.Fprintf(os.Stdout, "%s\t%s\t%s\t%d\t%s\t%d\t%s\t%s\t%s\n", emptyAs(row.Method, "-"), emptyAs(row.Host, "-"), emptyAs(row.Path, "-"), row.Requests, traceResultCounts(row.Statuses), row.Unanswered, traceLatency(row.LatencyAvgMS, "ms"), traceLatency(row.LatencyMaxMS, "ms"), emptyAs(strings.Join(row.Processes, ","), "-"))
+		fmt.Fprintf(os.Stdout, "%s%s\t%s\t%s\t%d\t%s\t%d\t%s\t%s\t%s\n", sideColumn(emptyAs(row.Side, "-")), emptyAs(row.Method, "-"), emptyAs(row.Host, "-"), emptyAs(row.Path, "-"), row.Requests, traceResultCounts(row.Statuses), row.Unanswered, traceLatency(row.LatencyAvgMS, "ms"), traceLatency(row.LatencyMaxMS, "ms"), emptyAs(strings.Join(row.Processes, ","), "-"))
+	}
+}
+
+func printHTTPCounts(indent string, counts traceHTTPCounts) {
+	for _, line := range []string{
+		fmt.Sprintf("Requests: %d", counts.Requests),
+		fmt.Sprintf("Responses: %d", counts.Responses),
+		fmt.Sprintf("Client errors (4xx): %d", counts.ClientErrors),
+		fmt.Sprintf("Server errors (5xx): %d", counts.ServerErrors),
+		fmt.Sprintf("Unanswered: %d", counts.Unanswered),
+		"Latency avg: " + traceLatency(counts.LatencyAvgMS, "ms"),
+		"Latency max: " + traceLatency(counts.LatencyMaxMS, "ms"),
+	} {
+		fmt.Fprintln(os.Stdout, indent+line)
 	}
 }

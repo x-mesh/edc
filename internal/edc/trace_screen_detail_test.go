@@ -332,7 +332,7 @@ func TestTraceScreenDecodesGzipBodies(t *testing.T) {
 
 func TestHTTPTrackerKeepsRawBytesOfGzipMessagesWhenAsked(t *testing.T) {
 	message := "HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\nContent-Length: 3\r\n\r\n\x1f\x8b\x08"
-	tracker := newHTTPTracker(false, true, false)
+	tracker := newHTTPTracker(traceClientSide, true, false)
 	if event, _ := tracker.event(httpTestPacket(message, 1, false), 0); event.gzipped != nil {
 		t.Fatal("kept raw bytes without keepGzip")
 	}

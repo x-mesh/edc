@@ -65,7 +65,8 @@ type captureEvent struct {
 	Error   string `json:"error,omitempty"`
 	// Transport는 TCP로 주고받은 DNS message에만 tcp로 붙는다.
 	Transport string `json:"transport,omitempty"`
-	// Side는 로컬 DNS 서버가 받은 질의와 보낸 응답에만 server로 붙는다. socket event에는 client나 server로 붙는다.
+	// Side는 DNS event에서는 로컬 DNS 서버가 받은 질의와 보낸 응답에만 server로 붙는다. HTTP와 socket event에는 client나
+	// server로 붙는다.
 	Side       string `json:"side,omitempty"`
 	LostEvents uint64 `json:"lost_events,omitempty"`
 	// answered는 응답이 답한 요청 수다. DNS는 응답 전에 같은 질의를 다시 보냈으면 1보다 크다.

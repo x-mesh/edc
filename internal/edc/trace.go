@@ -128,6 +128,8 @@ func traceScrollLabels(event captureEvent) (string, string) {
 type traceScope struct {
 	protocol string
 	server   bool
+	// side는 --side 값이다. trace http는 비어 있으면 두 쪽을 모두 본다. trace dns는 server만 쓴다.
+	side string
 	// payload가 꺼져 있으면 message 앞부분을 event에 붙이지 않는다. 화면은 event를 최대 10,000건 보관한다.
 	payload bool
 	// payloadAll은 --payload=all이다. 이어지는 조각까지 받아 message 전체를 event에 붙인다.
@@ -141,7 +143,7 @@ type traceScope struct {
 }
 
 func (options tcpTraceOptions) scope(protocol string) traceScope {
-	return traceScope{protocol: protocol, server: options.side == traceServerSide, payload: options.payload != "", payloadAll: options.payload == tracePayloadAll,
+	return traceScope{protocol: protocol, server: options.side == traceServerSide, side: options.side, payload: options.payload != "", payloadAll: options.payload == tracePayloadAll,
 		showSecrets: options.showSecrets, port: uint16(options.port), socketPath: options.socketPath}
 }
 
@@ -178,14 +180,16 @@ func (mode *tracePayloadMode) Set(value string) error {
 func (mode *tracePayloadMode) IsBoolFlag() bool { return true }
 
 // traceLabel은 화면 머리글에 쓰는 trace 이름이다. 서버 쪽 trace는 client 쪽과 같은 event 이름을 쓰므로 머리글로 구분한다.
+// trace http는 기본으로 두 쪽을 모두 보므로, client만 고른 것도 머리글에 쓴다.
 func traceLabel(protocol, side string) string {
-	if side == traceServerSide {
+	if side == traceServerSide || (side == traceClientSide && protocol == "http") {
 		return protocol + " --side " + side
 	}
 	return protocol
 }
 
-// traceClientSide와 traceServerSide는 --side 값이다. 서버 쪽 event와 요약에는 Side가 server로 붙는다.
+// traceClientSide와 traceServerSide는 --side 값이다. 서버 쪽 event와 요약에는 Side가 server로 붙는다. HTTP event에는
+// client 쪽에도 Side가 붙는다. 한 trace에 두 쪽이 섞이기 때문이다.
 const (
 	traceClientSide = "client"
 	traceServerSide = "server"
@@ -285,7 +289,8 @@ func runTrace(args []string) int {
 	set.BoolVar(&options.detail, "detail", false, T("command.trace.option.detail"))
 	set.BoolVar(&options.detail, "d", false, T("command.trace.option.detail"))
 	set.BoolVar(&options.yes, "yes", false, T("command.trace.option.yes"))
-	set.StringVar(&options.side, "side", traceClientSide, T("command.trace.option.side"))
+	// 기본값은 비워 둔다. trace http는 두 쪽을 모두, trace dns는 client 쪽만 본다.
+	set.StringVar(&options.side, "side", "", T("command.trace.option.side"))
 	set.Var(&options.payload, "payload", T("command.trace.option.payload"))
 	set.BoolVar(&options.showSecrets, "show-secrets", false, T("command.trace.option.show_secrets"))
 	set.IntVar(&options.port, "port", 0, T("command.trace.option.port"))
@@ -331,7 +336,7 @@ func runTrace(args []string) int {
 		fmt.Fprintln(os.Stderr, T("cli.trace.group_by_protocol", options.groupBy, args[0]))
 		return 2
 	}
-	if options.side != traceClientSide && options.side != traceServerSide {
+	if options.side != "" && options.side != traceClientSide && options.side != traceServerSide {
 		fmt.Fprintln(os.Stderr, T("cli.trace.side_range"))
 		return 2
 	}
@@ -874,10 +879,12 @@ func summarizeTraceGroups(protocol, groupBy string, events []captureEvent, summa
 type traceGroupSummarizer struct {
 	protocol string
 	side     string
-	groupBy  string
-	groups   map[string]*traceGroup
-	events   uint64
-	traffic  traceTraffic
+	// mixedSides는 두 쪽의 event를 모두 본 것이다. 그러면 보고서의 쪽을 비운다.
+	mixedSides bool
+	groupBy    string
+	groups     map[string]*traceGroup
+	events     uint64
+	traffic    traceTraffic
 }
 
 func newTraceGroupSummarizer(protocol, groupBy string) *traceGroupSummarizer {
@@ -885,11 +892,20 @@ func newTraceGroupSummarizer(protocol, groupBy string) *traceGroupSummarizer {
 }
 
 func (summarizer *traceGroupSummarizer) observe(event captureEvent) {
-	// socket event는 한 trace에 두 쪽이 섞인다. 보고서의 쪽은 --side로 고른 dns와 http에만 있다.
+	// socket event는 한 trace에 두 쪽이 섞인다. 보고서의 쪽은 dns와 http에만 있고, 두 쪽이 섞인 http trace에는 없다.
 	if event.Side != "" && traceProtocol(event) != "socket" {
-		summarizer.side = event.Side
+		if summarizer.side == "" && !summarizer.mixedSides {
+			summarizer.side = event.Side
+		} else if summarizer.side != event.Side {
+			summarizer.side, summarizer.mixedSides = "", true
+		}
 	}
 	key, server := traceGroupKey(event, summarizer.groupBy)
+	// 로컬 서버가 받은 HTTP 요청은 같은 process나 target이 보낸 요청과 다른 행에 둔다. 서버의 응답 시간은 처리 시간만
+	// 재므로, 섞으면 평균이 뜻을 잃는다.
+	if event.Protocol == "http" && event.Side == traceServerSide {
+		server = true
+	}
 	// 서버 행과 target 없는 client 행이 같은 주소일 수 있다. 섞이지 않도록 map key만 구분한다.
 	mapKey := key
 	if server {
@@ -907,7 +923,11 @@ func (summarizer *traceGroupSummarizer) observe(event captureEvent) {
 		if queries := summarizer.groups[traceDNSQueryEvent]; queries != nil && queries.DNS != nil {
 			queries.DNS.answered += event.answered
 		}
-		if requests := summarizer.groups[traceHTTPRequestEvent]; requests != nil && requests.HTTP != nil {
+		requestKey := traceHTTPRequestEvent
+		if server {
+			requestKey += "\x00server"
+		}
+		if requests := summarizer.groups[requestKey]; requests != nil && requests.HTTP != nil {
 			requests.HTTP.answered += event.answered
 		}
 	}

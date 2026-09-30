@@ -19,7 +19,7 @@ func traceScreenKey(model traceScreenModel, keys ...string) traceScreenModel {
 		if code == 0 {
 			press = tea.KeyPressMsg{Code: rune(key[0]), Text: key}
 		}
-		next, _ := model.updateKey(press)
+		next, _ := model.Update(press)
 		model = next.(traceScreenModel)
 	}
 	return model

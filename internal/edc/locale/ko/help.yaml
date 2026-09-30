@@ -167,6 +167,7 @@ command:
       - "event 목록에서 Up이나 Down을 누르면 event를 고르고 목록이 멈춥니다."
       - "Enter는 모든 field와 payload 전체를 보여 주고, l이나 Esc는 다시 따라갑니다."
       - "f는 상세 보기에서 가장 최근 event를 따라갑니다."
+      - "i는 목록 아래 미리 보기를 열고 닫으며, J와 K로 스크롤합니다."
       - "trace http: v는 payload 줄, m은 가린 값, z는 gzip 풀기를 켜고 끕니다."
       - "Tab은 다음 보기, Shift+Tab은 이전 보기로 바꿉니다."
       - "--group-by source, target, port, process, event로 group live 행을 표시합니다."

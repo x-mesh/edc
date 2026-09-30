@@ -167,6 +167,7 @@ command:
       - "In the event list, press Up or Down to select an event. The list stops."
       - "Enter shows all fields and the whole payload. l or Esc follows again."
       - "Press f to follow the newest event in the detail view."
+      - "Press i to show a preview under the list. J and K scroll it."
       - "trace http: v shows payload lines, m shows secrets, z decodes gzip."
       - "Press Tab for the next view and Shift+Tab for the previous view."
       - "Use --group-by source, target, port, process, or event for grouped rows."

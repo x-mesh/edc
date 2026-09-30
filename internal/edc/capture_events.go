@@ -36,8 +36,9 @@ type captureEvent struct {
 	NewState     string `json:"new_state,omitempty"`
 	Bytes        uint64 `json:"bytes"`
 	Packets      uint64 `json:"packets,omitempty"`
-	// QueryType, Answers, LatencyMS는 DNS event에만 붙는다. LatencyMS는 kernel이 질의를 보낸 때부터 process가
-	// 응답을 읽은 때까지라서 process가 응답을 늦게 읽으면 그만큼 길어진다.
+	// QueryType과 Answers는 DNS event에만 붙는다. LatencyMS는 DNS에서는 kernel이 질의를 보낸 때부터 process가 응답을 읽은
+	// 때까지라서 process가 응답을 늦게 읽으면 그만큼 길어진다. HTTP 응답과 socket_accept에도 붙는다. socket_accept에서는
+	// 클라이언트가 connect를 시작한 때부터 서버가 accept한 때까지다.
 	QueryType string   `json:"query_type,omitempty"`
 	Answers   []string `json:"answers,omitempty"`
 	LatencyMS *float64 `json:"latency_ms,omitempty"`

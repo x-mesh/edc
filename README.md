@@ -933,7 +933,7 @@ The summary after Ctrl-C shows one row for each method, host, and path. Grouped 
 
 `trace http` does not show HTTPS, HTTP/2, or HTTP/3, because the kernel sees only encrypted data or binary frames. edc finds a message only at the start of a read or a write. If one read has the end of a response and the start of the next response, edc misses the next response. If a program writes one message from several buffers, edc reads only the first buffer. So the `Host` header must be in the first buffer and in the first 512 bytes. If it is not, the target is the server address. The kernel field that edc reads came in Linux 6.4, so older kernels stop with an error.
 
-Use `trace socket` on Linux to follow one unix domain socket file. Give the path of the socket file. edc prints each connect, send, recv, end of data (`eof`), and close on that socket. The options can come before or after the path.
+Use `trace socket` on Linux to follow one unix domain socket file. Give the path of the socket file. edc prints each connect, accept, send, recv, end of data (`eof`), and close on that socket. The options can come before or after the path.
 
 ```bash
 ./bin/edc trace socket /run/docker.sock
@@ -941,7 +941,9 @@ Use `trace socket` on Linux to follow one unix domain socket file. Give the path
 ./bin/edc trace socket /run/php/php-fpm.sock --payload=all --raw
 ```
 
-The destination is the socket path. The event shows the call and its byte count. If a call fails, the event shows the errno name, for example `connect ECONNREFUSED`. The source is the peer process. On the server side, the peer is the process that connected. On the client side, the peer is the process that called `listen()`. For a socket that systemd opens, the client peer is `systemd`. The server rows show the process that serves the connection.
+The destination is the socket path. The event shows the call and its byte count. If a call fails, the event shows the errno name, for example `connect ECONNREFUSED`. The source is the peer process. On the server side, the peer is the process that connected. On the client side, the peer is the process that accepted the connection, or the last server process that sent or received data on it. Before the accept, the peer is the process that called `listen()`, for example `systemd` for a socket that systemd opens.
+
+The server side shows an `accept` event. It shows how long the connection waited in the backlog, for example `accept 120µs`. A long wait means that the server accepts connections too slowly, for example because all workers are busy. edc does not see an `accept` call that started before the trace, but the next server call on that connection still shows the correct peer.
 
 Use `--payload` to see the first 4 KiB of the data of each send and recv. Use `--payload=all` to see up to 1 MiB of each call. edc reads the data of one call in 16 KiB parts and joins them into one event. A stream socket has no message boundaries, so one event is one call, not one message. edc does not know the format of the payload, so it hides nothing. `--show-secrets` is not available. The payload can contain tokens and passwords, for example the `X-Registry-Auth` header on `docker.sock`. Before you share the output, check it for tokens and passwords. In the full screen, edc collects the first 4 KiB of each call also without `--payload`. Press `v` to show the payload lines. Press Enter to see the whole payload.
 

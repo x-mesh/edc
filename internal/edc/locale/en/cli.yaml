@@ -178,6 +178,12 @@ cli:
     port_range: "--port must be from 1 to 65535"
     port_protocol: "--port is not available for trace %s"
     http_kernel: "trace http needs Linux 6.4 or later: the kernel iov_iter has no %s field"
+    socket_path: "trace socket needs the path of a socket file, for example: edc trace socket /run/docker.sock"
+    socket_missing: "cannot read the socket file %s: %v"
+    socket_not_socket: "%s is not a socket file"
+    socket_not_stream: "%s is a %s socket. trace socket supports stream sockets only"
+    socket_hook_missing: "This kernel has no %s function to trace, so edc cannot trace unix sockets. unix is probably a kernel module on this system"
+    socket_payload_kernel: "--payload for trace socket needs Linux 6.4 or later: the kernel iov_iter has no %s field"
   report:
     unsupported_schema: "%s: unsupported schema version: %s"
     filter_label: "filter: "

@@ -58,9 +58,13 @@ type captureEvent struct {
 	// MAC과 OldMAC은 ARP event에만 붙는다. OldMAC은 MAC이 바뀌었을 때 이전 값이다.
 	MAC    string `json:"mac,omitempty"`
 	OldMAC string `json:"old_mac,omitempty"`
+	// PeerPID는 socket event의 상대 process다. SO_PEERCRED 값이라 클라이언트 쪽에서는 listen한 process다. Error는 실패한
+	// socket 호출의 errno 이름이다.
+	PeerPID uint32 `json:"peer_pid,omitempty"`
+	Error   string `json:"error,omitempty"`
 	// Transport는 TCP로 주고받은 DNS message에만 tcp로 붙는다.
 	Transport string `json:"transport,omitempty"`
-	// Side는 로컬 DNS 서버가 받은 질의와 보낸 응답에만 server로 붙는다.
+	// Side는 로컬 DNS 서버가 받은 질의와 보낸 응답에만 server로 붙는다. socket event에는 client나 server로 붙는다.
 	Side       string `json:"side,omitempty"`
 	LostEvents uint64 `json:"lost_events,omitempty"`
 	// answered는 응답이 답한 요청 수다. DNS는 응답 전에 같은 질의를 다시 보냈으면 1보다 크다.

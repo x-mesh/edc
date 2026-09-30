@@ -178,6 +178,12 @@ cli:
     port_range: "--port は 1 から 65535 までです"
     port_protocol: "--port は trace %s では使えません"
     http_kernel: "trace http には Linux 6.4 以降が必要です。kernel の iov_iter に %s field がありません"
+    socket_path: "trace socket には socket ファイルのパスが必要です。例: edc trace socket /run/docker.sock"
+    socket_missing: "socket ファイル %s を読めませんでした: %v"
+    socket_not_socket: "%s は socket ファイルではありません"
+    socket_not_stream: "%s は %s socket です。trace socket は stream socket だけに対応します"
+    socket_hook_missing: "この kernel にはトレースできる %s 関数がないため、edc は unix socket をトレースできません。この system では unix が kernel module とみられます"
+    socket_payload_kernel: "trace socket の --payload には Linux 6.4 以降が必要です。kernel の iov_iter に %s field がありません"
   report:
     unsupported_schema: "%s: 対応しない schema version: %s"
     filter_label: "絞り込み: "

@@ -67,6 +67,11 @@ func TestTraceHelpDescribesSourceTargetAndEventKeys(t *testing.T) {
 				t.Fatalf("%s trace help misses %q: %q", language, value, text)
 			}
 		}
+		for _, value := range []string{"Linux 5.15", "trace http", "trace mysql"} {
+			if !strings.Contains(text, value) {
+				t.Fatalf("%s trace help misses %q: %q", language, value, text)
+			}
+		}
 	}
 }
 

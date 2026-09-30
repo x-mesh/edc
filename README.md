@@ -920,7 +920,7 @@ Use `trace ndp` for the IPv6 neighbor table (NDP). It works the same way as `tra
 
 On macOS, the kernel puts the interface number into the link-local addresses of the table. `trace ndp` removes it, so a link-local address shows as, for example, `fe80::1`, and the `source` column shows the interface.
 
-Use `trace http` on Linux 6.4 or later to print plain HTTP/1.x requests and responses as they arrive. edc reads the first 512 bytes of each TCP read and write in the kernel, or the first 4 KiB with `--payload`. It keeps the method, the `Host` header, the path, and the status code. It removes the query from the path, because the query can contain tokens. Without `--payload`, it also drops the other headers and the body.
+Use `trace http` on Linux 5.15 or later to print plain HTTP/1.x requests and responses as they arrive. edc reads the first 512 bytes of each TCP read and write in the kernel, or the first 4 KiB with `--payload`. It keeps the method, the `Host` header, the path, and the status code. It removes the query from the path, because the query can contain tokens. Without `--payload`, it also drops the other headers and the body.
 
 ```bash
 ./bin/edc trace http
@@ -969,9 +969,9 @@ HTTPS is encrypted, so edc cannot read the method, the path, or the status. The 
 
 edc does not see a TLS connection that started before the trace. If a client uses Encrypted Client Hello (ECH), the SNI is the public name of the provider. To see the requests of HTTPS, trace the plain HTTP behind the TLS end point, for example a proxy that sends plain HTTP to its backend.
 
-`trace http` does not show the requests in HTTPS, HTTP/2, or HTTP/3, because the kernel sees only encrypted data or binary frames. HTTP/3 uses UDP, so it also has no `tls_hello` event. edc finds a message only at the start of a read or a write. If one read has the end of a response and the start of the next response, edc misses the next response. If a program writes one message from several buffers, edc reads only the first buffer. So the `Host` header must be in the first buffer and in the first 512 bytes. If it is not, the target is the server address. The kernel field that edc reads came in Linux 6.4, so older kernels stop with an error.
+`trace http` does not show the requests in HTTPS, HTTP/2, or HTTP/3, because the kernel sees only encrypted data or binary frames. HTTP/3 uses UDP, so it also has no `tls_hello` event. edc finds a message only at the start of a read or a write. If one read has the end of a response and the start of the next response, edc misses the next response. If a program writes one message from several buffers, edc reads only the first buffer. So the `Host` header must be in the first buffer and in the first 512 bytes. If it is not, the target is the server address. edc supports this field on Linux 5.15 or later.
 
-Use `trace mysql` on Linux 6.4 or later to print plain MySQL commands and results as they arrive. edc reads the start of each TCP read and write on the MySQL port in the kernel. The default port is 3306. Use `--port` for another port.
+Use `trace mysql` on Linux 5.15 or later to print plain MySQL commands and results as they arrive. edc reads the start of each TCP read and write on the MySQL port in the kernel. The default port is 3306. Use `--port` for another port.
 
 ```bash
 ./bin/edc trace mysql

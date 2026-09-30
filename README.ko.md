@@ -884,7 +884,7 @@ IPv6 neighbor table(NDP)은 `trace ndp`로 봅니다. Linux와 macOS에서 `trac
 
 macOS kernel은 table의 link-local 주소에 interface 번호를 넣어 둡니다. `trace ndp`는 이 번호를 지우므로 link-local 주소는 `fe80::1`처럼 보이고, interface는 `source` 열에 나옵니다.
 
-Linux 6.4 이상에서 `trace http`를 사용하면 평문 HTTP/1.x 요청과 응답을 발생 즉시 출력합니다. edc는 kernel에서 TCP로 읽고 쓰는 data마다 앞 512 byte(`--payload`를 쓰면 앞 4KiB)를 읽고, method, `Host` header, path, 상태 코드만 남깁니다. path의 query에는 token이 들어 있을 수 있어 뺍니다. `--payload`를 쓰지 않으면 다른 header와 body도 버립니다.
+Linux 5.15 이상에서 `trace http`를 사용하면 평문 HTTP/1.x 요청과 응답을 발생 즉시 출력합니다. edc는 kernel에서 TCP로 읽고 쓰는 data마다 앞 512 byte(`--payload`를 쓰면 앞 4KiB)를 읽고, method, `Host` header, path, 상태 코드만 남깁니다. path의 query에는 token이 들어 있을 수 있어 뺍니다. `--payload`를 쓰지 않으면 다른 header와 body도 버립니다.
 
 ```bash
 ./bin/edc trace http
@@ -933,9 +933,9 @@ HTTPS는 암호문이라 method, path, 상태 코드를 읽을 수 없습니다.
 
 trace를 시작하기 전에 맺은 TLS 연결은 보이지 않습니다. client가 Encrypted Client Hello(ECH)를 쓰면 SNI는 서비스 제공자의 공개 이름입니다. HTTPS의 요청을 보려면 TLS를 푸는 곳 뒤의 평문 HTTP를 trace합니다. 예를 들어 backend로 평문 HTTP를 보내는 proxy가 있으면 그 구간을 봅니다.
 
-HTTPS, HTTP/2, HTTP/3의 요청은 kernel에서 암호문이나 binary frame으로만 보이므로 표시하지 않습니다. HTTP/3은 UDP를 쓰므로 `tls_hello` event도 없습니다. edc는 한 번의 읽기나 쓰기가 시작되는 곳에서만 message를 찾습니다. 그래서 한 번의 읽기에 앞 응답의 끝과 다음 응답의 시작이 함께 들어 있으면 다음 응답을 놓칩니다. 프로그램이 message 하나를 여러 버퍼로 나눠 쓰면 첫 버퍼만 읽으므로, `Host` header는 첫 버퍼의 앞 512 byte 안에 있어야 합니다. 없으면 target은 서버 주소입니다. edc가 읽는 kernel field는 Linux 6.4에 생겼으므로, 더 오래된 kernel에서는 오류를 내고 멈춥니다.
+HTTPS, HTTP/2, HTTP/3의 요청은 kernel에서 암호문이나 binary frame으로만 보이므로 표시하지 않습니다. HTTP/3은 UDP를 쓰므로 `tls_hello` event도 없습니다. edc는 한 번의 읽기나 쓰기가 시작되는 곳에서만 message를 찾습니다. 그래서 한 번의 읽기에 앞 응답의 끝과 다음 응답의 시작이 함께 들어 있으면 다음 응답을 놓칩니다. 프로그램이 message 하나를 여러 버퍼로 나눠 쓰면 첫 버퍼만 읽으므로, `Host` header는 첫 버퍼의 앞 512 byte 안에 있어야 합니다. 없으면 target은 서버 주소입니다. edc는 Linux 5.15 이상에서 이 field를 지원합니다.
 
-Linux 6.4 이상에서 `trace mysql`을 사용하면 평문 MySQL 명령과 결과를 발생 즉시 출력합니다. edc는 kernel에서 MySQL port의 TCP 읽기와 쓰기마다 앞부분을 읽습니다. 기본 port는 3306이고, 다른 port는 `--port`로 지정합니다.
+Linux 5.15 이상에서 `trace mysql`을 사용하면 평문 MySQL 명령과 결과를 발생 즉시 출력합니다. edc는 kernel에서 MySQL port의 TCP 읽기와 쓰기마다 앞부분을 읽습니다. 기본 port는 3306이고, 다른 port는 `--port`로 지정합니다.
 
 ```bash
 ./bin/edc trace mysql

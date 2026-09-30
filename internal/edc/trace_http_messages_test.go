@@ -212,6 +212,11 @@ func TestHTTPSplitStartsPassOtherPackets(t *testing.T) {
 	if got, ok := starts.join(httpTestPacket("GET /b HTTP/1.1\r\n\r\n", 6, true)); !ok || !strings.HasPrefix(string(got.payload), "GET /b") || len(starts) != 0 {
 		t.Fatalf("new start = %q, %v, held %d", got.payload, ok, len(starts))
 	}
+	// 첫 줄이 4KiB 안에 끝나지 않으면 더 기다리지 않는다.
+	starts.join(httpTestPacket("GET /", 8, true))
+	if got, ok := starts.join(httpChunk(strings.Repeat("a", httpPayloadHead), 9, true, 5)); !ok || len(got.payload) != httpPayloadHead+5 || len(starts) != 0 {
+		t.Fatalf("a long first line: %d bytes, %v, held %d", len(got.payload), ok, len(starts))
+	}
 	for socket := range uint64(httpSplitLimit + 1) {
 		packet := httpTestPacket("GET /a", 7, true)
 		packet.socket = socket

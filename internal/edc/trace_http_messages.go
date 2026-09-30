@@ -64,7 +64,8 @@ func (starts httpSplitStarts) join(packet httpPacket) (httpPacket, bool) {
 	} else {
 		delete(starts, key)
 	}
-	if !httpFirstLineOpen(packet.payload) {
+	// --payload=all은 조각을 계속 보낸다. 4KiB 안에 첫 줄이 끝나지 않으면 읽을 수 있는 HTTP/1.x가 아니다.
+	if !httpFirstLineOpen(packet.payload) || len(packet.payload) >= httpPayloadHead {
 		return packet, true
 	}
 	if len(starts) >= httpSplitLimit {

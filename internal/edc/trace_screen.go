@@ -577,7 +577,9 @@ func traceEventMatchesText(event captureEvent, filter string) bool {
 	if filter == "" {
 		return true
 	}
-	text := strings.ToLower(strings.Join([]string{event.Process, event.Target, event.Source, event.Destination, event.Event}, " "))
+	// 화면의 목적지 칸과 event 칸에 보이는 값도 찾는다. HTTP의 method와 path, DNS의 질의 종류는 이 칸에만 보인다.
+	destination, name := traceScrollLabels(event)
+	text := strings.ToLower(strings.Join([]string{event.Process, event.Target, event.Source, event.Destination, event.Event, destination, name}, " "))
 	return strings.Contains(text, filter)
 }
 
@@ -646,11 +648,34 @@ func traceEventStyle(line, protocol, event string) string {
 }
 
 func traceFit(value string, width int) string {
-	if width <= 0 || liveWidth(value) <= width {
+	if width <= 0 {
+		return value
+	}
+	// truncateLine은 한 글자씩 줄이며 폭을 다시 재서, 4KiB payload 한 줄에 200ms가 넘게 걸렸다. 화면을 그릴 때마다 이만큼
+	// 걸려 키 입력이 밀렸다. 글자 하나는 적어도 한 칸이므로 width+1자에서 먼저 자른다. 색 escape가 있으면 글자 수와 칸 수가
+	// 달라서 그대로 둔다.
+	cut := false
+	if !strings.ContainsRune(value, '\x1b') {
+		if index := traceRuneIndex(value, width+1); index < len(value) {
+			value, cut = value[:index], true
+		}
+	}
+	if !cut && liveWidth(value) <= width {
 		return value
 	}
 	// truncateLine은 자른 값 끝에 줄바꿈을 붙인다. View가 행을 줄바꿈으로 이으므로 그대로 두면 잘린 행마다 빈 줄이 생긴다.
 	return strings.TrimRight(truncateLine(value, width), "\n")
+}
+
+// traceRuneIndex는 value에서 count번째 글자가 시작하는 byte 위치다. 글자가 모자라면 len(value)다.
+func traceRuneIndex(value string, count int) int {
+	for index := range value {
+		if count == 0 {
+			return index
+		}
+		count--
+	}
+	return len(value)
 }
 
 func runTraceScreen(protocol string, options tcpTraceOptions) int {

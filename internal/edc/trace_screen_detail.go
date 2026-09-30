@@ -324,9 +324,10 @@ func traceScreenDetailView(model traceScreenModel) []string {
 			header += "  ·  " + state.name
 		}
 	}
-	help := "↑↓ scroll  pgup/pgdn page  home/end  f follow  esc back  ctrl-c stop"
+	// Mac 자판에는 PgUp, PgDn, Home, End가 없는 경우가 많아, 어디서나 쓸 수 있는 키를 안내한다. 원래 키도 그대로 된다.
+	help := "↑↓ scroll  space/b page  g/G top/end  f follow  esc back  ctrl-c stop"
 	if model.protocol == "http" {
-		help = "↑↓ scroll  pgup/pgdn page  home/end  f follow  m secrets  z gzip  esc back  ctrl-c stop"
+		help = "↑↓ scroll  space/b page  g/G top/end  f follow  m secrets  z gzip  esc back  ctrl-c stop"
 	}
 	rows := []string{liveSelected(traceFit(header, model.width), color), liveMuted(traceFit(help, model.width), color), traceFit(detail.title, model.width)}
 	rows = append(rows, detail.lines[detail.offset:last]...)

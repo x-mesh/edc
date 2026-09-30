@@ -92,6 +92,14 @@ func captureEventsOutputPath(requested string) (string, error) {
 }
 
 func captureEventsPrerequisites() error {
+	if err := captureBPFPrerequisites(); err != nil {
+		return err
+	}
+	return captureTraceHooksAvailable()
+}
+
+// captureBPFPrerequisites는 eBPF program을 불러오는 데 필요한 kernel BTF와 capability를 확인한다.
+func captureBPFPrerequisites() error {
 	if _, err := os.Stat("/sys/kernel/btf/vmlinux"); err != nil {
 		return errors.New(T("cli.capture.btf_missing"))
 	}
@@ -104,10 +112,7 @@ func captureEventsPrerequisites() error {
 		// 실행 경로를 모르면 명령줄의 이름을 쓴다. 안내 문구에만 들어간다.
 		executable = os.Args[0]
 	}
-	if err := captureCapabilityError(capabilities, rootCommand(executable, os.Args[1:])); err != nil {
-		return err
-	}
-	return captureTraceHooksAvailable()
+	return captureCapabilityError(capabilities, rootCommand(executable, os.Args[1:]))
 }
 
 // captureCapabilities는 eBPF program을 불러오고 붙이는 데 필요한 capability다.

@@ -5,16 +5,16 @@
 #
 # Environment:
 #   EDC_VERSION      version to install, without the leading v (default: latest)
-#   BINDIR           install directory (default: $HOME/.local/bin)
+#   BINDIR           install directory (default: /usr/local/bin on Linux, $HOME/.local/bin on macOS)
 #   EDC_MODIFY_PATH  set to 1 to add BINDIR to PATH in the startup file of your shell
 #
 # The script downloads the release asset, checks its SHA-256 against
-# checksums.txt, and then installs the binary.
+# checksums.txt, and then installs the binary. If the user cannot write to
+# BINDIR, the script uses sudo only to copy the binary.
 
 set -eu
 
 REPO="x-mesh/edc"
-BINDIR="${BINDIR:-$HOME/.local/bin}"
 VERSION="${EDC_VERSION:-latest}"
 
 fail() {
@@ -48,6 +48,15 @@ case "$os" in
 linux | darwin) ;;
 *) fail "unsupported operating system: $os" ;;
 esac
+
+# On Linux, trace and capture need root. sudo uses secure_path, which does not include ~/.local/bin, so
+# edc goes where sudo and every user find the same binary.
+if [ -z "${BINDIR:-}" ]; then
+	case "$os" in
+	linux) BINDIR=/usr/local/bin ;;
+	*) BINDIR="$HOME/.local/bin" ;;
+	esac
+fi
 
 arch=$(uname -m)
 case "$arch" in
@@ -91,15 +100,74 @@ awk -v name="$asset" '$2 == name || $2 == "*" name' "$tmp/checksums.txt" > "$tmp
 
 tar -xzf "$tmp/$asset" -C "$tmp" edc || fail "cannot extract edc from $asset"
 
-mkdir -p "$BINDIR" || fail "cannot create $BINDIR"
+# writable_dir tells whether the user can create files in a directory, or in its nearest parent that
+# exists when the directory does not exist yet.
+writable_dir() {
+	dir=$1
+	while [ ! -d "$dir" ]; do
+		dir=$(dirname "$dir")
+	done
+	[ -w "$dir" ]
+}
+
+elevate=""
+if ! writable_dir "$BINDIR"; then
+	if [ "$(id -u)" = 0 ]; then
+		fail "cannot write to $BINDIR"
+	fi
+	command -v sudo >/dev/null 2>&1 || fail "cannot write to $BINDIR. Run the installer as root, or set BINDIR=\$HOME/.local/bin"
+	echo "installing to $BINDIR with sudo"
+	# sudo -v asks for a password once, if it needs one. It reads the password from the terminal, also with curl | sh.
+	sudo -v || fail "sudo failed. Run the installer as root, or set BINDIR=\$HOME/.local/bin"
+	elevate="sudo"
+fi
+
+$elevate mkdir -p "$BINDIR" || fail "cannot create $BINDIR"
 install_path="$BINDIR/edc"
 # Write next to the target and rename, so a running edc keeps working.
-cp "$tmp/edc" "$install_path.new" || fail "cannot write to $BINDIR"
-chmod 0755 "$install_path.new"
-mv "$install_path.new" "$install_path" || fail "cannot replace $install_path"
+$elevate cp "$tmp/edc" "$install_path.new" || fail "cannot write to $BINDIR"
+$elevate chmod 0755 "$install_path.new"
+$elevate mv "$install_path.new" "$install_path" || fail "cannot replace $install_path"
 
 echo "installed $install_path"
 "$install_path" version
+
+# remove_old_copy removes an edc that an earlier installer put in ~/.local/bin. Ubuntu puts ~/.local/bin
+# before /usr/local/bin in PATH, so the old binary would still run. A file that is not edc stays.
+removed=""
+remove_old_copy() {
+	old="$1/.local/bin/edc"
+	[ "$old" != "$install_path" ] && [ -f "$old" ] || return 0
+	old_version=$("$old" version 2>/dev/null | head -1) || true
+	case "$old_version" in
+	"edc "*) ;;
+	*)
+		echo "found $old, but it is not edc. Remove it by hand if you do not use it."
+		return 0
+		;;
+	esac
+	if rm -f "$old"; then
+		echo "removed old $old (${old_version% (*})"
+		removed=1
+	else
+		echo "cannot remove old $old. Remove it by hand: rm $old"
+	fi
+}
+
+[ -z "${HOME:-}" ] || remove_old_copy "$HOME"
+# With sudo, HOME is /root, but the old copy is usually in the home of the user who ran sudo.
+if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ] && command -v getent >/dev/null 2>&1; then
+	sudo_home=$(getent passwd "$SUDO_USER" | cut -d: -f6)
+	[ -z "$sudo_home" ] || [ "$sudo_home" = "${HOME:-}" ] || remove_old_copy "$sudo_home"
+fi
+if [ -n "$removed" ]; then
+	echo "If your shell still runs the old path, run: hash -r"
+fi
+
+found=$(command -v edc 2>/dev/null || true)
+if [ -n "$found" ] && [ "$found" != "$install_path" ]; then
+	echo "another edc comes first on PATH: $found"
+fi
 
 # user_shell names the shell that started the installer. With curl | sh the parent process is that
 # shell. A parent sh is usually a wrapper such as sh -c or a Dockerfile RUN, and sudo is not a shell,

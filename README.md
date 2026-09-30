@@ -830,6 +830,8 @@ Press `f` to open the detail view on the newest event and follow new events. Pre
 
 Press `i` to split the screen. The list uses the top half, and a preview of one message uses the bottom half. The preview shows the selected event. If no event is selected, the preview shows the newest event and changes when a new event arrives. If the event has a payload, the preview shows the payload. Otherwise, the preview shows the fields of the event. Press `J` and `K` to scroll the preview, and press Enter to open the full detail view. In `trace http`, `m` and `z` also change the preview. If the terminal has fewer than 9 lines, edc shows only the list.
 
+The title line of the preview and of the detail view starts with the time of the event, for example `09:05:07.123`. The time is in the time zone of this host. A line of `─` fills the rest of the preview title line, so the border between the list and the preview is clear also without color. If the terminal has 120 columns or more, the event list shows a `TIME` column before `PROCESS`.
+
 On macOS, `trace` reads socket counters from the kernel network statistics interface (`com.apple.network.statistics`). `nettop` uses the same interface. `edc` reads the counters each second and makes events from the changes. The interface is private, so a macOS update can change its format. If the format changes, the trace stops with an error.
 
 On macOS, some values are not available. The text output shows `-` for these values. The JSON output shows `null`.

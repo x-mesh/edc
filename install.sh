@@ -117,8 +117,10 @@ if ! writable_dir "$BINDIR"; then
 	fi
 	command -v sudo >/dev/null 2>&1 || fail "cannot write to $BINDIR. Run the installer as root, or set BINDIR=\$HOME/.local/bin"
 	echo "installing to $BINDIR with sudo"
-	# sudo -v asks for a password once, if it needs one. It reads the password from the terminal, also with curl | sh.
-	sudo -v || fail "sudo failed. Run the installer as root, or set BINDIR=\$HOME/.local/bin"
+	# Check sudo with a command, not with sudo -v. By default sudo -v asks for a password unless every sudoers rule of
+	# the user has NOPASSWD, so it fails for the Ubuntu cloud user, whose NOPASSWD rule comes after "%sudo ALL=(ALL:ALL) ALL".
+	# If a rule needs a password, sudo asks once from the terminal, also with curl | sh, and the copy steps reuse it.
+	sudo true || fail "sudo failed. Run the installer as root, or set BINDIR=\$HOME/.local/bin"
 	elevate="sudo"
 fi
 

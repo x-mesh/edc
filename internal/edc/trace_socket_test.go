@@ -15,14 +15,15 @@ func TestSocketRecordOffsetsMatchTheBPFStruct(t *testing.T) {
 		"peer_skaddr": {unsafe.Offsetof(record.PeerSkaddr), 16},
 		"cgroup_id":   {unsafe.Offsetof(record.CgroupId), 24},
 		"result":      {unsafe.Offsetof(record.Result), 32},
-		"event_type":  {unsafe.Offsetof(record.EventType), 40},
-		"pid":         {unsafe.Offsetof(record.Pid), 44},
-		"peer_pid":    {unsafe.Offsetof(record.PeerPid), 48},
-		"len":         {unsafe.Offsetof(record.Len), 52},
-		"offset":      {unsafe.Offsetof(record.Offset), 56},
-		"side":        {unsafe.Offsetof(record.Side), 60},
-		"flags":       {unsafe.Offsetof(record.Flags), 61},
-		"comm":        {unsafe.Offsetof(record.Comm), 64},
+		"wait_ns":     {unsafe.Offsetof(record.WaitNs), 40},
+		"event_type":  {unsafe.Offsetof(record.EventType), 48},
+		"pid":         {unsafe.Offsetof(record.Pid), 52},
+		"peer_pid":    {unsafe.Offsetof(record.PeerPid), 56},
+		"len":         {unsafe.Offsetof(record.Len), 60},
+		"offset":      {unsafe.Offsetof(record.Offset), 64},
+		"side":        {unsafe.Offsetof(record.Side), 68},
+		"flags":       {unsafe.Offsetof(record.Flags), 69},
+		"comm":        {unsafe.Offsetof(record.Comm), 72},
 		"payload":     {unsafe.Offsetof(record.Payload), socketRecordPayloadOffset},
 	} {
 		if offsets[0] != offsets[1] {
@@ -40,16 +41,16 @@ func socketSample(eventType uint32, result int64, offset uint32, server bool, fl
 	binary.LittleEndian.PutUint64(sample[8:16], 0xabc)
 	binary.LittleEndian.PutUint64(sample[16:24], 0xdef)
 	binary.LittleEndian.PutUint64(sample[32:40], uint64(result))
-	binary.LittleEndian.PutUint32(sample[40:44], eventType)
-	binary.LittleEndian.PutUint32(sample[44:48], 42)
-	binary.LittleEndian.PutUint32(sample[48:52], 7)
-	binary.LittleEndian.PutUint32(sample[52:56], uint32(len(payload)))
-	binary.LittleEndian.PutUint32(sample[56:60], offset)
+	binary.LittleEndian.PutUint32(sample[48:52], eventType)
+	binary.LittleEndian.PutUint32(sample[52:56], 42)
+	binary.LittleEndian.PutUint32(sample[56:60], 7)
+	binary.LittleEndian.PutUint32(sample[60:64], uint32(len(payload)))
+	binary.LittleEndian.PutUint32(sample[64:68], offset)
 	if server {
-		sample[60] = socketRecordServer
+		sample[68] = socketRecordServer
 	}
-	sample[61] = flags
-	copy(sample[64:80], "dockerd")
+	sample[69] = flags
+	copy(sample[72:88], "dockerd")
 	copy(sample[socketRecordPayloadOffset:], payload)
 	return sample
 }
@@ -144,6 +145,7 @@ func TestSocketTraceEventNamesTheCall(t *testing.T) {
 		{socketRecordRecv, 10, true, "", "socket_recv", "recv 10B"},
 		{socketRecordRecv, 0, true, "", "socket_eof", "eof"},
 		{socketRecordClose, 0, true, "", "socket_close", "close"},
+		{socketRecordAccept, 0, true, "", "socket_accept", "accept"},
 	} {
 		record, _ := parseSocketRecord(socketSample(test.eventType, test.result, 0, test.server, 0, ""))
 		event := socketTraceEvent(socketCall{record: record}, "/run/docker.sock", 0, test.errorName, "docker")
@@ -156,6 +158,24 @@ func TestSocketTraceEventNamesTheCall(t *testing.T) {
 		}
 		if (test.errorName != "") != (event.Error != "") {
 			t.Fatalf("%s: error = %q", test.event, event.Error)
+		}
+	}
+}
+
+func TestSocketAcceptEventCarriesTheBacklogWait(t *testing.T) {
+	sample := socketSample(socketRecordAccept, 0, 0, true, 0, "")
+	binary.LittleEndian.PutUint64(sample[40:48], uint64(1500*time.Microsecond))
+	record, _ := parseSocketRecord(sample)
+	event := socketTraceEvent(socketCall{record: record}, "/run/php/php-fpm.sock", 0, "", "nginx")
+	if event.Event != "socket_accept" || event.LatencyMS == nil || *event.LatencyMS != 1.5 || event.Side != traceServerSide {
+		t.Fatalf("event = %+v", event)
+	}
+	if _, label := traceSocketScrollLabels(event); label != "accept 1.5ms" {
+		t.Fatalf("label = %q", label)
+	}
+	for milliseconds, want := range map[float64]string{0.012: "12µs", 0.9994: "999µs", 1: "1.0ms", 250.04: "250.0ms"} {
+		if got := socketWaitLabel(milliseconds); got != want {
+			t.Fatalf("socketWaitLabel(%v) = %q, want %q", milliseconds, got, want)
 		}
 	}
 }
@@ -175,6 +195,7 @@ func TestSocketTraceSummarizerGroupsByProcessPeerAndSide(t *testing.T) {
 	summarizer := newSocketTraceSummarizer()
 	for _, event := range []captureEvent{
 		{Event: "socket_connect", Process: "docker", Source: "dockerd[812]", Side: traceClientSide, Destination: "/run/docker.sock"},
+		{Event: "socket_accept", Process: "dockerd", Source: "docker[40]", Side: traceServerSide},
 		{Event: "socket_send", Process: "docker", Source: "dockerd[812]", Side: traceClientSide, Bytes: 100},
 		{Event: "socket_recv", Process: "docker", Source: "dockerd[812]", Side: traceClientSide, Bytes: 900},
 		{Event: "socket_send", Process: "docker", Source: "dockerd[999]", Side: traceClientSide, Bytes: 50},
@@ -183,7 +204,7 @@ func TestSocketTraceSummarizerGroupsByProcessPeerAndSide(t *testing.T) {
 		summarizer.observe(event)
 	}
 	report := summarizer.summarize(captureSummary{LostEvents: 2}, time.Second).(socketTraceReport)
-	if report.Path != "/run/docker.sock" || report.Events != 5 || report.TXBytes != 150 || report.RXBytes != 900 || report.Failures != 1 || report.LostEvents != 2 || len(report.Rows) != 2 {
+	if report.Path != "/run/docker.sock" || report.Events != 6 || report.TXBytes != 150 || report.RXBytes != 900 || report.Failures != 1 || report.LostEvents != 2 || len(report.Rows) != 3 {
 		t.Fatalf("report = %+v", report)
 	}
 	if first := report.Rows[0]; first.Process != "curl" || first.Failures != 1 {
@@ -191,6 +212,9 @@ func TestSocketTraceSummarizerGroupsByProcessPeerAndSide(t *testing.T) {
 	}
 	if second := report.Rows[1]; second.Peer != "dockerd" || second.Connects != 1 || second.Sends != 2 || second.Recvs != 1 || second.Events != 4 {
 		t.Fatalf("docker row = %+v", second)
+	}
+	if third := report.Rows[2]; third.Process != "dockerd" || third.Accepts != 1 || third.Side != traceServerSide {
+		t.Fatalf("dockerd row = %+v", third)
 	}
 	if strings.Contains(report.Rows[1].Peer, "[") {
 		t.Fatal("the peer pid must not split rows")

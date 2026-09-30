@@ -183,8 +183,9 @@ command:
       - "--port は HTTP server の port だけを見ます。--side server では local port。"
       - "Authorization、Proxy-Authorization、Cookie、Set-Cookie の値は隠します。"
       - "trace socket <path> は Linux で stream unix socket ファイルを 1 つ見ます。"
-      - "connect、send、recv、eof、close を表示します。SOURCE は相手の process です。"
-      - "client 側の相手は listen した process です。例: systemd"
+      - "connect、accept、send、recv、eof、close を表示します。SOURCE は相手です。"
+      - "client 側の相手は server process です。accept 前は listen した process です。"
+      - "accept は接続が backlog で待った時間を表示します。"
       - "payload は隠さずそのまま表示します。全画面では v で表示します。"
   report:
     summary: "保存した JSON report の閲覧と比較"

@@ -183,8 +183,9 @@ command:
       - "--port는 HTTP 서버 port만 봅니다. --side server면 로컬 port입니다."
       - "Authorization, Proxy-Authorization, Cookie, Set-Cookie 값은 가립니다."
       - "trace socket <path>는 Linux에서 stream unix socket 파일 하나를 봅니다."
-      - "connect, send, recv, eof, close를 표시합니다. SOURCE는 상대 process입니다."
-      - "클라이언트 쪽의 상대는 listen한 process입니다. 예: systemd"
+      - "connect, accept, send, recv, eof, close를 표시합니다. SOURCE는 상대입니다."
+      - "클라이언트 쪽 상대는 서버 process입니다. accept 전에는 listen한 process입니다."
+      - "accept는 연결이 backlog에서 기다린 시간을 표시합니다."
       - "payload는 가리지 않고 그대로 보입니다. 전체 화면에서는 v로 켭니다."
   report:
     summary: "저장한 JSON report 보기와 비교"

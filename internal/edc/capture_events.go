@@ -36,8 +36,9 @@ type captureEvent struct {
 	NewState     string `json:"new_state,omitempty"`
 	Bytes        uint64 `json:"bytes"`
 	Packets      uint64 `json:"packets,omitempty"`
-	// QueryType, Answers, LatencyMS는 DNS event에만 붙는다. LatencyMS는 kernel이 질의를 보낸 때부터 process가
-	// 응답을 읽은 때까지라서 process가 응답을 늦게 읽으면 그만큼 길어진다.
+	// QueryType과 Answers는 DNS event에만 붙는다. LatencyMS는 DNS에서는 kernel이 질의를 보낸 때부터 process가 응답을 읽은
+	// 때까지라서 process가 응답을 늦게 읽으면 그만큼 길어진다. HTTP 응답과 socket_accept에도 붙는다. socket_accept에서는
+	// 클라이언트가 connect를 시작한 때부터 서버가 accept한 때까지다.
 	QueryType string   `json:"query_type,omitempty"`
 	Answers   []string `json:"answers,omitempty"`
 	LatencyMS *float64 `json:"latency_ms,omitempty"`
@@ -58,8 +59,8 @@ type captureEvent struct {
 	// MAC과 OldMAC은 ARP event에만 붙는다. OldMAC은 MAC이 바뀌었을 때 이전 값이다.
 	MAC    string `json:"mac,omitempty"`
 	OldMAC string `json:"old_mac,omitempty"`
-	// PeerPID는 socket event의 상대 process다. SO_PEERCRED 값이라 클라이언트 쪽에서는 listen한 process다. Error는 실패한
-	// socket 호출의 errno 이름이다.
+	// PeerPID는 socket event의 상대 process다. 서버 쪽은 SO_PEERCRED 값이고, 클라이언트 쪽은 연결을 accept하거나 처리한 서버
+	// process다. accept 전에는 listen한 process다. Error는 실패한 socket 호출의 errno 이름이다.
 	PeerPID uint32 `json:"peer_pid,omitempty"`
 	Error   string `json:"error,omitempty"`
 	// Transport는 TCP로 주고받은 DNS message에만 tcp로 붙는다.

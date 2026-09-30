@@ -183,8 +183,9 @@ command:
       - "--port shows one HTTP server port: the peer, or this host with --side server."
       - "It hides Authorization, Proxy-Authorization, Cookie, and Set-Cookie values."
       - "trace socket <path> follows one stream unix socket file on Linux."
-      - "It shows connect, send, recv, eof, and close. SOURCE is the peer process."
-      - "For a client, the peer is the process that listens, for example systemd."
+      - "It shows connect, accept, send, recv, eof, and close. SOURCE is the peer."
+      - "A client's peer is the server process. Before accept, it is the listener."
+      - "accept shows how long the connection waited in the backlog."
       - "Its payload is raw and not hidden. In the full screen, press v to show it."
   report:
     summary: "Read and compare saved JSON reports"

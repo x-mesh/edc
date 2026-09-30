@@ -319,7 +319,7 @@ func captureAttachments(objects *captureEventsObjects, protocol string) ([]captu
 		{[]string{"http", "mysql", "dns"}, "fentry/tcp_recvmsg", objects.TcpRecvmsgEntry},
 		{[]string{"http", "mysql", "dns"}, "fexit/tcp_recvmsg", objects.TcpRecvmsgExit},
 		// trace http는 끝난 socket의 짝짓기 상태를 지운다. tracepoint와 달리 tracefs 없이 붙는다.
-		{[]string{"http", "mysql"}, "tp_btf/tcp_destroy_sock", objects.HttpTcpDestroySock},
+		{[]string{"http", "mysql", "dns"}, "tp_btf/tcp_destroy_sock", objects.HttpTcpDestroySock},
 		// 서버 쪽 DNS over TCP도 받은 연결의 process를 알아야 해서 dns가 함께 쓴다.
 		{[]string{"tcp", "dns"}, "fentry/inet_csk_accept", objects.InetCskAcceptEntry},
 		{[]string{"tcp", "dns"}, "fexit/tcp_create_openreq_child", objects.TcpCreateOpenreqChildExit},
@@ -690,6 +690,9 @@ func collectCaptureEventsFor(scope traceScope, duration time.Duration, onEvent f
 			}
 			if protocol == "mysql" {
 				mysql.forgetSocket(socket)
+			}
+			if protocol == "dns" {
+				streams.forgetSocket(socket)
 			}
 			continue
 		}

@@ -244,6 +244,11 @@ func newDNSTCPStreams() *dnsTCPStreams {
 	return &dnsTCPStreams{pending: map[dnsTCPStreamKey]int{}}
 }
 
+func (streams *dnsTCPStreams) forgetSocket(socket uint64) {
+	delete(streams.pending, dnsTCPStreamKey{socket: socket, sent: true})
+	delete(streams.pending, dnsTCPStreamKey{socket: socket, sent: false})
+}
+
 // messages는 조각 하나에 든 DNS message다. BPF는 조각의 앞 capacity byte만 읽으므로, 잘린 message는 잘린 채로 돌려준다.
 // 뒤의 해석이 header로 결과를 읽는다.
 func (streams *dnsTCPStreams) messages(key dnsTCPStreamKey, chunk []byte, capacity int) [][]byte {

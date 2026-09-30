@@ -353,6 +353,29 @@ func TestDNSLatencySplitsNetworkAndReadDelay(t *testing.T) {
 	}
 }
 
+func TestDNSTCPStreamsForgetSocketClearsBothDirections(t *testing.T) {
+	streams := newDNSTCPStreams()
+	streams.pending[dnsTCPStreamKey{socket: 7, sent: true}] = 42
+	streams.pending[dnsTCPStreamKey{socket: 7, sent: false}] = 84
+	streams.pending[dnsTCPStreamKey{socket: 8, sent: true}] = 126
+	streams.forgetSocket(7)
+	if len(streams.pending) != 1 || streams.pending[dnsTCPStreamKey{socket: 8, sent: true}] != 126 {
+		t.Fatalf("pending = %#v", streams.pending)
+	}
+}
+
+func TestDNSTCPStreamsForgetSocketPreventsSocketReuseFromJoiningOldLength(t *testing.T) {
+	streams := newDNSTCPStreams()
+	key := dnsTCPStreamKey{socket: 7, sent: true}
+	if messages := streams.messages(key, []byte{0, 4, 1}, dnsRecordPayloadSize); len(messages) != 0 {
+		t.Fatalf("partial messages = %q", messages)
+	}
+	streams.forgetSocket(7)
+	if messages := streams.messages(key, []byte{2, 3, 4, 5}, dnsRecordPayloadSize); len(messages) != 0 {
+		t.Fatalf("reused socket joined old length: %q", messages)
+	}
+}
+
 // 서버가 잘린 응답을 보낸 client가 TCP로 다시 연결하면, 서버 쪽 accept event에 그 질의의 이름을 붙인다.
 func TestDNSServerSideTCPAcceptFollowsATruncatedAnswer(t *testing.T) {
 	tracker := newDNSQueryTracker(true)

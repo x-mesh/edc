@@ -1687,7 +1687,7 @@ int tcp_recvmsg_exit_legacy(__u64 *ctx) {
 SEC("tp_btf/tcp_destroy_sock")
 int http_tcp_destroy_sock(__u64 *ctx) {
 	struct sock *sk = (struct sock *)ctx[0];
-	if (!sk || !((emit_http_messages && http_socket(sk)) || (mysql_port && mysql_socket(sk)))) {
+	if (!sk || !((emit_http_messages && http_socket(sk)) || (mysql_port && mysql_socket(sk)) || (emit_dns_tcp_messages && dns_tcp_socket(sk)))) {
 		return 0;
 	}
 	// 머리만 읽은 첫 조각의 표시가 남으면 새 연결의 첫 읽기를 이어지는 조각으로 넘긴다.

@@ -717,9 +717,9 @@ func traceRuneIndex(value string, count int) int {
 	return len(value)
 }
 
-// traceScreenScope는 전체 화면이 모을 범위다. trace http와 trace socket은 --payload가 없어도 message나 호출의 앞부분을 모은다. 옵션을 늘리지
-// 않고 Enter와 v로 바로 보려는 것이다. 인증 header는 원문으로 두고 그릴 때 가려서 m으로 풀 수 있게 한다. 파이프와
-// --raw 출력은 이 범위를 쓰지 않는다.
+// traceScreenScope는 전체 화면이 모을 범위다. trace http와 trace socket은 --payload가 없어도 message나 호출의
+// 앞부분을 모은다. 옵션을 늘리지 않고 Enter와 v로 바로 보려는 것이다. 인증 header는 원문으로 두고 그릴 때 가려서
+// m으로 풀 수 있게 한다. 파이프와 --raw 출력은 이 범위를 쓰지 않는다.
 func traceScreenScope(protocol string, options tcpTraceOptions) traceScope {
 	scope := options.scope(protocol)
 	switch protocol {

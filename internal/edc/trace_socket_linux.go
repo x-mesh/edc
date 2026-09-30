@@ -296,8 +296,9 @@ func collectSocketEvents(path string, payloadLimit int, duration time.Duration, 
 		}
 		reader.SetDeadline(next)
 	}
-	wake()
+	// 첫 deadline이 refreshed보다 먼저 지나면 그 사이 Read가 곧바로 돌아와 빈 반복을 돈다.
 	refreshed := time.Now()
+	wake()
 	finish := func() (captureSummary, error) {
 		if err := emit(calls.flush()); err != nil {
 			return captureSummary{}, err

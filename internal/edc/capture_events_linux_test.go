@@ -103,8 +103,8 @@ func TestCaptureAttachmentsFollowTheProtocol(t *testing.T) {
 		// 수신 큐 hook은 DNS 응답 시간을 나누는 데만 쓴다.
 		// DNS over TCP의 message는 HTTP와 같은 TCP 송수신 hook이 읽는다.
 		{"dns", []string{"sock/inet_sock_set_state"}, append(append(append([]string{}, udpSend...), "fentry/__udp_enqueue_schedule_skb", "fentry/skb_consume_udp", "fentry/tcp_sendmsg", "fentry/tcp_recvmsg", "fexit/tcp_recvmsg"), tcpAccept...)},
-		// HTTP는 TCP 송수신의 사용자 버퍼만 읽고 TCP 상태 변화는 쓰지 않는다.
-		{"http", []string{}, []string{"fentry/skb_consume_udp", "fentry/tcp_sendmsg", "fentry/tcp_recvmsg", "fexit/tcp_recvmsg"}},
+		// HTTP는 TCP 송수신의 사용자 버퍼를 읽고, 끝난 socket의 짝짓기 상태를 tp_btf/tcp_destroy_sock으로 지운다.
+		{"http", []string{}, []string{"fentry/skb_consume_udp", "fentry/tcp_sendmsg", "fentry/tcp_recvmsg", "fexit/tcp_recvmsg", "tp_btf/tcp_destroy_sock"}},
 		// MySQL도 같은 TCP 송수신 hook만 쓴다.
 		{"mysql", []string{}, []string{"fentry/skb_consume_udp", "fentry/tcp_sendmsg", "fentry/tcp_recvmsg", "fexit/tcp_recvmsg"}},
 	} {
@@ -685,6 +685,23 @@ func TestHTTPRecordOffsetsMatchTheBPFStruct(t *testing.T) {
 	sample[39] = httpRecordTLSHandshake
 	if packet, ok := parseHTTPRecord(sample); !ok || packet.continued || !packet.tlsHandshake {
 		t.Fatalf("TLS handshake = %#v, %t", packet, ok)
+	}
+}
+
+// trace http는 tcp_destroy_sock 레코드에서 socket 주소만 읽는다.
+func TestHTTPTraceReadsDestroyedSockets(t *testing.T) {
+	sample := make([]byte, 64)
+	binary.LittleEndian.PutUint32(sample[8:12], tcpDestroyEventType)
+	binary.LittleEndian.PutUint64(sample[24:32], 0xabc)
+	if socket, ok := parseTCPDestroyRecord(sample); !ok || socket != 0xabc {
+		t.Fatalf("destroy record = %#x, %t", socket, ok)
+	}
+	binary.LittleEndian.PutUint32(sample[8:12], 1)
+	if _, ok := parseTCPDestroyRecord(sample); ok {
+		t.Fatal("a state change was read as a destroyed socket")
+	}
+	if _, ok := parseTCPDestroyRecord(sample[:16]); ok {
+		t.Fatal("a short record was read as a destroyed socket")
 	}
 }
 

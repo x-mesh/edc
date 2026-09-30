@@ -80,6 +80,12 @@ func (starts httpSplitStarts) join(packet httpPacket) (httpPacket, bool) {
 	return httpPacket{}, false
 }
 
+// forget은 끝난 socket의 첫 조각을 지운다. 새 연결의 조각이 같은 주소와 위치로 오면 이 조각과 잘못 이어진다.
+func (starts httpSplitStarts) forget(socket uint64) {
+	delete(starts, httpStreamKey{socket: socket, sent: true})
+	delete(starts, httpStreamKey{socket: socket, sent: false})
+}
+
 // httpFirstLineOpen은 요청 줄이나 상태 줄이 아직 끝나지 않았는지다. 모든 첫 조각에 부르므로 요청 줄을 다시 해석하지 않는다.
 // 요청 줄은 CRLF가 있어야 읽히고, 상태 줄은 코드까지만 있으면 읽힌다.
 func httpFirstLineOpen(payload []byte) bool {

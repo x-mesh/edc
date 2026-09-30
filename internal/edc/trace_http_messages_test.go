@@ -196,6 +196,22 @@ func TestHTTPSplitStartsJoinARequestLineReadInTwoParts(t *testing.T) {
 	}
 }
 
+// 연결이 끝나면 기다리던 첫 조각을 지운다. 같은 주소를 쓰는 새 연결의 조각이 같은 위치로 와도 잇지 않는다.
+func TestHTTPSplitStartsForgetAClosedSocket(t *testing.T) {
+	starts := httpSplitStarts{}
+	if _, ok := starts.join(httpTestPacket("GET /strace-pr", 1_000_000, false)); ok {
+		t.Fatal("a start without the end of its first line came out")
+	}
+	starts.forget(1)
+	if len(starts) != 0 {
+		t.Fatalf("held = %d", len(starts))
+	}
+	piece, ok := starts.join(httpChunk("obe HTTP/1.1\r\n\r\n", 2_000_000, false, 14))
+	if !ok || !piece.continued || string(piece.payload) != "obe HTTP/1.1\r\n\r\n" {
+		t.Fatalf("piece = %+v, %t", piece, ok)
+	}
+}
+
 func TestHTTPSplitStartsPassOtherPackets(t *testing.T) {
 	starts := httpSplitStarts{}
 	whole := httpTestPacket("GET / HTTP/1.1\r\n\r\n", 1, true)

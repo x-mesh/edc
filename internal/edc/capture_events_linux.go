@@ -306,6 +306,8 @@ func captureAttachments(objects *captureEventsObjects, protocol string) ([]captu
 		{[]string{"http", "mysql", "dns"}, "fentry/tcp_sendmsg", objects.TcpSendmsgEntry},
 		{[]string{"http", "mysql", "dns"}, "fentry/tcp_recvmsg", objects.TcpRecvmsgEntry},
 		{[]string{"http", "mysql", "dns"}, "fexit/tcp_recvmsg", objects.TcpRecvmsgExit},
+		// trace http는 끝난 socket의 짝짓기 상태를 지운다. tracepoint와 달리 tracefs 없이 붙는다.
+		{[]string{"http"}, "tp_btf/tcp_destroy_sock", objects.HttpTcpDestroySock},
 		// 서버 쪽 DNS over TCP도 받은 연결의 process를 알아야 해서 dns가 함께 쓴다.
 		{[]string{"tcp", "dns"}, "fentry/inet_csk_accept", objects.InetCskAcceptEntry},
 		{[]string{"tcp", "dns"}, "fexit/tcp_create_openreq_child", objects.TcpCreateOpenreqChildExit},
@@ -443,6 +445,11 @@ func collectCaptureEventsFor(scope traceScope, duration time.Duration, onEvent f
 		links = append(links, attached)
 	}
 	defer closeLinks()
+	// hook은 하나씩 붙는다. 요청을 보내는 hook만 붙은 동안 보낸 요청은 응답을 놓치므로, HTTP 레코드는 모두 붙은 뒤부터 읽는다.
+	var attached unix.Timespec
+	if err := unix.ClockGettime(unix.CLOCK_MONOTONIC, &attached); err != nil {
+		return captureSummary{}, fmt.Errorf("read monotonic clock: %w", err)
+	}
 
 	reader, err := ringbuf.NewReader(objects.Events)
 	if err != nil {
@@ -578,6 +585,9 @@ func collectCaptureEventsFor(scope traceScope, duration time.Duration, onEvent f
 			continue
 		}
 		if packet, ok := parseHTTPRecord(record.RawSample); ok {
+			if packet.bootTimeNS < uint64(attached.Nano()) {
+				continue
+			}
 			if packet, ok = splits.join(packet); !ok {
 				continue
 			}
@@ -613,6 +623,11 @@ func collectCaptureEventsFor(scope traceScope, duration time.Duration, onEvent f
 			if err := emit(mysql.events(packet, clockOffset)); err != nil {
 				return captureSummary{}, err
 			}
+			continue
+		}
+		if socket, ok := parseTCPDestroyRecord(record.RawSample); ok && protocol == "http" {
+			requests.forget(socket)
+			splits.forget(socket)
 			continue
 		}
 		if owner, ok := parseOwnerAnnouncement(record.RawSample); ok {
@@ -689,6 +704,18 @@ func captureClockOffset() (int64, error) {
 		return 0, err
 	}
 	return time.Now().UnixNano() - monotonic.Nano(), nil
+}
+
+// tcpDestroyEventType은 capture_events_bpf.c의 tcp_destroy_sock과 http_tcp_destroy_sock이 내는 struct event 종류다.
+const tcpDestroyEventType = 5
+
+// parseTCPDestroyRecord는 끝난 TCP socket의 주소를 읽는다. trace http에서 --port가 없으면 모든 TCP 연결마다 오므로
+// struct 전체를 binary.Read로 풀지 않는다.
+func parseTCPDestroyRecord(sample []byte) (uint64, bool) {
+	if len(sample) < 32 || binary.LittleEndian.Uint32(sample[8:12]) != tcpDestroyEventType {
+		return 0, false
+	}
+	return binary.LittleEndian.Uint64(sample[24:32]), true
 }
 
 func (raw captureEventRaw) event(clockOffset int64) captureEvent {

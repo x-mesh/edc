@@ -20,7 +20,7 @@ const (
 	// 다 쓰지 않도록 둔다.
 	httpMessageMax = 1 << 20
 	// httpMessageIdle은 조각이 더 오지 않는 message를 내보내기까지 기다리는 시간이다. 길이를 알 수 없는 응답은 연결이
-	// 닫혀야 끝나는데, trace http는 연결 종료를 보지 않는다.
+	// 닫혀야 끝나지만, message 조립은 연결 종료를 쓰지 않는다.
 	httpMessageIdle = time.Second
 	// httpMessageOpenBytes와 httpMessageOpenLimit는 끝나기를 기다리는 message의 합계 상한이다. 넘으면 오래된 것부터 낸다.
 	httpMessageOpenBytes  = 64 << 20
@@ -265,6 +265,13 @@ func tlsALPN(data []byte) []string {
 		}
 	}
 	return protocols
+}
+
+// forget은 끝난 socket의 요청을 지운다. kernel은 해제한 socket의 주소를 새 socket에 다시 쓰므로, 응답을 놓친 요청이
+// 남으면 새 연결의 응답이 그 요청과 짝지어진다.
+func (tracker *httpTracker) forget(socket uint64) {
+	tracker.size -= len(tracker.pending[socket])
+	delete(tracker.pending, socket)
 }
 
 // parseHTTPRequest는 요청 줄과 Host header를 읽는다. 요청 줄이 "METHOD target HTTP/1.x"가 아니면 HTTP가 아니다.

@@ -125,6 +125,7 @@ const (
 	captureEventsMapLostEvents                 = "lost_events"
 	captureEventsMapSockOwners                 = "sock_owners"
 	captureEventsMapUdpSendPending             = "udp_send_pending"
+	captureEventsProgHttpTcpDestroySock        = "http_tcp_destroy_sock"
 	captureEventsProgInetCskAcceptEntry        = "inet_csk_accept_entry"
 	captureEventsProgInetSockSetState          = "inet_sock_set_state"
 	captureEventsProgInetStreamConnectEntry    = "inet_stream_connect_entry"
@@ -200,6 +201,7 @@ type captureEventsSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type captureEventsProgramSpecs struct {
+	HttpTcpDestroySock        *ebpf.ProgramSpec `ebpf:"http_tcp_destroy_sock"`
 	InetCskAcceptEntry        *ebpf.ProgramSpec `ebpf:"inet_csk_accept_entry"`
 	InetSockSetState          *ebpf.ProgramSpec `ebpf:"inet_sock_set_state"`
 	InetStreamConnectEntry    *ebpf.ProgramSpec `ebpf:"inet_stream_connect_entry"`
@@ -332,6 +334,7 @@ type captureEventsVariables struct {
 //
 // It can be passed to loadCaptureEventsObjects or ebpf.CollectionSpec.LoadAndAssign.
 type captureEventsPrograms struct {
+	HttpTcpDestroySock        *ebpf.Program `ebpf:"http_tcp_destroy_sock"`
 	InetCskAcceptEntry        *ebpf.Program `ebpf:"inet_csk_accept_entry"`
 	InetSockSetState          *ebpf.Program `ebpf:"inet_sock_set_state"`
 	InetStreamConnectEntry    *ebpf.Program `ebpf:"inet_stream_connect_entry"`
@@ -356,6 +359,7 @@ type captureEventsPrograms struct {
 
 func (p *captureEventsPrograms) Close() error {
 	return _CaptureEventsClose(
+		p.HttpTcpDestroySock,
 		p.InetCskAcceptEntry,
 		p.InetSockSetState,
 		p.InetStreamConnectEntry,

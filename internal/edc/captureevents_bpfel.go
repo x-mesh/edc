@@ -153,6 +153,7 @@ const (
 	captureEventsVarHttpMessageLimit           = "http_message_limit"
 	captureEventsVarHttpPayloadLimit           = "http_payload_limit"
 	captureEventsVarHttpPort                   = "http_port"
+	captureEventsVarMysqlPort                  = "mysql_port"
 	captureEventsVarTcpStatePort               = "tcp_state_port"
 	captureEventsVarUnusedHttpRecord           = "unused_http_record"
 )
@@ -252,6 +253,7 @@ type captureEventsVariableSpecs struct {
 	HttpMessageLimit   *ebpf.VariableSpec `ebpf:"http_message_limit"`
 	HttpPayloadLimit   *ebpf.VariableSpec `ebpf:"http_payload_limit"`
 	HttpPort           *ebpf.VariableSpec `ebpf:"http_port"`
+	MysqlPort          *ebpf.VariableSpec `ebpf:"mysql_port"`
 	TcpStatePort       *ebpf.VariableSpec `ebpf:"tcp_state_port"`
 	UnusedHttpRecord   *ebpf.VariableSpec `ebpf:"unused_http_record"`
 }
@@ -321,6 +323,7 @@ type captureEventsVariables struct {
 	HttpMessageLimit   *ebpf.Variable `ebpf:"http_message_limit"`
 	HttpPayloadLimit   *ebpf.Variable `ebpf:"http_payload_limit"`
 	HttpPort           *ebpf.Variable `ebpf:"http_port"`
+	MysqlPort          *ebpf.Variable `ebpf:"mysql_port"`
 	TcpStatePort       *ebpf.Variable `ebpf:"tcp_state_port"`
 	UnusedHttpRecord   *ebpf.Variable `ebpf:"unused_http_record"`
 }

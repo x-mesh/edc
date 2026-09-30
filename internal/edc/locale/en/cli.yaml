@@ -184,7 +184,7 @@ cli:
     container_inspect: "docker inspect %s failed: %s"
     container_stopped: "container %s is not running"
     container_cgroup: "cannot read the cgroup of container %s: %v"
-    http_kernel: "trace http needs Linux 6.4 or later: the kernel iov_iter has no %s field"
+    http_kernel: "trace http and trace mysql need Linux 6.4 or later: the kernel iov_iter has no %s field"
     socket_path: "trace socket needs the path of a socket file, for example: edc trace socket /run/docker.sock"
     socket_missing: "cannot read the socket file %s: %v"
     socket_not_socket: "%s is not a socket file"

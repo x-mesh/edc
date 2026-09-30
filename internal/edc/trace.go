@@ -87,6 +87,11 @@ var traceProtocols = map[string]traceProtocolSpec{
 		ansiColor: "95", screenColor: "#f472b6", groupColumns: traceHTTPGroupColumns, hideTraffic: true, linuxOnly: true,
 		scrollLabels: traceHTTPScrollLabels, serverSide: true, prerequisites: httpTracePrerequisites, newSummarizer: func() traceSummarizer { return newHTTPTraceSummarizer() },
 	},
+	// 평문 MySQL만 본다. TLS 안의 packet은 kernel에서 암호문이다. 색은 다른 protocol이 쓰지 않는 값이다.
+	"mysql": {
+		ansiColor: "94", screenColor: "#818cf8", groupColumns: traceMySQLGroupColumns, hideTraffic: true, linuxOnly: true,
+		scrollLabels: traceMySQLScrollLabels, serverSide: true, prerequisites: httpTracePrerequisites, newSummarizer: func() traceSummarizer { return newMySQLTraceSummarizer() },
+	},
 	// unix socket 파일 하나를 본다. 목적지는 늘 그 경로라서 port와 target 보기는 한 행뿐이다. source는 상대 process다.
 	"socket": {
 		ansiColor: "38;5;208", screenColor: "#fb923c", hiddenViews: []string{traceGroupByPort, traceGroupByTarget}, linuxOnly: true,
@@ -182,7 +187,7 @@ func (mode *tracePayloadMode) IsBoolFlag() bool { return true }
 // traceLabel은 화면 머리글에 쓰는 trace 이름이다. 서버 쪽 trace는 client 쪽과 같은 event 이름을 쓰므로 머리글로 구분한다.
 // trace http는 기본으로 두 쪽을 모두 보므로, client만 고른 것도 머리글에 쓴다.
 func traceLabel(protocol, side string) string {
-	if side == traceServerSide || (side == traceClientSide && protocol == "http") {
+	if side == traceServerSide || (side == traceClientSide && (protocol == "http" || protocol == "mysql")) {
 		return protocol + " --side " + side
 	}
 	return protocol
@@ -272,7 +277,7 @@ func (report traceGroupReport) hideTraffic() bool { return traceProtocols[report
 
 func runTrace(args []string) int {
 	if len(args) == 0 || !knownTraceProtocol(args[0]) {
-		fmt.Fprintln(os.Stderr, T("cli.usage", "edc trace <tcp|udp|dns|arp|ndp|http> [options]"))
+		fmt.Fprintln(os.Stderr, T("cli.usage", "edc trace <tcp|udp|dns|arp|ndp|http|mysql> [options]"))
 		fmt.Fprintln(os.Stderr, T("cli.usage", traceSocketUsage))
 		return 2
 	}
@@ -353,7 +358,7 @@ func runTrace(args []string) int {
 		fmt.Fprintln(os.Stderr, T("cli.trace.payload_json_conflict"))
 		return 2
 	}
-	if options.showSecrets && options.payload == "" {
+	if options.showSecrets && options.payload == "" && args[0] != "mysql" {
 		fmt.Fprintln(os.Stderr, T("cli.trace.show_secrets_payload"))
 		return 2
 	}
@@ -368,7 +373,7 @@ func runTrace(args []string) int {
 		fmt.Fprintln(os.Stderr, T("cli.trace.port_range"))
 		return 2
 	}
-	if portSet && args[0] != "http" {
+	if portSet && args[0] != "http" && args[0] != "mysql" {
 		fmt.Fprintln(os.Stderr, T("cli.trace.port_protocol", args[0]))
 		return 2
 	}
@@ -801,6 +806,7 @@ type traceGroup struct {
 	DNS             *traceDNSCounts
 	Neighbor        *traceNeighborCounts
 	HTTP            *traceHTTPCounts
+	MySQL           *traceMySQLCounts
 	traceTraffic
 }
 
@@ -822,6 +828,7 @@ type traceGroupSummary struct {
 	// Neighbor는 ARP와 NDP group에만, HTTP는 HTTP group에만 있다.
 	Neighbor *traceNeighborCounts `json:"neighbor,omitempty"`
 	HTTP     *traceHTTPCounts     `json:"http,omitempty"`
+	MySQL    *traceMySQLCounts    `json:"mysql,omitempty"`
 	traceTraffic
 }
 
@@ -903,7 +910,7 @@ func (summarizer *traceGroupSummarizer) observe(event captureEvent) {
 	key, server := traceGroupKey(event, summarizer.groupBy)
 	// 로컬 서버가 받은 HTTP 요청은 같은 process나 target이 보낸 요청과 다른 행에 둔다. 서버의 응답 시간은 처리 시간만
 	// 재므로, 섞으면 평균이 뜻을 잃는다.
-	if event.Protocol == "http" && event.Side == traceServerSide {
+	if (event.Protocol == "http" || event.Protocol == "mysql") && event.Side == traceServerSide {
 		server = true
 	}
 	// 서버 행과 target 없는 client 행이 같은 주소일 수 있다. 섞이지 않도록 map key만 구분한다.
@@ -924,11 +931,17 @@ func (summarizer *traceGroupSummarizer) observe(event captureEvent) {
 			queries.DNS.answered += event.answered
 		}
 		requestKey := traceHTTPRequestEvent
+		if event.MySQL != nil {
+			requestKey = mysqlEventPrefix + event.MySQL.Command
+		}
 		if server {
 			requestKey += "\x00server"
 		}
 		if requests := summarizer.groups[requestKey]; requests != nil && requests.HTTP != nil {
 			requests.HTTP.answered += event.answered
+		}
+		if requests := summarizer.groups[requestKey]; requests != nil && requests.MySQL != nil {
+			requests.MySQL.answered += event.answered
 		}
 	}
 	summarizer.events++
@@ -946,7 +959,7 @@ func (summarizer *traceGroupSummarizer) report(summary captureSummary, duration 
 		result.Groups = append(result.Groups, traceGroupSummary{
 			Group: group.Group, Server: group.Server, Destinations: slices.Sorted(maps.Keys(group.Destinations)), Processes: slices.Sorted(maps.Keys(group.Processes)),
 			Events: group.Events, Rate: traceGroupRate(group.Events, duration), Tx: group.Tx, Rx: group.Rx, Connect: group.Connect,
-			Retransmissions: traceObserved(group.Retransmissions), Resets: traceObserved(group.Resets), LastEvent: group.LastEvent, DNS: traceDNSGroupSummary(group.DNS), Neighbor: traceNeighborGroupSummary(group.Neighbor), HTTP: traceHTTPGroupSummary(group.HTTP), traceTraffic: traffic,
+			Retransmissions: traceObserved(group.Retransmissions), Resets: traceObserved(group.Resets), LastEvent: group.LastEvent, DNS: traceDNSGroupSummary(group.DNS), Neighbor: traceNeighborGroupSummary(group.Neighbor), HTTP: traceHTTPGroupSummary(group.HTTP), MySQL: traceMySQLGroupSummary(group.MySQL), traceTraffic: traffic,
 		})
 	}
 	if summarizer.groupBy == traceGroupByPort {
@@ -1105,6 +1118,11 @@ func observeTraceGroup(group *traceGroup, event captureEvent) {
 			group.HTTP = &traceHTTPCounts{}
 		}
 		group.HTTP.observe(event)
+	case "mysql":
+		if group.MySQL == nil {
+			group.MySQL = &traceMySQLCounts{}
+		}
+		group.MySQL.observe(event)
 	}
 	group.traceTraffic.observe(event)
 	group.LastEvent = event.Event

@@ -931,6 +931,75 @@ edc는 port가 아니라 data의 앞부분으로 HTTP를 찾으므로, 어느 po
 
 HTTPS, HTTP/2, HTTP/3은 kernel에서 암호문이나 binary frame으로만 보이므로 표시하지 않습니다. edc는 한 번의 읽기나 쓰기가 시작되는 곳에서만 message를 찾습니다. 그래서 한 번의 읽기에 앞 응답의 끝과 다음 응답의 시작이 함께 들어 있으면 다음 응답을 놓칩니다. 프로그램이 message 하나를 여러 버퍼로 나눠 쓰면 첫 버퍼만 읽으므로, `Host` header는 첫 버퍼의 앞 512 byte 안에 있어야 합니다. 없으면 target은 서버 주소입니다. edc가 읽는 kernel field는 Linux 6.4에 생겼으므로, 더 오래된 kernel에서는 오류를 내고 멈춥니다.
 
+Linux 6.4 이상에서 `trace mysql`을 사용하면 평문 MySQL 명령과 결과를 발생 즉시 출력합니다. edc는 kernel에서 MySQL port의 TCP 읽기와 쓰기마다 앞부분을 읽습니다. 기본 port는 3306이고, 다른 port는 `--port`로 지정합니다.
+
+```bash
+./bin/edc trace mysql
+./bin/edc trace mysql --side server
+./bin/edc trace mysql --port 3307
+./bin/edc trace mysql --group-by process
+./bin/edc trace mysql --show-secrets
+./bin/edc trace mysql --raw
+```
+
+`trace mysql`은 `trace http`처럼 두 쪽을 나눠 보여 줍니다. event 행 앞에 쪽이 붙습니다.
+
+- `client:`는 이 host가 MySQL 서버로 보낸 명령입니다.
+- `server:`는 로컬 MySQL 서버가 받은 명령입니다.
+
+JSON event에는 `"side": "client"`나 `"side": "server"`가 붙습니다. 한 쪽만 보려면 `--side client`나 `--side server`를 씁니다. 로컬 port가 MySQL port이면 서버 쪽 socket이고, 상대 port가 MySQL port이면 client 쪽 socket입니다.
+
+| 보려는 것 | 명령 |
+| --- | --- |
+| 이 host의 MySQL 전부 | `./bin/edc trace mysql` |
+| 로컬 서버가 받은 명령 | `./bin/edc trace mysql --side server` |
+| 이 host가 보낸 명령 | `./bin/edc trace mysql --side client` |
+| port 3307의 MySQL | `./bin/edc trace mysql --port 3307` |
+| 쪽마다 process별 응답 시간 | `./bin/edc trace mysql --group-by process` |
+| 가리지 않은 SQL 원문 | `./bin/edc trace mysql --show-secrets` |
+
+명령은 아래 event 중 하나입니다. 필드는 JSON event의 `mysql` 객체에 들어 있습니다.
+
+- `mysql_connect`는 로그인입니다. `user`, `database`, `server_version`이 있습니다.
+- `mysql_query`는 텍스트 query입니다. `sql`이 있습니다.
+- `mysql_prepare`는 prepared statement 준비입니다. `sql`이 있습니다.
+- `mysql_execute`는 prepared statement 실행입니다. `statement_id`와, edc가 본 prepare의 `sql`이 있습니다. binary parameter 값은 읽지 않습니다.
+
+응답은 아래 event 중 하나입니다.
+
+- `mysql_ok`에는 `affected_rows`가 있고, prepare의 응답에는 `statement_id`가 있습니다. 로그인의 성공 응답도 `mysql_ok`입니다.
+- `mysql_error`에는 `error_code`, `sql_state`, `message`가 있습니다.
+- `mysql_result`에는 column 수인 `columns`가 있습니다. 행은 세지도 읽지도 않습니다.
+
+응답 event에는 답한 명령의 `command`와 `sql`이 함께 들어 있습니다. `mysql_tls`는 명령이 아닙니다. 연결이 TLS를 쓴다는 표시이며 `tls: true`가 있습니다. edc는 그 연결을 더 읽지 않습니다.
+
+MySQL은 한 번에 명령 하나에 답하므로, 명령 뒤에 오는 첫 응답 packet이 그 명령의 응답입니다. `latency_ms`는 client가 명령을 보낸 때부터 그 packet을 읽은 때까지입니다. 서버 쪽에서는 서버가 명령을 읽은 때부터 그 packet을 쓴 때까지입니다. client 응답 시간에는 network가 들어가고, 서버 응답 시간에는 서버가 처리한 시간만 들어갑니다. 첫 packet 뒤의 행은 읽지 않으므로 `latency_ms`는 마지막 행까지 걸린 시간이 아닙니다.
+
+`COM_QUIT`, `COM_STMT_CLOSE`, `COM_STMT_SEND_LONG_DATA`는 응답이 없어서 event가 없습니다. ping이나 기본 database 변경 같은 다른 명령도 event가 없고, edc는 그 응답을 건너뜁니다.
+
+edc는 기본으로 SQL의 작은따옴표와 큰따옴표 안 문자열을 `?`로 가립니다. 예를 들어 `INSERT INTO t VALUES (1,'?')`로 보입니다. 가리기는 scroll 보기, 전체 화면, `--raw`, 요약에 모두 적용됩니다. 숫자, 이름, 주석은 가리지 않으므로 주석이나 숫자에 비밀을 쓰지 않습니다. 서버가 `ANSI_QUOTES`를 쓰면 따옴표로 감싼 이름도 가려집니다.
+
+`--show-secrets`를 사용하면 SQL 원문을 보냈던 그대로 봅니다. `--payload`는 필요 없습니다. `CREATE USER ... IDENTIFIED BY 'password'` 같은 문장에서는 password가 보이므로 이런 출력은 공유하지 않습니다. 전체 화면의 `m` 키는 `trace http`에서만 동작합니다. `trace mysql`에서는 명령줄의 `--show-secrets`를 사용합니다.
+
+`mysql_error` event의 `message`는 가리지 않으며, 값이 들어 있을 수 있습니다. 예를 들어 `Duplicate entry '1' for key 't.PRIMARY'`에는 key 값이 있고, 접속 오류에는 user와 host가 있습니다. 출력을 공유하기 전에 값이 들어 있는지 확인합니다. edc는 로그인의 인증 data를 건너뛰고 저장하지 않습니다.
+
+Ctrl-C 뒤의 요약은 쪽, 명령, SQL shape마다 한 행을 보여 줍니다. shape는 문자열 값과 숫자를 `?`로 바꾸고 공백을 한 칸으로 합칩니다. 그래서 `WHERE id = 7`과 `WHERE id = 8`은 한 행에 합쳐집니다. `IN` 목록의 항목 수가 달라도 합치지 않습니다. 행에는 명령 수, 오류 수, 응답이 없는 명령 수, 평균과 최대 응답 시간, process가 나옵니다. 두 쪽이 섞이면 쪽별 합계를 보여 주고 `SIDE` 열을 더합니다. 연결 수, TLS 연결 수, 압축 연결 수도 나옵니다. JSON에도 같은 내용이 들어 있습니다. `--group-by`를 쓰면 행에 `CMD`, `RSP`, `ERR`, `NOANS`, `AVGms`, `MAXms`가 나오고, group 보기는 server 쪽을 별도 행으로 둡니다.
+
+`trace mysql`에는 다음 제한이 있습니다.
+
+- TCP만 봅니다. `mysql -h localhost`는 unix socket을 쓰므로 `trace mysql`에는 아무것도 보이지 않습니다. `mysql -h 127.0.0.1`은 TCP입니다. unix socket의 raw payload는 `trace socket`으로 봅니다.
+- TLS는 읽지 않습니다. MySQL 8.4의 `mysql` client는 TCP에서 기본으로 TLS를 쓰므로 많은 연결에 `mysql_tls`만 나옵니다. test에서는 `--ssl-mode=DISABLED`를 씁니다.
+- 압축 연결은 읽지 않습니다. `compressed: true`인 `mysql_connect`와 로그인 결과까지만 보이고, 그 뒤에는 event가 없습니다.
+- port 33060의 X Protocol은 읽지 않습니다.
+- 명령에 query attribute 값이 있으면 SQL을 찾지 못해 `sql` 없이 명령만 보입니다.
+- client가 한 번의 `writev`로 packet header와 payload를 서로 다른 buffer에서 쓰면 edc는 header만 읽어 명령을 보지 못합니다.
+- 16MiB 이상의 명령은 packet 여러 개로 옵니다. edc는 앞부분만 보여 주고 응답을 짝짓습니다.
+- `LOCAL INFILE`은 특별한 응답을 씁니다. edc는 짝짓지 못하므로 그 명령은 응답 없음으로 셉니다.
+- 연결 중간에 trace를 시작하면 그 연결의 `mysql_connect`가 없습니다. edc는 이후 명령에서 packet 경계를 찾으므로 처음 명령 몇 개는 빠질 수 있습니다. prepare를 보지 못했으면 `mysql_execute`에는 `statement_id`만 보입니다.
+- 명령은 읽기나 쓰기마다 앞 4KiB, 응답은 읽기나 쓰기마다 앞 1KiB만 가져옵니다. event의 SQL은 1,024 byte까지이고, 잘리면 `sql_truncated`가 true입니다.
+- 잃어버린 event나 부분 송신 때문에 packet 경계가 어긋나면 그 연결의 다음 명령이 빠질 수 있습니다. 요약에서 lost event 수를 확인합니다.
+- `docker run -p`는 `docker-proxy`를 거치므로 query 하나가 구간마다 한 번씩 보입니다. container 주소로 접속하면 피할 수 있습니다.
+
 Linux에서 `trace socket`을 사용하면 unix domain socket 파일 하나에서 일어나는 일을 출력합니다. socket 파일의 경로를 지정하면 그 socket의 connect, accept, send, recv, data 끝(`eof`), close를 표시합니다. option은 경로 앞이나 뒤에 씁니다.
 
 ```bash

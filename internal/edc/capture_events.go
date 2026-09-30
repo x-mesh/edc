@@ -50,6 +50,8 @@ type captureEvent struct {
 	Method string `json:"method,omitempty"`
 	Path   string `json:"path,omitempty"`
 	Status int    `json:"status,omitempty"`
+	// MySQL은 MySQL event에만 붙는다. 응답에는 답한 요청의 명령과 SQL도 들어 있다.
+	MySQL *traceMySQLEvent `json:"mysql,omitempty"`
 	// Payload는 trace http --payload일 때만 붙는 message 앞부분이다. 제어 문자를 이미 \xNN으로 바꿔 두어서
 	// jq -r로 terminal에 찍어도 escape sequence가 실행되지 않는다.
 	Payload string `json:"payload,omitempty"`

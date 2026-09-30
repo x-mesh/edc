@@ -44,7 +44,8 @@ type httpPacket struct {
 	source      string
 	destination string
 	payload     []byte
-	// continued는 --payload=all에서 앞 message에 이어지는 조각이다. offset은 조각이 message 안에서 시작하는 위치다.
+	// continued는 앞 message에 이어지는 조각이다. --payload=all이 아니면 첫 줄이 끊긴 첫 조각 뒤에만 온다. offset은 조각이
+	// message 안에서 시작하는 위치다.
 	continued bool
 	offset    uint32
 }

@@ -38,6 +38,53 @@ func newHTTPMessages(tracker *httpTracker, limit int, showSecrets bool) *httpMes
 	return &httpMessages{tracker: tracker, limit: limit, showSecrets: showSecrets, open: map[httpStreamKey]*httpOpenMessage{}}
 }
 
+// httpSplitLimit는 다음 조각을 기다리는 첫 조각 수의 상한이다. 다음 조각이 오지 않는 socket의 첫 조각이 쌓이지 않게 한다.
+const httpSplitLimit = 1024
+
+// httpSplitStarts는 첫 줄이 끝나기 전에 끊긴 첫 조각을 다음 조각과 잇는다. caddy는 요청의 첫 14 byte를 먼저 읽고 나머지를
+// 다시 읽어서, 첫 조각만으로는 요청을 알아볼 수 없다.
+type httpSplitStarts map[httpStreamKey]httpPacket
+
+// join은 첫 줄이 끝나지 않은 첫 조각을 두고 false를 돌려준다. 그 뒤에 이어지는 조각이 오면 둘을 이은 첫 조각을 돌려준다.
+// 기다리는 조각이 없는 packet은 그대로 돌려준다.
+func (starts httpSplitStarts) join(packet httpPacket) (httpPacket, bool) {
+	key := httpStreamKey{socket: packet.socket, sent: packet.sent}
+	if packet.continued {
+		held, ok := starts[key]
+		if !ok {
+			return packet, true
+		}
+		delete(starts, key)
+		// 사이 조각을 잃었으면 이을 수 없다.
+		if packet.offset != uint32(len(held.payload)) {
+			return httpPacket{}, false
+		}
+		held.payload = append(slices.Clip(held.payload), packet.payload...)
+		packet = held
+	} else {
+		delete(starts, key)
+	}
+	// --payload=all은 조각을 계속 보낸다. 4KiB 안에 첫 줄이 끝나지 않으면 읽을 수 있는 HTTP/1.x가 아니다.
+	if !httpFirstLineOpen(packet.payload) || len(packet.payload) >= httpPayloadHead {
+		return packet, true
+	}
+	if len(starts) >= httpSplitLimit {
+		clear(starts)
+	}
+	starts[key] = packet
+	return httpPacket{}, false
+}
+
+// httpFirstLineOpen은 요청 줄이나 상태 줄이 아직 끝나지 않았는지다. 모든 첫 조각에 부르므로 요청 줄을 다시 해석하지 않는다.
+// 요청 줄은 CRLF가 있어야 읽히고, 상태 줄은 코드까지만 있으면 읽힌다.
+func httpFirstLineOpen(payload []byte) bool {
+	if bytes.Contains(payload, []byte("\r\n")) {
+		return false
+	}
+	_, status := parseHTTPStatus(payload)
+	return !status
+}
+
 // add는 레코드 하나를 받아, 끝난 message의 event를 끝난 순서대로 돌려준다.
 func (messages *httpMessages) add(packet httpPacket, clockOffset int64, now time.Time) []captureEvent {
 	key := httpStreamKey{socket: packet.socket, sent: packet.sent}

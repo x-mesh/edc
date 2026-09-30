@@ -167,3 +167,80 @@ func TestTracePayloadAllOptions(t *testing.T) {
 		t.Fatalf("head scope = %+v", scope)
 	}
 }
+
+func TestHTTPSplitStartsJoinARequestLineReadInTwoParts(t *testing.T) {
+	starts := httpSplitStarts{}
+	// caddy는 요청의 첫 14 byte를 먼저 읽는다.
+	if _, ok := starts.join(httpTestPacket("GET /strace-pr", 1_000_000, false)); ok {
+		t.Fatal("a start without the end of its first line came out")
+	}
+	joined, ok := starts.join(httpChunk("obe HTTP/1.1\r\nHost: edc-proxy:8080\r\n\r\n", 1_100_000, false, 14))
+	if !ok || joined.continued || joined.bootTimeNS != 1_000_000 || len(starts) != 0 {
+		t.Fatalf("joined = %+v, ok %v, held %d", joined, ok, len(starts))
+	}
+	event, ok := newHTTPTracker(true, false, false).event(joined, 0)
+	if !ok || event.Path != "/strace-probe" || event.Target != "edc-proxy:8080" || event.Side != traceServerSide {
+		t.Fatalf("event = %+v", event)
+	}
+
+	status, _ := starts.join(httpTestPacket("HTTP/1.1 20", 2_000_000, true))
+	if status.payload != nil {
+		t.Fatalf("a cut status line came out: %q", status.payload)
+	}
+	if joined, ok := starts.join(httpChunk("0 OK\r\n\r\n", 2_100_000, true, 11)); !ok || string(joined.payload) != "HTTP/1.1 200 OK\r\n\r\n" {
+		t.Fatalf("status = %q, %v", joined.payload, ok)
+	}
+}
+
+func TestHTTPSplitStartsPassOtherPackets(t *testing.T) {
+	starts := httpSplitStarts{}
+	whole := httpTestPacket("GET / HTTP/1.1\r\n\r\n", 1, true)
+	if got, ok := starts.join(whole); !ok || string(got.payload) != string(whole.payload) {
+		t.Fatalf("a whole start = %q, %v", got.payload, ok)
+	}
+	// --payload=all의 본문 조각은 기다리는 첫 조각이 없으면 그대로 간다.
+	if got, ok := starts.join(httpChunk("body", 2, true, 18)); !ok || !got.continued {
+		t.Fatalf("a body chunk = %+v, %v", got, ok)
+	}
+	// 사이 조각을 잃으면 잇지 않는다.
+	starts.join(httpTestPacket("GET /a", 3, true))
+	if _, ok := starts.join(httpChunk(" HTTP/1.1\r\n\r\n", 4, true, 9)); ok || len(starts) != 0 {
+		t.Fatalf("a chunk after a gap was joined, held %d", len(starts))
+	}
+	// 새 message가 시작하면 기다리던 첫 조각은 버린다.
+	starts.join(httpTestPacket("GET /a", 5, true))
+	if got, ok := starts.join(httpTestPacket("GET /b HTTP/1.1\r\n\r\n", 6, true)); !ok || !strings.HasPrefix(string(got.payload), "GET /b") || len(starts) != 0 {
+		t.Fatalf("new start = %q, %v, held %d", got.payload, ok, len(starts))
+	}
+	// 첫 줄이 4KiB 안에 끝나지 않으면 더 기다리지 않는다.
+	starts.join(httpTestPacket("GET /", 8, true))
+	if got, ok := starts.join(httpChunk(strings.Repeat("a", httpPayloadHead), 9, true, 5)); !ok || len(got.payload) != httpPayloadHead+5 || len(starts) != 0 {
+		t.Fatalf("a long first line: %d bytes, %v, held %d", len(got.payload), ok, len(starts))
+	}
+	for socket := range uint64(httpSplitLimit + 1) {
+		packet := httpTestPacket("GET /a", 7, true)
+		packet.socket = socket
+		starts.join(packet)
+	}
+	if len(starts) > httpSplitLimit {
+		t.Fatalf("held %d starts, limit %d", len(starts), httpSplitLimit)
+	}
+}
+
+func TestHTTPMessagesTakeARequestWhoseFirstLineWasSplit(t *testing.T) {
+	starts, messages, now := httpSplitStarts{}, newHTTPMessages(newHTTPTracker(true, false, false), httpMessageMax, false), time.Unix(100, 0)
+	var events []captureEvent
+	first, second := "POST /uplo", "ad HTTP/1.1\r\nHost: x\r\nContent-Length: 4\r\n\r\nab"
+	for _, packet := range []httpPacket{
+		httpTestPacket(first, 1_000_000, false),
+		httpChunk(second, 1_100_000, false, uint32(len(first))),
+		httpChunk("cd", 1_200_000, false, uint32(len(first+second))),
+	} {
+		if packet, ok := starts.join(packet); ok {
+			events = append(events, messages.add(packet, 0, now)...)
+		}
+	}
+	if len(events) != 1 || events[0].Path != "/upload" || events[0].PayloadTruncated || !strings.HasSuffix(events[0].Payload, "\r\n\r\nabcd") {
+		t.Fatalf("events = %#v", events)
+	}
+}

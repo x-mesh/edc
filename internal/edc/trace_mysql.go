@@ -1077,7 +1077,7 @@ func traceMySQLScrollLabels(event captureEvent) (string, string) {
 	}
 	text := traceMySQLCommandText(event)
 	if mysqlResponseEvent(event.Event) {
-		text += " · " + traceMySQLResultText(event)
+		text = "↳ " + traceMySQLResultText(event)
 	}
 	if event.Side != "" {
 		text = event.Side + ": " + text

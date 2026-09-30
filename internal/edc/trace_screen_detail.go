@@ -83,13 +83,17 @@ func traceEventTitle(event captureEvent) string {
 // newTraceDetail은 event의 필드와 payload를 줄로 만든다. payload는 부르는 쪽이 가리기와 gzip 풀기를 마친 글자다.
 func newTraceDetail(event captureEvent, payload string, notes []string, number, width int) *traceDetail {
 	detail := &traceDetail{title: traceEventTitle(event), number: number}
-	fields := event
-	fields.Payload = ""
-	encoded, err := json.MarshalIndent(fields, "", "  ")
-	if err != nil {
-		encoded = []byte(err.Error())
+	if event.Protocol == "mysql" && event.MySQL != nil {
+		detail.raw = traceMySQLDetailLines(event)
+	} else {
+		fields := event
+		fields.Payload = ""
+		encoded, err := json.MarshalIndent(fields, "", "  ")
+		if err != nil {
+			encoded = []byte(err.Error())
+		}
+		detail.raw = strings.Split(string(encoded), "\n")
 	}
-	detail.raw = strings.Split(string(encoded), "\n")
 	if payload != "" {
 		detail.raw = append(append(detail.raw, "", "payload:"), notes...)
 		event.Payload = payload
@@ -97,6 +101,51 @@ func newTraceDetail(event captureEvent, payload string, notes []string, number, 
 	}
 	detail.wrap(width)
 	return detail
+}
+
+func traceMySQLDetailLines(event captureEvent) []string {
+	info := event.MySQL
+	lines := []string{
+		"event: " + event.Event,
+		"time: " + traceEventClock(event),
+		"side: " + emptyAs(event.Side, "-"),
+		"process: " + emptyAs(event.Process, "-"),
+		"source: " + emptyAs(event.Source, "-"),
+		"destination: " + emptyAs(event.Destination, "-"),
+		"bytes: " + strconv.FormatUint(event.Bytes, 10),
+	}
+	if info.Command != "" {
+		lines = append(lines, "command: "+info.Command)
+	}
+	if event.LatencyMS != nil {
+		lines = append(lines, "latency: "+traceLatency(event.LatencyMS, "ms"))
+	}
+	if info.User != "" {
+		lines = append(lines, "user: "+info.User)
+	}
+	if info.Database != "" {
+		lines = append(lines, "database: "+info.Database)
+	}
+	if info.ServerVersion != "" {
+		lines = append(lines, "server_version: "+info.ServerVersion)
+	}
+	if info.StatementID != 0 {
+		lines = append(lines, "statement_id: "+strconv.FormatUint(uint64(info.StatementID), 10))
+	}
+	if info.AffectedRows != nil {
+		lines = append(lines, "affected_rows: "+strconv.FormatUint(*info.AffectedRows, 10))
+	}
+	if info.Columns != 0 {
+		lines = append(lines, "columns: "+strconv.FormatUint(info.Columns, 10))
+	}
+	if info.ErrorCode != 0 || info.SQLState != "" || info.Message != "" {
+		lines = append(lines, "error: "+fmt.Sprintf("%d (%s) %s", info.ErrorCode, emptyAs(info.SQLState, "-"), info.Message))
+	}
+	if info.SQL != "" {
+		lines = append(lines, "", "sql:")
+		lines = append(lines, strings.Split(info.SQL, "\n")...)
+	}
+	return lines
 }
 
 // buildDetail은 번호가 number인 event의 상세 보기를 만든다. 목록에서 빠진 event면 nil이다.
@@ -241,6 +290,23 @@ func traceWrapLine(line string, width int) []string {
 // moveSelection은 고른 event에서 filter에 맞는 event를 step 방향으로 count개 건너간 번호다. 고른 event가 없으면
 // 가장 최근 event부터 센다. 더 갈 곳이 없으면 그대로 둔다.
 func (model traceScreenModel) moveSelection(step, count int) int {
+	if model.protocol == "mysql" {
+		rows := model.displayRows()
+		index := len(rows)
+		if model.selected >= 0 {
+			index = model.displayRowForSelected(rows)
+			if index < 0 {
+				index = len(rows)
+			}
+		}
+		found := model.selected
+		for index += step; index >= 0 && index < len(rows) && count > 0; index += step {
+			if model.displayRowMatches(rows[index]) {
+				found, count = rows[index].primary, count-1
+			}
+		}
+		return found
+	}
 	index := len(model.events)
 	if model.selected >= 0 {
 		index = model.selected - model.first

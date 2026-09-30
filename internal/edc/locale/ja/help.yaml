@@ -147,6 +147,7 @@ command:
     summary: "TCP、UDP、DNS、ARP、NDP、HTTP、MySQL、socket、drop を表示・要約"
     option:
       duration: "trace 時間、最大 60s。省略で Ctrl-C"
+      slow: "mysql のみ。最初の応答 latency がこの時間以上"
       raw: "raw event JSONL を表示"
       live: "互換 flag。trace は既定でリアルタイムに実行"
       group_by: "source、target、port、process、event でまとめます"
@@ -196,6 +197,8 @@ command:
       - "trace mysql は Linux 6.4 以降で平文 MySQL のコマンドと結果を表示します。"
       - "両側を表示します。各行の先頭に client: か server: が付きます。"
       - "--port は MySQL サーバーの port です。既定値は 3306 です。"
+      - "--slow は最初の応答 latency が指定時間以上の MySQL 行だけを表示します。"
+      - "--slow は Go duration 構文を受け付け、応答なしの command は表示しません。"
       - "SQL の文字列値は隠します。--show-secrets で表示します。"
       - "エラー message は隠しません。message に値が入ることがあります。"
       - "TCP だけを見ます。mysql -h localhost は unix socket を使います。"

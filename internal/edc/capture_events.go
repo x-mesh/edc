@@ -294,6 +294,7 @@ func (traffic *traceTraffic) finalize(duration time.Duration) {
 
 type tcpTraceOptions struct {
 	duration    time.Duration
+	slow        time.Duration
 	jsonPath    string
 	raw         bool
 	live        bool

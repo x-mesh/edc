@@ -147,6 +147,7 @@ command:
     summary: "Trace TCP, UDP, DNS, ARP, NDP, HTTP, MySQL, socket, and drop events"
     option:
       duration: "trace time, max 60s. Omit for Ctrl-C"
+      slow: "mysql only: first response latency threshold"
       raw: "print raw event JSONL"
       live: "compatibility flag. Trace is live by default"
       group_by: "group by source, target, port, process, or event"
@@ -196,6 +197,8 @@ command:
       - "trace mysql shows plain MySQL commands and results on Linux 6.4 or later."
       - "It shows both sides. Each row starts with client: or server:."
       - "--port is the MySQL server port. The default is 3306."
+      - "--slow keeps only paired MySQL rows at or above the first response latency."
+      - "--slow accepts Go duration syntax. It omits unanswered commands."
       - "It hides SQL string values. --show-secrets shows them."
       - "It does not hide an error message. The message can hold values."
       - "It reads TCP only. mysql -h localhost uses a unix socket."

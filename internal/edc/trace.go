@@ -128,7 +128,9 @@ type traceScope struct {
 	// payloadAll은 --payload=all이다. 이어지는 조각까지 받아 message 전체를 event에 붙인다.
 	payloadAll  bool
 	showSecrets bool
-	port        uint16
+	// keepGzip이면 gzip message의 원본 byte를 event에 붙인다. 전체 화면의 상세 보기가 본문을 풀 때 쓴다.
+	keepGzip bool
+	port     uint16
 }
 
 func (options tcpTraceOptions) scope(protocol string) traceScope {

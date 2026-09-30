@@ -816,6 +816,8 @@ Grouped rows in the full-screen view show the groups with the most traffic first
 
 In the event list, press Up or Down (or `k` and `j`) to select an event. While an event is selected, the list stops and does not follow new events. The header shows the number of newer events. Press Enter to see all the fields of the event and the whole payload. The detail view wraps long lines. Press Up, Down, PgUp, PgDn, Home, or End to scroll, and press Esc or `q` to go back. Press End in the list to follow new events again. The list keeps the first 4 KiB of each payload. The detail view shows the whole payload of recent events, up to 64 MiB in total.
 
+Press `f` to open the detail view on the newest event and follow new events. Press `f` again to stop at the event on the screen. In `trace http`, the full screen collects the first 4 KiB of each message also without `--payload`. The list hides the payload lines until you press `v`. With `--payload`, the list shows them from the start. Press `m` to show or hide the values of the `Authorization`, `Proxy-Authorization`, `Cookie`, and `Set-Cookie` headers. While they are visible, the header shows `secrets shown`. In the detail view, press `z` to decode a gzip body. edc decodes up to 1 MiB and shows how many bytes it decoded.
+
 On macOS, `trace` reads socket counters from the kernel network statistics interface (`com.apple.network.statistics`). `nettop` uses the same interface. `edc` reads the counters each second and makes events from the changes. The interface is private, so a macOS update can change its format. If the format changes, the trace stops with an error.
 
 On macOS, some values are not available. The text output shows `-` for these values. The JSON output shows `null`.
@@ -925,7 +927,7 @@ Use `--payload` to see the data of each message. Under each event, edc prints th
 
 Use `--payload=all` to see each whole message, up to 1 MiB. edc follows the message into the next reads and writes, and into the other buffers of a `writev`. edc prints the event when the message ends. The end is the last byte of `Content-Length`, the last chunk of a chunked body, or one second without data. So the event can come out later than with `--payload`, but the latency does not change. The plain output prints the whole message under the event. The full screen still shows one line. If edc cuts the message at 1 MiB, loses a part, or stops before the end, the event has `"payload_truncated": true`. Write `--payload=all` without a space. `--payload all` is an error. `--payload=all` uses more CPU than `--payload`, so a busy server causes lost events sooner.
 
-Use `--show-secrets` with `--payload` to show the values of the `Authorization`, `Proxy-Authorization`, `Cookie`, and `Set-Cookie` headers. Other people can use an account with these values. Do not share output that has them.
+Use `--show-secrets` with `--payload` to show the values of the `Authorization`, `Proxy-Authorization`, `Cookie`, and `Set-Cookie` headers. Other people can use an account with these values. Do not share output that has them. In the full screen, press `m` instead.
 
 The summary after Ctrl-C shows one row for each method, host, and path. Grouped rows show the requests, the responses, the 4xx and 5xx responses, the unanswered requests, and the average and maximum latency.
 

@@ -65,6 +65,8 @@ type captureEvent struct {
 	LostEvents uint64 `json:"lost_events,omitempty"`
 	// answered는 응답이 답한 요청 수다. DNS는 응답 전에 같은 질의를 다시 보냈으면 1보다 크다.
 	answered uint64
+	// gzipped는 gzip message의 원본 byte다. 전체 화면의 상세 보기가 본문을 풀 때 쓰고, JSON에는 나오지 않는다.
+	gzipped []byte
 }
 
 type captureSummary struct {

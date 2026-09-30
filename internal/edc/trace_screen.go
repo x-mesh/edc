@@ -54,6 +54,12 @@ type traceScreenModel struct {
 	finished    *traceFinishedMsg
 	eventCh     <-chan captureEvent
 	resultCh    <-chan traceFinishedMsg
+	// first는 events[0]의 번호다. 앞의 event를 버려도 번호는 그대로라서, 고른 event와 payload 전체를 번호로 찾는다.
+	first int
+	// selected는 고른 event의 번호다. -1이면 고른 event가 없고 목록이 새 event를 따라간다.
+	selected int
+	detail   *traceDetail
+	payloads traceFullPayloads
 }
 
 func newTraceScreenModel(protocol string, options tcpTraceOptions, eventCh <-chan captureEvent, resultCh <-chan traceFinishedMsg, stop func()) traceScreenModel {
@@ -65,7 +71,7 @@ func newTraceScreenModel(protocol string, options tcpTraceOptions, eventCh <-cha
 	return traceScreenModel{
 		protocol: protocol, side: options.side, groupBy: options.groupBy, process: options.process, destination: options.destination,
 		duration: options.duration, started: time.Now(), eventCh: eventCh, resultCh: resultCh, stop: stop, input: input,
-		width: 80, height: 24,
+		width: 80, height: 24, selected: -1,
 	}
 }
 
@@ -104,23 +110,33 @@ func (model traceScreenModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		model.width, model.height = value.Width, value.Height
 		model.input.SetWidth(max(20, min(60, value.Width-12)))
+		if model.detail != nil {
+			model.detail.wrap(model.width)
+			model.detail.scroll(0, max(1, model.height-3))
+		}
 		return model, nil
 	case traceEventMsg:
 		now := time.Now()
 		for _, event := range value.events {
 			model.received++
 			if traceProtocol(event) == model.protocol {
-				// 화면은 event를 한 줄로만 보여 주고 최대 10,000건 보관한다. --payload=all의 1MiB payload를 그대로 두면
-				// 메모리가 GB 단위로 커지므로 앞부분만 남긴다.
+				// 화면은 event를 최대 10,000건 보관한다. --payload=all의 1MiB payload를 그대로 두면 메모리가 GB 단위로
+				// 커지므로 목록에는 앞부분만 남긴다. 상세 보기에 쓸 전체는 최근 것만 상한 안에서 따로 둔다.
+				model.payloads.keep(model.first+len(model.events), event.Payload)
 				event.Payload = traceTrimText(event.Payload, httpPayloadHead)
 				model.events = append(model.events, event)
 				model.arrivals = append(model.arrivals, now)
 			}
 		}
 		if len(model.events) > traceScreenEventLimit {
+			model.first += len(model.events) - traceScreenEventLimit
 			model.events = model.events[len(model.events)-traceScreenEventLimit:]
 			model.arrivals = model.arrivals[len(model.arrivals)-traceScreenEventLimit:]
 			model.truncated = true
+			model.payloads.drop(model.first)
+			if model.selected >= 0 && model.selected < model.first {
+				model.selected = model.first
+			}
 		}
 		return model, waitTraceMessage(model.eventCh, model.resultCh)
 	case traceFinishedMsg:
@@ -140,12 +156,17 @@ func (model traceScreenModel) updateKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd
 		model.requestStop()
 		return model, waitTraceMessage(model.eventCh, model.resultCh)
 	}
+	if model.detail != nil {
+		return model.updateDetailKey(key.String()), nil
+	}
 	if model.filtering {
 		switch key.String() {
 		case "enter":
 			model.filter = strings.TrimSpace(model.input.Value())
 			model.input.Blur()
 			model.filtering = false
+			// 고른 event가 새 filter에 맞지 않으면 목록에 보이지 않으므로, 고른 것을 풀고 다시 따라간다.
+			model.selected = -1
 			return model, nil
 		case "esc":
 			model.input.SetValue(model.filter)
@@ -175,6 +196,29 @@ func (model traceScreenModel) updateKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd
 		return model, nil
 	case "esc":
 		model.filter = ""
+		return model, nil
+	case "up", "k", "down", "j", "pgup", "pgdown":
+		// 고르는 동안에는 목록이 새 event를 따라가지 않는다. end를 누르면 다시 따라간다.
+		if model.groupBy == "" {
+			step, count := 1, 1
+			switch key.String() {
+			case "up", "k":
+				step = -1
+			case "pgup":
+				step, count = -1, max(1, model.height-4)
+			case "pgdown":
+				count = max(1, model.height-4)
+			}
+			model.selected = model.moveSelection(step, count)
+		}
+		return model, nil
+	case "end":
+		model.selected = -1
+		return model, nil
+	case "enter":
+		if model.groupBy == "" {
+			model.openDetail()
+		}
 		return model, nil
 	case "q":
 		model.requestStop()
@@ -208,7 +252,7 @@ func traceScreenHelp(protocol string) string {
 			}
 		}
 	}
-	return strings.Join(append(keys, "g scroll", "enter apply", "esc clear", "q quit", "ctrl-c stop"), "  ")
+	return strings.Join(append(keys, "g scroll", "↑↓ select", "enter detail", "end live", "esc clear", "q quit", "ctrl-c stop"), "  ")
 }
 
 func (model *traceScreenModel) requestStop() {
@@ -222,6 +266,11 @@ func (model *traceScreenModel) requestStop() {
 }
 
 func (model traceScreenModel) View() tea.View {
+	if model.detail != nil {
+		view := liveFrame(strings.Join(traceScreenDetailView(model), "\n")+"\n", model.height)
+		view.AltScreen = true
+		return view
+	}
 	header := traceScreenHeader(model)
 	rows := traceScreenRows(model)
 	content := strings.Join(append(header, rows...), "\n") + "\n"
@@ -232,6 +281,9 @@ func (model traceScreenModel) View() tea.View {
 
 func traceScreenHeader(model traceScreenModel) []string {
 	status := "live"
+	if model.selected >= 0 && model.groupBy == "" {
+		status = fmt.Sprintf("paused, %d newer", model.first+len(model.events)-1-model.selected)
+	}
 	if model.stopping {
 		status = "stopping"
 	}
@@ -285,12 +337,20 @@ func traceScreenRows(model traceScreenModel) []string {
 	// 화면에 보이는 줄만 뒤에서부터 서식화한다. 보관한 event 전부(최대 10,000건)를 서식화하면 한 번 그리는 데
 	// 300ms가 넘게 걸려, 화면이 event를 따라가지 못하고 키 입력도 늦어진다.
 	available := max(0, model.height-3)
-	for index := len(model.events) - 1; index >= 0; index-- {
+	// 고른 event가 있으면 그 event를 맨 아래에 두고 그보다 오래된 event를 위에 채운다.
+	start := len(model.events) - 1
+	if model.selected >= 0 {
+		start = model.selected - model.first
+	}
+	for index := start; index >= 0; index-- {
 		event := model.events[index]
 		if !traceEventMatchesText(event, model.filter) {
 			continue
 		}
 		lines := []string{formatTraceScreenEvent(event, model.width)}
+		if model.first+index == model.selected {
+			lines[0] = liveSelected(formatTraceScreenEventLine(event, model.width), os.Getenv("NO_COLOR") == "")
+		}
 		if event.Payload != "" {
 			lines = append(lines, formatTraceScreenPayload(event, model.width))
 		}
@@ -537,6 +597,15 @@ func traceScrollColumns(width int) (int, int) {
 }
 
 func formatTraceScreenEvent(event captureEvent, width int) string {
+	line := formatTraceScreenEventLine(event, width)
+	if width < 72 {
+		return line
+	}
+	return traceEventStyle(line, traceProtocol(event), event.Event)
+}
+
+// formatTraceScreenEventLine은 색을 칠하기 전의 행이다. 고른 행은 색 대신 글자와 배경을 뒤집어 보인다.
+func formatTraceScreenEventLine(event captureEvent, width int) string {
 	destination, name := traceScrollLabels(event)
 	process, source := event.Process, event.Source
 	if process == "" {
@@ -551,8 +620,7 @@ func formatTraceScreenEvent(event captureEvent, width int) string {
 	destinationWidth, sourceWidth := traceScrollColumns(width)
 	// liveCell은 칸보다 긴 값을 여러 줄로 감싸므로, 한 행을 지키려고 먼저 자른다.
 	cell := func(value string, width int) string { return liveCell(traceFit(value, width), width) }
-	line := cell(process, traceScrollProcessWidth) + " " + cell(destination, destinationWidth) + " " + cell(name, traceScrollEventWidth) + " " + cell(source, sourceWidth)
-	return traceEventStyle(line, traceProtocol(event), event.Event)
+	return cell(process, traceScrollProcessWidth) + " " + cell(destination, destinationWidth) + " " + cell(name, traceScrollEventWidth) + " " + cell(source, sourceWidth)
 }
 
 // formatTraceScreenPayload는 event 행 아래에 목적지 칸부터 payload를 한 줄로 쓴다.

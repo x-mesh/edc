@@ -778,6 +778,8 @@ event의 target은 같은 process가 trace 중에 받은 DNS 응답, process의 
 전체 화면은 최근 event 10,000개를 유지하고, live rate는 이 event들이 걸친 시간으로 계산합니다. `Ctrl-C` 후 summary는 모든 event를 사용합니다.
 전체 화면의 group 행은 traffic이 많은 group부터 표시합니다. 행이 terminal에 다 들어가지 않으면 위쪽 행을 표시합니다.
 
+event 목록에서 Up이나 Down(또는 `k`, `j`)을 누르면 event를 고릅니다. event를 고른 동안에는 목록이 멈추고 새 event를 따라가지 않으며, 머리글에 더 새로운 event 수가 표시됩니다. Enter를 누르면 event의 모든 필드와 payload 전체를 보여 주는 상세 보기가 열립니다. 상세 보기는 긴 줄을 화면 폭에 맞춰 나눕니다. Up, Down, PgUp, PgDn, Home, End로 스크롤하고, Esc나 `q`로 돌아갑니다. 목록에서 End를 누르면 다시 새 event를 따라갑니다. 목록은 payload마다 앞 4KiB만 보관하고, 상세 보기는 최근 event의 payload 전체를 합계 64MiB까지 보여 줍니다.
+
 macOS에서 `trace`는 kernel의 network 통계 interface(`com.apple.network.statistics`)에서 socket별 counter를 읽습니다. `nettop`도 같은 interface를 사용합니다. `edc`는 1초마다 counter를 읽고 직전 값과의 차이로 event를 만듭니다. 이 interface는 공개되지 않은 interface라서 macOS 업데이트로 형식이 바뀔 수 있고, 형식이 바뀌면 trace는 오류를 내고 멈춥니다.
 
 macOS에서는 다음 값을 관측할 수 없어서 텍스트 출력에는 `-`로, JSON 출력에는 `null`로 표시합니다.

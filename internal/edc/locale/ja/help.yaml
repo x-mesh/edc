@@ -185,6 +185,8 @@ command:
       - "client: はこの host が送った要求、server: は local server が受けた要求です。"
       - "--side client か server で片側だけを残します。trace dns は client 側を見ます。"
       - "proxy では 1 つの要求が、受けた server: と送った client: の 2 行になります。"
+      - "HTTPS は暗号文なので、新しい接続ごとに tls_hello 行だけを表示します。"
+      - "tls_hello には path ではなく server 名 (SNI) と ALPN protocol があります。"
       - "--payload は各 message の先頭を表示します。"
       - "--payload=all は各 message を 1 MiB まで表示します。=all は続けて書きます。"
       - "--port は、この host か相手がその port を使う接続だけを見ます。"

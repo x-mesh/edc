@@ -26,6 +26,8 @@ const (
 	httpMessageOpenBytes  = 64 << 20
 	httpMessageOpenLimit  = 4096
 	traceHTTPRequestEvent = "http_request"
+	// traceTLSHelloEvent는 TLS ClientHello다. HTTPS는 암호문이라 method와 path 대신 SNI와 ALPN만 보인다.
+	traceTLSHelloEvent = "tls_hello"
 	// traceHTTPPendingLimit은 응답을 기다리는 요청 수의 상한이다. 응답을 읽지 못한 요청이 쌓여도 메모리를 제한한다.
 	traceHTTPPendingLimit = 65536
 )
@@ -48,6 +50,8 @@ type httpPacket struct {
 	// message 안에서 시작하는 위치다.
 	continued bool
 	offset    uint32
+	// tlsHandshake는 TLS record 머리 없이 handshake message로 시작하는 조각이다. record 머리만 따로 읽는 서버에서 온다.
+	tlsHandshake bool
 }
 
 type httpPendingRequest struct {
@@ -74,6 +78,12 @@ func newHTTPTracker(side string, payload, showSecrets bool) *httpTracker {
 }
 
 func (tracker *httpTracker) event(packet httpPacket, clockOffset int64) (captureEvent, bool) {
+	if hello, ok := parseTLSClientHello(packet.payload, !packet.tlsHandshake); ok {
+		return tracker.tlsEvent(packet, hello, clockOffset)
+	}
+	if packet.tlsHandshake {
+		return captureEvent{}, false
+	}
 	method, target, host, requestOK := parseHTTPRequest(packet.payload)
 	status, responseOK := parseHTTPStatus(packet.payload)
 	if !requestOK && !responseOK {
@@ -129,6 +139,132 @@ func (tracker *httpTracker) event(packet httpPacket, clockOffset int64) (capture
 		tracker.size--
 	}
 	return event, true
+}
+
+// tlsEvent는 ClientHello 하나를 event로 만든다. client는 ClientHello를 보내고, 로컬 서버는 받는다. 응답과 짝짓지 않는다.
+func (tracker *httpTracker) tlsEvent(packet httpPacket, hello tlsClientHello, clockOffset int64) (captureEvent, bool) {
+	side := traceClientSide
+	if !packet.sent {
+		side = traceServerSide
+	}
+	if tracker.side != "" && side != tracker.side {
+		return captureEvent{}, false
+	}
+	return captureEvent{
+		SocketID: packet.socket, TimestampNS: uint64(int64(packet.bootTimeNS) + clockOffset), BootTimeNS: packet.bootTimeNS, Protocol: "http", Side: side,
+		PID: packet.pid, Process: packet.process, CgroupID: packet.cgroupID, Source: packet.source, Destination: packet.destination, Bytes: uint64(len(packet.payload)),
+		Event: traceTLSHelloEvent, Target: emptyAs(hello.serverName, traceHTTPHost(packet.destination, side == traceServerSide)), ALPN: hello.alpn,
+	}, true
+}
+
+const (
+	tlsRecordHeaderSize = 5
+	tlsHandshakeRecord  = 0x16
+	tlsClientHelloType  = 0x01
+	// tlsHelloFixedSize는 handshake 머리 4 byte, client version 2 byte, random 32 byte다.
+	tlsHelloFixedSize      = 4 + 2 + 32
+	tlsExtensionServerName = 0x0000
+	tlsExtensionALPN       = 0x0010
+)
+
+// tlsClientHello는 ClientHello에서 읽은 값이다. 원격이 보낸 값이라 제어 문자를 \xNN으로 바꿔 둔다.
+type tlsClientHello struct {
+	serverName string
+	alpn       []string
+}
+
+// tlsRecordStart는 TLS handshake record 머리로 시작하는 payload다. BPF의 tls_start와 같다.
+func tlsRecordStart(payload []byte) bool {
+	return len(payload) >= 3 && payload[0] == tlsHandshakeRecord && tlsKnownVersion(payload[1], payload[2])
+}
+
+// tlsKnownVersion은 SSL 3.0부터 TLS 1.3까지의 version이다.
+func tlsKnownVersion(major, minor byte) bool {
+	return major == 3 && minor <= 4
+}
+
+// parseTLSClientHello는 ClientHello에서 SNI와 ALPN을 읽는다. record이면 payload가 TLS record 머리로 시작하고, 아니면
+// handshake message로 시작한다. BPF는 앞 4KiB만 읽으므로, 잘린 ClientHello는 읽은 확장까지만 쓴다.
+func parseTLSClientHello(payload []byte, record bool) (tlsClientHello, bool) {
+	if record {
+		if len(payload) < tlsRecordHeaderSize || !tlsRecordStart(payload) {
+			return tlsClientHello{}, false
+		}
+		payload = payload[tlsRecordHeaderSize:]
+	}
+	if len(payload) < tlsHelloFixedSize || payload[0] != tlsClientHelloType || !tlsKnownVersion(payload[4], payload[5]) {
+		return tlsClientHello{}, false
+	}
+	hello := tlsClientHello{}
+	rest := payload[tlsHelloFixedSize:]
+	// session ID, cipher suite, compression method를 건너뛴다.
+	for _, size := range []int{1, 2, 1} {
+		var ok bool
+		if _, rest, ok = tlsVector(rest, size); !ok {
+			return hello, true
+		}
+	}
+	extensions, _, ok := tlsVector(rest, 2)
+	if !ok && len(rest) >= 2 {
+		extensions = rest[2:]
+	}
+	for len(extensions) >= 4 {
+		kind := int(extensions[0])<<8 | int(extensions[1])
+		data, next, ok := tlsVector(extensions[2:], 2)
+		if !ok {
+			break
+		}
+		switch kind {
+		case tlsExtensionServerName:
+			hello.serverName = tlsServerName(data)
+		case tlsExtensionALPN:
+			hello.alpn = tlsALPN(data)
+		}
+		extensions = next
+	}
+	return hello, true
+}
+
+// tlsVector는 앞에 size byte 길이가 붙은 값을 떼어 내고 나머지를 돌려준다.
+func tlsVector(data []byte, size int) ([]byte, []byte, bool) {
+	if len(data) < size {
+		return nil, nil, false
+	}
+	length := 0
+	for _, value := range data[:size] {
+		length = length<<8 | int(value)
+	}
+	data = data[size:]
+	if len(data) < length {
+		return nil, nil, false
+	}
+	return data[:length], data[length:], true
+}
+
+// tlsServerName은 server_name 확장의 첫 host_name이다. host 이름은 대소문자를 가리지 않아 소문자로 쓴다.
+func tlsServerName(data []byte) string {
+	names, _, ok := tlsVector(data, 2)
+	for ok && len(names) > 0 {
+		var name []byte
+		kind := names[0]
+		if name, names, ok = tlsVector(names[1:], 2); ok && kind == 0 {
+			return strings.ToLower(traceEscapeText(name))
+		}
+	}
+	return ""
+}
+
+// tlsALPN은 client가 제안한 protocol을 순서대로 돌려준다.
+func tlsALPN(data []byte) []string {
+	list, _, ok := tlsVector(data, 2)
+	var protocols []string
+	for ok && len(list) > 0 {
+		var protocol []byte
+		if protocol, list, ok = tlsVector(list, 1); ok {
+			protocols = append(protocols, traceEscapeText(protocol))
+		}
+	}
+	return protocols
 }
 
 // parseHTTPRequest는 요청 줄과 Host header를 읽는다. 요청 줄이 "METHOD target HTTP/1.x"가 아니면 HTTP가 아니다.
@@ -333,6 +469,10 @@ type traceHTTPCounts struct {
 }
 
 func (counts *traceHTTPCounts) observe(event captureEvent) {
+	// ClientHello는 요청도 응답도 아니다. 요약은 TLS 연결을 따로 센다.
+	if event.Event == traceTLSHelloEvent {
+		return
+	}
 	if event.Event == traceHTTPRequestEvent {
 		counts.Requests++
 		return
@@ -396,6 +536,10 @@ func traceHTTPScrollLabels(event captureEvent) (string, string) {
 	if event.Status != 0 {
 		label += " " + strconv.Itoa(event.Status)
 	}
+	// event 칸이 좁아서 client가 가장 먼저 제안한 protocol만 쓴다. 전체는 JSON의 alpn에 있다.
+	if len(event.ALPN) > 0 {
+		label += " " + event.ALPN[0]
+	}
 	if event.LatencyMS != nil {
 		label += " " + traceLatency(event.LatencyMS, "ms")
 	}
@@ -429,6 +573,29 @@ type httpTraceReport struct {
 	// 서버 응답 시간에는 처리만 들어가서, 합친 평균은 뜻이 없다.
 	Client *traceHTTPCounts `json:"client,omitempty"`
 	Server *traceHTTPCounts `json:"server,omitempty"`
+	// TLSConnections와 TLS는 HTTPS 연결이다. 암호문이라 ClientHello의 SNI와 ALPN만 센다. 없으면 JSON에서 뺀다.
+	TLSConnections uint64       `json:"tls_connections,omitempty"`
+	TLS            []httpTLSRow `json:"tls,omitempty"`
+}
+
+type httpTLSKey struct {
+	side string
+	host string
+	alpn string
+}
+
+type httpTLSRow struct {
+	Side        string   `json:"side,omitempty"`
+	Host        string   `json:"host,omitempty"`
+	ALPN        []string `json:"alpn,omitempty"`
+	Connections uint64   `json:"connections"`
+	Processes   []string `json:"processes,omitempty"`
+}
+
+type httpTLSStats struct {
+	alpn        []string
+	connections uint64
+	processes   map[string]struct{}
 }
 
 type httpTraceRowStats struct {
@@ -443,13 +610,28 @@ type httpTraceSummarizer struct {
 	counts traceHTTPCounts
 	// sides는 쪽마다 모은 합계다. 한 쪽만 있으면 보고서의 쪽이 되고, 두 쪽이 있으면 쪽별 합계로 낸다.
 	sides map[string]*traceHTTPCounts
+	// tls는 ClientHello를 쪽, SNI, ALPN마다 센다. HTTP 행과 합계에는 넣지 않는다.
+	tls map[httpTLSKey]*httpTLSStats
 }
 
 func newHTTPTraceSummarizer() *httpTraceSummarizer {
-	return &httpTraceSummarizer{rows: map[httpTraceKey]*httpTraceRowStats{}, sides: map[string]*traceHTTPCounts{}}
+	return &httpTraceSummarizer{rows: map[httpTraceKey]*httpTraceRowStats{}, sides: map[string]*traceHTTPCounts{}, tls: map[httpTLSKey]*httpTLSStats{}}
 }
 
 func (summarizer *httpTraceSummarizer) observe(event captureEvent) {
+	if event.Event == traceTLSHelloEvent {
+		key := httpTLSKey{side: event.Side, host: event.Target, alpn: strings.Join(event.ALPN, ",")}
+		stats := summarizer.tls[key]
+		if stats == nil {
+			stats = &httpTLSStats{alpn: event.ALPN, processes: map[string]struct{}{}}
+			summarizer.tls[key] = stats
+		}
+		stats.connections++
+		if event.Process != "" {
+			stats.processes[event.Process] = struct{}{}
+		}
+		return
+	}
 	key := httpTraceKey{side: event.Side, method: event.Method, host: event.Target, path: event.Path}
 	stats := summarizer.rows[key]
 	if stats == nil {
@@ -504,6 +686,23 @@ func (summarizer *httpTraceSummarizer) summarize(summary captureSummary, duratio
 		}
 		return left.Side < right.Side
 	})
+	for key, stats := range summarizer.tls {
+		report.TLSConnections += stats.connections
+		report.TLS = append(report.TLS, httpTLSRow{Side: key.side, Host: key.host, ALPN: stats.alpn, Connections: stats.connections, Processes: slices.Sorted(maps.Keys(stats.processes))})
+	}
+	sort.Slice(report.TLS, func(i, j int) bool {
+		left, right := report.TLS[i], report.TLS[j]
+		if left.Connections != right.Connections {
+			return left.Connections > right.Connections
+		}
+		if left.Host != right.Host {
+			return left.Host < right.Host
+		}
+		if left.Side != right.Side {
+			return left.Side < right.Side
+		}
+		return strings.Join(left.ALPN, ",") < strings.Join(right.ALPN, ",")
+	})
 	return report
 }
 
@@ -528,19 +727,26 @@ func (report httpTraceReport) print(bool) {
 		printHTTPCounts("", report.traceHTTPCounts)
 	}
 	fmt.Fprintf(os.Stdout, "Lost events: %d\n", report.LostEvents)
-	if len(report.Paths) == 0 {
+	if len(report.Paths) > 0 {
+		// 한 쪽만 있으면 SIDE 칸은 모든 행이 같아서 뺀다.
+		sideColumn := func(value string) string {
+			if !mixed {
+				return ""
+			}
+			return value + "\t"
+		}
+		fmt.Fprintln(os.Stdout, "\n"+sideColumn("SIDE")+"METHOD\tHOST\tPATH\tREQUESTS\tSTATUS\tUNANSWERED\tAVG\tMAX\tPROCESS")
+		for _, row := range report.Paths {
+			fmt.Fprintf(os.Stdout, "%s%s\t%s\t%s\t%d\t%s\t%d\t%s\t%s\t%s\n", sideColumn(emptyAs(row.Side, "-")), emptyAs(row.Method, "-"), emptyAs(row.Host, "-"), emptyAs(row.Path, "-"), row.Requests, traceResultCounts(row.Statuses), row.Unanswered, traceLatency(row.LatencyAvgMS, "ms"), traceLatency(row.LatencyMaxMS, "ms"), emptyAs(strings.Join(row.Processes, ","), "-"))
+		}
+	}
+	if len(report.TLS) == 0 {
 		return
 	}
-	// 한 쪽만 있으면 SIDE 칸은 모든 행이 같아서 뺀다.
-	sideColumn := func(value string) string {
-		if !mixed {
-			return ""
-		}
-		return value + "\t"
-	}
-	fmt.Fprintln(os.Stdout, "\n"+sideColumn("SIDE")+"METHOD\tHOST\tPATH\tREQUESTS\tSTATUS\tUNANSWERED\tAVG\tMAX\tPROCESS")
-	for _, row := range report.Paths {
-		fmt.Fprintf(os.Stdout, "%s%s\t%s\t%s\t%d\t%s\t%d\t%s\t%s\t%s\n", sideColumn(emptyAs(row.Side, "-")), emptyAs(row.Method, "-"), emptyAs(row.Host, "-"), emptyAs(row.Path, "-"), row.Requests, traceResultCounts(row.Statuses), row.Unanswered, traceLatency(row.LatencyAvgMS, "ms"), traceLatency(row.LatencyMaxMS, "ms"), emptyAs(strings.Join(row.Processes, ","), "-"))
+	fmt.Fprintf(os.Stdout, "\nTLS connections: %d (HTTPS, only the ClientHello is plain text)\n", report.TLSConnections)
+	fmt.Fprintln(os.Stdout, "\nSIDE\tHOST\tALPN\tCONNECTIONS\tPROCESS")
+	for _, row := range report.TLS {
+		fmt.Fprintf(os.Stdout, "%s\t%s\t%s\t%d\t%s\n", emptyAs(row.Side, "-"), emptyAs(row.Host, "-"), emptyAs(strings.Join(row.ALPN, ","), "-"), row.Connections, emptyAs(strings.Join(row.Processes, ","), "-"))
 	}
 }
 

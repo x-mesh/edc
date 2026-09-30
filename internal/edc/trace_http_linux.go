@@ -16,6 +16,7 @@ const (
 	httpRecordType          = 10
 	httpRecordSent          = 1
 	httpRecordContinuation  = 1
+	httpRecordTLSHandshake  = 2 // capture_events_bpf.c의 TLS_HANDSHAKE. record 머리 없이 handshake message로 시작한다.
 	httpRecordPayloadOffset = 96
 	// httpRecordPayloadMax는 capture_events_bpf.c의 HTTP_PAYLOAD_SIZE로, 레코드 하나에 담기는 byte 수다.
 	httpRecordPayloadMax = 16384
@@ -30,17 +31,18 @@ func parseHTTPRecord(sample []byte) (httpPacket, bool) {
 	copy(source[:], sample[44:60])
 	copy(destination[:], sample[60:76])
 	packet := httpPacket{
-		bootTimeNS:  binary.LittleEndian.Uint64(sample[0:8]),
-		pid:         binary.LittleEndian.Uint32(sample[12:16]),
-		cgroupID:    binary.LittleEndian.Uint64(sample[16:24]),
-		socket:      binary.LittleEndian.Uint64(sample[24:32]),
-		sent:        sample[38] == httpRecordSent,
-		source:      formatCaptureAddress(family, source, binary.LittleEndian.Uint16(sample[40:42])),
-		destination: formatCaptureAddress(family, destination, binary.LittleEndian.Uint16(sample[42:44])),
-		process:     strings.TrimRight(string(sample[76:92]), "\x00"),
-		payload:     sample[httpRecordPayloadOffset:],
-		continued:   sample[39] == httpRecordContinuation,
-		offset:      binary.LittleEndian.Uint32(sample[92:96]),
+		bootTimeNS:   binary.LittleEndian.Uint64(sample[0:8]),
+		pid:          binary.LittleEndian.Uint32(sample[12:16]),
+		cgroupID:     binary.LittleEndian.Uint64(sample[16:24]),
+		socket:       binary.LittleEndian.Uint64(sample[24:32]),
+		sent:         sample[38] == httpRecordSent,
+		source:       formatCaptureAddress(family, source, binary.LittleEndian.Uint16(sample[40:42])),
+		destination:  formatCaptureAddress(family, destination, binary.LittleEndian.Uint16(sample[42:44])),
+		process:      strings.TrimRight(string(sample[76:92]), "\x00"),
+		payload:      sample[httpRecordPayloadOffset:],
+		continued:    sample[39] == httpRecordContinuation,
+		tlsHandshake: sample[39] == httpRecordTLSHandshake,
+		offset:       binary.LittleEndian.Uint32(sample[92:96]),
 	}
 	if size := int(binary.LittleEndian.Uint32(sample[32:36])); size < len(packet.payload) {
 		packet.payload = packet.payload[:size]

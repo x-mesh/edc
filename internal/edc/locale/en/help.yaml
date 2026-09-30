@@ -185,6 +185,8 @@ command:
       - "client: this host sent the request. server: a local server received it."
       - "--side client or --side server keeps one side. trace dns shows client."
       - "A proxy shows one request as server: from the user and client: to the backend."
+      - "HTTPS is encrypted. Each new connection shows only a tls_hello row."
+      - "tls_hello has the server name (SNI) and the ALPN protocols, not the path."
       - "--payload shows the start of each message."
       - "--payload=all shows each message up to 1 MiB. Write =all without a space."
       - "--port keeps the connections that use the port on this host or on the peer."

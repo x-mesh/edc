@@ -1498,4 +1498,27 @@ int tcp_recvmsg_exit(__u64 *ctx) {
 	return 0;
 }
 
+// trace http는 끝난 socket의 짝짓기 상태를 지운다. kernel은 해제한 socket의 주소를 새 socket에 다시 써서, 응답을 놓친
+// 요청이 남으면 새 연결의 응답이 그 요청과 짝지어진다. tracepoint는 tracefs가 있어야 붙으므로, tracefs가 없는
+// container에서도 붙는 tp_btf를 쓴다. trace tcp는 tcp_destroy_sock tracepoint를 따로 쓴다.
+SEC("tp_btf/tcp_destroy_sock")
+int http_tcp_destroy_sock(__u64 *ctx) {
+	struct sock *sk = (struct sock *)ctx[0];
+	if (!emit_http_messages || !sk || !http_socket(sk)) {
+		return 0;
+	}
+	// 머리만 읽은 첫 조각의 표시가 남으면 새 연결의 첫 읽기를 이어지는 조각으로 넘긴다.
+	struct http_stream_key key = {.skaddr = (__u64)sk, .direction = HTTP_SENT};
+	bpf_map_delete_elem(&http_streams, &key);
+	key.direction = HTTP_RECEIVED;
+	bpf_map_delete_elem(&http_streams, &key);
+	struct event *event = start_event(ctx, 5);
+	if (!event) {
+		return 0;
+	}
+	event->skaddr = (__u64)sk;
+	finish_event(event);
+	return 0;
+}
+
 char LICENSE[] SEC("license") = "Dual BSD/GPL";

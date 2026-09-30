@@ -158,6 +158,25 @@ func TestTraceHTTPPayloadLineShowsTheBodyOrTheHeaders(t *testing.T) {
 	}
 }
 
+// kernel은 해제한 socket의 주소를 새 socket에 다시 쓴다. 응답을 놓친 요청이 남아 있으면 새 연결의 응답이 그 요청과
+// 짝지어지고, 응답 시간도 앞 연결의 요청부터 잰다.
+func TestHTTPTrackerForgetsAClosedSocket(t *testing.T) {
+	tracker := newHTTPTracker(traceClientSide, false, false)
+	if _, ok := tracker.event(httpTestPacket("GET /old HTTP/1.1\r\nHost: api.example\r\n\r\n", 1_000_000, true), 0); !ok {
+		t.Fatal("request made no event")
+	}
+	tracker.forget(1)
+	tracker.forget(42)
+	if len(tracker.pending) != 0 || tracker.size != 0 {
+		t.Fatalf("pending = %#v, size %d", tracker.pending, tracker.size)
+	}
+	tracker.event(httpTestPacket("GET /new HTTP/1.1\r\nHost: api.example\r\n\r\n", 5_000_000, true), 0)
+	response, ok := tracker.event(httpTestPacket("HTTP/1.1 200 OK\r\n\r\n", 6_000_000, false), 0)
+	if !ok || response.Path != "/new" || response.LatencyMS == nil || *response.LatencyMS != 1 || tracker.size != 0 {
+		t.Fatalf("response = %#v, size %d", response, tracker.size)
+	}
+}
+
 func TestHTTPTrackerAddsThePayloadOnlyWhenAsked(t *testing.T) {
 	packet := httpTestPacket("GET / HTTP/1.1\r\nHost: x\r\nCookie: a=b\r\n\r\n", 1_000_000, true)
 	if event, _ := newHTTPTracker(traceClientSide, false, false).event(packet, 0); event.Payload != "" {

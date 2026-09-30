@@ -53,6 +53,7 @@ func (model *traceScreenModel) refreshPreview() {
 		return
 	}
 	if preview := model.preview; preview != nil && preview.number == number && preview.secrets == model.secrets && preview.decode == model.decode {
+		model.clampPreviewOffset()
 		return
 	}
 	if model.preview == nil || model.preview.number != number {
@@ -73,6 +74,43 @@ func (model *traceScreenModel) refreshPreview() {
 		preview.lines = strings.Split(string(encoded), "\n")
 	}
 	model.preview = preview
+	model.clampPreviewOffset()
+}
+
+func (model *traceScreenModel) clampPreviewOffset() {
+	if model.preview == nil {
+		model.previewOffset = 0
+		return
+	}
+	_, rows, ok := traceSplitHeights(model.height)
+	if !ok || rows <= 1 {
+		model.previewOffset = 0
+		return
+	}
+	wrapped := 0
+	for _, line := range model.preview.lines {
+		wrapped += traceWrappedLineCount(strings.ReplaceAll(line, "\t", "    "), model.width)
+	}
+	model.previewOffset = min(max(0, model.previewOffset), max(0, wrapped-(rows-1)))
+}
+
+func traceWrappedLineCount(line string, width int) int {
+	if width <= 0 {
+		return 1
+	}
+	count, used := 1, 0
+	for _, r := range line {
+		cell := 1
+		if r >= utf8.RuneSelf {
+			cell = lipgloss.Width(string(r))
+		}
+		if used+cell > width && used > 0 {
+			count++
+			used = 0
+		}
+		used += cell
+	}
+	return count
 }
 
 // traceWrapWindow는 lines를 width로 나눈 줄 가운데 offset부터 count줄을 돌려준다. 필요한 줄까지만 나눈다. more는 그 뒤에
@@ -172,4 +210,5 @@ func (model *traceScreenModel) scrollPreview(step int) {
 		}
 	}
 	model.previewOffset = max(0, model.previewOffset+step)
+	model.clampPreviewOffset()
 }

@@ -135,6 +135,7 @@ struct sock {
 struct sk_buff {
 	struct sock *sk;
 	unsigned int len;
+	unsigned int tail;
 	unsigned char *head;
 	__u16 transport_header;
 	__u16 network_header;
@@ -163,6 +164,25 @@ struct ipv6hdr {
 	__u8 daddr[16];
 };
 
+struct ipv6_ext {
+	__u8 nexthdr;
+	__u8 hdrlen;
+};
+
+struct ipv6_frag {
+	__u8 nexthdr;
+	__u8 reserved;
+	__be16 offset;
+	__u32 identification;
+};
+
+#define IPPROTO_HOPOPTS 0
+#define IPPROTO_ROUTING 43
+#define IPPROTO_FRAGMENT 44
+#define IPPROTO_AH 51
+#define IPPROTO_DSTOPTS 60
+#define IPV6_MAX_EXTENSIONS 8
+
 // sock_inode는 full socket의 inode다. TIME_WAIT와 SYN_RECV의 socket은 크기가 작은 다른 구조체라 sk_socket을 읽지 않는다.
 static __always_inline __u64 sock_inode(struct sock *sk) {
 	if (!sk) {
@@ -180,6 +200,7 @@ static __always_inline void fill_addresses(struct drop_record *record, struct sk
 	unsigned char *head = BPF_CORE_READ(skb, head);
 	__u16 network = BPF_CORE_READ(skb, network_header);
 	__u16 transport = BPF_CORE_READ(skb, transport_header);
+	__u32 end = BPF_CORE_READ(skb, tail);
 	if (!head || network == (__u16)~0U) {
 		return;
 	}
@@ -204,6 +225,36 @@ static __always_inline void fill_addresses(struct drop_record *record, struct sk
 		__builtin_memcpy(record->saddr, ip.saddr, 16);
 		__builtin_memcpy(record->daddr, ip.daddr, 16);
 		l4offset = network + sizeof(ip);
+		for (int step = 0; step < IPV6_MAX_EXTENSIONS; step++) {
+			if (record->l4 == IPPROTO_TCP || record->l4 == IPPROTO_UDP) {
+				break;
+			}
+			if (record->l4 == IPPROTO_FRAGMENT) {
+				struct ipv6_frag fragment = {};
+				if (l4offset + sizeof(fragment) > end || (transport != (__u16)~0U && l4offset + sizeof(fragment) > transport) || bpf_probe_read_kernel(&fragment, sizeof(fragment), head + l4offset)) {
+					return;
+				}
+				if (__builtin_bswap16(fragment.offset) & 0xfff8) {
+					return;
+				}
+				record->l4 = fragment.nexthdr;
+				l4offset += sizeof(fragment);
+				continue;
+			}
+			if (record->l4 != IPPROTO_HOPOPTS && record->l4 != IPPROTO_ROUTING && record->l4 != IPPROTO_DSTOPTS && record->l4 != IPPROTO_AH) {
+				return;
+			}
+			struct ipv6_ext extension = {};
+			if (l4offset + sizeof(extension) > end || (transport != (__u16)~0U && l4offset + sizeof(extension) > transport) || bpf_probe_read_kernel(&extension, sizeof(extension), head + l4offset)) {
+				return;
+			}
+			__u32 length = record->l4 == IPPROTO_AH ? (__u32)(extension.hdrlen + 2) * 4 : (__u32)(extension.hdrlen + 1) * 8;
+			if (length < sizeof(extension) || l4offset + length > end || (transport != (__u16)~0U && l4offset + length > transport)) {
+				return;
+			}
+			record->l4 = extension.nexthdr;
+			l4offset += length;
+		}
 	} else {
 		return;
 	}

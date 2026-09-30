@@ -88,6 +88,13 @@ type captureEventsHttpStreamKey struct {
 	Direction uint64
 }
 
+type captureEventsMysqlSendPending struct {
+	_      structs.HostLayout
+	Send   captureEventsHttpSendPending
+	Server uint8
+	_      [7]byte
+}
+
 type captureEventsSockOwner struct {
 	_        structs.HostLayout
 	CgroupId uint64
@@ -123,19 +130,23 @@ const (
 	captureEventsMapHttpSendPending            = "http_send_pending"
 	captureEventsMapHttpStreams                = "http_streams"
 	captureEventsMapLostEvents                 = "lost_events"
+	captureEventsMapMysqlSendPending           = "mysql_send_pending"
 	captureEventsMapSockOwners                 = "sock_owners"
+	captureEventsMapTcpLengthPending           = "tcp_length_pending"
 	captureEventsMapUdpSendPending             = "udp_send_pending"
 	captureEventsProgHttpTcpDestroySock        = "http_tcp_destroy_sock"
 	captureEventsProgInetCskAcceptEntry        = "inet_csk_accept_entry"
 	captureEventsProgInetSockSetState          = "inet_sock_set_state"
 	captureEventsProgInetStreamConnectEntry    = "inet_stream_connect_entry"
 	captureEventsProgSkbConsumeUdpEntry        = "skb_consume_udp_entry"
+	captureEventsProgTcpCleanupRbufEntry       = "tcp_cleanup_rbuf_entry"
 	captureEventsProgTcpCreateOpenreqChildExit = "tcp_create_openreq_child_exit"
 	captureEventsProgTcpDestroySock            = "tcp_destroy_sock"
 	captureEventsProgTcpReceiveReset           = "tcp_receive_reset"
 	captureEventsProgTcpRecvLength             = "tcp_recv_length"
 	captureEventsProgTcpRecvmsgEntry           = "tcp_recvmsg_entry"
 	captureEventsProgTcpRecvmsgExit            = "tcp_recvmsg_exit"
+	captureEventsProgTcpRecvmsgExitLegacy      = "tcp_recvmsg_exit_legacy"
 	captureEventsProgTcpRetransmitSkb          = "tcp_retransmit_skb"
 	captureEventsProgTcpSendLength             = "tcp_send_length"
 	captureEventsProgTcpSendReset              = "tcp_send_reset"
@@ -155,6 +166,7 @@ const (
 	captureEventsVarHttpPayloadLimit           = "http_payload_limit"
 	captureEventsVarHttpPort                   = "http_port"
 	captureEventsVarMysqlPort                  = "mysql_port"
+	captureEventsVarTcpLengthFallback          = "tcp_length_fallback"
 	captureEventsVarTcpStatePort               = "tcp_state_port"
 	captureEventsVarUnusedHttpRecord           = "unused_http_record"
 )
@@ -206,12 +218,14 @@ type captureEventsProgramSpecs struct {
 	InetSockSetState          *ebpf.ProgramSpec `ebpf:"inet_sock_set_state"`
 	InetStreamConnectEntry    *ebpf.ProgramSpec `ebpf:"inet_stream_connect_entry"`
 	SkbConsumeUdpEntry        *ebpf.ProgramSpec `ebpf:"skb_consume_udp_entry"`
+	TcpCleanupRbufEntry       *ebpf.ProgramSpec `ebpf:"tcp_cleanup_rbuf_entry"`
 	TcpCreateOpenreqChildExit *ebpf.ProgramSpec `ebpf:"tcp_create_openreq_child_exit"`
 	TcpDestroySock            *ebpf.ProgramSpec `ebpf:"tcp_destroy_sock"`
 	TcpReceiveReset           *ebpf.ProgramSpec `ebpf:"tcp_receive_reset"`
 	TcpRecvLength             *ebpf.ProgramSpec `ebpf:"tcp_recv_length"`
 	TcpRecvmsgEntry           *ebpf.ProgramSpec `ebpf:"tcp_recvmsg_entry"`
 	TcpRecvmsgExit            *ebpf.ProgramSpec `ebpf:"tcp_recvmsg_exit"`
+	TcpRecvmsgExitLegacy      *ebpf.ProgramSpec `ebpf:"tcp_recvmsg_exit_legacy"`
 	TcpRetransmitSkb          *ebpf.ProgramSpec `ebpf:"tcp_retransmit_skb"`
 	TcpSendLength             *ebpf.ProgramSpec `ebpf:"tcp_send_length"`
 	TcpSendReset              *ebpf.ProgramSpec `ebpf:"tcp_send_reset"`
@@ -228,19 +242,21 @@ type captureEventsProgramSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type captureEventsMapSpecs struct {
-	AnnouncedOwners *ebpf.MapSpec `ebpf:"announced_owners"`
-	DnsArrivals     *ebpf.MapSpec `ebpf:"dns_arrivals"`
-	DnsQueryPending *ebpf.MapSpec `ebpf:"dns_query_pending"`
-	DnsScratch      *ebpf.MapSpec `ebpf:"dns_scratch"`
-	Events          *ebpf.MapSpec `ebpf:"events"`
-	HttpCursors     *ebpf.MapSpec `ebpf:"http_cursors"`
-	HttpRecvPending *ebpf.MapSpec `ebpf:"http_recv_pending"`
-	HttpScratch     *ebpf.MapSpec `ebpf:"http_scratch"`
-	HttpSendPending *ebpf.MapSpec `ebpf:"http_send_pending"`
-	HttpStreams     *ebpf.MapSpec `ebpf:"http_streams"`
-	LostEvents      *ebpf.MapSpec `ebpf:"lost_events"`
-	SockOwners      *ebpf.MapSpec `ebpf:"sock_owners"`
-	UdpSendPending  *ebpf.MapSpec `ebpf:"udp_send_pending"`
+	AnnouncedOwners  *ebpf.MapSpec `ebpf:"announced_owners"`
+	DnsArrivals      *ebpf.MapSpec `ebpf:"dns_arrivals"`
+	DnsQueryPending  *ebpf.MapSpec `ebpf:"dns_query_pending"`
+	DnsScratch       *ebpf.MapSpec `ebpf:"dns_scratch"`
+	Events           *ebpf.MapSpec `ebpf:"events"`
+	HttpCursors      *ebpf.MapSpec `ebpf:"http_cursors"`
+	HttpRecvPending  *ebpf.MapSpec `ebpf:"http_recv_pending"`
+	HttpScratch      *ebpf.MapSpec `ebpf:"http_scratch"`
+	HttpSendPending  *ebpf.MapSpec `ebpf:"http_send_pending"`
+	HttpStreams      *ebpf.MapSpec `ebpf:"http_streams"`
+	LostEvents       *ebpf.MapSpec `ebpf:"lost_events"`
+	MysqlSendPending *ebpf.MapSpec `ebpf:"mysql_send_pending"`
+	SockOwners       *ebpf.MapSpec `ebpf:"sock_owners"`
+	TcpLengthPending *ebpf.MapSpec `ebpf:"tcp_length_pending"`
+	UdpSendPending   *ebpf.MapSpec `ebpf:"udp_send_pending"`
 }
 
 // captureEventsVariableSpecs contains global variables before they are loaded into the kernel.
@@ -256,6 +272,7 @@ type captureEventsVariableSpecs struct {
 	HttpPayloadLimit   *ebpf.VariableSpec `ebpf:"http_payload_limit"`
 	HttpPort           *ebpf.VariableSpec `ebpf:"http_port"`
 	MysqlPort          *ebpf.VariableSpec `ebpf:"mysql_port"`
+	TcpLengthFallback  *ebpf.VariableSpec `ebpf:"tcp_length_fallback"`
 	TcpStatePort       *ebpf.VariableSpec `ebpf:"tcp_state_port"`
 	UnusedHttpRecord   *ebpf.VariableSpec `ebpf:"unused_http_record"`
 }
@@ -280,19 +297,21 @@ func (o *captureEventsObjects) Close() error {
 //
 // It can be passed to loadCaptureEventsObjects or ebpf.CollectionSpec.LoadAndAssign.
 type captureEventsMaps struct {
-	AnnouncedOwners *ebpf.Map `ebpf:"announced_owners"`
-	DnsArrivals     *ebpf.Map `ebpf:"dns_arrivals"`
-	DnsQueryPending *ebpf.Map `ebpf:"dns_query_pending"`
-	DnsScratch      *ebpf.Map `ebpf:"dns_scratch"`
-	Events          *ebpf.Map `ebpf:"events"`
-	HttpCursors     *ebpf.Map `ebpf:"http_cursors"`
-	HttpRecvPending *ebpf.Map `ebpf:"http_recv_pending"`
-	HttpScratch     *ebpf.Map `ebpf:"http_scratch"`
-	HttpSendPending *ebpf.Map `ebpf:"http_send_pending"`
-	HttpStreams     *ebpf.Map `ebpf:"http_streams"`
-	LostEvents      *ebpf.Map `ebpf:"lost_events"`
-	SockOwners      *ebpf.Map `ebpf:"sock_owners"`
-	UdpSendPending  *ebpf.Map `ebpf:"udp_send_pending"`
+	AnnouncedOwners  *ebpf.Map `ebpf:"announced_owners"`
+	DnsArrivals      *ebpf.Map `ebpf:"dns_arrivals"`
+	DnsQueryPending  *ebpf.Map `ebpf:"dns_query_pending"`
+	DnsScratch       *ebpf.Map `ebpf:"dns_scratch"`
+	Events           *ebpf.Map `ebpf:"events"`
+	HttpCursors      *ebpf.Map `ebpf:"http_cursors"`
+	HttpRecvPending  *ebpf.Map `ebpf:"http_recv_pending"`
+	HttpScratch      *ebpf.Map `ebpf:"http_scratch"`
+	HttpSendPending  *ebpf.Map `ebpf:"http_send_pending"`
+	HttpStreams      *ebpf.Map `ebpf:"http_streams"`
+	LostEvents       *ebpf.Map `ebpf:"lost_events"`
+	MysqlSendPending *ebpf.Map `ebpf:"mysql_send_pending"`
+	SockOwners       *ebpf.Map `ebpf:"sock_owners"`
+	TcpLengthPending *ebpf.Map `ebpf:"tcp_length_pending"`
+	UdpSendPending   *ebpf.Map `ebpf:"udp_send_pending"`
 }
 
 func (m *captureEventsMaps) Close() error {
@@ -308,7 +327,9 @@ func (m *captureEventsMaps) Close() error {
 		m.HttpSendPending,
 		m.HttpStreams,
 		m.LostEvents,
+		m.MysqlSendPending,
 		m.SockOwners,
+		m.TcpLengthPending,
 		m.UdpSendPending,
 	)
 }
@@ -326,6 +347,7 @@ type captureEventsVariables struct {
 	HttpPayloadLimit   *ebpf.Variable `ebpf:"http_payload_limit"`
 	HttpPort           *ebpf.Variable `ebpf:"http_port"`
 	MysqlPort          *ebpf.Variable `ebpf:"mysql_port"`
+	TcpLengthFallback  *ebpf.Variable `ebpf:"tcp_length_fallback"`
 	TcpStatePort       *ebpf.Variable `ebpf:"tcp_state_port"`
 	UnusedHttpRecord   *ebpf.Variable `ebpf:"unused_http_record"`
 }
@@ -339,12 +361,14 @@ type captureEventsPrograms struct {
 	InetSockSetState          *ebpf.Program `ebpf:"inet_sock_set_state"`
 	InetStreamConnectEntry    *ebpf.Program `ebpf:"inet_stream_connect_entry"`
 	SkbConsumeUdpEntry        *ebpf.Program `ebpf:"skb_consume_udp_entry"`
+	TcpCleanupRbufEntry       *ebpf.Program `ebpf:"tcp_cleanup_rbuf_entry"`
 	TcpCreateOpenreqChildExit *ebpf.Program `ebpf:"tcp_create_openreq_child_exit"`
 	TcpDestroySock            *ebpf.Program `ebpf:"tcp_destroy_sock"`
 	TcpReceiveReset           *ebpf.Program `ebpf:"tcp_receive_reset"`
 	TcpRecvLength             *ebpf.Program `ebpf:"tcp_recv_length"`
 	TcpRecvmsgEntry           *ebpf.Program `ebpf:"tcp_recvmsg_entry"`
 	TcpRecvmsgExit            *ebpf.Program `ebpf:"tcp_recvmsg_exit"`
+	TcpRecvmsgExitLegacy      *ebpf.Program `ebpf:"tcp_recvmsg_exit_legacy"`
 	TcpRetransmitSkb          *ebpf.Program `ebpf:"tcp_retransmit_skb"`
 	TcpSendLength             *ebpf.Program `ebpf:"tcp_send_length"`
 	TcpSendReset              *ebpf.Program `ebpf:"tcp_send_reset"`
@@ -364,12 +388,14 @@ func (p *captureEventsPrograms) Close() error {
 		p.InetSockSetState,
 		p.InetStreamConnectEntry,
 		p.SkbConsumeUdpEntry,
+		p.TcpCleanupRbufEntry,
 		p.TcpCreateOpenreqChildExit,
 		p.TcpDestroySock,
 		p.TcpReceiveReset,
 		p.TcpRecvLength,
 		p.TcpRecvmsgEntry,
 		p.TcpRecvmsgExit,
+		p.TcpRecvmsgExitLegacy,
 		p.TcpRetransmitSkb,
 		p.TcpSendLength,
 		p.TcpSendReset,

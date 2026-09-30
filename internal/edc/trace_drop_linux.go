@@ -107,13 +107,26 @@ type dropOwners struct {
 	pids    map[uint32]dropOwner
 	missed  map[uint64]time.Time
 	scanned time.Time
+	scan    func() map[uint64]uint32
+	refresh chan struct{}
+	results chan map[uint64]uint32
+	done    chan struct{}
+	wg      sync.WaitGroup
 }
 
 func newDropOwners() *dropOwners {
-	return &dropOwners{byInode: map[uint64]uint32{}, pids: map[uint32]dropOwner{}, missed: map[uint64]time.Time{}}
+	return newDropOwnersWithScan(scanDropOwners)
+}
+
+func newDropOwnersWithScan(scan func() map[uint64]uint32) *dropOwners {
+	owners := &dropOwners{byInode: map[uint64]uint32{}, pids: map[uint32]dropOwner{}, missed: map[uint64]time.Time{}, scan: scan, refresh: make(chan struct{}, 1), results: make(chan map[uint64]uint32, 1), done: make(chan struct{})}
+	owners.wg.Add(1)
+	go owners.run()
+	return owners
 }
 
 func (owners *dropOwners) lookup(inode uint64, now time.Time) dropOwner {
+	owners.publish()
 	if inode == 0 {
 		return dropOwner{}
 	}
@@ -122,17 +135,15 @@ func (owners *dropOwners) lookup(inode uint64, now time.Time) dropOwner {
 		if missed, seen := owners.missed[inode]; seen && now.Sub(missed) < dropOwnerMiss {
 			return dropOwner{}
 		}
-		scanned := false
 		if now.Sub(owners.scanned) >= dropOwnerRescan {
-			owners.scan(now)
-			pid, ok = owners.byInode[inode]
-			scanned = true
+			owners.scanned = now
+			owners.missed[inode] = now
+			select {
+			case owners.refresh <- struct{}{}:
+			default:
+			}
 		}
 		if !ok {
-			// 방금 훑고도 없을 때만 기록한다. scan 간격 때문에 못 훑었으면 다음 event에서 다시 찾는다.
-			if scanned {
-				owners.missed[inode] = now
-			}
 			return dropOwner{}
 		}
 	}
@@ -144,12 +155,45 @@ func (owners *dropOwners) lookup(inode uint64, now time.Time) dropOwner {
 	return owner
 }
 
-// scan은 모든 process의 fd에서 socket inode를 모은다. 한 socket을 여러 process가 나눠 가지면 처음 찾은 process를 쓴다.
-func (owners *dropOwners) scan(now time.Time) {
-	owners.scanned = now
+func (owners *dropOwners) run() {
+	defer owners.wg.Done()
+	for {
+		select {
+		case <-owners.done:
+			return
+		case <-owners.refresh:
+			result := owners.scan()
+			select {
+			case owners.results <- result:
+			case <-owners.done:
+				return
+			}
+		}
+	}
+}
+
+func (owners *dropOwners) publish() {
+	select {
+	case byInode := <-owners.results:
+		owners.byInode = byInode
+		owners.pids = map[uint32]dropOwner{}
+		if len(owners.missed) > 4096 {
+			owners.missed = map[uint64]time.Time{}
+		}
+	default:
+	}
+}
+
+func (owners *dropOwners) close() {
+	close(owners.done)
+	owners.wg.Wait()
+}
+
+// scanDropOwners는 모든 process의 fd에서 socket inode를 모은다. 한 socket을 여러 process가 나눠 가지면 처음 찾은 process를 쓴다.
+func scanDropOwners() map[uint64]uint32 {
 	entries, err := os.ReadDir("/proc")
 	if err != nil {
-		return
+		return map[uint64]uint32{}
 	}
 	byInode := map[uint64]uint32{}
 	for _, entry := range entries {
@@ -176,12 +220,7 @@ func (owners *dropOwners) scan(now time.Time) {
 			}
 		}
 	}
-	owners.byInode = byInode
-	// pid는 재사용될 수 있으므로 이름과 cgroup도 다시 읽는다. 찾지 못한 기록도 새 scan 결과로 다시 판단한다.
-	owners.pids = map[uint32]dropOwner{}
-	if len(owners.missed) > 4096 {
-		owners.missed = map[uint64]time.Time{}
-	}
+	return byInode
 }
 
 func readProcessName(pid uint32) string {
@@ -316,6 +355,7 @@ func collectDropEvents(names []string, duration time.Duration, onEvent func(capt
 
 	var symbols *kernelSymbols
 	owners := newDropOwners()
+	defer owners.close()
 	var eventCount uint64
 	wake := func() {
 		next := time.Now().Add(dropWake)

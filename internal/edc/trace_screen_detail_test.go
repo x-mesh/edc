@@ -288,6 +288,25 @@ func TestTraceScreenFollowShowsTheNewestEvent(t *testing.T) {
 	}
 }
 
+func TestTraceScreenEvictionKeepsOnlyVisibleSelection(t *testing.T) {
+	model := newTraceScreenModel("http", tcpTraceOptions{}, make(chan captureEvent), make(chan traceFinishedMsg), nil)
+	model.filter, model.selected = "keep", 0
+	model.events = make([]captureEvent, traceScreenEventLimit)
+	model.arrivals = make([]time.Time, traceScreenEventLimit)
+	model.events[1] = captureEvent{Protocol: "http", Event: "keep"}
+	next, _ := model.Update(traceEventMsg{events: []captureEvent{{Protocol: "http", Event: "drop"}}})
+	model = next.(traceScreenModel)
+	if model.selected != model.first {
+		t.Fatalf("selected = %d, first = %d", model.selected, model.first)
+	}
+	model.selected = model.first
+	next, _ = model.Update(traceEventMsg{events: []captureEvent{{Protocol: "http", Event: "drop"}}})
+	model = next.(traceScreenModel)
+	if model.selected != -1 || model.preview != nil {
+		t.Fatalf("hidden selection = %d, preview = %#v", model.selected, model.preview)
+	}
+}
+
 func TestTraceScreenDecodesGzipBodies(t *testing.T) {
 	model := newTraceScreenModel("http", tcpTraceOptions{}, make(chan captureEvent), make(chan traceFinishedMsg), nil)
 	model.width, model.height = 100, 30

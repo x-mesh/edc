@@ -345,7 +345,22 @@ func mysqlCount(on bool) int {
 func (tracker *mysqlTracker) forget(conn *mysqlConn) {
 	tracker.statements -= len(conn.statements)
 	tracker.waiting -= mysqlCount(conn.requestWaiting) + mysqlCount(conn.responseWait)
+	if tracker.statements < 0 {
+		tracker.statements = 0
+	}
+	if tracker.waiting < 0 {
+		tracker.waiting = 0
+	}
 	*conn = mysqlConn{}
+}
+
+func (tracker *mysqlTracker) forgetSocket(socket uint64) {
+	conn := tracker.conns[socket]
+	if conn == nil {
+		return
+	}
+	tracker.forget(conn)
+	delete(tracker.conns, socket)
 }
 
 func mysqlKnownCommand(command byte) bool {

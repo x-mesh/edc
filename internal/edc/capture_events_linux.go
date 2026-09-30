@@ -279,6 +279,17 @@ type captureTracing struct {
 	prog      *ebpf.Program
 }
 
+var captureTCPLengthTracepointsAvailable = func() bool {
+	for _, root := range []string{"/sys/kernel/tracing", "/sys/kernel/debug/tracing"} {
+		if _, err := os.Stat(filepath.Join(root, "events/sock/sock_send_length/id")); err == nil {
+			if _, err := os.Stat(filepath.Join(root, "events/sock/sock_recv_length/id")); err == nil {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // captureAttachments는 protocol에 필요한 hook만 고른다. fentry와 fexit는 뗄 때 kernel이 하나씩 처리해 hook마다
 // 0.1초 넘게 걸리므로, 쓰지 않는 hook을 붙이면 trace를 끝낼 때마다 그만큼 늦어진다. 빈 protocol은 모든 hook을 고른다.
 func captureAttachments(objects *captureEventsObjects, protocol string) ([]captureTracepoint, []captureTracing) {
@@ -304,10 +315,11 @@ func captureAttachments(objects *captureEventsObjects, protocol string) ([]captu
 		{nil, "fentry/skb_consume_udp", objects.SkbConsumeUdpEntry},
 		// HTTP, MySQL, DNS over TCP는 TCP로 주고받는 사용자 버퍼의 앞부분을 읽는다.
 		{[]string{"http", "mysql", "dns"}, "fentry/tcp_sendmsg", objects.TcpSendmsgEntry},
+		{[]string{"mysql"}, "fexit/tcp_sendmsg", objects.TcpSendmsgExit},
 		{[]string{"http", "mysql", "dns"}, "fentry/tcp_recvmsg", objects.TcpRecvmsgEntry},
 		{[]string{"http", "mysql", "dns"}, "fexit/tcp_recvmsg", objects.TcpRecvmsgExit},
 		// trace http는 끝난 socket의 짝짓기 상태를 지운다. tracepoint와 달리 tracefs 없이 붙는다.
-		{[]string{"http"}, "tp_btf/tcp_destroy_sock", objects.HttpTcpDestroySock},
+		{[]string{"http", "mysql"}, "tp_btf/tcp_destroy_sock", objects.HttpTcpDestroySock},
 		// 서버 쪽 DNS over TCP도 받은 연결의 process를 알아야 해서 dns가 함께 쓴다.
 		{[]string{"tcp", "dns"}, "fentry/inet_csk_accept", objects.InetCskAcceptEntry},
 		{[]string{"tcp", "dns"}, "fexit/tcp_create_openreq_child", objects.TcpCreateOpenreqChildExit},
@@ -332,7 +344,17 @@ func captureAttachments(objects *captureEventsObjects, protocol string) ([]captu
 // byte 수를 알려 주지만 모든 TCP 송신에 붙으므로, --payload=all일 때만 붙인다.
 func captureAttachmentsFor(objects *captureEventsObjects, scope traceScope) ([]captureTracepoint, []captureTracing) {
 	tracepoints, tracing := captureAttachments(objects, scope.protocol)
-	if scope.payloadAll {
+	if scope.protocol == "tcp" && !captureTCPLengthTracepointsAvailable() {
+		tracepoints = slices.DeleteFunc(tracepoints, func(hook captureTracepoint) bool {
+			return hook.group == "sock" && (hook.name == "sock_send_length" || hook.name == "sock_recv_length")
+		})
+		tracing = append(tracing,
+			captureTracing{[]string{"tcp"}, "fentry/tcp_sendmsg", objects.TcpSendmsgEntry},
+			captureTracing{[]string{"tcp"}, "fexit/tcp_sendmsg", objects.TcpSendmsgExit},
+			captureTracing{[]string{"tcp"}, "fentry/tcp_cleanup_rbuf", objects.TcpCleanupRbufEntry},
+		)
+	}
+	if scope.payloadAll && scope.protocol != "mysql" {
 		tracing = append(tracing, captureTracing{[]string{"http"}, "fexit/tcp_sendmsg", objects.TcpSendmsgExit})
 	}
 	return tracepoints, tracing
@@ -387,13 +409,18 @@ func loadCaptureEventsFor(scope traceScope, objects *captureEventsObjects) error
 		return err
 	}
 	filter := captureEventFilterFor(scope)
+	tcpLengthFallback := scope.protocol == "tcp" && !captureTCPLengthTracepointsAvailable()
+	recvArgs, err := tcpRecvmsgArgumentCount()
+	if err != nil {
+		return err
+	}
 	flag := func(on bool) uint8 {
 		if on {
 			return 1
 		}
 		return 0
 	}
-	if err := errors.Join(variables.EmitUdpEvents.Set(flag(filter.udpEvents)), variables.EmitDnsSent.Set(flag(filter.dnsSent)), variables.EmitDnsServer.Set(flag(filter.server)), variables.TcpStatePort.Set(filter.tcpStatePort),
+	if err := errors.Join(variables.EmitUdpEvents.Set(flag(filter.udpEvents)), variables.EmitDnsSent.Set(flag(filter.dnsSent)), variables.EmitDnsServer.Set(flag(filter.server)), variables.TcpStatePort.Set(filter.tcpStatePort), variables.TcpLengthFallback.Set(flag(tcpLengthFallback)),
 		variables.EmitHttpMessages.Set(flag(filter.httpMessages)), variables.EmitDnsTcpMessages.Set(flag(filter.dnsTCP)), variables.HttpPort.Set(filter.httpPort), variables.MysqlPort.Set(filter.mysqlPort)); err != nil {
 		return err
 	}
@@ -407,7 +434,35 @@ func loadCaptureEventsFor(scope traceScope, objects *captureEventsObjects) error
 			return err
 		}
 	}
+	selected := "tcp_recvmsg_exit"
+	if recvArgs == 6 {
+		selected = "tcp_recvmsg_exit_legacy"
+	}
+	recvSpec := spec.Programs[selected]
+	if recvSpec == nil {
+		return fmt.Errorf("missing eBPF program %s", selected)
+	}
+	spec.Programs["tcp_recvmsg_exit"] = recvSpec.Copy()
+	spec.Programs["tcp_recvmsg_exit"].Name = "tcp_recvmsg_exit"
+	spec.Programs["tcp_recvmsg_exit_legacy"] = recvSpec.Copy()
+	spec.Programs["tcp_recvmsg_exit_legacy"].Name = "tcp_recvmsg_exit_legacy"
 	return spec.LoadAndAssign(objects, nil)
+}
+
+func tcpRecvmsgArgumentCount() (int, error) {
+	spec, err := btf.LoadKernelSpec()
+	if err != nil {
+		return 0, fmt.Errorf("read kernel BTF: %w", err)
+	}
+	var function *btf.Func
+	if err := spec.TypeByName("tcp_recvmsg", &function); err != nil {
+		return 0, fmt.Errorf("find tcp_recvmsg in kernel BTF: %w", err)
+	}
+	prototype, ok := btf.UnderlyingType(function.Type).(*btf.FuncProto)
+	if !ok || (len(prototype.Params) != 5 && len(prototype.Params) != 6) {
+		return 0, fmt.Errorf("unsupported tcp_recvmsg argument count: %d", len(prototype.Params))
+	}
+	return len(prototype.Params), nil
 }
 
 func collectCaptureEventsFor(scope traceScope, duration time.Duration, onEvent func(captureEvent) error, stop <-chan struct{}) (captureSummary, error) {
@@ -585,7 +640,7 @@ func collectCaptureEventsFor(scope traceScope, duration time.Duration, onEvent f
 			continue
 		}
 		if packet, ok := parseHTTPRecord(record.RawSample); ok {
-			if packet.bootTimeNS < uint64(attached.Nano()) {
+			if !captureRecordAfterAttached(packet.bootTimeNS, attached) {
 				continue
 			}
 			if packet, ok = splits.join(packet); !ok {
@@ -620,14 +675,22 @@ func collectCaptureEventsFor(scope traceScope, duration time.Duration, onEvent f
 			continue
 		}
 		if packet, ok := parseMySQLRecord(record.RawSample); ok {
+			if !captureRecordAfterAttached(packet.bootTimeNS, attached) {
+				continue
+			}
 			if err := emit(mysql.events(packet, clockOffset)); err != nil {
 				return captureSummary{}, err
 			}
 			continue
 		}
-		if socket, ok := parseTCPDestroyRecord(record.RawSample); ok && protocol == "http" {
-			requests.forget(socket)
-			splits.forget(socket)
+		if socket, ok := parseTCPDestroyRecord(record.RawSample); ok {
+			if protocol == "http" {
+				requests.forget(socket)
+				splits.forget(socket)
+			}
+			if protocol == "mysql" {
+				mysql.forgetSocket(socket)
+			}
 			continue
 		}
 		if owner, ok := parseOwnerAnnouncement(record.RawSample); ok {
@@ -664,6 +727,10 @@ func collectCaptureEventsFor(scope traceScope, duration time.Duration, onEvent f
 		}
 		eventCount++
 	}
+}
+
+func captureRecordAfterAttached(bootTimeNS uint64, attached unix.Timespec) bool {
+	return bootTimeNS >= uint64(attached.Nano())
 }
 
 func traceStopRequested(stop <-chan struct{}) bool {

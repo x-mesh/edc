@@ -77,11 +77,14 @@ func httpIOVIterFields(spec *btf.Spec) error {
 			continue
 		}
 		missing = ""
-		for _, field := range []string{"iter_type", "ubuf", "__iov"} {
+		for _, field := range []string{"iter_type", "iov_offset", "nr_segs"} {
 			if !btfHasMember(iter, field) {
 				missing = field
 				break
 			}
+		}
+		if missing == "" && !btfHasMember(iter, "iov") && !btfHasMember(iter, "__iov") {
+			missing = "iov"
 		}
 		if missing == "" {
 			return nil

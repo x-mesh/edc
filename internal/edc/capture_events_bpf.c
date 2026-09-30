@@ -76,6 +76,8 @@ volatile const __u16 tcp_state_port = 0;
 // mysql_port가 0이 아니면 trace mysql이다. 로컬이나 상대 port가 이 값인 socket의 읽기와 쓰기 앞부분을 넘긴다. 0이면 trace
 // mysql이 아니라서 verifier가 이 값에 걸린 분기를 지운다.
 volatile const __u16 mysql_port = 0;
+// Linux 5.15에는 sock_send_length와 sock_recv_length tracepoint가 없다. 사용자 공간이 그때만 이 값을 켠다.
+volatile const __u8 tcp_length_fallback = 0;
 
 struct {
 	__uint(type, BPF_MAP_TYPE_ARRAY);
@@ -421,6 +423,38 @@ static __always_inline int emit_length_event(struct sock_length_ctx *ctx, __u32 
 	event->sport = BPF_CORE_READ(sk, __sk_common.skc_num);
 	// RST를 받아 송수신 중에 닫힌 socket은 kernel이 포트 바인딩을 풀면서 skc_num을 0으로 지운다.
 	// inet_sport는 남아 있어서, 없으면 서버 socket의 마지막 송신이 상대 포트로 따로 묶인다.
+	if (!event->sport) {
+		event->sport = bpf_ntohs(BPF_CORE_READ((struct inet_sock *)sk, inet_sport));
+	}
+	event->dport = bpf_ntohs(BPF_CORE_READ(sk, __sk_common.skc_dport));
+	if (event->family == AF_INET) {
+		__be32 source = BPF_CORE_READ(sk, __sk_common.skc_rcv_saddr);
+		__be32 destination = BPF_CORE_READ(sk, __sk_common.skc_daddr);
+		__builtin_memcpy(event->source, &source, 4);
+		__builtin_memcpy(event->destination, &destination, 4);
+	} else if (event->family == AF_INET6) {
+		BPF_CORE_READ_INTO(&event->source, sk, __sk_common.skc_v6_rcv_saddr.in6_u.u6_addr8);
+		BPF_CORE_READ_INTO(&event->destination, sk, __sk_common.skc_v6_daddr.in6_u.u6_addr8);
+	}
+	finish_event(event);
+	return 0;
+}
+
+static __always_inline int emit_tcp_length_fallback(struct sock *sk, int bytes, __u32 type) {
+	if (!tcp_length_fallback || !sk || bytes <= 0) {
+		return 0;
+	}
+	announce_owner((__u64)sk);
+	struct event *event = start_event(sk, type);
+	if (!event) {
+		return 0;
+	}
+	event->skaddr = (__u64)sk;
+	event->protocol = IPPROTO_TCP;
+	remember_sock_owner(event->skaddr);
+	event->bytes = (__u64)bytes;
+	event->family = BPF_CORE_READ(sk, __sk_common.skc_family);
+	event->sport = BPF_CORE_READ(sk, __sk_common.skc_num);
 	if (!event->sport) {
 		event->sport = bpf_ntohs(BPF_CORE_READ((struct inet_sock *)sk, inet_sport));
 	}
@@ -998,6 +1032,7 @@ struct iov_iter {
 	__u8 iter_type;
 	__u64 iov_offset;
 	__u64 count;
+	const struct iovec *iov;
 	const struct iovec *__iov;
 	void *ubuf;
 	__u64 nr_segs;
@@ -1022,6 +1057,16 @@ static __always_inline void *http_user_buffer(struct msghdr *msg, __u64 *limit) 
 	if (bpf_core_field_exists(msg->msg_iter.__iov) && bpf_core_enum_value_exists(enum iter_type, ITER_IOVEC) &&
 	    type == bpf_core_enum_value(enum iter_type, ITER_IOVEC)) {
 		const struct iovec *iov = BPF_CORE_READ(msg, msg_iter.__iov);
+		__u64 length = BPF_CORE_READ(iov, iov_len);
+		if (length <= offset) {
+			return 0;
+		}
+		*limit = length - offset;
+		return (char *)BPF_CORE_READ(iov, iov_base) + offset;
+	}
+	if (bpf_core_field_exists(msg->msg_iter.iov) && bpf_core_enum_value_exists(enum iter_type, ITER_IOVEC) &&
+	    type == bpf_core_enum_value(enum iter_type, ITER_IOVEC)) {
+		const struct iovec *iov = BPF_CORE_READ(msg, msg_iter.iov);
 		__u64 length = BPF_CORE_READ(iov, iov_len);
 		if (length <= offset) {
 			return 0;
@@ -1242,7 +1287,86 @@ static __always_inline void http_capture(struct sock *sk, __u64 buffer, __u64 li
 
 // emit_mysql은 MySQL port socket의 읽기나 쓰기 앞부분을 레코드 하나로 넘긴다. TLS record로 시작하면 암호문이라 넘기지 않는다.
 // 사용자 공간이 packet 경계를 따라가므로 이 함수는 상태를 두지 않는다.
-static __always_inline void emit_mysql(struct sock *sk, __u64 buffer, __u64 limit, __u64 size, __u8 direction, __u8 server) {
+static __always_inline void emit_mysql_iov(struct sock *sk, __u64 buffer, __u64 limit, const struct iovec *iov, __u64 nr_segs, __u64 size, __u8 direction, __u8 server) {
+	if (!buffer || size == 0) {
+		return;
+	}
+	__u32 zero = 0;
+	struct http_record *record = bpf_map_lookup_elem(&http_scratch, &zero);
+	if (!record) {
+		return;
+	}
+	__u32 cap = server != (direction == HTTP_SENT) ? MYSQL_REQUEST_SIZE : MYSQL_RESPONSE_SIZE;
+	if (cap >= MYSQL_REQUEST_SIZE) {
+		cap = MYSQL_REQUEST_SIZE - 1;
+	}
+	struct http_cursor *cursor = bpf_map_lookup_elem(&http_cursors, &zero);
+	if (!cursor) {
+		return;
+	}
+	cursor->pointer = buffer;
+	cursor->left = limit;
+	cursor->remaining = size < cap ? size : cap;
+	cursor->offset = 0;
+	cursor->segment = 0;
+	cursor->iov = (__u64)iov;
+	cursor->nr_segs = nr_segs;
+	for (int step = 0; step < HTTP_MAX_STEPS; step++) {
+		if (!cursor->remaining || cursor->offset >= MYSQL_REQUEST_SIZE) {
+			break;
+		}
+		if (!cursor->left) {
+			__u64 segment = cursor->segment + 1;
+			if (!cursor->iov || segment >= cursor->nr_segs || segment >= HTTP_MAX_SEGMENTS) {
+				break;
+			}
+			struct iovec vector = {};
+			if (bpf_probe_read_kernel(&vector, sizeof(vector), (const struct iovec *)cursor->iov + segment)) {
+				break;
+			}
+			cursor->segment = segment;
+			cursor->pointer = (__u64)vector.iov_base;
+			cursor->left = vector.iov_len;
+			continue;
+		}
+		__u32 offset = cursor->offset & (MYSQL_REQUEST_SIZE - 1);
+		__u64 len = cursor->left < cursor->remaining ? cursor->left : cursor->remaining;
+		if (len > 512) {
+			len = 512;
+		}
+		if (len > MYSQL_REQUEST_SIZE - offset) {
+			len = MYSQL_REQUEST_SIZE - offset;
+		}
+		if (bpf_probe_read_user(record->payload + offset, len, (void *)cursor->pointer)) {
+			break;
+		}
+		cursor->pointer += len;
+		cursor->left -= len;
+		cursor->remaining -= len;
+		cursor->offset += len;
+	}
+	__u32 copied = cursor->offset & (MYSQL_REQUEST_SIZE - 1);
+	if (!copied) {
+		return;
+	}
+	if (copied >= 3 && record->payload[0] >= 0x14 && record->payload[0] <= 0x17 && record->payload[1] == 0x03 && (record->payload[2] == 0x01 || record->payload[2] == 0x03)) {
+		return;
+	}
+	http_fill_record(record, sk, direction);
+	record->event_type = 11;
+	record->timestamp_ns = bpf_ktime_get_ns();
+	record->len = copied;
+	record->kind = server;
+	record->offset = (__u32)size;
+	if (bpf_ringbuf_output(&events, record, __builtin_offsetof(struct http_record, payload) + copied, 0)) {
+		__u64 *lost = bpf_map_lookup_elem(&lost_events, &zero);
+		if (lost) {
+			__sync_fetch_and_add(lost, 1);
+		}
+	}
+}
+
+static __always_inline void emit_mysql_buffer(struct sock *sk, __u64 buffer, __u64 limit, __u64 size, __u8 direction, __u8 server) {
 	if (!buffer || size == 0) {
 		return;
 	}
@@ -1339,7 +1463,8 @@ static __always_inline void emit_dns_tcp(struct sock *sk, const void *buffer, __
 // iov_second_buffer는 둘째 iovec이다. glibc, systemd-resolved, BIND는 DNS over TCP의 2바이트 길이와 message를 writev로
 // 두 조각에 나눠 쓴다. 첫 조각만 읽으면 message를 놓친다.
 static __always_inline void *iov_second_buffer(struct msghdr *msg, __u64 *limit) {
-	if (!bpf_core_field_exists(msg->msg_iter.iter_type) || !bpf_core_field_exists(msg->msg_iter.__iov) ||
+	if (!bpf_core_field_exists(msg->msg_iter.iter_type) ||
+	    (!bpf_core_field_exists(msg->msg_iter.__iov) && !bpf_core_field_exists(msg->msg_iter.iov)) ||
 	    !bpf_core_field_exists(msg->msg_iter.nr_segs) || !bpf_core_enum_value_exists(enum iter_type, ITER_IOVEC)) {
 		return 0;
 	}
@@ -1347,14 +1472,15 @@ static __always_inline void *iov_second_buffer(struct msghdr *msg, __u64 *limit)
 	    BPF_CORE_READ(msg, msg_iter.iov_offset) != 0) {
 		return 0;
 	}
-	const struct iovec *iov = BPF_CORE_READ(msg, msg_iter.__iov);
+	const struct iovec *iov = bpf_core_field_exists(msg->msg_iter.__iov) ? BPF_CORE_READ(msg, msg_iter.__iov) : BPF_CORE_READ(msg, msg_iter.iov);
 	*limit = BPF_CORE_READ(iov + 1, iov_len);
 	return BPF_CORE_READ(iov + 1, iov_base);
 }
 
 // http_iov는 writev의 kernel iovec 배열이다. 첫 버퍼는 http_user_buffer가 iov_offset까지 반영해 읽는다.
 static __always_inline const struct iovec *http_iov(struct msghdr *msg, __u64 *nr_segs) {
-	if (!bpf_core_field_exists(msg->msg_iter.iter_type) || !bpf_core_field_exists(msg->msg_iter.__iov) ||
+	if (!bpf_core_field_exists(msg->msg_iter.iter_type) ||
+	    (!bpf_core_field_exists(msg->msg_iter.__iov) && !bpf_core_field_exists(msg->msg_iter.iov)) ||
 	    !bpf_core_field_exists(msg->msg_iter.nr_segs) || !bpf_core_enum_value_exists(enum iter_type, ITER_IOVEC)) {
 		return 0;
 	}
@@ -1362,7 +1488,7 @@ static __always_inline const struct iovec *http_iov(struct msghdr *msg, __u64 *n
 		return 0;
 	}
 	*nr_segs = BPF_CORE_READ(msg, msg_iter.nr_segs);
-	return BPF_CORE_READ(msg, msg_iter.__iov);
+	return bpf_core_field_exists(msg->msg_iter.__iov) ? BPF_CORE_READ(msg, msg_iter.__iov) : BPF_CORE_READ(msg, msg_iter.iov);
 }
 
 // --payload=all은 tcp_sendmsg가 끝난 뒤 실제로 보낸 byte 수만큼 넘긴다. non-blocking socket은 요청보다 적게 보내고
@@ -1382,6 +1508,25 @@ struct {
 	__type(value, struct http_send_pending);
 } http_send_pending SEC(".maps");
 
+struct mysql_send_pending {
+	struct http_send_pending send;
+	__u8 server;
+};
+
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, 10240);
+	__type(key, __u64);
+	__type(value, struct mysql_send_pending);
+} mysql_send_pending SEC(".maps");
+
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, 10240);
+	__type(key, __u64);
+	__type(value, __u64);
+} tcp_length_pending SEC(".maps");
+
 SEC("fentry/tcp_sendmsg")
 int tcp_sendmsg_entry(__u64 *ctx) {
 	struct sock *sk = (struct sock *)ctx[0];
@@ -1390,6 +1535,12 @@ int tcp_sendmsg_entry(__u64 *ctx) {
 	__u64 limit = 0;
 	void *buffer = http_user_buffer(msg, &limit);
 	__u64 first = size < limit ? size : limit;
+	if (tcp_length_fallback) {
+		__u64 key = bpf_get_current_pid_tgid();
+		__u64 skaddr = (__u64)sk;
+		bpf_map_update_elem(&tcp_length_pending, &key, &skaddr, BPF_ANY);
+		return 0;
+	}
 	if (emit_dns_tcp_messages && sk && dns_tcp_socket(sk)) {
 		emit_dns_tcp(sk, buffer, first, DNS_SENT);
 		if (first == 2 && size > 2) {
@@ -1402,7 +1553,10 @@ int tcp_sendmsg_entry(__u64 *ctx) {
 	if (mysql_port && sk) {
 		__u8 side = mysql_socket(sk);
 		if (side) {
-			emit_mysql(sk, (__u64)buffer, limit, size, HTTP_SENT, side == MYSQL_SERVER);
+			struct mysql_send_pending pending = {.send = {.skaddr = (__u64)sk, .buffer = (__u64)buffer, .limit = limit, .nr_segs = 1}, .server = side == MYSQL_SERVER};
+			pending.send.iov = (__u64)http_iov(msg, &pending.send.nr_segs);
+			__u64 key = bpf_get_current_pid_tgid();
+			bpf_map_update_elem(&mysql_send_pending, &key, &pending, BPF_ANY);
 			return 0;
 		}
 	}
@@ -1423,6 +1577,22 @@ int tcp_sendmsg_entry(__u64 *ctx) {
 SEC("fexit/tcp_sendmsg")
 int tcp_sendmsg_exit(__u64 *ctx) {
 	__u64 key = bpf_get_current_pid_tgid();
+	__u64 *tcp_stored = bpf_map_lookup_elem(&tcp_length_pending, &key);
+	if (tcp_stored) {
+		__u64 skaddr = *tcp_stored;
+		bpf_map_delete_elem(&tcp_length_pending, &key);
+		return emit_tcp_length_fallback((struct sock *)skaddr, (int)ctx[3], 6);
+	}
+	struct mysql_send_pending *mysql_stored = bpf_map_lookup_elem(&mysql_send_pending, &key);
+	if (mysql_stored) {
+		struct mysql_send_pending pending = *mysql_stored;
+		bpf_map_delete_elem(&mysql_send_pending, &key);
+		int sent = (int)ctx[3];
+		if (sent > 0) {
+			emit_mysql_iov((struct sock *)pending.send.skaddr, pending.send.buffer, pending.send.limit, (const struct iovec *)pending.send.iov, pending.send.nr_segs, sent, HTTP_SENT, pending.server);
+		}
+		return 0;
+	}
 	struct http_send_pending *stored = bpf_map_lookup_elem(&http_send_pending, &key);
 	if (!stored) {
 		return 0;
@@ -1434,6 +1604,11 @@ int tcp_sendmsg_exit(__u64 *ctx) {
 		http_capture((struct sock *)pending.skaddr, pending.buffer, pending.limit, (const struct iovec *)pending.iov, pending.nr_segs, sent, HTTP_SENT);
 	}
 	return 0;
+}
+
+SEC("fentry/tcp_cleanup_rbuf")
+int tcp_cleanup_rbuf_entry(__u64 *ctx) {
+	return emit_tcp_length_fallback((struct sock *)ctx[0], (int)ctx[1], 7);
 }
 
 // tcp_recvmsg가 끝나야 사용자 버퍼에 data가 있다. 시작할 때 버퍼 위치를 thread별로 두고 끝날 때 읽는다.
@@ -1472,14 +1647,12 @@ int tcp_recvmsg_entry(__u64 *ctx) {
 	return 0;
 }
 
-SEC("fexit/tcp_recvmsg")
-int tcp_recvmsg_exit(__u64 *ctx) {
+static __always_inline int finish_tcp_recvmsg(__u64 *ctx, int copied) {
 	__u64 key = bpf_get_current_pid_tgid();
 	struct http_recv_pending *pending = bpf_map_lookup_elem(&http_recv_pending, &key);
 	if (!pending) {
 		return 0;
 	}
-	int copied = (int)ctx[5];
 	if (copied > 0) {
 		__u64 size = (__u64)copied < pending->limit ? (__u64)copied : pending->limit;
 		struct sock *sk = (struct sock *)pending->skaddr;
@@ -1488,7 +1661,7 @@ int tcp_recvmsg_exit(__u64 *ctx) {
 		} else if (mysql_port && sk) {
 			__u8 side = mysql_socket(sk);
 			if (side) {
-				emit_mysql(sk, pending->buffer, pending->limit, (__u64)copied, HTTP_RECEIVED, side == MYSQL_SERVER);
+				emit_mysql_buffer(sk, pending->buffer, pending->limit, (__u64)copied, HTTP_RECEIVED, side == MYSQL_SERVER);
 			}
 		} else if (emit_http_messages) {
 			http_capture(sk, pending->buffer, pending->limit, 0, 1, (__u64)copied, HTTP_RECEIVED);
@@ -1498,20 +1671,32 @@ int tcp_recvmsg_exit(__u64 *ctx) {
 	return 0;
 }
 
+SEC("fexit/tcp_recvmsg")
+int tcp_recvmsg_exit(__u64 *ctx) {
+	return finish_tcp_recvmsg(ctx, *(int *)&ctx[5]);
+}
+
+SEC("fexit/tcp_recvmsg")
+int tcp_recvmsg_exit_legacy(__u64 *ctx) {
+	return finish_tcp_recvmsg(ctx, *(int *)&ctx[6]);
+}
+
 // trace http는 끝난 socket의 짝짓기 상태를 지운다. kernel은 해제한 socket의 주소를 새 socket에 다시 써서, 응답을 놓친
 // 요청이 남으면 새 연결의 응답이 그 요청과 짝지어진다. tracepoint는 tracefs가 있어야 붙으므로, tracefs가 없는
 // container에서도 붙는 tp_btf를 쓴다. trace tcp는 tcp_destroy_sock tracepoint를 따로 쓴다.
 SEC("tp_btf/tcp_destroy_sock")
 int http_tcp_destroy_sock(__u64 *ctx) {
 	struct sock *sk = (struct sock *)ctx[0];
-	if (!emit_http_messages || !sk || !http_socket(sk)) {
+	if (!sk || !((emit_http_messages && http_socket(sk)) || (mysql_port && mysql_socket(sk)))) {
 		return 0;
 	}
 	// 머리만 읽은 첫 조각의 표시가 남으면 새 연결의 첫 읽기를 이어지는 조각으로 넘긴다.
-	struct http_stream_key key = {.skaddr = (__u64)sk, .direction = HTTP_SENT};
-	bpf_map_delete_elem(&http_streams, &key);
-	key.direction = HTTP_RECEIVED;
-	bpf_map_delete_elem(&http_streams, &key);
+	if (emit_http_messages && http_socket(sk)) {
+		struct http_stream_key key = {.skaddr = (__u64)sk, .direction = HTTP_SENT};
+		bpf_map_delete_elem(&http_streams, &key);
+		key.direction = HTTP_RECEIVED;
+		bpf_map_delete_elem(&http_streams, &key);
+	}
 	struct event *event = start_event(ctx, 5);
 	if (!event) {
 		return 0;

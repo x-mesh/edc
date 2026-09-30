@@ -279,8 +279,11 @@ func traceScreenHelp(protocol string) string {
 		}
 	}
 	keys = append(keys, "g scroll", "↑↓ select", "enter detail", "f follow")
-	if protocol == "http" {
+	switch protocol {
+	case "http":
 		keys = append(keys, "v payload", "m secrets")
+	case "socket":
+		keys = append(keys, "v payload")
 	}
 	return strings.Join(append(keys, "end live", "esc clear", "q quit", "ctrl-c stop"), "  ")
 }
@@ -385,7 +388,7 @@ func traceScreenRows(model traceScreenModel) []string {
 			lines[0] = liveSelected(formatTraceScreenEventLine(event, model.width), os.Getenv("NO_COLOR") == "")
 		}
 		if model.payloadLines && event.Payload != "" {
-			if !model.secrets {
+			if !model.secrets && model.protocol == "http" {
 				event.Payload = string(traceMaskHTTPHeaders([]byte(event.Payload)))
 			}
 			lines = append(lines, formatTraceScreenPayload(event, model.width))
@@ -663,7 +666,7 @@ func formatTraceScreenEventLine(event captureEvent, width int) string {
 
 // formatTraceScreenPayload는 event 행 아래에 목적지 칸부터 payload를 한 줄로 쓴다.
 func formatTraceScreenPayload(event captureEvent, width int) string {
-	line := "↳ " + traceHTTPPayloadSummary(event)
+	line := "↳ " + tracePayloadSummary(event)
 	if width >= 72 {
 		line = strings.Repeat(" ", traceScrollProcessWidth+1) + line
 	}
@@ -714,13 +717,17 @@ func traceRuneIndex(value string, count int) int {
 	return len(value)
 }
 
-// traceScreenScope는 전체 화면이 모을 범위다. trace http는 --payload가 없어도 message 앞부분을 모은다. 옵션을 늘리지
+// traceScreenScope는 전체 화면이 모을 범위다. trace http와 trace socket은 --payload가 없어도 message나 호출의 앞부분을 모은다. 옵션을 늘리지
 // 않고 Enter와 v로 바로 보려는 것이다. 인증 header는 원문으로 두고 그릴 때 가려서 m으로 풀 수 있게 한다. 파이프와
 // --raw 출력은 이 범위를 쓰지 않는다.
 func traceScreenScope(protocol string, options tcpTraceOptions) traceScope {
 	scope := options.scope(protocol)
-	if protocol == "http" {
+	switch protocol {
+	case "http":
 		scope.payload, scope.showSecrets, scope.keepGzip = true, true, true
+	case "socket":
+		// 6.4 전 kernel은 사용자 버퍼를 읽을 field가 없다. 사용자가 고르지 않은 payload 때문에 화면이 멈추지 않게 byte 수만 모은다.
+		scope.payload = scope.payload || socketPayloadSupported()
 	}
 	return scope
 }

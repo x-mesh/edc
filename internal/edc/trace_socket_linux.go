@@ -67,6 +67,12 @@ func resolveSocketTarget(path string) (socketTraceTarget, error) {
 	return socketTraceTarget{path: absolute, key: key}, nil
 }
 
+// validateSocketTarget은 trace를 시작하기 전에 경로를 확인한다. 잘못된 경로는 사용법 오류다.
+func validateSocketTarget(path string) error {
+	_, err := resolveSocketTarget(path)
+	return err
+}
+
 func socketTargetKey(info os.FileInfo) (socketEventsSocketTarget, bool) {
 	stat, ok := info.Sys().(*syscall.Stat_t)
 	if !ok {
@@ -137,6 +143,10 @@ func socketPayloadKernel() error {
 		}
 	}
 	return nil
+}
+
+func socketPayloadSupported() bool {
+	return socketPayloadKernel() == nil
 }
 
 // socketPeerNames는 상대 pid의 process 이름이다. BPF는 상대의 pid만 알므로 /proc에서 읽는다.

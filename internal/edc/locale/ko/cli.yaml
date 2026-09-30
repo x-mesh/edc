@@ -175,6 +175,7 @@ cli:
     payload_json_conflict: "--json은 요약만 기록하므로 --payload와 함께 사용할 수 없습니다"
     payload_value: "--payload는 값 없이 쓰거나 =all로 씁니다"
     show_secrets_payload: "--show-secrets에는 --payload가 필요합니다"
+    show_secrets_protocol: "--show-secrets는 trace %s에서 사용할 수 없습니다. 이 payload는 가리지 않습니다"
     port_range: "--port는 1부터 65535까지입니다"
     port_protocol: "--port는 trace %s에서 사용할 수 없습니다"
     http_kernel: "trace http는 Linux 6.4 이상이 필요합니다. kernel의 iov_iter에 %s field가 없습니다"

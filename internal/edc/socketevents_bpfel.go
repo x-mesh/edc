@@ -73,6 +73,7 @@ const (
 	socketEventsMapSocketCalls             = "socket_calls"
 	socketEventsMapSocketCursors           = "socket_cursors"
 	socketEventsMapSocketScratch           = "socket_scratch"
+	socketEventsMapSocketSides             = "socket_sides"
 	socketEventsMapSocketTargets           = "socket_targets"
 	socketEventsProgUnixReleaseEntry       = "unix_release_entry"
 	socketEventsProgUnixStreamConnectExit  = "unix_stream_connect_exit"
@@ -144,6 +145,7 @@ type socketEventsMapSpecs struct {
 	SocketCalls   *ebpf.MapSpec `ebpf:"socket_calls"`
 	SocketCursors *ebpf.MapSpec `ebpf:"socket_cursors"`
 	SocketScratch *ebpf.MapSpec `ebpf:"socket_scratch"`
+	SocketSides   *ebpf.MapSpec `ebpf:"socket_sides"`
 	SocketTargets *ebpf.MapSpec `ebpf:"socket_targets"`
 }
 
@@ -181,6 +183,7 @@ type socketEventsMaps struct {
 	SocketCalls   *ebpf.Map `ebpf:"socket_calls"`
 	SocketCursors *ebpf.Map `ebpf:"socket_cursors"`
 	SocketScratch *ebpf.Map `ebpf:"socket_scratch"`
+	SocketSides   *ebpf.Map `ebpf:"socket_sides"`
 	SocketTargets *ebpf.Map `ebpf:"socket_targets"`
 }
 
@@ -191,6 +194,7 @@ func (m *socketEventsMaps) Close() error {
 		m.SocketCalls,
 		m.SocketCursors,
 		m.SocketScratch,
+		m.SocketSides,
 		m.SocketTargets,
 	)
 }

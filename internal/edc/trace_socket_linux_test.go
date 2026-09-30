@@ -3,6 +3,7 @@
 package edc
 
 import (
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -87,4 +88,48 @@ func TestResolveSocketTargetChecksTheFile(t *testing.T) {
 	if _, err := resolveSocketTarget(datagram); err == nil || !strings.Contains(err.Error(), "dgram") {
 		t.Fatalf("datagram socket: %v", err)
 	}
+}
+
+func TestTraceSocketTakesOnePathWithOptionsOnEitherSide(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "missing.sock")
+	for _, test := range []struct {
+		args   []string
+		stderr string
+	}{
+		{[]string{"socket"}, "usage: edc trace socket"},
+		{[]string{"socket", missing, "extra"}, "usage: edc trace socket"},
+		// 경로를 확인하는 단계까지 가면 option을 모두 읽은 것이다.
+		{[]string{"socket", "--duration", "1s", missing}, "cannot read the socket file"},
+		{[]string{"socket", missing, "--duration", "1s", "--payload=all"}, "cannot read the socket file"},
+		{[]string{"socket", missing, "--port", "80"}, "--port is not available for trace socket"},
+		{[]string{"socket", missing, "--payload", "--show-secrets"}, "--show-secrets is not available for trace socket"},
+		{[]string{"socket", missing, "--side", "server"}, "--side server is not available for trace socket"},
+		{[]string{"tcp", missing}, "trace tcp takes no positional argument"},
+	} {
+		var code int
+		stderr := captureTraceStderr(t, func() { code = runTrace(test.args) })
+		if code != 2 || !strings.Contains(stderr, test.stderr) {
+			t.Fatalf("trace %q exit = %d, stderr %q, want 2 and %q", test.args, code, stderr, test.stderr)
+		}
+	}
+}
+
+func captureTraceStderr(t *testing.T, run func()) string {
+	t.Helper()
+	file, err := os.CreateTemp(t.TempDir(), "stderr")
+	if err != nil {
+		t.Fatal(err)
+	}
+	previous := os.Stderr
+	os.Stderr = file
+	defer func() { os.Stderr = previous }()
+	run()
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		t.Fatal(err)
+	}
+	data, err := io.ReadAll(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
 }

@@ -87,6 +87,11 @@ var traceProtocols = map[string]traceProtocolSpec{
 		ansiColor: "95", screenColor: "#f472b6", groupColumns: traceHTTPGroupColumns, hideTraffic: true, linuxOnly: true,
 		scrollLabels: traceHTTPScrollLabels, serverSide: true, prerequisites: httpTracePrerequisites, newSummarizer: func() traceSummarizer { return newHTTPTraceSummarizer() },
 	},
+	// unix socket 파일 하나를 본다. 목적지는 늘 그 경로라서 port와 target 보기는 한 행뿐이다. source는 상대 process다.
+	"socket": {
+		ansiColor: "38;5;208", screenColor: "#fb923c", hiddenViews: []string{traceGroupByPort, traceGroupByTarget}, linuxOnly: true,
+		scrollLabels: traceSocketScrollLabels, prerequisites: socketTracePrerequisites, newSummarizer: func() traceSummarizer { return newSocketTraceSummarizer() },
+	},
 	// ARP event에는 process와 port가 없다. source는 interface, target은 IP다. Linux는 netlink 알림을, macOS는 1초마다 읽은 table을 쓴다.
 	"arp": {
 		ansiColor: "34", screenColor: "#60a5fa", groupColumns: traceNeighborGroupColumns, hideTraffic: true, hiddenViews: []string{traceGroupByPort, traceGroupByProcess},
@@ -131,11 +136,13 @@ type traceScope struct {
 	// keepGzip이면 gzip message의 원본 byte를 event에 붙인다. 전체 화면의 상세 보기가 본문을 풀 때 쓴다.
 	keepGzip bool
 	port     uint16
+	// socketPath는 trace socket이 볼 unix socket 파일이다.
+	socketPath string
 }
 
 func (options tcpTraceOptions) scope(protocol string) traceScope {
 	return traceScope{protocol: protocol, server: options.side == traceServerSide, payload: options.payload != "", payloadAll: options.payload == tracePayloadAll,
-		showSecrets: options.showSecrets, port: uint16(options.port)}
+		showSecrets: options.showSecrets, port: uint16(options.port), socketPath: options.socketPath}
 }
 
 // tracePayloadMode는 --payload 값이다. 값 없이 쓰면 message마다 앞 4KiB를, all이면 message 전체를 본다.
@@ -262,6 +269,7 @@ func (report traceGroupReport) hideTraffic() bool { return traceProtocols[report
 func runTrace(args []string) int {
 	if len(args) == 0 || !knownTraceProtocol(args[0]) {
 		fmt.Fprintln(os.Stderr, T("cli.usage", "edc trace <tcp|udp|dns|arp|ndp|http> [options]"))
+		fmt.Fprintln(os.Stderr, T("cli.usage", traceSocketUsage))
 		return 2
 	}
 	options := tcpTraceOptions{}
@@ -284,7 +292,21 @@ func runTrace(args []string) int {
 	if err := set.Parse(args[1:]); err != nil {
 		return 2
 	}
-	if set.NArg() != 0 {
+	if args[0] == "socket" {
+		// flag package는 첫 위치 인자에서 멈춘다. 경로 뒤의 option도 받도록 경로를 꺼내고 나머지를 다시 읽는다.
+		if set.NArg() == 0 {
+			fmt.Fprintln(os.Stderr, T("cli.usage", traceSocketUsage))
+			return 2
+		}
+		options.socketPath = set.Arg(0)
+		if err := set.Parse(set.Args()[1:]); err != nil {
+			return 2
+		}
+		if set.NArg() != 0 {
+			fmt.Fprintln(os.Stderr, T("cli.usage", traceSocketUsage))
+			return 2
+		}
+	} else if set.NArg() != 0 {
 		fmt.Fprintln(os.Stderr, T("cli.error.no_positional", "trace "+args[0]))
 		return 2
 	}
@@ -316,7 +338,7 @@ func runTrace(args []string) int {
 		fmt.Fprintln(os.Stderr, T("cli.trace.side_protocol", args[0]))
 		return 2
 	}
-	if options.payload != "" && args[0] != "http" {
+	if options.payload != "" && args[0] != "http" && args[0] != "socket" {
 		fmt.Fprintln(os.Stderr, T("cli.trace.payload_protocol", args[0]))
 		return 2
 	}
@@ -327,6 +349,11 @@ func runTrace(args []string) int {
 	}
 	if options.showSecrets && options.payload == "" {
 		fmt.Fprintln(os.Stderr, T("cli.trace.show_secrets_payload"))
+		return 2
+	}
+	// socket의 payload는 형식을 몰라 가리지 않는다. 가릴 것이 없으므로 받지 않는다.
+	if options.showSecrets && args[0] == "socket" {
+		fmt.Fprintln(os.Stderr, T("cli.trace.show_secrets_protocol", args[0]))
 		return 2
 	}
 	portSet := false
@@ -342,6 +369,12 @@ func runTrace(args []string) int {
 	if traceProtocols[args[0]].linuxOnly && runtime.GOOS != "linux" {
 		fmt.Fprintln(os.Stderr, T("cli.trace.protocol_linux_only", args[0], runtime.GOOS))
 		return 3
+	}
+	if args[0] == "socket" {
+		if err := validateSocketTarget(options.socketPath); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 2
+		}
 	}
 	if err := traceProtocolPrerequisites(args[0]); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -454,8 +487,17 @@ func printTraceEvent(event captureEvent, color, full bool) {
 			fmt.Fprintf(os.Stdout, "%-16s │ %s\n", "", payloadLine)
 		}
 	default:
-		fmt.Fprintf(os.Stdout, "%-16s ↳ %s\n", "", traceHTTPPayloadSummary(event))
+		fmt.Fprintf(os.Stdout, "%-16s ↳ %s\n", "", tracePayloadSummary(event))
 	}
+}
+
+// tracePayloadSummary는 event 아래 한 줄에 쓰는 payload다. socket의 payload는 형식을 몰라 HTTP처럼 머리와 본문으로
+// 나누지 않는다.
+func tracePayloadSummary(event captureEvent) string {
+	if traceProtocol(event) == "socket" {
+		return traceSocketPayloadLine(event)
+	}
+	return traceHTTPPayloadSummary(event)
 }
 
 func printTraceEventHeader(protocol string) {
@@ -824,7 +866,8 @@ func newTraceGroupSummarizer(protocol, groupBy string) *traceGroupSummarizer {
 }
 
 func (summarizer *traceGroupSummarizer) observe(event captureEvent) {
-	if event.Side != "" {
+	// socket event는 한 trace에 두 쪽이 섞인다. 보고서의 쪽은 --side로 고른 dns와 http에만 있다.
+	if event.Side != "" && traceProtocol(event) != "socket" {
 		summarizer.side = event.Side
 	}
 	key, server := traceGroupKey(event, summarizer.groupBy)
@@ -1000,7 +1043,7 @@ func observeTraceGroup(group *traceGroup, event captureEvent) {
 		group.Tx += traceEventPackets(event)
 	case "udp_receive":
 		group.Rx += traceEventPackets(event)
-	case "tcp_connect", "tcp_accept":
+	case "tcp_connect", "tcp_accept", "socket_connect":
 		group.Connect++
 	case "tcp_retransmit":
 		group.Retransmissions++

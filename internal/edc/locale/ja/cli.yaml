@@ -175,6 +175,7 @@ cli:
     payload_json_conflict: "--json は要約だけを書くため、--payload と同時に使えません"
     payload_value: "--payload は値なしか =all です"
     show_secrets_payload: "--show-secrets には --payload が必要です"
+    show_secrets_protocol: "--show-secrets は trace %s では使えません。この payload は隠しません"
     port_range: "--port は 1 から 65535 までです"
     port_protocol: "--port は trace %s では使えません"
     http_kernel: "trace http には Linux 6.4 以降が必要です。kernel の iov_iter に %s field がありません"

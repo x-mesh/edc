@@ -196,3 +196,30 @@ func TestSocketTraceSummarizerGroupsByProcessPeerAndSide(t *testing.T) {
 		t.Fatal("the peer pid must not split rows")
 	}
 }
+
+func TestSocketPayloadLimitFollowsThePayloadOption(t *testing.T) {
+	for payload, want := range map[tracePayloadMode]int{"": 0, tracePayloadHead: httpPayloadHead, tracePayloadAll: httpMessageMax} {
+		scope := (tcpTraceOptions{payload: payload, socketPath: "/run/x.sock"}).scope("socket")
+		if scope.socketPath != "/run/x.sock" || socketPayloadLimit(scope) != want {
+			t.Fatalf("payload %q: scope %+v limit %d, want %d", payload, scope, socketPayloadLimit(scope), want)
+		}
+	}
+	// 전체 화면은 --payload가 없어도 앞부분을 모아 v와 Enter로 보게 한다. kernel이 읽지 못하면 byte 수만 모은다.
+	want := 0
+	if socketPayloadSupported() {
+		want = httpPayloadHead
+	}
+	if scope := traceScreenScope("socket", tcpTraceOptions{socketPath: "/run/x.sock"}); socketPayloadLimit(scope) != want || scope.showSecrets {
+		t.Fatalf("screen scope = %+v", scope)
+	}
+}
+
+func TestTraceGroupReportTakesNoSideFromSocketEvents(t *testing.T) {
+	summarizer := newTraceGroupSummarizer("socket", traceGroupByProcess)
+	summarizer.observe(captureEvent{Protocol: "socket", Event: "socket_send", Process: "app", Side: traceServerSide, Bytes: 3})
+	summarizer.observe(captureEvent{Protocol: "socket", Event: "socket_recv", Process: "app", Side: traceClientSide, Bytes: 5})
+	report := summarizer.report(captureSummary{}, time.Second)
+	if report.Side != "" || len(report.Groups) != 1 || report.Groups[0].TXBytes != 3 || report.Groups[0].RXBytes != 5 {
+		t.Fatalf("report = %+v", report)
+	}
+}

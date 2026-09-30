@@ -20,6 +20,7 @@ typedef __u32 __wsum;
 #define BPF_MAP_TYPE_HASH 1
 #define BPF_MAP_TYPE_ARRAY 2
 #define BPF_MAP_TYPE_PERCPU_ARRAY 6
+#define BPF_MAP_TYPE_LRU_HASH 9
 #define BPF_MAP_TYPE_RINGBUF 27
 #define MSG_PEEK 2
 #define EAGAIN 11
@@ -196,22 +197,38 @@ struct socket_call {
 	__u8 side;
 };
 
+// socket_sides는 대상 socket으로 확인한 socket의 쪽이다. 서버 쪽 socket이 닫히면 kernel이 그 socket의 경로를 비워서,
+// 클라이언트 쪽은 그 뒤의 EOF와 close를 경로로 고를 수 없다. 그래서 한 번 확인한 socket을 기억하고 close할 때 지운다.
+struct {
+	__uint(type, BPF_MAP_TYPE_LRU_HASH);
+	__uint(max_entries, 16384);
+	__type(key, __u64);
+	__type(value, __u8);
+} socket_sides SEC(".maps");
+
 // socket_side는 sk가 대상 socket에 속하면 call을 채우고 1을 돌려준다. accept로 생긴 서버 쪽 socket은 listener의 경로를
 // 물려받고, 클라이언트 쪽 socket은 상대(peer)가 그 경로를 가진다.
 static __always_inline int socket_side(struct sock *sk, struct socket_call *call) {
 	if (!sk) {
 		return 0;
 	}
+	__u64 skaddr = (__u64)sk;
 	struct unix_sock *unix = (struct unix_sock *)sk;
 	struct sock *peer = BPF_CORE_READ(unix, peer);
-	if (socket_matches(BPF_CORE_READ(unix, path.dentry))) {
+	__u8 *known = bpf_map_lookup_elem(&socket_sides, &skaddr);
+	if (known) {
+		call->side = *known;
+	} else if (socket_matches(BPF_CORE_READ(unix, path.dentry))) {
 		call->side = SOCKET_SERVER;
 	} else if (peer && socket_matches(BPF_CORE_READ((struct unix_sock *)peer, path.dentry))) {
 		call->side = SOCKET_CLIENT;
 	} else {
 		return 0;
 	}
-	call->skaddr = (__u64)sk;
+	if (!known) {
+		bpf_map_update_elem(&socket_sides, &skaddr, &call->side, BPF_ANY);
+	}
+	call->skaddr = skaddr;
 	call->peer_skaddr = (__u64)peer;
 	// sk_peer_pid는 SO_PEERCRED 값이다. 서버 쪽에서는 connect한 process, 클라이언트 쪽에서는 listen한 process다.
 	call->peer_pid = BPF_CORE_READ(sk, sk_peer_pid, numbers[0].nr);
@@ -507,6 +524,7 @@ int unix_release_entry(__u64 *ctx) {
 	if (record) {
 		socket_output(record);
 	}
+	bpf_map_delete_elem(&socket_sides, &call.skaddr);
 	return 0;
 }
 

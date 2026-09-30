@@ -257,9 +257,9 @@ type traceTraffic struct {
 
 func (traffic *traceTraffic) observe(event captureEvent) {
 	switch event.Event {
-	case "tcp_send", "udp_send":
+	case "tcp_send", "udp_send", "socket_send":
 		traffic.TXBytes += event.Bytes
-	case "tcp_receive", "udp_receive":
+	case "tcp_receive", "udp_receive", "socket_recv":
 		traffic.RXBytes += event.Bytes
 	}
 }
@@ -291,6 +291,8 @@ type tcpTraceOptions struct {
 	showSecrets bool
 	// port는 trace http가 볼 HTTP 서버의 port다. client 쪽은 상대 port, 서버 쪽은 로컬 port다. 0이면 모든 port를 본다.
 	port int
+	// socketPath는 trace socket이 볼 unix socket 파일이다.
+	socketPath string
 }
 
 func traceProtocol(event captureEvent) string {

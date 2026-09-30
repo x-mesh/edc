@@ -11,6 +11,20 @@ import (
 	"time"
 )
 
+// traceSocketUsage는 trace socket의 사용법이다. option은 경로 앞이나 뒤에 쓴다.
+const traceSocketUsage = "edc trace socket <path> [options]"
+
+// socketPayloadLimit는 호출마다 받는 payload byte 수다. --payload는 앞 4KiB, --payload=all은 1MiB까지다.
+func socketPayloadLimit(scope traceScope) int {
+	switch {
+	case scope.payloadAll:
+		return httpMessageMax
+	case scope.payload:
+		return httpPayloadHead
+	}
+	return 0
+}
+
 // socketRecord의 offset은 socket_events_bpf.c의 struct socket_record와 같다.
 const (
 	socketRecordPayloadOffset = 80

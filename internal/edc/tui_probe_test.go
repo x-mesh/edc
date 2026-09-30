@@ -77,6 +77,19 @@ func TestProbeModelTruncatesToWidth(t *testing.T) {
 	}
 }
 
+func TestProbeModelTruncatesTheResultToWidth(t *testing.T) {
+	model := newProbeModel("net.ping", "127.0.0.1", "", true, false, nil)
+	model, _ = probeAfter(t, model, tea.WindowSizeMsg{Width: 48, Height: 40}, probeResultMsg{result: Result{Probe: "net.ping", Status: StatusPass, Summary: "0% packet loss (4/4 received), target 127.0.0.1"}})
+	view := strings.TrimRight(model.View().Content, "\n")
+	if liveWidth(view) > 48 || !strings.HasSuffix(view, "…") || liveLineCount(model.View().Content) != 1 {
+		t.Fatalf("result view = %q (%d wide)", view, liveWidth(view))
+	}
+	// 색은 상태 칸에만 있어서, 자른 뒤에도 색을 끄는 escape가 남는다.
+	if status := terminalStatus(StatusPass, true); !strings.HasPrefix(view, status) {
+		t.Fatalf("result view lost the colored status %q: %q", status, view)
+	}
+}
+
 func TestProbeProgressHandsOverLatestLine(t *testing.T) {
 	progress := &probeProgress{}
 	progress.observe("first")

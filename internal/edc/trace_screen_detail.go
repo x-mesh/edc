@@ -154,7 +154,28 @@ func (model traceScreenModel) buildDetail(number int) *traceDetail {
 		return nil
 	}
 	event, payload, notes := model.detailPayload(number)
-	return newTraceDetail(event, payload, notes, number, model.width)
+	detail := newTraceDetail(event, payload, notes, number, model.width)
+	if model.protocol == "mysql" {
+		for _, row := range model.displayRows() {
+			if row.primary != number || row.response < model.first || row.response >= model.first+len(model.events) {
+				continue
+			}
+			response := model.events[row.response-model.first]
+			if response.MySQL == nil {
+				break
+			}
+			detail.raw = append(detail.raw, "", "response:", "event: "+response.Event, "result: "+traceMySQLResultText(response))
+			if response.LatencyMS != nil {
+				detail.raw = append(detail.raw, "latency: "+traceLatency(response.LatencyMS, "ms"))
+			}
+			if response.MySQL.ErrorCode != 0 || response.MySQL.SQLState != "" || response.MySQL.Message != "" {
+				detail.raw = append(detail.raw, "error: "+fmt.Sprintf("%d (%s) %s", response.MySQL.ErrorCode, emptyAs(response.MySQL.SQLState, "-"), response.MySQL.Message))
+			}
+			detail.wrap(model.width)
+			break
+		}
+	}
+	return detail
 }
 
 // detailPayload는 상세 보기와 미리 보기가 보일 payload다. 보관한 전체 payload를 쓰고, z면 gzip 본문을 풀고, m이 꺼져

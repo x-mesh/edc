@@ -76,12 +76,18 @@ type traceScreenModel struct {
 	preview       *tracePreview
 	previewOffset int
 	// container는 --container로 고른 container의 이름이다. 목록이 조용해도 거르는 중임을 머리글에 보인다.
-	container string
+	container       string
+	mysqlRows       []traceScreenRow
+	mysqlRowsHead   int
+	mysqlRowIndex   map[int]int
+	mysqlPending    map[traceMySQLPairKey][]int
+	mysqlPendingKey map[int]traceMySQLPairKey
 }
 
 type traceScreenRow struct {
 	primary  int
 	response int
+	hidden   bool
 }
 
 type traceMySQLPairKey struct {
@@ -92,17 +98,26 @@ type traceMySQLPairKey struct {
 }
 
 func (model traceScreenModel) displayRows() []traceScreenRow {
-	rows := make([]traceScreenRow, 0, len(model.events))
 	if model.protocol != "mysql" {
+		rows := make([]traceScreenRow, 0, len(model.events))
 		for index := range model.events {
 			rows = append(rows, traceScreenRow{primary: model.first + index, response: -1})
 		}
 		return rows
 	}
+	if model.mysqlRows == nil && len(model.events) != 0 {
+		return traceMySQLReferenceRows(model.events, model.first, model.slow)
+	}
+	return model.mysqlRows[model.mysqlRowsHead:]
+}
+
+// traceMySQLReferenceRows is the test reference for the incremental screen index.
+func traceMySQLReferenceRows(events []captureEvent, first int, slow time.Duration) []traceScreenRow {
+	rows := make([]traceScreenRow, 0, len(events))
 	pending := map[traceMySQLPairKey][]int{}
-	rowIndexByPrimary := make(map[int]int, len(model.events))
-	for index, event := range model.events {
-		number := model.first + index
+	rowIndexByPrimary := make(map[int]int, len(events))
+	for index, event := range events {
+		number := first + index
 		if event.MySQL == nil {
 			rows = append(rows, traceScreenRow{primary: number, response: -1})
 			rowIndexByPrimary[number] = len(rows) - 1
@@ -129,21 +144,107 @@ func (model traceScreenModel) displayRows() []traceScreenRow {
 			pending[key] = append(pending[key], number)
 		}
 	}
-	if model.slow == 0 {
+	if slow == 0 {
 		return rows
 	}
-	threshold := float64(model.slow) / float64(time.Millisecond)
+	threshold := float64(slow) / float64(time.Millisecond)
 	filtered := rows[:0]
 	for _, row := range rows {
-		if row.response < model.first || row.response >= model.first+len(model.events) {
+		if row.response < first || row.response >= first+len(events) {
 			continue
 		}
-		response := model.events[row.response-model.first]
+		response := events[row.response-first]
 		if response.LatencyMS != nil && *response.LatencyMS >= threshold {
 			filtered = append(filtered, row)
 		}
 	}
 	return filtered
+}
+
+func (model traceScreenModel) displayRowIsSlow(row traceScreenRow) bool {
+	if row.response < model.first || row.response >= model.first+len(model.events) {
+		return false
+	}
+	response := model.events[row.response-model.first]
+	return response.LatencyMS != nil && *response.LatencyMS >= float64(model.slow)/float64(time.Millisecond)
+}
+
+func (model *traceScreenModel) appendMySQLRow(event captureEvent, number int) {
+	if model.mysqlRowIndex == nil {
+		model.mysqlRowIndex = map[int]int{}
+		model.mysqlPending = map[traceMySQLPairKey][]int{}
+		model.mysqlPendingKey = map[int]traceMySQLPairKey{}
+	}
+	appendRow := func(row traceScreenRow) {
+		model.mysqlRowIndex[row.primary] = len(model.mysqlRows)
+		model.mysqlRows = append(model.mysqlRows, row)
+	}
+	if event.MySQL == nil {
+		appendRow(traceScreenRow{primary: number, response: -1})
+		return
+	}
+	key := traceMySQLPairKey{socket: event.SocketID, side: event.Side, command: event.MySQL.Command, sql: event.MySQL.SQL}
+	if mysqlResponseEvent(event.Event) {
+		appendRow(traceScreenRow{primary: number, response: -1, hidden: true})
+		if pending := model.mysqlPending[key]; len(pending) > 0 {
+			primary := pending[0]
+			if len(pending) == 1 {
+				delete(model.mysqlPending, key)
+			} else {
+				model.mysqlPending[key] = pending[1:]
+			}
+			delete(model.mysqlPendingKey, primary)
+			if index, ok := model.mysqlRowIndex[primary]; ok {
+				model.mysqlRows[index].response = number
+			}
+			return
+		}
+		model.mysqlRows[len(model.mysqlRows)-1].hidden = false
+		return
+	}
+	appendRow(traceScreenRow{primary: number, response: -1})
+	if event.Event != mysqlEventTLS {
+		model.mysqlPending[key] = append(model.mysqlPending[key], number)
+		model.mysqlPendingKey[number] = key
+	}
+}
+
+func (model *traceScreenModel) evictMySQLRow(number int) {
+	index, ok := model.mysqlRowIndex[number]
+	if !ok {
+		return
+	}
+	row := model.mysqlRows[index]
+	if key, pending := model.mysqlPendingKey[number]; pending {
+		queue := model.mysqlPending[key]
+		if len(queue) > 0 && queue[0] == number {
+			if len(queue) == 1 {
+				delete(model.mysqlPending, key)
+			} else {
+				model.mysqlPending[key] = queue[1:]
+			}
+		}
+		delete(model.mysqlPendingKey, number)
+	}
+	delete(model.mysqlRowIndex, number)
+	if row.response >= 0 {
+		if responseIndex, retained := model.mysqlRowIndex[row.response]; retained {
+			model.mysqlRows[responseIndex].hidden = false
+		}
+	}
+	if index != model.mysqlRowsHead {
+		model.mysqlRows[index].hidden = true
+		return
+	}
+	model.mysqlRowsHead++
+	if model.mysqlRowsHead*2 >= len(model.mysqlRows) {
+		copy(model.mysqlRows, model.mysqlRows[model.mysqlRowsHead:])
+		model.mysqlRows = model.mysqlRows[:len(model.mysqlRows)-model.mysqlRowsHead]
+		model.mysqlRowsHead = 0
+		for index, current := range model.mysqlRows {
+			model.mysqlRowIndex[current.primary] = index
+		}
+	}
 }
 
 func (model traceScreenModel) displayRowLabels(row traceScreenRow) (captureEvent, string, string, bool) {
@@ -173,6 +274,9 @@ func (model traceScreenModel) displayRow(row traceScreenRow) (captureEvent, bool
 }
 
 func (model traceScreenModel) displayRowMatches(row traceScreenRow) bool {
+	if row.hidden || (model.protocol == "mysql" && model.slow > 0 && !model.displayRowIsSlow(row)) {
+		return false
+	}
 	event, ok := model.displayRow(row)
 	if !ok {
 		return false
@@ -269,12 +373,21 @@ func (model traceScreenModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				event.Payload, event.gzipped = traceTrimText(event.Payload, httpPayloadHead), nil
 				model.events = append(model.events, event)
 				model.arrivals = append(model.arrivals, now)
+				if model.protocol == "mysql" {
+					model.appendMySQLRow(event, model.first+len(model.events)-1)
+				}
 			}
 		}
 		if len(model.events) > traceScreenEventLimit {
-			model.first += len(model.events) - traceScreenEventLimit
-			model.events = model.events[len(model.events)-traceScreenEventLimit:]
-			model.arrivals = model.arrivals[len(model.arrivals)-traceScreenEventLimit:]
+			drop := len(model.events) - traceScreenEventLimit
+			if model.protocol == "mysql" {
+				for number := model.first; number < model.first+drop; number++ {
+					model.evictMySQLRow(number)
+				}
+			}
+			model.first += drop
+			model.events = model.events[drop:]
+			model.arrivals = model.arrivals[drop:]
 			model.truncated = true
 			model.payloads.drop(model.first)
 			model.gzipped.drop(model.first)
@@ -522,7 +635,11 @@ func traceScreenHeader(model traceScreenModel) []string {
 		}
 		line += fmt.Sprintf(" grouped by %s  ·  %s  ·  events %d  ·  %s %d  ·  event/s %.1f%s  ·  filter %s", model.groupBy, status, report.Events, model.groupBy, len(report.Groups), report.Rate, traffic, filter)
 	} else {
-		line += fmt.Sprintf("  ·  %s  ·  events %d  ·  filter %s", status, model.received, filter)
+		if model.protocol == "mysql" {
+			line += fmt.Sprintf("  ·  %s  ·  raw events %d  ·  shown pairs %d  ·  slow %s  ·  filter %s", status, model.received, model.shownMySQLPairs(), model.slow, filter)
+		} else {
+			line += fmt.Sprintf("  ·  %s  ·  events %d  ·  filter %s", status, model.received, filter)
+		}
 	}
 	help := traceScreenHelp(model.protocol)
 	if model.filtering {
@@ -547,6 +664,16 @@ func traceScreenHeader(model traceScreenModel) []string {
 		columns = liveCell(traceGroupLabel(model.groupBy), layout.labelWidth) + fmt.Sprintf(traceGroupColumns(model.protocol, layout.byteWidth), append(names, "LAST")...)
 	}
 	return []string{liveSelected(traceFit(line, model.width), color), liveMuted(traceFit(help, model.width), color), traceFit(columns, model.width)}
+}
+
+func (model traceScreenModel) shownMySQLPairs() int {
+	shown := 0
+	for _, row := range model.displayRows() {
+		if row.response >= model.first && row.response < model.first+len(model.events) && model.displayRowMatches(row) {
+			shown++
+		}
+	}
+	return shown
 }
 
 // traceScreenRows는 머리글 아래의 줄이다. 화면 나누기가 켜져 있으면 목록 아래에 미리 보기 창을 붙인다.

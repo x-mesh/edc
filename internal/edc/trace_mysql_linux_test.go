@@ -4,6 +4,7 @@ package edc
 
 import (
 	"encoding/binary"
+	"os"
 	"strings"
 	"testing"
 )
@@ -85,5 +86,35 @@ func TestMySQLTraceSlowOptionChecks(t *testing.T) {
 		if code != 2 || !strings.Contains(stderr, test.stderr) {
 			t.Fatalf("trace %q exit = %d, stderr %q, want 2 and %q", test.args, code, stderr, test.stderr)
 		}
+	}
+}
+
+func TestMySQLTraceSlowRejectsNonInteractiveModes(t *testing.T) {
+	for _, language := range supportedLanguages {
+		restore := currentLanguage()
+		setLanguage(language)
+		for _, args := range [][]string{
+			{"mysql", "--slow", "1ms", "--raw"},
+			{"mysql", "--slow", "1ms", "--json", "report.json"},
+			{"mysql", "--slow", "1ms", "--group-by", "process"},
+		} {
+			var code int
+			stderr := captureTraceStderr(t, func() { code = runTrace(args) })
+			if code != 2 || !strings.Contains(stderr, T("cli.trace.slow_interactive")) {
+				t.Fatalf("%s trace %q exit = %d, stderr %q", language, args, code, stderr)
+			}
+		}
+		setLanguage(restore)
+	}
+}
+
+func TestMySQLTraceSlowRejectsRedirectedTerminal(t *testing.T) {
+	previous := traceIsTerminal
+	defer func() { traceIsTerminal = previous }()
+	traceIsTerminal = func(*os.File) bool { return false }
+	var code int
+	stderr := captureTraceStderr(t, func() { code = runTrace([]string{"mysql", "--slow", "1ms"}) })
+	if code != 2 || !strings.Contains(stderr, T("cli.trace.slow_interactive")) {
+		t.Fatalf("exit = %d, stderr %q", code, stderr)
 	}
 }

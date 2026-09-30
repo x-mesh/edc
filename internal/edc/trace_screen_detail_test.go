@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"compress/gzip"
 	"fmt"
+	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -99,7 +101,7 @@ func TestTraceScreenPairsMySQLCommandAndResponseForDisplay(t *testing.T) {
 		{SocketID: 7, Protocol: "mysql", Event: mysqlEventPrefix + mysqlCommandQuery, Side: traceServerSide, MySQL: &traceMySQLEvent{Command: mysqlCommandQuery, SQL: "SELECT 1"}},
 		{SocketID: 7, Protocol: "mysql", Event: mysqlEventResult, Side: traceServerSide, LatencyMS: func() *float64 { value := 0.4; return &value }(), MySQL: &traceMySQLEvent{Command: mysqlCommandQuery, SQL: "SELECT 1", Columns: 2}},
 	}
-	rows := model.displayRows()
+	rows := traceVisibleScreenRows(model)
 	if len(rows) != 2 || rows[1].response != 2 {
 		t.Fatalf("display rows = %+v", rows)
 	}
@@ -115,6 +117,109 @@ func TestTraceScreenPairsMySQLCommandAndResponseForDisplay(t *testing.T) {
 	model.normalizeSelection()
 	if model.selected != 1 {
 		t.Fatalf("selected response = %d, want primary 1", model.selected)
+	}
+}
+
+func TestTraceScreenIncrementalMySQLRowsMatchReference(t *testing.T) {
+	model := newTraceScreenModel("mysql", tcpTraceOptions{}, make(chan captureEvent), make(chan traceFinishedMsg), nil)
+	query := func(socket uint64, sql string) captureEvent {
+		return captureEvent{SocketID: socket, Protocol: "mysql", Event: mysqlEventPrefix + mysqlCommandQuery, MySQL: &traceMySQLEvent{Command: mysqlCommandQuery, SQL: sql}}
+	}
+	result := func(socket uint64, sql string) captureEvent {
+		return captureEvent{SocketID: socket, Protocol: "mysql", Event: mysqlEventResult, MySQL: &traceMySQLEvent{Command: mysqlCommandQuery, SQL: sql}}
+	}
+	events := []captureEvent{query(1, "first"), query(1, "first"), result(1, "first"), result(1, "first"), query(2, "second"), result(2, "second")}
+	for _, event := range events {
+		next, _ := model.Update(traceEventMsg{events: []captureEvent{event}})
+		model = next.(traceScreenModel)
+		if got, want := traceVisibleScreenRows(model), traceMySQLReferenceRows(model.events, model.first, 0); !slices.Equal(got, want) {
+			t.Fatalf("rows = %+v, want %+v", got, want)
+		}
+	}
+}
+
+func TestTraceScreenIncrementalMySQLRowsMatchReferenceAfterEviction(t *testing.T) {
+	model := newTraceScreenModel("mysql", tcpTraceOptions{}, make(chan captureEvent), make(chan traceFinishedMsg), nil)
+	query := func(socket uint64, sql string) captureEvent {
+		return captureEvent{SocketID: socket, Protocol: "mysql", Event: mysqlEventPrefix + mysqlCommandQuery, MySQL: &traceMySQLEvent{Command: mysqlCommandQuery, SQL: sql}}
+	}
+	result := func(socket uint64, sql string) captureEvent {
+		return captureEvent{SocketID: socket, Protocol: "mysql", Event: mysqlEventResult, MySQL: &traceMySQLEvent{Command: mysqlCommandQuery, SQL: sql}}
+	}
+	events := make([]captureEvent, 0, traceScreenEventLimit+3)
+	events = append(events, query(1, "paired-primary"), result(1, "paired-primary"), query(2, "pending"), result(3, "standalone"))
+	for len(events) < traceScreenEventLimit+3 {
+		events = append(events, captureEvent{Protocol: "mysql", Event: mysqlEventTLS, MySQL: &traceMySQLEvent{TLS: true}})
+	}
+	for _, event := range events {
+		next, _ := model.Update(traceEventMsg{events: []captureEvent{event}})
+		model = next.(traceScreenModel)
+	}
+	if got, want := traceVisibleScreenRows(model), traceMySQLReferenceRows(model.events, model.first, 0); !slices.Equal(got, want) {
+		t.Fatalf("rows after eviction = %+v, want %+v", got[:min(5, len(got))], want[:min(5, len(want))])
+	}
+	for number := range model.mysqlRowIndex {
+		if number < model.first {
+			t.Fatalf("stale row index %d before %d", number, model.first)
+		}
+	}
+	for number := range model.mysqlPendingKey {
+		if number < model.first {
+			t.Fatalf("stale pending index %d before %d", number, model.first)
+		}
+	}
+}
+
+func TestTraceScreenMySQLPendingKeysDoNotAccumulate(t *testing.T) {
+	model := newTraceScreenModel("mysql", tcpTraceOptions{}, make(chan captureEvent), make(chan traceFinishedMsg), nil)
+	for index := 0; index < traceScreenEventLimit+100; index++ {
+		sql := fmt.Sprintf("SELECT %d", index)
+		latency := 1.0
+		next, _ := model.Update(traceEventMsg{events: []captureEvent{
+			{SocketID: uint64(index), Protocol: "mysql", Event: mysqlEventPrefix + mysqlCommandQuery, MySQL: &traceMySQLEvent{Command: mysqlCommandQuery, SQL: sql}},
+			{SocketID: uint64(index), Protocol: "mysql", Event: mysqlEventResult, LatencyMS: &latency, MySQL: &traceMySQLEvent{Command: mysqlCommandQuery, SQL: sql}},
+		}})
+		model = next.(traceScreenModel)
+	}
+	if len(model.mysqlPending) != 0 || len(model.mysqlPendingKey) != 0 {
+		t.Fatalf("pending keys = %d, pending numbers = %d", len(model.mysqlPending), len(model.mysqlPendingKey))
+	}
+}
+
+func TestTraceScreenMySQLDetailIncludesPairedResponse(t *testing.T) {
+	model := newTraceScreenModel("mysql", tcpTraceOptions{}, make(chan captureEvent), make(chan traceFinishedMsg), nil)
+	latency := 1.25
+	next, _ := model.Update(traceEventMsg{events: []captureEvent{
+		{SocketID: 1, Protocol: "mysql", Event: mysqlEventPrefix + mysqlCommandQuery, MySQL: &traceMySQLEvent{Command: mysqlCommandQuery, SQL: "SELECT 1"}},
+		{SocketID: 1, Protocol: "mysql", Event: mysqlEventError, LatencyMS: &latency, MySQL: &traceMySQLEvent{Command: mysqlCommandQuery, SQL: "SELECT 1", ErrorCode: 1064, SQLState: "42000", Message: "bad syntax"}},
+	}})
+	model = next.(traceScreenModel)
+	before := slices.Clone(model.events)
+	detail := model.buildDetail(0)
+	text := strings.Join(detail.raw, "\n")
+	if !strings.Contains(text, "response:") || !strings.Contains(text, "result: 1064 (42000) bad syntax") || !strings.Contains(text, "latency: 1.2ms") {
+		t.Fatalf("detail = %q", text)
+	}
+	if !slices.EqualFunc(model.events, before, func(a, b captureEvent) bool { return reflect.DeepEqual(a, b) }) {
+		t.Fatal("detail changed source events")
+	}
+}
+
+func TestTraceScreenMySQLHeaderCountsOnlyShownPairs(t *testing.T) {
+	model := newTraceScreenModel("mysql", tcpTraceOptions{slow: time.Millisecond}, make(chan captureEvent), make(chan traceFinishedMsg), nil)
+	latency := 2.0
+	next, _ := model.Update(traceEventMsg{events: []captureEvent{
+		{SocketID: 1, Protocol: "mysql", Event: mysqlEventPrefix + mysqlCommandQuery, MySQL: &traceMySQLEvent{Command: mysqlCommandQuery, SQL: "shown"}},
+		{SocketID: 1, Protocol: "mysql", Event: mysqlEventResult, LatencyMS: &latency, MySQL: &traceMySQLEvent{Command: mysqlCommandQuery, SQL: "shown"}},
+		{SocketID: 2, Protocol: "mysql", Event: mysqlEventPrefix + mysqlCommandQuery, MySQL: &traceMySQLEvent{Command: mysqlCommandQuery, SQL: "pending"}},
+		{SocketID: 3, Protocol: "mysql", Event: mysqlEventResult, LatencyMS: &latency, MySQL: &traceMySQLEvent{Command: mysqlCommandQuery, SQL: "standalone"}},
+		{SocketID: 4, Protocol: "mysql", Event: mysqlEventTLS, MySQL: &traceMySQLEvent{TLS: true}},
+	}})
+	model = next.(traceScreenModel)
+	model.filter = "shown"
+	header := strings.Join(traceScreenHeader(model), "\n")
+	if !strings.Contains(header, "raw events 5") || !strings.Contains(header, "shown pairs 1") || !strings.Contains(header, "slow 1ms") {
+		t.Fatalf("header = %q", header)
 	}
 }
 
@@ -134,10 +239,20 @@ func TestTraceScreenFiltersMySQLPairsBySlowLatency(t *testing.T) {
 		{SocketID: 6, Protocol: "mysql", Event: mysqlEventResult, Side: traceServerSide, LatencyMS: latency(4), MySQL: &traceMySQLEvent{Command: mysqlCommandQuery, SQL: "unmatched"}},
 		{SocketID: 7, Protocol: "mysql", Event: mysqlEventTLS, Side: traceClientSide, MySQL: &traceMySQLEvent{TLS: true}},
 	}
-	rows := model.displayRows()
+	rows := traceVisibleScreenRows(model)
 	if len(rows) != 2 || rows[0] != (traceScreenRow{primary: 2, response: 3}) || rows[1] != (traceScreenRow{primary: 4, response: 5}) {
 		t.Fatalf("slow display rows = %+v", rows)
 	}
+}
+
+func traceVisibleScreenRows(model traceScreenModel) []traceScreenRow {
+	rows := make([]traceScreenRow, 0, len(model.displayRows()))
+	for _, row := range model.displayRows() {
+		if !row.hidden && (model.slow == 0 || model.displayRowIsSlow(row)) {
+			rows = append(rows, row)
+		}
+	}
+	return rows
 }
 
 func TestTraceMySQLDetailUsesReadableFieldsAndSQLLines(t *testing.T) {

@@ -282,6 +282,8 @@ func (report udpTraceReport) print(detail bool) { printUDPTraceReport(report, de
 
 func (report traceGroupReport) hideTraffic() bool { return traceProtocols[report.Protocol].hideTraffic }
 
+var traceIsTerminal = isTerminal
+
 func runTrace(args []string) int {
 	if len(args) == 0 || !knownTraceProtocol(args[0]) {
 		fmt.Fprintln(os.Stderr, T("cli.usage", "edc trace <tcp|udp|dns|arp|ndp|http|drop|mysql> [options]"))
@@ -419,6 +421,10 @@ func runTrace(args []string) int {
 			return 2
 		}
 	}
+	if slowSet && (options.raw || options.jsonPath != "" || options.groupBy != "" || !traceIsTerminal(os.Stdin) || !traceIsTerminal(os.Stdout)) {
+		fmt.Fprintln(os.Stderr, T("cli.trace.slow_interactive"))
+		return 2
+	}
 	if err := traceProtocolPrerequisites(args[0]); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 3
@@ -439,7 +445,7 @@ func runTrace(args []string) int {
 		}
 		options.container = container
 	}
-	if !options.raw && options.jsonPath == "" && isTerminal(os.Stdin) && isTerminal(os.Stdout) {
+	if !options.raw && options.jsonPath == "" && traceIsTerminal(os.Stdin) && traceIsTerminal(os.Stdout) {
 		return runTraceScreen(args[0], options)
 	}
 	ctx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

@@ -58,16 +58,34 @@ func httpTracePrerequisites() error {
 	if err != nil {
 		return fmt.Errorf("read kernel BTF: %w", err)
 	}
-	var iter *btf.Struct
-	if err := spec.TypeByName("iov_iter", &iter); err != nil {
+	return httpIOVIterFields(spec)
+}
+
+// httpIOVIterFields는 BPF가 읽는 iov_iter 필드가 kernel BTF에 있는지 본다. BTF에 iov_iter struct가 둘 이상인 kernel이
+// 있어서(OrbStack 7.0) 하나라도 필드를 모두 가지면 통과한다. BPF의 CO-RE도 후보 중 맞는 struct를 고른다.
+func httpIOVIterFields(spec *btf.Spec) error {
+	types, err := spec.AnyTypesByName("iov_iter")
+	if err != nil {
 		return fmt.Errorf("find iov_iter in kernel BTF: %w", err)
 	}
-	for _, field := range []string{"iter_type", "ubuf", "__iov"} {
-		if !btfHasMember(iter, field) {
-			return errors.New(T("cli.trace.http_kernel", field))
+	missing := "iter_type"
+	for _, typ := range types {
+		iter, ok := typ.(*btf.Struct)
+		if !ok {
+			continue
+		}
+		missing = ""
+		for _, field := range []string{"iter_type", "ubuf", "__iov"} {
+			if !btfHasMember(iter, field) {
+				missing = field
+				break
+			}
+		}
+		if missing == "" {
+			return nil
 		}
 	}
-	return nil
+	return errors.New(T("cli.trace.http_kernel", missing))
 }
 
 // btfHasMember는 이름 없는 struct와 union 안까지 찾는다. iov_iter의 ubuf와 __iov는 이름 없는 union 안에 있다.

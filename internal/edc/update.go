@@ -13,6 +13,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -88,14 +89,31 @@ func runUpdate(args []string, version string) int {
 		fmt.Fprintln(os.Stderr, err)
 		return 2
 	}
-	if err := checkWritable(filepath.Dir(target)); err != nil {
-		fmt.Fprintln(os.Stderr, T("cli.update.not_writable", filepath.Dir(target), err))
-		return 3
+	dir := filepath.Dir(target)
+	sudo := ""
+	if err := checkWritable(dir); err != nil {
+		if sudo, err = updateSudo(dir, err); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 3
+		}
 	}
 
-	if !*yes && !confirmUpdate(os.Stdin, os.Stdout, updateDetail(current, latest, assetName, target)) {
+	privilege := ""
+	if sudo != "" {
+		privilege = "sudo"
+	}
+	if !*yes && !confirmUpdate(os.Stdin, os.Stdout, updateDetail(current, latest, assetName, target, privilege)) {
 		fmt.Fprintln(os.Stderr, T("cli.update.cancelled"))
 		return 4
+	}
+	if sudo != "" {
+		fmt.Println(T("cli.update.using_sudo", dir))
+		// 암호가 필요하면 내려받기 전에 한 번 묻는다. sudo -v는 쓰지 않는다. 사용자의 sudoers 규칙이 모두 NOPASSWD가 아니면
+		// 암호를 요구해, 명령은 암호 없이 실행하는 Ubuntu cloud 사용자도 멈춘다.
+		if err := updateRunCommand(sudo, "true"); err != nil {
+			fmt.Fprintln(os.Stderr, T("cli.update.sudo_failed", dir, err))
+			return 3
+		}
 	}
 
 	archive, err := downloadAsset(ctx, downloadURL+assetName, version)
@@ -113,7 +131,11 @@ func runUpdate(args []string, version string) int {
 		fmt.Fprintln(os.Stderr, err)
 		return 2
 	}
-	if err := replaceBinary(target, binary); err != nil {
+	replace := replaceBinary
+	if sudo != "" {
+		replace = func(target string, data []byte) error { return replaceBinaryWithSudo(sudo, target, data) }
+	}
+	if err := replace(target, binary); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 2
 	}
@@ -294,12 +316,60 @@ func replaceBinary(target string, data []byte) error {
 	return nil
 }
 
-func updateDetail(current, latest, assetName, target string) string {
+// updateSudo는 설치 디렉터리에 쓸 수 없을 때 파일 교체에 쓸 sudo다. install.sh처럼 교체만 sudo로 하고, 내려받기와
+// checksum 확인은 사용자 권한으로 한다. sudo가 proxy 환경 변수를 지워도 내려받기는 그대로 된다. root이거나 신뢰하는 경로에
+// sudo가 없으면 쓸 수 없다는 오류를 돌려준다.
+func updateSudo(dir string, writeErr error) (string, error) {
+	if captureGeteuid() == 0 {
+		return "", errors.New(T("cli.update.not_writable", dir, writeErr))
+	}
+	sudo, ok := captureFirstExecutable(captureSudoPaths)
+	if !ok {
+		return "", errors.New(T("cli.update.sudo_missing", dir, strings.Join(captureSudoPaths, ", ")))
+	}
+	return sudo, nil
+}
+
+// updateRunCommand는 sudo를 실행한다. 암호를 물으면 sudo가 terminal에서 읽는다. test가 바꾼다.
+var updateRunCommand = func(name string, args ...string) error {
+	command := exec.Command(name, args...)
+	command.Stdin, command.Stdout, command.Stderr = os.Stdin, os.Stdout, os.Stderr
+	return command.Run()
+}
+
+// replaceBinaryWithSudo는 확인을 마친 바이너리를 사용자만 여는 임시 디렉터리에 쓰고, sudo로 대상 옆에 복사한 뒤 이름을
+// 바꾼다. 셸을 거치지 않고, 같은 디렉터리 안의 rename이라 교체는 원자적이다.
+func replaceBinaryWithSudo(sudo, target string, data []byte) error {
+	directory, err := os.MkdirTemp("", "edc-update-*")
+	if err != nil {
+		return fmt.Errorf("%s: %w", T("cli.update.temp_create_failed"), err)
+	}
+	defer os.RemoveAll(directory)
+	temp := filepath.Join(directory, "edc")
+	if err := os.WriteFile(temp, data, 0o600); err != nil {
+		return fmt.Errorf("%s: %w", T("cli.update.temp_write_failed"), err)
+	}
+	staged := target + ".new"
+	if err := updateRunCommand(sudo, "install", "-m", "0755", temp, staged); err != nil {
+		return errors.New(T("cli.update.sudo_replace_failed", target, err))
+	}
+	if err := updateRunCommand(sudo, "mv", "-f", staged, target); err != nil {
+		_ = updateRunCommand(sudo, "rm", "-f", staged)
+		return errors.New(T("cli.update.sudo_replace_failed", target, err))
+	}
+	return nil
+}
+
+// updateDetail의 privilege가 비어 있지 않으면 교체에 쓰는 권한(sudo)을 한 줄 더 보인다.
+func updateDetail(current, latest, assetName, target, privilege string) string {
 	rows := [][2]string{
 		{T("cli.update.label.current"), current},
 		{T("cli.update.label.latest"), latest},
 		{T("cli.update.label.asset"), assetName},
 		{T("cli.update.label.target"), target},
+	}
+	if privilege != "" {
+		rows = append(rows, [2]string{T("cli.update.label.privilege"), privilege})
 	}
 	var builder strings.Builder
 	for _, row := range rows {

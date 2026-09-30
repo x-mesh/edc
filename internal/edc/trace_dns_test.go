@@ -175,7 +175,7 @@ func TestDNSTraceHasNoPortView(t *testing.T) {
 	if help := traceScreenHelp("dns"); strings.Contains(help, "p port") || !strings.Contains(help, "t target") {
 		t.Fatalf("dns help = %q", help)
 	}
-	if help := traceScreenHelp("tcp"); help != "/ filter  tab view  s source  t target  p port  c process  e event  g scroll  ↑↓ select  enter detail  f follow  end live  esc clear  q quit  ctrl-c stop" {
+	if help := traceScreenHelp("tcp"); help != "/ filter  tab view  s source  t target  p port  c process  e event  g scroll  ↑↓ select  enter detail  i split  f follow  l live  esc clear  q quit  ctrl-c stop" {
 		t.Fatalf("tcp help = %q", help)
 	}
 	model := newTraceScreenModel("dns", tcpTraceOptions{groupBy: traceGroupByTarget}, make(chan captureEvent), make(chan traceFinishedMsg), nil)

@@ -30,7 +30,7 @@ func TestHTTPMessagesJoinABodyFromLaterWrites(t *testing.T) {
 	if len(events) != 1 || events[0].Event != traceHTTPRequestEvent || events[0].PayloadTruncated || events[0].Bytes != uint64(len(head)+10) {
 		t.Fatalf("events = %#v", events)
 	}
-	if want := strings.Replace(head, "a=b", "***", 1) + "0123456789"; events[0].Payload != strings.Replace(want, "Cookie: ***", "Cookie: ***", 1) || !strings.HasSuffix(events[0].Payload, "\r\n\r\n0123456789") || strings.Contains(events[0].Payload, "a=b") {
+	if want := strings.Replace(head, "a=b", "***", 1) + "0123456789"; events[0].Payload != want {
 		t.Fatalf("payload = %q", events[0].Payload)
 	}
 	// 응답은 요청과 짝지어져 응답 시간이 첫 조각 시각부터 잰다.

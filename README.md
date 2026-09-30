@@ -49,7 +49,7 @@ edc update --check   # print the two versions only
 edc update --yes     # skip the confirmation
 ```
 
-`edc` writes the new file next to the old one and renames it. A failed download leaves the earlier binary in place. If the directory needs a privilege, `edc` stops with exit code `3` before it downloads anything. If `edc` is in `/usr/local/bin`, run `sudo edc update`.
+`edc` writes the new file next to the old one and renames it. A failed download leaves the earlier binary in place. If you cannot write to the directory, `edc` uses `sudo` to copy and rename the new file, as the install script does. `edc` downloads and checks the file as your user. The confirmation shows `privilege sudo`, and `sudo` asks for your password once if it needs one. If `sudo` is not available or fails, `edc` stops with exit code `3` before it downloads anything.
 
 ## Build
 

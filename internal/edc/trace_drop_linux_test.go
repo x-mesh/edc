@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -54,7 +55,19 @@ func TestDropOwnersFindTheProcessOfASocket(t *testing.T) {
 		t.Fatal(err)
 	}
 	owners := newDropOwners()
-	owner := owners.lookup(stat.Ino, time.Now())
+	defer owners.close()
+	if owner := owners.lookup(stat.Ino, time.Now()); owner.pid != 0 {
+		t.Fatalf("first lookup = %+v", owner)
+	}
+	deadline := time.Now().Add(time.Second)
+	owner := dropOwner{}
+	for time.Now().Before(deadline) {
+		owner = owners.lookup(stat.Ino, time.Now())
+		if owner.pid != 0 {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
 	if owner.pid != uint32(os.Getpid()) || owner.process == "" {
 		t.Fatalf("owner = %+v, want pid %d", owner, os.Getpid())
 	}
@@ -68,6 +81,48 @@ func TestDropOwnersFindTheProcessOfASocket(t *testing.T) {
 	owners.lookup(missing, now.Add(dropOwnerRescan))
 	if !owners.scanned.Equal(scanned) {
 		t.Fatal("a recent miss must not rescan /proc")
+	}
+}
+
+func TestDropOwnerRefreshDoesNotBlockAndCoalescesMisses(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var scans atomic.Int32
+	owners := newDropOwnersWithScan(func() map[uint64]uint32 {
+		if scans.Add(1) == 1 {
+			close(started)
+		}
+		<-release
+		return map[uint64]uint32{}
+	})
+	defer owners.close()
+
+	now := time.Now().Add(time.Minute)
+	returned := make(chan struct{})
+	go func() {
+		owners.lookup(1, now)
+		close(returned)
+	}()
+	select {
+	case <-returned:
+	case <-time.After(time.Second):
+		t.Fatal("lookup waited for the scan")
+	}
+	<-started
+	for inode := uint64(2); inode < 100; inode++ {
+		now = now.Add(dropOwnerRescan)
+		owners.lookup(inode, now)
+	}
+	if queued := len(owners.refresh); queued != 1 {
+		t.Fatalf("queued refreshes = %d", queued)
+	}
+	close(release)
+	deadline := time.Now().Add(time.Second)
+	for scans.Load() < 2 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if got := scans.Load(); got != 2 {
+		t.Fatalf("scans = %d", got)
 	}
 }
 

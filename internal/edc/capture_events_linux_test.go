@@ -105,8 +105,8 @@ func TestCaptureAttachmentsFollowTheProtocol(t *testing.T) {
 		{"dns", []string{"sock/inet_sock_set_state"}, append(append(append([]string{}, udpSend...), "fentry/__udp_enqueue_schedule_skb", "fentry/skb_consume_udp", "fentry/tcp_sendmsg", "fentry/tcp_recvmsg", "fexit/tcp_recvmsg"), tcpAccept...)},
 		// HTTP는 TCP 송수신의 사용자 버퍼를 읽고, 끝난 socket의 짝짓기 상태를 tp_btf/tcp_destroy_sock으로 지운다.
 		{"http", []string{}, []string{"fentry/skb_consume_udp", "fentry/tcp_sendmsg", "fentry/tcp_recvmsg", "fexit/tcp_recvmsg", "tp_btf/tcp_destroy_sock"}},
-		// MySQL도 같은 TCP 송수신 hook만 쓴다.
-		{"mysql", []string{}, []string{"fentry/skb_consume_udp", "fentry/tcp_sendmsg", "fentry/tcp_recvmsg", "fexit/tcp_recvmsg"}},
+		// MySQL 송신은 완료한 byte 수만 읽고, 끝난 socket의 상태도 지운다.
+		{"mysql", []string{}, []string{"fentry/skb_consume_udp", "fentry/tcp_sendmsg", "fexit/tcp_sendmsg", "fentry/tcp_recvmsg", "fexit/tcp_recvmsg", "tp_btf/tcp_destroy_sock"}},
 	} {
 		tracepoints, tracing := captureAttachments(&captureEventsObjects{}, test.protocol)
 		gotTracepoints := []string{}
@@ -705,6 +705,26 @@ func TestHTTPTraceReadsDestroyedSockets(t *testing.T) {
 	}
 }
 
+func TestProtocolRecordsStartAfterAllHooksAttach(t *testing.T) {
+	attached := unix.NsecToTimespec(10_000)
+	if captureRecordAfterAttached(9_999, attached) {
+		t.Fatal("record before attachment was accepted")
+	}
+	if !captureRecordAfterAttached(10_000, attached) {
+		t.Fatal("record at attachment was rejected")
+	}
+}
+
+func TestTCPRecvmsgArgumentCountMatchesKernel(t *testing.T) {
+	count, err := tcpRecvmsgArgumentCount()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 5 && count != 6 {
+		t.Fatalf("tcp_recvmsg arguments = %d", count)
+	}
+}
+
 // fexit/tcp_sendmsg는 모든 TCP 송신에 붙고 뗄 때도 느리므로 --payload=all일 때만 붙인다.
 func TestHTTPPayloadAllAddsTheSendExitHook(t *testing.T) {
 	names := func(scope traceScope) []string {
@@ -720,6 +740,27 @@ func TestHTTPPayloadAllAddsTheSendExitHook(t *testing.T) {
 	}
 	if !slices.Contains(names(traceScope{protocol: "http", payload: true, payloadAll: true}), "fexit/tcp_sendmsg") {
 		t.Fatal("--payload=all did not attach fexit/tcp_sendmsg")
+	}
+}
+
+func TestTCPUsesLengthHookFallbackWhenTracepointsAreMissing(t *testing.T) {
+	previous := captureTCPLengthTracepointsAvailable
+	t.Cleanup(func() { captureTCPLengthTracepointsAvailable = previous })
+	captureTCPLengthTracepointsAvailable = func() bool { return false }
+	tracepoints, tracing := captureAttachmentsFor(&captureEventsObjects{}, traceScope{protocol: "tcp"})
+	for _, hook := range tracepoints {
+		if hook.name == "sock_send_length" || hook.name == "sock_recv_length" {
+			t.Fatalf("missing tracepoint kept: %s", hook.name)
+		}
+	}
+	var names []string
+	for _, hook := range tracing {
+		names = append(names, hook.name)
+	}
+	for _, want := range []string{"fentry/tcp_sendmsg", "fexit/tcp_sendmsg", "fentry/tcp_cleanup_rbuf"} {
+		if !slices.Contains(names, want) {
+			t.Fatalf("fallback hooks = %v, missing %s", names, want)
+		}
 	}
 }
 
@@ -775,14 +816,18 @@ func TestHTTPIOVIterFieldsAcceptsDuplicateStructs(t *testing.T) {
 		}
 		return spec
 	}
-	old, current := iter("type", "iov_offset"), iter("iter_type", "ubuf", "__iov")
+	old, current := iter("type", "iov_offset"), iter("iter_type", "iov_offset", "nr_segs", "ubuf", "__iov")
+	legacy := iter("iter_type", "iov_offset", "nr_segs", "iov")
 	if err := httpIOVIterFields(spec(old, current)); err != nil {
 		t.Fatalf("duplicate iov_iter: %v", err)
+	}
+	if err := httpIOVIterFields(spec(legacy)); err != nil {
+		t.Fatalf("legacy iov_iter: %v", err)
 	}
 	for _, test := range []struct {
 		types   []btf.Type
 		missing string
-	}{{[]btf.Type{old}, "iter_type"}, {[]btf.Type{iter("iter_type", "ubuf")}, "__iov"}, {[]btf.Type{u8}, "iov_iter"}} {
+	}{{[]btf.Type{old}, "iter_type"}, {[]btf.Type{iter("iter_type", "iov_offset", "nr_segs")}, "iov"}, {[]btf.Type{u8}, "iov_iter"}} {
 		if err := httpIOVIterFields(spec(test.types...)); err == nil || !strings.Contains(err.Error(), test.missing) {
 			t.Fatalf("types %v: error %v does not name %s", test.types, err, test.missing)
 		}

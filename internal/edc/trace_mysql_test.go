@@ -292,6 +292,19 @@ func TestMySQLTrackerStartsAgainOnANewGreeting(t *testing.T) {
 	}
 }
 
+func TestMySQLTrackerForgetsDestroyedSocket(t *testing.T) {
+	conn := newMySQLTestConn(t, false, "", false)
+	conn.handshake(mysqlTestClientCaps)
+	conn.request(1_000, mysqlFrame(0, mysqlQueryPayload("SELECT stale")))
+	conn.tracker.forgetSocket(conn.socket)
+	if len(conn.tracker.conns) != 0 || conn.tracker.waiting != 0 || conn.tracker.statements != 0 {
+		t.Fatalf("tracker after destroy = %#v", conn.tracker)
+	}
+	if events := conn.handshake(mysqlTestClientCaps); len(events) != 2 {
+		t.Fatalf("reused socket events = %#v", events)
+	}
+}
+
 func TestMySQLTrackerRestoresThePreparedSQLForExecute(t *testing.T) {
 	conn := newMySQLTestConn(t, false, "", false)
 	prepare := mysqlOnly(t, conn.request(1_000_000, mysqlFrame(0, append([]byte{mysqlComStmtPrepare}, "SELECT id FROM t WHERE name = ?"...))))

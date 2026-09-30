@@ -161,9 +161,7 @@ func (model traceScreenModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			model.truncated = true
 			model.payloads.drop(model.first)
 			model.gzipped.drop(model.first)
-			if model.selected >= 0 && model.selected < model.first {
-				model.selected = model.first
-			}
+			model.normalizeSelection()
 		}
 		if model.follow {
 			model.followNewest()
@@ -179,6 +177,23 @@ func (model traceScreenModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return model.updateKey(value)
 	}
 	return model, nil
+}
+
+func (model *traceScreenModel) normalizeSelection() {
+	if model.selected < 0 {
+		return
+	}
+	index := model.selected - model.first
+	if index >= 0 && index < len(model.events) && traceEventMatchesText(model.events[index], model.filter) {
+		return
+	}
+	for index, event := range model.events {
+		if traceEventMatchesText(event, model.filter) {
+			model.selected = model.first + index
+			return
+		}
+	}
+	model.selected, model.preview, model.previewOffset = -1, nil, 0
 }
 
 func (model traceScreenModel) updateKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {

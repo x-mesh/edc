@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	tea "charm.land/bubbletea/v2"
 )
 
 func TestTraceScreenSplitShowsTheSelectedMessage(t *testing.T) {
@@ -75,6 +77,24 @@ func TestTraceScreenSplitScrollAndSmallScreens(t *testing.T) {
 	}
 	if model = traceScreenKey(model, "J"); model.previewOffset != 0 {
 		t.Fatalf("J on a small screen moved the hidden preview: offset %d", model.previewOffset)
+	}
+}
+
+func TestTraceScreenClampsPreviewOffsetAfterResize(t *testing.T) {
+	model := newTraceScreenModel("http", tcpTraceOptions{payload: tracePayloadAll}, make(chan captureEvent), make(chan traceFinishedMsg), nil)
+	model.width, model.height = 12, 20
+	next, _ := model.Update(traceEventMsg{events: []captureEvent{{Protocol: "http", Event: traceHTTPRequestEvent, Payload: strings.Repeat("x", 400)}}})
+	model = traceScreenKey(next.(traceScreenModel), "i")
+	for range 100 {
+		model = traceScreenKey(model, "J")
+	}
+	if model.previewOffset == 0 {
+		t.Fatal("scroll did not move the preview")
+	}
+	next, _ = model.Update(tea.WindowSizeMsg{Width: 120, Height: 8})
+	model = next.(traceScreenModel)
+	if model.previewOffset != 0 {
+		t.Fatalf("preview offset after resize = %d", model.previewOffset)
 	}
 }
 

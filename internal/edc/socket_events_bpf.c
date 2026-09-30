@@ -253,15 +253,21 @@ static __always_inline int socket_side(struct sock *sk, struct socket_call *call
 	call->peer_skaddr = (__u64)peer;
 	// sk_peer_pid는 SO_PEERCRED 값이다. 서버 쪽에서는 connect한 process, 클라이언트 쪽에서는 listen한 process다.
 	call->peer_pid = BPF_CORE_READ(sk, sk_peer_pid, numbers[0].nr);
-	if (call->side == SOCKET_SERVER && peer) {
-		__u64 peeraddr = (__u64)peer;
-		__u32 tgid = bpf_get_current_pid_tgid() >> 32;
-		__u32 *server = bpf_map_lookup_elem(&socket_servers, &peeraddr);
-		if (!server || *server != tgid) {
-			bpf_map_update_elem(&socket_servers, &peeraddr, &tgid, BPF_ANY);
-		}
-	}
 	return 1;
+}
+
+// socket_note_server는 서버 쪽 호출의 process를 그 연결의 클라이언트 상대로 기록한다. accept, send, recv에서만 부른다.
+// close는 부르지 않는다. journald처럼 helper process((sd-close))가 닫는 서버에서는 그 helper가 상대로 남기 때문이다.
+static __always_inline void socket_note_server(struct socket_call *call) {
+	if (call->side != SOCKET_SERVER || !call->peer_skaddr) {
+		return;
+	}
+	__u64 client = call->peer_skaddr;
+	__u32 tgid = bpf_get_current_pid_tgid() >> 32;
+	__u32 *server = bpf_map_lookup_elem(&socket_servers, &client);
+	if (!server || *server != tgid) {
+		bpf_map_update_elem(&socket_servers, &client, &tgid, BPF_ANY);
+	}
 }
 
 // socket_user_buffer는 사용자 버퍼의 시작과 첫 조각의 길이다. writev와 readv의 다음 버퍼는 socket_iov로 넘긴다.
@@ -458,6 +464,7 @@ static __always_inline int socket_call_start(struct socket *sock, struct msghdr 
 	if (!socket_side(BPF_CORE_READ(sock, sk), &call)) {
 		return 0;
 	}
+	socket_note_server(&call);
 	if (payload_limit) {
 		call.buffer = (__u64)socket_user_buffer(msg, &call.limit);
 		call.iov = (__u64)socket_iov(msg, &call.nr_segs);
@@ -572,6 +579,7 @@ int unix_accept_exit(__u64 *ctx) {
 	if (!socket_side(BPF_CORE_READ(newsock, sk), &call) || call.side != SOCKET_SERVER) {
 		return 0;
 	}
+	socket_note_server(&call);
 	struct socket_record *record = socket_record_start(&call, SOCKET_ACCEPT, 0);
 	if (!record) {
 		return 0;

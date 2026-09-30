@@ -120,6 +120,7 @@ const (
 	captureEventsVarEmitHttpMessages           = "emit_http_messages"
 	captureEventsVarEmitUdpEvents              = "emit_udp_events"
 	captureEventsVarHttpPayloadLimit           = "http_payload_limit"
+	captureEventsVarHttpPort                   = "http_port"
 	captureEventsVarTcpStatePort               = "tcp_state_port"
 	captureEventsVarUnusedHttpRecord           = "unused_http_record"
 )
@@ -213,6 +214,7 @@ type captureEventsVariableSpecs struct {
 	EmitHttpMessages   *ebpf.VariableSpec `ebpf:"emit_http_messages"`
 	EmitUdpEvents      *ebpf.VariableSpec `ebpf:"emit_udp_events"`
 	HttpPayloadLimit   *ebpf.VariableSpec `ebpf:"http_payload_limit"`
+	HttpPort           *ebpf.VariableSpec `ebpf:"http_port"`
 	TcpStatePort       *ebpf.VariableSpec `ebpf:"tcp_state_port"`
 	UnusedHttpRecord   *ebpf.VariableSpec `ebpf:"unused_http_record"`
 }
@@ -274,6 +276,7 @@ type captureEventsVariables struct {
 	EmitHttpMessages   *ebpf.Variable `ebpf:"emit_http_messages"`
 	EmitUdpEvents      *ebpf.Variable `ebpf:"emit_udp_events"`
 	HttpPayloadLimit   *ebpf.Variable `ebpf:"http_payload_limit"`
+	HttpPort           *ebpf.Variable `ebpf:"http_port"`
 	TcpStatePort       *ebpf.Variable `ebpf:"tcp_state_port"`
 	UnusedHttpRecord   *ebpf.Variable `ebpf:"unused_http_record"`
 }

@@ -212,3 +212,14 @@ func TestTraceEscapeTextKeepsCleanTextAndEscapesAnywhere(t *testing.T) {
 		}
 	}
 }
+
+func TestTracePortOptionNeedsHTTPAndAPort(t *testing.T) {
+	for _, args := range [][]string{{"tcp", "--port", "80"}, {"dns", "--port", "53"}, {"http", "--port", "0"}, {"http", "--port", "65536"}, {"http", "--port", "-1"}} {
+		if code := runTrace(args); code != 2 {
+			t.Fatalf("trace %q exit = %d, want 2", args, code)
+		}
+	}
+	if scope := (tcpTraceOptions{side: traceServerSide, port: 8080}).scope("http"); scope.port != 8080 || !scope.server {
+		t.Fatalf("scope = %+v", scope)
+	}
+}

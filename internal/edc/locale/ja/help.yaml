@@ -156,6 +156,7 @@ command:
       yes: "確認を省く"
       side: "trace dns, http: この host か local server"
       payload: "trace http: 各 message の先頭 4 KiB"
+      port: "trace http: この HTTP server port だけ"
     notes:
       - "terminal では既定で全画面の trace を開きます。"
       - "/ で process、destination、event、source を絞り込みます。"
@@ -173,6 +174,7 @@ command:
       - "trace ndp は IPv6 neighbor について同じことをします。"
       - "trace http は Linux 6.4 以降で平文 HTTP/1.x を表示します。"
       - "--payload は各 message の先頭を表示します。"
+      - "--port は HTTP server の port だけを見ます。--side server では local port。"
       - "Authorization、Proxy-Authorization、Cookie、Set-Cookie の値は隠します。"
   report:
     summary: "保存した JSON report の閲覧と比較"

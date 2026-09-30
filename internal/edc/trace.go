@@ -124,10 +124,11 @@ type traceScope struct {
 	server   bool
 	// payload가 꺼져 있으면 message 앞부분을 event에 붙이지 않는다. 화면은 event를 최대 10,000건 보관한다.
 	payload bool
+	port    uint16
 }
 
 func (options tcpTraceOptions) scope(protocol string) traceScope {
-	return traceScope{protocol: protocol, server: options.side == traceServerSide, payload: options.payload}
+	return traceScope{protocol: protocol, server: options.side == traceServerSide, payload: options.payload, port: uint16(options.port)}
 }
 
 // traceLabel은 화면 머리글에 쓰는 trace 이름이다. 서버 쪽 trace는 client 쪽과 같은 event 이름을 쓰므로 머리글로 구분한다.
@@ -239,6 +240,7 @@ func runTrace(args []string) int {
 	set.BoolVar(&options.yes, "yes", false, T("command.trace.option.yes"))
 	set.StringVar(&options.side, "side", traceClientSide, T("command.trace.option.side"))
 	set.BoolVar(&options.payload, "payload", false, T("command.trace.option.payload"))
+	set.IntVar(&options.port, "port", 0, T("command.trace.option.port"))
 	if err := set.Parse(args[1:]); err != nil {
 		return 2
 	}
@@ -281,6 +283,16 @@ func runTrace(args []string) int {
 	// --json은 요약만 쓰므로 event에 붙인 payload가 어디에도 나오지 않는다.
 	if options.payload && options.jsonPath != "" {
 		fmt.Fprintln(os.Stderr, T("cli.trace.payload_json_conflict"))
+		return 2
+	}
+	portSet := false
+	set.Visit(func(option *flag.Flag) { portSet = portSet || option.Name == "port" })
+	if portSet && (options.port < 1 || options.port > 65535) {
+		fmt.Fprintln(os.Stderr, T("cli.trace.port_range"))
+		return 2
+	}
+	if portSet && args[0] != "http" {
+		fmt.Fprintln(os.Stderr, T("cli.trace.port_protocol", args[0]))
 		return 2
 	}
 	if traceProtocols[args[0]].linuxOnly && runtime.GOOS != "linux" {

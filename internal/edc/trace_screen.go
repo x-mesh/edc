@@ -165,6 +165,8 @@ func (model traceScreenModel) updateKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd
 			model.filter = strings.TrimSpace(model.input.Value())
 			model.input.Blur()
 			model.filtering = false
+			// 고른 event가 새 filter에 맞지 않으면 목록에 보이지 않으므로, 고른 것을 풀고 다시 따라간다.
+			model.selected = -1
 			return model, nil
 		case "esc":
 			model.input.SetValue(model.filter)

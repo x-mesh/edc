@@ -101,6 +101,15 @@ func TestTraceScreenSelectionFollowsTheFilterAndKeptEvents(t *testing.T) {
 	if got := model.moveSelection(1, 1); got != 102 {
 		t.Fatalf("down at the newest match = %d, want 102", got)
 	}
+	// filter를 새로 적용하면 고른 것을 푼다.
+	model.selected = 102
+	model.filtering = true
+	model.input.SetValue("curl")
+	next, _ := model.updateKey(tea.KeyPressMsg{Code: tea.KeyEnter})
+	model = next.(traceScreenModel)
+	if model.selected != -1 {
+		t.Fatalf("applying a filter kept the selection %d", model.selected)
+	}
 	// Enter는 고른 event가 없으면 가장 최근 event를 고른다.
 	model.selected = -1
 	model.openDetail()

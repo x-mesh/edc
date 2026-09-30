@@ -27,13 +27,14 @@ func socketPayloadLimit(scope traceScope) int {
 
 // socketRecord의 offset은 socket_events_bpf.c의 struct socket_record와 같다.
 const (
-	socketRecordPayloadOffset = 80
+	socketRecordPayloadOffset = 88
 	// socketRecordPayloadMax는 SOCKET_PAYLOAD_SIZE로, 레코드 하나에 담기는 byte 수다.
 	socketRecordPayloadMax = 16384
 	socketRecordConnect    = 1
 	socketRecordSend       = 2
 	socketRecordRecv       = 3
 	socketRecordClose      = 4
+	socketRecordAccept     = 5
 	socketRecordServer     = 1
 	socketRecordUnreadable = 1
 	// socketCallIdle은 조각을 잃은 호출을 기다리는 시간이다. 한 호출의 조각은 BPF가 한 번에 넘기므로 금방 온다.
@@ -46,6 +47,7 @@ type socketRecord struct {
 	peer       uint64
 	cgroupID   uint64
 	result     int64
+	waitNS     uint64
 	eventType  uint32
 	pid        uint32
 	peerPID    uint32
@@ -66,16 +68,17 @@ func parseSocketRecord(sample []byte) (socketRecord, bool) {
 		peer:       binary.LittleEndian.Uint64(sample[16:24]),
 		cgroupID:   binary.LittleEndian.Uint64(sample[24:32]),
 		result:     int64(binary.LittleEndian.Uint64(sample[32:40])),
-		eventType:  binary.LittleEndian.Uint32(sample[40:44]),
-		pid:        binary.LittleEndian.Uint32(sample[44:48]),
-		peerPID:    binary.LittleEndian.Uint32(sample[48:52]),
-		offset:     binary.LittleEndian.Uint32(sample[56:60]),
-		server:     sample[60] == socketRecordServer,
-		unreadable: sample[61]&socketRecordUnreadable != 0,
-		process:    strings.TrimRight(string(sample[64:80]), "\x00"),
+		waitNS:     binary.LittleEndian.Uint64(sample[40:48]),
+		eventType:  binary.LittleEndian.Uint32(sample[48:52]),
+		pid:        binary.LittleEndian.Uint32(sample[52:56]),
+		peerPID:    binary.LittleEndian.Uint32(sample[56:60]),
+		offset:     binary.LittleEndian.Uint32(sample[64:68]),
+		server:     sample[68] == socketRecordServer,
+		unreadable: sample[69]&socketRecordUnreadable != 0,
+		process:    strings.TrimRight(string(sample[72:88]), "\x00"),
 		payload:    sample[socketRecordPayloadOffset:],
 	}
-	if size := int(binary.LittleEndian.Uint32(sample[52:56])); size < len(record.payload) {
+	if size := int(binary.LittleEndian.Uint32(sample[60:64])); size < len(record.payload) {
 		record.payload = record.payload[:size]
 	}
 	return record, true
@@ -198,6 +201,13 @@ func socketTraceEvent(call socketCall, path string, clockOffset int64, errorName
 		}
 	case socketRecordClose:
 		event.Event = "socket_close"
+	case socketRecordAccept:
+		event.Event = "socket_accept"
+		// connect가 trace를 시작하기 전이면 시각을 몰라 0이다.
+		if record.waitNS > 0 {
+			wait := float64(record.waitNS) / float64(time.Millisecond)
+			event.LatencyMS = &wait
+		}
 	}
 	if record.result > 0 && (record.eventType == socketRecordSend || record.eventType == socketRecordRecv) {
 		event.Bytes = uint64(record.result)
@@ -224,8 +234,18 @@ func traceSocketScrollLabels(event captureEvent) (string, string) {
 		label += " " + event.Error
 	case event.Event == "socket_send" || event.Event == "socket_recv":
 		label += " " + traceBytes(event.Bytes)
+	case event.Event == "socket_accept" && event.LatencyMS != nil:
+		label += " " + socketWaitLabel(*event.LatencyMS)
 	}
 	return emptyAs(event.Destination, "-"), label
+}
+
+// socketWaitLabel은 accept 대기 시간이다. 기다리던 서버는 수 µs 안에 accept하므로 1ms 아래는 µs로 쓴다.
+func socketWaitLabel(milliseconds float64) string {
+	if milliseconds < 1 {
+		return fmt.Sprintf("%.0fµs", milliseconds*1000)
+	}
+	return fmt.Sprintf("%.1fms", milliseconds)
 }
 
 // traceSocketPayloadLine은 payload를 한 줄로 잇는다. socket의 payload는 형식을 모르므로 줄바꿈만 표시로 바꾼다.
@@ -244,6 +264,7 @@ type socketTraceRow struct {
 	Side     string `json:"side"`
 	Events   uint64 `json:"events"`
 	Connects uint64 `json:"connects"`
+	Accepts  uint64 `json:"accepts"`
 	Sends    uint64 `json:"sends"`
 	TXBytes  uint64 `json:"tx_bytes"`
 	Recvs    uint64 `json:"recvs"`
@@ -296,6 +317,8 @@ func (summarizer *socketTraceSummarizer) observe(event captureEvent) {
 	switch event.Event {
 	case "socket_connect":
 		row.Connects++
+	case "socket_accept":
+		row.Accepts++
 	case "socket_send":
 		row.Sends++
 		row.TXBytes += event.Bytes
@@ -345,8 +368,8 @@ func (report socketTraceReport) print(bool) {
 	if len(report.Rows) == 0 {
 		return
 	}
-	fmt.Fprintln(os.Stdout, "\nPROCESS\tPEER\tSIDE\tEVENTS\tCONNECT\tSEND\tSENT\tRECV\tRECEIVED\tFAIL\tCLOSE")
+	fmt.Fprintln(os.Stdout, "\nPROCESS\tPEER\tSIDE\tEVENTS\tCONNECT\tACCEPT\tSEND\tSENT\tRECV\tRECEIVED\tFAIL\tCLOSE")
 	for _, row := range report.Rows {
-		fmt.Fprintf(os.Stdout, "%s\t%s\t%s\t%d\t%d\t%d\t%s\t%d\t%s\t%d\t%d\n", emptyAs(row.Process, "-"), emptyAs(row.Peer, "-"), row.Side, row.Events, row.Connects, row.Sends, traceBytes(row.TXBytes), row.Recvs, traceBytes(row.RXBytes), row.Failures, row.Closes)
+		fmt.Fprintf(os.Stdout, "%s\t%s\t%s\t%d\t%d\t%d\t%d\t%s\t%d\t%s\t%d\t%d\n", emptyAs(row.Process, "-"), emptyAs(row.Peer, "-"), row.Side, row.Events, row.Connects, row.Accepts, row.Sends, traceBytes(row.TXBytes), row.Recvs, traceBytes(row.RXBytes), row.Failures, row.Closes)
 	}
 }

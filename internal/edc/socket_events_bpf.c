@@ -29,6 +29,7 @@ typedef __u32 __wsum;
 #define SOCKET_SEND 2
 #define SOCKET_RECV 3
 #define SOCKET_CLOSE 4
+#define SOCKET_ACCEPT 5
 #define SOCKET_CLIENT 0
 #define SOCKET_SERVER 1
 // SOCKET_UNREADABLE는 payload를 읽지 못한 호출이다. 사용자 공간은 조각을 기다리지 않고 바로 event를 낸다.
@@ -41,13 +42,15 @@ typedef __u32 __wsum;
 #define SOCKET_PATH_SIZE 108
 
 // socket_record는 호출 하나의 event와 payload 조각이다. 한 호출의 조각은 timestamp_ns가 같고, offset은 조각이 호출의
-// data 안에서 시작하는 위치다. result는 주고받은 byte 수나 음수 errno다.
+// data 안에서 시작하는 위치다. result는 주고받은 byte 수나 음수 errno다. wait_ns는 accept event에서 connect부터 accept까지
+// backlog에서 기다린 시간이고, 모르면 0이다.
 struct socket_record {
 	__u64 timestamp_ns;
 	__u64 skaddr;
 	__u64 peer_skaddr;
 	__u64 cgroup_id;
 	__s64 result;
+	__u64 wait_ns;
 	__u32 event_type;
 	__u32 pid;
 	__u32 peer_pid;
@@ -206,6 +209,24 @@ struct {
 	__type(value, __u8);
 } socket_sides SEC(".maps");
 
+// socket_servers는 클라이언트 socket마다 서버 쪽에서 그 연결을 처리하는 process다. SO_PEERCRED는 listen()한 process라서
+// socket activation(systemd)이나 accept한 뒤 fork하는 서버에서는 실제 상대가 아니다. accept와 서버 쪽 호출마다 기록한다.
+struct {
+	__uint(type, BPF_MAP_TYPE_LRU_HASH);
+	__uint(max_entries, 16384);
+	__type(key, __u64);
+	__type(value, __u32);
+} socket_servers SEC(".maps");
+
+// socket_connects는 클라이언트 socket이 connect를 시작한 시각이다. accept event가 backlog에서 기다린 시간을 잰다. 기다리던
+// 서버는 connect가 끝나기 전에 accept를 마칠 수 있으므로 connect가 시작할 때 기록한다.
+struct {
+	__uint(type, BPF_MAP_TYPE_LRU_HASH);
+	__uint(max_entries, 16384);
+	__type(key, __u64);
+	__type(value, __u64);
+} socket_connects SEC(".maps");
+
 // socket_side는 sk가 대상 socket에 속하면 call을 채우고 1을 돌려준다. accept로 생긴 서버 쪽 socket은 listener의 경로를
 // 물려받고, 클라이언트 쪽 socket은 상대(peer)가 그 경로를 가진다.
 static __always_inline int socket_side(struct sock *sk, struct socket_call *call) {
@@ -232,6 +253,14 @@ static __always_inline int socket_side(struct sock *sk, struct socket_call *call
 	call->peer_skaddr = (__u64)peer;
 	// sk_peer_pid는 SO_PEERCRED 값이다. 서버 쪽에서는 connect한 process, 클라이언트 쪽에서는 listen한 process다.
 	call->peer_pid = BPF_CORE_READ(sk, sk_peer_pid, numbers[0].nr);
+	if (call->side == SOCKET_SERVER && peer) {
+		__u64 peeraddr = (__u64)peer;
+		__u32 tgid = bpf_get_current_pid_tgid() >> 32;
+		__u32 *server = bpf_map_lookup_elem(&socket_servers, &peeraddr);
+		if (!server || *server != tgid) {
+			bpf_map_update_elem(&socket_servers, &peeraddr, &tgid, BPF_ANY);
+		}
+	}
 	return 1;
 }
 
@@ -326,9 +355,17 @@ static __always_inline struct socket_record *socket_record_start(struct socket_c
 	record->peer_skaddr = call->peer_skaddr;
 	record->cgroup_id = bpf_get_current_cgroup_id();
 	record->result = result;
+	record->wait_ns = 0;
 	record->event_type = type;
 	record->pid = bpf_get_current_pid_tgid() >> 32;
 	record->peer_pid = call->peer_pid;
+	// 클라이언트는 서버보다 먼저 recv에 들어가 기다리므로, 상대는 호출이 시작할 때가 아니라 레코드를 낼 때 찾는다.
+	if (call->side == SOCKET_CLIENT) {
+		__u32 *server = bpf_map_lookup_elem(&socket_servers, &call->skaddr);
+		if (server) {
+			record->peer_pid = *server;
+		}
+	}
 	record->len = 0;
 	record->offset = 0;
 	record->side = call->side;
@@ -489,20 +526,34 @@ static __always_inline int socket_path_is_target(struct sockaddr_un *address) {
 	return 1;
 }
 
+SEC("fentry/unix_stream_connect")
+int unix_stream_connect_entry(__u64 *ctx) {
+	__u64 skaddr = (__u64)BPF_CORE_READ((struct socket *)ctx[0], sk);
+	__u64 now = bpf_ktime_get_ns();
+	if (skaddr) {
+		bpf_map_update_elem(&socket_connects, &skaddr, &now, BPF_ANY);
+	}
+	return 0;
+}
+
 SEC("fexit/unix_stream_connect")
 int unix_stream_connect_exit(__u64 *ctx) {
 	struct socket *sock = (struct socket *)ctx[0];
 	int result = (int)ctx[4];
 	struct socket_call call = {.event_type = SOCKET_CONNECT};
+	__u64 skaddr = (__u64)BPF_CORE_READ(sock, sk);
 	if (result == 0) {
 		if (!socket_side(BPF_CORE_READ(sock, sk), &call)) {
+			// 시작할 때는 대상인지 몰라 모든 connect의 시각을 두었다. 대상이 아닌 연결은 accept가 찾지 않는다.
+			bpf_map_delete_elem(&socket_connects, &skaddr);
 			return 0;
 		}
 	} else {
+		bpf_map_delete_elem(&socket_connects, &skaddr);
 		if (!target_path[0] || !socket_path_is_target((struct sockaddr_un *)ctx[1])) {
 			return 0;
 		}
-		call.skaddr = (__u64)BPF_CORE_READ(sock, sk);
+		call.skaddr = skaddr;
 		call.side = SOCKET_CLIENT;
 	}
 	struct socket_record *record = socket_record_start(&call, SOCKET_CONNECT, result);
@@ -512,19 +563,49 @@ int unix_stream_connect_exit(__u64 *ctx) {
 	return 0;
 }
 
+// unix_accept의 인자는 6.10에서 (sock, newsock, flags, kern)에서 (sock, newsock, arg)로 바뀌어 반환값의 위치가 다르다. 두
+// 형태에 공통인 newsock만 읽고, accept가 성공했는지는 newsock->sk가 채워졌는지로 본다.
+SEC("fexit/unix_accept")
+int unix_accept_exit(__u64 *ctx) {
+	struct socket *newsock = (struct socket *)ctx[1];
+	struct socket_call call = {.event_type = SOCKET_ACCEPT};
+	if (!socket_side(BPF_CORE_READ(newsock, sk), &call) || call.side != SOCKET_SERVER) {
+		return 0;
+	}
+	struct socket_record *record = socket_record_start(&call, SOCKET_ACCEPT, 0);
+	if (!record) {
+		return 0;
+	}
+	__u64 client = call.peer_skaddr;
+	__u64 *connected = bpf_map_lookup_elem(&socket_connects, &client);
+	if (connected) {
+		if (*connected < record->timestamp_ns) {
+			record->wait_ns = record->timestamp_ns - *connected;
+		}
+		bpf_map_delete_elem(&socket_connects, &client);
+	}
+	socket_output(record);
+	return 0;
+}
+
 // unix_release가 시작할 때는 socket의 경로와 상대가 아직 남아 있다.
 SEC("fentry/unix_release")
 int unix_release_entry(__u64 *ctx) {
 	struct socket *sock = (struct socket *)ctx[0];
+	struct sock *sk = BPF_CORE_READ(sock, sk);
+	__u64 skaddr = (__u64)sk;
 	struct socket_call call = {.event_type = SOCKET_CLOSE};
-	if (!socket_side(BPF_CORE_READ(sock, sk), &call)) {
-		return 0;
+	if (socket_side(sk, &call)) {
+		struct socket_record *record = socket_record_start(&call, SOCKET_CLOSE, 0);
+		if (record) {
+			socket_output(record);
+		}
 	}
-	struct socket_record *record = socket_record_start(&call, SOCKET_CLOSE, 0);
-	if (record) {
-		socket_output(record);
-	}
-	bpf_map_delete_elem(&socket_sides, &call.skaddr);
+	// 대상인지와 관계없이 지운다. 기억한 쪽이 LRU에서 밀려나 대상인지 모르게 되어도, 같은 주소를 받은 새 socket이 남은 서버나
+	// connect 시각을 물려받지 않게 한다.
+	bpf_map_delete_elem(&socket_sides, &skaddr);
+	bpf_map_delete_elem(&socket_servers, &skaddr);
+	bpf_map_delete_elem(&socket_connects, &skaddr);
 	return 0;
 }
 

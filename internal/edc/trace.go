@@ -1043,7 +1043,7 @@ func observeTraceGroup(group *traceGroup, event captureEvent) {
 		group.Tx += traceEventPackets(event)
 	case "udp_receive":
 		group.Rx += traceEventPackets(event)
-	case "tcp_connect", "tcp_accept", "socket_connect":
+	case "tcp_connect", "tcp_accept", "socket_connect", "socket_accept":
 		group.Connect++
 	case "tcp_retransmit":
 		group.Retransmissions++

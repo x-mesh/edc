@@ -117,6 +117,7 @@ var captureCapabilities = []struct {
 }{{capBPF, "CAP_BPF"}, {capPerfmon, "CAP_PERFMON"}, {capNetAdmin, "CAP_NET_ADMIN"}}
 
 // captureCapabilityError는 빠진 capability를 모두 이름으로 알리고, 지금 명령을 root로 다시 실행하는 줄을 붙인다.
+// root인데도 빠졌다면 컨테이너처럼 capability를 제한한 환경이라 sudo는 소용없으므로 capability를 더하라고 안내한다.
 func captureCapabilityError(capabilities map[int]bool, command string) error {
 	var missing []string
 	for _, capability := range captureCapabilities {
@@ -126,6 +127,9 @@ func captureCapabilityError(capabilities map[int]bool, command string) error {
 	}
 	if len(missing) == 0 {
 		return nil
+	}
+	if captureGeteuid() == 0 {
+		return errors.New(T("cli.capture.capability_missing_root", strings.Join(missing, ", ")))
 	}
 	return errors.New(T("cli.capture.capability_missing", strings.Join(missing, ", "), command))
 }

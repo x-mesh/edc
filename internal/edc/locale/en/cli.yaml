@@ -134,6 +134,7 @@ cli:
     tcp_accept_hook_missing: "This kernel has no %s function to trace, so edc cannot link an accepted TCP connection to its server process"
     capability_check_failed: "cannot read Linux capabilities"
     capability_missing: "edc needs %s to trace network events. Run it as root:\n  %s"
+    capability_missing_root: "edc needs %s to trace network events. It runs as root, but the process does not have them. In a container, add them with --cap-add or --privileged"
     supported_platforms: "capture runs on Linux and macOS only"
     tcpdump_missing: "tcpdump is not installed in a system path (%s)"
     sudo_missing: "sudo is not installed in a system path (%s)"

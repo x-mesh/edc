@@ -134,6 +134,7 @@ cli:
     tcp_accept_hook_missing: "この kernel にはトレースできる %s 関数がないため、edc は accept した TCP 接続をサーバー process に結び付けられません"
     capability_check_failed: "Linux capability を読めませんでした"
     capability_missing: "network event を追跡するには %s が必要です。root で実行してください:\n  %s"
+    capability_missing_root: "network event を追跡するには %s が必要です。root で実行していますが、process にこの capability がありません。コンテナ内なら --cap-add か --privileged で追加してください"
     supported_platforms: "capture は Linux と macOS だけで動きます"
     tcpdump_missing: "tcpdump がシステムパス (%s) にインストールされていません"
     sudo_missing: "sudo がシステムパス (%s) にインストールされていません"

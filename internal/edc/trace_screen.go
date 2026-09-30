@@ -69,6 +69,11 @@ type traceScreenModel struct {
 	// follow면 상세 보기가 가장 최근 event를 따라간다. decode면 상세 보기가 gzip 본문을 푼다.
 	follow bool
 	decode bool
+	// split이면 목록 아래에 고른 event나 가장 최근 event의 message를 보인다. i로 바꾼다. previewOffset은 J/K로 옮긴
+	// 미리 보기의 위치다.
+	split         bool
+	preview       *tracePreview
+	previewOffset int
 }
 
 func newTraceScreenModel(protocol string, options tcpTraceOptions, eventCh <-chan captureEvent, resultCh <-chan traceFinishedMsg, stop func()) traceScreenModel {
@@ -115,7 +120,15 @@ func waitTraceMessage(eventCh <-chan captureEvent, resultCh <-chan traceFinished
 	}
 }
 
+// Update는 message를 처리한 뒤 미리 보기를 맞춘다. 고른 event는 키와 새 event 양쪽에서 바뀌므로 한곳에서 맞춘다.
 func (model traceScreenModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	next, cmd := model.update(msg)
+	updated := next.(traceScreenModel)
+	updated.refreshPreview()
+	return updated, cmd
+}
+
+func (model traceScreenModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch value := msg.(type) {
 	case tea.WindowSizeMsg:
 		model.width, model.height = value.Width, value.Height
@@ -220,14 +233,14 @@ func (model traceScreenModel) updateKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd
 	case "up", "k", "down", "j", "pgup", "pgdown", "b", "space":
 		// 고르는 동안에는 목록이 새 event를 따라가지 않는다. end를 누르면 다시 따라간다.
 		if model.groupBy == "" {
-			step, count := 1, 1
+			step, count, page := 1, 1, max(1, model.listRows()-1)
 			switch key.String() {
 			case "up", "k":
 				step = -1
 			case "pgup", "b":
-				step, count = -1, max(1, model.height-4)
+				step, count = -1, page
 			case "pgdown", "space":
-				count = max(1, model.height-4)
+				count = page
 			}
 			model.selected = model.moveSelection(step, count)
 		}
@@ -244,6 +257,21 @@ func (model traceScreenModel) updateKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd
 	case "f":
 		if model.groupBy == "" {
 			model.openFollow()
+		}
+		return model, nil
+	case "i":
+		if model.groupBy == "" {
+			model.split, model.preview, model.previewOffset = !model.split, nil, 0
+		}
+		return model, nil
+	case "J", "K":
+		if model.split {
+			model.scrollPreview(map[string]int{"J": 1, "K": -1}[key.String()])
+		}
+		return model, nil
+	case "z":
+		if model.split && model.protocol == "http" {
+			model.decode = !model.decode
 		}
 		return model, nil
 	case "enter":
@@ -283,7 +311,7 @@ func traceScreenHelp(protocol string) string {
 			}
 		}
 	}
-	keys = append(keys, "g scroll", "↑↓ select", "enter detail", "f follow")
+	keys = append(keys, "g scroll", "↑↓ select", "enter detail", "i split", "f follow")
 	switch protocol {
 	case "http":
 		keys = append(keys, "v payload", "m secrets")
@@ -365,19 +393,34 @@ func traceScreenHeader(model traceScreenModel) []string {
 	return []string{liveSelected(traceFit(line, model.width), color), liveMuted(traceFit(help, model.width), color), traceFit(columns, model.width)}
 }
 
+// traceScreenRows는 머리글 아래의 줄이다. 화면 나누기가 켜져 있으면 목록 아래에 미리 보기 창을 붙인다.
 func traceScreenRows(model traceScreenModel) []string {
-	rows := make([]string, 0, model.height)
+	if list, preview, ok := traceSplitHeights(model.height); model.split && model.groupBy == "" && ok {
+		return append(traceScreenListRows(model, list), traceScreenPreviewRows(model, preview)...)
+	}
+	return traceScreenListRows(model, max(0, model.height-3))
+}
+
+// listRows는 목록에 쓰는 줄 수다. 한 쪽씩 넘길 때 쓴다.
+func (model traceScreenModel) listRows() int {
+	if list, _, ok := traceSplitHeights(model.height); model.split && model.groupBy == "" && ok {
+		return list
+	}
+	return max(0, model.height-3)
+}
+
+func traceScreenListRows(model traceScreenModel, available int) []string {
+	rows := make([]string, 0, available)
 	if model.groupBy != "" {
 		report := model.groupReport()
 		layout := traceScreenGroupLayout(model, report)
 		for _, group := range traceScreenVisibleGroups(model, report) {
 			rows = append(rows, formatTraceGroupScreenRow(model.protocol, model.groupBy, group, model.width, layout))
 		}
-		return traceScreenPadRows(rows, model.height-3)
+		return traceScreenPadRows(rows, available)
 	}
 	// 화면에 보이는 줄만 뒤에서부터 서식화한다. 보관한 event 전부(최대 10,000건)를 서식화하면 한 번 그리는 데
 	// 300ms가 넘게 걸려, 화면이 event를 따라가지 못하고 키 입력도 늦어진다.
-	available := max(0, model.height-3)
 	eventLines := func(index int) []string {
 		event := model.events[index]
 		lines := []string{formatTraceScreenEvent(event, model.width)}

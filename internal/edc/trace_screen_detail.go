@@ -6,13 +6,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"slices"
 	"strconv"
 	"strings"
-	"unicode/utf8"
-
-	"charm.land/lipgloss/v2"
 )
 
 // traceScreenPayloadBytes는 상세 보기를 위해 payload 전체를 두는 합계 상한이다. 목록은 event마다 앞 4KiB만 두므로,
@@ -101,6 +99,13 @@ func (model traceScreenModel) buildDetail(number int) *traceDetail {
 	if number < model.first || number >= model.first+len(model.events) {
 		return nil
 	}
+	event, payload, notes := model.detailPayload(number)
+	return newTraceDetail(event, payload, notes, number, model.width)
+}
+
+// detailPayload는 상세 보기와 미리 보기가 보일 payload다. 보관한 전체 payload를 쓰고, z면 gzip 본문을 풀고, m이 꺼져
+// 있으면 인증 header 값을 가린다. notes는 payload 앞에 붙일 안내다.
+func (model traceScreenModel) detailPayload(number int) (captureEvent, string, []string) {
 	event := model.events[number-model.first]
 	payload, kept := model.payloads.get(number)
 	var notes []string
@@ -123,7 +128,7 @@ func (model traceScreenModel) buildDetail(number int) *traceDetail {
 	if !model.secrets && model.protocol == "http" {
 		payload = string(traceMaskHTTPHeaders([]byte(payload)))
 	}
-	return newTraceDetail(event, payload, notes, number, model.width)
+	return event, payload, notes
 }
 
 // rebuildDetail은 가리기나 gzip을 바꾼 뒤 같은 event를 다시 그린다. 보던 위치는 그대로 둔다.
@@ -224,23 +229,8 @@ func traceWrapLine(line string, width int) []string {
 	if width <= 0 || liveWidth(line) <= width {
 		return []string{line}
 	}
-	var parts []string
-	var current strings.Builder
-	used := 0
-	for _, r := range line {
-		cell := 1
-		if r >= utf8.RuneSelf {
-			cell = lipgloss.Width(string(r))
-		}
-		if used+cell > width && used > 0 {
-			parts = append(parts, current.String())
-			current.Reset()
-			used = 0
-		}
-		current.WriteRune(r)
-		used += cell
-	}
-	return append(parts, current.String())
+	parts, _ := traceWrapLineUpTo(line, width, math.MaxInt)
+	return parts
 }
 
 // moveSelection은 고른 event에서 filter에 맞는 event를 step 방향으로 count개 건너간 번호다. 고른 event가 없으면

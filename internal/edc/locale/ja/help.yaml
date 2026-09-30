@@ -166,6 +166,7 @@ command:
       - "event 一覧で Up か Down を押すと event を選び、一覧は止まります。"
       - "Enter で全 field と payload 全体を表示し、l か Esc で最新に戻ります。"
       - "f で詳細表示が最新の event を追います。"
+      - "i で一覧の下にプレビューを開閉し、J と K でスクロールします。"
       - "trace http: v は payload 行、m は secret、z は gzip 展開を切り替えます。"
       - "Tab で次の表示、Shift+Tab で前の表示に切り替えます。"
       - "--group-by source、target、port、process、event で group live 行を表示します。"

@@ -15,9 +15,10 @@ import (
 const (
 	httpRecordType          = 10
 	httpRecordSent          = 1
-	httpRecordPayloadOffset = 92
-	// httpRecordPayloadMax는 capture_events_bpf.c의 HTTP_PAYLOAD_SIZE다. trace http --payload일 때 BPF가 이만큼 읽는다.
-	httpRecordPayloadMax = 4096
+	httpRecordContinuation  = 1
+	httpRecordPayloadOffset = 96
+	// httpRecordPayloadMax는 capture_events_bpf.c의 HTTP_PAYLOAD_SIZE로, 레코드 하나에 담기는 byte 수다.
+	httpRecordPayloadMax = 16384
 )
 
 func parseHTTPRecord(sample []byte) (httpPacket, bool) {
@@ -38,6 +39,8 @@ func parseHTTPRecord(sample []byte) (httpPacket, bool) {
 		destination: formatCaptureAddress(family, destination, binary.LittleEndian.Uint16(sample[42:44])),
 		process:     strings.TrimRight(string(sample[76:92]), "\x00"),
 		payload:     sample[httpRecordPayloadOffset:],
+		continued:   sample[39] == httpRecordContinuation,
+		offset:      binary.LittleEndian.Uint32(sample[92:96]),
 	}
 	if size := int(binary.LittleEndian.Uint32(sample[32:36])); size < len(packet.payload) {
 		packet.payload = packet.payload[:size]

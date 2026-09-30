@@ -3,6 +3,7 @@ package edc
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"maps"
@@ -124,12 +125,48 @@ type traceScope struct {
 	server   bool
 	// payload가 꺼져 있으면 message 앞부분을 event에 붙이지 않는다. 화면은 event를 최대 10,000건 보관한다.
 	payload bool
-	port    uint16
+	// payloadAll은 --payload=all이다. 이어지는 조각까지 받아 message 전체를 event에 붙인다.
+	payloadAll  bool
+	showSecrets bool
+	port        uint16
 }
 
 func (options tcpTraceOptions) scope(protocol string) traceScope {
-	return traceScope{protocol: protocol, server: options.side == traceServerSide, payload: options.payload, port: uint16(options.port)}
+	return traceScope{protocol: protocol, server: options.side == traceServerSide, payload: options.payload != "", payloadAll: options.payload == tracePayloadAll,
+		showSecrets: options.showSecrets, port: uint16(options.port)}
 }
+
+// tracePayloadMode는 --payload 값이다. 값 없이 쓰면 message마다 앞 4KiB를, all이면 message 전체를 본다.
+type tracePayloadMode string
+
+const (
+	tracePayloadHead tracePayloadMode = "head"
+	tracePayloadAll  tracePayloadMode = "all"
+)
+
+func (mode *tracePayloadMode) String() string {
+	if mode == nil {
+		return ""
+	}
+	return string(*mode)
+}
+
+func (mode *tracePayloadMode) Set(value string) error {
+	switch value {
+	case "true":
+		*mode = tracePayloadHead
+	case "false":
+		*mode = ""
+	case string(tracePayloadAll):
+		*mode = tracePayloadAll
+	default:
+		return errors.New(T("cli.trace.payload_value"))
+	}
+	return nil
+}
+
+// IsBoolFlag가 있어야 flag package가 값 없는 --payload를 받는다. 그래서 값은 --payload=all처럼 붙여 써야 한다.
+func (mode *tracePayloadMode) IsBoolFlag() bool { return true }
 
 // traceLabel은 화면 머리글에 쓰는 trace 이름이다. 서버 쪽 trace는 client 쪽과 같은 event 이름을 쓰므로 머리글로 구분한다.
 func traceLabel(protocol, side string) string {
@@ -239,7 +276,8 @@ func runTrace(args []string) int {
 	set.BoolVar(&options.detail, "d", false, T("command.trace.option.detail"))
 	set.BoolVar(&options.yes, "yes", false, T("command.trace.option.yes"))
 	set.StringVar(&options.side, "side", traceClientSide, T("command.trace.option.side"))
-	set.BoolVar(&options.payload, "payload", false, T("command.trace.option.payload"))
+	set.Var(&options.payload, "payload", T("command.trace.option.payload"))
+	set.BoolVar(&options.showSecrets, "show-secrets", false, T("command.trace.option.show_secrets"))
 	set.IntVar(&options.port, "port", 0, T("command.trace.option.port"))
 	if err := set.Parse(args[1:]); err != nil {
 		return 2
@@ -276,13 +314,17 @@ func runTrace(args []string) int {
 		fmt.Fprintln(os.Stderr, T("cli.trace.side_protocol", args[0]))
 		return 2
 	}
-	if options.payload && args[0] != "http" {
+	if options.payload != "" && args[0] != "http" {
 		fmt.Fprintln(os.Stderr, T("cli.trace.payload_protocol", args[0]))
 		return 2
 	}
 	// --json은 요약만 쓰므로 event에 붙인 payload가 어디에도 나오지 않는다.
-	if options.payload && options.jsonPath != "" {
+	if options.payload != "" && options.jsonPath != "" {
 		fmt.Fprintln(os.Stderr, T("cli.trace.payload_json_conflict"))
+		return 2
+	}
+	if options.showSecrets && options.payload == "" {
+		fmt.Fprintln(os.Stderr, T("cli.trace.show_secrets_payload"))
 		return 2
 	}
 	portSet := false
@@ -332,7 +374,7 @@ func runTrace(args []string) int {
 		}
 		aggregate.observe(event)
 		if options.jsonPath == "" && options.groupBy == "" {
-			printTraceEvent(event, true)
+			printTraceEvent(event, true, options.payload == tracePayloadAll)
 		}
 		return nil
 	}, ctx.Done())
@@ -393,7 +435,8 @@ func traceEventDestinationLabel(event captureEvent) string {
 	return destination
 }
 
-func printTraceEvent(event captureEvent, color bool) {
+// full이면 --payload=all이라 message 전체를 event 아래 여러 줄로 쓴다. 한 줄 요약은 긴 message를 읽기 어렵다.
+func printTraceEvent(event captureEvent, color, full bool) {
 	destination, name := traceScrollLabels(event)
 	process := event.Process
 	if process == "" {
@@ -402,8 +445,14 @@ func printTraceEvent(event captureEvent, color bool) {
 	protocol := traceProtocol(event)
 	line := fmt.Sprintf("%-16s %-32s %-20s %s", process, destination, name, event.Source)
 	fmt.Fprintln(os.Stdout, traceColorLine(line, protocol, event.Event, color))
-	if event.Payload != "" {
-		fmt.Fprintf(os.Stdout, "%-16s ↳ %s\n", "", traceHTTPPayloadLine(event.Payload))
+	switch {
+	case event.Payload == "":
+	case full:
+		for _, payloadLine := range traceHTTPPayloadBlock(event) {
+			fmt.Fprintf(os.Stdout, "%-16s │ %s\n", "", payloadLine)
+		}
+	default:
+		fmt.Fprintf(os.Stdout, "%-16s ↳ %s\n", "", traceHTTPPayloadSummary(event))
 	}
 }
 

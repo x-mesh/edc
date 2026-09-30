@@ -272,6 +272,16 @@ func captureAttachments(objects *captureEventsObjects, protocol string) ([]captu
 	return tracepoints, tracing
 }
 
+// captureAttachmentsFor는 captureAttachments에 --payload=all의 hook을 더한다. tcp_sendmsg가 끝날 때의 hook은 실제로 보낸
+// byte 수를 알려 주지만 모든 TCP 송신에 붙으므로, --payload=all일 때만 붙인다.
+func captureAttachmentsFor(objects *captureEventsObjects, scope traceScope) ([]captureTracepoint, []captureTracing) {
+	tracepoints, tracing := captureAttachments(objects, scope.protocol)
+	if scope.payloadAll {
+		tracing = append(tracing, captureTracing{[]string{"http"}, "fexit/tcp_sendmsg", objects.TcpSendmsgExit})
+	}
+	return tracepoints, tracing
+}
+
 // captureEventFilter는 BPF를 불러오기 전에 정하는 event 필터다. protocol이 쓰지 않을 event를 kernel에서 버린다.
 type captureEventFilter struct {
 	udpEvents    bool
@@ -280,10 +290,12 @@ type captureEventFilter struct {
 	tcpStatePort uint16
 	httpMessages bool
 	dnsTCP       bool
-	// httpPayload는 HTTP message를 httpRecordPayloadMax까지 읽는다. 끄면 BPF 기본값인 512바이트만 읽는다.
+	// httpPayload는 HTTP message를 httpPayloadHead까지 읽는다. 끄면 BPF 기본값인 512바이트만 읽는다.
 	httpPayload bool
 	// httpPort가 0이 아니면 로컬이나 상대 port가 이 값인 socket의 HTTP message만 본다.
 	httpPort uint16
+	// httpMessageLimit가 0이 아니면 HTTP message 하나를 이 byte 수까지 조각으로 따라간다.
+	httpMessageLimit uint32
 }
 
 func captureEventFilterFor(scope traceScope) captureEventFilter {
@@ -298,6 +310,9 @@ func captureEventFilterFor(scope traceScope) captureEventFilter {
 		filter.udpEvents, filter.server, filter.tcpStatePort, filter.dnsTCP = false, scope.server, 53, true
 	case "http":
 		filter.udpEvents, filter.httpMessages, filter.httpPayload, filter.httpPort = false, true, scope.payload, scope.port
+		if scope.payloadAll {
+			filter.httpMessageLimit = httpMessageMax
+		}
 	}
 	return filter
 }
@@ -323,7 +338,12 @@ func loadCaptureEventsFor(scope traceScope, objects *captureEventsObjects) error
 		return err
 	}
 	if filter.httpPayload {
-		if err := variables.HttpPayloadLimit.Set(uint32(httpRecordPayloadMax)); err != nil {
+		if err := variables.HttpPayloadLimit.Set(uint32(httpPayloadHead)); err != nil {
+			return err
+		}
+	}
+	if filter.httpMessageLimit != 0 {
+		if err := variables.HttpMessageLimit.Set(filter.httpMessageLimit); err != nil {
 			return err
 		}
 	}
@@ -344,7 +364,7 @@ func collectCaptureEventsFor(scope traceScope, duration time.Duration, onEvent f
 	}
 	defer objects.Close()
 
-	attachments, tracing := captureAttachments(&objects, protocol)
+	attachments, tracing := captureAttachmentsFor(&objects, scope)
 	links := make([]link.Link, 0, len(attachments)+len(tracing))
 	closeLinks := func() { closeCaptureLinks(links) }
 	for _, attachment := range attachments {
@@ -395,10 +415,45 @@ func collectCaptureEventsFor(scope traceScope, duration time.Duration, onEvent f
 	sockets := newSocketTargetCache()
 	owners := newPIDTargetCache()
 	queries := newDNSQueryTracker(scope.server)
-	requests := newHTTPTracker(scope.server, scope.payload)
+	// --payload=all은 message가 끝날 때 payload를 붙이므로 tracker는 첫 조각에 payload를 붙이지 않는다.
+	requests := newHTTPTracker(scope.server, scope.payload && !scope.payloadAll, scope.showSecrets)
+	var messages *httpMessages
+	if scope.payloadAll {
+		messages = newHTTPMessages(requests, httpMessageMax, scope.showSecrets)
+	}
 	streams := newDNSTCPStreams()
 	var eventCount uint64
+	emit := func(events []captureEvent) error {
+		for _, event := range events {
+			if onEvent != nil {
+				if err := onEvent(event); err != nil {
+					return err
+				}
+			}
+			eventCount++
+		}
+		return nil
+	}
+	// 끝나기를 기다리는 HTTP message가 있으면 reader가 오래 막히지 않게 deadline을 짧게 둔다. ring buffer reader는 버퍼가
+	// 빌 때만 deadline을 보므로, event가 계속 올 때는 레코드를 읽을 때마다 시각을 확인한다.
+	swept := time.Now()
+	sweepDeadline := func() {
+		if messages == nil {
+			return
+		}
+		next := time.Now().Add(httpMessageIdle / 4)
+		if duration > 0 && deadline.Before(next) {
+			next = deadline
+		}
+		reader.SetDeadline(next)
+	}
+	sweepDeadline()
 	finish := func() (captureSummary, error) {
+		if messages != nil {
+			if err := emit(messages.flush()); err != nil {
+				return captureSummary{}, err
+			}
+		}
 		var lost uint64
 		if lookupErr := objects.LostEvents.Lookup(uint32(0), &lost); lookupErr != nil {
 			return captureSummary{}, fmt.Errorf("read lost event count: %w", lookupErr)
@@ -413,6 +468,14 @@ func collectCaptureEventsFor(scope traceScope, duration time.Duration, onEvent f
 		}
 		record, err := reader.Read()
 		if errors.Is(err, os.ErrDeadlineExceeded) {
+			if messages != nil && (duration == 0 || time.Now().Before(deadline)) {
+				if err := emit(messages.expire(time.Now())); err != nil {
+					return captureSummary{}, err
+				}
+				swept = time.Now()
+				sweepDeadline()
+				continue
+			}
 			return finish()
 		}
 		if errors.Is(err, os.ErrClosed) && traceStopRequested(stop) {
@@ -454,6 +517,18 @@ func collectCaptureEventsFor(scope traceScope, duration time.Duration, onEvent f
 			continue
 		}
 		if packet, ok := parseHTTPRecord(record.RawSample); ok {
+			if messages != nil {
+				now := time.Now()
+				events := messages.add(packet, clockOffset, now)
+				if now.Sub(swept) >= httpMessageIdle/4 {
+					events = append(events, messages.expire(now)...)
+					swept = now
+				}
+				if err := emit(events); err != nil {
+					return captureSummary{}, err
+				}
+				continue
+			}
 			event, ok := requests.event(packet, clockOffset)
 			if !ok {
 				continue

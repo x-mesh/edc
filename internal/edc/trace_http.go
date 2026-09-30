@@ -14,6 +14,17 @@ import (
 )
 
 const (
+	// httpPayloadHead는 --payload가 message마다 읽는 byte 수다. 전체 화면도 event마다 이만큼만 보관한다.
+	httpPayloadHead = 4096
+	// httpMessageMax는 --payload=all이 message 하나를 따라가는 byte 수다. 큰 업로드 하나가 ring buffer와 메모리를
+	// 다 쓰지 않도록 둔다.
+	httpMessageMax = 1 << 20
+	// httpMessageIdle은 조각이 더 오지 않는 message를 내보내기까지 기다리는 시간이다. 길이를 알 수 없는 응답은 연결이
+	// 닫혀야 끝나는데, trace http는 연결 종료를 보지 않는다.
+	httpMessageIdle = time.Second
+	// httpMessageOpenBytes와 httpMessageOpenLimit는 끝나기를 기다리는 message의 합계 상한이다. 넘으면 오래된 것부터 낸다.
+	httpMessageOpenBytes  = 64 << 20
+	httpMessageOpenLimit  = 4096
 	traceHTTPRequestEvent = "http_request"
 	// traceHTTPPendingLimit은 응답을 기다리는 요청 수의 상한이다. 응답을 읽지 못한 요청이 쌓여도 메모리를 제한한다.
 	traceHTTPPendingLimit = 65536
@@ -33,6 +44,9 @@ type httpPacket struct {
 	source      string
 	destination string
 	payload     []byte
+	// continued는 --payload=all에서 앞 message에 이어지는 조각이다. offset은 조각이 message 안에서 시작하는 위치다.
+	continued bool
+	offset    uint32
 }
 
 type httpPendingRequest struct {
@@ -45,14 +59,15 @@ type httpPendingRequest struct {
 // httpTracker는 socket마다 요청을 순서대로 두고 응답과 짝짓는다. HTTP/1.x는 한 연결에서 요청 순서대로 응답한다.
 // server는 tracker가 볼 쪽이다. 다른 쪽 message는 기억하지 않는다.
 type httpTracker struct {
-	server  bool
-	payload bool
-	pending map[uint64][]httpPendingRequest
-	size    int
+	server      bool
+	payload     bool
+	showSecrets bool
+	pending     map[uint64][]httpPendingRequest
+	size        int
 }
 
-func newHTTPTracker(server, payload bool) *httpTracker {
-	return &httpTracker{server: server, payload: payload, pending: map[uint64][]httpPendingRequest{}}
+func newHTTPTracker(server, payload, showSecrets bool) *httpTracker {
+	return &httpTracker{server: server, payload: payload, showSecrets: showSecrets, pending: map[uint64][]httpPendingRequest{}}
 }
 
 func (tracker *httpTracker) event(packet httpPacket, clockOffset int64) (captureEvent, bool) {
@@ -74,7 +89,7 @@ func (tracker *httpTracker) event(packet httpPacket, clockOffset int64) (capture
 		event.Side = traceServerSide
 	}
 	if tracker.payload {
-		event.Payload = traceHTTPPayload(packet.payload)
+		event.Payload = traceHTTPPayload(packet.payload, tracker.showSecrets)
 	}
 	if requestOK {
 		host, path := traceHTTPTarget(target, host)
@@ -160,10 +175,10 @@ var traceHTTPSecretHeaders = []string{"authorization", "proxy-authorization", "c
 
 // traceHTTPPayload는 --payload로 보여 줄 message 앞부분이다. BPF가 앞부분만 읽으므로 header 끝을 못 봤으면
 // 마지막 header 줄이 CRLF 없이 값 중간에서 끊겨 있다. 그 줄도 header로 보고 가린다.
-func traceHTTPPayload(payload []byte) string {
+func traceHTTPPayload(payload []byte, showSecrets bool) string {
 	head, body, complete := bytes.Cut(payload, []byte("\r\n\r\n"))
 	lines := bytes.Split(head, []byte("\r\n"))
-	for index := 1; index < len(lines); index++ {
+	for index := 1; index < len(lines) && !showSecrets; index++ {
 		name, _, ok := bytes.Cut(lines[index], []byte(":"))
 		if ok && slices.ContainsFunc(traceHTTPSecretHeaders, func(secret string) bool { return strings.EqualFold(string(bytes.TrimSpace(name)), secret) }) {
 			lines[index] = append(slices.Clip(name), ": ***"...)
@@ -228,6 +243,39 @@ func traceHTTPPayloadLine(payload string) string {
 	}
 	_, headers, _ := strings.Cut(head, "\r\n")
 	return "headers " + emptyAs(strings.ReplaceAll(strings.TrimSuffix(headers, "\r\n"), "\r\n", " · "), "-")
+}
+
+// traceHTTPPayloadSummary는 한 줄 요약에 잘림 표시를 붙인다. 긴 본문은 화면 폭에서 잘리므로 표시를 앞에 둔다.
+func traceHTTPPayloadSummary(event captureEvent) string {
+	line := traceHTTPPayloadLine(event.Payload)
+	if event.PayloadTruncated {
+		line = "[truncated] " + line
+	}
+	return line
+}
+
+// traceHTTPPayloadBlock은 payload를 줄마다 나눈다. 마지막 줄바꿈 뒤의 빈 줄은 뺀다.
+func traceHTTPPayloadBlock(event captureEvent) []string {
+	lines := strings.Split(strings.ReplaceAll(event.Payload, "\r\n", "\n"), "\n")
+	if len(lines) > 1 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+	if event.PayloadTruncated {
+		lines = append(lines, "[truncated]")
+	}
+	return lines
+}
+
+// traceTrimText는 text를 limit byte 안에서 UTF-8 문자 경계로 자른다.
+func traceTrimText(text string, limit int) string {
+	if len(text) <= limit {
+		return text
+	}
+	cut := limit
+	for cut > 0 && !utf8.RuneStart(text[cut]) {
+		cut--
+	}
+	return text[:cut]
 }
 
 // traceHTTPHost는 Host header가 없을 때 쓸 상대 주소다. 서버 쪽 상대는 client라서 로컬 주소를 쓴다.

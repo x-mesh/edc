@@ -44,7 +44,7 @@ func httpTestPacket(payload string, at uint64, sent bool) httpPacket {
 }
 
 func TestHTTPTrackerMatchesResponsesInOrder(t *testing.T) {
-	tracker := newHTTPTracker(false, false)
+	tracker := newHTTPTracker(false, false, false)
 	var events []captureEvent
 	for _, packet := range []httpPacket{
 		httpTestPacket("GET /a?x=1 HTTP/1.1\r\nHost: api.example\r\n\r\n", 1_000_000, true),
@@ -108,7 +108,7 @@ func TestHTTPTrackerMatchesResponsesInOrder(t *testing.T) {
 }
 
 func TestHTTPServerSideTimesTheServer(t *testing.T) {
-	tracker := newHTTPTracker(true, false)
+	tracker := newHTTPTracker(true, false, false)
 	request, ok := tracker.event(httpTestPacket("GET /health HTTP/1.1\r\n\r\n", 1_000_000, false), 0)
 	if !ok || request.Side != traceServerSide || request.Target != "" || request.Path != "/health" {
 		t.Fatalf("server request = %#v, %t", request, ok)
@@ -134,7 +134,7 @@ func TestTraceHTTPPayloadHidesSecretsAndEscapesControls(t *testing.T) {
 		{"response", "HTTP/1.1 200 OK\r\nSet-Cookie: id=1\r\n\r\nok\t\xff\x7f\xc2\x9b\n", "HTTP/1.1 200 OK\r\nSet-Cookie: ***\r\n\r\nok\t\\xff\\x7f\\xc2\\x9b\n"},
 		{"cookie text in the body", "HTTP/1.1 200 OK\r\n\r\nCookie: visible", "HTTP/1.1 200 OK\r\n\r\nCookie: visible"},
 	} {
-		if got := traceHTTPPayload([]byte(test.payload)); got != test.want {
+		if got := traceHTTPPayload([]byte(test.payload), false); got != test.want {
 			t.Fatalf("%s: payload = %q, want %q", test.name, got, test.want)
 		}
 	}
@@ -155,10 +155,10 @@ func TestTraceHTTPPayloadLineShowsTheBodyOrTheHeaders(t *testing.T) {
 
 func TestHTTPTrackerAddsThePayloadOnlyWhenAsked(t *testing.T) {
 	packet := httpTestPacket("GET / HTTP/1.1\r\nHost: x\r\nCookie: a=b\r\n\r\n", 1_000_000, true)
-	if event, _ := newHTTPTracker(false, false).event(packet, 0); event.Payload != "" {
+	if event, _ := newHTTPTracker(false, false, false).event(packet, 0); event.Payload != "" {
 		t.Fatalf("payload without --payload: %q", event.Payload)
 	}
-	event, _ := newHTTPTracker(false, true).event(packet, 0)
+	event, _ := newHTTPTracker(false, true, false).event(packet, 0)
 	if event.Payload != "GET / HTTP/1.1\r\nHost: x\r\nCookie: ***\r\n\r\n" {
 		t.Fatalf("payload = %q", event.Payload)
 	}
@@ -170,7 +170,7 @@ func TestHTTPTrackerAddsThePayloadOnlyWhenAsked(t *testing.T) {
 
 func TestHTTPTraceScreenPutsThePayloadUnderItsEvent(t *testing.T) {
 	t.Setenv("NO_COLOR", "1")
-	model := newTraceScreenModel("http", tcpTraceOptions{payload: true}, make(chan captureEvent), make(chan traceFinishedMsg), nil)
+	model := newTraceScreenModel("http", tcpTraceOptions{payload: tracePayloadHead}, make(chan captureEvent), make(chan traceFinishedMsg), nil)
 	request := captureEvent{Protocol: "http", Event: traceHTTPRequestEvent, Process: "curl", Method: "POST", Target: "api.example", Path: "/a", Payload: "POST /a HTTP/1.1\r\nHost: api.example\r\n\r\n{\"k\":1}"}
 	plain := captureEvent{Protocol: "http", Event: "http_2xx", Process: "curl", Target: "api.example", Path: "/a", Status: 200}
 	model.events, model.width = []captureEvent{request, request, plain}, 120

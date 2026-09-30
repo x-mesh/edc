@@ -172,6 +172,8 @@ cli:
     side_protocol: "--side server is not available for trace %s"
     payload_protocol: "--payload is not available for trace %s"
     payload_json_conflict: "--payload and --json cannot be used together because --json writes only the summary"
+    payload_value: "--payload takes no value, or =all"
+    show_secrets_payload: "--show-secrets needs --payload"
     port_range: "--port must be from 1 to 65535"
     port_protocol: "--port is not available for trace %s"
     http_kernel: "trace http needs Linux 6.4 or later: the kernel iov_iter has no %s field"

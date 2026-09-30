@@ -941,6 +941,7 @@ Linux 6.4 이상에서 `trace mysql`을 사용하면 평문 MySQL 명령과 결�
 ./bin/edc trace mysql
 ./bin/edc trace mysql --side server
 ./bin/edc trace mysql --port 3307
+./bin/edc trace mysql --slow 250ms
 ./bin/edc trace mysql --group-by process
 ./bin/edc trace mysql --show-secrets
 ./bin/edc trace mysql --raw
@@ -953,12 +954,15 @@ Linux 6.4 이상에서 `trace mysql`을 사용하면 평문 MySQL 명령과 결�
 
 JSON event에는 `"side": "client"`나 `"side": "server"`가 붙습니다. 한 쪽만 보려면 `--side client`나 `--side server`를 씁니다. 로컬 port가 MySQL port이면 서버 쪽 socket이고, 상대 port가 MySQL port이면 client 쪽 socket입니다.
 
+`--slow <duration>`은 `trace mysql`에서만 씁니다. `250ms`, `1.5s` 같은 Go duration 문법을 받습니다. 묶지 않은 대화형 화면에서는 첫 paired response의 latency가 지정 시간 이상인 command 행만 남깁니다. 응답 없는 command, 짝이 없는 response, latency가 없는 response, TLS 행은 제외합니다. raw JSON, 비대화형 출력, 요약, group 보기, `--group-by`, `--side`에는 영향을 주지 않습니다.
+
 | 보려는 것 | 명령 |
 | --- | --- |
 | 이 host의 MySQL 전부 | `./bin/edc trace mysql` |
 | 로컬 서버가 받은 명령 | `./bin/edc trace mysql --side server` |
 | 이 host가 보낸 명령 | `./bin/edc trace mysql --side client` |
 | port 3307의 MySQL | `./bin/edc trace mysql --port 3307` |
+| 250ms 이상 걸린 paired command | `./bin/edc trace mysql --slow 250ms` |
 | 쪽마다 process별 응답 시간 | `./bin/edc trace mysql --group-by process` |
 | 가리지 않은 SQL 원문 | `./bin/edc trace mysql --show-secrets` |
 

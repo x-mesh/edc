@@ -65,3 +65,25 @@ func TestMySQLTraceOptionChecks(t *testing.T) {
 		}
 	}
 }
+
+func TestMySQLTraceSlowOptionChecks(t *testing.T) {
+	for _, test := range []struct {
+		args   []string
+		stderr string
+	}{
+		{[]string{"mysql", "--slow", "250us", "--port", "0"}, "--port must be from 1 to 65535"},
+		{[]string{"mysql", "--slow", "1.5ms", "--port", "0"}, "--port must be from 1 to 65535"},
+		{[]string{"mysql", "--slow", "0s"}, "--slow must be greater than 0"},
+		{[]string{"mysql", "--slow", "-1ms"}, "--slow must be greater than 0"},
+		{[]string{"mysql", "--slow", "slow"}, "invalid value \"slow\" for flag -slow"},
+		{[]string{"mysql", "--slow", "1000000000000000000000h"}, "invalid value \"1000000000000000000000h\" for flag -slow"},
+		{[]string{"tcp", "--slow", "1ms"}, "--slow is only available for trace mysql"},
+		{[]string{"http", "--slow", "1ms"}, "--slow is only available for trace mysql"},
+	} {
+		var code int
+		stderr := captureTraceStderr(t, func() { code = runTrace(test.args) })
+		if code != 2 || !strings.Contains(stderr, test.stderr) {
+			t.Fatalf("trace %q exit = %d, stderr %q, want 2 and %q", test.args, code, stderr, test.stderr)
+		}
+	}
+}

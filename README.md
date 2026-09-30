@@ -977,6 +977,7 @@ Use `trace mysql` on Linux 6.4 or later to print plain MySQL commands and result
 ./bin/edc trace mysql
 ./bin/edc trace mysql --side server
 ./bin/edc trace mysql --port 3307
+./bin/edc trace mysql --slow 250ms
 ./bin/edc trace mysql --group-by process
 ./bin/edc trace mysql --show-secrets
 ./bin/edc trace mysql --raw
@@ -989,12 +990,15 @@ Use `trace mysql` on Linux 6.4 or later to print plain MySQL commands and result
 
 JSON events have `"side": "client"` or `"side": "server"`. Use `--side client` or `--side server` to keep one side. If the local port is the MySQL port, the socket is on the server side. If the peer port is the MySQL port, the socket is on the client side.
 
+Use `--slow <duration>` only with `trace mysql`. It accepts Go duration syntax, such as `250ms` and `1.5s`. In the ungrouped interactive view, it keeps a command row only when its first paired response has latency at or above the duration. It excludes unanswered commands, unmatched responses, responses without latency, and TLS rows. It does not change raw JSON, noninteractive output, summaries, grouped views, `--group-by`, or `--side`.
+
 | To see | Command |
 | --- | --- |
 | All MySQL on this host | `./bin/edc trace mysql` |
 | The commands that local servers received | `./bin/edc trace mysql --side server` |
 | The commands that this host sent | `./bin/edc trace mysql --side client` |
 | MySQL on port 3307 | `./bin/edc trace mysql --port 3307` |
+| Paired commands at or above 250ms | `./bin/edc trace mysql --slow 250ms` |
 | The latency of each process on each side | `./bin/edc trace mysql --group-by process` |
 | The SQL text without the mask | `./bin/edc trace mysql --show-secrets` |
 

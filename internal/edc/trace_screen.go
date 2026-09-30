@@ -39,6 +39,7 @@ type traceScreenModel struct {
 	process     string
 	destination string
 	duration    time.Duration
+	slow        time.Duration
 	started     time.Time
 	events      []captureEvent
 	arrivals    []time.Time
@@ -78,6 +79,122 @@ type traceScreenModel struct {
 	container string
 }
 
+type traceScreenRow struct {
+	primary  int
+	response int
+}
+
+type traceMySQLPairKey struct {
+	socket  uint64
+	side    string
+	command string
+	sql     string
+}
+
+func (model traceScreenModel) displayRows() []traceScreenRow {
+	rows := make([]traceScreenRow, 0, len(model.events))
+	if model.protocol != "mysql" {
+		for index := range model.events {
+			rows = append(rows, traceScreenRow{primary: model.first + index, response: -1})
+		}
+		return rows
+	}
+	pending := map[traceMySQLPairKey][]int{}
+	rowIndexByPrimary := make(map[int]int, len(model.events))
+	for index, event := range model.events {
+		number := model.first + index
+		if event.MySQL == nil {
+			rows = append(rows, traceScreenRow{primary: number, response: -1})
+			rowIndexByPrimary[number] = len(rows) - 1
+			continue
+		}
+		key := traceMySQLPairKey{socket: event.SocketID, side: event.Side, command: event.MySQL.Command, sql: event.MySQL.SQL}
+		if mysqlResponseEvent(event.Event) {
+			queue := pending[key]
+			if len(queue) > 0 {
+				primary := queue[0]
+				pending[key] = queue[1:]
+				if rowIndex, ok := rowIndexByPrimary[primary]; ok {
+					rows[rowIndex].response = number
+				}
+				continue
+			}
+			rows = append(rows, traceScreenRow{primary: number, response: -1})
+			rowIndexByPrimary[number] = len(rows) - 1
+			continue
+		}
+		rows = append(rows, traceScreenRow{primary: number, response: -1})
+		rowIndexByPrimary[number] = len(rows) - 1
+		if event.Event != mysqlEventTLS {
+			pending[key] = append(pending[key], number)
+		}
+	}
+	if model.slow == 0 {
+		return rows
+	}
+	threshold := float64(model.slow) / float64(time.Millisecond)
+	filtered := rows[:0]
+	for _, row := range rows {
+		if row.response < model.first || row.response >= model.first+len(model.events) {
+			continue
+		}
+		response := model.events[row.response-model.first]
+		if response.LatencyMS != nil && *response.LatencyMS >= threshold {
+			filtered = append(filtered, row)
+		}
+	}
+	return filtered
+}
+
+func (model traceScreenModel) displayRowLabels(row traceScreenRow) (captureEvent, string, string, bool) {
+	event, ok := model.displayRow(row)
+	if !ok {
+		return captureEvent{}, "", "", false
+	}
+	destination, label := traceScrollLabels(event)
+	if row.response >= model.first && row.response < model.first+len(model.events) && event.Protocol == "mysql" {
+		response := model.events[row.response-model.first]
+		if response.MySQL != nil {
+			destination += " → " + traceMySQLResultText(response)
+			label = response.Event
+			if response.LatencyMS != nil {
+				label += " " + traceLatency(response.LatencyMS, "ms")
+			}
+		}
+	}
+	return event, destination, label, true
+}
+
+func (model traceScreenModel) displayRow(row traceScreenRow) (captureEvent, bool) {
+	if row.primary < model.first || row.primary >= model.first+len(model.events) {
+		return captureEvent{}, false
+	}
+	return model.events[row.primary-model.first], true
+}
+
+func (model traceScreenModel) displayRowMatches(row traceScreenRow) bool {
+	event, ok := model.displayRow(row)
+	if !ok {
+		return false
+	}
+	if traceEventMatchesText(event, model.filter) {
+		return true
+	}
+	if row.response < 0 || row.response < model.first || row.response >= model.first+len(model.events) {
+		return false
+	}
+	return traceEventMatchesText(model.events[row.response-model.first], model.filter)
+}
+
+func (model traceScreenModel) displayRowForSelected(rows []traceScreenRow) int {
+	for index, row := range rows {
+		if row.primary == model.selected || row.response == model.selected {
+			return index
+		}
+	}
+	return -1
+}
+
 func newTraceScreenModel(protocol string, options tcpTraceOptions, eventCh <-chan captureEvent, resultCh <-chan traceFinishedMsg, stop func()) traceScreenModel {
 	input := textinput.New()
 	input.Prompt = "filter / "
@@ -86,7 +203,7 @@ func newTraceScreenModel(protocol string, options tcpTraceOptions, eventCh <-cha
 	input.SetWidth(48)
 	return traceScreenModel{
 		protocol: protocol, side: options.side, groupBy: options.groupBy, process: options.process, destination: options.destination,
-		duration: options.duration, started: time.Now(), eventCh: eventCh, resultCh: resultCh, stop: stop, input: input,
+		duration: options.duration, slow: options.slow, started: time.Now(), eventCh: eventCh, resultCh: resultCh, stop: stop, input: input,
 		width: 80, height: 24, selected: -1, payloads: traceFullPayloads{minimum: httpPayloadHead},
 		payloadLines: options.payload != "", secrets: options.showSecrets, container: traceContainerName(options.container),
 	}
@@ -181,6 +298,21 @@ func (model traceScreenModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (model *traceScreenModel) normalizeSelection() {
 	if model.selected < 0 {
+		return
+	}
+	if model.protocol == "mysql" {
+		rows := model.displayRows()
+		if index := model.displayRowForSelected(rows); index >= 0 && model.displayRowMatches(rows[index]) {
+			model.selected = rows[index].primary
+			return
+		}
+		for _, row := range rows {
+			if model.displayRowMatches(row) {
+				model.selected = row.primary
+				return
+			}
+		}
+		model.selected, model.preview, model.previewOffset = -1, nil, 0
 		return
 	}
 	index := model.selected - model.first
@@ -445,12 +577,20 @@ func traceScreenListRows(model traceScreenModel, available int) []string {
 	}
 	// 화면에 보이는 줄만 뒤에서부터 서식화한다. 보관한 event 전부(최대 10,000건)를 서식화하면 한 번 그리는 데
 	// 300ms가 넘게 걸려, 화면이 event를 따라가지 못하고 키 입력도 늦어진다.
-	eventLines := func(index int) []string {
-		event := model.events[index]
-		lines := []string{formatTraceScreenEvent(event, model.width)}
-		if model.first+index == model.selected {
-			lines[0] = liveSelected(formatTraceScreenEventLine(event, model.width), os.Getenv("NO_COLOR") == "")
+	rowsForDisplay := model.displayRows()
+	eventLines := func(rowIndex int) []string {
+		row := rowsForDisplay[rowIndex]
+		event, destination, name, ok := model.displayRowLabels(row)
+		if !ok {
+			return nil
 		}
+		line := formatTraceScreenEventLabels(event, destination, name, model.width)
+		if row.primary == model.selected || row.response == model.selected {
+			line = liveSelected(line, os.Getenv("NO_COLOR") == "")
+		} else if model.width >= 72 {
+			line = traceEventStyle(line, traceProtocol(event), name)
+		}
+		lines := []string{line}
 		if model.payloadLines && event.Payload != "" {
 			if !model.secrets && model.protocol == "http" {
 				event.Payload = string(traceMaskHTTPHeaders([]byte(event.Payload)))
@@ -460,12 +600,14 @@ func traceScreenListRows(model traceScreenModel, available int) []string {
 		return lines
 	}
 	// 고른 event가 있으면 그 event를 맨 아래에 두고 그보다 오래된 event를 위에 채운다.
-	start := len(model.events) - 1
+	start := len(rowsForDisplay) - 1
 	if model.selected >= 0 {
-		start = model.selected - model.first
+		if selected := model.displayRowForSelected(rowsForDisplay); selected >= 0 {
+			start = selected
+		}
 	}
 	for index := start; index >= 0; index-- {
-		if !traceEventMatchesText(model.events[index], model.filter) {
+		if !model.displayRowMatches(rowsForDisplay[index]) {
 			continue
 		}
 		lines := eventLines(index)
@@ -480,8 +622,8 @@ func traceScreenListRows(model traceScreenModel, available int) []string {
 	slices.Reverse(rows)
 	// 오래된 event가 모자라 화면이 남으면 고른 event 아래에 더 새 event를 채운다. 멈춘 동안 event가 10,000개 넘게 쌓이면
 	// 고른 event가 가장 오래된 event로 밀려서, 전에는 목록이 한 줄만 보였다.
-	for index := start + 1; model.selected >= 0 && index < len(model.events); index++ {
-		if !traceEventMatchesText(model.events[index], model.filter) {
+	for index := start + 1; model.selected >= 0 && index < len(rowsForDisplay); index++ {
+		if !model.displayRowMatches(rowsForDisplay[index]) {
 			continue
 		}
 		lines := eventLines(index)
@@ -750,6 +892,27 @@ func formatTraceScreenEvent(event captureEvent, width int) string {
 		return line
 	}
 	return traceEventStyle(line, traceProtocol(event), event.Event)
+}
+
+func formatTraceScreenEventLabels(event captureEvent, destination, name string, width int) string {
+	process, source := event.Process, event.Source
+	if process == "" {
+		process = "-"
+	}
+	if source == "" {
+		source = "-"
+	}
+	if width < 72 {
+		return traceFit(strings.Join([]string{process, destination, name, source}, "  "), width)
+	}
+	timeColumn := traceScrollTimeColumn(width)
+	destinationWidth, sourceWidth := traceScrollColumns(width - timeColumn)
+	cell := func(value string, cellWidth int) string { return liveCell(traceFit(value, cellWidth), cellWidth) }
+	line := cell(process, traceScrollProcessWidth) + " " + cell(destination, destinationWidth) + " " + cell(name, traceScrollEventWidth) + " " + cell(source, sourceWidth)
+	if timeColumn > 0 {
+		line = cell(traceEventClock(event), traceScrollTimeWidth) + " " + line
+	}
+	return line
 }
 
 // formatTraceScreenEventLine은 색을 칠하기 전의 행이다. 고른 행은 색 대신 글자와 배경을 뒤집어 보인다.

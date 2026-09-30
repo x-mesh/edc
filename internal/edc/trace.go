@@ -292,6 +292,7 @@ func runTrace(args []string) int {
 	set := flag.NewFlagSet("trace "+args[0], flag.ContinueOnError)
 	set.SetOutput(os.Stderr)
 	set.DurationVar(&options.duration, "duration", 0, T("command.trace.option.duration"))
+	set.DurationVar(&options.slow, "slow", 0, T("command.trace.option.slow"))
 	set.StringVar(&options.jsonPath, "json", "", T("option.json"))
 	set.BoolVar(&options.raw, "raw", false, T("command.trace.option.raw"))
 	set.BoolVar(&options.live, "live", false, T("command.trace.option.live"))
@@ -331,6 +332,16 @@ func runTrace(args []string) int {
 	}
 	if options.duration < 0 || options.duration > maxCaptureDuration {
 		fmt.Fprintln(os.Stderr, T("cli.trace.duration_range"))
+		return 2
+	}
+	slowSet := false
+	set.Visit(func(option *flag.Flag) { slowSet = slowSet || option.Name == "slow" })
+	if slowSet && options.slow <= 0 {
+		fmt.Fprintln(os.Stderr, T("cli.trace.slow_range"))
+		return 2
+	}
+	if slowSet && args[0] != "mysql" {
+		fmt.Fprintln(os.Stderr, T("cli.trace.slow_protocol"))
 		return 2
 	}
 	if options.raw && options.jsonPath != "" {

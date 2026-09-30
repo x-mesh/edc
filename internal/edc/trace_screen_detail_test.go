@@ -91,6 +91,65 @@ func TestTraceScreenSelectsAnEventAndShowsAllOfIt(t *testing.T) {
 	}
 }
 
+func TestTraceScreenPairsMySQLCommandAndResponseForDisplay(t *testing.T) {
+	model := newTraceScreenModel("mysql", tcpTraceOptions{}, make(chan captureEvent), make(chan traceFinishedMsg), nil)
+	model.width, model.height = 120, 10
+	model.events = []captureEvent{
+		{SocketID: 7, Protocol: "mysql", Event: mysqlEventConnect, Side: traceServerSide, MySQL: &traceMySQLEvent{Command: mysqlCommandConnect}},
+		{SocketID: 7, Protocol: "mysql", Event: mysqlEventPrefix + mysqlCommandQuery, Side: traceServerSide, MySQL: &traceMySQLEvent{Command: mysqlCommandQuery, SQL: "SELECT 1"}},
+		{SocketID: 7, Protocol: "mysql", Event: mysqlEventResult, Side: traceServerSide, LatencyMS: func() *float64 { value := 0.4; return &value }(), MySQL: &traceMySQLEvent{Command: mysqlCommandQuery, SQL: "SELECT 1", Columns: 2}},
+	}
+	rows := model.displayRows()
+	if len(rows) != 2 || rows[1].response != 2 {
+		t.Fatalf("display rows = %+v", rows)
+	}
+	_, destination, label, ok := model.displayRowLabels(rows[1])
+	if !ok || destination != "server: SELECT 1 → 2 columns" || label != "mysql_result 0.4ms" {
+		t.Fatalf("display row = %q, %q, %t", destination, label, ok)
+	}
+	model.filter = "columns"
+	if !model.displayRowMatches(rows[1]) {
+		t.Fatal("response text did not match the paired row")
+	}
+	model.selected = 2
+	model.normalizeSelection()
+	if model.selected != 1 {
+		t.Fatalf("selected response = %d, want primary 1", model.selected)
+	}
+}
+
+func TestTraceScreenFiltersMySQLPairsBySlowLatency(t *testing.T) {
+	model := newTraceScreenModel("mysql", tcpTraceOptions{slow: 1500 * time.Microsecond}, make(chan captureEvent), make(chan traceFinishedMsg), nil)
+	latency := func(value float64) *float64 { return &value }
+	model.events = []captureEvent{
+		{SocketID: 1, Protocol: "mysql", Event: mysqlEventPrefix + mysqlCommandQuery, Side: traceServerSide, MySQL: &traceMySQLEvent{Command: mysqlCommandQuery, SQL: "below"}},
+		{SocketID: 1, Protocol: "mysql", Event: mysqlEventResult, Side: traceServerSide, LatencyMS: latency(1.499), MySQL: &traceMySQLEvent{Command: mysqlCommandQuery, SQL: "below"}},
+		{SocketID: 2, Protocol: "mysql", Event: mysqlEventPrefix + mysqlCommandQuery, Side: traceServerSide, MySQL: &traceMySQLEvent{Command: mysqlCommandQuery, SQL: "exact"}},
+		{SocketID: 2, Protocol: "mysql", Event: mysqlEventResult, Side: traceServerSide, LatencyMS: latency(1.5), MySQL: &traceMySQLEvent{Command: mysqlCommandQuery, SQL: "exact"}},
+		{SocketID: 3, Protocol: "mysql", Event: mysqlEventPrefix + mysqlCommandQuery, Side: traceClientSide, MySQL: &traceMySQLEvent{Command: mysqlCommandQuery, SQL: "above"}},
+		{SocketID: 3, Protocol: "mysql", Event: mysqlEventResult, Side: traceClientSide, LatencyMS: latency(1.501), MySQL: &traceMySQLEvent{Command: mysqlCommandQuery, SQL: "above"}},
+		{SocketID: 4, Protocol: "mysql", Event: mysqlEventPrefix + mysqlCommandQuery, Side: traceServerSide, MySQL: &traceMySQLEvent{Command: mysqlCommandQuery, SQL: "pending"}},
+		{SocketID: 5, Protocol: "mysql", Event: mysqlEventPrefix + mysqlCommandQuery, Side: traceServerSide, MySQL: &traceMySQLEvent{Command: mysqlCommandQuery, SQL: "missing"}},
+		{SocketID: 5, Protocol: "mysql", Event: mysqlEventResult, Side: traceServerSide, MySQL: &traceMySQLEvent{Command: mysqlCommandQuery, SQL: "missing"}},
+		{SocketID: 6, Protocol: "mysql", Event: mysqlEventResult, Side: traceServerSide, LatencyMS: latency(4), MySQL: &traceMySQLEvent{Command: mysqlCommandQuery, SQL: "unmatched"}},
+		{SocketID: 7, Protocol: "mysql", Event: mysqlEventTLS, Side: traceClientSide, MySQL: &traceMySQLEvent{TLS: true}},
+	}
+	rows := model.displayRows()
+	if len(rows) != 2 || rows[0] != (traceScreenRow{primary: 2, response: 3}) || rows[1] != (traceScreenRow{primary: 4, response: 5}) {
+		t.Fatalf("slow display rows = %+v", rows)
+	}
+}
+
+func TestTraceMySQLDetailUsesReadableFieldsAndSQLLines(t *testing.T) {
+	latency := 0.4
+	event := captureEvent{TimestampNS: 1_700_000_000_123_000_000, BootTimeNS: 987, Bytes: 42, Event: mysqlEventPrefix + mysqlCommandQuery, Protocol: "mysql", Side: traceServerSide, Process: "mysqld", Source: "127.0.0.1:3306", Destination: "127.0.0.1:40000", LatencyMS: &latency, MySQL: &traceMySQLEvent{Command: mysqlCommandQuery, SQL: "WITH EmployeeOrder AS (\n\tSELECT sid\n) SELECT * FROM EmployeeOrder"}}
+	detail := newTraceDetail(event, "", nil, 0, 120)
+	text := strings.Join(detail.lines, "\n")
+	if strings.Contains(text, "timestamp_ns") || strings.Contains(text, "boot_time_ns") || !strings.Contains(text, "sql:\nWITH EmployeeOrder AS (\n    SELECT sid") {
+		t.Fatalf("detail = %q", text)
+	}
+}
+
 func TestTraceScreenSelectionFollowsTheFilterAndKeptEvents(t *testing.T) {
 	model := newTraceScreenModel("http", tcpTraceOptions{}, make(chan captureEvent), make(chan traceFinishedMsg), nil)
 	model.first = 100

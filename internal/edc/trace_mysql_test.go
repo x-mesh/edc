@@ -687,10 +687,10 @@ func TestMySQLScrollLabelsShowSideCommandAndResult(t *testing.T) {
 	for index, want := range [][2]string{
 		{"client: SELECT * FROM t WHERE id = 7 AND name = '?'", "mysql_query"},
 		{"server: SELECT * FROM t WHERE id = 7 AND name = '?'", "mysql_query"},
-		{"server: SELECT * FROM t WHERE id = 7 AND name = '?' · 2 columns", "mysql_result 1.5ms"},
-		{"client: SELECT * FROM t WHERE id = 7 AND name = '?' · 2 columns", "mysql_result 2.0ms"},
+		{"server: ↳ 2 columns", "mysql_result 1.5ms"},
+		{"client: ↳ 2 columns", "mysql_result 2.0ms"},
 		{"client: SELECT * FROM t WHERE id = 9 AND name = '?'", "mysql_query"},
-		{"client: SELECT * FROM t WHERE id = 9 AND name = '?' · 1064 (42000) syntax", "mysql_error 2.0ms"},
+		{"client: ↳ 1064 (42000) syntax", "mysql_error 2.0ms"},
 		{"client: DELETE FROM t", "mysql_query"},
 		{"client: execute #3", "mysql_execute"},
 	} {

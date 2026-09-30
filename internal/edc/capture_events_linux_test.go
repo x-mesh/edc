@@ -4,6 +4,7 @@ package edc
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -702,15 +703,63 @@ func TestHTTPKernelCheckFindsNestedIOVIterFields(t *testing.T) {
 	if err != nil {
 		t.Skipf("no kernel BTF: %v", err)
 	}
-	var iter *btf.Struct
-	if err := spec.TypeByName("iov_iter", &iter); err != nil {
+	types, err := spec.AnyTypesByName("iov_iter")
+	if err != nil {
 		t.Skipf("no iov_iter: %v", err)
 	}
-	if !btfHasMember(iter, "iov_offset") || btfHasMember(iter, "no_such_field") {
-		t.Fatal("btfHasMember does not follow the struct members")
+	for _, typ := range types {
+		iter, ok := typ.(*btf.Struct)
+		if !ok || !btfHasMember(iter, "iov_offset") {
+			continue
+		}
+		if btfHasMember(iter, "no_such_field") {
+			t.Fatal("btfHasMember does not follow the struct members")
+		}
+		if !btfHasMember(iter, "ubuf") && !btfHasMember(iter, "iov") {
+			t.Fatal("btfHasMember does not look into anonymous unions")
+		}
+		return
 	}
-	if !btfHasMember(iter, "ubuf") && !btfHasMember(iter, "iov") {
-		t.Fatal("btfHasMember does not look into anonymous unions")
+	t.Fatal("btfHasMember found iov_offset in no iov_iter struct")
+}
+
+// BTF에 iov_iter struct가 둘 이상인 kernel(OrbStack 7.0)이 있다. 하나라도 필드를 모두 가지면 trace http를 연다.
+func TestHTTPIOVIterFieldsAcceptsDuplicateStructs(t *testing.T) {
+	u8 := &btf.Int{Name: "u8", Size: 1}
+	iter := func(fields ...string) *btf.Struct {
+		members := make([]btf.Member, len(fields))
+		for index, field := range fields {
+			members[index] = btf.Member{Name: field, Type: u8, Offset: btf.Bits(8 * index)}
+		}
+		return &btf.Struct{Name: "iov_iter", Size: uint32(len(fields)), Members: members}
+	}
+	spec := func(types ...btf.Type) *btf.Spec {
+		t.Helper()
+		builder, err := btf.NewBuilder(types, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw, err := builder.Marshal(nil, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		spec, err := btf.LoadSpecFromReader(bytes.NewReader(raw))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return spec
+	}
+	old, current := iter("type", "iov_offset"), iter("iter_type", "ubuf", "__iov")
+	if err := httpIOVIterFields(spec(old, current)); err != nil {
+		t.Fatalf("duplicate iov_iter: %v", err)
+	}
+	for _, test := range []struct {
+		types   []btf.Type
+		missing string
+	}{{[]btf.Type{old}, "iter_type"}, {[]btf.Type{iter("iter_type", "ubuf")}, "__iov"}, {[]btf.Type{u8}, "iov_iter"}} {
+		if err := httpIOVIterFields(spec(test.types...)); err == nil || !strings.Contains(err.Error(), test.missing) {
+			t.Fatalf("types %v: error %v does not name %s", test.types, err, test.missing)
+		}
 	}
 }
 

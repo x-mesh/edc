@@ -107,7 +107,7 @@ type dropOwners struct {
 	pids    map[uint32]dropOwner
 	missed  map[uint64]time.Time
 	scanned time.Time
-	scan    func() map[uint64]uint32
+	scan    func(<-chan struct{}) map[uint64]uint32
 	refresh chan struct{}
 	results chan map[uint64]uint32
 	done    chan struct{}
@@ -118,7 +118,7 @@ func newDropOwners() *dropOwners {
 	return newDropOwnersWithScan(scanDropOwners)
 }
 
-func newDropOwnersWithScan(scan func() map[uint64]uint32) *dropOwners {
+func newDropOwnersWithScan(scan func(<-chan struct{}) map[uint64]uint32) *dropOwners {
 	owners := &dropOwners{byInode: map[uint64]uint32{}, pids: map[uint32]dropOwner{}, missed: map[uint64]time.Time{}, scan: scan, refresh: make(chan struct{}, 1), results: make(chan map[uint64]uint32, 1), done: make(chan struct{})}
 	owners.wg.Add(1)
 	go owners.run()
@@ -162,7 +162,12 @@ func (owners *dropOwners) run() {
 		case <-owners.done:
 			return
 		case <-owners.refresh:
-			result := owners.scan()
+			result := owners.scan(owners.done)
+			select {
+			case <-owners.done:
+				return
+			default:
+			}
 			select {
 			case owners.results <- result:
 			case <-owners.done:
@@ -185,18 +190,27 @@ func (owners *dropOwners) publish() {
 }
 
 func (owners *dropOwners) close() {
-	close(owners.done)
+	select {
+	case <-owners.done:
+	default:
+		close(owners.done)
+	}
 	owners.wg.Wait()
 }
 
 // scanDropOwners는 모든 process의 fd에서 socket inode를 모은다. 한 socket을 여러 process가 나눠 가지면 처음 찾은 process를 쓴다.
-func scanDropOwners() map[uint64]uint32 {
+func scanDropOwners(done <-chan struct{}) map[uint64]uint32 {
 	entries, err := os.ReadDir("/proc")
 	if err != nil {
 		return map[uint64]uint32{}
 	}
 	byInode := map[uint64]uint32{}
 	for _, entry := range entries {
+		select {
+		case <-done:
+			return nil
+		default:
+		}
 		pid, err := strconv.ParseUint(entry.Name(), 10, 32)
 		if err != nil {
 			continue
@@ -207,6 +221,11 @@ func scanDropOwners() map[uint64]uint32 {
 			continue
 		}
 		for _, fd := range fds {
+			select {
+			case <-done:
+				return nil
+			default:
+			}
 			target, err := os.Readlink(filepath.Join(directory, fd.Name()))
 			if err != nil || !strings.HasPrefix(target, "socket:[") {
 				continue

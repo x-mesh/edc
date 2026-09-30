@@ -88,11 +88,15 @@ func TestDropOwnerRefreshDoesNotBlockAndCoalescesMisses(t *testing.T) {
 	started := make(chan struct{})
 	release := make(chan struct{})
 	var scans atomic.Int32
-	owners := newDropOwnersWithScan(func() map[uint64]uint32 {
+	owners := newDropOwnersWithScan(func(done <-chan struct{}) map[uint64]uint32 {
 		if scans.Add(1) == 1 {
 			close(started)
 		}
-		<-release
+		select {
+		case <-release:
+		case <-done:
+			return nil
+		}
 		return map[uint64]uint32{}
 	})
 	defer owners.close()
@@ -123,6 +127,34 @@ func TestDropOwnerRefreshDoesNotBlockAndCoalescesMisses(t *testing.T) {
 	}
 	if got := scans.Load(); got != 2 {
 		t.Fatalf("scans = %d", got)
+	}
+}
+
+func TestDropOwnerCloseCancelsBlockedScan(t *testing.T) {
+	started := make(chan struct{})
+	finished := make(chan struct{})
+	owners := newDropOwnersWithScan(func(done <-chan struct{}) map[uint64]uint32 {
+		close(started)
+		<-done
+		close(finished)
+		return nil
+	})
+	owners.lookup(1, time.Now().Add(time.Minute))
+	<-started
+	closed := make(chan struct{})
+	go func() { owners.close(); close(closed) }()
+	select {
+	case <-finished:
+	case <-time.After(time.Second):
+		t.Fatal("scan did not receive cancellation")
+	}
+	select {
+	case <-closed:
+	case <-time.After(time.Second):
+		t.Fatal("close did not wait for the worker")
+	}
+	if len(owners.results) != 0 {
+		t.Fatal("cancelled scan published a partial result")
 	}
 }
 

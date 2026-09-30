@@ -382,8 +382,12 @@ func traceScreenHeader(model traceScreenModel) []string {
 		help = model.input.View() + "  enter apply  esc cancel"
 	}
 	color := os.Getenv("NO_COLOR") == ""
-	destinationWidth, _ := traceScrollColumns(model.width)
+	timeColumn := traceScrollTimeColumn(model.width)
+	destinationWidth, _ := traceScrollColumns(model.width - timeColumn)
 	columns := liveCell("PROCESS", traceScrollProcessWidth) + " " + liveCell("DESTINATION", destinationWidth) + " " + liveCell("EVENT", traceScrollEventWidth) + " SOURCE"
+	if timeColumn > 0 {
+		columns = liveCell("TIME", traceScrollTimeWidth) + " " + columns
+	}
 	if model.groupBy != "" {
 		layout := traceScreenGroupLayout(model, report)
 		names := []any{"EVT", "E/s"}
@@ -696,7 +700,26 @@ const (
 	traceScrollEventWidth   = 20
 	// traceScrollSourceWidth는 목적지 칸을 넓힐 때 source 칸에 남기는 폭이다. 100.83.200.248:52406 같은 값이 들어간다.
 	traceScrollSourceWidth = 22
+	// TIME 칸은 15:04:05.000을 쓴다. 좁은 화면에서 목적지 칸을 더 줄이지 않도록 traceScrollTimeMinWidth 이상일 때만 둔다.
+	traceScrollTimeWidth    = 12
+	traceScrollTimeMinWidth = 120
 )
+
+// traceScrollTimeColumn은 TIME 칸과 뒤의 빈칸을 더한 폭이다. 좁은 화면에서는 0이다.
+func traceScrollTimeColumn(width int) int {
+	if width < traceScrollTimeMinWidth {
+		return 0
+	}
+	return traceScrollTimeWidth + 1
+}
+
+// traceEventClock은 event의 시각을 이 host의 시간대로 쓴다. 시각이 없는 event는 -다.
+func traceEventClock(event captureEvent) string {
+	if event.TimestampNS == 0 {
+		return "-"
+	}
+	return time.Unix(0, int64(event.TimestampNS)).Format("15:04:05.000")
+}
 
 // traceScrollColumns는 스크롤 화면의 목적지와 source 칸 폭이다. 목적지에는 도메인이 붙어 길어지므로 넓은 화면에서
 // 목적지 칸을 늘린다. 좁은 화면에서는 예전처럼 32칸을 지킨다.
@@ -727,17 +750,22 @@ func formatTraceScreenEventLine(event captureEvent, width int) string {
 	if width < 72 {
 		return traceFit(strings.Join([]string{process, destination, name, source}, "  "), width)
 	}
-	destinationWidth, sourceWidth := traceScrollColumns(width)
+	timeColumn := traceScrollTimeColumn(width)
+	destinationWidth, sourceWidth := traceScrollColumns(width - timeColumn)
 	// liveCell은 칸보다 긴 값을 여러 줄로 감싸므로, 한 행을 지키려고 먼저 자른다.
 	cell := func(value string, width int) string { return liveCell(traceFit(value, width), width) }
-	return cell(process, traceScrollProcessWidth) + " " + cell(destination, destinationWidth) + " " + cell(name, traceScrollEventWidth) + " " + cell(source, sourceWidth)
+	line := cell(process, traceScrollProcessWidth) + " " + cell(destination, destinationWidth) + " " + cell(name, traceScrollEventWidth) + " " + cell(source, sourceWidth)
+	if timeColumn > 0 {
+		line = cell(traceEventClock(event), traceScrollTimeWidth) + " " + line
+	}
+	return line
 }
 
 // formatTraceScreenPayload는 event 행 아래에 목적지 칸부터 payload를 한 줄로 쓴다.
 func formatTraceScreenPayload(event captureEvent, width int) string {
 	line := "↳ " + tracePayloadSummary(event)
 	if width >= 72 {
-		line = strings.Repeat(" ", traceScrollProcessWidth+1) + line
+		line = strings.Repeat(" ", traceScrollTimeColumn(width)+traceScrollProcessWidth+1) + line
 	}
 	return liveMuted(traceFit(line, width), os.Getenv("NO_COLOR") == "")
 }

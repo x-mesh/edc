@@ -74,10 +74,15 @@ type traceDetail struct {
 	offset int
 }
 
+// traceEventTitle은 상세 보기와 미리 보기의 제목이다. 시각을 앞에 두어 서버 log와 맞춰 볼 수 있게 한다.
+func traceEventTitle(event captureEvent) string {
+	destination, name := traceScrollLabels(event)
+	return fmt.Sprintf("%s  %s  %s  %s", traceEventClock(event), emptyAs(event.Process, "-"), destination, name)
+}
+
 // newTraceDetail은 event의 필드와 payload를 줄로 만든다. payload는 부르는 쪽이 가리기와 gzip 풀기를 마친 글자다.
 func newTraceDetail(event captureEvent, payload string, notes []string, number, width int) *traceDetail {
-	destination, name := traceScrollLabels(event)
-	detail := &traceDetail{title: fmt.Sprintf("%s  %s  %s", emptyAs(event.Process, "-"), destination, name), number: number}
+	detail := &traceDetail{title: traceEventTitle(event), number: number}
 	fields := event
 	fields.Payload = ""
 	encoded, err := json.MarshalIndent(fields, "", "  ")

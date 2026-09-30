@@ -794,6 +794,8 @@ event 목록에서 Up이나 Down(또는 `k`, `j`)을 누르면 event를 고릅�
 
 `i`를 누르면 화면을 나눕니다. 위쪽 절반은 목록이고, 아래쪽 절반은 message 하나의 미리 보기입니다. 미리 보기는 고른 event를 보여 주고, 고른 event가 없으면 가장 최근 event를 보여 주며 새 event가 오면 바뀝니다. event에 payload가 있으면 payload를, 없으면 event의 필드를 보여 줍니다. `J`와 `K`로 미리 보기를 스크롤하고, Enter로 전체 상세 보기를 엽니다. `trace http`에서는 `m`과 `z`도 미리 보기에 적용됩니다. terminal이 9줄보다 작으면 목록만 보입니다.
 
+미리 보기와 상세 보기의 제목 줄은 `09:05:07.123`처럼 event 시각으로 시작하며, 시각은 이 host의 시간대를 따릅니다. 미리 보기 제목 줄의 남은 폭은 `─`로 채워서, 색이 없어도 목록과 미리 보기의 경계가 보입니다. terminal 폭이 120칸 이상이면 event 목록의 `PROCESS` 앞에 `TIME` 열이 생깁니다.
+
 macOS에서 `trace`는 kernel의 network 통계 interface(`com.apple.network.statistics`)에서 socket별 counter를 읽습니다. `nettop`도 같은 interface를 사용합니다. `edc`는 1초마다 counter를 읽고 직전 값과의 차이로 event를 만듭니다. 이 interface는 공개되지 않은 interface라서 macOS 업데이트로 형식이 바뀔 수 있고, 형식이 바뀌면 trace는 오류를 내고 멈춥니다.
 
 macOS에서는 다음 값을 관측할 수 없어서 텍스트 출력에는 `-`로, JSON 출력에는 `null`로 표시합니다.

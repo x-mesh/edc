@@ -59,8 +59,7 @@ func (model *traceScreenModel) refreshPreview() {
 		model.previewOffset = 0
 	}
 	event, payload, notes := model.detailPayload(number)
-	destination, name := traceScrollLabels(event)
-	preview := &tracePreview{number: number, secrets: model.secrets, decode: model.decode, title: fmt.Sprintf("%s  %s  %s", emptyAs(event.Process, "-"), destination, name)}
+	preview := &tracePreview{number: number, secrets: model.secrets, decode: model.decode, title: traceEventTitle(event)}
 	if payload != "" {
 		// 창이 작아서 payload가 있으면 payload를 먼저 보인다. event 필드는 Enter의 상세 보기에 있다.
 		event.Payload = payload
@@ -131,7 +130,7 @@ func traceWrapLineUpTo(line string, width, limit int) ([]string, bool) {
 func traceScreenPreviewRows(model traceScreenModel, rows int) []string {
 	color := os.Getenv("NO_COLOR") == ""
 	if model.preview == nil {
-		return traceScreenPadRows([]string{liveMuted(traceFit("── preview: no event", model.width), color)}, rows)
+		return traceScreenPadRows([]string{liveMuted(traceDivider("── preview: no event", model.width), color)}, rows)
 	}
 	window, more := traceWrapWindow(model.preview.lines, model.width, model.previewOffset, rows-1)
 	// 좁은 화면에서는 뒤가 잘리므로 위치를 제목과 키 안내보다 앞에 둔다.
@@ -146,7 +145,16 @@ func traceScreenPreviewRows(model traceScreenModel, rows int) []string {
 	if model.protocol == "http" {
 		title += "  z gzip"
 	}
-	return traceScreenPadRows(append([]string{liveMuted(traceFit(title, model.width), color)}, window...), rows)
+	return traceScreenPadRows(append([]string{liveMuted(traceDivider(title, model.width), color)}, window...), rows)
+}
+
+// traceDivider는 미리 보기 제목 뒤에 남은 폭을 ─로 채운다. 색이 없는 terminal에서도 목록과 미리 보기의 경계가 보인다.
+func traceDivider(title string, width int) string {
+	title = traceFit(title, width)
+	if fill := width - liveWidth(title) - 1; fill > 0 {
+		title += " " + strings.Repeat("─", fill)
+	}
+	return title
 }
 
 // scrollPreview는 미리 보기를 step줄 옮긴다. 아래에 더 보일 줄이 없으면 더 내려가지 않는다.

@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -155,11 +156,108 @@ func TestCheckWritable(t *testing.T) {
 }
 
 func TestUpdateDetailListsVersionsAndTarget(t *testing.T) {
-	detail := updateDetail("0.1.0", "0.2.0", "edc_0.2.0_linux_amd64.tar.gz", "/usr/local/bin/edc")
+	detail := updateDetail("0.1.0", "0.2.0", "edc_0.2.0_linux_amd64.tar.gz", "/usr/local/bin/edc", "")
 	for _, want := range []string{"0.1.0", "0.2.0", "edc_0.2.0_linux_amd64.tar.gz", "/usr/local/bin/edc"} {
 		if !strings.Contains(detail, want) {
 			t.Fatalf("detail %q missing %q", detail, want)
 		}
+	}
+	if strings.Contains(detail, "sudo") {
+		t.Fatalf("a writable target needs no privilege row: %q", detail)
+	}
+	if detail := updateDetail("0.1.0", "0.2.0", "a.tar.gz", "/usr/local/bin/edc", "sudo"); !strings.Contains(detail, "privilege") || !strings.Contains(detail, "sudo") {
+		t.Fatalf("detail %q has no privilege row", detail)
+	}
+}
+
+func TestUpdateSudoNeedsANonRootUserAndSudo(t *testing.T) {
+	denied := errors.New("permission denied")
+	stubCaptureExecutables(t, "/usr/bin/sudo")
+	captureGeteuid = func() int { return 1000 }
+	if sudo, err := updateSudo("/usr/local/bin", denied); err != nil || sudo != "/usr/bin/sudo" {
+		t.Fatalf("user with sudo = %q, %v", sudo, err)
+	}
+	// root가 쓸 수 없는 디렉터리는 sudo로도 쓸 수 없다. 예를 들어 읽기 전용 file system이다.
+	captureGeteuid = func() int { return 0 }
+	if _, err := updateSudo("/usr/local/bin", denied); err == nil || !strings.Contains(err.Error(), "permission denied") {
+		t.Fatalf("root = %v", err)
+	}
+	stubCaptureExecutables(t)
+	captureGeteuid = func() int { return 1000 }
+	if _, err := updateSudo("/usr/local/bin", denied); err == nil || !strings.Contains(err.Error(), "sudo is not installed") {
+		t.Fatalf("no sudo = %v", err)
+	}
+}
+
+// stubUpdateCommands는 sudo 대신 install, mv, rm을 이 process에서 흉내 내고 부른 명령을 기록한다.
+func stubUpdateCommands(t *testing.T, failing string) *[][]string {
+	t.Helper()
+	previous := updateRunCommand
+	t.Cleanup(func() { updateRunCommand = previous })
+	var calls [][]string
+	updateRunCommand = func(name string, args ...string) error {
+		calls = append(calls, append([]string{name}, args...))
+		if args[0] == failing {
+			return errors.New(failing + " failed")
+		}
+		switch args[0] {
+		case "install":
+			data, err := os.ReadFile(args[3])
+			if err != nil {
+				return err
+			}
+			return os.WriteFile(args[4], data, 0o755)
+		case "mv":
+			return os.Rename(args[2], args[3])
+		case "rm":
+			return os.Remove(args[2])
+		}
+		return nil
+	}
+	return &calls
+}
+
+func TestReplaceBinaryWithSudoInstallsNextToTheTargetAndRenames(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "edc")
+	if err := os.WriteFile(target, []byte("old"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	calls := stubUpdateCommands(t, "")
+	if err := replaceBinaryWithSudo("/usr/bin/sudo", target, []byte("new")); err != nil {
+		t.Fatal(err)
+	}
+	if content, _ := os.ReadFile(target); string(content) != "new" {
+		t.Fatalf("content = %q", content)
+	}
+	if len(*calls) != 2 || strings.Join((*calls)[0][:4], " ") != "/usr/bin/sudo install -m 0755" || (*calls)[0][5] != target+".new" || strings.Join((*calls)[1], " ") != "/usr/bin/sudo mv -f "+target+".new "+target {
+		t.Fatalf("calls = %q", *calls)
+	}
+	// 사용자 쪽 임시 파일은 교체가 끝나면 지운다.
+	if _, err := os.Stat((*calls)[0][4]); !os.IsNotExist(err) {
+		t.Fatalf("temporary file %s stays: %v", (*calls)[0][4], err)
+	}
+	if _, err := os.Stat(target + ".new"); !os.IsNotExist(err) {
+		t.Fatalf("staged file stays: %v", err)
+	}
+}
+
+func TestReplaceBinaryWithSudoRemovesTheStagedFileWhenTheRenameFails(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "edc")
+	if err := os.WriteFile(target, []byte("old"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	calls := stubUpdateCommands(t, "mv")
+	if err := replaceBinaryWithSudo("/usr/bin/sudo", target, []byte("new")); err == nil || !strings.Contains(err.Error(), "mv failed") {
+		t.Fatalf("error = %v", err)
+	}
+	if content, _ := os.ReadFile(target); string(content) != "old" {
+		t.Fatalf("the old binary must stay: %q", content)
+	}
+	if last := (*calls)[len(*calls)-1]; strings.Join(last, " ") != "/usr/bin/sudo rm -f "+target+".new" {
+		t.Fatalf("last call = %q", last)
+	}
+	if _, err := os.Stat(target + ".new"); !os.IsNotExist(err) {
+		t.Fatalf("staged file stays: %v", err)
 	}
 }
 

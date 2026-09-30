@@ -3,6 +3,7 @@ package edc
 import (
 	"strings"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 )
@@ -157,5 +158,39 @@ func TestTraceWrapLine(t *testing.T) {
 	}
 	if got := traceWrapLine("", 4); len(got) != 1 || got[0] != "" {
 		t.Fatalf("empty = %q", got)
+	}
+}
+
+func TestTraceFitCutsLongLinesLikeBefore(t *testing.T) {
+	slow := func(value string, width int) string {
+		if liveWidth(value) <= width {
+			return value
+		}
+		return strings.TrimRight(truncateLine(value, width), "\n")
+	}
+	for _, value := range []string{"", "short", strings.Repeat("a", 72), strings.Repeat("a", 73), strings.Repeat("x", 1200), strings.Repeat("한글", 100), "한a글b" + strings.Repeat("c", 200)} {
+		for _, width := range []int{10, 72, 110} {
+			if got, want := traceFit(value, width), slow(value, width); got != want {
+				t.Fatalf("traceFit(%d chars, %d) = %q, want %q", len(value), width, got, want)
+			}
+		}
+	}
+	// 4KiB 본문 한 줄에 200ms가 넘게 걸리던 것을 막는다. 느린 CI를 생각해 상한을 넉넉히 둔다.
+	event := captureEvent{Protocol: "http", Event: traceHTTPRequestEvent, Payload: "POST / HTTP/1.1\r\n\r\n" + strings.Repeat(`{"sku": "A-1"}, `, 256)}
+	started := time.Now()
+	for range 100 {
+		formatTraceScreenPayload(event, 110)
+	}
+	if elapsed := time.Since(started); elapsed > 2*time.Second {
+		t.Fatalf("100 payload rows took %s", elapsed)
+	}
+}
+
+func TestTraceScreenFilterMatchesTheShownDestination(t *testing.T) {
+	event := captureEvent{Protocol: "http", Event: traceHTTPRequestEvent, Process: "curl", Method: "POST", Target: "127.0.0.1:18090", Path: "/orders", Destination: "127.0.0.1:18090"}
+	for filter, want := range map[string]bool{"orders": true, "post 127.0.0.1:18090/ord": true, "curl": true, "/missing": false} {
+		if got := traceEventMatchesText(event, filter); got != want {
+			t.Fatalf("filter %q = %t, want %t", filter, got, want)
+		}
 	}
 }

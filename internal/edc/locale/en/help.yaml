@@ -144,7 +144,7 @@ command:
       - "A PCAP file can hold credentials and personal data."
       - "The JSON redaction does not apply to the PCAP payload."
   trace:
-    summary: "Print TCP, UDP, DNS, ARP, NDP, HTTP, or socket events and summarize"
+    summary: "Trace TCP, UDP, DNS, ARP, NDP, HTTP, socket, and drop events"
     option:
       duration: "trace time, max 60s. Omit for Ctrl-C"
       raw: "print raw event JSONL"
@@ -159,6 +159,7 @@ command:
       show_secrets: "trace http --payload: show Cookie and Authorization"
       port: "trace http: only connections that use this port"
       container: "only this docker container, by name or ID"
+      reason: "trace drop: only these reasons, comma separated"
     notes:
       - "The default output opens a full-screen trace view in a terminal."
       - "Use / to filter process, destination, event, or source text."
@@ -195,6 +196,10 @@ command:
       - "A client's peer is the server process. Before accept, it is the listener."
       - "accept shows how long the connection waited in the backlog."
       - "Its payload is raw and not hidden. In the full screen, press v to show it."
+      - "trace drop shows why the kernel drops packets: the reason and the function."
+      - "It shows the process when the packet has a local socket. --reason filters."
+      - "Totals per reason are exact. Above 1,000 drops a second on one CPU, edc samples."
+      - "SYNs freed by a full accept queue are not events. The summary counts them."
   report:
     summary: "Read and compare saved JSON reports"
     notes:

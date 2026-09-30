@@ -144,7 +144,7 @@ command:
       - "PCAP には credential や個人情報が入ることがあります。"
       - "JSON の redaction は PCAP の payload には効きません。"
   trace:
-    summary: "TCP、UDP、DNS、ARP、NDP、HTTP、socket event を表示して要約"
+    summary: "TCP、UDP、DNS、ARP、NDP、HTTP、socket、drop event を表示して要約"
     option:
       duration: "trace 時間、最大 60s。省略で Ctrl-C"
       raw: "raw event JSONL を表示"
@@ -159,6 +159,7 @@ command:
       show_secrets: "--payload: Cookie と Authorization を表示"
       port: "trace http: この port を使う接続だけ"
       container: "この docker container だけ、名前か ID"
+      reason: "trace drop: この理由だけ、カンマ区切り"
     notes:
       - "terminal では既定で全画面の trace を開きます。"
       - "/ で process、destination、event、source を絞り込みます。"
@@ -195,6 +196,10 @@ command:
       - "client 側の相手は server process です。accept 前は listen した process です。"
       - "accept は接続が backlog で待った時間を表示します。"
       - "payload は隠さずそのまま表示します。全画面では v で表示します。"
+      - "trace drop は kernel が packet を破棄した理由と kernel 関数を表示します。"
+      - "packet に local socket があれば process を付けます。--reason で絞ります。"
+      - "理由ごとの合計は正確です。CPU ごとに毎秒 1,000 件を超えると event は標本です。"
+      - "accept queue が満杯で解放された SYN は event にならず、summary で数えます。"
   report:
     summary: "保存した JSON report の閲覧と比較"
     notes:

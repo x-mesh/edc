@@ -196,7 +196,7 @@ var commandDocs = []commandDoc{
 	},
 	{
 		name: "trace", group: "observe",
-		usage: []string{"edc trace <tcp|udp|dns|arp|ndp|http> [options]", traceSocketUsage},
+		usage: []string{"edc trace <tcp|udp|dns|arp|ndp|http|drop> [options]", traceSocketUsage},
 		options: []optionDoc{
 			{"--duration 15s", "command.trace.option.duration"},
 			{"--json <path|->", "option.json"},
@@ -211,6 +211,7 @@ var commandDocs = []commandDoc{
 			{"--show-secrets", "command.trace.option.show_secrets"},
 			{"--port <n>", "command.trace.option.port"},
 			{"--container <name>", "command.trace.option.container"},
+			{"--reason <names>", "command.trace.option.reason"},
 			{"--yes", "command.trace.option.yes"},
 		},
 	},

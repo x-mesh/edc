@@ -99,12 +99,60 @@ func captureEventsPrerequisites() error {
 	if err != nil {
 		return fmt.Errorf("%s: %w", T("cli.capture.capability_check_failed"), err)
 	}
-	for _, capability := range []int{capBPF, capPerfmon, capNetAdmin} {
-		if !capabilities[capability] {
-			return errors.New(T("cli.capture.capability_missing", capability))
-		}
+	executable, err := os.Executable()
+	if err != nil {
+		// 실행 경로를 모르면 명령줄의 이름을 쓴다. 안내 문구에만 들어간다.
+		executable = os.Args[0]
+	}
+	if err := captureCapabilityError(capabilities, rootCommand(executable, os.Args[1:])); err != nil {
+		return err
 	}
 	return captureTraceHooksAvailable()
+}
+
+// captureCapabilities는 eBPF program을 불러오고 붙이는 데 필요한 capability다.
+var captureCapabilities = []struct {
+	number int
+	name   string
+}{{capBPF, "CAP_BPF"}, {capPerfmon, "CAP_PERFMON"}, {capNetAdmin, "CAP_NET_ADMIN"}}
+
+// captureCapabilityError는 빠진 capability를 모두 이름으로 알리고, 지금 명령을 root로 다시 실행하는 줄을 붙인다.
+// root인데도 빠졌다면 컨테이너처럼 capability를 제한한 환경이라 sudo는 소용없으므로 capability를 더하라고 안내한다.
+func captureCapabilityError(capabilities map[int]bool, command string) error {
+	var missing []string
+	for _, capability := range captureCapabilities {
+		if !capabilities[capability.number] {
+			missing = append(missing, capability.name)
+		}
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	if captureGeteuid() == 0 {
+		return errors.New(T("cli.capture.capability_missing_root", strings.Join(missing, ", ")))
+	}
+	return errors.New(T("cli.capture.capability_missing", strings.Join(missing, ", "), command))
+}
+
+// rootCommand는 지금 명령을 sudo로 다시 실행하는 줄이다. Ubuntu의 sudo는 secure_path만 PATH로 써서 ~/.local/bin의
+// edc를 찾지 못하므로 실행 파일의 전체 경로를 쓴다.
+func rootCommand(executable string, args []string) string {
+	words := []string{"sudo", shellWord(executable)}
+	for _, arg := range args {
+		words = append(words, shellWord(arg))
+	}
+	return strings.Join(words, " ")
+}
+
+// shellWord는 셸에 그대로 붙여 넣을 수 있게, 특수 문자가 있을 때만 작은따옴표로 감싼다.
+func shellWord(word string) string {
+	plain := func(r rune) bool {
+		return r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune("/-_.=:,@+%", r)
+	}
+	if word != "" && strings.IndexFunc(word, func(r rune) bool { return !plain(r) }) < 0 {
+		return word
+	}
+	return "'" + strings.ReplaceAll(word, "'", `'\''`) + "'"
 }
 
 // captureTraceHooksAvailable은 fentry와 fexit 대상이 kernel BTF에 있는지 본다. UDP 송신 함수는 static이라 kernel

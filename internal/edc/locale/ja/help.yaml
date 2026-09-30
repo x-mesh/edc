@@ -158,6 +158,7 @@ command:
       payload: "trace http, socket: 先頭 4 KiB、=all は 1 MiB まで"
       show_secrets: "--payload: Cookie と Authorization を表示"
       port: "trace http: この HTTP server port だけ"
+      container: "この docker container だけ、名前か ID"
     notes:
       - "terminal では既定で全画面の trace を開きます。"
       - "/ で process、destination、event、source を絞り込みます。"
@@ -173,6 +174,7 @@ command:
       - "B/s は byte rate、bps と Mbps は bit rate です。Mbps は bps / 1,000,000 です。"
       - "--duration を省略した場合は Ctrl-C で trace を終了します。"
       - "JSONL event には --raw を使います。"
+      - "--container は Linux で docker container 一つの event だけを表示します。"
       - "要約は process と相手ごとに行をまとめます。-d は接続ごとに表示します。"
       - "trace dns は Linux で DNS の問い合わせと応答を表示します。port 表示なし。"
       - "trace arp は Linux と macOS で neighbor table の変化を表示します。root 不要。"

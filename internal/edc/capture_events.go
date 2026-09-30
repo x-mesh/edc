@@ -294,6 +294,9 @@ type tcpTraceOptions struct {
 	port int
 	// socketPath는 trace socket이 볼 unix socket 파일이다.
 	socketPath string
+	// containerRef는 --container 값이고, container는 trace를 시작하기 전에 그 값을 cgroup ID로 푼 것이다.
+	containerRef string
+	container    *traceContainer
 }
 
 func traceProtocol(event captureEvent) string {

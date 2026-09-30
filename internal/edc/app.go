@@ -47,7 +47,7 @@ func Run(args []string, version string) int {
 	activeConfig = config
 	defer func() { activeConfig = previousConfig }()
 	if len(args) == 0 {
-		printHelp(os.Stdout)
+		printHelp(os.Stdout, version)
 		return 0
 	}
 	// `edc <command> --help`도 같은 상세 화면으로 보낸다. flag의 기본 usage와 어긋나지 않게 한다.
@@ -63,7 +63,7 @@ func Run(args []string, version string) int {
 			}
 			return 0
 		}
-		printHelp(os.Stdout)
+		printHelp(os.Stdout, version)
 		return 0
 	case "version":
 		printVersion(os.Stdout, version)

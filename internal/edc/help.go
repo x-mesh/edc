@@ -297,8 +297,8 @@ func commandSummaries() []commandDoc {
 }
 
 // printHelp는 첫 화면이다. 명령마다 한 줄만 두고 상세는 edc help <command>로 미룬다.
-func printHelp(writer io.Writer) {
-	fmt.Fprintf(writer, "edc — %s\n\n", T("help.tagline"))
+func printHelp(writer io.Writer, version string) {
+	fmt.Fprintf(writer, "edc %s — %s\n\n", version, T("help.tagline"))
 
 	// 라벨 폭은 언어마다 다르므로 세 라벨을 재서 맞춘다.
 	labels := []string{T("help.usage_label"), T("help.common_label"), T("help.detail_label")}

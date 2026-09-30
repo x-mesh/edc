@@ -10,8 +10,12 @@ const helpLineLimit = 80
 
 func TestPrintHelpListsEveryCommandOnce(t *testing.T) {
 	var output strings.Builder
-	printHelp(&output)
+	printHelp(&output, "0.18.0")
 	text := output.String()
+
+	if first, _, _ := strings.Cut(text, "\n"); !strings.HasPrefix(first, "edc 0.18.0 — ") {
+		t.Errorf("the first line must show the version: %q", first)
+	}
 
 	for _, doc := range commandDocs {
 		if strings.Count(text, "  "+doc.name+" ") != 1 {
@@ -34,7 +38,8 @@ func TestHelpScreensStayWithinTheLineLimit(t *testing.T) {
 	for _, language := range supportedLanguages {
 		setLanguage(language)
 		var first strings.Builder
-		printHelp(&first)
+		// git describe가 만드는 개발 build의 긴 version으로 잰다.
+		printHelp(&first, "0.18.0-6-gaca320a-dirty")
 		assertWidth(t, language+" printHelp", first.String())
 
 		for _, doc := range commandDocs {

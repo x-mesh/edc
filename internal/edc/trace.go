@@ -97,6 +97,11 @@ var traceProtocols = map[string]traceProtocolSpec{
 		ansiColor: "38;5;208", screenColor: "#fb923c", hiddenViews: []string{traceGroupByPort, traceGroupByTarget}, linuxOnly: true,
 		scrollLabels: traceSocketScrollLabels, prerequisites: socketTracePrerequisites, newSummarizer: func() traceSummarizer { return newSocketTraceSummarizer() },
 	},
+	// kernel이 버린 패킷이다. event 칸은 버린 이유다. process는 패킷에 local socket이 있을 때만 붙는다.
+	"drop": {
+		ansiColor: "91", screenColor: "#f87171", hideTraffic: true, linuxOnly: true,
+		scrollLabels: traceDropScrollLabels, prerequisites: dropTracePrerequisites, newSummarizer: func() traceSummarizer { return newDropTraceSummarizer() },
+	},
 	// ARP event에는 process와 port가 없다. source는 interface, target은 IP다. Linux는 netlink 알림을, macOS는 1초마다 읽은 table을 쓴다.
 	"arp": {
 		ansiColor: "34", screenColor: "#60a5fa", groupColumns: traceNeighborGroupColumns, hideTraffic: true, hiddenViews: []string{traceGroupByPort, traceGroupByProcess},
@@ -145,11 +150,13 @@ type traceScope struct {
 	port     uint16
 	// socketPath는 trace socket이 볼 unix socket 파일이다.
 	socketPath string
+	// dropReasons는 trace drop이 event로 볼 이유 이름이다. 비어 있으면 모든 이유를 본다.
+	dropReasons []string
 }
 
 func (options tcpTraceOptions) scope(protocol string) traceScope {
 	return traceScope{protocol: protocol, server: options.side == traceServerSide, side: options.side, payload: options.payload != "", payloadAll: options.payload == tracePayloadAll,
-		showSecrets: options.showSecrets, port: uint16(options.port), socketPath: options.socketPath}
+		showSecrets: options.showSecrets, port: uint16(options.port), socketPath: options.socketPath, dropReasons: splitDropReasons(options.dropReasons)}
 }
 
 // tracePayloadMode는 --payload 값이다. 값 없이 쓰면 message마다 앞 4KiB를, all이면 message 전체를 본다.
@@ -277,7 +284,7 @@ func (report traceGroupReport) hideTraffic() bool { return traceProtocols[report
 
 func runTrace(args []string) int {
 	if len(args) == 0 || !knownTraceProtocol(args[0]) {
-		fmt.Fprintln(os.Stderr, T("cli.usage", "edc trace <tcp|udp|dns|arp|ndp|http|mysql> [options]"))
+		fmt.Fprintln(os.Stderr, T("cli.usage", "edc trace <tcp|udp|dns|arp|ndp|http|drop|mysql> [options]"))
 		fmt.Fprintln(os.Stderr, T("cli.usage", traceSocketUsage))
 		return 2
 	}
@@ -300,6 +307,7 @@ func runTrace(args []string) int {
 	set.BoolVar(&options.showSecrets, "show-secrets", false, T("command.trace.option.show_secrets"))
 	set.IntVar(&options.port, "port", 0, T("command.trace.option.port"))
 	set.StringVar(&options.containerRef, "container", "", T("command.trace.option.container"))
+	set.StringVar(&options.dropReasons, "reason", "", T("command.trace.option.reason"))
 	if err := set.Parse(args[1:]); err != nil {
 		return 2
 	}
@@ -378,6 +386,10 @@ func runTrace(args []string) int {
 		return 2
 	}
 	// ARP와 NDP event는 netlink에서 와서 process가 없으므로 process 보기도 없다. cgroup ID도 없다.
+	if options.dropReasons != "" && args[0] != "drop" {
+		fmt.Fprintln(os.Stderr, T("cli.trace.reason_protocol", args[0]))
+		return 2
+	}
 	if options.containerRef != "" && slices.Contains(traceProtocols[args[0]].hiddenViews, traceGroupByProcess) {
 		fmt.Fprintln(os.Stderr, T("cli.trace.container_protocol", args[0]))
 		return 2
@@ -399,6 +411,13 @@ func runTrace(args []string) int {
 	if err := traceProtocolPrerequisites(args[0]); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 3
+	}
+	// 이유 이름은 kernel BTF에서 읽으므로 prerequisite 뒤에 맞춘다.
+	if args[0] == "drop" {
+		if err := validateDropReasons(splitDropReasons(options.dropReasons)); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 2
+		}
 	}
 	// 권한이 없으면 docker 권한 오류보다 capability 안내가 먼저 보이도록 prerequisite 뒤에 푼다.
 	if options.containerRef != "" {

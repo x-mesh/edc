@@ -965,7 +965,11 @@ Use `--show-secrets` with `--payload` to show the values of the `Authorization`,
 
 The summary after Ctrl-C shows one row for each side, method, host, and path. If the trace has both sides, the summary shows the totals of each side and adds a `SIDE` column. JSON adds the `client` and `server` objects with the totals of each side. Grouped rows show the requests, the responses, the 4xx and 5xx responses, the unanswered requests, and the average and maximum latency.
 
-`trace http` does not show HTTPS, HTTP/2, or HTTP/3, because the kernel sees only encrypted data or binary frames. edc finds a message only at the start of a read or a write. If one read has the end of a response and the start of the next response, edc misses the next response. If a program writes one message from several buffers, edc reads only the first buffer. So the `Host` header must be in the first buffer and in the first 512 bytes. If it is not, the target is the server address. The kernel field that edc reads came in Linux 6.4, so older kernels stop with an error.
+HTTPS is encrypted, so edc cannot read the method, the path, or the status. The TLS ClientHello at the start of each connection is plain text. edc reads it and shows a `tls_hello` event. The `target` is the server name (SNI). The `alpn` field lists the protocols that the client offers, for example `h2` and `http/1.1`, and the event row shows the first one. A client that sends a ClientHello makes a `client:` row. A local server that receives one makes a `server:` row. The summary counts these connections in a separate `TLS connections` table, and JSON adds `tls_connections` and `tls`. Use `--port 443` to see only the HTTPS connections on port 443.
+
+edc does not see a TLS connection that started before the trace. If a client uses Encrypted Client Hello (ECH), the SNI is the public name of the provider. To see the requests of HTTPS, trace the plain HTTP behind the TLS end point, for example a proxy that sends plain HTTP to its backend.
+
+`trace http` does not show the requests in HTTPS, HTTP/2, or HTTP/3, because the kernel sees only encrypted data or binary frames. HTTP/3 uses UDP, so it also has no `tls_hello` event. edc finds a message only at the start of a read or a write. If one read has the end of a response and the start of the next response, edc misses the next response. If a program writes one message from several buffers, edc reads only the first buffer. So the `Host` header must be in the first buffer and in the first 512 bytes. If it is not, the target is the server address. The kernel field that edc reads came in Linux 6.4, so older kernels stop with an error.
 
 Use `trace mysql` on Linux 6.4 or later to print plain MySQL commands and results as they arrive. edc reads the start of each TCP read and write on the MySQL port in the kernel. The default port is 3306. Use `--port` for another port.
 
@@ -1051,6 +1055,22 @@ The server side shows an `accept` event. It shows how long the connection waited
 Use `--payload` to see the first 4 KiB of the data of each send and recv. Use `--payload=all` to see up to 1 MiB of each call. edc reads the data of one call in 16 KiB parts and joins them into one event. A stream socket has no message boundaries, so one event is one call, not one message. edc does not know the format of the payload, so it hides nothing. `--show-secrets` is not available. The payload can contain tokens and passwords, for example the `X-Registry-Auth` header on `docker.sock`. Before you share the output, check it for tokens and passwords. In the full screen, edc collects the first 4 KiB of each call also without `--payload`. Press `v` to show the payload lines. Press Enter to see the whole payload.
 
 If the server makes the socket file again, for example after a restart, edc finds the new file within one second. Connections on the old file stay in the trace. `trace socket` supports stream sockets only. Datagram and seqpacket sockets, abstract sockets, and socket pairs are not available. edc does not see the data of `sendfile` and `splice`. A failed connect is in the trace only if the program uses the same path as the command.
+
+Use `trace drop` on Linux to see why the kernel drops packets. For each drop, edc shows the reason, the kernel function, the addresses and ports, and the size. If the packet belongs to a local socket, edc also shows the process.
+
+```bash
+./bin/edc trace drop
+./bin/edc trace drop --reason NO_SOCKET,SOCKET_RCVBUFF
+./bin/edc trace drop --container web --raw
+```
+
+The reason is the name from the kernel, for example `NO_SOCKET` (no socket uses the port), `SOCKET_RCVBUFF` (the receive buffer of the socket is full), or `NETFILTER_DROP` (a firewall rule dropped the packet). The reasons need Linux 5.17 or later. On an earlier kernel, the reason is `unknown`, and only the function shows. Use `--reason` with names separated by commas to see only some reasons. The names are not case-sensitive.
+
+The kernel also frees packets as part of normal work, for example when a program closes a socket with unread data (`QUEUE_PURGE` and `TCP_ABORT_ON_DATA`). edc shows these too, because they tell you that a program did not read the data.
+
+The totals per reason in the summary are exact. If one CPU drops more than 1,000 packets in one second, edc sends only 1,000 events for that second and counts the rest. The summary shows this number as `Sampled out`. A process shows only for a packet that has a socket. A packet to a closed port has no socket.
+
+The kernel does not report every drop with a reason. For example, if the accept queue of a listening socket is full, the kernel frees the SYN as a normal packet. For that case, the summary shows how much `ListenOverflows` and `ListenDrops` in `/proc/net/netstat` increased during the trace. These counters cover all listening sockets in the network namespace of edc, also with `--container`.
 
 ```bash
 ./bin/edc capture \

@@ -144,7 +144,7 @@ command:
       - "PCAP には credential や個人情報が入ることがあります。"
       - "JSON の redaction は PCAP の payload には効きません。"
   trace:
-    summary: "TCP、UDP、DNS、ARP、NDP、HTTP、MySQL、socket event を表示して要約"
+    summary: "TCP、UDP、DNS、ARP、NDP、HTTP、MySQL、socket、drop を表示・要約"
     option:
       duration: "trace 時間、最大 60s。省略で Ctrl-C"
       raw: "raw event JSONL を表示"
@@ -159,6 +159,7 @@ command:
       show_secrets: "http --payload: header 値。mysql: SQL 値"
       port: "http: この port だけ。mysql: サーバー port、3306"
       container: "この docker container だけ、名前か ID"
+      reason: "trace drop: この理由だけ、カンマ区切り"
     notes:
       - "terminal では既定で全画面の trace を開きます。"
       - "/ で process、destination、event、source を絞り込みます。"
@@ -185,6 +186,8 @@ command:
       - "client: はこの host が送った要求、server: は local server が受けた要求です。"
       - "--side client か server で片側だけを残します。trace dns は client 側を見ます。"
       - "proxy では 1 つの要求が、受けた server: と送った client: の 2 行になります。"
+      - "HTTPS は暗号文なので、新しい接続ごとに tls_hello 行だけを表示します。"
+      - "tls_hello には path ではなく server 名 (SNI) と ALPN protocol があります。"
       - "--payload は各 message の先頭を表示します。"
       - "--payload=all は各 message を 1 MiB まで表示します。=all は続けて書きます。"
       - "--port は、この host か相手がその port を使う接続だけを見ます。"
@@ -203,6 +206,10 @@ command:
       - "client 側の相手は server process です。accept 前は listen した process です。"
       - "accept は接続が backlog で待った時間を表示します。"
       - "payload は隠さずそのまま表示します。全画面では v で表示します。"
+      - "trace drop は kernel が packet を破棄した理由と kernel 関数を表示します。"
+      - "packet に local socket があれば process を付けます。--reason で絞ります。"
+      - "理由ごとの合計は正確です。CPU ごとに毎秒 1,000 件を超えると event は標本です。"
+      - "accept queue が満杯で解放された SYN は event にならず、summary で数えます。"
   report:
     summary: "保存した JSON report の閲覧と比較"
     notes:

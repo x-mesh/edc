@@ -144,7 +144,7 @@ command:
       - "PCAP에는 credential과 개인정보가 들어갈 수 있습니다."
       - "JSON redaction은 PCAP payload에 적용되지 않습니다."
   trace:
-    summary: "TCP, UDP, DNS, ARP, NDP, HTTP, MySQL, socket event를 출력하고 요약"
+    summary: "TCP, UDP, DNS, ARP, NDP, HTTP, MySQL, socket, drop event 출력과 요약"
     option:
       duration: "trace 시간, 최대 60s. 생략하면 Ctrl-C"
       raw: "raw event JSONL 출력"
@@ -159,6 +159,7 @@ command:
       show_secrets: "http --payload: header 값. mysql: SQL 값"
       port: "http: 이 port만. mysql: 서버 port, 기본 3306"
       container: "이 docker container만, 이름이나 ID"
+      reason: "trace drop: 이 이유만, 쉼표로 구분"
     notes:
       - "terminal에서는 기본으로 전체 화면 trace를 엽니다."
       - "/를 누르면 process, destination, event, source를 필터할 수 있습니다."
@@ -185,6 +186,8 @@ command:
       - "client:는 이 host가 보낸 요청, server:는 로컬 서버가 받은 요청입니다."
       - "--side client나 server는 한 쪽만 남깁니다. trace dns는 client 쪽을 봅니다."
       - "proxy에서는 요청 하나가 받은 server:와 backend로 보낸 client:로 두 번 보입니다."
+      - "HTTPS는 암호문이라 새 연결마다 tls_hello 행만 보입니다."
+      - "tls_hello에는 path 대신 서버 이름(SNI)과 ALPN protocol이 있습니다."
       - "--payload는 message 앞부분을 표시합니다."
       - "--payload=all은 각 message를 1MiB까지 표시합니다. =all은 붙여 씁니다."
       - "--port는 이 host나 상대가 그 port를 쓰는 연결만 봅니다."
@@ -203,6 +206,10 @@ command:
       - "클라이언트 쪽 상대는 서버 process입니다. accept 전에는 listen한 process입니다."
       - "accept는 연결이 backlog에서 기다린 시간을 표시합니다."
       - "payload는 가리지 않고 그대로 보입니다. 전체 화면에서는 v로 켭니다."
+      - "trace drop은 kernel이 패킷을 버린 이유와 kernel 함수를 보여 줍니다."
+      - "패킷에 local socket이 있으면 process를 붙입니다. --reason으로 이유를 거릅니다."
+      - "이유별 합계는 정확합니다. CPU마다 초당 1,000건이 넘으면 event는 표본입니다."
+      - "accept 대기열이 가득 차 해제된 SYN은 event가 아니고, 요약에서 셉니다."
   report:
     summary: "저장한 JSON report 보기와 비교"
     notes:

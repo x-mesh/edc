@@ -52,6 +52,8 @@ type captureEvent struct {
 	Status int    `json:"status,omitempty"`
 	// MySQL은 MySQL event에만 붙는다. 응답에는 답한 요청의 명령과 SQL도 들어 있다.
 	MySQL *traceMySQLEvent `json:"mysql,omitempty"`
+	// ALPN은 tls_hello event에만 붙는다. client가 ClientHello로 제안한 protocol이고, 서버가 고른 것은 암호문이라 모른다.
+	ALPN []string `json:"alpn,omitempty"`
 	// Payload는 trace http --payload일 때만 붙는 message 앞부분이다. 제어 문자를 이미 \xNN으로 바꿔 두어서
 	// jq -r로 terminal에 찍어도 escape sequence가 실행되지 않는다.
 	Payload string `json:"payload,omitempty"`
@@ -65,6 +67,10 @@ type captureEvent struct {
 	// process다. accept 전에는 listen한 process다. Error는 실패한 socket 호출의 errno 이름이다.
 	PeerPID uint32 `json:"peer_pid,omitempty"`
 	Error   string `json:"error,omitempty"`
+	// Reason과 Location은 drop event에만 붙는다. Reason은 kernel의 skb_drop_reason 이름이고, Location은 패킷을 버린 kernel
+	// 함수다.
+	Reason   string `json:"reason,omitempty"`
+	Location string `json:"location,omitempty"`
 	// Transport는 TCP로 주고받은 DNS message에만 tcp로 붙는다.
 	Transport string `json:"transport,omitempty"`
 	// Side는 DNS event에서는 로컬 DNS 서버가 받은 질의와 보낸 응답에만 server로 붙는다. HTTP와 socket event에는 client나
@@ -82,6 +88,13 @@ type captureSummary struct {
 	Event       string `json:"event"`
 	EventCount  uint64 `json:"event_count"`
 	LostEvents  uint64 `json:"lost_events"`
+	// DropCounts는 trace drop의 이유별 정확한 합계다. DropSampled는 초당 상한 때문에 event로 보내지 않은 수다.
+	DropCounts  map[string]uint64 `json:"drop_counts,omitempty"`
+	DropSampled uint64            `json:"drop_sampled,omitempty"`
+	// ListenOverflows와 ListenDrops는 trace drop 동안 /proc/net/netstat TcpExt 값이 늘어난 수다. accept 대기열이 가득 차
+	// 해제된 SYN은 kfree_skb로 보이지 않아 따로 센다. edc가 있는 network namespace의 모든 listen socket을 합한 값이다.
+	ListenOverflows *uint64 `json:"listen_overflows,omitempty"`
+	ListenDrops     *uint64 `json:"listen_drops,omitempty"`
 }
 
 type tcpTraceConnection struct {
@@ -297,6 +310,8 @@ type tcpTraceOptions struct {
 	port int
 	// socketPath는 trace socket이 볼 unix socket 파일이다.
 	socketPath string
+	// dropReasons는 trace drop --reason 값이다. 쉼표로 이유 이름을 나눈다.
+	dropReasons string
 	// containerRef는 --container 값이고, container는 trace를 시작하기 전에 그 값을 cgroup ID로 푼 것이다.
 	containerRef string
 	container    *traceContainer

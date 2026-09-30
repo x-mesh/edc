@@ -21,6 +21,9 @@ func collectTraceEventsLive(scope traceScope, duration time.Duration, onEvent fu
 	if scope.protocol == "arp" || scope.protocol == "ndp" {
 		return collectNeighborEvents(scope.protocol, duration, onEvent, stop)
 	}
+	if scope.protocol == "drop" {
+		return collectDropEvents(scope.dropReasons, duration, onEvent, stop)
+	}
 	if scope.protocol == "socket" {
 		return collectSocketEvents(scope.socketPath, socketPayloadLimit(scope), duration, onEvent, stop)
 	}

@@ -677,6 +677,10 @@ func TestHTTPRecordOffsetsMatchTheBPFStruct(t *testing.T) {
 	if packet, ok := parseHTTPRecord(sample); !ok || !packet.continued || packet.offset != 4096 {
 		t.Fatalf("continuation = %#v, %t", packet, ok)
 	}
+	sample[39] = httpRecordTLSHandshake
+	if packet, ok := parseHTTPRecord(sample); !ok || packet.continued || !packet.tlsHandshake {
+		t.Fatalf("TLS handshake = %#v, %t", packet, ok)
+	}
 }
 
 // fexit/tcp_sendmsg는 모든 TCP 송신에 붙고 뗄 때도 느리므로 --payload=all일 때만 붙인다.

@@ -186,6 +186,8 @@ command:
       - "client:는 이 host가 보낸 요청, server:는 로컬 서버가 받은 요청입니다."
       - "--side client나 server는 한 쪽만 남깁니다. trace dns는 client 쪽을 봅니다."
       - "proxy에서는 요청 하나가 받은 server:와 backend로 보낸 client:로 두 번 보입니다."
+      - "HTTPS는 암호문이라 새 연결마다 tls_hello 행만 보입니다."
+      - "tls_hello에는 path 대신 서버 이름(SNI)과 ALPN protocol이 있습니다."
       - "--payload는 message 앞부분을 표시합니다."
       - "--payload=all은 각 message를 1MiB까지 표시합니다. =all은 붙여 씁니다."
       - "--port는 이 host나 상대가 그 port를 쓰는 연결만 봅니다."

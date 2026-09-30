@@ -1,8 +1,12 @@
 package edc
 
 import (
+	"crypto/tls"
 	"encoding/json"
+	"io"
+	"net"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -370,5 +374,187 @@ func TestTraceLabelNamesAChosenHTTPSide(t *testing.T) {
 	}
 	if code := runTrace([]string{"http", "--side", "both"}); code != 2 {
 		t.Fatalf("trace http --side both exit = %d, want 2", code)
+	}
+}
+
+// tlsTestClientHello는 Go crypto/tls가 보내는 첫 record다. 서버 없이 ClientHello만 받고 연결을 닫는다.
+func tlsTestClientHello(t *testing.T, serverName string, protocols ...string) []byte {
+	t.Helper()
+	client, server := net.Pipe()
+	defer server.Close()
+	go func() {
+		defer client.Close()
+		_ = tls.Client(client, &tls.Config{ServerName: serverName, NextProtos: protocols, InsecureSkipVerify: serverName == ""}).Handshake()
+	}()
+	record := make([]byte, tlsRecordHeaderSize)
+	if _, err := io.ReadFull(server, record); err != nil {
+		t.Fatal(err)
+	}
+	body := make([]byte, int(record[3])<<8|int(record[4]))
+	if _, err := io.ReadFull(server, body); err != nil {
+		t.Fatal(err)
+	}
+	return append(record, body...)
+}
+
+// tlsHandBuiltClientHello는 SNI와 ALPN만 있는 ClientHello record다. 원격이 보낸 제어 문자를 시험한다.
+func tlsHandBuiltClientHello(serverName string, protocols ...string) []byte {
+	vector := func(size int, data []byte) []byte {
+		prefix := make([]byte, size)
+		for index := range size {
+			prefix[index] = byte(len(data) >> (8 * (size - 1 - index)))
+		}
+		return append(prefix, data...)
+	}
+	extension := func(kind int, data []byte) []byte {
+		return append([]byte{byte(kind >> 8), byte(kind)}, vector(2, data)...)
+	}
+	var names []byte
+	for _, protocol := range protocols {
+		names = append(names, vector(1, []byte(protocol))...)
+	}
+	extensions := append(extension(tlsExtensionServerName, vector(2, append([]byte{0}, vector(2, []byte(serverName))...))), extension(tlsExtensionALPN, vector(2, names))...)
+	body := append([]byte{3, 3}, make([]byte, 32)...)
+	body = append(body, 0, 0, 2, 0x13, 0x01, 1, 0)
+	body = append(body, vector(2, extensions)...)
+	handshake := append([]byte{tlsClientHelloType}, vector(3, body)...)
+	return append([]byte{tlsHandshakeRecord, 3, 1}, vector(2, handshake)...)
+}
+
+func TestParseTLSClientHelloReadsTheServerNameAndALPN(t *testing.T) {
+	record := tlsTestClientHello(t, "API.Example.test", "h2", "http/1.1")
+	for name, test := range map[string]struct {
+		payload []byte
+		record  bool
+	}{"record": {record, true}, "handshake without the record header": {record[tlsRecordHeaderSize:], false}} {
+		hello, ok := parseTLSClientHello(test.payload, test.record)
+		if !ok || hello.serverName != "api.example.test" || strings.Join(hello.alpn, ",") != "h2,http/1.1" {
+			t.Fatalf("%s: hello = %+v, %t (%d bytes)", name, hello, ok, len(test.payload))
+		}
+	}
+	// BPF가 앞부분만 읽어 확장이 잘려도 ClientHello다. 읽은 데까지만 쓴다.
+	if hello, ok := parseTLSClientHello(record[:100], true); !ok || hello.serverName != "" {
+		t.Fatalf("cut hello = %+v, %t", hello, ok)
+	}
+	if hello, ok := parseTLSClientHello(tlsTestClientHello(t, ""), true); !ok || hello.serverName != "" || hello.alpn != nil {
+		t.Fatalf("hello without SNI = %+v, %t", hello, ok)
+	}
+	serverHello := slices.Clone(record)
+	serverHello[tlsRecordHeaderSize] = 0x02
+	badVersion := slices.Clone(record)
+	badVersion[2] = 0x09
+	for name, payload := range map[string][]byte{"ServerHello": serverHello, "record version": badVersion, "HTTP": []byte("GET / HTTP/1.1\r\n\r\n"), "header only": record[:tlsRecordHeaderSize]} {
+		if hello, ok := parseTLSClientHello(payload, true); ok {
+			t.Fatalf("%s was read as a ClientHello: %+v", name, hello)
+		}
+	}
+	hello, ok := parseTLSClientHello(tlsHandBuiltClientHello("evil\x1b[31m.example", "h2\x07"), true)
+	if !ok || hello.serverName != `evil\x1b[31m.example` || strings.Join(hello.alpn, ",") != `h2\x07` {
+		t.Fatalf("hand-built hello = %+v, %t", hello, ok)
+	}
+}
+
+func TestHTTPTrackerShowsTLSClientHellos(t *testing.T) {
+	record := tlsHandBuiltClientHello("api.example", "h2", "http/1.1")
+	sent := httpTestPacket(string(record), 1_000_000, true)
+	received := httpTestPacket(string(record), 1_000_000, false)
+	split := httpTestPacket(string(record[tlsRecordHeaderSize:]), 1_000_000, false)
+	split.tlsHandshake = true
+	tracker := newHTTPTracker("", true, false)
+	for _, test := range []struct {
+		packet httpPacket
+		side   string
+	}{{sent, traceClientSide}, {received, traceServerSide}, {split, traceServerSide}} {
+		event, ok := tracker.event(test.packet, 0)
+		if !ok || event.Event != traceTLSHelloEvent || event.Side != test.side || event.Target != "api.example" || strings.Join(event.ALPN, ",") != "h2,http/1.1" || event.Payload != "" || event.Method != "" {
+			t.Fatalf("%s hello = %#v, %t", test.side, event, ok)
+		}
+	}
+	event, _ := tracker.event(sent, 0)
+	if destination, label := traceHTTPScrollLabels(event); destination != "client: api.example (127.0.0.1:8080)" || label != "tls_hello h2" {
+		t.Fatalf("labels = %q, %q", destination, label)
+	}
+	if _, ok := newHTTPTracker(traceServerSide, false, false).event(sent, 0); ok {
+		t.Fatal("server-side tracker kept a sent ClientHello")
+	}
+	// ClientHello는 응답을 기다리지 않는다.
+	if len(tracker.pending) != 0 {
+		t.Fatalf("pending = %#v", tracker.pending)
+	}
+	noName := httpTestPacket(string(tlsHandBuiltClientHello("")), 1_000_000, true)
+	if event, ok := tracker.event(noName, 0); !ok || event.Target != "127.0.0.1:8080" {
+		t.Fatalf("hello without SNI = %#v, %t", event, ok)
+	}
+	// record 머리 없이 온 조각이 ClientHello가 아니면 HTTP로도 읽지 않는다.
+	other := httpTestPacket("HTTP/1.1 200 OK\r\n\r\n", 1_000_000, false)
+	other.tlsHandshake = true
+	if event, ok := tracker.event(other, 0); ok {
+		t.Fatalf("a TLS handshake piece was read as HTTP: %#v", event)
+	}
+}
+
+func TestHTTPMessagesPassTLSClientHellosThrough(t *testing.T) {
+	record := tlsHandBuiltClientHello("api.example", "h2")
+	starts := httpSplitStarts{}
+	for _, packet := range []httpPacket{httpTestPacket(string(record[:tlsRecordHeaderSize+3]), 1, false), httpTestPacket(string(record), 1, true)} {
+		if joined, ok := starts.join(packet); !ok || len(joined.payload) != len(packet.payload) || len(starts) != 0 {
+			t.Fatalf("join = %+v, %t, held %d", joined, ok, len(starts))
+		}
+	}
+	messages := newTestHTTPMessages(false, httpMessageMax)
+	events := messages.add(httpTestPacket(string(record), 1_000_000, true), 0, time.Unix(100, 0))
+	if len(events) != 1 || events[0].Event != traceTLSHelloEvent || len(messages.open) != 0 {
+		t.Fatalf("events = %#v, open %d", events, len(messages.open))
+	}
+}
+
+func TestHTTPTraceSummaryCountsTLSConnectionsApart(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	tracker := newHTTPTracker("", false, false)
+	var events []captureEvent
+	for _, packet := range []httpPacket{
+		httpTestPacket(string(tlsHandBuiltClientHello("api.example", "h2", "http/1.1")), 1_000_000, true),
+		httpTestPacket(string(tlsHandBuiltClientHello("api.example", "h2", "http/1.1")), 2_000_000, true),
+		httpTestPacket("GET /a HTTP/1.1\r\nHost: plain.example\r\n\r\n", 3_000_000, true),
+		httpTestPacket("HTTP/1.1 200 OK\r\n\r\n", 4_000_000, false),
+	} {
+		event, ok := tracker.event(packet, 0)
+		if !ok {
+			t.Fatalf("packet %q made no event", packet.payload)
+		}
+		events = append(events, event)
+	}
+	summarizer := newHTTPTraceSummarizer()
+	for _, event := range events {
+		summarizer.observe(event)
+	}
+	report := summarizer.summarize(captureSummary{}, time.Second).(httpTraceReport)
+	if report.Requests != 1 || report.Responses != 1 || report.TLSConnections != 2 || len(report.Paths) != 1 || len(report.TLS) != 1 || report.TLS[0].Connections != 2 || report.TLS[0].Host != "api.example" {
+		t.Fatalf("report = %#v", report)
+	}
+	data, _ := json.Marshal(report)
+	for _, field := range []string{`"tls_connections":2`, `"tls":[{"side":"client","host":"api.example","alpn":["h2","http/1.1"],"connections":2,"processes":["curl"]}]`} {
+		if !strings.Contains(string(data), field) {
+			t.Fatalf("report JSON %s does not contain %s", data, field)
+		}
+	}
+	output := traceCaptureOutput(t, &os.Stdout, func() { report.print(false) })
+	for _, text := range []string{"\nRequests: 1\n", "\nTLS connections: 2 (HTTPS, only the ClientHello is plain text)\n", "\nclient\tapi.example\th2,http/1.1\t2\tcurl\n"} {
+		if !strings.Contains(output, text) {
+			t.Fatalf("summary %q does not contain %q", output, text)
+		}
+	}
+	// group 보기에서 ClientHello는 event로만 세고 응답으로 세지 않는다.
+	for _, group := range summarizeTraceGroups("http", traceGroupByTarget, events, captureSummary{}, time.Second, "", "").Groups {
+		if group.Group == "api.example" && (group.Events != 2 || group.HTTP.Requests != 0 || group.HTTP.Responses != 0) {
+			t.Fatalf("TLS group = %#v, http %#v", group, group.HTTP)
+		}
+	}
+	// TLS가 없으면 JSON과 요약은 지금까지와 같다.
+	plain := newHTTPTraceSummarizer()
+	plain.observe(events[2])
+	data, _ = json.Marshal(plain.summarize(captureSummary{}, time.Second))
+	if strings.Contains(string(data), "tls") {
+		t.Fatalf("report without TLS = %s", data)
 	}
 }

@@ -901,6 +901,16 @@ int tcp_create_openreq_child_exit(__u64 *ctx) {
 // HTTP_SPLIT_SIZE보다 짧게 시작한 읽기와 쓰기는 첫 줄이 끝나지 않았을 수 있다. caddy는 요청의 첫 14 byte를 먼저 읽고
 // 나머지를 다시 읽는다. --payload=all이 아니면 이런 socket과 방향에서만 다음 조각 하나를 이어서 넘긴다.
 #define HTTP_SPLIT_SIZE 64
+// HTTPS는 암호문이라 ClientHello만 읽는다. SNI와 ALPN이 그 안에 평문으로 있다. post-quantum key share를 보내는 client는
+// ClientHello가 2KB에 가깝고 확장 순서를 섞어서, SNI가 앞 512 byte 밖에 있을 수 있다.
+#define TLS_HELLO_SIZE 4096
+#define TLS_RECORD_HEADER_SIZE 5
+#define TLS_CLIENT_HELLO 0x01
+// TLS_HANDSHAKE는 record 머리 없이 handshake message로 시작하는 레코드다. 머리만 따로 읽는 서버에서 나온다.
+#define TLS_HANDSHAKE 2
+// TLS_SPLIT은 http_streams 값에서 TLS record 머리만 읽은 socket을 표시한다. 다음 읽기 하나만 보고, 그 뒤의 암호문은
+// --payload=all에서도 따라가지 않는다.
+#define TLS_SPLIT (1ULL << 63)
 
 struct http_record {
 	__u64 timestamp_ns;
@@ -935,7 +945,7 @@ struct {
 
 // http_streams는 socket과 방향마다 지금 message에서 주고받은 byte 수다. HTTP로 시작하지 않는 읽기와 쓰기는 이 값이
 // http_message_limit보다 작을 때만 앞 message의 이어지는 조각으로 넘긴다. --payload=all이 아니면 HTTP_SPLIT_SIZE보다
-// 짧게 시작한 message만 둔다.
+// 짧게 시작한 message만 둔다. TLS_SPLIT이 붙은 값은 TLS record 머리만 읽은 socket이다.
 struct http_stream_key {
 	__u64 skaddr;
 	__u64 direction;
@@ -1026,6 +1036,17 @@ static __always_inline int http_start(const __u8 *p) {
 	       (p[0] == 'O' && p[1] == 'P' && p[2] == 'T' && p[3] == 'I') || (p[0] == 'H' && p[1] == 'T' && p[2] == 'T' && p[3] == 'P');
 }
 
+// tls_start는 TLS handshake record의 머리다. version은 SSL 3.0부터 TLS 1.3까지다.
+static __always_inline int tls_start(const __u8 *p) {
+	return p[0] == 0x16 && p[1] == 0x03 && p[2] <= 0x04;
+}
+
+// tls_client_hello는 buffer의 at 위치가 ClientHello handshake인지 본다. ServerHello와 다른 handshake는 읽지 않는다.
+static __always_inline int tls_client_hello(__u64 buffer, __u64 limit, __u64 at) {
+	__u8 type = 0;
+	return limit > at && !bpf_probe_read_user(&type, sizeof(type), (void *)(buffer + at)) && type == TLS_CLIENT_HELLO;
+}
+
 static __always_inline int http_socket(struct sock *sk) {
 	if (!http_port) {
 		return 1;
@@ -1060,7 +1081,7 @@ static __always_inline void http_fill_record(struct http_record *record, struct 
 
 // http_capture는 한 번의 읽기나 쓰기를 레코드로 넘긴다. buffer와 limit는 첫 버퍼이고, iov가 있으면 writev의 다음 버퍼를
 // 이어서 읽는다. size는 이번 호출에서 주고받은 byte 수다. --payload=all이 아니면 HTTP로 시작하는 첫 버퍼의 앞
-// http_payload_limit byte만 레코드 하나로 넘긴다.
+// http_payload_limit byte만 레코드 하나로 넘긴다. TLS는 ClientHello의 앞 TLS_HELLO_SIZE byte만 넘긴다.
 static __always_inline void http_capture(struct sock *sk, __u64 buffer, __u64 limit, const struct iovec *iov, __u64 nr_segs, __u64 size, __u8 direction) {
 	// port는 부르는 쪽이 시작할 때(fentry) 확인한다. 끝날 때는 이미 늦을 수 있다. loopback에서 상대가 닫은 socket에 쓰면
 	// RST가 같은 호출 안에서 처리되어, tcp_sendmsg가 끝날 때는 kernel이 로컬 port를 0으로 지워 두었다.
@@ -1069,13 +1090,44 @@ static __always_inline void http_capture(struct sock *sk, __u64 buffer, __u64 li
 	}
 	struct http_stream_key key = {.skaddr = (__u64)sk, .direction = direction};
 	__u8 peek[4] = {};
-	int start = size >= 4 && limit >= 4 && !bpf_probe_read_user(peek, sizeof(peek), (void *)buffer) && http_start(peek);
+	int readable = size >= 4 && limit >= 4 && !bpf_probe_read_user(peek, sizeof(peek), (void *)buffer);
+	int start = readable && http_start(peek);
+	__u8 kind = start ? HTTP_START : HTTP_CONTINUATION;
 	__u64 offset = 0;
 	__u64 budget = http_payload_limit;
-	if (http_message_limit) {
+	// 모든 TCP 송수신이 여기를 지나므로 이어 받을 조각이 있는 socket에서만 map에 값이 있다. 이어 받는 조각을 TLS 판별보다
+	// 먼저 보므로, 0x16 0x03으로 시작하는 HTTP body 조각을 TLS로 읽지 않는다.
+	__u64 *seen = start ? 0 : bpf_map_lookup_elem(&http_streams, &key);
+	if (seen && (*seen & TLS_SPLIT)) {
+		// record 머리만 읽은 TLS socket의 다음 읽기다. ClientHello가 아니면 버린다.
+		offset = *seen & ~TLS_SPLIT;
+		bpf_map_delete_elem(&http_streams, &key);
+		if (!tls_client_hello(buffer, limit, 0)) {
+			return;
+		}
+		kind = TLS_HANDSHAKE;
+		budget = TLS_HELLO_SIZE;
+		iov = 0;
+	} else if (!start && !seen) {
+		if (!readable || !tls_start(peek)) {
+			return;
+		}
+		if (size <= TLS_RECORD_HEADER_SIZE) {
+			// read_ahead를 켜지 않은 OpenSSL 서버(openssl s_server, Python ssl)는 record 머리 5 byte를 먼저 읽고 본문을
+			// 다시 읽는다. handshake 종류는 다음 읽기의 첫 byte다.
+			__u64 mark = size | TLS_SPLIT;
+			bpf_map_update_elem(&http_streams, &key, &mark, BPF_ANY);
+			return;
+		}
+		if (!tls_client_hello(buffer, limit, TLS_RECORD_HEADER_SIZE)) {
+			return;
+		}
+		kind = HTTP_START;
+		budget = TLS_HELLO_SIZE;
+		iov = 0;
+	} else if (http_message_limit) {
 		budget = http_message_limit;
 		if (!start) {
-			__u64 *seen = bpf_map_lookup_elem(&http_streams, &key);
 			if (!seen || *seen >= http_message_limit) {
 				return;
 			}
@@ -1083,11 +1135,10 @@ static __always_inline void http_capture(struct sock *sk, __u64 buffer, __u64 li
 			budget = http_message_limit - offset;
 		}
 		// 레코드를 내지 못해도 실제로 주고받은 만큼 위치를 옮긴다. 그래야 잃은 조각이 사용자 공간에서 위치 차이로 드러난다.
-		__u64 seen = offset + size;
-		bpf_map_update_elem(&http_streams, &key, &seen, BPF_ANY);
+		__u64 next = offset + size;
+		bpf_map_update_elem(&http_streams, &key, &next, BPF_ANY);
 	} else if (!start) {
-		// 모든 TCP 송수신이 여기를 지나므로 짧은 첫 조각을 본 socket에서만 map에 값이 있다.
-		__u64 *seen = bpf_map_lookup_elem(&http_streams, &key);
+		// 짧은 첫 조각을 본 socket이다.
 		if (!seen) {
 			return;
 		}
@@ -1122,7 +1173,7 @@ static __always_inline void http_capture(struct sock *sk, __u64 buffer, __u64 li
 	cursor->segment = 0;
 	cursor->iov = (__u64)iov;
 	cursor->nr_segs = nr_segs;
-	cursor->kind = start ? HTTP_START : HTTP_CONTINUATION;
+	cursor->kind = kind;
 	for (int step = 0; step < HTTP_MAX_STEPS; step++) {
 		if (!cursor->remaining) {
 			break;

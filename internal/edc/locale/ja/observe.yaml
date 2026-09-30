@@ -38,7 +38,6 @@ observe:
     count_minimum: "--count は 0 以上にしてください"
     stopped: "停止しました"
     paused: "一時停止"
-    help_line: "q 終了  p 一時停止  +/- interval"
     error:
       host: "host の情報を読めませんでした: %v"
       resource: "resource を読めませんでした: %v"

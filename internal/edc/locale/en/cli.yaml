@@ -165,7 +165,7 @@ cli:
     group_by_range: "--group-by must be source, target, port, process, or event"
     group_by_raw_conflict: "--group-by cannot be used with --raw"
     group_by: "group events by source, target, port, process, or event and show traffic counters"
-    linux_only: "network trace requires Linux, not %s"
+    linux_only: "network trace requires Linux or macOS, not %s"
     group_by_protocol: "--group-by %s is not available for trace %s"
     protocol_linux_only: "trace %s requires Linux, not %s"
     side_range: "--side must be client or server"

@@ -144,7 +144,7 @@ command:
       - "A PCAP file can hold credentials and personal data."
       - "The JSON redaction does not apply to the PCAP payload."
   trace:
-    summary: "Print TCP, UDP, DNS, ARP, or HTTP events in real time and summarize"
+    summary: "Print TCP, UDP, DNS, ARP, NDP, or HTTP events live and summarize"
     option:
       duration: "trace time, max 60s. Omit for Ctrl-C"
       raw: "print raw event JSONL"
@@ -172,7 +172,8 @@ command:
       - "trace arp shows neighbor table changes on Linux and macOS. It needs no root."
       - "trace ndp does the same for IPv6 neighbors."
       - "trace http shows plain HTTP/1.x requests on Linux 6.4 or later."
-      - "--payload shows the start of each message. It hides Cookie and Authorization."
+      - "--payload shows the start of each message."
+      - "It hides Authorization, Proxy-Authorization, Cookie, and Set-Cookie values."
   report:
     summary: "Read and compare saved JSON reports"
     notes:

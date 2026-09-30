@@ -144,7 +144,7 @@ command:
       - "PCAP には credential や個人情報が入ることがあります。"
       - "JSON の redaction は PCAP の payload には効きません。"
   trace:
-    summary: "TCP、UDP、DNS、ARP、HTTP event を表示して summary にまとめる"
+    summary: "TCP、UDP、DNS、ARP、NDP、HTTP event を表示して summary にまとめる"
     option:
       duration: "trace 時間、最大 60s。省略で Ctrl-C"
       raw: "raw event JSONL を表示"
@@ -172,7 +172,8 @@ command:
       - "trace arp は Linux と macOS で neighbor table の変化を表示します。root 不要。"
       - "trace ndp は IPv6 neighbor について同じことをします。"
       - "trace http は Linux 6.4 以降で平文 HTTP/1.x を表示します。"
-      - "--payload は各 message の先頭を表示します。Cookie と Authorization は隠します。"
+      - "--payload は各 message の先頭を表示します。"
+      - "Authorization、Proxy-Authorization、Cookie、Set-Cookie の値は隠します。"
   report:
     summary: "保存した JSON report の閲覧と比較"
     notes:

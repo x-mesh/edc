@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -683,5 +684,19 @@ func TestHTTPKernelCheckFindsNestedIOVIterFields(t *testing.T) {
 	}
 	if !btfHasMember(iter, "ubuf") && !btfHasMember(iter, "iov") {
 		t.Fatal("btfHasMember does not look into anonymous unions")
+	}
+}
+
+func TestCaptureCapabilityErrorNamesTheMissingCapabilities(t *testing.T) {
+	command := rootCommand("/home/ubuntu/.local/bin/edc", []string{"trace", "tcp", "--process", "my app", "--destination", "it's"})
+	if want := `sudo /home/ubuntu/.local/bin/edc trace tcp --process 'my app' --destination 'it'\''s'`; command != want {
+		t.Fatalf("command = %q, want %q", command, want)
+	}
+	err := captureCapabilityError(map[int]bool{capPerfmon: true}, command)
+	if err == nil || !strings.Contains(err.Error(), "CAP_BPF, CAP_NET_ADMIN") || strings.Contains(err.Error(), "CAP_PERFMON") || !strings.Contains(err.Error(), command) {
+		t.Fatalf("error = %v", err)
+	}
+	if err := captureCapabilityError(map[int]bool{capBPF: true, capPerfmon: true, capNetAdmin: true}, command); err != nil {
+		t.Fatalf("all capabilities are present: %v", err)
 	}
 }

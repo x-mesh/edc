@@ -1,6 +1,10 @@
 package edc
 
 import (
+	"bytes"
+	"compress/gzip"
+	"fmt"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -120,7 +124,7 @@ func TestTraceScreenSelectionFollowsTheFilterAndKeptEvents(t *testing.T) {
 }
 
 func TestTraceFullPayloadsKeepOnlyRecentLongPayloads(t *testing.T) {
-	var payloads traceFullPayloads
+	payloads := traceFullPayloads{minimum: httpPayloadHead}
 	payloads.keep(1, "short")
 	if _, ok := payloads.get(1); ok {
 		t.Fatal("a payload that the list keeps whole was stored again")
@@ -141,8 +145,10 @@ func TestTraceFullPayloadsKeepOnlyRecentLongPayloads(t *testing.T) {
 		t.Fatalf("drop kept older payloads: %v", payloads.order)
 	}
 
-	event := captureEvent{Protocol: "http", Event: traceHTTPRequestEvent, Payload: traceTrimText("POST / HTTP/1.1\r\n\r\n"+big, httpPayloadHead)}
-	detail := newTraceDetail(event, "", false, 80)
+	// 전체 payload가 없는 오래된 event는 앞 4KiB만 있다고 알린다.
+	model := newTraceScreenModel("http", tcpTraceOptions{}, make(chan captureEvent), make(chan traceFinishedMsg), nil)
+	model.events = []captureEvent{{Protocol: "http", Event: traceHTTPRequestEvent, Payload: traceTrimText("POST / HTTP/1.1\r\n\r\n"+big, httpPayloadHead)}}
+	detail := model.buildDetail(0)
 	if !strings.Contains(strings.Join(detail.lines, "\n"), "only the first 4096 bytes") {
 		t.Fatal("the detail view does not say that the payload is cut")
 	}
@@ -192,5 +198,153 @@ func TestTraceScreenFilterMatchesTheShownDestination(t *testing.T) {
 		if got := traceEventMatchesText(event, filter); got != want {
 			t.Fatalf("filter %q = %t, want %t", filter, got, want)
 		}
+	}
+}
+
+func traceGzipBytes(t *testing.T, data []byte) []byte {
+	t.Helper()
+	var out bytes.Buffer
+	writer := gzip.NewWriter(&out)
+	if _, err := writer.Write(data); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return out.Bytes()
+}
+
+func TestTraceScreenScopeCollectsHTTPPayloads(t *testing.T) {
+	scope := traceScreenScope("http", tcpTraceOptions{})
+	if !scope.payload || scope.payloadAll || !scope.showSecrets || !scope.keepGzip {
+		t.Fatalf("http screen scope = %+v", scope)
+	}
+	if scope := traceScreenScope("http", tcpTraceOptions{payload: tracePayloadAll}); !scope.payloadAll {
+		t.Fatalf("--payload=all was lost: %+v", scope)
+	}
+	if scope := traceScreenScope("tcp", tcpTraceOptions{}); scope.payload || scope.showSecrets || scope.keepGzip {
+		t.Fatalf("tcp screen scope = %+v", scope)
+	}
+}
+
+func TestTraceScreenKeysShowPayloadsAndSecrets(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	model := newTraceScreenModel("http", tcpTraceOptions{}, make(chan captureEvent), make(chan traceFinishedMsg), nil)
+	model.width, model.height = 120, 12
+	event := captureEvent{Protocol: "http", Event: traceHTTPRequestEvent, Process: "curl", Method: "GET", Target: "api.example", Path: "/me", Payload: "GET /me HTTP/1.1\r\nHost: api.example\r\nAuthorization: Bearer t0ken\r\n\r\n"}
+	next, _ := model.Update(traceEventMsg{events: []captureEvent{event}})
+	model = next.(traceScreenModel)
+	rows := strings.Join(traceScreenRows(model), "\n")
+	if strings.Contains(rows, "↳") {
+		t.Fatalf("payload lines are on without --payload: %q", rows)
+	}
+	model = traceScreenKey(model, "v")
+	rows = strings.Join(traceScreenRows(model), "\n")
+	if !strings.Contains(rows, "Authorization: ***") || strings.Contains(rows, "t0ken") {
+		t.Fatalf("v did not show a masked payload line: %q", rows)
+	}
+	model = traceScreenKey(model, "m")
+	if rows := strings.Join(traceScreenRows(model), "\n"); !strings.Contains(rows, "Bearer t0ken") || !strings.Contains(traceScreenHeader(model)[0], "secrets shown") {
+		t.Fatalf("m did not show the secret: %q", rows)
+	}
+	model = traceScreenKey(model, "m", "enter")
+	if text := strings.Join(model.detail.lines, "\n"); !strings.Contains(text, "Authorization: ***") {
+		t.Fatalf("the detail view shows the secret: %q", text)
+	}
+	model = traceScreenKey(model, "m")
+	if text := strings.Join(model.detail.lines, "\n"); !strings.Contains(text, "Bearer t0ken") || !strings.Contains(traceScreenDetailView(model)[0], "secrets shown") {
+		t.Fatalf("m in the detail view did not show the secret: %q", text)
+	}
+}
+
+func TestTraceScreenFollowShowsTheNewestEvent(t *testing.T) {
+	model := newTraceScreenModel("http", tcpTraceOptions{}, make(chan captureEvent), make(chan traceFinishedMsg), nil)
+	model.width, model.height = 100, 12
+	send := func(path string) {
+		next, _ := model.Update(traceEventMsg{events: []captureEvent{{Protocol: "http", Event: traceHTTPRequestEvent, Method: "GET", Target: "x", Path: path}}})
+		model = next.(traceScreenModel)
+	}
+	send("/one")
+	model = traceScreenKey(model, "f")
+	if model.detail == nil || !model.follow || model.detail.number != 0 {
+		t.Fatalf("f did not open the newest event: %+v", model.detail)
+	}
+	send("/two")
+	if model.detail.number != 1 || !strings.Contains(strings.Join(model.detail.lines, "\n"), `"/two"`) {
+		t.Fatalf("follow did not move to the new event: %d", model.detail.number)
+	}
+	if !strings.Contains(traceScreenDetailView(model)[0], "follow") {
+		t.Fatal("the detail header does not say follow")
+	}
+	// f를 다시 누르면 보던 event에서 멈추고, 새 event가 와도 그대로 둔다.
+	model = traceScreenKey(model, "f")
+	send("/three")
+	if model.follow || model.detail.number != 1 || model.selected != 1 {
+		t.Fatalf("stopped follow: follow %t, number %d, selected %d", model.follow, model.detail.number, model.selected)
+	}
+	model = traceScreenKey(model, "f", "esc")
+	if model.detail != nil || model.follow || model.selected != -1 {
+		t.Fatalf("esc from follow: detail %v, follow %t, selected %d", model.detail, model.follow, model.selected)
+	}
+}
+
+func TestTraceScreenDecodesGzipBodies(t *testing.T) {
+	model := newTraceScreenModel("http", tcpTraceOptions{}, make(chan captureEvent), make(chan traceFinishedMsg), nil)
+	model.width, model.height = 100, 30
+	body := `{"message":"hello from a gzip body"}`
+	compressed := traceGzipBytes(t, []byte(body))
+	raw := append([]byte("HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\nContent-Length: "+strconv.Itoa(len(compressed))+"\r\n\r\n"), compressed...)
+	chunked := append([]byte("HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\nTransfer-Encoding: chunked\r\n\r\n"), []byte(fmt.Sprintf("%x\r\n", 10))...)
+	chunked = append(append(chunked, compressed[:10]...), []byte(fmt.Sprintf("\r\n%x\r\n", len(compressed)-10))...)
+	chunked = append(append(chunked, compressed[10:]...), "\r\n0\r\n\r\n"...)
+	var long strings.Builder
+	for index := range 4000 {
+		fmt.Fprintf(&long, "partial %d %x, ", index, index*7919)
+	}
+	cut := append([]byte("HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\n\r\n"), traceGzipBytes(t, []byte(long.String()))[:2000]...)
+	var events []captureEvent
+	for _, message := range [][]byte{raw, chunked, cut, []byte("HTTP/1.1 200 OK\r\n\r\nplain")} {
+		event := captureEvent{Protocol: "http", Event: "http_2xx", Status: 200, Payload: traceHTTPPayload(message, true)}
+		if httpGzipped(message) {
+			event.gzipped = message
+		}
+		events = append(events, event)
+	}
+	next, _ := model.Update(traceEventMsg{events: events})
+	model = next.(traceScreenModel)
+	model.decode = true
+	for number, want := range []string{body, body, "partial 5 9aab", ""} {
+		text := strings.Join(model.buildDetail(number).raw, "\n")
+		if !strings.Contains(text, want) {
+			t.Fatalf("event %d: decoded text does not have %q: %q", number, want, text[:min(len(text), 400)])
+		}
+		note := map[int]string{0: "bytes decoded", 1: "bytes decoded", 2: "was not captured", 3: "not gzip"}[number]
+		if !strings.Contains(text, note) {
+			t.Fatalf("event %d: note %q missing: %q", number, note, text)
+		}
+	}
+	// 풀린 크기에는 상한이 있다.
+	bomb := append([]byte("HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\n\r\n"), traceGzipBytes(t, make([]byte, traceGunzipLimit+1024))...)
+	if text, note := traceGunzipMessage(bomb); len(text) > 4*traceGunzipLimit+200 || !strings.Contains(note, "cut at") {
+		t.Fatalf("gzip bomb: %d bytes, note %q", len(text), note)
+	}
+}
+
+func TestHTTPTrackerKeepsRawBytesOfGzipMessagesWhenAsked(t *testing.T) {
+	message := "HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\nContent-Length: 3\r\n\r\n\x1f\x8b\x08"
+	tracker := newHTTPTracker(false, true, false)
+	if event, _ := tracker.event(httpTestPacket(message, 1, false), 0); event.gzipped != nil {
+		t.Fatal("kept raw bytes without keepGzip")
+	}
+	tracker.keepGzip = true
+	if event, _ := tracker.event(httpTestPacket(message, 2, false), 0); string(event.gzipped) != message {
+		t.Fatalf("head mode raw = %q", event.gzipped)
+	}
+	if event, _ := tracker.event(httpTestPacket("HTTP/1.1 200 OK\r\n\r\nplain", 3, false), 0); event.gzipped != nil {
+		t.Fatal("kept raw bytes of a message without gzip")
+	}
+	messages := newHTTPMessages(tracker, httpMessageMax, false)
+	if events := messages.add(httpTestPacket(message, 4, false), 0, time.Unix(100, 0)); len(events) != 1 || string(events[0].gzipped) != message {
+		t.Fatalf("--payload=all raw = %v", events)
 	}
 }

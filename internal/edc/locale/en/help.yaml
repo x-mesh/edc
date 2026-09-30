@@ -165,6 +165,8 @@ command:
       - "Press g to scroll events."
       - "In the event list, press Up or Down to select an event. The list stops."
       - "Press Enter to see all fields and the whole payload. Press End to follow."
+      - "Press f to follow the newest event in the detail view."
+      - "trace http: v shows payload lines, m shows secrets, z decodes gzip."
       - "Press Tab for the next view and Shift+Tab for the previous view."
       - "Use --group-by source, target, port, process, or event for grouped rows."
       - "Grouped rows label the event count rate EVENT/s and show payload traffic."

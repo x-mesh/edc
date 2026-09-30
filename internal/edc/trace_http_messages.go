@@ -163,6 +163,9 @@ func (messages *httpMessages) finishAt(key httpStreamKey, lost bool, end int, kn
 	}
 	event := message.event
 	event.Payload = traceHTTPPayload(data, messages.showSecrets)
+	if messages.tracker.keepGzip && httpGzipped(data) {
+		event.gzipped = slices.Clone(data)
+	}
 	event.PayloadTruncated = truncated
 	event.Bytes = uint64(len(data))
 	return append([]captureEvent{event}, message.interim...)

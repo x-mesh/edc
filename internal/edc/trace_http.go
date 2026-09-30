@@ -62,8 +62,10 @@ type httpTracker struct {
 	server      bool
 	payload     bool
 	showSecrets bool
-	pending     map[uint64][]httpPendingRequest
-	size        int
+	// keepGzip이면 gzip message의 원본 byte를 event에 붙인다. 전체 화면만 켠다.
+	keepGzip bool
+	pending  map[uint64][]httpPendingRequest
+	size     int
 }
 
 func newHTTPTracker(server, payload, showSecrets bool) *httpTracker {
@@ -90,6 +92,9 @@ func (tracker *httpTracker) event(packet httpPacket, clockOffset int64) (capture
 	}
 	if tracker.payload {
 		event.Payload = traceHTTPPayload(packet.payload, tracker.showSecrets)
+		if tracker.keepGzip && httpGzipped(packet.payload) {
+			event.gzipped = slices.Clone(packet.payload)
+		}
 	}
 	if requestOK {
 		host, path := traceHTTPTarget(target, host)
@@ -176,9 +181,18 @@ var traceHTTPSecretHeaders = []string{"authorization", "proxy-authorization", "c
 // traceHTTPPayload는 --payload로 보여 줄 message 앞부분이다. BPF가 앞부분만 읽으므로 header 끝을 못 봤으면
 // 마지막 header 줄이 CRLF 없이 값 중간에서 끊겨 있다. 그 줄도 header로 보고 가린다.
 func traceHTTPPayload(payload []byte, showSecrets bool) string {
+	if !showSecrets {
+		payload = traceMaskHTTPHeaders(payload)
+	}
+	return traceEscapeText(payload)
+}
+
+// traceMaskHTTPHeaders는 traceHTTPSecretHeaders의 값을 ***로 바꾼다. escape한 글자에도 쓸 수 있다. escape는 header
+// 이름과 CRLF를 바꾸지 않으므로, 전체 화면은 원문을 두었다가 그릴 때 가린다.
+func traceMaskHTTPHeaders(payload []byte) []byte {
 	head, body, complete := bytes.Cut(payload, []byte("\r\n\r\n"))
 	lines := bytes.Split(head, []byte("\r\n"))
-	for index := 1; index < len(lines) && !showSecrets; index++ {
+	for index := 1; index < len(lines); index++ {
 		name, _, ok := bytes.Cut(lines[index], []byte(":"))
 		if ok && slices.ContainsFunc(traceHTTPSecretHeaders, func(secret string) bool { return strings.EqualFold(string(bytes.TrimSpace(name)), secret) }) {
 			lines[index] = append(slices.Clip(name), ": ***"...)
@@ -188,7 +202,20 @@ func traceHTTPPayload(payload []byte, showSecrets bool) string {
 	if complete {
 		text = append(append(text, "\r\n\r\n"...), body...)
 	}
-	return traceEscapeText(text)
+	return text
+}
+
+// httpGzipped는 header에 Content-Encoding: gzip이 있는 message다. 전체 화면은 이런 message만 원본 byte를 두었다가
+// 상세 보기에서 푼다. escape한 글자로는 byte를 되돌릴 수 없다. 원문의 \x41 같은 글자와 escape를 구분할 수 없기 때문이다.
+func httpGzipped(payload []byte) bool {
+	head, _, _ := bytes.Cut(payload, []byte("\r\n\r\n"))
+	for _, line := range bytes.Split(head, []byte("\r\n"))[1:] {
+		name, value, ok := bytes.Cut(line, []byte(":"))
+		if ok && bytes.EqualFold(bytes.TrimSpace(name), []byte("content-encoding")) && bytes.Contains(bytes.ToLower(value), []byte("gzip")) {
+			return true
+		}
+	}
+	return false
 }
 
 // traceEscapeText는 제어 문자와 UTF-8이 아닌 byte를 \xNN으로 바꾼다. payload는 상대가 보낸 값이라, 그대로 찍으면

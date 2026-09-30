@@ -60,6 +60,15 @@ type traceScreenModel struct {
 	selected int
 	detail   *traceDetail
 	payloads traceFullPayloads
+	// gzipped는 gzip message의 원본 byte다. 상세 보기에서 z로 본문을 풀 때 쓴다.
+	gzipped traceFullPayloads
+	// payloadLines는 목록에서 event 아래에 payload 줄을 보일지다. v로 바꾼다. --payload로 시작하면 켜져 있다.
+	payloadLines bool
+	// secrets는 인증 header 값을 보일지다. m으로 바꾼다. 화면은 원문을 두었다가 그릴 때 가린다.
+	secrets bool
+	// follow면 상세 보기가 가장 최근 event를 따라간다. decode면 상세 보기가 gzip 본문을 푼다.
+	follow bool
+	decode bool
 }
 
 func newTraceScreenModel(protocol string, options tcpTraceOptions, eventCh <-chan captureEvent, resultCh <-chan traceFinishedMsg, stop func()) traceScreenModel {
@@ -71,7 +80,8 @@ func newTraceScreenModel(protocol string, options tcpTraceOptions, eventCh <-cha
 	return traceScreenModel{
 		protocol: protocol, side: options.side, groupBy: options.groupBy, process: options.process, destination: options.destination,
 		duration: options.duration, started: time.Now(), eventCh: eventCh, resultCh: resultCh, stop: stop, input: input,
-		width: 80, height: 24, selected: -1,
+		width: 80, height: 24, selected: -1, payloads: traceFullPayloads{minimum: httpPayloadHead},
+		payloadLines: options.payload != "", secrets: options.showSecrets,
 	}
 }
 
@@ -123,7 +133,8 @@ func (model traceScreenModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// 화면은 event를 최대 10,000건 보관한다. --payload=all의 1MiB payload를 그대로 두면 메모리가 GB 단위로
 				// 커지므로 목록에는 앞부분만 남긴다. 상세 보기에 쓸 전체는 최근 것만 상한 안에서 따로 둔다.
 				model.payloads.keep(model.first+len(model.events), event.Payload)
-				event.Payload = traceTrimText(event.Payload, httpPayloadHead)
+				model.gzipped.keep(model.first+len(model.events), string(event.gzipped))
+				event.Payload, event.gzipped = traceTrimText(event.Payload, httpPayloadHead), nil
 				model.events = append(model.events, event)
 				model.arrivals = append(model.arrivals, now)
 			}
@@ -134,9 +145,13 @@ func (model traceScreenModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			model.arrivals = model.arrivals[len(model.arrivals)-traceScreenEventLimit:]
 			model.truncated = true
 			model.payloads.drop(model.first)
+			model.gzipped.drop(model.first)
 			if model.selected >= 0 && model.selected < model.first {
 				model.selected = model.first
 			}
+		}
+		if model.follow {
+			model.followNewest()
 		}
 		return model, waitTraceMessage(model.eventCh, model.resultCh)
 	case traceFinishedMsg:
@@ -215,6 +230,17 @@ func (model traceScreenModel) updateKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd
 	case "end":
 		model.selected = -1
 		return model, nil
+	case "v":
+		model.payloadLines = !model.payloadLines
+		return model, nil
+	case "m":
+		model.secrets = !model.secrets
+		return model, nil
+	case "f":
+		if model.groupBy == "" {
+			model.openFollow()
+		}
+		return model, nil
 	case "enter":
 		if model.groupBy == "" {
 			model.openDetail()
@@ -252,7 +278,11 @@ func traceScreenHelp(protocol string) string {
 			}
 		}
 	}
-	return strings.Join(append(keys, "g scroll", "↑↓ select", "enter detail", "end live", "esc clear", "q quit", "ctrl-c stop"), "  ")
+	keys = append(keys, "g scroll", "↑↓ select", "enter detail", "f follow")
+	if protocol == "http" {
+		keys = append(keys, "v payload", "m secrets")
+	}
+	return strings.Join(append(keys, "end live", "esc clear", "q quit", "ctrl-c stop"), "  ")
 }
 
 func (model *traceScreenModel) requestStop() {
@@ -283,6 +313,9 @@ func traceScreenHeader(model traceScreenModel) []string {
 	status := "live"
 	if model.selected >= 0 && model.groupBy == "" {
 		status = fmt.Sprintf("paused, %d newer", model.first+len(model.events)-1-model.selected)
+	}
+	if model.secrets && model.protocol == "http" {
+		status += "  ·  secrets shown"
 	}
 	if model.stopping {
 		status = "stopping"
@@ -351,7 +384,10 @@ func traceScreenRows(model traceScreenModel) []string {
 		if model.first+index == model.selected {
 			lines[0] = liveSelected(formatTraceScreenEventLine(event, model.width), os.Getenv("NO_COLOR") == "")
 		}
-		if event.Payload != "" {
+		if model.payloadLines && event.Payload != "" {
+			if !model.secrets {
+				event.Payload = string(traceMaskHTTPHeaders([]byte(event.Payload)))
+			}
 			lines = append(lines, formatTraceScreenPayload(event, model.width))
 		}
 		// 넘친 채로 두면 traceScreenPadRows가 위를 잘라 event 행 없이 payload 줄만 남으므로, 두 줄이 다 들어가지 않으면 멈춘다.
@@ -678,6 +714,17 @@ func traceRuneIndex(value string, count int) int {
 	return len(value)
 }
 
+// traceScreenScope는 전체 화면이 모을 범위다. trace http는 --payload가 없어도 message 앞부분을 모은다. 옵션을 늘리지
+// 않고 Enter와 v로 바로 보려는 것이다. 인증 header는 원문으로 두고 그릴 때 가려서 m으로 풀 수 있게 한다. 파이프와
+// --raw 출력은 이 범위를 쓰지 않는다.
+func traceScreenScope(protocol string, options tcpTraceOptions) traceScope {
+	scope := options.scope(protocol)
+	if protocol == "http" {
+		scope.payload, scope.showSecrets, scope.keepGzip = true, true, true
+	}
+	return scope
+}
+
 func runTraceScreen(protocol string, options tcpTraceOptions) int {
 	if err := traceProtocolPrerequisites(protocol); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -695,7 +742,7 @@ func runTraceScreen(protocol string, options tcpTraceOptions) int {
 	// 끝날 때 어느 보기일지 모르므로 모든 보기의 요약을 쌓는다. 수집 goroutine만 쓰고, resultCh를 받은 뒤에 읽는다.
 	aggregate := newTraceAggregate(protocol, traceGroupViews(protocol)...)
 	go func() {
-		summary, err := collectTraceEventsLive(options.scope(protocol), options.duration, func(event captureEvent) error {
+		summary, err := collectTraceEventsLive(traceScreenScope(protocol, options), options.duration, func(event captureEvent) error {
 			if traceProtocol(event) != protocol || !traceEventMatches(event, options.process, options.destination) {
 				return nil
 			}

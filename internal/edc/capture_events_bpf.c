@@ -898,6 +898,9 @@ int tcp_create_openreq_child_exit(__u64 *ctx) {
 #define HTTP_START 0
 #define HTTP_CONTINUATION 1
 #define MSG_PEEK 2
+// HTTP_SPLIT_SIZE보다 짧게 시작한 읽기와 쓰기는 첫 줄이 끝나지 않았을 수 있다. caddy는 요청의 첫 14 byte를 먼저 읽고
+// 나머지를 다시 읽는다. --payload=all이 아니면 이런 socket과 방향에서만 다음 조각 하나를 이어서 넘긴다.
+#define HTTP_SPLIT_SIZE 64
 
 struct http_record {
 	__u64 timestamp_ns;
@@ -931,7 +934,8 @@ struct {
 } http_scratch SEC(".maps");
 
 // http_streams는 socket과 방향마다 지금 message에서 주고받은 byte 수다. HTTP로 시작하지 않는 읽기와 쓰기는 이 값이
-// http_message_limit보다 작을 때만 앞 message의 이어지는 조각으로 넘긴다.
+// http_message_limit보다 작을 때만 앞 message의 이어지는 조각으로 넘긴다. --payload=all이 아니면 HTTP_SPLIT_SIZE보다
+// 짧게 시작한 message만 둔다.
 struct http_stream_key {
 	__u64 skaddr;
 	__u64 direction;
@@ -1082,8 +1086,23 @@ static __always_inline void http_capture(struct sock *sk, __u64 buffer, __u64 li
 		__u64 seen = offset + size;
 		bpf_map_update_elem(&http_streams, &key, &seen, BPF_ANY);
 	} else if (!start) {
-		return;
+		// 모든 TCP 송수신이 여기를 지나므로 짧은 첫 조각을 본 socket에서만 map에 값이 있다.
+		__u64 *seen = bpf_map_lookup_elem(&http_streams, &key);
+		if (!seen) {
+			return;
+		}
+		offset = *seen;
+		bpf_map_delete_elem(&http_streams, &key);
+		if (offset >= budget) {
+			return;
+		}
+		budget -= offset;
+		iov = 0;
 	} else {
+		if (size < HTTP_SPLIT_SIZE) {
+			__u64 seen = size;
+			bpf_map_update_elem(&http_streams, &key, &seen, BPF_ANY);
+		}
 		iov = 0;
 	}
 	__u32 zero = 0;

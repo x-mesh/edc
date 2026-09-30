@@ -471,6 +471,7 @@ func collectCaptureEventsFor(scope traceScope, duration time.Duration, onEvent f
 	// --payload=all은 message가 끝날 때 payload를 붙이므로 tracker는 첫 조각에 payload를 붙이지 않는다.
 	requests := newHTTPTracker(scope.server, scope.payload && !scope.payloadAll, scope.showSecrets)
 	requests.keepGzip = scope.keepGzip
+	splits := httpSplitStarts{}
 	var messages *httpMessages
 	if scope.payloadAll {
 		messages = newHTTPMessages(requests, httpMessageMax, scope.showSecrets)
@@ -571,6 +572,9 @@ func collectCaptureEventsFor(scope traceScope, duration time.Duration, onEvent f
 			continue
 		}
 		if packet, ok := parseHTTPRecord(record.RawSample); ok {
+			if packet, ok = splits.join(packet); !ok {
+				continue
+			}
 			if messages != nil {
 				now := time.Now()
 				events := messages.add(packet, clockOffset, now)
@@ -581,6 +585,10 @@ func collectCaptureEventsFor(scope traceScope, duration time.Duration, onEvent f
 				if err := emit(events); err != nil {
 					return captureSummary{}, err
 				}
+				continue
+			}
+			// 첫 조각에 잇지 못한 조각은 요청이나 응답으로 읽지 않는다.
+			if packet.continued {
 				continue
 			}
 			event, ok := requests.event(packet, clockOffset)

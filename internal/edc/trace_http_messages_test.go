@@ -13,7 +13,11 @@ func httpChunk(payload string, at uint64, sent bool, offset uint32) httpPacket {
 }
 
 func newTestHTTPMessages(server bool, limit int) *httpMessages {
-	return newHTTPMessages(newHTTPTracker(server, false, false), limit, false)
+	side := traceClientSide
+	if server {
+		side = traceServerSide
+	}
+	return newHTTPMessages(newHTTPTracker(side, false, false), limit, false)
 }
 
 func TestHTTPMessagesJoinABodyFromLaterWrites(t *testing.T) {
@@ -128,7 +132,7 @@ func TestHTTPMessagesKeepTheRequestOpenAcrossAnInterimResponse(t *testing.T) {
 }
 
 func TestHTTPMessagesShowSecretsWhenAsked(t *testing.T) {
-	messages := newHTTPMessages(newHTTPTracker(false, false, true), httpMessageMax, true)
+	messages := newHTTPMessages(newHTTPTracker(traceClientSide, false, true), httpMessageMax, true)
 	events := messages.add(httpTestPacket("GET / HTTP/1.1\r\nAuthorization: Bearer t0ken\r\n\r\n", 1_000_000, true), 0, time.Unix(100, 0))
 	if len(events) != 1 || !strings.Contains(events[0].Payload, "Bearer t0ken") {
 		t.Fatalf("events = %#v", events)
@@ -178,7 +182,7 @@ func TestHTTPSplitStartsJoinARequestLineReadInTwoParts(t *testing.T) {
 	if !ok || joined.continued || joined.bootTimeNS != 1_000_000 || len(starts) != 0 {
 		t.Fatalf("joined = %+v, ok %v, held %d", joined, ok, len(starts))
 	}
-	event, ok := newHTTPTracker(true, false, false).event(joined, 0)
+	event, ok := newHTTPTracker(traceServerSide, false, false).event(joined, 0)
 	if !ok || event.Path != "/strace-probe" || event.Target != "edc-proxy:8080" || event.Side != traceServerSide {
 		t.Fatalf("event = %+v", event)
 	}
@@ -228,7 +232,7 @@ func TestHTTPSplitStartsPassOtherPackets(t *testing.T) {
 }
 
 func TestHTTPMessagesTakeARequestWhoseFirstLineWasSplit(t *testing.T) {
-	starts, messages, now := httpSplitStarts{}, newHTTPMessages(newHTTPTracker(true, false, false), httpMessageMax, false), time.Unix(100, 0)
+	starts, messages, now := httpSplitStarts{}, newHTTPMessages(newHTTPTracker(traceServerSide, false, false), httpMessageMax, false), time.Unix(100, 0)
 	var events []captureEvent
 	first, second := "POST /uplo", "ad HTTP/1.1\r\nHost: x\r\nContent-Length: 4\r\n\r\nab"
 	for _, packet := range []httpPacket{

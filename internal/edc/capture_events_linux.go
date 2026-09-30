@@ -469,7 +469,7 @@ func collectCaptureEventsFor(scope traceScope, duration time.Duration, onEvent f
 	owners := newPIDTargetCache()
 	queries := newDNSQueryTracker(scope.server)
 	// --payload=all은 message가 끝날 때 payload를 붙이므로 tracker는 첫 조각에 payload를 붙이지 않는다.
-	requests := newHTTPTracker(scope.server, scope.payload && !scope.payloadAll, scope.showSecrets)
+	requests := newHTTPTracker(scope.side, scope.payload && !scope.payloadAll, scope.showSecrets)
 	requests.keepGzip = scope.keepGzip
 	splits := httpSplitStarts{}
 	var messages *httpMessages

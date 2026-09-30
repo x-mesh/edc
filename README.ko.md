@@ -897,9 +897,29 @@ Linux 6.4 이상에서 `trace http`를 사용하면 평문 HTTP/1.x 요청과 �
 
 요청은 `http_request` event입니다. 응답은 `http_1xx`부터 `http_5xx`까지이고 `status`에 코드가 나옵니다. HTTP/1.x는 한 연결에서 요청 순서대로 응답하므로, 응답은 같은 연결에서 아직 응답이 없는 가장 오래된 요청과 짝짓습니다. `latency_ms`는 client가 요청을 보낸 때부터 응답을 읽은 때까지입니다. `1xx` 응답은 요청을 끝내지 않습니다.
 
-HTTP event의 `target`은 `Host` header이고, `Host`가 없으면 서버 주소입니다. `--side server`를 사용하면 로컬 HTTP 서버를 관측합니다. 서버 쪽 `latency_ms`는 서버가 요청을 읽은 때부터 응답을 쓴 때까지입니다.
+HTTP event의 `target`은 `Host` header이고, `Host`가 없으면 서버 주소입니다. 서버 쪽 `latency_ms`는 서버가 요청을 읽은 때부터 응답을 쓴 때까지입니다.
 
-edc는 port가 아니라 data의 앞부분으로 HTTP를 찾으므로, 어느 port의 HTTP든 봅니다. `source`는 항상 이 host 쪽 주소이고 `destination`은 상대 주소입니다. `--port`를 사용하면 HTTP 서버 port 하나만 봅니다. client 쪽에서는 이 host가 호출하는 서버의 port이고, `--side server`에서는 로컬 서버의 port입니다. port는 kernel에서 확인하므로 다른 연결의 data는 읽지 않습니다.
+`trace http`는 이 host에서 일어나는 HTTP를 두 쪽으로 나눠 보여 줍니다. event 행 앞에 쪽이 붙습니다.
+
+- `client:`는 이 host가 보낸 요청입니다. proxy가 backend로 보내는 요청이나 program이 API를 호출하는 요청이 여기에 속합니다.
+- `server:`는 로컬 서버가 받은 요청입니다.
+
+JSON event에는 `"side": "client"`나 `"side": "server"`가 붙습니다. 한 쪽만 보려면 `--side client`나 `--side server`를 씁니다. 전체 화면에서는 `/`를 누르고 `server`를 입력하면 server 쪽 행만 남습니다. `trace dns`는 기본으로 client 쪽만 봅니다.
+
+proxy를 거치는 요청은 구간마다 한 번씩 보입니다. 예를 들어 같은 host에서 nginx가 port 9900으로 요청을 받아 port 9000의 backend로 보내면, 사용자 요청 하나가 요청 행 세 개로 나옵니다. port 9900에서 받은 nginx의 `server:`, port 9000으로 보낸 nginx의 `client:`, port 9000에서 받은 backend의 `server:`입니다. group 보기는 server 쪽을 `nginx (server)`처럼 따로 묶습니다.
+
+| 보려는 것 | 명령 |
+| --- | --- |
+| 이 host의 HTTP 전부 | `./bin/edc trace http` |
+| 로컬 서버가 받은 요청 | `./bin/edc trace http --side server` |
+| 이 host가 보낸 요청(backend나 외부 API 호출) | `./bin/edc trace http --side client` |
+| port 9000 연결의 양 끝 | `./bin/edc trace http --port 9000` |
+| port 9900의 proxy가 받은 요청만 | `./bin/edc trace http --side server --port 9900` |
+| 쪽마다 process별 응답 시간 | `./bin/edc trace http --port 9000 --group-by process` |
+
+한 구간의 client 응답 시간과 서버 응답 시간은 서로 다른 시간을 잽니다. client 응답 시간에는 network와, 서버가 요청을 읽기 전까지 기다린 시간이 들어갑니다. 서버 응답 시간에는 서버가 처리한 시간만 들어갑니다. client 응답 시간이 서버 응답 시간보다 훨씬 길면 network와 서버의 대기열을 확인합니다.
+
+edc는 port가 아니라 data의 앞부분으로 HTTP를 찾으므로, 어느 port의 HTTP든 봅니다. `source`는 항상 이 host 쪽 주소이고 `destination`은 상대 주소입니다. `--port`를 사용하면 이 host나 상대가 그 port를 쓰는 연결만 봅니다. `--side server`와 함께 쓰면 로컬 서버 하나를, `--side client`와 함께 쓰면 이 host가 그 port의 서버로 보낸 요청을 봅니다. port는 kernel에서 확인하므로 다른 연결의 data는 읽지 않습니다.
 
 `--payload`를 사용하면 각 message의 data를 볼 수 있습니다. edc는 event마다 그 아래 줄에 body를 출력하고, body가 없으면 header를 출력합니다. `--raw`에서는 `payload` 필드에 data 전체가 들어 있습니다. data는 한 번의 읽기나 쓰기에서 앞 4KiB(4,096 byte)라서 더 긴 body는 잘립니다. program이 header와 body를 두 번에 나눠 쓰면 body는 보이지 않습니다. `--payload`를 쓰면 레코드가 커져서, 요청이 많은 서버에서는 event가 유실될 수 있습니다. 유실된 event 수는 요약에 표시됩니다. `--payload`는 query를 그대로 두지만 `Authorization`, `Proxy-Authorization`, `Cookie`, `Set-Cookie` header 값은 가립니다. 다른 header, query, body는 그대로 출력하므로 token이나 비밀번호가 보일 수 있습니다. 출력을 공유하기 전에 token이나 비밀번호가 없는지 확인합니다. 제어 문자는 `\xNN`으로 바꾸므로 data가 terminal을 조작하지 못합니다. `--json`은 요약만 기록하므로 `--payload`와 함께 사용할 수 없습니다.
 
@@ -907,7 +927,7 @@ edc는 port가 아니라 data의 앞부분으로 HTTP를 찾으므로, 어느 po
 
 `--payload`와 함께 `--show-secrets`를 사용하면 `Authorization`, `Proxy-Authorization`, `Cookie`, `Set-Cookie` header 값도 그대로 보여 줍니다. 이 값이 있으면 다른 사람이 그 계정을 쓸 수 있으므로, 이 출력은 공유하지 않습니다. 전체 화면에서는 대신 `m`을 누릅니다.
 
-`Ctrl-C` 후 summary는 method, host, path마다 한 행을 표시합니다. group 행은 요청, 응답, 4xx·5xx 응답, 응답 없음, 평균·최대 응답 시간을 표시합니다.
+`Ctrl-C` 후 summary는 쪽, method, host, path마다 한 행을 표시합니다. 두 쪽이 모두 있으면 쪽별 합계를 따로 보여 주고 `SIDE` 칸을 더합니다. JSON에는 쪽별 합계를 담은 `client`와 `server` 객체가 붙습니다. group 행은 요청, 응답, 4xx·5xx 응답, 응답 없음, 평균·최대 응답 시간을 표시합니다.
 
 HTTPS, HTTP/2, HTTP/3은 kernel에서 암호문이나 binary frame으로만 보이므로 표시하지 않습니다. edc는 한 번의 읽기나 쓰기가 시작되는 곳에서만 message를 찾습니다. 그래서 한 번의 읽기에 앞 응답의 끝과 다음 응답의 시작이 함께 들어 있으면 다음 응답을 놓칩니다. 프로그램이 message 하나를 여러 버퍼로 나눠 쓰면 첫 버퍼만 읽으므로, `Host` header는 첫 버퍼의 앞 512 byte 안에 있어야 합니다. 없으면 target은 서버 주소입니다. edc가 읽는 kernel field는 Linux 6.4에 생겼으므로, 더 오래된 kernel에서는 오류를 내고 멈춥니다.
 

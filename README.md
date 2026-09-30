@@ -933,9 +933,29 @@ Use `trace http` on Linux 6.4 or later to print plain HTTP/1.x requests and resp
 
 A request is an `http_request` event. A response is one of `http_1xx` to `http_5xx`, and `status` has the code. HTTP/1.x answers the requests on one connection in order. So a response matches the oldest request on the same connection that has no answer. `latency_ms` starts when the client sends the request and stops when the client reads the response. A `1xx` response does not end the request.
 
-The `target` of an HTTP event is the `Host` header. If there is no `Host` header, the target is the server address. Use `--side server` to watch a local HTTP server. On the server side, `latency_ms` starts when the server reads the request and stops when the server writes the response.
+The `target` of an HTTP event is the `Host` header. If there is no `Host` header, the target is the server address. On the server side, `latency_ms` starts when the server reads the request and stops when the server writes the response.
 
-edc finds HTTP by the start of the data, not by the port, so it sees HTTP on any port. The `source` column is always this host, and `destination` is the peer. Use `--port` to watch one HTTP server port. On the client side, it is the port of the server that this host calls. With `--side server`, it is the port of the local server. edc checks the port in the kernel, so it does not read the data of other connections.
+`trace http` shows two sides of HTTP on this host. Each event row starts with the side:
+
+- `client:` is a request that this host sent. For example, a proxy sends requests to its backend, or a program calls an API.
+- `server:` is a request that a local server received.
+
+JSON events have `"side": "client"` or `"side": "server"`. Use `--side client` or `--side server` to keep one side. In the full-screen view, press `/` and type `server` to keep the server rows. `trace dns` shows only the client side by default.
+
+A proxy shows one request on each hop. For example, nginx receives requests on port 9900 and sends them to a backend on port 9000 on the same host. Then one user request gives three request rows: `server:` for nginx on port 9900, `client:` for nginx to port 9000, and `server:` for the backend on port 9000. The grouped views keep the server side in separate rows, for example `nginx (server)`.
+
+| To see | Command |
+| --- | --- |
+| All HTTP on this host | `./bin/edc trace http` |
+| The requests that local servers received | `./bin/edc trace http --side server` |
+| The requests that this host sent, for example to a backend or an API | `./bin/edc trace http --side client` |
+| Both ends of the connections to port 9000 | `./bin/edc trace http --port 9000` |
+| Only the requests that the proxy on port 9900 received | `./bin/edc trace http --side server --port 9900` |
+| The latency of each process on each side | `./bin/edc trace http --port 9000 --group-by process` |
+
+The client latency and the server latency of one hop measure different times. The client latency includes the network and the wait before the server reads the request. The server latency includes only the work of the server. If the client latency is much larger than the server latency, examine the network and the server queue.
+
+edc finds HTTP by the start of the data, not by the port, so it sees HTTP on any port. The `source` column is always this host, and `destination` is the peer. Use `--port` to keep the connections that use one port on this host or on the peer. With `--side server`, it shows one local server. With `--side client`, it shows the requests from this host to the servers on that port. edc checks the port in the kernel, so it does not read the data of other connections.
 
 Use `--payload` to see the data of each message. Under each event, edc prints the body. If there is no body, it prints the headers. With `--raw`, the `payload` field has all the data. The data is the first 4 KiB (4,096 bytes) of the read or the write, so edc cuts a longer body. If a program writes the headers and the body in two writes, edc does not see the body. Each record is larger with `--payload`, so a busy server can cause lost events. The summary shows the number of lost events. `--payload` keeps the query, but it hides the values of the `Authorization`, `Proxy-Authorization`, `Cookie`, and `Set-Cookie` headers. edc shows the other headers, the query, and the body as they are, and they can contain tokens and passwords. Before you share the output, check it for tokens and passwords. edc changes control characters to `\xNN`, so the data cannot change the terminal. `--payload` does not work with `--json`, because `--json` writes only the summary.
 
@@ -943,7 +963,7 @@ Use `--payload=all` to see each whole message, up to 1 MiB. edc follows the mess
 
 Use `--show-secrets` with `--payload` to show the values of the `Authorization`, `Proxy-Authorization`, `Cookie`, and `Set-Cookie` headers. Other people can use an account with these values. Do not share output that has them. In the full screen, press `m` instead.
 
-The summary after Ctrl-C shows one row for each method, host, and path. Grouped rows show the requests, the responses, the 4xx and 5xx responses, the unanswered requests, and the average and maximum latency.
+The summary after Ctrl-C shows one row for each side, method, host, and path. If the trace has both sides, the summary shows the totals of each side and adds a `SIDE` column. JSON adds the `client` and `server` objects with the totals of each side. Grouped rows show the requests, the responses, the 4xx and 5xx responses, the unanswered requests, and the average and maximum latency.
 
 `trace http` does not show HTTPS, HTTP/2, or HTTP/3, because the kernel sees only encrypted data or binary frames. edc finds a message only at the start of a read or a write. If one read has the end of a response and the start of the next response, edc misses the next response. If a program writes one message from several buffers, edc reads only the first buffer. So the `Host` header must be in the first buffer and in the first 512 bytes. If it is not, the target is the server address. The kernel field that edc reads came in Linux 6.4, so older kernels stop with an error.
 

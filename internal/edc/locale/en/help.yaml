@@ -155,7 +155,8 @@ command:
       detail: "list each connection or flow in the summary"
       yes: "skip the question"
       side: "trace dns, http: client side or local server"
-      payload: "trace http: first 4 KiB of each message"
+      payload: "trace http: 4 KiB of each message, =all up to 1 MiB"
+      show_secrets: "trace http --payload: show Cookie and Authorization"
       port: "trace http: only this HTTP server port"
     notes:
       - "The default output opens a full-screen trace view in a terminal."
@@ -174,6 +175,7 @@ command:
       - "trace ndp does the same for IPv6 neighbors."
       - "trace http shows plain HTTP/1.x requests on Linux 6.4 or later."
       - "--payload shows the start of each message."
+      - "--payload=all shows each message up to 1 MiB. Write =all without a space."
       - "--port shows one HTTP server port: the peer, or this host with --side server."
       - "It hides Authorization, Proxy-Authorization, Cookie, and Set-Cookie values."
   report:

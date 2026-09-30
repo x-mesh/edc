@@ -155,7 +155,8 @@ command:
       detail: "요약에 연결이나 flow를 하나씩 표시"
       yes: "확인 질문 생략"
       side: "trace dns, http: 이 host의 client 쪽 또는 로컬 서버"
-      payload: "trace http: 각 message의 앞 4KiB"
+      payload: "trace http: 각 message의 앞 4KiB, =all은 1MiB까지"
+      show_secrets: "--payload: Cookie와 Authorization 값 표시"
       port: "trace http: 이 HTTP 서버 port만"
     notes:
       - "terminal에서는 기본으로 전체 화면 trace를 엽니다."
@@ -174,6 +175,7 @@ command:
       - "trace ndp는 IPv6 neighbor에 대해 같은 일을 합니다."
       - "trace http는 Linux 6.4 이상에서 평문 HTTP/1.x 요청을 표시합니다."
       - "--payload는 message 앞부분을 표시합니다."
+      - "--payload=all은 각 message를 1MiB까지 표시합니다. =all은 붙여 씁니다."
       - "--port는 HTTP 서버 port만 봅니다. --side server면 로컬 port입니다."
       - "Authorization, Proxy-Authorization, Cookie, Set-Cookie 값은 가립니다."
   report:

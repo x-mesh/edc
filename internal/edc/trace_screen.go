@@ -110,6 +110,9 @@ func (model traceScreenModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		for _, event := range value.events {
 			model.received++
 			if traceProtocol(event) == model.protocol {
+				// 화면은 event를 한 줄로만 보여 주고 최대 10,000건 보관한다. --payload=all의 1MiB payload를 그대로 두면
+				// 메모리가 GB 단위로 커지므로 앞부분만 남긴다.
+				event.Payload = traceTrimText(event.Payload, httpPayloadHead)
 				model.events = append(model.events, event)
 				model.arrivals = append(model.arrivals, now)
 			}
@@ -289,7 +292,7 @@ func traceScreenRows(model traceScreenModel) []string {
 		}
 		lines := []string{formatTraceScreenEvent(event, model.width)}
 		if event.Payload != "" {
-			lines = append(lines, formatTraceScreenPayload(event.Payload, model.width))
+			lines = append(lines, formatTraceScreenPayload(event, model.width))
 		}
 		// 넘친 채로 두면 traceScreenPadRows가 위를 잘라 event 행 없이 payload 줄만 남으므로, 두 줄이 다 들어가지 않으면 멈춘다.
 		if len(rows)+len(lines) > available {
@@ -553,8 +556,8 @@ func formatTraceScreenEvent(event captureEvent, width int) string {
 }
 
 // formatTraceScreenPayload는 event 행 아래에 목적지 칸부터 payload를 한 줄로 쓴다.
-func formatTraceScreenPayload(payload string, width int) string {
-	line := "↳ " + traceHTTPPayloadLine(payload)
+func formatTraceScreenPayload(event captureEvent, width int) string {
+	line := "↳ " + traceHTTPPayloadSummary(event)
 	if width >= 72 {
 		line = strings.Repeat(" ", traceScrollProcessWidth+1) + line
 	}

@@ -34,6 +34,18 @@ type captureEventsDnsRecord struct {
 	_           [4]byte
 }
 
+type captureEventsHttpCursor struct {
+	_         structs.HostLayout
+	Pointer   uint64
+	Left      uint64
+	Remaining uint64
+	Offset    uint64
+	Segment   uint64
+	Iov       uint64
+	NrSegs    uint64
+	Kind      uint64
+}
+
 type captureEventsHttpRecord struct {
 	_           structs.HostLayout
 	TimestampNs uint64
@@ -44,14 +56,14 @@ type captureEventsHttpRecord struct {
 	Len         uint32
 	Family      uint16
 	Direction   uint8
-	Reserved    uint8
+	Kind        uint8
 	Sport       uint16
 	Dport       uint16
 	Source      [16]uint8
 	Destination [16]uint8
 	Comm        [16]int8
-	Payload     [4096]uint8
-	_           [4]byte
+	Offset      uint32
+	Payload     [16384]uint8
 }
 
 type captureEventsHttpRecvPending struct {
@@ -59,6 +71,21 @@ type captureEventsHttpRecvPending struct {
 	Skaddr uint64
 	Buffer uint64
 	Limit  uint64
+}
+
+type captureEventsHttpSendPending struct {
+	_      structs.HostLayout
+	Skaddr uint64
+	Buffer uint64
+	Limit  uint64
+	Iov    uint64
+	NrSegs uint64
+}
+
+type captureEventsHttpStreamKey struct {
+	_         structs.HostLayout
+	Skaddr    uint64
+	Direction uint64
 }
 
 type captureEventsSockOwner struct {
@@ -90,8 +117,11 @@ const (
 	captureEventsMapDnsQueryPending            = "dns_query_pending"
 	captureEventsMapDnsScratch                 = "dns_scratch"
 	captureEventsMapEvents                     = "events"
+	captureEventsMapHttpCursors                = "http_cursors"
 	captureEventsMapHttpRecvPending            = "http_recv_pending"
 	captureEventsMapHttpScratch                = "http_scratch"
+	captureEventsMapHttpSendPending            = "http_send_pending"
+	captureEventsMapHttpStreams                = "http_streams"
 	captureEventsMapLostEvents                 = "lost_events"
 	captureEventsMapSockOwners                 = "sock_owners"
 	captureEventsMapUdpSendPending             = "udp_send_pending"
@@ -109,6 +139,7 @@ const (
 	captureEventsProgTcpSendLength             = "tcp_send_length"
 	captureEventsProgTcpSendReset              = "tcp_send_reset"
 	captureEventsProgTcpSendmsgEntry           = "tcp_sendmsg_entry"
+	captureEventsProgTcpSendmsgExit            = "tcp_sendmsg_exit"
 	captureEventsProgUdpEnqueueEntry           = "udp_enqueue_entry"
 	captureEventsProgUdpSendSkbEntry           = "udp_send_skb_entry"
 	captureEventsProgUdpSendSkbExit            = "udp_send_skb_exit"
@@ -119,6 +150,7 @@ const (
 	captureEventsVarEmitDnsTcpMessages         = "emit_dns_tcp_messages"
 	captureEventsVarEmitHttpMessages           = "emit_http_messages"
 	captureEventsVarEmitUdpEvents              = "emit_udp_events"
+	captureEventsVarHttpMessageLimit           = "http_message_limit"
 	captureEventsVarHttpPayloadLimit           = "http_payload_limit"
 	captureEventsVarHttpPort                   = "http_port"
 	captureEventsVarTcpStatePort               = "tcp_state_port"
@@ -181,6 +213,7 @@ type captureEventsProgramSpecs struct {
 	TcpSendLength             *ebpf.ProgramSpec `ebpf:"tcp_send_length"`
 	TcpSendReset              *ebpf.ProgramSpec `ebpf:"tcp_send_reset"`
 	TcpSendmsgEntry           *ebpf.ProgramSpec `ebpf:"tcp_sendmsg_entry"`
+	TcpSendmsgExit            *ebpf.ProgramSpec `ebpf:"tcp_sendmsg_exit"`
 	UdpEnqueueEntry           *ebpf.ProgramSpec `ebpf:"udp_enqueue_entry"`
 	UdpSendSkbEntry           *ebpf.ProgramSpec `ebpf:"udp_send_skb_entry"`
 	UdpSendSkbExit            *ebpf.ProgramSpec `ebpf:"udp_send_skb_exit"`
@@ -197,8 +230,11 @@ type captureEventsMapSpecs struct {
 	DnsQueryPending *ebpf.MapSpec `ebpf:"dns_query_pending"`
 	DnsScratch      *ebpf.MapSpec `ebpf:"dns_scratch"`
 	Events          *ebpf.MapSpec `ebpf:"events"`
+	HttpCursors     *ebpf.MapSpec `ebpf:"http_cursors"`
 	HttpRecvPending *ebpf.MapSpec `ebpf:"http_recv_pending"`
 	HttpScratch     *ebpf.MapSpec `ebpf:"http_scratch"`
+	HttpSendPending *ebpf.MapSpec `ebpf:"http_send_pending"`
+	HttpStreams     *ebpf.MapSpec `ebpf:"http_streams"`
 	LostEvents      *ebpf.MapSpec `ebpf:"lost_events"`
 	SockOwners      *ebpf.MapSpec `ebpf:"sock_owners"`
 	UdpSendPending  *ebpf.MapSpec `ebpf:"udp_send_pending"`
@@ -213,6 +249,7 @@ type captureEventsVariableSpecs struct {
 	EmitDnsTcpMessages *ebpf.VariableSpec `ebpf:"emit_dns_tcp_messages"`
 	EmitHttpMessages   *ebpf.VariableSpec `ebpf:"emit_http_messages"`
 	EmitUdpEvents      *ebpf.VariableSpec `ebpf:"emit_udp_events"`
+	HttpMessageLimit   *ebpf.VariableSpec `ebpf:"http_message_limit"`
 	HttpPayloadLimit   *ebpf.VariableSpec `ebpf:"http_payload_limit"`
 	HttpPort           *ebpf.VariableSpec `ebpf:"http_port"`
 	TcpStatePort       *ebpf.VariableSpec `ebpf:"tcp_state_port"`
@@ -244,8 +281,11 @@ type captureEventsMaps struct {
 	DnsQueryPending *ebpf.Map `ebpf:"dns_query_pending"`
 	DnsScratch      *ebpf.Map `ebpf:"dns_scratch"`
 	Events          *ebpf.Map `ebpf:"events"`
+	HttpCursors     *ebpf.Map `ebpf:"http_cursors"`
 	HttpRecvPending *ebpf.Map `ebpf:"http_recv_pending"`
 	HttpScratch     *ebpf.Map `ebpf:"http_scratch"`
+	HttpSendPending *ebpf.Map `ebpf:"http_send_pending"`
+	HttpStreams     *ebpf.Map `ebpf:"http_streams"`
 	LostEvents      *ebpf.Map `ebpf:"lost_events"`
 	SockOwners      *ebpf.Map `ebpf:"sock_owners"`
 	UdpSendPending  *ebpf.Map `ebpf:"udp_send_pending"`
@@ -258,8 +298,11 @@ func (m *captureEventsMaps) Close() error {
 		m.DnsQueryPending,
 		m.DnsScratch,
 		m.Events,
+		m.HttpCursors,
 		m.HttpRecvPending,
 		m.HttpScratch,
+		m.HttpSendPending,
+		m.HttpStreams,
 		m.LostEvents,
 		m.SockOwners,
 		m.UdpSendPending,
@@ -275,6 +318,7 @@ type captureEventsVariables struct {
 	EmitDnsTcpMessages *ebpf.Variable `ebpf:"emit_dns_tcp_messages"`
 	EmitHttpMessages   *ebpf.Variable `ebpf:"emit_http_messages"`
 	EmitUdpEvents      *ebpf.Variable `ebpf:"emit_udp_events"`
+	HttpMessageLimit   *ebpf.Variable `ebpf:"http_message_limit"`
 	HttpPayloadLimit   *ebpf.Variable `ebpf:"http_payload_limit"`
 	HttpPort           *ebpf.Variable `ebpf:"http_port"`
 	TcpStatePort       *ebpf.Variable `ebpf:"tcp_state_port"`
@@ -299,6 +343,7 @@ type captureEventsPrograms struct {
 	TcpSendLength             *ebpf.Program `ebpf:"tcp_send_length"`
 	TcpSendReset              *ebpf.Program `ebpf:"tcp_send_reset"`
 	TcpSendmsgEntry           *ebpf.Program `ebpf:"tcp_sendmsg_entry"`
+	TcpSendmsgExit            *ebpf.Program `ebpf:"tcp_sendmsg_exit"`
 	UdpEnqueueEntry           *ebpf.Program `ebpf:"udp_enqueue_entry"`
 	UdpSendSkbEntry           *ebpf.Program `ebpf:"udp_send_skb_entry"`
 	UdpSendSkbExit            *ebpf.Program `ebpf:"udp_send_skb_exit"`
@@ -322,6 +367,7 @@ func (p *captureEventsPrograms) Close() error {
 		p.TcpSendLength,
 		p.TcpSendReset,
 		p.TcpSendmsgEntry,
+		p.TcpSendmsgExit,
 		p.UdpEnqueueEntry,
 		p.UdpSendSkbEntry,
 		p.UdpSendSkbExit,

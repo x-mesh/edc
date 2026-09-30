@@ -67,6 +67,9 @@ volatile const __u32 http_payload_limit = 512;
 // http_port가 0이 아니면 trace http는 로컬이나 상대 port가 이 값인 socket만 본다. client 쪽에서는 상대 서버의 port,
 // 서버 쪽에서는 로컬 서버의 port다. 걸러진 socket은 사용자 메모리를 읽지 않아 바쁜 host의 부담도 준다.
 volatile const __u16 http_port = 0;
+// http_message_limit가 0이 아니면 trace http --payload=all이다. message 하나를 이 byte 수까지 따라가며, 한 번의 읽기나
+// 쓰기에서 레코드 하나를 넘는 부분, writev의 다음 버퍼, 이어지는 읽기와 쓰기를 조각 레코드로 넘긴다.
+volatile const __u32 http_message_limit = 0;
 // 0이 아니면 inet_sock_set_state는 로컬이나 상대 port가 이 값인 socket만 본다. trace dns는 53만 본다. 상대 port는 client 쪽
 // 연결, 로컬 port는 이 host의 DNS 서버가 받은 연결이다.
 volatile const __u16 tcp_state_port = 0;
@@ -883,9 +886,17 @@ int tcp_create_openreq_child_exit(__u64 *ctx) {
 
 // trace http는 TCP로 주고받는 평문 HTTP/1.x message의 앞부분을 읽는다. 요청 줄, Host, 상태 줄이 이 안에 들어간다.
 // 나머지 header와 body는 사용자 공간이 해석한 뒤 버린다.
-#define HTTP_PAYLOAD_SIZE 4096
+// HTTP_PAYLOAD_SIZE는 레코드 하나에 담는 byte 수다. 조각이 클수록 한 번의 읽기나 쓰기를 넘기는 반복이 준다.
+// per-CPU scratch 값은 32KiB를 넘을 수 없다.
+#define HTTP_PAYLOAD_SIZE 16384
+// 한 번의 읽기나 쓰기에서 도는 반복의 상한이다. 1MiB를 조각 64개로 넘기고, writev 버퍼를 16개까지 넘긴다. bpf_loop는
+// 5.17에 생겨서, 쓰면 오래된 kernel에서 이 객체 전체(trace tcp 포함)를 불러오지 못한다. 그래서 횟수가 정해진 반복을 쓴다.
+#define HTTP_MAX_SEGMENTS 16
+#define HTTP_MAX_STEPS 80
 #define HTTP_RECEIVED 0
 #define HTTP_SENT 1
+#define HTTP_START 0
+#define HTTP_CONTINUATION 1
 #define MSG_PEEK 2
 
 struct http_record {
@@ -897,12 +908,14 @@ struct http_record {
 	__u32 len;
 	__u16 family;
 	__u8 direction;
-	__u8 reserved;
+	__u8 kind;
 	__u16 sport;
 	__u16 dport;
 	__u8 source[16];
 	__u8 destination[16];
 	char comm[16];
+	// offset은 조각이 message 안에서 시작하는 위치다. 사용자 공간은 기다리던 위치와 다르면 조각을 잃은 것으로 본다.
+	__u32 offset;
 	__u8 payload[HTTP_PAYLOAD_SIZE];
 };
 
@@ -916,6 +929,40 @@ struct {
 	__type(key, __u32);
 	__type(value, struct http_record);
 } http_scratch SEC(".maps");
+
+// http_streams는 socket과 방향마다 지금 message에서 주고받은 byte 수다. HTTP로 시작하지 않는 읽기와 쓰기는 이 값이
+// http_message_limit보다 작을 때만 앞 message의 이어지는 조각으로 넘긴다.
+struct http_stream_key {
+	__u64 skaddr;
+	__u64 direction;
+};
+
+struct {
+	__uint(type, BPF_MAP_TYPE_LRU_HASH);
+	__uint(max_entries, 16384);
+	__type(key, struct http_stream_key);
+	__type(value, __u64);
+} http_streams SEC(".maps");
+
+// http_cursor는 http_capture 반복의 위치다. 반복 상태를 register에 두면 verifier가 반복마다 값의 범위를 따로 추적해
+// 경로를 합치지 못하고, 100만 명령 한도를 넘는다. map에서 다시 읽은 값은 범위를 모르는 값이라 경로가 합쳐진다.
+struct http_cursor {
+	__u64 pointer;
+	__u64 left;
+	__u64 remaining;
+	__u64 offset;
+	__u64 segment;
+	__u64 iov;
+	__u64 nr_segs;
+	__u64 kind;
+};
+
+struct {
+	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+	__uint(max_entries, 1);
+	__type(key, __u32);
+	__type(value, struct http_cursor);
+} http_cursors SEC(".maps");
 
 struct iovec {
 	void *iov_base;
@@ -984,37 +1031,12 @@ static __always_inline int http_socket(struct sock *sk) {
 	return local == http_port || remote == http_port;
 }
 
-static __always_inline void emit_http(struct sock *sk, const void *buffer, __u64 size, __u8 direction) {
-	if (!sk || !buffer || size < 4 || !http_socket(sk)) {
-		return;
-	}
-	__u8 peek[4];
-	if (bpf_probe_read_user(peek, sizeof(peek), buffer) || !http_start(peek)) {
-		return;
-	}
-	__u32 zero = 0;
-	struct http_record *record = bpf_map_lookup_elem(&http_scratch, &zero);
-	if (!record) {
-		return;
-	}
-	__u32 len = size;
-	if (len > http_payload_limit) {
-		len = http_payload_limit;
-	}
-	if (len > HTTP_PAYLOAD_SIZE) {
-		len = HTTP_PAYLOAD_SIZE;
-	}
-	if (bpf_probe_read_user(record->payload, len, buffer)) {
-		return;
-	}
-	record->timestamp_ns = bpf_ktime_get_ns();
+static __always_inline void http_fill_record(struct http_record *record, struct sock *sk, __u8 direction) {
 	record->event_type = 10;
 	record->pid = bpf_get_current_pid_tgid() >> 32;
 	record->cgroup_id = bpf_get_current_cgroup_id();
 	record->skaddr = (__u64)sk;
-	record->len = len;
 	record->direction = direction;
-	record->reserved = 0;
 	record->family = BPF_CORE_READ(sk, __sk_common.skc_family);
 	record->sport = BPF_CORE_READ(sk, __sk_common.skc_num);
 	record->dport = bpf_ntohs(BPF_CORE_READ(sk, __sk_common.skc_dport));
@@ -1030,11 +1052,99 @@ static __always_inline void emit_http(struct sock *sk, const void *buffer, __u64
 		BPF_CORE_READ_INTO(&record->destination, sk, __sk_common.skc_v6_daddr.in6_u.u6_addr8);
 	}
 	current_process_name(&record->comm);
-	if (bpf_ringbuf_output(&events, record, __builtin_offsetof(struct http_record, payload) + len, 0)) {
-		__u64 *lost = bpf_map_lookup_elem(&lost_events, &zero);
-		if (lost) {
-			__sync_fetch_and_add(lost, 1);
+}
+
+// http_capture는 한 번의 읽기나 쓰기를 레코드로 넘긴다. buffer와 limit는 첫 버퍼이고, iov가 있으면 writev의 다음 버퍼를
+// 이어서 읽는다. size는 이번 호출에서 주고받은 byte 수다. --payload=all이 아니면 HTTP로 시작하는 첫 버퍼의 앞
+// http_payload_limit byte만 레코드 하나로 넘긴다.
+static __always_inline void http_capture(struct sock *sk, __u64 buffer, __u64 limit, const struct iovec *iov, __u64 nr_segs, __u64 size, __u8 direction) {
+	// port는 부르는 쪽이 시작할 때(fentry) 확인한다. 끝날 때는 이미 늦을 수 있다. loopback에서 상대가 닫은 socket에 쓰면
+	// RST가 같은 호출 안에서 처리되어, tcp_sendmsg가 끝날 때는 kernel이 로컬 port를 0으로 지워 두었다.
+	if (!sk || !buffer || size == 0) {
+		return;
+	}
+	struct http_stream_key key = {.skaddr = (__u64)sk, .direction = direction};
+	__u8 peek[4] = {};
+	int start = size >= 4 && limit >= 4 && !bpf_probe_read_user(peek, sizeof(peek), (void *)buffer) && http_start(peek);
+	__u64 offset = 0;
+	__u64 budget = http_payload_limit;
+	if (http_message_limit) {
+		budget = http_message_limit;
+		if (!start) {
+			__u64 *seen = bpf_map_lookup_elem(&http_streams, &key);
+			if (!seen || *seen >= http_message_limit) {
+				return;
+			}
+			offset = *seen;
+			budget = http_message_limit - offset;
 		}
+		// 레코드를 내지 못해도 실제로 주고받은 만큼 위치를 옮긴다. 그래야 잃은 조각이 사용자 공간에서 위치 차이로 드러난다.
+		__u64 seen = offset + size;
+		bpf_map_update_elem(&http_streams, &key, &seen, BPF_ANY);
+	} else if (!start) {
+		return;
+	} else {
+		iov = 0;
+	}
+	__u32 zero = 0;
+	struct http_record *record = bpf_map_lookup_elem(&http_scratch, &zero);
+	if (!record) {
+		return;
+	}
+	struct http_cursor *cursor = bpf_map_lookup_elem(&http_cursors, &zero);
+	if (!cursor) {
+		return;
+	}
+	http_fill_record(record, sk, direction);
+	cursor->pointer = buffer;
+	cursor->left = limit;
+	cursor->remaining = size < budget ? size : budget;
+	cursor->offset = offset;
+	cursor->segment = 0;
+	cursor->iov = (__u64)iov;
+	cursor->nr_segs = nr_segs;
+	cursor->kind = start ? HTTP_START : HTTP_CONTINUATION;
+	for (int step = 0; step < HTTP_MAX_STEPS; step++) {
+		if (!cursor->remaining) {
+			break;
+		}
+		if (!cursor->left) {
+			__u64 segment = cursor->segment + 1;
+			if (!cursor->iov || segment >= cursor->nr_segs || segment >= HTTP_MAX_SEGMENTS) {
+				break;
+			}
+			struct iovec vector = {};
+			if (bpf_probe_read_kernel(&vector, sizeof(vector), (const struct iovec *)cursor->iov + segment)) {
+				break;
+			}
+			cursor->segment = segment;
+			cursor->pointer = (__u64)vector.iov_base;
+			cursor->left = vector.iov_len;
+			continue;
+		}
+		__u64 len = cursor->left < cursor->remaining ? cursor->left : cursor->remaining;
+		if (len > HTTP_PAYLOAD_SIZE) {
+			len = HTTP_PAYLOAD_SIZE;
+		}
+		if (bpf_probe_read_user(record->payload, len, (void *)cursor->pointer)) {
+			break;
+		}
+		record->timestamp_ns = bpf_ktime_get_ns();
+		record->len = len;
+		record->kind = cursor->kind;
+		record->offset = cursor->offset;
+		if (bpf_ringbuf_output(&events, record, __builtin_offsetof(struct http_record, payload) + len, 0)) {
+			__u64 *lost = bpf_map_lookup_elem(&lost_events, &zero);
+			if (lost) {
+				__sync_fetch_and_add(lost, 1);
+			}
+			break;
+		}
+		cursor->pointer += len;
+		cursor->left -= len;
+		cursor->remaining -= len;
+		cursor->offset += len;
+		cursor->kind = HTTP_CONTINUATION;
 	}
 }
 
@@ -1111,6 +1221,36 @@ static __always_inline void *iov_second_buffer(struct msghdr *msg, __u64 *limit)
 	return BPF_CORE_READ(iov + 1, iov_base);
 }
 
+// http_iov는 writev의 kernel iovec 배열이다. 첫 버퍼는 http_user_buffer가 iov_offset까지 반영해 읽는다.
+static __always_inline const struct iovec *http_iov(struct msghdr *msg, __u64 *nr_segs) {
+	if (!bpf_core_field_exists(msg->msg_iter.iter_type) || !bpf_core_field_exists(msg->msg_iter.__iov) ||
+	    !bpf_core_field_exists(msg->msg_iter.nr_segs) || !bpf_core_enum_value_exists(enum iter_type, ITER_IOVEC)) {
+		return 0;
+	}
+	if (BPF_CORE_READ(msg, msg_iter.iter_type) != bpf_core_enum_value(enum iter_type, ITER_IOVEC)) {
+		return 0;
+	}
+	*nr_segs = BPF_CORE_READ(msg, msg_iter.nr_segs);
+	return BPF_CORE_READ(msg, msg_iter.__iov);
+}
+
+// --payload=all은 tcp_sendmsg가 끝난 뒤 실제로 보낸 byte 수만큼 넘긴다. non-blocking socket은 요청보다 적게 보내고
+// 나머지를 다시 보내므로, 시작할 때 크기로 넘기면 같은 byte를 두 번 잇는다. 시작할 때는 버퍼 위치만 thread별로 둔다.
+struct http_send_pending {
+	__u64 skaddr;
+	__u64 buffer;
+	__u64 limit;
+	__u64 iov;
+	__u64 nr_segs;
+};
+
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, 10240);
+	__type(key, __u64);
+	__type(value, struct http_send_pending);
+} http_send_pending SEC(".maps");
+
 SEC("fentry/tcp_sendmsg")
 int tcp_sendmsg_entry(__u64 *ctx) {
 	struct sock *sk = (struct sock *)ctx[0];
@@ -1128,8 +1268,32 @@ int tcp_sendmsg_entry(__u64 *ctx) {
 		}
 		return 0;
 	}
-	if (emit_http_messages) {
-		emit_http(sk, buffer, first, HTTP_SENT);
+	if (!emit_http_messages || !sk || !buffer || !http_socket(sk)) {
+		return 0;
+	}
+	if (!http_message_limit) {
+		http_capture(sk, (__u64)buffer, limit, 0, 1, size, HTTP_SENT);
+		return 0;
+	}
+	struct http_send_pending pending = {.skaddr = (__u64)sk, .buffer = (__u64)buffer, .limit = limit, .nr_segs = 1};
+	pending.iov = (__u64)http_iov(msg, &pending.nr_segs);
+	__u64 key = bpf_get_current_pid_tgid();
+	bpf_map_update_elem(&http_send_pending, &key, &pending, BPF_ANY);
+	return 0;
+}
+
+SEC("fexit/tcp_sendmsg")
+int tcp_sendmsg_exit(__u64 *ctx) {
+	__u64 key = bpf_get_current_pid_tgid();
+	struct http_send_pending *stored = bpf_map_lookup_elem(&http_send_pending, &key);
+	if (!stored) {
+		return 0;
+	}
+	struct http_send_pending pending = *stored;
+	bpf_map_delete_elem(&http_send_pending, &key);
+	int sent = (int)ctx[3];
+	if (sent > 0) {
+		http_capture((struct sock *)pending.skaddr, pending.buffer, pending.limit, (const struct iovec *)pending.iov, pending.nr_segs, sent, HTTP_SENT);
 	}
 	return 0;
 }
@@ -1184,7 +1348,7 @@ int tcp_recvmsg_exit(__u64 *ctx) {
 		if (emit_dns_tcp_messages && sk && dns_tcp_socket(sk)) {
 			emit_dns_tcp(sk, (void *)pending->buffer, size, DNS_RECEIVED);
 		} else if (emit_http_messages) {
-			emit_http(sk, (void *)pending->buffer, size, HTTP_RECEIVED);
+			http_capture(sk, pending->buffer, pending->limit, 0, 1, (__u64)copied, HTTP_RECEIVED);
 		}
 	}
 	bpf_map_delete_elem(&http_recv_pending, &key);

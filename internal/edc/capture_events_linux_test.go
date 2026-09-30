@@ -132,6 +132,7 @@ func TestCaptureEventFiltersFollowTheProtocol(t *testing.T) {
 		{traceScope{protocol: "http"}, captureEventFilter{dnsSent: true, httpMessages: true}},
 		{traceScope{protocol: "http", payload: true}, captureEventFilter{dnsSent: true, httpMessages: true, httpPayload: true}},
 		{traceScope{protocol: "http", server: true, port: 8080}, captureEventFilter{dnsSent: true, httpMessages: true, httpPort: 8080}},
+		{traceScope{protocol: "http", payload: true, payloadAll: true}, captureEventFilter{dnsSent: true, httpMessages: true, httpPayload: true, httpMessageLimit: httpMessageMax}},
 	} {
 		if got := captureEventFilterFor(test.scope); got != test.want {
 			t.Fatalf("scope %+v filter = %+v, want %+v", test.scope, got, test.want)
@@ -150,13 +151,14 @@ func TestCaptureEventFiltersFollowTheProtocol(t *testing.T) {
 	var tcpStatePort uint16
 	var httpPayloadLimit uint32
 	var httpPort uint16
-	if err := errors.Join(variables.EmitUdpEvents.Get(&udpEvents), variables.EmitDnsSent.Get(&dnsSent), variables.EmitDnsServer.Get(&server), variables.TcpStatePort.Get(&tcpStatePort), variables.HttpPayloadLimit.Get(&httpPayloadLimit), variables.HttpPort.Get(&httpPort)); err != nil {
+	var httpMessageLimit uint32
+	if err := errors.Join(variables.EmitUdpEvents.Get(&udpEvents), variables.EmitDnsSent.Get(&dnsSent), variables.EmitDnsServer.Get(&server), variables.TcpStatePort.Get(&tcpStatePort), variables.HttpPayloadLimit.Get(&httpPayloadLimit), variables.HttpPort.Get(&httpPort), variables.HttpMessageLimit.Get(&httpMessageLimit)); err != nil {
 		t.Fatal(err)
 	}
 	// capture는 모든 event와 client 쪽 DNS 레코드를 받는다. 서버 쪽 레코드는 trace dns --side server만 켠다.
 	// HTTP message는 --payload가 아니면 요청 줄과 Host가 들어가는 512바이트만 읽는다.
-	if udpEvents != 1 || dnsSent != 1 || server != 0 || tcpStatePort != 0 || httpPayloadLimit != 512 || httpPort != 0 {
-		t.Fatalf("BPF defaults = %d, %d, %d, %d, %d, %d", udpEvents, dnsSent, server, tcpStatePort, httpPayloadLimit, httpPort)
+	if udpEvents != 1 || dnsSent != 1 || server != 0 || tcpStatePort != 0 || httpPayloadLimit != 512 || httpPort != 0 || httpMessageLimit != 0 {
+		t.Fatalf("BPF defaults = %d, %d, %d, %d, %d, %d, %d", udpEvents, dnsSent, server, tcpStatePort, httpPayloadLimit, httpPort, httpMessageLimit)
 	}
 }
 
@@ -637,11 +639,13 @@ func TestHTTPRecordOffsetsMatchTheBPFStruct(t *testing.T) {
 		"len":         {unsafe.Offsetof(record.Len), 32},
 		"family":      {unsafe.Offsetof(record.Family), 36},
 		"direction":   {unsafe.Offsetof(record.Direction), 38},
+		"kind":        {unsafe.Offsetof(record.Kind), 39},
 		"sport":       {unsafe.Offsetof(record.Sport), 40},
 		"dport":       {unsafe.Offsetof(record.Dport), 42},
 		"source":      {unsafe.Offsetof(record.Source), 44},
 		"destination": {unsafe.Offsetof(record.Destination), 60},
 		"comm":        {unsafe.Offsetof(record.Comm), 76},
+		"offset":      {unsafe.Offsetof(record.Offset), 92},
 		"payload":     {unsafe.Offsetof(record.Payload), httpRecordPayloadOffset},
 	} {
 		if offsets[0] != offsets[1] {
@@ -649,7 +653,7 @@ func TestHTTPRecordOffsetsMatchTheBPFStruct(t *testing.T) {
 		}
 	}
 	if len(record.Payload) != httpRecordPayloadMax {
-		t.Fatalf("BPF HTTP_PAYLOAD_SIZE is %d, --payload asks for %d", len(record.Payload), httpRecordPayloadMax)
+		t.Fatalf("BPF HTTP_PAYLOAD_SIZE is %d, the parser expects %d", len(record.Payload), httpRecordPayloadMax)
 	}
 	sample := make([]byte, httpRecordPayloadOffset+16)
 	binary.LittleEndian.PutUint32(sample[8:12], httpRecordType)
@@ -663,8 +667,31 @@ func TestHTTPRecordOffsetsMatchTheBPFStruct(t *testing.T) {
 	copy(sample[60:64], []byte{192, 0, 2, 1})
 	copy(sample[httpRecordPayloadOffset:], "GET /")
 	packet, ok := parseHTTPRecord(sample)
-	if !ok || !packet.sent || packet.socket != 0xabc || packet.source != "10.0.0.2:40000" || packet.destination != "192.0.2.1:80" || string(packet.payload) != "GET " {
+	if !ok || packet.continued || !packet.sent || packet.socket != 0xabc || packet.source != "10.0.0.2:40000" || packet.destination != "192.0.2.1:80" || string(packet.payload) != "GET " {
 		t.Fatalf("parseHTTPRecord = %#v, %t", packet, ok)
+	}
+	sample[39] = httpRecordContinuation
+	binary.LittleEndian.PutUint32(sample[92:96], 4096)
+	if packet, ok := parseHTTPRecord(sample); !ok || !packet.continued || packet.offset != 4096 {
+		t.Fatalf("continuation = %#v, %t", packet, ok)
+	}
+}
+
+// fexit/tcp_sendmsg는 모든 TCP 송신에 붙고 뗄 때도 느리므로 --payload=all일 때만 붙인다.
+func TestHTTPPayloadAllAddsTheSendExitHook(t *testing.T) {
+	names := func(scope traceScope) []string {
+		_, tracing := captureAttachmentsFor(&captureEventsObjects{}, scope)
+		var names []string
+		for _, hook := range tracing {
+			names = append(names, hook.name)
+		}
+		return names
+	}
+	if slices.Contains(names(traceScope{protocol: "http", payload: true}), "fexit/tcp_sendmsg") {
+		t.Fatal("--payload attached fexit/tcp_sendmsg")
+	}
+	if !slices.Contains(names(traceScope{protocol: "http", payload: true, payloadAll: true}), "fexit/tcp_sendmsg") {
+		t.Fatal("--payload=all did not attach fexit/tcp_sendmsg")
 	}
 }
 

@@ -90,7 +90,8 @@ func (model probeModel) View() tea.View {
 		if model.redact {
 			line = redactIPAddresses(line)
 		}
-		return liveFrame(line, 1)
+		// 폭보다 긴 결과 줄은 terminal이 표시 없이 자른다. 진행 줄처럼 "…"를 붙여 잘린 것을 보인다.
+		return liveFrame(truncateLine(line, model.width), 1)
 	}
 	line := fmt.Sprintf(resultLineFormat, liveCell(model.spinner.View(), resultStatusWidth), model.name, model.detail())
 	return liveFrame(truncateLine(line, model.width), 1)

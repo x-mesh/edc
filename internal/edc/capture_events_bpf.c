@@ -64,6 +64,9 @@ volatile const __u8 emit_dns_tcp_messages = 0;
 // http_payload_limit는 HTTP message 앞부분을 읽는 byte 수다. 사용자 공간은 요청 줄과 Host만 쓰므로 512면 된다.
 // trace http --payload만 HTTP_PAYLOAD_SIZE까지 늘린다. 레코드는 읽은 만큼만 ring buffer에 넣는다.
 volatile const __u32 http_payload_limit = 512;
+// http_port가 0이 아니면 trace http는 로컬이나 상대 port가 이 값인 socket만 본다. client 쪽에서는 상대 서버의 port,
+// 서버 쪽에서는 로컬 서버의 port다. 걸러진 socket은 사용자 메모리를 읽지 않아 바쁜 host의 부담도 준다.
+volatile const __u16 http_port = 0;
 // 0이 아니면 inet_sock_set_state는 로컬이나 상대 port가 이 값인 socket만 본다. trace dns는 53만 본다. 상대 port는 client 쪽
 // 연결, 로컬 port는 이 host의 DNS 서버가 받은 연결이다.
 volatile const __u16 tcp_state_port = 0;
@@ -972,8 +975,17 @@ static __always_inline int http_start(const __u8 *p) {
 	       (p[0] == 'O' && p[1] == 'P' && p[2] == 'T' && p[3] == 'I') || (p[0] == 'H' && p[1] == 'T' && p[2] == 'T' && p[3] == 'P');
 }
 
+static __always_inline int http_socket(struct sock *sk) {
+	if (!http_port) {
+		return 1;
+	}
+	__u16 local = BPF_CORE_READ(sk, __sk_common.skc_num);
+	__u16 remote = bpf_ntohs(BPF_CORE_READ(sk, __sk_common.skc_dport));
+	return local == http_port || remote == http_port;
+}
+
 static __always_inline void emit_http(struct sock *sk, const void *buffer, __u64 size, __u8 direction) {
-	if (!sk || !buffer || size < 4) {
+	if (!sk || !buffer || size < 4 || !http_socket(sk)) {
 		return;
 	}
 	__u8 peek[4];
@@ -1140,6 +1152,11 @@ SEC("fentry/tcp_recvmsg")
 int tcp_recvmsg_entry(__u64 *ctx) {
 	// MSG_PEEK로 읽은 data는 다음 recv가 다시 읽는다. 같은 message를 두 번 내지 않는다.
 	if ((int)ctx[3] & MSG_PEEK) {
+		return 0;
+	}
+	// 끝날 때 쓰지 않을 socket이면 버퍼 위치를 기록하지 않는다. recv마다 map을 갱신하는 비용이 크다.
+	struct sock *sk = (struct sock *)ctx[0];
+	if (!sk || !((emit_dns_tcp_messages && dns_tcp_socket(sk)) || (emit_http_messages && http_socket(sk)))) {
 		return 0;
 	}
 	struct http_recv_pending pending = {.skaddr = ctx[0]};

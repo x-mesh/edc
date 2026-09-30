@@ -279,6 +279,8 @@ type tcpTraceOptions struct {
 	// side는 trace dns가 볼 쪽이다. client는 이 host의 조회, server는 로컬 DNS 서버가 받은 질의다.
 	side    string
 	payload bool
+	// port는 trace http가 볼 HTTP 서버의 port다. client 쪽은 상대 port, 서버 쪽은 로컬 port다. 0이면 모든 port를 본다.
+	port int
 }
 
 func traceProtocol(event captureEvent) string {

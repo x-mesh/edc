@@ -156,6 +156,7 @@ command:
       yes: "skip the question"
       side: "trace dns, http: client side or local server"
       payload: "trace http: first 4 KiB of each message"
+      port: "trace http: only this HTTP server port"
     notes:
       - "The default output opens a full-screen trace view in a terminal."
       - "Use / to filter process, destination, event, or source text."
@@ -173,6 +174,7 @@ command:
       - "trace ndp does the same for IPv6 neighbors."
       - "trace http shows plain HTTP/1.x requests on Linux 6.4 or later."
       - "--payload shows the start of each message."
+      - "--port shows one HTTP server port: the peer, or this host with --side server."
       - "It hides Authorization, Proxy-Authorization, Cookie, and Set-Cookie values."
   report:
     summary: "Read and compare saved JSON reports"

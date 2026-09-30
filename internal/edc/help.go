@@ -208,6 +208,7 @@ var commandDocs = []commandDoc{
 			{"-d, --detail", "command.trace.option.detail"},
 			{"--side client|server", "command.trace.option.side"},
 			{"--payload", "command.trace.option.payload"},
+			{"--port <n>", "command.trace.option.port"},
 			{"--yes", "command.trace.option.yes"},
 		},
 	},

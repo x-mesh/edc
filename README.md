@@ -907,11 +907,14 @@ Use `trace http` on Linux 6.4 or later to print plain HTTP/1.x requests and resp
 ./bin/edc trace http --group-by target
 ./bin/edc trace http --side server --process nginx
 ./bin/edc trace http --payload
+./bin/edc trace http --side server --port 8080
 ```
 
 A request is an `http_request` event. A response is one of `http_1xx` to `http_5xx`, and `status` has the code. HTTP/1.x answers the requests on one connection in order. So a response matches the oldest request on the same connection that has no answer. `latency_ms` starts when the client sends the request and stops when the client reads the response. A `1xx` response does not end the request.
 
 The `target` of an HTTP event is the `Host` header. If there is no `Host` header, the target is the server address. Use `--side server` to watch a local HTTP server. On the server side, `latency_ms` starts when the server reads the request and stops when the server writes the response.
+
+edc finds HTTP by the start of the data, not by the port, so it sees HTTP on any port. The `source` column is always this host, and `destination` is the peer. Use `--port` to watch one HTTP server port. On the client side, it is the port of the server that this host calls. With `--side server`, it is the port of the local server. edc checks the port in the kernel, so it does not read the data of other connections.
 
 Use `--payload` to see the data of each message. Under each event, edc prints the body. If there is no body, it prints the headers. With `--raw`, the `payload` field has all the data. The data is the first 4 KiB (4,096 bytes) of the read or the write, so edc cuts a longer body. If a program writes the headers and the body in two writes, edc does not see the body. Each record is larger with `--payload`, so a busy server can cause lost events. The summary shows the number of lost events. `--payload` keeps the query, but it hides the values of the `Authorization`, `Proxy-Authorization`, `Cookie`, and `Set-Cookie` headers. edc shows the other headers, the query, and the body as they are, and they can contain tokens and passwords. Before you share the output, check it for tokens and passwords. edc changes control characters to `\xNN`, so the data cannot change the terminal. `--payload` does not work with `--json`, because `--json` writes only the summary.
 

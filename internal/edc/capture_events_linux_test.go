@@ -131,6 +131,7 @@ func TestCaptureEventFiltersFollowTheProtocol(t *testing.T) {
 		{traceScope{protocol: "dns", server: true}, captureEventFilter{dnsSent: true, server: true, tcpStatePort: 53, dnsTCP: true}},
 		{traceScope{protocol: "http"}, captureEventFilter{dnsSent: true, httpMessages: true}},
 		{traceScope{protocol: "http", payload: true}, captureEventFilter{dnsSent: true, httpMessages: true, httpPayload: true}},
+		{traceScope{protocol: "http", server: true, port: 8080}, captureEventFilter{dnsSent: true, httpMessages: true, httpPort: 8080}},
 	} {
 		if got := captureEventFilterFor(test.scope); got != test.want {
 			t.Fatalf("scope %+v filter = %+v, want %+v", test.scope, got, test.want)
@@ -148,13 +149,14 @@ func TestCaptureEventFiltersFollowTheProtocol(t *testing.T) {
 	var udpEvents, dnsSent, server uint8
 	var tcpStatePort uint16
 	var httpPayloadLimit uint32
-	if err := errors.Join(variables.EmitUdpEvents.Get(&udpEvents), variables.EmitDnsSent.Get(&dnsSent), variables.EmitDnsServer.Get(&server), variables.TcpStatePort.Get(&tcpStatePort), variables.HttpPayloadLimit.Get(&httpPayloadLimit)); err != nil {
+	var httpPort uint16
+	if err := errors.Join(variables.EmitUdpEvents.Get(&udpEvents), variables.EmitDnsSent.Get(&dnsSent), variables.EmitDnsServer.Get(&server), variables.TcpStatePort.Get(&tcpStatePort), variables.HttpPayloadLimit.Get(&httpPayloadLimit), variables.HttpPort.Get(&httpPort)); err != nil {
 		t.Fatal(err)
 	}
 	// capture는 모든 event와 client 쪽 DNS 레코드를 받는다. 서버 쪽 레코드는 trace dns --side server만 켠다.
 	// HTTP message는 --payload가 아니면 요청 줄과 Host가 들어가는 512바이트만 읽는다.
-	if udpEvents != 1 || dnsSent != 1 || server != 0 || tcpStatePort != 0 || httpPayloadLimit != 512 {
-		t.Fatalf("BPF defaults = %d, %d, %d, %d, %d", udpEvents, dnsSent, server, tcpStatePort, httpPayloadLimit)
+	if udpEvents != 1 || dnsSent != 1 || server != 0 || tcpStatePort != 0 || httpPayloadLimit != 512 || httpPort != 0 {
+		t.Fatalf("BPF defaults = %d, %d, %d, %d, %d, %d", udpEvents, dnsSent, server, tcpStatePort, httpPayloadLimit, httpPort)
 	}
 }
 

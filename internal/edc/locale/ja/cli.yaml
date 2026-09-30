@@ -172,6 +172,8 @@ cli:
     side_protocol: "--side server は trace %s では使えません"
     payload_protocol: "--payload は trace %s では使えません"
     payload_json_conflict: "--json は要約だけを書くため、--payload と同時に使えません"
+    port_range: "--port は 1 から 65535 までです"
+    port_protocol: "--port は trace %s では使えません"
     http_kernel: "trace http には Linux 6.4 以降が必要です。kernel の iov_iter に %s field がありません"
   report:
     unsupported_schema: "%s: 対応しない schema version: %s"

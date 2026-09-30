@@ -14,7 +14,7 @@ import (
 
 func traceScreenKey(model traceScreenModel, keys ...string) traceScreenModel {
 	for _, key := range keys {
-		code := map[string]rune{"up": tea.KeyUp, "down": tea.KeyDown, "enter": tea.KeyEnter, "esc": tea.KeyEscape, "end": tea.KeyEnd, "home": tea.KeyHome}[key]
+		code := map[string]rune{"up": tea.KeyUp, "down": tea.KeyDown, "enter": tea.KeyEnter, "esc": tea.KeyEscape, "end": tea.KeyEnd, "home": tea.KeyHome, "space": tea.KeySpace}[key]
 		press := tea.KeyPressMsg{Code: code}
 		if code == 0 {
 			press = tea.KeyPressMsg{Code: rune(key[0]), Text: key}
@@ -48,9 +48,9 @@ func TestTraceScreenSelectsAnEventAndShowsAllOfIt(t *testing.T) {
 	if header := traceScreenHeader(model)[0]; !strings.Contains(header, "paused, 1 newer") {
 		t.Fatalf("header = %q", header)
 	}
-	// 고른 event가 맨 아래에 오고, 그보다 새 event는 보이지 않는다.
+	// 화면에 자리가 남으면 고른 event 아래에 더 새 event가 온다.
 	rows := strings.Join(traceScreenRows(model), "\n")
-	if !strings.Contains(rows, "POST api.example/b") || strings.Contains(rows, "http_2xx") {
+	if selected, newer := strings.Index(rows, "POST api.example/b"), strings.Index(rows, "http_2xx"); selected < 0 || newer < selected {
 		t.Fatalf("rows = %q", rows)
 	}
 
@@ -346,5 +346,70 @@ func TestHTTPTrackerKeepsRawBytesOfGzipMessagesWhenAsked(t *testing.T) {
 	messages := newHTTPMessages(tracker, httpMessageMax, false)
 	if events := messages.add(httpTestPacket(message, 4, false), 0, time.Unix(100, 0)); len(events) != 1 || string(events[0].gzipped) != message {
 		t.Fatalf("--payload=all raw = %v", events)
+	}
+}
+
+func TestTraceScreenKeepsAFullListWhileItWaits(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	model := newTraceScreenModel("tcp", tcpTraceOptions{}, make(chan captureEvent), make(chan traceFinishedMsg), nil)
+	model.width, model.height = 100, 13
+	batch := func(from, count int) []captureEvent {
+		events := make([]captureEvent, count)
+		for index := range events {
+			events[index] = captureEvent{Protocol: "tcp", Event: "tcp_send", Process: fmt.Sprintf("p%d", from+index), Destination: "10.0.0.1:80"}
+		}
+		return events
+	}
+	next, _ := model.Update(traceEventMsg{events: batch(0, 20)})
+	model = traceScreenKey(next.(traceScreenModel), "up")
+	// 멈춘 동안 event가 목록 상한을 넘게 쌓이면 고른 event가 가장 오래된 event로 밀린다. 그래도 화면은 가득 찬다.
+	for from := 20; from < 20+traceScreenEventLimit+500; from += traceEventBatchLimit {
+		next, _ = model.Update(traceEventMsg{events: batch(from, traceEventBatchLimit)})
+		model = next.(traceScreenModel)
+	}
+	if model.selected != model.first {
+		t.Fatalf("selected %d, first %d", model.selected, model.first)
+	}
+	rows := traceScreenRows(model)
+	filled := 0
+	for _, row := range rows {
+		if strings.TrimSpace(row) != "" {
+			filled++
+		}
+	}
+	if filled != model.height-3 || !strings.HasPrefix(rows[0], fmt.Sprintf("p%d ", model.first)) {
+		t.Fatalf("%d of %d rows are filled, first row %q", filled, model.height-3, rows[0])
+	}
+}
+
+func TestTraceScreenEscAndLFollowAgain(t *testing.T) {
+	model := newTraceScreenModel("http", tcpTraceOptions{}, make(chan captureEvent), make(chan traceFinishedMsg), nil)
+	model.events = []captureEvent{{Process: "a"}, {Process: "b"}, {Process: "c"}}
+	model.filter = "b"
+	// Esc는 먼저 선택을 풀고, 한 번 더 누르면 filter를 지운다.
+	model = traceScreenKey(model, "up")
+	if model.selected != 1 {
+		t.Fatalf("selected = %d", model.selected)
+	}
+	model = traceScreenKey(model, "esc")
+	if model.selected != -1 || model.filter != "b" {
+		t.Fatalf("first esc: selected %d, filter %q", model.selected, model.filter)
+	}
+	model = traceScreenKey(model, "esc")
+	if model.filter != "" {
+		t.Fatalf("second esc kept the filter %q", model.filter)
+	}
+	model = traceScreenKey(model, "up", "up", "l")
+	if model.selected != -1 {
+		t.Fatalf("l did not follow again: %d", model.selected)
+	}
+	// b와 space는 PgUp, PgDn과 같다.
+	model = traceScreenKey(model, "up", "b")
+	if model.selected != 0 {
+		t.Fatalf("b = %d, want the oldest", model.selected)
+	}
+	model = traceScreenKey(model, "space")
+	if model.selected != 2 {
+		t.Fatalf("space = %d, want the newest", model.selected)
 	}
 }

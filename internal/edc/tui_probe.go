@@ -130,11 +130,19 @@ func truncateLine(line string, width int) string {
 	if liveWidth(trimmed) <= width {
 		return line
 	}
+	// "…"까지 폭 안에 드는 가장 긴 앞부분을 찾는다. 앞부분의 폭은 길어질수록 줄지 않으므로 이분 탐색한다. 한 글자씩
+	// 줄이며 폭을 다시 재면 4KiB 줄 하나에 200ms가 넘게 걸려, 화면을 그릴 때마다 키 입력이 밀렸다.
 	runes := []rune(trimmed)
-	for len(runes) > 0 && liveWidth(string(runes))+1 > width {
-		runes = runes[:len(runes)-1]
+	low, high := 0, len(runes)
+	for low < high {
+		middle := (low + high + 1) / 2
+		if liveWidth(string(runes[:middle]))+1 <= width {
+			low = middle
+		} else {
+			high = middle - 1
+		}
 	}
-	return string(runes) + "…\n"
+	return string(runes[:low]) + "…\n"
 }
 
 // probeProgress는 command 출력의 마지막 줄을 들고 있다가, 화면이 뜨면 이어서 전달한다.

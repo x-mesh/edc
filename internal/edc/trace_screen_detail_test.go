@@ -166,7 +166,7 @@ func TestTraceFitCutsLongLinesLikeBefore(t *testing.T) {
 		if liveWidth(value) <= width {
 			return value
 		}
-		return strings.TrimRight(truncateLine(value, width), "\n")
+		return strings.TrimRight(slowTruncateLine(value, width), "\n")
 	}
 	for _, value := range []string{"", "short", strings.Repeat("a", 72), strings.Repeat("a", 73), strings.Repeat("x", 1200), strings.Repeat("한글", 100), "한a글b" + strings.Repeat("c", 200)} {
 		for _, width := range []int{10, 72, 110} {

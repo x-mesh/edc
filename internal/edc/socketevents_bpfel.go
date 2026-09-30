@@ -45,6 +45,7 @@ type socketEventsSocketRecord struct {
 	PeerSkaddr  uint64
 	CgroupId    uint64
 	Result      int64
+	WaitNs      uint64
 	EventType   uint32
 	Pid         uint32
 	PeerPid     uint32
@@ -71,11 +72,15 @@ const (
 	socketEventsMapEvents                  = "events"
 	socketEventsMapLostEvents              = "lost_events"
 	socketEventsMapSocketCalls             = "socket_calls"
+	socketEventsMapSocketConnects          = "socket_connects"
 	socketEventsMapSocketCursors           = "socket_cursors"
 	socketEventsMapSocketScratch           = "socket_scratch"
+	socketEventsMapSocketServers           = "socket_servers"
 	socketEventsMapSocketSides             = "socket_sides"
 	socketEventsMapSocketTargets           = "socket_targets"
+	socketEventsProgUnixAcceptExit         = "unix_accept_exit"
 	socketEventsProgUnixReleaseEntry       = "unix_release_entry"
+	socketEventsProgUnixStreamConnectEntry = "unix_stream_connect_entry"
 	socketEventsProgUnixStreamConnectExit  = "unix_stream_connect_exit"
 	socketEventsProgUnixStreamRecvmsgEntry = "unix_stream_recvmsg_entry"
 	socketEventsProgUnixStreamRecvmsgExit  = "unix_stream_recvmsg_exit"
@@ -128,7 +133,9 @@ type socketEventsSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type socketEventsProgramSpecs struct {
+	UnixAcceptExit         *ebpf.ProgramSpec `ebpf:"unix_accept_exit"`
 	UnixReleaseEntry       *ebpf.ProgramSpec `ebpf:"unix_release_entry"`
+	UnixStreamConnectEntry *ebpf.ProgramSpec `ebpf:"unix_stream_connect_entry"`
 	UnixStreamConnectExit  *ebpf.ProgramSpec `ebpf:"unix_stream_connect_exit"`
 	UnixStreamRecvmsgEntry *ebpf.ProgramSpec `ebpf:"unix_stream_recvmsg_entry"`
 	UnixStreamRecvmsgExit  *ebpf.ProgramSpec `ebpf:"unix_stream_recvmsg_exit"`
@@ -140,13 +147,15 @@ type socketEventsProgramSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type socketEventsMapSpecs struct {
-	Events        *ebpf.MapSpec `ebpf:"events"`
-	LostEvents    *ebpf.MapSpec `ebpf:"lost_events"`
-	SocketCalls   *ebpf.MapSpec `ebpf:"socket_calls"`
-	SocketCursors *ebpf.MapSpec `ebpf:"socket_cursors"`
-	SocketScratch *ebpf.MapSpec `ebpf:"socket_scratch"`
-	SocketSides   *ebpf.MapSpec `ebpf:"socket_sides"`
-	SocketTargets *ebpf.MapSpec `ebpf:"socket_targets"`
+	Events         *ebpf.MapSpec `ebpf:"events"`
+	LostEvents     *ebpf.MapSpec `ebpf:"lost_events"`
+	SocketCalls    *ebpf.MapSpec `ebpf:"socket_calls"`
+	SocketConnects *ebpf.MapSpec `ebpf:"socket_connects"`
+	SocketCursors  *ebpf.MapSpec `ebpf:"socket_cursors"`
+	SocketScratch  *ebpf.MapSpec `ebpf:"socket_scratch"`
+	SocketServers  *ebpf.MapSpec `ebpf:"socket_servers"`
+	SocketSides    *ebpf.MapSpec `ebpf:"socket_sides"`
+	SocketTargets  *ebpf.MapSpec `ebpf:"socket_targets"`
 }
 
 // socketEventsVariableSpecs contains global variables before they are loaded into the kernel.
@@ -178,13 +187,15 @@ func (o *socketEventsObjects) Close() error {
 //
 // It can be passed to loadSocketEventsObjects or ebpf.CollectionSpec.LoadAndAssign.
 type socketEventsMaps struct {
-	Events        *ebpf.Map `ebpf:"events"`
-	LostEvents    *ebpf.Map `ebpf:"lost_events"`
-	SocketCalls   *ebpf.Map `ebpf:"socket_calls"`
-	SocketCursors *ebpf.Map `ebpf:"socket_cursors"`
-	SocketScratch *ebpf.Map `ebpf:"socket_scratch"`
-	SocketSides   *ebpf.Map `ebpf:"socket_sides"`
-	SocketTargets *ebpf.Map `ebpf:"socket_targets"`
+	Events         *ebpf.Map `ebpf:"events"`
+	LostEvents     *ebpf.Map `ebpf:"lost_events"`
+	SocketCalls    *ebpf.Map `ebpf:"socket_calls"`
+	SocketConnects *ebpf.Map `ebpf:"socket_connects"`
+	SocketCursors  *ebpf.Map `ebpf:"socket_cursors"`
+	SocketScratch  *ebpf.Map `ebpf:"socket_scratch"`
+	SocketServers  *ebpf.Map `ebpf:"socket_servers"`
+	SocketSides    *ebpf.Map `ebpf:"socket_sides"`
+	SocketTargets  *ebpf.Map `ebpf:"socket_targets"`
 }
 
 func (m *socketEventsMaps) Close() error {
@@ -192,8 +203,10 @@ func (m *socketEventsMaps) Close() error {
 		m.Events,
 		m.LostEvents,
 		m.SocketCalls,
+		m.SocketConnects,
 		m.SocketCursors,
 		m.SocketScratch,
+		m.SocketServers,
 		m.SocketSides,
 		m.SocketTargets,
 	)
@@ -212,7 +225,9 @@ type socketEventsVariables struct {
 //
 // It can be passed to loadSocketEventsObjects or ebpf.CollectionSpec.LoadAndAssign.
 type socketEventsPrograms struct {
+	UnixAcceptExit         *ebpf.Program `ebpf:"unix_accept_exit"`
 	UnixReleaseEntry       *ebpf.Program `ebpf:"unix_release_entry"`
+	UnixStreamConnectEntry *ebpf.Program `ebpf:"unix_stream_connect_entry"`
 	UnixStreamConnectExit  *ebpf.Program `ebpf:"unix_stream_connect_exit"`
 	UnixStreamRecvmsgEntry *ebpf.Program `ebpf:"unix_stream_recvmsg_entry"`
 	UnixStreamRecvmsgExit  *ebpf.Program `ebpf:"unix_stream_recvmsg_exit"`
@@ -222,7 +237,9 @@ type socketEventsPrograms struct {
 
 func (p *socketEventsPrograms) Close() error {
 	return _SocketEventsClose(
+		p.UnixAcceptExit,
 		p.UnixReleaseEntry,
+		p.UnixStreamConnectEntry,
 		p.UnixStreamConnectExit,
 		p.UnixStreamRecvmsgEntry,
 		p.UnixStreamRecvmsgExit,

@@ -51,7 +51,7 @@ edc update --check   # 두 버전만 출력
 edc update --yes     # 확인 생략
 ```
 
-`edc`는 새 파일을 기존 파일 옆에 쓰고 이름을 바꿉니다. 내려받기가 실패하면 기존 실행 파일이 그대로 남습니다. 디렉터리에 쓸 권한이 없으면 내려받기 전에 exit code `3`으로 멈춥니다. `edc`가 `/usr/local/bin`에 있으면 `sudo edc update`로 실행합니다.
+`edc`는 새 파일을 기존 파일 옆에 쓰고 이름을 바꿉니다. 내려받기가 실패하면 기존 실행 파일이 그대로 남습니다. 디렉터리에 쓸 권한이 없으면 install script처럼 새 파일의 복사와 이름 바꾸기만 `sudo`로 합니다. 내려받기와 checksum 확인은 사용자 권한으로 합니다. 확인 화면에 `권한 sudo`가 나오고, 암호가 필요하면 `sudo`가 한 번 묻습니다. `sudo`가 없거나 실패하면 내려받기 전에 exit code `3`으로 멈춥니다.
 
 ## 빌드
 
@@ -774,6 +774,16 @@ Linux와 macOS에서 `trace tcp` 또는 `trace udp`를 사용하면 network even
 `--group-by target`은 target이 없는 서버 socket의 event를 `127.0.0.53:53 (server)`처럼 로컬 서비스마다 한 행으로 묶습니다. 로컬 port가 ephemeral port 범위 밖이고 상대 port가 범위 안이면 서버 socket으로 봅니다.
 event의 target은 같은 process가 trace 중에 받은 DNS 응답, process의 명령줄, 그 주소에 대해 다른 DNS 응답이나 systemd-resolved 캐시에서 마지막으로 본 이름 순서로 정합니다. JSON event의 `target_source` 필드에 `dns`, `command`, `resolver-cache` 중 어디서 얻었는지 나옵니다. 한 주소를 여러 이름이 함께 쓸 수 있어서 다른 조회에서 얻은 이름은 틀릴 수 있습니다.
 재전송, reset, 일부 상태 변화는 kernel이 socket을 가진 프로세스 밖에서 기록합니다. trace 중에 그 socket을 쓰는 프로세스를 보지 못했으면 이 event의 process는 `-`로 표시합니다. 예를 들어 trace 전에 연결한 socket은 데이터를 주고받기 전까지 주인을 알 수 없습니다.
+
+Linux에서 `--container <name|id>`를 주면 docker container 하나의 event만 보여 줍니다. edc는 `docker inspect`로 container의 첫 process를 찾고 그 process의 cgroup v2 디렉터리를 읽은 뒤, 그 cgroup과 하위 cgroup의 event만 남깁니다. `docker exec`로 띄운 process도 같은 cgroup에 들어갑니다. cgroup은 trace를 시작할 때 한 번만 읽으므로, container가 다시 시작되면 trace도 다시 시작합니다. 주인을 모르는 event에는 cgroup이 없어서 `--process`처럼 `--container`에서도 빠집니다. `trace arp`와 `trace ndp`의 event에는 process가 없으므로 `--container`를 받지 않습니다. 전체 화면의 머리글에는 container 이름이 표시됩니다.
+
+```bash
+./bin/edc trace http --side server --container web
+./bin/edc trace tcp --container 5c9e77b3f470 --raw
+```
+
+bridge network에서는 주소와 port가 container 안의 값입니다. 예를 들어 `-p 8080:80`으로 publish한 서버는 port 80으로 보입니다.
+
 전체 화면 terminal에서는 `s`로 source 행, `t`로 target 행, `p`로 port 행, `c`로 process 행, `e`로 event 행, `g`로 event 스크롤을 표시합니다. `Tab`은 다음 보기, `Shift+Tab`은 이전 보기로 바꿉니다. terminal 폭이 넓으면 첫 열을 넓혀 group 값을 자르지 않고 표시합니다. 폭이 좁으면 byte 열을 `195K`(195 KiB)처럼 짧은 단위로 표시합니다.
 전체 화면은 최근 event 10,000개를 유지하고, live rate는 이 event들이 걸친 시간으로 계산합니다. `Ctrl-C` 후 summary는 모든 event를 사용합니다.
 전체 화면의 group 행은 traffic이 많은 group부터 표시합니다. 행이 terminal에 다 들어가지 않으면 위쪽 행을 표시합니다.
@@ -899,7 +909,7 @@ edc는 port가 아니라 data의 앞부분으로 HTTP를 찾으므로, 어느 po
 
 HTTPS, HTTP/2, HTTP/3은 kernel에서 암호문이나 binary frame으로만 보이므로 표시하지 않습니다. edc는 한 번의 읽기나 쓰기가 시작되는 곳에서만 message를 찾습니다. 그래서 한 번의 읽기에 앞 응답의 끝과 다음 응답의 시작이 함께 들어 있으면 다음 응답을 놓칩니다. 프로그램이 message 하나를 여러 버퍼로 나눠 쓰면 첫 버퍼만 읽으므로, `Host` header는 첫 버퍼의 앞 512 byte 안에 있어야 합니다. 없으면 target은 서버 주소입니다. edc가 읽는 kernel field는 Linux 6.4에 생겼으므로, 더 오래된 kernel에서는 오류를 내고 멈춥니다.
 
-Linux에서 `trace socket`을 사용하면 unix domain socket 파일 하나에서 일어나는 일을 출력합니다. socket 파일의 경로를 지정하면 그 socket의 connect, send, recv, data 끝(`eof`), close를 표시합니다. option은 경로 앞이나 뒤에 씁니다.
+Linux에서 `trace socket`을 사용하면 unix domain socket 파일 하나에서 일어나는 일을 출력합니다. socket 파일의 경로를 지정하면 그 socket의 connect, accept, send, recv, data 끝(`eof`), close를 표시합니다. option은 경로 앞이나 뒤에 씁니다.
 
 ```bash
 ./bin/edc trace socket /run/docker.sock
@@ -907,7 +917,9 @@ Linux에서 `trace socket`을 사용하면 unix domain socket 파일 하나에�
 ./bin/edc trace socket /run/php/php-fpm.sock --payload=all --raw
 ```
 
-목적지는 socket 경로입니다. event 칸에는 호출과 byte 수가 나오고, 호출이 실패하면 `connect ECONNREFUSED`처럼 errno 이름이 나옵니다. 출처(source)는 상대 process입니다. 서버 쪽에서는 연결한 process이고, 클라이언트 쪽에서는 `listen()`을 호출한 process입니다. 그래서 systemd가 여는 socket에서는 클라이언트 쪽 상대가 `systemd`로 나옵니다. 실제로 연결을 처리하는 process는 서버 쪽 행에서 확인합니다.
+목적지는 socket 경로입니다. event 칸에는 호출과 byte 수가 나오고, 호출이 실패하면 `connect ECONNREFUSED`처럼 errno 이름이 나옵니다. 출처(source)는 상대 process입니다. 서버 쪽에서는 연결한 process입니다. 클라이언트 쪽에서는 연결을 accept한 process이고, 그 뒤 서버 쪽에서 data를 주고받은 process가 있으면 가장 최근의 그 process입니다. accept 전에는 `listen()`을 호출한 process라서, systemd가 여는 socket에서는 `systemd`로 나옵니다.
+
+서버 쪽에는 `accept` event가 나옵니다. 이 event는 `accept 120µs`처럼 연결이 backlog에서 기다린 시간을 보여 줍니다. 이 시간이 길면 서버가 연결을 늦게 받는 것이고, worker가 모두 바쁜 경우가 그 예입니다. trace를 시작하기 전에 이미 시작된 `accept` 호출은 보이지 않지만, 그 연결의 다음 서버 쪽 호출부터는 상대가 바르게 나옵니다.
 
 `--payload`를 사용하면 send와 recv마다 data의 앞 4KiB를 볼 수 있고, `--payload=all`을 사용하면 호출마다 1MiB까지 볼 수 있습니다. edc는 호출 하나의 data를 16KiB 조각으로 읽어 event 하나로 합칩니다. stream socket에는 message 경계가 없으므로 event 하나는 message가 아니라 호출 하나입니다. edc는 payload의 형식을 모르므로 어떤 값도 가리지 않고, 그래서 `--show-secrets`는 쓸 수 없습니다. `docker.sock`의 `X-Registry-Auth` header처럼 token이나 비밀번호가 보일 수 있으므로, 출력을 공유하기 전에 확인합니다. 전체 화면에서는 `--payload`가 없어도 호출마다 앞 4KiB를 모읍니다. `v`를 누르면 payload 줄이 보이고, Enter를 누르면 payload 전체가 보입니다.
 

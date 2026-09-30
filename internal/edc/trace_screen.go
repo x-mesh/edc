@@ -74,6 +74,8 @@ type traceScreenModel struct {
 	split         bool
 	preview       *tracePreview
 	previewOffset int
+	// container는 --container로 고른 container의 이름이다. 목록이 조용해도 거르는 중임을 머리글에 보인다.
+	container string
 }
 
 func newTraceScreenModel(protocol string, options tcpTraceOptions, eventCh <-chan captureEvent, resultCh <-chan traceFinishedMsg, stop func()) traceScreenModel {
@@ -86,7 +88,7 @@ func newTraceScreenModel(protocol string, options tcpTraceOptions, eventCh <-cha
 		protocol: protocol, side: options.side, groupBy: options.groupBy, process: options.process, destination: options.destination,
 		duration: options.duration, started: time.Now(), eventCh: eventCh, resultCh: resultCh, stop: stop, input: input,
 		width: 80, height: 24, selected: -1, payloads: traceFullPayloads{minimum: httpPayloadHead},
-		payloadLines: options.payload != "", secrets: options.showSecrets,
+		payloadLines: options.payload != "", secrets: options.showSecrets, container: traceContainerName(options.container),
 	}
 }
 
@@ -361,6 +363,9 @@ func traceScreenHeader(model traceScreenModel) []string {
 		filter = model.filter
 	}
 	line := fmt.Sprintf("edc trace %s", traceLabel(model.protocol, model.side))
+	if model.container != "" {
+		line += " in container " + model.container
+	}
 	var report traceGroupReport
 	if model.groupBy != "" {
 		report = model.groupReport()
@@ -814,7 +819,7 @@ func runTraceScreen(protocol string, options tcpTraceOptions) int {
 	aggregate := newTraceAggregate(protocol, traceGroupViews(protocol)...)
 	go func() {
 		summary, err := collectTraceEventsLive(traceScreenScope(protocol, options), options.duration, func(event captureEvent) error {
-			if traceProtocol(event) != protocol || !traceEventMatches(event, options.process, options.destination) {
+			if traceProtocol(event) != protocol || !options.matches(event) {
 				return nil
 			}
 			aggregate.observe(event)

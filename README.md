@@ -49,7 +49,7 @@ edc update --check   # print the two versions only
 edc update --yes     # skip the confirmation
 ```
 
-`edc` writes the new file next to the old one and renames it. A failed download leaves the earlier binary in place. If the directory needs a privilege, `edc` stops with exit code `3` before it downloads anything. If `edc` is in `/usr/local/bin`, run `sudo edc update`.
+`edc` writes the new file next to the old one and renames it. A failed download leaves the earlier binary in place. If you cannot write to the directory, `edc` uses `sudo` to copy and rename the new file, as the install script does. `edc` downloads and checks the file as your user. The confirmation shows `privilege sudo`, and `sudo` asks for your password once if it needs one. If `sudo` is not available or fails, `edc` stops with exit code `3` before it downloads anything.
 
 ## Build
 
@@ -810,6 +810,16 @@ Use `--group-by source`, `--group-by target`, `--group-by port`, `--group-by pro
 `--group-by target` shows one `(server)` row for each local service, such as `127.0.0.53:53 (server)`, when an event has no target and comes from a server socket. edc treats a socket as a server if its local port is outside the ephemeral port range and the peer port is inside it.
 edc picks the target of an event in this order: a DNS answer that the same process received during the trace, the command line of the process, and then the last name seen for the address in any DNS answer or in the systemd-resolved cache. The `target_source` field of a JSON event shows `dns`, `command`, or `resolver-cache`. Two names can share one address, so a name from another lookup can be wrong.
 The kernel records retransmissions, resets, and some state changes outside the process that owns the socket. If edc did not see the owner use the socket during the trace, the process of these events is `-`. For example, a socket that connected before the trace started has no known owner until it sends or receives data.
+
+Use `--container <name|id>` to show only the events of one docker container on Linux. edc asks `docker inspect` for the first process of the container and reads its cgroup v2 directory. Then edc keeps the events of that cgroup and of the cgroups under it. Processes from `docker exec` are in the same cgroup. edc reads the cgroups once, when the trace starts. If the container restarts, start the trace again. An event without a known owner has no cgroup, so `--container` drops it, as `--process` does. `trace arp` and `trace ndp` do not accept `--container`, because their events have no process. The full-screen header shows the container name.
+
+```bash
+./bin/edc trace http --side server --container web
+./bin/edc trace tcp --container 5c9e77b3f470 --raw
+```
+
+In a bridge network, the addresses and ports are the addresses and ports inside the container. For example, a server published with `-p 8080:80` shows port 80.
+
 In the full-screen terminal view, press `s` for source rows, `t` for target rows, `p` for port rows, `c` for process rows, `e` for event rows, or `g` for scrolling events. Press `Tab` to show the next view. Press `Shift+Tab` to show the previous view. If the terminal is wide, the first column becomes wider and shows the full group value. If the terminal is narrow, the byte columns use short units, for example `195K` for 195 KiB.
 The full-screen view keeps the last 10,000 events. The live rates use the time that these events cover. The summary after Ctrl-C uses all events.
 Grouped rows in the full-screen view show the groups with the most traffic first. If the rows do not fit the terminal, the view shows the top rows.
@@ -935,7 +945,7 @@ The summary after Ctrl-C shows one row for each method, host, and path. Grouped 
 
 `trace http` does not show HTTPS, HTTP/2, or HTTP/3, because the kernel sees only encrypted data or binary frames. edc finds a message only at the start of a read or a write. If one read has the end of a response and the start of the next response, edc misses the next response. If a program writes one message from several buffers, edc reads only the first buffer. So the `Host` header must be in the first buffer and in the first 512 bytes. If it is not, the target is the server address. The kernel field that edc reads came in Linux 6.4, so older kernels stop with an error.
 
-Use `trace socket` on Linux to follow one unix domain socket file. Give the path of the socket file. edc prints each connect, send, recv, end of data (`eof`), and close on that socket. The options can come before or after the path.
+Use `trace socket` on Linux to follow one unix domain socket file. Give the path of the socket file. edc prints each connect, accept, send, recv, end of data (`eof`), and close on that socket. The options can come before or after the path.
 
 ```bash
 ./bin/edc trace socket /run/docker.sock
@@ -943,7 +953,9 @@ Use `trace socket` on Linux to follow one unix domain socket file. Give the path
 ./bin/edc trace socket /run/php/php-fpm.sock --payload=all --raw
 ```
 
-The destination is the socket path. The event shows the call and its byte count. If a call fails, the event shows the errno name, for example `connect ECONNREFUSED`. The source is the peer process. On the server side, the peer is the process that connected. On the client side, the peer is the process that called `listen()`. For a socket that systemd opens, the client peer is `systemd`. The server rows show the process that serves the connection.
+The destination is the socket path. The event shows the call and its byte count. If a call fails, the event shows the errno name, for example `connect ECONNREFUSED`. The source is the peer process. On the server side, the peer is the process that connected. On the client side, the peer is the process that accepted the connection, or the last server process that sent or received data on it. Before the accept, the peer is the process that called `listen()`, for example `systemd` for a socket that systemd opens.
+
+The server side shows an `accept` event. It shows how long the connection waited in the backlog, for example `accept 120µs`. A long wait means that the server accepts connections too slowly, for example because all workers are busy. edc does not see an `accept` call that started before the trace, but the next server call on that connection still shows the correct peer.
 
 Use `--payload` to see the first 4 KiB of the data of each send and recv. Use `--payload=all` to see up to 1 MiB of each call. edc reads the data of one call in 16 KiB parts and joins them into one event. A stream socket has no message boundaries, so one event is one call, not one message. edc does not know the format of the payload, so it hides nothing. `--show-secrets` is not available. The payload can contain tokens and passwords, for example the `X-Registry-Auth` header on `docker.sock`. Before you share the output, check it for tokens and passwords. In the full screen, edc collects the first 4 KiB of each call also without `--payload`. Press `v` to show the payload lines. Press Enter to see the whole payload.
 

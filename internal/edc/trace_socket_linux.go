@@ -117,7 +117,7 @@ func socketTracePrerequisites() error {
 	if err != nil {
 		return fmt.Errorf("%s: %w", T("cli.capture.btf_missing"), err)
 	}
-	for _, name := range []string{"unix_stream_sendmsg", "unix_stream_recvmsg", "unix_stream_connect", "unix_release"} {
+	for _, name := range []string{"unix_stream_sendmsg", "unix_stream_recvmsg", "unix_stream_connect", "unix_accept", "unix_release"} {
 		var function *btf.Func
 		if err := kernel.TypeByName(name, &function); err != nil {
 			return errors.New(T("cli.trace.socket_hook_missing", name))
@@ -232,9 +232,11 @@ func collectSocketEvents(path string, payloadLimit int, duration time.Duration, 
 	}{
 		{"fentry/unix_stream_sendmsg", objects.UnixStreamSendmsgEntry},
 		{"fentry/unix_stream_recvmsg", objects.UnixStreamRecvmsgEntry},
+		{"fentry/unix_stream_connect", objects.UnixStreamConnectEntry},
 		{"fexit/unix_stream_sendmsg", objects.UnixStreamSendmsgExit},
 		{"fexit/unix_stream_recvmsg", objects.UnixStreamRecvmsgExit},
 		{"fexit/unix_stream_connect", objects.UnixStreamConnectExit},
+		{"fexit/unix_accept", objects.UnixAcceptExit},
 		{"fentry/unix_release", objects.UnixReleaseEntry},
 	}
 	links := make([]link.Link, 0, len(hooks))

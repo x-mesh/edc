@@ -158,6 +158,7 @@ command:
       payload: "trace http, socket: 앞 4KiB, =all은 1MiB까지"
       show_secrets: "--payload: Cookie와 Authorization 값 표시"
       port: "trace http: 이 HTTP 서버 port만"
+      container: "이 docker container만, 이름이나 ID"
     notes:
       - "terminal에서는 기본으로 전체 화면 trace를 엽니다."
       - "/를 누르면 process, destination, event, source를 필터할 수 있습니다."
@@ -174,6 +175,7 @@ command:
       - "B/s는 byte rate이며 bps와 Mbps는 bit rate입니다. Mbps는 bps / 1,000,000입니다."
       - "--duration을 생략하면 Ctrl-C로 trace를 종료합니다."
       - "JSONL event가 필요하면 --raw를 사용합니다."
+      - "--container는 Linux에서 docker container 하나의 event만 보여 줍니다."
       - "요약은 process와 상대별로 행을 묶습니다. -d는 연결마다 표시합니다."
       - "trace dns는 Linux에서 DNS 질의와 응답을 표시합니다. port 보기는 없습니다."
       - "trace arp는 Linux와 macOS에서 neighbor table 변화를 표시합니다. root 불필요."
@@ -184,8 +186,9 @@ command:
       - "--port는 HTTP 서버 port만 봅니다. --side server면 로컬 port입니다."
       - "Authorization, Proxy-Authorization, Cookie, Set-Cookie 값은 가립니다."
       - "trace socket <path>는 Linux에서 stream unix socket 파일 하나를 봅니다."
-      - "connect, send, recv, eof, close를 표시합니다. SOURCE는 상대 process입니다."
-      - "클라이언트 쪽의 상대는 listen한 process입니다. 예: systemd"
+      - "connect, accept, send, recv, eof, close를 표시합니다. SOURCE는 상대입니다."
+      - "클라이언트 쪽 상대는 서버 process입니다. accept 전에는 listen한 process입니다."
+      - "accept는 연결이 backlog에서 기다린 시간을 표시합니다."
       - "payload는 가리지 않고 그대로 보입니다. 전체 화면에서는 v로 켭니다."
   report:
     summary: "저장한 JSON report 보기와 비교"

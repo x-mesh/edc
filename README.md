@@ -971,6 +971,75 @@ edc does not see a TLS connection that started before the trace. If a client use
 
 `trace http` does not show the requests in HTTPS, HTTP/2, or HTTP/3, because the kernel sees only encrypted data or binary frames. HTTP/3 uses UDP, so it also has no `tls_hello` event. edc finds a message only at the start of a read or a write. If one read has the end of a response and the start of the next response, edc misses the next response. If a program writes one message from several buffers, edc reads only the first buffer. So the `Host` header must be in the first buffer and in the first 512 bytes. If it is not, the target is the server address. The kernel field that edc reads came in Linux 6.4, so older kernels stop with an error.
 
+Use `trace mysql` on Linux 6.4 or later to print plain MySQL commands and results as they arrive. edc reads the start of each TCP read and write on the MySQL port in the kernel. The default port is 3306. Use `--port` for another port.
+
+```bash
+./bin/edc trace mysql
+./bin/edc trace mysql --side server
+./bin/edc trace mysql --port 3307
+./bin/edc trace mysql --group-by process
+./bin/edc trace mysql --show-secrets
+./bin/edc trace mysql --raw
+```
+
+`trace mysql` shows two sides, like `trace http`. Each event row starts with the side:
+
+- `client:` is a command that this host sent to a MySQL server.
+- `server:` is a command that a local MySQL server received.
+
+JSON events have `"side": "client"` or `"side": "server"`. Use `--side client` or `--side server` to keep one side. If the local port is the MySQL port, the socket is on the server side. If the peer port is the MySQL port, the socket is on the client side.
+
+| To see | Command |
+| --- | --- |
+| All MySQL on this host | `./bin/edc trace mysql` |
+| The commands that local servers received | `./bin/edc trace mysql --side server` |
+| The commands that this host sent | `./bin/edc trace mysql --side client` |
+| MySQL on port 3307 | `./bin/edc trace mysql --port 3307` |
+| The latency of each process on each side | `./bin/edc trace mysql --group-by process` |
+| The SQL text without the mask | `./bin/edc trace mysql --show-secrets` |
+
+A command is one of these events. The `mysql` object of the JSON event has the fields.
+
+- `mysql_connect` is a login. It has `user`, `database`, and `server_version`.
+- `mysql_query` is a text query. It has `sql`.
+- `mysql_prepare` is a prepared statement. It has `sql`.
+- `mysql_execute` runs a prepared statement. It has `statement_id` and the `sql` of the prepare that edc saw. edc does not read the binary parameter values.
+
+A response is one of these events:
+
+- `mysql_ok` has `affected_rows`. For a prepare, it has `statement_id`. The answer to a login is also `mysql_ok`.
+- `mysql_error` has `error_code`, `sql_state`, and `message`.
+- `mysql_result` has `columns`, the number of columns. edc does not count or read the rows.
+
+A response event has the `command` and the `sql` of the command that it answers. `mysql_tls` is not a command. It shows that the connection uses TLS and has `tls: true`. edc reads no more of that connection.
+
+MySQL answers one command at a time. So the first response packet after a command is the response of that command. `latency_ms` starts when the client sends the command and stops when the client reads that packet. On the server side, it starts when the server reads the command and stops when the server writes that packet. The client latency includes the network. The server latency includes only the work of the server. edc does not read the rows after the first packet, so `latency_ms` is not the time to the last row.
+
+`COM_QUIT`, `COM_STMT_CLOSE`, and `COM_STMT_SEND_LONG_DATA` have no response, and edc shows no event for them. Other commands, for example a ping or a change of the default database, have no event. edc skips their response.
+
+By default, edc replaces the text in single quotes and double quotes of the SQL with `?`, for example `INSERT INTO t VALUES (1,'?')`. The mask applies to the scroll view, the full screen, `--raw`, and the summary. Numbers, names, and comments are not hidden. Do not write a secret in a comment or a number. If the server uses `ANSI_QUOTES`, edc also hides the quoted names.
+
+Use `--show-secrets` to show the SQL as sent. It needs no `--payload`. Then a statement such as `CREATE USER ... IDENTIFIED BY 'password'` shows the password. Do not share output that has it. The `m` key of the full screen works only in `trace http`. In `trace mysql`, use `--show-secrets` on the command line.
+
+edc does not hide the `message` of a `mysql_error` event. The message can hold values. For example, `Duplicate entry '1' for key 't.PRIMARY'` has the key value, and an access error has the user and the host. Check the output for values before you share it. edc skips the authentication data of a login and does not keep it.
+
+The summary after Ctrl-C shows one row for each side, command, and SQL shape. The shape replaces the string values and the numbers with `?` and joins the spaces to one space. So `WHERE id = 7` and `WHERE id = 8` share one row. edc does not merge the items of an `IN` list. A row shows the number of commands, errors, and unanswered commands, the average and maximum latency, and the process. If the trace has both sides, the summary shows the totals of each side and adds a `SIDE` column. The summary also shows the number of connections, TLS connections, and compressed connections. JSON has the same content. With `--group-by`, the rows show `CMD`, `RSP`, `ERR`, `NOANS`, `AVGms`, and `MAXms`. The grouped views keep the server side in separate rows.
+
+`trace mysql` has these limits:
+
+- It reads TCP only. `mysql -h localhost` uses a unix socket, so `trace mysql` sees nothing. `mysql -h 127.0.0.1` uses TCP. Use `trace socket` to see the raw payload of a unix socket.
+- It does not read TLS. The `mysql` client of MySQL 8.4 uses TLS on TCP by default, so many connections show only `mysql_tls`. Use `--ssl-mode=DISABLED` in a test.
+- It does not read a compressed connection. It shows `mysql_connect` with `compressed: true` and the result of the login. It shows no event after that.
+- It does not read the X Protocol on port 33060.
+- If a command has the values of query attributes, edc cannot find the SQL. It shows the command without `sql`.
+- If a client writes the packet header and the payload from two buffers in one `writev`, edc reads only the header. It does not see the command.
+- A command of 16 MiB or more comes as several packets. edc shows the first part and matches the response.
+- `LOCAL INFILE` has a special response. edc does not match it, so the command counts as unanswered.
+- If the trace starts in the middle of a connection, there is no `mysql_connect` for it. edc finds the packet boundary at a later command, so edc can miss the first commands. If edc did not see the prepare, `mysql_execute` shows only `statement_id`.
+- edc keeps the first 4 KiB of each command read or write. It keeps the first 1 KiB of each response read or write. An event shows up to 1,024 bytes of SQL, and `sql_truncated` is true if edc cuts it.
+- If a lost event or a partial send moves the packet boundary, edc can miss the next commands of that connection. The summary shows the lost events.
+- `docker run -p` starts `docker-proxy`. It shows one query on each hop. Use the container address to skip it.
+
 Use `trace socket` on Linux to follow one unix domain socket file. Give the path of the socket file. edc prints each connect, accept, send, recv, end of data (`eof`), and close on that socket. The options can come before or after the path.
 
 ```bash

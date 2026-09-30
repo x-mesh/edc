@@ -5,6 +5,7 @@ package edc
 import (
 	"bufio"
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/binary"
 	"encoding/json"
@@ -301,10 +302,10 @@ func captureAttachments(objects *captureEventsObjects, protocol string) ([]captu
 		// DNS 응답 시간을 network와 읽기 지연으로 나누려고 수신 큐에 들어간 시각을 잰다.
 		{[]string{"dns"}, "fentry/__udp_enqueue_schedule_skb", objects.UdpEnqueueEntry},
 		{nil, "fentry/skb_consume_udp", objects.SkbConsumeUdpEntry},
-		// HTTP와 DNS over TCP는 TCP로 주고받는 사용자 버퍼의 앞부분을 읽는다.
-		{[]string{"http", "dns"}, "fentry/tcp_sendmsg", objects.TcpSendmsgEntry},
-		{[]string{"http", "dns"}, "fentry/tcp_recvmsg", objects.TcpRecvmsgEntry},
-		{[]string{"http", "dns"}, "fexit/tcp_recvmsg", objects.TcpRecvmsgExit},
+		// HTTP, MySQL, DNS over TCP는 TCP로 주고받는 사용자 버퍼의 앞부분을 읽는다.
+		{[]string{"http", "mysql", "dns"}, "fentry/tcp_sendmsg", objects.TcpSendmsgEntry},
+		{[]string{"http", "mysql", "dns"}, "fentry/tcp_recvmsg", objects.TcpRecvmsgEntry},
+		{[]string{"http", "mysql", "dns"}, "fexit/tcp_recvmsg", objects.TcpRecvmsgExit},
 		// 서버 쪽 DNS over TCP도 받은 연결의 process를 알아야 해서 dns가 함께 쓴다.
 		{[]string{"tcp", "dns"}, "fentry/inet_csk_accept", objects.InetCskAcceptEntry},
 		{[]string{"tcp", "dns"}, "fexit/tcp_create_openreq_child", objects.TcpCreateOpenreqChildExit},
@@ -349,6 +350,8 @@ type captureEventFilter struct {
 	httpPort uint16
 	// httpMessageLimit가 0이 아니면 HTTP message 하나를 이 byte 수까지 조각으로 따라간다.
 	httpMessageLimit uint32
+	// mysqlPort가 0이 아니면 로컬이나 상대 port가 이 값인 socket의 MySQL packet을 읽는다.
+	mysqlPort uint16
 }
 
 func captureEventFilterFor(scope traceScope) captureEventFilter {
@@ -366,6 +369,8 @@ func captureEventFilterFor(scope traceScope) captureEventFilter {
 		if scope.payloadAll {
 			filter.httpMessageLimit = httpMessageMax
 		}
+	case "mysql":
+		filter.udpEvents, filter.mysqlPort = false, cmp.Or(scope.port, traceMySQLDefaultPort)
 	}
 	return filter
 }
@@ -387,7 +392,7 @@ func loadCaptureEventsFor(scope traceScope, objects *captureEventsObjects) error
 		return 0
 	}
 	if err := errors.Join(variables.EmitUdpEvents.Set(flag(filter.udpEvents)), variables.EmitDnsSent.Set(flag(filter.dnsSent)), variables.EmitDnsServer.Set(flag(filter.server)), variables.TcpStatePort.Set(filter.tcpStatePort),
-		variables.EmitHttpMessages.Set(flag(filter.httpMessages)), variables.EmitDnsTcpMessages.Set(flag(filter.dnsTCP)), variables.HttpPort.Set(filter.httpPort)); err != nil {
+		variables.EmitHttpMessages.Set(flag(filter.httpMessages)), variables.EmitDnsTcpMessages.Set(flag(filter.dnsTCP)), variables.HttpPort.Set(filter.httpPort), variables.MysqlPort.Set(filter.mysqlPort)); err != nil {
 		return err
 	}
 	if filter.httpPayload {
@@ -477,6 +482,7 @@ func collectCaptureEventsFor(scope traceScope, duration time.Duration, onEvent f
 		messages = newHTTPMessages(requests, httpMessageMax, scope.showSecrets)
 	}
 	streams := newDNSTCPStreams()
+	mysql := newMySQLTracker(scope.side, scope.showSecrets)
 	var eventCount uint64
 	emit := func(events []captureEvent) error {
 		for _, event := range events {
@@ -601,6 +607,12 @@ func collectCaptureEventsFor(scope traceScope, duration time.Duration, onEvent f
 				}
 			}
 			eventCount++
+			continue
+		}
+		if packet, ok := parseMySQLRecord(record.RawSample); ok {
+			if err := emit(mysql.events(packet, clockOffset)); err != nil {
+				return captureSummary{}, err
+			}
 			continue
 		}
 		if owner, ok := parseOwnerAnnouncement(record.RawSample); ok {

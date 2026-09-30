@@ -105,6 +105,8 @@ func TestCaptureAttachmentsFollowTheProtocol(t *testing.T) {
 		{"dns", []string{"sock/inet_sock_set_state"}, append(append(append([]string{}, udpSend...), "fentry/__udp_enqueue_schedule_skb", "fentry/skb_consume_udp", "fentry/tcp_sendmsg", "fentry/tcp_recvmsg", "fexit/tcp_recvmsg"), tcpAccept...)},
 		// HTTP는 TCP 송수신의 사용자 버퍼만 읽고 TCP 상태 변화는 쓰지 않는다.
 		{"http", []string{}, []string{"fentry/skb_consume_udp", "fentry/tcp_sendmsg", "fentry/tcp_recvmsg", "fexit/tcp_recvmsg"}},
+		// MySQL도 같은 TCP 송수신 hook만 쓴다.
+		{"mysql", []string{}, []string{"fentry/skb_consume_udp", "fentry/tcp_sendmsg", "fentry/tcp_recvmsg", "fexit/tcp_recvmsg"}},
 	} {
 		tracepoints, tracing := captureAttachments(&captureEventsObjects{}, test.protocol)
 		gotTracepoints := []string{}
@@ -135,6 +137,8 @@ func TestCaptureEventFiltersFollowTheProtocol(t *testing.T) {
 		{traceScope{protocol: "http", payload: true}, captureEventFilter{dnsSent: true, httpMessages: true, httpPayload: true}},
 		{traceScope{protocol: "http", server: true, port: 8080}, captureEventFilter{dnsSent: true, httpMessages: true, httpPort: 8080}},
 		{traceScope{protocol: "http", payload: true, payloadAll: true}, captureEventFilter{dnsSent: true, httpMessages: true, httpPayload: true, httpMessageLimit: httpMessageMax}},
+		{traceScope{protocol: "mysql"}, captureEventFilter{dnsSent: true, mysqlPort: 3306}},
+		{traceScope{protocol: "mysql", port: 3307}, captureEventFilter{dnsSent: true, mysqlPort: 3307}},
 	} {
 		if got := captureEventFilterFor(test.scope); got != test.want {
 			t.Fatalf("scope %+v filter = %+v, want %+v", test.scope, got, test.want)
@@ -154,13 +158,14 @@ func TestCaptureEventFiltersFollowTheProtocol(t *testing.T) {
 	var httpPayloadLimit uint32
 	var httpPort uint16
 	var httpMessageLimit uint32
-	if err := errors.Join(variables.EmitUdpEvents.Get(&udpEvents), variables.EmitDnsSent.Get(&dnsSent), variables.EmitDnsServer.Get(&server), variables.TcpStatePort.Get(&tcpStatePort), variables.HttpPayloadLimit.Get(&httpPayloadLimit), variables.HttpPort.Get(&httpPort), variables.HttpMessageLimit.Get(&httpMessageLimit)); err != nil {
+	var mysqlPort uint16
+	if err := errors.Join(variables.EmitUdpEvents.Get(&udpEvents), variables.EmitDnsSent.Get(&dnsSent), variables.EmitDnsServer.Get(&server), variables.TcpStatePort.Get(&tcpStatePort), variables.HttpPayloadLimit.Get(&httpPayloadLimit), variables.HttpPort.Get(&httpPort), variables.HttpMessageLimit.Get(&httpMessageLimit), variables.MysqlPort.Get(&mysqlPort)); err != nil {
 		t.Fatal(err)
 	}
 	// capture는 모든 event와 client 쪽 DNS 레코드를 받는다. 서버 쪽 레코드는 trace dns --side server만 켠다.
 	// HTTP message는 --payload가 아니면 요청 줄과 Host가 들어가는 512바이트만 읽는다.
-	if udpEvents != 1 || dnsSent != 1 || server != 0 || tcpStatePort != 0 || httpPayloadLimit != 512 || httpPort != 0 || httpMessageLimit != 0 {
-		t.Fatalf("BPF defaults = %d, %d, %d, %d, %d, %d, %d", udpEvents, dnsSent, server, tcpStatePort, httpPayloadLimit, httpPort, httpMessageLimit)
+	if udpEvents != 1 || dnsSent != 1 || server != 0 || tcpStatePort != 0 || httpPayloadLimit != 512 || httpPort != 0 || httpMessageLimit != 0 || mysqlPort != 0 {
+		t.Fatalf("BPF defaults = %d, %d, %d, %d, %d, %d, %d, %d", udpEvents, dnsSent, server, tcpStatePort, httpPayloadLimit, httpPort, httpMessageLimit, mysqlPort)
 	}
 }
 

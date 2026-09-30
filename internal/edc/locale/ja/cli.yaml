@@ -188,7 +188,7 @@ cli:
     container_inspect: "docker inspect %s が失敗しました: %s"
     container_stopped: "container %s は動いていません"
     container_cgroup: "container %s の cgroup を読めません: %v"
-    http_kernel: "trace http には Linux 6.4 以降が必要です。kernel の iov_iter に %s field がありません"
+    http_kernel: "trace http と trace mysql には Linux 6.4 以降が必要です。kernel の iov_iter に %s field がありません"
     socket_path: "trace socket には socket ファイルのパスが必要です。例: edc trace socket /run/docker.sock"
     socket_missing: "socket ファイル %s を読めませんでした: %v"
     socket_not_socket: "%s は socket ファイルではありません"

@@ -50,6 +50,8 @@ type captureEvent struct {
 	Method string `json:"method,omitempty"`
 	Path   string `json:"path,omitempty"`
 	Status int    `json:"status,omitempty"`
+	// MySQL은 MySQL event에만 붙는다. 응답에는 답한 요청의 명령과 SQL도 들어 있다.
+	MySQL *traceMySQLEvent `json:"mysql,omitempty"`
 	// ALPN은 tls_hello event에만 붙는다. client가 ClientHello로 제안한 protocol이고, 서버가 고른 것은 암호문이라 모른다.
 	ALPN []string `json:"alpn,omitempty"`
 	// Payload는 trace http --payload일 때만 붙는 message 앞부분이다. 제어 문자를 이미 \xNN으로 바꿔 두어서

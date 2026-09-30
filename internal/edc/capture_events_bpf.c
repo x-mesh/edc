@@ -73,6 +73,9 @@ volatile const __u32 http_message_limit = 0;
 // 0이 아니면 inet_sock_set_state는 로컬이나 상대 port가 이 값인 socket만 본다. trace dns는 53만 본다. 상대 port는 client 쪽
 // 연결, 로컬 port는 이 host의 DNS 서버가 받은 연결이다.
 volatile const __u16 tcp_state_port = 0;
+// mysql_port가 0이 아니면 trace mysql이다. 로컬이나 상대 port가 이 값인 socket의 읽기와 쓰기 앞부분을 넘긴다. 0이면 trace
+// mysql이 아니라서 verifier가 이 값에 걸린 분기를 지운다.
+volatile const __u16 mysql_port = 0;
 
 struct {
 	__uint(type, BPF_MAP_TYPE_ARRAY);
@@ -928,6 +931,7 @@ struct http_record {
 	__u8 destination[16];
 	char comm[16];
 	// offset은 조각이 message 안에서 시작하는 위치다. 사용자 공간은 기다리던 위치와 다르면 조각을 잃은 것으로 본다.
+	// trace mysql에서는 kind가 로컬 port가 MySQL port인 서버 쪽이면 1이고, offset은 이번 읽기나 쓰기의 전체 byte 수다.
 	__u32 offset;
 	__u8 payload[HTTP_PAYLOAD_SIZE];
 };
@@ -1054,6 +1058,24 @@ static __always_inline int http_socket(struct sock *sk) {
 	__u16 local = BPF_CORE_READ(sk, __sk_common.skc_num);
 	__u16 remote = bpf_ntohs(BPF_CORE_READ(sk, __sk_common.skc_dport));
 	return local == http_port || remote == http_port;
+}
+
+// mysql_socket은 MySQL port의 socket이 어느 쪽인지 돌려준다. 로컬 port가 mysql_port면 서버, 상대 port가 mysql_port면
+// client이고 아니면 0이다. RST 뒤에는 kernel이 port를 지우므로 시작할 때 확인한 값을 쓴다.
+#define MYSQL_NONE 0
+#define MYSQL_CLIENT 1
+#define MYSQL_SERVER 2
+// 요청은 client가 보내고 서버가 받는 방향이다. 요청에 명령 SQL이 있어 응답보다 넉넉히 읽는다.
+#define MYSQL_REQUEST_SIZE 4096
+#define MYSQL_RESPONSE_SIZE 1024
+static __always_inline __u8 mysql_socket(struct sock *sk) {
+	if (BPF_CORE_READ(sk, __sk_common.skc_num) == mysql_port) {
+		return MYSQL_SERVER;
+	}
+	if (bpf_ntohs(BPF_CORE_READ(sk, __sk_common.skc_dport)) == mysql_port) {
+		return MYSQL_CLIENT;
+	}
+	return MYSQL_NONE;
 }
 
 static __always_inline void http_fill_record(struct http_record *record, struct sock *sk, __u8 direction) {
@@ -1218,6 +1240,45 @@ static __always_inline void http_capture(struct sock *sk, __u64 buffer, __u64 li
 	}
 }
 
+// emit_mysql은 MySQL port socket의 읽기나 쓰기 앞부분을 레코드 하나로 넘긴다. TLS record로 시작하면 암호문이라 넘기지 않는다.
+// 사용자 공간이 packet 경계를 따라가므로 이 함수는 상태를 두지 않는다.
+static __always_inline void emit_mysql(struct sock *sk, __u64 buffer, __u64 limit, __u64 size, __u8 direction, __u8 server) {
+	if (!buffer || size == 0) {
+		return;
+	}
+	__u32 zero = 0;
+	struct http_record *record = bpf_map_lookup_elem(&http_scratch, &zero);
+	if (!record) {
+		return;
+	}
+	__u64 cap = server != (direction == HTTP_SENT) ? MYSQL_REQUEST_SIZE : MYSQL_RESPONSE_SIZE;
+	__u64 len = size < limit ? size : limit;
+	if (len > cap) {
+		len = cap;
+	}
+	if (len > MYSQL_REQUEST_SIZE) {
+		len = MYSQL_REQUEST_SIZE;
+	}
+	if (len == 0 || bpf_probe_read_user(record->payload, len, (void *)buffer)) {
+		return;
+	}
+	if (len >= 3 && record->payload[0] >= 0x14 && record->payload[0] <= 0x17 && record->payload[1] == 0x03 && (record->payload[2] == 0x01 || record->payload[2] == 0x03)) {
+		return;
+	}
+	http_fill_record(record, sk, direction);
+	record->event_type = 11;
+	record->timestamp_ns = bpf_ktime_get_ns();
+	record->len = len;
+	record->kind = server;
+	record->offset = (__u32)size;
+	if (bpf_ringbuf_output(&events, record, __builtin_offsetof(struct http_record, payload) + len, 0)) {
+		__u64 *lost = bpf_map_lookup_elem(&lost_events, &zero);
+		if (lost) {
+			__sync_fetch_and_add(lost, 1);
+		}
+	}
+}
+
 // DNS over TCP는 로컬이나 상대 port 53의 연결이다. 로컬 53은 이 host의 DNS 서버라서 --side server일 때만 본다.
 static __always_inline int dns_tcp_socket(struct sock *sk) {
 	__u16 local = BPF_CORE_READ(sk, __sk_common.skc_num);
@@ -1338,6 +1399,13 @@ int tcp_sendmsg_entry(__u64 *ctx) {
 		}
 		return 0;
 	}
+	if (mysql_port && sk) {
+		__u8 side = mysql_socket(sk);
+		if (side) {
+			emit_mysql(sk, (__u64)buffer, limit, size, HTTP_SENT, side == MYSQL_SERVER);
+			return 0;
+		}
+	}
 	if (!emit_http_messages || !sk || !buffer || !http_socket(sk)) {
 		return 0;
 	}
@@ -1390,7 +1458,7 @@ int tcp_recvmsg_entry(__u64 *ctx) {
 	}
 	// 끝날 때 쓰지 않을 socket이면 버퍼 위치를 기록하지 않는다. recv마다 map을 갱신하는 비용이 크다.
 	struct sock *sk = (struct sock *)ctx[0];
-	if (!sk || !((emit_dns_tcp_messages && dns_tcp_socket(sk)) || (emit_http_messages && http_socket(sk)))) {
+	if (!sk || !((emit_dns_tcp_messages && dns_tcp_socket(sk)) || (emit_http_messages && http_socket(sk)) || (mysql_port && mysql_socket(sk)))) {
 		return 0;
 	}
 	struct http_recv_pending pending = {.skaddr = ctx[0]};
@@ -1417,6 +1485,11 @@ int tcp_recvmsg_exit(__u64 *ctx) {
 		struct sock *sk = (struct sock *)pending->skaddr;
 		if (emit_dns_tcp_messages && sk && dns_tcp_socket(sk)) {
 			emit_dns_tcp(sk, (void *)pending->buffer, size, DNS_RECEIVED);
+		} else if (mysql_port && sk) {
+			__u8 side = mysql_socket(sk);
+			if (side) {
+				emit_mysql(sk, pending->buffer, pending->limit, (__u64)copied, HTTP_RECEIVED, side == MYSQL_SERVER);
+			}
 		} else if (emit_http_messages) {
 			http_capture(sk, pending->buffer, pending->limit, 0, 1, (__u64)copied, HTTP_RECEIVED);
 		}

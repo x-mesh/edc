@@ -144,7 +144,7 @@ command:
       - "PCAP には credential や個人情報が入ることがあります。"
       - "JSON の redaction は PCAP の payload には効きません。"
   trace:
-    summary: "TCP、UDP、DNS、ARP、NDP、HTTP event を表示して summary にまとめる"
+    summary: "TCP、UDP、DNS、ARP、NDP、HTTP、socket event を表示して要約"
     option:
       duration: "trace 時間、最大 60s。省略で Ctrl-C"
       raw: "raw event JSONL を表示"
@@ -155,7 +155,7 @@ command:
       detail: "要約で接続や flow を 1 行ずつ表示"
       yes: "確認を省く"
       side: "trace dns, http: この host か local server"
-      payload: "trace http: 先頭 4 KiB、=all は 1 MiB まで"
+      payload: "trace http, socket: 先頭 4 KiB、=all は 1 MiB まで"
       show_secrets: "--payload: Cookie と Authorization を表示"
       port: "trace http: この HTTP server port だけ"
     notes:
@@ -182,6 +182,10 @@ command:
       - "--payload=all は各 message を 1 MiB まで表示します。=all は続けて書きます。"
       - "--port は HTTP server の port だけを見ます。--side server では local port。"
       - "Authorization、Proxy-Authorization、Cookie、Set-Cookie の値は隠します。"
+      - "trace socket <path> は Linux で stream unix socket ファイルを 1 つ見ます。"
+      - "connect、send、recv、eof、close を表示します。SOURCE は相手の process です。"
+      - "client 側の相手は listen した process です。例: systemd"
+      - "payload は隠さずそのまま表示します。全画面では v で表示します。"
   report:
     summary: "保存した JSON report の閲覧と比較"
     notes:

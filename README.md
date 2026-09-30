@@ -933,6 +933,20 @@ The summary after Ctrl-C shows one row for each method, host, and path. Grouped 
 
 `trace http` does not show HTTPS, HTTP/2, or HTTP/3, because the kernel sees only encrypted data or binary frames. edc finds a message only at the start of a read or a write. If one read has the end of a response and the start of the next response, edc misses the next response. If a program writes one message from several buffers, edc reads only the first buffer. So the `Host` header must be in the first buffer and in the first 512 bytes. If it is not, the target is the server address. The kernel field that edc reads came in Linux 6.4, so older kernels stop with an error.
 
+Use `trace socket` on Linux to follow one unix domain socket file. Give the path of the socket file. edc prints each connect, send, recv, end of data (`eof`), and close on that socket. The options can come before or after the path.
+
+```bash
+./bin/edc trace socket /run/docker.sock
+./bin/edc trace socket /run/docker.sock --payload
+./bin/edc trace socket /run/php/php-fpm.sock --payload=all --raw
+```
+
+The destination is the socket path. The event shows the call and its byte count. If a call fails, the event shows the errno name, for example `connect ECONNREFUSED`. The source is the peer process. On the server side, the peer is the process that connected. On the client side, the peer is the process that called `listen()`. For a socket that systemd opens, the client peer is `systemd`. The server rows show the process that serves the connection.
+
+Use `--payload` to see the first 4 KiB of the data of each send and recv. Use `--payload=all` to see up to 1 MiB of each call. edc reads the data of one call in 16 KiB parts and joins them into one event. A stream socket has no message boundaries, so one event is one call, not one message. edc does not know the format of the payload, so it hides nothing. `--show-secrets` is not available. The payload can contain tokens and passwords, for example the `X-Registry-Auth` header on `docker.sock`. Before you share the output, check it for tokens and passwords. In the full screen, edc collects the first 4 KiB of each call also without `--payload`. Press `v` to show the payload lines. Press Enter to see the whole payload.
+
+If the server makes the socket file again, for example after a restart, edc finds the new file within one second. Connections on the old file stay in the trace. `trace socket` supports stream sockets only. Datagram and seqpacket sockets, abstract sockets, and socket pairs are not available. edc does not see the data of `sendfile` and `splice`. A failed connect is in the trace only if the program uses the same path as the command.
+
 ```bash
 ./bin/edc capture \
   --interface en0 \

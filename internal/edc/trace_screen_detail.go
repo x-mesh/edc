@@ -120,7 +120,7 @@ func (model traceScreenModel) buildDetail(number int) *traceDetail {
 			notes = append(notes, note)
 		}
 	}
-	if !model.secrets {
+	if !model.secrets && model.protocol == "http" {
 		payload = string(traceMaskHTTPHeaders([]byte(payload)))
 	}
 	return newTraceDetail(event, payload, notes, number, model.width)

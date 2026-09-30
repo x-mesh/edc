@@ -158,6 +158,7 @@ command:
       payload: "trace http, socket: 4 KiB each, =all up to 1 MiB"
       show_secrets: "trace http --payload: show Cookie and Authorization"
       port: "trace http: only this HTTP server port"
+      container: "only this docker container, by name or ID"
     notes:
       - "The default output opens a full-screen trace view in a terminal."
       - "Use / to filter process, destination, event, or source text."
@@ -173,6 +174,7 @@ command:
       - "B/s is a byte rate. bps and Mbps are bit rates. Mbps is bps / 1,000,000."
       - "Press Ctrl-C to stop a trace without --duration."
       - "Use --raw for JSONL events."
+      - "--container shows the events of one docker container on Linux."
       - "The summary groups rows by process and peer. -d lists each connection."
       - "trace dns shows DNS queries and answers on Linux. It has no port view."
       - "trace arp shows neighbor table changes on Linux and macOS. It needs no root."

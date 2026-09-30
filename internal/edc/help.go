@@ -210,6 +210,7 @@ var commandDocs = []commandDoc{
 			{"--payload[=all]", "command.trace.option.payload"},
 			{"--show-secrets", "command.trace.option.show_secrets"},
 			{"--port <n>", "command.trace.option.port"},
+			{"--container <name>", "command.trace.option.container"},
 			{"--yes", "command.trace.option.yes"},
 		},
 	},

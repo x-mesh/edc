@@ -289,6 +289,7 @@ func runTrace(args []string) int {
 	set.Var(&options.payload, "payload", T("command.trace.option.payload"))
 	set.BoolVar(&options.showSecrets, "show-secrets", false, T("command.trace.option.show_secrets"))
 	set.IntVar(&options.port, "port", 0, T("command.trace.option.port"))
+	set.StringVar(&options.containerRef, "container", "", T("command.trace.option.container"))
 	if err := set.Parse(args[1:]); err != nil {
 		return 2
 	}
@@ -366,8 +367,17 @@ func runTrace(args []string) int {
 		fmt.Fprintln(os.Stderr, T("cli.trace.port_protocol", args[0]))
 		return 2
 	}
+	// ARP와 NDP event는 netlink에서 와서 process가 없으므로 process 보기도 없다. cgroup ID도 없다.
+	if options.containerRef != "" && slices.Contains(traceProtocols[args[0]].hiddenViews, traceGroupByProcess) {
+		fmt.Fprintln(os.Stderr, T("cli.trace.container_protocol", args[0]))
+		return 2
+	}
 	if traceProtocols[args[0]].linuxOnly && runtime.GOOS != "linux" {
 		fmt.Fprintln(os.Stderr, T("cli.trace.protocol_linux_only", args[0], runtime.GOOS))
+		return 3
+	}
+	if options.containerRef != "" && runtime.GOOS != "linux" {
+		fmt.Fprintln(os.Stderr, T("cli.trace.container_linux_only", runtime.GOOS))
 		return 3
 	}
 	if args[0] == "socket" {
@@ -379,6 +389,15 @@ func runTrace(args []string) int {
 	if err := traceProtocolPrerequisites(args[0]); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 3
+	}
+	// 권한이 없으면 docker 권한 오류보다 capability 안내가 먼저 보이도록 prerequisite 뒤에 푼다.
+	if options.containerRef != "" {
+		container, code, err := resolveTraceContainer(options.containerRef)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return code
+		}
+		options.container = container
 	}
 	if !options.raw && options.jsonPath == "" && isTerminal(os.Stdin) && isTerminal(os.Stdout) {
 		return runTraceScreen(args[0], options)
@@ -400,7 +419,7 @@ func runTrace(args []string) int {
 		if traceProtocol(event) != args[0] {
 			return nil
 		}
-		if !traceEventMatches(event, options.process, options.destination) {
+		if !options.matches(event) {
 			return nil
 		}
 		if options.raw {

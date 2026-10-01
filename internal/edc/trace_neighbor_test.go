@@ -87,7 +87,7 @@ func TestARPTrackerReportsOnlyChanges(t *testing.T) {
 // ARP와 NDP는 netlink나 sysctl만 쓰므로 root 없이 동작한다. eBPF 확인을 붙이면 일반 사용자가 쓸 수 없게 된다.
 func TestOnlyBPFProtocolsCheckEBPFPrerequisites(t *testing.T) {
 	for protocol, spec := range traceProtocols {
-		if (spec.prerequisites == nil) != (protocol == "arp" || protocol == "ndp") {
+		if (spec.prerequisites == nil) != (protocol == "arp" || protocol == "ndp" || protocol == "sched") {
 			t.Fatalf("trace %s prerequisites set = %t", protocol, spec.prerequisites != nil)
 		}
 	}

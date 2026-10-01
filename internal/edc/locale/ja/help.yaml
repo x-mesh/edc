@@ -144,7 +144,7 @@ command:
       - "PCAP には credential や個人情報が入ることがあります。"
       - "JSON の redaction は PCAP の payload には効きません。"
   trace:
-    summary: "TCP、UDP、DNS、ARP、NDP、HTTP、MySQL、I/O、socket、drop を表示・要約"
+    summary: "network、I/O、socket、drop、scheduler を表示・要約"
     option:
       duration: "trace 時間、最大 60s。省略で Ctrl-C"
       slow: "mysql のみ。最初の応答 latency がこの時間以上"

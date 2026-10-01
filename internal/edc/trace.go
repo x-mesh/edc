@@ -125,6 +125,7 @@ var traceProtocolRegistry = []traceProtocolRegistration{
 		ansiColor: "91", screenColor: "#f87171", hideTraffic: true, linuxOnly: true,
 		scrollLabels: traceDropScrollLabels, prerequisites: dropTracePrerequisites, newSummarizer: func() traceSummarizer { return newDropTraceSummarizer() },
 	}},
+	{name: "sched", view: traceProtocolView{selectorLabel: "sched"}, spec: traceProtocolSpec{hideTraffic: true, hiddenViews: []string{traceGroupBySource, traceGroupByTarget, traceGroupByPort}}, run: runTraceSched},
 }
 
 var traceProtocols = traceProtocolSpecs(traceProtocolRegistry)
@@ -399,7 +400,7 @@ func runTrace(args []string) int {
 }
 
 func traceUsage() {
-	fmt.Fprintln(os.Stderr, T("cli.usage", "edc trace <tcp|udp|dns|arp|ndp|http|drop|mysql|io> [options]"))
+	fmt.Fprintln(os.Stderr, T("cli.usage", "edc trace <tcp|udp|dns|arp|ndp|http|drop|mysql|io|sched> [options]"))
 	fmt.Fprintln(os.Stderr, T("cli.usage", traceSocketUsage))
 }
 

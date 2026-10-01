@@ -144,7 +144,7 @@ command:
       - "PCAP에는 credential과 개인정보가 들어갈 수 있습니다."
       - "JSON redaction은 PCAP payload에 적용되지 않습니다."
   trace:
-    summary: "network과 I/O event 출력과 요약"
+    summary: "network, I/O, socket, drop, scheduler event 출력과 요약"
     option:
       duration: "trace 시간, 최대 60s. 생략하면 Ctrl-C"
       slow: "mysql만: 첫 응답 latency가 이 시간 이상"

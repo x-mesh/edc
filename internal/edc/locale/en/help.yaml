@@ -144,7 +144,7 @@ command:
       - "A PCAP file can hold credentials and personal data."
       - "The JSON redaction does not apply to the PCAP payload."
   trace:
-    summary: "Trace TCP, UDP, DNS, ARP, NDP, HTTP, MySQL, socket, and drop events"
+    summary: "Trace network, socket, drop, and scheduler events"
     option:
       duration: "trace time, max 60s. Omit for Ctrl-C"
       slow: "mysql only: first response latency threshold"

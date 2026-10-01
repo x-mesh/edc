@@ -50,6 +50,19 @@ type traceProtocolSpec struct {
 	newSummarizer func() traceSummarizer
 }
 
+type traceProtocolView struct {
+	selectorLabel string
+}
+
+type traceProtocolRunner func([]string) int
+
+type traceProtocolRegistration struct {
+	name string
+	view traceProtocolView
+	spec traceProtocolSpec
+	run  traceProtocolRunner
+}
+
 // traceGroupColumn은 group 행의 protocol 전용 열이다. 전체 화면은 좁은 title을, 끝난 뒤 출력하는 표는 긴 title을 쓴다.
 type traceGroupColumn struct {
 	screenTitle string
@@ -67,8 +80,8 @@ type traceSummarizer interface {
 // traceReport의 print는 detail이 false면 process와 상대별로 묶은 행을, true면 연결이나 flow마다 한 행을 쓴다.
 type traceReport interface{ print(detail bool) }
 
-var traceProtocols = map[string]traceProtocolSpec{
-	"tcp": {
+var traceProtocolRegistry = []traceProtocolRegistration{
+	{name: "tcp", view: traceProtocolView{selectorLabel: "tcp"}, spec: traceProtocolSpec{
 		ansiColor: "36", screenColor: "#22d3ee",
 		groupColumns: []traceGroupColumn{
 			{screenTitle: "CON", reportTitle: "CONNECT", width: 3, value: func(group traceGroupSummary) string { return strconv.FormatUint(group.Connect, 10) }},
@@ -76,42 +89,88 @@ var traceProtocols = map[string]traceProtocolSpec{
 			{screenTitle: "RST", reportTitle: "RESET", width: 3, value: func(group traceGroupSummary) string { return traceOptional(group.Resets, "%d") }},
 		},
 		prerequisites: captureEventsPrerequisites, newSummarizer: func() traceSummarizer { return newTCPTraceSummarizer() },
-	},
-	"udp": {ansiColor: "35", screenColor: "#c084fc", prerequisites: captureEventsPrerequisites, newSummarizer: func() traceSummarizer { return newUDPTraceSummarizer() }},
-	"dns": {
+	}},
+	{name: "udp", view: traceProtocolView{selectorLabel: "udp"}, spec: traceProtocolSpec{ansiColor: "35", screenColor: "#c084fc", prerequisites: captureEventsPrerequisites, newSummarizer: func() traceSummarizer { return newUDPTraceSummarizer() }}},
+	{name: "dns", view: traceProtocolView{selectorLabel: "dns"}, spec: traceProtocolSpec{
 		ansiColor: "32", screenColor: "#4ade80", groupColumns: traceDNSGroupColumns, hideTraffic: true, hiddenViews: []string{traceGroupByPort}, linuxOnly: true,
 		scrollLabels: traceDNSScrollLabels, serverSide: true, prerequisites: captureEventsPrerequisites, newSummarizer: func() traceSummarizer { return newDNSTraceSummarizer() },
-	},
-	// 평문 HTTP/1.x만 본다. TLS 안의 HTTP는 kernel에서 암호문이다.
-	"http": {
-		ansiColor: "95", screenColor: "#f472b6", groupColumns: traceHTTPGroupColumns, hideTraffic: true, linuxOnly: true,
-		scrollLabels: traceHTTPScrollLabels, serverSide: true, prerequisites: httpTracePrerequisites, newSummarizer: func() traceSummarizer { return newHTTPTraceSummarizer() },
-	},
-	// 평문 MySQL만 본다. TLS 안의 packet은 kernel에서 암호문이다. 색은 다른 protocol이 쓰지 않는 값이다.
-	"mysql": {
-		ansiColor: "94", screenColor: "#818cf8", groupColumns: traceMySQLGroupColumns, hideTraffic: true, linuxOnly: true,
-		scrollLabels: traceMySQLScrollLabels, serverSide: true, prerequisites: httpTracePrerequisites, newSummarizer: func() traceSummarizer { return newMySQLTraceSummarizer() },
-	},
-	// unix socket 파일 하나를 본다. 목적지는 늘 그 경로라서 port와 target 보기는 한 행뿐이다. source는 상대 process다.
-	"socket": {
-		ansiColor: "38;5;208", screenColor: "#fb923c", hiddenViews: []string{traceGroupByPort, traceGroupByTarget}, linuxOnly: true,
-		scrollLabels: traceSocketScrollLabels, prerequisites: socketTracePrerequisites, newSummarizer: func() traceSummarizer { return newSocketTraceSummarizer() },
-	},
-	// kernel이 버린 패킷이다. event 칸은 버린 이유다. process는 패킷에 local socket이 있을 때만 붙는다.
-	"drop": {
-		ansiColor: "91", screenColor: "#f87171", hideTraffic: true, linuxOnly: true,
-		scrollLabels: traceDropScrollLabels, prerequisites: dropTracePrerequisites, newSummarizer: func() traceSummarizer { return newDropTraceSummarizer() },
-	},
-	// ARP event에는 process와 port가 없다. source는 interface, target은 IP다. Linux는 netlink 알림을, macOS는 1초마다 읽은 table을 쓴다.
-	"arp": {
+	}},
+	{name: "arp", view: traceProtocolView{selectorLabel: "arp"}, spec: traceProtocolSpec{
 		ansiColor: "34", screenColor: "#60a5fa", groupColumns: traceNeighborGroupColumns, hideTraffic: true, hiddenViews: []string{traceGroupByPort, traceGroupByProcess},
 		scrollLabels: traceNeighborScrollLabels, newSummarizer: func() traceSummarizer { return newNeighborTraceSummarizer("arp") },
-	},
-	// NDP는 IPv6 neighbor table이다. ARP와 같은 원천과 형식을 쓰고, event 이름만 ndp_로 시작한다.
-	"ndp": {
+	}},
+	{name: "ndp", view: traceProtocolView{selectorLabel: "ndp"}, spec: traceProtocolSpec{
 		ansiColor: "34", screenColor: "#60a5fa", groupColumns: traceNeighborGroupColumns, hideTraffic: true, hiddenViews: []string{traceGroupByPort, traceGroupByProcess},
 		scrollLabels: traceNeighborScrollLabels, newSummarizer: func() traceSummarizer { return newNeighborTraceSummarizer("ndp") },
-	},
+	}},
+	// 평문 HTTP/1.x만 본다. TLS 안의 HTTP는 kernel에서 암호문이다.
+	{name: "http", view: traceProtocolView{selectorLabel: "http"}, spec: traceProtocolSpec{
+		ansiColor: "95", screenColor: "#f472b6", groupColumns: traceHTTPGroupColumns, hideTraffic: true, linuxOnly: true,
+		scrollLabels: traceHTTPScrollLabels, serverSide: true, prerequisites: httpTracePrerequisites, newSummarizer: func() traceSummarizer { return newHTTPTraceSummarizer() },
+	}},
+	// 평문 MySQL만 본다. TLS 안의 packet은 kernel에서 암호문이다. 색은 다른 protocol이 쓰지 않는 값이다.
+	{name: "mysql", view: traceProtocolView{selectorLabel: "mysql"}, spec: traceProtocolSpec{
+		ansiColor: "94", screenColor: "#818cf8", groupColumns: traceMySQLGroupColumns, hideTraffic: true, linuxOnly: true,
+		scrollLabels: traceMySQLScrollLabels, serverSide: true, prerequisites: httpTracePrerequisites, newSummarizer: func() traceSummarizer { return newMySQLTraceSummarizer() },
+	}},
+	// unix socket 파일 하나를 본다. 목적지는 늘 그 경로라서 port와 target 보기는 한 행뿐이다. source는 상대 process다.
+	{name: "socket", view: traceProtocolView{selectorLabel: "socket"}, spec: traceProtocolSpec{
+		ansiColor: "38;5;208", screenColor: "#fb923c", hiddenViews: []string{traceGroupByPort, traceGroupByTarget}, linuxOnly: true,
+		scrollLabels: traceSocketScrollLabels, prerequisites: socketTracePrerequisites, newSummarizer: func() traceSummarizer { return newSocketTraceSummarizer() },
+	}},
+	// kernel이 버린 패킷이다. event 칸은 버린 이유다. process는 패킷에 local socket이 있을 때만 붙는다.
+	{name: "drop", view: traceProtocolView{selectorLabel: "drop"}, spec: traceProtocolSpec{
+		ansiColor: "91", screenColor: "#f87171", hideTraffic: true, linuxOnly: true,
+		scrollLabels: traceDropScrollLabels, prerequisites: dropTracePrerequisites, newSummarizer: func() traceSummarizer { return newDropTraceSummarizer() },
+	}},
+}
+
+var traceProtocols = traceProtocolSpecs(traceProtocolRegistry)
+
+func traceProtocolSpecs(registry []traceProtocolRegistration) map[string]traceProtocolSpec {
+	specs := make(map[string]traceProtocolSpec, len(registry))
+	for _, protocol := range registry {
+		if protocol.name == "" {
+			panic("trace protocol name is required")
+		}
+		if _, exists := specs[protocol.name]; exists {
+			panic("trace protocol is already registered: " + protocol.name)
+		}
+		specs[protocol.name] = protocol.spec
+	}
+	return specs
+}
+
+func registerTraceProtocol(protocol traceProtocolRegistration) {
+	if protocol.name == "" {
+		panic("trace protocol name is required")
+	}
+	if _, exists := traceProtocols[protocol.name]; exists {
+		panic("trace protocol is already registered: " + protocol.name)
+	}
+	traceProtocolRegistry = append(traceProtocolRegistry, protocol)
+	traceProtocols[protocol.name] = protocol.spec
+}
+
+func traceProtocolRegistrationFor(name string) (traceProtocolRegistration, bool) {
+	for _, protocol := range traceProtocolRegistry {
+		if protocol.name == name {
+			return protocol, true
+		}
+	}
+	return traceProtocolRegistration{}, false
+}
+
+func traceProtocolSelectItems() []selectItem {
+	items := make([]selectItem, 0, len(traceProtocolRegistry))
+	for _, protocol := range traceProtocolRegistry {
+		label := protocol.view.selectorLabel
+		if label == "" {
+			label = protocol.name
+		}
+		items = append(items, selectItem{label: label, value: protocol.name})
+	}
+	return items
 }
 
 func traceProtocolPrerequisites(protocol string) error {
@@ -283,13 +342,38 @@ func (report udpTraceReport) print(detail bool) { printUDPTraceReport(report, de
 func (report traceGroupReport) hideTraffic() bool { return traceProtocols[report.Protocol].hideTraffic }
 
 var traceIsTerminal = isTerminal
+var runTraceProtocolSelector = selectTraceProtocol
 
 func runTrace(args []string) int {
-	if len(args) == 0 || !knownTraceProtocol(args[0]) {
-		fmt.Fprintln(os.Stderr, T("cli.usage", "edc trace <tcp|udp|dns|arp|ndp|http|drop|mysql> [options]"))
-		fmt.Fprintln(os.Stderr, T("cli.usage", traceSocketUsage))
+	if len(args) == 0 {
+		if !traceIsTerminal(os.Stdin) || !traceIsTerminal(os.Stdout) {
+			traceUsage()
+			return 2
+		}
+		protocol, err := runTraceProtocolSelector(os.Stdin, os.Stdout, traceProtocolSelectItems())
+		if err != nil {
+			traceUsage()
+			return 2
+		}
+		args = []string{protocol}
+	}
+	registration, ok := traceProtocolRegistrationFor(args[0])
+	if !ok {
+		traceUsage()
 		return 2
 	}
+	if registration.run != nil {
+		return registration.run(args[1:])
+	}
+	return runTraceProtocol(args)
+}
+
+func traceUsage() {
+	fmt.Fprintln(os.Stderr, T("cli.usage", "edc trace <tcp|udp|dns|arp|ndp|http|drop|mysql> [options]"))
+	fmt.Fprintln(os.Stderr, T("cli.usage", traceSocketUsage))
+}
+
+func runTraceProtocol(args []string) int {
 	options := tcpTraceOptions{}
 	set := flag.NewFlagSet("trace "+args[0], flag.ContinueOnError)
 	set.SetOutput(os.Stderr)

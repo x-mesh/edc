@@ -27,6 +27,15 @@ typedef __u32 __wsum;
 #define TCP_SYN_SENT 2
 #define TCP_CLOSE 7
 #define TCP_LISTEN 10
+#define TCP_ESTABLISHED 1
+
+#define TCP_DIAG_RTT 1
+#define TCP_DIAG_RTTVAR 2
+#define TCP_DIAG_CWND 4
+#define TCP_DIAG_SSTHRESH 8
+#define TCP_DIAG_UNACKED 16
+#define TCP_DIAG_LOST 32
+#define TCP_DIAG_ZERO_WINDOW 64
 
 struct event {
 	__u64 timestamp_ns;
@@ -44,12 +53,30 @@ struct event {
 	__u8 destination[16];
 	char comm[16];
 	__u64 bytes;
+	__u32 tcp_valid;
+	__u32 rtt_us;
+	__u32 rttvar_us;
+	__u32 cwnd;
+	__u32 ssthresh;
+	__u32 unacked;
+	__u32 lost;
+	__u32 zero_window;
+	__u64 accept_latency_ns;
+	__u32 accept_queue_used;
+	__u32 accept_queue_max;
 };
 
 struct {
 	__uint(type, BPF_MAP_TYPE_RINGBUF);
 	__uint(max_entries, 1 << 24);
 } events SEC(".maps");
+
+struct {
+	__uint(type, BPF_MAP_TYPE_LRU_HASH);
+	__uint(max_entries, 65536);
+	__type(key, __u64);
+	__type(value, __u64);
+} tcp_established_at SEC(".maps");
 
 // 사용자 공간이 trace protocol에 맞춰 불러오기 전에 정한다. 쓰지 않을 event를 ring buffer에 넣지 않아야 바쁜 host에서
 // 필요한 event가 유실되지 않는다. 기본값은 capture처럼 모든 event를 보낸다.
@@ -282,6 +309,10 @@ static __always_inline void finish_event(struct event *event) {
 	}
 }
 
+struct sock;
+static __always_inline void emit_tcp_sample(struct sock *sk);
+
+
 SEC("tracepoint/sock/inet_sock_set_state")
 int inet_sock_set_state(struct inet_sock_set_state_ctx *ctx) {
 	if (tcp_state_port && ctx->dport != tcp_state_port && ctx->sport != tcp_state_port) {
@@ -303,6 +334,12 @@ int inet_sock_set_state(struct inet_sock_set_state_ctx *ctx) {
 		remember_sock_owner(event->skaddr);
 	}
 	apply_sock_owner(event);
+	if (ctx->newstate == TCP_ESTABLISHED) {
+		// 5.15 verifier는 ring buffer 메모리를 map key로 받지 않는다.
+		__u64 skaddr = event->skaddr;
+		__u64 established_at = event->timestamp_ns;
+		bpf_map_update_elem(&tcp_established_at, &skaddr, &established_at, BPF_ANY);
+	}
 	// listen socket은 tcp_destroy_sock을 거치지 않으므로 닫힐 때 여기서 지운다.
 	if (ctx->oldstate == TCP_LISTEN && ctx->newstate == TCP_CLOSE) {
 		forget_owner(event->skaddr);
@@ -318,6 +355,9 @@ int inet_sock_set_state(struct inet_sock_set_state_ctx *ctx) {
 		__builtin_memcpy(event->destination, ctx->daddr_v6, 16);
 	}
 	finish_event(event);
+	if (ctx->newstate == TCP_ESTABLISHED) {
+		emit_tcp_sample((struct sock *)ctx->skaddr);
+	}
 	return 0;
 }
 
@@ -377,11 +417,42 @@ struct sock_common {
 	unsigned short skc_family;
 	struct in6_addr skc_v6_daddr;
 	struct in6_addr skc_v6_rcv_saddr;
+	__u8 skc_state;
 };
 
 struct sock {
 	struct sock_common __sk_common;
+	unsigned int sk_ack_backlog;
+	unsigned int sk_max_ack_backlog;
 };
+
+struct tcp_sock {
+	__u32 snd_ssthresh;
+	__u32 snd_cwnd;
+	__u32 srtt_us;
+	__u32 rttvar_us;
+	__u32 packets_out;
+	__u32 lost_out;
+	__u32 snd_wnd;
+};
+
+struct tcp_diagnostics {
+	__u32 valid;
+	__u32 rtt_us;
+	__u32 rttvar_us;
+	__u32 cwnd;
+	__u32 ssthresh;
+	__u32 unacked;
+	__u32 lost;
+	__u32 zero_window;
+};
+
+struct {
+	__uint(type, BPF_MAP_TYPE_LRU_HASH);
+	__uint(max_entries, 65536);
+	__type(key, __u64);
+	__type(value, struct tcp_diagnostics);
+} tcp_diagnostics SEC(".maps");
 
 struct inet_sock {
 	__be16 inet_sport;
@@ -390,6 +461,61 @@ struct inet_sock {
 struct socket {
 	struct sock *sk;
 };
+
+static __always_inline void fill_tcp_addresses(struct event *event, struct sock *sk) {
+	event->family = BPF_CORE_READ(sk, __sk_common.skc_family);
+	event->sport = BPF_CORE_READ(sk, __sk_common.skc_num);
+	if (!event->sport) {
+		event->sport = bpf_ntohs(BPF_CORE_READ((struct inet_sock *)sk, inet_sport));
+	}
+	event->dport = bpf_ntohs(BPF_CORE_READ(sk, __sk_common.skc_dport));
+	if (event->family == AF_INET) {
+		__be32 source = BPF_CORE_READ(sk, __sk_common.skc_rcv_saddr);
+		__be32 destination = BPF_CORE_READ(sk, __sk_common.skc_daddr);
+		__builtin_memcpy(event->source, &source, 4);
+		__builtin_memcpy(event->destination, &destination, 4);
+	} else if (event->family == AF_INET6) {
+		BPF_CORE_READ_INTO(&event->source, sk, __sk_common.skc_v6_rcv_saddr.in6_u.u6_addr8);
+		BPF_CORE_READ_INTO(&event->destination, sk, __sk_common.skc_v6_daddr.in6_u.u6_addr8);
+	}
+}
+
+static __always_inline void read_tcp_diagnostics(struct sock *sk, struct tcp_diagnostics *diag) {
+	struct tcp_sock *tcp = (struct tcp_sock *)sk;
+	if (bpf_core_field_exists(tcp->srtt_us)) { diag->valid |= TCP_DIAG_RTT; diag->rtt_us = BPF_CORE_READ(tcp, srtt_us) >> 3; }
+	if (bpf_core_field_exists(tcp->rttvar_us)) { diag->valid |= TCP_DIAG_RTTVAR; diag->rttvar_us = BPF_CORE_READ(tcp, rttvar_us) >> 2; }
+	if (bpf_core_field_exists(tcp->snd_cwnd)) { diag->valid |= TCP_DIAG_CWND; diag->cwnd = BPF_CORE_READ(tcp, snd_cwnd); }
+	if (bpf_core_field_exists(tcp->snd_ssthresh)) { diag->valid |= TCP_DIAG_SSTHRESH; diag->ssthresh = BPF_CORE_READ(tcp, snd_ssthresh); }
+	if (bpf_core_field_exists(tcp->packets_out)) { diag->valid |= TCP_DIAG_UNACKED; diag->unacked = BPF_CORE_READ(tcp, packets_out); }
+	if (bpf_core_field_exists(tcp->lost_out)) { diag->valid |= TCP_DIAG_LOST; diag->lost = BPF_CORE_READ(tcp, lost_out); }
+	if (bpf_core_field_exists(tcp->snd_wnd) && BPF_CORE_READ(sk, __sk_common.skc_state) == TCP_ESTABLISHED) {
+		diag->valid |= TCP_DIAG_ZERO_WINDOW;
+		diag->zero_window = BPF_CORE_READ(tcp, snd_wnd) == 0;
+	}
+}
+
+static __always_inline void emit_tcp_sample(struct sock *sk) {
+	if (!sk) return;
+	__u64 key = (__u64)sk;
+	struct tcp_diagnostics current = {};
+	read_tcp_diagnostics(sk, &current);
+	struct tcp_diagnostics *previous = bpf_map_lookup_elem(&tcp_diagnostics, &key);
+	if (previous && __builtin_memcmp(previous, &current, sizeof(current)) == 0) return;
+	bpf_map_update_elem(&tcp_diagnostics, &key, &current, BPF_ANY);
+	struct event *event = start_event(sk, 12);
+	if (!event) return;
+	event->skaddr = key;
+	apply_sock_owner(event);
+	event->tcp_valid = current.valid;
+	event->rtt_us = current.rtt_us;
+	event->rttvar_us = current.rttvar_us;
+	event->cwnd = current.cwnd;
+	event->ssthresh = current.ssthresh;
+	event->unacked = current.unacked;
+	event->lost = current.lost;
+	event->zero_window = current.zero_window;
+	finish_event(event);
+}
 
 struct sock_length_ctx {
 	__u64 unused;
@@ -506,7 +632,11 @@ static __always_inline int emit_reset_event(struct tcp_reset_ctx *ctx, __u32 typ
 }
 
 SEC("tracepoint/tcp/tcp_retransmit_skb")
-int tcp_retransmit_skb(struct tcp_event_ctx *ctx) { return emit_tcp_event(ctx, 2); }
+int tcp_retransmit_skb(struct tcp_event_ctx *ctx) {
+	emit_tcp_event(ctx, 2);
+	emit_tcp_sample((struct sock *)ctx->skaddr);
+	return 0;
+}
 
 SEC("tracepoint/tcp/tcp_send_reset")
 int tcp_send_reset(struct tcp_reset_ctx *ctx) { return emit_reset_event(ctx, 3); }
@@ -517,8 +647,11 @@ int tcp_receive_reset(struct tcp_socket_ctx *ctx) { return emit_socket_event(ctx
 SEC("tracepoint/tcp/tcp_destroy_sock")
 int tcp_destroy_sock(struct tcp_socket_ctx *ctx) {
 	emit_socket_event(ctx, 5);
+	__u64 skaddr = (__u64)ctx->skaddr;
 	// kernel이 해제한 socket 주소를 새 socket에 다시 쓰므로, 남겨 두면 새 socket에 옛 주인이 붙는다.
-	forget_owner((__u64)ctx->skaddr);
+	forget_owner(skaddr);
+	bpf_map_delete_elem(&tcp_diagnostics, &skaddr);
+	bpf_map_delete_elem(&tcp_established_at, &skaddr);
 	return 0;
 }
 
@@ -891,6 +1024,43 @@ int inet_csk_accept_entry(__u64 *ctx) {
 	announce_owner(ctx[0]);
 	remember_sock_owner(ctx[0]);
 	return 0;
+}
+
+static __always_inline int finish_inet_csk_accept(__u64 *ctx, struct sock *child) {
+	struct sock *listener = (struct sock *)ctx[0];
+	if (!listener || !child) {
+		return 0;
+	}
+	__u64 child_key = (__u64)child;
+	__u64 *established_at = bpf_map_lookup_elem(&tcp_established_at, &child_key);
+	if (!established_at) {
+		return 0;
+	}
+	struct event *event = start_event(ctx, 13);
+	if (!event) {
+		return 0;
+	}
+	event->skaddr = child_key;
+	apply_sock_owner(event);
+	fill_tcp_addresses(event, child);
+	event->accept_latency_ns = event->timestamp_ns - *established_at;
+	event->accept_queue_used = BPF_CORE_READ(listener, sk_ack_backlog);
+	event->accept_queue_max = BPF_CORE_READ(listener, sk_max_ack_backlog);
+	finish_event(event);
+	bpf_map_delete_elem(&tcp_established_at, &child_key);
+	return 0;
+}
+
+// inet_csk_accept는 6.17에서 (sk, arg) 두 인자를, 5.15에서 (sk, flags, err, kern) 네 인자를 받는다. fexit의 반환값은
+// 인자 뒤에 오고 verifier는 없는 인자 위치를 거부하므로, 사용자 공간이 kernel BTF를 보고 둘 중 하나를 고른다.
+SEC("fexit/inet_csk_accept")
+int inet_csk_accept_exit(__u64 *ctx) {
+	return finish_inet_csk_accept(ctx, (struct sock *)ctx[2]);
+}
+
+SEC("fexit/inet_csk_accept")
+int inet_csk_accept_exit_legacy(__u64 *ctx) {
+	return finish_inet_csk_accept(ctx, (struct sock *)ctx[4]);
 }
 
 // 경로가 없는 IPv6 connect()는 SYN_SENT 전에 실패하고, socket을 닫을 때 tcp_destroy만 남긴다. connect()는 부른

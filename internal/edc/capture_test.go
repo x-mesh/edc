@@ -1382,6 +1382,37 @@ func assertCapturePlanDetail(t *testing.T) {
 }
 
 // 확인 화면은 답을 고른 뒤에도 계획을 남겨야 tcpdump 출력 위에 조건이 보인다.
+func TestTCPTraceDiagnosticsKeepZeroDistinctFromUnknown(t *testing.T) {
+	events := []captureEvent{
+		{SocketID: 1, Event: "tcp_connect", Source: "127.0.0.1:40000", Destination: "127.0.0.1:443"},
+		{SocketID: 1, Event: "tcp_sample", TCPValid: 1 | 32 | 64, RTTUS: 0, Lost: 0, ZeroWindow: 0},
+		{SocketID: 2, Event: "tcp_connect", Source: "127.0.0.1:40001", Destination: "127.0.0.1:443"},
+	}
+	report := summarizeTCPTrace(events, captureSummary{}, time.Second, "", "")
+	if report.Connections[0].RTTUS == nil || *report.Connections[0].RTTUS != 0 || report.Connections[0].Lost == nil || *report.Connections[0].Lost != 0 || report.Connections[0].ZeroWindow == nil || *report.Connections[0].ZeroWindow {
+		t.Fatalf("observed zero diagnostics = %#v", report.Connections[0])
+	}
+	if report.Connections[1].RTTUS != nil || report.Connections[1].Lost != nil || report.Connections[1].ZeroWindow != nil {
+		t.Fatalf("unknown diagnostics = %#v", report.Connections[1])
+	}
+}
+
+func TestTCPAppAcceptStaysWithItsChildSocketAfterAddressReuse(t *testing.T) {
+	events := []captureEvent{
+		{SocketID: 7, Event: "tcp_accept", Source: "127.0.0.1:19094", Destination: "127.0.0.1:41000"},
+		{SocketID: 7, Event: "tcp_app_accept", Source: "127.0.0.1:19094", Destination: "127.0.0.1:41000", AcceptLatencyNS: 250 * uint64(time.Millisecond), AcceptQueueUsed: 1, AcceptQueueMax: 8},
+		{SocketID: 7, Event: "tcp_destroy"},
+		{SocketID: 7, Event: "tcp_state", OldState: "CLOSE", NewState: "SYN_SENT", Source: "127.0.0.1:41001", Destination: "192.0.2.1:443"},
+	}
+	report := summarizeTCPTrace(events, captureSummary{}, time.Second, "", "")
+	if len(report.Connections) != 2 {
+		t.Fatalf("connections = %#v", report.Connections)
+	}
+	if report.Connections[0].Destination != "127.0.0.1:41000" || report.Connections[0].AcceptLatencyMS == nil || *report.Connections[0].AcceptLatencyMS != 250 || report.Connections[1].AcceptLatencyMS != nil {
+		t.Fatalf("connections = %#v", report.Connections)
+	}
+}
+
 func TestCaptureConfirmKeepsPlanAfterAnswer(t *testing.T) {
 	plan := capturePlan{interfaceName: "en0", duration: time.Second, count: 10, outputPath: "/tmp/a.pcap"}
 	model := newDetailedConfirmModel(plan.detail(), T("cli.capture.confirm"), false)

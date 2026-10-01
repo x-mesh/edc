@@ -198,6 +198,8 @@ cli:
     socket_not_stream: "%s は %s socket です。trace socket は stream socket だけに対応します"
     socket_hook_missing: "この kernel にはトレースできる %s 関数がないため、edc は unix socket をトレースできません。この system では unix が kernel module とみられます"
     socket_payload_kernel: "trace socket の --payload には Linux 6.4 以降が必要です。kernel の iov_iter に %s field がありません"
+    io_group_by: "--group-by は device、process、cgroup、event だけを使用できます"
+    io_failed: "trace io に失敗しました: %v"
   report:
     unsupported_schema: "%s: 対応しない schema version: %s"
     filter_label: "絞り込み: "

@@ -776,6 +776,25 @@ Use `--mode events` on Linux to record TCP socket state, retransmission, reset, 
 
 Use `trace tcp` or `trace udp` on Linux or macOS to print network events as they arrive. The default terminal view scrolls through events. The command runs until you press Ctrl-C. It then prints a summary.
 
+On Linux, `trace tcp` also reports change-based `tcp_sample` events. These events show RTT, RTT variation, congestion window, slow-start threshold, unacknowledged packets, lost packets, and zero-window state. A valid field can contain `0`. An absent field is unavailable. RTT and RTT variation use microseconds. Linux stores `srtt_us` with three fixed-point bits and `rttvar_us` with two fixed-point bits. edc shifts these values before output. Zero-window means that an ESTABLISHED TCP socket has `snd_wnd` equal to zero. It does not mean that the accept queue is full. `tcp_sample` does not run on each send or receive event. It runs when a connection reaches ESTABLISHED or retransmits, and only emits changed values.
+
+`tcp_accept` records TCP handshake completion. `tcp_app_accept` records a successful return from `inet_csk_accept`. It reports the time from child ESTABLISHED to application accept and the listener accept queue values. Failed accepts do not produce `tcp_app_accept`. `ListenDrops` and `ListenOverflows` are network namespace counters. edc does not assign them to one listener.
+
+Use Enter in the terminal view to see raw event JSON. The TCP connection JSON includes the last observed diagnostic values. The text summary shows mean RTT, lost packets, zero-window state, and mean application accept time for each process and peer. Linux 5.15 load and attach verification is not complete.
+
+Use `trace io` on Linux to measure block I/O latency. It records queue latency from request insert to issue, service latency from issue to complete, and total latency. It keeps the submitter process and cgroup at request insert. The completion context does not change that attribution. A device with the `none` I/O scheduler sends most requests to the driver without an insert. For these requests, `attribution` is `issue`, and the event has no `queue_ms`. The process and cgroup then come from the issue context, and this context can be a kernel worker.
+
+```bash
+./bin/edc trace io --duration 15s
+./bin/edc trace io --device 8:0 --group-by device
+./bin/edc trace io --process postgres --raw
+./bin/edc trace io --container database --json io.json
+```
+
+`trace io` reports read and write operations, bytes, and average, p95, and maximum queue, service, and total latency. It emits requests at or above 1ms. The summary reports ring loss, pending-map insertion failures, unmatched completions, incomplete requests, and requeues. A request without saved issue state has no invented latency or process owner.
+
+Use `--group-by device`, `--group-by process`, `--group-by cgroup`, or `--group-by event` for I/O reports. `--raw` writes each completed request and then the summary as JSONL. In each event, `timestamp_ns` is Unix epoch time in nanoseconds, the same clock as the summary line. `boot_time_ns` is the kernel monotonic time since boot. `--json` writes the summary report. `trace io` requires kernel BTF, block request tracepoints, `CAP_BPF`, and `CAP_PERFMON`. It does not require `CAP_NET_ADMIN`.
+
 ```bash
 ./bin/edc trace tcp
 ./bin/edc trace tcp --duration 15s
@@ -789,6 +808,17 @@ Use `trace tcp` or `trace udp` on Linux or macOS to print network events as they
 ./bin/edc trace tcp --group-by event
 ./bin/edc trace tcp -d
 ```
+
+Use `trace sched` on Linux to measure scheduler delays. The trace reports wakeup-to-run after sleep, runnable queue after preemption, and off-CPU spans. The off-CPU spans include the two delay types as subsets. It reports voluntary and preempted off-CPU spans separately. The trace does not identify sleep, lock, or I/O causes.
+
+```bash
+./bin/edc trace sched --duration 15s
+./bin/edc trace sched --process api --group-by process
+./bin/edc trace sched --group-by event --json sched.json
+./bin/edc trace sched --raw
+```
+
+The trace emits spans of at least 1 ms. It uses fixed pending maps and a fixed ring buffer. The summary and raw JSON summary show ring loss, map full, unmatched, repeated wakeup, and omitted span counts. On Linux kernels that expose the required BTF fields, raw events include the cgroup v2 ID and `--container` filters this ID. Use `--group-by cgroup` to group rows by this ID. edc verifies these fields before it loads the program. The trace works on Linux 5.15. In each raw event, `timestamp_ns` is Unix epoch time in nanoseconds, the same clock as the summary line. `boot_time_ns` is the kernel monotonic time since boot.
 
 Use `--raw` to print JSONL events as they arrive. Use `--json` to write the connection summary after Ctrl-C.
 The text summary at the end groups the rows by process and peer. A client row shows the destination. A server row shows the local service, for example `127.0.0.1:2379 (server)`, because each client uses a different port. A TCP row shows the number of connections, the connections for each result, the mean connect time, and the traffic. A UDP row shows the datagrams and the traffic. Use `-d` or `--detail` to show one row for each connection or UDP flow. The JSON output always has one row for each connection or flow. The `trace dns` summary always has one row for each name and record type, so `-d` does not change it.

@@ -1,6 +1,8 @@
 package edc
 
 import (
+	"io"
+	"os"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -29,6 +31,10 @@ func selectItemsFromValues(values []string) []selectItem {
 		items = append(items, selectItem{label: value, value: value})
 	}
 	return items
+}
+
+func selectTraceProtocol(input *os.File, output io.Writer, items []selectItem) (string, error) {
+	return runSelect(input, output, newSelectModel("cli.prompt.subcommand_title", "cli.prompt.subcommand_label", items))
 }
 
 type selectModel struct {

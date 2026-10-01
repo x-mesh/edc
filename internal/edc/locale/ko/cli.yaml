@@ -198,6 +198,8 @@ cli:
     socket_not_stream: "%s는 %s socket입니다. trace socket은 stream socket만 지원합니다"
     socket_hook_missing: "이 kernel에는 추적할 %s 함수가 없어 edc가 unix socket을 추적할 수 없습니다. 이 system에서는 unix가 kernel module로 보입니다"
     socket_payload_kernel: "trace socket의 --payload는 Linux 6.4 이상이 필요합니다. kernel의 iov_iter에 %s field가 없습니다"
+    io_group_by: "--group-by는 device, process, cgroup, event만 사용할 수 있습니다"
+    io_failed: "trace io 실패: %v"
   report:
     unsupported_schema: "%s: 지원하지 않는 schema version: %s"
     filter_label: "필터: "

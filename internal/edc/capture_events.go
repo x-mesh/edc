@@ -28,14 +28,25 @@ type captureEvent struct {
 	// TargetSource는 target을 명령줄(command), 이 프로세스의 DNS 응답(dns), resolver 캐시(resolver-cache),
 	// macOS가 연결에 기록한 이름(system) 중 어디서 얻었는지 알린다. 주소를 여러 이름이 공유하면 dns와
 	// resolver-cache 이름이 틀릴 수 있다.
-	TargetSource string `json:"target_source,omitempty"`
-	CgroupID     uint64 `json:"cgroup_id"`
-	Source       string `json:"source,omitempty"`
-	Destination  string `json:"destination,omitempty"`
-	OldState     string `json:"old_state,omitempty"`
-	NewState     string `json:"new_state,omitempty"`
-	Bytes        uint64 `json:"bytes"`
-	Packets      uint64 `json:"packets,omitempty"`
+	TargetSource    string `json:"target_source,omitempty"`
+	CgroupID        uint64 `json:"cgroup_id"`
+	Source          string `json:"source,omitempty"`
+	Destination     string `json:"destination,omitempty"`
+	OldState        string `json:"old_state,omitempty"`
+	NewState        string `json:"new_state,omitempty"`
+	Bytes           uint64 `json:"bytes"`
+	TCPValid        uint32 `json:"tcp_valid,omitempty"`
+	RTTUS           uint32 `json:"rtt_us,omitempty"`
+	RTTVarUS        uint32 `json:"rttvar_us,omitempty"`
+	CWND            uint32 `json:"cwnd,omitempty"`
+	SSThresh        uint32 `json:"ssthresh,omitempty"`
+	Unacked         uint32 `json:"unacked,omitempty"`
+	Lost            uint32 `json:"lost,omitempty"`
+	ZeroWindow      uint32 `json:"zero_window,omitempty"`
+	AcceptLatencyNS uint64 `json:"accept_latency_ns,omitempty"`
+	AcceptQueueUsed uint32 `json:"accept_queue_used,omitempty"`
+	AcceptQueueMax  uint32 `json:"accept_queue_max,omitempty"`
+	Packets         uint64 `json:"packets,omitempty"`
 	// QueryType과 Answers는 DNS event에만 붙는다. LatencyMS는 DNS에서는 kernel이 질의를 보낸 때부터 process가 응답을 읽은
 	// 때까지라서 process가 응답을 늦게 읽으면 그만큼 길어진다. HTTP 응답과 socket_accept에도 붙는다. socket_accept에서는
 	// 클라이언트가 connect를 시작한 때부터 서버가 accept한 때까지다.
@@ -98,18 +109,39 @@ type captureSummary struct {
 }
 
 type tcpTraceConnection struct {
-	Process         string  `json:"process"`
-	PID             uint32  `json:"pid"`
-	Source          string  `json:"source,omitempty"`
-	Destination     string  `json:"destination,omitempty"`
-	Hostname        string  `json:"hostname,omitempty"`
-	Result          string  `json:"result"`
-	ConnectMS       *int64  `json:"connect_ms"`
-	Retransmissions *uint64 `json:"retransmissions"`
-	Reset           *bool   `json:"reset"`
+	Process         string   `json:"process"`
+	PID             uint32   `json:"pid"`
+	Source          string   `json:"source,omitempty"`
+	Destination     string   `json:"destination,omitempty"`
+	Hostname        string   `json:"hostname,omitempty"`
+	Result          string   `json:"result"`
+	ConnectMS       *int64   `json:"connect_ms"`
+	Retransmissions *uint64  `json:"retransmissions"`
+	Reset           *bool    `json:"reset"`
+	RTTUS           *uint32  `json:"rtt_us"`
+	RTTVarUS        *uint32  `json:"rttvar_us"`
+	CWND            *uint32  `json:"cwnd"`
+	SSThresh        *uint32  `json:"ssthresh"`
+	Unacked         *uint32  `json:"unacked"`
+	Lost            *uint32  `json:"lost"`
+	ZeroWindow      *bool    `json:"zero_window"`
+	AcceptLatencyMS *float64 `json:"accept_latency_ms"`
+	AcceptQueueUsed *uint32  `json:"accept_queue_used"`
+	AcceptQueueMax  *uint32  `json:"accept_queue_max"`
 	connectMS       int64
 	retransmissions uint64
 	reset           bool
+	tcpValid        uint32
+	rttUS           uint32
+	rttvarUS        uint32
+	cwnd            uint32
+	ssThresh        uint32
+	unacked         uint32
+	lost            uint32
+	zeroWindow      bool
+	acceptLatencyNS uint64
+	acceptQueueUsed uint32
+	acceptQueueMax  uint32
 	closed          bool
 	established     bool
 	handshake       bool
@@ -199,6 +231,12 @@ type tcpTraceGroupRow struct {
 	retransmissions uint64
 	connectTotalMS  int64
 	connectCount    int
+	rttTotalUS      uint64
+	rttCount        int
+	lost            uint64
+	zeroWindow      bool
+	acceptTotalNS   uint64
+	acceptCount     int
 	traceTraffic
 }
 
@@ -245,6 +283,18 @@ func addTCPTraceGroup(groups map[tcpTraceGroupKey]*tcpTraceGroupRow, connection 
 	if connection.established {
 		row.connectTotalMS += connection.connectMS
 		row.connectCount++
+	}
+	if connection.tcpValid&1 != 0 {
+		row.rttTotalUS += uint64(connection.rttUS)
+		row.rttCount++
+	}
+	if connection.tcpValid&32 != 0 {
+		row.lost += uint64(connection.lost)
+	}
+	row.zeroWindow = row.zeroWindow || connection.tcpValid&64 != 0 && connection.zeroWindow
+	if connection.acceptLatencyNS != 0 {
+		row.acceptTotalNS += connection.acceptLatencyNS
+		row.acceptCount++
 	}
 	row.TXBytes += connection.TXBytes
 	row.RXBytes += connection.RXBytes
@@ -345,6 +395,10 @@ func captureEventTypeName(eventType uint32, protocol uint16) (string, string) {
 			return "udp_receive", "udp"
 		}
 		return "tcp_receive", "tcp"
+	case 12:
+		return "tcp_sample", "tcp"
+	case 13:
+		return "tcp_app_accept", "tcp"
 	default:
 		return "tcp_event", "tcp"
 	}
@@ -499,6 +553,19 @@ func (summarizer *tcpTraceSummarizer) observe(event captureEvent) {
 		}
 	case "tcp_retransmit":
 		connection.retransmissions++
+	case "tcp_sample":
+		connection.tcpValid = event.TCPValid
+		connection.rttUS = event.RTTUS
+		connection.rttvarUS = event.RTTVarUS
+		connection.cwnd = event.CWND
+		connection.ssThresh = event.SSThresh
+		connection.unacked = event.Unacked
+		connection.lost = event.Lost
+		connection.zeroWindow = event.ZeroWindow != 0
+	case "tcp_app_accept":
+		connection.acceptLatencyNS = event.AcceptLatencyNS
+		connection.acceptQueueUsed = event.AcceptQueueUsed
+		connection.acceptQueueMax = event.AcceptQueueMax
 	case "tcp_send_reset", "tcp_receive_reset":
 		connection.reset = true
 	case "tcp_close":
@@ -588,6 +655,35 @@ func (summarizer *tcpTraceSummarizer) report(summary captureSummary, duration ti
 		}
 		connection.Retransmissions = traceObserved(connection.retransmissions)
 		connection.Reset = traceObserved(connection.reset)
+		if connection.tcpValid&1 != 0 {
+			connection.RTTUS = &connection.rttUS
+		}
+		if connection.tcpValid&2 != 0 {
+			connection.RTTVarUS = &connection.rttvarUS
+		}
+		if connection.tcpValid&4 != 0 {
+			connection.CWND = &connection.cwnd
+		}
+		if connection.tcpValid&8 != 0 {
+			connection.SSThresh = &connection.ssThresh
+		}
+		if connection.tcpValid&16 != 0 {
+			connection.Unacked = &connection.unacked
+		}
+		if connection.tcpValid&32 != 0 {
+			connection.Lost = &connection.lost
+		}
+		if connection.tcpValid&64 != 0 {
+			connection.ZeroWindow = traceObserved(connection.zeroWindow)
+		}
+		if connection.acceptLatencyNS != 0 {
+			value := float64(connection.acceptLatencyNS) / float64(time.Millisecond)
+			connection.AcceptLatencyMS = &value
+		}
+		if connection.acceptQueueMax != 0 {
+			connection.AcceptQueueUsed = &connection.acceptQueueUsed
+			connection.AcceptQueueMax = &connection.acceptQueueMax
+		}
 	}
 	result.Attempts, result.Established, result.Incomplete, result.Existing = totals.attempts, totals.established, totals.incomplete, totals.existing
 	result.Retransmissions = traceObserved(totals.retransmissions)

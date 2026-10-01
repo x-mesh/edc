@@ -144,7 +144,7 @@ command:
       - "PCAP には credential や個人情報が入ることがあります。"
       - "JSON の redaction は PCAP の payload には効きません。"
   trace:
-    summary: "TCP、UDP、DNS、ARP、NDP、HTTP、MySQL、socket、drop を表示・要約"
+    summary: "network、I/O、socket、drop、scheduler を表示・要約"
     option:
       duration: "trace 時間、最大 60s。省略で Ctrl-C"
       slow: "mysql のみ。最初の応答 latency がこの時間以上"
@@ -161,6 +161,7 @@ command:
       port: "http: この port だけ。mysql: サーバー port、3306"
       container: "この docker container だけ、名前か ID"
       reason: "trace drop: この理由だけ、カンマ区切り"
+      device: "trace io: block device major:minor"
     notes:
       - "terminal では既定で全画面の trace を開きます。"
       - "/ で process、destination、event、source を絞り込みます。"
@@ -173,6 +174,7 @@ command:
       - "trace http: v は payload 行、m は secret、z は gzip 展開を切り替えます。"
       - "Tab で次の表示、Shift+Tab で前の表示に切り替えます。"
       - "--group-by source、target、port、process、event で group live 行を表示します。"
+      - "trace io は device、process、cgroup、event で行をまとめます。"
       - "グループ画面は event 数を EVENT/s、socket payload traffic を表示します。"
       - "B/s は byte rate、bps と Mbps は bit rate です。Mbps は bps / 1,000,000 です。"
       - "--duration を省略した場合は Ctrl-C で trace を終了します。"

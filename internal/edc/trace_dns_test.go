@@ -367,11 +367,11 @@ func TestDNSTCPStreamsForgetSocketClearsBothDirections(t *testing.T) {
 func TestDNSTCPStreamsForgetSocketPreventsSocketReuseFromJoiningOldLength(t *testing.T) {
 	streams := newDNSTCPStreams()
 	key := dnsTCPStreamKey{socket: 7, sent: true}
-	if messages := streams.messages(key, []byte{0, 4, 1}, dnsRecordPayloadSize); len(messages) != 0 {
+	if messages := streams.messages(key, []byte{0, 4, 1}, 1024); len(messages) != 0 {
 		t.Fatalf("partial messages = %q", messages)
 	}
 	streams.forgetSocket(7)
-	if messages := streams.messages(key, []byte{2, 3, 4, 5}, dnsRecordPayloadSize); len(messages) != 0 {
+	if messages := streams.messages(key, []byte{2, 3, 4, 5}, 1024); len(messages) != 0 {
 		t.Fatalf("reused socket joined old length: %q", messages)
 	}
 }

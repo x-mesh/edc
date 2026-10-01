@@ -103,6 +103,18 @@ type captureEventsSockOwner struct {
 	_        [4]byte
 }
 
+type captureEventsTcpDiagnostics struct {
+	_          structs.HostLayout
+	Valid      uint32
+	RttUs      uint32
+	RttvarUs   uint32
+	Cwnd       uint32
+	Ssthresh   uint32
+	Unacked    uint32
+	Lost       uint32
+	ZeroWindow uint32
+}
+
 type captureEventsUdpSendPending struct {
 	_           structs.HostLayout
 	Skaddr      uint64
@@ -132,10 +144,13 @@ const (
 	captureEventsMapLostEvents                 = "lost_events"
 	captureEventsMapMysqlSendPending           = "mysql_send_pending"
 	captureEventsMapSockOwners                 = "sock_owners"
+	captureEventsMapTcpDiagnostics             = "tcp_diagnostics"
+	captureEventsMapTcpEstablishedAt           = "tcp_established_at"
 	captureEventsMapTcpLengthPending           = "tcp_length_pending"
 	captureEventsMapUdpSendPending             = "udp_send_pending"
 	captureEventsProgHttpTcpDestroySock        = "http_tcp_destroy_sock"
 	captureEventsProgInetCskAcceptEntry        = "inet_csk_accept_entry"
+	captureEventsProgInetCskAcceptExit         = "inet_csk_accept_exit"
 	captureEventsProgInetSockSetState          = "inet_sock_set_state"
 	captureEventsProgInetStreamConnectEntry    = "inet_stream_connect_entry"
 	captureEventsProgSkbConsumeUdpEntry        = "skb_consume_udp_entry"
@@ -215,6 +230,7 @@ type captureEventsSpecs struct {
 type captureEventsProgramSpecs struct {
 	HttpTcpDestroySock        *ebpf.ProgramSpec `ebpf:"http_tcp_destroy_sock"`
 	InetCskAcceptEntry        *ebpf.ProgramSpec `ebpf:"inet_csk_accept_entry"`
+	InetCskAcceptExit         *ebpf.ProgramSpec `ebpf:"inet_csk_accept_exit"`
 	InetSockSetState          *ebpf.ProgramSpec `ebpf:"inet_sock_set_state"`
 	InetStreamConnectEntry    *ebpf.ProgramSpec `ebpf:"inet_stream_connect_entry"`
 	SkbConsumeUdpEntry        *ebpf.ProgramSpec `ebpf:"skb_consume_udp_entry"`
@@ -255,6 +271,8 @@ type captureEventsMapSpecs struct {
 	LostEvents       *ebpf.MapSpec `ebpf:"lost_events"`
 	MysqlSendPending *ebpf.MapSpec `ebpf:"mysql_send_pending"`
 	SockOwners       *ebpf.MapSpec `ebpf:"sock_owners"`
+	TcpDiagnostics   *ebpf.MapSpec `ebpf:"tcp_diagnostics"`
+	TcpEstablishedAt *ebpf.MapSpec `ebpf:"tcp_established_at"`
 	TcpLengthPending *ebpf.MapSpec `ebpf:"tcp_length_pending"`
 	UdpSendPending   *ebpf.MapSpec `ebpf:"udp_send_pending"`
 }
@@ -310,6 +328,8 @@ type captureEventsMaps struct {
 	LostEvents       *ebpf.Map `ebpf:"lost_events"`
 	MysqlSendPending *ebpf.Map `ebpf:"mysql_send_pending"`
 	SockOwners       *ebpf.Map `ebpf:"sock_owners"`
+	TcpDiagnostics   *ebpf.Map `ebpf:"tcp_diagnostics"`
+	TcpEstablishedAt *ebpf.Map `ebpf:"tcp_established_at"`
 	TcpLengthPending *ebpf.Map `ebpf:"tcp_length_pending"`
 	UdpSendPending   *ebpf.Map `ebpf:"udp_send_pending"`
 }
@@ -329,6 +349,8 @@ func (m *captureEventsMaps) Close() error {
 		m.LostEvents,
 		m.MysqlSendPending,
 		m.SockOwners,
+		m.TcpDiagnostics,
+		m.TcpEstablishedAt,
 		m.TcpLengthPending,
 		m.UdpSendPending,
 	)
@@ -358,6 +380,7 @@ type captureEventsVariables struct {
 type captureEventsPrograms struct {
 	HttpTcpDestroySock        *ebpf.Program `ebpf:"http_tcp_destroy_sock"`
 	InetCskAcceptEntry        *ebpf.Program `ebpf:"inet_csk_accept_entry"`
+	InetCskAcceptExit         *ebpf.Program `ebpf:"inet_csk_accept_exit"`
 	InetSockSetState          *ebpf.Program `ebpf:"inet_sock_set_state"`
 	InetStreamConnectEntry    *ebpf.Program `ebpf:"inet_stream_connect_entry"`
 	SkbConsumeUdpEntry        *ebpf.Program `ebpf:"skb_consume_udp_entry"`
@@ -385,6 +408,7 @@ func (p *captureEventsPrograms) Close() error {
 	return _CaptureEventsClose(
 		p.HttpTcpDestroySock,
 		p.InetCskAcceptEntry,
+		p.InetCskAcceptExit,
 		p.InetSockSetState,
 		p.InetStreamConnectEntry,
 		p.SkbConsumeUdpEntry,

@@ -93,6 +93,32 @@ func TestTraceScreenSelectsAnEventAndShowsAllOfIt(t *testing.T) {
 	}
 }
 
+func TestTCPDiagnosticsAppearInScrollAndDetailAtAllWidths(t *testing.T) {
+	event := captureEvent{Protocol: "tcp", Event: "tcp_sample", Process: "api", Source: "127.0.0.1:40000", Destination: "127.0.0.1:443", TCPValid: 1 | 4 | 32 | 64, RTTUS: 25, CWND: 10, Lost: 2, ZeroWindow: 1}
+	for _, width := range []int{40, 80, 120} {
+		line := formatTraceScreenEventLine(event, width)
+		if liveWidth(line) > width || !strings.Contains(line, "sample") {
+			t.Fatalf("width %d line = %q", width, line)
+		}
+		model := newTraceScreenModel("tcp", tcpTraceOptions{}, make(chan captureEvent), make(chan traceFinishedMsg), nil)
+		model.width, model.height = width, 12
+		next, _ := model.Update(traceEventMsg{events: []captureEvent{event}})
+		model = traceScreenKey(next.(traceScreenModel), "enter")
+		text := strings.Join(model.detail.raw, "\n")
+		if !strings.Contains(text, `"rtt_us": 25`) || !strings.Contains(text, `"cwnd": 10`) || !strings.Contains(text, `"lost": 2`) || !strings.Contains(text, `"zero_window": 1`) {
+			t.Fatalf("width %d detail = %q", width, text)
+		}
+	}
+}
+
+func TestTCPAcceptScrollLabelShowsLatencyAndQueue(t *testing.T) {
+	event := captureEvent{Protocol: "tcp", Event: "tcp_app_accept", Destination: "127.0.0.1:443", AcceptLatencyNS: 1250000, AcceptQueueUsed: 2, AcceptQueueMax: 32}
+	_, label := traceScrollLabels(event)
+	if label != "app accept=1.250ms q=2/32" {
+		t.Fatalf("label = %q", label)
+	}
+}
+
 func TestTraceScreenPairsMySQLCommandAndResponseForDisplay(t *testing.T) {
 	model := newTraceScreenModel("mysql", tcpTraceOptions{}, make(chan captureEvent), make(chan traceFinishedMsg), nil)
 	model.width, model.height = 120, 10

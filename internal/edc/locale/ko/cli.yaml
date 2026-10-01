@@ -159,6 +159,9 @@ cli:
     chmod_failed: "capture는 완료됐지만 권한 설정에 실패했습니다: %v"
     done: "capture 완료: %s"
   trace:
+    capability_missing: "%[2]s에는 %[1]s가 필요합니다. root로 실행하세요:\n  %[3]s"
+    capability_missing_root: "%[2]s에는 %[1]s가 필요합니다. root로 실행했지만 process에 이 capability가 없습니다. 컨테이너라면 --cap-add나 --privileged로 추가하세요"
+    unsupported: "%s는 이 호스트에서 지원되지 않습니다: %s"
     plan: "%s 동안 network event를 trace할까요? [y/N] "
     failed: "network trace 실패: %v"
     duration_range: "--duration은 생략하거나 0초 또는 1ns에서 60초 사이여야 합니다"

@@ -20,38 +20,9 @@ import (
 var ioTracepoints = []string{"block_rq_insert", "block_rq_issue", "block_rq_complete", "block_rq_requeue"}
 
 func ioTracePrerequisites() error {
-	if _, err := os.Stat("/sys/kernel/btf/vmlinux"); err != nil {
-		return fmt.Errorf("trace io requires kernel BTF: %w", err)
-	}
-	capabilities, err := effectiveCapabilities()
-	if err != nil {
-		return fmt.Errorf("read effective capabilities: %w", err)
-	}
-	for _, capability := range []struct {
-		number int
-		name   string
-	}{{capBPF, "CAP_BPF"}, {capPerfmon, "CAP_PERFMON"}} {
-		if !capabilities[capability.number] {
-			return fmt.Errorf("trace io requires %s", capability.name)
-		}
-	}
-	// tp_btf는 tracefs가 아니라 kernel BTF의 btf_trace_<tracepoint>로 붙는다. tracefs 경로를 보면 tracefs를 mount하지
-	// 않은 container에서 붙을 수 있는데도 멈춘다.
-	kernel, err := btf.LoadKernelSpec()
-	if err != nil {
-		return fmt.Errorf("trace io requires kernel BTF: %w", err)
-	}
-	return ioTracepointsAvailable(kernel)
-}
-
-func ioTracepointsAvailable(kernel *btf.Spec) error {
-	for _, name := range ioTracepoints {
-		var typedef *btf.Typedef
-		if err := kernel.TypeByName("btf_trace_"+name, &typedef); err != nil {
-			return fmt.Errorf("trace io requires block tracepoint %s: %w", name, err)
-		}
-	}
-	return nil
+	return traceBPFPrerequisites("trace io", func(kernel *btf.Spec) error {
+		return traceTracepointsAvailable(kernel, ioTracepoints)
+	})
 }
 
 func collectIOEvents(options ioTraceOptions, onEvent func(ioEvent) error, stop <-chan struct{}) (ioSummary, error) {

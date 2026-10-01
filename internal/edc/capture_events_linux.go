@@ -108,36 +108,93 @@ func captureBPFPrerequisites() error {
 	if err != nil {
 		return fmt.Errorf("%s: %w", T("cli.capture.capability_check_failed"), err)
 	}
+	return captureCapabilityError(capabilities, currentRootCommand())
+}
+
+// currentRootCommand는 지금 명령을 sudo로 다시 실행하는 줄이다.
+func currentRootCommand() string {
 	executable, err := os.Executable()
 	if err != nil {
 		// 실행 경로를 모르면 명령줄의 이름을 쓴다. 안내 문구에만 들어간다.
 		executable = os.Args[0]
 	}
-	return captureCapabilityError(capabilities, rootCommand(executable, os.Args[1:]))
+	return rootCommand(executable, os.Args[1:])
+}
+
+type traceCapability struct {
+	number int
+	name   string
 }
 
 // captureCapabilities는 eBPF program을 불러오고 붙이는 데 필요한 capability다.
-var captureCapabilities = []struct {
-	number int
-	name   string
-}{{capBPF, "CAP_BPF"}, {capPerfmon, "CAP_PERFMON"}, {capNetAdmin, "CAP_NET_ADMIN"}}
+var captureCapabilities = []traceCapability{{capBPF, "CAP_BPF"}, {capPerfmon, "CAP_PERFMON"}, {capNetAdmin, "CAP_NET_ADMIN"}}
 
-// captureCapabilityError는 빠진 capability를 모두 이름으로 알리고, 지금 명령을 root로 다시 실행하는 줄을 붙인다.
-// root인데도 빠졌다면 컨테이너처럼 capability를 제한한 환경이라 sudo는 소용없으므로 capability를 더하라고 안내한다.
-func captureCapabilityError(capabilities map[int]bool, command string) error {
+// bpfTraceCapabilities는 network hook 없이 tp_btf만 붙이는 trace io와 trace sched에 필요한 capability다.
+var bpfTraceCapabilities = []traceCapability{{capBPF, "CAP_BPF"}, {capPerfmon, "CAP_PERFMON"}}
+
+func missingCapabilities(required []traceCapability, capabilities map[int]bool) string {
 	var missing []string
-	for _, capability := range captureCapabilities {
+	for _, capability := range required {
 		if !capabilities[capability.number] {
 			missing = append(missing, capability.name)
 		}
 	}
-	if len(missing) == 0 {
+	return strings.Join(missing, ", ")
+}
+
+// captureCapabilityError는 빠진 capability를 모두 이름으로 알리고, 지금 명령을 root로 다시 실행하는 줄을 붙인다.
+// root인데도 빠졌다면 컨테이너처럼 capability를 제한한 환경이라 sudo는 소용없으므로 capability를 더하라고 안내한다.
+func captureCapabilityError(capabilities map[int]bool, command string) error {
+	missing := missingCapabilities(captureCapabilities, capabilities)
+	if missing == "" {
 		return nil
 	}
 	if captureGeteuid() == 0 {
-		return errors.New(T("cli.capture.capability_missing_root", strings.Join(missing, ", ")))
+		return errors.New(T("cli.capture.capability_missing_root", missing))
 	}
-	return errors.New(T("cli.capture.capability_missing", strings.Join(missing, ", "), command))
+	return errors.New(T("cli.capture.capability_missing", missing, command))
+}
+
+// traceCapabilityError는 captureCapabilityError와 같은 안내를 network 밖의 trace에 쓴다. subject는 "trace io"처럼
+// 명령 이름이다.
+func traceCapabilityError(required []traceCapability, capabilities map[int]bool, subject, command string) error {
+	missing := missingCapabilities(required, capabilities)
+	if missing == "" {
+		return nil
+	}
+	if captureGeteuid() == 0 {
+		return errors.New(T("cli.trace.capability_missing_root", missing, subject))
+	}
+	return errors.New(T("cli.trace.capability_missing", missing, subject, command))
+}
+
+// traceBPFPrerequisites는 kernel이 trace를 지원하는지 먼저 보고, 그다음 권한을 본다. 권한이 없는 사용자도 kernel BTF는
+// 읽을 수 있으므로, 지원되지 않는 host와 sudo로 실행하면 되는 host를 서로 다른 문구로 알린다.
+func traceBPFPrerequisites(subject string, supported func(*btf.Spec) error) error {
+	kernel, err := btf.LoadKernelSpec()
+	if err != nil {
+		return errors.New(T("cli.trace.unsupported", subject, T("cli.capture.btf_missing")))
+	}
+	if err := supported(kernel); err != nil {
+		return errors.New(T("cli.trace.unsupported", subject, err.Error()))
+	}
+	capabilities, err := effectiveCapabilities()
+	if err != nil {
+		return fmt.Errorf("%s: %w", T("cli.capture.capability_check_failed"), err)
+	}
+	return traceCapabilityError(bpfTraceCapabilities, capabilities, subject, currentRootCommand())
+}
+
+// traceTracepointsAvailable은 tp_btf가 붙을 btf_trace_<tracepoint> 형식이 kernel BTF에 있는지 본다. tracefs는
+// root만 읽을 수 있고 container에는 없을 수 있어서 보지 않는다.
+func traceTracepointsAvailable(kernel *btf.Spec, names []string) error {
+	for _, name := range names {
+		var typedef *btf.Typedef
+		if err := kernel.TypeByName("btf_trace_"+name, &typedef); err != nil {
+			return fmt.Errorf("kernel BTF has no tracepoint %s", name)
+		}
+	}
+	return nil
 }
 
 // rootCommand는 지금 명령을 sudo로 다시 실행하는 줄이다. Ubuntu의 sudo는 secure_path만 PATH로 써서 ~/.local/bin의

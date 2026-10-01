@@ -31,10 +31,10 @@ func TestIOTracepointsComeFromKernelBTF(t *testing.T) {
 		}
 		return loaded
 	}
-	if err := ioTracepointsAvailable(spec(ioTracepoints...)); err != nil {
+	if err := traceTracepointsAvailable(spec(ioTracepoints...), ioTracepoints); err != nil {
 		t.Fatal(err)
 	}
-	err := ioTracepointsAvailable(spec("block_rq_insert", "block_rq_issue", "block_rq_complete"))
+	err := traceTracepointsAvailable(spec("block_rq_insert", "block_rq_issue", "block_rq_complete"), ioTracepoints)
 	if err == nil || !strings.Contains(err.Error(), "block_rq_requeue") {
 		t.Fatalf("missing requeue = %v", err)
 	}

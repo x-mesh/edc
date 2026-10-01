@@ -945,9 +945,12 @@ int tcp_create_openreq_child_exit(__u64 *ctx) {
 #define TLS_CLIENT_HELLO 0x01
 // TLS_HANDSHAKE는 record 머리 없이 handshake message로 시작하는 레코드다. 머리만 따로 읽는 서버에서 나온다.
 #define TLS_HANDSHAKE 2
-// TLS_SPLIT은 http_streams 값에서 TLS record 머리만 읽은 socket을 표시한다. 다음 읽기 하나만 보고, 그 뒤의 암호문은
-// --payload=all에서도 따라가지 않는다.
-#define TLS_SPLIT (1ULL << 63)
+#define TLS_HANDSHAKE_HEADER_SIZE 4
+#define TLS_PREFIX_SIZE (TLS_RECORD_HEADER_SIZE + TLS_HANDSHAKE_HEADER_SIZE)
+#define TLS_CLIENT_HELLO_MIN_LENGTH 34
+#define TLS_PREFIX_NON_TLS 1
+#define TLS_PREFIX_CLIENT_HELLO 2
+#define TLS_PREFIX_DONE 3
 
 struct http_record {
 	__u64 timestamp_ns;
@@ -983,7 +986,7 @@ struct {
 
 // http_streams는 socket과 방향마다 지금 message에서 주고받은 byte 수다. HTTP로 시작하지 않는 읽기와 쓰기는 이 값이
 // http_message_limit보다 작을 때만 앞 message의 이어지는 조각으로 넘긴다. --payload=all이 아니면 HTTP_SPLIT_SIZE보다
-// 짧게 시작한 message만 둔다. TLS_SPLIT이 붙은 값은 TLS record 머리만 읽은 socket이다.
+// 짧게 시작한 message만 둔다.
 struct http_stream_key {
 	__u64 skaddr;
 	__u64 direction;
@@ -995,6 +998,23 @@ struct {
 	__type(key, struct http_stream_key);
 	__type(value, __u64);
 } http_streams SEC(".maps");
+
+// tls_prefixes는 TLS record header와 handshake header까지만 기억한다. recvmsg 경계가 이 아홉 byte 사이 어디에
+// 있어도 ClientHello 길이를 확인하고, 이후 암호문은 다시 검사하지 않는다.
+struct tls_prefix {
+	__u8 bytes[TLS_PREFIX_SIZE];
+	__u8 count;
+	__u8 terminal;
+	__u32 offset;
+	__u32 hello_end;
+};
+
+struct {
+	__uint(type, BPF_MAP_TYPE_LRU_HASH);
+	__uint(max_entries, 16384);
+	__type(key, struct http_stream_key);
+	__type(value, struct tls_prefix);
+} tls_prefixes SEC(".maps");
 
 // http_cursor는 http_capture 반복의 위치다. 반복 상태를 register에 두면 verifier가 반복마다 값의 범위를 따로 추적해
 // 경로를 합치지 못하고, 100만 명령 한도를 넘는다. map에서 다시 읽은 값은 범위를 모르는 값이라 경로가 합쳐진다.
@@ -1096,6 +1116,127 @@ static __always_inline int tls_client_hello(__u64 buffer, __u64 limit, __u64 at)
 	return limit > at && !bpf_probe_read_user(&type, sizeof(type), (void *)(buffer + at)) && type == TLS_CLIENT_HELLO;
 }
 
+// tls_prefix_client_hello는 이번 buffer가 첫 ClientHello type byte를 줄 때만 true를 돌린다. terminal 상태는 이후
+// TLS 암호문을 새 record로 다시 읽지 않는다.
+static __always_inline int tls_prefix_client_hello(const struct http_stream_key *key, __u64 buffer, __u64 limit, __u64 size, __u64 *output, __u64 *captured, __u8 *handshake) {
+	struct tls_prefix next = {};
+	struct tls_prefix *stored = bpf_map_lookup_elem(&tls_prefixes, key);
+	if (stored) {
+		if (stored->terminal == TLS_PREFIX_NON_TLS) {
+			return 0;
+		}
+		if (stored->terminal == TLS_PREFIX_CLIENT_HELLO) {
+			if (stored->offset >= stored->hello_end) {
+				return 0;
+			}
+			__u64 available = size < limit ? size : limit;
+			__u64 remaining = stored->hello_end - stored->offset;
+			if (available > remaining) {
+				available = remaining;
+			}
+			next = *stored;
+			next.offset += available;
+			if (next.offset >= next.hello_end) {
+				next.terminal = TLS_PREFIX_DONE;
+			}
+			bpf_map_update_elem(&tls_prefixes, key, &next, BPF_ANY);
+			*output = stored->offset;
+			*captured = available;
+			return 2;
+		}
+		__builtin_memcpy(&next, stored, sizeof(next));
+	}
+	if (next.count >= TLS_PREFIX_SIZE) {
+		return 0;
+	}
+	__u64 readable = size < limit ? size : limit;
+	__u64 available = readable;
+	if (available > TLS_PREFIX_SIZE - next.count) {
+		available = TLS_PREFIX_SIZE - next.count;
+	}
+	#pragma unroll
+	for (int index = 0; index < TLS_PREFIX_SIZE; index++) {
+		if ((__u64)index >= available) {
+			break;
+		}
+		__u8 byte = 0;
+		if (bpf_probe_read_user(&byte, sizeof(byte), (void *)(buffer + index))) {
+			break;
+		}
+		__u8 position = next.count;
+		if (position == 0) {
+			next.bytes[0] = byte;
+		} else if (position == 1) {
+			next.bytes[1] = byte;
+		} else if (position == 2) {
+			next.bytes[2] = byte;
+		} else if (position == 3) {
+			next.bytes[3] = byte;
+		} else if (position == 4) {
+			next.bytes[4] = byte;
+		} else if (position == 5) {
+			next.bytes[5] = byte;
+		} else if (position == 6) {
+			next.bytes[6] = byte;
+		} else if (position == 7) {
+			next.bytes[7] = byte;
+		} else if (position == 8) {
+			next.bytes[8] = byte;
+		} else {
+			return 0;
+		}
+		next.count = position + 1;
+		if ((position == 0 && byte != 0x16) || (position == 1 && byte != 0x03) || (position == 2 && byte > 0x04)) {
+			next.terminal = TLS_PREFIX_NON_TLS;
+			bpf_map_update_elem(&tls_prefixes, key, &next, BPF_ANY);
+			return 0;
+		}
+		if (position == TLS_RECORD_HEADER_SIZE - 1) {
+			__u16 record_length = ((__u16)next.bytes[3] << 8) | next.bytes[4];
+			if (record_length < TLS_HANDSHAKE_HEADER_SIZE) {
+				next.terminal = TLS_PREFIX_NON_TLS;
+				bpf_map_update_elem(&tls_prefixes, key, &next, BPF_ANY);
+				return 0;
+			}
+		}
+		if (position == TLS_PREFIX_SIZE - 1) {
+			__u16 record_length = ((__u16)next.bytes[3] << 8) | next.bytes[4];
+			__u32 handshake_length = ((__u32)next.bytes[6] << 16) | ((__u32)next.bytes[7] << 8) | next.bytes[8];
+			if (next.bytes[5] != TLS_CLIENT_HELLO || handshake_length < TLS_CLIENT_HELLO_MIN_LENGTH || TLS_HANDSHAKE_HEADER_SIZE + handshake_length > record_length) {
+				next.terminal = TLS_PREFIX_NON_TLS;
+				bpf_map_update_elem(&tls_prefixes, key, &next, BPF_ANY);
+				return 0;
+			}
+			next.hello_end = TLS_HANDSHAKE_HEADER_SIZE + handshake_length;
+			if (next.hello_end > TLS_HELLO_SIZE) {
+				next.hello_end = TLS_HELLO_SIZE;
+			}
+			__u64 consumed = index + 1;
+			__u64 body = readable - consumed;
+			if (body > next.hello_end - TLS_HANDSHAKE_HEADER_SIZE) {
+				body = next.hello_end - TLS_HANDSHAKE_HEADER_SIZE;
+			}
+			next.offset = TLS_HANDSHAKE_HEADER_SIZE + body;
+			if (next.offset >= next.hello_end) {
+				next.offset = next.hello_end;
+				next.terminal = TLS_PREFIX_DONE;
+			} else {
+				next.terminal = TLS_PREFIX_CLIENT_HELLO;
+			}
+			bpf_map_update_elem(&tls_prefixes, key, &next, BPF_ANY);
+		handshake[0] = next.bytes[5];
+		handshake[1] = next.bytes[6];
+		handshake[2] = next.bytes[7];
+		handshake[3] = next.bytes[8];
+			*output = consumed;
+			*captured = body;
+			return 1;
+		}
+	}
+	bpf_map_update_elem(&tls_prefixes, key, &next, BPF_ANY);
+	return 0;
+}
+
 static __always_inline int http_socket(struct sock *sk) {
 	if (!http_port) {
 		return 1;
@@ -1162,34 +1303,31 @@ static __always_inline void http_capture(struct sock *sk, __u64 buffer, __u64 li
 	__u8 kind = start ? HTTP_START : HTTP_CONTINUATION;
 	__u64 offset = 0;
 	__u64 budget = http_payload_limit;
+	__u8 tls_handshake[TLS_HANDSHAKE_HEADER_SIZE] = {};
+	int tls_synthetic = 0;
 	// 모든 TCP 송수신이 여기를 지나므로 이어 받을 조각이 있는 socket에서만 map에 값이 있다. 이어 받는 조각을 TLS 판별보다
 	// 먼저 보므로, 0x16 0x03으로 시작하는 HTTP body 조각을 TLS로 읽지 않는다.
 	__u64 *seen = start ? 0 : bpf_map_lookup_elem(&http_streams, &key);
-	if (seen && (*seen & TLS_SPLIT)) {
-		// record 머리만 읽은 TLS socket의 다음 읽기다. ClientHello가 아니면 버린다.
-		offset = *seen & ~TLS_SPLIT;
-		bpf_map_delete_elem(&http_streams, &key);
-		if (!tls_client_hello(buffer, limit, 0)) {
+	if (!start && !seen) {
+		__u64 tls_offset = 0;
+		__u64 tls_captured = 0;
+		int tls = tls_prefix_client_hello(&key, buffer, limit, size, &tls_offset, &tls_captured, tls_handshake);
+		if (!tls) {
 			return;
 		}
-		kind = TLS_HANDSHAKE;
-		budget = TLS_HELLO_SIZE;
-		iov = 0;
-	} else if (!start && !seen) {
-		if (!readable || !tls_start(peek)) {
-			return;
+		if (tls == 1) {
+			buffer += tls_offset;
+			limit = tls_captured;
+			size = tls_captured;
+			offset = TLS_HANDSHAKE_HEADER_SIZE;
+			kind = HTTP_CONTINUATION;
+			tls_synthetic = 1;
+		} else {
+			limit = tls_captured;
+			size = tls_captured;
+			offset = tls_offset;
+			kind = HTTP_CONTINUATION;
 		}
-		if (size <= TLS_RECORD_HEADER_SIZE) {
-			// read_ahead를 켜지 않은 OpenSSL 서버(openssl s_server, Python ssl)는 record 머리 5 byte를 먼저 읽고 본문을
-			// 다시 읽는다. handshake 종류는 다음 읽기의 첫 byte다.
-			__u64 mark = size | TLS_SPLIT;
-			bpf_map_update_elem(&http_streams, &key, &mark, BPF_ANY);
-			return;
-		}
-		if (!tls_client_hello(buffer, limit, TLS_RECORD_HEADER_SIZE)) {
-			return;
-		}
-		kind = HTTP_START;
 		budget = TLS_HELLO_SIZE;
 		iov = 0;
 	} else if (http_message_limit) {
@@ -1233,6 +1371,16 @@ static __always_inline void http_capture(struct sock *sk, __u64 buffer, __u64 li
 		return;
 	}
 	http_fill_record(record, sk, direction);
+	if (tls_synthetic) {
+		__builtin_memcpy(record->payload, tls_handshake, TLS_HANDSHAKE_HEADER_SIZE);
+		record->timestamp_ns = bpf_ktime_get_ns();
+		record->len = TLS_HANDSHAKE_HEADER_SIZE;
+		record->kind = TLS_HANDSHAKE;
+		record->offset = 0;
+		if (bpf_ringbuf_output(&events, record, __builtin_offsetof(struct http_record, payload) + TLS_HANDSHAKE_HEADER_SIZE, 0)) {
+			return;
+		}
+	}
 	cursor->pointer = buffer;
 	cursor->left = limit;
 	cursor->remaining = size < budget ? size : budget;
@@ -1694,8 +1842,10 @@ int http_tcp_destroy_sock(__u64 *ctx) {
 	if (emit_http_messages && http_socket(sk)) {
 		struct http_stream_key key = {.skaddr = (__u64)sk, .direction = HTTP_SENT};
 		bpf_map_delete_elem(&http_streams, &key);
+		bpf_map_delete_elem(&tls_prefixes, &key);
 		key.direction = HTTP_RECEIVED;
 		bpf_map_delete_elem(&http_streams, &key);
+		bpf_map_delete_elem(&tls_prefixes, &key);
 	}
 	struct event *event = start_event(ctx, 5);
 	if (!event) {

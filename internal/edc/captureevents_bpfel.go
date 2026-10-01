@@ -103,6 +103,16 @@ type captureEventsSockOwner struct {
 	_        [4]byte
 }
 
+type captureEventsTlsPrefix struct {
+	_        structs.HostLayout
+	Bytes    [9]uint8
+	Count    uint8
+	Terminal uint8
+	_        [1]byte
+	Offset   uint32
+	HelloEnd uint32
+}
+
 type captureEventsUdpSendPending struct {
 	_           structs.HostLayout
 	Skaddr      uint64
@@ -133,6 +143,7 @@ const (
 	captureEventsMapMysqlSendPending           = "mysql_send_pending"
 	captureEventsMapSockOwners                 = "sock_owners"
 	captureEventsMapTcpLengthPending           = "tcp_length_pending"
+	captureEventsMapTlsPrefixes                = "tls_prefixes"
 	captureEventsMapUdpSendPending             = "udp_send_pending"
 	captureEventsProgHttpTcpDestroySock        = "http_tcp_destroy_sock"
 	captureEventsProgInetCskAcceptEntry        = "inet_csk_accept_entry"
@@ -256,6 +267,7 @@ type captureEventsMapSpecs struct {
 	MysqlSendPending *ebpf.MapSpec `ebpf:"mysql_send_pending"`
 	SockOwners       *ebpf.MapSpec `ebpf:"sock_owners"`
 	TcpLengthPending *ebpf.MapSpec `ebpf:"tcp_length_pending"`
+	TlsPrefixes      *ebpf.MapSpec `ebpf:"tls_prefixes"`
 	UdpSendPending   *ebpf.MapSpec `ebpf:"udp_send_pending"`
 }
 
@@ -311,6 +323,7 @@ type captureEventsMaps struct {
 	MysqlSendPending *ebpf.Map `ebpf:"mysql_send_pending"`
 	SockOwners       *ebpf.Map `ebpf:"sock_owners"`
 	TcpLengthPending *ebpf.Map `ebpf:"tcp_length_pending"`
+	TlsPrefixes      *ebpf.Map `ebpf:"tls_prefixes"`
 	UdpSendPending   *ebpf.Map `ebpf:"udp_send_pending"`
 }
 
@@ -330,6 +343,7 @@ func (m *captureEventsMaps) Close() error {
 		m.MysqlSendPending,
 		m.SockOwners,
 		m.TcpLengthPending,
+		m.TlsPrefixes,
 		m.UdpSendPending,
 	)
 }

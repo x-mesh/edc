@@ -45,6 +45,14 @@ const httpSplitLimit = 1024
 // 다시 읽어서, 첫 조각만으로는 요청을 알아볼 수 없다.
 type httpSplitStarts map[httpStreamKey]httpPacket
 
+func tlsHandshakeComplete(payload []byte) bool {
+	if len(payload) < tlsHandshakeHeaderSize || payload[0] != tlsClientHelloType {
+		return false
+	}
+	length := int(payload[1])<<16 | int(payload[2])<<8 | int(payload[3])
+	return len(payload) >= min(tlsHandshakeHeaderSize+length, httpPayloadHead)
+}
+
 // join은 첫 줄이 끝나지 않은 첫 조각을 두고 false를 돌려준다. 그 뒤에 이어지는 조각이 오면 둘을 이은 첫 조각을 돌려준다.
 // 기다리는 조각이 없는 packet은 그대로 돌려준다.
 func (starts httpSplitStarts) join(packet httpPacket) (httpPacket, bool) {
@@ -65,9 +73,20 @@ func (starts httpSplitStarts) join(packet httpPacket) (httpPacket, bool) {
 		delete(starts, key)
 		// ClientHello는 첫 줄이 없는 binary라 기다리지 않는다. record 머리만 따로 읽은 서버에서는 BPF가 본문을 머리 없는
 		// handshake 레코드로 넘긴다.
+		if packet.tlsHandshake && !tlsHandshakeComplete(packet.payload) {
+			starts[key] = packet
+			return httpPacket{}, false
+		}
 		if packet.tlsHandshake || tlsRecordStart(packet.payload) {
 			return packet, true
 		}
+	}
+	if packet.tlsHandshake {
+		if !tlsHandshakeComplete(packet.payload) {
+			starts[key] = packet
+			return httpPacket{}, false
+		}
+		return packet, true
 	}
 	// --payload=all은 조각을 계속 보낸다. 4KiB 안에 첫 줄이 끝나지 않으면 읽을 수 있는 HTTP/1.x가 아니다.
 	if !httpFirstLineOpen(packet.payload) || len(packet.payload) >= httpPayloadHead {

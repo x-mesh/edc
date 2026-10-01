@@ -158,9 +158,10 @@ func (tracker *httpTracker) tlsEvent(packet httpPacket, hello tlsClientHello, cl
 }
 
 const (
-	tlsRecordHeaderSize = 5
-	tlsHandshakeRecord  = 0x16
-	tlsClientHelloType  = 0x01
+	tlsRecordHeaderSize    = 5
+	tlsHandshakeRecord     = 0x16
+	tlsClientHelloType     = 0x01
+	tlsHandshakeHeaderSize = 4
 	// tlsHelloFixedSize는 handshake 머리 4 byte, client version 2 byte, random 32 byte다.
 	tlsHelloFixedSize      = 4 + 2 + 32
 	tlsExtensionServerName = 0x0000

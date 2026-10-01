@@ -115,6 +115,16 @@ type captureEventsTcpDiagnostics struct {
 	ZeroWindow uint32
 }
 
+type captureEventsTlsPrefix struct {
+	_        structs.HostLayout
+	Bytes    [9]uint8
+	Count    uint8
+	Terminal uint8
+	_        [1]byte
+	Offset   uint32
+	HelloEnd uint32
+}
+
 type captureEventsUdpSendPending struct {
 	_           structs.HostLayout
 	Skaddr      uint64
@@ -147,6 +157,7 @@ const (
 	captureEventsMapTcpDiagnostics             = "tcp_diagnostics"
 	captureEventsMapTcpEstablishedAt           = "tcp_established_at"
 	captureEventsMapTcpLengthPending           = "tcp_length_pending"
+	captureEventsMapTlsPrefixes                = "tls_prefixes"
 	captureEventsMapUdpSendPending             = "udp_send_pending"
 	captureEventsProgHttpTcpDestroySock        = "http_tcp_destroy_sock"
 	captureEventsProgInetCskAcceptEntry        = "inet_csk_accept_entry"
@@ -276,6 +287,7 @@ type captureEventsMapSpecs struct {
 	TcpDiagnostics   *ebpf.MapSpec `ebpf:"tcp_diagnostics"`
 	TcpEstablishedAt *ebpf.MapSpec `ebpf:"tcp_established_at"`
 	TcpLengthPending *ebpf.MapSpec `ebpf:"tcp_length_pending"`
+	TlsPrefixes      *ebpf.MapSpec `ebpf:"tls_prefixes"`
 	UdpSendPending   *ebpf.MapSpec `ebpf:"udp_send_pending"`
 }
 
@@ -333,6 +345,7 @@ type captureEventsMaps struct {
 	TcpDiagnostics   *ebpf.Map `ebpf:"tcp_diagnostics"`
 	TcpEstablishedAt *ebpf.Map `ebpf:"tcp_established_at"`
 	TcpLengthPending *ebpf.Map `ebpf:"tcp_length_pending"`
+	TlsPrefixes      *ebpf.Map `ebpf:"tls_prefixes"`
 	UdpSendPending   *ebpf.Map `ebpf:"udp_send_pending"`
 }
 
@@ -354,6 +367,7 @@ func (m *captureEventsMaps) Close() error {
 		m.TcpDiagnostics,
 		m.TcpEstablishedAt,
 		m.TcpLengthPending,
+		m.TlsPrefixes,
 		m.UdpSendPending,
 	)
 }

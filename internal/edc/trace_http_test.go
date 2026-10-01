@@ -527,6 +527,115 @@ func TestHTTPMessagesPassTLSClientHellosThrough(t *testing.T) {
 	}
 }
 
+func TestHTTPSplitStartsJoinTLSHandshakeAcrossRecvmsgReads(t *testing.T) {
+	record := tlsHandBuiltClientHello("api.example", "h2")
+	starts := httpSplitStarts{}
+	var joined httpPacket
+	for index, payload := range [][]byte{record[tlsRecordHeaderSize : tlsRecordHeaderSize+1], record[tlsRecordHeaderSize+1 : tlsRecordHeaderSize+12], record[tlsRecordHeaderSize+12:]} {
+		packet := httpTestPacket(string(payload), uint64(index+1), false)
+		packet.tlsHandshake = index == 0
+		if index != 0 {
+			packet.continued = true
+			packet.offset = uint32(1 + len(record[tlsRecordHeaderSize+1:tlsRecordHeaderSize+12]))
+			if index == 1 {
+				packet.offset = 1
+			}
+		}
+		var ok bool
+		joined, ok = starts.join(packet)
+		if index < 2 && ok {
+			t.Fatalf("piece %d came out early: %#v", index, joined)
+		}
+		if index == 2 && (!ok || !joined.tlsHandshake || string(joined.payload) != string(record[tlsRecordHeaderSize:])) {
+			t.Fatalf("joined = %#v, %t", joined, ok)
+		}
+	}
+	event, ok := newHTTPTracker(traceServerSide, false, false).event(joined, 0)
+	if !ok || event.Event != traceTLSHelloEvent || event.Target != "api.example" {
+		t.Fatalf("event = %#v, %t", event, ok)
+	}
+}
+
+func TestHTTPSplitStartsJoinSyntheticHeaderAfterEveryPrefixSplit(t *testing.T) {
+	record := tlsHandBuiltClientHello("split.example", "h2", "http/1.1")
+	handshake := record[tlsRecordHeaderSize:]
+	for prefix := 1; prefix <= tlsRecordHeaderSize+tlsHandshakeHeaderSize-1; prefix++ {
+		starts := httpSplitStarts{}
+		header := httpTestPacket(string(handshake[:tlsHandshakeHeaderSize]), 1, false)
+		header.tlsHandshake = true
+		if packet, ok := starts.join(header); ok {
+			t.Fatalf("prefix %d emitted synthetic header: %#v", prefix, packet)
+		}
+		body := httpChunk(string(handshake[tlsHandshakeHeaderSize:]), 2, false, tlsHandshakeHeaderSize)
+		packet, ok := starts.join(body)
+		if !ok || string(packet.payload) != string(handshake) {
+			t.Fatalf("prefix %d joined = %#v, %t", prefix, packet, ok)
+		}
+		event, ok := newHTTPTracker(traceServerSide, false, false).event(packet, 0)
+		if !ok || event.Target != "split.example" || strings.Join(event.ALPN, ",") != "h2,http/1.1" {
+			t.Fatalf("prefix %d event = %#v, %t", prefix, event, ok)
+		}
+	}
+}
+
+func TestHTTPSplitStartsWaitForTheDeclaredClientHelloLength(t *testing.T) {
+	record := tlsHandBuiltClientHello("late.example", "h2", "http/1.1")
+	handshake := record[tlsRecordHeaderSize:]
+	starts := httpSplitStarts{}
+	cut := len(handshake) - 3
+	first := httpTestPacket(string(handshake[:cut]), 1, false)
+	first.tlsHandshake = true
+	if packet, ok := starts.join(first); ok {
+		t.Fatalf("incomplete ClientHello = %#v", packet)
+	}
+	second := httpChunk(string(handshake[cut:]), 2, false, uint32(cut))
+	packet, ok := starts.join(second)
+	if !ok || !packet.tlsHandshake || string(packet.payload) != string(handshake) {
+		t.Fatalf("joined = %#v, %t", packet, ok)
+	}
+	event, ok := newHTTPTracker(traceServerSide, false, false).event(packet, 0)
+	if !ok || event.Target != "late.example" || strings.Join(event.ALPN, ",") != "h2,http/1.1" {
+		t.Fatalf("event = %#v, %t", event, ok)
+	}
+}
+
+func TestTLSHandshakeCompleteRejectsMalformedLengths(t *testing.T) {
+	for name, payload := range map[string][]byte{
+		"short":                  {tlsClientHelloType, 0, 0},
+		"declared after payload": {tlsClientHelloType, 0, 0, 5, 3, 3},
+		"other handshake":        {2, 0, 0, 0},
+	} {
+		if tlsHandshakeComplete(payload) {
+			t.Fatalf("%s was complete", name)
+		}
+	}
+}
+
+func TestHTTPSplitStartsEmitsTruncatedClientHelloAtTheCaptureCap(t *testing.T) {
+	record := tlsHandBuiltClientHello("capped.example", "h2")
+	handshake := append([]byte(nil), record[tlsRecordHeaderSize:]...)
+	declared := httpPayloadHead
+	handshake[1] = byte(declared >> 16)
+	handshake[2] = byte(declared >> 8)
+	handshake[3] = byte(declared)
+	handshake = append(handshake, make([]byte, httpPayloadHead-len(handshake))...)
+	starts := httpSplitStarts{}
+	packet := httpTestPacket(string(handshake), 1, false)
+	packet.tlsHandshake = true
+	joined, ok := starts.join(packet)
+	if !ok || len(joined.payload) != httpPayloadHead {
+		t.Fatalf("capped ClientHello = %#v, %t", joined, ok)
+	}
+	event, ok := newHTTPTracker(traceServerSide, false, false).event(joined, 0)
+	if !ok || event.Event != traceTLSHelloEvent || event.Target != "capped.example" || strings.Join(event.ALPN, ",") != "h2" {
+		t.Fatalf("event = %#v, %t", event, ok)
+	}
+	packet.payload = packet.payload[:httpPayloadHead-1]
+	if joined, ok := (httpSplitStarts{}).join(packet); ok {
+		t.Fatalf("short capped ClientHello = %#v", joined)
+	}
+}
+
 func TestHTTPTraceSummaryCountsTLSConnectionsApart(t *testing.T) {
 	t.Setenv("NO_COLOR", "1")
 	tracker := newHTTPTracker("", false, false)

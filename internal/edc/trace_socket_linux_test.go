@@ -3,7 +3,6 @@
 package edc
 
 import (
-	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -112,24 +111,4 @@ func TestTraceSocketTakesOnePathWithOptionsOnEitherSide(t *testing.T) {
 			t.Fatalf("trace %q exit = %d, stderr %q, want 2 and %q", test.args, code, stderr, test.stderr)
 		}
 	}
-}
-
-func captureTraceStderr(t *testing.T, run func()) string {
-	t.Helper()
-	file, err := os.CreateTemp(t.TempDir(), "stderr")
-	if err != nil {
-		t.Fatal(err)
-	}
-	previous := os.Stderr
-	os.Stderr = file
-	defer func() { os.Stderr = previous }()
-	run()
-	if _, err := file.Seek(0, io.SeekStart); err != nil {
-		t.Fatal(err)
-	}
-	data, err := io.ReadAll(file)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return string(data)
 }

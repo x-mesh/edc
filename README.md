@@ -782,6 +782,19 @@ On Linux, `trace tcp` also reports change-based `tcp_sample` events. These event
 
 Use Enter in the terminal view to see raw event JSON. The TCP connection JSON includes the last observed diagnostic values. The text summary shows mean RTT, lost packets, zero-window state, and mean application accept time for each process and peer. Linux 5.15 load and attach verification is not complete.
 
+Use `trace io` on Linux to measure block I/O latency. It records queue latency from request insert to issue, service latency from issue to complete, and total latency. It keeps the submitter process and cgroup at request insert. The completion context does not change that attribution. A device with the `none` I/O scheduler sends most requests to the driver without an insert. For these requests, `attribution` is `issue`, and the event has no `queue_ms`. The process and cgroup then come from the issue context, and this context can be a kernel worker.
+
+```bash
+./bin/edc trace io --duration 15s
+./bin/edc trace io --device 8:0 --group-by device
+./bin/edc trace io --process postgres --raw
+./bin/edc trace io --container database --json io.json
+```
+
+`trace io` reports read and write operations, bytes, and average, p95, and maximum queue, service, and total latency. It emits requests at or above 1ms. The summary reports ring loss, pending-map insertion failures, unmatched completions, incomplete requests, and requeues. A request without saved issue state has no invented latency or process owner.
+
+Use `--group-by device`, `--group-by process`, `--group-by cgroup`, or `--group-by event` for I/O reports. `--raw` writes each completed request and then the summary as JSONL. In each event, `timestamp_ns` is Unix epoch time in nanoseconds, the same clock as the summary line. `boot_time_ns` is the kernel monotonic time since boot. `--json` writes the summary report. `trace io` requires kernel BTF, block request tracepoints, `CAP_BPF`, and `CAP_PERFMON`. It does not require `CAP_NET_ADMIN`.
+
 ```bash
 ./bin/edc trace tcp
 ./bin/edc trace tcp --duration 15s

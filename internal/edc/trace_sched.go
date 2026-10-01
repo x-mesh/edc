@@ -42,6 +42,7 @@ type schedTraceOptions struct {
 
 type schedEvent struct {
 	TimestampNS       uint64  `json:"timestamp_ns"`
+	BootTimeNS        uint64  `json:"boot_time_ns"`
 	Event             string  `json:"event"`
 	PID               uint32  `json:"pid"`
 	Process           string  `json:"process"`
@@ -405,6 +406,10 @@ func collectSchedEvents(duration time.Duration, onEvent func(schedEvent) error, 
 	if err := vars.MinimumLatencyNs.Set(uint64(schedMinimumLatency)); err != nil {
 		return schedSummary{}, err
 	}
+	clockOffset, err := captureClockOffset()
+	if err != nil {
+		return schedSummary{}, fmt.Errorf("read monotonic clock: %w", err)
+	}
 	objects := schedEventsObjects{}
 	if err := spec.LoadAndAssign(&objects, nil); err != nil {
 		return schedSummary{}, err
@@ -468,7 +473,7 @@ func collectSchedEvents(duration time.Duration, onEvent func(schedEvent) error, 
 			}
 			return schedSummary{}, err
 		}
-		event, ok := parseSchedRecord(record.RawSample)
+		event, ok := parseSchedRecord(record.RawSample, clockOffset)
 		if !ok {
 			continue
 		}
@@ -493,7 +498,7 @@ func collectSchedEvents(duration time.Duration, onEvent func(schedEvent) error, 
 
 const schedRecordSize = 56
 
-func parseSchedRecord(sample []byte) (schedEvent, bool) {
+func parseSchedRecord(sample []byte, clockOffset int64) (schedEvent, bool) {
 	if len(sample) < schedRecordSize {
 		return schedEvent{}, false
 	}
@@ -502,8 +507,10 @@ func parseSchedRecord(sample []byte) (schedEvent, bool) {
 	if kind >= len(eventNames) {
 		return schedEvent{}, false
 	}
+	bootTime := binary.LittleEndian.Uint64(sample[0:8])
 	return schedEvent{
-		TimestampNS: binary.LittleEndian.Uint64(sample[0:8]),
+		TimestampNS: uint64(int64(bootTime) + clockOffset),
+		BootTimeNS:  bootTime,
 		Event:       eventNames[kind],
 		CgroupID:    binary.LittleEndian.Uint64(sample[16:24]),
 		PID:         binary.LittleEndian.Uint32(sample[32:36]),

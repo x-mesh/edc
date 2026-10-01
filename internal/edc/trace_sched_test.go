@@ -69,14 +69,17 @@ func TestSchedMissingBTFMembers(t *testing.T) {
 }
 
 func TestParseSchedRecordKeepsZeroCgroupUnavailable(t *testing.T) {
-	event, ok := parseSchedRecord(schedSample(2, 1))
+	event, ok := parseSchedRecord(schedSample(2, 1), 1_000)
 	if !ok || event.Event != "sched_offcpu" || event.PID != 42 || event.Process != "worker" || event.LatencyMS != 2.5 || event.CgroupID != 9876 || event.CgroupUnavailable || event.OffCPUClass != "preempted" {
 		t.Fatalf("event = %#v, ok = %t", event, ok)
 	}
-	if event, ok := parseSchedRecord(schedSample(0, 1)); !ok || event.OffCPUClass != "" {
+	if event.TimestampNS != 2_234 || event.BootTimeNS != 1234 {
+		t.Fatalf("timestamp = %d, boot time = %d", event.TimestampNS, event.BootTimeNS)
+	}
+	if event, ok := parseSchedRecord(schedSample(0, 1), 0); !ok || event.OffCPUClass != "" {
 		t.Fatalf("event = %#v, ok = %t", event, ok)
 	}
-	if _, ok := parseSchedRecord(make([]byte, schedRecordSize-1)); ok {
+	if _, ok := parseSchedRecord(make([]byte, schedRecordSize-1), 0); ok {
 		t.Fatal("short sample parsed")
 	}
 }

@@ -17,7 +17,7 @@ func TestTraceProtocolSelectItemsUseRegistryOrder(t *testing.T) {
 		}
 		got = append(got, item.value)
 	}
-	want := []string{"tcp", "udp", "dns", "arp", "ndp", "http", "mysql", "socket", "drop", "sched"}
+	want := []string{"tcp", "udp", "dns", "arp", "ndp", "http", "mysql", "io", "socket", "drop", "sched"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("protocols = %#v, want %#v", got, want)
 	}
@@ -73,7 +73,7 @@ func TestRunTraceKeepsUsageOutsideTerminals(t *testing.T) {
 			t.Fatalf("code = %d", code)
 		}
 	})
-	if want := "usage: edc trace <tcp|udp|dns|arp|ndp|http|drop|mysql|sched> [options]\nusage: " + traceSocketUsage + "\n"; stderr != want {
+	if want := "usage: edc trace <tcp|udp|dns|arp|ndp|http|drop|mysql|io|sched> [options]\nusage: " + traceSocketUsage + "\n"; stderr != want {
 		t.Fatalf("stderr = %q, want %q", stderr, want)
 	}
 }
@@ -84,7 +84,27 @@ func TestRunTraceKeepsUsageForAnUnknownProtocol(t *testing.T) {
 			t.Fatalf("code = %d", code)
 		}
 	})
-	if !strings.Contains(stderr, "edc trace <tcp|udp|dns|arp|ndp|http|drop|mysql|sched> [options]") {
+	if !strings.Contains(stderr, "edc trace <tcp|udp|dns|arp|ndp|http|drop|mysql|io|sched> [options]") {
 		t.Fatalf("stderr = %q", stderr)
 	}
+}
+
+func captureTraceStderr(t *testing.T, run func()) string {
+	t.Helper()
+	file, err := os.CreateTemp(t.TempDir(), "stderr")
+	if err != nil {
+		t.Fatal(err)
+	}
+	previous := os.Stderr
+	os.Stderr = file
+	defer func() { os.Stderr = previous }()
+	run()
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		t.Fatal(err)
+	}
+	data, err := io.ReadAll(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
 }

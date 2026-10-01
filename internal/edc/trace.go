@@ -83,6 +83,7 @@ type traceReport interface{ print(detail bool) }
 var traceProtocolRegistry = []traceProtocolRegistration{
 	{name: "tcp", view: traceProtocolView{selectorLabel: "tcp"}, spec: traceProtocolSpec{
 		ansiColor: "36", screenColor: "#22d3ee",
+		scrollLabels: traceTCPScrollLabels,
 		groupColumns: []traceGroupColumn{
 			{screenTitle: "CON", reportTitle: "CONNECT", width: 3, value: func(group traceGroupSummary) string { return strconv.FormatUint(group.Connect, 10) }},
 			{screenTitle: "RET", reportTitle: "RETRANS", width: 3, value: func(group traceGroupSummary) string { return traceOptional(group.Retransmissions, "%d") }},
@@ -113,6 +114,7 @@ var traceProtocolRegistry = []traceProtocolRegistration{
 		ansiColor: "94", screenColor: "#818cf8", groupColumns: traceMySQLGroupColumns, hideTraffic: true, linuxOnly: true,
 		scrollLabels: traceMySQLScrollLabels, serverSide: true, prerequisites: httpTracePrerequisites, newSummarizer: func() traceSummarizer { return newMySQLTraceSummarizer() },
 	}},
+	{name: "io", view: traceProtocolView{selectorLabel: "io"}, spec: traceProtocolSpec{ansiColor: "33", screenColor: "#fbbf24", linuxOnly: true, prerequisites: ioTracePrerequisites}, run: runIOTrace},
 	// unix socket 파일 하나를 본다. 목적지는 늘 그 경로라서 port와 target 보기는 한 행뿐이다. source는 상대 process다.
 	{name: "socket", view: traceProtocolView{selectorLabel: "socket"}, spec: traceProtocolSpec{
 		ansiColor: "38;5;208", screenColor: "#fb923c", hiddenViews: []string{traceGroupByPort, traceGroupByTarget}, linuxOnly: true,
@@ -192,6 +194,34 @@ func traceScrollLabels(event captureEvent) (string, string) {
 		return labels(event)
 	}
 	return traceEventDestinationLabel(event), event.Event
+}
+
+func traceTCPScrollLabels(event captureEvent) (string, string) {
+	switch event.Event {
+	case "tcp_sample":
+		parts := []string{"sample"}
+		if event.TCPValid&1 != 0 {
+			parts = append(parts, fmt.Sprintf("rtt=%dus", event.RTTUS))
+		}
+		if event.TCPValid&4 != 0 {
+			parts = append(parts, fmt.Sprintf("cwnd=%d", event.CWND))
+		}
+		if event.TCPValid&32 != 0 {
+			parts = append(parts, fmt.Sprintf("lost=%d", event.Lost))
+		}
+		if event.TCPValid&64 != 0 && event.ZeroWindow != 0 {
+			parts = append(parts, "zwin")
+		}
+		return traceEventDestinationLabel(event), strings.Join(parts, " ")
+	case "tcp_app_accept":
+		label := fmt.Sprintf("app accept=%.3fms", float64(event.AcceptLatencyNS)/float64(time.Millisecond))
+		if event.AcceptQueueMax != 0 {
+			label += fmt.Sprintf(" q=%d/%d", event.AcceptQueueUsed, event.AcceptQueueMax)
+		}
+		return traceEventDestinationLabel(event), label
+	default:
+		return traceEventDestinationLabel(event), event.Event
+	}
 }
 
 // traceScope는 collector가 모을 범위다. server는 --side server로 로컬 서버 쪽을 볼 때 켠다.
@@ -370,7 +400,7 @@ func runTrace(args []string) int {
 }
 
 func traceUsage() {
-	fmt.Fprintln(os.Stderr, T("cli.usage", "edc trace <tcp|udp|dns|arp|ndp|http|drop|mysql|sched> [options]"))
+	fmt.Fprintln(os.Stderr, T("cli.usage", "edc trace <tcp|udp|dns|arp|ndp|http|drop|mysql|io|sched> [options]"))
 	fmt.Fprintln(os.Stderr, T("cli.usage", traceSocketUsage))
 }
 
@@ -682,6 +712,9 @@ func printTCPTraceReport(report tcpTraceReport, detail bool) {
 	fmt.Fprintln(os.Stdout, "\nPROCESS\tDESTINATION\tRESULT\tCONNECT\tTX\tRX\tRETRANS\tRESET")
 	for _, connection := range report.Connections {
 		fmt.Fprintf(os.Stdout, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", connection.Process, traceDestinationLabel(connection), connection.Result, traceOptional(connection.ConnectMS, "%dms"), traceBytes(connection.TXBytes), traceBytes(connection.RXBytes), traceOptional(connection.Retransmissions, "%d"), traceOptional(connection.Reset, "%t"))
+		if connection.RTTUS != nil || connection.AcceptLatencyMS != nil {
+			fmt.Fprintf(os.Stdout, "  diagnostics: rtt=%s rttvar=%s cwnd=%s ssthresh=%s unacked=%s lost=%s zero-window=%s accept=%s queue=%s/%s\n", traceOptional(connection.RTTUS, "%dus"), traceOptional(connection.RTTVarUS, "%dus"), traceOptional(connection.CWND, "%d"), traceOptional(connection.SSThresh, "%d"), traceOptional(connection.Unacked, "%d"), traceOptional(connection.Lost, "%d"), traceOptional(connection.ZeroWindow, "%t"), traceOptional(connection.AcceptLatencyMS, "%.3fms"), traceOptional(connection.AcceptQueueUsed, "%d"), traceOptional(connection.AcceptQueueMax, "%d"))
+		}
 	}
 	if report.ConnectionsOmitted > 0 {
 		fmt.Fprintf(os.Stdout, "%d earlier closed connections are not listed. The totals include them.\n", report.ConnectionsOmitted)
@@ -699,6 +732,16 @@ func printTCPTraceGroups(rows []tcpTraceGroupRow) {
 			connect = traceOptional(traceObserved(row.connectTotalMS/int64(row.connectCount)), "%dms")
 		}
 		fmt.Fprintf(os.Stdout, "%s\t%s\t%d\t%d\t%d\t%d\t%s\t%s\t%s\t%s\t%s\n", row.process, traceSummaryPeerLabel(row.peer, row.hostname, row.server), row.connections, row.established, row.incomplete, row.existing, connect, traceBytes(row.TXBytes), traceBytes(row.RXBytes), traceOptional(traceObserved(row.retransmissions), "%d"), traceOptional(traceObserved(row.resets), "%d"))
+		if row.rttCount > 0 || row.lost != 0 || row.zeroWindow || row.acceptCount > 0 {
+			rtt, accept := "-", "-"
+			if row.rttCount > 0 {
+				rtt = fmt.Sprintf("%dus", row.rttTotalUS/uint64(row.rttCount))
+			}
+			if row.acceptCount > 0 {
+				accept = fmt.Sprintf("%.3fms", float64(row.acceptTotalNS/uint64(row.acceptCount))/float64(time.Millisecond))
+			}
+			fmt.Fprintf(os.Stdout, "  diagnostics: rtt=%s lost=%d zero-window=%t accept=%s\n", rtt, row.lost, row.zeroWindow, accept)
+		}
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"maps"
 	"net/netip"
 	"os"
@@ -86,10 +87,38 @@ func TestTraceTargetFromArguments(t *testing.T) {
 	}
 }
 
+func TestInetCskAcceptArgumentCountFollowsTheKernelABI(t *testing.T) {
+	for _, test := range []struct {
+		params int
+		ok     bool
+	}{{2, true}, {4, true}, {3, false}} {
+		params := make([]btf.FuncParam, test.params)
+		for i := range params {
+			params[i] = btf.FuncParam{Name: fmt.Sprintf("arg%d", i), Type: &btf.Int{Name: "int", Size: 4}}
+		}
+		builder, err := btf.NewBuilder([]btf.Type{&btf.Func{Name: "inet_csk_accept", Type: &btf.FuncProto{Return: &btf.Void{}, Params: params}, Linkage: btf.GlobalFunc}}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw, err := builder.Marshal(nil, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		spec, err := btf.LoadSpecFromReader(bytes.NewReader(raw))
+		if err != nil {
+			t.Fatal(err)
+		}
+		count, err := inetCskAcceptArgumentCount(spec)
+		if (err == nil) != test.ok || (test.ok && count != test.params) {
+			t.Fatalf("%d params: count = %d, err = %v", test.params, count, err)
+		}
+	}
+}
+
 func TestCaptureAttachmentsFollowTheProtocol(t *testing.T) {
 	tcpTracepoints := []string{"sock/inet_sock_set_state", "tcp/tcp_retransmit_skb", "tcp/tcp_send_reset", "tcp/tcp_receive_reset", "tcp/tcp_destroy_sock", "sock/sock_send_length", "sock/sock_recv_length"}
 	udpSend := []string{"fentry/udp_send_skb", "fexit/udp_send_skb", "fentry/udp_v6_send_skb", "fexit/udp_v6_send_skb"}
-	tcpAccept := []string{"fentry/inet_csk_accept", "fexit/tcp_create_openreq_child"}
+	tcpAccept := []string{"fentry/inet_csk_accept", "fexit/inet_csk_accept", "fexit/tcp_create_openreq_child"}
 	for _, test := range []struct {
 		protocol    string
 		tracepoints []string
@@ -102,7 +131,7 @@ func TestCaptureAttachmentsFollowTheProtocol(t *testing.T) {
 		// DNS 질의는 UDP 송신 hook이, 응답은 skb_consume_udp가, port 53 TCP 연결은 inet_sock_set_state가 알린다.
 		// 수신 큐 hook은 DNS 응답 시간을 나누는 데만 쓴다.
 		// DNS over TCP의 message는 HTTP와 같은 TCP 송수신 hook이 읽는다.
-		{"dns", []string{"sock/inet_sock_set_state"}, append(append(append([]string{}, udpSend...), "fentry/__udp_enqueue_schedule_skb", "fentry/skb_consume_udp", "fentry/tcp_sendmsg", "fentry/tcp_recvmsg", "fexit/tcp_recvmsg", "tp_btf/tcp_destroy_sock"), tcpAccept...)},
+		{"dns", []string{"sock/inet_sock_set_state"}, append(append(append([]string{}, udpSend...), "fentry/__udp_enqueue_schedule_skb", "fentry/skb_consume_udp", "fentry/tcp_sendmsg", "fentry/tcp_recvmsg", "fexit/tcp_recvmsg", "tp_btf/tcp_destroy_sock"), "fentry/inet_csk_accept", "fexit/tcp_create_openreq_child")},
 		// HTTP는 TCP 송수신의 사용자 버퍼를 읽고, 끝난 socket의 짝짓기 상태를 tp_btf/tcp_destroy_sock으로 지운다.
 		{"http", []string{}, []string{"fentry/skb_consume_udp", "fentry/tcp_sendmsg", "fentry/tcp_recvmsg", "fexit/tcp_recvmsg", "tp_btf/tcp_destroy_sock"}},
 		// MySQL 송신은 완료한 byte 수만 읽고, 끝난 socket의 상태도 지운다.

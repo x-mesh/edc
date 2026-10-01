@@ -144,7 +144,7 @@ command:
       - "A PCAP file can hold credentials and personal data."
       - "The JSON redaction does not apply to the PCAP payload."
   trace:
-    summary: "Trace network, socket, drop, and scheduler events"
+    summary: "Trace network, I/O, socket, drop, and scheduler events"
     option:
       duration: "trace time, max 60s. Omit for Ctrl-C"
       slow: "mysql only: first response latency threshold"
@@ -161,6 +161,7 @@ command:
       port: "http: only this port. mysql: server port, 3306"
       container: "only this docker container, by name or ID"
       reason: "trace drop: only these reasons, comma separated"
+      device: "trace io: block device major:minor"
     notes:
       - "The default output opens a full-screen trace view in a terminal."
       - "Use / to filter process, destination, event, or source text."
@@ -173,6 +174,7 @@ command:
       - "trace http: v shows payload lines, m shows secrets, z decodes gzip."
       - "Press Tab for the next view and Shift+Tab for the previous view."
       - "Use --group-by source, target, port, process, or event for grouped rows."
+      - "trace io groups rows by device, process, cgroup, or event."
       - "Grouped rows label the event count rate EVENT/s and show payload traffic."
       - "B/s is a byte rate. bps and Mbps are bit rates. Mbps is bps / 1,000,000."
       - "Press Ctrl-C to stop a trace without --duration."

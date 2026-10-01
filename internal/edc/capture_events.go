@@ -674,7 +674,7 @@ func (summarizer *tcpTraceSummarizer) report(summary captureSummary, duration ti
 			connection.Lost = &connection.lost
 		}
 		if connection.tcpValid&64 != 0 {
-			connection.ZeroWindow = traceObserved(connection.zeroWindow)
+			connection.ZeroWindow = &connection.zeroWindow
 		}
 		if connection.acceptLatencyNS != 0 {
 			value := float64(connection.acceptLatencyNS) / float64(time.Millisecond)

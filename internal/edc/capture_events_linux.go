@@ -179,9 +179,6 @@ func captureTraceHooksAvailable() error {
 			return errors.New(T(hook.message, hook.name))
 		}
 	}
-	if _, err := inetCskAcceptArgumentCount(kernel); err != nil {
-		return err
-	}
 	return nil
 }
 
@@ -191,7 +188,7 @@ func inetCskAcceptArgumentCount(spec *btf.Spec) (int, error) {
 		return 0, fmt.Errorf("find inet_csk_accept in kernel BTF: %w", err)
 	}
 	prototype, ok := btf.UnderlyingType(function.Type).(*btf.FuncProto)
-	if !ok || len(prototype.Params) != 2 {
+	if !ok || (len(prototype.Params) != 2 && len(prototype.Params) != 4) {
 		return 0, fmt.Errorf("unsupported inet_csk_accept argument count: %d", len(prototype.Params))
 	}
 	return len(prototype.Params), nil
@@ -430,6 +427,14 @@ func loadCaptureEventsFor(scope traceScope, objects *captureEventsObjects) error
 	if err != nil {
 		return err
 	}
+	kernel, err := btf.LoadKernelSpec()
+	if err != nil {
+		return fmt.Errorf("read kernel BTF: %w", err)
+	}
+	acceptArgs, err := inetCskAcceptArgumentCount(kernel)
+	if err != nil {
+		return err
+	}
 	flag := func(on bool) uint8 {
 		if on {
 			return 1
@@ -462,6 +467,18 @@ func loadCaptureEventsFor(scope traceScope, objects *captureEventsObjects) error
 	spec.Programs["tcp_recvmsg_exit"].Name = "tcp_recvmsg_exit"
 	spec.Programs["tcp_recvmsg_exit_legacy"] = recvSpec.Copy()
 	spec.Programs["tcp_recvmsg_exit_legacy"].Name = "tcp_recvmsg_exit_legacy"
+	selected = "inet_csk_accept_exit"
+	if acceptArgs == 4 {
+		selected = "inet_csk_accept_exit_legacy"
+	}
+	acceptSpec := spec.Programs[selected]
+	if acceptSpec == nil {
+		return fmt.Errorf("missing eBPF program %s", selected)
+	}
+	spec.Programs["inet_csk_accept_exit"] = acceptSpec.Copy()
+	spec.Programs["inet_csk_accept_exit"].Name = "inet_csk_accept_exit"
+	spec.Programs["inet_csk_accept_exit_legacy"] = acceptSpec.Copy()
+	spec.Programs["inet_csk_accept_exit_legacy"].Name = "inet_csk_accept_exit_legacy"
 	return spec.LoadAndAssign(objects, nil)
 }
 

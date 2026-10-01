@@ -335,8 +335,10 @@ int inet_sock_set_state(struct inet_sock_set_state_ctx *ctx) {
 	}
 	apply_sock_owner(event);
 	if (ctx->newstate == TCP_ESTABLISHED) {
+		// 5.15 verifier는 ring buffer 메모리를 map key로 받지 않는다.
+		__u64 skaddr = event->skaddr;
 		__u64 established_at = event->timestamp_ns;
-		bpf_map_update_elem(&tcp_established_at, &event->skaddr, &established_at, BPF_ANY);
+		bpf_map_update_elem(&tcp_established_at, &skaddr, &established_at, BPF_ANY);
 	}
 	// listen socket은 tcp_destroy_sock을 거치지 않으므로 닫힐 때 여기서 지운다.
 	if (ctx->oldstate == TCP_LISTEN && ctx->newstate == TCP_CLOSE) {
@@ -1024,10 +1026,8 @@ int inet_csk_accept_entry(__u64 *ctx) {
 	return 0;
 }
 
-SEC("fexit/inet_csk_accept")
-int inet_csk_accept_exit(__u64 *ctx) {
+static __always_inline int finish_inet_csk_accept(__u64 *ctx, struct sock *child) {
 	struct sock *listener = (struct sock *)ctx[0];
-	struct sock *child = (struct sock *)ctx[2];
 	if (!listener || !child) {
 		return 0;
 	}
@@ -1049,6 +1049,18 @@ int inet_csk_accept_exit(__u64 *ctx) {
 	finish_event(event);
 	bpf_map_delete_elem(&tcp_established_at, &child_key);
 	return 0;
+}
+
+// inet_csk_accept는 6.17에서 (sk, arg) 두 인자를, 5.15에서 (sk, flags, err, kern) 네 인자를 받는다. fexit의 반환값은
+// 인자 뒤에 오고 verifier는 없는 인자 위치를 거부하므로, 사용자 공간이 kernel BTF를 보고 둘 중 하나를 고른다.
+SEC("fexit/inet_csk_accept")
+int inet_csk_accept_exit(__u64 *ctx) {
+	return finish_inet_csk_accept(ctx, (struct sock *)ctx[2]);
+}
+
+SEC("fexit/inet_csk_accept")
+int inet_csk_accept_exit_legacy(__u64 *ctx) {
+	return finish_inet_csk_accept(ctx, (struct sock *)ctx[4]);
 }
 
 // 경로가 없는 IPv6 connect()는 SYN_SENT 전에 실패하고, socket을 닫을 때 tcp_destroy만 남긴다. connect()는 부른

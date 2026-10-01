@@ -8,6 +8,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"maps"
 	"net/netip"
 	"os"
@@ -86,14 +87,31 @@ func TestTraceTargetFromArguments(t *testing.T) {
 	}
 }
 
-func TestInetCskAcceptArgumentCountRejectsUnsupportedABI(t *testing.T) {
-	spec, err := btf.LoadKernelSpec()
-	if err != nil {
-		t.Skipf("kernel BTF is unavailable: %v", err)
-	}
-	count, err := inetCskAcceptArgumentCount(spec)
-	if err != nil || count != 2 {
-		t.Fatalf("inet_csk_accept ABI = %d, %v", count, err)
+func TestInetCskAcceptArgumentCountFollowsTheKernelABI(t *testing.T) {
+	for _, test := range []struct {
+		params int
+		ok     bool
+	}{{2, true}, {4, true}, {3, false}} {
+		params := make([]btf.FuncParam, test.params)
+		for i := range params {
+			params[i] = btf.FuncParam{Name: fmt.Sprintf("arg%d", i), Type: &btf.Int{Name: "int", Size: 4}}
+		}
+		builder, err := btf.NewBuilder([]btf.Type{&btf.Func{Name: "inet_csk_accept", Type: &btf.FuncProto{Return: &btf.Void{}, Params: params}, Linkage: btf.GlobalFunc}}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw, err := builder.Marshal(nil, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		spec, err := btf.LoadSpecFromReader(bytes.NewReader(raw))
+		if err != nil {
+			t.Fatal(err)
+		}
+		count, err := inetCskAcceptArgumentCount(spec)
+		if (err == nil) != test.ok || (test.ok && count != test.params) {
+			t.Fatalf("%d params: count = %d, err = %v", test.params, count, err)
+		}
 	}
 }
 

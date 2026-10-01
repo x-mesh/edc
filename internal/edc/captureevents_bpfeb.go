@@ -151,6 +151,7 @@ const (
 	captureEventsProgHttpTcpDestroySock        = "http_tcp_destroy_sock"
 	captureEventsProgInetCskAcceptEntry        = "inet_csk_accept_entry"
 	captureEventsProgInetCskAcceptExit         = "inet_csk_accept_exit"
+	captureEventsProgInetCskAcceptExitLegacy   = "inet_csk_accept_exit_legacy"
 	captureEventsProgInetSockSetState          = "inet_sock_set_state"
 	captureEventsProgInetStreamConnectEntry    = "inet_stream_connect_entry"
 	captureEventsProgSkbConsumeUdpEntry        = "skb_consume_udp_entry"
@@ -231,6 +232,7 @@ type captureEventsProgramSpecs struct {
 	HttpTcpDestroySock        *ebpf.ProgramSpec `ebpf:"http_tcp_destroy_sock"`
 	InetCskAcceptEntry        *ebpf.ProgramSpec `ebpf:"inet_csk_accept_entry"`
 	InetCskAcceptExit         *ebpf.ProgramSpec `ebpf:"inet_csk_accept_exit"`
+	InetCskAcceptExitLegacy   *ebpf.ProgramSpec `ebpf:"inet_csk_accept_exit_legacy"`
 	InetSockSetState          *ebpf.ProgramSpec `ebpf:"inet_sock_set_state"`
 	InetStreamConnectEntry    *ebpf.ProgramSpec `ebpf:"inet_stream_connect_entry"`
 	SkbConsumeUdpEntry        *ebpf.ProgramSpec `ebpf:"skb_consume_udp_entry"`
@@ -381,6 +383,7 @@ type captureEventsPrograms struct {
 	HttpTcpDestroySock        *ebpf.Program `ebpf:"http_tcp_destroy_sock"`
 	InetCskAcceptEntry        *ebpf.Program `ebpf:"inet_csk_accept_entry"`
 	InetCskAcceptExit         *ebpf.Program `ebpf:"inet_csk_accept_exit"`
+	InetCskAcceptExitLegacy   *ebpf.Program `ebpf:"inet_csk_accept_exit_legacy"`
 	InetSockSetState          *ebpf.Program `ebpf:"inet_sock_set_state"`
 	InetStreamConnectEntry    *ebpf.Program `ebpf:"inet_stream_connect_entry"`
 	SkbConsumeUdpEntry        *ebpf.Program `ebpf:"skb_consume_udp_entry"`
@@ -409,6 +412,7 @@ func (p *captureEventsPrograms) Close() error {
 		p.HttpTcpDestroySock,
 		p.InetCskAcceptEntry,
 		p.InetCskAcceptExit,
+		p.InetCskAcceptExitLegacy,
 		p.InetSockSetState,
 		p.InetStreamConnectEntry,
 		p.SkbConsumeUdpEntry,

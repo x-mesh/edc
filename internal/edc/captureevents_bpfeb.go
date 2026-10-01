@@ -71,6 +71,8 @@ type captureEventsHttpRecvPending struct {
 	Skaddr uint64
 	Buffer uint64
 	Limit  uint64
+	Iov    uint64
+	NrSegs uint64
 }
 
 type captureEventsHttpSendPending struct {

@@ -22,7 +22,13 @@ Install the latest release with the script. It reads the operating system and th
 curl -fsSL https://raw.githubusercontent.com/x-mesh/edc/main/install.sh | sh
 ```
 
-The script installs `edc` in `/usr/local/bin` on Linux and in `~/.local/bin` on macOS. On Linux, `trace` and `capture` need root. `sudo` finds commands only in its own `PATH`, and that `PATH` includes `/usr/local/bin` but not `~/.local/bin`. If you cannot write to the install directory, the script uses `sudo` to copy the binary. Set `BINDIR` for another directory, for example `~/.local/bin` to install without `sudo`. Set `EDC_VERSION` for an earlier version.
+The script installs `edc` in `/usr/local/bin` on Linux and in `~/.local/bin` on macOS.
+
+On Linux, `trace` and `capture` need root. The `sudo` path includes `/usr/local/bin`, but it often excludes `~/.local/bin`.
+
+If a non-root user cannot write there, the script uses `sudo`. If root cannot write there on Linux, the script uses `~/.local/bin`.
+
+Set `BINDIR` to use another directory. Set `EDC_VERSION` to install an earlier version.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/x-mesh/edc/main/install.sh | BINDIR="$HOME/.local/bin" sh

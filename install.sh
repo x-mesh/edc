@@ -51,7 +51,9 @@ esac
 
 # On Linux, trace and capture need root. sudo uses secure_path, which does not include ~/.local/bin, so
 # edc goes where sudo and every user find the same binary.
+bindir_is_default=0
 if [ -z "${BINDIR:-}" ]; then
+	bindir_is_default=1
 	case "$os" in
 	linux) BINDIR=/usr/local/bin ;;
 	*) BINDIR="$HOME/.local/bin" ;;
@@ -107,21 +109,28 @@ writable_dir() {
 	while [ ! -d "$dir" ]; do
 		dir=$(dirname "$dir")
 	done
-	[ -w "$dir" ]
+	probe=$(mktemp "$dir/.edc-write-test.XXXXXX" 2>/dev/null) || return 1
+	rm -f "$probe" || return 1
 }
 
 elevate=""
 if ! writable_dir "$BINDIR"; then
 	if [ "$(id -u)" = 0 ]; then
-		fail "cannot write to $BINDIR"
+		if [ "$os" = linux ] && [ "$bindir_is_default" = 1 ] && [ -n "${HOME:-}" ] && writable_dir "$HOME/.local/bin"; then
+			echo "cannot write to $BINDIR; installing to $HOME/.local/bin instead"
+			BINDIR="$HOME/.local/bin"
+		else
+			fail "cannot write to $BINDIR"
+		fi
+	else
+		command -v sudo >/dev/null 2>&1 || fail "cannot write to $BINDIR. Run the installer as root, or set BINDIR=\$HOME/.local/bin"
+		echo "installing to $BINDIR with sudo"
+		# Check sudo with a command, not with sudo -v. By default sudo -v asks for a password unless every sudoers rule of
+		# the user has NOPASSWD, so it fails for the Ubuntu cloud user, whose NOPASSWD rule comes after "%sudo ALL=(ALL:ALL) ALL".
+		# If a rule needs a password, sudo asks once from the terminal, also with curl | sh, and the copy steps reuse it.
+		sudo true || fail "sudo failed. Run the installer as root, or set BINDIR=\$HOME/.local/bin"
+		elevate="sudo"
 	fi
-	command -v sudo >/dev/null 2>&1 || fail "cannot write to $BINDIR. Run the installer as root, or set BINDIR=\$HOME/.local/bin"
-	echo "installing to $BINDIR with sudo"
-	# Check sudo with a command, not with sudo -v. By default sudo -v asks for a password unless every sudoers rule of
-	# the user has NOPASSWD, so it fails for the Ubuntu cloud user, whose NOPASSWD rule comes after "%sudo ALL=(ALL:ALL) ALL".
-	# If a rule needs a password, sudo asks once from the terminal, also with curl | sh, and the copy steps reuse it.
-	sudo true || fail "sudo failed. Run the installer as root, or set BINDIR=\$HOME/.local/bin"
-	elevate="sudo"
 fi
 
 $elevate mkdir -p "$BINDIR" || fail "cannot create $BINDIR"

@@ -24,7 +24,7 @@ script로 최신 release를 설치합니다. script는 운영체제와 architect
 curl -fsSL https://raw.githubusercontent.com/x-mesh/edc/main/install.sh | sh
 ```
 
-script는 Linux에서는 `edc`를 `/usr/local/bin`에, macOS에서는 `~/.local/bin`에 설치합니다. Linux의 `trace`와 `capture`는 root가 필요한데, `sudo`는 자기 `PATH`에서만 명령을 찾고 그 `PATH`에는 `/usr/local/bin`은 있지만 `~/.local/bin`은 없기 때문입니다. 설치 디렉터리에 쓸 권한이 없으면 script는 실행 파일을 복사할 때만 `sudo`를 씁니다. 다른 디렉터리에 넣으려면 `BINDIR`을 지정합니다. 예를 들어 `~/.local/bin`을 지정하면 `sudo` 없이 설치합니다. 이전 버전을 받으려면 `EDC_VERSION`을 지정합니다.
+script는 Linux에서는 `edc`를 `/usr/local/bin`에, macOS에서는 `~/.local/bin`에 설치합니다. Linux의 `trace`와 `capture`는 root가 필요하고, `sudo`의 `PATH`에는 보통 `/usr/local/bin`만 있기 때문입니다. 일반 사용자가 설치 디렉터리에 쓸 수 없으면 script는 복사할 때만 `sudo`를 씁니다. root가 `/usr/local/bin`에 쓸 수 없으면 `~/.local/bin`으로 전환합니다. 다른 디렉터리를 반드시 사용하려면 `BINDIR`을 지정합니다. 이전 버전을 받으려면 `EDC_VERSION`을 지정합니다.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/x-mesh/edc/main/install.sh | BINDIR="$HOME/.local/bin" sh

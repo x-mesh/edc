@@ -2005,17 +2005,26 @@ int tcp_recvmsg_exit_legacy(__u64 *ctx) {
 SEC("tp_btf/tcp_destroy_sock")
 int http_tcp_destroy_sock(__u64 *ctx) {
 	struct sock *sk = (struct sock *)ctx[0];
-	if (!sk || !((emit_http_messages && http_socket(sk)) || (mysql_port && mysql_socket(sk)) || (emit_dns_tcp_messages && dns_tcp_socket(sk)))) {
+	if (!sk) {
+		return 0;
+	}
+	// 받은 socket은 닫힐 때 local port를 먼저 놓으므로, --port가 있으면 여기서 http_socket이 거짓이 된다. TLS 접두
+	// 상태가 남으면 같은 주소를 다시 쓴 새 연결의 ClientHello를 놓치므로 port와 관계없이 지운다.
+	if (emit_http_messages) {
+		struct http_stream_key key = {.skaddr = (__u64)sk, .direction = HTTP_SENT};
+		bpf_map_delete_elem(&tls_prefixes, &key);
+		key.direction = HTTP_RECEIVED;
+		bpf_map_delete_elem(&tls_prefixes, &key);
+	}
+	if (!((emit_http_messages && http_socket(sk)) || (mysql_port && mysql_socket(sk)) || (emit_dns_tcp_messages && dns_tcp_socket(sk)))) {
 		return 0;
 	}
 	// 머리만 읽은 첫 조각의 표시가 남으면 새 연결의 첫 읽기를 이어지는 조각으로 넘긴다.
 	if (emit_http_messages && http_socket(sk)) {
 		struct http_stream_key key = {.skaddr = (__u64)sk, .direction = HTTP_SENT};
 		bpf_map_delete_elem(&http_streams, &key);
-		bpf_map_delete_elem(&tls_prefixes, &key);
 		key.direction = HTTP_RECEIVED;
 		bpf_map_delete_elem(&http_streams, &key);
-		bpf_map_delete_elem(&tls_prefixes, &key);
 	}
 	struct event *event = start_event(ctx, 5);
 	if (!event) {

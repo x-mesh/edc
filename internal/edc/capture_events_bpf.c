@@ -1121,6 +1121,9 @@ int tcp_create_openreq_child_exit(__u64 *ctx) {
 #define TLS_PREFIX_NON_TLS 1
 #define TLS_PREFIX_CLIENT_HELLO 2
 #define TLS_PREFIX_DONE 3
+// TLS 접두 9 byte는 읽기 하나의 앞쪽 iovec 세 개까지만 따라간다. 바이트마다 펼친 반복이라 개수를 늘리면 verifier 비용이
+// 곱으로 는다. [5, 4, 본문]처럼 record 머리와 handshake 머리를 따로 받는 readv도 세 개면 담긴다.
+#define TLS_SEGMENTS 3
 
 struct http_record {
 	__u64 timestamp_ns;
@@ -1286,9 +1289,47 @@ static __always_inline int tls_client_hello(__u64 buffer, __u64 limit, __u64 at)
 	return limit > at && !bpf_probe_read_user(&type, sizeof(type), (void *)(buffer + at)) && type == TLS_CLIENT_HELLO;
 }
 
-// tls_prefix_client_hello는 이번 buffer가 첫 ClientHello type byte를 줄 때만 true를 돌린다. terminal 상태는 이후
-// TLS 암호문을 새 record로 다시 읽지 않는다.
-static __always_inline int tls_prefix_client_hello(const struct http_stream_key *key, __u64 buffer, __u64 limit, __u64 size, __u64 *output, __u64 *captured, __u8 *handshake) {
+// tls_segments는 이번 읽기의 앞쪽 iovec이다. 0번은 msg_iter의 offset을 뺀 첫 buffer다.
+struct tls_segments {
+	__u64 base[TLS_SEGMENTS];
+	__u64 len[TLS_SEGMENTS];
+};
+
+static __always_inline void tls_read_segments(struct tls_segments *segments, const struct iovec *iov, __u64 nr_segs) {
+	#pragma unroll
+	for (int index = 1; index < TLS_SEGMENTS; index++) {
+		struct iovec vector = {};
+		if (!iov || (__u64)index >= nr_segs || bpf_probe_read_kernel(&vector, sizeof(vector), iov + index)) {
+			return;
+		}
+		segments->base[index] = (__u64)vector.iov_base;
+		segments->len[index] = vector.iov_len;
+	}
+}
+
+// tls_segment_at은 이번 읽기의 at번째 byte가 있는 iovec과 그 주소, 그 iovec에 남은 길이를 돌린다. 앞쪽 iovec을
+// 모두 넘으면 -1이다. at이 앞쪽 iovec의 끝과 같으면 남은 길이 0을 돌려, 호출한 쪽이 다음 iovec으로 넘어가게 한다.
+static __always_inline int tls_segment_at(const struct tls_segments *segments, __u64 at, __u64 *pointer, __u64 *left) {
+	#pragma unroll
+	for (int index = 0; index < TLS_SEGMENTS; index++) {
+		if (at < segments->len[index]) {
+			*pointer = segments->base[index] + at;
+			*left = segments->len[index] - at;
+			return index;
+		}
+		at -= segments->len[index];
+	}
+	if (at == 0) {
+		*pointer = segments->base[TLS_SEGMENTS - 1] + segments->len[TLS_SEGMENTS - 1];
+		*left = 0;
+		return TLS_SEGMENTS - 1;
+	}
+	return -1;
+}
+
+// tls_prefix_client_hello는 이번 읽기가 첫 ClientHello type byte를 줄 때만 true를 돌린다. terminal 상태는 이후
+// TLS 암호문을 새 record로 다시 읽지 않는다. 위치는 첫 iovec 길이가 아니라 이번 읽기의 byte 수(size)로 옮긴다.
+static __always_inline int tls_prefix_client_hello(const struct http_stream_key *key, const struct tls_segments *segments, __u64 size, __u64 *output, __u64 *captured, __u8 *handshake) {
 	struct tls_prefix next = {};
 	struct tls_prefix *stored = bpf_map_lookup_elem(&tls_prefixes, key);
 	if (stored) {
@@ -1299,7 +1340,7 @@ static __always_inline int tls_prefix_client_hello(const struct http_stream_key 
 			if (stored->offset >= stored->hello_end) {
 				return 0;
 			}
-			__u64 available = size < limit ? size : limit;
+			__u64 available = size;
 			__u64 remaining = stored->hello_end - stored->offset;
 			if (available > remaining) {
 				available = remaining;
@@ -1319,8 +1360,7 @@ static __always_inline int tls_prefix_client_hello(const struct http_stream_key 
 	if (next.count >= TLS_PREFIX_SIZE) {
 		return 0;
 	}
-	__u64 readable = size < limit ? size : limit;
-	__u64 available = readable;
+	__u64 available = size;
 	if (available > TLS_PREFIX_SIZE - next.count) {
 		available = TLS_PREFIX_SIZE - next.count;
 	}
@@ -1330,8 +1370,13 @@ static __always_inline int tls_prefix_client_hello(const struct http_stream_key 
 			break;
 		}
 		__u8 byte = 0;
-		if (bpf_probe_read_user(&byte, sizeof(byte), (void *)(buffer + index))) {
-			break;
+		__u64 pointer = 0;
+		__u64 left = 0;
+		// 읽지 못한 byte를 건너뛰면 다음 읽기의 byte를 이 자리에 이어 붙이게 된다. 그 socket은 더 따라가지 않는다.
+		if (tls_segment_at(segments, index, &pointer, &left) < 0 || !left || bpf_probe_read_user(&byte, sizeof(byte), (void *)pointer)) {
+			next.terminal = TLS_PREFIX_NON_TLS;
+			bpf_map_update_elem(&tls_prefixes, key, &next, BPF_ANY);
+			return 0;
 		}
 		__u8 position = next.count;
 		if (position == 0) {
@@ -1382,7 +1427,7 @@ static __always_inline int tls_prefix_client_hello(const struct http_stream_key 
 				next.hello_end = TLS_HELLO_SIZE;
 			}
 			__u64 consumed = index + 1;
-			__u64 body = readable - consumed;
+			__u64 body = size - consumed;
 			if (body > next.hello_end - TLS_HANDSHAKE_HEADER_SIZE) {
 				body = next.hello_end - TLS_HANDSHAKE_HEADER_SIZE;
 			}
@@ -1475,31 +1520,36 @@ static __always_inline void http_capture(struct sock *sk, __u64 buffer, __u64 li
 	__u64 budget = http_payload_limit;
 	__u8 tls_handshake[TLS_HANDSHAKE_HEADER_SIZE] = {};
 	int tls_synthetic = 0;
+	__u64 segment = 0;
 	// 모든 TCP 송수신이 여기를 지나므로 이어 받을 조각이 있는 socket에서만 map에 값이 있다. 이어 받는 조각을 TLS 판별보다
 	// 먼저 보므로, 0x16 0x03으로 시작하는 HTTP body 조각을 TLS로 읽지 않는다.
 	__u64 *seen = start ? 0 : bpf_map_lookup_elem(&http_streams, &key);
 	if (!start && !seen) {
 		__u64 tls_offset = 0;
 		__u64 tls_captured = 0;
-		int tls = tls_prefix_client_hello(&key, buffer, limit, size, &tls_offset, &tls_captured, tls_handshake);
+		struct tls_segments segments = {.base = {buffer}, .len = {limit}};
+		tls_read_segments(&segments, iov, nr_segs);
+		int tls = tls_prefix_client_hello(&key, &segments, size, &tls_offset, &tls_captured, tls_handshake);
 		if (!tls) {
 			return;
 		}
 		if (tls == 1) {
-			buffer += tls_offset;
-			limit = tls_captured;
+			// 본문은 접두가 끝난 byte부터 시작한다. 그 byte는 첫 iovec이 아닐 수 있다.
+			int at = tls_segment_at(&segments, tls_offset, &buffer, &limit);
+			if (at < 0) {
+				return;
+			}
+			segment = at;
 			size = tls_captured;
 			offset = TLS_HANDSHAKE_HEADER_SIZE;
 			kind = HTTP_CONTINUATION;
 			tls_synthetic = 1;
 		} else {
-			limit = tls_captured;
 			size = tls_captured;
 			offset = tls_offset;
 			kind = HTTP_CONTINUATION;
 		}
 		budget = TLS_HELLO_SIZE;
-		iov = 0;
 	} else if (http_message_limit) {
 		budget = http_message_limit;
 		if (!start) {
@@ -1555,7 +1605,7 @@ static __always_inline void http_capture(struct sock *sk, __u64 buffer, __u64 li
 	cursor->left = limit;
 	cursor->remaining = size < budget ? size : budget;
 	cursor->offset = offset;
-	cursor->segment = 0;
+	cursor->segment = segment;
 	cursor->iov = (__u64)iov;
 	cursor->nr_segs = nr_segs;
 	cursor->kind = kind;
@@ -1882,7 +1932,9 @@ int tcp_sendmsg_entry(__u64 *ctx) {
 		return 0;
 	}
 	if (!http_message_limit) {
-		http_capture(sk, (__u64)buffer, limit, 0, 1, size, HTTP_SENT);
+		__u64 nr_segs = 1;
+		const struct iovec *iov = http_iov(msg, &nr_segs);
+		http_capture(sk, (__u64)buffer, limit, iov, nr_segs, size, HTTP_SENT);
 		return 0;
 	}
 	struct http_send_pending pending = {.skaddr = (__u64)sk, .buffer = (__u64)buffer, .limit = limit, .nr_segs = 1};
@@ -1934,6 +1986,8 @@ struct http_recv_pending {
 	__u64 skaddr;
 	__u64 buffer;
 	__u64 limit;
+	__u64 iov;
+	__u64 nr_segs;
 };
 
 struct {
@@ -1954,12 +2008,14 @@ int tcp_recvmsg_entry(__u64 *ctx) {
 	if (!sk || !((emit_dns_tcp_messages && dns_tcp_socket(sk)) || (emit_http_messages && http_socket(sk)) || (mysql_port && mysql_socket(sk)))) {
 		return 0;
 	}
-	struct http_recv_pending pending = {.skaddr = ctx[0]};
+	struct http_recv_pending pending = {.skaddr = ctx[0], .nr_segs = 1};
 	void *buffer = http_user_buffer((struct msghdr *)ctx[1], &pending.limit);
 	if (!buffer) {
 		return 0;
 	}
 	pending.buffer = (__u64)buffer;
+	// readv와 recvmsg는 받은 byte를 여러 iovec에 나눠 담는다. 첫 iovec만 읽으면 그 뒤의 byte를 놓친다.
+	pending.iov = (__u64)http_iov((struct msghdr *)ctx[1], &pending.nr_segs);
 	__u64 key = bpf_get_current_pid_tgid();
 	bpf_map_update_elem(&http_recv_pending, &key, &pending, BPF_ANY);
 	return 0;
@@ -1982,7 +2038,7 @@ static __always_inline int finish_tcp_recvmsg(__u64 *ctx, int copied) {
 				emit_mysql_buffer(sk, pending->buffer, pending->limit, (__u64)copied, HTTP_RECEIVED, side == MYSQL_SERVER);
 			}
 		} else if (emit_http_messages) {
-			http_capture(sk, pending->buffer, pending->limit, 0, 1, (__u64)copied, HTTP_RECEIVED);
+			http_capture(sk, pending->buffer, pending->limit, (const struct iovec *)pending->iov, pending->nr_segs, (__u64)copied, HTTP_RECEIVED);
 		}
 	}
 	bpf_map_delete_elem(&http_recv_pending, &key);

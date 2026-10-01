@@ -147,7 +147,7 @@ command:
     summary: "Trace network, I/O, socket, drop, and scheduler events"
     option:
       duration: "trace time, max 60s. Omit for Ctrl-C"
-      slow: "mysql only: first response latency threshold"
+      slow: "min latency: mysql first response, io 1ms default"
       raw: "print raw event JSONL"
       live: "compatibility flag. Trace is live by default"
       group_by: "group by source, target, port, process, or event"

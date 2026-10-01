@@ -25,6 +25,7 @@ const (
 // the common trace flags to this type when it registers trace io.
 type ioTraceOptions struct {
 	duration  time.Duration
+	slow      time.Duration
 	process   string
 	container *traceContainer
 	device    string
@@ -179,6 +180,7 @@ func runIOTrace(args []string) int {
 	set := flag.NewFlagSet("trace io", flag.ContinueOnError)
 	set.SetOutput(os.Stderr)
 	set.DurationVar(&options.duration, "duration", 0, "trace duration")
+	set.DurationVar(&options.slow, "slow", ioLatencyThreshold, "minimum request latency")
 	set.StringVar(&options.process, "process", "", "process name")
 	set.StringVar(&options.device, "device", "", "block device major:minor")
 	set.StringVar(&options.groupBy, "group-by", "", "device, process, cgroup, or event")
@@ -196,6 +198,10 @@ func runIOTrace(args []string) int {
 	}
 	if options.duration < 0 || options.duration > maxCaptureDuration {
 		fmt.Fprintln(os.Stderr, T("cli.trace.duration_range"))
+		return 2
+	}
+	if options.slow <= 0 {
+		fmt.Fprintln(os.Stderr, T("cli.trace.slow_range"))
 		return 2
 	}
 	if options.raw && options.jsonPath != "" {

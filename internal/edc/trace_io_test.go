@@ -89,6 +89,19 @@ func TestTraceIORejectsIrrelevantOptions(t *testing.T) {
 	}
 }
 
+func TestTraceIORejectsANonPositiveSlowThreshold(t *testing.T) {
+	for _, value := range []string{"0", "-1ms"} {
+		stderr := captureTraceStderr(t, func() {
+			if code := runIOTrace([]string{"--slow", value}); code != 2 {
+				t.Fatalf("--slow %s code = %d", value, code)
+			}
+		})
+		if !bytes.Contains([]byte(stderr), []byte("--slow")) {
+			t.Fatalf("--slow %s stderr = %q", value, stderr)
+		}
+	}
+}
+
 func TestIOOptionsMatchProcessDeviceAndContainer(t *testing.T) {
 	options := ioTraceOptions{process: "postgres", device: "8:0", container: &traceContainer{cgroups: map[uint64]bool{42: true}}}
 	if !options.matches(ioEvent{Process: "postgres", Device: "8:0", CgroupID: 42}) {

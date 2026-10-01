@@ -886,3 +886,24 @@ func TestCaptureCapabilityErrorNamesTheMissingCapabilities(t *testing.T) {
 		t.Fatalf("root error = %v", err)
 	}
 }
+
+func TestTraceCapabilityErrorNamesTheTraceAndTheRootCommand(t *testing.T) {
+	command := rootCommand("/home/ubuntu/.local/bin/edc", []string{"trace", "io"})
+	previousEuid := captureGeteuid
+	t.Cleanup(func() { captureGeteuid = previousEuid })
+
+	captureGeteuid = func() int { return 1000 }
+	err := traceCapabilityError(bpfTraceCapabilities, map[int]bool{}, "trace io", command)
+	if err == nil || !strings.Contains(err.Error(), "CAP_BPF, CAP_PERFMON for trace io") || strings.Contains(err.Error(), "CAP_NET_ADMIN") || !strings.Contains(err.Error(), "sudo /home/ubuntu/.local/bin/edc trace io") {
+		t.Fatalf("error = %v", err)
+	}
+	if err := traceCapabilityError(bpfTraceCapabilities, map[int]bool{capBPF: true, capPerfmon: true}, "trace io", command); err != nil {
+		t.Fatalf("all capabilities are present: %v", err)
+	}
+
+	captureGeteuid = func() int { return 0 }
+	err = traceCapabilityError(bpfTraceCapabilities, map[int]bool{capBPF: true}, "trace sched", command)
+	if err == nil || !strings.Contains(err.Error(), "CAP_PERFMON for trace sched") || strings.Contains(err.Error(), "sudo") || !strings.Contains(err.Error(), "--privileged") {
+		t.Fatalf("root error = %v", err)
+	}
+}

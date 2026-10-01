@@ -319,42 +319,13 @@ func runSchedTraceScreen(options schedTraceOptions) int {
 	return 0
 }
 
+var schedTracepoints = []string{"sched_wakeup", "sched_wakeup_new", "sched_switch", "sched_process_exit"}
+
 func schedTracePrerequisites() error {
-	if _, err := os.Stat("/sys/kernel/btf/vmlinux"); err != nil {
-		return errors.New("Linux BTF is not available")
-	}
-	caps, err := effectiveCapabilities()
-	if err != nil {
-		return err
-	}
-	if !caps[capBPF] || !caps[capPerfmon] {
-		return errors.New("edc needs CAP_BPF and CAP_PERFMON to trace scheduler events")
-	}
-	if err := schedBTFPrerequisites(btf.LoadKernelSpec); err != nil {
-		return err
-	}
-	for _, root := range []string{"/sys/kernel/tracing", "/sys/kernel/debug/tracing"} {
-		ok := true
-		for _, event := range []string{"sched_wakeup", "sched_wakeup_new", "sched_switch"} {
-			if _, err := os.Stat(root + "/events/sched/" + event + "/id"); err != nil {
-				ok = false
-				break
-			}
-		}
-		if ok {
-			return nil
-		}
-	}
-	return errors.New("scheduler tracepoints sched_wakeup, sched_wakeup_new, and sched_switch are unavailable")
+	return traceBPFPrerequisites("trace sched", schedKernelSupported)
 }
 
-type schedBTFLoader func() (*btf.Spec, error)
-
-func schedBTFPrerequisites(load schedBTFLoader) error {
-	spec, err := load()
-	if err != nil {
-		return fmt.Errorf("cannot read Linux BTF for trace sched: %w", err)
-	}
+func schedKernelSupported(spec *btf.Spec) error {
 	for _, required := range []struct {
 		name    string
 		members []string
@@ -366,13 +337,13 @@ func schedBTFPrerequisites(load schedBTFLoader) error {
 	} {
 		var value *btf.Struct
 		if err := spec.TypeByName(required.name, &value); err != nil {
-			return fmt.Errorf("trace sched requires BTF type %s", required.name)
+			return fmt.Errorf("kernel BTF has no type %s", required.name)
 		}
 		if missing := schedMissingBTFMembers(value.Members, required.members); missing != "" {
-			return fmt.Errorf("trace sched requires BTF field %s.%s", required.name, missing)
+			return fmt.Errorf("kernel BTF has no field %s.%s", required.name, missing)
 		}
 	}
-	return nil
+	return traceTracepointsAvailable(spec, schedTracepoints)
 }
 
 func schedMissingBTFMembers(members []btf.Member, required []string) string {

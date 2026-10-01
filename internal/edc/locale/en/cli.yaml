@@ -159,6 +159,9 @@ cli:
     chmod_failed: "capture finished, but the permission change failed: %v"
     done: "capture finished: %s"
   trace:
+    capability_missing: "edc needs %s for %s. Run it as root:\n  %s"
+    capability_missing_root: "edc needs %s for %s. It runs as root, but the process does not have them. In a container, add them with --cap-add or --privileged"
+    unsupported: "%s is not supported on this host: %s"
     plan: "trace network events for %s? [y/N] "
     failed: "network trace failed: %v"
     duration_range: "--duration must be 0s or between 1ns and 60s"

@@ -159,6 +159,9 @@ cli:
     chmod_failed: "capture は終わりましたが権限の設定に失敗しました: %v"
     done: "capture が終わりました: %s"
   trace:
+    capability_missing: "%[2]s には %[1]s が必要です。root で実行してください:\n  %[3]s"
+    capability_missing_root: "%[2]s には %[1]s が必要です。root で実行していますが、process にこの capability がありません。コンテナ内なら --cap-add か --privileged で追加してください"
+    unsupported: "%s はこのホストでは使えません: %s"
     plan: "%s の間 network event を trace しますか? [y/N] "
     failed: "network trace に失敗しました: %v"
     duration_range: "--duration は省略、0 秒、または 1ns から 60 秒の範囲で指定します"

@@ -88,3 +88,23 @@ func TestRunTraceKeepsUsageForAnUnknownProtocol(t *testing.T) {
 		t.Fatalf("stderr = %q", stderr)
 	}
 }
+
+func captureTraceStderr(t *testing.T, run func()) string {
+	t.Helper()
+	file, err := os.CreateTemp(t.TempDir(), "stderr")
+	if err != nil {
+		t.Fatal(err)
+	}
+	previous := os.Stderr
+	os.Stderr = file
+	defer func() { os.Stderr = previous }()
+	run()
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		t.Fatal(err)
+	}
+	data, err := io.ReadAll(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
+}

@@ -8,3 +8,7 @@ import (
 )
 
 func ioTracePrerequisites() error { return fmt.Errorf("trace io requires Linux, not %s", runtime.GOOS) }
+
+func collectIOEvents(ioTraceOptions, func(ioEvent) error, <-chan struct{}) (ioSummary, error) {
+	return ioSummary{}, ioTracePrerequisites()
+}

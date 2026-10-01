@@ -776,6 +776,19 @@ Use `--mode events` on Linux to record TCP socket state, retransmission, reset, 
 
 Use `trace tcp` or `trace udp` on Linux or macOS to print network events as they arrive. The default terminal view scrolls through events. The command runs until you press Ctrl-C. It then prints a summary.
 
+Use `trace io` on Linux to measure block I/O latency. It records queue latency from request insert to issue, service latency from issue to complete, and total latency. It keeps the submitter process and cgroup at request insert. The completion context does not change that attribution.
+
+```bash
+./bin/edc trace io --duration 15s
+./bin/edc trace io --device 8:0 --group-by device
+./bin/edc trace io --process postgres --raw
+./bin/edc trace io --container database --json io.json
+```
+
+`trace io` reports read and write operations, bytes, and average, p95, and maximum queue, service, and total latency. It emits requests at or above 1ms. The summary reports ring loss, pending-map insertion failures, unmatched completions, incomplete requests, and requeues. A request without saved insert and issue state has no invented latency or process owner.
+
+Use `--group-by device`, `--group-by process`, `--group-by cgroup`, or `--group-by event` for I/O reports. `--raw` writes each completed request and then the summary as JSONL. `--json` writes the summary report. `trace io` requires kernel BTF, block request tracepoints, `CAP_BPF`, and `CAP_PERFMON`. It does not require `CAP_NET_ADMIN`.
+
 ```bash
 ./bin/edc trace tcp
 ./bin/edc trace tcp --duration 15s

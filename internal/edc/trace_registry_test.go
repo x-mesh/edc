@@ -17,7 +17,7 @@ func TestTraceProtocolSelectItemsUseRegistryOrder(t *testing.T) {
 		}
 		got = append(got, item.value)
 	}
-	want := []string{"tcp", "udp", "dns", "arp", "ndp", "http", "mysql", "socket", "drop"}
+	want := []string{"tcp", "udp", "dns", "arp", "ndp", "http", "mysql", "io", "socket", "drop"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("protocols = %#v, want %#v", got, want)
 	}
@@ -73,7 +73,7 @@ func TestRunTraceKeepsUsageOutsideTerminals(t *testing.T) {
 			t.Fatalf("code = %d", code)
 		}
 	})
-	if want := "usage: edc trace <tcp|udp|dns|arp|ndp|http|drop|mysql> [options]\nusage: " + traceSocketUsage + "\n"; stderr != want {
+	if want := "usage: edc trace <tcp|udp|dns|arp|ndp|http|drop|mysql|io> [options]\nusage: " + traceSocketUsage + "\n"; stderr != want {
 		t.Fatalf("stderr = %q, want %q", stderr, want)
 	}
 }
@@ -84,7 +84,7 @@ func TestRunTraceKeepsUsageForAnUnknownProtocol(t *testing.T) {
 			t.Fatalf("code = %d", code)
 		}
 	})
-	if !strings.Contains(stderr, "edc trace <tcp|udp|dns|arp|ndp|http|drop|mysql> [options]") {
+	if !strings.Contains(stderr, "edc trace <tcp|udp|dns|arp|ndp|http|drop|mysql|io> [options]") {
 		t.Fatalf("stderr = %q", stderr)
 	}
 }

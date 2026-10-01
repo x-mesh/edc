@@ -11,17 +11,13 @@ import (
 	"time"
 
 	"github.com/cilium/ebpf"
+	"github.com/cilium/ebpf/btf"
 	"github.com/cilium/ebpf/link"
 	"github.com/cilium/ebpf/ringbuf"
 	"github.com/cilium/ebpf/rlimit"
 )
 
-var ioTracepointPaths = []string{
-	"/sys/kernel/tracing/events/block/block_rq_insert",
-	"/sys/kernel/tracing/events/block/block_rq_issue",
-	"/sys/kernel/tracing/events/block/block_rq_complete",
-	"/sys/kernel/tracing/events/block/block_rq_requeue",
-}
+var ioTracepoints = []string{"block_rq_insert", "block_rq_issue", "block_rq_complete", "block_rq_requeue"}
 
 func ioTracePrerequisites() error {
 	if _, err := os.Stat("/sys/kernel/btf/vmlinux"); err != nil {
@@ -39,9 +35,20 @@ func ioTracePrerequisites() error {
 			return fmt.Errorf("trace io requires %s", capability.name)
 		}
 	}
-	for _, path := range ioTracepointPaths {
-		if _, err := os.Stat(path); err != nil {
-			return fmt.Errorf("trace io requires block tracepoint %s: %w", path, err)
+	// tp_btf는 tracefs가 아니라 kernel BTF의 btf_trace_<tracepoint>로 붙는다. tracefs 경로를 보면 tracefs를 mount하지
+	// 않은 container에서 붙을 수 있는데도 멈춘다.
+	kernel, err := btf.LoadKernelSpec()
+	if err != nil {
+		return fmt.Errorf("trace io requires kernel BTF: %w", err)
+	}
+	return ioTracepointsAvailable(kernel)
+}
+
+func ioTracepointsAvailable(kernel *btf.Spec) error {
+	for _, name := range ioTracepoints {
+		var typedef *btf.Typedef
+		if err := kernel.TypeByName("btf_trace_"+name, &typedef); err != nil {
+			return fmt.Errorf("trace io requires block tracepoint %s: %w", name, err)
 		}
 	}
 	return nil
@@ -59,7 +66,7 @@ func collectIOEvents(options ioTraceOptions, onEvent func(ioEvent) error, stop <
 	if err := spec.Assign(&variables); err != nil {
 		return ioSummary{}, fmt.Errorf("load eBPF variables: %w", err)
 	}
-	if err := variables.MinimumLatencyNs.Set(uint64(ioLatencyThreshold)); err != nil {
+	if err := variables.MinimumLatencyNs.Set(uint64(options.slow)); err != nil {
 		return ioSummary{}, fmt.Errorf("set latency threshold: %w", err)
 	}
 	clockOffset, err := captureClockOffset()

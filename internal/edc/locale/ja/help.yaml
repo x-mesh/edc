@@ -147,7 +147,7 @@ command:
     summary: "network、I/O、socket、drop、scheduler を表示・要約"
     option:
       duration: "trace 時間、最大 60s。省略で Ctrl-C"
-      slow: "mysql のみ。最初の応答 latency がこの時間以上"
+      slow: "最小 latency。mysql は最初の応答、io は既定 1ms"
       raw: "raw event JSONL を表示"
       live: "互換 flag。trace は既定でリアルタイムに実行"
       group_by: "source、target、port、process、event でまとめます"

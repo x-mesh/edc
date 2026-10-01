@@ -3,9 +3,42 @@
 package edc
 
 import (
+	"bytes"
 	"encoding/binary"
+	"strings"
 	"testing"
+
+	"github.com/cilium/ebpf/btf"
 )
+
+func TestIOTracepointsComeFromKernelBTF(t *testing.T) {
+	spec := func(names ...string) *btf.Spec {
+		types := make([]btf.Type, 0, len(names))
+		for _, name := range names {
+			types = append(types, &btf.Typedef{Name: "btf_trace_" + name, Type: &btf.Int{Name: "int", Size: 4}})
+		}
+		builder, err := btf.NewBuilder(types, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw, err := builder.Marshal(nil, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		loaded, err := btf.LoadSpecFromReader(bytes.NewReader(raw))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return loaded
+	}
+	if err := ioTracepointsAvailable(spec(ioTracepoints...)); err != nil {
+		t.Fatal(err)
+	}
+	err := ioTracepointsAvailable(spec("block_rq_insert", "block_rq_issue", "block_rq_complete"))
+	if err == nil || !strings.Contains(err.Error(), "block_rq_requeue") {
+		t.Fatalf("missing requeue = %v", err)
+	}
+}
 
 func TestParseIORecordKeepsInsertIdentity(t *testing.T) {
 	sample := make([]byte, 88)

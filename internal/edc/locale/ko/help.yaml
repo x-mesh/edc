@@ -147,7 +147,7 @@ command:
     summary: "network, I/O, socket, drop, scheduler event 출력과 요약"
     option:
       duration: "trace 시간, 최대 60s. 생략하면 Ctrl-C"
-      slow: "mysql만: 첫 응답 latency가 이 시간 이상"
+      slow: "최소 latency. mysql은 첫 응답, io는 기본 1ms"
       raw: "raw event JSONL 출력"
       live: "호환성 flag. trace는 기본으로 실시간 실행"
       group_by: "source, target, port, process, event별로 묶습니다"

@@ -46,8 +46,9 @@ volatile const __u64 minimum_latency_ns = NSEC_PER_MSEC;
 static __always_inline void count(__u32 index) {
 	__u32 key = 0; struct io_counters *counts = bpf_map_lookup_elem(&counters, &key); if (counts) __sync_fetch_and_add(&counts->values[index], 1);
 }
+// part가 없는 요청은 block device에 속하지 않는 passthrough 명령이다. 장치 번호가 0:0으로 보이므로 세지 않는다.
 static __always_inline void remember(struct request *rq, __u8 stage) {
-	struct io_pending value = {}; struct block_device *part = BPF_CORE_READ(rq, part); if (stage == IO_INSERT) value.insert_ns = bpf_ktime_get_ns(); else value.issue_ns = bpf_ktime_get_ns(); value.dev = BPF_CORE_READ(part, bd_dev); value.bytes = BPF_CORE_READ(rq, __data_len); value.pid = bpf_get_current_pid_tgid() >> 32; value.cgroup_id = bpf_get_current_cgroup_id(); value.stage = stage; bpf_get_current_comm(&value.comm, sizeof(value.comm)); if (BPF_CORE_READ(rq, cmd_flags) & 1) value.rwbs[0] = 'W'; else value.rwbs[0] = 'R';
+	struct io_pending value = {}; struct block_device *part = BPF_CORE_READ(rq, part); if (!part) return; if (stage == IO_INSERT) value.insert_ns = bpf_ktime_get_ns(); else value.issue_ns = bpf_ktime_get_ns(); value.dev = BPF_CORE_READ(part, bd_dev); value.bytes = BPF_CORE_READ(rq, __data_len); value.pid = bpf_get_current_pid_tgid() >> 32; value.cgroup_id = bpf_get_current_cgroup_id(); value.stage = stage; bpf_get_current_comm(&value.comm, sizeof(value.comm)); if (BPF_CORE_READ(rq, cmd_flags) & 1) value.rwbs[0] = 'W'; else value.rwbs[0] = 'R';
 	if (bpf_map_update_elem(&pending, &rq, &value, BPF_NOEXIST)) count(IO_MAP_FULL);
 }
 SEC("tp_btf/block_rq_insert") int insert(unsigned long long *ctx) { struct request *rq = (void *)ctx[0]; remember(rq, IO_INSERT); return 0; }
@@ -56,11 +57,12 @@ SEC("tp_btf/block_rq_issue") int issue(unsigned long long *ctx) { struct request
 	value->issue_ns = bpf_ktime_get_ns(); value->stage = IO_ISSUE; return 0;
 }
 SEC("tp_btf/block_rq_requeue") int requeue(unsigned long long *ctx) { struct request *rq = (void *)ctx[0]; count(IO_REQUEUE); bpf_map_delete_elem(&pending, &rq); return 0; }
-SEC("tp_btf/block_rq_complete") int complete(unsigned long long *ctx) { struct request *rq = (void *)ctx[0];
+SEC("tp_btf/block_rq_complete") int complete(unsigned long long *ctx) { struct request *rq = (void *)ctx[0]; if (!BPF_CORE_READ(rq, part)) return 0;
 	struct io_pending *value = bpf_map_lookup_elem(&pending, &rq); if (!value) { count(IO_UNMATCHED_COMPLETE); return 0; }
-	__u64 now = bpf_ktime_get_ns(); if (value->stage != IO_ISSUE || !value->insert_ns || !value->issue_ns) { count(IO_INCOMPLETE); bpf_map_delete_elem(&pending, &rq); return 0; }
-	__u64 total = now - value->insert_ns; if (total < minimum_latency_ns) { bpf_map_delete_elem(&pending, &rq); return 0; }
+	__u64 now = bpf_ktime_get_ns(); if (value->stage != IO_ISSUE || !value->issue_ns) { count(IO_INCOMPLETE); bpf_map_delete_elem(&pending, &rq); return 0; }
+	// I/O scheduler가 none인 장치는 대부분의 요청을 block_rq_insert 없이 바로 issue한다. 그 요청은 queue 구간이 없고, 주인은 issue 시점의 문맥이다.
+	__u8 inserted = value->insert_ns != 0; __u64 total = now - (inserted ? value->insert_ns : value->issue_ns); if (total < minimum_latency_ns) { bpf_map_delete_elem(&pending, &rq); return 0; }
 	struct io_record *record = bpf_ringbuf_reserve(&events, sizeof(*record), 0); if (!record) { count(IO_RING_LOST); bpf_map_delete_elem(&pending, &rq); return 0; }
-	record->timestamp_ns = now; record->cgroup_id = value->cgroup_id; record->bytes = value->bytes; record->queue_ns = value->issue_ns - value->insert_ns; record->service_ns = now - value->issue_ns; record->total_ns = total; record->dev = value->dev; record->pid = value->pid; __builtin_memcpy(record->comm, value->comm, sizeof(record->comm)); __builtin_memcpy(record->rwbs, value->rwbs, sizeof(record->rwbs)); record->attribution = IO_INSERT; bpf_ringbuf_submit(record, 0); bpf_map_delete_elem(&pending, &rq); return 0;
+	record->timestamp_ns = now; record->cgroup_id = value->cgroup_id; record->bytes = value->bytes; record->queue_ns = inserted ? value->issue_ns - value->insert_ns : 0; record->service_ns = now - value->issue_ns; record->total_ns = total; record->dev = value->dev; record->pid = value->pid; __builtin_memcpy(record->comm, value->comm, sizeof(record->comm)); __builtin_memcpy(record->rwbs, value->rwbs, sizeof(record->rwbs)); record->attribution = inserted ? IO_INSERT : IO_ISSUE; bpf_ringbuf_submit(record, 0); bpf_map_delete_elem(&pending, &rq); return 0;
 }
 char LICENSE[] SEC("license") = "Dual BSD/GPL";

@@ -62,6 +62,10 @@ func collectIOEvents(options ioTraceOptions, onEvent func(ioEvent) error, stop <
 	if err := variables.MinimumLatencyNs.Set(uint64(ioLatencyThreshold)); err != nil {
 		return ioSummary{}, fmt.Errorf("set latency threshold: %w", err)
 	}
+	clockOffset, err := captureClockOffset()
+	if err != nil {
+		return ioSummary{}, fmt.Errorf("read monotonic clock: %w", err)
+	}
 	objects := ioEventsObjects{}
 	if err := spec.LoadAndAssign(&objects, nil); err != nil {
 		return ioSummary{}, fmt.Errorf("load eBPF objects: %w", err)
@@ -128,7 +132,7 @@ func collectIOEvents(options ioTraceOptions, onEvent func(ioEvent) error, stop <
 		if err != nil {
 			return ioSummary{}, err
 		}
-		event, ok := parseIORecord(record.RawSample)
+		event, ok := parseIORecord(record.RawSample, clockOffset)
 		if !ok || !options.matches(event) {
 			continue
 		}
@@ -141,9 +145,18 @@ func collectIOEvents(options ioTraceOptions, onEvent func(ioEvent) error, stop <
 	}
 }
 
-func parseIORecord(sample []byte) (ioEvent, bool) {
+func parseIORecord(sample []byte, clockOffset int64) (ioEvent, bool) {
 	const size = 88
 	if len(sample) < size {
+		return ioEvent{}, false
+	}
+	var attribution string
+	switch sample[80] {
+	case 1:
+		attribution = "insert"
+	case 2:
+		attribution = "issue"
+	default:
 		return ioEvent{}, false
 	}
 	operation := strings.TrimRight(string(sample[72:80]), "\x00")
@@ -159,5 +172,10 @@ func parseIORecord(sample []byte) (ioEvent, bool) {
 	total := float64(binary.LittleEndian.Uint64(sample[40:48])) / float64(time.Millisecond)
 	dev := binary.LittleEndian.Uint32(sample[48:52])
 	major, minor := dev>>20, dev&((1<<20)-1)
-	return ioEvent{TimestampNS: binary.LittleEndian.Uint64(sample[0:8]), CgroupID: binary.LittleEndian.Uint64(sample[8:16]), Bytes: binary.LittleEndian.Uint64(sample[16:24]), PID: binary.LittleEndian.Uint32(sample[52:56]), Process: strings.TrimRight(string(sample[56:72]), "\x00"), Operation: operation, Device: ioDevice(major, minor), Major: major, Minor: minor, Event: "io_complete", Attribution: "insert", QueueMS: &queue, ServiceMS: &service, TotalMS: &total}, true
+	bootTime := binary.LittleEndian.Uint64(sample[0:8])
+	event := ioEvent{TimestampNS: uint64(int64(bootTime) + clockOffset), BootTimeNS: bootTime, CgroupID: binary.LittleEndian.Uint64(sample[8:16]), Bytes: binary.LittleEndian.Uint64(sample[16:24]), PID: binary.LittleEndian.Uint32(sample[52:56]), Process: strings.TrimRight(string(sample[56:72]), "\x00"), Operation: operation, Device: ioDevice(major, minor), Major: major, Minor: minor, Event: "io_complete", Attribution: attribution, QueueMS: &queue, ServiceMS: &service, TotalMS: &total}
+	if attribution == "issue" {
+		event.QueueMS = nil
+	}
+	return event, true
 }

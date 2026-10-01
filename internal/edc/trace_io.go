@@ -36,6 +36,7 @@ type ioTraceOptions struct {
 
 type ioEvent struct {
 	TimestampNS uint64   `json:"timestamp_ns"`
+	BootTimeNS  uint64   `json:"boot_time_ns"`
 	Event       string   `json:"event"`
 	Operation   string   `json:"operation"`
 	Device      string   `json:"device"`

@@ -182,6 +182,18 @@ func captureTraceHooksAvailable() error {
 	return nil
 }
 
+func inetCskAcceptArgumentCount(spec *btf.Spec) (int, error) {
+	var function *btf.Func
+	if err := spec.TypeByName("inet_csk_accept", &function); err != nil {
+		return 0, fmt.Errorf("find inet_csk_accept in kernel BTF: %w", err)
+	}
+	prototype, ok := btf.UnderlyingType(function.Type).(*btf.FuncProto)
+	if !ok || (len(prototype.Params) != 2 && len(prototype.Params) != 4) {
+		return 0, fmt.Errorf("unsupported inet_csk_accept argument count: %d", len(prototype.Params))
+	}
+	return len(prototype.Params), nil
+}
+
 func effectiveCapabilities() (map[int]bool, error) {
 	file, err := os.Open("/proc/self/status")
 	if err != nil {
@@ -322,6 +334,7 @@ func captureAttachments(objects *captureEventsObjects, protocol string) ([]captu
 		{[]string{"http", "mysql", "dns"}, "tp_btf/tcp_destroy_sock", objects.HttpTcpDestroySock},
 		// 서버 쪽 DNS over TCP도 받은 연결의 process를 알아야 해서 dns가 함께 쓴다.
 		{[]string{"tcp", "dns"}, "fentry/inet_csk_accept", objects.InetCskAcceptEntry},
+		{[]string{"tcp"}, "fexit/inet_csk_accept", objects.InetCskAcceptExit},
 		{[]string{"tcp", "dns"}, "fexit/tcp_create_openreq_child", objects.TcpCreateOpenreqChildExit},
 		// SYN_SENT 전에 실패한 connect도 process를 알려고 connect()에서 주인을 배운다. 이 함수는 export되어 inline으로
 		// 사라지지 않으므로 captureTraceHooksAvailable에서 확인하지 않는다.
@@ -414,6 +427,14 @@ func loadCaptureEventsFor(scope traceScope, objects *captureEventsObjects) error
 	if err != nil {
 		return err
 	}
+	kernel, err := btf.LoadKernelSpec()
+	if err != nil {
+		return fmt.Errorf("read kernel BTF: %w", err)
+	}
+	acceptArgs, err := inetCskAcceptArgumentCount(kernel)
+	if err != nil {
+		return err
+	}
 	flag := func(on bool) uint8 {
 		if on {
 			return 1
@@ -446,6 +467,18 @@ func loadCaptureEventsFor(scope traceScope, objects *captureEventsObjects) error
 	spec.Programs["tcp_recvmsg_exit"].Name = "tcp_recvmsg_exit"
 	spec.Programs["tcp_recvmsg_exit_legacy"] = recvSpec.Copy()
 	spec.Programs["tcp_recvmsg_exit_legacy"].Name = "tcp_recvmsg_exit_legacy"
+	selected = "inet_csk_accept_exit"
+	if acceptArgs == 4 {
+		selected = "inet_csk_accept_exit_legacy"
+	}
+	acceptSpec := spec.Programs[selected]
+	if acceptSpec == nil {
+		return fmt.Errorf("missing eBPF program %s", selected)
+	}
+	spec.Programs["inet_csk_accept_exit"] = acceptSpec.Copy()
+	spec.Programs["inet_csk_accept_exit"].Name = "inet_csk_accept_exit"
+	spec.Programs["inet_csk_accept_exit_legacy"] = acceptSpec.Copy()
+	spec.Programs["inet_csk_accept_exit_legacy"].Name = "inet_csk_accept_exit_legacy"
 	return spec.LoadAndAssign(objects, nil)
 }
 
@@ -749,21 +782,32 @@ func traceStopRequested(stop <-chan struct{}) bool {
 }
 
 type captureEventRaw struct {
-	TimestampNS uint64
-	EventType   uint32
-	PID         uint32
-	CgroupID    uint64
-	SkAddr      uint64
-	OldState    uint32
-	NewState    uint32
-	Family      uint16
-	Sport       uint16
-	Dport       uint16
-	Protocol    uint16
-	Source      [16]byte
-	Destination [16]byte
-	Comm        [16]byte
-	Bytes       uint64
+	TimestampNS     uint64
+	EventType       uint32
+	PID             uint32
+	CgroupID        uint64
+	SkAddr          uint64
+	OldState        uint32
+	NewState        uint32
+	Family          uint16
+	Sport           uint16
+	Dport           uint16
+	Protocol        uint16
+	Source          [16]byte
+	Destination     [16]byte
+	Comm            [16]byte
+	Bytes           uint64
+	TCPValid        uint32
+	RTTUS           uint32
+	RTTVarUS        uint32
+	CWND            uint32
+	SSThresh        uint32
+	Unacked         uint32
+	Lost            uint32
+	ZeroWindow      uint32
+	AcceptLatencyNS uint64
+	AcceptQueueUsed uint32
+	AcceptQueueMax  uint32
 }
 
 // captureClockOffset은 CLOCK_MONOTONIC 값에 더하면 Unix epoch 시각이 되는 차이다.
@@ -795,19 +839,30 @@ func (raw captureEventRaw) event(clockOffset int64) captureEvent {
 		name = captureEventName(raw.OldState, raw.NewState)
 	}
 	return captureEvent{
-		SocketID:    raw.SkAddr,
-		TimestampNS: uint64(int64(raw.TimestampNS) + clockOffset),
-		BootTimeNS:  raw.TimestampNS,
-		Event:       name,
-		Protocol:    protocol,
-		PID:         raw.PID,
-		Process:     strings.TrimRight(string(raw.Comm[:]), "\x00"),
-		CgroupID:    raw.CgroupID,
-		Source:      formatCaptureAddress(raw.Family, raw.Source, raw.Sport),
-		Destination: formatCaptureAddress(raw.Family, raw.Destination, raw.Dport),
-		OldState:    tcpStateName(raw.OldState),
-		NewState:    tcpStateName(raw.NewState),
-		Bytes:       raw.Bytes,
+		SocketID:        raw.SkAddr,
+		TimestampNS:     uint64(int64(raw.TimestampNS) + clockOffset),
+		BootTimeNS:      raw.TimestampNS,
+		Event:           name,
+		Protocol:        protocol,
+		PID:             raw.PID,
+		Process:         strings.TrimRight(string(raw.Comm[:]), "\x00"),
+		CgroupID:        raw.CgroupID,
+		Source:          formatCaptureAddress(raw.Family, raw.Source, raw.Sport),
+		Destination:     formatCaptureAddress(raw.Family, raw.Destination, raw.Dport),
+		OldState:        tcpStateName(raw.OldState),
+		NewState:        tcpStateName(raw.NewState),
+		Bytes:           raw.Bytes,
+		TCPValid:        raw.TCPValid,
+		RTTUS:           raw.RTTUS,
+		RTTVarUS:        raw.RTTVarUS,
+		CWND:            raw.CWND,
+		SSThresh:        raw.SSThresh,
+		Unacked:         raw.Unacked,
+		Lost:            raw.Lost,
+		ZeroWindow:      raw.ZeroWindow,
+		AcceptLatencyNS: raw.AcceptLatencyNS,
+		AcceptQueueUsed: raw.AcceptQueueUsed,
+		AcceptQueueMax:  raw.AcceptQueueMax,
 	}
 }
 

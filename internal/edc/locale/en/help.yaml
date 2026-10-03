@@ -72,6 +72,7 @@ command:
       count: "rows to print, 0 runs until you quit"
       no_header: "drop the host and column header"
       process: "match PIDs or command names, comma-separated"
+      ebpf: "add eBPF run-queue and I/O delays, Linux"
       json: "one JSON line for each sample, - for stdout"
     notes:
       - "In a terminal, edc opens a dashboard. q quits, p pauses, +/- moves the interval."

@@ -132,6 +132,7 @@ var commandDocs = []commandDoc{
 			{"--count N", "command.top.option.count"},
 			{"--no-header", "command.top.option.no_header"},
 			{"--process <filter>", "command.top.option.process"},
+			{"--ebpf", "command.top.option.ebpf"},
 			{"--json <path|->", "command.top.option.json"},
 		},
 	},

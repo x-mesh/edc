@@ -72,6 +72,7 @@ command:
       count: "表示する行数、0 は継続実行"
       no_header: "host と列見出しを省く"
       process: "一致する PID か command 名のみ、カンマ区切り"
+      ebpf: "eBPF で runqueue と I/O の遅延を追加、Linux"
       json: "sample ごとに 1 行の JSON、stdout は -"
     notes:
       - "terminal ではダッシュボードを開きます。q 終了、p 一時停止、+/- interval。"

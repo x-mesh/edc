@@ -361,6 +361,7 @@ stdin과 stdout이 모두 terminal이면 `edc top`은 전체 화면 대시보드
 | `-` | interval 줄이기 |
 | `1`, `c`, `m`, `d`, `n` | 전체, CPU, memory, disk, network 열로 전환 |
 | `s` | Linux pressure 열로 전환 |
+| `f` | `--process`를 줬을 때 process 보기로 전환 |
 | `↑`, `↓`, `PgUp`, `PgDn`, `End` | 과거 행 선택, 한 화면씩 이동, 실시간 행 추적 재개 |
 | `Enter` | 선택한 시점의 상세 표시 |
 | `h` | 최근 60초의 load, CPU, iowait, memory 최고치를 각각 시각과 함께 표시 |
@@ -411,14 +412,16 @@ macOS에서 `edc`는 Mach `host_processor_info` 호출로 kernel에서 core별 C
 
 ## Top process 필터
 
-`--process <filter>`는 host 지표를 그대로 두고 process 목록만 지정한 process로 좁힙니다. filter는 쉼표로 구분한 목록입니다. 숫자는 PID와 같아야 하고, 그 밖의 항목은 command 이름의 일부와 대소문자를 가리지 않고 맞아야 합니다. 항목 하나라도 맞으면 목록에 남습니다. command 이름은 Linux에서는 kernel이 15자로 자르는 `comm`, macOS에서는 실행 파일 경로입니다.
+`--process <filter>`는 process 목록을 지정한 process로 좁힙니다. filter는 쉼표로 구분한 목록입니다. 숫자는 PID와 같아야 하고, 그 밖의 항목은 command 이름의 일부와 대소문자를 가리지 않고 맞아야 합니다. 항목 하나라도 맞으면 목록에 남습니다. command 이름은 Linux에서는 kernel이 15자로 자르는 `comm`, macOS에서는 실행 파일 경로입니다.
 
 ```bash
-# 대시보드: 상세 보기에 "top ..." 대신 "match ..."가 나옵니다
+# 대시보드: process 보기로 열리고, Enter로 가장 바쁜 process를 봅니다
 ./bin/edc top --process output-mesh
 # JSON 줄: sample마다 processes 배열을 더합니다
 ./bin/edc top --process 4321,worker --json /tmp/edc-host.jsonl
 ```
+
+`--process`를 주면 대시보드가 process 보기로 열립니다. 행마다 한 시점에 맞은 process 묶음의 값을 보여 줍니다. 맞은 개수, CPU% 합(core 하나가 100), 메모리(`rss`), thread 수, 열린 파일 수, 초당 디스크 읽기와 쓰기입니다. `--ebpf`를 주면 run-queue 평균 대기와 block I/O 평균 지연(ms)도 보입니다. 읽지 못한 값은 `—`로 나옵니다. `1`을 누르면 host 열로, `f`를 누르면 process 보기로 돌아갑니다. `Enter`는 선택한 행에서 가장 바쁜 process를 보여 줍니다.
 
 filter는 CPU 상위로 자르기 전에 적용하므로 CPU가 낮은 process도 맞으면 목록에 남습니다.
 

@@ -18,14 +18,18 @@ func runTopDashboard(interval time.Duration, version string, filter topProcessFi
 		fmt.Fprintln(os.Stderr, T("observe.top.error.host", err))
 		return 1
 	}
-	first, err := sampleTopDashboard()
+	sample := sampleTopDashboard
+	if filter.active() {
+		sample = sampleTopDashboardNow
+	}
+	first, err := sample()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, T("observe.top.error.resource", err))
 		return 1
 	}
-	model := newTopModel(details, first, interval, sampleTopDashboard)
+	model := newTopModel(details, first, interval, sample)
 	model.version = version
-	model.processFilter = filter
+	model = model.withProcessFilter(filter)
 	if _, err := tea.NewProgram(model, tea.WithInput(os.Stdin), tea.WithOutput(os.Stdout)).Run(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
@@ -41,6 +45,14 @@ func sampleTopDashboard() (resourceSnapshot, error) {
 	return snapshot, err
 }
 
+// sampleTopDashboardNow는 필터를 건 대시보드가 쓴다. process 보기는 행마다 그 시점의 값이 필요하므로, 배경 갱신이
+// 끝난 직전 목록을 다시 쓰지 않고 지금 읽는다. tick의 tea.Cmd 안에서 돌아 /proc을 읽는 동안 화면은 멈추지 않는다.
+func sampleTopDashboardNow() (resourceSnapshot, error) {
+	snapshot, err := collectResourceSnapshot()
+	snapshot.Processes, snapshot.ProcessTotal, snapshot.ProcessesValid = processSampler.refreshNow()
+	return snapshot, err
+}
+
 type topView string
 
 const (
@@ -50,6 +62,8 @@ const (
 	topViewDisk     topView = "disk"
 	topViewNetwork  topView = "network"
 	topViewPressure topView = "pressure"
+	// topViewProcess는 --process에 맞은 process 묶음을 시점마다 한 행으로 보인다. 필터가 있을 때만 고를 수 있다.
+	topViewProcess topView = "process"
 )
 
 const (
@@ -114,6 +128,15 @@ type topSampleMsg struct {
 
 func newTopModel(details hostDetails, first resourceSnapshot, interval time.Duration, sample func() (resourceSnapshot, error)) topModel {
 	return topModel{details: details, limits: newTopLimits(details.Cores, true), interval: interval, previous: first, view: topViewAll, follow: true, sample: sample}
+}
+
+// withProcessFilter는 필터를 건다. 필터를 건 사용자는 그 process를 보려는 것이므로 host 지표 대신 process 묶음 보기로 연다.
+func (model topModel) withProcessFilter(filter topProcessFilter) topModel {
+	model.processFilter = filter
+	if filter.active() {
+		model.view = topViewProcess
+	}
+	return model
 }
 
 func (model topModel) Init() tea.Cmd { return model.tick() }
@@ -195,6 +218,10 @@ func (model topModel) updateKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		model.view = topViewNetwork
 	case "s":
 		model.view = topViewPressure
+	case "f":
+		if model.processFilter.active() {
+			model.view = topViewProcess
+		}
 	case "enter":
 		model.detail = !model.detail
 		if model.detail {
@@ -455,7 +482,11 @@ func (model topModel) statusLines() []string {
 	} else if !model.follow {
 		state = fmt.Sprintf("history · %d new · %s", max(0, len(model.rows)-1-model.selected), state)
 	}
-	views := fmt.Sprintf("1 all c cpu m mem d disk n net s pressure · %s", state)
+	keys := "1 all c cpu m mem d disk n net s pressure"
+	if model.processFilter.active() {
+		keys += " f proc"
+	}
+	views := fmt.Sprintf("%s · %s", keys, state)
 	// PgUp/Dn을 넣어도 80열에서 끝의 +/-가 잘리지 않게 구분 공백을 두 칸으로 맞췄다.
 	actions := "keys ↑↓ PgUp/Dn history  End live  Enter detail  h peaks  q quit  p pause  +/-"
 	// 폭을 먼저 맞춘다. escape가 rune 수에 들어가면 잘리는 위치가 어긋난다.
@@ -483,6 +514,9 @@ func topViewColumns(view topView) []topColumn {
 		return []topColumn{{title: "in/s", width: 7}, {title: "out/s", width: 7}, {title: "pk_in", width: 6}, {title: "pk_out", width: 6}, {title: "err/s", width: 6}, {title: "drop/s", width: 6}, signal}
 	case topViewPressure:
 		return []topColumn{{title: "cpu psi", width: 7}, {title: "mem psi", width: 7}, {title: "io psi", width: 7}, {title: "load", width: 6}, {title: "mem%", width: 6}, signal}
+	case topViewProcess:
+		// cpu%는 core 하나를 100으로 센다. runq와 io는 --ebpf가 있을 때의 평균 대기와 지연이다. 가장 바쁜 process는 상세 패널에 있다.
+		return []topColumn{{title: "match", width: 5}, {title: "cpu%", width: 6}, {title: "rss", width: 6}, {title: "thr", width: 5}, {title: "fds", width: 5}, {title: "read/s", width: 7}, {title: "write/s", width: 7}, {title: "runq ms", width: 7}, {title: "io ms"}}
 	}
 	return nil
 }
@@ -765,6 +799,9 @@ func topDashboardHeaders(view topView, width int) []string {
 // formatTopDashboardRow의 width는 all 보기에만 쓴다. 다른 보기는 80열 고정 칸이다.
 func formatTopDashboardRow(row topDashboardRow, view topView, limits topLimits, width int) string {
 	at, rate := row.at.Format("15:04:05"), row.rate
+	if view == topViewProcess {
+		return formatTopColumns(at, topViewColumns(view), topProcessViewCells(row), limits.color)
+	}
 	if view != topViewAll {
 		signal := topDashboardSignal(rate, row.processes, row.processesValid, limits)
 		return formatTopColumns(at, topViewColumns(view), topViewCells(rate, view, signal, limits), limits.color)
@@ -1019,17 +1056,7 @@ func topMatchDetail(processes []topProcess, total topProcessTotal, valid bool) [
 	if total.Threads > 0 {
 		summary += fmt.Sprintf(" · thr %d", total.Threads)
 	}
-	var fds int
-	var read, write float64
-	var diskKnown bool
-	for _, process := range processes {
-		fds += process.FDs
-		if process.DiskValid {
-			diskKnown = true
-			read += process.DiskRead
-			write += process.DiskWrite
-		}
-	}
+	fds, read, write, diskKnown := topMatchIO(processes)
 	if fds > 0 {
 		summary += fmt.Sprintf(" · fds %d", fds)
 	}
@@ -1045,6 +1072,53 @@ func topMatchDetail(processes []topProcess, total topProcessTotal, valid bool) [
 		lines = append(lines, "  "+topBPFDetail(*total.BPF))
 	}
 	return lines
+}
+
+// topMatchIO는 목록에 남은 process의 fd 수와 디스크 rate를 더한다. 이 값은 남은 process만 읽으므로 합도 그 범위다.
+func topMatchIO(processes []topProcess) (fds int, read, write float64, diskKnown bool) {
+	for _, process := range processes {
+		fds += process.FDs
+		if process.DiskValid {
+			diskKnown = true
+			read += process.DiskRead
+			write += process.DiskWrite
+		}
+	}
+	return fds, read, write, diskKnown
+}
+
+// topProcessViewCells는 process 보기의 한 행이다. 읽지 못한 값은 0 대신 —로 둔다.
+func topProcessViewCells(row topDashboardRow) []topCell {
+	empty := topPlainCell("—")
+	if !row.processesValid {
+		return []topCell{empty, empty, empty, empty, empty, empty, empty, empty, empty}
+	}
+	total := row.processTotal
+	if total.Count == 0 {
+		return []topCell{topPlainCell("0"), empty, empty, empty, empty, empty, empty, empty, empty}
+	}
+	fds, read, write, diskKnown := topMatchIO(row.processes)
+	cells := []topCell{
+		topPlainCell(fmt.Sprintf("%d", total.Count)), topPlainCell(fmt.Sprintf("%.1f", total.CPU)), topPlainCell(formatProcessRSS(total.RSS)),
+		topPlainCell(topOptionalValue(total.Threads > 0, "%.0f", float64(total.Threads))), topPlainCell(topOptionalValue(fds > 0, "%.0f", float64(fds))),
+		topPlainCell(topOptionalRate(diskKnown, read)), topPlainCell(topOptionalRate(diskKnown, write)), empty, empty,
+	}
+	if bpf := total.BPF; bpf != nil {
+		if average, ok := topBPFAverageMS(bpf.RunqSumNS, bpf.RunqCount); ok {
+			cells[7] = topPlainCell(fmt.Sprintf("%.2f", average))
+		}
+		if average, ok := topBPFAverageMS(bpf.IOSumNS, bpf.IOCount); ok {
+			cells[8] = topPlainCell(fmt.Sprintf("%.2f", average))
+		}
+	}
+	return cells
+}
+
+func topOptionalRate(valid bool, value float64) string {
+	if !valid {
+		return "—"
+	}
+	return formatRate(value)
 }
 
 // topBPFDetail은 window 동안 센 run-queue 대기와 block I/O 지연이다. 지연 뒤의 p95는 그 값이 든 구간의 위쪽 경계다.

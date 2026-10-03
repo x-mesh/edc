@@ -77,6 +77,7 @@ command:
     notes:
       - "terminal ではダッシュボードを開きます。q 終了、p 一時停止、+/- interval。"
       - "--count か --json を渡すか、terminal でないか、NO_COLOR なら表で出力します。"
+      - "--process では process 表示で開きます。1 で host、f で戻ります。"
   watch:
     summary: "中断するまで HTTP の状態を繰り返し確認"
     option:

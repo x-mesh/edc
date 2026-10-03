@@ -365,6 +365,7 @@ If stdin and stdout are terminals, `edc top` opens a full-screen dashboard. The 
 | `-` | make the interval shorter |
 | `1`, `c`, `m`, `d`, `n` | switch to all, CPU, memory, disk, or network columns |
 | `s` | switch to Linux pressure columns |
+| `f` | with `--process`, switch to the process view |
 | `↑`, `↓`, `PgUp`, `PgDn`, `End` | select an earlier row, move one screen, or return to the live row |
 | `Enter` | show details for the selected time |
 | `h` | show the load, CPU, iowait, and memory peaks from the last 60 seconds, each with its time |
@@ -415,14 +416,16 @@ Each line has `time`, `hostname`, `cores`, the network and disk rates in bytes p
 
 ## Filter processes in top
 
-`--process <filter>` keeps the host metrics and narrows the process list to the processes you name. The filter is a comma-separated list. A number must equal a PID. Any other term matches part of the command name, ignoring case. A process that matches any term stays in the list. The command name is `comm` on Linux, which the kernel cuts at 15 characters, and the executable path on macOS.
+`--process <filter>` narrows the process list to the processes you name. The filter is a comma-separated list. A number must equal a PID. Any other term matches part of the command name, ignoring case. A process that matches any term stays in the list. The command name is `comm` on Linux, which the kernel cuts at 15 characters, and the executable path on macOS.
 
 ```bash
-# dashboard: the detail view shows "match ..." in place of "top ..."
+# dashboard: opens the process view, and Enter shows the busiest matches
 ./bin/edc top --process output-mesh
 # JSON lines: add a processes array to each sample
 ./bin/edc top --process 4321,worker --json /tmp/edc-host.jsonl
 ```
+
+With `--process`, the dashboard opens the process view. Each row shows the matched processes at one sample. It shows the number of matches, their CPU%, memory (`rss`), threads, open files, and disk read and write per second. One core is 100 CPU%. With `--ebpf`, the row also shows the average run-queue wait and the average block I/O latency in milliseconds. A value that `edc` cannot read shows `—`. Press `1` for the host columns and `f` to return to the process view. `Enter` shows the busiest matches for the selected row.
 
 The filter runs before the list is cut to the busiest processes. A quiet process that matches stays in the list.
 

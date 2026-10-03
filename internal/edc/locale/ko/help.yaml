@@ -147,7 +147,7 @@ command:
     summary: "network, I/O, socket, drop, scheduler event 출력과 요약"
     option:
       duration: "trace 시간, 최대 60s. 생략하면 Ctrl-C"
-      slow: "최소 latency. 예: 20us, 250ms. io 기본 1ms"
+      slow: "최소 latency. 예: 20us, 250ms. io/sched 기본 1ms"
       raw: "raw event JSONL 출력"
       live: "호환성 flag. trace는 기본으로 실시간 실행"
       group_by: "source, target, port, process, event별로 묶습니다"
@@ -176,6 +176,7 @@ command:
       - "--group-by source, target, port, process, event로 group live 행을 표시합니다."
       - "trace io는 device, process, cgroup, event로 행을 묶습니다."
       - "trace io의 --slow는 요청 latency 하한입니다. 기본값은 1ms입니다."
+      - "trace sched의 --slow는 span latency 하한입니다. 기본값은 1ms입니다."
       - "--slow에는 20us, 500us, 2ms처럼 단위가 필요합니다. 숫자만 쓰면 실패합니다."
       - "그룹 화면은 event 수를 EVENT/s로 표시하고 socket payload traffic을 표시합니다."
       - "B/s는 byte rate이며 bps와 Mbps는 bit rate입니다. Mbps는 bps / 1,000,000입니다."

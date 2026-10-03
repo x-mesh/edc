@@ -100,7 +100,7 @@ func TestSchedContainerFilterUsesCgroupID(t *testing.T) {
 }
 
 func TestRunTraceSchedRejectsUnsupportedFiltersBeforePrivilegeCheck(t *testing.T) {
-	for _, args := range [][]string{{"--group-by", "target"}, {"--destination", "127.0.0.1:1"}, {"--side", "server"}, {"--port", "80"}, {"--payload"}, {"--reason", "x"}} {
+	for _, args := range [][]string{{"--group-by", "target"}, {"--destination", "127.0.0.1:1"}, {"--side", "server"}, {"--port", "80"}, {"--payload"}, {"--reason", "x"}, {"--slow", "0"}, {"--slow", "-1ms"}, {"--slow", "1"}} {
 		stderr := captureTraceStderr(t, func() {
 			if code := runTraceSched(args); code != 2 {
 				t.Fatalf("args=%q code=%d", args, code)

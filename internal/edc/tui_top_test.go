@@ -225,12 +225,27 @@ func TestTopPressureAndCorePresentation(t *testing.T) {
 
 func TestTopProcessDetailUsesTheSelectedSnapshot(t *testing.T) {
 	processes := []topProcess{{PID: 4, CPU: 99, RSS: 2 * 1024 * 1024, Command: "java"}, {PID: 7, CPU: 12, RSS: 1024, Command: "node"}}
-	got := topProcessDetail(processes, true)
+	got := topProcessDetail(processes, true, topProcessFilter{})
 	if !strings.Contains(got, "java 99% 2.0M") || !strings.Contains(got, "node 12%") {
 		t.Fatalf("process detail = %q", got)
 	}
-	if got := topProcessDetail(nil, false); got != "processes —" {
+	if got := topProcessDetail(nil, false, topProcessFilter{}); got != "processes —" {
 		t.Fatalf("process fallback = %q", got)
+	}
+}
+
+func TestTopProcessDetailNamesTheFilterAndTheRest(t *testing.T) {
+	filter, err := parseTopProcessFilter("worker")
+	if err != nil {
+		t.Fatal(err)
+	}
+	processes := []topProcess{{PID: 1, CPU: 50, Command: "worker-a"}, {PID: 2, CPU: 40, Command: "worker-b"}, {PID: 3, CPU: 30, Command: "worker-c"}, {PID: 4, CPU: 20, Command: "worker-d"}, {PID: 5, CPU: 10, Command: "worker-e"}}
+	got := topProcessDetail(processes, true, filter)
+	if !strings.HasPrefix(got, "match worker-a 50%") || !strings.HasSuffix(got, ", +2") {
+		t.Fatalf("filtered detail = %q", got)
+	}
+	if got := topProcessDetail(nil, true, filter); got != "match none" {
+		t.Fatalf("no match detail = %q", got)
 	}
 }
 

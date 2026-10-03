@@ -71,6 +71,7 @@ command:
       interval: "time between samples"
       count: "rows to print, 0 runs until you quit"
       no_header: "drop the host and column header"
+      process: "match PIDs or command names, comma-separated"
       json: "one JSON line for each sample, - for stdout"
     notes:
       - "In a terminal, edc opens a dashboard. q quits, p pauses, +/- moves the interval."
@@ -151,7 +152,7 @@ command:
       raw: "print raw event JSONL"
       live: "compatibility flag. Trace is live by default"
       group_by: "group by source, target, port, process, or event"
-      process: "filter by process name"
+      process: "match PIDs or command names, comma-separated"
       destination: "filter by destination host and port"
       detail: "list each connection or flow in the summary"
       yes: "skip the question"

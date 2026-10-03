@@ -12,7 +12,7 @@ import (
 )
 
 // runTopDashboard는 alt screen 대시보드를 실행한다. 종료하면 화면이 원래대로 돌아온다.
-func runTopDashboard(interval time.Duration, version string) int {
+func runTopDashboard(interval time.Duration, version string, filter topProcessFilter) int {
 	details, err := collectHostDetails()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, T("observe.top.error.host", err))
@@ -25,6 +25,7 @@ func runTopDashboard(interval time.Duration, version string) int {
 	}
 	model := newTopModel(details, first, interval, sampleTopDashboard)
 	model.version = version
+	model.processFilter = filter
 	if _, err := tea.NewProgram(model, tea.WithInput(os.Stdin), tea.WithOutput(os.Stdout)).Run(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
@@ -100,6 +101,7 @@ type topModel struct {
 	seq           int
 	lastErr       error
 	version       string
+	processFilter topProcessFilter
 }
 
 // topSampleMsg는 tick마다 수집한 snapshot이다. seq가 다르면 interval이 바뀐 뒤의 낡은 tick이다.
@@ -341,7 +343,11 @@ func (model topModel) dashboardTitle() string {
 		{topMemorySize(model.details.MemoryTotal), 2},
 	}
 	// "all latest"를 버전으로 읽는 일이 없게 보기 이름 앞에 view를 붙인다.
-	rightParts := []titlePart{{"view " + string(model.view), 0}, {state, 0}, {version, 3}}
+	filter := ""
+	if model.processFilter.active() {
+		filter = "process " + model.processFilter.String()
+	}
+	rightParts := []titlePart{{"view " + string(model.view), 0}, {state, 0}, {filter, 1}, {version, 3}}
 	join := func(parts []titlePart, priority int) string {
 		texts := []string{}
 		for _, part := range parts {
@@ -398,7 +404,7 @@ func (model topModel) detailLines() []string {
 	return []string{
 		fmt.Sprintf("detail %s · load %.1f · cpu %.1f/%.1f%% · iowait %.1f%% · mem %.1f%%", row.at.Format("15:04:05"), rate.Load1, rate.CPUUser, rate.CPUSystem, rate.CPUIOWait, rate.MemoryPercent),
 		fmt.Sprintf("  %s · %s · %s", topDiskDetail(rate), topNetworkDetail(rate), topPressureDetail(rate)),
-		"  " + topProcessDetail(row.processes, row.processesValid),
+		"  " + topProcessDetail(row.processes, row.processesValid, model.processFilter),
 	}
 }
 
@@ -974,15 +980,25 @@ func topPressureDetail(rate resourceRate) string {
 	return fmt.Sprintf("psi %.1f/%.1f/%.1f%%", rate.PSICPU, rate.PSIMemory, rate.PSIIO)
 }
 
-func topProcessDetail(processes []topProcess, valid bool) string {
+// topProcessDetail은 CPU 순으로 process 세 개를 보인다. 필터가 있으면 "match"로 바꾸고 남은 개수를 알린다.
+func topProcessDetail(processes []topProcess, valid bool, filter topProcessFilter) string {
 	if !valid {
 		return "processes —"
+	}
+	if filter.active() && len(processes) == 0 {
+		return "match none"
 	}
 	items := make([]string, 0, min(3, len(processes)))
 	for _, process := range processes[:min(3, len(processes))] {
 		items = append(items, fmt.Sprintf("%s %.0f%% %s", topProcessName(process.Command, topProcessNameWidth), process.CPU, formatProcessRSS(process.RSS)))
 	}
-	return "top " + strings.Join(items, ", ")
+	if !filter.active() {
+		return "top " + strings.Join(items, ", ")
+	}
+	if rest := len(processes) - len(items); rest > 0 {
+		items = append(items, fmt.Sprintf("+%d", rest))
+	}
+	return "match " + strings.Join(items, ", ")
 }
 
 func formatProcessRSS(bytes uint64) string {

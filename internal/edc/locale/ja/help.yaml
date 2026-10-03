@@ -71,6 +71,7 @@ command:
       interval: "sampling の間隔"
       count: "表示する行数、0 は継続実行"
       no_header: "host と列見出しを省く"
+      process: "一致する PID か command 名のみ、カンマ区切り"
       json: "sample ごとに 1 行の JSON、stdout は -"
     notes:
       - "terminal ではダッシュボードを開きます。q 終了、p 一時停止、+/- interval。"
@@ -151,7 +152,7 @@ command:
       raw: "raw event JSONL を表示"
       live: "互換 flag。trace は既定でリアルタイムに実行"
       group_by: "source、target、port、process、event でまとめます"
-      process: "process 名で絞る"
+      process: "一致する PID か command 名のみ、カンマ区切り"
       destination: "宛先 host と port で絞る"
       detail: "要約で接続や flow を 1 行ずつ表示"
       yes: "確認を省く"

@@ -2,6 +2,7 @@ package edc
 
 import (
 	"encoding/json"
+	"errors"
 	"regexp"
 	"strings"
 	"testing"
@@ -415,5 +416,83 @@ func TestPrintDiskUsageKeepsColumnsAligned(t *testing.T) {
 	}
 	if rows != 2 || len(columns) != 1 {
 		t.Fatalf("disk columns are not aligned (rows %d, columns %v):\n%s", rows, columns, output.String())
+	}
+}
+
+func TestParseTopProcessFilter(t *testing.T) {
+	if filter, err := parseTopProcessFilter("  "); err != nil || filter.active() {
+		t.Fatalf("blank filter = %+v, %v", filter, err)
+	}
+	for _, value := range []string{"node,", ",node", "node, ,java"} {
+		if _, err := parseTopProcessFilter(value); !errors.Is(err, errTopProcessFilterEmpty) {
+			t.Fatalf("%q error = %v", value, err)
+		}
+	}
+	filter, err := parseTopProcessFilter("42, Output-Mesh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		process topProcess
+		want    bool
+	}{
+		{topProcess{PID: 42, Command: "unrelated"}, true},
+		{topProcess{PID: 7, Command: "/opt/bin/OUTPUT-MESH --serve"}, true},
+		{topProcess{PID: 420, Command: "unrelated"}, false},
+		{topProcess{PID: 7, Command: "node"}, false},
+	} {
+		if got := filter.match(test.process); got != test.want {
+			t.Fatalf("match(%+v) = %v, want %v", test.process, got, test.want)
+		}
+	}
+	// 숫자 항목은 PID와만 비교한다. command에 숫자가 들어 있어도 맞지 않는다.
+	if filter, _ := parseTopProcessFilter("42"); filter.match(topProcess{PID: 7, Command: "worker42"}) {
+		t.Fatal("a numeric term must match the PID only")
+	}
+}
+
+func TestTopProcessSamplerFiltersBeforeKeepingTheBusiestOnes(t *testing.T) {
+	busy := make([]topProcess, 0, 10)
+	for pid := 1; pid <= 10; pid++ {
+		busy = append(busy, topProcess{PID: pid, CPU: float64(100 - pid), Command: "busy"})
+	}
+	quiet := topProcess{PID: 99, CPU: 0.1, Command: "quiet"}
+	sampler := &topProcessSampler{read: func() ([]topProcess, bool) {
+		return append(append([]topProcess(nil), busy...), quiet), true
+	}}
+	sampler.refresh()
+	if processes, _ := sampler.latest(); len(processes) != topProcessLimit {
+		t.Fatalf("unfiltered list has %d processes, want %d", len(processes), topProcessLimit)
+	}
+	filter, err := parseTopProcessFilter("quiet,busy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sampler.setFilter(filter)
+	sampler.refresh()
+	if processes, valid := sampler.latest(); !valid || len(processes) != 11 {
+		t.Fatalf("filtered list = %d processes, valid %v", len(processes), valid)
+	}
+	only, _ := parseTopProcessFilter("quiet")
+	sampler.setFilter(only)
+	sampler.refresh()
+	if processes, _ := sampler.latest(); len(processes) != 1 || processes[0].PID != 99 {
+		t.Fatalf("a low CPU match was dropped: %+v", processes)
+	}
+}
+
+func TestTopSampleCarriesProcessesOnlyWhenFiltering(t *testing.T) {
+	sample := newTopSample(hostDetails{Hostname: "host"}, time.Unix(0, 0), resourceRate{})
+	data, err := json.Marshal(sample)
+	if err != nil || strings.Contains(string(data), "processes") {
+		t.Fatalf("unfiltered sample = %s, %v", data, err)
+	}
+	sample.Processes = newTopProcessSamples(nil)
+	if data, _ = json.Marshal(sample); !strings.Contains(string(data), `"processes":[]`) {
+		t.Fatalf("empty match = %s", data)
+	}
+	sample.Processes = newTopProcessSamples([]topProcess{{PID: 7, CPU: 12.3456, RSS: 2048, Command: "node"}})
+	if data, _ = json.Marshal(sample); !strings.Contains(string(data), `"processes":[{"pid":7,"command":"node","cpu_pct":12.35,"rss_bytes":2048}]`) {
+		t.Fatalf("process sample = %s", data)
 	}
 }

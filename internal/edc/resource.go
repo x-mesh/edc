@@ -65,7 +65,7 @@ type topProcess struct {
 const (
 	// topProcessRefresh는 process 목록을 다시 읽는 최소 간격이다. 관측 주기가 짧아도 host 부담을 묶어 둔다.
 	topProcessRefresh = time.Second
-	// topProcessLimit은 CPU 순으로 남기는 process 수다.
+	// topProcessLimit은 필터가 없을 때 CPU 순으로 남기는 process 수다.
 	topProcessLimit = 5
 )
 
@@ -77,6 +77,7 @@ type topProcessSampler struct {
 	valid, running bool
 	updated        time.Time
 	read           func() ([]topProcess, bool)
+	filter         topProcessFilter
 }
 
 var processSampler = &topProcessSampler{read: newTopProcessReader()}
@@ -91,19 +92,28 @@ func (sampler *topProcessSampler) latest() ([]topProcess, bool) {
 	return append([]topProcess(nil), sampler.processes...), sampler.valid
 }
 
+// setFilter는 이후 refresh부터 filter에 맞는 process만 남기게 한다. 이미 받은 목록은 다음 refresh까지 그대로다.
+func (sampler *topProcessSampler) setFilter(filter topProcessFilter) {
+	sampler.mutex.Lock()
+	defer sampler.mutex.Unlock()
+	sampler.filter = filter
+}
+
 func (sampler *topProcessSampler) refresh() {
 	processes, valid := sampler.read()
 	sampler.mutex.Lock()
 	defer sampler.mutex.Unlock()
+	// 필터는 CPU 순위를 자르기 전에 건다. 자른 뒤에 걸면 CPU가 낮은 process가 목록에 들지 못해 항상 비어 보인다.
+	processes = sampler.filter.apply(processes)
+	if limit := sampler.filter.limit(); len(processes) > limit {
+		processes = processes[:limit]
+	}
 	// 실패해도 시각과 결과를 남긴다. 수집기가 없는 host에서 매 tick 다시 돌지 않고, 낡은 목록이 유효하게 남지 않는다.
 	sampler.processes, sampler.valid, sampler.updated, sampler.running = processes, valid, time.Now(), false
 }
 
-func topProcessesByCPU(processes []topProcess) []topProcess {
+func sortTopProcessesByCPU(processes []topProcess) []topProcess {
 	sort.Slice(processes, func(i, j int) bool { return processes[i].CPU > processes[j].CPU })
-	if len(processes) > topProcessLimit {
-		processes = processes[:topProcessLimit]
-	}
 	return processes
 }
 
@@ -164,7 +174,7 @@ func (tracker *topProcessTracker) update(at time.Time, stats []linuxProcessStat)
 	if !hadBaseline {
 		return nil, false
 	}
-	return topProcessesByCPU(processes), true
+	return sortTopProcessesByCPU(processes), true
 }
 
 func parseTopProcesses(output string) []topProcess {
@@ -182,7 +192,7 @@ func parseTopProcesses(output string) []topProcess {
 		}
 		processes = append(processes, topProcess{pid, cpu, rss * 1024, strings.Join(fields[3:], " ")})
 	}
-	return topProcessesByCPU(processes)
+	return sortTopProcessesByCPU(processes)
 }
 
 type resourceCPU struct{ Total, Idle uint64 }

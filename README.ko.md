@@ -409,6 +409,21 @@ macOS에서 `edc`는 Mach `host_processor_info` 호출로 kernel에서 core별 C
 
 각 줄에는 `time`, `hostname`, `cores`, 초당 byte 단위 network·disk rate, 퍼센트 단위 CPU 값, `load1`, `memory_pct`, 초당 byte 단위 `swap_out_bytes_per_s`가 들어갑니다. macOS와 Linux 모두 network errors·drops와 disk IOPS·await를 내보냅니다. Linux에서는 disk busy와 PSI `some avg10`도 추가되며, `*_health_supported`, `disk_busy_supported`, `psi_supported`가 지원 여부를 표시합니다. `--json`은 표와 헤더를 없앱니다.
 
+## Top process 필터
+
+`--process <filter>`는 host 지표를 그대로 두고 process 목록만 지정한 process로 좁힙니다. filter는 쉼표로 구분한 목록입니다. 숫자는 PID와 같아야 하고, 그 밖의 항목은 command 이름의 일부와 대소문자를 가리지 않고 맞아야 합니다. 항목 하나라도 맞으면 목록에 남습니다. command 이름은 Linux에서는 kernel이 15자로 자르는 `comm`, macOS에서는 실행 파일 경로입니다.
+
+```bash
+# 대시보드: 상세 보기에 "top ..." 대신 "match ..."가 나옵니다
+./bin/edc top --process output-mesh
+# JSON 줄: sample마다 processes 배열을 더합니다
+./bin/edc top --process 4321,worker --json /tmp/edc-host.jsonl
+```
+
+filter는 CPU 상위로 자르기 전에 적용하므로 CPU가 낮은 process도 맞으면 목록에 남습니다. 대시보드는 CPU가 높은 세 개를 보이고 나머지는 `+N`으로 알립니다. 이때 `signal` 열은 맞는 process만 반영합니다. `--json`에서는 sample마다 맞는 process를 최대 50개까지 `processes`에 담고, 각 항목에는 `pid`, `command`, `cpu_pct`, `rss_bytes`가 있습니다. CPU는 core 하나가 100%입니다. 맞는 process가 없으면 `[]`이고, 첫 process refresh가 끝나기 전의 sample에는 `processes`가 없습니다. `--process`가 없으면 `--json` 출력에 `processes` 필드가 없습니다.
+
+`--process`는 대시보드나 `--json`에서만 쓸 수 있습니다. 표에는 process 열이 없으므로 `edc top --process x --count 5`는 종료 코드 `2`로 멈춥니다.
+
 ## Remote recipe
 
 `edc remote <group>`은 inventory group에 YAML recipe를 실행합니다. 로컬 OpenSSH 설정, agent, known host 검사를 그대로 씁니다.

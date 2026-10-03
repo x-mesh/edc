@@ -22,6 +22,7 @@ func runTop(args []string, version string) int {
 	count := set.Int("count", configuredInt(config.Count, 0), T("command.top.option.count"))
 	noHeader := set.Bool("no-header", configuredBool(config.NoHeader, false), T("command.top.option.no_header"))
 	processValue := set.String("process", "", T("command.top.option.process"))
+	ebpf := set.Bool("ebpf", false, T("command.top.option.ebpf"))
 	jsonPath := set.String("json", configuredStringFallback(config.JSON, activeConfig.Defaults.Common.JSON, ""), T("command.top.option.json"))
 	if err := set.Parse(args); err != nil {
 		return 2
@@ -60,6 +61,19 @@ func runTop(args []string, version string) int {
 		// 표에는 process 열이 없다. 필터를 조용히 무시하면 전체 host 값을 필터한 값으로 읽게 된다.
 		fmt.Fprintln(os.Stderr, T("observe.top.process_needs_view"))
 		return 2
+	}
+	if *ebpf && !filter.active() {
+		fmt.Fprintln(os.Stderr, T("observe.top.ebpf_needs_process"))
+		return 2
+	}
+	if *ebpf {
+		observe, stop, err := startTopProcessBPF()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 3
+		}
+		defer stop()
+		processSampler.setObserver(observe)
 	}
 	processSampler.setFilter(filter)
 	if dashboard {
@@ -124,6 +138,8 @@ type topProcessTotalSample struct {
 	CPU      float64 `json:"cpu_pct"`
 	RSSBytes uint64  `json:"rss_bytes"`
 	Threads  int     `json:"threads,omitempty"`
+	// EBPF는 --ebpf가 직전 window 동안 센 값이다. 첫 관측 전에는 빠진다.
+	EBPF *topBPFSample `json:"ebpf,omitempty"`
 }
 
 // topProcessSample은 --process가 sample마다 붙이는 process 한 개의 값이다. CPU는 core 하나가 100%다.
@@ -138,12 +154,14 @@ type topProcessSample struct {
 	FDs       int        `json:"fds,omitempty"`
 	DiskRead  *float64   `json:"disk_read_bytes_per_s,omitempty"`
 	DiskWrite *float64   `json:"disk_write_bytes_per_s,omitempty"`
+	// EBPF는 --ebpf가 직전 window 동안 센 값이다. 첫 관측 전에는 빠진다.
+	EBPF *topBPFSample `json:"ebpf,omitempty"`
 }
 
 func newTopProcessSamples(processes []topProcess) *[]topProcessSample {
 	samples := make([]topProcessSample, 0, len(processes))
 	for _, process := range processes {
-		sample := topProcessSample{PID: process.PID, Command: process.Command, CPU: roundTopValue(process.CPU), RSSBytes: process.RSS, Threads: process.Threads, FDs: process.FDs}
+		sample := topProcessSample{PID: process.PID, Command: process.Command, CPU: roundTopValue(process.CPU), RSSBytes: process.RSS, Threads: process.Threads, FDs: process.FDs, EBPF: newTopBPFSample(process.BPF)}
 		if !process.Started.IsZero() {
 			started := process.Started.UTC().Truncate(time.Second)
 			sample.Started = &started
@@ -158,7 +176,39 @@ func newTopProcessSamples(processes []topProcess) *[]topProcessSample {
 }
 
 func newTopProcessTotalSample(total topProcessTotal) *topProcessTotalSample {
-	return &topProcessTotalSample{Count: total.Count, CPU: roundTopValue(total.CPU), RSSBytes: total.RSS, Threads: total.Threads}
+	return &topProcessTotalSample{Count: total.Count, CPU: roundTopValue(total.CPU), RSSBytes: total.RSS, Threads: total.Threads, EBPF: newTopBPFSample(total.BPF)}
+}
+
+// topBPFSample은 window 동안 센 run-queue 대기와 block I/O 지연이다. 지연은 ms이고, p95는 그 값이 든 구간의 위쪽 경계라 실제 값은 그 아래다.
+// 개수가 0이면 평균과 p95는 빠진다. I/O는 요청을 낸 process로 잡으므로 writeback은 kworker로 잡힌다.
+type topBPFSample struct {
+	WindowS   float64  `json:"window_s"`
+	RunqCount uint64   `json:"runq_count"`
+	RunqAvgMS *float64 `json:"runq_avg_ms,omitempty"`
+	RunqP95MS *float64 `json:"runq_p95_ms,omitempty"`
+	IOOps     uint64   `json:"io_ops"`
+	IOBytes   uint64   `json:"io_bytes"`
+	IOAvgMS   *float64 `json:"io_avg_ms,omitempty"`
+	IOP95MS   *float64 `json:"io_p95_ms,omitempty"`
+}
+
+func newTopBPFSample(stats *topBPFStats) *topBPFSample {
+	if stats == nil {
+		return nil
+	}
+	sample := &topBPFSample{WindowS: roundTopValue(stats.Window.Seconds()), RunqCount: stats.RunqCount, IOOps: stats.IOCount, IOBytes: stats.IOBytes}
+	rounded := func(value float64, ok bool) *float64 {
+		if !ok {
+			return nil
+		}
+		value = math.Round(value*1000) / 1000
+		return &value
+	}
+	sample.RunqAvgMS = rounded(topBPFAverageMS(stats.RunqSumNS, stats.RunqCount))
+	sample.RunqP95MS = rounded(topBPFPercentileMS(stats.RunqHist, 0.95))
+	sample.IOAvgMS = rounded(topBPFAverageMS(stats.IOSumNS, stats.IOCount))
+	sample.IOP95MS = rounded(topBPFPercentileMS(stats.IOHist, 0.95))
+	return sample
 }
 
 func newTopSample(details hostDetails, at time.Time, rate resourceRate) topSample {
@@ -212,7 +262,7 @@ func streamTop(ctx context.Context, writer io.Writer, options topOptions) int {
 			if options.json {
 				sample := newTopSample(details, current.TakenAt, rate)
 				if options.process {
-					if processes, total, valid := processSampler.latestWithTotal(); valid {
+					if processes, total, valid := processSampler.refreshNow(); valid {
 						sample.Processes = newTopProcessSamples(processes)
 						sample.ProcessTotal = newTopProcessTotalSample(total)
 					}

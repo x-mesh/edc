@@ -71,6 +71,8 @@ type topProcess struct {
 	// 읽을 권한이 없거나 직전 기준이 없으면 false다.
 	DiskValid           bool
 	DiskRead, DiskWrite float64
+	// BPF는 eBPF가 직전 window 동안 센 값이다. --ebpf가 아니거나 아직 기준이 없으면 nil이다.
+	BPF *topBPFStats
 }
 
 // topProcessTotal은 필터에 맞은 process 전체의 합이다. 목록은 CPU 상위만 남기지만 합은 모두 센다.
@@ -79,6 +81,8 @@ type topProcessTotal struct {
 	CPU     float64
 	RSS     uint64
 	Threads int
+	// BPF는 감시하는 모든 process의 eBPF 값을 더한 것이다.
+	BPF *topBPFStats
 }
 
 func totalTopProcesses(processes []topProcess) topProcessTotal {
@@ -108,8 +112,10 @@ type topProcessSampler struct {
 	read           func() ([]topProcess, bool)
 	// enrich는 목록에 남은 process에만 비싼 값(I/O, fd)을 채운다. 없으면 채우지 않는다.
 	enrich func([]topProcess)
-	filter topProcessFilter
-	total  topProcessTotal
+	// observe는 eBPF로 필터에 맞은 process를 감시한다. 없으면 감시하지 않는다.
+	observe topBPFObserver
+	filter  topProcessFilter
+	total   topProcessTotal
 }
 
 var processSampler = &topProcessSampler{read: newTopProcessReader(), enrich: newTopProcessEnricher()}
@@ -129,6 +135,15 @@ func (sampler *topProcessSampler) latestWithTotal() ([]topProcess, topProcessTot
 	return append([]topProcess(nil), sampler.processes...), sampler.total, sampler.valid
 }
 
+// refreshNow는 배경 갱신을 기다리지 않고 지금 읽는다. --json은 sample마다 새 값과 정확한 window가 필요하다.
+// 대시보드의 latest와 함께 쓰지 않는다.
+func (sampler *topProcessSampler) refreshNow() ([]topProcess, topProcessTotal, bool) {
+	sampler.refresh()
+	sampler.mutex.Lock()
+	defer sampler.mutex.Unlock()
+	return append([]topProcess(nil), sampler.processes...), sampler.total, sampler.valid
+}
+
 // setFilter는 이후 refresh부터 filter에 맞는 process만 남기게 한다. 이미 받은 목록은 다음 refresh까지 그대로다.
 func (sampler *topProcessSampler) setFilter(filter topProcessFilter) {
 	sampler.mutex.Lock()
@@ -136,10 +151,17 @@ func (sampler *topProcessSampler) setFilter(filter topProcessFilter) {
 	sampler.filter = filter
 }
 
+// setObserver는 이후 refresh부터 필터에 맞은 process를 eBPF로 감시하게 한다.
+func (sampler *topProcessSampler) setObserver(observe topBPFObserver) {
+	sampler.mutex.Lock()
+	defer sampler.mutex.Unlock()
+	sampler.observe = observe
+}
+
 func (sampler *topProcessSampler) refresh() {
 	processes, valid := sampler.read()
 	sampler.mutex.Lock()
-	filter := sampler.filter
+	filter, observe := sampler.filter, sampler.observe
 	sampler.mutex.Unlock()
 	// 필터는 CPU 순위를 자르기 전에 건다. 자른 뒤에 걸면 CPU가 낮은 process가 목록에 들지 못해 항상 비어 보인다.
 	processes = filter.apply(processes)
@@ -147,8 +169,29 @@ func (sampler *topProcessSampler) refresh() {
 	if filter.active() {
 		total = totalTopProcesses(processes)
 	}
+	// 목록은 CPU가 높은 순이라 감시 개수를 넘으면 가장 바쁜 process부터 감시한다.
+	var observed map[int]topBPFStats
+	if filter.active() && observe != nil {
+		pids := make([]int, 0, len(processes))
+		for _, process := range processes {
+			pids = append(pids, process.PID)
+		}
+		observed = observe(pids)
+		if len(observed) > 0 {
+			merged := topBPFStats{}
+			for _, stats := range observed {
+				merged.add(stats)
+			}
+			total.BPF = &merged
+		}
+	}
 	if limit := filter.limit(); len(processes) > limit {
 		processes = processes[:limit]
+	}
+	for index := range processes {
+		if stats, ok := observed[processes[index].PID]; ok {
+			processes[index].BPF = &stats
+		}
 	}
 	// /proc를 읽는 일이라 lock 밖에서 한다. running이 refresh 하나만 돌게 하므로 enrich는 겹치지 않는다.
 	if filter.active() && sampler.enrich != nil {

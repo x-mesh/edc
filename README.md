@@ -442,6 +442,29 @@ A field that `edc` cannot read is left out, not set to 0. On Linux, `fds` and th
 
 `--process` needs the dashboard or `--json`. The table has no process column, so `edc top --process x --count 5` stops with exit code `2`.
 
+### eBPF detail (Linux)
+
+`--ebpf` adds what `/proc` cannot give: how long the matched processes wait for a CPU and how long their block I/O takes. It needs `--process`, root or `CAP_BPF` and `CAP_PERFMON`, and kernel BTF. Without them, `edc top` stops with exit code `3` and says whether the host is unsupported or a capability is missing. The kernel must give `prev_state` to the `sched_switch` tracepoint. Linux 5.15, the Ubuntu 22.04 GA kernel, does not, so `--ebpf` reports that host as unsupported.
+
+```bash
+sudo ./bin/edc top --process output-mesh --ebpf
+sudo ./bin/edc top --process output-mesh --ebpf --json /tmp/edc-host.jsonl
+```
+
+The dashboard adds a third line to the detail view: `ebpf 1s · runq 7584 avg 5.80ms p95 <16.384ms · io 704 avg 0.07ms p95 <0.256ms`. With `--json`, each process and `process_total` get an `ebpf` object:
+
+| Field | Meaning |
+|---|---|
+| `window_s` | seconds the counts cover, since the previous sample |
+| `runq_count`, `runq_avg_ms`, `runq_p95_ms` | times a thread of the process became runnable and then got a CPU, and the wait in between. A high wait with a low `cpu_pct` means the CPU is oversubscribed. |
+| `io_ops`, `io_bytes`, `io_avg_ms`, `io_p95_ms` | block I/O requests the process issued, their bytes, and the time from issue to completion |
+
+`p95` is the upper edge of the power-of-two bucket that holds the 95th percentile, so the real value is below it. A latency is left out when there were no events. `process_total` merges every match, and its p95 comes from the merged distribution. `edc` watches the 4096 busiest matches.
+
+- A block I/O request belongs to the task that issues it. Synchronous reads, direct I/O, and `fsync` land on the process. Buffered writes are issued later by a kernel flusher, so they land on `kworker`. Use `disk_write_bytes_per_s` for those bytes.
+- `edc` translates the kernel's PIDs into the PID namespace it runs in, so the filter matches inside a container as well.
+- The first sample after a process appears has no `ebpf` object, because the counts start when `edc` begins to watch it.
+
 ## Remote recipes
 
 `edc remote <group>` executes a YAML recipe on an inventory group. It uses local OpenSSH configuration, agents, and known host checks.

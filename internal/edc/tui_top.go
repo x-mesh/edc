@@ -1040,7 +1040,24 @@ func topMatchDetail(processes []topProcess, total topProcessTotal, valid bool) [
 	if rest := total.Count - len(items); rest > 0 {
 		items = append(items, fmt.Sprintf("+%d", rest))
 	}
-	return []string{summary, "  " + strings.Join(items, ", ")}
+	lines := []string{summary, "  " + strings.Join(items, ", ")}
+	if total.BPF != nil {
+		lines = append(lines, "  "+topBPFDetail(*total.BPF))
+	}
+	return lines
+}
+
+// topBPFDetail은 window 동안 센 run-queue 대기와 block I/O 지연이다. 지연 뒤의 p95는 그 값이 든 구간의 위쪽 경계다.
+func topBPFDetail(stats topBPFStats) string {
+	latency := func(sumNS, count uint64, hist [topBPFBuckets]uint64) string {
+		average, ok := topBPFAverageMS(sumNS, count)
+		if !ok {
+			return "—"
+		}
+		p95, _ := topBPFPercentileMS(hist, 0.95)
+		return fmt.Sprintf("avg %.2fms p95 <%gms", average, p95)
+	}
+	return fmt.Sprintf("ebpf %.0fs · runq %d %s · io %d %s", stats.Window.Seconds(), stats.RunqCount, latency(stats.RunqSumNS, stats.RunqCount, stats.RunqHist), stats.IOCount, latency(stats.IOSumNS, stats.IOCount, stats.IOHist))
 }
 
 func formatProcessRSS(bytes uint64) string {

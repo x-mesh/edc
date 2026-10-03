@@ -19,7 +19,7 @@ const linuxClockTicks = 100
 
 // newTopProcessReader는 /proc/<pid>/stat의 CPU tick을 직전 읽기와 비교한다. 첫 읽기는 기준점만 만든다.
 func newTopProcessReader() func() ([]topProcess, bool) {
-	tracker := &topProcessTracker{clockTicks: linuxClockTicks, pageSize: uint64(os.Getpagesize())}
+	tracker := &topProcessTracker{clockTicks: linuxClockTicks, pageSize: uint64(os.Getpagesize()), boot: readLinuxBootTime()}
 	return func() ([]topProcess, bool) {
 		entries, err := os.ReadDir("/proc")
 		if err != nil {
@@ -41,6 +41,59 @@ func newTopProcessReader() func() ([]topProcess, bool) {
 			}
 		}
 		return tracker.update(time.Now(), stats)
+	}
+}
+
+// readLinuxBootTime은 /proc/stat의 btime(부팅 시각, Unix 초)을 읽는다. 없으면 zero다.
+func readLinuxBootTime() time.Time {
+	data, err := os.ReadFile("/proc/stat")
+	if err != nil {
+		return time.Time{}
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if value, ok := strings.CutPrefix(line, "btime "); ok {
+			seconds, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
+			if err != nil {
+				return time.Time{}
+			}
+			return time.Unix(seconds, 0)
+		}
+	}
+	return time.Time{}
+}
+
+// newTopProcessEnricher는 목록에 남은 process의 I/O rate와 fd 수를 채운다. 모든 process가 아니라 남은 것만 읽어
+// 필터를 걸지 않을 때 비용이 늘지 않는다. 다른 사용자의 process는 root가 아니면 /proc/<pid>/io와 fd를 읽을 수 없어 비워 둔다.
+func newTopProcessEnricher() func([]topProcess) {
+	previous := map[int]linuxProcessIOSample{}
+	return func(processes []topProcess) {
+		now := time.Now()
+		current := make(map[int]linuxProcessIOSample, len(processes))
+		for index := range processes {
+			process := &processes[index]
+			pid := strconv.Itoa(process.PID)
+			if entries, err := os.ReadDir("/proc/" + pid + "/fd"); err == nil {
+				process.FDs = len(entries)
+			}
+			data, err := os.ReadFile("/proc/" + pid + "/io")
+			if err != nil {
+				continue
+			}
+			io, ok := parseLinuxProcessIO(string(data))
+			if !ok {
+				continue
+			}
+			current[process.PID] = linuxProcessIOSample{io: io, at: now}
+			before, seen := previous[process.PID]
+			seconds := now.Sub(before.at).Seconds()
+			if !seen || seconds <= 0 || io.read < before.io.read || io.write < before.io.write {
+				continue
+			}
+			process.DiskValid = true
+			process.DiskRead = float64(io.read-before.io.read) / seconds
+			process.DiskWrite = float64(io.write-before.io.write) / seconds
+		}
+		previous = current
 	}
 }
 

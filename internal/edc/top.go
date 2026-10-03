@@ -115,22 +115,50 @@ type topSample struct {
 	SwapOut    float64   `json:"swap_out_bytes_per_s"`
 	// Processes는 --process를 쓸 때만 나온다. 맞는 process가 없으면 빈 배열이고, 첫 sample처럼 목록이 아직 없으면 빠진다.
 	Processes *[]topProcessSample `json:"processes,omitempty"`
+	// ProcessTotal은 필터에 맞은 process 전체의 합이다. Processes는 CPU 상위만 남기지만 합은 모두 센다.
+	ProcessTotal *topProcessTotalSample `json:"process_total,omitempty"`
+}
+
+type topProcessTotalSample struct {
+	Count    int     `json:"count"`
+	CPU      float64 `json:"cpu_pct"`
+	RSSBytes uint64  `json:"rss_bytes"`
+	Threads  int     `json:"threads,omitempty"`
 }
 
 // topProcessSample은 --process가 sample마다 붙이는 process 한 개의 값이다. CPU는 core 하나가 100%다.
+// Started, Threads, FDs, 디스크 rate는 읽을 수 없으면 빠진다. (pid, started)가 process 하나를 가리킨다.
 type topProcessSample struct {
-	PID      int     `json:"pid"`
-	Command  string  `json:"command"`
-	CPU      float64 `json:"cpu_pct"`
-	RSSBytes uint64  `json:"rss_bytes"`
+	PID       int        `json:"pid"`
+	Started   *time.Time `json:"started,omitempty"`
+	Command   string     `json:"command"`
+	CPU       float64    `json:"cpu_pct"`
+	RSSBytes  uint64     `json:"rss_bytes"`
+	Threads   int        `json:"threads,omitempty"`
+	FDs       int        `json:"fds,omitempty"`
+	DiskRead  *float64   `json:"disk_read_bytes_per_s,omitempty"`
+	DiskWrite *float64   `json:"disk_write_bytes_per_s,omitempty"`
 }
 
 func newTopProcessSamples(processes []topProcess) *[]topProcessSample {
 	samples := make([]topProcessSample, 0, len(processes))
 	for _, process := range processes {
-		samples = append(samples, topProcessSample{PID: process.PID, Command: process.Command, CPU: roundTopValue(process.CPU), RSSBytes: process.RSS})
+		sample := topProcessSample{PID: process.PID, Command: process.Command, CPU: roundTopValue(process.CPU), RSSBytes: process.RSS, Threads: process.Threads, FDs: process.FDs}
+		if !process.Started.IsZero() {
+			started := process.Started.UTC().Truncate(time.Second)
+			sample.Started = &started
+		}
+		if process.DiskValid {
+			read, write := roundTopValue(process.DiskRead), roundTopValue(process.DiskWrite)
+			sample.DiskRead, sample.DiskWrite = &read, &write
+		}
+		samples = append(samples, sample)
 	}
 	return &samples
+}
+
+func newTopProcessTotalSample(total topProcessTotal) *topProcessTotalSample {
+	return &topProcessTotalSample{Count: total.Count, CPU: roundTopValue(total.CPU), RSSBytes: total.RSS, Threads: total.Threads}
 }
 
 func newTopSample(details hostDetails, at time.Time, rate resourceRate) topSample {
@@ -184,8 +212,9 @@ func streamTop(ctx context.Context, writer io.Writer, options topOptions) int {
 			if options.json {
 				sample := newTopSample(details, current.TakenAt, rate)
 				if options.process {
-					if processes, valid := processSampler.latest(); valid {
+					if processes, total, valid := processSampler.latestWithTotal(); valid {
 						sample.Processes = newTopProcessSamples(processes)
+						sample.ProcessTotal = newTopProcessTotalSample(total)
 					}
 				}
 				if err := encoder.Encode(sample); err != nil {

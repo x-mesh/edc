@@ -42,6 +42,7 @@ type resourceSnapshot struct {
 	PSIValid        bool
 	Processes       []topProcess
 	ProcessesValid  bool
+	ProcessTotal    topProcessTotal
 	NetHealthValid  bool
 	DiskHealthValid bool
 	// DiskBusyValid는 busy 시간을 읽었는지다. macOS는 IOPS와 await는 주지만 I/O가 진행 중이던 시간은 주지 않는다.
@@ -60,6 +61,34 @@ type topProcess struct {
 	CPU     float64
 	RSS     uint64
 	Command string
+	// Started는 process가 시작한 시각이다. PID가 재사용돼도 (PID, Started)는 process 하나를 가리킨다. 모르면 zero다.
+	Started time.Time
+	// Threads는 thread 수이고 모르면 0이다.
+	Threads int
+	// FDs는 열린 file descriptor 수이고 모르면 0이다. 필터로 고른 process에만 읽는다.
+	FDs int
+	// DiskValid는 DiskRead와 DiskWrite를 구했는지다. 이 값은 storage에 닿은 byte의 초당 rate이고,
+	// 읽을 권한이 없거나 직전 기준이 없으면 false다.
+	DiskValid           bool
+	DiskRead, DiskWrite float64
+}
+
+// topProcessTotal은 필터에 맞은 process 전체의 합이다. 목록은 CPU 상위만 남기지만 합은 모두 센다.
+type topProcessTotal struct {
+	Count   int
+	CPU     float64
+	RSS     uint64
+	Threads int
+}
+
+func totalTopProcesses(processes []topProcess) topProcessTotal {
+	total := topProcessTotal{Count: len(processes)}
+	for _, process := range processes {
+		total.CPU += process.CPU
+		total.RSS += process.RSS
+		total.Threads += process.Threads
+	}
+	return total
 }
 
 const (
@@ -77,19 +106,27 @@ type topProcessSampler struct {
 	valid, running bool
 	updated        time.Time
 	read           func() ([]topProcess, bool)
-	filter         topProcessFilter
+	// enrich는 목록에 남은 process에만 비싼 값(I/O, fd)을 채운다. 없으면 채우지 않는다.
+	enrich func([]topProcess)
+	filter topProcessFilter
+	total  topProcessTotal
 }
 
-var processSampler = &topProcessSampler{read: newTopProcessReader()}
+var processSampler = &topProcessSampler{read: newTopProcessReader(), enrich: newTopProcessEnricher()}
 
 func (sampler *topProcessSampler) latest() ([]topProcess, bool) {
+	processes, _, valid := sampler.latestWithTotal()
+	return processes, valid
+}
+
+func (sampler *topProcessSampler) latestWithTotal() ([]topProcess, topProcessTotal, bool) {
 	sampler.mutex.Lock()
 	defer sampler.mutex.Unlock()
 	if !sampler.running && time.Since(sampler.updated) >= topProcessRefresh {
 		sampler.running = true
 		go sampler.refresh()
 	}
-	return append([]topProcess(nil), sampler.processes...), sampler.valid
+	return append([]topProcess(nil), sampler.processes...), sampler.total, sampler.valid
 }
 
 // setFilter는 이후 refresh부터 filter에 맞는 process만 남기게 한다. 이미 받은 목록은 다음 refresh까지 그대로다.
@@ -102,14 +139,25 @@ func (sampler *topProcessSampler) setFilter(filter topProcessFilter) {
 func (sampler *topProcessSampler) refresh() {
 	processes, valid := sampler.read()
 	sampler.mutex.Lock()
-	defer sampler.mutex.Unlock()
+	filter := sampler.filter
+	sampler.mutex.Unlock()
 	// 필터는 CPU 순위를 자르기 전에 건다. 자른 뒤에 걸면 CPU가 낮은 process가 목록에 들지 못해 항상 비어 보인다.
-	processes = sampler.filter.apply(processes)
-	if limit := sampler.filter.limit(); len(processes) > limit {
+	processes = filter.apply(processes)
+	total := topProcessTotal{}
+	if filter.active() {
+		total = totalTopProcesses(processes)
+	}
+	if limit := filter.limit(); len(processes) > limit {
 		processes = processes[:limit]
 	}
+	// /proc를 읽는 일이라 lock 밖에서 한다. running이 refresh 하나만 돌게 하므로 enrich는 겹치지 않는다.
+	if filter.active() && sampler.enrich != nil {
+		sampler.enrich(processes)
+	}
+	sampler.mutex.Lock()
+	defer sampler.mutex.Unlock()
 	// 실패해도 시각과 결과를 남긴다. 수집기가 없는 host에서 매 tick 다시 돌지 않고, 낡은 목록이 유효하게 남지 않는다.
-	sampler.processes, sampler.valid, sampler.updated, sampler.running = processes, valid, time.Now(), false
+	sampler.processes, sampler.total, sampler.valid, sampler.updated, sampler.running = processes, total, valid, time.Now(), false
 }
 
 func sortTopProcessesByCPU(processes []topProcess) []topProcess {
@@ -119,16 +167,18 @@ func sortTopProcessesByCPU(processes []topProcess) []topProcess {
 
 // linuxProcessStat은 /proc/<pid>/stat 한 줄에서 CPU tick과 RSS page 수만 뽑은 값이다.
 type linuxProcessStat struct {
-	PID      int
-	Command  string
-	Ticks    uint64
-	RSSPages uint64
+	PID        int
+	Command    string
+	Ticks      uint64
+	RSSPages   uint64
+	Threads    int
+	StartTicks uint64
 }
 
 // parseLinuxProcessStat은 /proc/<pid>/stat을 읽는다. comm에는 공백과 괄호가 들어갈 수 있어 마지막 ')' 뒤를 나눈다.
-// ')' 뒤 첫 필드가 3번 state이므로 utime(14)·stime(15)·rss(24)는 11·12·21번째다.
+// ')' 뒤 첫 필드가 3번 state이므로 utime(14)·stime(15)·num_threads(20)·starttime(22)·rss(24)는 11·12·17·19·21번째다.
 func parseLinuxProcessStat(pid int, data string) (linuxProcessStat, bool) {
-	const utimeField, stimeField, rssField = 11, 12, 21
+	const utimeField, stimeField, threadsField, startField, rssField = 11, 12, 17, 19, 21
 	open, end := strings.IndexByte(data, '('), strings.LastIndexByte(data, ')')
 	if open < 0 || end < open {
 		return linuxProcessStat{}, false
@@ -140,15 +190,50 @@ func parseLinuxProcessStat(pid int, data string) (linuxProcessStat, bool) {
 	utime, e1 := strconv.ParseUint(fields[utimeField], 10, 64)
 	stime, e2 := strconv.ParseUint(fields[stimeField], 10, 64)
 	rss, e3 := strconv.ParseUint(fields[rssField], 10, 64)
-	if e1 != nil || e2 != nil || e3 != nil {
+	threads, e4 := strconv.Atoi(fields[threadsField])
+	start, e5 := strconv.ParseUint(fields[startField], 10, 64)
+	if e1 != nil || e2 != nil || e3 != nil || e4 != nil || e5 != nil {
 		return linuxProcessStat{}, false
 	}
-	return linuxProcessStat{PID: pid, Command: data[open+1 : end], Ticks: utime + stime, RSSPages: rss}, true
+	return linuxProcessStat{PID: pid, Command: data[open+1 : end], Ticks: utime + stime, RSSPages: rss, Threads: threads, StartTicks: start}, true
+}
+
+// linuxProcessIO는 /proc/<pid>/io에서 storage에 닿은 누적 byte다. rchar와 wchar는 page cache를 거친 byte까지 세므로 쓰지 않는다.
+type linuxProcessIO struct{ read, write uint64 }
+
+func parseLinuxProcessIO(data string) (linuxProcessIO, bool) {
+	var io linuxProcessIO
+	found := 0
+	for _, line := range strings.Split(data, "\n") {
+		name, value, ok := strings.Cut(line, ":")
+		if !ok {
+			continue
+		}
+		number, err := strconv.ParseUint(strings.TrimSpace(value), 10, 64)
+		if err != nil {
+			continue
+		}
+		switch name {
+		case "read_bytes":
+			io.read, found = number, found+1
+		case "write_bytes":
+			io.write, found = number, found+1
+		}
+	}
+	return io, found == 2
+}
+
+// linuxProcessIOSample은 직전 읽기다. 두 읽기의 차이를 시간으로 나눠 rate를 구한다.
+type linuxProcessIOSample struct {
+	io linuxProcessIO
+	at time.Time
 }
 
 // topProcessTracker는 두 번 읽은 CPU tick 차이로 최근 CPU%를 구한다. Linux ps의 pcpu는
 // process 수명 전체 평균이라 방금 바빠진 오래된 process를 놓친다.
 type topProcessTracker struct {
+	// boot는 부팅 시각이다. starttime은 부팅 뒤 tick 수라서 이 값을 더해야 시각이 된다. 모르면 zero다.
+	boot       time.Time
 	clockTicks float64
 	pageSize   uint64
 	previousAt time.Time
@@ -167,7 +252,11 @@ func (tracker *topProcessTracker) update(at time.Time, stats []linuxProcessStat)
 			continue
 		}
 		cpu := float64(stat.Ticks-before) / tracker.clockTicks / seconds * 100
-		processes = append(processes, topProcess{PID: stat.PID, CPU: cpu, RSS: stat.RSSPages * tracker.pageSize, Command: stat.Command})
+		process := topProcess{PID: stat.PID, CPU: cpu, RSS: stat.RSSPages * tracker.pageSize, Command: stat.Command, Threads: stat.Threads}
+		if !tracker.boot.IsZero() {
+			process.Started = tracker.boot.Add(time.Duration(float64(stat.StartTicks) / tracker.clockTicks * float64(time.Second)))
+		}
+		processes = append(processes, process)
 	}
 	hadBaseline := tracker.previous != nil
 	tracker.previous, tracker.previousAt = current, at
@@ -177,11 +266,18 @@ func (tracker *topProcessTracker) update(at time.Time, stats []linuxProcessStat)
 	return sortTopProcessesByCPU(processes), true
 }
 
+// topProcessStartLayout은 LC_ALL=C일 때 ps의 lstart 형식이다. 다섯 필드이고 일이 한 자리면 공백이 하나 더 들어간다.
+const topProcessStartLayout = "Mon Jan 2 15:04:05 2006"
+
+// topProcessStartFields는 lstart가 차지하는 필드 수다.
+const topProcessStartFields = 5
+
+// parseTopProcesses는 "pid pcpu rss lstart comm" 줄을 읽는다.
 func parseTopProcesses(output string) []topProcess {
 	processes := []topProcess{}
 	for _, line := range strings.Split(output, "\n") {
 		fields := strings.Fields(line)
-		if len(fields) < 4 {
+		if len(fields) < 4+topProcessStartFields {
 			continue
 		}
 		pid, e1 := strconv.Atoi(fields[0])
@@ -190,7 +286,9 @@ func parseTopProcesses(output string) []topProcess {
 		if e1 != nil || e2 != nil || e3 != nil {
 			continue
 		}
-		processes = append(processes, topProcess{pid, cpu, rss * 1024, strings.Join(fields[3:], " ")})
+		// lstart를 읽지 못해도 process는 남긴다. 시작 시각만 비운다.
+		started, _ := time.ParseInLocation(topProcessStartLayout, strings.Join(fields[3:3+topProcessStartFields], " "), time.Local)
+		processes = append(processes, topProcess{PID: pid, CPU: cpu, RSS: rss * 1024, Command: strings.Join(fields[3+topProcessStartFields:], " "), Started: started})
 	}
 	return sortTopProcessesByCPU(processes)
 }

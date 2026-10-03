@@ -420,7 +420,21 @@ macOS에서 `edc`는 Mach `host_processor_info` 호출로 kernel에서 core별 C
 ./bin/edc top --process 4321,worker --json /tmp/edc-host.jsonl
 ```
 
-filter는 CPU 상위로 자르기 전에 적용하므로 CPU가 낮은 process도 맞으면 목록에 남습니다. 대시보드는 CPU가 높은 세 개를 보이고 나머지는 `+N`으로 알립니다. 이때 `signal` 열은 맞는 process만 반영합니다. `--json`에서는 sample마다 맞는 process를 최대 50개까지 `processes`에 담고, 각 항목에는 `pid`, `command`, `cpu_pct`, `rss_bytes`가 있습니다. CPU는 core 하나가 100%입니다. 맞는 process가 없으면 `[]`이고, 첫 process refresh가 끝나기 전의 sample에는 `processes`가 없습니다. `--process`가 없으면 `--json` 출력에 `processes` 필드가 없습니다.
+filter는 CPU 상위로 자르기 전에 적용하므로 CPU가 낮은 process도 맞으면 목록에 남습니다.
+
+대시보드 상세 보기는 두 줄입니다. 첫 줄은 맞은 process 전체의 합으로, 개수, CPU, RSS, thread, 열린 file descriptor, 디스크 I/O입니다. 둘째 줄은 CPU가 높은 세 개와 나머지 개수 `+N`입니다. 이때 `signal` 열은 맞는 process만 반영합니다.
+
+`--json`에서는 sample에 필드 두 개가 더해집니다. `processes`는 맞는 process를 CPU가 높은 순으로 최대 50개 담습니다. `process_total`은 맞은 process 전체의 합으로 `count`, `cpu_pct`, `rss_bytes`, `threads`입니다. CPU는 core 하나가 100%이고, 맞는 process가 없으면 `processes`는 `[]`입니다. process마다 들어가는 필드는 다음과 같습니다.
+
+| 필드 | 뜻 |
+|---|---|
+| `pid`, `started` | `started`는 UTC 시작 시각입니다. PID는 재사용될 수 있어 `(pid, started)`가 process 하나를 가리킵니다. |
+| `command`, `cpu_pct`, `rss_bytes` | 이름, 직전 refresh 이후 CPU, 상주 memory |
+| `threads` | thread 수 (Linux) |
+| `fds` | 열린 file descriptor 수 (Linux) |
+| `disk_read_bytes_per_s`, `disk_write_bytes_per_s` | storage에 닿은 byte. `/proc/<pid>/io`의 `read_bytes`, `write_bytes` 기준 (Linux) |
+
+`edc`가 읽지 못한 필드는 0이 아니라 빠집니다. Linux에서 `fds`와 디스크 필드는 같은 사용자거나 root여야 읽습니다. 이 값은 목록에 남은 process만 읽으므로 많이 맞는 filter도 읽는 process는 최대 50개입니다. macOS는 `started`는 주지만 `threads`, `fds`, 디스크 값은 주지 않습니다. 첫 refresh가 끝나기 전의 sample에는 `processes`가 없고, 디스크 rate는 refresh가 두 번 지나야 나옵니다. `--process`가 없으면 `--json` 출력에 이 필드들이 없습니다.
 
 `--process`는 대시보드나 `--json`에서만 쓸 수 있습니다. 표에는 process 열이 없으므로 `edc top --process x --count 5`는 종료 코드 `2`로 멈춥니다.
 

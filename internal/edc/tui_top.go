@@ -37,7 +37,7 @@ func runTopDashboard(interval time.Duration, version string, filter topProcessFi
 // collectResourceSnapshot이 아니라 대시보드에서만 process를 수집한다.
 func sampleTopDashboard() (resourceSnapshot, error) {
 	snapshot, err := collectResourceSnapshot()
-	snapshot.Processes, snapshot.ProcessesValid = processSampler.latest()
+	snapshot.Processes, snapshot.ProcessTotal, snapshot.ProcessesValid = processSampler.latestWithTotal()
 	return snapshot, err
 }
 
@@ -80,6 +80,7 @@ type topDashboardRow struct {
 	at             time.Time
 	rate           resourceRate
 	processes      []topProcess
+	processTotal   topProcessTotal
 	processesValid bool
 }
 
@@ -146,7 +147,7 @@ func (model topModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return model, model.tick()
 		}
 		before := len(model.rows) + 1
-		model.rows = appendTopDashboardRow(model.rows, topDashboardRow{at: value.snapshot.TakenAt, rate: calculateRate(model.previous, value.snapshot), processes: value.snapshot.Processes, processesValid: value.snapshot.ProcessesValid})
+		model.rows = appendTopDashboardRow(model.rows, topDashboardRow{at: value.snapshot.TakenAt, rate: calculateRate(model.previous, value.snapshot), processes: value.snapshot.Processes, processTotal: value.snapshot.ProcessTotal, processesValid: value.snapshot.ProcessesValid})
 		model.previous = value.snapshot
 		if model.follow {
 			model.selected = len(model.rows) - 1
@@ -401,11 +402,20 @@ func (model topModel) detailLines() []string {
 		return []string{"detail · waiting for a sample"}
 	}
 	rate := row.rate
-	return []string{
+	lines := []string{
 		fmt.Sprintf("detail %s · load %.1f · cpu %.1f/%.1f%% · iowait %.1f%% · mem %.1f%%", row.at.Format("15:04:05"), rate.Load1, rate.CPUUser, rate.CPUSystem, rate.CPUIOWait, rate.MemoryPercent),
 		fmt.Sprintf("  %s · %s · %s", topDiskDetail(rate), topNetworkDetail(rate), topPressureDetail(rate)),
-		"  " + topProcessDetail(row.processes, row.processesValid, model.processFilter),
 	}
+	if !model.processFilter.active() {
+		return append(lines, "  "+topProcessDetail(row.processes, row.processesValid))
+	}
+	for index, line := range topMatchDetail(row.processes, row.processTotal, row.processesValid) {
+		if index == 0 {
+			line = "  " + line
+		}
+		lines = append(lines, line)
+	}
+	return lines
 }
 
 // peakLines는 지표마다 따로 최고치를 찾는다. 단위가 다른 값을 더해 한 행을 고르면 load 급등이 memory에 가려진다.
@@ -980,25 +990,57 @@ func topPressureDetail(rate resourceRate) string {
 	return fmt.Sprintf("psi %.1f/%.1f/%.1f%%", rate.PSICPU, rate.PSIMemory, rate.PSIIO)
 }
 
-// topProcessDetail은 CPU 순으로 process 세 개를 보인다. 필터가 있으면 "match"로 바꾸고 남은 개수를 알린다.
-func topProcessDetail(processes []topProcess, valid bool, filter topProcessFilter) string {
+// topProcessDetail은 CPU 순으로 process 세 개를 보인다. 필터가 있으면 topMatchDetail로 넘어간다.
+func topProcessDetail(processes []topProcess, valid bool) string {
 	if !valid {
 		return "processes —"
 	}
-	if filter.active() && len(processes) == 0 {
-		return "match none"
-	}
+	return "top " + strings.Join(topProcessItems(processes), ", ")
+}
+
+func topProcessItems(processes []topProcess) []string {
 	items := make([]string, 0, min(3, len(processes)))
 	for _, process := range processes[:min(3, len(processes))] {
 		items = append(items, fmt.Sprintf("%s %.0f%% %s", topProcessName(process.Command, topProcessNameWidth), process.CPU, formatProcessRSS(process.RSS)))
 	}
-	if !filter.active() {
-		return "top " + strings.Join(items, ", ")
+	return items
+}
+
+// topMatchDetail은 필터에 맞은 process 전체의 합 한 줄과, CPU 상위 세 개와 남은 개수 한 줄이다. 한 줄에 다 담으면 80열에서 잘린다.
+// 디스크와 fd는 목록에 남은 process만 읽으므로 합도 그 범위다.
+func topMatchDetail(processes []topProcess, total topProcessTotal, valid bool) []string {
+	if !valid {
+		return []string{"processes —"}
 	}
-	if rest := len(processes) - len(items); rest > 0 {
+	if total.Count == 0 {
+		return []string{"match none"}
+	}
+	summary := fmt.Sprintf("match %d · cpu %.0f%% · rss %s", total.Count, total.CPU, formatProcessRSS(total.RSS))
+	if total.Threads > 0 {
+		summary += fmt.Sprintf(" · thr %d", total.Threads)
+	}
+	var fds int
+	var read, write float64
+	var diskKnown bool
+	for _, process := range processes {
+		fds += process.FDs
+		if process.DiskValid {
+			diskKnown = true
+			read += process.DiskRead
+			write += process.DiskWrite
+		}
+	}
+	if fds > 0 {
+		summary += fmt.Sprintf(" · fds %d", fds)
+	}
+	if diskKnown {
+		summary += fmt.Sprintf(" · io r %s/s w %s/s", formatRate(read), formatRate(write))
+	}
+	items := topProcessItems(processes)
+	if rest := total.Count - len(items); rest > 0 {
 		items = append(items, fmt.Sprintf("+%d", rest))
 	}
-	return "match " + strings.Join(items, ", ")
+	return []string{summary, "  " + strings.Join(items, ", ")}
 }
 
 func formatProcessRSS(bytes uint64) string {

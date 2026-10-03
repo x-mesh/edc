@@ -30,7 +30,10 @@ func newTopProcessReader() func() ([]topProcess, bool) {
 	return func() ([]topProcess, bool) {
 		ctx, cancel := context.WithTimeout(context.Background(), darwinProcessTimeout)
 		defer cancel()
-		output, err := exec.CommandContext(ctx, "/bin/ps", "-Ao", "pid=,pcpu=,rss=,comm=").Output()
+		command := exec.CommandContext(ctx, "/bin/ps", "-Ao", "pid=,pcpu=,rss=,lstart=,comm=")
+		// lstart의 요일과 달 이름이 지역 설정을 따르면 시작 시각을 읽을 수 없다.
+		command.Env = append(os.Environ(), "LC_ALL=C")
+		output, err := command.Output()
 		if err != nil {
 			return nil, false
 		}
@@ -38,6 +41,9 @@ func newTopProcessReader() func() ([]topProcess, bool) {
 		return processes, len(processes) > 0
 	}
 }
+
+// newTopProcessEnricher는 macOS에서 쓰지 않는다. process별 I/O와 fd 수는 root 없이 싸게 읽을 수 없다.
+func newTopProcessEnricher() func([]topProcess) { return nil }
 
 func collectResourceSnapshot() (resourceSnapshot, error) {
 	snapshot := resourceSnapshot{TakenAt: time.Now()}

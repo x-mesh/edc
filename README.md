@@ -424,7 +424,21 @@ Each line has `time`, `hostname`, `cores`, the network and disk rates in bytes p
 ./bin/edc top --process 4321,worker --json /tmp/edc-host.jsonl
 ```
 
-The filter runs before the list is cut to the busiest processes. A quiet process that matches stays in the list. The dashboard shows the three busiest matches and `+N` for the rest. The `signal` column then reflects only the matches. With `--json`, a sample carries up to 50 matches in `processes`, each with `pid`, `command`, `cpu_pct`, and `rss_bytes`. CPU is 100% per core. The array is `[]` when nothing matches. The first samples have no `processes` field until the first process refresh finishes. Without `--process`, `--json` output has no `processes` field.
+The filter runs before the list is cut to the busiest processes. A quiet process that matches stays in the list.
+
+The dashboard detail view shows two lines. The first line is the total over every match: count, CPU, RSS, threads, open file descriptors, and disk I/O. The second line lists the three busiest matches and `+N` for the rest. The `signal` column then reflects only the matches.
+
+With `--json`, a sample adds two fields. `processes` holds up to 50 matches, busiest first. `process_total` is the sum over every match: `count`, `cpu_pct`, `rss_bytes`, and `threads`. CPU is 100% per core. `processes` is `[]` when nothing matches. Each process has these fields:
+
+| Field | Meaning |
+|---|---|
+| `pid`, `started` | `started` is the start time in UTC. A PID can be reused, so `(pid, started)` names one process. |
+| `command`, `cpu_pct`, `rss_bytes` | name, CPU since the last refresh, resident memory |
+| `threads` | thread count (Linux) |
+| `fds` | open file descriptors (Linux) |
+| `disk_read_bytes_per_s`, `disk_write_bytes_per_s` | bytes that reached storage, from `read_bytes` and `write_bytes` in `/proc/<pid>/io` (Linux) |
+
+A field that `edc` cannot read is left out, not set to 0. On Linux, `fds` and the disk fields need the same user or root. They are read only for the processes in the list, so a filter that matches many processes reads at most 50 of them. macOS gives `started` but no `threads`, `fds`, or disk values. The first samples have no `processes` field until the first refresh finishes, and the disk rate needs a second refresh. Without `--process`, `--json` output has none of these fields.
 
 `--process` needs the dashboard or `--json`. The table has no process column, so `edc top --process x --count 5` stops with exit code `2`.
 

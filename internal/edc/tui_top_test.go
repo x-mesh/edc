@@ -225,27 +225,34 @@ func TestTopPressureAndCorePresentation(t *testing.T) {
 
 func TestTopProcessDetailUsesTheSelectedSnapshot(t *testing.T) {
 	processes := []topProcess{{PID: 4, CPU: 99, RSS: 2 * 1024 * 1024, Command: "java"}, {PID: 7, CPU: 12, RSS: 1024, Command: "node"}}
-	got := topProcessDetail(processes, true, topProcessFilter{})
+	got := topProcessDetail(processes, true)
 	if !strings.Contains(got, "java 99% 2.0M") || !strings.Contains(got, "node 12%") {
 		t.Fatalf("process detail = %q", got)
 	}
-	if got := topProcessDetail(nil, false, topProcessFilter{}); got != "processes —" {
+	if got := topProcessDetail(nil, false); got != "processes —" {
 		t.Fatalf("process fallback = %q", got)
 	}
 }
 
-func TestTopProcessDetailNamesTheFilterAndTheRest(t *testing.T) {
-	filter, err := parseTopProcessFilter("worker")
-	if err != nil {
-		t.Fatal(err)
+func TestTopMatchDetailSumsEveryMatchAndNamesTheRest(t *testing.T) {
+	processes := []topProcess{
+		{PID: 1, CPU: 50, RSS: 3 << 20, Command: "worker-a", FDs: 10, DiskValid: true, DiskRead: 1 << 20, DiskWrite: 2 << 20},
+		{PID: 2, CPU: 40, RSS: 2 << 20, Command: "worker-b", FDs: 5, DiskValid: true, DiskWrite: 1 << 20},
 	}
-	processes := []topProcess{{PID: 1, CPU: 50, Command: "worker-a"}, {PID: 2, CPU: 40, Command: "worker-b"}, {PID: 3, CPU: 30, Command: "worker-c"}, {PID: 4, CPU: 20, Command: "worker-d"}, {PID: 5, CPU: 10, Command: "worker-e"}}
-	got := topProcessDetail(processes, true, filter)
-	if !strings.HasPrefix(got, "match worker-a 50%") || !strings.HasSuffix(got, ", +2") {
-		t.Fatalf("filtered detail = %q", got)
+	total := topProcessTotal{Count: 5, CPU: 130, RSS: 9 << 20, Threads: 12}
+	lines := topMatchDetail(processes, total, true)
+	if len(lines) != 2 || lines[0] != "match 5 · cpu 130% · rss 9.0M · thr 12 · fds 15 · io r 1.00M/s w 3.00M/s" || lines[1] != "  worker-a 50% 3.0M, worker-b 40% 2.0M, +3" {
+		t.Fatalf("match detail = %q", lines)
 	}
-	if got := topProcessDetail(nil, true, filter); got != "match none" {
+	if got := topMatchDetail(nil, topProcessTotal{}, true); len(got) != 1 || got[0] != "match none" {
 		t.Fatalf("no match detail = %q", got)
+	}
+	if got := topMatchDetail(nil, topProcessTotal{}, false); len(got) != 1 || got[0] != "processes —" {
+		t.Fatalf("no sample detail = %q", got)
+	}
+	quiet := topMatchDetail([]topProcess{{PID: 3, CPU: 1, Command: "x"}}, topProcessTotal{Count: 1, CPU: 1}, true)
+	if strings.Contains(quiet[0], "fds") || strings.Contains(quiet[0], "io r") || strings.Contains(quiet[0], "thr") {
+		t.Fatalf("unknown values must not appear: %q", quiet)
 	}
 }
 

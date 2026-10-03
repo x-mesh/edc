@@ -166,7 +166,7 @@ cli:
     failed: "network trace failed: %v"
     duration_range: "--duration must be 0s or between 1ns and 60s"
     slow_range: "--slow must be greater than 0"
-    slow_protocol: "--slow is only available for trace mysql and trace io"
+    slow_protocol: "--slow is only available for trace mysql, trace io, and trace sched"
     raw_json_conflict: "--raw and --json cannot be used together"
     group_by_range: "--group-by must be source, target, port, process, or event"
     group_by_raw_conflict: "--group-by cannot be used with --raw"

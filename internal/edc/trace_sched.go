@@ -31,6 +31,7 @@ const schedMinimumLatency = time.Millisecond
 
 type schedTraceOptions struct {
 	duration     time.Duration
+	slow         time.Duration
 	process      string
 	containerRef string
 	container    *traceContainer
@@ -120,7 +121,7 @@ func schedReportValueFor(stats schedStats) schedReportValue {
 	return schedReportValue{n, avg, p95, max}
 }
 func (r schedReport) print() {
-	fmt.Printf("SCHEDULER TRACE  duration %dms  minimum %.1fms\n", r.DurationMS, r.Summary.MinimumLatencyMS)
+	fmt.Printf("SCHEDULER TRACE  duration %dms  minimum %gms\n", r.DurationMS, r.Summary.MinimumLatencyMS)
 	fmt.Printf("%-20s %8s %8s %8s %8s  %8s %8s %8s %8s  %8s %8s %8s %8s\n", "GROUP", "WAKE N", "AVG", "P95", "MAX", "RUN N", "AVG", "P95", "MAX", "OFF N", "AVG", "P95", "MAX")
 	for _, row := range r.Rows {
 		fmt.Printf("%-20s %8d %8s %8s %8s  %8d %8s %8s %8s  %8d %8s %8s %8s\n", row.Group, row.Wakeup.Samples, schedMS(row.Wakeup.AverageMS), schedMS(row.Wakeup.P95MS), schedMS(row.Wakeup.MaxMS), row.Runqueue.Samples, schedMS(row.Runqueue.AverageMS), schedMS(row.Runqueue.P95MS), schedMS(row.Runqueue.MaxMS), row.OffCPU.Samples, schedMS(row.OffCPU.AverageMS), schedMS(row.OffCPU.P95MS), schedMS(row.OffCPU.MaxMS))
@@ -139,6 +140,7 @@ func runTraceSched(args []string) int {
 	set := flag.NewFlagSet("trace sched", flag.ContinueOnError)
 	set.SetOutput(os.Stderr)
 	set.DurationVar(&options.duration, "duration", 0, "trace duration")
+	set.DurationVar(&options.slow, "slow", schedMinimumLatency, "minimum span latency with a unit, such as 20us, 500us, or 2ms")
 	set.StringVar(&options.process, "process", "", "process name")
 	set.StringVar(&options.containerRef, "container", "", "container name or ID")
 	set.StringVar(&options.groupBy, "group-by", "", "process, cgroup, or event")
@@ -150,6 +152,10 @@ func runTraceSched(args []string) int {
 		return 2
 	}
 	if set.NArg() != 0 || options.duration < 0 || options.duration > maxCaptureDuration || (options.raw && options.jsonPath != "") {
+		return 2
+	}
+	if options.slow <= 0 {
+		fmt.Fprintln(os.Stderr, T("cli.trace.slow_range"))
 		return 2
 	}
 	if options.groupBy != "" && options.groupBy != "process" && options.groupBy != "cgroup" && options.groupBy != "event" {
@@ -177,7 +183,7 @@ func runTraceSched(args []string) int {
 	rows := map[string]*schedReportRow{}
 	var written uint64
 	encoder := json.NewEncoder(os.Stdout)
-	summary, err := collectSchedEvents(options.duration, func(event schedEvent) error {
+	summary, err := collectSchedEvents(options.duration, options.slow, func(event schedEvent) error {
 		if options.process != "" && event.Process != options.process {
 			return nil
 		}
@@ -250,7 +256,7 @@ func runSchedTraceScreen(options schedTraceOptions) int {
 	result := make(chan schedTraceFinishedMsg, 1)
 	var rows []schedEvent
 	go func() {
-		summary, err := collectSchedEvents(options.duration, func(event schedEvent) error {
+		summary, err := collectSchedEvents(options.duration, options.slow, func(event schedEvent) error {
 			if options.process != "" && event.Process != options.process {
 				return nil
 			}
@@ -362,7 +368,7 @@ func schedMissingBTFMembers(members []btf.Member, required []string) string {
 	return ""
 }
 
-func collectSchedEvents(duration time.Duration, onEvent func(schedEvent) error, stop <-chan struct{}) (schedSummary, error) {
+func collectSchedEvents(duration, slow time.Duration, onEvent func(schedEvent) error, stop <-chan struct{}) (schedSummary, error) {
 	if err := rlimit.RemoveMemlock(); err != nil {
 		return schedSummary{}, err
 	}
@@ -374,7 +380,7 @@ func collectSchedEvents(duration time.Duration, onEvent func(schedEvent) error, 
 	if err := spec.Assign(&vars); err != nil {
 		return schedSummary{}, err
 	}
-	if err := vars.MinimumLatencyNs.Set(uint64(schedMinimumLatency)); err != nil {
+	if err := vars.MinimumLatencyNs.Set(uint64(slow)); err != nil {
 		return schedSummary{}, err
 	}
 	clockOffset, err := captureClockOffset()
@@ -455,7 +461,7 @@ func collectSchedEvents(duration time.Duration, onEvent func(schedEvent) error, 
 			}
 		}
 	}
-	summary := schedSummary{TimestampNS: uint64(time.Now().UnixNano()), Event: "capture_summary", EventCount: count, MinimumLatencyMS: float64(schedMinimumLatency) / float64(time.Millisecond)}
+	summary := schedSummary{TimestampNS: uint64(time.Now().UnixNano()), Event: "capture_summary", EventCount: count, MinimumLatencyMS: float64(slow) / float64(time.Millisecond)}
 	var counters schedEventsSchedCounters
 	if err := objects.Counters.Lookup(uint32(0), &counters); err == nil {
 		summary.LostEvents = counters.LostEvents

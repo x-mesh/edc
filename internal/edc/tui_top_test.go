@@ -317,7 +317,7 @@ func topDividerColumns(line string) []int {
 
 func TestTopViewHeadersUseTheSameColumnsAsRows(t *testing.T) {
 	row := topDashboardRow{at: time.Unix(1, 0), rate: resourceRate{CoreCPU: []float64{10, 95}, DiskHealthValid: true, DiskIOPS: 12, NetHealthValid: true, PSIValid: true}}
-	for _, view := range []topView{topViewCPU, topViewMemory, topViewDisk, topViewNetwork, topViewPressure} {
+	for _, view := range []topView{topViewCPU, topViewMemory, topViewDisk, topViewNetwork, topViewPressure, topViewProcess} {
 		header := topDividerColumns(topDashboardHeaders(view, topTableWidth)[0])
 		value := topDividerColumns(formatTopDashboardRow(row, view, newTopLimits(8, false), topTableWidth))
 		if !reflect.DeepEqual(header, value) {
@@ -746,5 +746,66 @@ func TestTopDashboardWarnsOnlyForAFullHotCore(t *testing.T) {
 		if !strings.Contains(line, want) || strings.Contains(line, topColorDanger) {
 			t.Fatalf("hot core %.0f%% must warn only: %q", usage, line)
 		}
+	}
+}
+
+func TestTopProcessViewShowsTheMatchedGroupForEachSample(t *testing.T) {
+	limits := newTopLimits(8, false)
+	cells := func(row topDashboardRow) []string {
+		line := formatTopDashboardRow(row, topViewProcess, limits, topTableWidth)
+		if width := liveWidth(line); width > topTableWidth {
+			t.Fatalf("row is %d columns: %q", width, line)
+		}
+		parts := strings.Split(line, "│")
+		for index := range parts {
+			parts[index] = strings.TrimSpace(parts[index])
+		}
+		return parts[1:]
+	}
+	row := topDashboardRow{at: time.Unix(1, 0), processesValid: true,
+		processes: []topProcess{
+			{PID: 1, CPU: 50, Command: "worker-a", FDs: 10, DiskValid: true, DiskRead: 1 << 20, DiskWrite: 2 << 20},
+			{PID: 2, CPU: 40, Command: "worker-b", FDs: 5, DiskValid: true, DiskWrite: 1 << 20},
+		},
+		processTotal: topProcessTotal{Count: 5, CPU: 130, RSS: 9 << 20, Threads: 12, BPF: &topBPFStats{RunqCount: 4, RunqSumNS: 6_000_000, IOCount: 2, IOSumNS: 500_000}},
+	}
+	if got, want := cells(row), []string{"5", "130.0", "9.0M", "12", "15", "1.00M", "3.00M", "1.50", "0.25"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("process row = %q, want %q", got, want)
+	}
+	row.processTotal.BPF = nil
+	row.processes = []topProcess{{PID: 3, CPU: 1, Command: "quiet"}}
+	if got := cells(row); got[3] != "12" || got[4] != "—" || got[5] != "—" || got[7] != "—" || got[8] != "—" {
+		t.Fatalf("unknown values must show —: %q", got)
+	}
+	if got := cells(topDashboardRow{at: time.Unix(1, 0), processesValid: true}); got[0] != "0" || got[1] != "—" {
+		t.Fatalf("no match row = %q", got)
+	}
+	if got := cells(topDashboardRow{at: time.Unix(1, 0)}); got[0] != "—" {
+		t.Fatalf("first sample row = %q", got)
+	}
+}
+
+func TestTopProcessFilterOpensTheProcessView(t *testing.T) {
+	filter, err := parseTopProcessFilter("worker")
+	if err != nil {
+		t.Fatal(err)
+	}
+	model := topFixtureModel(nil)
+	if model.withProcessFilter(topProcessFilter{}).view != topViewAll {
+		t.Fatal("no filter must keep the all view")
+	}
+	filtered := model.withProcessFilter(filter)
+	if filtered.view != topViewProcess || !strings.Contains(filtered.statusLines()[0], "f proc") {
+		t.Fatalf("filtered view = %s, status %q", filtered.view, filtered.statusLines()[0])
+	}
+	host := topAfter(t, filtered, tea.KeyPressMsg{Code: '1', Text: "1"})
+	if host.view != topViewAll {
+		t.Fatalf("1 view = %s", host.view)
+	}
+	if back := topAfter(t, host, tea.KeyPressMsg{Code: 'f', Text: "f"}); back.view != topViewProcess {
+		t.Fatalf("f view = %s", back.view)
+	}
+	if plain := topAfter(t, model, tea.KeyPressMsg{Code: 'f', Text: "f"}); plain.view != topViewAll || strings.Contains(plain.statusLines()[0], "f proc") {
+		t.Fatalf("f without a filter: view %s, status %q", plain.view, plain.statusLines()[0])
 	}
 }

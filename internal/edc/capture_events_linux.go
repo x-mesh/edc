@@ -173,11 +173,25 @@ func traceCapabilityError(required []traceCapability, capabilities map[int]bool,
 func traceBPFPrerequisites(subject string, supported func(*btf.Spec) error) error {
 	kernel, err := btf.LoadKernelSpec()
 	if err != nil {
-		return errors.New(T("cli.trace.unsupported", subject, T("cli.capture.btf_missing")))
+		return kernelBTFError(subject, err)
 	}
 	if err := supported(kernel); err != nil {
 		return errors.New(T("cli.trace.unsupported", subject, err.Error()))
 	}
+	return bpfTraceCapabilityCheck(subject)
+}
+
+// kernelBTFError는 BTF가 없는 kernel만 지원하지 않는 host로 알린다. 대체 BTF 파일을 읽을 권한이 없거나 파일이 깨진 경우는
+// 지원되는 kernel에서도 생기므로 원래 오류를 그대로 남긴다.
+func kernelBTFError(subject string, err error) error {
+	if errors.Is(err, ebpf.ErrNotSupported) {
+		return errors.New(T("cli.trace.unsupported", subject, T("cli.capture.btf_missing")))
+	}
+	return fmt.Errorf("read kernel BTF: %w", err)
+}
+
+// bpfTraceCapabilityCheck는 network hook 없이 tracing program만 붙이는 trace가 쓸 capability를 확인한다.
+func bpfTraceCapabilityCheck(subject string) error {
 	capabilities, err := effectiveCapabilities()
 	if err != nil {
 		return fmt.Errorf("%s: %w", T("cli.capture.capability_check_failed"), err)

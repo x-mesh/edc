@@ -45,6 +45,7 @@ const (
 	topProcessEventsProgTopIssue          = "top_issue"
 	topProcessEventsProgTopRequeue        = "top_requeue"
 	topProcessEventsProgTopSwitch         = "top_switch"
+	topProcessEventsProgTopSwitchLegacy   = "top_switch_legacy"
 	topProcessEventsProgTopWakeup         = "top_wakeup"
 	topProcessEventsProgTopWakeupNew      = "top_wakeup_new"
 	topProcessEventsVarTargetNsInum       = "target_ns_inum"
@@ -93,13 +94,14 @@ type topProcessEventsSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type topProcessEventsProgramSpecs struct {
-	TopComplete  *ebpf.ProgramSpec `ebpf:"top_complete"`
-	TopExit      *ebpf.ProgramSpec `ebpf:"top_exit"`
-	TopIssue     *ebpf.ProgramSpec `ebpf:"top_issue"`
-	TopRequeue   *ebpf.ProgramSpec `ebpf:"top_requeue"`
-	TopSwitch    *ebpf.ProgramSpec `ebpf:"top_switch"`
-	TopWakeup    *ebpf.ProgramSpec `ebpf:"top_wakeup"`
-	TopWakeupNew *ebpf.ProgramSpec `ebpf:"top_wakeup_new"`
+	TopComplete     *ebpf.ProgramSpec `ebpf:"top_complete"`
+	TopExit         *ebpf.ProgramSpec `ebpf:"top_exit"`
+	TopIssue        *ebpf.ProgramSpec `ebpf:"top_issue"`
+	TopRequeue      *ebpf.ProgramSpec `ebpf:"top_requeue"`
+	TopSwitch       *ebpf.ProgramSpec `ebpf:"top_switch"`
+	TopSwitchLegacy *ebpf.ProgramSpec `ebpf:"top_switch_legacy"`
+	TopWakeup       *ebpf.ProgramSpec `ebpf:"top_wakeup"`
+	TopWakeupNew    *ebpf.ProgramSpec `ebpf:"top_wakeup_new"`
 }
 
 // topProcessEventsMapSpecs contains maps before they are loaded into the kernel.
@@ -167,13 +169,14 @@ type topProcessEventsVariables struct {
 //
 // It can be passed to loadTopProcessEventsObjects or ebpf.CollectionSpec.LoadAndAssign.
 type topProcessEventsPrograms struct {
-	TopComplete  *ebpf.Program `ebpf:"top_complete"`
-	TopExit      *ebpf.Program `ebpf:"top_exit"`
-	TopIssue     *ebpf.Program `ebpf:"top_issue"`
-	TopRequeue   *ebpf.Program `ebpf:"top_requeue"`
-	TopSwitch    *ebpf.Program `ebpf:"top_switch"`
-	TopWakeup    *ebpf.Program `ebpf:"top_wakeup"`
-	TopWakeupNew *ebpf.Program `ebpf:"top_wakeup_new"`
+	TopComplete     *ebpf.Program `ebpf:"top_complete"`
+	TopExit         *ebpf.Program `ebpf:"top_exit"`
+	TopIssue        *ebpf.Program `ebpf:"top_issue"`
+	TopRequeue      *ebpf.Program `ebpf:"top_requeue"`
+	TopSwitch       *ebpf.Program `ebpf:"top_switch"`
+	TopSwitchLegacy *ebpf.Program `ebpf:"top_switch_legacy"`
+	TopWakeup       *ebpf.Program `ebpf:"top_wakeup"`
+	TopWakeupNew    *ebpf.Program `ebpf:"top_wakeup_new"`
 }
 
 func (p *topProcessEventsPrograms) Close() error {
@@ -183,6 +186,7 @@ func (p *topProcessEventsPrograms) Close() error {
 		p.TopIssue,
 		p.TopRequeue,
 		p.TopSwitch,
+		p.TopSwitchLegacy,
 		p.TopWakeup,
 		p.TopWakeupNew,
 	)

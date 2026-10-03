@@ -444,7 +444,7 @@ A field that `edc` cannot read is left out, not set to 0. On Linux, `fds` and th
 
 ### eBPF detail (Linux)
 
-`--ebpf` adds what `/proc` cannot give: how long the matched processes wait for a CPU and how long their block I/O takes. It needs `--process`, root or `CAP_BPF` and `CAP_PERFMON`, and kernel BTF. Without them, `edc top` stops with exit code `3` and says whether the host is unsupported or a capability is missing. The kernel must give `prev_state` to the `sched_switch` tracepoint. Linux 5.15, the Ubuntu 22.04 GA kernel, does not, so `--ebpf` reports that host as unsupported.
+`--ebpf` adds what `/proc` cannot give: how long the matched processes wait for a CPU and how long their block I/O takes. It needs `--process`, root or `CAP_BPF` and `CAP_PERFMON`, and kernel BTF. Without them, `edc top` stops with exit code `3` and says whether the host is unsupported or a capability is missing. It is tested on Linux 5.15 and 6.17. Linux 5.15 does not give `prev_state` to the `sched_switch` tracepoint, so on that kernel `edc` reads the task state instead.
 
 ```bash
 sudo ./bin/edc top --process output-mesh --ebpf

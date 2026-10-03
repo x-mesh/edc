@@ -33,9 +33,11 @@ observe:
       clear: "最も近い地域は %s です。2 番目の %s までは %s 多くかかります。"
 
   top:
-    usage: "使い方: edc top [--interval 1s] [--count N] [--json <path|->]"
+    usage: "使い方: edc top [--interval 1s] [--count N] [--process <filter>] [--json <path|->]"
     interval_minimum: "--interval は %s 以上にしてください"
     count_minimum: "--count は 0 以上にしてください"
+    process_invalid: "--process には PID または command 名をカンマで区切って指定してください"
+    process_needs_view: "--process はダッシュボードか --json でのみ使えます。表には process 列がありません"
     stopped: "停止しました"
     paused: "一時停止"
     error:

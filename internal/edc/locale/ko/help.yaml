@@ -71,6 +71,7 @@ command:
       interval: "sampling 간격"
       count: "출력할 row 수, 0은 계속 실행"
       no_header: "host와 column header 생략"
+      process: "PID나 command 이름이 맞는 process만, 쉼표로 구분"
       json: "sample당 한 줄 JSON, stdout은 -"
     notes:
       - "terminal에서는 대시보드로 엽니다. q 종료, p 일시정지, +/- interval."
@@ -151,7 +152,7 @@ command:
       raw: "raw event JSONL 출력"
       live: "호환성 flag. trace는 기본으로 실시간 실행"
       group_by: "source, target, port, process, event별로 묶습니다"
-      process: "process 이름으로 필터"
+      process: "PID나 command 이름이 맞는 process만, 쉼표로 구분"
       destination: "destination host와 port로 필터"
       detail: "요약에 연결이나 flow를 하나씩 표시"
       yes: "확인 질문 생략"

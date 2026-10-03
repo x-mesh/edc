@@ -2,6 +2,7 @@ package edc
 
 import (
 	"encoding/json"
+	"errors"
 	"regexp"
 	"strings"
 	"testing"
@@ -81,16 +82,19 @@ func TestParsePressureAvg10(t *testing.T) {
 }
 
 func TestParseTopProcesses(t *testing.T) {
-	processes := parseTopProcesses(" 9 12.5 2048 node server.js\n 2 99.0 1024 java -jar app.jar\n")
+	processes := parseTopProcesses(" 9 12.5 2048 Sat Oct  3 05:06:51 2026 node server.js\n 2 99.0 1024 Mon Jan 12 23:00:01 2026 java -jar app.jar\n 5 1.0 10 garbled start comm\n")
 	if len(processes) != 2 || processes[0].PID != 2 || processes[0].RSS != 1024*1024 || processes[1].Command != "node server.js" {
 		t.Fatalf("processes = %#v", processes)
+	}
+	if want := time.Date(2026, time.October, 3, 5, 6, 51, 0, time.Local); !processes[1].Started.Equal(want) {
+		t.Fatalf("started = %v, want %v", processes[1].Started, want)
 	}
 }
 
 func TestParseLinuxProcessStat(t *testing.T) {
 	data := "1234 (my (odd) proc) S 1 1234 1234 0 -1 4194560 100 0 0 0 250 50 0 0 20 0 1 0 100 1000000 2048 18446744073709551615\n"
 	stat, ok := parseLinuxProcessStat(1234, data)
-	if !ok || stat.Command != "my (odd) proc" || stat.Ticks != 300 || stat.RSSPages != 2048 {
+	if !ok || stat.Command != "my (odd) proc" || stat.Ticks != 300 || stat.RSSPages != 2048 || stat.Threads != 1 || stat.StartTicks != 100 {
 		t.Fatalf("stat = %#v, %v", stat, ok)
 	}
 	if _, ok := parseLinuxProcessStat(1, "1 (short) S 1 2"); ok {
@@ -99,15 +103,20 @@ func TestParseLinuxProcessStat(t *testing.T) {
 }
 
 func TestTopProcessTrackerUsesRecentTicks(t *testing.T) {
-	tracker := &topProcessTracker{clockTicks: 100, pageSize: 4096}
+	boot := time.Unix(1_000_000, 0)
+	tracker := &topProcessTracker{clockTicks: 100, pageSize: 4096, boot: boot}
 	start := time.Unix(0, 0)
 	if _, ok := tracker.update(start, []linuxProcessStat{{PID: 1, Command: "old", Ticks: 1_000_000}, {PID: 2, Command: "idle", Ticks: 50}}); ok {
 		t.Fatal("the first read must only set a baseline")
 	}
 	// 오래 산 process가 방금 2초 동안 core 1.5개를 썼다. 수명 평균이었다면 거의 0이다.
-	processes, ok := tracker.update(start.Add(2*time.Second), []linuxProcessStat{{PID: 1, Command: "old", Ticks: 1_000_300, RSSPages: 10}, {PID: 2, Command: "idle", Ticks: 50}, {PID: 3, Command: "new", Ticks: 999}})
+	processes, ok := tracker.update(start.Add(2*time.Second), []linuxProcessStat{{PID: 1, Command: "old", Ticks: 1_000_300, RSSPages: 10, Threads: 4, StartTicks: 250}, {PID: 2, Command: "idle", Ticks: 50}, {PID: 3, Command: "new", Ticks: 999}})
 	if !ok || len(processes) != 2 || processes[0].PID != 1 || processes[0].CPU != 150 || processes[0].RSS != 40960 || processes[1].CPU != 0 {
 		t.Fatalf("processes = %#v", processes)
+	}
+	// starttime 250 tick은 부팅 2.5초 뒤다.
+	if want := boot.Add(2500 * time.Millisecond); processes[0].Threads != 4 || !processes[0].Started.Equal(want) {
+		t.Fatalf("threads %d, started %v, want %v", processes[0].Threads, processes[0].Started, want)
 	}
 }
 
@@ -415,5 +424,126 @@ func TestPrintDiskUsageKeepsColumnsAligned(t *testing.T) {
 	}
 	if rows != 2 || len(columns) != 1 {
 		t.Fatalf("disk columns are not aligned (rows %d, columns %v):\n%s", rows, columns, output.String())
+	}
+}
+
+func TestParseTopProcessFilter(t *testing.T) {
+	if filter, err := parseTopProcessFilter("  "); err != nil || filter.active() {
+		t.Fatalf("blank filter = %+v, %v", filter, err)
+	}
+	for _, value := range []string{"node,", ",node", "node, ,java"} {
+		if _, err := parseTopProcessFilter(value); !errors.Is(err, errTopProcessFilterEmpty) {
+			t.Fatalf("%q error = %v", value, err)
+		}
+	}
+	filter, err := parseTopProcessFilter("42, Output-Mesh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		process topProcess
+		want    bool
+	}{
+		{topProcess{PID: 42, Command: "unrelated"}, true},
+		{topProcess{PID: 7, Command: "/opt/bin/OUTPUT-MESH --serve"}, true},
+		{topProcess{PID: 420, Command: "unrelated"}, false},
+		{topProcess{PID: 7, Command: "node"}, false},
+	} {
+		if got := filter.match(test.process); got != test.want {
+			t.Fatalf("match(%+v) = %v, want %v", test.process, got, test.want)
+		}
+	}
+	// 숫자 항목은 PID와만 비교한다. command에 숫자가 들어 있어도 맞지 않는다.
+	if filter, _ := parseTopProcessFilter("42"); filter.match(topProcess{PID: 7, Command: "worker42"}) {
+		t.Fatal("a numeric term must match the PID only")
+	}
+}
+
+func TestTopProcessSamplerFiltersBeforeKeepingTheBusiestOnes(t *testing.T) {
+	busy := make([]topProcess, 0, 10)
+	for pid := 1; pid <= 10; pid++ {
+		busy = append(busy, topProcess{PID: pid, CPU: float64(100 - pid), Command: "busy"})
+	}
+	quiet := topProcess{PID: 99, CPU: 0.1, Command: "quiet"}
+	sampler := &topProcessSampler{read: func() ([]topProcess, bool) {
+		return append(append([]topProcess(nil), busy...), quiet), true
+	}}
+	sampler.refresh()
+	if processes, _ := sampler.latest(); len(processes) != topProcessLimit {
+		t.Fatalf("unfiltered list has %d processes, want %d", len(processes), topProcessLimit)
+	}
+	filter, err := parseTopProcessFilter("quiet,busy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sampler.setFilter(filter)
+	sampler.refresh()
+	if processes, valid := sampler.latest(); !valid || len(processes) != 11 {
+		t.Fatalf("filtered list = %d processes, valid %v", len(processes), valid)
+	}
+	only, _ := parseTopProcessFilter("quiet")
+	sampler.setFilter(only)
+	sampler.refresh()
+	if processes, _ := sampler.latest(); len(processes) != 1 || processes[0].PID != 99 {
+		t.Fatalf("a low CPU match was dropped: %+v", processes)
+	}
+}
+
+func TestTopSampleCarriesProcessesOnlyWhenFiltering(t *testing.T) {
+	sample := newTopSample(hostDetails{Hostname: "host"}, time.Unix(0, 0), resourceRate{})
+	data, err := json.Marshal(sample)
+	if err != nil || strings.Contains(string(data), "processes") {
+		t.Fatalf("unfiltered sample = %s, %v", data, err)
+	}
+	sample.Processes = newTopProcessSamples(nil)
+	if data, _ = json.Marshal(sample); !strings.Contains(string(data), `"processes":[]`) {
+		t.Fatalf("empty match = %s", data)
+	}
+	sample.Processes = newTopProcessSamples([]topProcess{{PID: 7, CPU: 12.3456, RSS: 2048, Command: "node"}})
+	if data, _ = json.Marshal(sample); !strings.Contains(string(data), `"processes":[{"pid":7,"command":"node","cpu_pct":12.35,"rss_bytes":2048}]`) {
+		t.Fatalf("process sample = %s", data)
+	}
+	started := time.Date(2026, time.October, 3, 5, 6, 51, 0, time.UTC)
+	sample.Processes = newTopProcessSamples([]topProcess{{PID: 7, CPU: 1, RSS: 2, Command: "node", Started: started, Threads: 4, FDs: 9, DiskValid: true, DiskRead: 10.5, DiskWrite: 0}})
+	sample.ProcessTotal = newTopProcessTotalSample(topProcessTotal{Count: 2, CPU: 3.456, RSS: 5, Threads: 8})
+	data, _ = json.Marshal(sample)
+	for _, want := range []string{`"started":"2026-10-03T05:06:51Z"`, `"threads":4`, `"fds":9`, `"disk_read_bytes_per_s":10.5`, `"disk_write_bytes_per_s":0`, `"process_total":{"count":2,"cpu_pct":3.46,"rss_bytes":5,"threads":8}`} {
+		if !strings.Contains(string(data), want) {
+			t.Fatalf("sample is missing %s: %s", want, data)
+		}
+	}
+}
+
+func TestParseLinuxProcessIO(t *testing.T) {
+	data := "rchar: 100\nwchar: 200\nsyscr: 1\nsyscw: 2\nread_bytes: 4096\nwrite_bytes: 8192\ncancelled_write_bytes: 0\n"
+	if io, ok := parseLinuxProcessIO(data); !ok || io.read != 4096 || io.write != 8192 {
+		t.Fatalf("io = %+v, %v", io, ok)
+	}
+	if _, ok := parseLinuxProcessIO("rchar: 1\nread_bytes: 5\n"); ok {
+		t.Fatal("a missing write_bytes must not be valid")
+	}
+}
+
+func TestTopProcessSamplerTotalsEveryMatchAndEnrichesTheKeptOnes(t *testing.T) {
+	all := make([]topProcess, 0, topFilteredProcessLimit+10)
+	for pid := 1; pid <= topFilteredProcessLimit+10; pid++ {
+		all = append(all, topProcess{PID: pid, CPU: 2, RSS: 1000, Threads: 3, Command: "worker"})
+	}
+	all = append(all, topProcess{PID: 999, CPU: 90, Command: "other"})
+	enriched := 0
+	sampler := &topProcessSampler{read: func() ([]topProcess, bool) { return all, true }, enrich: func(processes []topProcess) { enriched = len(processes) }}
+	sampler.refresh()
+	if enriched != 0 {
+		t.Fatal("enrich must not run without a filter")
+	}
+	filter, _ := parseTopProcessFilter("worker")
+	sampler.setFilter(filter)
+	sampler.refresh()
+	processes, total, valid := sampler.latestWithTotal()
+	if !valid || len(processes) != topFilteredProcessLimit || enriched != topFilteredProcessLimit {
+		t.Fatalf("kept %d, enriched %d, valid %v", len(processes), enriched, valid)
+	}
+	if want := (topProcessTotal{Count: topFilteredProcessLimit + 10, CPU: 2 * float64(topFilteredProcessLimit+10), RSS: 1000 * uint64(topFilteredProcessLimit+10), Threads: 3 * (topFilteredProcessLimit + 10)}); total != want {
+		t.Fatalf("total = %+v, want %+v", total, want)
 	}
 }

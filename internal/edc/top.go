@@ -21,6 +21,7 @@ func runTop(args []string, version string) int {
 	interval := set.Duration("interval", configuredDuration(config.Interval, time.Second), T("command.top.option.interval"))
 	count := set.Int("count", configuredInt(config.Count, 0), T("command.top.option.count"))
 	noHeader := set.Bool("no-header", configuredBool(config.NoHeader, false), T("command.top.option.no_header"))
+	processValue := set.String("process", "", T("command.top.option.process"))
 	jsonPath := set.String("json", configuredStringFallback(config.JSON, activeConfig.Defaults.Common.JSON, ""), T("command.top.option.json"))
 	if err := set.Parse(args); err != nil {
 		return 2
@@ -37,6 +38,11 @@ func runTop(args []string, version string) int {
 		fmt.Fprintln(os.Stderr, T("observe.top.count_minimum"))
 		return 2
 	}
+	filter, err := parseTopProcessFilter(*processValue)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, T("observe.top.process_invalid"))
+		return 2
+	}
 	var writer io.Writer = os.Stdout
 	if *jsonPath != "" && *jsonPath != "-" {
 		file, err := os.OpenFile(*jsonPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
@@ -49,15 +55,23 @@ func runTop(args []string, version string) int {
 	}
 	jsonOutput := *jsonPath != ""
 	// 대시보드는 무한 실행에만 쓴다. --count와 --json은 표와 JSON을 그대로 흘려 보낸다.
-	if !jsonOutput && *count == 0 && liveTerminal() {
-		return runTopDashboard(*interval, version)
+	dashboard := !jsonOutput && *count == 0 && liveTerminal()
+	if filter.active() && !dashboard && !jsonOutput {
+		// 표에는 process 열이 없다. 필터를 조용히 무시하면 전체 host 값을 필터한 값으로 읽게 된다.
+		fmt.Fprintln(os.Stderr, T("observe.top.process_needs_view"))
+		return 2
+	}
+	processSampler.setFilter(filter)
+	if dashboard {
+		return runTopDashboard(*interval, version, filter)
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	return streamTop(ctx, writer, topOptions{
 		interval: *interval, count: *count, json: jsonOutput,
-		header: !*noHeader && !jsonOutput,
-		color:  !jsonOutput && isTerminal(os.Stdout) && os.Getenv("NO_COLOR") == "",
+		process: filter.active(),
+		header:  !*noHeader && !jsonOutput,
+		color:   !jsonOutput && isTerminal(os.Stdout) && os.Getenv("NO_COLOR") == "",
 	})
 }
 
@@ -67,6 +81,7 @@ type topOptions struct {
 	header   bool
 	color    bool
 	json     bool // sample당 한 줄 JSON을 쓰고 표와 중지 메시지는 생략한다
+	process  bool // sample에 필터에 맞는 process 목록을 더한다
 }
 
 // topSample은 --json이 sample마다 한 줄로 내는 값이다. rate는 bytes/s와 percent다.
@@ -98,6 +113,52 @@ type topSample struct {
 	PSIValid   bool      `json:"psi_supported"`
 	MemoryPct  float64   `json:"memory_pct"`
 	SwapOut    float64   `json:"swap_out_bytes_per_s"`
+	// Processes는 --process를 쓸 때만 나온다. 맞는 process가 없으면 빈 배열이고, 첫 sample처럼 목록이 아직 없으면 빠진다.
+	Processes *[]topProcessSample `json:"processes,omitempty"`
+	// ProcessTotal은 필터에 맞은 process 전체의 합이다. Processes는 CPU 상위만 남기지만 합은 모두 센다.
+	ProcessTotal *topProcessTotalSample `json:"process_total,omitempty"`
+}
+
+type topProcessTotalSample struct {
+	Count    int     `json:"count"`
+	CPU      float64 `json:"cpu_pct"`
+	RSSBytes uint64  `json:"rss_bytes"`
+	Threads  int     `json:"threads,omitempty"`
+}
+
+// topProcessSample은 --process가 sample마다 붙이는 process 한 개의 값이다. CPU는 core 하나가 100%다.
+// Started, Threads, FDs, 디스크 rate는 읽을 수 없으면 빠진다. (pid, started)가 process 하나를 가리킨다.
+type topProcessSample struct {
+	PID       int        `json:"pid"`
+	Started   *time.Time `json:"started,omitempty"`
+	Command   string     `json:"command"`
+	CPU       float64    `json:"cpu_pct"`
+	RSSBytes  uint64     `json:"rss_bytes"`
+	Threads   int        `json:"threads,omitempty"`
+	FDs       int        `json:"fds,omitempty"`
+	DiskRead  *float64   `json:"disk_read_bytes_per_s,omitempty"`
+	DiskWrite *float64   `json:"disk_write_bytes_per_s,omitempty"`
+}
+
+func newTopProcessSamples(processes []topProcess) *[]topProcessSample {
+	samples := make([]topProcessSample, 0, len(processes))
+	for _, process := range processes {
+		sample := topProcessSample{PID: process.PID, Command: process.Command, CPU: roundTopValue(process.CPU), RSSBytes: process.RSS, Threads: process.Threads, FDs: process.FDs}
+		if !process.Started.IsZero() {
+			started := process.Started.UTC().Truncate(time.Second)
+			sample.Started = &started
+		}
+		if process.DiskValid {
+			read, write := roundTopValue(process.DiskRead), roundTopValue(process.DiskWrite)
+			sample.DiskRead, sample.DiskWrite = &read, &write
+		}
+		samples = append(samples, sample)
+	}
+	return &samples
+}
+
+func newTopProcessTotalSample(total topProcessTotal) *topProcessTotalSample {
+	return &topProcessTotalSample{Count: total.Count, CPU: roundTopValue(total.CPU), RSSBytes: total.RSS, Threads: total.Threads}
 }
 
 func newTopSample(details hostDetails, at time.Time, rate resourceRate) topSample {
@@ -149,7 +210,14 @@ func streamTop(ctx context.Context, writer io.Writer, options topOptions) int {
 			}
 			rate := calculateRate(previous, current)
 			if options.json {
-				if err := encoder.Encode(newTopSample(details, current.TakenAt, rate)); err != nil {
+				sample := newTopSample(details, current.TakenAt, rate)
+				if options.process {
+					if processes, total, valid := processSampler.latestWithTotal(); valid {
+						sample.Processes = newTopProcessSamples(processes)
+						sample.ProcessTotal = newTopProcessTotalSample(total)
+					}
+				}
+				if err := encoder.Encode(sample); err != nil {
 					fmt.Fprintln(os.Stderr, err)
 					return 1
 				}

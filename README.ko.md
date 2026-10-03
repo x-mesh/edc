@@ -409,6 +409,35 @@ macOS에서 `edc`는 Mach `host_processor_info` 호출로 kernel에서 core별 C
 
 각 줄에는 `time`, `hostname`, `cores`, 초당 byte 단위 network·disk rate, 퍼센트 단위 CPU 값, `load1`, `memory_pct`, 초당 byte 단위 `swap_out_bytes_per_s`가 들어갑니다. macOS와 Linux 모두 network errors·drops와 disk IOPS·await를 내보냅니다. Linux에서는 disk busy와 PSI `some avg10`도 추가되며, `*_health_supported`, `disk_busy_supported`, `psi_supported`가 지원 여부를 표시합니다. `--json`은 표와 헤더를 없앱니다.
 
+## Top process 필터
+
+`--process <filter>`는 host 지표를 그대로 두고 process 목록만 지정한 process로 좁힙니다. filter는 쉼표로 구분한 목록입니다. 숫자는 PID와 같아야 하고, 그 밖의 항목은 command 이름의 일부와 대소문자를 가리지 않고 맞아야 합니다. 항목 하나라도 맞으면 목록에 남습니다. command 이름은 Linux에서는 kernel이 15자로 자르는 `comm`, macOS에서는 실행 파일 경로입니다.
+
+```bash
+# 대시보드: 상세 보기에 "top ..." 대신 "match ..."가 나옵니다
+./bin/edc top --process output-mesh
+# JSON 줄: sample마다 processes 배열을 더합니다
+./bin/edc top --process 4321,worker --json /tmp/edc-host.jsonl
+```
+
+filter는 CPU 상위로 자르기 전에 적용하므로 CPU가 낮은 process도 맞으면 목록에 남습니다.
+
+대시보드 상세 보기는 두 줄입니다. 첫 줄은 맞은 process 전체의 합으로, 개수, CPU, RSS, thread, 열린 file descriptor, 디스크 I/O입니다. 둘째 줄은 CPU가 높은 세 개와 나머지 개수 `+N`입니다. 이때 `signal` 열은 맞는 process만 반영합니다.
+
+`--json`에서는 sample에 필드 두 개가 더해집니다. `processes`는 맞는 process를 CPU가 높은 순으로 최대 50개 담습니다. `process_total`은 맞은 process 전체의 합으로 `count`, `cpu_pct`, `rss_bytes`, `threads`입니다. CPU는 core 하나가 100%이고, 맞는 process가 없으면 `processes`는 `[]`입니다. process마다 들어가는 필드는 다음과 같습니다.
+
+| 필드 | 뜻 |
+|---|---|
+| `pid`, `started` | `started`는 UTC 시작 시각입니다. PID는 재사용될 수 있어 `(pid, started)`가 process 하나를 가리킵니다. |
+| `command`, `cpu_pct`, `rss_bytes` | 이름, 직전 refresh 이후 CPU, 상주 memory |
+| `threads` | thread 수 (Linux) |
+| `fds` | 열린 file descriptor 수 (Linux) |
+| `disk_read_bytes_per_s`, `disk_write_bytes_per_s` | storage에 닿은 byte. `/proc/<pid>/io`의 `read_bytes`, `write_bytes` 기준 (Linux) |
+
+`edc`가 읽지 못한 필드는 0이 아니라 빠집니다. Linux에서 `fds`와 디스크 필드는 같은 사용자거나 root여야 읽습니다. 이 값은 목록에 남은 process만 읽으므로 많이 맞는 filter도 읽는 process는 최대 50개입니다. macOS는 `started`는 주지만 `threads`, `fds`, 디스크 값은 주지 않습니다. 첫 refresh가 끝나기 전의 sample에는 `processes`가 없고, 디스크 rate는 refresh가 두 번 지나야 나옵니다. `--process`가 없으면 `--json` 출력에 이 필드들이 없습니다.
+
+`--process`는 대시보드나 `--json`에서만 쓸 수 있습니다. 표에는 process 열이 없으므로 `edc top --process x --count 5`는 종료 코드 `2`로 멈춥니다.
+
 ## Remote recipe
 
 `edc remote <group>`은 inventory group에 YAML recipe를 실행합니다. 로컬 OpenSSH 설정, agent, known host 검사를 그대로 씁니다.

@@ -33,9 +33,11 @@ observe:
       clear: "가장 가까운 지역은 %s입니다. 두 번째 %s까지는 %s 더 걸립니다."
 
   top:
-    usage: "사용법: edc top [--interval 1s] [--count N] [--json <path|->]"
+    usage: "사용법: edc top [--interval 1s] [--count N] [--process <filter>] [--json <path|->]"
     interval_minimum: "--interval은 %s 이상이어야 합니다"
     count_minimum: "--count는 0 이상이어야 합니다"
+    process_invalid: "--process에는 PID나 command 이름을 쉼표로 구분해 주세요"
+    process_needs_view: "--process는 대시보드나 --json에서만 쓸 수 있습니다. 표에는 process 열이 없습니다"
     stopped: "중지됨"
     paused: "일시정지"
     error:

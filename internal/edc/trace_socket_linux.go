@@ -107,15 +107,12 @@ func unixSocketKind(data []byte, paths []string) string {
 	return found
 }
 
-// socketTracePrerequisites는 eBPF 조건과 unix socket 함수를 확인한다. 이 함수들은 unix가 module로 build된 kernel에서는
+// socketTracePrerequisites는 unix socket 함수와 eBPF 권한을 확인한다. fentry와 fexit만 붙이므로 CAP_NET_ADMIN은 필요 없다. 이 함수들은 unix가 module로 build된 kernel에서는
 // vmlinux BTF에 없다.
 func socketTracePrerequisites() error {
-	if err := captureBPFPrerequisites(); err != nil {
-		return err
-	}
 	kernel, err := btf.LoadKernelSpec()
 	if err != nil {
-		return fmt.Errorf("%s: %w", T("cli.capture.btf_missing"), err)
+		return kernelBTFError("trace socket", err)
 	}
 	for _, name := range []string{"unix_stream_sendmsg", "unix_stream_recvmsg", "unix_stream_connect", "unix_accept", "unix_release"} {
 		var function *btf.Func
@@ -123,7 +120,7 @@ func socketTracePrerequisites() error {
 			return errors.New(T("cli.trace.socket_hook_missing", name))
 		}
 	}
-	return nil
+	return bpfTraceCapabilityCheck("trace socket")
 }
 
 // socketPayloadKernel은 사용자 버퍼를 읽을 iov_iter 필드를 확인한다. BPF는 없는 필드를 건너뛰므로, 확인하지 않으면 오래된
@@ -133,16 +130,34 @@ func socketPayloadKernel() error {
 	if err != nil {
 		return fmt.Errorf("read kernel BTF: %w", err)
 	}
-	var iter *btf.Struct
-	if err := spec.TypeByName("iov_iter", &iter); err != nil {
+	return socketIOVIterFields(spec)
+}
+
+// socketIOVIterFields는 BTF에 iov_iter struct가 둘 이상인 kernel에서 하나라도 필드를 모두 가지면 통과한다. BPF의 CO-RE도
+// 후보 중 맞는 struct를 고른다.
+func socketIOVIterFields(spec *btf.Spec) error {
+	types, err := spec.AnyTypesByName("iov_iter")
+	if err != nil {
 		return fmt.Errorf("find iov_iter in kernel BTF: %w", err)
 	}
-	for _, field := range []string{"iter_type", "ubuf", "__iov"} {
-		if !btfHasMember(iter, field) {
-			return errors.New(T("cli.trace.socket_payload_kernel", field))
+	missing := "iter_type"
+	for _, typ := range types {
+		iter, ok := typ.(*btf.Struct)
+		if !ok {
+			continue
+		}
+		missing = ""
+		for _, field := range []string{"iter_type", "ubuf", "__iov"} {
+			if !btfHasMember(iter, field) {
+				missing = field
+				break
+			}
+		}
+		if missing == "" {
+			return nil
 		}
 	}
-	return nil
+	return errors.New(T("cli.trace.socket_payload_kernel", missing))
 }
 
 func socketPayloadSupported() bool {

@@ -32,7 +32,9 @@ struct pid_namespace { struct ns_common ns; } __attribute__((preserve_access_ind
 struct upid { int nr; struct pid_namespace *ns; } __attribute__((preserve_access_index));
 struct pid { unsigned int level; struct upid numbers[]; } __attribute__((preserve_access_index));
 struct signal_struct { struct pid *pids[4]; } __attribute__((preserve_access_index));
-struct task_struct { int pid; struct signal_struct *signal; } __attribute__((preserve_access_index));
+struct task_struct { int pid; struct signal_struct *signal; unsigned int __state; } __attribute__((preserve_access_index));
+// 5.14 전 kernel은 같은 값을 state라는 이름으로 둔다.
+struct task_struct___pre514 { long state; } __attribute__((preserve_access_index));
 struct request { __u32 __data_len; } __attribute__((preserve_access_index));
 
 // bucket i는 [2^i, 2^(i+1)) 마이크로초다. 누적 count의 차이로 구간별 분포를 구한다.
@@ -60,6 +62,14 @@ static __always_inline __u32 log2_bucket(__u64 microseconds) {
 	shift = (value > 0x3) << 1; value >>= shift; result |= shift;
 	result |= (__u32)(value >> 1);
 	return result < HIST_BUCKETS ? result : HIST_BUCKETS - 1;
+}
+
+// hist_add는 microseconds가 든 bucket을 하나 올린다. 5.15 verifier는 log2_bucket의 상한을 배열 주소 계산까지 따라가지 못하고
+// 범위 밖 접근으로 거부한다. 컴파일러가 확인 전 값으로 주소를 만들지 못하게 막고, 확인한 값으로 index를 만든다.
+static __always_inline void hist_add(__u64 *hist, __u64 microseconds) {
+	__u32 bucket = log2_bucket(microseconds);
+	asm volatile("" : "+r"(bucket));
+	if (bucket < HIST_BUCKETS) hist[bucket]++;
 }
 
 // task의 tgid를 target_ns_inum namespace에서 본 값으로 바꾼다. 그 namespace에 보이지 않는 task는 0이다.
@@ -95,9 +105,12 @@ static __always_inline void enqueue(struct task_struct *task) {
 
 SEC("tp_btf/sched_wakeup") int top_wakeup(__u64 *ctx) { enqueue((struct task_struct *)ctx[0]); return 0; }
 SEC("tp_btf/sched_wakeup_new") int top_wakeup_new(__u64 *ctx) { enqueue((struct task_struct *)ctx[0]); return 0; }
-// 선점당한 task는 깨어나지 않고 곧바로 runqueue로 돌아가므로 prev_state가 TASK_RUNNING일 때 다시 시작 시각을 잡는다.
-SEC("tp_btf/sched_switch") int top_switch(__u64 *ctx) {
-	struct task_struct *prev = (struct task_struct *)ctx[1], *next = (struct task_struct *)ctx[2];
+static __always_inline long task_state(struct task_struct *task) {
+	if (bpf_core_field_exists(task->__state)) return BPF_CORE_READ(task, __state);
+	return BPF_CORE_READ((struct task_struct___pre514 *)task, state);
+}
+
+static __always_inline void switch_in(struct task_struct *next) {
 	__u32 next_pid = BPF_CORE_READ(next, pid);
 	__u64 *start = bpf_map_lookup_elem(&runq_start, &next_pid);
 	if (start) {
@@ -105,9 +118,22 @@ SEC("tp_btf/sched_switch") int top_switch(__u64 *ctx) {
 		bpf_map_delete_elem(&runq_start, &next_pid);
 		__u32 next_tgid = ns_tgid(next);
 		struct process_stats *value = next_tgid && is_watched(next_tgid) ? stats_for(next_tgid) : 0;
-		if (value) { value->runq_count++; value->runq_sum_ns += latency; value->runq_hist[log2_bucket(latency / 1000)]++; }
+		if (value) { value->runq_count++; value->runq_sum_ns += latency; hist_add(value->runq_hist, latency / 1000); }
 	}
-	if ((__u32)ctx[3] == TASK_RUNNING) enqueue(prev);
+}
+
+// 선점당한 task는 깨어나지 않고 곧바로 runqueue로 돌아가므로 prev_state가 TASK_RUNNING일 때 다시 시작 시각을 잡는다.
+SEC("tp_btf/sched_switch") int top_switch(__u64 *ctx) {
+	switch_in((struct task_struct *)ctx[2]);
+	if ((__u32)ctx[3] == TASK_RUNNING) enqueue((struct task_struct *)ctx[1]);
+	return 0;
+}
+// 5.15처럼 sched_switch에 prev_state가 없는 kernel용이다. tp_btf는 없는 인자를 읽을 수 없으므로, 그 kernel의 tracepoint가
+// prev_state를 정하던 규칙을 따른다. 선점이면 runnable이고, 아니면 그 순간 prev의 상태를 읽는다.
+SEC("tp_btf/sched_switch") int top_switch_legacy(__u64 *ctx) {
+	struct task_struct *prev = (struct task_struct *)ctx[1];
+	switch_in((struct task_struct *)ctx[2]);
+	if ((__u8)ctx[0] || task_state(prev) == TASK_RUNNING) enqueue(prev);
 	return 0;
 }
 SEC("tp_btf/sched_process_exit") int top_exit(__u64 *ctx) {
@@ -138,7 +164,7 @@ SEC("tp_btf/block_rq_complete") int top_complete(__u64 *ctx) {
 	__u64 bytes = pending->bytes;
 	bpf_map_delete_elem(&io_pending, &rq);
 	struct process_stats *value = stats_for(tgid);
-	if (value) { value->io_count++; value->io_bytes += bytes; value->io_sum_ns += latency; value->io_hist[log2_bucket(latency / 1000)]++; }
+	if (value) { value->io_count++; value->io_bytes += bytes; value->io_sum_ns += latency; hist_add(value->io_hist, latency / 1000); }
 	return 0;
 }
 char LICENSE[] SEC("license") = "Dual BSD/GPL";

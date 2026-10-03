@@ -69,3 +69,47 @@ func TestBTFStructHasMemberAcceptsDuplicateStructs(t *testing.T) {
 		t.Fatalf("missing type: %v", err)
 	}
 }
+
+// 5.15의 sched_switch는 prev_state 없이 preempt, prev, next만 넘긴다. 그 kernel은 task 상태 field를 읽는 program으로 지원한다.
+func TestTopProcessKernelSupportedAcceptsSchedSwitchWithoutPrevState(t *testing.T) {
+	u32 := &btf.Int{Name: "u32", Size: 4}
+	structure := func(name string, fields ...string) *btf.Struct {
+		members := make([]btf.Member, len(fields))
+		for index, field := range fields {
+			members[index] = btf.Member{Name: field, Type: u32, Offset: btf.Bits(32 * index)}
+		}
+		return &btf.Struct{Name: name, Size: uint32(4 * len(fields)), Members: members}
+	}
+	kernel := func(switchParams int, taskFields ...string) *btf.Spec {
+		types := []btf.Type{
+			structure("task_struct", append([]string{"signal"}, taskFields...)...), structure("signal_struct", "pids"),
+			structure("pid", "numbers"), structure("pid_namespace", "ns"), structure("request", "__data_len"),
+		}
+		for _, name := range topBPFTracepoints {
+			params := 2
+			switch name {
+			case "sched_switch":
+				params = switchParams
+			case "block_rq_complete":
+				params = 4
+			}
+			types = append(types, topTracepointType(name, params))
+		}
+		return topBTFSpec(t, types...)
+	}
+	if err := topProcessKernelSupported(kernel(4, "__state")); err != nil {
+		t.Fatalf("5.15 kernel: %v", err)
+	}
+	if legacy, err := topSchedSwitchLegacy(kernel(4, "__state")); err != nil || !legacy {
+		t.Fatalf("5.15 kernel legacy = %t, %v", legacy, err)
+	}
+	if err := topProcessKernelSupported(kernel(4)); err == nil || !strings.Contains(err.Error(), "task_struct.__state") {
+		t.Fatalf("a kernel without a task state field must be unsupported: %v", err)
+	}
+	if legacy, err := topSchedSwitchLegacy(kernel(5)); err != nil || legacy {
+		t.Fatalf("a kernel with prev_state legacy = %t, %v", legacy, err)
+	}
+	if err := topProcessKernelSupported(kernel(3, "__state")); err == nil || !strings.Contains(err.Error(), "sched_switch has 2 arguments") {
+		t.Fatalf("a kernel without next must be unsupported: %v", err)
+	}
+}

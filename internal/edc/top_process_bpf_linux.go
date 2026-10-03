@@ -31,11 +31,12 @@ func topProcessKernelSupported(spec *btf.Spec) error {
 	if err := traceTracepointsAvailable(spec, topBPFTracepoints); err != nil {
 		return err
 	}
-	// tp_btf는 인자 수만큼만 읽을 수 있다. 이 program은 sched_switch의 prev_state와 block_rq_complete의 nr_bytes를 읽는다.
+	// tp_btf는 인자 수만큼만 읽을 수 있다. 이 program은 sched_switch의 prev와 next, block_rq_complete의 nr_bytes를 읽는다.
+	// sched_switch의 prev_state는 5.15에 없으므로, 없으면 top_switch_legacy가 task의 상태 field를 대신 읽는다.
 	for _, required := range []struct {
 		tracepoint string
 		params     int
-	}{{"sched_switch", 5}, {"block_rq_complete", 4}} {
+	}{{"sched_switch", 4}, {"block_rq_complete", 4}} {
 		count, err := tracepointParams(spec, required.tracepoint)
 		if err != nil {
 			return err
@@ -49,7 +50,23 @@ func topProcessKernelSupported(spec *btf.Spec) error {
 			return err
 		}
 	}
+	if legacy, err := topSchedSwitchLegacy(spec); err != nil || !legacy {
+		return err
+	}
+	if btfStructHasMember(spec, "task_struct", "__state") != nil && btfStructHasMember(spec, "task_struct", "state") != nil {
+		return errors.New("kernel BTF has no field task_struct.__state")
+	}
 	return nil
+}
+
+// topSchedSwitchLegacy는 sched_switch가 prev_state를 넘기지 않는 kernel인지다. 첫 인자는 tp_btf가 쓰는 void *이고,
+// preempt, prev, next 뒤에 prev_state가 오면 인자는 다섯이다.
+func topSchedSwitchLegacy(spec *btf.Spec) (bool, error) {
+	count, err := tracepointParams(spec, "sched_switch")
+	if err != nil {
+		return false, err
+	}
+	return count < 5, nil
 }
 
 // btfStructHasMember는 이름이 같은 struct가 둘 이상인 kernel에서 하나라도 member를 가지면 통과한다.
@@ -127,6 +144,27 @@ func startTopProcessBPF() (topBPFObserver, func(), error) {
 	}
 	if err := variables.TargetNsInum.Set(namespace); err != nil {
 		return nil, nil, fmt.Errorf("set PID namespace: %w", err)
+	}
+	kernel, err := btf.LoadKernelSpec()
+	if err != nil {
+		return nil, nil, fmt.Errorf("read kernel BTF: %w", err)
+	}
+	legacy, err := topSchedSwitchLegacy(kernel)
+	if err != nil {
+		return nil, nil, err
+	}
+	// 고르지 않은 program도 불러오면 verifier가 없는 인자를 읽는다고 거부하므로, 고른 program을 두 이름에 모두 넣는다.
+	selected := "top_switch"
+	if legacy {
+		selected = "top_switch_legacy"
+	}
+	switchSpec := spec.Programs[selected]
+	if switchSpec == nil {
+		return nil, nil, fmt.Errorf("missing eBPF program %s", selected)
+	}
+	for _, name := range []string{"top_switch", "top_switch_legacy"} {
+		spec.Programs[name] = switchSpec.Copy()
+		spec.Programs[name].Name = name
 	}
 	tracer := &topProcessBPF{watched: map[int]struct{}{}, previous: map[int]topBPFStats{}}
 	if err := spec.LoadAndAssign(&tracer.objects, nil); err != nil {

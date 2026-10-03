@@ -440,7 +440,7 @@ filter는 CPU 상위로 자르기 전에 적용하므로 CPU가 낮은 process�
 
 ### eBPF 상세 (Linux)
 
-`--ebpf`는 `/proc`으로는 얻을 수 없는 값을 더합니다. 맞은 process가 CPU를 기다린 시간과 block I/O에 걸린 시간입니다. `--process`가 필요하고, root나 `CAP_BPF`와 `CAP_PERFMON`, 커널 BTF가 있어야 합니다. 없으면 `edc top`은 종료 코드 `3`으로 멈추고, 지원하지 않는 호스트인지 capability가 빠졌는지 알려 줍니다.
+`--ebpf`는 `/proc`으로는 얻을 수 없는 값을 더합니다. 맞은 process가 CPU를 기다린 시간과 block I/O에 걸린 시간입니다. `--process`가 필요하고, root나 `CAP_BPF`와 `CAP_PERFMON`, 커널 BTF가 있어야 합니다. 없으면 `edc top`은 종료 코드 `3`으로 멈추고, 지원하지 않는 호스트인지 capability가 빠졌는지 알려 줍니다. 커널의 `sched_switch` tracepoint가 `prev_state`를 넘겨야 합니다. Ubuntu 22.04 기본 커널인 Linux 5.15는 넘기지 않으므로, `--ebpf`는 그 호스트를 지원하지 않는다고 알립니다.
 
 ```bash
 sudo ./bin/edc top --process output-mesh --ebpf

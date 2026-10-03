@@ -54,11 +54,13 @@ static __always_inline void remember(struct request *rq, __u8 stage) {
 SEC("tp_btf/block_rq_insert") int insert(unsigned long long *ctx) { struct request *rq = (void *)ctx[0]; remember(rq, IO_INSERT); return 0; }
 SEC("tp_btf/block_rq_issue") int issue(unsigned long long *ctx) { struct request *rq = (void *)ctx[0];
 	struct io_pending *value = bpf_map_lookup_elem(&pending, &rq); if (!value) { remember(rq, IO_ISSUE); return 0; }
-	value->issue_ns = bpf_ktime_get_ns(); value->stage = IO_ISSUE; return 0;
+	value->issue_ns = bpf_ktime_get_ns(); value->stage = IO_ISSUE; value->bytes = BPF_CORE_READ(rq, __data_len); return 0;
 }
 SEC("tp_btf/block_rq_requeue") int requeue(unsigned long long *ctx) { struct request *rq = (void *)ctx[0]; count(IO_REQUEUE); bpf_map_delete_elem(&pending, &rq); return 0; }
 SEC("tp_btf/block_rq_complete") int complete(unsigned long long *ctx) { struct request *rq = (void *)ctx[0]; if (!BPF_CORE_READ(rq, part)) return 0;
 	struct io_pending *value = bpf_map_lookup_elem(&pending, &rq); if (!value) { count(IO_UNMATCHED_COMPLETE); return 0; }
+	// 이 tracepoint는 blk_update_request()가 __data_len을 줄이기 전에 부분 완료마다 발생한다. 남은 byte를 모두 끝내는 호출이 요청의 완료다.
+	if ((__u32)ctx[2] < BPF_CORE_READ(rq, __data_len)) return 0;
 	__u64 now = bpf_ktime_get_ns(); if (value->stage != IO_ISSUE || !value->issue_ns) { count(IO_INCOMPLETE); bpf_map_delete_elem(&pending, &rq); return 0; }
 	// I/O scheduler가 none인 장치는 대부분의 요청을 block_rq_insert 없이 바로 issue한다. 그 요청은 queue 구간이 없고, 주인은 issue 시점의 문맥이다.
 	__u8 inserted = value->insert_ns != 0; __u64 total = now - (inserted ? value->insert_ns : value->issue_ns); if (total < minimum_latency_ns) { bpf_map_delete_elem(&pending, &rq); return 0; }

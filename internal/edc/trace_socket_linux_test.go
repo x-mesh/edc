@@ -3,12 +3,18 @@
 package edc
 
 import (
+	"bytes"
+	"errors"
+	"fmt"
+	"io/fs"
 	"net"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/cilium/ebpf"
+	"github.com/cilium/ebpf/btf"
 	"golang.org/x/sys/unix"
 )
 
@@ -110,5 +116,55 @@ func TestTraceSocketTakesOnePathWithOptionsOnEitherSide(t *testing.T) {
 		if code != 2 || !strings.Contains(stderr, test.stderr) {
 			t.Fatalf("trace %q exit = %d, stderr %q, want 2 and %q", test.args, code, stderr, test.stderr)
 		}
+	}
+}
+
+func TestSocketIOVIterFieldsAcceptsDuplicateStructs(t *testing.T) {
+	u8 := &btf.Int{Name: "u8", Size: 1}
+	iter := func(fields ...string) *btf.Struct {
+		members := make([]btf.Member, len(fields))
+		for index, field := range fields {
+			members[index] = btf.Member{Name: field, Type: u8, Offset: btf.Bits(8 * index)}
+		}
+		return &btf.Struct{Name: "iov_iter", Size: uint32(len(fields)), Members: members}
+	}
+	spec := func(types ...btf.Type) *btf.Spec {
+		t.Helper()
+		builder, err := btf.NewBuilder(types, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw, err := builder.Marshal(nil, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		loaded, err := btf.LoadSpecFromReader(bytes.NewReader(raw))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return loaded
+	}
+	old, current := iter("type", "iov_offset"), iter("iter_type", "ubuf", "__iov")
+	if err := socketIOVIterFields(spec(old, current)); err != nil {
+		t.Fatalf("duplicate iov_iter: %v", err)
+	}
+	for _, test := range []struct {
+		types   []btf.Type
+		missing string
+	}{{[]btf.Type{old}, "iter_type"}, {[]btf.Type{iter("iter_type", "ubuf")}, "__iov"}, {[]btf.Type{u8}, "iov_iter"}} {
+		if err := socketIOVIterFields(spec(test.types...)); err == nil || !strings.Contains(err.Error(), test.missing) {
+			t.Fatalf("types %v: error %v does not name %s", test.types, err, test.missing)
+		}
+	}
+}
+
+func TestKernelBTFErrorSeparatesUnsupportedFromUnreadable(t *testing.T) {
+	unsupported := kernelBTFError("trace io", fmt.Errorf("no BTF found for kernel version 1.2.3: %w", ebpf.ErrNotSupported))
+	if !strings.Contains(unsupported.Error(), T("cli.trace.unsupported", "trace io", T("cli.capture.btf_missing"))) {
+		t.Fatalf("unsupported kernel error = %v", unsupported)
+	}
+	denied := kernelBTFError("trace io", &fs.PathError{Op: "open", Path: "/boot/vmlinux-1.2.3", Err: fs.ErrPermission})
+	if !errors.Is(denied, fs.ErrPermission) || strings.Contains(denied.Error(), T("cli.capture.btf_missing")) {
+		t.Fatalf("permission error = %v", denied)
 	}
 }

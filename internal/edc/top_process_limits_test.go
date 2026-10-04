@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/charmbracelet/x/ansi"
 )
 
 func TestTopProcessLimitJSONPreservesZeroAndUnavailableStates(t *testing.T) {
@@ -54,7 +56,7 @@ func TestTopProcessLimitPanelUsesTheSelectedHistoryAndFitsTheScreen(t *testing.T
 	for _, width := range []int{30, 80} {
 		model.width = width
 		for _, line := range strings.Split(model.View().Content, "\n") {
-			if topDisplayWidth(line) > width {
+			if ansi.StringWidth(line) > width {
 				t.Fatalf("line exceeds width %d: %q", width, line)
 			}
 		}

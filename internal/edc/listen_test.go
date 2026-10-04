@@ -1,6 +1,7 @@
 package edc
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -372,5 +373,58 @@ func TestListenBindingParserFixtures(t *testing.T) {
 				t.Fatalf("%s socket %d scope = %q, want %q", name, i, got, want)
 			}
 		}
+	}
+}
+
+func TestFormatListenBindingScopeLocales(t *testing.T) {
+	restore := currentLanguage()
+	defer setLanguage(restore)
+	sockets := []listenSocket{
+		{Proto: "tcp", Address: "::1", Port: 80, Process: "app", PID: "42"},
+		{Proto: "udp", Address: "*", Port: 53, Process: "resolver", PID: "7"},
+		{Proto: "tcp", Address: "fe80::1%en0", Port: 81, Process: "other"},
+	}
+	for _, lang := range []string{"en", "ko", "ja"} {
+		setLanguage(lang)
+		for _, detail := range []bool{false, true} {
+			table := formatListenTable(sockets, detail)
+			lines := strings.Split(strings.TrimSuffix(table, "\n"), "\n")
+			if len(lines) != 4 {
+				t.Fatalf("%s rows = %d", lang, len(lines))
+			}
+			header := lines[0]
+			addressAt := strings.Index(header, T("observe.listen.column.address"))
+			scopeAt := strings.Index(header, T("observe.listen.column.scope"))
+			processAt := strings.Index(header, T("observe.listen.column.process"))
+			if !(addressAt < scopeAt && scopeAt < processAt) {
+				t.Fatalf("column order: %s", header)
+			}
+			wantWidth := liveWidth(header[:processAt])
+			for i, socket := range sockets {
+				line := lines[i+1]
+				index := strings.Index(line, socket.Process)
+				if index < 0 || liveWidth(line[:index]) != wantWidth {
+					t.Fatalf("column alignment: %s", line)
+				}
+				scope := T("observe.listen.scope." + listenBindingScope(socket.Proto, socket.Address))
+				if !strings.Contains(line, scope) {
+					t.Fatalf("missing scope: %s", line)
+				}
+			}
+			redacted := redactIPAddresses(table)
+			if strings.Contains(redacted, "::1") || strings.Contains(redacted, "fe80::1") || !strings.Contains(redacted, T("observe.listen.scope.loopback")) {
+				t.Fatalf("redacted table: %s", redacted)
+			}
+		}
+	}
+}
+
+func TestListenBindingSocketJSONUnchanged(t *testing.T) {
+	socket := listenSocket{Proto: "tcp", Address: "127.0.0.1", Port: 80, Process: "app", PID: "42"}
+	formatListenTable([]listenSocket{socket}, true)
+	got, err := json.Marshal(socket)
+	want := `{"proto":"tcp","address":"127.0.0.1","port":80,"process":"app","pid":"42","recv_q":0,"send_q":0,"has_queue":false}`
+	if err != nil || string(got) != want {
+		t.Fatalf("socket JSON = %s, error = %v", got, err)
 	}
 }

@@ -358,7 +358,7 @@ func dedupeListenSockets(sockets []listenSocket) []listenSocket {
 // detail은 열을 더 여는 것일 뿐 줄을 늘리거나 줄이지 않는다. -v가 목록 자체를 바꾸면 -v를 준 화면과
 // 주지 않은 화면이 다른 사실을 말하게 된다.
 func formatListenTable(sockets []listenSocket, detail bool) string {
-	headers := []string{T("observe.listen.column.port"), T("observe.listen.column.proto"), T("observe.listen.column.address"), T("observe.listen.column.process")}
+	headers := []string{T("observe.listen.column.port"), T("observe.listen.column.proto"), T("observe.listen.column.address"), T("observe.listen.column.scope"), T("observe.listen.column.process")}
 	if detail {
 		headers = append(headers, T("observe.listen.column.user"), T("observe.listen.column.fd"), T("observe.listen.column.queue"))
 	}
@@ -373,7 +373,7 @@ func formatListenTable(sockets []listenSocket, detail bool) string {
 			// 유닉스 소켓은 포트가 없다. 빈 칸 대신 없음을 그대로 적는다.
 			port = "-"
 		}
-		row := []string{port, socket.Proto, socket.Address, process}
+		row := []string{port, socket.Proto, socket.Address, T("observe.listen.scope." + listenBindingScope(socket.Proto, socket.Address)), process}
 		if detail {
 			row = append(row, listenCell(socket.User), listenCell(socket.FD), listenQueueCell(socket))
 		}

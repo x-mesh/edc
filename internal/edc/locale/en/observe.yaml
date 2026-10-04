@@ -93,10 +93,17 @@ observe:
       port: "PORT"
       proto: "PROTO"
       address: "ADDRESS"
+      scope: "SCOPE"
       process: "PROCESS"
       user: "USER"
       fd: "FD"
       queue: "QUEUE"
+    scope:
+      loopback: "loopback"
+      all: "all interfaces"
+      specific: "specific address"
+      unix: "Unix"
+      unknown: "unknown"
     warn:
       unparsed: "%d socket line(s) could not be read"
       unix_state: "on macOS lsof gives no state for a unix socket, so the list is approximate"

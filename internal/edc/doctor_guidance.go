@@ -25,8 +25,8 @@ func printDoctorGuidance(writer io.Writer, report Report) {
 				continue
 			}
 			if !heading {
-				fmt.Fprintln(writer, "\n"+T("observe.doctor.guidance_heading"))
-				fmt.Fprintln(writer, T("observe.doctor.guidance_manual"))
+				fmt.Fprintln(writer, "\n"+"Investigation suggestions (order does not establish a cause)")
+				fmt.Fprintln(writer, "Replace HOST, HOST:PORT, or URL with your target, then run the command manually.")
 				heading = true
 			}
 			kind := ""
@@ -38,8 +38,8 @@ func printDoctorGuidance(writer io.Writer, report Report) {
 				evidence := result.Evidence[0]
 				excerpt += " · " + evidence.Label + ": " + evidence.Value
 			}
-			fmt.Fprintln(writer, T("observe.doctor.guidance_stage", stage.probe, string(result.Status), kind))
-			fmt.Fprintln(writer, T("observe.doctor.guidance_evidence", doctorGuidanceExcerpt(excerpt)))
+			fmt.Fprintln(writer, fmt.Sprintf("%s [%s]%s", stage.probe, string(result.Status), kind))
+			fmt.Fprintln(writer, fmt.Sprintf("  Observed: %s", doctorGuidanceExcerpt(excerpt)))
 			fmt.Fprintln(writer, "  "+stage.command)
 			break
 		}

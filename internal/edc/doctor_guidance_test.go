@@ -66,7 +66,7 @@ func TestDoctorCompletionGuidanceAndJSON(t *testing.T) {
 	printDoctorGuidance(&guidance, report)
 	printDoctorTail(&tail, report, false, false)
 	var code int
-	plain := captureSchedStdout(t, func() { code = emitDoctor(commonOptions{}, report) })
+	plain := traceCaptureOutput(t, &os.Stdout, func() { code = emitDoctor(commonOptions{}, report) })
 	if code != 1 || !strings.HasSuffix(plain, guidance.String()) || !strings.HasSuffix(tail.String(), guidance.String()) {
 		t.Fatalf("completion mismatch: code=%d plain=%q tail=%q", code, plain, tail.String())
 	}
@@ -74,7 +74,7 @@ func TestDoctorCompletionGuidanceAndJSON(t *testing.T) {
 		t.Fatalf("guidance leaked target: %s", guidance.String())
 	}
 	for _, path := range []string{"-", filepath.Join(t.TempDir(), "report.json")} {
-		output := captureSchedStdout(t, func() { code = emitDoctor(commonOptions{jsonPath: path}, report) })
+		output := traceCaptureOutput(t, &os.Stdout, func() { code = emitDoctor(commonOptions{jsonPath: path}, report) })
 		if code != 1 {
 			t.Fatalf("JSON exit=%d", code)
 		}

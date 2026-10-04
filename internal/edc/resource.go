@@ -116,9 +116,10 @@ type topProcessSampler struct {
 	// enrich는 목록에 남은 process에만 비싼 값(I/O, fd)을 채운다. 없으면 채우지 않는다.
 	enrich func([]topProcess)
 	// observe는 eBPF로 필터에 맞은 process를 감시한다. 없으면 감시하지 않는다.
-	observe topBPFObserver
-	filter  topProcessFilter
-	total   topProcessTotal
+	observe   topBPFObserver
+	filter    topProcessFilter
+	filterSeq int
+	total     topProcessTotal
 }
 
 var processSampler = &topProcessSampler{read: newTopProcessReader(), enrich: newTopProcessEnricher()}
@@ -147,11 +148,15 @@ func (sampler *topProcessSampler) refreshNow() ([]topProcess, topProcessTotal, b
 	return append([]topProcess(nil), sampler.processes...), sampler.total, sampler.valid
 }
 
-// setFilter는 이후 refresh부터 filter에 맞는 process만 남기게 한다. 이미 받은 목록은 다음 refresh까지 그대로다.
 func (sampler *topProcessSampler) setFilter(filter topProcessFilter) {
 	sampler.mutex.Lock()
 	defer sampler.mutex.Unlock()
+	if sampler.filter.String() == filter.String() {
+		return
+	}
 	sampler.filter = filter
+	sampler.filterSeq++
+	sampler.processes, sampler.total, sampler.valid, sampler.updated = nil, topProcessTotal{}, false, time.Time{}
 }
 
 // setObserver는 이후 refresh부터 필터에 맞은 process를 eBPF로 감시하게 한다.
@@ -164,10 +169,10 @@ func (sampler *topProcessSampler) setObserver(observe topBPFObserver) {
 func (sampler *topProcessSampler) refresh() {
 	sampler.refreshing.Lock()
 	defer sampler.refreshing.Unlock()
-	processes, valid := sampler.read()
 	sampler.mutex.Lock()
-	filter, observe := sampler.filter, sampler.observe
+	filter, observe, filterSeq := sampler.filter, sampler.observe, sampler.filterSeq
 	sampler.mutex.Unlock()
+	processes, valid := sampler.read()
 	// 필터는 CPU 순위를 자르기 전에 건다. 자른 뒤에 걸면 CPU가 낮은 process가 목록에 들지 못해 항상 비어 보인다.
 	processes = filter.apply(processes)
 	total := topProcessTotal{}
@@ -204,6 +209,10 @@ func (sampler *topProcessSampler) refresh() {
 	}
 	sampler.mutex.Lock()
 	defer sampler.mutex.Unlock()
+	if filterSeq != sampler.filterSeq {
+		sampler.running = false
+		return
+	}
 	// 실패해도 시각과 결과를 남긴다. 수집기가 없는 host에서 매 tick 다시 돌지 않고, 낡은 목록이 유효하게 남지 않는다.
 	sampler.processes, sampler.total, sampler.valid, sampler.updated, sampler.running = processes, total, valid, time.Now(), false
 }

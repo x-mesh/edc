@@ -3,6 +3,7 @@ package edc
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"regexp"
 	"strings"
 	"testing"
@@ -486,6 +487,54 @@ func TestTopProcessSamplerFiltersBeforeKeepingTheBusiestOnes(t *testing.T) {
 	sampler.refresh()
 	if processes, _ := sampler.latest(); len(processes) != 1 || processes[0].PID != 99 {
 		t.Fatalf("a low CPU match was dropped: %+v", processes)
+	}
+}
+
+func TestTopProcessSamplerClearsCachedMatchesWhenFilterChanges(t *testing.T) {
+	filter, err := parseTopProcessFilter("worker")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sampler := &topProcessSampler{read: func() ([]topProcess, bool) {
+		return []topProcess{{PID: 1, CPU: 90, Command: "other"}, {PID: 2, CPU: 10, Command: "worker"}}, true
+	}}
+	sampler.setFilter(filter)
+	sampler.refresh()
+	sampler.setFilter(filter)
+	if processes, total, valid := sampler.latestWithTotal(); !valid || len(processes) != 1 || total.Count != 1 {
+		t.Fatalf("same filter dropped valid matches: processes %+v, total %+v, valid %v", processes, total, valid)
+	}
+	sampler.setFilter(topProcessFilter{})
+	processes, total, valid := sampler.latestWithTotal()
+	if valid || len(processes) != 0 || total.Count != 0 {
+		t.Fatalf("changed filter returned cached matches: processes %+v, total %+v, valid %v", processes, total, valid)
+	}
+}
+
+func TestTopProcessSamplerDiscardsRefreshAfterFilterChanges(t *testing.T) {
+	filter, err := parseTopProcessFilter("worker")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, restore := range []bool{false, true} {
+		t.Run(fmt.Sprintf("restore=%t", restore), func(t *testing.T) {
+			sampler := &topProcessSampler{read: func() ([]topProcess, bool) {
+				return []topProcess{{PID: 2, CPU: 10, Command: "worker"}}, true
+			}}
+			sampler.enrich = func([]topProcess) {
+				sampler.setFilter(topProcessFilter{})
+				if restore {
+					sampler.setFilter(filter)
+				}
+			}
+			sampler.setFilter(filter)
+			sampler.refresh()
+			sampler.mutex.Lock()
+			defer sampler.mutex.Unlock()
+			if sampler.valid || len(sampler.processes) != 0 || sampler.total.Count != 0 || sampler.running || !sampler.updated.IsZero() {
+				t.Fatalf("refresh published old filter: processes %+v, total %+v, valid %v, running %v, updated %v", sampler.processes, sampler.total, sampler.valid, sampler.running, sampler.updated)
+			}
+		})
 	}
 }
 

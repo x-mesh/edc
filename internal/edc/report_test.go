@@ -65,7 +65,7 @@ func TestPrintReportDiff(t *testing.T) {
 	var output strings.Builder
 	printReportDiff(&output, diff, false)
 	text := output.String()
-	for _, expected := range []string{"diff  a.json → b.json", "WORSE    server.update", "PASS → FAIL  boom", "total_ms                  120 → 12 (-108)", "final_url                 a → b", "SAME     dns.lookup", "1 changed  ·  1 same  ·  0 added  ·  0 removed  ·  1 worse"} {
+	for _, expected := range []string{"diff  a.json → b.json", "WORSE           server.update", "PASS → FAIL  boom", "total_ms                  120 → 12 (-108)", "final_url                 a → b", "STATUS SAME     dns.lookup", "1 status changed  ·  1 status same  ·  0 added  ·  0 removed  ·  1 worse"} {
 		if !strings.Contains(text, expected) {
 			t.Fatalf("output %q does not contain %q", text, expected)
 		}
@@ -174,5 +174,176 @@ func TestPrintReportDiffEntryKeepsColumnsAligned(t *testing.T) {
 			t.Fatalf("probe column = %d, want %d in %q", start, column, text)
 		}
 		column = start
+	}
+}
+
+func TestLoadReportRejectsSchemaOnly(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "invalid.json")
+	if err := os.WriteFile(path, []byte(`{"schema_version":"1.0"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadReport(path); err == nil {
+		t.Fatal("schema-only report accepted")
+	}
+	if code := runReportShow(path); code != 2 {
+		t.Fatalf("show code = %d", code)
+	}
+	if code := runReportDiff([]string{path, path}); code != 2 {
+		t.Fatalf("diff code = %d", code)
+	}
+}
+
+func TestLoadReportValidation(t *testing.T) {
+	valid := buildReport("test", time.Now(), map[string]interface{}{"url": "[REDACTED]"}, []Result{{Probe: "remote.check", Status: StatusPass}}, true)
+	data, err := json.Marshal(valid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var base map[string]interface{}
+	if err := json.Unmarshal(data, &base); err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name string
+		edit func(map[string]interface{})
+	}{
+		{"tool", func(m map[string]interface{}) { m["tool"].(map[string]interface{})["name"] = "other" }},
+		{"version", func(m map[string]interface{}) { m["tool"].(map[string]interface{})["version"] = " " }},
+		{"run id", func(m map[string]interface{}) { m["run"].(map[string]interface{})["id"] = "" }},
+		{"time", func(m map[string]interface{}) { m["run"].(map[string]interface{})["started_at"] = "bad" }},
+		{"run duration", func(m map[string]interface{}) { m["run"].(map[string]interface{})["duration_ms"] = -1 }},
+		{"results missing", func(m map[string]interface{}) { delete(m, "results") }},
+		{"results type", func(m map[string]interface{}) { m["results"] = map[string]interface{}{} }},
+		{"summary null", func(m map[string]interface{}) { m["summary"] = nil }},
+		{"summary negative", func(m map[string]interface{}) { m["summary"].(map[string]interface{})["fail"] = -1 }},
+		{"summary mismatch", func(m map[string]interface{}) { m["summary"].(map[string]interface{})["pass"] = 4 }},
+		{"probe", func(m map[string]interface{}) {
+			m["results"].([]interface{})[0].(map[string]interface{})["probe"] = " "
+		}},
+		{"status", func(m map[string]interface{}) {
+			m["results"].([]interface{})[0].(map[string]interface{})["status"] = "unknown"
+		}},
+		{"duration", func(m map[string]interface{}) {
+			m["results"].([]interface{})[0].(map[string]interface{})["duration_ms"] = -1
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var m map[string]interface{}
+			json.Unmarshal(data, &m)
+			test.edit(m)
+			changed, _ := json.Marshal(m)
+			path := filepath.Join(t.TempDir(), "report.json")
+			os.WriteFile(path, changed, 0600)
+			if _, err := loadReport(path); err == nil || !strings.Contains(err.Error(), path) {
+				t.Fatalf("error = %v", err)
+			}
+		})
+	}
+	for _, invalid := range []string{"null", "[]", "42", string(data) + "{}", string(data) + "garbage", string(data) + strings.Repeat(" ", reportSizeLimit)} {
+		path := filepath.Join(t.TempDir(), "report.json")
+		os.WriteFile(path, []byte(invalid), 0600)
+		if _, err := loadReport(path); err == nil {
+			t.Fatal("invalid JSON accepted")
+		}
+	}
+	for _, results := range [][]Result{nil, {}, valid.Results, {{Probe: "duplicate", Status: StatusSkip}, {Probe: "duplicate", Status: StatusPass}}} {
+		report := buildReport("test", time.Now(), nil, results, true)
+		encoded, _ := json.Marshal(report)
+		var m map[string]interface{}
+		json.Unmarshal(encoded, &m)
+		m["extension"] = true
+		encoded, _ = json.Marshal(m)
+		path := filepath.Join(t.TempDir(), "report.json")
+		os.WriteFile(path, encoded, 0600)
+		if _, err := loadReport(path); err != nil {
+			t.Fatal(err)
+		}
+	}
+	path := filepath.Join(t.TempDir(), "old.json")
+	os.WriteFile(path, []byte(`{"schema_version":"2.0"}`), 0600)
+	if _, err := loadReport(path); err == nil || !strings.Contains(err.Error(), "2.0") {
+		t.Fatalf("schema error = %v", err)
+	}
+}
+
+func TestReportDiffIdentity(t *testing.T) {
+	before := Report{Target: map[string]interface{}{"url": "[REDACTED]", "host": "target-a"}, Host: map[string]interface{}{"hostname": "collector-a"}, Results: []Result{{Probe: "check", Status: StatusPass, DurationMS: 1}}}
+	after := Report{Target: map[string]interface{}{"url": "other\n\x1b[2J", "host": 42}, Host: map[string]interface{}{"hostname": "collector-b"}, Results: []Result{{Probe: "check", Status: StatusPass, DurationMS: 2}}}
+	diff := diffReports("a", before, "b", after)
+	text := reportDiffIdentity(diff)
+	for _, expected := range []string{"[REDACTED]", "target-a", "collector-a", "collector-b", T("cli.report.unavailable"), T("cli.report.identity_differs"), T("cli.report.status_semantics"), `other\n\x1b[2J`} {
+		if !strings.Contains(text, expected) {
+			t.Fatalf("identity %q missing %q", text, expected)
+		}
+	}
+	if strings.Contains(text, "\x1b") {
+		t.Fatal("control sequence in header")
+	}
+	encoded, _ := json.Marshal(diff)
+	var value map[string]interface{}
+	json.Unmarshal(encoded, &value)
+	side := value["before"].(map[string]interface{})
+	for _, key := range []string{"path", "run_id", "started_at", "hostname", "target_url", "target_host"} {
+		if _, ok := side[key]; !ok {
+			t.Fatalf("missing %s", key)
+		}
+	}
+	if diff.Entries[0].Change != changeSame || diff.Summary.Regressed != 0 {
+		t.Fatalf("status semantics changed: %#v", diff)
+	}
+	same := diff
+	same.After = same.Before
+	if strings.Contains(reportDiffIdentity(same), T("cli.report.identity_differs")) {
+		t.Fatal("same identities flagged")
+	}
+	missing := reportDiff{}
+	if strings.Contains(reportDiffIdentity(missing), T("cli.report.identity_differs")) {
+		t.Fatal("missing identities flagged as mismatch")
+	}
+}
+
+func TestReportDiffDifferentTargetsContinue(t *testing.T) {
+	dir := t.TempDir()
+	paths := []string{filepath.Join(dir, "before.json"), filepath.Join(dir, "after.json")}
+	for i, path := range paths {
+		report := buildReport("test", time.Now(), map[string]interface{}{"url": []string{"[REDACTED]", "https://other.invalid"}[i]}, []Result{{Probe: "check", Status: StatusPass, Metrics: map[string]interface{}{"scalar": i, "nested": map[string]interface{}{"value": i}}}}, false)
+		report.Host = map[string]interface{}{"hostname": []string{"one", "two"}[i]}
+		data, _ := json.Marshal(report)
+		if err := os.WriteFile(path, data, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	output := filepath.Join(dir, "diff.json")
+	if code := runReportDiff([]string{"--json", output, paths[0], paths[1]}); code != 0 {
+		t.Fatalf("cross-target code = %d", code)
+	}
+	data, err := os.ReadFile(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var diff reportDiff
+	if err := json.Unmarshal(data, &diff); err != nil {
+		t.Fatal(err)
+	}
+	if diff.Summary.Same != 1 || diff.Summary.Changed != 0 || len(diff.Entries[0].Metrics) != 1 || diff.Before.TargetURL != "[REDACTED]" || diff.After.Hostname != "two" {
+		t.Fatalf("diff = %#v", diff)
+	}
+}
+
+func TestLoadReportErrorsIdentifyResultIndex(t *testing.T) {
+	report := buildReport("test", time.Now(), nil, []Result{{Probe: "one", Status: StatusPass}, {Probe: "two", Status: StatusPass}}, false)
+	data, _ := json.Marshal(report)
+	for _, field := range []string{"started_at", "duration_ms"} {
+		var value map[string]interface{}
+		json.Unmarshal(data, &value)
+		value["results"].([]interface{})[1].(map[string]interface{})[field] = "invalid"
+		encoded, _ := json.Marshal(value)
+		path := filepath.Join(t.TempDir(), "invalid.json")
+		os.WriteFile(path, encoded, 0600)
+		_, err := loadReport(path)
+		if err == nil || !strings.Contains(err.Error(), "results[1]."+field) || strings.Contains(err.Error(), "\"invalid\"") {
+			t.Fatalf("error = %v", err)
+		}
 	}
 }

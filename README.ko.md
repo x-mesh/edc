@@ -307,7 +307,19 @@ terminal에서는 몇 곳을 확인했는지 진행 줄로 보여 줍니다. `q`
 ./bin/edc report diff --json diff.json before.json after.json
 ```
 
-status가 pass에서 warn이나 fail로, 또는 warn에서 fail로 바뀌면 그 probe를 `WORSE`로 표시합니다. 악화된 probe가 하나라도 있으면 exit code는 `1`입니다. `metrics` 안의 배열과 객체는 diff에 나오지 않습니다.
+보고서에는 schema version `1.0`, tool name `edc`, 비어 있지 않은 tool version과 run ID, 유효한 0이 아닌 실행 시작 시각이 필요합니다.
+
+`results`와 summary 객체가 있어야 합니다. 빈 결과는 `null`과 `[]`를 모두 허용하며, 알 수 없는 확장 필드도 허용합니다.
+
+각 결과에는 probe 이름과 `pass`, `warn`, `fail`, `skip` 중 하나의 status가 필요합니다. 실행 시간과 summary 개수는 음수일 수 없으며, summary는 결과와 일치해야 합니다. 잘못된 보고서 입력의 exit code는 `2`입니다.
+
+`STATUS SAME`과 `STATUS CHANGED`는 상태만 비교합니다. JSON의 `same`과 `changed`도 같은 기준을 유지합니다.
+
+status가 pass에서 warn이나 fail로, 또는 warn에서 fail로 바뀌면 그 probe를 `WORSE`로 표시합니다. 악화된 probe가 하나라도 있으면 exit code는 `1`입니다.
+
+두 보고서에 모두 있는 scalar metric과 실행 시간의 차이는 별도로 표시합니다. 배열, 객체, 추가되거나 삭제된 metric 키는 비교하지 않으므로, 차이가 표시되지 않아도 모든 측정값이 같다는 뜻은 아닙니다. 접힌 뷰어에는 scalar와 실행 시간의 차이 개수가 나옵니다.
+
+머리말에는 양쪽 target URL, target host, 수집 hostname이 나옵니다. 서로 다르면 안내를 표시하고 비교를 계속합니다. 없는 식별 정보는 확인 불가로 표시합니다. JSON 비교 결과의 각 측에는 수집 `hostname`과 별도로 선택 필드 `target_url`과 `target_host`가 추가됩니다.
 
 ## Report 뷰어
 
@@ -320,7 +332,7 @@ stdin과 stdout이 모두 terminal이면 `edc report show`와 `edc report diff`�
 | `↑` `↓` `PgUp` `PgDn` | 스크롤 |
 | `q` | 종료 |
 
-`edc report show`의 필터는 전체, 실패와 경고, 실패만 순서로 바뀝니다. `edc report diff`의 필터는 전체, 바뀐 것, 악화된 것 순서로 바뀝니다.
+`edc report show`의 필터는 전체, 실패와 경고, 실패만 순서로 바뀝니다. `edc report diff`의 필터는 전체, 상태가 바뀐 것, 악화된 것 순서로 바뀝니다.
 
 뷰어는 화면에 출력을 남기지 않습니다. exit code는 그대로입니다. 파이프, 파일, `--json`은 기존 출력을 받습니다.
 

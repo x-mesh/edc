@@ -204,6 +204,11 @@ cli:
     io_group_by: "--group-by は device、process、cgroup、event だけを使用できます"
     io_failed: "trace io に失敗しました: %v"
   report:
+    unavailable: "取得不可"
+    identity_differs: "対象または収集ホストが異なります。比較を続行します"
+    status_semantics: "same/changed は状態のみを比較します。共通 scalar と実行時間の差は別に表示します"
+    delta_count: "scalar/実行時間の差 %d 件 (e 詳細)"
+    invalid_field: "%s: 無効なレポートフィールド: %s"
     unsupported_schema: "%s: 対応しない schema version: %s"
     filter_label: "絞り込み: "
     detail_open: "  ·  詳細を展開"
@@ -213,7 +218,7 @@ cli:
       all: "全体"
       fail: "失敗のみ"
       problems: "失敗と警告"
-      changed: "変化"
+      changed: "状態の変化"
       worse: "悪化"
   update:
     no_tag: "release に tag がありません"

@@ -117,3 +117,22 @@ func TestDiffEntriesSplitLineAndMetrics(t *testing.T) {
 		t.Fatalf("changed filter = %#v", entries)
 	}
 }
+
+func TestDiffViewerShowsIdentityAndCollapsedDeltas(t *testing.T) {
+	diff := reportDiff{Before: reportDiffSide{TargetURL: "before", Hostname: "one"}, After: reportDiffSide{TargetURL: "after", Hostname: "two"}, Entries: []reportDiffEntry{{Probe: "check", Change: changeSame, AfterStatus: StatusPass, Metrics: []metricDelta{{Key: "duration_ms", Before: 1, After: 2}}}}}
+	title := reportViewerTitle("report diff", "a → b", diffSummaryLine(diff.Summary)) + "\n" + reportDiffIdentity(diff)
+	model := newViewerModel(title, diffEntries(diff, false), diffFilters())
+	updated, _ := model.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	model = updated.(viewerModel)
+	for _, expected := range []string{"before → after", "one → two", T("cli.report.identity_differs"), "STATUS SAME", T("cli.report.delta_count", 1)} {
+		if !strings.Contains(model.View().Content, expected) {
+			t.Fatalf("view missing %q", expected)
+		}
+	}
+	if strings.Contains(viewerAfter(t, model, "f").body(), "check") {
+		t.Fatal("same status entered changed filter")
+	}
+	if !strings.Contains(viewerAfter(t, model, "e").body(), "duration_ms") {
+		t.Fatal("delta detail missing")
+	}
+}

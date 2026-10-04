@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -18,7 +19,7 @@ import (
 const (
 	reportSizeLimit = 20 * 1024 * 1024
 	// diffLabelWidth는 SAME, WORSE 같은 변화 label 열의 폭이다.
-	diffLabelWidth = 8
+	diffLabelWidth = 15
 	// reportCandidateLimit은 목록에 올리는 report 파일 수다. 디렉터리에 JSON이 많아도
 	// 고르는 화면이 한 눈에 들어와야 한다.
 	reportCandidateLimit = 20
@@ -76,13 +77,113 @@ func loadReport(path string) (Report, error) {
 		return Report{}, err
 	}
 	defer file.Close()
-	var report Report
-	if err := json.NewDecoder(io.LimitReader(file, reportSizeLimit)).Decode(&report); err != nil {
+	data, err := io.ReadAll(io.LimitReader(file, reportSizeLimit+1))
+	if err != nil {
 		return Report{}, fmt.Errorf("%s: %w", path, err)
+	}
+	invalid := func(field string) (Report, error) {
+		return Report{}, errors.New(T("cli.report.invalid_field", path, field))
+	}
+	if len(data) > reportSizeLimit {
+		return invalid("size")
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil || fields == nil {
+		return invalid("JSON object")
+	}
+	var schema string
+	if raw, ok := fields["schema_version"]; ok {
+		if err := json.Unmarshal(raw, &schema); err != nil {
+			return invalid("schema_version")
+		}
+	}
+	if schema != "1.0" {
+		return Report{}, errors.New(T("cli.report.unsupported_schema", path, schema))
+	}
+	var rawRun map[string]json.RawMessage
+	if err := json.Unmarshal(fields["run"], &rawRun); err != nil {
+		return invalid("run")
+	}
+	if rawTime, ok := rawRun["started_at"]; ok {
+		var started time.Time
+		if err := json.Unmarshal(rawTime, &started); err != nil {
+			return invalid("run.started_at")
+		}
+	}
+	var rawResults []json.RawMessage
+	if raw, ok := fields["results"]; ok {
+		if err := json.Unmarshal(raw, &rawResults); err != nil {
+			return invalid("results")
+		}
+	}
+	for index, raw := range rawResults {
+		var result Result
+		if err := json.Unmarshal(raw, &result); err != nil {
+			field := fmt.Sprintf("results[%d]", index)
+			var typeError *json.UnmarshalTypeError
+			if errors.As(err, &typeError) && typeError.Field != "" {
+				field += "." + typeError.Field
+			}
+			if strings.Contains(err.Error(), "parsing time") {
+				field += ".started_at"
+			}
+			return invalid(field)
+		}
+	}
+	var report Report
+	if err := json.Unmarshal(data, &report); err != nil {
+		field := "JSON"
+		var typeError *json.UnmarshalTypeError
+		if errors.As(err, &typeError) {
+			field = typeError.Field
+		}
+		if strings.Contains(err.Error(), "parsing time") {
+			field = "started_at"
+		}
+		return invalid(field)
 	}
 	if report.SchemaVersion != "1.0" {
 		return Report{}, errors.New(T("cli.report.unsupported_schema", path, report.SchemaVersion))
 	}
+	if report.Tool.Name != "edc" {
+		return invalid("tool.name")
+	}
+	if strings.TrimSpace(report.Tool.Version) == "" {
+		return invalid("tool.version")
+	}
+	if strings.TrimSpace(report.Run.ID) == "" {
+		return invalid("run.id")
+	}
+	if report.Run.StartedAt.IsZero() {
+		return invalid("run.started_at")
+	}
+	if report.Run.DurationMS < 0 {
+		return invalid("run.duration_ms")
+	}
+	if _, ok := fields["results"]; !ok {
+		return invalid("results")
+	}
+	if value := strings.TrimSpace(string(fields["summary"])); value == "" || !strings.HasPrefix(value, "{") {
+		return invalid("summary")
+	}
+	for index, result := range report.Results {
+		prefix := fmt.Sprintf("results[%d].", index)
+		if strings.TrimSpace(result.Probe) == "" {
+			return invalid(prefix + "probe")
+		}
+		switch result.Status {
+		case StatusPass, StatusWarn, StatusFail, StatusSkip:
+		default:
+			return invalid(prefix + "status")
+		}
+		if result.DurationMS < 0 {
+			return invalid(prefix + "duration_ms")
+		}
+	}
+	if report.Summary.Pass < 0 || report.Summary.Warn < 0 || report.Summary.Fail < 0 || report.Summary.Skip < 0 || report.Summary != summarize(report.Results) {
+		return invalid("summary")
+	}
+
 	return report, nil
 }
 
@@ -143,7 +244,7 @@ func runReportDiff(args []string) int {
 			return 2
 		}
 	case liveTerminal():
-		title := reportViewerTitle("report diff", first+" → "+second, diffSummaryLine(diff.Summary))
+		title := reportViewerTitle("report diff", first+" → "+second, diffSummaryLine(diff.Summary)) + "\n" + reportDiffIdentity(diff)
 		if err := runReportViewer(title, diffEntries(diff, true), diffFilters()); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			return 2
@@ -185,10 +286,12 @@ type reportDiffEntry struct {
 }
 
 type reportDiffSide struct {
-	Path      string    `json:"path"`
-	RunID     string    `json:"run_id"`
-	StartedAt time.Time `json:"started_at"`
-	Hostname  string    `json:"hostname,omitempty"`
+	Path       string    `json:"path"`
+	RunID      string    `json:"run_id"`
+	StartedAt  time.Time `json:"started_at"`
+	Hostname   string    `json:"hostname,omitempty"`
+	TargetURL  string    `json:"target_url,omitempty"`
+	TargetHost string    `json:"target_host,omitempty"`
 }
 
 type reportDiffSummary struct {
@@ -270,7 +373,9 @@ func diffReports(beforePath string, before Report, afterPath string, after Repor
 
 func diffSide(path string, report Report) reportDiffSide {
 	hostname, _ := report.Host["hostname"].(string)
-	return reportDiffSide{Path: path, RunID: report.Run.ID, StartedAt: report.Run.StartedAt, Hostname: hostname}
+	url, _ := report.Target["url"].(string)
+	host, _ := report.Target["host"].(string)
+	return reportDiffSide{Path: path, RunID: report.Run.ID, StartedAt: report.Run.StartedAt, Hostname: hostname, TargetURL: url, TargetHost: host}
 }
 
 func indexResults(results []Result) map[string]Result {
@@ -355,19 +460,47 @@ func isScalarMetric(value interface{}) bool {
 func printReportDiff(writer io.Writer, diff reportDiff, color bool) {
 	fmt.Fprintf(writer, "diff  %s → %s\n", diff.Before.Path, diff.After.Path)
 	fmt.Fprintf(writer, "run   %s %s → %s %s\n\n", diff.Before.RunID, diff.Before.StartedAt.Format(time.RFC3339), diff.After.RunID, diff.After.StartedAt.Format(time.RFC3339))
+	fmt.Fprintln(writer, reportDiffIdentity(diff))
 	for _, entry := range diff.Entries {
 		printReportDiffEntry(writer, writer, entry, color)
 	}
 	fmt.Fprintf(writer, "\n%s\n", diffSummaryLine(diff.Summary))
 }
 
+func reportIdentityValue(value string) string {
+	if value == "" {
+		return T("cli.report.unavailable")
+	}
+	quoted := strconv.QuoteToGraphic(value)
+	return quoted[1 : len(quoted)-1]
+}
+
+func reportDiffIdentity(diff reportDiff) string {
+	lines := []string{
+		fmt.Sprintf("target URL   %s → %s", reportIdentityValue(diff.Before.TargetURL), reportIdentityValue(diff.After.TargetURL)),
+		fmt.Sprintf("target host  %s → %s", reportIdentityValue(diff.Before.TargetHost), reportIdentityValue(diff.After.TargetHost)),
+		fmt.Sprintf("collected on %s → %s", reportIdentityValue(diff.Before.Hostname), reportIdentityValue(diff.After.Hostname)),
+	}
+	for _, pair := range [][2]string{{diff.Before.TargetURL, diff.After.TargetURL}, {diff.Before.TargetHost, diff.After.TargetHost}, {diff.Before.Hostname, diff.After.Hostname}} {
+		if pair[0] != "" && pair[1] != "" && pair[0] != pair[1] {
+			lines = append(lines, T("cli.report.identity_differs"))
+			break
+		}
+	}
+	lines = append(lines, T("cli.report.status_semantics"))
+	return strings.Join(lines, "\n")
+}
+
 func diffSummaryLine(s reportDiffSummary) string {
-	return fmt.Sprintf("%d changed  ·  %d same  ·  %d added  ·  %d removed  ·  %d worse", s.Changed, s.Same, s.Added, s.Removed, s.Regressed)
+	return fmt.Sprintf("%d status changed  ·  %d status same  ·  %d added  ·  %d removed  ·  %d worse", s.Changed, s.Same, s.Added, s.Removed, s.Regressed)
 }
 
 // printReportDiffEntry는 요약 줄과 metric 상세를 나눠 쓴다. 뷰어는 둘을 따로 접고 편다.
 func printReportDiffEntry(line, detail io.Writer, entry reportDiffEntry, color bool) {
 	label := strings.ToUpper(string(entry.Change))
+	if entry.Change == changeSame || entry.Change == changeChanged {
+		label = "STATUS " + label
+	}
 	if entry.Regressed {
 		label = "WORSE"
 		if color {
@@ -386,6 +519,9 @@ func printReportDiffEntry(line, detail io.Writer, entry reportDiffEntry, color b
 		fmt.Fprintf(line, "%s %-24s  %s  %s\n", padded, probe, terminalStatus(entry.AfterStatus, color), firstLine(entry.AfterSummary))
 	case changeRemoved:
 		fmt.Fprintf(line, "%s %-24s  %s  %s\n", padded, probe, terminalStatus(entry.BeforeStatus, color), firstLine(entry.BeforeSummary))
+	}
+	if len(entry.Metrics) > 0 {
+		fmt.Fprintf(line, "         %s\n", T("cli.report.delta_count", len(entry.Metrics)))
 	}
 	for _, metric := range entry.Metrics {
 		if metric.Delta != nil {

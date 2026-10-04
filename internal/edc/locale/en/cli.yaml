@@ -204,6 +204,11 @@ cli:
     io_group_by: "--group-by must be device, process, cgroup, or event"
     io_failed: "trace io failed: %v"
   report:
+    unavailable: "unavailable"
+    identity_differs: "target or collection identity differs; comparison continues"
+    status_semantics: "same/changed compare status only; shared scalar and duration deltas appear separately"
+    delta_count: "%d scalar/duration deltas (e detail)"
+    invalid_field: "%s: invalid report field: %s"
     unsupported_schema: "%s: unsupported schema version: %s"
     filter_label: "filter: "
     detail_open: "  ·  detail open"
@@ -213,7 +218,7 @@ cli:
       all: "all"
       fail: "fail only"
       problems: "fail and warn"
-      changed: "changed"
+      changed: "status changed"
       worse: "worse"
   update:
     no_tag: "the release carries no tag"

@@ -91,6 +91,15 @@ func loadReport(path string) (Report, error) {
 	if err := json.Unmarshal(data, &fields); err != nil || fields == nil {
 		return invalid("JSON object")
 	}
+	var schema string
+	if raw, ok := fields["schema_version"]; ok {
+		if err := json.Unmarshal(raw, &schema); err != nil {
+			return invalid("schema_version")
+		}
+	}
+	if schema != "1.0" {
+		return Report{}, errors.New(T("cli.report.unsupported_schema", path, schema))
+	}
 	var rawRun map[string]json.RawMessage
 	if err := json.Unmarshal(fields["run"], &rawRun); err != nil {
 		return invalid("run")

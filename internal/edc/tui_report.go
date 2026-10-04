@@ -50,7 +50,7 @@ func (model viewerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		model.width, model.height = value.Width, value.Height
 		model.view.SetWidth(value.Width)
-		model.view.SetHeight(max(1, value.Height-viewerFixedLines))
+		model.view.SetHeight(max(1, value.Height-viewerFixedLines-strings.Count(model.title, "\n")))
 		model.view.SetContent(model.body())
 		return model, nil
 	case tea.KeyPressMsg:

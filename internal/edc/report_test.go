@@ -65,7 +65,7 @@ func TestPrintReportDiff(t *testing.T) {
 	var output strings.Builder
 	printReportDiff(&output, diff, false)
 	text := output.String()
-	for _, expected := range []string{"diff  a.json → b.json", "WORSE    server.update", "PASS → FAIL  boom", "total_ms                  120 → 12 (-108)", "final_url                 a → b", "SAME     dns.lookup", "1 changed  ·  1 same  ·  0 added  ·  0 removed  ·  1 worse"} {
+	for _, expected := range []string{"diff  a.json → b.json", "WORSE           server.update", "PASS → FAIL  boom", "total_ms                  120 → 12 (-108)", "final_url                 a → b", "STATUS SAME     dns.lookup", "1 status changed  ·  1 status same  ·  0 added  ·  0 removed  ·  1 worse"} {
 		if !strings.Contains(text, expected) {
 			t.Fatalf("output %q does not contain %q", text, expected)
 		}
@@ -264,5 +264,41 @@ func TestLoadReportValidation(t *testing.T) {
 	os.WriteFile(path, []byte(`{"schema_version":"2.0"}`), 0600)
 	if _, err := loadReport(path); err == nil || !strings.Contains(err.Error(), "2.0") {
 		t.Fatalf("schema error = %v", err)
+	}
+}
+
+func TestReportDiffIdentity(t *testing.T) {
+	before := Report{Target: map[string]interface{}{"url": "[REDACTED]", "host": "target-a"}, Host: map[string]interface{}{"hostname": "collector-a"}, Results: []Result{{Probe: "check", Status: StatusPass, DurationMS: 1}}}
+	after := Report{Target: map[string]interface{}{"url": "other\n\x1b[2J", "host": 42}, Host: map[string]interface{}{"hostname": "collector-b"}, Results: []Result{{Probe: "check", Status: StatusPass, DurationMS: 2}}}
+	diff := diffReports("a", before, "b", after)
+	text := reportDiffIdentity(diff)
+	for _, expected := range []string{"[REDACTED]", "target-a", "collector-a", "collector-b", T("cli.report.unavailable"), T("cli.report.identity_differs"), T("cli.report.status_semantics"), `other\n\x1b[2J`} {
+		if !strings.Contains(text, expected) {
+			t.Fatalf("identity %q missing %q", text, expected)
+		}
+	}
+	if strings.Contains(text, "\x1b") {
+		t.Fatal("control sequence in header")
+	}
+	encoded, _ := json.Marshal(diff)
+	var value map[string]interface{}
+	json.Unmarshal(encoded, &value)
+	side := value["before"].(map[string]interface{})
+	for _, key := range []string{"path", "run_id", "started_at", "hostname", "target_url", "target_host"} {
+		if _, ok := side[key]; !ok {
+			t.Fatalf("missing %s", key)
+		}
+	}
+	if diff.Entries[0].Change != changeSame || diff.Summary.Regressed != 0 {
+		t.Fatalf("status semantics changed: %#v", diff)
+	}
+	same := diff
+	same.After = same.Before
+	if strings.Contains(reportDiffIdentity(same), T("cli.report.identity_differs")) {
+		t.Fatal("same identities flagged")
+	}
+	missing := reportDiff{}
+	if strings.Contains(reportDiffIdentity(missing), T("cli.report.identity_differs")) {
+		t.Fatal("missing identities flagged as mismatch")
 	}
 }

@@ -204,6 +204,10 @@ cli:
     io_group_by: "--group-by는 device, process, cgroup, event만 사용할 수 있습니다"
     io_failed: "trace io 실패: %v"
   report:
+    unavailable: "확인 불가"
+    identity_differs: "대상 또는 수집 호스트가 다릅니다. 비교를 계속합니다"
+    status_semantics: "same/changed는 상태만 비교합니다. 공통 scalar와 실행 시간 차이는 별도 표시합니다"
+    delta_count: "scalar/실행 시간 차이 %d개 (e 상세)"
     invalid_field: "%s: 유효하지 않은 보고서 필드: %s"
     unsupported_schema: "%s: 지원하지 않는 schema version: %s"
     filter_label: "필터: "
@@ -214,7 +218,7 @@ cli:
       all: "전체"
       fail: "실패만"
       problems: "실패와 경고"
-      changed: "바뀐 것"
+      changed: "상태가 바뀐 것"
       worse: "악화된 것"
   update:
     no_tag: "release에 tag가 없습니다"

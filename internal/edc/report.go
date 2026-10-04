@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -18,7 +19,7 @@ import (
 const (
 	reportSizeLimit = 20 * 1024 * 1024
 	// diffLabelWidth는 SAME, WORSE 같은 변화 label 열의 폭이다.
-	diffLabelWidth = 8
+	diffLabelWidth = 15
 	// reportCandidateLimit은 목록에 올리는 report 파일 수다. 디렉터리에 JSON이 많아도
 	// 고르는 화면이 한 눈에 들어와야 한다.
 	reportCandidateLimit = 20
@@ -204,7 +205,7 @@ func runReportDiff(args []string) int {
 			return 2
 		}
 	case liveTerminal():
-		title := reportViewerTitle("report diff", first+" → "+second, diffSummaryLine(diff.Summary))
+		title := reportViewerTitle("report diff", first+" → "+second, diffSummaryLine(diff.Summary)) + "\n" + reportDiffIdentity(diff)
 		if err := runReportViewer(title, diffEntries(diff, true), diffFilters()); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			return 2
@@ -246,10 +247,12 @@ type reportDiffEntry struct {
 }
 
 type reportDiffSide struct {
-	Path      string    `json:"path"`
-	RunID     string    `json:"run_id"`
-	StartedAt time.Time `json:"started_at"`
-	Hostname  string    `json:"hostname,omitempty"`
+	Path       string    `json:"path"`
+	RunID      string    `json:"run_id"`
+	StartedAt  time.Time `json:"started_at"`
+	Hostname   string    `json:"hostname,omitempty"`
+	TargetURL  string    `json:"target_url,omitempty"`
+	TargetHost string    `json:"target_host,omitempty"`
 }
 
 type reportDiffSummary struct {
@@ -331,7 +334,9 @@ func diffReports(beforePath string, before Report, afterPath string, after Repor
 
 func diffSide(path string, report Report) reportDiffSide {
 	hostname, _ := report.Host["hostname"].(string)
-	return reportDiffSide{Path: path, RunID: report.Run.ID, StartedAt: report.Run.StartedAt, Hostname: hostname}
+	url, _ := report.Target["url"].(string)
+	host, _ := report.Target["host"].(string)
+	return reportDiffSide{Path: path, RunID: report.Run.ID, StartedAt: report.Run.StartedAt, Hostname: hostname, TargetURL: url, TargetHost: host}
 }
 
 func indexResults(results []Result) map[string]Result {
@@ -416,19 +421,47 @@ func isScalarMetric(value interface{}) bool {
 func printReportDiff(writer io.Writer, diff reportDiff, color bool) {
 	fmt.Fprintf(writer, "diff  %s → %s\n", diff.Before.Path, diff.After.Path)
 	fmt.Fprintf(writer, "run   %s %s → %s %s\n\n", diff.Before.RunID, diff.Before.StartedAt.Format(time.RFC3339), diff.After.RunID, diff.After.StartedAt.Format(time.RFC3339))
+	fmt.Fprintln(writer, reportDiffIdentity(diff))
 	for _, entry := range diff.Entries {
 		printReportDiffEntry(writer, writer, entry, color)
 	}
 	fmt.Fprintf(writer, "\n%s\n", diffSummaryLine(diff.Summary))
 }
 
+func reportIdentityValue(value string) string {
+	if value == "" {
+		return T("cli.report.unavailable")
+	}
+	quoted := strconv.QuoteToGraphic(value)
+	return quoted[1 : len(quoted)-1]
+}
+
+func reportDiffIdentity(diff reportDiff) string {
+	lines := []string{
+		fmt.Sprintf("target URL   %s → %s", reportIdentityValue(diff.Before.TargetURL), reportIdentityValue(diff.After.TargetURL)),
+		fmt.Sprintf("target host  %s → %s", reportIdentityValue(diff.Before.TargetHost), reportIdentityValue(diff.After.TargetHost)),
+		fmt.Sprintf("collected on %s → %s", reportIdentityValue(diff.Before.Hostname), reportIdentityValue(diff.After.Hostname)),
+	}
+	for _, pair := range [][2]string{{diff.Before.TargetURL, diff.After.TargetURL}, {diff.Before.TargetHost, diff.After.TargetHost}, {diff.Before.Hostname, diff.After.Hostname}} {
+		if pair[0] != "" && pair[1] != "" && pair[0] != pair[1] {
+			lines = append(lines, T("cli.report.identity_differs"))
+			break
+		}
+	}
+	lines = append(lines, T("cli.report.status_semantics"))
+	return strings.Join(lines, "\n")
+}
+
 func diffSummaryLine(s reportDiffSummary) string {
-	return fmt.Sprintf("%d changed  ·  %d same  ·  %d added  ·  %d removed  ·  %d worse", s.Changed, s.Same, s.Added, s.Removed, s.Regressed)
+	return fmt.Sprintf("%d status changed  ·  %d status same  ·  %d added  ·  %d removed  ·  %d worse", s.Changed, s.Same, s.Added, s.Removed, s.Regressed)
 }
 
 // printReportDiffEntry는 요약 줄과 metric 상세를 나눠 쓴다. 뷰어는 둘을 따로 접고 편다.
 func printReportDiffEntry(line, detail io.Writer, entry reportDiffEntry, color bool) {
 	label := strings.ToUpper(string(entry.Change))
+	if entry.Change == changeSame || entry.Change == changeChanged {
+		label = "STATUS " + label
+	}
 	if entry.Regressed {
 		label = "WORSE"
 		if color {
@@ -447,6 +480,9 @@ func printReportDiffEntry(line, detail io.Writer, entry reportDiffEntry, color b
 		fmt.Fprintf(line, "%s %-24s  %s  %s\n", padded, probe, terminalStatus(entry.AfterStatus, color), firstLine(entry.AfterSummary))
 	case changeRemoved:
 		fmt.Fprintf(line, "%s %-24s  %s  %s\n", padded, probe, terminalStatus(entry.BeforeStatus, color), firstLine(entry.BeforeSummary))
+	}
+	if len(entry.Metrics) > 0 {
+		fmt.Fprintf(line, "         %s\n", T("cli.report.delta_count", len(entry.Metrics)))
 	}
 	for _, metric := range entry.Metrics {
 		if metric.Delta != nil {

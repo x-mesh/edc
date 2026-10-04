@@ -149,15 +149,16 @@ type topProcessTotalSample struct {
 // topProcessSample은 --process가 sample마다 붙이는 process 한 개의 값이다. CPU는 core 하나가 100%다.
 // Started, Threads, FDs, 디스크 rate는 읽을 수 없으면 빠진다. (pid, started)가 process 하나를 가리킨다.
 type topProcessSample struct {
-	PID       int        `json:"pid"`
-	Started   *time.Time `json:"started,omitempty"`
-	Command   string     `json:"command"`
-	CPU       float64    `json:"cpu_pct"`
-	RSSBytes  uint64     `json:"rss_bytes"`
-	Threads   int        `json:"threads,omitempty"`
-	FDs       int        `json:"fds,omitempty"`
-	DiskRead  *float64   `json:"disk_read_bytes_per_s,omitempty"`
-	DiskWrite *float64   `json:"disk_write_bytes_per_s,omitempty"`
+	PID       int               `json:"pid"`
+	Started   *time.Time        `json:"started,omitempty"`
+	Command   string            `json:"command"`
+	CPU       float64           `json:"cpu_pct"`
+	RSSBytes  uint64            `json:"rss_bytes"`
+	Threads   int               `json:"threads,omitempty"`
+	FDs       int               `json:"fds,omitempty"`
+	Limits    *topProcessLimits `json:"limits"`
+	DiskRead  *float64          `json:"disk_read_bytes_per_s,omitempty"`
+	DiskWrite *float64          `json:"disk_write_bytes_per_s,omitempty"`
 	// EBPF는 --ebpf가 직전 window 동안 센 값이다. 첫 관측 전에는 빠진다.
 	EBPF *topBPFSample `json:"ebpf,omitempty"`
 }
@@ -166,6 +167,7 @@ func newTopProcessSamples(processes []topProcess) *[]topProcessSample {
 	samples := make([]topProcessSample, 0, len(processes))
 	for _, process := range processes {
 		sample := topProcessSample{PID: process.PID, Command: process.Command, CPU: roundTopValue(process.CPU), RSSBytes: process.RSS, Threads: process.Threads, FDs: process.FDs, EBPF: newTopBPFSample(process.BPF)}
+		sample.Limits = processLimitsOf(process)
 		if !process.Started.IsZero() {
 			started := process.Started.UTC().Truncate(time.Second)
 			sample.Started = &started

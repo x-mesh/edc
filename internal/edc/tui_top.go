@@ -666,6 +666,9 @@ func (model topModel) detailLines() []string {
 		}
 		lines = append(lines, line)
 	}
+	if row.processesValid {
+		lines = append(lines, topProcessLimitLines(row.processes)...)
+	}
 	return lines
 }
 
@@ -833,6 +836,9 @@ func (model topModel) candidateLines() []string {
 		process := processes[min(model.processSelected, len(processes)-1)]
 		if process.DiskStatus != "" {
 			lines = append(lines, "I/O · "+process.DiskStatus)
+		}
+		if model.processFilter.active() && !model.detail {
+			lines = append(lines, topProcessLimitLines([]topProcess{process})...)
 		}
 	}
 	return lines
@@ -1671,6 +1677,74 @@ func topOptionalRate(valid bool, value float64) string {
 		return "—"
 	}
 	return formatRate(value)
+}
+
+func topLimitStateText(status topLimitStatus) string {
+	if status.Reason != "" {
+		return status.Status + " · " + doctorGuidanceExcerpt(status.Reason)
+	}
+	return status.Status
+}
+
+func topProcessLimitLines(processes []topProcess) []string {
+	var lines []string
+	groups := map[string]bool{}
+	for _, process := range processes {
+		limits := processLimitsOf(process)
+		fd := limits.FD
+		used, soft := "—", "—"
+		if fd.Used != nil {
+			used = strconv.Itoa(*fd.Used)
+		}
+		if fd.Soft != nil {
+			soft = strconv.FormatUint(*fd.Soft, 10)
+		}
+		if fd.Unlimited {
+			soft = "unlimited"
+		}
+		line := fmt.Sprintf("pid %d · fd %s/%s", process.PID, used, soft)
+		if fd.Status != "available" {
+			line += " · " + topLimitStateText(fd.topLimitStatus)
+		}
+		lines = append(lines, line)
+		group := limits.Cgroup
+		key := group.Key
+		if key == "" {
+			key = group.Path + "|" + group.Status + "|" + group.Reason
+		}
+		if groups[key] {
+			continue
+		}
+		groups[key] = true
+		if group.Status != "available" {
+			lines = append(lines, "cgroup · "+topLimitStateText(group.topLimitStatus))
+			continue
+		}
+		lines = append(lines, "cgroup "+doctorGuidanceExcerpt(group.Path)+" · group scope")
+		memory := group.Memory
+		if memory.Status == "available" && memory.Used != nil && (memory.Max != nil || memory.Unlimited) {
+			maximum := "unlimited"
+			if memory.Max != nil {
+				maximum = formatProcessRSS(*memory.Max)
+			}
+			lines = append(lines, fmt.Sprintf("  memory %s · local max %s", formatProcessRSS(*memory.Used), maximum))
+		} else {
+			lines = append(lines, "  memory · "+topLimitStateText(memory.topLimitStatus))
+		}
+		events := group.Events
+		if events.Status == "available" && events.OOM != nil && events.OOMKill != nil {
+			lines = append(lines, fmt.Sprintf("  local OOM %d · OOM kill %d · cumulative", *events.OOM, *events.OOMKill))
+		} else {
+			lines = append(lines, "  local OOM · "+topLimitStateText(events.topLimitStatus))
+		}
+		cpu := group.CPU
+		if cpu.Status == "available" && cpu.WindowS != nil && cpu.Periods != nil && cpu.ThrottledPeriods != nil && cpu.ThrottledUS != nil {
+			lines = append(lines, fmt.Sprintf("  cpu throttle %d/%d periods · %.2fms · window %.2fs", *cpu.ThrottledPeriods, *cpu.Periods, float64(*cpu.ThrottledUS)/1000, *cpu.WindowS))
+		} else {
+			lines = append(lines, "  cpu throttle · "+topLimitStateText(cpu.topLimitStatus))
+		}
+	}
+	return lines
 }
 
 // topBPFDetail은 window 동안 센 run-queue 대기와 block I/O 지연이다. 지연 뒤의 p95는 그 값이 든 구간의 위쪽 경계다.

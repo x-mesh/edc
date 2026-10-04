@@ -66,7 +66,8 @@ type topProcess struct {
 	// Threads는 thread 수이고 모르면 0이다.
 	Threads int
 	// FDs는 열린 file descriptor 수이고 모르면 0이다. 필터로 고른 process에만 읽는다.
-	FDs int
+	FDs    int
+	Limits *topProcessLimits
 	// DiskValid는 DiskRead와 DiskWrite를 구했는지다. 이 값은 storage에 닿은 byte의 초당 rate이고,
 	// 읽을 권한이 없거나 직전 기준이 없으면 false다.
 	DiskValid           bool
@@ -74,6 +75,67 @@ type topProcess struct {
 	DiskStatus          string
 	// BPF는 eBPF가 직전 window 동안 센 값이다. --ebpf가 아니거나 아직 기준이 없으면 nil이다.
 	BPF *topBPFStats
+}
+
+type topLimitStatus struct {
+	Status string `json:"status"`
+	Reason string `json:"reason,omitempty"`
+}
+
+type topFDLimit struct {
+	topLimitStatus
+	Used      *int    `json:"used,omitempty"`
+	Soft      *uint64 `json:"soft_limit,omitempty"`
+	Unlimited bool    `json:"unlimited,omitempty"`
+}
+
+type topCgroupMemory struct {
+	topLimitStatus
+	Used      *uint64 `json:"used_bytes,omitempty"`
+	Max       *uint64 `json:"local_max_bytes,omitempty"`
+	Unlimited bool    `json:"local_max_unlimited,omitempty"`
+}
+
+type topCgroupEvents struct {
+	topLimitStatus
+	OOM     *uint64 `json:"oom,omitempty"`
+	OOMKill *uint64 `json:"oom_kill,omitempty"`
+}
+
+type topCgroupCPU struct {
+	topLimitStatus
+	WindowS          *float64 `json:"window_s,omitempty"`
+	Periods          *uint64  `json:"periods,omitempty"`
+	ThrottledPeriods *uint64  `json:"throttled_periods,omitempty"`
+	ThrottledUS      *uint64  `json:"throttled_usec,omitempty"`
+}
+
+type topCgroupLimits struct {
+	topLimitStatus
+	Path   string          `json:"path,omitempty"`
+	Key    string          `json:"-"`
+	Memory topCgroupMemory `json:"memory"`
+	Events topCgroupEvents `json:"local_events"`
+	CPU    topCgroupCPU    `json:"cpu"`
+}
+
+type topProcessLimits struct {
+	FD     topFDLimit      `json:"fd"`
+	Cgroup topCgroupLimits `json:"cgroup"`
+}
+
+func processLimitsOf(process topProcess) *topProcessLimits {
+	if process.Limits != nil {
+		return process.Limits
+	}
+	status := topLimitStatus{Status: "unsupported", Reason: "resource limits require Linux"}
+	if runtime.GOOS == "linux" {
+		status = topLimitStatus{Status: "unavailable", Reason: "resource limits were not collected"}
+	}
+	return &topProcessLimits{FD: topFDLimit{topLimitStatus: status}, Cgroup: topCgroupLimits{
+		topLimitStatus: status, Memory: topCgroupMemory{topLimitStatus: status},
+		Events: topCgroupEvents{topLimitStatus: status}, CPU: topCgroupCPU{topLimitStatus: status},
+	}}
 }
 
 // topProcessTotal은 필터에 맞은 process 전체의 합이다. 목록은 CPU 상위만 남기지만 합은 모두 센다.

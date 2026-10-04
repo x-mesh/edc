@@ -10,6 +10,7 @@ import (
 	"unicode"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // runTopDashboard는 alt screen 대시보드를 실행한다. 종료하면 화면이 원래대로 돌아온다.
@@ -31,6 +32,10 @@ func runTopDashboard(interval time.Duration, version string, filter topProcessFi
 	model := newTopModel(details, first, interval, sampleTopDashboard)
 	model.sampleNow, model.setFilter = sampleTopDashboardNow, processSampler.setFilter
 	model.version = version
+	model.limits.color = os.Getenv("NO_COLOR") == ""
+	processSampler.mutex.Lock()
+	model.bpfEnabled = processSampler.observe != nil
+	processSampler.mutex.Unlock()
 	model = model.withProcessFilter(filter)
 	if _, err := tea.NewProgram(model, tea.WithInput(os.Stdin), tea.WithOutput(os.Stdout)).Run(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -130,8 +135,13 @@ type topModel struct {
 	// notice는 다음 키까지 상태 줄에 보이는 안내다.
 	notice string
 	// input은 /로 연 필터 입력 중인지다. inputText는 입력한 글자다.
-	input     bool
-	inputText string
+	input           bool
+	inputText       string
+	help            bool
+	helpOffset      int
+	processFocus    bool
+	processSelected int
+	bpfEnabled      bool
 }
 
 // topSampleMsg는 tick마다 수집한 snapshot이다. seq가 다르면 interval이 바뀐 뒤의 낡은 tick이다.
@@ -214,6 +224,38 @@ func (model topModel) updateKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return model.updateInput(key)
 	}
 	model.notice = ""
+	if model.help {
+		switch key.String() {
+		case "?", "esc":
+			model.help = false
+		case "q", "ctrl+c":
+			return model, tea.Quit
+		case "up", "k":
+			model.helpOffset = max(0, model.helpOffset-1)
+		case "down", "j":
+			model.helpOffset = min(max(0, len(model.helpLines())-max(1, model.height-2)), model.helpOffset+1)
+		case "pgdown":
+			model.helpOffset = min(max(0, len(model.helpLines())-max(1, model.height-2)), model.helpOffset+max(1, model.height-2))
+		case "pgup":
+			model.helpOffset = max(0, model.helpOffset-max(1, model.height-2))
+		}
+		return model, nil
+	}
+	if model.processFocus {
+		switch key.String() {
+		case "up", "k":
+			model.processSelected = max(0, model.processSelected-1)
+			return model, nil
+		case "down", "j":
+			model.processSelected = min(max(0, len(model.candidates())-1), model.processSelected+1)
+			return model, nil
+		case "enter":
+			return model.focusProcess()
+		case "esc":
+			model.processFocus = false
+			return model, nil
+		}
+	}
 	switch key.String() {
 	case "q", "ctrl+c":
 		return model, tea.Quit
@@ -239,14 +281,27 @@ func (model topModel) updateKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "n":
 		model.view = topViewNetwork
 	case "s":
-		model.view = topViewPressure
+		if model.details.System == "darwin" {
+			model.notice = "pressure metrics are Linux-only · ? help"
+		} else {
+			model.view = topViewPressure
+		}
+	case "?":
+		model.help = true
+		model.helpOffset = 0
+	case "tab":
+		model.processFocus = !model.processFocus
+		model.processSelected = 0
+		if model.processFocus {
+			model.follow, model.peaks, model.detail = false, false, false
+		}
 	case "f":
 		return model.followSignal()
 	case "/":
 		model.input, model.inputText = true, model.processFilter.String()
 		if model.inputText == "" {
-			if row, ok := model.selectedRow(); ok && len(row.processes) > 0 {
-				model.inputText = row.processes[0].Command
+			if candidates := model.candidates(); len(candidates) > 0 {
+				model.inputText = candidates[min(model.processSelected, len(candidates)-1)].Command
 			}
 		}
 	case "esc":
@@ -285,15 +340,17 @@ func (model topModel) updateKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			model.follow = model.selected == len(model.rows)-1
 		}
 	case "end", "g":
+		model.processFocus = false
 		if len(model.rows) > 0 {
 			model.selected, model.follow = len(model.rows)-1, true
 		}
 	}
+	if key.String() == "1" || key.String() == "c" || key.String() == "m" || key.String() == "d" || key.String() == "n" || key.String() == "s" {
+		model.processSelected = 0
+	}
 	return model, nil
 }
 
-// followSignal은 선택한 행의 첫 경고를 따라간다. host 경고면 그 보기로 가고, 이미 그 보기이거나 process 경고이거나 경고가
-// 없으면 가장 바쁜 process에 PID로 초점을 맞춘다. 필터가 있으면 process 보기로 간다.
 func (model topModel) followSignal() (tea.Model, tea.Cmd) {
 	if model.processFilter.active() {
 		model.view = topViewProcess
@@ -307,21 +364,33 @@ func (model topModel) followSignal() (tea.Model, tea.Cmd) {
 	items := topDashboardSignalItems(row.rate, row.processes, row.processesValid, model.limits)
 	if len(items) > 0 && items[0].view != topViewProcess && model.view != items[0].view {
 		model.view = items[0].view
-		model.notice = fmt.Sprintf("f: %s → %s view · f again focuses the busiest process", items[0].text, items[0].view)
+		model.notice = fmt.Sprintf("f: %s → %s view · f again selects a candidate", items[0].text, items[0].view)
 		return model, nil
 	}
 	if len(row.processes) == 0 {
 		model.notice = "f: no process in this sample"
 		return model, nil
 	}
-	busiest := row.processes[0]
-	filter, err := parseTopProcessFilter(strconv.Itoa(busiest.PID))
+	model.processFocus, model.follow, model.detail, model.peaks = true, false, false, false
+	model.processSelected = 0
+	model.notice = "process candidates · ↑↓ select · Enter focus · Esc back"
+	return model, nil
+}
+
+func (model topModel) focusProcess() (tea.Model, tea.Cmd) {
+	candidates := model.candidates()
+	if len(candidates) == 0 {
+		model.notice = "no candidate in this sample · / filter"
+		return model, nil
+	}
+	process := candidates[min(model.processSelected, len(candidates)-1)]
+	filter, err := parseTopProcessFilter(strconv.Itoa(process.PID))
 	if err != nil {
 		model.notice = "f: " + err.Error()
 		return model, nil
 	}
-	name := topProcessName(busiest.Command, topProcessNameWidth)
-	model.notice = fmt.Sprintf("f: focus pid %d %s · / edits · Esc clears", busiest.PID, name)
+	name := topProcessName(process.Command, topProcessNameWidth)
+	model.notice = fmt.Sprintf("focus pid %d %s · / edits · Esc clears", process.PID, name)
 	return model.applyFilter(filter, name)
 }
 
@@ -354,6 +423,8 @@ func (model topModel) updateInput(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 // applyFilter는 실행 중에 필터를 바꾼다. 순번을 올려 이전 필터로 수집 중인 표본을 버리고, 필터가 있으면 process 보기로 연다.
 func (model topModel) applyFilter(filter topProcessFilter, name string) (tea.Model, tea.Cmd) {
+	model.processFocus, model.processSelected = false, 0
+	model.follow = true
 	model.processFilter, model.focusName = filter, name
 	if model.setFilter != nil {
 		model.setFilter(filter)
@@ -410,15 +481,28 @@ func (model topModel) selectedRow() (topDashboardRow, bool) {
 
 // bodyLines는 표 본문에 쓸 수 있는 줄 수다. View와 PgUp·PgDn이 같은 값을 써서 한 화면씩 넘긴다.
 func (model topModel) bodyLines() int {
-	headers := len(topDashboardHeaders(model.view, max(topTableWidth, model.width)))
+	headers := len(model.tableHeader())
 	return max(1, model.height-1-len(model.processBanner())-headers-len(model.panelLines())-len(model.statusLines()))
 }
 
 func (model topModel) View() tea.View {
-	// 창 크기를 받기 전(width 0)이나 80열보다 좁을 때도 80열 표를 그리고 넘치는 부분은 renderer가 자른다.
-	width := max(topTableWidth, model.width)
+	if model.width > 0 && (model.width < 24 || model.height < 8) {
+		view := tea.NewView(ansi.Truncate("terminal too small · q quit", model.displayWidth(), "") + "\n" + ansi.Truncate("resize to at least 24×8", model.displayWidth(), ""))
+		view.AltScreen = true
+		return view
+	}
 	lines := append([]string{model.dashboardTitle()}, model.processBanner()...)
-	lines = append(lines, topDashboardHeaders(model.view, width)...)
+	if model.help {
+		lines = []string{topDashboardFitWidth("Help · ↑↓ scroll · ?/Esc back · q quit", model.displayWidth())}
+		help := model.helpLines()
+		start := min(model.helpOffset, max(0, len(help)-1))
+		end := min(len(help), start+max(1, model.height-2))
+		lines = append(lines, help[start:end]...)
+		view := tea.NewView(strings.Join(lines, "\n"))
+		view.AltScreen = true
+		return view
+	}
+	lines = append(lines, model.tableHeader()...)
 	panel, status := model.panelLines(), model.statusLines()
 	bodyLines := model.bodyLines()
 	start := max(0, len(model.rows)-bodyLines)
@@ -426,14 +510,20 @@ func (model topModel) View() tea.View {
 		start = min(model.selected, len(model.rows)-bodyLines)
 	}
 	for index := start; index < len(model.rows) && index < start+bodyLines; index++ {
-		line := formatTopDashboardRow(model.currentFilterRow(model.rows[index]), model.view, model.limits, width)
+		line := model.tableRow(model.currentFilterRow(model.rows[index]))
 		if index == model.selected && !model.follow {
 			line = line[:topSelectionColumn] + ">" + line[topSelectionColumn+1:]
+			if !model.processFocus && model.limits.color {
+				line = topBannerStyle + strings.ReplaceAll(topDashboardFitWidth(line, model.displayWidth()), topColorReset, topColorReset+topBannerStyle) + topColorReset
+			}
 		}
 		lines = append(lines, line)
 	}
 	lines = append(lines, panel...)
 	lines = append(lines, status...)
+	for index := range lines {
+		lines[index] = ansi.Truncate(lines[index], model.displayWidth(), "")
+	}
 	view := tea.NewView(strings.Join(lines, "\n"))
 	view.AltScreen = true
 	return view
@@ -449,8 +539,18 @@ func (model topModel) panelLines() []string {
 	case model.peaks:
 		lines = model.peakLines()
 	}
+	if model.lastErr != nil {
+		lines = append(lines, fmt.Sprintf("sample failed · last success %s · %s", model.previous.TakenAt.Format("15:04:05"), model.lastErr))
+	}
+	lines = append(lines, model.candidateLines()...)
+	if model.height > 0 {
+		available := max(0, model.height-2-len(model.processBanner())-len(model.tableHeader())-len(model.statusLines()))
+		if len(lines) > available {
+			lines = lines[:available]
+		}
+	}
 	for index, line := range lines {
-		lines[index] = topDashboardFitWidth(line, max(topTableWidth, model.width))
+		lines[index] = topDashboardFitWidth(line, model.displayWidth())
 	}
 	return lines
 }
@@ -462,6 +562,9 @@ func (model topModel) dashboardTitle() string {
 	}
 	if model.lastErr != nil {
 		state += " · sample error"
+	}
+	if model.displayWidth() < topTableWidth {
+		return topDashboardFitWidth("edc top · "+string(model.view)+" · "+state, model.displayWidth())
 	}
 	// 왼쪽은 host 정보, 오른쪽은 보기와 상태다. priority 0은 항상 보이고, 나머지는 폭이 허락하는 만큼
 	// OS, memory, edc 버전, CPU 모델 순서로 더한다. 자리는 slice 순서를 따르므로 상태가 바뀌어도 host 정보가 움직이지 않는다.
@@ -531,7 +634,7 @@ func topMemorySize(total uint64) string {
 
 // currentFilterRow는 지금 필터와 다른 필터로 수집한 행의 process 값을 비운다. 초점을 바꾸기 전 행이 새 필터의 값처럼 보이지 않는다.
 func (model topModel) currentFilterRow(row topDashboardRow) topDashboardRow {
-	if model.processFilter.active() && row.filter != model.processFilter.String() {
+	if row.filter != model.processFilter.String() {
 		row.processesValid = false
 	}
 	return row
@@ -597,11 +700,11 @@ func (model topModel) statusLines() []string {
 	} else if !model.follow {
 		state = fmt.Sprintf("history · %d new · %s", max(0, len(model.rows)-1-model.selected), state)
 	}
-	keys := "1 all c cpu m mem d disk n net s pressure f follow / filter"
+	keys := "c cpu m mem d disk n net f candidates / filter ? help"
 	if model.processFilter.active() {
-		keys = "1 all c cpu m mem d disk n net s pressure f proc / edit esc clear"
+		keys = "1 host f proc / edit Esc clear ? help"
 	}
-	views := fmt.Sprintf("%s · %s", keys, state)
+	views := fmt.Sprintf("%s · %s", state, keys)
 	switch {
 	case model.input:
 		views = "process filter: " + model.inputText + "█ · Enter apply · Esc cancel"
@@ -609,9 +712,258 @@ func (model topModel) statusLines() []string {
 		views = model.notice
 	}
 	// PgUp/Dn을 넣어도 80열에서 끝의 +/-가 잘리지 않게 구분 공백을 두 칸으로 맞췄다.
-	actions := "keys ↑↓ PgUp/Dn history  End live  Enter detail  h peaks  q quit  p pause  +/-"
+	actions := "↑↓ history  Tab processes  Enter detail  End live  ? help  q quit"
+	if model.processFocus {
+		actions = "↑↓ select  Enter focus PID  Tab/Esc history  End live  ? help  q quit"
+	}
+	if model.displayWidth() < 70 {
+		views = state + " · / filter · ? help · q quit"
+		actions = "Tab processes · ↑↓ history · End live"
+		if model.processFocus {
+			actions = "↑↓ select · Enter focus · Esc back"
+		}
+		if model.input {
+			views = "filter: " + model.inputText + "█"
+			actions = "Enter apply · Esc cancel"
+		} else if model.notice != "" {
+			views = model.notice
+		}
+	}
+	if model.displayWidth() < 40 && !model.input && model.notice == "" {
+		views = model.interval.String() + " · ? help · q quit"
+		actions = "↑↓ history · Tab procs"
+		if model.processFocus {
+			actions = "↑↓ pick · Enter · Esc"
+		}
+	}
 	// 폭을 먼저 맞춘다. escape가 rune 수에 들어가면 잘리는 위치가 어긋난다.
-	return []string{liveMuted(topDashboardFit(views), model.limits.color), liveMuted(topDashboardFit(actions), model.limits.color)}
+	return []string{liveMuted(topDashboardFitWidth(views, model.displayWidth()), model.limits.color), liveMuted(topDashboardFitWidth(actions, model.displayWidth()), model.limits.color)}
+}
+
+func (model topModel) displayWidth() int {
+	if model.width <= 0 {
+		return topTableWidth
+	}
+	return model.width
+}
+
+func (model topModel) candidates() []topProcess {
+	row, ok := model.selectedRow()
+	row = model.currentFilterRow(row)
+	if !ok || !row.processesValid {
+		return nil
+	}
+	processes := append([]topProcess(nil), row.processes...)
+	if model.view == topViewMemory {
+		sort.SliceStable(processes, func(i, j int) bool { return processes[i].RSS > processes[j].RSS })
+	}
+	return processes[:min(topProcessLimit, len(processes))]
+}
+
+func (model topModel) candidateLines() []string {
+	row, ok := model.selectedRow()
+	row = model.currentFilterRow(row)
+	if !ok || !row.processesValid {
+		return []string{"processes · waiting for a sample with this filter"}
+	}
+	rank := "CPU"
+	if model.view == topViewMemory {
+		rank = "RSS"
+	}
+	state := "live"
+	if !model.follow {
+		state = "history"
+	}
+	lines := []string{fmt.Sprintf("processes · %s rank · %s %s · Tab select", rank, state, row.at.Format("15:04:05"))}
+	processes := model.candidates()
+	if len(processes) == 0 {
+		return append(lines, "no match · / edit filter · Esc clear")
+	}
+	nameWidth := max(4, min(28, model.displayWidth()-35))
+	if model.displayWidth() < 40 {
+		nameWidth = max(3, model.displayWidth()-17)
+	}
+	room := model.height - 2 - len(model.processBanner()) - len(model.tableHeader()) - len(model.statusLines())
+	if room >= 3 {
+		header := fmt.Sprintf("  %6s %s %7s %6s", "PID", topFitCell("COMMAND", nameWidth, true), "CPU%", "RSS")
+		if model.displayWidth() < 40 {
+			header = fmt.Sprintf("  %6s %s %6s", "PID", topFitCell("COMMAND", nameWidth, true), rank)
+		}
+		lines = append(lines, header)
+	}
+	count := min(3, len(processes))
+	if model.processFocus {
+		count = min(topProcessLimit, len(processes))
+	}
+	count = min(count, max(1, room-len(lines)))
+	start := 0
+	if model.processFocus {
+		start = max(0, model.processSelected-count+1)
+	}
+	for index := start; index < min(start+count, len(processes)); index++ {
+		process := processes[index]
+		marker := " "
+		if model.processFocus && index == model.processSelected {
+			marker = ">"
+		}
+		line := fmt.Sprintf("%s %6d %s %6.1f%% %6s", marker, process.PID, topFitCell(topProcessName(process.Command, nameWidth), nameWidth, true), process.CPU, formatProcessRSS(process.RSS))
+		if model.displayWidth() < 40 {
+			value := fmt.Sprintf("%.1f%%", process.CPU)
+			if model.view == topViewMemory {
+				value = formatProcessRSS(process.RSS)
+			}
+			line = fmt.Sprintf("%s %6d %s %6s", marker, process.PID, topFitCell(topProcessName(process.Command, nameWidth), nameWidth, true), value)
+		}
+		if model.processFilter.active() && model.displayWidth() >= 100 {
+			line += fmt.Sprintf(" · r %s w %s", topOptionalRate(process.DiskValid, process.DiskRead), topOptionalRate(process.DiskValid, process.DiskWrite))
+		}
+		if model.processFocus && index == model.processSelected && model.limits.color {
+			line = topBannerStyle + topDashboardFitWidth(line, model.displayWidth()) + topColorReset
+		}
+		lines = append(lines, line)
+	}
+	if model.processFocus || model.processFilter.active() {
+		process := processes[min(model.processSelected, len(processes)-1)]
+		if process.DiskStatus != "" {
+			lines = append(lines, "I/O · "+process.DiskStatus)
+		}
+	}
+	return lines
+}
+
+func (model topModel) helpLines() []string {
+	lines := []string{
+		"Views: 1 all · c CPU · m memory · d disk · n network · s Linux pressure",
+		"History: ↑↓ or PgUp/PgDn · End live · p pause · +/- interval",
+		"Processes: Tab select · ↑↓ choose · Enter focus PID · Tab/Esc back",
+		"Signals: f opens its view, then selects candidates. A candidate is not a confirmed cause.",
+		"Filter: / edit names or PIDs · Enter apply · Esc cancel or clear",
+		"Details: Enter on history · h peaks from the last 60 seconds",
+		"CPU: host % uses all cores. Process 100% uses one core. RSS is resident memory.",
+		"— means unavailable or no baseline. Read the process I/O status for errors.",
+		"no ev means the eBPF observer is active but collected no events in that interval.",
+	}
+	if model.details.System == "darwin" {
+		lines = append(lines, "macOS: process CPU is a recent ps average. Threads and disk I/O use libproc.", "macOS: FDs, PSI, CPU iowait, disk busy and eBPF latency are not collected.")
+	} else {
+		lines = append(lines, "Linux: process CPU uses sample deltas. Runq and I/O latency require -d at startup.")
+	}
+	var wrapped []string
+	for _, line := range lines {
+		wrapped = append(wrapped, strings.Split(ansi.Wrap(line, model.displayWidth(), ""), "\n")...)
+	}
+	return wrapped
+}
+
+func (model topModel) tableColumns() ([]topColumn, []int) {
+	columns := topViewColumns(model.view)
+	var kept []topColumn
+	var indexes []int
+	used := topSelectionColumn + 2
+	for index, column := range columns {
+		if model.view == topViewProcess && model.displayWidth() < 56 && column.title == "thr" {
+			continue
+		}
+		if model.details.System == "darwin" && (column.title == "fds" || column.title == "psi mem" || column.title == "busy%" || column.title == "io%") {
+			continue
+		}
+		if model.view == topViewProcess && !model.bpfEnabled && (column.title == "runq ms" || column.title == "io ms") {
+			continue
+		}
+		needed := column.width + 1
+		if column.width > 0 && used+needed > model.displayWidth() {
+			continue
+		}
+		kept, indexes = append(kept, column), append(indexes, index)
+		used += needed
+	}
+	return kept, indexes
+}
+
+func (model topModel) tableHeader() []string {
+	if model.view == topViewAll && model.displayWidth() >= topTableWidth {
+		columns, signalWidth := model.hostLayout()
+		titles := make([]topCell, len(columns))
+		for index, column := range columns {
+			titles[index] = topPlainCell(column.title)
+		}
+		return []string{formatTopAllGroupHeader(columns, signalWidth), formatTopAllLine("", columns, titles, "", signalWidth, false)}
+	}
+	if model.view == topViewAll {
+		return []string{model.compactRow(topDashboardRow{}, true)}
+	}
+	columns, _ := model.tableColumns()
+	titles := make([]topCell, len(columns))
+	for index, column := range columns {
+		titles[index] = topPlainCell(column.title)
+	}
+	return []string{formatTopColumnsWidth("time", columns, titles, false, model.displayWidth())}
+}
+
+func (model topModel) tableRow(row topDashboardRow) string {
+	if model.view == topViewAll {
+		if model.displayWidth() < topTableWidth {
+			return model.compactRow(row, false)
+		}
+		columns, signalWidth := model.hostLayout()
+		cells := make([]topCell, len(columns))
+		for index, column := range columns {
+			cells[index] = topPlainCell(column.cell(row.rate))
+			if column.level != nil {
+				cells[index].level = column.level(model.limits, row.rate)
+			}
+		}
+		signals := topDashboardSignalItems(row.rate, row.processes, row.processesValid, model.limits)
+		return formatTopAllLine(row.at.Format("15:04:05"), columns, cells, formatTopSignalsWidth(signals, signalWidth), signalWidth, model.limits.color)
+	}
+	columns, indexes := model.tableColumns()
+	signal := topDashboardSignal(row.rate, row.processes, row.processesValid, model.limits)
+	cells := topViewCells(row.rate, model.view, signal, model.limits)
+	if model.view == topViewProcess {
+		cells = topProcessViewCells(row)
+	}
+	kept := make([]topCell, len(indexes))
+	for index, source := range indexes {
+		kept[index] = cells[source]
+	}
+	return formatTopColumnsWidth(row.at.Format("15:04:05"), columns, kept, model.limits.color, model.displayWidth())
+}
+
+func (model topModel) hostLayout() ([]topAllColumn, int) {
+	columns, signalWidth := topAllLayout(model.displayWidth())
+	if model.details.System != "darwin" {
+		return columns, signalWidth
+	}
+	kept := make([]topAllColumn, 0, len(columns))
+	for _, column := range columns {
+		if column.title != "i/o" && column.title != "busy" {
+			kept = append(kept, column)
+		}
+	}
+	spare := max(0, model.displayWidth()-topAllLineWidth(kept)-signalWidth)
+	for index := range kept {
+		extra := spare*(index+1)/len(kept) - spare*index/len(kept)
+		kept[index].width += extra
+		kept[index].indent += extra
+	}
+	return kept, signalWidth
+}
+
+func (model topModel) compactRow(row topDashboardRow, header bool) string {
+	columns := []topColumn{{title: "cpu%", width: 5}, {title: "mem%", width: 5}, {title: "load", width: 5}, {title: "signal", left: true}}
+	cells := []topCell{topValueCell("%.1f", row.rate.CPUUser+row.rate.CPUSystem, model.limits.cpu), topValueCell("%.1f", row.rate.MemoryPercent, model.limits.memory), topValueCell("%.1f", row.rate.Load1, model.limits.load), topPlainCell(topDashboardSignal(row.rate, row.processes, row.processesValid, model.limits))}
+	if model.displayWidth() < 32 {
+		columns = append(columns[:2], columns[3])
+		cells = append(cells[:2], cells[3])
+	}
+	at := row.at.Format("15:04:05")
+	if header {
+		at = "time"
+		for index, column := range columns {
+			cells[index] = topPlainCell(column.title)
+		}
+	}
+	return formatTopColumnsWidth(at, columns, cells, model.limits.color && !header, model.displayWidth())
 }
 
 // topColumn은 보기별 표의 한 칸이다. 헤더와 행이 같은 정의로 그려져 구분선이 어긋나지 않는다.
@@ -699,6 +1051,10 @@ func topOptionalValue(valid bool, format string, value float64) string {
 // formatTopColumns는 칸마다 폭을 먼저 맞춘 뒤 색을 입힌다. 줄 전체를 나중에 자르면
 // escape가 rune 수에 섞여 자르는 위치가 어긋나므로 줄 단위 절단을 쓰지 않는다.
 func formatTopColumns(at string, columns []topColumn, cells []topCell, color bool) string {
+	return formatTopColumnsWidth(at, columns, cells, color, topTableWidth)
+}
+
+func formatTopColumnsWidth(at string, columns []topColumn, cells []topCell, color bool, targetWidth int) string {
 	var line strings.Builder
 	fmt.Fprintf(&line, "%8s │", at)
 	used := topSelectionColumn + 2
@@ -709,7 +1065,7 @@ func formatTopColumns(at string, columns []topColumn, cells []topCell, color boo
 		}
 		width := column.width
 		if width == 0 {
-			width = max(0, topTableWidth-used)
+			width = max(0, targetWidth-used)
 		}
 		used += width
 		line.WriteString(topPaint(topFitCell(cells[index].text, width, column.left), cells[index].level, color))
@@ -719,11 +1075,8 @@ func formatTopColumns(at string, columns []topColumn, cells []topCell, color boo
 
 // topFitCell은 칸 하나를 폭에 맞춘다. 색이 붙기 전이라 rune 단위로 잘라도 escape가 끊기지 않는다.
 func topFitCell(text string, width int, left bool) string {
-	runes := []rune(text)
-	if len(runes) > width {
-		return string(runes[:width])
-	}
-	gap := strings.Repeat(" ", width-len(runes))
+	text = ansi.Truncate(text, width, "")
+	gap := strings.Repeat(" ", max(0, width-ansi.StringWidth(text)))
 	if left {
 		return text + gap
 	}
@@ -954,8 +1307,7 @@ func topDashboardSignal(rate resourceRate, processes []topProcess, valid bool, l
 func topDashboardSignalItems(rate resourceRate, processes []topProcess, valid bool, limits topLimits) []topSignalItem {
 	signals := topSignals(rate, limits)
 	if process, ok := topProcessSignal(processes, valid); ok {
-		// process는 원인을 바로 가리키므로 점수와 상관없이 맨 앞에 두고, 나머지 경고는 개수로 남긴다.
-		signals = append([]topSignalItem{{text: process, view: topViewProcess}}, signals...)
+		signals = append(signals, topSignalItem{text: process, view: topViewProcess})
 	}
 	return signals
 }
@@ -1074,11 +1426,8 @@ func topDashboardFit(value string) string {
 }
 
 func topDashboardFitWidth(value string, width int) string {
-	runes := []rune(value)
-	if len(runes) > width {
-		return string(runes[:width])
-	}
-	return value + strings.Repeat(" ", width-len(runes))
+	value = ansi.Truncate(value, width, "")
+	return value + strings.Repeat(" ", max(0, width-ansi.StringWidth(value)))
 }
 
 func topSignal(rate resourceRate, limits topLimits) string {
@@ -1206,7 +1555,7 @@ func (model topModel) processBanner() []string {
 	if !model.processFilter.active() {
 		return nil
 	}
-	width := max(topTableWidth, model.width)
+	width := model.displayWidth()
 	var parts []string
 	row, ok := model.selectedRow()
 	row = model.currentFilterRow(row)
@@ -1241,15 +1590,28 @@ func (model topModel) processBanner() []string {
 	if model.focusName != "" {
 		line = " PROCESS pid " + model.processFilter.String() + " " + model.focusName
 	}
+	stamp := ""
+	if ok && row.processesValid {
+		stamp = row.at.Format("15:04:05")
+		if !model.follow {
+			stamp = "history " + stamp
+		}
+	}
+	contentWidth := width
+	if stamp != "" {
+		contentWidth = max(0, width-ansi.StringWidth(stamp)-3)
+	}
 	for _, part := range parts {
 		next := line + " · " + part
-		if topDisplayWidth(next)+1 > width {
+		if ansi.StringWidth(next)+1 > contentWidth {
 			break
 		}
 		line = next
 	}
+	if stamp != "" {
+		line = ansi.Truncate(line, contentWidth, "") + " · " + stamp
+	}
 	line = topDashboardFitWidth(line, width)
-	line += strings.Repeat(" ", max(0, width-topDisplayWidth(line)))
 	if model.limits.color {
 		line = topBannerStyle + line + topColorReset
 	}
@@ -1286,6 +1648,7 @@ func topProcessViewCells(row topDashboardRow) []topCell {
 		topPlainCell(topOptionalRate(diskKnown, read)), topPlainCell(topOptionalRate(diskKnown, write)), empty, empty,
 	}
 	if bpf := total.BPF; bpf != nil {
+		cells[7], cells[8] = topPlainCell("no ev"), topPlainCell("no ev")
 		if average, ok := topBPFAverageMS(bpf.RunqSumNS, bpf.RunqCount); ok {
 			cells[7] = topPlainCell(fmt.Sprintf("%.2f", average))
 		}

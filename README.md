@@ -365,16 +365,28 @@ If stdin and stdout are terminals, `edc top` opens a full-screen dashboard. The 
 | `-` | make the interval shorter |
 | `1`, `c`, `m`, `d`, `n` | switch to all, CPU, memory, disk, or network columns |
 | `s` | switch to Linux pressure columns |
-| `f` | follow the first signal of the selected row: open its view, then focus the busiest process. With a process filter, switch to the process view |
+| `f` | Open the signal view. Press again to select a process candidate. If a filter is active, open the process view. |
+| `Tab` | Switch between history and process selection. |
+| `?` | Open help. Use arrows to scroll. Press `Esc` to return. |
 | `/` | type a process filter: a command name or a PID, comma-separated |
-| `Esc` | clear the process filter |
+| `Esc` | Close help or process selection. Otherwise, clear the process filter. |
 | `↑`, `↓`, `PgUp`, `PgDn`, `End` | select an earlier row, move one screen, or return to the live row |
-| `Enter` | show details for the selected time |
+| `Enter` | Show time details. If process selection is active, focus the selected PID. |
 | `h` | show the load, CPU, iowait, and memory peaks from the last 60 seconds, each with its time |
 
-The default table has a `signal` column. It shows the highest-priority warning among load, CPU, iowait, memory, disk await, and network errors or drops, followed by the number of other warnings. Network errors and drops count as a warning from 1 per second. Use the network view for packet counts. Sampling continues while an earlier row is selected; press `End` to follow the latest row again. A temporary sampling error keeps the last row and retries on the next interval.
+The `signal` column shows the highest-priority host warning and the number of other warnings.
+
+Network errors and drops count as a warning from one per second. Use the network view for packet counts.
+
+If you select an earlier row, collection continues. Press `End` to follow the latest row.
+
+If collection fails, the dashboard keeps the last row and retries at the next interval.
 
 The default table follows the terminal width. If the terminal is wider than 80 columns, the table adds columns in this order:
+
+If the terminal has fewer than 80 columns, the overview shows CPU, memory, load, and signals. Other views omit columns that do not fit.
+
+The minimum terminal size is 24 columns and 8 rows. Help supports scroll on small terminals.
 
 | terminal width | added columns |
 |---|---|
@@ -386,13 +398,31 @@ The default table follows the terminal width. If the terminal is wider than 80 c
 
 The `signal` column gets 13 to 16 characters. That is room for at least one warning and the number of the other warnings. The other columns share the remaining width, so the table fills the terminal. The title line also adds the OS name, the memory size, and the CPU model when the terminal has room. The right edge of the title shows the view and `live` or `history`. It adds the edc version when the terminal has room. If the terminal becomes narrower, the table removes those columns immediately.
 
-On macOS and Linux, the disk view also shows IOPS and average `await` across physical disks. On Linux, the disk view also shows aggregate `busy%`, and the memory view shows memory pressure next to `mem%`. Aggregate `busy%` can exceed 100 when multiple disks are busy at once. macOS does not report the time that a disk is busy, so macOS shows `—` for these Linux-only values. On macOS and Linux, the network view shows interface errors and drops. On macOS, `edc` reads them from the interface statistics of the kernel (`net.link.generic.ifdata`). On macOS and Linux, the memory view shows `swap/s`, the bytes per second that the kernel moves out to swap. A value above zero shows that the host is short of memory.
+On macOS and Linux, the disk view shows IOPS and average `await` across physical disks.
+
+On Linux, the disk view shows aggregate `busy%`, and the memory view shows memory pressure. Aggregate `busy%` can exceed 100 across multiple disks.
+
+On macOS, the dashboard omits unsupported iowait, PSI, disk busy, file descriptor, and eBPF latency columns. The help page lists these limits.
+
+On macOS and Linux, the network view shows interface errors and drops. On macOS, `edc` reads kernel interface statistics (`net.link.generic.ifdata`).
+
+The memory view shows `swap/s`, the bytes per second that the kernel moves out to swap.
 
 Press `s` for Linux pressure. It shows CPU, memory, and I/O `some avg10`: the percentage of the last ten seconds during which at least some tasks waited for that resource. The CPU view shows the hottest core and an ASCII bar; on machines with more than 24 cores, the bar shows the first 24.
 
 The detail view also lists the top three processes by CPU. The list refreshes in the background at most once a second, so it does not lengthen the observation interval. Only the dashboard collects it; the table and `--json` output skip it. On Linux, `edc` compares the CPU ticks in `/proc/<pid>/stat` with the previous refresh, so the value covers the time since that refresh. On macOS, it uses the recent decaying average that `ps` reports.
 
-On macOS and Linux, a process at 80% CPU or more appears first in the default `signal` column with its name and CPU value, followed by the number of other warnings. CPU is measured as 100% per core, so `node 185%` means roughly 1.85 cores in use.
+The process panel shows CPU candidates by default and RSS candidates in the memory view. It keeps five leaders per metric before the list limit.
+
+Press `Tab` to select a candidate. Use arrows to choose a process. Press `Enter` to focus its PID.
+
+Process selection keeps the selected time while new samples arrive. Press `End` to return to live history.
+
+The `signal` column puts host warnings before process CPU candidates. A candidate does not prove the cause of a host warning.
+
+Process CPU uses 100% per core. Host CPU uses all cores as its total.
+
+The process panel and `PROCESS` bar show the selected time. If a host sample fails, the dashboard shows the last success time.
 
 The interval moves between 200ms, 500ms, 1s, 2s, 5s, 10s, 30s, and 1m. Resuming first creates a new baseline, and later rows show rates.
 
@@ -418,7 +448,13 @@ Each line has `time`, `hostname`, `cores`, the network and disk rates in bytes p
 
 ## Filter processes in top
 
-`--process <filter>` narrows the process list to the processes you name. The filter is a comma-separated list. A number must equal a PID. Any other term matches part of the command name, ignoring case. A process that matches any term stays in the list. The command name is `comm` on Linux, which the kernel cuts at 15 characters, and the executable path on macOS.
+`--process <filter>` narrows the process list to the processes you name. The filter is a comma-separated list.
+
+A number must equal a PID. Other terms match part of the command name without case sensitivity.
+
+A process that matches any term stays in the list.
+
+On Linux, the command name is `comm`, which the kernel cuts at 15 characters. On macOS, it is the executable path.
 
 ```bash
 # dashboard: opens the process view, and Enter shows the busiest matches
@@ -429,7 +465,13 @@ Each line has `time`, `hostname`, `cores`, the network and disk rates in bytes p
 
 With `--process`, the dashboard shows a highlighted `PROCESS` bar under the title. It names the filter and the current values of the matched processes. When the terminal is narrow, the bar drops the last values first. The dashboard also opens the process view. Each row shows the matched processes at one sample. It shows the number of matches, their CPU%, memory (`rss`), threads, open files, and disk read and write per second. One core is 100 CPU%. With `--ebpf`, the row also shows the average run-queue wait and the average block I/O latency in milliseconds. A value that `edc` cannot read shows `—`. Press `1` for the host columns and `f` to return to the process view. `Enter` shows the busiest matches for the selected row.
 
-You can also choose a process while the dashboard runs. Select a row and press `f`. If the first signal is a host value, such as `await 65ms`, `f` opens the view for it. Press `f` again, or press it on a process signal, to focus the busiest process of that row by its PID. Press `/` to type a filter, and `Esc` to clear it. Rows from before a filter change show `—` in the process view, because they were not sampled with that filter.
+Select a row and press `f`. If the first signal is a host value, `f` opens its view.
+
+Press `f` again to select a process candidate. Use arrows to choose a process. Press `Enter` to focus its PID.
+
+Press `/` to edit the filter. Press `Esc` to close process selection, then press `Esc` again to clear the filter.
+
+Rows from a different filter show `—` for process values. They do not represent the current filter.
 
 The filter runs before the list is cut to the busiest processes. A quiet process that matches stays in the list.
 
@@ -441,11 +483,21 @@ With `--json`, a sample adds two fields. `processes` holds up to 50 matches, bus
 |---|---|
 | `pid`, `started` | `started` is the start time in UTC. A PID can be reused, so `(pid, started)` names one process. |
 | `command`, `cpu_pct`, `rss_bytes` | name, CPU since the last refresh, resident memory |
-| `threads` | thread count (Linux) |
+| `threads` | thread count (Linux and macOS) |
 | `fds` | open file descriptors (Linux) |
-| `disk_read_bytes_per_s`, `disk_write_bytes_per_s` | bytes that reached storage, from `read_bytes` and `write_bytes` in `/proc/<pid>/io` (Linux) |
+| `disk_read_bytes_per_s`, `disk_write_bytes_per_s` | disk I/O bytes per second from `/proc/<pid>/io` on Linux and libproc on macOS |
 
-A field that `edc` cannot read is left out, not set to 0. On Linux, `fds` and the disk fields need the same user or root. They are read only for the processes in the list, so a filter that matches many processes reads at most 50 of them. macOS gives `started` but no `threads`, `fds`, or disk values. The first samples have no `processes` field until the first refresh finishes, and the disk rate needs a second refresh. Without `--process`, `--json` output has none of these fields.
+A field that `edc` cannot read is absent. It is not set to zero.
+
+On Linux, `fds` and disk fields need the same user or root. A filter reads details for at most 50 processes.
+
+On macOS, libproc supplies thread counts and disk I/O counters. File descriptor counts remain unavailable. Process CPU retains the recent `ps` average.
+
+Disk rates require two samples of the same process. The dashboard shows the baseline state or the libproc error.
+
+`no ev` means that the eBPF observer is active but collected no events in that interval. It does not mean zero latency.
+
+Without `--process`, JSON output has no process fields.
 
 `--process` needs the dashboard or `--json`. The table has no process column, so `edc top --process x --count 5` stops with exit code `2`.
 

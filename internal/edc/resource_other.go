@@ -38,12 +38,48 @@ func newTopProcessReader() func() ([]topProcess, bool) {
 			return nil, false
 		}
 		processes := parseTopProcesses(string(output))
+		for index := range processes {
+			threads, err := readDarwinProcessThreads(processes[index].PID)
+			if err == nil {
+				processes[index].Threads = threads
+			}
+		}
 		return processes, len(processes) > 0
 	}
 }
 
-// newTopProcessEnricher는 macOS에서 쓰지 않는다. process별 I/O와 fd 수는 root 없이 싸게 읽을 수 없다.
-func newTopProcessEnricher() func([]topProcess) { return nil }
+type darwinProcessIOSample struct {
+	stats darwinProcessRusage
+	at    time.Time
+}
+
+func newTopProcessEnricher() func([]topProcess) {
+	previous := map[int]darwinProcessIOSample{}
+	return func(processes []topProcess) {
+		current := make(map[int]darwinProcessIOSample, len(processes))
+		for index := range processes {
+			process := &processes[index]
+			process.DiskValid, process.DiskStatus = false, ""
+			stats, err := readDarwinProcessRusage(process.PID)
+			if err != nil {
+				process.DiskStatus = err.Error()
+				continue
+			}
+			now := time.Now()
+			current[process.PID] = darwinProcessIOSample{stats: stats, at: now}
+			before, seen := previous[process.PID]
+			seconds := now.Sub(before.at).Seconds()
+			if !seen || seconds <= 0 || stats.Started != before.stats.Started || stats.DiskRead < before.stats.DiskRead || stats.DiskWrite < before.stats.DiskWrite {
+				process.DiskStatus = "waiting for I/O baseline"
+				continue
+			}
+			process.DiskValid = true
+			process.DiskRead = float64(stats.DiskRead-before.stats.DiskRead) / seconds
+			process.DiskWrite = float64(stats.DiskWrite-before.stats.DiskWrite) / seconds
+		}
+		previous = current
+	}
+}
 
 func collectResourceSnapshot() (resourceSnapshot, error) {
 	snapshot := resourceSnapshot{TakenAt: time.Now()}

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 )
 
 func topFixtureModel(sample func() (resourceSnapshot, error)) topModel {
@@ -48,7 +49,7 @@ func TestTopModelAppendsRowsFromSamples(t *testing.T) {
 	if !view.AltScreen {
 		t.Fatal("dashboard must use the alt screen")
 	}
-	for _, expected := range []string{"network", "q quit  p pause  +/-", "interval 1s"} {
+	for _, expected := range []string{"network", "Tab processes", "? help", "q quit", "interval 1s"} {
 		if !strings.Contains(view.Content, expected) {
 			t.Fatalf("view %q does not contain %q", view.Content, expected)
 		}
@@ -262,14 +263,13 @@ func TestTopDashboardSignalIncludesBusyProcess(t *testing.T) {
 	if got := topDashboardSignal(resourceRate{}, processes, true, limits); got != "node 185%" {
 		t.Fatalf("process signal = %q", got)
 	}
-	if got := topDashboardSignal(resourceRate{MemoryPercent: 96}, processes, true, limits); got != "node 185% +1" {
+	if got := topDashboardSignal(resourceRate{MemoryPercent: 96}, processes, true, limits); got != "mem 96% +1" {
 		t.Fatalf("combined signal = %q", got)
 	}
 	if _, ok := topProcessSignal([]topProcess{{CPU: 79, Command: "node"}}, true); ok {
 		t.Fatal("process below threshold must not signal")
 	}
-	// process가 앞에 와도 가려진 경고 개수는 그대로 남는다.
-	if got := topDashboardSignal(resourceRate{MemoryPercent: 96, CPUIOWait: 30, Load1: 10}, processes, true, limits); got != "node 185% +3" {
+	if got := topDashboardSignal(resourceRate{MemoryPercent: 96, CPUIOWait: 30, Load1: 10}, processes, true, limits); got != "load 10.0 +3" {
 		t.Fatalf("combined signal count = %q", got)
 	}
 }
@@ -842,7 +842,7 @@ func TestTopProcessBannerLeadsWithTheMatchedGroup(t *testing.T) {
 	}}
 	model.selected = 0
 	banner := model.processBanner()[0]
-	if !strings.HasPrefix(banner, " PROCESS worker · 7 matched · cpu 600% · rss 9.0M · runq 1.50ms · io 0.25ms") || liveWidth(banner) != topTableWidth {
+	if !strings.HasPrefix(banner, " PROCESS worker · 7 matched · cpu 600% · rss 9.0M") || !strings.Contains(banner, "09:00:01") || liveWidth(banner) != topTableWidth {
 		t.Fatalf("80 column banner = %q (%d columns)", banner, liveWidth(banner))
 	}
 	if strings.Contains(banner, "fds") {
@@ -866,12 +866,17 @@ func topKey(text string) tea.KeyPressMsg {
 		return tea.KeyPressMsg{Code: tea.KeyEscape}
 	case "backspace":
 		return tea.KeyPressMsg{Code: tea.KeyBackspace}
+	case "tab":
+		return tea.KeyPressMsg{Code: tea.KeyTab}
+	case "up":
+		return tea.KeyPressMsg{Code: tea.KeyUp}
+	case "down":
+		return tea.KeyPressMsg{Code: tea.KeyDown}
 	}
 	return tea.KeyPressMsg{Code: []rune(text)[0], Text: text}
 }
 
-// f는 선택한 행의 첫 경고를 따라간다. host 경고는 그 보기로, 두 번째 f는 가장 바쁜 process로 초점을 옮긴다.
-func TestTopFollowSignalOpensTheSignalViewThenFocusesTheBusiestProcess(t *testing.T) {
+func TestTopFollowSignalOpensTheSignalViewThenSelectsACandidate(t *testing.T) {
 	var applied []topProcessFilter
 	model := topFixtureModel(nil)
 	model.limits.color = false
@@ -887,6 +892,10 @@ func TestTopFollowSignalOpensTheSignalViewThenFocusesTheBusiestProcess(t *testin
 	}
 	seq := model.seq
 	model = topAfter(t, model, topKey("f"))
+	if !model.processFocus || model.processFilter.active() || model.seq != seq || len(applied) != 0 {
+		t.Fatalf("second f must select a candidate without changing the filter: %+v", model)
+	}
+	model = topAfter(t, model, topKey("enter"))
 	if model.view != topViewProcess || model.processFilter.String() != "4321" || model.seq != seq+1 || len(applied) != 1 || applied[0].String() != "4321" {
 		t.Fatalf("second f: view %s, filter %q, seq %d, filters %v", model.view, model.processFilter, model.seq, applied)
 	}
@@ -907,11 +916,15 @@ func TestTopFollowSignalOpensTheSignalViewThenFocusesTheBusiestProcess(t *testin
 	}
 }
 
-func TestTopFollowSignalFocusesABusyProcessAtOnce(t *testing.T) {
+func TestTopFollowSignalSelectsABusyProcessBeforeFocus(t *testing.T) {
 	model := topFixtureModel(nil)
 	model.rows = []topDashboardRow{{at: time.Unix(1, 0), processesValid: true, processes: []topProcess{{PID: 77, CPU: 185, Command: "/usr/local/bin/node"}}}}
 	model.selected = 0
 	model = topAfter(t, model, topKey("f"))
+	if !model.processFocus || model.processFilter.active() {
+		t.Fatal("a process signal must open candidate selection")
+	}
+	model = topAfter(t, model, topKey("enter"))
 	if model.view != topViewProcess || model.processFilter.String() != "77" || model.focusName != "node" {
 		t.Fatalf("f on a process signal: view %s, filter %q, name %q", model.view, model.processFilter, model.focusName)
 	}
@@ -940,5 +953,160 @@ func TestTopSlashEditsTheProcessFilter(t *testing.T) {
 	}
 	if got := topAfter(t, model, topKey("q")); got.input {
 		t.Fatal("q must not open input")
+	}
+}
+
+func TestTopMemoryCandidatesFocusTheSelectedPIDAndKeepTheSnapshot(t *testing.T) {
+	model := topFixtureModel(nil)
+	model.limits.color = false
+	model.rows = []topDashboardRow{{at: time.Unix(1, 0), processesValid: true, processes: []topProcess{
+		{PID: 1, CPU: 185, RSS: 1 << 20, Command: "busy"},
+		{PID: 2, CPU: 1, RSS: 4 << 30, Command: "memory-heavy"},
+		{PID: 3, CPU: 2, RSS: 2 << 30, Command: "memory-second"},
+	}}}
+	model = topAfter(t, model, topKey("m"), topKey("tab"))
+	if !model.processFocus || model.follow || model.candidates()[0].PID != 2 {
+		t.Fatalf("memory candidates = %+v, focus %v, follow %v", model.candidates(), model.processFocus, model.follow)
+	}
+	model = topAfter(t, model, topSampleMsg{snapshot: resourceSnapshot{TakenAt: time.Unix(2, 0), CPUTotal: 200, ProcessesValid: true, Processes: []topProcess{{PID: 99, Command: "new"}}}})
+	if model.selected != 0 || model.candidates()[0].PID != 2 {
+		t.Fatal("new samples must not move the selected candidate snapshot")
+	}
+	model = topAfter(t, model, topKey("down"), topKey("enter"))
+	if model.processFilter.String() != "3" || model.processFocus || !model.follow || model.focusName != "memory-sec" {
+		t.Fatalf("selected PID focus = %+v", model)
+	}
+	model = topAfter(t, model, topKey("esc"))
+	if model.currentFilterRow(topDashboardRow{filter: "3", processesValid: true}).processesValid {
+		t.Fatal("clearing the filter must not treat old filtered rows as host process samples")
+	}
+}
+
+func TestTopHelpScrollsWithoutChangingTheFilter(t *testing.T) {
+	filter, _ := parseTopProcessFilter("worker")
+	model := topFixtureModel(nil).withProcessFilter(filter)
+	model.width, model.height = 48, 10
+	model = topAfter(t, model, topKey("?"))
+	first := model.View().Content
+	if !model.help || !strings.Contains(first, "Help") || len(strings.Split(first, "\n")) > model.height {
+		t.Fatalf("help view = %q", first)
+	}
+	model = topAfter(t, model, topKey("down"))
+	if model.helpOffset != 1 || model.View().Content == first {
+		t.Fatal("help must scroll on a small terminal")
+	}
+	model = topAfter(t, model, topKey("esc"))
+	if model.help || model.processFilter.String() != "worker" {
+		t.Fatal("Esc in help must preserve the process filter")
+	}
+}
+
+func TestTopDashboardFitsNarrowTerminalsAndHidesDarwinUnsupportedColumns(t *testing.T) {
+	filter, _ := parseTopProcessFilter("worker")
+	for _, width := range []int{24, 32, 40, 48, 60, 80, 120, 160} {
+		for _, view := range []topView{topViewAll, topViewCPU, topViewMemory, topViewDisk, topViewNetwork, topViewProcess} {
+			model := topFixtureModel(nil).withProcessFilter(filter)
+			model.details.System = "darwin"
+			model.view, model.width = view, width
+			model.limits.color = true
+			model.rows = []topDashboardRow{{at: time.Unix(1, 0), filter: "worker", processesValid: true, processes: []topProcess{{PID: 1, Command: "작업🙂", CPU: 99, RSS: 1 << 20}}, processTotal: topProcessTotal{Count: 1, CPU: 99}, rate: resourceRate{CPUUser: 99, MemoryPercent: 97, DiskHealthValid: true}}}
+			model.selected = 0
+			for _, line := range strings.Split(model.View().Content, "\n") {
+				if got := ansi.StringWidth(line); got > width {
+					t.Fatalf("%s at %d columns: %d wide: %q", view, width, got, line)
+				}
+			}
+			for _, header := range model.tableHeader() {
+				for _, unsupported := range []string{"fds", "runq ms", "io ms", "psi mem", "busy%", "i/o"} {
+					if strings.Contains(header, unsupported) {
+						t.Fatalf("Darwin header contains %s: %q", unsupported, header)
+					}
+				}
+			}
+			headers := model.tableHeader()
+			if got, want := topDividerColumns(ansi.Strip(model.tableRow(model.rows[0]))), topDividerColumns(headers[len(headers)-1]); !reflect.DeepEqual(got, want) {
+				t.Fatalf("%s at %d columns: row dividers %v, header %v", view, width, got, want)
+			}
+		}
+	}
+}
+
+func TestTopDashboardShowsFailedSampleTimeAndIOStatus(t *testing.T) {
+	filter, _ := parseTopProcessFilter("worker")
+	model := topFixtureModel(nil).withProcessFilter(filter)
+	model.lastErr = errors.New("host read failed")
+	model.rows = []topDashboardRow{{at: time.Unix(1, 0), filter: "worker", processesValid: true, processes: []topProcess{{PID: 1, Command: "worker", DiskStatus: "proc_pid_rusage: operation not permitted"}}, processTotal: topProcessTotal{Count: 1}}}
+	model.follow = false
+	for _, want := range []string{"last success 09:00:00", "host read failed", "history 09:00:01", "operation not permitted"} {
+		if content := model.View().Content; !strings.Contains(content, want) {
+			t.Fatalf("view does not show %q: %q", want, content)
+		}
+	}
+}
+
+func TestTopCandidateSelectionStaysVisibleOnShortTerminals(t *testing.T) {
+	for _, height := range []int{8, 12, 18, 24} {
+		model := topFixtureModel(nil)
+		model.width, model.height = 48, height
+		model.rows = []topDashboardRow{{at: time.Unix(1, 0), processesValid: true, processes: []topProcess{
+			{PID: 1, Command: "one"}, {PID: 2, Command: "two"}, {PID: 3, Command: "three"}, {PID: 4, Command: "four"}, {PID: 5, Command: "five"},
+		}}}
+		model = topAfter(t, model, topKey("tab"), topKey("down"), topKey("down"), topKey("down"), topKey("down"))
+		content := model.View().Content
+		if len(strings.Split(content, "\n")) > height || !strings.Contains(content, ">      5") || !strings.Contains(content, "Enter focus") {
+			t.Fatalf("%d rows: selected candidate or controls lost: %q", height, content)
+		}
+	}
+}
+
+func TestTopProcessLatencyDistinguishesNoEventsFromUnavailable(t *testing.T) {
+	row := topDashboardRow{processesValid: true, processTotal: topProcessTotal{Count: 1}}
+	if cells := topProcessViewCells(row); cells[7].text != "—" || cells[8].text != "—" {
+		t.Fatalf("latency without an observer = %+v", cells)
+	}
+	row.processTotal.BPF = &topBPFStats{}
+	if cells := topProcessViewCells(row); cells[7].text != "no ev" || cells[8].text != "no ev" {
+		t.Fatalf("active observer without events = %+v", cells)
+	}
+}
+
+func TestTopProcessBannerFitsWideCharacterFilters(t *testing.T) {
+	filter, _ := parseTopProcessFilter("작업🙂")
+	model := topFixtureModel(nil).withProcessFilter(filter)
+	model.limits.color = false
+	model.rows = []topDashboardRow{{at: time.Unix(1, 0), filter: filter.String(), processesValid: true, processTotal: topProcessTotal{Count: 1, CPU: 10, RSS: 1 << 20}}}
+	for _, width := range []int{24, 40, 80} {
+		model.width = width
+		if banner := model.processBanner()[0]; ansi.StringWidth(banner) != width {
+			t.Fatalf("banner at %d columns is %d wide: %q", width, ansi.StringWidth(banner), banner)
+		}
+	}
+}
+
+func TestTopSelectedRowHighlightsTheActivePane(t *testing.T) {
+	model := topFixtureModel(nil)
+	model.rows = []topDashboardRow{{at: time.Unix(1, 0), processesValid: true, rate: resourceRate{MemoryPercent: 99}, processes: []topProcess{
+		{PID: 1, Command: "first"}, {PID: 2, Command: "second"},
+	}}}
+	model.follow = false
+	if content := model.View().Content; !strings.Contains(content, topBannerStyle+"09:00:01>") || !strings.Contains(content, topColorDanger) {
+		t.Fatalf("history selection must keep warning color and highlight its row: %q", content)
+	}
+	model = topAfter(t, model, topKey("tab"), topKey("down"))
+	selected := 0
+	for _, line := range strings.Split(model.View().Content, "\n") {
+		if strings.Contains(line, topBannerStyle) {
+			selected++
+			if !strings.HasPrefix(line, topBannerStyle+">      2") || ansi.StringWidth(line) != model.width || !strings.HasSuffix(line, topColorReset) {
+				t.Fatalf("selected process must highlight the full row: %q", line)
+			}
+		}
+	}
+	if selected != 1 {
+		t.Fatalf("active pane must have one highlighted row, got %d", selected)
+	}
+	model.limits.color = false
+	if content := model.View().Content; strings.Contains(content, topBannerStyle) || !strings.Contains(content, ">      2") {
+		t.Fatalf("plain selection must keep its marker: %q", content)
 	}
 }

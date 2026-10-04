@@ -72,7 +72,8 @@ command:
       count: "출력할 row 수, 0은 계속 실행"
       no_header: "host와 column header 생략"
       process: "PID나 command 이름이 맞는 process만, 쉼표로 구분"
-      ebpf: "eBPF로 run-queue·I/O 지연 추가, Linux"
+      detail: "CPU 대기와 I/O 지연 추가(eBPF, root), Linux"
+      ebpf: "--detail과 같음"
       json: "sample당 한 줄 JSON, stdout은 -"
     notes:
       - "terminal에서는 대시보드로 엽니다. q 종료, p 일시정지, +/- interval."

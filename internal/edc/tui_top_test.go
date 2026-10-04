@@ -809,3 +809,51 @@ func TestTopProcessFilterOpensTheProcessView(t *testing.T) {
 		t.Fatalf("f without a filter: view %s, status %q", plain.view, plain.statusLines()[0])
 	}
 }
+
+func TestTopProcessBannerLeadsWithTheMatchedGroup(t *testing.T) {
+	filter, err := parseTopProcessFilter("worker")
+	if err != nil {
+		t.Fatal(err)
+	}
+	plain := topFixtureModel(nil)
+	if banner := plain.processBanner(); banner != nil {
+		t.Fatalf("no filter banner = %q", banner)
+	}
+	colored := plain.withProcessFilter(filter).processBanner()[0]
+	if !strings.HasPrefix(colored, topBannerStyle) || !strings.HasSuffix(colored, topColorReset) {
+		t.Fatalf("colored banner = %q", colored)
+	}
+	model := plain.withProcessFilter(filter)
+	model.limits.color = false
+	if banner := model.processBanner(); len(banner) != 1 || !strings.HasPrefix(banner[0], " PROCESS worker · waiting for a sample") {
+		t.Fatalf("first sample banner = %q", banner)
+	}
+	if strings.Contains(model.dashboardTitle(), "process worker") {
+		t.Fatalf("the title must leave the filter to the banner: %q", model.dashboardTitle())
+	}
+	sameView := plain
+	sameView.view = topViewProcess
+	if model.bodyLines() != sameView.bodyLines()-1 {
+		t.Fatalf("body lines = %d, without the banner %d", model.bodyLines(), sameView.bodyLines())
+	}
+	model.rows = []topDashboardRow{{at: time.Unix(1, 0), processesValid: true,
+		processes:    []topProcess{{PID: 1, CPU: 50, Command: "worker-a", FDs: 10, DiskValid: true, DiskWrite: 2 << 20}},
+		processTotal: topProcessTotal{Count: 7, CPU: 600.4, RSS: 9 << 20, Threads: 12, BPF: &topBPFStats{RunqCount: 4, RunqSumNS: 6_000_000, IOCount: 2, IOSumNS: 500_000}},
+	}}
+	model.selected = 0
+	banner := model.processBanner()[0]
+	if !strings.HasPrefix(banner, " PROCESS worker · 7 matched · cpu 600% · rss 9.0M · runq 1.50ms · io 0.25ms") || liveWidth(banner) != topTableWidth {
+		t.Fatalf("80 column banner = %q (%d columns)", banner, liveWidth(banner))
+	}
+	if strings.Contains(banner, "fds") {
+		t.Fatalf("an 80 column banner drops the last items first: %q", banner)
+	}
+	model.width = 160
+	if wide := model.processBanner()[0]; !strings.Contains(wide, "disk r 0.00M w 2.00M · thr 12 · fds 10") || liveWidth(wide) != 160 {
+		t.Fatalf("160 column banner = %q", wide)
+	}
+	model.rows[0] = topDashboardRow{at: time.Unix(1, 0), processesValid: true}
+	if banner := model.processBanner()[0]; !strings.HasPrefix(banner, " PROCESS worker · no match") {
+		t.Fatalf("no match banner = %q", banner)
+	}
+}

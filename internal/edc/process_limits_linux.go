@@ -164,12 +164,17 @@ func parseLinuxCgroupMounts(data string) []linuxCgroupMount {
 	return mounts
 }
 
+// linuxCgroupDefaultMount는 systemd가 cgroup2를 mount하는 자리다. calico 같은 agent가 같은 계층을 다른 자리에도
+// mount하면 mountinfo에서 그쪽이 먼저 나올 수 있다. 값은 같지만 경로와 오류 문구는 사용자가 아는 이 자리를 쓴다.
+const linuxCgroupDefaultMount = "/sys/fs/cgroup"
+
 func resolveLinuxCgroup(path string, mounts []linuxCgroupMount) (string, error) {
 	var chosen *linuxCgroupMount
 	for index := range mounts {
 		mount := &mounts[index]
 		if path == mount.root || mount.root == "/" || strings.HasPrefix(path, mount.root+"/") {
-			if chosen == nil || len(mount.root) > len(chosen.root) {
+			if chosen == nil || len(mount.root) > len(chosen.root) ||
+				len(mount.root) == len(chosen.root) && mount.path == linuxCgroupDefaultMount && chosen.path != linuxCgroupDefaultMount {
 				chosen = mount
 			}
 		}

@@ -89,6 +89,22 @@ func TestLinuxCgroupMountResolutionUsesMountRootAndEscapes(t *testing.T) {
 	}
 }
 
+// calico 같은 agent는 같은 cgroup2 계층을 /run/calico/cgroup에도 mount한다. mountinfo에서 그쪽이 먼저 나와도
+// 경로와 오류 문구는 사용자가 아는 /sys/fs/cgroup을 써야 한다.
+func TestLinuxCgroupMountResolutionPrefersSysFsCgroupForTheSameRoot(t *testing.T) {
+	mounts := parseLinuxCgroupMounts("12 0 0:1 / /run/calico/cgroup rw - cgroup2 none rw\n15 0 0:1 / /sys/fs/cgroup rw - cgroup2 none rw\n")
+	if got, err := resolveLinuxCgroup("/system.slice/a.service", mounts); err != nil || got != "/sys/fs/cgroup/system.slice/a.service" {
+		t.Fatalf("path=%q err=%v", got, err)
+	}
+	if got, err := resolveLinuxCgroup("/", mounts); err != nil || got != "/sys/fs/cgroup" {
+		t.Fatalf("root=%q err=%v", got, err)
+	}
+	// /sys/fs/cgroup이 없으면 먼저 나온 mount를 그대로 쓴다.
+	if got, err := resolveLinuxCgroup("/a", mounts[:1]); err != nil || got != "/run/calico/cgroup/a" {
+		t.Fatalf("only calico=%q err=%v", got, err)
+	}
+}
+
 func TestLinuxProcessLimitsShareGroupAndReportIntervalCounters(t *testing.T) {
 	proc, group, processes := limitFixture(t)
 	reader := newLinuxProcessLimits(proc)

@@ -148,7 +148,7 @@ func streamListenWatch(ctx context.Context, writer io.Writer, interval, timeout 
 
 func formatListenWatchEvent(event listenWatchEvent, redact, highlight bool) string {
 	socket := event.Socket
-	line := fmt.Sprintf("%s  %-5s  %-4s  %-25s  %s (%s)", event.Time.Local().Format("15:04:05"), strings.ToUpper(event.Type), socket.Proto, socket.Address, socket.Process, socket.PID)
+	line := fmt.Sprintf("%s  %-5s  %-4s  %s  %s  %s (%s)", event.Time.Local().Format("15:04:05"), strings.ToUpper(event.Type), socket.Proto, liveCell(socket.Address, 27), T("observe.listen.scope."+listenBindingScope(socket.Proto, socket.Address)), socket.Process, socket.PID)
 	if redact {
 		line = redactIPAddresses(line)
 	}

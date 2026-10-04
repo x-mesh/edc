@@ -149,3 +149,62 @@ func TestListenWatchHighlightsOnlyTerminalChangeText(t *testing.T) {
 		t.Fatalf("plain event = %q", plain)
 	}
 }
+
+func TestListenWatchBindingScopeAndJSON(t *testing.T) {
+	restore := currentLanguage()
+	defer setLanguage(restore)
+	setLanguage("en")
+	stamp := time.Date(2026, time.September, 24, 0, 0, 0, 0, time.UTC)
+	socket := listenSocket{Proto: "tcp", Address: "127.0.0.1", Port: 80, Process: "app", PID: "42"}
+	for _, kind := range []string{"open", "close"} {
+		event := listenWatchEvent{Type: kind, Time: stamp, Socket: socket}
+		line := formatListenWatchEvent(event, true, false)
+		if strings.Contains(line, socket.Address) || !strings.Contains(line, "loopback") || strings.Contains(line, liveReverse) {
+			t.Fatalf("watch text = %q", line)
+		}
+		var output strings.Builder
+		if err := writeListenWatchJSON(&output, event, false); err != nil {
+			t.Fatal(err)
+		}
+		want := `{"type":"` + kind + `","time":"2026-09-24T00:00:00Z","socket":{"proto":"tcp","address":"127.0.0.1","port":80,"process":"app","pid":"42","recv_q":0,"send_q":0,"has_queue":false}}` + "\n"
+		if output.String() != want {
+			t.Fatalf("event JSON = %s", output.String())
+		}
+	}
+	opened, closed := diffListenSockets([]listenSocket{socket}, []listenSocket{socket})
+	if len(opened)+len(closed) != 0 {
+		t.Fatal("display changed socket identity")
+	}
+}
+
+func TestListenWatchBindingSnapshotAndSummary(t *testing.T) {
+	socket := listenSocket{Proto: "udp", Address: "*", Port: 53, Process: "resolver", PID: "7"}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	var output strings.Builder
+	code := streamListenWatch(ctx, &output, time.Second, time.Second, true, false, false, func(context.Context) Result {
+		return Result{Status: StatusPass, Metrics: map[string]interface{}{"sockets": []listenSocket{socket}}}
+	})
+	if code != 0 {
+		t.Fatalf("exit = %d", code)
+	}
+	lines := strings.Split(strings.TrimSuffix(output.String(), "\n"), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("JSON Lines = %q", output.String())
+	}
+	var snapshot map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(lines[0]), &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	wantSockets := `[{"proto":"udp","address":"*","port":53,"process":"resolver","pid":"7","recv_q":0,"send_q":0,"has_queue":false}]`
+	if len(snapshot) != 3 || string(snapshot["type"]) != `"snapshot"` || len(snapshot["time"]) == 0 || string(snapshot["sockets"]) != wantSockets {
+		t.Fatalf("snapshot = %s", lines[0])
+	}
+	var summary map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(lines[1]), &summary); err != nil {
+		t.Fatal(err)
+	}
+	if len(summary) != 5 || string(summary["type"]) != `"summary"` || string(summary["opened"]) != "0" || string(summary["closed"]) != "0" || string(summary["errors"]) != "0" || len(summary["duration_ms"]) == 0 {
+		t.Fatalf("summary = %s", lines[1])
+	}
+}

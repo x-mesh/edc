@@ -260,7 +260,13 @@ Without completed samples, duration expiry returns exit code `2`, and cancellati
 
 With completed samples, a failed sample returns exit code `1`. Otherwise, the exit code is `0`, including after cancellation.
 
-`edc listen --watch` prints the current listeners once, then reports sockets opening, closing, or changing process. Change lines use reverse video in a terminal. It accepts the same interval and duration options; `--json` emits a snapshot, events, and a summary as JSON Lines.
+`edc listen --watch` prints the current listeners once, then reports socket creation, closure, or process changes. Change lines use reverse video in a terminal. It accepts the same interval and duration options. The `--json` option emits a snapshot, events, and a summary as JSON Lines.
+
+The SCOPE column and watch events identify the socket's bound address: loopback, all interfaces, specific address, Unix, or unknown.
+
+For wildcard addresses, all interfaces refers to the observed address family. The scope does not establish external access, firewall rules, or IPv6 dual-stack behavior.
+
+On macOS, lsof provides no Unix socket state. The Unix socket list is approximate.
 
 ### Route and interfaces
 

@@ -12,6 +12,12 @@ Every command is read-only. `edc` finds the fault and stops there. It runs no DN
 
 The whole run takes about three seconds. Each line keeps the probe name, the target, and the result in the same columns, so you read down one column to find the failure.
 
+After DNS, TCP, TLS, or HTTP warnings and failures, `edc doctor` shows manual command templates in investigation order.
+
+Independent checks retain their recorded outcomes. The order does not establish a cause, and JSON reports contain no suggestions.
+
+Replace the template placeholders with your target. Run a suggested command only when you need that check.
+
 The source of each demo is a `.tape` file under [`docs/tape/`](docs/tape). To build one again, run `vhs docs/tape/doctor.tape`.
 
 ## Install

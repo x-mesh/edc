@@ -102,3 +102,18 @@ func TestDoctorCompletionGuidanceAndJSON(t *testing.T) {
 		t.Fatal("completion mutated report")
 	}
 }
+
+func TestDoctorGuidanceKindsAndSafeEvidence(t *testing.T) {
+	report := Report{Results: []Result{{Probe: "tls.check", Status: StatusWarn, Summary: "certificate expiry\x1b[31m\nnext", Error: &DiagnosticError{Kind: "expiry\nkind\x00"}, Evidence: []Evidence{{Label: "days", Value: "7\tleft"}}}}}
+	var output bytes.Buffer
+	printDoctorGuidance(&output, report)
+	value := output.String()
+	for _, fragment := range []string{"tls.check [warn] · expiry kind", "certificate expiry next · days: 7 left", "edc tls check 'HOST:PORT'"} {
+		if !strings.Contains(value, fragment) {
+			t.Fatalf("missing %q: %q", fragment, value)
+		}
+	}
+	if strings.ContainsAny(value, "\x1b\x00\t") {
+		t.Fatalf("control characters: %q", value)
+	}
+}

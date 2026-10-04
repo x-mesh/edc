@@ -115,6 +115,10 @@ observe:
     trace_missing: "edc did not find the traceroute or tracepath command"
 
   doctor:
+    guidance_heading: "Investigation suggestions (order does not establish a cause)"
+    guidance_manual: "Replace HOST, HOST:PORT, or URL with your target, then run the command manually."
+    guidance_stage: "%s [%s]%s"
+    guidance_evidence: "  Observed: %s"
     cancelled: "edc cancelled the diagnosis."
     completed: "%d/%d done"
     cancelling: "cancelling, edc stops the running probes"

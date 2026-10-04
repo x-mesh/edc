@@ -299,7 +299,25 @@ The demo shows one pass and one threshold failure for each command.
 ./bin/edc report diff --json diff.json before.json after.json
 ```
 
-The output marks a probe as `WORSE` when the status changes from pass to warn or fail, or from warn to fail. If one probe gets worse, the exit code is `1`. Arrays and objects in `metrics` do not appear in the diff.
+Reports require schema version `1.0`, tool name `edc`, a nonblank tool version, a run ID, and a valid nonzero run start time.
+
+Reports require `results` and a summary object. Empty results can be `null` or `[]`. Unknown extension fields are accepted.
+
+Each result requires a probe name and a `pass`, `warn`, `fail`, or `skip` status. Durations and summary counts must be nonnegative.
+
+Summary counts must match the results. Invalid report input returns exit code `2`.
+
+`STATUS SAME` and `STATUS CHANGED` compare statuses only. The JSON `same` and `changed` fields retain this rule.
+
+The output marks a probe as `WORSE` for pass-to-warn, pass-to-fail, or warn-to-fail changes. If one probe gets worse, the exit code is `1`.
+
+Scalar metrics present in both reports and probe durations have separate deltas. Arrays, objects, and added or removed metric keys are excluded.
+
+An absent delta does not establish equal measurements. The collapsed viewer shows the scalar and duration delta count.
+
+The header shows both target URLs, target hosts, and collection hostnames. Different identities produce a notice and do not block the comparison.
+
+Missing identities appear as unavailable. JSON diff sides can include the optional `target_url` and `target_host` fields beside the collection `hostname`.
 
 ## Report viewer
 
@@ -312,7 +330,7 @@ If stdin and stdout are terminals, `edc report show` and `edc report diff` open 
 | `↑` `↓` `PgUp` `PgDn` | scroll |
 | `q` | quit |
 
-`edc report show` filters by 전체, 실패와 경고, then 실패만. `edc report diff` filters by 전체, 바뀐 것, then 악화된 것.
+`edc report show` filters by 전체, 실패와 경고, then 실패만. `edc report diff` filters by all entries, changed statuses, then worse statuses.
 
 The viewer leaves no output on the screen. The exit code stays the same. A pipe, a file, or `--json` gets the earlier output.
 

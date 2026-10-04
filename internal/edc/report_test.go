@@ -302,3 +302,31 @@ func TestReportDiffIdentity(t *testing.T) {
 		t.Fatal("missing identities flagged as mismatch")
 	}
 }
+
+func TestReportDiffDifferentTargetsContinue(t *testing.T) {
+	dir := t.TempDir()
+	paths := []string{filepath.Join(dir, "before.json"), filepath.Join(dir, "after.json")}
+	for i, path := range paths {
+		report := buildReport("test", time.Now(), map[string]interface{}{"url": []string{"[REDACTED]", "https://other.invalid"}[i]}, []Result{{Probe: "check", Status: StatusPass, Metrics: map[string]interface{}{"scalar": i, "nested": map[string]interface{}{"value": i}}}}, false)
+		report.Host = map[string]interface{}{"hostname": []string{"one", "two"}[i]}
+		data, _ := json.Marshal(report)
+		if err := os.WriteFile(path, data, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	output := filepath.Join(dir, "diff.json")
+	if code := runReportDiff([]string{"--json", output, paths[0], paths[1]}); code != 0 {
+		t.Fatalf("cross-target code = %d", code)
+	}
+	data, err := os.ReadFile(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var diff reportDiff
+	if err := json.Unmarshal(data, &diff); err != nil {
+		t.Fatal(err)
+	}
+	if diff.Summary.Same != 1 || diff.Summary.Changed != 0 || len(diff.Entries[0].Metrics) != 1 || diff.Before.TargetURL != "[REDACTED]" || diff.After.Hostname != "two" {
+		t.Fatalf("diff = %#v", diff)
+	}
+}

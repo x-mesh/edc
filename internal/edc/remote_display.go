@@ -25,6 +25,7 @@ type remoteDisplay struct {
 	mu       sync.Mutex
 	output   io.Writer
 	verbose  bool
+	confirm  bool
 	color    bool
 	results  bool
 	redact   bool
@@ -33,17 +34,21 @@ type remoteDisplay struct {
 }
 
 func newRemoteDisplay(output io.Writer, options remoteDisplayOptions) *remoteDisplay {
+	return newRemoteDisplayWithStarter(output, options, startLiveProgram)
+}
+
+func newRemoteDisplayWithStarter(output io.Writer, options remoteDisplayOptions, start func(tea.Model, func(), ...tea.ProgramOption) (*liveProgram, error)) *remoteDisplay {
 	display := &remoteDisplay{
-		output: output, verbose: options.verbose,
+		output: output, verbose: options.verbose, confirm: options.confirm,
 		color: options.live, results: options.results, redact: options.redact,
 	}
 	if !options.live {
 		return display
 	}
 	model := newRemoteModel(options.plan, options.confirm, true, options.verbose, options.cancel)
-	live, err := startLiveProgram(model, options.cancel, tea.WithInput(os.Stdin), tea.WithOutput(output))
+	live, err := start(model, options.cancel, tea.WithInput(os.Stdin), tea.WithOutput(output))
 	if err != nil {
-		// TTY를 열지 못하면 결과 줄만 흘려 보내는 기존 출력으로 내려간다.
+		// 확인 없이 실행하는 경우에는 TTY 시작 실패 후 기존 줄 출력을 사용한다.
 		fmt.Fprintln(os.Stderr, T("remote.error.live_start_failed", err))
 		return display
 	}
@@ -55,10 +60,12 @@ func newRemoteDisplay(output io.Writer, options remoteDisplayOptions) *remoteDis
 	return display
 }
 
-// awaitConfirm은 화면이 확인 답을 보낼 때까지 기다린다. 화면이 없거나 확인을 받지 않으면 바로 실행한다.
 func (display *remoteDisplay) awaitConfirm() bool {
-	if display == nil || display.live == nil || display.answered == nil {
+	if display == nil || !display.confirm {
 		return true
+	}
+	if display.live == nil || display.answered == nil {
+		return false
 	}
 	select {
 	case answer := <-display.answered:

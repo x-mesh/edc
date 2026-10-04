@@ -1,6 +1,8 @@
 package edc
 
 import (
+	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"testing"
@@ -97,7 +99,7 @@ func TestRemoteDisplayWithConfirmWaitsForAnswer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	display := &remoteDisplay{output: io.Discard, results: true, live: live, answered: model.answered}
+	display := &remoteDisplay{output: io.Discard, results: true, live: live, confirm: true, answered: model.answered}
 	waiting := make(chan bool, 1)
 	go func() { waiting <- display.awaitConfirm() }()
 	select {
@@ -115,4 +117,68 @@ func TestRemoteDisplayWithConfirmWaitsForAnswer(t *testing.T) {
 		t.Fatal("확인 답이 전달되지 않았다")
 	}
 	display.Close()
+}
+
+func TestRemoteDisplayStartupFailure(t *testing.T) {
+	for _, confirm := range []bool{true, false} {
+		t.Run(fmt.Sprintf("confirm=%t", confirm), func(t *testing.T) {
+			var output strings.Builder
+			calls := 0
+			display := newRemoteDisplayWithStarter(&output, remoteDisplayOptions{live: true, confirm: confirm, results: true}, func(tea.Model, func(), ...tea.ProgramOption) (*liveProgram, error) {
+				calls++
+				return nil, errors.New("mock startup failure")
+			})
+			if calls != 1 || display.live != nil {
+				t.Fatalf("calls = %d, live = %v", calls, display.live)
+			}
+			if allowed := display.awaitConfirm(); allowed != !confirm {
+				t.Fatalf("awaitConfirm = %t, want %t", allowed, !confirm)
+			}
+			if !confirm {
+				display.Result(Result{Probe: "remote.one.gk", Status: StatusPass, Summary: "ok", Metrics: map[string]interface{}{"host": "one", "step": "gk"}})
+				if !strings.Contains(output.String(), "PASS") || !strings.Contains(output.String(), "one.gk") {
+					t.Fatalf("output = %q", output.String())
+				}
+			}
+		})
+	}
+}
+
+func TestRemoteDisplayConfirmWithoutScreenOrChannel(t *testing.T) {
+	for name, display := range map[string]*remoteDisplay{
+		"no screen":  {confirm: true, answered: make(chan bool)},
+		"no channel": {confirm: true, live: &liveProgram{done: make(chan struct{})}},
+		"neither":    {confirm: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if display.awaitConfirm() {
+				t.Fatal("missing confirmation screen or channel must deny execution")
+			}
+		})
+	}
+}
+
+func TestRemoteDisplayConfirmDeniesNoAndClose(t *testing.T) {
+	for _, key := range []rune{'n', 'q'} {
+		t.Run(string(key), func(t *testing.T) {
+			model := newRemoteModel(remotePlanView{}, true, false, false, nil)
+			live, err := startLiveProgram(model, nil, headlessOptions()...)
+			if err != nil {
+				t.Fatal(err)
+			}
+			display := &remoteDisplay{output: io.Discard, confirm: true, live: live, answered: model.answered}
+			defer display.Close()
+			waiting := make(chan bool, 1)
+			go func() { waiting <- display.awaitConfirm() }()
+			live.send(tea.KeyPressMsg{Code: key, Text: string(key)})
+			select {
+			case answer := <-waiting:
+				if answer {
+					t.Fatal("refusal or screen close must deny execution")
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("confirmation did not stop after refusal or close")
+			}
+		})
+	}
 }

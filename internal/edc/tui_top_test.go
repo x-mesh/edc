@@ -1053,7 +1053,7 @@ func TestTopCandidateSelectionStaysVisibleOnShortTerminals(t *testing.T) {
 		}}}
 		model = topAfter(t, model, topKey("tab"), topKey("down"), topKey("down"), topKey("down"), topKey("down"))
 		content := model.View().Content
-		if len(strings.Split(content, "\n")) > height || !strings.Contains(content, ">      5") || !strings.Contains(content, "Enter focus") {
+		if len(strings.Split(content, "\n")) > height || !strings.Contains(content, ">       5") || !strings.Contains(content, "Enter focus") {
 			t.Fatalf("%d rows: selected candidate or controls lost: %q", height, content)
 		}
 	}
@@ -1097,7 +1097,7 @@ func TestTopSelectedRowHighlightsTheActivePane(t *testing.T) {
 	for _, line := range strings.Split(model.View().Content, "\n") {
 		if strings.Contains(line, topBannerStyle) {
 			selected++
-			if !strings.HasPrefix(line, topBannerStyle+">      2") || ansi.StringWidth(line) != model.width || !strings.HasSuffix(line, topColorReset) {
+			if !strings.HasPrefix(line, topBannerStyle+">       2") || ansi.StringWidth(line) != model.width || !strings.HasSuffix(line, topColorReset) {
 				t.Fatalf("selected process must highlight the full row: %q", line)
 			}
 		}
@@ -1106,7 +1106,7 @@ func TestTopSelectedRowHighlightsTheActivePane(t *testing.T) {
 		t.Fatalf("active pane must have one highlighted row, got %d", selected)
 	}
 	model.limits.color = false
-	if content := model.View().Content; strings.Contains(content, topBannerStyle) || !strings.Contains(content, ">      2") {
+	if content := model.View().Content; strings.Contains(content, topBannerStyle) || !strings.Contains(content, ">       2") {
 		t.Fatalf("plain selection must keep its marker: %q", content)
 	}
 }
@@ -1124,5 +1124,35 @@ func TestTopCandidatePagingKeepsTheSelectedSnapshot(t *testing.T) {
 	model = topAfter(t, model, tea.KeyPressMsg{Code: tea.KeyPgUp})
 	if model.selected != 0 || model.processSelected != 0 {
 		t.Fatalf("candidate page-up moved history: time row %d, process row %d", model.selected, model.processSelected)
+	}
+}
+
+// Linux의 pid_max는 기본 4194304라 PID가 7자리일 수 있다. PID 길이가 달라도 후보 목록의 열은 같은 자리에서 시작해야 한다.
+func TestTopCandidateColumnsAlignForSevenDigitPIDs(t *testing.T) {
+	for _, width := range []int{100, 36} {
+		model := topFixtureModel(nil)
+		model.limits.color = false
+		model.width = width
+		model.rows = []topDashboardRow{{at: time.Unix(1, 0), processesValid: true, processes: []topProcess{
+			{PID: 245099, CPU: 100, RSS: 10 << 20, Command: "edcbusy"},
+			{PID: 3688912, CPU: 7, RSS: 430 << 20, Command: "claude"},
+		}}}
+		model.selected = 0
+		lines := model.candidateLines()
+		var columns []int
+		// 첫 줄은 창 제목이고 화면에 그릴 때 폭에 맞춰 잘린다. 머리글과 process 행은 그대로 폭 안에 들어가야 한다.
+		for _, line := range lines[1:] {
+			if lineWidth := liveWidth(line); lineWidth > width {
+				t.Fatalf("width %d: line is %d columns: %q", width, lineWidth, line)
+			}
+			for _, name := range []string{"COMMAND", "edcbusy", "claude"} {
+				if index := strings.Index(line, name); index >= 0 {
+					columns = append(columns, index)
+				}
+			}
+		}
+		if len(columns) != 3 || columns[0] != columns[1] || columns[1] != columns[2] {
+			t.Fatalf("width %d: command columns %v in %q", width, columns, lines)
+		}
 	}
 }

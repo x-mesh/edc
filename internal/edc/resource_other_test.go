@@ -5,11 +5,51 @@ package edc
 import (
 	"encoding/binary"
 	"net"
+	"os"
 	"runtime"
 	"slices"
 	"strings"
 	"testing"
+	"unsafe"
 )
+
+func TestReadDarwinProcessDetails(t *testing.T) {
+	if size := unsafe.Sizeof(darwinProcessTaskInfo{}); size != 96 {
+		t.Fatalf("proc_taskinfo size = %d, want 96", size)
+	}
+	if size := unsafe.Sizeof(darwinProcessRusage{}); size != 160 {
+		t.Fatalf("rusage_info_v2 size = %d, want 160", size)
+	}
+	threads, err := readDarwinProcessThreads(os.Getpid())
+	if err != nil || threads <= 0 {
+		t.Fatalf("own threads = %d, %v", threads, err)
+	}
+	stats, err := readDarwinProcessRusage(os.Getpid())
+	if err != nil || stats.Started == 0 || stats.ResidentSize == 0 {
+		t.Fatalf("own rusage = %+v, %v", stats, err)
+	}
+	if _, err := readDarwinProcessRusage(-1); err == nil {
+		t.Fatal("invalid PID must return an error")
+	}
+}
+
+func TestDarwinProcessEnricherNeedsTwoSamplesAndReportsErrors(t *testing.T) {
+	enrich := newTopProcessEnricher()
+	processes := []topProcess{{PID: os.Getpid()}}
+	enrich(processes)
+	if processes[0].DiskValid || processes[0].DiskStatus != "waiting for I/O baseline" {
+		t.Fatalf("first I/O sample = %+v", processes[0])
+	}
+	enrich(processes)
+	if !processes[0].DiskValid || processes[0].DiskRead < 0 || processes[0].DiskWrite < 0 || processes[0].DiskStatus != "" {
+		t.Fatalf("second I/O sample = %+v", processes[0])
+	}
+	processes[0].PID = -1
+	enrich(processes)
+	if processes[0].DiskValid || !strings.Contains(processes[0].DiskStatus, "proc_pid_rusage") {
+		t.Fatalf("failed read must not retain rates: %+v", processes[0])
+	}
+}
 
 func TestDarwinMemoryFromStatistics(t *testing.T) {
 	// FreeCount 100에는 speculative 50이 들어 있다. 회수 가능한 page는 free 100과 inactive 250이다.

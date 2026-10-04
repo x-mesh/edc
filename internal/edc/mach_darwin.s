@@ -41,3 +41,13 @@ TEXT taskSelfTrapTrampoline<>(SB),NOSPLIT,$0-0
 	JMP	libc_task_self_trap(SB)
 GLOBL	·taskSelfTrapAddr(SB), RODATA, $8
 DATA	·taskSelfTrapAddr(SB)/8, $taskSelfTrapTrampoline<>(SB)
+
+TEXT procPIDInfoTrampoline<>(SB),NOSPLIT,$0-0
+	JMP	libc_proc_pidinfo(SB)
+GLOBL	·procPIDInfoAddr(SB), RODATA, $8
+DATA	·procPIDInfoAddr(SB)/8, $procPIDInfoTrampoline<>(SB)
+
+TEXT procPIDRusageTrampoline<>(SB),NOSPLIT,$0-0
+	JMP	libc_proc_pid_rusage(SB)
+GLOBL	·procPIDRusageAddr(SB), RODATA, $8
+DATA	·procPIDRusageAddr(SB)/8, $procPIDRusageTrampoline<>(SB)

@@ -490,6 +490,22 @@ func TestTopProcessSamplerFiltersBeforeKeepingTheBusiestOnes(t *testing.T) {
 	}
 }
 
+func TestTopProcessSamplerKeepsMemoryCandidatesOutsideCPUList(t *testing.T) {
+	all := make([]topProcess, 0, 10)
+	for pid := 1; pid <= 10; pid++ {
+		all = append(all, topProcess{PID: pid, CPU: float64(11 - pid), RSS: uint64(pid) << 20, Command: "worker"})
+	}
+	sampler := &topProcessSampler{read: func() ([]topProcess, bool) { return all, true }}
+	sampler.refresh()
+	processes, _, valid := sampler.latestWithTotal()
+	if !valid || len(processes) != 2*topProcessLimit {
+		t.Fatalf("candidate list = %+v, valid %v", processes, valid)
+	}
+	if processes[0].PID != 1 || processes[len(processes)-1].PID != 10 {
+		t.Fatalf("CPU and memory leaders must both remain: %+v", processes)
+	}
+}
+
 func TestTopProcessSamplerClearsCachedMatchesWhenFilterChanges(t *testing.T) {
 	filter, err := parseTopProcessFilter("worker")
 	if err != nil {

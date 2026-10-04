@@ -71,6 +71,7 @@ type topProcess struct {
 	// 읽을 권한이 없거나 직전 기준이 없으면 false다.
 	DiskValid           bool
 	DiskRead, DiskWrite float64
+	DiskStatus          string
 	// BPF는 eBPF가 직전 window 동안 센 값이다. --ebpf가 아니거나 아직 기준이 없으면 nil이다.
 	BPF *topBPFStats
 }
@@ -195,8 +196,12 @@ func (sampler *topProcessSampler) refresh() {
 			total.BPF = &merged
 		}
 	}
-	if limit := filter.limit(); len(processes) > limit {
-		processes = processes[:limit]
+	if filter.active() {
+		if limit := filter.limit(); len(processes) > limit {
+			processes = processes[:limit]
+		}
+	} else {
+		processes = topProcessCandidates(processes)
 	}
 	for index := range processes {
 		if stats, ok := observed[processes[index].PID]; ok {
@@ -220,6 +225,23 @@ func (sampler *topProcessSampler) refresh() {
 func sortTopProcessesByCPU(processes []topProcess) []topProcess {
 	sort.Slice(processes, func(i, j int) bool { return processes[i].CPU > processes[j].CPU })
 	return processes
+}
+
+func topProcessCandidates(processes []topProcess) []topProcess {
+	candidates := append([]topProcess(nil), processes[:min(topProcessLimit, len(processes))]...)
+	byMemory := append([]topProcess(nil), processes...)
+	sort.SliceStable(byMemory, func(i, j int) bool { return byMemory[i].RSS > byMemory[j].RSS })
+	seen := make(map[int]bool, len(candidates))
+	for _, process := range candidates {
+		seen[process.PID] = true
+	}
+	for _, process := range byMemory[:min(topProcessLimit, len(byMemory))] {
+		if !seen[process.PID] {
+			candidates = append(candidates, process)
+			seen[process.PID] = true
+		}
+	}
+	return sortTopProcessesByCPU(candidates)
 }
 
 // linuxProcessStat은 /proc/<pid>/stat 한 줄에서 CPU tick과 RSS page 수만 뽑은 값이다.

@@ -169,6 +169,53 @@ func readDarwinMemorySize() (uint64, error) {
 	return total, err
 }
 
+var procPIDInfoAddr, procPIDRusageAddr uintptr
+
+//go:cgo_import_dynamic libc_proc_pidinfo proc_pidinfo "/usr/lib/libSystem.B.dylib"
+//go:cgo_import_dynamic libc_proc_pid_rusage proc_pid_rusage "/usr/lib/libSystem.B.dylib"
+
+const (
+	darwinProcPIDTaskInfo = 4
+	darwinRusageInfoV2    = 2
+)
+
+// libproc에 넘기는 구조체는 Apple의 proc_taskinfo와 rusage_info_v2 ABI와 크기와 순서가 같아야 한다.
+type darwinProcessTaskInfo struct {
+	VirtualSize, ResidentSize, TotalUser, TotalSystem, ThreadsUser, ThreadsSystem uint64
+	Policy, Faults, Pageins, CowFaults, MessagesSent, MessagesReceived            int32
+	SyscallsMach, SyscallsUnix, ContextSwitches, Threads, Running, Priority       int32
+}
+
+type darwinProcessRusage struct {
+	UUID                                                                                  [16]byte
+	UserTime, SystemTime, IdleWakeups, InterruptWakeups, Pageins                          uint64
+	WiredSize, ResidentSize, Footprint, Started, Exited                                   uint64
+	ChildUserTime, ChildSystemTime, ChildIdleWakeups, ChildInterruptWakeups, ChildPageins uint64
+	ChildElapsedTime, DiskRead, DiskWrite                                                 uint64
+}
+
+func readDarwinProcessThreads(pid int) (int, error) {
+	var info darwinProcessTaskInfo
+	size := unsafe.Sizeof(info)
+	result, _, errno := darwinSyscall6(procPIDInfoAddr, uintptr(pid), darwinProcPIDTaskInfo, 0, uintptr(unsafe.Pointer(&info)), size, 0)
+	if int32(result) <= 0 {
+		return 0, fmt.Errorf("proc_pidinfo: %w", errno)
+	}
+	if uintptr(result) != size {
+		return 0, fmt.Errorf("proc_pidinfo: %d bytes, want %d", result, size)
+	}
+	return int(info.Threads), nil
+}
+
+func readDarwinProcessRusage(pid int) (darwinProcessRusage, error) {
+	var info darwinProcessRusage
+	result, _, errno := darwinSyscall6(procPIDRusageAddr, uintptr(pid), darwinRusageInfoV2, uintptr(unsafe.Pointer(&info)), 0, 0, 0)
+	if int32(result) != 0 {
+		return darwinProcessRusage{}, fmt.Errorf("proc_pid_rusage: %w", errno)
+	}
+	return info, nil
+}
+
 var sysctlAddr uintptr
 
 //go:cgo_import_dynamic libc_sysctl sysctl "/usr/lib/libSystem.B.dylib"

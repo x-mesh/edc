@@ -836,7 +836,7 @@ func TestTopProcessBannerLeadsWithTheMatchedGroup(t *testing.T) {
 	if model.bodyLines() != sameView.bodyLines()-1 {
 		t.Fatalf("body lines = %d, without the banner %d", model.bodyLines(), sameView.bodyLines())
 	}
-	model.rows = []topDashboardRow{{at: time.Unix(1, 0), processesValid: true,
+	model.rows = []topDashboardRow{{at: time.Unix(1, 0), processesValid: true, filter: "worker",
 		processes:    []topProcess{{PID: 1, CPU: 50, Command: "worker-a", FDs: 10, DiskValid: true, DiskWrite: 2 << 20}},
 		processTotal: topProcessTotal{Count: 7, CPU: 600.4, RSS: 9 << 20, Threads: 12, BPF: &topBPFStats{RunqCount: 4, RunqSumNS: 6_000_000, IOCount: 2, IOSumNS: 500_000}},
 	}}
@@ -852,8 +852,93 @@ func TestTopProcessBannerLeadsWithTheMatchedGroup(t *testing.T) {
 	if wide := model.processBanner()[0]; !strings.Contains(wide, "disk r 0.00M w 2.00M · thr 12 · fds 10") || liveWidth(wide) != 160 {
 		t.Fatalf("160 column banner = %q", wide)
 	}
-	model.rows[0] = topDashboardRow{at: time.Unix(1, 0), processesValid: true}
+	model.rows[0] = topDashboardRow{at: time.Unix(1, 0), processesValid: true, filter: "worker"}
 	if banner := model.processBanner()[0]; !strings.HasPrefix(banner, " PROCESS worker · no match") {
 		t.Fatalf("no match banner = %q", banner)
+	}
+}
+
+func topKey(text string) tea.KeyPressMsg {
+	switch text {
+	case "enter":
+		return tea.KeyPressMsg{Code: tea.KeyEnter}
+	case "esc":
+		return tea.KeyPressMsg{Code: tea.KeyEscape}
+	case "backspace":
+		return tea.KeyPressMsg{Code: tea.KeyBackspace}
+	}
+	return tea.KeyPressMsg{Code: []rune(text)[0], Text: text}
+}
+
+// f는 선택한 행의 첫 경고를 따라간다. host 경고는 그 보기로, 두 번째 f는 가장 바쁜 process로 초점을 옮긴다.
+func TestTopFollowSignalOpensTheSignalViewThenFocusesTheBusiestProcess(t *testing.T) {
+	var applied []topProcessFilter
+	model := topFixtureModel(nil)
+	model.limits.color = false
+	model.setFilter = func(filter topProcessFilter) { applied = append(applied, filter) }
+	model.rows = []topDashboardRow{{at: time.Unix(1, 0), processesValid: true,
+		rate:      resourceRate{DiskHealthValid: true, DiskAwait: 1000},
+		processes: []topProcess{{PID: 4321, CPU: 30, Command: "postgres"}},
+	}}
+	model.selected = 0
+	model = topAfter(t, model, topKey("f"))
+	if model.view != topViewDisk || !strings.Contains(model.statusLines()[0], "await 1000ms → disk view") || len(applied) != 0 {
+		t.Fatalf("first f: view %s, status %q, filters %v", model.view, model.statusLines()[0], applied)
+	}
+	seq := model.seq
+	model = topAfter(t, model, topKey("f"))
+	if model.view != topViewProcess || model.processFilter.String() != "4321" || model.seq != seq+1 || len(applied) != 1 || applied[0].String() != "4321" {
+		t.Fatalf("second f: view %s, filter %q, seq %d, filters %v", model.view, model.processFilter, model.seq, applied)
+	}
+	if banner := model.processBanner()[0]; !strings.HasPrefix(banner, " PROCESS pid 4321 postgres · waiting for a sample") {
+		t.Fatalf("rows from before the focus must not count: %q", banner)
+	}
+	if row := formatTopDashboardRow(model.currentFilterRow(model.rows[0]), topViewProcess, model.limits, topTableWidth); !strings.Contains(row, "│    —│") {
+		t.Fatalf("process row from before the focus = %q", row)
+	}
+	model = topAfter(t, model, topSampleMsg{seq: model.seq, snapshot: resourceSnapshot{TakenAt: time.Unix(2, 0), CPUTotal: 200, ProcessesValid: true,
+		Processes: []topProcess{{PID: 4321, CPU: 31, Command: "postgres"}}, ProcessTotal: topProcessTotal{Count: 1, CPU: 31}}})
+	if last := model.rows[len(model.rows)-1]; last.filter != "4321" || !strings.Contains(model.processBanner()[0], "1 matched · cpu 31%") {
+		t.Fatalf("row after the focus: filter %q, banner %q", last.filter, model.processBanner()[0])
+	}
+	model = topAfter(t, model, topKey("esc"))
+	if model.processFilter.active() || model.view != topViewAll || len(applied) != 2 || applied[1].active() || model.processBanner() != nil {
+		t.Fatalf("esc: filter %q, view %s, filters %v", model.processFilter, model.view, applied)
+	}
+}
+
+func TestTopFollowSignalFocusesABusyProcessAtOnce(t *testing.T) {
+	model := topFixtureModel(nil)
+	model.rows = []topDashboardRow{{at: time.Unix(1, 0), processesValid: true, processes: []topProcess{{PID: 77, CPU: 185, Command: "/usr/local/bin/node"}}}}
+	model.selected = 0
+	model = topAfter(t, model, topKey("f"))
+	if model.view != topViewProcess || model.processFilter.String() != "77" || model.focusName != "node" {
+		t.Fatalf("f on a process signal: view %s, filter %q, name %q", model.view, model.processFilter, model.focusName)
+	}
+}
+
+func TestTopSlashEditsTheProcessFilter(t *testing.T) {
+	model := topFixtureModel(nil)
+	model.limits.color = false
+	model.rows = []topDashboardRow{{at: time.Unix(1, 0), processesValid: true, processes: []topProcess{{PID: 9, CPU: 5, Command: "nginx"}}}}
+	model.selected = 0
+	model = topAfter(t, model, topKey("/"))
+	if !model.input || model.inputText != "nginx" || !strings.HasPrefix(model.statusLines()[0], "process filter: nginx") {
+		t.Fatalf("/ opens the input with the busiest process: input %t, text %q", model.input, model.inputText)
+	}
+	model = topAfter(t, model, topKey("backspace"), topKey("x"), topKey(","), topKey("9"), topKey("enter"))
+	if model.input || model.processFilter.String() != "nginx,9" || model.view != topViewProcess || model.focusName != "" {
+		t.Fatalf("enter applies the filter: input %t, filter %q, view %s", model.input, model.processFilter, model.view)
+	}
+	model = topAfter(t, model, topKey("/"), topKey(","), topKey("enter"))
+	if model.processFilter.String() != "nginx,9" || !strings.Contains(model.statusLines()[0], T("observe.top.process_invalid")) {
+		t.Fatalf("an invalid filter keeps the old one: filter %q, status %q", model.processFilter, model.statusLines()[0])
+	}
+	model = topAfter(t, model, topKey("/"), topKey("z"), topKey("esc"))
+	if model.input || model.processFilter.String() != "nginx,9" {
+		t.Fatalf("esc closes the input without a change: input %t, filter %q", model.input, model.processFilter)
+	}
+	if got := topAfter(t, model, topKey("q")); got.input {
+		t.Fatal("q must not open input")
 	}
 }

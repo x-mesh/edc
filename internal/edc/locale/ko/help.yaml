@@ -79,6 +79,7 @@ command:
       - "terminal에서는 대시보드로 엽니다. q 종료, p 일시정지, +/- interval."
       - "--count나 --json을 주거나, 비 terminal이거나, NO_COLOR면 표로 출력합니다."
       - "--process를 주면 process 보기로 엽니다. 1은 host 열, f는 다시 process."
+      - "f는 signal을 따라감: 그 보기, 다음은 가장 바쁜 process. / 필터, Esc 해제."
   watch:
     summary: "중단할 때까지 HTTP 상태 반복 관측"
     option:

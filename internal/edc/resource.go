@@ -105,7 +105,10 @@ const (
 // topProcessSampler는 process 목록을 배경에서 갱신한다. 대시보드 tick은 마지막 결과만 받아 가므로
 // process 수집 시간이 관측 주기에 붙지 않는다.
 type topProcessSampler struct {
-	mutex          sync.Mutex
+	mutex sync.Mutex
+	// refreshing은 refresh를 하나씩만 돌린다. 대시보드가 실행 중에 필터를 걸면 배경 갱신과 refreshNow가 겹칠 수 있고,
+	// read의 CPU tick 기록은 동시에 쓰면 깨진다.
+	refreshing     sync.Mutex
 	processes      []topProcess
 	valid, running bool
 	updated        time.Time
@@ -159,6 +162,8 @@ func (sampler *topProcessSampler) setObserver(observe topBPFObserver) {
 }
 
 func (sampler *topProcessSampler) refresh() {
+	sampler.refreshing.Lock()
+	defer sampler.refreshing.Unlock()
 	processes, valid := sampler.read()
 	sampler.mutex.Lock()
 	filter, observe := sampler.filter, sampler.observe

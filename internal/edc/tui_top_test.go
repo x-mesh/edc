@@ -842,7 +842,7 @@ func TestTopProcessBannerLeadsWithTheMatchedGroup(t *testing.T) {
 	}}
 	model.selected = 0
 	banner := model.processBanner()[0]
-	if !strings.HasPrefix(banner, " PROCESS worker · 7 matched · cpu 600% · rss 9.0M") || !strings.Contains(banner, "09:00:01") || liveWidth(banner) != topTableWidth {
+	if !strings.HasPrefix(banner, " PROCESS worker · 7 matched · cpu 600% · rss 9.0M") || !strings.Contains(banner, model.rows[0].at.Format("15:04:05")) || liveWidth(banner) != topTableWidth {
 		t.Fatalf("80 column banner = %q (%d columns)", banner, liveWidth(banner))
 	}
 	if strings.Contains(banner, "fds") {
@@ -1037,7 +1037,7 @@ func TestTopDashboardShowsFailedSampleTimeAndIOStatus(t *testing.T) {
 	model.lastErr = errors.New("host read failed")
 	model.rows = []topDashboardRow{{at: time.Unix(1, 0), filter: "worker", processesValid: true, processes: []topProcess{{PID: 1, Command: "worker", DiskStatus: "proc_pid_rusage: operation not permitted"}}, processTotal: topProcessTotal{Count: 1}}}
 	model.follow = false
-	for _, want := range []string{"last success 09:00:00", "host read failed", "history 09:00:01", "operation not permitted"} {
+	for _, want := range []string{"last success " + model.previous.TakenAt.Format("15:04:05"), "host read failed", "history " + model.rows[0].at.Format("15:04:05"), "operation not permitted"} {
 		if content := model.View().Content; !strings.Contains(content, want) {
 			t.Fatalf("view does not show %q: %q", want, content)
 		}
@@ -1089,7 +1089,7 @@ func TestTopSelectedRowHighlightsTheActivePane(t *testing.T) {
 		{PID: 1, Command: "first"}, {PID: 2, Command: "second"},
 	}}}
 	model.follow = false
-	if content := model.View().Content; !strings.Contains(content, topBannerStyle+"09:00:01>") || !strings.Contains(content, topColorDanger) {
+	if content := model.View().Content; !strings.Contains(content, topBannerStyle+model.rows[0].at.Format("15:04:05")+">") || !strings.Contains(content, topColorDanger) {
 		t.Fatalf("history selection must keep warning color and highlight its row: %q", content)
 	}
 	model = topAfter(t, model, topKey("tab"), topKey("down"))
@@ -1108,5 +1108,21 @@ func TestTopSelectedRowHighlightsTheActivePane(t *testing.T) {
 	model.limits.color = false
 	if content := model.View().Content; strings.Contains(content, topBannerStyle) || !strings.Contains(content, ">      2") {
 		t.Fatalf("plain selection must keep its marker: %q", content)
+	}
+}
+
+func TestTopCandidatePagingKeepsTheSelectedSnapshot(t *testing.T) {
+	model := topFixtureModel(nil)
+	model.rows = []topDashboardRow{
+		{at: time.Unix(1, 0), processesValid: true, processes: []topProcess{{PID: 1}, {PID: 2}, {PID: 3}, {PID: 4}, {PID: 5}}},
+		{at: time.Unix(2, 0), processesValid: true, processes: []topProcess{{PID: 99}}},
+	}
+	model = topAfter(t, model, topKey("tab"), tea.KeyPressMsg{Code: tea.KeyPgDown})
+	if model.selected != 0 || model.processSelected != 4 {
+		t.Fatalf("candidate page-down moved history: time row %d, process row %d", model.selected, model.processSelected)
+	}
+	model = topAfter(t, model, tea.KeyPressMsg{Code: tea.KeyPgUp})
+	if model.selected != 0 || model.processSelected != 0 {
+		t.Fatalf("candidate page-up moved history: time row %d, process row %d", model.selected, model.processSelected)
 	}
 }

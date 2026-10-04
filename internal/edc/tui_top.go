@@ -249,6 +249,12 @@ func (model topModel) updateKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		case "down", "j":
 			model.processSelected = min(max(0, len(model.candidates())-1), model.processSelected+1)
 			return model, nil
+		case "pgup":
+			model.processSelected = 0
+			return model, nil
+		case "pgdown":
+			model.processSelected = max(0, len(model.candidates())-1)
+			return model, nil
 		case "enter":
 			return model.focusProcess()
 		case "esc":

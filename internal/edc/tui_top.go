@@ -787,13 +787,14 @@ func (model topModel) candidateLines() []string {
 	}
 	nameWidth := max(4, min(28, model.displayWidth()-35))
 	if model.displayWidth() < 40 {
-		nameWidth = max(3, model.displayWidth()-17)
+		nameWidth = max(3, model.displayWidth()-18)
 	}
 	room := model.height - 2 - len(model.processBanner()) - len(model.tableHeader()) - len(model.statusLines())
 	if room >= 3 {
-		header := fmt.Sprintf("  %6s %s %7s %6s", "PID", topFitCell("COMMAND", nameWidth, true), "CPU%", "RSS")
+		// PID는 Linux에서 7자리(기본 pid_max 4194304)까지 가므로 일곱 칸을 둔다.
+		header := fmt.Sprintf("  %7s %s %7s %6s", "PID", topFitCell("COMMAND", nameWidth, true), "CPU%", "RSS")
 		if model.displayWidth() < 40 {
-			header = fmt.Sprintf("  %6s %s %6s", "PID", topFitCell("COMMAND", nameWidth, true), rank)
+			header = fmt.Sprintf("  %7s %s %6s", "PID", topFitCell("COMMAND", nameWidth, true), rank)
 		}
 		lines = append(lines, header)
 	}
@@ -812,13 +813,13 @@ func (model topModel) candidateLines() []string {
 		if model.processFocus && index == model.processSelected {
 			marker = ">"
 		}
-		line := fmt.Sprintf("%s %6d %s %6.1f%% %6s", marker, process.PID, topFitCell(topProcessName(process.Command, nameWidth), nameWidth, true), process.CPU, formatProcessRSS(process.RSS))
+		line := fmt.Sprintf("%s %7d %s %6.1f%% %6s", marker, process.PID, topFitCell(topProcessName(process.Command, nameWidth), nameWidth, true), process.CPU, formatProcessRSS(process.RSS))
 		if model.displayWidth() < 40 {
 			value := fmt.Sprintf("%.1f%%", process.CPU)
 			if model.view == topViewMemory {
 				value = formatProcessRSS(process.RSS)
 			}
-			line = fmt.Sprintf("%s %6d %s %6s", marker, process.PID, topFitCell(topProcessName(process.Command, nameWidth), nameWidth, true), value)
+			line = fmt.Sprintf("%s %7d %s %6s", marker, process.PID, topFitCell(topProcessName(process.Command, nameWidth), nameWidth, true), value)
 		}
 		if model.processFilter.active() && model.displayWidth() >= 100 {
 			line += fmt.Sprintf(" · r %s w %s", topOptionalRate(process.DiskValid, process.DiskRead), topOptionalRate(process.DiskValid, process.DiskWrite))

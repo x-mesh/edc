@@ -176,3 +176,93 @@ func TestPrintReportDiffEntryKeepsColumnsAligned(t *testing.T) {
 		column = start
 	}
 }
+
+func TestLoadReportRejectsSchemaOnly(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "invalid.json")
+	if err := os.WriteFile(path, []byte(`{"schema_version":"1.0"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadReport(path); err == nil {
+		t.Fatal("schema-only report accepted")
+	}
+	if code := runReportShow(path); code != 2 {
+		t.Fatalf("show code = %d", code)
+	}
+	if code := runReportDiff([]string{path, path}); code != 2 {
+		t.Fatalf("diff code = %d", code)
+	}
+}
+
+func TestLoadReportValidation(t *testing.T) {
+	valid := buildReport("test", time.Now(), map[string]interface{}{"url": "[REDACTED]"}, []Result{{Probe: "remote.check", Status: StatusPass}}, true)
+	data, err := json.Marshal(valid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var base map[string]interface{}
+	if err := json.Unmarshal(data, &base); err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name string
+		edit func(map[string]interface{})
+	}{
+		{"tool", func(m map[string]interface{}) { m["tool"].(map[string]interface{})["name"] = "other" }},
+		{"version", func(m map[string]interface{}) { m["tool"].(map[string]interface{})["version"] = " " }},
+		{"run id", func(m map[string]interface{}) { m["run"].(map[string]interface{})["id"] = "" }},
+		{"time", func(m map[string]interface{}) { m["run"].(map[string]interface{})["started_at"] = "bad" }},
+		{"run duration", func(m map[string]interface{}) { m["run"].(map[string]interface{})["duration_ms"] = -1 }},
+		{"results missing", func(m map[string]interface{}) { delete(m, "results") }},
+		{"results type", func(m map[string]interface{}) { m["results"] = map[string]interface{}{} }},
+		{"summary null", func(m map[string]interface{}) { m["summary"] = nil }},
+		{"summary negative", func(m map[string]interface{}) { m["summary"].(map[string]interface{})["fail"] = -1 }},
+		{"summary mismatch", func(m map[string]interface{}) { m["summary"].(map[string]interface{})["pass"] = 4 }},
+		{"probe", func(m map[string]interface{}) {
+			m["results"].([]interface{})[0].(map[string]interface{})["probe"] = " "
+		}},
+		{"status", func(m map[string]interface{}) {
+			m["results"].([]interface{})[0].(map[string]interface{})["status"] = "unknown"
+		}},
+		{"duration", func(m map[string]interface{}) {
+			m["results"].([]interface{})[0].(map[string]interface{})["duration_ms"] = -1
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var m map[string]interface{}
+			json.Unmarshal(data, &m)
+			test.edit(m)
+			changed, _ := json.Marshal(m)
+			path := filepath.Join(t.TempDir(), "report.json")
+			os.WriteFile(path, changed, 0600)
+			if _, err := loadReport(path); err == nil || !strings.Contains(err.Error(), path) {
+				t.Fatalf("error = %v", err)
+			}
+		})
+	}
+	for _, invalid := range []string{"null", "[]", "42", string(data) + "{}", string(data) + "garbage", string(data) + strings.Repeat(" ", reportSizeLimit)} {
+		path := filepath.Join(t.TempDir(), "report.json")
+		os.WriteFile(path, []byte(invalid), 0600)
+		if _, err := loadReport(path); err == nil {
+			t.Fatal("invalid JSON accepted")
+		}
+	}
+	for _, results := range [][]Result{nil, {}, valid.Results, {{Probe: "duplicate", Status: StatusSkip}, {Probe: "duplicate", Status: StatusPass}}} {
+		report := buildReport("test", time.Now(), nil, results, true)
+		encoded, _ := json.Marshal(report)
+		var m map[string]interface{}
+		json.Unmarshal(encoded, &m)
+		m["extension"] = true
+		encoded, _ = json.Marshal(m)
+		path := filepath.Join(t.TempDir(), "report.json")
+		os.WriteFile(path, encoded, 0600)
+		if _, err := loadReport(path); err != nil {
+			t.Fatal(err)
+		}
+	}
+	path := filepath.Join(t.TempDir(), "old.json")
+	os.WriteFile(path, []byte(`{"schema_version":"2.0"}`), 0600)
+	if _, err := loadReport(path); err == nil || !strings.Contains(err.Error(), "2.0") {
+		t.Fatalf("schema error = %v", err)
+	}
+}

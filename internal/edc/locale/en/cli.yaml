@@ -204,6 +204,7 @@ cli:
     io_group_by: "--group-by must be device, process, cgroup, or event"
     io_failed: "trace io failed: %v"
   report:
+    invalid_field: "%s: invalid report field: %s"
     unsupported_schema: "%s: unsupported schema version: %s"
     filter_label: "filter: "
     detail_open: "  ·  detail open"

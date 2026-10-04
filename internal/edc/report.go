@@ -76,13 +76,74 @@ func loadReport(path string) (Report, error) {
 		return Report{}, err
 	}
 	defer file.Close()
-	var report Report
-	if err := json.NewDecoder(io.LimitReader(file, reportSizeLimit)).Decode(&report); err != nil {
+	data, err := io.ReadAll(io.LimitReader(file, reportSizeLimit+1))
+	if err != nil {
 		return Report{}, fmt.Errorf("%s: %w", path, err)
+	}
+	invalid := func(field string) (Report, error) {
+		return Report{}, errors.New(T("cli.report.invalid_field", path, field))
+	}
+	if len(data) > reportSizeLimit {
+		return invalid("size")
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil || fields == nil {
+		return invalid("JSON object")
+	}
+	var report Report
+	if err := json.Unmarshal(data, &report); err != nil {
+		field := "JSON"
+		var typeError *json.UnmarshalTypeError
+		if errors.As(err, &typeError) {
+			field = typeError.Field
+		}
+		if strings.Contains(err.Error(), "parsing time") {
+			field = "started_at"
+		}
+		return invalid(field)
 	}
 	if report.SchemaVersion != "1.0" {
 		return Report{}, errors.New(T("cli.report.unsupported_schema", path, report.SchemaVersion))
 	}
+	if report.Tool.Name != "edc" {
+		return invalid("tool.name")
+	}
+	if strings.TrimSpace(report.Tool.Version) == "" {
+		return invalid("tool.version")
+	}
+	if strings.TrimSpace(report.Run.ID) == "" {
+		return invalid("run.id")
+	}
+	if report.Run.StartedAt.IsZero() {
+		return invalid("run.started_at")
+	}
+	if report.Run.DurationMS < 0 {
+		return invalid("run.duration_ms")
+	}
+	if _, ok := fields["results"]; !ok {
+		return invalid("results")
+	}
+	if value := strings.TrimSpace(string(fields["summary"])); value == "" || !strings.HasPrefix(value, "{") {
+		return invalid("summary")
+	}
+	for index, result := range report.Results {
+		prefix := fmt.Sprintf("results[%d].", index)
+		if strings.TrimSpace(result.Probe) == "" {
+			return invalid(prefix + "probe")
+		}
+		switch result.Status {
+		case StatusPass, StatusWarn, StatusFail, StatusSkip:
+		default:
+			return invalid(prefix + "status")
+		}
+		if result.DurationMS < 0 {
+			return invalid(prefix + "duration_ms")
+		}
+	}
+	if report.Summary.Pass < 0 || report.Summary.Warn < 0 || report.Summary.Fail < 0 || report.Summary.Skip < 0 || report.Summary != summarize(report.Results) {
+		return invalid("summary")
+	}
+
 	return report, nil
 }
 

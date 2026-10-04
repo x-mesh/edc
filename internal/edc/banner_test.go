@@ -66,7 +66,7 @@ func TestPrintVersionStaysMachineReadableOffTerminal(t *testing.T) {
 
 func TestPrintInfoStartsWithTheBanner(t *testing.T) {
 	var output strings.Builder
-	printInfo(&output, "1.2.3", hostDetails{Hostname: "host"}, nil, nil, nil, false)
+	printInfo(&output, "1.2.3", hostDetails{Hostname: "host"}, nil, nil, nil, false, false)
 	text := output.String()
 	if !strings.HasPrefix(text, bannerRows[0][0].stem) {
 		t.Fatalf("info must start with the banner: %q", strings.SplitN(text, "\n", 2)[0])

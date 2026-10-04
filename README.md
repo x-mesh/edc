@@ -208,6 +208,26 @@ The common options are `--timeout`, `--json <path|->`, `--verbose`, and `--redac
 
 `edc info` asks ipinfo.io for the public IP by default. The request stops after 3 seconds and the line disappears. Use `--public=false` to skip the request, `--timeout` to change the limit, and `-v` to print the cause of a failure.
 
+`edc info` also shows memory status, a process snapshot, and diagnostic support.
+
+The default output groups related values on one line. Use `-v` for kernel details, the memory calculation basis, and shared-page notes.
+
+On Linux, used memory is `MemTotal - MemAvailable`. Cache counters include `Cached`, `Buffers`, and reclaimable slab when present.
+
+On macOS, available memory is an estimate from free and inactive Mach pages. File-backed memory and physical compression appear separately.
+
+Memory detail counters can overlap. They do not measure memory pressure and must not be added together.
+
+The process snapshot shows observed process and thread counts, plus the three processes with the highest RSS. Thread counts show coverage.
+
+Diagnostic support tests process I/O access for the current process and PSI availability. Access to other PIDs can differ.
+
+The Linux eBPF check reads kernel BTF and effective capabilities. It does not load or attach programs.
+
+`prerequisites met` does not guarantee attachment. Unsupported features, absent permissions, and failed checks show their reasons.
+
+If memory or process collection fails, the command shows the error and returns exit code `1`.
+
 ### Name lookup
 
 ![edc dns lookup example.com prints the address list and edc dns config prints the resolver setup, both as PASS](docs/media/dns.gif)

@@ -66,6 +66,20 @@ func TestDarwinMemoryFromStatistics(t *testing.T) {
 	}
 }
 
+func TestInfoMemoryFromDarwinSeparatesPhysicalAndOriginalCompression(t *testing.T) {
+	stats := darwinVMStatistics64{FreeCount: 100, InactiveCount: 200, ExternalPageCount: 250, CompressorPageCount: 20, TotalUncompressedPagesInCompressor: 80, WireCount: 50}
+	memory, err := infoMemoryFromDarwin(stats, 16384, 1000*16384)
+	if err != nil || memory.Available != 300*16384 || memory.Details[0].Bytes != 250*16384 || memory.Details[1].Bytes != 50*16384 || memory.Details[2].Bytes != 20*16384 || memory.Details[3].Bytes != 80*16384 {
+		t.Fatalf("memory = %+v, %v", memory, err)
+	}
+	if _, err := infoMemoryFromDarwin(stats, 16384, 100*16384); err == nil {
+		t.Fatal("available memory above total must fail")
+	}
+	if _, err := infoMemoryFromDarwin(stats, 0, 1000); err == nil {
+		t.Fatal("unknown page size must fail")
+	}
+}
+
 // TestReadDarwinKernelStatistics는 구조체 offset이나 page 크기를 잘못 잡으면 page 합이 물리 memory와 크게 어긋나는 점으로 확인한다.
 // Rosetta에서 hw.pagesize를 쓰면 합이 1/4로 줄어든다.
 func TestReadDarwinKernelStatistics(t *testing.T) {

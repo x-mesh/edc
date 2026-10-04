@@ -12,10 +12,10 @@ Source docs/tape/_setup.tape
 Hide
 Set TypingSpeed 1ms
 # --json <path>는 terminal에 아무것도 쓰지 않으므로 Wait 대신 Sleep으로 기다립니다.
-Type "edc doctor --json before.json https://example.com"
+Type "edc doctor --redact --json before.json https://example.com"
 Enter
 Sleep 8s
-Type "edc doctor --json after.json https://example.com"
+Type "edc doctor --redact --json after.json https://example.com"
 Enter
 Sleep 8s
 Type "clear"

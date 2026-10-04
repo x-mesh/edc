@@ -242,7 +242,23 @@ Terminal and JSON output show actual IP addresses by default. Add `--redact` to 
 
 A failed probe shows the phase and the cause in an ERROR block. It returns exit code `1`.
 
-`edc watch -i 0.1 https://example.com` checks the page repeatedly until Ctrl-C. `-i` accepts seconds as a decimal (minimum `0.1`) or a duration such as `100ms`; `--duration 1m` stops automatically. Every sample prints HTTP status, body bytes read (up to 10 MiB), elapsed time, and available DNS/TCP/TLS/TTFB timings. The resolved IP set appears when it changes. The final summary includes min/avg/p95/max latency and the longest continuous failure. `--json <path|->` emits JSON Lines with a final summary. A failed sample makes the final exit code `1`.
+`edc watch -i 0.1 https://example.com` checks the page until Ctrl-C.
+
+`-i` accepts decimal seconds (minimum `0.1`) or a duration such as `100ms`. `--duration 1m` sets the observation duration.
+
+Each sample shows HTTP status, body bytes read (up to 10 MiB), elapsed time, and available DNS/TCP/TLS/TTFB times.
+
+If the resolved IP set changes, the output shows the new set.
+
+For completed samples, the final summary shows min/avg/p95/max latency and the longest continuous failure.
+
+`--json <path|->` emits JSON Lines with a final summary. The summary adds `observation_status` (`observed` or `no_samples`) and `stop_reason` (`duration` or `cancelled`).
+
+Without completed samples, the text summary states the stop reason and omits latency statistics. The target health remains unknown.
+
+Without completed samples, duration expiry returns exit code `2`, and cancellation returns `4`.
+
+With completed samples, a failed sample returns exit code `1`. Otherwise, the exit code is `0`, including after cancellation.
 
 `edc listen --watch` prints the current listeners once, then reports sockets opening, closing, or changing process. Change lines use reverse video in a terminal. It accepts the same interval and duration options; `--json` emits a snapshot, events, and a summary as JSON Lines.
 

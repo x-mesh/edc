@@ -46,6 +46,8 @@ observe:
       resource: "resource를 읽지 못했습니다: %v"
 
   watch:
+    no_samples_duration: "관측 시간이 끝날 때까지 완료한 표본이 없어 대상의 상태를 판단할 수 없습니다."
+    no_samples_cancelled: "표본을 완료하기 전에 관측을 취소하여 대상의 상태를 판단할 수 없습니다."
     interval_invalid: "interval은 초 단위 숫자(예: 0.1) 또는 Go duration이어야 합니다"
     interval_minimum: "interval은 최소 %s여야 합니다"
     options_invalid: "duration은 0 이상, 기대 HTTP status는 100-599여야 합니다"

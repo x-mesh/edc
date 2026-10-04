@@ -3,6 +3,7 @@ package edc
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -34,17 +35,19 @@ type watchSample struct {
 }
 
 type watchSummary struct {
-	Type             string `json:"type"`
-	Samples          int    `json:"samples"`
-	Pass             int    `json:"pass"`
-	Warn             int    `json:"warn"`
-	Fail             int    `json:"fail"`
-	DurationMS       int64  `json:"duration_ms"`
-	MinMS            int64  `json:"min_ms"`
-	AvgMS            int64  `json:"avg_ms"`
-	P95MS            int64  `json:"p95_ms"`
-	MaxMS            int64  `json:"max_ms"`
-	LongestFailureMS int64  `json:"longest_failure_ms"`
+	ObservationStatus string `json:"observation_status"`
+	StopReason        string `json:"stop_reason"`
+	Type              string `json:"type"`
+	Samples           int    `json:"samples"`
+	Pass              int    `json:"pass"`
+	Warn              int    `json:"warn"`
+	Fail              int    `json:"fail"`
+	DurationMS        int64  `json:"duration_ms"`
+	MinMS             int64  `json:"min_ms"`
+	AvgMS             int64  `json:"avg_ms"`
+	P95MS             int64  `json:"p95_ms"`
+	MaxMS             int64  `json:"max_ms"`
+	LongestFailureMS  int64  `json:"longest_failure_ms"`
 }
 
 func runWatch(args []string) int {
@@ -165,6 +168,14 @@ func streamWatch(ctx context.Context, writer io.Writer, interval, timeout time.D
 		case <-ticker.C:
 		}
 	}
+	summary.ObservationStatus = "observed"
+	if summary.Samples == 0 {
+		summary.ObservationStatus = "no_samples"
+	}
+	summary.StopReason = "cancelled"
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		summary.StopReason = "duration"
+	}
 	summary.DurationMS = time.Since(started).Milliseconds()
 	if !failureStart.IsZero() {
 		if elapsed := time.Since(failureStart).Milliseconds(); elapsed > summary.LongestFailureMS {
@@ -195,7 +206,17 @@ func streamWatch(ctx context.Context, writer io.Writer, interval, timeout time.D
 		}
 	} else {
 		fmt.Fprintln(writer, T("observe.watch.summary", summary.Samples, summary.Pass, summary.Warn, summary.Fail, time.Duration(summary.DurationMS)*time.Millisecond))
-		fmt.Fprintln(writer, T("observe.watch.latency_summary", summary.MinMS, summary.AvgMS, summary.P95MS, summary.MaxMS, time.Duration(summary.LongestFailureMS)*time.Millisecond))
+		if summary.Samples == 0 {
+			fmt.Fprintln(writer, T("observe.watch.no_samples_"+summary.StopReason))
+		} else {
+			fmt.Fprintln(writer, T("observe.watch.latency_summary", summary.MinMS, summary.AvgMS, summary.P95MS, summary.MaxMS, time.Duration(summary.LongestFailureMS)*time.Millisecond))
+		}
+	}
+	if summary.Samples == 0 {
+		if summary.StopReason == "duration" {
+			return 2
+		}
+		return 4
 	}
 	if summary.Fail > 0 {
 		return 1

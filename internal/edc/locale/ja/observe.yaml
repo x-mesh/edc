@@ -46,6 +46,8 @@ observe:
       resource: "resource を読めませんでした: %v"
 
   watch:
+    no_samples_duration: "観測時間が終了するまでに完了したサンプルがないため、対象の状態は不明です。"
+    no_samples_cancelled: "サンプルが完了する前に観測を中止したため、対象の状態は不明です。"
     interval_invalid: "interval は秒の数値(例 0.1)または Go duration で指定してください"
     interval_minimum: "interval は最低 %s です"
     options_invalid: "duration は 0 以上、期待 HTTP status は 100-599 です"

@@ -46,6 +46,8 @@ observe:
       resource: "edc did not read the resource values: %v"
 
   watch:
+    no_samples_duration: "No sample completed before the duration ended; target health is unknown."
+    no_samples_cancelled: "Observation cancelled before any sample completed; target health is unknown."
     interval_invalid: "interval must be seconds (for example 0.1) or a Go duration"
     interval_minimum: "interval must be at least %s"
     options_invalid: "duration must be nonnegative and expected HTTP status must be 100-599"

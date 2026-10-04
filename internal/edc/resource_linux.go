@@ -70,15 +70,14 @@ func readLinuxBootTime() time.Time {
 // 필터를 걸지 않을 때 비용이 늘지 않는다. 다른 사용자의 process는 root가 아니면 /proc/<pid>/io와 fd를 읽을 수 없어 비워 둔다.
 func newTopProcessEnricher() func([]topProcess) {
 	previous := map[int]linuxProcessIOSample{}
+	limits := newLinuxProcessLimits("/proc")
 	return func(processes []topProcess) {
 		now := time.Now()
+		limits.enrich(processes, now)
 		current := make(map[int]linuxProcessIOSample, len(processes))
 		for index := range processes {
 			process := &processes[index]
 			pid := strconv.Itoa(process.PID)
-			if entries, err := os.ReadDir("/proc/" + pid + "/fd"); err == nil {
-				process.FDs = len(entries)
-			}
 			data, err := os.ReadFile("/proc/" + pid + "/io")
 			if err != nil {
 				continue

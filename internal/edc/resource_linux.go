@@ -4,6 +4,7 @@ package edc
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -12,6 +13,9 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/cilium/ebpf"
+	"github.com/cilium/ebpf/btf"
 )
 
 // linuxClockTicks는 /proc이 CPU 시간을 세는 단위(USER_HZ)다. kernel HZ와 달리 userspace에는 100으로 고정돼 나온다.
@@ -238,6 +242,101 @@ func collectHostDetails() (hostDetails, error) {
 		details.RLimitSoft, details.RLimitHard = limits.Cur, limits.Max
 	}
 	return details, nil
+}
+
+func collectInfoMemory() (infoMemory, error) {
+	values, err := readMemInfo()
+	if err != nil {
+		return infoMemory{}, err
+	}
+	return infoMemoryFromLinux(values)
+}
+
+func infoMemoryFromLinux(values map[string]uint64) (infoMemory, error) {
+	total, available := values["MemTotal"], values["MemAvailable"]
+	if _, found := values["MemAvailable"]; !found || total == 0 || available > total {
+		return infoMemory{}, fmt.Errorf("missing or invalid MemTotal/MemAvailable")
+	}
+	memory := infoMemory{Total: total, Available: available, Basis: "used = MemTotal - MemAvailable; availability estimate, not pressure"}
+	for _, field := range []struct{ key, name string }{{"Cached", "Page cache (includes tmpfs/shmem)"}, {"Buffers", "Buffers"}, {"SReclaimable", "Reclaimable slab"}, {"Zswap", "Zswap compressed pool"}} {
+		if value, found := values[field.key]; found {
+			memory.Details = append(memory.Details, infoMemoryDetail{field.name, value})
+		}
+	}
+	return memory, nil
+}
+
+func collectInfoProcesses() ([]topProcess, error) {
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return nil, err
+	}
+	var processes []topProcess
+	for _, entry := range entries {
+		pid, err := strconv.Atoi(entry.Name())
+		if err != nil {
+			continue
+		}
+		data, err := os.ReadFile("/proc/" + entry.Name() + "/stat")
+		if err != nil {
+			continue
+		}
+		if stat, valid := parseLinuxProcessStat(pid, string(data)); valid {
+			processes = append(processes, topProcess{PID: pid, Command: stat.Command, RSS: stat.RSSPages * uint64(os.Getpagesize()), Threads: stat.Threads})
+		}
+	}
+	if len(processes) == 0 {
+		return nil, fmt.Errorf("no readable process statistics")
+	}
+	return processes, nil
+}
+
+func collectInfoCapabilities() []infoCapability {
+	ioSupport := infoCapability{"Process I/O", "available for current process", "/proc; access to other PIDs can differ"}
+	if data, err := os.ReadFile("/proc/self/io"); err != nil {
+		ioSupport.State, ioSupport.Detail = "unavailable", err.Error()
+	} else if _, valid := parseLinuxProcessIO(string(data)); !valid {
+		ioSupport.State, ioSupport.Detail = "unknown", "invalid /proc/self/io counters"
+	}
+	psi := infoCapability{"PSI", "available", "CPU, memory and I/O some avg10 can be read"}
+	for _, resource := range []string{"cpu", "memory", "io"} {
+		path := "/proc/pressure/" + resource
+		data, err := os.ReadFile(path)
+		if err != nil {
+			psi.State, psi.Detail = "unavailable", err.Error()
+			break
+		}
+		if _, valid := parsePressureAvg10(string(data)); !valid {
+			psi.State, psi.Detail = "unknown", "invalid PSI counters in "+path
+			break
+		}
+	}
+	return []infoCapability{ioSupport, psi, infoTopDetailCapability()}
+}
+
+func infoTopDetailCapability() infoCapability {
+	status := infoCapability{"CPU wait / I/O latency", "prerequisites met", "edc top -d; program attachment not tested"}
+	kernel, err := btf.LoadKernelSpec()
+	if err != nil {
+		status.State, status.Detail = "unknown", err.Error()
+		if errors.Is(err, ebpf.ErrNotSupported) {
+			status.State = "unsupported"
+		}
+		return status
+	}
+	if err := topProcessKernelSupported(kernel); err != nil {
+		status.State, status.Detail = "unsupported", err.Error()
+		return status
+	}
+	capabilities, err := effectiveCapabilities()
+	if err != nil {
+		status.State, status.Detail = "unknown", err.Error()
+		return status
+	}
+	if missing := missingCapabilities(bpfTraceCapabilities, capabilities); missing != "" {
+		status.State, status.Detail = "permission required", "missing "+missing
+	}
+	return status
 }
 
 func collectDefaultRoute() (string, string) {

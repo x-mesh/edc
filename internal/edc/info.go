@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"runtime"
+	"sort"
 	"strings"
 	"time"
 )
@@ -45,6 +46,9 @@ func runInfo(args []string, version string) int {
 	defaultInterface, gateway := collectDefaultRoute()
 	interfaces, interfaceErr := networkInterfaces(defaultInterface, gateway)
 	disks, diskErr := collectDisks()
+	memory, memoryErr := collectInfoMemory()
+	processes, processErr := collectInfoProcesses()
+	capabilities := collectInfoCapabilities()
 	var public *publicNetworkInfo
 	if *includePublic {
 		ctx, cancel := context.WithTimeout(context.Background(), *timeout)
@@ -59,28 +63,110 @@ func runInfo(args []string, version string) int {
 			public = &value
 		}
 	}
-	printInfo(os.Stdout, version, details, interfaces, disks, public, isTerminal(os.Stdout) && os.Getenv("NO_COLOR") == "")
-	if interfaceErr != nil || diskErr != nil {
+	printInfo(os.Stdout, version, details, interfaces, disks, public, isTerminal(os.Stdout) && os.Getenv("NO_COLOR") == "", verbose)
+	printInfoResources(os.Stdout, memory, memoryErr, processes, processErr, capabilities, verbose)
+	if interfaceErr != nil || diskErr != nil || memoryErr != nil || processErr != nil {
 		return 1
 	}
 	return 0
 }
 
-func printInfo(writer io.Writer, version string, details hostDetails, interfaces []interfaceDetails, disks []diskDetails, public *publicNetworkInfo, color bool) {
+type infoMemory struct {
+	Total, Available uint64
+	Basis            string
+	Details          []infoMemoryDetail
+}
+
+type infoMemoryDetail struct {
+	Name  string
+	Bytes uint64
+}
+
+type infoCapability struct {
+	Name, State, Detail string
+}
+
+func printInfoResources(writer io.Writer, memory infoMemory, memoryErr error, processes []topProcess, processErr error, capabilities []infoCapability, verbose bool) {
+	fmt.Fprintln(writer, "\nMemory Status")
+	if memoryErr != nil {
+		fmt.Fprintf(writer, "└── Unavailable: %s\n", infoSingleLine(memoryErr.Error()))
+	} else {
+		fmt.Fprintf(writer, "├── Used: %s / %s (%.2f%%) · Available: %s\n", formatBytes(memory.Total-memory.Available), formatBytes(memory.Total), float64(memory.Total-memory.Available)/float64(memory.Total)*100, formatBytes(memory.Available))
+		for index := 0; index < len(memory.Details); index += 2 {
+			parts := []string{memory.Details[index].Name + ": " + formatBytes(memory.Details[index].Bytes)}
+			if index+1 < len(memory.Details) {
+				parts = append(parts, memory.Details[index+1].Name+": "+formatBytes(memory.Details[index+1].Bytes))
+			}
+			branch := "├──"
+			if !verbose && index+2 >= len(memory.Details) {
+				branch = "└──"
+			}
+			fmt.Fprintf(writer, "%s %s\n", branch, strings.Join(parts, " · "))
+		}
+		if verbose {
+			fmt.Fprintf(writer, "├── Basis: %s\n└── Detail counters can overlap; they are not parts to add together.\n", memory.Basis)
+		}
+	}
+	fmt.Fprintln(writer, "\nProcess Snapshot")
+	if processErr != nil {
+		fmt.Fprintf(writer, "└── Unavailable: %s\n", infoSingleLine(processErr.Error()))
+	} else {
+		threads, known := 0, 0
+		for _, process := range processes {
+			if process.Threads > 0 {
+				threads, known = threads+process.Threads, known+1
+			}
+		}
+		fmt.Fprintf(writer, "├── Processes observed: %d", len(processes))
+		if known > 0 {
+			fmt.Fprintf(writer, " · Threads observed: %d (%d/%d processes)\n", threads, known, len(processes))
+		} else {
+			fmt.Fprintln(writer, " · Threads: unavailable")
+		}
+		fmt.Fprintln(writer, "└── Top RSS")
+		if verbose {
+			fmt.Fprintln(writer, "    Resident memory; shared pages can appear in multiple processes.")
+		}
+		ordered := append([]topProcess(nil), processes...)
+		sort.SliceStable(ordered, func(i, j int) bool { return ordered[i].RSS > ordered[j].RSS })
+		for _, process := range ordered[:min(3, len(ordered))] {
+			fmt.Fprintf(writer, "    PID %-7d %-28s %s\n", process.PID, topProcessName(process.Command, 28), formatProcessRSS(process.RSS))
+		}
+	}
+	fmt.Fprintln(writer, "\nDiagnostic Support")
+	for index, capability := range capabilities {
+		branch := "├──"
+		if index == len(capabilities)-1 {
+			branch = "└──"
+		}
+		fmt.Fprintf(writer, "%s %s: %s · %s\n", branch, capability.Name, capability.State, infoSingleLine(capability.Detail))
+	}
+}
+
+func infoSingleLine(value string) string {
+	return strings.Join(strings.Fields(value), " ")
+}
+
+func printInfo(writer io.Writer, version string, details hostDetails, interfaces []interfaceDetails, disks []diskDetails, public *publicNetworkInfo, color, verbose bool) {
 	// banner가 이미 버전을 담으므로 Version 줄을 따로 두지 않는다.
-	fmt.Fprintf(writer, "%s\nDescription : This command displays server resource information.\nAuthor      : %s\n\n%s\n\n", formatBanner(version, color), author, strings.Repeat("-", 50))
+	fmt.Fprintf(writer, "%s\n\n", formatBanner(version, color))
+	if verbose {
+		fmt.Fprintf(writer, "Description : This command displays server resource information.\nAuthor      : %s\n\n", author)
+	}
 	fmt.Fprintln(writer, "🖥️  System Information")
-	fmt.Fprintf(writer, "├── Hostname: %s\n├── System: %s\n├── OS: %s\n├── Version: %s\n├── Release: %s\n├── Machine: %s\n├── Processor: %s\n├── Python Version: %s\n├── Go Version: %s\n├── Model: %s\n├── Cores: %d\n├── Memory: %s\n", details.Hostname, details.System, details.OS, details.Version, details.Release, details.Machine, details.Processor, details.PythonVersion, runtime.Version(), details.Model, details.Cores, formatBytes(details.MemoryTotal))
-	fmt.Fprintf(writer, "├── Resource limit\n│   ├── Soft: %s\n│   └── Hard: %s\n", formatLimit(details.RLimitSoft), formatLimit(details.RLimitHard))
 	swapPercent := 0.0
 	if details.SwapTotal > 0 {
 		swapPercent = float64(details.SwapUsed) / float64(details.SwapTotal) * 100
 	}
-	fmt.Fprintf(writer, "├── Swap Usage: %s / %s (%.2f%%)\n├── CPU Load: %.2f, %.2f, %.2f (1, 5, 15 minutes)\n└── Uptime: %s\n\n", formatBytes(details.SwapUsed), formatBytes(details.SwapTotal), swapPercent, details.Load[0], details.Load[1], details.Load[2], formatDuration(details.Uptime))
+	fmt.Fprintf(writer, "├── Hostname: %s · %s · %s\n├── CPU: %s · %d cores · RAM %s\n├── Load: %.2f/%.2f/%.2f (1/5/15m) · Uptime: %s\n├── Runtime: Python %s · Go %s\n", details.Hostname, topHostOS(details), details.Machine, details.Model, details.Cores, formatBytes(details.MemoryTotal), details.Load[0], details.Load[1], details.Load[2], formatDuration(details.Uptime), details.PythonVersion, runtime.Version())
+	if verbose {
+		fmt.Fprintf(writer, "├── System: %s · Release: %s\n├── Processor: %s\n", details.System, details.Release, details.Processor)
+	}
+	fmt.Fprintf(writer, "└── Files (edc soft/hard): %s/%s · Swap: %s/%s (%.2f%%)\n\n", formatLimit(details.RLimitSoft), formatLimit(details.RLimitHard), formatBytes(details.SwapUsed), formatBytes(details.SwapTotal), swapPercent)
 	fmt.Fprintln(writer, "🛜 Network Interface")
 	// 조회하지 못하면 줄 자체를 빼서 없는 값을 설명하지 않는다.
 	if public != nil {
-		fmt.Fprintf(writer, "├── Public IP: %s\n│   ├── Region: %s, %s, %s, Timezone=%s\n│   └── ASN/ORG: %s\n", public.IP, public.Country, public.Region, public.City, public.Timezone, public.Org)
+		fmt.Fprintf(writer, "├── Public IP: %s · %s\n├── Region: %s, %s, %s · %s\n", public.IP, public.Org, public.City, public.Region, public.Country, public.Timezone)
 	}
 	fmt.Fprintln(writer, "└── Local IP")
 	for index, iface := range interfaces {

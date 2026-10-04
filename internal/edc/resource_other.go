@@ -245,6 +245,55 @@ func collectHostDetails() (hostDetails, error) {
 	return details, nil
 }
 
+func collectInfoMemory() (infoMemory, error) {
+	stats, err := readDarwinVMStatistics()
+	if err != nil {
+		return infoMemory{}, err
+	}
+	pageSize, err := darwinPageSize()
+	if err != nil {
+		return infoMemory{}, err
+	}
+	total, err := readDarwinMemorySize()
+	if err != nil {
+		return infoMemory{}, err
+	}
+	return infoMemoryFromDarwin(stats, pageSize, total)
+}
+
+func infoMemoryFromDarwin(stats darwinVMStatistics64, pageSize, total uint64) (infoMemory, error) {
+	available := (uint64(stats.FreeCount) + uint64(stats.InactiveCount)) * pageSize
+	if total == 0 || pageSize == 0 || available > total {
+		return infoMemory{}, fmt.Errorf("invalid Mach memory counters")
+	}
+	return infoMemory{Total: total, Available: available, Basis: "used = total - (free + inactive pages); availability estimate, not pressure",
+		Details: []infoMemoryDetail{
+			{"File-backed (non-swap)", uint64(stats.ExternalPageCount) * pageSize},
+			{"Wired", uint64(stats.WireCount) * pageSize},
+			{"Compressed physical", uint64(stats.CompressorPageCount) * pageSize},
+			{"Compressed original", stats.TotalUncompressedPagesInCompressor * pageSize},
+		}}, nil
+}
+
+func collectInfoProcesses() ([]topProcess, error) {
+	processes, valid := newTopProcessReader()()
+	if !valid {
+		return nil, fmt.Errorf("process list collection failed")
+	}
+	return processes, nil
+}
+
+func collectInfoCapabilities() []infoCapability {
+	ioSupport := infoCapability{"Process I/O", "available for current process", "libproc; access to other PIDs can differ"}
+	if _, err := readDarwinProcessRusage(os.Getpid()); err != nil {
+		ioSupport.State, ioSupport.Detail = "unavailable", err.Error()
+	}
+	return []infoCapability{ioSupport,
+		{"PSI", "unsupported", "Linux-only; no macOS pressure measurement here"},
+		{"CPU wait / I/O latency", "unsupported", "edc top -d requires Linux eBPF"},
+	}
+}
+
 func collectDefaultRoute() (string, string) {
 	output, _ := exec.Command("/sbin/route", "-n", "get", "default").Output()
 	var iface, gateway string

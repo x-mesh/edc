@@ -79,6 +79,7 @@ command:
       - "In a terminal, edc opens a dashboard. q quits, p pauses, +/- moves the interval."
       - "--count, --json, a pipe, or NO_COLOR gives the table instead."
       - "With --process, it opens the process view. 1 shows host columns, f returns."
+      - "f follows a signal: its view, then the busiest process. / filters, Esc clears."
   watch:
     summary: "Repeat an HTTP check until interrupted"
     option:

@@ -365,7 +365,9 @@ If stdin and stdout are terminals, `edc top` opens a full-screen dashboard. The 
 | `-` | make the interval shorter |
 | `1`, `c`, `m`, `d`, `n` | switch to all, CPU, memory, disk, or network columns |
 | `s` | switch to Linux pressure columns |
-| `f` | with `--process`, switch to the process view |
+| `f` | follow the first signal of the selected row: open its view, then focus the busiest process. With a process filter, switch to the process view |
+| `/` | type a process filter: a command name or a PID, comma-separated |
+| `Esc` | clear the process filter |
 | `↑`, `↓`, `PgUp`, `PgDn`, `End` | select an earlier row, move one screen, or return to the live row |
 | `Enter` | show details for the selected time |
 | `h` | show the load, CPU, iowait, and memory peaks from the last 60 seconds, each with its time |
@@ -427,6 +429,8 @@ Each line has `time`, `hostname`, `cores`, the network and disk rates in bytes p
 
 With `--process`, the dashboard shows a highlighted `PROCESS` bar under the title. It names the filter and the current values of the matched processes. When the terminal is narrow, the bar drops the last values first. The dashboard also opens the process view. Each row shows the matched processes at one sample. It shows the number of matches, their CPU%, memory (`rss`), threads, open files, and disk read and write per second. One core is 100 CPU%. With `--ebpf`, the row also shows the average run-queue wait and the average block I/O latency in milliseconds. A value that `edc` cannot read shows `—`. Press `1` for the host columns and `f` to return to the process view. `Enter` shows the busiest matches for the selected row.
 
+You can also choose a process while the dashboard runs. Select a row and press `f`. If the first signal is a host value, such as `await 65ms`, `f` opens the view for it. Press `f` again, or press it on a process signal, to focus the busiest process of that row by its PID. Press `/` to type a filter, and `Esc` to clear it. Rows from before a filter change show `—` in the process view, because they were not sampled with that filter.
+
 The filter runs before the list is cut to the busiest processes. A quiet process that matches stays in the list.
 
 The dashboard detail view shows two lines. The first line is the total over every match: count, CPU, RSS, threads, open file descriptors, and disk I/O. The second line lists the three busiest matches and `+N` for the rest. The `signal` column then reflects only the matches.
@@ -449,7 +453,7 @@ A field that `edc` cannot read is left out, not set to 0. On Linux, `fds` and th
 
 `-d` or `--detail` adds what `/proc` cannot give: how long the matched processes wait for a CPU and how long their block I/O takes. It needs `--process`, root or `CAP_BPF` and `CAP_PERFMON`, and kernel BTF. Without them, `edc top` stops with exit code `3` and says whether the host is unsupported or a capability is missing. It is tested on Linux 5.15 and 6.17. Linux 5.15 does not give `prev_state` to the `sched_switch` tracepoint, so on that kernel `edc` reads the task state instead.
 
-`--ebpf` is the same option. It stays for scripts that use the earlier name. The `PROCESS` bar and the process view then show the run-queue wait and the I/O latency.
+`--ebpf` is the same option. It stays for scripts that use the earlier name. In the dashboard, `-d` also works without `--process`. The values then start when you choose a process with `f` or `/`. The `PROCESS` bar and the process view then show the run-queue wait and the I/O latency.
 
 ```bash
 sudo ./bin/edc top --process output-mesh -d

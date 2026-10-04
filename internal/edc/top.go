@@ -65,7 +65,8 @@ func runTop(args []string, version string) int {
 		fmt.Fprintln(os.Stderr, T("observe.top.process_needs_view"))
 		return 2
 	}
-	if *ebpf && !filter.active() {
+	// 대시보드는 실행 중에 f나 /로 process를 고를 수 있으므로 -d만 줘도 된다. 표와 JSON은 고를 수 없다.
+	if *ebpf && !filter.active() && !dashboard {
 		fmt.Fprintln(os.Stderr, T("observe.top.ebpf_needs_process"))
 		return 2
 	}

@@ -328,3 +328,49 @@ func TestFormatListenTableDetailColumns(t *testing.T) {
 		t.Fatalf("-v가 줄 수를 바꿨다")
 	}
 }
+
+func TestListenBindingScope(t *testing.T) {
+	tests := []struct {
+		proto, address, want string
+	}{
+		{"tcp", "*", "all"}, {"udp", "0.0.0.0", "all"},
+		{"tcp", "::", "all"}, {"tcp", "::ffff:0.0.0.0", "all"},
+		{"tcp", "127.0.0.1", "loopback"}, {"tcp", "127.20.30.40", "loopback"},
+		{"tcp", "::1", "loopback"}, {"tcp", "::ffff:127.0.0.1", "loopback"},
+		{"udp", "192.0.2.10", "specific"}, {"tcp", "fe80::1%en0", "specific"},
+		{"tcp", "::1%lo0", "loopback"}, {"tcp", "", "unknown"},
+		{"tcp", "localhost", "unknown"}, {"tcp", "999.0.0.1", "unknown"},
+		{"tcp", "127.0.0.1:80", "unknown"}, {"other", "*", "unknown"},
+		{"unix", "/run/app.sock", "unix"}, {"unix", "", "unix"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.proto+"/"+tt.address, func(t *testing.T) {
+			if got := listenBindingScope(tt.proto, tt.address); got != tt.want {
+				t.Fatalf("scope = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestListenBindingParserFixtures(t *testing.T) {
+	lsof := "p42\ncapp\nf3\nPTCP\nn[::ffff:127.0.0.1]:80\nTST=LISTEN\nf4\nPUDP\nn*:53\nf5\ntunix\nn/run/app.sock\n"
+	ss := "tcp LISTEN 0 128 [::ffff:127.0.0.1]:80 *:*\nudp UNCONN 0 0 *:53 *:*\nunix LISTEN 0 128 /run/app.sock 1 * 0\n"
+	families := listenFamilies{TCP: true, UDP: true, Unix: true}
+	for name, parse := range map[string]func(string, listenFamilies) ([]listenSocket, int){
+		"lsof": parseLsofFields, "ss": parseSSRows,
+	} {
+		input := lsof
+		if name == "ss" {
+			input = ss
+		}
+		sockets, unparsed := parse(input, families)
+		if len(sockets) != 3 || unparsed != 0 {
+			t.Fatalf("%s parsed %d sockets, %d unread", name, len(sockets), unparsed)
+		}
+		for i, want := range []string{"loopback", "all", "unix"} {
+			if got := listenBindingScope(sockets[i].Proto, sockets[i].Address); got != want {
+				t.Fatalf("%s socket %d scope = %q, want %q", name, i, got, want)
+			}
+		}
+	}
+}

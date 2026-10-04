@@ -1,6 +1,7 @@
 package edc
 
 import (
+	"net/netip"
 	"os/user"
 	"sort"
 	"strconv"
@@ -33,6 +34,30 @@ type listenSocketKey struct {
 	Proto, Address string
 	Port           int
 	Process, PID   string
+}
+
+func listenBindingScope(proto, address string) string {
+	if proto == "unix" {
+		return "unix"
+	}
+	if proto != "tcp" && proto != "udp" {
+		return "unknown"
+	}
+	if address == "*" {
+		return "all"
+	}
+	ip, err := netip.ParseAddr(address)
+	if err != nil {
+		return "unknown"
+	}
+	ip = ip.Unmap()
+	if ip.IsUnspecified() {
+		return "all"
+	}
+	if ip.IsLoopback() {
+		return "loopback"
+	}
+	return "specific"
 }
 
 func listenKeyOf(socket listenSocket) listenSocketKey {

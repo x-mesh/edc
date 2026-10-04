@@ -3,6 +3,7 @@ package edc
 import (
 	"fmt"
 	"io"
+	"os"
 	"strings"
 	"unicode"
 
@@ -62,4 +63,17 @@ func doctorGuidanceExcerpt(value string) string {
 		return string(runes[:doctorGuidanceExcerptLimit-1]) + "…"
 	}
 	return clean
+}
+
+func emitDoctor(options commonOptions, report Report) int {
+	code := emit(options, report)
+	if options.jsonPath == "" {
+		printDoctorGuidance(os.Stdout, report)
+	}
+	return code
+}
+
+func printDoctorTail(writer io.Writer, report Report, verbose, color bool) {
+	printResultTail(writer, report.Results, verbose, color)
+	printDoctorGuidance(writer, report)
 }

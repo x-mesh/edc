@@ -224,7 +224,13 @@ A failed probe shows the phase and the cause in an ERROR block. It returns exit 
 
 `edc watch -i 0.1 https://example.com` checks the page repeatedly until Ctrl-C. `-i` accepts seconds as a decimal (minimum `0.1`) or a duration such as `100ms`; `--duration 1m` stops automatically. Every sample prints HTTP status, body bytes read (up to 10 MiB), elapsed time, and available DNS/TCP/TLS/TTFB timings. The resolved IP set appears when it changes. The final summary includes min/avg/p95/max latency and the longest continuous failure. `--json <path|->` emits JSON Lines with a final summary. A failed sample makes the final exit code `1`.
 
-`edc listen --watch` prints the current listeners once, then reports sockets opening, closing, or changing process. Change lines use reverse video in a terminal. It accepts the same interval and duration options; `--json` emits a snapshot, events, and a summary as JSON Lines.
+`edc listen --watch` prints the current listeners once, then reports socket creation, closure, or process changes. Change lines use reverse video in a terminal. It accepts the same interval and duration options. The `--json` option emits a snapshot, events, and a summary as JSON Lines.
+
+The SCOPE column and watch events identify the socket's bound address: loopback, all interfaces, specific address, Unix, or unknown.
+
+For wildcard addresses, all interfaces refers to the observed address family. The scope does not establish external access, firewall rules, or IPv6 dual-stack behavior.
+
+On macOS, lsof provides no Unix socket state. The Unix socket list is approximate.
 
 ### Route and interfaces
 

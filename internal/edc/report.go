@@ -91,6 +91,36 @@ func loadReport(path string) (Report, error) {
 	if err := json.Unmarshal(data, &fields); err != nil || fields == nil {
 		return invalid("JSON object")
 	}
+	var rawRun map[string]json.RawMessage
+	if err := json.Unmarshal(fields["run"], &rawRun); err != nil {
+		return invalid("run")
+	}
+	if rawTime, ok := rawRun["started_at"]; ok {
+		var started time.Time
+		if err := json.Unmarshal(rawTime, &started); err != nil {
+			return invalid("run.started_at")
+		}
+	}
+	var rawResults []json.RawMessage
+	if raw, ok := fields["results"]; ok {
+		if err := json.Unmarshal(raw, &rawResults); err != nil {
+			return invalid("results")
+		}
+	}
+	for index, raw := range rawResults {
+		var result Result
+		if err := json.Unmarshal(raw, &result); err != nil {
+			field := fmt.Sprintf("results[%d]", index)
+			var typeError *json.UnmarshalTypeError
+			if errors.As(err, &typeError) && typeError.Field != "" {
+				field += "." + typeError.Field
+			}
+			if strings.Contains(err.Error(), "parsing time") {
+				field += ".started_at"
+			}
+			return invalid(field)
+		}
+	}
 	var report Report
 	if err := json.Unmarshal(data, &report); err != nil {
 		field := "JSON"

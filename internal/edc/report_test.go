@@ -330,3 +330,20 @@ func TestReportDiffDifferentTargetsContinue(t *testing.T) {
 		t.Fatalf("diff = %#v", diff)
 	}
 }
+
+func TestLoadReportErrorsIdentifyResultIndex(t *testing.T) {
+	report := buildReport("test", time.Now(), nil, []Result{{Probe: "one", Status: StatusPass}, {Probe: "two", Status: StatusPass}}, false)
+	data, _ := json.Marshal(report)
+	for _, field := range []string{"started_at", "duration_ms"} {
+		var value map[string]interface{}
+		json.Unmarshal(data, &value)
+		value["results"].([]interface{})[1].(map[string]interface{})[field] = "invalid"
+		encoded, _ := json.Marshal(value)
+		path := filepath.Join(t.TempDir(), "invalid.json")
+		os.WriteFile(path, encoded, 0600)
+		_, err := loadReport(path)
+		if err == nil || !strings.Contains(err.Error(), "results[1]."+field) || strings.Contains(err.Error(), "\"invalid\"") {
+			t.Fatalf("error = %v", err)
+		}
+	}
+}

@@ -188,7 +188,7 @@ func runDoctor(args []string, version string) int {
 		return runDoctorLive(deadline, cancel, probes, options, version, started, input, target)
 	}
 	results := runParallel(deadline, doctorProbeFuncs(probes))
-	return emit(options, buildReport(version, started, target, results, options.redact))
+	return emitDoctor(options, buildReport(version, started, target, results, options.redact))
 }
 
 func runDNS(args []string, version string) int {

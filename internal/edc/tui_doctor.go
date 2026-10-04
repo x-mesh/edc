@@ -42,7 +42,7 @@ func runDoctorLive(ctx context.Context, cancel context.CancelFunc, probes []doct
 	if err != nil {
 		fmt.Fprintln(os.Stderr, T("observe.live.start_failed", err))
 		results := runParallel(ctx, doctorProbeFuncs(probes))
-		return emit(options, buildReport(version, started, targetInfo, results, options.redact))
+		return emitDoctor(options, buildReport(version, started, targetInfo, results, options.redact))
 	}
 	results := runParallelWith(ctx, doctorProbeFuncs(probes), func(index int, result Result) {
 		live.send(doctorResultMsg{name: probes[index].name, result: result})
@@ -53,7 +53,7 @@ func runDoctorLive(ctx context.Context, cancel context.CancelFunc, probes []doct
 		fmt.Fprintln(os.Stderr, T("observe.live.exit_error", err))
 	}
 	report := buildReport(version, started, targetInfo, results, options.redact)
-	printResultTail(os.Stdout, report.Results, options.verbose, true)
+	printDoctorTail(os.Stdout, report, options.verbose, true)
 	if cancelled {
 		fmt.Fprintln(os.Stderr, errDoctorCancelled)
 		return 4

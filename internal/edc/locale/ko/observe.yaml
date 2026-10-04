@@ -124,6 +124,10 @@ observe:
     trace_missing: "traceroute 또는 tracepath 명령을 찾을 수 없습니다"
 
   doctor:
+    guidance_heading: "후속 조사 제안 (순서는 원인 관계를 뜻하지 않습니다)"
+    guidance_manual: "HOST, HOST:PORT, URL을 조사할 대상으로 바꾼 뒤 명령을 직접 실행하세요."
+    guidance_stage: "%s [%s]%s"
+    guidance_evidence: "  관측 근거: %s"
     cancelled: "진단을 취소했습니다"
     completed: "%d/%d 완료"
     cancelling: "취소 중, 실행 중인 probe를 종료합니다"

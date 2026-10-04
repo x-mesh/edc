@@ -24,7 +24,7 @@ var topBPFTracepoints = []string{"sched_wakeup", "sched_wakeup_new", "sched_swit
 
 // topProcessBPFPrerequisites는 kernel이 이 program을 지원하는지 먼저 보고, 그다음 권한을 본다.
 func topProcessBPFPrerequisites() error {
-	return traceBPFPrerequisites("top --ebpf", topProcessKernelSupported)
+	return traceBPFPrerequisites("top --detail", topProcessKernelSupported)
 }
 
 func topProcessKernelSupported(spec *btf.Spec) error {

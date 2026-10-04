@@ -23,6 +23,9 @@ func runTop(args []string, version string) int {
 	noHeader := set.Bool("no-header", configuredBool(config.NoHeader, false), T("command.top.option.no_header"))
 	processValue := set.String("process", "", T("command.top.option.process"))
 	ebpf := set.Bool("ebpf", false, T("command.top.option.ebpf"))
+	// -d와 --detail은 사용자에게 보이는 이름이다. v0.28.0의 --ebpf도 같은 값으로 계속 받는다.
+	set.BoolVar(ebpf, "detail", false, T("command.top.option.detail"))
+	set.BoolVar(ebpf, "d", false, T("command.top.option.detail"))
 	jsonPath := set.String("json", configuredStringFallback(config.JSON, activeConfig.Defaults.Common.JSON, ""), T("command.top.option.json"))
 	if err := set.Parse(args); err != nil {
 		return 2

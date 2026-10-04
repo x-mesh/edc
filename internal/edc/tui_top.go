@@ -302,13 +302,14 @@ func (model topModel) selectedRow() (topDashboardRow, bool) {
 // bodyLines는 표 본문에 쓸 수 있는 줄 수다. View와 PgUp·PgDn이 같은 값을 써서 한 화면씩 넘긴다.
 func (model topModel) bodyLines() int {
 	headers := len(topDashboardHeaders(model.view, max(topTableWidth, model.width)))
-	return max(1, model.height-1-headers-len(model.panelLines())-len(model.statusLines()))
+	return max(1, model.height-1-len(model.processBanner())-headers-len(model.panelLines())-len(model.statusLines()))
 }
 
 func (model topModel) View() tea.View {
 	// 창 크기를 받기 전(width 0)이나 80열보다 좁을 때도 80열 표를 그리고 넘치는 부분은 renderer가 자른다.
 	width := max(topTableWidth, model.width)
-	lines := append([]string{model.dashboardTitle()}, topDashboardHeaders(model.view, width)...)
+	lines := append([]string{model.dashboardTitle()}, model.processBanner()...)
+	lines = append(lines, topDashboardHeaders(model.view, width)...)
 	panel, status := model.panelLines(), model.statusLines()
 	bodyLines := model.bodyLines()
 	start := max(0, len(model.rows)-bodyLines)
@@ -370,12 +371,8 @@ func (model topModel) dashboardTitle() string {
 		{fmt.Sprintf("%d cores", model.details.Cores), 0},
 		{topMemorySize(model.details.MemoryTotal), 2},
 	}
-	// "all latest"를 버전으로 읽는 일이 없게 보기 이름 앞에 view를 붙인다.
-	filter := ""
-	if model.processFilter.active() {
-		filter = "process " + model.processFilter.String()
-	}
-	rightParts := []titlePart{{"view " + string(model.view), 0}, {state, 0}, {filter, 1}, {version, 3}}
+	// "all latest"를 버전으로 읽는 일이 없게 보기 이름 앞에 view를 붙인다. 필터는 바로 아래 배너가 보인다.
+	rightParts := []titlePart{{"view " + string(model.view), 0}, {state, 0}, {version, 3}}
 	join := func(parts []titlePart, priority int) string {
 		texts := []string{}
 		for _, part := range parts {
@@ -1072,6 +1069,61 @@ func topMatchDetail(processes []topProcess, total topProcessTotal, valid bool) [
 		lines = append(lines, "  "+topBPFDetail(*total.BPF))
 	}
 	return lines
+}
+
+// topBannerStyle은 process 배너의 굵은 반전 표시다. 배너가 terminal 폭을 모두 채워 한 덩어리로 보인다.
+const topBannerStyle = "\033[1;7m"
+
+// processBanner는 --process에 맞은 process 묶음의 값을 제목 바로 아래에 크게 보인다. 선택한 행이 있으면 그 시점의 값이다.
+// 폭이 모자라면 뒤의 항목부터 뺀다. -d로 얻는 대기와 지연을 디스크보다 앞에 둔다.
+func (model topModel) processBanner() []string {
+	if !model.processFilter.active() {
+		return nil
+	}
+	width := max(topTableWidth, model.width)
+	var parts []string
+	row, ok := model.selectedRow()
+	switch {
+	case !ok || !row.processesValid:
+		parts = []string{"waiting for a sample"}
+	case row.processTotal.Count == 0:
+		parts = []string{"no match"}
+	default:
+		total := row.processTotal
+		parts = []string{fmt.Sprintf("%d matched", total.Count), fmt.Sprintf("cpu %.0f%%", total.CPU), "rss " + formatProcessRSS(total.RSS)}
+		if bpf := total.BPF; bpf != nil {
+			if average, ok := topBPFAverageMS(bpf.RunqSumNS, bpf.RunqCount); ok {
+				parts = append(parts, fmt.Sprintf("runq %.2fms", average))
+			}
+			if average, ok := topBPFAverageMS(bpf.IOSumNS, bpf.IOCount); ok {
+				parts = append(parts, fmt.Sprintf("io %.2fms", average))
+			}
+		}
+		fds, read, write, diskKnown := topMatchIO(row.processes)
+		if diskKnown {
+			parts = append(parts, fmt.Sprintf("disk r %s w %s", formatRate(read), formatRate(write)))
+		}
+		if total.Threads > 0 {
+			parts = append(parts, fmt.Sprintf("thr %d", total.Threads))
+		}
+		if fds > 0 {
+			parts = append(parts, fmt.Sprintf("fds %d", fds))
+		}
+	}
+	line := " PROCESS " + model.processFilter.String()
+	for _, part := range parts {
+		next := line + " · " + part
+		if topDisplayWidth(next)+1 > width {
+			break
+		}
+		line = next
+	}
+	line = topDashboardFitWidth(line, width)
+	line += strings.Repeat(" ", max(0, width-topDisplayWidth(line)))
+	if model.limits.color {
+		line = topBannerStyle + line + topColorReset
+	}
+	return []string{line}
 }
 
 // topMatchIO는 목록에 남은 process의 fd 수와 디스크 rate를 더한다. 이 값은 남은 process만 읽으므로 합도 그 범위다.

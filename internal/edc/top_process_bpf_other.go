@@ -8,5 +8,5 @@ import (
 )
 
 func startTopProcessBPF() (topBPFObserver, func(), error) {
-	return nil, nil, fmt.Errorf("top --ebpf requires Linux, not %s", runtime.GOOS)
+	return nil, nil, fmt.Errorf("top --detail requires Linux, not %s", runtime.GOOS)
 }

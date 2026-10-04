@@ -425,7 +425,7 @@ Each line has `time`, `hostname`, `cores`, the network and disk rates in bytes p
 ./bin/edc top --process 4321,worker --json /tmp/edc-host.jsonl
 ```
 
-With `--process`, the dashboard opens the process view. Each row shows the matched processes at one sample. It shows the number of matches, their CPU%, memory (`rss`), threads, open files, and disk read and write per second. One core is 100 CPU%. With `--ebpf`, the row also shows the average run-queue wait and the average block I/O latency in milliseconds. A value that `edc` cannot read shows `—`. Press `1` for the host columns and `f` to return to the process view. `Enter` shows the busiest matches for the selected row.
+With `--process`, the dashboard shows a highlighted `PROCESS` bar under the title. It names the filter and the current values of the matched processes. When the terminal is narrow, the bar drops the last values first. The dashboard also opens the process view. Each row shows the matched processes at one sample. It shows the number of matches, their CPU%, memory (`rss`), threads, open files, and disk read and write per second. One core is 100 CPU%. With `--ebpf`, the row also shows the average run-queue wait and the average block I/O latency in milliseconds. A value that `edc` cannot read shows `—`. Press `1` for the host columns and `f` to return to the process view. `Enter` shows the busiest matches for the selected row.
 
 The filter runs before the list is cut to the busiest processes. A quiet process that matches stays in the list.
 
@@ -445,13 +445,15 @@ A field that `edc` cannot read is left out, not set to 0. On Linux, `fds` and th
 
 `--process` needs the dashboard or `--json`. The table has no process column, so `edc top --process x --count 5` stops with exit code `2`.
 
-### eBPF detail (Linux)
+### CPU wait and I/O latency with `-d` (Linux)
 
-`--ebpf` adds what `/proc` cannot give: how long the matched processes wait for a CPU and how long their block I/O takes. It needs `--process`, root or `CAP_BPF` and `CAP_PERFMON`, and kernel BTF. Without them, `edc top` stops with exit code `3` and says whether the host is unsupported or a capability is missing. It is tested on Linux 5.15 and 6.17. Linux 5.15 does not give `prev_state` to the `sched_switch` tracepoint, so on that kernel `edc` reads the task state instead.
+`-d` or `--detail` adds what `/proc` cannot give: how long the matched processes wait for a CPU and how long their block I/O takes. It needs `--process`, root or `CAP_BPF` and `CAP_PERFMON`, and kernel BTF. Without them, `edc top` stops with exit code `3` and says whether the host is unsupported or a capability is missing. It is tested on Linux 5.15 and 6.17. Linux 5.15 does not give `prev_state` to the `sched_switch` tracepoint, so on that kernel `edc` reads the task state instead.
+
+`--ebpf` is the same option. It stays for scripts that use the earlier name. The `PROCESS` bar and the process view then show the run-queue wait and the I/O latency.
 
 ```bash
-sudo ./bin/edc top --process output-mesh --ebpf
-sudo ./bin/edc top --process output-mesh --ebpf --json /tmp/edc-host.jsonl
+sudo ./bin/edc top --process output-mesh -d
+sudo ./bin/edc top --process output-mesh -d --json /tmp/edc-host.jsonl
 ```
 
 The dashboard adds a third line to the detail view: `ebpf 1s · runq 7584 avg 5.80ms p95 <16.384ms · io 704 avg 0.07ms p95 <0.256ms`. With `--json`, each process and `process_total` get an `ebpf` object:

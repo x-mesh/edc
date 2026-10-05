@@ -6,7 +6,7 @@
 
 An incident starts with one question: is the fault here, in the network, or at the far end? `edc` answers it with one command. It runs DNS, TCP, TLS, HTTP, route, ping, interface, and socket probes in one pass, and every probe prints the same result format. It also reports host resources and host information on Linux and macOS, and it runs macOS `networkQuality`.
 
-Every command is read-only. `edc` finds the fault and stops there. It runs no DNS flush, no interface reset, and no firewall change, so it stays safe on a production host.
+Diagnostic commands are read-only. `watch fs` can execute commands explicitly configured with `--exec` or `--rules`. Observation alone finds the fault and stops there. It runs no DNS flush, no interface reset, and no firewall change, so it stays safe on a production host.
 
 ![edc doctor https://example.com runs nine probes in order and prints a 9 pass summary](docs/media/doctor.gif)
 
@@ -208,7 +208,7 @@ The command also creates the parent for the legacy recommended `edc.log` path.
 ./bin/edc quality --timeout 60s
 
 # repeat a page check; omit --duration to run until Ctrl-C
-./bin/edc watch -i 0.1 --duration 10s https://example.com
+./bin/edc watch http -i 0.1 --duration 10s https://example.com
 
 # which region is near, and what shape is this network
 ./bin/edc where
@@ -261,7 +261,7 @@ Terminal and JSON output show actual IP addresses by default. Add `--redact` to 
 
 A failed probe shows the phase and the cause in an ERROR block. It returns exit code `1`.
 
-`edc watch -i 0.1 https://example.com` checks the page until Ctrl-C.
+`edc watch http -i 0.1 https://example.com` checks the page until Ctrl-C.
 
 `-i` accepts decimal seconds (minimum `0.1`) or a duration such as `100ms`. `--duration 1m` sets the observation duration.
 
@@ -286,6 +286,54 @@ The SCOPE column and watch events identify the socket's bound address: loopback,
 For wildcard addresses, all interfaces refers to the observed address family. The scope does not establish external access, firewall rules, or IPv6 dual-stack behavior.
 
 On macOS, lsof provides no Unix socket state. The Unix socket list is approximate.
+
+### File watching and actions (Linux and macOS)
+
+`edc watch fs` observes changes directly below the current directory by default. Use `--recursive` for subdirectories, including newly created or moved-in directories. Existing files do not produce startup create events. Directory symlinks are not followed.
+
+```bash
+edc watch fs
+edc watch fs ./src --recursive
+edc watch fs --event create --match text.txt --exec 'git-kit pull'
+edc watch fs ./src --recursive --event modify --match '**/*.go' --exec 'go test ./...'
+edc watch fs --rules docs/examples/watch.yaml --dry-run
+edc watch fs --duration 1m --json events.jsonl
+```
+
+Events are `create`, `modify`, `remove`, and `rename`. A rename reports the old path; the new name can produce a create event inside the watched scope. Reads/access and metadata-only changes are excluded. `--event` accepts a comma-separated list. Globs are relative to the watch root: `*.go` matches direct children, and `**/*.go` matches any depth. Watching those deeper paths also requires `--recursive`.
+
+`.git/**` is excluded by default. Repeat `--exclude 'build/**'` to add exclusions. The JSON output file and regular files connected to stdout are excluded to avoid output feedback. `--event` and `--match` filter both event output and rule actions. There is no default action.
+
+Rules use one strict YAML document. With no `directory`, the current working directory is watched. An explicit `directory` is relative to the rules file; a CLI directory overrides it. A rule's `cwd` is relative to the watch root and defaults to that root.
+
+```yaml
+recursive: true
+exclude: [build/**]
+rules:
+  - name: pull-on-trigger
+    events: [create]
+    match: text.txt
+    command: [git-kit, pull]
+    debounce: 200ms
+    timeout: 30s
+  - name: test-on-go-change
+    events: [create, modify]
+    match: "**/*.go"
+    command: [go, test, ./...]
+    debounce: 500ms
+```
+
+```bash
+edc watch fs --rules watch.yaml
+```
+
+`--exec` uses `/bin/sh -c`; YAML `command` executes argv directly. Shell aliases are not loaded. File paths are not interpolated into commands. Actions receive `EDC_WATCH_ROOT` (absolute), `EDC_WATCH_PATH` (relative), `EDC_WATCH_EVENT`, and `EDC_WATCH_RULE`. Quote shell variables such as `"$EDC_WATCH_PATH"`.
+
+Actions run serially across all rules. The default debounce is 200ms, coalescing each rule's events to its latest event. Events during an action are coalesced into one pending action per rule and run after the active action ends. `--dry-run` reports matches without execution. Actions that change matching files can trigger themselves again; narrow the match or exclude generated paths.
+
+Actions receive no stdin. Their default timeout is 30s. `--debounce` and `--timeout` supply defaults for rules without their own values. Combined stdout/stderr is capped at 64 KiB. Failures and timeouts do not stop watching, but produce final exit code `1`. `Ctrl-C` or the watch duration ends the active action's process group and discards pending actions. A normal observation with no events exits `0`; option/output errors exit `2`. Removing or renaming the root, watcher errors, and event overflow stop observation with an error.
+
+JSON Lines uses `ready`, `event`, `action_start`, `action_result`, and `summary`. Child output stays inside `action_result.output`. This watches local filesystems; save operations can coalesce or generate multiple events. It is not a filesystem audit log.
 
 ### Route and interfaces
 

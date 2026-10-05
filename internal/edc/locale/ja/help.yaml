@@ -82,13 +82,15 @@ command:
       - "--process では process 表示で開きます。1 で host、f で戻ります。"
       - "f で signal を追跡 (表示→最も忙しい process)。/ で絞り込み、Esc で解除。"
   watch:
-    summary: "中断するまで HTTP の状態を繰り返し確認"
+    summary: "HTTP・ファイル変更の観測と条件付きaction実行"
     option:
       interval: "sample 間隔(秒)、最小 0.1"
       duration: "指定時間で終了。省略時は Ctrl-C まで実行"
     notes:
-      - "HTTP status、body byte、所要時間を毎回表示します。"
-      - "--json は sample ごとに JSON 1 行と最後に要約を書きます。"
+      - "HTTP観測はwatch httpで実行します。従来のwatch URL形式も利用できます。"
+      - "watch fsは既定で現在のディレクトリを監視します。"
+      - "ファイルイベントはcreate,modify,remove,renameです。読み取りは検出しません。"
+      - "--execまたは--rulesでcommandを実行します。"
   info:
     summary: "system、network、disk の情報"
     option:

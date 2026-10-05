@@ -82,13 +82,15 @@ command:
       - "--process를 주면 process 보기로 엽니다. 1은 host 열, f는 다시 process."
       - "f는 signal을 따라감: 그 보기, 다음은 가장 바쁜 process. / 필터, Esc 해제."
   watch:
-    summary: "중단할 때까지 HTTP 상태 반복 관측"
+    summary: "HTTP·파일 변경 관측과 조건별 action 실행"
     option:
       interval: "sample 간격(초), 최소 0.1"
       duration: "지정한 시간이 지나면 종료; 생략하면 Ctrl-C까지 실행"
     notes:
-      - "매번 HTTP status, body byte, 소요 시간을 출력합니다."
-      - "--json은 sample마다 JSON 한 줄과 마지막 요약을 씁니다."
+      - "HTTP 관측은 watch http로 실행합니다. 기존 watch URL 형식도 지원합니다."
+      - "watch fs는 기본으로 현재 디렉터리를 감시합니다."
+      - "파일 이벤트는 create,modify,remove,rename입니다. 파일 읽기는 감지하지 않습니다."
+      - "--exec나 --rules를 지정하면 커맨드를 실행합니다."
   info:
     summary: "system, network, disk 정보"
     option:

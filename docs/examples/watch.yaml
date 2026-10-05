@@ -1,0 +1,14 @@
+recursive: true
+exclude: [build/**]
+rules:
+  - name: pull-on-trigger
+    events: [create]
+    match: text.txt
+    command: [git-kit, pull]
+    debounce: 200ms
+    timeout: 30s
+  - name: test-on-go-change
+    events: [create, modify]
+    match: "**/*.go"
+    command: [go, test, ./...]
+    debounce: 500ms

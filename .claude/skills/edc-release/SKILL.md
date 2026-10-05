@@ -70,6 +70,10 @@ These four must agree. If one changes, check the others.
     EDC_VERSION=<previous> BINDIR=/tmp/edc-old sh install.sh
     /tmp/edc-old/edc update --check
     ```
+11. Check that your own install is still there. Before this fix, `install.sh` deleted `~/.local/bin/edc` whenever `BINDIR` pointed elsewhere, so steps 9 and 10 removed the copy on a macOS host. Keep the installer output whole; a `removed old` line means the side install touched the real one.
+    ```bash
+    command -v edc && edc version
+    ```
 
 ## Release notes
 

@@ -23,6 +23,7 @@ const (
 var (
 	errQualityLoadStatus      = errors.New("load request failed")
 	errQualityProbeIncomplete = errors.New("probe finished without connection timings")
+	errQualityProbeStatus     = errors.New("probe request failed")
 )
 
 type nativeQualityOutcome int
@@ -118,7 +119,7 @@ func (e *responsivenessEngine) Run(ctx context.Context) (nativeQualityReport, na
 	report := nativeQualityReport{ConfigURL: e.configURL}
 	e.flows = map[loadDirection]int{}
 	runEnd := time.Now().Add(e.params.MaxRun)
-	if deadline, ok := ctx.Deadline(); ok && deadline.Add(-e.params.FinalizeReserve).Before(runEnd) {
+	if deadline, ok := ctx.Deadline(); ok {
 		runEnd = deadline.Add(-e.params.FinalizeReserve)
 	}
 	runCtx, cancelRun := context.WithDeadline(ctx, runEnd)
@@ -169,7 +170,7 @@ func (e *responsivenessEngine) Run(ctx context.Context) (nativeQualityReport, na
 			return report, nativeOutcomeTimeout, ctx.Err()
 		}
 		return report, nativeOutcomeTimeout, errors.New(T("observe.quality.error.no_data"))
-	case ctx.Err() != nil:
+	case ctx.Err() != nil, progress.completed < e.params.MAD:
 		return report, nativeOutcomePartial, nil
 	default:
 		return report, nativeOutcomePass, nil
@@ -248,7 +249,6 @@ func (e *responsivenessEngine) loadPhase(ctx context.Context, abort context.Canc
 			rpmAverages = append(rpmAverages, rpm)
 		}
 		if downloadStable && uploadStable && stable(rpmAverages, e.params.MAD, e.params.SDT) {
-			snapshot()
 			progress.stable = true
 			return progress
 		}
@@ -385,6 +385,7 @@ func (e *responsivenessEngine) launchProbes(ctx context.Context, url string) {
 		case <-timer.C:
 		}
 		e.mu.Lock()
+		interval := e.interval
 		selfAvailable := !e.selfUnavailable && len(e.transports) > 0
 		var selfTransport *http.Transport
 		if selfAvailable {
@@ -400,9 +401,9 @@ func (e *responsivenessEngine) launchProbes(ctx context.Context, url string) {
 			continue
 		}
 		e.mu.Unlock()
-		e.startProbe(func() { e.runForeignProbe(ctx, url) })
+		e.startProbe(func() { e.runForeignProbe(ctx, url, interval) })
 		if selfAvailable {
-			e.startProbe(func() { e.runSelfProbe(ctx, selfTransport, url) })
+			e.startProbe(func() { e.runSelfProbe(ctx, selfTransport, url, interval) })
 		}
 	}
 }
@@ -421,7 +422,8 @@ func (e *responsivenessEngine) startProbe(probe func()) {
 	})
 }
 
-func (e *responsivenessEngine) runForeignProbe(ctx context.Context, url string) {
+// 표본은 probe를 띄운 interval에 넣는다. 응답이 tick을 넘겨도 그 부하 조건에서 잰 값이기 때문이다.
+func (e *responsivenessEngine) runForeignProbe(ctx context.Context, url string, interval int) {
 	sample, err := e.foreignProbe(ctx, url)
 	if err != nil {
 		return
@@ -429,7 +431,7 @@ func (e *responsivenessEngine) runForeignProbe(ctx context.Context, url string) 
 	e.noteLocal(sample.local)
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	current := &e.samples[e.interval]
+	current := &e.samples[interval]
 	current.TCPForeign = append(current.TCPForeign, sample.tcp)
 	if sample.hasTLS {
 		current.TLSForeign = append(current.TLSForeign, sample.tls)
@@ -439,7 +441,7 @@ func (e *responsivenessEngine) runForeignProbe(ctx context.Context, url string) 
 }
 
 // runSelfProbe는 부하 연결 위에 요청을 섞는다. HTTP/2가 아니면 새 연결이 열리므로 http_l로 쓰지 않는다.
-func (e *responsivenessEngine) runSelfProbe(ctx context.Context, transport *http.Transport, url string) {
+func (e *responsivenessEngine) runSelfProbe(ctx context.Context, transport *http.Transport, url string, interval int) {
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return
@@ -458,10 +460,10 @@ func (e *responsivenessEngine) runSelfProbe(ctx context.Context, transport *http
 		e.selfUnavailable = true
 		return
 	}
-	if err != nil {
+	if err != nil || response.StatusCode/100 != 2 {
 		return
 	}
-	current := &e.samples[e.interval]
+	current := &e.samples[interval]
 	current.HTTPLoaded = append(current.HTTPLoaded, milliseconds(elapsed))
 	e.selfProbes++
 }
@@ -523,6 +525,9 @@ func (e *responsivenessEngine) foreignProbe(ctx context.Context, url string) (fo
 	finished := e.now()
 	if err != nil {
 		return foreignSample{}, err
+	}
+	if response.StatusCode/100 != 2 {
+		return foreignSample{}, fmt.Errorf("%w: %s", errQualityProbeStatus, response.Status)
 	}
 	mu.Lock()
 	defer mu.Unlock()
@@ -607,7 +612,7 @@ func (reader zeroReader) Read(data []byte) (int, error) {
 }
 
 func nativeQualityResult(started time.Time, report nativeQualityReport, outcome nativeQualityOutcome, err error) Result {
-	metrics := map[string]interface{}{"config_url": report.ConfigURL}
+	metrics := map[string]interface{}{"config_url": qualityReportURL(report.ConfigURL)}
 	if report.TestEndpoint != "" {
 		metrics["test_endpoint"] = report.TestEndpoint
 	}

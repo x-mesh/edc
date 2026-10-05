@@ -240,6 +240,7 @@ func TestQualityNativeConfigServerValidation(t *testing.T) {
 		{"file:///etc/config", false},
 		{"https://", false},
 		{"ftp://quality.example.net/config", false},
+		{"https://user:secret@quality.example.net/config", false},
 	}
 	for _, tc := range cases {
 		err := validateQualityServer(tc.raw)
@@ -268,12 +269,18 @@ const (
 	qualityTestIdleProbes    = 2
 	qualityTestProbeRate     = 40
 	qualityTestInflightLimit = 8
+
+	qualityTestShortDeadline = 400 * time.Millisecond
+	qualityTestLongDeadline  = 800 * time.Millisecond
+	qualityTestShortMaxRun   = 100 * time.Millisecond
+	qualityTestUnreachedMAD  = 1000
 )
 
 type qualityTestServerOptions struct {
 	http2        bool
 	abortLarge   bool
 	slurpBounded bool
+	smallStatus  int
 }
 
 func qualityTestParams() responsivenessParams {
@@ -292,6 +299,10 @@ func newQualityTestEngine(t *testing.T, options qualityTestServerOptions) *respo
 		_, _ = fmt.Fprintf(writer, `{"version":1,"test_endpoint":"edge.test","urls":{"large_download_url":"%[1]s/large","small_download_url":"%[1]s/small","upload_url":"%[1]s/slurp"}}`, server.URL)
 	})
 	mux.HandleFunc("/small", func(writer http.ResponseWriter, _ *http.Request) {
+		if options.smallStatus != 0 {
+			writer.WriteHeader(options.smallStatus)
+			return
+		}
 		_, _ = writer.Write([]byte{0})
 	})
 	mux.HandleFunc("/large", func(writer http.ResponseWriter, request *http.Request) {
@@ -467,5 +478,60 @@ func TestQualityNativeNoLeak(t *testing.T) {
 	engine.workers.Wait()
 	if active := engine.active.Load(); active != 0 {
 		t.Fatalf("active workers = %d", active)
+	}
+}
+
+func TestQualityNativeDeadlinePartial(t *testing.T) {
+	engine := newQualityTestEngine(t, qualityTestServerOptions{http2: true, slurpBounded: true})
+	engine.params.MAD, engine.params.SDT = qualityTestUnreachedMAD, 0
+	ctx, cancel := context.WithTimeout(context.Background(), qualityTestShortDeadline)
+	defer cancel()
+	result := runQualityTestEngine(t, engine, ctx)
+	if result.Status != StatusWarn || len(result.Warnings) == 0 || result.Warnings[0] != T("observe.quality.warn.partial") {
+		t.Fatalf("result = %+v", result)
+	}
+	if result.Metrics["confidence"] != string(qualityConfidenceLow) {
+		t.Fatalf("metrics = %v", result.Metrics)
+	}
+}
+
+func TestQualityNativeTimeoutSetsRunLength(t *testing.T) {
+	engine := newQualityTestEngine(t, qualityTestServerOptions{http2: true, slurpBounded: true})
+	engine.params.MaxRun, engine.params.SDT = qualityTestShortMaxRun, 0
+	ctx, cancel := context.WithTimeout(context.Background(), qualityTestLongDeadline)
+	defer cancel()
+	started := time.Now()
+	result := runQualityTestEngine(t, engine, ctx)
+	if elapsed := time.Since(started); elapsed < qualityTestLongDeadline-qualityTestReserve-qualityTestInterval {
+		t.Fatalf("Run stopped after %s; MaxRun capped a run that had a deadline", elapsed)
+	}
+	if result.Status != StatusPass {
+		t.Fatalf("result = %+v", result)
+	}
+}
+
+func TestQualityNativeProbeErrorStatus(t *testing.T) {
+	engine := newQualityTestEngine(t, qualityTestServerOptions{http2: true, slurpBounded: true, smallStatus: http.StatusServiceUnavailable})
+	ctx, cancel := context.WithTimeout(context.Background(), qualityTestShortDeadline)
+	defer cancel()
+	result := runQualityTestEngine(t, engine, ctx)
+	if result.Metrics["foreign_probes"] != 0 || result.Metrics["self_probes"] != 0 {
+		t.Fatalf("error responses became samples: %v", result.Metrics)
+	}
+	for _, key := range []string{"responsiveness_rpm", "base_rtt_ms"} {
+		if _, ok := result.Metrics[key]; ok {
+			t.Fatalf("metrics have %s from error responses: %v", key, result.Metrics)
+		}
+	}
+	if _, ok := result.Metrics["download_bps"]; !ok {
+		t.Fatalf("metrics = %v", result.Metrics)
+	}
+}
+
+func TestQualityNativeReportURLDropsQuery(t *testing.T) {
+	report := nativeQualityReport{ConfigURL: "https://quality.example.net/config?token=secret#frag"}
+	result := nativeQualityResult(time.Now(), report, nativeOutcomeConfig, errQualityConfigStatus)
+	if got := result.Metrics["config_url"]; got != "https://quality.example.net/config" {
+		t.Fatalf("config_url = %v", got)
 	}
 }

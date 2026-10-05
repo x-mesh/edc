@@ -27,7 +27,7 @@ cli:
     no_positional: "%s는 positional argument를 받지 않습니다"
     profile_value: "--profile은 default 또는 full이어야 합니다"
     min_days_range: "--min-days는 0 이상이어야 합니다"
-    quality_server: "--server는 host가 있는 http 또는 https 절대 URL이어야 합니다: %s"
+    quality_server: "--server는 host가 있고 사용자 정보가 없는 http 또는 https 절대 URL이어야 합니다: %s"
     expect_status_range: "--expect-status는 100에서 599 사이여야 합니다"
   doctor:
     tls_skipped_for_http: "HTTP target에는 TLS를 적용하지 않습니다"

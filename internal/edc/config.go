@@ -355,7 +355,7 @@ func validateConfig(config edcConfig) error {
 		return invalidConfig("defaults.quality.timeout", "must be greater than 0")
 	}
 	if d.Quality.Server != nil && *d.Quality.Server != "" && validateQualityServer(*d.Quality.Server) != nil {
-		return invalidConfig("defaults.quality.server", "must be empty or an absolute http or https URL with a host")
+		return invalidConfig("defaults.quality.server", "must be empty or an absolute http or https URL with a host and no user info")
 	}
 	if d.Log.Stream != nil && *d.Log.Stream != "" && *d.Log.Stream != "stdout" && *d.Log.Stream != "stderr" && *d.Log.Stream != "both" {
 		return invalidConfig("defaults.log.stream", "must be stdout, stderr, or both")

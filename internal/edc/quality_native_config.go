@@ -20,7 +20,7 @@ var (
 	errQualityConfigVersion    = errors.New("responsiveness config has an unsupported version")
 	errQualityConfigMissingURL = errors.New("responsiveness config misses a URL")
 	errQualityConfigMixedHosts = errors.New("responsiveness config URLs use different hosts")
-	errQualityServerInvalid    = errors.New("must be an absolute http or https URL with a host")
+	errQualityServerInvalid    = errors.New("must be an absolute http or https URL with a host and no user info")
 )
 
 type responsivenessConfig struct {
@@ -45,10 +45,20 @@ var (
 
 func validateQualityServer(raw string) error {
 	parsed, err := url.Parse(raw)
-	if err != nil || !parsed.IsAbs() || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Hostname() == "" {
+	if err != nil || !parsed.IsAbs() || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Hostname() == "" || parsed.User != nil {
 		return fmt.Errorf("%w: %q", errQualityServerInvalid, raw)
 	}
 	return nil
+}
+
+// qualityReportURL은 query와 fragment를 뺀다. token이 들어 있을 수 있는데 --redact는 URL 안쪽을 지우지 않는다.
+func qualityReportURL(raw string) string {
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	parsed.RawQuery, parsed.ForceQuery, parsed.Fragment, parsed.RawFragment = "", false, "", ""
+	return parsed.String()
 }
 
 func fetchResponsivenessConfig(ctx context.Context, client *http.Client, configURL string) (responsivenessConfig, error) {

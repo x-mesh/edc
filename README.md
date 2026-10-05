@@ -499,7 +499,7 @@ The memory view shows `swap/s`, the bytes per second that the kernel moves out t
 
 Press `s` for Linux pressure. It shows CPU, memory, and I/O `some avg10`: the percentage of the last ten seconds during which at least some tasks waited for that resource. The CPU view shows the hottest core and an ASCII bar; on machines with more than 24 cores, the bar shows the first 24.
 
-The detail view also lists the top three processes by CPU. The list refreshes in the background at most once a second, so it does not lengthen the observation interval. Only the dashboard collects it; the table and `--json` output skip it. On Linux, `edc` compares the CPU ticks in `/proc/<pid>/stat` with the previous refresh, so the value covers the time since that refresh. On macOS, it uses the recent decaying average that `ps` reports.
+The detail view also lists the top three processes by CPU. The list refreshes in the background at most once a second, so it does not lengthen the observation interval. Without `--write`, only the dashboard collects it; the table and unfiltered `--json` output skip it. On Linux, `edc` compares the CPU ticks in `/proc/<pid>/stat` with the previous refresh, so the value covers the time since that refresh. On macOS, it uses the recent decaying average that `ps` reports.
 
 The process panel shows CPU candidates by default and RSS candidates in the memory view. It keeps five leaders per metric before the list limit.
 
@@ -515,7 +515,7 @@ The process panel and `PROCESS` bar show the selected time. If a host sample fai
 
 The interval moves between 200ms, 500ms, 1s, 2s, 5s, 10s, 30s, and 1m. Resuming first creates a new baseline, and later rows show rates.
 
-The dashboard quits to the previous screen and leaves no rows behind. Use `--json` to keep the values.
+The dashboard quits to the previous screen and leaves no rows behind. Use `--write <DB>` to record while keeping the dashboard, or `--json` for JSON Lines.
 
 `edc top` prints the earlier table instead of the dashboard in these cases:
 
@@ -540,6 +540,33 @@ Use `--json` to write one JSON object for each sample. Use `-` for stdout. A pat
 ```
 
 Each line has `time`, `hostname`, `cores`, the network and disk rates in bytes per second, the CPU values in percent, `load1`, `memory_pct`, and `swap_out_bytes_per_s`. macOS and Linux emit network errors and drops, and disk IOPS and await values. Linux additionally emits disk busy values and PSI `some avg10`; `*_health_supported`, `disk_busy_supported`, and `psi_supported` tell consumers whether those values are supported. The `--json` option removes the table and the header.
+
+## Top recordings and history
+
+`--write [path]` (`-w [path]`) appends observations to a local SQLite database. The dashboard stays open; `--count`, pipes, and `--json` retain their output behavior. Recording also allows `--process` in table mode. With no path, `-w` uses `~/.local/state/edc/history.db` on Linux or `~/Library/Application Support/edc/history.db` on macOS. An absolute `XDG_STATE_HOME` overrides the default on both platforms: `$XDG_STATE_HOME/edc/history.db`. The default directory is created with mode 0700. With no `-w` or `--write`, top does not save observations.
+
+```bash
+./bin/edc top -w
+./bin/edc history list
+./bin/edc top -w incident.db
+./bin/edc top --process nginx --count 60 -w incident.db
+./bin/edc top --count 10 -w incident.db --json samples.jsonl
+./bin/edc history list incident.db
+./bin/edc history top --metric memory_pct --min 90 incident.db
+./bin/edc history top --from 2026-10-05T09:00:00+09:00 --to 2026-10-05T10:00:00+09:00 incident.db
+./bin/edc history process --process nginx --metric cpu_pct --min 100 incident.db
+./bin/edc history top --run <run-id> --limit 0 --json - incident.db
+```
+
+Each invocation adds a separate run with host information, edc version, collection settings, start/end times, status, and sample count. `unfinished` means the run has no recorded end, which can indicate an active run or a forced termination. Normal exits flush queued samples; recording errors end observation with exit code `1`. Forced termination preserves committed transactions. A new database has mode 0600. There is no automatic deletion or rotation.
+
+Host samples include the existing numeric top metrics, per-core CPU values, support flags, the actual observation interval, and the process filter active at that time. Without a process filter, recording retains the union of the CPU top five and RSS top five (at most ten). With a filter, it retains up to fifty processes and the total of all matches. It does not record every process. Pausing top pauses recording, and resuming establishes a fresh baseline before the next recorded rate. Process refreshes may be less frequent than host samples; `process_observed_at` identifies the refresh time. PID and precise process start time distinguish reused PIDs when start time is available.
+
+`history list`, `top`, and `process` show newest results first. Omitting the database path selects the same default database, without creating it. `--run` selects one run; `--from` includes the start and `--to` excludes the end, using RFC3339 timestamps. `--limit` defaults to 200; `0` means all matching results. `--json <path|->` emits JSON Lines. Options precede the database path, following Go flag parsing.
+
+`top` and `process` support `--metric <field>` with an inclusive `--min`, `--max`, or both. Use top-level numeric JSON field names, such as `memory_pct`, `disk_await_ms`, `rss_bytes`, or `disk_read_bytes_per_s`. `cpu_pct` means user+system for host samples and the existing per-core percentage for processes. Unsupported or unmeasured SQL values are NULL and do not match numeric thresholds; JSON preserves availability information. The process name/PID filter follows the same rules as `top --process`.
+
+The database uses WAL so you can query while recording. Keep it on a local filesystem. External SQLite tools can inspect `runs`, `top_samples`, and `top_process_samples`; numeric fields are columns and `payload` retains JSON details, including cgroup/eBPF data. `history` opens existing databases for reading and does not create or migrate them. Unrelated databases and unsupported schema versions are rejected. JSON output cannot overwrite the database or its journal files.
 
 ## Filter processes in top
 
@@ -594,7 +621,7 @@ Disk rates require two samples of the same process. The dashboard shows the base
 
 Without `--process`, JSON output has no process fields.
 
-`--process` needs the dashboard or `--json`. The table has no process column, so `edc top --process x --count 5` stops with exit code `2`.
+`--process` needs the dashboard, `--json`, or `--write`. The table has no process column, so `edc top --process x --count 5` stops with exit code `2`.
 
 ### Process resource limits (Linux)
 
@@ -1482,7 +1509,7 @@ On Linux, `edc` reads `/proc`, `/sys`, `ip`, `ss`, `ping`, `traceroute` or `trac
 
 On macOS, `edc` uses a system command adapter. Linux and macOS run `capture`. Only macOS runs `quality`.
 
-Every diagnostic command keeps to read-only inspection. `edc` runs no automatic repair, such as a DNS flush, an interface reset, or a firewall change. `edc log` writes its output, rotation archives, and lock file.
+Every diagnostic command keeps to read-only inspection. `edc` runs no automatic repair, such as a DNS flush, an interface reset, or a firewall change. `edc log` writes its output, rotation archives, and lock file. `edc top --write` writes a SQLite database and its WAL files.
 
 ## License
 

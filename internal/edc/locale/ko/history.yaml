@@ -1,0 +1,33 @@
+history:
+  usage: "사용법: edc history <list|top|process> [options] [DB]"
+  option:
+    run: "이 실행 ID만 조회"
+    from: "시작 시각 포함(RFC3339)"
+    to: "종료 시각 제외(RFC3339)"
+    limit: "최대 결과 수, 기본 200; 0은 전체"
+    json: "결과당 JSON 한 줄, stdout은 -"
+    metric: "검색할 숫자 지표 이름"
+    min: "최솟값 포함; --metric 필요"
+    max: "최댓값 포함; --metric 필요"
+  error:
+    default_path: "기본 DB 경로를 찾을 수 없습니다. --write <path>를 지정하세요"
+    path: "DB 파일 경로를 지정하세요. JSON 출력은 DB나 journal 파일을 덮어쓸 수 없습니다"
+    regular: "DB 경로는 일반 파일이어야 합니다"
+    schema: "지원하는 edc history DB가 아닙니다(schema version 1)"
+    wal: "이 DB에서 SQLite WAL 모드를 사용할 수 없습니다"
+    queue: "기록 큐가 가득 차 관측을 중단합니다"
+    write: "기록 실패: %v"
+    read: "이력을 읽을 수 없습니다: %v"
+    time: "1678~2261년의 RFC3339 시각을 쓰세요. --from은 --to보다 빨라야 합니다"
+    metric: "--metric과 유한한 --min 또는 --max를 함께 쓰세요(min <= max). 지표: %s"
+command:
+  history:
+    notes:
+      - "top -w [DB]는 대시보드를 유지하며 기록합니다."
+      - "실행별로 누적합니다. top 일시정지는 기록도 멈춥니다."
+      - "list는 실행 목록, top과 process는 최신 sample부터 조회합니다."
+      - "host CPU%는 user+system, process는 core 하나가 100%입니다."
+      - "--metric에는 JSON의 최상위 숫자 필드 이름을 씁니다."
+      - "process는 관측한 후보만 저장하며 전체 process 목록이 아닙니다."
+      - "자동 삭제는 없습니다. 로컬 DB 파일을 사용하세요."
+      - "DB 경로를 생략하면 기본 이력 DB를 조회합니다."

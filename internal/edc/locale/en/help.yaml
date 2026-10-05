@@ -74,6 +74,7 @@ command:
       process: "match PIDs or command names, comma-separated"
       detail: "CPU wait and I/O latency (eBPF, root), Linux"
       ebpf: "same as --detail"
+      write: "append to SQLite; omit path for the default DB"
       json: "one JSON line for each sample, - for stdout"
     notes:
       - "In a terminal, edc opens a dashboard. q quits, p pauses, +/- moves the interval."
@@ -303,3 +304,6 @@ command:
     summary: "Print the version"
     notes:
       - "A terminal gets the banner. Everything else gets one line."
+
+  history:
+    summary: "Search recorded resource observations"

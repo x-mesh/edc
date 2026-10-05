@@ -14,7 +14,7 @@ import (
 )
 
 // runTopDashboard는 alt screen 대시보드를 실행한다. 종료하면 화면이 원래대로 돌아온다.
-func runTopDashboard(interval time.Duration, version string, filter topProcessFilter) int {
+func runTopDashboard(interval time.Duration, version string, filter topProcessFilter, recorder *topRecorder) int {
 	details, err := collectHostDetails()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, T("observe.top.error.host", err))
@@ -37,8 +37,23 @@ func runTopDashboard(interval time.Duration, version string, filter topProcessFi
 	model.bpfEnabled = processSampler.observe != nil
 	processSampler.mutex.Unlock()
 	model = model.withProcessFilter(filter)
-	if _, err := tea.NewProgram(model, tea.WithInput(os.Stdin), tea.WithOutput(os.Stdout)).Run(); err != nil {
+	if recorder != nil {
+		model.record = recorder.Record
+		model.recordFailure = func() tea.Msg {
+			select {
+			case <-recorder.failed:
+				return topRecordingErrorMsg{err: recorder.Err()}
+			case <-recorder.done:
+				return nil
+			}
+		}
+	}
+	final, err := tea.NewProgram(model, tea.WithInput(os.Stdin), tea.WithOutput(os.Stdout)).Run()
+	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	if final.(topModel).recordingErr != nil {
 		return 1
 	}
 	return 0
@@ -48,7 +63,7 @@ func runTopDashboard(interval time.Duration, version string, filter topProcessFi
 // collectResourceSnapshot이 아니라 대시보드에서만 process를 수집한다.
 func sampleTopDashboard() (resourceSnapshot, error) {
 	snapshot, err := collectResourceSnapshot()
-	snapshot.Processes, snapshot.ProcessTotal, snapshot.ProcessesValid = processSampler.latestWithTotal()
+	snapshot.Processes, snapshot.ProcessTotal, snapshot.ProcessesValid, snapshot.ProcessesAt = processSampler.latestWithTotalAt()
 	return snapshot, err
 }
 
@@ -56,7 +71,7 @@ func sampleTopDashboard() (resourceSnapshot, error) {
 // 끝난 직전 목록을 다시 쓰지 않고 지금 읽는다. tick의 tea.Cmd 안에서 돌아 /proc을 읽는 동안 화면은 멈추지 않는다.
 func sampleTopDashboardNow() (resourceSnapshot, error) {
 	snapshot, err := collectResourceSnapshot()
-	snapshot.Processes, snapshot.ProcessTotal, snapshot.ProcessesValid = processSampler.refreshNow()
+	snapshot.Processes, snapshot.ProcessTotal, snapshot.ProcessesValid, snapshot.ProcessesAt = processSampler.refreshNowAt()
 	return snapshot, err
 }
 
@@ -142,7 +157,12 @@ type topModel struct {
 	processFocus    bool
 	processSelected int
 	bpfEnabled      bool
+	record          func(historyTopSample) error
+	recordFailure   tea.Cmd
+	recordingErr    error
 }
+
+type topRecordingErrorMsg struct{ err error }
 
 // topSampleMsg는 tick마다 수집한 snapshot이다. seq가 다르면 interval이 바뀐 뒤의 낡은 tick이다.
 type topSampleMsg struct {
@@ -164,7 +184,7 @@ func (model topModel) withProcessFilter(filter topProcessFilter) topModel {
 	return model
 }
 
-func (model topModel) Init() tea.Cmd { return model.tick() }
+func (model topModel) Init() tea.Cmd { return tea.Batch(model.tick(), model.recordFailure) }
 
 func (model topModel) tick() tea.Cmd {
 	seq, sample := model.seq, model.sample
@@ -179,6 +199,9 @@ func (model topModel) tick() tea.Cmd {
 
 func (model topModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch value := msg.(type) {
+	case topRecordingErrorMsg:
+		model.recordingErr = value.err
+		return model, tea.Quit
 	case topSampleMsg:
 		if value.seq != model.seq {
 			return model, nil
@@ -197,8 +220,15 @@ func (model topModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			model.previous, model.baseline = value.snapshot, false
 			return model, model.tick()
 		}
+		rate := calculateRate(model.previous, value.snapshot)
+		if model.record != nil {
+			if err := model.record(newHistoryTopSample(model.details, model.previous, value.snapshot, rate, model.processFilter.String())); err != nil {
+				model.recordingErr = err
+				return model, tea.Quit
+			}
+		}
 		before := len(model.rows) + 1
-		model.rows = appendTopDashboardRow(model.rows, topDashboardRow{at: value.snapshot.TakenAt, rate: calculateRate(model.previous, value.snapshot), processes: value.snapshot.Processes, processTotal: value.snapshot.ProcessTotal, processesValid: value.snapshot.ProcessesValid, filter: model.processFilter.String()})
+		model.rows = appendTopDashboardRow(model.rows, topDashboardRow{at: value.snapshot.TakenAt, rate: rate, processes: value.snapshot.Processes, processTotal: value.snapshot.ProcessTotal, processesValid: value.snapshot.ProcessesValid, filter: model.processFilter.String()})
 		model.previous = value.snapshot
 		if model.follow {
 			model.selected = len(model.rows) - 1
@@ -714,6 +744,9 @@ func (model topModel) peakLines() []string {
 
 func (model topModel) statusLines() []string {
 	state := "interval " + model.interval.String()
+	if model.record != nil {
+		state = "SQLite · " + state
+	}
 	if model.paused {
 		state = T("observe.top.paused") + " · " + state
 	} else if !model.follow {

@@ -33,11 +33,11 @@ observe:
       clear: "The nearest region is %s. The second one, %s, takes %s more."
 
   top:
-    usage: "usage: edc top [--interval 1s] [--count N] [--process <filter>] [--json <path|->]"
+    usage: "usage: edc top [--interval 1s] [--count N] [--process <filter>] [--write [DB]] [--json <path|->]"
     interval_minimum: "--interval must be %s or more"
     count_minimum: "--count must be 0 or more"
     process_invalid: "--process needs a PID or a command name, separated by commas"
-    process_needs_view: "--process works with the dashboard or --json, not the table"
+    process_needs_view: "--process needs the dashboard, --json, or --write"
     ebpf_needs_process: "-d/--detail needs --process, or the dashboard"
     stopped: "stopped"
     paused: "paused"

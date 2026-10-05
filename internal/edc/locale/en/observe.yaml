@@ -123,6 +123,10 @@ observe:
     quality_done: "networkQuality measurement complete"
     trace_missing: "edc did not find the traceroute or tracepath command"
 
+  quality:
+    warn:
+      no_metrics: "networkQuality reported no throughput or responsiveness value"
+
   doctor:
     guidance_heading: "Investigation suggestions (order does not establish a cause)"
     guidance_manual: "Replace HOST, HOST:PORT, or URL with your target, then run the command manually."

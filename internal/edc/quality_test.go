@@ -1,0 +1,214 @@
+package edc
+
+import (
+	"encoding/json"
+	"strings"
+	"testing"
+	"time"
+)
+
+// networkQualityFixture는 macOS 27의 `networkQuality -c` 실제 출력이다. 배열은 앞 세 개만 남겼다.
+const networkQualityFixture = `{
+  "base_rtt" : 11.239375114440918,
+  "cli_options" : [ "-c" ],
+  "dl_bytes_transferred" : 121299311,
+  "dl_flows" : 8,
+  "dl_phase_duration" : 15.136159062385559,
+  "dl_phase_end" : "2026-10-05 18:29:01.643",
+  "dl_phase_start" : "2026-10-05 18:28:46.506",
+  "dl_throughput" : 67181720,
+  "draft_version" : 8,
+  "end_date" : "2026-10-05 18:29:01.647",
+  "il_h2_req_resp" : [ 13.326048851013184, 11.948943138122559, 17.189979553222656 ],
+  "il_tcp_handshake_443" : [ 4, 4, 5 ],
+  "il_tls_handshake" : [ 12, 12, 13 ],
+  "interface_name" : "en1",
+  "lud_foreign_h2_req_resp" : [ 145, 140, 138 ],
+  "lud_foreign_tcp_handshake_443" : [ 57, 96, 16 ],
+  "lud_foreign_tls_handshake" : [ 19, 25, 26 ],
+  "lud_self_h2_req_resp" : [ 109, 67, 26 ],
+  "os_version" : "Version 27.0.1 (Build 26A434)",
+  "other" : { "protocols_seen" : { "h2" : 308 } },
+  "responsiveness" : 189.62039184570312,
+  "start_date" : "2026-10-05 18:28:46.411",
+  "ul_bytes_transferred" : 214040574,
+  "ul_flows" : 6,
+  "ul_phase_duration" : 15.136159062385559,
+  "ul_phase_end" : "2026-10-05 18:29:01.643",
+  "ul_phase_start" : "2026-10-05 18:28:46.506",
+  "ul_throughput" : 110664168
+}`
+
+func qualityFloat(value float64) *float64 { return &value }
+
+func TestQualityNormalizeNetworkQuality(t *testing.T) {
+	cases := []struct {
+		name         string
+		output       string
+		status       Status
+		summary      string
+		present      []string
+		absent       []string
+		warningCount int
+	}{
+		{
+			name:    "real output",
+			output:  networkQualityFixture,
+			status:  StatusPass,
+			summary: "↓ 67 Mbps  ↑ 111 Mbps  ·  190 RPM",
+			present: []string{"download_bps", "upload_bps", "responsiveness_rpm", "base_rtt_ms", "interface", "source", "dl_throughput", "lud_self_h2_req_resp"},
+		},
+		{
+			name:    "missing upload and rtt",
+			output:  `{"dl_throughput": 4200000, "responsiveness": 1180.13}`,
+			status:  StatusPass,
+			summary: "↓ 4.2 Mbps  ·  1,180 RPM",
+			present: []string{"download_bps", "responsiveness_rpm", "source"},
+			absent:  []string{"upload_bps", "base_rtt_ms", "interface"},
+		},
+		{
+			name:         "string values",
+			output:       `{"dl_throughput": "67181720", "ul_throughput": "fast", "responsiveness": "190", "interface_name": "en0"}`,
+			status:       StatusWarn,
+			summary:      T("observe.system.quality_done"),
+			present:      []string{"dl_throughput", "interface", "source"},
+			absent:       []string{"download_bps", "upload_bps", "responsiveness_rpm"},
+			warningCount: 1,
+		},
+		{
+			name:         "negative values",
+			output:       `{"dl_throughput": -1, "ul_throughput": -5, "responsiveness": -10, "base_rtt": -2}`,
+			status:       StatusWarn,
+			summary:      T("observe.system.quality_done"),
+			absent:       []string{"download_bps", "upload_bps", "responsiveness_rpm", "base_rtt_ms"},
+			warningCount: 1,
+		},
+		{
+			name:         "empty object",
+			output:       `{}`,
+			status:       StatusWarn,
+			summary:      T("observe.system.quality_done"),
+			present:      []string{"source"},
+			absent:       []string{"download_bps", "upload_bps", "responsiveness_rpm", "base_rtt_ms", "interface"},
+			warningCount: 1,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			result := networkQualityResult(time.Now(), []byte(tc.output))
+			if result.Status != tc.status {
+				t.Fatalf("status = %s, want %s", result.Status, tc.status)
+			}
+			if result.Summary != tc.summary {
+				t.Fatalf("summary = %q, want %q", result.Summary, tc.summary)
+			}
+			if len(result.Warnings) != tc.warningCount {
+				t.Fatalf("warnings = %q, want %d", result.Warnings, tc.warningCount)
+			}
+			if tc.warningCount > 0 && result.Warnings[0] != T("observe.quality.warn.no_metrics") {
+				t.Fatalf("warning = %q", result.Warnings[0])
+			}
+			for _, key := range tc.present {
+				if _, ok := result.Metrics[key]; !ok {
+					t.Errorf("metrics miss %s: %v", key, result.Metrics)
+				}
+			}
+			for _, key := range tc.absent {
+				if value, ok := result.Metrics[key]; ok {
+					t.Errorf("metrics carry %s = %v", key, value)
+				}
+			}
+		})
+	}
+}
+
+func TestQualityNormalizeValues(t *testing.T) {
+	var raw map[string]interface{}
+	if err := json.Unmarshal([]byte(networkQualityFixture), &raw); err != nil {
+		t.Fatal(err)
+	}
+	m := normalizeNetworkQuality(raw)
+	if m.DownloadBPS == nil || *m.DownloadBPS != 67181720 {
+		t.Fatalf("download = %v", m.DownloadBPS)
+	}
+	if m.UploadBPS == nil || *m.UploadBPS != 110664168 {
+		t.Fatalf("upload = %v", m.UploadBPS)
+	}
+	if m.BaseRTTMS == nil || *m.BaseRTTMS != 11.239375114440918 {
+		t.Fatalf("base rtt = %v", m.BaseRTTMS)
+	}
+	if m.Interface != "en1" || m.Source != qualitySourceNetworkQual {
+		t.Fatalf("interface = %q, source = %q", m.Interface, m.Source)
+	}
+}
+
+func TestQualityNormalizeNumericKinds(t *testing.T) {
+	raw := map[string]interface{}{
+		"dl_throughput":  json.Number("1000000"),
+		"ul_throughput":  json.Number("not-a-number"),
+		"responsiveness": 0.0,
+		"base_rtt":       nil,
+	}
+	m := normalizeNetworkQuality(raw)
+	if m.DownloadBPS == nil || *m.DownloadBPS != 1000000 {
+		t.Fatalf("download = %v", m.DownloadBPS)
+	}
+	if m.UploadBPS != nil || m.BaseRTTMS != nil {
+		t.Fatalf("upload = %v, base rtt = %v", m.UploadBPS, m.BaseRTTMS)
+	}
+	if m.ResponsivenessRPM == nil || *m.ResponsivenessRPM != 0 {
+		t.Fatalf("responsiveness = %v", m.ResponsivenessRPM)
+	}
+}
+
+func TestQualityNormalizeParseError(t *testing.T) {
+	result := networkQualityResult(time.Now(), []byte("not json"))
+	if result.Status != StatusFail || result.Error == nil || result.Error.Kind != "parse" {
+		t.Fatalf("result = %+v", result)
+	}
+}
+
+func TestQualitySummaryParts(t *testing.T) {
+	cases := []struct {
+		name string
+		m    qualityMeasurement
+		want string
+	}{
+		{"full", qualityMeasurement{DownloadBPS: qualityFloat(450e6), UploadBPS: qualityFloat(42e6), ResponsivenessRPM: qualityFloat(1180.13)}, "↓ 450 Mbps  ↑ 42 Mbps  ·  1,180 RPM"},
+		{"gigabit", qualityMeasurement{DownloadBPS: qualityFloat(1.26e9), UploadBPS: qualityFloat(12.4e9)}, "↓ 1.3 Gbps  ↑ 12 Gbps"},
+		{"kilobit", qualityMeasurement{UploadBPS: qualityFloat(600), ResponsivenessRPM: qualityFloat(12345678)}, "↑ 0.6 Kbps  ·  12,345,678 RPM"},
+		{"rpm only", qualityMeasurement{ResponsivenessRPM: qualityFloat(999.6)}, "1,000 RPM"},
+		{"empty", qualityMeasurement{}, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := qualitySummary(tc.m); got != tc.want {
+				t.Fatalf("summary = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestQualitySummaryResultLine(t *testing.T) {
+	result := networkQualityResult(time.Now(), []byte(networkQualityFixture))
+	line := formatResultLine(result, false)
+	if !strings.Contains(line, "↓") || !strings.Contains(line, "RPM") {
+		t.Fatalf("result line = %q", line)
+	}
+	encoded, err := json.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded struct {
+		Metrics map[string]interface{} `json:"metrics"`
+	}
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.Metrics["dl_throughput"] != float64(67181720) {
+		t.Fatalf("dl_throughput = %v", decoded.Metrics["dl_throughput"])
+	}
+	if decoded.Metrics["download_bps"] != float64(67181720) || decoded.Metrics["source"] != qualitySourceNetworkQual {
+		t.Fatalf("metrics = %v", decoded.Metrics)
+	}
+}

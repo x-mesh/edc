@@ -15,6 +15,7 @@ import (
 )
 
 type resourceSnapshot struct {
+	NetworkHealth   *networkHealth
 	TakenAt         time.Time
 	CPUUser         uint64
 	CPUSystem       uint64
@@ -42,6 +43,7 @@ type resourceSnapshot struct {
 	PSIValid        bool
 	Processes       []topProcess
 	ProcessesValid  bool
+	ProcessesAt     time.Time
 	ProcessTotal    topProcessTotal
 	NetHealthValid  bool
 	DiskHealthValid bool
@@ -193,22 +195,32 @@ func (sampler *topProcessSampler) latest() ([]topProcess, bool) {
 }
 
 func (sampler *topProcessSampler) latestWithTotal() ([]topProcess, topProcessTotal, bool) {
+	processes, total, valid, _ := sampler.latestWithTotalAt()
+	return processes, total, valid
+}
+
+func (sampler *topProcessSampler) latestWithTotalAt() ([]topProcess, topProcessTotal, bool, time.Time) {
 	sampler.mutex.Lock()
 	defer sampler.mutex.Unlock()
 	if !sampler.running && time.Since(sampler.updated) >= topProcessRefresh {
 		sampler.running = true
 		go sampler.refresh()
 	}
-	return append([]topProcess(nil), sampler.processes...), sampler.total, sampler.valid
+	return append([]topProcess(nil), sampler.processes...), sampler.total, sampler.valid, sampler.updated
 }
 
 // refreshNow는 배경 갱신을 기다리지 않고 지금 읽는다. --json은 sample마다 새 값과 정확한 window가 필요하다.
 // 대시보드의 latest와 함께 쓰지 않는다.
 func (sampler *topProcessSampler) refreshNow() ([]topProcess, topProcessTotal, bool) {
+	processes, total, valid, _ := sampler.refreshNowAt()
+	return processes, total, valid
+}
+
+func (sampler *topProcessSampler) refreshNowAt() ([]topProcess, topProcessTotal, bool, time.Time) {
 	sampler.refresh()
 	sampler.mutex.Lock()
 	defer sampler.mutex.Unlock()
-	return append([]topProcess(nil), sampler.processes...), sampler.total, sampler.valid
+	return append([]topProcess(nil), sampler.processes...), sampler.total, sampler.valid, sampler.updated
 }
 
 func (sampler *topProcessSampler) setFilter(filter topProcessFilter) {
@@ -437,6 +449,7 @@ func parseTopProcesses(output string) []topProcess {
 type resourceCPU struct{ Total, Idle uint64 }
 
 type resourceRate struct {
+	NetworkHealth                   *networkHealthRate
 	NetIn, NetOut                   float64
 	PacketsIn, PacketsOut           float64
 	NetErrors, NetDrops             float64
@@ -488,16 +501,17 @@ func calculateRate(previous, current resourceSnapshot) resourceRate {
 		memoryPercent = float64(current.MemoryUsed) / float64(current.MemoryTotal) * 100
 	}
 	rate := resourceRate{
-		NetIn:      float64(delta(current.NetInBytes, previous.NetInBytes)) / seconds,
-		NetOut:     float64(delta(current.NetOutBytes, previous.NetOutBytes)) / seconds,
-		PacketsIn:  float64(delta(current.PacketsIn, previous.PacketsIn)) / seconds,
-		PacketsOut: float64(delta(current.PacketsOut, previous.PacketsOut)) / seconds,
-		NetErrors:  float64(delta(current.NetErrors, previous.NetErrors)) / seconds,
-		NetDrops:   float64(delta(current.NetDrops, previous.NetDrops)) / seconds,
-		DiskRead:   float64(delta(current.DiskRead, previous.DiskRead)) / seconds,
-		DiskWrite:  float64(delta(current.DiskWrite, previous.DiskWrite)) / seconds,
-		DiskIOPS:   float64(delta(current.DiskOps, previous.DiskOps)) / seconds,
-		CPUUser:    percent(current.CPUUser, previous.CPUUser), CPUSystem: percent(current.CPUSystem, previous.CPUSystem), CPUIOWait: percent(current.CPUIOWait, previous.CPUIOWait),
+		NetworkHealth: calculateNetworkHealthRate(previous.NetworkHealth, current.NetworkHealth, current.TakenAt.Sub(previous.TakenAt).Seconds()),
+		NetIn:         float64(delta(current.NetInBytes, previous.NetInBytes)) / seconds,
+		NetOut:        float64(delta(current.NetOutBytes, previous.NetOutBytes)) / seconds,
+		PacketsIn:     float64(delta(current.PacketsIn, previous.PacketsIn)) / seconds,
+		PacketsOut:    float64(delta(current.PacketsOut, previous.PacketsOut)) / seconds,
+		NetErrors:     float64(delta(current.NetErrors, previous.NetErrors)) / seconds,
+		NetDrops:      float64(delta(current.NetDrops, previous.NetDrops)) / seconds,
+		DiskRead:      float64(delta(current.DiskRead, previous.DiskRead)) / seconds,
+		DiskWrite:     float64(delta(current.DiskWrite, previous.DiskWrite)) / seconds,
+		DiskIOPS:      float64(delta(current.DiskOps, previous.DiskOps)) / seconds,
+		CPUUser:       percent(current.CPUUser, previous.CPUUser), CPUSystem: percent(current.CPUSystem, previous.CPUSystem), CPUIOWait: percent(current.CPUIOWait, previous.CPUIOWait),
 		MemoryPercent: memoryPercent, Load1: current.Load1,
 	}
 	rate.NetHealthValid = current.NetHealthValid && previous.NetHealthValid

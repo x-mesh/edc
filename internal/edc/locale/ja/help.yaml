@@ -74,6 +74,7 @@ command:
       process: "一致する PID か command 名のみ、カンマ区切り"
       detail: "CPU 待ちと I/O 遅延を追加 (eBPF, root)、Linux"
       ebpf: "--detail と同じ"
+      write: "SQLite に追記、path 省略時は既定 DB"
       json: "sample ごとに 1 行の JSON、stdout は -"
     notes:
       - "terminal ではダッシュボードを開きます。q 終了、p 一時停止、+/- interval。"
@@ -81,13 +82,15 @@ command:
       - "--process では process 表示で開きます。1 で host、f で戻ります。"
       - "f で signal を追跡 (表示→最も忙しい process)。/ で絞り込み、Esc で解除。"
   watch:
-    summary: "中断するまで HTTP の状態を繰り返し確認"
+    summary: "HTTP・ファイル変更の観測と条件付きaction実行"
     option:
       interval: "sample 間隔(秒)、最小 0.1"
       duration: "指定時間で終了。省略時は Ctrl-C まで実行"
     notes:
-      - "HTTP status、body byte、所要時間を毎回表示します。"
-      - "--json は sample ごとに JSON 1 行と最後に要約を書きます。"
+      - "HTTP観測はwatch httpで実行します。従来のwatch URL形式も利用できます。"
+      - "watch fsは既定で現在のディレクトリを監視します。"
+      - "ファイルイベントはcreate,modify,remove,renameです。読み取りは検出しません。"
+      - "--execまたは--rulesでcommandを実行します。"
   info:
     summary: "system、network、disk の情報"
     option:
@@ -131,9 +134,16 @@ command:
       - "キューを返すのは Linux だけで、macOS では - になります。"
       - "-v が増やすのは列だけです。行は変わりません。"
   quality:
-    summary: "networkQuality の測定 (macOS)"
+    summary: "ネットワークの応答性 (RPM) とスループット"
+    option:
+      server: "応答性測定の config URL"
     notes:
-      - "macOS の networkQuality を使います。測定には数十秒かかります。"
+      - "macOS は networkQuality、他の OS は内蔵の測定を使います。"
+      - "内蔵の測定は IETF responsiveness draft に従います。"
+      - "--server で config URL を変えます。既定は Apple の mensura サーバーです。"
+      - "測定には数十秒かかります。"
+      - "制限時間は 30s です。defaults.quality.timeout で変えます。"
+      - "defaults.common.timeout は使いません。内蔵の測定は制限時間まで測ります。"
   capture:
     summary: "packet capture (Linux と macOS)"
     option:
@@ -304,3 +314,6 @@ command:
     summary: "版の表示"
     notes:
       - "terminal では banner、それ以外では 1 行で出します。"
+
+  history:
+    summary: "保存した resource 観測履歴を検索"

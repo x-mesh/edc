@@ -74,6 +74,7 @@ command:
       process: "match PIDs or command names, comma-separated"
       detail: "CPU wait and I/O latency (eBPF, root), Linux"
       ebpf: "same as --detail"
+      write: "append to SQLite; omit path for the default DB"
       json: "one JSON line for each sample, - for stdout"
     notes:
       - "In a terminal, edc opens a dashboard. q quits, p pauses, +/- moves the interval."
@@ -81,13 +82,15 @@ command:
       - "With --process, it opens the process view. 1 shows host columns, f returns."
       - "f follows a signal: its view, then the busiest process. / filters, Esc clears."
   watch:
-    summary: "Repeat an HTTP check until interrupted"
+    summary: "Observe HTTP or file changes and run explicit file actions"
     option:
       interval: "seconds between samples (minimum 0.1)"
       duration: "stop after this time; omit to run until Ctrl-C"
     notes:
-      - "Each sample prints HTTP status, body bytes, and elapsed time."
-      - "--json writes one JSON object per sample and a final summary."
+      - "Use watch http for HTTP checks; the previous watch URL form remains supported."
+      - "watch fs observes the current directory by default."
+      - "File events are create,modify,remove,rename; reading a file is not observed."
+      - "--exec or --rules enables command execution."
   info:
     summary: "System, network, and disk information"
     option:
@@ -131,9 +134,16 @@ command:
       - "Only Linux gives the queue. On macOS the column shows -."
       - "-v adds columns only. The rows stay the same."
   quality:
-    summary: "networkQuality measurement (macOS)"
+    summary: "Network responsiveness (RPM) and throughput"
+    option:
+      server: "responsiveness config URL"
     notes:
-      - "edc uses networkQuality on macOS. The measurement needs tens of seconds."
+      - "macOS runs networkQuality. Other systems measure natively."
+      - "The native test follows the IETF responsiveness draft."
+      - "--server sets the config URL. Apple's mensura server is the default."
+      - "The measurement needs tens of seconds."
+      - "The timeout is 30s. defaults.quality.timeout overrides it."
+      - "defaults.common.timeout does not apply. The native test runs to the limit."
   capture:
     summary: "Packet capture (Linux and macOS)"
     option:
@@ -304,3 +314,6 @@ command:
     summary: "Print the version"
     notes:
       - "A terminal gets the banner. Everything else gets one line."
+
+  history:
+    summary: "Search recorded resource observations"

@@ -1,6 +1,7 @@
 package edc
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -316,6 +317,20 @@ func signalExitCode(received os.Signal) int {
 
 func asciiJSON(value any) string {
 	encoded, _ := json.Marshal(value)
+	return asciiEscape(encoded)
+}
+
+// terminalJSON은 화면 표시용이다. 셸 명령의 <, >, &가 \u003e로 바뀌지 않게 HTML escape만 끈다.
+// 제어 문자는 json이 여전히 escape한다. 로그 파일 헤더는 형식을 지키려고 asciiJSON을 그대로 쓴다.
+func terminalJSON(value any) string {
+	var buffer bytes.Buffer
+	encoder := json.NewEncoder(&buffer)
+	encoder.SetEscapeHTML(false)
+	_ = encoder.Encode(value)
+	return asciiEscape(bytes.TrimSuffix(buffer.Bytes(), []byte("\n")))
+}
+
+func asciiEscape(encoded []byte) string {
 	var builder strings.Builder
 	for len(encoded) > 0 {
 		r, size := utf8.DecodeRune(encoded)

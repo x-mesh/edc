@@ -80,3 +80,25 @@ func TestBashHistoryCompletionHonorsArgumentBoundary(t *testing.T) {
 		}
 	}
 }
+
+func TestBashWatchCompletionSeparatesHTTPAndFS(t *testing.T) {
+	for _, test := range []struct{ words, want, absent string }{
+		{`(edc watch f)`, "fs", "--exec"},
+		{`(edc watch http --d)`, "--duration", "--dry-run"},
+		{`(edc watch fs --e)`, "--exec", "--expect-status"},
+		{`(edc watch fs --event c)`, "create", "--exec"},
+		{`(edc watch fs --exec --e)`, "", "--exec"},
+	} {
+		command := bashCompletion + "\nCOMP_WORDS=" + test.words + "\nCOMP_CWORD=$((${#COMP_WORDS[@]}-1))\n_edc\nprintf '%s\n' \"${COMPREPLY[@]}\"\n"
+		output, err := exec.Command("bash", "-c", command).CombinedOutput()
+		if err != nil {
+			t.Fatalf("completion: %v %s", err, output)
+		}
+		if test.want != "" && !strings.Contains(string(output), test.want) {
+			t.Fatalf("%s missing %s: %s", test.words, test.want, output)
+		}
+		if strings.Contains(string(output), test.absent) {
+			t.Fatalf("%s unexpected %s: %s", test.words, test.absent, output)
+		}
+	}
+}

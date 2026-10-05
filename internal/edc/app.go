@@ -70,6 +70,8 @@ func Run(args []string, version string) int {
 		return 0
 	case "top":
 		return runTop(args[1:], version)
+	case "history":
+		return runHistory(args[1:])
 	case "watch":
 		return runWatch(args[1:])
 	case "info":
@@ -95,7 +97,7 @@ func Run(args []string, version string) int {
 	case "listen":
 		return runListen(args[1:], version)
 	case "quality":
-		return runSimple(args[1:], version, "quality", "net.quality", probeQuality)
+		return runQuality(args[1:], version)
 	case "capture":
 		return runCapture(args[1:])
 	case "trace":
@@ -132,6 +134,13 @@ func runDoctor(args []string, version string) int {
 		fmt.Fprintln(os.Stderr, T("cli.error.profile_value"))
 		return 2
 	}
+	timeoutFlagSet := false
+	set.Visit(func(visited *flag.Flag) {
+		if visited.Name == "timeout" {
+			timeoutFlagSet = true
+		}
+	})
+	options.timeout = doctorTimeout(*profile, timeoutFlagSet, options.timeout)
 	input := set.Arg(0)
 	if set.NArg() == 0 {
 		values, ok := promptMissingArgs("edc doctor", T("cli.prompt.target"))
@@ -172,7 +181,7 @@ func runDoctor(args []string, version string) int {
 		{name: listenProbeID, run: func(ctx context.Context) Result { return probeListen(ctx, defaultListenFamilies()) }},
 	}
 	if *profile == "full" {
-		probes = append(probes, doctorProbe{name: "net.quality", run: probeQuality})
+		probes = append(probes, doctorProbe{name: qualityProbeID, run: qualityProbe(configuredString(activeConfig.Defaults.Quality.Server, ""))})
 	}
 	if *allIPs {
 		_, port, _ := net.SplitHostPort(address)
@@ -385,12 +394,24 @@ func probeContext(timeout time.Duration) (context.Context, context.CancelFunc, c
 }
 
 func runSimple(args []string, version, name, probeID string, probe func(context.Context) Result) int {
-	options := configuredCommon(15 * time.Second)
+	return runSimpleWithOptions(args, version, name, probeID, configuredCommon(15*time.Second), probeFlags{}, probe)
+}
+
+func runSimpleWithOptions(args []string, version, name, probeID string, options commonOptions, extra probeFlags, probe func(context.Context) Result) int {
 	set := flag.NewFlagSet(name, flag.ContinueOnError)
 	set.SetOutput(os.Stderr)
 	bindCommon(set, &options)
+	if extra.bind != nil {
+		extra.bind(set)
+	}
 	if err := set.Parse(args); err != nil {
 		return 2
+	}
+	if extra.check != nil {
+		if err := extra.check(); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 2
+		}
 	}
 	if set.NArg() != 0 {
 		fmt.Fprintln(os.Stderr, T("cli.error.no_positional", name))

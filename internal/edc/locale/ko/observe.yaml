@@ -33,11 +33,11 @@ observe:
       clear: "가장 가까운 지역은 %s입니다. 두 번째 %s까지는 %s 더 걸립니다."
 
   top:
-    usage: "사용법: edc top [--interval 1s] [--count N] [--process <filter>] [--json <path|->]"
+    usage: "사용법: edc top [--interval 1s] [--count N] [--process <filter>] [--write [DB]] [--json <path|->]"
     interval_minimum: "--interval은 %s 이상이어야 합니다"
     count_minimum: "--count는 0 이상이어야 합니다"
     process_invalid: "--process에는 PID나 command 이름을 쉼표로 구분해 주세요"
-    process_needs_view: "--process는 대시보드나 --json에서만 쓸 수 있습니다. 표에는 process 열이 없습니다"
+    process_needs_view: "--process는 대시보드나 --json, --write에서 쓸 수 있습니다"
     ebpf_needs_process: "-d/--detail은 --process와 함께 쓰거나 대시보드에서 써야 합니다"
     stopped: "중지됨"
     paused: "일시정지"
@@ -119,9 +119,20 @@ observe:
     no_nameserver: "%s에 nameserver가 없습니다"
     nameserver_warning: "nameserver 줄이 없으면 resolver는 localhost를 사용합니다"
     resolvectl_failed: "resolvectl status 실패: %s"
-    quality_darwin_only: "networkQuality는 macOS 전용입니다"
     quality_done: "networkQuality 측정 완료"
     trace_missing: "traceroute 또는 tracepath 명령을 찾을 수 없습니다"
+
+  quality:
+    warn:
+      no_metrics: "networkQuality가 처리량이나 응답성 값을 알려 주지 않았습니다"
+      partial: "측정을 일찍 멈춰 측정한 구간만의 값입니다"
+      self_unavailable: "서버가 HTTP/2를 쓰지 않아 RPM은 별도 연결만으로 계산했습니다"
+    confidence:
+      low: "신뢰도 낮음"
+      medium: "신뢰도 보통"
+      high: "신뢰도 높음"
+    error:
+      no_data: "멈추기 전에 처리량이나 응답성을 측정하지 못했습니다"
 
   doctor:
     guidance_heading: "후속 조사 제안 (순서는 원인 관계를 뜻하지 않습니다)"

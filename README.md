@@ -4,9 +4,9 @@
 
 `edc` is short for **everyday carry**. An everyday carry is the small kit you keep in a pocket and reach for first. `edc` is that kit for SE and SRE work in a terminal.
 
-An incident starts with one question: is the fault here, in the network, or at the far end? `edc` answers it with one command. It runs DNS, TCP, TLS, HTTP, route, ping, interface, and socket probes in one pass, and every probe prints the same result format. It also reports host resources and host information on Linux and macOS, and it runs macOS `networkQuality`.
+An incident starts with one question: is the fault here, in the network, or at the far end? `edc` answers it with one command. It runs DNS, TCP, TLS, HTTP, route, ping, interface, and socket probes in one pass, and every probe prints the same result format. It also reports host resources and host information on Linux and macOS, and it measures network responsiveness (RPM) and throughput: macOS runs `networkQuality`, and Linux runs a built-in test that follows the IETF responsiveness draft.
 
-Every command is read-only. `edc` finds the fault and stops there. It runs no DNS flush, no interface reset, and no firewall change, so it stays safe on a production host.
+Diagnostic commands are read-only. `watch fs` can execute commands explicitly configured with `--exec` or `--rules`. Observation alone finds the fault and stops there. It runs no DNS flush, no interface reset, and no firewall change, so it stays safe on a production host.
 
 ![edc doctor https://example.com runs nine probes in order and prints a 9 pass summary](docs/media/doctor.gif)
 
@@ -143,6 +143,10 @@ parallel = 0
 [defaults.update]
 timeout = "60s"
 
+[defaults.quality]
+timeout = "30s"
+server = ""
+
 [defaults.log]
 stream = "both"
 output = ""
@@ -206,9 +210,10 @@ The command also creates the parent for the legacy recommended `edc.log` path.
 ./bin/edc listen              # open ports, --unix or --all adds unix sockets
 ./bin/edc listen --watch -i 0.5 --duration 10s
 ./bin/edc quality --timeout 60s
+./bin/edc quality --server https://example.com/.well-known/nq   # responsiveness config URL
 
 # repeat a page check; omit --duration to run until Ctrl-C
-./bin/edc watch -i 0.1 --duration 10s https://example.com
+./bin/edc watch http -i 0.1 --duration 10s https://example.com
 
 # which region is near, and what shape is this network
 ./bin/edc where
@@ -245,6 +250,8 @@ The Linux eBPF check reads kernel BTF and effective capabilities. It does not lo
 
 If memory or process collection fails, the command shows the error and returns exit code `1`.
 
+On Linux, `edc info` adds `Network Limits`: conntrack occupancy, the local port range and reserved ports, accept/SYN backlog limits, socket buffer ceilings, receive backlog/budgets, neighbor limits, forwarding, and `rp_filter`. Use `-v` for TCP buffer settings, sysctl names, and reasons for unavailable values. Missing or inaccessible values are `unavailable`; these Linux limits are `unsupported` on macOS. Configuration alone does not establish a connection failure.
+
 ### Name lookup
 
 ![edc dns lookup example.com prints the address list and edc dns config prints the resolver setup, both as PASS](docs/media/dns.gif)
@@ -259,7 +266,7 @@ Terminal and JSON output show actual IP addresses by default. Add `--redact` to 
 
 A failed probe shows the phase and the cause in an ERROR block. It returns exit code `1`.
 
-`edc watch -i 0.1 https://example.com` checks the page until Ctrl-C.
+`edc watch http -i 0.1 https://example.com` checks the page until Ctrl-C.
 
 `-i` accepts decimal seconds (minimum `0.1`) or a duration such as `100ms`. `--duration 1m` sets the observation duration.
 
@@ -284,6 +291,54 @@ The SCOPE column and watch events identify the socket's bound address: loopback,
 For wildcard addresses, all interfaces refers to the observed address family. The scope does not establish external access, firewall rules, or IPv6 dual-stack behavior.
 
 On macOS, lsof provides no Unix socket state. The Unix socket list is approximate.
+
+### File watching and actions (Linux and macOS)
+
+`edc watch fs` observes changes directly below the current directory by default. Use `--recursive` for subdirectories, including newly created or moved-in directories. Existing files do not produce startup create events. Directory symlinks are not followed.
+
+```bash
+edc watch fs
+edc watch fs ./src --recursive
+edc watch fs --event create --match text.txt --exec 'git-kit pull'
+edc watch fs ./src --recursive --event modify --match '**/*.go' --exec 'go test ./...'
+edc watch fs --rules docs/examples/watch.yaml --dry-run
+edc watch fs --duration 1m --json events.jsonl
+```
+
+Events are `create`, `modify`, `remove`, and `rename`. A rename reports the old path; the new name can produce a create event inside the watched scope. Reads/access and metadata-only changes are excluded. `--event` accepts a comma-separated list. Globs are relative to the watch root: `*.go` matches direct children, and `**/*.go` matches any depth. Watching those deeper paths also requires `--recursive`.
+
+`.git/**` is excluded by default. Repeat `--exclude 'build/**'` to add exclusions. The JSON output file and regular files connected to stdout are excluded to avoid output feedback. `--event` and `--match` filter both event output and rule actions. There is no default action.
+
+Rules use one strict YAML document. With no `directory`, the current working directory is watched. An explicit `directory` is relative to the rules file; a CLI directory overrides it. A rule's `cwd` is relative to the watch root and defaults to that root.
+
+```yaml
+recursive: true
+exclude: [build/**]
+rules:
+  - name: pull-on-trigger
+    events: [create]
+    match: text.txt
+    command: [git-kit, pull]
+    debounce: 200ms
+    timeout: 30s
+  - name: test-on-go-change
+    events: [create, modify]
+    match: "**/*.go"
+    command: [go, test, ./...]
+    debounce: 500ms
+```
+
+```bash
+edc watch fs --rules watch.yaml
+```
+
+`--exec` uses `/bin/sh -c`; YAML `command` executes argv directly. Shell aliases are not loaded. File paths are not interpolated into commands. Actions receive `EDC_WATCH_ROOT` (absolute), `EDC_WATCH_PATH` (relative), `EDC_WATCH_EVENT`, and `EDC_WATCH_RULE`. Quote shell variables such as `"$EDC_WATCH_PATH"`.
+
+Actions run serially across all rules. The default debounce is 200ms, coalescing each rule's events to its latest event. Events during an action are coalesced into one pending action per rule and run after the active action ends. `--dry-run` reports matches without execution. Actions that change matching files can trigger themselves again; narrow the match or exclude generated paths.
+
+Actions receive no stdin. Their default timeout is 30s. `--debounce` and `--timeout` supply defaults for rules without their own values. Combined stdout/stderr is capped at 64 KiB. Failures and timeouts do not stop watching, but produce final exit code `1`. `Ctrl-C` or the watch duration ends the active action's process group and discards pending actions. A normal observation with no events exits `0`; option/output errors exit `2`. Removing or renaming the root, watcher errors, and event overflow stop observation with an error.
+
+JSON Lines uses `ready`, `event`, `action_start`, `action_result`, and `summary`. Child output stays inside `action_result.output`. This watches local filesystems; save operations can coalesce or generate multiple events. It is not a filesystem audit log.
 
 ### Route and interfaces
 
@@ -497,7 +552,7 @@ The memory view shows `swap/s`, the bytes per second that the kernel moves out t
 
 Press `s` for Linux pressure. It shows CPU, memory, and I/O `some avg10`: the percentage of the last ten seconds during which at least some tasks waited for that resource. The CPU view shows the hottest core and an ASCII bar; on machines with more than 24 cores, the bar shows the first 24.
 
-The detail view also lists the top three processes by CPU. The list refreshes in the background at most once a second, so it does not lengthen the observation interval. Only the dashboard collects it; the table and `--json` output skip it. On Linux, `edc` compares the CPU ticks in `/proc/<pid>/stat` with the previous refresh, so the value covers the time since that refresh. On macOS, it uses the recent decaying average that `ps` reports.
+The detail view also lists the top three processes by CPU. The list refreshes in the background at most once a second, so it does not lengthen the observation interval. Without `--write`, only the dashboard collects it; the table and unfiltered `--json` output skip it. On Linux, `edc` compares the CPU ticks in `/proc/<pid>/stat` with the previous refresh, so the value covers the time since that refresh. On macOS, it uses the recent decaying average that `ps` reports.
 
 The process panel shows CPU candidates by default and RSS candidates in the memory view. It keeps five leaders per metric before the list limit.
 
@@ -513,7 +568,7 @@ The process panel and `PROCESS` bar show the selected time. If a host sample fai
 
 The interval moves between 200ms, 500ms, 1s, 2s, 5s, 10s, 30s, and 1m. Resuming first creates a new baseline, and later rows show rates.
 
-The dashboard quits to the previous screen and leaves no rows behind. Use `--json` to keep the values.
+The dashboard quits to the previous screen and leaves no rows behind. Use `--write <DB>` to record while keeping the dashboard, or `--json` for JSON Lines.
 
 `edc top` prints the earlier table instead of the dashboard in these cases:
 
@@ -522,6 +577,12 @@ The dashboard quits to the previous screen and leaves no rows behind. Use `--jso
 - `NO_COLOR` is set.
 
 On macOS, `edc` reads the CPU ticks of each core from the kernel with the Mach `host_processor_info` call. On Linux, `edc` reads `/proc/stat`. On both systems, every column follows the interval.
+
+On Linux, the `n` view adds conntrack occupancy (`ct%`), listen overflows/s (`listen/s`), and softnet drops/s (`soft/s`). Its panel shows the selected sample's conntrack entries, TCP socket counts, and rates for listen drops, SYN cookies, conntrack drops, UDP receive-buffer errors, and softnet budget exhaustion. Use `↑`/`↓` for history, `Enter` for settings at that sample, and `h` for peaks in the last 60 seconds. Conntrack occupancy warns at 90% and marks risk at 98%; neither proves a connection failure.
+
+Collection uses the current network namespace, but softnet counters and TCP TIME_WAIT can be host-wide. TCP `CurrEstab` includes ESTABLISHED and CLOSE_WAIT. Socket counts are not local port utilization. Missing baselines, failed reads, or counter resets show `—` for rates. Conntrack statistics require an exposed `/proc/net/stat/nf_conntrack`; missing statistics do not prevent other collection.
+
+JSON samples add `network_limits` with the namespace, `settings`, `gauges`, cumulative `counters`, and per-second `rates`. Readings include `status` and, where needed, `reason`; unobserved numbers are omitted. Save JSON Lines to analyze trends after the command exits.
 
 ## Top JSON output
 
@@ -532,6 +593,33 @@ Use `--json` to write one JSON object for each sample. Use `-` for stdout. A pat
 ```
 
 Each line has `time`, `hostname`, `cores`, the network and disk rates in bytes per second, the CPU values in percent, `load1`, `memory_pct`, and `swap_out_bytes_per_s`. macOS and Linux emit network errors and drops, and disk IOPS and await values. Linux additionally emits disk busy values and PSI `some avg10`; `*_health_supported`, `disk_busy_supported`, and `psi_supported` tell consumers whether those values are supported. The `--json` option removes the table and the header.
+
+## Top recordings and history
+
+`--write [path]` (`-w [path]`) appends observations to a local SQLite database. The dashboard stays open; `--count`, pipes, and `--json` retain their output behavior. Recording also allows `--process` in table mode. With no path, `-w` uses `~/.local/state/edc/history.db` on Linux or `~/Library/Application Support/edc/history.db` on macOS. An absolute `XDG_STATE_HOME` overrides the default on both platforms: `$XDG_STATE_HOME/edc/history.db`. The default directory is created with mode 0700. With no `-w` or `--write`, top does not save observations.
+
+```bash
+./bin/edc top -w
+./bin/edc history list
+./bin/edc top -w incident.db
+./bin/edc top --process nginx --count 60 -w incident.db
+./bin/edc top --count 10 -w incident.db --json samples.jsonl
+./bin/edc history list incident.db
+./bin/edc history top --metric memory_pct --min 90 incident.db
+./bin/edc history top --from 2026-10-05T09:00:00+09:00 --to 2026-10-05T10:00:00+09:00 incident.db
+./bin/edc history process --process nginx --metric cpu_pct --min 100 incident.db
+./bin/edc history top --run <run-id> --limit 0 --json - incident.db
+```
+
+Each invocation adds a separate run with host information, edc version, collection settings, start/end times, status, and sample count. `unfinished` means the run has no recorded end, which can indicate an active run or a forced termination. Normal exits flush queued samples; recording errors end observation with exit code `1`. Forced termination preserves committed transactions. A new database has mode 0600. There is no automatic deletion or rotation.
+
+Host samples include the existing numeric top metrics, per-core CPU values, support flags, the actual observation interval, and the process filter active at that time. Without a process filter, recording retains the union of the CPU top five and RSS top five (at most ten). With a filter, it retains up to fifty processes and the total of all matches. It does not record every process. Pausing top pauses recording, and resuming establishes a fresh baseline before the next recorded rate. Process refreshes may be less frequent than host samples; `process_observed_at` identifies the refresh time. PID and precise process start time distinguish reused PIDs when start time is available.
+
+`history list`, `top`, and `process` show newest results first. Omitting the database path selects the same default database, without creating it. `--run` selects one run; `--from` includes the start and `--to` excludes the end, using RFC3339 timestamps. `--limit` defaults to 200; `0` means all matching results. `--json <path|->` emits JSON Lines. Options precede the database path, following Go flag parsing.
+
+`top` and `process` support `--metric <field>` with an inclusive `--min`, `--max`, or both. Use top-level numeric JSON field names, such as `memory_pct`, `disk_await_ms`, `rss_bytes`, or `disk_read_bytes_per_s`. `cpu_pct` means user+system for host samples and the existing per-core percentage for processes. Unsupported or unmeasured SQL values are NULL and do not match numeric thresholds; JSON preserves availability information. The process name/PID filter follows the same rules as `top --process`.
+
+The database uses WAL so you can query while recording. Keep it on a local filesystem. External SQLite tools can inspect `runs`, `top_samples`, and `top_process_samples`; numeric fields are columns and `payload` retains JSON details, including cgroup/eBPF data. `history` opens existing databases for reading and does not create or migrate them. Unrelated databases and unsupported schema versions are rejected. JSON output cannot overwrite the database or its journal files.
 
 ## Filter processes in top
 
@@ -586,7 +674,7 @@ Disk rates require two samples of the same process. The dashboard shows the base
 
 Without `--process`, JSON output has no process fields.
 
-`--process` needs the dashboard or `--json`. The table has no process column, so `edc top --process x --count 5` stops with exit code `2`.
+`--process` needs the dashboard, `--json`, or `--write`. The table has no process column, so `edc top --process x --count 5` stops with exit code `2`.
 
 ### Process resource limits (Linux)
 
@@ -1476,9 +1564,9 @@ For zsh, you can also save the script as `_edc` in a directory of `fpath`.
 
 On Linux, `edc` reads `/proc`, `/sys`, `ip`, `ss`, `ping`, `traceroute` or `tracepath`, and `/etc/resolv.conf`. If `resolvectl` exists, `edc` adds `resolvectl status` as evidence.
 
-On macOS, `edc` uses a system command adapter. Linux and macOS run `capture`. Only macOS runs `quality`.
+On macOS, `edc` uses a system command adapter. Linux and macOS run `capture`. `quality` runs `networkQuality` on macOS and a built-in responsiveness test on Linux. Both report `download_bps`, `upload_bps`, `responsiveness_rpm`, and `base_rtt_ms` when the run measured them; a missing value is left out. The config URL defaults to Apple's `https://mensura.cdn-apple.com/api/v1/gm/config`; `--server` or `defaults.quality.server` replaces it. An empty `server` keeps the default.
 
-Every diagnostic command keeps to read-only inspection. `edc` runs no automatic repair, such as a DNS flush, an interface reset, or a firewall change. `edc log` writes its output, rotation archives, and lock file.
+Every diagnostic command keeps to read-only inspection. `edc` runs no automatic repair, such as a DNS flush, an interface reset, or a firewall change. `edc log` writes its output, rotation archives, and lock file. `edc top --write` writes a SQLite database and its WAL files.
 
 ## License
 

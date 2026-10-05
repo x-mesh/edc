@@ -65,6 +65,7 @@ func runInfo(args []string, version string) int {
 	}
 	printInfo(os.Stdout, version, details, interfaces, disks, public, isTerminal(os.Stdout) && os.Getenv("NO_COLOR") == "", verbose)
 	printInfoResources(os.Stdout, memory, memoryErr, processes, processErr, capabilities, verbose)
+	printInfoNetworkHealth(os.Stdout, collectNetworkHealth(), verbose)
 	if interfaceErr != nil || diskErr != nil || memoryErr != nil || processErr != nil {
 		return 1
 	}

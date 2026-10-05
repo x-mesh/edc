@@ -54,6 +54,7 @@ type nativeQualityReport struct {
 	SelfProbes      int
 	SkippedProbes   int
 	SelfUnavailable bool
+	Intervals       int
 }
 
 type responsivenessEngine struct {
@@ -161,6 +162,7 @@ func (e *responsivenessEngine) Run(ctx context.Context) (nativeQualityReport, na
 	measurement.Interface = interfaceForIP(localIP)
 	report.Measurement = measurement
 	report.Confidence = measurementConfidence(progress.completed, e.params.MAD, progress.stable)
+	report.Intervals = progress.completed
 
 	switch {
 	case loadErr != nil:
@@ -230,13 +232,23 @@ func (e *responsivenessEngine) loadPhase(ctx context.Context, abort context.Canc
 		uploadAverages = append(uploadAverages, movingGoodput(progress.upload, e.params.MAD))
 		e.mu.Lock()
 		window := recentSamples(e.samples, e.params.MAD)
-		e.samples = append(e.samples, responsivenessSamples{})
-		e.interval++
 		e.probeGoodput = downloadAverages[len(downloadAverages)-1] + uploadAverages[len(uploadAverages)-1]
 		e.mu.Unlock()
 
 		downloadStable := stable(downloadAverages, e.params.MAD, e.params.SDT)
 		uploadStable := stable(uploadAverages, e.params.MAD, e.params.SDT)
+		if rpm, ok := responsivenessRPM(window, e.params.TMP); ok {
+			rpmAverages = append(rpmAverages, rpm)
+		}
+		// 안정되면 새 interval을 열기 전에 끝낸다. 빈 interval이 붙으면 Run이 안정 판정과 다른 window로 RPM을 계산한다.
+		if downloadStable && uploadStable && stable(rpmAverages, e.params.MAD, e.params.SDT) {
+			progress.stable = true
+			return progress
+		}
+		e.mu.Lock()
+		e.samples = append(e.samples, responsivenessSamples{})
+		e.interval++
+		e.mu.Unlock()
 		for index := 0; index < e.params.INC; index++ {
 			if !downloadStable {
 				e.addLoad(ctx, abort, config, loadDownload)
@@ -244,13 +256,6 @@ func (e *responsivenessEngine) loadPhase(ctx context.Context, abort context.Canc
 			if !uploadStable {
 				e.addLoad(ctx, abort, config, loadUpload)
 			}
-		}
-		if rpm, ok := responsivenessRPM(window, e.params.TMP); ok {
-			rpmAverages = append(rpmAverages, rpm)
-		}
-		if downloadStable && uploadStable && stable(rpmAverages, e.params.MAD, e.params.SDT) {
-			progress.stable = true
-			return progress
 		}
 	}
 }

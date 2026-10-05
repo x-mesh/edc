@@ -1170,7 +1170,7 @@ Use `--container <name|id>` to show only the events of one docker container on L
 
 In a bridge network, the addresses and ports are the addresses and ports inside the container. For example, a server published with `-p 8080:80` shows port 80.
 
-In the full-screen terminal view, press `s` for source rows, `t` for target rows, `p` for port rows, `c` for process rows, `e` for event rows, or `g` for scrolling events. Press `Tab` to show the next view. Press `Shift+Tab` to show the previous view. If the terminal is wide, the first column becomes wider and shows the full group value. If the terminal is narrow, the byte columns use short units, for example `195K` for 195 KiB.
+In the full-screen terminal view, press `s` for source rows, `t` for target rows, `p` for port rows, `c` for process rows, `e` for event rows, or `g` for scrolling events. In `trace http`, press `u` for path rows. Press `Tab` to show the next view. Press `Shift+Tab` to show the previous view. If the terminal is wide, the first column becomes wider and shows the full group value. If the terminal is narrow, the byte columns use short units, for example `195K` for 195 KiB.
 The full-screen view keeps the last 10,000 events. The live rates use the time that these events cover. The summary after Ctrl-C uses all events.
 Grouped rows in the full-screen view show the groups with the most traffic first. If the rows do not fit the terminal, the view shows the top rows.
 
@@ -1275,6 +1275,7 @@ Use `trace http` on Linux 5.15 or later to print plain HTTP/1.x requests and res
 ```bash
 ./bin/edc trace http
 ./bin/edc trace http --group-by target
+./bin/edc trace http --group-by path
 ./bin/edc trace http --side server --process nginx
 ./bin/edc trace http --payload
 ./bin/edc trace http --side server --port 8080
@@ -1294,6 +1295,8 @@ JSON events have `"side": "client"` or `"side": "server"`. Use `--side client` o
 
 A proxy shows one request on each hop. For example, nginx receives requests on port 9900 and sends them to a backend on port 9000 on the same host. Then one user request gives three request rows: `server:` for nginx on port 9900, `client:` for nginx to port 9000, and `server:` for the backend on port 9000. The grouped views keep the server side in separate rows, for example `nginx (server)`.
 
+Use `--group-by path` to group the events by the request path. In the full-screen view, press `u`. Only `trace http` has the path view. The path has no query, and one path row includes all hosts and methods. A response goes into the row of its request. A `tls_hello` event and a response without a request go into the `-` row. If the path contains an ID, for example `/users/123`, each ID gets a different row.
+
 | To see | Command |
 | --- | --- |
 | All HTTP on this host | `./bin/edc trace http` |
@@ -1302,6 +1305,7 @@ A proxy shows one request on each hop. For example, nginx receives requests on p
 | Both ends of the connections to port 9000 | `./bin/edc trace http --port 9000` |
 | Only the requests that the proxy on port 9900 received | `./bin/edc trace http --side server --port 9900` |
 | The latency of each process on each side | `./bin/edc trace http --port 9000 --group-by process` |
+| The requests, errors, and latency of each path | `./bin/edc trace http --group-by path` |
 
 The client latency and the server latency of one hop measure different times. The client latency includes the network and the wait before the server reads the request. The server latency includes only the work of the server. If the client latency is much larger than the server latency, examine the network and the server queue.
 

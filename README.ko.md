@@ -1004,7 +1004,7 @@ Linux에서 `--container <name|id>`를 주면 docker container 하나의 event�
 
 bridge network에서는 주소와 port가 container 안의 값입니다. 예를 들어 `-p 8080:80`으로 publish한 서버는 port 80으로 보입니다.
 
-전체 화면 terminal에서는 `s`로 source 행, `t`로 target 행, `p`로 port 행, `c`로 process 행, `e`로 event 행, `g`로 event 스크롤을 표시합니다. `Tab`은 다음 보기, `Shift+Tab`은 이전 보기로 바꿉니다. terminal 폭이 넓으면 첫 열을 넓혀 group 값을 자르지 않고 표시합니다. 폭이 좁으면 byte 열을 `195K`(195 KiB)처럼 짧은 단위로 표시합니다.
+전체 화면 terminal에서는 `s`로 source 행, `t`로 target 행, `p`로 port 행, `c`로 process 행, `e`로 event 행, `g`로 event 스크롤을 표시합니다. `trace http`에서는 `u`로 path 행을 표시합니다. `Tab`은 다음 보기, `Shift+Tab`은 이전 보기로 바꿉니다. terminal 폭이 넓으면 첫 열을 넓혀 group 값을 자르지 않고 표시합니다. 폭이 좁으면 byte 열을 `195K`(195 KiB)처럼 짧은 단위로 표시합니다.
 전체 화면은 최근 event 10,000개를 유지하고, live rate는 이 event들이 걸친 시간으로 계산합니다. `Ctrl-C` 후 summary는 모든 event를 사용합니다.
 전체 화면의 group 행은 traffic이 많은 group부터 표시합니다. 행이 terminal에 다 들어가지 않으면 위쪽 행을 표시합니다.
 
@@ -1109,6 +1109,7 @@ Linux 5.15 이상에서 `trace http`를 사용하면 평문 HTTP/1.x 요청과 �
 ```bash
 ./bin/edc trace http
 ./bin/edc trace http --group-by target
+./bin/edc trace http --group-by path
 ./bin/edc trace http --side server --process nginx
 ./bin/edc trace http --payload
 ./bin/edc trace http --side server --port 8080
@@ -1128,6 +1129,8 @@ JSON event에는 `"side": "client"`나 `"side": "server"`가 붙습니다. 한 �
 
 proxy를 거치는 요청은 구간마다 한 번씩 보입니다. 예를 들어 같은 host에서 nginx가 port 9900으로 요청을 받아 port 9000의 backend로 보내면, 사용자 요청 하나가 요청 행 세 개로 나옵니다. port 9900에서 받은 nginx의 `server:`, port 9000으로 보낸 nginx의 `client:`, port 9000에서 받은 backend의 `server:`입니다. group 보기는 server 쪽을 `nginx (server)`처럼 따로 묶습니다.
 
+`--group-by path`를 사용하면 요청 path별로 event를 묶습니다. 전체 화면에서는 `u`를 누릅니다. path 보기는 `trace http`에만 있습니다. path에는 query가 없고, host와 method가 달라도 path가 같으면 한 행에 묶습니다. 응답은 짝지은 요청의 행에 들어갑니다. `tls_hello` event와 짝이 없는 응답은 `-` 행에 들어갑니다. `/users/123`처럼 path에 ID가 들어 있으면 ID마다 행이 따로 생깁니다.
+
 | 보려는 것 | 명령 |
 | --- | --- |
 | 이 host의 HTTP 전부 | `./bin/edc trace http` |
@@ -1136,6 +1139,7 @@ proxy를 거치는 요청은 구간마다 한 번씩 보입니다. 예를 들어
 | port 9000 연결의 양 끝 | `./bin/edc trace http --port 9000` |
 | port 9900의 proxy가 받은 요청만 | `./bin/edc trace http --side server --port 9900` |
 | 쪽마다 process별 응답 시간 | `./bin/edc trace http --port 9000 --group-by process` |
+| path별 요청, 오류, 응답 시간 | `./bin/edc trace http --group-by path` |
 
 한 구간의 client 응답 시간과 서버 응답 시간은 서로 다른 시간을 잽니다. client 응답 시간에는 network와, 서버가 요청을 읽기 전까지 기다린 시간이 들어갑니다. 서버 응답 시간에는 서버가 처리한 시간만 들어갑니다. client 응답 시간이 서버 응답 시간보다 훨씬 길면 network와 서버의 대기열을 확인합니다.
 

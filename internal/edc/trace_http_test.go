@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	tea "charm.land/bubbletea/v2"
 )
 
 func TestParseHTTPRequestReadsTheRequestLineAndHost(t *testing.T) {
@@ -373,6 +375,106 @@ func TestHTTPTraceGroupsKeepTheSidesApart(t *testing.T) {
 	}
 	if report := summarizeTraceGroups("http", traceGroupByProcess, events[:1], captureSummary{}, time.Second, "", ""); report.Side != traceServerSide {
 		t.Fatalf("server-only group report side = %q", report.Side)
+	}
+}
+
+func TestHTTPTraceGroupsByPath(t *testing.T) {
+	tracker := newHTTPTracker("", false, false)
+	orphan := httpTestPacket("HTTP/1.1 200 OK\r\n\r\n", 7_000_000, false)
+	orphan.socket = 3
+	var events []captureEvent
+	for _, packet := range []httpPacket{
+		httpTestPacket("GET /a?token=x HTTP/1.1\r\nHost: api.example\r\n\r\n", 1_000_000, true),
+		httpTestPacket("HTTP/1.1 200 OK\r\n\r\n", 2_000_000, false),
+		httpTestPacket("POST /a HTTP/1.1\r\nHost: other.example\r\n\r\n", 3_000_000, true),
+		httpTestPacket("HTTP/1.1 503 Service Unavailable\r\n\r\n", 4_000_000, false),
+		httpTestPacket("GET /b HTTP/1.1\r\nHost: api.example\r\n\r\n", 5_000_000, true),
+		httpTestPacket(string(tlsHandBuiltClientHello("api.example", "h2")), 6_000_000, true),
+		orphan,
+	} {
+		event, ok := tracker.event(packet, 0)
+		if !ok {
+			t.Fatalf("packet %q made no event", packet.payload)
+		}
+		events = append(events, event)
+	}
+	groups := map[string]traceGroupSummary{}
+	for _, group := range summarizeTraceGroups("http", traceGroupByPath, events, captureSummary{}, time.Second, "", "").Groups {
+		groups[group.Group] = group
+	}
+	if len(groups) != 3 {
+		t.Fatalf("path groups = %#v", groups)
+	}
+	// 응답은 짝지은 요청의 path를 물려받아, 요청과 같은 행에서 응답 없음이 빠진다. host와 method가 달라도 한 행이다.
+	if http := groups["/a"].HTTP; http == nil || http.Requests != 2 || http.Responses != 2 || http.ServerErrors != 1 || http.Unanswered != 0 {
+		t.Fatalf("/a group = %#v", http)
+	}
+	if http := groups["/b"].HTTP; http == nil || http.Requests != 1 || http.Unanswered != 1 {
+		t.Fatalf("/b group = %#v", http)
+	}
+	// path를 모르는 ClientHello와 짝 없는 응답은 - 행에 모은다.
+	if group := groups["-"]; group.Events != 2 || group.HTTP == nil || group.HTTP.Requests != 0 || group.HTTP.Responses != 1 {
+		t.Fatalf("- group = %#v, http %#v", group, group.HTTP)
+	}
+	sides := summarizeTraceGroups("http", traceGroupByPath, proxyTestEvents(t, newHTTPTracker("", false, false)), captureSummary{}, time.Second, "", "")
+	if len(sides.Groups) != 2 || sides.Groups[0].Server == sides.Groups[1].Server {
+		t.Fatalf("proxy path groups = %#v", sides.Groups)
+	}
+	for _, group := range sides.Groups {
+		label := "/admin/chain"
+		if group.Server {
+			label += traceServerSuffix
+		}
+		if value := traceGroupDisplayValue(traceGroupByPath, group); value != label || group.HTTP.Requests != 1 || group.HTTP.Unanswered != 0 {
+			t.Fatalf("proxy path group %q = %#v", value, group)
+		}
+	}
+}
+
+func TestTraceGroupsPutTheClientRowBeforeTheServerRowOfTheSameName(t *testing.T) {
+	events := proxyTestEvents(t, newHTTPTracker("", false, false))
+	// group은 map에 모으므로 순서가 실행마다 다르다. 여러 번 만들어 매번 같은 순서인지 본다.
+	for range 32 {
+		for _, view := range []string{traceGroupByProcess, traceGroupByPath} {
+			groups := summarizeTraceGroups("http", view, events, captureSummary{}, time.Second, "", "").Groups
+			if len(groups) != 2 || groups[0].Server || !groups[1].Server {
+				t.Fatalf("%s groups = %#v", view, groups)
+			}
+		}
+	}
+}
+
+func TestOnlyHTTPTraceHasThePathView(t *testing.T) {
+	if views := traceGroupViews("http"); views[len(views)-1] != traceGroupByPath {
+		t.Fatalf("http views = %q", views)
+	}
+	if help := traceScreenHelp("http"); !strings.Contains(help, "e event  u path  g scroll") {
+		t.Fatalf("http help = %q", help)
+	}
+	model := newTraceScreenModel("http", tcpTraceOptions{}, make(chan captureEvent), make(chan traceFinishedMsg), nil)
+	next, _ := model.updateKey(tea.KeyPressMsg{Code: 'u', Text: "u"})
+	if next.(traceScreenModel).groupBy != traceGroupByPath {
+		t.Fatal("u did not switch the http trace to the path view")
+	}
+	if got := nextTraceGroup(traceGroupViews("http"), traceGroupByPath, 1); got != "" {
+		t.Fatalf("tab after path = %q, want the event scroll", got)
+	}
+	for _, protocol := range []string{"tcp", "udp", "dns", "mysql", "socket", "drop"} {
+		if slices.Contains(traceGroupViews(protocol), traceGroupByPath) {
+			t.Fatalf("%s has the path view", protocol)
+		}
+	}
+	model = newTraceScreenModel("tcp", tcpTraceOptions{}, make(chan captureEvent), make(chan traceFinishedMsg), nil)
+	if next, _ := model.updateKey(tea.KeyPressMsg{Code: 'u', Text: "u"}); next.(traceScreenModel).groupBy != "" {
+		t.Fatal("u switched the tcp trace to the path view")
+	}
+	stderr := traceCaptureOutput(t, &os.Stderr, func() {
+		if code := runTrace([]string{"tcp", "--group-by", traceGroupByPath}); code != 2 {
+			t.Fatalf("trace tcp --group-by path exit = %d, want 2", code)
+		}
+	})
+	if !strings.Contains(stderr, "--group-by path") {
+		t.Fatalf("trace tcp --group-by path stderr = %q", stderr)
 	}
 }
 

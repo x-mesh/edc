@@ -473,7 +473,7 @@ func (model traceScreenModel) updateKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd
 		model.input.SetValue(model.filter)
 		model.filtering = true
 		return model, model.input.Focus()
-	case "s", "t", "p", "c", "e", "g":
+	case "s", "t", "p", "c", "e", "u", "g":
 		if view := traceGroupKeyViews[key.String()]; slices.Contains(traceGroupViews(model.protocol), view) {
 			model.groupBy = view
 		}
@@ -551,7 +551,7 @@ func (model traceScreenModel) updateKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd
 // traceGroupCycle은 Tab이 넘겨 가는 순서다. 기본 화면인 event 스크롤에서 시작해 s, t, p, c, e 키와 같은 순서로 간다.
 var traceGroupCycle = []string{"", traceGroupBySource, traceGroupByTarget, traceGroupByPort, traceGroupByProcess, traceGroupByEvent}
 
-var traceGroupKeyViews = map[string]string{"g": "", "s": traceGroupBySource, "t": traceGroupByTarget, "p": traceGroupByPort, "c": traceGroupByProcess, "e": traceGroupByEvent}
+var traceGroupKeyViews = map[string]string{"g": "", "s": traceGroupBySource, "t": traceGroupByTarget, "p": traceGroupByPort, "c": traceGroupByProcess, "e": traceGroupByEvent, "u": traceGroupByPath}
 
 func nextTraceGroup(views []string, current string, step int) string {
 	index := 0

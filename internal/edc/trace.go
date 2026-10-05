@@ -26,6 +26,7 @@ const (
 	traceGroupByPort    = "port"
 	traceGroupByProcess = "process"
 	traceGroupByEvent   = "event"
+	traceGroupByPath    = "path"
 )
 
 // traceProtocolSpec은 trace가 protocol마다 다르게 보여 주는 부분이다. 수집, filter, group 묶기는 protocol과 상관없이 같다.
@@ -39,6 +40,8 @@ type traceProtocolSpec struct {
 	hideTraffic bool
 	// hiddenViews는 이 protocol에서 의미가 없는 group 보기다. DNS 서버 port는 늘 53이라 port 보기는 한 행뿐이다.
 	hiddenViews []string
+	// extraViews는 이 protocol에만 있는 group 보기다. Tab 순서에서 공통 보기 뒤에 온다.
+	extraViews []string
 	// linuxOnly는 macOS가 관측하지 못하는 protocol이다. macOS의 network statistics는 payload를 주지 않는다.
 	linuxOnly bool
 	// scrollLabels는 스크롤 행의 목적지 칸과 event 칸이다. nil이면 목적지와 event 이름을 쓴다.
@@ -106,7 +109,7 @@ var traceProtocolRegistry = []traceProtocolRegistration{
 	}},
 	// 평문 HTTP/1.x만 본다. TLS 안의 HTTP는 kernel에서 암호문이다.
 	{name: "http", view: traceProtocolView{selectorLabel: "http"}, spec: traceProtocolSpec{
-		ansiColor: "95", screenColor: "#f472b6", groupColumns: traceHTTPGroupColumns, hideTraffic: true, linuxOnly: true,
+		ansiColor: "95", screenColor: "#f472b6", groupColumns: traceHTTPGroupColumns, hideTraffic: true, extraViews: []string{traceGroupByPath}, linuxOnly: true,
 		scrollLabels: traceHTTPScrollLabels, serverSide: true, prerequisites: httpTracePrerequisites, newSummarizer: func() traceSummarizer { return newHTTPTraceSummarizer() },
 	}},
 	// 평문 MySQL만 본다. TLS 안의 packet은 kernel에서 암호문이다. 색은 다른 protocol이 쓰지 않는 값이다.
@@ -186,7 +189,8 @@ func traceProtocolPrerequisites(protocol string) error {
 // traceGroupViews는 protocol이 쓰는 보기를 Tab 순서로 돌려준다. 첫 값은 event 스크롤이다.
 func traceGroupViews(protocol string) []string {
 	hidden := traceProtocols[protocol].hiddenViews
-	return slices.DeleteFunc(slices.Clone(traceGroupCycle), func(view string) bool { return slices.Contains(hidden, view) })
+	views := slices.DeleteFunc(slices.Clone(traceGroupCycle), func(view string) bool { return slices.Contains(hidden, view) })
+	return append(views, traceProtocols[protocol].extraViews...)
 }
 
 func traceScrollLabels(event captureEvent) (string, string) {
@@ -635,7 +639,7 @@ func runTraceProtocol(args []string) int {
 }
 
 func validTraceGroupBy(groupBy string) bool {
-	return groupBy == "" || groupBy == traceGroupBySource || groupBy == traceGroupByTarget || groupBy == traceGroupByPort || groupBy == traceGroupByProcess || groupBy == traceGroupByEvent
+	return groupBy == "" || groupBy == traceGroupBySource || groupBy == traceGroupByTarget || groupBy == traceGroupByPort || groupBy == traceGroupByProcess || groupBy == traceGroupByEvent || groupBy == traceGroupByPath
 }
 
 // traceEventDestinationLabel은 목적지 뒤에 명령줄에서 얻은 target을 붙인다. 두 이벤트 화면이 같은 표시를 쓴다.
@@ -1129,7 +1133,13 @@ func (summarizer *traceGroupSummarizer) report(summary captureSummary, duration 
 	if summarizer.groupBy == traceGroupByPort {
 		sort.Slice(result.Groups, func(i, j int) bool { return tracePortGroupLess(result.Groups[i], result.Groups[j]) })
 	} else {
-		sort.Slice(result.Groups, func(i, j int) bool { return result.Groups[i].Group < result.Groups[j].Group })
+		sort.Slice(result.Groups, func(i, j int) bool {
+			left, right := result.Groups[i], result.Groups[j]
+			if left.Group != right.Group {
+				return left.Group < right.Group
+			}
+			return !left.Server && right.Server
+		})
 	}
 	return result
 }
@@ -1146,6 +1156,12 @@ func traceGroupKey(event captureEvent, groupBy string) (string, bool) {
 			return "-", false
 		}
 		return event.Process, false
+	}
+	if groupBy == traceGroupByPath {
+		if event.Path == "" {
+			return "-", false
+		}
+		return event.Path, false
 	}
 	if groupBy == traceGroupBySource {
 		if event.Source == "" {

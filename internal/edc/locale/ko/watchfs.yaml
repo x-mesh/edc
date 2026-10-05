@@ -28,3 +28,7 @@ watchfs:
   ready: "WATCH %s · recursive=%t"
   output_truncated: "action 출력을 %d byte에서 잘랐습니다."
   summary: "이벤트 %d개 · action %d개 · 실패 %d개 · %s"
+  stop:
+    duration: "중지: --duration 경과"
+    cancelled: "중지: 사용자 중단"
+    watch_error: "중지: 감시 오류"

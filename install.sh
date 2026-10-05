@@ -145,6 +145,9 @@ echo "installed $install_path"
 
 # remove_old_copy removes an edc that an earlier installer put in ~/.local/bin. Ubuntu puts ~/.local/bin
 # before /usr/local/bin in PATH, so the old binary would still run. A file that is not edc stays.
+# Only the default Linux install moved away from ~/.local/bin. On macOS that path is the install, and an
+# explicit BINDIR is a side install, such as a check of a release; removing ~/.local/bin/edc there deletes
+# the copy the user runs.
 removed=""
 remove_old_copy() {
 	old="$1/.local/bin/edc"
@@ -165,11 +168,13 @@ remove_old_copy() {
 	fi
 }
 
-[ -z "${HOME:-}" ] || remove_old_copy "$HOME"
-# With sudo, HOME is /root, but the old copy is usually in the home of the user who ran sudo.
-if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ] && command -v getent >/dev/null 2>&1; then
-	sudo_home=$(getent passwd "$SUDO_USER" | cut -d: -f6)
-	[ -z "$sudo_home" ] || [ "$sudo_home" = "${HOME:-}" ] || remove_old_copy "$sudo_home"
+if [ "$os" = linux ] && [ "$bindir_is_default" = 1 ]; then
+	[ -z "${HOME:-}" ] || remove_old_copy "$HOME"
+	# With sudo, HOME is /root, but the old copy is usually in the home of the user who ran sudo.
+	if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ] && command -v getent >/dev/null 2>&1; then
+		sudo_home=$(getent passwd "$SUDO_USER" | cut -d: -f6)
+		[ -z "$sudo_home" ] || [ "$sudo_home" = "${HOME:-}" ] || remove_old_copy "$sudo_home"
+	fi
 fi
 if [ -n "$removed" ]; then
 	echo "If your shell still runs the old path, run: hash -r"

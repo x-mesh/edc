@@ -4,6 +4,8 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
+	"fmt"
+	"io"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -247,5 +249,223 @@ func TestQualityNativeConfigServerValidation(t *testing.T) {
 		if err != nil && !errors.Is(err, errQualityServerInvalid) {
 			t.Fatalf("validateQualityServer(%q) error type = %v", tc.raw, err)
 		}
+	}
+}
+
+const (
+	qualityTestChunkBytes    = 32 << 10
+	qualityTestFiniteChunks  = 8
+	qualityTestUploadLimit   = 256 << 10
+	qualityTestAbortAfter    = 64 << 10
+	qualityTestCancelAfter   = 300 * time.Millisecond
+	qualityTestRunTimeout    = 5 * time.Second
+	qualityTestReturnSlack   = 500 * time.Millisecond
+	qualityTestInterval      = 50 * time.Millisecond
+	qualityTestMaxRun        = time.Second
+	qualityTestGrace         = 500 * time.Millisecond
+	qualityTestReserve       = 100 * time.Millisecond
+	qualityTestMovingWindow  = 2
+	qualityTestIdleProbes    = 2
+	qualityTestProbeRate     = 40
+	qualityTestInflightLimit = 8
+)
+
+type qualityTestServerOptions struct {
+	http2        bool
+	abortLarge   bool
+	slurpBounded bool
+}
+
+func qualityTestParams() responsivenessParams {
+	params := defaultResponsivenessParams()
+	params.MAD, params.ID, params.MaxRun = qualityTestMovingWindow, qualityTestInterval, qualityTestMaxRun
+	params.IdleProbes, params.InitialProbeRate, params.MaxInflightProbes = qualityTestIdleProbes, qualityTestProbeRate, qualityTestInflightLimit
+	params.FinalizeReserve, params.ShutdownGrace = qualityTestReserve, qualityTestGrace
+	return params
+}
+
+func newQualityTestEngine(t *testing.T, options qualityTestServerOptions) *responsivenessEngine {
+	t.Helper()
+	mux := http.NewServeMux()
+	var server *httptest.Server
+	mux.HandleFunc("/config", func(writer http.ResponseWriter, _ *http.Request) {
+		_, _ = fmt.Fprintf(writer, `{"version":1,"test_endpoint":"edge.test","urls":{"large_download_url":"%[1]s/large","small_download_url":"%[1]s/small","upload_url":"%[1]s/slurp"}}`, server.URL)
+	})
+	mux.HandleFunc("/small", func(writer http.ResponseWriter, _ *http.Request) {
+		_, _ = writer.Write([]byte{0})
+	})
+	mux.HandleFunc("/large", func(writer http.ResponseWriter, request *http.Request) {
+		chunk := make([]byte, qualityTestChunkBytes)
+		flusher, _ := writer.(http.Flusher)
+		for written := 0; written < qualityTestFiniteChunks; written++ {
+			if request.Context().Err() != nil {
+				return
+			}
+			if _, err := writer.Write(chunk); err != nil {
+				return
+			}
+			if flusher != nil {
+				flusher.Flush()
+			}
+			if options.abortLarge && (written+1)*qualityTestChunkBytes >= qualityTestAbortAfter {
+				panic(http.ErrAbortHandler)
+			}
+		}
+	})
+	mux.HandleFunc("/slurp", func(writer http.ResponseWriter, request *http.Request) {
+		body := io.Reader(request.Body)
+		if options.slurpBounded {
+			body = io.LimitReader(request.Body, qualityTestUploadLimit)
+		}
+		_, _ = io.Copy(io.Discard, body)
+	})
+	server = httptest.NewUnstartedServer(mux)
+	if options.http2 {
+		server.EnableHTTP2 = true
+		server.StartTLS()
+	} else {
+		server.Start()
+	}
+	t.Cleanup(func() {
+		server.CloseClientConnections()
+		server.Close()
+	})
+	base := server.Client().Transport.(*http.Transport)
+	engine := newResponsivenessEngine(server.URL + "/config")
+	engine.params = qualityTestParams()
+	engine.newTransport = func() *http.Transport { return base.Clone() }
+	return engine
+}
+
+func runQualityTestEngine(t *testing.T, engine *responsivenessEngine, ctx context.Context) Result {
+	t.Helper()
+	report, outcome, err := engine.Run(ctx)
+	result := nativeQualityResult(time.Now(), report, outcome, err)
+	if active := engine.active.Load(); active != 0 {
+		t.Fatalf("active workers = %d after Run", active)
+	}
+	return result
+}
+
+func TestQualityNativeRun(t *testing.T) {
+	engine := newQualityTestEngine(t, qualityTestServerOptions{http2: true, slurpBounded: true})
+	ctx, cancel := context.WithTimeout(context.Background(), qualityTestRunTimeout)
+	defer cancel()
+	result := runQualityTestEngine(t, engine, ctx)
+	if result.Status != StatusPass {
+		t.Fatalf("result = %+v", result)
+	}
+	for _, key := range []string{"download_bps", "upload_bps", "responsiveness_rpm", "base_rtt_ms", "source", "confidence", "download_flows", "upload_flows", "config_url", "test_endpoint", "foreign_probes", "self_probes"} {
+		if _, ok := result.Metrics[key]; !ok {
+			t.Errorf("metrics miss %s: %v", key, result.Metrics)
+		}
+	}
+	if result.Metrics["self_probes"].(int) == 0 || result.Metrics["source"] != qualitySourceNative {
+		t.Fatalf("metrics = %v", result.Metrics)
+	}
+	if !strings.Contains(result.Summary, "↓") || !strings.Contains(result.Summary, "RPM") {
+		t.Fatalf("summary = %q", result.Summary)
+	}
+	if seen := engine.maxInflight.Load(); seen > int64(engine.params.MaxInflightProbes) {
+		t.Fatalf("in-flight probes reached %d", seen)
+	}
+}
+
+func TestQualityNativePartial(t *testing.T) {
+	engine := newQualityTestEngine(t, qualityTestServerOptions{http2: true})
+	engine.params.MaxRun = qualityTestRunTimeout
+	// SDT 0은 안정 판정을 막아 취소 전에 측정이 끝나지 않게 한다.
+	engine.params.SDT = 0
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	timer := time.AfterFunc(qualityTestCancelAfter, cancel)
+	defer timer.Stop()
+	started := time.Now()
+	result := runQualityTestEngine(t, engine, ctx)
+	if elapsed := time.Since(started); elapsed > qualityTestCancelAfter+engine.params.ShutdownGrace+qualityTestReturnSlack {
+		t.Fatalf("Run returned after %s", elapsed)
+	}
+	if result.Status != StatusWarn || len(result.Warnings) == 0 || result.Warnings[0] != T("observe.quality.warn.partial") {
+		t.Fatalf("result = %+v", result)
+	}
+	if _, ok := result.Metrics["download_bps"]; !ok {
+		t.Fatalf("metrics = %v", result.Metrics)
+	}
+}
+
+func TestQualityNativeCancel(t *testing.T) {
+	engine := newQualityTestEngine(t, qualityTestServerOptions{http2: true})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	started := time.Now()
+	result := runQualityTestEngine(t, engine, ctx)
+	if elapsed := time.Since(started); elapsed > engine.params.ShutdownGrace+qualityTestReturnSlack {
+		t.Fatalf("Run returned after %s", elapsed)
+	}
+	if result.Status != StatusFail || result.Error == nil || result.Error.Kind != "timeout" {
+		t.Fatalf("result = %+v", result)
+	}
+}
+
+func TestQualityNativeHTTP1(t *testing.T) {
+	engine := newQualityTestEngine(t, qualityTestServerOptions{})
+	ctx, cancel := context.WithTimeout(context.Background(), qualityTestRunTimeout)
+	defer cancel()
+	result := runQualityTestEngine(t, engine, ctx)
+	if result.Status != StatusPass {
+		t.Fatalf("result = %+v", result)
+	}
+	if result.Metrics["self_probes"] != 0 {
+		t.Fatalf("self probes = %v", result.Metrics["self_probes"])
+	}
+	if _, ok := result.Metrics["responsiveness_rpm"]; !ok {
+		t.Fatalf("metrics = %v", result.Metrics)
+	}
+	found := false
+	for _, warning := range result.Warnings {
+		found = found || warning == T("observe.quality.warn.self_unavailable")
+	}
+	if !found {
+		t.Fatalf("warnings = %q", result.Warnings)
+	}
+}
+
+func TestQualityNativeLoadError(t *testing.T) {
+	engine := newQualityTestEngine(t, qualityTestServerOptions{http2: true, abortLarge: true})
+	ctx, cancel := context.WithTimeout(context.Background(), qualityTestRunTimeout)
+	defer cancel()
+	result := runQualityTestEngine(t, engine, ctx)
+	if result.Status != StatusFail || result.Error == nil || result.Error.Kind != "load" {
+		t.Fatalf("result = %+v", result)
+	}
+	if _, ok := result.Metrics["download_bps"]; !ok {
+		t.Fatalf("metrics = %v", result.Metrics)
+	}
+}
+
+func TestQualityNativeConfigFailure(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		_, _ = writer.Write([]byte(`{"version":1}`))
+	}))
+	defer server.Close()
+	engine := newResponsivenessEngine(server.URL)
+	engine.params = qualityTestParams()
+	result := runQualityTestEngine(t, engine, context.Background())
+	if result.Status != StatusFail || result.Error == nil || result.Error.Kind != "config" {
+		t.Fatalf("result = %+v", result)
+	}
+	if engine.downloadBytes.Load() != 0 || engine.uploadBytes.Load() != 0 {
+		t.Fatal("load started after a config failure")
+	}
+}
+
+func TestQualityNativeNoLeak(t *testing.T) {
+	engine := newQualityTestEngine(t, qualityTestServerOptions{http2: true})
+	ctx, cancel := context.WithTimeout(context.Background(), qualityTestRunTimeout)
+	defer cancel()
+	runQualityTestEngine(t, engine, ctx)
+	engine.workers.Wait()
+	if active := engine.active.Load(); active != 0 {
+		t.Fatalf("active workers = %d", active)
 	}
 }

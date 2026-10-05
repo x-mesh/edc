@@ -126,6 +126,14 @@ observe:
   quality:
     warn:
       no_metrics: "networkQuality がスループットや応答性の値を返しませんでした"
+      partial: "測定を早めに止めたため、測定できた区間だけの値です"
+      self_unavailable: "サーバーが HTTP/2 を使わないため、RPM は別の接続だけで計算しました"
+    confidence:
+      low: "信頼度 低"
+      medium: "信頼度 中"
+      high: "信頼度 高"
+    error:
+      no_data: "停止する前にスループットや応答性を測定できませんでした"
 
   doctor:
     guidance_heading: "追加調査の提案（順序は原因関係を示しません）"

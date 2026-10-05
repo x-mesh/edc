@@ -126,6 +126,14 @@ observe:
   quality:
     warn:
       no_metrics: "networkQuality reported no throughput or responsiveness value"
+      partial: "edc stopped early, so the numbers cover only the part it measured"
+      self_unavailable: "the server did not use HTTP/2, so RPM uses separate connections only"
+    confidence:
+      low: "low confidence"
+      medium: "medium confidence"
+      high: "high confidence"
+    error:
+      no_data: "edc measured no throughput or responsiveness before it stopped"
 
   doctor:
     guidance_heading: "Investigation suggestions (order does not establish a cause)"

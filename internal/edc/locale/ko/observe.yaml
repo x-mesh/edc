@@ -126,6 +126,14 @@ observe:
   quality:
     warn:
       no_metrics: "networkQuality가 처리량이나 응답성 값을 알려 주지 않았습니다"
+      partial: "측정을 일찍 멈춰 측정한 구간만의 값입니다"
+      self_unavailable: "서버가 HTTP/2를 쓰지 않아 RPM은 별도 연결만으로 계산했습니다"
+    confidence:
+      low: "신뢰도 낮음"
+      medium: "신뢰도 보통"
+      high: "신뢰도 높음"
+    error:
+      no_data: "멈추기 전에 처리량이나 응답성을 측정하지 못했습니다"
 
   doctor:
     guidance_heading: "후속 조사 제안 (순서는 원인 관계를 뜻하지 않습니다)"

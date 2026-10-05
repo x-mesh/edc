@@ -1,5 +1,9 @@
 watchfs:
   summary: "%d events · %d actions · %d failed · %s"
+  stop:
+    duration: "stopped: --duration reached"
+    cancelled: "stopped: interrupted"
+    watch_error: "stopped: watcher error"
   option:
     recursive: "watch all subdirectories; do not follow directory symlinks"
     event: "comma-separated create,modify,remove,rename events"

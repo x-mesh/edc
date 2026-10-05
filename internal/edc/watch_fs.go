@@ -326,25 +326,25 @@ func writeFSWatchRecord(writer io.Writer, record fsWatchRecord, jsonOutput bool)
 	stamp := record.Time.Local().Format("15:04:05.000")
 	switch record.Type {
 	case "ready":
-		_, err := fmt.Fprintf(writer, "%s  %s\n", stamp, T("watchfs.ready", asciiJSON(record.Root), record.Recursive))
+		_, err := fmt.Fprintf(writer, "%s  %s\n", stamp, T("watchfs.ready", terminalJSON(record.Root), record.Recursive))
 		return err
 	case "event":
-		_, err := fmt.Fprintf(writer, "%s  %-7s  %s\n", stamp, strings.ToUpper(record.Event), asciiJSON(record.Path))
+		_, err := fmt.Fprintf(writer, "%s  %-7s  %s\n", stamp, strings.ToUpper(record.Event), terminalJSON(record.Path))
 		return err
 	case "action_start":
-		_, err := fmt.Fprintf(writer, "%s  START    %s · %s · %s\n", stamp, asciiJSON(record.Rule), asciiJSON(record.Path), asciiJSON(strings.Join(record.Command, " ")))
+		_, err := fmt.Fprintf(writer, "%s  START    %s · %s · %s\n", stamp, terminalJSON(record.Rule), terminalJSON(record.Path), terminalJSON(strings.Join(record.Command, " ")))
 		return err
 	case "action_result":
 		exit := "—"
 		if record.ExitCode != nil {
 			exit = fmt.Sprint(*record.ExitCode)
 		}
-		if _, err := fmt.Fprintf(writer, "%s  DONE     %s · %s · exit %s · %dms\n", stamp, asciiJSON(record.Rule), record.Status, exit, record.DurationMS); err != nil {
+		if _, err := fmt.Fprintf(writer, "%s  DONE     %s · %s · exit %s · %dms\n", stamp, terminalJSON(record.Rule), record.Status, exit, record.DurationMS); err != nil {
 			return err
 		}
 		if record.Output != "" {
 			for _, line := range strings.Split(strings.TrimSuffix(record.Output, "\n"), "\n") {
-				if _, err := fmt.Fprintf(writer, "          %s | %s\n", asciiJSON(record.Rule), asciiJSON(line)); err != nil {
+				if _, err := fmt.Fprintf(writer, "          %s | %s\n", terminalJSON(record.Rule), terminalJSON(line)); err != nil {
 					return err
 				}
 			}
@@ -355,12 +355,25 @@ func writeFSWatchRecord(writer io.Writer, record fsWatchRecord, jsonOutput bool)
 			}
 		}
 		if record.Error != "" {
-			_, err := fmt.Fprintln(writer, "          "+asciiJSON(record.Error))
+			_, err := fmt.Fprintln(writer, "          "+terminalJSON(record.Error))
 			return err
 		}
 	case "summary":
-		_, err := fmt.Fprintf(writer, "%s  %s\n", stamp, T("watchfs.summary", record.Events, record.Actions, record.Failed, record.StopReason))
+		_, err := fmt.Fprintf(writer, "%s  %s\n", stamp, T("watchfs.summary", record.Events, record.Actions, record.Failed, fsWatchStopLabel(record.StopReason)))
 		return err
 	}
 	return nil
+}
+
+func fsWatchStopLabel(reason string) string {
+	switch reason {
+	case "duration":
+		return T("watchfs.stop.duration")
+	case "cancelled":
+		return T("watchfs.stop.cancelled")
+	case "watch_error":
+		return T("watchfs.stop.watch_error")
+	default:
+		return reason
+	}
 }

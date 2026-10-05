@@ -1,6 +1,7 @@
 package edc
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -15,11 +16,13 @@ import (
 )
 
 const (
-	qualityProbeID           = "net.quality"
-	defaultQualityTimeout    = 30 * time.Second
-	defaultQualityServer     = "https://mensura.cdn-apple.com/api/v1/gm/config"
-	networkQualityPath       = "/usr/bin/networkQuality"
-	qualitySourceNetworkQual = "networkQuality"
+	qualityProbeID        = "net.quality"
+	defaultQualityTimeout = 30 * time.Second
+	defaultQualityServer  = "https://mensura.cdn-apple.com/api/v1/gm/config"
+	networkQualityPath    = "/usr/bin/networkQuality"
+	// networkQuality가 -M을 모르면 이 문구를 stderr에 쓰고 측정 없이 곧바로 끝난다.
+	networkQualityNoMaxRuntime = "invalid option -- M"
+	qualitySourceNetworkQual   = "networkQuality"
 
 	bitsPerKilobit = 1000
 	bitsPerMegabit = 1000 * bitsPerKilobit
@@ -196,7 +199,7 @@ func runQualityWith(args []string, version string, newProbe func(server string) 
 // qualityProbe는 빈 server를 기본 서버로 본다. macOS에서는 사용자가 바꾼 경우에만 -C를 넘겨 networkQuality의 기본 동작을 지킨다.
 func qualityProbe(server string) func(context.Context) Result {
 	if runtime.GOOS == "darwin" {
-		return func(ctx context.Context) Result { return probeNetworkQuality(ctx, server) }
+		return func(ctx context.Context) Result { return probeNetworkQuality(ctx, server, runNetworkQuality) }
 	}
 	configURL := server
 	if configURL == "" {
@@ -205,18 +208,37 @@ func qualityProbe(server string) func(context.Context) Result {
 	return func(ctx context.Context) Result { return probeNativeQuality(ctx, configURL) }
 }
 
-func networkQualityArgs(server string) []string {
+func networkQualityArgs(server string, maxRuntime time.Duration) []string {
 	args := []string{"-c"}
+	if maxRuntime >= time.Second {
+		args = append(args, "-M", strconv.Itoa(int(maxRuntime/time.Second)))
+	}
 	if server != "" {
 		args = append(args, "-C", server)
 	}
 	return args
 }
 
-func probeNetworkQuality(ctx context.Context, server string) Result {
+// networkQualityMaxRuntime은 기한 전에 networkQuality가 스스로 끝내게 한다. 기한에 kill되면 측정값이 하나도 남지 않는다.
+func networkQualityMaxRuntime(ctx context.Context) time.Duration {
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return 0
+	}
+	return time.Until(deadline) - finalizeReserve
+}
+
+func runNetworkQuality(ctx context.Context, args []string) ([]byte, error) {
+	return exec.CommandContext(ctx, networkQualityPath, args...).Output()
+}
+
+func probeNetworkQuality(ctx context.Context, server string, run func(context.Context, []string) ([]byte, error)) Result {
 	started := time.Now()
-	command := exec.CommandContext(ctx, networkQualityPath, networkQualityArgs(server)...)
-	output, err := command.Output()
+	output, err := run(ctx, networkQualityArgs(server, networkQualityMaxRuntime(ctx)))
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && bytes.Contains(exitErr.Stderr, []byte(networkQualityNoMaxRuntime)) {
+		output, err = run(ctx, networkQualityArgs(server, 0))
+	}
 	if err != nil {
 		return resultFromError(qualityProbeID, started, classifyCommandError(ctx, err), err)
 	}

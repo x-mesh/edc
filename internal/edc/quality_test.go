@@ -3,7 +3,10 @@ package edc
 import (
 	"context"
 	"encoding/json"
+	"os/exec"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -348,11 +351,73 @@ func TestQualityServerPrecedence(t *testing.T) {
 }
 
 func TestQualityDarwinArgs(t *testing.T) {
-	if got := strings.Join(networkQualityArgs(""), " "); got != "-c" {
-		t.Fatalf("default args = %q", got)
-	}
 	const server = "https://quality.example.net/config"
-	if got := strings.Join(networkQualityArgs(server), " "); got != "-c -C "+server {
-		t.Fatalf("override args = %q", got)
+	cases := []struct {
+		name       string
+		server     string
+		maxRuntime time.Duration
+		want       string
+	}{
+		{"default", "", 0, "-c"},
+		{"override", server, 0, "-c -C " + server},
+		{"max runtime", "", 27900 * time.Millisecond, "-c -M 27"},
+		{"max runtime and override", server, 27 * time.Second, "-c -M 27 -C " + server},
+		{"under a second", "", 900 * time.Millisecond, "-c"},
+	}
+	for _, tc := range cases {
+		if got := strings.Join(networkQualityArgs(tc.server, tc.maxRuntime), " "); got != tc.want {
+			t.Fatalf("%s: args = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestQualityDarwinMaxRuntimeFromDeadline(t *testing.T) {
+	const timeout = 30 * time.Second
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	var calls [][]string
+	run := func(_ context.Context, args []string) ([]byte, error) {
+		calls = append(calls, args)
+		return []byte(`{"dl_throughput": 1000000}`), nil
+	}
+	if result := probeNetworkQuality(ctx, "", run); result.Status != StatusPass {
+		t.Fatalf("result = %+v", result)
+	}
+	if len(calls) != 1 || strings.Join(calls[0][:2], " ") != "-c -M" {
+		t.Fatalf("calls = %q", calls)
+	}
+	seconds, err := strconv.Atoi(calls[0][2])
+	if err != nil || time.Duration(seconds)*time.Second > timeout-finalizeReserve {
+		t.Fatalf("-M %q does not leave the finalize reserve before the deadline", calls[0][2])
+	}
+}
+
+func TestQualityDarwinMaxRuntimeFallback(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), defaultQualityTimeout)
+	defer cancel()
+	var calls [][]string
+	run := func(_ context.Context, args []string) ([]byte, error) {
+		calls = append(calls, args)
+		if slices.Contains(args, "-M") {
+			return nil, &exec.ExitError{Stderr: []byte("networkQuality: " + networkQualityNoMaxRuntime + "\nUSAGE: networkQuality ...\n")}
+		}
+		return []byte(`{"dl_throughput": 1000000}`), nil
+	}
+	result := probeNetworkQuality(ctx, "", run)
+	if result.Status != StatusPass || len(calls) != 2 || slices.Contains(calls[1], "-M") {
+		t.Fatalf("result = %+v, calls = %q", result, calls)
+	}
+}
+
+func TestQualityDarwinOtherFailureNoRetry(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), defaultQualityTimeout)
+	defer cancel()
+	calls := 0
+	run := func(context.Context, []string) ([]byte, error) {
+		calls++
+		return nil, &exec.ExitError{Stderr: []byte("networkQuality: connection failed\n")}
+	}
+	if result := probeNetworkQuality(ctx, "", run); result.Status != StatusFail || calls != 1 {
+		t.Fatalf("result = %+v, calls = %d", result, calls)
 	}
 }

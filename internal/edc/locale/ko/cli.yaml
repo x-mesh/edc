@@ -289,6 +289,7 @@ cli:
     save_hint: "먼저 저장하세요: edc doctor --json report.json <host-or-URL>\n다른 곳에 저장한 report가 있다면 파일 경로를 입력하세요."
     show_hint: "목록 확인: edc report list [directory]\nreport 보기: edc report show <file.json>"
     not_found: "report 파일을 찾을 수 없습니다: %s"
+    not_regular: "report 파일이 아닙니다(일반 파일 아님): %s"
     unavailable: "확인 불가"
     identity_differs: "대상 또는 수집 호스트가 다릅니다. 비교를 계속합니다"
     status_semantics: "same/changed는 상태만 비교합니다. 공통 scalar와 실행 시간 차이는 별도 표시합니다"

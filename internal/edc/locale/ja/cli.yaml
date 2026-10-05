@@ -289,6 +289,7 @@ cli:
     save_hint: "先に保存してください: edc doctor --json report.json <host-or-URL>\n別の場所に保存した report があればファイルパスを入力してください。"
     show_hint: "一覧: edc report list [directory]\n表示: edc report show <file.json>"
     not_found: "report ファイルが見つかりません: %s"
+    not_regular: "report ファイルではありません(通常ファイルではない): %s"
     unavailable: "取得不可"
     identity_differs: "対象または収集ホストが異なります。比較を続行します"
     status_semantics: "same/changed は状態のみを比較します。共通 scalar と実行時間の差は別に表示します"

@@ -289,6 +289,7 @@ cli:
     save_hint: "Save one first: edc doctor --json report.json <host-or-URL>\nOr enter the path to a report saved elsewhere."
     show_hint: "List reports: edc report list [directory]\nView a report: edc report show <file.json>"
     not_found: "Report file not found: %s"
+    not_regular: "Not a report file (not a regular file): %s"
     unavailable: "unavailable"
     identity_differs: "target or collection identity differs; comparison continues"
     status_semantics: "same/changed compare status only; shared scalar and duration deltas appear separately"

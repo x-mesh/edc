@@ -377,7 +377,7 @@ func editCommonSetup(reader *bufio.Reader, output io.Writer, config *commonConfi
 }
 func editLogSetup(reader *bufio.Reader, output io.Writer, config *logConfig) error {
 	if err := setupOptionalString(reader, output, T("cli.setup.field.log_stream"), &config.Stream, func(value string) error {
-		if value != "stdout" && value != "stderr" {
+		if value != "stdout" && value != "stderr" && value != "both" {
 			return errors.New(T("cli.setup.validation.stream"))
 		}
 		return nil
@@ -385,19 +385,70 @@ func editLogSetup(reader *bufio.Reader, output io.Writer, config *logConfig) err
 		return err
 	}
 	if err := setupOptionalString(reader, output, T("cli.setup.field.log_output"), &config.Output, func(value string) error {
-		if value == "" || value == "-" || !filepath.IsAbs(value) {
+		if value != "" && (value == "-" || !filepath.IsAbs(value)) {
 			return errors.New(T("cli.setup.validation.file_path"))
 		}
 		return nil
 	}); err != nil {
 		return err
 	}
-	return setupOptionalString(reader, output, T("cli.setup.field.log_command_display"), &config.CommandDisplay, func(value string) error {
+	if err := setupOptionalString(reader, output, T("cli.setup.field.log_command_display"), &config.CommandDisplay, func(value string) error {
 		if value != "full" && value != "name" && value != "none" {
 			return errors.New(T("cli.setup.validation.command_display"))
 		}
 		return nil
-	})
+	}); err != nil {
+		return err
+	}
+	if err := setupIntValue(reader, output, T("cli.setup.field.log_max_size"), &config.MaxSizeMB, func(value int) error {
+		if value < 0 || value > logMaxSizeMB {
+			return errors.New(T("cli.setup.validation.log_max_size"))
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+	if err := setupIntValue(reader, output, T("cli.setup.field.log_keep_files"), &config.KeepFiles, func(value int) error {
+		if value < 1 || value > logMaxKeepFiles {
+			return errors.New(T("cli.setup.validation.log_keep_files"))
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+	if err := setupOptionalString(reader, output, T("cli.setup.field.log_restart"), &config.Restart, func(value string) error {
+		if value != "never" && value != "on-failure" && value != "always" {
+			return errors.New(T("cli.setup.validation.log_restart"))
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+	if err := setupIntValue(reader, output, T("cli.setup.field.log_max_restarts"), &config.MaxRestarts, func(value int) error {
+		if value < 0 || value > logMaxRestarts {
+			return errors.New(T("cli.setup.validation.log_max_restarts"))
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+	if err := setupDurationValue(reader, output, T("cli.setup.field.log_restart_delay"), &config.RestartDelay, func(value time.Duration) error {
+		if value < 0 {
+			return errors.New(T("cli.setup.validation.non_negative"))
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+	if err := setupDurationValue(reader, output, T("cli.setup.field.log_timeout"), &config.Timeout, func(value time.Duration) error {
+		if value < 0 {
+			return errors.New(T("cli.setup.validation.non_negative"))
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+	return setupDurationValue(reader, output, T("cli.setup.field.log_kill_after"), &config.KillAfter, positiveDuration)
 }
 func editTopSetup(reader *bufio.Reader, output io.Writer, config *topConfig) error {
 	if err := setupDurationValue(reader, output, T("cli.setup.field.top_interval"), &config.Interval, func(value time.Duration) error {

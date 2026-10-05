@@ -24,7 +24,8 @@ var configScalarTypes = map[string]string{
 	"defaults.top.json": "!!str", "defaults.where.provider": "!!str",
 	"defaults.capture.interface": "!!str", "defaults.capture.filter": "!!str", "defaults.capture.output": "!!str",
 	"defaults.remote.inventory": "!!str", "defaults.remote.recipe": "!!str",
-	"defaults.log.stream": "!!str", "defaults.log.output": "!!str", "defaults.log.command_display": "!!str",
+	"defaults.log.stream": "!!str", "defaults.log.output": "!!str", "defaults.log.command_display": "!!str", "defaults.log.restart": "!!str",
+	"defaults.log.max_size_mb": "!!int", "defaults.log.keep_files": "!!int", "defaults.log.max_restarts": "!!int",
 	"defaults.common.verbose": "!!bool", "defaults.common.redact": "!!bool",
 	"defaults.tls.min_days": "!!int", "defaults.http.expect_status": "!!int",
 	"defaults.top.count": "!!int", "defaults.top.no_header": "!!bool",
@@ -133,9 +134,16 @@ type updateConfig struct {
 	Timeout *configDuration `yaml:"timeout,omitempty" toml:"timeout,omitempty"`
 }
 type logConfig struct {
-	Stream         *string `yaml:"stream,omitempty" toml:"stream,omitempty"`
-	Output         *string `yaml:"output,omitempty" toml:"output,omitempty"`
-	CommandDisplay *string `yaml:"command_display,omitempty" toml:"command_display,omitempty"`
+	Stream         *string         `yaml:"stream,omitempty" toml:"stream,omitempty"`
+	Output         *string         `yaml:"output,omitempty" toml:"output,omitempty"`
+	CommandDisplay *string         `yaml:"command_display,omitempty" toml:"command_display,omitempty"`
+	MaxSizeMB      *int            `yaml:"max_size_mb,omitempty" toml:"max_size_mb,omitempty"`
+	KeepFiles      *int            `yaml:"keep_files,omitempty" toml:"keep_files,omitempty"`
+	Restart        *string         `yaml:"restart,omitempty" toml:"restart,omitempty"`
+	MaxRestarts    *int            `yaml:"max_restarts,omitempty" toml:"max_restarts,omitempty"`
+	RestartDelay   *configDuration `yaml:"restart_delay,omitempty" toml:"restart_delay,omitempty"`
+	Timeout        *configDuration `yaml:"timeout,omitempty" toml:"timeout,omitempty"`
+	KillAfter      *configDuration `yaml:"kill_after,omitempty" toml:"kill_after,omitempty"`
 }
 
 var activeConfig edcConfig
@@ -338,14 +346,22 @@ func validateConfig(config edcConfig) error {
 	if d.Update.Timeout != nil && d.Update.Timeout.Duration <= 0 {
 		return invalidConfig("defaults.update.timeout", "must be greater than 0")
 	}
-	if d.Log.Stream != nil && *d.Log.Stream != "" && *d.Log.Stream != "stdout" && *d.Log.Stream != "stderr" {
-		return invalidConfig("defaults.log.stream", "must be stdout or stderr")
+	if d.Log.Stream != nil && *d.Log.Stream != "" && *d.Log.Stream != "stdout" && *d.Log.Stream != "stderr" && *d.Log.Stream != "both" {
+		return invalidConfig("defaults.log.stream", "must be stdout, stderr, or both")
 	}
 	if d.Log.Output != nil && *d.Log.Output == "-" {
 		return invalidConfig("defaults.log.output", "must be a file path")
 	}
 	if d.Log.CommandDisplay != nil && *d.Log.CommandDisplay != "full" && *d.Log.CommandDisplay != "name" && *d.Log.CommandDisplay != "none" {
 		return invalidConfig("defaults.log.command_display", "must be full, name, or none")
+	}
+
+	if err := validateLogPolicy(logOptions{
+		maxSizeMB: configuredInt(d.Log.MaxSizeMB, defaultLogMaxSizeMB), keepFiles: configuredInt(d.Log.KeepFiles, defaultLogKeepFiles),
+		restart: configuredString(d.Log.Restart, "never"), maxRestarts: configuredInt(d.Log.MaxRestarts, defaultLogMaxRestarts),
+		restartDelay: configuredDuration(d.Log.RestartDelay, defaultLogRestartDelay), timeout: configuredDuration(d.Log.Timeout, 0), killAfter: configuredDuration(d.Log.KillAfter, defaultLogKillAfter),
+	}); err != nil {
+		return fmt.Errorf("defaults.log: %w", err)
 	}
 	return nil
 }
@@ -416,7 +432,9 @@ func recommendedConfig() edcConfig {
 		Capture: captureConfig{Interface: stringPointer(""), Duration: durationPointer(15 * time.Second), Count: intPointer(500), Filter: stringPointer(""), Output: stringPointer("")},
 		Remote:  remoteConfig{Inventory: stringPointer(""), Recipe: stringPointer(""), ConnectTimeout: durationPointer(10 * time.Second), OutputLimit: intPointer(remoteOutputLimit), Parallel: intPointer(0)},
 		Update:  updateConfig{Timeout: durationPointer(60 * time.Second)},
-		Log:     logConfig{Stream: stringPointer("stderr"), Output: stringPointer(recommendedLogOutputPath()), CommandDisplay: stringPointer("full")},
+		Log: logConfig{Stream: stringPointer("both"), Output: stringPointer(""), CommandDisplay: stringPointer("full"),
+			MaxSizeMB: intPointer(defaultLogMaxSizeMB), KeepFiles: intPointer(defaultLogKeepFiles), Restart: stringPointer("never"),
+			MaxRestarts: intPointer(defaultLogMaxRestarts), RestartDelay: durationPointer(defaultLogRestartDelay), Timeout: durationPointer(0), KillAfter: durationPointer(defaultLogKillAfter)},
 	}}
 }
 

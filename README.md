@@ -144,14 +144,25 @@ parallel = 0
 timeout = "60s"
 
 [defaults.log]
-stream = "stderr"
-output = "/absolute/path/to/edc.log"
+stream = "both"
+output = ""
 command_display = "full"
+max_size_mb = 10
+keep_files = 3
+restart = "never"
+max_restarts = 3
+restart_delay = "5s"
+timeout = "0s"
+kill_after = "5s"
 ```
 
 Command-specific values override `defaults.common`. Positional targets, URLs, hosts, and remote groups are never stored, nor are action options such as `yes`, `force`, `dry-run`, `list`, and `check`. Persisted remote inventory and recipe paths must be absolute. Empty path values disable that default.
 
-The setup wizard recommends `~/Library/Logs/edc.log` on macOS and `${XDG_STATE_HOME:-~/.local/state}/edc/edc.log` on Linux. `edc log` creates the parent directory only for this generated default; custom output paths must already have a parent directory.
+The setup wizard recommends automatic files for `edc log`.
+
+An empty output path selects one file per run. Custom output paths require an existing parent directory.
+
+The command also creates the parent for the legacy recommended `edc.log` path.
 
 ## Quick start
 
@@ -1334,17 +1345,68 @@ Use `--yes` to skip the question. A non-terminal command prints the plan and rea
 
 ## Cron and application logs
 
-`edc log` appends either `stdout` or `stderr` from a command to a file. The selected stream goes only to the file; the other stream and `stdin` stay connected to cron or the calling terminal. This makes a quiet cron failure visible without requiring logging support in the application.
+`edc log` records both stdout and stderr without setup. Each run uses a separate file, so independent jobs do not wait for each other.
 
 ```cron
 * * * * * /usr/local/bin/edc log -- /usr/local/bin/job --daily
 ```
 
-The short form uses `defaults.log.stream`, `output`, and `command_display`. Each value can still be overridden with its CLI option. Without a configured or explicit stream and output, `edc log` keeps reporting them as required.
+Linux uses `${XDG_STATE_HOME:-~/.local/state}/edc/log/<command>/`. macOS uses `~/Library/Logs/edc/<command>/`.
 
-Each run gets ASCII start and end markers with its time, duration, and exit status. A new file is mode `0600`; an existing file keeps its contents and mode. Runs targeting the same file wait for each other, so their blocks do not mix. The child exit code and signal status pass through `edc`.
+File names include the UTC time, wrapper PID, and a unique suffix. An interactive terminal shows the generated path.
 
-The default `--command-display full` puts the complete argument list in the start marker. Use `--command-display name` or `none` when arguments may contain credentials. `edc log` only appends: it does not rotate, compress, or remove logs. Configure retention with the system log rotation service.
+Each attempt records the command, work directory, process IDs, start and end times, duration, and exit status.
+
+A command start failure records its cause in the file. A silent nonzero exit still produces an end record.
+
+The default command display includes all arguments. Use `--command-display name` or `none` if arguments contain credentials.
+
+An explicit `--output` appends to that file. `--stream stdout` or `stderr` records only the selected stream and preserves the other stream.
+
+Commands with the same explicit output file wait for its `.lock` file. The lock remains stable across file rotation.
+
+New files use mode `0600`. Existing log files retain their mode. Automatic command directories use mode `0700`.
+
+### Log rotation
+
+The default maximum file size is 10 MiB. `--max-size` accepts an integer in MiB. A value of `0` disables rotation.
+
+Rotation retains three archives by default. `--keep-files` accepts values from 1 to 100.
+
+The archive names are `<output>.edc.1` through `<output>.edc.N`. These names are reserved for this log's rotation files.
+
+Rotation removes only the oldest reserved archive. It does not expire files from other runs or compress them.
+
+Use a regular file as the output. Rotation rejects symbolic links and nonregular archive paths.
+
+If a log write fails, the wrapper stops the child process group and returns exit code `2`.
+
+### Restart and timeout
+
+Restart is disabled by default. `--restart on-failure` retries a nonzero exit, a child signal, or a timeout.
+
+`--restart always` also retries a successful exit. Command start errors and log errors do not trigger another attempt.
+
+For an exit eligible for restart, the wrapper stops remaining group members before it returns or starts another attempt.
+
+The default limit is three additional attempts, with a five-second delay. `--max-restarts` and `--restart-delay` change these values.
+
+An external SIGINT or SIGTERM stops the current attempt or retry delay. It prevents another attempt.
+
+Timeout is disabled by default. `--timeout` limits each attempt, which includes the time to drain its recorded output.
+
+On timeout, the wrapper sends SIGTERM to the child process group. After `--kill-after` (default five seconds), it sends SIGKILL.
+
+It records `status=timeout exit=124`. If a later attempt succeeds, the wrapper returns `0`. Otherwise, it returns the last attempt's exit code.
+
+```bash
+edc log --timeout 10m --restart on-failure --max-restarts 3 -- /path/to/job
+edc log --max-size 20 --keep-files 5 --output /tmp/job.log -- /path/to/job
+```
+
+The log settings also accept defaults under `[defaults.log]`. Explicit CLI options override them. The common timeout does not apply to `log`.
+
+SIGKILL of the wrapper cannot produce an end record. Descendants outside the child's process group are outside its termination scope.
 
 ## Shell completion
 
@@ -1366,6 +1428,7 @@ For zsh, you can also save the script as `_edc` in a directory of `fpath`.
 - `2`: a run error, such as an argument, a config, a log start, or a report parse error
 - `3`: not enough privilege for a privileged task
 - `4`: user cancel, which includes a cancelled selection and Ctrl-C in `remote` and `doctor`
+- `124`: the final `log` attempt exceeds its timeout
 
 ## Current scope
 
@@ -1375,7 +1438,7 @@ On Linux, `edc` reads `/proc`, `/sys`, `ip`, `ss`, `ping`, `traceroute` or `trac
 
 On macOS, `edc` uses a system command adapter. Linux and macOS run `capture`. Only macOS runs `quality`.
 
-Every diagnostic command keeps to read-only inspection. `edc` runs no automatic repair, such as a DNS flush, an interface reset, or a firewall change. `edc log` only writes its explicit output file.
+Every diagnostic command keeps to read-only inspection. `edc` runs no automatic repair, such as a DNS flush, an interface reset, or a firewall change. `edc log` writes its output, rotation archives, and lock file.
 
 ## License
 

@@ -230,13 +230,20 @@ var commandDocs = []commandDoc{
 	{
 		name: "log", group: "record",
 		usage: []string{
-			"edc log [--stream stdout|stderr] [--output <file>]",
+			"edc log [--stream stdout|stderr|both] [--output <file>]",
 			"        [--command-display full|name|none] -- <command> [args...]",
 		},
 		options: []optionDoc{
-			{"--stream stdout|stderr", "command.log.option.stream"},
+			{"--stream stdout|stderr|both", "command.log.option.stream"},
 			{"--output <file>", "command.log.option.output"},
 			{"--command-display full|name|none", "command.log.option.command_display"},
+			{"--max-size 10", "command.log.option.max_size"},
+			{"--keep-files 3", "command.log.option.keep_files"},
+			{"--restart never|on-failure|always", "command.log.option.restart"},
+			{"--max-restarts 3", "command.log.option.max_restarts"},
+			{"--restart-delay 5s", "command.log.option.restart_delay"},
+			{"--timeout 0s", "command.log.option.timeout"},
+			{"--kill-after 5s", "command.log.option.kill_after"},
 		},
 	},
 	{

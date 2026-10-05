@@ -356,7 +356,7 @@ func historyFamily(path string) ([]historyPart, error) {
 	var parts []historyPart
 	base := filepath.Base(path)
 	examined := 0
-	err := walkHistoryDirectory(filepath.Dir(path), func(entry os.DirEntry) error {
+	err := walkHistoryDirectory(filepath.Dir(path), true, func(entry os.DirEntry) error {
 		examined++
 		if examined > 10000 {
 			return errHistoryScanLimit
@@ -451,8 +451,15 @@ func readHistoryFamily(path string, parts []historyPart) ([]logHistoryAttempt, b
 
 var errHistoryScanLimit = errors.New("history scan limit")
 
-func walkHistoryDirectory(directory string, visit func(os.DirEntry) error) error {
-	file, err := os.OpenFile(directory, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_DIRECTORY, 0)
+// A directory the user named may itself be a symlink, such as /tmp on macOS.
+// Directories reached while walking are opened without following links so a
+// swapped-in symlink cannot redirect discovery outside the named tree.
+func walkHistoryDirectory(directory string, followLink bool, visit func(os.DirEntry) error) error {
+	flags := os.O_RDONLY | syscall.O_DIRECTORY
+	if !followLink {
+		flags |= syscall.O_NOFOLLOW
+	}
+	file, err := os.OpenFile(directory, flags, 0)
 	if err != nil {
 		return err
 	}
@@ -479,7 +486,7 @@ func historyPaths(root string) ([]string, error) {
 	examined := 0
 	var visit func(string, bool) error
 	visit = func(directory string, descend bool) error {
-		return walkHistoryDirectory(directory, func(entry os.DirEntry) error {
+		return walkHistoryDirectory(directory, descend, func(entry os.DirEntry) error {
 			examined++
 			if examined > 10000 {
 				return errHistoryScanLimit

@@ -142,10 +142,10 @@ func historyRunRow(row logHistoryAttempt, width int, selected, color bool) strin
 		exit = fmt.Sprint(*row.Exit)
 	}
 	code := "33"
-	switch row.Outcome {
-	case "SUCCESS":
+	switch {
+	case row.Outcome == "SUCCESS":
 		code = "32"
-	case "FAIL", "ERROR", "SIGNAL":
+	case row.failed():
 		code = "31;1"
 	}
 	marker := "  "

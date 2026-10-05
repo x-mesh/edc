@@ -211,6 +211,51 @@ func TestLogHistoryDiscoveryAndScanLimits(t *testing.T) {
 	}
 }
 
+func TestLogHistoryFollowsNamedSymlinkDirectory(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "real")
+	if err := os.MkdirAll(filepath.Join(target, "ls"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	data := historyFixture([]string{"ls", "-l"}, "/tmp", time.Now().UTC(), "exit", "2ms", 0, 1)
+	for _, path := range []string{"job.log", "ls/two.log"} {
+		if err := os.WriteFile(filepath.Join(target, path), []byte(data), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	link := filepath.Join(dir, "link")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	snapshot := collectLogHistory([]string{filepath.Join(link, "job.log")})
+	if len(snapshot.Issues) != 0 || len(snapshot.Rows) != 1 || snapshot.Rows[0].Outcome != "SUCCESS" {
+		t.Fatalf("file under symlinked directory: %+v", snapshot)
+	}
+	paths, err := historyPaths(link)
+	if err != nil || len(paths) != 2 {
+		t.Fatalf("symlinked root paths=%v err=%v", paths, err)
+	}
+	if err := os.Symlink(filepath.Join(target, "ls"), filepath.Join(target, "nested")); err != nil {
+		t.Fatal(err)
+	}
+	paths, err = historyPaths(link)
+	if err != nil || len(paths) != 2 {
+		t.Fatalf("symlinked subdirectory followed: paths=%v err=%v", paths, err)
+	}
+}
+
+func TestLogHistoryRunRowColorsEveryFailureRed(t *testing.T) {
+	for _, outcome := range []string{"FAIL", "TIMEOUT", "SIGNAL", "ERROR"} {
+		row := historyRunRow(logHistoryAttempt{Outcome: outcome}, 80, false, true)
+		if !strings.Contains(row, "\x1b[31;1m") {
+			t.Fatalf("%s not red: %q", outcome, row)
+		}
+	}
+	if row := historyRunRow(logHistoryAttempt{Outcome: "UNKNOWN"}, 80, false, true); !strings.Contains(row, "\x1b[33m") {
+		t.Fatalf("UNKNOWN not yellow: %q", row)
+	}
+}
+
 func TestLogHistoryCLIExactArgumentsAndSummary(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "job.log")

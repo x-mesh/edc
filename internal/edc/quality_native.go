@@ -385,7 +385,6 @@ func (e *responsivenessEngine) launchProbes(ctx context.Context, url string) {
 		case <-timer.C:
 		}
 		e.mu.Lock()
-		interval := e.interval
 		selfAvailable := !e.selfUnavailable && len(e.transports) > 0
 		var selfTransport *http.Transport
 		if selfAvailable {
@@ -401,9 +400,9 @@ func (e *responsivenessEngine) launchProbes(ctx context.Context, url string) {
 			continue
 		}
 		e.mu.Unlock()
-		e.startProbe(func() { e.runForeignProbe(ctx, url, interval) })
+		e.startProbe(func() { e.runForeignProbe(ctx, url) })
 		if selfAvailable {
-			e.startProbe(func() { e.runSelfProbe(ctx, selfTransport, url, interval) })
+			e.startProbe(func() { e.runSelfProbe(ctx, selfTransport, url) })
 		}
 	}
 }
@@ -422,8 +421,8 @@ func (e *responsivenessEngine) startProbe(probe func()) {
 	})
 }
 
-// 표본은 probe를 띄운 interval에 넣는다. 응답이 tick을 넘겨도 그 부하 조건에서 잰 값이기 때문이다.
-func (e *responsivenessEngine) runForeignProbe(ctx context.Context, url string, interval int) {
+// 표본은 probe가 끝난 interval에 넣는다. 띄운 interval에 넣으면 종료 직전에 띄운 probe가 shutdown에 취소되어 마지막 window가 빌 수 있다.
+func (e *responsivenessEngine) runForeignProbe(ctx context.Context, url string) {
 	sample, err := e.foreignProbe(ctx, url)
 	if err != nil {
 		return
@@ -431,7 +430,7 @@ func (e *responsivenessEngine) runForeignProbe(ctx context.Context, url string, 
 	e.noteLocal(sample.local)
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	current := &e.samples[interval]
+	current := &e.samples[e.interval]
 	current.TCPForeign = append(current.TCPForeign, sample.tcp)
 	if sample.hasTLS {
 		current.TLSForeign = append(current.TLSForeign, sample.tls)
@@ -441,7 +440,7 @@ func (e *responsivenessEngine) runForeignProbe(ctx context.Context, url string, 
 }
 
 // runSelfProbe는 부하 연결 위에 요청을 섞는다. HTTP/2가 아니면 새 연결이 열리므로 http_l로 쓰지 않는다.
-func (e *responsivenessEngine) runSelfProbe(ctx context.Context, transport *http.Transport, url string, interval int) {
+func (e *responsivenessEngine) runSelfProbe(ctx context.Context, transport *http.Transport, url string) {
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return
@@ -463,7 +462,7 @@ func (e *responsivenessEngine) runSelfProbe(ctx context.Context, transport *http
 	if err != nil || response.StatusCode/100 != 2 {
 		return
 	}
-	current := &e.samples[interval]
+	current := &e.samples[e.interval]
 	current.HTTPLoaded = append(current.HTTPLoaded, milliseconds(elapsed))
 	e.selfProbes++
 }

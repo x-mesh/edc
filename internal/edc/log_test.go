@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -55,6 +56,82 @@ func TestLogHelperProcess(t *testing.T) {
 		for {
 			time.Sleep(time.Second)
 		}
+	case "ignore-term":
+		signal.Ignore(syscall.SIGTERM)
+		if len(arguments) > 1 {
+			if err := os.WriteFile(arguments[1], []byte("ready"), 0600); err != nil {
+				os.Exit(98)
+			}
+		}
+		fmt.Fprintln(os.Stdout, "ready")
+		for {
+			time.Sleep(time.Second)
+		}
+	case "count":
+		file, err := os.OpenFile(arguments[1], os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+		if err != nil {
+			os.Exit(98)
+		}
+		_, err = file.WriteString("attempt\n")
+		file.Close()
+		if err != nil {
+			os.Exit(98)
+		}
+		data, err := os.ReadFile(arguments[1])
+		if err != nil {
+			os.Exit(98)
+		}
+		if strings.Count(string(data), "attempt\n") < 3 {
+			os.Exit(7)
+		}
+	case "grandchild":
+		child := exec.Command(logHelperCommand("ignore-term")[0], logHelperCommand("ignore-term")[1:]...)
+		child.Stdout, child.Stderr = os.Stdout, os.Stderr
+		if err := child.Start(); err != nil {
+			os.Exit(98)
+		}
+		fmt.Fprintln(os.Stdout, "grandchild-started")
+	case "burst":
+		fmt.Fprint(os.Stdout, strings.Repeat("x", 2*logMiB))
+	case "burst-label":
+		fmt.Fprintf(os.Stdout, "%s-begin\n", arguments[1])
+		time.Sleep(175 * time.Millisecond)
+		fmt.Fprint(os.Stdout, strings.Repeat("x", 2*logMiB))
+		fmt.Fprintf(os.Stdout, "%s-end\n", arguments[1])
+	case "burst-wait":
+		signal.Ignore(syscall.SIGTERM)
+		fmt.Fprint(os.Stdout, strings.Repeat("x", 2*logMiB))
+		for {
+			time.Sleep(time.Second)
+		}
+	case "closed-output-child", "failed-with-child":
+		stop := make(chan os.Signal, 1)
+		signal.Notify(stop, syscall.SIGTERM)
+		output, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+		if err != nil {
+			os.Exit(98)
+		}
+		command := logHelperCommand("ignore-term", arguments[1])
+		child := exec.Command(command[0], command[1:]...)
+		child.Stdout, child.Stderr = output, output
+		if arguments[0] == "failed-with-child" {
+			child.Stdout, child.Stderr = os.Stdout, os.Stderr
+		}
+		if err := child.Start(); err != nil {
+			os.Exit(98)
+		}
+		fmt.Fprintf(os.Stdout, "grandchild-pid=%d\n", child.Process.Pid)
+		for {
+			if _, err := os.Stat(arguments[1]); err == nil {
+				break
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		fmt.Fprintln(os.Stdout, "ready")
+		if arguments[0] == "failed-with-child" {
+			os.Exit(7)
+		}
+		<-stop
 	default:
 		os.Exit(98)
 	}
@@ -301,9 +378,7 @@ func TestLogLockWaitCanBeInterrupted(t *testing.T) {
 func TestLogRejectsInvalidArgumentsAndRecordsStartError(t *testing.T) {
 	validPath := filepath.Join(t.TempDir(), "job.log")
 	cases := [][]string{
-		{"--output", validPath, "--", "echo"},
-		{"--stream", "both", "--output", validPath, "--", "echo"},
-		{"--stream", "stdout", "--", "echo"},
+		{"--stream", "bogus", "--output", validPath, "--", "echo"},
 		{"--stream", "stdout", "--output", "-", "--", "echo"},
 		{"--stream", "stdout", "--output", validPath, "--command-display", "secret", "--", "echo"},
 		{"--stream", "stdout", "--output", validPath, "echo"},
@@ -391,3 +466,19 @@ func TestLogSerializesConcurrentRuns(t *testing.T) {
 		t.Fatalf("serialized log = %q", text)
 	}
 }
+
+func TestLogCopyDistinguishesInputAndOutputFailures(t *testing.T) {
+	reader := io.MultiReader(strings.NewReader("payload"), errorReader{err: os.ErrClosed})
+	result := copyLogStream(errorWriter{err: os.ErrClosed}, reader)
+	if !errors.Is(result.writeErr, os.ErrClosed) || !errors.Is(result.readErr, os.ErrClosed) {
+		t.Fatalf("copy=%+v", result)
+	}
+	result = copyLogStream(io.Discard, errorReader{err: io.ErrUnexpectedEOF})
+	if result.writeErr != nil || !errors.Is(result.readErr, io.ErrUnexpectedEOF) {
+		t.Fatalf("copy=%+v", result)
+	}
+}
+
+type errorReader struct{ err error }
+
+func (reader errorReader) Read([]byte) (int, error) { return 0, reader.err }

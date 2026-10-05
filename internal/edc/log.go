@@ -18,10 +18,13 @@ import (
 )
 
 type logOptions struct {
-	stream         string
-	output         string
-	commandDisplay string
-	command        []string
+	stream                            string
+	output                            string
+	commandDisplay                    string
+	command                           []string
+	maxSizeMB, keepFiles, maxRestarts int
+	restart                           string
+	restartDelay, timeout, killAfter  time.Duration
 }
 
 type logStreams struct {
@@ -34,6 +37,7 @@ type logCopyResult struct {
 	wrote    bool
 	last     byte
 	writeErr error
+	readErr  error
 }
 
 func runLog(args []string) int {
@@ -45,23 +49,31 @@ func runLogWithStreams(args []string, streams logStreams) int {
 	if !ok {
 		return 2
 	}
+	signals := make(chan os.Signal, 4)
+	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(signals)
+	if options.output == "" {
+		path, err := createDefaultLogOutput(options.command[0], defaultLogDirectory())
+		if err != nil {
+			fmt.Fprintln(streams.stderr, T("cli.log.open_failed", "automatic output", err))
+			return 2
+		}
+		options.output = path
+		if terminal, ok := streams.stderr.(*os.File); ok && isTerminal(terminal) {
+			fmt.Fprintln(streams.stderr, T("cli.log.output_path", path))
+		}
+	}
 	if err := ensureRecommendedLogDirectory(options.output); err != nil {
 		fmt.Fprintln(streams.stderr, T("cli.log.open_failed", options.output, err))
 		return 2
 	}
-
-	logFile, err := openLogFile(options.output)
+	lock, err := openLogFile(options.output + ".lock")
 	if err != nil {
-		fmt.Fprintln(streams.stderr, T("cli.log.open_failed", options.output, err))
+		fmt.Fprintln(streams.stderr, T("cli.log.lock_failed", options.output, err))
 		return 2
 	}
-	defer logFile.Close()
-
-	signals := make(chan os.Signal, 4)
-	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
-	defer signal.Stop(signals)
-
-	interrupted, err := lockLogFile(logFile, signals)
+	defer lock.Close()
+	interrupted, err := lockLogFile(lock, signals)
 	if err != nil {
 		fmt.Fprintln(streams.stderr, T("cli.log.lock_failed", options.output, err))
 		return 2
@@ -69,86 +81,58 @@ func runLogWithStreams(args []string, streams logStreams) int {
 	if interrupted != nil {
 		return signalExitCode(interrupted)
 	}
-	defer unlockLogFile(logFile)
-
-	started := time.Now()
-	if err := writeLogStart(logFile, started, options); err != nil {
-		fmt.Fprintln(streams.stderr, T("cli.log.write_failed", options.output, err))
-		return 2
-	}
-	if err := logFile.Sync(); err != nil {
-		_ = writeLogEnd(logFile, started, "status=log_error exit=2", logCopyResult{})
-		fmt.Fprintln(streams.stderr, T("cli.log.sync_failed", options.output, err))
-		return 2
-	}
-
-	process := exec.Command(options.command[0], options.command[1:]...)
-	process.Stdin = streams.stdin
-	configureLogProcess(process)
-
-	readPipe, writePipe, err := os.Pipe()
+	defer unlockLogFile(lock)
+	file, err := openRotatingLog(options.output, int64(options.maxSizeMB)*logMiB, options.keepFiles)
 	if err != nil {
-		return finishLogStartError(logFile, streams.stderr, options.output, started, err)
+		fmt.Fprintln(streams.stderr, T("cli.log.open_failed", options.output, err))
+		return 2
 	}
-	if options.stream == "stdout" {
-		process.Stdout = writePipe
-		process.Stderr = streams.stderr
-	} else {
-		process.Stdout = streams.stdout
-		process.Stderr = writePipe
-	}
-
-	if err := process.Start(); err != nil {
-		readPipe.Close()
-		writePipe.Close()
-		return finishLogStartError(logFile, streams.stderr, options.output, started, err)
-	}
-	// The child owns its duplicate. Keeping this descriptor open would prevent EOF.
-	writePipe.Close()
-
-	copyDone := make(chan logCopyResult, 1)
-	go func() {
-		result := copyLogStream(logFile, readPipe)
-		readPipe.Close()
-		copyDone <- result
-	}()
-	waitDone := make(chan error, 1)
-	go func() { waitDone <- process.Wait() }()
-
-	var waitErr error
-waitLoop:
-	for {
+	defer file.Close()
+	for attempt := 0; ; attempt++ {
 		select {
 		case received := <-signals:
-			if err := signalLogProcess(process, received); err != nil {
-				fmt.Fprintln(streams.stderr, T("cli.log.signal_failed", err))
+			return signalExitCode(received)
+		default:
+		}
+		result := runLogAttempt(options, streams, file, signals, attempt+1)
+		if result.stopped || !result.started || result.wrapperError || options.restart == "never" || options.restart == "on-failure" && result.code == 0 {
+			return result.code
+		}
+		if attempt >= options.maxRestarts {
+			if _, err := fmt.Fprintf(file, "=== edc log stopped reason=restart_limit attempts=%d exit=%d ===\n", attempt+1, result.code); err != nil {
+				fmt.Fprintln(streams.stderr, T("cli.log.write_failed", options.output, err))
+				return 2
 			}
-		case waitErr = <-waitDone:
-			break waitLoop
+			if err := file.Sync(); err != nil {
+				fmt.Fprintln(streams.stderr, T("cli.log.sync_failed", options.output, err))
+				return 2
+			}
+			return result.code
+		}
+		if _, err := fmt.Fprintf(file, "=== edc log restart next_attempt=%d delay=%s ===\n", attempt+2, options.restartDelay); err != nil {
+			fmt.Fprintln(streams.stderr, T("cli.log.write_failed", options.output, err))
+			return 2
+		}
+		if err := file.Sync(); err != nil {
+			fmt.Fprintln(streams.stderr, T("cli.log.sync_failed", options.output, err))
+			return 2
+		}
+		timer := time.NewTimer(options.restartDelay)
+		select {
+		case received := <-signals:
+			timer.Stop()
+			if _, err := fmt.Fprintf(file, "=== edc log stopped signal=%s exit=%d ===\n", unixSignalName(received.(syscall.Signal)), signalExitCode(received)); err != nil {
+				fmt.Fprintln(streams.stderr, T("cli.log.write_failed", options.output, err))
+				return 2
+			}
+			if err := file.Sync(); err != nil {
+				fmt.Fprintln(streams.stderr, T("cli.log.sync_failed", options.output, err))
+				return 2
+			}
+			return signalExitCode(received)
+		case <-timer.C:
 		}
 	}
-	copyResult := <-copyDone
-
-	status, exitCode, childErr := logProcessStatus(process, waitErr)
-	if copyResult.writeErr != nil {
-		status = "status=log_error exit=2"
-		exitCode = 2
-		fmt.Fprintln(streams.stderr, T("cli.log.write_failed", options.output, copyResult.writeErr))
-	} else if childErr != nil {
-		status = "status=wait_error exit=2"
-		exitCode = 2
-		fmt.Fprintln(streams.stderr, T("cli.log.wait_failed", childErr))
-	}
-
-	if err := writeLogEnd(logFile, started, status, copyResult); err != nil {
-		fmt.Fprintln(streams.stderr, T("cli.log.write_failed", options.output, err))
-		return 2
-	}
-	if err := logFile.Sync(); err != nil {
-		fmt.Fprintln(streams.stderr, T("cli.log.sync_failed", options.output, err))
-		return 2
-	}
-	return exitCode
 }
 
 func ensureRecommendedLogDirectory(output string) error {
@@ -165,9 +149,16 @@ func ensureRecommendedLogDirectoryFor(output, recommended string) error {
 func parseLogOptions(args []string, stderr io.Writer) (logOptions, bool) {
 	config := activeConfig.Defaults.Log
 	options := logOptions{
-		stream:         configuredString(config.Stream, ""),
+		stream:         configuredString(config.Stream, "both"),
 		output:         configuredString(config.Output, ""),
 		commandDisplay: configuredString(config.CommandDisplay, "full"),
+		maxSizeMB:      configuredInt(config.MaxSizeMB, defaultLogMaxSizeMB),
+		keepFiles:      configuredInt(config.KeepFiles, defaultLogKeepFiles),
+		restart:        configuredString(config.Restart, "never"),
+		maxRestarts:    configuredInt(config.MaxRestarts, defaultLogMaxRestarts),
+		restartDelay:   configuredDuration(config.RestartDelay, defaultLogRestartDelay),
+		timeout:        configuredDuration(config.Timeout, 0),
+		killAfter:      configuredDuration(config.KillAfter, defaultLogKillAfter),
 	}
 	separator := -1
 	for index, argument := range args {
@@ -185,6 +176,13 @@ func parseLogOptions(args []string, stderr io.Writer) (logOptions, bool) {
 	set.StringVar(&options.stream, "stream", options.stream, T("command.log.option.stream"))
 	set.StringVar(&options.output, "output", options.output, T("command.log.option.output"))
 	set.StringVar(&options.commandDisplay, "command-display", options.commandDisplay, T("command.log.option.command_display"))
+	set.IntVar(&options.maxSizeMB, "max-size", options.maxSizeMB, T("command.log.option.max_size"))
+	set.IntVar(&options.keepFiles, "keep-files", options.keepFiles, T("command.log.option.keep_files"))
+	set.StringVar(&options.restart, "restart", options.restart, T("command.log.option.restart"))
+	set.IntVar(&options.maxRestarts, "max-restarts", options.maxRestarts, T("command.log.option.max_restarts"))
+	set.DurationVar(&options.restartDelay, "restart-delay", options.restartDelay, T("command.log.option.restart_delay"))
+	set.DurationVar(&options.timeout, "timeout", options.timeout, T("command.log.option.timeout"))
+	set.DurationVar(&options.killAfter, "kill-after", options.killAfter, T("command.log.option.kill_after"))
 	if err := set.Parse(args[:separator]); err != nil {
 		return logOptions{}, false
 	}
@@ -193,12 +191,8 @@ func parseLogOptions(args []string, stderr io.Writer) (logOptions, bool) {
 		return logOptions{}, false
 	}
 	options.command = args[separator+1:]
-	if options.stream != "stdout" && options.stream != "stderr" {
+	if options.stream != "stdout" && options.stream != "stderr" && options.stream != "both" {
 		fmt.Fprintln(stderr, T("cli.log.stream_value"))
-		return logOptions{}, false
-	}
-	if options.output == "" {
-		fmt.Fprintln(stderr, T("cli.log.output_required"))
 		return logOptions{}, false
 	}
 	if options.output == "-" {
@@ -211,6 +205,10 @@ func parseLogOptions(args []string, stderr io.Writer) (logOptions, bool) {
 	}
 	if len(options.command) == 0 {
 		fmt.Fprintln(stderr, T("cli.log.command_required"))
+		return logOptions{}, false
+	}
+	if err := validateLogPolicy(options); err != nil {
+		fmt.Fprintln(stderr, err)
 		return logOptions{}, false
 	}
 	return options, true
@@ -240,20 +238,12 @@ func writeLogStart(writer io.Writer, started time.Time, options logOptions) erro
 	if options.commandDisplay != "none" {
 		field = " command=" + asciiJSON(command)
 	}
-	_, err := fmt.Fprintf(writer, "=== edc log start time=%s stream=%s%s ===\n", started.Format(time.RFC3339Nano), options.stream, field)
+	cwd, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(writer, "=== edc log start time=%s pid=%d cwd=%s stream=%s%s ===\n", started.Format(time.RFC3339Nano), os.Getpid(), asciiJSON(cwd), options.stream, field)
 	return err
-}
-
-func finishLogStartError(file *os.File, stderr io.Writer, path string, started time.Time, cause error) int {
-	fmt.Fprintln(stderr, T("cli.log.start_failed", cause))
-	if err := writeLogEnd(file, started, "status=start_error exit=2", logCopyResult{}); err != nil {
-		fmt.Fprintln(stderr, T("cli.log.write_failed", path, err))
-		return 2
-	}
-	if err := file.Sync(); err != nil {
-		fmt.Fprintln(stderr, T("cli.log.sync_failed", path, err))
-	}
-	return 2
 }
 
 func writeLogEnd(writer io.Writer, started time.Time, status string, copied logCopyResult) error {
@@ -284,8 +274,8 @@ func copyLogStream(writer io.Writer, reader io.Reader) logCopyResult {
 			}
 		}
 		if readErr != nil {
-			if readErr != io.EOF && result.writeErr == nil {
-				result.writeErr = readErr
+			if readErr != io.EOF {
+				result.readErr = readErr
 			}
 			return result
 		}

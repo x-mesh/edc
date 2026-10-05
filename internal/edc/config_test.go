@@ -322,3 +322,36 @@ func TestLogUsesConfigDefaults(t *testing.T) {
 		t.Fatalf("override log=%q stdout=%q", content, stdout.String())
 	}
 }
+
+func TestLogSupervisionConfigDefaultsAndCLIOverrides(t *testing.T) {
+	restore := activeConfig
+	defer func() { activeConfig = restore }()
+	config, err := loadConfigAt(writeConfigFixture(t, `defaults:
+  log:
+    stream: both
+    max_size_mb: 2
+    keep_files: 4
+    restart: on-failure
+    max_restarts: 5
+    restart_delay: 2s
+    timeout: 1m
+    kill_after: 3s
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	activeConfig = config
+	options, ok := parseLogOptions([]string{"--", "job"}, io.Discard)
+	if !ok || options.maxSizeMB != 2 || options.keepFiles != 4 || options.restart != "on-failure" || options.maxRestarts != 5 || options.restartDelay != 2*time.Second || options.timeout != time.Minute || options.killAfter != 3*time.Second {
+		t.Fatalf("configured=%+v", options)
+	}
+	options, ok = parseLogOptions([]string{"--max-size", "0", "--keep-files", "1", "--restart", "never", "--max-restarts", "0", "--restart-delay", "0s", "--timeout", "0s", "--kill-after", "1s", "--", "job"}, io.Discard)
+	if !ok || options.maxSizeMB != 0 || options.keepFiles != 1 || options.restart != "never" || options.maxRestarts != 0 || options.restartDelay != 0 || options.timeout != 0 || options.killAfter != time.Second {
+		t.Fatalf("overrides=%+v", options)
+	}
+	for _, field := range []string{"max_size_mb: -1", "max_size_mb: 1048577", "keep_files: 0", "keep_files: 101", "restart: bogus", "max_restarts: -1", "max_restarts: 1001", "restart_delay: -1s", "timeout: -1s", "kill_after: 0s", "max_size_mb: 'ten'", "timeout: 3"} {
+		if _, err := loadConfigAt(writeConfigFixture(t, "defaults:\n  log: {"+field+"}\n")); err == nil {
+			t.Fatalf("accepted %s", field)
+		}
+	}
+}

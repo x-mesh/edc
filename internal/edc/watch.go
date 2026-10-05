@@ -51,9 +51,37 @@ type watchSummary struct {
 }
 
 func runWatch(args []string) int {
+	if len(args) == 0 {
+		choice, ok := promptMissingChoice("edc watch", []string{"http", "fs"})
+		if !ok {
+			printCommandHelp(os.Stderr, "watch")
+			return 2
+		}
+		args = []string{choice}
+	}
+	if len(args) > 1 && (args[1] == "--help" || args[1] == "-h") {
+		if args[0] == "http" || args[0] == "fs" {
+			printWatchSubcommandHelp(os.Stdout, args[0])
+		} else {
+			printCommandHelp(os.Stdout, "watch")
+		}
+		return 0
+	}
+	switch args[0] {
+	case "fs":
+		return runFSWatch(args[1:])
+	case "http":
+		return runHTTPWatch(args[1:])
+	default:
+		return runHTTPWatch(args)
+	}
+}
+
+func runHTTPWatch(args []string) int {
 	options := configuredCommon(15 * time.Second)
-	set := flag.NewFlagSet("watch", flag.ContinueOnError)
+	set := flag.NewFlagSet("watch http", flag.ContinueOnError)
 	set.SetOutput(os.Stderr)
+	set.Usage = func() { printWatchSubcommandHelp(set.Output(), "http") }
 	bindCommon(set, &options)
 	intervalText := "1"
 	set.StringVar(&intervalText, "i", intervalText, T("command.watch.option.interval"))
@@ -61,10 +89,13 @@ func runWatch(args []string) int {
 	duration := set.Duration("duration", 0, T("command.watch.option.duration"))
 	expectStatus := set.Int("expect-status", configuredInt(activeConfig.Defaults.HTTP.ExpectStatus, 0), T("command.http.option.expect_status"))
 	if err := set.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
 		return 2
 	}
 	if set.NArg() != 1 {
-		fmt.Fprintln(os.Stderr, T("cli.usage", "edc watch [-i seconds] [--duration 1m] [options] <host|URL>"))
+		fmt.Fprintln(os.Stderr, T("cli.usage", "edc watch http [-i seconds] [--duration 1m] [options] <host|URL>"))
 		return 2
 	}
 	interval, err := parseObserveInterval(intervalText)
@@ -286,4 +317,32 @@ func formatWatchSample(sample watchSample) string {
 		parts = append(parts, sample.Error)
 	}
 	return strings.Join(parts, "  ")
+}
+
+func printWatchSubcommandHelp(writer io.Writer, mode string) {
+	doc, _ := findCommandDoc("watch")
+	fmt.Fprintf(writer, "edc watch %s — %s\n\n%s\n", mode, doc.summary(), T("help.usage_label"))
+	usage := doc.usage[0]
+	if mode == "fs" {
+		usage = fsWatchUsage
+	}
+	fmt.Fprintf(writer, "  %s\n\n%s\n", usage, T("help.options_label"))
+	var options []optionDoc
+	for _, option := range doc.options {
+		isFS := strings.HasPrefix(option.key, "watchfs.")
+		if (mode == "fs" && (isFS || option.key == "command.watch.option.duration")) || (mode == "http" && !isFS) {
+			if option.key == "watchfs.option.timeout" {
+				option.flag = "--timeout 30s"
+			}
+			options = append(options, option)
+		}
+	}
+	if mode == "fs" {
+		options = append(options, optionDoc{"--json <path|->", "watchfs.option.json"})
+	}
+	printOptionDocs(writer, options)
+	if mode == "http" {
+		fmt.Fprintf(writer, "\n%s\n", T("help.common_options_label"))
+		printOptionDocs(writer, commonOptionDocs)
+	}
 }

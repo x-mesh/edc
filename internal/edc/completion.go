@@ -141,7 +141,11 @@ _edc() {
           _arguments '1:subcommand:(list top process)' '--run[실행 ID]:id' '--from[시작 시각]:RFC3339' '--to[종료 시각]:RFC3339' '--process[process filter]:filter' '--metric[지표 이름]:metric' '--min[최솟값]:number' '--max[최댓값]:number' '--limit[최대 결과 수]:count' '--json[JSONL 출력 경로]:path:_files' '*:database:_files'
           ;;
         watch)
-          _arguments $common '(-i --interval)'{-i,--interval}'[sample 간격(초)]:seconds' '--duration[관측 시간]:duration' '--expect-status[기대 HTTP status]:code' '1:host or URL:_hosts'
+          if [[ $words[2] == fs ]]; then
+            _arguments '1:subcommand:(http fs)' '--recursive[하위 디렉터리 감시]' '--event[파일 이벤트]:events:(create modify remove rename)' '--match[감시 루트 기준 glob]:glob' '--exec[실행할 shell command]:command' '--rules[YAML rule 파일]:path:_files' '--exclude[제외 glob]:glob' '--debounce[이벤트 묶음 시간]:duration' '--timeout[action 제한 시간]:duration' '--duration[감시 시간]:duration' '--json[JSONL 출력 경로]:path:_files' '--dry-run[action 미실행]' '2:directory:_files -/'
+          else
+            _arguments $common '(-i --interval)'{-i,--interval}'[sample 간격(초)]:seconds' '--duration[관측 시간]:duration' '--expect-status[기대 HTTP status]:code' '1:subcommand:(http fs)' '2:host or URL:_hosts'
+          fi
           ;;
         info)
           _arguments '--public[public IP, 지역, ASN 조회. --public=false로 끕니다]' '--timeout[public 조회 제한 시간]:duration' '(-v --verbose)'{-v,--verbose}'[조회 실패 원인 출력]'
@@ -303,7 +307,18 @@ _edc() {
       elif [[ $prev == --run || $prev == --from || $prev == --to || $prev == --process || $prev == --metric || $prev == --min || $prev == --max || $prev == --limit ]]; then COMPREPLY=()
       elif [[ $cur == -* ]]; then COMPREPLY=($(compgen -W "--run --from --to --process --metric --min --max --limit --json" -- "$cur"))
       else COMPREPLY=($(compgen -f -- "$cur")); fi ;;
-    watch) COMPREPLY=($(compgen -W "$common -i --interval --duration --expect-status" -- "$cur")) ;;
+    watch)
+      if [[ $COMP_CWORD -eq 2 ]]; then COMPREPLY=($(compgen -W "http fs" -- "$cur")); return; fi
+      if [[ ${COMP_WORDS[2]} == fs ]]; then
+        case "$prev" in
+          --json|--rules) COMPREPLY=($(compgen -f -- "$cur")); return ;;
+          --event) COMPREPLY=($(compgen -W "create modify remove rename" -- "$cur")); return ;;
+          --exec|--match|--exclude|--debounce|--timeout|--duration) COMPREPLY=(); return ;;
+        esac
+        if [[ $cur == -* ]]; then COMPREPLY=($(compgen -W "--recursive --event --match --exec --rules --exclude --debounce --timeout --duration --json --dry-run" -- "$cur"))
+        else COMPREPLY=($(compgen -d -- "$cur")); fi
+      else COMPREPLY=($(compgen -W "$common -i --interval --duration --expect-status" -- "$cur")); fi ;;
+
     info) COMPREPLY=($(compgen -W "--public --timeout --verbose -v" -- "$cur")) ;;
     doctor) COMPREPLY=($(compgen -W "$common --profile --all-ips" -- "$cur")) ;;
     dns)

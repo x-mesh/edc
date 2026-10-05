@@ -1,0 +1,33 @@
+history:
+  usage: "Usage: edc history <list|top|process> [options] [DB]"
+  option:
+    run: "only this run ID"
+    from: "inclusive start time (RFC3339)"
+    to: "exclusive end time (RFC3339)"
+    limit: "maximum rows, 200 by default; 0 means all"
+    json: "one JSON line per result, - for stdout"
+    metric: "numeric field to filter"
+    min: "inclusive minimum; requires --metric"
+    max: "inclusive maximum; requires --metric"
+  error:
+    default_path: "The default database path is unavailable; specify --write <path>"
+    path: "Use a database file path; JSON output must not overwrite the database or its journal files"
+    regular: "The database path must be a regular file"
+    schema: "Not a supported edc history database (schema version 1)"
+    wal: "Cannot enable SQLite WAL mode on this database"
+    queue: "The recording queue is full; stopping observation"
+    write: "Recording failed: %v"
+    read: "Cannot read history: %v"
+    time: "Use RFC3339 times from 1678 to 2261, with --from earlier than --to"
+    metric: "Use --metric with a finite --min or --max (min <= max). Fields: %s"
+command:
+  history:
+    notes:
+      - "top -w [DB] records while the dashboard stays open."
+      - "Records append by run. Pausing top also pauses recording."
+      - "list shows runs; top and process show newest samples first."
+      - "CPU% is user+system for hosts and per core for processes."
+      - "Use top-level numeric JSON field names with --metric."
+      - "Process samples cover observed candidates, not every process."
+      - "No automatic deletion; use a local database file."
+      - "Omit the DB path to use the default history database."

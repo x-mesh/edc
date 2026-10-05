@@ -179,7 +179,7 @@ func runDoctor(args []string, version string) int {
 		{name: listenProbeID, run: func(ctx context.Context) Result { return probeListen(ctx, defaultListenFamilies()) }},
 	}
 	if *profile == "full" {
-		probes = append(probes, doctorProbe{name: qualityProbeID, run: probeQuality})
+		probes = append(probes, doctorProbe{name: qualityProbeID, run: qualityProbe(configuredString(activeConfig.Defaults.Quality.Server, ""))})
 	}
 	if *allIPs {
 		_, port, _ := net.SplitHostPort(address)

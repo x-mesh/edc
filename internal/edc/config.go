@@ -136,6 +136,7 @@ type updateConfig struct {
 }
 type qualityConfig struct {
 	Timeout *configDuration `yaml:"timeout,omitempty" toml:"timeout,omitempty"`
+	Server  *string         `yaml:"server,omitempty" toml:"server,omitempty"`
 }
 type logConfig struct {
 	Stream         *string         `yaml:"stream,omitempty" toml:"stream,omitempty"`
@@ -353,6 +354,9 @@ func validateConfig(config edcConfig) error {
 	if d.Quality.Timeout != nil && d.Quality.Timeout.Duration <= 0 {
 		return invalidConfig("defaults.quality.timeout", "must be greater than 0")
 	}
+	if d.Quality.Server != nil && *d.Quality.Server != "" && validateQualityServer(*d.Quality.Server) != nil {
+		return invalidConfig("defaults.quality.server", "must be empty or an absolute http or https URL with a host")
+	}
 	if d.Log.Stream != nil && *d.Log.Stream != "" && *d.Log.Stream != "stdout" && *d.Log.Stream != "stderr" && *d.Log.Stream != "both" {
 		return invalidConfig("defaults.log.stream", "must be stdout, stderr, or both")
 	}
@@ -439,7 +443,7 @@ func recommendedConfig() edcConfig {
 		Capture: captureConfig{Interface: stringPointer(""), Duration: durationPointer(15 * time.Second), Count: intPointer(500), Filter: stringPointer(""), Output: stringPointer("")},
 		Remote:  remoteConfig{Inventory: stringPointer(""), Recipe: stringPointer(""), ConnectTimeout: durationPointer(10 * time.Second), OutputLimit: intPointer(remoteOutputLimit), Parallel: intPointer(0)},
 		Update:  updateConfig{Timeout: durationPointer(60 * time.Second)},
-		Quality: qualityConfig{Timeout: durationPointer(defaultQualityTimeout)},
+		Quality: qualityConfig{Timeout: durationPointer(defaultQualityTimeout), Server: stringPointer("")},
 		Log: logConfig{Stream: stringPointer("both"), Output: stringPointer(""), CommandDisplay: stringPointer("full"),
 			MaxSizeMB: intPointer(defaultLogMaxSizeMB), KeepFiles: intPointer(defaultLogKeepFiles), Restart: stringPointer("never"),
 			MaxRestarts: intPointer(defaultLogMaxRestarts), RestartDelay: durationPointer(defaultLogRestartDelay), Timeout: durationPointer(0), KillAfter: durationPointer(defaultLogKillAfter)},

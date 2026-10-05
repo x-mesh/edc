@@ -27,6 +27,7 @@ cli:
     no_positional: "%s는 positional argument를 받지 않습니다"
     profile_value: "--profile은 default 또는 full이어야 합니다"
     min_days_range: "--min-days는 0 이상이어야 합니다"
+    quality_server: "--server는 host가 있는 http 또는 https 절대 URL이어야 합니다: %s"
     expect_status_range: "--expect-status는 100에서 599 사이여야 합니다"
   doctor:
     tls_skipped_for_http: "HTTP target에는 TLS를 적용하지 않습니다"
@@ -115,10 +116,12 @@ cli:
       remote_parallel: "remote 병렬 host 수 (0은 inventory 사용)"
       update_timeout: "update timeout"
       quality_timeout: "quality timeout"
+      quality_server: "quality config URL (비우면 Apple 서버)"
     validation:
       language: "en, ko, ja 중 하나를 입력하세요"
       yes_no: "y 또는 n으로 답하세요"
       positive: "0보다 커야 합니다"
+      url: "host가 있는 http 또는 https 절대 URL을 입력하세요"
       non_negative: "0 이상이어야 합니다"
       stream: "stdout, stderr, both 중 하나를 입력하십시오"
       file_path: "-가 아닌 file 경로를 입력하세요"

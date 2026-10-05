@@ -243,7 +243,7 @@ func TestQualityTimeoutPrecedence(t *testing.T) {
 				return Result{Probe: qualityProbeID, Status: StatusPass}
 			}
 			args := append([]string{"--json", filepath.Join(t.TempDir(), "report.json")}, tc.args...)
-			if code := runQualityWith(args, "test", probe); code != 0 {
+			if code := runQualityWith(args, "test", func(string) func(context.Context) Result { return probe }); code != 0 {
 				t.Fatalf("exit = %d", code)
 			}
 			if remaining > tc.want || remaining < tc.want-time.Second {
@@ -290,5 +290,69 @@ func TestQualityConfigRejectsNonPositiveTimeout(t *testing.T) {
 	}
 	if recommended := recommendedConfig().Defaults.Quality.Timeout; recommended == nil || recommended.Duration != defaultQualityTimeout {
 		t.Fatalf("recommended quality timeout = %v", recommended)
+	}
+}
+
+func TestQualityServerPrecedence(t *testing.T) {
+	restore := activeConfig
+	defer func() { activeConfig = restore }()
+	const configured, explicit = "https://configured.example/config", "http://explicit.example:8080/config"
+	cases := []struct {
+		name   string
+		config *string
+		args   []string
+		want   string
+		code   int
+	}{
+		{"builtin", nil, nil, "", 0},
+		{"config", stringPointer(configured), nil, configured, 0},
+		{"flag over config", stringPointer(configured), []string{"--server", explicit}, explicit, 0},
+		{"relative flag", nil, []string{"--server", "relative/config"}, "", 2},
+		{"file flag", nil, []string{"--server", "file:///etc/config"}, "", 2},
+		{"empty host flag", nil, []string{"--server", "https://"}, "", 2},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			activeConfig = edcConfig{Defaults: configDefaults{Quality: qualityConfig{Server: tc.config}}}
+			got, measured := "", false
+			newProbe := func(server string) func(context.Context) Result {
+				return func(context.Context) Result {
+					got, measured = server, true
+					return Result{Probe: qualityProbeID, Status: StatusPass}
+				}
+			}
+			args := append([]string{"--json", filepath.Join(t.TempDir(), "report.json")}, tc.args...)
+			if code := runQualityWith(args, "test", newProbe); code != tc.code {
+				t.Fatalf("exit = %d, want %d", code, tc.code)
+			}
+			if tc.code != 0 {
+				if measured {
+					t.Fatal("an invalid server still ran the measurement")
+				}
+				return
+			}
+			if got != tc.want {
+				t.Fatalf("server = %q, want %q", got, tc.want)
+			}
+		})
+	}
+	for _, server := range []string{"relative/config", "ftp://h.example/config"} {
+		config := edcConfig{Defaults: configDefaults{Quality: qualityConfig{Server: stringPointer(server)}}}
+		if err := validateConfig(config); err == nil || !strings.Contains(err.Error(), "defaults.quality.server") {
+			t.Fatalf("server %q: error = %v", server, err)
+		}
+	}
+	if err := validateConfig(edcConfig{Defaults: configDefaults{Quality: qualityConfig{Server: stringPointer("")}}}); err != nil {
+		t.Fatalf("empty server: %v", err)
+	}
+}
+
+func TestQualityDarwinArgs(t *testing.T) {
+	if got := strings.Join(networkQualityArgs(""), " "); got != "-c" {
+		t.Fatalf("default args = %q", got)
+	}
+	const server = "https://quality.example.net/config"
+	if got := strings.Join(networkQualityArgs(server), " "); got != "-c -C "+server {
+		t.Fatalf("override args = %q", got)
 	}
 }

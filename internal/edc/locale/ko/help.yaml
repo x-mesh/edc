@@ -131,9 +131,14 @@ command:
       - "큐를 주는 것은 Linux뿐이고 macOS에서는 -로 나옵니다."
       - "-v는 열만 늘립니다. 줄은 그대로입니다."
   quality:
-    summary: "networkQuality 측정 (macOS)"
+    summary: "네트워크 응답성(RPM)과 처리량 측정"
+    option:
+      server: "응답성 측정 config URL"
     notes:
-      - "macOS의 networkQuality를 씁니다. 측정에 수십 초가 걸립니다."
+      - "macOS는 networkQuality를, 다른 OS는 자체 측정을 씁니다."
+      - "자체 측정은 IETF responsiveness draft를 따릅니다."
+      - "--server로 config URL을 바꿉니다. 기본은 Apple mensura 서버입니다."
+      - "측정에 수십 초가 걸립니다."
       - "제한 시간은 30s입니다. defaults.quality.timeout으로 바꿉니다."
   capture:
     summary: "packet capture (Linux와 macOS)"

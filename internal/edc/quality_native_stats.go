@@ -33,8 +33,8 @@ const (
 	// 기한 직전에 측정을 멈춰 표본 계산과 결과 출력을 기한 안에 끝낸다.
 	finalizeReserve = 2 * time.Second
 	shutdownGrace   = time.Second
-	// 기본 30s timeout 안에서 idle probe와 마무리 시간을 남긴다.
-	maxRun = 20 * time.Second
+	// MAD×ID(20s) 부하 구간에 config와 idle probe 시간을 더한 값이다. 기본 30s timeout 안에 끝난다.
+	maxRun = 25 * time.Second
 	// config는 URL 몇 개뿐이다. 이보다 크면 잘못되었거나 악의적인 응답이다.
 	configBodyLimit = 64 << 10
 )

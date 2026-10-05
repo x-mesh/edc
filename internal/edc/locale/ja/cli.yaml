@@ -27,6 +27,7 @@ cli:
     no_positional: "%s は positional argument を受け取りません"
     profile_value: "--profile は default か full です"
     min_days_range: "--min-days は 0 以上です"
+    quality_server: "--server は host を含む http または https の絶対 URL です: %s"
     expect_status_range: "--expect-status は 100 から 599 の間です"
   doctor:
     tls_skipped_for_http: "HTTP target には TLS を適用しません"
@@ -115,10 +116,12 @@ cli:
       remote_parallel: "remote 並列 host 数 (0 は inventory)"
       update_timeout: "update timeout"
       quality_timeout: "quality timeout"
+      quality_server: "quality config URL (空なら Apple のサーバー)"
     validation:
       language: "en、ko、ja のいずれかを入力してください"
       yes_no: "y または n で答えてください"
       positive: "0 より大きい値が必要です"
+      url: "host を含む http または https の絶対 URL を入力してください"
       non_negative: "0 以上が必要です"
       stream: "stdout、stderr、both のいずれかを入力してください"
       file_path: "- 以外の file path を入力してください"

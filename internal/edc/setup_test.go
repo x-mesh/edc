@@ -262,8 +262,8 @@ func TestSetupSnapshotsOversizedAndNonRegularConfigWithoutReading(t *testing.T) 
 
 func TestSetupConfiguresQualityTimeout(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "edc", "config.yaml")
-	// language; the eleven sections before quality no; quality yes with 45s; save.
-	input := "\n" + strings.Repeat("n\n", 11) + "y\n45s\ny\n"
+	// language; the eleven sections before quality no; quality yes with 45s and a server; save.
+	input := "\n" + strings.Repeat("n\n", 11) + "y\n45s\nrelative\nhttps://quality.example.net/config\ny\n"
 	var output, stderr strings.Builder
 	if code := runSetupWithIO(nil, strings.NewReader(input), &output, &stderr, true, path); code != 0 {
 		t.Fatalf("exit=%d stderr=%q output=%q", code, stderr.String(), output.String())
@@ -272,7 +272,8 @@ func TestSetupConfiguresQualityTimeout(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if config.Defaults.Quality.Timeout == nil || config.Defaults.Quality.Timeout.Duration != 45*time.Second || config.Defaults.Update.Timeout != nil {
+	if config.Defaults.Quality.Timeout == nil || config.Defaults.Quality.Timeout.Duration != 45*time.Second || config.Defaults.Update.Timeout != nil ||
+		config.Defaults.Quality.Server == nil || *config.Defaults.Quality.Server != "https://quality.example.net/config" {
 		t.Fatalf("quality = %#v, update = %#v", config.Defaults.Quality, config.Defaults.Update)
 	}
 }

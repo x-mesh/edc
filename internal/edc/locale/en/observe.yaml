@@ -119,7 +119,6 @@ observe:
     no_nameserver: "%s holds no nameserver"
     nameserver_warning: "without a nameserver line, the resolver uses localhost"
     resolvectl_failed: "resolvectl status failed: %s"
-    quality_darwin_only: "networkQuality runs on macOS only"
     quality_done: "networkQuality measurement complete"
     trace_missing: "edc did not find the traceroute or tracepath command"
 

@@ -3,6 +3,8 @@ package edc
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"flag"
 	"fmt"
 	"math"
 	"os/exec"
@@ -15,6 +17,8 @@ import (
 const (
 	qualityProbeID           = "net.quality"
 	defaultQualityTimeout    = 30 * time.Second
+	defaultQualityServer     = "https://mensura.cdn-apple.com/api/v1/gm/config"
+	networkQualityPath       = "/usr/bin/networkQuality"
 	qualitySourceNetworkQual = "networkQuality"
 
 	bitsPerKilobit = 1000
@@ -162,21 +166,55 @@ func doctorTimeout(profile string, timeoutFlagSet bool, current time.Duration) t
 }
 
 func runQuality(args []string, version string) int {
-	return runQualityWith(args, version, probeQuality)
+	return runQualityWith(args, version, qualityProbe)
 }
 
-func runQualityWith(args []string, version string, probe func(context.Context) Result) int {
+func runQualityWith(args []string, version string, newProbe func(server string) func(context.Context) Result) int {
 	options := configuredCommon(defaultQualityTimeout)
 	options.timeout = resolveQualityTimeout()
-	return runSimpleWithOptions(args, version, "quality", qualityProbeID, options, probeFlags{}, probe)
+	server := configuredString(activeConfig.Defaults.Quality.Server, "")
+	flags := probeFlags{
+		bind: func(set *flag.FlagSet) {
+			set.StringVar(&server, "server", server, T("command.quality.option.server"))
+		},
+		check: func() error {
+			if server == "" {
+				return nil
+			}
+			if err := validateQualityServer(server); err != nil {
+				return errors.New(T("cli.error.quality_server", server))
+			}
+			return nil
+		},
+	}
+	return runSimpleWithOptions(args, version, "quality", qualityProbeID, options, flags, func(ctx context.Context) Result {
+		return newProbe(server)(ctx)
+	})
 }
 
-func probeQuality(ctx context.Context) Result {
-	started := time.Now()
-	if runtime.GOOS != "darwin" {
-		return unsupported(qualityProbeID, T("observe.system.quality_darwin_only"))
+// qualityProbe는 빈 server를 기본 서버로 본다. macOS에서는 사용자가 바꾼 경우에만 -C를 넘겨 networkQuality의 기본 동작을 지킨다.
+func qualityProbe(server string) func(context.Context) Result {
+	if runtime.GOOS == "darwin" {
+		return func(ctx context.Context) Result { return probeNetworkQuality(ctx, server) }
 	}
-	command := exec.CommandContext(ctx, "/usr/bin/networkQuality", "-c")
+	configURL := server
+	if configURL == "" {
+		configURL = defaultQualityServer
+	}
+	return func(ctx context.Context) Result { return probeNativeQuality(ctx, configURL) }
+}
+
+func networkQualityArgs(server string) []string {
+	args := []string{"-c"}
+	if server != "" {
+		args = append(args, "-C", server)
+	}
+	return args
+}
+
+func probeNetworkQuality(ctx context.Context, server string) Result {
+	started := time.Now()
+	command := exec.CommandContext(ctx, networkQualityPath, networkQualityArgs(server)...)
 	output, err := command.Output()
 	if err != nil {
 		return resultFromError(qualityProbeID, started, classifyCommandError(ctx, err), err)

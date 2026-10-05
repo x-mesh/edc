@@ -204,7 +204,7 @@ _edc() {
           _arguments ${common:#*verbose*} '--tcp[TCP socket만 봅니다]' '(-u --udp)'{-u,--udp}'[바인드된 UDP socket만 봅니다]' '--unix[unix domain socket만 봅니다]' '--all[TCP와 UDP, unix domain socket을 모두 봅니다]' '--watch[포트 변화 관측]' '(-i --interval)'{-i,--interval}'[관측 간격(초)]:seconds' '--duration[관측 시간]:duration' '(-v --verbose)'{-v,--verbose}'[계정과 descriptor, 큐 열을 함께 엽니다]'
           ;;
         quality)
-          _arguments $common
+          _arguments $common '--server[응답성 측정 config URL]:url'
           ;;
         capture)
           _arguments '--mode[캡처 방식]:mode:(pcap events)' '--interface[capture할 interface]:interface' '--duration[capture 시간]:duration' '--count[packet 수]:count' '--filter[BPF filter]:filter' '--output[pcap 저장 경로]:path:_files' '--yes[확인 생략]'
@@ -327,7 +327,7 @@ _edc() {
         esac
       fi ;;
     listen) COMPREPLY=($(compgen -W "$common --tcp --udp --unix --all --watch -i --interval --duration" -- "$cur")) ;;
-    quality) COMPREPLY=($(compgen -W "$common" -- "$cur")) ;;
+    quality) COMPREPLY=($(compgen -W "$common --server" -- "$cur")) ;;
     capture) COMPREPLY=($(compgen -W "--mode --interface --duration --count --filter --output --yes" -- "$cur")) ;;
     trace)
       if [[ $COMP_CWORD -eq 2 ]]; then COMPREPLY=($(compgen -W "tcp udp dns arp ndp http mysql" -- "$cur")); else COMPREPLY=($(compgen -W "--duration --json --raw --live --group-by --process --destination -d --detail --side --payload --payload=all --show-secrets --port --yes" -- "$cur")); fi ;;

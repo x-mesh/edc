@@ -583,7 +583,15 @@ func editUpdateSetup(reader *bufio.Reader, output io.Writer, config *updateConfi
 	return setupDurationValue(reader, output, T("cli.setup.field.update_timeout"), &config.Timeout, positiveDuration)
 }
 func editQualitySetup(reader *bufio.Reader, output io.Writer, config *qualityConfig) error {
-	return setupDurationValue(reader, output, T("cli.setup.field.quality_timeout"), &config.Timeout, positiveDuration)
+	if err := setupDurationValue(reader, output, T("cli.setup.field.quality_timeout"), &config.Timeout, positiveDuration); err != nil {
+		return err
+	}
+	return setupOptionalString(reader, output, T("cli.setup.field.quality_server"), &config.Server, func(value string) error {
+		if validateQualityServer(value) != nil {
+			return errors.New(T("cli.setup.validation.url"))
+		}
+		return nil
+	})
 }
 
 func outputPathValidation(allowStdout bool) func(string) error {

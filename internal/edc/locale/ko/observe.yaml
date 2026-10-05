@@ -119,7 +119,6 @@ observe:
     no_nameserver: "%s에 nameserver가 없습니다"
     nameserver_warning: "nameserver 줄이 없으면 resolver는 localhost를 사용합니다"
     resolvectl_failed: "resolvectl status 실패: %s"
-    quality_darwin_only: "networkQuality는 macOS 전용입니다"
     quality_done: "networkQuality 측정 완료"
     trace_missing: "traceroute 또는 tracepath 명령을 찾을 수 없습니다"
 

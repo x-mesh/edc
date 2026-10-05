@@ -119,7 +119,6 @@ observe:
     no_nameserver: "%s に nameserver がありません"
     nameserver_warning: "nameserver の行がないと resolver は localhost を使います"
     resolvectl_failed: "resolvectl status に失敗しました: %s"
-    quality_darwin_only: "networkQuality は macOS 専用です"
     quality_done: "networkQuality の測定が完了しました"
     trace_missing: "traceroute または tracepath コマンドが見つかりません"
 

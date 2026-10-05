@@ -133,6 +133,9 @@ parallel = 0
 [defaults.update]
 timeout = "60s"
 
+[defaults.quality]
+timeout = "30s"
+
 [defaults.log]
 stream = "both"
 output = ""

@@ -134,6 +134,7 @@ command:
     summary: "networkQuality measurement (macOS)"
     notes:
       - "edc uses networkQuality on macOS. The measurement needs tens of seconds."
+      - "The timeout is 30s. defaults.quality.timeout overrides it."
   capture:
     summary: "Packet capture (Linux and macOS)"
     option:

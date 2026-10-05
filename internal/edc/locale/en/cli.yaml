@@ -75,6 +75,7 @@ cli:
       capture: "Configure capture defaults?"
       remote: "Configure remote defaults?"
       update: "Configure update defaults?"
+      quality: "Configure quality defaults?"
     field:
       common_timeout: "common timeout"
       common_json: "common JSON path (empty disables)"
@@ -113,6 +114,7 @@ cli:
       remote_output_limit: "remote output byte limit"
       remote_parallel: "remote parallel hosts (0 uses inventory)"
       update_timeout: "update timeout"
+      quality_timeout: "quality timeout"
     validation:
       language: "use en, ko, or ja"
       yes_no: "answer y or n"

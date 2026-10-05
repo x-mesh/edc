@@ -14,6 +14,7 @@ import (
 
 const (
 	qualityProbeID           = "net.quality"
+	defaultQualityTimeout    = 30 * time.Second
 	qualitySourceNetworkQual = "networkQuality"
 
 	bitsPerKilobit = 1000
@@ -143,6 +144,31 @@ func groupThousands(value int64) string {
 		builder.WriteRune(digit)
 	}
 	return builder.String()
+}
+
+func resolveQualityTimeout() time.Duration {
+	return configuredDurationFallback(activeConfig.Defaults.Quality.Timeout, activeConfig.Defaults.Common.Timeout, defaultQualityTimeout)
+}
+
+// doctorTimeout은 full profile이 quality를 함께 돌릴 때만 기한을 늘린다. 명시한 --timeout은 그대로 둔다.
+func doctorTimeout(profile string, timeoutFlagSet bool, current time.Duration) time.Duration {
+	if timeoutFlagSet || profile != "full" {
+		return current
+	}
+	if quality := resolveQualityTimeout(); quality > current {
+		return quality
+	}
+	return current
+}
+
+func runQuality(args []string, version string) int {
+	return runQualityWith(args, version, probeQuality)
+}
+
+func runQualityWith(args []string, version string, probe func(context.Context) Result) int {
+	options := configuredCommon(defaultQualityTimeout)
+	options.timeout = resolveQualityTimeout()
+	return runSimpleWithOptions(args, version, "quality", qualityProbeID, options, probeFlags{}, probe)
 }
 
 func probeQuality(ctx context.Context) Result {

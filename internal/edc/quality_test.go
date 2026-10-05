@@ -1,7 +1,9 @@
 package edc
 
 import (
+	"context"
 	"encoding/json"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -210,5 +212,83 @@ func TestQualitySummaryResultLine(t *testing.T) {
 	}
 	if decoded.Metrics["download_bps"] != float64(67181720) || decoded.Metrics["source"] != qualitySourceNetworkQual {
 		t.Fatalf("metrics = %v", decoded.Metrics)
+	}
+}
+
+func TestQualityTimeoutPrecedence(t *testing.T) {
+	restore := activeConfig
+	defer func() { activeConfig = restore }()
+	const commonTimeout, qualityTimeout = 12 * time.Second, 45 * time.Second
+	cases := []struct {
+		name     string
+		defaults configDefaults
+		args     []string
+		want     time.Duration
+	}{
+		{"builtin", configDefaults{}, nil, defaultQualityTimeout},
+		{"common only", configDefaults{Common: commonConfig{Timeout: durationPointer(commonTimeout)}}, nil, commonTimeout},
+		{"quality over common", configDefaults{Common: commonConfig{Timeout: durationPointer(commonTimeout)}, Quality: qualityConfig{Timeout: durationPointer(qualityTimeout)}}, nil, qualityTimeout},
+		{"flag over both", configDefaults{Common: commonConfig{Timeout: durationPointer(commonTimeout)}, Quality: qualityConfig{Timeout: durationPointer(qualityTimeout)}}, []string{"--timeout", "7s"}, 7 * time.Second},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			activeConfig = edcConfig{Defaults: tc.defaults}
+			var remaining time.Duration
+			probe := func(ctx context.Context) Result {
+				deadline, ok := ctx.Deadline()
+				if !ok {
+					t.Fatal("probe context has no deadline")
+				}
+				remaining = time.Until(deadline)
+				return Result{Probe: qualityProbeID, Status: StatusPass}
+			}
+			args := append([]string{"--json", filepath.Join(t.TempDir(), "report.json")}, tc.args...)
+			if code := runQualityWith(args, "test", probe); code != 0 {
+				t.Fatalf("exit = %d", code)
+			}
+			if remaining > tc.want || remaining < tc.want-time.Second {
+				t.Fatalf("timeout = %s, want %s", remaining, tc.want)
+			}
+		})
+	}
+}
+
+func TestQualityDoctorTimeout(t *testing.T) {
+	restore := activeConfig
+	defer func() { activeConfig = restore }()
+	const shortTimeout, longTimeout = 15 * time.Second, 90 * time.Second
+	cases := []struct {
+		name    string
+		quality *configDuration
+		profile string
+		flagSet bool
+		current time.Duration
+		want    time.Duration
+	}{
+		{"default profile keeps current", nil, "default", false, shortTimeout, shortTimeout},
+		{"full raises to builtin quality", nil, "full", false, shortTimeout, defaultQualityTimeout},
+		{"full raises to configured quality", durationPointer(longTimeout), "full", false, shortTimeout, longTimeout},
+		{"full never lowers", nil, "full", false, longTimeout, longTimeout},
+		{"explicit flag wins", durationPointer(longTimeout), "full", true, shortTimeout, shortTimeout},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			activeConfig = edcConfig{Defaults: configDefaults{Quality: qualityConfig{Timeout: tc.quality}}}
+			if got := doctorTimeout(tc.profile, tc.flagSet, tc.current); got != tc.want {
+				t.Fatalf("timeout = %s, want %s", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestQualityConfigRejectsNonPositiveTimeout(t *testing.T) {
+	for _, value := range []time.Duration{0, -time.Second} {
+		config := edcConfig{Defaults: configDefaults{Quality: qualityConfig{Timeout: durationPointer(value)}}}
+		if err := validateConfig(config); err == nil || !strings.Contains(err.Error(), "defaults.quality.timeout") {
+			t.Fatalf("timeout %s: error = %v", value, err)
+		}
+	}
+	if recommended := recommendedConfig().Defaults.Quality.Timeout; recommended == nil || recommended.Duration != defaultQualityTimeout {
+		t.Fatalf("recommended quality timeout = %v", recommended)
 	}
 }

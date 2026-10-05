@@ -75,6 +75,7 @@ cli:
       capture: "capture デフォルトを設定しますか?"
       remote: "remote デフォルトを設定しますか?"
       update: "update デフォルトを設定しますか?"
+      quality: "quality デフォルトを設定しますか?"
     field:
       common_timeout: "共通 timeout"
       common_json: "共通 JSON path (空なら無効)"
@@ -113,6 +114,7 @@ cli:
       remote_output_limit: "remote output byte 上限"
       remote_parallel: "remote 並列 host 数 (0 は inventory)"
       update_timeout: "update timeout"
+      quality_timeout: "quality timeout"
     validation:
       language: "en、ko、ja のいずれかを入力してください"
       yes_no: "y または n で答えてください"

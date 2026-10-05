@@ -134,6 +134,7 @@ command:
     summary: "networkQuality の測定 (macOS)"
     notes:
       - "macOS の networkQuality を使います。測定には数十秒かかります。"
+      - "制限時間は 30s です。defaults.quality.timeout で変えます。"
   capture:
     summary: "packet capture (Linux と macOS)"
     option:

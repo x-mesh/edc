@@ -119,6 +119,10 @@ func runSetupWithIO(args []string, input io.Reader, output, stderr io.Writer, te
 			config.Defaults.Update = mergeConfigSection(config.Defaults.Update, recommended.Defaults.Update)
 			return editUpdateSetup(reader, output, &config.Defaults.Update)
 		}},
+		{"quality", func() error {
+			config.Defaults.Quality = mergeConfigSection(config.Defaults.Quality, recommended.Defaults.Quality)
+			return editQualitySetup(reader, output, &config.Defaults.Quality)
+		}},
 	}
 	for _, section := range sections {
 		configure, err := setupYesNo(reader, output, T("cli.setup.section."+section.key), false)
@@ -577,6 +581,9 @@ func editRemoteSetup(reader *bufio.Reader, output io.Writer, config *remoteConfi
 }
 func editUpdateSetup(reader *bufio.Reader, output io.Writer, config *updateConfig) error {
 	return setupDurationValue(reader, output, T("cli.setup.field.update_timeout"), &config.Timeout, positiveDuration)
+}
+func editQualitySetup(reader *bufio.Reader, output io.Writer, config *qualityConfig) error {
+	return setupDurationValue(reader, output, T("cli.setup.field.quality_timeout"), &config.Timeout, positiveDuration)
 }
 
 func outputPathValidation(allowStdout bool) func(string) error {

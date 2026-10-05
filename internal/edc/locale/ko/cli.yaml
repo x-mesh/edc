@@ -75,6 +75,7 @@ cli:
       capture: "capture 기본값을 설정할까요?"
       remote: "remote 기본값을 설정할까요?"
       update: "update 기본값을 설정할까요?"
+      quality: "quality 기본값을 설정할까요?"
     field:
       common_timeout: "공통 timeout"
       common_json: "공통 JSON 경로 (빈 값은 끔)"
@@ -113,6 +114,7 @@ cli:
       remote_output_limit: "remote output byte 제한"
       remote_parallel: "remote 병렬 host 수 (0은 inventory 사용)"
       update_timeout: "update timeout"
+      quality_timeout: "quality timeout"
     validation:
       language: "en, ko, ja 중 하나를 입력하세요"
       yes_no: "y 또는 n으로 답하세요"

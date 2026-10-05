@@ -226,7 +226,7 @@ func TestQualityTimeoutPrecedence(t *testing.T) {
 		want     time.Duration
 	}{
 		{"builtin", configDefaults{}, nil, defaultQualityTimeout},
-		{"common only", configDefaults{Common: commonConfig{Timeout: durationPointer(commonTimeout)}}, nil, commonTimeout},
+		{"common ignored", configDefaults{Common: commonConfig{Timeout: durationPointer(commonTimeout)}}, nil, defaultQualityTimeout},
 		{"quality over common", configDefaults{Common: commonConfig{Timeout: durationPointer(commonTimeout)}, Quality: qualityConfig{Timeout: durationPointer(qualityTimeout)}}, nil, qualityTimeout},
 		{"flag over both", configDefaults{Common: commonConfig{Timeout: durationPointer(commonTimeout)}, Quality: qualityConfig{Timeout: durationPointer(qualityTimeout)}}, []string{"--timeout", "7s"}, 7 * time.Second},
 	}

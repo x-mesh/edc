@@ -140,6 +140,7 @@ command:
       - "--server로 config URL을 바꿉니다. 기본은 Apple mensura 서버입니다."
       - "측정에 수십 초가 걸립니다."
       - "제한 시간은 30s입니다. defaults.quality.timeout으로 바꿉니다."
+      - "defaults.common.timeout은 쓰지 않습니다. 내장 측정은 제한 시간까지 잽니다."
   capture:
     summary: "packet capture (Linux와 macOS)"
     option:

@@ -140,6 +140,7 @@ command:
       - "--server sets the config URL. Apple's mensura server is the default."
       - "The measurement needs tens of seconds."
       - "The timeout is 30s. defaults.quality.timeout overrides it."
+      - "defaults.common.timeout does not apply. The native test runs to the limit."
   capture:
     summary: "Packet capture (Linux and macOS)"
     option:

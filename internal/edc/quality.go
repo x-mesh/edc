@@ -150,8 +150,9 @@ func groupThousands(value int64) string {
 	return builder.String()
 }
 
+// resolveQualityTimeout은 defaults.common.timeout을 물려받지 않는다. 예전 setup이 쓴 common 15s가 측정을 매번 자르기 때문이다.
 func resolveQualityTimeout() time.Duration {
-	return configuredDurationFallback(activeConfig.Defaults.Quality.Timeout, activeConfig.Defaults.Common.Timeout, defaultQualityTimeout)
+	return configuredDuration(activeConfig.Defaults.Quality.Timeout, defaultQualityTimeout)
 }
 
 // doctorTimeout은 full profile이 quality를 함께 돌릴 때만 기한을 늘린다. 명시한 --timeout은 그대로 둔다.

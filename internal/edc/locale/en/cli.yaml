@@ -27,6 +27,7 @@ cli:
     no_positional: "%s takes no positional argument"
     profile_value: "--profile takes default or full"
     min_days_range: "--min-days must be 0 or more"
+    quality_server: "--server must be an absolute http or https URL with a host and no user info: %s"
     expect_status_range: "--expect-status must be between 100 and 599"
   doctor:
     tls_skipped_for_http: "edc applies no TLS to an HTTP target"
@@ -138,6 +139,7 @@ cli:
       capture: "Configure capture defaults?"
       remote: "Configure remote defaults?"
       update: "Configure update defaults?"
+      quality: "Configure quality defaults?"
     field:
       common_timeout: "common timeout"
       common_json: "common JSON path (empty disables)"
@@ -176,10 +178,13 @@ cli:
       remote_output_limit: "remote output byte limit"
       remote_parallel: "remote parallel hosts (0 uses inventory)"
       update_timeout: "update timeout"
+      quality_timeout: "quality timeout"
+      quality_server: "quality config URL (empty uses the Apple server)"
     validation:
       language: "use en, ko, or ja"
       yes_no: "answer y or n"
       positive: "must be greater than 0"
+      url: "enter an absolute http or https URL with a host"
       non_negative: "must be 0 or more"
       stream: "use stdout, stderr, or both"
       file_path: "enter a file path other than -"

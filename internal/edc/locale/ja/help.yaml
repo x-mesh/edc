@@ -132,9 +132,16 @@ command:
       - "キューを返すのは Linux だけで、macOS では - になります。"
       - "-v が増やすのは列だけです。行は変わりません。"
   quality:
-    summary: "networkQuality の測定 (macOS)"
+    summary: "ネットワークの応答性 (RPM) とスループット"
+    option:
+      server: "応答性測定の config URL"
     notes:
-      - "macOS の networkQuality を使います。測定には数十秒かかります。"
+      - "macOS は networkQuality、他の OS は内蔵の測定を使います。"
+      - "内蔵の測定は IETF responsiveness draft に従います。"
+      - "--server で config URL を変えます。既定は Apple の mensura サーバーです。"
+      - "測定には数十秒かかります。"
+      - "制限時間は 30s です。defaults.quality.timeout で変えます。"
+      - "defaults.common.timeout は使いません。内蔵の測定は制限時間まで測ります。"
   capture:
     summary: "packet capture (Linux と macOS)"
     option:

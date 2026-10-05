@@ -45,6 +45,9 @@ func runLog(args []string) int {
 }
 
 func runLogWithStreams(args []string, streams logStreams) int {
+	if len(args) > 0 && args[0] == "history" {
+		return runLogHistory(args[1:], streams)
+	}
 	options, ok := parseLogOptions(args, streams.stderr)
 	if !ok {
 		return 2
@@ -237,7 +240,11 @@ func writeLogStart(writer io.Writer, started time.Time, options logOptions) erro
 	field := ""
 	if options.commandDisplay != "none" {
 		field = " command=" + asciiJSON(command)
+		if key, err := commandKey(options.command); err == nil {
+			field += " command_key=" + key + " command_key_version=1"
+		}
 	}
+	field = " command_display=" + options.commandDisplay + field
 	cwd, err := os.Getwd()
 	if err != nil {
 		return err

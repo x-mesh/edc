@@ -565,7 +565,7 @@ func TestTopSampleCarriesProcessesOnlyWhenFiltering(t *testing.T) {
 		t.Fatalf("empty match = %s", data)
 	}
 	sample.Processes = newTopProcessSamples([]topProcess{{PID: 7, CPU: 12.3456, RSS: 2048, Command: "node"}})
-	if data, _ = json.Marshal(sample); !strings.Contains(string(data), `"processes":[{"pid":7,"command":"node","cpu_pct":12.35,"rss_bytes":2048}]`) {
+	if data, _ = json.Marshal(sample); !strings.Contains(string(data), `"processes":[{"pid":7,"command":"node","cpu_pct":12.35,"rss_bytes":2048,"limits":`) {
 		t.Fatalf("process sample = %s", data)
 	}
 	started := time.Date(2026, time.October, 3, 5, 6, 51, 0, time.UTC)

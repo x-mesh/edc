@@ -2,9 +2,12 @@ package edc
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -345,5 +348,121 @@ func TestLoadReportErrorsIdentifyResultIndex(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "results[1]."+field) || strings.Contains(err.Error(), "\"invalid\"") {
 			t.Fatalf("error = %v", err)
 		}
+	}
+}
+
+func TestReportListAndCandidatesOrderByRunTime(t *testing.T) {
+	t.Chdir(t.TempDir())
+	started := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	for index := 0; index < reportCandidateLimit+2; index++ {
+		report := buildReport("test", started.Add(time.Duration(index)*time.Hour), nil, []Result{{Probe: "check", Status: StatusWarn}}, false)
+		data, err := json.Marshal(report)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(fmt.Sprintf("report-%02d.json", index), data, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, name := range []string{"invalid.json", "command.log"} {
+		if err := os.WriteFile(name, []byte("command output"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var output strings.Builder
+	if err := listReports(&output, "."); err != nil {
+		t.Fatal(err)
+	}
+	text := output.String()
+	last := -1
+	for index := reportCandidateLimit + 1; index >= 0; index-- {
+		position := strings.Index(text, fmt.Sprintf("report-%02d.json", index))
+		if position <= last {
+			t.Fatalf("report %d missing or out of order: %s", index, text)
+		}
+		last = position
+	}
+	if strings.Contains(text, "invalid.json") || strings.Contains(text, "command.log") || !strings.Contains(text, "2026-01-01T21:00:00Z") || !strings.Contains(text, "1 warn") {
+		t.Fatalf("unexpected list: %s", text)
+	}
+	items := reportCandidates()
+	if len(items) != reportCandidateLimit || items[0].value != "report-21.json" || !strings.Contains(items[0].label, "1 warn") {
+		t.Fatalf("candidates = %#v", items)
+	}
+}
+
+func TestReportListEmptyAndDirectoryErrors(t *testing.T) {
+	directory := t.TempDir()
+	var output strings.Builder
+	if err := listReports(&output, directory); err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{directory, "--json", "edc doctor", T("cli.report.description")} {
+		if !strings.Contains(output.String(), expected) {
+			t.Fatalf("empty list missing %q: %s", expected, output.String())
+		}
+	}
+	missing := filepath.Join(directory, "missing")
+	if err := listReports(&output, missing); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("missing directory error = %v", err)
+	}
+	if code := runReport([]string{"list", directory}); code != 0 {
+		t.Fatalf("empty list code = %d", code)
+	}
+	for _, args := range [][]string{{"list", missing}, {"list", directory, "extra"}} {
+		if code := runReport(args); code != 2 {
+			t.Fatalf("%v code = %d", args, code)
+		}
+	}
+}
+
+func TestReportListSkipsNonRegularFilesWithoutBlocking(t *testing.T) {
+	directory := t.TempDir()
+	data, err := json.Marshal(buildReport("test", time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), nil, []Result{{Probe: "check", Status: StatusPass}}, false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(directory, "real.json"), data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(directory, "real.json"), filepath.Join(directory, "linked.json")); err != nil {
+		t.Fatal(err)
+	}
+	fifo := filepath.Join(directory, "pipe.json")
+	if err := syscall.Mkfifo(fifo, 0600); err != nil {
+		t.Fatal(err)
+	}
+	type listed struct {
+		reports []savedReport
+		err     error
+	}
+	done := make(chan listed, 1)
+	go func() {
+		reports, err := discoverReports(directory)
+		done <- listed{reports, err}
+	}()
+	select {
+	case result := <-done:
+		if result.err != nil || len(result.reports) != 2 {
+			t.Fatalf("reports=%+v err=%v", result.reports, result.err)
+		}
+		for _, report := range result.reports {
+			if report.path == fifo {
+				t.Fatal("FIFO listed as a report")
+			}
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("discoverReports blocked on a FIFO")
+	}
+	if _, err := loadReport(fifo); err == nil || !strings.Contains(err.Error(), T("cli.report.not_regular", reportIdentityValue(fifo))) {
+		t.Fatalf("FIFO load error = %v", err)
+	}
+}
+
+func TestMissingReportSuggestsListAndJSONPath(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "log")
+	_, err := loadReport(path)
+	if !errors.Is(err, os.ErrNotExist) || !strings.Contains(err.Error(), "edc report list") || !strings.Contains(err.Error(), "<file.json>") {
+		t.Fatalf("missing report error = %v", err)
 	}
 }

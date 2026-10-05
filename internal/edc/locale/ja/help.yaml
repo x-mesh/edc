@@ -224,8 +224,12 @@ command:
       - "理由ごとの合計は正確です。CPU ごとに毎秒 1,000 件を超えると event は標本です。"
       - "accept queue が満杯で解放された SYN は event にならず、summary で数えます。"
   report:
-    summary: "保存した JSON report の閲覧と比較"
+    summary: "保存した edc 診断結果の表示と比較"
     notes:
+      - "edc 診断コマンドが --json で保存した結果を読みます。"
+      - "一般 JSON、report diff の出力、edc log のテキストログは非対応です。"
+      - "list [directory] はパス、実行時刻、結果数を新しい順に表示します。"
+      - "指定ディレクトリのみ検索し、サブディレクトリは検索しません。"
       - "terminal ではビューアを開きます。f 絞り込み、e 詳細、q 終了。"
       - "diff は probe ごとの status の変化と metric の差を示します。"
       - "悪化した probe があれば exit code 1 を返します。"
@@ -243,6 +247,11 @@ command:
       timeout: "試行ごとの時間制限。0 は無制限 (既定 0s)"
       kill_after: "SIGKILL までの猶予時間 (既定 5s)"
     notes:
+      - "history は引数別のキーを表示し、選択すると実行履歴を開きます。"
+      - "Enter で履歴と実行詳細、Esc で戻る、q で終了します。"
+      - "history <command> [args...] は argv 検索、--command はキー一覧です。"
+      - "--failed は失敗のみ、--limit は最近の実行数を指定します。"
+      - "パイプではキー一覧を出力し、入力を待ちません。"
       - "設定なしで stdout と stderr を実行ごとのファイルに記録します。"
       - "同じ出力ファイルを指定したコマンドは別のロックファイルで直列実行します。"
       - "再起動と timeout は既定で無効です。"

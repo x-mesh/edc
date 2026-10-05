@@ -224,8 +224,12 @@ command:
       - "Totals per reason are exact. Above 1,000 drops a second on one CPU, edc samples."
       - "SYNs freed by a full accept queue are not events. The summary counts them."
   report:
-    summary: "Read and compare saved JSON reports"
+    summary: "View and compare saved edc diagnostic results"
     notes:
+      - "Reads results saved with --json by edc diagnostic commands."
+      - "General JSON, report diff output, and edc log text logs are unsupported."
+      - "list [directory] shows paths, run times, and result counts, newest first."
+      - "Only that directory is searched, without subdirectories."
       - "In a terminal, edc opens a viewer. f filters, e shows the details, q quits."
       - "diff shows the status change and the metric difference of each probe."
       - "A worse probe returns exit code 1."
@@ -243,6 +247,11 @@ command:
       timeout: "limit per attempt; 0 disables (default 0s)"
       kill_after: "SIGKILL grace period (default 5s)"
     notes:
+      - "history lists argument keys; select one to view its runs."
+      - "Enter opens runs, then details. Esc goes back; q quits."
+      - "history <command> [args...] matches argv; --command lists keys."
+      - "Use --failed for failures and --limit for recent attempts."
+      - "Piped history prints keys without waiting for input."
       - "No setup is required. stdout and stderr go to a separate file for each run."
       - "An explicit shared output file serializes commands with a stable lock file."
       - "Restart and timeout are disabled by default."

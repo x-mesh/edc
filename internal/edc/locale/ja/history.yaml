@@ -1,0 +1,33 @@
+history:
+  usage: "使い方: edc history <list|top|process> [options] [DB]"
+  option:
+    run: "この実行 ID のみ"
+    from: "開始時刻を含む (RFC3339)"
+    to: "終了時刻を含まない (RFC3339)"
+    limit: "最大件数、既定 200。0 はすべて"
+    json: "結果ごとに JSON 1 行、stdout は -"
+    metric: "検索する数値 field 名"
+    min: "最小値を含む。--metric が必要"
+    max: "最大値を含む。--metric が必要"
+  error:
+    default_path: "既定の DB path を取得できません。--write <path> を指定してください"
+    path: "DB の file path を指定してください。JSON は DB や journal を上書きできません"
+    regular: "DB path は通常の file である必要があります"
+    schema: "対応する edc history DB ではありません (schema version 1)"
+    wal: "この DB で SQLite WAL mode を使用できません"
+    queue: "記録 queue が満杯のため観測を停止します"
+    write: "記録に失敗: %v"
+    read: "履歴を読み取れません: %v"
+    time: "1678~2261 年の RFC3339 時刻を指定し、--from は --to より前にしてください"
+    metric: "--metric と有限の --min または --max を指定してください (min <= max)。field: %s"
+command:
+  history:
+    notes:
+      - "top -w [DB] は dashboard を維持して記録します。"
+      - "実行ごとに追記。top の一時停止中は記録も停止します。"
+      - "list は実行一覧、top と process は新しい sample から表示。"
+      - "host CPU% は user+system、process は core 1 個が 100%。"
+      - "--metric には JSON の最上位の数値 field 名を指定。"
+      - "process は観測した候補のみ。全 process を保存しません。"
+      - "自動削除なし。local DB file を使用してください。"
+      - "DB path を省略すると既定の履歴 DB を読みます。"

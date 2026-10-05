@@ -14,7 +14,7 @@ import (
 )
 
 // runTopDashboard는 alt screen 대시보드를 실행한다. 종료하면 화면이 원래대로 돌아온다.
-func runTopDashboard(interval time.Duration, version string, filter topProcessFilter) int {
+func runTopDashboard(interval time.Duration, version string, filter topProcessFilter, recorder *topRecorder) int {
 	details, err := collectHostDetails()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, T("observe.top.error.host", err))
@@ -37,8 +37,23 @@ func runTopDashboard(interval time.Duration, version string, filter topProcessFi
 	model.bpfEnabled = processSampler.observe != nil
 	processSampler.mutex.Unlock()
 	model = model.withProcessFilter(filter)
-	if _, err := tea.NewProgram(model, tea.WithInput(os.Stdin), tea.WithOutput(os.Stdout)).Run(); err != nil {
+	if recorder != nil {
+		model.record = recorder.Record
+		model.recordFailure = func() tea.Msg {
+			select {
+			case <-recorder.failed:
+				return topRecordingErrorMsg{err: recorder.Err()}
+			case <-recorder.done:
+				return nil
+			}
+		}
+	}
+	final, err := tea.NewProgram(model, tea.WithInput(os.Stdin), tea.WithOutput(os.Stdout)).Run()
+	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	if final.(topModel).recordingErr != nil {
 		return 1
 	}
 	return 0
@@ -48,7 +63,7 @@ func runTopDashboard(interval time.Duration, version string, filter topProcessFi
 // collectResourceSnapshot이 아니라 대시보드에서만 process를 수집한다.
 func sampleTopDashboard() (resourceSnapshot, error) {
 	snapshot, err := collectResourceSnapshot()
-	snapshot.Processes, snapshot.ProcessTotal, snapshot.ProcessesValid = processSampler.latestWithTotal()
+	snapshot.Processes, snapshot.ProcessTotal, snapshot.ProcessesValid, snapshot.ProcessesAt = processSampler.latestWithTotalAt()
 	return snapshot, err
 }
 
@@ -56,7 +71,7 @@ func sampleTopDashboard() (resourceSnapshot, error) {
 // 끝난 직전 목록을 다시 쓰지 않고 지금 읽는다. tick의 tea.Cmd 안에서 돌아 /proc을 읽는 동안 화면은 멈추지 않는다.
 func sampleTopDashboardNow() (resourceSnapshot, error) {
 	snapshot, err := collectResourceSnapshot()
-	snapshot.Processes, snapshot.ProcessTotal, snapshot.ProcessesValid = processSampler.refreshNow()
+	snapshot.Processes, snapshot.ProcessTotal, snapshot.ProcessesValid, snapshot.ProcessesAt = processSampler.refreshNowAt()
 	return snapshot, err
 }
 
@@ -142,7 +157,12 @@ type topModel struct {
 	processFocus    bool
 	processSelected int
 	bpfEnabled      bool
+	record          func(historyTopSample) error
+	recordFailure   tea.Cmd
+	recordingErr    error
 }
+
+type topRecordingErrorMsg struct{ err error }
 
 // topSampleMsg는 tick마다 수집한 snapshot이다. seq가 다르면 interval이 바뀐 뒤의 낡은 tick이다.
 type topSampleMsg struct {
@@ -164,7 +184,7 @@ func (model topModel) withProcessFilter(filter topProcessFilter) topModel {
 	return model
 }
 
-func (model topModel) Init() tea.Cmd { return model.tick() }
+func (model topModel) Init() tea.Cmd { return tea.Batch(model.tick(), model.recordFailure) }
 
 func (model topModel) tick() tea.Cmd {
 	seq, sample := model.seq, model.sample
@@ -179,6 +199,9 @@ func (model topModel) tick() tea.Cmd {
 
 func (model topModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch value := msg.(type) {
+	case topRecordingErrorMsg:
+		model.recordingErr = value.err
+		return model, tea.Quit
 	case topSampleMsg:
 		if value.seq != model.seq {
 			return model, nil
@@ -197,8 +220,15 @@ func (model topModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			model.previous, model.baseline = value.snapshot, false
 			return model, model.tick()
 		}
+		rate := calculateRate(model.previous, value.snapshot)
+		if model.record != nil {
+			if err := model.record(newHistoryTopSample(model.details, model.previous, value.snapshot, rate, model.processFilter.String())); err != nil {
+				model.recordingErr = err
+				return model, tea.Quit
+			}
+		}
 		before := len(model.rows) + 1
-		model.rows = appendTopDashboardRow(model.rows, topDashboardRow{at: value.snapshot.TakenAt, rate: calculateRate(model.previous, value.snapshot), processes: value.snapshot.Processes, processTotal: value.snapshot.ProcessTotal, processesValid: value.snapshot.ProcessesValid, filter: model.processFilter.String()})
+		model.rows = appendTopDashboardRow(model.rows, topDashboardRow{at: value.snapshot.TakenAt, rate: rate, processes: value.snapshot.Processes, processTotal: value.snapshot.ProcessTotal, processesValid: value.snapshot.ProcessesValid, filter: model.processFilter.String()})
 		model.previous = value.snapshot
 		if model.follow {
 			model.selected = len(model.rows) - 1
@@ -544,6 +574,10 @@ func (model topModel) panelLines() []string {
 		lines = model.detailLines()
 	case model.peaks:
 		lines = model.peakLines()
+	case model.view == topViewNetwork && model.previous.NetworkHealth != nil:
+		if row, ok := model.selectedRow(); ok {
+			lines = append([]string{"network " + row.at.Format("15:04:05") + " · current namespace · Enter settings"}, networkHealthLines(row.rate.NetworkHealth)...)
+		}
 	}
 	if model.lastErr != nil {
 		lines = append(lines, fmt.Sprintf("sample failed · last success %s · %s", model.previous.TakenAt.Format("15:04:05"), model.lastErr))
@@ -653,6 +687,9 @@ func (model topModel) detailLines() []string {
 		return []string{"detail · waiting for a sample"}
 	}
 	rate := row.rate
+	if model.view == topViewNetwork {
+		return append(append([]string{"network detail " + row.at.Format("15:04:05")}, networkHealthLines(rate.NetworkHealth)...), networkSettingLines(rate.NetworkHealth)...)
+	}
 	lines := []string{
 		fmt.Sprintf("detail %s · load %.1f · cpu %.1f/%.1f%% · iowait %.1f%% · mem %.1f%%", row.at.Format("15:04:05"), rate.Load1, rate.CPUUser, rate.CPUSystem, rate.CPUIOWait, rate.MemoryPercent),
 		fmt.Sprintf("  %s · %s · %s", topDiskDetail(rate), topNetworkDetail(rate), topPressureDetail(rate)),
@@ -678,6 +715,9 @@ func (model topModel) peakLines() []string {
 		return []string{"peaks 60s · waiting for a sample"}
 	}
 	last := model.rows[len(model.rows)-1]
+	if model.view == topViewNetwork && last.rate.NetworkHealth != nil {
+		return model.networkPeakLines(last)
+	}
 	load, cpu, iowait, memory := last, last, last, last
 	for _, row := range model.rows {
 		if last.at.Sub(row.at) > topPeakWindow {
@@ -704,6 +744,9 @@ func (model topModel) peakLines() []string {
 
 func (model topModel) statusLines() []string {
 	state := "interval " + model.interval.String()
+	if model.record != nil {
+		state = "SQLite · " + state
+	}
 	if model.paused {
 		state = T("observe.top.paused") + " · " + state
 	} else if !model.follow {
@@ -877,7 +920,7 @@ func (model topModel) tableColumns() ([]topColumn, []int) {
 		if model.view == topViewProcess && model.displayWidth() < 56 && column.title == "thr" {
 			continue
 		}
-		if model.details.System == "darwin" && (column.title == "fds" || column.title == "psi mem" || column.title == "busy%" || column.title == "io%") {
+		if model.details.System == "darwin" && (column.title == "fds" || column.title == "psi mem" || column.title == "busy%" || column.title == "io%" || column.title == "ct%" || column.title == "listen/s" || column.title == "soft/s") {
 			continue
 		}
 		if model.view == topViewProcess && !model.bpfEnabled && (column.title == "runq ms" || column.title == "io ms") {
@@ -997,7 +1040,7 @@ func topViewColumns(view topView) []topColumn {
 	case topViewDisk:
 		return []topColumn{{title: "read/s", width: 7}, {title: "write/s", width: 7}, {title: "iops", width: 6}, {title: "await", width: 6}, {title: "busy%", width: 6}, signal}
 	case topViewNetwork:
-		return []topColumn{{title: "in/s", width: 7}, {title: "out/s", width: 7}, {title: "pk_in", width: 6}, {title: "pk_out", width: 6}, {title: "err/s", width: 6}, {title: "drop/s", width: 6}, signal}
+		return []topColumn{{title: "in/s", width: 7}, {title: "out/s", width: 7}, {title: "ct%", width: 6}, {title: "listen/s", width: 8}, {title: "err/s", width: 6}, {title: "drop/s", width: 6}, {title: "soft/s", width: 6}, {title: "pk_in", width: 6}, {title: "pk_out", width: 6}, signal}
 	case topViewPressure:
 		return []topColumn{{title: "cpu psi", width: 7}, {title: "mem psi", width: 7}, {title: "io psi", width: 7}, {title: "load", width: 6}, {title: "mem%", width: 6}, signal}
 	case topViewProcess:
@@ -1046,7 +1089,7 @@ func topViewCells(rate resourceRate, view topView, signal string, limits topLimi
 	case topViewDisk:
 		return []topCell{topPlainCell(formatRate(rate.DiskRead)), topPlainCell(formatRate(rate.DiskWrite)), topPlainCell(topOptionalValue(rate.DiskHealthValid, "%.0f", rate.DiskIOPS)), topOptionalCell(rate.DiskHealthValid, "%.1f", rate.DiskAwait, limits.await), topPlainCell(topOptionalValue(rate.DiskBusyValid, "%.0f", rate.DiskBusy)), topPlainCell(signal)}
 	case topViewNetwork:
-		return []topCell{topPlainCell(formatRate(rate.NetIn)), topPlainCell(formatRate(rate.NetOut)), topPlainCell(fmt.Sprintf("%.0f", rate.PacketsIn)), topPlainCell(fmt.Sprintf("%.0f", rate.PacketsOut)), topOptionalCell(rate.NetHealthValid, "%.0f", rate.NetErrors, limits.network), topOptionalCell(rate.NetHealthValid, "%.0f", rate.NetDrops, limits.network), topPlainCell(signal)}
+		return []topCell{topPlainCell(formatRate(rate.NetIn)), topPlainCell(formatRate(rate.NetOut)), networkConntrackCell(rate.NetworkHealth), topPlainCell(networkRateText(rate.NetworkHealth, "listen_overflows")), topOptionalCell(rate.NetHealthValid, "%.0f", rate.NetErrors, limits.network), topOptionalCell(rate.NetHealthValid, "%.0f", rate.NetDrops, limits.network), topPlainCell(networkRateText(rate.NetworkHealth, "softnet_dropped")), topPlainCell(fmt.Sprintf("%.0f", rate.PacketsIn)), topPlainCell(fmt.Sprintf("%.0f", rate.PacketsOut)), topPlainCell(signal)}
 	case topViewPressure:
 		return []topCell{topOptionalCell(rate.PSIValid, "%.1f", rate.PSICPU, limits.psi), topOptionalCell(rate.PSIValid, "%.1f", rate.PSIMemory, limits.psi), topOptionalCell(rate.PSIValid, "%.1f", rate.PSIIO, limits.psi), topValueCell("%.1f", rate.Load1, limits.load), topValueCell("%.1f", rate.MemoryPercent, limits.memory), topPlainCell(signal)}
 	}
@@ -1769,4 +1812,52 @@ func formatProcessRSS(bytes uint64) string {
 		return fmt.Sprintf("%.1fM", float64(bytes)/mib)
 	}
 	return fmt.Sprintf("%.0fK", float64(bytes)/1024)
+}
+
+func networkConntrackCell(health *networkHealthRate) topCell {
+	if health == nil {
+		return topPlainCell("—")
+	}
+	usage, valid := networkConntrackUsage(&health.networkHealth)
+	return topOptionalCell(valid, "%.1f", usage, topThreshold{warn: 90, danger: 98})
+}
+
+func (model topModel) networkPeakLines(last topDashboardRow) []string {
+	var peakUsage float64
+	var peakAt time.Time
+	rates := map[string]float64{}
+	for _, row := range model.rows {
+		if last.at.Sub(row.at) > topPeakWindow {
+			continue
+		}
+		health := row.rate.NetworkHealth
+		if health == nil {
+			continue
+		}
+		if usage, ok := networkConntrackUsage(&health.networkHealth); ok && (peakAt.IsZero() || usage > peakUsage) {
+			peakUsage, peakAt = usage, row.at
+		}
+		for name, rate := range health.Rates {
+			if rate.PerSecond != nil && *rate.PerSecond > rates[name] {
+				rates[name] = *rate.PerSecond
+			}
+		}
+	}
+	usage := "—"
+	if !peakAt.IsZero() {
+		usage = fmt.Sprintf("%.1f%% at %s", peakUsage, peakAt.Format("15:04:05"))
+	}
+	peak := func(key string) string {
+		for _, row := range model.rows {
+			if last.at.Sub(row.at) <= topPeakWindow && row.rate.NetworkHealth != nil && row.rate.NetworkHealth.Rates[key].PerSecond != nil {
+				return fmt.Sprintf("%.1f/s", rates[key])
+			}
+		}
+		return "—"
+	}
+	return []string{
+		"peaks 60s · conntrack " + usage,
+		"listen overflow " + peak("listen_overflows") + " · drop " + peak("listen_drops"),
+		"softnet drop " + peak("softnet_dropped") + " · UDP buffer " + peak("udp_rcvbuf_errors"),
+	}
 }

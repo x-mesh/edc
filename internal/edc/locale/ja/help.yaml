@@ -74,6 +74,7 @@ command:
       process: "一致する PID か command 名のみ、カンマ区切り"
       detail: "CPU 待ちと I/O 遅延を追加 (eBPF, root)、Linux"
       ebpf: "--detail と同じ"
+      write: "SQLite に追記、path 省略時は既定 DB"
       json: "sample ごとに 1 行の JSON、stdout は -"
     notes:
       - "terminal ではダッシュボードを開きます。q 終了、p 一時停止、+/- interval。"
@@ -310,3 +311,6 @@ command:
     summary: "版の表示"
     notes:
       - "terminal では banner、それ以外では 1 行で出します。"
+
+  history:
+    summary: "保存した resource 観測履歴を検索"

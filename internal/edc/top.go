@@ -9,12 +9,13 @@ import (
 	"math"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
 )
 
-func runTop(args []string, version string) int {
+func runTop(args []string, version string) (code int) {
 	set := flag.NewFlagSet("top", flag.ContinueOnError)
 	set.SetOutput(os.Stderr)
 	config := activeConfig.Defaults.Top
@@ -27,6 +28,9 @@ func runTop(args []string, version string) int {
 	set.BoolVar(ebpf, "detail", false, T("command.top.option.detail"))
 	set.BoolVar(ebpf, "d", false, T("command.top.option.detail"))
 	jsonPath := set.String("json", configuredStringFallback(config.JSON, activeConfig.Defaults.Common.JSON, ""), T("command.top.option.json"))
+	writePath := set.String("write", "", T("command.top.option.write"))
+	set.StringVar(writePath, "w", "", T("command.top.option.write"))
+	args, defaultWrite := normalizeTopWriteArgs(args, set)
 	if err := set.Parse(args); err != nil {
 		return 2
 	}
@@ -42,10 +46,31 @@ func runTop(args []string, version string) int {
 		fmt.Fprintln(os.Stderr, T("observe.top.count_minimum"))
 		return 2
 	}
+	if defaultWrite {
+		path, err := defaultHistoryPath()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 2
+		}
+		*writePath = path
+	}
 	filter, err := parseTopProcessFilter(*processValue)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, T("observe.top.process_invalid"))
 		return 2
+	}
+	if *writePath == "-" || (*writePath != "" && sameHistoryPath(*writePath, *jsonPath)) {
+		fmt.Fprintln(os.Stderr, T("history.error.path"))
+		return 2
+	}
+	set.Visit(func(option *flag.Flag) {
+		if (option.Name == "write" || option.Name == "w") && option.Value.String() == "" {
+			code = 2
+		}
+	})
+	if code != 0 {
+		fmt.Fprintln(os.Stderr, T("history.error.path"))
+		return code
 	}
 	var writer io.Writer = os.Stdout
 	if *jsonPath != "" && *jsonPath != "-" {
@@ -60,7 +85,7 @@ func runTop(args []string, version string) int {
 	jsonOutput := *jsonPath != ""
 	// 대시보드는 무한 실행에만 쓴다. --count와 --json은 표와 JSON을 그대로 흘려 보낸다.
 	dashboard := !jsonOutput && *count == 0 && liveTerminal()
-	if filter.active() && !dashboard && !jsonOutput {
+	if filter.active() && !dashboard && !jsonOutput && *writePath == "" {
 		// 표에는 process 열이 없다. 필터를 조용히 무시하면 전체 host 값을 필터한 값으로 읽게 된다.
 		fmt.Fprintln(os.Stderr, T("observe.top.process_needs_view"))
 		return 2
@@ -78,19 +103,85 @@ func runTop(args []string, version string) int {
 		}
 		defer stop()
 		processSampler.setObserver(observe)
+		defer processSampler.setObserver(nil)
 	}
 	processSampler.setFilter(filter)
+	var recorder *topRecorder
+	if *writePath != "" {
+		details, err := collectHostDetails()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, T("observe.top.error.host", err))
+			return 1
+		}
+		if defaultWrite {
+			if err := os.MkdirAll(filepath.Dir(*writePath), 0o700); err != nil {
+				fmt.Fprintln(os.Stderr, T("history.error.write", err))
+				return 1
+			}
+		}
+		recorder, err = newTopRecorder(*writePath, version, details, *interval, filter.String(), *ebpf)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, T("history.error.write", err))
+			return 1
+		}
+		defer func() {
+			status := "finished"
+			if code != 0 {
+				status = "error"
+			}
+			if err := recorder.Close(status); err != nil {
+				fmt.Fprintln(os.Stderr, T("history.error.write", err))
+				code = 1
+			}
+		}()
+	}
 	if dashboard {
-		return runTopDashboard(*interval, version, filter)
+		return runTopDashboard(*interval, version, filter, recorder)
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	return streamTop(ctx, writer, topOptions{
 		interval: *interval, count: *count, json: jsonOutput,
-		process: filter.active(),
-		header:  !*noHeader && !jsonOutput,
-		color:   !jsonOutput && isTerminal(os.Stdout) && os.Getenv("NO_COLOR") == "",
+		process:  filter.active(),
+		recorder: recorder, filter: filter.String(),
+		header: !*noHeader && !jsonOutput,
+		color:  !jsonOutput && isTerminal(os.Stdout) && os.Getenv("NO_COLOR") == "",
 	})
+}
+
+func normalizeTopWriteArgs(args []string, set *flag.FlagSet) ([]string, bool) {
+	normalized := make([]string, 0, len(args))
+	defaultWrite := false
+	for index := 0; index < len(args); index++ {
+		arg := args[index]
+		if arg == "--" || arg == "-" || !strings.HasPrefix(arg, "-") {
+			normalized = append(normalized, args[index:]...)
+			break
+		}
+		name, _, hasValue := strings.Cut(strings.TrimPrefix(strings.TrimPrefix(arg, "-"), "-"), "=")
+		if name == "w" || name == "write" {
+			defaultWrite = false
+			if hasValue {
+				normalized = append(normalized, arg)
+			} else if index+1 < len(args) && (!strings.HasPrefix(args[index+1], "-") || args[index+1] == "-") {
+				index++
+				normalized = append(normalized, arg+"="+args[index])
+			} else {
+				normalized = append(normalized, arg+"=")
+				defaultWrite = true
+			}
+			continue
+		}
+		normalized = append(normalized, arg)
+		if option := set.Lookup(name); option != nil && !hasValue && index+1 < len(args) {
+			boolean, ok := option.Value.(interface{ IsBoolFlag() bool })
+			if !ok || !boolean.IsBoolFlag() {
+				index++
+				normalized = append(normalized, args[index])
+			}
+		}
+	}
+	return normalized, defaultWrite
 }
 
 type topOptions struct {
@@ -100,37 +191,40 @@ type topOptions struct {
 	color    bool
 	json     bool // sample당 한 줄 JSON을 쓰고 표와 중지 메시지는 생략한다
 	process  bool // sample에 필터에 맞는 process 목록을 더한다
+	recorder *topRecorder
+	filter   string
 }
 
 // topSample은 --json이 sample마다 한 줄로 내는 값이다. rate는 bytes/s와 percent다.
 type topSample struct {
-	Time       time.Time `json:"time"`
-	Hostname   string    `json:"hostname"`
-	Cores      int       `json:"cores"`
-	NetIn      float64   `json:"net_in_bytes_per_s"`
-	NetOut     float64   `json:"net_out_bytes_per_s"`
-	PacketsIn  float64   `json:"packets_in_per_s"`
-	PacketsOut float64   `json:"packets_out_per_s"`
-	NetErrors  float64   `json:"network_errors_per_s"`
-	NetDrops   float64   `json:"network_drops_per_s"`
-	NetHealth  bool      `json:"network_health_supported"`
-	Load1      float64   `json:"load1"`
-	CPUUser    float64   `json:"cpu_user_pct"`
-	CPUSystem  float64   `json:"cpu_system_pct"`
-	CPUIOWait  float64   `json:"cpu_iowait_pct"`
-	DiskRead   float64   `json:"disk_read_bytes_per_s"`
-	DiskWrite  float64   `json:"disk_write_bytes_per_s"`
-	DiskIOPS   float64   `json:"disk_iops"`
-	DiskAwait  float64   `json:"disk_await_ms"`
-	DiskBusy   float64   `json:"disk_busy_pct"`
-	DiskHealth bool      `json:"disk_health_supported"`
-	DiskBusyOK bool      `json:"disk_busy_supported"`
-	PSICPU     float64   `json:"psi_cpu_some_avg10_pct"`
-	PSIMemory  float64   `json:"psi_memory_some_avg10_pct"`
-	PSIIO      float64   `json:"psi_io_some_avg10_pct"`
-	PSIValid   bool      `json:"psi_supported"`
-	MemoryPct  float64   `json:"memory_pct"`
-	SwapOut    float64   `json:"swap_out_bytes_per_s"`
+	NetworkLimits *networkHealthRate `json:"network_limits,omitempty"`
+	Time          time.Time          `json:"time"`
+	Hostname      string             `json:"hostname"`
+	Cores         int                `json:"cores"`
+	NetIn         float64            `json:"net_in_bytes_per_s"`
+	NetOut        float64            `json:"net_out_bytes_per_s"`
+	PacketsIn     float64            `json:"packets_in_per_s"`
+	PacketsOut    float64            `json:"packets_out_per_s"`
+	NetErrors     float64            `json:"network_errors_per_s"`
+	NetDrops      float64            `json:"network_drops_per_s"`
+	NetHealth     bool               `json:"network_health_supported"`
+	Load1         float64            `json:"load1"`
+	CPUUser       float64            `json:"cpu_user_pct"`
+	CPUSystem     float64            `json:"cpu_system_pct"`
+	CPUIOWait     float64            `json:"cpu_iowait_pct"`
+	DiskRead      float64            `json:"disk_read_bytes_per_s"`
+	DiskWrite     float64            `json:"disk_write_bytes_per_s"`
+	DiskIOPS      float64            `json:"disk_iops"`
+	DiskAwait     float64            `json:"disk_await_ms"`
+	DiskBusy      float64            `json:"disk_busy_pct"`
+	DiskHealth    bool               `json:"disk_health_supported"`
+	DiskBusyOK    bool               `json:"disk_busy_supported"`
+	PSICPU        float64            `json:"psi_cpu_some_avg10_pct"`
+	PSIMemory     float64            `json:"psi_memory_some_avg10_pct"`
+	PSIIO         float64            `json:"psi_io_some_avg10_pct"`
+	PSIValid      bool               `json:"psi_supported"`
+	MemoryPct     float64            `json:"memory_pct"`
+	SwapOut       float64            `json:"swap_out_bytes_per_s"`
 	// Processes는 --process를 쓸 때만 나온다. 맞는 process가 없으면 빈 배열이고, 첫 sample처럼 목록이 아직 없으면 빠진다.
 	Processes *[]topProcessSample `json:"processes,omitempty"`
 	// ProcessTotal은 필터에 맞은 process 전체의 합이다. Processes는 CPU 상위만 남기지만 합은 모두 센다.
@@ -219,7 +313,7 @@ func newTopBPFSample(stats *topBPFStats) *topBPFSample {
 
 func newTopSample(details hostDetails, at time.Time, rate resourceRate) topSample {
 	return topSample{
-		Time: at.UTC(), Hostname: details.Hostname, Cores: details.Cores,
+		Time: at.UTC(), Hostname: details.Hostname, Cores: details.Cores, NetworkLimits: rate.NetworkHealth,
 		NetIn: roundTopValue(rate.NetIn), NetOut: roundTopValue(rate.NetOut),
 		PacketsIn: roundTopValue(rate.PacketsIn), PacketsOut: roundTopValue(rate.PacketsOut), NetErrors: roundTopValue(rate.NetErrors), NetDrops: roundTopValue(rate.NetDrops), NetHealth: rate.NetHealthValid,
 		Load1: roundTopValue(rate.Load1), CPUUser: roundTopValue(rate.CPUUser), CPUSystem: roundTopValue(rate.CPUSystem), CPUIOWait: roundTopValue(rate.CPUIOWait),
@@ -251,8 +345,14 @@ func streamTop(ctx context.Context, writer io.Writer, options topOptions) int {
 	ticker := time.NewTicker(options.interval)
 	defer ticker.Stop()
 	printed := 0
+	var failed <-chan struct{}
+	if options.recorder != nil {
+		failed = options.recorder.failed
+	}
 	for options.count == 0 || printed < options.count {
 		select {
+		case <-failed:
+			return 1
 		case <-ctx.Done():
 			if !options.json {
 				fmt.Fprintln(writer, "\n"+T("observe.top.stopped"))
@@ -265,12 +365,22 @@ func streamTop(ctx context.Context, writer io.Writer, options topOptions) int {
 				return 1
 			}
 			rate := calculateRate(previous, current)
+			if options.process {
+				current.Processes, current.ProcessTotal, current.ProcessesValid, current.ProcessesAt = processSampler.refreshNowAt()
+			} else if options.recorder != nil {
+				current.Processes, current.ProcessTotal, current.ProcessesValid, current.ProcessesAt = processSampler.latestWithTotalAt()
+			}
+			if options.recorder != nil {
+				if err := options.recorder.Record(newHistoryTopSample(details, previous, current, rate, options.filter)); err != nil {
+					return 1
+				}
+			}
 			if options.json {
 				sample := newTopSample(details, current.TakenAt, rate)
 				if options.process {
-					if processes, total, valid := processSampler.refreshNow(); valid {
-						sample.Processes = newTopProcessSamples(processes)
-						sample.ProcessTotal = newTopProcessTotalSample(total)
+					if current.ProcessesValid {
+						sample.Processes = newTopProcessSamples(current.Processes)
+						sample.ProcessTotal = newTopProcessTotalSample(current.ProcessTotal)
 					}
 				}
 				if err := encoder.Encode(sample); err != nil {

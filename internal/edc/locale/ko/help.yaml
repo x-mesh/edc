@@ -74,6 +74,7 @@ command:
       process: "PID나 command 이름이 맞는 process만, 쉼표로 구분"
       detail: "CPU 대기와 I/O 지연 추가(eBPF, root), Linux"
       ebpf: "--detail과 같음"
+      write: "SQLite에 누적, 경로 생략 시 기본 DB 사용"
       json: "sample당 한 줄 JSON, stdout은 -"
     notes:
       - "terminal에서는 대시보드로 엽니다. q 종료, p 일시정지, +/- interval."
@@ -310,3 +311,6 @@ command:
     summary: "버전 출력"
     notes:
       - "terminal에서는 banner로, 그 밖에서는 한 줄로 출력합니다."
+
+  history:
+    summary: "저장한 resource 관측 이력 검색"

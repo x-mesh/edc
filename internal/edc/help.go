@@ -129,12 +129,28 @@ var commandDocs = []commandDoc{
 		usage: []string{"edc top [--interval 1s] [--count N] [--json <path|->]", "edc top --process <filter> [-d] [--interval 1s] [--json <path|->]"},
 		options: []optionDoc{
 			{"--interval 1s", "command.top.option.interval"},
+			{"-w, --write [path]", "command.top.option.write"},
 			{"--count N", "command.top.option.count"},
 			{"--no-header", "command.top.option.no_header"},
 			{"--process <filter>", "command.top.option.process"},
 			{"-d, --detail", "command.top.option.detail"},
 			{"--ebpf", "command.top.option.ebpf"},
 			{"--json <path|->", "command.top.option.json"},
+		},
+	},
+	{
+		name: "history", group: "record",
+		usage: []string{"edc history list [options] [DB]", "edc history top [options] [DB]", "edc history process [options] [DB]"},
+		options: []optionDoc{
+			{"--run <id>", "history.option.run"},
+			{"--from <RFC3339>", "history.option.from"},
+			{"--to <RFC3339>", "history.option.to"},
+			{"--process <filter>", "command.top.option.process"},
+			{"--metric <name>", "history.option.metric"},
+			{"--min <number>", "history.option.min"},
+			{"--max <number>", "history.option.max"},
+			{"--limit 200", "history.option.limit"},
+			{"--json <path|->", "history.option.json"},
 		},
 	},
 	{

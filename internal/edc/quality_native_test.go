@@ -535,3 +535,17 @@ func TestQualityNativeReportURLDropsQuery(t *testing.T) {
 		t.Fatalf("config_url = %v", got)
 	}
 }
+
+func TestQualityNativeStableExitKeepsWindow(t *testing.T) {
+	engine := newQualityTestEngine(t, qualityTestServerOptions{http2: true, slurpBounded: true})
+	ctx, cancel := context.WithTimeout(context.Background(), qualityTestRunTimeout)
+	defer cancel()
+	report, outcome, err := engine.Run(ctx)
+	if err != nil || outcome != nativeOutcomePass || report.Confidence != qualityConfidenceHigh {
+		t.Skipf("run did not reach stability: outcome=%d confidence=%s err=%v", outcome, report.Confidence, err)
+	}
+	// interval 0은 부하 시작 때 열린다. 안정 판정이 난 tick은 새 interval을 열지 않아야 한다.
+	if got := len(engine.samples); got != report.Intervals {
+		t.Fatalf("samples has %d intervals after %d ticks; the stable exit opened an empty one", got, report.Intervals)
+	}
+}

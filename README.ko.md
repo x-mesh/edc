@@ -134,14 +134,21 @@ parallel = 0
 timeout = "60s"
 
 [defaults.log]
-stream = "stderr"
-output = "/absolute/path/to/edc.log"
+stream = "both"
+output = ""
 command_display = "full"
+max_size_mb = 10
+keep_files = 3
+restart = "never"
+max_restarts = 3
+restart_delay = "5s"
+timeout = "0s"
+kill_after = "5s"
 ```
 
 command별 값은 `defaults.common`을 덮습니다. positional target, URL, host, remote group과 `yes`, `force`, `dry-run`, `list`, `check` 같은 action option은 저장하지 않습니다. 저장하는 remote inventory와 recipe는 absolute path여야 합니다. 빈 path 값은 해당 기본값을 사용하지 않는다는 뜻입니다.
 
-Setup wizard는 macOS에서 `~/Library/Logs/edc.log`, Linux에서 `${XDG_STATE_HOME:-~/.local/state}/edc/edc.log`를 추천합니다. 이 추천값에 한해 `edc log`가 parent directory를 만들며, 직접 지정한 output path는 parent directory가 이미 있어야 합니다.
+Setup wizard는 `edc log`의 저장 경로를 비워두고 실행별 파일을 자동 생성하도록 추천합니다. 직접 지정한 경로의 상위 디렉터리는 이미 있어야 합니다. 이전 추천값인 `edc.log` 경로는 상위 디렉터리 자동 생성을 계속 지원합니다.
 
 ## 빠른 시작
 
@@ -1170,19 +1177,48 @@ PCAP에는 credential과 개인정보가 포함될 수 있습니다. JSON redact
 
 질문을 건너뛰려면 `--yes`를 씁니다. terminal이 아닌 실행은 계획을 출력하고 stdin에서 `y`나 `n`을 읽습니다.
 
-## Cron과 application log
+## Cron과 애플리케이션 로그
 
-`edc log`는 command의 `stdout` 또는 `stderr` 한쪽을 file에 append합니다. 선택한 stream은 file로만 보내고, 다른 stream과 `stdin`은 cron 또는 호출 terminal에 그대로 연결합니다. application에 logging 기능이 없어도 조용히 실패한 cron 실행을 확인할 수 있습니다.
+`edc log`는 별도 설정 없이 stdout과 stderr를 모두 기록합니다. 실행마다 다른 파일을 쓰므로 독립적인 작업이 서로 기다리지 않습니다.
 
 ```cron
 * * * * * /usr/local/bin/edc log -- /usr/local/bin/job --daily
 ```
 
-짧은 형식은 `defaults.log.stream`, `output`, `command_display`를 사용합니다. 각 값은 기존 CLI option으로 다시 덮을 수 있습니다. config와 CLI 어디에도 stream과 output이 없으면 기존처럼 필수 option 오류를 냅니다.
+Linux는 `${XDG_STATE_HOME:-~/.local/state}/edc/log/<command>/`, macOS는 `~/Library/Logs/edc/<command>/` 아래에 저장합니다. 파일 이름은 UTC 시각, wrapper PID, 고유 접미사로 구성하며 터미널에서 실행하면 생성한 경로를 안내합니다.
 
-실행마다 시간, duration, exit status를 담은 ASCII start/end marker를 남깁니다. 새 file은 mode `0600`으로 만들고 기존 file은 내용과 mode를 유지합니다. 같은 file을 대상으로 하는 실행은 서로 기다리므로 log block이 섞이지 않습니다. Child의 exit code와 signal status는 `edc`가 그대로 전달합니다.
+각 실행 시도에는 명령, 작업 디렉터리, 프로세스 PID, 시작·종료 시각, 실행 시간, 종료 상태를 기록합니다. 명령 시작에 실패하면 원인도 파일에 남기므로, 에러 출력 없이 비정상 종료한 작업도 종료 기록으로 확인할 수 있습니다.
 
-기본값 `--command-display full`은 start marker에 argument 전체를 기록합니다. argument에 credential이 들어갈 수 있으면 `--command-display name` 또는 `none`을 사용하십시오. `edc log`는 append만 하며 rotation, compression, retention은 제공하지 않습니다. 보관 정책은 system log rotation service로 설정하십시오.
+기본 `--command-display full`은 인자 전체를 기록합니다. 인자에 인증 정보가 있으면 `name`이나 `none`을 사용하십시오.
+
+`--output`을 지정하면 해당 파일에 이어 쓰며, `--stream stdout` 또는 `stderr`로 기록할 출력을 한쪽으로 제한할 수 있습니다. 선택하지 않은 출력과 stdin은 호출한 환경에 그대로 연결합니다. 같은 저장 파일을 지정한 실행은 `.lock` 파일로 순서대로 실행하므로 회전 중에도 잠금이 유지됩니다.
+
+새 로그 파일은 mode `0600`, 자동 생성한 명령 디렉터리는 `0700`입니다. 기존 로그 파일의 권한은 유지합니다.
+
+### 로그 회전
+
+파일당 기본 최대 크기는 10 MiB이며 `--max-size`에 MiB 단위 정수를 지정합니다. `0`은 회전을 끕니다. 기본으로 회전 파일 3개를 보관하며 `--keep-files`는 1-100을 받습니다.
+
+회전 파일은 `<output>.edc.1`부터 `<output>.edc.N`까지이며, 이 이름은 해당 로그의 회전용으로 예약합니다. 가장 오래된 회전 파일만 정리하고 다른 실행의 로그는 삭제하거나 압축하지 않습니다. 실행 횟수에 따른 전체 보관량은 별도로 관리해야 합니다.
+
+저장 경로에는 일반 파일을 사용해야 합니다. 로그나 회전 파일 경로가 symlink이거나 일반 파일이 아니면 거부합니다. 기록에 실패하면 자식 프로세스 그룹을 종료하고 종료 코드 `2`를 반환합니다.
+
+### 재시작과 timeout
+
+재시작은 기본으로 꺼져 있습니다. `--restart on-failure`는 비정상 종료, 자식의 signal 종료, timeout을 재시도합니다. `always`는 정상 종료도 다시 실행하며, `never`는 재시작하지 않습니다. 명령 시작 실패와 로그 기록 오류는 재시도하지 않습니다. 재시작 대상인 종료에서는 남아 있는 그룹 구성원을 종료한 뒤 다음 시도를 시작하거나 wrapper를 종료합니다.
+
+기본 최대 재시작 횟수는 3회, 대기 시간은 5초입니다. `--max-restarts`와 `--restart-delay`로 바꿀 수 있습니다. 외부 SIGINT·SIGTERM을 받으면 실행 중인 작업이나 재시작 대기를 중단하고 다시 실행하지 않습니다.
+
+시간 제한은 기본으로 없습니다. `--timeout`은 출력 수집까지 포함해 시도별 시간을 제한하며, 공통 timeout 기본값은 적용하지 않습니다. 제한 시간이 지나면 자식 프로세스 그룹에 SIGTERM을 보내고, `--kill-after`의 유예 시간(기본 5초)이 지나면 SIGKILL을 보냅니다.
+
+시간 초과는 `status=timeout exit=124`로 기록합니다. 이후 재시도가 성공하면 `0`, 그렇지 않으면 마지막 시도의 종료 코드를 반환합니다.
+
+```bash
+edc log --timeout 10m --restart on-failure --max-restarts 3 -- /path/to/job
+edc log --max-size 20 --keep-files 5 --output /tmp/job.log -- /path/to/job
+```
+
+새 옵션은 `[defaults.log]`에도 저장할 수 있으며 명시한 CLI 옵션이 우선합니다. wrapper 자체가 SIGKILL로 종료되면 종료 기록을 남길 수 없습니다. 별도 프로세스 그룹으로 이동한 자손 프로세스는 그룹 종료 범위에 포함되지 않습니다.
 
 ## Shell completion
 
@@ -1207,7 +1243,7 @@ zsh에서는 script를 `fpath`의 디렉터리에 `_edc`라는 이름으로 저�
 
 ## 현재 범위
 
-`top`, `info`, `doctor`와 개별 network probe는 Linux와 macOS를 지원합니다. Linux에서는 `/proc`, `/sys`, `ip`, `ss`, `ping`, `traceroute` 또는 `tracepath`, `/etc/resolv.conf`를 읽고, `resolvectl`이 있으면 `resolvectl status`를 evidence로 덧붙입니다. macOS에서는 system command adapter를 사용합니다. `capture`는 Linux와 macOS를 지원하고 `quality`는 macOS 전용입니다. 진단 command는 read-only 관측에 집중하며, DNS flush, interface reset, firewall 변경 같은 자동 복구는 하지 않습니다. `edc log`는 명시한 output file만 씁니다.
+`top`, `info`, `doctor`와 개별 network probe는 Linux와 macOS를 지원합니다. Linux에서는 `/proc`, `/sys`, `ip`, `ss`, `ping`, `traceroute` 또는 `tracepath`, `/etc/resolv.conf`를 읽고, `resolvectl`이 있으면 `resolvectl status`를 evidence로 덧붙입니다. macOS에서는 system command adapter를 사용합니다. `capture`는 Linux와 macOS를 지원하고 `quality`는 macOS 전용입니다. 진단 command는 read-only 관측에 집중하며, DNS flush, interface reset, firewall 변경 같은 자동 복구는 하지 않습니다. `edc log`는 로그 파일, 회전 파일, 잠금 파일을 씁니다.
 
 ## 라이선스
 

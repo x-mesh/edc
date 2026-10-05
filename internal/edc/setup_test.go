@@ -92,7 +92,7 @@ func TestSetupMigratesLinuxYAMLToTOML(t *testing.T) {
 func TestSetupOnlyAddsSelectedSections(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "edc", "config.yaml")
 	// language; common no; log yes and retain its three recommended values; remaining sections no; save yes.
-	input := "\nn\ny\n\n\n\n" + strings.Repeat("n\n", 9) + "y\n"
+	input := "\nn\ny\n" + strings.Repeat("\n", 10) + strings.Repeat("n\n", 9) + "y\n"
 	var output, stderr strings.Builder
 	if code := runSetupWithIO(nil, strings.NewReader(input), &output, &stderr, true, path); code != 0 {
 		t.Fatalf("exit=%d stderr=%q output=%q", code, stderr.String(), output.String())
@@ -101,14 +101,14 @@ func TestSetupOnlyAddsSelectedSections(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if config.Defaults.Log.Stream == nil || *config.Defaults.Log.Stream != "stderr" || config.Defaults.Top.Count != nil || config.Defaults.Info.Public != nil {
+	if config.Defaults.Log.Stream == nil || *config.Defaults.Log.Stream != "both" || config.Defaults.Top.Count != nil || config.Defaults.Info.Public != nil {
 		t.Fatalf("selected sections leaked defaults: %#v", config.Defaults)
 	}
 }
 
 func TestSetupCanClearOptionalDefault(t *testing.T) {
 	path := writeConfigFixture(t, "lang: en\ndefaults:\n  log: {stream: stdout, output: /tmp/old.log, command_display: name}\n")
-	input := "\nn\ny\n\n!clear\n\n" + strings.Repeat("n\n", 9) + "y\n"
+	input := "\nn\ny\n\n!clear\n\n" + strings.Repeat("\n", 7) + strings.Repeat("n\n", 9) + "y\n"
 	var output, stderr strings.Builder
 	if code := runSetupWithIO(nil, strings.NewReader(input), &output, &stderr, true, path); code != 0 {
 		t.Fatalf("exit=%d stderr=%q output=%q", code, stderr.String(), output.String())
@@ -142,7 +142,7 @@ func TestSetupCanClearTypedDefault(t *testing.T) {
 func TestSetupUpdatesLogAndPreservesExistingValues(t *testing.T) {
 	path := writeConfigFixture(t, "lang: ja\ndefaults:\n  common: {timeout: 33s}\n  log: {stream: stdout, output: /tmp/old.log, command_display: name}\n")
 	// language retain; common no; log yes + three values; remaining nine sections no; save yes.
-	input := "\nn\ny\nstderr\n/tmp/new.log\nnone\n" + strings.Repeat("n\n", 9) + "y\n"
+	input := "\nn\ny\nstderr\n/tmp/new.log\nnone\n" + strings.Repeat("\n", 7) + strings.Repeat("n\n", 9) + "y\n"
 	var output, stderr strings.Builder
 	if code := runSetupWithIO(nil, strings.NewReader(input), &output, &stderr, true, path); code != 0 {
 		t.Fatalf("exit=%d stderr=%q output=%q", code, stderr.String(), output.String())
@@ -159,7 +159,7 @@ func TestSetupUpdatesLogAndPreservesExistingValues(t *testing.T) {
 func TestSetupMigratesTheLegacyRecommendedLogPath(t *testing.T) {
 	path := writeConfigFixture(t, "lang: en\ndefaults:\n  log: {stream: stderr, output: /var/log/job.log, command_display: full}\n")
 	// language; common no; log yes, retain all migrated values; remaining sections no; save.
-	input := "\nn\ny\n\n\n\n" + strings.Repeat("n\n", 9) + "y\n"
+	input := "\nn\ny\n" + strings.Repeat("\n", 10) + strings.Repeat("n\n", 9) + "y\n"
 	var output, stderr strings.Builder
 	if code := runSetupWithIO(nil, strings.NewReader(input), &output, &stderr, true, path); code != 0 {
 		t.Fatalf("exit=%d stderr=%q output=%q", code, stderr.String(), output.String())

@@ -230,16 +230,26 @@ command:
       - "diff shows the status change and the metric difference of each probe."
       - "A worse probe returns exit code 1."
   log:
-    summary: "Append one command stream to a log file"
+    summary: "Record command output and exit status"
     option:
-      stream: "stream to capture; config can provide it"
-      output: "log file to append; config can provide it"
+      stream: "stream to record (default both)"
+      output: "log file; default creates one file per run"
       command_display: "command detail in markers"
+      max_size: "max MiB; 0 disables rotation (default 10)"
+      keep_files: "rotated files to keep (default 3)"
+      restart: "restart policy (default never)"
+      max_restarts: "maximum additional attempts (default 3)"
+      restart_delay: "delay before another attempt (default 5s)"
+      timeout: "limit per attempt; 0 disables (default 0s)"
+      kill_after: "SIGKILL grace period (default 5s)"
     notes:
-      - "Only the selected stream goes to the file; the other stream stays unchanged."
-      - "Commands using the same file run one at a time."
+      - "No setup is required. stdout and stderr go to a separate file for each run."
+      - "An explicit shared output file serializes commands with a stable lock file."
+      - "Restart and timeout are disabled by default."
+      - "External stop signals prevent restarts."
+      - "Rotation keeps only this log's .edc.N archives."
+      - "It does not expire files from other runs."
       - "Use name or none when arguments can contain credentials."
-      - "Run edc setup to configure a short edc log -- command form."
   remote:
     summary: "Run a recipe on an inventory group"
     option:

@@ -349,6 +349,16 @@ The demo shows one pass and one threshold failure for each command.
 
 ## Report diff
 
+`edc report` views and compares **edc diagnostic results** saved with `--json`. It supports `doctor` and other edc diagnostic commands that use the same report format. General JSON files and comparison JSON from `report diff` are unsupported. `edc log` saves command output as text separately. `edc report list [directory]` lists valid JSON reports in the specified directory (the current directory by default), newest run first, with the run time and PASS/WARN/FAIL/SKIP counts. It does not search subdirectories.
+
+```bash
+./bin/edc doctor --json report.json https://example.com
+./bin/edc report list
+./bin/edc report show report.json
+```
+
+Without paths, `edc report show` and `edc report diff` let you choose from up to 20 recent reports or enter another JSON file path. If no report is found, they show an example of how to save one.
+
 `edc report diff` compares two JSON reports by probe name. It shows the status change and the scalar metric differences of each probe.
 
 ```bash
@@ -1366,6 +1376,32 @@ An explicit `--output` appends to that file. `--stream stdout` or `stderr` recor
 Commands with the same explicit output file wait for its `.lock` file. The lock remains stable across file rotation.
 
 New files use mode `0600`. Existing log files retain their mode. Automatic command directories use mode `0700`.
+
+### Command history
+
+`edc log history` lists command keys based on the complete argv, in aligned Command / Last run / Runs / Failed columns. An Unknown column appears only when needed; hashes and repeated metadata are hidden in the browser overview. In a terminal, use ↑/↓ and Enter to open a key’s runs. Within history, select a run and press Enter for its working directory, full key, and source file. Esc or b goes back one screen and q quits. Selection is cyan; successful runs are green, failures red, and unknown outcomes and notices yellow. Piped output or `NO_COLOR` prints a static key list.
+
+```bash
+edc log -- ls -l /tmp
+edc log history
+edc log history ls
+edc log history --command ls
+edc log history ls -l /tmp
+edc log history --failed ls -l /tmp
+edc log history --key <key>
+edc log history --file /tmp/job.log
+edc log history --dir /path/to/logs
+```
+
+`history ls` prints runs of `ls` without arguments. `history ls -l /tmp` prints runs with that exact argv. Use `history --command ls` to list all argument keys for `ls`. Options are parsed only before the first command token; all following tokens are argv, including `--failed` and `--`. An optional `--` before the command ends option parsing without changing the query. `--command`, `--key`, and direct argv queries are mutually exclusive. Queries do not execute commands. Argument order and boundaries are preserved: `echo "a b"` and `echo a b` have different keys. The same argv shares a key across working directories, while statistics stay separate by directory.
+
+Each attempt shows its start time, elapsed time, outcome, exit code, and retry number. Outcomes distinguish success, nonzero exit, timeout, signal, wrapper error, and unknown completion. The default is the latest 20 attempts; `--limit` accepts 1–1000. Elapsed time includes output draining and process cleanup. Summaries cover the displayed attempts, and average/min/max duration includes successful attempts only. Incomplete attempts are not counted as failures or included by `--failed`.
+
+Discovery reads `.log` files in the default directory and one subdirectory level, plus `defaults.log.output`. Rotation archives are read together. Use `--file` or `--dir` for other locations. Scans are limited to 1,000 file families, 10,000 directory entries, 128 MiB, and 10,000 attempts. Limits, changes during reading, and malformed records produce notices, partial results, and exit code `2`. A successful query returns `0` even if historical commands failed.
+
+New start markers record the SHA-256 argv key and command display mode. `name` hides arguments but retains the key; `none` omits the key as well. Legacy records can reconstruct keys when the complete argv is known. A legacy singleton basename cannot distinguish a no-argument invocation from name mode, so it is excluded with a notice. Hidden arguments are not reconstructed.
+
+History reads metadata embedded in text logs. It cannot authenticate markers imitated by child output.
 
 ### Log rotation
 

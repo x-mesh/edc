@@ -311,6 +311,16 @@ terminal에서는 몇 곳을 확인했는지 진행 줄로 보여 줍니다. `q`
 
 ## Report 비교
 
+`edc report`는 edc 진단 명령이 `--json`으로 저장한 **edc 진단 결과**를 읽고 비교합니다. `doctor`뿐 아니라 같은 report 형식을 사용하는 다른 edc 진단 명령의 결과도 지원합니다. 일반 JSON 파일이나 `report diff`가 생성한 비교 JSON은 지원하지 않습니다. `edc log`가 저장한 명령 출력 텍스트와는 별개입니다. `edc report list [directory]`는 지정한 디렉터리(기본값: 현재 디렉터리)의 유효한 JSON report를 실행 시각이 최신인 순서로 나열하며, 실행 시각과 PASS/WARN/FAIL/SKIP 개수를 보여 줍니다. 하위 디렉터리는 검색하지 않습니다.
+
+```bash
+./bin/edc doctor --json report.json https://example.com
+./bin/edc report list
+./bin/edc report show report.json
+```
+
+경로 없이 `edc report show`나 `edc report diff`를 실행하면 최근 report 최대 20개 중에서 선택하거나 다른 JSON 파일 경로를 직접 입력할 수 있습니다. report가 없으면 저장 예시를 안내합니다.
+
 `edc report diff`는 두 JSON report를 probe 이름으로 맞춰 비교합니다. probe마다 status 변화와 scalar metric 차이를 보여 줍니다.
 
 ```bash
@@ -1194,6 +1204,32 @@ Linux는 `${XDG_STATE_HOME:-~/.local/state}/edc/log/<command>/`, macOS는 `~/Lib
 `--output`을 지정하면 해당 파일에 이어 쓰며, `--stream stdout` 또는 `stderr`로 기록할 출력을 한쪽으로 제한할 수 있습니다. 선택하지 않은 출력과 stdin은 호출한 환경에 그대로 연결합니다. 같은 저장 파일을 지정한 실행은 `.lock` 파일로 순서대로 실행하므로 회전 중에도 잠금이 유지됩니다.
 
 새 로그 파일은 mode `0600`, 자동 생성한 명령 디렉터리는 `0700`입니다. 기존 로그 파일의 권한은 유지합니다.
+
+### 명령 실행 이력
+
+`edc log history`는 자동 저장된 로그의 명령과 전체 인자를 키로 묶어 나열합니다. 기본 영문 화면의 목록은 명령·최근 실행·실행 수·실패 수를 정렬해서 보여 줍니다. 불명 건수가 있을 때만 해당 열을 추가하며 hash와 반복 설명은 목록에서 숨깁니다. 터미널에서는 ↑/↓로 키를 선택하고 Enter로 해당 명령의 실행 이력을 엽니다. 이력 화면에서는 실행을 선택한 뒤 Enter로 작업 디렉터리·전체 키·원본 경로를 확인합니다. Esc 또는 b는 이전 화면으로 돌아가며 q는 종료합니다. 선택 행은 청록색, 성공은 초록, 실패는 빨강, 불명과 안내는 노랑으로 표시합니다. 파이프이거나 `NO_COLOR`가 설정되면 키 목록을 정적으로 출력합니다.
+
+```bash
+edc log -- ls -l /tmp
+edc log history
+edc log history ls
+edc log history --command ls
+edc log history ls -l /tmp
+edc log history --failed ls -l /tmp
+edc log history --key <key>
+edc log history --file /tmp/job.log
+edc log history --dir /path/to/logs
+```
+
+`history ls`는 인자 없는 `ls`의 이력을 바로 출력합니다. `history ls -l /tmp`는 정확히 같은 argv의 이력을 조회합니다. `history --command ls`는 `ls`의 인자 조합별 키 목록을 보여 줍니다. 첫 명령 토큰 전까지 history 옵션을 해석하고, 이후 `--failed`나 `--`를 포함한 모든 토큰은 argv로 보존합니다. 명령 앞의 선택적 `--`는 옵션 해석만 끝내며 조회 의미를 바꾸지 않습니다. `--command`, `--key`, 직접 argv 조회는 함께 지정할 수 없습니다. 조회는 명령을 다시 실행하지 않습니다. 인자 순서와 경계를 보존하므로 `echo "a b"`와 `echo a b`는 다른 키입니다. 동일 argv를 다른 디렉터리에서 실행한 경우 키는 같지만 통계는 작업 디렉터리별로 구분합니다.
+
+실행별 시작 시각, 소요 시간, 성공·실패·시간 초과·시그널 종료·오류·완료 불명, exit code와 재시도 번호를 표시합니다. 기본 최근 20건이며 `--limit 1`부터 `--limit 1000`까지 지정할 수 있습니다. 실행 소요 시간에는 출력 배출과 프로세스 정리가 포함됩니다. 요약은 표시한 실행 기준이며 성공한 실행만 평균·최소·최대 시간에 포함합니다. 종료 기록이 없는 항목은 실패로 단정하지 않으며 `--failed`에서도 제외합니다.
+
+기본 로그 디렉터리와 하위 한 단계의 `.log` 파일, 설정한 `defaults.log.output`을 조회하며 회전 조각도 함께 읽습니다. 임의 위치에 저장한 로그는 `--file` 또는 `--dir`로 지정합니다. 조회는 최대 1,000개 파일 묶음, 10,000개 디렉터리 항목, 128 MiB, 10,000개 실행 시도로 제한합니다. 한도 초과·읽는 동안 변경·손상된 기록은 안내와 함께 부분 결과를 반환하고 exit code `2`를 돌려줍니다. 과거 실패가 있어도 정상적인 조회는 `0`입니다.
+
+새 로그는 전체 argv의 SHA-256 키와 표시 방식을 기록합니다. `command-display=name`은 인자를 숨기지만 키로 구분할 수 있으며, `none`은 키도 기록하지 않습니다. 기존 로그는 전체 argv가 확실한 경우 키를 재구성합니다. 기존 단일 basename 기록은 인자 없는 실행인지 name 모드인지 구별할 수 없어 키 목록에서 제외하고 건수를 안내합니다. 숨겨진 인자는 복원하지 않습니다.
+
+이력은 텍스트 로그의 메타데이터를 읽은 결과입니다. 자식 출력이 동일한 메타데이터 형식을 흉내 낸 경우의 진위까지 보장하지는 않습니다.
 
 ### 로그 회전
 

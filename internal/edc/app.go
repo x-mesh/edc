@@ -453,9 +453,9 @@ func runParallelWith(ctx context.Context, probes []func(context.Context) Result,
 }
 
 func runReport(args []string) int {
-	usage := T("cli.usage", "edc report show <file> | edc report diff [--json <path|->] <before> <after>")
+	usage := T("cli.usage", "edc report list [directory] | edc report show <file> | edc report diff [--json <path|->] <before> <after>")
 	if len(args) == 0 {
-		choice, ok := promptMissingChoice("edc report", []string{"show", "diff"})
+		choice, ok := promptReportCommand()
 		if !ok {
 			fmt.Fprintln(os.Stderr, usage)
 			return 2
@@ -463,6 +463,20 @@ func runReport(args []string) int {
 		args = []string{choice}
 	}
 	switch args[0] {
+	case "list":
+		if len(args) > 2 {
+			fmt.Fprintln(os.Stderr, usage)
+			return 2
+		}
+		directory := "."
+		if len(args) == 2 {
+			directory = args[1]
+		}
+		if err := listReports(os.Stdout, directory); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 2
+		}
+		return 0
 	case "show":
 		if len(args) == 1 {
 			values, ok := promptReportPaths("edc report show",

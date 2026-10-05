@@ -223,6 +223,7 @@ var commandDocs = []commandDoc{
 	{
 		name: "report", group: "record",
 		usage: []string{
+			"edc report list [directory]",
 			"edc report show <file>",
 			"edc report diff [--json <path|->] <before> <after>",
 		},
@@ -230,10 +231,20 @@ var commandDocs = []commandDoc{
 	{
 		name: "log", group: "record",
 		usage: []string{
+			"edc log history [options] [<command> [args...]]",
+			"edc log history [options] --command <name>",
+			"edc log history [options] -- <command> [args...]",
+			"edc log history --key <key>",
 			"edc log [--stream stdout|stderr|both] [--output <file>]",
 			"        [--command-display full|name|none] -- <command> [args...]",
 		},
 		options: []optionDoc{
+			{"--dir <dir>", "cli.log_history.option.dir"},
+			{"--file <file>", "cli.log_history.option.file"},
+			{"--key <key>", "cli.log_history.option.key"},
+			{"--command <name>", "cli.log_history.option.command"},
+			{"--limit 20", "cli.log_history.option.limit"},
+			{"--failed", "cli.log_history.option.failed"},
 			{"--stream stdout|stderr|both", "command.log.option.stream"},
 			{"--output <file>", "command.log.option.output"},
 			{"--command-display full|name|none", "command.log.option.command_display"},

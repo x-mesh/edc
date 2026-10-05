@@ -15,6 +15,7 @@ import (
 )
 
 type resourceSnapshot struct {
+	NetworkHealth   *networkHealth
 	TakenAt         time.Time
 	CPUUser         uint64
 	CPUSystem       uint64
@@ -437,6 +438,7 @@ func parseTopProcesses(output string) []topProcess {
 type resourceCPU struct{ Total, Idle uint64 }
 
 type resourceRate struct {
+	NetworkHealth                   *networkHealthRate
 	NetIn, NetOut                   float64
 	PacketsIn, PacketsOut           float64
 	NetErrors, NetDrops             float64
@@ -488,16 +490,17 @@ func calculateRate(previous, current resourceSnapshot) resourceRate {
 		memoryPercent = float64(current.MemoryUsed) / float64(current.MemoryTotal) * 100
 	}
 	rate := resourceRate{
-		NetIn:      float64(delta(current.NetInBytes, previous.NetInBytes)) / seconds,
-		NetOut:     float64(delta(current.NetOutBytes, previous.NetOutBytes)) / seconds,
-		PacketsIn:  float64(delta(current.PacketsIn, previous.PacketsIn)) / seconds,
-		PacketsOut: float64(delta(current.PacketsOut, previous.PacketsOut)) / seconds,
-		NetErrors:  float64(delta(current.NetErrors, previous.NetErrors)) / seconds,
-		NetDrops:   float64(delta(current.NetDrops, previous.NetDrops)) / seconds,
-		DiskRead:   float64(delta(current.DiskRead, previous.DiskRead)) / seconds,
-		DiskWrite:  float64(delta(current.DiskWrite, previous.DiskWrite)) / seconds,
-		DiskIOPS:   float64(delta(current.DiskOps, previous.DiskOps)) / seconds,
-		CPUUser:    percent(current.CPUUser, previous.CPUUser), CPUSystem: percent(current.CPUSystem, previous.CPUSystem), CPUIOWait: percent(current.CPUIOWait, previous.CPUIOWait),
+		NetworkHealth: calculateNetworkHealthRate(previous.NetworkHealth, current.NetworkHealth, current.TakenAt.Sub(previous.TakenAt).Seconds()),
+		NetIn:         float64(delta(current.NetInBytes, previous.NetInBytes)) / seconds,
+		NetOut:        float64(delta(current.NetOutBytes, previous.NetOutBytes)) / seconds,
+		PacketsIn:     float64(delta(current.PacketsIn, previous.PacketsIn)) / seconds,
+		PacketsOut:    float64(delta(current.PacketsOut, previous.PacketsOut)) / seconds,
+		NetErrors:     float64(delta(current.NetErrors, previous.NetErrors)) / seconds,
+		NetDrops:      float64(delta(current.NetDrops, previous.NetDrops)) / seconds,
+		DiskRead:      float64(delta(current.DiskRead, previous.DiskRead)) / seconds,
+		DiskWrite:     float64(delta(current.DiskWrite, previous.DiskWrite)) / seconds,
+		DiskIOPS:      float64(delta(current.DiskOps, previous.DiskOps)) / seconds,
+		CPUUser:       percent(current.CPUUser, previous.CPUUser), CPUSystem: percent(current.CPUSystem, previous.CPUSystem), CPUIOWait: percent(current.CPUIOWait, previous.CPUIOWait),
 		MemoryPercent: memoryPercent, Load1: current.Load1,
 	}
 	rate.NetHealthValid = current.NetHealthValid && previous.NetHealthValid

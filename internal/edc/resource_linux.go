@@ -101,7 +101,7 @@ func newTopProcessEnricher() func([]topProcess) {
 }
 
 func collectResourceSnapshot() (resourceSnapshot, error) {
-	snapshot := resourceSnapshot{TakenAt: time.Now()}
+	snapshot := resourceSnapshot{TakenAt: time.Now(), NetworkHealth: collectNetworkHealth()}
 	stat, err := os.ReadFile("/proc/stat")
 	if err != nil {
 		return snapshot, err

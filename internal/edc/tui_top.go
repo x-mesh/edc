@@ -544,6 +544,10 @@ func (model topModel) panelLines() []string {
 		lines = model.detailLines()
 	case model.peaks:
 		lines = model.peakLines()
+	case model.view == topViewNetwork && model.previous.NetworkHealth != nil:
+		if row, ok := model.selectedRow(); ok {
+			lines = append([]string{"network " + row.at.Format("15:04:05") + " · current namespace · Enter settings"}, networkHealthLines(row.rate.NetworkHealth)...)
+		}
 	}
 	if model.lastErr != nil {
 		lines = append(lines, fmt.Sprintf("sample failed · last success %s · %s", model.previous.TakenAt.Format("15:04:05"), model.lastErr))
@@ -653,6 +657,9 @@ func (model topModel) detailLines() []string {
 		return []string{"detail · waiting for a sample"}
 	}
 	rate := row.rate
+	if model.view == topViewNetwork {
+		return append(append([]string{"network detail " + row.at.Format("15:04:05")}, networkHealthLines(rate.NetworkHealth)...), networkSettingLines(rate.NetworkHealth)...)
+	}
 	lines := []string{
 		fmt.Sprintf("detail %s · load %.1f · cpu %.1f/%.1f%% · iowait %.1f%% · mem %.1f%%", row.at.Format("15:04:05"), rate.Load1, rate.CPUUser, rate.CPUSystem, rate.CPUIOWait, rate.MemoryPercent),
 		fmt.Sprintf("  %s · %s · %s", topDiskDetail(rate), topNetworkDetail(rate), topPressureDetail(rate)),
@@ -678,6 +685,9 @@ func (model topModel) peakLines() []string {
 		return []string{"peaks 60s · waiting for a sample"}
 	}
 	last := model.rows[len(model.rows)-1]
+	if model.view == topViewNetwork && last.rate.NetworkHealth != nil {
+		return model.networkPeakLines(last)
+	}
 	load, cpu, iowait, memory := last, last, last, last
 	for _, row := range model.rows {
 		if last.at.Sub(row.at) > topPeakWindow {
@@ -877,7 +887,7 @@ func (model topModel) tableColumns() ([]topColumn, []int) {
 		if model.view == topViewProcess && model.displayWidth() < 56 && column.title == "thr" {
 			continue
 		}
-		if model.details.System == "darwin" && (column.title == "fds" || column.title == "psi mem" || column.title == "busy%" || column.title == "io%") {
+		if model.details.System == "darwin" && (column.title == "fds" || column.title == "psi mem" || column.title == "busy%" || column.title == "io%" || column.title == "ct%" || column.title == "listen/s" || column.title == "soft/s") {
 			continue
 		}
 		if model.view == topViewProcess && !model.bpfEnabled && (column.title == "runq ms" || column.title == "io ms") {
@@ -997,7 +1007,7 @@ func topViewColumns(view topView) []topColumn {
 	case topViewDisk:
 		return []topColumn{{title: "read/s", width: 7}, {title: "write/s", width: 7}, {title: "iops", width: 6}, {title: "await", width: 6}, {title: "busy%", width: 6}, signal}
 	case topViewNetwork:
-		return []topColumn{{title: "in/s", width: 7}, {title: "out/s", width: 7}, {title: "pk_in", width: 6}, {title: "pk_out", width: 6}, {title: "err/s", width: 6}, {title: "drop/s", width: 6}, signal}
+		return []topColumn{{title: "in/s", width: 7}, {title: "out/s", width: 7}, {title: "ct%", width: 6}, {title: "listen/s", width: 8}, {title: "err/s", width: 6}, {title: "drop/s", width: 6}, {title: "soft/s", width: 6}, {title: "pk_in", width: 6}, {title: "pk_out", width: 6}, signal}
 	case topViewPressure:
 		return []topColumn{{title: "cpu psi", width: 7}, {title: "mem psi", width: 7}, {title: "io psi", width: 7}, {title: "load", width: 6}, {title: "mem%", width: 6}, signal}
 	case topViewProcess:
@@ -1046,7 +1056,7 @@ func topViewCells(rate resourceRate, view topView, signal string, limits topLimi
 	case topViewDisk:
 		return []topCell{topPlainCell(formatRate(rate.DiskRead)), topPlainCell(formatRate(rate.DiskWrite)), topPlainCell(topOptionalValue(rate.DiskHealthValid, "%.0f", rate.DiskIOPS)), topOptionalCell(rate.DiskHealthValid, "%.1f", rate.DiskAwait, limits.await), topPlainCell(topOptionalValue(rate.DiskBusyValid, "%.0f", rate.DiskBusy)), topPlainCell(signal)}
 	case topViewNetwork:
-		return []topCell{topPlainCell(formatRate(rate.NetIn)), topPlainCell(formatRate(rate.NetOut)), topPlainCell(fmt.Sprintf("%.0f", rate.PacketsIn)), topPlainCell(fmt.Sprintf("%.0f", rate.PacketsOut)), topOptionalCell(rate.NetHealthValid, "%.0f", rate.NetErrors, limits.network), topOptionalCell(rate.NetHealthValid, "%.0f", rate.NetDrops, limits.network), topPlainCell(signal)}
+		return []topCell{topPlainCell(formatRate(rate.NetIn)), topPlainCell(formatRate(rate.NetOut)), networkConntrackCell(rate.NetworkHealth), topPlainCell(networkRateText(rate.NetworkHealth, "listen_overflows")), topOptionalCell(rate.NetHealthValid, "%.0f", rate.NetErrors, limits.network), topOptionalCell(rate.NetHealthValid, "%.0f", rate.NetDrops, limits.network), topPlainCell(networkRateText(rate.NetworkHealth, "softnet_dropped")), topPlainCell(fmt.Sprintf("%.0f", rate.PacketsIn)), topPlainCell(fmt.Sprintf("%.0f", rate.PacketsOut)), topPlainCell(signal)}
 	case topViewPressure:
 		return []topCell{topOptionalCell(rate.PSIValid, "%.1f", rate.PSICPU, limits.psi), topOptionalCell(rate.PSIValid, "%.1f", rate.PSIMemory, limits.psi), topOptionalCell(rate.PSIValid, "%.1f", rate.PSIIO, limits.psi), topValueCell("%.1f", rate.Load1, limits.load), topValueCell("%.1f", rate.MemoryPercent, limits.memory), topPlainCell(signal)}
 	}
@@ -1769,4 +1779,52 @@ func formatProcessRSS(bytes uint64) string {
 		return fmt.Sprintf("%.1fM", float64(bytes)/mib)
 	}
 	return fmt.Sprintf("%.0fK", float64(bytes)/1024)
+}
+
+func networkConntrackCell(health *networkHealthRate) topCell {
+	if health == nil {
+		return topPlainCell("—")
+	}
+	usage, valid := networkConntrackUsage(&health.networkHealth)
+	return topOptionalCell(valid, "%.1f", usage, topThreshold{warn: 90, danger: 98})
+}
+
+func (model topModel) networkPeakLines(last topDashboardRow) []string {
+	var peakUsage float64
+	var peakAt time.Time
+	rates := map[string]float64{}
+	for _, row := range model.rows {
+		if last.at.Sub(row.at) > topPeakWindow {
+			continue
+		}
+		health := row.rate.NetworkHealth
+		if health == nil {
+			continue
+		}
+		if usage, ok := networkConntrackUsage(&health.networkHealth); ok && (peakAt.IsZero() || usage > peakUsage) {
+			peakUsage, peakAt = usage, row.at
+		}
+		for name, rate := range health.Rates {
+			if rate.PerSecond != nil && *rate.PerSecond > rates[name] {
+				rates[name] = *rate.PerSecond
+			}
+		}
+	}
+	usage := "—"
+	if !peakAt.IsZero() {
+		usage = fmt.Sprintf("%.1f%% at %s", peakUsage, peakAt.Format("15:04:05"))
+	}
+	peak := func(key string) string {
+		for _, row := range model.rows {
+			if last.at.Sub(row.at) <= topPeakWindow && row.rate.NetworkHealth != nil && row.rate.NetworkHealth.Rates[key].PerSecond != nil {
+				return fmt.Sprintf("%.1f/s", rates[key])
+			}
+		}
+		return "—"
+	}
+	return []string{
+		"peaks 60s · conntrack " + usage,
+		"listen overflow " + peak("listen_overflows") + " · drop " + peak("listen_drops"),
+		"softnet drop " + peak("softnet_dropped") + " · UDP buffer " + peak("udp_rcvbuf_errors"),
+	}
 }

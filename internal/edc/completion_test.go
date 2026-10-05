@@ -1,6 +1,7 @@
 package edc
 
 import (
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -55,5 +56,27 @@ func TestCompletionGroupsUsesConfiguredInventory(t *testing.T) {
 	var output strings.Builder
 	if code := writeCompletionGroupsWithPath(&output, t.TempDir(), t.TempDir(), path); code != 0 || output.String() != "configured\n" {
 		t.Fatalf("code=%d output=%q", code, output.String())
+	}
+}
+
+func TestBashHistoryCompletionHonorsArgumentBoundary(t *testing.T) {
+	for _, row := range []struct {
+		words      string
+		wantOption bool
+	}{
+		{`(edc log history --f)`, true},
+		{`(edc log history --limit 5 --f)`, true},
+		{`(edc log history ls --f)`, false},
+		{`(edc log history ls -- --f)`, false},
+		{`(edc log history -- ls --f)`, false},
+	} {
+		command := bashCompletion + "\nCOMP_WORDS=" + row.words + "\nCOMP_CWORD=$((${#COMP_WORDS[@]}-1))\n_edc\nprintf '%s\n' \"${COMPREPLY[@]}\"\n"
+		output, err := exec.Command("bash", "-c", command).CombinedOutput()
+		if err != nil {
+			t.Fatalf("completion error: %v: %s", err, output)
+		}
+		if strings.Contains(string(output), "--failed") != row.wantOption {
+			t.Fatalf("completion changed argv boundary for %s: %s", row.words, output)
+		}
 	}
 }

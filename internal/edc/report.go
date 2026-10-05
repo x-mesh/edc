@@ -45,35 +45,113 @@ func promptReportPaths(command string, titles, labels []string) ([]string, bool)
 }
 
 func promptReportValue(file *os.File, title, label string) (string, error) {
-	if candidates := reportCandidates(); len(candidates) > 0 {
-		return runSelect(file, os.Stdout, selectModel{title: title, label: label, items: candidates, color: true})
+	candidates := reportCandidates()
+	if len(candidates) > 0 {
+		candidates = append(candidates, selectItem{label: T("cli.report.enter_path"), value: ""})
+		value, err := runSelect(file, os.Stdout, selectModel{title: title, label: label, items: candidates, color: true})
+		if err != nil || value != "" {
+			return value, err
+		}
+	} else {
+		printReportEmpty(os.Stdout, ".")
 	}
-	return promptRemoteText(bufio.NewReader(file), os.Stdout, label, "")
+	return promptRemoteText(bufio.NewReader(file), os.Stdout, T("cli.report.path_label", label), "")
 }
 
-// reportCandidates는 현재 디렉터리에서 report로 읽히는 JSON 파일이다. 방금 저장한 report를
-// 경로 없이 고를 수 있다. 읽히지 않는 JSON은 report가 아니므로 뺀다.
+func promptReportCommand() (string, bool) {
+	file, ok := terminalInput(os.Stdin)
+	if !ok {
+		return "", false
+	}
+	fmt.Fprintln(os.Stdout, T("cli.report.description"))
+	items := []selectItem{
+		{label: T("cli.report.command_show"), value: "show"},
+		{label: T("cli.report.command_diff"), value: "diff"},
+		{label: T("cli.report.command_list"), value: "list"},
+	}
+	value, err := runSelect(file, os.Stdout, newSelectModel("cli.prompt.subcommand_title", "cli.prompt.subcommand_label", items))
+	if err != nil {
+		return "", false
+	}
+	promptEcho(os.Stdout, "edc report "+value)
+	return value, true
+}
+
+type savedReport struct {
+	path   string
+	report Report
+}
+
+func discoverReports(directory string) ([]savedReport, error) {
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		return nil, err
+	}
+	var reports []savedReport
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+		path := filepath.Join(directory, entry.Name())
+		report, err := loadReport(path)
+		if err != nil {
+			continue
+		}
+		reports = append(reports, savedReport{path: path, report: report})
+	}
+	sort.Slice(reports, func(i, j int) bool {
+		if reports[i].report.Run.StartedAt.Equal(reports[j].report.Run.StartedAt) {
+			return reports[i].path < reports[j].path
+		}
+		return reports[i].report.Run.StartedAt.After(reports[j].report.Run.StartedAt)
+	})
+	return reports, nil
+}
+
+func savedReportLabel(report savedReport) string {
+	return fmt.Sprintf("%s  ·  %s  ·  %s", reportIdentityValue(report.path), report.report.Run.StartedAt.Format(time.RFC3339), summaryLine(report.report.Results))
+}
+
 func reportCandidates() []selectItem {
-	entries, err := filepath.Glob("*.json")
+	reports, err := discoverReports(".")
 	if err != nil {
 		return nil
 	}
-	items := []selectItem{}
-	for _, entry := range entries {
-		if len(items) >= reportCandidateLimit {
-			break
-		}
-		if _, err := loadReport(entry); err != nil {
-			continue
-		}
-		items = append(items, selectItem{label: entry, value: entry})
+	items := make([]selectItem, 0, min(len(reports), reportCandidateLimit))
+	for _, report := range reports[:min(len(reports), reportCandidateLimit)] {
+		items = append(items, selectItem{label: savedReportLabel(report), value: report.path})
 	}
 	return items
+}
+
+func printReportEmpty(output io.Writer, directory string) {
+	fmt.Fprintln(output, T("cli.report.empty", reportIdentityValue(directory)))
+	fmt.Fprintln(output, T("cli.report.save_hint"))
+}
+
+func listReports(output io.Writer, directory string) error {
+	reports, err := discoverReports(directory)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintln(output, T("cli.report.description"))
+	if len(reports) == 0 {
+		printReportEmpty(output, directory)
+		return nil
+	}
+	for _, report := range reports {
+		fmt.Fprintln(output, savedReportLabel(report))
+	}
+	fmt.Fprintln(output, T("cli.report.show_hint"))
+	return nil
 }
 
 func loadReport(path string) (Report, error) {
 	file, err := os.Open(path)
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return Report{}, fmt.Errorf("%s: %w\n%s", T("cli.report.not_found", reportIdentityValue(path)), err, T("cli.report.show_hint"))
+		}
 		return Report{}, err
 	}
 	defer file.Close()

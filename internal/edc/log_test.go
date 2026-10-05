@@ -281,7 +281,7 @@ func TestLogCommandDisplayModesAndASCII(t *testing.T) {
 	}{
 		{"full", `command=["/tmp/\uc2e4\ud589 \ud30c\uc77c","--token","\u79d8\u5bc6"]`, ""},
 		{"name", `command=["\uc2e4\ud589 \ud30c\uc77c"]`, "--token"},
-		{"none", "stream=stderr ===", "command="},
+		{"none", "command_display=none ===", "command="},
 	} {
 		var output bytes.Buffer
 		base.commandDisplay = row.mode

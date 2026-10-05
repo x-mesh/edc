@@ -224,8 +224,12 @@ command:
       - "이유별 합계는 정확합니다. CPU마다 초당 1,000건이 넘으면 event는 표본입니다."
       - "accept 대기열이 가득 차 해제된 SYN은 event가 아니고, 요약에서 셉니다."
   report:
-    summary: "저장한 JSON report 보기와 비교"
+    summary: "저장한 edc 진단 결과 보기·비교"
     notes:
+      - "edc 진단 명령이 --json으로 저장한 결과를 읽습니다."
+      - "일반 JSON, report diff 결과, edc log 텍스트 로그는 지원하지 않습니다."
+      - "list [directory]는 report 경로, 실행 시각, 결과 개수를 최신순으로 보여 줍니다."
+      - "지정한 디렉터리만 검색하며 하위 디렉터리는 제외합니다."
       - "terminal에서는 뷰어로 엽니다. f 필터, e 상세, q 종료."
       - "diff는 probe별 status 변화와 metric 차이를 보여 줍니다."
       - "악화된 probe가 있으면 exit code 1을 돌려줍니다."
@@ -243,6 +247,11 @@ command:
       timeout: "시도별 시간 제한; 0은 제한 없음 (기본 0s)"
       kill_after: "종료 신호 뒤 SIGKILL 전 대기 시간 (기본 5s)"
     notes:
+      - "history는 인자별 키 목록을 보여주며 선택하면 실행 이력을 엽니다."
+      - "Enter로 이력과 실행 상세를 엽니다. Esc는 복귀, q는 종료입니다."
+      - "history <command> [args...]는 argv 조회, --command는 이름별 목록입니다."
+      - "--failed는 실패만, --limit는 최근 실행 수를 지정합니다."
+      - "파이프에서는 키 목록을 출력하고 입력을 기다리지 않습니다."
       - "별도 설정 없이 stdout·stderr를 실행별 파일에 기록합니다."
       - "같은 저장 파일을 지정한 실행은 별도 잠금 파일로 순서대로 실행합니다."
       - "재시작과 timeout은 기본으로 꺼져 있습니다."

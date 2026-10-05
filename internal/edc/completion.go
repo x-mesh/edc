@@ -220,10 +220,17 @@ _edc() {
           esac
           ;;
         log)
+          if [[ $words[2] == history ]]; then
+            local -a words=("${words[@]:1}")
+            local CURRENT=$((CURRENT-1))
+            _arguments -S -A "-*" '--dir[로그 디렉터리]:directory:_directories' '--file[로그 파일]:path:_files' '--key[명령 키]:key' '--command[명령별 키 목록]:command:_command_names -e' '--limit[최근 실행 수]:count' '--failed[실패만 조회]' '*:command:_command_names -e'
+            return
+          fi
+          if (( CURRENT == 2 )); then compadd history; fi
           _arguments -S '--stream[capture할 stream]:stream:(stdout stderr)' '--output[append log 경로]:path:_files' '--command-display[marker에 기록할 command 범위]:mode:(full name none)' '1:separator:(--)' '2:command:_command_names -e' '*::command argument'
           ;;
         report)
-          _arguments '--json[JSON 출력 경로]:path:_files' '1:subcommand:(show diff)' '*:report file:_files -g "*.json"'
+          _arguments '--json[JSON 출력 경로]:path:_files' '1:subcommand:(list show diff)' '*:report file:_files -g "*.json"'
           ;;
         remote)
           _arguments $common \
@@ -332,6 +339,27 @@ _edc() {
     trace)
       if [[ $COMP_CWORD -eq 2 ]]; then COMPREPLY=($(compgen -W "tcp udp dns arp ndp http mysql" -- "$cur")); else COMPREPLY=($(compgen -W "--duration --json --raw --live --group-by --process --destination -d --detail --side --payload --payload=all --show-secrets --port --yes" -- "$cur")); fi ;;
     log)
+      if [[ $COMP_CWORD -eq 2 && $cur != -* ]]; then COMPREPLY=($(compgen -W "history" -- "$cur")); return; fi
+      if [[ ${COMP_WORDS[2]} == history ]]; then
+        for ((index=3; index<COMP_CWORD; index++)); do
+          case "${COMP_WORDS[index]}" in
+            --dir|--file|--key|--limit|--command|-dir|-file|-key|-limit|-command) ((index++)) ;;
+            --) COMPREPLY=(); if [[ $index -eq $((COMP_CWORD-1)) ]]; then COMPREPLY=($(compgen -c -- "$cur")); fi; return ;;
+            -|[!-]*) COMPREPLY=($(compgen -f -- "$cur")); return ;;
+          esac
+        done
+        case "$prev" in
+          --dir|--file) COMPREPLY=($(compgen -f -- "$cur")); return ;;
+          --key|--limit) COMPREPLY=(); return ;;
+          --command) COMPREPLY=($(compgen -c -- "$cur")); return ;;
+        esac
+        if [[ $cur == -* ]]; then
+          COMPREPLY=($(compgen -W "--dir --file --key --command --limit --failed --" -- "$cur"))
+        else
+          COMPREPLY=($(compgen -c -- "$cur"))
+        fi
+        return
+      fi
       for ((index=2; index<COMP_CWORD; index++)); do
         if [[ ${COMP_WORDS[index]} == -- ]]; then
           COMPREPLY=()
@@ -347,7 +375,7 @@ _edc() {
       if [[ $cur == -* ]]; then COMPREPLY=($(compgen -W "--stream --output --command-display --" -- "$cur")); fi ;;
     update) COMPREPLY=($(compgen -W "--check --yes --timeout" -- "$cur")) ;;
     report)
-      if [[ $COMP_CWORD -eq 2 ]]; then COMPREPLY=($(compgen -W "show diff" -- "$cur"))
+      if [[ $COMP_CWORD -eq 2 ]]; then COMPREPLY=($(compgen -W "list show diff" -- "$cur"))
       elif [[ $cur == -* ]]; then COMPREPLY=($(compgen -W "--json" -- "$cur"))
       else COMPREPLY=($(compgen -f -- "$cur")); fi ;;
     remote)

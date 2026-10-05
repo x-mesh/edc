@@ -541,7 +541,7 @@ Rows from a different filter show `—` for process values. They do not represen
 
 The filter runs before the list is cut to the busiest processes. A quiet process that matches stays in the list.
 
-The dashboard detail view shows two lines. The first line is the total over every match: count, CPU, RSS, threads, open file descriptors, and disk I/O. The second line lists the three busiest matches and `+N` for the rest. The `signal` column then reflects only the matches.
+The detail view starts with totals over every match: count, CPU, RSS, threads, open file descriptors, and disk I/O. Next, it lists the three busiest matches and `+N` for the rest. The remaining lines show process resource limits. The `signal` column then reflects only the matches.
 
 With `--json`, a sample adds two fields. `processes` holds up to 50 matches, busiest first. `process_total` is the sum over every match: `count`, `cpu_pct`, `rss_bytes`, and `threads`. CPU is 100% per core. `processes` is `[]` when nothing matches. Each process has these fields:
 
@@ -566,6 +566,32 @@ Disk rates require two samples of the same process. The dashboard shows the base
 Without `--process`, JSON output has no process fields.
 
 `--process` needs the dashboard or `--json`. The table has no process column, so `edc top --process x --count 5` stops with exit code `2`.
+
+### Process resource limits (Linux)
+
+With `--process`, the process panel shows FD usage and the soft limit for the selected candidate.
+
+Press `Enter` on a history row to see resource details for the retained processes.
+
+The cgroup v2 details show group memory usage, the local memory limit, local OOM counts, and CPU throttle counts.
+
+Each shared cgroup appears once in the detail view. These values describe the group, not one process.
+
+Memory usage includes descendant groups. The local memory limit does not include ancestor limits.
+
+Local OOM counts are cumulative for the lifetime of the cgroup. They do not include descendant events.
+
+CPU throttle counts cover the interval between two samples. They describe the group's own CPU limit, not ancestor limits.
+
+The first CPU sample establishes a baseline. A counter reset or an interrupted observation requires a new baseline.
+
+JSON adds `limits.fd` and `limits.cgroup` to each process. Each metric includes a `status` and an optional `reason`.
+
+Unavailable values remain absent. Unlimited FD and memory limits use explicit boolean fields.
+
+The command distinguishes unsupported metrics, denied access, unavailable namespace paths, and read errors. cgroup v1 and macOS resource limits are unsupported.
+
+These metrics use the [Linux cgroup v2 interfaces](https://docs.kernel.org/admin-guide/cgroup-v2.html).
 
 ### CPU wait and I/O latency with `-d` (Linux)
 

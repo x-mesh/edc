@@ -207,7 +207,9 @@ var commandDocs = []commandDoc{
 	},
 	{
 		name: "quality", group: "observe",
-		usage: []string{"edc quality [options]"}, usesCommon: true,
+		usage:      []string{"edc quality [options]"},
+		options:    []optionDoc{{"--server <URL>", "command.quality.option.server"}},
+		usesCommon: true,
 	},
 	{
 		name: "capture", group: "observe",

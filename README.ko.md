@@ -4,7 +4,7 @@
 
 `edc`는 **everyday carry**의 줄임말입니다. everyday carry는 주머니에 넣고 다니면서 가장 먼저 꺼내 쓰는 작은 도구 모음을 뜻합니다. `edc`는 SE와 SRE가 terminal에서 그렇게 쓰는 도구입니다.
 
-장애가 나면 첫 질문은 하나입니다. 원인이 내 쪽인지, 네트워크인지, 상대편인지. `edc`는 명령 하나로 답합니다. DNS, TCP, TLS, HTTP, route, ping, interface, socket을 한 번에 확인하고 결과를 모두 같은 형식으로 출력합니다. Linux와 macOS의 host resource와 host 정보도 함께 보여 주며, macOS에서는 `networkQuality`를 실행합니다.
+장애가 나면 첫 질문은 하나입니다. 원인이 내 쪽인지, 네트워크인지, 상대편인지. `edc`는 명령 하나로 답합니다. DNS, TCP, TLS, HTTP, route, ping, interface, socket을 한 번에 확인하고 결과를 모두 같은 형식으로 출력합니다. Linux와 macOS의 host resource와 host 정보도 함께 보여 주며, 네트워크 응답성(RPM)과 처리량도 잽니다. macOS는 `networkQuality`를 실행하고, Linux는 IETF responsiveness draft를 따르는 내장 측정을 씁니다.
 
 진단 command는 read-only입니다. `watch fs`는 `--exec`나 `--rules`로 지정한 커맨드를 실행할 수 있습니다. 기본 관측은 원인을 찾는 데서 멈춥니다. DNS flush, interface reset, firewall 변경 같은 자동 복구를 하지 않으므로 운영 중인 host에서도 그대로 씁니다.
 
@@ -133,6 +133,10 @@ parallel = 0
 [defaults.update]
 timeout = "60s"
 
+[defaults.quality]
+timeout = "30s"
+server = ""
+
 [defaults.log]
 stream = "both"
 output = ""
@@ -192,6 +196,7 @@ Setup wizard는 `edc log`의 저장 경로를 비워두고 실행별 파일을 �
 ./bin/edc listen              # 열려 있는 포트, --unix나 --all로 unix socket 포함
 ./bin/edc listen --watch -i 0.5 --duration 10s
 ./bin/edc quality --timeout 60s
+./bin/edc quality --server https://example.com/.well-known/nq   # 응답성 config URL
 
 # 페이지 상태 반복 확인; --duration을 생략하면 Ctrl-C까지 실행
 ./bin/edc watch http -i 0.1 --duration 10s https://example.com
@@ -1362,7 +1367,7 @@ zsh에서는 script를 `fpath`의 디렉터리에 `_edc`라는 이름으로 저�
 
 ## 현재 범위
 
-`top`, `info`, `doctor`와 개별 network probe는 Linux와 macOS를 지원합니다. Linux에서는 `/proc`, `/sys`, `ip`, `ss`, `ping`, `traceroute` 또는 `tracepath`, `/etc/resolv.conf`를 읽고, `resolvectl`이 있으면 `resolvectl status`를 evidence로 덧붙입니다. macOS에서는 system command adapter를 사용합니다. `capture`는 Linux와 macOS를 지원하고 `quality`는 macOS 전용입니다. 진단 command는 read-only 관측에 집중하며, DNS flush, interface reset, firewall 변경 같은 자동 복구는 하지 않습니다. `edc log`는 로그 파일, 회전 파일, 잠금 파일을 씁니다. `edc top --write`는 SQLite DB와 WAL 파일을 씁니다.
+`top`, `info`, `doctor`와 개별 network probe는 Linux와 macOS를 지원합니다. Linux에서는 `/proc`, `/sys`, `ip`, `ss`, `ping`, `traceroute` 또는 `tracepath`, `/etc/resolv.conf`를 읽고, `resolvectl`이 있으면 `resolvectl status`를 evidence로 덧붙입니다. macOS에서는 system command adapter를 사용합니다. `capture`는 Linux와 macOS를 지원하고 `quality`는 macOS에서 `networkQuality`를, Linux에서 내장 응답성 측정을 실행하며 둘 다 측정한 경우에 `download_bps`, `upload_bps`, `responsiveness_rpm`, `base_rtt_ms`를 남기고, 측정하지 못한 값은 뺍니다. config URL 기본값은 Apple의 `https://mensura.cdn-apple.com/api/v1/gm/config`이고, `--server`나 `defaults.quality.server`로 바꿉니다. `server`를 비우면 기본값을 씁니다. 진단 command는 read-only 관측에 집중하며, DNS flush, interface reset, firewall 변경 같은 자동 복구는 하지 않습니다. `edc log`는 로그 파일, 회전 파일, 잠금 파일을 씁니다. `edc top --write`는 SQLite DB와 WAL 파일을 씁니다.
 
 ## 라이선스
 

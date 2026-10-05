@@ -2,7 +2,6 @@ package edc
 
 import (
 	"context"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -381,23 +380,6 @@ func countSocketRows(text string) int {
 		return 0
 	}
 	return rows - 1
-}
-
-func probeQuality(ctx context.Context) Result {
-	started := time.Now()
-	if runtime.GOOS != "darwin" {
-		return unsupported("net.quality", T("observe.system.quality_darwin_only"))
-	}
-	command := exec.CommandContext(ctx, "/usr/bin/networkQuality", "-c")
-	output, err := command.Output()
-	if err != nil {
-		return resultFromError("net.quality", started, classifyCommandError(ctx, err), err)
-	}
-	var metrics map[string]interface{}
-	if err := json.Unmarshal(output, &metrics); err != nil {
-		return resultFromError("net.quality", started, "parse", err)
-	}
-	return Result{Probe: "net.quality", Status: StatusPass, StartedAt: started.UTC(), DurationMS: time.Since(started).Milliseconds(), Summary: T("observe.system.quality_done"), Metrics: metrics}
 }
 
 func probePing(ctx context.Context, target string) Result {

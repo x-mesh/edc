@@ -134,9 +134,16 @@ command:
       - "Only Linux gives the queue. On macOS the column shows -."
       - "-v adds columns only. The rows stay the same."
   quality:
-    summary: "networkQuality measurement (macOS)"
+    summary: "Network responsiveness (RPM) and throughput"
+    option:
+      server: "responsiveness config URL"
     notes:
-      - "edc uses networkQuality on macOS. The measurement needs tens of seconds."
+      - "macOS runs networkQuality. Other systems measure natively."
+      - "The native test follows the IETF responsiveness draft."
+      - "--server sets the config URL. Apple's mensura server is the default."
+      - "The measurement needs tens of seconds."
+      - "The timeout is 30s. defaults.quality.timeout overrides it."
+      - "defaults.common.timeout does not apply. The native test runs to the limit."
   capture:
     summary: "Packet capture (Linux and macOS)"
     option:

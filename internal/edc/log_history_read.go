@@ -8,11 +8,13 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
 	"syscall"
 	"time"
+	"unicode/utf8"
 )
 
 const (
@@ -22,8 +24,20 @@ const (
 	historyMarkerLimit  = 64 * 1024
 )
 
+type logHistoryOutcome string
+
+const (
+	historyOutcomeSuccess logHistoryOutcome = "SUCCESS"
+	historyOutcomeFail    logHistoryOutcome = "FAIL"
+	historyOutcomeTimeout logHistoryOutcome = "TIMEOUT"
+	historyOutcomeSignal  logHistoryOutcome = "SIGNAL"
+	historyOutcomeError   logHistoryOutcome = "ERROR"
+	historyOutcomeUnknown logHistoryOutcome = "UNKNOWN"
+)
+
 type logHistoryAttempt struct {
-	Key, CWD, Path, Display, Outcome     string
+	Key, CWD, Path, Display              string
+	Outcome                              logHistoryOutcome
 	Command                              []string
 	Started, Ended                       time.Time
 	Duration                             time.Duration
@@ -33,7 +47,7 @@ type logHistoryAttempt struct {
 }
 
 func (row logHistoryAttempt) failed() bool {
-	return row.Outcome != "SUCCESS" && row.Outcome != "UNKNOWN"
+	return row.Outcome != historyOutcomeSuccess && row.Outcome != historyOutcomeUnknown
 }
 
 type logHistorySnapshot struct {
@@ -52,6 +66,8 @@ type historyParser struct {
 	invalid     bool
 	ordinal     int
 	nextAttempt int
+	holdTail    bool
+	tail        string
 }
 
 func parseHistoryMarker(line string) (string, map[string]string, error) {
@@ -106,7 +122,7 @@ func (parser *historyParser) finish() {
 	}
 	row := *parser.current
 	if row.Outcome == "" || row.damaged {
-		row.Outcome = "UNKNOWN"
+		row.Outcome = historyOutcomeUnknown
 	}
 	parser.rows = append(parser.rows, row)
 	parser.current = nil
@@ -184,6 +200,11 @@ func (parser *historyParser) line(line string) {
 				parser.damage()
 			}
 		case "full":
+			// writeLogStart omits the key for argv that is not valid UTF-8, and JSON
+			// has already replaced those bytes with U+FFFD, so the exact argv is lost.
+			if stored == "" && fields["command_key_version"] == "" && slices.ContainsFunc(row.Command, func(arg string) bool { return strings.ContainsRune(arg, utf8.RuneError) }) {
+				break
+			}
 			row.Key, err = commandKey(row.Command)
 			if err != nil {
 				parser.damage()
@@ -244,7 +265,7 @@ func (parser *historyParser) line(line string) {
 		if parser.current == nil {
 			if len(parser.rows) > 0 {
 				parser.rows[len(parser.rows)-1].damaged = true
-				parser.rows[len(parser.rows)-1].Outcome = "UNKNOWN"
+				parser.rows[len(parser.rows)-1].Outcome = historyOutcomeUnknown
 			}
 			parser.damage()
 			return
@@ -269,22 +290,22 @@ func (parser *historyParser) line(line string) {
 		}
 		switch fields["status"] {
 		case "exit":
-			row.Outcome = "SUCCESS"
+			row.Outcome = historyOutcomeSuccess
 			if exit != 0 {
-				row.Outcome = "FAIL"
+				row.Outcome = historyOutcomeFail
 			}
 		case "timeout":
-			row.Outcome = "TIMEOUT"
+			row.Outcome = historyOutcomeTimeout
 			if exit != 124 {
 				parser.damage()
 			}
 		case "signal":
-			row.Outcome = "SIGNAL"
+			row.Outcome = historyOutcomeSignal
 			if exit < 129 || fields["signal"] == "" {
 				parser.damage()
 			}
 		case "start_error", "log_error", "wait_error", "signal_error":
-			row.Outcome = "ERROR"
+			row.Outcome = historyOutcomeError
 			if exit != 2 {
 				parser.damage()
 			}
@@ -329,7 +350,12 @@ func readHistoryLines(reader io.Reader, parser *historyParser) error {
 		}
 		if err != bufio.ErrBufferFull {
 			if !discard && len(line) > 0 {
-				parser.line(strings.TrimRight(string(line), "\r\n"))
+				text := strings.TrimRight(string(line), "\r\n")
+				if err == io.EOF && parser.holdTail {
+					parser.tail = text
+				} else {
+					parser.line(text)
+				}
 			}
 			line = nil
 			discard = false
@@ -400,17 +426,26 @@ func historyFamily(path string) ([]historyPart, error) {
 	return parts, nil
 }
 
-func sameHistoryFamily(before, after []historyPart) bool {
+func compareHistoryFamily(before, after []historyPart) (appended, ok bool) {
 	if len(before) != len(after) {
-		return false
+		return false, false
 	}
 	for i, part := range before {
 		other := after[i]
-		if part.path != other.path || !os.SameFile(part.info, other.info) || part.info.Size() != other.info.Size() || !part.info.ModTime().Equal(other.info.ModTime()) {
-			return false
+		if part.path != other.path || !os.SameFile(part.info, other.info) {
+			return false, false
 		}
+		if part.info.Size() == other.info.Size() && part.info.ModTime().Equal(other.info.ModTime()) {
+			continue
+		}
+		// edc only appends to the active file; rotation renames it and changes the
+		// inode, so growth of index 0 leaves every byte read so far intact.
+		if part.index != 0 || other.info.Size() <= part.info.Size() {
+			return false, false
+		}
+		appended = true
 	}
-	return true
+	return appended, true
 }
 
 func readHistoryFamily(path string, parts []historyPart) ([]logHistoryAttempt, bool, error) {
@@ -436,16 +471,22 @@ func readHistoryFamily(path string, parts []historyPart) ([]logHistoryAttempt, b
 		}
 		readers = append(readers, io.LimitReader(file, part.info.Size()))
 	}
-	parser := &historyParser{path: path}
-	err := readHistoryLines(io.MultiReader(readers...), parser)
-	parser.finish()
-	if err != nil {
+	parser := &historyParser{path: path, holdTail: true}
+	if err := readHistoryLines(io.MultiReader(readers...), parser); err != nil {
 		return nil, false, err
 	}
 	after, err := historyFamily(path)
-	if err != nil || !sameHistoryFamily(parts, after) {
+	if err != nil {
 		return nil, false, errors.New("changed file")
 	}
+	appended, ok := compareHistoryFamily(parts, after)
+	if !ok {
+		return nil, false, errors.New("changed file")
+	}
+	if parser.tail != "" && !appended {
+		parser.line(parser.tail)
+	}
+	parser.finish()
 	return parser.rows, parser.invalid, nil
 }
 
@@ -616,7 +657,7 @@ func historyCommand(row logHistoryAttempt) string {
 }
 
 func historyOutcome(row logHistoryAttempt) string {
-	return T("cli.log_history.outcome." + strings.ToLower(row.Outcome))
+	return T("cli.log_history.outcome." + strings.ToLower(string(row.Outcome)))
 }
 
 func historyTime(at time.Time) string {

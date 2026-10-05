@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -412,6 +413,49 @@ func TestReportListEmptyAndDirectoryErrors(t *testing.T) {
 		if code := runReport(args); code != 2 {
 			t.Fatalf("%v code = %d", args, code)
 		}
+	}
+}
+
+func TestReportListSkipsNonRegularFilesWithoutBlocking(t *testing.T) {
+	directory := t.TempDir()
+	data, err := json.Marshal(buildReport("test", time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), nil, []Result{{Probe: "check", Status: StatusPass}}, false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(directory, "real.json"), data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(directory, "real.json"), filepath.Join(directory, "linked.json")); err != nil {
+		t.Fatal(err)
+	}
+	fifo := filepath.Join(directory, "pipe.json")
+	if err := syscall.Mkfifo(fifo, 0600); err != nil {
+		t.Fatal(err)
+	}
+	type listed struct {
+		reports []savedReport
+		err     error
+	}
+	done := make(chan listed, 1)
+	go func() {
+		reports, err := discoverReports(directory)
+		done <- listed{reports, err}
+	}()
+	select {
+	case result := <-done:
+		if result.err != nil || len(result.reports) != 2 {
+			t.Fatalf("reports=%+v err=%v", result.reports, result.err)
+		}
+		for _, report := range result.reports {
+			if report.path == fifo {
+				t.Fatal("FIFO listed as a report")
+			}
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("discoverReports blocked on a FIFO")
+	}
+	if _, err := loadReport(fifo); err == nil || !strings.Contains(err.Error(), T("cli.report.not_regular", reportIdentityValue(fifo))) {
+		t.Fatalf("FIFO load error = %v", err)
 	}
 }
 

@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -147,7 +148,8 @@ func listReports(output io.Writer, directory string) error {
 }
 
 func loadReport(path string) (Report, error) {
-	file, err := os.Open(path)
+	// O_NONBLOCK keeps a FIFO named *.json from blocking discovery before Stat rejects it.
+	file, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return Report{}, fmt.Errorf("%s: %w\n%s", T("cli.report.not_found", reportIdentityValue(path)), err, T("cli.report.show_hint"))
@@ -155,6 +157,13 @@ func loadReport(path string) (Report, error) {
 		return Report{}, err
 	}
 	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return Report{}, fmt.Errorf("%s: %w", path, err)
+	}
+	if !info.Mode().IsRegular() {
+		return Report{}, errors.New(T("cli.report.not_regular", reportIdentityValue(path)))
+	}
 	data, err := io.ReadAll(io.LimitReader(file, reportSizeLimit+1))
 	if err != nil {
 		return Report{}, fmt.Errorf("%s: %w", path, err)

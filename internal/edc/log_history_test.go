@@ -55,7 +55,7 @@ func TestLogHistoryParserOutcomesAndRestart(t *testing.T) {
 	if parser.invalid || len(parser.rows) != 8 {
 		t.Fatalf("invalid=%v rows=%+v", parser.invalid, parser.rows)
 	}
-	expected := []string{"SUCCESS", "FAIL", "TIMEOUT", "SIGNAL", "ERROR", "ERROR", "ERROR", "ERROR"}
+	expected := []logHistoryOutcome{historyOutcomeSuccess, historyOutcomeFail, historyOutcomeTimeout, historyOutcomeSignal, historyOutcomeError, historyOutcomeError, historyOutcomeError, historyOutcomeError}
 	for i, row := range parser.rows {
 		wantAttempt := i + 1
 		if i == 4 {
@@ -137,6 +137,27 @@ func TestLogHistoryDisplayModesAndLegacy(t *testing.T) {
 	}
 }
 
+func TestLogHistoryKeepsInvalidUTF8RunWithoutKey(t *testing.T) {
+	var writer strings.Builder
+	if err := writeLogStart(&writer, time.Now(), logOptions{command: []string{"ls", "a\xffb"}, commandDisplay: "full", stream: "both"}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(writer.String(), "command_key=") {
+		t.Fatalf("key written for invalid UTF-8 argv: %s", writer.String())
+	}
+	parser := parseHistoryFixture(t, writer.String())
+	if parser.invalid || len(parser.rows) != 1 || parser.rows[0].Key != "" || parser.rows[0].Display != "full" {
+		t.Fatalf("invalid UTF-8 run: invalid=%v rows=%+v", parser.invalid, parser.rows)
+	}
+	if got := parser.rows[0].Command; len(got) != 2 || got[1] != "a\uFFFDb" {
+		t.Fatalf("decoded command=%q", got)
+	}
+	forged := strings.Replace(writer.String(), "command_display=full", "command_display=full command_key_version=1", 1)
+	if parser := parseHistoryFixture(t, forged); !parser.invalid {
+		t.Fatal("version without key accepted")
+	}
+}
+
 func TestLogHistoryRotationAndLongOutput(t *testing.T) {
 	started := time.Now().UTC()
 	data := historyFixture([]string{"echo", "a b"}, "/tmp", started, "exit", "2ms", 0, 1)
@@ -167,12 +188,77 @@ func TestLogHistoryRotationAndLongOutput(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, []byte(data), 0600); err != nil {
+	if err := os.Truncate(path, 1); err != nil {
 		t.Fatal(err)
 	}
 	_, _, err = readHistoryFamily(path, parts)
 	if err == nil {
 		t.Fatal("file changed during snapshot accepted")
+	}
+}
+
+func TestLogHistoryReadsActiveLogWhileAppended(t *testing.T) {
+	started := time.Now().UTC()
+	done := historyFixture([]string{"ls"}, "/tmp", started, "exit", "2ms", 0, 1)
+	running := historyFixture([]string{"ls"}, "/tmp", started.Add(time.Hour), "exit", "2ms", 0, 1)
+	cut := strings.Index(running, "=== edc log end") + len("=== edc log end time=")
+	path := filepath.Join(t.TempDir(), "job.log")
+	write := func(text string) {
+		t.Helper()
+		if err := os.WriteFile(path, []byte(text), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	appendText := func(text string) {
+		t.Helper()
+		file, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer file.Close()
+		if _, err := file.WriteString(text); err != nil {
+			t.Fatal(err)
+		}
+	}
+	snapshot := func() []historyPart {
+		t.Helper()
+		parts, err := historyFamily(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return parts
+	}
+
+	write(done + running[:cut])
+	parts := snapshot()
+	appendText(running[cut:])
+	rows, invalid, err := readHistoryFamily(path, parts)
+	if err != nil || invalid || len(rows) != 2 || rows[0].Outcome != historyOutcomeSuccess || rows[1].Outcome != historyOutcomeUnknown {
+		t.Fatalf("appended during read: rows=%+v invalid=%v err=%v", rows, invalid, err)
+	}
+
+	write(done + running[:cut])
+	rows, invalid, err = readHistoryFamily(path, snapshot())
+	if err != nil || !invalid || len(rows) != 2 {
+		t.Fatalf("truncated marker at rest: rows=%+v invalid=%v err=%v", rows, invalid, err)
+	}
+
+	write(done)
+	parts = snapshot()
+	if err := os.Rename(path, path+".edc.1"); err != nil {
+		t.Fatal(err)
+	}
+	write(running)
+	if _, _, err := readHistoryFamily(path, parts); err == nil {
+		t.Fatal("rotation during read accepted")
+	}
+
+	parts = snapshot()
+	if err := os.WriteFile(path+".edc.1", []byte(done+done), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := readHistoryFamily(path, parts); err == nil {
+		t.Fatal("growth of a rotated part accepted")
 	}
 }
 
@@ -245,7 +331,7 @@ func TestLogHistoryFollowsNamedSymlinkDirectory(t *testing.T) {
 }
 
 func TestLogHistoryRunRowColorsEveryFailureRed(t *testing.T) {
-	for _, outcome := range []string{"FAIL", "TIMEOUT", "SIGNAL", "ERROR"} {
+	for _, outcome := range []logHistoryOutcome{historyOutcomeFail, historyOutcomeTimeout, historyOutcomeSignal, historyOutcomeError} {
 		row := historyRunRow(logHistoryAttempt{Outcome: outcome}, 80, false, true)
 		if !strings.Contains(row, "\x1b[31;1m") {
 			t.Fatalf("%s not red: %q", outcome, row)

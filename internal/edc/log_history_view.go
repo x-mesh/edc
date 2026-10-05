@@ -143,7 +143,7 @@ func historyRunRow(row logHistoryAttempt, width int, selected, color bool) strin
 	}
 	code := "33"
 	switch {
-	case row.Outcome == "SUCCESS":
+	case row.Outcome == historyOutcomeSuccess:
 		code = "32"
 	case row.failed():
 		code = "31;1"
@@ -174,7 +174,7 @@ func historyCompactSummary(rows []logHistoryAttempt, color bool) []string {
 		var total big.Int
 		success, failed, unknown := 0, 0, 0
 		for _, row := range contexts[cwd].rows {
-			if row.Outcome == "SUCCESS" {
+			if row.Outcome == historyOutcomeSuccess {
 				success++
 				total.Add(&total, big.NewInt(int64(row.Duration)))
 			} else if row.failed() {

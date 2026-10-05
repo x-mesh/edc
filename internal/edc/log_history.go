@@ -145,7 +145,7 @@ func logHistoryGroups(snapshot logHistorySnapshot, options logHistoryOptions) ([
 		if row.failed() {
 			group.Failed++
 		}
-		if row.Outcome == "UNKNOWN" {
+		if row.Outcome == historyOutcomeUnknown {
 			group.Unknown++
 		}
 	}
@@ -226,7 +226,7 @@ func printHistoryGroup(output io.Writer, group logHistoryGroup, options logHisto
 	type stats struct {
 		count, failed, unknown, success int
 		total                           big.Int
-		outcomes                        map[string]int
+		outcomes                        map[logHistoryOutcome]int
 		low, high                       time.Duration
 	}
 	contexts := map[string]*stats{}
@@ -234,7 +234,7 @@ func printHistoryGroup(output io.Writer, group logHistoryGroup, options logHisto
 	for _, row := range rows {
 		stat := contexts[row.CWD]
 		if stat == nil {
-			stat = &stats{outcomes: map[string]int{}}
+			stat = &stats{outcomes: map[logHistoryOutcome]int{}}
 			contexts[row.CWD] = stat
 			order = append(order, row.CWD)
 		}
@@ -243,10 +243,10 @@ func printHistoryGroup(output io.Writer, group logHistoryGroup, options logHisto
 		if row.failed() {
 			stat.failed++
 		}
-		if row.Outcome == "UNKNOWN" {
+		if row.Outcome == historyOutcomeUnknown {
 			stat.unknown++
 		}
-		if row.Outcome == "SUCCESS" {
+		if row.Outcome == historyOutcomeSuccess {
 			stat.success++
 			stat.total.Add(&stat.total, big.NewInt(int64(row.Duration)))
 			if stat.success == 1 || row.Duration < stat.low {
@@ -261,7 +261,7 @@ func printHistoryGroup(output io.Writer, group logHistoryGroup, options logHisto
 	for _, cwd := range order {
 		stat := contexts[cwd]
 		fmt.Fprintf(output, "cwd %s  ·  %s  ·  %s\n", reportIdentityValue(cwd), T("cli.log_history.counts", stat.count, stat.failed, stat.unknown), T("cli.log_history.success_count", stat.success))
-		fmt.Fprintln(output, T("cli.log_history.outcome_counts", stat.outcomes["SUCCESS"], stat.outcomes["FAIL"], stat.outcomes["TIMEOUT"], stat.outcomes["SIGNAL"], stat.outcomes["ERROR"], stat.outcomes["UNKNOWN"]))
+		fmt.Fprintln(output, T("cli.log_history.outcome_counts", stat.outcomes[historyOutcomeSuccess], stat.outcomes[historyOutcomeFail], stat.outcomes[historyOutcomeTimeout], stat.outcomes[historyOutcomeSignal], stat.outcomes[historyOutcomeError], stat.outcomes[historyOutcomeUnknown]))
 		if stat.success > 0 {
 			fmt.Fprintln(output, T("cli.log_history.timing", time.Duration(new(big.Int).Quo(&stat.total, big.NewInt(int64(stat.success))).Int64()).String(), stat.low.String(), stat.high.String()))
 		}

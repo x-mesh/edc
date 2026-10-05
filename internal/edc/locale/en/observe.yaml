@@ -119,9 +119,20 @@ observe:
     no_nameserver: "%s holds no nameserver"
     nameserver_warning: "without a nameserver line, the resolver uses localhost"
     resolvectl_failed: "resolvectl status failed: %s"
-    quality_darwin_only: "networkQuality runs on macOS only"
     quality_done: "networkQuality measurement complete"
     trace_missing: "edc did not find the traceroute or tracepath command"
+
+  quality:
+    warn:
+      no_metrics: "networkQuality reported no throughput or responsiveness value"
+      partial: "edc stopped early, so the numbers cover only the part it measured"
+      self_unavailable: "the server did not use HTTP/2, so RPM uses separate connections only"
+    confidence:
+      low: "low confidence"
+      medium: "medium confidence"
+      high: "high confidence"
+    error:
+      no_data: "edc measured no throughput or responsiveness before it stopped"
 
   doctor:
     guidance_heading: "Investigation suggestions (order does not establish a cause)"

@@ -4,7 +4,7 @@
 
 `edc` is short for **everyday carry**. An everyday carry is the small kit you keep in a pocket and reach for first. `edc` is that kit for SE and SRE work in a terminal.
 
-An incident starts with one question: is the fault here, in the network, or at the far end? `edc` answers it with one command. It runs DNS, TCP, TLS, HTTP, route, ping, interface, and socket probes in one pass, and every probe prints the same result format. It also reports host resources and host information on Linux and macOS, and it runs macOS `networkQuality`.
+An incident starts with one question: is the fault here, in the network, or at the far end? `edc` answers it with one command. It runs DNS, TCP, TLS, HTTP, route, ping, interface, and socket probes in one pass, and every probe prints the same result format. It also reports host resources and host information on Linux and macOS, and it measures network responsiveness (RPM) and throughput: macOS runs `networkQuality`, and Linux runs a built-in test that follows the IETF responsiveness draft.
 
 Every command is read-only. `edc` finds the fault and stops there. It runs no DNS flush, no interface reset, and no firewall change, so it stays safe on a production host.
 
@@ -143,6 +143,10 @@ parallel = 0
 [defaults.update]
 timeout = "60s"
 
+[defaults.quality]
+timeout = "30s"
+server = ""
+
 [defaults.log]
 stream = "both"
 output = ""
@@ -206,6 +210,7 @@ The command also creates the parent for the legacy recommended `edc.log` path.
 ./bin/edc listen              # open ports, --unix or --all adds unix sockets
 ./bin/edc listen --watch -i 0.5 --duration 10s
 ./bin/edc quality --timeout 60s
+./bin/edc quality --server https://example.com/.well-known/nq   # responsiveness config URL
 
 # repeat a page check; omit --duration to run until Ctrl-C
 ./bin/edc watch -i 0.1 --duration 10s https://example.com
@@ -1472,7 +1477,7 @@ For zsh, you can also save the script as `_edc` in a directory of `fpath`.
 
 On Linux, `edc` reads `/proc`, `/sys`, `ip`, `ss`, `ping`, `traceroute` or `tracepath`, and `/etc/resolv.conf`. If `resolvectl` exists, `edc` adds `resolvectl status` as evidence.
 
-On macOS, `edc` uses a system command adapter. Linux and macOS run `capture`. Only macOS runs `quality`.
+On macOS, `edc` uses a system command adapter. Linux and macOS run `capture`. `quality` runs `networkQuality` on macOS and a built-in responsiveness test on Linux. Both report `download_bps`, `upload_bps`, `responsiveness_rpm`, and `base_rtt_ms` when the run measured them; a missing value is left out. The config URL defaults to Apple's `https://mensura.cdn-apple.com/api/v1/gm/config`; `--server` or `defaults.quality.server` replaces it. An empty `server` keeps the default.
 
 Every diagnostic command keeps to read-only inspection. `edc` runs no automatic repair, such as a DNS flush, an interface reset, or a firewall change. `edc log` writes its output, rotation archives, and lock file.
 

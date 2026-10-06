@@ -271,6 +271,7 @@ cli:
     cancelled: "trace를 취소했습니다"
     tls_attached: "--tls: OpenSSL·GnuTLS 파일 %d개를 봅니다. 나중에 시작한 프로그램도 확인합니다"
     tls_attached_path: "--tls: %s만 봅니다"
+    tls_exec_events: "--tls: process가 시작하는 것을 알 수 없습니다(%s). 새 TLS 파일을 몇 초마다만 찾으므로, 새로 시작한 프로그램의 첫 요청을 놓칠 수 있습니다"
     show_secrets_payload: "--show-secrets에는 --payload가 필요합니다"
     show_secrets_protocol: "--show-secrets는 trace %s에서 사용할 수 없습니다. 이 payload는 가리지 않습니다"
     port_range: "--port는 1부터 65535까지입니다"

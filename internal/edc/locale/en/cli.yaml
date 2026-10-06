@@ -271,6 +271,7 @@ cli:
     cancelled: "edc cancelled the trace"
     tls_attached: "--tls: watching %d OpenSSL or GnuTLS file(s). edc also checks the programs that start later"
     tls_attached_path: "--tls: watching only %s"
+    tls_exec_events: "--tls: edc cannot learn when a process starts (%s). It finds new TLS files only every few seconds, so it can miss the first requests of a new program"
     show_secrets_payload: "--show-secrets needs --payload"
     show_secrets_protocol: "--show-secrets is not available for trace %s. Its payload is never hidden"
     port_range: "--port must be from 1 to 65535"

@@ -88,6 +88,9 @@ func resolveTraceTLSTargets(mode traceTLSMode) (finder *traceTLSFinder, notices 
 	if len(finder.targets) == 0 {
 		return nil, finder.notices, 3, errors.New(T("cli.trace.tls_none"))
 	}
+	if problem := traceTLSExecProblem(); problem != "" {
+		finder.notices = append(finder.notices, T("cli.trace.tls_exec_events", problem))
+	}
 	return finder, finder.notices, 0, nil
 }
 

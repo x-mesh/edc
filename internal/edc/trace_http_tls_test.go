@@ -214,10 +214,11 @@ func TestResolveTraceTLSTargetsFindsEachLibraryOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	previousRoot, previousLibraries, previousRelease := traceProcRoot, traceTLSHostLibraries, traceKernelRelease
+	previousRoot, previousLibraries, previousRelease, previousProblem := traceProcRoot, traceTLSHostLibraries, traceKernelRelease, traceTLSExecProblem
 	traceProcRoot, traceTLSHostLibraries, traceKernelRelease = proc, []string{filepath.Join(root, "host", "libssl.so*")}, release
+	traceTLSExecProblem = func() string { return "" }
 	t.Cleanup(func() {
-		traceProcRoot, traceTLSHostLibraries, traceKernelRelease = previousRoot, previousLibraries, previousRelease
+		traceProcRoot, traceTLSHostLibraries, traceKernelRelease, traceTLSExecProblem = previousRoot, previousLibraries, previousRelease, previousProblem
 	})
 
 	finder, notices, code, err := resolveTraceTLSTargets(traceTLSAuto)
@@ -274,6 +275,27 @@ func TestResolveTraceTLSTargetsChecksAnExplicitPath(t *testing.T) {
 	finder, _, code, err := resolveTraceTLSTargets(traceTLSMode(libssl))
 	if err != nil || code != 0 || len(finder.targets) != 1 || finder.targets[0].path != libssl || finder.rescan {
 		t.Fatalf("--tls=%s = %+v, %d, %v", libssl, finder, code, err)
+	}
+}
+
+// trace 중에 exec 알림을 받지 못하면 새로 시작한 프로그램의 첫 요청을 놓칠 수 있으므로, 화면을 열기 전에 알린다.
+func TestResolveTraceTLSTargetsNoticesMissingExecEvents(t *testing.T) {
+	libssl := traceTLSHostLibssl(t)
+	root := t.TempDir()
+	copyTraceTLSFile(t, libssl, filepath.Join(root, "host", "libssl.so.3"))
+	release := filepath.Join(root, "osrelease")
+	if err := os.WriteFile(release, []byte("6.17.0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	previousRoot, previousLibraries, previousRelease, previousProblem := traceProcRoot, traceTLSHostLibraries, traceKernelRelease, traceTLSExecProblem
+	traceProcRoot, traceTLSHostLibraries, traceKernelRelease = t.TempDir(), []string{filepath.Join(root, "host", "libssl.so*")}, release
+	traceTLSExecProblem = func() string { return "network namespace net:[4026532000]" }
+	t.Cleanup(func() {
+		traceProcRoot, traceTLSHostLibraries, traceKernelRelease, traceTLSExecProblem = previousRoot, previousLibraries, previousRelease, previousProblem
+	})
+	finder, notices, code, err := resolveTraceTLSTargets(traceTLSAuto)
+	if err != nil || code != 0 || len(finder.targets) != 1 || !slices.Equal(notices, []string{T("cli.trace.tls_exec_events", "network namespace net:[4026532000]")}) {
+		t.Fatalf("resolve = %q, %d, %v", notices, code, err)
 	}
 }
 

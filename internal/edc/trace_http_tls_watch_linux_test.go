@@ -115,10 +115,14 @@ func TestWatchTraceTLSRescansWithoutExecEvents(t *testing.T) {
 // proc connector는 CAP_NET_ADMIN이 있어야 구독한다. 구독하면 exec한 process의 PID가 오고, stop을 닫으면 channel이 닫힌다.
 func TestTraceTLSExecEventsReportsAnExec(t *testing.T) {
 	stop := make(chan struct{})
-	execs := traceTLSExecEvents(stop)
-	if execs == nil {
+	execs, err := traceTLSExecEvents(stop)
+	if err != nil {
 		close(stop)
-		t.Skip("proc connector needs CAP_NET_ADMIN")
+		t.Skipf("proc connector: %v", err)
+	}
+	if problem := traceTLSExecProblem(); problem != "" {
+		close(stop)
+		t.Skipf("no exec events here: %s", problem)
 	}
 	command := exec.Command("true")
 	if err := command.Start(); err != nil {

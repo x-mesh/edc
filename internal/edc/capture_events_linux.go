@@ -692,7 +692,9 @@ func collectCaptureEventsFor(scope traceScope, duration time.Duration, onEvent f
 		stopWatch, watched := make(chan struct{}), make(chan struct{})
 		go func() {
 			defer close(watched)
-			watchTraceTLS(finder, traceTLSExecEvents(stopWatch), func(target traceTLSTarget) {
+			// 구독하지 못한 이유는 화면을 열기 전에 traceTLSExecProblem이 알렸다. nil channel이면 전체 탐색만 한다.
+			execs, _ := traceTLSExecEvents(stopWatch)
+			watchTraceTLS(finder, execs, func(target traceTLSTarget) {
 				// 화면이 이미 열렸으므로 붙이지 못한 파일은 알리지 않는다. 일부만 붙었으면 그 link는 닫을 때 쓴다.
 				attached, _ := attachTraceTLS(&objects, target)
 				links = append(links, attached...)

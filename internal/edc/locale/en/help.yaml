@@ -72,6 +72,7 @@ command:
       count: "rows to print, 0 runs until you quit"
       no_header: "drop the host and column header"
       process: "match PIDs or command names, comma-separated"
+      full: "match and show the full command line"
       detail: "CPU wait and I/O latency (eBPF, root), Linux"
       ebpf: "same as --detail"
       write: "append to SQLite; omit path for the default DB"

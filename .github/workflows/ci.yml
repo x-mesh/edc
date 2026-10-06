@@ -25,6 +25,16 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      # macOS runner는 proxy.golang.org 연결이 끊겨 module download만으로 job이 실패한 적이 있다.
+      - name: Download modules
+        run: |
+          for attempt in 1 2 3; do
+            if go mod download; then break; fi
+            if [ "$attempt" -eq 3 ]; then exit 1; fi
+            echo "go mod download failed, retrying in 10s"
+            sleep 10
+          done
+
       - name: Test and vet
         run: make check
 

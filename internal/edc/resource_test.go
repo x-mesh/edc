@@ -103,6 +103,29 @@ func TestParseLinuxProcessStat(t *testing.T) {
 	}
 }
 
+func TestLinuxProcessCommandLine(t *testing.T) {
+	if got := linuxProcessCommandLine([]byte("bun\x00/tmp/bunx/node_modules/.bin/output-mesh\x00")); got != "bun /tmp/bunx/node_modules/.bin/output-mesh" {
+		t.Fatalf("command line = %q", got)
+	}
+	// 커널 thread는 cmdline이 비어 있다. 부른 쪽이 comm을 그대로 쓰도록 빈 문자열이어야 한다.
+	if got := linuxProcessCommandLine([]byte("\x00")); got != "" {
+		t.Fatalf("kernel thread command line = %q", got)
+	}
+}
+
+func TestTopProcessFilterMatchesTheFullCommandLine(t *testing.T) {
+	filter, err := parseTopProcessFilter("output-mesh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !filter.match(topProcess{PID: 46800, Command: "bun /tmp/bunx/node_modules/.bin/output-mesh"}) {
+		t.Fatal("the term must match a command line that holds it")
+	}
+	if filter.match(topProcess{PID: 46800, Command: "bun"}) {
+		t.Fatal("the term must not match the executable name alone")
+	}
+}
+
 func TestTopProcessTrackerUsesRecentTicks(t *testing.T) {
 	boot := time.Unix(1_000_000, 0)
 	tracker := &topProcessTracker{clockTicks: 100, pageSize: 4096, boot: boot}

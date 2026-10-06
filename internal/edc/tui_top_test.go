@@ -291,6 +291,57 @@ func TestTopProcessNameStripsPathsAndControlCharacters(t *testing.T) {
 	}
 }
 
+func TestTopProcessNameKeepsTheCommandTailWhenFull(t *testing.T) {
+	previous := topFullCommand
+	topFullCommand = true
+	t.Cleanup(func() { topFullCommand = previous })
+	command := "bun /var/folders/j3/x/T/bunx-501-output-mesh@latest/node_modules/.bin/output-mesh"
+	if got := topProcessName(command, 28); got != "bun …/.bin/output-mesh" {
+		t.Fatalf("full name = %q", got)
+	}
+	// 인자가 다 들어가면 자르지 않는다.
+	if got := topProcessName("dig +short example.com", 28); got != "dig +short example.com" {
+		t.Fatalf("short command line = %q", got)
+	}
+	// 칸이 좁으면 실행 파일 이름만 남는다.
+	if got := topProcessName(command, topSignalProcessNameWidth); got != "bun" {
+		t.Fatalf("narrow name = %q", got)
+	}
+}
+
+func TestTopFilterSeedKeepsTheExecutableNameOnly(t *testing.T) {
+	// macOS의 comm은 경로째로 온다. 마지막 조각만 남아야 입력 줄이 폭에 밀리지 않는다.
+	if got := topFilterSeed("/System/Library/Frameworks/Security.framework/Versions/A/Resources/CloudKeychainProxy"); got != "CloudKeychainProxy" {
+		t.Fatalf("seed = %q", got)
+	}
+	if got := topFilterSeed(""); got != "" {
+		t.Fatalf("empty command seed = %q", got)
+	}
+	// 경로가 아닌 이름은 표에 보이는 그대로 둔다.
+	if got := topFilterSeed("kworker/0:1"); got != "kworker/0:1" {
+		t.Fatalf("name that is not a path = %q", got)
+	}
+	// login shell은 ps가 앞에 -를 붙여 준다.
+	if got := topFilterSeed("-/Applications/term-mesh.app/Contents/Resources/bin/term-mesh-peer-relay"); got != "term-mesh-peer-relay" {
+		t.Fatalf("login shell seed = %q", got)
+	}
+	previous := topFullCommand
+	topFullCommand = true
+	t.Cleanup(func() { topFullCommand = previous })
+	command := "bun /var/folders/j3/x/T/bunx-501-output-mesh@latest/node_modules/.bin/output-mesh"
+	seed := topFilterSeed(command)
+	if seed != "bun" {
+		t.Fatalf("full command seed = %q", seed)
+	}
+	filter, err := parseTopProcessFilter(seed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !filter.match(topProcess{PID: 46800, Command: command}) {
+		t.Fatal("the seed must match the process it came from")
+	}
+}
+
 func TestTopDashboardRowsFitTargetWidth(t *testing.T) {
 	row := topDashboardRow{at: time.Unix(1, 0), rate: resourceRate{NetIn: 12 * 1024 * 1024, NetOut: 2 * 1024 * 1024, PacketsIn: 42, PacketsOut: 99, Load1: 2.5, CPUUser: 12, CPUSystem: 4, CPUIOWait: 1, DiskRead: 3 * 1024 * 1024, DiskWrite: 4 * 1024 * 1024, MemoryPercent: 55}}
 	for _, view := range []topView{topViewAll, topViewCPU, topViewMemory, topViewDisk, topViewNetwork, topViewPressure} {
@@ -450,16 +501,22 @@ func TestTopAllViewAddsColumnsAsTheTerminalWidens(t *testing.T) {
 		width         int
 		shown, hidden []string
 	}{
-		{topTableWidth, []string{"in", "mem%", "write"}, []string{"hot core", "iops", "pk_in", "drop", "busy"}},
+		{topTableWidth, []string{"in", "mem%", "write"}, []string{"hot core", "iops", "pk_in", "drop", "busy", "psi", "swap", "listen", "soft", "ct%"}},
 		{83, nil, []string{"hot core"}},
 		{84, []string{"hot core"}, []string{"iops"}},
 		{96, []string{"iops", "await"}, []string{"pk_in"}},
 		{110, []string{"pk_in", "pk_out"}, []string{"drop"}},
 		{120, []string{"err", "drop"}, []string{"busy"}},
-		{125, []string{"busy"}, nil},
+		{125, []string{"busy"}, []string{"psi", "swap", "listen", "soft", "ct%"}},
+		{142, nil, []string{"psi"}},
+		{143, []string{"psi"}, []string{"swap"}},
+		{149, []string{"swap"}, []string{"listen"}},
+		{161, []string{"listen", "soft"}, []string{"ct%"}},
+		{167, []string{"ct%"}, nil},
 	}
 	for _, step := range steps {
-		header := topDashboardHeaders(topViewAll, step.width)[1]
+		// psi는 group 이름이라 첫 헤더 줄에만 있다. 칸 제목 cpu·mem·io는 cpu group 이름, mem%, iops와 구별되지 않는다.
+		header := strings.Join(topDashboardHeaders(topViewAll, step.width), "\n")
 		line := formatTopDashboardRow(row, topViewAll, newTopLimits(8, false), step.width)
 		if got := len([]rune(line)); got != step.width {
 			t.Fatalf("width %d row is %d wide: %q", step.width, got, line)
@@ -479,6 +536,51 @@ func TestTopAllViewAddsColumnsAsTheTerminalWidens(t *testing.T) {
 	for _, expected := range []string{"123", "456", "789", "12.3", "80", "1 95%"} {
 		if !strings.Contains(line, expected) {
 			t.Fatalf("widest row %q does not contain %q", line, expected)
+		}
+	}
+}
+
+func TestTopAllViewShowsPressureSwapAndNetworkLimitsWhenWide(t *testing.T) {
+	rate := func(value float64) networkCounterRate {
+		return networkCounterRate{Status: "observed", PerSecond: &value}
+	}
+	health := &networkHealthRate{
+		networkHealth: networkHealth{Supported: true,
+			Gauges:   map[string]networkReading{"conntrack_entries": networkNumber(100)},
+			Settings: map[string]networkReading{"net.netfilter.nf_conntrack_max": networkNumber(1000)}},
+		Rates: map[string]networkCounterRate{"listen_overflows": rate(0.5), "softnet_dropped": rate(12345)},
+	}
+	row := topDashboardRow{at: time.Unix(1, 0), rate: resourceRate{PSIValid: true, PSICPU: 12.5, PSIMemory: 3.2, PSIIO: 30.1, SwapOut: 2 << 20, NetworkHealth: health}}
+	line := formatTopDashboardRow(row, topViewAll, newTopLimits(8, false), 167)
+	for _, expected := range []string{"12.5", "3.2", "30.1", "2.00M", "0.5", "12k", "10.0"} {
+		if !strings.Contains(line, expected) {
+			t.Fatalf("widest row %q does not contain %q", line, expected)
+		}
+	}
+	colored := formatTopDashboardRow(row, topViewAll, newTopLimits(8, true), 167)
+	if !strings.Contains(colored, topPaint(topFitCell("30.1", 5, false), topLevelDanger, true)) || !strings.Contains(colored, topPaint(topFitCell("12.5", 5, false), topLevelWarn, true)) {
+		t.Fatalf("psi must use the pressure thresholds: %q", colored)
+	}
+}
+
+func TestTopNetworkRateCellKeepsSmallRatesVisible(t *testing.T) {
+	value := func(value float64) *networkHealthRate {
+		return &networkHealthRate{Rates: map[string]networkCounterRate{"listen_overflows": {Status: "observed", PerSecond: &value}}}
+	}
+	for _, test := range []struct {
+		health *networkHealthRate
+		width  int
+		want   string
+	}{
+		{nil, 6, "—"},
+		{&networkHealthRate{Rates: map[string]networkCounterRate{"listen_overflows": {Status: "unavailable"}}}, 6, "—"},
+		{value(0.5), 4, "0.5"},
+		{value(123.4), 6, "123.4"},
+		{value(123.4), 4, "123"},
+		{value(12345), 4, "12k"},
+	} {
+		if got := topNetworkRateCell(test.health, "listen_overflows", test.width); got != test.want {
+			t.Fatalf("topNetworkRateCell(width %d) = %q, want %q", test.width, got, test.want)
 		}
 	}
 }
@@ -1003,7 +1105,7 @@ func TestTopHelpScrollsWithoutChangingTheFilter(t *testing.T) {
 
 func TestTopDashboardFitsNarrowTerminalsAndHidesDarwinUnsupportedColumns(t *testing.T) {
 	filter, _ := parseTopProcessFilter("worker")
-	for _, width := range []int{24, 32, 40, 48, 60, 80, 120, 160} {
+	for _, width := range []int{24, 32, 40, 48, 60, 80, 120, 160, 170} {
 		for _, view := range []topView{topViewAll, topViewCPU, topViewMemory, topViewDisk, topViewNetwork, topViewProcess} {
 			model := topFixtureModel(nil).withProcessFilter(filter)
 			model.details.System = "darwin"
@@ -1017,7 +1119,7 @@ func TestTopDashboardFitsNarrowTerminalsAndHidesDarwinUnsupportedColumns(t *test
 				}
 			}
 			for _, header := range model.tableHeader() {
-				for _, unsupported := range []string{"fds", "runq ms", "io ms", "psi mem", "busy%", "i/o"} {
+				for _, unsupported := range []string{"fds", "runq ms", "io ms", "psi", "busy%", "i/o", "listen", "soft", "ct%"} {
 					if strings.Contains(header, unsupported) {
 						t.Fatalf("Darwin header contains %s: %q", unsupported, header)
 					}
@@ -1124,6 +1226,36 @@ func TestTopCandidatePagingKeepsTheSelectedSnapshot(t *testing.T) {
 	model = topAfter(t, model, tea.KeyPressMsg{Code: tea.KeyPgUp})
 	if model.selected != 0 || model.processSelected != 0 {
 		t.Fatalf("candidate page-up moved history: time row %d, process row %d", model.selected, model.processSelected)
+	}
+}
+
+func TestTopCandidatePanelShowsMoreProcessesOnTallTerminals(t *testing.T) {
+	processes := []topProcess{}
+	for pid := 1; pid <= 6; pid++ {
+		processes = append(processes, topProcess{PID: pid, CPU: float64(10 - pid), Command: "proc" + string(rune('0'+pid))})
+	}
+	for height, want := range map[int]int{topTallHeight - 1: 3, topTallHeight: topProcessLimit} {
+		model := topFixtureModel(nil)
+		model.width, model.height = 120, height
+		for second := 0; second < 60; second++ {
+			model.rows = append(model.rows, topDashboardRow{at: time.Unix(int64(second), 0), processesValid: true, processes: processes})
+		}
+		model.selected = len(model.rows) - 1
+		content, got := model.View().Content, 0
+		for _, process := range processes {
+			if strings.Contains(content, process.Command) {
+				got++
+			}
+		}
+		if got != want {
+			t.Fatalf("height %d shows %d processes, want %d: %q", height, got, want, content)
+		}
+		if lines := len(strings.Split(content, "\n")); lines > height {
+			t.Fatalf("height %d renders %d lines", height, lines)
+		}
+		if height == topTallHeight && model.bodyLines() != 28 {
+			t.Fatalf("height %d keeps %d history rows, want 28", height, model.bodyLines())
+		}
 	}
 }
 

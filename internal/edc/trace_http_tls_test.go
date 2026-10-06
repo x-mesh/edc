@@ -86,7 +86,7 @@ func TestTraceTLSMbedTLSDiscoveryAndLifecycle(t *testing.T) {
 	if !slices.Contains(traceTLSHostLibraries, "/usr/local/lib/libmbedtls.so*") {
 		t.Fatal("Mbed TLS host library search missing")
 	}
-	for _, name := range []string{"mbedtls_ssl_read", "mbedtls_ssl_write"} {
+	for _, name := range []string{"mbedtls_ssl_read", "mbedtls_ssl_write", "mbedtls_ssl_read_early_data", "mbedtls_ssl_write_early_data"} {
 		if !slices.Contains(traceTLSFunctions, name) || !traceTLSReadsPlaintext([]string{name}) {
 			t.Fatalf("Mbed TLS reader missing: %s", name)
 		}

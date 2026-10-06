@@ -1236,13 +1236,13 @@ rustls-ffi는 C 함수 `rustls_connection_read`와 `rustls_connection_write`에�
 
 이 event에는 socket 주소가 없습니다. `--port` 필터를 사용하면 제외됩니다. native Rust API는 지원하지 않습니다.
 
-Mbed TLS는 `mbedtls_ssl_read`와 `mbedtls_ssl_write`에서 평문을 읽습니다. `mbedtls_ssl_session_reset`과 `mbedtls_ssl_free`에서 연결 상태를 지웁니다.
+Mbed TLS는 `mbedtls_ssl_read`, `mbedtls_ssl_write`, `mbedtls_ssl_read_early_data`, `mbedtls_ssl_write_early_data`에서 평문을 읽습니다. `mbedtls_ssl_session_reset`과 `mbedtls_ssl_free`에서 연결 상태를 지웁니다.
 
 ```bash
 ./bin/edc trace http --tls=/usr/local/lib/libmbedtls.so
 ```
 
-DTLS와 early data API는 지원하지 않습니다.
+DTLS는 지원하지 않습니다.
 
 wolfSSL은 `wolfSSL_read`와 `wolfSSL_write` 또는 `_ex` 변형에서 평문을 읽고, `wolfSSL_free`에서 연결 상태를 지웁니다.
 

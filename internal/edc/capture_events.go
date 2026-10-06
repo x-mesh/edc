@@ -99,6 +99,8 @@ type captureSummary struct {
 	Event       string `json:"event"`
 	EventCount  uint64 `json:"event_count"`
 	LostEvents  uint64 `json:"lost_events"`
+	// TLSUnmapped는 trace http --tls --port에서 socket을 몰라 port를 확인하지 못하고 버린 평문 레코드 수다.
+	TLSUnmapped uint64 `json:"tls_unmapped,omitempty"`
 	// DropCounts는 trace drop의 이유별 정확한 합계다. DropSampled는 초당 상한 때문에 event로 보내지 않은 수다.
 	DropCounts  map[string]uint64 `json:"drop_counts,omitempty"`
 	DropSampled uint64            `json:"drop_sampled,omitempty"`
@@ -358,6 +360,8 @@ type tcpTraceOptions struct {
 	payload     tracePayloadMode
 	showSecrets bool
 	tls         traceTLSMode
+	// tlsTargets는 trace를 시작하기 전에 tls 값으로 고른 파일이다.
+	tlsTargets []traceTLSTarget
 	// port는 trace http가 볼 HTTP 서버의 port다. client 쪽은 상대 port, 서버 쪽은 로컬 port다. 0이면 모든 port를 본다.
 	port int
 	// socketPath는 trace socket이 볼 unix socket 파일이다.

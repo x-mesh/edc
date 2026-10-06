@@ -348,6 +348,15 @@ func traceTLSPrograms(objects *captureEventsObjects) map[string][2]*ebpf.Program
 		"gnutls_record_recv":     {objects.SslReadEntry, objects.SslReadExit},
 		"gnutls_record_recv_seq": {objects.SslReadEntry, objects.SslReadExit},
 		"gnutls_deinit":          {objects.SslFreeEntry, nil},
+		"SSL_ImportFD":           {objects.NssImportEntry, objects.NssControlExit},
+		"SSL_OptionSet":          {objects.NssOptionEntry, objects.NssControlExit},
+		"SSL_OptionSetDefault":   {objects.NssDefaultEntry, objects.NssControlExit},
+		"PR_Accept":              {objects.NssAcceptEntry, objects.NssControlExit},
+		"PR_Read":                {objects.NssReadEntry, objects.NssIoExit},
+		"PR_Recv":                {objects.NssRecvEntry, objects.NssIoExit},
+		"PR_Write":               {objects.NssWriteEntry, objects.NssIoExit},
+		"PR_Send":                {objects.NssWriteEntry, objects.NssIoExit},
+		"PR_Close":               {objects.NssCloseEntry, nil},
 	}
 }
 
@@ -375,6 +384,12 @@ func attachTraceTLS(objects *captureEventsObjects, target traceTLSTarget) ([]lin
 		var options *link.UprobeOptions
 		if offset, ok := target.offsets[symbol]; ok {
 			options = &link.UprobeOptions{Address: offset}
+		}
+		if index := slices.Index(traceTLSNSSFunctions, symbol); index >= 0 {
+			if options == nil {
+				options = &link.UprobeOptions{}
+			}
+			options.Cookie = uint64(index + 1)
 		}
 		entry, err := executable.Uprobe(symbol, pair[0], options)
 		if err != nil {

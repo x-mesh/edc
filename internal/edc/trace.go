@@ -621,7 +621,11 @@ func runTraceProtocol(args []string) int {
 		if finder.rescan {
 			fmt.Fprintln(os.Stderr, T("cli.trace.tls_attached", len(finder.targets)))
 		} else {
-			fmt.Fprintln(os.Stderr, T("cli.trace.tls_attached_path", traceEscapeText([]byte(options.tls))))
+			paths := make([]string, 0, len(finder.targets))
+			for _, target := range finder.targets {
+				paths = append(paths, traceEscapeText([]byte(target.path)))
+			}
+			fmt.Fprintln(os.Stderr, T("cli.trace.tls_attached_path", strings.Join(paths, ", ")))
 		}
 		if screen && !traceTLSConfirmStart(os.Stdin, os.Stderr, traceIsTerminal(os.Stderr)) {
 			return 4

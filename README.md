@@ -1359,7 +1359,7 @@ HTTPS is encrypted, so edc cannot read the method, the path, or the status. The 
 
 edc does not see a TLS connection that started before the trace. If a client uses Encrypted Client Hello (ECH), the SNI is the public name of the provider. To see the requests of HTTPS, use `--tls`. You can also trace the plain HTTP behind the TLS end point, for example a proxy that sends plain HTTP to its backend.
 
-Use `--tls` to see the HTTP/1.1 and HTTP/2 requests in HTTPS. edc reads plaintext in OpenSSL, GnuTLS, or a supported BoringSSL build before encryption and after decryption. It does not need a certificate or a key.
+Use `--tls` to see the HTTP/1.1 and HTTP/2 requests in HTTPS. edc reads plaintext in OpenSSL, GnuTLS, NSS, or a supported BoringSSL build before encryption and after decryption. It does not need a certificate or a key.
 
 ```bash
 ./bin/edc trace http --tls
@@ -1369,8 +1369,8 @@ Use `--tls` to see the HTTP/1.1 and HTTP/2 requests in HTTPS. edc reads plaintex
 
 Without a value, `--tls` finds these files when the trace starts:
 
-- the `libssl` and `libgnutls` of this host in the standard library directories
-- each `libssl` or `libgnutls` that a process loads, also in a container
+- the `libssl`, `libgnutls`, `libssl3`, and `libnspr4` of this host in the standard library directories
+- each of these libraries that a process loads, also in a container
 - the program file of a process, if the file contains OpenSSL and exports `SSL_read`, for example `node`
 - a stripped BoringSSL program with a supported GNU build ID
 
@@ -1379,6 +1379,18 @@ edc opens the file that each process loaded. So edc also sees a process that sti
 edc continues the search while the trace runs. When a process starts a program, edc checks that process several times in the next 3 seconds. It also checks all the processes again at an interval of 2 seconds or more. On a host with many processes, the interval is longer. If a process uses a new file, edc adds the probes to that file. edc does not see the requests that the process sends before that. The kernel sends the start of a program only to the first network namespace. If edc runs in another network namespace or PID namespace, for example in a container without the host network or `--pid=host`, edc shows a notice and uses only the check of all the processes. If the kernel stops sending the start of programs during the trace, edc tells you after the trace.
 
 To watch only one file, use `--tls=<path>`. Then edc does not search for other files. Write the path without a space, as with `--payload=all`.
+
+NSS needs two libraries: `libssl3` for the TLS state and `libnspr4` for the plaintext I/O. If you specify either library, edc also selects its companion from the same directory or a standard library directory.
+
+```bash
+./bin/edc trace http --tls=/usr/lib/x86_64-linux-gnu/libssl3.so
+```
+
+Start the trace before the NSS program starts. edc needs the SSL setup calls to distinguish TLS from plain files and sockets.
+
+NSS uses `PR_Read`, `PR_Recv`, `PR_Write`, and `PR_Send` for plaintext. edc follows `SSL_SECURITY`, its default value, model copies, accepted connections, and `PR_Close`.
+
+An NSS connection with `SSL_SECURITY` off produces no TLS event. `PR_Recv` with `PR_MSG_PEEK` also produces no TLS event.
 
 Use `--tls=claude` to find an executable in PATH. A file in the current directory takes priority over PATH.
 
@@ -1396,7 +1408,7 @@ With `sudo`, `PATH` often does not include `~/.local/bin`. If edc does not find 
 sudo ./bin/edc trace http --tls="$(command -v claude)"
 ```
 
-An HTTPS request or response from OpenSSL, GnuTLS, or BoringSSL has `"tls": true`, and the event row shows `tls` after the event name. The destination starts with `https://`. A plain HTTP destination starts with `http://`. The path, the status, the latency, the grouped views, `--payload`, and the summary work as with plain HTTP. `--payload` hides the same header values. The body of HTTPS often contains tokens. Before you share the output, check it for tokens.
+An HTTPS request or response from OpenSSL, GnuTLS, NSS, or BoringSSL has `"tls": true`. The event row shows `tls` after the event name. The destination starts with `https://`. A plain HTTP destination starts with `http://`. The path, the status, the latency, the grouped views, `--payload`, and the summary work as with plain HTTP. `--payload` hides the same header values. The body of HTTPS often contains tokens. Before you share the output, check it for tokens.
 
 edc reads HTTP/2 over TLS as it reads h2c. It shows the method, the path, the status, and the latency of each stream. To follow the frames and the header tables, edc reads all the plaintext of an HTTP/2 connection. So a busy HTTP/2 connection costs more than HTTP/1, and it can make edc lose events of other connections. To reduce the cost, use `--port`. If edc loses plaintext of an HTTP/2 connection, it stops reading that direction and counts lost events. edc does not read an HTTP/2 connection that started before the trace. With HTTP/2, `--payload` shows a start line and the body. edc makes the start line from the method and the path, or from the status. It does not show the headers. edc prints an HTTP/2 event when its body ends. `--payload` keeps the first 4 KiB of each body, and `--payload=all` keeps up to 1 MiB. If edc cuts the body at the limit, or the body does not end before the stream or the trace ends, the event has `"payload_truncated": true`. If more than 4096 bodies or 64 MiB of bodies wait, edc prints the oldest event early with this field. edc does the same when it stops reading a direction. Without `--payload`, the full screen shows no HTTP/2 body, and it shows each HTTP/2 event when its headers arrive.
 
@@ -1412,7 +1424,7 @@ With `--tls=<path>`, edc also reads the symbol table, so a static program with s
 
 Each call of these functions runs a probe in each process that uses the files. This cost also applies to the processes that `--process` hides. At the end, the kernel removes each probe, so the trace can stop a few seconds after Ctrl-C. `--tls` needs no newer kernel than `trace http`.
 
-On amd64 with Linux 6.11, 6.12 before 6.12.14, or 6.13 before 6.13.3, a process under a seccomp filter can stop when an OpenSSL or GnuTLS call returns. A Docker container uses such a filter. On these kernels, edc shows a warning before it attaches the probes. Before the full screen opens, edc waits for Enter. To stop, press Ctrl-C. A distribution kernel can include the fix.
+On amd64 with Linux 6.11, 6.12 before 6.12.14, or 6.13 before 6.13.3, a process under a seccomp filter can stop when a TLS call returns. A Docker container uses such a filter. On these kernels, edc shows a warning before it attaches the probes. Before the full screen opens, edc waits for Enter. To stop, press Ctrl-C. A distribution kernel can include the fix.
 
 Without `--tls`, `trace http` does not show the requests in HTTPS, because the kernel sees only encrypted data. It reads HTTP/2 without TLS (h2c), for example gRPC inside a cluster. It shows the method, the path, the status, and the latency of each stream. To follow the frames and the header tables, edc reads all the bytes of an h2c connection, so a busy h2c connection costs more than HTTP/1. These bytes share one buffer with the other HTTP records, so a busy h2c connection can also make edc lose events of other connections. To reduce the cost, use `--port`. If edc loses bytes of an h2c connection, it stops reading that direction and counts lost events. It does not show the requests in HTTP/3, because they use binary frames. HTTP/3 uses UDP, so it also has no `tls_hello` event. edc finds a message only at the start of a read or a write. If one read has the end of a response and the start of the next response, edc misses the next response. If a program writes one message from several buffers, edc reads only the first buffer. So the `Host` header must be in the first buffer and in the first 512 bytes. If it is not, the target is the server address. edc supports this field on Linux 5.15 or later.
 

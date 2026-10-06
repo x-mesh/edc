@@ -105,6 +105,35 @@ type captureEventsSockOwner struct {
 	_        [4]byte
 }
 
+type captureEventsSslKey struct {
+	_    structs.HostLayout
+	Tgid uint64
+	Ssl  uint64
+}
+
+type captureEventsSslPending struct {
+	_         structs.HostLayout
+	Ssl       uint64
+	Buffer    uint64
+	Num       uint64
+	Out       uint64
+	Direction uint8
+	Learned   uint8
+	_         [6]byte
+	Snapshot  captureEventsSslSnapshot
+}
+
+type captureEventsSslSnapshot struct {
+	_           structs.HostLayout
+	Skaddr      uint64
+	Family      uint16
+	Sport       uint16
+	Dport       uint16
+	Source      [16]uint8
+	Destination [16]uint8
+	_           [2]byte
+}
+
 type captureEventsTcpDiagnostics struct {
 	_          structs.HostLayout
 	Valid      uint32
@@ -156,10 +185,13 @@ const (
 	captureEventsMapLostEvents                 = "lost_events"
 	captureEventsMapMysqlSendPending           = "mysql_send_pending"
 	captureEventsMapSockOwners                 = "sock_owners"
+	captureEventsMapSslPending                 = "ssl_pending"
+	captureEventsMapSslSocks                   = "ssl_socks"
 	captureEventsMapTcpDiagnostics             = "tcp_diagnostics"
 	captureEventsMapTcpEstablishedAt           = "tcp_established_at"
 	captureEventsMapTcpLengthPending           = "tcp_length_pending"
 	captureEventsMapTlsPrefixes                = "tls_prefixes"
+	captureEventsMapTlsUnmapped                = "tls_unmapped"
 	captureEventsMapUdpSendPending             = "udp_send_pending"
 	captureEventsProgHttpTcpDestroySock        = "http_tcp_destroy_sock"
 	captureEventsProgInetCskAcceptEntry        = "inet_csk_accept_entry"
@@ -168,6 +200,15 @@ const (
 	captureEventsProgInetSockSetState          = "inet_sock_set_state"
 	captureEventsProgInetStreamConnectEntry    = "inet_stream_connect_entry"
 	captureEventsProgSkbConsumeUdpEntry        = "skb_consume_udp_entry"
+	captureEventsProgSslFreeEntry              = "ssl_free_entry"
+	captureEventsProgSslReadEntry              = "ssl_read_entry"
+	captureEventsProgSslReadExEntry            = "ssl_read_ex_entry"
+	captureEventsProgSslReadExExit             = "ssl_read_ex_exit"
+	captureEventsProgSslReadExit               = "ssl_read_exit"
+	captureEventsProgSslWriteEntry             = "ssl_write_entry"
+	captureEventsProgSslWriteExEntry           = "ssl_write_ex_entry"
+	captureEventsProgSslWriteExExit            = "ssl_write_ex_exit"
+	captureEventsProgSslWriteExit              = "ssl_write_exit"
 	captureEventsProgTcpCleanupRbufEntry       = "tcp_cleanup_rbuf_entry"
 	captureEventsProgTcpCreateOpenreqChildExit = "tcp_create_openreq_child_exit"
 	captureEventsProgTcpDestroySock            = "tcp_destroy_sock"
@@ -190,6 +231,7 @@ const (
 	captureEventsVarEmitDnsServer              = "emit_dns_server"
 	captureEventsVarEmitDnsTcpMessages         = "emit_dns_tcp_messages"
 	captureEventsVarEmitHttpMessages           = "emit_http_messages"
+	captureEventsVarEmitTlsPlaintext           = "emit_tls_plaintext"
 	captureEventsVarEmitUdpEvents              = "emit_udp_events"
 	captureEventsVarHttpMessageLimit           = "http_message_limit"
 	captureEventsVarHttpPayloadLimit           = "http_payload_limit"
@@ -198,6 +240,7 @@ const (
 	captureEventsVarTcpLengthFallback          = "tcp_length_fallback"
 	captureEventsVarTcpStatePort               = "tcp_state_port"
 	captureEventsVarUnusedHttpRecord           = "unused_http_record"
+	captureEventsVarUprobeArch                 = "uprobe_arch"
 )
 
 // loadCaptureEvents returns the embedded CollectionSpec for captureEvents.
@@ -249,6 +292,15 @@ type captureEventsProgramSpecs struct {
 	InetSockSetState          *ebpf.ProgramSpec `ebpf:"inet_sock_set_state"`
 	InetStreamConnectEntry    *ebpf.ProgramSpec `ebpf:"inet_stream_connect_entry"`
 	SkbConsumeUdpEntry        *ebpf.ProgramSpec `ebpf:"skb_consume_udp_entry"`
+	SslFreeEntry              *ebpf.ProgramSpec `ebpf:"ssl_free_entry"`
+	SslReadEntry              *ebpf.ProgramSpec `ebpf:"ssl_read_entry"`
+	SslReadExEntry            *ebpf.ProgramSpec `ebpf:"ssl_read_ex_entry"`
+	SslReadExExit             *ebpf.ProgramSpec `ebpf:"ssl_read_ex_exit"`
+	SslReadExit               *ebpf.ProgramSpec `ebpf:"ssl_read_exit"`
+	SslWriteEntry             *ebpf.ProgramSpec `ebpf:"ssl_write_entry"`
+	SslWriteExEntry           *ebpf.ProgramSpec `ebpf:"ssl_write_ex_entry"`
+	SslWriteExExit            *ebpf.ProgramSpec `ebpf:"ssl_write_ex_exit"`
+	SslWriteExit              *ebpf.ProgramSpec `ebpf:"ssl_write_exit"`
 	TcpCleanupRbufEntry       *ebpf.ProgramSpec `ebpf:"tcp_cleanup_rbuf_entry"`
 	TcpCreateOpenreqChildExit *ebpf.ProgramSpec `ebpf:"tcp_create_openreq_child_exit"`
 	TcpDestroySock            *ebpf.ProgramSpec `ebpf:"tcp_destroy_sock"`
@@ -286,10 +338,13 @@ type captureEventsMapSpecs struct {
 	LostEvents       *ebpf.MapSpec `ebpf:"lost_events"`
 	MysqlSendPending *ebpf.MapSpec `ebpf:"mysql_send_pending"`
 	SockOwners       *ebpf.MapSpec `ebpf:"sock_owners"`
+	SslPending       *ebpf.MapSpec `ebpf:"ssl_pending"`
+	SslSocks         *ebpf.MapSpec `ebpf:"ssl_socks"`
 	TcpDiagnostics   *ebpf.MapSpec `ebpf:"tcp_diagnostics"`
 	TcpEstablishedAt *ebpf.MapSpec `ebpf:"tcp_established_at"`
 	TcpLengthPending *ebpf.MapSpec `ebpf:"tcp_length_pending"`
 	TlsPrefixes      *ebpf.MapSpec `ebpf:"tls_prefixes"`
+	TlsUnmapped      *ebpf.MapSpec `ebpf:"tls_unmapped"`
 	UdpSendPending   *ebpf.MapSpec `ebpf:"udp_send_pending"`
 }
 
@@ -301,6 +356,7 @@ type captureEventsVariableSpecs struct {
 	EmitDnsServer      *ebpf.VariableSpec `ebpf:"emit_dns_server"`
 	EmitDnsTcpMessages *ebpf.VariableSpec `ebpf:"emit_dns_tcp_messages"`
 	EmitHttpMessages   *ebpf.VariableSpec `ebpf:"emit_http_messages"`
+	EmitTlsPlaintext   *ebpf.VariableSpec `ebpf:"emit_tls_plaintext"`
 	EmitUdpEvents      *ebpf.VariableSpec `ebpf:"emit_udp_events"`
 	HttpMessageLimit   *ebpf.VariableSpec `ebpf:"http_message_limit"`
 	HttpPayloadLimit   *ebpf.VariableSpec `ebpf:"http_payload_limit"`
@@ -309,6 +365,7 @@ type captureEventsVariableSpecs struct {
 	TcpLengthFallback  *ebpf.VariableSpec `ebpf:"tcp_length_fallback"`
 	TcpStatePort       *ebpf.VariableSpec `ebpf:"tcp_state_port"`
 	UnusedHttpRecord   *ebpf.VariableSpec `ebpf:"unused_http_record"`
+	UprobeArch         *ebpf.VariableSpec `ebpf:"uprobe_arch"`
 }
 
 // captureEventsObjects contains all objects after they have been loaded into the kernel.
@@ -344,10 +401,13 @@ type captureEventsMaps struct {
 	LostEvents       *ebpf.Map `ebpf:"lost_events"`
 	MysqlSendPending *ebpf.Map `ebpf:"mysql_send_pending"`
 	SockOwners       *ebpf.Map `ebpf:"sock_owners"`
+	SslPending       *ebpf.Map `ebpf:"ssl_pending"`
+	SslSocks         *ebpf.Map `ebpf:"ssl_socks"`
 	TcpDiagnostics   *ebpf.Map `ebpf:"tcp_diagnostics"`
 	TcpEstablishedAt *ebpf.Map `ebpf:"tcp_established_at"`
 	TcpLengthPending *ebpf.Map `ebpf:"tcp_length_pending"`
 	TlsPrefixes      *ebpf.Map `ebpf:"tls_prefixes"`
+	TlsUnmapped      *ebpf.Map `ebpf:"tls_unmapped"`
 	UdpSendPending   *ebpf.Map `ebpf:"udp_send_pending"`
 }
 
@@ -366,10 +426,13 @@ func (m *captureEventsMaps) Close() error {
 		m.LostEvents,
 		m.MysqlSendPending,
 		m.SockOwners,
+		m.SslPending,
+		m.SslSocks,
 		m.TcpDiagnostics,
 		m.TcpEstablishedAt,
 		m.TcpLengthPending,
 		m.TlsPrefixes,
+		m.TlsUnmapped,
 		m.UdpSendPending,
 	)
 }
@@ -382,6 +445,7 @@ type captureEventsVariables struct {
 	EmitDnsServer      *ebpf.Variable `ebpf:"emit_dns_server"`
 	EmitDnsTcpMessages *ebpf.Variable `ebpf:"emit_dns_tcp_messages"`
 	EmitHttpMessages   *ebpf.Variable `ebpf:"emit_http_messages"`
+	EmitTlsPlaintext   *ebpf.Variable `ebpf:"emit_tls_plaintext"`
 	EmitUdpEvents      *ebpf.Variable `ebpf:"emit_udp_events"`
 	HttpMessageLimit   *ebpf.Variable `ebpf:"http_message_limit"`
 	HttpPayloadLimit   *ebpf.Variable `ebpf:"http_payload_limit"`
@@ -390,6 +454,7 @@ type captureEventsVariables struct {
 	TcpLengthFallback  *ebpf.Variable `ebpf:"tcp_length_fallback"`
 	TcpStatePort       *ebpf.Variable `ebpf:"tcp_state_port"`
 	UnusedHttpRecord   *ebpf.Variable `ebpf:"unused_http_record"`
+	UprobeArch         *ebpf.Variable `ebpf:"uprobe_arch"`
 }
 
 // captureEventsPrograms contains all programs after they have been loaded into the kernel.
@@ -403,6 +468,15 @@ type captureEventsPrograms struct {
 	InetSockSetState          *ebpf.Program `ebpf:"inet_sock_set_state"`
 	InetStreamConnectEntry    *ebpf.Program `ebpf:"inet_stream_connect_entry"`
 	SkbConsumeUdpEntry        *ebpf.Program `ebpf:"skb_consume_udp_entry"`
+	SslFreeEntry              *ebpf.Program `ebpf:"ssl_free_entry"`
+	SslReadEntry              *ebpf.Program `ebpf:"ssl_read_entry"`
+	SslReadExEntry            *ebpf.Program `ebpf:"ssl_read_ex_entry"`
+	SslReadExExit             *ebpf.Program `ebpf:"ssl_read_ex_exit"`
+	SslReadExit               *ebpf.Program `ebpf:"ssl_read_exit"`
+	SslWriteEntry             *ebpf.Program `ebpf:"ssl_write_entry"`
+	SslWriteExEntry           *ebpf.Program `ebpf:"ssl_write_ex_entry"`
+	SslWriteExExit            *ebpf.Program `ebpf:"ssl_write_ex_exit"`
+	SslWriteExit              *ebpf.Program `ebpf:"ssl_write_exit"`
 	TcpCleanupRbufEntry       *ebpf.Program `ebpf:"tcp_cleanup_rbuf_entry"`
 	TcpCreateOpenreqChildExit *ebpf.Program `ebpf:"tcp_create_openreq_child_exit"`
 	TcpDestroySock            *ebpf.Program `ebpf:"tcp_destroy_sock"`
@@ -432,6 +506,15 @@ func (p *captureEventsPrograms) Close() error {
 		p.InetSockSetState,
 		p.InetStreamConnectEntry,
 		p.SkbConsumeUdpEntry,
+		p.SslFreeEntry,
+		p.SslReadEntry,
+		p.SslReadExEntry,
+		p.SslReadExExit,
+		p.SslReadExit,
+		p.SslWriteEntry,
+		p.SslWriteExEntry,
+		p.SslWriteExExit,
+		p.SslWriteExit,
 		p.TcpCleanupRbufEntry,
 		p.TcpCreateOpenreqChildExit,
 		p.TcpDestroySock,

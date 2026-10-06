@@ -221,6 +221,9 @@ func TestTraceHTTPPayloadHidesSecretsAndEscapesControls(t *testing.T) {
 		{"space before the colon", "GET / HTTP/1.1\r\nHost: x\r\nAuthorization : Basic YWxh\r\n\r\n", "GET / HTTP/1.1\r\nHost: x\r\nAuthorization : ***\r\n\r\n"},
 		{"response", "HTTP/1.1 200 OK\r\nSet-Cookie: id=1\r\n\r\nok\t\xff\x7f\xc2\x9b\n", "HTTP/1.1 200 OK\r\nSet-Cookie: ***\r\n\r\nok\t\\xff\\x7f\\xc2\\x9b\n"},
 		{"cookie text in the body", "HTTP/1.1 200 OK\r\n\r\nCookie: visible", "HTTP/1.1 200 OK\r\n\r\nCookie: visible"},
+		// --tls로 푼 HTTPS에는 API key를 따로 보내는 header가 많다.
+		{"api key headers", "POST / HTTP/1.1\r\nX-Api-Key: sk-1\r\napi-key: 2\r\nX-Goog-Api-Key: 3\r\nX-Amz-Security-Token: 4\r\n\r\n",
+			"POST / HTTP/1.1\r\nX-Api-Key: ***\r\napi-key: ***\r\nX-Goog-Api-Key: ***\r\nX-Amz-Security-Token: ***\r\n\r\n"},
 	} {
 		if got := traceHTTPPayload([]byte(test.payload), false); got != test.want {
 			t.Fatalf("%s: payload = %q, want %q", test.name, got, test.want)
@@ -867,5 +870,160 @@ func TestHTTPTraceSummaryCountsTLSConnectionsApart(t *testing.T) {
 	data, _ = json.Marshal(plain.summarize(captureSummary{}, time.Second))
 	if strings.Contains(string(data), "tls") {
 		t.Fatalf("report without TLS = %s", data)
+	}
+}
+
+// tlsTestPacket은 --tls가 OpenSSL에서 읽은 평문 레코드다.
+func tlsTestPacket(payload string, at uint64, sent bool) httpPacket {
+	packet := httpTestPacket(payload, at, sent)
+	packet.decrypted = true
+	return packet
+}
+
+// --tls 평문은 평문 HTTP처럼 짝지어지고 tls로 표시된다. 같은 socket의 ClientHello도 그대로 보인다.
+func TestHTTPTrackerPairsTLSPlaintext(t *testing.T) {
+	tracker := newHTTPTracker("", false, false)
+	hello, ok := tracker.event(httpTestPacket(string(tlsHandBuiltClientHello("api.example", "http/1.1")), 1_000_000, true), 0)
+	if !ok || hello.Event != traceTLSHelloEvent || hello.TLS {
+		t.Fatalf("ClientHello = %#v, %t", hello, ok)
+	}
+	request, ok := tracker.event(tlsTestPacket("GET /v1/users?token=x HTTP/1.1\r\nHost: api.example\r\n\r\n", 2_000_000, true), 0)
+	if !ok || request.Event != traceHTTPRequestEvent || !request.TLS || request.Target != "api.example" || request.Path != "/v1/users" {
+		t.Fatalf("request = %#v, %t", request, ok)
+	}
+	response, ok := tracker.event(tlsTestPacket("HTTP/1.1 200 OK\r\n\r\n", 5_000_000, false), 0)
+	if !ok || response.Status != 200 || !response.TLS || response.Path != "/v1/users" || response.LatencyMS == nil || *response.LatencyMS != 3 {
+		t.Fatalf("response = %#v, %t", response, ok)
+	}
+	if _, label := traceHTTPScrollLabels(response); label != "http_2xx tls 200 3.0ms" {
+		t.Fatalf("label = %q", label)
+	}
+	// 평문이 TLS record처럼 시작해도 ClientHello로 읽지 않는다. 평문은 이미 복호화된 byte다.
+	if event, ok := tracker.event(tlsTestPacket(string(tlsHandBuiltClientHello("x.example", "h2")), 6_000_000, true), 0); ok {
+		t.Fatalf("plaintext ClientHello bytes = %#v", event)
+	}
+}
+
+func TestHTTPTrackerMarksHTTP2OverTLSOnce(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	preface := "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n\x00\x00\x12\x04\x00"
+	server := tlsTestPacket(preface, 2_000_000, false)
+	server.socket = 2
+	tracker := newHTTPTracker("", false, false)
+	var events []captureEvent
+	for _, packet := range []httpPacket{tlsTestPacket(preface, 1_000_000, true), server} {
+		event, ok := tracker.event(packet, 0)
+		if !ok || event.Event != traceHTTP2UnparsedEvent || !event.TLS {
+			t.Fatalf("preface = %#v, %t", event, ok)
+		}
+		events = append(events, event)
+	}
+	if events[0].Side != traceClientSide || events[1].Side != traceServerSide {
+		t.Fatalf("sides = %s, %s", events[0].Side, events[1].Side)
+	}
+	if _, ok := newHTTPTracker(traceClientSide, false, false).event(server, 0); ok {
+		t.Fatal("--side client must hide the server preface")
+	}
+	// 암호문은 preface일 수 없다. 같은 byte가 와도 HTTP/2로 읽지 않는다.
+	if _, ok := tracker.event(httpTestPacket(preface, 3_000_000, true), 0); ok {
+		t.Fatal("a ciphertext packet must not be read as an HTTP/2 preface")
+	}
+	// --payload=all의 조립기는 HTTP/2 frame을 따라가지 않으므로 message를 열지 않는다.
+	messages := newHTTPMessages(newHTTPTracker("", false, false), httpMessageMax, false)
+	if got := messages.add(tlsTestPacket(preface, 1_000_000, true), 0, time.Now()); len(got) != 1 || len(messages.open) != 0 {
+		t.Fatalf("messages = %#v, open %d", got, len(messages.open))
+	}
+	summarizer := newHTTPTraceSummarizer()
+	for _, event := range events {
+		summarizer.observe(event)
+	}
+	report := summarizer.summarize(captureSummary{}, time.Second).(httpTraceReport)
+	if report.Requests != 0 || report.Responses != 0 || len(report.Paths) != 0 || report.HTTP2Unparsed != 2 {
+		t.Fatalf("report = %#v", report)
+	}
+	if data, _ := json.Marshal(report); !strings.Contains(string(data), `"http2_unparsed":2`) {
+		t.Fatalf("report JSON = %s", data)
+	}
+	if output := traceCaptureOutput(t, &os.Stdout, func() { report.print(false) }); !strings.Contains(output, "\nHTTP/2 connections (not parsed): 2\n") {
+		t.Fatalf("summary = %q", output)
+	}
+}
+
+// node처럼 SSL 호출 안에서 socket을 쓰지 않는 program의 평문은 주소 없이 보이고, BPF가 준 id로 짝지어진다.
+func TestHTTPTraceShowsTLSPlaintextWithoutAnAddress(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	unmapped := func(payload string, at uint64, sent bool) httpPacket {
+		packet := tlsTestPacket(payload, at, sent)
+		packet.socket, packet.source, packet.destination, packet.process = 7<<32|0x1234, "", "", "node"
+		return packet
+	}
+	tracker := newHTTPTracker("", false, false)
+	request, ok := tracker.event(unmapped("GET /orders HTTP/1.1\r\nHost: shop.example\r\n\r\n", 1_000_000, true), 0)
+	if !ok || request.Target != "shop.example" || request.Source != "" || request.Destination != "" || !request.TLS {
+		t.Fatalf("request = %#v, %t", request, ok)
+	}
+	response, ok := tracker.event(unmapped("HTTP/1.1 201 Created\r\n\r\n", 4_000_000, false), 0)
+	if !ok || response.LatencyMS == nil || *response.LatencyMS != 3 || response.Path != "/orders" {
+		t.Fatalf("response = %#v, %t", response, ok)
+	}
+	summarizer := newHTTPTraceSummarizer()
+	summarizer.observe(request)
+	summarizer.observe(response)
+	// BPF가 --port 때문에 버린 3건과 주소 없이 보인 2건을 합친다.
+	report := summarizer.summarize(captureSummary{TLSUnmapped: 3}, time.Second).(httpTraceReport)
+	if report.TLSUnmapped != 5 || report.Requests != 1 {
+		t.Fatalf("report = %#v", report)
+	}
+	if output := traceCaptureOutput(t, &os.Stdout, func() { report.print(false) }); !strings.Contains(output, "\nTLS plaintext without an address: 5\n") {
+		t.Fatalf("summary = %q", output)
+	}
+	// SSL_free의 끝 레코드가 응답을 놓친 요청을 지운다. 지우지 않으면 같은 id를 다시 쓴 SSL 객체의 응답과 짝지어진다.
+	if _, ok := tracker.event(unmapped("GET /lost HTTP/1.1\r\nHost: shop.example\r\n\r\n", 5_000_000, true), 0); !ok {
+		t.Fatal("second request made no event")
+	}
+	tracker.forget(7<<32 | 0x1234)
+	if response, ok := tracker.event(unmapped("HTTP/1.1 200 OK\r\n\r\n", 9_000_000, false), 0); !ok || response.LatencyMS != nil {
+		t.Fatalf("response after forget = %#v, %t", response, ok)
+	}
+}
+
+// 평문과 같은 socket의 암호문은 조각을 따로 잇는다. 섞이면 암호문이 평문 요청의 뒷부분으로 붙는다.
+func TestHTTPSplitStartsKeepTLSPlaintextApart(t *testing.T) {
+	starts := httpSplitStarts{}
+	if _, ok := starts.join(tlsTestPacket("GET /long", 1, true)); ok {
+		t.Fatal("an open first line must wait for the next fragment")
+	}
+	cipher := httpTestPacket("\x17\x03\x03\x00\x20", 2, true)
+	cipher.continued, cipher.offset = true, 9
+	if joined, ok := starts.join(cipher); !ok || !joined.continued || string(joined.payload) != string(cipher.payload) {
+		t.Fatalf("ciphertext joined the plaintext: %#v, %t", joined, ok)
+	}
+	rest := tlsTestPacket(" HTTP/1.1\r\nHost: a.example\r\n\r\n", 3, true)
+	rest.continued, rest.offset = true, 9
+	joined, ok := starts.join(rest)
+	if !ok || joined.continued || !joined.decrypted || !strings.HasPrefix(string(joined.payload), "GET /long HTTP/1.1\r\n") {
+		t.Fatalf("plaintext join = %#v, %t", joined, ok)
+	}
+	starts.join(tlsTestPacket("GET /next", 4, true))
+	starts.forget(1)
+	if len(starts) != 0 {
+		t.Fatalf("forget left %d fragments", len(starts))
+	}
+}
+
+func TestTraceTLSOptionNeedsHTTP(t *testing.T) {
+	for _, args := range [][]string{{"tcp", "--tls"}, {"mysql", "--tls"}, {"dns", "--tls=/usr/lib/libssl.so.3"}, {"http", "--tls="}} {
+		if code := runTrace(args); code != 2 {
+			t.Fatalf("trace %q exit = %d, want 2", args, code)
+		}
+	}
+	var mode traceTLSMode
+	for value, want := range map[string]traceTLSMode{"true": traceTLSAuto, "/opt/app/libssl.so.3": "/opt/app/libssl.so.3", "false": ""} {
+		if err := mode.Set(value); err != nil || mode != want {
+			t.Fatalf("Set(%q) = %q, %v", value, mode, err)
+		}
+	}
+	if scope := (tcpTraceOptions{tls: traceTLSAuto, tlsTargets: []traceTLSTarget{{path: "/lib/libssl.so.3"}}}).scope("http"); scope.tls != traceTLSAuto || len(scope.tlsTargets) != 1 {
+		t.Fatalf("scope = %+v", scope)
 	}
 }

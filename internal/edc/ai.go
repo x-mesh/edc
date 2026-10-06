@@ -94,9 +94,10 @@ type aiCollector struct {
 	lastResets  map[string]aiResetEvent
 	// shown은 도구마다 마지막으로 보인 값이다. Claude를 건너뛴 조회도 이 값을 다시 보인다.
 	shown map[string]aiProvider
-	// claudeNext 전에는 Claude를 부르지 않는다. claudeInterval은 429를 받을 때마다 늘어난다.
-	claudeNext     time.Time
-	claudeInterval time.Duration
+	// claudeNext 전에는 Claude를 부르지 않는다. claudeBackoff는 429를 받을 때마다 두 배로 늘린 간격이고 성공해도 줄지 않는다.
+	// --poll 하한과 따로 둔다. 둘을 한 값에 담으면 다른 --poll로 다시 실행할 때 앞선 하한이 백오프처럼 남는다.
+	claudeNext    time.Time
+	claudeBackoff time.Duration
 }
 
 func newAICollector(claudeDir, codexDir, stateDir string, now time.Time) *aiCollector {
@@ -120,12 +121,16 @@ func newAICollector(claudeDir, codexDir, stateDir string, now time.Time) *aiColl
 				collector.claudeNext = claude.FetchedAt.Add(aiClaudeMinInterval)
 			}
 		}
-		// 직전 실행이 정한 다음 조회 시각이 아직 오지 않았으면 그 시각과 늘린 간격을 이어 쓴다. 이미 지났으면 백오프도 끝났다.
+		// 백오프는 직전 실행이 정한 다음 조회 시각에서 한 간격이 더 지날 때까지 이어진다. 그 안에 다시 실행하면
+		// --count 1을 되풀이할 때처럼 같은 간격에서 다시 늘리고, 더 오래 쉬었으면 처음 간격으로 돌아간다.
 		// 백오프 상한보다 먼 시각은 믿지 않는다.
-		if state.NextTry.After(now) && state.NextTry.After(collector.claudeNext) && state.NextTry.Before(now.Add(aiMaxBackoff)) {
-			collector.claudeNext, collector.claudeInterval = state.NextTry, min(state.Interval, aiMaxBackoff)
+		if backoff := min(state.Backoff, aiMaxBackoff); backoff > 0 && state.NextTry.Before(now.Add(aiMaxBackoff)) && now.Before(state.NextTry.Add(backoff)) {
+			collector.claudeBackoff = backoff
+			if state.NextTry.After(collector.claudeNext) {
+				collector.claudeNext = state.NextTry
+			}
 			// 성공한 값 없이 429로 미룬 상태다. 상자가 빈 채로 기다리지 않게 미룬 이유와 다음 조회 시각을 보인다.
-			if state.FetchedAt.IsZero() {
+			if state.FetchedAt.IsZero() && state.NextTry.After(now) {
 				collector.shown["claude"] = aiProvider{Name: "claude", Windows: []aiWindow{}, Err: "rate limited · next try " + state.NextTry.Local().Format("15:04:05")}
 			}
 		}
@@ -161,7 +166,7 @@ func (collector *aiCollector) poll(ctx context.Context, poll time.Duration) aiPo
 		if claude.rateLimited {
 			claude.Err += " · next try " + collector.claudeNext.Local().Format("15:04:05")
 			// 다시 실행해도 미룬 시각 전에는 부르지 않도록 남긴다. 마지막으로 성공한 값은 그대로 둔다.
-			stateErr = saveAIClaudeState(collector.claudeState, aiClaudeState{aiProvider: collector.last["claude"], NextTry: collector.claudeNext, Interval: collector.claudeInterval})
+			stateErr = saveAIClaudeState(collector.claudeState, aiClaudeState{aiProvider: collector.last["claude"], NextTry: collector.claudeRetry(now), Backoff: collector.claudeBackoff})
 		}
 		fetched = append(fetched, claude)
 	}
@@ -177,8 +182,8 @@ func (collector *aiCollector) poll(ctx context.Context, poll time.Duration) aiPo
 			}
 			collector.last[provider.Name], collector.shown[provider.Name] = provider, provider
 			if provider.Name == "claude" {
-				// 429 뒤에 늘어난 간격은 성공해도 줄지 않는다. 다시 실행해도 같은 간격을 쓰도록 다음 조회 시각과 함께 남긴다.
-				stateErr = saveAIClaudeState(collector.claudeState, aiClaudeState{aiProvider: provider, NextTry: collector.claudeNext, Interval: collector.claudeInterval})
+				// 429 뒤에 늘어난 백오프는 성공해도 줄지 않는다. 다시 실행해도 이어지도록 다음 조회 시각과 함께 남긴다.
+				stateErr = saveAIClaudeState(collector.claudeState, aiClaudeState{aiProvider: provider, NextTry: collector.claudeRetry(now), Backoff: collector.claudeBackoff})
 			}
 			continue
 		}
@@ -212,22 +217,31 @@ func (collector *aiCollector) poll(ctx context.Context, poll time.Duration) aiPo
 // scheduleClaude는 다음 Claude 조회 시각을 정한다. 사용량 API의 요청 한도는 공개되지 않았고 같은 계정의
 // Claude Code도 이 API를 부른다. 429를 받으면 간격을 두 배로 늘리고, 성공해도 한도에 닿았던 간격으로 돌아가지 않는다.
 func (collector *aiCollector) scheduleClaude(rateLimited bool, now time.Time, poll time.Duration) {
-	collector.claudeInterval = collector.claudeEvery(poll)
 	if rateLimited {
-		collector.claudeInterval = min(2*collector.claudeInterval, aiMaxBackoff)
+		collector.claudeBackoff = min(2*collector.claudeEvery(poll), aiMaxBackoff)
 	}
-	collector.claudeNext = now.Add(collector.claudeInterval)
+	collector.claudeNext = now.Add(collector.claudeEvery(poll))
 }
 
 // claudeEvery는 지금 적용되는 Claude 조회 간격이다. 저장한 값으로 시작해 아직 부르지 않았어도 상태 줄이 같은 간격을 보인다.
 func (collector *aiCollector) claudeEvery(poll time.Duration) time.Duration {
-	every := collector.claudeInterval
+	every := collector.claudeBackoff
 	for _, floor := range []time.Duration{aiClaudeMinInterval, poll} {
 		if every < floor {
 			every = floor
 		}
 	}
 	return every
+}
+
+// claudeRetry는 상태 파일에 남길 다음 조회 시각이다. --poll 하한은 이 실행의 설정이라 다음 실행으로 넘기지 않는다.
+// 하한이 섞이면 --poll이 백오프 상한보다 길 때 저장한 시각이 복원 범위를 벗어나 백오프가 사라진다.
+func (collector *aiCollector) claudeRetry(now time.Time) time.Time {
+	every := collector.claudeBackoff
+	if every < aiClaudeMinInterval {
+		every = aiClaudeMinInterval
+	}
+	return now.Add(every)
 }
 
 func (collector *aiCollector) scan() aiUsageSnapshot { return collector.scanner.scan(time.Now()) }

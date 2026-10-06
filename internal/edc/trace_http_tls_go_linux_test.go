@@ -20,7 +20,7 @@ import (
 	"time"
 )
 
-func traceTLSGoFixture(t *testing.T, mode string) string {
+func traceTLSGoFixture(t *testing.T, goCommand, mode string) string {
 	t.Helper()
 	fixture := filepath.Join(t.TempDir(), "edc-go-tls")
 	args := []string{"build", "-o", fixture}
@@ -30,15 +30,23 @@ func traceTLSGoFixture(t *testing.T, mode string) string {
 		args = append(args, "-buildmode=pie")
 	}
 	args = append(args, "testdata/go_tls_client.go")
-	if output, err := exec.Command("go", args...).CombinedOutput(); err != nil {
+	if output, err := exec.Command(goCommand, args...).CombinedOutput(); err != nil {
 		t.Fatalf("Go TLS fixture: %v\n%s", err, output)
 	}
 	return fixture
 }
 
-func traceTLSGoToolVersion(t *testing.T) string {
+func traceTLSGoCommand(t *testing.T) string {
 	t.Helper()
-	output, err := exec.Command("go", "env", "GOVERSION").Output()
+	if command := os.Getenv("EDC_TEST_GO"); command != "" {
+		return command
+	}
+	return "go"
+}
+
+func traceTLSGoVersion(t *testing.T, goCommand string) string {
+	t.Helper()
+	output, err := exec.Command(goCommand, "env", "GOVERSION").Output()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -46,15 +54,16 @@ func traceTLSGoToolVersion(t *testing.T) string {
 }
 
 func TestTraceTLSGoFixtureMetadata(t *testing.T) {
+	goCommand := traceTLSGoCommand(t)
 	for _, mode := range []string{"normal", "stripped", "pie"} {
 		t.Run(mode, func(t *testing.T) {
-			fixture := traceTLSGoFixture(t, mode)
+			fixture := traceTLSGoFixture(t, goCommand, mode)
 			info, err := buildinfo.ReadFile(fixture)
 			if err != nil {
 				t.Fatal(err)
 			}
 			target, err := traceTLSReadFile(fixture, true)
-			if info.GoVersion != traceTLSGoVersion || runtime.GOARCH != "amd64" {
+			if !traceTLSGoVersions[info.GoVersion] || (runtime.GOARCH != "amd64" && runtime.GOARCH != "arm64") {
 				if err == nil || !strings.Contains(err.Error(), "unsupported Go TLS ABI") {
 					t.Fatalf("unsupported ABI accepted: %s %v", info.GoVersion, err)
 				}
@@ -101,11 +110,12 @@ func TestTraceTLSGoFixtureMetadata(t *testing.T) {
 }
 
 func TestTraceTLSGoArm64FixtureMetadata(t *testing.T) {
-	if traceTLSGoToolVersion(t) != traceTLSGoVersion {
-		t.Skip("arm64 fixture needs Go 1.27.1")
+	goCommand := traceTLSGoCommand(t)
+	if !traceTLSGoVersions[traceTLSGoVersion(t, goCommand)] {
+		t.Skip("arm64 fixture needs a supported Go version")
 	}
 	fixture := filepath.Join(t.TempDir(), "edc-go-tls-arm64")
-	command := exec.Command("go", "build", "-o", fixture, "testdata/go_tls_client.go")
+	command := exec.Command(goCommand, "build", "-o", fixture, "testdata/go_tls_client.go")
 	command.Env = append(os.Environ(), "GOOS=linux", "GOARCH=arm64")
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("Go TLS arm64 fixture: %v\n%s", err, output)
@@ -133,9 +143,9 @@ func TestTraceTLSGoArm64FixtureMetadata(t *testing.T) {
 }
 
 func TestTraceTLSGoCaptures(t *testing.T) {
-	version, err := exec.Command("go", "env", "GOVERSION").Output()
-	if err != nil || strings.TrimSpace(string(version)) != traceTLSGoVersion || (runtime.GOARCH != "amd64" && runtime.GOARCH != "arm64") {
-		t.Skip("live Go TLS fixture needs Go 1.27.1 amd64 or arm64")
+	goCommand := traceTLSGoCommand(t)
+	if !traceTLSGoVersions[traceTLSGoVersion(t, goCommand)] || (runtime.GOARCH != "amd64" && runtime.GOARCH != "arm64") {
+		t.Skip("live Go TLS fixture needs a supported Linux amd64 or arm64 Go version")
 	}
 	capabilities, err := effectiveCapabilities()
 	if err != nil || missingCapabilities(bpfTraceCapabilities, capabilities) != "" {
@@ -148,7 +158,7 @@ func TestTraceTLSGoCaptures(t *testing.T) {
 		{"normal", "", 0}, {"stripped", "", 0}, {"pie", "", 0}, {"normal", "stack", 0}, {"normal", "stack", 443}, {"normal", "errors", 0},
 	} {
 		t.Run(tc.mode+"-"+tc.argument+"-"+fmt.Sprint(tc.port), func(t *testing.T) {
-			fixture := traceTLSGoFixture(t, tc.mode)
+			fixture := traceTLSGoFixture(t, goCommand, tc.mode)
 			finder, _, _, err := resolveTraceTLSTargets(traceTLSMode(fixture))
 			if err != nil {
 				t.Fatal(err)
@@ -221,6 +231,94 @@ func TestTraceTLSGoCaptures(t *testing.T) {
 			for path, count := range requests {
 				if count != 2 || responses[path] != 2 {
 					t.Errorf("Go TLS client/server copies: %s requests=%d responses=%d", path, count, responses[path])
+				}
+			}
+		})
+	}
+}
+
+func TestTraceTLSGoHTTP2CapturesStreamsAndBodies(t *testing.T) {
+	goCommand := traceTLSGoCommand(t)
+	if !traceTLSGoVersions[traceTLSGoVersion(t, goCommand)] || (runtime.GOARCH != "amd64" && runtime.GOARCH != "arm64") {
+		t.Skip("live Go HTTP/2 fixture needs a supported Linux amd64 or arm64 Go version")
+	}
+	capabilities, err := effectiveCapabilities()
+	if err != nil || missingCapabilities(bpfTraceCapabilities, capabilities) != "" {
+		t.Skip("Go HTTP/2 capture needs BPF and perf capabilities")
+	}
+	for _, mode := range []string{"normal", "stripped", "pie"} {
+		t.Run(mode, func(t *testing.T) {
+			fixture := filepath.Join(t.TempDir(), "edc-go-h2")
+			args := []string{"build", "-o", fixture}
+			if mode == "stripped" {
+				args = append(args, "-ldflags=-s -w")
+			}
+			if mode == "pie" {
+				args = append(args, "-buildmode=pie")
+			}
+			args = append(args, "testdata/go_tls_http2_client.go")
+			if output, err := exec.Command(goCommand, args...).CombinedOutput(); err != nil {
+				t.Fatalf("HTTP/2 fixture: %v\n%s", err, output)
+			}
+			finder, _, _, err := resolveTraceTLSTargets(traceTLSMode(fixture))
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+			defer cancel()
+			command := exec.CommandContext(ctx, fixture)
+			var stderr bytes.Buffer
+			command.Stderr = &stderr
+			stdout, err := command.StdoutPipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := command.Start(); err != nil {
+				t.Fatal(err)
+			}
+			reader := bufio.NewReader(stdout)
+			if line, err := reader.ReadString('\n'); err != nil || !strings.HasPrefix(line, "ready ") {
+				t.Fatalf("HTTP/2 ready: %q %v", line, err)
+			}
+			requests, responses := map[string]int{}, map[string]int{}
+			sockets := map[uint64]bool{}
+			summary, err := collectTraceEventsLive(traceScope{protocol: "http", tls: traceTLSMode(fixture), tlsFinder: finder, payload: true, payloadAll: true, http2Payload: true}, 8*time.Second, func(event captureEvent) error {
+				if event.PID != uint32(command.Process.Pid) || !event.TLS {
+					return nil
+				}
+				if event.Method != "POST" {
+					t.Errorf("HTTP/2 method: %#v", event)
+				}
+				sockets[event.SocketID] = true
+				prefix, repeated := "h2-request:", "q"
+				if event.Event == "http_request" {
+					requests[event.Path]++
+				} else if event.Status == 200 {
+					responses[event.Path]++
+					prefix, repeated = "h2-response:", "r"
+				} else {
+					t.Errorf("unexpected HTTP/2 event: %#v", event)
+					return nil
+				}
+				want := prefix + event.Path + ":" + strings.Repeat(repeated, 65536)
+				if event.Path == "" || !strings.HasSuffix(string(event.Payload), want) || event.PayloadTruncated {
+					t.Errorf("HTTP/2 payload path=%q length=%d truncated=%t", event.Path, len(event.Payload), event.PayloadTruncated)
+				}
+				return nil
+			}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			output, readErr := io.ReadAll(reader)
+			if err := command.Wait(); err != nil || readErr != nil || !strings.Contains(string(output), "done") {
+				t.Fatalf("HTTP/2 client: %v %v %s %s", err, readErr, output, stderr.String())
+			}
+			if len(requests) != 16 || len(responses) != 16 || len(sockets) != 2 || summary.LostEvents != 0 {
+				t.Fatalf("HTTP/2 requests=%v responses=%v sockets=%v lost=%d", requests, responses, sockets, summary.LostEvents)
+			}
+			for path, count := range requests {
+				if count != 2 || responses[path] != 2 {
+					t.Errorf("HTTP/2 copies: %s requests=%d responses=%d", path, count, responses[path])
 				}
 			}
 		})

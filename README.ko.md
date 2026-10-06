@@ -1163,7 +1163,7 @@ proxy를 거치는 요청은 구간마다 한 번씩 보입니다. 예를 들어
 | port 9900의 proxy가 받은 요청만 | `./bin/edc trace http --side server --port 9900` |
 | 쪽마다 process별 응답 시간 | `./bin/edc trace http --port 9000 --group-by process` |
 | path별 요청, 오류, 응답 시간 | `./bin/edc trace http --group-by path` |
-| HTTPS 안의 HTTP/1.1 요청 | `./bin/edc trace http --tls` |
+| HTTPS 안의 HTTP/1.1과 HTTP/2 요청 | `./bin/edc trace http --tls` |
 
 한 구간의 client 응답 시간과 서버 응답 시간은 서로 다른 시간을 잽니다. client 응답 시간에는 network와, 서버가 요청을 읽기 전까지 기다린 시간이 들어갑니다. 서버 응답 시간에는 서버가 처리한 시간만 들어갑니다. client 응답 시간이 서버 응답 시간보다 훨씬 길면 network와 서버의 대기열을 확인합니다.
 
@@ -1181,7 +1181,7 @@ HTTPS는 암호문이라 method, path, 상태 코드를 읽을 수 없습니다.
 
 trace를 시작하기 전에 맺은 TLS 연결은 보이지 않습니다. client가 Encrypted Client Hello(ECH)를 쓰면 SNI는 서비스 제공자의 공개 이름입니다. HTTPS의 요청을 보려면 `--tls`를 씁니다. TLS를 푸는 곳 뒤의 평문 HTTP를 trace해도 됩니다. 예를 들어 backend로 평문 HTTP를 보내는 proxy가 있으면 그 구간을 봅니다.
 
-`--tls`를 사용하면 HTTPS 안의 HTTP/1.1 요청을 볼 수 있습니다. edc는 OpenSSL에서 암호화하기 전과 복호화한 뒤의 평문을 읽으므로, 인증서나 key가 필요 없습니다.
+`--tls`를 사용하면 HTTPS 안의 HTTP/1.1과 HTTP/2 요청을 볼 수 있습니다. edc는 OpenSSL에서 암호화하기 전과 복호화한 뒤의 평문을 읽으므로, 인증서나 key가 필요 없습니다.
 
 ```bash
 ./bin/edc trace http --tls
@@ -1199,9 +1199,9 @@ edc는 process가 실제로 적재한 파일을 열므로, 패키지를 업데�
 
 trace를 시작한 뒤에 뜬 program도 이 파일을 쓰면 보입니다. 표준 library 디렉터리 밖의 `libssl`이나 program의 실행 파일은 trace를 시작할 때 어떤 process도 적재하지 않았다면 보이지 않으므로, 그런 파일은 `--tls=<경로>`로 지정합니다. 이때는 그 파일만 보고 다른 파일은 찾지 않습니다. 경로는 `--payload=all`처럼 띄우지 않고 붙여 씁니다.
 
-OpenSSL에서 읽은 요청과 응답 event에는 `"tls": true`가 붙고, event 행에는 event 이름 뒤에 `tls`가 표시됩니다. path, 상태 코드, 응답 시간, group 보기, `--payload`, 요약은 평문 HTTP와 같게 동작하고, `--payload`는 같은 header 값을 가립니다. HTTPS의 body에는 token이 들어 있는 경우가 많으므로, 출력을 공유하기 전에 확인합니다.
+OpenSSL에서 읽은 요청과 응답 event에는 `"tls": true`가 붙고, event 행에는 event 이름 뒤에 `tls`가 표시됩니다. 목적지는 `https://`로 시작하고, 평문 HTTP의 목적지는 `http://`로 시작합니다. path, 상태 코드, 응답 시간, group 보기, `--payload`, 요약은 평문 HTTP와 같게 동작하고, `--payload`는 같은 header 값을 가립니다. HTTPS의 body에는 token이 들어 있는 경우가 많으므로, 출력을 공유하기 전에 확인합니다.
 
-edc는 TLS 위의 HTTP/2를 해석하지 않습니다. TLS 위의 HTTP/2 연결은 쪽마다 `http2_unparsed` event 하나로 보입니다. 대부분의 browser와 기본 설정의 `curl`은 서버가 지원하면 HTTP/2를 쓰므로, `curl`의 요청을 보려면 `curl --http1.1`을 씁니다. 요약은 이 event 수를 표시하고, JSON에는 `http2_unparsed`가 붙습니다.
+TLS 위의 HTTP/2는 h2c처럼 해석해서 stream마다 method, path, 상태 코드, 응답 시간을 표시합니다. frame과 header 표를 따라가야 하므로 HTTP/2 연결의 평문은 모두 읽고, 그래서 바쁜 HTTP/2 연결은 HTTP/1보다 비용이 크고 다른 연결의 event를 잃게 할 수 있습니다. 비용을 줄이려면 `--port`를 씁니다. HTTP/2 연결의 평문을 잃으면 그 방향은 더 읽지 않고 잃은 event로 셉니다. trace를 시작하기 전에 맺은 HTTP/2 연결은 해석하지 않습니다. HTTP/2에서는 `--payload`가 header와 body를 표시하지 않습니다.
 
 `node`나 Python `asyncio`처럼 OpenSSL 함수 안에서 socket을 쓰지 않는 program은 어느 연결인지 알 수 없습니다. 이런 event에는 process는 있지만 `source`와 `destination`이 없고, `target`은 `Host` header입니다. 요약은 이 event 수를 `TLS plaintext without an address`로 표시하고, JSON에는 `tls_unmapped`가 붙습니다. `--port`를 쓰면 이런 평문은 port를 확인할 수 없어 표시하지 않고 같은 수에 더합니다.
 

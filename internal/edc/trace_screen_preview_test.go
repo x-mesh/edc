@@ -23,7 +23,7 @@ func TestTraceScreenSplitShowsTheSelectedMessage(t *testing.T) {
 
 	rows := traceScreenRows(model)
 	list, _, _ := traceSplitHeights(model.height)
-	if len(rows) != model.height-3 || !strings.HasPrefix(rows[list], "── 12:00:00.100  curl  api.example/b  http_2xx") || !strings.Contains(strings.Join(rows[list:], "\n"), "HTTP/1.1 200 OK") {
+	if len(rows) != model.height-3 || !strings.HasPrefix(rows[list], "── 12:00:00.100  curl  http://api.example/b  http_2xx") || !strings.Contains(strings.Join(rows[list:], "\n"), "HTTP/1.1 200 OK") {
 		t.Fatalf("with nothing selected the preview must show the newest event: %q", rows)
 	}
 	for _, row := range rows {
@@ -129,7 +129,7 @@ func TestTraceScreenShowsEventTimes(t *testing.T) {
 	if got := traceEventClock(captureEvent{}); got != "-" {
 		t.Fatalf("clock without a time = %q", got)
 	}
-	if title := newTraceDetail(event, "", nil, 0, 80).title; !strings.HasPrefix(title, "09:05:07.123  curl  GET api.example/a") {
+	if title := newTraceDetail(event, "", nil, 0, 80).title; !strings.HasPrefix(title, "09:05:07.123  curl  GET http://api.example/a") {
 		t.Fatalf("detail title = %q", title)
 	}
 
@@ -144,7 +144,7 @@ func TestTraceScreenShowsEventTimes(t *testing.T) {
 			t.Fatalf("width %d: header %q, row %q", width, header, rows[0])
 		}
 		for _, column := range []string{"DESTINATION", "EVENT", "SOURCE"} {
-			value := map[string]string{"DESTINATION": "GET api.example/a", "EVENT": traceHTTPRequestEvent, "SOURCE": "127.0.0.1:40000"}[column]
+			value := map[string]string{"DESTINATION": "GET http://api.example/a", "EVENT": traceHTTPRequestEvent, "SOURCE": "127.0.0.1:40000"}[column]
 			if strings.Index(header, column) != strings.Index(rows[0], value) {
 				t.Fatalf("width %d: %s starts at %d in the header and %d in the row\n%q\n%q", width, column, strings.Index(header, column), strings.Index(rows[0], value), header, rows[0])
 			}

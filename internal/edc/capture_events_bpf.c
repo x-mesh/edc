@@ -2328,12 +2328,6 @@ int http_tcp_destroy_sock(__u64 *ctx) {
 		key.direction = HTTP_RECEIVED;
 		bpf_map_delete_elem(&http_streams, &key);
 		bpf_map_delete_elem(&tls_prefixes, &key);
-		if (emit_tls_plaintext) {
-			key.direction = HTTP_SENT | HTTP_DECRYPTED;
-			bpf_map_delete_elem(&http_streams, &key);
-			key.direction = HTTP_RECEIVED | HTTP_DECRYPTED;
-			bpf_map_delete_elem(&http_streams, &key);
-		}
 	}
 	if (!((emit_http_messages && http_socket(sk)) || (mysql_port && mysql_socket(sk)) || (emit_dns_tcp_messages && dns_tcp_socket(sk)))) {
 		return 0;
@@ -2347,7 +2341,8 @@ int http_tcp_destroy_sock(__u64 *ctx) {
 	return 0;
 }
 
-// ssl_synthetic_socket은 socket을 모르는 SSL 객체의 짝짓기 id다. kernel 주소는 상위 bit가 모두 1이라 겹치지 않는다.
+// ssl_synthetic_socket은 평문 레코드의 짝짓기 id다. 상위 32 bit가 tgid라 2^54보다 작아서, 상위 bit가 모두 1인 kernel의
+// socket 주소와 겹치지 않는다. 한 process에서 SSL 객체 둘의 하위 32 bit가 같으려면 주소가 4GiB 간격이어야 한다.
 static __always_inline __u64 ssl_synthetic_socket(__u64 pid_tgid, __u64 ssl) {
 	return ((pid_tgid >> 32) << 32) | (ssl & 0xffffffff);
 }
@@ -2422,10 +2417,12 @@ static __always_inline int ssl_leave(void *ctx, int ex) {
 			}
 			return 0;
 		}
-		snapshot.skaddr = ssl_synthetic_socket(key, pending.ssl);
 	} else if (http_port && snapshot.sport != http_port && snapshot.dport != http_port) {
 		return 0;
 	}
+	// 짝짓기 id는 socket을 배웠어도 SSL 객체로 둔다. OpenSSL은 handshake 때 미리 읽어 둔 요청을 socket 없이 돌려주고, 응답을
+	// 쓸 때 socket을 배운다. socket 주소로 바꾸면 그 요청과 응답이 다른 연결로 나뉜다. 주소는 배운 값을 그대로 싣는다.
+	snapshot.skaddr = ssl_synthetic_socket(key, pending.ssl);
 	ssl_capture(&snapshot, pending.buffer, size, pending.direction);
 	return 0;
 }
@@ -2470,8 +2467,8 @@ int ssl_read_ex_exit(void *ctx) {
 	return ssl_leave(ctx, 1);
 }
 
-// SSL_free는 SSL 객체의 끝이다. 배운 socket을 지우고 짝짓기 id로 끝 레코드를 내서, 사용자 공간이 응답을 놓친 요청과
-// 조각 상태를 지우게 한다. socket을 배운 연결은 tcp_destroy_sock이 따로 지우고, 모르는 id의 끝 레코드는 지울 것이 없다.
+// SSL_free는 SSL 객체의 끝이다. 평문 레코드는 모두 SSL 객체의 짝짓기 id를 쓰므로, 여기서 배운 socket과 평문 stream 상태를
+// 지우고 끝 레코드를 내서 사용자 공간이 응답을 놓친 요청과 조각 상태를 지우게 한다.
 SEC("uprobe/SSL_free")
 int ssl_free_entry(void *ctx) {
 	if (!emit_tls_plaintext) {

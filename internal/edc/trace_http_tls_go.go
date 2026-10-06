@@ -16,11 +16,15 @@ const (
 	traceTLSGoRead       = "crypto/tls.(*Conn).Read"
 	traceTLSGoWrite      = "crypto/tls.(*Conn).Write"
 	traceTLSGoClose      = "crypto/tls.(*Conn).Close"
-	traceTLSGoVersion    = "go1.27.1"
 	traceTLSGoMaxCode    = 1 << 20
 	traceTLSGoMaxTable   = 64 << 20
 	traceTLSGoMaxReturns = 128
 )
+
+var traceTLSGoVersions = map[string]bool{
+	"go1.26.8": true,
+	"go1.27.1": true,
+}
 
 func traceTLSGo(file *elf.File, target *traceTLSTarget) (err error) {
 	section := file.Section(".gopclntab")
@@ -34,7 +38,7 @@ func traceTLSGo(file *elf.File, target *traceTLSTarget) (err error) {
 	if err != nil {
 		return fmt.Errorf("Go build info: %w", err)
 	}
-	if info.GoVersion != traceTLSGoVersion || file.Machine != elf.EM_X86_64 || file.Data != elf.ELFDATA2LSB || (file.Type != elf.ET_EXEC && file.Type != elf.ET_DYN) {
+	if !traceTLSGoVersions[info.GoVersion] || file.Machine != elf.EM_X86_64 || file.Data != elf.ELFDATA2LSB || (file.Type != elf.ET_EXEC && file.Type != elf.ET_DYN) {
 		return fmt.Errorf("unsupported Go TLS ABI: %s %s %s", info.GoVersion, file.Machine, file.Type)
 	}
 	text := file.Section(".text")

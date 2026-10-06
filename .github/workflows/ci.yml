@@ -70,8 +70,26 @@ jobs:
       - name: Trace an HTTPS request
         run: ./scripts/ci-tls-smoke.sh
 
-      - name: Trace Go TLS plaintext
-        run: go test ./internal/edc -run '^TestTraceTLSGoCaptures$' -count=1 -v
+      # capture 시험은 BPF 권한이 없으면 건너뛰므로 root로 돌린다. 건너뛰어도 step은 통과하므로, log에 SKIP이 있으면 실패시킨다.
+      - name: Trace Go 1.27.1 TLS plaintext
+        shell: bash
+        run: |
+          go test -c -o edc.test ./internal/edc
+          cd internal/edc
+          sudo env "PATH=$PATH" EDC_TEST_GO="$(command -v go)" ../../edc.test -test.run '^TestTraceTLSGo(Captures|HTTP2CapturesStreamsAndBodies)$' -test.count=1 -test.v 2>&1 | tee go-tls.log
+          ! grep -- '--- SKIP' go-tls.log
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26.8'
+          cache: false
+
+      - name: Trace Go 1.26.8 TLS plaintext
+        shell: bash
+        working-directory: internal/edc
+        run: |
+          sudo env "PATH=$PATH" EDC_TEST_GO="$(command -v go)" ../../edc.test -test.run '^TestTraceTLSGo(Captures|HTTP2CapturesStreamsAndBodies)$' -test.count=1 -test.v 2>&1 | tee go-tls.log
+          ! grep -- '--- SKIP' go-tls.log
 
   cross:
     name: cross build

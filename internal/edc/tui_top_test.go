@@ -317,6 +317,14 @@ func TestTopFilterSeedKeepsTheExecutableNameOnly(t *testing.T) {
 	if got := topFilterSeed(""); got != "" {
 		t.Fatalf("empty command seed = %q", got)
 	}
+	// 경로가 아닌 이름은 표에 보이는 그대로 둔다.
+	if got := topFilterSeed("kworker/0:1"); got != "kworker/0:1" {
+		t.Fatalf("name that is not a path = %q", got)
+	}
+	// login shell은 ps가 앞에 -를 붙여 준다.
+	if got := topFilterSeed("-/Applications/term-mesh.app/Contents/Resources/bin/term-mesh-peer-relay"); got != "term-mesh-peer-relay" {
+		t.Fatalf("login shell seed = %q", got)
+	}
 	previous := topFullCommand
 	topFullCommand = true
 	t.Cleanup(func() { topFullCommand = previous })

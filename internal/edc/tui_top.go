@@ -1400,11 +1400,11 @@ func topProcessSignal(processes []topProcess, valid bool) (string, bool) {
 	return fmt.Sprintf("%s %.0f%%", topProcessName(processes[0].Command, topSignalProcessNameWidth), processes[0].CPU), true
 }
 
-// topProcessName은 화면에 쓸 process 이름이다. macOS ps는 전체 경로를 주므로 마지막 요소만 남기고,
-// 이름에 섞인 제어 문자가 terminal escape로 해석되지 않게 바꾼다.
 // topFullCommandMinWidth는 전체 명령줄을 담을 최소 칸이다. 이보다 좁으면 실행 파일 이름만 보여 준다.
 const topFullCommandMinWidth = 12
 
+// topProcessName은 화면에 쓸 process 이름이다. macOS ps는 전체 경로를 주므로 마지막 요소만 남기고,
+// 이름에 섞인 제어 문자가 terminal escape로 해석되지 않게 바꾼다.
 func topProcessName(command string, width int) string {
 	name := strings.TrimSpace(command)
 	rest := ""
@@ -1440,8 +1440,11 @@ func topFilterSeed(command string) string {
 			name = name[:index]
 		}
 	}
-	if index := strings.LastIndexByte(name, '/'); index >= 0 {
-		name = name[index+1:]
+	// login shell은 ps가 -/bin/zsh처럼 앞에 -를 붙여 준다. 경로는 표시와 같은 규칙으로 마지막 조각만 남기고,
+	// kworker/0:1처럼 경로가 아닌 이름은 그대로 둔다.
+	name = strings.TrimPrefix(name, "-")
+	if strings.HasPrefix(name, "/") {
+		name = name[strings.LastIndex(name, "/")+1:]
 	}
 	return topPrintableText(name)
 }

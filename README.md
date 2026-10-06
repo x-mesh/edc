@@ -1310,6 +1310,7 @@ Use `--group-by path` to group the events by the request path. In the full-scree
 | Only the requests that the proxy on port 9900 received | `./bin/edc trace http --side server --port 9900` |
 | The latency of each process on each side | `./bin/edc trace http --port 9000 --group-by process` |
 | The requests, errors, and latency of each path | `./bin/edc trace http --group-by path` |
+| The HTTP/1.1 requests in HTTPS | `./bin/edc trace http --tls` |
 
 The client latency and the server latency of one hop measure different times. The client latency includes the network and the wait before the server reads the request. The server latency includes only the work of the server. If the client latency is much larger than the server latency, examine the network and the server queue.
 
@@ -1325,9 +1326,35 @@ The summary after Ctrl-C shows one row for each side, method, host, and path. If
 
 HTTPS is encrypted, so edc cannot read the method, the path, or the status. The TLS ClientHello at the start of each connection is plain text. edc reads it and shows a `tls_hello` event. The `target` is the server name (SNI). The `alpn` field lists the protocols that the client offers, for example `h2` and `http/1.1`, and the event row shows the first one. A client that sends a ClientHello makes a `client:` row. A local server that receives one makes a `server:` row. The summary counts these connections in a separate `TLS connections` table, and JSON adds `tls_connections` and `tls`. Use `--port 443` to see only the HTTPS connections on port 443.
 
-edc does not see a TLS connection that started before the trace. If a client uses Encrypted Client Hello (ECH), the SNI is the public name of the provider. To see the requests of HTTPS, trace the plain HTTP behind the TLS end point, for example a proxy that sends plain HTTP to its backend.
+edc does not see a TLS connection that started before the trace. If a client uses Encrypted Client Hello (ECH), the SNI is the public name of the provider. To see the requests of HTTPS, use `--tls`. You can also trace the plain HTTP behind the TLS end point, for example a proxy that sends plain HTTP to its backend.
 
-`trace http` does not show the requests in HTTPS, HTTP/2, or HTTP/3, because the kernel sees only encrypted data or binary frames. HTTP/3 uses UDP, so it also has no `tls_hello` event. edc finds a message only at the start of a read or a write. If one read has the end of a response and the start of the next response, edc misses the next response. If a program writes one message from several buffers, edc reads only the first buffer. So the `Host` header must be in the first buffer and in the first 512 bytes. If it is not, the target is the server address. edc supports this field on Linux 5.15 or later.
+Use `--tls` to see the HTTP/1.1 requests in HTTPS. edc reads the plaintext in OpenSSL before the encryption and after the decryption. It does not need a certificate or a key.
+
+```bash
+./bin/edc trace http --tls
+./bin/edc trace http --tls --side server --port 443
+./bin/edc trace http --tls=/usr/local/bin/node
+```
+
+Without a value, `--tls` finds these files when the trace starts:
+
+- the `libssl` of this host in the standard library directories
+- each `libssl` that a process loads, also in a container
+- the program file of a process, if the file contains OpenSSL and exports `SSL_read`, for example `node`
+
+edc also sees a program that starts after the trace, if the program uses one of these files. If no process loads a file when the trace starts, edc does not see that file. For that file, use `--tls=<path>`. Write the path without a space, as with `--payload=all`.
+
+An HTTPS request or response from OpenSSL has `"tls": true`, and the event row shows `tls` after the event name. The path, the status, the latency, the grouped views, `--payload`, and the summary work as with plain HTTP. `--payload` hides the same header values. The body of HTTPS often contains tokens. Before you share the output, check it for tokens.
+
+edc does not read HTTP/2. An HTTP/2 connection over TLS gives one `http2_unparsed` event on each side. Most browsers and the default `curl` use HTTP/2 when the server supports it. To see the requests of `curl`, use `curl --http1.1`. The summary counts these events, and JSON adds `http2_unparsed`.
+
+Some programs do not use the socket inside the OpenSSL call, for example `node` and Python `asyncio`. Then edc does not know the connection. The event has the process, but it has no `source` and no `destination`. The `target` is the `Host` header. The summary shows the number of these events as `TLS plaintext without an address`, and JSON adds `tls_unmapped`. With `--port`, edc cannot check the port of this plaintext. So edc does not show it and adds it to the same number.
+
+`--tls` sees only the programs that call the exported OpenSSL functions `SSL_read` and `SSL_write`, or `SSL_read_ex` and `SSL_write_ex`. It does not see Go, Java, GnuTLS, or a program without these exported functions. It also does not see a program that reads through the SSL BIO of OpenSSL, for example `openssl s_server -www`.
+
+Each call of these functions runs a probe in each process that uses the files. This cost also applies to the processes that `--process` hides. At the end, the kernel removes each probe, so the trace can stop a few seconds after Ctrl-C. `--tls` needs no newer kernel than `trace http`.
+
+Without `--tls`, `trace http` does not show the requests in HTTPS, because the kernel sees only encrypted data. It does not show the requests in HTTP/2 or HTTP/3, because they use binary frames. HTTP/3 uses UDP, so it also has no `tls_hello` event. edc finds a message only at the start of a read or a write. If one read has the end of a response and the start of the next response, edc misses the next response. If a program writes one message from several buffers, edc reads only the first buffer. So the `Host` header must be in the first buffer and in the first 512 bytes. If it is not, the target is the server address. edc supports this field on Linux 5.15 or later.
 
 Use `trace mysql` on Linux 5.15 or later to print plain MySQL commands and results as they arrive. edc reads the start of each TCP read and write on the MySQL port in the kernel. The default port is 3306. Use `--port` for another port.
 

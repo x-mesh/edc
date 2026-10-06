@@ -747,6 +747,12 @@ func collectCaptureEventsFor(scope traceScope, duration time.Duration, onEvent f
 			if !captureRecordAfterAttached(packet.bootTimeNS, attached) {
 				continue
 			}
+			if events, claimed := requests.http2Events(packet, clockOffset); claimed {
+				if err := emit(events); err != nil {
+					return captureSummary{}, err
+				}
+				continue
+			}
 			if packet, ok = splits.join(packet); !ok {
 				continue
 			}

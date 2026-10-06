@@ -2,6 +2,7 @@ package edc
 
 import (
 	"bytes"
+	"encoding/binary"
 	"fmt"
 	"maps"
 	"os"
@@ -11,6 +12,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"golang.org/x/net/http2/hpack"
 )
 
 const (
@@ -68,13 +71,168 @@ type httpTracker struct {
 	payload     bool
 	showSecrets bool
 	// keepGzip이면 gzip message의 원본 byte를 event에 붙인다. 전체 화면만 켠다.
-	keepGzip bool
-	pending  map[uint64][]httpPendingRequest
-	size     int
+	keepGzip  bool
+	pending   map[uint64][]httpPendingRequest
+	size      int
+	http2     map[httpStreamKey]*http2Direction
+	h2Pending map[http2RequestKey]httpPendingRequest
+}
+
+type http2RequestKey struct {
+	socket uint64
+	stream uint32
+}
+
+type http2Direction struct {
+	buffer       []byte
+	preface      bool
+	decoder      *hpack.Decoder
+	fields       []hpack.HeaderField
+	headerStream uint32
+	headerBlock  []byte
+	packet       httpPacket
 }
 
 func newHTTPTracker(side string, payload, showSecrets bool) *httpTracker {
-	return &httpTracker{side: side, payload: payload, showSecrets: showSecrets, pending: map[uint64][]httpPendingRequest{}}
+	return &httpTracker{side: side, payload: payload, showSecrets: showSecrets, pending: map[uint64][]httpPendingRequest{}, http2: map[httpStreamKey]*http2Direction{}, h2Pending: map[http2RequestKey]httpPendingRequest{}}
+}
+
+var http2Preface = []byte("PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n")
+
+func (tracker *httpTracker) newHTTP2Direction() *http2Direction {
+	direction := &http2Direction{}
+	direction.decoder = hpack.NewDecoder(4096, func(field hpack.HeaderField) { direction.fields = append(direction.fields, field) })
+	return direction
+}
+
+func (tracker *httpTracker) http2Events(packet httpPacket, clockOffset int64) ([]captureEvent, bool) {
+	key := httpStreamKey{socket: packet.socket, sent: packet.sent}
+	direction := tracker.http2[key]
+	if direction == nil {
+		if !bytes.HasPrefix(http2Preface, packet.payload) && !bytes.HasPrefix(packet.payload, http2Preface) {
+			return nil, false
+		}
+		direction = tracker.newHTTP2Direction()
+		tracker.http2[key] = direction
+		peer := httpStreamKey{socket: packet.socket, sent: !packet.sent}
+		if tracker.http2[peer] == nil {
+			tracker.http2[peer] = tracker.newHTTP2Direction()
+			tracker.http2[peer].preface = true
+		}
+	}
+	direction.buffer = append(direction.buffer, packet.payload...)
+	if !direction.preface {
+		if len(direction.buffer) < len(http2Preface) {
+			return nil, true
+		}
+		if !bytes.HasPrefix(direction.buffer, http2Preface) {
+			delete(tracker.http2, key)
+			return nil, true
+		}
+		direction.buffer = direction.buffer[len(http2Preface):]
+		direction.preface = true
+	}
+	var events []captureEvent
+	for len(direction.buffer) >= 9 {
+		length := int(direction.buffer[0])<<16 | int(direction.buffer[1])<<8 | int(direction.buffer[2])
+		if length > httpMessageMax {
+			direction.buffer = nil
+			break
+		}
+		if len(direction.buffer) < 9+length {
+			break
+		}
+		typeID, flags := direction.buffer[3], direction.buffer[4]
+		stream := binary.BigEndian.Uint32(direction.buffer[5:9]) & 0x7fffffff
+		payload := direction.buffer[9 : 9+length]
+		direction.buffer = direction.buffer[9+length:]
+		if typeID == 3 {
+			delete(tracker.h2Pending, http2RequestKey{socket: packet.socket, stream: stream})
+			continue
+		}
+		switch typeID {
+		case 1:
+			direction.packet = packet
+			if flags&0x8 != 0 {
+				if len(payload) == 0 || int(payload[0])+1 > len(payload) {
+					continue
+				}
+				payload = payload[1 : len(payload)-int(payload[0])]
+			}
+			if flags&0x20 != 0 {
+				if len(payload) < 5 {
+					continue
+				}
+				payload = payload[5:]
+			}
+			direction.headerStream, direction.headerBlock = stream, append(direction.headerBlock[:0], payload...)
+		case 9:
+			if stream != direction.headerStream {
+				continue
+			}
+			direction.headerBlock = append(direction.headerBlock, payload...)
+		default:
+			continue
+		}
+		if flags&0x4 == 0 {
+			continue
+		}
+		direction.fields = direction.fields[:0]
+		if _, err := direction.decoder.Write(direction.headerBlock); err != nil {
+			direction.headerBlock = nil
+			continue
+		}
+		if err := direction.decoder.Close(); err != nil {
+			direction.headerBlock = nil
+			continue
+		}
+		event, ok := tracker.http2HeaderEvent(direction.packet, stream, direction.fields, clockOffset)
+		direction.headerBlock = nil
+		if ok {
+			events = append(events, event)
+		}
+	}
+	return events, true
+}
+
+func (tracker *httpTracker) http2HeaderEvent(packet httpPacket, stream uint32, fields []hpack.HeaderField, clockOffset int64) (captureEvent, bool) {
+	values := map[string]string{}
+	for _, field := range fields {
+		values[field.Name] = field.Value
+	}
+	method, statusText := values[":method"], values[":status"]
+	if method == "" && statusText == "" {
+		return captureEvent{}, false
+	}
+	server := (method != "") != packet.sent
+	side := traceClientSide
+	if server {
+		side = traceServerSide
+	}
+	if tracker.side != "" && tracker.side != side {
+		return captureEvent{}, false
+	}
+	event := captureEvent{SocketID: packet.socket, TimestampNS: uint64(int64(packet.bootTimeNS) + clockOffset), BootTimeNS: packet.bootTimeNS, Protocol: "http", Side: side, PID: packet.pid, Process: packet.process, CgroupID: packet.cgroupID, Source: packet.source, Destination: packet.destination, Bytes: uint64(len(packet.payload))}
+	key := http2RequestKey{socket: packet.socket, stream: stream}
+	if method != "" {
+		host, path := traceHTTPTarget(values[":path"], strings.ToLower(values[":authority"]))
+		event.Event, event.Method, event.Path, event.Target = traceHTTPRequestEvent, method, path, emptyAs(host, traceHTTPHost(packet.destination, server))
+		tracker.h2Pending[key] = httpPendingRequest{bootTimeNS: packet.bootTimeNS, method: method, host: event.Target, path: path}
+		return event, true
+	}
+	status, err := strconv.Atoi(statusText)
+	if err != nil || status < 100 || status > 599 {
+		return captureEvent{}, false
+	}
+	event.Event, event.Status = traceHTTPStatusEvent(status), status
+	if request, ok := tracker.h2Pending[key]; ok {
+		event.Method, event.Path, event.Target = request.method, request.path, request.host
+		if status >= 200 {
+			event.LatencyMS, event.answered = traceSpan(request.bootTimeNS, packet.bootTimeNS), 1
+			delete(tracker.h2Pending, key)
+		}
+	}
+	return event, true
 }
 
 func (tracker *httpTracker) event(packet httpPacket, clockOffset int64) (captureEvent, bool) {
@@ -273,6 +431,13 @@ func tlsALPN(data []byte) []string {
 func (tracker *httpTracker) forget(socket uint64) {
 	tracker.size -= len(tracker.pending[socket])
 	delete(tracker.pending, socket)
+	delete(tracker.http2, httpStreamKey{socket: socket, sent: true})
+	delete(tracker.http2, httpStreamKey{socket: socket, sent: false})
+	for key := range tracker.h2Pending {
+		if key.socket == socket {
+			delete(tracker.h2Pending, key)
+		}
+	}
 }
 
 // parseHTTPRequest는 요청 줄과 Host header를 읽는다. 요청 줄이 "METHOD target HTTP/1.x"가 아니면 HTTP가 아니다.

@@ -632,3 +632,14 @@ func TestTraceScreenEscAndLFollowAgain(t *testing.T) {
 		t.Fatalf("space = %d, want the newest", model.selected)
 	}
 }
+
+func TestTraceSelectedEventUsesEmphasisWithoutABackground(t *testing.T) {
+	plain := traceSelectedEvent("curl  GET /", 20, false)
+	if plain != "curl  GET /" {
+		t.Fatalf("plain selection = %q", plain)
+	}
+	colored := traceSelectedEvent("curl  GET /", 20, true)
+	if strings.Contains(colored, liveReverse) || !strings.Contains(colored, "curl  GET /") {
+		t.Fatalf("colored selection = %q", colored)
+	}
+}

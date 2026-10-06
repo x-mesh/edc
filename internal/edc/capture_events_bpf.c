@@ -1275,7 +1275,8 @@ static __always_inline int http_start(const __u8 *p) {
 	return (p[0] == 'G' && p[1] == 'E' && p[2] == 'T' && p[3] == ' ') || (p[0] == 'P' && p[1] == 'O' && p[2] == 'S' && p[3] == 'T') ||
 	       (p[0] == 'P' && p[1] == 'U' && p[2] == 'T' && p[3] == ' ') || (p[0] == 'H' && p[1] == 'E' && p[2] == 'A' && p[3] == 'D') ||
 	       (p[0] == 'D' && p[1] == 'E' && p[2] == 'L' && p[3] == 'E') || (p[0] == 'P' && p[1] == 'A' && p[2] == 'T' && p[3] == 'C') ||
-	       (p[0] == 'O' && p[1] == 'P' && p[2] == 'T' && p[3] == 'I') || (p[0] == 'H' && p[1] == 'T' && p[2] == 'T' && p[3] == 'P');
+	       (p[0] == 'O' && p[1] == 'P' && p[2] == 'T' && p[3] == 'I') || (p[0] == 'H' && p[1] == 'T' && p[2] == 'T' && p[3] == 'P') ||
+	       (p[0] == 'P' && p[1] == 'R' && p[2] == 'I' && p[3] == ' ');
 }
 
 // tls_start는 TLS handshake record의 머리다. version은 SSL 3.0부터 TLS 1.3까지다.
@@ -1513,8 +1514,13 @@ static __always_inline void http_capture(struct sock *sk, __u64 buffer, __u64 li
 	}
 	struct http_stream_key key = {.skaddr = (__u64)sk, .direction = direction};
 	__u8 peek[4] = {};
-	int readable = size >= 4 && limit >= 4 && !bpf_probe_read_user(peek, sizeof(peek), (void *)buffer);
+	__u64 peek_len = size < sizeof(peek) ? size : sizeof(peek);
+	int peeked = limit >= peek_len && !bpf_probe_read_user(peek, peek_len, (void *)buffer);
+	int readable = peek_len == sizeof(peek) && peeked;
 	int start = readable && http_start(peek);
+	int http2_start = peeked && peek_len > 0 && peek[0] == 'P' && (peek_len < 2 || peek[1] == 'R') &&
+	                  (peek_len < 3 || peek[2] == 'I') && (peek_len < 4 || peek[3] == ' ');
+	start = start || http2_start;
 	__u8 kind = start ? HTTP_START : HTTP_CONTINUATION;
 	__u64 offset = 0;
 	__u64 budget = http_payload_limit;
@@ -1524,6 +1530,7 @@ static __always_inline void http_capture(struct sock *sk, __u64 buffer, __u64 li
 	// 모든 TCP 송수신이 여기를 지나므로 이어 받을 조각이 있는 socket에서만 map에 값이 있다. 이어 받는 조각을 TLS 판별보다
 	// 먼저 보므로, 0x16 0x03으로 시작하는 HTTP body 조각을 TLS로 읽지 않는다.
 	__u64 *seen = start ? 0 : bpf_map_lookup_elem(&http_streams, &key);
+	int http2 = http2_start || (seen && *seen == ~0ULL);
 	if (!start && !seen) {
 		__u64 tls_offset = 0;
 		__u64 tls_captured = 0;
@@ -1550,6 +1557,15 @@ static __always_inline void http_capture(struct sock *sk, __u64 buffer, __u64 li
 			kind = HTTP_CONTINUATION;
 		}
 		budget = TLS_HELLO_SIZE;
+	} else if (http2) {
+		__u64 marker = ~0ULL;
+		bpf_map_update_elem(&http_streams, &key, &marker, BPF_ANY);
+		if (http2_start) {
+			struct http_stream_key peer = {.skaddr = (__u64)sk, .direction = direction == HTTP_SENT ? HTTP_RECEIVED : HTTP_SENT};
+			bpf_map_update_elem(&http_streams, &peer, &marker, BPF_ANY);
+		}
+		budget = HTTP_PAYLOAD_SIZE;
+		iov = 0;
 	} else if (http_message_limit) {
 		budget = http_message_limit;
 		if (!start) {

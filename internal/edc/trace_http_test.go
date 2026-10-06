@@ -1,7 +1,9 @@
 package edc
 
 import (
+	"bytes"
 	"crypto/tls"
+	"encoding/binary"
 	"encoding/json"
 	"io"
 	"net"
@@ -12,7 +14,86 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"golang.org/x/net/http2/hpack"
 )
+
+func http2TestFrame(typeID, flags byte, stream uint32, payload []byte) []byte {
+	frame := make([]byte, 9, 9+len(payload))
+	frame[0], frame[1], frame[2] = byte(len(payload)>>16), byte(len(payload)>>8), byte(len(payload))
+	frame[3], frame[4] = typeID, flags
+	binary.BigEndian.PutUint32(frame[5:9], stream)
+	return append(frame, payload...)
+}
+
+func http2TestHeaders(fields ...hpack.HeaderField) []byte {
+	var data bytes.Buffer
+	encoder := hpack.NewEncoder(&data)
+	for _, field := range fields {
+		_ = encoder.WriteField(field)
+	}
+	return data.Bytes()
+}
+
+func TestHTTP2TracePairsMultiplexedStreams(t *testing.T) {
+	tracker := newHTTPTracker("", false, false)
+	request1 := http2TestHeaders(hpack.HeaderField{Name: ":method", Value: "GET"}, hpack.HeaderField{Name: ":scheme", Value: "http"}, hpack.HeaderField{Name: ":authority", Value: "api.example"}, hpack.HeaderField{Name: ":path", Value: "/one?q=secret"})
+	request3 := http2TestHeaders(hpack.HeaderField{Name: ":method", Value: "POST"}, hpack.HeaderField{Name: ":scheme", Value: "http"}, hpack.HeaderField{Name: ":authority", Value: "api.example"}, hpack.HeaderField{Name: ":path", Value: "/three"})
+	preface := append(append(append([]byte{}, http2Preface...), http2TestFrame(4, 0, 0, nil)...), http2TestFrame(1, 4, 1, request1)...)
+	events, claimed := tracker.http2Events(httpTestPacket(string(preface), 1_000_000, true), 0)
+	if !claimed || len(events) != 1 || events[0].Method != "GET" || events[0].Path != "/one" {
+		t.Fatalf("first request = %#v, %t", events, claimed)
+	}
+	events, claimed = tracker.http2Events(httpTestPacket(string(http2TestFrame(1, 4, 3, request3)), 2_000_000, true), 0)
+	if !claimed || len(events) != 1 || events[0].Method != "POST" {
+		t.Fatalf("second request = %#v, %t", events, claimed)
+	}
+	response := http2TestHeaders(hpack.HeaderField{Name: ":status", Value: "204"})
+	events, claimed = tracker.http2Events(httpTestPacket(string(http2TestFrame(1, 4, 3, response)), 5_000_000, false), 0)
+	if !claimed || len(events) != 1 || events[0].Status != 204 || events[0].Path != "/three" || events[0].LatencyMS == nil || *events[0].LatencyMS != 3 {
+		t.Fatalf("response = %#v, %t", events, claimed)
+	}
+}
+
+func TestHTTP2TraceJoinsSplitFramesAndContinuation(t *testing.T) {
+	tracker := newHTTPTracker("", false, false)
+	block := http2TestHeaders(hpack.HeaderField{Name: ":method", Value: "GET"}, hpack.HeaderField{Name: ":path", Value: "/split"})
+	frames := append(http2TestFrame(1, 0, 1, block[:1]), http2TestFrame(9, 4, 1, block[1:])...)
+	first := append(append([]byte{}, http2Preface...), frames[:12]...)
+	if events, claimed := tracker.http2Events(httpTestPacket(string(first), 1, true), 0); !claimed || len(events) != 0 {
+		t.Fatalf("first piece = %#v, %t", events, claimed)
+	}
+	if events, claimed := tracker.http2Events(httpTestPacket(string(frames[12:]), 2, true), 0); !claimed || len(events) != 1 || events[0].Path != "/split" {
+		t.Fatalf("second piece = %#v, %t", events, claimed)
+	}
+}
+
+func TestHTTP2TraceJoinsSplitPreface(t *testing.T) {
+	tracker := newHTTPTracker("", false, false)
+	if events, claimed := tracker.http2Events(httpTestPacket("PRI * HTTP/2.0\r\n", 1, true), 0); !claimed || len(events) != 0 {
+		t.Fatalf("preface prefix = %#v, %t", events, claimed)
+	}
+	block := http2TestHeaders(hpack.HeaderField{Name: ":method", Value: "GET"}, hpack.HeaderField{Name: ":path", Value: "/preface"})
+	rest := append([]byte("\r\nSM\r\n\r\n"), http2TestFrame(1, 4, 1, block)...)
+	if events, claimed := tracker.http2Events(httpTestPacket(string(rest), 2, true), 0); !claimed || len(events) != 1 || events[0].Path != "/preface" {
+		t.Fatalf("preface rest = %#v, %t", events, claimed)
+	}
+}
+
+func TestHTTP2TraceDropsResetStreams(t *testing.T) {
+	tracker := newHTTPTracker("", false, false)
+	block := http2TestHeaders(hpack.HeaderField{Name: ":method", Value: "GET"}, hpack.HeaderField{Name: ":path", Value: "/reset"})
+	request := append(append([]byte{}, http2Preface...), http2TestFrame(1, 4, 1, block)...)
+	if events, _ := tracker.http2Events(httpTestPacket(string(request), 1, true), 0); len(events) != 1 {
+		t.Fatalf("request = %#v", events)
+	}
+	reset := http2TestFrame(3, 0, 1, []byte{0, 0, 0, 8})
+	if events, claimed := tracker.http2Events(httpTestPacket(string(reset), 2, false), 0); !claimed || len(events) != 0 {
+		t.Fatalf("reset = %#v, %t", events, claimed)
+	}
+	if len(tracker.h2Pending) != 0 {
+		t.Fatalf("pending after reset = %#v", tracker.h2Pending)
+	}
+}
 
 func TestParseHTTPRequestReadsTheRequestLineAndHost(t *testing.T) {
 	method, target, host, ok := parseHTTPRequest([]byte("GET /search?q=secret HTTP/1.1\r\nUser-Agent: curl\r\nHOST: Example.COM:8080\r\nCookie: a=b\r\n\r\n"))

@@ -34,6 +34,22 @@ type captureEventsDnsRecord struct {
 	_           [4]byte
 }
 
+type captureEventsGoTlsKey struct {
+	_         structs.HostLayout
+	Goroutine uint64
+	Frame     uint64
+	Pid       uint32
+	Direction uint32
+}
+
+type captureEventsGoTlsPending struct {
+	_           structs.HostLayout
+	Connection  uint64
+	Buffer      uint64
+	Num         uint64
+	StackOffset uint64
+}
+
 type captureEventsHttpCursor struct {
 	_         structs.HostLayout
 	Pointer   uint64
@@ -203,6 +219,7 @@ const (
 	captureEventsMapDnsQueryPending            = "dns_query_pending"
 	captureEventsMapDnsScratch                 = "dns_scratch"
 	captureEventsMapEvents                     = "events"
+	captureEventsMapGoTlsPending               = "go_tls_pending"
 	captureEventsMapHttpCursors                = "http_cursors"
 	captureEventsMapHttpRecvPending            = "http_recv_pending"
 	captureEventsMapHttpScratch                = "http_scratch"
@@ -223,6 +240,11 @@ const (
 	captureEventsMapTlsPrefixes                = "tls_prefixes"
 	captureEventsMapTlsUnmapped                = "tls_unmapped"
 	captureEventsMapUdpSendPending             = "udp_send_pending"
+	captureEventsProgGoTlsCloseEntry           = "go_tls_close_entry"
+	captureEventsProgGoTlsReadEntry            = "go_tls_read_entry"
+	captureEventsProgGoTlsReadExit             = "go_tls_read_exit"
+	captureEventsProgGoTlsWriteEntry           = "go_tls_write_entry"
+	captureEventsProgGoTlsWriteExit            = "go_tls_write_exit"
 	captureEventsProgHttpTcpDestroySock        = "http_tcp_destroy_sock"
 	captureEventsProgInetCskAcceptEntry        = "inet_csk_accept_entry"
 	captureEventsProgInetCskAcceptExit         = "inet_csk_accept_exit"
@@ -328,6 +350,11 @@ type captureEventsSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type captureEventsProgramSpecs struct {
+	GoTlsCloseEntry           *ebpf.ProgramSpec `ebpf:"go_tls_close_entry"`
+	GoTlsReadEntry            *ebpf.ProgramSpec `ebpf:"go_tls_read_entry"`
+	GoTlsReadExit             *ebpf.ProgramSpec `ebpf:"go_tls_read_exit"`
+	GoTlsWriteEntry           *ebpf.ProgramSpec `ebpf:"go_tls_write_entry"`
+	GoTlsWriteExit            *ebpf.ProgramSpec `ebpf:"go_tls_write_exit"`
 	HttpTcpDestroySock        *ebpf.ProgramSpec `ebpf:"http_tcp_destroy_sock"`
 	InetCskAcceptEntry        *ebpf.ProgramSpec `ebpf:"inet_csk_accept_entry"`
 	InetCskAcceptExit         *ebpf.ProgramSpec `ebpf:"inet_csk_accept_exit"`
@@ -386,6 +413,7 @@ type captureEventsMapSpecs struct {
 	DnsQueryPending  *ebpf.MapSpec `ebpf:"dns_query_pending"`
 	DnsScratch       *ebpf.MapSpec `ebpf:"dns_scratch"`
 	Events           *ebpf.MapSpec `ebpf:"events"`
+	GoTlsPending     *ebpf.MapSpec `ebpf:"go_tls_pending"`
 	HttpCursors      *ebpf.MapSpec `ebpf:"http_cursors"`
 	HttpRecvPending  *ebpf.MapSpec `ebpf:"http_recv_pending"`
 	HttpScratch      *ebpf.MapSpec `ebpf:"http_scratch"`
@@ -453,6 +481,7 @@ type captureEventsMaps struct {
 	DnsQueryPending  *ebpf.Map `ebpf:"dns_query_pending"`
 	DnsScratch       *ebpf.Map `ebpf:"dns_scratch"`
 	Events           *ebpf.Map `ebpf:"events"`
+	GoTlsPending     *ebpf.Map `ebpf:"go_tls_pending"`
 	HttpCursors      *ebpf.Map `ebpf:"http_cursors"`
 	HttpRecvPending  *ebpf.Map `ebpf:"http_recv_pending"`
 	HttpScratch      *ebpf.Map `ebpf:"http_scratch"`
@@ -482,6 +511,7 @@ func (m *captureEventsMaps) Close() error {
 		m.DnsQueryPending,
 		m.DnsScratch,
 		m.Events,
+		m.GoTlsPending,
 		m.HttpCursors,
 		m.HttpRecvPending,
 		m.HttpScratch,
@@ -529,6 +559,11 @@ type captureEventsVariables struct {
 //
 // It can be passed to loadCaptureEventsObjects or ebpf.CollectionSpec.LoadAndAssign.
 type captureEventsPrograms struct {
+	GoTlsCloseEntry           *ebpf.Program `ebpf:"go_tls_close_entry"`
+	GoTlsReadEntry            *ebpf.Program `ebpf:"go_tls_read_entry"`
+	GoTlsReadExit             *ebpf.Program `ebpf:"go_tls_read_exit"`
+	GoTlsWriteEntry           *ebpf.Program `ebpf:"go_tls_write_entry"`
+	GoTlsWriteExit            *ebpf.Program `ebpf:"go_tls_write_exit"`
 	HttpTcpDestroySock        *ebpf.Program `ebpf:"http_tcp_destroy_sock"`
 	InetCskAcceptEntry        *ebpf.Program `ebpf:"inet_csk_accept_entry"`
 	InetCskAcceptExit         *ebpf.Program `ebpf:"inet_csk_accept_exit"`
@@ -580,6 +615,11 @@ type captureEventsPrograms struct {
 
 func (p *captureEventsPrograms) Close() error {
 	return _CaptureEventsClose(
+		p.GoTlsCloseEntry,
+		p.GoTlsReadEntry,
+		p.GoTlsReadExit,
+		p.GoTlsWriteEntry,
+		p.GoTlsWriteExit,
 		p.HttpTcpDestroySock,
 		p.InetCskAcceptEntry,
 		p.InetCskAcceptExit,

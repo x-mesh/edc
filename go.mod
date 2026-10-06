@@ -12,8 +12,9 @@ require (
 	github.com/miekg/dns v1.1.73
 	github.com/pelletier/go-toml/v2 v2.4.3
 	github.com/vishvananda/netlink v1.3.1
-	golang.org/x/sys v0.47.0
+	golang.org/x/arch v0.28.0
 	golang.org/x/net v0.57.0
+	golang.org/x/sys v0.47.0
 	golang.org/x/term v0.45.0
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.59.0

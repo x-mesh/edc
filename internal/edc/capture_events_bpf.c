@@ -2796,11 +2796,9 @@ static __always_inline int nss_io_enter(void *ctx, __u8 direction) {
 	if (nss_mode(thread, ssl_argument(ctx, 0)) != NSS_MODE_ON) {
 		return 0;
 	}
+	// 같은 반환 frame의 항목은 덮어쓴다. 반환 probe가 돌지 않아 남은 항목이 이후 호출을 막지 않고, tail call로 같은 frame에
+	// 두 함수가 들어와도 반환에서 cookie가 맞는 마지막 호출만 평문을 낸다.
 	struct nss_io_key key = {.thread = thread, .stack = nss_stack(ctx, 0)};
-	// PR_Read는 PR_Recv로 tail call할 수 있다. 같은 반환 frame은 처음 본 호출에서 한 번만 낸다.
-	if (bpf_map_lookup_elem(&nss_io_calls, &key)) {
-		return 0;
-	}
 	ssl_enter(ctx, direction, 0);
 	struct ssl_pending *pending = bpf_map_lookup_elem(&ssl_pending, &thread);
 	if (!pending) {

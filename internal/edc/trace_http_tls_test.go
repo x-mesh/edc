@@ -39,6 +39,25 @@ func TestTraceTLSMappedLibrariesReadsTLSLibraryPaths(t *testing.T) {
 	}
 }
 
+func TestTraceTLSWolfSSLDiscoveryAndLifecycle(t *testing.T) {
+	maps := []byte("7f00-7f01 r-xp 00000000 08:03 1 /opt/libwolfssl.so.46.0.0\n7f01-7f02 r--p 00001000 08:03 1 /opt/libwolfssl.so.46.0.0\n")
+	want := []traceTLSMapping{{"7f00-7f01", "/opt/libwolfssl.so.46.0.0"}}
+	if got := traceTLSMappedLibraries(maps); !slices.Equal(got, want) {
+		t.Fatalf("wolfSSL mappings = %#v", got)
+	}
+	if !slices.Contains(traceTLSHostLibraries, "/usr/local/lib/libwolfssl.so*") {
+		t.Fatal("wolfSSL host library search missing")
+	}
+	for _, name := range []string{"wolfSSL_read", "wolfSSL_write", "wolfSSL_read_ex", "wolfSSL_write_ex"} {
+		if !slices.Contains(traceTLSFunctions, name) || !traceTLSReadsPlaintext([]string{name}) {
+			t.Fatalf("wolfSSL reader missing: %s", name)
+		}
+	}
+	if !slices.Contains(traceTLSFreeFunctions, "wolfSSL_free") || traceTLSReadsPlaintext([]string{"wolfSSL_free"}) {
+		t.Fatal("wolfSSL_free must only clear the connection")
+	}
+}
+
 // traceTLSHostLibssl은 host에서 SSL_read를 정의한 libssl이다. 없는 host(macOS 등)에서는 ELF가 필요한 test를 건너뛴다.
 func traceTLSHostLibssl(t *testing.T) string {
 	t.Helper()

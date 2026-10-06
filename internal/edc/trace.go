@@ -664,6 +664,7 @@ func runTraceProtocol(args []string) int {
 		fmt.Fprintln(os.Stderr, T("cli.trace.failed", err))
 		return 1
 	}
+	printTraceTLSExecProblem(summary)
 	if options.raw {
 		// collector는 다른 protocol의 event도 받아 센다. 요약의 event 수는 이 출력에 쓴 줄 수와 같아야 한다.
 		summary.EventCount = written

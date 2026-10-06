@@ -684,26 +684,42 @@ func collectCaptureEventsFor(scope traceScope, duration time.Duration, onEvent f
 				closeLinks()
 				return captureSummary{}, err
 			}
+			if len(attached) == 0 {
+				// 탐색한 뒤 그 process가 끝나 경로가 사라졌다.
+				scope.tlsFinder.retry(target)
+			}
 		}
 	}
 	defer closeLinks()
+	// stopTLSWatch는 trace 중의 TLS 탐색을 멈추고 끝나기를 기다린다. 그 뒤에 tlsExecProblem을 읽는다.
+	stopTLSWatch, tlsExecProblem := func() {}, ""
 	if finder := scope.tlsFinder; finder != nil && finder.rescan {
 		// 감시는 links에 붙인 link를 더하므로, closeLinks보다 먼저 멈춘다. defer는 나중에 건 것이 먼저 돈다.
 		stopWatch, watched := make(chan struct{}), make(chan struct{})
 		go func() {
 			defer close(watched)
-			// 구독하지 못한 이유는 화면을 열기 전에 traceTLSExecProblem이 알렸다. nil channel이면 전체 탐색만 한다.
-			execs, _ := traceTLSExecEvents(stopWatch)
-			watchTraceTLS(finder, execs, func(target traceTLSTarget) {
-				// 화면이 이미 열렸으므로 붙이지 못한 파일은 알리지 않는다. 일부만 붙었으면 그 link는 닫을 때 쓴다.
-				attached, _ := attachTraceTLS(&objects, target)
+			// 화면이 이미 열렸으므로 exec 알림을 받지 못한 이유는 trace가 끝난 뒤 알린다. nil channel이면 전체 탐색만 한다.
+			execs, err := traceTLSExecEvents(stopWatch)
+			if err != nil {
+				tlsExecProblem = err.Error()
+			}
+			if watchTraceTLS(finder, execs, func(target traceTLSTarget) bool {
+				// 붙이지 못한 파일은 화면에 알리지 않는다. 일부만 붙었으면 그 link는 닫을 때 쓴다.
+				attached, err := attachTraceTLS(&objects, target)
 				links = append(links, attached...)
-			}, stopWatch)
+				return len(attached) > 0 || err != nil && !errors.Is(err, fs.ErrNotExist)
+			}, stopWatch) {
+				tlsExecProblem = "the kernel stopped sending process events"
+			}
 		}()
-		defer func() {
-			close(stopWatch)
-			<-watched
-		}()
+		var stopOnce sync.Once
+		stopTLSWatch = func() {
+			stopOnce.Do(func() {
+				close(stopWatch)
+				<-watched
+			})
+		}
+		defer stopTLSWatch()
 	}
 	// hook은 하나씩 붙는다. 요청을 보내는 hook만 붙은 동안 보낸 요청은 응답을 놓치므로, HTTP 레코드는 모두 붙은 뒤부터 읽는다.
 	var attached unix.Timespec
@@ -778,6 +794,7 @@ func collectCaptureEventsFor(scope traceScope, duration time.Duration, onEvent f
 	}
 	sweepDeadline()
 	finish := func() (captureSummary, error) {
+		stopTLSWatch()
 		if err := emit(requests.finishHTTP2Payloads(func(http2PayloadKey) bool { return true })); err != nil {
 			return captureSummary{}, err
 		}
@@ -793,7 +810,7 @@ func collectCaptureEventsFor(scope traceScope, duration time.Duration, onEvent f
 		if lookupErr := objects.TlsUnmapped.Lookup(uint32(0), &unmapped); lookupErr != nil {
 			return captureSummary{}, fmt.Errorf("read unmapped TLS count: %w", lookupErr)
 		}
-		return captureSummary{TimestampNS: uint64(time.Now().UnixNano()), Event: "capture_summary", EventCount: eventCount, LostEvents: lost, TLSUnmapped: unmapped}, nil
+		return captureSummary{TimestampNS: uint64(time.Now().UnixNano()), Event: "capture_summary", EventCount: eventCount, LostEvents: lost, TLSUnmapped: unmapped, TLSExecProblem: tlsExecProblem}, nil
 	}
 	for {
 		// ring buffer reader는 버퍼가 비었을 때만 deadline을 본다. event가 계속 쌓이면 버퍼가 비지 않아

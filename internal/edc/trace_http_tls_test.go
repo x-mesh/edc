@@ -124,6 +124,41 @@ func TestTraceTLSReadFileFindsFunctionOffsets(t *testing.T) {
 	}
 }
 
+// 흔한 libssl은 실행 segment의 파일 위치와 주소가 같아서 변환이 틀려도 위 test를 통과한다. non-PIE Go test binary는
+// 주소가 0x400000에서 시작하므로 주소를 파일 위치로 바꾸는 계산을 실제로 시험한다.
+func TestTraceTLSFileOffsetFollowsTheSegment(t *testing.T) {
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	file, err := elf.Open(executable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	if !slices.ContainsFunc(file.Progs, func(program *elf.Prog) bool {
+		return program.Type == elf.PT_LOAD && program.Flags&elf.PF_X != 0 && program.Off != program.Vaddr
+	}) {
+		t.Skip("the test binary has no executable segment whose file offset differs from its address")
+	}
+	raw, err := os.ReadFile(executable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := file.Section(".text")
+	data, err := text.Data()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// go test는 symbol 표를 지우므로 .text 안의 위치를 직접 고른다.
+	for _, at := range []uint64{0, 16, uint64(len(data)) / 2, uint64(len(data)) - 16} {
+		offset, ok := traceTLSFileOffset(file, text.Addr+at)
+		if !ok || offset+16 > uint64(len(raw)) || !bytes.Equal(raw[offset:offset+16], data[at:at+16]) {
+			t.Fatalf("address %#x: offset %#x (%t) does not hold the .text bytes", text.Addr+at, offset, ok)
+		}
+	}
+}
+
 func copyTraceTLSFile(t *testing.T, from, to string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(to), 0o755); err != nil {

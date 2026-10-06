@@ -25,6 +25,8 @@ type traceTLSTarget struct {
 	path    string
 	symbols []string
 	offsets map[string]uint64
+	// id는 탐색이 고른 파일의 (device, inode)다. --tls=<경로>로 준 파일은 0이다.
+	id [2]uint64
 }
 
 // traceTLSFunctions는 평문을 읽는 OpenSSL과 GnuTLS 함수, 그리고 연결 상태가 끝날 때 짝짓기 상태를 지우는
@@ -140,6 +142,20 @@ type traceTLSFinder struct {
 	rescan  bool
 }
 
+// retry는 붙이기 전에 경로가 사라진 파일을 다음 탐색에서 다시 고르게 한다. 고른 process가 그 사이에 끝나도, 같은 파일을
+// 적재한 다른 process가 살아 있는 경로를 준다.
+func (finder *traceTLSFinder) retry(target traceTLSTarget) {
+	delete(finder.seen, target.id)
+}
+
+// printTraceTLSExecProblem은 trace 중에 exec 알림을 받지 못했으면 trace가 끝난 뒤 알린다. 화면을 연 동안에는 stderr에 쓸
+// 수 없다.
+func printTraceTLSExecProblem(summary captureSummary) {
+	if summary.TLSExecProblem != "" {
+		fmt.Fprintln(os.Stderr, T("cli.trace.tls_exec_events", summary.TLSExecProblem))
+	}
+}
+
 // scanProcesses는 process마다 적재한 TLS library를 찾는다.
 func (finder *traceTLSFinder) scanProcesses() {
 	entries, err := os.ReadDir(traceProcRoot)
@@ -240,6 +256,7 @@ func (finder *traceTLSFinder) add(path, name string, library bool) {
 		finder.notices = append(finder.notices, T("cli.trace.tls_skipped", traceEscapeText([]byte(name)), err))
 	case err != nil:
 	case traceTLSReadsPlaintext(target.symbols):
+		target.id = id
 		finder.targets = append(finder.targets, target)
 	case library:
 		finder.notices = append(finder.notices, T("cli.trace.tls_symbols", traceEscapeText([]byte(name))))

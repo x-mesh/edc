@@ -37,9 +37,10 @@ func (check traceTLSExecCheck) due() time.Time {
 	return check.start.Add(traceTLSExecChecks[check.next])
 }
 
-// watchTraceTLS는 --tls 자동 탐색으로 trace를 시작한 뒤에 나타난 TLS 파일을 찾아 attach에 넘긴다. execs는 exec한
-// process의 PID다. nil이면 exec 알림 없이 전체 탐색만 한다. stop이 닫히면 돌아온다.
-func watchTraceTLS(finder *traceTLSFinder, execs <-chan uint32, attach func(traceTLSTarget), stop <-chan struct{}) {
+// watchTraceTLS는 --tls 자동 탐색으로 trace를 시작한 뒤에 나타난 TLS 파일을 찾아 attach에 넘긴다. attach는 경로가
+// 사라져 아무것도 붙이지 못했으면 false를 돌려주고, 그 파일은 다음 탐색에서 다시 고른다. execs는 exec한 process의
+// PID다. nil이면 exec 알림 없이 전체 탐색만 한다. stop이 닫히면 돌아오고, 그 전에 execs가 닫혔으면 true를 돌려준다.
+func watchTraceTLS(finder *traceTLSFinder, execs <-chan uint32, attach func(traceTLSTarget) bool, stop <-chan struct{}) (execsEnded bool) {
 	var checks []traceTLSExecCheck
 	rescan := time.NewTimer(traceTLSRescanFloor)
 	defer rescan.Stop()
@@ -49,7 +50,9 @@ func watchTraceTLS(finder *traceTLSFinder, execs <-chan uint32, attach func(trac
 		find()
 		finder.notices = nil
 		for _, target := range finder.targets[known:] {
-			attach(target)
+			if !attach(target) {
+				finder.retry(target)
+			}
 		}
 	}
 	for {
@@ -65,10 +68,16 @@ func watchTraceTLS(finder *traceTLSFinder, execs <-chan uint32, attach func(trac
 		}
 		select {
 		case <-stop:
-			return
+			return execsEnded
 		case pid, ok := <-execs:
 			if !ok {
-				execs = nil
+				// stop을 닫아도 구독이 끝나 execs가 닫힌다. 그때는 끊긴 것이 아니다.
+				select {
+				case <-stop:
+					return execsEnded
+				default:
+				}
+				execs, execsEnded = nil, true
 				continue
 			}
 			if len(checks) < traceTLSExecPending {
@@ -128,13 +137,24 @@ func traceTLSExecEvents(stop <-chan struct{}) (<-chan uint32, error) {
 	return execs, nil
 }
 
-// traceTLSExecProblem은 trace 중에 exec 알림을 받지 못할 이유이고, 없으면 ""이다. kernel은 처음 network namespace의
-// 구독자에게만 알림을 보내고, 다른 namespace에서는 구독이 성공해도 알림이 오지 않는다. 그래서 PID 1과 namespace를
-// 비교한다. 구독을 열어 시험하지 않는 것은, 6.17에서 같은 process가 구독 하나를 닫으면 먼저 연 구독에도 알림이 끊겼기
-// 때문이다. 화면을 열기 전에 알리려고 trace 전에 부른다. test가 바꾼다.
-var traceTLSExecProblem = func() string {
-	self, selfErr := os.Readlink("/proc/self/ns/net")
-	first, firstErr := os.Readlink("/proc/1/ns/net")
+// traceTLSExecProblem은 trace 중에 exec 알림을 받지 못할 이유이고, 없으면 ""이다. 구독을 열어 시험하지 않는 것은,
+// 6.17에서 같은 process가 구독 하나를 닫으면 먼저 연 구독에도 알림이 끊겼기 때문이다. 화면을 열기 전에 알리려고 trace
+// 전에 부른다. test가 바꾼다.
+var traceTLSExecProblem = func() string { return traceTLSNamespaceProblem(os.Readlink) }
+
+// traceInitPIDNamespace는 처음 PID namespace다. kernel 3.8부터 이 inode 번호가 고정이다.
+const traceInitPIDNamespace = "pid:[4026531836]"
+
+// traceTLSNamespaceProblem은 kernel이 exec 알림을 보내지 않는 namespace에 있는지 본다. 알림은 처음 network namespace의
+// 구독자에게만 가고, 다른 namespace에서는 구독이 성공해도 오지 않는다. PID 1의 network namespace와 비교하는데, 다른 PID
+// namespace에서는 PID 1이 그 container의 init이라 비교할 수 없으므로 PID namespace를 먼저 본다. 읽지 못하면 알 수
+// 없으므로 알리지 않는다.
+func traceTLSNamespaceProblem(readlink func(string) (string, error)) string {
+	if pid, err := readlink("/proc/self/ns/pid"); err == nil && pid != traceInitPIDNamespace {
+		return "PID namespace " + pid
+	}
+	self, selfErr := readlink("/proc/self/ns/net")
+	first, firstErr := readlink("/proc/1/ns/net")
 	if selfErr == nil && firstErr == nil && self != first {
 		return "network namespace " + self
 	}

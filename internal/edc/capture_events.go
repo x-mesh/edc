@@ -103,6 +103,8 @@ type captureSummary struct {
 	LostEvents  uint64 `json:"lost_events"`
 	// TLSUnmapped는 trace http --tls --port에서 socket을 몰라 port를 확인하지 못하고 버린 평문 레코드 수다.
 	TLSUnmapped uint64 `json:"tls_unmapped,omitempty"`
+	// TLSExecProblem은 --tls 자동 탐색이 trace 중에 exec 알림을 받지 못한 이유다. trace가 끝난 뒤 stderr로 알린다.
+	TLSExecProblem string `json:"-"`
 	// DropCounts는 trace drop의 이유별 정확한 합계다. DropSampled는 초당 상한 때문에 event로 보내지 않은 수다.
 	DropCounts  map[string]uint64 `json:"drop_counts,omitempty"`
 	DropSampled uint64            `json:"drop_sampled,omitempty"`

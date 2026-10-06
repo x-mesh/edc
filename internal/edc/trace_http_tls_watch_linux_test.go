@@ -40,7 +40,7 @@ func runTraceTLSWatch(t *testing.T, execs <-chan uint32) <-chan string {
 	finder := &traceTLSFinder{seen: map[[2]uint64]bool{}, rescan: true}
 	go func() {
 		defer close(done)
-		watchTraceTLS(finder, execs, func(target traceTLSTarget) { attached <- target.path }, stop)
+		watchTraceTLS(finder, execs, func(target traceTLSTarget) bool { attached <- target.path; return true }, stop)
 	}()
 	t.Cleanup(func() {
 		close(stop)
@@ -154,6 +154,91 @@ func TestTraceTLSExecEventsReportsAnExec(t *testing.T) {
 			}
 		case <-time.After(2 * time.Second):
 			t.Fatal("the exec channel did not close after stop")
+		}
+	}
+}
+
+// 고른 process가 붙이기 전에 끝나 경로가 사라지면, 같은 파일을 적재한 다른 process에서 다시 고른다.
+func TestWatchTraceTLSRetriesAFileWhoseProcessEnded(t *testing.T) {
+	libssl := traceTLSHostLibssl(t)
+	proc := traceTLSWatchProc(t, traceTLSExecChecks, 20*time.Millisecond)
+	writeTraceTLSProcFile(t, filepath.Join(proc, "400", "maps"), "7f00-7f01 r-xp 00000000 08:03 1  /usr/lib/libssl.so.3\n")
+	mapped := filepath.Join(proc, "400", "map_files", "7f00-7f01")
+	copyTraceTLSFile(t, libssl, mapped)
+	attached := make(chan bool, 4)
+	stop, done := make(chan struct{}), make(chan struct{})
+	finder := &traceTLSFinder{seen: map[[2]uint64]bool{}, rescan: true}
+	tries := 0
+	go func() {
+		defer close(done)
+		watchTraceTLS(finder, nil, func(traceTLSTarget) bool {
+			tries++
+			attached <- tries > 1
+			return tries > 1
+		}, stop)
+	}()
+	t.Cleanup(func() {
+		close(stop)
+		<-done
+	})
+	for _, want := range []bool{false, true} {
+		select {
+		case got := <-attached:
+			if got != want {
+				t.Fatalf("attach result %t, want %t", got, want)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("the file was not tried again after a failed attach (want %t)", want)
+		}
+	}
+	select {
+	case <-attached:
+		t.Fatal("tried a file again after it was attached")
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+// 구독이 trace 중에 끝나면 watchTraceTLS가 알리고, stop을 닫아서 끝난 구독은 알리지 않는다.
+func TestWatchTraceTLSReportsEndedExecEvents(t *testing.T) {
+	traceTLSWatchProc(t, traceTLSExecChecks, time.Hour)
+	for _, ended := range []bool{true, false} {
+		execs, stop, done := make(chan uint32), make(chan struct{}), make(chan bool)
+		go func() {
+			done <- watchTraceTLS(&traceTLSFinder{seen: map[[2]uint64]bool{}, rescan: true}, execs, func(traceTLSTarget) bool { return true }, stop)
+		}()
+		if ended {
+			close(execs)
+			time.Sleep(20 * time.Millisecond)
+			close(stop)
+		} else {
+			close(stop)
+			close(execs)
+		}
+		if got := <-done; got != ended {
+			t.Fatalf("closed execs before stop %t: reported %t", ended, got)
+		}
+	}
+}
+
+// 다른 PID namespace에서는 PID 1이 그 container의 init이라 network namespace를 비교할 수 없다.
+func TestTraceTLSNamespaceProblem(t *testing.T) {
+	for _, test := range []struct {
+		pid, self, first, want string
+	}{
+		{traceInitPIDNamespace, "net:[4026531840]", "net:[4026531840]", ""},
+		{traceInitPIDNamespace, "net:[4026532000]", "net:[4026531840]", "network namespace net:[4026532000]"},
+		{"pid:[4026532100]", "net:[4026532000]", "net:[4026532000]", "PID namespace pid:[4026532100]"},
+		{"", "net:[4026532000]", "", ""},
+	} {
+		readlink := func(path string) (string, error) {
+			value := map[string]string{"/proc/self/ns/pid": test.pid, "/proc/self/ns/net": test.self, "/proc/1/ns/net": test.first}[path]
+			if value == "" {
+				return "", os.ErrPermission
+			}
+			return value, nil
+		}
+		if got := traceTLSNamespaceProblem(readlink); got != test.want {
+			t.Fatalf("%+v: problem %q", test, got)
 		}
 	}
 }

@@ -23,6 +23,7 @@ func runTop(args []string, version string) (code int) {
 	count := set.Int("count", configuredInt(config.Count, 0), T("command.top.option.count"))
 	noHeader := set.Bool("no-header", configuredBool(config.NoHeader, false), T("command.top.option.no_header"))
 	processValue := set.String("process", "", T("command.top.option.process"))
+	fullCommand := set.Bool("full", false, T("command.top.option.full"))
 	ebpf := set.Bool("ebpf", false, T("command.top.option.ebpf"))
 	// -d와 --detail은 사용자에게 보이는 이름이다. v0.28.0의 --ebpf도 같은 값으로 계속 받는다.
 	set.BoolVar(ebpf, "detail", false, T("command.top.option.detail"))
@@ -95,6 +96,13 @@ func runTop(args []string, version string) (code int) {
 		fmt.Fprintln(os.Stderr, T("observe.top.ebpf_needs_process"))
 		return 2
 	}
+	// 표에는 process 열이 없어서 전체 명령줄을 보여 줄 자리가 없다.
+	if *fullCommand && !dashboard && !jsonOutput && *writePath == "" {
+		fmt.Fprintln(os.Stderr, T("observe.top.full_needs_view"))
+		return 2
+	}
+	// 표본을 읽기 전에 정해야 수집이 comm 대신 전체 명령줄을 담는다. 앞선 실행의 값이 남지 않게 매번 쓴다.
+	topFullCommand = *fullCommand
 	if *ebpf {
 		observe, stop, err := startTopProcessBPF()
 		if err != nil {

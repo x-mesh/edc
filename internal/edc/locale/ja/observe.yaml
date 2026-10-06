@@ -38,6 +38,7 @@ observe:
     count_minimum: "--count は 0 以上にしてください"
     process_invalid: "--process には PID または command 名をカンマで区切って指定してください"
     process_needs_view: "--process は dashboard、--json、--write のいずれかが必要です"
+    full_needs_view: "--full は dashboard、--json、--write のいずれかが必要です"
     ebpf_needs_process: "-d/--detail は --process と一緒か、ダッシュボードで使ってください"
     stopped: "停止しました"
     paused: "一時停止"

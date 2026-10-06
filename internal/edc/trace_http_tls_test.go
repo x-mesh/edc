@@ -446,8 +446,14 @@ func TestResolveTraceTLSTargetsChecksAnExplicitPath(t *testing.T) {
 	if err := os.WriteFile(notELF, []byte("text"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	executable, err := os.Executable()
-	if err != nil {
+	emptyHeader := make([]byte, 64)
+	copy(emptyHeader, "\x7fELF\x02\x01\x01")
+	binary.LittleEndian.PutUint16(emptyHeader[16:], uint16(elf.ET_DYN))
+	binary.LittleEndian.PutUint16(emptyHeader[18:], uint16(traceTLSMachines[runtime.GOARCH]))
+	binary.LittleEndian.PutUint32(emptyHeader[20:], 1)
+	binary.LittleEndian.PutUint16(emptyHeader[52:], 64)
+	noTLS := filepath.Join(t.TempDir(), "no-tls.so")
+	if err := os.WriteFile(noTLS, emptyHeader, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	// i386 libssl은 인자를 stack으로 받아 BPF가 읽는 register와 맞지 않는다.
@@ -461,7 +467,7 @@ func TestResolveTraceTLSTargetsChecksAnExplicitPath(t *testing.T) {
 	if err := os.WriteFile(elf32, header, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	for _, path := range []string{notELF, executable, filepath.Join(t.TempDir(), "missing"), elf32} {
+	for _, path := range []string{notELF, noTLS, filepath.Join(t.TempDir(), "missing"), elf32} {
 		if _, _, code, err := resolveTraceTLSTargets(traceTLSMode(path)); code != 2 || err == nil {
 			t.Fatalf("--tls=%s = %d, %v", path, code, err)
 		}

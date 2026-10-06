@@ -381,6 +381,9 @@ func traceTLSAttachGone(attached []link.Link, err error) bool {
 // attachTraceTLS는 --tls 대상 파일 하나의 TLS 함수에 uprobe를 붙인다. 고른 뒤 끝난 process의 container 파일은 열 수 없어
 // 건너뛴다. 화면이 이미 열렸으므로 알리지 않는다. 붙인 link는 실패해도 돌려준다.
 func attachTraceTLS(objects *captureEventsObjects, target traceTLSTarget) ([]link.Link, error) {
+	if target.goReturns != nil {
+		return attachTraceTLSGo(objects, target)
+	}
 	programs := traceTLSPrograms(objects)
 	executable, err := link.OpenExecutable(target.path)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -418,6 +421,54 @@ func attachTraceTLS(objects *captureEventsObjects, target traceTLSTarget) ([]lin
 			return links, fmt.Errorf("--tls %s: attach %s return: %w", target.path, symbol, err)
 		}
 		links = append(links, exit)
+	}
+	return links, nil
+}
+
+func attachTraceTLSGo(objects *captureEventsObjects, target traceTLSTarget) (links []link.Link, err error) {
+	executable, err := link.OpenExecutable(target.path)
+	if err != nil {
+		return nil, fmt.Errorf("--tls %s: %w", target.path, err)
+	}
+	defer func() {
+		if err != nil {
+			for _, probe := range links {
+				probe.Close()
+			}
+			links = nil
+		}
+	}()
+	pairs := map[string][2]*ebpf.Program{
+		traceTLSGoRead:  {objects.GoTlsReadEntry, objects.GoTlsReadExit},
+		traceTLSGoWrite: {objects.GoTlsWriteEntry, objects.GoTlsWriteExit},
+		traceTLSGoClose: {objects.GoTlsCloseEntry, nil},
+	}
+	attach := func(name string, program *ebpf.Program, offset uint64) error {
+		probe, attachErr := executable.Uprobe("", program, &link.UprobeOptions{Address: offset})
+		if attachErr != nil {
+			return fmt.Errorf("--tls %s: attach %s at %#x: %w", target.path, name, offset, attachErr)
+		}
+		links = append(links, probe)
+		return nil
+	}
+	for _, name := range []string{traceTLSGoRead, traceTLSGoWrite} {
+		if len(target.goReturns[name]) == 0 {
+			return links, fmt.Errorf("--tls %s: missing Go TLS RET offsets", target.path)
+		}
+		for _, offset := range target.goReturns[name] {
+			if err = attach(name+" return", pairs[name][1], offset); err != nil {
+				return links, err
+			}
+		}
+	}
+	for _, name := range []string{traceTLSGoClose, traceTLSGoRead, traceTLSGoWrite} {
+		offset, exists := target.offsets[name]
+		if !exists {
+			return links, fmt.Errorf("--tls %s: missing Go TLS entry offset", target.path)
+		}
+		if err = attach(name, pairs[name][0], offset); err != nil {
+			return links, err
+		}
 	}
 	return links, nil
 }
@@ -805,6 +856,11 @@ func collectCaptureEventsFor(scope traceScope, duration time.Duration, onEvent f
 	}
 	streams := newDNSTCPStreams()
 	mysql := newMySQLTracker(scope.side, scope.showSecrets)
+	var goOrder *goTLSOrder
+	if scope.tlsFinder != nil && slices.ContainsFunc(scope.tlsFinder.targets, func(target traceTLSTarget) bool { return target.goReturns != nil }) {
+		goOrder = newGoTLSOrder()
+	}
+	var ready [][]byte
 	var eventCount uint64
 	emit := func(events []captureEvent) error {
 		for _, event := range events {
@@ -847,6 +903,9 @@ func collectCaptureEventsFor(scope traceScope, duration time.Duration, onEvent f
 		if lookupErr := objects.TlsUnmapped.Lookup(uint32(0), &unmapped); lookupErr != nil {
 			return captureSummary{}, fmt.Errorf("read unmapped TLS count: %w", lookupErr)
 		}
+		if goOrder != nil {
+			lost += goOrder.finish() + uint64(len(ready))
+		}
 		// 감시를 기다리는 동안에도 hook은 붙어 있고 남은 레코드는 읽지 않으므로, 잃은 수를 읽은 뒤에 멈춘다.
 		stopTLSWatch()
 		return captureSummary{TimestampNS: uint64(time.Now().UnixNano()), Event: "capture_summary", EventCount: eventCount, LostEvents: lost, TLSUnmapped: unmapped, TLSExecProblem: tlsExecProblem}, nil
@@ -857,23 +916,41 @@ func collectCaptureEventsFor(scope traceScope, duration time.Duration, onEvent f
 		if duration > 0 && !time.Now().Before(deadline) {
 			return finish()
 		}
-		record, err := reader.Read()
-		if errors.Is(err, os.ErrDeadlineExceeded) {
-			if messages != nil && (duration == 0 || time.Now().Before(deadline)) {
-				if err := emit(messages.expire(time.Now())); err != nil {
-					return captureSummary{}, err
+		var record ringbuf.Record
+		var err error
+		if len(ready) != 0 {
+			record.RawSample = ready[0]
+			ready = ready[1:]
+		} else {
+			record, err = reader.Read()
+			if errors.Is(err, os.ErrDeadlineExceeded) {
+				if messages != nil && (duration == 0 || time.Now().Before(deadline)) {
+					if err := emit(messages.expire(time.Now())); err != nil {
+						return captureSummary{}, err
+					}
+					swept = time.Now()
+					sweepDeadline()
+					continue
 				}
-				swept = time.Now()
-				sweepDeadline()
-				continue
+				return finish()
 			}
-			return finish()
-		}
-		if errors.Is(err, os.ErrClosed) && traceStopRequested(stop) {
-			return finish()
-		}
-		if err != nil {
-			return captureSummary{}, err
+			if errors.Is(err, os.ErrClosed) && traceStopRequested(stop) {
+				return finish()
+			}
+			if err != nil {
+				return captureSummary{}, err
+			}
+			if goOrder != nil {
+				if len(record.RawSample) >= 12 && binary.LittleEndian.Uint32(record.RawSample[8:12]) != goTLSOrderRecord && !captureRecordAfterAttached(binary.LittleEndian.Uint64(record.RawSample[:8]), attached) {
+					continue
+				}
+				ready = goOrder.add(record.RawSample)
+				if len(ready) == 0 {
+					continue
+				}
+				record.RawSample = ready[0]
+				ready = ready[1:]
+			}
 		}
 		if packet, ok := parseDNSRecord(record.RawSample); ok {
 			if !packet.sent {

@@ -23,9 +23,10 @@ import (
 // 위치다. 위치를 주면 uprobe를 붙일 때 ELF의 심볼 표를 다시 읽지 않는다. node처럼 큰 실행 파일은 그 표를 읽는 데 100ms
 // 넘게 걸려, trace 중에 새로 뜬 process의 첫 요청보다 늦게 붙는다.
 type traceTLSTarget struct {
-	path    string
-	symbols []string
-	offsets map[string]uint64
+	path      string
+	symbols   []string
+	offsets   map[string]uint64
+	goReturns map[string][]uint64
 	// id는 탐색이 고른 파일의 (device, inode)다. --tls=<경로>로 준 파일은 0이다.
 	id [2]uint64
 }
@@ -46,7 +47,7 @@ var traceTLSNSSFunctions = []string{"SSL_ImportFD", "SSL_OptionSet", "SSL_Option
 	"PR_Read", "PR_Recv", "PR_Write", "PR_Send", "PR_Close"}
 
 // traceTLSFreeFunctions는 평문을 읽지 않는 traceTLSFunctions다.
-var traceTLSFreeFunctions = []string{"SSL_free", "gnutls_deinit", "PR_Close", "wolfSSL_free", "mbedtls_ssl_session_reset", "mbedtls_ssl_free", "rustls_connection_free"}
+var traceTLSFreeFunctions = []string{"SSL_free", "gnutls_deinit", "PR_Close", "wolfSSL_free", "mbedtls_ssl_session_reset", "mbedtls_ssl_free", "rustls_connection_free", traceTLSGoClose}
 
 // traceTLSLibraryNames는 maps와 host 디렉터리에서 찾는 TLS library 파일 이름의 앞부분이다.
 var traceTLSLibraryNames = []string{"libssl.so", "libgnutls.so", "libssl3.so", "libnspr4.so", "libwolfssl.so", "libmbedtls.so", "librustls.so"}
@@ -345,6 +346,11 @@ func traceTLSReadFile(path string, withSymtab bool) (traceTLSTarget, error) {
 			if offset, ok := traceTLSFileOffset(file, symbol.Value); ok {
 				target.offsets[symbol.Name] = offset
 			}
+		}
+	}
+	if withSymtab && !traceTLSReadsPlaintext(target.symbols) {
+		if err := traceTLSGo(file, &target); err != nil {
+			return target, err
 		}
 	}
 	if !traceTLSReadsPlaintext(target.symbols) {

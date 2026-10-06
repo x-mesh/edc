@@ -120,6 +120,30 @@ func TestHTTP2TraceStopsAfterAGap(t *testing.T) {
 	}
 }
 
+// non-blocking socket은 송신 버퍼가 차면 일부만 보내고 나머지를 다시 쓴다. BPF는 시작할 때 길이를 다 넘기므로 다시 쓴
+// byte가 같은 TCP 순번으로 다시 온다. 겹친 앞부분은 버리고 이어지는 frame만 읽는다.
+func TestHTTP2TraceSkipsResentBytes(t *testing.T) {
+	tracker := newHTTPTracker("", false, false)
+	headers := func(path string) []byte {
+		return http2TestFrame(1, 4, 1, http2TestHeaders(hpack.HeaderField{Name: ":method", Value: "GET"}, hpack.HeaderField{Name: ":path", Value: path}))
+	}
+	const seq = 1_000_000
+	first := append(append([]byte{}, http2Preface...), headers("/one")...)
+	if events, _ := tracker.http2Events(http2TestPacket(first, 1, true, seq), 0); len(events) != 1 || events[0].Path != "/one" {
+		t.Fatalf("first = %#v", events)
+	}
+	resent := append(append([]byte{}, first[len(first)-10:]...), headers("/two")...)
+	if events, claimed := tracker.http2Events(http2TestPacket(resent, 2, true, seq+len(first)-10), 0); !claimed || len(events) != 1 || events[0].Path != "/two" {
+		t.Fatalf("resent = %#v, %t", events, claimed)
+	}
+	if events, claimed := tracker.http2Events(http2TestPacket(first[:20], 3, true, seq), 0); !claimed || len(events) != 0 {
+		t.Fatalf("whole resend = %#v, %t", events, claimed)
+	}
+	if events, _ := tracker.http2Events(http2TestPacket(headers("/three"), 4, true, seq+len(first)+len(headers("/two"))), 0); len(events) != 1 || events[0].Path != "/three" {
+		t.Fatalf("after the resend = %#v", events)
+	}
+}
+
 // HPACK 오류 뒤에는 동적 표가 상대와 어긋나므로 그 방향은 더 읽지 않는다.
 func TestHTTP2TraceStopsAfterAnHPACKError(t *testing.T) {
 	tracker := newHTTPTracker("", false, false)

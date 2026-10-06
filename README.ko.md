@@ -1211,7 +1211,7 @@ edc는 TLS 위의 HTTP/2를 해석하지 않습니다. TLS 위의 HTTP/2 연결�
 
 amd64의 Linux 6.11, 6.12.14 전의 6.12, 6.13.3 전의 6.13에서는 Docker container처럼 seccomp filter 아래에서 도는 process가 OpenSSL 호출에서 돌아올 때 종료될 수 있습니다. 이런 kernel에서는 trace를 시작하기 전에 경고를 표시합니다. 배포판 kernel에는 수정이 따로 들어 있을 수 있습니다.
 
-`--tls`가 없으면 HTTPS의 요청은 kernel에서 암호문으로만 보이므로 표시하지 않습니다. TLS 없는 HTTP/2(h2c, 예: cluster 안의 gRPC)는 해석해서 stream마다 method, path, 상태 코드, 응답 시간을 표시합니다. frame과 header 표를 따라가야 하므로 h2c 연결은 모든 byte를 읽고, 그래서 바쁜 h2c 연결은 HTTP/1보다 비용이 큽니다. h2c 연결의 byte를 잃으면 그 방향은 더 읽지 않고 잃은 event로 셉니다. HTTP/3의 요청은 binary frame이라 표시하지 않습니다. HTTP/3은 UDP를 쓰므로 `tls_hello` event도 없습니다. edc는 한 번의 읽기나 쓰기가 시작되는 곳에서만 message를 찾습니다. 그래서 한 번의 읽기에 앞 응답의 끝과 다음 응답의 시작이 함께 들어 있으면 다음 응답을 놓칩니다. 프로그램이 message 하나를 여러 버퍼로 나눠 쓰면 첫 버퍼만 읽으므로, `Host` header는 첫 버퍼의 앞 512 byte 안에 있어야 합니다. 없으면 target은 서버 주소입니다. edc는 Linux 5.15 이상에서 이 field를 지원합니다.
+`--tls`가 없으면 HTTPS의 요청은 kernel에서 암호문으로만 보이므로 표시하지 않습니다. TLS 없는 HTTP/2(h2c, 예: cluster 안의 gRPC)는 해석해서 stream마다 method, path, 상태 코드, 응답 시간을 표시합니다. frame과 header 표를 따라가야 하므로 h2c 연결은 모든 byte를 읽고, 그래서 바쁜 h2c 연결은 HTTP/1보다 비용이 큽니다. 이 byte는 다른 HTTP 레코드와 같은 buffer를 쓰므로, 바쁜 h2c 연결이 있으면 다른 연결의 event도 잃을 수 있습니다. 비용을 줄이려면 `--port`를 씁니다. h2c 연결의 byte를 잃으면 그 방향은 더 읽지 않고 잃은 event로 셉니다. HTTP/3의 요청은 binary frame이라 표시하지 않습니다. HTTP/3은 UDP를 쓰므로 `tls_hello` event도 없습니다. edc는 한 번의 읽기나 쓰기가 시작되는 곳에서만 message를 찾습니다. 그래서 한 번의 읽기에 앞 응답의 끝과 다음 응답의 시작이 함께 들어 있으면 다음 응답을 놓칩니다. 프로그램이 message 하나를 여러 버퍼로 나눠 쓰면 첫 버퍼만 읽으므로, `Host` header는 첫 버퍼의 앞 512 byte 안에 있어야 합니다. 없으면 target은 서버 주소입니다. edc는 Linux 5.15 이상에서 이 field를 지원합니다.
 
 Linux 5.15 이상에서 `trace mysql`을 사용하면 평문 MySQL 명령과 결과를 발생 즉시 출력합니다. edc는 kernel에서 MySQL port의 TCP 읽기와 쓰기마다 앞부분을 읽습니다. 기본 port는 3306이고, 다른 port는 `--port`로 지정합니다.
 

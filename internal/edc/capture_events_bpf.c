@@ -432,6 +432,7 @@ struct sock {
 };
 
 struct tcp_sock {
+	__u32 write_seq;
 	__u32 snd_ssthresh;
 	__u32 snd_cwnd;
 	__u32 srtt_us;
@@ -1115,9 +1116,15 @@ int tcp_create_openreq_child_exit(__u64 *ctx) {
 // HTTP_SPLIT_SIZE보다 짧게 시작한 읽기와 쓰기는 첫 줄이 끝나지 않았을 수 있다. caddy는 요청의 첫 14 byte를 먼저 읽고
 // 나머지를 다시 읽는다. --payload=all이 아니면 이런 socket과 방향에서만 다음 조각 하나를 이어서 넘긴다.
 #define HTTP_SPLIT_SIZE 64
-// HTTP2_STREAM은 http_streams 값에서 h2c 연결을 표시하는 bit다. 나머지 bit는 그 방향에서 지금까지 주고받은 byte 수다.
-// HTTP/1의 위치는 message 하나 안이라 이 bit에 닿지 않는다.
+// HTTP2_STREAM은 http_streams 값에서 h2c 연결을 표시하는 bit다. 수신 방향에서는 나머지 bit가 지금까지 읽은 byte 수다.
+// 송신 방향은 TCP 순번을 위치로 쓴다. HTTP/1의 위치는 message 하나 안이라 이 bit에 닿지 않는다.
 #define HTTP2_STREAM (1ULL << 63)
+// HTTP2_PREFACE_LEN은 h2c 연결 머리의 길이다. "PRI "로 시작하는 HTTP/1 body를 h2c로 보면 그 연결의 byte를 모두 넘기고
+// 이후 HTTP/1 요청을 놓치므로, 머리 전체가 맞을 때만 h2c로 본다.
+#define HTTP2_PREFACE_LEN 24
+// HTTP_NO_SEQ는 http_capture에 TCP 순번이 없다는 표시다. 수신은 실제로 읽은 byte만 넘기므로 순번 없이 센다.
+#define HTTP_NO_SEQ (~0ULL)
+static const char http2_preface_bytes[HTTP2_PREFACE_LEN + 1] = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
 // HTTPS는 암호문이라 ClientHello만 읽는다. SNI와 ALPN이 그 안에 평문으로 있다. post-quantum key share를 보내는 client는
 // ClientHello가 2KB에 가깝고 확장 순서를 섞어서, SNI가 앞 512 byte 밖에 있을 수 있다.
 #define TLS_HELLO_SIZE 4096
@@ -1513,10 +1520,23 @@ static __always_inline void http_fill_record(struct http_record *record, struct 
 	current_process_name(&record->comm);
 }
 
+static __always_inline int h2c_preface(__u64 buffer, __u64 limit, __u64 size) {
+	__u8 head[HTTP2_PREFACE_LEN] = {};
+	if (size < HTTP2_PREFACE_LEN || limit < HTTP2_PREFACE_LEN || bpf_probe_read_user(head, sizeof(head), (void *)buffer)) {
+		return 0;
+	}
+	for (int i = 0; i < HTTP2_PREFACE_LEN; i++) {
+		if (head[i] != (__u8)http2_preface_bytes[i]) {
+			return 0;
+		}
+	}
+	return 1;
+}
+
 // http_capture는 한 번의 읽기나 쓰기를 레코드로 넘긴다. buffer와 limit는 첫 버퍼이고, iov가 있으면 writev의 다음 버퍼를
 // 이어서 읽는다. size는 이번 호출에서 주고받은 byte 수다. --payload=all이 아니면 HTTP로 시작하는 첫 버퍼의 앞
 // http_payload_limit byte만 레코드 하나로 넘긴다. TLS는 ClientHello의 앞 TLS_HELLO_SIZE byte만 넘긴다.
-static __always_inline void http_capture(struct sock *sk, __u64 buffer, __u64 limit, const struct iovec *iov, __u64 nr_segs, __u64 size, __u8 direction) {
+static __always_inline void http_capture(struct sock *sk, __u64 buffer, __u64 limit, const struct iovec *iov, __u64 nr_segs, __u64 size, __u8 direction, __u64 seq) {
 	// port는 부르는 쪽이 시작할 때(fentry) 확인한다. 끝날 때는 이미 늦을 수 있다. loopback에서 상대가 닫은 socket에 쓰면
 	// RST가 같은 호출 안에서 처리되어, tcp_sendmsg가 끝날 때는 kernel이 로컬 port를 0으로 지워 두었다.
 	if (!sk || !buffer || size == 0) {
@@ -1528,9 +1548,8 @@ static __always_inline void http_capture(struct sock *sk, __u64 buffer, __u64 li
 	int peeked = limit >= peek_len && !bpf_probe_read_user(peek, peek_len, (void *)buffer);
 	int readable = peek_len == sizeof(peek) && peeked;
 	int start = readable && http_start(peek);
-	// h2c 연결은 "PRI "로 시작한다. 1~3 byte만 읽은 조각은 HTTP/1 서버가 한 byte씩 엿보는 경우와 구별할 수 없고, h2c로
-	// 잘못 보면 그 연결의 byte를 모두 넘기게 되므로 4 byte가 다 맞을 때만 시작으로 본다.
-	int http2_start = readable && peek[0] == 'P' && peek[1] == 'R' && peek[2] == 'I' && peek[3] == ' ';
+	// h2c 연결은 HTTP2_PREFACE_LEN byte 머리로 시작한다. 짧은 조각은 HTTP/1 서버가 몇 byte씩 엿보는 경우와 구별할 수 없다.
+	int http2_start = readable && peek[0] == 'P' && peek[1] == 'R' && peek[2] == 'I' && peek[3] == ' ' && h2c_preface(buffer, limit, size);
 	// 모든 TCP 송수신이 여기를 지나므로 이어 받을 조각이 있는 socket에서만 map에 값이 있다. 이어 받는 조각을 TLS 판별보다
 	// 먼저 보므로, 0x16 0x03으로 시작하는 HTTP body 조각을 TLS로 읽지 않는다. h2c 연결의 frame 안에서 "GET "처럼 보이는
 	// 조각이 와도 HTTP/1 message로 보지 않도록 HTTP 시작보다 먼저 확인한다.
@@ -1545,6 +1564,8 @@ static __always_inline void http_capture(struct sock *sk, __u64 buffer, __u64 li
 	int tls_synthetic = 0;
 	__u64 segment = 0;
 	int dropped = 0;
+	struct http_stream_key peer = {.skaddr = (__u64)sk, .direction = direction == HTTP_SENT ? HTTP_RECEIVED : HTTP_SENT};
+	int peer_marked = 0;
 	if (!start && !seen) {
 		__u64 tls_offset = 0;
 		__u64 tls_captured = 0;
@@ -1574,15 +1595,17 @@ static __always_inline void http_capture(struct sock *sk, __u64 buffer, __u64 li
 	} else if (http2) {
 		// h2c는 frame이 읽기와 쓰기 경계를 넘나들고 HPACK 표가 앞 frame에 기대므로, 연결의 byte를 빠짐없이 순서대로 넘긴다.
 		// 위치를 레코드 offset에 실어, 잃은 byte가 사용자 공간에 위치 차이로 보인다.
-		offset = http2_going ? *seen & ~HTTP2_STREAM : 0;
+		// 송신은 시작할 때 길이를 다 넘기지만 non-blocking socket은 일부만 보내고 나머지를 다시 쓴다. 그래서 송신 위치는
+		// TCP 순번(write_seq)으로 둔다. 다시 쓴 byte는 같은 순번으로 오고 사용자 공간이 겹친 앞부분을 버린다.
+		offset = seq != HTTP_NO_SEQ ? seq : http2_going ? *seen & ~HTTP2_STREAM : 0;
 		__u64 next = HTTP2_STREAM | (offset + size);
 		bpf_map_update_elem(&http_streams, &key, &next, BPF_ANY);
 		if (!http2_going) {
-			struct http_stream_key peer = {.skaddr = (__u64)sk, .direction = direction == HTTP_SENT ? HTTP_RECEIVED : HTTP_SENT};
 			__u64 *other = bpf_map_lookup_elem(&http_streams, &peer);
 			if (!other || !(*other & HTTP2_STREAM)) {
 				__u64 begin = HTTP2_STREAM;
 				bpf_map_update_elem(&http_streams, &peer, &begin, BPF_ANY);
+				peer_marked = 1;
 			}
 		}
 		budget = size;
@@ -1691,6 +1714,10 @@ static __always_inline void http_capture(struct sock *sk, __u64 buffer, __u64 li
 	// h2c에서 넘기지 못한 byte가 남으면 frame 경계와 HPACK 표를 되찾을 수 없다. 그 방향은 더 넘기지 않고 잃은 event로 센다.
 	if (http2 && cursor->remaining) {
 		bpf_map_delete_elem(&http_streams, &key);
+		// 이 호출이 h2c를 시작하고 레코드를 하나도 넘기지 못했으면 사용자 공간은 이 연결을 모른다. 반대 방향도 넘기지 않는다.
+		if (peer_marked && cursor->offset == offset) {
+			bpf_map_delete_elem(&http_streams, &peer);
+		}
 		__u64 *lost = dropped ? 0 : bpf_map_lookup_elem(&lost_events, &zero);
 		if (lost) {
 			__sync_fetch_and_add(lost, 1);
@@ -2224,7 +2251,7 @@ int tcp_sendmsg_entry(__u64 *ctx) {
 	if (!http_message_limit) {
 		__u64 nr_segs = 1;
 		const struct iovec *iov = http_iov(msg, &nr_segs);
-		http_capture(sk, (__u64)buffer, limit, iov, nr_segs, size, HTTP_SENT);
+		http_capture(sk, (__u64)buffer, limit, iov, nr_segs, size, HTTP_SENT, BPF_CORE_READ((struct tcp_sock *)sk, write_seq));
 		return 0;
 	}
 	struct http_send_pending pending = {.skaddr = (__u64)sk, .buffer = (__u64)buffer, .limit = limit, .nr_segs = 1};
@@ -2261,7 +2288,11 @@ int tcp_sendmsg_exit(__u64 *ctx) {
 	bpf_map_delete_elem(&http_send_pending, &key);
 	int sent = (int)ctx[3];
 	if (sent > 0) {
-		http_capture((struct sock *)pending.skaddr, pending.buffer, pending.limit, (const struct iovec *)pending.iov, pending.nr_segs, sent, HTTP_SENT);
+		// 끝날 때 write_seq는 보낸 만큼 앞서 있다. BPF_CORE_READ 안에서 pending을 읽으면 그 접근도 kernel 타입으로
+		// 옮기려다 실패하므로 pointer를 먼저 꺼낸다.
+		struct tcp_sock *tcp = (struct tcp_sock *)pending.skaddr;
+		__u32 seq = BPF_CORE_READ(tcp, write_seq) - sent;
+		http_capture((struct sock *)pending.skaddr, pending.buffer, pending.limit, (const struct iovec *)pending.iov, pending.nr_segs, sent, HTTP_SENT, seq);
 	}
 	return 0;
 }
@@ -2332,7 +2363,7 @@ static __always_inline int finish_tcp_recvmsg(__u64 *ctx, int copied) {
 				emit_mysql_buffer(sk, pending->buffer, pending->limit, (__u64)copied, HTTP_RECEIVED, side == MYSQL_SERVER);
 			}
 		} else if (emit_http_messages) {
-			http_capture(sk, pending->buffer, pending->limit, (const struct iovec *)pending->iov, pending->nr_segs, (__u64)copied, HTTP_RECEIVED);
+			http_capture(sk, pending->buffer, pending->limit, (const struct iovec *)pending->iov, pending->nr_segs, (__u64)copied, HTTP_RECEIVED, HTTP_NO_SEQ);
 		}
 	}
 	bpf_map_delete_elem(&http_recv_pending, &key);

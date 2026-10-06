@@ -84,10 +84,12 @@ type httpTracker struct {
 	h2Size    int
 }
 
-// http2Direction은 h2c 연결의 한 방향이다. next는 다음 레코드가 시작해야 하는 연결 안의 위치다.
+// http2Direction은 h2c 연결의 한 방향이다. next는 다음 레코드가 시작해야 하는 위치이고, started 전에는 첫 레코드의 위치를
+// 기준으로 삼는다. 송신 위치는 TCP 순번이라 0에서 시작하지 않는다.
 type http2Direction struct {
 	buffer       []byte
 	next         uint32
+	started      bool
 	preface      bool
 	decoder      *hpack.Decoder
 	fields       []hpack.HeaderField
@@ -118,7 +120,7 @@ func (tracker *httpTracker) http2Events(packet httpPacket, clockOffset int64) ([
 	peer := httpStreamKey{socket: packet.socket, sent: !packet.sent}
 	direction := tracker.http2[key]
 	if direction == nil {
-		if packet.offset != 0 || !bytes.HasPrefix(http2Preface, packet.payload) && !bytes.HasPrefix(packet.payload, http2Preface) {
+		if packet.continued || !bytes.HasPrefix(http2Preface, packet.payload) && !bytes.HasPrefix(packet.payload, http2Preface) {
 			return nil, false
 		}
 		direction = tracker.newHTTP2Direction()
@@ -128,13 +130,23 @@ func (tracker *httpTracker) http2Events(packet httpPacket, clockOffset int64) ([
 			tracker.http2[peer].preface = true
 		}
 	}
-	// 잃은 byte가 있으면 frame 경계와 HPACK 표를 되찾을 수 없으므로 이 방향은 더 읽지 않는다.
-	if packet.offset != direction.next {
+	if !direction.started {
+		direction.next, direction.started = packet.offset, true
+	}
+	payload := packet.payload
+	// 일부만 보낸 송신을 program이 다시 쓰면 같은 byte가 같은 위치로 다시 온다. 이미 받은 앞부분은 버린다. 잃은 byte가
+	// 있으면 frame 경계와 HPACK 표를 되찾을 수 없으므로 이 방향은 더 읽지 않는다.
+	switch overlap := int32(direction.next - packet.offset); {
+	case overlap < 0:
 		delete(tracker.http2, key)
 		return nil, true
+	case int(overlap) >= len(payload):
+		return nil, true
+	default:
+		payload = payload[overlap:]
 	}
-	direction.next += uint32(len(packet.payload))
-	direction.buffer = append(direction.buffer, packet.payload...)
+	direction.next += uint32(len(payload))
+	direction.buffer = append(direction.buffer, payload...)
 	if !direction.preface {
 		if len(direction.buffer) < len(http2Preface) {
 			return nil, true

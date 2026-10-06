@@ -537,6 +537,10 @@ The minimum terminal size is 24 columns and 8 rows. Help supports scroll on smal
 | 110 | packet in/out |
 | 120 | network errors and drops |
 | 125 | disk `busy` |
+| 143 | CPU, memory, and I/O pressure (`psi`) |
+| 149 | memory swap out (`swap`) |
+| 161 | listen queue overflows (`listen`) and softnet drops (`soft`) |
+| 167 | conntrack usage (`ct%`) |
 
 The `signal` column gets 13 to 16 characters. That is room for at least one warning and the number of the other warnings. The other columns share the remaining width, so the table fills the terminal. The title line also adds the OS name, the memory size, and the CPU model when the terminal has room. The right edge of the title shows the view and `live` or `history`. It adds the edc version when the terminal has room. If the terminal becomes narrower, the table removes those columns immediately.
 
@@ -544,7 +548,7 @@ On macOS and Linux, the disk view shows IOPS and average `await` across physical
 
 On Linux, the disk view shows aggregate `busy%`, and the memory view shows memory pressure. Aggregate `busy%` can exceed 100 across multiple disks.
 
-On macOS, the dashboard omits unsupported iowait, PSI, disk busy, file descriptor, and eBPF latency columns. The help page lists these limits.
+On macOS, the dashboard omits unsupported iowait, PSI, disk busy, file descriptor, listen overflow, softnet drop, conntrack, and eBPF latency columns. The help page lists these limits.
 
 On macOS and Linux, the network view shows interface errors and drops. On macOS, `edc` reads kernel interface statistics (`net.link.generic.ifdata`).
 

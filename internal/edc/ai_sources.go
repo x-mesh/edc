@@ -796,12 +796,12 @@ func appendAIResets(path string, events []aiResetEvent) error {
 	return file.Close()
 }
 
-// aiClaudeState는 ai-claude.json의 내용이다. 마지막으로 성공한 조회와 함께 429 때문에 미룬 다음 조회 시각과 간격을 남긴다.
-// 거절된 호출도 제한을 늘리므로, 다시 실행해도 그 시각 전에는 부르지 않는다.
+// aiClaudeState는 ai-claude.json의 내용이다. 마지막으로 성공한 조회와 함께 다음 조회 시각과 429 백오프를 남긴다.
+// 거절된 호출도 제한을 늘리므로, 다시 실행해도 백오프 중이면 그 시각 전에는 부르지 않는다. --poll 하한은 남기지 않는다.
 type aiClaudeState struct {
 	aiProvider
-	NextTry  time.Time     `json:"next_try,omitzero"`
-	Interval time.Duration `json:"interval_ns,omitzero"`
+	NextTry time.Time     `json:"next_try,omitzero"`
+	Backoff time.Duration `json:"backoff_ns,omitzero"`
 }
 
 // saveAIClaudeState는 Claude 조회 상태를 쓴다. 임시 파일을 바꿔 넣어 다른 edc ai가 반쯤 쓴 파일을 읽지 않는다.

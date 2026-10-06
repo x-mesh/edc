@@ -322,22 +322,26 @@ func TestAIDashboardKeysMoveLikeTop(t *testing.T) {
 func TestAIClaudeIntervalGrowsOnRateLimitAndStays(t *testing.T) {
 	collector, now := &aiCollector{}, time.Date(2026, 10, 6, 2, 0, 0, 0, time.UTC)
 	collector.scheduleClaude(false, now, time.Minute)
-	if collector.claudeInterval != aiClaudeMinInterval || !collector.claudeNext.Equal(now.Add(aiClaudeMinInterval)) {
-		t.Fatalf("first success: interval %s, next %s", collector.claudeInterval, collector.claudeNext)
+	if every := collector.claudeEvery(time.Minute); every != aiClaudeMinInterval || collector.claudeBackoff != 0 || !collector.claudeNext.Equal(now.Add(aiClaudeMinInterval)) {
+		t.Fatalf("first success: every %s, backoff %s, next %s", every, collector.claudeBackoff, collector.claudeNext)
 	}
 	collector.scheduleClaude(true, now, time.Minute)
-	if collector.claudeInterval != 2*aiClaudeMinInterval {
-		t.Fatalf("after 429: interval %s, want %s", collector.claudeInterval, 2*aiClaudeMinInterval)
+	if collector.claudeBackoff != 2*aiClaudeMinInterval || !collector.claudeNext.Equal(now.Add(2*aiClaudeMinInterval)) {
+		t.Fatalf("after 429: backoff %s, next %s", collector.claudeBackoff, collector.claudeNext)
 	}
 	collector.scheduleClaude(false, now, time.Minute)
-	if collector.claudeInterval != 2*aiClaudeMinInterval {
-		t.Fatalf("success after 429 must keep %s, got %s", 2*aiClaudeMinInterval, collector.claudeInterval)
+	if collector.claudeBackoff != 2*aiClaudeMinInterval {
+		t.Fatalf("success after 429 must keep %s, got %s", 2*aiClaudeMinInterval, collector.claudeBackoff)
 	}
 	for range 10 {
 		collector.scheduleClaude(true, now, time.Minute)
 	}
-	if collector.claudeInterval != aiMaxBackoff {
-		t.Fatalf("interval %s, want the %s cap", collector.claudeInterval, aiMaxBackoff)
+	if collector.claudeBackoff != aiMaxBackoff {
+		t.Fatalf("backoff %s, want the %s cap", collector.claudeBackoff, aiMaxBackoff)
+	}
+	// --poll 하한은 간격을 늘리지만 백오프가 아니다.
+	if fresh := (&aiCollector{}); fresh.claudeEvery(10*time.Minute) != 10*time.Minute || fresh.claudeBackoff != 0 {
+		t.Fatalf("poll floor: every %s, backoff %s", fresh.claudeEvery(10*time.Minute), fresh.claudeBackoff)
 	}
 }
 
@@ -446,81 +450,153 @@ func (stub aiStubTransport) RoundTrip(request *http.Request) (*http.Response, er
 	return &http.Response{StatusCode: stub.status, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(stub.body)), Request: request}, nil
 }
 
+// aiUsageFixture는 성공한 Claude 사용량 응답이다.
+const aiUsageFixture = `{"five_hour":{"utilization":22,"resets_at":"2026-10-06T08:59:59Z"}}`
+
 func writeAIClaudeCredentials(t *testing.T, dir string) {
 	t.Helper()
 	writeAIFixture(t, filepath.Join(dir, ".credentials.json"),
 		`{"claudeAiOauth":{"accessToken":"test-token","expiresAt":`+strconv.FormatInt(time.Now().Add(time.Hour).UnixMilli(), 10)+`,"subscriptionType":"max"}}`)
 }
 
-// 429로 늘린 간격은 다시 실행해도 이어진다. 한 번도 성공하지 못했으면 상자에 보일 값은 없다.
+// 429로 늘린 간격은 다시 실행해도 이어진다. 한 번도 성공하지 못했으면 상자는 비지 않고 미룬 이유와 다음 조회 시각을 보인다.
 func TestAIPollKeepsTheClaudeBackoffAcrossRuns(t *testing.T) {
 	// codex를 찾지 못하게 해 시험이 실제 app-server를 띄우지 않는다.
 	t.Setenv("PATH", t.TempDir())
 	claudeDir, stateDir := t.TempDir(), t.TempDir()
 	writeAIClaudeCredentials(t, claudeDir)
+	rateLimited := &http.Client{Transport: aiStubTransport{status: http.StatusTooManyRequests, body: "{}"}}
 	collector := newAICollector(claudeDir, t.TempDir(), stateDir, time.Now())
-	collector.http = &http.Client{Transport: aiStubTransport{status: http.StatusTooManyRequests, body: "{}"}}
+	collector.http = rateLimited
 	collector.poll(context.Background(), time.Minute)
-	if collector.claudeInterval != 2*aiClaudeMinInterval {
-		t.Fatalf("after 429: interval %s", collector.claudeInterval)
+	if collector.claudeBackoff != 2*aiClaudeMinInterval {
+		t.Fatalf("after 429: backoff %s", collector.claudeBackoff)
 	}
 	restarted := newAICollector(claudeDir, t.TempDir(), stateDir, time.Now())
-	if !restarted.claudeNext.Equal(collector.claudeNext) || restarted.claudeInterval != collector.claudeInterval {
-		t.Errorf("restart: next %s interval %s, want %s and %s", restarted.claudeNext, restarted.claudeInterval, collector.claudeNext, collector.claudeInterval)
+	// 복원이 틀려 바로 조회하게 되어도 실제 API를 부르지 않는다.
+	restarted.http = rateLimited
+	if !restarted.claudeNext.Equal(collector.claudeNext) || restarted.claudeBackoff != collector.claudeBackoff {
+		t.Fatalf("restart: next %s backoff %s, want %s and %s", restarted.claudeNext, restarted.claudeBackoff, collector.claudeNext, collector.claudeBackoff)
 	}
-	// 성공한 값이 없으면 상자는 비지 않고 미룬 이유와 다음 조회 시각을 보인다.
 	claude := restarted.poll(context.Background(), time.Minute).providers[0]
 	if claude.Name != "claude" || len(claude.Windows) != 0 || !strings.Contains(claude.Err, "rate limited · next try ") {
 		t.Errorf("restart without a success: %+v", claude)
 	}
 }
 
-// 429 뒤에 늘어난 간격은 성공해도 줄지 않는다. 성공한 뒤 다시 실행해도 그 간격을 쓴다.
+// 429 뒤에 늘어난 백오프는 성공해도 줄지 않는다. 성공한 뒤 다시 실행해도 그 간격을 쓴다.
 func TestAIPollKeepsTheBackedOffIntervalAfterASuccess(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 	claudeDir, stateDir := t.TempDir(), t.TempDir()
 	writeAIClaudeCredentials(t, claudeDir)
 	collector := newAICollector(claudeDir, t.TempDir(), stateDir, time.Now())
-	collector.claudeInterval = 2 * aiClaudeMinInterval
-	collector.http = &http.Client{Transport: aiStubTransport{status: http.StatusOK, body: `{"five_hour":{"utilization":22,"resets_at":"2026-10-06T08:59:59Z"}}`}}
+	collector.claudeBackoff = 2 * aiClaudeMinInterval
+	collector.http = &http.Client{Transport: aiStubTransport{status: http.StatusOK, body: aiUsageFixture}}
 	if claude := collector.poll(context.Background(), time.Minute).providers[0]; claude.Err != "" || len(claude.Windows) != 1 {
 		t.Fatalf("success: %+v", claude)
 	}
 	restarted := newAICollector(claudeDir, t.TempDir(), stateDir, time.Now())
-	if !restarted.claudeNext.Equal(collector.claudeNext) || restarted.claudeInterval != 2*aiClaudeMinInterval {
-		t.Errorf("restart: next %s interval %s, want %s and %s", restarted.claudeNext, restarted.claudeInterval, collector.claudeNext, 2*aiClaudeMinInterval)
+	if !restarted.claudeNext.Equal(collector.claudeNext) || restarted.claudeBackoff != 2*aiClaudeMinInterval {
+		t.Errorf("restart: next %s backoff %s, want %s and %s", restarted.claudeNext, restarted.claudeBackoff, collector.claudeNext, 2*aiClaudeMinInterval)
 	}
 	if shown := restarted.shown["claude"]; shown.Err != "" || len(shown.Windows) != 1 {
 		t.Errorf("restart after a success shows %+v", shown)
 	}
 }
 
+// --poll 10m으로 성공한 뒤 기본 --poll로 다시 실행하면 5분 간격으로 돌아간다. 하한은 백오프가 아니라서 남기지 않는다.
+func TestAIPollDoesNotCarryThePollFloorAcrossRuns(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	claudeDir := t.TempDir()
+	writeAIClaudeCredentials(t, claudeDir)
+	for _, test := range []struct {
+		name    string
+		backoff time.Duration
+		poll    time.Duration
+		// wantAfter는 성공한 시각에서 다시 실행한 쪽의 다음 조회까지 걸리는 시간이다.
+		wantAfter time.Duration
+	}{
+		{"no backoff", 0, 10 * time.Minute, aiClaudeMinInterval},
+		{"poll above the backoff", 10 * time.Minute, 12 * time.Minute, 10 * time.Minute},
+	} {
+		stateDir := t.TempDir()
+		collector := newAICollector(claudeDir, t.TempDir(), stateDir, time.Now())
+		collector.claudeBackoff = test.backoff
+		collector.http = &http.Client{Transport: aiStubTransport{status: http.StatusOK, body: aiUsageFixture}}
+		if claude := collector.poll(context.Background(), test.poll).providers[0]; claude.Err != "" {
+			t.Fatalf("%s: success: %+v", test.name, claude)
+		}
+		fetched := collector.last["claude"].FetchedAt
+		restarted := newAICollector(claudeDir, t.TempDir(), stateDir, time.Now())
+		if restarted.claudeBackoff != test.backoff || !restarted.claudeNext.Equal(fetched.Add(test.wantAfter)) {
+			t.Errorf("%s: restart backoff %s next %s, want %s and %s", test.name, restarted.claudeBackoff, restarted.claudeNext, test.backoff, fetched.Add(test.wantAfter))
+		}
+	}
+}
+
+// --poll이 백오프 상한보다 길어도 429 뒤에 다시 실행하면 백오프를 이어 받는다. 저장한 시각에 하한이 섞이면 복원 범위를 벗어난다.
+func TestAIPollKeepsTheBackoffWithAPollAboveTheCap(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	claudeDir, stateDir := t.TempDir(), t.TempDir()
+	writeAIClaudeCredentials(t, claudeDir)
+	rateLimited := &http.Client{Transport: aiStubTransport{status: http.StatusTooManyRequests, body: "{}"}}
+	collector := newAICollector(claudeDir, t.TempDir(), stateDir, time.Now())
+	collector.http = rateLimited
+	collector.poll(context.Background(), 20*time.Minute)
+	if collector.claudeBackoff != aiMaxBackoff {
+		t.Fatalf("after 429 under --poll 20m: backoff %s", collector.claudeBackoff)
+	}
+	restarted := newAICollector(claudeDir, t.TempDir(), stateDir, time.Now())
+	restarted.http = rateLimited
+	// 이 실행의 다음 조회는 --poll 때문에 20분 뒤지만, 다음 실행은 백오프만큼인 15분 뒤에 부른다.
+	if want := collector.claudeNext.Add(aiMaxBackoff - 20*time.Minute); restarted.claudeBackoff != aiMaxBackoff || !restarted.claudeNext.Equal(want) {
+		t.Fatalf("restart: backoff %s next %s, want %s and %s", restarted.claudeBackoff, restarted.claudeNext, aiMaxBackoff, want)
+	}
+	if claude := restarted.poll(context.Background(), time.Minute).providers[0]; !strings.Contains(claude.Err, "rate limited · next try ") {
+		t.Errorf("restart without a success: %+v", claude)
+	}
+}
+
 func TestAICollectorResumesTheSavedClaudeBackoff(t *testing.T) {
 	now := time.Date(2026, 10, 6, 2, 20, 0, 0, time.UTC)
 	for _, test := range []struct {
-		name         string
-		fetched      time.Time
-		nextTry      time.Time
-		wantNext     time.Time
-		wantInterval time.Duration
+		name        string
+		fetched     time.Time
+		nextTry     time.Time
+		backoff     time.Duration
+		wantNext    time.Time
+		wantBackoff time.Duration
+		// wantAfter429는 이어 받은 백오프에서 429를 다시 받은 뒤의 백오프다. 0이면 확인하지 않는다.
+		wantAfter429 time.Duration
 	}{
-		{"later than the minimum interval", now.Add(-2 * time.Minute), now.Add(8 * time.Minute), now.Add(8 * time.Minute), 10 * time.Minute},
-		{"earlier than the minimum interval", now.Add(-2 * time.Minute), now.Add(time.Minute), now.Add(3 * time.Minute), 0},
-		{"beyond the backoff cap", now.Add(-2 * time.Minute), now.Add(time.Hour), now.Add(3 * time.Minute), 0},
-		// 지난 백오프는 끝났다. 늘린 간격을 영구 하한으로 남기지 않는다.
-		{"already passed", now.Add(-time.Hour), now.Add(-time.Minute), now.Add(-time.Hour + aiClaudeMinInterval), 0},
+		{"still ahead", now.Add(-2 * time.Minute), now.Add(8 * time.Minute), 10 * time.Minute, now.Add(8 * time.Minute), 10 * time.Minute, 0},
+		{"before the minimum interval", now.Add(-2 * time.Minute), now.Add(time.Minute), 10 * time.Minute, now.Add(3 * time.Minute), 10 * time.Minute, 0},
+		// --count 1을 되풀이하면 다음 실행은 미룬 시각이 지난 뒤에 온다. 한 간격 안이면 백오프를 이어 받아 다시 늘린다.
+		{"passed within one backoff", now.Add(-20 * time.Minute), now.Add(-time.Minute), 10 * time.Minute, now.Add(-time.Minute), 10 * time.Minute, aiMaxBackoff},
+		// 한 간격 넘게 쉬었으면 백오프는 끝났다. 늘린 간격을 영구 하한으로 남기지 않는다.
+		{"passed long ago", now.Add(-time.Hour), now.Add(-50 * time.Minute), 10 * time.Minute, now.Add(-time.Hour + aiClaudeMinInterval), 0, 0},
+		{"beyond the backoff cap", now.Add(-2 * time.Minute), now.Add(time.Hour), 10 * time.Minute, now.Add(3 * time.Minute), 0, 0},
+		// 백오프 없이 저장한 다음 조회 시각은 --poll 하한일 수 있어 따르지 않는다.
+		{"no backoff", now.Add(-2 * time.Minute), now.Add(8 * time.Minute), 0, now.Add(3 * time.Minute), 0, 0},
 	} {
 		stateDir := t.TempDir()
-		saved := aiClaudeState{aiProvider: aiProvider{FetchedAt: test.fetched, Windows: []aiWindow{{Name: "7d", Used: 61}}}, NextTry: test.nextTry, Interval: 10 * time.Minute}
+		saved := aiClaudeState{aiProvider: aiProvider{FetchedAt: test.fetched, Windows: []aiWindow{{Name: "7d", Used: 61}}}, NextTry: test.nextTry, Backoff: test.backoff}
 		if err := saveAIClaudeState(filepath.Join(stateDir, aiClaudeStateName), saved); err != nil {
 			t.Fatal(err)
 		}
 		collector := newAICollector(t.TempDir(), t.TempDir(), stateDir, now)
-		if !collector.claudeNext.Equal(test.wantNext) || collector.claudeInterval != test.wantInterval {
-			t.Errorf("%s: next %s interval %s, want %s and %s", test.name, collector.claudeNext, collector.claudeInterval, test.wantNext, test.wantInterval)
+		if !collector.claudeNext.Equal(test.wantNext) || collector.claudeBackoff != test.wantBackoff {
+			t.Errorf("%s: next %s backoff %s, want %s and %s", test.name, collector.claudeNext, collector.claudeBackoff, test.wantNext, test.wantBackoff)
 		}
 		if shown := collector.shown["claude"]; len(shown.Windows) != 1 {
 			t.Errorf("%s: the saved values are not shown: %+v", test.name, shown)
+		}
+		// 이어 받은 백오프에서 429를 다시 받으면 상한까지 계속 늘어난다.
+		if test.wantAfter429 > 0 {
+			collector.scheduleClaude(true, now, time.Minute)
+			if collector.claudeBackoff != test.wantAfter429 {
+				t.Errorf("%s: 429 after a resumed backoff: %s, want %s", test.name, collector.claudeBackoff, test.wantAfter429)
+			}
 		}
 	}
 }

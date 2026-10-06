@@ -158,12 +158,26 @@ func TestHTTP2TraceDropsStaleStateOnANewStart(t *testing.T) {
 	if events, claimed := tracker.http2Events(httpTestPacket("GET /new HTTP/1.1\r\nHost: x\r\n\r\n", 2, true), 0); claimed || len(events) != 0 {
 		t.Fatalf("HTTP/1 start = %#v, %t", events, claimed)
 	}
-	if len(tracker.http2) != 0 {
-		t.Fatalf("directions left = %d", len(tracker.http2))
+	if len(tracker.http2) != 0 || len(tracker.h2Pending) != 0 || tracker.h2Size != 0 {
+		t.Fatalf("state left = %d directions, %#v pending, size %d", len(tracker.http2), tracker.h2Pending, tracker.h2Size)
 	}
 	block = http2TestHeaders(hpack.HeaderField{Name: ":method", Value: "GET"}, hpack.HeaderField{Name: ":path", Value: "/again"})
 	if events, _ := tracker.http2Events(httpTestPacket(string(append(append([]byte{}, http2Preface...), http2TestFrame(1, 4, 1, block)...)), 3, true), 0); len(events) != 1 || events[0].Path != "/again" {
 		t.Fatalf("new h2c connection = %#v", events)
+	}
+}
+
+// 앞 연결에서 한 방향만 멈췄어도 시작 레코드가 오면 남은 반대 방향까지 버린다. 남기면 새 연결의 그 방향 레코드를 앞
+// 연결의 위치와 HPACK 표로 읽는다.
+func TestHTTP2TraceDropsAStaleDirectionLeftAlone(t *testing.T) {
+	tracker := newHTTPTracker("", false, false)
+	tracker.http2Events(httpTestPacket(string(http2Preface), 1, true), 0)
+	delete(tracker.http2, httpStreamKey{socket: 1, sent: true})
+	if events, claimed := tracker.http2Events(httpTestPacket("GET /new HTTP/1.1\r\nHost: x\r\n\r\n", 2, true), 0); claimed || len(events) != 0 {
+		t.Fatalf("HTTP/1 start = %#v, %t", events, claimed)
+	}
+	if len(tracker.http2) != 0 {
+		t.Fatalf("directions left = %d", len(tracker.http2))
 	}
 }
 

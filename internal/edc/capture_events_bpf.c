@@ -1552,11 +1552,13 @@ static __always_inline void http_capture(struct sock *sk, __u64 buffer, __u64 li
 	// h2c 연결은 HTTP2_PREFACE_LEN byte 머리로 시작한다. 짧은 조각은 HTTP/1 서버가 몇 byte씩 엿보는 경우와 구별할 수 없다.
 	int http2_start = readable && peek[0] == 'P' && peek[1] == 'R' && peek[2] == 'I' && peek[3] == ' ' && h2c_preface(buffer, limit, size);
 	// TCP Fast Open은 송신 호출 안에서 SYN과 첫 순번을 정하므로 시작할 때의 write_seq가 첫 data의 순번이 아니다. 이런
-	// 연결은 client 쪽 h2c를 따라가지 않는다. 위치를 틀리게 잡으면 첫 쓰기 뒤의 frame을 모두 버리게 된다.
+	// 연결은 client 쪽 h2c를 따라가지 않는다. 위치를 틀리게 잡으면 첫 쓰기 뒤의 frame을 모두 버리게 된다. http_start는
+	// "PRI "도 시작으로 보므로 start도 지워서, preface만 HTTP/1 레코드로 나가 반쪽 상태가 생기지 않게 한다.
 	if (http2_start && direction == HTTP_SENT) {
 		__u8 state = BPF_CORE_READ(sk, __sk_common.skc_state);
 		if (state == TCP_CLOSE || state == TCP_SYN_SENT) {
 			http2_start = 0;
+			start = 0;
 		}
 	}
 	// 모든 TCP 송수신이 여기를 지나므로 이어 받을 조각이 있는 socket에서만 map에 값이 있다. 이어 받는 조각을 TLS 판별보다

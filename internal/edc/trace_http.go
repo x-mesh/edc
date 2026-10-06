@@ -51,8 +51,9 @@ type httpPacket struct {
 	source      string
 	destination string
 	payload     []byte
-	// continued는 앞 message에 이어지는 조각이다. --payload=all이 아니면 첫 줄이 끊긴 첫 조각 뒤에만 온다. offset은 조각이
-	// message 안에서 시작하는 위치다. h2c에서는 연결 안의 위치로, 송신은 TCP 순번이고 수신은 읽은 byte 수다.
+	// continued는 앞 message에 이어지는 조각이다. --payload=all이 아니면 첫 줄이 끊긴 첫 조각 뒤에만 온다. h2c에서는
+	// preface 뒤의 레코드가 모두 continued이고, continued가 아닌 레코드는 새 연결의 첫 레코드다. offset은 조각이 message
+	// 안에서 시작하는 위치다. h2c에서는 연결 안의 위치로, 송신은 TCP 순번이고 수신은 읽은 byte 수다.
 	continued bool
 	offset    uint32
 	// tlsHandshake는 TLS record 머리 없이 handshake message로 시작하는 조각이다. record 머리만 따로 읽는 서버에서 온다.
@@ -120,10 +121,12 @@ func (tracker *httpTracker) http2Events(packet httpPacket, clockOffset int64) ([
 	peer := httpStreamKey{socket: packet.socket, sent: !packet.sent}
 	direction := tracker.http2[key]
 	// BPF는 h2c 연결 안에서는 시작 레코드를 내지 않는다. 시작 레코드가 오면 닫힘 레코드를 놓친 사이에 새 연결이 같은
-	// socket 주소를 쓴 것이므로, 남은 h2c 상태를 버리고 새로 읽는다.
-	if direction != nil && !packet.continued {
+	// socket 주소를 쓴 것이므로, 한쪽 방향만 남았더라도 그 socket의 h2c 상태를 모두 버리고 새로 읽는다.
+	if !packet.continued && (direction != nil || tracker.http2[peer] != nil) {
 		delete(tracker.http2, key)
 		delete(tracker.http2, peer)
+		tracker.h2Size -= len(tracker.h2Pending[packet.socket])
+		delete(tracker.h2Pending, packet.socket)
 		direction = nil
 	}
 	if direction == nil {

@@ -357,6 +357,7 @@ type tcpTraceOptions struct {
 	side        string
 	payload     tracePayloadMode
 	showSecrets bool
+	tls         traceTLSMode
 	// port는 trace http가 볼 HTTP 서버의 port다. client 쪽은 상대 port, 서버 쪽은 로컬 port다. 0이면 모든 port를 본다.
 	port int
 	// socketPath는 trace socket이 볼 unix socket 파일이다.

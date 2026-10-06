@@ -602,6 +602,7 @@ func runTraceProtocol(args []string) int {
 		}
 		options.container = container
 	}
+	screen := !options.raw && options.jsonPath == "" && traceIsTerminal(os.Stdin) && traceIsTerminal(os.Stdout)
 	// 전체 화면이 열리면 stderr 안내가 화면에 섞이므로, 붙일 파일은 화면을 열기 전에 고르고 알린다.
 	if options.tls != "" {
 		targets, notices, code, err := resolveTraceTLSTargets(options.tls)
@@ -614,8 +615,11 @@ func runTraceProtocol(args []string) int {
 		}
 		options.tlsTargets = targets
 		fmt.Fprintln(os.Stderr, T("cli.trace.tls_attached", len(targets)))
+		if screen && !traceTLSConfirmStart(os.Stdin, os.Stderr, traceIsTerminal(os.Stderr)) {
+			return 4
+		}
 	}
-	if !options.raw && options.jsonPath == "" && traceIsTerminal(os.Stdin) && traceIsTerminal(os.Stdout) {
+	if screen {
 		return runTraceScreen(args[0], options)
 	}
 	ctx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

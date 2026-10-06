@@ -382,7 +382,7 @@ func TestAICollectorStartsFromTheSavedClaudeValues(t *testing.T) {
 		fetched  time.Time
 		wantNext time.Time
 	}{
-		{"recent", now.Add(-2 * time.Minute), now.Add(8 * time.Minute)},
+		{"recent", now.Add(-2 * time.Minute), now.Add(3 * time.Minute)},
 		{"old", now.Add(-time.Hour), now.Add(-time.Hour + aiClaudeMinInterval)},
 		{"future", now.Add(time.Hour), time.Time{}},
 	} {
@@ -573,14 +573,14 @@ func TestAICollectorResumesTheSavedClaudeBackoff(t *testing.T) {
 		wantAfter429 time.Duration
 	}{
 		{"still ahead", now.Add(-2 * time.Minute), now.Add(8 * time.Minute), 10 * time.Minute, now.Add(8 * time.Minute), 10 * time.Minute, 0},
-		{"before the minimum interval", now.Add(-2 * time.Minute), now.Add(time.Minute), 10 * time.Minute, now.Add(8 * time.Minute), 10 * time.Minute, 0},
+		{"before the minimum interval", now.Add(-2 * time.Minute), now.Add(time.Minute), 10 * time.Minute, now.Add(3 * time.Minute), 10 * time.Minute, 0},
 		// --count 1을 되풀이하면 다음 실행은 미룬 시각이 지난 뒤에 온다. 한 간격 안이면 백오프를 이어 받아 다시 늘린다.
 		{"passed within one backoff", now.Add(-20 * time.Minute), now.Add(-time.Minute), 10 * time.Minute, now.Add(-time.Minute), 10 * time.Minute, 20 * time.Minute},
 		// 한 간격 넘게 쉬었으면 백오프는 끝났다. 늘린 간격을 영구 하한으로 남기지 않는다.
 		{"passed long ago", now.Add(-time.Hour), now.Add(-50 * time.Minute), 10 * time.Minute, now.Add(-time.Hour + aiClaudeMinInterval), 0, 0},
-		{"beyond the backoff cap", now.Add(-2 * time.Minute), now.Add(time.Hour), 10 * time.Minute, now.Add(8 * time.Minute), 0, 0},
+		{"beyond the backoff cap", now.Add(-2 * time.Minute), now.Add(time.Hour), 10 * time.Minute, now.Add(3 * time.Minute), 0, 0},
 		// 백오프 없이 저장한 다음 조회 시각은 --poll 하한일 수 있어 따르지 않는다.
-		{"no backoff", now.Add(-2 * time.Minute), now.Add(8 * time.Minute), 0, now.Add(8 * time.Minute), 0, 0},
+		{"no backoff", now.Add(-2 * time.Minute), now.Add(8 * time.Minute), 0, now.Add(3 * time.Minute), 0, 0},
 	} {
 		stateDir := t.TempDir()
 		saved := aiClaudeState{aiProvider: aiProvider{FetchedAt: test.fetched, Windows: []aiWindow{{Name: "7d", Used: 61}}}, NextTry: test.nextTry, Backoff: test.backoff}

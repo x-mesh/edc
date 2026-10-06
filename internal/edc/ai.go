@@ -21,8 +21,8 @@ const (
 	// aiMinPoll은 화면 갱신과 Codex 조회의 하한이다. Claude 사용량 API에는 별도 간격을 적용한다.
 	aiMinPoll = 30 * time.Second
 	// aiClaudeMinInterval은 Claude 사용량 API를 부르는 최소 간격이다. 시험에서 1-4분 간격의 호출은 429를 받았고
-	// 7분 쉰 뒤에는 200을 받았다. 10분은 이 관측보다 긴 기본 간격이다.
-	aiClaudeMinInterval = 10 * time.Minute
+	// 7분 쉰 뒤에는 200을 받았다. 정상 조회는 5분마다 갱신하고, 429 뒤에만 backoff를 적용한다.
+	aiClaudeMinInterval = 5 * time.Minute
 	// aiMaxBackoff는 429를 받아 늘린 Claude 조회 간격의 상한이다.
 	aiMaxBackoff = 30 * time.Minute
 	// aiScanInterval은 대화 기록을 다시 읽는 간격이다. 새로 붙은 줄만 읽으므로 짧아도 부담이 작다.

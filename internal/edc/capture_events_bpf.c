@@ -2124,15 +2124,6 @@ static __always_inline void ssl_fill_record(struct http_record *record, struct s
 	current_process_name(&record->comm);
 }
 
-// http2_preface는 HTTP/2 connection preface "PRI * HTTP/2.0"의 앞 4 byte다. 사용자 공간이 이 레코드로 연결을 HTTP/2로
-// 표시한다. 그 뒤의 frame은 binary라 HTTP/1.x 시작으로 보이지 않는다.
-static __always_inline int http2_preface(const __u8 *p) {
-	return p[0] == 'P' && p[1] == 'R' && p[2] == 'I' && p[3] == ' ';
-}
-
-// HTTP2_PREFACE_SIZE는 preface 레코드에서 넘기는 byte 수다. 사용자 공간은 preface 24 byte만 확인한다.
-#define HTTP2_PREFACE_SIZE 64
-
 // ssl_capture는 SSL 호출 하나의 평문을 레코드로 넘긴다. http_capture와 같은 stream 규칙을 따르되, 방향에 HTTP_DECRYPTED를
 // 더한 key를 써서 같은 socket의 암호문 상태와 섞지 않는다. 평문은 buffer 하나이고 TLS 판별을 하지 않는다. TCP 송수신마다
 // 도는 http_capture의 verifier 비용을 늘리지 않으려고 따로 둔다.
@@ -2141,16 +2132,31 @@ static __always_inline void ssl_capture(struct ssl_snapshot *snapshot, __u64 buf
 	struct http_stream_key key = {.skaddr = snapshot->skaddr, .direction = flagged};
 	__u8 peek[4] = {};
 	int readable = size >= 4 && !bpf_probe_read_user(peek, sizeof(peek), (void *)buffer);
-	int preface = readable && http2_preface(peek);
-	int start = readable && (http_start(peek) || preface);
+	int http2_start = readable && peek[0] == 'P' && peek[1] == 'R' && peek[2] == 'I' && peek[3] == ' ' && h2c_preface(buffer, size, size);
+	__u64 *seen = bpf_map_lookup_elem(&http_streams, &key);
+	int http2_going = seen && (*seen & HTTP2_STREAM);
+	int http2 = http2_going || http2_start;
+	int start = !http2_going && readable && (http_start(peek) || http2_start);
 	__u8 kind = start ? HTTP_START : HTTP_CONTINUATION;
 	__u64 offset = 0;
 	__u64 budget = http_payload_limit;
-	__u64 *seen = start ? 0 : bpf_map_lookup_elem(&http_streams, &key);
-	if (preface) {
-		// HTTP/2 frame은 읽지 않으므로 이어지는 조각을 따라가지 않는다.
-		budget = HTTP2_PREFACE_SIZE;
-		bpf_map_delete_elem(&http_streams, &key);
+	struct http_stream_key peer = {.skaddr = snapshot->skaddr, .direction = (direction == HTTP_SENT ? HTTP_RECEIVED : HTTP_SENT) | HTTP_DECRYPTED};
+	int peer_marked = 0;
+	if (http2) {
+		// HTTP/2는 frame이 SSL 호출 경계를 넘나들고 HPACK 표가 앞 frame에 기대므로, h2c처럼 연결의 평문을 빠짐없이 순서대로
+		// 넘긴다. SSL 호출은 돌려준 byte만 주고받으므로 두 방향 모두 0부터 센 위치를 offset에 싣는다.
+		offset = http2_going ? *seen & ~HTTP2_STREAM : 0;
+		__u64 next = HTTP2_STREAM | (offset + size);
+		bpf_map_update_elem(&http_streams, &key, &next, BPF_ANY);
+		if (!http2_going) {
+			__u64 *other = bpf_map_lookup_elem(&http_streams, &peer);
+			if (!other || !(*other & HTTP2_STREAM)) {
+				__u64 begin = HTTP2_STREAM;
+				bpf_map_update_elem(&http_streams, &peer, &begin, BPF_ANY);
+				peer_marked = 1;
+			}
+		}
+		budget = size;
 	} else if (http_message_limit) {
 		budget = http_message_limit;
 		if (!start) {
@@ -2190,6 +2196,7 @@ static __always_inline void ssl_capture(struct ssl_snapshot *snapshot, __u64 buf
 	cursor->remaining = size < budget ? size : budget;
 	cursor->offset = offset;
 	cursor->kind = kind;
+	int dropped = 0;
 	for (int step = 0; step < HTTP_MAX_STEPS; step++) {
 		if (!cursor->remaining) {
 			break;
@@ -2210,12 +2217,24 @@ static __always_inline void ssl_capture(struct ssl_snapshot *snapshot, __u64 buf
 			if (lost) {
 				__sync_fetch_and_add(lost, 1);
 			}
+			dropped = 1;
 			break;
 		}
 		cursor->pointer += len;
 		cursor->remaining -= len;
 		cursor->offset += len;
 		cursor->kind = HTTP_CONTINUATION;
+	}
+	// HTTP/2에서 넘기지 못한 byte가 남으면 frame 경계와 HPACK 표를 되찾을 수 없다. h2c와 같이 그 방향을 멈추고 잃은 event로 센다.
+	if (http2 && cursor->remaining) {
+		bpf_map_delete_elem(&http_streams, &key);
+		if (peer_marked && cursor->offset == offset) {
+			bpf_map_delete_elem(&http_streams, &peer);
+		}
+		__u64 *lost = dropped ? 0 : bpf_map_lookup_elem(&lost_events, &zero);
+		if (lost) {
+			__sync_fetch_and_add(lost, 1);
+		}
 	}
 }
 

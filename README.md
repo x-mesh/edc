@@ -1396,7 +1396,7 @@ NSPR also uses these functions for plain files and sockets. So each NSPR read an
 
 An NSS connection with `SSL_SECURITY` off produces no TLS event. `PR_Recv` with `PR_MSG_PEEK` also produces no TLS event.
 
-Go TLS uses the Go function table and probes at function returns. The verified scope is Go 1.27.1 on Linux amd64.
+Go TLS uses the Go function table and probes at function returns. The verified scope is Go 1.26.8 and 1.27.1 on Linux amd64 and arm64.
 
 ```bash
 ./bin/edc trace http --tls=my-go-program
@@ -1408,7 +1408,7 @@ These events have no socket addresses. A `--port` filter excludes them. For Go T
 
 For Go clients, latency starts at `Write` entry and ends at `Read` return. For servers, latency ends at `Write` entry.
 
-The capture tests cover Go HTTP/1.1. They do not cover Go HTTP/2.
+The capture tests cover Go HTTP/1.1 and HTTP/2, including concurrent streams, repeated headers and fragmented bodies.
 
 rustls-ffi uses the C functions `rustls_connection_read` and `rustls_connection_write`. edc clears the connection state at `rustls_connection_free`.
 

@@ -155,3 +155,33 @@ func TestTraceTLSGoOrderUnfinishedWritesReportLoss(t *testing.T) {
 		t.Fatalf("unfinished write hid queued loss: %#v", order)
 	}
 }
+
+func TestTraceTLSGoOrderHTTP2PrefacePrecedesServerSettings(t *testing.T) {
+	order := newGoTLSOrder()
+	order.add(goTLSOrderControl(goTLSWriteBegin, 1, 2, 3))
+	preface := goTLSOrderSample(1, false, string(http2Preface))
+	if got := order.add(preface); len(got) != 1 || !bytes.Equal(got[0], preface) {
+		t.Fatal("HTTP/2 preface was held behind server SETTINGS")
+	}
+	settings := goTLSOrderSample(1, true, string([]byte{0, 0, 0, 4, 0, 0, 0, 0, 0}))
+	if got := order.add(settings); len(got) != 1 {
+		t.Fatal("server SETTINGS was held")
+	}
+	if got := order.add(goTLSOrderControl(goTLSWriteEnd, 1, 2, 3)); len(got) != 0 || order.finish() != 0 {
+		t.Fatal("HTTP/2 startup retained state")
+	}
+}
+
+func TestTraceTLSGoOrderHTTP2BodyCannotBypassQueue(t *testing.T) {
+	order := newGoTLSOrder()
+	order.add(goTLSOrderControl(goTLSWriteBegin, 1, 2, 3))
+	body := goTLSOrderSample(1, false, string(http2Preface))
+	body[39] = httpRecordContinuation
+	binary.LittleEndian.PutUint32(body[92:], 24)
+	if len(order.add(body)) != 0 {
+		t.Fatal("preface-like body bypassed pending Write")
+	}
+	if got := order.add(goTLSOrderControl(goTLSWriteEnd, 1, 2, 3)); len(got) != 1 || order.finish() != 0 {
+		t.Fatal("held body did not follow Write")
+	}
+}

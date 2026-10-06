@@ -27,6 +27,7 @@ type traceTLSTarget struct {
 	symbols   []string
 	offsets   map[string]uint64
 	goReturns map[string][]uint64
+	goMachine elf.Machine
 	// id는 탐색이 고른 파일의 (device, inode)다. --tls=<경로>로 준 파일은 0이다.
 	id [2]uint64
 }

@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"cmp"
 	"context"
+	"debug/elf"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -25,6 +26,7 @@ import (
 	"time"
 
 	"github.com/cilium/ebpf"
+	"github.com/cilium/ebpf/asm"
 	"github.com/cilium/ebpf/btf"
 	"github.com/cilium/ebpf/link"
 	"github.com/cilium/ebpf/ringbuf"
@@ -445,6 +447,13 @@ func attachTraceTLSGo(objects *captureEventsObjects, target traceTLSTarget) (lin
 		traceTLSGoWrite: {objects.GoTlsWriteEntry, objects.GoTlsWriteExit},
 		traceTLSGoClose: {objects.GoTlsCloseEntry, nil},
 	}
+	if target.goMachine == elf.EM_AARCH64 {
+		pairs = map[string][2]*ebpf.Program{
+			traceTLSGoRead:  {objects.GoTlsArm64ReadEntry, objects.GoTlsArm64ReadExit},
+			traceTLSGoWrite: {objects.GoTlsArm64WriteEntry, objects.GoTlsArm64WriteExit},
+			traceTLSGoClose: {objects.GoTlsArm64CloseEntry, nil},
+		}
+	}
 	attach := func(name string, program *ebpf.Program, offset uint64) error {
 		probe, attachErr := executable.Uprobe("", program, &link.UprobeOptions{Address: offset})
 		if attachErr != nil {
@@ -682,6 +691,16 @@ func loadCaptureEventsFor(scope traceScope, objects *captureEventsObjects) error
 		}
 		if err := errors.Join(variables.EmitTlsPlaintext.Set(uint8(1)), variables.UprobeArch.Set(arch)); err != nil {
 			return err
+		}
+	}
+	if runtime.GOARCH != "arm64" {
+		for _, name := range []string{"go_tls_arm64_read_entry", "go_tls_arm64_read_exit", "go_tls_arm64_write_entry", "go_tls_arm64_write_exit", "go_tls_arm64_close_entry"} {
+			spec.Programs[name].Instructions = asm.Instructions{asm.Mov.Imm(asm.R0, 0), asm.Return()}
+		}
+	}
+	if runtime.GOARCH == "arm64" {
+		for _, name := range []string{"go_tls_read_entry", "go_tls_read_exit", "go_tls_write_entry", "go_tls_write_exit", "go_tls_close_entry"} {
+			spec.Programs[name].Instructions = asm.Instructions{asm.Mov.Imm(asm.R0, 0), asm.Return()}
 		}
 	}
 	selected := "tcp_recvmsg_exit"

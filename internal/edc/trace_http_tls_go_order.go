@@ -3,6 +3,7 @@
 package edc
 
 import (
+	"bytes"
 	"encoding/binary"
 	"slices"
 )
@@ -112,7 +113,7 @@ func (order *goTLSOrder) add(sample []byte) [][]byte {
 		socket = packet.socket
 	}
 	connection := order.connections[socket]
-	if connection == nil || (!close && (!http || !packet.decrypted || packet.sent)) {
+	if connection == nil || (!close && (!http || !packet.decrypted || packet.sent || (!packet.continued && packet.offset == 0 && bytes.HasPrefix(packet.payload, http2Preface)))) {
 		return [][]byte{sample}
 	}
 	if order.bytes+len(sample) > goTLSOrderMaxBytes || connection.bytes+len(sample) > goTLSOrderMaxConnectionBytes || order.records >= goTLSOrderMaxRecords {

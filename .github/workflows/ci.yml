@@ -70,6 +70,9 @@ jobs:
       - name: Trace an HTTPS request
         run: ./scripts/ci-tls-smoke.sh
 
+      - name: Trace Go TLS plaintext
+        run: go test ./internal/edc -run '^TestTraceTLSGoCaptures$' -count=1 -v
+
   cross:
     name: cross build
     runs-on: ubuntu-latest

@@ -1396,7 +1396,7 @@ NSPR also uses these functions for plain files and sockets. So each NSPR read an
 
 An NSS connection with `SSL_SECURITY` off produces no TLS event. `PR_Recv` with `PR_MSG_PEEK` also produces no TLS event.
 
-Go TLS uses the Go function table and probes at function returns. The verified scope is Go 1.27.1 on Linux amd64.
+Go TLS uses the Go function table and probes at function returns. The verified scope is Go 1.27.1 on Linux amd64 and arm64.
 
 ```bash
 ./bin/edc trace http --tls=my-go-program

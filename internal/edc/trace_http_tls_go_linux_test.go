@@ -91,10 +91,39 @@ func TestTraceTLSGoFixtureMetadata(t *testing.T) {
 	}
 }
 
+func TestTraceTLSGoArm64FixtureMetadata(t *testing.T) {
+	fixture := filepath.Join(t.TempDir(), "edc-go-tls-arm64")
+	command := exec.Command("go", "build", "-o", fixture, "testdata/go_tls_client.go")
+	command.Env = append(os.Environ(), "GOOS=linux", "GOARCH=arm64")
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("Go TLS arm64 fixture: %v\n%s", err, output)
+	}
+	file, err := elf.Open(fixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	target := traceTLSTarget{path: fixture}
+	if err := traceTLSGo(file, &target); err != nil {
+		t.Fatal(err)
+	}
+	if target.goMachine != elf.EM_AARCH64 {
+		t.Fatalf("machine=%s", target.goMachine)
+	}
+	for _, name := range []string{traceTLSGoRead, traceTLSGoWrite, traceTLSGoClose} {
+		if target.offsets[name] == 0 {
+			t.Errorf("missing entry: %s", name)
+		}
+		if name != traceTLSGoClose && len(target.goReturns[name]) == 0 {
+			t.Errorf("missing returns: %s", name)
+		}
+	}
+}
+
 func TestTraceTLSGoCaptures(t *testing.T) {
 	version, err := exec.Command("go", "env", "GOVERSION").Output()
-	if err != nil || strings.TrimSpace(string(version)) != traceTLSGoVersion || runtime.GOARCH != "amd64" {
-		t.Skip("live Go TLS fixture needs Go 1.27.1 amd64")
+	if err != nil || strings.TrimSpace(string(version)) != traceTLSGoVersion || (runtime.GOARCH != "amd64" && runtime.GOARCH != "arm64") {
+		t.Skip("live Go TLS fixture needs Go 1.27.1 amd64 or arm64")
 	}
 	capabilities, err := effectiveCapabilities()
 	if err != nil || missingCapabilities(bpfTraceCapabilities, capabilities) != "" {

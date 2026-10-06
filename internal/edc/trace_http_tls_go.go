@@ -34,7 +34,7 @@ func traceTLSGo(file *elf.File, target *traceTLSTarget) (err error) {
 	if err != nil {
 		return fmt.Errorf("Go build info: %w", err)
 	}
-	if info.GoVersion != traceTLSGoVersion || file.Machine != elf.EM_X86_64 || file.Data != elf.ELFDATA2LSB || (file.Type != elf.ET_EXEC && file.Type != elf.ET_DYN) {
+	if info.GoVersion != traceTLSGoVersion || (file.Machine != elf.EM_X86_64 && file.Machine != elf.EM_AARCH64) || file.Data != elf.ELFDATA2LSB || (file.Type != elf.ET_EXEC && file.Type != elf.ET_DYN) {
 		return fmt.Errorf("unsupported Go TLS ABI: %s %s %s", info.GoVersion, file.Machine, file.Type)
 	}
 	text := file.Section(".text")
@@ -48,7 +48,11 @@ func traceTLSGo(file *elf.File, target *traceTLSTarget) (err error) {
 	if len(data) < 72 || len(data) > traceTLSGoMaxTable {
 		return fmt.Errorf("invalid Go TLS function table size")
 	}
-	if binary.LittleEndian.Uint32(data) != 0xfffffff1 || data[4] != 0 || data[5] != 0 || data[6] != 1 || data[7] != 8 {
+	quantum := byte(1)
+	if file.Machine == elf.EM_AARCH64 {
+		quantum = 4
+	}
+	if binary.LittleEndian.Uint32(data) != 0xfffffff1 || data[4] != 0 || data[5] != 0 || data[6] != quantum || data[7] != 8 {
 		return fmt.Errorf("unsupported Go TLS function table header")
 	}
 	nfunc := binary.LittleEndian.Uint64(data[8:16])
@@ -92,12 +96,12 @@ func traceTLSGo(file *elf.File, target *traceTLSTarget) (err error) {
 		if err != nil {
 			return fmt.Errorf("%s: %w", name, err)
 		}
-		entries[name], err = traceTLSGoEntry(code, offset)
+		entries[name], err = traceTLSGoEntry(file.Machine, code, offset)
 		if err != nil {
 			return fmt.Errorf("%s: %w", name, err)
 		}
 		if name != traceTLSGoClose {
-			returns[name], err = traceTLSGoReturns(code, offset)
+			returns[name], err = traceTLSGoReturns(file.Machine, code, offset)
 			if err != nil {
 				return fmt.Errorf("%s: %w", name, err)
 			}
@@ -106,6 +110,7 @@ func traceTLSGo(file *elf.File, target *traceTLSTarget) (err error) {
 	target.symbols = []string{traceTLSGoRead, traceTLSGoWrite, traceTLSGoClose}
 	target.offsets = entries
 	target.goReturns = returns
+	target.goMachine = file.Machine
 	return nil
 }
 
@@ -132,9 +137,30 @@ func traceTLSGoCode(file *elf.File, start, end uint64) ([]byte, uint64, error) {
 	return nil, 0, fmt.Errorf("Go TLS function is outside executable file data")
 }
 
-func traceTLSGoReturns(code []byte, offset uint64) ([]uint64, error) {
+func traceTLSGoReturns(machine elf.Machine, code []byte, offset uint64) ([]uint64, error) {
 	if len(code) == 0 || len(code) > traceTLSGoMaxCode || offset > math.MaxUint64-uint64(len(code)) {
 		return nil, fmt.Errorf("invalid Go TLS instruction range")
+	}
+	if machine == elf.EM_AARCH64 {
+		if len(code)%4 != 0 {
+			return nil, fmt.Errorf("invalid Go TLS arm64 instruction range")
+		}
+		var returns []uint64
+		for pos := 0; pos < len(code); pos += 4 {
+			if binary.LittleEndian.Uint32(code[pos:])&0xfffffc1f == 0xd65f0000 {
+				if len(returns) >= traceTLSGoMaxReturns {
+					return nil, fmt.Errorf("unsupported Go TLS return at %#x", offset+uint64(pos))
+				}
+				returns = append(returns, offset+uint64(pos))
+			}
+		}
+		if len(returns) == 0 {
+			return nil, fmt.Errorf("Go TLS function has no RET")
+		}
+		return returns, nil
+	}
+	if machine != elf.EM_X86_64 {
+		return nil, fmt.Errorf("unsupported Go TLS machine")
 	}
 	var returns []uint64
 	for pos := 0; pos < len(code); {
@@ -156,9 +182,20 @@ func traceTLSGoReturns(code []byte, offset uint64) ([]uint64, error) {
 	return returns, nil
 }
 
-func traceTLSGoEntry(code []byte, offset uint64) (uint64, error) {
+func traceTLSGoEntry(machine elf.Machine, code []byte, offset uint64) (uint64, error) {
 	if len(code) == 0 || offset > math.MaxUint64-uint64(len(code)) {
 		return 0, fmt.Errorf("invalid Go TLS entry range")
+	}
+	if machine == elf.EM_AARCH64 {
+		for pos := 0; pos < 16 && pos+8 <= len(code); pos += 4 {
+			if binary.LittleEndian.Uint32(code[pos:])&0xff00001f == 0x54000009 {
+				return offset + uint64(pos+4), nil
+			}
+		}
+		return 0, fmt.Errorf("unsupported Go TLS arm64 prologue")
+	}
+	if machine != elf.EM_X86_64 {
+		return 0, fmt.Errorf("unsupported Go TLS machine")
 	}
 	pos := 0
 	stack := x86asm.RSP

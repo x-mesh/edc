@@ -95,6 +95,27 @@ func TestHTTP2TraceDropsResetStreams(t *testing.T) {
 	}
 }
 
+func TestHTTP2TraceCollectsDataPayloadByStream(t *testing.T) {
+	tracker := newHTTPTracker("", false, false)
+	tracker.h2PayloadLimit = 5
+	request := http2TestHeaders(hpack.HeaderField{Name: ":method", Value: "POST"}, hpack.HeaderField{Name: ":authority", Value: "api.example"}, hpack.HeaderField{Name: ":path", Value: "/upload"})
+	preface := append(append([]byte{}, http2Preface...), http2TestFrame(1, 4, 1, request)...)
+	if events, _ := tracker.http2Events(httpTestPacket(string(preface), 1, true), 0); len(events) != 0 {
+		t.Fatalf("request headers emitted before DATA: %#v", events)
+	}
+	frames := append(http2TestFrame(0, 0, 1, []byte("abc")), http2TestFrame(0, 1, 1, []byte("def"))...)
+	events, _ := tracker.http2Events(httpTestPacket(string(frames), 2, true), 0)
+	if len(events) != 1 || events[0].Payload != "POST /upload HTTP/2\r\n\r\nabcde" || !events[0].PayloadTruncated {
+		t.Fatalf("request payload = %#v", events)
+	}
+	response := http2TestHeaders(hpack.HeaderField{Name: ":status", Value: "200"})
+	frames = append(http2TestFrame(1, 4, 1, response), http2TestFrame(0, 1, 1, []byte("ok"))...)
+	events, _ = tracker.http2Events(httpTestPacket(string(frames), 3, false), 0)
+	if len(events) != 1 || events[0].Payload != "HTTP/2 200\r\n\r\nok" || events[0].Method != "POST" || events[0].Path != "/upload" {
+		t.Fatalf("response payload = %#v", events)
+	}
+}
+
 func TestParseHTTPRequestReadsTheRequestLineAndHost(t *testing.T) {
 	method, target, host, ok := parseHTTPRequest([]byte("GET /search?q=secret HTTP/1.1\r\nUser-Agent: curl\r\nHOST: Example.COM:8080\r\nCookie: a=b\r\n\r\n"))
 	if !ok || method != "GET" || target != "/search?q=secret" || host != "example.com:8080" {

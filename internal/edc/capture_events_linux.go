@@ -926,6 +926,11 @@ type httpEventPipeline struct {
 
 func newHTTPEventPipeline(scope traceScope, clockOffset int64) *httpEventPipeline {
 	tracker := newHTTPTracker(scope.side, scope.payload && !scope.payloadAll, scope.showSecrets)
+	if scope.payloadAll {
+		tracker.h2PayloadLimit = httpMessageMax
+	} else if scope.payload {
+		tracker.h2PayloadLimit = httpPayloadHead
+	}
 	tracker.keepGzip = scope.keepGzip
 	pipeline := &httpEventPipeline{tracker: tracker, splits: httpSplitStarts{}, clockOffset: clockOffset}
 	if scope.payloadAll {

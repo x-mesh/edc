@@ -72,16 +72,30 @@ type httpTracker struct {
 	payload     bool
 	showSecrets bool
 	// keepGzip이면 gzip message의 원본 byte를 event에 붙인다. 전체 화면만 켠다.
-	keepGzip  bool
-	pending   map[uint64][]httpPendingRequest
-	size      int
-	http2     map[httpStreamKey]*http2Direction
-	h2Pending map[http2RequestKey]httpPendingRequest
+	keepGzip       bool
+	pending        map[uint64][]httpPendingRequest
+	size           int
+	http2          map[httpStreamKey]*http2Direction
+	h2Pending      map[http2RequestKey]httpPendingRequest
+	h2Payload      map[http2PayloadKey]*http2Payload
+	h2PayloadLimit int
 }
 
 type http2RequestKey struct {
 	socket uint64
 	stream uint32
+}
+
+type http2PayloadKey struct {
+	socket uint64
+	stream uint32
+	sent   bool
+}
+
+type http2Payload struct {
+	event     captureEvent
+	body      []byte
+	truncated bool
 }
 
 type http2Direction struct {
@@ -95,7 +109,7 @@ type http2Direction struct {
 }
 
 func newHTTPTracker(side string, payload, showSecrets bool) *httpTracker {
-	return &httpTracker{side: side, payload: payload, showSecrets: showSecrets, pending: map[uint64][]httpPendingRequest{}, http2: map[httpStreamKey]*http2Direction{}, h2Pending: map[http2RequestKey]httpPendingRequest{}}
+	return &httpTracker{side: side, payload: payload, showSecrets: showSecrets, pending: map[uint64][]httpPendingRequest{}, http2: map[httpStreamKey]*http2Direction{}, h2Pending: map[http2RequestKey]httpPendingRequest{}, h2Payload: map[http2PayloadKey]*http2Payload{}}
 }
 
 var http2Preface = []byte("PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n")
@@ -147,8 +161,29 @@ func (tracker *httpTracker) http2Events(packet httpPacket, clockOffset int64) ([
 		stream := binary.BigEndian.Uint32(direction.buffer[5:9]) & 0x7fffffff
 		payload := direction.buffer[9 : 9+length]
 		direction.buffer = direction.buffer[9+length:]
+		payloadKey := http2PayloadKey{socket: packet.socket, stream: stream, sent: packet.sent}
 		if typeID == 3 {
 			delete(tracker.h2Pending, http2RequestKey{socket: packet.socket, stream: stream})
+			delete(tracker.h2Payload, payloadKey)
+			continue
+		}
+		if typeID == 0 {
+			open := tracker.h2Payload[payloadKey]
+			if open == nil {
+				continue
+			}
+			if flags&0x8 != 0 {
+				if len(payload) == 0 || int(payload[0])+1 > len(payload) {
+					continue
+				}
+				payload = payload[1 : len(payload)-int(payload[0])]
+			}
+			left := max(0, tracker.h2PayloadLimit-len(open.body))
+			open.body = append(open.body, payload[:min(len(payload), left)]...)
+			open.truncated = open.truncated || len(payload) > left
+			if flags&0x1 != 0 {
+				events = append(events, tracker.finishHTTP2Payload(payloadKey))
+			}
 			continue
 		}
 		switch typeID {
@@ -190,10 +225,32 @@ func (tracker *httpTracker) http2Events(packet httpPacket, clockOffset int64) ([
 		event, ok := tracker.http2HeaderEvent(direction.packet, stream, direction.fields, clockOffset)
 		direction.headerBlock = nil
 		if ok {
-			events = append(events, event)
+			if tracker.h2PayloadLimit > 0 {
+				tracker.h2Payload[payloadKey] = &http2Payload{event: event}
+				if flags&0x1 != 0 {
+					events = append(events, tracker.finishHTTP2Payload(payloadKey))
+				}
+			} else {
+				events = append(events, event)
+			}
 		}
 	}
 	return events, true
+}
+
+func (tracker *httpTracker) finishHTTP2Payload(key http2PayloadKey) captureEvent {
+	open := tracker.h2Payload[key]
+	delete(tracker.h2Payload, key)
+	line := "HTTP/2"
+	if open.event.Method != "" {
+		line = open.event.Method + " " + open.event.Path + " HTTP/2"
+	}
+	if open.event.Status != 0 {
+		line = "HTTP/2 " + strconv.Itoa(open.event.Status)
+	}
+	open.event.Payload = traceHTTPPayload(append([]byte(line+"\r\n\r\n"), open.body...), tracker.showSecrets)
+	open.event.PayloadTruncated = open.truncated
+	return open.event
 }
 
 func (tracker *httpTracker) http2HeaderEvent(packet httpPacket, stream uint32, fields []hpack.HeaderField, clockOffset int64) (captureEvent, bool) {
@@ -434,6 +491,11 @@ func (tracker *httpTracker) forget(socket uint64) {
 	delete(tracker.pending, socket)
 	delete(tracker.http2, httpStreamKey{socket: socket, sent: true})
 	delete(tracker.http2, httpStreamKey{socket: socket, sent: false})
+	for key := range tracker.h2Payload {
+		if key.socket == socket {
+			delete(tracker.h2Payload, key)
+		}
+	}
 	for key := range tracker.h2Pending {
 		if key.socket == socket {
 			delete(tracker.h2Pending, key)

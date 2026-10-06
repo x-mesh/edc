@@ -3,6 +3,7 @@ package edc
 import (
 	"encoding/binary"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -232,5 +233,52 @@ func TestTraceTLSSeccompRisk(t *testing.T) {
 		if got := traceTLSSeccompRisk(release); got != want {
 			t.Errorf("%q = %t, want %t", release, got, want)
 		}
+	}
+}
+
+// map_files를 따라갈 권한이 없으면 process마다 조용히 건너뛰지 않고 끝에서 한 번 알린다.
+func TestResolveTraceTLSTargetsNoticesAMissingCapability(t *testing.T) {
+	if runtime.GOARCH != "amd64" && runtime.GOARCH != "arm64" {
+		t.Skip("--tls supports amd64 and arm64")
+	}
+	root := t.TempDir()
+	proc := filepath.Join(root, "proc")
+	for _, pid := range []string{"100", "101"} {
+		if err := os.MkdirAll(filepath.Join(proc, pid), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(proc, pid, "maps"), []byte("7f00-7f01 r-xp 00000000 08:03 1  /usr/lib/libssl.so.3\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	release := filepath.Join(root, "osrelease")
+	if err := os.WriteFile(release, []byte("6.17.0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	previousRoot, previousLibraries, previousRelease, previousStat := traceProcRoot, traceTLSHostLibraries, traceKernelRelease, traceTLSStat
+	traceProcRoot, traceTLSHostLibraries, traceKernelRelease = proc, nil, release
+	traceTLSStat = func(path string) (fs.FileInfo, error) {
+		if strings.Contains(path, "map_files") {
+			return nil, &fs.PathError{Op: "stat", Path: path, Err: fs.ErrPermission}
+		}
+		return os.Stat(path)
+	}
+	t.Cleanup(func() {
+		traceProcRoot, traceTLSHostLibraries, traceKernelRelease, traceTLSStat = previousRoot, previousLibraries, previousRelease, previousStat
+	})
+	_, notices, code, err := resolveTraceTLSTargets(traceTLSAuto)
+	if code != 3 || err == nil || !slices.Equal(notices, []string{T("cli.trace.tls_permission")}) {
+		t.Fatalf("resolve = %q, %d, %v", notices, code, err)
+	}
+}
+
+// Enter를 받아야 trace를 시작한다. 입력이 끝나면 시작하지 않는다.
+func TestTraceTLSConfirmWaitsForEnter(t *testing.T) {
+	var out strings.Builder
+	if !traceTLSConfirm(strings.NewReader("\n"), &out) || out.String() != T("cli.trace.tls_confirm") {
+		t.Fatalf("Enter = %q", out.String())
+	}
+	if traceTLSConfirm(strings.NewReader(""), io.Discard) {
+		t.Fatal("the end of input started the trace")
 	}
 }

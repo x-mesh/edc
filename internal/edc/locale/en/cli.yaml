@@ -266,6 +266,8 @@ cli:
     tls_skipped: "--tls: skipped %s: %v"
     tls_arch: "--tls supports amd64 and arm64, not %s"
     tls_seccomp: "--tls: on kernel %s, a process under a seccomp filter, for example a Docker container, can stop when an OpenSSL call returns. Linux 6.12.14, 6.13.3 and 6.14 fix this"
+    tls_permission: "--tls: edc cannot open the libssl that another process loaded. This needs CAP_SYS_ADMIN or CAP_CHECKPOINT_RESTORE. In a container, add SYS_ADMIN with --cap-add or use --privileged"
+    tls_confirm: "Press Enter to start the trace, or Ctrl-C to stop: "
     tls_attached: "--tls: watching %d OpenSSL file(s). A program that loads another libssl after the start needs --tls=<path>"
     show_secrets_payload: "--show-secrets needs --payload"
     show_secrets_protocol: "--show-secrets is not available for trace %s. Its payload is never hidden"

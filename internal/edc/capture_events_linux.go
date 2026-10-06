@@ -351,6 +351,12 @@ func traceTLSPrograms(objects *captureEventsObjects) map[string][2]*ebpf.Program
 	}
 }
 
+// traceTLSAttachGone은 탐색한 뒤 그 process가 끝나 경로가 사라져서 아무것도 붙이지 못한 경우다. 그 파일은 같은 파일을
+// 적재한 다른 process에서 다시 고른다. 일부라도 붙었으면 다시 고르지 않아 같은 함수에 두 번 붙지 않는다.
+func traceTLSAttachGone(attached []link.Link, err error) bool {
+	return len(attached) == 0 && (err == nil || errors.Is(err, fs.ErrNotExist))
+}
+
 // attachTraceTLS는 --tls 대상 파일 하나의 TLS 함수에 uprobe를 붙인다. 고른 뒤 끝난 process의 container 파일은 열 수 없어
 // 건너뛴다. 화면이 이미 열렸으므로 알리지 않는다. 붙인 link는 실패해도 돌려준다.
 func attachTraceTLS(objects *captureEventsObjects, target traceTLSTarget) ([]link.Link, error) {
@@ -680,12 +686,12 @@ func collectCaptureEventsFor(scope traceScope, duration time.Duration, onEvent f
 		for _, target := range scope.tlsFinder.targets {
 			attached, err := attachTraceTLS(&objects, target)
 			links = append(links, attached...)
-			if err != nil {
+			gone := traceTLSAttachGone(attached, err)
+			if err != nil && !gone {
 				closeLinks()
 				return captureSummary{}, err
 			}
-			if len(attached) == 0 {
-				// 탐색한 뒤 그 process가 끝나 경로가 사라졌다.
+			if gone {
 				scope.tlsFinder.retry(target)
 			}
 		}
@@ -699,7 +705,7 @@ func collectCaptureEventsFor(scope traceScope, duration time.Duration, onEvent f
 		go func() {
 			defer close(watched)
 			// 화면이 이미 열렸으므로 exec 알림을 받지 못한 이유는 trace가 끝난 뒤 알린다. nil channel이면 전체 탐색만 한다.
-			execs, err := traceTLSExecEvents(stopWatch)
+			execs, failed, err := traceTLSExecEvents(stopWatch)
 			if err != nil {
 				tlsExecProblem = err.Error()
 			}
@@ -707,9 +713,14 @@ func collectCaptureEventsFor(scope traceScope, duration time.Duration, onEvent f
 				// 붙이지 못한 파일은 화면에 알리지 않는다. 일부만 붙었으면 그 link는 닫을 때 쓴다.
 				attached, err := attachTraceTLS(&objects, target)
 				links = append(links, attached...)
-				return len(attached) > 0 || err != nil && !errors.Is(err, fs.ErrNotExist)
+				return traceTLSAttachGone(attached, err)
 			}, stopWatch) {
-				tlsExecProblem = "the kernel stopped sending process events"
+				tlsExecProblem = "process events stopped"
+				select {
+				case err := <-failed:
+					tlsExecProblem = err.Error()
+				default:
+				}
 			}
 		}()
 		var stopOnce sync.Once
@@ -794,7 +805,6 @@ func collectCaptureEventsFor(scope traceScope, duration time.Duration, onEvent f
 	}
 	sweepDeadline()
 	finish := func() (captureSummary, error) {
-		stopTLSWatch()
 		if err := emit(requests.finishHTTP2Payloads(func(http2PayloadKey) bool { return true })); err != nil {
 			return captureSummary{}, err
 		}
@@ -810,6 +820,8 @@ func collectCaptureEventsFor(scope traceScope, duration time.Duration, onEvent f
 		if lookupErr := objects.TlsUnmapped.Lookup(uint32(0), &unmapped); lookupErr != nil {
 			return captureSummary{}, fmt.Errorf("read unmapped TLS count: %w", lookupErr)
 		}
+		// 감시를 기다리는 동안에도 hook은 붙어 있고 남은 레코드는 읽지 않으므로, 잃은 수를 읽은 뒤에 멈춘다.
+		stopTLSWatch()
 		return captureSummary{TimestampNS: uint64(time.Now().UnixNano()), Event: "capture_summary", EventCount: eventCount, LostEvents: lost, TLSUnmapped: unmapped, TLSExecProblem: tlsExecProblem}, nil
 	}
 	for {

@@ -127,6 +127,9 @@ func TestTraceTLSReadFileFindsFunctionOffsets(t *testing.T) {
 // 흔한 libssl은 실행 segment의 파일 위치와 주소가 같아서 변환이 틀려도 위 test를 통과한다. non-PIE Go test binary는
 // 주소가 0x400000에서 시작하므로 주소를 파일 위치로 바꾸는 계산을 실제로 시험한다.
 func TestTraceTLSFileOffsetFollowsTheSegment(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("the test binary is ELF only on Linux")
+	}
 	executable, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)

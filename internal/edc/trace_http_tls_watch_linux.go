@@ -38,9 +38,9 @@ func (check traceTLSExecCheck) due() time.Time {
 }
 
 // watchTraceTLS는 --tls 자동 탐색으로 trace를 시작한 뒤에 나타난 TLS 파일을 찾아 attach에 넘긴다. attach는 경로가
-// 사라져 아무것도 붙이지 못했으면 false를 돌려주고, 그 파일은 다음 탐색에서 다시 고른다. execs는 exec한 process의
+// 사라져 아무것도 붙이지 못했으면 gone을 돌려주고, 그 파일은 다음 탐색에서 다시 고른다. execs는 exec한 process의
 // PID다. nil이면 exec 알림 없이 전체 탐색만 한다. stop이 닫히면 돌아오고, 그 전에 execs가 닫혔으면 true를 돌려준다.
-func watchTraceTLS(finder *traceTLSFinder, execs <-chan uint32, attach func(traceTLSTarget) bool, stop <-chan struct{}) (execsEnded bool) {
+func watchTraceTLS(finder *traceTLSFinder, execs <-chan uint32, attach func(traceTLSTarget) (gone bool), stop <-chan struct{}) (execsEnded bool) {
 	var checks []traceTLSExecCheck
 	rescan := time.NewTimer(traceTLSRescanFloor)
 	defer rescan.Stop()
@@ -50,7 +50,7 @@ func watchTraceTLS(finder *traceTLSFinder, execs <-chan uint32, attach func(trac
 		find()
 		finder.notices = nil
 		for _, target := range finder.targets[known:] {
-			if !attach(target) {
+			if attach(target) {
 				finder.retry(target)
 			}
 		}
@@ -111,17 +111,17 @@ func watchTraceTLS(finder *traceTLSFinder, execs <-chan uint32, attach func(trac
 }
 
 // traceTLSExecEvents는 kernel의 process 알림(proc connector)에서 exec한 process의 PID를 받는다. 구독하지 못하면 오류를
-// 돌려주고, watchTraceTLS는 전체 탐색만 한다. 알림이 밀려 kernel이 버리면 구독이 끝나 channel이 닫힌다. stop이 닫히면
-// 구독을 닫는다.
-func traceTLSExecEvents(stop <-chan struct{}) (<-chan uint32, error) {
+// 돌려주고, watchTraceTLS는 전체 탐색만 한다. 알림이 밀려 socket 버퍼가 넘치면 구독이 끝나 channel이 닫히고, 그 이유는
+// failed로 온다. stop이 닫히면 구독을 닫는다.
+func traceTLSExecEvents(stop <-chan struct{}) (execs <-chan uint32, failed <-chan error, err error) {
 	events := make(chan netlink.ProcEvent, 256)
-	failed := make(chan error, 1)
-	if err := netlink.ProcEventMonitor(events, stop, failed); err != nil {
-		return nil, err
+	failures := make(chan error, 1)
+	if err := netlink.ProcEventMonitor(events, stop, failures); err != nil {
+		return nil, nil, err
 	}
-	execs := make(chan uint32, 256)
+	pids := make(chan uint32, 256)
 	go func() {
-		defer close(execs)
+		defer close(pids)
 		// 구독을 닫은 뒤에도 남은 알림을 끝까지 읽어야 netlink의 receive goroutine이 끝난다.
 		for event := range events {
 			exec, ok := event.Msg.(*netlink.ExecProcEvent)
@@ -129,12 +129,12 @@ func traceTLSExecEvents(stop <-chan struct{}) (<-chan uint32, error) {
 				continue
 			}
 			select {
-			case execs <- exec.ProcessTgid:
+			case pids <- exec.ProcessTgid:
 			case <-stop:
 			}
 		}
 	}()
-	return execs, nil
+	return pids, failures, nil
 }
 
 // traceTLSExecProblem은 trace 중에 exec 알림을 받지 못할 이유이고, 없으면 ""이다. 구독을 열어 시험하지 않는 것은,

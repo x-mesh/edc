@@ -14,10 +14,11 @@ import (
 func traceTLSWatchProc(t *testing.T, checks []time.Duration, floor time.Duration) string {
 	t.Helper()
 	proc := t.TempDir()
-	previousRoot, previousChecks, previousFloor, previousLibraries := traceProcRoot, traceTLSExecChecks, traceTLSRescanFloor, traceTLSHostLibraries
-	traceProcRoot, traceTLSExecChecks, traceTLSRescanFloor, traceTLSHostLibraries = proc, checks, floor, nil
+	previousRoot, previousChecks, previousFloor, previousCost, previousLibraries := traceProcRoot, traceTLSExecChecks, traceTLSRescanFloor, traceTLSRescanCost, traceTLSHostLibraries
+	// 탐색에 걸린 시간이 주기를 늘리지 않게 해서, 느린 runner에서도 floor마다 다시 본다.
+	traceProcRoot, traceTLSExecChecks, traceTLSRescanFloor, traceTLSRescanCost, traceTLSHostLibraries = proc, checks, floor, 1, nil
 	t.Cleanup(func() {
-		traceProcRoot, traceTLSExecChecks, traceTLSRescanFloor, traceTLSHostLibraries = previousRoot, previousChecks, previousFloor, previousLibraries
+		traceProcRoot, traceTLSExecChecks, traceTLSRescanFloor, traceTLSRescanCost, traceTLSHostLibraries = previousRoot, previousChecks, previousFloor, previousCost, previousLibraries
 	})
 	return proc
 }
@@ -40,7 +41,7 @@ func runTraceTLSWatch(t *testing.T, execs <-chan uint32) <-chan string {
 	finder := &traceTLSFinder{seen: map[[2]uint64]bool{}, rescan: true}
 	go func() {
 		defer close(done)
-		watchTraceTLS(finder, execs, func(target traceTLSTarget) bool { attached <- target.path; return true }, stop)
+		watchTraceTLS(finder, execs, func(target traceTLSTarget) bool { attached <- target.path; return false }, stop)
 	}()
 	t.Cleanup(func() {
 		close(stop)
@@ -119,7 +120,7 @@ func TestTraceTLSExecEventsReportsAnExec(t *testing.T) {
 		t.Skip("trace http needs CAP_NET_ADMIN")
 	}
 	stop := make(chan struct{})
-	execs, err := traceTLSExecEvents(stop)
+	execs, _, err := traceTLSExecEvents(stop)
 	if err != nil {
 		close(stop)
 		t.Skipf("proc connector: %v", err)
@@ -173,8 +174,9 @@ func TestWatchTraceTLSRetriesAFileWhoseProcessEnded(t *testing.T) {
 		defer close(done)
 		watchTraceTLS(finder, nil, func(traceTLSTarget) bool {
 			tries++
-			attached <- tries > 1
-			return tries > 1
+			gone := tries == 1
+			attached <- !gone
+			return gone
 		}, stop)
 	}()
 	t.Cleanup(func() {
@@ -204,7 +206,7 @@ func TestWatchTraceTLSReportsEndedExecEvents(t *testing.T) {
 	for _, ended := range []bool{true, false} {
 		execs, stop, done := make(chan uint32), make(chan struct{}), make(chan bool)
 		go func() {
-			done <- watchTraceTLS(&traceTLSFinder{seen: map[[2]uint64]bool{}, rescan: true}, execs, func(traceTLSTarget) bool { return true }, stop)
+			done <- watchTraceTLS(&traceTLSFinder{seen: map[[2]uint64]bool{}, rescan: true}, execs, func(traceTLSTarget) bool { return false }, stop)
 		}()
 		if ended {
 			close(execs)

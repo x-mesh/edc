@@ -1115,6 +1115,9 @@ int tcp_create_openreq_child_exit(__u64 *ctx) {
 // HTTP_SPLIT_SIZE보다 짧게 시작한 읽기와 쓰기는 첫 줄이 끝나지 않았을 수 있다. caddy는 요청의 첫 14 byte를 먼저 읽고
 // 나머지를 다시 읽는다. --payload=all이 아니면 이런 socket과 방향에서만 다음 조각 하나를 이어서 넘긴다.
 #define HTTP_SPLIT_SIZE 64
+// HTTP2_STREAM은 http_streams 값에서 h2c 연결을 표시하는 bit다. 나머지 bit는 그 방향에서 지금까지 주고받은 byte 수다.
+// HTTP/1의 위치는 message 하나 안이라 이 bit에 닿지 않는다.
+#define HTTP2_STREAM (1ULL << 63)
 // HTTPS는 암호문이라 ClientHello만 읽는다. SNI와 ALPN이 그 안에 평문으로 있다. post-quantum key share를 보내는 client는
 // ClientHello가 2KB에 가깝고 확장 순서를 섞어서, SNI가 앞 512 byte 밖에 있을 수 있다.
 #define TLS_HELLO_SIZE 4096
@@ -1525,19 +1528,23 @@ static __always_inline void http_capture(struct sock *sk, __u64 buffer, __u64 li
 	int peeked = limit >= peek_len && !bpf_probe_read_user(peek, peek_len, (void *)buffer);
 	int readable = peek_len == sizeof(peek) && peeked;
 	int start = readable && http_start(peek);
-	int http2_start = peeked && peek_len > 0 && peek[0] == 'P' && (peek_len < 2 || peek[1] == 'R') &&
-	                  (peek_len < 3 || peek[2] == 'I') && (peek_len < 4 || peek[3] == ' ');
-	start = start || http2_start;
+	// h2c 연결은 "PRI "로 시작한다. 1~3 byte만 읽은 조각은 HTTP/1 서버가 한 byte씩 엿보는 경우와 구별할 수 없고, h2c로
+	// 잘못 보면 그 연결의 byte를 모두 넘기게 되므로 4 byte가 다 맞을 때만 시작으로 본다.
+	int http2_start = readable && peek[0] == 'P' && peek[1] == 'R' && peek[2] == 'I' && peek[3] == ' ';
+	// 모든 TCP 송수신이 여기를 지나므로 이어 받을 조각이 있는 socket에서만 map에 값이 있다. 이어 받는 조각을 TLS 판별보다
+	// 먼저 보므로, 0x16 0x03으로 시작하는 HTTP body 조각을 TLS로 읽지 않는다. h2c 연결의 frame 안에서 "GET "처럼 보이는
+	// 조각이 와도 HTTP/1 message로 보지 않도록 HTTP 시작보다 먼저 확인한다.
+	__u64 *seen = bpf_map_lookup_elem(&http_streams, &key);
+	int http2_going = seen && (*seen & HTTP2_STREAM);
+	int http2 = http2_going || http2_start;
+	start = !http2_going && (start || http2_start);
 	__u8 kind = start ? HTTP_START : HTTP_CONTINUATION;
 	__u64 offset = 0;
 	__u64 budget = http_payload_limit;
 	__u8 tls_handshake[TLS_HANDSHAKE_HEADER_SIZE] = {};
 	int tls_synthetic = 0;
 	__u64 segment = 0;
-	// 모든 TCP 송수신이 여기를 지나므로 이어 받을 조각이 있는 socket에서만 map에 값이 있다. 이어 받는 조각을 TLS 판별보다
-	// 먼저 보므로, 0x16 0x03으로 시작하는 HTTP body 조각을 TLS로 읽지 않는다.
-	__u64 *seen = start ? 0 : bpf_map_lookup_elem(&http_streams, &key);
-	int http2 = http2_start || (seen && *seen == ~0ULL);
+	int dropped = 0;
 	if (!start && !seen) {
 		__u64 tls_offset = 0;
 		__u64 tls_captured = 0;
@@ -1565,14 +1572,20 @@ static __always_inline void http_capture(struct sock *sk, __u64 buffer, __u64 li
 		}
 		budget = TLS_HELLO_SIZE;
 	} else if (http2) {
-		__u64 marker = ~0ULL;
-		bpf_map_update_elem(&http_streams, &key, &marker, BPF_ANY);
-		if (http2_start) {
+		// h2c는 frame이 읽기와 쓰기 경계를 넘나들고 HPACK 표가 앞 frame에 기대므로, 연결의 byte를 빠짐없이 순서대로 넘긴다.
+		// 위치를 레코드 offset에 실어, 잃은 byte가 사용자 공간에 위치 차이로 보인다.
+		offset = http2_going ? *seen & ~HTTP2_STREAM : 0;
+		__u64 next = HTTP2_STREAM | (offset + size);
+		bpf_map_update_elem(&http_streams, &key, &next, BPF_ANY);
+		if (!http2_going) {
 			struct http_stream_key peer = {.skaddr = (__u64)sk, .direction = direction == HTTP_SENT ? HTTP_RECEIVED : HTTP_SENT};
-			bpf_map_update_elem(&http_streams, &peer, &marker, BPF_ANY);
+			__u64 *other = bpf_map_lookup_elem(&http_streams, &peer);
+			if (!other || !(*other & HTTP2_STREAM)) {
+				__u64 begin = HTTP2_STREAM;
+				bpf_map_update_elem(&http_streams, &peer, &begin, BPF_ANY);
+			}
 		}
-		budget = HTTP_PAYLOAD_SIZE;
-		iov = 0;
+		budget = size;
 	} else if (http_message_limit) {
 		budget = http_message_limit;
 		if (!start) {
@@ -1666,6 +1679,7 @@ static __always_inline void http_capture(struct sock *sk, __u64 buffer, __u64 li
 			if (lost) {
 				__sync_fetch_and_add(lost, 1);
 			}
+			dropped = 1;
 			break;
 		}
 		cursor->pointer += len;
@@ -1673,6 +1687,14 @@ static __always_inline void http_capture(struct sock *sk, __u64 buffer, __u64 li
 		cursor->remaining -= len;
 		cursor->offset += len;
 		cursor->kind = HTTP_CONTINUATION;
+	}
+	// h2c에서 넘기지 못한 byte가 남으면 frame 경계와 HPACK 표를 되찾을 수 없다. 그 방향은 더 넘기지 않고 잃은 event로 센다.
+	if (http2 && cursor->remaining) {
+		bpf_map_delete_elem(&http_streams, &key);
+		__u64 *lost = dropped ? 0 : bpf_map_lookup_elem(&lost_events, &zero);
+		if (lost) {
+			__sync_fetch_and_add(lost, 1);
+		}
 	}
 }
 

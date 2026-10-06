@@ -1201,7 +1201,7 @@ trace를 시작한 뒤에 뜬 program도 이 파일을 쓰면 보입니다. 표�
 
 OpenSSL에서 읽은 요청과 응답 event에는 `"tls": true`가 붙고, event 행에는 event 이름 뒤에 `tls`가 표시됩니다. path, 상태 코드, 응답 시간, group 보기, `--payload`, 요약은 평문 HTTP와 같게 동작하고, `--payload`는 같은 header 값을 가립니다. HTTPS의 body에는 token이 들어 있는 경우가 많으므로, 출력을 공유하기 전에 확인합니다.
 
-edc는 HTTP/2를 해석하지 않습니다. TLS 위의 HTTP/2 연결은 쪽마다 `http2_unparsed` event 하나로 보입니다. 대부분의 browser와 기본 설정의 `curl`은 서버가 지원하면 HTTP/2를 쓰므로, `curl`의 요청을 보려면 `curl --http1.1`을 씁니다. 요약은 이 event 수를 표시하고, JSON에는 `http2_unparsed`가 붙습니다.
+edc는 TLS 위의 HTTP/2를 해석하지 않습니다. TLS 위의 HTTP/2 연결은 쪽마다 `http2_unparsed` event 하나로 보입니다. 대부분의 browser와 기본 설정의 `curl`은 서버가 지원하면 HTTP/2를 쓰므로, `curl`의 요청을 보려면 `curl --http1.1`을 씁니다. 요약은 이 event 수를 표시하고, JSON에는 `http2_unparsed`가 붙습니다.
 
 `node`나 Python `asyncio`처럼 OpenSSL 함수 안에서 socket을 쓰지 않는 program은 어느 연결인지 알 수 없습니다. 이런 event에는 process는 있지만 `source`와 `destination`이 없고, `target`은 `Host` header입니다. 요약은 이 event 수를 `TLS plaintext without an address`로 표시하고, JSON에는 `tls_unmapped`가 붙습니다. `--port`를 쓰면 이런 평문은 port를 확인할 수 없어 표시하지 않고 같은 수에 더합니다.
 
@@ -1211,7 +1211,7 @@ edc는 HTTP/2를 해석하지 않습니다. TLS 위의 HTTP/2 연결은 쪽마�
 
 amd64의 Linux 6.11, 6.12.14 전의 6.12, 6.13.3 전의 6.13에서는 Docker container처럼 seccomp filter 아래에서 도는 process가 OpenSSL 호출에서 돌아올 때 종료될 수 있습니다. 이런 kernel에서는 trace를 시작하기 전에 경고를 표시합니다. 배포판 kernel에는 수정이 따로 들어 있을 수 있습니다.
 
-`--tls`가 없으면 HTTPS의 요청은 kernel에서 암호문으로만 보이므로 표시하지 않습니다. HTTP/2와 HTTP/3의 요청은 binary frame이라 표시하지 않습니다. HTTP/3은 UDP를 쓰므로 `tls_hello` event도 없습니다. edc는 한 번의 읽기나 쓰기가 시작되는 곳에서만 message를 찾습니다. 그래서 한 번의 읽기에 앞 응답의 끝과 다음 응답의 시작이 함께 들어 있으면 다음 응답을 놓칩니다. 프로그램이 message 하나를 여러 버퍼로 나눠 쓰면 첫 버퍼만 읽으므로, `Host` header는 첫 버퍼의 앞 512 byte 안에 있어야 합니다. 없으면 target은 서버 주소입니다. edc는 Linux 5.15 이상에서 이 field를 지원합니다.
+`--tls`가 없으면 HTTPS의 요청은 kernel에서 암호문으로만 보이므로 표시하지 않습니다. TLS 없는 HTTP/2(h2c, 예: cluster 안의 gRPC)는 해석해서 stream마다 method, path, 상태 코드, 응답 시간을 표시합니다. frame과 header 표를 따라가야 하므로 h2c 연결은 모든 byte를 읽고, 그래서 바쁜 h2c 연결은 HTTP/1보다 비용이 큽니다. h2c 연결의 byte를 잃으면 그 방향은 더 읽지 않고 잃은 event로 셉니다. HTTP/3의 요청은 binary frame이라 표시하지 않습니다. HTTP/3은 UDP를 쓰므로 `tls_hello` event도 없습니다. edc는 한 번의 읽기나 쓰기가 시작되는 곳에서만 message를 찾습니다. 그래서 한 번의 읽기에 앞 응답의 끝과 다음 응답의 시작이 함께 들어 있으면 다음 응답을 놓칩니다. 프로그램이 message 하나를 여러 버퍼로 나눠 쓰면 첫 버퍼만 읽으므로, `Host` header는 첫 버퍼의 앞 512 byte 안에 있어야 합니다. 없으면 target은 서버 주소입니다. edc는 Linux 5.15 이상에서 이 field를 지원합니다.
 
 Linux 5.15 이상에서 `trace mysql`을 사용하면 평문 MySQL 명령과 결과를 발생 즉시 출력합니다. edc는 kernel에서 MySQL port의 TCP 읽기와 쓰기마다 앞부분을 읽습니다. 기본 port는 3306이고, 다른 port는 `--port`로 지정합니다.
 

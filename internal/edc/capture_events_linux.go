@@ -812,6 +812,8 @@ func collectCaptureEventsFor(scope traceScope, duration time.Duration, onEvent f
 			if !captureRecordAfterAttached(packet.bootTimeNS, attached) {
 				continue
 			}
+			// h2c는 frame을 이어 읽어야 해서 조각 결합보다 먼저 받는다. --tls 평문은 http2Events가 넘기지 않으므로
+			// TLS 위의 HTTP/2는 아래 tracker.event에서 http2_unparsed가 된다.
 			if events, claimed := requests.http2Events(packet, clockOffset); claimed {
 				if err := emit(events); err != nil {
 					return captureSummary{}, err

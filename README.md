@@ -1390,6 +1390,8 @@ Start the trace before the NSS program starts. edc needs the SSL setup calls to 
 
 NSS uses `PR_Read`, `PR_Recv`, `PR_Write`, and `PR_Send` for plaintext. edc follows `SSL_SECURITY`, its default value, model copies, accepted connections, and `PR_Close`.
 
+NSPR also uses these functions for plain files and sockets. So each NSPR read and write runs a probe, also in a program without TLS.
+
 An NSS connection with `SSL_SECURITY` off produces no TLS event. `PR_Recv` with `PR_MSG_PEEK` also produces no TLS event.
 
 Use `--tls=claude` to find an executable in PATH. A file in the current directory takes priority over PATH.

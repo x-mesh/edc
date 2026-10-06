@@ -902,7 +902,7 @@ func (model topModel) helpLines() []string {
 		"no ev means the eBPF observer is active but collected no events in that interval.",
 	}
 	if model.details.System == "darwin" {
-		lines = append(lines, "macOS: process CPU is a recent ps average. Threads and disk I/O use libproc.", "macOS: FDs, PSI, CPU iowait, disk busy and eBPF latency are not collected.")
+		lines = append(lines, "macOS: process CPU is a recent ps average. Threads and disk I/O use libproc.", "macOS: FDs, PSI, CPU iowait, disk busy, network limits and eBPF latency are not collected.")
 	} else {
 		lines = append(lines, "Linux: process CPU uses sample deltas. Runq and I/O latency require -d at startup.")
 	}

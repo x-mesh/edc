@@ -2448,8 +2448,9 @@ static __always_inline __u64 ssl_synthetic_socket(__u64 pid_tgid, __u64 ssl) {
 	return ((pid_tgid >> 32) << 32) | (ssl & 0xffffffff);
 }
 
-// ssl_enter는 SSL_read, SSL_write와 _ex의 시작이다. 인자는 (SSL *ssl, void *buf, num[, size_t *out])이다. SSL_read와
-// SSL_write의 num은 int라서 상위 32 bit를 버린다. 중첩된 호출은 덮어쓰고 반환에서 지우므로 레코드는 한 번만 나간다.
+// ssl_enter는 TLS 읽기와 쓰기 함수의 시작이다. 인자는 (ssl, buf, num[, size_t *out])이다. SSL_read와 SSL_write의 num은
+// int라서 wide가 아니면 상위 32 bit를 버린다. _ex, Mbed TLS, rustls-ffi의 num은 size_t라서 wide로 64 bit를 모두 읽는다.
+// 중첩된 호출은 덮어쓰고 반환에서 지우므로 레코드는 한 번만 나간다.
 static __always_inline int ssl_enter(void *ctx, __u8 direction, int ex, int wide) {
 	if (!emit_tls_plaintext) {
 		return 0;
@@ -2467,8 +2468,9 @@ static __always_inline int ssl_enter(void *ctx, __u8 direction, int ex, int wide
 	return 0;
 }
 
-// ssl_leave는 반환에서 길이를 정한다. SSL_read와 SSL_write는 양수 반환값이 byte 수이고, _ex는 1을 돌려주고 길이를 out에
-// 쓴다. 0 이하(오류, WANT_READ, WANT_WRITE, 종료)는 평문이 없다.
+// ssl_leave는 반환에서 길이를 정한다. SSL_read와 SSL_write는 양수 반환값이 byte 수이고, ex 형식은 success를 돌려주고 길이를
+// out에 쓴다. success는 _ex가 1, rustls-ffi가 RUSTLS_RESULT_OK(7000)이다. 0 이하(오류, WANT_READ, WANT_WRITE, 종료)는
+// 평문이 없다.
 static __always_inline int ssl_leave(void *ctx, int ex, int success) {
 	if (!emit_tls_plaintext) {
 		return 0;

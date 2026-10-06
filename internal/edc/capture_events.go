@@ -17,14 +17,15 @@ type captureEventsOptions struct {
 }
 
 type captureEvent struct {
-	SocketID    uint64 `json:"-"`
-	TimestampNS uint64 `json:"timestamp_ns"`
-	BootTimeNS  uint64 `json:"boot_time_ns"`
-	Event       string `json:"event"`
-	Protocol    string `json:"protocol"`
-	PID         uint32 `json:"pid"`
-	Process     string `json:"process"`
-	Target      string `json:"target,omitempty"`
+	SocketID      uint64 `json:"-"`
+	TimestampNS   uint64 `json:"timestamp_ns"`
+	BootTimeNS    uint64 `json:"boot_time_ns"`
+	Event         string `json:"event"`
+	Protocol      string `json:"protocol"`
+	CaptureSource string `json:"capture_source,omitempty"`
+	PID           uint32 `json:"pid"`
+	Process       string `json:"process"`
+	Target        string `json:"target,omitempty"`
 	// TargetSource는 target을 명령줄(command), 이 프로세스의 DNS 응답(dns), resolver 캐시(resolver-cache),
 	// macOS가 연결에 기록한 이름(system) 중 어디서 얻었는지 알린다. 주소를 여러 이름이 공유하면 dns와
 	// resolver-cache 이름이 틀릴 수 있다.
@@ -366,6 +367,8 @@ type tcpTraceOptions struct {
 	// containerRef는 --container 값이고, container는 trace를 시작하기 전에 그 값을 cgroup ID로 푼 것이다.
 	containerRef string
 	container    *traceContainer
+	tlsPlaintext bool
+	pid          uint
 }
 
 func traceProtocol(event captureEvent) string {

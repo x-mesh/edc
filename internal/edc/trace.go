@@ -245,12 +245,16 @@ type traceScope struct {
 	// socketPath는 trace socket이 볼 unix socket 파일이다.
 	socketPath string
 	// dropReasons는 trace drop이 event로 볼 이유 이름이다. 비어 있으면 모든 이유를 본다.
-	dropReasons []string
+	dropReasons  []string
+	tlsPlaintext bool
+	pid          uint32
+	container    *traceContainer
 }
 
 func (options tcpTraceOptions) scope(protocol string) traceScope {
 	return traceScope{protocol: protocol, server: options.side == traceServerSide, side: options.side, payload: options.payload != "", payloadAll: options.payload == tracePayloadAll,
-		showSecrets: options.showSecrets, port: uint16(options.port), socketPath: options.socketPath, dropReasons: splitDropReasons(options.dropReasons)}
+		showSecrets: options.showSecrets, port: uint16(options.port), socketPath: options.socketPath, dropReasons: splitDropReasons(options.dropReasons),
+		tlsPlaintext: options.tlsPlaintext, pid: uint32(options.pid), container: options.container}
 }
 
 // tracePayloadMode는 --payload 값이다. 값 없이 쓰면 message마다 앞 4KiB를, all이면 message 전체를 본다.
@@ -429,6 +433,8 @@ func runTraceProtocol(args []string) int {
 	set.BoolVar(&options.showSecrets, "show-secrets", false, T("command.trace.option.show_secrets"))
 	set.IntVar(&options.port, "port", 0, T("command.trace.option.port"))
 	set.StringVar(&options.containerRef, "container", "", T("command.trace.option.container"))
+	set.BoolVar(&options.tlsPlaintext, "tls-plaintext", false, "decode HTTP inside OpenSSL TLS")
+	set.UintVar(&options.pid, "pid", 0, "process ID for TLS plaintext capture")
 	set.StringVar(&options.dropReasons, "reason", "", T("command.trace.option.reason"))
 	if err := set.Parse(args[1:]); err != nil {
 		return 2
@@ -533,6 +539,18 @@ func runTraceProtocol(args []string) int {
 	if options.containerRef != "" && runtime.GOOS != "linux" {
 		fmt.Fprintln(os.Stderr, T("cli.trace.container_linux_only", runtime.GOOS))
 		return 3
+	}
+	if options.tlsPlaintext && args[0] != "http" {
+		fmt.Fprintln(os.Stderr, "--tls-plaintext is only valid for trace http")
+		return 2
+	}
+	if options.pid != 0 && !options.tlsPlaintext {
+		fmt.Fprintln(os.Stderr, "--pid requires --tls-plaintext")
+		return 2
+	}
+	if uint64(options.pid) > uint64(^uint32(0)) {
+		fmt.Fprintln(os.Stderr, "--pid is out of range")
+		return 2
 	}
 	if args[0] == "socket" {
 		if err := validateSocketTarget(options.socketPath); err != nil {

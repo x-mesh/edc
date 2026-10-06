@@ -40,15 +40,16 @@ var traceHTTPMethods = []string{"GET", "POST", "PUT", "HEAD", "DELETE", "PATCH",
 
 // httpPacket은 kernel이 TCP로 주고받은 HTTP message의 앞부분이다. source는 로컬 쪽, destination은 상대 쪽이다.
 type httpPacket struct {
-	bootTimeNS  uint64
-	pid         uint32
-	cgroupID    uint64
-	process     string
-	sent        bool
-	socket      uint64
-	source      string
-	destination string
-	payload     []byte
+	bootTimeNS    uint64
+	pid           uint32
+	cgroupID      uint64
+	process       string
+	sent          bool
+	socket        uint64
+	source        string
+	destination   string
+	payload       []byte
+	captureSource string
 	// continued는 앞 message에 이어지는 조각이다. --payload=all이 아니면 첫 줄이 끊긴 첫 조각 뒤에만 온다. offset은 조각이
 	// message 안에서 시작하는 위치다.
 	continued bool
@@ -212,7 +213,7 @@ func (tracker *httpTracker) http2HeaderEvent(packet httpPacket, stream uint32, f
 	if tracker.side != "" && tracker.side != side {
 		return captureEvent{}, false
 	}
-	event := captureEvent{SocketID: packet.socket, TimestampNS: uint64(int64(packet.bootTimeNS) + clockOffset), BootTimeNS: packet.bootTimeNS, Protocol: "http", Side: side, PID: packet.pid, Process: packet.process, CgroupID: packet.cgroupID, Source: packet.source, Destination: packet.destination, Bytes: uint64(len(packet.payload))}
+	event := captureEvent{SocketID: packet.socket, TimestampNS: uint64(int64(packet.bootTimeNS) + clockOffset), BootTimeNS: packet.bootTimeNS, Protocol: "http", CaptureSource: packet.captureSource, Side: side, PID: packet.pid, Process: packet.process, CgroupID: packet.cgroupID, Source: packet.source, Destination: packet.destination, Bytes: uint64(len(packet.payload))}
 	key := http2RequestKey{socket: packet.socket, stream: stream}
 	if method != "" {
 		host, path := traceHTTPTarget(values[":path"], strings.ToLower(values[":authority"]))
@@ -257,7 +258,7 @@ func (tracker *httpTracker) event(packet httpPacket, clockOffset int64) (capture
 		return captureEvent{}, false
 	}
 	event := captureEvent{
-		SocketID: packet.socket, TimestampNS: uint64(int64(packet.bootTimeNS) + clockOffset), BootTimeNS: packet.bootTimeNS, Protocol: "http", Side: side,
+		SocketID: packet.socket, TimestampNS: uint64(int64(packet.bootTimeNS) + clockOffset), BootTimeNS: packet.bootTimeNS, Protocol: "http", CaptureSource: packet.captureSource, Side: side,
 		PID: packet.pid, Process: packet.process, CgroupID: packet.cgroupID, Source: packet.source, Destination: packet.destination, Bytes: uint64(len(packet.payload)),
 	}
 	if tracker.payload {
@@ -309,7 +310,7 @@ func (tracker *httpTracker) tlsEvent(packet httpPacket, hello tlsClientHello, cl
 		return captureEvent{}, false
 	}
 	return captureEvent{
-		SocketID: packet.socket, TimestampNS: uint64(int64(packet.bootTimeNS) + clockOffset), BootTimeNS: packet.bootTimeNS, Protocol: "http", Side: side,
+		SocketID: packet.socket, TimestampNS: uint64(int64(packet.bootTimeNS) + clockOffset), BootTimeNS: packet.bootTimeNS, Protocol: "http", CaptureSource: packet.captureSource, Side: side,
 		PID: packet.pid, Process: packet.process, CgroupID: packet.cgroupID, Source: packet.source, Destination: packet.destination, Bytes: uint64(len(packet.payload)),
 		Event: traceTLSHelloEvent, Target: emptyAs(hello.serverName, traceHTTPHost(packet.destination, side == traceServerSide)), ALPN: hello.alpn,
 	}, true
@@ -698,7 +699,11 @@ var traceHTTPGroupColumns = []traceGroupColumn{
 // 한 목록에 두 쪽이 섞이므로 쪽을 앞에 붙인다. event 칸은 모든 protocol이 같은 폭이라 붙이면 잘린다. 글자로 붙여서
 // 전체 화면의 / 필터로 server나 client를 찾을 수 있다.
 func traceHTTPScrollLabels(event captureEvent) (string, string) {
-	request := strings.TrimSpace(event.Method + " " + event.Target + event.Path)
+	target := event.Target + event.Path
+	if event.Target != "" {
+		target = traceHTTPScheme(event) + target
+	}
+	request := strings.TrimSpace(event.Method + " " + target)
 	if event.Destination != "" && event.Destination != event.Target {
 		request = strings.TrimSpace(request + " (" + event.Destination + ")")
 	}
@@ -717,6 +722,13 @@ func traceHTTPScrollLabels(event captureEvent) (string, string) {
 		label += " " + traceLatency(event.LatencyMS, "ms")
 	}
 	return emptyAs(request, "-"), label
+}
+
+func traceHTTPScheme(event captureEvent) string {
+	if event.CaptureSource == "openssl_uprobe" || event.Event == traceTLSHelloEvent {
+		return "https://"
+	}
+	return "http://"
 }
 
 type httpTraceKey struct {

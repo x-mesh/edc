@@ -165,7 +165,7 @@ func TestHTTPTrackerMatchesResponsesInOrder(t *testing.T) {
 	if stray.LatencyMS != nil || stray.Path != "" || stray.Target != "127.0.0.1:8080" {
 		t.Fatalf("response without a request = %#v", stray)
 	}
-	if destination, label := traceHTTPScrollLabels(second); destination != "client: POST api.example/b (127.0.0.1:8080)" || label != "http_5xx 503 4.0ms" {
+	if destination, label := traceHTTPScrollLabels(second); destination != "client: POST http://api.example/b (127.0.0.1:8080)" || label != "http_5xx 503 4.0ms" {
 		t.Fatalf("labels = %q, %q", destination, label)
 	}
 	// client 쪽 tracker는 서버가 받은 요청을 버린다.
@@ -282,7 +282,7 @@ func TestHTTPTraceScreenPutsThePayloadUnderItsEvent(t *testing.T) {
 	plain := captureEvent{Protocol: "http", Event: "http_2xx", Process: "curl", Target: "api.example", Path: "/a", Status: 200}
 	model.events, model.width = []captureEvent{request, request, plain}, 120
 	// 3줄이면 마지막 event와 그 앞 event의 두 줄이 들어간다. 그 앞 요청은 두 줄이 다 들어가지 않으므로 빼야 한다.
-	for height, want := range map[int][]string{6: {"POST api.example/a", "↳ body {\"k\":1}", "http_2xx 200"}, 5: {"http_2xx 200", ""}} {
+	for height, want := range map[int][]string{6: {"POST http://api.example/a", "↳ body {\"k\":1}", "http_2xx 200"}, 5: {"http_2xx 200", ""}} {
 		model.height = height
 		rows := traceScreenRows(model)
 		if len(rows) != len(want) {
@@ -373,8 +373,8 @@ func TestHTTPTrackerShowsBothSidesByDefault(t *testing.T) {
 		event captureEvent
 		want  string
 	}{
-		{received, "server: GET node.example:9900/admin/chain (203.0.113.7:50000)"},
-		{sent, "client: GET localhost:9000/admin/chain (127.0.0.1:8080)"},
+		{received, "server: GET http://node.example:9900/admin/chain (203.0.113.7:50000)"},
+		{sent, "client: GET http://localhost:9000/admin/chain (127.0.0.1:8080)"},
 		{captureEvent{Protocol: "http", Side: traceServerSide, Event: "http_2xx"}, "server: -"},
 	} {
 		if destination, _ := traceHTTPScrollLabels(test.event); destination != test.want {
@@ -673,7 +673,7 @@ func TestHTTPTrackerShowsTLSClientHellos(t *testing.T) {
 		}
 	}
 	event, _ := tracker.event(sent, 0)
-	if destination, label := traceHTTPScrollLabels(event); destination != "client: api.example (127.0.0.1:8080)" || label != "tls_hello h2" {
+	if destination, label := traceHTTPScrollLabels(event); destination != "client: https://api.example (127.0.0.1:8080)" || label != "tls_hello h2" {
 		t.Fatalf("labels = %q, %q", destination, label)
 	}
 	if _, ok := newHTTPTracker(traceServerSide, false, false).event(sent, 0); ok {

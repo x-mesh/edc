@@ -1200,6 +1200,7 @@ func runTraceScreen(protocol string, options tcpTraceOptions) int {
 		fmt.Fprintln(os.Stderr, T("cli.trace.failed", result.err))
 		return 1
 	}
+	printTraceTLSExecProblem(result.summary)
 	duration := options.duration
 	if duration == 0 || screen.stopping || ctx.Err() != nil {
 		duration = time.Since(started)

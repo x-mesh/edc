@@ -1,6 +1,8 @@
 package edc
 
 import (
+	"bytes"
+	"debug/elf"
 	"encoding/binary"
 	"io"
 	"io/fs"
@@ -13,7 +15,7 @@ import (
 	"testing"
 )
 
-func TestTraceTLSMappedLibrariesReadsLibsslPaths(t *testing.T) {
+func TestTraceTLSMappedLibrariesReadsTLSLibraryPaths(t *testing.T) {
 	maps := []byte(`7f00-7f01 r--p 00000000 08:03 123  /usr/lib/x86_64-linux-gnu/libssl.so.3
 7f01-7f02 r-xp 00001000 08:03 123  /usr/lib/x86_64-linux-gnu/libssl.so.3
 7f02-7f03 r--p 00000000 08:03 124  /usr/lib/x86_64-linux-gnu/libcrypto.so.3
@@ -22,12 +24,15 @@ func TestTraceTLSMappedLibrariesReadsLibsslPaths(t *testing.T) {
 00400000-00401000 r-xp 00000000 00:25 127  /usr/local/lib/libssl.so.1.0.2
 7f05-7f06 rw-p 00000000 00:00 0
 7f06-7f07 r--p 00000000 00:00 0  [vdso]
+7f07-7f08 r--p 00000000 08:03 128  /usr/lib/x86_64-linux-gnu/libgnutls.so.30.40.3
+7f08-7f09 r--p 00000000 08:03 129  /usr/lib/x86_64-linux-gnu/libgnutls-dane.so.0
 `)
 	want := []traceTLSMapping{
 		{"7f00-7f01", "/usr/lib/x86_64-linux-gnu/libssl.so.3"},
 		{"7f03-7f04", "/usr/lib/libssl.so.1.1 (deleted)"},
 		{"7f04-7f05", "/opt/my app/lib/libssl.so.3"},
 		{"400000-401000", "/usr/local/lib/libssl.so.1.0.2"},
+		{"7f07-7f08", "/usr/lib/x86_64-linux-gnu/libgnutls.so.30.40.3"},
 	}
 	if got := traceTLSMappedLibraries(maps); !slices.Equal(got, want) {
 		t.Fatalf("libraries = %q, want %q", got, want)
@@ -40,13 +45,121 @@ func traceTLSHostLibssl(t *testing.T) string {
 	for _, pattern := range traceTLSHostLibraries {
 		matches, _ := filepath.Glob(pattern)
 		for _, path := range matches {
-			if symbols, err := traceTLSFileSymbols(path, false); err == nil && traceTLSReadsPlaintext(symbols) {
+			if target, err := traceTLSReadFile(path, false); err == nil && traceTLSReadsPlaintext(target.symbols) {
 				return path
 			}
 		}
 	}
 	t.Skip("no libssl with SSL_read on this host")
 	return ""
+}
+
+// GnuTLS의 송수신 함수도 평문을 읽는 함수로 고른다. gnutls_deinit만으로는 붙이지 않는다.
+func TestTraceTLSFileSymbolsReadsGnuTLS(t *testing.T) {
+	if !slices.Contains(traceTLSHostLibraries, "/usr/lib/*/libgnutls.so*") {
+		t.Fatalf("host libraries = %q", traceTLSHostLibraries)
+	}
+	if traceTLSReadsPlaintext([]string{"SSL_free", "gnutls_deinit"}) || !traceTLSReadsPlaintext([]string{"gnutls_deinit", "gnutls_record_recv"}) {
+		t.Fatal("only the free functions must not count as plaintext")
+	}
+	for _, pattern := range traceTLSHostLibraries {
+		if !strings.Contains(pattern, "libgnutls") {
+			continue
+		}
+		matches, _ := filepath.Glob(pattern)
+		for _, path := range matches {
+			target, err := traceTLSReadFile(path, false)
+			if err != nil {
+				continue
+			}
+			for _, want := range []string{"gnutls_record_send", "gnutls_record_recv", "gnutls_deinit"} {
+				if !slices.Contains(target.symbols, want) {
+					t.Fatalf("%s symbols = %q, missing %s", path, target.symbols, want)
+				}
+			}
+			return
+		}
+	}
+	t.Skip("no libgnutls on this host")
+}
+
+// uprobe는 파일 위치에 붙으므로, 읽은 위치의 byte가 그 함수의 첫 명령이어야 한다. section에서 가상 주소로 읽은 byte와
+// 파일에서 위치로 읽은 byte를 비교한다.
+func TestTraceTLSReadFileFindsFunctionOffsets(t *testing.T) {
+	libssl := traceTLSHostLibssl(t)
+	target, err := traceTLSReadFile(libssl, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	file, err := elf.Open(libssl)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	raw, err := os.ReadFile(libssl)
+	if err != nil {
+		t.Fatal(err)
+	}
+	symbols, err := file.DynamicSymbols()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, symbol := range symbols {
+		offset, ok := target.offsets[symbol.Name]
+		if symbol.Name != "SSL_read" && symbol.Name != "SSL_write" || symbol.Section == elf.SHN_UNDEF {
+			continue
+		}
+		section := file.Sections[symbol.Section]
+		data, err := section.Data()
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := data[symbol.Value-section.Addr:][:16]
+		if !ok || offset+16 > uint64(len(raw)) || !bytes.Equal(raw[offset:offset+16], want) {
+			t.Fatalf("%s offset %#x (%t) does not hold the function", symbol.Name, offset, ok)
+		}
+	}
+	if len(target.offsets) != len(target.symbols) {
+		t.Fatalf("offsets = %v, symbols = %q", target.offsets, target.symbols)
+	}
+}
+
+// 흔한 libssl은 실행 segment의 파일 위치와 주소가 같아서 변환이 틀려도 위 test를 통과한다. non-PIE Go test binary는
+// 주소가 0x400000에서 시작하므로 주소를 파일 위치로 바꾸는 계산을 실제로 시험한다.
+func TestTraceTLSFileOffsetFollowsTheSegment(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("the test binary is ELF only on Linux")
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	file, err := elf.Open(executable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	if !slices.ContainsFunc(file.Progs, func(program *elf.Prog) bool {
+		return program.Type == elf.PT_LOAD && program.Flags&elf.PF_X != 0 && program.Off != program.Vaddr
+	}) {
+		t.Skip("the test binary has no executable segment whose file offset differs from its address")
+	}
+	raw, err := os.ReadFile(executable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := file.Section(".text")
+	data, err := text.Data()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// go test는 symbol 표를 지우므로 .text 안의 위치를 직접 고른다.
+	for _, at := range []uint64{0, 16, uint64(len(data)) / 2, uint64(len(data)) - 16} {
+		offset, ok := traceTLSFileOffset(file, text.Addr+at)
+		if !ok || offset+16 > uint64(len(raw)) || !bytes.Equal(raw[offset:offset+16], data[at:at+16]) {
+			t.Fatalf("address %#x: offset %#x (%t) does not hold the .text bytes", text.Addr+at, offset, ok)
+		}
+	}
 }
 
 func copyTraceTLSFile(t *testing.T, from, to string) {
@@ -139,18 +252,19 @@ func TestResolveTraceTLSTargetsFindsEachLibraryOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	previousRoot, previousLibraries, previousRelease := traceProcRoot, traceTLSHostLibraries, traceKernelRelease
+	previousRoot, previousLibraries, previousRelease, previousProblem := traceProcRoot, traceTLSHostLibraries, traceKernelRelease, traceTLSExecProblem
 	traceProcRoot, traceTLSHostLibraries, traceKernelRelease = proc, []string{filepath.Join(root, "host", "libssl.so*")}, release
+	traceTLSExecProblem = func() string { return "" }
 	t.Cleanup(func() {
-		traceProcRoot, traceTLSHostLibraries, traceKernelRelease = previousRoot, previousLibraries, previousRelease
+		traceProcRoot, traceTLSHostLibraries, traceKernelRelease, traceTLSExecProblem = previousRoot, previousLibraries, previousRelease, previousProblem
 	})
 
-	targets, notices, code, err := resolveTraceTLSTargets(traceTLSAuto)
-	if err != nil || code != 0 {
+	finder, notices, code, err := resolveTraceTLSTargets(traceTLSAuto)
+	if err != nil || code != 0 || !finder.rescan {
 		t.Fatalf("resolve = %v, %d", err, code)
 	}
 	var paths []string
-	for _, target := range targets {
+	for _, target := range finder.targets {
 		paths = append(paths, target.path)
 		if !slices.Contains(target.symbols, "SSL_read") || !slices.Contains(target.symbols, "SSL_write") {
 			t.Fatalf("%s symbols = %q", target.path, target.symbols)
@@ -192,13 +306,34 @@ func TestResolveTraceTLSTargetsChecksAnExplicitPath(t *testing.T) {
 			t.Fatalf("--tls=%s = %d, %v", path, code, err)
 		}
 	}
-	if _, err := traceTLSFileSymbols(elf32, true); err == nil || !strings.Contains(err.Error(), "ELFCLASS32") {
+	if _, err := traceTLSReadFile(elf32, true); err == nil || !strings.Contains(err.Error(), "ELFCLASS32") {
 		t.Fatalf("32-bit ELF = %v", err)
 	}
 	libssl := traceTLSHostLibssl(t)
-	targets, _, code, err := resolveTraceTLSTargets(traceTLSMode(libssl))
-	if err != nil || code != 0 || len(targets) != 1 || targets[0].path != libssl {
-		t.Fatalf("--tls=%s = %+v, %d, %v", libssl, targets, code, err)
+	finder, _, code, err := resolveTraceTLSTargets(traceTLSMode(libssl))
+	if err != nil || code != 0 || len(finder.targets) != 1 || finder.targets[0].path != libssl || finder.rescan {
+		t.Fatalf("--tls=%s = %+v, %d, %v", libssl, finder, code, err)
+	}
+}
+
+// trace 중에 exec 알림을 받지 못하면 새로 시작한 프로그램의 첫 요청을 놓칠 수 있으므로, 화면을 열기 전에 알린다.
+func TestResolveTraceTLSTargetsNoticesMissingExecEvents(t *testing.T) {
+	libssl := traceTLSHostLibssl(t)
+	root := t.TempDir()
+	copyTraceTLSFile(t, libssl, filepath.Join(root, "host", "libssl.so.3"))
+	release := filepath.Join(root, "osrelease")
+	if err := os.WriteFile(release, []byte("6.17.0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	previousRoot, previousLibraries, previousRelease, previousProblem := traceProcRoot, traceTLSHostLibraries, traceKernelRelease, traceTLSExecProblem
+	traceProcRoot, traceTLSHostLibraries, traceKernelRelease = t.TempDir(), []string{filepath.Join(root, "host", "libssl.so*")}, release
+	traceTLSExecProblem = func() string { return "network namespace net:[4026532000]" }
+	t.Cleanup(func() {
+		traceProcRoot, traceTLSHostLibraries, traceKernelRelease, traceTLSExecProblem = previousRoot, previousLibraries, previousRelease, previousProblem
+	})
+	finder, notices, code, err := resolveTraceTLSTargets(traceTLSAuto)
+	if err != nil || code != 0 || len(finder.targets) != 1 || !slices.Equal(notices, []string{T("cli.trace.tls_exec_events", "network namespace net:[4026532000]")}) {
+		t.Fatalf("resolve = %q, %d, %v", notices, code, err)
 	}
 }
 

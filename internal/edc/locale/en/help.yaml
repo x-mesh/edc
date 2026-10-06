@@ -175,7 +175,7 @@ command:
       side: "http and mysql show both sides. dns shows client"
       payload: "trace http, socket: 4 KiB each, =all up to 1 MiB"
       show_secrets: "http --payload: show headers. mysql: show SQL text"
-      tls: "http: OpenSSL HTTPS plaintext, =<path> for one file"
+      tls: "http: OpenSSL/GnuTLS plaintext, =<path>: one file"
       port: "http: only this port. mysql: server port, 3306"
       container: "only this docker container, by name or ID"
       reason: "trace drop: only these reasons, comma separated"

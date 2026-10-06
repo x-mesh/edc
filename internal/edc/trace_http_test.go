@@ -1328,7 +1328,8 @@ func TestTraceTLSOptionNeedsHTTP(t *testing.T) {
 			t.Fatalf("Set(%q) = %q, %v", value, mode, err)
 		}
 	}
-	if scope := (tcpTraceOptions{tls: traceTLSAuto, tlsTargets: []traceTLSTarget{{path: "/lib/libssl.so.3"}}}).scope("http"); scope.tls != traceTLSAuto || len(scope.tlsTargets) != 1 {
+	finder := &traceTLSFinder{targets: []traceTLSTarget{{path: "/lib/libssl.so.3"}}}
+	if scope := (tcpTraceOptions{tls: traceTLSAuto, tlsFinder: finder}).scope("http"); scope.tls != traceTLSAuto || scope.tlsFinder != finder {
 		t.Fatalf("scope = %+v", scope)
 	}
 }

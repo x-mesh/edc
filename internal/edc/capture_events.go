@@ -70,7 +70,7 @@ type captureEvent struct {
 	// Payload는 trace http --payload일 때만 붙는 message 앞부분이다. 제어 문자를 이미 \xNN으로 바꿔 두어서
 	// jq -r로 terminal에 찍어도 escape sequence가 실행되지 않는다.
 	Payload string `json:"payload,omitempty"`
-	// PayloadTruncated는 --payload=all에서 message를 끝까지 담지 못했을 때 붙는다. 상한에서 잘렸거나, 조각을 잃었거나,
+	// PayloadTruncated는 --payload=all과 HTTP/2의 --payload에서 message를 끝까지 담지 못했을 때 붙는다. 상한에서 잘렸거나, 조각을 잃었거나,
 	// 끝나기 전에 trace가 끝났다.
 	PayloadTruncated bool `json:"payload_truncated,omitempty"`
 	// MAC과 OldMAC은 ARP event에만 붙는다. OldMAC은 MAC이 바뀌었을 때 이전 값이다.

@@ -9,6 +9,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -68,6 +69,15 @@ func resolveTraceTLSTargets(mode traceTLSMode) (finder *traceTLSFinder, notices 
 	if mode != traceTLSAuto {
 		path := string(mode)
 		target, err := traceTLSReadFile(path, true)
+		// 기존 상대 경로가 PATH의 같은 이름 실행 파일로 바뀌지 않게 ENOENT일 때만 찾는다.
+		if errors.Is(err, fs.ErrNotExist) && !strings.ContainsRune(path, '/') {
+			var resolved string
+			resolved, err = exec.LookPath(path)
+			if err == nil {
+				path = resolved
+				target, err = traceTLSReadFile(path, true)
+			}
+		}
 		if err != nil {
 			return nil, notices, 2, errors.New(T("cli.trace.tls_skipped", path, err))
 		}
@@ -252,7 +262,7 @@ func (finder *traceTLSFinder) add(path, name string, library bool) {
 	finder.seen[id] = true
 	target, err := traceTLSReadFile(path, false)
 	switch {
-	case err != nil && library:
+	case err != nil && (library || errors.Is(err, errTraceTLSBoringSSL)):
 		finder.notices = append(finder.notices, T("cli.trace.tls_skipped", traceEscapeText([]byte(name)), err))
 	case err != nil:
 	case traceTLSReadsPlaintext(target.symbols):
@@ -295,6 +305,11 @@ func traceTLSReadFile(path string, withSymtab bool) (traceTLSTarget, error) {
 			if offset, ok := traceTLSFileOffset(file, symbol.Value); ok {
 				target.offsets[symbol.Name] = offset
 			}
+		}
+	}
+	if !traceTLSReadsPlaintext(target.symbols) {
+		if err := traceTLSBoringSSL(file, &target); err != nil {
+			return target, err
 		}
 	}
 	return target, nil

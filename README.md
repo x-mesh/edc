@@ -1359,7 +1359,7 @@ HTTPS is encrypted, so edc cannot read the method, the path, or the status. The 
 
 edc does not see a TLS connection that started before the trace. If a client uses Encrypted Client Hello (ECH), the SNI is the public name of the provider. To see the requests of HTTPS, use `--tls`. You can also trace the plain HTTP behind the TLS end point, for example a proxy that sends plain HTTP to its backend.
 
-Use `--tls` to see the HTTP/1.1 and HTTP/2 requests in HTTPS. edc reads the plaintext in OpenSSL or GnuTLS before the encryption and after the decryption. It does not need a certificate or a key.
+Use `--tls` to see the HTTP/1.1 and HTTP/2 requests in HTTPS. edc reads plaintext in OpenSSL, GnuTLS, or a supported BoringSSL build before encryption and after decryption. It does not need a certificate or a key.
 
 ```bash
 ./bin/edc trace http --tls
@@ -1372,6 +1372,7 @@ Without a value, `--tls` finds these files when the trace starts:
 - the `libssl` and `libgnutls` of this host in the standard library directories
 - each `libssl` or `libgnutls` that a process loads, also in a container
 - the program file of a process, if the file contains OpenSSL and exports `SSL_read`, for example `node`
+- a stripped BoringSSL program with a supported GNU build ID
 
 edc opens the file that each process loaded. So edc also sees a process that still uses an old `libssl` after a package update. To open these files, edc needs `CAP_SYS_ADMIN` or `CAP_CHECKPOINT_RESTORE`. The probes can also need `CAP_SYS_ADMIN`. Root has it. In a container, add `SYS_ADMIN` with `--cap-add` or use `--privileged`. If edc cannot open these files, it shows a notice.
 
@@ -1379,13 +1380,29 @@ edc continues the search while the trace runs. When a process starts a program, 
 
 To watch only one file, use `--tls=<path>`. Then edc does not search for other files. Write the path without a space, as with `--payload=all`.
 
+Use `--tls=claude` to find an executable in PATH. A file in the current directory takes priority over PATH.
+
+edc supports the stripped amd64 Bun 1.4.3 runtime in Claude Code 2.1.291. Its GNU build ID is `ca2032b38650b44e05b2074617d524c7475c80f0`.
+
+edc checks the build ID and the function code before it attaches probes. Other stripped BoringSSL builds need a separate entry with checked offsets.
+
+```bash
+./bin/edc trace http --tls=claude
+```
+
 An HTTPS request or response from OpenSSL or GnuTLS has `"tls": true`, and the event row shows `tls` after the event name. The destination starts with `https://`. A plain HTTP destination starts with `http://`. The path, the status, the latency, the grouped views, `--payload`, and the summary work as with plain HTTP. `--payload` hides the same header values. The body of HTTPS often contains tokens. Before you share the output, check it for tokens.
 
 edc reads HTTP/2 over TLS as it reads h2c. It shows the method, the path, the status, and the latency of each stream. To follow the frames and the header tables, edc reads all the plaintext of an HTTP/2 connection. So a busy HTTP/2 connection costs more than HTTP/1, and it can make edc lose events of other connections. To reduce the cost, use `--port`. If edc loses plaintext of an HTTP/2 connection, it stops reading that direction and counts lost events. edc does not read an HTTP/2 connection that started before the trace. With HTTP/2, `--payload` shows a start line and the body. edc makes the start line from the method and the path, or from the status. It does not show the headers. edc prints an HTTP/2 event when its body ends. `--payload` keeps the first 4 KiB of each body, and `--payload=all` keeps up to 1 MiB. If edc cuts the body at the limit, or the body does not end before the stream or the trace ends, the event has `"payload_truncated": true`. If more than 4096 bodies or 64 MiB of bodies wait, edc prints the oldest event early with this field. edc does the same when it stops reading a direction. Without `--payload`, the full screen shows no HTTP/2 body, and it shows each HTTP/2 event when its headers arrive.
 
-Some programs do not use the socket inside the OpenSSL call, for example `node` and Python `asyncio`. Then edc does not know the connection. The event has the process, but it has no `source` and no `destination`. The `target` is the `Host` header. The summary shows the number of these events as `TLS plaintext without an address`, and JSON adds `tls_unmapped`. With `--port`, edc cannot check the port of this plaintext. So edc does not show it and adds it to the same number.
+Some programs do not use the socket inside the TLS call, for example Bun, `node`, and Python `asyncio`. Then edc does not know the connection. The event has the process, but it has no `source` and no `destination`. The `target` is the `Host` header. The summary shows the number of these events as `TLS plaintext without an address`, and JSON adds `tls_unmapped`. With `--port`, edc cannot check the port of this plaintext. So edc does not show it and adds it to the same number.
 
-`--tls` sees only the programs that call the exported OpenSSL functions `SSL_read` and `SSL_write`, or `SSL_read_ex` and `SSL_write_ex`. It also sees the programs that call the GnuTLS functions `gnutls_record_recv` and `gnutls_record_send`, for example `wget` and `git` on Debian and Ubuntu. It does not see Go, Java, or a program without these exported functions. With `--tls=<path>`, edc also reads the symbol table of the file, so it also sees a static program file that is not stripped. It also does not see a program that reads through the SSL BIO of OpenSSL, for example `openssl s_server -www`.
+`--tls` sees programs that call the OpenSSL functions `SSL_read` and `SSL_write`, or `SSL_read_ex` and `SSL_write_ex`. GnuTLS programs can call `gnutls_record_recv` and `gnutls_record_send`, such as `wget` and `git` on Debian and Ubuntu.
+
+Go and Java are not supported. Without exported TLS functions, a program needs the BoringSSL support described above.
+
+With `--tls=<path>`, edc also reads the symbol table, so a static program with symbols can work.
+
+Programs that use the SSL BIO of OpenSSL are not supported, such as `openssl s_server -www`.
 
 Each call of these functions runs a probe in each process that uses the files. This cost also applies to the processes that `--process` hides. At the end, the kernel removes each probe, so the trace can stop a few seconds after Ctrl-C. `--tls` needs no newer kernel than `trace http`.
 

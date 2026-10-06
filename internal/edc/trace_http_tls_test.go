@@ -316,6 +316,53 @@ func TestResolveTraceTLSTargetsChecksAnExplicitPath(t *testing.T) {
 	}
 }
 
+func TestResolveTraceTLSTargetsFindsAnExecutableName(t *testing.T) {
+	libssl := traceTLSHostLibssl(t)
+	data, err := os.ReadFile(libssl)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin := t.TempDir()
+	name := "edc-tls-path-test"
+	path := filepath.Join(bin, name)
+	if err := os.WriteFile(path, data, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+	t.Chdir(t.TempDir())
+	finder, _, code, err := resolveTraceTLSTargets(traceTLSMode(name))
+	if err != nil || code != 0 || len(finder.targets) != 1 || finder.targets[0].path != path {
+		t.Fatalf("PATH target = %#v, %d, %v", finder, code, err)
+	}
+	for _, missing := range []string{"./" + name, name + "-missing"} {
+		if _, _, code, err := resolveTraceTLSTargets(traceTLSMode(missing)); code != 2 || err == nil || !strings.Contains(err.Error(), missing) {
+			t.Fatalf("missing %s = %d, %v", missing, code, err)
+		}
+	}
+	if err := os.Chmod(path, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, code, err := resolveTraceTLSTargets(traceTLSMode(name)); code != 2 || err == nil {
+		t.Fatalf("non-executable PATH target = %d, %v", code, err)
+	}
+	if err := os.Chmod(path, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(name, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	finder, _, code, err = resolveTraceTLSTargets(traceTLSMode(name))
+	if err != nil || code != 0 || len(finder.targets) != 1 || finder.targets[0].path != name {
+		t.Fatalf("relative file target = %#v, %d, %v", finder, code, err)
+	}
+	if err := os.WriteFile(name, []byte("not ELF"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, code, err := resolveTraceTLSTargets(traceTLSMode(name)); code != 2 || err == nil {
+		t.Fatalf("invalid relative file used PATH = %d, %v", code, err)
+	}
+}
+
 // trace 중에 exec 알림을 받지 못하면 새로 시작한 프로그램의 첫 요청을 놓칠 수 있으므로, 화면을 열기 전에 알린다.
 func TestResolveTraceTLSTargetsNoticesMissingExecEvents(t *testing.T) {
 	libssl := traceTLSHostLibssl(t)

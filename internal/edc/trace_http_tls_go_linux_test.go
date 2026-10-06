@@ -63,7 +63,7 @@ func TestTraceTLSGoFixtureMetadata(t *testing.T) {
 				t.Fatal(err)
 			}
 			target, err := traceTLSReadFile(fixture, true)
-			if !traceTLSGoVersions[info.GoVersion] || runtime.GOARCH != "amd64" {
+			if !traceTLSGoVersions[info.GoVersion] || (runtime.GOARCH != "amd64" && runtime.GOARCH != "arm64") {
 				if err == nil || !strings.Contains(err.Error(), "unsupported Go TLS ABI") {
 					t.Fatalf("unsupported ABI accepted: %s %v", info.GoVersion, err)
 				}
@@ -109,10 +109,43 @@ func TestTraceTLSGoFixtureMetadata(t *testing.T) {
 	}
 }
 
+func TestTraceTLSGoArm64FixtureMetadata(t *testing.T) {
+	goCommand := traceTLSGoCommand(t)
+	if !traceTLSGoVersions[traceTLSGoVersion(t, goCommand)] {
+		t.Skip("arm64 fixture needs a supported Go version")
+	}
+	fixture := filepath.Join(t.TempDir(), "edc-go-tls-arm64")
+	command := exec.Command(goCommand, "build", "-o", fixture, "testdata/go_tls_client.go")
+	command.Env = append(os.Environ(), "GOOS=linux", "GOARCH=arm64")
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("Go TLS arm64 fixture: %v\n%s", err, output)
+	}
+	file, err := elf.Open(fixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	target := traceTLSTarget{path: fixture}
+	if err := traceTLSGo(file, &target); err != nil {
+		t.Fatal(err)
+	}
+	if target.goMachine != elf.EM_AARCH64 {
+		t.Fatalf("machine=%s", target.goMachine)
+	}
+	for _, name := range []string{traceTLSGoRead, traceTLSGoWrite, traceTLSGoClose} {
+		if target.offsets[name] == 0 {
+			t.Errorf("missing entry: %s", name)
+		}
+		if name != traceTLSGoClose && len(target.goReturns[name]) == 0 {
+			t.Errorf("missing returns: %s", name)
+		}
+	}
+}
+
 func TestTraceTLSGoCaptures(t *testing.T) {
 	goCommand := traceTLSGoCommand(t)
-	if !traceTLSGoVersions[traceTLSGoVersion(t, goCommand)] || runtime.GOARCH != "amd64" {
-		t.Skip("live Go TLS fixture needs a supported Linux amd64 Go version")
+	if !traceTLSGoVersions[traceTLSGoVersion(t, goCommand)] || (runtime.GOARCH != "amd64" && runtime.GOARCH != "arm64") {
+		t.Skip("live Go TLS fixture needs a supported Linux amd64 or arm64 Go version")
 	}
 	capabilities, err := effectiveCapabilities()
 	if err != nil || missingCapabilities(bpfTraceCapabilities, capabilities) != "" {
@@ -206,8 +239,8 @@ func TestTraceTLSGoCaptures(t *testing.T) {
 
 func TestTraceTLSGoHTTP2CapturesStreamsAndBodies(t *testing.T) {
 	goCommand := traceTLSGoCommand(t)
-	if !traceTLSGoVersions[traceTLSGoVersion(t, goCommand)] || runtime.GOARCH != "amd64" {
-		t.Skip("live Go HTTP/2 fixture needs a supported Linux amd64 Go version")
+	if !traceTLSGoVersions[traceTLSGoVersion(t, goCommand)] || (runtime.GOARCH != "amd64" && runtime.GOARCH != "arm64") {
+		t.Skip("live Go HTTP/2 fixture needs a supported Linux amd64 or arm64 Go version")
 	}
 	capabilities, err := effectiveCapabilities()
 	if err != nil || missingCapabilities(bpfTraceCapabilities, capabilities) != "" {

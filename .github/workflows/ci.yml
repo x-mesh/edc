@@ -15,7 +15,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
@@ -40,6 +40,35 @@ jobs:
 
       - name: Build
         run: make build VERSION=ci
+
+  # --tls의 BPF는 amd64와 arm64에서 uprobe 인자를 다른 register로 읽는다. 두 machine에서 실제 curl 요청을 잡아 본다.
+  tls-smoke:
+    name: tls smoke (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build
+        run: make build VERSION=ci
+
+      - name: Show kernel and libssl
+        run: |
+          uname -srm
+          openssl version
+          curl --version | head -1
+          ldd "$(command -v curl)" | grep libssl
+
+      - name: Trace an HTTPS request
+        run: ./scripts/ci-tls-smoke.sh
 
   cross:
     name: cross build

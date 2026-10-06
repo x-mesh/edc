@@ -218,6 +218,7 @@ command:
       - "--port は、この host か相手がその port を使う接続だけを見ます。"
       - "例: trace http --side server --port 8080 は local server を 1 つだけ見ます。"
       - "Authorization、Proxy-Authorization、Cookie、Set-Cookie の値は隠します。"
+      - "X-Api-Key、X-Goog-Api-Key、Api-Key、X-Amz-Security-Token の値も隠します。"
       - "trace mysql は Linux 5.15 以降で平文 MySQL のコマンドと結果を表示します。"
       - "両側を表示します。各行の先頭に client: か server: が付きます。"
       - "--port は MySQL サーバーの port です。既定値は 3306 です。"

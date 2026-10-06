@@ -1373,7 +1373,7 @@ Without a value, `--tls` finds these files when the trace starts:
 - each `libssl` that a process loads, also in a container
 - the program file of a process, if the file contains OpenSSL and exports `SSL_read`, for example `node`
 
-edc opens the file that each process loaded. So edc also sees a process that still uses an old `libssl` after a package update.
+edc opens the file that each process loaded. So edc also sees a process that still uses an old `libssl` after a package update. To open these files, edc needs `CAP_SYS_ADMIN` or `CAP_CHECKPOINT_RESTORE`. The probes can also need `CAP_SYS_ADMIN`. Root has it. In a container, add `SYS_ADMIN` with `--cap-add` or use `--privileged`. If edc cannot open these files, it shows a notice.
 
 edc also sees a program that starts after the trace, if the program uses one of these files. If no process loads a program file, or a `libssl` outside the standard library directories, when the trace starts, edc does not see that file. For that file, use `--tls=<path>`. Then edc watches only that file and does not search for other files. Write the path without a space, as with `--payload=all`.
 
@@ -1387,7 +1387,7 @@ Some programs do not use the socket inside the OpenSSL call, for example `node` 
 
 Each call of these functions runs a probe in each process that uses the files. This cost also applies to the processes that `--process` hides. At the end, the kernel removes each probe, so the trace can stop a few seconds after Ctrl-C. `--tls` needs no newer kernel than `trace http`.
 
-On amd64 with Linux 6.11, 6.12 before 6.12.14, or 6.13 before 6.13.3, a process under a seccomp filter can stop when an OpenSSL call returns. A Docker container uses such a filter. On these kernels, edc shows a warning before the trace starts. A distribution kernel can include the fix.
+On amd64 with Linux 6.11, 6.12 before 6.12.14, or 6.13 before 6.13.3, a process under a seccomp filter can stop when an OpenSSL call returns. A Docker container uses such a filter. On these kernels, edc shows a warning before it attaches the probes. Before the full screen opens, edc waits for Enter. To stop, press Ctrl-C. A distribution kernel can include the fix.
 
 Without `--tls`, `trace http` does not show the requests in HTTPS, because the kernel sees only encrypted data. It reads HTTP/2 without TLS (h2c), for example gRPC inside a cluster. It shows the method, the path, the status, and the latency of each stream. To follow the frames and the header tables, edc reads all the bytes of an h2c connection, so a busy h2c connection costs more than HTTP/1. These bytes share one buffer with the other HTTP records, so a busy h2c connection can also make edc lose events of other connections. To reduce the cost, use `--port`. If edc loses bytes of an h2c connection, it stops reading that direction and counts lost events. It does not show the requests in HTTP/3, because they use binary frames. HTTP/3 uses UDP, so it also has no `tls_hello` event. edc finds a message only at the start of a read or a write. If one read has the end of a response and the start of the next response, edc misses the next response. If a program writes one message from several buffers, edc reads only the first buffer. So the `Host` header must be in the first buffer and in the first 512 bytes. If it is not, the target is the server address. edc supports this field on Linux 5.15 or later.
 

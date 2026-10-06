@@ -164,35 +164,25 @@ func TestTraceTLSBoringSSLProfileBuildsHaveTLSFunctions(t *testing.T) {
 	}
 }
 
-func TestTraceTLSBoringSSLOfficialBunProfiles(t *testing.T) {
-	profiles := []struct {
-		path string
-		id   string
-	}{
-		{"/tmp/bun-profile-1.4.1/bun-linux-x64-profile/bun-profile", "2bbcd6d3ddc6b1a248d1bfb2c64a09e4642e7a52"},
-		{"/tmp/bun-profile.d5u6IJ/bun-linux-x64-profile/bun-profile", "5afca2666bfab8605a934f1b6231dacae0518a5f"},
+// EDC_TEST_BUN은 공식 Bun 릴리스의 bun 파일 경로를 쉼표로 나눠 받는다. 등록한 위치와 코드는 그 파일에서만 확인할 수 있다.
+func TestTraceTLSBoringSSLOfficialBun(t *testing.T) {
+	paths := os.Getenv("EDC_TEST_BUN")
+	if paths == "" {
+		t.Skip("EDC_TEST_BUN is not set")
 	}
-	for _, profile := range profiles {
-		if _, err := os.Stat(profile.path); err != nil {
-			t.Skipf("official Bun profile unavailable: %s", profile.path)
-		}
-		file, err := elf.Open(profile.path)
+	for _, path := range strings.Split(paths, ",") {
+		file, err := elf.Open(path)
 		if err != nil {
 			t.Fatal(err)
 		}
-		target := traceTLSTarget{path: profile.path, offsets: map[string]uint64{}}
+		target := traceTLSTarget{path: path, offsets: map[string]uint64{}}
 		err = traceTLSBoringSSL(file, &target)
 		file.Close()
 		if err != nil {
-			t.Fatal(err)
+			t.Fatalf("%s: %v", path, err)
 		}
 		if !slices.Equal(target.symbols, []string{"SSL_read", "SSL_write", "SSL_free"}) {
-			t.Fatalf("profile %s symbols=%q", profile.id, target.symbols)
-		}
-		for _, name := range target.symbols {
-			if target.offsets[name] == 0 {
-				t.Fatalf("profile %s missing %s", profile.id, name)
-			}
+			t.Fatalf("%s symbols=%q", path, target.symbols)
 		}
 	}
 }

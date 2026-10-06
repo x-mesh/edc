@@ -26,24 +26,23 @@ type traceTLSBoringSSLBuild struct {
 }
 
 var traceTLSBoringSSLBuilds = map[string]traceTLSBoringSSLBuild{
-	// Official Bun 1.4.1 Linux x64 profile artifact. The release linker map and
-	// unstripped symbol table identify these functions.
+	// 공식 Bun 1.4.1 Linux x64의 bun(baseline과 같은 파일)이다. bun-profile의 symbol 표에서 찾은 가상 주소를 bun의 실행
+	// segment로 옮긴 파일 위치다. bun-profile은 같은 build ID지만 파일 위치가 달라 코드 확인에서 거부된다.
 	"2bbcd6d3ddc6b1a248d1bfb2c64a09e4642e7a52": {
 		machine: elf.EM_X86_64,
 		functions: []traceTLSBoringSSLFunction{
-			{"SSL_read", 0x274bbd0, 251, "f4bcc777aa1bd2f5d23a1e332c9c29903ef1900af6513c891992e2c14f02880b"},
-			{"SSL_write", 0x274bfc0, 388, "e897d1f29180757b6a5b5583cef4e362ca6199526663469989e15fdaa94539ec"},
-			{"SSL_free", 0x274a450, 534, "ffad1afe1151924cfe0a9c76cea6b78364320c582177f1b90daf260e2383e18c"},
+			{"SSL_read", 0x2743bd0, 251, "246eb04301236726689ab36267b18b15b0ce6a1b04e520761ac907ef33baa71e"},
+			{"SSL_write", 0x2743fc0, 388, "e71a8bc8bca41e7c4a35a26d5fd32ffab1ce2407351da03b26662f0583aedfbf"},
+			{"SSL_free", 0x2742450, 534, "ee2470738e73553fd9698a75a3400c495d06f935fe358a0474a669816a0b48bb"},
 		},
 	},
-	// Official Bun 1.4.2 Linux x64 profile artifact. The release linker map and
-	// unstripped symbol table identify these functions.
+	// 공식 Bun 1.4.2 Linux x64의 bun(baseline과 같은 파일)이다. 위치를 구한 방법은 1.4.1과 같다.
 	"5afca2666bfab8605a934f1b6231dacae0518a5f": {
 		machine: elf.EM_X86_64,
 		functions: []traceTLSBoringSSLFunction{
-			{"SSL_read", 0x27341c0, 251, "42e6aa94ec00837f2be1acd08aa98b4c32830cf7480d3acc959c5a2a88ed2d0d"},
-			{"SSL_write", 0x27345b0, 388, "211626743c106fdec7223e1ffb6bf9797096bfb9df8b3687f25d7f15fb14b11c"},
-			{"SSL_free", 0x2732a40, 534, "21e50c2004eeb8c14234f9bc7a15e7f36fe199725b326ccd80899edd65b8e0c5"},
+			{"SSL_read", 0x272c1c0, 251, "34d6016d394865d1da32364c6ab4edbd253d35028e32378fcd36c7f70e991726"},
+			{"SSL_write", 0x272c5b0, 388, "893e6fff00983305910c2fed957f3f6c59b88c0f9678dd22aa081849a2e4ce21"},
+			{"SSL_free", 0x272aa40, 534, "1c9dd6cc90acf52b0398b635874931ac9fb79acf6d55933c71176b4ba9875a8f"},
 		},
 	},
 	// Claude Code 2.1.291의 Bun 1.4.3(eecfd55de). 공식 Bun 1.4.2 profile과 비교하고 로컬 HTTPS로 확인한 위치다.

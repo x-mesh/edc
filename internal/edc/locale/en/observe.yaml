@@ -38,6 +38,7 @@ observe:
     count_minimum: "--count must be 0 or more"
     process_invalid: "--process needs a PID or a command name, separated by commas"
     process_needs_view: "--process needs the dashboard, --json, or --write"
+    full_needs_view: "--full needs the dashboard, --json, or --write"
     ebpf_needs_process: "-d/--detail needs --process, or the dashboard"
     stopped: "stopped"
     paused: "paused"

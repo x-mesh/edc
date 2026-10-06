@@ -337,7 +337,7 @@ func (model topModel) updateKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		model.input, model.inputText = true, model.processFilter.String()
 		if model.inputText == "" {
 			if candidates := model.candidates(); len(candidates) > 0 {
-				model.inputText = candidates[min(model.processSelected, len(candidates)-1)].Command
+				model.inputText = topFilterSeed(candidates[min(model.processSelected, len(candidates)-1)].Command)
 			}
 		}
 	case "esc":
@@ -1402,17 +1402,24 @@ func topProcessSignal(processes []topProcess, valid bool) (string, bool) {
 
 // topProcessName은 화면에 쓸 process 이름이다. macOS ps는 전체 경로를 주므로 마지막 요소만 남기고,
 // 이름에 섞인 제어 문자가 terminal escape로 해석되지 않게 바꾼다.
+// topFullCommandMinWidth는 전체 명령줄을 담을 최소 칸이다. 이보다 좁으면 실행 파일 이름만 보여 준다.
+const topFullCommandMinWidth = 12
+
 func topProcessName(command string, width int) string {
 	name := strings.TrimSpace(command)
+	rest := ""
+	if topFullCommand {
+		if index := strings.IndexByte(name, ' '); index >= 0 {
+			name, rest = name[:index], strings.TrimSpace(name[index+1:])
+		}
+	}
 	if strings.HasPrefix(name, "/") {
 		name = name[strings.LastIndex(name, "/")+1:]
 	}
-	name = strings.Map(func(r rune) rune {
-		if unicode.IsPrint(r) {
-			return r
-		}
-		return '?'
-	}, name)
+	name = topPrintableText(name)
+	if rest != "" && width >= topFullCommandMinWidth {
+		name = topJoinCommandTail(name, topPrintableText(rest), width)
+	}
 	if runes := []rune(name); len(runes) > width {
 		name = string(runes[:width])
 	}
@@ -1420,6 +1427,61 @@ func topProcessName(command string, width int) string {
 		return "proc"
 	}
 	return name
+}
+
+// topFilterSeed는 /로 연 필터 입력의 출발값이다. macOS의 comm은 경로째로 오고 전체 명령줄 모드는 인자까지
+// 담아서, 그대로 넣으면 입력 줄의 커서와 안내가 폭에 밀려 사라진다. 실행 파일 이름만 쓰면 짧고, 부분 일치라
+// 고른 process에 그대로 걸린다. 표시용 topProcessName과 달리 빈 이름을 proc으로 바꾸지 않는다. proc은
+// 그 process에 걸리지 않는 값이다.
+func topFilterSeed(command string) string {
+	name := strings.TrimSpace(command)
+	if topFullCommand {
+		if index := strings.IndexByte(name, ' '); index >= 0 {
+			name = name[:index]
+		}
+	}
+	if index := strings.LastIndexByte(name, '/'); index >= 0 {
+		name = name[index+1:]
+	}
+	return topPrintableText(name)
+}
+
+func topPrintableText(text string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsPrint(r) {
+			return r
+		}
+		return '?'
+	}, text)
+}
+
+// topJoinCommandTail은 이름 뒤에 인자의 끝을 붙인다. 같은 실행 파일을 구분하는 부분이 보통 끝에 있어서,
+// 칸이 좁으면 앞을 버리고 경로 구분자에 맞춰 …로 잇는다.
+func topJoinCommandTail(name, rest string, width int) string {
+	room := width - len([]rune(name)) - 1
+	if room < 4 {
+		return name
+	}
+	if runes := []rune(rest); len(runes) <= room {
+		return name + " " + rest
+	}
+	budget := room - 1
+	tail := ""
+	// 앞에서부터 처음으로 들어가는 조각이 가장 긴 조각이다.
+	for index, letter := range rest {
+		if letter != '/' {
+			continue
+		}
+		if candidate := rest[index:]; len([]rune(candidate)) <= budget {
+			tail = candidate
+			break
+		}
+	}
+	if tail == "" {
+		runes := []rune(rest)
+		tail = string(runes[len(runes)-budget:])
+	}
+	return name + " …" + tail
 }
 
 // topHotCoreLevel은 hot core 칸의 위험도다. 위험 단계 없이 경고만 준다.

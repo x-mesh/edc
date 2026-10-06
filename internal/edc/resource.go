@@ -187,6 +187,22 @@ type topProcessSampler struct {
 	total     topProcessTotal
 }
 
+// topFullCommand는 process 목록의 Command에 실행 파일 이름 대신 전체 명령줄을 담을지다. runTop이 표본을
+// 읽기 전에 한 번 정한다.
+var topFullCommand bool
+
+// linuxProcessCommandLine은 /proc/<pid>/cmdline의 NUL로 나뉜 argv를 한 줄로 잇는다. 커널 thread는 cmdline이
+// 비어 있어서 빈 문자열을 돌려주고, 부른 쪽이 comm을 그대로 쓴다.
+func linuxProcessCommandLine(data []byte) string {
+	args := make([]string, 0, 8)
+	for _, arg := range strings.Split(string(data), "\x00") {
+		if arg != "" {
+			args = append(args, arg)
+		}
+	}
+	return strings.Join(args, " ")
+}
+
 var processSampler = &topProcessSampler{read: newTopProcessReader(), enrich: newTopProcessEnricher()}
 
 func (sampler *topProcessSampler) latest() ([]topProcess, bool) {

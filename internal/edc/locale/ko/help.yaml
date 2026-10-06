@@ -72,6 +72,7 @@ command:
       count: "출력할 row 수, 0은 계속 실행"
       no_header: "host와 column header 생략"
       process: "PID나 command 이름이 맞는 process만, 쉼표로 구분"
+      full: "전체 명령줄로 맞추고 보여 준다"
       detail: "CPU 대기와 I/O 지연 추가(eBPF, root), Linux"
       ebpf: "--detail과 같음"
       write: "SQLite에 누적, 경로 생략 시 기본 DB 사용"

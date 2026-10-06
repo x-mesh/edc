@@ -126,13 +126,14 @@ var commandDocs = []commandDoc{
 	},
 	{
 		name: "top", group: "observe",
-		usage: []string{"edc top [--interval 1s] [--count N] [--json <path|->]", "edc top --process <filter> [-d] [--interval 1s] [--json <path|->]"},
+		usage: []string{"edc top [--interval 1s] [--count N] [--json <path|->]", "edc top --process <filter> [--full] [-d] [--interval 1s] [--json <path|->]"},
 		options: []optionDoc{
 			{"--interval 1s", "command.top.option.interval"},
 			{"-w, --write [path]", "command.top.option.write"},
 			{"--count N", "command.top.option.count"},
 			{"--no-header", "command.top.option.no_header"},
 			{"--process <filter>", "command.top.option.process"},
+			{"--full", "command.top.option.full"},
 			{"-d, --detail", "command.top.option.detail"},
 			{"--ebpf", "command.top.option.ebpf"},
 			{"--json <path|->", "command.top.option.json"},

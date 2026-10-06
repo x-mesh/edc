@@ -72,6 +72,7 @@ command:
       count: "表示する行数、0 は継続実行"
       no_header: "host と列見出しを省く"
       process: "一致する PID か command 名のみ、カンマ区切り"
+      full: "コマンドライン全体で照合して表示する"
       detail: "CPU 待ちと I/O 遅延を追加 (eBPF, root)、Linux"
       ebpf: "--detail と同じ"
       write: "SQLite に追記、path 省略時は既定 DB"

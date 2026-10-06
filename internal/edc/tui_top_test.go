@@ -291,6 +291,49 @@ func TestTopProcessNameStripsPathsAndControlCharacters(t *testing.T) {
 	}
 }
 
+func TestTopProcessNameKeepsTheCommandTailWhenFull(t *testing.T) {
+	previous := topFullCommand
+	topFullCommand = true
+	t.Cleanup(func() { topFullCommand = previous })
+	command := "bun /var/folders/j3/x/T/bunx-501-output-mesh@latest/node_modules/.bin/output-mesh"
+	if got := topProcessName(command, 28); got != "bun …/.bin/output-mesh" {
+		t.Fatalf("full name = %q", got)
+	}
+	// 인자가 다 들어가면 자르지 않는다.
+	if got := topProcessName("dig +short example.com", 28); got != "dig +short example.com" {
+		t.Fatalf("short command line = %q", got)
+	}
+	// 칸이 좁으면 실행 파일 이름만 남는다.
+	if got := topProcessName(command, topSignalProcessNameWidth); got != "bun" {
+		t.Fatalf("narrow name = %q", got)
+	}
+}
+
+func TestTopFilterSeedKeepsTheExecutableNameOnly(t *testing.T) {
+	// macOS의 comm은 경로째로 온다. 마지막 조각만 남아야 입력 줄이 폭에 밀리지 않는다.
+	if got := topFilterSeed("/System/Library/Frameworks/Security.framework/Versions/A/Resources/CloudKeychainProxy"); got != "CloudKeychainProxy" {
+		t.Fatalf("seed = %q", got)
+	}
+	if got := topFilterSeed(""); got != "" {
+		t.Fatalf("empty command seed = %q", got)
+	}
+	previous := topFullCommand
+	topFullCommand = true
+	t.Cleanup(func() { topFullCommand = previous })
+	command := "bun /var/folders/j3/x/T/bunx-501-output-mesh@latest/node_modules/.bin/output-mesh"
+	seed := topFilterSeed(command)
+	if seed != "bun" {
+		t.Fatalf("full command seed = %q", seed)
+	}
+	filter, err := parseTopProcessFilter(seed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !filter.match(topProcess{PID: 46800, Command: command}) {
+		t.Fatal("the seed must match the process it came from")
+	}
+}
+
 func TestTopDashboardRowsFitTargetWidth(t *testing.T) {
 	row := topDashboardRow{at: time.Unix(1, 0), rate: resourceRate{NetIn: 12 * 1024 * 1024, NetOut: 2 * 1024 * 1024, PacketsIn: 42, PacketsOut: 99, Load1: 2.5, CPUUser: 12, CPUSystem: 4, CPUIOWait: 1, DiskRead: 3 * 1024 * 1024, DiskWrite: 4 * 1024 * 1024, MemoryPercent: 55}}
 	for _, view := range []topView{topViewAll, topViewCPU, topViewMemory, topViewDisk, topViewNetwork, topViewPressure} {

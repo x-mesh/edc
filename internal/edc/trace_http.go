@@ -79,6 +79,7 @@ type httpTracker struct {
 	h2Pending      map[http2RequestKey]httpPendingRequest
 	h2Payload      map[http2PayloadKey]*http2Payload
 	h2PayloadLimit int
+	h2PayloadBytes int
 }
 
 type http2RequestKey struct {
@@ -97,6 +98,8 @@ type http2Payload struct {
 	body      []byte
 	truncated bool
 }
+
+const http2PayloadOpenLimit = 4096
 
 type http2Direction struct {
 	buffer       []byte
@@ -164,7 +167,10 @@ func (tracker *httpTracker) http2Events(packet httpPacket, clockOffset int64) ([
 		payloadKey := http2PayloadKey{socket: packet.socket, stream: stream, sent: packet.sent}
 		if typeID == 3 {
 			delete(tracker.h2Pending, http2RequestKey{socket: packet.socket, stream: stream})
-			delete(tracker.h2Payload, payloadKey)
+			if open := tracker.h2Payload[payloadKey]; open != nil {
+				open.truncated = true
+				events = append(events, tracker.finishHTTP2Payload(payloadKey))
+			}
 			continue
 		}
 		if typeID == 0 {
@@ -179,7 +185,9 @@ func (tracker *httpTracker) http2Events(packet httpPacket, clockOffset int64) ([
 				payload = payload[1 : len(payload)-int(payload[0])]
 			}
 			left := max(0, tracker.h2PayloadLimit-len(open.body))
-			open.body = append(open.body, payload[:min(len(payload), left)]...)
+			chunk := payload[:min(len(payload), left)]
+			open.body = append(open.body, chunk...)
+			tracker.h2PayloadBytes += len(chunk)
 			open.truncated = open.truncated || len(payload) > left
 			if flags&0x1 != 0 {
 				events = append(events, tracker.finishHTTP2Payload(payloadKey))
@@ -226,6 +234,7 @@ func (tracker *httpTracker) http2Events(packet httpPacket, clockOffset int64) ([
 		direction.headerBlock = nil
 		if ok {
 			if tracker.h2PayloadLimit > 0 {
+				events = append(events, tracker.trimHTTP2Payload()...)
 				tracker.h2Payload[payloadKey] = &http2Payload{event: event}
 				if flags&0x1 != 0 {
 					events = append(events, tracker.finishHTTP2Payload(payloadKey))
@@ -241,6 +250,7 @@ func (tracker *httpTracker) http2Events(packet httpPacket, clockOffset int64) ([
 func (tracker *httpTracker) finishHTTP2Payload(key http2PayloadKey) captureEvent {
 	open := tracker.h2Payload[key]
 	delete(tracker.h2Payload, key)
+	tracker.h2PayloadBytes -= len(open.body)
 	line := "HTTP/2"
 	if open.event.Method != "" {
 		line = open.event.Method + " " + open.event.Path + " HTTP/2"
@@ -251,6 +261,54 @@ func (tracker *httpTracker) finishHTTP2Payload(key http2PayloadKey) captureEvent
 	open.event.Payload = traceHTTPPayload(append([]byte(line+"\r\n\r\n"), open.body...), tracker.showSecrets)
 	open.event.PayloadTruncated = open.truncated
 	return open.event
+}
+
+func (tracker *httpTracker) trimHTTP2Payload() []captureEvent {
+	if len(tracker.h2Payload) < http2PayloadOpenLimit && tracker.h2PayloadBytes < httpMessageOpenBytes {
+		return nil
+	}
+	key, found := tracker.oldestHTTP2Payload()
+	if !found {
+		return nil
+	}
+	tracker.h2Payload[key].truncated = true
+	return []captureEvent{tracker.finishHTTP2Payload(key)}
+}
+
+func (tracker *httpTracker) oldestHTTP2Payload() (http2PayloadKey, bool) {
+	var oldest http2PayloadKey
+	found := false
+	for key, open := range tracker.h2Payload {
+		if !found || open.event.BootTimeNS < tracker.h2Payload[oldest].event.BootTimeNS {
+			oldest, found = key, true
+		}
+	}
+	return oldest, found
+}
+
+func (tracker *httpTracker) flushHTTP2Payload(socket uint64) []captureEvent {
+	var events []captureEvent
+	for {
+		key, found := tracker.oldestHTTP2Payload()
+		if !found {
+			break
+		}
+		if socket != 0 && key.socket != socket {
+			matched := false
+			for candidate := range tracker.h2Payload {
+				if candidate.socket == socket {
+					key, matched = candidate, true
+					break
+				}
+			}
+			if !matched {
+				break
+			}
+		}
+		tracker.h2Payload[key].truncated = true
+		events = append(events, tracker.finishHTTP2Payload(key))
+	}
+	return events
 }
 
 func (tracker *httpTracker) http2HeaderEvent(packet httpPacket, stream uint32, fields []hpack.HeaderField, clockOffset int64) (captureEvent, bool) {
@@ -486,21 +544,18 @@ func tlsALPN(data []byte) []string {
 
 // forget은 끝난 socket의 요청을 지운다. kernel은 해제한 socket의 주소를 새 socket에 다시 쓰므로, 응답을 놓친 요청이
 // 남으면 새 연결의 응답이 그 요청과 짝지어진다.
-func (tracker *httpTracker) forget(socket uint64) {
+func (tracker *httpTracker) forget(socket uint64) []captureEvent {
+	events := tracker.flushHTTP2Payload(socket)
 	tracker.size -= len(tracker.pending[socket])
 	delete(tracker.pending, socket)
 	delete(tracker.http2, httpStreamKey{socket: socket, sent: true})
 	delete(tracker.http2, httpStreamKey{socket: socket, sent: false})
-	for key := range tracker.h2Payload {
-		if key.socket == socket {
-			delete(tracker.h2Payload, key)
-		}
-	}
 	for key := range tracker.h2Pending {
 		if key.socket == socket {
 			delete(tracker.h2Pending, key)
 		}
 	}
+	return events
 }
 
 // parseHTTPRequest는 요청 줄과 Host header를 읽는다. 요청 줄이 "METHOD target HTTP/1.x"가 아니면 HTTP가 아니다.

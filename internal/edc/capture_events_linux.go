@@ -640,7 +640,14 @@ func collectCaptureEventsWithTLS(scope traceScope, duration time.Duration, onEve
 				return captureSummary{}, record.err
 			}
 			if record.closeSocket != 0 {
-				pipeline.forget(record.closeSocket)
+				for _, event := range pipeline.forget(record.closeSocket) {
+					if onEvent != nil {
+						if err := onEvent(event); err != nil {
+							return captureSummary{}, err
+						}
+					}
+					tlsCount++
+				}
 				continue
 			}
 			if record.packet != nil {
@@ -871,7 +878,9 @@ func collectKernelCaptureEventsFor(scope traceScope, duration time.Duration, onE
 		}
 		if socket, ok := parseTCPDestroyRecord(record.RawSample); ok {
 			if protocol == "http" {
-				httpPipeline.forget(socket)
+				if err := emit(httpPipeline.forget(socket)); err != nil {
+					return captureSummary{}, err
+				}
 			}
 			if protocol == "mysql" {
 				mysql.forgetSocket(socket)
@@ -960,16 +969,18 @@ func (pipeline *httpEventPipeline) add(packet httpPacket, now time.Time) []captu
 	return []captureEvent{event}
 }
 
-func (pipeline *httpEventPipeline) forget(socket uint64) {
-	pipeline.tracker.forget(socket)
+func (pipeline *httpEventPipeline) forget(socket uint64) []captureEvent {
+	events := pipeline.tracker.forget(socket)
 	pipeline.splits.forget(socket)
+	return events
 }
 
 func (pipeline *httpEventPipeline) flush() []captureEvent {
+	events := pipeline.tracker.flushHTTP2Payload(0)
 	if pipeline.messages == nil {
-		return nil
+		return events
 	}
-	return pipeline.messages.flush()
+	return append(events, pipeline.messages.flush()...)
 }
 
 func captureRecordAfterAttached(bootTimeNS uint64, attached unix.Timespec) bool {

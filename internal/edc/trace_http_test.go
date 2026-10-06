@@ -116,6 +116,41 @@ func TestHTTP2TraceCollectsDataPayloadByStream(t *testing.T) {
 	}
 }
 
+func TestHTTP2PayloadFlushesIncompleteAndResetStreams(t *testing.T) {
+	newOpen := func() (*httpTracker, http2PayloadKey) {
+		tracker := newHTTPTracker("", false, false)
+		tracker.h2PayloadLimit = httpPayloadHead
+		key := http2PayloadKey{socket: 1, stream: 3, sent: true}
+		tracker.h2Payload[key] = &http2Payload{event: captureEvent{BootTimeNS: 1, Event: traceHTTPRequestEvent, Method: "POST", Path: "/stream"}, body: []byte("partial")}
+		tracker.h2PayloadBytes = len("partial")
+		return tracker, key
+	}
+	tracker, _ := newOpen()
+	events := tracker.flushHTTP2Payload(0)
+	if len(events) != 1 || !events[0].PayloadTruncated || !strings.HasSuffix(events[0].Payload, "partial") || tracker.h2PayloadBytes != 0 {
+		t.Fatalf("flushed = %#v, bytes %d", events, tracker.h2PayloadBytes)
+	}
+	tracker, _ = newOpen()
+	reset := http2TestFrame(3, 0, 3, []byte{0, 0, 0, 8})
+	events, _ = tracker.http2Events(httpTestPacket(string(append(append([]byte{}, http2Preface...), reset...)), 2, true), 0)
+	if len(events) != 1 || !events[0].PayloadTruncated || tracker.h2PayloadBytes != 0 {
+		t.Fatalf("reset = %#v, bytes %d", events, tracker.h2PayloadBytes)
+	}
+}
+
+func TestHTTP2PayloadTrimsTheOldestOpenStream(t *testing.T) {
+	tracker := newHTTPTracker("", false, false)
+	tracker.h2PayloadLimit = httpMessageMax
+	for stream := uint32(1); stream <= http2PayloadOpenLimit; stream++ {
+		key := http2PayloadKey{socket: 1, stream: stream, sent: true}
+		tracker.h2Payload[key] = &http2Payload{event: captureEvent{BootTimeNS: uint64(stream), Method: "GET"}}
+	}
+	events := tracker.trimHTTP2Payload()
+	if len(events) != 1 || !events[0].PayloadTruncated || len(tracker.h2Payload) != http2PayloadOpenLimit-1 {
+		t.Fatalf("trimmed = %#v, open %d", events, len(tracker.h2Payload))
+	}
+}
+
 func TestParseHTTPRequestReadsTheRequestLineAndHost(t *testing.T) {
 	method, target, host, ok := parseHTTPRequest([]byte("GET /search?q=secret HTTP/1.1\r\nUser-Agent: curl\r\nHOST: Example.COM:8080\r\nCookie: a=b\r\n\r\n"))
 	if !ok || method != "GET" || target != "/search?q=secret" || host != "example.com:8080" {

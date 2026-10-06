@@ -149,6 +149,54 @@ func TestTraceTLSBoringSSLRequiresIdentityAndCode(t *testing.T) {
 	})
 }
 
+func TestTraceTLSBoringSSLProfileBuildsHaveTLSFunctions(t *testing.T) {
+	for _, id := range []string{"2bbcd6d3ddc6b1a248d1bfb2c64a09e4642e7a52", "5afca2666bfab8605a934f1b6231dacae0518a5f"} {
+		build, ok := traceTLSBoringSSLBuilds[id]
+		if !ok || build.machine != elf.EM_X86_64 || len(build.functions) != 3 {
+			t.Fatalf("profile %s = %#v", id, build)
+		}
+		for index, name := range []string{"SSL_read", "SSL_write", "SSL_free"} {
+			function := build.functions[index]
+			if function.name != name || function.offset == 0 || function.size == 0 || len(function.digest) != sha256.Size*2 {
+				t.Fatalf("profile %s function %#v", id, function)
+			}
+		}
+	}
+}
+
+func TestTraceTLSBoringSSLOfficialBunProfiles(t *testing.T) {
+	profiles := []struct {
+		path string
+		id   string
+	}{
+		{"/tmp/bun-profile-1.4.1/bun-linux-x64-profile/bun-profile", "2bbcd6d3ddc6b1a248d1bfb2c64a09e4642e7a52"},
+		{"/tmp/bun-profile.d5u6IJ/bun-linux-x64-profile/bun-profile", "5afca2666bfab8605a934f1b6231dacae0518a5f"},
+	}
+	for _, profile := range profiles {
+		if _, err := os.Stat(profile.path); err != nil {
+			t.Skipf("official Bun profile unavailable: %s", profile.path)
+		}
+		file, err := elf.Open(profile.path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		target := traceTLSTarget{path: profile.path, offsets: map[string]uint64{}}
+		err = traceTLSBoringSSL(file, &target)
+		file.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !slices.Equal(target.symbols, []string{"SSL_read", "SSL_write", "SSL_free"}) {
+			t.Fatalf("profile %s symbols=%q", profile.id, target.symbols)
+		}
+		for _, name := range target.symbols {
+			if target.offsets[name] == 0 {
+				t.Fatalf("profile %s missing %s", profile.id, name)
+			}
+		}
+	}
+}
+
 func TestTraceTLSBuildIDReadsNotes(t *testing.T) {
 	id := []byte{1, 2, 3, 4, 5}
 	for _, order := range []binary.ByteOrder{binary.LittleEndian, binary.BigEndian} {

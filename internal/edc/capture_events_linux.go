@@ -856,6 +856,11 @@ func collectCaptureEventsFor(scope traceScope, duration time.Duration, onEvent f
 	}
 	streams := newDNSTCPStreams()
 	mysql := newMySQLTracker(scope.side, scope.showSecrets)
+	var goOrder *goTLSOrder
+	if scope.tlsFinder != nil && slices.ContainsFunc(scope.tlsFinder.targets, func(target traceTLSTarget) bool { return target.goReturns != nil }) {
+		goOrder = newGoTLSOrder()
+	}
+	var ready [][]byte
 	var eventCount uint64
 	emit := func(events []captureEvent) error {
 		for _, event := range events {
@@ -898,6 +903,9 @@ func collectCaptureEventsFor(scope traceScope, duration time.Duration, onEvent f
 		if lookupErr := objects.TlsUnmapped.Lookup(uint32(0), &unmapped); lookupErr != nil {
 			return captureSummary{}, fmt.Errorf("read unmapped TLS count: %w", lookupErr)
 		}
+		if goOrder != nil {
+			lost += goOrder.finish() + uint64(len(ready))
+		}
 		// 감시를 기다리는 동안에도 hook은 붙어 있고 남은 레코드는 읽지 않으므로, 잃은 수를 읽은 뒤에 멈춘다.
 		stopTLSWatch()
 		return captureSummary{TimestampNS: uint64(time.Now().UnixNano()), Event: "capture_summary", EventCount: eventCount, LostEvents: lost, TLSUnmapped: unmapped, TLSExecProblem: tlsExecProblem}, nil
@@ -908,23 +916,41 @@ func collectCaptureEventsFor(scope traceScope, duration time.Duration, onEvent f
 		if duration > 0 && !time.Now().Before(deadline) {
 			return finish()
 		}
-		record, err := reader.Read()
-		if errors.Is(err, os.ErrDeadlineExceeded) {
-			if messages != nil && (duration == 0 || time.Now().Before(deadline)) {
-				if err := emit(messages.expire(time.Now())); err != nil {
-					return captureSummary{}, err
+		var record ringbuf.Record
+		var err error
+		if len(ready) != 0 {
+			record.RawSample = ready[0]
+			ready = ready[1:]
+		} else {
+			record, err = reader.Read()
+			if errors.Is(err, os.ErrDeadlineExceeded) {
+				if messages != nil && (duration == 0 || time.Now().Before(deadline)) {
+					if err := emit(messages.expire(time.Now())); err != nil {
+						return captureSummary{}, err
+					}
+					swept = time.Now()
+					sweepDeadline()
+					continue
 				}
-				swept = time.Now()
-				sweepDeadline()
-				continue
+				return finish()
 			}
-			return finish()
-		}
-		if errors.Is(err, os.ErrClosed) && traceStopRequested(stop) {
-			return finish()
-		}
-		if err != nil {
-			return captureSummary{}, err
+			if errors.Is(err, os.ErrClosed) && traceStopRequested(stop) {
+				return finish()
+			}
+			if err != nil {
+				return captureSummary{}, err
+			}
+			if goOrder != nil {
+				if len(record.RawSample) >= 12 && binary.LittleEndian.Uint32(record.RawSample[8:12]) != goTLSOrderRecord && !captureRecordAfterAttached(binary.LittleEndian.Uint64(record.RawSample[:8]), attached) {
+					continue
+				}
+				ready = goOrder.add(record.RawSample)
+				if len(ready) == 0 {
+					continue
+				}
+				record.RawSample = ready[0]
+				ready = ready[1:]
+			}
 		}
 		if packet, ok := parseDNSRecord(record.RawSample); ok {
 			if !packet.sent {

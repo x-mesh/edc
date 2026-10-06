@@ -1359,7 +1359,7 @@ HTTPS is encrypted, so edc cannot read the method, the path, or the status. The 
 
 edc does not see a TLS connection that started before the trace. If a client uses Encrypted Client Hello (ECH), the SNI is the public name of the provider. To see the requests of HTTPS, use `--tls`. You can also trace the plain HTTP behind the TLS end point, for example a proxy that sends plain HTTP to its backend.
 
-Use `--tls` to see the HTTP/1.1 and HTTP/2 requests in HTTPS. edc reads plaintext before encryption and after decryption. It supports OpenSSL, GnuTLS, NSS, wolfSSL, Mbed TLS, rustls-ffi, and registered BoringSSL builds. It does not need a certificate or a key.
+Use `--tls` to see the HTTP/1.1 and HTTP/2 requests in HTTPS. edc reads plaintext before encryption and after decryption. It supports OpenSSL, GnuTLS, NSS, wolfSSL, Mbed TLS, rustls-ffi, Go TLS, and registered BoringSSL builds. It does not need a certificate or a key.
 
 ```bash
 ./bin/edc trace http --tls
@@ -1391,6 +1391,20 @@ Start the trace before the NSS program starts. edc needs the SSL setup calls to 
 NSS uses `PR_Read`, `PR_Recv`, `PR_Write`, and `PR_Send` for plaintext. edc follows `SSL_SECURITY`, its default value, model copies, accepted connections, and `PR_Close`.
 
 An NSS connection with `SSL_SECURITY` off produces no TLS event. `PR_Recv` with `PR_MSG_PEEK` also produces no TLS event.
+
+Go TLS uses the Go function table and probes at function returns. The verified scope is Go 1.27.1 on Linux amd64.
+
+```bash
+./bin/edc trace http --tls=my-go-program
+```
+
+Specify the binary path or command name. edc supports normal, stripped, and PIE binaries. Automatic library discovery does not select Go binaries.
+
+These events have no socket addresses. A `--port` filter excludes them. For Go TLS, edc supports no other version or architecture.
+
+For Go clients, latency starts at `Write` entry and ends at `Read` return. For servers, latency ends at `Write` entry.
+
+The capture tests cover Go HTTP/1.1. They do not cover Go HTTP/2.
 
 rustls-ffi uses the C functions `rustls_connection_read` and `rustls_connection_write`. edc clears the connection state at `rustls_connection_free`.
 
@@ -1438,7 +1452,7 @@ Some programs do not use the socket inside the TLS call, for example Bun, `node`
 
 `--tls` sees programs that call the OpenSSL functions `SSL_read` and `SSL_write`, or `SSL_read_ex` and `SSL_write_ex`. It also sees programs that call the GnuTLS functions `gnutls_record_recv` and `gnutls_record_send`, for example `wget` and `git` on Debian and Ubuntu.
 
-`--tls` does not see Go or Java programs. It also does not see a program without these exported functions, except the supported BoringSSL build.
+`--tls` does not see Java programs. Go support has the limits above. It also does not see a program without these exported functions, except supported Go binaries and the registered BoringSSL build.
 
 With `--tls=<path>`, edc also reads the symbol table, so a static program with symbols can work.
 

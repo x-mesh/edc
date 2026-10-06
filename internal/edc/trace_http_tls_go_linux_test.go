@@ -104,7 +104,7 @@ func TestTraceTLSGoCaptures(t *testing.T) {
 		mode, argument string
 		port           uint16
 	}{
-		{"normal", "", 0}, {"stripped", "", 0}, {"pie", "", 0}, {"normal", "stack", 0}, {"normal", "stack", 443},
+		{"normal", "", 0}, {"stripped", "", 0}, {"pie", "", 0}, {"normal", "stack", 0}, {"normal", "stack", 443}, {"normal", "errors", 0},
 	} {
 		t.Run(tc.mode+"-"+tc.argument+"-"+fmt.Sprint(tc.port), func(t *testing.T) {
 			fixture := traceTLSGoFixture(t, tc.mode)
@@ -142,6 +142,9 @@ func TestTraceTLSGoCaptures(t *testing.T) {
 					requests[event.Path]++
 				} else if event.Status == 200 {
 					responses[event.Path]++
+					if event.LatencyMS == nil || *event.LatencyMS <= 0 {
+						t.Errorf("missing Go TLS latency: %#v", event)
+					}
 					if !strings.Contains(string(event.Payload), "response") {
 						t.Errorf("missing Go TLS body: %#v", event)
 					}
@@ -158,6 +161,9 @@ func TestTraceTLSGoCaptures(t *testing.T) {
 			want := 64
 			if tc.argument == "stack" {
 				want = 16
+			}
+			if tc.argument == "errors" {
+				want = 0
 			}
 			if tc.port != 0 {
 				if len(requests) != 0 || len(responses) != 0 || summary.TLSUnmapped == 0 {

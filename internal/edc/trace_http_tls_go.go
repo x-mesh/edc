@@ -92,7 +92,10 @@ func traceTLSGo(file *elf.File, target *traceTLSTarget) (err error) {
 		if err != nil {
 			return fmt.Errorf("%s: %w", name, err)
 		}
-		entries[name] = offset
+		entries[name], err = traceTLSGoEntry(code, offset)
+		if err != nil {
+			return fmt.Errorf("%s: %w", name, err)
+		}
 		if name != traceTLSGoClose {
 			returns[name], err = traceTLSGoReturns(code, offset)
 			if err != nil {
@@ -151,4 +154,56 @@ func traceTLSGoReturns(code []byte, offset uint64) ([]uint64, error) {
 		return nil, fmt.Errorf("Go TLS function has no RET")
 	}
 	return returns, nil
+}
+
+func traceTLSGoEntry(code []byte, offset uint64) (uint64, error) {
+	if len(code) == 0 || offset > math.MaxUint64-uint64(len(code)) {
+		return 0, fmt.Errorf("invalid Go TLS entry range")
+	}
+	pos := 0
+	stack := x86asm.RSP
+	decode := func() (x86asm.Inst, error) {
+		if pos >= len(code) {
+			return x86asm.Inst{}, fmt.Errorf("missing Go TLS prologue")
+		}
+		instruction, err := x86asm.Decode(code[pos:], 64)
+		if err != nil || instruction.Len == 0 {
+			return instruction, fmt.Errorf("invalid Go TLS prologue")
+		}
+		pos += instruction.Len
+		return instruction, nil
+	}
+	instruction, err := decode()
+	if err != nil {
+		return 0, err
+	}
+	if instruction.Op == x86asm.LEA {
+		memory, ok := instruction.Args[1].(x86asm.Mem)
+		if instruction.Args[0] != x86asm.R12 || !ok || memory.Base != x86asm.RSP || memory.Index != 0 || memory.Disp >= 0 {
+			return 0, fmt.Errorf("unsupported Go TLS stack adjustment")
+		}
+		stack = x86asm.R12
+		instruction, err = decode()
+		if err != nil {
+			return 0, err
+		}
+	}
+	memory, ok := instruction.Args[1].(x86asm.Mem)
+	if instruction.Op != x86asm.CMP || instruction.Args[0] != stack || !ok || memory.Base != x86asm.R14 || memory.Index != 0 || memory.Disp != 16 {
+		return 0, fmt.Errorf("unsupported Go TLS stack guard")
+	}
+	instruction, err = decode()
+	if err != nil {
+		return 0, err
+	}
+	branch, ok := instruction.Args[0].(x86asm.Rel)
+	if instruction.Op != x86asm.JBE || !ok || int64(pos)+int64(branch) <= int64(pos) || int64(pos)+int64(branch) >= int64(len(code)) {
+		return 0, fmt.Errorf("unsupported Go TLS stack branch")
+	}
+	entry := pos
+	instruction, err = decode()
+	if err != nil || instruction.Op != x86asm.PUSH || instruction.Args[0] != x86asm.RBP || instruction.Len != 1 {
+		return 0, fmt.Errorf("unsupported Go TLS frame prologue")
+	}
+	return offset + uint64(entry), nil
 }

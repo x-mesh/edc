@@ -28,20 +28,37 @@ func (c movingConn) Write(p []byte) (int, error) {
 	return n, err
 }
 
+type completedConn struct {
+	net.Conn
+	writes *sync.WaitGroup
+}
+
+func (c completedConn) Write(p []byte) (int, error) {
+	c.writes.Add(1)
+	defer c.writes.Done()
+	return c.Conn.Write(p)
+}
+
 func runStress() {
 	runtime.GOMAXPROCS(4)
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, "go-tls-response:"+r.URL.Path)
 	}))
 	defer server.Close()
+	var writes sync.WaitGroup
 	transport := &http.Transport{
 		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-		DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+		DialTLSContext: func(ctx context.Context, network, address string) (net.Conn, error) {
 			conn, err := (&net.Dialer{}).DialContext(ctx, network, address)
 			if err != nil {
 				return nil, err
 			}
-			return movingConn{conn}, nil
+			secure := tls.Client(movingConn{conn}, &tls.Config{InsecureSkipVerify: true})
+			if err := secure.HandshakeContext(ctx); err != nil {
+				conn.Close()
+				return nil, err
+			}
+			return completedConn{Conn: secure, writes: &writes}, nil
 		},
 		DisableKeepAlives: true,
 	}
@@ -72,6 +89,7 @@ func runStress() {
 		}(worker)
 	}
 	wait.Wait()
+	writes.Wait()
 	close(errors)
 	for err := range errors {
 		fmt.Fprintln(os.Stderr, err)
@@ -151,9 +169,43 @@ func runStack() {
 	fmt.Println("done")
 }
 
+func runErrors() {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer server.Close()
+	raw, err := net.Dial("tcp", strings.TrimPrefix(server.URL, "https://"))
+	if err != nil {
+		panic(err)
+	}
+	conn := tls.Client(raw, &tls.Config{InsecureSkipVerify: true})
+	if err := conn.Handshake(); err != nil {
+		panic(err)
+	}
+	fmt.Println("ready", os.Getpid())
+	time.Sleep(3 * time.Second)
+	if n, err := conn.Write(nil); n != 0 || err != nil {
+		panic("empty Write")
+	}
+	if n, err := conn.Read(nil); n != 0 || err != nil {
+		panic("empty Read")
+	}
+	conn.Close()
+	request := []byte("GET /failed HTTP/1.1\r\nHost: localhost\r\n\r\n")
+	if n, err := conn.Write(request); n != 0 || err == nil {
+		panic("closed Write")
+	}
+	response := []byte("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+	if n, err := conn.Read(response); n != 0 || err == nil {
+		panic("closed Read")
+	}
+	conn.Close()
+	fmt.Println("done")
+}
+
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "stack" {
 		runStack()
+	} else if len(os.Args) > 1 && os.Args[1] == "errors" {
+		runErrors()
 	} else {
 		runStress()
 	}

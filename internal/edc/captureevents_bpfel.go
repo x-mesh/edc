@@ -48,6 +48,15 @@ type captureEventsGoTlsPending struct {
 	Buffer      uint64
 	Num         uint64
 	StackOffset uint64
+	Marked      uint8
+	_           [7]byte
+	Started     uint64
+}
+
+type captureEventsGoTlsWrites struct {
+	_      structs.HostLayout
+	Active uint64
+	Closed uint64
 }
 
 type captureEventsHttpCursor struct {
@@ -220,6 +229,7 @@ const (
 	captureEventsMapDnsScratch                 = "dns_scratch"
 	captureEventsMapEvents                     = "events"
 	captureEventsMapGoTlsPending               = "go_tls_pending"
+	captureEventsMapGoTlsWrites                = "go_tls_writes"
 	captureEventsMapHttpCursors                = "http_cursors"
 	captureEventsMapHttpRecvPending            = "http_recv_pending"
 	captureEventsMapHttpScratch                = "http_scratch"
@@ -414,6 +424,7 @@ type captureEventsMapSpecs struct {
 	DnsScratch       *ebpf.MapSpec `ebpf:"dns_scratch"`
 	Events           *ebpf.MapSpec `ebpf:"events"`
 	GoTlsPending     *ebpf.MapSpec `ebpf:"go_tls_pending"`
+	GoTlsWrites      *ebpf.MapSpec `ebpf:"go_tls_writes"`
 	HttpCursors      *ebpf.MapSpec `ebpf:"http_cursors"`
 	HttpRecvPending  *ebpf.MapSpec `ebpf:"http_recv_pending"`
 	HttpScratch      *ebpf.MapSpec `ebpf:"http_scratch"`
@@ -482,6 +493,7 @@ type captureEventsMaps struct {
 	DnsScratch       *ebpf.Map `ebpf:"dns_scratch"`
 	Events           *ebpf.Map `ebpf:"events"`
 	GoTlsPending     *ebpf.Map `ebpf:"go_tls_pending"`
+	GoTlsWrites      *ebpf.Map `ebpf:"go_tls_writes"`
 	HttpCursors      *ebpf.Map `ebpf:"http_cursors"`
 	HttpRecvPending  *ebpf.Map `ebpf:"http_recv_pending"`
 	HttpScratch      *ebpf.Map `ebpf:"http_scratch"`
@@ -512,6 +524,7 @@ func (m *captureEventsMaps) Close() error {
 		m.DnsScratch,
 		m.Events,
 		m.GoTlsPending,
+		m.GoTlsWrites,
 		m.HttpCursors,
 		m.HttpRecvPending,
 		m.HttpScratch,

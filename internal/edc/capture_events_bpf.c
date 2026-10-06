@@ -19,6 +19,7 @@ typedef __u32 __wsum;
 #define IPPROTO_TCP 6
 #define IPPROTO_UDP 17
 #define BPF_ANY 0
+#define BPF_NOEXIST 1
 #define BPF_MAP_TYPE_HASH 1
 #define BPF_MAP_TYPE_ARRAY 2
 #define BPF_MAP_TYPE_PERCPU_ARRAY 6
@@ -2127,7 +2128,7 @@ static __always_inline void ssl_fill_record(struct http_record *record, struct s
 // ssl_capture는 SSL 호출 하나의 평문을 레코드로 넘긴다. http_capture와 같은 stream 규칙을 따르되, 방향에 HTTP_DECRYPTED를
 // 더한 key를 써서 같은 socket의 암호문 상태와 섞지 않는다. 평문은 buffer 하나이고 TLS 판별을 하지 않는다. TCP 송수신마다
 // 도는 http_capture의 verifier 비용을 늘리지 않으려고 따로 둔다.
-static __always_inline void ssl_capture(struct ssl_snapshot *snapshot, __u64 buffer, __u64 size, __u8 direction) {
+static __always_inline void ssl_capture(struct ssl_snapshot *snapshot, __u64 buffer, __u64 size, __u8 direction, __u64 started) {
 	__u8 flagged = direction | HTTP_DECRYPTED;
 	struct http_stream_key key = {.skaddr = snapshot->skaddr, .direction = flagged};
 	__u8 peek[4] = {};
@@ -2208,7 +2209,7 @@ static __always_inline void ssl_capture(struct ssl_snapshot *snapshot, __u64 buf
 		if (bpf_probe_read_user(record->payload, len, (void *)cursor->pointer)) {
 			break;
 		}
-		record->timestamp_ns = bpf_ktime_get_ns();
+		record->timestamp_ns = started ? started : bpf_ktime_get_ns();
 		record->len = len;
 		record->kind = cursor->kind;
 		record->offset = cursor->offset;
@@ -2524,7 +2525,7 @@ static __always_inline int ssl_leave(void *ctx, int ex, int success) {
 	// 짝짓기 id는 socket을 배웠어도 SSL 객체로 둔다. OpenSSL은 handshake 때 미리 읽어 둔 요청을 socket 없이 돌려주고, 응답을
 	// 쓸 때 socket을 배운다. socket 주소로 바꾸면 그 요청과 응답이 다른 연결로 나뉜다. 주소는 배운 값을 그대로 싣는다.
 	snapshot.skaddr = ssl_synthetic_socket(key, pending.ssl);
-	ssl_capture(&snapshot, pending.buffer, size, pending.direction);
+	ssl_capture(&snapshot, pending.buffer, size, pending.direction, 0);
 	return 0;
 }
 
@@ -2628,6 +2629,8 @@ struct go_tls_pending {
 	__u64 buffer;
 	__u64 num;
 	__u64 stack_offset;
+	__u8 marked;
+	__u64 started;
 };
 
 struct {
@@ -2642,6 +2645,77 @@ static __always_inline void go_tls_lost(void) {
 	__u64 *lost = bpf_map_lookup_elem(&lost_events, &zero);
 	if (lost) {
 		__sync_fetch_and_add(lost, 1);
+	}
+}
+
+#define GO_TLS_ORDER_RECORD 22
+#define GO_TLS_WRITE_BEGIN 1
+#define GO_TLS_WRITE_END 2
+
+struct go_tls_order_record {
+	__u64 timestamp_ns;
+	__u32 event_type;
+	__u32 phase;
+	__u64 connection;
+	__u64 goroutine;
+	__u64 frame;
+};
+
+struct go_tls_writes {
+	__u64 active;
+	__u64 closed;
+};
+
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, 10240);
+	__type(key, struct ssl_key);
+	__type(value, struct go_tls_writes);
+} go_tls_writes SEC(".maps");
+
+static __always_inline int go_tls_order(struct go_tls_key *key, __u64 connection, __u32 phase) {
+	struct go_tls_order_record record = {
+		.timestamp_ns = bpf_ktime_get_ns(),
+		.event_type = GO_TLS_ORDER_RECORD,
+		.phase = phase,
+		.connection = ssl_synthetic_socket(bpf_get_current_pid_tgid(), connection),
+		.goroutine = key->goroutine,
+		.frame = key->frame,
+	};
+	if (bpf_ringbuf_output(&events, &record, sizeof(record), 0)) {
+		go_tls_lost();
+		return 0;
+	}
+	return 1;
+}
+
+static __always_inline int go_tls_write_begin(struct go_tls_key *key, __u64 connection) {
+	struct ssl_key socket = {.tgid = key->pid, .ssl = connection};
+	struct go_tls_writes initial = {};
+	bpf_map_update_elem(&go_tls_writes, &socket, &initial, BPF_NOEXIST);
+	struct go_tls_writes *writes = bpf_map_lookup_elem(&go_tls_writes, &socket);
+	if (!writes) {
+		go_tls_lost();
+		return 0;
+	}
+	__sync_fetch_and_add(&writes->active, 1);
+	return go_tls_order(key, connection, GO_TLS_WRITE_BEGIN);
+}
+
+static __always_inline void go_tls_write_end(void *ctx, struct go_tls_key *key, struct go_tls_pending *pending) {
+	struct ssl_key socket = {.tgid = key->pid, .ssl = pending->connection};
+	struct go_tls_writes *writes = bpf_map_lookup_elem(&go_tls_writes, &socket);
+	if (writes) {
+		__u64 active = __sync_fetch_and_sub(&writes->active, 1);
+		if (active == 1 && writes->closed) {
+			ssl_forget(ctx, pending->connection);
+			bpf_map_delete_elem(&go_tls_writes, &socket);
+		}
+	} else {
+		go_tls_lost();
+	}
+	if (pending->marked) {
+		go_tls_order(key, pending->connection, GO_TLS_WRITE_END);
 	}
 }
 
@@ -2672,6 +2746,7 @@ static __always_inline int go_tls_enter(void *ctx, __u8 direction) {
 		.connection = SSL_CONTEXT_WORD(ctx, 80),
 		.buffer = SSL_CONTEXT_WORD(ctx, 40),
 		.num = SSL_CONTEXT_WORD(ctx, 88),
+		.started = bpf_ktime_get_ns(),
 	};
 	if (pending.buffer >= stack.lo && pending.buffer < stack.hi) {
 		if (pending.num > stack.hi - pending.buffer) {
@@ -2682,6 +2757,13 @@ static __always_inline int go_tls_enter(void *ctx, __u8 direction) {
 	}
 	if (bpf_map_update_elem(&go_tls_pending, &key, &pending, BPF_ANY)) {
 		go_tls_lost();
+		return 0;
+	}
+	if (direction == HTTP_SENT) {
+		struct go_tls_pending *stored = bpf_map_lookup_elem(&go_tls_pending, &key);
+		if (stored) {
+			stored->marked = go_tls_write_begin(&key, pending.connection);
+		}
 	}
 	return 0;
 }
@@ -2703,12 +2785,12 @@ static __always_inline int go_tls_leave(void *ctx, __u8 direction) {
 	bpf_map_delete_elem(&go_tls_pending, &key);
 	__u64 size = SSL_CONTEXT_WORD(ctx, 80);
 	if ((__s64)size <= 0 || size > pending.num || !pending.buffer) {
-		return 0;
+		goto complete;
 	}
 	if (pending.stack_offset) {
 		if (pending.stack_offset > stack.hi - stack.lo || size > pending.stack_offset) {
 			go_tls_lost();
-			return 0;
+			goto complete;
 		}
 		pending.buffer = stack.hi - pending.stack_offset;
 	}
@@ -2718,15 +2800,19 @@ static __always_inline int go_tls_leave(void *ctx, __u8 direction) {
 		if (unmapped) {
 			__sync_fetch_and_add(unmapped, 1);
 		}
-		return 0;
+		goto complete;
 	}
 	__u8 readable;
 	if (bpf_probe_read_user(&readable, sizeof(readable), (void *)pending.buffer)) {
 		go_tls_lost();
-		return 0;
+		goto complete;
 	}
 	struct ssl_snapshot snapshot = {.skaddr = ssl_synthetic_socket(bpf_get_current_pid_tgid(), pending.connection)};
-	ssl_capture(&snapshot, pending.buffer, size, direction);
+	ssl_capture(&snapshot, pending.buffer, size, direction, direction == HTTP_SENT ? pending.started : 0);
+complete:
+	if (direction == HTTP_SENT) {
+		go_tls_write_end(ctx, &key, &pending);
+	}
 	return 0;
 }
 
@@ -2741,7 +2827,15 @@ int go_tls_write_exit(void *ctx) { return go_tls_leave(ctx, HTTP_SENT); }
 SEC("uprobe/go_tls_close")
 int go_tls_close_entry(void *ctx) {
 	if (!emit_tls_plaintext || uprobe_arch == UPROBE_ARM64) { return 0; }
-	return ssl_forget(ctx, SSL_CONTEXT_WORD(ctx, 80));
+	__u64 connection = SSL_CONTEXT_WORD(ctx, 80);
+	struct ssl_key socket = {.tgid = bpf_get_current_pid_tgid() >> 32, .ssl = connection};
+	struct go_tls_writes *writes = bpf_map_lookup_elem(&go_tls_writes, &socket);
+	if (writes) {
+		__sync_lock_test_and_set(&writes->closed, 1);
+		if (writes->active) { return 0; }
+		bpf_map_delete_elem(&go_tls_writes, &socket);
+	}
+	return ssl_forget(ctx, connection);
 }
 
 #define NSS_SECURITY 1

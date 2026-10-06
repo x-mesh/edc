@@ -313,7 +313,7 @@ func TestHTTPTrackerMatchesResponsesInOrder(t *testing.T) {
 	if stray.LatencyMS != nil || stray.Path != "" || stray.Target != "127.0.0.1:8080" {
 		t.Fatalf("response without a request = %#v", stray)
 	}
-	if destination, label := traceHTTPScrollLabels(second); destination != "client: POST api.example/b (127.0.0.1:8080)" || label != "http_5xx 503 4.0ms" {
+	if destination, label := traceHTTPScrollLabels(second); destination != "client: POST http://api.example/b (127.0.0.1:8080)" || label != "http_5xx 503 4.0ms" {
 		t.Fatalf("labels = %q, %q", destination, label)
 	}
 	// client 쪽 tracker는 서버가 받은 요청을 버린다.
@@ -433,7 +433,7 @@ func TestHTTPTraceScreenPutsThePayloadUnderItsEvent(t *testing.T) {
 	plain := captureEvent{Protocol: "http", Event: "http_2xx", Process: "curl", Target: "api.example", Path: "/a", Status: 200}
 	model.events, model.width = []captureEvent{request, request, plain}, 120
 	// 3줄이면 마지막 event와 그 앞 event의 두 줄이 들어간다. 그 앞 요청은 두 줄이 다 들어가지 않으므로 빼야 한다.
-	for height, want := range map[int][]string{6: {"POST api.example/a", "↳ body {\"k\":1}", "http_2xx 200"}, 5: {"http_2xx 200", ""}} {
+	for height, want := range map[int][]string{6: {"POST http://api.example/a", "↳ body {\"k\":1}", "http_2xx 200"}, 5: {"http_2xx 200", ""}} {
 		model.height = height
 		rows := traceScreenRows(model)
 		if len(rows) != len(want) {
@@ -524,8 +524,8 @@ func TestHTTPTrackerShowsBothSidesByDefault(t *testing.T) {
 		event captureEvent
 		want  string
 	}{
-		{received, "server: GET node.example:9900/admin/chain (203.0.113.7:50000)"},
-		{sent, "client: GET localhost:9000/admin/chain (127.0.0.1:8080)"},
+		{received, "server: GET http://node.example:9900/admin/chain (203.0.113.7:50000)"},
+		{sent, "client: GET http://localhost:9000/admin/chain (127.0.0.1:8080)"},
 		{captureEvent{Protocol: "http", Side: traceServerSide, Event: "http_2xx"}, "server: -"},
 	} {
 		if destination, _ := traceHTTPScrollLabels(test.event); destination != test.want {
@@ -824,7 +824,7 @@ func TestHTTPTrackerShowsTLSClientHellos(t *testing.T) {
 		}
 	}
 	event, _ := tracker.event(sent, 0)
-	if destination, label := traceHTTPScrollLabels(event); destination != "client: api.example (127.0.0.1:8080)" || label != "tls_hello h2" {
+	if destination, label := traceHTTPScrollLabels(event); destination != "client: https://api.example (127.0.0.1:8080)" || label != "tls_hello h2" {
 		t.Fatalf("labels = %q, %q", destination, label)
 	}
 	if _, ok := newHTTPTracker(traceServerSide, false, false).event(sent, 0); ok {
@@ -1052,52 +1052,45 @@ func TestHTTPTrackerPairsTLSPlaintext(t *testing.T) {
 	}
 }
 
-func TestHTTPTrackerMarksHTTP2OverTLSOnce(t *testing.T) {
-	t.Setenv("NO_COLOR", "1")
-	preface := "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n\x00\x00\x12\x04\x00"
-	server := tlsTestPacket(preface, 2_000_000, false)
-	server.socket = 2
+// --tls 평문의 HTTP/2는 h2c처럼 frame을 읽는다. 두 방향 모두 BPF가 0부터 센 위치를 싣고, 요청과 응답은 tls로 표시된다.
+func TestHTTP2TraceReadsTLSPlaintext(t *testing.T) {
 	tracker := newHTTPTracker("", false, false)
-	var events []captureEvent
-	for _, packet := range []httpPacket{tlsTestPacket(preface, 1_000_000, true), server} {
-		// 수집 루프처럼 h2c 처리를 먼저 거친다. --tls 평문은 h2c로 읽지 않는다.
-		if _, claimed := tracker.http2Events(packet, 0); claimed {
-			t.Fatalf("h2c claimed TLS plaintext %q", packet.payload)
-		}
-		event, ok := tracker.event(packet, 0)
-		if !ok || event.Event != traceHTTP2UnparsedEvent || !event.TLS {
-			t.Fatalf("preface = %#v, %t", event, ok)
-		}
-		events = append(events, event)
+	request := http2TestHeaders(hpack.HeaderField{Name: ":method", Value: "GET"}, hpack.HeaderField{Name: ":scheme", Value: "https"}, hpack.HeaderField{Name: ":authority", Value: "api.example"}, hpack.HeaderField{Name: ":path", Value: "/v1?token=secret"})
+	start := tlsTestPacket(string(append(append(append([]byte{}, http2Preface...), http2TestFrame(4, 0, 0, nil)...), http2TestFrame(1, 4, 1, request)...)), 1_000_000, true)
+	events, claimed := tracker.http2Events(start, 0)
+	if !claimed || len(events) != 1 || events[0].Method != "GET" || events[0].Path != "/v1" || !events[0].TLS {
+		t.Fatalf("request = %#v, %t", events, claimed)
 	}
-	if events[0].Side != traceClientSide || events[1].Side != traceServerSide {
-		t.Fatalf("sides = %s, %s", events[0].Side, events[1].Side)
+	if destination, label := traceHTTPScrollLabels(events[0]); destination != "client: GET https://api.example/v1 (127.0.0.1:8080)" || label != "http_request tls" {
+		t.Fatalf("labels = %q, %q", destination, label)
 	}
-	if _, ok := newHTTPTracker(traceClientSide, false, false).event(server, 0); ok {
-		t.Fatal("--side client must hide the server preface")
-	}
-	// 암호문은 preface일 수 없다. 같은 byte가 와도 HTTP/2로 읽지 않는다.
-	if _, ok := tracker.event(httpTestPacket(preface, 3_000_000, true), 0); ok {
-		t.Fatal("a ciphertext packet must not be read as an HTTP/2 preface")
-	}
-	// --payload=all의 조립기는 HTTP/2 frame을 따라가지 않으므로 message를 열지 않는다.
-	messages := newHTTPMessages(newHTTPTracker("", false, false), httpMessageMax, false)
-	if got := messages.add(tlsTestPacket(preface, 1_000_000, true), 0, time.Now()); len(got) != 1 || len(messages.open) != 0 {
-		t.Fatalf("messages = %#v, open %d", got, len(messages.open))
+	response := append(http2TestFrame(4, 0, 0, nil), http2TestFrame(1, 4, 1, http2TestHeaders(hpack.HeaderField{Name: ":status", Value: "200"}))...)
+	received := tlsTestPacket(string(response), 4_000_000, false)
+	received.continued = true
+	events, claimed = tracker.http2Events(received, 0)
+	if !claimed || len(events) != 1 || events[0].Status != 200 || !events[0].TLS || events[0].Path != "/v1" || events[0].LatencyMS == nil || *events[0].LatencyMS != 3 {
+		t.Fatalf("response = %#v, %t", events, claimed)
 	}
 	summarizer := newHTTPTraceSummarizer()
-	for _, event := range events {
-		summarizer.observe(event)
-	}
-	report := summarizer.summarize(captureSummary{}, time.Second).(httpTraceReport)
-	if report.Requests != 0 || report.Responses != 0 || len(report.Paths) != 0 || report.HTTP2Unparsed != 2 {
+	summarizer.observe(events[0])
+	if report := summarizer.summarize(captureSummary{}, time.Second).(httpTraceReport); report.Responses != 1 || len(report.Paths) != 1 {
 		t.Fatalf("report = %#v", report)
 	}
-	if data, _ := json.Marshal(report); !strings.Contains(string(data), `"http2_unparsed":2`) {
-		t.Fatalf("report JSON = %s", data)
+}
+
+// 서버가 받은 preface 뒤에 보내는 평문도 0에서 시작한다. 앞부분을 잃고 뒤에서 시작한 레코드는 h2c 송신처럼 원점으로
+// 받지 않고 그 방향을 멈춘다.
+func TestHTTP2TraceStartsTLSPlaintextAtZero(t *testing.T) {
+	tracker := newHTTPTracker("", false, false)
+	request := http2TestHeaders(hpack.HeaderField{Name: ":method", Value: "GET"}, hpack.HeaderField{Name: ":scheme", Value: "https"}, hpack.HeaderField{Name: ":authority", Value: "api.example"}, hpack.HeaderField{Name: ":path", Value: "/a"})
+	received := tlsTestPacket(string(append(append(append([]byte{}, http2Preface...), http2TestFrame(4, 0, 0, nil)...), http2TestFrame(1, 4, 1, request)...)), 1_000_000, false)
+	if events, claimed := tracker.http2Events(received, 0); !claimed || len(events) != 1 || events[0].Side != traceServerSide {
+		t.Fatalf("server request = %#v, %t", events, claimed)
 	}
-	if output := traceCaptureOutput(t, &os.Stdout, func() { report.print(false) }); !strings.Contains(output, "\nHTTP/2 connections (not parsed): 2\n") {
-		t.Fatalf("summary = %q", output)
+	sent := tlsTestPacket(string(http2TestFrame(1, 4, 1, http2TestHeaders(hpack.HeaderField{Name: ":status", Value: "200"}))), 2_000_000, true)
+	sent.continued, sent.offset = true, 9
+	if events, claimed := tracker.http2Events(sent, 0); !claimed || len(events) != 0 {
+		t.Fatalf("sent after a gap = %#v, %t", events, claimed)
 	}
 }
 

@@ -166,7 +166,7 @@ func (collector *aiCollector) poll(ctx context.Context, poll time.Duration) aiPo
 		if claude.rateLimited {
 			claude.Err += " · next try " + collector.claudeNext.Local().Format("15:04:05")
 			// 다시 실행해도 미룬 시각 전에는 부르지 않도록 남긴다. 마지막으로 성공한 값은 그대로 둔다.
-			stateErr = saveAIClaudeState(collector.claudeState, aiClaudeState{aiProvider: collector.last["claude"], NextTry: collector.claudeNext, Backoff: collector.claudeBackoff})
+			stateErr = saveAIClaudeState(collector.claudeState, aiClaudeState{aiProvider: collector.last["claude"], NextTry: collector.claudeRetry(now), Backoff: collector.claudeBackoff})
 		}
 		fetched = append(fetched, claude)
 	}
@@ -183,7 +183,7 @@ func (collector *aiCollector) poll(ctx context.Context, poll time.Duration) aiPo
 			collector.last[provider.Name], collector.shown[provider.Name] = provider, provider
 			if provider.Name == "claude" {
 				// 429 뒤에 늘어난 백오프는 성공해도 줄지 않는다. 다시 실행해도 이어지도록 다음 조회 시각과 함께 남긴다.
-				stateErr = saveAIClaudeState(collector.claudeState, aiClaudeState{aiProvider: provider, NextTry: collector.claudeNext, Backoff: collector.claudeBackoff})
+				stateErr = saveAIClaudeState(collector.claudeState, aiClaudeState{aiProvider: provider, NextTry: collector.claudeRetry(now), Backoff: collector.claudeBackoff})
 			}
 			continue
 		}
@@ -232,6 +232,16 @@ func (collector *aiCollector) claudeEvery(poll time.Duration) time.Duration {
 		}
 	}
 	return every
+}
+
+// claudeRetry는 상태 파일에 남길 다음 조회 시각이다. --poll 하한은 이 실행의 설정이라 다음 실행으로 넘기지 않는다.
+// 하한이 섞이면 --poll이 백오프 상한보다 길 때 저장한 시각이 복원 범위를 벗어나 백오프가 사라진다.
+func (collector *aiCollector) claudeRetry(now time.Time) time.Time {
+	every := collector.claudeBackoff
+	if every < aiClaudeMinInterval {
+		every = aiClaudeMinInterval
+	}
+	return now.Add(every)
 }
 
 func (collector *aiCollector) scan() aiUsageSnapshot { return collector.scanner.scan(time.Now()) }

@@ -97,6 +97,32 @@ type captureEventsMysqlSendPending struct {
 	_      [7]byte
 }
 
+type captureEventsNssCallKey struct {
+	_      structs.HostLayout
+	Thread uint64
+	Stack  uint64
+	Cookie uint64
+}
+
+type captureEventsNssControl struct {
+	_    structs.HostLayout
+	Fd   uint64
+	Mode uint32
+	Kind uint32
+}
+
+type captureEventsNssIoCall struct {
+	_       structs.HostLayout
+	Cookie  uint64
+	Pending captureEventsSslPending
+}
+
+type captureEventsNssIoKey struct {
+	_      structs.HostLayout
+	Thread uint64
+	Stack  uint64
+}
+
 type captureEventsSockOwner struct {
 	_        structs.HostLayout
 	CgroupId uint64
@@ -184,6 +210,10 @@ const (
 	captureEventsMapHttpStreams                = "http_streams"
 	captureEventsMapLostEvents                 = "lost_events"
 	captureEventsMapMysqlSendPending           = "mysql_send_pending"
+	captureEventsMapNssConfigs                 = "nss_configs"
+	captureEventsMapNssControlCalls            = "nss_control_calls"
+	captureEventsMapNssDefaults                = "nss_defaults"
+	captureEventsMapNssIoCalls                 = "nss_io_calls"
 	captureEventsMapSockOwners                 = "sock_owners"
 	captureEventsMapSslPending                 = "ssl_pending"
 	captureEventsMapSslSocks                   = "ssl_socks"
@@ -199,6 +229,16 @@ const (
 	captureEventsProgInetCskAcceptExitLegacy   = "inet_csk_accept_exit_legacy"
 	captureEventsProgInetSockSetState          = "inet_sock_set_state"
 	captureEventsProgInetStreamConnectEntry    = "inet_stream_connect_entry"
+	captureEventsProgNssAcceptEntry            = "nss_accept_entry"
+	captureEventsProgNssCloseEntry             = "nss_close_entry"
+	captureEventsProgNssControlExit            = "nss_control_exit"
+	captureEventsProgNssDefaultEntry           = "nss_default_entry"
+	captureEventsProgNssImportEntry            = "nss_import_entry"
+	captureEventsProgNssIoExit                 = "nss_io_exit"
+	captureEventsProgNssOptionEntry            = "nss_option_entry"
+	captureEventsProgNssReadEntry              = "nss_read_entry"
+	captureEventsProgNssRecvEntry              = "nss_recv_entry"
+	captureEventsProgNssWriteEntry             = "nss_write_entry"
 	captureEventsProgSkbConsumeUdpEntry        = "skb_consume_udp_entry"
 	captureEventsProgSslFreeEntry              = "ssl_free_entry"
 	captureEventsProgSslReadEntry              = "ssl_read_entry"
@@ -291,6 +331,16 @@ type captureEventsProgramSpecs struct {
 	InetCskAcceptExitLegacy   *ebpf.ProgramSpec `ebpf:"inet_csk_accept_exit_legacy"`
 	InetSockSetState          *ebpf.ProgramSpec `ebpf:"inet_sock_set_state"`
 	InetStreamConnectEntry    *ebpf.ProgramSpec `ebpf:"inet_stream_connect_entry"`
+	NssAcceptEntry            *ebpf.ProgramSpec `ebpf:"nss_accept_entry"`
+	NssCloseEntry             *ebpf.ProgramSpec `ebpf:"nss_close_entry"`
+	NssControlExit            *ebpf.ProgramSpec `ebpf:"nss_control_exit"`
+	NssDefaultEntry           *ebpf.ProgramSpec `ebpf:"nss_default_entry"`
+	NssImportEntry            *ebpf.ProgramSpec `ebpf:"nss_import_entry"`
+	NssIoExit                 *ebpf.ProgramSpec `ebpf:"nss_io_exit"`
+	NssOptionEntry            *ebpf.ProgramSpec `ebpf:"nss_option_entry"`
+	NssReadEntry              *ebpf.ProgramSpec `ebpf:"nss_read_entry"`
+	NssRecvEntry              *ebpf.ProgramSpec `ebpf:"nss_recv_entry"`
+	NssWriteEntry             *ebpf.ProgramSpec `ebpf:"nss_write_entry"`
 	SkbConsumeUdpEntry        *ebpf.ProgramSpec `ebpf:"skb_consume_udp_entry"`
 	SslFreeEntry              *ebpf.ProgramSpec `ebpf:"ssl_free_entry"`
 	SslReadEntry              *ebpf.ProgramSpec `ebpf:"ssl_read_entry"`
@@ -337,6 +387,10 @@ type captureEventsMapSpecs struct {
 	HttpStreams      *ebpf.MapSpec `ebpf:"http_streams"`
 	LostEvents       *ebpf.MapSpec `ebpf:"lost_events"`
 	MysqlSendPending *ebpf.MapSpec `ebpf:"mysql_send_pending"`
+	NssConfigs       *ebpf.MapSpec `ebpf:"nss_configs"`
+	NssControlCalls  *ebpf.MapSpec `ebpf:"nss_control_calls"`
+	NssDefaults      *ebpf.MapSpec `ebpf:"nss_defaults"`
+	NssIoCalls       *ebpf.MapSpec `ebpf:"nss_io_calls"`
 	SockOwners       *ebpf.MapSpec `ebpf:"sock_owners"`
 	SslPending       *ebpf.MapSpec `ebpf:"ssl_pending"`
 	SslSocks         *ebpf.MapSpec `ebpf:"ssl_socks"`
@@ -400,6 +454,10 @@ type captureEventsMaps struct {
 	HttpStreams      *ebpf.Map `ebpf:"http_streams"`
 	LostEvents       *ebpf.Map `ebpf:"lost_events"`
 	MysqlSendPending *ebpf.Map `ebpf:"mysql_send_pending"`
+	NssConfigs       *ebpf.Map `ebpf:"nss_configs"`
+	NssControlCalls  *ebpf.Map `ebpf:"nss_control_calls"`
+	NssDefaults      *ebpf.Map `ebpf:"nss_defaults"`
+	NssIoCalls       *ebpf.Map `ebpf:"nss_io_calls"`
 	SockOwners       *ebpf.Map `ebpf:"sock_owners"`
 	SslPending       *ebpf.Map `ebpf:"ssl_pending"`
 	SslSocks         *ebpf.Map `ebpf:"ssl_socks"`
@@ -425,6 +483,10 @@ func (m *captureEventsMaps) Close() error {
 		m.HttpStreams,
 		m.LostEvents,
 		m.MysqlSendPending,
+		m.NssConfigs,
+		m.NssControlCalls,
+		m.NssDefaults,
+		m.NssIoCalls,
 		m.SockOwners,
 		m.SslPending,
 		m.SslSocks,
@@ -467,6 +529,16 @@ type captureEventsPrograms struct {
 	InetCskAcceptExitLegacy   *ebpf.Program `ebpf:"inet_csk_accept_exit_legacy"`
 	InetSockSetState          *ebpf.Program `ebpf:"inet_sock_set_state"`
 	InetStreamConnectEntry    *ebpf.Program `ebpf:"inet_stream_connect_entry"`
+	NssAcceptEntry            *ebpf.Program `ebpf:"nss_accept_entry"`
+	NssCloseEntry             *ebpf.Program `ebpf:"nss_close_entry"`
+	NssControlExit            *ebpf.Program `ebpf:"nss_control_exit"`
+	NssDefaultEntry           *ebpf.Program `ebpf:"nss_default_entry"`
+	NssImportEntry            *ebpf.Program `ebpf:"nss_import_entry"`
+	NssIoExit                 *ebpf.Program `ebpf:"nss_io_exit"`
+	NssOptionEntry            *ebpf.Program `ebpf:"nss_option_entry"`
+	NssReadEntry              *ebpf.Program `ebpf:"nss_read_entry"`
+	NssRecvEntry              *ebpf.Program `ebpf:"nss_recv_entry"`
+	NssWriteEntry             *ebpf.Program `ebpf:"nss_write_entry"`
 	SkbConsumeUdpEntry        *ebpf.Program `ebpf:"skb_consume_udp_entry"`
 	SslFreeEntry              *ebpf.Program `ebpf:"ssl_free_entry"`
 	SslReadEntry              *ebpf.Program `ebpf:"ssl_read_entry"`
@@ -505,6 +577,16 @@ func (p *captureEventsPrograms) Close() error {
 		p.InetCskAcceptExitLegacy,
 		p.InetSockSetState,
 		p.InetStreamConnectEntry,
+		p.NssAcceptEntry,
+		p.NssCloseEntry,
+		p.NssControlExit,
+		p.NssDefaultEntry,
+		p.NssImportEntry,
+		p.NssIoExit,
+		p.NssOptionEntry,
+		p.NssReadEntry,
+		p.NssRecvEntry,
+		p.NssWriteEntry,
 		p.SkbConsumeUdpEntry,
 		p.SslFreeEntry,
 		p.SslReadEntry,

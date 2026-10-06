@@ -34,18 +34,27 @@ type traceTLSTarget struct {
 // traceTLSFreeFunctions다. OpenSSL의 _ex는 1.1.1에 생겨서 없는 파일도 있다. GnuTLS 3.6.3부터 gnutls_record_send는
 // gnutls_record_send2로 넘어가는 stub이지만, BPF는 중첩된 호출의 평문을 한 번만 내므로 둘 다 붙인다.
 var traceTLSFunctions = []string{"SSL_read", "SSL_write", "SSL_read_ex", "SSL_write_ex", "SSL_free",
-	"gnutls_record_send", "gnutls_record_send2", "gnutls_record_recv", "gnutls_record_recv_seq", "gnutls_deinit"}
+	"gnutls_record_send", "gnutls_record_send2", "gnutls_record_recv", "gnutls_record_recv_seq", "gnutls_deinit",
+	"SSL_ImportFD", "SSL_OptionSet", "SSL_OptionSetDefault", "PR_Accept",
+	"PR_Read", "PR_Recv", "PR_Write", "PR_Send", "PR_Close"}
+
+var traceTLSNSSControls = []string{"SSL_ImportFD", "SSL_OptionSet", "SSL_OptionSetDefault", "PR_Accept"}
+
+var traceTLSNSSFunctions = []string{"SSL_ImportFD", "SSL_OptionSet", "SSL_OptionSetDefault", "PR_Accept",
+	"PR_Read", "PR_Recv", "PR_Write", "PR_Send", "PR_Close"}
 
 // traceTLSFreeFunctions는 평문을 읽지 않는 traceTLSFunctions다.
-var traceTLSFreeFunctions = []string{"SSL_free", "gnutls_deinit"}
+var traceTLSFreeFunctions = []string{"SSL_free", "gnutls_deinit", "PR_Close"}
 
 // traceTLSLibraryNames는 maps와 host 디렉터리에서 찾는 TLS library 파일 이름의 앞부분이다.
-var traceTLSLibraryNames = []string{"libssl.so", "libgnutls.so"}
+var traceTLSLibraryNames = []string{"libssl.so", "libgnutls.so", "libssl3.so", "libnspr4.so"}
 
 // traceTLSHostLibraries는 실행 중인 process가 적재하지 않아도 붙이는 host의 TLS library다. uprobe는 파일 단위라서, trace를
 // 시작한 뒤에 뜬 curl이나 wget도 이 파일을 쓰면 보인다. test가 바꾼다.
 var traceTLSHostLibraries = []string{"/lib/*/libssl.so*", "/usr/lib/*/libssl.so*", "/lib64/libssl.so*", "/usr/lib64/libssl.so*", "/usr/lib/libssl.so*", "/usr/local/lib/libssl.so*", "/usr/local/lib64/libssl.so*",
-	"/lib/*/libgnutls.so*", "/usr/lib/*/libgnutls.so*", "/lib64/libgnutls.so*", "/usr/lib64/libgnutls.so*", "/usr/lib/libgnutls.so*", "/usr/local/lib/libgnutls.so*", "/usr/local/lib64/libgnutls.so*"}
+	"/lib/*/libgnutls.so*", "/usr/lib/*/libgnutls.so*", "/lib64/libgnutls.so*", "/usr/lib64/libgnutls.so*", "/usr/lib/libgnutls.so*", "/usr/local/lib/libgnutls.so*", "/usr/local/lib64/libgnutls.so*",
+	"/lib/*/libssl3.so", "/usr/lib/*/libssl3.so", "/lib64/libssl3.so", "/usr/lib64/libssl3.so", "/usr/lib/libssl3.so", "/usr/local/lib/libssl3.so", "/usr/local/lib64/libssl3.so",
+	"/lib/*/libnspr4.so", "/usr/lib/*/libnspr4.so", "/lib64/libnspr4.so", "/usr/lib64/libnspr4.so", "/usr/lib/libnspr4.so", "/usr/local/lib/libnspr4.so", "/usr/local/lib64/libnspr4.so"}
 
 // traceTLSMachines는 BPF가 인자를 읽는 register 배치와 맞는 ELF다. multilib host의 i386 libssl은 인자를 stack으로 받는다.
 var traceTLSMachines = map[string]elf.Machine{"amd64": elf.EM_X86_64, "arm64": elf.EM_AARCH64}
@@ -84,10 +93,22 @@ func resolveTraceTLSTargets(mode traceTLSMode) (finder *traceTLSFinder, notices 
 		if err != nil {
 			return nil, notices, 2, errors.New(T("cli.trace.tls_skipped", path, err))
 		}
-		if !traceTLSReadsPlaintext(target.symbols) {
+		peer, needed, err := traceTLSNSSPeer(target)
+		if err != nil {
+			return nil, notices, 2, err
+		}
+		targets := []traceTLSTarget{target}
+		if needed {
+			if slices.Contains(target.symbols, "SSL_ImportFD") {
+				targets = append(targets, peer)
+			} else {
+				targets = []traceTLSTarget{peer, target}
+			}
+		}
+		if !slices.ContainsFunc(targets, func(target traceTLSTarget) bool { return traceTLSReadsPlaintext(target.symbols) }) {
 			return nil, notices, 2, errors.New(T("cli.trace.tls_symbols", path))
 		}
-		return &traceTLSFinder{targets: []traceTLSTarget{target}}, notices, 0, nil
+		return &traceTLSFinder{targets: targets}, notices, 0, nil
 	}
 	finder = &traceTLSFinder{seen: map[[2]uint64]bool{}, notices: notices, rescan: true}
 	for _, pattern := range traceTLSHostLibraries {
@@ -100,7 +121,7 @@ func resolveTraceTLSTargets(mode traceTLSMode) (finder *traceTLSFinder, notices 
 	if finder.denied {
 		finder.notices = append(finder.notices, T("cli.trace.tls_permission"))
 	}
-	if len(finder.targets) == 0 {
+	if !slices.ContainsFunc(finder.targets, func(target traceTLSTarget) bool { return traceTLSReadsPlaintext(target.symbols) }) {
 		return nil, finder.notices, 3, errors.New(T("cli.trace.tls_none"))
 	}
 	if problem := traceTLSExecProblem(); problem != "" {
@@ -193,6 +214,17 @@ func (finder *traceTLSFinder) scanProcess(pid string) bool {
 		return false
 	}
 	mappings := traceTLSMappedLibraries(maps)
+	slices.SortStableFunc(mappings, func(a, b traceTLSMapping) int {
+		aNSS := filepath.Base(strings.TrimSuffix(a.path, " (deleted)")) == "libssl3.so"
+		bNSS := filepath.Base(strings.TrimSuffix(b.path, " (deleted)")) == "libssl3.so"
+		if aNSS && !bNSS {
+			return -1
+		}
+		if bNSS && !aNSS {
+			return 1
+		}
+		return 0
+	})
 	// maps의 경로를 /proc/<pid>/root에 붙여 열면 안 된다. chroot한 process는 그 자리에 FIFO나 host를 가리키는
 	// symlink를 둘 수 있다. map_files는 실제로 적재한 inode로 이어지고, 업데이트로 지워진 library도 연다.
 	for _, mapping := range mappings {
@@ -268,7 +300,7 @@ func (finder *traceTLSFinder) add(path, name string, library bool) {
 	case err != nil && (library || errors.Is(err, errTraceTLSBoringSSL)):
 		finder.notices = append(finder.notices, T("cli.trace.tls_skipped", traceEscapeText([]byte(name)), err))
 	case err != nil:
-	case traceTLSReadsPlaintext(target.symbols):
+	case traceTLSReadsPlaintext(target.symbols) || slices.Contains(target.symbols, "SSL_ImportFD"):
 		target.id = id
 		finder.targets = append(finder.targets, target)
 	case library:
@@ -315,7 +347,53 @@ func traceTLSReadFile(path string, withSymtab bool) (traceTLSTarget, error) {
 			return target, err
 		}
 	}
+	slices.SortStableFunc(target.symbols, func(a, b string) int {
+		aControl, bControl := slices.Contains(traceTLSNSSControls, a), slices.Contains(traceTLSNSSControls, b)
+		if aControl && !bControl {
+			return -1
+		}
+		if bControl && !aControl {
+			return 1
+		}
+		return 0
+	})
 	return target, nil
+}
+
+func traceTLSNSSPeer(target traceTLSTarget) (traceTLSTarget, bool, error) {
+	control := slices.Contains(target.symbols, "SSL_ImportFD")
+	reader := slices.Contains(target.symbols, "PR_Read") || slices.Contains(target.symbols, "PR_Recv") || slices.Contains(target.symbols, "PR_Write") || slices.Contains(target.symbols, "PR_Send")
+	if control == reader {
+		return traceTLSTarget{}, false, nil
+	}
+	name := "libssl3.so"
+	required := []string{"SSL_ImportFD", "SSL_OptionSet", "SSL_OptionSetDefault"}
+	if control {
+		name = "libnspr4.so"
+		required = []string{"PR_Read", "PR_Write", "PR_Close"}
+	}
+	candidates := []string{filepath.Join(filepath.Dir(target.path), name)}
+	for _, pattern := range traceTLSHostLibraries {
+		if filepath.Base(pattern) == name {
+			matches, _ := filepath.Glob(pattern)
+			candidates = append(candidates, matches...)
+		}
+	}
+	for _, path := range candidates {
+		info, err := os.Stat(path)
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err != nil || !info.Mode().IsRegular() {
+			break
+		}
+		peer, err := traceTLSReadFile(path, true)
+		if err == nil && !slices.ContainsFunc(required, func(symbol string) bool { return !slices.Contains(peer.symbols, symbol) }) {
+			return peer, true, nil
+		}
+		break
+	}
+	return traceTLSTarget{}, true, errors.New(T("cli.trace.tls_nss_peer", target.path, name))
 }
 
 // traceTLSFileOffset은 함수의 가상 주소를 파일 안 위치로 바꾼다. uprobe는 파일 위치에 붙는다. cilium/ebpf가 심볼 이름으로
@@ -331,5 +409,7 @@ func traceTLSFileOffset(file *elf.File, address uint64) (uint64, bool) {
 
 // traceTLSReadsPlaintext는 평문을 읽을 함수가 하나라도 있는 파일이다. SSL_free나 gnutls_deinit만 있으면 붙일 이유가 없다.
 func traceTLSReadsPlaintext(symbols []string) bool {
-	return slices.ContainsFunc(symbols, func(name string) bool { return !slices.Contains(traceTLSFreeFunctions, name) })
+	return slices.ContainsFunc(symbols, func(name string) bool {
+		return !slices.Contains(traceTLSFreeFunctions, name) && !slices.Contains(traceTLSNSSControls, name)
+	})
 }

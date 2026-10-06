@@ -175,7 +175,7 @@ command:
       side: "http, mysql은 기본으로 두 쪽, dns는 client 쪽"
       payload: "trace http, socket: 앞 4KiB, =all은 1MiB까지"
       show_secrets: "http --payload: header 값. mysql: SQL 값"
-      tls: "http: OpenSSL·GnuTLS 평문, =경로는 그 파일만"
+      tls: "http: HTTPS 평문, =경로: 프로그램이나 library"
       port: "http: 이 port만. mysql: 서버 port, 기본 3306"
       container: "이 docker container만, 이름이나 ID"
       reason: "trace drop: 이 이유만, 쉼표로 구분"

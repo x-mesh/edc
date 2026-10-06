@@ -83,6 +83,109 @@ func TestTraceTLSFileSymbolsReadsGnuTLS(t *testing.T) {
 	t.Skip("no libgnutls on this host")
 }
 
+func traceTLSHostNSS(t *testing.T) (string, string) {
+	t.Helper()
+	var ssl, nspr string
+	for _, pattern := range traceTLSHostLibraries {
+		if filepath.Base(pattern) != "libssl3.so" && filepath.Base(pattern) != "libnspr4.so" {
+			continue
+		}
+		paths, _ := filepath.Glob(pattern)
+		for _, path := range paths {
+			target, err := traceTLSReadFile(path, false)
+			if err != nil {
+				continue
+			}
+			if slices.Contains(target.symbols, "SSL_ImportFD") {
+				ssl = path
+			}
+			if slices.Contains(target.symbols, "PR_Read") {
+				nspr = path
+			}
+		}
+	}
+	if ssl == "" || nspr == "" {
+		t.Skip("NSS and NSPR ELF libraries are not available")
+	}
+	return ssl, nspr
+}
+
+func TestTraceTLSNSSUsesBothLibraries(t *testing.T) {
+	ssl, nspr := traceTLSHostNSS(t)
+	for _, path := range []string{ssl, nspr} {
+		finder, _, code, err := resolveTraceTLSTargets(traceTLSMode(path))
+		if err != nil || code != 0 || len(finder.targets) != 2 || finder.rescan {
+			t.Fatalf("%s: %#v, %d, %v", path, finder, code, err)
+		}
+		if !slices.Contains(finder.targets[0].symbols, "SSL_ImportFD") || !slices.Contains(finder.targets[1].symbols, "PR_Read") {
+			t.Fatalf("NSS controls must precede NSPR I/O: %#v", finder.targets)
+		}
+		for _, target := range finder.targets {
+			seenReader := false
+			for _, symbol := range target.symbols {
+				control := slices.Contains(traceTLSNSSControls, symbol)
+				if control && seenReader {
+					t.Fatalf("control after reader: %q", target.symbols)
+				}
+				seenReader = seenReader || !control
+			}
+		}
+	}
+	if traceTLSReadsPlaintext(append(slices.Clone(traceTLSNSSControls), "PR_Close")) || !traceTLSReadsPlaintext([]string{"PR_Read"}) {
+		t.Fatal("NSS setup and close functions must not count as readers")
+	}
+}
+
+func TestTraceTLSNSSRequiresAMatchingPeer(t *testing.T) {
+	ssl, nspr := traceTLSHostNSS(t)
+	previous := traceTLSHostLibraries
+	traceTLSHostLibraries = nil
+	t.Cleanup(func() { traceTLSHostLibraries = previous })
+	for _, test := range []struct{ source, name, peer string }{
+		{ssl, "libssl3.so", "libnspr4.so"},
+		{nspr, "libnspr4.so", "libssl3.so"},
+	} {
+		path := filepath.Join(t.TempDir(), test.name)
+		copyTraceTLSFile(t, test.source, path)
+		if _, _, code, err := resolveTraceTLSTargets(traceTLSMode(path)); code != 2 || err == nil || !strings.Contains(err.Error(), test.peer) {
+			t.Fatalf("missing %s = %d, %v", test.peer, code, err)
+		}
+		if err := os.WriteFile(filepath.Join(filepath.Dir(path), test.peer), []byte("not ELF"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, code, err := resolveTraceTLSTargets(traceTLSMode(path)); code != 2 || err == nil {
+			t.Fatalf("invalid peer = %d, %v", code, err)
+		}
+	}
+}
+
+func TestTraceTLSFinderAddsNSSControlsBeforeIO(t *testing.T) {
+	ssl, nspr := traceTLSHostNSS(t)
+	root := t.TempDir()
+	process := filepath.Join(root, "100")
+	mapFiles := filepath.Join(process, "map_files")
+	if err := os.MkdirAll(mapFiles, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	copyTraceTLSFile(t, nspr, filepath.Join(mapFiles, "7f00-7f01"))
+	copyTraceTLSFile(t, ssl, filepath.Join(mapFiles, "7f02-7f03"))
+	if err := os.WriteFile(filepath.Join(process, "maps"), []byte("7f00-7f01 r-xp 00000000 08:03 1 /container/libnspr4.so\n7f02-7f03 r-xp 00000000 08:03 2 /container/libssl3.so\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	previous := traceProcRoot
+	traceProcRoot = root
+	t.Cleanup(func() { traceProcRoot = previous })
+	finder := &traceTLSFinder{seen: map[[2]uint64]bool{}}
+	finder.scanProcess("100")
+	if len(finder.targets) != 2 || !slices.Contains(finder.targets[0].symbols, "SSL_ImportFD") || !slices.Contains(finder.targets[1].symbols, "PR_Read") {
+		t.Fatalf("NSS targets = %#v", finder.targets)
+	}
+	finder.scanProcess("100")
+	if len(finder.targets) != 2 {
+		t.Fatalf("duplicate NSS targets = %#v", finder.targets)
+	}
+}
+
 // uprobe는 파일 위치에 붙으므로, 읽은 위치의 byte가 그 함수의 첫 명령이어야 한다. section에서 가상 주소로 읽은 byte와
 // 파일에서 위치로 읽은 byte를 비교한다.
 func TestTraceTLSReadFileFindsFunctionOffsets(t *testing.T) {

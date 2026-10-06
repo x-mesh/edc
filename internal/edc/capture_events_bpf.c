@@ -2570,13 +2570,11 @@ int ssl_read_ex_exit(void *ctx) {
 
 // SSL_free는 SSL 객체의 끝이다. 평문 레코드는 모두 SSL 객체의 짝짓기 id를 쓰므로, 여기서 배운 socket과 평문 stream 상태를
 // 지우고 끝 레코드를 내서 사용자 공간이 응답을 놓친 요청과 조각 상태를 지우게 한다.
-SEC("uprobe/SSL_free")
-int ssl_free_entry(void *ctx) {
+static __always_inline int ssl_forget(void *ctx, __u64 ssl) {
 	if (!emit_tls_plaintext) {
 		return 0;
 	}
 	__u64 pid_tgid = bpf_get_current_pid_tgid();
-	__u64 ssl = ssl_argument(ctx, 0);
 	struct ssl_key sock_key = {.tgid = pid_tgid >> 32, .ssl = ssl};
 	bpf_map_delete_elem(&ssl_socks, &sock_key);
 	__u64 synthetic = ssl_synthetic_socket(pid_tgid, ssl);
@@ -2591,6 +2589,281 @@ int ssl_free_entry(void *ctx) {
 	event->skaddr = synthetic;
 	finish_event(event);
 	return 0;
+}
+
+SEC("uprobe/SSL_free")
+int ssl_free_entry(void *ctx) {
+	return ssl_forget(ctx, ssl_argument(ctx, 0));
+}
+
+#define NSS_SECURITY 1
+#define NSS_MODE_ON 1
+#define NSS_MODE_OFF 2
+#define NSS_COPY_CONFIG 1
+#define NSS_SET_OPTION 2
+#define NSS_SET_DEFAULT 3
+#define NSS_ACCEPT_CONFIG 4
+#define NSPR_MSG_PEEK 2
+
+struct nss_call_key {
+	__u64 thread;
+	__u64 stack;
+	__u64 cookie;
+};
+
+struct nss_control {
+	__u64 fd;
+	__u32 mode;
+	__u32 kind;
+};
+
+struct nss_io_key {
+	__u64 thread;
+	__u64 stack;
+};
+
+struct nss_io_call {
+	__u64 cookie;
+	struct ssl_pending pending;
+};
+
+struct {
+	__uint(type, BPF_MAP_TYPE_LRU_HASH);
+	__uint(max_entries, 16384);
+	__type(key, struct ssl_key);
+	__type(value, __u32);
+} nss_configs SEC(".maps");
+
+struct {
+	__uint(type, BPF_MAP_TYPE_LRU_HASH);
+	__uint(max_entries, 10240);
+	__type(key, __u32);
+	__type(value, __u32);
+} nss_defaults SEC(".maps");
+
+struct {
+	__uint(type, BPF_MAP_TYPE_LRU_HASH);
+	__uint(max_entries, 10240);
+	__type(key, struct nss_call_key);
+	__type(value, struct nss_control);
+} nss_control_calls SEC(".maps");
+
+struct {
+	__uint(type, BPF_MAP_TYPE_LRU_HASH);
+	__uint(max_entries, 10240);
+	__type(key, struct nss_io_key);
+	__type(value, struct nss_io_call);
+} nss_io_calls SEC(".maps");
+
+static __always_inline __u64 nss_stack(void *ctx, int returning) {
+	if (uprobe_arch == UPROBE_ARM64) {
+		return SSL_CONTEXT_WORD(ctx, 248);
+	}
+	__u64 stack = SSL_CONTEXT_WORD(ctx, 152);
+	return returning ? stack - 8 : stack;
+}
+
+static __always_inline void nss_lost(void) {
+	__u32 zero = 0;
+	__u64 *lost = bpf_map_lookup_elem(&lost_events, &zero);
+	if (lost) {
+		__sync_fetch_and_add(lost, 1);
+	}
+}
+
+static __always_inline __u32 nss_mode(__u64 thread, __u64 fd) {
+	struct ssl_key key = {.tgid = thread >> 32, .ssl = fd};
+	__u32 *mode = bpf_map_lookup_elem(&nss_configs, &key);
+	return mode ? *mode : 0;
+}
+
+static __always_inline int nss_control_enter(void *ctx, struct nss_control *control) {
+	struct nss_call_key key = {
+		.thread = bpf_get_current_pid_tgid(),
+		.stack = nss_stack(ctx, 0),
+		.cookie = bpf_get_attach_cookie(ctx),
+	};
+	if (bpf_map_update_elem(&nss_control_calls, &key, control, BPF_ANY)) {
+		nss_lost();
+	}
+	return 0;
+}
+
+SEC("uprobe/SSL_ImportFD")
+int nss_import_entry(void *ctx) {
+	if (!emit_tls_plaintext) {
+		return 0;
+	}
+	__u64 thread = bpf_get_current_pid_tgid();
+	__u64 model = ssl_argument(ctx, 0);
+	struct nss_control control = {.kind = NSS_COPY_CONFIG};
+	if (model) {
+		control.mode = nss_mode(thread, model);
+	} else {
+		__u32 pid = thread >> 32;
+		__u32 *mode = bpf_map_lookup_elem(&nss_defaults, &pid);
+		// NSS의 SSL_SECURITY 기본값은 on이다. 이후의 기본값 변경은 SSL_OptionSetDefault에서 기록한다.
+		control.mode = mode ? *mode : NSS_MODE_ON;
+	}
+	return nss_control_enter(ctx, &control);
+}
+
+SEC("uprobe/SSL_OptionSet")
+int nss_option_entry(void *ctx) {
+	if (!emit_tls_plaintext || (__u32)ssl_argument(ctx, 1) != NSS_SECURITY) {
+		return 0;
+	}
+	struct nss_control control = {
+		.fd = ssl_argument(ctx, 0),
+		.mode = ssl_argument(ctx, 2) ? NSS_MODE_ON : NSS_MODE_OFF,
+		.kind = NSS_SET_OPTION,
+	};
+	return nss_control_enter(ctx, &control);
+}
+
+SEC("uprobe/SSL_OptionSetDefault")
+int nss_default_entry(void *ctx) {
+	if (!emit_tls_plaintext || (__u32)ssl_argument(ctx, 0) != NSS_SECURITY) {
+		return 0;
+	}
+	struct nss_control control = {
+		.mode = ssl_argument(ctx, 1) ? NSS_MODE_ON : NSS_MODE_OFF,
+		.kind = NSS_SET_DEFAULT,
+	};
+	return nss_control_enter(ctx, &control);
+}
+
+SEC("uprobe/PR_Accept")
+int nss_accept_entry(void *ctx) {
+	if (!emit_tls_plaintext) {
+		return 0;
+	}
+	struct nss_control control = {
+		.mode = nss_mode(bpf_get_current_pid_tgid(), ssl_argument(ctx, 0)),
+		.kind = NSS_ACCEPT_CONFIG,
+	};
+	if (!control.mode) {
+		return 0;
+	}
+	return nss_control_enter(ctx, &control);
+}
+
+SEC("uretprobe/NSS_config")
+int nss_control_exit(void *ctx) {
+	if (!emit_tls_plaintext) {
+		return 0;
+	}
+	struct nss_call_key key = {
+		.thread = bpf_get_current_pid_tgid(),
+		.stack = nss_stack(ctx, 1),
+		.cookie = bpf_get_attach_cookie(ctx),
+	};
+	struct nss_control *stored = bpf_map_lookup_elem(&nss_control_calls, &key);
+	if (!stored) {
+		return 0;
+	}
+	struct nss_control control = *stored;
+	bpf_map_delete_elem(&nss_control_calls, &key);
+	if (control.kind == NSS_COPY_CONFIG || control.kind == NSS_ACCEPT_CONFIG) {
+		control.fd = uprobe_arch == UPROBE_ARM64 ? SSL_CONTEXT_WORD(ctx, 0) : SSL_CONTEXT_WORD(ctx, 80);
+		if (!control.fd) {
+			return 0;
+		}
+	} else if (ssl_return_value(ctx) != 0) {
+		return 0;
+	}
+	if (control.kind == NSS_SET_DEFAULT) {
+		__u32 pid = key.thread >> 32;
+		if (bpf_map_update_elem(&nss_defaults, &pid, &control.mode, BPF_ANY)) {
+			nss_lost();
+		}
+		return 0;
+	}
+	struct ssl_key config_key = {.tgid = key.thread >> 32, .ssl = control.fd};
+	if (!control.mode) {
+		bpf_map_delete_elem(&nss_configs, &config_key);
+	} else if (bpf_map_update_elem(&nss_configs, &config_key, &control.mode, BPF_ANY)) {
+		nss_lost();
+	}
+	return ssl_forget(ctx, control.fd);
+}
+
+static __always_inline int nss_io_enter(void *ctx, __u8 direction) {
+	if (!emit_tls_plaintext) {
+		return 0;
+	}
+	__u64 thread = bpf_get_current_pid_tgid();
+	if (nss_mode(thread, ssl_argument(ctx, 0)) != NSS_MODE_ON) {
+		return 0;
+	}
+	struct nss_io_key key = {.thread = thread, .stack = nss_stack(ctx, 0)};
+	// PR_Read는 PR_Recv로 tail call할 수 있다. 같은 반환 frame은 처음 본 호출에서 한 번만 낸다.
+	if (bpf_map_lookup_elem(&nss_io_calls, &key)) {
+		return 0;
+	}
+	ssl_enter(ctx, direction, 0);
+	struct ssl_pending *pending = bpf_map_lookup_elem(&ssl_pending, &thread);
+	if (!pending) {
+		nss_lost();
+		return 0;
+	}
+	struct nss_io_call call = {.cookie = bpf_get_attach_cookie(ctx), .pending = *pending};
+	if (bpf_map_update_elem(&nss_io_calls, &key, &call, BPF_ANY)) {
+		bpf_map_delete_elem(&ssl_pending, &thread);
+		nss_lost();
+	}
+	return 0;
+}
+
+SEC("uprobe/PR_Read")
+int nss_read_entry(void *ctx) {
+	return nss_io_enter(ctx, HTTP_RECEIVED);
+}
+
+SEC("uprobe/PR_Recv")
+int nss_recv_entry(void *ctx) {
+	if ((__u32)ssl_argument(ctx, 3) & NSPR_MSG_PEEK) {
+		return 0;
+	}
+	return nss_io_enter(ctx, HTTP_RECEIVED);
+}
+
+SEC("uprobe/PR_Write")
+int nss_write_entry(void *ctx) {
+	return nss_io_enter(ctx, HTTP_SENT);
+}
+
+SEC("uretprobe/NSPR_IO")
+int nss_io_exit(void *ctx) {
+	if (!emit_tls_plaintext) {
+		return 0;
+	}
+	struct nss_io_key key = {.thread = bpf_get_current_pid_tgid(), .stack = nss_stack(ctx, 1)};
+	struct nss_io_call *stored = bpf_map_lookup_elem(&nss_io_calls, &key);
+	if (!stored || stored->cookie != bpf_get_attach_cookie(ctx)) {
+		return 0;
+	}
+	struct ssl_pending pending = stored->pending;
+	bpf_map_delete_elem(&nss_io_calls, &key);
+	if (bpf_map_update_elem(&ssl_pending, &key.thread, &pending, BPF_ANY)) {
+		nss_lost();
+		return 0;
+	}
+	return ssl_leave(ctx, 0);
+}
+
+SEC("uprobe/PR_Close")
+int nss_close_entry(void *ctx) {
+	if (!emit_tls_plaintext) {
+		return 0;
+	}
+	__u64 fd = ssl_argument(ctx, 0);
+	struct ssl_key key = {.tgid = bpf_get_current_pid_tgid() >> 32, .ssl = fd};
+	if (!bpf_map_lookup_elem(&nss_configs, &key)) {
+		return 0;
+	}
+	bpf_map_delete_elem(&nss_configs, &key);
+	return ssl_forget(ctx, fd);
 }
 
 char LICENSE[] SEC("license") = "Dual BSD/GPL";

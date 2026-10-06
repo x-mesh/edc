@@ -175,7 +175,7 @@ command:
       side: "http と mysql は既定で両側、dns は client 側"
       payload: "trace http, socket: 先頭 4 KiB、=all は 1 MiB まで"
       show_secrets: "http --payload: header 値。mysql: SQL 値"
-      tls: "http: OpenSSL・GnuTLS 平文、=パスはそのファイル"
+      tls: "http: HTTPS 平文、=パス: プログラムまたはライブラリ"
       port: "http: この port だけ。mysql: サーバー port、3306"
       container: "この docker container だけ、名前か ID"
       reason: "trace drop: この理由だけ、カンマ区切り"

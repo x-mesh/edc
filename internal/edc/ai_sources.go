@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -35,17 +36,18 @@ const (
 var errAIAuthExpired = errors.New("auth expired · open Claude Code to refresh")
 
 // aiWindow는 한도 창 하나다. 두 도구를 같은 상자로 그리도록 이름, 사용률, 리셋 시각만 남긴다.
+// 리셋 시각을 받지 못하면 ResetsAt은 0이고, --json에 0001-01-01을 시각처럼 내보내지 않게 뺀다.
 type aiWindow struct {
 	Name     string    `json:"name"`
 	Used     float64   `json:"used_percent"`
-	ResetsAt time.Time `json:"resets_at"`
+	ResetsAt time.Time `json:"resets_at,omitzero"`
 }
 
 type aiProvider struct {
 	Name      string     `json:"name"`
 	Plan      string     `json:"plan,omitempty"`
 	Windows   []aiWindow `json:"windows"`
-	FetchedAt time.Time  `json:"fetched_at"`
+	FetchedAt time.Time  `json:"fetched_at,omitzero"`
 	Err       string     `json:"error,omitempty"`
 	// rateLimited는 429 응답이다. 수집기가 다음 조회를 늦춘다.
 	rateLimited bool
@@ -87,6 +89,10 @@ func aiCodexDir(home string) string {
 func readAIClaudeToken(dir string, now time.Time) (token, plan string, err error) {
 	data, err := os.ReadFile(filepath.Join(dir, ".credentials.json"))
 	if err != nil {
+		// macOS의 Claude Code는 token을 Keychain에 두고 이 파일을 만들지 않는다. 로그인하라는 안내는 해결책이 아니다.
+		if runtime.GOOS == "darwin" && errors.Is(err, fs.ErrNotExist) {
+			return "", "", errors.New("Claude token is in the macOS Keychain · not supported")
+		}
 		return "", "", errors.New("no Claude credentials · log in with Claude Code")
 	}
 	var credentials aiClaudeCredentials
@@ -790,10 +796,18 @@ func appendAIResets(path string, events []aiResetEvent) error {
 	return file.Close()
 }
 
-// saveAIClaudeState는 마지막으로 성공한 Claude 조회를 쓴다. 임시 파일을 바꿔 넣어 다른 edc ai가 반쯤 쓴 파일을 읽지 않는다.
-func saveAIClaudeState(path string, provider aiProvider) error {
-	provider.Err = ""
-	data, err := json.Marshal(provider)
+// aiClaudeState는 ai-claude.json의 내용이다. 마지막으로 성공한 조회와 함께 429 때문에 미룬 다음 조회 시각과 간격을 남긴다.
+// 거절된 호출도 제한을 늘리므로, 다시 실행해도 그 시각 전에는 부르지 않는다.
+type aiClaudeState struct {
+	aiProvider
+	NextTry  time.Time     `json:"next_try,omitzero"`
+	Interval time.Duration `json:"interval_ns,omitzero"`
+}
+
+// saveAIClaudeState는 Claude 조회 상태를 쓴다. 임시 파일을 바꿔 넣어 다른 edc ai가 반쯤 쓴 파일을 읽지 않는다.
+func saveAIClaudeState(path string, state aiClaudeState) error {
+	state.Name, state.Err = "claude", ""
+	data, err := json.Marshal(state)
 	if err != nil {
 		return err
 	}
@@ -818,19 +832,20 @@ func saveAIClaudeState(path string, provider aiProvider) error {
 
 // loadAIClaudeState는 파일이 없거나 읽을 수 없으면 false를 돌려준다. 저장한 값은 다시 받을 수 있는 cache라서
 // 그때는 처음 실행처럼 바로 조회한다.
-func loadAIClaudeState(path string) (aiProvider, bool) {
+// 한 번도 성공하지 못했어도 429로 미룬 시각은 남는다. 이때 FetchedAt은 0이다.
+func loadAIClaudeState(path string) (aiClaudeState, bool) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return aiProvider{}, false
+		return aiClaudeState{}, false
 	}
-	var provider aiProvider
-	if json.Unmarshal(data, &provider) != nil || provider.Name != "claude" || provider.FetchedAt.IsZero() {
-		return aiProvider{}, false
+	var state aiClaudeState
+	if json.Unmarshal(data, &state) != nil || state.Name != "claude" || (state.FetchedAt.IsZero() && state.NextTry.IsZero()) {
+		return aiClaudeState{}, false
 	}
-	if provider.Windows == nil {
-		provider.Windows = []aiWindow{}
+	if state.Windows == nil {
+		state.Windows = []aiWindow{}
 	}
-	return provider, true
+	return state, true
 }
 
 // loadAILastResets는 도구마다 가장 최근 리셋을 읽는다. 상자는 edc ai를 다시 열어도 마지막 리셋을 보인다.

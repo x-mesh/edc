@@ -161,6 +161,11 @@ func (model aiModel) bodyLines() int {
 	return max(1, model.height-5-len(aiTotalWindows)-len(model.boxLines(model.displayWidth())))
 }
 
+// minHeight는 표 본문이 한 줄 남는 높이다. 한도 상자의 줄 수는 받은 한도 창 수에 따라 달라진다.
+func (model aiModel) minHeight() int {
+	return 6 + len(aiTotalWindows) + len(model.boxLines(max(model.displayWidth(), 40)))
+}
+
 func (model aiModel) displayWidth() int {
 	if model.width <= 0 {
 		return aiBoxWidth
@@ -170,8 +175,8 @@ func (model aiModel) displayWidth() int {
 
 func (model aiModel) View() tea.View {
 	width := model.displayWidth()
-	if model.width > 0 && (model.width < 40 || model.height < 12) {
-		view := tea.NewView(ansi.Truncate("terminal too small · q quit", width, "") + "\n" + ansi.Truncate("resize to at least 40×12", width, ""))
+	if minHeight := model.minHeight(); model.width > 0 && (model.width < 40 || model.height < minHeight) {
+		view := tea.NewView(ansi.Truncate("terminal too small · q quit", width, "") + "\n" + ansi.Truncate(fmt.Sprintf("resize to at least 40×%d", minHeight), width, ""))
 		view.AltScreen = true
 		return view
 	}

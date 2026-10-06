@@ -111,12 +111,18 @@ func newAICollector(claudeDir, codexDir, stateDir string, now time.Time) *aiColl
 		lastResets:  loadAILastResets(resetLog),
 		shown:       map[string]aiProvider{},
 	}
-	if claude, ok := loadAIClaudeState(collector.claudeState); ok {
-		// 저장한 값을 앞선 조회로 삼는다. 꺼져 있는 동안 지난 리셋도 다음 조회에서 찾는다.
-		collector.last["claude"], collector.shown["claude"] = claude, claude
-		// 직전 실행이 조회한 지 최소 간격이 지나지 않았으면 그때까지 부르지 않는다. 시각이 미래면 믿지 않는다.
-		if claude.FetchedAt.Before(now) {
-			collector.claudeNext = claude.FetchedAt.Add(aiClaudeMinInterval)
+	if state, ok := loadAIClaudeState(collector.claudeState); ok {
+		if claude := state.aiProvider; !claude.FetchedAt.IsZero() {
+			// 저장한 값을 앞선 조회로 삼는다. 꺼져 있는 동안 지난 리셋도 다음 조회에서 찾는다.
+			collector.last["claude"], collector.shown["claude"] = claude, claude
+			// 직전 실행이 조회한 지 최소 간격이 지나지 않았으면 그때까지 부르지 않는다. 시각이 미래면 믿지 않는다.
+			if claude.FetchedAt.Before(now) {
+				collector.claudeNext = claude.FetchedAt.Add(aiClaudeMinInterval)
+			}
+		}
+		// 직전 실행이 429로 미룬 시각이 더 늦으면 그 시각과 늘린 간격을 이어 쓴다. 백오프 상한보다 먼 시각은 믿지 않는다.
+		if state.NextTry.After(collector.claudeNext) && state.NextTry.Before(now.Add(aiMaxBackoff)) {
+			collector.claudeNext, collector.claudeInterval = state.NextTry, min(state.Interval, aiMaxBackoff)
 		}
 	}
 	return collector
@@ -142,12 +148,15 @@ func (collector *aiCollector) poll(ctx context.Context, poll time.Duration) aiPo
 		codex = collector.codex.fetch(now)
 	}()
 	var fetched []aiProvider
+	var stateErr error
 	// poll 간격과 조회 시간이 겹쳐 예정 시각보다 조금 일찍 깨도 이번 차례로 본다.
 	if !now.Add(time.Second).Before(collector.claudeNext) {
 		claude := fetchAIClaude(ctx, collector.http, collector.claudeDir, now)
 		collector.scheduleClaude(claude.rateLimited, now, poll)
 		if claude.rateLimited {
 			claude.Err += " · next try " + collector.claudeNext.Local().Format("15:04:05")
+			// 다시 실행해도 미룬 시각 전에는 부르지 않도록 남긴다. 마지막으로 성공한 값은 그대로 둔다.
+			stateErr = saveAIClaudeState(collector.claudeState, aiClaudeState{aiProvider: collector.last["claude"], NextTry: collector.claudeNext, Interval: collector.claudeInterval})
 		}
 		fetched = append(fetched, claude)
 	}
@@ -155,7 +164,6 @@ func (collector *aiCollector) poll(ctx context.Context, poll time.Duration) aiPo
 	fetched = append(fetched, codex)
 
 	var events []aiResetEvent
-	var stateErr error
 	for _, provider := range fetched {
 		previous, known := collector.last[provider.Name]
 		if provider.Err == "" {
@@ -164,7 +172,7 @@ func (collector *aiCollector) poll(ctx context.Context, poll time.Duration) aiPo
 			}
 			collector.last[provider.Name], collector.shown[provider.Name] = provider, provider
 			if provider.Name == "claude" {
-				stateErr = saveAIClaudeState(collector.claudeState, provider)
+				stateErr = saveAIClaudeState(collector.claudeState, aiClaudeState{aiProvider: provider})
 			}
 			continue
 		}

@@ -1,9 +1,15 @@
 package edc
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -341,7 +347,7 @@ func TestAIClaudeStateKeepsTheValuesWithoutTheError(t *testing.T) {
 	fetched := time.Date(2026, 10, 6, 2, 17, 40, 0, time.UTC)
 	saved := aiProvider{Name: "claude", Plan: "max", FetchedAt: fetched, Err: "rate limited",
 		Windows: []aiWindow{{Name: "5h", Used: 23, ResetsAt: time.Date(2026, 10, 6, 3, 0, 0, 0, time.UTC)}}}
-	if err := saveAIClaudeState(path, saved); err != nil {
+	if err := saveAIClaudeState(path, aiClaudeState{aiProvider: saved}); err != nil {
 		t.Fatal(err)
 	}
 	loaded, ok := loadAIClaudeState(path)
@@ -375,7 +381,7 @@ func TestAICollectorStartsFromTheSavedClaudeValues(t *testing.T) {
 	} {
 		stateDir := t.TempDir()
 		saved := aiProvider{Name: "claude", FetchedAt: test.fetched, Windows: []aiWindow{{Name: "7d", Used: 61}}}
-		if err := saveAIClaudeState(filepath.Join(stateDir, aiClaudeStateName), saved); err != nil {
+		if err := saveAIClaudeState(filepath.Join(stateDir, aiClaudeStateName), aiClaudeState{aiProvider: saved}); err != nil {
 			t.Fatal(err)
 		}
 		collector := newAICollector(t.TempDir(), t.TempDir(), stateDir, now)
@@ -427,5 +433,107 @@ func TestAICompactKeepsAboutThreeDigits(t *testing.T) {
 		if got := aiCompact(value); got != want {
 			t.Errorf("aiCompact(%d) = %q, want %q", value, got, want)
 		}
+	}
+}
+
+// aiStatusTransport는 Claude 사용량 API 대신 정해 둔 상태 코드만 돌려준다.
+type aiStatusTransport int
+
+func (status aiStatusTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	return &http.Response{StatusCode: int(status), Header: http.Header{}, Body: io.NopCloser(strings.NewReader("{}")), Request: request}, nil
+}
+
+// 429로 늘린 간격은 다시 실행해도 이어진다. 한 번도 성공하지 못했으면 상자에 보일 값은 없다.
+func TestAIPollKeepsTheClaudeBackoffAcrossRuns(t *testing.T) {
+	// codex를 찾지 못하게 해 시험이 실제 app-server를 띄우지 않는다.
+	t.Setenv("PATH", t.TempDir())
+	claudeDir, stateDir := t.TempDir(), t.TempDir()
+	writeAIFixture(t, filepath.Join(claudeDir, ".credentials.json"),
+		`{"claudeAiOauth":{"accessToken":"test-token","expiresAt":`+strconv.FormatInt(time.Now().Add(time.Hour).UnixMilli(), 10)+`,"subscriptionType":"max"}}`)
+	collector := newAICollector(claudeDir, t.TempDir(), stateDir, time.Now())
+	collector.http = &http.Client{Transport: aiStatusTransport(http.StatusTooManyRequests)}
+	collector.poll(context.Background(), time.Minute)
+	if collector.claudeInterval != 2*aiClaudeMinInterval {
+		t.Fatalf("after 429: interval %s", collector.claudeInterval)
+	}
+	restarted := newAICollector(claudeDir, t.TempDir(), stateDir, time.Now())
+	if !restarted.claudeNext.Equal(collector.claudeNext) || restarted.claudeInterval != collector.claudeInterval {
+		t.Errorf("restart: next %s interval %s, want %s and %s", restarted.claudeNext, restarted.claudeInterval, collector.claudeNext, collector.claudeInterval)
+	}
+	if shown, ok := restarted.shown["claude"]; ok {
+		t.Errorf("no success yet, but the box shows %+v", shown)
+	}
+}
+
+func TestAICollectorResumesTheSavedClaudeBackoff(t *testing.T) {
+	now := time.Date(2026, 10, 6, 2, 20, 0, 0, time.UTC)
+	for _, test := range []struct {
+		name         string
+		nextTry      time.Time
+		wantNext     time.Time
+		wantInterval time.Duration
+	}{
+		{"later than the minimum interval", now.Add(8 * time.Minute), now.Add(8 * time.Minute), 10 * time.Minute},
+		{"earlier than the minimum interval", now.Add(time.Minute), now.Add(3 * time.Minute), 0},
+		{"beyond the backoff cap", now.Add(time.Hour), now.Add(3 * time.Minute), 0},
+	} {
+		stateDir := t.TempDir()
+		saved := aiClaudeState{aiProvider: aiProvider{FetchedAt: now.Add(-2 * time.Minute), Windows: []aiWindow{{Name: "7d", Used: 61}}}, NextTry: test.nextTry, Interval: 10 * time.Minute}
+		if err := saveAIClaudeState(filepath.Join(stateDir, aiClaudeStateName), saved); err != nil {
+			t.Fatal(err)
+		}
+		collector := newAICollector(t.TempDir(), t.TempDir(), stateDir, now)
+		if !collector.claudeNext.Equal(test.wantNext) || collector.claudeInterval != test.wantInterval {
+			t.Errorf("%s: next %s interval %s, want %s and %s", test.name, collector.claudeNext, collector.claudeInterval, test.wantNext, test.wantInterval)
+		}
+		if shown := collector.shown["claude"]; len(shown.Windows) != 1 {
+			t.Errorf("%s: the saved values are not shown: %+v", test.name, shown)
+		}
+	}
+}
+
+func TestAIJSONOmitsUnknownTimes(t *testing.T) {
+	data, err := json.Marshal(aiProvider{Name: "codex", Windows: []aiWindow{{Name: "5h", Used: 3}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if text := string(data); strings.Contains(text, "resets_at") || strings.Contains(text, "fetched_at") || strings.Contains(text, "0001-01-01") {
+		t.Errorf("unknown times leaked into JSON: %s", text)
+	}
+	at := time.Date(2026, 10, 6, 3, 0, 0, 0, time.UTC)
+	data, err = json.Marshal(aiProvider{Name: "codex", FetchedAt: at, Windows: []aiWindow{{Name: "5h", ResetsAt: at}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if text := string(data); !strings.Contains(text, `"resets_at":"2026-10-06T03:00:00Z"`) || !strings.Contains(text, `"fetched_at":"2026-10-06T03:00:00Z"`) {
+		t.Errorf("known times are missing: %s", text)
+	}
+}
+
+// macOS의 Claude Code는 token을 Keychain에 둔다. 그때 로그인하라는 안내는 틀린 해결책이다.
+func TestReadAIClaudeTokenNamesTheMacOSKeychain(t *testing.T) {
+	_, _, err := readAIClaudeToken(t.TempDir(), time.Now())
+	want := "log in with Claude Code"
+	if runtime.GOOS == "darwin" {
+		want = "macOS Keychain"
+	}
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("missing credentials on %s: %v, want %q", runtime.GOOS, err, want)
+	}
+}
+
+func TestAIDashboardAsksForTheHeightItNeeds(t *testing.T) {
+	model := aiDashboardFixture(time.Date(2026, 10, 6, 1, 0, 30, 0, time.Local))
+	minHeight := model.minHeight()
+	if minHeight <= 12 {
+		t.Fatalf("the fixture needs %d rows; the old 12-row check would pass", minHeight)
+	}
+	model.height = minHeight - 1
+	if text := model.View().Content; !strings.Contains(text, "terminal too small") || !strings.Contains(text, fmt.Sprintf("40×%d", minHeight)) {
+		t.Errorf("%d rows: %q", model.height, text)
+	}
+	model.height = minHeight
+	if lines := strings.Split(model.View().Content, "\n"); len(lines) > model.height || strings.Contains(lines[0], "terminal too small") {
+		t.Errorf("%d rows: %d lines, first %q", model.height, len(lines), lines[0])
 	}
 }

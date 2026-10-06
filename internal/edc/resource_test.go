@@ -74,11 +74,17 @@ func TestCalculateRateIncludesCoreAndPressure(t *testing.T) {
 
 func TestParsePressureAvg10(t *testing.T) {
 	input := "some avg10=1.25 avg60=0.20 avg300=0.10 total=123\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n"
-	if value, ok := parsePressureAvg10(input); !ok || value != 1.25 {
+	if value, ok := parsePressureAvg10(input, "some"); !ok || value != 1.25 {
 		t.Fatalf("pressure = %v, %v", value, ok)
 	}
-	if _, ok := parsePressureAvg10("full avg10=1.0"); ok {
+	if value, ok := parsePressureAvg10("some avg10=1.25\nfull avg10=0.75 avg60=0.10", "full"); !ok || value != 0.75 {
+		t.Fatalf("full pressure = %v, %v", value, ok)
+	}
+	if _, ok := parsePressureAvg10("full avg10=1.0", "some"); ok {
 		t.Fatal("missing some row must not be valid")
+	}
+	if _, ok := parsePressureAvg10("some avg10=1.0", "full"); ok {
+		t.Fatal("missing full row must not be valid")
 	}
 }
 
@@ -294,15 +300,37 @@ func TestCalculateRateSwapOut(t *testing.T) {
 	}
 }
 
+func TestCalculateRateStealBlockedAndQueue(t *testing.T) {
+	start := time.Unix(0, 0)
+	previous := resourceSnapshot{TakenAt: start, CPUTotal: 1000, CPUSteal: 100, CPUStealValid: true, DiskQueueMS: 1000, DiskHealthValid: true, DiskBusyValid: true}
+	current := resourceSnapshot{TakenAt: start.Add(2 * time.Second), CPUTotal: 1200, CPUSteal: 130, CPUStealValid: true, ProcsBlocked: 4, ProcsBlockedValid: true, DiskQueueMS: 4000, DiskHealthValid: true, DiskBusyValid: true}
+	rate := calculateRate(previous, current)
+	if !rate.CPUStealValid || rate.CPUSteal != 15 {
+		t.Fatalf("steal = %v %v", rate.CPUSteal, rate.CPUStealValid)
+	}
+	if !rate.ProcsBlockedValid || rate.ProcsBlocked != 4 {
+		t.Fatalf("blocked = %v %v", rate.ProcsBlocked, rate.ProcsBlockedValid)
+	}
+	// 2초 동안 가중 I/O 시간이 3000ms 늘었으면 평균 1.5개가 진행 중이었다.
+	if rate.DiskQueue != 1.5 {
+		t.Fatalf("queue = %v", rate.DiskQueue)
+	}
+	previous.CPUStealValid, current.DiskMissing = false, true
+	rate = calculateRate(previous, current)
+	if rate.CPUStealValid || rate.CPUSteal != 0 || rate.DiskQueue != 0 {
+		t.Fatalf("missing reads: steal %v %v, queue %v", rate.CPUSteal, rate.CPUStealValid, rate.DiskQueue)
+	}
+}
+
 func TestTopSampleJSON(t *testing.T) {
 	at := time.Date(2026, 1, 1, 11, 36, 44, 0, time.FixedZone("KST", 9*3600))
-	sample := newTopSample(hostDetails{Hostname: "host", Cores: 8}, at, resourceRate{NetIn: 1234.567, NetDrops: 2.2, NetHealthValid: true, DiskAwait: 15.555, DiskHealthValid: true, PSIIO: 3.3, PSIValid: true, CPUUser: 12.3456, MemoryPercent: 11.8, Load1: 0.5, SwapOut: 20480.456})
+	sample := newTopSample(hostDetails{Hostname: "host", Cores: 8}, at, resourceRate{NetIn: 1234.567, NetDrops: 2.2, NetHealthValid: true, DiskAwait: 15.555, DiskHealthValid: true, PSIIO: 3.3, PSIMemoryFull: 1.25, PSIIOFull: 0.5, PSIValid: true, CPUUser: 12.3456, MemoryPercent: 11.8, Load1: 0.5, SwapOut: 20480.456})
 	data, err := json.Marshal(sample)
 	if err != nil {
 		t.Fatal(err)
 	}
 	text := string(data)
-	for _, expected := range []string{`"time":"2026-01-01T02:36:44Z"`, `"hostname":"host"`, `"cores":8`, `"net_in_bytes_per_s":1234.57`, `"network_drops_per_s":2.2`, `"network_health_supported":true`, `"disk_await_ms":15.56`, `"disk_health_supported":true`, `"psi_io_some_avg10_pct":3.3`, `"psi_supported":true`, `"cpu_user_pct":12.35`, `"memory_pct":11.8`, `"load1":0.5`, `"swap_out_bytes_per_s":20480.46`, `"disk_busy_supported":false`} {
+	for _, expected := range []string{`"time":"2026-01-01T02:36:44Z"`, `"hostname":"host"`, `"cores":8`, `"net_in_bytes_per_s":1234.57`, `"network_drops_per_s":2.2`, `"network_health_supported":true`, `"disk_await_ms":15.56`, `"disk_health_supported":true`, `"psi_io_some_avg10_pct":3.3`, `"psi_memory_full_avg10_pct":1.25`, `"psi_io_full_avg10_pct":0.5`, `"psi_supported":true`, `"cpu_user_pct":12.35`, `"memory_pct":11.8`, `"load1":0.5`, `"swap_out_bytes_per_s":20480.46`, `"disk_busy_supported":false`} {
 		if !strings.Contains(text, expected) {
 			t.Fatalf("sample %s does not contain %s", text, expected)
 		}

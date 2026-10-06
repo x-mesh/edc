@@ -73,6 +73,7 @@ command:
       no_header: "host と列見出しを省く"
       process: "一致する PID か command 名のみ、カンマ区切り"
       full: "コマンドライン全体で照合して表示する"
+      split: "cpu, mem, disk, net, psi を 1 画面の枠で表示、省略時は全部"
       detail: "CPU 待ちと I/O 遅延を追加 (eBPF, root)、Linux"
       ebpf: "--detail と同じ"
       write: "SQLite に追記、path 省略時は既定 DB"

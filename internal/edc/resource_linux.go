@@ -127,8 +127,15 @@ func collectResourceSnapshot() (resourceSnapshot, error) {
 	snapshot.CPUSystem = values[2] + values[5] + values[6]
 	snapshot.CPUIdle = values[3]
 	snapshot.CPUIOWait = values[4]
+	if len(values) > 7 {
+		snapshot.CPUSteal, snapshot.CPUStealValid = values[7], true
+	}
 	for _, line := range lines[1:] {
 		parts := strings.Fields(line)
+		if len(parts) == 2 && parts[0] == "procs_blocked" {
+			snapshot.ProcsBlocked, snapshot.ProcsBlockedValid = parseUint(parts[1]), true
+			continue
+		}
 		if len(parts) < 5 || !strings.HasPrefix(parts[0], "cpu") || len(parts[0]) == 3 {
 			continue
 		}
@@ -139,11 +146,14 @@ func collectResourceSnapshot() (resourceSnapshot, error) {
 		core.Idle = parseUint(parts[4])
 		snapshot.Cores = append(snapshot.Cores, core)
 	}
-	psiCPU, okCPU := readLinuxPressure("/proc/pressure/cpu")
-	psiMemory, okMemory := readLinuxPressure("/proc/pressure/memory")
-	psiIO, okIO := readLinuxPressure("/proc/pressure/io")
+	// memory와 io의 full 행은 PSI가 처음 들어간 4.20부터 some과 함께 있다. cpu의 full은 5.13부터 나오지만
+	// system 수준에서는 kernel이 항상 0을 쓰므로 읽지 않는다.
+	psiCPU, okCPU := readLinuxPressure("/proc/pressure/cpu", "some")
+	psiMemory, okMemory := readLinuxPressure("/proc/pressure/memory", "some", "full")
+	psiIO, okIO := readLinuxPressure("/proc/pressure/io", "some", "full")
 	if okCPU && okMemory && okIO {
-		snapshot.PSICPU, snapshot.PSIMemory, snapshot.PSIIO, snapshot.PSIValid = psiCPU, psiMemory, psiIO, true
+		snapshot.PSICPU, snapshot.PSIMemory, snapshot.PSIIO, snapshot.PSIValid = psiCPU[0], psiMemory[0], psiIO[0], true
+		snapshot.PSIMemoryFull, snapshot.PSIIOFull = psiMemory[1], psiIO[1]
 	}
 	if loads, err := os.ReadFile("/proc/loadavg"); err == nil {
 		fmt.Sscan(string(loads), &snapshot.Load1)
@@ -186,6 +196,7 @@ func collectResourceSnapshot() (resourceSnapshot, error) {
 			snapshot.DiskOps += parseUint(parts[3]) + parseUint(parts[7])
 			snapshot.DiskWaitMS += parseUint(parts[6]) + parseUint(parts[10])
 			snapshot.DiskBusyMS += parseUint(parts[12])
+			snapshot.DiskQueueMS += parseUint(parts[13])
 			snapshot.DiskHealthValid, snapshot.DiskBusyValid = true, true
 		}
 	} else {
@@ -194,12 +205,20 @@ func collectResourceSnapshot() (resourceSnapshot, error) {
 	return snapshot, nil
 }
 
-func readLinuxPressure(path string) (float64, bool) {
+func readLinuxPressure(path string, kinds ...string) ([]float64, bool) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return 0, false
+		return nil, false
 	}
-	return parsePressureAvg10(string(data))
+	values := make([]float64, len(kinds))
+	for index, kind := range kinds {
+		value, ok := parsePressureAvg10(string(data), kind)
+		if !ok {
+			return nil, false
+		}
+		values[index] = value
+	}
+	return values, true
 }
 
 func collectHostDetails() (hostDetails, error) {
@@ -312,7 +331,7 @@ func collectInfoCapabilities() []infoCapability {
 			psi.State, psi.Detail = "unavailable", err.Error()
 			break
 		}
-		if _, valid := parsePressureAvg10(string(data)); !valid {
+		if _, valid := parsePressureAvg10(string(data), "some"); !valid {
 			psi.State, psi.Detail = "unknown", "invalid PSI counters in "+path
 			break
 		}

@@ -134,6 +134,7 @@ var commandDocs = []commandDoc{
 			{"--no-header", "command.top.option.no_header"},
 			{"--process <filter>", "command.top.option.process"},
 			{"--full", "command.top.option.full"},
+			{"--split [list]", "command.top.option.split"},
 			{"-d, --detail", "command.top.option.detail"},
 			{"--ebpf", "command.top.option.ebpf"},
 			{"--json <path|->", "command.top.option.json"},

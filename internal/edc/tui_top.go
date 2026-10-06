@@ -14,7 +14,7 @@ import (
 )
 
 // runTopDashboard는 alt screen 대시보드를 실행한다. 종료하면 화면이 원래대로 돌아온다.
-func runTopDashboard(interval time.Duration, version string, filter topProcessFilter, recorder *topRecorder) int {
+func runTopDashboard(interval time.Duration, version string, filter topProcessFilter, recorder *topRecorder, split []topView) int {
 	details, err := collectHostDetails()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, T("observe.top.error.host", err))
@@ -36,7 +36,7 @@ func runTopDashboard(interval time.Duration, version string, filter topProcessFi
 	processSampler.mutex.Lock()
 	model.bpfEnabled = processSampler.observe != nil
 	processSampler.mutex.Unlock()
-	model = model.withProcessFilter(filter)
+	model = model.withProcessFilter(filter).withSplit(split)
 	if recorder != nil {
 		model.record = recorder.Record
 		model.recordFailure = func() tea.Msg {
@@ -97,6 +97,11 @@ const (
 	topPeakWindow = time.Minute
 	// topSelectionColumn은 행에서 "15:04:05" 바로 뒤 공백 자리다. 선택 표시가 시각을 가리지 않는다.
 	topSelectionColumn = 8
+	// topFooterProcessWidth는 아래 영역 오른쪽 process 후보 칸의 폭이다. 이름 칸이 쌓을 때와 같은 28칸이 된다.
+	topFooterProcessWidth = 63
+	topFooterGap          = 2
+	// topFooterDockWidth부터 process 후보를 오른쪽에 둔다. 왼쪽 패널은 80열에 맞춰 줄을 나눠 두었으므로 왼쪽에 80열이 남아야 한다.
+	topFooterDockWidth = topTableWidth + topFooterGap + topFooterProcessWidth
 	// topTallHeight부터 process 패널이 후보를 topProcessLimit개까지 보인다. 두 줄을 더 써도 history가 28행 남는다.
 	topTallHeight = 40
 	// topProcessNameWidth는 상세 패널의 process 이름 폭이다. 세 개가 80열 한 줄에 들어간다.
@@ -162,6 +167,11 @@ type topModel struct {
 	record          func(historyTopSample) error
 	recordFailure   tea.Cmd
 	recordingErr    error
+	// split은 박스로 보일 보기 목록이고, 비어 있으면 전체다. boxed는 박스 안에서 그리는 표임을 나타낸다.
+	split []topView
+	boxed bool
+	// compact는 박스가 optional 칸을 빼고 그리는지다.
+	compact bool
 }
 
 type topRecordingErrorMsg struct{ err error }
@@ -318,6 +328,8 @@ func (model topModel) updateKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		model.view = topViewDisk
 	case "n":
 		model.view = topViewNetwork
+	case "v":
+		model = model.enterSplit()
 	case "s":
 		if model.details.System == "darwin" {
 			model.notice = "pressure metrics are Linux-only · ? help"
@@ -383,7 +395,7 @@ func (model topModel) updateKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			model.selected, model.follow = len(model.rows)-1, true
 		}
 	}
-	if key.String() == "1" || key.String() == "c" || key.String() == "m" || key.String() == "d" || key.String() == "n" || key.String() == "s" {
+	if key.String() == "1" || key.String() == "c" || key.String() == "m" || key.String() == "d" || key.String() == "n" || key.String() == "s" || key.String() == "v" {
 		model.processSelected = 0
 	}
 	return model, nil
@@ -519,8 +531,11 @@ func (model topModel) selectedRow() (topDashboardRow, bool) {
 
 // bodyLines는 표 본문에 쓸 수 있는 줄 수다. View와 PgUp·PgDn이 같은 값을 써서 한 화면씩 넘긴다.
 func (model topModel) bodyLines() int {
+	if model.view == topViewSplit {
+		return model.splitBodyLines()
+	}
 	headers := len(model.tableHeader())
-	return max(1, model.height-1-len(model.processBanner())-headers-len(model.panelLines())-len(model.statusLines()))
+	return max(1, model.height-1-len(model.processBanner())-headers-len(model.footerLines()))
 }
 
 func (model topModel) View() tea.View {
@@ -540,8 +555,11 @@ func (model topModel) View() tea.View {
 		view.AltScreen = true
 		return view
 	}
+	if model.view == topViewSplit {
+		return model.splitView()
+	}
 	lines = append(lines, model.tableHeader()...)
-	panel, status := model.panelLines(), model.statusLines()
+	footer := model.footerLines()
 	bodyLines := model.bodyLines()
 	start := max(0, len(model.rows)-bodyLines)
 	if !model.follow && len(model.rows) > bodyLines {
@@ -557,8 +575,7 @@ func (model topModel) View() tea.View {
 		}
 		lines = append(lines, line)
 	}
-	lines = append(lines, panel...)
-	lines = append(lines, status...)
+	lines = append(model.padToFooter(lines, footer), footer...)
 	for index := range lines {
 		lines[index] = ansi.Truncate(lines[index], model.displayWidth(), "")
 	}
@@ -570,6 +587,21 @@ func (model topModel) View() tea.View {
 // panelLines는 detail이나 peaks 패널이다. renderer는 넘치는 줄을 접지 않고 자르므로
 // 패널을 여러 줄로 나눠 80열에서도 끝까지 보이게 한다.
 func (model topModel) panelLines() []string {
+	lines := append(model.infoLines(), model.candidateLines()...)
+	if model.height > 0 {
+		available := max(0, model.height-2-len(model.processBanner())-len(model.tableHeader())-len(model.statusLines()))
+		if len(lines) > available {
+			lines = lines[:available]
+		}
+	}
+	for index, line := range lines {
+		lines[index] = topDashboardFitWidth(line, model.displayWidth())
+	}
+	return lines
+}
+
+// infoLines는 process 후보 위에 보이는 detail, peaks, network 패널과 수집 실패 줄이다.
+func (model topModel) infoLines() []string {
 	var lines []string
 	switch {
 	case model.detail:
@@ -584,15 +616,47 @@ func (model topModel) panelLines() []string {
 	if model.lastErr != nil {
 		lines = append(lines, fmt.Sprintf("sample failed · last success %s · %s", model.previous.TakenAt.Format("15:04:05"), model.lastErr))
 	}
-	lines = append(lines, model.candidateLines()...)
-	if model.height > 0 {
-		available := max(0, model.height-2-len(model.processBanner())-len(model.tableHeader())-len(model.statusLines()))
-		if len(lines) > available {
-			lines = lines[:available]
-		}
+	return lines
+}
+
+// footerLines는 표 아래 영역이다. 넓은 화면에서는 process 후보를 오른쪽에, 패널과 안내를 왼쪽에 둬 줄을 아낀다.
+// 필터가 있으면 process 줄에 I/O와 limit 줄이 붙어 길어지므로 위아래로 쌓는다.
+func (model topModel) footerLines() []string {
+	if model.displayWidth() < topFooterDockWidth || model.processFilter.active() {
+		return append(model.panelLines(), model.statusLines()...)
 	}
-	for index, line := range lines {
-		lines[index] = topDashboardFitWidth(line, model.displayWidth())
+	leftWidth := model.displayWidth() - topFooterGap - topFooterProcessWidth
+	left, right := model, model
+	left.width, right.width = leftWidth, topFooterProcessWidth
+	info, status, candidates := left.infoLines(), left.statusLines(), right.candidateLines()
+	if model.height > 0 {
+		available := max(len(status), model.height-2-len(model.processBanner())-len(model.tableHeader()))
+		info = info[:min(len(info), available-len(status))]
+		candidates = candidates[:min(len(candidates), available)]
+	}
+	rows := max(len(info)+len(status), len(candidates))
+	lines := make([]string, rows)
+	for index := range lines {
+		var leftLine, rightLine string
+		if index < len(info) {
+			leftLine = info[index]
+		}
+		// 안내는 왼쪽 칸의 맨 아래에 둬 화면 마지막 줄에 머문다.
+		if offset := index - (rows - len(status)); offset >= 0 {
+			leftLine = status[offset]
+		}
+		if index < len(candidates) {
+			rightLine = candidates[index]
+		}
+		lines[index] = topDashboardFitWidth(leftLine, leftWidth) + strings.Repeat(" ", topFooterGap) + topDashboardFitWidth(rightLine, topFooterProcessWidth)
+	}
+	return lines
+}
+
+// padToFooter는 아래 영역이 화면 맨 아래에 오도록 빈 줄을 채운다. 시작 직후 행이 적어도 안내 줄이 움직이지 않는다.
+func (model topModel) padToFooter(lines, footer []string) []string {
+	for model.height > 0 && len(lines)+len(footer) < model.height {
+		lines = append(lines, "")
 	}
 	return lines
 }
@@ -790,6 +854,10 @@ func (model topModel) statusLines() []string {
 			actions = "↑↓ pick · Enter · Esc"
 		}
 	}
+	// 두 줄이 한 폭에 들어가면 합쳐 표가 한 줄 더 보이게 한다. 양쪽에 있는 ? help는 한 번만 둔다.
+	if joined := strings.TrimSuffix(views, " ? help") + "  ·  " + actions; ansi.StringWidth(joined) <= model.displayWidth() {
+		return []string{liveMuted(topDashboardFitWidth(joined, model.displayWidth()), model.limits.color)}
+	}
 	// 폭을 먼저 맞춘다. escape가 rune 수에 들어가면 잘리는 위치가 어긋난다.
 	return []string{liveMuted(topDashboardFitWidth(views, model.displayWidth()), model.limits.color), liveMuted(topDashboardFitWidth(actions, model.displayWidth()), model.limits.color)}
 }
@@ -891,7 +959,7 @@ func (model topModel) candidateLines() []string {
 
 func (model topModel) helpLines() []string {
 	lines := []string{
-		"Views: 1 all · c CPU · m memory · d disk · n network · s Linux pressure",
+		"Views: 1 all · c CPU · m memory · d disk · n network · s Linux pressure · v boxes",
 		"History: ↑↓ or PgUp/PgDn · End live · p pause · +/- interval",
 		"Processes: Tab select · ↑↓ choose · Enter focus PID · Tab/Esc back",
 		"Signals: f opens its view, then selects candidates. A candidate is not a confirmed cause.",
@@ -918,18 +986,33 @@ func (model topModel) tableColumns() ([]topColumn, []int) {
 	var kept []topColumn
 	var indexes []int
 	used := topSelectionColumn + 2
+	dropped := false
 	for index, column := range columns {
 		if model.view == topViewProcess && model.displayWidth() < 56 && column.title == "thr" {
 			continue
 		}
-		if model.details.System == "darwin" && (column.title == "fds" || column.title == "psi mem" || column.title == "busy%" || column.title == "io%" || column.title == "ct%" || column.title == "listen/s" || column.title == "soft/s") {
+		if model.details.System == "darwin" && (column.title == "fds" || column.title == "psi mem" || column.title == "busy%" || column.title == "io%" || column.title == "ct%" || column.title == "listen/s" || column.title == "soft/s" || column.title == "steal%" || column.title == "blocked" || column.title == "queue" || column.title == "retr/s" || column.title == "rst/s" || column.title == "fail/s") {
 			continue
+		}
+		if model.boxed && model.splitHidden(column.title) {
+			continue
+		}
+		if cores := len(model.previous.Cores); column.title == "cores" && cores > 0 {
+			// 막대는 core마다 한 칸이다. details.Cores는 CPU affinity를 따라 /proc/stat의 core 수보다 작을 수 있어 막대가 그리는 수를 쓴다.
+			column.width = min(topCoreBarLimit, max(len(column.title), cores))
 		}
 		if model.view == topViewProcess && !model.bpfEnabled && (column.title == "runq ms" || column.title == "io ms") {
 			continue
 		}
-		needed := column.width + 1
-		if column.width > 0 && used+needed > model.displayWidth() {
+		if column.optional && (dropped || model.compact) {
+			continue
+		}
+		needed, reserve := column.width+1, 0
+		if column.optional && !model.boxed {
+			reserve = topSignalMinWidth
+		}
+		if column.width > 0 && used+needed+reserve > model.displayWidth() {
+			dropped = dropped || !column.optional
 			continue
 		}
 		kept, indexes = append(kept, column), append(indexes, index)
@@ -1031,21 +1114,24 @@ type topColumn struct {
 	title string
 	width int
 	left  bool
+	// optional인 칸은 기존 칸이 모두 들어가고 signal 칸이 topSignalMinWidth를 지킬 때만 넣는다.
+	// 좁은 화면에서 기존 칸과 signal을 그대로 두려고 뒤에 붙인 칸이다.
+	optional bool
 }
 
 func topViewColumns(view topView) []topColumn {
 	signal := topColumn{title: "signal", left: true}
 	switch view {
 	case topViewCPU:
-		return []topColumn{{title: "load", width: 5}, {title: "usr%", width: 5}, {title: "sys%", width: 5}, {title: "io%", width: 5}, {title: "hot core", width: 8, left: true}, {title: "cores", width: topCoreBarLimit, left: true}, signal}
+		return []topColumn{{title: "load", width: 5}, {title: "usr%", width: 5}, {title: "sys%", width: 5}, {title: "io%", width: 5}, {title: "hot core", width: 8, left: true}, {title: "cores", width: topCoreBarLimit, left: true}, {title: "steal%", width: 6, optional: true}, {title: "blocked", width: 7, optional: true}, signal}
 	case topViewMemory:
 		return []topColumn{{title: "mem%", width: 6}, {title: "swap/s", width: 7}, {title: "psi mem", width: 7}, {title: "load", width: 6}, signal}
 	case topViewDisk:
-		return []topColumn{{title: "read/s", width: 7}, {title: "write/s", width: 7}, {title: "iops", width: 6}, {title: "await", width: 6}, {title: "busy%", width: 6}, signal}
+		return []topColumn{{title: "read/s", width: 7}, {title: "write/s", width: 7}, {title: "iops", width: 6}, {title: "await", width: 6}, {title: "busy%", width: 6}, {title: "queue", width: 6, optional: true}, signal}
 	case topViewNetwork:
-		return []topColumn{{title: "in/s", width: 7}, {title: "out/s", width: 7}, {title: "ct%", width: 6}, {title: "listen/s", width: 8}, {title: "err/s", width: 6}, {title: "drop/s", width: 6}, {title: "soft/s", width: 6}, {title: "pk_in", width: 6}, {title: "pk_out", width: 6}, signal}
+		return []topColumn{{title: "in/s", width: 7}, {title: "out/s", width: 7}, {title: "ct%", width: 6}, {title: "listen/s", width: 8}, {title: "err/s", width: 6}, {title: "drop/s", width: 6}, {title: "soft/s", width: 6}, {title: "pk_in", width: 6}, {title: "pk_out", width: 6}, {title: "retr/s", width: 7, optional: true}, {title: "rst/s", width: 6, optional: true}, {title: "fail/s", width: 6, optional: true}, signal}
 	case topViewPressure:
-		return []topColumn{{title: "cpu psi", width: 7}, {title: "mem psi", width: 7}, {title: "io psi", width: 7}, {title: "load", width: 6}, {title: "mem%", width: 6}, signal}
+		return []topColumn{{title: "cpu psi", width: 7}, {title: "mem psi", width: 7}, {title: "io psi", width: 7}, {title: "mem full", width: 8}, {title: "io full", width: 7}, {title: "load", width: 6}, {title: "mem%", width: 6}, signal}
 	case topViewProcess:
 		// cpu%는 core 하나를 100으로 센다. runq와 io는 --ebpf가 있을 때의 평균 대기와 지연이다. 가장 바쁜 process는 상세 패널에 있다.
 		return []topColumn{{title: "match", width: 5}, {title: "cpu%", width: 6}, {title: "rss", width: 6}, {title: "thr", width: 5}, {title: "fds", width: 5}, {title: "read/s", width: 7}, {title: "write/s", width: 7}, {title: "runq ms", width: 7}, {title: "io ms"}}
@@ -1086,15 +1172,15 @@ func topValidLevel(valid bool, threshold topThreshold, value float64) topLevel {
 func topViewCells(rate resourceRate, view topView, signal string, limits topLimits) []topCell {
 	switch view {
 	case topViewCPU:
-		return []topCell{topValueCell("%.1f", rate.Load1, limits.load), topValueCell("%.1f", rate.CPUUser, limits.cpu), topValueCell("%.1f", rate.CPUSystem, limits.cpu), topValueCell("%.1f", rate.CPUIOWait, limits.io), {text: topHotCore(rate.CoreCPU), level: topHotCoreLevel(rate.CoreCPU)}, topPlainCell(topCoreBar(rate.CoreCPU)), topPlainCell(signal)}
+		return []topCell{topValueCell("%.1f", rate.Load1, limits.load), topValueCell("%.1f", rate.CPUUser, limits.cpu), topValueCell("%.1f", rate.CPUSystem, limits.cpu), topValueCell("%.1f", rate.CPUIOWait, limits.io), {text: topHotCore(rate.CoreCPU), level: topHotCoreLevel(rate.CoreCPU)}, topPlainCell(topCoreBar(rate.CoreCPU)), topPlainCell(topOptionalValue(rate.CPUStealValid, "%.1f", rate.CPUSteal)), topPlainCell(topOptionalValue(rate.ProcsBlockedValid, "%.0f", rate.ProcsBlocked)), topPlainCell(signal)}
 	case topViewMemory:
 		return []topCell{topValueCell("%.1f", rate.MemoryPercent, limits.memory), topPlainCell(formatRate(rate.SwapOut)), topOptionalCell(rate.PSIValid, "%.1f", rate.PSIMemory, limits.psi), topValueCell("%.1f", rate.Load1, limits.load), topPlainCell(signal)}
 	case topViewDisk:
-		return []topCell{topPlainCell(formatRate(rate.DiskRead)), topPlainCell(formatRate(rate.DiskWrite)), topPlainCell(topOptionalValue(rate.DiskHealthValid, "%.0f", rate.DiskIOPS)), topOptionalCell(rate.DiskHealthValid, "%.1f", rate.DiskAwait, limits.await), topPlainCell(topOptionalValue(rate.DiskBusyValid, "%.0f", rate.DiskBusy)), topPlainCell(signal)}
+		return []topCell{topPlainCell(formatRate(rate.DiskRead)), topPlainCell(formatRate(rate.DiskWrite)), topPlainCell(topOptionalValue(rate.DiskHealthValid, "%.0f", rate.DiskIOPS)), topOptionalCell(rate.DiskHealthValid, "%.1f", rate.DiskAwait, limits.await), topPlainCell(topOptionalValue(rate.DiskBusyValid, "%.0f", rate.DiskBusy)), topPlainCell(topOptionalValue(rate.DiskBusyValid, "%.1f", rate.DiskQueue)), topPlainCell(signal)}
 	case topViewNetwork:
-		return []topCell{topPlainCell(formatRate(rate.NetIn)), topPlainCell(formatRate(rate.NetOut)), networkConntrackCell(rate.NetworkHealth), topPlainCell(networkRateText(rate.NetworkHealth, "listen_overflows")), topOptionalCell(rate.NetHealthValid, "%.0f", rate.NetErrors, limits.network), topOptionalCell(rate.NetHealthValid, "%.0f", rate.NetDrops, limits.network), topPlainCell(networkRateText(rate.NetworkHealth, "softnet_dropped")), topPlainCell(fmt.Sprintf("%.0f", rate.PacketsIn)), topPlainCell(fmt.Sprintf("%.0f", rate.PacketsOut)), topPlainCell(signal)}
+		return []topCell{topPlainCell(formatRate(rate.NetIn)), topPlainCell(formatRate(rate.NetOut)), networkConntrackCell(rate.NetworkHealth), topPlainCell(networkRateText(rate.NetworkHealth, "listen_overflows")), topOptionalCell(rate.NetHealthValid, "%.0f", rate.NetErrors, limits.network), topOptionalCell(rate.NetHealthValid, "%.0f", rate.NetDrops, limits.network), topPlainCell(networkRateText(rate.NetworkHealth, "softnet_dropped")), topPlainCell(fmt.Sprintf("%.0f", rate.PacketsIn)), topPlainCell(fmt.Sprintf("%.0f", rate.PacketsOut)), topPlainCell(topNetworkRateCell(rate.NetworkHealth, "tcp_retrans_segs", 7)), topPlainCell(topNetworkRateCell(rate.NetworkHealth, "tcp_out_rsts", 6)), topPlainCell(topNetworkRateCell(rate.NetworkHealth, "tcp_attempt_fails", 6)), topPlainCell(signal)}
 	case topViewPressure:
-		return []topCell{topOptionalCell(rate.PSIValid, "%.1f", rate.PSICPU, limits.psi), topOptionalCell(rate.PSIValid, "%.1f", rate.PSIMemory, limits.psi), topOptionalCell(rate.PSIValid, "%.1f", rate.PSIIO, limits.psi), topValueCell("%.1f", rate.Load1, limits.load), topValueCell("%.1f", rate.MemoryPercent, limits.memory), topPlainCell(signal)}
+		return []topCell{topOptionalCell(rate.PSIValid, "%.1f", rate.PSICPU, limits.psi), topOptionalCell(rate.PSIValid, "%.1f", rate.PSIMemory, limits.psi), topOptionalCell(rate.PSIValid, "%.1f", rate.PSIIO, limits.psi), topOptionalCell(rate.PSIValid, "%.1f", rate.PSIMemoryFull, limits.psi), topOptionalCell(rate.PSIValid, "%.1f", rate.PSIIOFull, limits.psi), topValueCell("%.1f", rate.Load1, limits.load), topValueCell("%.1f", rate.MemoryPercent, limits.memory), topPlainCell(signal)}
 	}
 	return nil
 }

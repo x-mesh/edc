@@ -21,6 +21,7 @@ SE와 SRE가 terminal에서 여러 시스템을 진단하고 반복 유지보수
 ## Anti-references
 
 과도한 색상, 박스 남발, 장식적 animation, 불필요한 banner, 같은 정보를 반복하는 출력은 사용하지 않습니다.
+다만 `edc top --split`의 박스 화면은 사용자가 직접 켤 때만 쓰는 예외입니다.
 
 ## Design Principles
 

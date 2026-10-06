@@ -436,11 +436,20 @@ func TestAICompactKeepsAboutThreeDigits(t *testing.T) {
 	}
 }
 
-// aiStatusTransport는 Claude 사용량 API 대신 정해 둔 상태 코드만 돌려준다.
-type aiStatusTransport int
+// aiStubTransport는 Claude 사용량 API 대신 정해 둔 상태 코드와 본문을 돌려준다.
+type aiStubTransport struct {
+	status int
+	body   string
+}
 
-func (status aiStatusTransport) RoundTrip(request *http.Request) (*http.Response, error) {
-	return &http.Response{StatusCode: int(status), Header: http.Header{}, Body: io.NopCloser(strings.NewReader("{}")), Request: request}, nil
+func (stub aiStubTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	return &http.Response{StatusCode: stub.status, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(stub.body)), Request: request}, nil
+}
+
+func writeAIClaudeCredentials(t *testing.T, dir string) {
+	t.Helper()
+	writeAIFixture(t, filepath.Join(dir, ".credentials.json"),
+		`{"claudeAiOauth":{"accessToken":"test-token","expiresAt":`+strconv.FormatInt(time.Now().Add(time.Hour).UnixMilli(), 10)+`,"subscriptionType":"max"}}`)
 }
 
 // 429로 늘린 간격은 다시 실행해도 이어진다. 한 번도 성공하지 못했으면 상자에 보일 값은 없다.
@@ -448,10 +457,9 @@ func TestAIPollKeepsTheClaudeBackoffAcrossRuns(t *testing.T) {
 	// codex를 찾지 못하게 해 시험이 실제 app-server를 띄우지 않는다.
 	t.Setenv("PATH", t.TempDir())
 	claudeDir, stateDir := t.TempDir(), t.TempDir()
-	writeAIFixture(t, filepath.Join(claudeDir, ".credentials.json"),
-		`{"claudeAiOauth":{"accessToken":"test-token","expiresAt":`+strconv.FormatInt(time.Now().Add(time.Hour).UnixMilli(), 10)+`,"subscriptionType":"max"}}`)
+	writeAIClaudeCredentials(t, claudeDir)
 	collector := newAICollector(claudeDir, t.TempDir(), stateDir, time.Now())
-	collector.http = &http.Client{Transport: aiStatusTransport(http.StatusTooManyRequests)}
+	collector.http = &http.Client{Transport: aiStubTransport{status: http.StatusTooManyRequests, body: "{}"}}
 	collector.poll(context.Background(), time.Minute)
 	if collector.claudeInterval != 2*aiClaudeMinInterval {
 		t.Fatalf("after 429: interval %s", collector.claudeInterval)
@@ -460,8 +468,30 @@ func TestAIPollKeepsTheClaudeBackoffAcrossRuns(t *testing.T) {
 	if !restarted.claudeNext.Equal(collector.claudeNext) || restarted.claudeInterval != collector.claudeInterval {
 		t.Errorf("restart: next %s interval %s, want %s and %s", restarted.claudeNext, restarted.claudeInterval, collector.claudeNext, collector.claudeInterval)
 	}
-	if shown, ok := restarted.shown["claude"]; ok {
-		t.Errorf("no success yet, but the box shows %+v", shown)
+	// 성공한 값이 없으면 상자는 비지 않고 미룬 이유와 다음 조회 시각을 보인다.
+	claude := restarted.poll(context.Background(), time.Minute).providers[0]
+	if claude.Name != "claude" || len(claude.Windows) != 0 || !strings.Contains(claude.Err, "rate limited · next try ") {
+		t.Errorf("restart without a success: %+v", claude)
+	}
+}
+
+// 429 뒤에 늘어난 간격은 성공해도 줄지 않는다. 성공한 뒤 다시 실행해도 그 간격을 쓴다.
+func TestAIPollKeepsTheBackedOffIntervalAfterASuccess(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	claudeDir, stateDir := t.TempDir(), t.TempDir()
+	writeAIClaudeCredentials(t, claudeDir)
+	collector := newAICollector(claudeDir, t.TempDir(), stateDir, time.Now())
+	collector.claudeInterval = 2 * aiClaudeMinInterval
+	collector.http = &http.Client{Transport: aiStubTransport{status: http.StatusOK, body: `{"five_hour":{"utilization":22,"resets_at":"2026-10-06T08:59:59Z"}}`}}
+	if claude := collector.poll(context.Background(), time.Minute).providers[0]; claude.Err != "" || len(claude.Windows) != 1 {
+		t.Fatalf("success: %+v", claude)
+	}
+	restarted := newAICollector(claudeDir, t.TempDir(), stateDir, time.Now())
+	if !restarted.claudeNext.Equal(collector.claudeNext) || restarted.claudeInterval != 2*aiClaudeMinInterval {
+		t.Errorf("restart: next %s interval %s, want %s and %s", restarted.claudeNext, restarted.claudeInterval, collector.claudeNext, 2*aiClaudeMinInterval)
+	}
+	if shown := restarted.shown["claude"]; shown.Err != "" || len(shown.Windows) != 1 {
+		t.Errorf("restart after a success shows %+v", shown)
 	}
 }
 
@@ -469,16 +499,19 @@ func TestAICollectorResumesTheSavedClaudeBackoff(t *testing.T) {
 	now := time.Date(2026, 10, 6, 2, 20, 0, 0, time.UTC)
 	for _, test := range []struct {
 		name         string
+		fetched      time.Time
 		nextTry      time.Time
 		wantNext     time.Time
 		wantInterval time.Duration
 	}{
-		{"later than the minimum interval", now.Add(8 * time.Minute), now.Add(8 * time.Minute), 10 * time.Minute},
-		{"earlier than the minimum interval", now.Add(time.Minute), now.Add(3 * time.Minute), 0},
-		{"beyond the backoff cap", now.Add(time.Hour), now.Add(3 * time.Minute), 0},
+		{"later than the minimum interval", now.Add(-2 * time.Minute), now.Add(8 * time.Minute), now.Add(8 * time.Minute), 10 * time.Minute},
+		{"earlier than the minimum interval", now.Add(-2 * time.Minute), now.Add(time.Minute), now.Add(3 * time.Minute), 0},
+		{"beyond the backoff cap", now.Add(-2 * time.Minute), now.Add(time.Hour), now.Add(3 * time.Minute), 0},
+		// 지난 백오프는 끝났다. 늘린 간격을 영구 하한으로 남기지 않는다.
+		{"already passed", now.Add(-time.Hour), now.Add(-time.Minute), now.Add(-time.Hour + aiClaudeMinInterval), 0},
 	} {
 		stateDir := t.TempDir()
-		saved := aiClaudeState{aiProvider: aiProvider{FetchedAt: now.Add(-2 * time.Minute), Windows: []aiWindow{{Name: "7d", Used: 61}}}, NextTry: test.nextTry, Interval: 10 * time.Minute}
+		saved := aiClaudeState{aiProvider: aiProvider{FetchedAt: test.fetched, Windows: []aiWindow{{Name: "7d", Used: 61}}}, NextTry: test.nextTry, Interval: 10 * time.Minute}
 		if err := saveAIClaudeState(filepath.Join(stateDir, aiClaudeStateName), saved); err != nil {
 			t.Fatal(err)
 		}

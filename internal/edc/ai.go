@@ -120,9 +120,14 @@ func newAICollector(claudeDir, codexDir, stateDir string, now time.Time) *aiColl
 				collector.claudeNext = claude.FetchedAt.Add(aiClaudeMinInterval)
 			}
 		}
-		// 직전 실행이 429로 미룬 시각이 더 늦으면 그 시각과 늘린 간격을 이어 쓴다. 백오프 상한보다 먼 시각은 믿지 않는다.
-		if state.NextTry.After(collector.claudeNext) && state.NextTry.Before(now.Add(aiMaxBackoff)) {
+		// 직전 실행이 정한 다음 조회 시각이 아직 오지 않았으면 그 시각과 늘린 간격을 이어 쓴다. 이미 지났으면 백오프도 끝났다.
+		// 백오프 상한보다 먼 시각은 믿지 않는다.
+		if state.NextTry.After(now) && state.NextTry.After(collector.claudeNext) && state.NextTry.Before(now.Add(aiMaxBackoff)) {
 			collector.claudeNext, collector.claudeInterval = state.NextTry, min(state.Interval, aiMaxBackoff)
+			// 성공한 값 없이 429로 미룬 상태다. 상자가 빈 채로 기다리지 않게 미룬 이유와 다음 조회 시각을 보인다.
+			if state.FetchedAt.IsZero() {
+				collector.shown["claude"] = aiProvider{Name: "claude", Windows: []aiWindow{}, Err: "rate limited · next try " + state.NextTry.Local().Format("15:04:05")}
+			}
 		}
 	}
 	return collector
@@ -172,7 +177,8 @@ func (collector *aiCollector) poll(ctx context.Context, poll time.Duration) aiPo
 			}
 			collector.last[provider.Name], collector.shown[provider.Name] = provider, provider
 			if provider.Name == "claude" {
-				stateErr = saveAIClaudeState(collector.claudeState, aiClaudeState{aiProvider: provider})
+				// 429 뒤에 늘어난 간격은 성공해도 줄지 않는다. 다시 실행해도 같은 간격을 쓰도록 다음 조회 시각과 함께 남긴다.
+				stateErr = saveAIClaudeState(collector.claudeState, aiClaudeState{aiProvider: provider, NextTry: collector.claudeNext, Interval: collector.claudeInterval})
 			}
 			continue
 		}

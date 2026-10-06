@@ -237,8 +237,11 @@ type traceScope struct {
 	// payload가 꺼져 있으면 message 앞부분을 event에 붙이지 않는다. 화면은 event를 최대 10,000건 보관한다.
 	payload bool
 	// payloadAll은 --payload=all이다. 이어지는 조각까지 받아 message 전체를 event에 붙인다.
-	payloadAll  bool
-	showSecrets bool
+	payloadAll bool
+	// http2Payload는 사용자가 준 --payload다. 전체 화면은 payload를 늘 켜지만, HTTP/2 event를 본문이 끝날 때까지 붙잡으면
+	// streaming 응답의 행이 끝날 때까지 나오지 않으므로 사용자가 고른 경우에만 붙잡는다.
+	http2Payload bool
+	showSecrets  bool
 	// keepGzip이면 gzip message의 원본 byte를 event에 붙인다. 전체 화면의 상세 보기가 본문을 풀 때 쓴다.
 	keepGzip bool
 	// tls는 --tls 값이다. 비어 있지 않으면 OpenSSL uprobe로 HTTPS 평문을 본다. tlsTargets는 붙일 파일이다.
@@ -252,7 +255,7 @@ type traceScope struct {
 }
 
 func (options tcpTraceOptions) scope(protocol string) traceScope {
-	return traceScope{protocol: protocol, server: options.side == traceServerSide, side: options.side, payload: options.payload != "", payloadAll: options.payload == tracePayloadAll,
+	return traceScope{protocol: protocol, server: options.side == traceServerSide, side: options.side, payload: options.payload != "", payloadAll: options.payload == tracePayloadAll, http2Payload: options.payload != "",
 		showSecrets: options.showSecrets, tls: options.tls, tlsTargets: options.tlsTargets, port: uint16(options.port), socketPath: options.socketPath, dropReasons: splitDropReasons(options.dropReasons)}
 }
 

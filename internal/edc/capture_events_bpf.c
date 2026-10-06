@@ -1158,6 +1158,7 @@ struct http_record {
 	__u8 destination[16];
 	char comm[16];
 	// offset은 조각이 message 안에서 시작하는 위치다. 사용자 공간은 기다리던 위치와 다르면 조각을 잃은 것으로 본다.
+	// h2c에서는 연결 안의 위치다. 송신은 TCP 순번(write_seq), 수신은 그 방향에서 읽은 byte 수이고 둘 다 2^32에서 감긴다.
 	// trace mysql에서는 kind가 로컬 port가 MySQL port인 서버 쪽이면 1이고, offset은 이번 읽기나 쓰기의 전체 byte 수다.
 	__u32 offset;
 	__u8 payload[HTTP_PAYLOAD_SIZE];
@@ -1550,6 +1551,14 @@ static __always_inline void http_capture(struct sock *sk, __u64 buffer, __u64 li
 	int start = readable && http_start(peek);
 	// h2c 연결은 HTTP2_PREFACE_LEN byte 머리로 시작한다. 짧은 조각은 HTTP/1 서버가 몇 byte씩 엿보는 경우와 구별할 수 없다.
 	int http2_start = readable && peek[0] == 'P' && peek[1] == 'R' && peek[2] == 'I' && peek[3] == ' ' && h2c_preface(buffer, limit, size);
+	// TCP Fast Open은 송신 호출 안에서 SYN과 첫 순번을 정하므로 시작할 때의 write_seq가 첫 data의 순번이 아니다. 이런
+	// 연결은 client 쪽 h2c를 따라가지 않는다. 위치를 틀리게 잡으면 첫 쓰기 뒤의 frame을 모두 버리게 된다.
+	if (http2_start && direction == HTTP_SENT) {
+		__u8 state = BPF_CORE_READ(sk, __sk_common.skc_state);
+		if (state == TCP_CLOSE || state == TCP_SYN_SENT) {
+			http2_start = 0;
+		}
+	}
 	// 모든 TCP 송수신이 여기를 지나므로 이어 받을 조각이 있는 socket에서만 map에 값이 있다. 이어 받는 조각을 TLS 판별보다
 	// 먼저 보므로, 0x16 0x03으로 시작하는 HTTP body 조각을 TLS로 읽지 않는다. h2c 연결의 frame 안에서 "GET "처럼 보이는
 	// 조각이 와도 HTTP/1 message로 보지 않도록 HTTP 시작보다 먼저 확인한다.

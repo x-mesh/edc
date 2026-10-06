@@ -52,7 +52,7 @@ type httpPacket struct {
 	destination string
 	payload     []byte
 	// continued는 앞 message에 이어지는 조각이다. --payload=all이 아니면 첫 줄이 끊긴 첫 조각 뒤에만 온다. offset은 조각이
-	// message 안에서 시작하는 위치다.
+	// message 안에서 시작하는 위치다. h2c에서는 연결 안의 위치로, 송신은 TCP 순번이고 수신은 읽은 byte 수다.
 	continued bool
 	offset    uint32
 	// tlsHandshake는 TLS record 머리 없이 handshake message로 시작하는 조각이다. record 머리만 따로 읽는 서버에서 온다.
@@ -119,6 +119,13 @@ func (tracker *httpTracker) http2Events(packet httpPacket, clockOffset int64) ([
 	key := httpStreamKey{socket: packet.socket, sent: packet.sent}
 	peer := httpStreamKey{socket: packet.socket, sent: !packet.sent}
 	direction := tracker.http2[key]
+	// BPF는 h2c 연결 안에서는 시작 레코드를 내지 않는다. 시작 레코드가 오면 닫힘 레코드를 놓친 사이에 새 연결이 같은
+	// socket 주소를 쓴 것이므로, 남은 h2c 상태를 버리고 새로 읽는다.
+	if direction != nil && !packet.continued {
+		delete(tracker.http2, key)
+		delete(tracker.http2, peer)
+		direction = nil
+	}
 	if direction == nil {
 		if packet.continued || !bytes.HasPrefix(http2Preface, packet.payload) && !bytes.HasPrefix(packet.payload, http2Preface) {
 			return nil, false
@@ -126,8 +133,9 @@ func (tracker *httpTracker) http2Events(packet httpPacket, clockOffset int64) ([
 		direction = tracker.newHTTP2Direction()
 		tracker.http2[key] = direction
 		if tracker.http2[peer] == nil {
+			// 수신 위치는 BPF가 0부터 센다. 원점을 모르는 것은 TCP 순번을 쓰는 송신뿐이다.
 			tracker.http2[peer] = tracker.newHTTP2Direction()
-			tracker.http2[peer].preface = true
+			tracker.http2[peer].preface, tracker.http2[peer].started = true, !peer.sent
 		}
 	}
 	if !direction.started {

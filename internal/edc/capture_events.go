@@ -65,6 +65,8 @@ type captureEvent struct {
 	MySQL *traceMySQLEvent `json:"mysql,omitempty"`
 	// ALPN은 tls_hello event에만 붙는다. client가 ClientHello로 제안한 protocol이고, 서버가 고른 것은 암호문이라 모른다.
 	ALPN []string `json:"alpn,omitempty"`
+	// TLS는 trace http --tls가 OpenSSL에서 읽은 평문 event다. socket을 모르는 평문은 Source와 Destination이 비어 있다.
+	TLS bool `json:"tls,omitempty"`
 	// Payload는 trace http --payload일 때만 붙는 message 앞부분이다. 제어 문자를 이미 \xNN으로 바꿔 두어서
 	// jq -r로 terminal에 찍어도 escape sequence가 실행되지 않는다.
 	Payload string `json:"payload,omitempty"`
@@ -99,6 +101,8 @@ type captureSummary struct {
 	Event       string `json:"event"`
 	EventCount  uint64 `json:"event_count"`
 	LostEvents  uint64 `json:"lost_events"`
+	// TLSUnmapped는 trace http --tls --port에서 socket을 몰라 port를 확인하지 못하고 버린 평문 레코드 수다.
+	TLSUnmapped uint64 `json:"tls_unmapped,omitempty"`
 	// DropCounts는 trace drop의 이유별 정확한 합계다. DropSampled는 초당 상한 때문에 event로 보내지 않은 수다.
 	DropCounts  map[string]uint64 `json:"drop_counts,omitempty"`
 	DropSampled uint64            `json:"drop_sampled,omitempty"`
@@ -357,6 +361,9 @@ type tcpTraceOptions struct {
 	side        string
 	payload     tracePayloadMode
 	showSecrets bool
+	tls         traceTLSMode
+	// tlsTargets는 trace를 시작하기 전에 tls 값으로 고른 파일이다.
+	tlsTargets []traceTLSTarget
 	// port는 trace http가 볼 HTTP 서버의 port다. client 쪽은 상대 port, 서버 쪽은 로컬 port다. 0이면 모든 port를 본다.
 	port int
 	// socketPath는 trace socket이 볼 unix socket 파일이다.

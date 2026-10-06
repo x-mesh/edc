@@ -15,6 +15,7 @@ import (
 const (
 	httpRecordType          = 10
 	httpRecordSent          = 1
+	httpRecordDecrypted     = 0x80 // capture_events_bpf.c의 HTTP_DECRYPTED. direction에 더해 OpenSSL 평문을 표시한다.
 	httpRecordContinuation  = 1
 	httpRecordTLSHandshake  = 2 // capture_events_bpf.c의 TLS_HANDSHAKE. record 머리 없이 handshake message로 시작한다.
 	httpRecordPayloadOffset = 96
@@ -35,7 +36,8 @@ func parseHTTPRecord(sample []byte) (httpPacket, bool) {
 		pid:          binary.LittleEndian.Uint32(sample[12:16]),
 		cgroupID:     binary.LittleEndian.Uint64(sample[16:24]),
 		socket:       binary.LittleEndian.Uint64(sample[24:32]),
-		sent:         sample[38] == httpRecordSent,
+		sent:         sample[38]&httpRecordSent != 0,
+		decrypted:    sample[38]&httpRecordDecrypted != 0,
 		source:       formatCaptureAddress(family, source, binary.LittleEndian.Uint16(sample[40:42])),
 		destination:  formatCaptureAddress(family, destination, binary.LittleEndian.Uint16(sample[42:44])),
 		process:      strings.TrimRight(string(sample[76:92]), "\x00"),

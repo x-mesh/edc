@@ -105,6 +105,11 @@ volatile const __u16 tcp_state_port = 0;
 volatile const __u16 mysql_port = 0;
 // Linux 5.15에는 sock_send_length와 sock_recv_length tracepoint가 없다. 사용자 공간이 그때만 이 값을 켠다.
 volatile const __u8 tcp_length_fallback = 0;
+// emit_tls_plaintext는 trace http --tls다. OpenSSL uprobe가 암호화 전과 복호화 뒤의 평문을 넘긴다. 이 객체는 모든
+// trace가 불러오므로, 꺼져 있으면 uprobe program이 첫 명령에서 돌아가고 TCP hook도 SSL 상태를 보지 않는다.
+volatile const __u8 emit_tls_plaintext = 0;
+// uprobe_arch는 uprobe 인자를 읽을 pt_regs 배치다. bpfel 객체 하나가 amd64와 arm64를 함께 섬겨서 compile 때 정할 수 없다.
+volatile const __u8 uprobe_arch = 0;
 
 struct {
 	__uint(type, BPF_MAP_TYPE_ARRAY);
@@ -1102,6 +1107,8 @@ int tcp_create_openreq_child_exit(__u64 *ctx) {
 #define HTTP_MAX_STEPS 80
 #define HTTP_RECEIVED 0
 #define HTTP_SENT 1
+// HTTP_DECRYPTED는 OpenSSL uprobe가 넘긴 평문 레코드의 방향 bit다. 같은 socket의 암호문과 stream 상태를 나눠 둔다.
+#define HTTP_DECRYPTED 0x80
 #define HTTP_START 0
 #define HTTP_CONTINUATION 1
 #define MSG_PEEK 2
@@ -1895,9 +1902,254 @@ struct {
 	__type(value, __u64);
 } tcp_length_pending SEC(".maps");
 
+// ssl_snapshot은 SSL 호출 안에서 배운 socket의 주소다. 나중 호출은 struct sock*를 다시 읽지 않고 이 사본을 쓴다.
+// 그 사이에 socket이 해제되어 주소가 새 socket에 쓰였을 수 있다.
+struct ssl_snapshot {
+	__u64 skaddr;
+	__u16 family;
+	__u16 sport;
+	__u16 dport;
+	__u8 source[16];
+	__u8 destination[16];
+};
+
+// ssl_pending은 thread에서 진행 중인 SSL_read와 SSL_write다. 평문은 함수가 돌아와야 길이가 정해지고, SSL_read는 그때
+// buffer에 평문이 있다. 그 사이에 같은 thread가 부르는 tcp_sendmsg와 tcp_recvmsg가 socket을 알려 준다.
+struct ssl_pending {
+	__u64 ssl;
+	__u64 buffer;
+	__u64 num;
+	__u64 out;
+	__u8 direction;
+	__u8 learned;
+	struct ssl_snapshot snapshot;
+};
+
+// uretprobe는 SSL 호출 안에서 끝난 thread에서는 실행되지 않아 항목이 남는다. HASH가 차면 새 thread의 평문을 아무 표시
+// 없이 잃으므로, 남은 항목은 LRU가 밀어낸다.
+struct {
+	__uint(type, BPF_MAP_TYPE_LRU_HASH);
+	__uint(max_entries, 10240);
+	__type(key, __u64);
+	__type(value, struct ssl_pending);
+} ssl_pending SEC(".maps");
+
+struct ssl_key {
+	__u64 tgid;
+	__u64 ssl;
+};
+
+// ssl_socks는 SSL 객체마다 마지막으로 배운 socket이다. OpenSSL은 미리 읽어 둔 record에서 평문을 돌려줄 때 socket을 읽지
+// 않으므로, 그 호출은 앞 호출에서 배운 주소를 쓴다.
+struct {
+	__uint(type, BPF_MAP_TYPE_LRU_HASH);
+	__uint(max_entries, 16384);
+	__type(key, struct ssl_key);
+	__type(value, struct ssl_snapshot);
+} ssl_socks SEC(".maps");
+
+// tls_unmapped는 --port가 있을 때 socket을 몰라 버린 평문 레코드 수다. port를 확인할 수 없어 보이지 않은 수를 알린다.
+struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__uint(max_entries, 1);
+	__type(key, __u32);
+	__type(value, __u64);
+} tls_unmapped SEC(".maps");
+
+static __always_inline void ssl_snapshot_fill(struct ssl_snapshot *snapshot, struct sock *sk) {
+	snapshot->skaddr = (__u64)sk;
+	snapshot->family = BPF_CORE_READ(sk, __sk_common.skc_family);
+	snapshot->sport = BPF_CORE_READ(sk, __sk_common.skc_num);
+	snapshot->dport = bpf_ntohs(BPF_CORE_READ(sk, __sk_common.skc_dport));
+	__builtin_memset(snapshot->source, 0, sizeof(snapshot->source));
+	__builtin_memset(snapshot->destination, 0, sizeof(snapshot->destination));
+	if (snapshot->family == AF_INET) {
+		__be32 source = BPF_CORE_READ(sk, __sk_common.skc_rcv_saddr);
+		__be32 destination = BPF_CORE_READ(sk, __sk_common.skc_daddr);
+		__builtin_memcpy(snapshot->source, &source, 4);
+		__builtin_memcpy(snapshot->destination, &destination, 4);
+	} else {
+		BPF_CORE_READ_INTO(&snapshot->source, sk, __sk_common.skc_v6_rcv_saddr.in6_u.u6_addr8);
+		BPF_CORE_READ_INTO(&snapshot->destination, sk, __sk_common.skc_v6_daddr.in6_u.u6_addr8);
+	}
+}
+
+// ssl_learn은 SSL 호출 안에서 불린 TCP 송수신의 socket을 그 호출과 SSL 객체에 적는다. port와 관계없이 배우고, --port는
+// 평문을 낼 때 확인한다. 배우지 않으면 다른 port의 SSL 객체가 주소 없는 평문으로 잘못 세어진다.
+static __always_inline void ssl_learn(struct sock *sk) {
+	__u64 key = bpf_get_current_pid_tgid();
+	struct ssl_pending *pending = bpf_map_lookup_elem(&ssl_pending, &key);
+	if (!pending) {
+		return;
+	}
+	ssl_snapshot_fill(&pending->snapshot, sk);
+	pending->learned = 1;
+	struct ssl_key sock_key = {.tgid = key >> 32, .ssl = pending->ssl};
+	bpf_map_update_elem(&ssl_socks, &sock_key, &pending->snapshot, BPF_ANY);
+}
+
+#define UPROBE_ARM64 1
+
+// SSL_CONTEXT_WORD는 kprobe ctx(struct pt_regs)의 off byte 위치를 읽는다. verifier는 ctx를 상수 offset으로만 읽게 한다.
+// C로 쓰면 clang이 두 아키텍처의 읽기를 offset 고르기와 읽기 하나로 합쳐서 거절된다. inline asm은 합쳐지지 않는다.
+#define SSL_CONTEXT_WORD(ctx, off)                                                    \
+	({                                                                            \
+		__u64 word;                                                           \
+		asm volatile("%0 = *(u64 *)(%1 + " #off ")" : "=r"(word) : "r"(ctx)); \
+		word;                                                                 \
+	})
+
+// ssl_argument는 uprobe의 n번째 정수 인자다. x86_64 pt_regs는 di, si, dx, cx가 112, 104, 96, 88 byte 위치이고 arm64는
+// x0부터 8 byte씩이다. 두 아키텍처의 offset 모두 양쪽 pt_regs 크기 안이라 어느 갈래든 verifier를 통과한다.
+static __always_inline __u64 ssl_argument(void *ctx, int n) {
+	if (uprobe_arch == UPROBE_ARM64) {
+		switch (n) {
+		case 0:
+			return SSL_CONTEXT_WORD(ctx, 0);
+		case 1:
+			return SSL_CONTEXT_WORD(ctx, 8);
+		case 2:
+			return SSL_CONTEXT_WORD(ctx, 16);
+		default:
+			return SSL_CONTEXT_WORD(ctx, 24);
+		}
+	}
+	switch (n) {
+	case 0:
+		return SSL_CONTEXT_WORD(ctx, 112);
+	case 1:
+		return SSL_CONTEXT_WORD(ctx, 104);
+	case 2:
+		return SSL_CONTEXT_WORD(ctx, 96);
+	default:
+		return SSL_CONTEXT_WORD(ctx, 88);
+	}
+}
+
+// ssl_return_value는 uretprobe의 int 반환값이다. x86_64는 ax(80 byte 위치), arm64는 x0다.
+static __always_inline int ssl_return_value(void *ctx) {
+	if (uprobe_arch == UPROBE_ARM64) {
+		return (int)SSL_CONTEXT_WORD(ctx, 0);
+	}
+	return (int)SSL_CONTEXT_WORD(ctx, 80);
+}
+
+static __always_inline void ssl_fill_record(struct http_record *record, struct ssl_snapshot *snapshot, __u8 direction) {
+	record->event_type = 10;
+	record->pid = bpf_get_current_pid_tgid() >> 32;
+	record->cgroup_id = bpf_get_current_cgroup_id();
+	record->skaddr = snapshot->skaddr;
+	record->direction = direction;
+	record->family = snapshot->family;
+	record->sport = snapshot->sport;
+	record->dport = snapshot->dport;
+	__builtin_memcpy(record->source, snapshot->source, sizeof(record->source));
+	__builtin_memcpy(record->destination, snapshot->destination, sizeof(record->destination));
+	current_process_name(&record->comm);
+}
+
+// http2_preface는 HTTP/2 connection preface "PRI * HTTP/2.0"의 앞 4 byte다. 사용자 공간이 이 레코드로 연결을 HTTP/2로
+// 표시한다. 그 뒤의 frame은 binary라 HTTP/1.x 시작으로 보이지 않는다.
+static __always_inline int http2_preface(const __u8 *p) {
+	return p[0] == 'P' && p[1] == 'R' && p[2] == 'I' && p[3] == ' ';
+}
+
+// HTTP2_PREFACE_SIZE는 preface 레코드에서 넘기는 byte 수다. 사용자 공간은 preface 24 byte만 확인한다.
+#define HTTP2_PREFACE_SIZE 64
+
+// ssl_capture는 SSL 호출 하나의 평문을 레코드로 넘긴다. http_capture와 같은 stream 규칙을 따르되, 방향에 HTTP_DECRYPTED를
+// 더한 key를 써서 같은 socket의 암호문 상태와 섞지 않는다. 평문은 buffer 하나이고 TLS 판별을 하지 않는다. TCP 송수신마다
+// 도는 http_capture의 verifier 비용을 늘리지 않으려고 따로 둔다.
+static __always_inline void ssl_capture(struct ssl_snapshot *snapshot, __u64 buffer, __u64 size, __u8 direction) {
+	__u8 flagged = direction | HTTP_DECRYPTED;
+	struct http_stream_key key = {.skaddr = snapshot->skaddr, .direction = flagged};
+	__u8 peek[4] = {};
+	int readable = size >= 4 && !bpf_probe_read_user(peek, sizeof(peek), (void *)buffer);
+	int preface = readable && http2_preface(peek);
+	int start = readable && (http_start(peek) || preface);
+	__u8 kind = start ? HTTP_START : HTTP_CONTINUATION;
+	__u64 offset = 0;
+	__u64 budget = http_payload_limit;
+	__u64 *seen = start ? 0 : bpf_map_lookup_elem(&http_streams, &key);
+	if (preface) {
+		// HTTP/2 frame은 읽지 않으므로 이어지는 조각을 따라가지 않는다.
+		budget = HTTP2_PREFACE_SIZE;
+		bpf_map_delete_elem(&http_streams, &key);
+	} else if (http_message_limit) {
+		budget = http_message_limit;
+		if (!start) {
+			if (!seen || *seen >= http_message_limit) {
+				return;
+			}
+			offset = *seen;
+			budget = http_message_limit - offset;
+		}
+		__u64 next = offset + size;
+		bpf_map_update_elem(&http_streams, &key, &next, BPF_ANY);
+	} else if (!start) {
+		if (!seen) {
+			return;
+		}
+		offset = *seen;
+		bpf_map_delete_elem(&http_streams, &key);
+		if (offset >= budget) {
+			return;
+		}
+		budget -= offset;
+	} else if (size < HTTP_SPLIT_SIZE) {
+		__u64 first = size;
+		bpf_map_update_elem(&http_streams, &key, &first, BPF_ANY);
+	}
+	__u32 zero = 0;
+	struct http_record *record = bpf_map_lookup_elem(&http_scratch, &zero);
+	if (!record) {
+		return;
+	}
+	struct http_cursor *cursor = bpf_map_lookup_elem(&http_cursors, &zero);
+	if (!cursor) {
+		return;
+	}
+	ssl_fill_record(record, snapshot, flagged);
+	cursor->pointer = buffer;
+	cursor->remaining = size < budget ? size : budget;
+	cursor->offset = offset;
+	cursor->kind = kind;
+	for (int step = 0; step < HTTP_MAX_STEPS; step++) {
+		if (!cursor->remaining) {
+			break;
+		}
+		__u64 len = cursor->remaining;
+		if (len > HTTP_PAYLOAD_SIZE) {
+			len = HTTP_PAYLOAD_SIZE;
+		}
+		if (bpf_probe_read_user(record->payload, len, (void *)cursor->pointer)) {
+			break;
+		}
+		record->timestamp_ns = bpf_ktime_get_ns();
+		record->len = len;
+		record->kind = cursor->kind;
+		record->offset = cursor->offset;
+		if (bpf_ringbuf_output(&events, record, __builtin_offsetof(struct http_record, payload) + len, 0)) {
+			__u64 *lost = bpf_map_lookup_elem(&lost_events, &zero);
+			if (lost) {
+				__sync_fetch_and_add(lost, 1);
+			}
+			break;
+		}
+		cursor->pointer += len;
+		cursor->remaining -= len;
+		cursor->offset += len;
+		cursor->kind = HTTP_CONTINUATION;
+	}
+}
+
 SEC("fentry/tcp_sendmsg")
 int tcp_sendmsg_entry(__u64 *ctx) {
 	struct sock *sk = (struct sock *)ctx[0];
+	// SSL_write 안의 송신이면 그 SSL 객체에 socket을 적는다. 아래의 port와 protocol 확인보다 먼저 해야 한다.
+	if (emit_tls_plaintext && sk) {
+		ssl_learn(sk);
+	}
 	struct msghdr *msg = (struct msghdr *)ctx[1];
 	__u64 size = ctx[2];
 	__u64 limit = 0;
@@ -1999,12 +2251,16 @@ struct {
 
 SEC("fentry/tcp_recvmsg")
 int tcp_recvmsg_entry(__u64 *ctx) {
+	struct sock *sk = (struct sock *)ctx[0];
+	// SSL_read 안의 수신이면 그 SSL 객체에 socket을 적는다. MSG_PEEK와 port 확인보다 먼저 해야 한다.
+	if (emit_tls_plaintext && sk) {
+		ssl_learn(sk);
+	}
 	// MSG_PEEK로 읽은 data는 다음 recv가 다시 읽는다. 같은 message를 두 번 내지 않는다.
 	if ((int)ctx[3] & MSG_PEEK) {
 		return 0;
 	}
 	// 끝날 때 쓰지 않을 socket이면 버퍼 위치를 기록하지 않는다. recv마다 map을 갱신하는 비용이 크다.
-	struct sock *sk = (struct sock *)ctx[0];
 	if (!sk || !((emit_dns_tcp_messages && dns_tcp_socket(sk)) || (emit_http_messages && http_socket(sk)) || (mysql_port && mysql_socket(sk)))) {
 		return 0;
 	}
@@ -2083,6 +2339,157 @@ int http_tcp_destroy_sock(__u64 *ctx) {
 		return 0;
 	}
 	event->skaddr = (__u64)sk;
+	finish_event(event);
+	return 0;
+}
+
+// ssl_synthetic_socket은 평문 레코드의 짝짓기 id다. 상위 32 bit가 tgid라 2^54보다 작아서, 상위 bit가 모두 1인 kernel의
+// socket 주소와 겹치지 않는다. 한 process에서 SSL 객체 둘의 하위 32 bit가 같으려면 주소가 4GiB 간격이어야 한다.
+static __always_inline __u64 ssl_synthetic_socket(__u64 pid_tgid, __u64 ssl) {
+	return ((pid_tgid >> 32) << 32) | (ssl & 0xffffffff);
+}
+
+// ssl_enter는 SSL_read, SSL_write와 _ex의 시작이다. 인자는 (SSL *ssl, void *buf, num[, size_t *out])이다. SSL_read와
+// SSL_write의 num은 int라서 상위 32 bit를 버린다. 중첩된 호출은 덮어쓰고 반환에서 지우므로 레코드는 한 번만 나간다.
+static __always_inline int ssl_enter(void *ctx, __u8 direction, int ex) {
+	if (!emit_tls_plaintext) {
+		return 0;
+	}
+	struct ssl_pending pending = {};
+	pending.ssl = ssl_argument(ctx, 0);
+	pending.buffer = ssl_argument(ctx, 1);
+	pending.num = ex ? ssl_argument(ctx, 2) : (__u32)ssl_argument(ctx, 2);
+	if (ex) {
+		pending.out = ssl_argument(ctx, 3);
+	}
+	pending.direction = direction;
+	__u64 key = bpf_get_current_pid_tgid();
+	bpf_map_update_elem(&ssl_pending, &key, &pending, BPF_ANY);
+	return 0;
+}
+
+// ssl_leave는 반환에서 길이를 정한다. SSL_read와 SSL_write는 양수 반환값이 byte 수이고, _ex는 1을 돌려주고 길이를 out에
+// 쓴다. 0 이하(오류, WANT_READ, WANT_WRITE, 종료)는 평문이 없다.
+static __always_inline int ssl_leave(void *ctx, int ex) {
+	if (!emit_tls_plaintext) {
+		return 0;
+	}
+	__u64 key = bpf_get_current_pid_tgid();
+	struct ssl_pending *stored = bpf_map_lookup_elem(&ssl_pending, &key);
+	if (!stored) {
+		return 0;
+	}
+	struct ssl_pending pending = *stored;
+	bpf_map_delete_elem(&ssl_pending, &key);
+	int result = ssl_return_value(ctx);
+	__u64 size = 0;
+	if (ex) {
+		if (result != 1 || !pending.out || bpf_probe_read_user(&size, sizeof(size), (void *)pending.out)) {
+			return 0;
+		}
+	} else {
+		if (result <= 0) {
+			return 0;
+		}
+		size = result;
+	}
+	if (size > pending.num) {
+		size = pending.num;
+	}
+	if (!size || !pending.buffer) {
+		return 0;
+	}
+	struct ssl_snapshot snapshot = {};
+	if (pending.learned) {
+		snapshot = pending.snapshot;
+	} else {
+		struct ssl_key sock_key = {.tgid = key >> 32, .ssl = pending.ssl};
+		struct ssl_snapshot *known = bpf_map_lookup_elem(&ssl_socks, &sock_key);
+		if (known) {
+			snapshot = *known;
+		}
+	}
+	if (!snapshot.skaddr) {
+		// memory BIO(node)나 trace 전에 받아 둔 record에서 온 평문이다. --port가 있으면 port를 확인할 수 없어 버리고 센다.
+		if (http_port) {
+			__u32 zero = 0;
+			__u64 *unmapped = bpf_map_lookup_elem(&tls_unmapped, &zero);
+			if (unmapped) {
+				__sync_fetch_and_add(unmapped, 1);
+			}
+			return 0;
+		}
+	} else if (http_port && snapshot.sport != http_port && snapshot.dport != http_port) {
+		return 0;
+	}
+	// 짝짓기 id는 socket을 배웠어도 SSL 객체로 둔다. OpenSSL은 handshake 때 미리 읽어 둔 요청을 socket 없이 돌려주고, 응답을
+	// 쓸 때 socket을 배운다. socket 주소로 바꾸면 그 요청과 응답이 다른 연결로 나뉜다. 주소는 배운 값을 그대로 싣는다.
+	snapshot.skaddr = ssl_synthetic_socket(key, pending.ssl);
+	ssl_capture(&snapshot, pending.buffer, size, pending.direction);
+	return 0;
+}
+
+SEC("uprobe/SSL_write")
+int ssl_write_entry(void *ctx) {
+	return ssl_enter(ctx, HTTP_SENT, 0);
+}
+
+SEC("uretprobe/SSL_write")
+int ssl_write_exit(void *ctx) {
+	return ssl_leave(ctx, 0);
+}
+
+SEC("uprobe/SSL_write_ex")
+int ssl_write_ex_entry(void *ctx) {
+	return ssl_enter(ctx, HTTP_SENT, 1);
+}
+
+SEC("uretprobe/SSL_write_ex")
+int ssl_write_ex_exit(void *ctx) {
+	return ssl_leave(ctx, 1);
+}
+
+SEC("uprobe/SSL_read")
+int ssl_read_entry(void *ctx) {
+	return ssl_enter(ctx, HTTP_RECEIVED, 0);
+}
+
+SEC("uretprobe/SSL_read")
+int ssl_read_exit(void *ctx) {
+	return ssl_leave(ctx, 0);
+}
+
+SEC("uprobe/SSL_read_ex")
+int ssl_read_ex_entry(void *ctx) {
+	return ssl_enter(ctx, HTTP_RECEIVED, 1);
+}
+
+SEC("uretprobe/SSL_read_ex")
+int ssl_read_ex_exit(void *ctx) {
+	return ssl_leave(ctx, 1);
+}
+
+// SSL_free는 SSL 객체의 끝이다. 평문 레코드는 모두 SSL 객체의 짝짓기 id를 쓰므로, 여기서 배운 socket과 평문 stream 상태를
+// 지우고 끝 레코드를 내서 사용자 공간이 응답을 놓친 요청과 조각 상태를 지우게 한다.
+SEC("uprobe/SSL_free")
+int ssl_free_entry(void *ctx) {
+	if (!emit_tls_plaintext) {
+		return 0;
+	}
+	__u64 pid_tgid = bpf_get_current_pid_tgid();
+	__u64 ssl = ssl_argument(ctx, 0);
+	struct ssl_key sock_key = {.tgid = pid_tgid >> 32, .ssl = ssl};
+	bpf_map_delete_elem(&ssl_socks, &sock_key);
+	__u64 synthetic = ssl_synthetic_socket(pid_tgid, ssl);
+	struct http_stream_key key = {.skaddr = synthetic, .direction = HTTP_SENT | HTTP_DECRYPTED};
+	bpf_map_delete_elem(&http_streams, &key);
+	key.direction = HTTP_RECEIVED | HTTP_DECRYPTED;
+	bpf_map_delete_elem(&http_streams, &key);
+	struct event *event = start_event(ctx, 5);
+	if (!event) {
+		return 0;
+	}
+	event->skaddr = synthetic;
 	finish_event(event);
 	return 0;
 }

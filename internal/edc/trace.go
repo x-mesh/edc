@@ -241,7 +241,10 @@ type traceScope struct {
 	showSecrets bool
 	// keepGzip이면 gzip message의 원본 byte를 event에 붙인다. 전체 화면의 상세 보기가 본문을 풀 때 쓴다.
 	keepGzip bool
-	port     uint16
+	// tls는 --tls 값이다. 비어 있지 않으면 OpenSSL uprobe로 HTTPS 평문을 본다. tlsTargets는 붙일 파일이다.
+	tls        traceTLSMode
+	tlsTargets []traceTLSTarget
+	port       uint16
 	// socketPath는 trace socket이 볼 unix socket 파일이다.
 	socketPath string
 	// dropReasons는 trace drop이 event로 볼 이유 이름이다. 비어 있으면 모든 이유를 본다.
@@ -250,7 +253,7 @@ type traceScope struct {
 
 func (options tcpTraceOptions) scope(protocol string) traceScope {
 	return traceScope{protocol: protocol, server: options.side == traceServerSide, side: options.side, payload: options.payload != "", payloadAll: options.payload == tracePayloadAll,
-		showSecrets: options.showSecrets, port: uint16(options.port), socketPath: options.socketPath, dropReasons: splitDropReasons(options.dropReasons)}
+		showSecrets: options.showSecrets, tls: options.tls, tlsTargets: options.tlsTargets, port: uint16(options.port), socketPath: options.socketPath, dropReasons: splitDropReasons(options.dropReasons)}
 }
 
 // tracePayloadMode는 --payload 값이다. 값 없이 쓰면 message마다 앞 4KiB를, all이면 message 전체를 본다.
@@ -284,6 +287,36 @@ func (mode *tracePayloadMode) Set(value string) error {
 
 // IsBoolFlag가 있어야 flag package가 값 없는 --payload를 받는다. 그래서 값은 --payload=all처럼 붙여 써야 한다.
 func (mode *tracePayloadMode) IsBoolFlag() bool { return true }
+
+// traceTLSMode는 trace http --tls 값이다. 값 없이 쓰면 실행 중인 process가 적재한 libssl과 SSL 심볼을 내보내는 실행
+// 파일을 찾고, --tls=<경로>면 그 파일 하나에만 붙인다. 비어 있으면 HTTPS 평문을 보지 않는다.
+type traceTLSMode string
+
+const traceTLSAuto traceTLSMode = "auto"
+
+func (mode *traceTLSMode) String() string {
+	if mode == nil {
+		return ""
+	}
+	return string(*mode)
+}
+
+func (mode *traceTLSMode) Set(value string) error {
+	switch value {
+	case "true":
+		*mode = traceTLSAuto
+	case "false":
+		*mode = ""
+	case "":
+		return errors.New(T("cli.trace.tls_value"))
+	default:
+		*mode = traceTLSMode(value)
+	}
+	return nil
+}
+
+// --payload와 같이 값 없는 --tls를 받으려고 둔다. 경로는 --tls=<경로>처럼 붙여 써야 한다.
+func (mode *traceTLSMode) IsBoolFlag() bool { return true }
 
 // traceLabel은 화면 머리글에 쓰는 trace 이름이다. 서버 쪽 trace는 client 쪽과 같은 event 이름을 쓰므로 머리글로 구분한다.
 // trace http는 기본으로 두 쪽을 모두 보므로, client만 고른 것도 머리글에 쓴다.
@@ -427,6 +460,7 @@ func runTraceProtocol(args []string) int {
 	set.StringVar(&options.side, "side", "", T("command.trace.option.side"))
 	set.Var(&options.payload, "payload", T("command.trace.option.payload"))
 	set.BoolVar(&options.showSecrets, "show-secrets", false, T("command.trace.option.show_secrets"))
+	set.Var(&options.tls, "tls", T("command.trace.option.tls"))
 	set.IntVar(&options.port, "port", 0, T("command.trace.option.port"))
 	set.StringVar(&options.containerRef, "container", "", T("command.trace.option.container"))
 	set.StringVar(&options.dropReasons, "reason", "", T("command.trace.option.reason"))
@@ -491,6 +525,10 @@ func runTraceProtocol(args []string) int {
 	}
 	if options.payload != "" && args[0] != "http" && args[0] != "socket" {
 		fmt.Fprintln(os.Stderr, T("cli.trace.payload_protocol", args[0]))
+		return 2
+	}
+	if options.tls != "" && args[0] != "http" {
+		fmt.Fprintln(os.Stderr, T("cli.trace.tls_protocol", args[0]))
 		return 2
 	}
 	// --json은 요약만 쓰므로 event에 붙인 payload가 어디에도 나오지 않는다.
@@ -563,6 +601,19 @@ func runTraceProtocol(args []string) int {
 			return code
 		}
 		options.container = container
+	}
+	// 전체 화면이 열리면 stderr 안내가 화면에 섞이므로, 붙일 파일은 화면을 열기 전에 고르고 알린다.
+	if options.tls != "" {
+		targets, notices, code, err := resolveTraceTLSTargets(options.tls)
+		for _, notice := range notices {
+			fmt.Fprintln(os.Stderr, notice)
+		}
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return code
+		}
+		options.tlsTargets = targets
+		fmt.Fprintln(os.Stderr, T("cli.trace.tls_attached", len(targets)))
 	}
 	if !options.raw && options.jsonPath == "" && traceIsTerminal(os.Stdin) && traceIsTerminal(os.Stdout) {
 		return runTraceScreen(args[0], options)

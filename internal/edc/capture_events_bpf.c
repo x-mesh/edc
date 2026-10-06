@@ -2668,8 +2668,10 @@ struct go_tls_writes {
 	__u64 closed;
 };
 
+// (*Conn).Close를 부르지 않고 끝난 process와 열어 둔 연결의 항목은 남는다. HASH가 차면 새 연결의 Write가 순서 맞춤에서
+// 빠지므로, 오래 쓰지 않은 항목은 LRU가 밀어낸다.
 struct {
-	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(type, BPF_MAP_TYPE_LRU_HASH);
 	__uint(max_entries, 10240);
 	__type(key, struct ssl_key);
 	__type(value, struct go_tls_writes);
@@ -2830,6 +2832,93 @@ SEC("uprobe/go_tls_close")
 int go_tls_close_entry(void *ctx) {
 	if (!emit_tls_plaintext || uprobe_arch == UPROBE_ARM64) { return 0; }
 	__u64 connection = SSL_CONTEXT_WORD(ctx, 80);
+	struct ssl_key socket = {.tgid = bpf_get_current_pid_tgid() >> 32, .ssl = connection};
+	struct go_tls_writes *writes = bpf_map_lookup_elem(&go_tls_writes, &socket);
+	if (writes) {
+		__sync_lock_test_and_set(&writes->closed, 1);
+		if (writes->active) { return 0; }
+		bpf_map_delete_elem(&go_tls_writes, &socket);
+	}
+	return ssl_forget(ctx, connection);
+}
+
+static __always_inline int go_tls_arm64_frame(void *ctx, __u8 direction, struct go_tls_key *key, struct go_tls_stack *stack) {
+	key->goroutine = SSL_CONTEXT_WORD(ctx, 224);
+	key->pid = bpf_get_current_pid_tgid() >> 32;
+	key->direction = direction;
+	__u64 sp = SSL_CONTEXT_WORD(ctx, 248);
+	if (!key->goroutine || bpf_probe_read_user(stack, sizeof(*stack), (void *)key->goroutine) || stack->hi <= stack->lo || sp < stack->lo || sp >= stack->hi) {
+		go_tls_lost();
+		return 0;
+	}
+	key->frame = stack->hi - sp;
+	return 1;
+}
+
+static __always_inline int go_tls_arm64_enter(void *ctx, __u8 direction) {
+	if (!emit_tls_plaintext) { return 0; }
+	struct go_tls_key key = {};
+	struct go_tls_stack stack = {};
+	if (!go_tls_arm64_frame(ctx, direction, &key, &stack)) { return 0; }
+	struct go_tls_pending pending = {
+		.connection = SSL_CONTEXT_WORD(ctx, 0),
+		.buffer = SSL_CONTEXT_WORD(ctx, 8),
+		.num = SSL_CONTEXT_WORD(ctx, 16),
+		.started = bpf_ktime_get_ns(),
+	};
+	if (pending.buffer >= stack.lo && pending.buffer < stack.hi) {
+		if (pending.num > stack.hi - pending.buffer) { go_tls_lost(); return 0; }
+		pending.stack_offset = stack.hi - pending.buffer;
+	}
+	if (bpf_map_update_elem(&go_tls_pending, &key, &pending, BPF_ANY)) { go_tls_lost(); return 0; }
+	if (direction == HTTP_SENT) {
+		struct go_tls_pending *stored = bpf_map_lookup_elem(&go_tls_pending, &key);
+		if (stored) { stored->marked = go_tls_write_begin(&key, pending.connection); }
+	}
+	return 0;
+}
+
+static __always_inline int go_tls_arm64_leave(void *ctx, __u8 direction) {
+	if (!emit_tls_plaintext) { return 0; }
+	struct go_tls_key key = {};
+	struct go_tls_stack stack = {};
+	if (!go_tls_arm64_frame(ctx, direction, &key, &stack)) { return 0; }
+	struct go_tls_pending *stored = bpf_map_lookup_elem(&go_tls_pending, &key);
+	if (!stored) { return 0; }
+	struct go_tls_pending pending = *stored;
+	bpf_map_delete_elem(&go_tls_pending, &key);
+	__u64 size = SSL_CONTEXT_WORD(ctx, 0);
+	if ((__s64)size <= 0 || size > pending.num || !pending.buffer) { goto complete; }
+	if (pending.stack_offset) {
+		if (pending.stack_offset > stack.hi - stack.lo || size > pending.stack_offset) { go_tls_lost(); goto complete; }
+		pending.buffer = stack.hi - pending.stack_offset;
+	}
+	if (http_port) {
+		__u32 zero = 0; __u64 *unmapped = bpf_map_lookup_elem(&tls_unmapped, &zero);
+		if (unmapped) { __sync_fetch_and_add(unmapped, 1); }
+		goto complete;
+	}
+	__u8 readable;
+	if (bpf_probe_read_user(&readable, sizeof(readable), (void *)pending.buffer)) { go_tls_lost(); goto complete; }
+	struct ssl_snapshot snapshot = {.skaddr = ssl_synthetic_socket(bpf_get_current_pid_tgid(), pending.connection)};
+	ssl_capture(&snapshot, pending.buffer, size, direction, direction == HTTP_SENT ? pending.started : 0);
+complete:
+	if (direction == HTTP_SENT) { go_tls_write_end(ctx, &key, &pending); }
+	return 0;
+}
+
+SEC("uprobe/go_tls_arm64_read")
+int go_tls_arm64_read_entry(void *ctx) { return go_tls_arm64_enter(ctx, HTTP_RECEIVED); }
+SEC("uprobe/go_tls_arm64_read_return")
+int go_tls_arm64_read_exit(void *ctx) { return go_tls_arm64_leave(ctx, HTTP_RECEIVED); }
+SEC("uprobe/go_tls_arm64_write")
+int go_tls_arm64_write_entry(void *ctx) { return go_tls_arm64_enter(ctx, HTTP_SENT); }
+SEC("uprobe/go_tls_arm64_write_return")
+int go_tls_arm64_write_exit(void *ctx) { return go_tls_arm64_leave(ctx, HTTP_SENT); }
+SEC("uprobe/go_tls_arm64_close")
+int go_tls_arm64_close_entry(void *ctx) {
+	if (!emit_tls_plaintext) { return 0; }
+	__u64 connection = SSL_CONTEXT_WORD(ctx, 0);
 	struct ssl_key socket = {.tgid = bpf_get_current_pid_tgid() >> 32, .ssl = connection};
 	struct go_tls_writes *writes = bpf_map_lookup_elem(&go_tls_writes, &socket);
 	if (writes) {

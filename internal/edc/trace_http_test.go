@@ -1,7 +1,9 @@
 package edc
 
 import (
+	"bytes"
 	"crypto/tls"
+	"encoding/binary"
 	"encoding/json"
 	"io"
 	"net"
@@ -12,7 +14,234 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"golang.org/x/net/http2/hpack"
 )
+
+func http2TestFrame(typeID, flags byte, stream uint32, payload []byte) []byte {
+	frame := make([]byte, 9, 9+len(payload))
+	frame[0], frame[1], frame[2] = byte(len(payload)>>16), byte(len(payload)>>8), byte(len(payload))
+	frame[3], frame[4] = typeID, flags
+	binary.BigEndian.PutUint32(frame[5:9], stream)
+	return append(frame, payload...)
+}
+
+// http2TestPacket은 h2c 연결에서 첫 레코드 뒤에 오는 레코드다. BPF는 h2c 연결 안에서 이어지는 레코드만 내고, offset에
+// 그 방향의 위치를 싣는다.
+func http2TestPacket(payload []byte, at uint64, sent bool, offset int) httpPacket {
+	packet := httpTestPacket(string(payload), at, sent)
+	packet.offset, packet.continued = uint32(offset), true
+	return packet
+}
+
+func http2TestHeaders(fields ...hpack.HeaderField) []byte {
+	var data bytes.Buffer
+	encoder := hpack.NewEncoder(&data)
+	for _, field := range fields {
+		_ = encoder.WriteField(field)
+	}
+	return data.Bytes()
+}
+
+func TestHTTP2TracePairsMultiplexedStreams(t *testing.T) {
+	tracker := newHTTPTracker("", false, false)
+	request1 := http2TestHeaders(hpack.HeaderField{Name: ":method", Value: "GET"}, hpack.HeaderField{Name: ":scheme", Value: "http"}, hpack.HeaderField{Name: ":authority", Value: "api.example"}, hpack.HeaderField{Name: ":path", Value: "/one?q=secret"})
+	request3 := http2TestHeaders(hpack.HeaderField{Name: ":method", Value: "POST"}, hpack.HeaderField{Name: ":scheme", Value: "http"}, hpack.HeaderField{Name: ":authority", Value: "api.example"}, hpack.HeaderField{Name: ":path", Value: "/three"})
+	preface := append(append(append([]byte{}, http2Preface...), http2TestFrame(4, 0, 0, nil)...), http2TestFrame(1, 4, 1, request1)...)
+	events, claimed := tracker.http2Events(httpTestPacket(string(preface), 1_000_000, true), 0)
+	if !claimed || len(events) != 1 || events[0].Method != "GET" || events[0].Path != "/one" {
+		t.Fatalf("first request = %#v, %t", events, claimed)
+	}
+	events, claimed = tracker.http2Events(http2TestPacket(http2TestFrame(1, 4, 3, request3), 2_000_000, true, len(preface)), 0)
+	if !claimed || len(events) != 1 || events[0].Method != "POST" {
+		t.Fatalf("second request = %#v, %t", events, claimed)
+	}
+	response := http2TestHeaders(hpack.HeaderField{Name: ":status", Value: "204"})
+	events, claimed = tracker.http2Events(http2TestPacket(http2TestFrame(1, 4, 3, response), 5_000_000, false, 0), 0)
+	if !claimed || len(events) != 1 || events[0].Status != 204 || events[0].Path != "/three" || events[0].LatencyMS == nil || *events[0].LatencyMS != 3 {
+		t.Fatalf("response = %#v, %t", events, claimed)
+	}
+}
+
+func TestHTTP2TraceJoinsSplitFramesAndContinuation(t *testing.T) {
+	tracker := newHTTPTracker("", false, false)
+	block := http2TestHeaders(hpack.HeaderField{Name: ":method", Value: "GET"}, hpack.HeaderField{Name: ":path", Value: "/split"})
+	frames := append(http2TestFrame(1, 0, 1, block[:1]), http2TestFrame(9, 4, 1, block[1:])...)
+	first := append(append([]byte{}, http2Preface...), frames[:12]...)
+	if events, claimed := tracker.http2Events(httpTestPacket(string(first), 1, true), 0); !claimed || len(events) != 0 {
+		t.Fatalf("first piece = %#v, %t", events, claimed)
+	}
+	if events, claimed := tracker.http2Events(http2TestPacket(frames[12:], 2, true, len(first)), 0); !claimed || len(events) != 1 || events[0].Path != "/split" {
+		t.Fatalf("second piece = %#v, %t", events, claimed)
+	}
+}
+
+func TestHTTP2TraceJoinsSplitPreface(t *testing.T) {
+	tracker := newHTTPTracker("", false, false)
+	if events, claimed := tracker.http2Events(httpTestPacket("PRI * HTTP/2.0\r\n", 1, true), 0); !claimed || len(events) != 0 {
+		t.Fatalf("preface prefix = %#v, %t", events, claimed)
+	}
+	block := http2TestHeaders(hpack.HeaderField{Name: ":method", Value: "GET"}, hpack.HeaderField{Name: ":path", Value: "/preface"})
+	rest := append([]byte("\r\nSM\r\n\r\n"), http2TestFrame(1, 4, 1, block)...)
+	if events, claimed := tracker.http2Events(http2TestPacket(rest, 2, true, len("PRI * HTTP/2.0\r\n")), 0); !claimed || len(events) != 1 || events[0].Path != "/preface" {
+		t.Fatalf("preface rest = %#v, %t", events, claimed)
+	}
+}
+
+func TestHTTP2TraceDropsResetStreams(t *testing.T) {
+	tracker := newHTTPTracker("", false, false)
+	block := http2TestHeaders(hpack.HeaderField{Name: ":method", Value: "GET"}, hpack.HeaderField{Name: ":path", Value: "/reset"})
+	request := append(append([]byte{}, http2Preface...), http2TestFrame(1, 4, 1, block)...)
+	if events, _ := tracker.http2Events(httpTestPacket(string(request), 1, true), 0); len(events) != 1 {
+		t.Fatalf("request = %#v", events)
+	}
+	reset := http2TestFrame(3, 0, 1, []byte{0, 0, 0, 8})
+	if events, claimed := tracker.http2Events(http2TestPacket(reset, 2, false, 0), 0); !claimed || len(events) != 0 {
+		t.Fatalf("reset = %#v, %t", events, claimed)
+	}
+	if len(tracker.h2Pending) != 0 || tracker.h2Size != 0 {
+		t.Fatalf("pending after reset = %#v, %d", tracker.h2Pending, tracker.h2Size)
+	}
+}
+
+// 잃은 byte가 있으면 그 방향은 더 읽지 않는다. frame 경계와 HPACK 표를 되찾을 수 없다.
+func TestHTTP2TraceStopsAfterAGap(t *testing.T) {
+	tracker := newHTTPTracker("", false, false)
+	block := http2TestHeaders(hpack.HeaderField{Name: ":method", Value: "GET"}, hpack.HeaderField{Name: ":path", Value: "/first"})
+	first := append(append([]byte{}, http2Preface...), http2TestFrame(1, 4, 1, block)...)
+	if events, _ := tracker.http2Events(httpTestPacket(string(first), 1, true), 0); len(events) != 1 {
+		t.Fatalf("first = %#v", events)
+	}
+	next := http2TestFrame(1, 4, 3, http2TestHeaders(hpack.HeaderField{Name: ":method", Value: "GET"}, hpack.HeaderField{Name: ":path", Value: "/after"}))
+	// BPF가 쓰기 하나를 다 넘기지 못하면 다음 레코드는 기다리던 위치보다 뒤에서 시작한다.
+	if events, claimed := tracker.http2Events(http2TestPacket(next, 2, true, len(first)+100), 0); !claimed || len(events) != 0 {
+		t.Fatalf("after a gap = %#v, %t", events, claimed)
+	}
+	if events, claimed := tracker.http2Events(http2TestPacket(next, 3, true, len(first)+100+len(next)), 0); claimed || len(events) != 0 {
+		t.Fatalf("after the stop = %#v, %t", events, claimed)
+	}
+}
+
+// non-blocking socket은 송신 버퍼가 차면 일부만 보내고 나머지를 다시 쓴다. BPF는 시작할 때 길이를 다 넘기므로 다시 쓴
+// byte가 같은 TCP 순번으로 다시 온다. 겹친 앞부분은 버리고 이어지는 frame만 읽는다.
+func TestHTTP2TraceSkipsResentBytes(t *testing.T) {
+	tracker := newHTTPTracker("", false, false)
+	headers := func(path string) []byte {
+		return http2TestFrame(1, 4, 1, http2TestHeaders(hpack.HeaderField{Name: ":method", Value: "GET"}, hpack.HeaderField{Name: ":path", Value: path}))
+	}
+	const seq = 1_000_000
+	first := append(append([]byte{}, http2Preface...), headers("/one")...)
+	start := http2TestPacket(first, 1, true, seq)
+	start.continued = false
+	if events, _ := tracker.http2Events(start, 0); len(events) != 1 || events[0].Path != "/one" {
+		t.Fatalf("first = %#v", events)
+	}
+	resent := append(append([]byte{}, first[len(first)-10:]...), headers("/two")...)
+	if events, claimed := tracker.http2Events(http2TestPacket(resent, 2, true, seq+len(first)-10), 0); !claimed || len(events) != 1 || events[0].Path != "/two" {
+		t.Fatalf("resent = %#v, %t", events, claimed)
+	}
+	if events, claimed := tracker.http2Events(http2TestPacket(first[:20], 3, true, seq), 0); !claimed || len(events) != 0 {
+		t.Fatalf("whole resend = %#v, %t", events, claimed)
+	}
+	if events, _ := tracker.http2Events(http2TestPacket(headers("/three"), 4, true, seq+len(first)+len(headers("/two"))), 0); len(events) != 1 || events[0].Path != "/three" {
+		t.Fatalf("after the resend = %#v", events)
+	}
+}
+
+// 닫힘 레코드를 놓친 사이에 새 연결이 같은 socket 주소를 쓰면 시작 레코드가 온다. 남은 h2c 상태를 버리고 새로 읽어야
+// 새 연결의 요청이 사라지지 않는다.
+func TestHTTP2TraceDropsStaleStateOnANewStart(t *testing.T) {
+	tracker := newHTTPTracker("", false, false)
+	block := http2TestHeaders(hpack.HeaderField{Name: ":method", Value: "GET"}, hpack.HeaderField{Name: ":path", Value: "/old"})
+	if events, _ := tracker.http2Events(httpTestPacket(string(append(append([]byte{}, http2Preface...), http2TestFrame(1, 4, 1, block)...)), 1, true), 0); len(events) != 1 {
+		t.Fatalf("old connection = %#v", events)
+	}
+	if events, claimed := tracker.http2Events(httpTestPacket("GET /new HTTP/1.1\r\nHost: x\r\n\r\n", 2, true), 0); claimed || len(events) != 0 {
+		t.Fatalf("HTTP/1 start = %#v, %t", events, claimed)
+	}
+	if len(tracker.http2) != 0 || len(tracker.h2Pending) != 0 || tracker.h2Size != 0 {
+		t.Fatalf("state left = %d directions, %#v pending, size %d", len(tracker.http2), tracker.h2Pending, tracker.h2Size)
+	}
+	block = http2TestHeaders(hpack.HeaderField{Name: ":method", Value: "GET"}, hpack.HeaderField{Name: ":path", Value: "/again"})
+	if events, _ := tracker.http2Events(httpTestPacket(string(append(append([]byte{}, http2Preface...), http2TestFrame(1, 4, 1, block)...)), 3, true), 0); len(events) != 1 || events[0].Path != "/again" {
+		t.Fatalf("new h2c connection = %#v", events)
+	}
+}
+
+// 앞 연결에서 한 방향만 멈췄어도 시작 레코드가 오면 남은 반대 방향까지 버린다. 남기면 새 연결의 그 방향 레코드를 앞
+// 연결의 위치와 HPACK 표로 읽는다.
+func TestHTTP2TraceDropsAStaleDirectionLeftAlone(t *testing.T) {
+	tracker := newHTTPTracker("", false, false)
+	tracker.http2Events(httpTestPacket(string(http2Preface), 1, true), 0)
+	delete(tracker.http2, httpStreamKey{socket: 1, sent: true})
+	if events, claimed := tracker.http2Events(httpTestPacket("GET /new HTTP/1.1\r\nHost: x\r\n\r\n", 2, true), 0); claimed || len(events) != 0 {
+		t.Fatalf("HTTP/1 start = %#v, %t", events, claimed)
+	}
+	if len(tracker.http2) != 0 {
+		t.Fatalf("directions left = %d", len(tracker.http2))
+	}
+}
+
+// 수신 위치는 BPF가 0부터 센다. preface와 함께 만든 수신 방향은 0에서 시작하므로 앞 레코드를 잃으면 멈춘다.
+func TestHTTP2TraceStartsTheReceivedDirectionAtZero(t *testing.T) {
+	tracker := newHTTPTracker("", false, false)
+	start := http2TestPacket(append(append([]byte{}, http2Preface...), http2TestFrame(4, 0, 0, nil)...), 1, true, 5000)
+	start.continued = false
+	tracker.http2Events(start, 0)
+	response := http2TestFrame(1, 4, 1, http2TestHeaders(hpack.HeaderField{Name: ":status", Value: "200"}))
+	if events, claimed := tracker.http2Events(http2TestPacket(response, 2, false, 9), 0); !claimed || len(events) != 0 {
+		t.Fatalf("received after a gap = %#v, %t", events, claimed)
+	}
+}
+
+// HPACK 오류 뒤에는 동적 표가 상대와 어긋나므로 그 방향은 더 읽지 않는다.
+func TestHTTP2TraceStopsAfterAnHPACKError(t *testing.T) {
+	tracker := newHTTPTracker("", false, false)
+	broken := append(append([]byte{}, http2Preface...), http2TestFrame(1, 4, 1, []byte{0x80})...)
+	if events, claimed := tracker.http2Events(httpTestPacket(string(broken), 1, true), 0); !claimed || len(events) != 0 {
+		t.Fatalf("broken block = %#v, %t", events, claimed)
+	}
+	valid := http2TestFrame(1, 4, 3, http2TestHeaders(hpack.HeaderField{Name: ":method", Value: "GET"}, hpack.HeaderField{Name: ":path", Value: "/later"}))
+	if events, _ := tracker.http2Events(http2TestPacket(valid, 2, true, len(broken)), 0); len(events) != 0 {
+		t.Fatalf("after an HPACK error = %#v", events)
+	}
+}
+
+// "PRI "로 시작했지만 preface가 아니면 두 방향 모두 h2c로 보지 않고, 그 조각을 HTTP/1 경로로 돌려준다.
+func TestHTTP2TraceGivesBackAFalsePreface(t *testing.T) {
+	tracker := newHTTPTracker("", false, false)
+	start := "PRI * HTTP/2.0\r\n"
+	if _, claimed := tracker.http2Events(httpTestPacket(start, 1, true), 0); !claimed {
+		t.Fatal("the preface start was not held")
+	}
+	if events, claimed := tracker.http2Events(http2TestPacket([]byte("Host: example\r\n"), 2, true, len(start)), 0); claimed || len(events) != 0 {
+		t.Fatalf("false preface = %#v, %t", events, claimed)
+	}
+	if len(tracker.http2) != 0 {
+		t.Fatalf("directions left = %d", len(tracker.http2))
+	}
+}
+
+// 응답을 받지 못한 HTTP/2 요청도 HTTP/1처럼 상한에서 비운다. socket이 닫히면 그 socket의 요청만 지운다.
+func TestHTTP2TraceCapsPendingRequests(t *testing.T) {
+	tracker := newHTTPTracker("", false, false)
+	request := []hpack.HeaderField{{Name: ":method", Value: "GET"}, {Name: ":path", Value: "/x"}}
+	if _, ok := tracker.http2HeaderEvent(httpTestPacket("", 1, true), 1, request, 0); !ok {
+		t.Fatal("request was not read")
+	}
+	tracker.h2Size = traceHTTPPendingLimit
+	other := httpTestPacket("", 2, true)
+	other.socket = 2
+	if _, ok := tracker.http2HeaderEvent(other, 1, request, 0); !ok {
+		t.Fatal("request was not read")
+	}
+	if tracker.h2Size != 1 || len(tracker.h2Pending) != 1 || len(tracker.h2Pending[2]) != 1 {
+		t.Fatalf("pending at the limit = %#v, %d", tracker.h2Pending, tracker.h2Size)
+	}
+	tracker.forget(2)
+	if tracker.h2Size != 0 || len(tracker.h2Pending) != 0 {
+		t.Fatalf("pending after forget = %#v, %d", tracker.h2Pending, tracker.h2Size)
+	}
+}
 
 func TestParseHTTPRequestReadsTheRequestLineAndHost(t *testing.T) {
 	method, target, host, ok := parseHTTPRequest([]byte("GET /search?q=secret HTTP/1.1\r\nUser-Agent: curl\r\nHOST: Example.COM:8080\r\nCookie: a=b\r\n\r\n"))
@@ -831,6 +1060,10 @@ func TestHTTPTrackerMarksHTTP2OverTLSOnce(t *testing.T) {
 	tracker := newHTTPTracker("", false, false)
 	var events []captureEvent
 	for _, packet := range []httpPacket{tlsTestPacket(preface, 1_000_000, true), server} {
+		// 수집 루프처럼 h2c 처리를 먼저 거친다. --tls 평문은 h2c로 읽지 않는다.
+		if _, claimed := tracker.http2Events(packet, 0); claimed {
+			t.Fatalf("h2c claimed TLS plaintext %q", packet.payload)
+		}
 		event, ok := tracker.event(packet, 0)
 		if !ok || event.Event != traceHTTP2UnparsedEvent || !event.TLS {
 			t.Fatalf("preface = %#v, %t", event, ok)

@@ -713,7 +713,7 @@ func traceScreenListRows(model traceScreenModel, available int) []string {
 		}
 		line := formatTraceScreenEventLabels(event, destination, name, model.width)
 		if row.primary == model.selected || row.response == model.selected {
-			line = liveSelected(line, os.Getenv("NO_COLOR") == "")
+			line = traceSelectedEvent(line, model.width, os.Getenv("NO_COLOR") == "")
 		} else if model.width >= 72 {
 			line = traceEventStyle(line, traceProtocol(event), name)
 		}
@@ -760,6 +760,13 @@ func traceScreenListRows(model traceScreenModel, available int) []string {
 		rows = append(rows, lines...)
 	}
 	return traceScreenPadRows(rows, available)
+}
+
+func traceSelectedEvent(line string, width int, color bool) string {
+	if !color {
+		return line
+	}
+	return lipgloss.NewStyle().Foreground(lipgloss.Color("#f8fafc")).Bold(true).Render(line)
 }
 
 // traceScreenGroupOrder는 화면에 다 들어가지 않을 때 잘릴 group을 정한다. 이름순으로 자르면 같은

@@ -40,6 +40,8 @@ type resourceSnapshot struct {
 	PSICPU          float64
 	PSIMemory       float64
 	PSIIO           float64
+	PSIMemoryFull   float64
+	PSIIOFull       float64
 	PSIValid        bool
 	Processes       []topProcess
 	ProcessesValid  bool
@@ -56,6 +58,14 @@ type resourceSnapshot struct {
 	// SwapOutBytes는 부팅 뒤 memory가 모자라 kernel이 swap으로 내보낸 누적 byte다.
 	SwapOutBytes uint64
 	SwapMissing  bool
+	// DiskQueueMS는 진행 중인 I/O 수에 시간을 곱해 쌓은 값이다. 구간 시간으로 나누면 평균 큐 길이다. busy와 같은 diskstats에서 읽는다.
+	DiskQueueMS uint64
+	// CPUSteal은 hypervisor가 다른 guest에 CPU를 내준 시간이다. macOS는 이 값을 주지 않는다.
+	CPUSteal      uint64
+	CPUStealValid bool
+	// ProcsBlocked는 지금 I/O를 기다리며 멈춘(D state) 작업 수다. 누적값이 아니라 현재 값이다.
+	ProcsBlocked      uint64
+	ProcsBlockedValid bool
 }
 
 type topProcess struct {
@@ -471,13 +481,18 @@ type resourceRate struct {
 	NetErrors, NetDrops             float64
 	DiskRead, DiskWrite             float64
 	DiskIOPS, DiskAwait, DiskBusy   float64
+	DiskQueue                       float64
 	CPUUser, CPUSystem, CPUIOWait   float64
+	CPUSteal, ProcsBlocked          float64
 	MemoryPercent, Load1            float64
 	SwapOut                         float64
 	NetHealthValid, DiskHealthValid bool
 	DiskBusyValid                   bool
+	CPUStealValid                   bool
+	ProcsBlockedValid               bool
 	CoreCPU                         []float64
 	PSICPU, PSIMemory, PSIIO        float64
+	PSIMemoryFull, PSIIOFull        float64
 	PSIValid                        bool
 }
 
@@ -538,13 +553,19 @@ func calculateRate(previous, current resourceSnapshot) resourceRate {
 	}
 	if rate.DiskBusyValid {
 		rate.DiskBusy = float64(delta(current.DiskBusyMS, previous.DiskBusyMS)) / seconds / 10
+		rate.DiskQueue = float64(delta(current.DiskQueueMS, previous.DiskQueueMS)) / seconds / 1000
 	}
+	rate.CPUStealValid = current.CPUStealValid && previous.CPUStealValid
+	if rate.CPUStealValid {
+		rate.CPUSteal = percent(current.CPUSteal, previous.CPUSteal)
+	}
+	rate.ProcsBlocked, rate.ProcsBlockedValid = float64(current.ProcsBlocked), current.ProcsBlockedValid
 	// 한쪽 sample이 counter를 읽지 못했으면 이 구간의 rate는 알 수 없다. 0으로 남은 counter와 비교하지 않는다.
 	if previous.NetMissing || current.NetMissing {
 		rate.NetIn, rate.NetOut, rate.PacketsIn, rate.PacketsOut, rate.NetErrors, rate.NetDrops, rate.NetHealthValid = 0, 0, 0, 0, 0, 0, false
 	}
 	if previous.DiskMissing || current.DiskMissing {
-		rate.DiskRead, rate.DiskWrite, rate.DiskIOPS, rate.DiskAwait, rate.DiskBusy, rate.DiskHealthValid, rate.DiskBusyValid = 0, 0, 0, 0, 0, false, false
+		rate.DiskRead, rate.DiskWrite, rate.DiskIOPS, rate.DiskAwait, rate.DiskBusy, rate.DiskQueue, rate.DiskHealthValid, rate.DiskBusyValid = 0, 0, 0, 0, 0, 0, false, false
 	}
 	if !previous.SwapMissing && !current.SwapMissing {
 		rate.SwapOut = float64(delta(current.SwapOutBytes, previous.SwapOutBytes)) / seconds
@@ -559,6 +580,7 @@ func calculateRate(previous, current resourceSnapshot) resourceRate {
 		}
 	}
 	rate.PSICPU, rate.PSIMemory, rate.PSIIO, rate.PSIValid = current.PSICPU, current.PSIMemory, current.PSIIO, current.PSIValid
+	rate.PSIMemoryFull, rate.PSIIOFull = current.PSIMemoryFull, current.PSIIOFull
 	return rate
 }
 
@@ -574,11 +596,11 @@ func parseLinuxSwapOutPages(input string) (uint64, bool) {
 	return 0, false
 }
 
-// parsePressureAvg10은 /proc/pressure/*의 some 행에서 최근 10초 stall 비율을 읽는다.
-func parsePressureAvg10(input string) (float64, bool) {
+// parsePressureAvg10은 /proc/pressure/*의 kind 행(some 또는 full)에서 최근 10초 stall 비율을 읽는다.
+func parsePressureAvg10(input, kind string) (float64, bool) {
 	for _, line := range strings.Split(input, "\n") {
 		fields := strings.Fields(line)
-		if len(fields) == 0 || fields[0] != "some" {
+		if len(fields) == 0 || fields[0] != kind {
 			continue
 		}
 		for _, field := range fields[1:] {

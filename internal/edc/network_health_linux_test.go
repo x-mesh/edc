@@ -27,7 +27,7 @@ func TestNetworkLinuxProcFixture(t *testing.T) {
 	write("sys/net/ipv4/ip_local_reserved_ports", "\n")
 	write("sys/net/core/somaxconn", "broken\n")
 	write("net/netstat", "TcpExt: ListenOverflows ListenDrops SyncookiesSent\nTcpExt: 10 20 0\n")
-	write("net/snmp", "Tcp: CurrEstab\nTcp: 3\nUdp: RcvbufErrors SndbufErrors\nUdp: 4 5\n")
+	write("net/snmp", "Tcp: AttemptFails CurrEstab RetransSegs OutRsts\nTcp: 7 3 11 13\nUdp: RcvbufErrors SndbufErrors\nUdp: 4 5\n")
 	write("net/sockstat", "TCP: inuse 12 orphan 0 tw 40 alloc 15 mem 3\n")
 	write("net/softnet_stat", "00000010 00000002 00000003\n00000011 00000004 00000005\n")
 	write("net/stat/nf_conntrack", "entries drop early_drop insert_failed\n000000ff 00000001 00000002 00000003\n000000ff 00000002 00000003 00000004\n")
@@ -48,7 +48,7 @@ func TestNetworkLinuxProcFixture(t *testing.T) {
 			t.Fatalf("%s = %+v", name, health.Gauges[name])
 		}
 	}
-	for name, expected := range map[string]uint64{"listen_overflows": 10, "listen_drops": 20, "syn_cookies_sent": 0, "udp_rcvbuf_errors": 4, "udp_sndbuf_errors": 5, "softnet_dropped": 6, "softnet_time_squeeze": 8, "conntrack_drop": 3, "conntrack_early_drop": 5, "conntrack_insert_failed": 7} {
+	for name, expected := range map[string]uint64{"listen_overflows": 10, "listen_drops": 20, "syn_cookies_sent": 0, "udp_rcvbuf_errors": 4, "udp_sndbuf_errors": 5, "softnet_dropped": 6, "softnet_time_squeeze": 8, "conntrack_drop": 3, "conntrack_early_drop": 5, "conntrack_insert_failed": 7, "tcp_retrans_segs": 11, "tcp_out_rsts": 13, "tcp_attempt_fails": 7} {
 		if got := health.Counters[name].Value; got == nil || *got != expected {
 			t.Fatalf("%s = %+v", name, health.Counters[name])
 		}

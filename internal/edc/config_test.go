@@ -169,6 +169,10 @@ func TestConfigRejectsUnknownTypeAndRange(t *testing.T) {
 		"defaults: {remote: {inventory: false}}\n",
 		"defaults: {log: {output: false}}\n",
 		"defaults: {top: {count: 1.9}}\n",
+		"defaults: {top: {split: memory}}\n",
+		"defaults: {top: {split: \"mem,mem\"}}\n",
+		"defaults: {top: {split: 3}}\n",
+		"defaults: {top: {split: [mem]}}\n",
 		"defaults: {common: {verbose: yes}}\n",
 		"defaults: {common: {json: report.json}}\n",
 		"defaults: {top: {json: report.json}}\n",
@@ -186,6 +190,26 @@ func TestConfigRejectsUnknownTypeAndRange(t *testing.T) {
 	}
 	if _, err := loadConfigAt(writeConfigFixture(t, "defaults: {http: {expect_status: 0}}\n")); err != nil {
 		t.Fatalf("expect_status 0 must disable the check: %v", err)
+	}
+}
+
+func TestConfigTopSplitLoadsAndSurvivesSetup(t *testing.T) {
+	for _, value := range []string{"mem,disk", "all", "none", ""} {
+		config, err := loadConfigAt(writeConfigFixture(t, "defaults: {top: {split: \""+value+"\"}}\n"))
+		if err != nil || config.Defaults.Top.Split == nil || *config.Defaults.Top.Split != value {
+			t.Errorf("split %q = %#v, error = %v", value, config.Defaults.Top.Split, err)
+		}
+	}
+	config, err := loadConfigAt(writeTOMLFixture(t, "[defaults.top]\nsplit = \"psi\"\n"))
+	if err != nil || config.Defaults.Top.Split == nil || *config.Defaults.Top.Split != "psi" {
+		t.Fatalf("TOML split = %#v, error = %v", config.Defaults.Top.Split, err)
+	}
+	recommended := recommendedConfig().Defaults.Top
+	if recommended.Split != nil {
+		t.Fatalf("recommendedConfig split = %q, want unset", *recommended.Split)
+	}
+	if merged := mergeConfigSection(topConfig{Split: stringPointer("mem")}, recommended); merged.Split == nil || *merged.Split != "mem" {
+		t.Fatalf("merged split = %#v, want mem", merged.Split)
 	}
 }
 

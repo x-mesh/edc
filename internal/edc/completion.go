@@ -135,7 +135,7 @@ _edc() {
     args)
       case $words[1] in
         top)
-          _arguments '--interval[sampling interval]:duration' '--count[출력 row 수]:count' '--no-header[header 생략]' '--process[process filter]:filter' '(-d --detail)'{-d,--detail}'[eBPF details]' '(-w --write)'{-w,--write}'[SQLite 기록, 경로 생략 시 기본 DB]::path:_files' '--json[sample당 한 줄 JSON 출력 경로]:path:_files'
+          _arguments '--interval[sampling interval]:duration' '--count[출력 row 수]:count' '--no-header[header 생략]' '--process[process filter]:filter' '--split=-[박스 화면, =all은 전체]::views:(all none cpu mem disk net psi)' '(-d --detail)'{-d,--detail}'[eBPF details]' '(-w --write)'{-w,--write}'[SQLite 기록, 경로 생략 시 기본 DB]::path:_files' '--json[sample당 한 줄 JSON 출력 경로]:path:_files'
           ;;
         history)
           _arguments '1:subcommand:(list top process)' '--run[실행 ID]:id' '--from[시작 시각]:RFC3339' '--to[종료 시각]:RFC3339' '--process[process filter]:filter' '--metric[지표 이름]:metric' '--min[최솟값]:number' '--max[최댓값]:number' '--limit[최대 결과 수]:count' '--json[JSONL 출력 경로]:path:_files' '*:database:_files'
@@ -299,8 +299,9 @@ _edc() {
       case "$prev" in
         --json) COMPREPLY=($(compgen -f -- "$cur")); return ;;
         -w|--write) if [[ $cur != -* ]]; then COMPREPLY=($(compgen -f -- "$cur")); return; fi ;;
+        --split) if [[ $cur != -* ]]; then COMPREPLY=($(compgen -W "all none cpu mem disk net psi" -- "$cur")); return; fi ;;
       esac
-      COMPREPLY=($(compgen -W "--interval --count --no-header --process -d --detail --ebpf -w --write --json" -- "$cur")) ;;
+      COMPREPLY=($(compgen -W "--interval --count --no-header --process --split -d --detail --ebpf -w --write --json" -- "$cur")) ;;
     history)
       if [[ $COMP_CWORD -eq 2 ]]; then COMPREPLY=($(compgen -W "list top process" -- "$cur"))
       elif [[ $prev == --json ]]; then COMPREPLY=($(compgen -f -- "$cur"))

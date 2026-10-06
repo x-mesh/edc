@@ -24,6 +24,7 @@ func runTop(args []string, version string) (code int) {
 	noHeader := set.Bool("no-header", configuredBool(config.NoHeader, false), T("command.top.option.no_header"))
 	processValue := set.String("process", "", T("command.top.option.process"))
 	fullCommand := set.Bool("full", false, T("command.top.option.full"))
+	splitValue := set.String("split", "", T("command.top.option.split"))
 	ebpf := set.Bool("ebpf", false, T("command.top.option.ebpf"))
 	// -d와 --detail은 사용자에게 보이는 이름이다. v0.28.0의 --ebpf도 같은 값으로 계속 받는다.
 	set.BoolVar(ebpf, "detail", false, T("command.top.option.detail"))
@@ -64,7 +65,11 @@ func runTop(args []string, version string) (code int) {
 		fmt.Fprintln(os.Stderr, T("history.error.path"))
 		return 2
 	}
+	explicitSplit := false
 	set.Visit(func(option *flag.Flag) {
+		if option.Name == "split" {
+			explicitSplit = true
+		}
 		if (option.Name == "write" || option.Name == "w") && option.Value.String() == "" {
 			code = 2
 		}
@@ -72,6 +77,29 @@ func runTop(args []string, version string) (code int) {
 	if code != 0 {
 		fmt.Fprintln(os.Stderr, T("history.error.path"))
 		return code
+	}
+	jsonOutput := *jsonPath != ""
+	// 대시보드는 무한 실행에만 쓴다. --count와 --json은 표와 JSON을 그대로 흘려 보낸다.
+	dashboard := !jsonOutput && *count == 0 && liveTerminal()
+	// --split 검사는 --json 파일을 열거나 --write DB를 만들기 전에 끝낸다. 실패한 실행이 파일을 비우거나 DB를 남기면 안 된다.
+	splitText := configuredString(config.Split, "")
+	if explicitSplit {
+		splitText = *splitValue
+	}
+	var split []topView
+	if explicitSplit || splitText != "" {
+		if split, err = parseTopSplit(splitText); err != nil {
+			fmt.Fprintln(os.Stderr, T("observe.top.split_invalid"))
+			return 2
+		}
+	}
+	if explicitSplit && filter.active() {
+		fmt.Fprintln(os.Stderr, T("observe.top.split_with_process"))
+		return 2
+	}
+	if explicitSplit && !dashboard {
+		fmt.Fprintln(os.Stderr, T("observe.top.split_needs_view"))
+		return 2
 	}
 	var writer io.Writer = os.Stdout
 	if *jsonPath != "" && *jsonPath != "-" {
@@ -83,9 +111,6 @@ func runTop(args []string, version string) (code int) {
 		defer file.Close()
 		writer = file
 	}
-	jsonOutput := *jsonPath != ""
-	// 대시보드는 무한 실행에만 쓴다. --count와 --json은 표와 JSON을 그대로 흘려 보낸다.
-	dashboard := !jsonOutput && *count == 0 && liveTerminal()
 	if filter.active() && !dashboard && !jsonOutput && *writePath == "" {
 		// 표에는 process 열이 없다. 필터를 조용히 무시하면 전체 host 값을 필터한 값으로 읽게 된다.
 		fmt.Fprintln(os.Stderr, T("observe.top.process_needs_view"))
@@ -144,7 +169,7 @@ func runTop(args []string, version string) (code int) {
 		}()
 	}
 	if dashboard {
-		return runTopDashboard(*interval, version, filter, recorder)
+		return runTopDashboard(*interval, version, filter, recorder, split)
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
@@ -177,6 +202,18 @@ func normalizeTopWriteArgs(args []string, set *flag.FlagSet) ([]string, bool) {
 			} else {
 				normalized = append(normalized, arg+"=")
 				defaultWrite = true
+			}
+			continue
+		}
+		if name == "split" {
+			switch {
+			case hasValue:
+				normalized = append(normalized, arg)
+			case index+1 < len(args) && !strings.HasPrefix(args[index+1], "-"):
+				index++
+				normalized = append(normalized, arg+"="+args[index])
+			default:
+				normalized = append(normalized, arg+"=all")
 			}
 			continue
 		}
@@ -230,6 +267,8 @@ type topSample struct {
 	PSICPU        float64            `json:"psi_cpu_some_avg10_pct"`
 	PSIMemory     float64            `json:"psi_memory_some_avg10_pct"`
 	PSIIO         float64            `json:"psi_io_some_avg10_pct"`
+	PSIMemoryFull float64            `json:"psi_memory_full_avg10_pct"`
+	PSIIOFull     float64            `json:"psi_io_full_avg10_pct"`
 	PSIValid      bool               `json:"psi_supported"`
 	MemoryPct     float64            `json:"memory_pct"`
 	SwapOut       float64            `json:"swap_out_bytes_per_s"`
@@ -325,7 +364,7 @@ func newTopSample(details hostDetails, at time.Time, rate resourceRate) topSampl
 		NetIn: roundTopValue(rate.NetIn), NetOut: roundTopValue(rate.NetOut),
 		PacketsIn: roundTopValue(rate.PacketsIn), PacketsOut: roundTopValue(rate.PacketsOut), NetErrors: roundTopValue(rate.NetErrors), NetDrops: roundTopValue(rate.NetDrops), NetHealth: rate.NetHealthValid,
 		Load1: roundTopValue(rate.Load1), CPUUser: roundTopValue(rate.CPUUser), CPUSystem: roundTopValue(rate.CPUSystem), CPUIOWait: roundTopValue(rate.CPUIOWait),
-		DiskRead: roundTopValue(rate.DiskRead), DiskWrite: roundTopValue(rate.DiskWrite), DiskIOPS: roundTopValue(rate.DiskIOPS), DiskAwait: roundTopValue(rate.DiskAwait), DiskBusy: roundTopValue(rate.DiskBusy), DiskHealth: rate.DiskHealthValid, DiskBusyOK: rate.DiskBusyValid, PSICPU: roundTopValue(rate.PSICPU), PSIMemory: roundTopValue(rate.PSIMemory), PSIIO: roundTopValue(rate.PSIIO), PSIValid: rate.PSIValid, MemoryPct: roundTopValue(rate.MemoryPercent), SwapOut: roundTopValue(rate.SwapOut),
+		DiskRead: roundTopValue(rate.DiskRead), DiskWrite: roundTopValue(rate.DiskWrite), DiskIOPS: roundTopValue(rate.DiskIOPS), DiskAwait: roundTopValue(rate.DiskAwait), DiskBusy: roundTopValue(rate.DiskBusy), DiskHealth: rate.DiskHealthValid, DiskBusyOK: rate.DiskBusyValid, PSICPU: roundTopValue(rate.PSICPU), PSIMemory: roundTopValue(rate.PSIMemory), PSIIO: roundTopValue(rate.PSIIO), PSIMemoryFull: roundTopValue(rate.PSIMemoryFull), PSIIOFull: roundTopValue(rate.PSIIOFull), PSIValid: rate.PSIValid, MemoryPct: roundTopValue(rate.MemoryPercent), SwapOut: roundTopValue(rate.SwapOut),
 	}
 }
 

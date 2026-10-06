@@ -222,6 +222,36 @@ func TestTopPressureAndCorePresentation(t *testing.T) {
 	if got := topSignal(resourceRate{PSIValid: true, PSIIO: 30}, limits); got != "psi io 30%" {
 		t.Fatalf("pressure signal = %q", got)
 	}
+	model := topFixtureModel(nil)
+	model.view = topViewPressure
+	row := topDashboardRow{at: time.Unix(1, 0), rate: resourceRate{PSIValid: true, PSIMemoryFull: 12.5, PSIIOFull: 7.25}}
+	if header := model.tableHeader()[0]; !strings.Contains(header, "mem full") || !strings.Contains(header, "io full") {
+		t.Fatalf("pressure header = %q", header)
+	}
+	if line := model.tableRow(row); !strings.Contains(line, "12.5") || !strings.Contains(line, "7.2") {
+		t.Fatalf("pressure row = %q", line)
+	}
+	if line := model.tableRow(topDashboardRow{at: time.Unix(1, 0)}); strings.Count(line, "—") < 5 {
+		t.Fatalf("pressure row without PSI = %q", line)
+	}
+}
+
+func TestTopCoresColumnFollowsTheCoreCount(t *testing.T) {
+	model := topFixtureModel(nil)
+	model.view = topViewCPU
+	for _, row := range []struct{ cores, width int }{{0, topCoreBarLimit}, {2, len("cores")}, {12, 12}, {40, topCoreBarLimit}} {
+		model.previous.Cores = make([]resourceCPU, row.cores)
+		columns, _ := model.tableColumns()
+		for _, column := range columns {
+			if column.title == "cores" && column.width != row.width {
+				t.Errorf("%d cores: width = %d, want %d", row.cores, column.width, row.width)
+			}
+		}
+		header, line := model.tableHeader()[0], model.tableRow(topDashboardRow{at: time.Unix(1, 0), rate: resourceRate{CoreCPU: make([]float64, row.cores)}})
+		if ansi.StringWidth(header) != ansi.StringWidth(line) {
+			t.Errorf("%d cores: header %d columns, row %d columns", row.cores, ansi.StringWidth(header), ansi.StringWidth(line))
+		}
+	}
 }
 
 func TestTopProcessDetailUsesTheSelectedSnapshot(t *testing.T) {
@@ -344,15 +374,91 @@ func TestTopFilterSeedKeepsTheExecutableNameOnly(t *testing.T) {
 
 func TestTopDashboardRowsFitTargetWidth(t *testing.T) {
 	row := topDashboardRow{at: time.Unix(1, 0), rate: resourceRate{NetIn: 12 * 1024 * 1024, NetOut: 2 * 1024 * 1024, PacketsIn: 42, PacketsOut: 99, Load1: 2.5, CPUUser: 12, CPUSystem: 4, CPUIOWait: 1, DiskRead: 3 * 1024 * 1024, DiskWrite: 4 * 1024 * 1024, MemoryPercent: 55}}
-	for _, view := range []topView{topViewAll, topViewCPU, topViewMemory, topViewDisk, topViewNetwork, topViewPressure} {
-		for _, header := range topDashboardHeaders(view, topTableWidth) {
-			if got := len([]rune(header)); got > topTableWidth {
-				t.Fatalf("%s header width = %d", view, got)
-			}
+	for _, header := range topDashboardHeaders(topViewAll, topTableWidth) {
+		if got := len([]rune(header)); got > topTableWidth {
+			t.Fatalf("all header width = %d", got)
 		}
-		if got := len([]rune(formatTopDashboardRow(row, view, newTopLimits(8, false), topTableWidth))); got > topTableWidth {
+	}
+	if got := len([]rune(formatTopDashboardRow(row, topViewAll, newTopLimits(8, false), topTableWidth))); got > topTableWidth {
+		t.Fatalf("all row width = %d", got)
+	}
+	// 보기 칸은 tableColumns가 폭에 맞춰 고른다. 뒤에 붙인 optional 칸이 들어가도 80열을 넘지 않는다.
+	model := topFixtureModel(nil)
+	for _, view := range []topView{topViewCPU, topViewMemory, topViewDisk, topViewNetwork, topViewPressure} {
+		model.view = view
+		if got := ansi.StringWidth(model.tableHeader()[0]); got > topTableWidth {
+			t.Fatalf("%s header width = %d", view, got)
+		}
+		if got := ansi.StringWidth(model.tableRow(row)); got > topTableWidth {
 			t.Fatalf("%s row width = %d", view, got)
 		}
+	}
+}
+
+func TestTopOptionalColumnsKeepTheSignalWidth(t *testing.T) {
+	model := topFixtureModel(nil)
+	header := func(view topView, width, cores int) string {
+		model.view, model.width = view, width
+		model.previous.Cores = make([]resourceCPU, cores)
+		return model.tableHeader()[0]
+	}
+	signalWidth := func(header string) int {
+		_, signal, _ := strings.Cut(header, "signal")
+		return len("signal") + len(signal)
+	}
+	for _, row := range []struct {
+		view    topView
+		width   int
+		cores   int
+		present []string
+		absent  []string
+	}{
+		// 80열 기존 칸은 그대로다. 24 core의 cpu 보기와 network 보기에는 새 칸이 들어갈 자리가 없다.
+		{topViewCPU, 80, 24, []string{"cores"}, []string{"steal%", "blocked"}},
+		{topViewCPU, 80, 12, []string{"cores", "steal%"}, []string{"blocked"}},
+		{topViewCPU, 120, 24, []string{"steal%", "blocked"}, nil},
+		{topViewDisk, 80, 0, []string{"busy%", "queue"}, nil},
+		{topViewNetwork, 80, 0, []string{"pk_out"}, []string{"retr/s", "rst/s", "fail/s"}},
+		{topViewNetwork, 130, 0, []string{"retr/s", "rst/s", "fail/s"}, nil},
+	} {
+		got := header(row.view, row.width, row.cores)
+		for _, title := range row.present {
+			if !strings.Contains(got, title) {
+				t.Errorf("%s %d cols %d cores: %s missing in %q", row.view, row.width, row.cores, title, got)
+			}
+		}
+		for _, title := range row.absent {
+			if strings.Contains(got, title) {
+				t.Errorf("%s %d cols %d cores: %s shown in %q", row.view, row.width, row.cores, title, got)
+			}
+		}
+		optional := false
+		for _, title := range []string{"steal%", "blocked", "queue", "retr/s", "rst/s", "fail/s"} {
+			optional = optional || strings.Contains(got, title)
+		}
+		if optional && signalWidth(got) < topSignalMinWidth {
+			t.Errorf("%s %d cols: signal is %d columns in %q", row.view, row.width, signalWidth(got), got)
+		}
+	}
+	darwin := topFixtureModel(nil)
+	darwin.details.System = "darwin"
+	darwin.width = 200
+	for _, view := range []topView{topViewCPU, topViewDisk, topViewNetwork} {
+		darwin.view = view
+		for _, title := range []string{"steal%", "blocked", "queue", "retr/s", "rst/s", "fail/s"} {
+			if got := darwin.tableHeader()[0]; strings.Contains(got, title) {
+				t.Errorf("darwin %s shows %s: %q", view, title, got)
+			}
+		}
+	}
+	rate := resourceRate{CPUSteal: 12.5, CPUStealValid: true, ProcsBlocked: 3, ProcsBlockedValid: true, DiskQueue: 2.25, DiskHealthValid: true, DiskBusyValid: true}
+	model.width, model.view = 200, topViewCPU
+	if line := model.tableRow(topDashboardRow{at: time.Unix(1, 0), rate: rate}); !strings.Contains(line, "12.5") || !strings.Contains(line, "│      3│") {
+		t.Errorf("cpu row = %q", line)
+	}
+	model.view = topViewDisk
+	if line := model.tableRow(topDashboardRow{at: time.Unix(1, 0), rate: rate}); !strings.Contains(line, "2.2") {
+		t.Errorf("disk row = %q", line)
 	}
 }
 
@@ -392,16 +498,16 @@ func TestTopViewsShowDashForUnsupportedValues(t *testing.T) {
 		t.Fatalf("memory row = %q", memory)
 	}
 	disk := formatTopDashboardRow(row, topViewDisk, newTopLimits(8, false), topTableWidth)
-	if strings.Count(disk, "—") != 3 {
-		t.Fatalf("disk row must show — for iops, await and busy: %q", disk)
+	if strings.Count(disk, "—") != 4 {
+		t.Fatalf("disk row must show — for iops, await, busy and queue: %q", disk)
 	}
 }
 
 func TestTopDiskViewShowsDashOnlyForBusyWithoutBusyTime(t *testing.T) {
 	row := topDashboardRow{at: time.Unix(1, 0), rate: resourceRate{DiskHealthValid: true, DiskIOPS: 321, DiskAwait: 4.5}}
 	disk := formatTopDashboardRow(row, topViewDisk, newTopLimits(8, false), topTableWidth)
-	if strings.Count(disk, "—") != 1 || !strings.Contains(disk, "321") || !strings.Contains(disk, "4.5") {
-		t.Fatalf("disk row must show iops and await with — for busy: %q", disk)
+	if strings.Count(disk, "—") != 2 || !strings.Contains(disk, "321") || !strings.Contains(disk, "4.5") {
+		t.Fatalf("disk row must show iops and await with — for busy and queue: %q", disk)
 	}
 	if detail := topDiskDetail(row.rate); !strings.Contains(detail, "321 iops") || !strings.Contains(detail, "busy —") {
 		t.Fatalf("disk detail = %q", detail)
@@ -1286,5 +1392,90 @@ func TestTopCandidateColumnsAlignForSevenDigitPIDs(t *testing.T) {
 		if len(columns) != 3 || columns[0] != columns[1] || columns[1] != columns[2] {
 			t.Fatalf("width %d: command columns %v in %q", width, columns, lines)
 		}
+	}
+}
+
+func topFooterModelAt(width, height, rows int) topModel {
+	model := topFixtureModel(nil)
+	model.width, model.height = width, height
+	processes := []topProcess{{PID: 11, CPU: 90, RSS: 1 << 20, Command: "alpha"}, {PID: 12, CPU: 80, RSS: 1 << 20, Command: "beta"}, {PID: 13, CPU: 70, RSS: 1 << 20, Command: "gamma"}, {PID: 14, CPU: 60, RSS: 1 << 20, Command: "delta"}, {PID: 15, CPU: 50, RSS: 1 << 20, Command: "eps"}}
+	for index := 0; index < rows; index++ {
+		model.rows = append(model.rows, topDashboardRow{at: time.Date(2026, 1, 1, 9, 0, index, 0, time.UTC), processes: processes, processesValid: true, rate: resourceRate{Load1: 1, MemoryPercent: 30}})
+	}
+	model.selected = max(0, rows-1)
+	return model
+}
+
+func TestTopStatusLinesMergeWhenTheyFit(t *testing.T) {
+	wide := topFooterModelAt(200, 40, 3).statusLines()
+	if len(wide) != 1 || !strings.Contains(wide[0], "interval") || !strings.Contains(wide[0], "q quit") || strings.Count(wide[0], "? help") != 1 {
+		t.Errorf("200 columns: status = %q", wide)
+	}
+	if narrow := topFooterModelAt(120, 40, 3).statusLines(); len(narrow) != 2 {
+		t.Errorf("120 columns: status = %q", narrow)
+	}
+}
+
+func TestTopFooterDocksProcessesOnTheRight(t *testing.T) {
+	model := topFooterModelAt(200, 40, 3)
+	left := 200 - topFooterGap - topFooterProcessWidth
+	footer := model.footerLines()
+	// process 후보는 제목, 열 이름, 다섯 개로 7줄이고 안내 한 줄은 그 왼쪽 마지막 줄에 들어간다.
+	if len(footer) != 7 {
+		t.Fatalf("footer = %d lines:\n%s", len(footer), strings.Join(footer, "\n"))
+	}
+	if !strings.HasPrefix(footer[0][left+topFooterGap:], "processes · CPU rank") {
+		t.Errorf("first footer line = %q", footer[0])
+	}
+	if last := ansi.Strip(footer[len(footer)-1]); !strings.HasPrefix(last, "interval") || !strings.Contains(last, "eps") {
+		t.Errorf("last footer line = %q", last)
+	}
+	for _, line := range footer {
+		if ansi.StringWidth(line) != 200 {
+			t.Errorf("footer line is %d columns: %q", ansi.StringWidth(line), line)
+		}
+	}
+	detail := topAfter(t, model, topKey("enter"))
+	if got := len(detail.footerLines()); got != 7 {
+		t.Errorf("detail footer = %d lines, want 7 beside the processes", got)
+	}
+	if lines := strings.Split(detail.View().Content, "\n"); !strings.HasPrefix(lines[len(lines)-7], "detail ") {
+		t.Errorf("detail panel is not at the top left of the footer:\n%s", detail.View().Content)
+	}
+	filter, err := parseTopProcessFilter("alpha")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stacked := model.withProcessFilter(filter); len(stacked.footerLines()) != len(stacked.panelLines())+len(stacked.statusLines()) {
+		t.Error("a process filter must keep the stacked footer")
+	}
+	if narrow := topFooterModelAt(144, 40, 3); len(narrow.footerLines()) != len(narrow.panelLines())+len(narrow.statusLines()) {
+		t.Error("144 columns must keep the stacked footer")
+	}
+}
+
+func TestTopFooterStaysAtTheBottom(t *testing.T) {
+	for _, size := range [][2]int{{80, 30}, {200, 40}} {
+		model := topFooterModelAt(size[0], size[1], 2)
+		lines := strings.Split(model.View().Content, "\n")
+		if len(lines) != size[1] {
+			t.Errorf("%v: %d lines", size, len(lines))
+		}
+		if last := ansi.Strip(lines[len(lines)-1]); !strings.Contains(last, "q quit") {
+			t.Errorf("%v: last line = %q", size, last)
+		}
+		// 시각 두 행 바로 다음 줄은 빈 줄이고, 아래 영역은 화면 끝에 붙는다.
+		for index, line := range lines {
+			if strings.HasPrefix(line, "09:00:01") {
+				if strings.TrimSpace(lines[index+1]) != "" {
+					t.Errorf("%v: line after the rows = %q", size, lines[index+1])
+				}
+			}
+		}
+	}
+	split := topSplitModelAt(200, 60, 3, false, nil)
+	lines := strings.Split(split.View().Content, "\n")
+	if len(lines) != 60 || !strings.Contains(ansi.Strip(lines[59]), "q quit") {
+		t.Errorf("split: %d lines, last = %q", len(lines), lines[len(lines)-1])
 	}
 }

@@ -331,16 +331,30 @@ func closeCaptureLinks(links []link.Link) {
 	wait.Wait()
 }
 
-// attachTraceTLS는 --tls 대상 파일 하나의 SSL 함수에 uprobe를 붙인다. 진입은 인자를, 반환은 평문 길이를 본다. 고른 뒤
-// 끝난 process의 container 파일은 열 수 없어 건너뛴다. 화면이 이미 열렸으므로 알리지 않는다. 붙인 link는 실패해도 돌려준다.
-func attachTraceTLS(objects *captureEventsObjects, target traceTLSTarget) ([]link.Link, error) {
-	programs := map[string][2]*ebpf.Program{
+// traceTLSPrograms는 traceTLSFunctions마다 진입과 반환 program이다. 진입은 인자를, 반환은 평문 길이를 본다. GnuTLS의
+// 송수신 함수는 (session, buffer, size)를 받아 byte 수를 돌려주므로 SSL_write와 SSL_read의 program을 쓰고, gnutls_deinit은
+// SSL_free처럼 그 session의 상태를 지운다.
+func traceTLSPrograms(objects *captureEventsObjects) map[string][2]*ebpf.Program {
+	return map[string][2]*ebpf.Program{
 		"SSL_read":     {objects.SslReadEntry, objects.SslReadExit},
 		"SSL_write":    {objects.SslWriteEntry, objects.SslWriteExit},
 		"SSL_read_ex":  {objects.SslReadExEntry, objects.SslReadExExit},
 		"SSL_write_ex": {objects.SslWriteExEntry, objects.SslWriteExExit},
 		"SSL_free":     {objects.SslFreeEntry, nil},
+		// gnutls_record_send와 _recv의 size는 size_t, 반환은 ssize_t다. BPF는 SSL_write처럼 하위 32 bit를 읽는데, 한 번의
+		// 호출은 협상한 최대 record 크기(16KiB 이하)까지만 주고받으므로 반환값이 잘리지 않는다.
+		"gnutls_record_send":     {objects.SslWriteEntry, objects.SslWriteExit},
+		"gnutls_record_send2":    {objects.SslWriteEntry, objects.SslWriteExit},
+		"gnutls_record_recv":     {objects.SslReadEntry, objects.SslReadExit},
+		"gnutls_record_recv_seq": {objects.SslReadEntry, objects.SslReadExit},
+		"gnutls_deinit":          {objects.SslFreeEntry, nil},
 	}
+}
+
+// attachTraceTLS는 --tls 대상 파일 하나의 TLS 함수에 uprobe를 붙인다. 고른 뒤 끝난 process의 container 파일은 열 수 없어
+// 건너뛴다. 화면이 이미 열렸으므로 알리지 않는다. 붙인 link는 실패해도 돌려준다.
+func attachTraceTLS(objects *captureEventsObjects, target traceTLSTarget) ([]link.Link, error) {
+	programs := traceTLSPrograms(objects)
 	executable, err := link.OpenExecutable(target.path)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil, nil
@@ -351,7 +365,12 @@ func attachTraceTLS(objects *captureEventsObjects, target traceTLSTarget) ([]lin
 	var links []link.Link
 	for _, symbol := range target.symbols {
 		pair := programs[symbol]
-		entry, err := executable.Uprobe(symbol, pair[0], nil)
+		// 위치를 모르면 nil이라 cilium/ebpf가 심볼 표에서 찾는다.
+		var options *link.UprobeOptions
+		if offset, ok := target.offsets[symbol]; ok {
+			options = &link.UprobeOptions{Address: offset}
+		}
+		entry, err := executable.Uprobe(symbol, pair[0], options)
 		if err != nil {
 			return links, fmt.Errorf("--tls %s: attach %s: %w", target.path, symbol, err)
 		}
@@ -361,7 +380,7 @@ func attachTraceTLS(objects *captureEventsObjects, target traceTLSTarget) ([]lin
 		}
 		// amd64 kernel 6.11, 6.12.14 전의 6.12, 6.13.3 전의 6.13에서는 uretprobe가 seccomp filter 아래의 process를 끝낼
 		// 수 있다. distro kernel은 수정을 따로 넣었을 수 있어 막지 않고, resolveTraceTLSTargets가 화면을 열기 전에 알린다.
-		exit, err := executable.Uretprobe(symbol, pair[1], nil)
+		exit, err := executable.Uretprobe(symbol, pair[1], options)
 		if err != nil {
 			return links, fmt.Errorf("--tls %s: attach %s return: %w", target.path, symbol, err)
 		}
@@ -657,15 +676,33 @@ func collectCaptureEventsFor(scope traceScope, duration time.Duration, onEvent f
 		links = append(links, attached)
 	}
 	// uprobe도 attach 시각을 재기 전에 붙인다. 그 뒤의 레코드만 읽으므로 요청 쪽 평문만 보이는 구간이 없다.
-	for _, target := range scope.tlsTargets {
-		attached, err := attachTraceTLS(&objects, target)
-		links = append(links, attached...)
-		if err != nil {
-			closeLinks()
-			return captureSummary{}, err
+	if scope.tlsFinder != nil {
+		for _, target := range scope.tlsFinder.targets {
+			attached, err := attachTraceTLS(&objects, target)
+			links = append(links, attached...)
+			if err != nil {
+				closeLinks()
+				return captureSummary{}, err
+			}
 		}
 	}
 	defer closeLinks()
+	if finder := scope.tlsFinder; finder != nil && finder.rescan {
+		// 감시는 links에 붙인 link를 더하므로, closeLinks보다 먼저 멈춘다. defer는 나중에 건 것이 먼저 돈다.
+		stopWatch, watched := make(chan struct{}), make(chan struct{})
+		go func() {
+			defer close(watched)
+			watchTraceTLS(finder, traceTLSExecEvents(stopWatch), func(target traceTLSTarget) {
+				// 화면이 이미 열렸으므로 붙이지 못한 파일은 알리지 않는다. 일부만 붙었으면 그 link는 닫을 때 쓴다.
+				attached, _ := attachTraceTLS(&objects, target)
+				links = append(links, attached...)
+			}, stopWatch)
+		}()
+		defer func() {
+			close(stopWatch)
+			<-watched
+		}()
+	}
 	// hook은 하나씩 붙는다. 요청을 보내는 hook만 붙은 동안 보낸 요청은 응답을 놓치므로, HTTP 레코드는 모두 붙은 뒤부터 읽는다.
 	var attached unix.Timespec
 	if err := unix.ClockGettime(unix.CLOCK_MONOTONIC, &attached); err != nil {

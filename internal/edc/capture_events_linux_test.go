@@ -924,3 +924,11 @@ func TestTraceCapabilityErrorNamesTheTraceAndTheRootCommand(t *testing.T) {
 		t.Fatalf("root error = %v", err)
 	}
 }
+
+// 탐색이 고르는 함수마다 붙일 program이 있어야 한다. 없으면 그 파일의 attach가 실패해 trace가 시작하지 않는다.
+func TestTraceTLSProgramsCoverEveryFunction(t *testing.T) {
+	programs := traceTLSPrograms(&captureEventsObjects{})
+	if got, want := slices.Sorted(maps.Keys(programs)), slices.Sorted(slices.Values(traceTLSFunctions)); !slices.Equal(got, want) {
+		t.Fatalf("programs = %q, functions = %q", got, want)
+	}
+}

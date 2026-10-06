@@ -241,10 +241,11 @@ type traceScope struct {
 	showSecrets bool
 	// keepGzip이면 gzip message의 원본 byte를 event에 붙인다. 전체 화면의 상세 보기가 본문을 풀 때 쓴다.
 	keepGzip bool
-	// tls는 --tls 값이다. 비어 있지 않으면 OpenSSL uprobe로 HTTPS 평문을 본다. tlsTargets는 붙일 파일이다.
-	tls        traceTLSMode
-	tlsTargets []traceTLSTarget
-	port       uint16
+	// tls는 --tls 값이다. 비어 있지 않으면 OpenSSL과 GnuTLS uprobe로 HTTPS 평문을 본다. tlsFinder의 targets가 붙일
+	// 파일이다.
+	tls       traceTLSMode
+	tlsFinder *traceTLSFinder
+	port      uint16
 	// socketPath는 trace socket이 볼 unix socket 파일이다.
 	socketPath string
 	// dropReasons는 trace drop이 event로 볼 이유 이름이다. 비어 있으면 모든 이유를 본다.
@@ -253,7 +254,7 @@ type traceScope struct {
 
 func (options tcpTraceOptions) scope(protocol string) traceScope {
 	return traceScope{protocol: protocol, server: options.side == traceServerSide, side: options.side, payload: options.payload != "", payloadAll: options.payload == tracePayloadAll,
-		showSecrets: options.showSecrets, tls: options.tls, tlsTargets: options.tlsTargets, port: uint16(options.port), socketPath: options.socketPath, dropReasons: splitDropReasons(options.dropReasons)}
+		showSecrets: options.showSecrets, tls: options.tls, tlsFinder: options.tlsFinder, port: uint16(options.port), socketPath: options.socketPath, dropReasons: splitDropReasons(options.dropReasons)}
 }
 
 // tracePayloadMode는 --payload 값이다. 값 없이 쓰면 message마다 앞 4KiB를, all이면 message 전체를 본다.
@@ -605,7 +606,7 @@ func runTraceProtocol(args []string) int {
 	screen := !options.raw && options.jsonPath == "" && traceIsTerminal(os.Stdin) && traceIsTerminal(os.Stdout)
 	// 전체 화면이 열리면 stderr 안내가 화면에 섞이므로, 붙일 파일은 화면을 열기 전에 고르고 알린다.
 	if options.tls != "" {
-		targets, notices, code, err := resolveTraceTLSTargets(options.tls)
+		finder, notices, code, err := resolveTraceTLSTargets(options.tls)
 		for _, notice := range notices {
 			fmt.Fprintln(os.Stderr, notice)
 		}
@@ -613,8 +614,12 @@ func runTraceProtocol(args []string) int {
 			fmt.Fprintln(os.Stderr, err)
 			return code
 		}
-		options.tlsTargets = targets
-		fmt.Fprintln(os.Stderr, T("cli.trace.tls_attached", len(targets)))
+		options.tlsFinder = finder
+		if finder.rescan {
+			fmt.Fprintln(os.Stderr, T("cli.trace.tls_attached", len(finder.targets)))
+		} else {
+			fmt.Fprintln(os.Stderr, T("cli.trace.tls_attached_path", traceEscapeText([]byte(options.tls))))
+		}
 		if screen && !traceTLSConfirmStart(os.Stdin, os.Stderr, traceIsTerminal(os.Stderr)) {
 			return 4
 		}

@@ -9,9 +9,11 @@ import (
 	"time"
 )
 
+// decrypted는 --tls 평문이다. 같은 socket의 암호문 조각과 잇지 않는다.
 type httpStreamKey struct {
-	socket uint64
-	sent   bool
+	socket    uint64
+	sent      bool
+	decrypted bool
 }
 
 // httpOpenMessage는 끝나기를 기다리는 message다. next는 다음 조각이 message 안에서 시작해야 하는 위치다.
@@ -56,7 +58,7 @@ func tlsHandshakeComplete(payload []byte) bool {
 // join은 첫 줄이 끝나지 않은 첫 조각을 두고 false를 돌려준다. 그 뒤에 이어지는 조각이 오면 둘을 이은 첫 조각을 돌려준다.
 // 기다리는 조각이 없는 packet은 그대로 돌려준다.
 func (starts httpSplitStarts) join(packet httpPacket) (httpPacket, bool) {
-	key := httpStreamKey{socket: packet.socket, sent: packet.sent}
+	key := httpStreamKey{socket: packet.socket, sent: packet.sent, decrypted: packet.decrypted}
 	if packet.continued {
 		held, ok := starts[key]
 		if !ok {
@@ -77,7 +79,7 @@ func (starts httpSplitStarts) join(packet httpPacket) (httpPacket, bool) {
 			starts[key] = packet
 			return httpPacket{}, false
 		}
-		if packet.tlsHandshake || tlsRecordStart(packet.payload) {
+		if !packet.decrypted && (packet.tlsHandshake || tlsRecordStart(packet.payload)) {
 			return packet, true
 		}
 	}
@@ -101,8 +103,10 @@ func (starts httpSplitStarts) join(packet httpPacket) (httpPacket, bool) {
 
 // forget은 끝난 socket의 첫 조각을 지운다. 새 연결의 조각이 같은 주소와 위치로 오면 이 조각과 잘못 이어진다.
 func (starts httpSplitStarts) forget(socket uint64) {
-	delete(starts, httpStreamKey{socket: socket, sent: true})
-	delete(starts, httpStreamKey{socket: socket, sent: false})
+	for _, sent := range []bool{true, false} {
+		delete(starts, httpStreamKey{socket: socket, sent: sent})
+		delete(starts, httpStreamKey{socket: socket, sent: sent, decrypted: true})
+	}
 }
 
 // httpFirstLineOpen은 요청 줄이나 상태 줄이 아직 끝나지 않았는지다. 모든 첫 조각에 부르므로 요청 줄을 다시 해석하지 않는다.
@@ -117,7 +121,7 @@ func httpFirstLineOpen(payload []byte) bool {
 
 // add는 레코드 하나를 받아, 끝난 message의 event를 끝난 순서대로 돌려준다.
 func (messages *httpMessages) add(packet httpPacket, clockOffset int64, now time.Time) []captureEvent {
-	key := httpStreamKey{socket: packet.socket, sent: packet.sent}
+	key := httpStreamKey{socket: packet.socket, sent: packet.sent, decrypted: packet.decrypted}
 	if packet.continued {
 		message := messages.open[key]
 		if message == nil {
@@ -145,7 +149,7 @@ func (messages *httpMessages) add(packet httpPacket, clockOffset int64, now time
 	// 반대쪽 message도 끝내서 요청 event가 응답 event보다 먼저 나오게 한다. 1xx는 중간 응답이라, 요청 본문이 아직
 	// 오는 중일 수 있다(Expect: 100-continue).
 	if event.Status < 100 || event.Status >= 200 {
-		done = append(done, messages.finish(httpStreamKey{socket: packet.socket, sent: !packet.sent}, false)...)
+		done = append(done, messages.finish(httpStreamKey{socket: packet.socket, sent: !packet.sent, decrypted: packet.decrypted}, false)...)
 	}
 	// 첫 조각은 복사하지 않고 레코드를 그대로 쓴다. 이어지는 조각이 오면 append가 새 배열로 옮긴다.
 	data := slices.Clip(packet.payload[:min(len(packet.payload), messages.limit)])
@@ -154,7 +158,7 @@ func (messages *httpMessages) add(packet httpPacket, clockOffset int64, now time
 	messages.bytes += len(data)
 	finished := messages.finishIfDone(key)
 	// 요청 본문이 아직 오는 중에 온 1xx는 요청 event 뒤로 미뤄서, 요청이 응답보다 먼저 나오게 한다.
-	if request := messages.open[httpStreamKey{socket: packet.socket, sent: !packet.sent}]; request != nil && event.Status >= 100 && event.Status < 200 {
+	if request := messages.open[httpStreamKey{socket: packet.socket, sent: !packet.sent, decrypted: packet.decrypted}]; request != nil && event.Status >= 100 && event.Status < 200 {
 		request.interim = append(request.interim, finished...)
 		finished = nil
 	}

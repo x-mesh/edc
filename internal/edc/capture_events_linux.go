@@ -11,10 +11,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net/netip"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -329,6 +331,45 @@ func closeCaptureLinks(links []link.Link) {
 	wait.Wait()
 }
 
+// attachTraceTLS는 --tls 대상 파일 하나의 SSL 함수에 uprobe를 붙인다. 진입은 인자를, 반환은 평문 길이를 본다. 고른 뒤
+// 끝난 process의 container 파일은 열 수 없어 건너뛴다. 화면이 이미 열렸으므로 알리지 않는다. 붙인 link는 실패해도 돌려준다.
+func attachTraceTLS(objects *captureEventsObjects, target traceTLSTarget) ([]link.Link, error) {
+	programs := map[string][2]*ebpf.Program{
+		"SSL_read":     {objects.SslReadEntry, objects.SslReadExit},
+		"SSL_write":    {objects.SslWriteEntry, objects.SslWriteExit},
+		"SSL_read_ex":  {objects.SslReadExEntry, objects.SslReadExExit},
+		"SSL_write_ex": {objects.SslWriteExEntry, objects.SslWriteExExit},
+		"SSL_free":     {objects.SslFreeEntry, nil},
+	}
+	executable, err := link.OpenExecutable(target.path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("--tls %s: %w", target.path, err)
+	}
+	var links []link.Link
+	for _, symbol := range target.symbols {
+		pair := programs[symbol]
+		entry, err := executable.Uprobe(symbol, pair[0], nil)
+		if err != nil {
+			return links, fmt.Errorf("--tls %s: attach %s: %w", target.path, symbol, err)
+		}
+		links = append(links, entry)
+		if pair[1] == nil {
+			continue
+		}
+		// amd64 kernel 6.11, 6.12.14 전의 6.12, 6.13.3 전의 6.13에서는 uretprobe가 seccomp filter 아래의 process를 끝낼
+		// 수 있다. distro kernel은 수정을 따로 넣었을 수 있어 막지 않고, resolveTraceTLSTargets가 화면을 열기 전에 알린다.
+		exit, err := executable.Uretprobe(symbol, pair[1], nil)
+		if err != nil {
+			return links, fmt.Errorf("--tls %s: attach %s return: %w", target.path, symbol, err)
+		}
+		links = append(links, exit)
+	}
+	return links, nil
+}
+
 func collectCaptureEvents(duration time.Duration, onEvent func(captureEvent) error) ([]captureEvent, captureSummary, error) {
 	return collectCaptureEventsUntil(duration, onEvent, nil)
 }
@@ -460,6 +501,8 @@ type captureEventFilter struct {
 	httpMessageLimit uint32
 	// mysqlPort가 0이 아니면 로컬이나 상대 port가 이 값인 socket의 MySQL packet을 읽는다.
 	mysqlPort uint16
+	// tlsPlaintext는 trace http --tls다. OpenSSL uprobe가 넘기는 평문 레코드를 낸다.
+	tlsPlaintext bool
 }
 
 func captureEventFilterFor(scope traceScope) captureEventFilter {
@@ -473,7 +516,7 @@ func captureEventFilterFor(scope traceScope) captureEventFilter {
 	case "dns":
 		filter.udpEvents, filter.server, filter.tcpStatePort, filter.dnsTCP = false, scope.server, 53, true
 	case "http":
-		filter.udpEvents, filter.httpMessages, filter.httpPayload, filter.httpPort = false, true, scope.payload, scope.port
+		filter.udpEvents, filter.httpMessages, filter.httpPayload, filter.httpPort, filter.tlsPlaintext = false, true, scope.payload, scope.port, scope.tls != ""
 		if scope.payloadAll {
 			filter.httpMessageLimit = httpMessageMax
 		}
@@ -526,6 +569,16 @@ func loadCaptureEventsFor(scope traceScope, objects *captureEventsObjects) error
 			return err
 		}
 	}
+	if filter.tlsPlaintext {
+		// resolveTraceTLSTargets가 amd64와 arm64만 받으므로 여기서는 둘 중 하나다.
+		arch := uint8(0)
+		if runtime.GOARCH == "arm64" {
+			arch = 1
+		}
+		if err := errors.Join(variables.EmitTlsPlaintext.Set(uint8(1)), variables.UprobeArch.Set(arch)); err != nil {
+			return err
+		}
+	}
 	selected := "tcp_recvmsg_exit"
 	if recvArgs == 6 {
 		selected = "tcp_recvmsg_exit_legacy"
@@ -570,114 +623,6 @@ func tcpRecvmsgArgumentCount() (int, error) {
 }
 
 func collectCaptureEventsFor(scope traceScope, duration time.Duration, onEvent func(captureEvent) error, stop <-chan struct{}) (captureSummary, error) {
-	if scope.tlsPlaintext {
-		return collectCaptureEventsWithTLS(scope, duration, onEvent, stop)
-	}
-	return collectKernelCaptureEventsFor(scope, duration, onEvent, stop)
-}
-
-func collectCaptureEventsWithTLS(scope traceScope, duration time.Duration, onEvent func(captureEvent) error, stop <-chan struct{}) (captureSummary, error) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	if stop != nil {
-		go func() {
-			select {
-			case <-stop:
-				cancel()
-			case <-ctx.Done():
-			}
-		}()
-	}
-	tlsRecords, tlsCloser, err := startTLSPlaintextCollector(scope, ctx.Done())
-	if err != nil {
-		return captureSummary{}, err
-	}
-	defer tlsCloser.Close()
-	clockOffset, err := captureClockOffset()
-	if err != nil {
-		return captureSummary{}, err
-	}
-	pipeline := newHTTPEventPipeline(scope, clockOffset)
-	type kernelResult struct {
-		summary captureSummary
-		err     error
-	}
-	kernelEvents := make(chan captureEvent)
-	kernelDone := make(chan kernelResult, 1)
-	kernelScope := scope
-	kernelScope.tlsPlaintext = false
-	go func() {
-		summary, err := collectKernelCaptureEventsFor(kernelScope, duration, func(event captureEvent) error {
-			if event.PID != scope.pid {
-				return nil
-			}
-			select {
-			case kernelEvents <- event:
-				return nil
-			case <-ctx.Done():
-				return ctx.Err()
-			}
-		}, ctx.Done())
-		kernelDone <- kernelResult{summary: summary, err: err}
-	}()
-	var tlsCount uint64
-	for {
-		select {
-		case event := <-kernelEvents:
-			if onEvent != nil {
-				if err := onEvent(event); err != nil {
-					cancel()
-					return captureSummary{}, err
-				}
-			}
-		case record, ok := <-tlsRecords:
-			if !ok {
-				tlsRecords = nil
-				continue
-			}
-			if record.err != nil {
-				cancel()
-				return captureSummary{}, record.err
-			}
-			if record.closeSocket != 0 {
-				for _, event := range pipeline.forget(record.closeSocket) {
-					if onEvent != nil {
-						if err := onEvent(event); err != nil {
-							return captureSummary{}, err
-						}
-					}
-					tlsCount++
-				}
-				continue
-			}
-			if record.packet != nil {
-				record.packet.captureSource = "openssl_uprobe"
-				for _, event := range pipeline.add(*record.packet, time.Now()) {
-					if onEvent != nil {
-						if err := onEvent(event); err != nil {
-							cancel()
-							return captureSummary{}, err
-						}
-					}
-					tlsCount++
-				}
-			}
-		case result := <-kernelDone:
-			for _, event := range pipeline.flush() {
-				if onEvent != nil {
-					if err := onEvent(event); err != nil {
-						return captureSummary{}, err
-					}
-				}
-				tlsCount++
-			}
-			result.summary.EventCount += tlsCount
-			return result.summary, result.err
-		}
-	}
-}
-
-func collectKernelCaptureEventsFor(scope traceScope, duration time.Duration, onEvent func(captureEvent) error, stop <-chan struct{}) (captureSummary, error) {
 	protocol := scope.protocol
 	if err := rlimit.RemoveMemlock(); err != nil {
 		return captureSummary{}, fmt.Errorf("remove memlock limit: %w", err)
@@ -710,6 +655,15 @@ func collectKernelCaptureEventsFor(scope traceScope, duration time.Duration, onE
 			return captureSummary{}, fmt.Errorf("attach %s (needs BPF trampolines: x86_64 5.5+, arm64 6.0+): %w", attachment.name, err)
 		}
 		links = append(links, attached)
+	}
+	// uprobe도 attach 시각을 재기 전에 붙인다. 그 뒤의 레코드만 읽으므로 요청 쪽 평문만 보이는 구간이 없다.
+	for _, target := range scope.tlsTargets {
+		attached, err := attachTraceTLS(&objects, target)
+		links = append(links, attached...)
+		if err != nil {
+			closeLinks()
+			return captureSummary{}, err
+		}
 	}
 	defer closeLinks()
 	// hook은 하나씩 붙는다. 요청을 보내는 hook만 붙은 동안 보낸 요청은 응답을 놓치므로, HTTP 레코드는 모두 붙은 뒤부터 읽는다.
@@ -748,8 +702,19 @@ func collectKernelCaptureEventsFor(scope traceScope, duration time.Duration, onE
 	owners := newPIDTargetCache()
 	queries := newDNSQueryTracker(scope.server)
 	// --payload=all은 message가 끝날 때 payload를 붙이므로 tracker는 첫 조각에 payload를 붙이지 않는다.
-	httpPipeline := newHTTPEventPipeline(scope, clockOffset)
-	messages := httpPipeline.messages
+	requests := newHTTPTracker(scope.side, scope.payload && !scope.payloadAll, scope.showSecrets)
+	requests.keepGzip = scope.keepGzip
+	switch {
+	case scope.payloadAll:
+		requests.h2PayloadLimit = httpMessageMax
+	case scope.payload:
+		requests.h2PayloadLimit = httpPayloadHead
+	}
+	splits := httpSplitStarts{}
+	var messages *httpMessages
+	if scope.payloadAll {
+		messages = newHTTPMessages(requests, httpMessageMax, scope.showSecrets)
+	}
 	streams := newDNSTCPStreams()
 	mysql := newMySQLTracker(scope.side, scope.showSecrets)
 	var eventCount uint64
@@ -779,16 +744,22 @@ func collectKernelCaptureEventsFor(scope traceScope, duration time.Duration, onE
 	}
 	sweepDeadline()
 	finish := func() (captureSummary, error) {
+		if err := emit(requests.closeHTTP2Payloads(func(http2PayloadKey) bool { return true })); err != nil {
+			return captureSummary{}, err
+		}
 		if messages != nil {
-			if err := emit(httpPipeline.flush()); err != nil {
+			if err := emit(messages.flush()); err != nil {
 				return captureSummary{}, err
 			}
 		}
-		var lost uint64
+		var lost, unmapped uint64
 		if lookupErr := objects.LostEvents.Lookup(uint32(0), &lost); lookupErr != nil {
 			return captureSummary{}, fmt.Errorf("read lost event count: %w", lookupErr)
 		}
-		return captureSummary{TimestampNS: uint64(time.Now().UnixNano()), Event: "capture_summary", EventCount: eventCount, LostEvents: lost}, nil
+		if lookupErr := objects.TlsUnmapped.Lookup(uint32(0), &unmapped); lookupErr != nil {
+			return captureSummary{}, fmt.Errorf("read unmapped TLS count: %w", lookupErr)
+		}
+		return captureSummary{TimestampNS: uint64(time.Now().UnixNano()), Event: "capture_summary", EventCount: eventCount, LostEvents: lost, TLSUnmapped: unmapped}, nil
 	}
 	for {
 		// ring buffer reader는 버퍼가 비었을 때만 deadline을 본다. event가 계속 쌓이면 버퍼가 비지 않아
@@ -850,9 +821,21 @@ func collectKernelCaptureEventsFor(scope traceScope, duration time.Duration, onE
 			if !captureRecordAfterAttached(packet.bootTimeNS, attached) {
 				continue
 			}
-			now := time.Now()
-			events := httpPipeline.add(packet, now)
+			// h2c와 --tls 평문의 HTTP/2는 frame을 이어 읽어야 해서 조각 결합보다 먼저 받는다. 새 연결이 이전 연결의
+			// 상태를 비우면 HTTP/2로 읽지 않은 레코드에서도 본문을 기다리던 event가 나온다.
+			events, claimed := requests.http2Events(packet, clockOffset)
+			if err := emit(events); err != nil {
+				return captureSummary{}, err
+			}
+			if claimed {
+				continue
+			}
+			if packet, ok = splits.join(packet); !ok {
+				continue
+			}
 			if messages != nil {
+				now := time.Now()
+				events := messages.add(packet, clockOffset, now)
 				if now.Sub(swept) >= httpMessageIdle/4 {
 					events = append(events, messages.expire(now)...)
 					swept = now
@@ -862,9 +845,20 @@ func collectKernelCaptureEventsFor(scope traceScope, duration time.Duration, onE
 				}
 				continue
 			}
-			if err := emit(events); err != nil {
-				return captureSummary{}, err
+			// 첫 조각에 잇지 못한 조각은 요청이나 응답으로 읽지 않는다.
+			if packet.continued {
+				continue
 			}
+			event, ok := requests.event(packet, clockOffset)
+			if !ok {
+				continue
+			}
+			if onEvent != nil {
+				if err := onEvent(event); err != nil {
+					return captureSummary{}, err
+				}
+			}
+			eventCount++
 			continue
 		}
 		if packet, ok := parseMySQLRecord(record.RawSample); ok {
@@ -878,9 +872,10 @@ func collectKernelCaptureEventsFor(scope traceScope, duration time.Duration, onE
 		}
 		if socket, ok := parseTCPDestroyRecord(record.RawSample); ok {
 			if protocol == "http" {
-				if err := emit(httpPipeline.forget(socket)); err != nil {
+				if err := emit(requests.forget(socket)); err != nil {
 					return captureSummary{}, err
 				}
+				splits.forget(socket)
 			}
 			if protocol == "mysql" {
 				mysql.forgetSocket(socket)
@@ -924,63 +919,6 @@ func collectKernelCaptureEventsFor(scope traceScope, duration time.Duration, onE
 		}
 		eventCount++
 	}
-}
-
-type httpEventPipeline struct {
-	tracker     *httpTracker
-	splits      httpSplitStarts
-	messages    *httpMessages
-	clockOffset int64
-}
-
-func newHTTPEventPipeline(scope traceScope, clockOffset int64) *httpEventPipeline {
-	tracker := newHTTPTracker(scope.side, scope.payload && !scope.payloadAll, scope.showSecrets)
-	if scope.payloadAll {
-		tracker.h2PayloadLimit = httpMessageMax
-	} else if scope.payload {
-		tracker.h2PayloadLimit = httpPayloadHead
-	}
-	tracker.keepGzip = scope.keepGzip
-	pipeline := &httpEventPipeline{tracker: tracker, splits: httpSplitStarts{}, clockOffset: clockOffset}
-	if scope.payloadAll {
-		pipeline.messages = newHTTPMessages(tracker, httpMessageMax, scope.showSecrets)
-	}
-	return pipeline
-}
-
-func (pipeline *httpEventPipeline) add(packet httpPacket, now time.Time) []captureEvent {
-	if events, claimed := pipeline.tracker.http2Events(packet, pipeline.clockOffset); claimed {
-		return events
-	}
-	packet, ok := pipeline.splits.join(packet)
-	if !ok {
-		return nil
-	}
-	if pipeline.messages != nil {
-		return pipeline.messages.add(packet, pipeline.clockOffset, now)
-	}
-	if packet.continued {
-		return nil
-	}
-	event, ok := pipeline.tracker.event(packet, pipeline.clockOffset)
-	if !ok {
-		return nil
-	}
-	return []captureEvent{event}
-}
-
-func (pipeline *httpEventPipeline) forget(socket uint64) []captureEvent {
-	events := pipeline.tracker.forget(socket)
-	pipeline.splits.forget(socket)
-	return events
-}
-
-func (pipeline *httpEventPipeline) flush() []captureEvent {
-	events := pipeline.tracker.flushHTTP2Payload(0)
-	if pipeline.messages == nil {
-		return events
-	}
-	return append(events, pipeline.messages.flush()...)
 }
 
 func captureRecordAfterAttached(bootTimeNS uint64, attached unix.Timespec) bool {

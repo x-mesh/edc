@@ -242,6 +242,7 @@ var commandDocs = []commandDoc{
 			{"--side client|server", "command.trace.option.side"},
 			{"--payload[=all]", "command.trace.option.payload"},
 			{"--show-secrets", "command.trace.option.show_secrets"},
+			{"--tls[=<path>]", "command.trace.option.tls"},
 			{"--port <n>", "command.trace.option.port"},
 			{"--container <name>", "command.trace.option.container"},
 			{"--reason <names>", "command.trace.option.reason"},

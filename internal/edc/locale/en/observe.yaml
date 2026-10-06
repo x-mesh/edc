@@ -46,6 +46,14 @@ observe:
       host: "edc did not read the host information: %v"
       resource: "edc did not read the resource values: %v"
 
+  ai:
+    usage: "usage: edc ai [--poll 60s] [--count N] [--json <path|->]"
+    poll_minimum: "--poll must be %s or more"
+    count_minimum: "--count must be 0 or more"
+    error:
+      reset_log: "edc did not write the reset log: %v"
+      state: "edc did not save the last Claude values: %v"
+
   watch:
     no_samples_duration: "No sample completed before the duration ended; target health is unknown."
     no_samples_cancelled: "Observation cancelled before any sample completed; target health is unknown."

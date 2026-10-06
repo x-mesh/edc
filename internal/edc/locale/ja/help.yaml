@@ -235,6 +235,21 @@ command:
       - "packet に local socket があれば process を付けます。--reason で絞ります。"
       - "理由ごとの合計は正確です。CPU ごとに毎秒 1,000 件を超えると event は標本です。"
       - "accept queue が満杯で解放された SYN は event にならず、summary で数えます。"
+  ai:
+    summary: "AI コーディングツールの使用量とリセット時刻"
+    option:
+      poll: "制限の照会間隔、15s 以上。Claude は 5m 以上"
+      count: "表示するサンプル数、0 は継続実行"
+    notes:
+      - "terminal ではこの host の区間別 token 表をダッシュボードで開きます。"
+      - "▸ 行は進行中の区間です。↑↓ 過去の行、+/- 行の区間、End で実時間。"
+      - "Σ 行は直近 10 分、1 時間、24 時間の合計です。行の区間に関係しません。"
+      - "下の枠は Claude と Codex の制限、リセット時刻、残り時間です。"
+      - "Claude は ~/.claude/.credentials.json の token で照会します。"
+      - "token は画面にもファイルにも残しません。"
+      - "Codex は codex app-server で照会します。"
+      - "リセットを検出すると history DB の隣の ai-resets.jsonl に記録します。"
+      - "最後に受け取った Claude の値は同じ場所の ai-claude.json に残します。"
   report:
     summary: "保存した edc 診断結果の表示と比較"
     notes:

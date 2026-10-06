@@ -249,6 +249,15 @@ var commandDocs = []commandDoc{
 		},
 	},
 	{
+		name: "ai", group: "observe",
+		usage: []string{"edc ai [--poll 60s] [--count N] [--json <path|->]"},
+		options: []optionDoc{
+			{"--poll 60s", "command.ai.option.poll"},
+			{"--count N", "command.ai.option.count"},
+			{"--json <path|->", "option.json"},
+		},
+	},
+	{
 		name: "report", group: "record",
 		usage: []string{
 			"edc report list [directory]",

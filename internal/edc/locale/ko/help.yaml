@@ -235,6 +235,21 @@ command:
       - "패킷에 local socket이 있으면 process를 붙입니다. --reason으로 이유를 거릅니다."
       - "이유별 합계는 정확합니다. CPU마다 초당 1,000건이 넘으면 event는 표본입니다."
       - "accept 대기열이 가득 차 해제된 SYN은 event가 아니고, 요약에서 셉니다."
+  ai:
+    summary: "AI 코딩 도구 사용량과 리셋 시각"
+    option:
+      poll: "한도 조회 간격, 15s 이상. Claude는 5m 이상"
+      count: "출력할 표본 수, 0은 계속 실행"
+    notes:
+      - "terminal에서는 이 host의 구간별 token 표를 대시보드로 엽니다."
+      - "▸ 행은 진행 중인 구간입니다. ↑↓ 지난 행, +/- 행 구간, End 실시간."
+      - "Σ 행은 지금까지 최근 10분, 1시간, 24시간 합계입니다. 행 구간과 무관합니다."
+      - "아래 상자는 Claude와 Codex의 한도, 리셋 시각, 남은 시간입니다."
+      - "Claude는 ~/.claude/.credentials.json의 token으로 조회합니다."
+      - "token은 화면이나 파일에 남기지 않습니다."
+      - "Codex는 codex app-server로 조회합니다."
+      - "리셋을 감지하면 history DB 옆 ai-resets.jsonl에 기록합니다."
+      - "마지막으로 받은 Claude 값은 같은 곳의 ai-claude.json에 남깁니다."
   report:
     summary: "저장한 edc 진단 결과 보기·비교"
     notes:

@@ -70,6 +70,8 @@ func Run(args []string, version string) int {
 		return 0
 	case "top":
 		return runTop(args[1:], version)
+	case "ai":
+		return runAI(args[1:], version)
 	case "history":
 		return runHistory(args[1:])
 	case "watch":

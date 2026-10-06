@@ -49,6 +49,14 @@ observe:
       host: "host の情報を読めませんでした: %v"
       resource: "resource を読めませんでした: %v"
 
+  ai:
+    usage: "使い方: edc ai [--poll 60s] [--count N] [--json <path|->]"
+    poll_minimum: "--poll は %s 以上にしてください"
+    count_minimum: "--count は 0 以上にしてください"
+    error:
+      reset_log: "リセット記録を書けませんでした: %v"
+      state: "最後の Claude の値を保存できませんでした: %v"
+
   watch:
     no_samples_duration: "観測時間が終了するまでに完了したサンプルがないため、対象の状態は不明です。"
     no_samples_cancelled: "サンプルが完了する前に観測を中止したため、対象の状態は不明です。"

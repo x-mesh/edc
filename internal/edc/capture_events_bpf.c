@@ -2450,14 +2450,14 @@ static __always_inline __u64 ssl_synthetic_socket(__u64 pid_tgid, __u64 ssl) {
 
 // ssl_enter는 SSL_read, SSL_write와 _ex의 시작이다. 인자는 (SSL *ssl, void *buf, num[, size_t *out])이다. SSL_read와
 // SSL_write의 num은 int라서 상위 32 bit를 버린다. 중첩된 호출은 덮어쓰고 반환에서 지우므로 레코드는 한 번만 나간다.
-static __always_inline int ssl_enter(void *ctx, __u8 direction, int ex) {
+static __always_inline int ssl_enter(void *ctx, __u8 direction, int ex, int wide) {
 	if (!emit_tls_plaintext) {
 		return 0;
 	}
 	struct ssl_pending pending = {};
 	pending.ssl = ssl_argument(ctx, 0);
 	pending.buffer = ssl_argument(ctx, 1);
-	pending.num = ex ? ssl_argument(ctx, 2) : (__u32)ssl_argument(ctx, 2);
+	pending.num = wide ? ssl_argument(ctx, 2) : (__u32)ssl_argument(ctx, 2);
 	if (ex) {
 		pending.out = ssl_argument(ctx, 3);
 	}
@@ -2469,7 +2469,7 @@ static __always_inline int ssl_enter(void *ctx, __u8 direction, int ex) {
 
 // ssl_leave는 반환에서 길이를 정한다. SSL_read와 SSL_write는 양수 반환값이 byte 수이고, _ex는 1을 돌려주고 길이를 out에
 // 쓴다. 0 이하(오류, WANT_READ, WANT_WRITE, 종료)는 평문이 없다.
-static __always_inline int ssl_leave(void *ctx, int ex) {
+static __always_inline int ssl_leave(void *ctx, int ex, int success) {
 	if (!emit_tls_plaintext) {
 		return 0;
 	}
@@ -2483,7 +2483,7 @@ static __always_inline int ssl_leave(void *ctx, int ex) {
 	int result = ssl_return_value(ctx);
 	__u64 size = 0;
 	if (ex) {
-		if (result != 1 || !pending.out || bpf_probe_read_user(&size, sizeof(size), (void *)pending.out)) {
+		if (result != success || !pending.out || bpf_probe_read_user(&size, sizeof(size), (void *)pending.out)) {
 			return 0;
 		}
 	} else {
@@ -2528,44 +2528,59 @@ static __always_inline int ssl_leave(void *ctx, int ex) {
 	return 0;
 }
 
+SEC("uretprobe/rustls_connection_read")
+int rustls_exit(void *ctx) {
+	return ssl_leave(ctx, 1, 7000);
+}
+
+SEC("uprobe/mbedtls_ssl_read")
+int mbed_read_entry(void *ctx) {
+	return ssl_enter(ctx, HTTP_RECEIVED, 0, 1);
+}
+
+SEC("uprobe/mbedtls_ssl_write")
+int mbed_write_entry(void *ctx) {
+	return ssl_enter(ctx, HTTP_SENT, 0, 1);
+}
+
 SEC("uprobe/SSL_write")
 int ssl_write_entry(void *ctx) {
-	return ssl_enter(ctx, HTTP_SENT, 0);
+	return ssl_enter(ctx, HTTP_SENT, 0, 0);
 }
 
 SEC("uretprobe/SSL_write")
 int ssl_write_exit(void *ctx) {
-	return ssl_leave(ctx, 0);
+	return ssl_leave(ctx, 0, 0);
 }
 
 SEC("uprobe/SSL_write_ex")
 int ssl_write_ex_entry(void *ctx) {
-	return ssl_enter(ctx, HTTP_SENT, 1);
+	return ssl_enter(ctx, HTTP_SENT, 1, 1);
 }
 
 SEC("uretprobe/SSL_write_ex")
 int ssl_write_ex_exit(void *ctx) {
-	return ssl_leave(ctx, 1);
+	return ssl_leave(ctx, 1, 1);
 }
 
 SEC("uprobe/SSL_read")
 int ssl_read_entry(void *ctx) {
-	return ssl_enter(ctx, HTTP_RECEIVED, 0);
+	return ssl_enter(ctx, HTTP_RECEIVED, 0, 0);
 }
 
 SEC("uretprobe/SSL_read")
 int ssl_read_exit(void *ctx) {
-	return ssl_leave(ctx, 0);
+	return ssl_leave(ctx, 0, 0);
 }
 
 SEC("uprobe/SSL_read_ex")
 int ssl_read_ex_entry(void *ctx) {
-	return ssl_enter(ctx, HTTP_RECEIVED, 1);
+	return ssl_enter(ctx, HTTP_RECEIVED, 1, 1);
 }
 
 SEC("uretprobe/SSL_read_ex")
 int ssl_read_ex_exit(void *ctx) {
-	return ssl_leave(ctx, 1);
+	return ssl_leave(ctx, 1, 1);
 }
 
 // SSL_free는 SSL 객체의 끝이다. 평문 레코드는 모두 SSL 객체의 짝짓기 id를 쓰므로, 여기서 배운 socket과 평문 stream 상태를
@@ -2799,7 +2814,7 @@ static __always_inline int nss_io_enter(void *ctx, __u8 direction) {
 	// 같은 반환 frame의 항목은 덮어쓴다. 반환 probe가 돌지 않아 남은 항목이 이후 호출을 막지 않고, tail call로 같은 frame에
 	// 두 함수가 들어와도 반환에서 cookie가 맞는 마지막 호출만 평문을 낸다.
 	struct nss_io_key key = {.thread = thread, .stack = nss_stack(ctx, 0)};
-	ssl_enter(ctx, direction, 0);
+	ssl_enter(ctx, direction, 0, 0);
 	struct ssl_pending *pending = bpf_map_lookup_elem(&ssl_pending, &thread);
 	if (!pending) {
 		nss_lost();
@@ -2847,7 +2862,7 @@ int nss_io_exit(void *ctx) {
 		nss_lost();
 		return 0;
 	}
-	return ssl_leave(ctx, 0);
+	return ssl_leave(ctx, 0, 0);
 }
 
 SEC("uprobe/PR_Close")

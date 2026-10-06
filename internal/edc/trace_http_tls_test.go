@@ -58,6 +58,44 @@ func TestTraceTLSWolfSSLDiscoveryAndLifecycle(t *testing.T) {
 	}
 }
 
+func TestTraceTLSRustlsDiscoveryAndLifecycle(t *testing.T) {
+	maps := []byte("7f00-7f01 r-xp 00000000 08:03 1 /opt/librustls.so.46.0.0\n7f01-7f02 r--p 00001000 08:03 1 /opt/librustls.so.46.0.0\n")
+	want := []traceTLSMapping{{"7f00-7f01", "/opt/librustls.so.46.0.0"}}
+	if got := traceTLSMappedLibraries(maps); !slices.Equal(got, want) {
+		t.Fatalf("rustls_connection mappings = %#v", got)
+	}
+	if !slices.Contains(traceTLSHostLibraries, "/usr/local/lib/librustls.so*") {
+		t.Fatal("rustls_connection host library search missing")
+	}
+	for _, name := range []string{"rustls_connection_read", "rustls_connection_write"} {
+		if !slices.Contains(traceTLSFunctions, name) || !traceTLSReadsPlaintext([]string{name}) {
+			t.Fatalf("rustls_connection reader missing: %s", name)
+		}
+	}
+	if !slices.Contains(traceTLSFreeFunctions, "rustls_connection_free") || traceTLSReadsPlaintext([]string{"rustls_connection_free"}) {
+		t.Fatal("rustls_connection_free must only clear the connection")
+	}
+}
+
+func TestTraceTLSMbedTLSDiscoveryAndLifecycle(t *testing.T) {
+	maps := []byte("7f00-7f01 r-xp 00000000 08:03 1 /opt/libmbedtls.so.46.0.0\n7f01-7f02 r--p 00001000 08:03 1 /opt/libmbedtls.so.46.0.0\n")
+	want := []traceTLSMapping{{"7f00-7f01", "/opt/libmbedtls.so.46.0.0"}}
+	if got := traceTLSMappedLibraries(maps); !slices.Equal(got, want) {
+		t.Fatalf("Mbed TLS mappings = %#v", got)
+	}
+	if !slices.Contains(traceTLSHostLibraries, "/usr/local/lib/libmbedtls.so*") {
+		t.Fatal("Mbed TLS host library search missing")
+	}
+	for _, name := range []string{"mbedtls_ssl_read", "mbedtls_ssl_write"} {
+		if !slices.Contains(traceTLSFunctions, name) || !traceTLSReadsPlaintext([]string{name}) {
+			t.Fatalf("Mbed TLS reader missing: %s", name)
+		}
+	}
+	if !slices.Contains(traceTLSFreeFunctions, "mbedtls_ssl_session_reset") || traceTLSReadsPlaintext([]string{"mbedtls_ssl_session_reset"}) || !slices.Contains(traceTLSFreeFunctions, "mbedtls_ssl_free") || traceTLSReadsPlaintext([]string{"mbedtls_ssl_free"}) {
+		t.Fatal("Mbed TLS_free must only clear the connection")
+	}
+}
+
 // traceTLSHostLibssl은 host에서 SSL_read를 정의한 libssl이다. 없는 host(macOS 등)에서는 ELF가 필요한 test를 건너뛴다.
 func traceTLSHostLibssl(t *testing.T) string {
 	t.Helper()

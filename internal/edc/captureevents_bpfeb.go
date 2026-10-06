@@ -229,6 +229,8 @@ const (
 	captureEventsProgInetCskAcceptExitLegacy   = "inet_csk_accept_exit_legacy"
 	captureEventsProgInetSockSetState          = "inet_sock_set_state"
 	captureEventsProgInetStreamConnectEntry    = "inet_stream_connect_entry"
+	captureEventsProgMbedReadEntry             = "mbed_read_entry"
+	captureEventsProgMbedWriteEntry            = "mbed_write_entry"
 	captureEventsProgNssAcceptEntry            = "nss_accept_entry"
 	captureEventsProgNssCloseEntry             = "nss_close_entry"
 	captureEventsProgNssControlExit            = "nss_control_exit"
@@ -239,6 +241,7 @@ const (
 	captureEventsProgNssReadEntry              = "nss_read_entry"
 	captureEventsProgNssRecvEntry              = "nss_recv_entry"
 	captureEventsProgNssWriteEntry             = "nss_write_entry"
+	captureEventsProgRustlsExit                = "rustls_exit"
 	captureEventsProgSkbConsumeUdpEntry        = "skb_consume_udp_entry"
 	captureEventsProgSslFreeEntry              = "ssl_free_entry"
 	captureEventsProgSslReadEntry              = "ssl_read_entry"
@@ -331,6 +334,8 @@ type captureEventsProgramSpecs struct {
 	InetCskAcceptExitLegacy   *ebpf.ProgramSpec `ebpf:"inet_csk_accept_exit_legacy"`
 	InetSockSetState          *ebpf.ProgramSpec `ebpf:"inet_sock_set_state"`
 	InetStreamConnectEntry    *ebpf.ProgramSpec `ebpf:"inet_stream_connect_entry"`
+	MbedReadEntry             *ebpf.ProgramSpec `ebpf:"mbed_read_entry"`
+	MbedWriteEntry            *ebpf.ProgramSpec `ebpf:"mbed_write_entry"`
 	NssAcceptEntry            *ebpf.ProgramSpec `ebpf:"nss_accept_entry"`
 	NssCloseEntry             *ebpf.ProgramSpec `ebpf:"nss_close_entry"`
 	NssControlExit            *ebpf.ProgramSpec `ebpf:"nss_control_exit"`
@@ -341,6 +346,7 @@ type captureEventsProgramSpecs struct {
 	NssReadEntry              *ebpf.ProgramSpec `ebpf:"nss_read_entry"`
 	NssRecvEntry              *ebpf.ProgramSpec `ebpf:"nss_recv_entry"`
 	NssWriteEntry             *ebpf.ProgramSpec `ebpf:"nss_write_entry"`
+	RustlsExit                *ebpf.ProgramSpec `ebpf:"rustls_exit"`
 	SkbConsumeUdpEntry        *ebpf.ProgramSpec `ebpf:"skb_consume_udp_entry"`
 	SslFreeEntry              *ebpf.ProgramSpec `ebpf:"ssl_free_entry"`
 	SslReadEntry              *ebpf.ProgramSpec `ebpf:"ssl_read_entry"`
@@ -529,6 +535,8 @@ type captureEventsPrograms struct {
 	InetCskAcceptExitLegacy   *ebpf.Program `ebpf:"inet_csk_accept_exit_legacy"`
 	InetSockSetState          *ebpf.Program `ebpf:"inet_sock_set_state"`
 	InetStreamConnectEntry    *ebpf.Program `ebpf:"inet_stream_connect_entry"`
+	MbedReadEntry             *ebpf.Program `ebpf:"mbed_read_entry"`
+	MbedWriteEntry            *ebpf.Program `ebpf:"mbed_write_entry"`
 	NssAcceptEntry            *ebpf.Program `ebpf:"nss_accept_entry"`
 	NssCloseEntry             *ebpf.Program `ebpf:"nss_close_entry"`
 	NssControlExit            *ebpf.Program `ebpf:"nss_control_exit"`
@@ -539,6 +547,7 @@ type captureEventsPrograms struct {
 	NssReadEntry              *ebpf.Program `ebpf:"nss_read_entry"`
 	NssRecvEntry              *ebpf.Program `ebpf:"nss_recv_entry"`
 	NssWriteEntry             *ebpf.Program `ebpf:"nss_write_entry"`
+	RustlsExit                *ebpf.Program `ebpf:"rustls_exit"`
 	SkbConsumeUdpEntry        *ebpf.Program `ebpf:"skb_consume_udp_entry"`
 	SslFreeEntry              *ebpf.Program `ebpf:"ssl_free_entry"`
 	SslReadEntry              *ebpf.Program `ebpf:"ssl_read_entry"`
@@ -577,6 +586,8 @@ func (p *captureEventsPrograms) Close() error {
 		p.InetCskAcceptExitLegacy,
 		p.InetSockSetState,
 		p.InetStreamConnectEntry,
+		p.MbedReadEntry,
+		p.MbedWriteEntry,
 		p.NssAcceptEntry,
 		p.NssCloseEntry,
 		p.NssControlExit,
@@ -587,6 +598,7 @@ func (p *captureEventsPrograms) Close() error {
 		p.NssReadEntry,
 		p.NssRecvEntry,
 		p.NssWriteEntry,
+		p.RustlsExit,
 		p.SkbConsumeUdpEntry,
 		p.SslFreeEntry,
 		p.SslReadEntry,

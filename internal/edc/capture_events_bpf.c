@@ -1925,8 +1925,10 @@ struct ssl_pending {
 	struct ssl_snapshot snapshot;
 };
 
+// uretprobe는 SSL 호출 안에서 끝난 thread에서는 실행되지 않아 항목이 남는다. HASH가 차면 새 thread의 평문을 아무 표시
+// 없이 잃으므로, 남은 항목은 LRU가 밀어낸다.
 struct {
-	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(type, BPF_MAP_TYPE_LRU_HASH);
 	__uint(max_entries, 10240);
 	__type(key, __u64);
 	__type(value, struct ssl_pending);

@@ -359,6 +359,8 @@ func attachTraceTLS(objects *captureEventsObjects, target traceTLSTarget) ([]lin
 		if pair[1] == nil {
 			continue
 		}
+		// amd64 kernel 6.11, 6.12.14 전의 6.12, 6.13.3 전의 6.13에서는 uretprobe가 seccomp filter 아래의 process를 끝낼
+		// 수 있다. distro kernel은 수정을 따로 넣었을 수 있어 막지 않고, resolveTraceTLSTargets가 화면을 열기 전에 알린다.
 		exit, err := executable.Uretprobe(symbol, pair[1], nil)
 		if err != nil {
 			return links, fmt.Errorf("--tls %s: attach %s return: %w", target.path, symbol, err)

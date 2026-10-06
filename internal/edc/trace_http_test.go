@@ -140,6 +140,9 @@ func TestTraceHTTPPayloadHidesSecretsAndEscapesControls(t *testing.T) {
 		{"space before the colon", "GET / HTTP/1.1\r\nHost: x\r\nAuthorization : Basic YWxh\r\n\r\n", "GET / HTTP/1.1\r\nHost: x\r\nAuthorization : ***\r\n\r\n"},
 		{"response", "HTTP/1.1 200 OK\r\nSet-Cookie: id=1\r\n\r\nok\t\xff\x7f\xc2\x9b\n", "HTTP/1.1 200 OK\r\nSet-Cookie: ***\r\n\r\nok\t\\xff\\x7f\\xc2\\x9b\n"},
 		{"cookie text in the body", "HTTP/1.1 200 OK\r\n\r\nCookie: visible", "HTTP/1.1 200 OK\r\n\r\nCookie: visible"},
+		// --tls로 푼 HTTPS에는 API key를 따로 보내는 header가 많다.
+		{"api key headers", "POST / HTTP/1.1\r\nX-Api-Key: sk-1\r\napi-key: 2\r\nX-Goog-Api-Key: 3\r\nX-Amz-Security-Token: 4\r\n\r\n",
+			"POST / HTTP/1.1\r\nX-Api-Key: ***\r\napi-key: ***\r\nX-Goog-Api-Key: ***\r\nX-Amz-Security-Token: ***\r\n\r\n"},
 	} {
 		if got := traceHTTPPayload([]byte(test.payload), false); got != test.want {
 			t.Fatalf("%s: payload = %q, want %q", test.name, got, test.want)

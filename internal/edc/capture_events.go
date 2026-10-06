@@ -65,6 +65,8 @@ type captureEvent struct {
 	MySQL *traceMySQLEvent `json:"mysql,omitempty"`
 	// ALPN은 tls_hello event에만 붙는다. client가 ClientHello로 제안한 protocol이고, 서버가 고른 것은 암호문이라 모른다.
 	ALPN []string `json:"alpn,omitempty"`
+	// TLS는 trace http --tls가 OpenSSL에서 읽은 평문 event다. socket을 모르는 평문은 Source와 Destination이 비어 있다.
+	TLS bool `json:"tls,omitempty"`
 	// Payload는 trace http --payload일 때만 붙는 message 앞부분이다. 제어 문자를 이미 \xNN으로 바꿔 두어서
 	// jq -r로 terminal에 찍어도 escape sequence가 실행되지 않는다.
 	Payload string `json:"payload,omitempty"`

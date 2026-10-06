@@ -1226,7 +1226,7 @@ Go TLS는 Go 함수 표와 반환 위치의 probe로 평문을 읽습니다. 검
 
 Go client의 응답 시간은 `Write` 진입부터 `Read` 반환까지입니다. 서버에서는 응답의 `Write` 진입까지 잽니다.
 
-Go HTTP/2 캡처는 아직 검증하지 않았습니다.
+Go HTTP/2 캡처는 시험으로 검증하지 않았습니다. 로컬에서 확인했을 때 client 쪽은 응답을 요청과 모두 짝지었지만, server 쪽은 가끔 한 연결의 요청이 모두 응답 없이 남았습니다.
 
 rustls-ffi는 C 함수 `rustls_connection_read`와 `rustls_connection_write`에서 평문을 읽고, `rustls_connection_free`에서 연결 상태를 지웁니다.
 

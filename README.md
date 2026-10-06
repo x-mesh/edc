@@ -1410,6 +1410,8 @@ For Go clients, latency starts at `Write` entry and ends at `Read` return. For s
 
 The capture tests cover Go HTTP/1.1. They do not cover Go HTTP/2.
 
+In local checks of Go HTTP/2, the client side matched each response to its request. The server side sometimes showed every request of a connection without a response.
+
 rustls-ffi uses the C functions `rustls_connection_read` and `rustls_connection_write`. edc clears the connection state at `rustls_connection_free`.
 
 ```bash

@@ -36,6 +36,15 @@ func traceTLSGoFixture(t *testing.T, mode string) string {
 	return fixture
 }
 
+func traceTLSGoToolVersion(t *testing.T) string {
+	t.Helper()
+	output, err := exec.Command("go", "env", "GOVERSION").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return strings.TrimSpace(string(output))
+}
+
 func TestTraceTLSGoFixtureMetadata(t *testing.T) {
 	for _, mode := range []string{"normal", "stripped", "pie"} {
 		t.Run(mode, func(t *testing.T) {
@@ -92,6 +101,9 @@ func TestTraceTLSGoFixtureMetadata(t *testing.T) {
 }
 
 func TestTraceTLSGoArm64FixtureMetadata(t *testing.T) {
+	if traceTLSGoToolVersion(t) != traceTLSGoVersion {
+		t.Skip("arm64 fixture needs Go 1.27.1")
+	}
 	fixture := filepath.Join(t.TempDir(), "edc-go-tls-arm64")
 	command := exec.Command("go", "build", "-o", fixture, "testdata/go_tls_client.go")
 	command.Env = append(os.Environ(), "GOOS=linux", "GOARCH=arm64")

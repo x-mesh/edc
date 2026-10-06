@@ -31,6 +31,8 @@ const (
 	traceHTTPRequestEvent = "http_request"
 	// traceTLSHelloEvent는 TLS ClientHello다. HTTPS는 암호문이라 method와 path 대신 SNI와 ALPN만 보인다.
 	traceTLSHelloEvent = "tls_hello"
+	// traceHTTP2UnparsedEvent는 --tls 평문에서 본 HTTP/2 연결이다. frame은 해석하지 않지만 연결이 조용히 사라지지 않게 한다.
+	traceHTTP2UnparsedEvent = "http2_unparsed"
 	// traceHTTPPendingLimit은 응답을 기다리는 요청 수의 상한이다. 응답을 읽지 못한 요청이 쌓여도 메모리를 제한한다.
 	traceHTTPPendingLimit = 65536
 )
@@ -40,22 +42,24 @@ var traceHTTPMethods = []string{"GET", "POST", "PUT", "HEAD", "DELETE", "PATCH",
 
 // httpPacket은 kernel이 TCP로 주고받은 HTTP message의 앞부분이다. source는 로컬 쪽, destination은 상대 쪽이다.
 type httpPacket struct {
-	bootTimeNS    uint64
-	pid           uint32
-	cgroupID      uint64
-	process       string
-	sent          bool
-	socket        uint64
-	source        string
-	destination   string
-	payload       []byte
-	captureSource string
-	// continued는 앞 message에 이어지는 조각이다. --payload=all이 아니면 첫 줄이 끊긴 첫 조각 뒤에만 온다. offset은 조각이
-	// message 안에서 시작하는 위치다.
+	bootTimeNS  uint64
+	pid         uint32
+	cgroupID    uint64
+	process     string
+	sent        bool
+	socket      uint64
+	source      string
+	destination string
+	payload     []byte
+	// continued는 앞 message에 이어지는 조각이다. --payload=all이 아니면 첫 줄이 끊긴 첫 조각 뒤에만 온다. h2c에서는
+	// preface 뒤의 레코드가 모두 continued이고, continued가 아닌 레코드는 새 연결의 첫 레코드다. offset은 조각이 message
+	// 안에서 시작하는 위치다. h2c에서는 연결 안의 위치로, 송신은 TCP 순번이고 수신은 읽은 byte 수다.
 	continued bool
 	offset    uint32
 	// tlsHandshake는 TLS record 머리 없이 handshake message로 시작하는 조각이다. record 머리만 따로 읽는 서버에서 온다.
 	tlsHandshake bool
+	// decrypted는 OpenSSL uprobe가 읽은 평문이다. 같은 socket의 암호문과 조각을 잇지 않는다.
+	decrypted bool
 }
 
 type httpPendingRequest struct {
@@ -67,6 +71,7 @@ type httpPendingRequest struct {
 
 // httpTracker는 socket마다 요청을 순서대로 두고 응답과 짝짓는다. HTTP/1.x는 한 연결에서 요청 순서대로 응답한다.
 // side는 tracker가 볼 쪽이다. 비어 있으면 두 쪽을 모두 본다. 한 socket은 client와 server 중 한 쪽이므로 짝은 섞이지 않는다.
+// h2Pending은 socket마다 stream별로 응답을 기다리는 HTTP/2 요청이고, h2Size가 HTTP/1과 같은 상한을 지킨다.
 type httpTracker struct {
 	side        string
 	payload     bool
@@ -76,16 +81,16 @@ type httpTracker struct {
 	pending   map[uint64][]httpPendingRequest
 	size      int
 	http2     map[httpStreamKey]*http2Direction
-	h2Pending map[http2RequestKey]httpPendingRequest
+	h2Pending map[uint64]map[uint32]httpPendingRequest
+	h2Size    int
 }
 
-type http2RequestKey struct {
-	socket uint64
-	stream uint32
-}
-
+// http2Direction은 h2c 연결의 한 방향이다. next는 다음 레코드가 시작해야 하는 위치이고, started 전에는 첫 레코드의 위치를
+// 기준으로 삼는다. 송신 위치는 TCP 순번이라 0에서 시작하지 않는다.
 type http2Direction struct {
 	buffer       []byte
+	next         uint32
+	started      bool
 	preface      bool
 	decoder      *hpack.Decoder
 	fields       []hpack.HeaderField
@@ -95,7 +100,7 @@ type http2Direction struct {
 }
 
 func newHTTPTracker(side string, payload, showSecrets bool) *httpTracker {
-	return &httpTracker{side: side, payload: payload, showSecrets: showSecrets, pending: map[uint64][]httpPendingRequest{}, http2: map[httpStreamKey]*http2Direction{}, h2Pending: map[http2RequestKey]httpPendingRequest{}}
+	return &httpTracker{side: side, payload: payload, showSecrets: showSecrets, pending: map[uint64][]httpPendingRequest{}, http2: map[httpStreamKey]*http2Direction{}, h2Pending: map[uint64]map[uint32]httpPendingRequest{}}
 }
 
 var http2Preface = []byte("PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n")
@@ -106,29 +111,62 @@ func (tracker *httpTracker) newHTTP2Direction() *http2Direction {
 	return direction
 }
 
+// http2Events는 h2c 연결의 frame을 읽는다. BPF는 h2c 연결의 byte를 빠짐없이 넘기고 offset에 연결 안의 위치를 싣는다.
+// --tls 평문은 받지 않는다. TLS 위의 HTTP/2는 BPF가 preface만 넘기고, tracker.event가 http2_unparsed로 알린다.
 func (tracker *httpTracker) http2Events(packet httpPacket, clockOffset int64) ([]captureEvent, bool) {
+	if packet.decrypted {
+		return nil, false
+	}
 	key := httpStreamKey{socket: packet.socket, sent: packet.sent}
+	peer := httpStreamKey{socket: packet.socket, sent: !packet.sent}
 	direction := tracker.http2[key]
+	// BPF는 h2c 연결 안에서는 시작 레코드를 내지 않는다. 시작 레코드가 오면 닫힘 레코드를 놓친 사이에 새 연결이 같은
+	// socket 주소를 쓴 것이므로, 한쪽 방향만 남았더라도 그 socket의 h2c 상태를 모두 버리고 새로 읽는다.
+	if !packet.continued && (direction != nil || tracker.http2[peer] != nil) {
+		delete(tracker.http2, key)
+		delete(tracker.http2, peer)
+		tracker.h2Size -= len(tracker.h2Pending[packet.socket])
+		delete(tracker.h2Pending, packet.socket)
+		direction = nil
+	}
 	if direction == nil {
-		if !bytes.HasPrefix(http2Preface, packet.payload) && !bytes.HasPrefix(packet.payload, http2Preface) {
+		if packet.continued || !bytes.HasPrefix(http2Preface, packet.payload) && !bytes.HasPrefix(packet.payload, http2Preface) {
 			return nil, false
 		}
 		direction = tracker.newHTTP2Direction()
 		tracker.http2[key] = direction
-		peer := httpStreamKey{socket: packet.socket, sent: !packet.sent}
 		if tracker.http2[peer] == nil {
+			// 수신 위치는 BPF가 0부터 센다. 원점을 모르는 것은 TCP 순번을 쓰는 송신뿐이다.
 			tracker.http2[peer] = tracker.newHTTP2Direction()
-			tracker.http2[peer].preface = true
+			tracker.http2[peer].preface, tracker.http2[peer].started = true, !peer.sent
 		}
 	}
-	direction.buffer = append(direction.buffer, packet.payload...)
+	if !direction.started {
+		direction.next, direction.started = packet.offset, true
+	}
+	payload := packet.payload
+	// 일부만 보낸 송신을 program이 다시 쓰면 같은 byte가 같은 위치로 다시 온다. 이미 받은 앞부분은 버린다. 잃은 byte가
+	// 있으면 frame 경계와 HPACK 표를 되찾을 수 없으므로 이 방향은 더 읽지 않는다.
+	switch overlap := int32(direction.next - packet.offset); {
+	case overlap < 0:
+		delete(tracker.http2, key)
+		return nil, true
+	case int(overlap) >= len(payload):
+		return nil, true
+	default:
+		payload = payload[overlap:]
+	}
+	direction.next += uint32(len(payload))
+	direction.buffer = append(direction.buffer, payload...)
 	if !direction.preface {
 		if len(direction.buffer) < len(http2Preface) {
 			return nil, true
 		}
+		// preface가 아니면 반대 방향도 h2c가 아니다. 이 조각은 HTTP/1로 다시 읽는다.
 		if !bytes.HasPrefix(direction.buffer, http2Preface) {
 			delete(tracker.http2, key)
-			return nil, true
+			delete(tracker.http2, peer)
+			return nil, false
 		}
 		direction.buffer = direction.buffer[len(http2Preface):]
 		direction.preface = true
@@ -137,8 +175,8 @@ func (tracker *httpTracker) http2Events(packet httpPacket, clockOffset int64) ([
 	for len(direction.buffer) >= 9 {
 		length := int(direction.buffer[0])<<16 | int(direction.buffer[1])<<8 | int(direction.buffer[2])
 		if length > httpMessageMax {
-			direction.buffer = nil
-			break
+			delete(tracker.http2, key)
+			return events, true
 		}
 		if len(direction.buffer) < 9+length {
 			break
@@ -148,7 +186,7 @@ func (tracker *httpTracker) http2Events(packet httpPacket, clockOffset int64) ([
 		payload := direction.buffer[9 : 9+length]
 		direction.buffer = direction.buffer[9+length:]
 		if typeID == 3 {
-			delete(tracker.h2Pending, http2RequestKey{socket: packet.socket, stream: stream})
+			tracker.forgetHTTP2Stream(packet.socket, stream)
 			continue
 		}
 		switch typeID {
@@ -179,13 +217,14 @@ func (tracker *httpTracker) http2Events(packet httpPacket, clockOffset int64) ([
 			continue
 		}
 		direction.fields = direction.fields[:0]
+		// HPACK 오류 뒤에는 동적 표가 상대와 어긋나 이후 header를 틀리게 읽으므로 이 방향은 더 읽지 않는다.
 		if _, err := direction.decoder.Write(direction.headerBlock); err != nil {
-			direction.headerBlock = nil
-			continue
+			delete(tracker.http2, key)
+			return events, true
 		}
 		if err := direction.decoder.Close(); err != nil {
-			direction.headerBlock = nil
-			continue
+			delete(tracker.http2, key)
+			return events, true
 		}
 		event, ok := tracker.http2HeaderEvent(direction.packet, stream, direction.fields, clockOffset)
 		direction.headerBlock = nil
@@ -213,12 +252,24 @@ func (tracker *httpTracker) http2HeaderEvent(packet httpPacket, stream uint32, f
 	if tracker.side != "" && tracker.side != side {
 		return captureEvent{}, false
 	}
-	event := captureEvent{SocketID: packet.socket, TimestampNS: uint64(int64(packet.bootTimeNS) + clockOffset), BootTimeNS: packet.bootTimeNS, Protocol: "http", CaptureSource: packet.captureSource, Side: side, PID: packet.pid, Process: packet.process, CgroupID: packet.cgroupID, Source: packet.source, Destination: packet.destination, Bytes: uint64(len(packet.payload))}
-	key := http2RequestKey{socket: packet.socket, stream: stream}
+	event := captureEvent{SocketID: packet.socket, TimestampNS: uint64(int64(packet.bootTimeNS) + clockOffset), BootTimeNS: packet.bootTimeNS, Protocol: "http", Side: side, PID: packet.pid, Process: packet.process, CgroupID: packet.cgroupID, Source: packet.source, Destination: packet.destination, Bytes: uint64(len(packet.payload))}
 	if method != "" {
 		host, path := traceHTTPTarget(values[":path"], strings.ToLower(values[":authority"]))
 		event.Event, event.Method, event.Path, event.Target = traceHTTPRequestEvent, method, path, emptyAs(host, traceHTTPHost(packet.destination, server))
-		tracker.h2Pending[key] = httpPendingRequest{bootTimeNS: packet.bootTimeNS, method: method, host: event.Target, path: path}
+		if tracker.h2Size >= traceHTTPPendingLimit {
+			// 이때 버린 요청의 응답은 응답 시간 없이 보인다.
+			clear(tracker.h2Pending)
+			tracker.h2Size = 0
+		}
+		streams := tracker.h2Pending[packet.socket]
+		if streams == nil {
+			streams = map[uint32]httpPendingRequest{}
+			tracker.h2Pending[packet.socket] = streams
+		}
+		if _, ok := streams[stream]; !ok {
+			tracker.h2Size++
+		}
+		streams[stream] = httpPendingRequest{bootTimeNS: packet.bootTimeNS, method: method, host: event.Target, path: path}
 		return event, true
 	}
 	status, err := strconv.Atoi(statusText)
@@ -226,22 +277,39 @@ func (tracker *httpTracker) http2HeaderEvent(packet httpPacket, stream uint32, f
 		return captureEvent{}, false
 	}
 	event.Event, event.Status = traceHTTPStatusEvent(status), status
-	if request, ok := tracker.h2Pending[key]; ok {
+	if request, ok := tracker.h2Pending[packet.socket][stream]; ok {
 		event.Method, event.Path, event.Target = request.method, request.path, request.host
 		if status >= 200 {
 			event.LatencyMS, event.answered = traceSpan(request.bootTimeNS, packet.bootTimeNS), 1
-			delete(tracker.h2Pending, key)
+			tracker.forgetHTTP2Stream(packet.socket, stream)
 		}
 	}
 	return event, true
 }
 
-func (tracker *httpTracker) event(packet httpPacket, clockOffset int64) (captureEvent, bool) {
-	if hello, ok := parseTLSClientHello(packet.payload, !packet.tlsHandshake); ok {
-		return tracker.tlsEvent(packet, hello, clockOffset)
+func (tracker *httpTracker) forgetHTTP2Stream(socket uint64, stream uint32) {
+	streams := tracker.h2Pending[socket]
+	if _, ok := streams[stream]; !ok {
+		return
 	}
-	if packet.tlsHandshake {
-		return captureEvent{}, false
+	delete(streams, stream)
+	tracker.h2Size--
+	if len(streams) == 0 {
+		delete(tracker.h2Pending, socket)
+	}
+}
+
+func (tracker *httpTracker) event(packet httpPacket, clockOffset int64) (captureEvent, bool) {
+	if packet.decrypted && bytes.HasPrefix(packet.payload, httpTwoPreface) {
+		return tracker.http2Event(packet, clockOffset)
+	}
+	if !packet.decrypted {
+		if hello, ok := parseTLSClientHello(packet.payload, !packet.tlsHandshake); ok {
+			return tracker.tlsEvent(packet, hello, clockOffset)
+		}
+		if packet.tlsHandshake {
+			return captureEvent{}, false
+		}
 	}
 	method, target, host, requestOK := parseHTTPRequest(packet.payload)
 	status, responseOK := parseHTTPStatus(packet.payload)
@@ -258,8 +326,9 @@ func (tracker *httpTracker) event(packet httpPacket, clockOffset int64) (capture
 		return captureEvent{}, false
 	}
 	event := captureEvent{
-		SocketID: packet.socket, TimestampNS: uint64(int64(packet.bootTimeNS) + clockOffset), BootTimeNS: packet.bootTimeNS, Protocol: "http", CaptureSource: packet.captureSource, Side: side,
+		SocketID: packet.socket, TimestampNS: uint64(int64(packet.bootTimeNS) + clockOffset), BootTimeNS: packet.bootTimeNS, Protocol: "http", Side: side,
 		PID: packet.pid, Process: packet.process, CgroupID: packet.cgroupID, Source: packet.source, Destination: packet.destination, Bytes: uint64(len(packet.payload)),
+		TLS: packet.decrypted,
 	}
 	if tracker.payload {
 		event.Payload = traceHTTPPayload(packet.payload, tracker.showSecrets)
@@ -310,9 +379,28 @@ func (tracker *httpTracker) tlsEvent(packet httpPacket, hello tlsClientHello, cl
 		return captureEvent{}, false
 	}
 	return captureEvent{
-		SocketID: packet.socket, TimestampNS: uint64(int64(packet.bootTimeNS) + clockOffset), BootTimeNS: packet.bootTimeNS, Protocol: "http", CaptureSource: packet.captureSource, Side: side,
+		SocketID: packet.socket, TimestampNS: uint64(int64(packet.bootTimeNS) + clockOffset), BootTimeNS: packet.bootTimeNS, Protocol: "http", Side: side,
 		PID: packet.pid, Process: packet.process, CgroupID: packet.cgroupID, Source: packet.source, Destination: packet.destination, Bytes: uint64(len(packet.payload)),
 		Event: traceTLSHelloEvent, Target: emptyAs(hello.serverName, traceHTTPHost(packet.destination, side == traceServerSide)), ALPN: hello.alpn,
+	}, true
+}
+
+// httpTwoPreface는 HTTP/2 connection preface의 첫 줄이다. client가 TLS 위에서 처음 보내는 평문이다.
+var httpTwoPreface = []byte("PRI * HTTP/2.0\r\n")
+
+// http2Event는 HTTP/2 연결의 preface 하나를 event로 만든다. client가 보내고 로컬 서버가 받는다. 연결마다 한 번 온다.
+func (tracker *httpTracker) http2Event(packet httpPacket, clockOffset int64) (captureEvent, bool) {
+	side := traceClientSide
+	if !packet.sent {
+		side = traceServerSide
+	}
+	if tracker.side != "" && side != tracker.side {
+		return captureEvent{}, false
+	}
+	return captureEvent{
+		SocketID: packet.socket, TimestampNS: uint64(int64(packet.bootTimeNS) + clockOffset), BootTimeNS: packet.bootTimeNS, Protocol: "http", Side: side,
+		PID: packet.pid, Process: packet.process, CgroupID: packet.cgroupID, Source: packet.source, Destination: packet.destination, Bytes: uint64(len(packet.payload)),
+		Event: traceHTTP2UnparsedEvent, Target: traceHTTPHost(packet.destination, side == traceServerSide), TLS: true,
 	}, true
 }
 
@@ -434,11 +522,8 @@ func (tracker *httpTracker) forget(socket uint64) {
 	delete(tracker.pending, socket)
 	delete(tracker.http2, httpStreamKey{socket: socket, sent: true})
 	delete(tracker.http2, httpStreamKey{socket: socket, sent: false})
-	for key := range tracker.h2Pending {
-		if key.socket == socket {
-			delete(tracker.h2Pending, key)
-		}
-	}
+	tracker.h2Size -= len(tracker.h2Pending[socket])
+	delete(tracker.h2Pending, socket)
 }
 
 // parseHTTPRequest는 요청 줄과 Host header를 읽는다. 요청 줄이 "METHOD target HTTP/1.x"가 아니면 HTTP가 아니다.
@@ -488,7 +573,8 @@ func traceHTTPTarget(target, host string) (string, string) {
 }
 
 // traceHTTPSecretHeaders는 --payload에서도 값을 가리는 header다. 인증 정보라서, 출력을 log나 issue에 옮기면 그대로 샌다.
-var traceHTTPSecretHeaders = []string{"authorization", "proxy-authorization", "cookie", "set-cookie"}
+// API key를 따로 보내는 header도 넣는다. --tls로 HTTPS를 풀면 이런 header가 많이 보인다.
+var traceHTTPSecretHeaders = []string{"authorization", "proxy-authorization", "cookie", "set-cookie", "x-api-key", "x-goog-api-key", "api-key", "x-amz-security-token"}
 
 // traceHTTPPayload는 --payload로 보여 줄 message 앞부분이다. BPF가 앞부분만 읽으므로 header 끝을 못 봤으면
 // 마지막 header 줄이 CRLF 없이 값 중간에서 끊겨 있다. 그 줄도 header로 보고 가린다.
@@ -643,8 +729,8 @@ type traceHTTPCounts struct {
 }
 
 func (counts *traceHTTPCounts) observe(event captureEvent) {
-	// ClientHello는 요청도 응답도 아니다. 요약은 TLS 연결을 따로 센다.
-	if event.Event == traceTLSHelloEvent {
+	// ClientHello와 HTTP/2 preface는 요청도 응답도 아니다. 요약은 연결을 따로 센다.
+	if event.Event == traceTLSHelloEvent || event.Event == traceHTTP2UnparsedEvent {
 		return
 	}
 	if event.Event == traceHTTPRequestEvent {
@@ -699,11 +785,7 @@ var traceHTTPGroupColumns = []traceGroupColumn{
 // 한 목록에 두 쪽이 섞이므로 쪽을 앞에 붙인다. event 칸은 모든 protocol이 같은 폭이라 붙이면 잘린다. 글자로 붙여서
 // 전체 화면의 / 필터로 server나 client를 찾을 수 있다.
 func traceHTTPScrollLabels(event captureEvent) (string, string) {
-	target := event.Target + event.Path
-	if event.Target != "" {
-		target = traceHTTPScheme(event) + target
-	}
-	request := strings.TrimSpace(event.Method + " " + target)
+	request := strings.TrimSpace(event.Method + " " + event.Target + event.Path)
 	if event.Destination != "" && event.Destination != event.Target {
 		request = strings.TrimSpace(request + " (" + event.Destination + ")")
 	}
@@ -711,6 +793,10 @@ func traceHTTPScrollLabels(event captureEvent) (string, string) {
 		request = event.Side + ": " + emptyAs(request, "-")
 	}
 	label := event.Event
+	// event 칸은 폭이 정해져 끝이 잘릴 수 있어서, 평문 HTTPS 표시는 이름 바로 뒤에 둔다.
+	if event.TLS && event.Event != traceHTTP2UnparsedEvent {
+		label += " tls"
+	}
 	if event.Status != 0 {
 		label += " " + strconv.Itoa(event.Status)
 	}
@@ -722,13 +808,6 @@ func traceHTTPScrollLabels(event captureEvent) (string, string) {
 		label += " " + traceLatency(event.LatencyMS, "ms")
 	}
 	return emptyAs(request, "-"), label
-}
-
-func traceHTTPScheme(event captureEvent) string {
-	if event.CaptureSource == "openssl_uprobe" || event.Event == traceTLSHelloEvent {
-		return "https://"
-	}
-	return "http://"
 }
 
 type httpTraceKey struct {
@@ -761,6 +840,10 @@ type httpTraceReport struct {
 	// TLSConnections와 TLS는 HTTPS 연결이다. 암호문이라 ClientHello의 SNI와 ALPN만 센다. 없으면 JSON에서 뺀다.
 	TLSConnections uint64       `json:"tls_connections,omitempty"`
 	TLS            []httpTLSRow `json:"tls,omitempty"`
+	// HTTP2Unparsed는 --tls 평문에서 본 HTTP/2 연결 수다. 요청은 해석하지 않는다.
+	HTTP2Unparsed uint64 `json:"http2_unparsed,omitempty"`
+	// TLSUnmapped는 --tls 평문 중 socket을 몰라 주소 없이 보인 event와, --port 때문에 버린 평문 레코드의 수다.
+	TLSUnmapped uint64 `json:"tls_unmapped,omitempty"`
 }
 
 type httpTLSKey struct {
@@ -797,6 +880,9 @@ type httpTraceSummarizer struct {
 	sides map[string]*traceHTTPCounts
 	// tls는 ClientHello를 쪽, SNI, ALPN마다 센다. HTTP 행과 합계에는 넣지 않는다.
 	tls map[httpTLSKey]*httpTLSStats
+	// http2와 unmapped는 --tls 평문의 HTTP/2 연결 수와 주소 없는 event 수다.
+	http2    uint64
+	unmapped uint64
 }
 
 func newHTTPTraceSummarizer() *httpTraceSummarizer {
@@ -816,6 +902,13 @@ func (summarizer *httpTraceSummarizer) observe(event captureEvent) {
 			stats.processes[event.Process] = struct{}{}
 		}
 		return
+	}
+	if event.Event == traceHTTP2UnparsedEvent {
+		summarizer.http2++
+		return
+	}
+	if event.TLS && event.Source == "" && event.Destination == "" {
+		summarizer.unmapped++
 	}
 	key := httpTraceKey{side: event.Side, method: event.Method, host: event.Target, path: event.Path}
 	stats := summarizer.rows[key]
@@ -842,7 +935,8 @@ func (summarizer *httpTraceSummarizer) observe(event captureEvent) {
 }
 
 func (summarizer *httpTraceSummarizer) summarize(summary captureSummary, duration time.Duration) traceReport {
-	report := httpTraceReport{DurationMS: duration.Milliseconds(), LostEvents: summary.LostEvents, traceHTTPCounts: summarizer.counts.finished()}
+	report := httpTraceReport{DurationMS: duration.Milliseconds(), LostEvents: summary.LostEvents, traceHTTPCounts: summarizer.counts.finished(),
+		HTTP2Unparsed: summarizer.http2, TLSUnmapped: summarizer.unmapped + summary.TLSUnmapped}
 	if len(summarizer.sides) == 1 {
 		for side := range summarizer.sides {
 			report.Side = side
@@ -912,6 +1006,12 @@ func (report httpTraceReport) print(bool) {
 		printHTTPCounts("", report.traceHTTPCounts)
 	}
 	fmt.Fprintf(os.Stdout, "Lost events: %d\n", report.LostEvents)
+	if report.HTTP2Unparsed > 0 {
+		fmt.Fprintf(os.Stdout, "HTTP/2 connections (not parsed): %d\n", report.HTTP2Unparsed)
+	}
+	if report.TLSUnmapped > 0 {
+		fmt.Fprintf(os.Stdout, "TLS plaintext without an address: %d\n", report.TLSUnmapped)
+	}
 	if len(report.Paths) > 0 {
 		// 한 쪽만 있으면 SIDE 칸은 모든 행이 같아서 뺀다.
 		sideColumn := func(value string) string {

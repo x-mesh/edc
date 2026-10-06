@@ -69,13 +69,16 @@ func resolveTraceTLSTargets(mode traceTLSMode) (finder *traceTLSFinder, notices 
 	if mode != traceTLSAuto {
 		path := string(mode)
 		target, err := traceTLSReadFile(path, true)
-		// 기존 상대 경로가 PATH의 같은 이름 실행 파일로 바뀌지 않게 ENOENT일 때만 찾는다.
-		if errors.Is(err, fs.ErrNotExist) && !strings.ContainsRune(path, '/') {
-			var resolved string
-			resolved, err = exec.LookPath(path)
-			if err == nil {
-				path = resolved
-				target, err = traceTLSReadFile(path, true)
+		// 기존 상대 경로가 PATH의 같은 이름 실행 파일로 바뀌지 않게, 그 이름의 파일이 없거나 디렉터리일 때만 찾는다.
+		// 디렉터리를 연 오류는 elf.FormatError가 값으로만 담아 errors.Is로 가릴 수 없으므로 stat으로 판단한다.
+		if err != nil && !strings.ContainsRune(path, '/') {
+			if info, statErr := os.Stat(path); errors.Is(statErr, fs.ErrNotExist) || (statErr == nil && info.IsDir()) {
+				var resolved string
+				resolved, err = exec.LookPath(path)
+				if err == nil {
+					path = resolved
+					target, err = traceTLSReadFile(path, true)
+				}
 			}
 		}
 		if err != nil {

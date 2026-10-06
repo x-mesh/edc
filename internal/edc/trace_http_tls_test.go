@@ -348,6 +348,16 @@ func TestResolveTraceTLSTargetsFindsAnExecutableName(t *testing.T) {
 	if err := os.Chmod(path, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.Mkdir(name, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	finder, _, code, err = resolveTraceTLSTargets(traceTLSMode(name))
+	if err != nil || code != 0 || len(finder.targets) != 1 || finder.targets[0].path != path {
+		t.Fatalf("relative directory target = %#v, %d, %v", finder, code, err)
+	}
+	if err := os.Remove(name); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(name, data, 0o644); err != nil {
 		t.Fatal(err)
 	}

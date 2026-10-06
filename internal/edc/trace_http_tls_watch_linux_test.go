@@ -112,8 +112,12 @@ func TestWatchTraceTLSRescansWithoutExecEvents(t *testing.T) {
 	}
 }
 
-// proc connector는 CAP_NET_ADMIN이 있어야 구독한다. 구독하면 exec한 process의 PID가 오고, stop을 닫으면 channel이 닫힌다.
+// 구독하면 exec한 process의 PID가 오고, stop을 닫으면 channel이 닫힌다. CAP_NET_ADMIN이 없는 CI runner에서는 구독은
+// 되지만 exec 알림이 오지 않았다. trace http는 그 capability가 없으면 시작하지 않으므로 이때는 건너뛴다.
 func TestTraceTLSExecEventsReportsAnExec(t *testing.T) {
+	if capabilities, err := effectiveCapabilities(); err != nil || !capabilities[capNetAdmin] {
+		t.Skip("trace http needs CAP_NET_ADMIN")
+	}
 	stop := make(chan struct{})
 	execs, err := traceTLSExecEvents(stop)
 	if err != nil {

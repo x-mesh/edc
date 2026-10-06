@@ -558,7 +558,7 @@ Press `s` for Linux pressure. It shows CPU, memory, and I/O `some avg10`: the pe
 
 The detail view also lists the top three processes by CPU. The list refreshes in the background at most once a second, so it does not lengthen the observation interval. Without `--write`, only the dashboard collects it; the table and unfiltered `--json` output skip it. On Linux, `edc` compares the CPU ticks in `/proc/<pid>/stat` with the previous refresh, so the value covers the time since that refresh. On macOS, it uses the recent decaying average that `ps` reports.
 
-The process panel shows CPU candidates by default and RSS candidates in the memory view. It keeps five leaders per metric before the list limit.
+The process panel shows CPU candidates by default and RSS candidates in the memory view. It keeps five leaders per metric before the list limit. The panel shows three candidates. If the terminal has 40 or more rows, the panel shows five.
 
 Press `Tab` to select a candidate. Use arrows to choose a process. Press `Enter` to focus its PID.
 

@@ -1229,6 +1229,36 @@ func TestTopCandidatePagingKeepsTheSelectedSnapshot(t *testing.T) {
 	}
 }
 
+func TestTopCandidatePanelShowsMoreProcessesOnTallTerminals(t *testing.T) {
+	processes := []topProcess{}
+	for pid := 1; pid <= 6; pid++ {
+		processes = append(processes, topProcess{PID: pid, CPU: float64(10 - pid), Command: "proc" + string(rune('0'+pid))})
+	}
+	for height, want := range map[int]int{topTallHeight - 1: 3, topTallHeight: topProcessLimit} {
+		model := topFixtureModel(nil)
+		model.width, model.height = 120, height
+		for second := 0; second < 60; second++ {
+			model.rows = append(model.rows, topDashboardRow{at: time.Unix(int64(second), 0), processesValid: true, processes: processes})
+		}
+		model.selected = len(model.rows) - 1
+		content, got := model.View().Content, 0
+		for _, process := range processes {
+			if strings.Contains(content, process.Command) {
+				got++
+			}
+		}
+		if got != want {
+			t.Fatalf("height %d shows %d processes, want %d: %q", height, got, want, content)
+		}
+		if lines := len(strings.Split(content, "\n")); lines > height {
+			t.Fatalf("height %d renders %d lines", height, lines)
+		}
+		if height == topTallHeight && model.bodyLines() != 28 {
+			t.Fatalf("height %d keeps %d history rows, want 28", height, model.bodyLines())
+		}
+	}
+}
+
 // Linux의 pid_max는 기본 4194304라 PID가 7자리일 수 있다. PID 길이가 달라도 후보 목록의 열은 같은 자리에서 시작해야 한다.
 func TestTopCandidateColumnsAlignForSevenDigitPIDs(t *testing.T) {
 	for _, width := range []int{100, 36} {

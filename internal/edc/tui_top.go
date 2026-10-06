@@ -97,6 +97,8 @@ const (
 	topPeakWindow = time.Minute
 	// topSelectionColumn은 행에서 "15:04:05" 바로 뒤 공백 자리다. 선택 표시가 시각을 가리지 않는다.
 	topSelectionColumn = 8
+	// topTallHeight부터 process 패널이 후보를 topProcessLimit개까지 보인다. 두 줄을 더 써도 history가 28행 남는다.
+	topTallHeight = 40
 	// topProcessNameWidth는 상세 패널의 process 이름 폭이다. 세 개가 80열 한 줄에 들어간다.
 	topProcessNameWidth = 10
 	// topSignalProcessNameWidth는 signal 열의 process 이름 폭이다.
@@ -845,7 +847,7 @@ func (model topModel) candidateLines() []string {
 		lines = append(lines, header)
 	}
 	count := min(3, len(processes))
-	if model.processFocus {
+	if model.processFocus || model.height >= topTallHeight {
 		count = min(topProcessLimit, len(processes))
 	}
 	count = min(count, max(1, room-len(lines)))

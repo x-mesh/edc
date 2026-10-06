@@ -526,10 +526,6 @@ If collection fails, the dashboard keeps the last row and retries at the next in
 
 The default table follows the terminal width. If the terminal is wider than 80 columns, the table adds columns in this order:
 
-If the terminal has fewer than 80 columns, the overview shows CPU, memory, load, and signals. Other views omit columns that do not fit.
-
-The minimum terminal size is 24 columns and 8 rows. Help supports scroll on small terminals.
-
 | terminal width | added columns |
 |---|---|
 | 84 | hot core |
@@ -543,6 +539,10 @@ The minimum terminal size is 24 columns and 8 rows. Help supports scroll on smal
 | 167 | conntrack usage (`ct%`) |
 
 The `signal` column gets 13 to 16 characters. That is room for at least one warning and the number of the other warnings. The other columns share the remaining width, so the table fills the terminal. The title line also adds the OS name, the memory size, and the CPU model when the terminal has room. The right edge of the title shows the view and `live` or `history`. It adds the edc version when the terminal has room. If the terminal becomes narrower, the table removes those columns immediately.
+
+If the terminal has fewer than 80 columns, the overview shows CPU, memory, load, and signals. Other views omit columns that do not fit.
+
+The minimum terminal size is 24 columns and 8 rows. Help supports scroll on small terminals.
 
 On macOS and Linux, the disk view shows IOPS and average `await` across physical disks.
 

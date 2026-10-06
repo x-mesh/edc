@@ -2668,8 +2668,10 @@ struct go_tls_writes {
 	__u64 closed;
 };
 
+// (*Conn).Close를 부르지 않고 끝난 process와 열어 둔 연결의 항목은 남는다. HASH가 차면 새 연결의 Write가 순서 맞춤에서
+// 빠지므로, 오래 쓰지 않은 항목은 LRU가 밀어낸다.
 struct {
-	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(type, BPF_MAP_TYPE_LRU_HASH);
 	__uint(max_entries, 10240);
 	__type(key, struct ssl_key);
 	__type(value, struct go_tls_writes);

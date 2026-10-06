@@ -20,7 +20,7 @@ import (
 	"time"
 )
 
-func traceTLSGoFixture(t *testing.T, mode string) string {
+func traceTLSGoFixture(t *testing.T, goCommand, mode string) string {
 	t.Helper()
 	fixture := filepath.Join(t.TempDir(), "edc-go-tls")
 	args := []string{"build", "-o", fixture}
@@ -30,22 +30,40 @@ func traceTLSGoFixture(t *testing.T, mode string) string {
 		args = append(args, "-buildmode=pie")
 	}
 	args = append(args, "testdata/go_tls_client.go")
-	if output, err := exec.Command("go", args...).CombinedOutput(); err != nil {
+	if output, err := exec.Command(goCommand, args...).CombinedOutput(); err != nil {
 		t.Fatalf("Go TLS fixture: %v\n%s", err, output)
 	}
 	return fixture
 }
 
+func traceTLSGoCommand(t *testing.T) string {
+	t.Helper()
+	if command := os.Getenv("EDC_TEST_GO"); command != "" {
+		return command
+	}
+	return "go"
+}
+
+func traceTLSGoVersion(t *testing.T, goCommand string) string {
+	t.Helper()
+	output, err := exec.Command(goCommand, "env", "GOVERSION").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return strings.TrimSpace(string(output))
+}
+
 func TestTraceTLSGoFixtureMetadata(t *testing.T) {
+	goCommand := traceTLSGoCommand(t)
 	for _, mode := range []string{"normal", "stripped", "pie"} {
 		t.Run(mode, func(t *testing.T) {
-			fixture := traceTLSGoFixture(t, mode)
+			fixture := traceTLSGoFixture(t, goCommand, mode)
 			info, err := buildinfo.ReadFile(fixture)
 			if err != nil {
 				t.Fatal(err)
 			}
 			target, err := traceTLSReadFile(fixture, true)
-			if info.GoVersion != traceTLSGoVersion || runtime.GOARCH != "amd64" {
+			if !traceTLSGoVersions[info.GoVersion] || runtime.GOARCH != "amd64" {
 				if err == nil || !strings.Contains(err.Error(), "unsupported Go TLS ABI") {
 					t.Fatalf("unsupported ABI accepted: %s %v", info.GoVersion, err)
 				}
@@ -92,9 +110,9 @@ func TestTraceTLSGoFixtureMetadata(t *testing.T) {
 }
 
 func TestTraceTLSGoCaptures(t *testing.T) {
-	version, err := exec.Command("go", "env", "GOVERSION").Output()
-	if err != nil || strings.TrimSpace(string(version)) != traceTLSGoVersion || runtime.GOARCH != "amd64" {
-		t.Skip("live Go TLS fixture needs Go 1.27.1 amd64")
+	goCommand := traceTLSGoCommand(t)
+	if !traceTLSGoVersions[traceTLSGoVersion(t, goCommand)] || runtime.GOARCH != "amd64" {
+		t.Skip("live Go TLS fixture needs a supported Linux amd64 Go version")
 	}
 	capabilities, err := effectiveCapabilities()
 	if err != nil || missingCapabilities(bpfTraceCapabilities, capabilities) != "" {
@@ -107,7 +125,7 @@ func TestTraceTLSGoCaptures(t *testing.T) {
 		{"normal", "", 0}, {"stripped", "", 0}, {"pie", "", 0}, {"normal", "stack", 0}, {"normal", "stack", 443}, {"normal", "errors", 0},
 	} {
 		t.Run(tc.mode+"-"+tc.argument+"-"+fmt.Sprint(tc.port), func(t *testing.T) {
-			fixture := traceTLSGoFixture(t, tc.mode)
+			fixture := traceTLSGoFixture(t, goCommand, tc.mode)
 			finder, _, _, err := resolveTraceTLSTargets(traceTLSMode(fixture))
 			if err != nil {
 				t.Fatal(err)
@@ -187,9 +205,9 @@ func TestTraceTLSGoCaptures(t *testing.T) {
 }
 
 func TestTraceTLSGoHTTP2CapturesStreamsAndBodies(t *testing.T) {
-	version, err := exec.Command("go", "env", "GOVERSION").Output()
-	if err != nil || strings.TrimSpace(string(version)) != traceTLSGoVersion || runtime.GOARCH != "amd64" {
-		t.Skip("live Go HTTP/2 fixture needs Go 1.27.1 amd64")
+	goCommand := traceTLSGoCommand(t)
+	if !traceTLSGoVersions[traceTLSGoVersion(t, goCommand)] || runtime.GOARCH != "amd64" {
+		t.Skip("live Go HTTP/2 fixture needs a supported Linux amd64 Go version")
 	}
 	capabilities, err := effectiveCapabilities()
 	if err != nil || missingCapabilities(bpfTraceCapabilities, capabilities) != "" {
@@ -206,7 +224,7 @@ func TestTraceTLSGoHTTP2CapturesStreamsAndBodies(t *testing.T) {
 				args = append(args, "-buildmode=pie")
 			}
 			args = append(args, "testdata/go_tls_http2_client.go")
-			if output, err := exec.Command("go", args...).CombinedOutput(); err != nil {
+			if output, err := exec.Command(goCommand, args...).CombinedOutput(); err != nil {
 				t.Fatalf("HTTP/2 fixture: %v\n%s", err, output)
 			}
 			finder, _, _, err := resolveTraceTLSTargets(traceTLSMode(fixture))

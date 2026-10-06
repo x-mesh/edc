@@ -615,8 +615,8 @@ func runTraceProtocol(args []string) int {
 		}
 		options.tlsTargets = targets
 		fmt.Fprintln(os.Stderr, T("cli.trace.tls_attached", len(targets)))
-		if _, risky := traceTLSSeccompKernel(); risky && screen && !traceTLSConfirm(os.Stdin, os.Stderr) {
-			return 1
+		if screen && !traceTLSConfirmStart(os.Stdin, os.Stderr, traceIsTerminal(os.Stderr)) {
+			return 4
 		}
 	}
 	if screen {

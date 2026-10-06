@@ -93,6 +93,17 @@ func traceTLSConfirm(in io.Reader, out io.Writer) bool {
 	return err == nil
 }
 
+// traceTLSConfirmStart는 seccomp 위험 kernel에서 전체 화면을 열기 전에 Enter를 받는다. 경고와 확인 문구는 stderr에 쓰므로,
+// stderr를 리다이렉트했으면 보이지 않는 입력을 기다리지 않도록 묻지 않는다. 입력이 끝나면 취소로 알리고 false를 돌려준다.
+func traceTLSConfirmStart(in io.Reader, out io.Writer, outTerminal bool) bool {
+	if _, risky := traceTLSSeccompKernel(); !risky || !outTerminal || traceTLSConfirm(in, out) {
+		return true
+	}
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, T("cli.trace.cancelled"))
+	return false
+}
+
 // traceTLSSeccompRisk는 uretprobe가 seccomp filter 아래의 process를 죽일 수 있는 amd64 kernel이다. 6.11부터 uretprobe는
 // 돌아올 때 syscall을 부르고, Docker 기본 profile처럼 모르는 syscall을 막는 filter가 그 process를 끝낸다. 6.14와
 // 6.12.14, 6.13.3이 seccomp가 이 syscall을 통과시키게 고쳤다. distro kernel은 고친 패치를 따로 넣었을 수 있어 막지 않고 알린다.

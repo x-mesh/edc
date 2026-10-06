@@ -282,3 +282,35 @@ func TestTraceTLSConfirmWaitsForEnter(t *testing.T) {
 		t.Fatal("the end of input started the trace")
 	}
 }
+
+// 위험 kernel에서만 묻고, stderr가 터미널이 아니면 보이지 않는 입력을 기다리지 않는다. 입력이 끝나면 취소로 알린다.
+func TestTraceTLSConfirmStartAsksOnlyWhereTheWarningShows(t *testing.T) {
+	if runtime.GOARCH != "amd64" {
+		t.Skip("the seccomp risk applies to amd64 only")
+	}
+	release := filepath.Join(t.TempDir(), "osrelease")
+	previous := traceKernelRelease
+	traceKernelRelease = release
+	t.Cleanup(func() { traceKernelRelease = previous })
+	write := func(text string) {
+		if err := os.WriteFile(release, []byte(text), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("6.17.0\n")
+	if !traceTLSConfirmStart(strings.NewReader(""), io.Discard, true) {
+		t.Fatal("a safe kernel asked for Enter")
+	}
+	write("6.11.0-29-generic\n")
+	var out strings.Builder
+	if !traceTLSConfirmStart(strings.NewReader(""), &out, false) || out.Len() != 0 {
+		t.Fatalf("redirected stderr asked for Enter: %q", out.String())
+	}
+	if !traceTLSConfirmStart(strings.NewReader("\n"), io.Discard, true) {
+		t.Fatal("Enter did not start the trace")
+	}
+	out.Reset()
+	if traceTLSConfirmStart(strings.NewReader(""), &out, true) || !strings.HasSuffix(out.String(), T("cli.trace.cancelled")+"\n") {
+		t.Fatalf("end of input = %q", out.String())
+	}
+}

@@ -94,6 +94,9 @@ func setTraceKernelEvents(t *testing.T, value bool) {
 func TestMain(m *testing.M) {
 	// 테스트를 실행하는 host의 LISTEN socket이 서버 판정을 바꾸지 않게 한다.
 	traceListeningPorts = func() map[int]bool { return nil }
+	// host의 ephemeral port 범위도 떼어 놓는다. macOS 기본값은 49152-65535라서, 범위를 직접 고정하지 않은
+	// 테스트의 서버 판정이 Linux와 갈린다.
+	traceEphemeralPortRange = func() (int, int) { return 32768, 60999 }
 	os.Exit(m.Run())
 }
 

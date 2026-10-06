@@ -501,16 +501,22 @@ func TestTopAllViewAddsColumnsAsTheTerminalWidens(t *testing.T) {
 		width         int
 		shown, hidden []string
 	}{
-		{topTableWidth, []string{"in", "mem%", "write"}, []string{"hot core", "iops", "pk_in", "drop", "busy"}},
+		{topTableWidth, []string{"in", "mem%", "write"}, []string{"hot core", "iops", "pk_in", "drop", "busy", "psi", "swap", "listen", "soft", "ct%"}},
 		{83, nil, []string{"hot core"}},
 		{84, []string{"hot core"}, []string{"iops"}},
 		{96, []string{"iops", "await"}, []string{"pk_in"}},
 		{110, []string{"pk_in", "pk_out"}, []string{"drop"}},
 		{120, []string{"err", "drop"}, []string{"busy"}},
-		{125, []string{"busy"}, nil},
+		{125, []string{"busy"}, []string{"psi", "swap", "listen", "soft", "ct%"}},
+		{142, nil, []string{"psi"}},
+		{143, []string{"psi"}, []string{"swap"}},
+		{149, []string{"swap"}, []string{"listen"}},
+		{161, []string{"listen", "soft"}, []string{"ct%"}},
+		{167, []string{"ct%"}, nil},
 	}
 	for _, step := range steps {
-		header := topDashboardHeaders(topViewAll, step.width)[1]
+		// psi는 group 이름이라 첫 헤더 줄에만 있다. 칸 제목 cpu·mem·io는 cpu group 이름, mem%, iops와 구별되지 않는다.
+		header := strings.Join(topDashboardHeaders(topViewAll, step.width), "\n")
 		line := formatTopDashboardRow(row, topViewAll, newTopLimits(8, false), step.width)
 		if got := len([]rune(line)); got != step.width {
 			t.Fatalf("width %d row is %d wide: %q", step.width, got, line)
@@ -530,6 +536,51 @@ func TestTopAllViewAddsColumnsAsTheTerminalWidens(t *testing.T) {
 	for _, expected := range []string{"123", "456", "789", "12.3", "80", "1 95%"} {
 		if !strings.Contains(line, expected) {
 			t.Fatalf("widest row %q does not contain %q", line, expected)
+		}
+	}
+}
+
+func TestTopAllViewShowsPressureSwapAndNetworkLimitsWhenWide(t *testing.T) {
+	rate := func(value float64) networkCounterRate {
+		return networkCounterRate{Status: "observed", PerSecond: &value}
+	}
+	health := &networkHealthRate{
+		networkHealth: networkHealth{Supported: true,
+			Gauges:   map[string]networkReading{"conntrack_entries": networkNumber(100)},
+			Settings: map[string]networkReading{"net.netfilter.nf_conntrack_max": networkNumber(1000)}},
+		Rates: map[string]networkCounterRate{"listen_overflows": rate(0.5), "softnet_dropped": rate(12345)},
+	}
+	row := topDashboardRow{at: time.Unix(1, 0), rate: resourceRate{PSIValid: true, PSICPU: 12.5, PSIMemory: 3.2, PSIIO: 30.1, SwapOut: 2 << 20, NetworkHealth: health}}
+	line := formatTopDashboardRow(row, topViewAll, newTopLimits(8, false), 167)
+	for _, expected := range []string{"12.5", "3.2", "30.1", "2.00M", "0.5", "12k", "10.0"} {
+		if !strings.Contains(line, expected) {
+			t.Fatalf("widest row %q does not contain %q", line, expected)
+		}
+	}
+	colored := formatTopDashboardRow(row, topViewAll, newTopLimits(8, true), 167)
+	if !strings.Contains(colored, topPaint(topFitCell("30.1", 5, false), topLevelDanger, true)) || !strings.Contains(colored, topPaint(topFitCell("12.5", 5, false), topLevelWarn, true)) {
+		t.Fatalf("psi must use the pressure thresholds: %q", colored)
+	}
+}
+
+func TestTopNetworkRateCellKeepsSmallRatesVisible(t *testing.T) {
+	value := func(value float64) *networkHealthRate {
+		return &networkHealthRate{Rates: map[string]networkCounterRate{"listen_overflows": {Status: "observed", PerSecond: &value}}}
+	}
+	for _, test := range []struct {
+		health *networkHealthRate
+		width  int
+		want   string
+	}{
+		{nil, 6, "—"},
+		{&networkHealthRate{Rates: map[string]networkCounterRate{"listen_overflows": {Status: "unavailable"}}}, 6, "—"},
+		{value(0.5), 4, "0.5"},
+		{value(123.4), 6, "123.4"},
+		{value(123.4), 4, "123"},
+		{value(12345), 4, "12k"},
+	} {
+		if got := topNetworkRateCell(test.health, "listen_overflows", test.width); got != test.want {
+			t.Fatalf("topNetworkRateCell(width %d) = %q, want %q", test.width, got, test.want)
 		}
 	}
 }
@@ -1054,7 +1105,7 @@ func TestTopHelpScrollsWithoutChangingTheFilter(t *testing.T) {
 
 func TestTopDashboardFitsNarrowTerminalsAndHidesDarwinUnsupportedColumns(t *testing.T) {
 	filter, _ := parseTopProcessFilter("worker")
-	for _, width := range []int{24, 32, 40, 48, 60, 80, 120, 160} {
+	for _, width := range []int{24, 32, 40, 48, 60, 80, 120, 160, 170} {
 		for _, view := range []topView{topViewAll, topViewCPU, topViewMemory, topViewDisk, topViewNetwork, topViewProcess} {
 			model := topFixtureModel(nil).withProcessFilter(filter)
 			model.details.System = "darwin"
@@ -1068,7 +1119,7 @@ func TestTopDashboardFitsNarrowTerminalsAndHidesDarwinUnsupportedColumns(t *test
 				}
 			}
 			for _, header := range model.tableHeader() {
-				for _, unsupported := range []string{"fds", "runq ms", "io ms", "psi mem", "busy%", "i/o"} {
+				for _, unsupported := range []string{"fds", "runq ms", "io ms", "psi", "busy%", "i/o", "listen", "soft", "ct%"} {
 					if strings.Contains(header, unsupported) {
 						t.Fatalf("Darwin header contains %s: %q", unsupported, header)
 					}
@@ -1175,6 +1226,36 @@ func TestTopCandidatePagingKeepsTheSelectedSnapshot(t *testing.T) {
 	model = topAfter(t, model, tea.KeyPressMsg{Code: tea.KeyPgUp})
 	if model.selected != 0 || model.processSelected != 0 {
 		t.Fatalf("candidate page-up moved history: time row %d, process row %d", model.selected, model.processSelected)
+	}
+}
+
+func TestTopCandidatePanelShowsMoreProcessesOnTallTerminals(t *testing.T) {
+	processes := []topProcess{}
+	for pid := 1; pid <= 6; pid++ {
+		processes = append(processes, topProcess{PID: pid, CPU: float64(10 - pid), Command: "proc" + string(rune('0'+pid))})
+	}
+	for height, want := range map[int]int{topTallHeight - 1: 3, topTallHeight: topProcessLimit} {
+		model := topFixtureModel(nil)
+		model.width, model.height = 120, height
+		for second := 0; second < 60; second++ {
+			model.rows = append(model.rows, topDashboardRow{at: time.Unix(int64(second), 0), processesValid: true, processes: processes})
+		}
+		model.selected = len(model.rows) - 1
+		content, got := model.View().Content, 0
+		for _, process := range processes {
+			if strings.Contains(content, process.Command) {
+				got++
+			}
+		}
+		if got != want {
+			t.Fatalf("height %d shows %d processes, want %d: %q", height, got, want, content)
+		}
+		if lines := len(strings.Split(content, "\n")); lines > height {
+			t.Fatalf("height %d renders %d lines", height, lines)
+		}
+		if height == topTallHeight && model.bodyLines() != 28 {
+			t.Fatalf("height %d keeps %d history rows, want 28", height, model.bodyLines())
+		}
 	}
 }
 

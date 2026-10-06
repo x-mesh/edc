@@ -97,6 +97,8 @@ const (
 	topPeakWindow = time.Minute
 	// topSelectionColumn은 행에서 "15:04:05" 바로 뒤 공백 자리다. 선택 표시가 시각을 가리지 않는다.
 	topSelectionColumn = 8
+	// topTallHeight부터 process 패널이 후보를 topProcessLimit개까지 보인다. 두 줄을 더 써도 history가 28행 남는다.
+	topTallHeight = 40
 	// topProcessNameWidth는 상세 패널의 process 이름 폭이다. 세 개가 80열 한 줄에 들어간다.
 	topProcessNameWidth = 10
 	// topSignalProcessNameWidth는 signal 열의 process 이름 폭이다.
@@ -845,7 +847,7 @@ func (model topModel) candidateLines() []string {
 		lines = append(lines, header)
 	}
 	count := min(3, len(processes))
-	if model.processFocus {
+	if model.processFocus || model.height >= topTallHeight {
 		count = min(topProcessLimit, len(processes))
 	}
 	count = min(count, max(1, room-len(lines)))
@@ -900,7 +902,7 @@ func (model topModel) helpLines() []string {
 		"no ev means the eBPF observer is active but collected no events in that interval.",
 	}
 	if model.details.System == "darwin" {
-		lines = append(lines, "macOS: process CPU is a recent ps average. Threads and disk I/O use libproc.", "macOS: FDs, PSI, CPU iowait, disk busy and eBPF latency are not collected.")
+		lines = append(lines, "macOS: process CPU is a recent ps average. Threads and disk I/O use libproc.", "macOS: FDs, PSI, CPU iowait, disk busy, network limits and eBPF latency are not collected.")
 	} else {
 		lines = append(lines, "Linux: process CPU uses sample deltas. Runq and I/O latency require -d at startup.")
 	}
@@ -992,7 +994,8 @@ func (model topModel) hostLayout() ([]topAllColumn, int) {
 	}
 	kept := make([]topAllColumn, 0, len(columns))
 	for _, column := range columns {
-		if column.title != "i/o" && column.title != "busy" {
+		linuxOnly := column.group == "psi" || column.title == "listen" || column.title == "soft" || column.title == "ct%"
+		if column.title != "i/o" && column.title != "busy" && !linuxOnly {
 			kept = append(kept, column)
 		}
 	}
@@ -1140,7 +1143,8 @@ func topFitCell(text string, width int, left bool) string {
 }
 
 // topAllColumn은 all 보기의 한 칸이다. tier 0은 항상 보이고, 나머지는 terminal이 넓어질수록 tier 순서대로 추가된다.
-// 순서는 진단에 쓸모가 큰 값부터다: hot core, disk iops·await, packet, network err·drop, disk busy.
+// 순서는 진단에 쓸모가 큰 값부터다: hot core, disk iops·await, packet, network err·drop, disk busy,
+// pressure, swap out, listen overflow·softnet drop, conntrack 사용률.
 type topAllColumn struct {
 	group string
 	title string
@@ -1167,6 +1171,12 @@ var topAllColumns = []topAllColumn{
 		level: func(limits topLimits, rate resourceRate) topLevel {
 			return topValidLevel(rate.NetHealthValid, limits.network, rate.NetDrops)
 		}},
+	{group: "network", title: "listen", width: 6, tier: 8, cell: func(rate resourceRate) string { return topNetworkRateCell(rate.NetworkHealth, "listen_overflows", 6) }},
+	{group: "network", title: "soft", width: 4, tier: 8, cell: func(rate resourceRate) string { return topNetworkRateCell(rate.NetworkHealth, "softnet_dropped", 4) }},
+	{group: "network", title: "ct%", width: 5, tier: 9, cell: func(rate resourceRate) string { return networkConntrackCell(rate.NetworkHealth).text },
+		level: func(limits topLimits, rate resourceRate) topLevel {
+			return networkConntrackCell(rate.NetworkHealth).level
+		}},
 	{group: "cpu", title: "load", width: 4, cell: func(rate resourceRate) string { return fmt.Sprintf("%.1f", rate.Load1) },
 		level: func(limits topLimits, rate resourceRate) topLevel { return limits.load.level(rate.Load1) }},
 	{group: "cpu", title: "usr%", width: 5, cell: func(rate resourceRate) string { return fmt.Sprintf("%.1f", rate.CPUUser) },
@@ -1179,6 +1189,7 @@ var topAllColumns = []topAllColumn{
 		level: func(limits topLimits, rate resourceRate) topLevel { return topHotCoreLevel(rate.CoreCPU) }},
 	{group: "mem", title: "mem%", width: 5, cell: func(rate resourceRate) string { return fmt.Sprintf("%.1f", rate.MemoryPercent) },
 		level: func(limits topLimits, rate resourceRate) topLevel { return limits.memory.level(rate.MemoryPercent) }},
+	{group: "mem", title: "swap", width: 5, tier: 7, cell: func(rate resourceRate) string { return formatRate(rate.SwapOut) }},
 	{group: "disk", title: "read", width: 5, cell: func(rate resourceRate) string { return formatRate(rate.DiskRead) }},
 	{group: "disk", title: "write", width: 5, cell: func(rate resourceRate) string { return formatRate(rate.DiskWrite) }},
 	{group: "disk", title: "iops", width: 5, tier: 2, cell: func(rate resourceRate) string { return topOptionalCount(rate.DiskHealthValid, rate.DiskIOPS, 5) }},
@@ -1187,6 +1198,18 @@ var topAllColumns = []topAllColumn{
 			return topValidLevel(rate.DiskHealthValid, limits.await, rate.DiskAwait)
 		}},
 	{group: "disk", title: "busy", width: 4, tier: 5, cell: func(rate resourceRate) string { return topOptionalValue(rate.DiskBusyValid, "%.0f", rate.DiskBusy) }},
+	{group: "psi", title: "cpu", width: 5, tier: 6, cell: func(rate resourceRate) string { return topOptionalValue(rate.PSIValid, "%.1f", rate.PSICPU) },
+		level: func(limits topLimits, rate resourceRate) topLevel {
+			return topValidLevel(rate.PSIValid, limits.psi, rate.PSICPU)
+		}},
+	{group: "psi", title: "mem", width: 5, tier: 6, cell: func(rate resourceRate) string { return topOptionalValue(rate.PSIValid, "%.1f", rate.PSIMemory) },
+		level: func(limits topLimits, rate resourceRate) topLevel {
+			return topValidLevel(rate.PSIValid, limits.psi, rate.PSIMemory)
+		}},
+	{group: "psi", title: "io", width: 5, tier: 6, cell: func(rate resourceRate) string { return topOptionalValue(rate.PSIValid, "%.1f", rate.PSIIO) },
+		level: func(limits topLimits, rate resourceRate) topLevel {
+			return topValidLevel(rate.PSIValid, limits.psi, rate.PSIIO)
+		}},
 }
 
 // topAllLayout은 width 안에 signal 최소 폭까지 들어가는 가장 높은 tier의 칸을 고른다.
@@ -1885,6 +1908,18 @@ func networkConntrackCell(health *networkHealthRate) topCell {
 	}
 	usage, valid := networkConntrackUsage(&health.networkHealth)
 	return topOptionalCell(valid, "%.1f", usage, topThreshold{warn: 90, danger: 98})
+}
+
+// topNetworkRateCell은 소수 한 자리를 우선한다. interval이 2초면 overflow 한 번이 0.5/s라서 정수로 줄이면 0으로 숨는다.
+func topNetworkRateCell(health *networkHealthRate, name string, width int) string {
+	if health == nil || health.Rates[name].PerSecond == nil {
+		return "—"
+	}
+	value := *health.Rates[name].PerSecond
+	if text := fmt.Sprintf("%.1f", value); len(text) <= width {
+		return text
+	}
+	return topCompactCount(value, width)
 }
 
 func (model topModel) networkPeakLines(last topDashboardRow) []string {

@@ -149,6 +149,44 @@ func TestTraceTLSBoringSSLRequiresIdentityAndCode(t *testing.T) {
 	})
 }
 
+func TestTraceTLSBoringSSLProfileBuildsHaveTLSFunctions(t *testing.T) {
+	for _, id := range []string{"2bbcd6d3ddc6b1a248d1bfb2c64a09e4642e7a52", "5afca2666bfab8605a934f1b6231dacae0518a5f"} {
+		build, ok := traceTLSBoringSSLBuilds[id]
+		if !ok || build.machine != elf.EM_X86_64 || len(build.functions) != 3 {
+			t.Fatalf("profile %s = %#v", id, build)
+		}
+		for index, name := range []string{"SSL_read", "SSL_write", "SSL_free"} {
+			function := build.functions[index]
+			if function.name != name || function.offset == 0 || function.size == 0 || len(function.digest) != sha256.Size*2 {
+				t.Fatalf("profile %s function %#v", id, function)
+			}
+		}
+	}
+}
+
+// EDC_TEST_BUN은 공식 Bun 릴리스의 bun 파일 경로를 쉼표로 나눠 받는다. 등록한 위치와 코드는 그 파일에서만 확인할 수 있다.
+func TestTraceTLSBoringSSLOfficialBun(t *testing.T) {
+	paths := os.Getenv("EDC_TEST_BUN")
+	if paths == "" {
+		t.Skip("EDC_TEST_BUN is not set")
+	}
+	for _, path := range strings.Split(paths, ",") {
+		file, err := elf.Open(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		target := traceTLSTarget{path: path, offsets: map[string]uint64{}}
+		err = traceTLSBoringSSL(file, &target)
+		file.Close()
+		if err != nil {
+			t.Fatalf("%s: %v", path, err)
+		}
+		if !slices.Equal(target.symbols, []string{"SSL_read", "SSL_write", "SSL_free"}) {
+			t.Fatalf("%s symbols=%q", path, target.symbols)
+		}
+	}
+}
+
 func TestTraceTLSBuildIDReadsNotes(t *testing.T) {
 	id := []byte{1, 2, 3, 4, 5}
 	for _, order := range []binary.ByteOrder{binary.LittleEndian, binary.BigEndian} {

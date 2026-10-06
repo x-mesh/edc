@@ -26,6 +26,25 @@ type traceTLSBoringSSLBuild struct {
 }
 
 var traceTLSBoringSSLBuilds = map[string]traceTLSBoringSSLBuild{
+	// 공식 Bun 1.4.1 Linux x64의 bun(baseline과 같은 파일)이다. bun-profile의 symbol 표에서 찾은 가상 주소를 bun의 실행
+	// segment로 옮긴 파일 위치다. bun-profile은 같은 build ID지만 파일 위치가 달라 코드 확인에서 거부된다.
+	"2bbcd6d3ddc6b1a248d1bfb2c64a09e4642e7a52": {
+		machine: elf.EM_X86_64,
+		functions: []traceTLSBoringSSLFunction{
+			{"SSL_read", 0x2743bd0, 251, "246eb04301236726689ab36267b18b15b0ce6a1b04e520761ac907ef33baa71e"},
+			{"SSL_write", 0x2743fc0, 388, "e71a8bc8bca41e7c4a35a26d5fd32ffab1ce2407351da03b26662f0583aedfbf"},
+			{"SSL_free", 0x2742450, 534, "ee2470738e73553fd9698a75a3400c495d06f935fe358a0474a669816a0b48bb"},
+		},
+	},
+	// 공식 Bun 1.4.2 Linux x64의 bun(baseline과 같은 파일)이다. 위치를 구한 방법은 1.4.1과 같다.
+	"5afca2666bfab8605a934f1b6231dacae0518a5f": {
+		machine: elf.EM_X86_64,
+		functions: []traceTLSBoringSSLFunction{
+			{"SSL_read", 0x272c1c0, 251, "34d6016d394865d1da32364c6ab4edbd253d35028e32378fcd36c7f70e991726"},
+			{"SSL_write", 0x272c5b0, 388, "893e6fff00983305910c2fed957f3f6c59b88c0f9678dd22aa081849a2e4ce21"},
+			{"SSL_free", 0x272aa40, 534, "1c9dd6cc90acf52b0398b635874931ac9fb79acf6d55933c71176b4ba9875a8f"},
+		},
+	},
 	// Claude Code 2.1.291의 Bun 1.4.3(eecfd55de). 공식 Bun 1.4.2 profile과 비교하고 로컬 HTTPS로 확인한 위치다.
 	"ca2032b38650b44e05b2074617d524c7475c80f0": {
 		machine: elf.EM_X86_64,

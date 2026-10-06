@@ -1404,7 +1404,7 @@ These events have no socket addresses. A `--port` filter excludes them. For Go T
 
 For Go clients, latency starts at `Write` entry and ends at `Read` return. For servers, latency ends at `Write` entry.
 
-The capture tests cover Go HTTP/1.1. They do not cover Go HTTP/2.
+The capture tests cover Go HTTP/1.1 and HTTP/2, including concurrent streams, repeated headers and fragmented bodies.
 
 rustls-ffi uses the C functions `rustls_connection_read` and `rustls_connection_write`. edc clears the connection state at `rustls_connection_free`.
 

@@ -314,7 +314,7 @@ func TestHTTP2PayloadClosesUnfinishedBodies(t *testing.T) {
 		t.Fatalf("gap = %#v", events)
 	}
 	tracker.http2Events(tlsTestPacket(string(start), 8_000_000, true), 0)
-	if events := tracker.closeHTTP2Payloads(func(http2PayloadKey) bool { return true }); len(events) != 1 || !events[0].PayloadTruncated {
+	if events := tracker.finishHTTP2Payloads(func(http2PayloadKey) bool { return true }); len(events) != 1 || !events[0].PayloadTruncated {
 		t.Fatalf("trace end = %#v", events)
 	}
 	if tracker.h2PayloadBytes != 0 || len(tracker.h2Payload) != 0 {
@@ -328,6 +328,7 @@ func TestHTTP2PayloadTrimsTheOldestOpenStream(t *testing.T) {
 	for stream := uint32(1); stream <= http2PayloadOpenLimit; stream++ {
 		tracker.h2Payload[http2PayloadKey{socket: 1, stream: stream, sent: true}] = &http2Payload{event: captureEvent{BootTimeNS: uint64(stream), Method: "GET", Path: "/" + strconv.Itoa(int(stream))}}
 	}
+	tracker.h2PayloadOpen[1] = http2PayloadOpenLimit
 	events := tracker.trimHTTP2Payloads(true)
 	if len(events) != 1 || events[0].Path != "/1" || !events[0].PayloadTruncated || len(tracker.h2Payload) != http2PayloadOpenLimit-1 {
 		t.Fatalf("trimmed = %#v, open %d", events, len(tracker.h2Payload))
@@ -339,6 +340,60 @@ func TestHTTP2PayloadTrimsTheOldestOpenStream(t *testing.T) {
 	tracker.h2PayloadBytes = httpMessageOpenBytes + 1
 	if events := tracker.trimHTTP2Payloads(false); len(events) != 1 || events[0].Path != "/2" || tracker.h2PayloadBytes != 0 {
 		t.Fatalf("trimmed by bytes = %#v, bytes %d", events, tracker.h2PayloadBytes)
+	}
+}
+
+// 같은 stream과 방향에 header가 다시 오면 붙잡던 event를 잘린 채로 내고 새 event를 붙잡는다.
+func TestHTTP2PayloadCutsAReopenedStream(t *testing.T) {
+	tracker := newHTTPTracker("", false, false)
+	tracker.h2PayloadLimit = httpPayloadHead
+	post := http2TestFrame(1, 4, 1, http2TestHeaders(hpack.HeaderField{Name: ":method", Value: "POST"}, hpack.HeaderField{Name: ":authority", Value: "api.example"}, hpack.HeaderField{Name: ":path", Value: "/up"}))
+	start := append(append(append(append([]byte{}, http2Preface...), post...), http2TestFrame(0, 0, 1, []byte("abc"))...), post...)
+	events, _ := tracker.http2Events(tlsTestPacket(string(start), 1_000_000, true), 0)
+	if len(events) != 1 || events[0].Payload != "POST /up HTTP/2\r\n\r\nabc" || !events[0].PayloadTruncated {
+		t.Fatalf("first = %#v", events)
+	}
+	if len(tracker.h2Payload) != 1 || tracker.h2PayloadBytes != 0 || tracker.h2PayloadOpen[1] != 1 {
+		t.Fatalf("open = %d streams, %d bytes, %v", len(tracker.h2Payload), tracker.h2PayloadBytes, tracker.h2PayloadOpen)
+	}
+}
+
+// 한 레코드로 연 stream은 시각이 같아도 stream 순서대로 나오고, 다른 socket이 끝나도 붙잡은 본문은 남는다.
+func TestHTTP2PayloadClosesInStreamOrder(t *testing.T) {
+	tracker := newHTTPTracker("", false, false)
+	tracker.h2PayloadLimit = httpPayloadHead
+	start := append([]byte{}, http2Preface...)
+	for stream := uint32(1); stream < 40; stream += 2 {
+		start = append(start, http2TestFrame(1, 4, stream, http2TestHeaders(hpack.HeaderField{Name: ":method", Value: "POST"}, hpack.HeaderField{Name: ":authority", Value: "api.example"}, hpack.HeaderField{Name: ":path", Value: "/" + strconv.Itoa(int(stream))}))...)
+	}
+	tracker.http2Events(tlsTestPacket(string(start), 1_000_000, true), 0)
+	if events := tracker.forget(2); len(events) != 0 || len(tracker.h2Payload) != 20 {
+		t.Fatalf("another socket closed %d bodies, %d left", len(events), len(tracker.h2Payload))
+	}
+	events := tracker.finishHTTP2Payloads(func(http2PayloadKey) bool { return true })
+	for index, event := range events {
+		if want := "/" + strconv.Itoa(2*index+1); event.Path != want {
+			t.Fatalf("event %d = %s, want %s", index, event.Path, want)
+		}
+	}
+	if len(events) != 20 || len(tracker.h2PayloadOpen) != 0 {
+		t.Fatalf("closed %d, open counts %v", len(events), tracker.h2PayloadOpen)
+	}
+}
+
+// 전체 화면은 --payload 없이도 payload를 켜지만, HTTP/2 event는 사용자가 --payload를 줄 때만 본문까지 붙잡는다.
+func TestTraceHTTP2PayloadLimitFollowsTheUserOption(t *testing.T) {
+	for _, test := range []struct {
+		payload tracePayloadMode
+		want    int
+	}{{"", 0}, {tracePayloadHead, httpPayloadHead}, {tracePayloadAll, httpMessageMax}} {
+		options := tcpTraceOptions{payload: test.payload}
+		if got := traceHTTP2PayloadLimit(traceScreenScope("http", options)); got != test.want {
+			t.Fatalf("screen with --payload=%q = %d, want %d", test.payload, got, test.want)
+		}
+		if got := traceHTTP2PayloadLimit(options.scope("http")); got != test.want {
+			t.Fatalf("lines with --payload=%q = %d, want %d", test.payload, got, test.want)
+		}
 	}
 }
 

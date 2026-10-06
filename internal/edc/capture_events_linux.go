@@ -704,12 +704,7 @@ func collectCaptureEventsFor(scope traceScope, duration time.Duration, onEvent f
 	// --payload=all은 message가 끝날 때 payload를 붙이므로 tracker는 첫 조각에 payload를 붙이지 않는다.
 	requests := newHTTPTracker(scope.side, scope.payload && !scope.payloadAll, scope.showSecrets)
 	requests.keepGzip = scope.keepGzip
-	switch {
-	case scope.payloadAll:
-		requests.h2PayloadLimit = httpMessageMax
-	case scope.payload:
-		requests.h2PayloadLimit = httpPayloadHead
-	}
+	requests.h2PayloadLimit = traceHTTP2PayloadLimit(scope)
 	splits := httpSplitStarts{}
 	var messages *httpMessages
 	if scope.payloadAll {
@@ -744,7 +739,7 @@ func collectCaptureEventsFor(scope traceScope, duration time.Duration, onEvent f
 	}
 	sweepDeadline()
 	finish := func() (captureSummary, error) {
-		if err := emit(requests.closeHTTP2Payloads(func(http2PayloadKey) bool { return true })); err != nil {
+		if err := emit(requests.finishHTTP2Payloads(func(http2PayloadKey) bool { return true })); err != nil {
 			return captureSummary{}, err
 		}
 		if messages != nil {

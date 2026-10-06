@@ -704,6 +704,7 @@ func collectCaptureEventsFor(scope traceScope, duration time.Duration, onEvent f
 	// --payload=all은 message가 끝날 때 payload를 붙이므로 tracker는 첫 조각에 payload를 붙이지 않는다.
 	requests := newHTTPTracker(scope.side, scope.payload && !scope.payloadAll, scope.showSecrets)
 	requests.keepGzip = scope.keepGzip
+	requests.h2PayloadLimit = traceHTTP2PayloadLimit(scope)
 	splits := httpSplitStarts{}
 	var messages *httpMessages
 	if scope.payloadAll {
@@ -738,6 +739,9 @@ func collectCaptureEventsFor(scope traceScope, duration time.Duration, onEvent f
 	}
 	sweepDeadline()
 	finish := func() (captureSummary, error) {
+		if err := emit(requests.finishHTTP2Payloads(func(http2PayloadKey) bool { return true })); err != nil {
+			return captureSummary{}, err
+		}
 		if messages != nil {
 			if err := emit(messages.flush()); err != nil {
 				return captureSummary{}, err
@@ -812,12 +816,13 @@ func collectCaptureEventsFor(scope traceScope, duration time.Duration, onEvent f
 			if !captureRecordAfterAttached(packet.bootTimeNS, attached) {
 				continue
 			}
-			// h2c는 frame을 이어 읽어야 해서 조각 결합보다 먼저 받는다. --tls 평문은 http2Events가 넘기지 않으므로
-			// TLS 위의 HTTP/2는 아래 tracker.event에서 http2_unparsed가 된다.
-			if events, claimed := requests.http2Events(packet, clockOffset); claimed {
-				if err := emit(events); err != nil {
-					return captureSummary{}, err
-				}
+			// h2c와 --tls 평문의 HTTP/2는 frame을 이어 읽어야 해서 조각 결합보다 먼저 받는다. 새 연결이 이전 연결의
+			// 상태를 비우면 HTTP/2로 읽지 않은 레코드에서도 본문을 기다리던 event가 나온다.
+			events, claimed := requests.http2Events(packet, clockOffset)
+			if err := emit(events); err != nil {
+				return captureSummary{}, err
+			}
+			if claimed {
 				continue
 			}
 			if packet, ok = splits.join(packet); !ok {
@@ -862,7 +867,9 @@ func collectCaptureEventsFor(scope traceScope, duration time.Duration, onEvent f
 		}
 		if socket, ok := parseTCPDestroyRecord(record.RawSample); ok {
 			if protocol == "http" {
-				requests.forget(socket)
+				if err := emit(requests.forget(socket)); err != nil {
+					return captureSummary{}, err
+				}
 				splits.forget(socket)
 			}
 			if protocol == "mysql" {

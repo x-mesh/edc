@@ -1341,7 +1341,7 @@ Use `--group-by path` to group the events by the request path. In the full-scree
 | Only the requests that the proxy on port 9900 received | `./bin/edc trace http --side server --port 9900` |
 | The latency of each process on each side | `./bin/edc trace http --port 9000 --group-by process` |
 | The requests, errors, and latency of each path | `./bin/edc trace http --group-by path` |
-| The HTTP/1.1 requests in HTTPS | `./bin/edc trace http --tls` |
+| The HTTP/1.1 and HTTP/2 requests in HTTPS | `./bin/edc trace http --tls` |
 
 The client latency and the server latency of one hop measure different times. The client latency includes the network and the wait before the server reads the request. The server latency includes only the work of the server. If the client latency is much larger than the server latency, examine the network and the server queue.
 
@@ -1359,7 +1359,7 @@ HTTPS is encrypted, so edc cannot read the method, the path, or the status. The 
 
 edc does not see a TLS connection that started before the trace. If a client uses Encrypted Client Hello (ECH), the SNI is the public name of the provider. To see the requests of HTTPS, use `--tls`. You can also trace the plain HTTP behind the TLS end point, for example a proxy that sends plain HTTP to its backend.
 
-Use `--tls` to see the HTTP/1.1 requests in HTTPS. edc reads the plaintext in OpenSSL before the encryption and after the decryption. It does not need a certificate or a key.
+Use `--tls` to see the HTTP/1.1 and HTTP/2 requests in HTTPS. edc reads the plaintext in OpenSSL before the encryption and after the decryption. It does not need a certificate or a key.
 
 ```bash
 ./bin/edc trace http --tls
@@ -1373,13 +1373,13 @@ Without a value, `--tls` finds these files when the trace starts:
 - each `libssl` that a process loads, also in a container
 - the program file of a process, if the file contains OpenSSL and exports `SSL_read`, for example `node`
 
-edc opens the file that each process loaded. So edc also sees a process that still uses an old `libssl` after a package update.
+edc opens the file that each process loaded. So edc also sees a process that still uses an old `libssl` after a package update. To open these files, edc needs `CAP_SYS_ADMIN` or `CAP_CHECKPOINT_RESTORE`. The probes can also need `CAP_SYS_ADMIN`. Root has it. In a container, add `SYS_ADMIN` with `--cap-add` or use `--privileged`. If edc cannot open these files, it shows a notice.
 
 edc also sees a program that starts after the trace, if the program uses one of these files. If no process loads a program file, or a `libssl` outside the standard library directories, when the trace starts, edc does not see that file. For that file, use `--tls=<path>`. Then edc watches only that file and does not search for other files. Write the path without a space, as with `--payload=all`.
 
-An HTTPS request or response from OpenSSL has `"tls": true`, and the event row shows `tls` after the event name. The path, the status, the latency, the grouped views, `--payload`, and the summary work as with plain HTTP. `--payload` hides the same header values. The body of HTTPS often contains tokens. Before you share the output, check it for tokens.
+An HTTPS request or response from OpenSSL has `"tls": true`, and the event row shows `tls` after the event name. The destination starts with `https://`. A plain HTTP destination starts with `http://`. The path, the status, the latency, the grouped views, `--payload`, and the summary work as with plain HTTP. `--payload` hides the same header values. The body of HTTPS often contains tokens. Before you share the output, check it for tokens.
 
-edc does not read HTTP/2 over TLS. An HTTP/2 connection over TLS gives one `http2_unparsed` event on each side. Most browsers and the default `curl` use HTTP/2 when the server supports it. To see the requests of `curl`, use `curl --http1.1`. The summary counts these events, and JSON adds `http2_unparsed`.
+edc reads HTTP/2 over TLS as it reads h2c. It shows the method, the path, the status, and the latency of each stream. To follow the frames and the header tables, edc reads all the plaintext of an HTTP/2 connection. So a busy HTTP/2 connection costs more than HTTP/1, and it can make edc lose events of other connections. To reduce the cost, use `--port`. If edc loses plaintext of an HTTP/2 connection, it stops reading that direction and counts lost events. edc does not read an HTTP/2 connection that started before the trace. With HTTP/2, `--payload` shows a start line and the body. edc makes the start line from the method and the path, or from the status. It does not show the headers. edc prints an HTTP/2 event when its body ends. `--payload` keeps the first 4 KiB of each body, and `--payload=all` keeps up to 1 MiB. If edc cuts the body at the limit, or the body does not end before the stream or the trace ends, the event has `"payload_truncated": true`. If more than 4096 bodies or 64 MiB of bodies wait, edc prints the oldest event early with this field. edc does the same when it stops reading a direction. Without `--payload`, the full screen shows no HTTP/2 body, and it shows each HTTP/2 event when its headers arrive.
 
 Some programs do not use the socket inside the OpenSSL call, for example `node` and Python `asyncio`. Then edc does not know the connection. The event has the process, but it has no `source` and no `destination`. The `target` is the `Host` header. The summary shows the number of these events as `TLS plaintext without an address`, and JSON adds `tls_unmapped`. With `--port`, edc cannot check the port of this plaintext. So edc does not show it and adds it to the same number.
 
@@ -1387,7 +1387,7 @@ Some programs do not use the socket inside the OpenSSL call, for example `node` 
 
 Each call of these functions runs a probe in each process that uses the files. This cost also applies to the processes that `--process` hides. At the end, the kernel removes each probe, so the trace can stop a few seconds after Ctrl-C. `--tls` needs no newer kernel than `trace http`.
 
-On amd64 with Linux 6.11, 6.12 before 6.12.14, or 6.13 before 6.13.3, a process under a seccomp filter can stop when an OpenSSL call returns. A Docker container uses such a filter. On these kernels, edc shows a warning before the trace starts. A distribution kernel can include the fix.
+On amd64 with Linux 6.11, 6.12 before 6.12.14, or 6.13 before 6.13.3, a process under a seccomp filter can stop when an OpenSSL call returns. A Docker container uses such a filter. On these kernels, edc shows a warning before it attaches the probes. Before the full screen opens, edc waits for Enter. To stop, press Ctrl-C. A distribution kernel can include the fix.
 
 Without `--tls`, `trace http` does not show the requests in HTTPS, because the kernel sees only encrypted data. It reads HTTP/2 without TLS (h2c), for example gRPC inside a cluster. It shows the method, the path, the status, and the latency of each stream. To follow the frames and the header tables, edc reads all the bytes of an h2c connection, so a busy h2c connection costs more than HTTP/1. These bytes share one buffer with the other HTTP records, so a busy h2c connection can also make edc lose events of other connections. To reduce the cost, use `--port`. If edc loses bytes of an h2c connection, it stops reading that direction and counts lost events. It does not show the requests in HTTP/3, because they use binary frames. HTTP/3 uses UDP, so it also has no `tls_hello` event. edc finds a message only at the start of a read or a write. If one read has the end of a response and the start of the next response, edc misses the next response. If a program writes one message from several buffers, edc reads only the first buffer. So the `Host` header must be in the first buffer and in the first 512 bytes. If it is not, the target is the server address. edc supports this field on Linux 5.15 or later.
 

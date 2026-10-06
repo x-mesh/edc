@@ -142,8 +142,8 @@ func (messages *httpMessages) add(packet httpPacket, clockOffset int64, now time
 	if !ok {
 		return done
 	}
-	// BPF는 ClientHello 뒤의 암호문과 HTTP/2 frame을 따라가지 않으므로 message를 열어 두지 않는다.
-	if event.Event == traceTLSHelloEvent || event.Event == traceHTTP2UnparsedEvent {
+	// BPF는 ClientHello 뒤의 암호문을 따라가지 않으므로 message를 열어 두지 않는다.
+	if event.Event == traceTLSHelloEvent {
 		return append(done, event)
 	}
 	// 반대쪽 message도 끝내서 요청 event가 응답 event보다 먼저 나오게 한다. 1xx는 중간 응답이라, 요청 본문이 아직

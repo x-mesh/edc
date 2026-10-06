@@ -218,6 +218,7 @@ command:
       - "--port keeps the connections that use the port on this host or on the peer."
       - "Example: trace http --side server --port 8080 shows one local server."
       - "It hides Authorization, Proxy-Authorization, Cookie, and Set-Cookie values."
+      - "It also hides X-Api-Key, X-Goog-Api-Key, Api-Key, X-Amz-Security-Token values."
       - "trace mysql shows plain MySQL commands and results on Linux 5.15 or later."
       - "It shows both sides. Each row starts with client: or server:."
       - "--port is the MySQL server port. The default is 3306."

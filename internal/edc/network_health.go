@@ -167,7 +167,7 @@ func networkHealthLines(health *networkHealthRate) []string {
 		"netns · conntrack " + ct + " · TCP ESTAB/CLOSE_WAIT " + networkGaugeText(health, "tcp_established"),
 		"TCPv4 in-use " + networkGaugeText(health, "tcp_inuse") + " · TIME_WAIT " + networkGaugeText(health, "tcp_time_wait") + " (can be host-wide)",
 		"listen/s · overflow " + networkRateText(health, "listen_overflows") + " · drop " + networkRateText(health, "listen_drops") + " · SYN cookies " + networkRateText(health, "syn_cookies_sent"),
-		"drop/s · conntrack " + networkRateText(health, "conntrack_drop") + " · early " + networkRateText(health, "conntrack_early_drop") + " · UDP buffer " + networkRateText(health, "udp_rcvbuf_errors"),
+		"drop/s · conntrack drop " + networkRateText(health, "conntrack_drop") + " · early " + networkRateText(health, "conntrack_early_drop") + " · UDP buffer " + networkRateText(health, "udp_rcvbuf_errors"),
 		"softnet/s (host) · drop " + networkRateText(health, "softnet_dropped") + " · budget exhausted " + networkRateText(health, "softnet_time_squeeze"),
 		"local ports " + networkReadingText(health.Settings["net.ipv4.ip_local_port_range"]) + " · accept/SYN " + networkReadingText(health.Settings["net.core.somaxconn"]) + "/" + networkReadingText(health.Settings["net.ipv4.tcp_max_syn_backlog"]),
 		"— unavailable · counts are not port utilization · rates use consecutive samples",

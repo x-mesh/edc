@@ -1359,7 +1359,7 @@ HTTPS is encrypted, so edc cannot read the method, the path, or the status. The 
 
 edc does not see a TLS connection that started before the trace. If a client uses Encrypted Client Hello (ECH), the SNI is the public name of the provider. To see the requests of HTTPS, use `--tls`. You can also trace the plain HTTP behind the TLS end point, for example a proxy that sends plain HTTP to its backend.
 
-Use `--tls` to see the HTTP/1.1 and HTTP/2 requests in HTTPS. edc reads plaintext in OpenSSL, GnuTLS, NSS, wolfSSL, or a supported BoringSSL build before encryption and after decryption. It does not need a certificate or a key.
+Use `--tls` to see the HTTP/1.1 and HTTP/2 requests in HTTPS. edc reads plaintext before encryption and after decryption. It supports OpenSSL, GnuTLS, NSS, wolfSSL, Mbed TLS, rustls-ffi, and registered BoringSSL builds. It does not need a certificate or a key.
 
 ```bash
 ./bin/edc trace http --tls
@@ -1369,7 +1369,7 @@ Use `--tls` to see the HTTP/1.1 and HTTP/2 requests in HTTPS. edc reads plaintex
 
 Without a value, `--tls` finds these files when the trace starts:
 
-- the `libssl`, `libgnutls`, `libssl3`, `libnspr4`, and `libwolfssl` of this host in the standard library directories
+- the `libssl`, `libgnutls`, `libssl3`, `libnspr4`, `libwolfssl`, `libmbedtls`, and `librustls` of this host in the standard library directories
 - each of these libraries that a process loads, also in a container
 - the program file of a process, if the file contains OpenSSL and exports `SSL_read`, for example `node`
 - a stripped BoringSSL program with a supported GNU build ID
@@ -1391,6 +1391,22 @@ Start the trace before the NSS program starts. edc needs the SSL setup calls to 
 NSS uses `PR_Read`, `PR_Recv`, `PR_Write`, and `PR_Send` for plaintext. edc follows `SSL_SECURITY`, its default value, model copies, accepted connections, and `PR_Close`.
 
 An NSS connection with `SSL_SECURITY` off produces no TLS event. `PR_Recv` with `PR_MSG_PEEK` also produces no TLS event.
+
+rustls-ffi uses the C functions `rustls_connection_read` and `rustls_connection_write`. edc clears the connection state at `rustls_connection_free`.
+
+```bash
+./bin/edc trace http --tls=/usr/local/lib/librustls.so
+```
+
+These events have no socket addresses. A `--port` filter excludes them. Native Rust APIs are not supported.
+
+Mbed TLS uses `mbedtls_ssl_read` and `mbedtls_ssl_write`. edc clears the connection state at `mbedtls_ssl_session_reset` and `mbedtls_ssl_free`.
+
+```bash
+./bin/edc trace http --tls=/usr/local/lib/libmbedtls.so
+```
+
+DTLS and the early data APIs are not supported.
 
 wolfSSL uses `wolfSSL_read` and `wolfSSL_write`, or their `_ex` variants. edc clears the connection state at `wolfSSL_free`.
 

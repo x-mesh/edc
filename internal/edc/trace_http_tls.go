@@ -37,7 +37,8 @@ var traceTLSFunctions = []string{"SSL_read", "SSL_write", "SSL_read_ex", "SSL_wr
 	"gnutls_record_send", "gnutls_record_send2", "gnutls_record_recv", "gnutls_record_recv_seq", "gnutls_deinit",
 	"SSL_ImportFD", "SSL_OptionSet", "SSL_OptionSetDefault", "PR_Accept",
 	"PR_Read", "PR_Recv", "PR_Write", "PR_Send", "PR_Close",
-	"wolfSSL_read", "wolfSSL_write", "wolfSSL_read_ex", "wolfSSL_write_ex", "wolfSSL_free"}
+	"wolfSSL_read", "wolfSSL_write", "wolfSSL_read_ex", "wolfSSL_write_ex", "wolfSSL_free",
+	"mbedtls_ssl_read", "mbedtls_ssl_write", "mbedtls_ssl_session_reset", "mbedtls_ssl_free", "rustls_connection_read", "rustls_connection_write", "rustls_connection_free"}
 
 var traceTLSNSSControls = []string{"SSL_ImportFD", "SSL_OptionSet", "SSL_OptionSetDefault", "PR_Accept"}
 
@@ -45,10 +46,10 @@ var traceTLSNSSFunctions = []string{"SSL_ImportFD", "SSL_OptionSet", "SSL_Option
 	"PR_Read", "PR_Recv", "PR_Write", "PR_Send", "PR_Close"}
 
 // traceTLSFreeFunctions는 평문을 읽지 않는 traceTLSFunctions다.
-var traceTLSFreeFunctions = []string{"SSL_free", "gnutls_deinit", "PR_Close", "wolfSSL_free"}
+var traceTLSFreeFunctions = []string{"SSL_free", "gnutls_deinit", "PR_Close", "wolfSSL_free", "mbedtls_ssl_session_reset", "mbedtls_ssl_free", "rustls_connection_free"}
 
 // traceTLSLibraryNames는 maps와 host 디렉터리에서 찾는 TLS library 파일 이름의 앞부분이다.
-var traceTLSLibraryNames = []string{"libssl.so", "libgnutls.so", "libssl3.so", "libnspr4.so", "libwolfssl.so"}
+var traceTLSLibraryNames = []string{"libssl.so", "libgnutls.so", "libssl3.so", "libnspr4.so", "libwolfssl.so", "libmbedtls.so", "librustls.so"}
 
 // traceTLSHostLibraries는 실행 중인 process가 적재하지 않아도 붙이는 host의 TLS library다. uprobe는 파일 단위라서, trace를
 // 시작한 뒤에 뜬 curl이나 wget도 이 파일을 쓰면 보인다. test가 바꾼다.
@@ -56,7 +57,9 @@ var traceTLSHostLibraries = []string{"/lib/*/libssl.so*", "/usr/lib/*/libssl.so*
 	"/lib/*/libgnutls.so*", "/usr/lib/*/libgnutls.so*", "/lib64/libgnutls.so*", "/usr/lib64/libgnutls.so*", "/usr/lib/libgnutls.so*", "/usr/local/lib/libgnutls.so*", "/usr/local/lib64/libgnutls.so*",
 	"/lib/*/libssl3.so", "/usr/lib/*/libssl3.so", "/lib64/libssl3.so", "/usr/lib64/libssl3.so", "/usr/lib/libssl3.so", "/usr/local/lib/libssl3.so", "/usr/local/lib64/libssl3.so",
 	"/lib/*/libnspr4.so", "/usr/lib/*/libnspr4.so", "/lib64/libnspr4.so", "/usr/lib64/libnspr4.so", "/usr/lib/libnspr4.so", "/usr/local/lib/libnspr4.so", "/usr/local/lib64/libnspr4.so",
-	"/lib/*/libwolfssl.so*", "/usr/lib/*/libwolfssl.so*", "/lib64/libwolfssl.so*", "/usr/lib64/libwolfssl.so*", "/usr/lib/libwolfssl.so*", "/usr/local/lib/libwolfssl.so*", "/usr/local/lib64/libwolfssl.so*"}
+	"/lib/*/libwolfssl.so*", "/usr/lib/*/libwolfssl.so*", "/lib64/libwolfssl.so*", "/usr/lib64/libwolfssl.so*", "/usr/lib/libwolfssl.so*", "/usr/local/lib/libwolfssl.so*", "/usr/local/lib64/libwolfssl.so*",
+	"/lib/*/libmbedtls.so*", "/usr/lib/*/libmbedtls.so*", "/lib64/libmbedtls.so*", "/usr/lib64/libmbedtls.so*", "/usr/lib/libmbedtls.so*", "/usr/local/lib/libmbedtls.so*", "/usr/local/lib64/libmbedtls.so*",
+	"/lib/*/librustls.so*", "/usr/lib/*/librustls.so*", "/lib64/librustls.so*", "/usr/lib64/librustls.so*", "/usr/lib/librustls.so*", "/usr/local/lib/librustls.so*", "/usr/local/lib64/librustls.so*"}
 
 // traceTLSMachines는 BPF가 인자를 읽는 register 배치와 맞는 ELF다. multilib host의 i386 libssl은 인자를 stack으로 받는다.
 var traceTLSMachines = map[string]elf.Machine{"amd64": elf.EM_X86_64, "arm64": elf.EM_AARCH64}

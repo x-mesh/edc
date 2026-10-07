@@ -312,6 +312,8 @@ Events are `create`, `modify`, `remove`, and `rename`. A rename reports the old 
 
 By default, `edc` excludes `.git`, `node_modules`, `.venv`, `venv`, `__pycache__`, `.mypy_cache`, `.pytest_cache`, `.ruff_cache`, `.tox`, `.next`, and `.gradle` at any depth. It does not exclude `build` or `dist`, because you can watch build output. Repeat `--exclude 'build/**'` to add exclusions. To watch the default directories too, use `--no-default-exclude`. Your `--exclude` patterns still apply.
 
+With `--recursive`, `edc` adds a watch to each directory before its first output. A large tree takes time. If stderr is a terminal, `edc` shows a notice during this step.
+
 On macOS, the watcher opens one file descriptor for each watched file and directory. If the tree has more entries than the open file limit, `watch fs` stops with an error. Narrow the scope with `--exclude`.
 
 The JSON output file and regular files connected to stdout are excluded to avoid output feedback. `--event` and `--match` filter both event output and rule actions. There is no default action.

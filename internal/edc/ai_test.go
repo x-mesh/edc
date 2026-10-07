@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -233,7 +232,7 @@ func TestAICountdownShowsSeconds(t *testing.T) {
 }
 
 func aiDashboardFixture(now time.Time) aiModel {
-	model := aiModel{poll: time.Minute, width: 80, height: 24, now: now, rowSize: time.Minute, polled: true, scanned: true,
+	model := aiModel{poll: time.Minute, width: aiBoxWidth, height: 24, now: now, rowSize: time.Minute, polled: true, scanned: true,
 		usage: aiUsageSnapshot{Buckets: map[string]map[time.Time]aiUsage{
 			"claude": {now.Truncate(aiBucket): {Requests: 3, Input: 4100, Output: 1200, Cache: 412_000}},
 			"codex":  {now.Add(-2 * time.Minute).Truncate(aiBucket): {Requests: 1, Input: 900, Output: 120}},
@@ -252,7 +251,7 @@ func aiDashboardFixture(now time.Time) aiModel {
 	return model
 }
 
-func TestAIDashboardFitsAnEightyColumnTerminal(t *testing.T) {
+func TestAIDashboardFitsTheTableWidth(t *testing.T) {
 	model := aiDashboardFixture(time.Date(2026, 10, 6, 1, 0, 30, 0, time.Local))
 	lines := strings.Split(model.View().Content, "\n")
 	if len(lines) != model.height {
@@ -264,7 +263,7 @@ func TestAIDashboardFitsAnEightyColumnTerminal(t *testing.T) {
 		}
 	}
 	text := ansi.Strip(model.View().Content)
-	for _, want := range []string{"▸01:00:00│   3│  4.1K│  1.2K│  412K│   417K│", "│00:58:00│   0│", "in 02:00:00", "in 6d 00:00:00", "! codex app-server exited", "│   Σ 10m│   3│  4.1K│  1.2K│  412K│   417K│   1│   900│   120│     0│   1.0K│", "- 10s [1m] 5m 1h +"} {
+	for _, want := range []string{"▸01:00:00│   3│  4.1K│  1.2K│  412K│ 99%│   417K│", "│00:58:00│   0│", "in 02:00:00", "in 6d 00:00:00", "! codex app-server exited", "│   Σ 10m│   3│  4.1K│  1.2K│  412K│ 99%│   417K│   1│   900│   120│     0│  0%│   1.0K│", "│00:58:00│   0│     0│     0│     0│   -│", "- 10s [1m] 5m 1h +"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("dashboard misses %q", want)
 		}
@@ -622,15 +621,10 @@ func TestAIJSONOmitsUnknownTimes(t *testing.T) {
 	}
 }
 
-// macOS의 Claude Code는 token을 Keychain에 둔다. 그때 로그인하라는 안내는 틀린 해결책이다.
-func TestReadAIClaudeTokenNamesTheMacOSKeychain(t *testing.T) {
+func TestReadAIClaudeTokenAsksForALoginWithoutCredentials(t *testing.T) {
 	_, _, err := readAIClaudeToken(t.TempDir(), time.Now())
-	want := "log in with Claude Code"
-	if runtime.GOOS == "darwin" {
-		want = "macOS Keychain"
-	}
-	if err == nil || !strings.Contains(err.Error(), want) {
-		t.Fatalf("missing credentials on %s: %v, want %q", runtime.GOOS, err, want)
+	if err == nil || !strings.Contains(err.Error(), "log in with Claude Code") {
+		t.Fatalf("missing credentials: %v", err)
 	}
 }
 
@@ -647,5 +641,239 @@ func TestAIDashboardAsksForTheHeightItNeeds(t *testing.T) {
 	model.height = minHeight
 	if lines := strings.Split(model.View().Content, "\n"); len(lines) > model.height || strings.Contains(lines[0], "terminal too small") {
 		t.Errorf("%d rows: %d lines, first %q", model.height, len(lines), lines[0])
+	}
+}
+
+// aiStatuslineFixture는 문서에 나온 statusline 입력의 한도 부분이다. spend_limit은 gateway 전용이라 읽지 않는다.
+const aiStatuslineFixture = `{"model":{"display_name":"Opus"},"rate_limits":{` +
+	`"five_hour":{"used_percentage":23.5,"resets_at":1791362400},` +
+	`"seven_day":{"used_percentage":41.2,"resets_at":1791880800},` +
+	`"spend_limit":{"used_percentage":62.8,"resets_at":1793000000}}}`
+
+func TestParseAIStatuslineInputKeepsTheLimitWindows(t *testing.T) {
+	now := time.Date(2026, 10, 7, 3, 0, 0, 0, time.UTC)
+	provider, ok := parseAIStatuslineInput([]byte(aiStatuslineFixture), now)
+	if !ok || provider.Name != "claude" || !provider.FetchedAt.Equal(now) || len(provider.Windows) != 2 {
+		t.Fatalf("parsed %+v, ok %t", provider, ok)
+	}
+	if window := provider.Windows[0]; window.Name != "5h" || window.Used != 23.5 || !window.ResetsAt.Equal(time.Unix(1791362400, 0)) {
+		t.Errorf("5h window %+v", window)
+	}
+	if window := provider.Windows[1]; window.Name != "7d" || window.Used != 41.2 {
+		t.Errorf("7d window %+v", window)
+	}
+	if text := formatAIStatusline(provider); text != "5h 24% · 7d 41%" {
+		t.Errorf("status line %q", text)
+	}
+	for _, input := range []string{`{"model":{}}`, `{"rate_limits":{}}`, `not json`, ``} {
+		if _, ok := parseAIStatuslineInput([]byte(input), now); ok {
+			t.Errorf("%q must not count as usage", input)
+		}
+	}
+}
+
+func TestReadAIClaudeSnapshotDropsPassedWindows(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, aiClaudeSnapshotName)
+	if provider := readAIClaudeSnapshot(path, time.Now()); provider.Err != errAIStatuslineMissing.Error() {
+		t.Fatalf("missing snapshot: %+v", provider)
+	}
+	writeAIFixture(t, path, "{not json")
+	if provider := readAIClaudeSnapshot(path, time.Now()); provider.Err == "" || provider.Err == errAIStatuslineMissing.Error() {
+		t.Fatalf("broken snapshot: %+v", provider)
+	}
+	now := time.Date(2026, 10, 7, 3, 0, 0, 0, time.UTC)
+	saved := aiProvider{Name: "claude", FetchedAt: now.Add(-time.Hour), Windows: []aiWindow{
+		{Name: "5h", Used: 90, ResetsAt: now.Add(-time.Minute)},
+		{Name: "7d", Used: 41, ResetsAt: now.Add(time.Hour)},
+	}}
+	if err := saveAIClaudeState(path, aiClaudeState{aiProvider: saved}); err != nil {
+		t.Fatal(err)
+	}
+	provider := readAIClaudeSnapshot(path, now)
+	if provider.Err != "" || !provider.FetchedAt.Equal(saved.FetchedAt) || len(provider.Windows) != 1 || provider.Windows[0].Name != "7d" {
+		t.Errorf("snapshot %+v", provider)
+	}
+}
+
+// 스냅샷을 읽는 수집기는 사용량 API를 부르지 않고, 조회 간격도 늘리지 않으며, API 상태 파일도 쓰지 않는다.
+func TestAIPollReadsTheStatuslineSnapshotInsteadOfTheAPI(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	claudeDir, stateDir := t.TempDir(), t.TempDir()
+	writeAIClaudeCredentials(t, claudeDir)
+	snapshot := filepath.Join(stateDir, aiClaudeSnapshotName)
+	provider, _ := parseAIStatuslineInput([]byte(aiStatuslineFixture), time.Now().Add(-time.Minute))
+	if err := saveAIClaudeState(snapshot, aiClaudeState{aiProvider: provider}); err != nil {
+		t.Fatal(err)
+	}
+	collector := newAICollector(claudeDir, t.TempDir(), stateDir, time.Now())
+	collector.claudeSnapshot = snapshot
+	collector.http = &http.Client{Transport: aiStubTransport{status: http.StatusTeapot, body: "{}"}}
+	result := collector.poll(context.Background(), time.Minute)
+	if claude := result.providers[0]; claude.Err != "" || len(claude.Windows) != 2 || !claude.FetchedAt.Equal(provider.FetchedAt) {
+		t.Fatalf("claude %+v", claude)
+	}
+	if result.claudeInterval != time.Minute {
+		t.Errorf("claude interval %s, want the poll", result.claudeInterval)
+	}
+	if _, err := os.Stat(filepath.Join(stateDir, aiClaudeStateName)); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the API state file must stay untouched: %v", err)
+	}
+}
+
+func TestRunAIStatuslinePassesTheInputToTheCommand(t *testing.T) {
+	stateHome := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", stateHome)
+	input := filepath.Join(t.TempDir(), "input.json")
+	writeAIFixture(t, input, aiStatuslineFixture)
+	stdin, err := os.Open(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stdin.Close()
+	saved := os.Stdin
+	os.Stdin = stdin
+	defer func() { os.Stdin = saved }()
+
+	copied := filepath.Join(t.TempDir(), "copied.json")
+	if code := runAIStatusline([]string{"--", "sh", "-c", `cat > "$0"; exit 3`, copied}); code != 3 {
+		t.Errorf("exit code %d, want the command's 3", code)
+	}
+	if data, err := os.ReadFile(copied); err != nil || string(data) != aiStatuslineFixture {
+		t.Errorf("the command got %q, %v", data, err)
+	}
+	provider := readAIClaudeSnapshot(filepath.Join(stateHome, "edc", aiClaudeSnapshotName), time.Now())
+	if provider.Err != "" || len(provider.Windows) != 2 {
+		t.Errorf("snapshot %+v", provider)
+	}
+}
+
+func TestEditAIStatuslineWrapsAndRestoresTheCommand(t *testing.T) {
+	const executable = "/opt/edc/bin/edc"
+	for _, test := range []struct {
+		name, settings, wrapped string
+	}{
+		{"plain", `{"model":"opus","statusLine":{"type":"command","command":"cship","padding":0},"env":{"A":"1"}}`,
+			"/opt/edc/bin/edc ai statusline -- cship"},
+		{"shell", `{"statusLine":{"type":"command","command":"jq -r '\"[\\(.model.display_name)]\"' | head -1 && echo ok"}}`,
+			`/opt/edc/bin/edc ai statusline -- sh -c 'jq -r '\''"[\(.model.display_name)]"'\'' | head -1 && echo ok'`},
+		{"env", `{"statusLine":{"type":"command","command":"NO_COLOR=1 cship"}}`,
+			`/opt/edc/bin/edc ai statusline -- sh -c 'NO_COLOR=1 cship'`},
+		{"words", `{"statusLine":{"type":"command","command":"bunx ccstatusline"}}`,
+			`/opt/edc/bin/edc ai statusline -- sh -c 'bunx ccstatusline'`},
+		{"home", `{"statusLine":{"type":"command","command":"~/bin/status"}}`,
+			"/opt/edc/bin/edc ai statusline -- ~/bin/status"},
+		{"absent", `{"model":"opus"}`, "/opt/edc/bin/edc ai statusline"},
+		{"empty file", ``, "/opt/edc/bin/edc ai statusline"},
+	} {
+		installed, err := editAIStatusline([]byte(test.settings), executable, true)
+		if err != nil || !installed.changed || installed.after != test.wrapped {
+			t.Fatalf("%s: install %+v, %v", test.name, installed, err)
+		}
+		again, err := editAIStatusline(installed.settings, executable, true)
+		if err != nil || again.changed {
+			t.Errorf("%s: a second install must not wrap again: %+v, %v", test.name, again, err)
+		}
+		removed, err := editAIStatusline(installed.settings, executable, false)
+		if err != nil || !removed.changed || removed.after != installed.before {
+			t.Fatalf("%s: uninstall %+v, %v", test.name, removed, err)
+		}
+		if !aiJSONEqual(t, removed.settings, test.settings) {
+			t.Errorf("%s: uninstall left\n%s\nwant %s", test.name, removed.settings, test.settings)
+		}
+	}
+	installed, _ := editAIStatusline([]byte(`{"model":"opus","statusLine":{"type":"command","command":"cship","padding":0},"env":{"A":"1"}}`), executable, true)
+	if text := string(installed.settings); strings.Index(text, `"model"`) > strings.Index(text, `"statusLine"`) || strings.Index(text, `"statusLine"`) > strings.Index(text, `"env"`) || !strings.Contains(text, `"padding": 0`) {
+		t.Errorf("the other keys moved or vanished:\n%s", text)
+	}
+	if again, err := editAIStatusline([]byte(`{"statusLine":{"command":"cship"}}`), executable, false); err != nil || again.changed {
+		t.Errorf("uninstall without edc: %+v, %v", again, err)
+	}
+	if _, err := editAIStatusline([]byte(`[1]`), executable, true); err == nil {
+		t.Error("a settings file that is not an object must fail")
+	}
+}
+
+func TestWriteAIClaudeSettingsKeepsASymbolicLink(t *testing.T) {
+	directory := t.TempDir()
+	target := filepath.Join(directory, "dotfiles", "settings.json")
+	link := filepath.Join(directory, "claude", "settings.json")
+	for _, dir := range []string{filepath.Dir(target), filepath.Dir(link)} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(target, []byte(`{"a":1}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(target, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	backup, err := writeAIClaudeSettings(link, []byte(`{"a":1}`), []byte(`{"a":2}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info, err := os.Lstat(link); err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("the link became %v, %v", info, err)
+	}
+	if data, err := os.ReadFile(target); err != nil || string(data) != `{"a":2}` {
+		t.Errorf("target %q, %v", data, err)
+	}
+	if info, err := os.Stat(target); err != nil || info.Mode().Perm() != 0o640 {
+		t.Errorf("target mode %v, %v", info, err)
+	}
+	if data, err := os.ReadFile(backup); backup != link+aiStatuslineBackupSuffix || err != nil || string(data) != `{"a":1}` {
+		t.Errorf("backup %s %q, %v", backup, data, err)
+	}
+	if err := os.Remove(target); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := writeAIClaudeSettings(link, nil, []byte(`{"a":3}`)); err == nil {
+		t.Error("a link to a missing file must fail")
+	}
+	if info, err := os.Lstat(link); err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Errorf("the dangling link changed: %v, %v", info, err)
+	}
+}
+
+func aiJSONEqual(t *testing.T, got []byte, want string) bool {
+	t.Helper()
+	if strings.TrimSpace(want) == "" {
+		want = "{}"
+	}
+	var left, right any
+	if json.Unmarshal(got, &left) != nil || json.Unmarshal([]byte(want), &right) != nil {
+		return false
+	}
+	a, _ := json.Marshal(left)
+	b, _ := json.Marshal(right)
+	return string(a) == string(b)
+}
+
+func TestAICacheHitCountsCacheWritesAsMisses(t *testing.T) {
+	for _, test := range []struct {
+		usage aiUsage
+		text  string
+		json  string
+	}{
+		{aiUsage{Requests: 1, Input: 1, Cache: 999}, "99%", `"cache_hit_percent":99.9`},
+		{aiUsage{Requests: 1, Input: 0, Cache: 50}, "100%", `"cache_hit_percent":100`},
+		{aiUsage{Requests: 1, Input: 300, Output: 20, Cache: 100}, "25%", `"cache_hit_percent":25`},
+		{aiUsage{Requests: 1, Output: 20}, "-", ""},
+		{aiUsage{}, "-", ""},
+	} {
+		if text := test.usage.cacheHitText(); text != test.text {
+			t.Errorf("%+v: hit %q, want %q", test.usage, text, test.text)
+		}
+		data, err := json.Marshal(test.usage)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := string(data); test.json == "" && strings.Contains(got, "cache_hit_percent") || !strings.Contains(got, test.json) || !strings.Contains(got, `"requests":`) {
+			t.Errorf("%+v: JSON %s, want %s", test.usage, got, test.json)
+		}
 	}
 }

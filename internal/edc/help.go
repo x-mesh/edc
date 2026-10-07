@@ -252,7 +252,11 @@ var commandDocs = []commandDoc{
 	},
 	{
 		name: "ai", group: "observe",
-		usage: []string{"edc ai [--poll 60s] [--count N] [--json <path|->]"},
+		usage: []string{
+			"edc ai [--poll 60s] [--count N] [--json <path|->]",
+			"edc ai statusline [-- <command> [args...]]",
+			"edc ai statusline install|uninstall",
+		},
 		options: []optionDoc{
 			{"--poll 60s", "command.ai.option.poll"},
 			{"--count N", "command.ai.option.count"},

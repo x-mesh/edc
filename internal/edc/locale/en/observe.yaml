@@ -56,6 +56,15 @@ observe:
     error:
       reset_log: "edc did not write the reset log: %v"
       state: "edc did not save the last Claude values: %v"
+    statusline:
+      usage: "usage: edc ai statusline [-- <command> [args...]] | install | uninstall"
+      write: "edc did not save the Claude usage: %v"
+      settings: "edc did not update %s: %v"
+      already: "statusLine.command already runs edc ai statusline: %s"
+      not_installed: "statusLine.command does not run edc ai statusline"
+      changed: "statusLine.command: %s → %s"
+      backup: "backup: %s"
+      none: "(none)"
 
   watch:
     no_samples_duration: "No sample completed before the duration ended; target health is unknown."

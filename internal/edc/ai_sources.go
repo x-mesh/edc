@@ -9,11 +9,11 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"math"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -89,10 +89,6 @@ func aiCodexDir(home string) string {
 func readAIClaudeToken(dir string, now time.Time) (token, plan string, err error) {
 	data, err := os.ReadFile(filepath.Join(dir, ".credentials.json"))
 	if err != nil {
-		// macOS의 Claude Code는 token을 Keychain에 두고 이 파일을 만들지 않는다. 로그인하라는 안내는 해결책이 아니다.
-		if runtime.GOOS == "darwin" && errors.Is(err, fs.ErrNotExist) {
-			return "", "", errors.New("Claude token is in the macOS Keychain · not supported")
-		}
 		return "", "", errors.New("no Claude credentials · log in with Claude Code")
 	}
 	var credentials aiClaudeCredentials
@@ -428,6 +424,39 @@ type aiUsage struct {
 }
 
 func (usage aiUsage) total() int64 { return usage.Input + usage.Output + usage.Cache }
+
+// cacheHit은 입력 가운데 cache에서 읽은 비율이다. Claude는 cache에 새로 쓴 입력을 in에 넣으므로 miss로 센다.
+// 입력이 없는 구간은 비율이 없으므로 false를 돌려준다.
+func (usage aiUsage) cacheHit() (float64, bool) {
+	input := usage.Input + usage.Cache
+	if input <= 0 {
+		return 0, false
+	}
+	return 100 * float64(usage.Cache) / float64(input), true
+}
+
+// cacheHitText는 내림한다. 반올림하면 miss가 남아도 100%로 보인다.
+func (usage aiUsage) cacheHitText() string {
+	hit, ok := usage.cacheHit()
+	if !ok {
+		return "-"
+	}
+	return fmt.Sprintf("%.0f%%", math.Floor(hit))
+}
+
+// MarshalJSON은 --json에 cache_hit_percent를 더한다. 입력이 없는 구간은 0%와 구분되도록 뺀다.
+func (usage aiUsage) MarshalJSON() ([]byte, error) {
+	type plain aiUsage
+	value := struct {
+		plain
+		CacheHit *float64 `json:"cache_hit_percent,omitempty"`
+	}{plain: plain(usage)}
+	if hit, ok := usage.cacheHit(); ok {
+		rounded := math.Round(hit*10) / 10
+		value.CacheHit = &rounded
+	}
+	return json.Marshal(value)
+}
 
 func (usage *aiUsage) add(other aiUsage) {
 	usage.Requests += other.Requests

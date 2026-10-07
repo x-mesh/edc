@@ -2125,6 +2125,15 @@ static __always_inline void ssl_fill_record(struct http_record *record, struct s
 	current_process_name(&record->comm);
 }
 
+// ssl_lost는 평문을 넘기지 못한 SSL 호출 하나를 잃은 event로 센다.
+static __always_inline void ssl_lost(void) {
+	__u32 zero = 0;
+	__u64 *lost = bpf_map_lookup_elem(&lost_events, &zero);
+	if (lost) {
+		__sync_fetch_and_add(lost, 1);
+	}
+}
+
 // ssl_capture는 SSL 호출 하나의 평문을 레코드로 넘긴다. http_capture와 같은 stream 규칙을 따르되, 방향에 HTTP_DECRYPTED를
 // 더한 key를 써서 같은 socket의 암호문 상태와 섞지 않는다. 평문은 buffer 하나이고 TLS 판별을 하지 않는다. TCP 송수신마다
 // 도는 http_capture의 verifier 비용을 늘리지 않으려고 따로 둔다.
@@ -2133,6 +2142,12 @@ static __always_inline void ssl_capture(struct ssl_snapshot *snapshot, __u64 buf
 	struct http_stream_key key = {.skaddr = snapshot->skaddr, .direction = flagged};
 	__u8 peek[4] = {};
 	int readable = size >= 4 && !bpf_probe_read_user(peek, sizeof(peek), (void *)buffer);
+	// BPF는 page fault 없이 읽으므로, kernel이 그 page를 바꾸는 순간에는 평문을 읽지 못한다. HTTP인지 알 수 없어도 조용히
+	// 버리지 않고 호출마다 한 번 센다. 그 뒤의 stream 상태 처리는 읽을 수 있을 때와 같다.
+	int counted = size >= 4 && !readable;
+	if (counted) {
+		ssl_lost();
+	}
 	int http2_start = readable && peek[0] == 'P' && peek[1] == 'R' && peek[2] == 'I' && peek[3] == ' ' && h2c_preface(buffer, size, size);
 	__u64 *seen = bpf_map_lookup_elem(&http_streams, &key);
 	int http2_going = seen && (*seen & HTTP2_STREAM);
@@ -2207,6 +2222,10 @@ static __always_inline void ssl_capture(struct ssl_snapshot *snapshot, __u64 buf
 			len = HTTP_PAYLOAD_SIZE;
 		}
 		if (bpf_probe_read_user(record->payload, len, (void *)cursor->pointer)) {
+			if (!counted) {
+				ssl_lost();
+				counted = 1;
+			}
 			break;
 		}
 		record->timestamp_ns = started ? started : bpf_ktime_get_ns();
@@ -2232,7 +2251,7 @@ static __always_inline void ssl_capture(struct ssl_snapshot *snapshot, __u64 buf
 		if (peer_marked && cursor->offset == offset) {
 			bpf_map_delete_elem(&http_streams, &peer);
 		}
-		__u64 *lost = dropped ? 0 : bpf_map_lookup_elem(&lost_events, &zero);
+		__u64 *lost = dropped || counted ? 0 : bpf_map_lookup_elem(&lost_events, &zero);
 		if (lost) {
 			__sync_fetch_and_add(lost, 1);
 		}

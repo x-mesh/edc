@@ -164,6 +164,9 @@ Setup wizard는 `edc log`의 저장 경로를 비워두고 실행별 파일을 �
 # sample당 한 줄 JSON
 ./bin/edc top --count 5 --json -
 
+# Claude Code와 Codex의 token 사용량과 계정 한도
+./bin/edc ai
+
 # system/network/disk 정보와 public IP
 ./bin/edc info
 # 외부 ipinfo.io 요청 없이 실행
@@ -651,6 +654,40 @@ sudo ./bin/edc top --process output-mesh -d --json /tmp/edc-host.jsonl
 - block I/O 요청은 그것을 낸 task에 속합니다. 동기 읽기, direct I/O, `fsync`는 그 process로 잡힙니다. 버퍼 쓰기는 나중에 커널 flusher가 내므로 `kworker`로 잡힙니다. 그 byte는 `disk_write_bytes_per_s`를 쓰세요.
 - `edc`가 커널의 PID를 자신이 속한 PID namespace 기준으로 바꾸므로 컨테이너 안에서도 필터가 맞습니다.
 - process가 나타난 뒤 첫 sample에는 `ebpf` 객체가 없습니다. `edc`가 그 process를 감시하기 시작할 때부터 세기 때문입니다.
+
+## AI 도구 사용량
+
+`edc ai`는 이 host에서 Claude Code와 Codex가 쓴 token을 보여 줍니다. 두 도구의 계정 한도와 reset 시각도 함께 보여 줍니다.
+
+```bash
+./bin/edc ai                      # 대시보드 (q로 종료)
+./bin/edc ai --count 3            # sample 3개를 표로 출력
+./bin/edc ai --count 1 --json -   # 한 줄 JSON
+```
+
+터미널에서는 대시보드를 엽니다. 표의 한 행은 한 구간이고, 구간은 10s, 1m, 5m, 1h 중 하나입니다. `+`와 `-`로 구간을 바꿉니다. `▸` 행은 아직 끝나지 않은 구간입니다. `↑`, `↓`, PgUp, PgDn, End로 24시간 기록을 오갑니다. `Σ` 행은 최근 10분, 1시간, 24시간의 합계입니다.
+
+token은 이 host의 로그에서 셉니다. 2초마다 새로 붙은 줄만 읽습니다.
+
+- Claude Code: `~/.claude/projects/**/*.jsonl`. 같은 메시지는 한 번만 셉니다.
+- Codex: `~/.codex/sessions`에 쌓이는 누적 token 수의 증가분입니다.
+
+표는 이 host만 셉니다. 다른 기기나 claude.ai에서 쓴 양은 한도 비율에만 나타납니다.
+
+한도 상자는 한도 구간마다 사용률, reset 시각, 남은 시간을 보여 줍니다.
+
+- Codex: `codex app-server`를 띄워 묻습니다. `codex` 명령이 `PATH`에 있어야 합니다.
+- Claude: Claude Code의 `/usage`가 쓰는 API인 `https://api.anthropic.com/api/oauth/usage`를 부릅니다. 이때 `~/.claude/.credentials.json`의 token을 보냅니다. edc는 이 token을 출력하거나 저장하거나 갱신하지 않습니다.
+
+Claude 사용량 API는 공개 문서가 없고, 자주 부르면 HTTP 429로 거절합니다. 그래서 edc는 최소 5분 간격으로 부릅니다. 429를 받으면 10분, 20분, 최대 30분으로 간격을 늘립니다. 다음 조회 전까지는 저장한 값과 그 값이 얼마나 오래됐는지를 보여 줍니다.
+
+`--poll`은 한도 조회 간격입니다. 기본값은 60s이고 30s 이상이어야 합니다. Claude는 이와 별도로 5분 이상 간격을 지킵니다.
+
+터미널이 아니거나 `--count` 또는 `--json`을 주면 대시보드 대신 sample을 출력합니다. `--count N`은 sample N개를 출력하고 끝나며, 0이면 멈출 때까지 계속합니다. `--json <경로|->`는 sample마다 JSON 객체 하나를 씁니다. 파일은 mode 0600으로 만듭니다.
+
+감지한 reset은 `ai-resets.jsonl`에, 마지막 Claude 값은 `ai-claude.json`에 남깁니다. 두 파일은 history DB와 같은 디렉터리에 있습니다. 위치는 [Top 저장과 이력 조회](#top-저장과-이력-조회)를 봅니다.
+
+macOS의 Claude Code는 token을 Keychain에 둡니다. edc는 Keychain을 읽지 않으므로, macOS에서는 Claude 상자에 한도가 나오지 않습니다.
 
 ## Remote recipe
 
@@ -1494,7 +1531,7 @@ zsh에서는 script를 `fpath`의 디렉터리에 `_edc`라는 이름으로 저�
 
 ## 현재 범위
 
-`top`, `info`, `doctor`와 개별 network probe는 Linux와 macOS를 지원합니다. Linux에서는 `/proc`, `/sys`, `ip`, `ss`, `ping`, `traceroute` 또는 `tracepath`, `/etc/resolv.conf`를 읽고, `resolvectl`이 있으면 `resolvectl status`를 evidence로 덧붙입니다. macOS에서는 system command adapter를 사용합니다. `capture`는 Linux와 macOS를 지원하고 `quality`는 macOS에서 `networkQuality`를, Linux에서 내장 응답성 측정을 실행하며 둘 다 측정한 경우에 `download_bps`, `upload_bps`, `responsiveness_rpm`, `base_rtt_ms`를 남기고, 측정하지 못한 값은 뺍니다. config URL 기본값은 Apple의 `https://mensura.cdn-apple.com/api/v1/gm/config`이고, `--server`나 `defaults.quality.server`로 바꿉니다. `server`를 비우면 기본값을 씁니다. 진단 command는 read-only 관측에 집중하며, DNS flush, interface reset, firewall 변경 같은 자동 복구는 하지 않습니다. `edc log`는 로그 파일, 회전 파일, 잠금 파일을 씁니다. `edc top --write`는 SQLite DB와 WAL 파일을 씁니다.
+`top`, `info`, `doctor`와 개별 network probe는 Linux와 macOS를 지원합니다. Linux에서는 `/proc`, `/sys`, `ip`, `ss`, `ping`, `traceroute` 또는 `tracepath`, `/etc/resolv.conf`를 읽고, `resolvectl`이 있으면 `resolvectl status`를 evidence로 덧붙입니다. macOS에서는 system command adapter를 사용합니다. `capture`는 Linux와 macOS를 지원하고 `quality`는 macOS에서 `networkQuality`를, Linux에서 내장 응답성 측정을 실행하며 둘 다 측정한 경우에 `download_bps`, `upload_bps`, `responsiveness_rpm`, `base_rtt_ms`를 남기고, 측정하지 못한 값은 뺍니다. config URL 기본값은 Apple의 `https://mensura.cdn-apple.com/api/v1/gm/config`이고, `--server`나 `defaults.quality.server`로 바꿉니다. `server`를 비우면 기본값을 씁니다. 진단 command는 read-only 관측에 집중하며, DNS flush, interface reset, firewall 변경 같은 자동 복구는 하지 않습니다. `edc log`는 로그 파일, 회전 파일, 잠금 파일을 씁니다. `edc top --write`는 SQLite DB와 WAL 파일을 씁니다. `edc ai`는 `ai-resets.jsonl`과 `ai-claude.json`을 쓰고 Claude 사용량 API를 부릅니다.
 
 ## 라이선스
 

@@ -178,6 +178,9 @@ The command also creates the parent for the legacy recommended `edc.log` path.
 # one JSON line for each sample
 ./bin/edc top --count 5 --json -
 
+# Claude Code and Codex token use and account limits
+./bin/edc ai
+
 # system, network, and disk information, with the public IP
 ./bin/edc info
 # skip the ipinfo.io request
@@ -761,6 +764,40 @@ The dashboard adds a third line to the detail view: `ebpf 1s · runq 7584 avg 5.
 - A block I/O request belongs to the task that issues it. Synchronous reads, direct I/O, and `fsync` land on the process. Buffered writes are issued later by a kernel flusher, so they land on `kworker`. Use `disk_write_bytes_per_s` for those bytes.
 - `edc` translates the kernel's PIDs into the PID namespace it runs in, so the filter matches inside a container as well.
 - The first sample after a process appears has no `ebpf` object, because the counts start when `edc` begins to watch it.
+
+## AI tool usage
+
+`edc ai` shows the tokens that Claude Code and Codex use on this host. It also shows the account limits of both tools and their reset times.
+
+```bash
+./bin/edc ai                      # dashboard (press q to quit)
+./bin/edc ai --count 3            # three samples as a table
+./bin/edc ai --count 1 --json -   # one JSON line
+```
+
+In a terminal, `edc ai` opens a dashboard. Each row of the table is one interval: 10s, 1m, 5m, or 1h. To change the interval, press `+` or `-`. The `▸` row is still open. To move through 24 hours of history, use `↑`, `↓`, PgUp, PgDn, and End. The `Σ` rows sum the last 10 minutes, the last hour, and the last 24 hours.
+
+edc counts the tokens from the local logs. Every 2 seconds, it reads only the new lines.
+
+- Claude Code: `~/.claude/projects/**/*.jsonl`. edc counts each message once.
+- Codex: the growth of the cumulative token count in `~/.codex/sessions`.
+
+The table counts this host only. The tokens that other machines or claude.ai use show only in the limit percentages.
+
+The limit boxes show each window with its use, its reset time, and the time left.
+
+- Codex: edc starts `codex app-server` and asks it. The `codex` command must be in `PATH`.
+- Claude: edc calls `https://api.anthropic.com/api/oauth/usage`, the API behind `/usage` in Claude Code. It sends the token in `~/.claude/.credentials.json`. edc does not print, store, or refresh this token.
+
+Anthropic does not document the Claude usage API, and the API answers frequent calls with HTTP 429. So edc calls it at most every 5 minutes. After a 429, edc waits 10 minutes, then 20 minutes, then at most 30 minutes. Until the next call, the box shows the saved values and their age.
+
+`--poll` sets the time between limit calls. The default is 60s, and the minimum is 30s. Claude keeps its own interval of 5 minutes or more.
+
+Without a terminal, or with `--count` or `--json`, edc prints samples in place of the dashboard. `--count N` stops after N samples, and 0 runs until you stop edc. `--json <path|->` writes one JSON object for each sample. A file gets mode 0600.
+
+edc writes each reset that it detects to `ai-resets.jsonl`. It keeps the last Claude values in `ai-claude.json`. Both files are in the directory of the history database. For that directory, see [Top recordings and history](#top-recordings-and-history).
+
+On macOS, Claude Code keeps the token in the Keychain. edc does not read the Keychain, so the Claude box shows no limits on macOS.
 
 ## Remote recipes
 
@@ -1711,7 +1748,7 @@ On Linux, `edc` reads `/proc`, `/sys`, `ip`, `ss`, `ping`, `traceroute` or `trac
 
 On macOS, `edc` uses a system command adapter. Linux and macOS run `capture`. `quality` runs `networkQuality` on macOS and a built-in responsiveness test on Linux. Both report `download_bps`, `upload_bps`, `responsiveness_rpm`, and `base_rtt_ms` when the run measured them; a missing value is left out. The config URL defaults to Apple's `https://mensura.cdn-apple.com/api/v1/gm/config`; `--server` or `defaults.quality.server` replaces it. An empty `server` keeps the default.
 
-Every diagnostic command keeps to read-only inspection. `edc` runs no automatic repair, such as a DNS flush, an interface reset, or a firewall change. `edc log` writes its output, rotation archives, and lock file. `edc top --write` writes a SQLite database and its WAL files.
+Every diagnostic command keeps to read-only inspection. `edc` runs no automatic repair, such as a DNS flush, an interface reset, or a firewall change. `edc log` writes its output, rotation archives, and lock file. `edc top --write` writes a SQLite database and its WAL files. `edc ai` writes `ai-resets.jsonl` and `ai-claude.json`, and it calls the Claude usage API.
 
 ## License
 

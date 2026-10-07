@@ -7,14 +7,17 @@ import (
 	"bytes"
 	"cmp"
 	"context"
+	"debug/elf"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net/netip"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -23,6 +26,7 @@ import (
 	"time"
 
 	"github.com/cilium/ebpf"
+	"github.com/cilium/ebpf/asm"
 	"github.com/cilium/ebpf/btf"
 	"github.com/cilium/ebpf/link"
 	"github.com/cilium/ebpf/ringbuf"
@@ -329,6 +333,157 @@ func closeCaptureLinks(links []link.Link) {
 	wait.Wait()
 }
 
+// traceTLSPrograms는 traceTLSFunctions마다 진입과 반환 program이다. 진입은 인자를, 반환은 평문 길이를 본다. GnuTLS의
+// 송수신 함수는 (session, buffer, size)를 받아 byte 수를 돌려주므로 SSL_write와 SSL_read의 program을 쓰고, gnutls_deinit은
+// SSL_free처럼 그 session의 상태를 지운다.
+func traceTLSPrograms(objects *captureEventsObjects) map[string][2]*ebpf.Program {
+	return map[string][2]*ebpf.Program{
+		"SSL_read":     {objects.SslReadEntry, objects.SslReadExit},
+		"SSL_write":    {objects.SslWriteEntry, objects.SslWriteExit},
+		"SSL_read_ex":  {objects.SslReadExEntry, objects.SslReadExExit},
+		"SSL_write_ex": {objects.SslWriteExEntry, objects.SslWriteExExit},
+		"SSL_free":     {objects.SslFreeEntry, nil},
+		// gnutls_record_send와 _recv의 size는 size_t, 반환은 ssize_t다. BPF는 SSL_write처럼 하위 32 bit를 읽는데, 한 번의
+		// 호출은 협상한 최대 record 크기(16KiB 이하)까지만 주고받으므로 반환값이 잘리지 않는다.
+		"gnutls_record_send":           {objects.SslWriteEntry, objects.SslWriteExit},
+		"gnutls_record_send2":          {objects.SslWriteEntry, objects.SslWriteExit},
+		"gnutls_record_recv":           {objects.SslReadEntry, objects.SslReadExit},
+		"gnutls_record_recv_seq":       {objects.SslReadEntry, objects.SslReadExit},
+		"gnutls_deinit":                {objects.SslFreeEntry, nil},
+		"wolfSSL_read":                 {objects.SslReadEntry, objects.SslReadExit},
+		"wolfSSL_write":                {objects.SslWriteEntry, objects.SslWriteExit},
+		"wolfSSL_read_ex":              {objects.SslReadExEntry, objects.SslReadExExit},
+		"wolfSSL_write_ex":             {objects.SslWriteExEntry, objects.SslWriteExExit},
+		"wolfSSL_free":                 {objects.SslFreeEntry, nil},
+		"mbedtls_ssl_read":             {objects.MbedReadEntry, objects.SslReadExit},
+		"mbedtls_ssl_write":            {objects.MbedWriteEntry, objects.SslWriteExit},
+		"mbedtls_ssl_read_early_data":  {objects.MbedReadEntry, objects.SslReadExit},
+		"mbedtls_ssl_write_early_data": {objects.MbedWriteEntry, objects.SslWriteExit},
+		"mbedtls_ssl_session_reset":    {objects.SslFreeEntry, nil},
+		"mbedtls_ssl_free":             {objects.SslFreeEntry, nil},
+		"rustls_connection_read":       {objects.SslReadExEntry, objects.RustlsExit},
+		"rustls_connection_write":      {objects.SslWriteExEntry, objects.RustlsExit},
+		"rustls_connection_free":       {objects.SslFreeEntry, nil},
+		"SSL_ImportFD":                 {objects.NssImportEntry, objects.NssControlExit},
+		"SSL_OptionSet":                {objects.NssOptionEntry, objects.NssControlExit},
+		"SSL_OptionSetDefault":         {objects.NssDefaultEntry, objects.NssControlExit},
+		"PR_Accept":                    {objects.NssAcceptEntry, objects.NssControlExit},
+		"PR_Read":                      {objects.NssReadEntry, objects.NssIoExit},
+		"PR_Recv":                      {objects.NssRecvEntry, objects.NssIoExit},
+		"PR_Write":                     {objects.NssWriteEntry, objects.NssIoExit},
+		"PR_Send":                      {objects.NssWriteEntry, objects.NssIoExit},
+		"PR_Close":                     {objects.NssCloseEntry, nil},
+	}
+}
+
+// traceTLSAttachGone은 탐색한 뒤 그 process가 끝나 경로가 사라져서 아무것도 붙이지 못한 경우다. 그 파일은 같은 파일을
+// 적재한 다른 process에서 다시 고른다. 일부라도 붙었으면 다시 고르지 않아 같은 함수에 두 번 붙지 않는다.
+func traceTLSAttachGone(attached []link.Link, err error) bool {
+	return len(attached) == 0 && (err == nil || errors.Is(err, fs.ErrNotExist))
+}
+
+// attachTraceTLS는 --tls 대상 파일 하나의 TLS 함수에 uprobe를 붙인다. 고른 뒤 끝난 process의 container 파일은 열 수 없어
+// 건너뛴다. 화면이 이미 열렸으므로 알리지 않는다. 붙인 link는 실패해도 돌려준다.
+func attachTraceTLS(objects *captureEventsObjects, target traceTLSTarget) ([]link.Link, error) {
+	if target.goReturns != nil {
+		return attachTraceTLSGo(objects, target)
+	}
+	programs := traceTLSPrograms(objects)
+	executable, err := link.OpenExecutable(target.path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("--tls %s: %w", target.path, err)
+	}
+	var links []link.Link
+	for _, symbol := range target.symbols {
+		pair := programs[symbol]
+		// 위치를 모르면 nil이라 cilium/ebpf가 심볼 표에서 찾는다.
+		var options *link.UprobeOptions
+		if offset, ok := target.offsets[symbol]; ok {
+			options = &link.UprobeOptions{Address: offset}
+		}
+		if index := slices.Index(traceTLSNSSFunctions, symbol); index >= 0 {
+			if options == nil {
+				options = &link.UprobeOptions{}
+			}
+			options.Cookie = uint64(index + 1)
+		}
+		entry, err := executable.Uprobe(symbol, pair[0], options)
+		if err != nil {
+			return links, fmt.Errorf("--tls %s: attach %s: %w", target.path, symbol, err)
+		}
+		links = append(links, entry)
+		if pair[1] == nil {
+			continue
+		}
+		// amd64 kernel 6.11, 6.12.14 전의 6.12, 6.13.3 전의 6.13에서는 uretprobe가 seccomp filter 아래의 process를 끝낼
+		// 수 있다. distro kernel은 수정을 따로 넣었을 수 있어 막지 않고, resolveTraceTLSTargets가 화면을 열기 전에 알린다.
+		exit, err := executable.Uretprobe(symbol, pair[1], options)
+		if err != nil {
+			return links, fmt.Errorf("--tls %s: attach %s return: %w", target.path, symbol, err)
+		}
+		links = append(links, exit)
+	}
+	return links, nil
+}
+
+func attachTraceTLSGo(objects *captureEventsObjects, target traceTLSTarget) (links []link.Link, err error) {
+	executable, err := link.OpenExecutable(target.path)
+	if err != nil {
+		return nil, fmt.Errorf("--tls %s: %w", target.path, err)
+	}
+	defer func() {
+		if err != nil {
+			for _, probe := range links {
+				probe.Close()
+			}
+			links = nil
+		}
+	}()
+	pairs := map[string][2]*ebpf.Program{
+		traceTLSGoRead:  {objects.GoTlsReadEntry, objects.GoTlsReadExit},
+		traceTLSGoWrite: {objects.GoTlsWriteEntry, objects.GoTlsWriteExit},
+		traceTLSGoClose: {objects.GoTlsCloseEntry, nil},
+	}
+	if target.goMachine == elf.EM_AARCH64 {
+		pairs = map[string][2]*ebpf.Program{
+			traceTLSGoRead:  {objects.GoTlsArm64ReadEntry, objects.GoTlsArm64ReadExit},
+			traceTLSGoWrite: {objects.GoTlsArm64WriteEntry, objects.GoTlsArm64WriteExit},
+			traceTLSGoClose: {objects.GoTlsArm64CloseEntry, nil},
+		}
+	}
+	attach := func(name string, program *ebpf.Program, offset uint64) error {
+		probe, attachErr := executable.Uprobe("", program, &link.UprobeOptions{Address: offset})
+		if attachErr != nil {
+			return fmt.Errorf("--tls %s: attach %s at %#x: %w", target.path, name, offset, attachErr)
+		}
+		links = append(links, probe)
+		return nil
+	}
+	for _, name := range []string{traceTLSGoRead, traceTLSGoWrite} {
+		if len(target.goReturns[name]) == 0 {
+			return links, fmt.Errorf("--tls %s: missing Go TLS RET offsets", target.path)
+		}
+		for _, offset := range target.goReturns[name] {
+			if err = attach(name+" return", pairs[name][1], offset); err != nil {
+				return links, err
+			}
+		}
+	}
+	for _, name := range []string{traceTLSGoClose, traceTLSGoRead, traceTLSGoWrite} {
+		offset, exists := target.offsets[name]
+		if !exists {
+			return links, fmt.Errorf("--tls %s: missing Go TLS entry offset", target.path)
+		}
+		if err = attach(name, pairs[name][0], offset); err != nil {
+			return links, err
+		}
+	}
+	return links, nil
+}
+
 func collectCaptureEvents(duration time.Duration, onEvent func(captureEvent) error) ([]captureEvent, captureSummary, error) {
 	return collectCaptureEventsUntil(duration, onEvent, nil)
 }
@@ -460,6 +615,8 @@ type captureEventFilter struct {
 	httpMessageLimit uint32
 	// mysqlPort가 0이 아니면 로컬이나 상대 port가 이 값인 socket의 MySQL packet을 읽는다.
 	mysqlPort uint16
+	// tlsPlaintext는 trace http --tls다. OpenSSL uprobe가 넘기는 평문 레코드를 낸다.
+	tlsPlaintext bool
 }
 
 func captureEventFilterFor(scope traceScope) captureEventFilter {
@@ -473,7 +630,7 @@ func captureEventFilterFor(scope traceScope) captureEventFilter {
 	case "dns":
 		filter.udpEvents, filter.server, filter.tcpStatePort, filter.dnsTCP = false, scope.server, 53, true
 	case "http":
-		filter.udpEvents, filter.httpMessages, filter.httpPayload, filter.httpPort = false, true, scope.payload, scope.port
+		filter.udpEvents, filter.httpMessages, filter.httpPayload, filter.httpPort, filter.tlsPlaintext = false, true, scope.payload, scope.port, scope.tls != ""
 		if scope.payloadAll {
 			filter.httpMessageLimit = httpMessageMax
 		}
@@ -524,6 +681,26 @@ func loadCaptureEventsFor(scope traceScope, objects *captureEventsObjects) error
 	if filter.httpMessageLimit != 0 {
 		if err := variables.HttpMessageLimit.Set(filter.httpMessageLimit); err != nil {
 			return err
+		}
+	}
+	if filter.tlsPlaintext {
+		// resolveTraceTLSTargets가 amd64와 arm64만 받으므로 여기서는 둘 중 하나다.
+		arch := uint8(0)
+		if runtime.GOARCH == "arm64" {
+			arch = 1
+		}
+		if err := errors.Join(variables.EmitTlsPlaintext.Set(uint8(1)), variables.UprobeArch.Set(arch)); err != nil {
+			return err
+		}
+	}
+	if runtime.GOARCH != "arm64" {
+		for _, name := range []string{"go_tls_arm64_read_entry", "go_tls_arm64_read_exit", "go_tls_arm64_write_entry", "go_tls_arm64_write_exit", "go_tls_arm64_close_entry"} {
+			spec.Programs[name].Instructions = asm.Instructions{asm.Mov.Imm(asm.R0, 0), asm.Return()}
+		}
+	}
+	if runtime.GOARCH == "arm64" {
+		for _, name := range []string{"go_tls_read_entry", "go_tls_read_exit", "go_tls_write_entry", "go_tls_write_exit", "go_tls_close_entry"} {
+			spec.Programs[name].Instructions = asm.Instructions{asm.Mov.Imm(asm.R0, 0), asm.Return()}
 		}
 	}
 	selected := "tcp_recvmsg_exit"
@@ -603,7 +780,57 @@ func collectCaptureEventsFor(scope traceScope, duration time.Duration, onEvent f
 		}
 		links = append(links, attached)
 	}
+	// uprobe도 attach 시각을 재기 전에 붙인다. 그 뒤의 레코드만 읽으므로 요청 쪽 평문만 보이는 구간이 없다.
+	if scope.tlsFinder != nil {
+		for _, target := range scope.tlsFinder.targets {
+			attached, err := attachTraceTLS(&objects, target)
+			links = append(links, attached...)
+			gone := traceTLSAttachGone(attached, err)
+			if err != nil && !gone {
+				closeLinks()
+				return captureSummary{}, err
+			}
+			if gone {
+				scope.tlsFinder.retry(target)
+			}
+		}
+	}
 	defer closeLinks()
+	// stopTLSWatch는 trace 중의 TLS 탐색을 멈추고 끝나기를 기다린다. 그 뒤에 tlsExecProblem을 읽는다.
+	stopTLSWatch, tlsExecProblem := func() {}, ""
+	if finder := scope.tlsFinder; finder != nil && finder.rescan {
+		// 감시는 links에 붙인 link를 더하므로, closeLinks보다 먼저 멈춘다. defer는 나중에 건 것이 먼저 돈다.
+		stopWatch, watched := make(chan struct{}), make(chan struct{})
+		go func() {
+			defer close(watched)
+			// 화면이 이미 열렸으므로 exec 알림을 받지 못한 이유는 trace가 끝난 뒤 알린다. nil channel이면 전체 탐색만 한다.
+			execs, failed, err := traceTLSExecEvents(stopWatch)
+			if err != nil {
+				tlsExecProblem = err.Error()
+			}
+			if watchTraceTLS(finder, execs, func(target traceTLSTarget) bool {
+				// 붙이지 못한 파일은 화면에 알리지 않는다. 일부만 붙었으면 그 link는 닫을 때 쓴다.
+				attached, err := attachTraceTLS(&objects, target)
+				links = append(links, attached...)
+				return traceTLSAttachGone(attached, err)
+			}, stopWatch) {
+				tlsExecProblem = "process events stopped"
+				select {
+				case err := <-failed:
+					tlsExecProblem = err.Error()
+				default:
+				}
+			}
+		}()
+		var stopOnce sync.Once
+		stopTLSWatch = func() {
+			stopOnce.Do(func() {
+				close(stopWatch)
+				<-watched
+			})
+		}
+		defer stopTLSWatch()
+	}
 	// hook은 하나씩 붙는다. 요청을 보내는 hook만 붙은 동안 보낸 요청은 응답을 놓치므로, HTTP 레코드는 모두 붙은 뒤부터 읽는다.
 	var attached unix.Timespec
 	if err := unix.ClockGettime(unix.CLOCK_MONOTONIC, &attached); err != nil {
@@ -642,6 +869,7 @@ func collectCaptureEventsFor(scope traceScope, duration time.Duration, onEvent f
 	// --payload=all은 message가 끝날 때 payload를 붙이므로 tracker는 첫 조각에 payload를 붙이지 않는다.
 	requests := newHTTPTracker(scope.side, scope.payload && !scope.payloadAll, scope.showSecrets)
 	requests.keepGzip = scope.keepGzip
+	requests.h2PayloadLimit = traceHTTP2PayloadLimit(scope)
 	splits := httpSplitStarts{}
 	var messages *httpMessages
 	if scope.payloadAll {
@@ -649,6 +877,11 @@ func collectCaptureEventsFor(scope traceScope, duration time.Duration, onEvent f
 	}
 	streams := newDNSTCPStreams()
 	mysql := newMySQLTracker(scope.side, scope.showSecrets)
+	var goOrder *goTLSOrder
+	if scope.tlsFinder != nil && slices.ContainsFunc(scope.tlsFinder.targets, func(target traceTLSTarget) bool { return target.goReturns != nil }) {
+		goOrder = newGoTLSOrder()
+	}
+	var ready [][]byte
 	var eventCount uint64
 	emit := func(events []captureEvent) error {
 		for _, event := range events {
@@ -676,16 +909,27 @@ func collectCaptureEventsFor(scope traceScope, duration time.Duration, onEvent f
 	}
 	sweepDeadline()
 	finish := func() (captureSummary, error) {
+		if err := emit(requests.finishHTTP2Payloads(func(http2PayloadKey) bool { return true })); err != nil {
+			return captureSummary{}, err
+		}
 		if messages != nil {
 			if err := emit(messages.flush()); err != nil {
 				return captureSummary{}, err
 			}
 		}
-		var lost uint64
+		var lost, unmapped uint64
 		if lookupErr := objects.LostEvents.Lookup(uint32(0), &lost); lookupErr != nil {
 			return captureSummary{}, fmt.Errorf("read lost event count: %w", lookupErr)
 		}
-		return captureSummary{TimestampNS: uint64(time.Now().UnixNano()), Event: "capture_summary", EventCount: eventCount, LostEvents: lost}, nil
+		if lookupErr := objects.TlsUnmapped.Lookup(uint32(0), &unmapped); lookupErr != nil {
+			return captureSummary{}, fmt.Errorf("read unmapped TLS count: %w", lookupErr)
+		}
+		if goOrder != nil {
+			lost += goOrder.finish() + uint64(len(ready))
+		}
+		// 감시를 기다리는 동안에도 hook은 붙어 있고 남은 레코드는 읽지 않으므로, 잃은 수를 읽은 뒤에 멈춘다.
+		stopTLSWatch()
+		return captureSummary{TimestampNS: uint64(time.Now().UnixNano()), Event: "capture_summary", EventCount: eventCount, LostEvents: lost, TLSUnmapped: unmapped, TLSExecProblem: tlsExecProblem}, nil
 	}
 	for {
 		// ring buffer reader는 버퍼가 비었을 때만 deadline을 본다. event가 계속 쌓이면 버퍼가 비지 않아
@@ -693,23 +937,41 @@ func collectCaptureEventsFor(scope traceScope, duration time.Duration, onEvent f
 		if duration > 0 && !time.Now().Before(deadline) {
 			return finish()
 		}
-		record, err := reader.Read()
-		if errors.Is(err, os.ErrDeadlineExceeded) {
-			if messages != nil && (duration == 0 || time.Now().Before(deadline)) {
-				if err := emit(messages.expire(time.Now())); err != nil {
-					return captureSummary{}, err
+		var record ringbuf.Record
+		var err error
+		if len(ready) != 0 {
+			record.RawSample = ready[0]
+			ready = ready[1:]
+		} else {
+			record, err = reader.Read()
+			if errors.Is(err, os.ErrDeadlineExceeded) {
+				if messages != nil && (duration == 0 || time.Now().Before(deadline)) {
+					if err := emit(messages.expire(time.Now())); err != nil {
+						return captureSummary{}, err
+					}
+					swept = time.Now()
+					sweepDeadline()
+					continue
 				}
-				swept = time.Now()
-				sweepDeadline()
-				continue
+				return finish()
 			}
-			return finish()
-		}
-		if errors.Is(err, os.ErrClosed) && traceStopRequested(stop) {
-			return finish()
-		}
-		if err != nil {
-			return captureSummary{}, err
+			if errors.Is(err, os.ErrClosed) && traceStopRequested(stop) {
+				return finish()
+			}
+			if err != nil {
+				return captureSummary{}, err
+			}
+			if goOrder != nil {
+				if len(record.RawSample) >= 12 && binary.LittleEndian.Uint32(record.RawSample[8:12]) != goTLSOrderRecord && !captureRecordAfterAttached(binary.LittleEndian.Uint64(record.RawSample[:8]), attached) {
+					continue
+				}
+				ready = goOrder.add(record.RawSample)
+				if len(ready) == 0 {
+					continue
+				}
+				record.RawSample = ready[0]
+				ready = ready[1:]
+			}
 		}
 		if packet, ok := parseDNSRecord(record.RawSample); ok {
 			if !packet.sent {
@@ -745,6 +1007,15 @@ func collectCaptureEventsFor(scope traceScope, duration time.Duration, onEvent f
 		}
 		if packet, ok := parseHTTPRecord(record.RawSample); ok {
 			if !captureRecordAfterAttached(packet.bootTimeNS, attached) {
+				continue
+			}
+			// h2c와 --tls 평문의 HTTP/2는 frame을 이어 읽어야 해서 조각 결합보다 먼저 받는다. 새 연결이 이전 연결의
+			// 상태를 비우면 HTTP/2로 읽지 않은 레코드에서도 본문을 기다리던 event가 나온다.
+			events, claimed := requests.http2Events(packet, clockOffset)
+			if err := emit(events); err != nil {
+				return captureSummary{}, err
+			}
+			if claimed {
 				continue
 			}
 			if packet, ok = splits.join(packet); !ok {
@@ -789,7 +1060,9 @@ func collectCaptureEventsFor(scope traceScope, duration time.Duration, onEvent f
 		}
 		if socket, ok := parseTCPDestroyRecord(record.RawSample); ok {
 			if protocol == "http" {
-				requests.forget(socket)
+				if err := emit(requests.forget(socket)); err != nil {
+					return captureSummary{}, err
+				}
 				splits.forget(socket)
 			}
 			if protocol == "mysql" {

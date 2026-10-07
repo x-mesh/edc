@@ -45,7 +45,7 @@ func collectLinuxNetworkHealth(procRoot string) *networkHealth {
 	}
 	for path, fields := range map[string]map[string]string{
 		"net/netstat": {"listen_overflows": "TcpExt.ListenOverflows", "listen_drops": "TcpExt.ListenDrops", "syn_cookies_sent": "TcpExt.SyncookiesSent"},
-		"net/snmp":    {"udp_rcvbuf_errors": "Udp.RcvbufErrors", "udp_sndbuf_errors": "Udp.SndbufErrors", "tcp_established": "Tcp.CurrEstab"},
+		"net/snmp":    {"udp_rcvbuf_errors": "Udp.RcvbufErrors", "udp_sndbuf_errors": "Udp.SndbufErrors", "tcp_established": "Tcp.CurrEstab", "tcp_retrans_segs": "Tcp.RetransSegs", "tcp_out_rsts": "Tcp.OutRsts", "tcp_attempt_fails": "Tcp.AttemptFails"},
 	} {
 		data, err := read(path)
 		values := parseNetworkNamedCounters(string(data))

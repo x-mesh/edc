@@ -19,6 +19,7 @@ typedef __u32 __wsum;
 #define IPPROTO_TCP 6
 #define IPPROTO_UDP 17
 #define BPF_ANY 0
+#define BPF_NOEXIST 1
 #define BPF_MAP_TYPE_HASH 1
 #define BPF_MAP_TYPE_ARRAY 2
 #define BPF_MAP_TYPE_PERCPU_ARRAY 6
@@ -105,6 +106,11 @@ volatile const __u16 tcp_state_port = 0;
 volatile const __u16 mysql_port = 0;
 // Linux 5.15에는 sock_send_length와 sock_recv_length tracepoint가 없다. 사용자 공간이 그때만 이 값을 켠다.
 volatile const __u8 tcp_length_fallback = 0;
+// emit_tls_plaintext는 trace http --tls다. OpenSSL uprobe가 암호화 전과 복호화 뒤의 평문을 넘긴다. 이 객체는 모든
+// trace가 불러오므로, 꺼져 있으면 uprobe program이 첫 명령에서 돌아가고 TCP hook도 SSL 상태를 보지 않는다.
+volatile const __u8 emit_tls_plaintext = 0;
+// uprobe_arch는 uprobe 인자를 읽을 pt_regs 배치다. bpfel 객체 하나가 amd64와 arm64를 함께 섬겨서 compile 때 정할 수 없다.
+volatile const __u8 uprobe_arch = 0;
 
 struct {
 	__uint(type, BPF_MAP_TYPE_ARRAY);
@@ -427,6 +433,7 @@ struct sock {
 };
 
 struct tcp_sock {
+	__u32 write_seq;
 	__u32 snd_ssthresh;
 	__u32 snd_cwnd;
 	__u32 srtt_us;
@@ -1102,12 +1109,23 @@ int tcp_create_openreq_child_exit(__u64 *ctx) {
 #define HTTP_MAX_STEPS 80
 #define HTTP_RECEIVED 0
 #define HTTP_SENT 1
+// HTTP_DECRYPTED는 OpenSSL uprobe가 넘긴 평문 레코드의 방향 bit다. 같은 socket의 암호문과 stream 상태를 나눠 둔다.
+#define HTTP_DECRYPTED 0x80
 #define HTTP_START 0
 #define HTTP_CONTINUATION 1
 #define MSG_PEEK 2
 // HTTP_SPLIT_SIZE보다 짧게 시작한 읽기와 쓰기는 첫 줄이 끝나지 않았을 수 있다. caddy는 요청의 첫 14 byte를 먼저 읽고
 // 나머지를 다시 읽는다. --payload=all이 아니면 이런 socket과 방향에서만 다음 조각 하나를 이어서 넘긴다.
 #define HTTP_SPLIT_SIZE 64
+// HTTP2_STREAM은 http_streams 값에서 h2c 연결을 표시하는 bit다. 수신 방향에서는 나머지 bit가 지금까지 읽은 byte 수다.
+// 송신 방향은 TCP 순번을 위치로 쓴다. HTTP/1의 위치는 message 하나 안이라 이 bit에 닿지 않는다.
+#define HTTP2_STREAM (1ULL << 63)
+// HTTP2_PREFACE_LEN은 h2c 연결 머리의 길이다. "PRI "로 시작하는 HTTP/1 body를 h2c로 보면 그 연결의 byte를 모두 넘기고
+// 이후 HTTP/1 요청을 놓치므로, 머리 전체가 맞을 때만 h2c로 본다.
+#define HTTP2_PREFACE_LEN 24
+// HTTP_NO_SEQ는 http_capture에 TCP 순번이 없다는 표시다. 수신은 실제로 읽은 byte만 넘기므로 순번 없이 센다.
+#define HTTP_NO_SEQ (~0ULL)
+static const char http2_preface_bytes[HTTP2_PREFACE_LEN + 1] = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
 // HTTPS는 암호문이라 ClientHello만 읽는다. SNI와 ALPN이 그 안에 평문으로 있다. post-quantum key share를 보내는 client는
 // ClientHello가 2KB에 가깝고 확장 순서를 섞어서, SNI가 앞 512 byte 밖에 있을 수 있다.
 #define TLS_HELLO_SIZE 4096
@@ -1141,6 +1159,7 @@ struct http_record {
 	__u8 destination[16];
 	char comm[16];
 	// offset은 조각이 message 안에서 시작하는 위치다. 사용자 공간은 기다리던 위치와 다르면 조각을 잃은 것으로 본다.
+	// h2c에서는 연결 안의 위치다. 송신은 TCP 순번(write_seq), 수신은 그 방향에서 읽은 byte 수이고 둘 다 2^32에서 감긴다.
 	// trace mysql에서는 kind가 로컬 port가 MySQL port인 서버 쪽이면 1이고, offset은 이번 읽기나 쓰기의 전체 byte 수다.
 	__u32 offset;
 	__u8 payload[HTTP_PAYLOAD_SIZE];
@@ -1275,7 +1294,8 @@ static __always_inline int http_start(const __u8 *p) {
 	return (p[0] == 'G' && p[1] == 'E' && p[2] == 'T' && p[3] == ' ') || (p[0] == 'P' && p[1] == 'O' && p[2] == 'S' && p[3] == 'T') ||
 	       (p[0] == 'P' && p[1] == 'U' && p[2] == 'T' && p[3] == ' ') || (p[0] == 'H' && p[1] == 'E' && p[2] == 'A' && p[3] == 'D') ||
 	       (p[0] == 'D' && p[1] == 'E' && p[2] == 'L' && p[3] == 'E') || (p[0] == 'P' && p[1] == 'A' && p[2] == 'T' && p[3] == 'C') ||
-	       (p[0] == 'O' && p[1] == 'P' && p[2] == 'T' && p[3] == 'I') || (p[0] == 'H' && p[1] == 'T' && p[2] == 'T' && p[3] == 'P');
+	       (p[0] == 'O' && p[1] == 'P' && p[2] == 'T' && p[3] == 'I') || (p[0] == 'H' && p[1] == 'T' && p[2] == 'T' && p[3] == 'P') ||
+	       (p[0] == 'P' && p[1] == 'R' && p[2] == 'I' && p[3] == ' ');
 }
 
 // tls_start는 TLS handshake record의 머리다. version은 SSL 3.0부터 TLS 1.3까지다.
@@ -1502,10 +1522,23 @@ static __always_inline void http_fill_record(struct http_record *record, struct 
 	current_process_name(&record->comm);
 }
 
+static __always_inline int h2c_preface(__u64 buffer, __u64 limit, __u64 size) {
+	__u8 head[HTTP2_PREFACE_LEN] = {};
+	if (size < HTTP2_PREFACE_LEN || limit < HTTP2_PREFACE_LEN || bpf_probe_read_user(head, sizeof(head), (void *)buffer)) {
+		return 0;
+	}
+	for (int i = 0; i < HTTP2_PREFACE_LEN; i++) {
+		if (head[i] != (__u8)http2_preface_bytes[i]) {
+			return 0;
+		}
+	}
+	return 1;
+}
+
 // http_capture는 한 번의 읽기나 쓰기를 레코드로 넘긴다. buffer와 limit는 첫 버퍼이고, iov가 있으면 writev의 다음 버퍼를
 // 이어서 읽는다. size는 이번 호출에서 주고받은 byte 수다. --payload=all이 아니면 HTTP로 시작하는 첫 버퍼의 앞
 // http_payload_limit byte만 레코드 하나로 넘긴다. TLS는 ClientHello의 앞 TLS_HELLO_SIZE byte만 넘긴다.
-static __always_inline void http_capture(struct sock *sk, __u64 buffer, __u64 limit, const struct iovec *iov, __u64 nr_segs, __u64 size, __u8 direction) {
+static __always_inline void http_capture(struct sock *sk, __u64 buffer, __u64 limit, const struct iovec *iov, __u64 nr_segs, __u64 size, __u8 direction, __u64 seq) {
 	// port는 부르는 쪽이 시작할 때(fentry) 확인한다. 끝날 때는 이미 늦을 수 있다. loopback에서 상대가 닫은 socket에 쓰면
 	// RST가 같은 호출 안에서 처리되어, tcp_sendmsg가 끝날 때는 kernel이 로컬 port를 0으로 지워 두었다.
 	if (!sk || !buffer || size == 0) {
@@ -1513,17 +1546,38 @@ static __always_inline void http_capture(struct sock *sk, __u64 buffer, __u64 li
 	}
 	struct http_stream_key key = {.skaddr = (__u64)sk, .direction = direction};
 	__u8 peek[4] = {};
-	int readable = size >= 4 && limit >= 4 && !bpf_probe_read_user(peek, sizeof(peek), (void *)buffer);
+	__u64 peek_len = size < sizeof(peek) ? size : sizeof(peek);
+	int peeked = limit >= peek_len && !bpf_probe_read_user(peek, peek_len, (void *)buffer);
+	int readable = peek_len == sizeof(peek) && peeked;
 	int start = readable && http_start(peek);
+	// h2c 연결은 HTTP2_PREFACE_LEN byte 머리로 시작한다. 짧은 조각은 HTTP/1 서버가 몇 byte씩 엿보는 경우와 구별할 수 없다.
+	int http2_start = readable && peek[0] == 'P' && peek[1] == 'R' && peek[2] == 'I' && peek[3] == ' ' && h2c_preface(buffer, limit, size);
+	// TCP Fast Open은 송신 호출 안에서 SYN과 첫 순번을 정하므로 시작할 때의 write_seq가 첫 data의 순번이 아니다. 이런
+	// 연결은 client 쪽 h2c를 따라가지 않는다. 위치를 틀리게 잡으면 첫 쓰기 뒤의 frame을 모두 버리게 된다. http_start는
+	// "PRI "도 시작으로 보므로 start도 지워서, preface만 HTTP/1 레코드로 나가 반쪽 상태가 생기지 않게 한다.
+	if (http2_start && direction == HTTP_SENT) {
+		__u8 state = BPF_CORE_READ(sk, __sk_common.skc_state);
+		if (state == TCP_CLOSE || state == TCP_SYN_SENT) {
+			http2_start = 0;
+			start = 0;
+		}
+	}
+	// 모든 TCP 송수신이 여기를 지나므로 이어 받을 조각이 있는 socket에서만 map에 값이 있다. 이어 받는 조각을 TLS 판별보다
+	// 먼저 보므로, 0x16 0x03으로 시작하는 HTTP body 조각을 TLS로 읽지 않는다. h2c 연결의 frame 안에서 "GET "처럼 보이는
+	// 조각이 와도 HTTP/1 message로 보지 않도록 HTTP 시작보다 먼저 확인한다.
+	__u64 *seen = bpf_map_lookup_elem(&http_streams, &key);
+	int http2_going = seen && (*seen & HTTP2_STREAM);
+	int http2 = http2_going || http2_start;
+	start = !http2_going && (start || http2_start);
 	__u8 kind = start ? HTTP_START : HTTP_CONTINUATION;
 	__u64 offset = 0;
 	__u64 budget = http_payload_limit;
 	__u8 tls_handshake[TLS_HANDSHAKE_HEADER_SIZE] = {};
 	int tls_synthetic = 0;
 	__u64 segment = 0;
-	// 모든 TCP 송수신이 여기를 지나므로 이어 받을 조각이 있는 socket에서만 map에 값이 있다. 이어 받는 조각을 TLS 판별보다
-	// 먼저 보므로, 0x16 0x03으로 시작하는 HTTP body 조각을 TLS로 읽지 않는다.
-	__u64 *seen = start ? 0 : bpf_map_lookup_elem(&http_streams, &key);
+	int dropped = 0;
+	struct http_stream_key peer = {.skaddr = (__u64)sk, .direction = direction == HTTP_SENT ? HTTP_RECEIVED : HTTP_SENT};
+	int peer_marked = 0;
 	if (!start && !seen) {
 		__u64 tls_offset = 0;
 		__u64 tls_captured = 0;
@@ -1550,6 +1604,23 @@ static __always_inline void http_capture(struct sock *sk, __u64 buffer, __u64 li
 			kind = HTTP_CONTINUATION;
 		}
 		budget = TLS_HELLO_SIZE;
+	} else if (http2) {
+		// h2c는 frame이 읽기와 쓰기 경계를 넘나들고 HPACK 표가 앞 frame에 기대므로, 연결의 byte를 빠짐없이 순서대로 넘긴다.
+		// 위치를 레코드 offset에 실어, 잃은 byte가 사용자 공간에 위치 차이로 보인다.
+		// 송신은 시작할 때 길이를 다 넘기지만 non-blocking socket은 일부만 보내고 나머지를 다시 쓴다. 그래서 송신 위치는
+		// TCP 순번(write_seq)으로 둔다. 다시 쓴 byte는 같은 순번으로 오고 사용자 공간이 겹친 앞부분을 버린다.
+		offset = seq != HTTP_NO_SEQ ? seq : http2_going ? *seen & ~HTTP2_STREAM : 0;
+		__u64 next = HTTP2_STREAM | (offset + size);
+		bpf_map_update_elem(&http_streams, &key, &next, BPF_ANY);
+		if (!http2_going) {
+			__u64 *other = bpf_map_lookup_elem(&http_streams, &peer);
+			if (!other || !(*other & HTTP2_STREAM)) {
+				__u64 begin = HTTP2_STREAM;
+				bpf_map_update_elem(&http_streams, &peer, &begin, BPF_ANY);
+				peer_marked = 1;
+			}
+		}
+		budget = size;
 	} else if (http_message_limit) {
 		budget = http_message_limit;
 		if (!start) {
@@ -1643,6 +1714,7 @@ static __always_inline void http_capture(struct sock *sk, __u64 buffer, __u64 li
 			if (lost) {
 				__sync_fetch_and_add(lost, 1);
 			}
+			dropped = 1;
 			break;
 		}
 		cursor->pointer += len;
@@ -1650,6 +1722,18 @@ static __always_inline void http_capture(struct sock *sk, __u64 buffer, __u64 li
 		cursor->remaining -= len;
 		cursor->offset += len;
 		cursor->kind = HTTP_CONTINUATION;
+	}
+	// h2c에서 넘기지 못한 byte가 남으면 frame 경계와 HPACK 표를 되찾을 수 없다. 그 방향은 더 넘기지 않고 잃은 event로 센다.
+	if (http2 && cursor->remaining) {
+		bpf_map_delete_elem(&http_streams, &key);
+		// 이 호출이 h2c를 시작하고 레코드를 하나도 넘기지 못했으면 사용자 공간은 이 연결을 모른다. 반대 방향도 넘기지 않는다.
+		if (peer_marked && cursor->offset == offset) {
+			bpf_map_delete_elem(&http_streams, &peer);
+		}
+		__u64 *lost = dropped ? 0 : bpf_map_lookup_elem(&lost_events, &zero);
+		if (lost) {
+			__sync_fetch_and_add(lost, 1);
+		}
 	}
 }
 
@@ -1895,9 +1979,273 @@ struct {
 	__type(value, __u64);
 } tcp_length_pending SEC(".maps");
 
+// ssl_snapshot은 SSL 호출 안에서 배운 socket의 주소다. 나중 호출은 struct sock*를 다시 읽지 않고 이 사본을 쓴다.
+// 그 사이에 socket이 해제되어 주소가 새 socket에 쓰였을 수 있다.
+struct ssl_snapshot {
+	__u64 skaddr;
+	__u16 family;
+	__u16 sport;
+	__u16 dport;
+	__u8 source[16];
+	__u8 destination[16];
+};
+
+// ssl_pending은 thread에서 진행 중인 SSL_read와 SSL_write다. 평문은 함수가 돌아와야 길이가 정해지고, SSL_read는 그때
+// buffer에 평문이 있다. 그 사이에 같은 thread가 부르는 tcp_sendmsg와 tcp_recvmsg가 socket을 알려 준다.
+struct ssl_pending {
+	__u64 ssl;
+	__u64 buffer;
+	__u64 num;
+	__u64 out;
+	__u8 direction;
+	__u8 learned;
+	struct ssl_snapshot snapshot;
+};
+
+// uretprobe는 SSL 호출 안에서 끝난 thread에서는 실행되지 않아 항목이 남는다. HASH가 차면 새 thread의 평문을 아무 표시
+// 없이 잃으므로, 남은 항목은 LRU가 밀어낸다.
+struct {
+	__uint(type, BPF_MAP_TYPE_LRU_HASH);
+	__uint(max_entries, 10240);
+	__type(key, __u64);
+	__type(value, struct ssl_pending);
+} ssl_pending SEC(".maps");
+
+struct ssl_key {
+	__u64 tgid;
+	__u64 ssl;
+};
+
+// ssl_socks는 SSL 객체마다 마지막으로 배운 socket이다. OpenSSL은 미리 읽어 둔 record에서 평문을 돌려줄 때 socket을 읽지
+// 않으므로, 그 호출은 앞 호출에서 배운 주소를 쓴다.
+struct {
+	__uint(type, BPF_MAP_TYPE_LRU_HASH);
+	__uint(max_entries, 16384);
+	__type(key, struct ssl_key);
+	__type(value, struct ssl_snapshot);
+} ssl_socks SEC(".maps");
+
+// tls_unmapped는 --port가 있을 때 socket을 몰라 버린 평문 레코드 수다. port를 확인할 수 없어 보이지 않은 수를 알린다.
+struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__uint(max_entries, 1);
+	__type(key, __u32);
+	__type(value, __u64);
+} tls_unmapped SEC(".maps");
+
+static __always_inline void ssl_snapshot_fill(struct ssl_snapshot *snapshot, struct sock *sk) {
+	snapshot->skaddr = (__u64)sk;
+	snapshot->family = BPF_CORE_READ(sk, __sk_common.skc_family);
+	snapshot->sport = BPF_CORE_READ(sk, __sk_common.skc_num);
+	snapshot->dport = bpf_ntohs(BPF_CORE_READ(sk, __sk_common.skc_dport));
+	__builtin_memset(snapshot->source, 0, sizeof(snapshot->source));
+	__builtin_memset(snapshot->destination, 0, sizeof(snapshot->destination));
+	if (snapshot->family == AF_INET) {
+		__be32 source = BPF_CORE_READ(sk, __sk_common.skc_rcv_saddr);
+		__be32 destination = BPF_CORE_READ(sk, __sk_common.skc_daddr);
+		__builtin_memcpy(snapshot->source, &source, 4);
+		__builtin_memcpy(snapshot->destination, &destination, 4);
+	} else {
+		BPF_CORE_READ_INTO(&snapshot->source, sk, __sk_common.skc_v6_rcv_saddr.in6_u.u6_addr8);
+		BPF_CORE_READ_INTO(&snapshot->destination, sk, __sk_common.skc_v6_daddr.in6_u.u6_addr8);
+	}
+}
+
+// ssl_learn은 SSL 호출 안에서 불린 TCP 송수신의 socket을 그 호출과 SSL 객체에 적는다. port와 관계없이 배우고, --port는
+// 평문을 낼 때 확인한다. 배우지 않으면 다른 port의 SSL 객체가 주소 없는 평문으로 잘못 세어진다.
+static __always_inline void ssl_learn(struct sock *sk) {
+	__u64 key = bpf_get_current_pid_tgid();
+	struct ssl_pending *pending = bpf_map_lookup_elem(&ssl_pending, &key);
+	if (!pending) {
+		return;
+	}
+	ssl_snapshot_fill(&pending->snapshot, sk);
+	pending->learned = 1;
+	struct ssl_key sock_key = {.tgid = key >> 32, .ssl = pending->ssl};
+	bpf_map_update_elem(&ssl_socks, &sock_key, &pending->snapshot, BPF_ANY);
+}
+
+#define UPROBE_ARM64 1
+
+// SSL_CONTEXT_WORD는 kprobe ctx(struct pt_regs)의 off byte 위치를 읽는다. verifier는 ctx를 상수 offset으로만 읽게 한다.
+// C로 쓰면 clang이 두 아키텍처의 읽기를 offset 고르기와 읽기 하나로 합쳐서 거절된다. inline asm은 합쳐지지 않는다.
+#define SSL_CONTEXT_WORD(ctx, off)                                                    \
+	({                                                                            \
+		__u64 word;                                                           \
+		asm volatile("%0 = *(u64 *)(%1 + " #off ")" : "=r"(word) : "r"(ctx)); \
+		word;                                                                 \
+	})
+
+// ssl_argument는 uprobe의 n번째 정수 인자다. x86_64 pt_regs는 di, si, dx, cx가 112, 104, 96, 88 byte 위치이고 arm64는
+// x0부터 8 byte씩이다. 두 아키텍처의 offset 모두 양쪽 pt_regs 크기 안이라 어느 갈래든 verifier를 통과한다.
+static __always_inline __u64 ssl_argument(void *ctx, int n) {
+	if (uprobe_arch == UPROBE_ARM64) {
+		switch (n) {
+		case 0:
+			return SSL_CONTEXT_WORD(ctx, 0);
+		case 1:
+			return SSL_CONTEXT_WORD(ctx, 8);
+		case 2:
+			return SSL_CONTEXT_WORD(ctx, 16);
+		default:
+			return SSL_CONTEXT_WORD(ctx, 24);
+		}
+	}
+	switch (n) {
+	case 0:
+		return SSL_CONTEXT_WORD(ctx, 112);
+	case 1:
+		return SSL_CONTEXT_WORD(ctx, 104);
+	case 2:
+		return SSL_CONTEXT_WORD(ctx, 96);
+	default:
+		return SSL_CONTEXT_WORD(ctx, 88);
+	}
+}
+
+// ssl_return_value는 uretprobe의 int 반환값이다. x86_64는 ax(80 byte 위치), arm64는 x0다.
+static __always_inline int ssl_return_value(void *ctx) {
+	if (uprobe_arch == UPROBE_ARM64) {
+		return (int)SSL_CONTEXT_WORD(ctx, 0);
+	}
+	return (int)SSL_CONTEXT_WORD(ctx, 80);
+}
+
+static __always_inline void ssl_fill_record(struct http_record *record, struct ssl_snapshot *snapshot, __u8 direction) {
+	record->event_type = 10;
+	record->pid = bpf_get_current_pid_tgid() >> 32;
+	record->cgroup_id = bpf_get_current_cgroup_id();
+	record->skaddr = snapshot->skaddr;
+	record->direction = direction;
+	record->family = snapshot->family;
+	record->sport = snapshot->sport;
+	record->dport = snapshot->dport;
+	__builtin_memcpy(record->source, snapshot->source, sizeof(record->source));
+	__builtin_memcpy(record->destination, snapshot->destination, sizeof(record->destination));
+	current_process_name(&record->comm);
+}
+
+// ssl_capture는 SSL 호출 하나의 평문을 레코드로 넘긴다. http_capture와 같은 stream 규칙을 따르되, 방향에 HTTP_DECRYPTED를
+// 더한 key를 써서 같은 socket의 암호문 상태와 섞지 않는다. 평문은 buffer 하나이고 TLS 판별을 하지 않는다. TCP 송수신마다
+// 도는 http_capture의 verifier 비용을 늘리지 않으려고 따로 둔다.
+static __always_inline void ssl_capture(struct ssl_snapshot *snapshot, __u64 buffer, __u64 size, __u8 direction, __u64 started) {
+	__u8 flagged = direction | HTTP_DECRYPTED;
+	struct http_stream_key key = {.skaddr = snapshot->skaddr, .direction = flagged};
+	__u8 peek[4] = {};
+	int readable = size >= 4 && !bpf_probe_read_user(peek, sizeof(peek), (void *)buffer);
+	int http2_start = readable && peek[0] == 'P' && peek[1] == 'R' && peek[2] == 'I' && peek[3] == ' ' && h2c_preface(buffer, size, size);
+	__u64 *seen = bpf_map_lookup_elem(&http_streams, &key);
+	int http2_going = seen && (*seen & HTTP2_STREAM);
+	int http2 = http2_going || http2_start;
+	int start = !http2_going && readable && (http_start(peek) || http2_start);
+	__u8 kind = start ? HTTP_START : HTTP_CONTINUATION;
+	__u64 offset = 0;
+	__u64 budget = http_payload_limit;
+	struct http_stream_key peer = {.skaddr = snapshot->skaddr, .direction = (direction == HTTP_SENT ? HTTP_RECEIVED : HTTP_SENT) | HTTP_DECRYPTED};
+	int peer_marked = 0;
+	if (http2) {
+		// HTTP/2는 frame이 SSL 호출 경계를 넘나들고 HPACK 표가 앞 frame에 기대므로, h2c처럼 연결의 평문을 빠짐없이 순서대로
+		// 넘긴다. SSL 호출은 돌려준 byte만 주고받으므로 두 방향 모두 0부터 센 위치를 offset에 싣는다.
+		offset = http2_going ? *seen & ~HTTP2_STREAM : 0;
+		__u64 next = HTTP2_STREAM | (offset + size);
+		bpf_map_update_elem(&http_streams, &key, &next, BPF_ANY);
+		if (!http2_going) {
+			__u64 *other = bpf_map_lookup_elem(&http_streams, &peer);
+			if (!other || !(*other & HTTP2_STREAM)) {
+				__u64 begin = HTTP2_STREAM;
+				bpf_map_update_elem(&http_streams, &peer, &begin, BPF_ANY);
+				peer_marked = 1;
+			}
+		}
+		budget = size;
+	} else if (http_message_limit) {
+		budget = http_message_limit;
+		if (!start) {
+			if (!seen || *seen >= http_message_limit) {
+				return;
+			}
+			offset = *seen;
+			budget = http_message_limit - offset;
+		}
+		__u64 next = offset + size;
+		bpf_map_update_elem(&http_streams, &key, &next, BPF_ANY);
+	} else if (!start) {
+		if (!seen) {
+			return;
+		}
+		offset = *seen;
+		bpf_map_delete_elem(&http_streams, &key);
+		if (offset >= budget) {
+			return;
+		}
+		budget -= offset;
+	} else if (size < HTTP_SPLIT_SIZE) {
+		__u64 first = size;
+		bpf_map_update_elem(&http_streams, &key, &first, BPF_ANY);
+	}
+	__u32 zero = 0;
+	struct http_record *record = bpf_map_lookup_elem(&http_scratch, &zero);
+	if (!record) {
+		return;
+	}
+	struct http_cursor *cursor = bpf_map_lookup_elem(&http_cursors, &zero);
+	if (!cursor) {
+		return;
+	}
+	ssl_fill_record(record, snapshot, flagged);
+	cursor->pointer = buffer;
+	cursor->remaining = size < budget ? size : budget;
+	cursor->offset = offset;
+	cursor->kind = kind;
+	int dropped = 0;
+	for (int step = 0; step < HTTP_MAX_STEPS; step++) {
+		if (!cursor->remaining) {
+			break;
+		}
+		__u64 len = cursor->remaining;
+		if (len > HTTP_PAYLOAD_SIZE) {
+			len = HTTP_PAYLOAD_SIZE;
+		}
+		if (bpf_probe_read_user(record->payload, len, (void *)cursor->pointer)) {
+			break;
+		}
+		record->timestamp_ns = started ? started : bpf_ktime_get_ns();
+		record->len = len;
+		record->kind = cursor->kind;
+		record->offset = cursor->offset;
+		if (bpf_ringbuf_output(&events, record, __builtin_offsetof(struct http_record, payload) + len, 0)) {
+			__u64 *lost = bpf_map_lookup_elem(&lost_events, &zero);
+			if (lost) {
+				__sync_fetch_and_add(lost, 1);
+			}
+			dropped = 1;
+			break;
+		}
+		cursor->pointer += len;
+		cursor->remaining -= len;
+		cursor->offset += len;
+		cursor->kind = HTTP_CONTINUATION;
+	}
+	// HTTP/2에서 넘기지 못한 byte가 남으면 frame 경계와 HPACK 표를 되찾을 수 없다. h2c와 같이 그 방향을 멈추고 잃은 event로 센다.
+	if (http2 && cursor->remaining) {
+		bpf_map_delete_elem(&http_streams, &key);
+		if (peer_marked && cursor->offset == offset) {
+			bpf_map_delete_elem(&http_streams, &peer);
+		}
+		__u64 *lost = dropped ? 0 : bpf_map_lookup_elem(&lost_events, &zero);
+		if (lost) {
+			__sync_fetch_and_add(lost, 1);
+		}
+	}
+}
+
 SEC("fentry/tcp_sendmsg")
 int tcp_sendmsg_entry(__u64 *ctx) {
 	struct sock *sk = (struct sock *)ctx[0];
+	// SSL_write 안의 송신이면 그 SSL 객체에 socket을 적는다. 아래의 port와 protocol 확인보다 먼저 해야 한다.
+	if (emit_tls_plaintext && sk) {
+		ssl_learn(sk);
+	}
 	struct msghdr *msg = (struct msghdr *)ctx[1];
 	__u64 size = ctx[2];
 	__u64 limit = 0;
@@ -1934,7 +2282,7 @@ int tcp_sendmsg_entry(__u64 *ctx) {
 	if (!http_message_limit) {
 		__u64 nr_segs = 1;
 		const struct iovec *iov = http_iov(msg, &nr_segs);
-		http_capture(sk, (__u64)buffer, limit, iov, nr_segs, size, HTTP_SENT);
+		http_capture(sk, (__u64)buffer, limit, iov, nr_segs, size, HTTP_SENT, BPF_CORE_READ((struct tcp_sock *)sk, write_seq));
 		return 0;
 	}
 	struct http_send_pending pending = {.skaddr = (__u64)sk, .buffer = (__u64)buffer, .limit = limit, .nr_segs = 1};
@@ -1971,7 +2319,11 @@ int tcp_sendmsg_exit(__u64 *ctx) {
 	bpf_map_delete_elem(&http_send_pending, &key);
 	int sent = (int)ctx[3];
 	if (sent > 0) {
-		http_capture((struct sock *)pending.skaddr, pending.buffer, pending.limit, (const struct iovec *)pending.iov, pending.nr_segs, sent, HTTP_SENT);
+		// 끝날 때 write_seq는 보낸 만큼 앞서 있다. BPF_CORE_READ 안에서 pending을 읽으면 그 접근도 kernel 타입으로
+		// 옮기려다 실패하므로 pointer를 먼저 꺼낸다.
+		struct tcp_sock *tcp = (struct tcp_sock *)pending.skaddr;
+		__u32 seq = BPF_CORE_READ(tcp, write_seq) - sent;
+		http_capture((struct sock *)pending.skaddr, pending.buffer, pending.limit, (const struct iovec *)pending.iov, pending.nr_segs, sent, HTTP_SENT, seq);
 	}
 	return 0;
 }
@@ -1999,12 +2351,16 @@ struct {
 
 SEC("fentry/tcp_recvmsg")
 int tcp_recvmsg_entry(__u64 *ctx) {
+	struct sock *sk = (struct sock *)ctx[0];
+	// SSL_read 안의 수신이면 그 SSL 객체에 socket을 적는다. MSG_PEEK와 port 확인보다 먼저 해야 한다.
+	if (emit_tls_plaintext && sk) {
+		ssl_learn(sk);
+	}
 	// MSG_PEEK로 읽은 data는 다음 recv가 다시 읽는다. 같은 message를 두 번 내지 않는다.
 	if ((int)ctx[3] & MSG_PEEK) {
 		return 0;
 	}
 	// 끝날 때 쓰지 않을 socket이면 버퍼 위치를 기록하지 않는다. recv마다 map을 갱신하는 비용이 크다.
-	struct sock *sk = (struct sock *)ctx[0];
 	if (!sk || !((emit_dns_tcp_messages && dns_tcp_socket(sk)) || (emit_http_messages && http_socket(sk)) || (mysql_port && mysql_socket(sk)))) {
 		return 0;
 	}
@@ -2038,7 +2394,7 @@ static __always_inline int finish_tcp_recvmsg(__u64 *ctx, int copied) {
 				emit_mysql_buffer(sk, pending->buffer, pending->limit, (__u64)copied, HTTP_RECEIVED, side == MYSQL_SERVER);
 			}
 		} else if (emit_http_messages) {
-			http_capture(sk, pending->buffer, pending->limit, (const struct iovec *)pending->iov, pending->nr_segs, (__u64)copied, HTTP_RECEIVED);
+			http_capture(sk, pending->buffer, pending->limit, (const struct iovec *)pending->iov, pending->nr_segs, (__u64)copied, HTTP_RECEIVED, HTTP_NO_SEQ);
 		}
 	}
 	bpf_map_delete_elem(&http_recv_pending, &key);
@@ -2085,6 +2441,760 @@ int http_tcp_destroy_sock(__u64 *ctx) {
 	event->skaddr = (__u64)sk;
 	finish_event(event);
 	return 0;
+}
+
+// ssl_synthetic_socket은 평문 레코드의 짝짓기 id다. 상위 32 bit가 tgid라 2^54보다 작아서, 상위 bit가 모두 1인 kernel의
+// socket 주소와 겹치지 않는다. 한 process에서 SSL 객체 둘의 하위 32 bit가 같으려면 주소가 4GiB 간격이어야 한다.
+static __always_inline __u64 ssl_synthetic_socket(__u64 pid_tgid, __u64 ssl) {
+	return ((pid_tgid >> 32) << 32) | (ssl & 0xffffffff);
+}
+
+// ssl_enter는 TLS 읽기와 쓰기 함수의 시작이다. 인자는 (ssl, buf, num[, size_t *out])이다. SSL_read와 SSL_write의 num은
+// int라서 wide가 아니면 상위 32 bit를 버린다. _ex, Mbed TLS, rustls-ffi의 num은 size_t라서 wide로 64 bit를 모두 읽는다.
+// 중첩된 호출은 덮어쓰고 반환에서 지우므로 레코드는 한 번만 나간다.
+static __always_inline int ssl_enter(void *ctx, __u8 direction, int ex, int wide) {
+	if (!emit_tls_plaintext) {
+		return 0;
+	}
+	struct ssl_pending pending = {};
+	pending.ssl = ssl_argument(ctx, 0);
+	pending.buffer = ssl_argument(ctx, 1);
+	pending.num = wide ? ssl_argument(ctx, 2) : (__u32)ssl_argument(ctx, 2);
+	if (ex) {
+		pending.out = ssl_argument(ctx, 3);
+	}
+	pending.direction = direction;
+	__u64 key = bpf_get_current_pid_tgid();
+	bpf_map_update_elem(&ssl_pending, &key, &pending, BPF_ANY);
+	return 0;
+}
+
+// ssl_leave는 반환에서 길이를 정한다. SSL_read와 SSL_write는 양수 반환값이 byte 수이고, ex 형식은 success를 돌려주고 길이를
+// out에 쓴다. success는 _ex가 1, rustls-ffi가 RUSTLS_RESULT_OK(7000)이다. 0 이하(오류, WANT_READ, WANT_WRITE, 종료)는
+// 평문이 없다.
+static __always_inline int ssl_leave(void *ctx, int ex, int success) {
+	if (!emit_tls_plaintext) {
+		return 0;
+	}
+	__u64 key = bpf_get_current_pid_tgid();
+	struct ssl_pending *stored = bpf_map_lookup_elem(&ssl_pending, &key);
+	if (!stored) {
+		return 0;
+	}
+	struct ssl_pending pending = *stored;
+	bpf_map_delete_elem(&ssl_pending, &key);
+	int result = ssl_return_value(ctx);
+	__u64 size = 0;
+	if (ex) {
+		if (result != success || !pending.out || bpf_probe_read_user(&size, sizeof(size), (void *)pending.out)) {
+			return 0;
+		}
+	} else {
+		if (result <= 0) {
+			return 0;
+		}
+		size = result;
+	}
+	if (size > pending.num) {
+		size = pending.num;
+	}
+	if (!size || !pending.buffer) {
+		return 0;
+	}
+	struct ssl_snapshot snapshot = {};
+	if (pending.learned) {
+		snapshot = pending.snapshot;
+	} else {
+		struct ssl_key sock_key = {.tgid = key >> 32, .ssl = pending.ssl};
+		struct ssl_snapshot *known = bpf_map_lookup_elem(&ssl_socks, &sock_key);
+		if (known) {
+			snapshot = *known;
+		}
+	}
+	if (!snapshot.skaddr) {
+		// memory BIO(node)나 trace 전에 받아 둔 record에서 온 평문이다. --port가 있으면 port를 확인할 수 없어 버리고 센다.
+		if (http_port) {
+			__u32 zero = 0;
+			__u64 *unmapped = bpf_map_lookup_elem(&tls_unmapped, &zero);
+			if (unmapped) {
+				__sync_fetch_and_add(unmapped, 1);
+			}
+			return 0;
+		}
+	} else if (http_port && snapshot.sport != http_port && snapshot.dport != http_port) {
+		return 0;
+	}
+	// 짝짓기 id는 socket을 배웠어도 SSL 객체로 둔다. OpenSSL은 handshake 때 미리 읽어 둔 요청을 socket 없이 돌려주고, 응답을
+	// 쓸 때 socket을 배운다. socket 주소로 바꾸면 그 요청과 응답이 다른 연결로 나뉜다. 주소는 배운 값을 그대로 싣는다.
+	snapshot.skaddr = ssl_synthetic_socket(key, pending.ssl);
+	ssl_capture(&snapshot, pending.buffer, size, pending.direction, 0);
+	return 0;
+}
+
+SEC("uretprobe/rustls_connection_read")
+int rustls_exit(void *ctx) {
+	return ssl_leave(ctx, 1, 7000);
+}
+
+SEC("uprobe/mbedtls_ssl_read")
+int mbed_read_entry(void *ctx) {
+	return ssl_enter(ctx, HTTP_RECEIVED, 0, 1);
+}
+
+SEC("uprobe/mbedtls_ssl_write")
+int mbed_write_entry(void *ctx) {
+	return ssl_enter(ctx, HTTP_SENT, 0, 1);
+}
+
+SEC("uprobe/SSL_write")
+int ssl_write_entry(void *ctx) {
+	return ssl_enter(ctx, HTTP_SENT, 0, 0);
+}
+
+SEC("uretprobe/SSL_write")
+int ssl_write_exit(void *ctx) {
+	return ssl_leave(ctx, 0, 0);
+}
+
+SEC("uprobe/SSL_write_ex")
+int ssl_write_ex_entry(void *ctx) {
+	return ssl_enter(ctx, HTTP_SENT, 1, 1);
+}
+
+SEC("uretprobe/SSL_write_ex")
+int ssl_write_ex_exit(void *ctx) {
+	return ssl_leave(ctx, 1, 1);
+}
+
+SEC("uprobe/SSL_read")
+int ssl_read_entry(void *ctx) {
+	return ssl_enter(ctx, HTTP_RECEIVED, 0, 0);
+}
+
+SEC("uretprobe/SSL_read")
+int ssl_read_exit(void *ctx) {
+	return ssl_leave(ctx, 0, 0);
+}
+
+SEC("uprobe/SSL_read_ex")
+int ssl_read_ex_entry(void *ctx) {
+	return ssl_enter(ctx, HTTP_RECEIVED, 1, 1);
+}
+
+SEC("uretprobe/SSL_read_ex")
+int ssl_read_ex_exit(void *ctx) {
+	return ssl_leave(ctx, 1, 1);
+}
+
+// SSL_free는 SSL 객체의 끝이다. 평문 레코드는 모두 SSL 객체의 짝짓기 id를 쓰므로, 여기서 배운 socket과 평문 stream 상태를
+// 지우고 끝 레코드를 내서 사용자 공간이 응답을 놓친 요청과 조각 상태를 지우게 한다.
+static __always_inline int ssl_forget(void *ctx, __u64 ssl) {
+	if (!emit_tls_plaintext) {
+		return 0;
+	}
+	__u64 pid_tgid = bpf_get_current_pid_tgid();
+	struct ssl_key sock_key = {.tgid = pid_tgid >> 32, .ssl = ssl};
+	bpf_map_delete_elem(&ssl_socks, &sock_key);
+	__u64 synthetic = ssl_synthetic_socket(pid_tgid, ssl);
+	struct http_stream_key key = {.skaddr = synthetic, .direction = HTTP_SENT | HTTP_DECRYPTED};
+	bpf_map_delete_elem(&http_streams, &key);
+	key.direction = HTTP_RECEIVED | HTTP_DECRYPTED;
+	bpf_map_delete_elem(&http_streams, &key);
+	struct event *event = start_event(ctx, 5);
+	if (!event) {
+		return 0;
+	}
+	event->skaddr = synthetic;
+	finish_event(event);
+	return 0;
+}
+
+SEC("uprobe/SSL_free")
+int ssl_free_entry(void *ctx) {
+	return ssl_forget(ctx, ssl_argument(ctx, 0));
+}
+
+struct go_tls_stack {
+	__u64 lo;
+	__u64 hi;
+};
+
+struct go_tls_key {
+	__u64 goroutine;
+	__u64 frame;
+	__u32 pid;
+	__u32 direction;
+};
+
+struct go_tls_pending {
+	__u64 connection;
+	__u64 buffer;
+	__u64 num;
+	__u64 stack_offset;
+	__u8 marked;
+	__u64 started;
+};
+
+struct {
+	__uint(type, BPF_MAP_TYPE_LRU_HASH);
+	__uint(max_entries, 10240);
+	__type(key, struct go_tls_key);
+	__type(value, struct go_tls_pending);
+} go_tls_pending SEC(".maps");
+
+static __always_inline void go_tls_lost(void) {
+	__u32 zero = 0;
+	__u64 *lost = bpf_map_lookup_elem(&lost_events, &zero);
+	if (lost) {
+		__sync_fetch_and_add(lost, 1);
+	}
+}
+
+#define GO_TLS_ORDER_RECORD 22
+#define GO_TLS_WRITE_BEGIN 1
+#define GO_TLS_WRITE_END 2
+
+struct go_tls_order_record {
+	__u64 timestamp_ns;
+	__u32 event_type;
+	__u32 phase;
+	__u64 connection;
+	__u64 goroutine;
+	__u64 frame;
+};
+
+struct go_tls_writes {
+	__u64 active;
+	__u64 closed;
+};
+
+// (*Conn).Close를 부르지 않고 끝난 process와 열어 둔 연결의 항목은 남는다. HASH가 차면 새 연결의 Write가 순서 맞춤에서
+// 빠지므로, 오래 쓰지 않은 항목은 LRU가 밀어낸다.
+struct {
+	__uint(type, BPF_MAP_TYPE_LRU_HASH);
+	__uint(max_entries, 10240);
+	__type(key, struct ssl_key);
+	__type(value, struct go_tls_writes);
+} go_tls_writes SEC(".maps");
+
+static __always_inline int go_tls_order(struct go_tls_key *key, __u64 connection, __u32 phase) {
+	struct go_tls_order_record record = {
+		.timestamp_ns = bpf_ktime_get_ns(),
+		.event_type = GO_TLS_ORDER_RECORD,
+		.phase = phase,
+		.connection = ssl_synthetic_socket(bpf_get_current_pid_tgid(), connection),
+		.goroutine = key->goroutine,
+		.frame = key->frame,
+	};
+	if (bpf_ringbuf_output(&events, &record, sizeof(record), 0)) {
+		go_tls_lost();
+		return 0;
+	}
+	return 1;
+}
+
+static __always_inline int go_tls_write_begin(struct go_tls_key *key, __u64 connection) {
+	struct ssl_key socket = {.tgid = key->pid, .ssl = connection};
+	struct go_tls_writes initial = {};
+	bpf_map_update_elem(&go_tls_writes, &socket, &initial, BPF_NOEXIST);
+	struct go_tls_writes *writes = bpf_map_lookup_elem(&go_tls_writes, &socket);
+	if (!writes) {
+		go_tls_lost();
+		return 0;
+	}
+	__sync_fetch_and_add(&writes->active, 1);
+	return go_tls_order(key, connection, GO_TLS_WRITE_BEGIN);
+}
+
+static __always_inline void go_tls_write_end(void *ctx, struct go_tls_key *key, struct go_tls_pending *pending) {
+	struct ssl_key socket = {.tgid = key->pid, .ssl = pending->connection};
+	struct go_tls_writes *writes = bpf_map_lookup_elem(&go_tls_writes, &socket);
+	if (writes) {
+		__u64 active = __sync_fetch_and_sub(&writes->active, 1);
+		if (active == 1 && writes->closed) {
+			ssl_forget(ctx, pending->connection);
+			bpf_map_delete_elem(&go_tls_writes, &socket);
+		}
+	} else {
+		go_tls_lost();
+	}
+	if (pending->marked) {
+		go_tls_order(key, pending->connection, GO_TLS_WRITE_END);
+	}
+}
+
+// Go stack growth preserves the distance from stack.hi for active frames and stack buffers.
+static __always_inline int go_tls_frame(void *ctx, __u8 direction, struct go_tls_key *key, struct go_tls_stack *stack) {
+	key->goroutine = SSL_CONTEXT_WORD(ctx, 8);
+	key->pid = bpf_get_current_pid_tgid() >> 32;
+	key->direction = direction;
+	__u64 sp = SSL_CONTEXT_WORD(ctx, 152);
+	if (!key->goroutine || bpf_probe_read_user(stack, sizeof(*stack), (void *)key->goroutine) || stack->hi <= stack->lo || sp < stack->lo || sp >= stack->hi) {
+		go_tls_lost();
+		return 0;
+	}
+	key->frame = stack->hi - sp;
+	return 1;
+}
+
+static __always_inline int go_tls_enter(void *ctx, __u8 direction) {
+	if (!emit_tls_plaintext || uprobe_arch == UPROBE_ARM64) {
+		return 0;
+	}
+	struct go_tls_key key = {};
+	struct go_tls_stack stack = {};
+	if (!go_tls_frame(ctx, direction, &key, &stack)) {
+		return 0;
+	}
+	struct go_tls_pending pending = {
+		.connection = SSL_CONTEXT_WORD(ctx, 80),
+		.buffer = SSL_CONTEXT_WORD(ctx, 40),
+		.num = SSL_CONTEXT_WORD(ctx, 88),
+		.started = bpf_ktime_get_ns(),
+	};
+	if (pending.buffer >= stack.lo && pending.buffer < stack.hi) {
+		if (pending.num > stack.hi - pending.buffer) {
+			go_tls_lost();
+			return 0;
+		}
+		pending.stack_offset = stack.hi - pending.buffer;
+	}
+	if (bpf_map_update_elem(&go_tls_pending, &key, &pending, BPF_ANY)) {
+		go_tls_lost();
+		return 0;
+	}
+	if (direction == HTTP_SENT) {
+		struct go_tls_pending *stored = bpf_map_lookup_elem(&go_tls_pending, &key);
+		if (stored) {
+			stored->marked = go_tls_write_begin(&key, pending.connection);
+		}
+	}
+	return 0;
+}
+
+static __always_inline int go_tls_leave(void *ctx, __u8 direction) {
+	if (!emit_tls_plaintext || uprobe_arch == UPROBE_ARM64) {
+		return 0;
+	}
+	struct go_tls_key key = {};
+	struct go_tls_stack stack = {};
+	if (!go_tls_frame(ctx, direction, &key, &stack)) {
+		return 0;
+	}
+	struct go_tls_pending *stored = bpf_map_lookup_elem(&go_tls_pending, &key);
+	if (!stored) {
+		return 0;
+	}
+	struct go_tls_pending pending = *stored;
+	bpf_map_delete_elem(&go_tls_pending, &key);
+	__u64 size = SSL_CONTEXT_WORD(ctx, 80);
+	if ((__s64)size <= 0 || size > pending.num || !pending.buffer) {
+		goto complete;
+	}
+	if (pending.stack_offset) {
+		if (pending.stack_offset > stack.hi - stack.lo || size > pending.stack_offset) {
+			go_tls_lost();
+			goto complete;
+		}
+		pending.buffer = stack.hi - pending.stack_offset;
+	}
+	if (http_port) {
+		__u32 zero = 0;
+		__u64 *unmapped = bpf_map_lookup_elem(&tls_unmapped, &zero);
+		if (unmapped) {
+			__sync_fetch_and_add(unmapped, 1);
+		}
+		goto complete;
+	}
+	__u8 readable;
+	if (bpf_probe_read_user(&readable, sizeof(readable), (void *)pending.buffer)) {
+		go_tls_lost();
+		goto complete;
+	}
+	struct ssl_snapshot snapshot = {.skaddr = ssl_synthetic_socket(bpf_get_current_pid_tgid(), pending.connection)};
+	ssl_capture(&snapshot, pending.buffer, size, direction, direction == HTTP_SENT ? pending.started : 0);
+complete:
+	if (direction == HTTP_SENT) {
+		go_tls_write_end(ctx, &key, &pending);
+	}
+	return 0;
+}
+
+SEC("uprobe/go_tls_read")
+int go_tls_read_entry(void *ctx) { return go_tls_enter(ctx, HTTP_RECEIVED); }
+SEC("uprobe/go_tls_read_return")
+int go_tls_read_exit(void *ctx) { return go_tls_leave(ctx, HTTP_RECEIVED); }
+SEC("uprobe/go_tls_write")
+int go_tls_write_entry(void *ctx) { return go_tls_enter(ctx, HTTP_SENT); }
+SEC("uprobe/go_tls_write_return")
+int go_tls_write_exit(void *ctx) { return go_tls_leave(ctx, HTTP_SENT); }
+SEC("uprobe/go_tls_close")
+int go_tls_close_entry(void *ctx) {
+	if (!emit_tls_plaintext || uprobe_arch == UPROBE_ARM64) { return 0; }
+	__u64 connection = SSL_CONTEXT_WORD(ctx, 80);
+	struct ssl_key socket = {.tgid = bpf_get_current_pid_tgid() >> 32, .ssl = connection};
+	struct go_tls_writes *writes = bpf_map_lookup_elem(&go_tls_writes, &socket);
+	if (writes) {
+		__sync_lock_test_and_set(&writes->closed, 1);
+		if (writes->active) { return 0; }
+		bpf_map_delete_elem(&go_tls_writes, &socket);
+	}
+	return ssl_forget(ctx, connection);
+}
+
+static __always_inline int go_tls_arm64_frame(void *ctx, __u8 direction, struct go_tls_key *key, struct go_tls_stack *stack) {
+	key->goroutine = SSL_CONTEXT_WORD(ctx, 224);
+	key->pid = bpf_get_current_pid_tgid() >> 32;
+	key->direction = direction;
+	__u64 sp = SSL_CONTEXT_WORD(ctx, 248);
+	if (!key->goroutine || bpf_probe_read_user(stack, sizeof(*stack), (void *)key->goroutine) || stack->hi <= stack->lo || sp < stack->lo || sp >= stack->hi) {
+		go_tls_lost();
+		return 0;
+	}
+	key->frame = stack->hi - sp;
+	return 1;
+}
+
+static __always_inline int go_tls_arm64_enter(void *ctx, __u8 direction) {
+	if (!emit_tls_plaintext) { return 0; }
+	struct go_tls_key key = {};
+	struct go_tls_stack stack = {};
+	if (!go_tls_arm64_frame(ctx, direction, &key, &stack)) { return 0; }
+	struct go_tls_pending pending = {
+		.connection = SSL_CONTEXT_WORD(ctx, 0),
+		.buffer = SSL_CONTEXT_WORD(ctx, 8),
+		.num = SSL_CONTEXT_WORD(ctx, 16),
+		.started = bpf_ktime_get_ns(),
+	};
+	if (pending.buffer >= stack.lo && pending.buffer < stack.hi) {
+		if (pending.num > stack.hi - pending.buffer) { go_tls_lost(); return 0; }
+		pending.stack_offset = stack.hi - pending.buffer;
+	}
+	if (bpf_map_update_elem(&go_tls_pending, &key, &pending, BPF_ANY)) { go_tls_lost(); return 0; }
+	if (direction == HTTP_SENT) {
+		struct go_tls_pending *stored = bpf_map_lookup_elem(&go_tls_pending, &key);
+		if (stored) { stored->marked = go_tls_write_begin(&key, pending.connection); }
+	}
+	return 0;
+}
+
+static __always_inline int go_tls_arm64_leave(void *ctx, __u8 direction) {
+	if (!emit_tls_plaintext) { return 0; }
+	struct go_tls_key key = {};
+	struct go_tls_stack stack = {};
+	if (!go_tls_arm64_frame(ctx, direction, &key, &stack)) { return 0; }
+	struct go_tls_pending *stored = bpf_map_lookup_elem(&go_tls_pending, &key);
+	if (!stored) { return 0; }
+	struct go_tls_pending pending = *stored;
+	bpf_map_delete_elem(&go_tls_pending, &key);
+	__u64 size = SSL_CONTEXT_WORD(ctx, 0);
+	if ((__s64)size <= 0 || size > pending.num || !pending.buffer) { goto complete; }
+	if (pending.stack_offset) {
+		if (pending.stack_offset > stack.hi - stack.lo || size > pending.stack_offset) { go_tls_lost(); goto complete; }
+		pending.buffer = stack.hi - pending.stack_offset;
+	}
+	if (http_port) {
+		__u32 zero = 0; __u64 *unmapped = bpf_map_lookup_elem(&tls_unmapped, &zero);
+		if (unmapped) { __sync_fetch_and_add(unmapped, 1); }
+		goto complete;
+	}
+	__u8 readable;
+	if (bpf_probe_read_user(&readable, sizeof(readable), (void *)pending.buffer)) { go_tls_lost(); goto complete; }
+	struct ssl_snapshot snapshot = {.skaddr = ssl_synthetic_socket(bpf_get_current_pid_tgid(), pending.connection)};
+	ssl_capture(&snapshot, pending.buffer, size, direction, direction == HTTP_SENT ? pending.started : 0);
+complete:
+	if (direction == HTTP_SENT) { go_tls_write_end(ctx, &key, &pending); }
+	return 0;
+}
+
+SEC("uprobe/go_tls_arm64_read")
+int go_tls_arm64_read_entry(void *ctx) { return go_tls_arm64_enter(ctx, HTTP_RECEIVED); }
+SEC("uprobe/go_tls_arm64_read_return")
+int go_tls_arm64_read_exit(void *ctx) { return go_tls_arm64_leave(ctx, HTTP_RECEIVED); }
+SEC("uprobe/go_tls_arm64_write")
+int go_tls_arm64_write_entry(void *ctx) { return go_tls_arm64_enter(ctx, HTTP_SENT); }
+SEC("uprobe/go_tls_arm64_write_return")
+int go_tls_arm64_write_exit(void *ctx) { return go_tls_arm64_leave(ctx, HTTP_SENT); }
+SEC("uprobe/go_tls_arm64_close")
+int go_tls_arm64_close_entry(void *ctx) {
+	if (!emit_tls_plaintext) { return 0; }
+	__u64 connection = SSL_CONTEXT_WORD(ctx, 0);
+	struct ssl_key socket = {.tgid = bpf_get_current_pid_tgid() >> 32, .ssl = connection};
+	struct go_tls_writes *writes = bpf_map_lookup_elem(&go_tls_writes, &socket);
+	if (writes) {
+		__sync_lock_test_and_set(&writes->closed, 1);
+		if (writes->active) { return 0; }
+		bpf_map_delete_elem(&go_tls_writes, &socket);
+	}
+	return ssl_forget(ctx, connection);
+}
+
+#define NSS_SECURITY 1
+#define NSS_MODE_ON 1
+#define NSS_MODE_OFF 2
+#define NSS_COPY_CONFIG 1
+#define NSS_SET_OPTION 2
+#define NSS_SET_DEFAULT 3
+#define NSS_ACCEPT_CONFIG 4
+#define NSPR_MSG_PEEK 2
+
+struct nss_call_key {
+	__u64 thread;
+	__u64 stack;
+	__u64 cookie;
+};
+
+struct nss_control {
+	__u64 fd;
+	__u32 mode;
+	__u32 kind;
+};
+
+struct nss_io_key {
+	__u64 thread;
+	__u64 stack;
+};
+
+struct nss_io_call {
+	__u64 cookie;
+	struct ssl_pending pending;
+};
+
+struct {
+	__uint(type, BPF_MAP_TYPE_LRU_HASH);
+	__uint(max_entries, 16384);
+	__type(key, struct ssl_key);
+	__type(value, __u32);
+} nss_configs SEC(".maps");
+
+struct {
+	__uint(type, BPF_MAP_TYPE_LRU_HASH);
+	__uint(max_entries, 10240);
+	__type(key, __u32);
+	__type(value, __u32);
+} nss_defaults SEC(".maps");
+
+struct {
+	__uint(type, BPF_MAP_TYPE_LRU_HASH);
+	__uint(max_entries, 10240);
+	__type(key, struct nss_call_key);
+	__type(value, struct nss_control);
+} nss_control_calls SEC(".maps");
+
+struct {
+	__uint(type, BPF_MAP_TYPE_LRU_HASH);
+	__uint(max_entries, 10240);
+	__type(key, struct nss_io_key);
+	__type(value, struct nss_io_call);
+} nss_io_calls SEC(".maps");
+
+static __always_inline __u64 nss_stack(void *ctx, int returning) {
+	if (uprobe_arch == UPROBE_ARM64) {
+		return SSL_CONTEXT_WORD(ctx, 248);
+	}
+	__u64 stack = SSL_CONTEXT_WORD(ctx, 152);
+	return returning ? stack - 8 : stack;
+}
+
+static __always_inline void nss_lost(void) {
+	__u32 zero = 0;
+	__u64 *lost = bpf_map_lookup_elem(&lost_events, &zero);
+	if (lost) {
+		__sync_fetch_and_add(lost, 1);
+	}
+}
+
+static __always_inline __u32 nss_mode(__u64 thread, __u64 fd) {
+	struct ssl_key key = {.tgid = thread >> 32, .ssl = fd};
+	__u32 *mode = bpf_map_lookup_elem(&nss_configs, &key);
+	return mode ? *mode : 0;
+}
+
+static __always_inline int nss_control_enter(void *ctx, struct nss_control *control) {
+	struct nss_call_key key = {
+		.thread = bpf_get_current_pid_tgid(),
+		.stack = nss_stack(ctx, 0),
+		.cookie = bpf_get_attach_cookie(ctx),
+	};
+	if (bpf_map_update_elem(&nss_control_calls, &key, control, BPF_ANY)) {
+		nss_lost();
+	}
+	return 0;
+}
+
+SEC("uprobe/SSL_ImportFD")
+int nss_import_entry(void *ctx) {
+	if (!emit_tls_plaintext) {
+		return 0;
+	}
+	__u64 thread = bpf_get_current_pid_tgid();
+	__u64 model = ssl_argument(ctx, 0);
+	struct nss_control control = {.kind = NSS_COPY_CONFIG};
+	if (model) {
+		control.mode = nss_mode(thread, model);
+	} else {
+		__u32 pid = thread >> 32;
+		__u32 *mode = bpf_map_lookup_elem(&nss_defaults, &pid);
+		// NSS의 SSL_SECURITY 기본값은 on이다. 이후의 기본값 변경은 SSL_OptionSetDefault에서 기록한다.
+		control.mode = mode ? *mode : NSS_MODE_ON;
+	}
+	return nss_control_enter(ctx, &control);
+}
+
+SEC("uprobe/SSL_OptionSet")
+int nss_option_entry(void *ctx) {
+	if (!emit_tls_plaintext || (__u32)ssl_argument(ctx, 1) != NSS_SECURITY) {
+		return 0;
+	}
+	struct nss_control control = {
+		.fd = ssl_argument(ctx, 0),
+		.mode = ssl_argument(ctx, 2) ? NSS_MODE_ON : NSS_MODE_OFF,
+		.kind = NSS_SET_OPTION,
+	};
+	return nss_control_enter(ctx, &control);
+}
+
+SEC("uprobe/SSL_OptionSetDefault")
+int nss_default_entry(void *ctx) {
+	if (!emit_tls_plaintext || (__u32)ssl_argument(ctx, 0) != NSS_SECURITY) {
+		return 0;
+	}
+	struct nss_control control = {
+		.mode = ssl_argument(ctx, 1) ? NSS_MODE_ON : NSS_MODE_OFF,
+		.kind = NSS_SET_DEFAULT,
+	};
+	return nss_control_enter(ctx, &control);
+}
+
+SEC("uprobe/PR_Accept")
+int nss_accept_entry(void *ctx) {
+	if (!emit_tls_plaintext) {
+		return 0;
+	}
+	struct nss_control control = {
+		.mode = nss_mode(bpf_get_current_pid_tgid(), ssl_argument(ctx, 0)),
+		.kind = NSS_ACCEPT_CONFIG,
+	};
+	if (!control.mode) {
+		return 0;
+	}
+	return nss_control_enter(ctx, &control);
+}
+
+SEC("uretprobe/NSS_config")
+int nss_control_exit(void *ctx) {
+	if (!emit_tls_plaintext) {
+		return 0;
+	}
+	struct nss_call_key key = {
+		.thread = bpf_get_current_pid_tgid(),
+		.stack = nss_stack(ctx, 1),
+		.cookie = bpf_get_attach_cookie(ctx),
+	};
+	struct nss_control *stored = bpf_map_lookup_elem(&nss_control_calls, &key);
+	if (!stored) {
+		return 0;
+	}
+	struct nss_control control = *stored;
+	bpf_map_delete_elem(&nss_control_calls, &key);
+	if (control.kind == NSS_COPY_CONFIG || control.kind == NSS_ACCEPT_CONFIG) {
+		control.fd = uprobe_arch == UPROBE_ARM64 ? SSL_CONTEXT_WORD(ctx, 0) : SSL_CONTEXT_WORD(ctx, 80);
+		if (!control.fd) {
+			return 0;
+		}
+	} else if (ssl_return_value(ctx) != 0) {
+		return 0;
+	}
+	if (control.kind == NSS_SET_DEFAULT) {
+		__u32 pid = key.thread >> 32;
+		if (bpf_map_update_elem(&nss_defaults, &pid, &control.mode, BPF_ANY)) {
+			nss_lost();
+		}
+		return 0;
+	}
+	struct ssl_key config_key = {.tgid = key.thread >> 32, .ssl = control.fd};
+	if (!control.mode) {
+		bpf_map_delete_elem(&nss_configs, &config_key);
+	} else if (bpf_map_update_elem(&nss_configs, &config_key, &control.mode, BPF_ANY)) {
+		nss_lost();
+	}
+	return ssl_forget(ctx, control.fd);
+}
+
+static __always_inline int nss_io_enter(void *ctx, __u8 direction) {
+	if (!emit_tls_plaintext) {
+		return 0;
+	}
+	__u64 thread = bpf_get_current_pid_tgid();
+	if (nss_mode(thread, ssl_argument(ctx, 0)) != NSS_MODE_ON) {
+		return 0;
+	}
+	// 같은 반환 frame의 항목은 덮어쓴다. 반환 probe가 돌지 않아 남은 항목이 이후 호출을 막지 않고, tail call로 같은 frame에
+	// 두 함수가 들어와도 반환에서 cookie가 맞는 마지막 호출만 평문을 낸다.
+	struct nss_io_key key = {.thread = thread, .stack = nss_stack(ctx, 0)};
+	ssl_enter(ctx, direction, 0, 0);
+	struct ssl_pending *pending = bpf_map_lookup_elem(&ssl_pending, &thread);
+	if (!pending) {
+		nss_lost();
+		return 0;
+	}
+	struct nss_io_call call = {.cookie = bpf_get_attach_cookie(ctx), .pending = *pending};
+	if (bpf_map_update_elem(&nss_io_calls, &key, &call, BPF_ANY)) {
+		bpf_map_delete_elem(&ssl_pending, &thread);
+		nss_lost();
+	}
+	return 0;
+}
+
+SEC("uprobe/PR_Read")
+int nss_read_entry(void *ctx) {
+	return nss_io_enter(ctx, HTTP_RECEIVED);
+}
+
+SEC("uprobe/PR_Recv")
+int nss_recv_entry(void *ctx) {
+	if ((__u32)ssl_argument(ctx, 3) & NSPR_MSG_PEEK) {
+		return 0;
+	}
+	return nss_io_enter(ctx, HTTP_RECEIVED);
+}
+
+SEC("uprobe/PR_Write")
+int nss_write_entry(void *ctx) {
+	return nss_io_enter(ctx, HTTP_SENT);
+}
+
+SEC("uretprobe/NSPR_IO")
+int nss_io_exit(void *ctx) {
+	if (!emit_tls_plaintext) {
+		return 0;
+	}
+	struct nss_io_key key = {.thread = bpf_get_current_pid_tgid(), .stack = nss_stack(ctx, 1)};
+	struct nss_io_call *stored = bpf_map_lookup_elem(&nss_io_calls, &key);
+	if (!stored || stored->cookie != bpf_get_attach_cookie(ctx)) {
+		return 0;
+	}
+	struct ssl_pending pending = stored->pending;
+	bpf_map_delete_elem(&nss_io_calls, &key);
+	if (bpf_map_update_elem(&ssl_pending, &key.thread, &pending, BPF_ANY)) {
+		nss_lost();
+		return 0;
+	}
+	return ssl_leave(ctx, 0, 0);
+}
+
+SEC("uprobe/PR_Close")
+int nss_close_entry(void *ctx) {
+	if (!emit_tls_plaintext) {
+		return 0;
+	}
+	__u64 fd = ssl_argument(ctx, 0);
+	struct ssl_key key = {.tgid = bpf_get_current_pid_tgid() >> 32, .ssl = fd};
+	if (!bpf_map_lookup_elem(&nss_configs, &key)) {
+		return 0;
+	}
+	bpf_map_delete_elem(&nss_configs, &key);
+	return ssl_forget(ctx, fd);
 }
 
 char LICENSE[] SEC("license") = "Dual BSD/GPL";

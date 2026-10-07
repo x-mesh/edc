@@ -21,7 +21,7 @@ const legacyRecommendedLogOutput = "/var/log/job.log"
 
 var configScalarTypes = map[string]string{
 	"lang": "!!str", "defaults.common.json": "!!str", "defaults.doctor.profile": "!!str",
-	"defaults.top.json": "!!str", "defaults.where.provider": "!!str",
+	"defaults.top.json": "!!str", "defaults.top.split": "!!str", "defaults.where.provider": "!!str",
 	"defaults.capture.interface": "!!str", "defaults.capture.filter": "!!str", "defaults.capture.output": "!!str",
 	"defaults.remote.inventory": "!!str", "defaults.remote.recipe": "!!str",
 	"defaults.log.stream": "!!str", "defaults.log.output": "!!str", "defaults.log.command_display": "!!str", "defaults.log.restart": "!!str",
@@ -107,6 +107,7 @@ type topConfig struct {
 	Count    *int            `yaml:"count,omitempty" toml:"count,omitempty"`
 	NoHeader *bool           `yaml:"no_header,omitempty" toml:"no_header,omitempty"`
 	JSON     *string         `yaml:"json,omitempty" toml:"json,omitempty"`
+	Split    *string         `yaml:"split,omitempty" toml:"split,omitempty"`
 }
 type infoConfig struct {
 	Public  *bool           `yaml:"public,omitempty" toml:"public,omitempty"`
@@ -315,6 +316,11 @@ func validateConfig(config edcConfig) error {
 	}
 	if d.Top.Count != nil && *d.Top.Count < 0 {
 		return invalidConfig("defaults.top.count", "must be at least 0")
+	}
+	if d.Top.Split != nil && *d.Top.Split != "" {
+		if _, err := parseTopSplit(*d.Top.Split); err != nil {
+			return invalidConfig("defaults.top.split", "must be all, none, or cpu, mem, disk, net, psi, comma-separated, each once")
+		}
 	}
 	if d.Info.Timeout != nil && d.Info.Timeout.Duration <= 0 {
 		return invalidConfig("defaults.info.timeout", "must be greater than 0")

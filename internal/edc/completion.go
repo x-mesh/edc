@@ -135,7 +135,7 @@ _edc() {
     args)
       case $words[1] in
         top)
-          _arguments '--interval[sampling interval]:duration' '--count[출력 row 수]:count' '--no-header[header 생략]' '--process[process filter]:filter' '(-d --detail)'{-d,--detail}'[eBPF details]' '(-w --write)'{-w,--write}'[SQLite 기록, 경로 생략 시 기본 DB]::path:_files' '--json[sample당 한 줄 JSON 출력 경로]:path:_files'
+          _arguments '--interval[sampling interval]:duration' '--count[출력 row 수]:count' '--no-header[header 생략]' '--process[process filter]:filter' '--split=-[박스 화면, =all은 전체]::views:(all none cpu mem disk net psi)' '(-d --detail)'{-d,--detail}'[eBPF details]' '(-w --write)'{-w,--write}'[SQLite 기록, 경로 생략 시 기본 DB]::path:_files' '--json[sample당 한 줄 JSON 출력 경로]:path:_files'
           ;;
         history)
           _arguments '1:subcommand:(list top process)' '--run[실행 ID]:id' '--from[시작 시각]:RFC3339' '--to[종료 시각]:RFC3339' '--process[process filter]:filter' '--metric[지표 이름]:metric' '--min[최솟값]:number' '--max[최댓값]:number' '--limit[최대 결과 수]:count' '--json[JSONL 출력 경로]:path:_files' '*:database:_files'
@@ -221,7 +221,7 @@ _edc() {
           case $words[2] in
             tcp|udp) _arguments '--duration[trace 시간]:duration' '--json[JSON 저장 경로]:path:_files' '--raw[raw event JSONL 출력]' '--live[실시간 event 출력]' '--group-by[그룹 기준]:group:(source target port process event)' '--process[process filter]:process' '--destination[destination filter]:host:port' '(-d --detail)'{-d,--detail}'[연결별 상세 요약]' '--yes[확인 생략]' ;;
             dns) _arguments '--duration[trace 시간]:duration' '--json[JSON 저장 경로]:path:_files' '--raw[raw event JSONL 출력]' '--live[실시간 event 출력]' '--group-by[그룹 기준]:group:(source target process event)' '--process[process filter]:process' '--destination[DNS server filter]:host:port' '--side[DNS 관측 쪽]:side:(client server)' '--yes[확인 생략]' ;;
-            http) _arguments '--duration[trace 시간]:duration' '--json[JSON 저장 경로]:path:_files' '--raw[raw event JSONL 출력]' '--live[실시간 event 출력]' '--group-by[그룹 기준]:group:(source target port process event path)' '--process[process filter]:process' '--destination[destination filter]:host:port' '--side[관측 쪽]:side:(client server)' '--payload=-[message 출력, =all은 전체]::mode:(all)' '--show-secrets[가린 header 값 출력]' '--port[HTTP 서버 port]:port' '--yes[확인 생략]' ;;
+            http) _arguments '--duration[trace 시간]:duration' '--json[JSON 저장 경로]:path:_files' '--raw[raw event JSONL 출력]' '--live[실시간 event 출력]' '--group-by[그룹 기준]:group:(source target port process event path)' '--process[process filter]:process' '--destination[destination filter]:host:port' '--side[관측 쪽]:side:(client server)' '--payload=-[message 출력, =all은 전체]::mode:(all)' '--show-secrets[가린 header 값 출력]' '--tls=-[OpenSSL HTTPS 평문, =경로는 그 파일만]::path:_files' '--port[HTTP 서버 port]:port' '--yes[확인 생략]' ;;
             mysql) _arguments '--duration[trace 시간]:duration' '--json[JSON 저장 경로]:path:_files' '--raw[raw event JSONL 출력]' '--live[실시간 event 출력]' '--group-by[그룹 기준]:group:(source target port process event)' '--process[process filter]:process' '--destination[destination filter]:host:port' '--side[관측 쪽]:side:(client server)' '--show-secrets[SQL 문자열 출력]' '--port[MySQL 서버 port]:port' '--yes[확인 생략]' ;;
             arp|ndp) _arguments '--duration[trace 시간]:duration' '--json[JSON 저장 경로]:path:_files' '--raw[raw event JSONL 출력]' '--live[실시간 event 출력]' '--group-by[그룹 기준]:group:(source target event)' '--destination[IP filter]:ip' ;;
           esac
@@ -299,8 +299,9 @@ _edc() {
       case "$prev" in
         --json) COMPREPLY=($(compgen -f -- "$cur")); return ;;
         -w|--write) if [[ $cur != -* ]]; then COMPREPLY=($(compgen -f -- "$cur")); return; fi ;;
+        --split) if [[ $cur != -* ]]; then COMPREPLY=($(compgen -W "all none cpu mem disk net psi" -- "$cur")); return; fi ;;
       esac
-      COMPREPLY=($(compgen -W "--interval --count --no-header --process -d --detail --ebpf -w --write --json" -- "$cur")) ;;
+      COMPREPLY=($(compgen -W "--interval --count --no-header --process --split -d --detail --ebpf -w --write --json" -- "$cur")) ;;
     history)
       if [[ $COMP_CWORD -eq 2 ]]; then COMPREPLY=($(compgen -W "list top process" -- "$cur"))
       elif [[ $prev == --json ]]; then COMPREPLY=($(compgen -f -- "$cur"))
@@ -366,7 +367,7 @@ _edc() {
     quality) COMPREPLY=($(compgen -W "$common --server" -- "$cur")) ;;
     capture) COMPREPLY=($(compgen -W "--mode --interface --duration --count --filter --output --yes" -- "$cur")) ;;
     trace)
-      if [[ $COMP_CWORD -eq 2 ]]; then COMPREPLY=($(compgen -W "tcp udp dns arp ndp http mysql" -- "$cur")); else COMPREPLY=($(compgen -W "--duration --json --raw --live --group-by --process --destination -d --detail --side --payload --payload=all --show-secrets --port --yes" -- "$cur")); fi ;;
+      if [[ $COMP_CWORD -eq 2 ]]; then COMPREPLY=($(compgen -W "tcp udp dns arp ndp http mysql" -- "$cur")); else COMPREPLY=($(compgen -W "--duration --json --raw --live --group-by --process --destination -d --detail --side --payload --payload=all --show-secrets --tls --port --yes" -- "$cur")); fi ;;
     log)
       if [[ $COMP_CWORD -eq 2 && $cur != -* ]]; then COMPREPLY=($(compgen -W "history" -- "$cur")); return; fi
       if [[ ${COMP_WORDS[2]} == history ]]; then

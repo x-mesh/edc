@@ -39,12 +39,23 @@ observe:
     process_invalid: "--process에는 PID나 command 이름을 쉼표로 구분해 주세요"
     process_needs_view: "--process는 대시보드나 --json, --write에서 쓸 수 있습니다"
     full_needs_view: "--full은 대시보드나 --json, --write에서 쓸 수 있습니다"
+    split_invalid: "--split에는 all, none 또는 cpu, mem, disk, net, psi를 쉼표로 구분해 한 번씩만 쓸 수 있습니다"
+    split_needs_view: "--split은 대시보드에서만 쓸 수 있습니다"
+    split_with_process: "--split은 --process와 함께 쓸 수 없습니다"
     ebpf_needs_process: "-d/--detail은 --process와 함께 쓰거나 대시보드에서 써야 합니다"
     stopped: "중지됨"
     paused: "일시정지"
     error:
       host: "host 정보를 읽지 못했습니다: %v"
       resource: "resource를 읽지 못했습니다: %v"
+
+  ai:
+    usage: "사용법: edc ai [--poll 60s] [--count N] [--json <path|->]"
+    poll_minimum: "--poll은 %s 이상이어야 합니다"
+    count_minimum: "--count는 0 이상이어야 합니다"
+    error:
+      reset_log: "리셋 기록을 쓰지 못했습니다: %v"
+      state: "마지막 Claude 값을 저장하지 못했습니다: %v"
 
   watch:
     no_samples_duration: "관측 시간이 끝날 때까지 완료한 표본이 없어 대상의 상태를 판단할 수 없습니다."

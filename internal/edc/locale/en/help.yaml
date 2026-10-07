@@ -73,6 +73,7 @@ command:
       no_header: "drop the host and column header"
       process: "match PIDs or command names, comma-separated"
       full: "match and show the full command line"
+      split: "one box each for cpu, mem, disk, net, psi, default all"
       detail: "CPU wait and I/O latency (eBPF, root), Linux"
       ebpf: "same as --detail"
       write: "append to SQLite; omit path for the default DB"
@@ -174,6 +175,7 @@ command:
       side: "http and mysql show both sides. dns shows client"
       payload: "trace http, socket: 4 KiB each, =all up to 1 MiB"
       show_secrets: "http --payload: show headers. mysql: show SQL text"
+      tls: "http: HTTPS plaintext, =<path>: program or library"
       port: "http: only this port. mysql: server port, 3306"
       container: "only this docker container, by name or ID"
       reason: "trace drop: only these reasons, comma separated"
@@ -216,6 +218,7 @@ command:
       - "--port keeps the connections that use the port on this host or on the peer."
       - "Example: trace http --side server --port 8080 shows one local server."
       - "It hides Authorization, Proxy-Authorization, Cookie, and Set-Cookie values."
+      - "It also hides X-Api-Key, X-Goog-Api-Key, Api-Key, X-Amz-Security-Token values."
       - "trace mysql shows plain MySQL commands and results on Linux 5.15 or later."
       - "It shows both sides. Each row starts with client: or server:."
       - "--port is the MySQL server port. The default is 3306."
@@ -235,6 +238,21 @@ command:
       - "It shows the process when the packet has a local socket. --reason filters."
       - "Totals per reason are exact. Above 1,000 drops a second on one CPU, edc samples."
       - "SYNs freed by a full accept queue are not events. The summary counts them."
+  ai:
+    summary: "AI coding tool usage and reset times"
+    option:
+      poll: "time between limit calls, 30s or more, 5m or more for Claude"
+      count: "samples to print, 0 runs until you quit"
+    notes:
+      - "In a terminal, edc opens a table of tokens per interval on this host."
+      - "The ▸ row is still open. ↑↓ moves back, +/- changes rows, End goes live."
+      - "Σ rows sum the last 10 minutes, hour, and 24 hours at any row size."
+      - "The boxes show Claude and Codex limits, reset times, and time left."
+      - "Claude answers with the token in ~/.claude/.credentials.json."
+      - "edc never prints or stores that token."
+      - "Codex answers through codex app-server."
+      - "Each detected reset goes to ai-resets.jsonl next to the history DB."
+      - "The last Claude values stay in ai-claude.json in the same directory."
   report:
     summary: "View and compare saved edc diagnostic results"
     notes:

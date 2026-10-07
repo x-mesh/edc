@@ -439,7 +439,7 @@ load 임계값은 host의 core 수를 따릅니다.
 
 `hot core`는 core 하나의 사용률이므로 90부터 경고만 주고 위험 단계가 없습니다. core가 여럿이면 하나가 포화해도 host 전체에는 여유가 있습니다.
 
-대시보드는 `iops`, `busy%`, `swap/s`, 바이트와 패킷 속도, `signal` 열에는 색을 넣지 않습니다. 임계값이 없거나 색 없이도 수준이 드러나는 값입니다. 집계 `busy%`는 바쁜 disk가 여럿이면 100을 넘으므로 고정 임계값이 잘못된 신호를 줍니다. `cores` 막대는 `.`, `:`, `*`, `#`로 수준을 보여 줍니다.
+대시보드는 `iops`, `busy%`, `swap/s`, `steal%`, `blocked`, `queue`, 바이트·패킷·TCP 속도, `signal` 열에는 색을 넣지 않습니다. 임계값이 없거나 색 없이도 수준이 드러나는 값입니다. 집계 `busy%`는 바쁜 disk가 여럿이면 100을 넘으므로 고정 임계값이 잘못된 신호를 줍니다. `cores` 막대는 `.`, `:`, `*`, `#`로 수준을 보여 줍니다.
 
 색을 끄려면 `NO_COLOR`를 설정합니다. 파이프와 파일에는 색이 들어가지 않습니다.
 
@@ -463,6 +463,7 @@ stdin과 stdout이 모두 terminal이면 `edc top`은 전체 화면 대시보드
 | `-` | interval 줄이기 |
 | `1`, `c`, `m`, `d`, `n` | 전체, CPU, memory, disk, network 열로 전환 |
 | `s` | Linux pressure 열로 전환 |
+| `v` | 박스 화면으로 돌아가기 |
 | `f` | 선택한 행의 signal 보기로 이동하고, 한 번 더 누르면 process 후보 선택. 필터가 있으면 process 보기로 전환 |
 | `Tab` | 이력 탐색과 process 후보 선택 사이 이동 |
 | `?` | 도움말 표시. 화살표로 스크롤하고 `Esc`로 닫기 |
@@ -492,13 +493,31 @@ stdin과 stdout이 모두 terminal이면 `edc top`은 전체 화면 대시보드
 
 80열보다 좁으면 전체 보기에는 CPU, memory, load, signal을 남깁니다. 다른 보기에서도 폭에 맞지 않는 열은 뺍니다. 최소 크기는 24열·8행이며, 작은 terminal에서는 도움말을 스크롤할 수 있습니다.
 
+`--split`을 쓰면 여러 보기를 한 화면에 동시에 봅니다. 보기마다 박스가 하나씩 생기고, 박스 안에는 그 보기의 최근 sample 표가 들어갑니다.
+
+`--split`은 `cpu`, `mem`, `disk`, `net`, `psi` 이름을 쉼표로 이어 받으며, 적은 순서대로 박스를 배치합니다. 목록 없이 `--split`만 쓰면 다섯 박스를 모두 보이고, `--split none`은 박스 없이 단일 보기로 시작합니다. 빈 값, 모르는 이름, 중복 이름은 exit 2로 끝납니다.
+
+설정 파일의 `defaults.top.split`에 같은 문법으로 목록을 적으면 대시보드를 매번 그 목록으로 시작합니다. 명령줄에 직접 준 `--split`이 설정 값보다 우선합니다.
+
+박스는 적은 순서를 지킵니다. terminal 폭에 들어가는 가장 적은 줄 수를 쓰고, 그 줄 수 안에서 가장 넓은 줄이 가장 좁아지도록 박스를 나눕니다. 박스 줄들은 높이를 똑같이 나눠 가집니다. 모든 박스에서 `signal` 열을 빼고, 선택한 시각의 signal을 박스 아래 한 줄로 한 번만 보입니다. cpu 박스가 화면에 있으면 mem과 psi 박스에서 `load`를 빼고, mem 박스가 있으면 psi 박스에서 `mem%`를 뺍니다. 상세, 최고치, process 패널은 단일 보기와 같은 방식으로 그 아래에 놓입니다. 같은 줄의 박스는 같은 시각의 행을 나란히 보이므로 `time` 열은 줄의 첫 박스에만 있습니다.
+
+선택한 행은 모든 박스가 공유합니다. 방향키와 `End`는 모든 박스를 함께 움직이고, `PgUp`과 `PgDn`은 박스 하나의 데이터 행 수만큼 이동합니다. `1`, `c`, `m`, `d`, `n`, `s`를 누르면 박스 화면을 떠나고, `v`를 누르면 돌아옵니다.
+
+박스 하나에는 데이터 행이 3개 이상 필요합니다. 박스의 데이터 행이 그보다 적으면 첫 박스를 단일 보기로 보이고 상태 줄에 이유를 안내합니다. terminal보다 넓은 박스는 뒤쪽 열을 빼고 들어갑니다. `steal%`, `retr/s` 같은 선택 열 때문에 박스 줄이 늘어나면 박스에서 선택 열을 뺍니다. 80열·24행 terminal에서 `--split`은 CPU 보기만 보이고, 80열에서 박스 다섯 개를 모두 보이려면 약 33행이 필요합니다.
+
+macOS에서는 `psi` 박스를 생략하고 안내를 보입니다. 설정 파일에 `psi`를 적어도 오류가 아니므로 Mac과 Linux가 같은 파일을 쓸 수 있습니다.
+
+`--split`은 대시보드에서만 동작합니다. 표를 출력하는 실행(`--count`, `--json`, 파이프, `NO_COLOR`)이나 `--process`와 함께 직접 주면 exit 2로 끝납니다. 설정 값은 그런 실행을 막지 않고, `--process`와 함께면 process 보기가 유지됩니다.
+
 disk 보기에는 macOS와 Linux 모두 물리 disk의 IOPS와 평균 `await`가 추가됩니다. Linux에서는 모든 물리 disk의 합산 `busy%`와, memory 보기의 `mem%` 옆 memory pressure도 추가됩니다. 합산 `busy%`는 여러 disk가 동시에 바쁘면 100%를 넘을 수 있습니다. macOS 대시보드는 수집하지 않는 iowait, PSI, disk busy, file descriptor, listen overflow, softnet drop, conntrack, eBPF 지연 열을 숨기고 도움말에 제한을 설명합니다. network 보기의 interface errors·drops는 macOS와 Linux 모두 표시하며, macOS에서는 kernel의 interface 통계(`net.link.generic.ifdata`)에서 읽습니다. memory 보기의 `swap/s`는 kernel이 초당 swap으로 내보낸 byte입니다.
 
-`s`는 Linux pressure 보기입니다. CPU, memory, I/O의 `some avg10`을 퍼센트로 표시하며, 최근 10초 동안 일부 작업이 그 자원을 기다린 시간의 비율입니다. CPU 보기의 `hot core`와 ASCII 막대는 코어별 사용률을 보여 주고, 24개보다 많은 코어는 앞 24개만 막대로 표시합니다.
+Linux에서는 일부 보기에 선택 열이 더 있습니다. CPU 보기의 `steal%`는 hypervisor가 다른 guest에 CPU를 내준 시간의 비율이고, `blocked`는 지금 I/O를 기다리며 멈춘 작업 수입니다. disk 보기의 `queue`는 진행 중인 I/O 요청의 평균 개수를 물리 disk마다 더한 값입니다. network 보기에는 초당 TCP 재전송 segment(`retr/s`), 보낸 RST(`rst/s`), 실패한 연결 시도(`fail/s`)가 있습니다. 선택 열은 다른 열이 모두 들어가고 `signal`에 13열 이상이 남을 때만 보입니다.
+
+`s`는 Linux pressure 보기입니다. CPU, memory, I/O의 `some avg10`을 퍼센트로 표시하며, 최근 10초 동안 일부 작업이 그 자원을 기다린 시간의 비율입니다. `mem full`과 `io full` 열은 memory와 I/O의 `full avg10`으로, 최근 10초 동안 실행할 수 있는 작업이 모두 동시에 기다린 시간의 비율입니다. CPU 보기의 `hot core`와 ASCII 막대는 코어별 사용률을 보여 주고, 24개보다 많은 코어는 앞 24개만 막대로 표시합니다.
 
 상세 보기에는 CPU 사용률 기준 상위 세 process도 표시합니다. 목록은 관측 주기를 늘리지 않도록 최대 1초마다 백그라운드에서 갱신하며, `--write`가 없으면 대시보드에서만 수집하고 표와 필터 없는 `--json` 출력에서는 수집하지 않습니다. Linux에서는 `/proc/<pid>/stat`의 CPU tick을 직전 갱신과 비교하므로 값은 그 사이 구간의 사용률입니다. macOS에서는 `ps`가 제공하는 최근 감쇠 평균을 씁니다.
 
-기본 process 패널은 CPU 순위로, memory 보기에서는 RSS 순위로 후보를 보여 줍니다. 후보는 3개를 표시하고, terminal이 40행 이상이면 5개를 표시합니다. CPU 상위 목록을 자르기 전에 두 지표의 상위 5개를 각각 보존하므로 CPU 사용량이 낮은 memory 상위 process도 남습니다. `Tab`으로 후보 선택에 들어가 화살표로 고른 뒤 `Enter`로 해당 PID에 초점을 맞춥니다. 후보를 고르는 동안에는 선택한 시점을 유지하고, `End`로 실시간 이력으로 돌아갑니다.
+기본 process 패널은 CPU 순위로, memory 보기에서는 RSS 순위로 후보를 보여 줍니다. 후보는 3개를 표시하고, terminal이 40행 이상이면 5개를 표시합니다. 패널과 키 안내는 화면 맨 아래에 고정됩니다. 안내 두 줄이 한 줄에 들어가면 한 줄로 합칩니다. terminal이 145열 이상이면 process 패널은 오른쪽으로 가고, 상세·최고치 패널과 키 안내는 왼쪽에 놓입니다. `--process`를 쓰면 process 줄이 길어지므로 위아래로 쌓습니다. CPU 상위 목록을 자르기 전에 두 지표의 상위 5개를 각각 보존하므로 CPU 사용량이 낮은 memory 상위 process도 남습니다. `Tab`으로 후보 선택에 들어가 화살표로 고른 뒤 `Enter`로 해당 PID에 초점을 맞춥니다. 후보를 고르는 동안에는 선택한 시점을 유지하고, `End`로 실시간 이력으로 돌아갑니다.
 
 `signal` 열은 host 경고를 process CPU 후보보다 먼저 보여 줍니다. 후보가 host 경고의 원인이라고 단정하지 않습니다. process CPU는 core 하나가 100%이고, host CPU는 전체 core를 기준으로 합니다.
 
@@ -520,7 +539,7 @@ Linux에서는 `n` 화면에 conntrack 사용률(`ct%`), listen overflow/s(`list
 
 수집은 현재 network namespace를 기준으로 하지만 softnet 카운터와 TCP TIME_WAIT 수는 host 전체 값일 수 있습니다. TCP `CurrEstab`는 ESTABLISHED와 CLOSE_WAIT를 포함합니다. socket 수는 임시 port 사용률이 아닙니다. 카운터 읽기 실패·초기화·기준점 부재 시 rate는 `—`로 표시합니다. conntrack 상세 통계는 `/proc/net/stat/nf_conntrack`이 노출될 때 수집하며, 없으면 해당 값만 빠집니다.
 
-`--json`의 `network_limits`에는 namespace, 설정(`settings`), 현재값(`gauges`), 누적값(`counters`), 초당 증가량(`rates`)이 들어갑니다. 각 값에는 `status`와 필요한 경우 `reason`이 있으며, 관측하지 못한 숫자는 생략됩니다. 파일에 저장하면 외부 도구로 실행 후 추이를 분석할 수 있습니다.
+`--json`의 `network_limits`에는 namespace, 설정(`settings`), 현재값(`gauges`), 누적값(`counters`), 초당 증가량(`rates`)이 들어갑니다. `counters`와 `rates`에는 `tcp_retrans_segs`, `tcp_out_rsts`, `tcp_attempt_fails`도 있습니다. 각 값에는 `status`와 필요한 경우 `reason`이 있으며, 관측하지 못한 숫자는 생략됩니다. 파일에 저장하면 외부 도구로 실행 후 추이를 분석할 수 있습니다.
 
 ## Top JSON 출력
 
@@ -530,7 +549,7 @@ Linux에서는 `n` 화면에 conntrack 사용률(`ct%`), listen overflow/s(`list
 ./bin/edc top --count 5 --json -
 ```
 
-각 줄에는 `time`, `hostname`, `cores`, 초당 byte 단위 network·disk rate, 퍼센트 단위 CPU 값, `load1`, `memory_pct`, 초당 byte 단위 `swap_out_bytes_per_s`가 들어갑니다. macOS와 Linux 모두 network errors·drops와 disk IOPS·await를 내보냅니다. Linux에서는 disk busy와 PSI `some avg10`도 추가되며, `*_health_supported`, `disk_busy_supported`, `psi_supported`가 지원 여부를 표시합니다. `--json`은 표와 헤더를 없앱니다.
+각 줄에는 `time`, `hostname`, `cores`, 초당 byte 단위 network·disk rate, 퍼센트 단위 CPU 값, `load1`, `memory_pct`, 초당 byte 단위 `swap_out_bytes_per_s`가 들어갑니다. macOS와 Linux 모두 network errors·drops와 disk IOPS·await를 내보냅니다. Linux에서는 disk busy, PSI `some avg10`, memory·I/O PSI `full avg10`도 추가되며, `*_health_supported`, `disk_busy_supported`, `psi_supported`가 지원 여부를 표시합니다. `--json`은 표와 헤더를 없앱니다.
 
 ## Top 저장과 이력 조회
 
@@ -1014,7 +1033,7 @@ bridge network에서는 주소와 port가 container 안의 값입니다. 예를 
 
 event 목록에서 Up이나 Down(또는 `k`, `j`)을 누르면 event를 고릅니다. event를 고른 동안에는 목록이 멈추고 새 event를 따라가지 않으며, 머리글에 더 새로운 event 수가 표시됩니다. Enter를 누르면 event의 모든 필드와 payload 전체를 보여 주는 상세 보기가 열립니다. 상세 보기는 긴 줄을 화면 폭에 맞춰 나눕니다. Up, Down, PgUp(또는 `b`), PgDn(또는 Space), `g`, `G`로 스크롤하고, Esc나 `q`로 돌아갑니다. 목록에서 `l`, Esc, End 중 하나를 누르면 다시 새 event를 따라갑니다. Mac 자판에는 End 키가 없는 경우가 많습니다. 목록에서도 `b`와 Space는 한 화면씩 고른 위치를 옮깁니다. 고른 event가 목록에서 가장 오래된 event가 되면, 그 아래에 더 새 event를 보여 줍니다. 목록은 payload마다 앞 4KiB만 보관하고, 상세 보기는 최근 event의 payload 전체를 합계 64MiB까지 보여 줍니다.
 
-`f`를 누르면 가장 최근 event의 상세 보기를 열고 새 event를 따라갑니다. `f`를 다시 누르면 화면의 event에서 멈춥니다. `trace http`의 전체 화면은 `--payload`가 없어도 각 message의 앞 4KiB를 모읍니다. 목록의 payload 줄은 `v`를 누를 때까지 숨기고, `--payload`로 시작하면 처음부터 보여 줍니다. `m`은 `Authorization`, `Proxy-Authorization`, `Cookie`, `Set-Cookie` header 값을 보이거나 가리고, 보이는 동안 머리글에 `secrets shown`이 표시됩니다. 상세 보기에서 `z`를 누르면 gzip 본문을 풉니다. 최대 1MiB까지 풀고, 푼 크기를 함께 보여 줍니다.
+`f`를 누르면 가장 최근 event의 상세 보기를 열고 새 event를 따라갑니다. `f`를 다시 누르면 화면의 event에서 멈춥니다. `trace http`의 전체 화면은 `--payload`가 없어도 각 message의 앞 4KiB를 모읍니다. 목록의 payload 줄은 `v`를 누를 때까지 숨기고, `--payload`로 시작하면 처음부터 보여 줍니다. `m`은 `--payload`가 가리는 header 값을 보이거나 가리고, 보이는 동안 머리글에 `secrets shown`이 표시됩니다. 상세 보기에서 `z`를 누르면 gzip 본문을 풉니다. 최대 1MiB까지 풀고, 푼 크기를 함께 보여 줍니다.
 
 `i`를 누르면 화면을 나눕니다. 위쪽 절반은 목록이고, 아래쪽 절반은 message 하나의 미리 보기입니다. 미리 보기는 고른 event를 보여 주고, 고른 event가 없으면 가장 최근 event를 보여 주며 새 event가 오면 바뀝니다. event에 payload가 있으면 payload를, 없으면 event의 필드를 보여 줍니다. `J`와 `K`로 미리 보기를 스크롤하고, Enter로 전체 상세 보기를 엽니다. `trace http`에서는 `m`과 `z`도 미리 보기에 적용됩니다. terminal이 9줄보다 작으면 목록만 보입니다.
 
@@ -1144,24 +1163,122 @@ proxy를 거치는 요청은 구간마다 한 번씩 보입니다. 예를 들어
 | port 9900의 proxy가 받은 요청만 | `./bin/edc trace http --side server --port 9900` |
 | 쪽마다 process별 응답 시간 | `./bin/edc trace http --port 9000 --group-by process` |
 | path별 요청, 오류, 응답 시간 | `./bin/edc trace http --group-by path` |
+| HTTPS 안의 HTTP/1.1과 HTTP/2 요청 | `./bin/edc trace http --tls` |
 
 한 구간의 client 응답 시간과 서버 응답 시간은 서로 다른 시간을 잽니다. client 응답 시간에는 network와, 서버가 요청을 읽기 전까지 기다린 시간이 들어갑니다. 서버 응답 시간에는 서버가 처리한 시간만 들어갑니다. client 응답 시간이 서버 응답 시간보다 훨씬 길면 network와 서버의 대기열을 확인합니다.
 
 edc는 port가 아니라 data의 앞부분으로 HTTP를 찾으므로, 어느 port의 HTTP든 봅니다. `source`는 항상 이 host 쪽 주소이고 `destination`은 상대 주소입니다. `--port`를 사용하면 이 host나 상대가 그 port를 쓰는 연결만 봅니다. `--side server`와 함께 쓰면 로컬 서버 하나를, `--side client`와 함께 쓰면 이 host가 그 port의 서버로 보낸 요청을 봅니다. port는 kernel에서 확인하므로 다른 연결의 data는 읽지 않습니다.
 
-`--payload`를 사용하면 각 message의 data를 볼 수 있습니다. edc는 event마다 그 아래 줄에 body를 출력하고, body가 없으면 header를 출력합니다. `--raw`에서는 `payload` 필드에 data 전체가 들어 있습니다. data는 한 번의 읽기나 쓰기에서 앞 4KiB(4,096 byte)라서 더 긴 body는 잘립니다. program이 header와 body를 두 번에 나눠 쓰면 body는 보이지 않습니다. `--payload`를 쓰면 레코드가 커져서, 요청이 많은 서버에서는 event가 유실될 수 있습니다. 유실된 event 수는 요약에 표시됩니다. `--payload`는 query를 그대로 두지만 `Authorization`, `Proxy-Authorization`, `Cookie`, `Set-Cookie` header 값은 가립니다. 다른 header, query, body는 그대로 출력하므로 token이나 비밀번호가 보일 수 있습니다. 출력을 공유하기 전에 token이나 비밀번호가 없는지 확인합니다. 제어 문자는 `\xNN`으로 바꾸므로 data가 terminal을 조작하지 못합니다. `--json`은 요약만 기록하므로 `--payload`와 함께 사용할 수 없습니다.
+`--payload`를 사용하면 각 message의 data를 볼 수 있습니다. edc는 event마다 그 아래 줄에 body를 출력하고, body가 없으면 header를 출력합니다. `--raw`에서는 `payload` 필드에 data 전체가 들어 있습니다. data는 한 번의 읽기나 쓰기에서 앞 4KiB(4,096 byte)라서 더 긴 body는 잘립니다. program이 header와 body를 두 번에 나눠 쓰면 body는 보이지 않습니다. `--payload`를 쓰면 레코드가 커져서, 요청이 많은 서버에서는 event가 유실될 수 있습니다. 유실된 event 수는 요약에 표시됩니다. `--payload`는 query를 그대로 두지만 `Authorization`, `Proxy-Authorization`, `Cookie`, `Set-Cookie`, `X-Api-Key`, `X-Goog-Api-Key`, `Api-Key`, `X-Amz-Security-Token` header 값은 가립니다. 다른 header, query, body는 그대로 출력하므로 token이나 비밀번호가 보일 수 있습니다. 출력을 공유하기 전에 token이나 비밀번호가 없는지 확인합니다. 제어 문자는 `\xNN`으로 바꾸므로 data가 terminal을 조작하지 못합니다. `--json`은 요약만 기록하므로 `--payload`와 함께 사용할 수 없습니다.
 
 `--payload=all`을 사용하면 message 하나를 1MiB까지 전부 볼 수 있습니다. edc는 message의 다음 읽기와 쓰기, `writev`의 다른 버퍼까지 따라갑니다. event는 message가 끝날 때 출력합니다. `Content-Length`만큼 body를 받았거나, chunked body의 마지막 조각을 받았거나, 1초 동안 data가 없으면 끝난 것으로 봅니다. 그래서 `--payload`보다 event가 늦게 나올 수 있지만 응답 시간은 같습니다. 줄 단위 출력에서는 event 아래에 message 전체를 출력하고, 전체 화면은 여전히 한 줄로 보여 줍니다. 1MiB에서 잘렸거나, 조각을 잃었거나, 끝나기 전에 trace가 끝나면 event에 `"payload_truncated": true`가 붙습니다. `--payload=all`은 띄우지 않고 붙여 씁니다. `--payload all`은 오류입니다. `--payload=all`은 `--payload`보다 CPU를 더 쓰므로, 요청이 많은 서버에서는 event가 더 일찍 유실될 수 있습니다.
 
-`--payload`와 함께 `--show-secrets`를 사용하면 `Authorization`, `Proxy-Authorization`, `Cookie`, `Set-Cookie` header 값도 그대로 보여 줍니다. 이 값이 있으면 다른 사람이 그 계정을 쓸 수 있으므로, 이 출력은 공유하지 않습니다. 전체 화면에서는 대신 `m`을 누릅니다.
+`--payload`와 함께 `--show-secrets`를 사용하면 `--payload`가 가리는 header 값도 그대로 보여 줍니다. 이 값이 있으면 다른 사람이 그 계정을 쓸 수 있으므로, 이 출력은 공유하지 않습니다. 전체 화면에서는 대신 `m`을 누릅니다.
 
 `Ctrl-C` 후 summary는 쪽, method, host, path마다 한 행을 표시합니다. 두 쪽이 모두 있으면 쪽별 합계를 따로 보여 주고 `SIDE` 칸을 더합니다. JSON에는 쪽별 합계를 담은 `client`와 `server` 객체가 붙습니다. group 행은 요청, 응답, 4xx·5xx 응답, 응답 없음, 평균·최대 응답 시간을 표시합니다.
 
 HTTPS는 암호문이라 method, path, 상태 코드를 읽을 수 없습니다. 연결을 시작할 때 보내는 TLS ClientHello는 평문이므로, edc는 이를 읽어 `tls_hello` event로 보여 줍니다. `target`은 서버 이름(SNI)이고, `alpn` 필드에는 client가 제안한 protocol이 `h2`, `http/1.1`처럼 들어 있습니다. event 행에는 첫 protocol만 표시합니다. ClientHello를 보낸 client는 `client:` 행으로, 받은 로컬 서버는 `server:` 행으로 보입니다. 요약은 이 연결을 별도의 `TLS connections` 표로 세고, JSON에는 `tls_connections`와 `tls`가 붙습니다. port 443의 HTTPS 연결만 보려면 `--port 443`을 씁니다.
 
-trace를 시작하기 전에 맺은 TLS 연결은 보이지 않습니다. client가 Encrypted Client Hello(ECH)를 쓰면 SNI는 서비스 제공자의 공개 이름입니다. HTTPS의 요청을 보려면 TLS를 푸는 곳 뒤의 평문 HTTP를 trace합니다. 예를 들어 backend로 평문 HTTP를 보내는 proxy가 있으면 그 구간을 봅니다.
+trace를 시작하기 전에 맺은 TLS 연결은 보이지 않습니다. client가 Encrypted Client Hello(ECH)를 쓰면 SNI는 서비스 제공자의 공개 이름입니다. HTTPS의 요청을 보려면 `--tls`를 씁니다. TLS를 푸는 곳 뒤의 평문 HTTP를 trace해도 됩니다. 예를 들어 backend로 평문 HTTP를 보내는 proxy가 있으면 그 구간을 봅니다.
 
-HTTPS, HTTP/2, HTTP/3의 요청은 kernel에서 암호문이나 binary frame으로만 보이므로 표시하지 않습니다. HTTP/3은 UDP를 쓰므로 `tls_hello` event도 없습니다. edc는 한 번의 읽기나 쓰기가 시작되는 곳에서만 message를 찾습니다. 그래서 한 번의 읽기에 앞 응답의 끝과 다음 응답의 시작이 함께 들어 있으면 다음 응답을 놓칩니다. 프로그램이 message 하나를 여러 버퍼로 나눠 쓰면 첫 버퍼만 읽으므로, `Host` header는 첫 버퍼의 앞 512 byte 안에 있어야 합니다. 없으면 target은 서버 주소입니다. edc는 Linux 5.15 이상에서 이 field를 지원합니다.
+`--tls`를 사용하면 HTTPS 안의 HTTP/1.1과 HTTP/2 요청을 볼 수 있습니다. edc는 OpenSSL, GnuTLS, NSS, wolfSSL, Mbed TLS, rustls-ffi, Go TLS 또는 지원하는 BoringSSL 빌드에서 암호화하기 전과 복호화한 뒤의 평문을 읽으므로, 인증서나 key가 필요 없습니다.
+
+```bash
+./bin/edc trace http --tls
+./bin/edc trace http --tls --side server --port 443
+./bin/edc trace http --tls=/usr/local/bin/node
+```
+
+값 없이 쓰면 trace를 시작할 때 다음 파일을 찾습니다.
+
+- 표준 library 디렉터리에 있는 이 host의 `libssl`, `libgnutls`, `libssl3`, `libnspr4`, `libwolfssl`, `libmbedtls`, `librustls`
+- 실행 중인 process가 적재한 이 library들(container 안의 것도 포함)
+- OpenSSL을 실행 파일 안에 넣고 `SSL_read`를 내보내는 process의 실행 파일(예: `node`)
+- 지원하는 GNU build ID를 가진 심볼 없는 BoringSSL 실행 파일
+
+edc는 process가 실제로 적재한 파일을 열므로, 패키지를 업데이트한 뒤에도 예전 `libssl`을 쓰고 있는 process가 보입니다. 이 파일을 열려면 `CAP_SYS_ADMIN`이나 `CAP_CHECKPOINT_RESTORE`가 필요하고, probe를 붙일 때도 `CAP_SYS_ADMIN`이 필요할 수 있습니다. root는 이 권한이 있고, container에서는 `--cap-add`로 `SYS_ADMIN`을 더하거나 `--privileged`를 씁니다. 이 파일을 열 수 없으면 안내를 표시합니다.
+
+trace가 도는 동안에도 계속 찾습니다. process가 program을 실행하면 그 뒤 3초 동안 그 process를 몇 번 다시 확인하고, 모든 process도 2초 이상의 간격으로 다시 확인합니다. process가 많은 host에서는 이 간격이 길어집니다. 새 파일을 쓰는 process를 찾으면 그 파일에 probe를 붙이며, 그 전에 보낸 요청은 보이지 않습니다. kernel은 program 실행 알림을 처음 network namespace에만 보냅니다. host network나 `--pid=host`를 쓰지 않는 container처럼 다른 network namespace나 PID namespace에서 edc를 실행하면 안내를 표시하고, 모든 process를 다시 확인하는 방법만 씁니다. trace 도중에 kernel이 실행 알림을 멈추면 trace가 끝난 뒤 알려 줍니다.
+
+파일 하나만 보려면 `--tls=<경로>`로 지정합니다. 이때는 다른 파일을 찾지 않습니다. 경로는 `--payload=all`처럼 띄우지 않고 붙여 씁니다.
+
+probe는 지정한 파일에 붙습니다. program이 같은 내용의 다른 파일(복사본)을 적재하면 그 program은 보이지 않습니다. process가 적재한 파일은 `/proc/<pid>/maps`에서 확인합니다.
+
+NSS는 TLS 상태를 확인할 `libssl3`와 평문 I/O를 읽을 `libnspr4`가 모두 필요합니다. 둘 중 하나를 지정하면 같은 디렉터리나 표준 library 디렉터리에서 다른 하나도 함께 선택합니다.
+
+```bash
+./bin/edc trace http --tls=/usr/lib/x86_64-linux-gnu/libssl3.so
+```
+
+NSS 프로그램을 시작하기 전에 trace를 시작합니다. TLS와 일반 파일·socket을 구분하려면 SSL 설정 호출을 관찰해야 합니다.
+
+NSS 평문은 `PR_Read`, `PR_Recv`, `PR_Write`, `PR_Send`에서 읽습니다. NSPR은 이 함수로 일반 파일과 socket도 읽고 쓰므로, TLS를 쓰지 않는 program에서도 NSPR의 읽기와 쓰기마다 probe가 실행됩니다. `SSL_SECURITY`와 기본값 변경, model 복사, accept한 연결, `PR_Close`도 추적합니다. `SSL_SECURITY`를 끈 연결과 `PR_MSG_PEEK`로 읽은 내용은 TLS event로 표시하지 않습니다.
+
+Go TLS는 Go 함수 표와 반환 위치의 probe로 평문을 읽습니다. 검증한 범위는 Linux amd64와 arm64의 Go 1.26.8과 1.27.1입니다.
+
+```bash
+./bin/edc trace http --tls=my-go-program
+```
+
+바이너리 경로나 command 이름을 지정합니다. 일반·stripped·PIE 바이너리를 지원하며, 자동 library 탐색으로 Go 바이너리를 고르지는 않습니다.
+
+이 event에는 socket 주소가 없어 `--port` 필터를 사용하면 제외됩니다. 다른 Go 버전과 아키텍처는 지원하지 않습니다.
+
+Go client의 응답 시간은 `Write` 진입부터 `Read` 반환까지입니다. 서버에서는 응답의 `Write` 진입까지 잽니다.
+
+Go HTTP/2는 한 TLS 연결의 동시 stream 16개, 반복 header의 HPACK 처리, 64KiB body의 조각 결합을 검증했습니다.
+
+rustls-ffi는 C 함수 `rustls_connection_read`와 `rustls_connection_write`에서 평문을 읽고, `rustls_connection_free`에서 연결 상태를 지웁니다.
+
+```bash
+./bin/edc trace http --tls=/usr/local/lib/librustls.so
+```
+
+이 event에는 socket 주소가 없습니다. `--port` 필터를 사용하면 제외됩니다. native Rust API는 지원하지 않습니다.
+
+Mbed TLS는 `mbedtls_ssl_read`, `mbedtls_ssl_write`, `mbedtls_ssl_read_early_data`, `mbedtls_ssl_write_early_data`에서 평문을 읽습니다. `mbedtls_ssl_session_reset`과 `mbedtls_ssl_free`에서 연결 상태를 지웁니다.
+
+```bash
+./bin/edc trace http --tls=/usr/local/lib/libmbedtls.so
+```
+
+DTLS는 지원하지 않습니다.
+
+wolfSSL은 `wolfSSL_read`와 `wolfSSL_write` 또는 `_ex` 변형에서 평문을 읽고, `wolfSSL_free`에서 연결 상태를 지웁니다.
+
+```bash
+./bin/edc trace http --tls=/usr/local/lib/libwolfssl.so
+```
+
+`--tls=claude`처럼 실행 파일 이름만 지정하면 PATH에서 찾습니다. 현재 디렉터리에 같은 이름의 파일이 있으면 그 파일을 먼저 사용합니다.
+
+심볼 없는 BoringSSL은 Claude Code 2.1.291에 포함된 amd64 Bun 1.4.3 런타임을 지원합니다. GNU build ID는 `ca2032b38650b44e05b2074617d524c7475c80f0`입니다.
+
+edc는 build ID와 함수 코드가 등록된 값과 일치해야 probe를 붙입니다. 다른 심볼 없는 BoringSSL 빌드는 확인한 오프셋을 별도로 등록해야 합니다.
+
+```bash
+./bin/edc trace http --tls=claude
+```
+
+`sudo`로 실행하면 `PATH`에 `~/.local/bin`이 없는 경우가 많습니다. edc가 실행 파일을 찾지 못하면 현재 shell에서 찾은 경로를 넘깁니다.
+
+```bash
+sudo ./bin/edc trace http --tls="$(command -v claude)"
+```
+
+OpenSSL, GnuTLS, NSS, wolfSSL, Mbed TLS, rustls-ffi, Go TLS, BoringSSL에서 읽은 요청과 응답 event에는 `"tls": true`가 붙고, event 행에는 event 이름 뒤에 `tls`가 표시됩니다. 목적지는 `https://`로 시작하고, 평문 HTTP의 목적지는 `http://`로 시작합니다. path, 상태 코드, 응답 시간, group 보기, `--payload`, 요약은 평문 HTTP와 같게 동작하고, `--payload`는 같은 header 값을 가립니다. HTTPS의 body에는 token이 들어 있는 경우가 많으므로, 출력을 공유하기 전에 확인합니다.
+
+TLS 위의 HTTP/2는 h2c처럼 해석해서 stream마다 method, path, 상태 코드, 응답 시간을 표시합니다. frame과 header 표를 따라가야 하므로 HTTP/2 연결의 평문은 모두 읽고, 그래서 바쁜 HTTP/2 연결은 HTTP/1보다 비용이 크고 다른 연결의 event를 잃게 할 수 있습니다. 비용을 줄이려면 `--port`를 씁니다. HTTP/2 연결의 평문을 잃으면 그 방향은 더 읽지 않고 잃은 event로 셉니다. trace를 시작하기 전에 맺은 HTTP/2 연결은 해석하지 않습니다. HTTP/2에서는 `--payload`가 시작 줄과 body를 표시합니다. 시작 줄은 method와 path, 또는 상태 코드로 만들고, header는 표시하지 않습니다. HTTP/2 event는 body가 끝날 때 출력합니다. `--payload`는 body의 앞 4KiB를, `--payload=all`은 1MiB까지 담습니다. 상한에서 body를 잘랐거나, stream이나 trace가 끝나기 전에 body가 끝나지 않으면 event에 `"payload_truncated": true`가 붙습니다. 기다리는 body가 4096개나 64MiB를 넘으면 가장 오래된 event를 먼저 이 표시와 함께 출력하고, 어느 방향을 더 읽지 않을 때도 그렇게 합니다. `--payload` 없이 연 전체 화면은 HTTP/2 body를 보여 주지 않고, header가 오면 바로 event를 보여 줍니다.
+
+Bun, `node`, Python `asyncio`처럼 TLS 함수 안에서 socket을 쓰지 않는 program은 어느 연결인지 알 수 없습니다. 이런 event에는 process는 있지만 `source`와 `destination`이 없고, `target`은 `Host` header입니다. 요약은 이 event 수를 `TLS plaintext without an address`로 표시하고, JSON에는 `tls_unmapped`가 붙습니다. `--port`를 쓰면 이런 평문은 port를 확인할 수 없어 표시하지 않고 같은 수에 더합니다.
+
+`--tls`는 OpenSSL이 내보내는 `SSL_read`와 `SSL_write`(또는 `SSL_read_ex`와 `SSL_write_ex`), GnuTLS의 `gnutls_record_recv`와 `gnutls_record_send`, 앞서 설명한 NSS, wolfSSL, Mbed TLS, rustls-ffi, BoringSSL을 봅니다. Debian과 Ubuntu의 `wget`과 `git`은 GnuTLS를 씁니다. Java는 지원하지 않습니다. Go는 앞서 설명한 범위만 지원합니다. 심볼이 없는 program은 지원하는 Go 바이너리와 등록된 BoringSSL 빌드를 지원합니다. `--tls=<경로>`로 지정한 파일은 symbol table도 읽으므로, strip하지 않은 정적 program도 보입니다. `openssl s_server -www`처럼 OpenSSL의 SSL BIO로 읽고 쓰는 program도 보이지 않습니다.
+
+이 파일을 쓰는 모든 process에서 함수가 불릴 때마다 probe가 실행되며, `--process`로 가린 process도 마찬가지입니다. 끝날 때 kernel이 probe를 하나씩 지우므로, Ctrl-C를 누른 뒤 몇 초 지나서 끝날 수 있습니다. `--tls`가 요구하는 kernel 버전은 `trace http`와 같습니다.
+
+amd64의 Linux 6.11, 6.12.14 전의 6.12, 6.13.3 전의 6.13에서는 Docker container처럼 seccomp filter 아래에서 도는 process가 TLS 호출에서 돌아올 때 종료될 수 있습니다. 이런 kernel에서는 probe를 붙이기 전에 경고를 표시하고, 전체 화면을 열기 전에 Enter를 기다립니다. 멈추려면 Ctrl-C를 누릅니다. 배포판 kernel에는 수정이 따로 들어 있을 수 있습니다.
+
+`--tls`가 없으면 HTTPS의 요청은 kernel에서 암호문으로만 보이므로 표시하지 않습니다. TLS 없는 HTTP/2(h2c, 예: cluster 안의 gRPC)는 해석해서 stream마다 method, path, 상태 코드, 응답 시간을 표시합니다. frame과 header 표를 따라가야 하므로 h2c 연결은 모든 byte를 읽고, 그래서 바쁜 h2c 연결은 HTTP/1보다 비용이 큽니다. 이 byte는 다른 HTTP 레코드와 같은 buffer를 쓰므로, 바쁜 h2c 연결이 있으면 다른 연결의 event도 잃을 수 있습니다. 비용을 줄이려면 `--port`를 씁니다. h2c 연결의 byte를 잃으면 그 방향은 더 읽지 않고 잃은 event로 셉니다. HTTP/3의 요청은 binary frame이라 표시하지 않습니다. HTTP/3은 UDP를 쓰므로 `tls_hello` event도 없습니다. edc는 한 번의 읽기나 쓰기가 시작되는 곳에서만 message를 찾습니다. 그래서 한 번의 읽기에 앞 응답의 끝과 다음 응답의 시작이 함께 들어 있으면 다음 응답을 놓칩니다. 프로그램이 message 하나를 여러 버퍼로 나눠 쓰면 첫 버퍼만 읽으므로, `Host` header는 첫 버퍼의 앞 512 byte 안에 있어야 합니다. 없으면 target은 서버 주소입니다. edc는 Linux 5.15 이상에서 이 field를 지원합니다.
 
 Linux 5.15 이상에서 `trace mysql`을 사용하면 평문 MySQL 명령과 결과를 발생 즉시 출력합니다. edc는 kernel에서 MySQL port의 TCP 읽기와 쓰기마다 앞부분을 읽습니다. 기본 port는 3306이고, 다른 port는 `--port`로 지정합니다.
 

@@ -483,7 +483,7 @@ The load thresholds follow the core count of the host.
 
 `hot core` shows the usage of one core, so it gets a warning at 90 and no risk level. A host with many cores keeps room when one core is full.
 
-The dashboard gives no color to `iops`, `busy%`, `swap/s`, the byte and packet rates, and the `signal` column. These values have no threshold, or they show the level without a color. Aggregate `busy%` goes above 100 on a host with more than one busy disk, so a fixed threshold gives a wrong signal. The `cores` bar shows the level with `.`, `:`, `*`, and `#`.
+The dashboard gives no color to `iops`, `busy%`, `swap/s`, `steal%`, `blocked`, `queue`, the byte, packet, and TCP rates, and the `signal` column. These values have no threshold, or they show the level without a color. Aggregate `busy%` goes above 100 on a host with more than one busy disk, so a fixed threshold gives a wrong signal. The `cores` bar shows the level with `.`, `:`, `*`, and `#`.
 
 To remove the colors, set `NO_COLOR`. A pipe or a file gets no colors.
 
@@ -507,6 +507,7 @@ If stdin and stdout are terminals, `edc top` opens a full-screen dashboard. The 
 | `-` | make the interval shorter |
 | `1`, `c`, `m`, `d`, `n` | switch to all, CPU, memory, disk, or network columns |
 | `s` | switch to Linux pressure columns |
+| `v` | Return to the box screen. |
 | `f` | Open the signal view. Press again to select a process candidate. If a filter is active, open the process view. |
 | `Tab` | Switch between history and process selection. |
 | `?` | Open help. Use arrows to scroll. Press `Esc` to return. |
@@ -544,9 +545,37 @@ If the terminal has fewer than 80 columns, the overview shows CPU, memory, load,
 
 The minimum terminal size is 24 columns and 8 rows. Help supports scroll on small terminals.
 
+Use `--split` to show several views at the same time. Each view gets a box with its own table of recent samples.
+
+`--split` takes a list of names: `cpu`, `mem`, `disk`, `net`, and `psi`. Boxes appear in the order that you write them. `--split` without a list shows all five boxes. `--split none` starts with a single view.
+
+Write each name once. An empty value, an unknown name, or a repeated name stops the command with exit code 2.
+
+Set `defaults.top.split` in the config file to start the dashboard with the same list every time. The value uses the same syntax as `--split`. A `--split` option on the command line has priority over the config value.
+
+The boxes keep the order of the list. The layout uses the smallest number of rows that fit the terminal width. It then divides the boxes so that the widest row is as narrow as possible. All rows share the height equally.
+
+Every box omits the `signal` column. One line below the boxes shows the signals of the selected time. If the cpu box is on the screen, the mem and psi boxes omit `load`. If the mem box is on the screen, the psi box omits `mem%`. Only the first box in each row shows the `time` column. The other boxes in that row use the same times. The detail, peaks, and process panels appear below that line, as in the single view.
+
+All boxes share the selected row. The arrow keys, `PgUp`, `PgDn`, and `End` move all boxes together. `PgUp` and `PgDn` move by the number of data rows in one box.
+
+Press `1`, `c`, `m`, `d`, `n`, or `s` to leave the box screen. Press `v` to return.
+
+Each box needs at least 3 data rows. If a box has fewer rows, the dashboard shows the first box as a single view. The status line explains this. A box that is wider than the terminal drops its last columns.
+
+If the optional columns, such as `steal%` and `retr/s`, add a row of boxes, the boxes omit these columns.
+
+A terminal with 80 columns and 24 rows shows only the CPU view for `--split`. At 80 columns, all five boxes need about 33 rows.
+
+On macOS, the dashboard omits the `psi` box and shows a notice. The config file can still list `psi`, so one file works on both systems.
+
+`--split` works only in the dashboard. If you add `--split` to a run that prints the table, the command exits with code 2. That includes `--count`, `--json`, a pipe, and `NO_COLOR`. The same applies to `--process`. The config value does not stop those runs. With `--process`, the process view stays.
+
 On macOS and Linux, the disk view shows IOPS and average `await` across physical disks.
 
 On Linux, the disk view shows aggregate `busy%`, and the memory view shows memory pressure. Aggregate `busy%` can exceed 100 across multiple disks.
+
+On Linux, some views also show optional columns. The CPU view shows `steal%` and `blocked`. `steal%` is the CPU time that the hypervisor gave to other guests. `blocked` is the number of tasks that wait for I/O now. The disk view shows `queue`, the average number of I/O requests in progress, added across physical disks. The network view shows TCP retransmitted segments (`retr/s`), sent resets (`rst/s`), and failed connection attempts (`fail/s`) per second. Optional columns appear only if all other columns fit and `signal` keeps at least 13 columns.
 
 On macOS, the dashboard omits unsupported iowait, PSI, disk busy, file descriptor, listen overflow, softnet drop, conntrack, and eBPF latency columns. The help page lists these limits.
 
@@ -554,11 +583,13 @@ On macOS and Linux, the network view shows interface errors and drops. On macOS,
 
 The memory view shows `swap/s`, the bytes per second that the kernel moves out to swap.
 
-Press `s` for Linux pressure. It shows CPU, memory, and I/O `some avg10`: the percentage of the last ten seconds during which at least some tasks waited for that resource. The CPU view shows the hottest core and an ASCII bar; on machines with more than 24 cores, the bar shows the first 24.
+Press `s` for Linux pressure. It shows CPU, memory, and I/O `some avg10`: the percentage of the last ten seconds during which at least some tasks waited for that resource. The `mem full` and `io full` columns show memory and I/O `full avg10`. This is the percentage of the last ten seconds during which all non-idle tasks waited at the same time. The CPU view shows the hottest core and an ASCII bar; on machines with more than 24 cores, the bar shows the first 24.
 
 The detail view also lists the top three processes by CPU. The list refreshes in the background at most once a second, so it does not lengthen the observation interval. Without `--write`, only the dashboard collects it; the table and unfiltered `--json` output skip it. On Linux, `edc` compares the CPU ticks in `/proc/<pid>/stat` with the previous refresh, so the value covers the time since that refresh. On macOS, it uses the recent decaying average that `ps` reports.
 
 The process panel shows CPU candidates by default and RSS candidates in the memory view. It keeps five leaders per metric before the list limit. The panel shows three candidates. If the terminal has 40 or more rows, the panel shows five.
+
+The panels and the key hints stay at the bottom of the screen. If the two hint lines fit in one line, the dashboard joins them. If the terminal has 145 or more columns, the process panel moves to the right. The detail and peaks panels and the key hints use the left side. With `--process`, the panels stay below each other because the process lines are longer.
 
 Press `Tab` to select a candidate. Use arrows to choose a process. Press `Enter` to focus its PID.
 
@@ -586,7 +617,7 @@ On Linux, the `n` view adds conntrack occupancy (`ct%`), listen overflows/s (`li
 
 Collection uses the current network namespace, but softnet counters and TCP TIME_WAIT can be host-wide. TCP `CurrEstab` includes ESTABLISHED and CLOSE_WAIT. Socket counts are not local port utilization. Missing baselines, failed reads, or counter resets show `—` for rates. Conntrack statistics require an exposed `/proc/net/stat/nf_conntrack`; missing statistics do not prevent other collection.
 
-JSON samples add `network_limits` with the namespace, `settings`, `gauges`, cumulative `counters`, and per-second `rates`. Readings include `status` and, where needed, `reason`; unobserved numbers are omitted. Save JSON Lines to analyze trends after the command exits.
+JSON samples add `network_limits` with the namespace, `settings`, `gauges`, cumulative `counters`, and per-second `rates`. The counters and rates include `tcp_retrans_segs`, `tcp_out_rsts`, and `tcp_attempt_fails`. Readings include `status` and, where needed, `reason`; unobserved numbers are omitted. Save JSON Lines to analyze trends after the command exits.
 
 ## Top JSON output
 
@@ -596,7 +627,7 @@ Use `--json` to write one JSON object for each sample. Use `-` for stdout. A pat
 ./bin/edc top --count 5 --json -
 ```
 
-Each line has `time`, `hostname`, `cores`, the network and disk rates in bytes per second, the CPU values in percent, `load1`, `memory_pct`, and `swap_out_bytes_per_s`. macOS and Linux emit network errors and drops, and disk IOPS and await values. Linux additionally emits disk busy values and PSI `some avg10`; `*_health_supported`, `disk_busy_supported`, and `psi_supported` tell consumers whether those values are supported. The `--json` option removes the table and the header.
+Each line has `time`, `hostname`, `cores`, the network and disk rates in bytes per second, the CPU values in percent, `load1`, `memory_pct`, and `swap_out_bytes_per_s`. macOS and Linux emit network errors and drops, and disk IOPS and await values. Linux additionally emits disk busy values, PSI `some avg10`, and memory and I/O PSI `full avg10`; `*_health_supported`, `disk_busy_supported`, and `psi_supported` tell consumers whether those values are supported. The `--json` option removes the table and the header.
 
 ## Top recordings and history
 
@@ -1180,7 +1211,7 @@ Grouped rows in the full-screen view show the groups with the most traffic first
 
 In the event list, press Up or Down (or `k` and `j`) to select an event. While an event is selected, the list stops and does not follow new events. The header shows the number of newer events. Press Enter to see all the fields of the event and the whole payload. The detail view wraps long lines. Press Up, Down, PgUp (or `b`), PgDn (or Space), `g`, or `G` to scroll, and press Esc or `q` to go back. Press `l`, Esc, or End in the list to follow new events again. Many Mac keyboards have no End key. In the list, `b` and Space also move the selection by a page. If the selected event becomes the oldest one in the list, the list shows newer events below it. The list keeps the first 4 KiB of each payload. The detail view shows the whole payload of recent events, up to 64 MiB in total.
 
-Press `f` to open the detail view on the newest event and follow new events. Press `f` again to stop at the event on the screen. In `trace http`, the full screen collects the first 4 KiB of each message also without `--payload`. The list hides the payload lines until you press `v`. With `--payload`, the list shows them from the start. Press `m` to show or hide the values of the `Authorization`, `Proxy-Authorization`, `Cookie`, and `Set-Cookie` headers. While they are visible, the header shows `secrets shown`. In the detail view, press `z` to decode a gzip body. edc decodes up to 1 MiB and shows how many bytes it decoded.
+Press `f` to open the detail view on the newest event and follow new events. Press `f` again to stop at the event on the screen. In `trace http`, the full screen collects the first 4 KiB of each message also without `--payload`. The list hides the payload lines until you press `v`. With `--payload`, the list shows them from the start. Press `m` to show or hide the values of the headers that `--payload` hides. While they are visible, the header shows `secrets shown`. In the detail view, press `z` to decode a gzip body. edc decodes up to 1 MiB and shows how many bytes it decoded.
 
 Press `i` to split the screen. The list uses the top half, and a preview of one message uses the bottom half. The preview shows the selected event. If no event is selected, the preview shows the newest event and changes when a new event arrives. If the event has a payload, the preview shows the payload. Otherwise, the preview shows the fields of the event. Press `J` and `K` to scroll the preview, and press Enter to open the full detail view. In `trace http`, `m` and `z` also change the preview. If the terminal has fewer than 9 lines, edc shows only the list.
 
@@ -1310,24 +1341,132 @@ Use `--group-by path` to group the events by the request path. In the full-scree
 | Only the requests that the proxy on port 9900 received | `./bin/edc trace http --side server --port 9900` |
 | The latency of each process on each side | `./bin/edc trace http --port 9000 --group-by process` |
 | The requests, errors, and latency of each path | `./bin/edc trace http --group-by path` |
+| The HTTP/1.1 and HTTP/2 requests in HTTPS | `./bin/edc trace http --tls` |
 
 The client latency and the server latency of one hop measure different times. The client latency includes the network and the wait before the server reads the request. The server latency includes only the work of the server. If the client latency is much larger than the server latency, examine the network and the server queue.
 
 edc finds HTTP by the start of the data, not by the port, so it sees HTTP on any port. The `source` column is always this host, and `destination` is the peer. Use `--port` to keep the connections that use one port on this host or on the peer. With `--side server`, it shows one local server. With `--side client`, it shows the requests from this host to the servers on that port. edc checks the port in the kernel, so it does not read the data of other connections.
 
-Use `--payload` to see the data of each message. Under each event, edc prints the body. If there is no body, it prints the headers. With `--raw`, the `payload` field has all the data. The data is the first 4 KiB (4,096 bytes) of the read or the write, so edc cuts a longer body. If a program writes the headers and the body in two writes, edc does not see the body. Each record is larger with `--payload`, so a busy server can cause lost events. The summary shows the number of lost events. `--payload` keeps the query, but it hides the values of the `Authorization`, `Proxy-Authorization`, `Cookie`, and `Set-Cookie` headers. edc shows the other headers, the query, and the body as they are, and they can contain tokens and passwords. Before you share the output, check it for tokens and passwords. edc changes control characters to `\xNN`, so the data cannot change the terminal. `--payload` does not work with `--json`, because `--json` writes only the summary.
+Use `--payload` to see the data of each message. Under each event, edc prints the body. If there is no body, it prints the headers. With `--raw`, the `payload` field has all the data. The data is the first 4 KiB (4,096 bytes) of the read or the write, so edc cuts a longer body. If a program writes the headers and the body in two writes, edc does not see the body. Each record is larger with `--payload`, so a busy server can cause lost events. The summary shows the number of lost events. `--payload` keeps the query, but it hides the values of the `Authorization`, `Proxy-Authorization`, `Cookie`, `Set-Cookie`, `X-Api-Key`, `X-Goog-Api-Key`, `Api-Key`, and `X-Amz-Security-Token` headers. edc shows the other headers, the query, and the body as they are, and they can contain tokens and passwords. Before you share the output, check it for tokens and passwords. edc changes control characters to `\xNN`, so the data cannot change the terminal. `--payload` does not work with `--json`, because `--json` writes only the summary.
 
 Use `--payload=all` to see each whole message, up to 1 MiB. edc follows the message into the next reads and writes, and into the other buffers of a `writev`. edc prints the event when the message ends. The end is the last byte of `Content-Length`, the last chunk of a chunked body, or one second without data. So the event can come out later than with `--payload`, but the latency does not change. The plain output prints the whole message under the event. The full screen still shows one line. If edc cuts the message at 1 MiB, loses a part, or stops before the end, the event has `"payload_truncated": true`. Write `--payload=all` without a space. `--payload all` is an error. `--payload=all` uses more CPU than `--payload`, so a busy server causes lost events sooner.
 
-Use `--show-secrets` with `--payload` to show the values of the `Authorization`, `Proxy-Authorization`, `Cookie`, and `Set-Cookie` headers. Other people can use an account with these values. Do not share output that has them. In the full screen, press `m` instead.
+Use `--show-secrets` with `--payload` to show the values of the headers that `--payload` hides. Other people can use an account with these values. Do not share output that has them. In the full screen, press `m` instead.
 
 The summary after Ctrl-C shows one row for each side, method, host, and path. If the trace has both sides, the summary shows the totals of each side and adds a `SIDE` column. JSON adds the `client` and `server` objects with the totals of each side. Grouped rows show the requests, the responses, the 4xx and 5xx responses, the unanswered requests, and the average and maximum latency.
 
 HTTPS is encrypted, so edc cannot read the method, the path, or the status. The TLS ClientHello at the start of each connection is plain text. edc reads it and shows a `tls_hello` event. The `target` is the server name (SNI). The `alpn` field lists the protocols that the client offers, for example `h2` and `http/1.1`, and the event row shows the first one. A client that sends a ClientHello makes a `client:` row. A local server that receives one makes a `server:` row. The summary counts these connections in a separate `TLS connections` table, and JSON adds `tls_connections` and `tls`. Use `--port 443` to see only the HTTPS connections on port 443.
 
-edc does not see a TLS connection that started before the trace. If a client uses Encrypted Client Hello (ECH), the SNI is the public name of the provider. To see the requests of HTTPS, trace the plain HTTP behind the TLS end point, for example a proxy that sends plain HTTP to its backend.
+edc does not see a TLS connection that started before the trace. If a client uses Encrypted Client Hello (ECH), the SNI is the public name of the provider. To see the requests of HTTPS, use `--tls`. You can also trace the plain HTTP behind the TLS end point, for example a proxy that sends plain HTTP to its backend.
 
-`trace http` does not show the requests in HTTPS, HTTP/2, or HTTP/3, because the kernel sees only encrypted data or binary frames. HTTP/3 uses UDP, so it also has no `tls_hello` event. edc finds a message only at the start of a read or a write. If one read has the end of a response and the start of the next response, edc misses the next response. If a program writes one message from several buffers, edc reads only the first buffer. So the `Host` header must be in the first buffer and in the first 512 bytes. If it is not, the target is the server address. edc supports this field on Linux 5.15 or later.
+Use `--tls` to see the HTTP/1.1 and HTTP/2 requests in HTTPS. edc reads plaintext before encryption and after decryption. It supports OpenSSL, GnuTLS, NSS, wolfSSL, Mbed TLS, rustls-ffi, Go TLS, and registered BoringSSL builds. It does not need a certificate or a key.
+
+```bash
+./bin/edc trace http --tls
+./bin/edc trace http --tls --side server --port 443
+./bin/edc trace http --tls=/usr/local/bin/node
+```
+
+Without a value, `--tls` finds these files when the trace starts:
+
+- the `libssl`, `libgnutls`, `libssl3`, `libnspr4`, `libwolfssl`, `libmbedtls`, and `librustls` of this host in the standard library directories
+- each of these libraries that a process loads, also in a container
+- the program file of a process, if the file contains OpenSSL and exports `SSL_read`, for example `node`
+- a stripped BoringSSL program with a supported GNU build ID
+
+edc opens the file that each process loaded. So edc also sees a process that still uses an old `libssl` after a package update. To open these files, edc needs `CAP_SYS_ADMIN` or `CAP_CHECKPOINT_RESTORE`. The probes can also need `CAP_SYS_ADMIN`. Root has it. In a container, add `SYS_ADMIN` with `--cap-add` or use `--privileged`. If edc cannot open these files, it shows a notice.
+
+edc continues the search while the trace runs. When a process starts a program, edc checks that process several times in the next 3 seconds. It also checks all the processes again at an interval of 2 seconds or more. On a host with many processes, the interval is longer. If a process uses a new file, edc adds the probes to that file. edc does not see the requests that the process sends before that. The kernel sends the start of a program only to the first network namespace. If edc runs in another network namespace or PID namespace, for example in a container without the host network or `--pid=host`, edc shows a notice and uses only the check of all the processes. If the kernel stops sending the start of programs during the trace, edc tells you after the trace.
+
+To watch only one file, use `--tls=<path>`. Then edc does not search for other files. Write the path without a space, as with `--payload=all`.
+
+edc attaches the probes to this file. If a program loads a copy of the library from another file, edc does not see that program. To find the file that a process loads, read `/proc/<pid>/maps`.
+
+NSS needs two libraries: `libssl3` for the TLS state and `libnspr4` for the plaintext I/O. If you specify either library, edc also selects its companion from the same directory or a standard library directory.
+
+```bash
+./bin/edc trace http --tls=/usr/lib/x86_64-linux-gnu/libssl3.so
+```
+
+Start the trace before the NSS program starts. edc needs the SSL setup calls to distinguish TLS from plain files and sockets.
+
+NSS uses `PR_Read`, `PR_Recv`, `PR_Write`, and `PR_Send` for plaintext. edc follows `SSL_SECURITY`, its default value, model copies, accepted connections, and `PR_Close`.
+
+NSPR also uses these functions for plain files and sockets. So each NSPR read and write runs a probe, also in a program without TLS.
+
+An NSS connection with `SSL_SECURITY` off produces no TLS event. `PR_Recv` with `PR_MSG_PEEK` also produces no TLS event.
+
+Go TLS uses the Go function table and probes at function returns. The verified scope is Go 1.26.8 and 1.27.1 on Linux amd64 and arm64.
+
+```bash
+./bin/edc trace http --tls=my-go-program
+```
+
+Specify the binary path or command name. edc supports normal, stripped, and PIE binaries. Automatic library discovery does not select Go binaries.
+
+These events have no socket addresses. A `--port` filter excludes them. For Go TLS, edc supports no other version or architecture.
+
+For Go clients, latency starts at `Write` entry and ends at `Read` return. For servers, latency ends at `Write` entry.
+
+The capture tests cover Go HTTP/1.1 and HTTP/2, including concurrent streams, repeated headers and fragmented bodies.
+
+rustls-ffi uses the C functions `rustls_connection_read` and `rustls_connection_write`. edc clears the connection state at `rustls_connection_free`.
+
+```bash
+./bin/edc trace http --tls=/usr/local/lib/librustls.so
+```
+
+These events have no socket addresses. A `--port` filter excludes them. `--tls` does not see programs that use the native Rust API of rustls.
+
+Mbed TLS uses `mbedtls_ssl_read`, `mbedtls_ssl_write`, `mbedtls_ssl_read_early_data`, and `mbedtls_ssl_write_early_data`. edc clears the connection state at `mbedtls_ssl_session_reset` and `mbedtls_ssl_free`.
+
+```bash
+./bin/edc trace http --tls=/usr/local/lib/libmbedtls.so
+```
+
+edc does not read DTLS connections.
+
+wolfSSL uses `wolfSSL_read` and `wolfSSL_write`, or their `_ex` variants. edc clears the connection state at `wolfSSL_free`.
+
+```bash
+./bin/edc trace http --tls=/usr/local/lib/libwolfssl.so
+```
+
+Use `--tls=claude` to find an executable in PATH. A file in the current directory takes priority over PATH.
+
+edc supports the stripped amd64 Bun 1.4.3 runtime in Claude Code 2.1.291. Its GNU build ID is `ca2032b38650b44e05b2074617d524c7475c80f0`.
+
+edc checks the build ID and the function code before it attaches probes. Other stripped BoringSSL builds need a separate entry with checked offsets.
+
+```bash
+./bin/edc trace http --tls=claude
+```
+
+With `sudo`, `PATH` often does not include `~/.local/bin`. If edc does not find the program, give the path from your shell:
+
+```bash
+sudo ./bin/edc trace http --tls="$(command -v claude)"
+```
+
+An HTTPS request or response from OpenSSL, GnuTLS, NSS, wolfSSL, Mbed TLS, rustls-ffi, Go TLS, or BoringSSL has `"tls": true`. The event row shows `tls` after the event name. The destination starts with `https://`. A plain HTTP destination starts with `http://`. The path, the status, the latency, the grouped views, `--payload`, and the summary work as with plain HTTP. `--payload` hides the same header values. The body of HTTPS often contains tokens. Before you share the output, check it for tokens.
+
+edc reads HTTP/2 over TLS as it reads h2c. It shows the method, the path, the status, and the latency of each stream. To follow the frames and the header tables, edc reads all the plaintext of an HTTP/2 connection. So a busy HTTP/2 connection costs more than HTTP/1, and it can make edc lose events of other connections. To reduce the cost, use `--port`. If edc loses plaintext of an HTTP/2 connection, it stops reading that direction and counts lost events. edc does not read an HTTP/2 connection that started before the trace. With HTTP/2, `--payload` shows a start line and the body. edc makes the start line from the method and the path, or from the status. It does not show the headers. edc prints an HTTP/2 event when its body ends. `--payload` keeps the first 4 KiB of each body, and `--payload=all` keeps up to 1 MiB. If edc cuts the body at the limit, or the body does not end before the stream or the trace ends, the event has `"payload_truncated": true`. If more than 4096 bodies or 64 MiB of bodies wait, edc prints the oldest event early with this field. edc does the same when it stops reading a direction. Without `--payload`, the full screen shows no HTTP/2 body, and it shows each HTTP/2 event when its headers arrive.
+
+Some programs do not use the socket inside the TLS call, for example Bun, `node`, and Python `asyncio`. Then edc does not know the connection. The event has the process, but it has no `source` and no `destination`. The `target` is the `Host` header. The summary shows the number of these events as `TLS plaintext without an address`, and JSON adds `tls_unmapped`. With `--port`, edc cannot check the port of this plaintext. So edc does not show it and adds it to the same number.
+
+`--tls` sees programs that call the OpenSSL functions `SSL_read` and `SSL_write`, or `SSL_read_ex` and `SSL_write_ex`. It also sees programs that call the GnuTLS functions `gnutls_record_recv` and `gnutls_record_send`, for example `wget` and `git` on Debian and Ubuntu. NSS, wolfSSL, Mbed TLS, and rustls-ffi programs also work, as described above.
+
+`--tls` does not see Java programs. Go support has the limits above. It also does not see a program without the exported functions of these libraries, except supported Go binaries and the supported BoringSSL build.
+
+With `--tls=<path>`, edc also reads the symbol table, so a static program with symbols can work.
+
+`--tls` does not see a program that reads through the SSL BIO of OpenSSL, for example `openssl s_server -www`.
+
+Each call of these functions runs a probe in each process that uses the files. This cost also applies to the processes that `--process` hides. At the end, the kernel removes each probe, so the trace can stop a few seconds after Ctrl-C. `--tls` needs no newer kernel than `trace http`.
+
+On amd64 with Linux 6.11, 6.12 before 6.12.14, or 6.13 before 6.13.3, a process under a seccomp filter can stop when a TLS call returns. A Docker container uses such a filter. On these kernels, edc shows a warning before it attaches the probes. Before the full screen opens, edc waits for Enter. To stop, press Ctrl-C. A distribution kernel can include the fix.
+
+Without `--tls`, `trace http` does not show the requests in HTTPS, because the kernel sees only encrypted data. It reads HTTP/2 without TLS (h2c), for example gRPC inside a cluster. It shows the method, the path, the status, and the latency of each stream. To follow the frames and the header tables, edc reads all the bytes of an h2c connection, so a busy h2c connection costs more than HTTP/1. These bytes share one buffer with the other HTTP records, so a busy h2c connection can also make edc lose events of other connections. To reduce the cost, use `--port`. If edc loses bytes of an h2c connection, it stops reading that direction and counts lost events. It does not show the requests in HTTP/3, because they use binary frames. HTTP/3 uses UDP, so it also has no `tls_hello` event. edc finds a message only at the start of a read or a write. If one read has the end of a response and the start of the next response, edc misses the next response. If a program writes one message from several buffers, edc reads only the first buffer. So the `Host` header must be in the first buffer and in the first 512 bytes. If it is not, the target is the server address. edc supports this field on Linux 5.15 or later.
 
 Use `trace mysql` on Linux 5.15 or later to print plain MySQL commands and results as they arrive. edc reads the start of each TCP read and write on the MySQL port in the kernel. The default port is 3306. Use `--port` for another port.
 

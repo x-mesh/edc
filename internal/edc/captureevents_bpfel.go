@@ -34,6 +34,31 @@ type captureEventsDnsRecord struct {
 	_           [4]byte
 }
 
+type captureEventsGoTlsKey struct {
+	_         structs.HostLayout
+	Goroutine uint64
+	Frame     uint64
+	Pid       uint32
+	Direction uint32
+}
+
+type captureEventsGoTlsPending struct {
+	_           structs.HostLayout
+	Connection  uint64
+	Buffer      uint64
+	Num         uint64
+	StackOffset uint64
+	Marked      uint8
+	_           [7]byte
+	Started     uint64
+}
+
+type captureEventsGoTlsWrites struct {
+	_      structs.HostLayout
+	Active uint64
+	Closed uint64
+}
+
 type captureEventsHttpCursor struct {
 	_         structs.HostLayout
 	Pointer   uint64
@@ -97,12 +122,67 @@ type captureEventsMysqlSendPending struct {
 	_      [7]byte
 }
 
+type captureEventsNssCallKey struct {
+	_      structs.HostLayout
+	Thread uint64
+	Stack  uint64
+	Cookie uint64
+}
+
+type captureEventsNssControl struct {
+	_    structs.HostLayout
+	Fd   uint64
+	Mode uint32
+	Kind uint32
+}
+
+type captureEventsNssIoCall struct {
+	_       structs.HostLayout
+	Cookie  uint64
+	Pending captureEventsSslPending
+}
+
+type captureEventsNssIoKey struct {
+	_      structs.HostLayout
+	Thread uint64
+	Stack  uint64
+}
+
 type captureEventsSockOwner struct {
 	_        structs.HostLayout
 	CgroupId uint64
 	Pid      uint32
 	Comm     [16]int8
 	_        [4]byte
+}
+
+type captureEventsSslKey struct {
+	_    structs.HostLayout
+	Tgid uint64
+	Ssl  uint64
+}
+
+type captureEventsSslPending struct {
+	_         structs.HostLayout
+	Ssl       uint64
+	Buffer    uint64
+	Num       uint64
+	Out       uint64
+	Direction uint8
+	Learned   uint8
+	_         [6]byte
+	Snapshot  captureEventsSslSnapshot
+}
+
+type captureEventsSslSnapshot struct {
+	_           structs.HostLayout
+	Skaddr      uint64
+	Family      uint16
+	Sport       uint16
+	Dport       uint16
+	Source      [16]uint8
+	Destination [16]uint8
+	_           [2]byte
 }
 
 type captureEventsTcpDiagnostics struct {
@@ -148,6 +228,8 @@ const (
 	captureEventsMapDnsQueryPending            = "dns_query_pending"
 	captureEventsMapDnsScratch                 = "dns_scratch"
 	captureEventsMapEvents                     = "events"
+	captureEventsMapGoTlsPending               = "go_tls_pending"
+	captureEventsMapGoTlsWrites                = "go_tls_writes"
 	captureEventsMapHttpCursors                = "http_cursors"
 	captureEventsMapHttpRecvPending            = "http_recv_pending"
 	captureEventsMapHttpScratch                = "http_scratch"
@@ -155,19 +237,58 @@ const (
 	captureEventsMapHttpStreams                = "http_streams"
 	captureEventsMapLostEvents                 = "lost_events"
 	captureEventsMapMysqlSendPending           = "mysql_send_pending"
+	captureEventsMapNssConfigs                 = "nss_configs"
+	captureEventsMapNssControlCalls            = "nss_control_calls"
+	captureEventsMapNssDefaults                = "nss_defaults"
+	captureEventsMapNssIoCalls                 = "nss_io_calls"
 	captureEventsMapSockOwners                 = "sock_owners"
+	captureEventsMapSslPending                 = "ssl_pending"
+	captureEventsMapSslSocks                   = "ssl_socks"
 	captureEventsMapTcpDiagnostics             = "tcp_diagnostics"
 	captureEventsMapTcpEstablishedAt           = "tcp_established_at"
 	captureEventsMapTcpLengthPending           = "tcp_length_pending"
 	captureEventsMapTlsPrefixes                = "tls_prefixes"
+	captureEventsMapTlsUnmapped                = "tls_unmapped"
 	captureEventsMapUdpSendPending             = "udp_send_pending"
+	captureEventsProgGoTlsArm64CloseEntry      = "go_tls_arm64_close_entry"
+	captureEventsProgGoTlsArm64ReadEntry       = "go_tls_arm64_read_entry"
+	captureEventsProgGoTlsArm64ReadExit        = "go_tls_arm64_read_exit"
+	captureEventsProgGoTlsArm64WriteEntry      = "go_tls_arm64_write_entry"
+	captureEventsProgGoTlsArm64WriteExit       = "go_tls_arm64_write_exit"
+	captureEventsProgGoTlsCloseEntry           = "go_tls_close_entry"
+	captureEventsProgGoTlsReadEntry            = "go_tls_read_entry"
+	captureEventsProgGoTlsReadExit             = "go_tls_read_exit"
+	captureEventsProgGoTlsWriteEntry           = "go_tls_write_entry"
+	captureEventsProgGoTlsWriteExit            = "go_tls_write_exit"
 	captureEventsProgHttpTcpDestroySock        = "http_tcp_destroy_sock"
 	captureEventsProgInetCskAcceptEntry        = "inet_csk_accept_entry"
 	captureEventsProgInetCskAcceptExit         = "inet_csk_accept_exit"
 	captureEventsProgInetCskAcceptExitLegacy   = "inet_csk_accept_exit_legacy"
 	captureEventsProgInetSockSetState          = "inet_sock_set_state"
 	captureEventsProgInetStreamConnectEntry    = "inet_stream_connect_entry"
+	captureEventsProgMbedReadEntry             = "mbed_read_entry"
+	captureEventsProgMbedWriteEntry            = "mbed_write_entry"
+	captureEventsProgNssAcceptEntry            = "nss_accept_entry"
+	captureEventsProgNssCloseEntry             = "nss_close_entry"
+	captureEventsProgNssControlExit            = "nss_control_exit"
+	captureEventsProgNssDefaultEntry           = "nss_default_entry"
+	captureEventsProgNssImportEntry            = "nss_import_entry"
+	captureEventsProgNssIoExit                 = "nss_io_exit"
+	captureEventsProgNssOptionEntry            = "nss_option_entry"
+	captureEventsProgNssReadEntry              = "nss_read_entry"
+	captureEventsProgNssRecvEntry              = "nss_recv_entry"
+	captureEventsProgNssWriteEntry             = "nss_write_entry"
+	captureEventsProgRustlsExit                = "rustls_exit"
 	captureEventsProgSkbConsumeUdpEntry        = "skb_consume_udp_entry"
+	captureEventsProgSslFreeEntry              = "ssl_free_entry"
+	captureEventsProgSslReadEntry              = "ssl_read_entry"
+	captureEventsProgSslReadExEntry            = "ssl_read_ex_entry"
+	captureEventsProgSslReadExExit             = "ssl_read_ex_exit"
+	captureEventsProgSslReadExit               = "ssl_read_exit"
+	captureEventsProgSslWriteEntry             = "ssl_write_entry"
+	captureEventsProgSslWriteExEntry           = "ssl_write_ex_entry"
+	captureEventsProgSslWriteExExit            = "ssl_write_ex_exit"
+	captureEventsProgSslWriteExit              = "ssl_write_exit"
 	captureEventsProgTcpCleanupRbufEntry       = "tcp_cleanup_rbuf_entry"
 	captureEventsProgTcpCreateOpenreqChildExit = "tcp_create_openreq_child_exit"
 	captureEventsProgTcpDestroySock            = "tcp_destroy_sock"
@@ -190,6 +311,7 @@ const (
 	captureEventsVarEmitDnsServer              = "emit_dns_server"
 	captureEventsVarEmitDnsTcpMessages         = "emit_dns_tcp_messages"
 	captureEventsVarEmitHttpMessages           = "emit_http_messages"
+	captureEventsVarEmitTlsPlaintext           = "emit_tls_plaintext"
 	captureEventsVarEmitUdpEvents              = "emit_udp_events"
 	captureEventsVarHttpMessageLimit           = "http_message_limit"
 	captureEventsVarHttpPayloadLimit           = "http_payload_limit"
@@ -198,6 +320,7 @@ const (
 	captureEventsVarTcpLengthFallback          = "tcp_length_fallback"
 	captureEventsVarTcpStatePort               = "tcp_state_port"
 	captureEventsVarUnusedHttpRecord           = "unused_http_record"
+	captureEventsVarUprobeArch                 = "uprobe_arch"
 )
 
 // loadCaptureEvents returns the embedded CollectionSpec for captureEvents.
@@ -242,13 +365,45 @@ type captureEventsSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type captureEventsProgramSpecs struct {
+	GoTlsArm64CloseEntry      *ebpf.ProgramSpec `ebpf:"go_tls_arm64_close_entry"`
+	GoTlsArm64ReadEntry       *ebpf.ProgramSpec `ebpf:"go_tls_arm64_read_entry"`
+	GoTlsArm64ReadExit        *ebpf.ProgramSpec `ebpf:"go_tls_arm64_read_exit"`
+	GoTlsArm64WriteEntry      *ebpf.ProgramSpec `ebpf:"go_tls_arm64_write_entry"`
+	GoTlsArm64WriteExit       *ebpf.ProgramSpec `ebpf:"go_tls_arm64_write_exit"`
+	GoTlsCloseEntry           *ebpf.ProgramSpec `ebpf:"go_tls_close_entry"`
+	GoTlsReadEntry            *ebpf.ProgramSpec `ebpf:"go_tls_read_entry"`
+	GoTlsReadExit             *ebpf.ProgramSpec `ebpf:"go_tls_read_exit"`
+	GoTlsWriteEntry           *ebpf.ProgramSpec `ebpf:"go_tls_write_entry"`
+	GoTlsWriteExit            *ebpf.ProgramSpec `ebpf:"go_tls_write_exit"`
 	HttpTcpDestroySock        *ebpf.ProgramSpec `ebpf:"http_tcp_destroy_sock"`
 	InetCskAcceptEntry        *ebpf.ProgramSpec `ebpf:"inet_csk_accept_entry"`
 	InetCskAcceptExit         *ebpf.ProgramSpec `ebpf:"inet_csk_accept_exit"`
 	InetCskAcceptExitLegacy   *ebpf.ProgramSpec `ebpf:"inet_csk_accept_exit_legacy"`
 	InetSockSetState          *ebpf.ProgramSpec `ebpf:"inet_sock_set_state"`
 	InetStreamConnectEntry    *ebpf.ProgramSpec `ebpf:"inet_stream_connect_entry"`
+	MbedReadEntry             *ebpf.ProgramSpec `ebpf:"mbed_read_entry"`
+	MbedWriteEntry            *ebpf.ProgramSpec `ebpf:"mbed_write_entry"`
+	NssAcceptEntry            *ebpf.ProgramSpec `ebpf:"nss_accept_entry"`
+	NssCloseEntry             *ebpf.ProgramSpec `ebpf:"nss_close_entry"`
+	NssControlExit            *ebpf.ProgramSpec `ebpf:"nss_control_exit"`
+	NssDefaultEntry           *ebpf.ProgramSpec `ebpf:"nss_default_entry"`
+	NssImportEntry            *ebpf.ProgramSpec `ebpf:"nss_import_entry"`
+	NssIoExit                 *ebpf.ProgramSpec `ebpf:"nss_io_exit"`
+	NssOptionEntry            *ebpf.ProgramSpec `ebpf:"nss_option_entry"`
+	NssReadEntry              *ebpf.ProgramSpec `ebpf:"nss_read_entry"`
+	NssRecvEntry              *ebpf.ProgramSpec `ebpf:"nss_recv_entry"`
+	NssWriteEntry             *ebpf.ProgramSpec `ebpf:"nss_write_entry"`
+	RustlsExit                *ebpf.ProgramSpec `ebpf:"rustls_exit"`
 	SkbConsumeUdpEntry        *ebpf.ProgramSpec `ebpf:"skb_consume_udp_entry"`
+	SslFreeEntry              *ebpf.ProgramSpec `ebpf:"ssl_free_entry"`
+	SslReadEntry              *ebpf.ProgramSpec `ebpf:"ssl_read_entry"`
+	SslReadExEntry            *ebpf.ProgramSpec `ebpf:"ssl_read_ex_entry"`
+	SslReadExExit             *ebpf.ProgramSpec `ebpf:"ssl_read_ex_exit"`
+	SslReadExit               *ebpf.ProgramSpec `ebpf:"ssl_read_exit"`
+	SslWriteEntry             *ebpf.ProgramSpec `ebpf:"ssl_write_entry"`
+	SslWriteExEntry           *ebpf.ProgramSpec `ebpf:"ssl_write_ex_entry"`
+	SslWriteExExit            *ebpf.ProgramSpec `ebpf:"ssl_write_ex_exit"`
+	SslWriteExit              *ebpf.ProgramSpec `ebpf:"ssl_write_exit"`
 	TcpCleanupRbufEntry       *ebpf.ProgramSpec `ebpf:"tcp_cleanup_rbuf_entry"`
 	TcpCreateOpenreqChildExit *ebpf.ProgramSpec `ebpf:"tcp_create_openreq_child_exit"`
 	TcpDestroySock            *ebpf.ProgramSpec `ebpf:"tcp_destroy_sock"`
@@ -278,6 +433,8 @@ type captureEventsMapSpecs struct {
 	DnsQueryPending  *ebpf.MapSpec `ebpf:"dns_query_pending"`
 	DnsScratch       *ebpf.MapSpec `ebpf:"dns_scratch"`
 	Events           *ebpf.MapSpec `ebpf:"events"`
+	GoTlsPending     *ebpf.MapSpec `ebpf:"go_tls_pending"`
+	GoTlsWrites      *ebpf.MapSpec `ebpf:"go_tls_writes"`
 	HttpCursors      *ebpf.MapSpec `ebpf:"http_cursors"`
 	HttpRecvPending  *ebpf.MapSpec `ebpf:"http_recv_pending"`
 	HttpScratch      *ebpf.MapSpec `ebpf:"http_scratch"`
@@ -285,11 +442,18 @@ type captureEventsMapSpecs struct {
 	HttpStreams      *ebpf.MapSpec `ebpf:"http_streams"`
 	LostEvents       *ebpf.MapSpec `ebpf:"lost_events"`
 	MysqlSendPending *ebpf.MapSpec `ebpf:"mysql_send_pending"`
+	NssConfigs       *ebpf.MapSpec `ebpf:"nss_configs"`
+	NssControlCalls  *ebpf.MapSpec `ebpf:"nss_control_calls"`
+	NssDefaults      *ebpf.MapSpec `ebpf:"nss_defaults"`
+	NssIoCalls       *ebpf.MapSpec `ebpf:"nss_io_calls"`
 	SockOwners       *ebpf.MapSpec `ebpf:"sock_owners"`
+	SslPending       *ebpf.MapSpec `ebpf:"ssl_pending"`
+	SslSocks         *ebpf.MapSpec `ebpf:"ssl_socks"`
 	TcpDiagnostics   *ebpf.MapSpec `ebpf:"tcp_diagnostics"`
 	TcpEstablishedAt *ebpf.MapSpec `ebpf:"tcp_established_at"`
 	TcpLengthPending *ebpf.MapSpec `ebpf:"tcp_length_pending"`
 	TlsPrefixes      *ebpf.MapSpec `ebpf:"tls_prefixes"`
+	TlsUnmapped      *ebpf.MapSpec `ebpf:"tls_unmapped"`
 	UdpSendPending   *ebpf.MapSpec `ebpf:"udp_send_pending"`
 }
 
@@ -301,6 +465,7 @@ type captureEventsVariableSpecs struct {
 	EmitDnsServer      *ebpf.VariableSpec `ebpf:"emit_dns_server"`
 	EmitDnsTcpMessages *ebpf.VariableSpec `ebpf:"emit_dns_tcp_messages"`
 	EmitHttpMessages   *ebpf.VariableSpec `ebpf:"emit_http_messages"`
+	EmitTlsPlaintext   *ebpf.VariableSpec `ebpf:"emit_tls_plaintext"`
 	EmitUdpEvents      *ebpf.VariableSpec `ebpf:"emit_udp_events"`
 	HttpMessageLimit   *ebpf.VariableSpec `ebpf:"http_message_limit"`
 	HttpPayloadLimit   *ebpf.VariableSpec `ebpf:"http_payload_limit"`
@@ -309,6 +474,7 @@ type captureEventsVariableSpecs struct {
 	TcpLengthFallback  *ebpf.VariableSpec `ebpf:"tcp_length_fallback"`
 	TcpStatePort       *ebpf.VariableSpec `ebpf:"tcp_state_port"`
 	UnusedHttpRecord   *ebpf.VariableSpec `ebpf:"unused_http_record"`
+	UprobeArch         *ebpf.VariableSpec `ebpf:"uprobe_arch"`
 }
 
 // captureEventsObjects contains all objects after they have been loaded into the kernel.
@@ -336,6 +502,8 @@ type captureEventsMaps struct {
 	DnsQueryPending  *ebpf.Map `ebpf:"dns_query_pending"`
 	DnsScratch       *ebpf.Map `ebpf:"dns_scratch"`
 	Events           *ebpf.Map `ebpf:"events"`
+	GoTlsPending     *ebpf.Map `ebpf:"go_tls_pending"`
+	GoTlsWrites      *ebpf.Map `ebpf:"go_tls_writes"`
 	HttpCursors      *ebpf.Map `ebpf:"http_cursors"`
 	HttpRecvPending  *ebpf.Map `ebpf:"http_recv_pending"`
 	HttpScratch      *ebpf.Map `ebpf:"http_scratch"`
@@ -343,11 +511,18 @@ type captureEventsMaps struct {
 	HttpStreams      *ebpf.Map `ebpf:"http_streams"`
 	LostEvents       *ebpf.Map `ebpf:"lost_events"`
 	MysqlSendPending *ebpf.Map `ebpf:"mysql_send_pending"`
+	NssConfigs       *ebpf.Map `ebpf:"nss_configs"`
+	NssControlCalls  *ebpf.Map `ebpf:"nss_control_calls"`
+	NssDefaults      *ebpf.Map `ebpf:"nss_defaults"`
+	NssIoCalls       *ebpf.Map `ebpf:"nss_io_calls"`
 	SockOwners       *ebpf.Map `ebpf:"sock_owners"`
+	SslPending       *ebpf.Map `ebpf:"ssl_pending"`
+	SslSocks         *ebpf.Map `ebpf:"ssl_socks"`
 	TcpDiagnostics   *ebpf.Map `ebpf:"tcp_diagnostics"`
 	TcpEstablishedAt *ebpf.Map `ebpf:"tcp_established_at"`
 	TcpLengthPending *ebpf.Map `ebpf:"tcp_length_pending"`
 	TlsPrefixes      *ebpf.Map `ebpf:"tls_prefixes"`
+	TlsUnmapped      *ebpf.Map `ebpf:"tls_unmapped"`
 	UdpSendPending   *ebpf.Map `ebpf:"udp_send_pending"`
 }
 
@@ -358,6 +533,8 @@ func (m *captureEventsMaps) Close() error {
 		m.DnsQueryPending,
 		m.DnsScratch,
 		m.Events,
+		m.GoTlsPending,
+		m.GoTlsWrites,
 		m.HttpCursors,
 		m.HttpRecvPending,
 		m.HttpScratch,
@@ -365,11 +542,18 @@ func (m *captureEventsMaps) Close() error {
 		m.HttpStreams,
 		m.LostEvents,
 		m.MysqlSendPending,
+		m.NssConfigs,
+		m.NssControlCalls,
+		m.NssDefaults,
+		m.NssIoCalls,
 		m.SockOwners,
+		m.SslPending,
+		m.SslSocks,
 		m.TcpDiagnostics,
 		m.TcpEstablishedAt,
 		m.TcpLengthPending,
 		m.TlsPrefixes,
+		m.TlsUnmapped,
 		m.UdpSendPending,
 	)
 }
@@ -382,6 +566,7 @@ type captureEventsVariables struct {
 	EmitDnsServer      *ebpf.Variable `ebpf:"emit_dns_server"`
 	EmitDnsTcpMessages *ebpf.Variable `ebpf:"emit_dns_tcp_messages"`
 	EmitHttpMessages   *ebpf.Variable `ebpf:"emit_http_messages"`
+	EmitTlsPlaintext   *ebpf.Variable `ebpf:"emit_tls_plaintext"`
 	EmitUdpEvents      *ebpf.Variable `ebpf:"emit_udp_events"`
 	HttpMessageLimit   *ebpf.Variable `ebpf:"http_message_limit"`
 	HttpPayloadLimit   *ebpf.Variable `ebpf:"http_payload_limit"`
@@ -390,19 +575,52 @@ type captureEventsVariables struct {
 	TcpLengthFallback  *ebpf.Variable `ebpf:"tcp_length_fallback"`
 	TcpStatePort       *ebpf.Variable `ebpf:"tcp_state_port"`
 	UnusedHttpRecord   *ebpf.Variable `ebpf:"unused_http_record"`
+	UprobeArch         *ebpf.Variable `ebpf:"uprobe_arch"`
 }
 
 // captureEventsPrograms contains all programs after they have been loaded into the kernel.
 //
 // It can be passed to loadCaptureEventsObjects or ebpf.CollectionSpec.LoadAndAssign.
 type captureEventsPrograms struct {
+	GoTlsArm64CloseEntry      *ebpf.Program `ebpf:"go_tls_arm64_close_entry"`
+	GoTlsArm64ReadEntry       *ebpf.Program `ebpf:"go_tls_arm64_read_entry"`
+	GoTlsArm64ReadExit        *ebpf.Program `ebpf:"go_tls_arm64_read_exit"`
+	GoTlsArm64WriteEntry      *ebpf.Program `ebpf:"go_tls_arm64_write_entry"`
+	GoTlsArm64WriteExit       *ebpf.Program `ebpf:"go_tls_arm64_write_exit"`
+	GoTlsCloseEntry           *ebpf.Program `ebpf:"go_tls_close_entry"`
+	GoTlsReadEntry            *ebpf.Program `ebpf:"go_tls_read_entry"`
+	GoTlsReadExit             *ebpf.Program `ebpf:"go_tls_read_exit"`
+	GoTlsWriteEntry           *ebpf.Program `ebpf:"go_tls_write_entry"`
+	GoTlsWriteExit            *ebpf.Program `ebpf:"go_tls_write_exit"`
 	HttpTcpDestroySock        *ebpf.Program `ebpf:"http_tcp_destroy_sock"`
 	InetCskAcceptEntry        *ebpf.Program `ebpf:"inet_csk_accept_entry"`
 	InetCskAcceptExit         *ebpf.Program `ebpf:"inet_csk_accept_exit"`
 	InetCskAcceptExitLegacy   *ebpf.Program `ebpf:"inet_csk_accept_exit_legacy"`
 	InetSockSetState          *ebpf.Program `ebpf:"inet_sock_set_state"`
 	InetStreamConnectEntry    *ebpf.Program `ebpf:"inet_stream_connect_entry"`
+	MbedReadEntry             *ebpf.Program `ebpf:"mbed_read_entry"`
+	MbedWriteEntry            *ebpf.Program `ebpf:"mbed_write_entry"`
+	NssAcceptEntry            *ebpf.Program `ebpf:"nss_accept_entry"`
+	NssCloseEntry             *ebpf.Program `ebpf:"nss_close_entry"`
+	NssControlExit            *ebpf.Program `ebpf:"nss_control_exit"`
+	NssDefaultEntry           *ebpf.Program `ebpf:"nss_default_entry"`
+	NssImportEntry            *ebpf.Program `ebpf:"nss_import_entry"`
+	NssIoExit                 *ebpf.Program `ebpf:"nss_io_exit"`
+	NssOptionEntry            *ebpf.Program `ebpf:"nss_option_entry"`
+	NssReadEntry              *ebpf.Program `ebpf:"nss_read_entry"`
+	NssRecvEntry              *ebpf.Program `ebpf:"nss_recv_entry"`
+	NssWriteEntry             *ebpf.Program `ebpf:"nss_write_entry"`
+	RustlsExit                *ebpf.Program `ebpf:"rustls_exit"`
 	SkbConsumeUdpEntry        *ebpf.Program `ebpf:"skb_consume_udp_entry"`
+	SslFreeEntry              *ebpf.Program `ebpf:"ssl_free_entry"`
+	SslReadEntry              *ebpf.Program `ebpf:"ssl_read_entry"`
+	SslReadExEntry            *ebpf.Program `ebpf:"ssl_read_ex_entry"`
+	SslReadExExit             *ebpf.Program `ebpf:"ssl_read_ex_exit"`
+	SslReadExit               *ebpf.Program `ebpf:"ssl_read_exit"`
+	SslWriteEntry             *ebpf.Program `ebpf:"ssl_write_entry"`
+	SslWriteExEntry           *ebpf.Program `ebpf:"ssl_write_ex_entry"`
+	SslWriteExExit            *ebpf.Program `ebpf:"ssl_write_ex_exit"`
+	SslWriteExit              *ebpf.Program `ebpf:"ssl_write_exit"`
 	TcpCleanupRbufEntry       *ebpf.Program `ebpf:"tcp_cleanup_rbuf_entry"`
 	TcpCreateOpenreqChildExit *ebpf.Program `ebpf:"tcp_create_openreq_child_exit"`
 	TcpDestroySock            *ebpf.Program `ebpf:"tcp_destroy_sock"`
@@ -425,13 +643,45 @@ type captureEventsPrograms struct {
 
 func (p *captureEventsPrograms) Close() error {
 	return _CaptureEventsClose(
+		p.GoTlsArm64CloseEntry,
+		p.GoTlsArm64ReadEntry,
+		p.GoTlsArm64ReadExit,
+		p.GoTlsArm64WriteEntry,
+		p.GoTlsArm64WriteExit,
+		p.GoTlsCloseEntry,
+		p.GoTlsReadEntry,
+		p.GoTlsReadExit,
+		p.GoTlsWriteEntry,
+		p.GoTlsWriteExit,
 		p.HttpTcpDestroySock,
 		p.InetCskAcceptEntry,
 		p.InetCskAcceptExit,
 		p.InetCskAcceptExitLegacy,
 		p.InetSockSetState,
 		p.InetStreamConnectEntry,
+		p.MbedReadEntry,
+		p.MbedWriteEntry,
+		p.NssAcceptEntry,
+		p.NssCloseEntry,
+		p.NssControlExit,
+		p.NssDefaultEntry,
+		p.NssImportEntry,
+		p.NssIoExit,
+		p.NssOptionEntry,
+		p.NssReadEntry,
+		p.NssRecvEntry,
+		p.NssWriteEntry,
+		p.RustlsExit,
 		p.SkbConsumeUdpEntry,
+		p.SslFreeEntry,
+		p.SslReadEntry,
+		p.SslReadExEntry,
+		p.SslReadExExit,
+		p.SslReadExit,
+		p.SslWriteEntry,
+		p.SslWriteExEntry,
+		p.SslWriteExExit,
+		p.SslWriteExit,
 		p.TcpCleanupRbufEntry,
 		p.TcpCreateOpenreqChildExit,
 		p.TcpDestroySock,

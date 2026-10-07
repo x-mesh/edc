@@ -166,6 +166,8 @@ func TestCaptureEventFiltersFollowTheProtocol(t *testing.T) {
 		{traceScope{protocol: "http", payload: true}, captureEventFilter{dnsSent: true, httpMessages: true, httpPayload: true}},
 		{traceScope{protocol: "http", server: true, port: 8080}, captureEventFilter{dnsSent: true, httpMessages: true, httpPort: 8080}},
 		{traceScope{protocol: "http", payload: true, payloadAll: true}, captureEventFilter{dnsSent: true, httpMessages: true, httpPayload: true, httpMessageLimit: httpMessageMax}},
+		{traceScope{protocol: "http", tls: traceTLSAuto}, captureEventFilter{dnsSent: true, httpMessages: true, tlsPlaintext: true}},
+		{traceScope{protocol: "http", tls: "/usr/lib/libssl.so.3", port: 443}, captureEventFilter{dnsSent: true, httpMessages: true, httpPort: 443, tlsPlaintext: true}},
 		{traceScope{protocol: "mysql"}, captureEventFilter{dnsSent: true, mysqlPort: 3306}},
 		{traceScope{protocol: "mysql", port: 3307}, captureEventFilter{dnsSent: true, mysqlPort: 3307}},
 	} {
@@ -188,8 +190,14 @@ func TestCaptureEventFiltersFollowTheProtocol(t *testing.T) {
 	var httpPort uint16
 	var httpMessageLimit uint32
 	var mysqlPort uint16
-	if err := errors.Join(variables.EmitUdpEvents.Get(&udpEvents), variables.EmitDnsSent.Get(&dnsSent), variables.EmitDnsServer.Get(&server), variables.TcpStatePort.Get(&tcpStatePort), variables.HttpPayloadLimit.Get(&httpPayloadLimit), variables.HttpPort.Get(&httpPort), variables.HttpMessageLimit.Get(&httpMessageLimit), variables.MysqlPort.Get(&mysqlPort)); err != nil {
+	var tlsPlaintext, uprobeArch uint8
+	if err := errors.Join(variables.EmitUdpEvents.Get(&udpEvents), variables.EmitDnsSent.Get(&dnsSent), variables.EmitDnsServer.Get(&server), variables.TcpStatePort.Get(&tcpStatePort), variables.HttpPayloadLimit.Get(&httpPayloadLimit), variables.HttpPort.Get(&httpPort), variables.HttpMessageLimit.Get(&httpMessageLimit), variables.MysqlPort.Get(&mysqlPort),
+		variables.EmitTlsPlaintext.Get(&tlsPlaintext), variables.UprobeArch.Get(&uprobeArch)); err != nil {
 		t.Fatal(err)
+	}
+	// uprobe program은 모든 trace가 함께 불러오므로, --tls가 아니면 첫 명령에서 돌아가도록 꺼져 있어야 한다.
+	if tlsPlaintext != 0 || uprobeArch != 0 {
+		t.Fatalf("TLS BPF defaults = %d, %d", tlsPlaintext, uprobeArch)
 	}
 	// capture는 모든 event와 client 쪽 DNS 레코드를 받는다. 서버 쪽 레코드는 trace dns --side server만 켠다.
 	// HTTP message는 --payload가 아니면 요청 줄과 Host가 들어가는 512바이트만 읽는다.
@@ -715,6 +723,15 @@ func TestHTTPRecordOffsetsMatchTheBPFStruct(t *testing.T) {
 	if packet, ok := parseHTTPRecord(sample); !ok || packet.continued || !packet.tlsHandshake {
 		t.Fatalf("TLS handshake = %#v, %t", packet, ok)
 	}
+	// --tls 평문은 방향 byte의 0x80으로 온다. 보낸 쪽 bit는 그대로 읽어야 요청과 응답의 쪽이 맞는다.
+	sample[39] = 0
+	for direction, want := range map[byte][2]bool{httpRecordSent | httpRecordDecrypted: {true, true}, httpRecordDecrypted: {false, true}, httpRecordSent: {true, false}, 0: {false, false}} {
+		sample[38] = direction
+		packet, ok := parseHTTPRecord(sample)
+		if !ok || packet.sent != want[0] || packet.decrypted != want[1] {
+			t.Fatalf("direction %#x = sent %t decrypted %t, want %v", direction, packet.sent, packet.decrypted, want)
+		}
+	}
 }
 
 // trace http는 tcp_destroy_sock 레코드에서 socket 주소만 읽는다.
@@ -905,5 +922,13 @@ func TestTraceCapabilityErrorNamesTheTraceAndTheRootCommand(t *testing.T) {
 	err = traceCapabilityError(bpfTraceCapabilities, map[int]bool{capBPF: true}, "trace sched", command)
 	if err == nil || !strings.Contains(err.Error(), "CAP_PERFMON for trace sched") || strings.Contains(err.Error(), "sudo") || !strings.Contains(err.Error(), "--privileged") {
 		t.Fatalf("root error = %v", err)
+	}
+}
+
+// 탐색이 고르는 함수마다 붙일 program이 있어야 한다. 없으면 그 파일의 attach가 실패해 trace가 시작하지 않는다.
+func TestTraceTLSProgramsCoverEveryFunction(t *testing.T) {
+	programs := traceTLSPrograms(&captureEventsObjects{})
+	if got, want := slices.Sorted(maps.Keys(programs)), slices.Sorted(slices.Values(traceTLSFunctions)); !slices.Equal(got, want) {
+		t.Fatalf("programs = %q, functions = %q", got, want)
 	}
 }

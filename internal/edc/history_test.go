@@ -519,6 +519,83 @@ func TestTopOptionalWritePathDoesNotConsumeOtherOptions(t *testing.T) {
 	}
 }
 
+func TestTopSplitOptionalListDoesNotConsumeOtherOptions(t *testing.T) {
+	for _, row := range []struct {
+		args    []string
+		split   string
+		path    string
+		defPath bool
+		detail  bool
+		count   int
+		narg    int
+	}{
+		{args: []string{"--split"}, split: "all"},
+		{args: []string{"--split", "mem,disk"}, split: "mem,disk"},
+		{args: []string{"--split", "-d"}, split: "all", detail: true},
+		{args: []string{"--split", "--count", "2"}, split: "all", count: 2},
+		{args: []string{"--split=mem"}, split: "mem"},
+		{args: []string{"--split="}, split: ""},
+		{args: []string{"-w", "--split", "mem"}, split: "mem", defPath: true},
+		{args: []string{"--split", "mem", "--split", "disk"}, split: "disk"},
+		{args: []string{"--split", "-"}, split: "all", narg: 1},
+	} {
+		set := flag.NewFlagSet("top", flag.ContinueOnError)
+		set.SetOutput(io.Discard)
+		split := set.String("split", "", "")
+		path := set.String("write", "", "")
+		set.StringVar(path, "w", "", "")
+		detail := set.Bool("d", false, "")
+		count := set.Int("count", 0, "")
+		args, useDefault := normalizeTopWriteArgs(row.args, set)
+		if err := set.Parse(args); err != nil {
+			t.Fatalf("%v: %v", row.args, err)
+		}
+		if *split != row.split || useDefault != row.defPath || *path != row.path || *detail != row.detail || *count != row.count || set.NArg() != row.narg {
+			t.Errorf("%v: split=%q default=%t path=%q d=%t count=%d narg=%d", row.args, *split, useDefault, *path, *detail, *count, set.NArg())
+		}
+	}
+}
+
+func TestTopSplitRejectsNonDashboardUse(t *testing.T) {
+	restore := activeConfig
+	defer func() { activeConfig = restore }()
+	activeConfig = edcConfig{}
+	pid := strconv.Itoa(os.Getpid())
+	for _, args := range [][]string{
+		{"--split", "--count", "1"},
+		{"--split=", "--count", "1"},
+		{"--split", "mem,bogus", "--count", "1"},
+		{"--split", "mem,mem", "--count", "1"},
+		{"--split", "none", "--count", "1"},
+		{"--split", "mem", "--process", pid, "--count", "1"},
+	} {
+		if code := runTop(args, "test"); code != 2 {
+			t.Errorf("runTop(%v) = %d, want 2", args, code)
+		}
+	}
+	existing := filepath.Join(t.TempDir(), "existing.jsonl")
+	if err := os.WriteFile(existing, []byte("keep\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if code := runTop([]string{"--split", "--json", existing}, "test"); code != 2 {
+		t.Fatalf("--split --json = %d, want 2", code)
+	}
+	if data, err := os.ReadFile(existing); err != nil || string(data) != "keep\n" {
+		t.Fatalf("json file = %q, %v; want it untouched", data, err)
+	}
+	database := filepath.Join(t.TempDir(), "never.db")
+	if code := runTop([]string{"--count", "1", "-w", database, "--split"}, "test"); code != 2 {
+		t.Fatalf("--split with -w = %d, want 2", code)
+	}
+	if _, err := os.Stat(database); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("database was created before the split check: %v", err)
+	}
+	activeConfig.Defaults.Top.Split = stringPointer("mem")
+	if code := runTop([]string{"--interval", "200ms", "--count", "1", "--json", filepath.Join(t.TempDir(), "out.jsonl")}, "test"); code != 0 {
+		t.Fatalf("configured split blocked a JSON run: %d", code)
+	}
+}
+
 func TestDefaultHistoryPathFollowsStateDirectory(t *testing.T) {
 	for _, row := range []struct{ goos, home, state, want string }{
 		{"linux", "/users/one", "", "/users/one/.local/state/edc/history.db"},

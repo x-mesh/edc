@@ -52,7 +52,7 @@ func TestTraceScreenSelectsAnEventAndShowsAllOfIt(t *testing.T) {
 	}
 	// 화면에 자리가 남으면 고른 event 아래에 더 새 event가 온다.
 	rows := strings.Join(traceScreenRows(model), "\n")
-	if selected, newer := strings.Index(rows, "POST api.example/b"), strings.Index(rows, "http_2xx"); selected < 0 || newer < selected {
+	if selected, newer := strings.Index(rows, "POST http://api.example/b"), strings.Index(rows, "http_2xx"); selected < 0 || newer < selected {
 		t.Fatalf("rows = %q", rows)
 	}
 
@@ -394,7 +394,7 @@ func TestTraceFitCutsLongLinesLikeBefore(t *testing.T) {
 
 func TestTraceScreenFilterMatchesTheShownDestination(t *testing.T) {
 	event := captureEvent{Protocol: "http", Event: traceHTTPRequestEvent, Process: "curl", Method: "POST", Target: "127.0.0.1:18090", Path: "/orders", Destination: "127.0.0.1:18090"}
-	for filter, want := range map[string]bool{"orders": true, "post 127.0.0.1:18090/ord": true, "curl": true, "/missing": false} {
+	for filter, want := range map[string]bool{"orders": true, "post http://127.0.0.1:18090/ord": true, "curl": true, "/missing": false} {
 		if got := traceEventMatchesText(event, filter); got != want {
 			t.Fatalf("filter %q = %t, want %t", filter, got, want)
 		}
@@ -630,5 +630,16 @@ func TestTraceScreenEscAndLFollowAgain(t *testing.T) {
 	model = traceScreenKey(model, "space")
 	if model.selected != 2 {
 		t.Fatalf("space = %d, want the newest", model.selected)
+	}
+}
+
+func TestTraceSelectedEventUsesEmphasisWithoutABackground(t *testing.T) {
+	plain := traceSelectedEvent("curl  GET /", 20, false)
+	if plain != "curl  GET /" {
+		t.Fatalf("plain selection = %q", plain)
+	}
+	colored := traceSelectedEvent("curl  GET /", 20, true)
+	if strings.Contains(colored, liveReverse) || !strings.Contains(colored, "curl  GET /") {
+		t.Fatalf("colored selection = %q", colored)
 	}
 }

@@ -39,6 +39,18 @@ func (c completedConn) Write(p []byte) (int, error) {
 	return c.Conn.Write(p)
 }
 
+// waitForTLSWrites는 TLS Write를 실행 중인 goroutine이 없을 때까지 기다린다. Write 도중에 process가 끝나면 edc는 그 Write의
+// 반환을 보지 못해 잃은 event로 센다. server가 응답을 보내고 Write에서 돌아오기 전에 client가 응답을 받고 끝날 수 있다.
+func waitForTLSWrites() {
+	buffer := make([]byte, 1<<20)
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+		if !strings.Contains(string(buffer[:runtime.Stack(buffer, true)]), "crypto/tls.(*Conn).Write(") {
+			return
+		}
+	}
+	panic("a TLS Write did not return")
+}
+
 func runStress() {
 	runtime.GOMAXPROCS(4)
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -95,6 +107,7 @@ func runStress() {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+	waitForTLSWrites()
 	fmt.Println("completed 64 HTTPS requests")
 }
 
@@ -166,6 +179,7 @@ func runStack() {
 		}(i)
 	}
 	wait.Wait()
+	waitForTLSWrites()
 	fmt.Println("done")
 }
 
@@ -198,6 +212,7 @@ func runErrors() {
 		panic("closed Read")
 	}
 	conn.Close()
+	waitForTLSWrites()
 	fmt.Println("done")
 }
 

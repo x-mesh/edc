@@ -166,6 +166,9 @@ func TestTraceTLSGoCaptures(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 			defer cancel()
 			command := exec.CommandContext(ctx, fixture, tc.argument)
+			// edc는 page fault 없이 user memory를 읽는다. THP가 always인 host에서는 Go heap의 huge page를 쪼개거나 합치는 순간 그 읽기가
+			// 실패해 잃은 event가 생기므로, 시험 program의 heap에는 THP를 쓰지 않는다.
+			command.Env = append(os.Environ(), "GODEBUG=disablethp=1")
 			var stderr bytes.Buffer
 			command.Stderr = &stderr
 			stdout, err := command.StdoutPipe()
@@ -267,6 +270,8 @@ func TestTraceTLSGoHTTP2CapturesStreamsAndBodies(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 			defer cancel()
 			command := exec.CommandContext(ctx, fixture)
+			// TestTraceTLSGoCaptures와 같은 이유로 시험 program의 heap에는 THP를 쓰지 않는다.
+			command.Env = append(os.Environ(), "GODEBUG=disablethp=1")
 			var stderr bytes.Buffer
 			command.Stderr = &stderr
 			stdout, err := command.StdoutPipe()

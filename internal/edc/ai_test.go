@@ -757,6 +757,12 @@ func TestEditAIStatuslineWrapsAndRestoresTheCommand(t *testing.T) {
 			"/opt/edc/bin/edc ai statusline -- cship"},
 		{"shell", `{"statusLine":{"type":"command","command":"jq -r '\"[\\(.model.display_name)]\"' | head -1 && echo ok"}}`,
 			`/opt/edc/bin/edc ai statusline -- sh -c 'jq -r '\''"[\(.model.display_name)]"'\'' | head -1 && echo ok'`},
+		{"env", `{"statusLine":{"type":"command","command":"NO_COLOR=1 cship"}}`,
+			`/opt/edc/bin/edc ai statusline -- sh -c 'NO_COLOR=1 cship'`},
+		{"words", `{"statusLine":{"type":"command","command":"bunx ccstatusline"}}`,
+			`/opt/edc/bin/edc ai statusline -- sh -c 'bunx ccstatusline'`},
+		{"home", `{"statusLine":{"type":"command","command":"~/bin/status"}}`,
+			"/opt/edc/bin/edc ai statusline -- ~/bin/status"},
 		{"absent", `{"model":"opus"}`, "/opt/edc/bin/edc ai statusline"},
 		{"empty file", ``, "/opt/edc/bin/edc ai statusline"},
 	} {
@@ -785,6 +791,51 @@ func TestEditAIStatuslineWrapsAndRestoresTheCommand(t *testing.T) {
 	}
 	if _, err := editAIStatusline([]byte(`[1]`), executable, true); err == nil {
 		t.Error("a settings file that is not an object must fail")
+	}
+}
+
+func TestWriteAIClaudeSettingsKeepsASymbolicLink(t *testing.T) {
+	directory := t.TempDir()
+	target := filepath.Join(directory, "dotfiles", "settings.json")
+	link := filepath.Join(directory, "claude", "settings.json")
+	for _, dir := range []string{filepath.Dir(target), filepath.Dir(link)} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(target, []byte(`{"a":1}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(target, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	backup, err := writeAIClaudeSettings(link, []byte(`{"a":1}`), []byte(`{"a":2}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info, err := os.Lstat(link); err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("the link became %v, %v", info, err)
+	}
+	if data, err := os.ReadFile(target); err != nil || string(data) != `{"a":2}` {
+		t.Errorf("target %q, %v", data, err)
+	}
+	if info, err := os.Stat(target); err != nil || info.Mode().Perm() != 0o640 {
+		t.Errorf("target mode %v, %v", info, err)
+	}
+	if data, err := os.ReadFile(backup); backup != link+aiStatuslineBackupSuffix || err != nil || string(data) != `{"a":1}` {
+		t.Errorf("backup %s %q, %v", backup, data, err)
+	}
+	if err := os.Remove(target); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := writeAIClaudeSettings(link, nil, []byte(`{"a":3}`)); err == nil {
+		t.Error("a link to a missing file must fail")
+	}
+	if info, err := os.Lstat(link); err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Errorf("the dangling link changed: %v, %v", info, err)
 	}
 }
 

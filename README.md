@@ -1462,6 +1462,8 @@ With `--tls=<path>`, edc also reads the symbol table, so a static program with s
 
 `--tls` does not see a program that reads through the SSL BIO of OpenSSL, for example `openssl s_server -www`.
 
+edc reads the plaintext without a page fault. If the kernel changes the page at that moment, for example when it splits or merges a transparent huge page, edc cannot read the plaintext of that call. This is rare. For a Go program, edc counts it as a lost event.
+
 Each call of these functions runs a probe in each process that uses the files. This cost also applies to the processes that `--process` hides. At the end, the kernel removes each probe, so the trace can stop a few seconds after Ctrl-C. `--tls` needs no newer kernel than `trace http`.
 
 On amd64 with Linux 6.11, 6.12 before 6.12.14, or 6.13 before 6.13.3, a process under a seccomp filter can stop when a TLS call returns. A Docker container uses such a filter. On these kernels, edc shows a warning before it attaches the probes. Before the full screen opens, edc waits for Enter. To stop, press Ctrl-C. A distribution kernel can include the fix.

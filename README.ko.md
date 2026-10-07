@@ -274,7 +274,7 @@ edc watch fs --duration 1m --json events.jsonl
 
 기본으로 `.git`, `node_modules`, `.venv`, `venv`, `__pycache__`, `.mypy_cache`, `.pytest_cache`, `.ruff_cache`, `.tox`, `.next`, `.gradle`을 모든 깊이에서 제외합니다. 빌드 결과물을 감시할 수 있도록 `build`와 `dist`는 제외하지 않습니다. `--exclude 'build/**'`처럼 제외 glob을 반복해서 추가할 수 있습니다. 기본 제외 디렉터리도 감시하려면 `--no-default-exclude`를 쓰며, 이때도 `--exclude`로 준 패턴은 적용됩니다.
 
-`--recursive`이면 `edc`는 디렉터리마다 감시를 등록한 뒤에 `WATCH` 줄을 출력합니다. 트리가 크면 시간이 걸립니다. stderr가 터미널이면 이 동안 안내를 출력합니다.
+`--recursive`이면 `edc`는 디렉터리마다 감시를 등록한 뒤에 출력을 시작합니다. 트리가 크면 시간이 걸립니다. stderr가 터미널이면 이 동안 안내를 출력합니다.
 
 macOS에서는 감시하는 파일과 디렉터리마다 file descriptor를 하나씩 엽니다. 항목 수가 열 수 있는 파일 한도를 넘으면 `watch fs`는 오류를 내고 멈추므로, `--exclude`로 범위를 줄이세요.
 

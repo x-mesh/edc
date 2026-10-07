@@ -27,7 +27,7 @@ watchfs:
   invalid_glob: "올바르지 않은 감시 루트 기준 glob: %q"
   root_removed: "감시 디렉터리가 삭제되거나 이름이 바뀌었습니다: %s"
   source_closed: "파일 이벤트 수집이 예상치 못하게 종료됐습니다. 관측이 불완전합니다."
-  walking: "%s 아래 디렉터리마다 감시 등록 중… 트리가 크면 시간이 걸립니다. 준비되면 WATCH 줄을 출력합니다."
+  walking: "%s 아래 디렉터리마다 감시 등록 중… 트리가 크면 시간이 걸립니다. 준비되면 출력을 시작합니다."
   ready: "WATCH %s · recursive=%t"
   output_truncated: "action 출력을 %d byte에서 잘랐습니다."
   summary: "이벤트 %d개 · action %d개 · 실패 %d개 · %s"

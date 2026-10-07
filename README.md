@@ -1418,13 +1418,13 @@ rustls-ffi uses the C functions `rustls_connection_read` and `rustls_connection_
 
 These events have no socket addresses. A `--port` filter excludes them. `--tls` does not see programs that use the native Rust API of rustls.
 
-Mbed TLS uses `mbedtls_ssl_read` and `mbedtls_ssl_write`. edc clears the connection state at `mbedtls_ssl_session_reset` and `mbedtls_ssl_free`.
+Mbed TLS uses `mbedtls_ssl_read`, `mbedtls_ssl_write`, `mbedtls_ssl_read_early_data`, and `mbedtls_ssl_write_early_data`. edc clears the connection state at `mbedtls_ssl_session_reset` and `mbedtls_ssl_free`.
 
 ```bash
 ./bin/edc trace http --tls=/usr/local/lib/libmbedtls.so
 ```
 
-edc does not read DTLS connections or the early data functions of Mbed TLS.
+edc does not read DTLS connections.
 
 wolfSSL uses `wolfSSL_read` and `wolfSSL_write`, or their `_ex` variants. edc clears the connection state at `wolfSSL_free`.
 

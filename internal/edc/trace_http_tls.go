@@ -40,7 +40,7 @@ var traceTLSFunctions = []string{"SSL_read", "SSL_write", "SSL_read_ex", "SSL_wr
 	"SSL_ImportFD", "SSL_OptionSet", "SSL_OptionSetDefault", "PR_Accept",
 	"PR_Read", "PR_Recv", "PR_Write", "PR_Send", "PR_Close",
 	"wolfSSL_read", "wolfSSL_write", "wolfSSL_read_ex", "wolfSSL_write_ex", "wolfSSL_free",
-	"mbedtls_ssl_read", "mbedtls_ssl_write", "mbedtls_ssl_session_reset", "mbedtls_ssl_free", "rustls_connection_read", "rustls_connection_write", "rustls_connection_free"}
+	"mbedtls_ssl_read", "mbedtls_ssl_write", "mbedtls_ssl_read_early_data", "mbedtls_ssl_write_early_data", "mbedtls_ssl_session_reset", "mbedtls_ssl_free", "rustls_connection_read", "rustls_connection_write", "rustls_connection_free"}
 
 var traceTLSNSSControls = []string{"SSL_ImportFD", "SSL_OptionSet", "SSL_OptionSetDefault", "PR_Accept"}
 

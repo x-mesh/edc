@@ -32,5 +32,6 @@ watchfs:
   invalid_glob: "Invalid root-relative glob: %q"
   root_removed: "Watched directory was removed or renamed: %s"
   source_closed: "Filesystem event source closed unexpectedly; observation is incomplete."
+  walking: "Adding a watch to each directory under %s… A large tree takes time. The WATCH line shows when edc is ready."
   ready: "WATCH %s · recursive=%t"
   output_truncated: "Action output truncated at %d bytes."

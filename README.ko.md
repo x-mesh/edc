@@ -272,7 +272,11 @@ edc watch fs --duration 1m --json events.jsonl
 
 이벤트는 `create`, `modify`, `remove`, `rename`입니다. `rename`의 path는 원래 이름이며 감시 범위 안의 새 이름은 create로 나타날 수 있습니다. 파일 읽기(access)와 metadata-only 변경은 감지 대상이 아닙니다. `--event`는 쉼표로 여러 이벤트를 받으며 `--match`는 감시 루트 기준 glob입니다. `*.go`는 바로 아래 파일, `**/*.go`는 모든 깊이의 파일에 일치합니다. 하위 경로를 실제로 감시하려면 `--recursive`도 지정합니다.
 
-기본으로 `.git/**`를 제외하며 `--exclude 'build/**'`처럼 제외 glob을 반복할 수 있습니다. JSON 출력 파일과 stdout으로 연결된 일반 파일도 감시에서 제외하여 출력이 다음 이벤트를 만들지 않게 합니다. `--event`와 `--match`는 출력과 action에 공통으로 적용됩니다. rule 파일을 생략하면 기본 action은 없습니다.
+기본으로 `.git`, `node_modules`, `.venv`, `venv`, `__pycache__`, `.mypy_cache`, `.pytest_cache`, `.ruff_cache`, `.tox`, `.next`, `.gradle`을 모든 깊이에서 제외합니다. 빌드 결과물을 감시할 수 있도록 `build`와 `dist`는 제외하지 않습니다. `--exclude 'build/**'`처럼 제외 glob을 반복해서 추가할 수 있습니다. 기본 제외 디렉터리도 감시하려면 `--no-default-exclude`를 쓰며, 이때도 `--exclude`로 준 패턴은 적용됩니다.
+
+macOS에서는 감시하는 파일과 디렉터리마다 file descriptor를 하나씩 엽니다. 항목 수가 열 수 있는 파일 한도를 넘으면 `watch fs`는 오류를 내고 멈추므로, `--exclude`로 범위를 줄이세요.
+
+JSON 출력 파일과 stdout으로 연결된 일반 파일도 감시에서 제외하여 출력이 다음 이벤트를 만들지 않게 합니다. `--event`와 `--match`는 출력과 action에 공통으로 적용됩니다. rule 파일을 생략하면 기본 action은 없습니다.
 
 rule 파일은 알 수 없는 key를 거부하는 YAML 문서 하나입니다. 아래 예시는 현재 디렉터리를 감시합니다. `directory`를 지정하면 rule 파일이 있는 디렉터리 기준으로 해석하며, CLI의 directory 인자가 우선합니다. rule의 `cwd`는 감시 루트 기준이고 기본값은 감시 루트입니다.
 

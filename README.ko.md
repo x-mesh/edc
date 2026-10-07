@@ -1274,7 +1274,7 @@ Bun, `node`, Python `asyncio`처럼 TLS 함수 안에서 socket을 쓰지 않는
 
 `--tls`는 OpenSSL이 내보내는 `SSL_read`와 `SSL_write`(또는 `SSL_read_ex`와 `SSL_write_ex`), GnuTLS의 `gnutls_record_recv`와 `gnutls_record_send`, 앞서 설명한 NSS, wolfSSL, Mbed TLS, rustls-ffi, BoringSSL을 봅니다. Debian과 Ubuntu의 `wget`과 `git`은 GnuTLS를 씁니다. Java는 지원하지 않습니다. Go는 앞서 설명한 범위만 지원합니다. 심볼이 없는 program은 지원하는 Go 바이너리와 등록된 BoringSSL 빌드를 지원합니다. `--tls=<경로>`로 지정한 파일은 symbol table도 읽으므로, strip하지 않은 정적 program도 보입니다. `openssl s_server -www`처럼 OpenSSL의 SSL BIO로 읽고 쓰는 program도 보이지 않습니다.
 
-edc는 page fault 없이 평문을 읽습니다. 그 순간 kernel이 그 page를 바꾸고 있으면(예: transparent huge page를 쪼개거나 합칠 때) 그 호출의 평문을 읽지 못합니다. 드문 일이며, Go program에서는 잃은 event로 셉니다.
+edc는 page fault 없이 평문을 읽습니다. 그 순간 kernel이 그 page를 바꾸고 있으면(예: transparent huge page를 쪼개거나 합칠 때) 그 호출의 평문을 읽지 못합니다. 드문 일이며, edc는 이를 잃은 event로 셉니다.
 
 이 파일을 쓰는 모든 process에서 함수가 불릴 때마다 probe가 실행되며, `--process`로 가린 process도 마찬가지입니다. 끝날 때 kernel이 probe를 하나씩 지우므로, Ctrl-C를 누른 뒤 몇 초 지나서 끝날 수 있습니다. `--tls`가 요구하는 kernel 버전은 `trace http`와 같습니다.
 

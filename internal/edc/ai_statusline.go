@@ -195,18 +195,27 @@ func aiStatuslineShown(command string) string {
 
 // writeAIClaudeSettings는 원래 파일을 백업한 뒤 임시 파일을 바꿔 넣는다. Claude Code가 반쯤 쓴 설정을 읽지 않게 한다.
 func writeAIClaudeSettings(path string, original, settings []byte) (string, error) {
+	// dotfile 관리 도구는 settings.json을 심볼릭 링크로 둔다. 링크 자리에 rename하면 링크가 일반 파일로 바뀌므로 링크가 가리키는 파일을 고친다.
+	target := path
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		target = resolved
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return "", err
+	} else if _, err := os.Lstat(path); err == nil {
+		return "", fmt.Errorf("the symbolic link points to a missing file")
+	}
 	mode := fs.FileMode(0o600)
 	backup := ""
-	if info, err := os.Stat(path); err == nil {
+	if info, err := os.Stat(target); err == nil {
 		mode = info.Mode().Perm()
 		backup = path + aiStatuslineBackupSuffix
 		if err := os.WriteFile(backup, original, mode); err != nil {
 			return "", err
 		}
-	} else if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	} else if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
 		return "", err
 	}
-	temp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".*")
+	temp, err := os.CreateTemp(filepath.Dir(target), filepath.Base(target)+".*")
 	if err != nil {
 		return "", err
 	}
@@ -224,7 +233,7 @@ func writeAIClaudeSettings(path string, original, settings []byte) (string, erro
 		os.Remove(temp.Name())
 		return "", err
 	}
-	return backup, os.Rename(temp.Name(), path)
+	return backup, os.Rename(temp.Name(), target)
 }
 
 type aiStatuslineEdit struct {
@@ -307,7 +316,7 @@ var aiStatuslinePlainWord = regexp.MustCompile(`^[A-Za-z0-9_./~:@%+=,-]+$`)
 var aiStatuslineWrapper = regexp.MustCompile(`^('[^']*'|\S+) ai statusline(?: -- (.*))?$`)
 
 // wrapAIStatusline은 원래 command를 edc ai statusline 뒤에 붙인다. Claude Code는 command를 shell로 실행하므로
-// 낱말만 있으면 그대로 붙이고, pipe나 따옴표가 있으면 sh -c로 감싸 원래 shell 문법을 지킨다.
+// 한 낱말이면 그대로 붙이고, 그 밖에는 sh -c로 감싸 원래 shell 문법을 지킨다.
 func wrapAIStatusline(executable, command string) string {
 	prefix := quoteAIShell(executable) + " ai statusline"
 	switch {
@@ -334,13 +343,10 @@ func unwrapAIStatusline(command string) (string, bool) {
 	return inner, true
 }
 
+// aiStatuslineIsPlain은 edc가 sh 없이 바로 실행할 수 있는 command다. 낱말이 둘 이상이면 환경 변수 지정(NO_COLOR=1 cmd)이나
+// shell builtin(exec cmd)일 수 있다. edc가 첫 낱말을 실행 파일로 부르면 원래 상태 줄이 사라진다.
 func aiStatuslineIsPlain(command string) bool {
-	for _, word := range strings.Split(command, " ") {
-		if !aiStatuslinePlainWord.MatchString(word) {
-			return false
-		}
-	}
-	return true
+	return aiStatuslinePlainWord.MatchString(command)
 }
 
 func quoteAIShell(text string) string {

@@ -56,6 +56,15 @@ observe:
     error:
       reset_log: "リセット記録を書けませんでした: %v"
       state: "最後の Claude の値を保存できませんでした: %v"
+    statusline:
+      usage: "使い方: edc ai statusline [-- <command> [args...]] | install | uninstall"
+      write: "Claude の使用量を保存できませんでした: %v"
+      settings: "%s を更新できませんでした: %v"
+      already: "statusLine.command はすでに edc ai statusline を実行します: %s"
+      not_installed: "statusLine.command は edc ai statusline を実行しません"
+      changed: "statusLine.command: %s → %s"
+      backup: "バックアップ: %s"
+      none: "(なし)"
 
   watch:
     no_samples_duration: "観測時間が終了するまでに完了したサンプルがないため、対象の状態は不明です。"

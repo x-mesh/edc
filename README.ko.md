@@ -677,17 +677,28 @@ token은 이 host의 로그에서 셉니다. 2초마다 새로 붙은 줄만 읽
 한도 상자는 한도 구간마다 사용률, reset 시각, 남은 시간을 보여 줍니다.
 
 - Codex: `codex app-server`를 띄워 묻습니다. `codex` 명령이 `PATH`에 있어야 합니다.
-- Claude: Claude Code의 `/usage`가 쓰는 API인 `https://api.anthropic.com/api/oauth/usage`를 부릅니다. 이때 `~/.claude/.credentials.json`의 token을 보냅니다. edc는 이 token을 출력하거나 저장하거나 갱신하지 않습니다.
+- Linux의 Claude: Claude Code의 `/usage`가 쓰는 API인 `https://api.anthropic.com/api/oauth/usage`를 부릅니다. 이때 `~/.claude/.credentials.json`의 token을 보냅니다. edc는 이 token을 출력하거나 저장하거나 갱신하지 않습니다.
+- macOS의 Claude: Claude Code의 상태 줄이 `edc ai statusline`에 넘긴 사용량을 읽습니다. 이 절의 끝을 봅니다.
 
 Claude 사용량 API는 공개 문서가 없고, 자주 부르면 HTTP 429로 거절합니다. 그래서 edc는 최소 5분 간격으로 부릅니다. 429를 받으면 10분, 20분, 최대 30분으로 간격을 늘립니다. 다음 조회 전까지는 저장한 값과 그 값이 얼마나 오래됐는지를 보여 줍니다.
 
-`--poll`은 한도 조회 간격입니다. 기본값은 60s이고 30s 이상이어야 합니다. Claude는 이와 별도로 5분 이상 간격을 지킵니다.
+`--poll`은 한도 조회 간격입니다. 기본값은 60s이고 30s 이상이어야 합니다. Linux의 Claude는 이와 별도로 5분 이상 간격을 지킵니다.
 
 터미널이 아니거나 `--count` 또는 `--json`을 주면 대시보드 대신 sample을 출력합니다. `--count N`은 sample N개를 출력하고 끝나며, 0이면 멈출 때까지 계속합니다. `--json <경로|->`는 sample마다 JSON 객체 하나를 씁니다. 파일은 mode 0600으로 만듭니다.
 
 감지한 reset은 `ai-resets.jsonl`에, 마지막 Claude 값은 `ai-claude.json`에 남깁니다. 두 파일은 history DB와 같은 디렉터리에 있습니다. 위치는 [Top 저장과 이력 조회](#top-저장과-이력-조회)를 봅니다.
 
-macOS의 Claude Code는 token을 Keychain에 둡니다. edc는 Keychain을 읽지 않으므로, macOS에서는 Claude 상자에 한도가 나오지 않습니다.
+macOS의 Claude Code는 token을 Keychain에 둡니다. edc는 Keychain을 읽지 않습니다. 대신 Claude Code가 상태 줄 명령에 넘기는 5시간·7일 한도를 씁니다. `edc ai statusline`이 이 값을 같은 디렉터리의 `ai-claude-statusline.json`에 남깁니다.
+
+상태 줄을 연결하려면 edc를 계속 쓸 위치에 먼저 설치한 뒤 다음 명령을 실행합니다. 이 명령은 실행한 edc의 경로를 설정에 넣습니다.
+
+```sh
+edc ai statusline install
+```
+
+이 명령은 `~/.claude/settings.json`의 `statusLine.command`만 바꿉니다. 원래 명령은 그대로 실행되므로, `cship`은 `edc ai statusline -- cship`이 됩니다. 원래 파일은 `settings.json.edc-backup`에 남습니다. 되돌리려면 `edc ai statusline uninstall`을 실행합니다.
+
+값은 Claude Code가 마지막으로 요청했을 때의 값입니다. 1분 이상 지난 값에는 경과 시간을 함께 보여 줍니다. 상태 줄 입력에 요금제가 없으므로 macOS의 상자에는 요금제 이름이 나오지 않습니다.
 
 ## Remote recipe
 

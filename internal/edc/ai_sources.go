@@ -13,7 +13,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -89,10 +88,6 @@ func aiCodexDir(home string) string {
 func readAIClaudeToken(dir string, now time.Time) (token, plan string, err error) {
 	data, err := os.ReadFile(filepath.Join(dir, ".credentials.json"))
 	if err != nil {
-		// macOS의 Claude Code는 token을 Keychain에 두고 이 파일을 만들지 않는다. 로그인하라는 안내는 해결책이 아니다.
-		if runtime.GOOS == "darwin" && errors.Is(err, fs.ErrNotExist) {
-			return "", "", errors.New("Claude token is in the macOS Keychain · not supported")
-		}
 		return "", "", errors.New("no Claude credentials · log in with Claude Code")
 	}
 	var credentials aiClaudeCredentials

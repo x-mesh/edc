@@ -787,17 +787,28 @@ The table counts this host only. The tokens that other machines or claude.ai use
 The limit boxes show each window with its use, its reset time, and the time left.
 
 - Codex: edc starts `codex app-server` and asks it. The `codex` command must be in `PATH`.
-- Claude: edc calls `https://api.anthropic.com/api/oauth/usage`, the API behind `/usage` in Claude Code. It sends the token in `~/.claude/.credentials.json`. edc does not print, store, or refresh this token.
+- Claude on Linux: edc calls `https://api.anthropic.com/api/oauth/usage`, the API behind `/usage` in Claude Code. It sends the token in `~/.claude/.credentials.json`. edc does not print, store, or refresh this token.
+- Claude on macOS: edc reads the usage that the Claude Code status line gives to `edc ai statusline`. See the end of this section.
 
 Anthropic does not document the Claude usage API, and the API answers frequent calls with HTTP 429. So edc calls it at most every 5 minutes. After a 429, edc waits 10 minutes, then 20 minutes, then at most 30 minutes. Until the next call, the box shows the saved values and their age.
 
-`--poll` sets the time between limit calls. The default is 60s, and the minimum is 30s. Claude keeps its own interval of 5 minutes or more.
+`--poll` sets the time between limit calls. The default is 60s, and the minimum is 30s. On Linux, Claude keeps its own interval of 5 minutes or more.
 
 Without a terminal, or with `--count` or `--json`, edc prints samples in place of the dashboard. `--count N` stops after N samples, and 0 runs until you stop edc. `--json <path|->` writes one JSON object for each sample. A file gets mode 0600.
 
 edc writes each reset that it detects to `ai-resets.jsonl`. It keeps the last Claude values in `ai-claude.json`. Both files are in the directory of the history database. For that directory, see [Top recordings and history](#top-recordings-and-history).
 
-On macOS, Claude Code keeps the token in the Keychain. edc does not read the Keychain, so the Claude box shows no limits on macOS.
+On macOS, Claude Code keeps the token in the Keychain. edc does not read the Keychain. Claude Code gives the 5-hour and 7-day limits to its status line command. `edc ai statusline` saves these limits to `ai-claude-statusline.json` in the same directory.
+
+To connect the status line, install edc in its permanent location first. Then run this command:
+
+```sh
+edc ai statusline install
+```
+
+The command changes only `statusLine.command` in `~/.claude/settings.json`. It keeps the old command, so `cship` becomes `edc ai statusline -- cship`. The old file stays in `settings.json.edc-backup`. To restore the old command, run `edc ai statusline uninstall`.
+
+The values come from the last Claude Code request. If the values are 1 minute old or more, the box shows their age. The macOS box does not show the plan name. The status line input does not include it.
 
 ## Remote recipes
 

@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"syscall"
@@ -34,6 +35,9 @@ const (
 )
 
 func runAI(args []string, version string) int {
+	if len(args) > 0 && args[0] == "statusline" {
+		return runAIStatusline(args[1:])
+	}
 	set := flag.NewFlagSet("ai", flag.ContinueOnError)
 	set.SetOutput(os.Stderr)
 	poll := set.Duration("poll", aiDefaultPoll, T("command.ai.option.poll"))
@@ -62,6 +66,11 @@ func runAI(args []string, version string) int {
 	home, _ := os.UserHomeDir()
 	collector := newAICollector(aiClaudeDir(home), aiCodexDir(home), filepath.Dir(historyPath), time.Now())
 	defer collector.close()
+	// macOS의 Claude Code는 token을 Keychain에 둔다. Keychain을 열면 다른 프로그램에도 token을 내주는 허용을 묻게 되므로
+	// Claude Code가 statusline에 넘긴 사용량을 읽는다.
+	if runtime.GOOS == "darwin" {
+		collector.claudeSnapshot = filepath.Join(filepath.Dir(historyPath), aiClaudeSnapshotName)
+	}
 
 	var writer io.Writer = os.Stdout
 	if *jsonPath != "" && *jsonPath != "-" {
@@ -98,6 +107,8 @@ type aiCollector struct {
 	// --poll 하한과 따로 둔다. 둘을 한 값에 담으면 다른 --poll로 다시 실행할 때 앞선 하한이 백오프처럼 남는다.
 	claudeNext    time.Time
 	claudeBackoff time.Duration
+	// claudeSnapshot이 있으면 사용량 API 대신 이 파일을 읽는다. 로컬 파일이라 조회 간격과 429 백오프를 적용하지 않는다.
+	claudeSnapshot string
 }
 
 func newAICollector(claudeDir, codexDir, stateDir string, now time.Time) *aiCollector {
@@ -160,7 +171,9 @@ func (collector *aiCollector) poll(ctx context.Context, poll time.Duration) aiPo
 	var fetched []aiProvider
 	var stateErr error
 	// poll 간격과 조회 시간이 겹쳐 예정 시각보다 조금 일찍 깨도 이번 차례로 본다.
-	if !now.Add(time.Second).Before(collector.claudeNext) {
+	if collector.claudeSnapshot != "" {
+		fetched = append(fetched, readAIClaudeSnapshot(collector.claudeSnapshot, now))
+	} else if !now.Add(time.Second).Before(collector.claudeNext) {
 		claude := fetchAIClaude(ctx, collector.http, collector.claudeDir, now)
 		collector.scheduleClaude(claude.rateLimited, now, poll)
 		if claude.rateLimited {
@@ -181,7 +194,7 @@ func (collector *aiCollector) poll(ctx context.Context, poll time.Duration) aiPo
 				events = append(events, detectAIResets(previous, provider, now)...)
 			}
 			collector.last[provider.Name], collector.shown[provider.Name] = provider, provider
-			if provider.Name == "claude" {
+			if provider.Name == "claude" && collector.claudeSnapshot == "" {
 				// 429 뒤에 늘어난 백오프는 성공해도 줄지 않는다. 다시 실행해도 이어지도록 다음 조회 시각과 함께 남긴다.
 				stateErr = saveAIClaudeState(collector.claudeState, aiClaudeState{aiProvider: provider, NextTry: collector.claudeRetry(now), Backoff: collector.claudeBackoff})
 			}
@@ -197,6 +210,9 @@ func (collector *aiCollector) poll(ctx context.Context, poll time.Duration) aiPo
 		collector.shown[provider.Name] = provider
 	}
 	result := aiPollResult{lastResets: map[string]aiResetEvent{}, claudeInterval: collector.claudeEvery(poll), stateErr: stateErr}
+	if collector.claudeSnapshot != "" {
+		result.claudeInterval = poll
+	}
 	for _, name := range []string{"claude", "codex"} {
 		provider, ok := collector.shown[name]
 		if !ok {

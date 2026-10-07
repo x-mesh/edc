@@ -119,6 +119,22 @@ struct {
 	__type(value, __u64);
 } lost_events SEC(".maps");
 
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, 256);
+	__type(key, __u32);
+	__type(value, __u64);
+} lost_lines SEC(".maps");
+
+static __always_inline void note_lost_line(__u32 line) {
+	__u64 zero = 0;
+	bpf_map_update_elem(&lost_lines, &line, &zero, 1);
+	__u64 *count = bpf_map_lookup_elem(&lost_lines, &line);
+	if (count) {
+		__sync_fetch_and_add(count, 1);
+	}
+}
+
 struct inet_sock_set_state_ctx {
 	__u64 unused;
 	const void *skaddr;
@@ -176,6 +192,7 @@ static __always_inline struct event *start_event(void *ctx, __u32 type) {
 	struct event *event = bpf_ringbuf_reserve(&events, sizeof(*event), 0);
 	if (!event) {
 		__u32 key = 0;
+		note_lost_line(__LINE__);
 		__u64 *lost = bpf_map_lookup_elem(&lost_events, &key);
 		if (lost) {
 			__sync_fetch_and_add(lost, 1);
@@ -1710,6 +1727,7 @@ static __always_inline void http_capture(struct sock *sk, __u64 buffer, __u64 li
 		record->kind = cursor->kind;
 		record->offset = cursor->offset;
 		if (bpf_ringbuf_output(&events, record, __builtin_offsetof(struct http_record, payload) + len, 0)) {
+			note_lost_line(__LINE__);
 			__u64 *lost = bpf_map_lookup_elem(&lost_events, &zero);
 			if (lost) {
 				__sync_fetch_and_add(lost, 1);
@@ -1730,6 +1748,7 @@ static __always_inline void http_capture(struct sock *sk, __u64 buffer, __u64 li
 		if (peer_marked && cursor->offset == offset) {
 			bpf_map_delete_elem(&http_streams, &peer);
 		}
+		if (!dropped) note_lost_line(__LINE__);
 		__u64 *lost = dropped ? 0 : bpf_map_lookup_elem(&lost_events, &zero);
 		if (lost) {
 			__sync_fetch_and_add(lost, 1);
@@ -1811,6 +1830,7 @@ static __always_inline void emit_mysql_iov(struct sock *sk, __u64 buffer, __u64 
 	record->kind = server;
 	record->offset = (__u32)size;
 	if (bpf_ringbuf_output(&events, record, __builtin_offsetof(struct http_record, payload) + copied, 0)) {
+		note_lost_line(__LINE__);
 		__u64 *lost = bpf_map_lookup_elem(&lost_events, &zero);
 		if (lost) {
 			__sync_fetch_and_add(lost, 1);
@@ -1848,6 +1868,7 @@ static __always_inline void emit_mysql_buffer(struct sock *sk, __u64 buffer, __u
 	record->kind = server;
 	record->offset = (__u32)size;
 	if (bpf_ringbuf_output(&events, record, __builtin_offsetof(struct http_record, payload) + len, 0)) {
+		note_lost_line(__LINE__);
 		__u64 *lost = bpf_map_lookup_elem(&lost_events, &zero);
 		if (lost) {
 			__sync_fetch_and_add(lost, 1);
@@ -1871,6 +1892,7 @@ static __always_inline void emit_dns_tcp(struct sock *sk, const void *buffer, __
 	struct dns_record *record = bpf_ringbuf_reserve(&events, sizeof(*record), 0);
 	if (!record) {
 		__u32 key = 0;
+		note_lost_line(__LINE__);
 		__u64 *lost = bpf_map_lookup_elem(&lost_events, &key);
 		if (lost) {
 			__sync_fetch_and_add(lost, 1);
@@ -2214,6 +2236,7 @@ static __always_inline void ssl_capture(struct ssl_snapshot *snapshot, __u64 buf
 		record->kind = cursor->kind;
 		record->offset = cursor->offset;
 		if (bpf_ringbuf_output(&events, record, __builtin_offsetof(struct http_record, payload) + len, 0)) {
+			note_lost_line(__LINE__);
 			__u64 *lost = bpf_map_lookup_elem(&lost_events, &zero);
 			if (lost) {
 				__sync_fetch_and_add(lost, 1);
@@ -2232,6 +2255,7 @@ static __always_inline void ssl_capture(struct ssl_snapshot *snapshot, __u64 buf
 		if (peer_marked && cursor->offset == offset) {
 			bpf_map_delete_elem(&http_streams, &peer);
 		}
+		if (!dropped) note_lost_line(__LINE__);
 		__u64 *lost = dropped ? 0 : bpf_map_lookup_elem(&lost_events, &zero);
 		if (lost) {
 			__sync_fetch_and_add(lost, 1);
@@ -2642,13 +2666,15 @@ struct {
 	__type(value, struct go_tls_pending);
 } go_tls_pending SEC(".maps");
 
-static __always_inline void go_tls_lost(void) {
+static __always_inline void go_tls_lost_at(__u32 line) {
+	note_lost_line(line);
 	__u32 zero = 0;
 	__u64 *lost = bpf_map_lookup_elem(&lost_events, &zero);
 	if (lost) {
 		__sync_fetch_and_add(lost, 1);
 	}
 }
+#define go_tls_lost() go_tls_lost_at(__LINE__)
 
 #define GO_TLS_ORDER_RECORD 22
 #define GO_TLS_WRITE_BEGIN 1
@@ -2996,13 +3022,15 @@ static __always_inline __u64 nss_stack(void *ctx, int returning) {
 	return returning ? stack - 8 : stack;
 }
 
-static __always_inline void nss_lost(void) {
+static __always_inline void nss_lost_at(__u32 line) {
+	note_lost_line(line);
 	__u32 zero = 0;
 	__u64 *lost = bpf_map_lookup_elem(&lost_events, &zero);
 	if (lost) {
 		__sync_fetch_and_add(lost, 1);
 	}
 }
+#define nss_lost() nss_lost_at(__LINE__)
 
 static __always_inline __u32 nss_mode(__u64 thread, __u64 fd) {
 	struct ssl_key key = {.tgid = thread >> 32, .ssl = fd};

@@ -924,7 +924,13 @@ func collectCaptureEventsFor(scope traceScope, duration time.Duration, onEvent f
 		if lookupErr := objects.TlsUnmapped.Lookup(uint32(0), &unmapped); lookupErr != nil {
 			return captureSummary{}, fmt.Errorf("read unmapped TLS count: %w", lookupErr)
 		}
+		var zzLine uint32
+		var zzCount uint64
+		for iter := objects.LostLines.Iterate(); iter.Next(&zzLine, &zzCount); {
+			fmt.Fprintf(os.Stderr, "ZZLINE line=%d count=%d\n", zzLine, zzCount)
+		}
 		if goOrder != nil {
+			fmt.Fprintf(os.Stderr, "ZZLOST bpf=%d writers=%d records=%d orderlost=%d ready=%d failed=%t\n", lost, goOrder.writers, goOrder.records, goOrder.lost, len(ready), goOrder.failed)
 			lost += goOrder.finish() + uint64(len(ready))
 		}
 		// 감시를 기다리는 동안에도 hook은 붙어 있고 남은 레코드는 읽지 않으므로, 잃은 수를 읽은 뒤에 멈춘다.

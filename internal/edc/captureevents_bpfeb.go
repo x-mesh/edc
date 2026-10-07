@@ -236,6 +236,7 @@ const (
 	captureEventsMapHttpSendPending            = "http_send_pending"
 	captureEventsMapHttpStreams                = "http_streams"
 	captureEventsMapLostEvents                 = "lost_events"
+	captureEventsMapLostLines                  = "lost_lines"
 	captureEventsMapMysqlSendPending           = "mysql_send_pending"
 	captureEventsMapNssConfigs                 = "nss_configs"
 	captureEventsMapNssControlCalls            = "nss_control_calls"
@@ -441,6 +442,7 @@ type captureEventsMapSpecs struct {
 	HttpSendPending  *ebpf.MapSpec `ebpf:"http_send_pending"`
 	HttpStreams      *ebpf.MapSpec `ebpf:"http_streams"`
 	LostEvents       *ebpf.MapSpec `ebpf:"lost_events"`
+	LostLines        *ebpf.MapSpec `ebpf:"lost_lines"`
 	MysqlSendPending *ebpf.MapSpec `ebpf:"mysql_send_pending"`
 	NssConfigs       *ebpf.MapSpec `ebpf:"nss_configs"`
 	NssControlCalls  *ebpf.MapSpec `ebpf:"nss_control_calls"`
@@ -510,6 +512,7 @@ type captureEventsMaps struct {
 	HttpSendPending  *ebpf.Map `ebpf:"http_send_pending"`
 	HttpStreams      *ebpf.Map `ebpf:"http_streams"`
 	LostEvents       *ebpf.Map `ebpf:"lost_events"`
+	LostLines        *ebpf.Map `ebpf:"lost_lines"`
 	MysqlSendPending *ebpf.Map `ebpf:"mysql_send_pending"`
 	NssConfigs       *ebpf.Map `ebpf:"nss_configs"`
 	NssControlCalls  *ebpf.Map `ebpf:"nss_control_calls"`
@@ -541,6 +544,7 @@ func (m *captureEventsMaps) Close() error {
 		m.HttpSendPending,
 		m.HttpStreams,
 		m.LostEvents,
+		m.LostLines,
 		m.MysqlSendPending,
 		m.NssConfigs,
 		m.NssControlCalls,

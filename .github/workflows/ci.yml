@@ -70,6 +70,16 @@ jobs:
       - name: Trace an HTTPS request
         run: ./scripts/ci-tls-smoke.sh
 
+      - name: Diagnose Go TLS lost events
+        shell: bash
+        continue-on-error: true
+        run: |
+          go test -c -o edc.test ./internal/edc
+          cd internal/edc
+          sudo env "PATH=$PATH" EDC_TEST_GO="$(command -v go)" ../../edc.test -test.run 'TestTraceTLSGoCaptures/normal--0' -test.count=15 -test.v > diag.log 2>&1 || true
+          grep -cE -- '^    --- (PASS|FAIL)' diag.log || true
+          grep -E -- '^ZZ|^    --- FAIL|_test.go:(197|229):' diag.log | sed -E 's/requests=map.*responses=/responses=/' | cut -c1-300 || true
+
       # capture 시험은 BPF 권한이 없으면 건너뛰므로 root로 돌린다. 건너뛰어도 step은 통과하므로, log에 SKIP이 있으면 실패시킨다.
       - name: Trace Go 1.27.1 TLS plaintext
         shell: bash

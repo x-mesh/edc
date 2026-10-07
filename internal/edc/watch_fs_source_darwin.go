@@ -5,7 +5,6 @@ package edc
 import (
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -87,9 +86,6 @@ func fsWatchClassify(flags uint32, previous fsWatchPathState, known bool, curren
 	}
 	return nil
 }
-
-// fsWatchNotice는 다시 훑었다는 안내를 받는다. 이벤트 출력과 섞이지 않게 stderr로 보낸다.
-var fsWatchNotice io.Writer = os.Stderr
 
 // fsWatchFSEvents는 FSEvents 이벤트를 edc event로 바꾸는 상태다. 이벤트 goroutine 하나만 쓴다.
 type fsWatchFSEvents struct {

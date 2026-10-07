@@ -1,6 +1,7 @@
 package edc
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -86,6 +87,13 @@ func runFSWatch(args []string) int {
 		ctx, cancel = context.WithTimeout(ctx, options.duration)
 		defer cancel()
 	}
+	// 상태줄은 사람이 보는 터미널에만 그린다. pipe, 파일과 JSON 출력은 바뀌지 않는다.
+	if options.jsonPath == "" && isTerminal(os.Stdout) {
+		options.status = newFSWatchStatus(os.Stdout, terminalWidth, time.Now, options.events, len(options.rules) > 0)
+		previous := fsWatchNotice
+		fsWatchNotice = options.status.through(os.Stderr)
+		defer func() { fsWatchNotice = previous }()
+	}
 	code, err := streamFSWatch(ctx, writer, source, options, executeFSWatchAction)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -97,7 +105,28 @@ func streamFSWatch(ctx context.Context, writer io.Writer, source fsWatchSource, 
 	actionCtx, cancelActions := context.WithCancel(ctx)
 	var workers sync.WaitGroup
 	defer func() { cancelActions(); workers.Wait() }()
-	emit := func(record fsWatchRecord) error { return writeFSWatchRecord(writer, record, options.jsonPath != "") }
+	var tick <-chan time.Time
+	if options.status != nil {
+		// 한 기록을 한 번에 써야 상태줄을 기록마다 한 번만 지우고 다시 그린다.
+		defer options.status.close()
+		ticker := time.NewTicker(time.Second)
+		defer ticker.Stop()
+		tick = ticker.C
+	}
+	emit := func(record fsWatchRecord) error {
+		if options.status == nil {
+			return writeFSWatchRecord(writer, record, options.jsonPath != "")
+		}
+		if record.Type == "summary" {
+			options.status.close()
+		}
+		var buffer bytes.Buffer
+		if err := writeFSWatchRecord(&buffer, record, options.jsonPath != ""); err != nil {
+			return err
+		}
+		_, err := options.status.through(writer).Write(buffer.Bytes())
+		return err
+	}
 	if err := emit(fsWatchRecord{Type: "ready", Time: time.Now().UTC(), Root: options.root, Recursive: options.recursive}); err != nil {
 		return 2, err
 	}
@@ -184,6 +213,9 @@ func streamFSWatch(ctx context.Context, writer io.Writer, source fsWatchSource, 
 				continue
 			}
 			summary.Events++
+			if options.status != nil {
+				options.status.event(event.Event, event.Time)
+			}
 			if err := emit(fsWatchRecord{Type: "event", Time: event.Time, Event: event.Event, Path: event.Path, IsDir: event.IsDir}); err != nil {
 				cancelActions()
 				return 2, err
@@ -205,14 +237,20 @@ func streamFSWatch(ctx context.Context, writer io.Writer, source fsWatchSource, 
 		case result := <-completed:
 			running = false
 			summary.Actions++
-			if result.Status == "failed" || result.Status == "timeout" {
+			failed := result.Status == "failed" || result.Status == "timeout"
+			if failed {
 				summary.Failed++
+			}
+			if options.status != nil {
+				options.status.action(failed)
 			}
 			if err := emit(result); err != nil {
 				cancelActions()
 				return 2, err
 			}
 		case <-timerC:
+		case <-tick:
+			options.status.tick()
 		}
 	}
 	summary.Time, summary.DurationMS = time.Now().UTC(), time.Since(started).Milliseconds()

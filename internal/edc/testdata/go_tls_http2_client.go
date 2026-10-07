@@ -13,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/net/http2"
 )
 
 // waitForTLSWrites는 TLS Write를 실행 중인 goroutine이 없을 때까지 기다린다. Write 도중에 process가 끝나면 edc는 그 Write의
@@ -63,10 +65,12 @@ func main() {
 	time.Sleep(3 * time.Second)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	protocols := &http.Protocols{}
-	protocols.SetHTTP2(true)
-	transport := &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, Protocols: protocols}
-	conn, err := transport.NewClientConn(ctx, "https", strings.TrimPrefix(server.URL, "https://"))
+	dialer := &tls.Dialer{Config: &tls.Config{InsecureSkipVerify: true, NextProtos: []string{"h2"}}}
+	tlsConn, err := dialer.DialContext(ctx, "tcp", strings.TrimPrefix(server.URL, "https://"))
+	if err != nil {
+		panic(err)
+	}
+	conn, err := (&http2.Transport{}).NewClientConn(tlsConn)
 	if err != nil {
 		panic(err)
 	}

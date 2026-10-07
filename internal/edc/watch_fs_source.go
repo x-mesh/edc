@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
@@ -88,6 +89,9 @@ func newFSWatchSource(options fsWatchOptions) (fsWatchSource, error) {
 					if err := watcher.Add(filename); err != nil {
 						if filename != options.root && errors.Is(err, fs.ErrNotExist) {
 							return filepath.SkipDir
+						}
+						if errors.Is(err, syscall.EMFILE) || errors.Is(err, syscall.ENFILE) {
+							return fmt.Errorf("%s: %w", T("watchfs.too_many_files"), err)
 						}
 						return err
 					}

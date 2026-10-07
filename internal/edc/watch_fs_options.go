@@ -16,6 +16,13 @@ import (
 
 const fsWatchUsage = "edc watch fs [directory] [options]"
 
+// fsWatchDefaultExcludes는 VCS, 의존성과 cache 디렉터리다. macOS kqueue는 감시하는 파일마다 fd를 하나 연다.
+// build와 dist는 감시하려는 산출물일 수 있어서 넣지 않는다.
+var fsWatchDefaultExcludes = []string{
+	"**/.git/**", "**/node_modules/**", "**/.venv/**", "**/venv/**", "**/__pycache__/**",
+	"**/.mypy_cache/**", "**/.pytest_cache/**", "**/.ruff_cache/**", "**/.tox/**", "**/.next/**", "**/.gradle/**",
+}
+
 type fsWatchRule struct {
 	Name         string   `yaml:"name"`
 	Events       []string `yaml:"events"`
@@ -55,7 +62,7 @@ func (values *fsWatchExcludes) String() string         { return strings.Join(*va
 func (values *fsWatchExcludes) Set(value string) error { *values = append(*values, value); return nil }
 
 func parseFSWatchOptions(args []string, output io.Writer) (fsWatchOptions, error) {
-	options := fsWatchOptions{match: "**", exclude: []string{".git/**"}}
+	options := fsWatchOptions{match: "**"}
 	set := flag.NewFlagSet("watch fs", flag.ContinueOnError)
 	set.SetOutput(output)
 	set.BoolVar(&options.recursive, "recursive", false, T("watchfs.option.recursive"))
@@ -68,6 +75,7 @@ func parseFSWatchOptions(args []string, output io.Writer) (fsWatchOptions, error
 	set.DurationVar(&options.duration, "duration", 0, T("command.watch.option.duration"))
 	set.StringVar(&options.jsonPath, "json", "", T("watchfs.option.json"))
 	set.BoolVar(&options.dryRun, "dry-run", false, T("watchfs.option.dry_run"))
+	noDefaultExclude := set.Bool("no-default-exclude", false, T("watchfs.option.no_default_exclude"))
 	var excludes fsWatchExcludes
 	set.Var(&excludes, "exclude", T("watchfs.option.exclude"))
 	reordered, err := reorderFSWatchArgs(set, args)
@@ -76,6 +84,9 @@ func parseFSWatchOptions(args []string, output io.Writer) (fsWatchOptions, error
 	}
 	if err := set.Parse(reordered); err != nil {
 		return options, err
+	}
+	if !*noDefaultExclude {
+		options.exclude = append(options.exclude, fsWatchDefaultExcludes...)
 	}
 	if set.NArg() > 1 || options.duration < 0 || *debounce < 0 || *timeout <= 0 {
 		return options, errors.New(T("watchfs.invalid_options"))

@@ -54,7 +54,7 @@ func TestFSWatchOptionsAndStrictRules(t *testing.T) {
 	if options.root != realRoot || options.recursive || len(options.rules) != 1 || options.rules[0].debounce != 0 || options.rules[0].timeout != 2*time.Second || options.rules[0].CWD != realRoot {
 		t.Fatalf("options = %+v", options)
 	}
-	if len(options.exclude) != 2 {
+	if len(options.exclude) != len(fsWatchDefaultExcludes)+1 || options.exclude[len(options.exclude)-1] != "build/**" {
 		t.Fatalf("excludes = %v", options.exclude)
 	}
 	cli, err := parseFSWatchOptions([]string{root, "--event", "create", "--match", "text.txt", "--exec", "git-kit pull"}, io.Discard)
@@ -110,6 +110,39 @@ func fsWatchWaitEvent(t *testing.T, source fsWatchSource, kind, path string) {
 		case <-timer.C:
 			t.Fatalf("missing %s %s", kind, path)
 		}
+	}
+}
+
+func TestFSWatchDefaultExcludesCanBeTurnedOff(t *testing.T) {
+	root := t.TempDir()
+	excluded := func(options fsWatchOptions, name string) bool {
+		for _, pattern := range options.exclude {
+			if matchFSWatchGlob(pattern, name) {
+				return true
+			}
+		}
+		return false
+	}
+	defaults, err := parseFSWatchOptions([]string{root}, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{".git", "app/.git/HEAD", "web/node_modules/react/index.js", "api/.venv/lib/site.py", "api/pkg/__pycache__/x.pyc"} {
+		if !excluded(defaults, name) {
+			t.Fatalf("default excludes miss %s", name)
+		}
+	}
+	for _, name := range []string{"build/out.js", "dist/app", "src/main.go"} {
+		if excluded(defaults, name) {
+			t.Fatalf("default excludes hide %s", name)
+		}
+	}
+	all, err := parseFSWatchOptions([]string{root, "--no-default-exclude", "--exclude", "build/**"}, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if excluded(all, "web/node_modules/react/index.js") || excluded(all, ".git/HEAD") || !excluded(all, "build/out.js") {
+		t.Fatalf("excludes = %v", all.exclude)
 	}
 }
 

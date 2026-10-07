@@ -168,6 +168,7 @@ var commandDocs = []commandDoc{
 			{"--exec <command>", "watchfs.option.exec"},
 			{"--rules <path>", "watchfs.option.rules"},
 			{"--exclude <glob>", "watchfs.option.exclude"},
+			{"--no-default-exclude", "watchfs.option.no_default_exclude"},
 			{"--debounce 200ms", "watchfs.option.debounce"},
 			{"--timeout 30s (fs)", "watchfs.option.timeout"},
 			{"--dry-run", "watchfs.option.dry_run"},

@@ -45,17 +45,27 @@ func newFSWatchSource(options fsWatchOptions) (fsWatchSource, error) {
 			return false
 		}
 	}
-	ignored := func(filename string) bool {
+	// 출력 파일인지는 stat해야 안다. walk에서는 출력과 종류가 같은 항목과 symbolic link만 확인해서, 터미널로 출력할 때 파일마다 stat하지 않는다.
+	mayBeOutput := func(entry fs.DirEntry) bool {
+		if entry == nil || options.outputInfo == nil {
+			return true
+		}
+		kind := entry.Type()
+		return kind&fs.ModeSymlink != 0 || kind == options.outputInfo.Mode().Type()
+	}
+	ignored := func(filename string, entry fs.DirEntry) bool {
 		relative, err := filepath.Rel(options.root, filename)
 		if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
 			return true
 		}
-		if options.outputPath != "" && fsWatchPathsEqual(options.outputPath, filename) {
-			return true
-		}
-		if options.outputInfo != nil {
-			if info, err := os.Stat(filename); err == nil && os.SameFile(info, options.outputInfo) {
+		if mayBeOutput(entry) {
+			if options.outputPath != "" && fsWatchPathsEqual(options.outputPath, filename) {
 				return true
+			}
+			if options.outputInfo != nil {
+				if info, err := os.Stat(filename); err == nil && os.SameFile(info, options.outputInfo) {
+					return true
+				}
 			}
 		}
 		name := filepath.ToSlash(relative)
@@ -74,7 +84,7 @@ func newFSWatchSource(options fsWatchOptions) (fsWatchSource, error) {
 			if err != nil {
 				return err
 			}
-			if filename != options.root && ignored(filename) {
+			if filename != options.root && ignored(filename, entry) {
 				if entry.IsDir() {
 					return filepath.SkipDir
 				}
@@ -142,7 +152,7 @@ func newFSWatchSource(options fsWatchOptions) (fsWatchSource, error) {
 					fail(errors.New(T("watchfs.root_removed", options.root)))
 					return
 				}
-				if raw.Name == options.root || ignored(raw.Name) {
+				if raw.Name == options.root || ignored(raw.Name, nil) {
 					continue
 				}
 				relative, err := filepath.Rel(options.root, raw.Name)

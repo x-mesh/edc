@@ -700,7 +700,7 @@ edc ai statusline install
 
 이 명령은 `~/.claude/settings.json`의 `statusLine.command`만 바꿉니다. 원래 명령은 그대로 실행되므로, `cship`은 `edc ai statusline -- cship`이 됩니다. 원래 파일은 `settings.json.edc-backup`에 남습니다. 되돌리려면 `edc ai statusline uninstall`을 실행합니다.
 
-값은 Claude Code가 마지막으로 요청했을 때의 값입니다. 1분 이상 지난 값에는 경과 시간을 함께 보여 줍니다. 상태 줄 입력에 요금제가 없으므로 macOS의 상자에는 요금제 이름이 나오지 않습니다.
+값은 Claude Code가 마지막으로 요청했을 때의 값입니다. 상자에는 경과 시간을 늘 보여 주고, 텍스트 출력은 1분 이상 지난 값에만 `updated` 줄을 더합니다. 상태 줄 입력에 요금제가 없으므로 macOS의 상자에는 요금제 이름이 나오지 않습니다.
 
 ## Remote recipe
 
@@ -1286,7 +1286,7 @@ rustls-ffi는 C 함수 `rustls_connection_read`와 `rustls_connection_write`에�
 
 이 event에는 socket 주소가 없습니다. `--port` 필터를 사용하면 제외됩니다. native Rust API는 지원하지 않습니다.
 
-Mbed TLS는 `mbedtls_ssl_read`, `mbedtls_ssl_write`, `mbedtls_ssl_read_early_data`, `mbedtls_ssl_write_early_data`에서 평문을 읽습니다. `mbedtls_ssl_session_reset`과 `mbedtls_ssl_free`에서 연결 상태를 지웁니다.
+Mbed TLS는 `mbedtls_ssl_read`, `mbedtls_ssl_write`, `mbedtls_ssl_read_early_data`, `mbedtls_ssl_write_early_data`에서 평문을 읽습니다. `mbedtls_ssl_session_reset`과 `mbedtls_ssl_free`에서 연결 상태를 지웁니다. server 쪽 `mbedtls_ssl_read_early_data`는 handshake가 이미 받은 data를 돌려주므로, 이 event에는 socket 주소가 없고 `--port`를 쓰면 빠집니다.
 
 ```bash
 ./bin/edc trace http --tls=/usr/local/lib/libmbedtls.so

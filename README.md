@@ -810,7 +810,7 @@ edc ai statusline install
 
 The command changes only `statusLine.command` in `~/.claude/settings.json`. It keeps the old command, so `cship` becomes `edc ai statusline -- cship`. The old file stays in `settings.json.edc-backup`. To restore the old command, run `edc ai statusline uninstall`.
 
-The values come from the last Claude Code request. If the values are 1 minute old or more, the box shows their age. The macOS box does not show the plan name. The status line input does not include it.
+The values come from the last Claude Code request. The box shows their age. The text output adds an `updated` line when the values are 1 minute old or more. The macOS box does not show the plan name. The status line input does not include it.
 
 ## Remote recipes
 
@@ -1468,7 +1468,7 @@ rustls-ffi uses the C functions `rustls_connection_read` and `rustls_connection_
 
 These events have no socket addresses. A `--port` filter excludes them. `--tls` does not see programs that use the native Rust API of rustls.
 
-Mbed TLS uses `mbedtls_ssl_read`, `mbedtls_ssl_write`, `mbedtls_ssl_read_early_data`, and `mbedtls_ssl_write_early_data`. edc clears the connection state at `mbedtls_ssl_session_reset` and `mbedtls_ssl_free`.
+Mbed TLS uses `mbedtls_ssl_read`, `mbedtls_ssl_write`, `mbedtls_ssl_read_early_data`, and `mbedtls_ssl_write_early_data`. edc clears the connection state at `mbedtls_ssl_session_reset` and `mbedtls_ssl_free`. On a server, `mbedtls_ssl_read_early_data` returns data that the handshake already read. So its events have no socket address, and a `--port` filter excludes them.
 
 ```bash
 ./bin/edc trace http --tls=/usr/local/lib/libmbedtls.so

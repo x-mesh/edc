@@ -274,7 +274,9 @@ edc watch fs --duration 1m --json events.jsonl
 
 기본으로 `.git`, `node_modules`, `.venv`, `venv`, `__pycache__`, `.mypy_cache`, `.pytest_cache`, `.ruff_cache`, `.tox`, `.next`, `.gradle`을 모든 깊이에서 제외합니다. 빌드 결과물을 감시할 수 있도록 `build`와 `dist`는 제외하지 않습니다. `--exclude 'build/**'`처럼 제외 glob을 반복해서 추가할 수 있습니다. 기본 제외 디렉터리도 감시하려면 `--no-default-exclude`를 쓰며, 이때도 `--exclude`로 준 패턴은 적용됩니다.
 
-macOS에서는 감시하는 파일과 디렉터리마다 file descriptor를 하나씩 엽니다. 항목 수가 열 수 있는 파일 한도를 넘으면 `watch fs`는 오류를 내고 멈추므로, `--exclude`로 범위를 줄이세요.
+Linux에서 `--recursive`이면 `edc`는 디렉터리마다 감시를 등록한 뒤에 출력을 시작합니다. 트리가 크면 시간이 걸립니다. stderr가 터미널이면 이 동안 안내를 출력합니다.
+
+macOS에서는 `watch fs`가 FSEvents를 사용합니다. stream 하나가 트리 전체를 감시하므로 파일 수만큼 file descriptor를 쓰지 않습니다. FSEvents는 변경을 최대 50ms 동안 모아서 보냅니다. macOS가 이벤트를 유실하면 `watch fs`는 그 디렉터리를 다시 훑어서 달라진 점을 `create`, `modify`, `remove`로 알립니다. 이때 이동은 `remove`와 `create`로 나옵니다. 한 번에 최대 200,000개 항목을 훑으며, 다시 훑었다는 사실과 상한에서 멈췄는지를 stderr에 한 줄로 알립니다. 제외한 디렉터리의 변경도 FSEvents가 보내지만 `edc`가 버립니다.
 
 JSON 출력 파일과 stdout으로 연결된 일반 파일도 감시에서 제외하여 출력이 다음 이벤트를 만들지 않게 합니다. `--event`와 `--match`는 출력과 action에 공통으로 적용됩니다. rule 파일을 생략하면 기본 action은 없습니다.
 

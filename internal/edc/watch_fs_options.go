@@ -315,17 +315,28 @@ func validateFSWatchGlob(pattern string) error {
 }
 
 func matchFSWatchGlob(pattern, name string) bool {
+	if directory, ok := fsWatchAnyDepthName(pattern); ok {
+		for rest := name; ; {
+			part, next, found := strings.Cut(rest, "/")
+			if part == directory {
+				return true
+			}
+			if !found {
+				return false
+			}
+			rest = next
+		}
+	}
 	patterns, parts := strings.Split(pattern, "/"), strings.Split(name, "/")
-	type position struct{ pattern, part int }
-	cache := map[position]bool{}
-	seen := map[position]bool{}
+	// 시작할 때 모든 파일과 디렉터리를 제외 패턴마다 맞춰 본다. 호출마다 map을 만들면 큰 트리에서 할당과 GC가 시간을 거의 다 쓴다.
+	width := len(parts) + 1
+	memo := make([]int8, (len(patterns)+1)*width)
 	var match func(int, int) bool
 	match = func(i, j int) bool {
-		key := position{i, j}
-		if seen[key] {
-			return cache[key]
+		key := i*width + j
+		if memo[key] != 0 {
+			return memo[key] > 0
 		}
-		seen[key] = true
 		result := false
 		if i == len(patterns) {
 			result = j == len(parts)
@@ -335,10 +346,27 @@ func matchFSWatchGlob(pattern, name string) bool {
 			ok, _ := path.Match(patterns[i], parts[j])
 			result = ok && match(i+1, j+1)
 		}
-		cache[key] = result
+		memo[key] = -1
+		if result {
+			memo[key] = 1
+		}
 		return result
 	}
 	return match(0, 0)
+}
+
+// fsWatchAnyDepthName은 "**/<이름>/**" 꼴인 패턴의 이름이다. 기본 제외 패턴이 모두 이 꼴이다.
+// 이름에 메타 문자가 없으면 이 패턴은 경로의 한 부분이 그 이름일 때만 맞으므로, 재귀로 맞춰 보지 않는다.
+func fsWatchAnyDepthName(pattern string) (string, bool) {
+	name, ok := strings.CutPrefix(pattern, "**/")
+	if !ok {
+		return "", false
+	}
+	name, ok = strings.CutSuffix(name, "/**")
+	if !ok || name == "" || strings.ContainsAny(name, `/*?[\`) {
+		return "", false
+	}
+	return name, true
 }
 
 func fsWatchPathsEqual(first, second string) bool {

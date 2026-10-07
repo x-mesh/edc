@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"runtime"
 	"strings"
 	"sync"
 	"syscall"
@@ -66,6 +67,11 @@ func runFSWatch(args []string) int {
 	defer closeOutput()
 	if file, ok := writer.(*os.File); ok {
 		options.outputInfo, _ = file.Stat()
+	}
+	// 재귀 감시는 모든 디렉터리를 등록한 뒤에야 첫 줄을 낸다. 큰 트리에서는 수십 초 걸려 멈춘 것처럼 보이므로 터미널에 먼저 알린다.
+	// macOS의 FSEvents는 디렉터리를 등록하지 않고 바로 시작한다.
+	if options.recursive && runtime.GOOS != "darwin" && isTerminal(os.Stderr) {
+		fmt.Fprintln(os.Stderr, T("watchfs.walking", terminalJSON(options.root)))
 	}
 	source, err := newFSWatchSource(options)
 	if err != nil {

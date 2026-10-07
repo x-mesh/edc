@@ -24,6 +24,9 @@ func TestFSWatchGlob(t *testing.T) {
 		{"*.go", "src/main.go", false}, {"src/**/test?.[ch]", "src/test1.c", true},
 		{"src/**/test?.[ch]", "src/a/b/test2.h", true}, {"src/**/test?.[ch]", "src/a/b/test22.h", false},
 		{".git/**", ".git", true}, {".git/**", ".git/objects/x", true}, {"**", "a/b", true},
+		{"**/node_modules/**", "node_modules", true}, {"**/node_modules/**", "web/node_modules/react/index.js", true},
+		{"**/node_modules/**", "web/node_modules_old/x", false}, {"**/.git/**", "a/b.git/c", false},
+		{"**/[ab]/**", "x/a/y", true}, {`**/\*/**`, "x/*/y", true}, {`**/\*/**`, `x/\*/y`, false},
 	} {
 		if err := validateFSWatchGlob(test.pattern); err != nil {
 			t.Fatal(err)
@@ -518,6 +521,55 @@ func TestFSWatchNativeOutputIsExcludedAndRootRenameFails(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("root rename was not reported")
+	}
+}
+
+func TestFSWatchMovedTreeHidesOutputAndItsLink(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	tree := filepath.Join(t.TempDir(), "tree")
+	if err := os.Mkdir(tree, 0700); err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.Create(filepath.Join(tree, "events.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	info, _ := file.Stat()
+	if err := os.Symlink("events.jsonl", filepath.Join(tree, "link")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tree, "z.txt"), []byte("z"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	source, err := newFSWatchSource(fsWatchOptions{root: root, recursive: true, outputInfo: info})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer source.close()
+	if err := os.Rename(tree, filepath.Join(root, "tree")); err != nil {
+		t.Fatal(err)
+	}
+	// walk는 이름 순서로 알리므로 z.txt보다 먼저 나오는 출력 파일과 link가 이때까지 보이지 않아야 한다.
+	timer := time.NewTimer(5 * time.Second)
+	defer timer.Stop()
+	for {
+		select {
+		case event := <-source.events:
+			if event.Path == "tree/events.jsonl" || event.Path == "tree/link" {
+				t.Fatalf("output event: %+v", event)
+			}
+			if event.Path == "tree/z.txt" {
+				return
+			}
+		case err := <-source.errors:
+			t.Fatal(err)
+		case <-timer.C:
+			t.Fatal("missing create tree/z.txt")
+		}
 	}
 }
 

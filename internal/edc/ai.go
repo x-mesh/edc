@@ -336,7 +336,8 @@ func formatAITable(sample aiSample) string {
 		}
 	}
 	for _, total := range sample.Totals {
-		fmt.Fprintf(&builder, "%s  tokens  %-*s  claude %s · codex %s · this host\n", at, nameWidth, total.Window, aiCompact(total.Claude.total()), aiCompact(total.Codex.total()))
+		fmt.Fprintf(&builder, "%s  tokens  %-*s  claude %s hit %s · codex %s hit %s · this host\n", at, nameWidth, total.Window,
+			aiCompact(total.Claude.total()), total.Claude.cacheHitText(), aiCompact(total.Codex.total()), total.Codex.cacheHitText())
 	}
 	if sample.ScanError != "" {
 		fmt.Fprintf(&builder, "%s  scan    error  %s\n", at, sample.ScanError)

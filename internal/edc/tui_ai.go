@@ -16,8 +16,8 @@ const (
 	aiUsageBarWidth = 10
 	aiWarnPercent   = 80
 	aiDangerPercent = 95
-	// aiBoxWidth는 한도 상자의 최대 폭이다. 표와 같은 80열에 맞춘다.
-	aiBoxWidth = 80
+	// aiBoxWidth는 한도 상자의 최대 폭이다. 표와 같은 88열에 맞춘다.
+	aiBoxWidth = 88
 	// aiDefaultBodyLines는 terminal 크기를 받기 전에 그리는 표 행 수다.
 	aiDefaultBodyLines = 12
 )
@@ -29,7 +29,7 @@ var aiRowSizes = []time.Duration{aiBucket, time.Minute, 5 * time.Minute, time.Ho
 var aiColumns = []struct {
 	title string
 	width int
-}{{"req", 4}, {"in", 6}, {"out", 6}, {"cache", 6}, {"total", 7}}
+}{{"req", 4}, {"in", 6}, {"out", 6}, {"cache", 6}, {"hit", 4}, {"total", 7}}
 
 func runAIDashboard(collector *aiCollector, poll time.Duration, version string) int {
 	model := aiModel{collector: collector, poll: poll, version: version, now: time.Now(), rowSize: time.Minute}
@@ -273,7 +273,7 @@ func aiTotalRow(total aiTotal) string {
 }
 
 func aiUsageCells(usage aiUsage) string {
-	values := []string{fmt.Sprint(usage.Requests), aiCompact(usage.Input), aiCompact(usage.Output), aiCompact(usage.Cache), aiCompact(usage.total())}
+	values := []string{fmt.Sprint(usage.Requests), aiCompact(usage.Input), aiCompact(usage.Output), aiCompact(usage.Cache), usage.cacheHitText(), aiCompact(usage.total())}
 	cells := make([]string, len(values))
 	for index, value := range values {
 		cells[index] = fmt.Sprintf("%*s", aiColumns[index].width, value)

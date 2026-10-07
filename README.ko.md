@@ -674,6 +674,8 @@ token은 이 host의 로그에서 셉니다. 2초마다 새로 붙은 줄만 읽
 
 표는 이 host만 셉니다. 다른 기기나 claude.ai에서 쓴 양은 한도 비율에만 나타납니다.
 
+`in`은 새로 보낸 입력이고, `cache`는 prompt cache에서 읽은 입력입니다. `hit`은 `cache / (in + cache)`를 내림한 값입니다. Claude의 `in`에는 cache에 새로 쓴 token도 들어가므로, 이 token은 miss로 셉니다. 입력이 없는 구간의 `hit`은 `-`로 표시합니다. `--json`에는 소수점 한 자리의 `cache_hit_percent`가 들어가고, 입력이 없는 구간에서는 이 필드를 뺍니다. 표는 88열이 필요합니다.
+
 한도 상자는 한도 구간마다 사용률, reset 시각, 남은 시간을 보여 줍니다.
 
 - Codex: `codex app-server`를 띄워 묻습니다. `codex` 명령이 `PATH`에 있어야 합니다.

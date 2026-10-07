@@ -784,6 +784,8 @@ edc counts the tokens from the local logs. Every 2 seconds, it reads only the ne
 
 The table counts this host only. The tokens that other machines or claude.ai use show only in the limit percentages.
 
+`in` is new input, and `cache` is input that the tool read from the prompt cache. `hit` is `cache / (in + cache)`, rounded down. For Claude, `in` includes the tokens that Claude Code wrote to the cache, so these tokens count as misses. If an interval has no input, `hit` shows `-`. The `--json` output has `cache_hit_percent` with one decimal place, and it omits the field for an interval without input. The table needs 88 columns.
+
 The limit boxes show each window with its use, its reset time, and the time left.
 
 - Codex: edc starts `codex app-server` and asks it. The `codex` command must be in `PATH`.

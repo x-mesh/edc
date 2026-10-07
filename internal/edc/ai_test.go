@@ -232,7 +232,7 @@ func TestAICountdownShowsSeconds(t *testing.T) {
 }
 
 func aiDashboardFixture(now time.Time) aiModel {
-	model := aiModel{poll: time.Minute, width: 80, height: 24, now: now, rowSize: time.Minute, polled: true, scanned: true,
+	model := aiModel{poll: time.Minute, width: aiBoxWidth, height: 24, now: now, rowSize: time.Minute, polled: true, scanned: true,
 		usage: aiUsageSnapshot{Buckets: map[string]map[time.Time]aiUsage{
 			"claude": {now.Truncate(aiBucket): {Requests: 3, Input: 4100, Output: 1200, Cache: 412_000}},
 			"codex":  {now.Add(-2 * time.Minute).Truncate(aiBucket): {Requests: 1, Input: 900, Output: 120}},
@@ -251,7 +251,7 @@ func aiDashboardFixture(now time.Time) aiModel {
 	return model
 }
 
-func TestAIDashboardFitsAnEightyColumnTerminal(t *testing.T) {
+func TestAIDashboardFitsTheTableWidth(t *testing.T) {
 	model := aiDashboardFixture(time.Date(2026, 10, 6, 1, 0, 30, 0, time.Local))
 	lines := strings.Split(model.View().Content, "\n")
 	if len(lines) != model.height {
@@ -263,7 +263,7 @@ func TestAIDashboardFitsAnEightyColumnTerminal(t *testing.T) {
 		}
 	}
 	text := ansi.Strip(model.View().Content)
-	for _, want := range []string{"▸01:00:00│   3│  4.1K│  1.2K│  412K│   417K│", "│00:58:00│   0│", "in 02:00:00", "in 6d 00:00:00", "! codex app-server exited", "│   Σ 10m│   3│  4.1K│  1.2K│  412K│   417K│   1│   900│   120│     0│   1.0K│", "- 10s [1m] 5m 1h +"} {
+	for _, want := range []string{"▸01:00:00│   3│  4.1K│  1.2K│  412K│ 99%│   417K│", "│00:58:00│   0│", "in 02:00:00", "in 6d 00:00:00", "! codex app-server exited", "│   Σ 10m│   3│  4.1K│  1.2K│  412K│ 99%│   417K│   1│   900│   120│     0│  0%│   1.0K│", "│00:58:00│   0│     0│     0│     0│   -│", "- 10s [1m] 5m 1h +"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("dashboard misses %q", want)
 		}
@@ -800,4 +800,29 @@ func aiJSONEqual(t *testing.T, got []byte, want string) bool {
 	a, _ := json.Marshal(left)
 	b, _ := json.Marshal(right)
 	return string(a) == string(b)
+}
+
+func TestAICacheHitCountsCacheWritesAsMisses(t *testing.T) {
+	for _, test := range []struct {
+		usage aiUsage
+		text  string
+		json  string
+	}{
+		{aiUsage{Requests: 1, Input: 1, Cache: 999}, "99%", `"cache_hit_percent":99.9`},
+		{aiUsage{Requests: 1, Input: 0, Cache: 50}, "100%", `"cache_hit_percent":100`},
+		{aiUsage{Requests: 1, Input: 300, Output: 20, Cache: 100}, "25%", `"cache_hit_percent":25`},
+		{aiUsage{Requests: 1, Output: 20}, "-", ""},
+		{aiUsage{}, "-", ""},
+	} {
+		if text := test.usage.cacheHitText(); text != test.text {
+			t.Errorf("%+v: hit %q, want %q", test.usage, text, test.text)
+		}
+		data, err := json.Marshal(test.usage)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := string(data); test.json == "" && strings.Contains(got, "cache_hit_percent") || !strings.Contains(got, test.json) || !strings.Contains(got, `"requests":`) {
+			t.Errorf("%+v: JSON %s, want %s", test.usage, got, test.json)
+		}
+	}
 }

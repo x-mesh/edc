@@ -56,6 +56,15 @@ observe:
     error:
       reset_log: "리셋 기록을 쓰지 못했습니다: %v"
       state: "마지막 Claude 값을 저장하지 못했습니다: %v"
+    statusline:
+      usage: "사용법: edc ai statusline [-- <command> [args...]] | install | uninstall"
+      write: "Claude 사용량을 저장하지 못했습니다: %v"
+      settings: "%s를 고치지 못했습니다: %v"
+      already: "statusLine.command가 이미 edc ai statusline을 실행합니다: %s"
+      not_installed: "statusLine.command가 edc ai statusline을 실행하지 않습니다"
+      changed: "statusLine.command: %s → %s"
+      backup: "백업: %s"
+      none: "(없음)"
 
   watch:
     no_samples_duration: "관측 시간이 끝날 때까지 완료한 표본이 없어 대상의 상태를 판단할 수 없습니다."

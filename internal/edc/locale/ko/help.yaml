@@ -241,7 +241,7 @@ command:
   ai:
     summary: "AI 코딩 도구 사용량과 리셋 시각"
     option:
-      poll: "한도 조회 간격, 15s 이상. Claude는 5m 이상"
+      poll: "한도 조회 간격, 30s 이상. Claude는 5m 이상"
       count: "출력할 표본 수, 0은 계속 실행"
     notes:
       - "terminal에서는 이 host의 구간별 token 표를 대시보드로 엽니다."

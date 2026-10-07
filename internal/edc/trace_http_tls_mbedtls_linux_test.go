@@ -136,6 +136,8 @@ func traceTLSBoundedABIFixture(t *testing.T, outLength bool) {
 #define WRITE mbedtls_ssl_write
 #define FREE mbedtls_ssl_free
 #define RESET mbedtls_ssl_session_reset
+#define EARLY_READ mbedtls_ssl_read_early_data
+#define EARLY_WRITE mbedtls_ssl_write_early_data
 #define EXTRA
 #define CALL_EXTRA
 #define SUCCESS 0
@@ -162,6 +164,18 @@ __attribute__((noinline)) int WRITE(void *conn, const unsigned char *buf, size_t
  return n;
 #endif
 }
+#ifndef OUT_LENGTH
+__attribute__((noinline)) int EARLY_READ(void *conn, unsigned char *buf, size_t len) {
+ (void)conn;
+ if (!len) return -1;
+ return strlen((char *)buf);
+}
+__attribute__((noinline)) int EARLY_WRITE(void *conn, const unsigned char *buf, size_t len) {
+ (void)conn;
+ if (!len) return -1;
+ return strlen((char *)buf);
+}
+#endif
 __attribute__((noinline)) void FREE(void *conn) { __asm__ volatile("" : : "r"(conn) : "memory"); }
 #ifndef OUT_LENGTH
 __attribute__((noinline)) int RESET(void *conn) { __asm__ volatile("" : : "r"(conn) : "memory"); return -1; }
@@ -176,6 +190,10 @@ int main(void) {
  unsigned char response[] = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok";
  WRITE(&conn, request, ((size_t)1 << 32)+1 CALL_EXTRA);
  READ(&conn, response, ((size_t)1 << 32)+1 CALL_EXTRA);
+#ifndef OUT_LENGTH
+ EARLY_WRITE(&conn, request, ((size_t)1 << 32)+1);
+ EARLY_READ(&conn, response, ((size_t)1 << 32)+1);
+#endif
  out = 999;
  unsigned char error[] = "GET /error HTTP/1.1\r\nHost: localhost\r\n\r\n";
  WRITE(&conn, error, 0 CALL_EXTRA);
@@ -237,7 +255,11 @@ int main(void) {
 	if err := command.Wait(); err != nil || readErr != nil || !strings.Contains(string(output), "done") {
 		t.Fatalf("TLS ABI client: %v, %v, %s", err, readErr, output)
 	}
-	if requests != 2 || responses != 1 || summary.LostEvents != 0 {
+	wantRequests, wantResponses := 3, 2
+	if outLength {
+		wantRequests, wantResponses = 2, 1
+	}
+	if requests != wantRequests || responses != wantResponses || summary.LostEvents != 0 {
 		t.Fatalf("TLS ABI requests=%d responses=%d lost=%d", requests, responses, summary.LostEvents)
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"cmp"
 	"context"
+	"debug/elf"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -25,6 +26,7 @@ import (
 	"time"
 
 	"github.com/cilium/ebpf"
+	"github.com/cilium/ebpf/asm"
 	"github.com/cilium/ebpf/btf"
 	"github.com/cilium/ebpf/link"
 	"github.com/cilium/ebpf/ringbuf"
@@ -343,32 +345,34 @@ func traceTLSPrograms(objects *captureEventsObjects) map[string][2]*ebpf.Program
 		"SSL_free":     {objects.SslFreeEntry, nil},
 		// gnutls_record_send와 _recv의 size는 size_t, 반환은 ssize_t다. BPF는 SSL_write처럼 하위 32 bit를 읽는데, 한 번의
 		// 호출은 협상한 최대 record 크기(16KiB 이하)까지만 주고받으므로 반환값이 잘리지 않는다.
-		"gnutls_record_send":        {objects.SslWriteEntry, objects.SslWriteExit},
-		"gnutls_record_send2":       {objects.SslWriteEntry, objects.SslWriteExit},
-		"gnutls_record_recv":        {objects.SslReadEntry, objects.SslReadExit},
-		"gnutls_record_recv_seq":    {objects.SslReadEntry, objects.SslReadExit},
-		"gnutls_deinit":             {objects.SslFreeEntry, nil},
-		"wolfSSL_read":              {objects.SslReadEntry, objects.SslReadExit},
-		"wolfSSL_write":             {objects.SslWriteEntry, objects.SslWriteExit},
-		"wolfSSL_read_ex":           {objects.SslReadExEntry, objects.SslReadExExit},
-		"wolfSSL_write_ex":          {objects.SslWriteExEntry, objects.SslWriteExExit},
-		"wolfSSL_free":              {objects.SslFreeEntry, nil},
-		"mbedtls_ssl_read":          {objects.MbedReadEntry, objects.SslReadExit},
-		"mbedtls_ssl_write":         {objects.MbedWriteEntry, objects.SslWriteExit},
-		"mbedtls_ssl_session_reset": {objects.SslFreeEntry, nil},
-		"mbedtls_ssl_free":          {objects.SslFreeEntry, nil},
-		"rustls_connection_read":    {objects.SslReadExEntry, objects.RustlsExit},
-		"rustls_connection_write":   {objects.SslWriteExEntry, objects.RustlsExit},
-		"rustls_connection_free":    {objects.SslFreeEntry, nil},
-		"SSL_ImportFD":              {objects.NssImportEntry, objects.NssControlExit},
-		"SSL_OptionSet":             {objects.NssOptionEntry, objects.NssControlExit},
-		"SSL_OptionSetDefault":      {objects.NssDefaultEntry, objects.NssControlExit},
-		"PR_Accept":                 {objects.NssAcceptEntry, objects.NssControlExit},
-		"PR_Read":                   {objects.NssReadEntry, objects.NssIoExit},
-		"PR_Recv":                   {objects.NssRecvEntry, objects.NssIoExit},
-		"PR_Write":                  {objects.NssWriteEntry, objects.NssIoExit},
-		"PR_Send":                   {objects.NssWriteEntry, objects.NssIoExit},
-		"PR_Close":                  {objects.NssCloseEntry, nil},
+		"gnutls_record_send":           {objects.SslWriteEntry, objects.SslWriteExit},
+		"gnutls_record_send2":          {objects.SslWriteEntry, objects.SslWriteExit},
+		"gnutls_record_recv":           {objects.SslReadEntry, objects.SslReadExit},
+		"gnutls_record_recv_seq":       {objects.SslReadEntry, objects.SslReadExit},
+		"gnutls_deinit":                {objects.SslFreeEntry, nil},
+		"wolfSSL_read":                 {objects.SslReadEntry, objects.SslReadExit},
+		"wolfSSL_write":                {objects.SslWriteEntry, objects.SslWriteExit},
+		"wolfSSL_read_ex":              {objects.SslReadExEntry, objects.SslReadExExit},
+		"wolfSSL_write_ex":             {objects.SslWriteExEntry, objects.SslWriteExExit},
+		"wolfSSL_free":                 {objects.SslFreeEntry, nil},
+		"mbedtls_ssl_read":             {objects.MbedReadEntry, objects.SslReadExit},
+		"mbedtls_ssl_write":            {objects.MbedWriteEntry, objects.SslWriteExit},
+		"mbedtls_ssl_read_early_data":  {objects.MbedReadEntry, objects.SslReadExit},
+		"mbedtls_ssl_write_early_data": {objects.MbedWriteEntry, objects.SslWriteExit},
+		"mbedtls_ssl_session_reset":    {objects.SslFreeEntry, nil},
+		"mbedtls_ssl_free":             {objects.SslFreeEntry, nil},
+		"rustls_connection_read":       {objects.SslReadExEntry, objects.RustlsExit},
+		"rustls_connection_write":      {objects.SslWriteExEntry, objects.RustlsExit},
+		"rustls_connection_free":       {objects.SslFreeEntry, nil},
+		"SSL_ImportFD":                 {objects.NssImportEntry, objects.NssControlExit},
+		"SSL_OptionSet":                {objects.NssOptionEntry, objects.NssControlExit},
+		"SSL_OptionSetDefault":         {objects.NssDefaultEntry, objects.NssControlExit},
+		"PR_Accept":                    {objects.NssAcceptEntry, objects.NssControlExit},
+		"PR_Read":                      {objects.NssReadEntry, objects.NssIoExit},
+		"PR_Recv":                      {objects.NssRecvEntry, objects.NssIoExit},
+		"PR_Write":                     {objects.NssWriteEntry, objects.NssIoExit},
+		"PR_Send":                      {objects.NssWriteEntry, objects.NssIoExit},
+		"PR_Close":                     {objects.NssCloseEntry, nil},
 	}
 }
 
@@ -442,6 +446,13 @@ func attachTraceTLSGo(objects *captureEventsObjects, target traceTLSTarget) (lin
 		traceTLSGoRead:  {objects.GoTlsReadEntry, objects.GoTlsReadExit},
 		traceTLSGoWrite: {objects.GoTlsWriteEntry, objects.GoTlsWriteExit},
 		traceTLSGoClose: {objects.GoTlsCloseEntry, nil},
+	}
+	if target.goMachine == elf.EM_AARCH64 {
+		pairs = map[string][2]*ebpf.Program{
+			traceTLSGoRead:  {objects.GoTlsArm64ReadEntry, objects.GoTlsArm64ReadExit},
+			traceTLSGoWrite: {objects.GoTlsArm64WriteEntry, objects.GoTlsArm64WriteExit},
+			traceTLSGoClose: {objects.GoTlsArm64CloseEntry, nil},
+		}
 	}
 	attach := func(name string, program *ebpf.Program, offset uint64) error {
 		probe, attachErr := executable.Uprobe("", program, &link.UprobeOptions{Address: offset})
@@ -680,6 +691,16 @@ func loadCaptureEventsFor(scope traceScope, objects *captureEventsObjects) error
 		}
 		if err := errors.Join(variables.EmitTlsPlaintext.Set(uint8(1)), variables.UprobeArch.Set(arch)); err != nil {
 			return err
+		}
+	}
+	if runtime.GOARCH != "arm64" {
+		for _, name := range []string{"go_tls_arm64_read_entry", "go_tls_arm64_read_exit", "go_tls_arm64_write_entry", "go_tls_arm64_write_exit", "go_tls_arm64_close_entry"} {
+			spec.Programs[name].Instructions = asm.Instructions{asm.Mov.Imm(asm.R0, 0), asm.Return()}
+		}
+	}
+	if runtime.GOARCH == "arm64" {
+		for _, name := range []string{"go_tls_read_entry", "go_tls_read_exit", "go_tls_write_entry", "go_tls_write_exit", "go_tls_close_entry"} {
+			spec.Programs[name].Instructions = asm.Instructions{asm.Mov.Imm(asm.R0, 0), asm.Return()}
 		}
 	}
 	selected := "tcp_recvmsg_exit"

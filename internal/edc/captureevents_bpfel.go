@@ -250,6 +250,11 @@ const (
 	captureEventsMapTlsPrefixes                = "tls_prefixes"
 	captureEventsMapTlsUnmapped                = "tls_unmapped"
 	captureEventsMapUdpSendPending             = "udp_send_pending"
+	captureEventsProgGoTlsArm64CloseEntry      = "go_tls_arm64_close_entry"
+	captureEventsProgGoTlsArm64ReadEntry       = "go_tls_arm64_read_entry"
+	captureEventsProgGoTlsArm64ReadExit        = "go_tls_arm64_read_exit"
+	captureEventsProgGoTlsArm64WriteEntry      = "go_tls_arm64_write_entry"
+	captureEventsProgGoTlsArm64WriteExit       = "go_tls_arm64_write_exit"
 	captureEventsProgGoTlsCloseEntry           = "go_tls_close_entry"
 	captureEventsProgGoTlsReadEntry            = "go_tls_read_entry"
 	captureEventsProgGoTlsReadExit             = "go_tls_read_exit"
@@ -360,6 +365,11 @@ type captureEventsSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type captureEventsProgramSpecs struct {
+	GoTlsArm64CloseEntry      *ebpf.ProgramSpec `ebpf:"go_tls_arm64_close_entry"`
+	GoTlsArm64ReadEntry       *ebpf.ProgramSpec `ebpf:"go_tls_arm64_read_entry"`
+	GoTlsArm64ReadExit        *ebpf.ProgramSpec `ebpf:"go_tls_arm64_read_exit"`
+	GoTlsArm64WriteEntry      *ebpf.ProgramSpec `ebpf:"go_tls_arm64_write_entry"`
+	GoTlsArm64WriteExit       *ebpf.ProgramSpec `ebpf:"go_tls_arm64_write_exit"`
 	GoTlsCloseEntry           *ebpf.ProgramSpec `ebpf:"go_tls_close_entry"`
 	GoTlsReadEntry            *ebpf.ProgramSpec `ebpf:"go_tls_read_entry"`
 	GoTlsReadExit             *ebpf.ProgramSpec `ebpf:"go_tls_read_exit"`
@@ -572,6 +582,11 @@ type captureEventsVariables struct {
 //
 // It can be passed to loadCaptureEventsObjects or ebpf.CollectionSpec.LoadAndAssign.
 type captureEventsPrograms struct {
+	GoTlsArm64CloseEntry      *ebpf.Program `ebpf:"go_tls_arm64_close_entry"`
+	GoTlsArm64ReadEntry       *ebpf.Program `ebpf:"go_tls_arm64_read_entry"`
+	GoTlsArm64ReadExit        *ebpf.Program `ebpf:"go_tls_arm64_read_exit"`
+	GoTlsArm64WriteEntry      *ebpf.Program `ebpf:"go_tls_arm64_write_entry"`
+	GoTlsArm64WriteExit       *ebpf.Program `ebpf:"go_tls_arm64_write_exit"`
 	GoTlsCloseEntry           *ebpf.Program `ebpf:"go_tls_close_entry"`
 	GoTlsReadEntry            *ebpf.Program `ebpf:"go_tls_read_entry"`
 	GoTlsReadExit             *ebpf.Program `ebpf:"go_tls_read_exit"`
@@ -628,6 +643,11 @@ type captureEventsPrograms struct {
 
 func (p *captureEventsPrograms) Close() error {
 	return _CaptureEventsClose(
+		p.GoTlsArm64CloseEntry,
+		p.GoTlsArm64ReadEntry,
+		p.GoTlsArm64ReadExit,
+		p.GoTlsArm64WriteEntry,
+		p.GoTlsArm64WriteExit,
 		p.GoTlsCloseEntry,
 		p.GoTlsReadEntry,
 		p.GoTlsReadExit,

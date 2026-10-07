@@ -210,6 +210,19 @@ func TestFSWatchRecursiveNewTreeAndRename(t *testing.T) {
 	fsWatchWaitEvent(t, source, "create", "moved/deep/later.txt")
 }
 
+func TestFSWatchReportsAnOldFileMovedIn(t *testing.T) {
+	root, outside := t.TempDir(), t.TempDir()
+	old := filepath.Join(outside, "old.txt")
+	if err := os.WriteFile(old, []byte("old"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	source := fsWatchTestSource(t, root, false)
+	if err := os.Rename(old, filepath.Join(root, "old.txt")); err != nil {
+		t.Fatal(err)
+	}
+	fsWatchWaitEvent(t, source, "create", "old.txt")
+}
+
 func TestFSWatchNoInitialOrExcludedEvents(t *testing.T) {
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, ".git"), 0700); err != nil {
@@ -569,6 +582,46 @@ func TestFSWatchMovedTreeHidesOutputAndItsLink(t *testing.T) {
 			t.Fatal(err)
 		case <-timer.C:
 			t.Fatal("missing create tree/z.txt")
+		}
+	}
+}
+
+func TestFSWatchSkipsTheTreeOfAnExcludedDirectory(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "build", "deep"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, err := newFSWatchSource(fsWatchOptions{root: resolved, recursive: true, exclude: []string{"build"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(source.close)
+	if err := os.WriteFile(filepath.Join(root, "build", "deep", "out.o"), []byte("ignored"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "kept.txt"), []byte("kept"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	timeout := time.After(5 * time.Second)
+	for kept := false; ; {
+		select {
+		case event := <-source.events:
+			if strings.HasPrefix(event.Path, "build") {
+				t.Fatalf("excluded tree event: %+v", event)
+			}
+			kept = kept || event.Path == "kept.txt"
+		case err := <-source.errors:
+			t.Fatal(err)
+		case <-time.After(150 * time.Millisecond):
+			if kept {
+				return
+			}
+		case <-timeout:
+			t.Fatal("missing create kept.txt")
 		}
 	}
 }

@@ -31,6 +31,8 @@ watchfs:
   invalid_event: "Unsupported file event %q; use create,modify,remove,rename. Reading files is not a change event."
   invalid_glob: "Invalid root-relative glob: %q"
   root_removed: "Watched directory was removed or renamed: %s"
+  rescanned: "File events were dropped; rescanned %s. The order of its changes is unknown."
+  rescan_partial: "File events were dropped; rescanned the first %[2]d entries of %[1]s. Some changes can be missing."
   source_closed: "Filesystem event source closed unexpectedly; observation is incomplete."
   walking: "Adding a watch to each directory under %s… A large tree takes time. Output starts when edc is ready."
   ready: "WATCH %s · recursive=%t"

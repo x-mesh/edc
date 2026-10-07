@@ -650,6 +650,14 @@ const aiStatuslineFixture = `{"model":{"display_name":"Opus"},"rate_limits":{` +
 	`"seven_day":{"used_percentage":41.2,"resets_at":1791880800},` +
 	`"spend_limit":{"used_percentage":62.8,"resets_at":1793000000}}}`
 
+// aiStatuslineInputAt는 재설정 시각이 now 뒤인 statusline 입력이다. 실제 시각으로 스냅샷을 읽는 시험은 지난
+// 창을 버리므로 고정된 재설정 시각을 쓰면 그 시각이 지난 뒤에 실패한다.
+func aiStatuslineInputAt(now time.Time) string {
+	return fmt.Sprintf(`{"model":{"display_name":"Opus"},"rate_limits":{`+
+		`"five_hour":{"used_percentage":23.5,"resets_at":%d},`+
+		`"seven_day":{"used_percentage":41.2,"resets_at":%d}}}`, now.Add(2*time.Hour).Unix(), now.Add(6*24*time.Hour).Unix())
+}
+
 func TestParseAIStatuslineInputKeepsTheLimitWindows(t *testing.T) {
 	now := time.Date(2026, 10, 7, 3, 0, 0, 0, time.UTC)
 	provider, ok := parseAIStatuslineInput([]byte(aiStatuslineFixture), now)
@@ -702,7 +710,7 @@ func TestAIPollReadsTheStatuslineSnapshotInsteadOfTheAPI(t *testing.T) {
 	claudeDir, stateDir := t.TempDir(), t.TempDir()
 	writeAIClaudeCredentials(t, claudeDir)
 	snapshot := filepath.Join(stateDir, aiClaudeSnapshotName)
-	provider, _ := parseAIStatuslineInput([]byte(aiStatuslineFixture), time.Now().Add(-time.Minute))
+	provider, _ := parseAIStatuslineInput([]byte(aiStatuslineInputAt(time.Now())), time.Now().Add(-time.Minute))
 	if err := saveAIClaudeState(snapshot, aiClaudeState{aiProvider: provider}); err != nil {
 		t.Fatal(err)
 	}
@@ -725,7 +733,8 @@ func TestRunAIStatuslinePassesTheInputToTheCommand(t *testing.T) {
 	stateHome := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", stateHome)
 	input := filepath.Join(t.TempDir(), "input.json")
-	writeAIFixture(t, input, aiStatuslineFixture)
+	statusline := aiStatuslineInputAt(time.Now())
+	writeAIFixture(t, input, statusline)
 	stdin, err := os.Open(input)
 	if err != nil {
 		t.Fatal(err)
@@ -739,7 +748,7 @@ func TestRunAIStatuslinePassesTheInputToTheCommand(t *testing.T) {
 	if code := runAIStatusline([]string{"--", "sh", "-c", `cat > "$0"; exit 3`, copied}); code != 3 {
 		t.Errorf("exit code %d, want the command's 3", code)
 	}
-	if data, err := os.ReadFile(copied); err != nil || string(data) != aiStatuslineFixture {
+	if data, err := os.ReadFile(copied); err != nil || string(data) != statusline {
 		t.Errorf("the command got %q, %v", data, err)
 	}
 	provider := readAIClaudeSnapshot(filepath.Join(stateHome, "edc", aiClaudeSnapshotName), time.Now())

@@ -54,6 +54,7 @@ type fsWatchOptions struct {
 	dryRun     bool
 	outputPath string
 	outputInfo os.FileInfo
+	status     *fsWatchStatus
 }
 
 type fsWatchExcludes []string

@@ -31,6 +31,10 @@ watchfs:
   source_closed: "ファイルイベントの収集が予期せず終了しました。観測は不完全です。"
   walking: "%s 配下の各ディレクトリを監視に登録中… ツリーが大きいと時間がかかります。準備ができると出力を開始します。"
   ready: "WATCH %s · recursive=%t"
+  status:
+    actions: "action %d"
+    failed: "失敗 %d"
+    last: "最終 %s前"
   output_truncated: "action出力を%d byteで切り詰めました。"
   summary: "イベント%d件 · action%d件 · 失敗%d件 · %s"
   stop:

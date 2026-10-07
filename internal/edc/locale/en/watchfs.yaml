@@ -36,4 +36,8 @@ watchfs:
   source_closed: "Filesystem event source closed unexpectedly; observation is incomplete."
   walking: "Adding a watch to each directory under %s… A large tree takes time. Output starts when edc is ready."
   ready: "WATCH %s · recursive=%t"
+  status:
+    actions: "action %d"
+    failed: "failed %d"
+    last: "last %s ago"
   output_truncated: "Action output truncated at %d bytes."

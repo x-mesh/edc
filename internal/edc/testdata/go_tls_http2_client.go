@@ -9,10 +9,23 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
 )
+
+// waitForTLSWrites는 TLS Write를 실행 중인 goroutine이 없을 때까지 기다린다. Write 도중에 process가 끝나면 edc는 그 Write의
+// 반환을 보지 못해 잃은 event로 센다. HTTP/2 server는 frame을 쓰는 goroutine이 끝나기 전에 연결을 닫았다고 알릴 수 있다.
+func waitForTLSWrites() {
+	buffer := make([]byte, 1<<20)
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+		if !strings.Contains(string(buffer[:runtime.Stack(buffer, true)]), "crypto/tls.(*Conn).Write(") {
+			return
+		}
+	}
+	panic("a TLS Write did not return")
+}
 
 func requestBody(path string) string { return "h2-request:" + path + ":" + strings.Repeat("q", 65536) }
 func responseBody(path string) string {
@@ -86,5 +99,6 @@ func main() {
 	}
 	server.Close()
 	serverConnections.Wait()
+	waitForTLSWrites()
 	fmt.Println("done")
 }

@@ -241,7 +241,7 @@ command:
   ai:
     summary: "AI コーディングツールの使用量とリセット時刻"
     option:
-      poll: "制限の照会間隔、15s 以上。Claude は 5m 以上"
+      poll: "制限の照会間隔、30s 以上。Claude は 5m 以上"
       count: "表示するサンプル数、0 は継続実行"
     notes:
       - "terminal ではこの host の区間別 token 表をダッシュボードで開きます。"

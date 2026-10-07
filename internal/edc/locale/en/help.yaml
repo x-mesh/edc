@@ -241,7 +241,7 @@ command:
   ai:
     summary: "AI coding tool usage and reset times"
     option:
-      poll: "time between limit calls, 15s or more, 5m or more for Claude"
+      poll: "time between limit calls, 30s or more, 5m or more for Claude"
       count: "samples to print, 0 runs until you quit"
     notes:
       - "In a terminal, edc opens a table of tokens per interval on this host."

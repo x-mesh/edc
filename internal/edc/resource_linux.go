@@ -76,34 +76,12 @@ func readLinuxBootTime() time.Time {
 // newTopProcessEnricher는 목록에 남은 process의 I/O rate와 fd 수를 채운다. 모든 process가 아니라 남은 것만 읽어
 // 필터를 걸지 않을 때 비용이 늘지 않는다. 다른 사용자의 process는 root가 아니면 /proc/<pid>/io와 fd를 읽을 수 없어 비워 둔다.
 func newTopProcessEnricher() func([]topProcess) {
-	previous := map[int]linuxProcessIOSample{}
+	tracker := &topProcessIOTracker{}
 	limits := newLinuxProcessLimits("/proc")
 	return func(processes []topProcess) {
 		now := time.Now()
 		limits.enrich(processes, now)
-		current := make(map[int]linuxProcessIOSample, len(processes))
-		for index := range processes {
-			process := &processes[index]
-			pid := strconv.Itoa(process.PID)
-			data, err := os.ReadFile("/proc/" + pid + "/io")
-			if err != nil {
-				continue
-			}
-			io, ok := parseLinuxProcessIO(string(data))
-			if !ok {
-				continue
-			}
-			current[process.PID] = linuxProcessIOSample{io: io, at: now}
-			before, seen := previous[process.PID]
-			seconds := now.Sub(before.at).Seconds()
-			if !seen || seconds <= 0 || io.read < before.io.read || io.write < before.io.write {
-				continue
-			}
-			process.DiskValid = true
-			process.DiskRead = float64(io.read-before.io.read) / seconds
-			process.DiskWrite = float64(io.write-before.io.write) / seconds
-		}
-		previous = current
+		tracker.fill(processes, now)
 	}
 }
 

@@ -188,6 +188,223 @@ func TestTopSignalSummarizesHighestRisk(t *testing.T) {
 	}
 }
 
+func TestTopSignalReportsBlockedTasksOnlyWithHighIOWait(t *testing.T) {
+	limits := newTopLimits(4, false)
+	items := topSignals(resourceRate{CPUIOWait: 78, ProcsBlocked: 14, ProcsBlockedValid: true}, limits)
+	if len(items) != 2 || items[1].text != "blocked 14" || items[1].view != topViewDisk {
+		t.Fatalf("items = %+v", items)
+	}
+	for name, rate := range map[string]resourceRate{
+		"low iowait":   {CPUIOWait: 2, ProcsBlocked: 14, ProcsBlockedValid: true},
+		"few blocked":  {CPUIOWait: 78, ProcsBlocked: 3, ProcsBlockedValid: true},
+		"not measured": {CPUIOWait: 78, ProcsBlocked: 14},
+	} {
+		for _, item := range topSignals(rate, limits) {
+			if strings.HasPrefix(item.text, "blocked") {
+				t.Fatalf("%s must not signal blocked: %+v", name, item)
+			}
+		}
+	}
+}
+
+func TestTopDiskCandidatesPutBlockedProcessesFirst(t *testing.T) {
+	processes := []topProcess{
+		{PID: 1, CPU: 20, Command: "busy"},
+		{PID: 2, CPU: 5, Command: "gm", State: "D"},
+		{PID: 3, CPU: 3, Command: "gm", State: "D"},
+		{PID: 4, CPU: 1, Command: "idle"},
+	}
+	for view, want := range map[topView][]int{topViewDisk: {2, 3, 1, 4}, topViewCPU: {1, 2, 3, 4}} {
+		model := topFixtureModel(nil)
+		model.width, model.height = 120, topTallHeight
+		model.view = view
+		model.rows = append(model.rows, topDashboardRow{at: time.Unix(1, 0), processesValid: true, processes: processes})
+		model.selected = len(model.rows) - 1
+		got := []int{}
+		for _, process := range model.candidates() {
+			got = append(got, process.PID)
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("view %v order = %v, want %v", view, got, want)
+		}
+	}
+}
+
+func TestTopDiskCandidatesSortByIOAndShowRates(t *testing.T) {
+	processes := []topProcess{
+		{PID: 1, CPU: 20, Command: "busy"},
+		{PID: 2, CPU: 5, Command: "gm", State: "D", DiskValid: true, DiskRead: 1 << 20, DiskWrite: 2 << 20},
+		{PID: 3, CPU: 3, Command: "node", DiskValid: true, DiskRead: 40 << 20},
+		{PID: 4, CPU: 1, Command: "unreadable", State: "D"},
+	}
+	model := topFixtureModel(nil)
+	model.limits.color = false
+	model.width, model.height = 120, topTallHeight
+	model.view = topViewDisk
+	model.rows = append(model.rows, topDashboardRow{at: time.Unix(1, 0), processesValid: true, processes: processes})
+	model.selected = len(model.rows) - 1
+	got := []int{}
+	for _, process := range model.candidates() {
+		got = append(got, process.PID)
+	}
+	if want := []int{3, 2, 4, 1}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("order = %v, want %v", got, want)
+	}
+	lines := model.candidateLines()
+	if !strings.Contains(lines[1], "STATE") || !strings.Contains(lines[1], "READ") || !strings.Contains(lines[1], "WRITE") {
+		t.Fatalf("header = %q", lines[1])
+	}
+	for _, want := range []string{"   3 node", "   2 gm", "   4 unreadable"} {
+		found := false
+		for _, line := range lines {
+			found = found || strings.Contains(line, want)
+		}
+		if !found {
+			t.Fatalf("%q missing in %q", want, lines)
+		}
+	}
+	node, gm, unreadable := lines[2], lines[3], lines[4]
+	if !strings.HasSuffix(node, " 40.0M  0.00M") || !strings.HasSuffix(gm, " 1.00M  2.00M") || !strings.HasSuffix(unreadable, "     —      —") {
+		t.Fatalf("I/O columns:\n%s\n%s\n%s", node, gm, unreadable)
+	}
+	if index := strings.Index(lines[1], "STATE"); index < 0 || !strings.HasPrefix(gm[index:], "iowait") || !strings.HasPrefix(node[index:], "      ") {
+		t.Fatalf("state column misaligned:\n%s\n%s", lines[1], gm)
+	}
+	model.view = topViewCPU
+	if content := model.View().Content; !strings.Contains(content, "40.0M") {
+		t.Fatalf("a measured rate must also show in other views: %q", content)
+	}
+}
+
+func TestTopProcessStateNames(t *testing.T) {
+	for state, want := range map[string]string{"R": "run", "S": "sleep", "D": "iowait", "Z": "zombie", "T": "stop", "I": "idle", "W": "W", "": ""} {
+		if got := topProcessStateName(state); got != want {
+			t.Fatalf("state %q = %q, want %q", state, got, want)
+		}
+		if len(want) > topProcessStateWidth {
+			t.Fatalf("state %q name %q is wider than the column", state, want)
+		}
+	}
+}
+
+func TestTopDiskCandidatesColorHeavyIOAndShowGroups(t *testing.T) {
+	model := topFixtureModel(nil)
+	model.limits.color = true
+	model.width, model.height = topFooterProcessWidth, topTallHeight
+	model.view = topViewDisk
+	processes := []topProcess{
+		{PID: 1, CPU: 30, Command: "node", DiskValid: true, DiskRead: 60 << 20},
+		{PID: 2, CPU: 1, Command: "gm", State: "D", DiskValid: true, DiskWrite: 12 << 20},
+		{PID: 3, CPU: 1, Command: "gm", DiskValid: true, DiskWrite: 1 << 20},
+	}
+	total := topProcessTotal{Groups: []topProcessGroup{{Name: "gm", Count: 200, Blocked: 150, CPU: 100, RSS: 460 << 20, DiskValid: true, DiskRead: 200 << 20, DiskWrite: 400 << 20}}}
+	model.rows = append(model.rows, topDashboardRow{at: time.Unix(1, 0), processesValid: true, processes: processes, processTotal: total})
+	model.selected = len(model.rows) - 1
+	lines := model.candidateLines()
+	for _, line := range lines[1:] {
+		if width := ansi.StringWidth(line); width > topFooterProcessWidth {
+			t.Fatalf("line is %d columns in a %d column panel: %q", width, topFooterProcessWidth, line)
+		}
+	}
+	group := lines[2]
+	// 63칸 패널의 이름 칸에는 I/O 대기 수까지 들어가지 않아 process 수만 남는다.
+	if strings.Contains(group, "×") || !strings.Contains(group, "gm (200 procs)") || !strings.Contains(group, topColorDanger+"  400M") {
+		t.Fatalf("group line = %q", group)
+	}
+	if !strings.Contains(lines[3], topColorDanger+" 60.0M") || !strings.Contains(lines[4], topColorWarn+" 12.0M") || !strings.Contains(lines[4], topColorWarn+"iowait") {
+		t.Fatalf("colors:\n%q\n%q", lines[3], lines[4])
+	}
+	if strings.Contains(lines[5], topColorWarn) || strings.Contains(lines[5], topColorDanger) {
+		t.Fatalf("a small writer must stay plain: %q", lines[5])
+	}
+	// 고른 줄은 반전 한 번으로 그려야 하고, 칸 색의 reset이 반전을 끊으면 안 된다.
+	model.processFocus, model.processSelected = true, 0
+	selected := model.candidateLines()[3]
+	if strings.Count(selected, topColorReset) != 1 {
+		t.Fatalf("selected line = %q", selected)
+	}
+	model.processFilter, _ = parseTopProcessFilter("gm")
+	for _, line := range model.candidateLines() {
+		if strings.Contains(line, "procs)") {
+			t.Fatalf("a filtered view must not show groups: %q", line)
+		}
+	}
+}
+
+func TestTopCPUAndMemoryViewsShowGroups(t *testing.T) {
+	model := topFixtureModel(nil)
+	model.limits.color = false
+	model.width, model.height = topFooterProcessWidth, topTallHeight
+	processes := []topProcess{{PID: 1, CPU: 30, RSS: 500 << 20, Command: "node"}}
+	total := topProcessTotal{Groups: []topProcessGroup{
+		{Name: "gm", Count: 200, CPU: 100, RSS: 400 << 20},
+		{Name: "php-fpm", Count: 10, CPU: 20, RSS: 800 << 20},
+	}}
+	model.rows = append(model.rows, topDashboardRow{at: time.Unix(1, 0), processesValid: true, processes: processes, processTotal: total})
+	model.selected = len(model.rows) - 1
+	for view, want := range map[topView][]string{topViewCPU: {"gm (200 procs)", "php-fpm (10 procs)"}, topViewMemory: {"php-fpm (10 procs)", "gm (200 procs)"}} {
+		model.view = view
+		lines := model.candidateLines()
+		if !strings.Contains(lines[2], want[0]) || !strings.Contains(lines[3], want[1]) {
+			t.Fatalf("view %v groups:\n%s", view, strings.Join(lines, "\n"))
+		}
+		for _, line := range lines[1:] {
+			if width := ansi.StringWidth(line); width > topFooterProcessWidth {
+				t.Fatalf("view %v line is %d columns: %q", view, width, line)
+			}
+		}
+	}
+	model.view = topViewMemory
+	if line := model.candidateLines()[3]; !strings.Contains(line, "≤400M") {
+		t.Fatalf("a group RSS must be marked as an upper bound: %q", line)
+	}
+	// 묶음이 후보 줄을 모두 밀어내면 고를 process가 없어진다.
+	model.height = 0
+	for height := 8; height <= 12; height++ {
+		model.height = height
+		found := false
+		for _, line := range model.candidateLines() {
+			found = found || strings.Contains(line, "node")
+		}
+		if !found {
+			t.Fatalf("height %d hides every process: %q", height, model.candidateLines())
+		}
+	}
+}
+
+func TestTopProcessGroupLabelShrinksToFit(t *testing.T) {
+	group := topProcessGroup{Name: "gm", Count: 200, Blocked: 150}
+	for width, want := range map[int]string{30: "gm (200 procs, 150 iowait)", 17: "gm (200 procs)"} {
+		if got := topProcessGroupLabel(group, width); got != want {
+			t.Fatalf("width %d label = %q, want %q", width, got, want)
+		}
+	}
+	if got := topProcessGroupLabel(topProcessGroup{Name: "php-fpm-worker", Count: 10}, 14); got != "php (10 procs)" {
+		t.Fatalf("narrow label = %q", got)
+	}
+}
+
+func TestTopProcessGroupSignals(t *testing.T) {
+	groups := []topProcessGroup{
+		{Name: "gm", Count: 200, CPU: 100, DiskValid: true, DiskWrite: 400 << 20},
+		{Name: "php-fpm", Count: 10, CPU: 20},
+	}
+	items := topProcessGroupSignals(groups)
+	if len(items) != 2 || items[0].text != "gm (200) 100%" || items[0].view != topViewCPU || items[1].text != "gm (200) 400M" || items[1].view != topViewDisk {
+		t.Fatalf("items = %+v", items)
+	}
+	// I/O를 읽지 못한 묶음이나 기준 아래 묶음은 경고하지 않는다.
+	if items := topProcessGroupSignals([]topProcessGroup{{Name: "gm", Count: 200, CPU: 79, Blocked: 150}}); len(items) != 0 {
+		t.Fatalf("items = %+v", items)
+	}
+	if got := topDashboardSignal(resourceRate{}, nil, groups, true, newTopLimits(4, false)); got != "gm (200) 100% +1" {
+		t.Fatalf("signal = %q", got)
+	}
+	if got := topDashboardSignal(resourceRate{}, nil, groups, false, newTopLimits(4, false)); got != "-" {
+		t.Fatalf("an invalid sample must not signal: %q", got)
+	}
+}
+
 func TestTopSignalIncludesNetworkAndDiskHealth(t *testing.T) {
 	limits := newTopLimits(8, false)
 	if got := topSignal(resourceRate{DiskHealthValid: true, DiskAwait: 65, NetHealthValid: true, NetDrops: 2}, limits); got != "await 65ms +1" {
@@ -290,16 +507,16 @@ func TestTopMatchDetailSumsEveryMatchAndNamesTheRest(t *testing.T) {
 func TestTopDashboardSignalIncludesBusyProcess(t *testing.T) {
 	limits := newTopLimits(8, false)
 	processes := []topProcess{{CPU: 185, Command: "/usr/local/bin/node"}}
-	if got := topDashboardSignal(resourceRate{}, processes, true, limits); got != "node 185%" {
+	if got := topDashboardSignal(resourceRate{}, processes, nil, true, limits); got != "node 185%" {
 		t.Fatalf("process signal = %q", got)
 	}
-	if got := topDashboardSignal(resourceRate{MemoryPercent: 96}, processes, true, limits); got != "mem 96% +1" {
+	if got := topDashboardSignal(resourceRate{MemoryPercent: 96}, processes, nil, true, limits); got != "mem 96% +1" {
 		t.Fatalf("combined signal = %q", got)
 	}
 	if _, ok := topProcessSignal([]topProcess{{CPU: 79, Command: "node"}}, true); ok {
 		t.Fatal("process below threshold must not signal")
 	}
-	if got := topDashboardSignal(resourceRate{MemoryPercent: 96, CPUIOWait: 30, Load1: 10}, processes, true, limits); got != "load 10.0 +3" {
+	if got := topDashboardSignal(resourceRate{MemoryPercent: 96, CPUIOWait: 30, Load1: 10}, processes, nil, true, limits); got != "load 10.0 +3" {
 		t.Fatalf("combined signal count = %q", got)
 	}
 }
@@ -1424,7 +1641,8 @@ func TestTopFooterDocksProcessesOnTheRight(t *testing.T) {
 	if len(footer) != 7 {
 		t.Fatalf("footer = %d lines:\n%s", len(footer), strings.Join(footer, "\n"))
 	}
-	if !strings.HasPrefix(footer[0][left+topFooterGap:], "processes · CPU rank") {
+	// 왼쪽 칸에는 이벤트가 들어가고 ·가 여러 바이트라, 오른쪽 칸은 바이트가 아니라 셀 위치로 자른다.
+	if !strings.HasPrefix(ansi.Cut(footer[0], left+topFooterGap, 200), "processes · CPU rank") || !strings.HasPrefix(footer[0], "events · e list") {
 		t.Errorf("first footer line = %q", footer[0])
 	}
 	if last := ansi.Strip(footer[len(footer)-1]); !strings.HasPrefix(last, "interval") || !strings.Contains(last, "eps") {

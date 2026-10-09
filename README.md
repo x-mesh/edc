@@ -491,8 +491,11 @@ The load thresholds follow the core count of the host.
 | err, drop | 1/s | 50/s |
 | psi | 10 | 25 |
 | hot core | 90 | — |
+| process READ, WRITE | 10 MB/s | 50 MB/s |
 
 `hot core` shows the usage of one core, so it gets a warning at 90 and no risk level. A host with many cores keeps room when one core is full.
+
+The process panel colors `READ` and `WRITE` with the thresholds above. It colors `iowait` in the `STATE` column yellow. It colors the CPU total of a process group red at 80%, the level of one busy core.
 
 The dashboard gives no color to `iops`, `busy%`, `swap/s`, `steal%`, `blocked`, `queue`, the byte, packet, and TCP rates, and the `signal` column. These values have no threshold, or they show the level without a color. Aggregate `busy%` goes above 100 on a host with more than one busy disk, so a fixed threshold gives a wrong signal. The `cores` bar shows the level with `.`, `:`, `*`, and `#`.
 
@@ -527,8 +530,12 @@ If stdin and stdout are terminals, `edc top` opens a full-screen dashboard. The 
 | `↑`, `↓`, `PgUp`, `PgDn`, `End` | select an earlier row, move one screen, or return to the live row |
 | `Enter` | Show time details. If process selection is active, focus the selected PID. |
 | `h` | show the load, CPU, iowait, and memory peaks from the last 60 seconds, each with its time |
+| `e` | Open the event list. Use arrows to select an event. Press `Enter` to go to its start. Press `e` or `Esc` to return. |
+| `[`, `]` | Go to the start of the previous or next event. |
 
 The `signal` column shows the highest-priority host warning and the number of other warnings.
+
+On Linux, the `signal` column shows `blocked N` when `i/o` is at the warning level and 4 or more tasks wait for I/O. A process group also gets a warning when its CPU total is 80% or more, or its I/O total is 50 MB/s or more. The warning shows the name and the process count, for example `gm (200) 100%`. Only the disk view calculates the I/O total, so the I/O warning of a group shows only in the disk view.
 
 Network errors and drops count as a warning from one per second. Use the network view for packet counts.
 
@@ -598,9 +605,17 @@ Press `s` for Linux pressure. It shows CPU, memory, and I/O `some avg10`: the pe
 
 The detail view also lists the top three processes by CPU. The list refreshes in the background at most once a second, so it does not lengthen the observation interval. Without `--write`, only the dashboard collects it; the table and unfiltered `--json` output skip it. On Linux, `edc` compares the CPU ticks in `/proc/<pid>/stat` with the previous refresh, so the value covers the time since that refresh. On macOS, it uses the recent decaying average that `ps` reports.
 
-The process panel shows CPU candidates by default and RSS candidates in the memory view. It keeps five leaders per metric before the list limit. The panel shows three candidates. If the terminal has 40 or more rows, the panel shows five.
+The process panel shows `PID`, `COMMAND`, `STATE`, `CPU%`, and `RSS`. `STATE` shows `run`, `sleep`, `iowait`, `zombie`, `stop`, `trace`, `idle`, `dead`, or `park`. `iowait` is the Linux `D` state: the process waits for I/O, and a signal cannot wake it. An `iowait` process waits for the disk. It does not prove that the process uses the disk.
 
-The panels and the key hints stay at the bottom of the screen. If the two hint lines fit in one line, the dashboard joins them. If the terminal has 145 or more columns, the process panel moves to the right. The detail and peaks panels and the key hints use the left side. With `--process`, the panels stay below each other because the process lines are longer.
+If the terminal has 60 or more columns, the panel adds `READ` and `WRITE`. The disk view and `--process` always add them. Other views add them only when a value is available. These values are the bytes per second that reach the storage device, from `/proc/<pid>/io`. The panel shows `—` if `edc` cannot read the value. To read the processes of other users, run `edc top` as root.
+
+The panel ranks candidates by CPU in most views, by RSS in the memory view, and by I/O in the disk view. The disk view reads the I/O of every process, so a process with low CPU and high I/O appears. Other views read the I/O of the candidates only. Before the list limit, the panel keeps five leaders by CPU, by RSS, and by `iowait` state. The disk view also keeps five leaders by I/O. The panel shows three candidates. If the terminal has 40 or more rows, the panel shows five.
+
+The panel also shows up to two process groups above the candidates. A group is two or more processes with the same executable name, for example `gm (200 procs, 150 iowait)`. Each view ranks the groups by its own total: CPU, RSS, or I/O. A group must reach the minimum total of the view: 10% CPU, 100 MB RSS, or 1 MB/s I/O. In the disk view, a group with `iowait` processes also appears. The RSS total counts a shared page one time for each process, so `≤` marks it as an upper bound. A group line has no PID, and you cannot select it.
+
+On Linux, the kernel adds the I/O of a child process to its parent when the parent reaps the child. A parent that starts many short-lived children can show the I/O of those children. Check the children before you blame the parent.
+
+The panels and the key hints stay at the bottom of the screen. If the two hint lines fit in one line, the dashboard joins them. If the terminal has 145 or more columns, the process panel moves to the right. The detail and peaks panels and the key hints use the left side. The events use the left side when no other panel uses it. From 89 to 144 columns, the events stay to the right of the process panel. With `--process`, the panels stay below each other because the process lines are longer.
 
 Press `Tab` to select a candidate. Use arrows to choose a process. Press `Enter` to focus its PID.
 
@@ -629,6 +644,24 @@ On Linux, the `n` view adds conntrack occupancy (`ct%`), listen overflows/s (`li
 Collection uses the current network namespace, but softnet counters and TCP TIME_WAIT can be host-wide. TCP `CurrEstab` includes ESTABLISHED and CLOSE_WAIT. Socket counts are not local port utilization. Missing baselines, failed reads, or counter resets show `—` for rates. Conntrack statistics require an exposed `/proc/net/stat/nf_conntrack`; missing statistics do not prevent other collection.
 
 JSON samples add `network_limits` with the namespace, `settings`, `gauges`, cumulative `counters`, and per-second `rates`. The counters and rates include `tcp_retrans_segs`, `tcp_out_rsts`, and `tcp_attempt_fails`. Readings include `status` and, where needed, `reason`; unobserved numbers are omitted. Save JSON Lines to analyze trends after the command exits.
+
+## Top events
+
+`edc top` keeps a warning from the `signal` column as an event when the warning stays on for 5 seconds. A warning that stops and starts again within 5 seconds stays in the same event. The dashboard keeps the last 100 events. Events stay in memory, and they disappear when the dashboard quits.
+
+Each event keeps its worst value and the leading group and process at that sample. The candidates come from the view of the warning: I/O for disk and pressure warnings, RSS for memory warnings, and CPU for other warnings. Network warnings get no candidate. A candidate does not prove the cause.
+
+One fault often starts several warnings at the same time. A full disk raises `await`, `blocked`, `load`, `i/o`, and `psi io` together. Events that start within 5 seconds of the first one share one line. The line shows the worst warning and the number of the other warnings, for example `await 2034ms +4`.
+
+| mark | meaning |
+|---|---|
+| `●` | The event is still on. |
+| `≤` before the time | The warning was already on at the first sample. It can have started earlier. |
+| `!` after the time of a history row | An event started at this row. |
+
+The footer shows the recent events. If the footer has no room, one line above the panels shows the worst event that is still on.
+
+Press `e` to open the event list. Each entry shows the worst warning, the other warnings with their worst values, and the candidates. Press `Enter` to go to the start of the entry. The history keeps 500 rows, so an older event keeps only its summary. Press `[` or `]` to go to the start of the previous or next entry.
 
 ## Top JSON output
 

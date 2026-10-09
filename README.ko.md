@@ -447,8 +447,11 @@ load 임계값은 host의 core 수를 따릅니다.
 | err, drop | 1/s | 50/s |
 | psi | 10 | 25 |
 | hot core | 90 | — |
+| process READ, WRITE | 10 MB/s | 50 MB/s |
 
 `hot core`는 core 하나의 사용률이므로 90부터 경고만 주고 위험 단계가 없습니다. core가 여럿이면 하나가 포화해도 host 전체에는 여유가 있습니다.
+
+process 패널은 `READ`와 `WRITE`에 위 임계값으로 색을 넣고, `STATE` 열의 `iowait`는 노란색으로 표시합니다. process 묶음의 CPU 합은 core 하나가 바쁜 수준인 80%부터 빨간색입니다.
 
 대시보드는 `iops`, `busy%`, `swap/s`, `steal%`, `blocked`, `queue`, 바이트·패킷·TCP 속도, `signal` 열에는 색을 넣지 않습니다. 임계값이 없거나 색 없이도 수준이 드러나는 값입니다. 집계 `busy%`는 바쁜 disk가 여럿이면 100을 넘으므로 고정 임계값이 잘못된 신호를 줍니다. `cores` 막대는 `.`, `:`, `*`, `#`로 수준을 보여 줍니다.
 
@@ -483,8 +486,12 @@ stdin과 stdout이 모두 terminal이면 `edc top`은 전체 화면 대시보드
 | `↑`, `↓`, `PgUp`, `PgDn`, `End` | 과거 행 선택, 한 화면씩 이동, 실시간 행 추적 재개 |
 | `Enter` | 선택한 시점의 상세 표시. 후보 선택 중에는 선택한 PID에 초점 |
 | `h` | 최근 60초의 load, CPU, iowait, memory 최고치를 각각 시각과 함께 표시 |
+| `e` | 이벤트 목록 열기. 화살표로 고르고 `Enter`로 그 시작 시점으로 이동, `e`나 `Esc`로 닫기 |
+| `[`, `]` | 이전·다음 이벤트의 시작 시점으로 이동 |
 
 기본 표의 `signal` 열은 load, CPU, iowait, memory, disk await, network errors·drops 중 가장 심각한 항목과 추가 개수를 보여 줍니다. network errors·drops는 초당 1개부터 경고로 셉니다. 패킷 수는 network 보기에서 확인합니다. 과거 행을 선택해도 수집은 계속되며 `End`로 최신 행을 다시 따라갑니다. 수집이 잠시 실패하면 마지막 행을 유지하고 다음 interval에 다시 시도합니다.
+
+Linux에서는 `i/o`가 경고 수준이고 I/O를 기다리는 작업이 4개 이상이면 `signal` 열에 `blocked N`을 표시합니다. process 묶음도 CPU 합이 80% 이상이거나 I/O 합이 50 MB/s 이상이면 `gm (200) 100%`처럼 이름과 process 수로 경고합니다. I/O 합은 disk 보기에서만 계산하므로 묶음의 I/O 경고도 disk 보기에서만 나옵니다.
 
 기본 표는 terminal 폭에 맞춰 열을 늘립니다. 80열보다 넓으면 다음 순서로 열을 추가합니다.
 
@@ -528,7 +535,17 @@ Linux에서는 일부 보기에 선택 열이 더 있습니다. CPU 보기의 `s
 
 상세 보기에는 CPU 사용률 기준 상위 세 process도 표시합니다. 목록은 관측 주기를 늘리지 않도록 최대 1초마다 백그라운드에서 갱신하며, `--write`가 없으면 대시보드에서만 수집하고 표와 필터 없는 `--json` 출력에서는 수집하지 않습니다. Linux에서는 `/proc/<pid>/stat`의 CPU tick을 직전 갱신과 비교하므로 값은 그 사이 구간의 사용률입니다. macOS에서는 `ps`가 제공하는 최근 감쇠 평균을 씁니다.
 
-기본 process 패널은 CPU 순위로, memory 보기에서는 RSS 순위로 후보를 보여 줍니다. 후보는 3개를 표시하고, terminal이 40행 이상이면 5개를 표시합니다. 패널과 키 안내는 화면 맨 아래에 고정됩니다. 안내 두 줄이 한 줄에 들어가면 한 줄로 합칩니다. terminal이 145열 이상이면 process 패널은 오른쪽으로 가고, 상세·최고치 패널과 키 안내는 왼쪽에 놓입니다. `--process`를 쓰면 process 줄이 길어지므로 위아래로 쌓습니다. CPU 상위 목록을 자르기 전에 두 지표의 상위 5개를 각각 보존하므로 CPU 사용량이 낮은 memory 상위 process도 남습니다. `Tab`으로 후보 선택에 들어가 화살표로 고른 뒤 `Enter`로 해당 PID에 초점을 맞춥니다. 후보를 고르는 동안에는 선택한 시점을 유지하고, `End`로 실시간 이력으로 돌아갑니다.
+process 패널은 `PID`, `COMMAND`, `STATE`, `CPU%`, `RSS`를 보여 줍니다. `STATE`는 `run`, `sleep`, `iowait`, `zombie`, `stop`, `trace`, `idle`, `dead`, `park` 중 하나입니다. `iowait`는 Linux의 `D` 상태로, I/O가 끝나기를 기다리며 signal로도 깨울 수 없는 상태입니다. `iowait`는 disk를 기다린다는 뜻이지, 그 process가 disk를 많이 쓴다는 증거는 아닙니다.
+
+terminal이 60열 이상이면 `READ`와 `WRITE` 열을 붙입니다. disk 보기와 `--process`에서는 항상 붙이고, 다른 보기에서는 값이 있을 때만 붙입니다. `/proc/<pid>/io`에서 읽은, 저장 장치에 닿은 초당 byte입니다. 값을 읽지 못하면 `—`로 표시합니다. 다른 사용자의 process까지 보려면 `edc top`을 root로 실행합니다.
+
+후보 순위는 기본이 CPU, memory 보기는 RSS, disk 보기는 I/O입니다. disk 보기는 모든 process의 I/O를 읽으므로 CPU는 낮고 I/O가 큰 process도 후보에 오릅니다. 다른 보기는 후보의 I/O만 읽습니다. 목록을 자르기 전에 CPU, RSS, `iowait` 상태 기준 상위 5개를 각각 보존하고, disk 보기는 I/O 상위 5개도 보존합니다. 후보는 3개를 표시하고, terminal이 40행 이상이면 5개를 표시합니다.
+
+후보 위에는 process 묶음을 최대 2줄 표시합니다. 묶음은 실행 파일 이름이 같은 process 2개 이상이며 `gm (200 procs, 150 iowait)`처럼 씁니다. 보기마다 자기 기준의 합(CPU, RSS, I/O)으로 묶음 순위를 정합니다. 묶음은 보기의 기준 합이 최소값(CPU 10%, RSS 100 MB, I/O 1 MB/s)을 넘어야 보이고, disk 보기에서는 `iowait` process가 있는 묶음도 보입니다. RSS 합은 공유 page를 process마다 세므로 상한값이라는 뜻으로 `≤`를 붙입니다. 묶음 줄에는 PID가 없고 고를 수 없습니다.
+
+Linux kernel은 부모가 끝난 자식을 회수할 때 자식의 I/O를 부모의 값에 더합니다. 짧게 사는 자식을 많이 띄우는 부모는 자식의 I/O까지 자기 값으로 보일 수 있으므로, 부모를 원인으로 보기 전에 자식을 확인합니다.
+
+패널과 키 안내는 화면 맨 아래에 고정됩니다. 안내 두 줄이 한 줄에 들어가면 한 줄로 합칩니다. terminal이 145열 이상이면 process 패널은 오른쪽으로 가고, 상세·최고치 패널과 키 안내는 왼쪽에 놓입니다. 왼쪽을 쓰는 다른 패널이 없으면 왼쪽에 이벤트를 놓습니다. 89~144열에서는 이벤트를 process 패널 오른쪽에 놓습니다. `--process`를 쓰면 process 줄이 길어지므로 위아래로 쌓습니다. `Tab`으로 후보 선택에 들어가 화살표로 고른 뒤 `Enter`로 해당 PID에 초점을 맞춥니다. 후보를 고르는 동안에는 선택한 시점을 유지하고, `End`로 실시간 이력으로 돌아갑니다.
 
 `signal` 열은 host 경고를 process CPU 후보보다 먼저 보여 줍니다. 후보가 host 경고의 원인이라고 단정하지 않습니다. process CPU는 core 하나가 100%이고, host CPU는 전체 core를 기준으로 합니다.
 
@@ -551,6 +568,24 @@ Linux에서는 `n` 화면에 conntrack 사용률(`ct%`), listen overflow/s(`list
 수집은 현재 network namespace를 기준으로 하지만 softnet 카운터와 TCP TIME_WAIT 수는 host 전체 값일 수 있습니다. TCP `CurrEstab`는 ESTABLISHED와 CLOSE_WAIT를 포함합니다. socket 수는 임시 port 사용률이 아닙니다. 카운터 읽기 실패·초기화·기준점 부재 시 rate는 `—`로 표시합니다. conntrack 상세 통계는 `/proc/net/stat/nf_conntrack`이 노출될 때 수집하며, 없으면 해당 값만 빠집니다.
 
 `--json`의 `network_limits`에는 namespace, 설정(`settings`), 현재값(`gauges`), 누적값(`counters`), 초당 증가량(`rates`)이 들어갑니다. `counters`와 `rates`에는 `tcp_retrans_segs`, `tcp_out_rsts`, `tcp_attempt_fails`도 있습니다. 각 값에는 `status`와 필요한 경우 `reason`이 있으며, 관측하지 못한 숫자는 생략됩니다. 파일에 저장하면 외부 도구로 실행 후 추이를 분석할 수 있습니다.
+
+## Top 이벤트
+
+`edc top`은 `signal` 열의 경고가 5초 이상 이어지면 이벤트로 남깁니다. 꺼졌다가 5초 안에 다시 켜진 경고는 같은 이벤트로 이어집니다. 이벤트는 최근 100개까지 메모리에만 보관하며, 대시보드를 닫으면 사라집니다.
+
+이벤트마다 가장 나빴던 값과 그 시점에 앞선 묶음과 process를 저장합니다. 후보는 경고를 자세히 보이는 보기의 기준을 따릅니다. disk와 pressure 경고는 I/O, memory 경고는 RSS, 나머지는 CPU이고, network 경고에는 후보를 붙이지 않습니다. 후보가 원인이라고 단정하지 않습니다.
+
+장애 하나가 여러 경고를 동시에 켜는 일이 많습니다. disk가 포화하면 `await`, `blocked`, `load`, `i/o`, `psi io`가 함께 오릅니다. 첫 이벤트에서 5초 안에 시작한 이벤트는 한 줄로 합치고, 가장 심한 경고와 나머지 개수를 `await 2034ms +4`처럼 표시합니다.
+
+| 표시 | 뜻 |
+|---|---|
+| `●` | 아직 이어지는 이벤트 |
+| 시각 앞의 `≤` | 첫 sample에서 이미 켜져 있던 경고. 실제 시작은 더 이를 수 있음 |
+| 이력 행 시각 뒤의 `!` | 그 행에서 이벤트가 시작됨 |
+
+아래 영역에 최근 이벤트를 표시합니다. 자리가 없으면 패널 위 한 줄에 아직 이어지는 이벤트 중 가장 심한 것을 표시합니다.
+
+`e`를 누르면 이벤트 목록이 열립니다. 항목마다 가장 심한 경고, 함께 켜진 경고의 최고값, 후보를 보여 줍니다. `Enter`를 누르면 그 항목의 시작 시점으로 이동합니다. 이력은 500행만 보관하므로 오래된 이벤트는 요약만 남습니다. `[`와 `]`는 이전·다음 항목의 시작 시점으로 이동합니다.
 
 ## Top JSON 출력
 

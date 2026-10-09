@@ -326,6 +326,6 @@ func (model topModel) splitSignalLine() string {
 	}
 	row = model.currentFilterRow(row)
 	prefix := "signal " + row.at.Format("15:04:05") + " · "
-	items := topDashboardSignalItems(row.rate, row.processes, row.processesValid, model.limits)
+	items := topDashboardSignalItems(row.rate, row.processes, row.processTotal.Groups, row.processesValid, model.limits)
 	return prefix + formatTopSignalsWidth(items, model.displayWidth()-ansi.StringWidth(prefix))
 }

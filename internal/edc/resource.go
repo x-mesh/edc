@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"os/exec"
 	"runtime"
 	"sort"
@@ -77,6 +78,8 @@ type topProcess struct {
 	Started time.Time
 	// Threads는 thread 수이고 모르면 0이다.
 	Threads int
+	// State는 /proc/<pid>/stat의 state 문자다. 모르면 빈 문자열이다. "D"는 I/O를 기다리며 멈춘 상태다.
+	State string
 	// FDs는 열린 file descriptor 수이고 모르면 0이다. 필터로 고른 process에만 읽는다.
 	FDs    int
 	Limits *topProcessLimits
@@ -158,6 +161,123 @@ type topProcessTotal struct {
 	Threads int
 	// BPF는 감시하는 모든 process의 eBPF 값을 더한 것이다.
 	BPF *topBPFStats
+	// Groups는 같은 실행 파일 이름의 process를 묶은 합이다. 필터가 없을 때 채우고, I/O 합은 모든 process의 I/O를 읽는
+	// 디스크 보기에서만 들어간다.
+	Groups []topProcessGroup
+}
+
+// topProcessGroup은 같은 실행 파일 이름의 process를 묶은 합이다. 하나하나는 작아도 수가 많아 디스크를 채우는 경우를 보인다.
+type topProcessGroup struct {
+	Name    string
+	Count   int
+	Blocked int
+	CPU     float64
+	RSS     uint64
+	// DiskValid는 I/O를 읽은 process가 하나라도 있는지다. DiskRead와 DiskWrite는 읽은 process만 더한 값이다.
+	DiskValid           bool
+	DiskRead, DiskWrite float64
+}
+
+// topProcessGroupLimit은 디스크 보기에 보이는 묶음 수다. 후보 목록이 밀려나지 않게 작게 둔다.
+const topProcessGroupLimit = 2
+
+// 묶음이 보이는 최소 합이다. 상주 daemon 몇 개의 작은 사용량이 후보 칸을 차지하지 않게 한다.
+const (
+	// topProcessGroupMinIO는 I/O 합(byte/s)이다.
+	topProcessGroupMinIO = 1 << 20
+	// topProcessGroupMinCPU는 CPU 합(core 하나가 100%)이다.
+	topProcessGroupMinCPU = 10
+	// topProcessGroupMinRSS는 RSS 합(byte)이다.
+	topProcessGroupMinRSS = 100 << 20
+)
+
+// topProcessGroupName은 묶음 기준인 실행 파일 이름이다. 전체 명령줄이면 인자를 떼고, 경로면 마지막 요소만 남긴다.
+func topProcessGroupName(command string) string {
+	name := strings.TrimSpace(command)
+	if topFullCommand {
+		if index := strings.IndexByte(name, ' '); index >= 0 {
+			name = name[:index]
+		}
+	}
+	if strings.HasPrefix(name, "/") {
+		name = name[strings.LastIndex(name, "/")+1:]
+	}
+	return name
+}
+
+// groupTopProcesses는 process를 실행 파일 이름으로 묶고, I/O·CPU·RSS 기준으로 각각 앞선 묶음을 모은다.
+// 보기마다 다른 기준으로 고르므로 세 기준의 상위 묶음을 함께 넘기고, 행마다 남는 묶음 수를 작게 묶어 둔다.
+func groupTopProcesses(processes []topProcess) []topProcessGroup {
+	indexes := map[string]int{}
+	groups := []topProcessGroup{}
+	for _, process := range processes {
+		name := topProcessGroupName(process.Command)
+		index, seen := indexes[name]
+		if !seen {
+			index = len(groups)
+			indexes[name] = index
+			groups = append(groups, topProcessGroup{Name: name})
+		}
+		group := &groups[index]
+		group.Count++
+		group.CPU += process.CPU
+		group.RSS += process.RSS
+		if process.State == topProcessStateBlocked {
+			group.Blocked++
+		}
+		if process.DiskValid {
+			group.DiskValid = true
+			group.DiskRead += process.DiskRead
+			group.DiskWrite += process.DiskWrite
+		}
+	}
+	kept, seen := []topProcessGroup{}, map[string]bool{}
+	for _, ranked := range [][]topProcessGroup{topProcessGroupsByIO(groups), topProcessGroupsByCPU(groups), topProcessGroupsByRSS(groups)} {
+		for _, group := range ranked {
+			if !seen[group.Name] {
+				kept = append(kept, group)
+				seen[group.Name] = true
+			}
+		}
+	}
+	return kept
+}
+
+// topProcessGroupsBy는 둘 이상 모였고 keep을 만족하는 묶음을 before 순으로 topProcessGroupLimit개 고른다.
+func topProcessGroupsBy(groups []topProcessGroup, keep func(topProcessGroup) bool, before func(a, b topProcessGroup) bool) []topProcessGroup {
+	kept := []topProcessGroup{}
+	for _, group := range groups {
+		if group.Count >= 2 && keep(group) {
+			kept = append(kept, group)
+		}
+	}
+	sort.SliceStable(kept, func(i, j int) bool { return before(kept[i], kept[j]) })
+	return kept[:min(topProcessGroupLimit, len(kept))]
+}
+
+// topProcessGroupsByIO는 I/O를 topProcessGroupMinIO 이상 쓰거나 I/O를 기다리는 묶음을 I/O 합, 대기 수, process 수 순으로 고른다.
+func topProcessGroupsByIO(groups []topProcessGroup) []topProcessGroup {
+	return topProcessGroupsBy(groups, func(group topProcessGroup) bool {
+		return group.DiskRead+group.DiskWrite >= topProcessGroupMinIO || group.Blocked > 0
+	}, func(a, b topProcessGroup) bool {
+		if before, after := a.DiskRead+a.DiskWrite, b.DiskRead+b.DiskWrite; before != after {
+			return before > after
+		}
+		if a.Blocked != b.Blocked {
+			return a.Blocked > b.Blocked
+		}
+		return a.Count > b.Count
+	})
+}
+
+func topProcessGroupsByCPU(groups []topProcessGroup) []topProcessGroup {
+	return topProcessGroupsBy(groups, func(group topProcessGroup) bool { return group.CPU >= topProcessGroupMinCPU },
+		func(a, b topProcessGroup) bool { return a.CPU > b.CPU })
+}
+
+func topProcessGroupsByRSS(groups []topProcessGroup) []topProcessGroup {
+	return topProcessGroupsBy(groups, func(group topProcessGroup) bool { return group.RSS >= topProcessGroupMinRSS },
+		func(a, b topProcessGroup) bool { return a.RSS > b.RSS })
 }
 
 func totalTopProcesses(processes []topProcess) topProcessTotal {
@@ -190,6 +310,10 @@ type topProcessSampler struct {
 	read           func() ([]topProcess, bool)
 	// enrich는 목록에 남은 process에만 비싼 값(I/O, fd)을 채운다. 없으면 채우지 않는다.
 	enrich func([]topProcess)
+	// fillIO는 필터가 없을 때 process의 I/O rate만 채운다. enrich보다 싸서 후보마다 매번 돌려도 된다.
+	fillIO func([]topProcess)
+	// scanIO는 후보를 고르기 전에 모든 process의 I/O를 읽을지다. 디스크 보기에서만 켠다.
+	scanIO bool
 	// observe는 eBPF로 필터에 맞은 process를 감시한다. 없으면 감시하지 않는다.
 	observe   topBPFObserver
 	filter    topProcessFilter
@@ -213,7 +337,58 @@ func linuxProcessCommandLine(data []byte) string {
 	return strings.Join(args, " ")
 }
 
-var processSampler = &topProcessSampler{read: newTopProcessReader(), enrich: newTopProcessEnricher()}
+var processSampler = &topProcessSampler{read: newTopProcessReader(), enrich: newTopProcessEnricher(), fillIO: newTopProcessIOFiller()}
+
+// topProcessIOTracker는 /proc/<pid>/io를 두 번 읽은 차이로 process의 I/O rate를 구한다.
+// root가 아니면 다른 사용자의 process를 읽지 못해 그 process는 DiskValid가 false로 남는다.
+type topProcessIOTracker struct {
+	previous map[int]linuxProcessIOSample
+}
+
+func (tracker *topProcessIOTracker) fill(processes []topProcess, now time.Time) {
+	current := make(map[int]linuxProcessIOSample, len(processes))
+	for index := range processes {
+		process := &processes[index]
+		data, err := os.ReadFile("/proc/" + strconv.Itoa(process.PID) + "/io")
+		if err != nil {
+			continue
+		}
+		counters, ok := parseLinuxProcessIO(string(data))
+		if !ok {
+			continue
+		}
+		current[process.PID] = linuxProcessIOSample{io: counters, at: now}
+		before, seen := tracker.previous[process.PID]
+		seconds := now.Sub(before.at).Seconds()
+		if !seen || seconds <= 0 || counters.read < before.io.read || counters.write < before.io.write {
+			continue
+		}
+		process.DiskValid = true
+		process.DiskRead = float64(counters.read-before.io.read) / seconds
+		process.DiskWrite = float64(counters.write-before.io.write) / seconds
+	}
+	tracker.previous = current
+}
+
+func newTopProcessIOFiller() func([]topProcess) {
+	tracker := &topProcessIOTracker{}
+	return func(processes []topProcess) { tracker.fill(processes, time.Now()) }
+}
+
+// topProcessIOTotal은 process가 storage에 읽고 쓴 byte rate의 합이다. 읽지 못했으면 -1이다.
+func topProcessIOTotal(process topProcess) float64 {
+	if !process.DiskValid {
+		return -1
+	}
+	return process.DiskRead + process.DiskWrite
+}
+
+// setScanIO는 이후 refresh부터 후보를 고르기 전에 모든 process의 I/O를 읽을지 정한다.
+func (sampler *topProcessSampler) setScanIO(on bool) {
+	sampler.mutex.Lock()
+	defer sampler.mutex.Unlock()
+	sampler.scanIO = on
+}
 
 func (sampler *topProcessSampler) latest() ([]topProcess, bool) {
 	processes, _, valid := sampler.latestWithTotal()
@@ -271,7 +446,7 @@ func (sampler *topProcessSampler) refresh() {
 	sampler.refreshing.Lock()
 	defer sampler.refreshing.Unlock()
 	sampler.mutex.Lock()
-	filter, observe, filterSeq := sampler.filter, sampler.observe, sampler.filterSeq
+	filter, observe, filterSeq, scanIO := sampler.filter, sampler.observe, sampler.filterSeq, sampler.scanIO
 	sampler.mutex.Unlock()
 	processes, valid := sampler.read()
 	// 필터는 CPU 순위를 자르기 전에 건다. 자른 뒤에 걸면 CPU가 낮은 process가 목록에 들지 못해 항상 비어 보인다.
@@ -300,8 +475,17 @@ func (sampler *topProcessSampler) refresh() {
 		if limit := filter.limit(); len(processes) > limit {
 			processes = processes[:limit]
 		}
+	} else if scanIO && sampler.fillIO != nil {
+		// 디스크 대기는 CPU와 메모리에 드러나지 않으므로 I/O가 큰 process를 후보에 넣으려면 전부 읽어야 한다.
+		sampler.fillIO(processes)
+		total.Groups = groupTopProcesses(processes)
+		processes = topProcessCandidatesByIO(processes)
 	} else {
+		total.Groups = groupTopProcesses(processes)
 		processes = topProcessCandidates(processes)
+		if sampler.fillIO != nil {
+			sampler.fillIO(processes)
+		}
 	}
 	for index := range processes {
 		if stats, ok := observed[processes[index].PID]; ok {
@@ -341,8 +525,43 @@ func topProcessCandidates(processes []topProcess) []topProcess {
 			seen[process.PID] = true
 		}
 	}
+	// D state process는 CPU를 거의 쓰지 않아 두 목록에서 빠진다. 디스크 대기 원인을 찾으려면 남겨야 한다.
+	blocked := 0
+	for _, process := range processes {
+		if process.State == topProcessStateBlocked && !seen[process.PID] && blocked < topProcessLimit {
+			candidates = append(candidates, process)
+			seen[process.PID] = true
+			blocked++
+		}
+	}
 	return sortTopProcessesByCPU(candidates)
 }
+
+// topProcessCandidatesByIO는 기본 후보에 I/O rate 상위 process를 더한다. 값을 읽은 process만 고른다.
+func topProcessCandidatesByIO(processes []topProcess) []topProcess {
+	candidates := topProcessCandidates(processes)
+	seen := make(map[int]bool, len(candidates))
+	for _, process := range candidates {
+		seen[process.PID] = true
+	}
+	byIO := append([]topProcess(nil), processes...)
+	sort.SliceStable(byIO, func(i, j int) bool { return topProcessIOTotal(byIO[i]) > topProcessIOTotal(byIO[j]) })
+	added := 0
+	for _, process := range byIO {
+		if added == topProcessLimit || topProcessIOTotal(process) <= 0 {
+			break
+		}
+		if !seen[process.PID] {
+			candidates = append(candidates, process)
+			seen[process.PID] = true
+			added++
+		}
+	}
+	return sortTopProcessesByCPU(candidates)
+}
+
+// topProcessStateBlocked는 I/O를 기다리며 멈춘 process의 state 문자다.
+const topProcessStateBlocked = "D"
 
 // linuxProcessStat은 /proc/<pid>/stat 한 줄에서 CPU tick과 RSS page 수만 뽑은 값이다.
 type linuxProcessStat struct {
@@ -352,6 +571,7 @@ type linuxProcessStat struct {
 	RSSPages   uint64
 	Threads    int
 	StartTicks uint64
+	State      string
 }
 
 // parseLinuxProcessStat은 /proc/<pid>/stat을 읽는다. comm에는 공백과 괄호가 들어갈 수 있어 마지막 ')' 뒤를 나눈다.
@@ -374,7 +594,7 @@ func parseLinuxProcessStat(pid int, data string) (linuxProcessStat, bool) {
 	if e1 != nil || e2 != nil || e3 != nil || e4 != nil || e5 != nil {
 		return linuxProcessStat{}, false
 	}
-	return linuxProcessStat{PID: pid, Command: data[open+1 : end], Ticks: utime + stime, RSSPages: rss, Threads: threads, StartTicks: start}, true
+	return linuxProcessStat{PID: pid, Command: data[open+1 : end], Ticks: utime + stime, RSSPages: rss, Threads: threads, StartTicks: start, State: fields[0]}, true
 }
 
 // linuxProcessIO는 /proc/<pid>/io에서 storage에 닿은 누적 byte다. rchar와 wchar는 page cache를 거친 byte까지 세므로 쓰지 않는다.
@@ -431,7 +651,7 @@ func (tracker *topProcessTracker) update(at time.Time, stats []linuxProcessStat)
 			continue
 		}
 		cpu := float64(stat.Ticks-before) / tracker.clockTicks / seconds * 100
-		process := topProcess{PID: stat.PID, CPU: cpu, RSS: stat.RSSPages * tracker.pageSize, Command: stat.Command, Threads: stat.Threads}
+		process := topProcess{PID: stat.PID, CPU: cpu, RSS: stat.RSSPages * tracker.pageSize, Command: stat.Command, Threads: stat.Threads, State: stat.State}
 		if !tracker.boot.IsZero() {
 			process.Started = tracker.boot.Add(time.Duration(float64(stat.StartTicks) / tracker.clockTicks * float64(time.Second)))
 		}

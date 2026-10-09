@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"regexp"
 	"strings"
 	"testing"
@@ -103,6 +104,12 @@ func TestParseLinuxProcessStat(t *testing.T) {
 	stat, ok := parseLinuxProcessStat(1234, data)
 	if !ok || stat.Command != "my (odd) proc" || stat.Ticks != 300 || stat.RSSPages != 2048 || stat.Threads != 1 || stat.StartTicks != 100 {
 		t.Fatalf("stat = %#v, %v", stat, ok)
+	}
+	if stat.State != "S" {
+		t.Fatalf("state = %q, want S", stat.State)
+	}
+	if blocked, ok := parseLinuxProcessStat(9, "9 (gm) D 1 9 9 0 -1 4194560 100 0 0 0 1 1 0 0 20 0 1 0 100 1000000 2048 18446744073709551615\n"); !ok || blocked.State != "D" {
+		t.Fatalf("blocked stat = %#v, %v", blocked, ok)
 	}
 	if _, ok := parseLinuxProcessStat(1, "1 (short) S 1 2"); ok {
 		t.Fatal("truncated stat must not be valid")
@@ -557,6 +564,133 @@ func TestTopProcessSamplerKeepsMemoryCandidatesOutsideCPUList(t *testing.T) {
 	}
 }
 
+func TestTopProcessSamplerKeepsBlockedProcessesOutsideCPUAndMemoryLists(t *testing.T) {
+	all := make([]topProcess, 0, 12)
+	for pid := 1; pid <= 10; pid++ {
+		all = append(all, topProcess{PID: pid, CPU: float64(50 - pid), RSS: uint64(100-pid) << 20, Command: "busy"})
+	}
+	all = append(all, topProcess{PID: 11, CPU: 1, RSS: 1 << 20, Command: "gm", State: "D"}, topProcess{PID: 12, CPU: 1, RSS: 1 << 20, Command: "gm", State: "S"})
+	sampler := &topProcessSampler{read: func() ([]topProcess, bool) { return all, true }}
+	sampler.refresh()
+	processes, _, _ := sampler.latestWithTotal()
+	found := map[int]bool{}
+	for _, process := range processes {
+		found[process.PID] = true
+	}
+	if !found[11] || found[12] {
+		t.Fatalf("only the D state process must be added: %+v", processes)
+	}
+}
+
+func TestTopProcessSamplerReadsIOOnlyForCandidatesUnlessScanning(t *testing.T) {
+	all := make([]topProcess, 0, 40)
+	for pid := 1; pid <= 40; pid++ {
+		rss := uint64(1) << 20
+		if pid <= 20 {
+			rss = uint64(pid) << 20
+		}
+		all = append(all, topProcess{PID: pid, CPU: float64(100 - pid), RSS: rss, Command: "worker"})
+	}
+	filled := 0
+	fill := func(processes []topProcess) {
+		filled = len(processes)
+		for index := range processes {
+			// 40번은 CPU와 메모리 순위가 가장 낮지만 I/O가 가장 크다.
+			if processes[index].PID == 40 {
+				processes[index].DiskValid, processes[index].DiskWrite = true, 50<<20
+			}
+		}
+	}
+	sampler := &topProcessSampler{read: func() ([]topProcess, bool) { return append([]topProcess(nil), all...), true }, fillIO: fill}
+	sampler.refresh()
+	processes, _, _ := sampler.latestWithTotal()
+	if filled != len(processes) || filled != 2*topProcessLimit {
+		t.Fatalf("I/O read for %d processes, candidates %d", filled, len(processes))
+	}
+	for _, process := range processes {
+		if process.PID == 40 {
+			t.Fatalf("a low CPU and memory process must not be a candidate without a scan: %+v", processes)
+		}
+	}
+	sampler.setScanIO(true)
+	sampler.refresh()
+	processes, _, _ = sampler.latestWithTotal()
+	if filled != len(all) {
+		t.Fatalf("a scan read I/O for %d processes, want %d", filled, len(all))
+	}
+	found := false
+	for _, process := range processes {
+		found = found || (process.PID == 40 && process.DiskValid)
+	}
+	if !found || len(processes) != 2*topProcessLimit+1 {
+		t.Fatalf("the top I/O process must join the candidates: %+v", processes)
+	}
+}
+
+func TestGroupTopProcessesSumsManySmallWriters(t *testing.T) {
+	processes := []topProcess{{PID: 1, Command: "node", CPU: 30, DiskValid: true, DiskRead: 40 << 20}}
+	for pid := 2; pid <= 201; pid++ {
+		process := topProcess{PID: pid, Command: "gm", CPU: 0.5, RSS: 2 << 20, DiskValid: true, DiskRead: 1 << 20, DiskWrite: 2 << 20}
+		if pid%4 != 0 {
+			process.State = "D"
+		}
+		processes = append(processes, process)
+	}
+	// I/O를 읽지 못해도 대기 중인 process가 모이면 묶음으로 보인다.
+	processes = append(processes, topProcess{PID: 300, Command: "sync", State: "D"}, topProcess{PID: 301, Command: "sync", State: "D"}, topProcess{PID: 302, Command: "shim", DiskValid: true, DiskWrite: 4 << 10}, topProcess{PID: 303, Command: "shim", DiskValid: true, DiskWrite: 4 << 10})
+	groups := topProcessGroupsByIO(groupTopProcesses(processes))
+	if len(groups) != topProcessGroupLimit {
+		t.Fatalf("groups = %+v", groups)
+	}
+	gm := groups[0]
+	if gm.Name != "gm" || gm.Count != 200 || gm.Blocked != 150 || gm.DiskRead != 200<<20 || gm.DiskWrite != 400<<20 || !gm.DiskValid {
+		t.Fatalf("gm group = %+v", gm)
+	}
+	if groups[1].Name != "sync" || groups[1].Blocked != 2 || groups[1].DiskValid {
+		t.Fatalf("a blocked group without I/O must follow: %+v", groups[1])
+	}
+}
+
+func TestGroupTopProcessesKeepsCPUAndMemoryLeaders(t *testing.T) {
+	processes := []topProcess{}
+	for pid := 1; pid <= 200; pid++ {
+		processes = append(processes, topProcess{PID: pid, Command: "gm", CPU: 0.5, RSS: 2 << 20})
+	}
+	for pid := 201; pid <= 210; pid++ {
+		processes = append(processes, topProcess{PID: pid, Command: "php-fpm", CPU: 2, RSS: 80 << 20})
+	}
+	// 합이 기준에 못 미치는 묶음은 남지 않는다.
+	processes = append(processes, topProcess{PID: 300, Command: "sshd", CPU: 1, RSS: 8 << 20}, topProcess{PID: 301, Command: "sshd", CPU: 1, RSS: 8 << 20})
+	groups := groupTopProcesses(processes)
+	byCPU, byRSS := topProcessGroupsByCPU(groups), topProcessGroupsByRSS(groups)
+	if len(byCPU) != 2 || byCPU[0].Name != "gm" || byCPU[0].CPU != 100 || byCPU[1].Name != "php-fpm" {
+		t.Fatalf("CPU groups = %+v", byCPU)
+	}
+	if len(byRSS) != 2 || byRSS[0].Name != "php-fpm" || byRSS[0].RSS != 800<<20 || byRSS[1].RSS != 400<<20 {
+		t.Fatalf("RSS groups = %+v", byRSS)
+	}
+	for _, group := range groups {
+		if group.Name == "sshd" {
+			t.Fatalf("a small group must not be kept: %+v", groups)
+		}
+	}
+}
+
+func TestTopProcessGroupNameDropsArgumentsAndPath(t *testing.T) {
+	if got := topProcessGroupName("/usr/bin/gm"); got != "gm" {
+		t.Fatalf("path = %q", got)
+	}
+	// comm에는 인자가 없고 공백이 이름의 일부일 수 있어 자르지 않는다.
+	if got := topProcessGroupName("Web Content"); got != "Web Content" {
+		t.Fatalf("comm = %q", got)
+	}
+	topFullCommand = true
+	defer func() { topFullCommand = false }()
+	if got := topProcessGroupName("/usr/bin/gm convert -density 100x100 -[1]"); got != "gm" {
+		t.Fatalf("full command = %q", got)
+	}
+}
+
 func TestTopProcessSamplerClearsCachedMatchesWhenFilterChanges(t *testing.T) {
 	filter, err := parseTopProcessFilter("worker")
 	if err != nil {
@@ -659,7 +793,7 @@ func TestTopProcessSamplerTotalsEveryMatchAndEnrichesTheKeptOnes(t *testing.T) {
 	if !valid || len(processes) != topFilteredProcessLimit || enriched != topFilteredProcessLimit {
 		t.Fatalf("kept %d, enriched %d, valid %v", len(processes), enriched, valid)
 	}
-	if want := (topProcessTotal{Count: topFilteredProcessLimit + 10, CPU: 2 * float64(topFilteredProcessLimit+10), RSS: 1000 * uint64(topFilteredProcessLimit+10), Threads: 3 * (topFilteredProcessLimit + 10)}); total != want {
+	if want := (topProcessTotal{Count: topFilteredProcessLimit + 10, CPU: 2 * float64(topFilteredProcessLimit+10), RSS: 1000 * uint64(topFilteredProcessLimit+10), Threads: 3 * (topFilteredProcessLimit + 10)}); !reflect.DeepEqual(total, want) {
 		t.Fatalf("total = %+v, want %+v", total, want)
 	}
 }

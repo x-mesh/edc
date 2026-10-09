@@ -30,7 +30,7 @@ func runTopDashboard(interval time.Duration, version string, filter topProcessFi
 		return 1
 	}
 	model := newTopModel(details, first, interval, sampleTopDashboard)
-	model.sampleNow, model.setFilter = sampleTopDashboardNow, processSampler.setFilter
+	model.sampleNow, model.setFilter, model.setScanIO = sampleTopDashboardNow, processSampler.setFilter, processSampler.setScanIO
 	model.version = version
 	model.limits.color = os.Getenv("NO_COLOR") == ""
 	processSampler.mutex.Lock()
@@ -110,12 +110,28 @@ const (
 	topSignalProcessNameWidth = 4
 	// topProcessSignalCPU는 process 하나가 signal에 오르는 CPU%다. core 하나가 100%다.
 	topProcessSignalCPU = 80
+	// topProcessIOMinWidth는 후보 줄에 READ·WRITE 칸을 붙이는 최소 폭이다.
+	topProcessIOMinWidth = 60
+	// topProcessStateWidth는 STATE 칸의 폭이다. 가장 긴 이름인 iowait와 zombie가 들어간다.
+	topProcessStateWidth = 6
+	// topProcessColumnsWidth는 후보 줄에서 이름 칸을 뺀 표시·PID·STATE·CPU%·RSS 칸과 사이 공백의 폭이다.
+	topProcessColumnsWidth = 26 + topProcessStateWidth
+	// topProcessIOColumnsWidth는 READ·WRITE 두 칸과 앞 공백의 폭이다. 63칸 후보 패널에서 이름 칸이 17칸 남는다.
+	topProcessIOColumnsWidth = 14
+	// topBlockedSignalMin은 iowait이 높을 때 blocked가 signal에 오르는 D state 작업 수다. 4 core host의 core 수와 같다.
+	topBlockedSignalMin = 4
+	// topBlockedSignalDanger는 blocked 경고의 순위를 다른 경고와 맞추는 기준 작업 수다.
+	topBlockedSignalDanger = 16
 	// topCoreBarLimit는 CPU 보기 막대에 그리는 최대 core 수다.
 	topCoreBarLimit = 24
 	// topHotCoreWarn은 hot core 칸에 경고를 주는 사용률이다. core 하나가 포화해도 core가 여럿이면
 	// host 전체는 여유가 있으므로 host의 cpu 임계치보다 늦게 켜고 위험 단계를 두지 않는다.
 	topHotCoreWarn = 90
 )
+
+// topProcessIOThreshold는 후보의 READ·WRITE 칸에 색을 입히는 byte/s다. 디스크가 한가할 때 작은 값에 색이
+// 들지 않도록 host 처리량 대비 비율이 아니라 절대값으로 정한다.
+var topProcessIOThreshold = topThreshold{warn: 10 << 20, danger: 50 << 20}
 
 // topDashboardRow는 포맷 문자열 대신 측정값을 보존한다. 같은 시점을 다른 렌즈로
 // 다시 그릴 수 있고, 선택한 과거 행의 상세도 최신 값과 섞이지 않는다.
@@ -130,18 +146,22 @@ type topDashboardRow struct {
 }
 
 type topModel struct {
-	details       hostDetails
-	limits        topLimits
-	interval      time.Duration
-	paused        bool
-	previous      resourceSnapshot
-	rows          []topDashboardRow
-	view          topView
-	follow        bool
-	baseline      bool
-	selected      int
-	detail        bool
-	peaks         bool
+	details  hostDetails
+	limits   topLimits
+	interval time.Duration
+	paused   bool
+	previous resourceSnapshot
+	rows     []topDashboardRow
+	view     topView
+	follow   bool
+	baseline bool
+	selected int
+	detail   bool
+	peaks    bool
+	// events는 경고가 이어진 구간의 기록이다. 모델은 값으로 복사되므로 포인터로 두어 Update 사이에 이어진다.
+	events        *topEventLog
+	eventsOpen    bool
+	eventSelected int
 	width, height int
 	sample        func() (resourceSnapshot, error)
 	seq           int
@@ -154,6 +174,8 @@ type topModel struct {
 	sampleNow func() (resourceSnapshot, error)
 	// setFilter는 실행 중에 바꾼 필터를 process 수집기에 알린다.
 	setFilter func(topProcessFilter)
+	// setScanIO는 디스크 보기에서 모든 process의 I/O를 읽게 수집기에 알린다.
+	setScanIO func(bool)
 	// notice는 다음 키까지 상태 줄에 보이는 안내다.
 	notice string
 	// input은 /로 연 필터 입력 중인지다. inputText는 입력한 글자다.
@@ -184,7 +206,7 @@ type topSampleMsg struct {
 }
 
 func newTopModel(details hostDetails, first resourceSnapshot, interval time.Duration, sample func() (resourceSnapshot, error)) topModel {
-	return topModel{details: details, limits: newTopLimits(details.Cores, true), interval: interval, previous: first, view: topViewAll, follow: true, sample: sample}
+	return topModel{details: details, limits: newTopLimits(details.Cores, true), interval: interval, previous: first, view: topViewAll, follow: true, sample: sample, events: &topEventLog{}}
 }
 
 // withProcessFilter는 필터를 건다. 필터를 건 사용자는 그 process를 보려는 것이므로 host 지표 대신 process 묶음 보기로 연다.
@@ -200,6 +222,9 @@ func (model topModel) Init() tea.Cmd { return tea.Batch(model.tick(), model.reco
 
 func (model topModel) tick() tea.Cmd {
 	seq, sample := model.seq, model.sample
+	if model.setScanIO != nil {
+		model.setScanIO(model.view == topViewDisk)
+	}
 	if model.processFilter.active() && model.sampleNow != nil {
 		sample = model.sampleNow
 	}
@@ -241,6 +266,7 @@ func (model topModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		before := len(model.rows) + 1
 		model.rows = appendTopDashboardRow(model.rows, topDashboardRow{at: value.snapshot.TakenAt, rate: rate, processes: value.snapshot.Processes, processTotal: value.snapshot.ProcessTotal, processesValid: value.snapshot.ProcessesValid, filter: model.processFilter.String()})
+		model = model.recordEvents(model.rows[len(model.rows)-1])
 		model.previous = value.snapshot
 		if model.follow {
 			model.selected = len(model.rows) - 1
@@ -280,6 +306,24 @@ func (model topModel) updateKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			model.helpOffset = min(max(0, len(model.helpLines())-max(1, model.height-2)), model.helpOffset+max(1, model.height-2))
 		case "pgup":
 			model.helpOffset = max(0, model.helpOffset-max(1, model.height-2))
+		}
+		return model, nil
+	}
+	if model.eventsOpen {
+		switch key.String() {
+		case "e", "esc":
+			model.eventsOpen = false
+		case "q", "ctrl+c":
+			return model, tea.Quit
+		case "up", "k":
+			model.eventSelected = max(0, model.eventSelected-1)
+		case "down", "j":
+			model.eventSelected = min(max(0, len(topEventClusters(model.eventList()))-1), model.eventSelected+1)
+		case "enter":
+			if cluster, ok := model.newestCluster(model.eventSelected); ok {
+				model.eventsOpen = false
+				model = model.jumpToEvent(cluster.worst(), cluster[0].start)
+			}
 		}
 		return model, nil
 	}
@@ -347,6 +391,12 @@ func (model topModel) updateKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 	case "f":
 		return model.followSignal()
+	case "e":
+		model.eventsOpen, model.eventSelected = true, 0
+	case "[":
+		model = model.stepEvent(-1)
+	case "]":
+		model = model.stepEvent(1)
 	case "/":
 		model.input, model.inputText = true, model.processFilter.String()
 		if model.inputText == "" {
@@ -411,7 +461,7 @@ func (model topModel) followSignal() (tea.Model, tea.Cmd) {
 		model.notice = "f: waiting for a sample"
 		return model, nil
 	}
-	items := topDashboardSignalItems(row.rate, row.processes, row.processesValid, model.limits)
+	items := topDashboardSignalItems(row.rate, row.processes, row.processTotal.Groups, row.processesValid, model.limits)
 	if len(items) > 0 && items[0].view != topViewProcess && model.view != items[0].view {
 		model.view = items[0].view
 		model.notice = fmt.Sprintf("f: %s → %s view · f again selects a candidate", items[0].text, items[0].view)
@@ -555,6 +605,16 @@ func (model topModel) View() tea.View {
 		view.AltScreen = true
 		return view
 	}
+	if model.eventsOpen {
+		lines = []string{topDashboardFitWidth("Events · ↑↓ select · Enter jump to its start · e/Esc back · q quit", model.displayWidth())}
+		lines = append(lines, model.eventListLines()...)
+		for index := range lines {
+			lines[index] = ansi.Truncate(lines[index], model.displayWidth(), "")
+		}
+		view := tea.NewView(strings.Join(lines, "\n"))
+		view.AltScreen = true
+		return view
+	}
 	if model.view == topViewSplit {
 		return model.splitView()
 	}
@@ -565,9 +625,15 @@ func (model topModel) View() tea.View {
 	if !model.follow && len(model.rows) > bodyLines {
 		start = min(model.selected, len(model.rows)-bodyLines)
 	}
+	starts := model.eventStarts()
 	for index := start; index < len(model.rows) && index < start+bodyLines; index++ {
 		line := model.tableRow(model.currentFilterRow(model.rows[index]))
-		if index == model.selected && !model.follow {
+		selected := index == model.selected && !model.follow
+		// 고른 행은 같은 칸에 >를 쓰므로 이벤트 표시를 넣지 않는다.
+		if level, ok := starts[model.rows[index].at.UnixNano()]; ok && !selected {
+			line = line[:topSelectionColumn] + topPaint("!", level, model.limits.color) + line[topSelectionColumn+1:]
+		}
+		if selected {
 			line = line[:topSelectionColumn] + ">" + line[topSelectionColumn+1:]
 			if !model.processFocus && model.limits.color {
 				line = topBannerStyle + strings.ReplaceAll(topDashboardFitWidth(line, model.displayWidth()), topColorReset, topColorReset+topBannerStyle) + topColorReset
@@ -601,6 +667,33 @@ func (model topModel) panelLines() []string {
 }
 
 // infoLines는 process 후보 위에 보이는 detail, peaks, network 패널과 수집 실패 줄이다.
+// panelLinesWithEvents는 좁은 아래 영역에서 process 목록을 후보 칸 폭으로 줄이고 남는 오른쪽에 이벤트를 둔다.
+func (model topModel) panelLinesWithEvents() []string {
+	right := model
+	right.width = topFooterProcessWidth
+	candidates := right.candidateLines()
+	events := model.eventLines(model.displayWidth()-topFooterProcessWidth-topFooterGap, max(topEventMinLines, len(candidates)))
+	lines := model.infoLines()
+	for index := 0; index < max(len(candidates), len(events)); index++ {
+		var candidate, event string
+		if index < len(candidates) {
+			candidate = candidates[index]
+		}
+		if index < len(events) {
+			event = events[index]
+		}
+		lines = append(lines, topDashboardFitWidth(candidate, topFooterProcessWidth)+strings.Repeat(" ", topFooterGap)+event)
+	}
+	if model.height > 0 {
+		available := max(0, model.height-2-len(model.processBanner())-len(model.tableHeader())-len(model.statusLines()))
+		lines = lines[:min(len(lines), available)]
+	}
+	for index, line := range lines {
+		lines[index] = topDashboardFitWidth(line, model.displayWidth())
+	}
+	return lines
+}
+
 func (model topModel) infoLines() []string {
 	var lines []string
 	switch {
@@ -621,8 +714,19 @@ func (model topModel) infoLines() []string {
 
 // footerLines는 표 아래 영역이다. 넓은 화면에서는 process 후보를 오른쪽에, 패널과 안내를 왼쪽에 둬 줄을 아낀다.
 // 필터가 있으면 process 줄에 I/O와 limit 줄이 붙어 길어지므로 위아래로 쌓는다.
+// footerLines는 표 아래 영역이다. 이벤트 칸이 없는 폭에서는 진행 중인 이벤트 한 줄을 맨 위에 둔다.
 func (model topModel) footerLines() []string {
+	if ticker := model.eventTicker(); ticker != "" {
+		return append([]string{ticker}, model.footerPanelLines()...)
+	}
+	return model.footerPanelLines()
+}
+
+func (model topModel) footerPanelLines() []string {
 	if model.displayWidth() < topFooterDockWidth || model.processFilter.active() {
+		if model.eventsInFooter() {
+			return append(model.panelLinesWithEvents(), model.statusLines()...)
+		}
 		return append(model.panelLines(), model.statusLines()...)
 	}
 	leftWidth := model.displayWidth() - topFooterGap - topFooterProcessWidth
@@ -633,6 +737,10 @@ func (model topModel) footerLines() []string {
 		available := max(len(status), model.height-2-len(model.processBanner())-len(model.tableHeader()))
 		info = info[:min(len(info), available-len(status))]
 		candidates = candidates[:min(len(candidates), available)]
+	}
+	// 상세나 최고치 패널이 없으면 왼쪽 빈자리에 이벤트를 둔다. 줄 수는 오른쪽 process 목록에 맞춘다.
+	if len(info) == 0 && model.eventsInFooter() {
+		info = model.eventLines(leftWidth, max(topEventMinLines, len(candidates)-len(status)))
 	}
 	rows := max(len(info)+len(status), len(candidates))
 	lines := make([]string, rows)
@@ -876,10 +984,120 @@ func (model topModel) candidates() []topProcess {
 		return nil
 	}
 	processes := append([]topProcess(nil), row.processes...)
-	if model.view == topViewMemory {
+	switch model.view {
+	case topViewMemory:
 		sort.SliceStable(processes, func(i, j int) bool { return processes[i].RSS > processes[j].RSS })
+	case topViewDisk:
+		// 디스크 대기는 CPU를 쓰지 않으므로 I/O가 큰 process를 앞에 둔다. I/O를 읽지 못했거나 같으면
+		// I/O를 기다리며 멈춘 process를 CPU 순위보다 앞에 둔다.
+		sort.SliceStable(processes, func(i, j int) bool {
+			if before, after := topProcessIOTotal(processes[i]), topProcessIOTotal(processes[j]); before != after {
+				return before > after
+			}
+			return processes[i].State == topProcessStateBlocked && processes[j].State != topProcessStateBlocked
+		})
 	}
 	return processes[:min(topProcessLimit, len(processes))]
+}
+
+// showsProcessIO는 후보 줄 끝에 읽기·쓰기 rate를 붙일지다. 필터를 걸었거나 디스크 보기이면 읽지 못한 값도 —로 보이고,
+// 그 밖의 보기에서는 값을 구한 process가 있을 때만 붙인다.
+func (model topModel) showsProcessIO(processes []topProcess) bool {
+	if model.displayWidth() < topProcessIOMinWidth {
+		return false
+	}
+	if model.processFilter.active() || model.view == topViewDisk {
+		return true
+	}
+	for _, process := range processes {
+		if process.DiskValid {
+			return true
+		}
+	}
+	return false
+}
+
+// topProcessStateNames는 /proc/<pid>/stat의 state 문자를 읽을 수 있는 이름으로 바꾼다. D는 커널이 disk sleep이라 부르지만
+// 디스크 외의 I/O에서도 생기므로 iowait로 쓴다.
+var topProcessStateNames = map[string]string{
+	"R": "run", "S": "sleep", "D": "iowait", "Z": "zombie", "T": "stop", "t": "trace", "I": "idle", "X": "dead", "P": "park",
+}
+
+// topProcessStateName은 STATE 칸의 이름이다. 표에 없는 문자는 그대로 보이고, 모르면 빈 칸이다.
+func topProcessStateName(state string) string {
+	if name, ok := topProcessStateNames[state]; ok {
+		return name
+	}
+	return topPrintableText(state)
+}
+
+// topProcessIOCell은 READ·WRITE 한 칸이다. 폭을 먼저 맞춘 뒤 색을 입혀 열이 어긋나지 않는다.
+func topProcessIOCell(valid bool, value float64, color bool) string {
+	text := topFitCell(topOptionalRate(valid, value), 6, false)
+	if !valid {
+		return text
+	}
+	return topPaint(text, topProcessIOThreshold.level(value), color)
+}
+
+// topProcessGroupDetail은 묶음 이름 뒤 괄호에 넣는 process 수와 I/O를 기다리는 수다. 이름에 수를 붙여 쓰면
+// gm×163처럼 다른 process 이름으로 읽혀 괄호 안에 단어와 함께 적는다.
+func topProcessGroupDetail(group topProcessGroup) string {
+	detail := fmt.Sprintf("%d procs", group.Count)
+	if group.Blocked > 0 {
+		detail += fmt.Sprintf(", %d %s", group.Blocked, topProcessStateName(topProcessStateBlocked))
+	}
+	return detail
+}
+
+// topProcessGroupLabel은 후보 목록의 묶음 이름 칸이다. 폭이 모자라면 I/O 대기 수를 빼고, 그래도 모자라면 이름을 줄인다.
+func topProcessGroupLabel(group topProcessGroup, width int) string {
+	name := topProcessName(group.Name, width)
+	count := fmt.Sprintf(" (%d procs)", group.Count)
+	for _, suffix := range []string{" (" + topProcessGroupDetail(group) + ")", count} {
+		if ansi.StringWidth(name+suffix) <= width {
+			return name + suffix
+		}
+	}
+	return topProcessName(group.Name, max(1, width-len(count))) + count
+}
+
+// topProcessGroupLine은 묶음 한 줄이다. 고를 수 없는 줄이라 PID 칸과 표시를 비운다.
+// CPU 합이 process 경고 기준을 넘으면 그 칸을 위험 색으로 칠한다.
+func topProcessGroupLine(group topProcessGroup, nameWidth int, showIO, color bool) string {
+	name := topProcessGroupLabel(group, nameWidth)
+	cpu := fmt.Sprintf("%6.1f%%", group.CPU)
+	if group.CPU >= topProcessSignalCPU {
+		cpu = topPaint(cpu, topLevelDanger, color)
+	}
+	line := fmt.Sprintf("  %7s %s %s %s %6s", "", topFitCell(name, nameWidth, true), strings.Repeat(" ", topProcessStateWidth), cpu, formatProcessGroupRSS(group.RSS))
+	if showIO {
+		line += " " + topProcessIOCell(group.DiskValid, group.DiskRead, color) + " " + topProcessIOCell(group.DiskValid, group.DiskWrite, color)
+	}
+	return line
+}
+
+// topViewProcessGroups는 보기의 순위 기준에 맞는 묶음이다. 디스크는 I/O, 메모리는 RSS, 나머지는 CPU 합 순이다.
+func topViewProcessGroups(groups []topProcessGroup, view topView) []topProcessGroup {
+	switch view {
+	case topViewDisk:
+		return topProcessGroupsByIO(groups)
+	case topViewMemory:
+		return topProcessGroupsByRSS(groups)
+	}
+	return topProcessGroupsByCPU(groups)
+}
+
+// formatProcessGroupRSS는 묶음의 RSS 합이다. 공유 page를 process마다 세므로 실제 사용량의 상한이라 ≤를 붙인다.
+func formatProcessGroupRSS(bytes uint64) string {
+	const mib = 1024 * 1024
+	switch {
+	case bytes >= 1024*mib:
+		return fmt.Sprintf("≤%.1fG", float64(bytes)/(1024*mib))
+	case bytes >= 10*mib:
+		return fmt.Sprintf("≤%.0fM", float64(bytes)/mib)
+	}
+	return fmt.Sprintf("≤%.1fM", float64(bytes)/mib)
 }
 
 func (model topModel) candidateLines() []string {
@@ -896,23 +1114,42 @@ func (model topModel) candidateLines() []string {
 	if !model.follow {
 		state = "history"
 	}
-	lines := []string{fmt.Sprintf("processes · %s rank · %s %s · Tab select", rank, state, row.at.Format("15:04:05"))}
+	title := rank
+	if model.view == topViewDisk {
+		title = "I/O"
+	}
+	lines := []string{fmt.Sprintf("processes · %s rank · %s %s · Tab select", title, state, row.at.Format("15:04:05"))}
 	processes := model.candidates()
 	if len(processes) == 0 {
 		return append(lines, "no match · / edit filter · Esc clear")
 	}
-	nameWidth := max(4, min(28, model.displayWidth()-35))
+	showIO := model.showsProcessIO(processes)
+	nameWidth := max(4, min(28, model.displayWidth()-topProcessColumnsWidth-10))
+	if showIO {
+		nameWidth = max(4, min(28, model.displayWidth()-topProcessColumnsWidth-topProcessIOColumnsWidth))
+	}
 	if model.displayWidth() < 40 {
 		nameWidth = max(3, model.displayWidth()-18)
 	}
 	room := model.height - 2 - len(model.processBanner()) - len(model.tableHeader()) - len(model.statusLines())
 	if room >= 3 {
 		// PID는 Linux에서 7자리(기본 pid_max 4194304)까지 가므로 일곱 칸을 둔다.
-		header := fmt.Sprintf("  %7s %s %7s %6s", "PID", topFitCell("COMMAND", nameWidth, true), "CPU%", "RSS")
+		header := fmt.Sprintf("  %7s %s %s %7s %6s", "PID", topFitCell("COMMAND", nameWidth, true), topFitCell("STATE", topProcessStateWidth, true), "CPU%", "RSS")
+		if showIO {
+			header += fmt.Sprintf(" %6s %6s", "READ", "WRITE")
+		}
 		if model.displayWidth() < 40 {
 			header = fmt.Sprintf("  %7s %s %6s", "PID", topFitCell("COMMAND", nameWidth, true), rank)
 		}
 		lines = append(lines, header)
+	}
+	if model.displayWidth() >= 40 && !model.processFilter.active() {
+		groups := topViewProcessGroups(row.processTotal.Groups, model.view)
+		// 묶음이 process 줄을 모두 밀어내지 않도록 process 한 줄은 남긴다.
+		groups = groups[:min(len(groups), max(0, room-len(lines)-1))]
+		for _, group := range groups {
+			lines = append(lines, topProcessGroupLine(group, nameWidth, showIO, model.limits.color))
+		}
 	}
 	count := min(3, len(processes))
 	if model.processFocus || model.height >= topTallHeight {
@@ -925,11 +1162,18 @@ func (model topModel) candidateLines() []string {
 	}
 	for index := start; index < min(start+count, len(processes)); index++ {
 		process := processes[index]
+		selected := model.processFocus && index == model.processSelected
 		marker := " "
-		if model.processFocus && index == model.processSelected {
+		if selected {
 			marker = ">"
 		}
-		line := fmt.Sprintf("%s %7d %s %6.1f%% %6s", marker, process.PID, topFitCell(topProcessName(process.Command, nameWidth), nameWidth, true), process.CPU, formatProcessRSS(process.RSS))
+		// 고른 줄은 줄 전체를 반전하므로 칸마다 색을 넣으면 중간의 reset이 반전을 끊는다.
+		color := model.limits.color && !selected
+		state := topFitCell(topProcessStateName(process.State), topProcessStateWidth, true)
+		if process.State == topProcessStateBlocked {
+			state = topPaint(state, topLevelWarn, color)
+		}
+		line := fmt.Sprintf("%s %7d %s %s %6.1f%% %6s", marker, process.PID, topFitCell(topProcessName(process.Command, nameWidth), nameWidth, true), state, process.CPU, formatProcessRSS(process.RSS))
 		if model.displayWidth() < 40 {
 			value := fmt.Sprintf("%.1f%%", process.CPU)
 			if model.view == topViewMemory {
@@ -937,10 +1181,10 @@ func (model topModel) candidateLines() []string {
 			}
 			line = fmt.Sprintf("%s %7d %s %6s", marker, process.PID, topFitCell(topProcessName(process.Command, nameWidth), nameWidth, true), value)
 		}
-		if model.processFilter.active() && model.displayWidth() >= 100 {
-			line += fmt.Sprintf(" · r %s w %s", topOptionalRate(process.DiskValid, process.DiskRead), topOptionalRate(process.DiskValid, process.DiskWrite))
+		if showIO {
+			line += " " + topProcessIOCell(process.DiskValid, process.DiskRead, color) + " " + topProcessIOCell(process.DiskValid, process.DiskWrite, color)
 		}
-		if model.processFocus && index == model.processSelected && model.limits.color {
+		if selected && model.limits.color {
 			line = topBannerStyle + topDashboardFitWidth(line, model.displayWidth()) + topColorReset
 		}
 		lines = append(lines, line)
@@ -963,6 +1207,8 @@ func (model topModel) helpLines() []string {
 		"History: ↑↓ or PgUp/PgDn · End live · p pause · +/- interval",
 		"Processes: Tab select · ↑↓ choose · Enter focus PID · Tab/Esc back",
 		"Signals: f opens its view, then selects candidates. A candidate is not a confirmed cause.",
+		"Events: warnings that last 5s are kept with their candidates · e list · Enter jump · [ ] previous/next · ! marks the start row",
+		"Events that start within 5s share one line. ≤ means the warning was already on when edc started.",
 		"Filter: / edit names or PIDs · Enter apply · Esc cancel or clear",
 		"Details: Enter on history · h peaks from the last 60 seconds",
 		"CPU: host % uses all cores. Process 100% uses one core. RSS is resident memory.",
@@ -1054,11 +1300,11 @@ func (model topModel) tableRow(row topDashboardRow) string {
 				cells[index].level = column.level(model.limits, row.rate)
 			}
 		}
-		signals := topDashboardSignalItems(row.rate, row.processes, row.processesValid, model.limits)
+		signals := topDashboardSignalItems(row.rate, row.processes, row.processTotal.Groups, row.processesValid, model.limits)
 		return formatTopAllLine(row.at.Format("15:04:05"), columns, cells, formatTopSignalsWidth(signals, signalWidth), signalWidth, model.limits.color)
 	}
 	columns, indexes := model.tableColumns()
-	signal := topDashboardSignal(row.rate, row.processes, row.processesValid, model.limits)
+	signal := topDashboardSignal(row.rate, row.processes, row.processTotal.Groups, row.processesValid, model.limits)
 	cells := topViewCells(row.rate, model.view, signal, model.limits)
 	if model.view == topViewProcess {
 		cells = topProcessViewCells(row)
@@ -1093,7 +1339,7 @@ func (model topModel) hostLayout() ([]topAllColumn, int) {
 
 func (model topModel) compactRow(row topDashboardRow, header bool) string {
 	columns := []topColumn{{title: "cpu%", width: 5}, {title: "mem%", width: 5}, {title: "load", width: 5}, {title: "signal", left: true}}
-	cells := []topCell{topValueCell("%.1f", row.rate.CPUUser+row.rate.CPUSystem, model.limits.cpu), topValueCell("%.1f", row.rate.MemoryPercent, model.limits.memory), topValueCell("%.1f", row.rate.Load1, model.limits.load), topPlainCell(topDashboardSignal(row.rate, row.processes, row.processesValid, model.limits))}
+	cells := []topCell{topValueCell("%.1f", row.rate.CPUUser+row.rate.CPUSystem, model.limits.cpu), topValueCell("%.1f", row.rate.MemoryPercent, model.limits.memory), topValueCell("%.1f", row.rate.Load1, model.limits.load), topPlainCell(topDashboardSignal(row.rate, row.processes, row.processTotal.Groups, row.processesValid, model.limits))}
 	if model.displayWidth() < 32 {
 		columns = append(columns[:2], columns[3])
 		cells = append(cells[:2], cells[3])
@@ -1442,7 +1688,7 @@ func formatTopDashboardRow(row topDashboardRow, view topView, limits topLimits, 
 		return formatTopColumns(at, topViewColumns(view), topProcessViewCells(row), limits.color)
 	}
 	if view != topViewAll {
-		signal := topDashboardSignal(rate, row.processes, row.processesValid, limits)
+		signal := topDashboardSignal(rate, row.processes, row.processTotal.Groups, row.processesValid, limits)
 		return formatTopColumns(at, topViewColumns(view), topViewCells(rate, view, signal, limits), limits.color)
 	}
 	columns, signalWidth := topAllLayout(width)
@@ -1453,7 +1699,7 @@ func formatTopDashboardRow(row topDashboardRow, view topView, limits topLimits, 
 			cells[index].level = column.level(limits, rate)
 		}
 	}
-	signals := topDashboardSignalItems(rate, row.processes, row.processesValid, limits)
+	signals := topDashboardSignalItems(rate, row.processes, row.processTotal.Groups, row.processesValid, limits)
 	return formatTopAllLine(at, columns, cells, formatTopSignalsWidth(signals, signalWidth), signalWidth, limits.color)
 }
 
@@ -1463,16 +1709,37 @@ type topSignalItem struct {
 	score float64
 	// view는 이 경고를 자세히 보이는 보기다. f가 그 보기로 간다. process 경고는 topViewProcess다.
 	view topView
+	// kind는 경고의 종류다. 값이 바뀌어도 같은 종류가 이어지면 한 이벤트로 합친다.
+	kind string
 }
 
-func topDashboardSignal(rate resourceRate, processes []topProcess, valid bool, limits topLimits) string {
-	return formatTopSignals(topDashboardSignalItems(rate, processes, valid, limits))
+func topDashboardSignal(rate resourceRate, processes []topProcess, groups []topProcessGroup, valid bool, limits topLimits) string {
+	return formatTopSignals(topDashboardSignalItems(rate, processes, groups, valid, limits))
 }
 
-func topDashboardSignalItems(rate resourceRate, processes []topProcess, valid bool, limits topLimits) []topSignalItem {
+func topDashboardSignalItems(rate resourceRate, processes []topProcess, groups []topProcessGroup, valid bool, limits topLimits) []topSignalItem {
 	signals := topSignals(rate, limits)
 	if process, ok := topProcessSignal(processes, valid); ok {
-		signals = append(signals, topSignalItem{text: process, view: topViewProcess})
+		signals = append(signals, topSignalItem{text: process, view: topViewProcess, kind: "process " + strconv.Itoa(processes[0].PID)})
+	}
+	if valid {
+		signals = append(signals, topProcessGroupSignals(groups)...)
+	}
+	return signals
+}
+
+// topProcessGroupSignals는 묶음 합이 process 하나의 경고 기준을 넘을 때 경고한다. 하나하나는 작아 process 경고에
+// 오르지 않는 경우다. I/O 합은 디스크 보기에서만 구하므로 I/O 묶음 경고도 그때만 나온다.
+func topProcessGroupSignals(groups []topProcessGroup) []topSignalItem {
+	signals := []topSignalItem{}
+	if ranked := topProcessGroupsByCPU(groups); len(ranked) > 0 && ranked[0].CPU >= topProcessSignalCPU {
+		group := ranked[0]
+		signals = append(signals, topSignalItem{text: fmt.Sprintf("%s (%d) %.0f%%", topProcessName(group.Name, topSignalProcessNameWidth), group.Count, group.CPU), view: topViewCPU, kind: "group cpu " + group.Name})
+	}
+	if ranked := topProcessGroupsByIO(groups); len(ranked) > 0 && ranked[0].DiskValid && ranked[0].DiskRead+ranked[0].DiskWrite >= topProcessIOThreshold.danger {
+		group := ranked[0]
+		io := group.DiskRead + group.DiskWrite
+		signals = append(signals, topSignalItem{text: fmt.Sprintf("%s (%d) %s", topProcessName(group.Name, topSignalProcessNameWidth), group.Count, formatRate(io)), score: io / topProcessIOThreshold.danger, view: topViewDisk, kind: "group io " + group.Name})
 	}
 	return signals
 }
@@ -1667,28 +1934,31 @@ func topSignal(rate resourceRate, limits topLimits) string {
 func topSignals(rate resourceRate, limits topLimits) []topSignalItem {
 	all := []topSignalItem{}
 	if rate.MemoryPercent >= limits.memory.warn {
-		all = append(all, topSignalItem{fmt.Sprintf("mem %.0f%%", rate.MemoryPercent), rate.MemoryPercent / limits.memory.danger, topViewMemory})
+		all = append(all, topSignalItem{fmt.Sprintf("mem %.0f%%", rate.MemoryPercent), rate.MemoryPercent / limits.memory.danger, topViewMemory, "mem"})
 	}
 	if rate.Load1 >= limits.load.warn {
-		all = append(all, topSignalItem{fmt.Sprintf("load %.1f", rate.Load1), rate.Load1 / limits.load.danger, topViewCPU})
+		all = append(all, topSignalItem{fmt.Sprintf("load %.1f", rate.Load1), rate.Load1 / limits.load.danger, topViewCPU, "load"})
 	}
 	if rate.CPUIOWait >= limits.io.warn {
-		all = append(all, topSignalItem{fmt.Sprintf("io %.1f%%", rate.CPUIOWait), rate.CPUIOWait / limits.io.danger, topViewDisk})
+		all = append(all, topSignalItem{fmt.Sprintf("io %.1f%%", rate.CPUIOWait), rate.CPUIOWait / limits.io.danger, topViewDisk, "io"})
+	}
+	if rate.CPUIOWait >= limits.io.warn && rate.ProcsBlockedValid && rate.ProcsBlocked >= topBlockedSignalMin {
+		all = append(all, topSignalItem{fmt.Sprintf("blocked %.0f", rate.ProcsBlocked), rate.ProcsBlocked / topBlockedSignalDanger, topViewDisk, "blocked"})
 	}
 	if rate.CPUUser+rate.CPUSystem >= limits.cpu.warn {
-		all = append(all, topSignalItem{fmt.Sprintf("cpu %.0f%%", rate.CPUUser+rate.CPUSystem), (rate.CPUUser + rate.CPUSystem) / limits.cpu.danger, topViewCPU})
+		all = append(all, topSignalItem{fmt.Sprintf("cpu %.0f%%", rate.CPUUser+rate.CPUSystem), (rate.CPUUser + rate.CPUSystem) / limits.cpu.danger, topViewCPU, "cpu"})
 	}
 	if rate.DiskHealthValid && rate.DiskAwait >= limits.await.warn {
-		all = append(all, topSignalItem{fmt.Sprintf("await %.0fms", rate.DiskAwait), rate.DiskAwait / limits.await.danger, topViewDisk})
+		all = append(all, topSignalItem{fmt.Sprintf("await %.0fms", rate.DiskAwait), rate.DiskAwait / limits.await.danger, topViewDisk, "await"})
 	}
 	if rate.NetHealthValid && rate.NetDrops >= limits.network.warn {
-		all = append(all, topSignalItem{fmt.Sprintf("drop %.0f/s", rate.NetDrops), rate.NetDrops / limits.network.danger, topViewNetwork})
+		all = append(all, topSignalItem{fmt.Sprintf("drop %.0f/s", rate.NetDrops), rate.NetDrops / limits.network.danger, topViewNetwork, "drop"})
 	}
 	if rate.NetHealthValid && rate.NetErrors >= limits.network.warn {
-		all = append(all, topSignalItem{fmt.Sprintf("err %.0f/s", rate.NetErrors), rate.NetErrors / limits.network.danger, topViewNetwork})
+		all = append(all, topSignalItem{fmt.Sprintf("err %.0f/s", rate.NetErrors), rate.NetErrors / limits.network.danger, topViewNetwork, "err"})
 	}
 	if rate.PSIValid && rate.PSIIO >= limits.psi.warn {
-		all = append(all, topSignalItem{fmt.Sprintf("psi io %.0f%%", rate.PSIIO), rate.PSIIO / limits.psi.danger, topViewPressure})
+		all = append(all, topSignalItem{fmt.Sprintf("psi io %.0f%%", rate.PSIIO), rate.PSIIO / limits.psi.danger, topViewPressure, "psi io"})
 	}
 	sort.SliceStable(all, func(i, j int) bool { return all[i].score > all[j].score })
 	return all

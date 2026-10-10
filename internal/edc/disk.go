@@ -139,8 +139,8 @@ func diskEvidence(chain diskChain, steps []diskStep) []Evidence {
 	var evidence []Evidence
 	if chain.Disk.Name != "" {
 		value := fmt.Sprintf("%s · %s", chain.Disk.Name, formatBytes(chain.Disk.Size))
-		if chain.Volume > 0 {
-			value = fmt.Sprintf("%s · %s → %s", chain.Disk.Name, formatBytes(chain.Disk.Size), formatBytes(chain.Volume))
+		if volume := chain.grownVolume(); volume > 0 {
+			value = fmt.Sprintf("%s · %s → %s", chain.Disk.Name, formatBytes(chain.Disk.Size), formatBytes(volume))
 		}
 		if chain.Table != "" {
 			value += " · " + chain.Table
@@ -208,8 +208,9 @@ func checkDiskMount(ctx context.Context, system diskSystem, mount diskMount) Res
 	planned := chain.afterRescan()
 	steps, blocked := planDiskGrow(planned)
 	result.Evidence = diskEvidence(chain, steps)
+	// 파티션 순서 때문에 막힌 경우만 본다. readChain이 다른 이유(논리 파티션 등)로 막았다면 그 이유를 그대로 보인다.
 	owner := ""
-	if blocked != "" && planned.freeAfterLast() {
+	if blocked != "" && chain.Blocked == "" && planned.freeAfterLast() {
 		owner = system.partitionMount(planned.LastPart)
 	}
 	switch {
@@ -240,9 +241,9 @@ func checkDiskMount(ctx context.Context, system diskSystem, mount diskMount) Res
 // 묻지 못했으면 grow가 rescan하면서 더 찾을 수도 있다는 것을 알린다. 같은 크기라는 답을 받았으면 말하지 않는다.
 func diskRescanWarnings(chain diskChain) []string {
 	switch {
-	case chain.Volume > 0:
-		return []string{T("disk.check.volume_grew", chain.Disk.Name, formatBytes(chain.Volume), formatBytes(chain.Disk.Size))}
-	case chain.Disk.Rescan && !chain.VolumeRead:
+	case chain.grownVolume() > 0:
+		return []string{T("disk.check.volume_grew", chain.Disk.Name, formatBytes(chain.grownVolume()), formatBytes(chain.Disk.Size))}
+	case chain.Disk.Rescan && chain.DeviceSize == 0:
 		return []string{T("disk.check.rescan_note", chain.Disk.Name)}
 	}
 	return nil
@@ -369,8 +370,8 @@ func executeDiskGrow(ctx context.Context, system diskSystem, input diskGrowInput
 			return fail("disk", err)
 		}
 		// 장치가 여전히 커널보다 크다고 답하면 rescan이 듣지 않은 것이다. 옛 크기로 "다 씀"이라 말하지 않는다.
-		if chain.Volume > 0 {
-			result := fail("rescan", errors.New(T("disk.grow.error.rescan_stale", chain.Disk.Name, formatBytes(chain.Disk.Size), formatBytes(chain.Volume))))
+		if volume := chain.grownVolume(); volume > 0 {
+			result := fail("rescan", errors.New(T("disk.grow.error.rescan_stale", chain.Disk.Name, formatBytes(chain.Disk.Size), formatBytes(volume))))
 			result.Result.Evidence = append(done, diskEvidence(chain, nil)...)
 			return result
 		}

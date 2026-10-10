@@ -639,3 +639,22 @@ func TestCheckPutsTheGrowCommandOnItsOwnLine(t *testing.T) {
 		t.Fatalf("colored = %q", colored.String())
 	}
 }
+
+// 다른 이유로 막힌 마운트는, 마지막 파티션이 늘릴 수 있는 파일시스템이어도 통과로 바꾸지 않는다.
+func TestCheckKeepsAnotherBlockReason(t *testing.T) {
+	host := newFakeDiskHost(t)
+	host.block("pci0/block/sdc", 8, 32, 30*gib, 0, 0)
+	host.block("pci0/block/sdc/sdc5", 8, 37, 5*gib, 5, 1<<20)
+	host.block("pci0/block/sdc/sdc1", 8, 33, 10*gib, 1, 6*gib)
+	host.mbrDisk("sdc")
+	host.ext4("sdc5", 5*gib)
+	host.ext4("sdc1", 10*gib)
+	host.mountinfo(
+		`40 1 8:33 / / rw - ext4 /dev/sdc1 rw`,
+		`41 40 8:37 / /var rw - ext4 /dev/sdc5 rw`,
+	)
+	results := checkDiskMounts(context.Background(), host.system(), "/var")
+	if len(results) != 1 || results[0].Status != StatusWarn || !strings.Contains(results[0].Summary, "logical partition") {
+		t.Fatalf("results = %#v", results)
+	}
+}

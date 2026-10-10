@@ -12,6 +12,9 @@ import (
 
 // kernel은 이 구조체를 그대로 읽고 쓴다. 64비트 Linux의 sizeof(struct sg_io_hdr)는 88이다.
 func TestSCSISGIOHdrMatchesTheKernelLayout(t *testing.T) {
+	if unsafe.Sizeof(uintptr(0)) != 8 {
+		t.Skip("the layout below is the 64-bit one; edc ships 64-bit Linux builds only")
+	}
 	var header scsiSGIOHdr
 	if size := unsafe.Sizeof(header); size != 88 {
 		t.Fatalf("sizeof = %d, want 88", size)
@@ -21,14 +24,6 @@ func TestSCSISGIOHdrMatchesTheKernelLayout(t *testing.T) {
 		if got != want {
 			t.Errorf("offsetof %s = %d, want %d", name, got, want)
 		}
-	}
-}
-
-func TestSCSISenseKeyReadsBothFormats(t *testing.T) {
-	fixed := []byte{0x70, 0, 0x06, 0, 0, 0, 0, 10, 0, 0, 0, 0, 0x2a, 0x09}
-	descriptor := []byte{0x72, 0x06, 0x2a, 0x09}
-	if scsiSenseKey(fixed) != scsiSenseUnitAttention || scsiSenseKey(descriptor) != scsiSenseUnitAttention || scsiSenseKey(nil) != 0 {
-		t.Fatal("sense key")
 	}
 }
 

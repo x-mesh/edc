@@ -341,20 +341,28 @@ type diskChain struct {
 	DiskEnd  uint64
 	Table    string
 	Blocked  string
-	// Volume은 장치가 알려 준 크기가 커널이 아는 크기보다 클 때 그 크기다. 클라우드 콘솔에서 늘린 SCSI 볼륨은
-	// rescan 전까지 커널이 옛 크기를 본다. VolumeRead는 장치에 물어 답을 받았는지다.
-	Volume     uint64
-	VolumeRead bool
+	// DeviceSize는 디스크 장치가 READ CAPACITY로 답한 크기다. 묻지 않았거나 답을 받지 못했으면 0이다. 클라우드 콘솔에서
+	// 늘린 SCSI 볼륨은 rescan 전까지 커널이 옛 크기를 보므로 이 값이 더 크다.
+	DeviceSize uint64
+}
+
+// grownVolume은 장치가 커널보다 크다고 답한 크기다. 답이 없거나 차이가 정렬 몫보다 작으면 0이다.
+func (chain diskChain) grownVolume() uint64 {
+	if chain.DeviceSize >= chain.Disk.Size+diskGrowMinGap {
+		return chain.DeviceSize
+	}
+	return 0
 }
 
 // afterRescan은 rescan한 뒤의 모습이다. 장치가 더 크다고 답했으면 디스크 크기를 그 값으로 바꾼다.
 // check와 계획 출력이 쓰고, 실제 grow는 rescan한 뒤 커널 값을 다시 읽는다.
 func (chain diskChain) afterRescan() diskChain {
-	if chain.Volume == 0 {
+	volume := chain.grownVolume()
+	if volume == 0 {
 		return chain
 	}
-	chain.Disk.Size = chain.Volume
-	chain.DiskEnd = diskUsableEnd(chain.Volume, chain.Table, chain.Part != nil)
+	chain.Disk.Size = volume
+	chain.DiskEnd = diskUsableEnd(volume, chain.Table, chain.Part != nil)
 	return chain
 }
 
@@ -448,10 +456,7 @@ func (system diskSystem) readChain(ctx context.Context, mount diskMount) (diskCh
 	chain.DiskEnd = diskUsableEnd(chain.Disk.Size, chain.Table, chain.Part != nil)
 	if chain.Disk.Rescan && system.capacity != nil {
 		if size, err := system.capacity(chain.Disk.Name); err == nil {
-			chain.VolumeRead = true
-			if size >= chain.Disk.Size+diskGrowMinGap {
-				chain.Volume = size
-			}
+			chain.DeviceSize = size
 		}
 	}
 	if chain.Part != nil {

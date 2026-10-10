@@ -1113,7 +1113,7 @@ edc disk grow /data            # 계획을 보여 주고, 확인을 받은 뒤 �
 - LV가 PV 여러 개에 걸쳐 있거나, device-mapper 디바이스가 LVM 볼륨이 아닌 경우
 - `growpart`가 없는 경우. Debian과 Ubuntu에서는 `cloud-guest-utils`, RHEL에서는 `cloud-utils-growpart`를 설치하세요.
 
-늘린 SCSI 디스크는 rescan하기 전까지 커널이 옛 크기를 봅니다. `check`와 `grow -n`은 커널 상태를 바꾸는 rescan을 하지 않습니다. 대신 아무것도 바꾸지 않는 SCSI `READ CAPACITY` 명령으로 디스크에 크기를 묻습니다. 디스크가 커널이 아는 크기보다 크면 새 크기로 계획하고, 디스크 줄에 `sda · 100.00 GB → 200.00 GB`처럼 보이며, `edc disk grow`를 제안합니다. root가 아니어서 묻지 못하면 `grow`가 먼저 rescan하므로 공간이 더 보일 수 있다고 알립니다. 실제 `grow`는 rescan한 뒤 커널이 보는 크기로만 계획합니다. rescan 뒤에도 디스크가 커널보다 크다고 답하면 다 쓴 디스크라고 하지 않고 오류로 멈춥니다.
+늘린 SCSI 디스크는 rescan하기 전까지 커널이 옛 크기를 봅니다. `check`와 `grow -n`은 커널 상태를 바꾸는 rescan을 하지 않습니다. 대신 아무것도 바꾸지 않는 SCSI `READ CAPACITY` 명령으로 디스크에 크기를 묻습니다. 디스크가 커널이 아는 크기보다 크면 새 크기로 계획하고, 디스크 줄에 `sda · 100.00 GB → 200.00 GB`처럼 보이며, `edc disk grow`를 제안합니다. root가 아닌 경우처럼 디스크에 묻지 못하면 `grow`가 먼저 rescan하므로 공간이 더 보일 수 있다고 알립니다. 실제 `grow`는 rescan한 뒤 커널이 보는 크기로만 계획합니다. rescan 뒤에도 디스크가 커널보다 크다고 답하면 다 쓴 디스크라고 하지 않고 오류로 멈춥니다.
 
 늘릴 수 있는 마운트는 늘리기 전과 뒤의 크기를 보이고, 실행할 명령을 따로 `next:` 줄에 보입니다. JSON에서는 `next`에 명령이 들어갑니다.
 

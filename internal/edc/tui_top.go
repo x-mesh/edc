@@ -71,8 +71,8 @@ func sampleTopDashboard() (resourceSnapshot, error) {
 // fillProcsBlocked는 kernel이 멈춘 작업 수를 주지 않는 host에서 process 목록의 멈춘 process 수를 쓴다.
 // Linux의 procs_blocked는 thread를 세지만 이 값은 process를 센다.
 func fillProcsBlocked(snapshot *resourceSnapshot) {
-	if !snapshot.ProcsBlockedValid && snapshot.ProcessTotal.BlockedValid {
-		snapshot.ProcsBlocked, snapshot.ProcsBlockedValid, snapshot.ProcsBlockedFromProcesses = uint64(snapshot.ProcessTotal.Blocked), true, true
+	if !snapshot.ProcsBlockedSource.known() && snapshot.ProcessTotal.BlockedValid {
+		snapshot.ProcsBlocked, snapshot.ProcsBlockedSource = uint64(snapshot.ProcessTotal.Blocked), topBlockedProcessList
 	}
 }
 
@@ -1442,7 +1442,7 @@ func topValidLevel(valid bool, threshold topThreshold, value float64) topLevel {
 func topViewCells(rate resourceRate, view topView, signal string, limits topLimits) []topCell {
 	switch view {
 	case topViewCPU:
-		return []topCell{topValueCell("%.1f", rate.Load1, limits.load), topValueCell("%.1f", rate.CPUUser, limits.cpu), topValueCell("%.1f", rate.CPUSystem, limits.cpu), topValueCell("%.1f", rate.CPUIOWait, limits.io), {text: topHotCore(rate.CoreCPU), level: topHotCoreLevel(rate.CoreCPU)}, topPlainCell(topCoreBar(rate.CoreCPU)), topPlainCell(topOptionalValue(rate.CPUStealValid, "%.1f", rate.CPUSteal)), topPlainCell(topOptionalValue(rate.ProcsBlockedValid, "%.0f", rate.ProcsBlocked)), topPlainCell(signal)}
+		return []topCell{topValueCell("%.1f", rate.Load1, limits.load), topValueCell("%.1f", rate.CPUUser, limits.cpu), topValueCell("%.1f", rate.CPUSystem, limits.cpu), topValueCell("%.1f", rate.CPUIOWait, limits.io), {text: topHotCore(rate.CoreCPU), level: topHotCoreLevel(rate.CoreCPU)}, topPlainCell(topCoreBar(rate.CoreCPU)), topPlainCell(topOptionalValue(rate.CPUStealValid, "%.1f", rate.CPUSteal)), topPlainCell(topOptionalValue(rate.ProcsBlockedSource.known(), "%.0f", rate.ProcsBlocked)), topPlainCell(signal)}
 	case topViewMemory:
 		return []topCell{topValueCell("%.1f", rate.MemoryPercent, limits.memory), topPlainCell(formatRate(rate.SwapOut)), topOptionalCell(rate.PSIValid, "%.1f", rate.PSIMemory, limits.psi), topMemoryPressureCell(rate), topValueCell("%.1f", rate.Load1, limits.load), topPlainCell(signal)}
 	case topViewDisk:
@@ -1450,7 +1450,7 @@ func topViewCells(rate resourceRate, view topView, signal string, limits topLimi
 	case topViewNetwork:
 		return []topCell{topPlainCell(formatRate(rate.NetIn)), topPlainCell(formatRate(rate.NetOut)), networkConntrackCell(rate.NetworkHealth), topPlainCell(networkRateText(rate.NetworkHealth, "listen_overflows")), topOptionalCell(rate.NetHealthValid, "%.0f", rate.NetErrors, limits.network), topOptionalCell(rate.NetHealthValid, "%.0f", rate.NetDrops, limits.network), topPlainCell(networkRateText(rate.NetworkHealth, "softnet_dropped")), topPlainCell(fmt.Sprintf("%.0f", rate.PacketsIn)), topPlainCell(fmt.Sprintf("%.0f", rate.PacketsOut)), topPlainCell(topNetworkRateCell(rate.NetworkHealth, "tcp_retrans_segs", 7)), topPlainCell(topNetworkRateCell(rate.NetworkHealth, "tcp_out_rsts", 6)), topPlainCell(topNetworkRateCell(rate.NetworkHealth, "tcp_attempt_fails", 6)), topPlainCell(signal)}
 	case topViewPressure:
-		return []topCell{topOptionalCell(rate.PSIValid, "%.1f", rate.PSICPU, limits.psi), topOptionalCell(rate.PSIValid, "%.1f", rate.PSIMemory, limits.psi), topOptionalCell(rate.PSIValid, "%.1f", rate.PSIIO, limits.psi), topOptionalCell(rate.PSIValid, "%.1f", rate.PSIMemoryFull, limits.psi), topOptionalCell(rate.PSIValid, "%.1f", rate.PSIIOFull, limits.psi), topMemoryPressureCell(rate), topPlainCell(topOptionalValue(rate.ProcsBlockedValid, "%.0f", rate.ProcsBlocked)), topValueCell("%.1f", rate.Load1, limits.load), topValueCell("%.1f", rate.MemoryPercent, limits.memory), topPlainCell(signal)}
+		return []topCell{topOptionalCell(rate.PSIValid, "%.1f", rate.PSICPU, limits.psi), topOptionalCell(rate.PSIValid, "%.1f", rate.PSIMemory, limits.psi), topOptionalCell(rate.PSIValid, "%.1f", rate.PSIIO, limits.psi), topOptionalCell(rate.PSIValid, "%.1f", rate.PSIMemoryFull, limits.psi), topOptionalCell(rate.PSIValid, "%.1f", rate.PSIIOFull, limits.psi), topMemoryPressureCell(rate), topPlainCell(topOptionalValue(rate.ProcsBlockedSource.known(), "%.0f", rate.ProcsBlocked)), topValueCell("%.1f", rate.Load1, limits.load), topValueCell("%.1f", rate.MemoryPercent, limits.memory), topPlainCell(signal)}
 	}
 	return nil
 }
@@ -1973,7 +1973,7 @@ func topSignals(rate resourceRate, limits topLimits) []topSignalItem {
 	if rate.CPUIOWait >= limits.io.warn {
 		all = append(all, topSignalItem{fmt.Sprintf("io %.1f%%", rate.CPUIOWait), rate.CPUIOWait / limits.io.danger, topViewDisk, "io"})
 	}
-	if topBlockedEvidence(rate, limits) && rate.ProcsBlockedValid && rate.ProcsBlocked >= topBlockedSignalMin {
+	if topBlockedEvidence(rate, limits) && rate.ProcsBlocked >= topBlockedSignalMin {
 		all = append(all, topSignalItem{fmt.Sprintf("blocked %.0f", rate.ProcsBlocked), rate.ProcsBlocked / topBlockedSignalDanger, topViewDisk, "blocked"})
 	}
 	if rate.CPUUser+rate.CPUSystem >= limits.cpu.warn {
@@ -2001,10 +2001,13 @@ func topSignals(rate resourceRate, limits topLimits) []topSignalItem {
 // topBlockedEvidence는 멈춘 작업 수 외의 두 번째 근거다. Linux는 iowait이다. iowait이 없는 macOS의 U 상태는 디스크
 // 대기 말고 page-in 같은 VM 대기에서도 생기므로, 디스크 await 경고나 memory 압박이 함께 있을 때만 경고한다.
 func topBlockedEvidence(rate resourceRate, limits topLimits) bool {
-	if rate.ProcsBlockedFromProcesses {
+	switch rate.ProcsBlockedSource {
+	case topBlockedKernelTasks:
+		return rate.CPUIOWait >= limits.io.warn
+	case topBlockedProcessList:
 		return (rate.DiskHealthValid && rate.DiskAwait >= limits.await.warn) || rate.MemoryPressure.level() != topLevelNormal
 	}
-	return rate.CPUIOWait >= limits.io.warn
+	return false
 }
 
 func formatTopSignals(signals []topSignalItem) string {

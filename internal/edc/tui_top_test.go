@@ -190,13 +190,13 @@ func TestTopSignalSummarizesHighestRisk(t *testing.T) {
 
 func TestTopSignalReportsBlockedTasksOnlyWithHighIOWait(t *testing.T) {
 	limits := newTopLimits(4, false)
-	items := topSignals(resourceRate{CPUIOWait: 78, ProcsBlocked: 14, ProcsBlockedValid: true}, limits)
+	items := topSignals(resourceRate{CPUIOWait: 78, ProcsBlocked: 14, ProcsBlockedSource: topBlockedKernelTasks}, limits)
 	if len(items) != 2 || items[1].text != "blocked 14" || items[1].view != topViewDisk {
 		t.Fatalf("items = %+v", items)
 	}
 	for name, rate := range map[string]resourceRate{
-		"low iowait":   {CPUIOWait: 2, ProcsBlocked: 14, ProcsBlockedValid: true},
-		"few blocked":  {CPUIOWait: 78, ProcsBlocked: 3, ProcsBlockedValid: true},
+		"low iowait":   {CPUIOWait: 2, ProcsBlocked: 14, ProcsBlockedSource: topBlockedKernelTasks},
+		"few blocked":  {CPUIOWait: 78, ProcsBlocked: 3, ProcsBlockedSource: topBlockedKernelTasks},
 		"not measured": {CPUIOWait: 78, ProcsBlocked: 14},
 	} {
 		for _, item := range topSignals(rate, limits) {
@@ -673,7 +673,7 @@ func TestTopOptionalColumnsKeepTheSignalWidth(t *testing.T) {
 	if got := darwin.tableHeader()[0]; !strings.Contains(got, "blocked") {
 		t.Errorf("darwin cpu hides blocked: %q", got)
 	}
-	rate := resourceRate{CPUSteal: 12.5, CPUStealValid: true, ProcsBlocked: 3, ProcsBlockedValid: true, DiskQueue: 2.25, DiskHealthValid: true, DiskBusyValid: true}
+	rate := resourceRate{CPUSteal: 12.5, CPUStealValid: true, ProcsBlocked: 3, ProcsBlockedSource: topBlockedKernelTasks, DiskQueue: 2.25, DiskHealthValid: true, DiskBusyValid: true}
 	model.width, model.view = 200, topViewCPU
 	if line := model.tableRow(topDashboardRow{at: time.Unix(1, 0), rate: rate}); !strings.Contains(line, "12.5") || !strings.Contains(line, "│      3│") {
 		t.Errorf("cpu row = %q", line)
@@ -1720,7 +1720,7 @@ func TestTopMemoryPressureColumnFollowsTheHost(t *testing.T) {
 		}
 	}
 	darwin.view = topViewPressure
-	rate := resourceRate{MemoryPressure: topMemoryPressureCritical, ProcsBlocked: 2, ProcsBlockedValid: true, ProcsBlockedFromProcesses: true}
+	rate := resourceRate{MemoryPressure: topMemoryPressureCritical, ProcsBlocked: 2, ProcsBlockedSource: topBlockedProcessList}
 	if line := darwin.tableRow(topDashboardRow{at: time.Unix(1, 0), rate: rate}); !strings.Contains(line, "critical") || !strings.Contains(line, "│      2│") {
 		t.Errorf("darwin pressure row = %q", line)
 	}
@@ -1759,7 +1759,7 @@ func TestTopSignalsUseMemoryPressureAndBlockedWithoutIOWait(t *testing.T) {
 	// process 목록에서 센 blocked(macOS)는 iowait 대신 디스크 await 경고나 memory 압박이 두 번째 근거다. U 상태는 page-in
 	// 대기에서도 생기므로 개수만으로는 경고하지 않는다. kernel 값(Linux)은 iowait도 높아야 한다. zero value는 kernel 값이라
 	// 표시를 빠뜨려도 경고가 느슨해지지 않는다.
-	fromProcesses := resourceRate{ProcsBlocked: topBlockedSignalMin, ProcsBlockedValid: true, ProcsBlockedFromProcesses: true}
+	fromProcesses := resourceRate{ProcsBlocked: topBlockedSignalMin, ProcsBlockedSource: topBlockedProcessList}
 	if blocked(fromProcesses) {
 		t.Error("blocked processes from the process list must not warn alone")
 	}
@@ -1778,7 +1778,7 @@ func TestTopSignalsUseMemoryPressureAndBlockedWithoutIOWait(t *testing.T) {
 	if !blocked(pressured) {
 		t.Error("blocked processes under memory pressure must warn")
 	}
-	if blocked(resourceRate{ProcsBlocked: 14, ProcsBlockedValid: true}) {
+	if blocked(resourceRate{ProcsBlocked: 14, ProcsBlockedSource: topBlockedKernelTasks}) {
 		t.Error("kernel blocked tasks without iowait must not warn")
 	}
 }

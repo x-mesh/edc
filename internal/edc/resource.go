@@ -66,14 +66,23 @@ type resourceSnapshot struct {
 	CPUStealValid bool
 	// ProcsBlocked는 지금 I/O를 기다리며 멈춘(D state) 작업 수다. 누적값이 아니라 현재 값이다.
 	// macOS는 이 값을 주지 않아 대시보드가 process 목록의 U 상태 process 수로 채운다.
-	ProcsBlocked      uint64
-	ProcsBlockedValid bool
-	// ProcsBlockedFromProcesses는 ProcsBlocked를 kernel이 아니라 process 목록의 멈춘 process 수로 채웠다는 뜻이다.
-	// 이 값은 thread가 아니라 process를 세고, iowait이 없는 host(macOS)에서만 쓴다.
-	ProcsBlockedFromProcesses bool
+	ProcsBlocked       uint64
+	ProcsBlockedSource topBlockedSource
 	// MemoryPressure는 macOS kernel이 판단한 memory 압박 단계다. 다른 host와 읽지 못한 sample은 zero value다.
 	MemoryPressure topMemoryPressure
 }
+
+// topBlockedSource는 ProcsBlocked를 센 곳이다. kernel의 procs_blocked는 thread를 세고, iowait이 없는 macOS는
+// process 목록의 U 상태 process를 센다. 단위가 달라 경고 규칙도 출처에 따라 다르다. zero value는 값이 없다는 뜻이다.
+type topBlockedSource uint8
+
+const (
+	topBlockedUnknown topBlockedSource = iota
+	topBlockedKernelTasks
+	topBlockedProcessList
+)
+
+func (source topBlockedSource) known() bool { return source != topBlockedUnknown }
 
 // topMemoryPressure는 kern.memorystatus_vm_pressure_level 값이다. dispatch의 DISPATCH_MEMORYPRESSURE_*와 같고 0은 모르는 값이다.
 type topMemoryPressure int32
@@ -781,8 +790,7 @@ type resourceRate struct {
 	NetHealthValid, DiskHealthValid bool
 	DiskBusyValid                   bool
 	CPUStealValid                   bool
-	ProcsBlockedValid               bool
-	ProcsBlockedFromProcesses       bool
+	ProcsBlockedSource              topBlockedSource
 	MemoryPressure                  topMemoryPressure
 	CoreCPU                         []float64
 	PSICPU, PSIMemory, PSIIO        float64
@@ -853,8 +861,7 @@ func calculateRate(previous, current resourceSnapshot) resourceRate {
 	if rate.CPUStealValid {
 		rate.CPUSteal = percent(current.CPUSteal, previous.CPUSteal)
 	}
-	rate.ProcsBlocked, rate.ProcsBlockedValid = float64(current.ProcsBlocked), current.ProcsBlockedValid
-	rate.ProcsBlockedFromProcesses = current.ProcsBlockedFromProcesses
+	rate.ProcsBlocked, rate.ProcsBlockedSource = float64(current.ProcsBlocked), current.ProcsBlockedSource
 	rate.MemoryPressure = current.MemoryPressure
 	// 한쪽 sample이 counter를 읽지 못했으면 이 구간의 rate는 알 수 없다. 0으로 남은 counter와 비교하지 않는다.
 	if previous.NetMissing || current.NetMissing {

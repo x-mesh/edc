@@ -10,11 +10,11 @@ func TestCollectResourceSnapshotReadsKernelBlockedOnLinux(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !snapshot.ProcsBlockedValid || snapshot.ProcsBlockedFromProcesses || snapshot.MemoryPressure.known() {
-		t.Fatalf("procs_blocked %v, from processes %v, memory pressure %v", snapshot.ProcsBlockedValid, snapshot.ProcsBlockedFromProcesses, snapshot.MemoryPressure)
+	if snapshot.ProcsBlockedSource != topBlockedKernelTasks || snapshot.MemoryPressure.known() {
+		t.Fatalf("procs_blocked from %v, memory pressure %v", snapshot.ProcsBlockedSource, snapshot.MemoryPressure)
 	}
 	fillProcsBlocked(&snapshot)
-	if snapshot.ProcsBlockedFromProcesses {
+	if snapshot.ProcsBlockedSource != topBlockedKernelTasks {
 		t.Fatal("the kernel count must stay the kernel count")
 	}
 }

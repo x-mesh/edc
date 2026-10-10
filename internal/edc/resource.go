@@ -66,13 +66,32 @@ type resourceSnapshot struct {
 	CPUStealValid bool
 	// ProcsBlocked는 지금 I/O를 기다리며 멈춘(D state) 작업 수다. 누적값이 아니라 현재 값이다.
 	// macOS는 이 값을 주지 않아 대시보드가 process 목록의 U 상태 process 수로 채운다.
-	ProcsBlocked      uint64
-	ProcsBlockedValid bool
-	// ProcsBlockedFromProcesses는 ProcsBlocked를 kernel이 아니라 process 목록의 멈춘 process 수로 채웠다는 뜻이다.
-	// 이 값은 thread가 아니라 process를 세고, iowait이 없는 host(macOS)에서만 쓴다.
-	ProcsBlockedFromProcesses bool
+	ProcsBlocked       uint64
+	ProcsBlockedSource topBlockedSource
 	// MemoryPressure는 macOS kernel이 판단한 memory 압박 단계다. 다른 host와 읽지 못한 sample은 zero value다.
 	MemoryPressure topMemoryPressure
+}
+
+// topBlockedSource는 ProcsBlocked를 센 곳이다. kernel의 procs_blocked는 thread를 세고, iowait이 없는 macOS는
+// process 목록의 U 상태 process를 센다. 단위가 달라 경고 규칙도 출처에 따라 다르다. zero value는 값이 없다는 뜻이다.
+type topBlockedSource uint8
+
+const (
+	topBlockedUnknown topBlockedSource = iota
+	topBlockedKernelTasks
+	topBlockedProcessList
+)
+
+func (source topBlockedSource) known() bool { return source != topBlockedUnknown }
+
+func (source topBlockedSource) String() string {
+	switch source {
+	case topBlockedKernelTasks:
+		return "kernel tasks"
+	case topBlockedProcessList:
+		return "process list"
+	}
+	return "unknown"
 }
 
 // topMemoryPressure는 kern.memorystatus_vm_pressure_level 값이다. dispatch의 DISPATCH_MEMORYPRESSURE_*와 같고 0은 모르는 값이다.
@@ -98,9 +117,10 @@ func (pressure topMemoryPressure) level() topLevel {
 	return topLevelNormal
 }
 
-// score는 signal 순위에 쓰는 값이다. critical이 1이라 다른 경고의 위험 기준과 맞는다.
+// score는 signal 순위에 쓰는 값이다. critical이 1이라 다른 경고의 위험 기준과 맞는다. 표에 없는 큰 값도 critical로 읽으므로
+// 1을 넘기지 않는다. 넘기면 다른 위험 경고보다 앞에 선다.
 func (pressure topMemoryPressure) score() float64 {
-	return float64(pressure) / float64(topMemoryPressureCritical)
+	return min(1, float64(pressure)/float64(topMemoryPressureCritical))
 }
 
 func (pressure topMemoryPressure) String() string {
@@ -135,8 +155,8 @@ type topProcess struct {
 	DiskValid           bool
 	DiskRead, DiskWrite float64
 	DiskStatus          string
-	// BPF는 eBPF가 직전 window 동안 센 값이다. --ebpf가 아니거나 아직 기준이 없으면 nil이다.
-	BPF *topBPFStats
+	// Probe는 -d observer가 직전 window 동안 센 값이다. Linux는 eBPF, macOS는 libproc이다. -d가 아니거나 아직 기준이 없으면 nil이다.
+	Probe *topProbeStats
 }
 
 type topLimitStatus struct {
@@ -206,8 +226,8 @@ type topProcessTotal struct {
 	CPU     float64
 	RSS     uint64
 	Threads int
-	// BPF는 감시하는 모든 process의 eBPF 값을 더한 것이다.
-	BPF *topBPFStats
+	// Probe는 감시하는 모든 process의 -d 값을 더한 것이다.
+	Probe *topProbeStats
 	// Blocked는 필터를 걸기 전 모든 process 중 I/O를 기다리며 멈춘 process 수다. state를 읽은 목록에서만 유효하다.
 	Blocked      int
 	BlockedValid bool
@@ -365,7 +385,7 @@ type topProcessSampler struct {
 	// scanIO는 후보를 고르기 전에 모든 process의 I/O를 읽을지다. 디스크 보기에서만 켠다.
 	scanIO bool
 	// observe는 eBPF로 필터에 맞은 process를 감시한다. 없으면 감시하지 않는다.
-	observe   topBPFObserver
+	observe   topProbeObserver
 	filter    topProcessFilter
 	filterSeq int
 	total     topProcessTotal
@@ -485,8 +505,8 @@ func (sampler *topProcessSampler) setFilter(filter topProcessFilter) {
 	sampler.processes, sampler.total, sampler.valid, sampler.updated = nil, topProcessTotal{}, false, time.Time{}
 }
 
-// setObserver는 이후 refresh부터 필터에 맞은 process를 eBPF로 감시하게 한다.
-func (sampler *topProcessSampler) setObserver(observe topBPFObserver) {
+// setObserver는 이후 refresh부터 필터에 맞은 process를 -d observer로 감시하게 한다.
+func (sampler *topProcessSampler) setObserver(observe topProbeObserver) {
 	sampler.mutex.Lock()
 	defer sampler.mutex.Unlock()
 	sampler.observe = observe
@@ -508,7 +528,7 @@ func (sampler *topProcessSampler) refresh() {
 	}
 	total.Blocked, total.BlockedValid = blocked, valid && blockedValid
 	// 목록은 CPU가 높은 순이라 감시 개수를 넘으면 가장 바쁜 process부터 감시한다.
-	var observed map[int]topBPFStats
+	var observed map[int]topProbeStats
 	if filter.active() && observe != nil {
 		pids := make([]int, 0, len(processes))
 		for _, process := range processes {
@@ -516,11 +536,11 @@ func (sampler *topProcessSampler) refresh() {
 		}
 		observed = observe(pids)
 		if len(observed) > 0 {
-			merged := topBPFStats{}
+			merged := topProbeStats{}
 			for _, stats := range observed {
 				merged.add(stats)
 			}
-			total.BPF = &merged
+			total.Probe = &merged
 		}
 	}
 	if filter.active() {
@@ -541,7 +561,7 @@ func (sampler *topProcessSampler) refresh() {
 	}
 	for index := range processes {
 		if stats, ok := observed[processes[index].PID]; ok {
-			processes[index].BPF = &stats
+			processes[index].Probe = &stats
 		}
 	}
 	// /proc를 읽는 일이라 lock 밖에서 한다. running이 refresh 하나만 돌게 하므로 enrich는 겹치지 않는다.
@@ -781,8 +801,7 @@ type resourceRate struct {
 	NetHealthValid, DiskHealthValid bool
 	DiskBusyValid                   bool
 	CPUStealValid                   bool
-	ProcsBlockedValid               bool
-	ProcsBlockedFromProcesses       bool
+	ProcsBlockedSource              topBlockedSource
 	MemoryPressure                  topMemoryPressure
 	CoreCPU                         []float64
 	PSICPU, PSIMemory, PSIIO        float64
@@ -853,8 +872,7 @@ func calculateRate(previous, current resourceSnapshot) resourceRate {
 	if rate.CPUStealValid {
 		rate.CPUSteal = percent(current.CPUSteal, previous.CPUSteal)
 	}
-	rate.ProcsBlocked, rate.ProcsBlockedValid = float64(current.ProcsBlocked), current.ProcsBlockedValid
-	rate.ProcsBlockedFromProcesses = current.ProcsBlockedFromProcesses
+	rate.ProcsBlocked, rate.ProcsBlockedSource = float64(current.ProcsBlocked), current.ProcsBlockedSource
 	rate.MemoryPressure = current.MemoryPressure
 	// 한쪽 sample이 counter를 읽지 못했으면 이 구간의 rate는 알 수 없다. 0으로 남은 counter와 비교하지 않는다.
 	if previous.NetMissing || current.NetMissing {

@@ -111,7 +111,7 @@ func collectResourceSnapshot() (resourceSnapshot, error) {
 	for _, line := range lines[1:] {
 		parts := strings.Fields(line)
 		if len(parts) == 2 && parts[0] == "procs_blocked" {
-			snapshot.ProcsBlocked, snapshot.ProcsBlockedValid = parseUint(parts[1]), true
+			snapshot.ProcsBlocked, snapshot.ProcsBlockedSource = parseUint(parts[1]), topBlockedKernelTasks
 			continue
 		}
 		if len(parts) < 5 || !strings.HasPrefix(parts[0], "cpu") || len(parts[0]) == 3 {

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 	"unsafe"
 )
 
@@ -201,7 +202,8 @@ type darwinProcessTaskInfo struct {
 
 type darwinProcessRusage struct {
 	UUID                                                                                  [16]byte
-	UserTime, SystemTime, IdleWakeups, InterruptWakeups, Pageins                          uint64
+	UserTime, SystemTime                                                                  darwinMachTicks
+	IdleWakeups, InterruptWakeups, Pageins                                                uint64
 	WiredSize, ResidentSize, Footprint, Started, Exited                                   uint64
 	ChildUserTime, ChildSystemTime, ChildIdleWakeups, ChildInterruptWakeups, ChildPageins uint64
 	ChildElapsedTime, DiskRead, DiskWrite                                                 uint64
@@ -210,8 +212,11 @@ type darwinProcessRusage struct {
 	LogicalWrites, LifetimeMaxFootprint, Instructions, Cycles                             uint64
 	BilledEnergy, ServicedEnergy, IntervalMaxFootprint                                    uint64
 	// RunnableTime은 실행 중이거나 CPU를 기다린 시간의 합이다. 실행 시간을 포함한다.
-	RunnableTime uint64
+	RunnableTime darwinMachTicks
 }
+
+// darwinMachTicks는 Mach absolute time 단위다. Apple Silicon에서는 ns가 아니므로 darwinTimebase로만 ns로 바꾼다.
+type darwinMachTicks uint64
 
 func readDarwinProcessThreads(pid int) (int, error) {
 	info, err := readDarwinProcessTaskInfo(pid)
@@ -260,9 +265,9 @@ var darwinMachTimebase = sync.OnceValues(func() (darwinTimebase, error) {
 	return timebase, nil
 })
 
-// nanoseconds는 window 동안의 차이에 쓴다. 누적값에 곱하면 오래 돈 process에서 넘칠 수 있다.
-func (timebase darwinTimebase) nanoseconds(ticks uint64) uint64 {
-	return ticks * uint64(timebase.Numer) / uint64(timebase.Denom)
+// duration은 window 동안의 차이에 쓴다. 누적값에 곱하면 오래 돈 process에서 넘칠 수 있다.
+func (timebase darwinTimebase) duration(ticks darwinMachTicks) time.Duration {
+	return time.Duration(uint64(ticks) * uint64(timebase.Numer) / uint64(timebase.Denom))
 }
 
 var sysctlAddr uintptr

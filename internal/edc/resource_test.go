@@ -314,13 +314,13 @@ func TestCalculateRateSwapOut(t *testing.T) {
 func TestCalculateRateStealBlockedAndQueue(t *testing.T) {
 	start := time.Unix(0, 0)
 	previous := resourceSnapshot{TakenAt: start, CPUTotal: 1000, CPUSteal: 100, CPUStealValid: true, DiskQueueMS: 1000, DiskHealthValid: true, DiskBusyValid: true}
-	current := resourceSnapshot{TakenAt: start.Add(2 * time.Second), CPUTotal: 1200, CPUSteal: 130, CPUStealValid: true, ProcsBlocked: 4, ProcsBlockedValid: true, DiskQueueMS: 4000, DiskHealthValid: true, DiskBusyValid: true}
+	current := resourceSnapshot{TakenAt: start.Add(2 * time.Second), CPUTotal: 1200, CPUSteal: 130, CPUStealValid: true, ProcsBlocked: 4, ProcsBlockedSource: topBlockedKernelTasks, DiskQueueMS: 4000, DiskHealthValid: true, DiskBusyValid: true}
 	rate := calculateRate(previous, current)
 	if !rate.CPUStealValid || rate.CPUSteal != 15 {
 		t.Fatalf("steal = %v %v", rate.CPUSteal, rate.CPUStealValid)
 	}
-	if !rate.ProcsBlockedValid || rate.ProcsBlocked != 4 {
-		t.Fatalf("blocked = %v %v", rate.ProcsBlocked, rate.ProcsBlockedValid)
+	if rate.ProcsBlockedSource != topBlockedKernelTasks || rate.ProcsBlocked != 4 {
+		t.Fatalf("blocked = %v from %v", rate.ProcsBlocked, rate.ProcsBlockedSource)
 	}
 	// 2초 동안 가중 I/O 시간이 3000ms 늘었으면 평균 1.5개가 진행 중이었다.
 	if rate.DiskQueue != 1.5 {
@@ -814,14 +814,14 @@ func TestTopProcessSamplerCountsBlockedBeforeTheFilter(t *testing.T) {
 	}
 	snapshot := resourceSnapshot{ProcessTotal: total}
 	fillProcsBlocked(&snapshot)
-	if snapshot.ProcsBlocked != 2 || !snapshot.ProcsBlockedValid || !snapshot.ProcsBlockedFromProcesses {
-		t.Fatalf("snapshot = %d, %v, %v", snapshot.ProcsBlocked, snapshot.ProcsBlockedValid, snapshot.ProcsBlockedFromProcesses)
+	if snapshot.ProcsBlocked != 2 || snapshot.ProcsBlockedSource != topBlockedProcessList {
+		t.Fatalf("snapshot = %d from %v", snapshot.ProcsBlocked, snapshot.ProcsBlockedSource)
 	}
 	// kernel이 준 값(Linux procs_blocked)은 덮지 않는다.
-	kernel := resourceSnapshot{ProcsBlocked: 9, ProcsBlockedValid: true, ProcessTotal: total}
+	kernel := resourceSnapshot{ProcsBlocked: 9, ProcsBlockedSource: topBlockedKernelTasks, ProcessTotal: total}
 	fillProcsBlocked(&kernel)
-	if kernel.ProcsBlocked != 9 || kernel.ProcsBlockedFromProcesses {
-		t.Fatalf("kernel value overwritten: %d, %v", kernel.ProcsBlocked, kernel.ProcsBlockedFromProcesses)
+	if kernel.ProcsBlocked != 9 || kernel.ProcsBlockedSource != topBlockedKernelTasks {
+		t.Fatalf("kernel value overwritten: %d from %v", kernel.ProcsBlocked, kernel.ProcsBlockedSource)
 	}
 	// state를 읽지 못한 목록은 0이 아니라 모르는 값이다.
 	if _, known := countBlockedTopProcesses([]topProcess{{PID: 1}}); known {
@@ -831,11 +831,12 @@ func TestTopProcessSamplerCountsBlockedBeforeTheFilter(t *testing.T) {
 
 func TestTopSampleWritesMemoryPressureOnlyWhenRead(t *testing.T) {
 	data, err := json.Marshal(newTopSample(hostDetails{}, time.Unix(1, 0), resourceRate{MemoryPressure: topMemoryPressureWarn}))
-	if err != nil || !strings.Contains(string(data), `"memory_pressure":"warn"`) {
+	if err != nil || !strings.Contains(string(data), `"memory_pressure":"warn"`) || !strings.Contains(string(data), `"memory_pressure_supported":true`) {
 		t.Fatalf("sample = %s, %v", data, err)
 	}
+	// psi_supported처럼 지원 여부는 늘 나오고, 값은 읽었을 때만 나온다.
 	data, _ = json.Marshal(newTopSample(hostDetails{}, time.Unix(1, 0), resourceRate{}))
-	if strings.Contains(string(data), "memory_pressure") {
+	if strings.Contains(string(data), `"memory_pressure":`) || !strings.Contains(string(data), `"memory_pressure_supported":false`) {
 		t.Fatalf("an unread level must be left out: %s", data)
 	}
 }
@@ -844,13 +845,13 @@ func TestTopSampleWritesMemoryPressureOnlyWhenRead(t *testing.T) {
 func TestCalculateRateCarriesBlockedOriginAndMemoryPressure(t *testing.T) {
 	start := time.Unix(0, 0)
 	previous := resourceSnapshot{TakenAt: start, CPUTotal: 100, MemoryPressure: topMemoryPressureNormal}
-	current := resourceSnapshot{TakenAt: start.Add(time.Second), CPUTotal: 200, MemoryPressure: topMemoryPressureCritical, ProcsBlocked: 5, ProcsBlockedValid: true, ProcsBlockedFromProcesses: true}
+	current := resourceSnapshot{TakenAt: start.Add(time.Second), CPUTotal: 200, MemoryPressure: topMemoryPressureCritical, ProcsBlocked: 5, ProcsBlockedSource: topBlockedProcessList}
 	rate := calculateRate(previous, current)
-	if rate.MemoryPressure != topMemoryPressureCritical || !rate.ProcsBlockedFromProcesses {
+	if rate.MemoryPressure != topMemoryPressureCritical || rate.ProcsBlockedSource != topBlockedProcessList {
 		t.Fatalf("rate = %+v", rate)
 	}
-	current.MemoryPressure, current.ProcsBlockedFromProcesses = topMemoryPressureUnknown, false
-	if rate := calculateRate(previous, current); rate.MemoryPressure.known() || rate.ProcsBlockedFromProcesses {
+	current.MemoryPressure, current.ProcsBlockedSource = topMemoryPressureUnknown, topBlockedKernelTasks
+	if rate := calculateRate(previous, current); rate.MemoryPressure.known() || rate.ProcsBlockedSource != topBlockedKernelTasks {
 		t.Fatalf("an unread level or a kernel count must not carry over: %+v", rate)
 	}
 }
@@ -861,8 +862,8 @@ func TestTopMemoryPressureLevelsAndNames(t *testing.T) {
 			t.Errorf("%d = %q, want %q", pressure, got, want)
 		}
 	}
-	if topMemoryPressureUnknown.level() != topLevelNormal || topMemoryPressureCritical.score() != 1 {
-		t.Fatal("an unknown level must not warn and critical must score 1")
+	if topMemoryPressureUnknown.level() != topLevelNormal || topMemoryPressureCritical.score() != 1 || topMemoryPressure(8).score() != 1 {
+		t.Fatal("an unknown level must not warn, and critical and above must score 1")
 	}
 }
 
@@ -877,7 +878,7 @@ func TestTopProcessSamplerLeavesBlockedUnknownWhenTheReadFails(t *testing.T) {
 	}
 	snapshot := resourceSnapshot{ProcessTotal: total}
 	fillProcsBlocked(&snapshot)
-	if snapshot.ProcsBlockedValid {
+	if snapshot.ProcsBlockedSource.known() {
 		t.Fatal("an unknown count must not fill blocked")
 	}
 }

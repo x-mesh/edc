@@ -34,7 +34,7 @@ func runTopDashboard(interval time.Duration, version string, filter topProcessFi
 	model.version = version
 	model.limits.color = os.Getenv("NO_COLOR") == ""
 	processSampler.mutex.Lock()
-	model.bpfEnabled = processSampler.observe != nil
+	model.probeEnabled = processSampler.observe != nil
 	processSampler.mutex.Unlock()
 	model = model.withProcessFilter(filter).withSplit(split)
 	if recorder != nil {
@@ -71,8 +71,8 @@ func sampleTopDashboard() (resourceSnapshot, error) {
 // fillProcsBlocked는 kernel이 멈춘 작업 수를 주지 않는 host에서 process 목록의 멈춘 process 수를 쓴다.
 // Linux의 procs_blocked는 thread를 세지만 이 값은 process를 센다.
 func fillProcsBlocked(snapshot *resourceSnapshot) {
-	if !snapshot.ProcsBlockedValid && snapshot.ProcessTotal.BlockedValid {
-		snapshot.ProcsBlocked, snapshot.ProcsBlockedValid, snapshot.ProcsBlockedFromProcesses = uint64(snapshot.ProcessTotal.Blocked), true, true
+	if !snapshot.ProcsBlockedSource.known() && snapshot.ProcessTotal.BlockedValid {
+		snapshot.ProcsBlocked, snapshot.ProcsBlockedSource = uint64(snapshot.ProcessTotal.Blocked), topBlockedProcessList
 	}
 }
 
@@ -195,7 +195,7 @@ type topModel struct {
 	helpOffset      int
 	processFocus    bool
 	processSelected int
-	bpfEnabled      bool
+	probeEnabled    bool
 	record          func(historyTopSample) error
 	recordFailure   tea.Cmd
 	recordingErr    error
@@ -1237,20 +1237,6 @@ func (model topModel) helpLines() []string {
 	return wrapped
 }
 
-// topDarwinUnsupportedColumns는 macOS kernel이 주지 않는 값의 열이다.
-var topDarwinUnsupportedColumns = map[string]bool{
-	"fds": true, "psi mem": true, "busy%": true, "io%": true, "ct%": true, "listen/s": true, "soft/s": true, "steal%": true, "queue": true,
-	"retr/s": true, "rst/s": true, "fail/s": true, "cpu psi": true, "mem psi": true, "io psi": true, "mem full": true, "io full": true,
-}
-
-// topColumnUnsupported는 이 host가 값을 주지 않는 열이다. mem lvl은 macOS의 memory 압박 단계라 Linux에서는 PSI 열이 대신한다.
-func topColumnUnsupported(system, title string) bool {
-	if system == "darwin" {
-		return topDarwinUnsupportedColumns[title]
-	}
-	return title == "mem lvl"
-}
-
 func (model topModel) tableColumns() ([]topColumn, []int) {
 	columns := topViewColumns(model.view)
 	var kept []topColumn
@@ -1261,7 +1247,7 @@ func (model topModel) tableColumns() ([]topColumn, []int) {
 		if model.view == topViewProcess && model.displayWidth() < 56 && column.title == "thr" {
 			continue
 		}
-		if topColumnUnsupported(model.details.System, column.title) {
+		if !column.host.shown(model.details.System) {
 			continue
 		}
 		if model.boxed && model.splitHidden(column.title) {
@@ -1271,7 +1257,7 @@ func (model topModel) tableColumns() ([]topColumn, []int) {
 			// 막대는 core마다 한 칸이다. details.Cores는 CPU affinity를 따라 /proc/stat의 core 수보다 작을 수 있어 막대가 그리는 수를 쓴다.
 			column.width = min(topCoreBarLimit, max(len(column.title), cores))
 		}
-		if model.view == topViewProcess && !model.bpfEnabled && (column.title == "runq ms" || column.title == "io ms") {
+		if model.view == topViewProcess && !model.probeEnabled && (column.title == "runq ms" || column.title == "io ms") {
 			continue
 		}
 		if column.optional && (dropped || model.compact) {
@@ -1347,8 +1333,7 @@ func (model topModel) hostLayout() ([]topAllColumn, int) {
 	}
 	kept := make([]topAllColumn, 0, len(columns))
 	for _, column := range columns {
-		linuxOnly := column.group == "psi" || column.title == "listen" || column.title == "soft" || column.title == "ct%"
-		if column.title != "i/o" && column.title != "busy" && !linuxOnly {
+		if column.host.shown(model.details.System) {
 			kept = append(kept, column)
 		}
 	}
@@ -1378,12 +1363,32 @@ func (model topModel) compactRow(row topDashboardRow, header bool) string {
 	return formatTopColumnsWidth(at, columns, cells, model.limits.color && !header, model.displayWidth())
 }
 
+// topColumnHost는 열의 값을 주는 host다. 값을 주지 않는 host에서는 열을 숨긴다.
+type topColumnHost uint8
+
+const (
+	topColumnAnyHost topColumnHost = iota
+	topColumnLinuxOnly
+	topColumnDarwinOnly
+)
+
+func (host topColumnHost) shown(system string) bool {
+	switch host {
+	case topColumnLinuxOnly:
+		return system != "darwin"
+	case topColumnDarwinOnly:
+		return system == "darwin"
+	}
+	return true
+}
+
 // topColumn은 보기별 표의 한 칸이다. 헤더와 행이 같은 정의로 그려져 구분선이 어긋나지 않는다.
 // width가 0인 마지막 칸은 남은 폭을 모두 쓴다.
 type topColumn struct {
 	title string
 	width int
 	left  bool
+	host  topColumnHost
 	// optional인 칸은 기존 칸이 모두 들어가고 signal 칸이 topSignalMinWidth를 지킬 때만 넣는다.
 	// 좁은 화면에서 기존 칸과 signal을 그대로 두려고 뒤에 붙인 칸이다.
 	optional bool
@@ -1393,18 +1398,18 @@ func topViewColumns(view topView) []topColumn {
 	signal := topColumn{title: "signal", left: true}
 	switch view {
 	case topViewCPU:
-		return []topColumn{{title: "load", width: 5}, {title: "usr%", width: 5}, {title: "sys%", width: 5}, {title: "io%", width: 5}, {title: "hot core", width: 8, left: true}, {title: "cores", width: topCoreBarLimit, left: true}, {title: "steal%", width: 6, optional: true}, {title: "blocked", width: 7, optional: true}, signal}
+		return []topColumn{{title: "load", width: 5}, {title: "usr%", width: 5}, {title: "sys%", width: 5}, {title: "io%", width: 5, host: topColumnLinuxOnly}, {title: "hot core", width: 8, left: true}, {title: "cores", width: topCoreBarLimit, left: true}, {title: "steal%", width: 6, optional: true, host: topColumnLinuxOnly}, {title: "blocked", width: 7, optional: true}, signal}
 	case topViewMemory:
-		return []topColumn{{title: "mem%", width: 6}, {title: "swap/s", width: 7}, {title: "psi mem", width: 7}, {title: "mem lvl", width: 8}, {title: "load", width: 6}, signal}
+		return []topColumn{{title: "mem%", width: 6}, {title: "swap/s", width: 7}, {title: "psi mem", width: 7, host: topColumnLinuxOnly}, {title: "mem lvl", width: 8, host: topColumnDarwinOnly}, {title: "load", width: 6}, signal}
 	case topViewDisk:
-		return []topColumn{{title: "read/s", width: 7}, {title: "write/s", width: 7}, {title: "iops", width: 6}, {title: "await", width: 6}, {title: "busy%", width: 6}, {title: "queue", width: 6, optional: true}, signal}
+		return []topColumn{{title: "read/s", width: 7}, {title: "write/s", width: 7}, {title: "iops", width: 6}, {title: "await", width: 6}, {title: "busy%", width: 6, host: topColumnLinuxOnly}, {title: "queue", width: 6, optional: true, host: topColumnLinuxOnly}, signal}
 	case topViewNetwork:
-		return []topColumn{{title: "in/s", width: 7}, {title: "out/s", width: 7}, {title: "ct%", width: 6}, {title: "listen/s", width: 8}, {title: "err/s", width: 6}, {title: "drop/s", width: 6}, {title: "soft/s", width: 6}, {title: "pk_in", width: 6}, {title: "pk_out", width: 6}, {title: "retr/s", width: 7, optional: true}, {title: "rst/s", width: 6, optional: true}, {title: "fail/s", width: 6, optional: true}, signal}
+		return []topColumn{{title: "in/s", width: 7}, {title: "out/s", width: 7}, {title: "ct%", width: 6, host: topColumnLinuxOnly}, {title: "listen/s", width: 8, host: topColumnLinuxOnly}, {title: "err/s", width: 6}, {title: "drop/s", width: 6}, {title: "soft/s", width: 6, host: topColumnLinuxOnly}, {title: "pk_in", width: 6}, {title: "pk_out", width: 6}, {title: "retr/s", width: 7, optional: true, host: topColumnLinuxOnly}, {title: "rst/s", width: 6, optional: true, host: topColumnLinuxOnly}, {title: "fail/s", width: 6, optional: true, host: topColumnLinuxOnly}, signal}
 	case topViewPressure:
-		return []topColumn{{title: "cpu psi", width: 7}, {title: "mem psi", width: 7}, {title: "io psi", width: 7}, {title: "mem full", width: 8}, {title: "io full", width: 7}, {title: "mem lvl", width: 8}, {title: "blocked", width: 7}, {title: "load", width: 6}, {title: "mem%", width: 6}, signal}
+		return []topColumn{{title: "cpu psi", width: 7, host: topColumnLinuxOnly}, {title: "mem psi", width: 7, host: topColumnLinuxOnly}, {title: "io psi", width: 7, host: topColumnLinuxOnly}, {title: "mem full", width: 8, host: topColumnLinuxOnly}, {title: "io full", width: 7, host: topColumnLinuxOnly}, {title: "mem lvl", width: 8, host: topColumnDarwinOnly}, {title: "blocked", width: 7}, {title: "load", width: 6}, {title: "mem%", width: 6}, signal}
 	case topViewProcess:
 		// cpu%는 core 하나를 100으로 센다. runq와 io는 --ebpf가 있을 때의 평균 대기와 지연이다. 가장 바쁜 process는 상세 패널에 있다.
-		return []topColumn{{title: "match", width: 5}, {title: "cpu%", width: 6}, {title: "rss", width: 6}, {title: "thr", width: 5}, {title: "fds", width: 5}, {title: "read/s", width: 7}, {title: "write/s", width: 7}, {title: "runq ms", width: 7}, {title: "io ms"}}
+		return []topColumn{{title: "match", width: 5}, {title: "cpu%", width: 6}, {title: "rss", width: 6}, {title: "thr", width: 5}, {title: "fds", width: 5, host: topColumnLinuxOnly}, {title: "read/s", width: 7}, {title: "write/s", width: 7}, {title: "runq ms", width: 7}, {title: "io ms"}}
 	}
 	return nil
 }
@@ -1442,7 +1447,7 @@ func topValidLevel(valid bool, threshold topThreshold, value float64) topLevel {
 func topViewCells(rate resourceRate, view topView, signal string, limits topLimits) []topCell {
 	switch view {
 	case topViewCPU:
-		return []topCell{topValueCell("%.1f", rate.Load1, limits.load), topValueCell("%.1f", rate.CPUUser, limits.cpu), topValueCell("%.1f", rate.CPUSystem, limits.cpu), topValueCell("%.1f", rate.CPUIOWait, limits.io), {text: topHotCore(rate.CoreCPU), level: topHotCoreLevel(rate.CoreCPU)}, topPlainCell(topCoreBar(rate.CoreCPU)), topPlainCell(topOptionalValue(rate.CPUStealValid, "%.1f", rate.CPUSteal)), topPlainCell(topOptionalValue(rate.ProcsBlockedValid, "%.0f", rate.ProcsBlocked)), topPlainCell(signal)}
+		return []topCell{topValueCell("%.1f", rate.Load1, limits.load), topValueCell("%.1f", rate.CPUUser, limits.cpu), topValueCell("%.1f", rate.CPUSystem, limits.cpu), topValueCell("%.1f", rate.CPUIOWait, limits.io), {text: topHotCore(rate.CoreCPU), level: topHotCoreLevel(rate.CoreCPU)}, topPlainCell(topCoreBar(rate.CoreCPU)), topPlainCell(topOptionalValue(rate.CPUStealValid, "%.1f", rate.CPUSteal)), topPlainCell(topOptionalValue(rate.ProcsBlockedSource.known(), "%.0f", rate.ProcsBlocked)), topPlainCell(signal)}
 	case topViewMemory:
 		return []topCell{topValueCell("%.1f", rate.MemoryPercent, limits.memory), topPlainCell(formatRate(rate.SwapOut)), topOptionalCell(rate.PSIValid, "%.1f", rate.PSIMemory, limits.psi), topMemoryPressureCell(rate), topValueCell("%.1f", rate.Load1, limits.load), topPlainCell(signal)}
 	case topViewDisk:
@@ -1450,7 +1455,7 @@ func topViewCells(rate resourceRate, view topView, signal string, limits topLimi
 	case topViewNetwork:
 		return []topCell{topPlainCell(formatRate(rate.NetIn)), topPlainCell(formatRate(rate.NetOut)), networkConntrackCell(rate.NetworkHealth), topPlainCell(networkRateText(rate.NetworkHealth, "listen_overflows")), topOptionalCell(rate.NetHealthValid, "%.0f", rate.NetErrors, limits.network), topOptionalCell(rate.NetHealthValid, "%.0f", rate.NetDrops, limits.network), topPlainCell(networkRateText(rate.NetworkHealth, "softnet_dropped")), topPlainCell(fmt.Sprintf("%.0f", rate.PacketsIn)), topPlainCell(fmt.Sprintf("%.0f", rate.PacketsOut)), topPlainCell(topNetworkRateCell(rate.NetworkHealth, "tcp_retrans_segs", 7)), topPlainCell(topNetworkRateCell(rate.NetworkHealth, "tcp_out_rsts", 6)), topPlainCell(topNetworkRateCell(rate.NetworkHealth, "tcp_attempt_fails", 6)), topPlainCell(signal)}
 	case topViewPressure:
-		return []topCell{topOptionalCell(rate.PSIValid, "%.1f", rate.PSICPU, limits.psi), topOptionalCell(rate.PSIValid, "%.1f", rate.PSIMemory, limits.psi), topOptionalCell(rate.PSIValid, "%.1f", rate.PSIIO, limits.psi), topOptionalCell(rate.PSIValid, "%.1f", rate.PSIMemoryFull, limits.psi), topOptionalCell(rate.PSIValid, "%.1f", rate.PSIIOFull, limits.psi), topMemoryPressureCell(rate), topPlainCell(topOptionalValue(rate.ProcsBlockedValid, "%.0f", rate.ProcsBlocked)), topValueCell("%.1f", rate.Load1, limits.load), topValueCell("%.1f", rate.MemoryPercent, limits.memory), topPlainCell(signal)}
+		return []topCell{topOptionalCell(rate.PSIValid, "%.1f", rate.PSICPU, limits.psi), topOptionalCell(rate.PSIValid, "%.1f", rate.PSIMemory, limits.psi), topOptionalCell(rate.PSIValid, "%.1f", rate.PSIIO, limits.psi), topOptionalCell(rate.PSIValid, "%.1f", rate.PSIMemoryFull, limits.psi), topOptionalCell(rate.PSIValid, "%.1f", rate.PSIIOFull, limits.psi), topMemoryPressureCell(rate), topPlainCell(topOptionalValue(rate.ProcsBlockedSource.known(), "%.0f", rate.ProcsBlocked)), topValueCell("%.1f", rate.Load1, limits.load), topValueCell("%.1f", rate.MemoryPercent, limits.memory), topPlainCell(signal)}
 	}
 	return nil
 }
@@ -1511,6 +1516,7 @@ func topFitCell(text string, width int, left bool) string {
 type topAllColumn struct {
 	group string
 	title string
+	host  topColumnHost
 	width int
 	tier  int
 	left  bool
@@ -1534,9 +1540,9 @@ var topAllColumns = []topAllColumn{
 		level: func(limits topLimits, rate resourceRate) topLevel {
 			return topValidLevel(rate.NetHealthValid, limits.network, rate.NetDrops)
 		}},
-	{group: "network", title: "listen", width: 6, tier: 8, cell: func(rate resourceRate) string { return topNetworkRateCell(rate.NetworkHealth, "listen_overflows", 6) }},
-	{group: "network", title: "soft", width: 4, tier: 8, cell: func(rate resourceRate) string { return topNetworkRateCell(rate.NetworkHealth, "softnet_dropped", 4) }},
-	{group: "network", title: "ct%", width: 5, tier: 9, cell: func(rate resourceRate) string { return networkConntrackCell(rate.NetworkHealth).text },
+	{group: "network", title: "listen", host: topColumnLinuxOnly, width: 6, tier: 8, cell: func(rate resourceRate) string { return topNetworkRateCell(rate.NetworkHealth, "listen_overflows", 6) }},
+	{group: "network", title: "soft", host: topColumnLinuxOnly, width: 4, tier: 8, cell: func(rate resourceRate) string { return topNetworkRateCell(rate.NetworkHealth, "softnet_dropped", 4) }},
+	{group: "network", title: "ct%", host: topColumnLinuxOnly, width: 5, tier: 9, cell: func(rate resourceRate) string { return networkConntrackCell(rate.NetworkHealth).text },
 		level: func(limits topLimits, rate resourceRate) topLevel {
 			return networkConntrackCell(rate.NetworkHealth).level
 		}},
@@ -1546,7 +1552,7 @@ var topAllColumns = []topAllColumn{
 		level: func(limits topLimits, rate resourceRate) topLevel { return limits.cpu.level(rate.CPUUser) }},
 	{group: "cpu", title: "sys%", width: 5, cell: func(rate resourceRate) string { return fmt.Sprintf("%.1f", rate.CPUSystem) },
 		level: func(limits topLimits, rate resourceRate) topLevel { return limits.cpu.level(rate.CPUSystem) }},
-	{group: "cpu", title: "i/o", width: 4, cell: func(rate resourceRate) string { return fmt.Sprintf("%.1f", rate.CPUIOWait) },
+	{group: "cpu", title: "i/o", host: topColumnLinuxOnly, width: 4, cell: func(rate resourceRate) string { return fmt.Sprintf("%.1f", rate.CPUIOWait) },
 		level: func(limits topLimits, rate resourceRate) topLevel { return limits.io.level(rate.CPUIOWait) }},
 	{group: "cpu", title: "hot core", width: 8, tier: 1, left: true, cell: func(rate resourceRate) string { return topHotCore(rate.CoreCPU) },
 		level: func(limits topLimits, rate resourceRate) topLevel { return topHotCoreLevel(rate.CoreCPU) }},
@@ -1560,16 +1566,16 @@ var topAllColumns = []topAllColumn{
 		level: func(limits topLimits, rate resourceRate) topLevel {
 			return topValidLevel(rate.DiskHealthValid, limits.await, rate.DiskAwait)
 		}},
-	{group: "disk", title: "busy", width: 4, tier: 5, cell: func(rate resourceRate) string { return topOptionalValue(rate.DiskBusyValid, "%.0f", rate.DiskBusy) }},
-	{group: "psi", title: "cpu", width: 5, tier: 6, cell: func(rate resourceRate) string { return topOptionalValue(rate.PSIValid, "%.1f", rate.PSICPU) },
+	{group: "disk", title: "busy", host: topColumnLinuxOnly, width: 4, tier: 5, cell: func(rate resourceRate) string { return topOptionalValue(rate.DiskBusyValid, "%.0f", rate.DiskBusy) }},
+	{group: "psi", title: "cpu", host: topColumnLinuxOnly, width: 5, tier: 6, cell: func(rate resourceRate) string { return topOptionalValue(rate.PSIValid, "%.1f", rate.PSICPU) },
 		level: func(limits topLimits, rate resourceRate) topLevel {
 			return topValidLevel(rate.PSIValid, limits.psi, rate.PSICPU)
 		}},
-	{group: "psi", title: "mem", width: 5, tier: 6, cell: func(rate resourceRate) string { return topOptionalValue(rate.PSIValid, "%.1f", rate.PSIMemory) },
+	{group: "psi", title: "mem", host: topColumnLinuxOnly, width: 5, tier: 6, cell: func(rate resourceRate) string { return topOptionalValue(rate.PSIValid, "%.1f", rate.PSIMemory) },
 		level: func(limits topLimits, rate resourceRate) topLevel {
 			return topValidLevel(rate.PSIValid, limits.psi, rate.PSIMemory)
 		}},
-	{group: "psi", title: "io", width: 5, tier: 6, cell: func(rate resourceRate) string { return topOptionalValue(rate.PSIValid, "%.1f", rate.PSIIO) },
+	{group: "psi", title: "io", host: topColumnLinuxOnly, width: 5, tier: 6, cell: func(rate resourceRate) string { return topOptionalValue(rate.PSIValid, "%.1f", rate.PSIIO) },
 		level: func(limits topLimits, rate resourceRate) topLevel {
 			return topValidLevel(rate.PSIValid, limits.psi, rate.PSIIO)
 		}},
@@ -1973,7 +1979,7 @@ func topSignals(rate resourceRate, limits topLimits) []topSignalItem {
 	if rate.CPUIOWait >= limits.io.warn {
 		all = append(all, topSignalItem{fmt.Sprintf("io %.1f%%", rate.CPUIOWait), rate.CPUIOWait / limits.io.danger, topViewDisk, "io"})
 	}
-	if topBlockedEvidence(rate, limits) && rate.ProcsBlockedValid && rate.ProcsBlocked >= topBlockedSignalMin {
+	if topBlockedEvidence(rate, limits) && rate.ProcsBlocked >= topBlockedSignalMin {
 		all = append(all, topSignalItem{fmt.Sprintf("blocked %.0f", rate.ProcsBlocked), rate.ProcsBlocked / topBlockedSignalDanger, topViewDisk, "blocked"})
 	}
 	if rate.CPUUser+rate.CPUSystem >= limits.cpu.warn {
@@ -2001,10 +2007,13 @@ func topSignals(rate resourceRate, limits topLimits) []topSignalItem {
 // topBlockedEvidence는 멈춘 작업 수 외의 두 번째 근거다. Linux는 iowait이다. iowait이 없는 macOS의 U 상태는 디스크
 // 대기 말고 page-in 같은 VM 대기에서도 생기므로, 디스크 await 경고나 memory 압박이 함께 있을 때만 경고한다.
 func topBlockedEvidence(rate resourceRate, limits topLimits) bool {
-	if rate.ProcsBlockedFromProcesses {
+	switch rate.ProcsBlockedSource {
+	case topBlockedKernelTasks:
+		return rate.CPUIOWait >= limits.io.warn
+	case topBlockedProcessList:
 		return (rate.DiskHealthValid && rate.DiskAwait >= limits.await.warn) || rate.MemoryPressure.level() != topLevelNormal
 	}
-	return rate.CPUIOWait >= limits.io.warn
+	return false
 }
 
 func formatTopSignals(signals []topSignalItem) string {
@@ -2083,8 +2092,8 @@ func topMatchDetail(processes []topProcess, total topProcessTotal, valid bool) [
 		items = append(items, fmt.Sprintf("+%d", rest))
 	}
 	lines := []string{summary, "  " + strings.Join(items, ", ")}
-	if total.BPF != nil {
-		lines = append(lines, "  "+topBPFDetail(*total.BPF))
+	if total.Probe != nil {
+		lines = append(lines, "  "+topProbeDetail(*total.Probe))
 	}
 	return lines
 }
@@ -2110,15 +2119,17 @@ func (model topModel) processBanner() []string {
 	default:
 		total := row.processTotal
 		parts = []string{fmt.Sprintf("%d matched", total.Count), fmt.Sprintf("cpu %.0f%%", total.CPU), "rss " + formatProcessRSS(total.RSS)}
-		if bpf := total.BPF; bpf != nil {
-			if average, ok := topBPFAverageMS(bpf.RunqSumNS, bpf.RunqCount); ok {
+		if probe := total.Probe; probe != nil {
+			if average, ok := topProbeAverageMS(probe.RunqSumNS, probe.RunqCount); ok {
 				parts = append(parts, fmt.Sprintf("runq %.2fms", average))
 			}
-			if average, ok := topBPFAverageMS(bpf.IOSumNS, bpf.IOCount); ok && bpf.Source.measuresIO() {
-				parts = append(parts, fmt.Sprintf("io %.2fms", average))
+			if probe.IO != nil {
+				if average, ok := topProbeAverageMS(probe.IO.SumNS, probe.IO.Count); ok {
+					parts = append(parts, fmt.Sprintf("io %.2fms", average))
+				}
 			}
-			if bpf.Unreadable > 0 {
-				parts = append(parts, fmt.Sprintf("%d need root", bpf.Unreadable))
+			if probe.Unreadable > 0 {
+				parts = append(parts, fmt.Sprintf("%d need root", probe.Unreadable))
 			}
 		}
 		fds, read, write, diskKnown := topMatchIO(row.processes)
@@ -2193,17 +2204,17 @@ func topProcessViewCells(row topDashboardRow) []topCell {
 		topPlainCell(topOptionalValue(total.Threads > 0, "%.0f", float64(total.Threads))), topPlainCell(topOptionalValue(fds > 0, "%.0f", float64(fds))),
 		topPlainCell(topOptionalRate(diskKnown, read)), topPlainCell(topOptionalRate(diskKnown, write)), empty, empty,
 	}
-	if bpf := total.BPF; bpf != nil {
+	if probe := total.Probe; probe != nil {
 		cells[7], cells[8] = topPlainCell("no ev"), topPlainCell("no ev")
-		if bpf.unmeasured() {
+		if probe.unmeasured() {
 			// 권한이 없어 하나도 읽지 못한 값이다. no ev로 두면 대기가 없었던 것으로 읽힌다.
 			cells[7] = topPlainCell("root")
-		} else if average, ok := topBPFAverageMS(bpf.RunqSumNS, bpf.RunqCount); ok {
+		} else if average, ok := topProbeAverageMS(probe.RunqSumNS, probe.RunqCount); ok {
 			cells[7] = topPlainCell(fmt.Sprintf("%.2f", average))
 		}
-		if !bpf.Source.measuresIO() {
+		if probe.IO == nil {
 			cells[8] = topPlainCell("n/a")
-		} else if average, ok := topBPFAverageMS(bpf.IOSumNS, bpf.IOCount); ok {
+		} else if average, ok := topProbeAverageMS(probe.IO.SumNS, probe.IO.Count); ok {
 			cells[8] = topPlainCell(fmt.Sprintf("%.2f", average))
 		}
 	}
@@ -2285,16 +2296,19 @@ func topProcessLimitLines(processes []topProcess) []string {
 	return lines
 }
 
-// topBPFDetail은 window 동안 센 run-queue 대기와 block I/O 지연이다. 지연 뒤의 p95는 그 값이 든 구간의 위쪽 경계다.
+// topProbeDetail은 window 동안 센 run-queue 대기와 block I/O 지연이다. 지연 뒤의 p95는 그 값이 든 구간의 위쪽 경계다.
 // 분포가 없는 platform은 p95를 빼고, 셀 수 없는 I/O는 n/a로 둔다.
-func topBPFDetail(stats topBPFStats) string {
-	latency := func(sumNS, count uint64, hist [topBPFBuckets]uint64) string {
-		average, ok := topBPFAverageMS(sumNS, count)
+func topProbeDetail(stats topProbeStats) string {
+	latency := func(sumNS, count uint64, hist *topProbeHist) string {
+		average, ok := topProbeAverageMS(sumNS, count)
 		if !ok {
 			return "—"
 		}
-		p95, ok := topBPFPercentileMS(hist, 0.95)
-		if !ok || !stats.Source.hasHistogram() {
+		if hist == nil {
+			return fmt.Sprintf("avg %.2fms", average)
+		}
+		p95, ok := topProbePercentileMS(*hist, 0.95)
+		if !ok {
 			return fmt.Sprintf("avg %.2fms", average)
 		}
 		return fmt.Sprintf("avg %.2fms p95 <%gms", average, p95)
@@ -2304,8 +2318,8 @@ func topBPFDetail(stats topBPFStats) string {
 		runq = "runq n/a"
 	}
 	io := "io n/a"
-	if stats.Source.measuresIO() {
-		io = fmt.Sprintf("io %d %s", stats.IOCount, latency(stats.IOSumNS, stats.IOCount, stats.IOHist))
+	if stats.IO != nil {
+		io = fmt.Sprintf("io %d %s", stats.IO.Count, latency(stats.IO.SumNS, stats.IO.Count, &stats.IO.Hist))
 	}
 	detail := fmt.Sprintf("%s %.0fs · %s · %s", stats.Source, stats.Window.Seconds(), runq, io)
 	if stats.Unreadable > 0 {

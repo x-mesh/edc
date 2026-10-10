@@ -21,6 +21,8 @@ type diskSystem struct {
 	run      func(ctx context.Context, name string, args ...string) (string, error)
 	lookPath func(name string) error
 	xfsSize  func(mount string) (uint64, error)
+	// capacity는 디스크 장치에 지금 크기를 묻는다. nil이면 묻지 않는다.
+	capacity func(disk string) (uint64, error)
 }
 
 func (system diskSystem) path(parts ...string) string {
@@ -334,9 +336,59 @@ type diskChain struct {
 	Disk      diskBlock
 	NextStart uint64
 	LastEnd   uint64
-	DiskEnd   uint64
-	Table     string
-	Blocked   string
+	// LastPart는 디스크에서 가장 뒤에 끝나는 파티션이다. 마지막 파티션 뒤의 빈 공간은 이 파티션만 늘릴 수 있다.
+	LastPart string
+	DiskEnd  uint64
+	Table    string
+	Blocked  string
+	// DeviceSize는 디스크 장치가 READ CAPACITY로 답한 크기다. 묻지 않았거나 답을 받지 못했으면 0이다. 클라우드 콘솔에서
+	// 늘린 SCSI 볼륨은 rescan 전까지 커널이 옛 크기를 보므로 이 값이 더 크다.
+	DeviceSize uint64
+}
+
+// grownVolume은 장치가 커널보다 크다고 답한 크기다. 답이 없거나 차이가 정렬 몫보다 작으면 0이다.
+func (chain diskChain) grownVolume() uint64 {
+	if chain.DeviceSize >= chain.Disk.Size+diskGrowMinGap {
+		return chain.DeviceSize
+	}
+	return 0
+}
+
+// afterRescan은 rescan한 뒤의 모습이다. 장치가 더 크다고 답했으면 디스크 크기를 그 값으로 바꾼다.
+// check와 계획 출력이 쓰고, 실제 grow는 rescan한 뒤 커널 값을 다시 읽는다.
+func (chain diskChain) afterRescan() diskChain {
+	volume := chain.grownVolume()
+	if volume == 0 {
+		return chain
+	}
+	chain.Disk.Size = volume
+	chain.DiskEnd = diskUsableEnd(volume, chain.Table, chain.Part != nil)
+	return chain
+}
+
+// freeAfterLast는 이 파티션이 마지막이 아니고 마지막 파티션 뒤에 빈 공간이 있다는 뜻이다.
+func (chain diskChain) freeAfterLast() bool {
+	return chain.Part != nil && chain.NextStart > 0 && chain.LastPart != chain.Part.Name && chain.DiskEnd >= chain.LastEnd+diskGrowMinGap
+}
+
+// diskUsableEnd는 파티션이 닿을 수 있는 끝이다. 표를 읽지 못했다면(root가 아님) GPT로 보고 끝을 덜 잡는다.
+// 늘릴 공간을 부풀리지 않는다.
+func diskUsableEnd(size uint64, table string, partitioned bool) uint64 {
+	if (table == "gpt" || (table == "" && partitioned)) && size > diskGPTTailBytes {
+		return size - diskGPTTailBytes
+	}
+	return size
+}
+
+// fsDeviceSize는 파일시스템 바로 아래 층의 지금 크기다.
+func (chain diskChain) fsDeviceSize() uint64 {
+	switch {
+	case chain.LV != nil:
+		return chain.LV.Size
+	case chain.Part != nil:
+		return chain.Part.Size
+	}
+	return chain.Disk.Size
 }
 
 func (chain diskChain) fsDevicePath() string {
@@ -401,11 +453,10 @@ func (system diskSystem) readChain(ctx context.Context, mount diskMount) (diskCh
 		chain.Disk = below
 	}
 	chain.Table = system.partitionTable(chain.Disk.Name)
-	chain.DiskEnd = chain.Disk.Size
-	// 표를 읽지 못했다면(root가 아님) GPT로 보고 끝을 덜 잡는다. 늘릴 공간을 부풀리지 않는다.
-	if chain.Table == "gpt" || (chain.Table == "" && chain.Part != nil) {
-		if chain.DiskEnd > diskGPTTailBytes {
-			chain.DiskEnd -= diskGPTTailBytes
+	chain.DiskEnd = diskUsableEnd(chain.Disk.Size, chain.Table, chain.Part != nil)
+	if chain.Disk.Rescan && system.capacity != nil {
+		if size, err := system.capacity(chain.Disk.Name); err == nil {
+			chain.DeviceSize = size
 		}
 	}
 	if chain.Part != nil {
@@ -417,7 +468,7 @@ func (system diskSystem) readChain(ctx context.Context, mount diskMount) (diskCh
 				chain.NextStart = part.Start
 			}
 			if part.end() > chain.LastEnd {
-				chain.LastEnd = part.end()
+				chain.LastEnd, chain.LastPart = part.end(), part.Name
 			}
 		}
 	}

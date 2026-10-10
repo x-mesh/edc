@@ -27,6 +27,8 @@ type fakeDiskHost struct {
 	lvm      map[string]string
 	missing  map[string]bool
 	xfsSizes map[string]uint64
+	// volumes는 장치가 READ CAPACITY에 답할 크기다. nil이면 장치에 묻지 않는 호스트다.
+	volumes map[string]uint64
 }
 
 func newFakeDiskHost(t *testing.T) *fakeDiskHost {
@@ -129,6 +131,20 @@ func (host *fakeDiskHost) system() diskSystem {
 			}
 			return size, nil
 		},
+		capacity: host.capacity(),
+	}
+}
+
+func (host *fakeDiskHost) capacity() func(string) (uint64, error) {
+	if host.volumes == nil {
+		return nil
+	}
+	return func(disk string) (uint64, error) {
+		size, ok := host.volumes[disk]
+		if !ok {
+			return 0, errors.New("no answer")
+		}
+		return size, nil
 	}
 }
 
@@ -320,7 +336,7 @@ func TestCheckWarnsWhenSpaceIsLeft(t *testing.T) {
 	host := newFakeDiskHost(t)
 	ubuntuCloudDisk(host, 30*gib, 19*gib)
 	results := checkDiskMounts(context.Background(), host.system(), "/home/user")
-	if len(results) != 1 || results[0].Status != StatusWarn || !strings.Contains(results[0].Summary, "edc disk grow /") {
+	if len(results) != 1 || results[0].Status != StatusWarn || results[0].Next != "edc disk grow /" || strings.Contains(results[0].Summary, "edc disk grow") {
 		t.Fatalf("result = %#v", results)
 	}
 }
@@ -476,5 +492,169 @@ func TestGrowCancelsOnASignalBeforeTheFirstStep(t *testing.T) {
 	})
 	if !outcome.Cancelled || len(host.calls) != 0 {
 		t.Fatalf("cancelled = %v, calls = %q", outcome.Cancelled, host.calls)
+	}
+}
+
+// ociBootVolume은 OCI Ubuntu 이미지의 부트 볼륨이다. virtio-scsi라 rescan 파일이 있고, 루트가 1번이지만 맨 뒤에 있다.
+// 콘솔에서 볼륨을 늘리면 장치는 새 크기로 답하지만 커널은 rescan 전까지 옛 크기를 본다.
+func ociBootVolume(host *fakeDiskHost, kernelSize, rootSize uint64) {
+	host.block("pci0/virtio2/host0/target0/block/sda", 8, 0, kernelSize, 0, 0)
+	host.write("sys/devices/pci0/virtio2/host0/target0/block/sda/device/rescan", nil)
+	host.block("pci0/virtio2/host0/target0/block/sda/sda15", 8, 15, 99<<20, 15, 1<<20)
+	host.block("pci0/virtio2/host0/target0/block/sda/sda16", 8, 16, 923<<20, 16, 100<<20)
+	host.block("pci0/virtio2/host0/target0/block/sda/sda1", 8, 1, rootSize, 1, 1023<<20)
+	host.gptDisk("sda")
+	host.ext4("sda1", rootSize)
+	host.ext4("sda16", 891<<20)
+	host.mountinfo(
+		`29 1 8:1 / / rw - ext4 /dev/sda1 rw`,
+		`30 29 8:16 / /boot rw - ext4 /dev/sda16 rw`,
+	)
+}
+
+// 콘솔에서 늘린 볼륨은 rescan 전에도 check가 보여 주고 grow를 제안한다. 마지막 파티션이 아닌 /boot는
+// 같은 빈 공간으로 다시 경고하지 않는다.
+func TestCheckFindsAVolumeThatGrewBeforeTheRescan(t *testing.T) {
+	host := newFakeDiskHost(t)
+	rootSize := 100*gib - diskGPTTailBytes - 1023<<20
+	ociBootVolume(host, 100*gib, rootSize)
+	host.volumes = map[string]uint64{"sda": 200 * gib}
+	results := checkDiskMounts(context.Background(), host.system(), "")
+	if len(results) != 2 {
+		t.Fatalf("results = %#v", results)
+	}
+	root, boot := results[0], results[1]
+	if root.Status != StatusWarn || !strings.Contains(root.Summary, "99.00 GB to 199.00 GB (+100.00 GB)") || root.Next != "edc disk grow /" {
+		t.Fatalf("root = %+v", root)
+	}
+	if len(root.Warnings) != 1 || !strings.Contains(root.Warnings[0], "200.00 GB") || !strings.Contains(root.Warnings[0], "rescan") {
+		t.Fatalf("root warnings = %q", root.Warnings)
+	}
+	if root.Evidence[0].Value != "sda · 100.00 GB → 200.00 GB · gpt · rescan" {
+		t.Fatalf("disk evidence = %q", root.Evidence[0].Value)
+	}
+	if boot.Status != StatusPass || !strings.Contains(boot.Summary, "/boot") || !strings.Contains(boot.Summary, "goes to /") || len(boot.Warnings) != 0 {
+		t.Fatalf("boot = %+v", boot)
+	}
+	if len(host.calls) != 0 {
+		t.Fatalf("check ran %q", host.calls)
+	}
+	if data, _ := os.ReadFile(filepath.Join(host.root, "sys/class/block/sda/device/rescan")); len(data) != 0 {
+		t.Fatalf("check wrote the rescan file: %q", data)
+	}
+}
+
+// 장치가 커널과 같은 크기로 답하면 "더 찾을 수도 있다"는 안내는 소음이다.
+func TestCheckDropsTheRescanNoteWhenTheVolumeMatches(t *testing.T) {
+	host := newFakeDiskHost(t)
+	rootSize := 100*gib - diskGPTTailBytes - 1023<<20
+	ociBootVolume(host, 100*gib, rootSize)
+	host.volumes = map[string]uint64{"sda": 100 * gib}
+	results := checkDiskMounts(context.Background(), host.system(), "/")
+	if len(results) != 1 || results[0].Status != StatusPass || len(results[0].Warnings) != 0 {
+		t.Fatalf("results = %#v", results)
+	}
+	// 장치에 묻지 못했으면 rescan이 더 찾을 수도 있다는 안내를 남긴다.
+	host.volumes = map[string]uint64{}
+	unknown := checkDiskMounts(context.Background(), host.system(), "/")
+	if len(unknown) != 1 || len(unknown[0].Warnings) != 1 || !strings.Contains(unknown[0].Warnings[0], "SCSI") {
+		t.Fatalf("unknown = %#v", unknown)
+	}
+}
+
+// 계획만 볼 때도 rescan한 뒤의 계획을 보이고, rescan과 명령은 하지 않는다.
+func TestGrowDryRunPlansWithTheVolumeSize(t *testing.T) {
+	host := newFakeDiskHost(t)
+	rootSize := 100*gib - diskGPTTailBytes - 1023<<20
+	ociBootVolume(host, 100*gib, rootSize)
+	host.volumes = map[string]uint64{"sda": 200 * gib}
+	outcome := executeDiskGrow(context.Background(), host.system(), diskGrowInput{path: "/", dryRun: true})
+	if outcome.Result.Status != StatusPass || !strings.Contains(outcome.Result.Summary, "100.00 GB") || len(host.calls) != 0 {
+		t.Fatalf("dry run = %+v, calls = %q", outcome.Result, host.calls)
+	}
+	if data, _ := os.ReadFile(filepath.Join(host.root, "sys/class/block/sda/device/rescan")); len(data) != 0 {
+		t.Fatalf("dry run wrote the rescan file: %q", data)
+	}
+}
+
+// 실제 grow는 rescan한 뒤 커널 값을 따른다. 장치가 더 크다고 답해도 커널이 새 크기를 보지 못하면 늘리지 않고,
+// 다 쓴 디스크라고 말하는 대신 rescan이 듣지 않았다고 알린다.
+func TestGrowTrustsTheKernelAfterTheRescan(t *testing.T) {
+	host := newFakeDiskHost(t)
+	rootSize := 100*gib - diskGPTTailBytes - 1023<<20
+	ociBootVolume(host, 100*gib, rootSize)
+	host.volumes = map[string]uint64{"sda": 200 * gib}
+	asked := false
+	outcome := executeDiskGrow(context.Background(), host.system(), diskGrowInput{path: "/", confirm: func(string, string) (bool, error) { asked = true; return true, nil }})
+	if outcome.Result.Status != StatusFail || asked || !strings.Contains(outcome.Result.Summary, "200.00 GB") || !reflect.DeepEqual(host.calls, []string{"dd iflag=direct if=/dev/sda of=/dev/null count=1"}) {
+		t.Fatalf("grow = %+v, asked = %v, calls = %q", outcome.Result, asked, host.calls)
+	}
+}
+
+// 마지막 파티션이 마운트되어 있지 않으면 빈 공간을 쓸 곳이 없으므로 경고를 남긴다.
+func TestCheckWarnsWhenTheLastPartitionIsNotMounted(t *testing.T) {
+	host := newFakeDiskHost(t)
+	rootSize := 100*gib - diskGPTTailBytes - 1023<<20
+	ociBootVolume(host, 200*gib, rootSize)
+	host.mountinfo(`30 1 8:16 / /boot rw - ext4 /dev/sda16 rw`)
+	results := checkDiskMounts(context.Background(), host.system(), "/boot")
+	if len(results) != 1 || results[0].Status != StatusWarn || !strings.Contains(results[0].Summary, "sda16") {
+		t.Fatalf("results = %#v", results)
+	}
+}
+
+// root가 아니면 ext 슈퍼블록을 읽지 못한다. 늘어날 크기는 파티션이 늘어나는 만큼이지 디스크 전체가 아니다.
+func TestCheckWithoutTheFileSystemSizeCountsOnlyTheNewSpace(t *testing.T) {
+	host := newFakeDiskHost(t)
+	rootSize := 100*gib - diskGPTTailBytes - 1023<<20
+	ociBootVolume(host, 200*gib, rootSize)
+	if err := os.Remove(filepath.Join(host.root, "dev/sda1")); err != nil {
+		t.Fatal(err)
+	}
+	results := checkDiskMounts(context.Background(), host.system(), "/")
+	if len(results) != 1 || results[0].Status != StatusWarn || !strings.Contains(results[0].Summary, "(+100.00 GB)") {
+		t.Fatalf("results = %#v", results)
+	}
+}
+
+// 이어서 실행할 명령은 문장과 다른 줄에 두고, 셸이 다르게 읽을 경로는 따옴표로 감싼다.
+func TestCheckPutsTheGrowCommandOnItsOwnLine(t *testing.T) {
+	host := newFakeDiskHost(t)
+	host.block("pci0/block/sdb", 8, 16, 30*gib, 0, 0)
+	host.block("pci0/block/sdb/sdb1", 8, 17, 10*gib, 1, 1<<20)
+	host.gptDisk("sdb")
+	host.ext4("sdb1", 10*gib)
+	host.mountinfo(`40 1 8:17 / /mnt\040data rw - ext4 /dev/sdb1 rw`)
+	results := checkDiskMounts(context.Background(), host.system(), "/mnt data")
+	if len(results) != 1 || results[0].Next != "edc disk grow '/mnt data'" {
+		t.Fatalf("results = %#v", results)
+	}
+	var plain, colored strings.Builder
+	printTerminalWithColor(&plain, results, false, false)
+	printTerminalWithColor(&colored, results, false, true)
+	if !strings.Contains(plain.String(), "\n      next: edc disk grow '/mnt data'\n") {
+		t.Fatalf("plain = %q", plain.String())
+	}
+	if !strings.Contains(colored.String(), "next: \033[1medc disk grow '/mnt data'\033[0m") {
+		t.Fatalf("colored = %q", colored.String())
+	}
+}
+
+// 다른 이유로 막힌 마운트는, 마지막 파티션이 늘릴 수 있는 파일시스템이어도 통과로 바꾸지 않는다.
+func TestCheckKeepsAnotherBlockReason(t *testing.T) {
+	host := newFakeDiskHost(t)
+	host.block("pci0/block/sdc", 8, 32, 30*gib, 0, 0)
+	host.block("pci0/block/sdc/sdc5", 8, 37, 5*gib, 5, 1<<20)
+	host.block("pci0/block/sdc/sdc1", 8, 33, 10*gib, 1, 6*gib)
+	host.mbrDisk("sdc")
+	host.ext4("sdc5", 5*gib)
+	host.ext4("sdc1", 10*gib)
+	host.mountinfo(
+		`40 1 8:33 / / rw - ext4 /dev/sdc1 rw`,
+		`41 40 8:37 / /var rw - ext4 /dev/sdc5 rw`,
+	)
+	results := checkDiskMounts(context.Background(), host.system(), "/var")
+	if len(results) != 1 || results[0].Status != StatusWarn || !strings.Contains(results[0].Summary, "logical partition") {
+		t.Fatalf("results = %#v", results)
 	}
 }

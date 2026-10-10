@@ -144,3 +144,21 @@ func TestTopBPFUnsupportedValuesAreNotShownAsZero(t *testing.T) {
 		t.Fatalf("merged = %+v", merged)
 	}
 }
+
+// 배너는 폭이 좁아 값만 보인다. 셀 수 없는 I/O는 n/a 대신 아예 빼고 runq만 남긴다.
+func TestTopProcessBannerLeavesOutUnsupportedIO(t *testing.T) {
+	filter, err := parseTopProcessFilter("worker")
+	if err != nil {
+		t.Fatal(err)
+	}
+	model := topFixtureModel(nil).withProcessFilter(filter)
+	// 폭이 좁으면 뒤의 항목이 폭 때문에 빠져서 io를 뺐는지 알 수 없다.
+	model.limits.color, model.width = false, 200
+	stats := topBPFStats{Source: "libproc", RunqCount: 4, RunqSumNS: 6_000_000, IOCount: 2, IOSumNS: 500_000, IOUnsupported: true, RunqHistUnsupported: true}
+	model.rows = []topDashboardRow{{at: time.Unix(1, 0), processesValid: true, filter: "worker", processTotal: topProcessTotal{Count: 1, CPU: 10, RSS: 1 << 20, BPF: &stats}}}
+	model.selected = 0
+	banner := model.processBanner()[0]
+	if !strings.Contains(banner, "runq 1.50ms") || strings.Contains(banner, "io ") {
+		t.Fatalf("banner = %q", banner)
+	}
+}

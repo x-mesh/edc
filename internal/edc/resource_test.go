@@ -839,3 +839,35 @@ func TestTopSampleWritesMemoryPressureOnlyWhenRead(t *testing.T) {
 		t.Fatalf("an unread level must be left out: %s", data)
 	}
 }
+
+// iowait은 두 sample이 모두 읽었을 때만 유효하다. 압박 단계는 누적값이 아니라 현재 값이다.
+func TestCalculateRateCarriesIOWaitValidityAndMemoryPressure(t *testing.T) {
+	start := time.Unix(0, 0)
+	previous := resourceSnapshot{TakenAt: start, CPUTotal: 100, CPUIOWaitValid: true, MemoryPressure: 1, MemoryPressureValid: true}
+	current := resourceSnapshot{TakenAt: start.Add(time.Second), CPUTotal: 200, CPUIOWaitValid: true, MemoryPressure: 4, MemoryPressureValid: true}
+	rate := calculateRate(previous, current)
+	if !rate.CPUIOWaitValid || rate.MemoryPressure != 4 || !rate.MemoryPressureValid {
+		t.Fatalf("rate = %+v", rate)
+	}
+	previous.CPUIOWaitValid = false
+	current.MemoryPressureValid = false
+	if rate := calculateRate(previous, current); rate.CPUIOWaitValid || rate.MemoryPressureValid {
+		t.Fatalf("a missing read must not be valid: %+v", rate)
+	}
+}
+
+// process 목록을 읽지 못하면 멈춘 수는 0이 아니라 모르는 값이다. 0으로 두면 blocked 열이 0을 보인다.
+func TestTopProcessSamplerLeavesBlockedUnknownWhenTheReadFails(t *testing.T) {
+	sampler := &topProcessSampler{read: func() ([]topProcess, bool) {
+		return []topProcess{{PID: 1, State: topProcessStateBlocked}}, false
+	}}
+	_, total, _ := sampler.refreshNow()
+	if total.BlockedValid {
+		t.Fatalf("total = %+v", total)
+	}
+	snapshot := resourceSnapshot{ProcessTotal: total}
+	fillProcsBlocked(&snapshot)
+	if snapshot.ProcsBlockedValid {
+		t.Fatal("an unknown count must not fill blocked")
+	}
+}

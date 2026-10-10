@@ -325,3 +325,22 @@ func TestTopModelRecordsEventsFromSamples(t *testing.T) {
 		t.Fatalf("events = %+v", events)
 	}
 }
+
+// memory 압박 경고는 memory 보기의 원인 후보(RSS 순)를 남긴다.
+func TestTopEventLogKeepsMemoryPressureWithMemoryCandidates(t *testing.T) {
+	log := &topEventLog{}
+	var views []topView
+	culprit := func(view topView) string { views = append(views, view); return "Google Chr (35 procs)" }
+	limits := newTopLimits(4, false)
+	rate := resourceRate{MemoryPressure: topMemoryPressureWarn, MemoryPressureValid: true}
+	log.observe(time.Unix(0, 0), nil, culprit)
+	for second := 1; second <= 7; second++ {
+		log.observe(time.Unix(int64(second), 0), topSignals(rate, limits), culprit)
+	}
+	if len(log.events) != 1 || log.events[0].kind != "mem pressure" || log.events[0].text != "mem pressure warn" || log.events[0].level != topLevelWarn {
+		t.Fatalf("events = %+v", log.events)
+	}
+	if log.events[0].culprit != "Google Chr (35 procs)" || len(views) == 0 || views[0] != topViewMemory {
+		t.Fatalf("culprit %q from views %v", log.events[0].culprit, views)
+	}
+}

@@ -38,6 +38,14 @@ func TestTopDarwinRunqDeltaSubtractsCPUFromRunnable(t *testing.T) {
 	if _, ok := topDarwinRunqDelta(before, topDarwinRunqCounters{started: 8, runnable: 9_000, cpu: 2_000}, timebase); ok {
 		t.Fatal("a reused PID must not give a delta")
 	}
+	for name, after := range map[string]topDarwinRunqCounters{
+		"runnable went back": {started: 7, runnable: before.runnable - 1, cpu: before.cpu},
+		"cpu went back":      {started: 7, runnable: before.runnable, cpu: before.cpu - 1},
+	} {
+		if _, ok := topDarwinRunqDelta(before, after, timebase); ok {
+			t.Errorf("%s must not give a delta", name)
+		}
+	}
 	idle := before
 	idle.runnable, idle.cpu = before.runnable+100, before.cpu+120
 	if stats, ok := topDarwinRunqDelta(before, idle, timebase); !ok || stats.RunqSumNS != 0 {
@@ -83,5 +91,42 @@ func TestTopDarwinObserverSeesCPUWaitOfThisProcess(t *testing.T) {
 	}
 	if stats.Window < 500*time.Millisecond || stats.RunqCount == 0 || stats.RunqSumNS < uint64(100*time.Millisecond) {
 		t.Fatalf("stats = %+v", stats)
+	}
+}
+
+// 읽지 못한 pid는 빠지고, 목록에서 빠졌다 돌아온 pid는 기준을 다시 잡는다. 오래된 기준과 비교하면 빠진 동안의 대기가 한 window에 몰린다.
+func TestTopDarwinObserverSkipsUnreadablePIDsAndRebaselines(t *testing.T) {
+	observe, stop, err := startTopProcessBPF()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stop()
+	self := os.Getpid()
+	// macOS의 PID는 99999를 넘지 않으므로 이 PID의 process는 없다.
+	const unreadable = 999_999
+	observe([]int{self, unreadable})
+	if got := observe([]int{self, unreadable}); len(got) != 1 || got[self].Source != topDarwinSource {
+		t.Fatalf("observed = %+v", got)
+	}
+	observe(nil)
+	if got := observe([]int{self}); len(got) != 0 {
+		t.Fatalf("a PID that came back must wait for a new baseline, got %+v", got)
+	}
+	if got := observe([]int{self}); len(got) != 1 {
+		t.Fatalf("the next observation must report it, got %+v", got)
+	}
+}
+
+// offset 검사는 배치만 본다. flavor를 잘못 넘기면 kernel이 v4 뒤쪽을 채우지 않으므로 실제 값으로 확인한다.
+func TestDarwinRusageV4FillsRunnableTime(t *testing.T) {
+	deadline := time.Now().Add(50 * time.Millisecond)
+	for time.Now().Before(deadline) {
+	}
+	info, err := readDarwinProcessRusage(os.Getpid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cpu := info.UserTime + info.SystemTime; cpu == 0 || info.RunnableTime < cpu {
+		t.Fatalf("runnable %d must include cpu %d", info.RunnableTime, cpu)
 	}
 }

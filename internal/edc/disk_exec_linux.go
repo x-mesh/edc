@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"strings"
+	"syscall"
 	"unsafe"
 
 	"golang.org/x/sys/unix"
@@ -35,19 +35,16 @@ func newDiskSystem() (diskSystem, bool) {
 }
 
 // diskCommand는 stdout만 돌려준다. lvs와 pvs는 경고를 stderr에 쓰므로 섞으면 JSON이 깨진다.
-// 실패하면 stderr(없으면 stdout)의 첫 줄을 오류에 붙인다. growpart는 실패 이유를 stdout에 쓴다.
+// 명령은 자기 프로세스 그룹에서 돈다. 터미널의 Ctrl+C가 resize2fs 같은 단계를 중간에 죽이지 않는다.
 func diskCommand(ctx context.Context, name string, args ...string) (string, error) {
 	command := exec.CommandContext(ctx, name, args...)
 	command.Env = append(os.Environ(), "LC_ALL=C", "LVM_SUPPRESS_FD_WARNINGS=1")
+	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	var stdout, stderr bytes.Buffer
 	command.Stdout, command.Stderr = &stdout, &stderr
 	if err := command.Run(); err != nil {
-		message := strings.TrimSpace(stderr.String())
-		if message == "" {
-			message = strings.TrimSpace(stdout.String())
-		}
-		if message != "" {
-			return stdout.String(), fmt.Errorf("%w: %s", err, firstLine(message))
+		if message := diskCommandMessage(stderr.String(), stdout.String()); message != "" {
+			return stdout.String(), fmt.Errorf("%w: %s", err, message)
 		}
 		return stdout.String(), err
 	}

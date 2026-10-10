@@ -6,8 +6,10 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"golang.org/x/term"
@@ -245,6 +247,9 @@ type diskGrowInput struct {
 	path    string
 	dryRun  bool
 	confirm func(detail, question string) (bool, error)
+	// notify는 확인 뒤에 신호를 받기 시작한다. 확인 전에 받으면 파이프 입력을 읽는 확인이 Ctrl+C로
+	// 끝나지 않는다. nil이면 신호를 보지 않는다.
+	notify func() (<-chan os.Signal, func())
 }
 
 type diskGrowOutcome struct {
@@ -293,13 +298,16 @@ func executeDiskGrow(ctx context.Context, system diskSystem, input diskGrowInput
 	if err != nil {
 		return fail("disk", err)
 	}
+	// 디스크를 바꾸는 명령은 시간 제한으로 끊지 않는다. resize2fs를 죽여도 커널은 확장을 끝까지
+	// 하므로, 끊으면 실제로는 늘어난 디스크를 실패로 보고한다. 시간 제한은 계획을 세우는 읽기에만 건다.
+	changeCtx := context.WithoutCancel(ctx)
 	var done []Evidence
 	if chain.Disk.Rescan && !input.dryRun {
-		if err := system.rescan(ctx, chain.Disk.Name); err != nil {
+		if err := system.rescan(changeCtx, chain.Disk.Name); err != nil {
 			return fail("rescan", fmt.Errorf("rescan %s: %w", chain.Disk.Name, err))
 		}
 		done = append(done, Evidence{Label: T("disk.evidence.done"), Value: "rescan " + chain.Disk.Name})
-		if chain, err = system.readChain(ctx, mount); err != nil {
+		if chain, err = system.readChain(changeCtx, mount); err != nil {
 			return fail("disk", err)
 		}
 	}
@@ -339,6 +347,12 @@ func executeDiskGrow(ctx context.Context, system diskSystem, input diskGrowInput
 	if !confirmed {
 		return diskGrowOutcome{Cancelled: true}
 	}
+	var signals <-chan os.Signal
+	if input.notify != nil {
+		var stop func()
+		signals, stop = input.notify()
+		defer stop()
+	}
 	before := chain.FSSize
 	for attempt := 0; attempt < diskMaxSteps; attempt++ {
 		steps, blocked = planDiskGrow(chain)
@@ -348,12 +362,21 @@ func executeDiskGrow(ctx context.Context, system diskSystem, input diskGrowInput
 		if len(steps) == 0 {
 			break
 		}
+		// 신호는 다음 단계 앞에서만 본다. 마지막 단계 중에 온 신호는 이미 끝난 일을 실패로 만들지 않는다.
+		select {
+		case <-signals:
+			if attempt == 0 {
+				return diskGrowOutcome{Cancelled: true}
+			}
+			return failDiskStep(started, done, chain, errors.New(T("disk.grow.error.interrupted", done[len(done)-1].Value)))
+		default:
+		}
 		step := steps[0]
-		if output, err := system.run(ctx, step.Command[0], step.Command[1:]...); err != nil {
-			return failDiskStep(started, done, chain, fmt.Errorf("%s: %w %s", step.commandLine(), err, firstLine(output)))
+		if _, err := system.run(changeCtx, step.Command[0], step.Command[1:]...); err != nil {
+			return failDiskStep(started, done, chain, fmt.Errorf("%s: %w", step.commandLine(), err))
 		}
 		done = append(done, Evidence{Label: T("disk.evidence.done"), Value: step.commandLine()})
-		if chain, err = system.readChain(ctx, mount); err != nil {
+		if chain, err = system.readChain(changeCtx, mount); err != nil {
 			return failDiskStep(started, done, chain, err)
 		}
 		if next, _ := planDiskGrow(chain); len(next) > 0 && next[0].Layer == step.Layer {
@@ -395,6 +418,29 @@ func diskTerminalConfirm(detail, question string) (bool, error) {
 }
 
 func diskAutoConfirm(string, string) (bool, error) { return true, nil }
+
+// diskNotifySignals는 단계 중의 Ctrl+C와 종료 신호를 잡아 edc가 지금 단계를 끝낸 뒤 멈추게 한다.
+// 단계 명령은 자기 프로세스 그룹에서 돌므로 터미널의 Ctrl+C를 받지 않는다.
+func diskNotifySignals() (<-chan os.Signal, func()) {
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
+	return signals, func() { signal.Stop(signals) }
+}
+
+// diskCommandMessage는 실패한 명령의 출력에서 마지막 의미 있는 줄을 고른다. resize2fs처럼 첫 줄에
+// 버전을 쓰는 명령은 첫 줄로 이유를 알 수 없다. stderr가 비면 stdout을 본다. growpart는 이유를
+// stdout에 쓴다.
+func diskCommandMessage(stderr, stdout string) string {
+	for _, output := range []string{stderr, stdout} {
+		lines := strings.Split(strings.TrimSpace(output), "\n")
+		for index := len(lines) - 1; index >= 0; index-- {
+			if line := strings.TrimSpace(lines[index]); line != "" {
+				return line
+			}
+		}
+	}
+	return ""
+}
 
 func runDisk(args []string, version string) int {
 	usage := T("cli.usage", "edc disk <check|grow> ...")
@@ -478,7 +524,7 @@ func runDiskGrow(args []string, version string) int {
 	if !ok {
 		return emit(options, buildReport(version, started, nil, []Result{unsupported(diskProbeGrow, T("disk.skip.linux_only"))}, options.redact))
 	}
-	input := diskGrowInput{path: set.Arg(0), dryRun: *dryRun, confirm: diskTerminalConfirm}
+	input := diskGrowInput{path: set.Arg(0), dryRun: *dryRun, confirm: diskTerminalConfirm, notify: diskNotifySignals}
 	if *yes {
 		input.confirm = diskAutoConfirm
 	}

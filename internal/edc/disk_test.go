@@ -396,3 +396,85 @@ func TestGrowRefusesWithoutGrowpart(t *testing.T) {
 		t.Fatalf("result = %#v, calls = %q", outcome.Result, host.calls)
 	}
 }
+
+// 시간 제한이 지나도 디스크를 바꾸는 단계는 끊기지 않는다. 끊으면 커널은 확장을 끝내는데 edc만
+// 실패로 보고한다.
+func TestGrowStepsIgnoreAnExpiredTimeLimit(t *testing.T) {
+	host := growRootHost(t)
+	system := host.system()
+	run := system.run
+	var stepErrors []error
+	system.run = func(ctx context.Context, name string, args ...string) (string, error) {
+		stepErrors = append(stepErrors, ctx.Err())
+		return run(ctx, name, args...)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	outcome := executeDiskGrow(ctx, system, diskGrowInput{path: "/", confirm: diskAutoConfirm})
+	if outcome.Result.Status != StatusPass || !reflect.DeepEqual(stepErrors, []error{nil, nil}) {
+		t.Fatalf("status = %s, step context errors = %v", outcome.Result.Status, stepErrors)
+	}
+}
+
+func TestGrowStopsAfterTheCurrentStepOnASignal(t *testing.T) {
+	host := growRootHost(t)
+	signals := make(chan os.Signal, 1)
+	growpart := host.onRun["growpart"]
+	host.onRun["growpart"] = func(args []string) {
+		growpart(args)
+		signals <- os.Interrupt
+	}
+	stopped := false
+	outcome := executeDiskGrow(context.Background(), host.system(), diskGrowInput{
+		path: "/", confirm: diskAutoConfirm,
+		notify: func() (<-chan os.Signal, func()) { return signals, func() { stopped = true } },
+	})
+	if outcome.Result.Status != StatusFail || !reflect.DeepEqual(host.calls, []string{"growpart /dev/vda 1"}) || !stopped {
+		t.Fatalf("status = %s, calls = %q, stopped = %v", outcome.Result.Status, host.calls, stopped)
+	}
+	if !strings.Contains(outcome.Result.Summary, "growpart /dev/vda 1") {
+		t.Fatalf("summary = %q", outcome.Result.Summary)
+	}
+}
+
+func TestDiskCommandMessageSkipsTheVersionBanner(t *testing.T) {
+	for _, row := range []struct{ stderr, stdout, want string }{
+		{"resize2fs 1.47.0 (5-Feb-2023)\nresize2fs: Permission denied to resize filesystem\n\n", "", "resize2fs: Permission denied to resize filesystem"},
+		{"", "NOCHANGE: partition 1 is size 100. it cannot be grown\n", "NOCHANGE: partition 1 is size 100. it cannot be grown"},
+		{"  \n", "", ""},
+	} {
+		if got := diskCommandMessage(row.stderr, row.stdout); got != row.want {
+			t.Errorf("diskCommandMessage(%q, %q) = %q, want %q", row.stderr, row.stdout, got, row.want)
+		}
+	}
+}
+
+func TestGrowIgnoresASignalDuringTheLastStep(t *testing.T) {
+	host := growRootHost(t)
+	signals := make(chan os.Signal, 1)
+	resize := host.onRun["resize2fs"]
+	host.onRun["resize2fs"] = func(args []string) {
+		resize(args)
+		signals <- os.Interrupt
+	}
+	outcome := executeDiskGrow(context.Background(), host.system(), diskGrowInput{
+		path: "/", confirm: diskAutoConfirm,
+		notify: func() (<-chan os.Signal, func()) { return signals, func() {} },
+	})
+	if outcome.Result.Status != StatusPass {
+		t.Fatalf("result = %#v", outcome.Result)
+	}
+}
+
+func TestGrowCancelsOnASignalBeforeTheFirstStep(t *testing.T) {
+	host := growRootHost(t)
+	signals := make(chan os.Signal, 1)
+	signals <- os.Interrupt
+	outcome := executeDiskGrow(context.Background(), host.system(), diskGrowInput{
+		path: "/", confirm: diskAutoConfirm,
+		notify: func() (<-chan os.Signal, func()) { return signals, func() {} },
+	})
+	if !outcome.Cancelled || len(host.calls) != 0 {
+		t.Fatalf("cancelled = %v, calls = %q", outcome.Cancelled, host.calls)
+	}
+}

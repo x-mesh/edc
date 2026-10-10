@@ -47,3 +47,4 @@ disk:
       root_required: "edc disk grow には root 権限が必要です。計画だけを見るには -n を使ってください"
       unchanged: "%s を実行しましたがサイズが変わりませんでした"
       resume: "同じコマンドをもう一度実行すると、失敗した手順から続行します。"
+      interrupted: "シグナルを受けたため %s の後で停止しました"

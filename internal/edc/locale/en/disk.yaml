@@ -47,3 +47,4 @@ disk:
       root_required: "edc disk grow needs root, or use -n to see the plan"
       unchanged: "%s did not change the size"
       resume: "Run the same command again to continue from the failed step."
+      interrupted: "stopped after %s because of a signal"

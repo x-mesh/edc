@@ -51,3 +51,8 @@ TEXT procPIDRusageTrampoline<>(SB),NOSPLIT,$0-0
 	JMP	libc_proc_pid_rusage(SB)
 GLOBL	·procPIDRusageAddr(SB), RODATA, $8
 DATA	·procPIDRusageAddr(SB)/8, $procPIDRusageTrampoline<>(SB)
+
+TEXT machTimebaseInfoTrampoline<>(SB),NOSPLIT,$0-0
+	JMP	libc_mach_timebase_info(SB)
+GLOBL	·machTimebaseInfoAddr(SB), RODATA, $8
+DATA	·machTimebaseInfoAddr(SB)/8, $machTimebaseInfoTrampoline<>(SB)

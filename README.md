@@ -522,7 +522,7 @@ If stdin and stdout are terminals, `edc top` opens a full-screen dashboard. The 
 | `+` | make the interval longer |
 | `-` | make the interval shorter |
 | `1`, `c`, `m`, `d`, `n` | switch to all, CPU, memory, disk, or network columns |
-| `s` | switch to Linux pressure columns |
+| `s` | switch to pressure columns |
 | `v` | Return to the box screen. |
 | `f` | Open the signal view. Press again to select a process candidate. If a filter is active, open the process view. |
 | `Tab` | Switch between history and process selection. |
@@ -537,7 +537,7 @@ If stdin and stdout are terminals, `edc top` opens a full-screen dashboard. The 
 
 The `signal` column shows the highest-priority host warning and the number of other warnings.
 
-On Linux, the `signal` column shows `blocked N` when `i/o` is at the warning level and 4 or more tasks wait for I/O. A process group also gets a warning when its CPU total is 80% or more, or its I/O total is 50 MB/s or more. The warning shows the name and the process count, for example `gm (200) 100%`. Only the disk view calculates the I/O total, so the I/O warning of a group shows only in the disk view.
+On Linux, the `signal` column shows `blocked N` when `i/o` is at the warning level and 4 or more tasks wait for I/O. macOS has no `i/o` value. The `U` state also covers page-in waits, so macOS shows `blocked N` when 4 or more processes are in the `U` state and `await` is at the warning level or the memory pressure level is `warn` or `critical`. On macOS, the `signal` column also shows `mem pressure warn` or `mem pressure critical` when the kernel raises the memory pressure level. A process group also gets a warning when its CPU total is 80% or more, or its I/O total is 50 MB/s or more. The warning shows the name and the process count, for example `gm (200) 100%`. Only the disk view calculates the I/O total, so the I/O warning of a group shows only in the disk view.
 
 Network errors and drops count as a warning from one per second. Use the network view for packet counts.
 
@@ -587,7 +587,7 @@ If the optional columns, such as `steal%` and `retr/s`, add a row of boxes, the 
 
 A terminal with 80 columns and 24 rows shows only the CPU view for `--split`. At 80 columns, all five boxes need about 33 rows.
 
-On macOS, the dashboard omits the `psi` box and shows a notice. The config file can still list `psi`, so one file works on both systems.
+On macOS, the dashboard omits the `psi` box and shows a notice. The mem box shows the macOS memory pressure level. The config file can still list `psi`, so one file works on both systems.
 
 `--split` works only in the dashboard. If you add `--split` to a run that prints the table, the command exits with code 2. That includes `--count`, `--json`, a pipe, and `NO_COLOR`. The same applies to `--process`. The config value does not stop those runs. With `--process`, the process view stays.
 
@@ -597,13 +597,13 @@ On Linux, the disk view shows aggregate `busy%`, and the memory view shows memor
 
 On Linux, some views also show optional columns. The CPU view shows `steal%` and `blocked`. `steal%` is the CPU time that the hypervisor gave to other guests. `blocked` is the number of tasks that wait for I/O now. The disk view shows `queue`, the average number of I/O requests in progress, added across physical disks. The network view shows TCP retransmitted segments (`retr/s`), sent resets (`rst/s`), and failed connection attempts (`fail/s`) per second. Optional columns appear only if all other columns fit and `signal` keeps at least 13 columns.
 
-On macOS, the dashboard omits unsupported iowait, PSI, disk busy, file descriptor, listen overflow, softnet drop, conntrack, and eBPF latency columns. The help page lists these limits.
+On macOS, the dashboard omits unsupported iowait, PSI, disk busy, file descriptor, listen overflow, softnet drop, conntrack, and I/O latency columns. The help page lists these limits. The memory and pressure views show `mem lvl`, the memory pressure level of the kernel (`kern.memorystatus_vm_pressure_level`): `normal`, `warn`, or `critical`. The CPU and pressure views show `blocked`, the number of processes in the `U` state. Linux counts tasks, so the two values are not the same unit.
 
 On macOS and Linux, the network view shows interface errors and drops. On macOS, `edc` reads kernel interface statistics (`net.link.generic.ifdata`).
 
 The memory view shows `swap/s`, the bytes per second that the kernel moves out to swap.
 
-Press `s` for Linux pressure. It shows CPU, memory, and I/O `some avg10`: the percentage of the last ten seconds during which at least some tasks waited for that resource. The `mem full` and `io full` columns show memory and I/O `full avg10`. This is the percentage of the last ten seconds during which all non-idle tasks waited at the same time. The CPU view shows the hottest core and an ASCII bar; on machines with more than 24 cores, the bar shows the first 24.
+Press `s` for pressure. On macOS, it shows `mem lvl`, `blocked`, `load`, and `mem%`. On Linux, it shows CPU, memory, and I/O `some avg10`: the percentage of the last ten seconds during which at least some tasks waited for that resource. The `mem full` and `io full` columns show memory and I/O `full avg10`. This is the percentage of the last ten seconds during which all non-idle tasks waited at the same time. The Linux pressure view also shows `blocked`, the tasks that wait for I/O now, next to `io psi`. The CPU view shows the hottest core and an ASCII bar; on machines with more than 24 cores, the bar shows the first 24.
 
 The detail view also lists the top three processes by CPU. The list refreshes in the background at most once a second, so it does not lengthen the observation interval. Without `--write`, only the dashboard collects it; the table and unfiltered `--json` output skip it. On Linux, `edc` compares the CPU ticks in `/proc/<pid>/stat` with the previous refresh, so the value covers the time since that refresh. On macOS, it uses the recent decaying average that `ps` reports.
 
@@ -673,7 +673,7 @@ Use `--json` to write one JSON object for each sample. Use `-` for stdout. A pat
 ./bin/edc top --count 5 --json -
 ```
 
-Each line has `time`, `hostname`, `cores`, the network and disk rates in bytes per second, the CPU values in percent, `load1`, `memory_pct`, and `swap_out_bytes_per_s`. macOS and Linux emit network errors and drops, and disk IOPS and await values. Linux additionally emits disk busy values, PSI `some avg10`, and memory and I/O PSI `full avg10`; `*_health_supported`, `disk_busy_supported`, and `psi_supported` tell consumers whether those values are supported. The `--json` option removes the table and the header.
+Each line has `time`, `hostname`, `cores`, the network and disk rates in bytes per second, the CPU values in percent, `load1`, `memory_pct`, and `swap_out_bytes_per_s`. macOS and Linux emit network errors and drops, and disk IOPS and await values. Linux additionally emits disk busy values, PSI `some avg10`, and memory and I/O PSI `full avg10`; `*_health_supported`, `disk_busy_supported`, and `psi_supported` tell consumers whether those values are supported. macOS adds `memory_pressure` (`normal`, `warn`, or `critical`). The `--json` option removes the table and the header.
 
 ## Top recordings and history
 
@@ -783,9 +783,9 @@ The command distinguishes unsupported metrics, denied access, unavailable namesp
 
 These metrics use the [Linux cgroup v2 interfaces](https://docs.kernel.org/admin-guide/cgroup-v2.html).
 
-### CPU wait and I/O latency with `-d` (Linux)
+### CPU wait and I/O latency with `-d`
 
-`-d` or `--detail` adds what `/proc` cannot give: how long the matched processes wait for a CPU and how long their block I/O takes. It needs `--process`, root or `CAP_BPF` and `CAP_PERFMON`, and kernel BTF. Without them, `edc top` stops with exit code `3` and says whether the host is unsupported or a capability is missing. It is tested on Linux 5.15 and 6.17. Linux 5.15 does not give `prev_state` to the `sched_switch` tracepoint, so on that kernel `edc` reads the task state instead.
+`-d` or `--detail` adds what `/proc` cannot give: how long the matched processes wait for a CPU and how long their block I/O takes. It needs `--process`. On Linux, it also needs root or `CAP_BPF` and `CAP_PERFMON`, and kernel BTF. Without them, `edc top` stops with exit code `3` and says whether the host is unsupported or a capability is missing. It is tested on Linux 5.15 and 6.17. Linux 5.15 does not give `prev_state` to the `sched_switch` tracepoint, so on that kernel `edc` reads the task state instead.
 
 `--ebpf` is the same option. It stays for scripts that use the earlier name. In the dashboard, `-d` also works without `--process`. The values then start when you choose a process with `f` or `/`. The `PROCESS` bar and the process view then show the run-queue wait and the I/O latency.
 
@@ -807,6 +807,15 @@ The dashboard adds a third line to the detail view: `ebpf 1s · runq 7584 avg 5.
 - A block I/O request belongs to the task that issues it. Synchronous reads, direct I/O, and `fsync` land on the process. Buffered writes are issued later by a kernel flusher, so they land on `kworker`. Use `disk_write_bytes_per_s` for those bytes.
 - `edc` translates the kernel's PIDs into the PID namespace it runs in, so the filter matches inside a container as well.
 - The first sample after a process appears has no `ebpf` object, because the counts start when `edc` begins to watch it.
+- `source` in the `ebpf` object names how the values were counted: `ebpf` on Linux, `libproc` on macOS.
+
+macOS has no public hook for scheduler or block I/O events. On macOS, `-d` therefore counts only the CPU wait, without root, from libproc's cumulative counters. The wait is the runnable time minus the CPU time, and `runq_count` is the number of context switches in the window, so `runq_avg_ms` is the average wait per switch. There is no distribution, so `runq_p95_ms` is left out, and I/O cannot be counted, so the `io_*` fields are absent. The dashboard shows `n/a` in those cells. Without root, macOS refuses to read the processes of other users. `edc` counts them in `unreadable`, leaves out the `runq_*` fields when it read none of the matches, and shows `root` in the dashboard. The x86_64 build stops `-d` under Rosetta, because the translated clock may not match the kernel counters; use the arm64 build.
+
+```bash
+./bin/edc top --process Safari -d
+```
+
+On macOS, a process in the `U` state (uninterruptible wait) shows as `iowait` like Linux `D` and joins the blocked candidates.
 
 ## AI tool usage
 

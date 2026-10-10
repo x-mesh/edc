@@ -75,7 +75,7 @@ const (
 	topSplitWideWidth = 1000
 	// topSplitTimeWidth는 행 앞의 "15:04:05 │" 폭이다.
 	topSplitTimeWidth = topSelectionColumn + 2
-	topSplitPSINotice = "pressure metrics are Linux-only · ? help"
+	topSplitPSINotice = "psi box is Linux-only · s shows macOS pressure"
 )
 
 // splitHidden은 박스에서 뺄 열이다. signal은 박스 아래 한 줄로 한 번만 보인다. load와 mem%는 그 값을 가진
@@ -107,7 +107,7 @@ func (model topModel) splitList() []topView {
 	return model.split
 }
 
-// splitViews는 실제로 그릴 박스다. macOS에는 pressure 지표가 없다. 판단은 호스트 정보로만 한다.
+// splitViews는 실제로 그릴 박스다. macOS에는 PSI가 없고 memory 압박 단계는 mem 박스에 있다. 판단은 호스트 정보로만 한다.
 func (model topModel) splitViews() []topView {
 	var views []topView
 	for _, view := range model.splitList() {

@@ -17,8 +17,8 @@ const topDarwinWatchedMax = 4096
 // topDarwinRunqCounters는 한 process의 누적값이다. 시간은 Mach absolute time 단위다.
 type topDarwinRunqCounters struct {
 	started  uint64
-	runnable uint64
-	cpu      uint64
+	runnable darwinMachTicks
+	cpu      darwinMachTicks
 	// switches는 proc_taskinfo의 32비트 counter라 넘어갈 수 있다. 차이는 32비트로 구한다.
 	switches uint32
 }
@@ -94,11 +94,11 @@ func topDarwinRunqDelta(before, after topDarwinRunqCounters, timebase darwinTime
 	if after.started != before.started || after.runnable < before.runnable || after.cpu < before.cpu {
 		return topProbeStats{}, false
 	}
-	runnable := timebase.nanoseconds(after.runnable - before.runnable)
-	cpu := timebase.nanoseconds(after.cpu - before.cpu)
+	runnable := timebase.duration(after.runnable - before.runnable)
+	cpu := timebase.duration(after.cpu - before.cpu)
 	stats := topProbeStats{Source: topProbeSourceLibproc, Measured: 1, RunqCount: uint64(after.switches - before.switches)}
 	if runnable > cpu {
-		stats.RunqSumNS = runnable - cpu
+		stats.RunqSumNS = uint64(runnable - cpu)
 	}
 	return stats, true
 }

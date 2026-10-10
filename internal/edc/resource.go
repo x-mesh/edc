@@ -107,9 +107,10 @@ func (pressure topMemoryPressure) level() topLevel {
 	return topLevelNormal
 }
 
-// score는 signal 순위에 쓰는 값이다. critical이 1이라 다른 경고의 위험 기준과 맞는다.
+// score는 signal 순위에 쓰는 값이다. critical이 1이라 다른 경고의 위험 기준과 맞는다. 표에 없는 큰 값도 critical로 읽으므로
+// 1을 넘기지 않는다. 넘기면 다른 위험 경고보다 앞에 선다.
 func (pressure topMemoryPressure) score() float64 {
-	return float64(pressure) / float64(topMemoryPressureCritical)
+	return min(1, float64(pressure)/float64(topMemoryPressureCritical))
 }
 
 func (pressure topMemoryPressure) String() string {

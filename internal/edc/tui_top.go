@@ -1237,20 +1237,6 @@ func (model topModel) helpLines() []string {
 	return wrapped
 }
 
-// topDarwinUnsupportedColumns는 macOS kernel이 주지 않는 값의 열이다.
-var topDarwinUnsupportedColumns = map[string]bool{
-	"fds": true, "psi mem": true, "busy%": true, "io%": true, "ct%": true, "listen/s": true, "soft/s": true, "steal%": true, "queue": true,
-	"retr/s": true, "rst/s": true, "fail/s": true, "cpu psi": true, "mem psi": true, "io psi": true, "mem full": true, "io full": true,
-}
-
-// topColumnUnsupported는 이 host가 값을 주지 않는 열이다. mem lvl은 macOS의 memory 압박 단계라 Linux에서는 PSI 열이 대신한다.
-func topColumnUnsupported(system, title string) bool {
-	if system == "darwin" {
-		return topDarwinUnsupportedColumns[title]
-	}
-	return title == "mem lvl"
-}
-
 func (model topModel) tableColumns() ([]topColumn, []int) {
 	columns := topViewColumns(model.view)
 	var kept []topColumn
@@ -1261,7 +1247,7 @@ func (model topModel) tableColumns() ([]topColumn, []int) {
 		if model.view == topViewProcess && model.displayWidth() < 56 && column.title == "thr" {
 			continue
 		}
-		if topColumnUnsupported(model.details.System, column.title) {
+		if !column.host.shown(model.details.System) {
 			continue
 		}
 		if model.boxed && model.splitHidden(column.title) {
@@ -1347,8 +1333,7 @@ func (model topModel) hostLayout() ([]topAllColumn, int) {
 	}
 	kept := make([]topAllColumn, 0, len(columns))
 	for _, column := range columns {
-		linuxOnly := column.group == "psi" || column.title == "listen" || column.title == "soft" || column.title == "ct%"
-		if column.title != "i/o" && column.title != "busy" && !linuxOnly {
+		if column.host.shown(model.details.System) {
 			kept = append(kept, column)
 		}
 	}
@@ -1380,10 +1365,30 @@ func (model topModel) compactRow(row topDashboardRow, header bool) string {
 
 // topColumn은 보기별 표의 한 칸이다. 헤더와 행이 같은 정의로 그려져 구분선이 어긋나지 않는다.
 // width가 0인 마지막 칸은 남은 폭을 모두 쓴다.
+// topColumnHost는 열의 값을 주는 host다. 값을 주지 않는 host에서는 열을 숨긴다.
+type topColumnHost uint8
+
+const (
+	topColumnAnyHost topColumnHost = iota
+	topColumnLinuxOnly
+	topColumnDarwinOnly
+)
+
+func (host topColumnHost) shown(system string) bool {
+	switch host {
+	case topColumnLinuxOnly:
+		return system != "darwin"
+	case topColumnDarwinOnly:
+		return system == "darwin"
+	}
+	return true
+}
+
 type topColumn struct {
 	title string
 	width int
 	left  bool
+	host  topColumnHost
 	// optional인 칸은 기존 칸이 모두 들어가고 signal 칸이 topSignalMinWidth를 지킬 때만 넣는다.
 	// 좁은 화면에서 기존 칸과 signal을 그대로 두려고 뒤에 붙인 칸이다.
 	optional bool
@@ -1393,18 +1398,18 @@ func topViewColumns(view topView) []topColumn {
 	signal := topColumn{title: "signal", left: true}
 	switch view {
 	case topViewCPU:
-		return []topColumn{{title: "load", width: 5}, {title: "usr%", width: 5}, {title: "sys%", width: 5}, {title: "io%", width: 5}, {title: "hot core", width: 8, left: true}, {title: "cores", width: topCoreBarLimit, left: true}, {title: "steal%", width: 6, optional: true}, {title: "blocked", width: 7, optional: true}, signal}
+		return []topColumn{{title: "load", width: 5}, {title: "usr%", width: 5}, {title: "sys%", width: 5}, {title: "io%", width: 5, host: topColumnLinuxOnly}, {title: "hot core", width: 8, left: true}, {title: "cores", width: topCoreBarLimit, left: true}, {title: "steal%", width: 6, optional: true, host: topColumnLinuxOnly}, {title: "blocked", width: 7, optional: true}, signal}
 	case topViewMemory:
-		return []topColumn{{title: "mem%", width: 6}, {title: "swap/s", width: 7}, {title: "psi mem", width: 7}, {title: "mem lvl", width: 8}, {title: "load", width: 6}, signal}
+		return []topColumn{{title: "mem%", width: 6}, {title: "swap/s", width: 7}, {title: "psi mem", width: 7, host: topColumnLinuxOnly}, {title: "mem lvl", width: 8, host: topColumnDarwinOnly}, {title: "load", width: 6}, signal}
 	case topViewDisk:
-		return []topColumn{{title: "read/s", width: 7}, {title: "write/s", width: 7}, {title: "iops", width: 6}, {title: "await", width: 6}, {title: "busy%", width: 6}, {title: "queue", width: 6, optional: true}, signal}
+		return []topColumn{{title: "read/s", width: 7}, {title: "write/s", width: 7}, {title: "iops", width: 6}, {title: "await", width: 6}, {title: "busy%", width: 6, host: topColumnLinuxOnly}, {title: "queue", width: 6, optional: true, host: topColumnLinuxOnly}, signal}
 	case topViewNetwork:
-		return []topColumn{{title: "in/s", width: 7}, {title: "out/s", width: 7}, {title: "ct%", width: 6}, {title: "listen/s", width: 8}, {title: "err/s", width: 6}, {title: "drop/s", width: 6}, {title: "soft/s", width: 6}, {title: "pk_in", width: 6}, {title: "pk_out", width: 6}, {title: "retr/s", width: 7, optional: true}, {title: "rst/s", width: 6, optional: true}, {title: "fail/s", width: 6, optional: true}, signal}
+		return []topColumn{{title: "in/s", width: 7}, {title: "out/s", width: 7}, {title: "ct%", width: 6, host: topColumnLinuxOnly}, {title: "listen/s", width: 8, host: topColumnLinuxOnly}, {title: "err/s", width: 6}, {title: "drop/s", width: 6}, {title: "soft/s", width: 6, host: topColumnLinuxOnly}, {title: "pk_in", width: 6}, {title: "pk_out", width: 6}, {title: "retr/s", width: 7, optional: true, host: topColumnLinuxOnly}, {title: "rst/s", width: 6, optional: true, host: topColumnLinuxOnly}, {title: "fail/s", width: 6, optional: true, host: topColumnLinuxOnly}, signal}
 	case topViewPressure:
-		return []topColumn{{title: "cpu psi", width: 7}, {title: "mem psi", width: 7}, {title: "io psi", width: 7}, {title: "mem full", width: 8}, {title: "io full", width: 7}, {title: "mem lvl", width: 8}, {title: "blocked", width: 7}, {title: "load", width: 6}, {title: "mem%", width: 6}, signal}
+		return []topColumn{{title: "cpu psi", width: 7, host: topColumnLinuxOnly}, {title: "mem psi", width: 7, host: topColumnLinuxOnly}, {title: "io psi", width: 7, host: topColumnLinuxOnly}, {title: "mem full", width: 8, host: topColumnLinuxOnly}, {title: "io full", width: 7, host: topColumnLinuxOnly}, {title: "mem lvl", width: 8, host: topColumnDarwinOnly}, {title: "blocked", width: 7}, {title: "load", width: 6}, {title: "mem%", width: 6}, signal}
 	case topViewProcess:
 		// cpu%는 core 하나를 100으로 센다. runq와 io는 --ebpf가 있을 때의 평균 대기와 지연이다. 가장 바쁜 process는 상세 패널에 있다.
-		return []topColumn{{title: "match", width: 5}, {title: "cpu%", width: 6}, {title: "rss", width: 6}, {title: "thr", width: 5}, {title: "fds", width: 5}, {title: "read/s", width: 7}, {title: "write/s", width: 7}, {title: "runq ms", width: 7}, {title: "io ms"}}
+		return []topColumn{{title: "match", width: 5}, {title: "cpu%", width: 6}, {title: "rss", width: 6}, {title: "thr", width: 5}, {title: "fds", width: 5, host: topColumnLinuxOnly}, {title: "read/s", width: 7}, {title: "write/s", width: 7}, {title: "runq ms", width: 7}, {title: "io ms"}}
 	}
 	return nil
 }
@@ -1511,6 +1516,7 @@ func topFitCell(text string, width int, left bool) string {
 type topAllColumn struct {
 	group string
 	title string
+	host  topColumnHost
 	width int
 	tier  int
 	left  bool
@@ -1534,9 +1540,9 @@ var topAllColumns = []topAllColumn{
 		level: func(limits topLimits, rate resourceRate) topLevel {
 			return topValidLevel(rate.NetHealthValid, limits.network, rate.NetDrops)
 		}},
-	{group: "network", title: "listen", width: 6, tier: 8, cell: func(rate resourceRate) string { return topNetworkRateCell(rate.NetworkHealth, "listen_overflows", 6) }},
-	{group: "network", title: "soft", width: 4, tier: 8, cell: func(rate resourceRate) string { return topNetworkRateCell(rate.NetworkHealth, "softnet_dropped", 4) }},
-	{group: "network", title: "ct%", width: 5, tier: 9, cell: func(rate resourceRate) string { return networkConntrackCell(rate.NetworkHealth).text },
+	{group: "network", title: "listen", host: topColumnLinuxOnly, width: 6, tier: 8, cell: func(rate resourceRate) string { return topNetworkRateCell(rate.NetworkHealth, "listen_overflows", 6) }},
+	{group: "network", title: "soft", host: topColumnLinuxOnly, width: 4, tier: 8, cell: func(rate resourceRate) string { return topNetworkRateCell(rate.NetworkHealth, "softnet_dropped", 4) }},
+	{group: "network", title: "ct%", host: topColumnLinuxOnly, width: 5, tier: 9, cell: func(rate resourceRate) string { return networkConntrackCell(rate.NetworkHealth).text },
 		level: func(limits topLimits, rate resourceRate) topLevel {
 			return networkConntrackCell(rate.NetworkHealth).level
 		}},
@@ -1546,7 +1552,7 @@ var topAllColumns = []topAllColumn{
 		level: func(limits topLimits, rate resourceRate) topLevel { return limits.cpu.level(rate.CPUUser) }},
 	{group: "cpu", title: "sys%", width: 5, cell: func(rate resourceRate) string { return fmt.Sprintf("%.1f", rate.CPUSystem) },
 		level: func(limits topLimits, rate resourceRate) topLevel { return limits.cpu.level(rate.CPUSystem) }},
-	{group: "cpu", title: "i/o", width: 4, cell: func(rate resourceRate) string { return fmt.Sprintf("%.1f", rate.CPUIOWait) },
+	{group: "cpu", title: "i/o", host: topColumnLinuxOnly, width: 4, cell: func(rate resourceRate) string { return fmt.Sprintf("%.1f", rate.CPUIOWait) },
 		level: func(limits topLimits, rate resourceRate) topLevel { return limits.io.level(rate.CPUIOWait) }},
 	{group: "cpu", title: "hot core", width: 8, tier: 1, left: true, cell: func(rate resourceRate) string { return topHotCore(rate.CoreCPU) },
 		level: func(limits topLimits, rate resourceRate) topLevel { return topHotCoreLevel(rate.CoreCPU) }},
@@ -1560,16 +1566,16 @@ var topAllColumns = []topAllColumn{
 		level: func(limits topLimits, rate resourceRate) topLevel {
 			return topValidLevel(rate.DiskHealthValid, limits.await, rate.DiskAwait)
 		}},
-	{group: "disk", title: "busy", width: 4, tier: 5, cell: func(rate resourceRate) string { return topOptionalValue(rate.DiskBusyValid, "%.0f", rate.DiskBusy) }},
-	{group: "psi", title: "cpu", width: 5, tier: 6, cell: func(rate resourceRate) string { return topOptionalValue(rate.PSIValid, "%.1f", rate.PSICPU) },
+	{group: "disk", title: "busy", host: topColumnLinuxOnly, width: 4, tier: 5, cell: func(rate resourceRate) string { return topOptionalValue(rate.DiskBusyValid, "%.0f", rate.DiskBusy) }},
+	{group: "psi", title: "cpu", host: topColumnLinuxOnly, width: 5, tier: 6, cell: func(rate resourceRate) string { return topOptionalValue(rate.PSIValid, "%.1f", rate.PSICPU) },
 		level: func(limits topLimits, rate resourceRate) topLevel {
 			return topValidLevel(rate.PSIValid, limits.psi, rate.PSICPU)
 		}},
-	{group: "psi", title: "mem", width: 5, tier: 6, cell: func(rate resourceRate) string { return topOptionalValue(rate.PSIValid, "%.1f", rate.PSIMemory) },
+	{group: "psi", title: "mem", host: topColumnLinuxOnly, width: 5, tier: 6, cell: func(rate resourceRate) string { return topOptionalValue(rate.PSIValid, "%.1f", rate.PSIMemory) },
 		level: func(limits topLimits, rate resourceRate) topLevel {
 			return topValidLevel(rate.PSIValid, limits.psi, rate.PSIMemory)
 		}},
-	{group: "psi", title: "io", width: 5, tier: 6, cell: func(rate resourceRate) string { return topOptionalValue(rate.PSIValid, "%.1f", rate.PSIIO) },
+	{group: "psi", title: "io", host: topColumnLinuxOnly, width: 5, tier: 6, cell: func(rate resourceRate) string { return topOptionalValue(rate.PSIValid, "%.1f", rate.PSIIO) },
 		level: func(limits topLimits, rate resourceRate) topLevel {
 			return topValidLevel(rate.PSIValid, limits.psi, rate.PSIIO)
 		}},

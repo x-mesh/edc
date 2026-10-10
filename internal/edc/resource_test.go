@@ -862,8 +862,8 @@ func TestTopMemoryPressureLevelsAndNames(t *testing.T) {
 			t.Errorf("%d = %q, want %q", pressure, got, want)
 		}
 	}
-	if topMemoryPressureUnknown.level() != topLevelNormal || topMemoryPressureCritical.score() != 1 {
-		t.Fatal("an unknown level must not warn and critical must score 1")
+	if topMemoryPressureUnknown.level() != topLevelNormal || topMemoryPressureCritical.score() != 1 || topMemoryPressure(8).score() != 1 {
+		t.Fatal("an unknown level must not warn, and critical and above must score 1")
 	}
 }
 

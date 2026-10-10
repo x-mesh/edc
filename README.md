@@ -1196,6 +1196,8 @@ edc disk grow /data            # show the plan, ask, then grow
 4. `lvextend -l +100%FREE <lv>` if the volume group has free space. The LV gets all the free space of the volume group.
 5. `resize2fs <device>` for ext3 and ext4, or `xfs_growfs -d <mount>` for xfs.
 
+Until the rescan, the kernel still sees the old size of a SCSI disk that you made larger. `check` and `grow -n` do not rescan, because a rescan changes the kernel state. Instead they ask the disk for its size with the SCSI `READ CAPACITY` command, which changes nothing. If the disk is larger than the kernel's size, they plan with the new size, show `sda · 100.00 GB → 200.00 GB` on the disk line, and suggest `edc disk grow`. If `edc` cannot ask the disk, for example without root, it says that `grow` rescans first and can find more space. `grow` itself always plans with the size that the kernel reports after the rescan. If the disk still reports a larger size than the kernel after the rescan, `grow` stops with an error instead of reporting a full disk.
+
 After each step, `edc` reads the layers again and checks that the layer grew. If a step fails, run the same command again. The layers that grew drop out of the plan, so the next run starts at the failed step.
 
 The time limit applies only to the reads before the plan. It does not stop a step that changes the disk, because the kernel finishes a resize even after `edc` kills the command. If you press Ctrl+C, `edc` lets the current step finish and stops before the next step.
@@ -1209,6 +1211,15 @@ The grow is permanent. A partition or a file system cannot shrink back, and xfs 
 - The disk uses an MBR table, and the partition reaches the 2 TiB limit of MBR. Convert the table to GPT first.
 - The LV spans more than one PV, or a device-mapper device is not an LVM volume.
 - `growpart` is not installed. Install `cloud-guest-utils` on Debian and Ubuntu, or `cloud-utils-growpart` on RHEL.
+
+When a mount can grow, `check` shows the size before and after, and the command to run on its own `next:` line. JSON has the command in `next`.
+
+```text
+WARN  disk.check                / can grow from 99.00 GB to 199.00 GB (+100.00 GB)
+      next: edc disk grow /
+```
+
+A mount on a partition that is not last, such as `/boot` in the OCI and Ubuntu cloud images, passes in `check` when the free space after the last partition can grow another mounted file system. The row for that file system suggests the grow.
 
 `check` needs no root, but it shows every size only as root. Without root, `edc` cannot read the ext superblock or the LVM report. Without a mount, `check` shows the mounted ext3, ext4, and xfs file systems on block devices.
 

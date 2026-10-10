@@ -106,7 +106,12 @@ func planDiskGrow(chain diskChain) ([]diskStep, string) {
 		if chain.Mount.FSType == "xfs" {
 			command = []string{"xfs_growfs", "-d", chain.Mount.Point}
 		}
-		steps = append(steps, diskStep{Layer: "filesystem", Command: command, From: chain.FSSize, To: deviceSize})
+		// root가 아니면 파일시스템 크기를 읽지 못한다. 0에서 늘어난다고 하지 않고 바로 아래 층의 지금 크기로 본다.
+		from := chain.FSSize
+		if chain.FSSizeErr != nil {
+			from = chain.fsDeviceSize()
+		}
+		steps = append(steps, diskStep{Layer: "filesystem", Command: command, From: from, To: deviceSize})
 	}
 	return steps, ""
 }
@@ -134,6 +139,9 @@ func diskEvidence(chain diskChain, steps []diskStep) []Evidence {
 	var evidence []Evidence
 	if chain.Disk.Name != "" {
 		value := fmt.Sprintf("%s · %s", chain.Disk.Name, formatBytes(chain.Disk.Size))
+		if chain.Volume > 0 {
+			value = fmt.Sprintf("%s · %s → %s", chain.Disk.Name, formatBytes(chain.Disk.Size), formatBytes(chain.Volume))
+		}
 		if chain.Table != "" {
 			value += " · " + chain.Table
 		}
@@ -164,6 +172,15 @@ func diskEvidence(chain diskChain, steps []diskStep) []Evidence {
 	return evidence
 }
 
+// diskGrowRange는 파일시스템이 지금 크기에서 늘린 뒤 크기로 가는 범위다. 마지막 단계가 파일시스템이다.
+func diskGrowRange(steps []diskStep) (uint64, uint64) {
+	if len(steps) == 0 {
+		return 0, 0
+	}
+	last := steps[len(steps)-1]
+	return last.From, last.To
+}
+
 func diskGrowth(steps []diskStep) uint64 {
 	if len(steps) == 0 {
 		return 0
@@ -175,7 +192,8 @@ func diskGrowth(steps []diskStep) uint64 {
 	return last.To - last.From
 }
 
-// checkDiskMount는 check의 마운트 하나다. 늘릴 공간이 남았으면 warn으로 눈에 띄게 한다.
+// checkDiskMount는 check의 마운트 하나다. 늘릴 공간이 남았으면 warn으로 눈에 띄게 한다. 장치가 커널보다
+// 크다고 답했으면 rescan한 뒤의 크기로 계획한다. 그래야 콘솔에서 늘린 볼륨을 grow 전에 보여 준다.
 func checkDiskMount(ctx context.Context, system diskSystem, mount diskMount) Result {
 	started := time.Now()
 	chain, err := system.readChain(ctx, mount)
@@ -187,24 +205,64 @@ func checkDiskMount(ctx context.Context, system diskSystem, mount diskMount) Res
 		result.Status, result.Summary = StatusSkip, mount.Point+": "+chain.Blocked
 		return finishDiskResult(result, started)
 	}
-	steps, blocked := planDiskGrow(chain)
+	planned := chain.afterRescan()
+	steps, blocked := planDiskGrow(planned)
 	result.Evidence = diskEvidence(chain, steps)
+	owner := ""
+	if blocked != "" && planned.freeAfterLast() {
+		owner = system.partitionMount(planned.LastPart)
+	}
 	switch {
+	case owner != "":
+		// 빈 공간은 마지막 파티션의 몫이다. 그 파일시스템의 줄이 grow를 제안하므로 여기서 다시 경고하지 않는다.
+		result.Summary = T("disk.check.space_for", mount.Point, formatBytes(chain.Part.Size), chain.Disk.Name, owner)
+		return finishDiskResult(result, started)
 	case blocked != "":
 		result.Status, result.Summary = StatusWarn, mount.Point+": "+blocked
 	case len(steps) > 0:
 		result.Status = StatusWarn
-		result.Summary = T("disk.check.growable", mount.Point, formatBytes(diskGrowth(steps)), mount.Point)
+		from, to := diskGrowRange(steps)
+		result.Summary = T("disk.check.growable", mount.Point, formatBytes(from), formatBytes(to), formatBytes(diskGrowth(steps)))
+		result.Next = "edc disk grow " + quoteLocalShellWord(mount.Point)
 	case chain.FSSizeErr != nil:
 		result.Status = StatusWarn
 		result.Summary = T("disk.check.unknown", mount.Point)
 	default:
 		result.Summary = T("disk.check.full", mount.Point, formatBytes(chain.FSSize))
 	}
-	if chain.Disk.Rescan && blocked == "" {
-		result.Warnings = append(result.Warnings, T("disk.check.rescan_note", chain.Disk.Name))
+	if blocked == "" {
+		result.Warnings = append(result.Warnings, diskRescanWarnings(chain)...)
 	}
 	return finishDiskResult(result, started)
+}
+
+// diskRescanWarnings는 SCSI 디스크의 크기를 설명한다. 장치에 물어 커널보다 크다는 답을 받았으면 그 크기를,
+// 묻지 못했으면 grow가 rescan하면서 더 찾을 수도 있다는 것을 알린다. 같은 크기라는 답을 받았으면 말하지 않는다.
+func diskRescanWarnings(chain diskChain) []string {
+	switch {
+	case chain.Volume > 0:
+		return []string{T("disk.check.volume_grew", chain.Disk.Name, formatBytes(chain.Volume), formatBytes(chain.Disk.Size))}
+	case chain.Disk.Rescan && !chain.VolumeRead:
+		return []string{T("disk.check.rescan_note", chain.Disk.Name)}
+	}
+	return nil
+}
+
+// partitionMount는 파티션 위에 바로 마운트된, 늘릴 수 있는 파일시스템의 마운트 지점이다. 없으면 빈 문자열이다.
+func (system diskSystem) partitionMount(partition string) string {
+	mounts, err := system.mounts()
+	if err != nil {
+		return ""
+	}
+	for _, mount := range mounts {
+		if mount.Major == 0 || mount.Root != "/" || !diskGrowFSTypes[mount.FSType] {
+			continue
+		}
+		if block, err := system.blockByNumber(mount.Major, mount.Minor); err == nil && block.Name == partition {
+			return mount.Point
+		}
+	}
+	return ""
 }
 
 func finishDiskResult(result Result, started time.Time) Result {
@@ -310,8 +368,19 @@ func executeDiskGrow(ctx context.Context, system diskSystem, input diskGrowInput
 		if chain, err = system.readChain(changeCtx, mount); err != nil {
 			return fail("disk", err)
 		}
+		// 장치가 여전히 커널보다 크다고 답하면 rescan이 듣지 않은 것이다. 옛 크기로 "다 씀"이라 말하지 않는다.
+		if chain.Volume > 0 {
+			result := fail("rescan", errors.New(T("disk.grow.error.rescan_stale", chain.Disk.Name, formatBytes(chain.Disk.Size), formatBytes(chain.Volume))))
+			result.Result.Evidence = append(done, diskEvidence(chain, nil)...)
+			return result
+		}
 	}
-	steps, blocked := planDiskGrow(chain)
+	// 계획만 볼 때는 rescan하지 않으므로, 장치가 알려 준 크기로 rescan한 뒤의 계획을 보인다.
+	planned := chain
+	if input.dryRun {
+		planned = chain.afterRescan()
+	}
+	steps, blocked := planDiskGrow(planned)
 	if blocked == "" {
 		blocked = system.missingTool(steps)
 	}
@@ -330,13 +399,12 @@ func executeDiskGrow(ctx context.Context, system diskSystem, input diskGrowInput
 		}, started)}
 	}
 	if input.dryRun {
+		from, to := diskGrowRange(steps)
 		result := Result{
 			Probe: diskProbeGrow, Status: StatusPass, StartedAt: started.UTC(),
-			Summary:  T("disk.grow.dry_run", mount.Point, formatBytes(diskGrowth(steps))),
+			Summary:  T("disk.grow.dry_run", mount.Point, formatBytes(from), formatBytes(to), formatBytes(diskGrowth(steps))),
 			Evidence: diskEvidence(chain, steps),
-		}
-		if chain.Disk.Rescan {
-			result.Warnings = append(result.Warnings, T("disk.check.rescan_note", chain.Disk.Name))
+			Warnings: diskRescanWarnings(chain),
 		}
 		return diskGrowOutcome{Result: finishDiskResult(result, started)}
 	}

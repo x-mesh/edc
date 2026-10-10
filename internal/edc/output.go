@@ -88,6 +88,13 @@ func printResultDetail(writer io.Writer, result Result, verbose, color bool) {
 	if result.Status == StatusFail {
 		printFailureBox(writer, resultLabel(result), result, color)
 	}
+	if result.Next != "" {
+		next := result.Next
+		if color {
+			next = "\033[1m" + next + "\033[0m"
+		}
+		fmt.Fprintf(writer, "      next: %s\n", next)
+	}
 	for _, warning := range result.Warnings {
 		fmt.Fprintf(writer, "      warning: %s\n", warning)
 	}

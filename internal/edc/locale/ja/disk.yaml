@@ -31,13 +31,15 @@ disk:
     no_growpart: "growpart がありません。cloud-guest-utils(Debian、Ubuntu)か cloud-utils-growpart(RHEL)をインストールしてください"
     no_tool: "%s がありません"
   check:
-    growable: "%s はあと %s 拡張できます。edc disk grow %s を実行してください"
+    growable: "%s は %s から %s に拡張できます(+%s)"
     full: "%s はディスク全体を使っています、%s"
     unknown: "%s: ファイルシステムのサイズを読めません。root で実行してください"
     rescan_note: "%s は SCSI ディスクです。edc disk grow は先に rescan するため、さらに空きが見える場合があります"
+    volume_grew: "%s のボリュームは今 %s ですが、カーネルはまだ %s として見ています。edc disk grow が先に rescan します"
+    space_for: "%s はパーティションを使い切っています、%s。%s の空きは %s の拡張に使います"
     none: "マウントされたブロックデバイスがありません"
   grow:
-    dry_run: "計画のみ、変更なし: %s が %s 増えます"
+    dry_run: "計画のみ、変更なし: %s が %s から %s に増えます(+%s)"
     summary: "%s が %s から %s に増えました"
     cancelled: "キャンセルしました。何も変更していません"
     confirm:
@@ -45,6 +47,7 @@ disk:
       detail: "パーティションとファイルシステムは縮小できません。先にスナップショットを作成してください。"
     error:
       root_required: "edc disk grow には root 権限が必要です。計画だけを見るには -n を使ってください"
+      rescan_stale: "rescan 後も %s は %s ですが、ボリュームは %s です。ボリュームの接続を確認して再実行してください"
       unchanged: "%s を実行しましたがサイズが変わりませんでした"
       resume: "同じコマンドをもう一度実行すると、失敗した手順から続行します。"
       interrupted: "シグナルを受けたため %s の後で停止しました"

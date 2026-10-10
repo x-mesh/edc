@@ -2113,15 +2113,17 @@ func (model topModel) processBanner() []string {
 	default:
 		total := row.processTotal
 		parts = []string{fmt.Sprintf("%d matched", total.Count), fmt.Sprintf("cpu %.0f%%", total.CPU), "rss " + formatProcessRSS(total.RSS)}
-		if bpf := total.Probe; bpf != nil {
-			if average, ok := topProbeAverageMS(bpf.RunqSumNS, bpf.RunqCount); ok {
+		if probe := total.Probe; probe != nil {
+			if average, ok := topProbeAverageMS(probe.RunqSumNS, probe.RunqCount); ok {
 				parts = append(parts, fmt.Sprintf("runq %.2fms", average))
 			}
-			if average, ok := topProbeAverageMS(bpf.IOSumNS, bpf.IOCount); ok && bpf.Source.measuresIO() {
-				parts = append(parts, fmt.Sprintf("io %.2fms", average))
+			if probe.IO != nil {
+				if average, ok := topProbeAverageMS(probe.IO.SumNS, probe.IO.Count); ok {
+					parts = append(parts, fmt.Sprintf("io %.2fms", average))
+				}
 			}
-			if bpf.Unreadable > 0 {
-				parts = append(parts, fmt.Sprintf("%d need root", bpf.Unreadable))
+			if probe.Unreadable > 0 {
+				parts = append(parts, fmt.Sprintf("%d need root", probe.Unreadable))
 			}
 		}
 		fds, read, write, diskKnown := topMatchIO(row.processes)
@@ -2196,17 +2198,17 @@ func topProcessViewCells(row topDashboardRow) []topCell {
 		topPlainCell(topOptionalValue(total.Threads > 0, "%.0f", float64(total.Threads))), topPlainCell(topOptionalValue(fds > 0, "%.0f", float64(fds))),
 		topPlainCell(topOptionalRate(diskKnown, read)), topPlainCell(topOptionalRate(diskKnown, write)), empty, empty,
 	}
-	if bpf := total.Probe; bpf != nil {
+	if probe := total.Probe; probe != nil {
 		cells[7], cells[8] = topPlainCell("no ev"), topPlainCell("no ev")
-		if bpf.unmeasured() {
+		if probe.unmeasured() {
 			// 권한이 없어 하나도 읽지 못한 값이다. no ev로 두면 대기가 없었던 것으로 읽힌다.
 			cells[7] = topPlainCell("root")
-		} else if average, ok := topProbeAverageMS(bpf.RunqSumNS, bpf.RunqCount); ok {
+		} else if average, ok := topProbeAverageMS(probe.RunqSumNS, probe.RunqCount); ok {
 			cells[7] = topPlainCell(fmt.Sprintf("%.2f", average))
 		}
-		if !bpf.Source.measuresIO() {
+		if probe.IO == nil {
 			cells[8] = topPlainCell("n/a")
-		} else if average, ok := topProbeAverageMS(bpf.IOSumNS, bpf.IOCount); ok {
+		} else if average, ok := topProbeAverageMS(probe.IO.SumNS, probe.IO.Count); ok {
 			cells[8] = topPlainCell(fmt.Sprintf("%.2f", average))
 		}
 	}
@@ -2291,13 +2293,16 @@ func topProcessLimitLines(processes []topProcess) []string {
 // topProbeDetail은 window 동안 센 run-queue 대기와 block I/O 지연이다. 지연 뒤의 p95는 그 값이 든 구간의 위쪽 경계다.
 // 분포가 없는 platform은 p95를 빼고, 셀 수 없는 I/O는 n/a로 둔다.
 func topProbeDetail(stats topProbeStats) string {
-	latency := func(sumNS, count uint64, hist [topProbeBuckets]uint64) string {
+	latency := func(sumNS, count uint64, hist *topProbeHist) string {
 		average, ok := topProbeAverageMS(sumNS, count)
 		if !ok {
 			return "—"
 		}
-		p95, ok := topProbePercentileMS(hist, 0.95)
-		if !ok || !stats.Source.hasHistogram() {
+		if hist == nil {
+			return fmt.Sprintf("avg %.2fms", average)
+		}
+		p95, ok := topProbePercentileMS(*hist, 0.95)
+		if !ok {
 			return fmt.Sprintf("avg %.2fms", average)
 		}
 		return fmt.Sprintf("avg %.2fms p95 <%gms", average, p95)
@@ -2307,8 +2312,8 @@ func topProbeDetail(stats topProbeStats) string {
 		runq = "runq n/a"
 	}
 	io := "io n/a"
-	if stats.Source.measuresIO() {
-		io = fmt.Sprintf("io %d %s", stats.IOCount, latency(stats.IOSumNS, stats.IOCount, stats.IOHist))
+	if stats.IO != nil {
+		io = fmt.Sprintf("io %d %s", stats.IO.Count, latency(stats.IO.SumNS, stats.IO.Count, &stats.IO.Hist))
 	}
 	detail := fmt.Sprintf("%s %.0fs · %s · %s", stats.Source, stats.Window.Seconds(), runq, io)
 	if stats.Unreadable > 0 {

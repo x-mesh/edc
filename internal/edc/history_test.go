@@ -440,7 +440,7 @@ func TestHistoryPreservesMissingAndEmptyProcessSamples(t *testing.T) {
 func TestHistoryKeepsCgroupAndEBPFDetails(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "details.db")
 	recorder := topHistoryFixture(t, path)
-	stats := &topProbeStats{Window: time.Second, RunqCount: 2, RunqSumNS: 4_000_000, IOCount: 3, IOBytes: 4096}
+	stats := &topProbeStats{Window: time.Second, Source: topProbeSourceEBPF, Measured: 1, RunqCount: 2, RunqSumNS: 4_000_000, RunqHist: &topProbeHist{}, IO: &topProbeIO{Count: 3, Bytes: 4096}}
 	limits := &topProcessLimits{Cgroup: topCgroupLimits{topLimitStatus: topLimitStatus{Status: "supported"}, Path: "/worker.slice"}}
 	sample := historyFixtureSample(1, 90, topProcess{PID: 7, Probe: stats, Limits: limits})
 	sample.ProcessTotal = newTopProcessTotalSample(topProcessTotal{Count: 70, CPU: 500, Probe: stats})

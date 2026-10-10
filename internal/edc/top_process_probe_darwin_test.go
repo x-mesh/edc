@@ -33,7 +33,7 @@ func TestTopDarwinRunqDeltaSubtractsCPUFromRunnable(t *testing.T) {
 		t.Fatal("same process must give a delta")
 	}
 	// (30000 - 6000) tick * 125/3 = 1,000,000ns다. switch counter는 32비트에서 넘어가도 4번으로 센다.
-	if stats.RunqSumNS != 1_000_000 || stats.RunqCount != 4 || stats.Source != topProbeSourceLibproc || stats.Measured != 1 || stats.Source.measuresIO() || stats.Source.hasHistogram() {
+	if stats.RunqSumNS != 1_000_000 || stats.RunqCount != 4 || stats.Source != topProbeSourceLibproc || stats.Measured != 1 || stats.IO != nil || stats.RunqHist != nil {
 		t.Fatalf("stats = %+v", stats)
 	}
 	if _, ok := topDarwinRunqDelta(before, topDarwinRunqCounters{started: 8, runnable: 9_000, cpu: 2_000}, timebase); ok {

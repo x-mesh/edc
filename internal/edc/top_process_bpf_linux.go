@@ -235,25 +235,25 @@ func (tracer *topProcessBPF) observe(pids []int) map[int]topProbeStats {
 	return observed
 }
 
-// read는 pid의 누적값을 모든 CPU에 걸쳐 더한다. 아직 이벤트가 없으면 0이다.
+// read는 pid의 누적값을 모든 CPU에 걸쳐 더한다. 아직 이벤트가 없으면 0이다. eBPF는 분포와 I/O를 세므로 0이어도 채운다.
 func (tracer *topProcessBPF) read(pid int) (topProbeStats, error) {
+	total := topProbeStats{RunqHist: &topProbeHist{}, IO: &topProbeIO{}}
 	var perCPU []topProcessEventsProcessStats
 	if err := tracer.objects.Stats.Lookup(uint32(pid), &perCPU); err != nil {
 		if errors.Is(err, ebpf.ErrKeyNotExist) {
-			return topProbeStats{}, nil
+			return total, nil
 		}
 		return topProbeStats{}, err
 	}
-	var total topProbeStats
 	for _, cpu := range perCPU {
 		total.RunqCount += cpu.RunqCount
 		total.RunqSumNS += cpu.RunqSumNs
-		total.IOCount += cpu.IoCount
-		total.IOBytes += cpu.IoBytes
-		total.IOSumNS += cpu.IoSumNs
+		total.IO.Count += cpu.IoCount
+		total.IO.Bytes += cpu.IoBytes
+		total.IO.SumNS += cpu.IoSumNs
 		for index := range total.RunqHist {
 			total.RunqHist[index] += cpu.RunqHist[index]
-			total.IOHist[index] += cpu.IoHist[index]
+			total.IO.Hist[index] += cpu.IoHist[index]
 		}
 	}
 	return total, nil

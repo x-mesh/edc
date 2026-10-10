@@ -36,13 +36,13 @@ func TestTopProbeAverageNeedsASample(t *testing.T) {
 }
 
 func TestTopProbeStatsSubtractsTheEarlierReadAndAddsAcrossProcesses(t *testing.T) {
-	previous := topProbeStats{RunqCount: 10, RunqSumNS: 1000, IOCount: 2, IOBytes: 4096, IOSumNS: 50}
-	previous.RunqHist[3], previous.IOHist[5] = 10, 2
-	current := topProbeStats{RunqCount: 15, RunqSumNS: 2500, IOCount: 3, IOBytes: 8192, IOSumNS: 90}
-	current.RunqHist[3], current.RunqHist[4], current.IOHist[5] = 12, 3, 3
+	previous := topProbeStats{RunqCount: 10, RunqSumNS: 1000, RunqHist: &topProbeHist{}, IO: &topProbeIO{Count: 2, Bytes: 4096, SumNS: 50}}
+	previous.RunqHist[3], previous.IO.Hist[5] = 10, 2
+	current := topProbeStats{RunqCount: 15, RunqSumNS: 2500, RunqHist: &topProbeHist{}, IO: &topProbeIO{Count: 3, Bytes: 8192, SumNS: 90}}
+	current.RunqHist[3], current.RunqHist[4], current.IO.Hist[5] = 12, 3, 3
 	delta := current.sub(previous)
-	if delta.RunqCount != 5 || delta.RunqSumNS != 1500 || delta.IOCount != 1 || delta.IOBytes != 4096 || delta.IOSumNS != 40 || delta.RunqHist[3] != 2 || delta.RunqHist[4] != 3 || delta.IOHist[5] != 1 {
-		t.Fatalf("delta = %+v", delta)
+	if delta.RunqCount != 5 || delta.RunqSumNS != 1500 || delta.IO.Count != 1 || delta.IO.Bytes != 4096 || delta.IO.SumNS != 40 || delta.RunqHist[3] != 2 || delta.RunqHist[4] != 3 || delta.IO.Hist[5] != 1 {
+		t.Fatalf("delta = %+v %+v %+v", delta, *delta.RunqHist, *delta.IO)
 	}
 	// 카운터가 줄었다면 map이 비워진 것이다. 음수로 돌아가지 않고 현재 값을 쓴다.
 	if reset := (topProbeStats{RunqCount: 1}).sub(previous); reset.RunqCount != 1 {
@@ -50,9 +50,37 @@ func TestTopProbeStatsSubtractsTheEarlierReadAndAddsAcrossProcesses(t *testing.T
 	}
 	merged := topProbeStats{Window: time.Second}
 	merged.add(delta)
-	merged.add(topProbeStats{Window: 2 * time.Second, RunqCount: 1, IOCount: 4})
-	if merged.RunqCount != 6 || merged.IOCount != 5 || merged.Window != 2*time.Second || merged.RunqHist[3] != 2 {
-		t.Fatalf("merged = %+v", merged)
+	merged.add(topProbeStats{Window: 2 * time.Second, RunqCount: 1, RunqHist: &topProbeHist{}, IO: &topProbeIO{Count: 4}})
+	if merged.RunqCount != 6 || merged.IO.Count != 5 || merged.Window != 2*time.Second || merged.RunqHist[3] != 2 {
+		t.Fatalf("merged = %+v %+v", merged, *merged.IO)
+	}
+}
+
+// 포인터 필드를 공유하면 합계를 더할 때 process별 값이, 차이를 구할 때 tracer가 보관한 이전 값이 바뀐다.
+func TestTopProbeStatsArithmeticLeavesItsInputsAlone(t *testing.T) {
+	first := topProbeStats{RunqCount: 1, RunqHist: &topProbeHist{1}, IO: &topProbeIO{Count: 1, Hist: topProbeHist{1}}}
+	second := topProbeStats{RunqCount: 2, RunqHist: &topProbeHist{2}, IO: &topProbeIO{Count: 2, Hist: topProbeHist{2}}}
+	total := topProbeStats{}
+	total.add(first)
+	total.add(second)
+	if first.IO.Count != 1 || first.RunqHist[0] != 1 || first.IO.Hist[0] != 1 || total.IO.Count != 3 || total.RunqHist[0] != 3 {
+		t.Fatalf("first %+v, total %+v", *first.IO, *total.IO)
+	}
+	previous := topProbeStats{RunqCount: 1, RunqHist: &topProbeHist{1}, IO: &topProbeIO{Count: 1}}
+	current := topProbeStats{RunqCount: 3, RunqHist: &topProbeHist{3}, IO: &topProbeIO{Count: 3}}
+	delta := current.sub(previous)
+	delta.IO.Count, delta.RunqHist[0] = 99, 99
+	if current.IO.Count != 3 || current.RunqHist[0] != 3 || previous.IO.Count != 1 || previous.RunqHist[0] != 1 {
+		t.Fatalf("sub changed its inputs: current %+v, previous %+v", *current.IO, *previous.IO)
+	}
+}
+
+// eBPF가 아닌 값은 분포와 I/O가 nil이라 합쳐도 생기지 않는다.
+func TestTopProbeStatsKeepMissingValuesMissing(t *testing.T) {
+	total := topProbeStats{}
+	total.add(topProbeStats{Source: topProbeSourceLibproc, Measured: 1, RunqCount: 4})
+	if total.IO != nil || total.RunqHist != nil {
+		t.Fatalf("total = %+v", total)
 	}
 }
 
@@ -86,7 +114,7 @@ func TestTopProbeSampleLeavesOutLatenciesWithoutEvents(t *testing.T) {
 	if newTopProbeSample(nil) != nil {
 		t.Fatal("no eBPF values must give no field")
 	}
-	stats := topProbeStats{Window: 1500 * time.Millisecond, Source: topProbeSourceEBPF, Measured: 1, RunqCount: 4, RunqSumNS: 6_000_000, IOBytes: 0}
+	stats := topProbeStats{Window: 1500 * time.Millisecond, Source: topProbeSourceEBPF, Measured: 1, RunqCount: 4, RunqSumNS: 6_000_000, RunqHist: &topProbeHist{}, IO: &topProbeIO{}}
 	stats.RunqHist[10] = 4
 	data, err := json.Marshal(newTopProbeSample(&stats))
 	if err != nil {
@@ -103,7 +131,7 @@ func TestTopProbeSampleLeavesOutLatenciesWithoutEvents(t *testing.T) {
 }
 
 func TestTopProbeDetailShowsTheWindowAndBothDelays(t *testing.T) {
-	stats := topProbeStats{Window: 2 * time.Second, Source: topProbeSourceEBPF, Measured: 1, RunqCount: 10, RunqSumNS: 20_000_000}
+	stats := topProbeStats{Window: 2 * time.Second, Source: topProbeSourceEBPF, Measured: 1, RunqCount: 10, RunqSumNS: 20_000_000, RunqHist: &topProbeHist{}, IO: &topProbeIO{}}
 	stats.RunqHist[11] = 10
 	got := topProbeDetail(stats)
 	if got != "ebpf 2s · runq 10 avg 2.00ms p95 <4.096ms · io 0 —" {
@@ -140,7 +168,7 @@ func TestTopProbeUnsupportedValuesAreNotShownAsZero(t *testing.T) {
 	}
 	merged := topProbeStats{}
 	merged.add(stats)
-	if merged.Source != topProbeSourceLibproc || merged.Source.measuresIO() || merged.Measured != 1 {
+	if merged.Source != topProbeSourceLibproc || merged.IO != nil || merged.Measured != 1 {
 		t.Fatalf("merged = %+v", merged)
 	}
 }
@@ -154,7 +182,7 @@ func TestTopProcessBannerLeavesOutUnsupportedIO(t *testing.T) {
 	model := topFixtureModel(nil).withProcessFilter(filter)
 	// 폭이 좁으면 뒤의 항목이 폭 때문에 빠져서 io를 뺐는지 알 수 없다.
 	model.limits.color, model.width = false, 200
-	stats := topProbeStats{Source: topProbeSourceLibproc, Measured: 1, RunqCount: 4, RunqSumNS: 6_000_000, IOCount: 2, IOSumNS: 500_000}
+	stats := topProbeStats{Source: topProbeSourceLibproc, Measured: 1, RunqCount: 4, RunqSumNS: 6_000_000}
 	model.rows = []topDashboardRow{{at: time.Unix(1, 0), processesValid: true, filter: "worker", processTotal: topProcessTotal{Count: 1, CPU: 10, RSS: 1 << 20, Probe: &stats}}}
 	model.selected = 0
 	banner := model.processBanner()[0]
@@ -193,7 +221,7 @@ func TestTopProbeUnreadableProcessesAreNotShownAsNoEvents(t *testing.T) {
 
 // source가 빠진 값은 모르는 방법이라 I/O를 0으로 보이지 않고, 상세 줄 앞이 비지 않는다.
 func TestTopProbeStatsWithoutSourceDoNotClaimIO(t *testing.T) {
-	stats := topProbeStats{Window: time.Second, Measured: 1, RunqCount: 1, RunqSumNS: 1_000_000, IOCount: 3}
+	stats := topProbeStats{Window: time.Second, Measured: 1, RunqCount: 1, RunqSumNS: 1_000_000}
 	if got := topProbeDetail(stats); !strings.HasPrefix(got, "unknown 1s") || !strings.Contains(got, "io n/a") {
 		t.Fatalf("detail = %q", got)
 	}

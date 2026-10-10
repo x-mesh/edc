@@ -363,14 +363,14 @@ func newTopProbeSample(stats *topProbeStats) *topProbeSample {
 	runq := stats.RunqCount
 	sample.RunqCount = &runq
 	sample.RunqAvgMS = rounded(topProbeAverageMS(stats.RunqSumNS, stats.RunqCount))
-	if stats.Source.hasHistogram() {
-		sample.RunqP95MS = rounded(topProbePercentileMS(stats.RunqHist, 0.95))
+	if stats.RunqHist != nil {
+		sample.RunqP95MS = rounded(topProbePercentileMS(*stats.RunqHist, 0.95))
 	}
-	if stats.Source.measuresIO() {
-		ops, bytes := stats.IOCount, stats.IOBytes
+	if io := stats.IO; io != nil {
+		ops, bytes := io.Count, io.Bytes
 		sample.IOOps, sample.IOBytes = &ops, &bytes
-		sample.IOAvgMS = rounded(topProbeAverageMS(stats.IOSumNS, stats.IOCount))
-		sample.IOP95MS = rounded(topProbePercentileMS(stats.IOHist, 0.95))
+		sample.IOAvgMS = rounded(topProbeAverageMS(io.SumNS, io.Count))
+		sample.IOP95MS = rounded(topProbePercentileMS(io.Hist, 0.95))
 	}
 	return sample
 }

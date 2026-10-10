@@ -135,8 +135,8 @@ type topProcess struct {
 	DiskValid           bool
 	DiskRead, DiskWrite float64
 	DiskStatus          string
-	// BPF는 eBPF가 직전 window 동안 센 값이다. --ebpf가 아니거나 아직 기준이 없으면 nil이다.
-	BPF *topBPFStats
+	// Probe는 -d observer가 직전 window 동안 센 값이다. Linux는 eBPF, macOS는 libproc이다. -d가 아니거나 아직 기준이 없으면 nil이다.
+	Probe *topProbeStats
 }
 
 type topLimitStatus struct {
@@ -206,8 +206,8 @@ type topProcessTotal struct {
 	CPU     float64
 	RSS     uint64
 	Threads int
-	// BPF는 감시하는 모든 process의 eBPF 값을 더한 것이다.
-	BPF *topBPFStats
+	// Probe는 감시하는 모든 process의 -d 값을 더한 것이다.
+	Probe *topProbeStats
 	// Blocked는 필터를 걸기 전 모든 process 중 I/O를 기다리며 멈춘 process 수다. state를 읽은 목록에서만 유효하다.
 	Blocked      int
 	BlockedValid bool
@@ -365,7 +365,7 @@ type topProcessSampler struct {
 	// scanIO는 후보를 고르기 전에 모든 process의 I/O를 읽을지다. 디스크 보기에서만 켠다.
 	scanIO bool
 	// observe는 eBPF로 필터에 맞은 process를 감시한다. 없으면 감시하지 않는다.
-	observe   topBPFObserver
+	observe   topProbeObserver
 	filter    topProcessFilter
 	filterSeq int
 	total     topProcessTotal
@@ -485,8 +485,8 @@ func (sampler *topProcessSampler) setFilter(filter topProcessFilter) {
 	sampler.processes, sampler.total, sampler.valid, sampler.updated = nil, topProcessTotal{}, false, time.Time{}
 }
 
-// setObserver는 이후 refresh부터 필터에 맞은 process를 eBPF로 감시하게 한다.
-func (sampler *topProcessSampler) setObserver(observe topBPFObserver) {
+// setObserver는 이후 refresh부터 필터에 맞은 process를 -d observer로 감시하게 한다.
+func (sampler *topProcessSampler) setObserver(observe topProbeObserver) {
 	sampler.mutex.Lock()
 	defer sampler.mutex.Unlock()
 	sampler.observe = observe
@@ -508,7 +508,7 @@ func (sampler *topProcessSampler) refresh() {
 	}
 	total.Blocked, total.BlockedValid = blocked, valid && blockedValid
 	// 목록은 CPU가 높은 순이라 감시 개수를 넘으면 가장 바쁜 process부터 감시한다.
-	var observed map[int]topBPFStats
+	var observed map[int]topProbeStats
 	if filter.active() && observe != nil {
 		pids := make([]int, 0, len(processes))
 		for _, process := range processes {
@@ -516,11 +516,11 @@ func (sampler *topProcessSampler) refresh() {
 		}
 		observed = observe(pids)
 		if len(observed) > 0 {
-			merged := topBPFStats{}
+			merged := topProbeStats{}
 			for _, stats := range observed {
 				merged.add(stats)
 			}
-			total.BPF = &merged
+			total.Probe = &merged
 		}
 	}
 	if filter.active() {
@@ -541,7 +541,7 @@ func (sampler *topProcessSampler) refresh() {
 	}
 	for index := range processes {
 		if stats, ok := observed[processes[index].PID]; ok {
-			processes[index].BPF = &stats
+			processes[index].Probe = &stats
 		}
 	}
 	// /proc를 읽는 일이라 lock 밖에서 한다. running이 refresh 하나만 돌게 하므로 enrich는 겹치지 않는다.

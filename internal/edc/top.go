@@ -129,7 +129,7 @@ func runTop(args []string, version string) (code int) {
 	// 표본을 읽기 전에 정해야 수집이 comm 대신 전체 명령줄을 담는다. 앞선 실행의 값이 남지 않게 매번 쓴다.
 	topFullCommand = *fullCommand
 	if *ebpf {
-		observe, stop, err := startTopProcessBPF()
+		observe, stop, err := startTopProcessProbe()
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			return 3
@@ -286,7 +286,7 @@ type topProcessTotalSample struct {
 	RSSBytes uint64  `json:"rss_bytes"`
 	Threads  int     `json:"threads,omitempty"`
 	// EBPF는 --ebpf가 직전 window 동안 센 값이다. 첫 관측 전에는 빠진다.
-	EBPF *topBPFSample `json:"ebpf,omitempty"`
+	EBPF *topProbeSample `json:"ebpf,omitempty"`
 }
 
 // topProcessSample은 --process가 sample마다 붙이는 process 한 개의 값이다. CPU는 core 하나가 100%다.
@@ -303,13 +303,13 @@ type topProcessSample struct {
 	DiskRead  *float64          `json:"disk_read_bytes_per_s,omitempty"`
 	DiskWrite *float64          `json:"disk_write_bytes_per_s,omitempty"`
 	// EBPF는 --ebpf가 직전 window 동안 센 값이다. 첫 관측 전에는 빠진다.
-	EBPF *topBPFSample `json:"ebpf,omitempty"`
+	EBPF *topProbeSample `json:"ebpf,omitempty"`
 }
 
 func newTopProcessSamples(processes []topProcess) *[]topProcessSample {
 	samples := make([]topProcessSample, 0, len(processes))
 	for _, process := range processes {
-		sample := topProcessSample{PID: process.PID, Command: process.Command, CPU: roundTopValue(process.CPU), RSSBytes: process.RSS, Threads: process.Threads, FDs: process.FDs, EBPF: newTopBPFSample(process.BPF)}
+		sample := topProcessSample{PID: process.PID, Command: process.Command, CPU: roundTopValue(process.CPU), RSSBytes: process.RSS, Threads: process.Threads, FDs: process.FDs, EBPF: newTopProbeSample(process.Probe)}
 		sample.Limits = processLimitsOf(process)
 		if !process.Started.IsZero() {
 			started := process.Started.UTC().Truncate(time.Second)
@@ -325,31 +325,31 @@ func newTopProcessSamples(processes []topProcess) *[]topProcessSample {
 }
 
 func newTopProcessTotalSample(total topProcessTotal) *topProcessTotalSample {
-	return &topProcessTotalSample{Count: total.Count, CPU: roundTopValue(total.CPU), RSSBytes: total.RSS, Threads: total.Threads, EBPF: newTopBPFSample(total.BPF)}
+	return &topProcessTotalSample{Count: total.Count, CPU: roundTopValue(total.CPU), RSSBytes: total.RSS, Threads: total.Threads, EBPF: newTopProbeSample(total.Probe)}
 }
 
-// topBPFSample은 window 동안 센 run-queue 대기와 block I/O 지연이다. 지연은 ms이고, p95는 그 값이 든 구간의 위쪽 경계라 실제 값은 그 아래다.
+// topProbeSample은 window 동안 센 run-queue 대기와 block I/O 지연이다. 지연은 ms이고, p95는 그 값이 든 구간의 위쪽 경계라 실제 값은 그 아래다.
 // 개수가 0이면 평균과 p95는 빠진다. I/O는 요청을 낸 process로 잡으므로 writeback은 kworker로 잡힌다.
 // source가 libproc이면 macOS의 누적 counter라 p95와 I/O 값이 없다. unreadable은 권한이 없어 읽지 못한 process 수이고,
 // 하나도 읽지 못했으면 runq 값도 빠진다.
-type topBPFSample struct {
-	Source     topBPFSource `json:"source"`
-	WindowS    float64      `json:"window_s"`
-	Unreadable int          `json:"unreadable,omitempty"`
-	RunqCount  *uint64      `json:"runq_count,omitempty"`
-	RunqAvgMS  *float64     `json:"runq_avg_ms,omitempty"`
-	RunqP95MS  *float64     `json:"runq_p95_ms,omitempty"`
-	IOOps      *uint64      `json:"io_ops,omitempty"`
-	IOBytes    *uint64      `json:"io_bytes,omitempty"`
-	IOAvgMS    *float64     `json:"io_avg_ms,omitempty"`
-	IOP95MS    *float64     `json:"io_p95_ms,omitempty"`
+type topProbeSample struct {
+	Source     topProbeSource `json:"source"`
+	WindowS    float64        `json:"window_s"`
+	Unreadable int            `json:"unreadable,omitempty"`
+	RunqCount  *uint64        `json:"runq_count,omitempty"`
+	RunqAvgMS  *float64       `json:"runq_avg_ms,omitempty"`
+	RunqP95MS  *float64       `json:"runq_p95_ms,omitempty"`
+	IOOps      *uint64        `json:"io_ops,omitempty"`
+	IOBytes    *uint64        `json:"io_bytes,omitempty"`
+	IOAvgMS    *float64       `json:"io_avg_ms,omitempty"`
+	IOP95MS    *float64       `json:"io_p95_ms,omitempty"`
 }
 
-func newTopBPFSample(stats *topBPFStats) *topBPFSample {
+func newTopProbeSample(stats *topProbeStats) *topProbeSample {
 	if stats == nil {
 		return nil
 	}
-	sample := &topBPFSample{Source: stats.Source, WindowS: roundTopValue(stats.Window.Seconds()), Unreadable: stats.Unreadable}
+	sample := &topProbeSample{Source: stats.Source, WindowS: roundTopValue(stats.Window.Seconds()), Unreadable: stats.Unreadable}
 	if stats.unmeasured() {
 		return sample
 	}
@@ -362,15 +362,15 @@ func newTopBPFSample(stats *topBPFStats) *topBPFSample {
 	}
 	runq := stats.RunqCount
 	sample.RunqCount = &runq
-	sample.RunqAvgMS = rounded(topBPFAverageMS(stats.RunqSumNS, stats.RunqCount))
+	sample.RunqAvgMS = rounded(topProbeAverageMS(stats.RunqSumNS, stats.RunqCount))
 	if stats.Source.hasHistogram() {
-		sample.RunqP95MS = rounded(topBPFPercentileMS(stats.RunqHist, 0.95))
+		sample.RunqP95MS = rounded(topProbePercentileMS(stats.RunqHist, 0.95))
 	}
 	if stats.Source.measuresIO() {
 		ops, bytes := stats.IOCount, stats.IOBytes
 		sample.IOOps, sample.IOBytes = &ops, &bytes
-		sample.IOAvgMS = rounded(topBPFAverageMS(stats.IOSumNS, stats.IOCount))
-		sample.IOP95MS = rounded(topBPFPercentileMS(stats.IOHist, 0.95))
+		sample.IOAvgMS = rounded(topProbeAverageMS(stats.IOSumNS, stats.IOCount))
+		sample.IOP95MS = rounded(topProbePercentileMS(stats.IOHist, 0.95))
 	}
 	return sample
 }

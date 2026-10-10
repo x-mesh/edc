@@ -29,7 +29,7 @@ type topDarwinObserver struct {
 	at       time.Time
 }
 
-func startTopProcessBPF() (topBPFObserver, func(), error) {
+func startTopProcessProbe() (topProbeObserver, func(), error) {
 	// Rosetta는 mach_timebase_info를 번역하지만 proc_pid_rusage는 kernel의 tick을 그대로 준다. 단위가 어긋나 대기를
 	// 잘못 셀 수 있으므로 번역된 amd64 binary에서는 세지 않는다.
 	if darwinTranslated() {
@@ -46,17 +46,17 @@ func startTopProcessBPF() (topBPFObserver, func(), error) {
 // observe는 pid마다 직전 관측 이후의 값을 돌려준다. 처음 본 process와 이미 끝난 process는 빠진다.
 // 다른 사용자의 process는 root가 아니면 libproc이 EPERM으로 거부한다. 그 process는 빠뜨리지 않고 Unreadable로 남긴다.
 // 빠뜨리면 감시 중인데 event가 없던 것과 구분되지 않는다.
-func (observer *topDarwinObserver) observe(pids []int) map[int]topBPFStats {
+func (observer *topDarwinObserver) observe(pids []int) map[int]topProbeStats {
 	now := time.Now()
 	window := now.Sub(observer.at)
 	current := make(map[int]topDarwinRunqCounters, min(len(pids), topDarwinWatchedMax))
-	observed := make(map[int]topBPFStats, len(observer.previous))
+	observed := make(map[int]topProbeStats, len(observer.previous))
 	for _, pid := range pids[:min(len(pids), topDarwinWatchedMax)] {
 		counters, err := readTopDarwinRunqCounters(pid)
 		if errors.Is(err, syscall.EPERM) {
 			// 첫 관측에는 window가 없다. 다른 process처럼 다음 관측부터 보고한다.
 			if !observer.at.IsZero() {
-				observed[pid] = topBPFStats{Window: window, Source: topBPFSourceLibproc, Unreadable: 1}
+				observed[pid] = topProbeStats{Window: window, Source: topProbeSourceLibproc, Unreadable: 1}
 			}
 			continue
 		}
@@ -90,13 +90,13 @@ func readTopDarwinRunqCounters(pid int) (topDarwinRunqCounters, error) {
 // topDarwinRunqDelta는 runnable 시간에서 CPU 시간을 빼 대기 시간을 구한다. runnable은 실행 시간을 포함한다.
 // 개수는 context switch 수다. eBPF처럼 깨어나 CPU를 받은 횟수가 아니므로 평균은 switch 한 번당 대기다.
 // PID가 재사용됐거나 counter가 줄었으면 기준이 없는 것으로 본다.
-func topDarwinRunqDelta(before, after topDarwinRunqCounters, timebase darwinTimebase) (topBPFStats, bool) {
+func topDarwinRunqDelta(before, after topDarwinRunqCounters, timebase darwinTimebase) (topProbeStats, bool) {
 	if after.started != before.started || after.runnable < before.runnable || after.cpu < before.cpu {
-		return topBPFStats{}, false
+		return topProbeStats{}, false
 	}
 	runnable := timebase.nanoseconds(after.runnable - before.runnable)
 	cpu := timebase.nanoseconds(after.cpu - before.cpu)
-	stats := topBPFStats{Source: topBPFSourceLibproc, Measured: 1, RunqCount: uint64(after.switches - before.switches)}
+	stats := topProbeStats{Source: topProbeSourceLibproc, Measured: 1, RunqCount: uint64(after.switches - before.switches)}
 	if runnable > cpu {
 		stats.RunqSumNS = runnable - cpu
 	}

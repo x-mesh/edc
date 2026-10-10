@@ -34,7 +34,7 @@ func runTopDashboard(interval time.Duration, version string, filter topProcessFi
 	model.version = version
 	model.limits.color = os.Getenv("NO_COLOR") == ""
 	processSampler.mutex.Lock()
-	model.bpfEnabled = processSampler.observe != nil
+	model.probeEnabled = processSampler.observe != nil
 	processSampler.mutex.Unlock()
 	model = model.withProcessFilter(filter).withSplit(split)
 	if recorder != nil {
@@ -195,7 +195,7 @@ type topModel struct {
 	helpOffset      int
 	processFocus    bool
 	processSelected int
-	bpfEnabled      bool
+	probeEnabled    bool
 	record          func(historyTopSample) error
 	recordFailure   tea.Cmd
 	recordingErr    error
@@ -1271,7 +1271,7 @@ func (model topModel) tableColumns() ([]topColumn, []int) {
 			// 막대는 core마다 한 칸이다. details.Cores는 CPU affinity를 따라 /proc/stat의 core 수보다 작을 수 있어 막대가 그리는 수를 쓴다.
 			column.width = min(topCoreBarLimit, max(len(column.title), cores))
 		}
-		if model.view == topViewProcess && !model.bpfEnabled && (column.title == "runq ms" || column.title == "io ms") {
+		if model.view == topViewProcess && !model.probeEnabled && (column.title == "runq ms" || column.title == "io ms") {
 			continue
 		}
 		if column.optional && (dropped || model.compact) {
@@ -2083,8 +2083,8 @@ func topMatchDetail(processes []topProcess, total topProcessTotal, valid bool) [
 		items = append(items, fmt.Sprintf("+%d", rest))
 	}
 	lines := []string{summary, "  " + strings.Join(items, ", ")}
-	if total.BPF != nil {
-		lines = append(lines, "  "+topBPFDetail(*total.BPF))
+	if total.Probe != nil {
+		lines = append(lines, "  "+topProbeDetail(*total.Probe))
 	}
 	return lines
 }
@@ -2110,11 +2110,11 @@ func (model topModel) processBanner() []string {
 	default:
 		total := row.processTotal
 		parts = []string{fmt.Sprintf("%d matched", total.Count), fmt.Sprintf("cpu %.0f%%", total.CPU), "rss " + formatProcessRSS(total.RSS)}
-		if bpf := total.BPF; bpf != nil {
-			if average, ok := topBPFAverageMS(bpf.RunqSumNS, bpf.RunqCount); ok {
+		if bpf := total.Probe; bpf != nil {
+			if average, ok := topProbeAverageMS(bpf.RunqSumNS, bpf.RunqCount); ok {
 				parts = append(parts, fmt.Sprintf("runq %.2fms", average))
 			}
-			if average, ok := topBPFAverageMS(bpf.IOSumNS, bpf.IOCount); ok && bpf.Source.measuresIO() {
+			if average, ok := topProbeAverageMS(bpf.IOSumNS, bpf.IOCount); ok && bpf.Source.measuresIO() {
 				parts = append(parts, fmt.Sprintf("io %.2fms", average))
 			}
 			if bpf.Unreadable > 0 {
@@ -2193,17 +2193,17 @@ func topProcessViewCells(row topDashboardRow) []topCell {
 		topPlainCell(topOptionalValue(total.Threads > 0, "%.0f", float64(total.Threads))), topPlainCell(topOptionalValue(fds > 0, "%.0f", float64(fds))),
 		topPlainCell(topOptionalRate(diskKnown, read)), topPlainCell(topOptionalRate(diskKnown, write)), empty, empty,
 	}
-	if bpf := total.BPF; bpf != nil {
+	if bpf := total.Probe; bpf != nil {
 		cells[7], cells[8] = topPlainCell("no ev"), topPlainCell("no ev")
 		if bpf.unmeasured() {
 			// 권한이 없어 하나도 읽지 못한 값이다. no ev로 두면 대기가 없었던 것으로 읽힌다.
 			cells[7] = topPlainCell("root")
-		} else if average, ok := topBPFAverageMS(bpf.RunqSumNS, bpf.RunqCount); ok {
+		} else if average, ok := topProbeAverageMS(bpf.RunqSumNS, bpf.RunqCount); ok {
 			cells[7] = topPlainCell(fmt.Sprintf("%.2f", average))
 		}
 		if !bpf.Source.measuresIO() {
 			cells[8] = topPlainCell("n/a")
-		} else if average, ok := topBPFAverageMS(bpf.IOSumNS, bpf.IOCount); ok {
+		} else if average, ok := topProbeAverageMS(bpf.IOSumNS, bpf.IOCount); ok {
 			cells[8] = topPlainCell(fmt.Sprintf("%.2f", average))
 		}
 	}
@@ -2285,15 +2285,15 @@ func topProcessLimitLines(processes []topProcess) []string {
 	return lines
 }
 
-// topBPFDetail은 window 동안 센 run-queue 대기와 block I/O 지연이다. 지연 뒤의 p95는 그 값이 든 구간의 위쪽 경계다.
+// topProbeDetail은 window 동안 센 run-queue 대기와 block I/O 지연이다. 지연 뒤의 p95는 그 값이 든 구간의 위쪽 경계다.
 // 분포가 없는 platform은 p95를 빼고, 셀 수 없는 I/O는 n/a로 둔다.
-func topBPFDetail(stats topBPFStats) string {
-	latency := func(sumNS, count uint64, hist [topBPFBuckets]uint64) string {
-		average, ok := topBPFAverageMS(sumNS, count)
+func topProbeDetail(stats topProbeStats) string {
+	latency := func(sumNS, count uint64, hist [topProbeBuckets]uint64) string {
+		average, ok := topProbeAverageMS(sumNS, count)
 		if !ok {
 			return "—"
 		}
-		p95, ok := topBPFPercentileMS(hist, 0.95)
+		p95, ok := topProbePercentileMS(hist, 0.95)
 		if !ok || !stats.Source.hasHistogram() {
 			return fmt.Sprintf("avg %.2fms", average)
 		}

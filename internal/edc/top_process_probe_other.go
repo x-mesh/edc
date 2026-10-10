@@ -7,6 +7,6 @@ import (
 	"runtime"
 )
 
-func startTopProcessBPF() (topBPFObserver, func(), error) {
+func startTopProcessProbe() (topProbeObserver, func(), error) {
 	return nil, nil, fmt.Errorf("top --detail requires Linux, not %s", runtime.GOOS)
 }

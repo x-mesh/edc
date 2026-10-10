@@ -1197,12 +1197,12 @@ func TestTopProcessViewShowsTheMatchedGroupForEachSample(t *testing.T) {
 			{PID: 1, CPU: 50, Command: "worker-a", FDs: 10, DiskValid: true, DiskRead: 1 << 20, DiskWrite: 2 << 20},
 			{PID: 2, CPU: 40, Command: "worker-b", FDs: 5, DiskValid: true, DiskWrite: 1 << 20},
 		},
-		processTotal: topProcessTotal{Count: 5, CPU: 130, RSS: 9 << 20, Threads: 12, BPF: &topBPFStats{Source: topBPFSourceEBPF, Measured: 1, RunqCount: 4, RunqSumNS: 6_000_000, IOCount: 2, IOSumNS: 500_000}},
+		processTotal: topProcessTotal{Count: 5, CPU: 130, RSS: 9 << 20, Threads: 12, Probe: &topProbeStats{Source: topProbeSourceEBPF, Measured: 1, RunqCount: 4, RunqSumNS: 6_000_000, IOCount: 2, IOSumNS: 500_000}},
 	}
 	if got, want := cells(row), []string{"5", "130.0", "9.0M", "12", "15", "1.00M", "3.00M", "1.50", "0.25"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("process row = %q, want %q", got, want)
 	}
-	row.processTotal.BPF = nil
+	row.processTotal.Probe = nil
 	row.processes = []topProcess{{PID: 3, CPU: 1, Command: "quiet"}}
 	if got := cells(row); got[3] != "12" || got[4] != "—" || got[5] != "—" || got[7] != "—" || got[8] != "—" {
 		t.Fatalf("unknown values must show —: %q", got)
@@ -1268,7 +1268,7 @@ func TestTopProcessBannerLeadsWithTheMatchedGroup(t *testing.T) {
 	}
 	model.rows = []topDashboardRow{{at: time.Unix(1, 0), processesValid: true, filter: "worker",
 		processes:    []topProcess{{PID: 1, CPU: 50, Command: "worker-a", FDs: 10, DiskValid: true, DiskWrite: 2 << 20}},
-		processTotal: topProcessTotal{Count: 7, CPU: 600.4, RSS: 9 << 20, Threads: 12, BPF: &topBPFStats{Source: topBPFSourceEBPF, Measured: 1, RunqCount: 4, RunqSumNS: 6_000_000, IOCount: 2, IOSumNS: 500_000}},
+		processTotal: topProcessTotal{Count: 7, CPU: 600.4, RSS: 9 << 20, Threads: 12, Probe: &topProbeStats{Source: topProbeSourceEBPF, Measured: 1, RunqCount: 4, RunqSumNS: 6_000_000, IOCount: 2, IOSumNS: 500_000}},
 	}}
 	model.selected = 0
 	banner := model.processBanner()[0]
@@ -1494,7 +1494,7 @@ func TestTopProcessLatencyDistinguishesNoEventsFromUnavailable(t *testing.T) {
 	if cells := topProcessViewCells(row); cells[7].text != "—" || cells[8].text != "—" {
 		t.Fatalf("latency without an observer = %+v", cells)
 	}
-	row.processTotal.BPF = &topBPFStats{Source: topBPFSourceEBPF, Measured: 1}
+	row.processTotal.Probe = &topProbeStats{Source: topProbeSourceEBPF, Measured: 1}
 	if cells := topProcessViewCells(row); cells[7].text != "no ev" || cells[8].text != "no ev" {
 		t.Fatalf("active observer without events = %+v", cells)
 	}

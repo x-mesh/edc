@@ -118,12 +118,12 @@ type topProcessBPF struct {
 	objects  topProcessEventsObjects
 	links    []link.Link
 	watched  map[int]struct{}
-	previous map[int]topBPFStats
+	previous map[int]topProbeStats
 	at       time.Time
 }
 
-// startTopProcessBPF는 감시 pid가 없는 채로 program을 붙인다. 돌려주는 observer로 pid를 정하고, close로 모두 뗀다.
-func startTopProcessBPF() (topBPFObserver, func(), error) {
+// startTopProcessProbe는 감시 pid가 없는 채로 program을 붙인다. 돌려주는 observer로 pid를 정하고, close로 모두 뗀다.
+func startTopProcessProbe() (topProbeObserver, func(), error) {
 	if err := topProcessBPFPrerequisites(); err != nil {
 		return nil, nil, err
 	}
@@ -166,7 +166,7 @@ func startTopProcessBPF() (topBPFObserver, func(), error) {
 		spec.Programs[name] = switchSpec.Copy()
 		spec.Programs[name].Name = name
 	}
-	tracer := &topProcessBPF{watched: map[int]struct{}{}, previous: map[int]topBPFStats{}}
+	tracer := &topProcessBPF{watched: map[int]struct{}{}, previous: map[int]topProbeStats{}}
 	if err := spec.LoadAndAssign(&tracer.objects, nil); err != nil {
 		return nil, nil, fmt.Errorf("load eBPF objects: %w", err)
 	}
@@ -195,14 +195,14 @@ func (tracer *topProcessBPF) close() {
 }
 
 // observe는 pids만 감시하게 맞추고 pid마다 직전 관측 이후 센 값을 돌려준다. 이번에 새로 감시한 pid는 기준이 없어 다음 관측부터 나온다.
-func (tracer *topProcessBPF) observe(pids []int) map[int]topBPFStats {
+func (tracer *topProcessBPF) observe(pids []int) map[int]topProbeStats {
 	now := time.Now()
 	window := now.Sub(tracer.at)
 	want := make(map[int]struct{}, min(len(pids), topBPFWatchedMax))
 	for _, pid := range pids[:min(len(pids), topBPFWatchedMax)] {
 		want[pid] = struct{}{}
 	}
-	observed := make(map[int]topBPFStats, len(tracer.watched))
+	observed := make(map[int]topProbeStats, len(tracer.watched))
 	for pid := range tracer.watched {
 		if _, keep := want[pid]; !keep {
 			key := uint32(pid)
@@ -217,7 +217,7 @@ func (tracer *topProcessBPF) observe(pids []int) map[int]topBPFStats {
 			continue
 		}
 		delta := cumulative.sub(tracer.previous[pid])
-		delta.Window, delta.Source, delta.Measured = window, topBPFSourceEBPF, 1
+		delta.Window, delta.Source, delta.Measured = window, topProbeSourceEBPF, 1
 		tracer.previous[pid] = cumulative
 		observed[pid] = delta
 	}
@@ -229,22 +229,22 @@ func (tracer *topProcessBPF) observe(pids []int) map[int]topBPFStats {
 			continue
 		}
 		tracer.watched[pid] = struct{}{}
-		tracer.previous[pid] = topBPFStats{}
+		tracer.previous[pid] = topProbeStats{}
 	}
 	tracer.at = now
 	return observed
 }
 
 // read는 pid의 누적값을 모든 CPU에 걸쳐 더한다. 아직 이벤트가 없으면 0이다.
-func (tracer *topProcessBPF) read(pid int) (topBPFStats, error) {
+func (tracer *topProcessBPF) read(pid int) (topProbeStats, error) {
 	var perCPU []topProcessEventsProcessStats
 	if err := tracer.objects.Stats.Lookup(uint32(pid), &perCPU); err != nil {
 		if errors.Is(err, ebpf.ErrKeyNotExist) {
-			return topBPFStats{}, nil
+			return topProbeStats{}, nil
 		}
-		return topBPFStats{}, err
+		return topProbeStats{}, err
 	}
-	var total topBPFStats
+	var total topProbeStats
 	for _, cpu := range perCPU {
 		total.RunqCount += cpu.RunqCount
 		total.RunqSumNS += cpu.RunqSumNs

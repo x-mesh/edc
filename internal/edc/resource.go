@@ -84,6 +84,16 @@ const (
 
 func (source topBlockedSource) known() bool { return source != topBlockedUnknown }
 
+func (source topBlockedSource) String() string {
+	switch source {
+	case topBlockedKernelTasks:
+		return "kernel tasks"
+	case topBlockedProcessList:
+		return "process list"
+	}
+	return "unknown"
+}
+
 // topMemoryPressure는 kern.memorystatus_vm_pressure_level 값이다. dispatch의 DISPATCH_MEMORYPRESSURE_*와 같고 0은 모르는 값이다.
 type topMemoryPressure int32
 

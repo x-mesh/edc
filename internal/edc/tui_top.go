@@ -1363,8 +1363,6 @@ func (model topModel) compactRow(row topDashboardRow, header bool) string {
 	return formatTopColumnsWidth(at, columns, cells, model.limits.color && !header, model.displayWidth())
 }
 
-// topColumn은 보기별 표의 한 칸이다. 헤더와 행이 같은 정의로 그려져 구분선이 어긋나지 않는다.
-// width가 0인 마지막 칸은 남은 폭을 모두 쓴다.
 // topColumnHost는 열의 값을 주는 host다. 값을 주지 않는 host에서는 열을 숨긴다.
 type topColumnHost uint8
 
@@ -1384,6 +1382,8 @@ func (host topColumnHost) shown(system string) bool {
 	return true
 }
 
+// topColumn은 보기별 표의 한 칸이다. 헤더와 행이 같은 정의로 그려져 구분선이 어긋나지 않는다.
+// width가 0인 마지막 칸은 남은 폭을 모두 쓴다.
 type topColumn struct {
 	title string
 	width int

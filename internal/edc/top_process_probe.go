@@ -84,7 +84,8 @@ func (stats *topProbeStats) add(other topProbeStats) {
 // sub는 누적값 current에서 previous를 뺀다. 카운터가 줄었다면 map이 비워졌다는 뜻이므로 current를 그대로 쓴다.
 func (current topProbeStats) sub(previous topProbeStats) topProbeStats {
 	if current.RunqCount < previous.RunqCount || (current.IO != nil && previous.IO != nil && current.IO.Count < previous.IO.Count) {
-		return current
+		// 빈 기준에서 빼면 current의 복사본이 된다. current를 그대로 돌려주면 포인터 필드를 함께 쓴다.
+		return current.sub(topProbeStats{})
 	}
 	delta := current
 	delta.RunqCount -= previous.RunqCount

@@ -692,7 +692,7 @@ sudo ./bin/edc top --process output-mesh -d --json /tmp/edc-host.jsonl
 |---|---|
 | `window_s` | 이 개수가 다루는 시간(초). 직전 sample 이후입니다. |
 | `io_supported`, `p95_supported` | 이 source가 block I/O를 세고 분포를 남기는지입니다. `ebpf`는 둘 다 `true`, `libproc`은 둘 다 `false`입니다. |
-| `runq_count`, `runq_avg_ms`, `runq_p95_ms` | process의 thread가 실행 가능 상태가 된 뒤 CPU를 받기까지의 횟수와 대기 시간. `cpu_pct`가 낮은데 대기가 길면 CPU가 모자란 것입니다. |
+| `runq_count`, `runq_avg_ms`, `runq_p95_ms` | Linux에서는 process의 thread가 실행 가능 상태가 된 뒤 CPU를 받기까지의 횟수와 대기 시간입니다. macOS에서는 이 시간 동안의 context switch 수와 switch 한 번당 평균 대기이고 p95는 없습니다. `cpu_pct`가 낮은데 대기가 길면 CPU가 모자란 것입니다. |
 | `io_ops`, `io_bytes`, `io_avg_ms`, `io_p95_ms` | process가 낸 block I/O 요청 수, byte, 요청부터 완료까지의 시간 |
 | `context_switches`, `unreadable` | macOS 전용입니다. 이 시간 동안의 context switch 수(`runq_count`와 같은 값)와 macOS가 읽지 못하게 막은 process 수입니다. |
 

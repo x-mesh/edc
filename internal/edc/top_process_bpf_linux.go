@@ -229,7 +229,7 @@ func (tracer *topProcessBPF) observe(pids []int) map[int]topProbeStats {
 			continue
 		}
 		tracer.watched[pid] = struct{}{}
-		tracer.previous[pid] = topProbeStats{}
+		tracer.previous[pid] = topProbeStats{RunqHist: &topProbeHist{}, IO: &topProbeIO{}}
 	}
 	tracer.at = now
 	return observed

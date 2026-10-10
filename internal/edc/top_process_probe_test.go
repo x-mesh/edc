@@ -75,6 +75,20 @@ func TestTopProbeStatsArithmeticLeavesItsInputsAlone(t *testing.T) {
 	}
 }
 
+// 카운터가 줄어 기준을 버릴 때도 current와 포인터를 함께 쓰지 않는다.
+func TestTopProbeStatsResetDoesNotShareCurrent(t *testing.T) {
+	previous := topProbeStats{RunqCount: 10, RunqHist: &topProbeHist{}, IO: &topProbeIO{Count: 5}}
+	current := topProbeStats{RunqCount: 2, RunqHist: &topProbeHist{7}, IO: &topProbeIO{Count: 3}}
+	delta := current.sub(previous)
+	if delta.RunqCount != 2 || delta.IO.Count != 3 || delta.RunqHist[0] != 7 {
+		t.Fatalf("reset delta = %+v", delta)
+	}
+	delta.IO.Count, delta.RunqHist[0] = 99, 99
+	if current.IO.Count != 3 || current.RunqHist[0] != 7 {
+		t.Fatalf("reset shared current: %+v %+v", *current.IO, *current.RunqHist)
+	}
+}
+
 // eBPF가 아닌 값은 분포와 I/O가 nil이라 합쳐도 생기지 않는다.
 func TestTopProbeStatsKeepMissingValuesMissing(t *testing.T) {
 	total := topProbeStats{}

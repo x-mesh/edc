@@ -800,7 +800,7 @@ The dashboard adds a third line to the detail view: `ebpf 1s · runq 7584 avg 5.
 |---|---|
 | `window_s` | seconds the counts cover, since the previous sample |
 | `io_supported`, `p95_supported` | whether the source can count block I/O and keep a distribution. Both are `true` for `ebpf` and `false` for `libproc`. |
-| `runq_count`, `runq_avg_ms`, `runq_p95_ms` | times a thread of the process became runnable and then got a CPU, and the wait in between. A high wait with a low `cpu_pct` means the CPU is oversubscribed. |
+| `runq_count`, `runq_avg_ms`, `runq_p95_ms` | On Linux, times a thread of the process became runnable and then got a CPU, and the wait in between. On macOS, the context switches in the window and the average wait per switch, with no p95. A high wait with a low `cpu_pct` means the CPU is oversubscribed. |
 | `io_ops`, `io_bytes`, `io_avg_ms`, `io_p95_ms` | block I/O requests the process issued, their bytes, and the time from issue to completion |
 | `context_switches`, `unreadable` | macOS only: the context switches in the window, which `runq_count` repeats, and the matches that macOS refused to read |
 

@@ -493,7 +493,7 @@ stdin과 stdout이 모두 terminal이면 `edc top`은 전체 화면 대시보드
 
 기본 표의 `signal` 열은 load, CPU, iowait, memory, disk await, network errors·drops 중 가장 심각한 항목과 추가 개수를 보여 줍니다. network errors·drops는 초당 1개부터 경고로 셉니다. 패킷 수는 network 보기에서 확인합니다. 과거 행을 선택해도 수집은 계속되며 `End`로 최신 행을 다시 따라갑니다. 수집이 잠시 실패하면 마지막 행을 유지하고 다음 interval에 다시 시도합니다.
 
-Linux에서는 `i/o`가 경고 수준이고 I/O를 기다리는 작업이 4개 이상이면 `signal` 열에 `blocked N`을 표시합니다. macOS에는 `i/o` 값이 없으므로 `U` 상태 process가 4개 이상이면 `blocked N`을 표시합니다. macOS에서는 kernel이 memory 압박 단계를 올리면 `signal` 열에 `mem pressure warn`이나 `mem pressure critical`도 표시합니다. process 묶음도 CPU 합이 80% 이상이거나 I/O 합이 50 MB/s 이상이면 `gm (200) 100%`처럼 이름과 process 수로 경고합니다. I/O 합은 disk 보기에서만 계산하므로 묶음의 I/O 경고도 disk 보기에서만 나옵니다.
+Linux에서는 `i/o`가 경고 수준이고 I/O를 기다리는 작업이 4개 이상이면 `signal` 열에 `blocked N`을 표시합니다. macOS에는 `i/o` 값이 없습니다. `U` 상태는 page-in 대기에서도 생기므로, macOS는 `U` 상태 process가 4개 이상이고 `await`가 경고 수준이거나 memory 압박 단계가 `warn`이나 `critical`일 때 `blocked N`을 표시합니다. macOS에서는 kernel이 memory 압박 단계를 올리면 `signal` 열에 `mem pressure warn`이나 `mem pressure critical`도 표시합니다. process 묶음도 CPU 합이 80% 이상이거나 I/O 합이 50 MB/s 이상이면 `gm (200) 100%`처럼 이름과 process 수로 경고합니다. I/O 합은 disk 보기에서만 계산하므로 묶음의 I/O 경고도 disk 보기에서만 나옵니다.
 
 기본 표는 terminal 폭에 맞춰 열을 늘립니다. 80열보다 넓으면 다음 순서로 열을 추가합니다.
 

@@ -537,7 +537,7 @@ If stdin and stdout are terminals, `edc top` opens a full-screen dashboard. The 
 
 The `signal` column shows the highest-priority host warning and the number of other warnings.
 
-On Linux, the `signal` column shows `blocked N` when `i/o` is at the warning level and 4 or more tasks wait for I/O. macOS has no `i/o` value, so it shows `blocked N` when 4 or more processes are in the `U` state. On macOS, the `signal` column also shows `mem pressure warn` or `mem pressure critical` when the kernel raises the memory pressure level. A process group also gets a warning when its CPU total is 80% or more, or its I/O total is 50 MB/s or more. The warning shows the name and the process count, for example `gm (200) 100%`. Only the disk view calculates the I/O total, so the I/O warning of a group shows only in the disk view.
+On Linux, the `signal` column shows `blocked N` when `i/o` is at the warning level and 4 or more tasks wait for I/O. macOS has no `i/o` value. The `U` state also covers page-in waits, so macOS shows `blocked N` when 4 or more processes are in the `U` state and `await` is at the warning level or the memory pressure level is `warn` or `critical`. On macOS, the `signal` column also shows `mem pressure warn` or `mem pressure critical` when the kernel raises the memory pressure level. A process group also gets a warning when its CPU total is 80% or more, or its I/O total is 50 MB/s or more. The warning shows the name and the process count, for example `gm (200) 100%`. Only the disk view calculates the I/O total, so the I/O warning of a group shows only in the disk view.
 
 Network errors and drops count as a warning from one per second. Use the network view for packet counts.
 

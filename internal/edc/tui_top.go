@@ -1973,8 +1973,7 @@ func topSignals(rate resourceRate, limits topLimits) []topSignalItem {
 	if rate.CPUIOWait >= limits.io.warn {
 		all = append(all, topSignalItem{fmt.Sprintf("io %.1f%%", rate.CPUIOWait), rate.CPUIOWait / limits.io.danger, topViewDisk, "io"})
 	}
-	// process 목록에서 센 blocked(macOS)는 iowait이 없으므로 멈춘 process 수만으로 판단한다.
-	if (rate.ProcsBlockedFromProcesses || rate.CPUIOWait >= limits.io.warn) && rate.ProcsBlockedValid && rate.ProcsBlocked >= topBlockedSignalMin {
+	if topBlockedEvidence(rate, limits) && rate.ProcsBlockedValid && rate.ProcsBlocked >= topBlockedSignalMin {
 		all = append(all, topSignalItem{fmt.Sprintf("blocked %.0f", rate.ProcsBlocked), rate.ProcsBlocked / topBlockedSignalDanger, topViewDisk, "blocked"})
 	}
 	if rate.CPUUser+rate.CPUSystem >= limits.cpu.warn {
@@ -1997,6 +1996,15 @@ func topSignals(rate resourceRate, limits topLimits) []topSignalItem {
 	}
 	sort.SliceStable(all, func(i, j int) bool { return all[i].score > all[j].score })
 	return all
+}
+
+// topBlockedEvidence는 멈춘 작업 수 외의 두 번째 근거다. Linux는 iowait이다. iowait이 없는 macOS의 U 상태는 디스크
+// 대기 말고 page-in 같은 VM 대기에서도 생기므로, 디스크 await 경고나 memory 압박이 함께 있을 때만 경고한다.
+func topBlockedEvidence(rate resourceRate, limits topLimits) bool {
+	if rate.ProcsBlockedFromProcesses {
+		return (rate.DiskHealthValid && rate.DiskAwait >= limits.await.warn) || rate.MemoryPressure.level() != topLevelNormal
+	}
+	return rate.CPUIOWait >= limits.io.warn
 }
 
 func formatTopSignals(signals []topSignalItem) string {

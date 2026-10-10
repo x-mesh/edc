@@ -1756,10 +1756,27 @@ func TestTopSignalsUseMemoryPressureAndBlockedWithoutIOWait(t *testing.T) {
 		}
 		return false
 	}
-	// process 목록에서 센 blocked(macOS)는 iowait이 없으므로 개수만으로 판단한다. kernel 값(Linux)은 iowait도 높아야 한다.
-	// zero value는 kernel 값이라 표시를 빠뜨려도 경고가 느슨해지지 않는다.
-	if !blocked(resourceRate{ProcsBlocked: topBlockedSignalMin, ProcsBlockedValid: true, ProcsBlockedFromProcesses: true}) {
-		t.Error("blocked processes from the process list must warn alone")
+	// process 목록에서 센 blocked(macOS)는 iowait 대신 디스크 await 경고나 memory 압박이 두 번째 근거다. U 상태는 page-in
+	// 대기에서도 생기므로 개수만으로는 경고하지 않는다. kernel 값(Linux)은 iowait도 높아야 한다. zero value는 kernel 값이라
+	// 표시를 빠뜨려도 경고가 느슨해지지 않는다.
+	fromProcesses := resourceRate{ProcsBlocked: topBlockedSignalMin, ProcsBlockedValid: true, ProcsBlockedFromProcesses: true}
+	if blocked(fromProcesses) {
+		t.Error("blocked processes from the process list must not warn alone")
+	}
+	slowDisk := fromProcesses
+	slowDisk.DiskHealthValid, slowDisk.DiskAwait = true, limits.await.warn
+	if !blocked(slowDisk) {
+		t.Error("blocked processes with a slow disk must warn")
+	}
+	unreadDisk := slowDisk
+	unreadDisk.DiskHealthValid = false
+	if blocked(unreadDisk) {
+		t.Error("an unread disk await must not count as evidence")
+	}
+	pressured := fromProcesses
+	pressured.MemoryPressure = topMemoryPressureWarn
+	if !blocked(pressured) {
+		t.Error("blocked processes under memory pressure must warn")
 	}
 	if blocked(resourceRate{ProcsBlocked: 14, ProcsBlockedValid: true}) {
 		t.Error("kernel blocked tasks without iowait must not warn")

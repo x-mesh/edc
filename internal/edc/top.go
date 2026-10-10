@@ -271,7 +271,9 @@ type topSample struct {
 	PSIIOFull     float64            `json:"psi_io_full_avg10_pct"`
 	PSIValid      bool               `json:"psi_supported"`
 	MemoryPct     float64            `json:"memory_pct"`
-	SwapOut       float64            `json:"swap_out_bytes_per_s"`
+	// MemoryPressure는 macOS kernel의 memory 압박 단계(normal, warn, critical)다. 다른 host에서는 빠진다.
+	MemoryPressure string  `json:"memory_pressure,omitempty"`
+	SwapOut        float64 `json:"swap_out_bytes_per_s"`
 	// Processes는 --process를 쓸 때만 나온다. 맞는 process가 없으면 빈 배열이고, 첫 sample처럼 목록이 아직 없으면 빠진다.
 	Processes *[]topProcessSample `json:"processes,omitempty"`
 	// ProcessTotal은 필터에 맞은 process 전체의 합이다. Processes는 CPU 상위만 남기지만 합은 모두 센다.
@@ -365,13 +367,17 @@ func newTopBPFSample(stats *topBPFStats) *topBPFSample {
 }
 
 func newTopSample(details hostDetails, at time.Time, rate resourceRate) topSample {
-	return topSample{
+	sample := topSample{
 		Time: at.UTC(), Hostname: details.Hostname, Cores: details.Cores, NetworkLimits: rate.NetworkHealth,
 		NetIn: roundTopValue(rate.NetIn), NetOut: roundTopValue(rate.NetOut),
 		PacketsIn: roundTopValue(rate.PacketsIn), PacketsOut: roundTopValue(rate.PacketsOut), NetErrors: roundTopValue(rate.NetErrors), NetDrops: roundTopValue(rate.NetDrops), NetHealth: rate.NetHealthValid,
 		Load1: roundTopValue(rate.Load1), CPUUser: roundTopValue(rate.CPUUser), CPUSystem: roundTopValue(rate.CPUSystem), CPUIOWait: roundTopValue(rate.CPUIOWait),
 		DiskRead: roundTopValue(rate.DiskRead), DiskWrite: roundTopValue(rate.DiskWrite), DiskIOPS: roundTopValue(rate.DiskIOPS), DiskAwait: roundTopValue(rate.DiskAwait), DiskBusy: roundTopValue(rate.DiskBusy), DiskHealth: rate.DiskHealthValid, DiskBusyOK: rate.DiskBusyValid, PSICPU: roundTopValue(rate.PSICPU), PSIMemory: roundTopValue(rate.PSIMemory), PSIIO: roundTopValue(rate.PSIIO), PSIMemoryFull: roundTopValue(rate.PSIMemoryFull), PSIIOFull: roundTopValue(rate.PSIIOFull), PSIValid: rate.PSIValid, MemoryPct: roundTopValue(rate.MemoryPercent), SwapOut: roundTopValue(rate.SwapOut),
 	}
+	if rate.MemoryPressureValid {
+		sample.MemoryPressure = topMemoryPressureName(rate.MemoryPressure)
+	}
+	return sample
 }
 
 // roundTopValue는 소수점 둘째 자리까지만 남겨 JSON 한 줄을 짧게 유지한다.

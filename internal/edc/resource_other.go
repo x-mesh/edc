@@ -103,12 +103,15 @@ func collectResourceSnapshot() (resourceSnapshot, error) {
 		load    float64
 		// networkOK와 diskOK가 false면 counter가 0이므로 다음 rate의 기준으로 쓰면 안 된다.
 		networkOK, diskOK bool
+		pressure          int
+		pressureErr       error
 	)
-	group.Add(4)
+	group.Add(5)
 	go func() { defer group.Done(); network, networkOK = readDarwinNetwork() }()
 	go func() { defer group.Done(); disk, diskOK = readDarwinDisk() }()
 	go func() { defer group.Done(); memory = readDarwinMemory() }()
 	go func() { defer group.Done(); load = readDarwinLoad() }()
+	go func() { defer group.Done(); pressure, pressureErr = readDarwinMemoryPressure() }()
 	group.Wait()
 
 	snapshot.NetMissing, snapshot.DiskMissing = !networkOK, !diskOK
@@ -120,6 +123,7 @@ func collectResourceSnapshot() (resourceSnapshot, error) {
 	snapshot.MemoryTotal, snapshot.MemoryUsed = memory.total, memory.used
 	snapshot.SwapOutBytes, snapshot.SwapMissing = memory.swapOut, !memory.swapOK
 	snapshot.Load1 = load
+	snapshot.MemoryPressure, snapshot.MemoryPressureValid = pressure, pressureErr == nil
 	return snapshot, nil
 }
 
@@ -294,7 +298,7 @@ func collectInfoCapabilities() []infoCapability {
 		ioSupport.State, ioSupport.Detail = "unavailable", err.Error()
 	}
 	return []infoCapability{ioSupport,
-		{"PSI", "unsupported", "Linux-only; no macOS pressure measurement here"},
+		{"PSI", "unsupported", "Linux-only; edc top shows the macOS memory pressure level"},
 		{"CPU wait / I/O latency", "unsupported", "edc top -d requires Linux eBPF"},
 	}
 }

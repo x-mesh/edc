@@ -190,14 +190,14 @@ func TestTopSignalSummarizesHighestRisk(t *testing.T) {
 
 func TestTopSignalReportsBlockedTasksOnlyWithHighIOWait(t *testing.T) {
 	limits := newTopLimits(4, false)
-	items := topSignals(resourceRate{CPUIOWait: 78, ProcsBlocked: 14, ProcsBlockedValid: true}, limits)
+	items := topSignals(resourceRate{CPUIOWait: 78, CPUIOWaitValid: true, ProcsBlocked: 14, ProcsBlockedValid: true}, limits)
 	if len(items) != 2 || items[1].text != "blocked 14" || items[1].view != topViewDisk {
 		t.Fatalf("items = %+v", items)
 	}
 	for name, rate := range map[string]resourceRate{
-		"low iowait":   {CPUIOWait: 2, ProcsBlocked: 14, ProcsBlockedValid: true},
-		"few blocked":  {CPUIOWait: 78, ProcsBlocked: 3, ProcsBlockedValid: true},
-		"not measured": {CPUIOWait: 78, ProcsBlocked: 14},
+		"low iowait":   {CPUIOWait: 2, CPUIOWaitValid: true, ProcsBlocked: 14, ProcsBlockedValid: true},
+		"few blocked":  {CPUIOWait: 78, CPUIOWaitValid: true, ProcsBlocked: 3, ProcsBlockedValid: true},
+		"not measured": {CPUIOWait: 78, CPUIOWaitValid: true, ProcsBlocked: 14},
 	} {
 		for _, item := range topSignals(rate, limits) {
 			if strings.HasPrefix(item.text, "blocked") {
@@ -662,11 +662,16 @@ func TestTopOptionalColumnsKeepTheSignalWidth(t *testing.T) {
 	darwin.width = 200
 	for _, view := range []topView{topViewCPU, topViewDisk, topViewNetwork} {
 		darwin.view = view
-		for _, title := range []string{"steal%", "blocked", "queue", "retr/s", "rst/s", "fail/s"} {
+		for _, title := range []string{"steal%", "queue", "retr/s", "rst/s", "fail/s"} {
 			if got := darwin.tableHeader()[0]; strings.Contains(got, title) {
 				t.Errorf("darwin %s shows %s: %q", view, title, got)
 			}
 		}
+	}
+	// macOS는 U 상태 process 수로 blocked를 채우므로 그 열을 보인다.
+	darwin.view = topViewCPU
+	if got := darwin.tableHeader()[0]; !strings.Contains(got, "blocked") {
+		t.Errorf("darwin cpu hides blocked: %q", got)
 	}
 	rate := resourceRate{CPUSteal: 12.5, CPUStealValid: true, ProcsBlocked: 3, ProcsBlockedValid: true, DiskQueue: 2.25, DiskHealthValid: true, DiskBusyValid: true}
 	model.width, model.view = 200, topViewCPU
@@ -1695,5 +1700,67 @@ func TestTopFooterStaysAtTheBottom(t *testing.T) {
 	lines := strings.Split(split.View().Content, "\n")
 	if len(lines) != 60 || !strings.Contains(ansi.Strip(lines[59]), "q quit") {
 		t.Errorf("split: %d lines, last = %q", len(lines), lines[len(lines)-1])
+	}
+}
+
+// macOS는 PSI 대신 kernel의 memory 압박 단계를 보이고, Linux는 그 열을 숨긴다.
+func TestTopMemoryPressureColumnFollowsTheHost(t *testing.T) {
+	model := topFixtureModel(nil)
+	model.width = 200
+	darwin := model
+	darwin.details.System = "darwin"
+	for _, view := range []topView{topViewMemory, topViewPressure} {
+		model.view, darwin.view = view, view
+		if got := model.tableHeader()[0]; strings.Contains(got, "mem lvl") {
+			t.Errorf("linux %s shows mem lvl: %q", view, got)
+		}
+		got := darwin.tableHeader()[0]
+		if !strings.Contains(got, "mem lvl") || strings.Contains(got, "psi") || strings.Contains(got, "full") {
+			t.Errorf("darwin %s header = %q", view, got)
+		}
+	}
+	darwin.view = topViewPressure
+	rate := resourceRate{MemoryPressure: 4, MemoryPressureValid: true, ProcsBlocked: 2, ProcsBlockedValid: true}
+	if line := darwin.tableRow(topDashboardRow{at: time.Unix(1, 0), rate: rate}); !strings.Contains(line, "critical") || !strings.Contains(line, "│      2│") {
+		t.Errorf("darwin pressure row = %q", line)
+	}
+	if got := topAfter(t, darwin, topKey("s")); got.view != topViewPressure {
+		t.Errorf("darwin s: view = %s, notice = %q", got.view, got.notice)
+	}
+}
+
+func TestTopSignalsUseMemoryPressureAndBlockedWithoutIOWait(t *testing.T) {
+	limits := newTopLimits(4, false)
+	for level, want := range map[int]string{1: "", 2: "mem pressure warn", 3: "mem pressure warn", 4: "mem pressure critical"} {
+		got := ""
+		for _, item := range topSignals(resourceRate{MemoryPressure: level, MemoryPressureValid: true}, limits) {
+			if item.kind == "mem pressure" {
+				got = item.text
+				if item.level() != topMemoryPressureLevel(level) {
+					t.Errorf("level %d: signal level %v", level, item.level())
+				}
+			}
+		}
+		if got != want {
+			t.Errorf("level %d: signal %q, want %q", level, got, want)
+		}
+	}
+	if items := topSignals(resourceRate{MemoryPressure: 4}, limits); len(items) != 0 {
+		t.Errorf("an unread level must not warn: %+v", items)
+	}
+	blocked := func(rate resourceRate) bool {
+		for _, item := range topSignals(rate, limits) {
+			if item.kind == "blocked" {
+				return true
+			}
+		}
+		return false
+	}
+	// macOS에는 iowait이 없으므로 멈춘 process 수만으로 판단한다. Linux는 iowait도 높아야 한다.
+	if !blocked(resourceRate{ProcsBlocked: topBlockedSignalMin, ProcsBlockedValid: true}) {
+		t.Error("a host without iowait must warn on blocked processes alone")
+	}
+	if blocked(resourceRate{CPUIOWait: 1, CPUIOWaitValid: true, ProcsBlocked: topBlockedSignalMin, ProcsBlockedValid: true}) {
+		t.Error("a host with low iowait must not warn on blocked tasks")
 	}
 }

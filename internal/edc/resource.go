@@ -65,8 +65,14 @@ type resourceSnapshot struct {
 	CPUSteal      uint64
 	CPUStealValid bool
 	// ProcsBlocked는 지금 I/O를 기다리며 멈춘(D state) 작업 수다. 누적값이 아니라 현재 값이다.
+	// macOS는 이 값을 주지 않아 대시보드가 process 목록의 U 상태 process 수로 채운다.
 	ProcsBlocked      uint64
 	ProcsBlockedValid bool
+	// CPUIOWaitValid는 kernel이 iowait 시간을 주는지다. macOS에는 이 값이 없다.
+	CPUIOWaitValid bool
+	// MemoryPressure는 macOS kernel이 판단한 memory 압박 단계다. 1 normal, 2 warn, 4 critical이다.
+	MemoryPressure      int
+	MemoryPressureValid bool
 }
 
 type topProcess struct {
@@ -161,6 +167,9 @@ type topProcessTotal struct {
 	Threads int
 	// BPF는 감시하는 모든 process의 eBPF 값을 더한 것이다.
 	BPF *topBPFStats
+	// Blocked는 필터를 걸기 전 모든 process 중 I/O를 기다리며 멈춘 process 수다. state를 읽은 목록에서만 유효하다.
+	Blocked      int
+	BlockedValid bool
 	// Groups는 같은 실행 파일 이름의 process를 묶은 합이다. 필터가 없을 때 채우고, I/O 합은 모든 process의 I/O를 읽는
 	// 디스크 보기에서만 들어간다.
 	Groups []topProcessGroup
@@ -449,12 +458,14 @@ func (sampler *topProcessSampler) refresh() {
 	filter, observe, filterSeq, scanIO := sampler.filter, sampler.observe, sampler.filterSeq, sampler.scanIO
 	sampler.mutex.Unlock()
 	processes, valid := sampler.read()
+	blocked, blockedValid := countBlockedTopProcesses(processes)
 	// 필터는 CPU 순위를 자르기 전에 건다. 자른 뒤에 걸면 CPU가 낮은 process가 목록에 들지 못해 항상 비어 보인다.
 	processes = filter.apply(processes)
 	total := topProcessTotal{}
 	if filter.active() {
 		total = totalTopProcesses(processes)
 	}
+	total.Blocked, total.BlockedValid = blocked, valid && blockedValid
 	// 목록은 CPU가 높은 순이라 감시 개수를 넘으면 가장 바쁜 process부터 감시한다.
 	var observed map[int]topBPFStats
 	if filter.active() && observe != nil {
@@ -562,6 +573,18 @@ func topProcessCandidatesByIO(processes []topProcess) []topProcess {
 
 // topProcessStateBlocked는 I/O를 기다리며 멈춘 process의 state 문자다.
 const topProcessStateBlocked = "D"
+
+// countBlockedTopProcesses는 멈춘 process 수다. state를 하나도 읽지 못한 목록은 셀 수 없다.
+func countBlockedTopProcesses(processes []topProcess) (int, bool) {
+	blocked, known := 0, false
+	for _, process := range processes {
+		known = known || process.State != ""
+		if process.State == topProcessStateBlocked {
+			blocked++
+		}
+	}
+	return blocked, known
+}
 
 // linuxProcessStat은 /proc/<pid>/stat 한 줄에서 CPU tick과 RSS page 수만 뽑은 값이다.
 type linuxProcessStat struct {
@@ -718,6 +741,9 @@ type resourceRate struct {
 	DiskBusyValid                   bool
 	CPUStealValid                   bool
 	ProcsBlockedValid               bool
+	CPUIOWaitValid                  bool
+	MemoryPressure                  int
+	MemoryPressureValid             bool
 	CoreCPU                         []float64
 	PSICPU, PSIMemory, PSIIO        float64
 	PSIMemoryFull, PSIIOFull        float64
@@ -788,6 +814,8 @@ func calculateRate(previous, current resourceSnapshot) resourceRate {
 		rate.CPUSteal = percent(current.CPUSteal, previous.CPUSteal)
 	}
 	rate.ProcsBlocked, rate.ProcsBlockedValid = float64(current.ProcsBlocked), current.ProcsBlockedValid
+	rate.CPUIOWaitValid = current.CPUIOWaitValid && previous.CPUIOWaitValid
+	rate.MemoryPressure, rate.MemoryPressureValid = current.MemoryPressure, current.MemoryPressureValid
 	// 한쪽 sample이 counter를 읽지 못했으면 이 구간의 rate는 알 수 없다. 0으로 남은 counter와 비교하지 않는다.
 	if previous.NetMissing || current.NetMissing {
 		rate.NetIn, rate.NetOut, rate.PacketsIn, rate.PacketsOut, rate.NetErrors, rate.NetDrops, rate.NetHealthValid = 0, 0, 0, 0, 0, 0, false

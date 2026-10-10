@@ -801,3 +801,41 @@ func TestTopProcessSamplerTotalsEveryMatchAndEnrichesTheKeptOnes(t *testing.T) {
 		t.Fatalf("total = %+v, want %+v", total, want)
 	}
 }
+
+// 멈춘 process 수는 host 값이라 필터와 상관없이 모든 process에서 센다.
+func TestTopProcessSamplerCountsBlockedBeforeTheFilter(t *testing.T) {
+	all := []topProcess{{PID: 1, State: topProcessStateBlocked, Command: "dd"}, {PID: 2, State: topProcessStateBlocked, Command: "cp"}, {PID: 3, State: "S", Command: "worker"}}
+	sampler := &topProcessSampler{read: func() ([]topProcess, bool) { return append([]topProcess(nil), all...), true }}
+	filter, _ := parseTopProcessFilter("worker")
+	sampler.setFilter(filter)
+	_, total, _ := sampler.refreshNow()
+	if total.Blocked != 2 || !total.BlockedValid {
+		t.Fatalf("blocked = %d, %v", total.Blocked, total.BlockedValid)
+	}
+	snapshot := resourceSnapshot{ProcessTotal: total}
+	fillProcsBlocked(&snapshot)
+	if snapshot.ProcsBlocked != 2 || !snapshot.ProcsBlockedValid {
+		t.Fatalf("snapshot = %d, %v", snapshot.ProcsBlocked, snapshot.ProcsBlockedValid)
+	}
+	// kernel이 준 값(Linux procs_blocked)은 덮지 않는다.
+	kernel := resourceSnapshot{ProcsBlocked: 9, ProcsBlockedValid: true, ProcessTotal: total}
+	fillProcsBlocked(&kernel)
+	if kernel.ProcsBlocked != 9 {
+		t.Fatalf("kernel value overwritten: %d", kernel.ProcsBlocked)
+	}
+	// state를 읽지 못한 목록은 0이 아니라 모르는 값이다.
+	if _, known := countBlockedTopProcesses([]topProcess{{PID: 1}}); known {
+		t.Fatal("a list without states must not count")
+	}
+}
+
+func TestTopSampleWritesMemoryPressureOnlyWhenRead(t *testing.T) {
+	data, err := json.Marshal(newTopSample(hostDetails{}, time.Unix(1, 0), resourceRate{MemoryPressure: 2, MemoryPressureValid: true}))
+	if err != nil || !strings.Contains(string(data), `"memory_pressure":"warn"`) {
+		t.Fatalf("sample = %s, %v", data, err)
+	}
+	data, _ = json.Marshal(newTopSample(hostDetails{}, time.Unix(1, 0), resourceRate{}))
+	if strings.Contains(string(data), "memory_pressure") {
+		t.Fatalf("an unread level must be left out: %s", data)
+	}
+}

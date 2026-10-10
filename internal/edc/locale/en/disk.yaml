@@ -1,0 +1,49 @@
+# English messages for the disk command group (check, grow).
+disk:
+  skip:
+    linux_only: "edc reads and grows disks on Linux only"
+  flag:
+    dry_run: "print the plan and exit, changing nothing"
+    yes: "skip the confirmation"
+  layer:
+    disk: "disk"
+    partition: "partition"
+    pv: "pv"
+    lv: "lv"
+    filesystem: "filesystem"
+  evidence:
+    rescan: "rescan"
+    unknown_size: "size unknown (%v)"
+    step: "step %d"
+    done: "done"
+  error:
+    no_mount: "edc found no mount for %s"
+    no_ext_superblock: "no ext superblock"
+    lv_not_found: "lvs shows no logical volume for %s"
+    pv_not_found: "pvs shows no physical volume %s"
+  blocked:
+    fs_type: "edc cannot grow %s, only ext3, ext4, and xfs"
+    not_lvm: "%s is a device-mapper device but not an LVM volume"
+    many_pvs: "%s uses %d physical volumes, edc grows a volume on one disk only"
+    logical: "%s is a logical partition in an MBR table, growpart cannot grow it"
+    not_last: "%s is not the last partition, %s is free after the last partition"
+    mbr_limit: "%s uses an MBR table that ends at 2 TiB, convert it to GPT first"
+    no_growpart: "growpart is missing, install cloud-guest-utils (Debian, Ubuntu) or cloud-utils-growpart (RHEL)"
+    no_tool: "%s is missing"
+  check:
+    growable: "%s can grow by %s, run edc disk grow %s"
+    full: "%s uses the full disk, %s"
+    unknown: "%s: edc cannot read the file system size, run as root"
+    rescan_note: "%s is a SCSI disk, edc disk grow rescans it first and can find more space"
+    none: "edc found no mounted block device"
+  grow:
+    dry_run: "plan only, nothing changed: %s grows by %s"
+    summary: "%s grew from %s to %s"
+    cancelled: "cancelled, nothing changed"
+    confirm:
+      question: "Grow %s?"
+      detail: "A partition and a file system cannot shrink back. Take a snapshot first."
+    error:
+      root_required: "edc disk grow needs root, or use -n to see the plan"
+      unchanged: "%s did not change the size"
+      resume: "Run the same command again to continue from the failed step."

@@ -1160,6 +1160,41 @@ Run only one protected change at a time. If the target changes after apply, `edc
 
 Use `--yes` to confirm immediately. This removes the rollback window.
 
+## Disk growth
+
+Use `edc disk` after you make a cloud volume larger, for example an AWS EBS volume or an OCI block volume. Linux only. `grow` needs root. `edc` does not add `sudo` itself.
+
+```bash
+edc disk check                 # show the mounts that can grow, change nothing
+edc disk check /data           # show the layers under one mount
+edc disk grow /data -n         # print the plan, change nothing
+edc disk grow /data            # show the plan, ask, then grow
+```
+
+`edc` reads the layers from `/proc/self/mountinfo` and `/sys/class/block`. A layer is the disk, the partition, the LVM physical volume (PV), the logical volume (LV), or the file system. Then `edc` runs only the steps that add space:
+
+1. `rescan` if the disk is a SCSI disk. This step follows the OCI procedure: a direct read of one block, then a write to `/sys/class/block/<disk>/device/rescan`. NVMe and virtio disks have no rescan file. The kernel sees their new size at once.
+2. `growpart <disk> <number>` if the partition is shorter than the disk.
+3. `pvresize <pv>` if the PV is shorter than its partition.
+4. `lvextend -l +100%FREE <lv>` if the volume group has free space. The LV gets all the free space of the volume group.
+5. `resize2fs <device>` for ext3 and ext4, or `xfs_growfs -d <mount>` for xfs.
+
+After each step, `edc` reads the layers again and checks that the layer grew. If a step fails, run the same command again. The layers that grew drop out of the plan, so the next run starts at the failed step.
+
+The grow is permanent. A partition or a file system cannot shrink back, and xfs cannot shrink at all. Take a snapshot of the volume before you grow it.
+
+`edc` refuses these cases and changes nothing:
+
+- The file system is not ext3, ext4, or xfs.
+- Another partition starts after the partition. `edc` finds the last partition by its start, not by its number. The Ubuntu cloud image keeps the root partition `1` at the end of the disk.
+- The disk uses an MBR table, and the partition reaches the 2 TiB limit of MBR. Convert the table to GPT first.
+- The LV spans more than one PV, or a device-mapper device is not an LVM volume.
+- `growpart` is not installed. Install `cloud-guest-utils` on Debian and Ubuntu, or `cloud-utils-growpart` on RHEL.
+
+`check` needs no root, but it shows every size only as root. Without root, `edc` cannot read the ext superblock or the LVM report. Without a mount, `check` shows the mounted ext3, ext4, and xfs file systems on block devices.
+
+`grow` asks before it changes the disk. Use `--yes` to skip the question in a script. If you answer no, `grow` stops with exit code `4`.
+
 ## Probe live line
 
 A single probe command shows one progress line if stdin and stdout are terminals. The line has the probe name, the target, the elapsed time, and the last output line of the command.
@@ -1196,7 +1231,7 @@ which interface do you want to capture?
 → edc capture --interface en0
 ```
 
-A command group asks which command to run. `edc dns`, `edc net`, `edc report`, `edc route`, `edc change`, and `edc completion` show their commands. `edc report show` and `edc report diff` then list the reports in the current directory.
+A command group asks which command to run. `edc dns`, `edc net`, `edc report`, `edc route`, `edc change`, `edc disk`, and `edc completion` show their commands. `edc report show` and `edc report diff` then list the reports in the current directory.
 
 `edc change confirm`, `edc change rollback`, and `edc route rollback` list the changes that still wait. You pick one instead of copying a run id.
 

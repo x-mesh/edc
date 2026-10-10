@@ -94,6 +94,8 @@ func Run(args []string, version string) int {
 		return runRoute(args[1:], version)
 	case "change":
 		return runChange(args[1:], version)
+	case "disk":
+		return runDisk(args[1:], version)
 	case "where":
 		return runWhere(args[1:], version)
 	case "listen":

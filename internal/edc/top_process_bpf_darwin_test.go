@@ -5,6 +5,7 @@ package edc
 import (
 	"os"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -96,6 +97,9 @@ func TestTopDarwinObserverSeesCPUWaitOfThisProcess(t *testing.T) {
 
 // 읽지 못한 pid는 빠지고, 목록에서 빠졌다 돌아온 pid는 기준을 다시 잡는다. 오래된 기준과 비교하면 빠진 동안의 대기가 한 window에 몰린다.
 func TestTopDarwinObserverSkipsUnreadablePIDsAndRebaselines(t *testing.T) {
+	if darwinTranslated() {
+		t.Skip("-d refuses to run under Rosetta")
+	}
 	observe, stop, err := startTopProcessBPF()
 	if err != nil {
 		t.Fatal(err)
@@ -128,5 +132,14 @@ func TestDarwinRusageV4FillsRunnableTime(t *testing.T) {
 	}
 	if cpu := info.UserTime + info.SystemTime; cpu == 0 || info.RunnableTime < cpu {
 		t.Fatalf("runnable %d must include cpu %d", info.RunnableTime, cpu)
+	}
+}
+
+func TestDarwinInfoReportsCPUWaitFromLibproc(t *testing.T) {
+	if darwinTranslated() {
+		t.Skip("-d refuses to run under Rosetta")
+	}
+	if got := darwinDetailCapability(); got.State != "CPU wait only" || !strings.Contains(got.Detail, "libproc") {
+		t.Fatalf("capability = %+v", got)
 	}
 }

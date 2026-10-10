@@ -299,8 +299,16 @@ func collectInfoCapabilities() []infoCapability {
 	}
 	return []infoCapability{ioSupport,
 		{"PSI", "unsupported", "Linux-only; edc top shows the macOS memory pressure level"},
-		{"CPU wait / I/O latency", "unsupported", "edc top -d requires Linux eBPF"},
+		darwinDetailCapability(),
 	}
+}
+
+// darwinDetailCapability는 edc top -d가 macOS에서 세는 범위다. CPU 대기만 libproc으로 세고 I/O 지연은 세지 못한다.
+func darwinDetailCapability() infoCapability {
+	if darwinTranslated() {
+		return infoCapability{"CPU wait / I/O latency", "unsupported", "edc top -d stops under Rosetta; use the arm64 build"}
+	}
+	return infoCapability{"CPU wait / I/O latency", "CPU wait only", "edc top -d reads libproc; I/O latency needs Linux eBPF"}
 }
 
 func collectDefaultRoute() (string, string) {

@@ -1014,6 +1014,41 @@ edc route switch --to lab-nat-02 --seconds 60
 
 전환은 기존 연결을 끊습니다. NAT 상태가 이전 출구에 남아 있어 이미 맺어진 흐름은 멈춥니다. 새로 맺는 흐름만 새 출구를 씁니다.
 
+## 디스크 증설
+
+AWS EBS 볼륨이나 OCI 블록 볼륨처럼 클라우드 볼륨을 키운 뒤에 `edc disk`를 실행합니다. Linux에서만 동작합니다. `grow`는 root 권한이 필요하고 `edc`가 `sudo`를 붙이지 않습니다.
+
+```bash
+edc disk check                 # 늘릴 수 있는 마운트를 보여 줍니다. 아무것도 바꾸지 않습니다
+edc disk check /data           # 마운트 하나 아래의 층을 보여 줍니다
+edc disk grow /data -n         # 계획만 출력하고 아무것도 바꾸지 않습니다
+edc disk grow /data            # 계획을 보여 주고, 확인을 받은 뒤 늘립니다
+```
+
+`edc`는 `/proc/self/mountinfo`와 `/sys/class/block`에서 디스크, 파티션, LVM 물리 볼륨(PV), 논리 볼륨(LV), 파일시스템 층을 읽습니다. 그리고 공간을 늘리는 단계만 실행합니다.
+
+1. 디스크가 SCSI면 `rescan`합니다. OCI 문서의 순서대로 블록 하나를 직접 읽은 뒤 `/sys/class/block/<disk>/device/rescan`에 씁니다. NVMe와 virtio 디스크에는 rescan 파일이 없고, 커널이 새 크기를 바로 봅니다.
+2. 파티션이 디스크보다 짧으면 `growpart <disk> <number>`를 실행합니다.
+3. PV가 파티션보다 짧으면 `pvresize <pv>`를 실행합니다.
+4. 볼륨 그룹에 남은 공간이 있으면 `lvextend -l +100%FREE <lv>`를 실행합니다. 남은 공간을 모두 LV에 줍니다.
+5. ext3와 ext4는 `resize2fs <device>`, xfs는 `xfs_growfs -d <mount>`로 파일시스템을 늘립니다.
+
+단계마다 층을 다시 읽어 그 층이 실제로 늘었는지 확인합니다. 어떤 단계가 실패하면 같은 명령을 다시 실행하세요. 이미 늘어난 층은 계획에서 빠지므로 실패한 단계부터 이어서 진행합니다.
+
+늘린 크기는 되돌릴 수 없습니다. 파티션과 파일시스템은 다시 줄일 수 없고, xfs는 아예 줄일 수 없습니다. 늘리기 전에 볼륨 스냅샷을 만드세요.
+
+다음 경우에는 거부하고 아무것도 바꾸지 않습니다.
+
+- 파일시스템이 ext3, ext4, xfs가 아닌 경우
+- 그 파티션 뒤에 다른 파티션이 있는 경우. 마지막 파티션은 번호가 아니라 시작 위치로 판정합니다. Ubuntu 클라우드 이미지는 루트인 `1`번 파티션을 디스크 맨 뒤에 둡니다.
+- MBR 디스크에서 파티션이 MBR의 2 TiB 한계에 닿은 경우. 먼저 GPT로 바꾸세요.
+- LV가 PV 여러 개에 걸쳐 있거나, device-mapper 디바이스가 LVM 볼륨이 아닌 경우
+- `growpart`가 없는 경우. Debian과 Ubuntu에서는 `cloud-guest-utils`, RHEL에서는 `cloud-utils-growpart`를 설치하세요.
+
+`check`는 root 없이도 실행되지만, 모든 크기는 root로 실행해야 보입니다. root가 아니면 ext 슈퍼블록과 LVM 정보를 읽지 못합니다. 마운트를 주지 않으면 블록 디바이스 위에 마운트된 ext3, ext4, xfs를 모두 보여 줍니다.
+
+`grow`는 디스크를 바꾸기 전에 확인을 받습니다. 스크립트에서는 `--yes`로 질문을 건너뜁니다. 거절하면 exit code `4`로 끝납니다.
+
 ## Probe 진행 줄
 
 stdin과 stdout이 모두 terminal이면 단일 probe command는 진행 줄 하나를 보여 줍니다. 그 줄에는 probe 이름, target, 경과 시간, command의 마지막 출력 줄이 들어갑니다.
@@ -1050,7 +1085,7 @@ $ edc capture
 → edc capture --interface en0
 ```
 
-command 묶음은 어떤 command를 실행할지 묻습니다. `edc dns`, `edc net`, `edc report`, `edc route`, `edc change`, `edc completion`이 각자의 command를 보여 줍니다. `edc report show`와 `edc report diff`는 이어서 현재 디렉터리의 report를 나열합니다.
+command 묶음은 어떤 command를 실행할지 묻습니다. `edc dns`, `edc net`, `edc report`, `edc route`, `edc change`, `edc disk`, `edc completion`이 각자의 command를 보여 줍니다. `edc report show`와 `edc report diff`는 이어서 현재 디렉터리의 report를 나열합니다.
 
 `edc change confirm`, `edc change rollback`, `edc route rollback`은 아직 대기 중인 변경을 나열합니다. run id를 옮겨 적는 대신 고릅니다.
 

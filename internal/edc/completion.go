@@ -206,6 +206,19 @@ _edc() {
               ;;
           esac
           ;;
+        disk)
+          case $words[2] in
+            grow)
+              _arguments $common '(-n --dry-run)'{-n,--dry-run}'[print the plan and exit]' '--yes[skip the confirmation]' '1:mount:_directories'
+              ;;
+            check)
+              _arguments $common '1:mount:_directories'
+              ;;
+            *)
+              _arguments '1:subcommand:(check grow)'
+              ;;
+          esac
+          ;;
         listen)
           # listen의 -v는 evidence를 펼치지 않고 열을 늘린다. 공용 설명을 빼고 이 명령의 것을 쓴다.
           _arguments ${common:#*verbose*} '--tcp[TCP socket만 봅니다]' '(-u --udp)'{-u,--udp}'[바인드된 UDP socket만 봅니다]' '--unix[unix domain socket만 봅니다]' '--all[TCP와 UDP, unix domain socket을 모두 봅니다]' '--watch[포트 변화 관측]' '(-i --interval)'{-i,--interval}'[관측 간격(초)]:seconds' '--duration[관측 시간]:duration' '(-v --verbose)'{-v,--verbose}'[계정과 descriptor, 큐 열을 함께 엽니다]'
@@ -362,6 +375,17 @@ _edc() {
             if [[ $prev == --state ]]; then COMPREPLY=($(compgen -f -- "$cur")); else COMPREPLY=($(compgen -W "--state $common" -- "$cur")); fi ;;
           status) COMPREPLY=($(compgen -W "$common" -- "$cur")) ;;
         esac
+      fi ;;
+    disk)
+      if [[ $COMP_CWORD -eq 2 ]]; then
+        COMPREPLY=($(compgen -W "check grow" -- "$cur"))
+      elif [[ $cur == -* ]]; then
+        case "${COMP_WORDS[2]}" in
+          grow) COMPREPLY=($(compgen -W "--dry-run --yes $common" -- "$cur")) ;;
+          *) COMPREPLY=($(compgen -W "$common" -- "$cur")) ;;
+        esac
+      else
+        COMPREPLY=($(compgen -d -- "$cur"))
       fi ;;
     listen) COMPREPLY=($(compgen -W "$common --tcp --udp --unix --all --watch -i --interval --duration" -- "$cur")) ;;
     quality) COMPREPLY=($(compgen -W "$common --server" -- "$cur")) ;;

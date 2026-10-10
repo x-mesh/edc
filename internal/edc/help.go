@@ -35,7 +35,7 @@ func (doc commandDoc) summary() string { return T("command." + doc.name + ".summ
 func (doc commandDoc) notes() []string { return TList("command." + doc.name + ".notes") }
 
 // helpGroups는 첫 화면의 그룹 순서다. 값은 locale의 help.group 아래 키다.
-var helpGroups = []string{"diagnose", "observe", "record", "tool"}
+var helpGroups = []string{"diagnose", "observe", "host", "record", "tool"}
 
 var commonOptionDocs = []optionDoc{
 	{"--timeout 15s", "option.timeout"},
@@ -87,7 +87,7 @@ var commandDocs = []commandDoc{
 		usesCommon: true,
 	},
 	{
-		name: "route", group: "diagnose",
+		name: "route", group: "host",
 		usage: []string{
 			"edc route check [options]",
 			"edc route switch --to <name> [options]",
@@ -106,7 +106,19 @@ var commandDocs = []commandDoc{
 		usesCommon: true,
 	},
 	{
-		name: "change", group: "tool",
+		name: "disk", group: "host",
+		usage: []string{
+			"edc disk check [mount]",
+			"edc disk grow <mount> [options]",
+		},
+		options: []optionDoc{
+			{"-n, --dry-run", "disk.flag.dry_run"},
+			{"--yes", "disk.flag.yes"},
+		},
+		usesCommon: true,
+	},
+	{
+		name: "change", group: "host",
 		usage: []string{
 			"edc change apply --kind authorized-keys|iptables [options]",
 			"edc change status [options]",

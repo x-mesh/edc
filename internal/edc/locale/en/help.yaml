@@ -12,6 +12,7 @@ help:
   group:
     diagnose: "diagnose"
     observe: "observe"
+    host: "host changes"
     record: "record and remote"
     tool: "tools"
 
@@ -63,6 +64,13 @@ command:
       - "switch and rollback need root. edc does not add sudo itself."
       - "check never changes a route. switch arms a rollback timer first."
       - "status reads /run/edc. rollback --state repeats one state file."
+  disk:
+    summary: "Grow a partition and file system after a disk resize"
+    notes:
+      - "check reads the layers and changes nothing."
+      - "Run check as root to see the size of every layer."
+      - "grow needs root. edc does not add sudo itself."
+      - "grow cannot be undone. Take a snapshot of the volume first."
   change:
     summary: "Protected host changes with automatic rollback"
   top:

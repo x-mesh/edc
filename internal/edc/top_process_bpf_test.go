@@ -86,13 +86,13 @@ func TestTopBPFSampleLeavesOutLatenciesWithoutEvents(t *testing.T) {
 	if newTopBPFSample(nil) != nil {
 		t.Fatal("no eBPF values must give no field")
 	}
-	stats := topBPFStats{Window: 1500 * time.Millisecond, RunqCount: 4, RunqSumNS: 6_000_000, IOBytes: 0}
+	stats := topBPFStats{Window: 1500 * time.Millisecond, Source: "ebpf", RunqCount: 4, RunqSumNS: 6_000_000, IOBytes: 0}
 	stats.RunqHist[10] = 4
 	data, err := json.Marshal(newTopBPFSample(&stats))
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{`"window_s":1.5`, `"runq_count":4`, `"runq_avg_ms":1.5`, `"runq_p95_ms":2.048`, `"io_ops":0`, `"io_bytes":0`} {
+	for _, want := range []string{`"source":"ebpf"`, `"window_s":1.5`, `"runq_count":4`, `"runq_avg_ms":1.5`, `"runq_p95_ms":2.048`, `"io_ops":0`, `"io_bytes":0`} {
 		if !strings.Contains(string(data), want) {
 			t.Fatalf("sample is missing %s: %s", want, data)
 		}
@@ -103,7 +103,7 @@ func TestTopBPFSampleLeavesOutLatenciesWithoutEvents(t *testing.T) {
 }
 
 func TestTopBPFDetailShowsTheWindowAndBothDelays(t *testing.T) {
-	stats := topBPFStats{Window: 2 * time.Second, RunqCount: 10, RunqSumNS: 20_000_000}
+	stats := topBPFStats{Window: 2 * time.Second, Source: "ebpf", RunqCount: 10, RunqSumNS: 20_000_000}
 	stats.RunqHist[11] = 10
 	got := topBPFDetail(stats)
 	if got != "ebpf 2s · runq 10 avg 2.00ms p95 <4.096ms · io 0 —" {
@@ -112,5 +112,35 @@ func TestTopBPFDetailShowsTheWindowAndBothDelays(t *testing.T) {
 	lines := topMatchDetail([]topProcess{{PID: 1, CPU: 1, Command: "x"}}, topProcessTotal{Count: 1, CPU: 1, BPF: &stats}, true)
 	if len(lines) != 3 || lines[2] != "  "+got {
 		t.Fatalf("match detail = %q", lines)
+	}
+}
+
+// macOS의 libproc counter는 분포와 I/O 지연이 없다. 0건으로 보이면 I/O가 없었다고 잘못 읽는다.
+func TestTopBPFUnsupportedValuesAreNotShownAsZero(t *testing.T) {
+	stats := topBPFStats{Window: time.Second, Source: "libproc", RunqCount: 4, RunqSumNS: 6_000_000, RunqHistUnsupported: true, IOUnsupported: true}
+	if got := topBPFDetail(stats); got != "libproc 1s · runq 4 avg 1.50ms · io n/a" {
+		t.Fatalf("detail = %q", got)
+	}
+	data, err := json.Marshal(newTopBPFSample(&stats))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"source":"libproc"`) || !strings.Contains(string(data), `"runq_avg_ms":1.5`) {
+		t.Fatalf("sample = %s", data)
+	}
+	for _, absent := range []string{"io_ops", "io_bytes", "runq_p95_ms"} {
+		if strings.Contains(string(data), absent) {
+			t.Fatalf("sample must leave out %s: %s", absent, data)
+		}
+	}
+	row := topDashboardRow{processesValid: true, processTotal: topProcessTotal{Count: 1, CPU: 1, BPF: &stats}}
+	cells := topProcessViewCells(row)
+	if cells[7].text != "1.50" || cells[8].text != "n/a" {
+		t.Fatalf("runq and io cells = %q, %q", cells[7].text, cells[8].text)
+	}
+	merged := topBPFStats{}
+	merged.add(stats)
+	if merged.Source != "libproc" || !merged.IOUnsupported || !merged.RunqHistUnsupported {
+		t.Fatalf("merged = %+v", merged)
 	}
 }

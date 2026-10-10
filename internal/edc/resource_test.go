@@ -90,9 +90,13 @@ func TestParsePressureAvg10(t *testing.T) {
 }
 
 func TestParseTopProcesses(t *testing.T) {
-	processes := parseTopProcesses(" 9 12.5 2048 Sat Oct  3 05:06:51 2026 node server.js\n 2 99.0 1024 Mon Jan 12 23:00:01 2026 java -jar app.jar\n 5 1.0 10 garbled start comm\n")
+	processes := parseTopProcesses(" 9 12.5 2048 Ss+ Sat Oct  3 05:06:51 2026 node server.js\n 2 99.0 1024 U< Mon Jan 12 23:00:01 2026 java -jar app.jar\n 5 1.0 10 R garbled start comm\n")
 	if len(processes) != 2 || processes[0].PID != 2 || processes[0].RSS != 1024*1024 || processes[1].Command != "node server.js" {
 		t.Fatalf("processes = %#v", processes)
+	}
+	// macOS의 U는 Linux의 D처럼 I/O를 기다리며 멈춘 상태라 blocked 후보와 묶음 집계에 들어가야 한다.
+	if processes[0].State != topProcessStateBlocked || processes[1].State != "S" {
+		t.Fatalf("states = %q, %q", processes[0].State, processes[1].State)
 	}
 	if want := time.Date(2026, time.October, 3, 5, 6, 51, 0, time.Local); !processes[1].Started.Equal(want) {
 		t.Fatalf("started = %v, want %v", processes[1].Started, want)

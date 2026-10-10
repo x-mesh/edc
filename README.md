@@ -783,7 +783,7 @@ The command distinguishes unsupported metrics, denied access, unavailable namesp
 
 These metrics use the [Linux cgroup v2 interfaces](https://docs.kernel.org/admin-guide/cgroup-v2.html).
 
-### CPU wait and I/O latency with `-d` (Linux)
+### CPU wait and I/O latency with `-d`
 
 `-d` or `--detail` adds what `/proc` cannot give: how long the matched processes wait for a CPU and how long their block I/O takes. It needs `--process`, root or `CAP_BPF` and `CAP_PERFMON`, and kernel BTF. Without them, `edc top` stops with exit code `3` and says whether the host is unsupported or a capability is missing. It is tested on Linux 5.15 and 6.17. Linux 5.15 does not give `prev_state` to the `sched_switch` tracepoint, so on that kernel `edc` reads the task state instead.
 
@@ -807,6 +807,15 @@ The dashboard adds a third line to the detail view: `ebpf 1s · runq 7584 avg 5.
 - A block I/O request belongs to the task that issues it. Synchronous reads, direct I/O, and `fsync` land on the process. Buffered writes are issued later by a kernel flusher, so they land on `kworker`. Use `disk_write_bytes_per_s` for those bytes.
 - `edc` translates the kernel's PIDs into the PID namespace it runs in, so the filter matches inside a container as well.
 - The first sample after a process appears has no `ebpf` object, because the counts start when `edc` begins to watch it.
+- `source` in the `ebpf` object names how the values were counted: `ebpf` on Linux, `libproc` on macOS.
+
+macOS has no public hook for scheduler or block I/O events. On macOS, `-d` therefore counts only the CPU wait, without root, from libproc's cumulative counters. The wait is the runnable time minus the CPU time, and `runq_count` is the number of context switches in the window, so `runq_avg_ms` is the average wait per switch. There is no distribution, so `runq_p95_ms` is left out, and I/O cannot be counted, so the `io_*` fields are absent. The dashboard shows `n/a` in those cells. Processes of other users cannot be read without root and have no values.
+
+```bash
+./bin/edc top --process Safari -d
+```
+
+On macOS, a process in the `U` state (uninterruptible wait) shows as `iowait` like Linux `D` and joins the blocked candidates.
 
 ## AI tool usage
 

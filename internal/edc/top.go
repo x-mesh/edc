@@ -328,13 +328,15 @@ func newTopProcessTotalSample(total topProcessTotal) *topProcessTotalSample {
 
 // topBPFSample은 window 동안 센 run-queue 대기와 block I/O 지연이다. 지연은 ms이고, p95는 그 값이 든 구간의 위쪽 경계라 실제 값은 그 아래다.
 // 개수가 0이면 평균과 p95는 빠진다. I/O는 요청을 낸 process로 잡으므로 writeback은 kworker로 잡힌다.
+// source가 libproc이면 macOS의 누적 counter라 p95와 I/O 값이 없다.
 type topBPFSample struct {
+	Source    string   `json:"source"`
 	WindowS   float64  `json:"window_s"`
 	RunqCount uint64   `json:"runq_count"`
 	RunqAvgMS *float64 `json:"runq_avg_ms,omitempty"`
 	RunqP95MS *float64 `json:"runq_p95_ms,omitempty"`
-	IOOps     uint64   `json:"io_ops"`
-	IOBytes   uint64   `json:"io_bytes"`
+	IOOps     *uint64  `json:"io_ops,omitempty"`
+	IOBytes   *uint64  `json:"io_bytes,omitempty"`
 	IOAvgMS   *float64 `json:"io_avg_ms,omitempty"`
 	IOP95MS   *float64 `json:"io_p95_ms,omitempty"`
 }
@@ -343,7 +345,11 @@ func newTopBPFSample(stats *topBPFStats) *topBPFSample {
 	if stats == nil {
 		return nil
 	}
-	sample := &topBPFSample{WindowS: roundTopValue(stats.Window.Seconds()), RunqCount: stats.RunqCount, IOOps: stats.IOCount, IOBytes: stats.IOBytes}
+	sample := &topBPFSample{Source: stats.Source, WindowS: roundTopValue(stats.Window.Seconds()), RunqCount: stats.RunqCount}
+	if !stats.IOUnsupported {
+		ops, bytes := stats.IOCount, stats.IOBytes
+		sample.IOOps, sample.IOBytes = &ops, &bytes
+	}
 	rounded := func(value float64, ok bool) *float64 {
 		if !ok {
 			return nil

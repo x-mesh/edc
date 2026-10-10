@@ -671,12 +671,16 @@ const topProcessStartLayout = "Mon Jan 2 15:04:05 2006"
 // topProcessStartFields는 lstart가 차지하는 필드 수다.
 const topProcessStartFields = 5
 
-// parseTopProcesses는 "pid pcpu rss lstart comm" 줄을 읽는다.
+// topDarwinStateBlocked는 macOS ps의 uninterruptible wait 상태다. Linux의 D와 같은 뜻이다.
+const topDarwinStateBlocked = "U"
+
+// parseTopProcesses는 "pid pcpu rss state lstart comm" 줄을 읽는다. state는 macOS ps의 첫 글자만 쓰고,
+// 뒤의 글자는 우선순위와 session 표시라 버린다.
 func parseTopProcesses(output string) []topProcess {
 	processes := []topProcess{}
 	for _, line := range strings.Split(output, "\n") {
 		fields := strings.Fields(line)
-		if len(fields) < 4+topProcessStartFields {
+		if len(fields) < 5+topProcessStartFields {
 			continue
 		}
 		pid, e1 := strconv.Atoi(fields[0])
@@ -685,9 +689,13 @@ func parseTopProcesses(output string) []topProcess {
 		if e1 != nil || e2 != nil || e3 != nil {
 			continue
 		}
+		state := fields[3][:1]
+		if state == topDarwinStateBlocked {
+			state = topProcessStateBlocked
+		}
 		// lstart를 읽지 못해도 process는 남긴다. 시작 시각만 비운다.
-		started, _ := time.ParseInLocation(topProcessStartLayout, strings.Join(fields[3:3+topProcessStartFields], " "), time.Local)
-		processes = append(processes, topProcess{PID: pid, CPU: cpu, RSS: rss * 1024, Command: strings.Join(fields[3+topProcessStartFields:], " "), Started: started})
+		started, _ := time.ParseInLocation(topProcessStartLayout, strings.Join(fields[4:4+topProcessStartFields], " "), time.Local)
+		processes = append(processes, topProcess{PID: pid, CPU: cpu, RSS: rss * 1024, State: state, Command: strings.Join(fields[4+topProcessStartFields:], " "), Started: started})
 	}
 	return sortTopProcessesByCPU(processes)
 }

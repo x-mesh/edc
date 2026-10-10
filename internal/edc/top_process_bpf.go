@@ -5,20 +5,30 @@ import "time"
 // topBPFBuckets는 top_process_bpf.c의 HIST_BUCKETS다. bucket i는 [2^i, 2^(i+1)) 마이크로초다.
 const topBPFBuckets = 24
 
-// topBPFStats는 한 window 동안 eBPF가 센 값이다. window는 직전 관측부터 이번 관측까지의 시간이다.
+// topBPFStats는 한 window 동안 observer가 센 값이다. window는 직전 관측부터 이번 관측까지의 시간이다.
 type topBPFStats struct {
-	Window               time.Duration
-	RunqCount, RunqSumNS uint64
-	RunqHist             [topBPFBuckets]uint64
-	IOCount, IOBytes     uint64
-	IOSumNS              uint64
-	IOHist               [topBPFBuckets]uint64
+	Window time.Duration
+	// Source는 값을 센 방법이다. Linux는 eBPF, macOS는 libproc의 누적 counter다.
+	Source string
+	// RunqHistUnsupported와 IOUnsupported는 이 platform이 대기 분포나 block I/O 지연을 셀 수 없다는 뜻이다.
+	// 0건과 구분해야 I/O가 없었다고 잘못 읽지 않는다.
+	RunqHistUnsupported, IOUnsupported bool
+	RunqCount, RunqSumNS               uint64
+	RunqHist                           [topBPFBuckets]uint64
+	IOCount, IOBytes                   uint64
+	IOSumNS                            uint64
+	IOHist                             [topBPFBuckets]uint64
 }
 
 func (stats *topBPFStats) add(other topBPFStats) {
 	if other.Window > stats.Window {
 		stats.Window = other.Window
 	}
+	if stats.Source == "" {
+		stats.Source = other.Source
+	}
+	stats.RunqHistUnsupported = stats.RunqHistUnsupported || other.RunqHistUnsupported
+	stats.IOUnsupported = stats.IOUnsupported || other.IOUnsupported
 	stats.RunqCount += other.RunqCount
 	stats.RunqSumNS += other.RunqSumNS
 	stats.IOCount += other.IOCount

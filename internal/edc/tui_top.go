@@ -1213,10 +1213,12 @@ func (model topModel) helpLines() []string {
 		"Details: Enter on history · h peaks from the last 60 seconds",
 		"CPU: host % uses all cores. Process 100% uses one core. RSS is resident memory.",
 		"— means unavailable or no baseline. Read the process I/O status for errors.",
-		"no ev means the eBPF observer is active but collected no events in that interval.",
+		"no ev means the -d observer is active but collected no events in that interval. n/a means this OS cannot measure it.",
 	}
 	if model.details.System == "darwin" {
-		lines = append(lines, "macOS: process CPU is a recent ps average. Threads and disk I/O use libproc.", "macOS: FDs, PSI, CPU iowait, disk busy, network limits and eBPF latency are not collected.")
+		lines = append(lines, "macOS: process CPU is a recent ps average. Threads and disk I/O use libproc. Process state iowait is the U state.",
+			"macOS: -d gives the average CPU wait per context switch from libproc. It has no p95 and no I/O latency.",
+			"macOS: FDs, PSI, CPU iowait, disk busy and network limits are not collected.")
 	} else {
 		lines = append(lines, "Linux: process CPU uses sample deltas. Runq and I/O latency require -d at startup.")
 	}
@@ -2071,7 +2073,7 @@ func (model topModel) processBanner() []string {
 			if average, ok := topBPFAverageMS(bpf.RunqSumNS, bpf.RunqCount); ok {
 				parts = append(parts, fmt.Sprintf("runq %.2fms", average))
 			}
-			if average, ok := topBPFAverageMS(bpf.IOSumNS, bpf.IOCount); ok {
+			if average, ok := topBPFAverageMS(bpf.IOSumNS, bpf.IOCount); ok && !bpf.IOUnsupported {
 				parts = append(parts, fmt.Sprintf("io %.2fms", average))
 			}
 		}
@@ -2152,7 +2154,9 @@ func topProcessViewCells(row topDashboardRow) []topCell {
 		if average, ok := topBPFAverageMS(bpf.RunqSumNS, bpf.RunqCount); ok {
 			cells[7] = topPlainCell(fmt.Sprintf("%.2f", average))
 		}
-		if average, ok := topBPFAverageMS(bpf.IOSumNS, bpf.IOCount); ok {
+		if bpf.IOUnsupported {
+			cells[8] = topPlainCell("n/a")
+		} else if average, ok := topBPFAverageMS(bpf.IOSumNS, bpf.IOCount); ok {
 			cells[8] = topPlainCell(fmt.Sprintf("%.2f", average))
 		}
 	}
@@ -2235,16 +2239,24 @@ func topProcessLimitLines(processes []topProcess) []string {
 }
 
 // topBPFDetail은 window 동안 센 run-queue 대기와 block I/O 지연이다. 지연 뒤의 p95는 그 값이 든 구간의 위쪽 경계다.
+// 분포가 없는 platform은 p95를 빼고, 셀 수 없는 I/O는 n/a로 둔다.
 func topBPFDetail(stats topBPFStats) string {
 	latency := func(sumNS, count uint64, hist [topBPFBuckets]uint64) string {
 		average, ok := topBPFAverageMS(sumNS, count)
 		if !ok {
 			return "—"
 		}
-		p95, _ := topBPFPercentileMS(hist, 0.95)
+		p95, ok := topBPFPercentileMS(hist, 0.95)
+		if !ok {
+			return fmt.Sprintf("avg %.2fms", average)
+		}
 		return fmt.Sprintf("avg %.2fms p95 <%gms", average, p95)
 	}
-	return fmt.Sprintf("ebpf %.0fs · runq %d %s · io %d %s", stats.Window.Seconds(), stats.RunqCount, latency(stats.RunqSumNS, stats.RunqCount, stats.RunqHist), stats.IOCount, latency(stats.IOSumNS, stats.IOCount, stats.IOHist))
+	io := "io n/a"
+	if !stats.IOUnsupported {
+		io = fmt.Sprintf("io %d %s", stats.IOCount, latency(stats.IOSumNS, stats.IOCount, stats.IOHist))
+	}
+	return fmt.Sprintf("%s %.0fs · runq %d %s · %s", stats.Source, stats.Window.Seconds(), stats.RunqCount, latency(stats.RunqSumNS, stats.RunqCount, stats.RunqHist), io)
 }
 
 func formatProcessRSS(bytes uint64) string {

@@ -82,7 +82,7 @@ command:
       process: "PID나 command 이름이 맞는 process만, 쉼표로 구분"
       full: "전체 명령줄로 맞추고 보여 준다"
       split: "cpu, mem, disk, net, psi를 박스로 한 화면에, 생략하면 전부"
-      detail: "CPU 대기와 I/O 지연 추가(eBPF, root), Linux"
+      detail: "CPU 대기·I/O 지연(Linux eBPF, root), macOS는 CPU 대기"
       ebpf: "--detail과 같음"
       write: "SQLite에 누적, 경로 생략 시 기본 DB 사용"
       json: "sample당 한 줄 JSON, stdout은 -"

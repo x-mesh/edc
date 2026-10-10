@@ -597,7 +597,7 @@ Linux에서는 `n` 화면에 conntrack 사용률(`ct%`), listen overflow/s(`list
 ./bin/edc top --count 5 --json -
 ```
 
-각 줄에는 `time`, `hostname`, `cores`, 초당 byte 단위 network·disk rate, 퍼센트 단위 CPU 값, `load1`, `memory_pct`, 초당 byte 단위 `swap_out_bytes_per_s`가 들어갑니다. macOS와 Linux 모두 network errors·drops와 disk IOPS·await를 내보냅니다. Linux에서는 disk busy, PSI `some avg10`, memory·I/O PSI `full avg10`도 추가되며, `*_health_supported`, `disk_busy_supported`, `psi_supported`가 지원 여부를 표시합니다. macOS는 `memory_pressure`(`normal`, `warn`, `critical`)를 추가합니다. `--json`은 표와 헤더를 없앱니다.
+각 줄에는 `time`, `hostname`, `cores`, 초당 byte 단위 network·disk rate, 퍼센트 단위 CPU 값, `load1`, `memory_pct`, 초당 byte 단위 `swap_out_bytes_per_s`가 들어갑니다. macOS와 Linux 모두 network errors·drops와 disk IOPS·await를 내보냅니다. Linux에서는 disk busy, PSI `some avg10`, memory·I/O PSI `full avg10`도 추가되며, `*_health_supported`, `disk_busy_supported`, `psi_supported`가 지원 여부를 표시합니다. `memory_pressure_supported`는 host가 memory 압박 단계를 알려 줬는지를 표시하고, 그때 macOS는 `memory_pressure`(`normal`, `warn`, `critical`)를 추가합니다. `--json`은 표와 헤더를 없앱니다.
 
 ## Top 저장과 이력 조회
 
@@ -691,8 +691,10 @@ sudo ./bin/edc top --process output-mesh -d --json /tmp/edc-host.jsonl
 | 필드 | 뜻 |
 |---|---|
 | `window_s` | 이 개수가 다루는 시간(초). 직전 sample 이후입니다. |
-| `runq_count`, `runq_avg_ms`, `runq_p95_ms` | process의 thread가 실행 가능 상태가 된 뒤 CPU를 받기까지의 횟수와 대기 시간. `cpu_pct`가 낮은데 대기가 길면 CPU가 모자란 것입니다. |
+| `io_supported`, `p95_supported` | 이 source가 block I/O를 세고 분포를 남기는지입니다. `ebpf`는 둘 다 `true`, `libproc`은 둘 다 `false`입니다. |
+| `runq_count`, `runq_avg_ms`, `runq_p95_ms` | Linux에서는 process의 thread가 실행 가능 상태가 된 뒤 CPU를 받기까지의 횟수와 대기 시간입니다. macOS에서는 이 시간 동안의 context switch 수와 switch 한 번당 평균 대기이고 p95는 없습니다. `cpu_pct`가 낮은데 대기가 길면 CPU가 모자란 것입니다. |
 | `io_ops`, `io_bytes`, `io_avg_ms`, `io_p95_ms` | process가 낸 block I/O 요청 수, byte, 요청부터 완료까지의 시간 |
+| `context_switches`, `unreadable` | macOS 전용입니다. 이 시간 동안의 context switch 수(`runq_count`와 같은 값)와 macOS가 읽지 못하게 막은 process 수입니다. |
 
 `p95`는 95번째 백분위가 든 2의 거듭제곱 구간의 위쪽 경계라서 실제 값은 그 아래입니다. 이벤트가 없으면 지연 값은 빠집니다. `process_total`은 맞은 process 전체를 합치고, p95도 합친 분포에서 구합니다. `edc`는 맞은 process 중 가장 바쁜 4096개까지 감시합니다.
 

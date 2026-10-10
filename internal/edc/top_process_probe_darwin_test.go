@@ -33,7 +33,7 @@ func TestTopDarwinRunqDeltaSubtractsCPUFromRunnable(t *testing.T) {
 		t.Fatal("same process must give a delta")
 	}
 	// (30000 - 6000) tick * 125/3 = 1,000,000ns다. switch counter는 32비트에서 넘어가도 4번으로 센다.
-	if stats.RunqSumNS != 1_000_000 || stats.RunqCount != 4 || stats.Source != topBPFSourceLibproc || stats.Measured != 1 || stats.Source.measuresIO() || stats.Source.hasHistogram() {
+	if stats.RunqSumNS != 1_000_000 || stats.RunqCount != 4 || stats.Source != topProbeSourceLibproc || stats.Measured != 1 || stats.IO != nil || stats.RunqHist != nil {
 		t.Fatalf("stats = %+v", stats)
 	}
 	if _, ok := topDarwinRunqDelta(before, topDarwinRunqCounters{started: 8, runnable: 9_000, cpu: 2_000}, timebase); ok {
@@ -62,7 +62,7 @@ func TestTopDarwinObserverSeesCPUWaitOfThisProcess(t *testing.T) {
 	if darwinTranslated() {
 		t.Skip("-d refuses to run under Rosetta")
 	}
-	observe, stop, err := startTopProcessBPF()
+	observe, stop, err := startTopProcessProbe()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,7 +100,7 @@ func TestTopDarwinObserverSkipsUnreadablePIDsAndRebaselines(t *testing.T) {
 	if darwinTranslated() {
 		t.Skip("-d refuses to run under Rosetta")
 	}
-	observe, stop, err := startTopProcessBPF()
+	observe, stop, err := startTopProcessProbe()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,7 +109,7 @@ func TestTopDarwinObserverSkipsUnreadablePIDsAndRebaselines(t *testing.T) {
 	// macOS의 PID는 99999를 넘지 않으므로 이 PID의 process는 없다. 끝난 process는 빠진다.
 	const gone = 999_999
 	observe([]int{self, gone})
-	if got := observe([]int{self, gone}); len(got) != 1 || got[self].Source != topBPFSourceLibproc || got[self].Measured != 1 {
+	if got := observe([]int{self, gone}); len(got) != 1 || got[self].Source != topProbeSourceLibproc || got[self].Measured != 1 {
 		t.Fatalf("observed = %+v", got)
 	}
 	observe(nil)
@@ -157,7 +157,7 @@ func TestTopDarwinObserverCountsPermissionRefusals(t *testing.T) {
 	if darwinTranslated() {
 		t.Skip("-d refuses to run under Rosetta")
 	}
-	observe, stop, err := startTopProcessBPF()
+	observe, stop, err := startTopProcessProbe()
 	if err != nil {
 		t.Fatal(err)
 	}

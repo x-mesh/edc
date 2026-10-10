@@ -12,6 +12,7 @@ help:
   group:
     diagnose: "診断"
     observe: "観測"
+    host: "ホスト変更"
     record: "記録・遠隔"
     tool: "ツール"
 
@@ -63,6 +64,13 @@ command:
       - "switch と rollback には root 権限が必要です。sudo は付けません。"
       - "check は経路を変更しません。switch はまずタイマーを武装します。"
       - "status は /run/edc を読み、rollback --state は 1 件を再実行します。"
+  disk:
+    summary: "ディスク増設後にパーティションとファイルシステムを拡張"
+    notes:
+      - "check は層を読むだけで何も変更しません。"
+      - "root で実行するとすべての層のサイズが見えます。"
+      - "grow には root 権限が必要です。sudo は付けません。"
+      - "grow は元に戻せません。先にボリュームのスナップショットを作成してください。"
   change:
     summary: "自動ロールバック付きのホスト変更"
   top:

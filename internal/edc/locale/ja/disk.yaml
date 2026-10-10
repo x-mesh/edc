@@ -1,0 +1,49 @@
+# disk コマンド群(check, grow)の日本語メッセージ。
+disk:
+  skip:
+    linux_only: "ディスクの読み取りと拡張は Linux でのみ動作します"
+  flag:
+    dry_run: "何も変更せずに計画だけを表示"
+    yes: "確認を省略"
+  layer:
+    disk: "ディスク"
+    partition: "パーティション"
+    pv: "pv"
+    lv: "lv"
+    filesystem: "ファイルシステム"
+  evidence:
+    rescan: "rescan"
+    unknown_size: "サイズ不明 (%v)"
+    step: "手順 %d"
+    done: "完了"
+  error:
+    no_mount: "%s を含むマウントが見つかりません"
+    no_ext_superblock: "ext スーパーブロックがありません"
+    lv_not_found: "lvs に %s の論理ボリュームがありません"
+    pv_not_found: "pvs に物理ボリューム %s がありません"
+  blocked:
+    fs_type: "%s は拡張できません。ext3、ext4、xfs のみ対応しています"
+    not_lvm: "%s は device-mapper デバイスですが LVM ボリュームではありません"
+    many_pvs: "%s は物理ボリュームを %d 個使います。1 台のディスク上のボリュームだけを拡張します"
+    logical: "%s は MBR の論理パーティションのため growpart で拡張できません"
+    not_last: "%s は最後のパーティションではありません。最後のパーティションの後ろに %s が空いています"
+    mbr_limit: "%s は 2 TiB で終わる MBR を使っています。先に GPT に変換してください"
+    no_growpart: "growpart がありません。cloud-guest-utils(Debian、Ubuntu)か cloud-utils-growpart(RHEL)をインストールしてください"
+    no_tool: "%s がありません"
+  check:
+    growable: "%s はあと %s 拡張できます。edc disk grow %s を実行してください"
+    full: "%s はディスク全体を使っています、%s"
+    unknown: "%s: ファイルシステムのサイズを読めません。root で実行してください"
+    rescan_note: "%s は SCSI ディスクです。edc disk grow は先に rescan するため、さらに空きが見える場合があります"
+    none: "マウントされたブロックデバイスがありません"
+  grow:
+    dry_run: "計画のみ、変更なし: %s が %s 増えます"
+    summary: "%s が %s から %s に増えました"
+    cancelled: "キャンセルしました。何も変更していません"
+    confirm:
+      question: "%s を拡張しますか?"
+      detail: "パーティションとファイルシステムは縮小できません。先にスナップショットを作成してください。"
+    error:
+      root_required: "edc disk grow には root 権限が必要です。計画だけを見るには -n を使ってください"
+      unchanged: "%s を実行しましたがサイズが変わりませんでした"
+      resume: "同じコマンドをもう一度実行すると、失敗した手順から続行します。"

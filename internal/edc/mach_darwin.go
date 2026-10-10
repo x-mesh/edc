@@ -162,6 +162,18 @@ func readDarwinLoad1() (float64, error) {
 	return float64(load.Load[0]) / float64(load.Scale), nil
 }
 
+// readDarwinMemoryPressure는 kernel이 memory 압박 알림에 쓰는 단계다. dispatch의 DISPATCH_MEMORYPRESSURE_* 값과 같다.
+func readDarwinMemoryPressure() (topMemoryPressure, error) {
+	var level topMemoryPressure
+	if err := darwinSysctl("kern.memorystatus_vm_pressure_level", unsafe.Pointer(&level), unsafe.Sizeof(level)); err != nil {
+		return topMemoryPressureUnknown, err
+	}
+	if !level.known() {
+		return topMemoryPressureUnknown, fmt.Errorf("kern.memorystatus_vm_pressure_level: %d", level)
+	}
+	return level, nil
+}
+
 // readDarwinMemorySize는 hw.memsize, 곧 물리 memory byte 수를 읽는다.
 func readDarwinMemorySize() (uint64, error) {
 	var total uint64
@@ -176,10 +188,11 @@ var procPIDInfoAddr, procPIDRusageAddr uintptr
 
 const (
 	darwinProcPIDTaskInfo = 4
-	darwinRusageInfoV2    = 2
+	darwinRusageInfoV4    = 4
 )
 
-// libproc에 넘기는 구조체는 Apple의 proc_taskinfo와 rusage_info_v2 ABI와 크기와 순서가 같아야 한다.
+// libproc에 넘기는 구조체는 Apple의 proc_taskinfo와 rusage_info_v4 ABI와 크기와 순서가 같아야 한다.
+// kernel은 flavor의 크기만큼 그대로 쓰므로 Go 구조체가 작으면 오류 없이 memory를 덮는다.
 type darwinProcessTaskInfo struct {
 	VirtualSize, ResidentSize, TotalUser, TotalSystem, ThreadsUser, ThreadsSystem uint64
 	Policy, Faults, Pageins, CowFaults, MessagesSent, MessagesReceived            int32
@@ -192,28 +205,64 @@ type darwinProcessRusage struct {
 	WiredSize, ResidentSize, Footprint, Started, Exited                                   uint64
 	ChildUserTime, ChildSystemTime, ChildIdleWakeups, ChildInterruptWakeups, ChildPageins uint64
 	ChildElapsedTime, DiskRead, DiskWrite                                                 uint64
+	CPUTimeQoS                                                                            [7]uint64
+	BilledSystemTime, ServicedSystemTime                                                  uint64
+	LogicalWrites, LifetimeMaxFootprint, Instructions, Cycles                             uint64
+	BilledEnergy, ServicedEnergy, IntervalMaxFootprint                                    uint64
+	// RunnableTime은 실행 중이거나 CPU를 기다린 시간의 합이다. 실행 시간을 포함한다.
+	RunnableTime uint64
 }
 
 func readDarwinProcessThreads(pid int) (int, error) {
+	info, err := readDarwinProcessTaskInfo(pid)
+	return int(info.Threads), err
+}
+
+func readDarwinProcessTaskInfo(pid int) (darwinProcessTaskInfo, error) {
 	var info darwinProcessTaskInfo
 	size := unsafe.Sizeof(info)
 	result, _, errno := darwinSyscall6(procPIDInfoAddr, uintptr(pid), darwinProcPIDTaskInfo, 0, uintptr(unsafe.Pointer(&info)), size, 0)
 	if int32(result) <= 0 {
-		return 0, fmt.Errorf("proc_pidinfo: %w", errno)
+		return darwinProcessTaskInfo{}, fmt.Errorf("proc_pidinfo: %w", errno)
 	}
 	if uintptr(result) != size {
-		return 0, fmt.Errorf("proc_pidinfo: %d bytes, want %d", result, size)
+		return darwinProcessTaskInfo{}, fmt.Errorf("proc_pidinfo: %d bytes, want %d", result, size)
 	}
-	return int(info.Threads), nil
+	return info, nil
 }
 
 func readDarwinProcessRusage(pid int) (darwinProcessRusage, error) {
 	var info darwinProcessRusage
-	result, _, errno := darwinSyscall6(procPIDRusageAddr, uintptr(pid), darwinRusageInfoV2, uintptr(unsafe.Pointer(&info)), 0, 0, 0)
+	result, _, errno := darwinSyscall6(procPIDRusageAddr, uintptr(pid), darwinRusageInfoV4, uintptr(unsafe.Pointer(&info)), 0, 0, 0)
 	if int32(result) != 0 {
 		return darwinProcessRusage{}, fmt.Errorf("proc_pid_rusage: %w", errno)
 	}
 	return info, nil
+}
+
+var machTimebaseInfoAddr uintptr
+
+//go:cgo_import_dynamic libc_mach_timebase_info mach_timebase_info "/usr/lib/libSystem.B.dylib"
+
+type darwinTimebase struct{ Numer, Denom uint32 }
+
+// darwinMachTimebase는 Mach absolute time을 ns로 바꾸는 비율이다. rusage_info의 시간 값은 이 단위라
+// Apple Silicon에서는 그대로 ns로 읽으면 125/3배 작다.
+var darwinMachTimebase = sync.OnceValues(func() (darwinTimebase, error) {
+	var timebase darwinTimebase
+	result, _, _ := darwinSyscall6(machTimebaseInfoAddr, uintptr(unsafe.Pointer(&timebase)), 0, 0, 0, 0, 0)
+	if code := int32(result); code != 0 {
+		return darwinTimebase{}, fmt.Errorf("mach_timebase_info: kern_return_t %d", code)
+	}
+	if timebase.Numer == 0 || timebase.Denom == 0 {
+		return darwinTimebase{}, fmt.Errorf("mach_timebase_info: %d/%d", timebase.Numer, timebase.Denom)
+	}
+	return timebase, nil
+})
+
+// nanoseconds는 window 동안의 차이에 쓴다. 누적값에 곱하면 오래 돈 process에서 넘칠 수 있다.
+func (timebase darwinTimebase) nanoseconds(ticks uint64) uint64 {
+	return ticks * uint64(timebase.Numer) / uint64(timebase.Denom)
 }
 
 var sysctlAddr uintptr

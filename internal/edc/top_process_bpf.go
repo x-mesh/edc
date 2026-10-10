@@ -5,9 +5,33 @@ import "time"
 // topBPFBuckets는 top_process_bpf.c의 HIST_BUCKETS다. bucket i는 [2^i, 2^(i+1)) 마이크로초다.
 const topBPFBuckets = 24
 
-// topBPFStats는 한 window 동안 eBPF가 센 값이다. window는 직전 관측부터 이번 관측까지의 시간이다.
+// topBPFSource는 값을 센 방법이다. 어떤 값을 셀 수 있는지가 방법에 따라 정해진다.
+type topBPFSource string
+
+const (
+	topBPFSourceEBPF    topBPFSource = "ebpf"
+	topBPFSourceLibproc topBPFSource = "libproc"
+)
+
+// measuresIO와 hasHistogram은 eBPF만 참이다. macOS libproc은 누적 counter라 대기 분포가 없고 block I/O 지연을 셀 수 없다.
+// 방법을 모르는 값도 세지 못한 것으로 둔다. 0건으로 보이면 I/O가 없었다고 잘못 읽는다.
+func (source topBPFSource) measuresIO() bool   { return source == topBPFSourceEBPF }
+func (source topBPFSource) hasHistogram() bool { return source == topBPFSourceEBPF }
+
+func (source topBPFSource) String() string {
+	if source == "" {
+		return "unknown"
+	}
+	return string(source)
+}
+
+// topBPFStats는 한 window 동안 observer가 센 값이다. window는 직전 관측부터 이번 관측까지의 시간이다.
 type topBPFStats struct {
-	Window               time.Duration
+	Window time.Duration
+	Source topBPFSource
+	// Measured는 값을 센 process 수이고, Unreadable은 권한이 없어 읽지 못한 process 수다. macOS는 root가 아니면
+	// 다른 사용자의 process를 읽지 못한다. 하나도 세지 못했으면 대기 값은 0이 아니라 모르는 값이다.
+	Measured, Unreadable int
 	RunqCount, RunqSumNS uint64
 	RunqHist             [topBPFBuckets]uint64
 	IOCount, IOBytes     uint64
@@ -19,6 +43,11 @@ func (stats *topBPFStats) add(other topBPFStats) {
 	if other.Window > stats.Window {
 		stats.Window = other.Window
 	}
+	if stats.Source == "" {
+		stats.Source = other.Source
+	}
+	stats.Measured += other.Measured
+	stats.Unreadable += other.Unreadable
 	stats.RunqCount += other.RunqCount
 	stats.RunqSumNS += other.RunqSumNS
 	stats.IOCount += other.IOCount
@@ -46,6 +75,11 @@ func (current topBPFStats) sub(previous topBPFStats) topBPFStats {
 		delta.IOHist[index] -= min(previous.IOHist[index], delta.IOHist[index])
 	}
 	return delta
+}
+
+// unmeasured는 읽은 process 없이 권한 거부만 있었다는 뜻이다. 이때 대기 값은 0이 아니라 모르는 값이다.
+func (stats topBPFStats) unmeasured() bool {
+	return stats.Measured == 0 && stats.Unreadable > 0
 }
 
 // topBPFAverageMS는 합과 개수에서 평균 지연(ms)을 구한다. 개수가 0이면 값이 없다.

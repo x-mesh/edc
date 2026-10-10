@@ -17,8 +17,8 @@ func TestReadDarwinProcessDetails(t *testing.T) {
 	if size := unsafe.Sizeof(darwinProcessTaskInfo{}); size != 96 {
 		t.Fatalf("proc_taskinfo size = %d, want 96", size)
 	}
-	if size := unsafe.Sizeof(darwinProcessRusage{}); size != 160 {
-		t.Fatalf("rusage_info_v2 size = %d, want 160", size)
+	if size := unsafe.Sizeof(darwinProcessRusage{}); size != 296 {
+		t.Fatalf("rusage_info_v4 size = %d, want 296", size)
 	}
 	threads, err := readDarwinProcessThreads(os.Getpid())
 	if err != nil || threads <= 0 {
@@ -224,5 +224,12 @@ func TestReadDarwinCoreTicks(t *testing.T) {
 		if after < before {
 			t.Fatalf("core %d ticks went backwards: %d -> %d", index, before, after)
 		}
+	}
+}
+
+func TestReadDarwinMemoryPressure(t *testing.T) {
+	level, err := readDarwinMemoryPressure()
+	if err != nil || !level.known() || level > topMemoryPressureCritical {
+		t.Fatalf("level = %d, %v", level, err)
 	}
 }

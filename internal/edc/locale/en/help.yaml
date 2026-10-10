@@ -82,7 +82,7 @@ command:
       process: "match PIDs or command names, comma-separated"
       full: "match and show the full command line"
       split: "one box each for cpu, mem, disk, net, psi, default all"
-      detail: "CPU wait and I/O latency (eBPF, root), Linux"
+      detail: "CPU wait, I/O latency (Linux eBPF, root); macOS CPU wait"
       ebpf: "same as --detail"
       write: "append to SQLite; omit path for the default DB"
       json: "one JSON line for each sample, - for stdout"

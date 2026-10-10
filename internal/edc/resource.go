@@ -65,8 +65,55 @@ type resourceSnapshot struct {
 	CPUSteal      uint64
 	CPUStealValid bool
 	// ProcsBlocked는 지금 I/O를 기다리며 멈춘(D state) 작업 수다. 누적값이 아니라 현재 값이다.
+	// macOS는 이 값을 주지 않아 대시보드가 process 목록의 U 상태 process 수로 채운다.
 	ProcsBlocked      uint64
 	ProcsBlockedValid bool
+	// ProcsBlockedFromProcesses는 ProcsBlocked를 kernel이 아니라 process 목록의 멈춘 process 수로 채웠다는 뜻이다.
+	// 이 값은 thread가 아니라 process를 세고, iowait이 없는 host(macOS)에서만 쓴다.
+	ProcsBlockedFromProcesses bool
+	// MemoryPressure는 macOS kernel이 판단한 memory 압박 단계다. 다른 host와 읽지 못한 sample은 zero value다.
+	MemoryPressure topMemoryPressure
+}
+
+// topMemoryPressure는 kern.memorystatus_vm_pressure_level 값이다. dispatch의 DISPATCH_MEMORYPRESSURE_*와 같고 0은 모르는 값이다.
+type topMemoryPressure int32
+
+const (
+	topMemoryPressureUnknown  topMemoryPressure = 0
+	topMemoryPressureNormal   topMemoryPressure = 1
+	topMemoryPressureWarn     topMemoryPressure = 2
+	topMemoryPressureCritical topMemoryPressure = 4
+)
+
+func (pressure topMemoryPressure) known() bool { return pressure > topMemoryPressureUnknown }
+
+// level은 표에 없는 값이 와도 그보다 낮은 쪽 단계로 읽는다. 모르는 값은 경고하지 않는다.
+func (pressure topMemoryPressure) level() topLevel {
+	switch {
+	case pressure >= topMemoryPressureCritical:
+		return topLevelDanger
+	case pressure >= topMemoryPressureWarn:
+		return topLevelWarn
+	}
+	return topLevelNormal
+}
+
+// score는 signal 순위에 쓰는 값이다. critical이 1이라 다른 경고의 위험 기준과 맞는다.
+func (pressure topMemoryPressure) score() float64 {
+	return float64(pressure) / float64(topMemoryPressureCritical)
+}
+
+func (pressure topMemoryPressure) String() string {
+	if !pressure.known() {
+		return "unknown"
+	}
+	switch pressure.level() {
+	case topLevelDanger:
+		return "critical"
+	case topLevelWarn:
+		return "warn"
+	}
+	return "normal"
 }
 
 type topProcess struct {
@@ -161,6 +208,9 @@ type topProcessTotal struct {
 	Threads int
 	// BPF는 감시하는 모든 process의 eBPF 값을 더한 것이다.
 	BPF *topBPFStats
+	// Blocked는 필터를 걸기 전 모든 process 중 I/O를 기다리며 멈춘 process 수다. state를 읽은 목록에서만 유효하다.
+	Blocked      int
+	BlockedValid bool
 	// Groups는 같은 실행 파일 이름의 process를 묶은 합이다. 필터가 없을 때 채우고, I/O 합은 모든 process의 I/O를 읽는
 	// 디스크 보기에서만 들어간다.
 	Groups []topProcessGroup
@@ -449,12 +499,14 @@ func (sampler *topProcessSampler) refresh() {
 	filter, observe, filterSeq, scanIO := sampler.filter, sampler.observe, sampler.filterSeq, sampler.scanIO
 	sampler.mutex.Unlock()
 	processes, valid := sampler.read()
+	blocked, blockedValid := countBlockedTopProcesses(processes)
 	// 필터는 CPU 순위를 자르기 전에 건다. 자른 뒤에 걸면 CPU가 낮은 process가 목록에 들지 못해 항상 비어 보인다.
 	processes = filter.apply(processes)
 	total := topProcessTotal{}
 	if filter.active() {
 		total = totalTopProcesses(processes)
 	}
+	total.Blocked, total.BlockedValid = blocked, valid && blockedValid
 	// 목록은 CPU가 높은 순이라 감시 개수를 넘으면 가장 바쁜 process부터 감시한다.
 	var observed map[int]topBPFStats
 	if filter.active() && observe != nil {
@@ -562,6 +614,18 @@ func topProcessCandidatesByIO(processes []topProcess) []topProcess {
 
 // topProcessStateBlocked는 I/O를 기다리며 멈춘 process의 state 문자다.
 const topProcessStateBlocked = "D"
+
+// countBlockedTopProcesses는 멈춘 process 수다. state를 하나도 읽지 못한 목록은 셀 수 없다.
+func countBlockedTopProcesses(processes []topProcess) (int, bool) {
+	blocked, known := 0, false
+	for _, process := range processes {
+		known = known || process.State != ""
+		if process.State == topProcessStateBlocked {
+			blocked++
+		}
+	}
+	return blocked, known
+}
 
 // linuxProcessStat은 /proc/<pid>/stat 한 줄에서 CPU tick과 RSS page 수만 뽑은 값이다.
 type linuxProcessStat struct {
@@ -671,12 +735,16 @@ const topProcessStartLayout = "Mon Jan 2 15:04:05 2006"
 // topProcessStartFields는 lstart가 차지하는 필드 수다.
 const topProcessStartFields = 5
 
-// parseTopProcesses는 "pid pcpu rss lstart comm" 줄을 읽는다.
+// topDarwinStateBlocked는 macOS ps의 uninterruptible wait 상태다. Linux의 D와 같은 뜻이다.
+const topDarwinStateBlocked = "U"
+
+// parseTopProcesses는 "pid pcpu rss state lstart comm" 줄을 읽는다. state는 macOS ps의 첫 글자만 쓰고,
+// 뒤의 글자는 우선순위와 session 표시라 버린다.
 func parseTopProcesses(output string) []topProcess {
 	processes := []topProcess{}
 	for _, line := range strings.Split(output, "\n") {
 		fields := strings.Fields(line)
-		if len(fields) < 4+topProcessStartFields {
+		if len(fields) < 5+topProcessStartFields {
 			continue
 		}
 		pid, e1 := strconv.Atoi(fields[0])
@@ -685,9 +753,13 @@ func parseTopProcesses(output string) []topProcess {
 		if e1 != nil || e2 != nil || e3 != nil {
 			continue
 		}
+		state := fields[3][:1]
+		if state == topDarwinStateBlocked {
+			state = topProcessStateBlocked
+		}
 		// lstart를 읽지 못해도 process는 남긴다. 시작 시각만 비운다.
-		started, _ := time.ParseInLocation(topProcessStartLayout, strings.Join(fields[3:3+topProcessStartFields], " "), time.Local)
-		processes = append(processes, topProcess{PID: pid, CPU: cpu, RSS: rss * 1024, Command: strings.Join(fields[3+topProcessStartFields:], " "), Started: started})
+		started, _ := time.ParseInLocation(topProcessStartLayout, strings.Join(fields[4:4+topProcessStartFields], " "), time.Local)
+		processes = append(processes, topProcess{PID: pid, CPU: cpu, RSS: rss * 1024, State: state, Command: strings.Join(fields[4+topProcessStartFields:], " "), Started: started})
 	}
 	return sortTopProcessesByCPU(processes)
 }
@@ -710,6 +782,8 @@ type resourceRate struct {
 	DiskBusyValid                   bool
 	CPUStealValid                   bool
 	ProcsBlockedValid               bool
+	ProcsBlockedFromProcesses       bool
+	MemoryPressure                  topMemoryPressure
 	CoreCPU                         []float64
 	PSICPU, PSIMemory, PSIIO        float64
 	PSIMemoryFull, PSIIOFull        float64
@@ -780,6 +854,8 @@ func calculateRate(previous, current resourceSnapshot) resourceRate {
 		rate.CPUSteal = percent(current.CPUSteal, previous.CPUSteal)
 	}
 	rate.ProcsBlocked, rate.ProcsBlockedValid = float64(current.ProcsBlocked), current.ProcsBlockedValid
+	rate.ProcsBlockedFromProcesses = current.ProcsBlockedFromProcesses
+	rate.MemoryPressure = current.MemoryPressure
 	// 한쪽 sample이 counter를 읽지 못했으면 이 구간의 rate는 알 수 없다. 0으로 남은 counter와 비교하지 않는다.
 	if previous.NetMissing || current.NetMissing {
 		rate.NetIn, rate.NetOut, rate.PacketsIn, rate.PacketsOut, rate.NetErrors, rate.NetDrops, rate.NetHealthValid = 0, 0, 0, 0, 0, 0, false

@@ -30,10 +30,10 @@ func newTopProcessReader() func() ([]topProcess, bool) {
 	return func() ([]topProcess, bool) {
 		ctx, cancel := context.WithTimeout(context.Background(), darwinProcessTimeout)
 		defer cancel()
-		args := []string{"-Ao", "pid=,pcpu=,rss=,lstart=,comm="}
+		args := []string{"-Ao", "pid=,pcpu=,rss=,state=,lstart=,comm="}
 		if topFullCommand {
 			// -ww는 ps가 출력 폭에 맞춰 argv를 자르지 않게 한다.
-			args = []string{"-ww", "-Ao", "pid=,pcpu=,rss=,lstart=,args="}
+			args = []string{"-ww", "-Ao", "pid=,pcpu=,rss=,state=,lstart=,args="}
 		}
 		command := exec.CommandContext(ctx, "/bin/ps", args...)
 		// lstart의 요일과 달 이름이 지역 설정을 따르면 시작 시각을 읽을 수 없다.
@@ -103,12 +103,15 @@ func collectResourceSnapshot() (resourceSnapshot, error) {
 		load    float64
 		// networkOK와 diskOK가 false면 counter가 0이므로 다음 rate의 기준으로 쓰면 안 된다.
 		networkOK, diskOK bool
+		pressure          topMemoryPressure
+		pressureErr       error
 	)
-	group.Add(4)
+	group.Add(5)
 	go func() { defer group.Done(); network, networkOK = readDarwinNetwork() }()
 	go func() { defer group.Done(); disk, diskOK = readDarwinDisk() }()
 	go func() { defer group.Done(); memory = readDarwinMemory() }()
 	go func() { defer group.Done(); load = readDarwinLoad() }()
+	go func() { defer group.Done(); pressure, pressureErr = readDarwinMemoryPressure() }()
 	group.Wait()
 
 	snapshot.NetMissing, snapshot.DiskMissing = !networkOK, !diskOK
@@ -120,6 +123,9 @@ func collectResourceSnapshot() (resourceSnapshot, error) {
 	snapshot.MemoryTotal, snapshot.MemoryUsed = memory.total, memory.used
 	snapshot.SwapOutBytes, snapshot.SwapMissing = memory.swapOut, !memory.swapOK
 	snapshot.Load1 = load
+	if pressureErr == nil {
+		snapshot.MemoryPressure = pressure
+	}
 	return snapshot, nil
 }
 
@@ -294,9 +300,17 @@ func collectInfoCapabilities() []infoCapability {
 		ioSupport.State, ioSupport.Detail = "unavailable", err.Error()
 	}
 	return []infoCapability{ioSupport,
-		{"PSI", "unsupported", "Linux-only; no macOS pressure measurement here"},
-		{"CPU wait / I/O latency", "unsupported", "edc top -d requires Linux eBPF"},
+		{"PSI", "unsupported", "Linux-only; edc top shows the macOS memory pressure level"},
+		darwinDetailCapability(),
 	}
+}
+
+// darwinDetailCapability는 edc top -d가 macOS에서 세는 범위다. CPU 대기만 libproc으로 세고 I/O 지연은 세지 못한다.
+func darwinDetailCapability() infoCapability {
+	if darwinTranslated() {
+		return infoCapability{"CPU wait / I/O latency", "unsupported", "edc top -d stops under Rosetta; use the arm64 build"}
+	}
+	return infoCapability{"CPU wait / I/O latency", "CPU wait only", "edc top -d reads libproc; I/O latency needs Linux eBPF"}
 }
 
 func collectDefaultRoute() (string, string) {

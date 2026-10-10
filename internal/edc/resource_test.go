@@ -90,9 +90,13 @@ func TestParsePressureAvg10(t *testing.T) {
 }
 
 func TestParseTopProcesses(t *testing.T) {
-	processes := parseTopProcesses(" 9 12.5 2048 Sat Oct  3 05:06:51 2026 node server.js\n 2 99.0 1024 Mon Jan 12 23:00:01 2026 java -jar app.jar\n 5 1.0 10 garbled start comm\n")
+	processes := parseTopProcesses(" 9 12.5 2048 Ss+ Sat Oct  3 05:06:51 2026 node server.js\n 2 99.0 1024 U< Mon Jan 12 23:00:01 2026 java -jar app.jar\n 5 1.0 10 R garbled start comm\n")
 	if len(processes) != 2 || processes[0].PID != 2 || processes[0].RSS != 1024*1024 || processes[1].Command != "node server.js" {
 		t.Fatalf("processes = %#v", processes)
+	}
+	// macOS의 U는 Linux의 D처럼 I/O를 기다리며 멈춘 상태라 blocked 후보와 묶음 집계에 들어가야 한다.
+	if processes[0].State != topProcessStateBlocked || processes[1].State != "S" {
+		t.Fatalf("states = %q, %q", processes[0].State, processes[1].State)
 	}
 	if want := time.Date(2026, time.October, 3, 5, 6, 51, 0, time.Local); !processes[1].Started.Equal(want) {
 		t.Fatalf("started = %v, want %v", processes[1].Started, want)
@@ -795,5 +799,85 @@ func TestTopProcessSamplerTotalsEveryMatchAndEnrichesTheKeptOnes(t *testing.T) {
 	}
 	if want := (topProcessTotal{Count: topFilteredProcessLimit + 10, CPU: 2 * float64(topFilteredProcessLimit+10), RSS: 1000 * uint64(topFilteredProcessLimit+10), Threads: 3 * (topFilteredProcessLimit + 10)}); !reflect.DeepEqual(total, want) {
 		t.Fatalf("total = %+v, want %+v", total, want)
+	}
+}
+
+// 멈춘 process 수는 host 값이라 필터와 상관없이 모든 process에서 센다.
+func TestTopProcessSamplerCountsBlockedBeforeTheFilter(t *testing.T) {
+	all := []topProcess{{PID: 1, State: topProcessStateBlocked, Command: "dd"}, {PID: 2, State: topProcessStateBlocked, Command: "cp"}, {PID: 3, State: "S", Command: "worker"}}
+	sampler := &topProcessSampler{read: func() ([]topProcess, bool) { return append([]topProcess(nil), all...), true }}
+	filter, _ := parseTopProcessFilter("worker")
+	sampler.setFilter(filter)
+	_, total, _ := sampler.refreshNow()
+	if total.Blocked != 2 || !total.BlockedValid {
+		t.Fatalf("blocked = %d, %v", total.Blocked, total.BlockedValid)
+	}
+	snapshot := resourceSnapshot{ProcessTotal: total}
+	fillProcsBlocked(&snapshot)
+	if snapshot.ProcsBlocked != 2 || !snapshot.ProcsBlockedValid || !snapshot.ProcsBlockedFromProcesses {
+		t.Fatalf("snapshot = %d, %v, %v", snapshot.ProcsBlocked, snapshot.ProcsBlockedValid, snapshot.ProcsBlockedFromProcesses)
+	}
+	// kernel이 준 값(Linux procs_blocked)은 덮지 않는다.
+	kernel := resourceSnapshot{ProcsBlocked: 9, ProcsBlockedValid: true, ProcessTotal: total}
+	fillProcsBlocked(&kernel)
+	if kernel.ProcsBlocked != 9 || kernel.ProcsBlockedFromProcesses {
+		t.Fatalf("kernel value overwritten: %d, %v", kernel.ProcsBlocked, kernel.ProcsBlockedFromProcesses)
+	}
+	// state를 읽지 못한 목록은 0이 아니라 모르는 값이다.
+	if _, known := countBlockedTopProcesses([]topProcess{{PID: 1}}); known {
+		t.Fatal("a list without states must not count")
+	}
+}
+
+func TestTopSampleWritesMemoryPressureOnlyWhenRead(t *testing.T) {
+	data, err := json.Marshal(newTopSample(hostDetails{}, time.Unix(1, 0), resourceRate{MemoryPressure: topMemoryPressureWarn}))
+	if err != nil || !strings.Contains(string(data), `"memory_pressure":"warn"`) {
+		t.Fatalf("sample = %s, %v", data, err)
+	}
+	data, _ = json.Marshal(newTopSample(hostDetails{}, time.Unix(1, 0), resourceRate{}))
+	if strings.Contains(string(data), "memory_pressure") {
+		t.Fatalf("an unread level must be left out: %s", data)
+	}
+}
+
+// 압박 단계와 blocked의 출처는 누적값이 아니라 현재 sample의 값이다.
+func TestCalculateRateCarriesBlockedOriginAndMemoryPressure(t *testing.T) {
+	start := time.Unix(0, 0)
+	previous := resourceSnapshot{TakenAt: start, CPUTotal: 100, MemoryPressure: topMemoryPressureNormal}
+	current := resourceSnapshot{TakenAt: start.Add(time.Second), CPUTotal: 200, MemoryPressure: topMemoryPressureCritical, ProcsBlocked: 5, ProcsBlockedValid: true, ProcsBlockedFromProcesses: true}
+	rate := calculateRate(previous, current)
+	if rate.MemoryPressure != topMemoryPressureCritical || !rate.ProcsBlockedFromProcesses {
+		t.Fatalf("rate = %+v", rate)
+	}
+	current.MemoryPressure, current.ProcsBlockedFromProcesses = topMemoryPressureUnknown, false
+	if rate := calculateRate(previous, current); rate.MemoryPressure.known() || rate.ProcsBlockedFromProcesses {
+		t.Fatalf("an unread level or a kernel count must not carry over: %+v", rate)
+	}
+}
+
+func TestTopMemoryPressureLevelsAndNames(t *testing.T) {
+	for pressure, want := range map[topMemoryPressure]string{topMemoryPressureUnknown: "unknown", topMemoryPressureNormal: "normal", topMemoryPressureWarn: "warn", 3: "warn", topMemoryPressureCritical: "critical", 8: "critical"} {
+		if got := pressure.String(); got != want {
+			t.Errorf("%d = %q, want %q", pressure, got, want)
+		}
+	}
+	if topMemoryPressureUnknown.level() != topLevelNormal || topMemoryPressureCritical.score() != 1 {
+		t.Fatal("an unknown level must not warn and critical must score 1")
+	}
+}
+
+// process 목록을 읽지 못하면 멈춘 수는 0이 아니라 모르는 값이다. 0으로 두면 blocked 열이 0을 보인다.
+func TestTopProcessSamplerLeavesBlockedUnknownWhenTheReadFails(t *testing.T) {
+	sampler := &topProcessSampler{read: func() ([]topProcess, bool) {
+		return []topProcess{{PID: 1, State: topProcessStateBlocked}}, false
+	}}
+	_, total, _ := sampler.refreshNow()
+	if total.BlockedValid {
+		t.Fatalf("total = %+v", total)
+	}
+	snapshot := resourceSnapshot{ProcessTotal: total}
+	fillProcsBlocked(&snapshot)
+	if snapshot.ProcsBlockedValid {
+		t.Fatal("an unknown count must not fill blocked")
 	}
 }

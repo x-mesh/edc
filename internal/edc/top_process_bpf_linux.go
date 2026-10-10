@@ -217,7 +217,7 @@ func (tracer *topProcessBPF) observe(pids []int) map[int]topBPFStats {
 			continue
 		}
 		delta := cumulative.sub(tracer.previous[pid])
-		delta.Window = window
+		delta.Window, delta.Source, delta.Measured = window, topBPFSourceEBPF, 1
 		tracer.previous[pid] = cumulative
 		observed[pid] = delta
 	}

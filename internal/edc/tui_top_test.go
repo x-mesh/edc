@@ -662,11 +662,16 @@ func TestTopOptionalColumnsKeepTheSignalWidth(t *testing.T) {
 	darwin.width = 200
 	for _, view := range []topView{topViewCPU, topViewDisk, topViewNetwork} {
 		darwin.view = view
-		for _, title := range []string{"steal%", "blocked", "queue", "retr/s", "rst/s", "fail/s"} {
+		for _, title := range []string{"steal%", "queue", "retr/s", "rst/s", "fail/s"} {
 			if got := darwin.tableHeader()[0]; strings.Contains(got, title) {
 				t.Errorf("darwin %s shows %s: %q", view, title, got)
 			}
 		}
+	}
+	// macOS는 U 상태 process 수로 blocked를 채우므로 그 열을 보인다.
+	darwin.view = topViewCPU
+	if got := darwin.tableHeader()[0]; !strings.Contains(got, "blocked") {
+		t.Errorf("darwin cpu hides blocked: %q", got)
 	}
 	rate := resourceRate{CPUSteal: 12.5, CPUStealValid: true, ProcsBlocked: 3, ProcsBlockedValid: true, DiskQueue: 2.25, DiskHealthValid: true, DiskBusyValid: true}
 	model.width, model.view = 200, topViewCPU
@@ -1192,7 +1197,7 @@ func TestTopProcessViewShowsTheMatchedGroupForEachSample(t *testing.T) {
 			{PID: 1, CPU: 50, Command: "worker-a", FDs: 10, DiskValid: true, DiskRead: 1 << 20, DiskWrite: 2 << 20},
 			{PID: 2, CPU: 40, Command: "worker-b", FDs: 5, DiskValid: true, DiskWrite: 1 << 20},
 		},
-		processTotal: topProcessTotal{Count: 5, CPU: 130, RSS: 9 << 20, Threads: 12, BPF: &topBPFStats{RunqCount: 4, RunqSumNS: 6_000_000, IOCount: 2, IOSumNS: 500_000}},
+		processTotal: topProcessTotal{Count: 5, CPU: 130, RSS: 9 << 20, Threads: 12, BPF: &topBPFStats{Source: topBPFSourceEBPF, Measured: 1, RunqCount: 4, RunqSumNS: 6_000_000, IOCount: 2, IOSumNS: 500_000}},
 	}
 	if got, want := cells(row), []string{"5", "130.0", "9.0M", "12", "15", "1.00M", "3.00M", "1.50", "0.25"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("process row = %q, want %q", got, want)
@@ -1263,7 +1268,7 @@ func TestTopProcessBannerLeadsWithTheMatchedGroup(t *testing.T) {
 	}
 	model.rows = []topDashboardRow{{at: time.Unix(1, 0), processesValid: true, filter: "worker",
 		processes:    []topProcess{{PID: 1, CPU: 50, Command: "worker-a", FDs: 10, DiskValid: true, DiskWrite: 2 << 20}},
-		processTotal: topProcessTotal{Count: 7, CPU: 600.4, RSS: 9 << 20, Threads: 12, BPF: &topBPFStats{RunqCount: 4, RunqSumNS: 6_000_000, IOCount: 2, IOSumNS: 500_000}},
+		processTotal: topProcessTotal{Count: 7, CPU: 600.4, RSS: 9 << 20, Threads: 12, BPF: &topBPFStats{Source: topBPFSourceEBPF, Measured: 1, RunqCount: 4, RunqSumNS: 6_000_000, IOCount: 2, IOSumNS: 500_000}},
 	}}
 	model.selected = 0
 	banner := model.processBanner()[0]
@@ -1489,7 +1494,7 @@ func TestTopProcessLatencyDistinguishesNoEventsFromUnavailable(t *testing.T) {
 	if cells := topProcessViewCells(row); cells[7].text != "—" || cells[8].text != "—" {
 		t.Fatalf("latency without an observer = %+v", cells)
 	}
-	row.processTotal.BPF = &topBPFStats{}
+	row.processTotal.BPF = &topBPFStats{Source: topBPFSourceEBPF, Measured: 1}
 	if cells := topProcessViewCells(row); cells[7].text != "no ev" || cells[8].text != "no ev" {
 		t.Fatalf("active observer without events = %+v", cells)
 	}
@@ -1695,5 +1700,85 @@ func TestTopFooterStaysAtTheBottom(t *testing.T) {
 	lines := strings.Split(split.View().Content, "\n")
 	if len(lines) != 60 || !strings.Contains(ansi.Strip(lines[59]), "q quit") {
 		t.Errorf("split: %d lines, last = %q", len(lines), lines[len(lines)-1])
+	}
+}
+
+// macOS는 PSI 대신 kernel의 memory 압박 단계를 보이고, Linux는 그 열을 숨긴다.
+func TestTopMemoryPressureColumnFollowsTheHost(t *testing.T) {
+	model := topFixtureModel(nil)
+	model.width = 200
+	darwin := model
+	darwin.details.System = "darwin"
+	for _, view := range []topView{topViewMemory, topViewPressure} {
+		model.view, darwin.view = view, view
+		if got := model.tableHeader()[0]; strings.Contains(got, "mem lvl") {
+			t.Errorf("linux %s shows mem lvl: %q", view, got)
+		}
+		got := darwin.tableHeader()[0]
+		if !strings.Contains(got, "mem lvl") || strings.Contains(got, "psi") || strings.Contains(got, "full") {
+			t.Errorf("darwin %s header = %q", view, got)
+		}
+	}
+	darwin.view = topViewPressure
+	rate := resourceRate{MemoryPressure: topMemoryPressureCritical, ProcsBlocked: 2, ProcsBlockedValid: true, ProcsBlockedFromProcesses: true}
+	if line := darwin.tableRow(topDashboardRow{at: time.Unix(1, 0), rate: rate}); !strings.Contains(line, "critical") || !strings.Contains(line, "│      2│") {
+		t.Errorf("darwin pressure row = %q", line)
+	}
+	if got := topAfter(t, darwin, topKey("s")); got.view != topViewPressure {
+		t.Errorf("darwin s: view = %s, notice = %q", got.view, got.notice)
+	}
+}
+
+func TestTopSignalsUseMemoryPressureAndBlockedWithoutIOWait(t *testing.T) {
+	limits := newTopLimits(4, false)
+	for level, want := range map[topMemoryPressure]string{topMemoryPressureNormal: "", topMemoryPressureWarn: "mem pressure warn", 3: "mem pressure warn", topMemoryPressureCritical: "mem pressure critical"} {
+		got := ""
+		for _, item := range topSignals(resourceRate{MemoryPressure: level}, limits) {
+			if item.kind == "mem pressure" {
+				got = item.text
+				if item.level() != level.level() {
+					t.Errorf("level %d: signal level %v", level, item.level())
+				}
+			}
+		}
+		if got != want {
+			t.Errorf("level %d: signal %q, want %q", level, got, want)
+		}
+	}
+	if items := topSignals(resourceRate{MemoryPressure: topMemoryPressureUnknown}, limits); len(items) != 0 {
+		t.Errorf("an unread level must not warn: %+v", items)
+	}
+	blocked := func(rate resourceRate) bool {
+		for _, item := range topSignals(rate, limits) {
+			if item.kind == "blocked" {
+				return true
+			}
+		}
+		return false
+	}
+	// process 목록에서 센 blocked(macOS)는 iowait 대신 디스크 await 경고나 memory 압박이 두 번째 근거다. U 상태는 page-in
+	// 대기에서도 생기므로 개수만으로는 경고하지 않는다. kernel 값(Linux)은 iowait도 높아야 한다. zero value는 kernel 값이라
+	// 표시를 빠뜨려도 경고가 느슨해지지 않는다.
+	fromProcesses := resourceRate{ProcsBlocked: topBlockedSignalMin, ProcsBlockedValid: true, ProcsBlockedFromProcesses: true}
+	if blocked(fromProcesses) {
+		t.Error("blocked processes from the process list must not warn alone")
+	}
+	slowDisk := fromProcesses
+	slowDisk.DiskHealthValid, slowDisk.DiskAwait = true, limits.await.warn
+	if !blocked(slowDisk) {
+		t.Error("blocked processes with a slow disk must warn")
+	}
+	unreadDisk := slowDisk
+	unreadDisk.DiskHealthValid = false
+	if blocked(unreadDisk) {
+		t.Error("an unread disk await must not count as evidence")
+	}
+	pressured := fromProcesses
+	pressured.MemoryPressure = topMemoryPressureWarn
+	if !blocked(pressured) {
+		t.Error("blocked processes under memory pressure must warn")
+	}
+	if blocked(resourceRate{ProcsBlocked: 14, ProcsBlockedValid: true}) {
+		t.Error("kernel blocked tasks without iowait must not warn")
 	}
 }

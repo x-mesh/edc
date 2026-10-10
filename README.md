@@ -6,7 +6,9 @@
 
 An incident starts with one question: is the fault here, in the network, or at the far end? `edc` answers it with one command. It runs DNS, TCP, TLS, HTTP, route, ping, interface, and socket probes in one pass, and every probe prints the same result format. It also reports host resources and host information on Linux and macOS, and it measures network responsiveness (RPM) and throughput: macOS runs `networkQuality`, and Linux runs a built-in test that follows the IETF responsiveness draft.
 
-Diagnostic commands are read-only. `watch fs` can execute commands explicitly configured with `--exec` or `--rules`. Observation alone finds the fault and stops there. It runs no DNS flush, no interface reset, and no firewall change, so it stays safe on a production host.
+Diagnostic and observation commands are read-only. `watch fs` can execute commands explicitly configured with `--exec` or `--rules`. Observation alone finds the fault and stops there. It runs no DNS flush, no interface reset, and no firewall change, so it stays safe on a production host.
+
+Only the `host changes` group changes a host: `edc route`, `edc disk`, and `edc change`. Each change needs a subcommand that you type, root, and a confirmation. `edc` does not add `sudo` itself.
 
 ![edc doctor https://example.com runs nine probes in order and prints a 9 pass summary](docs/media/doctor.gif)
 
@@ -935,6 +937,10 @@ If `edc` finds no `inventory.yaml`, it lists the YAML files of the search direct
 The confirmation questions put the question, the two answers, and the key help on one line. Move with the left and right arrow keys and press Enter, or press `y` or `n` to answer at once. The answer you point at gets a `▌` bar and reversed colors. The default answer is no.
 
 Use `-f` or `--force` to skip the confirmation. Combine it with `-v` for streaming output. If you name no group, `-f` needs an inventory with exactly one group.
+
+A recipe command runs without a terminal, and its input is empty. If a step runs a `host changes` command without `--yes`, the command cannot get a confirmation. `edc disk grow` stops with exit code `4`. `edc route switch` restores the route. `edc change apply` rolls back when its timer fires.
+
+If a step adds `--yes`, `edc disk grow` and `edc change apply` run on every host of the group without a question. `edc route switch` does the same when the exit identity matches. Read the plan before you confirm. Do not run such a recipe with `-f`.
 
 These group names are reserved for future subcommands: `run`, `list`, `plan`, `hosts`, `groups`. An inventory that uses one of them fails to load.
 

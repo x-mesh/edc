@@ -31,13 +31,15 @@ disk:
     no_growpart: "growpart is missing, install cloud-guest-utils (Debian, Ubuntu) or cloud-utils-growpart (RHEL)"
     no_tool: "%s is missing"
   check:
-    growable: "%s can grow by %s, run edc disk grow %s"
+    growable: "%s can grow from %s to %s (+%s)"
     full: "%s uses the full disk, %s"
     unknown: "%s: edc cannot read the file system size, run as root"
     rescan_note: "%s is a SCSI disk, edc disk grow rescans it first and can find more space"
+    volume_grew: "the volume behind %s is now %s, the kernel still sees %s; edc disk grow rescans it first"
+    space_for: "%s fills its partition, %s; the free space on %s goes to %s"
     none: "edc found no mounted block device"
   grow:
-    dry_run: "plan only, nothing changed: %s grows by %s"
+    dry_run: "plan only, nothing changed: %s grows from %s to %s (+%s)"
     summary: "%s grew from %s to %s"
     cancelled: "cancelled, nothing changed"
     confirm:
@@ -45,6 +47,7 @@ disk:
       detail: "A partition and a file system cannot shrink back. Take a snapshot first."
     error:
       root_required: "edc disk grow needs root, or use -n to see the plan"
+      rescan_stale: "%s still shows %s after the rescan, but the volume is %s; check the volume attachment and run again"
       unchanged: "%s did not change the size"
       resume: "Run the same command again to continue from the failed step."
       interrupted: "stopped after %s because of a signal"

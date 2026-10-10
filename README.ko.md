@@ -6,7 +6,9 @@
 
 장애가 나면 첫 질문은 하나입니다. 원인이 내 쪽인지, 네트워크인지, 상대편인지. `edc`는 명령 하나로 답합니다. DNS, TCP, TLS, HTTP, route, ping, interface, socket을 한 번에 확인하고 결과를 모두 같은 형식으로 출력합니다. Linux와 macOS의 host resource와 host 정보도 함께 보여 주며, 네트워크 응답성(RPM)과 처리량도 잽니다. macOS는 `networkQuality`를 실행하고, Linux는 IETF responsiveness draft를 따르는 내장 측정을 씁니다.
 
-진단 command는 read-only입니다. `watch fs`는 `--exec`나 `--rules`로 지정한 커맨드를 실행할 수 있습니다. 기본 관측은 원인을 찾는 데서 멈춥니다. DNS flush, interface reset, firewall 변경 같은 자동 복구를 하지 않으므로 운영 중인 host에서도 그대로 씁니다.
+진단과 관측 command는 read-only입니다. `watch fs`는 `--exec`나 `--rules`로 지정한 커맨드를 실행할 수 있습니다. 기본 관측은 원인을 찾는 데서 멈춥니다. DNS flush, interface reset, firewall 변경 같은 자동 복구를 하지 않으므로 운영 중인 host에서도 그대로 씁니다.
+
+host를 바꾸는 command는 `host changes` 그룹의 `edc route`, `edc disk`, `edc change`뿐입니다. 하위 command를 직접 입력하고, root로 실행하고, 확인을 받아야 바뀝니다. `edc`는 `sudo`를 붙이지 않습니다.
 
 ![edc doctor https://example.com이 probe 9개를 차례로 실행하고 9 pass 요약을 출력하는 화면](docs/media/doctor.gif)
 
@@ -839,6 +841,10 @@ inventory 파일
 
 `-f`나 `--force`를 쓰면 확인을 생략합니다. `-v`와 함께 쓰면 출력을 흘려보냅니다. group을 지정하지 않은 채 `-f`를 쓰려면 inventory에 group이 정확히 하나 있어야 합니다.
 
+recipe의 command는 terminal 없이 실행되고 입력이 비어 있습니다. step이 `host changes` command를 `--yes` 없이 실행하면 확인을 받을 수 없습니다. `edc disk grow`는 exit code `4`로 멈추고, `edc route switch`는 경로를 되돌리고, `edc change apply`는 타이머가 실행될 때 되돌립니다.
+
+step에 `--yes`를 넣으면 `edc disk grow`와 `edc change apply`는 group의 모든 host에서 질문 없이 실행됩니다. `edc route switch`는 출구 신원이 일치할 때 그렇습니다. 확인하기 전에 plan을 읽고, 이런 recipe는 `-f`로 실행하지 마세요.
+
 `run`, `list`, `plan`, `hosts`, `groups`는 앞으로 쓸 subcommand 이름이라 group 이름으로 예약돼 있습니다. 이 중 하나를 쓴 inventory는 로드에 실패합니다.
 
 기존 `edc remote run` 형태는 없어졌습니다. `edc remote <group>`을 씁니다.
@@ -1013,6 +1019,55 @@ edc route switch --to lab-nat-02 --seconds 60
 `--dry-run`은 어떤 경로를 바꾸는지, 실행할 명령이 무엇인지, 어떤 타이머를 무장하는지, 출구가 닿는지를 보여 줍니다. root 권한이 없어도 됩니다.
 
 전환은 기존 연결을 끊습니다. NAT 상태가 이전 출구에 남아 있어 이미 맺어진 흐름은 멈춥니다. 새로 맺는 흐름만 새 출구를 씁니다.
+
+## 보호된 호스트 변경
+
+접속을 막을 수 있는 호스트 변경에는 `edc change`를 씁니다. Linux에서만 동작합니다. 대상 호스트에서 root로 실행합니다.
+
+`edc`는 대상을 바꾸기 전에 현재 상태를 저장하고 systemd 타이머를 무장합니다. 확정이 오지 않으면 타이머가 rollback 명령을 실행합니다.
+
+SSH 공개 키 파일을 바꿉니다.
+
+```bash
+edc change apply \
+  --kind authorized-keys \
+  --path /home/<user>/.ssh/authorized_keys \
+  --content-file /path/to/authorized_keys \
+  --seconds 120
+```
+
+IPv4 방화벽 규칙을 바꿉니다.
+
+```bash
+edc change apply \
+  --kind iptables \
+  --rules-file /path/to/rules.v4 \
+  --seconds 120
+```
+
+apply 결과의 run ID로 변경을 확정합니다.
+
+```bash
+edc change confirm --state /run/edc/change-<run-id>.json
+```
+
+타이머가 실행되기 전에 되돌리려면 같은 상태 파일 경로를 씁니다.
+
+```bash
+edc change rollback --state /run/edc/change-<run-id>.json
+```
+
+대기 중인 변경과 남은 시간을 봅니다.
+
+```bash
+edc change status
+```
+
+`authorized-keys`는 공개 키가 담긴 일반 파일을 받습니다. `iptables`는 타이머를 무장하기 전에 `iptables-restore --test`로 규칙을 검사합니다.
+
+보호된 변경은 한 번에 하나만 실행하세요. apply 뒤에 대상이 바뀌면 `edc`는 rollback할 때 새 상태를 덮어쓰지 않고 거부합니다.
+
+`--yes`를 쓰면 바로 확정합니다. 이 경우 rollback 유예가 사라집니다.
 
 ## 디스크 증설
 

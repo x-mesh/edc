@@ -831,11 +831,12 @@ func TestTopProcessSamplerCountsBlockedBeforeTheFilter(t *testing.T) {
 
 func TestTopSampleWritesMemoryPressureOnlyWhenRead(t *testing.T) {
 	data, err := json.Marshal(newTopSample(hostDetails{}, time.Unix(1, 0), resourceRate{MemoryPressure: topMemoryPressureWarn}))
-	if err != nil || !strings.Contains(string(data), `"memory_pressure":"warn"`) {
+	if err != nil || !strings.Contains(string(data), `"memory_pressure":"warn"`) || !strings.Contains(string(data), `"memory_pressure_supported":true`) {
 		t.Fatalf("sample = %s, %v", data, err)
 	}
+	// psi_supported처럼 지원 여부는 늘 나오고, 값은 읽었을 때만 나온다.
 	data, _ = json.Marshal(newTopSample(hostDetails{}, time.Unix(1, 0), resourceRate{}))
-	if strings.Contains(string(data), "memory_pressure") {
+	if strings.Contains(string(data), `"memory_pressure":`) || !strings.Contains(string(data), `"memory_pressure_supported":false`) {
 		t.Fatalf("an unread level must be left out: %s", data)
 	}
 }

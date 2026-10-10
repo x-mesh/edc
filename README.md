@@ -673,7 +673,7 @@ Use `--json` to write one JSON object for each sample. Use `-` for stdout. A pat
 ./bin/edc top --count 5 --json -
 ```
 
-Each line has `time`, `hostname`, `cores`, the network and disk rates in bytes per second, the CPU values in percent, `load1`, `memory_pct`, and `swap_out_bytes_per_s`. macOS and Linux emit network errors and drops, and disk IOPS and await values. Linux additionally emits disk busy values, PSI `some avg10`, and memory and I/O PSI `full avg10`; `*_health_supported`, `disk_busy_supported`, and `psi_supported` tell consumers whether those values are supported. macOS adds `memory_pressure` (`normal`, `warn`, or `critical`). The `--json` option removes the table and the header.
+Each line has `time`, `hostname`, `cores`, the network and disk rates in bytes per second, the CPU values in percent, `load1`, `memory_pct`, and `swap_out_bytes_per_s`. macOS and Linux emit network errors and drops, and disk IOPS and await values. Linux additionally emits disk busy values, PSI `some avg10`, and memory and I/O PSI `full avg10`; `*_health_supported`, `disk_busy_supported`, and `psi_supported` tell consumers whether those values are supported. `memory_pressure_supported` tells whether the host reported a memory pressure level, and macOS then adds `memory_pressure` (`normal`, `warn`, or `critical`). The `--json` option removes the table and the header.
 
 ## Top recordings and history
 
@@ -799,8 +799,10 @@ The dashboard adds a third line to the detail view: `ebpf 1s · runq 7584 avg 5.
 | Field | Meaning |
 |---|---|
 | `window_s` | seconds the counts cover, since the previous sample |
+| `io_supported`, `p95_supported` | whether the source can count block I/O and keep a distribution. Both are `true` for `ebpf` and `false` for `libproc`. |
 | `runq_count`, `runq_avg_ms`, `runq_p95_ms` | times a thread of the process became runnable and then got a CPU, and the wait in between. A high wait with a low `cpu_pct` means the CPU is oversubscribed. |
 | `io_ops`, `io_bytes`, `io_avg_ms`, `io_p95_ms` | block I/O requests the process issued, their bytes, and the time from issue to completion |
+| `context_switches`, `unreadable` | macOS only: the context switches in the window, which `runq_count` repeats, and the matches that macOS refused to read |
 
 `p95` is the upper edge of the power-of-two bucket that holds the 95th percentile, so the real value is below it. A latency is left out when there were no events. `process_total` merges every match, and its p95 comes from the merged distribution. `edc` watches the 4096 busiest matches.
 

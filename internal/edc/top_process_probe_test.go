@@ -120,13 +120,13 @@ func TestTopProbeSampleLeavesOutLatenciesWithoutEvents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{`"source":"ebpf"`, `"window_s":1.5`, `"runq_count":4`, `"runq_avg_ms":1.5`, `"runq_p95_ms":2.048`, `"io_ops":0`, `"io_bytes":0`} {
+	for _, want := range []string{`"source":"ebpf"`, `"window_s":1.5`, `"io_supported":true`, `"p95_supported":true`, `"runq_count":4`, `"runq_avg_ms":1.5`, `"runq_p95_ms":2.048`, `"io_ops":0`, `"io_bytes":0`} {
 		if !strings.Contains(string(data), want) {
 			t.Fatalf("sample is missing %s: %s", want, data)
 		}
 	}
-	if strings.Contains(string(data), "io_avg_ms") || strings.Contains(string(data), "io_p95_ms") {
-		t.Fatalf("no I/O events must leave out the latencies: %s", data)
+	if strings.Contains(string(data), "io_avg_ms") || strings.Contains(string(data), "io_p95_ms") || strings.Contains(string(data), "context_switches") {
+		t.Fatalf("no I/O events must leave out the latencies, and eBPF has no context switches: %s", data)
 	}
 }
 
@@ -153,8 +153,10 @@ func TestTopProbeUnsupportedValuesAreNotShownAsZero(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(data), `"source":"libproc"`) || !strings.Contains(string(data), `"runq_avg_ms":1.5`) {
-		t.Fatalf("sample = %s", data)
+	for _, want := range []string{`"source":"libproc"`, `"io_supported":false`, `"p95_supported":false`, `"context_switches":4`, `"runq_count":4`, `"runq_avg_ms":1.5`} {
+		if !strings.Contains(string(data), want) {
+			t.Fatalf("sample is missing %s: %s", want, data)
+		}
 	}
 	for _, absent := range []string{"io_ops", "io_bytes", "runq_p95_ms"} {
 		if strings.Contains(string(data), absent) {
@@ -201,7 +203,7 @@ func TestTopProbeUnreadableProcessesAreNotShownAsNoEvents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(data), `"unreadable":2`) || strings.Contains(string(data), "runq_count") {
+	if !strings.Contains(string(data), `"unreadable":2`) || !strings.Contains(string(data), `"io_supported":false`) || strings.Contains(string(data), "runq_count") || strings.Contains(string(data), "context_switches") {
 		t.Fatalf("sample = %s", data)
 	}
 	cells := topProcessViewCells(topDashboardRow{processesValid: true, processTotal: topProcessTotal{Count: 2, CPU: 1, Probe: &refused}})

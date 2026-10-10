@@ -229,7 +229,7 @@ func TestReadDarwinCoreTicks(t *testing.T) {
 
 func TestReadDarwinMemoryPressure(t *testing.T) {
 	level, err := readDarwinMemoryPressure()
-	if err != nil || level < 1 || level > topMemoryPressureCritical {
+	if err != nil || !level.known() || level > topMemoryPressureCritical {
 		t.Fatalf("level = %d, %v", level, err)
 	}
 }

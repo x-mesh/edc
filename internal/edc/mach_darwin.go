@@ -163,15 +163,15 @@ func readDarwinLoad1() (float64, error) {
 }
 
 // readDarwinMemoryPressure는 kernel이 memory 압박 알림에 쓰는 단계다. dispatch의 DISPATCH_MEMORYPRESSURE_* 값과 같다.
-func readDarwinMemoryPressure() (int, error) {
-	var level int32
+func readDarwinMemoryPressure() (topMemoryPressure, error) {
+	var level topMemoryPressure
 	if err := darwinSysctl("kern.memorystatus_vm_pressure_level", unsafe.Pointer(&level), unsafe.Sizeof(level)); err != nil {
-		return 0, err
+		return topMemoryPressureUnknown, err
 	}
-	if level <= 0 {
-		return 0, fmt.Errorf("kern.memorystatus_vm_pressure_level: %d", level)
+	if !level.known() {
+		return topMemoryPressureUnknown, fmt.Errorf("kern.memorystatus_vm_pressure_level: %d", level)
 	}
-	return int(level), nil
+	return level, nil
 }
 
 // readDarwinMemorySize는 hw.memsize, 곧 물리 memory byte 수를 읽는다.

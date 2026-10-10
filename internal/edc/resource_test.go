@@ -814,14 +814,14 @@ func TestTopProcessSamplerCountsBlockedBeforeTheFilter(t *testing.T) {
 	}
 	snapshot := resourceSnapshot{ProcessTotal: total}
 	fillProcsBlocked(&snapshot)
-	if snapshot.ProcsBlocked != 2 || !snapshot.ProcsBlockedValid {
-		t.Fatalf("snapshot = %d, %v", snapshot.ProcsBlocked, snapshot.ProcsBlockedValid)
+	if snapshot.ProcsBlocked != 2 || !snapshot.ProcsBlockedValid || !snapshot.ProcsBlockedFromProcesses {
+		t.Fatalf("snapshot = %d, %v, %v", snapshot.ProcsBlocked, snapshot.ProcsBlockedValid, snapshot.ProcsBlockedFromProcesses)
 	}
 	// kernel이 준 값(Linux procs_blocked)은 덮지 않는다.
 	kernel := resourceSnapshot{ProcsBlocked: 9, ProcsBlockedValid: true, ProcessTotal: total}
 	fillProcsBlocked(&kernel)
-	if kernel.ProcsBlocked != 9 {
-		t.Fatalf("kernel value overwritten: %d", kernel.ProcsBlocked)
+	if kernel.ProcsBlocked != 9 || kernel.ProcsBlockedFromProcesses {
+		t.Fatalf("kernel value overwritten: %d, %v", kernel.ProcsBlocked, kernel.ProcsBlockedFromProcesses)
 	}
 	// state를 읽지 못한 목록은 0이 아니라 모르는 값이다.
 	if _, known := countBlockedTopProcesses([]topProcess{{PID: 1}}); known {
@@ -830,7 +830,7 @@ func TestTopProcessSamplerCountsBlockedBeforeTheFilter(t *testing.T) {
 }
 
 func TestTopSampleWritesMemoryPressureOnlyWhenRead(t *testing.T) {
-	data, err := json.Marshal(newTopSample(hostDetails{}, time.Unix(1, 0), resourceRate{MemoryPressure: 2, MemoryPressureValid: true}))
+	data, err := json.Marshal(newTopSample(hostDetails{}, time.Unix(1, 0), resourceRate{MemoryPressure: topMemoryPressureWarn}))
 	if err != nil || !strings.Contains(string(data), `"memory_pressure":"warn"`) {
 		t.Fatalf("sample = %s, %v", data, err)
 	}
@@ -840,19 +840,29 @@ func TestTopSampleWritesMemoryPressureOnlyWhenRead(t *testing.T) {
 	}
 }
 
-// iowait은 두 sample이 모두 읽었을 때만 유효하다. 압박 단계는 누적값이 아니라 현재 값이다.
-func TestCalculateRateCarriesIOWaitValidityAndMemoryPressure(t *testing.T) {
+// 압박 단계와 blocked의 출처는 누적값이 아니라 현재 sample의 값이다.
+func TestCalculateRateCarriesBlockedOriginAndMemoryPressure(t *testing.T) {
 	start := time.Unix(0, 0)
-	previous := resourceSnapshot{TakenAt: start, CPUTotal: 100, CPUIOWaitValid: true, MemoryPressure: 1, MemoryPressureValid: true}
-	current := resourceSnapshot{TakenAt: start.Add(time.Second), CPUTotal: 200, CPUIOWaitValid: true, MemoryPressure: 4, MemoryPressureValid: true}
+	previous := resourceSnapshot{TakenAt: start, CPUTotal: 100, MemoryPressure: topMemoryPressureNormal}
+	current := resourceSnapshot{TakenAt: start.Add(time.Second), CPUTotal: 200, MemoryPressure: topMemoryPressureCritical, ProcsBlocked: 5, ProcsBlockedValid: true, ProcsBlockedFromProcesses: true}
 	rate := calculateRate(previous, current)
-	if !rate.CPUIOWaitValid || rate.MemoryPressure != 4 || !rate.MemoryPressureValid {
+	if rate.MemoryPressure != topMemoryPressureCritical || !rate.ProcsBlockedFromProcesses {
 		t.Fatalf("rate = %+v", rate)
 	}
-	previous.CPUIOWaitValid = false
-	current.MemoryPressureValid = false
-	if rate := calculateRate(previous, current); rate.CPUIOWaitValid || rate.MemoryPressureValid {
-		t.Fatalf("a missing read must not be valid: %+v", rate)
+	current.MemoryPressure, current.ProcsBlockedFromProcesses = topMemoryPressureUnknown, false
+	if rate := calculateRate(previous, current); rate.MemoryPressure.known() || rate.ProcsBlockedFromProcesses {
+		t.Fatalf("an unread level or a kernel count must not carry over: %+v", rate)
+	}
+}
+
+func TestTopMemoryPressureLevelsAndNames(t *testing.T) {
+	for pressure, want := range map[topMemoryPressure]string{topMemoryPressureUnknown: "unknown", topMemoryPressureNormal: "normal", topMemoryPressureWarn: "warn", 3: "warn", topMemoryPressureCritical: "critical", 8: "critical"} {
+		if got := pressure.String(); got != want {
+			t.Errorf("%d = %q, want %q", pressure, got, want)
+		}
+	}
+	if topMemoryPressureUnknown.level() != topLevelNormal || topMemoryPressureCritical.score() != 1 {
+		t.Fatal("an unknown level must not warn and critical must score 1")
 	}
 }
 

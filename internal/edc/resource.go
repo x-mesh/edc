@@ -68,11 +68,52 @@ type resourceSnapshot struct {
 	// macOS는 이 값을 주지 않아 대시보드가 process 목록의 U 상태 process 수로 채운다.
 	ProcsBlocked      uint64
 	ProcsBlockedValid bool
-	// CPUIOWaitValid는 kernel이 iowait 시간을 주는지다. macOS에는 이 값이 없다.
-	CPUIOWaitValid bool
-	// MemoryPressure는 macOS kernel이 판단한 memory 압박 단계다. 1 normal, 2 warn, 4 critical이다.
-	MemoryPressure      int
-	MemoryPressureValid bool
+	// ProcsBlockedFromProcesses는 ProcsBlocked를 kernel이 아니라 process 목록의 멈춘 process 수로 채웠다는 뜻이다.
+	// 이 값은 thread가 아니라 process를 세고, iowait이 없는 host(macOS)에서만 쓴다.
+	ProcsBlockedFromProcesses bool
+	// MemoryPressure는 macOS kernel이 판단한 memory 압박 단계다. 다른 host와 읽지 못한 sample은 zero value다.
+	MemoryPressure topMemoryPressure
+}
+
+// topMemoryPressure는 kern.memorystatus_vm_pressure_level 값이다. dispatch의 DISPATCH_MEMORYPRESSURE_*와 같고 0은 모르는 값이다.
+type topMemoryPressure int32
+
+const (
+	topMemoryPressureUnknown  topMemoryPressure = 0
+	topMemoryPressureNormal   topMemoryPressure = 1
+	topMemoryPressureWarn     topMemoryPressure = 2
+	topMemoryPressureCritical topMemoryPressure = 4
+)
+
+func (pressure topMemoryPressure) known() bool { return pressure > topMemoryPressureUnknown }
+
+// level은 표에 없는 값이 와도 그보다 낮은 쪽 단계로 읽는다. 모르는 값은 경고하지 않는다.
+func (pressure topMemoryPressure) level() topLevel {
+	switch {
+	case pressure >= topMemoryPressureCritical:
+		return topLevelDanger
+	case pressure >= topMemoryPressureWarn:
+		return topLevelWarn
+	}
+	return topLevelNormal
+}
+
+// score는 signal 순위에 쓰는 값이다. critical이 1이라 다른 경고의 위험 기준과 맞는다.
+func (pressure topMemoryPressure) score() float64 {
+	return float64(pressure) / float64(topMemoryPressureCritical)
+}
+
+func (pressure topMemoryPressure) String() string {
+	if !pressure.known() {
+		return "unknown"
+	}
+	switch pressure.level() {
+	case topLevelDanger:
+		return "critical"
+	case topLevelWarn:
+		return "warn"
+	}
+	return "normal"
 }
 
 type topProcess struct {
@@ -741,9 +782,8 @@ type resourceRate struct {
 	DiskBusyValid                   bool
 	CPUStealValid                   bool
 	ProcsBlockedValid               bool
-	CPUIOWaitValid                  bool
-	MemoryPressure                  int
-	MemoryPressureValid             bool
+	ProcsBlockedFromProcesses       bool
+	MemoryPressure                  topMemoryPressure
 	CoreCPU                         []float64
 	PSICPU, PSIMemory, PSIIO        float64
 	PSIMemoryFull, PSIIOFull        float64
@@ -814,8 +854,8 @@ func calculateRate(previous, current resourceSnapshot) resourceRate {
 		rate.CPUSteal = percent(current.CPUSteal, previous.CPUSteal)
 	}
 	rate.ProcsBlocked, rate.ProcsBlockedValid = float64(current.ProcsBlocked), current.ProcsBlockedValid
-	rate.CPUIOWaitValid = current.CPUIOWaitValid && previous.CPUIOWaitValid
-	rate.MemoryPressure, rate.MemoryPressureValid = current.MemoryPressure, current.MemoryPressureValid
+	rate.ProcsBlockedFromProcesses = current.ProcsBlockedFromProcesses
+	rate.MemoryPressure = current.MemoryPressure
 	// 한쪽 sample이 counter를 읽지 못했으면 이 구간의 rate는 알 수 없다. 0으로 남은 counter와 비교하지 않는다.
 	if previous.NetMissing || current.NetMissing {
 		rate.NetIn, rate.NetOut, rate.PacketsIn, rate.PacketsOut, rate.NetErrors, rate.NetDrops, rate.NetHealthValid = 0, 0, 0, 0, 0, 0, false

@@ -330,27 +330,28 @@ func newTopProcessTotalSample(total topProcessTotal) *topProcessTotalSample {
 
 // topBPFSample은 window 동안 센 run-queue 대기와 block I/O 지연이다. 지연은 ms이고, p95는 그 값이 든 구간의 위쪽 경계라 실제 값은 그 아래다.
 // 개수가 0이면 평균과 p95는 빠진다. I/O는 요청을 낸 process로 잡으므로 writeback은 kworker로 잡힌다.
-// source가 libproc이면 macOS의 누적 counter라 p95와 I/O 값이 없다.
+// source가 libproc이면 macOS의 누적 counter라 p95와 I/O 값이 없다. unreadable은 권한이 없어 읽지 못한 process 수이고,
+// 하나도 읽지 못했으면 runq 값도 빠진다.
 type topBPFSample struct {
-	Source    string   `json:"source"`
-	WindowS   float64  `json:"window_s"`
-	RunqCount uint64   `json:"runq_count"`
-	RunqAvgMS *float64 `json:"runq_avg_ms,omitempty"`
-	RunqP95MS *float64 `json:"runq_p95_ms,omitempty"`
-	IOOps     *uint64  `json:"io_ops,omitempty"`
-	IOBytes   *uint64  `json:"io_bytes,omitempty"`
-	IOAvgMS   *float64 `json:"io_avg_ms,omitempty"`
-	IOP95MS   *float64 `json:"io_p95_ms,omitempty"`
+	Source     topBPFSource `json:"source"`
+	WindowS    float64      `json:"window_s"`
+	Unreadable int          `json:"unreadable,omitempty"`
+	RunqCount  *uint64      `json:"runq_count,omitempty"`
+	RunqAvgMS  *float64     `json:"runq_avg_ms,omitempty"`
+	RunqP95MS  *float64     `json:"runq_p95_ms,omitempty"`
+	IOOps      *uint64      `json:"io_ops,omitempty"`
+	IOBytes    *uint64      `json:"io_bytes,omitempty"`
+	IOAvgMS    *float64     `json:"io_avg_ms,omitempty"`
+	IOP95MS    *float64     `json:"io_p95_ms,omitempty"`
 }
 
 func newTopBPFSample(stats *topBPFStats) *topBPFSample {
 	if stats == nil {
 		return nil
 	}
-	sample := &topBPFSample{Source: stats.Source, WindowS: roundTopValue(stats.Window.Seconds()), RunqCount: stats.RunqCount}
-	if !stats.IOUnsupported {
-		ops, bytes := stats.IOCount, stats.IOBytes
-		sample.IOOps, sample.IOBytes = &ops, &bytes
+	sample := &topBPFSample{Source: stats.Source, WindowS: roundTopValue(stats.Window.Seconds()), Unreadable: stats.Unreadable}
+	if stats.unmeasured() {
+		return sample
 	}
 	rounded := func(value float64, ok bool) *float64 {
 		if !ok {
@@ -359,10 +360,18 @@ func newTopBPFSample(stats *topBPFStats) *topBPFSample {
 		value = math.Round(value*1000) / 1000
 		return &value
 	}
+	runq := stats.RunqCount
+	sample.RunqCount = &runq
 	sample.RunqAvgMS = rounded(topBPFAverageMS(stats.RunqSumNS, stats.RunqCount))
-	sample.RunqP95MS = rounded(topBPFPercentileMS(stats.RunqHist, 0.95))
-	sample.IOAvgMS = rounded(topBPFAverageMS(stats.IOSumNS, stats.IOCount))
-	sample.IOP95MS = rounded(topBPFPercentileMS(stats.IOHist, 0.95))
+	if stats.Source.hasHistogram() {
+		sample.RunqP95MS = rounded(topBPFPercentileMS(stats.RunqHist, 0.95))
+	}
+	if stats.Source.measuresIO() {
+		ops, bytes := stats.IOCount, stats.IOBytes
+		sample.IOOps, sample.IOBytes = &ops, &bytes
+		sample.IOAvgMS = rounded(topBPFAverageMS(stats.IOSumNS, stats.IOCount))
+		sample.IOP95MS = rounded(topBPFPercentileMS(stats.IOHist, 0.95))
+	}
 	return sample
 }
 
@@ -374,8 +383,8 @@ func newTopSample(details hostDetails, at time.Time, rate resourceRate) topSampl
 		Load1: roundTopValue(rate.Load1), CPUUser: roundTopValue(rate.CPUUser), CPUSystem: roundTopValue(rate.CPUSystem), CPUIOWait: roundTopValue(rate.CPUIOWait),
 		DiskRead: roundTopValue(rate.DiskRead), DiskWrite: roundTopValue(rate.DiskWrite), DiskIOPS: roundTopValue(rate.DiskIOPS), DiskAwait: roundTopValue(rate.DiskAwait), DiskBusy: roundTopValue(rate.DiskBusy), DiskHealth: rate.DiskHealthValid, DiskBusyOK: rate.DiskBusyValid, PSICPU: roundTopValue(rate.PSICPU), PSIMemory: roundTopValue(rate.PSIMemory), PSIIO: roundTopValue(rate.PSIIO), PSIMemoryFull: roundTopValue(rate.PSIMemoryFull), PSIIOFull: roundTopValue(rate.PSIIOFull), PSIValid: rate.PSIValid, MemoryPct: roundTopValue(rate.MemoryPercent), SwapOut: roundTopValue(rate.SwapOut),
 	}
-	if rate.MemoryPressureValid {
-		sample.MemoryPressure = topMemoryPressureName(rate.MemoryPressure)
+	if rate.MemoryPressure.known() {
+		sample.MemoryPressure = rate.MemoryPressure.String()
 	}
 	return sample
 }

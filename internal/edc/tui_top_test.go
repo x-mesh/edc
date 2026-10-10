@@ -190,14 +190,14 @@ func TestTopSignalSummarizesHighestRisk(t *testing.T) {
 
 func TestTopSignalReportsBlockedTasksOnlyWithHighIOWait(t *testing.T) {
 	limits := newTopLimits(4, false)
-	items := topSignals(resourceRate{CPUIOWait: 78, CPUIOWaitValid: true, ProcsBlocked: 14, ProcsBlockedValid: true}, limits)
+	items := topSignals(resourceRate{CPUIOWait: 78, ProcsBlocked: 14, ProcsBlockedValid: true}, limits)
 	if len(items) != 2 || items[1].text != "blocked 14" || items[1].view != topViewDisk {
 		t.Fatalf("items = %+v", items)
 	}
 	for name, rate := range map[string]resourceRate{
-		"low iowait":   {CPUIOWait: 2, CPUIOWaitValid: true, ProcsBlocked: 14, ProcsBlockedValid: true},
-		"few blocked":  {CPUIOWait: 78, CPUIOWaitValid: true, ProcsBlocked: 3, ProcsBlockedValid: true},
-		"not measured": {CPUIOWait: 78, CPUIOWaitValid: true, ProcsBlocked: 14},
+		"low iowait":   {CPUIOWait: 2, ProcsBlocked: 14, ProcsBlockedValid: true},
+		"few blocked":  {CPUIOWait: 78, ProcsBlocked: 3, ProcsBlockedValid: true},
+		"not measured": {CPUIOWait: 78, ProcsBlocked: 14},
 	} {
 		for _, item := range topSignals(rate, limits) {
 			if strings.HasPrefix(item.text, "blocked") {
@@ -1197,7 +1197,7 @@ func TestTopProcessViewShowsTheMatchedGroupForEachSample(t *testing.T) {
 			{PID: 1, CPU: 50, Command: "worker-a", FDs: 10, DiskValid: true, DiskRead: 1 << 20, DiskWrite: 2 << 20},
 			{PID: 2, CPU: 40, Command: "worker-b", FDs: 5, DiskValid: true, DiskWrite: 1 << 20},
 		},
-		processTotal: topProcessTotal{Count: 5, CPU: 130, RSS: 9 << 20, Threads: 12, BPF: &topBPFStats{RunqCount: 4, RunqSumNS: 6_000_000, IOCount: 2, IOSumNS: 500_000}},
+		processTotal: topProcessTotal{Count: 5, CPU: 130, RSS: 9 << 20, Threads: 12, BPF: &topBPFStats{Source: topBPFSourceEBPF, Measured: 1, RunqCount: 4, RunqSumNS: 6_000_000, IOCount: 2, IOSumNS: 500_000}},
 	}
 	if got, want := cells(row), []string{"5", "130.0", "9.0M", "12", "15", "1.00M", "3.00M", "1.50", "0.25"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("process row = %q, want %q", got, want)
@@ -1268,7 +1268,7 @@ func TestTopProcessBannerLeadsWithTheMatchedGroup(t *testing.T) {
 	}
 	model.rows = []topDashboardRow{{at: time.Unix(1, 0), processesValid: true, filter: "worker",
 		processes:    []topProcess{{PID: 1, CPU: 50, Command: "worker-a", FDs: 10, DiskValid: true, DiskWrite: 2 << 20}},
-		processTotal: topProcessTotal{Count: 7, CPU: 600.4, RSS: 9 << 20, Threads: 12, BPF: &topBPFStats{RunqCount: 4, RunqSumNS: 6_000_000, IOCount: 2, IOSumNS: 500_000}},
+		processTotal: topProcessTotal{Count: 7, CPU: 600.4, RSS: 9 << 20, Threads: 12, BPF: &topBPFStats{Source: topBPFSourceEBPF, Measured: 1, RunqCount: 4, RunqSumNS: 6_000_000, IOCount: 2, IOSumNS: 500_000}},
 	}}
 	model.selected = 0
 	banner := model.processBanner()[0]
@@ -1494,7 +1494,7 @@ func TestTopProcessLatencyDistinguishesNoEventsFromUnavailable(t *testing.T) {
 	if cells := topProcessViewCells(row); cells[7].text != "—" || cells[8].text != "—" {
 		t.Fatalf("latency without an observer = %+v", cells)
 	}
-	row.processTotal.BPF = &topBPFStats{}
+	row.processTotal.BPF = &topBPFStats{Source: topBPFSourceEBPF, Measured: 1}
 	if cells := topProcessViewCells(row); cells[7].text != "no ev" || cells[8].text != "no ev" {
 		t.Fatalf("active observer without events = %+v", cells)
 	}
@@ -1720,7 +1720,7 @@ func TestTopMemoryPressureColumnFollowsTheHost(t *testing.T) {
 		}
 	}
 	darwin.view = topViewPressure
-	rate := resourceRate{MemoryPressure: 4, MemoryPressureValid: true, ProcsBlocked: 2, ProcsBlockedValid: true}
+	rate := resourceRate{MemoryPressure: topMemoryPressureCritical, ProcsBlocked: 2, ProcsBlockedValid: true, ProcsBlockedFromProcesses: true}
 	if line := darwin.tableRow(topDashboardRow{at: time.Unix(1, 0), rate: rate}); !strings.Contains(line, "critical") || !strings.Contains(line, "│      2│") {
 		t.Errorf("darwin pressure row = %q", line)
 	}
@@ -1731,12 +1731,12 @@ func TestTopMemoryPressureColumnFollowsTheHost(t *testing.T) {
 
 func TestTopSignalsUseMemoryPressureAndBlockedWithoutIOWait(t *testing.T) {
 	limits := newTopLimits(4, false)
-	for level, want := range map[int]string{1: "", 2: "mem pressure warn", 3: "mem pressure warn", 4: "mem pressure critical"} {
+	for level, want := range map[topMemoryPressure]string{topMemoryPressureNormal: "", topMemoryPressureWarn: "mem pressure warn", 3: "mem pressure warn", topMemoryPressureCritical: "mem pressure critical"} {
 		got := ""
-		for _, item := range topSignals(resourceRate{MemoryPressure: level, MemoryPressureValid: true}, limits) {
+		for _, item := range topSignals(resourceRate{MemoryPressure: level}, limits) {
 			if item.kind == "mem pressure" {
 				got = item.text
-				if item.level() != topMemoryPressureLevel(level) {
+				if item.level() != level.level() {
 					t.Errorf("level %d: signal level %v", level, item.level())
 				}
 			}
@@ -1745,7 +1745,7 @@ func TestTopSignalsUseMemoryPressureAndBlockedWithoutIOWait(t *testing.T) {
 			t.Errorf("level %d: signal %q, want %q", level, got, want)
 		}
 	}
-	if items := topSignals(resourceRate{MemoryPressure: 4}, limits); len(items) != 0 {
+	if items := topSignals(resourceRate{MemoryPressure: topMemoryPressureUnknown}, limits); len(items) != 0 {
 		t.Errorf("an unread level must not warn: %+v", items)
 	}
 	blocked := func(rate resourceRate) bool {
@@ -1756,11 +1756,12 @@ func TestTopSignalsUseMemoryPressureAndBlockedWithoutIOWait(t *testing.T) {
 		}
 		return false
 	}
-	// macOS에는 iowait이 없으므로 멈춘 process 수만으로 판단한다. Linux는 iowait도 높아야 한다.
-	if !blocked(resourceRate{ProcsBlocked: topBlockedSignalMin, ProcsBlockedValid: true}) {
-		t.Error("a host without iowait must warn on blocked processes alone")
+	// process 목록에서 센 blocked(macOS)는 iowait이 없으므로 개수만으로 판단한다. kernel 값(Linux)은 iowait도 높아야 한다.
+	// zero value는 kernel 값이라 표시를 빠뜨려도 경고가 느슨해지지 않는다.
+	if !blocked(resourceRate{ProcsBlocked: topBlockedSignalMin, ProcsBlockedValid: true, ProcsBlockedFromProcesses: true}) {
+		t.Error("blocked processes from the process list must warn alone")
 	}
-	if blocked(resourceRate{CPUIOWait: 1, CPUIOWaitValid: true, ProcsBlocked: topBlockedSignalMin, ProcsBlockedValid: true}) {
-		t.Error("a host with low iowait must not warn on blocked tasks")
+	if blocked(resourceRate{ProcsBlocked: 14, ProcsBlockedValid: true}) {
+		t.Error("kernel blocked tasks without iowait must not warn")
 	}
 }

@@ -3,7 +3,9 @@
 package edc
 
 import (
+	"errors"
 	"fmt"
+	"syscall"
 	"time"
 	"unsafe"
 )
@@ -11,8 +13,6 @@ import (
 // macOS에는 scheduler와 block I/O event를 주는 공개 hook이 없다. 그래서 rusage_info_v4의 누적 counter 차이로
 // window 동안의 CPU 대기 합을 구한다. 대기 하나하나의 값이 없어 분포와 p95는 없고, process별 block I/O 지연은 셀 수 없다.
 const topDarwinWatchedMax = 4096
-
-const topDarwinSource = "libproc"
 
 // topDarwinRunqCounters는 한 process의 누적값이다. 시간은 Mach absolute time 단위다.
 type topDarwinRunqCounters struct {
@@ -43,8 +43,9 @@ func startTopProcessBPF() (topBPFObserver, func(), error) {
 	return observer.observe, func() {}, nil
 }
 
-// observe는 pid마다 직전 관측 이후의 값을 돌려준다. 처음 본 process와 읽지 못한 process는 빠진다.
-// 다른 사용자의 process는 root가 아니면 libproc이 거부한다.
+// observe는 pid마다 직전 관측 이후의 값을 돌려준다. 처음 본 process와 이미 끝난 process는 빠진다.
+// 다른 사용자의 process는 root가 아니면 libproc이 EPERM으로 거부한다. 그 process는 빠뜨리지 않고 Unreadable로 남긴다.
+// 빠뜨리면 감시 중인데 event가 없던 것과 구분되지 않는다.
 func (observer *topDarwinObserver) observe(pids []int) map[int]topBPFStats {
 	now := time.Now()
 	window := now.Sub(observer.at)
@@ -52,6 +53,13 @@ func (observer *topDarwinObserver) observe(pids []int) map[int]topBPFStats {
 	observed := make(map[int]topBPFStats, len(observer.previous))
 	for _, pid := range pids[:min(len(pids), topDarwinWatchedMax)] {
 		counters, err := readTopDarwinRunqCounters(pid)
+		if errors.Is(err, syscall.EPERM) {
+			// 첫 관측에는 window가 없다. 다른 process처럼 다음 관측부터 보고한다.
+			if !observer.at.IsZero() {
+				observed[pid] = topBPFStats{Window: window, Source: topBPFSourceLibproc, Unreadable: 1}
+			}
+			continue
+		}
 		if err != nil {
 			continue
 		}
@@ -88,7 +96,7 @@ func topDarwinRunqDelta(before, after topDarwinRunqCounters, timebase darwinTime
 	}
 	runnable := timebase.nanoseconds(after.runnable - before.runnable)
 	cpu := timebase.nanoseconds(after.cpu - before.cpu)
-	stats := topBPFStats{Source: topDarwinSource, RunqHistUnsupported: true, IOUnsupported: true, RunqCount: uint64(after.switches - before.switches)}
+	stats := topBPFStats{Source: topBPFSourceLibproc, Measured: 1, RunqCount: uint64(after.switches - before.switches)}
 	if runnable > cpu {
 		stats.RunqSumNS = runnable - cpu
 	}

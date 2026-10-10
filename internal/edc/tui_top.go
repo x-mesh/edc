@@ -72,7 +72,7 @@ func sampleTopDashboard() (resourceSnapshot, error) {
 // Linux의 procs_blocked는 thread를 세지만 이 값은 process를 센다.
 func fillProcsBlocked(snapshot *resourceSnapshot) {
 	if !snapshot.ProcsBlockedValid && snapshot.ProcessTotal.BlockedValid {
-		snapshot.ProcsBlocked, snapshot.ProcsBlockedValid = uint64(snapshot.ProcessTotal.Blocked), true
+		snapshot.ProcsBlocked, snapshot.ProcsBlockedValid, snapshot.ProcsBlockedFromProcesses = uint64(snapshot.ProcessTotal.Blocked), true, true
 	}
 }
 
@@ -1224,6 +1224,7 @@ func (model topModel) helpLines() []string {
 	if model.details.System == "darwin" {
 		lines = append(lines, "macOS: process CPU is a recent ps average. Threads and disk I/O use libproc. Process state iowait is the U state.",
 			"macOS: -d gives the average CPU wait per context switch from libproc. It has no p95 and no I/O latency.",
+			"macOS: root in the runq column means macOS refused to read another user's process. Run as root to measure it.",
 			"macOS: mem lvl is the kernel memory pressure level. blocked counts processes in the U state.",
 			"macOS: FDs, PSI, CPU iowait, disk busy and network limits are not collected.")
 	} else {
@@ -1454,37 +1455,11 @@ func topViewCells(rate resourceRate, view topView, signal string, limits topLimi
 	return nil
 }
 
-// topMemoryPressure 값은 dispatch의 DISPATCH_MEMORYPRESSURE_WARN과 CRITICAL이다. 그 사이 값이 와도 낮은 쪽 단계로 읽는다.
-const (
-	topMemoryPressureWarn     = 2
-	topMemoryPressureCritical = 4
-)
-
-func topMemoryPressureLevel(level int) topLevel {
-	switch {
-	case level >= topMemoryPressureCritical:
-		return topLevelDanger
-	case level >= topMemoryPressureWarn:
-		return topLevelWarn
-	}
-	return topLevelNormal
-}
-
-func topMemoryPressureName(level int) string {
-	switch topMemoryPressureLevel(level) {
-	case topLevelDanger:
-		return "critical"
-	case topLevelWarn:
-		return "warn"
-	}
-	return "normal"
-}
-
 func topMemoryPressureCell(rate resourceRate) topCell {
-	if !rate.MemoryPressureValid {
+	if !rate.MemoryPressure.known() {
 		return topPlainCell("—")
 	}
-	return topCell{text: topMemoryPressureName(rate.MemoryPressure), level: topMemoryPressureLevel(rate.MemoryPressure)}
+	return topCell{text: rate.MemoryPressure.String(), level: rate.MemoryPressure.level()}
 }
 
 // topOptionalValue는 platform이 주지 않는 값을 0 대신 —로 보여 준다.
@@ -1998,8 +1973,8 @@ func topSignals(rate resourceRate, limits topLimits) []topSignalItem {
 	if rate.CPUIOWait >= limits.io.warn {
 		all = append(all, topSignalItem{fmt.Sprintf("io %.1f%%", rate.CPUIOWait), rate.CPUIOWait / limits.io.danger, topViewDisk, "io"})
 	}
-	// iowait이 없는 host(macOS)는 멈춘 process 수만으로 판단한다.
-	if (!rate.CPUIOWaitValid || rate.CPUIOWait >= limits.io.warn) && rate.ProcsBlockedValid && rate.ProcsBlocked >= topBlockedSignalMin {
+	// process 목록에서 센 blocked(macOS)는 iowait이 없으므로 멈춘 process 수만으로 판단한다.
+	if (rate.ProcsBlockedFromProcesses || rate.CPUIOWait >= limits.io.warn) && rate.ProcsBlockedValid && rate.ProcsBlocked >= topBlockedSignalMin {
 		all = append(all, topSignalItem{fmt.Sprintf("blocked %.0f", rate.ProcsBlocked), rate.ProcsBlocked / topBlockedSignalDanger, topViewDisk, "blocked"})
 	}
 	if rate.CPUUser+rate.CPUSystem >= limits.cpu.warn {
@@ -2014,8 +1989,8 @@ func topSignals(rate resourceRate, limits topLimits) []topSignalItem {
 	if rate.NetHealthValid && rate.NetErrors >= limits.network.warn {
 		all = append(all, topSignalItem{fmt.Sprintf("err %.0f/s", rate.NetErrors), rate.NetErrors / limits.network.danger, topViewNetwork, "err"})
 	}
-	if rate.MemoryPressureValid && rate.MemoryPressure >= topMemoryPressureWarn {
-		all = append(all, topSignalItem{"mem pressure " + topMemoryPressureName(rate.MemoryPressure), float64(rate.MemoryPressure) / topMemoryPressureCritical, topViewMemory, "mem pressure"})
+	if rate.MemoryPressure.level() != topLevelNormal {
+		all = append(all, topSignalItem{"mem pressure " + rate.MemoryPressure.String(), rate.MemoryPressure.score(), topViewMemory, "mem pressure"})
 	}
 	if rate.PSIValid && rate.PSIIO >= limits.psi.warn {
 		all = append(all, topSignalItem{fmt.Sprintf("psi io %.0f%%", rate.PSIIO), rate.PSIIO / limits.psi.danger, topViewPressure, "psi io"})
@@ -2131,8 +2106,11 @@ func (model topModel) processBanner() []string {
 			if average, ok := topBPFAverageMS(bpf.RunqSumNS, bpf.RunqCount); ok {
 				parts = append(parts, fmt.Sprintf("runq %.2fms", average))
 			}
-			if average, ok := topBPFAverageMS(bpf.IOSumNS, bpf.IOCount); ok && !bpf.IOUnsupported {
+			if average, ok := topBPFAverageMS(bpf.IOSumNS, bpf.IOCount); ok && bpf.Source.measuresIO() {
 				parts = append(parts, fmt.Sprintf("io %.2fms", average))
+			}
+			if bpf.Unreadable > 0 {
+				parts = append(parts, fmt.Sprintf("%d need root", bpf.Unreadable))
 			}
 		}
 		fds, read, write, diskKnown := topMatchIO(row.processes)
@@ -2209,10 +2187,13 @@ func topProcessViewCells(row topDashboardRow) []topCell {
 	}
 	if bpf := total.BPF; bpf != nil {
 		cells[7], cells[8] = topPlainCell("no ev"), topPlainCell("no ev")
-		if average, ok := topBPFAverageMS(bpf.RunqSumNS, bpf.RunqCount); ok {
+		if bpf.unmeasured() {
+			// 권한이 없어 하나도 읽지 못한 값이다. no ev로 두면 대기가 없었던 것으로 읽힌다.
+			cells[7] = topPlainCell("root")
+		} else if average, ok := topBPFAverageMS(bpf.RunqSumNS, bpf.RunqCount); ok {
 			cells[7] = topPlainCell(fmt.Sprintf("%.2f", average))
 		}
-		if bpf.IOUnsupported {
+		if !bpf.Source.measuresIO() {
 			cells[8] = topPlainCell("n/a")
 		} else if average, ok := topBPFAverageMS(bpf.IOSumNS, bpf.IOCount); ok {
 			cells[8] = topPlainCell(fmt.Sprintf("%.2f", average))
@@ -2305,16 +2286,24 @@ func topBPFDetail(stats topBPFStats) string {
 			return "—"
 		}
 		p95, ok := topBPFPercentileMS(hist, 0.95)
-		if !ok {
+		if !ok || !stats.Source.hasHistogram() {
 			return fmt.Sprintf("avg %.2fms", average)
 		}
 		return fmt.Sprintf("avg %.2fms p95 <%gms", average, p95)
 	}
+	runq := fmt.Sprintf("runq %d %s", stats.RunqCount, latency(stats.RunqSumNS, stats.RunqCount, stats.RunqHist))
+	if stats.unmeasured() {
+		runq = "runq n/a"
+	}
 	io := "io n/a"
-	if !stats.IOUnsupported {
+	if stats.Source.measuresIO() {
 		io = fmt.Sprintf("io %d %s", stats.IOCount, latency(stats.IOSumNS, stats.IOCount, stats.IOHist))
 	}
-	return fmt.Sprintf("%s %.0fs · runq %d %s · %s", stats.Source, stats.Window.Seconds(), stats.RunqCount, latency(stats.RunqSumNS, stats.RunqCount, stats.RunqHist), io)
+	detail := fmt.Sprintf("%s %.0fs · %s · %s", stats.Source, stats.Window.Seconds(), runq, io)
+	if stats.Unreadable > 0 {
+		detail += fmt.Sprintf(" · %d need root", stats.Unreadable)
+	}
+	return detail
 }
 
 func formatProcessRSS(bytes uint64) string {

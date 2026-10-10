@@ -701,7 +701,7 @@ sudo ./bin/edc top --process output-mesh -d --json /tmp/edc-host.jsonl
 - process가 나타난 뒤 첫 sample에는 `ebpf` 객체가 없습니다. `edc`가 그 process를 감시하기 시작할 때부터 세기 때문입니다.
 - `ebpf` 객체의 `source`는 값을 센 방법입니다. Linux는 `ebpf`, macOS는 `libproc`입니다.
 
-macOS에는 scheduler와 block I/O event를 주는 공개 hook이 없습니다. 그래서 `-d`는 root 없이 libproc의 누적 counter로 CPU 대기만 셉니다. 대기 시간은 실행 가능했던 시간에서 CPU를 쓴 시간을 뺀 값이고, `runq_count`는 그동안의 context switch 수입니다. 따라서 `runq_avg_ms`는 switch 한 번당 평균 대기입니다. 분포가 없어 `runq_p95_ms`는 빠지고, I/O 값은 셀 수 없으므로 `io_*` 필드가 없습니다. 대시보드는 그 칸을 `n/a`로 보입니다. 다른 사용자의 process는 root가 아니면 읽을 수 없어 값이 빠집니다.
+macOS에는 scheduler와 block I/O event를 주는 공개 hook이 없습니다. 그래서 `-d`는 root 없이 libproc의 누적 counter로 CPU 대기만 셉니다. 대기 시간은 실행 가능했던 시간에서 CPU를 쓴 시간을 뺀 값이고, `runq_count`는 그동안의 context switch 수입니다. 따라서 `runq_avg_ms`는 switch 한 번당 평균 대기입니다. 분포가 없어 `runq_p95_ms`는 빠지고, I/O 값은 셀 수 없으므로 `io_*` 필드가 없습니다. 대시보드는 그 칸을 `n/a`로 보입니다. root가 아니면 macOS는 다른 사용자의 process를 읽지 못하게 막습니다. `edc`는 그 수를 `unreadable`에 세고, 맞은 process를 하나도 읽지 못했으면 `runq_*` 필드를 빼며, 대시보드에는 `root`를 보입니다. x86_64 build는 Rosetta에서 `-d`를 멈춥니다. 번역된 시계가 kernel counter와 맞지 않을 수 있기 때문이니 arm64 build를 쓰세요.
 
 ```bash
 ./bin/edc top --process Safari -d

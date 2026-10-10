@@ -33,7 +33,7 @@ func TestTopDarwinRunqDeltaSubtractsCPUFromRunnable(t *testing.T) {
 		t.Fatal("same process must give a delta")
 	}
 	// (30000 - 6000) tick * 125/3 = 1,000,000ns다. switch counter는 32비트에서 넘어가도 4번으로 센다.
-	if stats.RunqSumNS != 1_000_000 || stats.RunqCount != 4 || stats.Source != topDarwinSource || !stats.IOUnsupported || !stats.RunqHistUnsupported {
+	if stats.RunqSumNS != 1_000_000 || stats.RunqCount != 4 || stats.Source != topBPFSourceLibproc || stats.Measured != 1 || stats.Source.measuresIO() || stats.Source.hasHistogram() {
 		t.Fatalf("stats = %+v", stats)
 	}
 	if _, ok := topDarwinRunqDelta(before, topDarwinRunqCounters{started: 8, runnable: 9_000, cpu: 2_000}, timebase); ok {
@@ -106,10 +106,10 @@ func TestTopDarwinObserverSkipsUnreadablePIDsAndRebaselines(t *testing.T) {
 	}
 	defer stop()
 	self := os.Getpid()
-	// macOS의 PID는 99999를 넘지 않으므로 이 PID의 process는 없다.
-	const unreadable = 999_999
-	observe([]int{self, unreadable})
-	if got := observe([]int{self, unreadable}); len(got) != 1 || got[self].Source != topDarwinSource {
+	// macOS의 PID는 99999를 넘지 않으므로 이 PID의 process는 없다. 끝난 process는 빠진다.
+	const gone = 999_999
+	observe([]int{self, gone})
+	if got := observe([]int{self, gone}); len(got) != 1 || got[self].Source != topBPFSourceLibproc || got[self].Measured != 1 {
 		t.Fatalf("observed = %+v", got)
 	}
 	observe(nil)
@@ -135,11 +135,39 @@ func TestDarwinRusageV4FillsRunnableTime(t *testing.T) {
 	}
 }
 
+// darwinDetailCapability는 -d를 실행하지 않으므로 Rosetta에서도 건너뛰지 않고 그쪽 문구를 확인한다.
 func TestDarwinInfoReportsCPUWaitFromLibproc(t *testing.T) {
+	got := darwinDetailCapability()
+	if darwinTranslated() {
+		if got.State != "unsupported" || !strings.Contains(got.Detail, "Rosetta") {
+			t.Fatalf("Rosetta capability = %+v", got)
+		}
+		return
+	}
+	if got.State != "CPU wait only" || !strings.Contains(got.Detail, "libproc") {
+		t.Fatalf("capability = %+v", got)
+	}
+}
+
+// 다른 사용자의 process는 빠뜨리지 않고 Unreadable로 남긴다. root로 돌면 읽히므로 그때는 확인할 수 없다.
+func TestTopDarwinObserverCountsPermissionRefusals(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root can read every process")
+	}
 	if darwinTranslated() {
 		t.Skip("-d refuses to run under Rosetta")
 	}
-	if got := darwinDetailCapability(); got.State != "CPU wait only" || !strings.Contains(got.Detail, "libproc") {
-		t.Fatalf("capability = %+v", got)
+	observe, stop, err := startTopProcessBPF()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stop()
+	const launchd = 1
+	if got := observe([]int{launchd}); len(got) != 0 {
+		t.Fatalf("the first observation has no window, got %+v", got)
+	}
+	got, ok := observe([]int{launchd})[launchd]
+	if !ok || got.Unreadable != 1 || got.Measured != 0 || !got.unmeasured() || got.Window <= 0 {
+		t.Fatalf("launchd = %+v, %v", got, ok)
 	}
 }

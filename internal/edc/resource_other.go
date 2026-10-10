@@ -103,7 +103,7 @@ func collectResourceSnapshot() (resourceSnapshot, error) {
 		load    float64
 		// networkOK와 diskOK가 false면 counter가 0이므로 다음 rate의 기준으로 쓰면 안 된다.
 		networkOK, diskOK bool
-		pressure          int
+		pressure          topMemoryPressure
 		pressureErr       error
 	)
 	group.Add(5)
@@ -123,7 +123,9 @@ func collectResourceSnapshot() (resourceSnapshot, error) {
 	snapshot.MemoryTotal, snapshot.MemoryUsed = memory.total, memory.used
 	snapshot.SwapOutBytes, snapshot.SwapMissing = memory.swapOut, !memory.swapOK
 	snapshot.Load1 = load
-	snapshot.MemoryPressure, snapshot.MemoryPressureValid = pressure, pressureErr == nil
+	if pressureErr == nil {
+		snapshot.MemoryPressure = pressure
+	}
 	return snapshot, nil
 }
 

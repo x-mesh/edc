@@ -104,7 +104,7 @@ func collectResourceSnapshot() (resourceSnapshot, error) {
 	snapshot.CPUUser = values[0] + values[1]
 	snapshot.CPUSystem = values[2] + values[5] + values[6]
 	snapshot.CPUIdle = values[3]
-	snapshot.CPUIOWait, snapshot.CPUIOWaitValid = values[4], true
+	snapshot.CPUIOWait = values[4]
 	if len(values) > 7 {
 		snapshot.CPUSteal, snapshot.CPUStealValid = values[7], true
 	}

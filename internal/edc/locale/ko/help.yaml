@@ -149,6 +149,14 @@ command:
       - "-v는 계정과 file descriptor, 큐 열을 함께 엽니다."
       - "큐는 Recv-Q/Send-Q이고 TCP listener에서는 accept 큐입니다."
       - "-v는 열만 늘립니다. 줄은 그대로입니다."
+  svc:
+    summary: "systemd service 하나를 한 화면에 (Linux)"
+    notes:
+      - "상태, 가동 시간, 재시작, process, fd, 소켓, journal 오류를 보여 줍니다."
+      - "읽기만 합니다. unit을 시작·중지·reload하지 않습니다."
+      - "systemd가 있는 Linux에서만 동작하고, 다른 호스트에서는 skip입니다."
+      - "root로 실행하세요. root가 아니면 fd, 소켓 주인, journal이 skip입니다."
+      - "systemd만 쥔 소켓(socket activation)은 목록에 나오지 않습니다."
   quality:
     summary: "네트워크 응답성(RPM)과 처리량 측정"
     option:

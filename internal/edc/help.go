@@ -226,6 +226,11 @@ var commandDocs = []commandDoc{
 		usesCommon: true,
 	},
 	{
+		name: "svc", group: "observe",
+		usage:      []string{"edc svc [options] <unit>"},
+		usesCommon: true,
+	},
+	{
 		name: "quality", group: "observe",
 		usage:      []string{"edc quality [options]"},
 		options:    []optionDoc{{"--server <URL>", "command.quality.option.server"}},

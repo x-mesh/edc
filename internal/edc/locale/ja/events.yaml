@@ -7,6 +7,7 @@ events:
     linux_only: "events は Linux のカーネルと systemd のログだけを読みます"
     needs_root: "%s を読むには root か adm、systemd-journal グループが必要です"
     no_journal: "journalctl がインストールされていません"
+    no_systemd: "このホストでは systemd が動いていません"
     unreadable: "%s を読めませんでした: %s"
   window:
     summary: "シグナル %d 件、直近 %s (%s 以降)"
@@ -44,6 +45,12 @@ events:
   hung_task:
     none: "%s 以降 hung task の上限を超えて止まった task なし"
     found: "hung task の報告 %d 回、最新 %s"
+  failed_units:
+    none: "いま failed 状態の unit なし"
+    found: "いま failed の unit %d 個: %s"
+  journal_errors:
+    none: "%s 以降 journal にエラー行なし"
+    found: "エラー行 %d 行、unit か program %d 個、最多は %s (%d)"
   taint:
     D: "D: カーネルに oops か BUG があった"
     W: "W: カーネルが warning を出した"
@@ -59,3 +66,5 @@ events:
     events: "記録"
     more: "... ほか %d 件"
     tainted: "tainted"
+    failed_units: "failed の unit (load/active/sub)"
+    error_sources: "unit ごとのエラー行 (件数、unit、最新、メッセージ)"

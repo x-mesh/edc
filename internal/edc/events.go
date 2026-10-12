@@ -27,6 +27,9 @@ var errEventsNeedsRoot = errors.New("needs root")
 // errEventsNoJournal은 journalctl이 없는 경우다. unit과 시계 판정은 journal에만 있어 skip이 된다.
 var errEventsNoJournal = errors.New("no journalctl")
 
+// errEventsNoSystemd는 systemd가 PID 1이 아닌 호스트다. container와 Alpine에는 unit이 없다.
+var errEventsNoSystemd = errors.New("no systemd")
+
 const (
 	eventsDefaultSince = 6 * time.Hour
 	// journalctl -n과 출력·한 줄 크기의 상한이다. 큰 호스트에서도 메모리와 시간이 일정하게 끝나게 한다.
@@ -56,6 +59,10 @@ const (
 	eventsLockup     = "lockup"
 	eventsOops       = "oops"
 	eventsHungTask   = "hung_task"
+	eventsFailed     = "failed_units"
+	eventsErrors     = "journal_errors"
+	// eventsErrorUnits는 근거에 적는 unit 수다. 나머지는 개수만 센다.
+	eventsErrorUnits = 10
 )
 
 // eventsTaintLetters는 Documentation/admin-guide/tainted-kernels.rst의 비트 순서다. 비트 0은 P(proprietary module)다.
@@ -74,6 +81,22 @@ type eventsSources struct {
 	journal func(ctx context.Context, start time.Time) (io.Reader, []string, error)
 	// tainted는 kernel.tainted의 값이다. nil이면 읽지 않는다.
 	tainted func() (uint64, error)
+	// failedUnits는 systemctl list-units --state=failed의 출력이다. nil이면 읽지 않는다.
+	failedUnits func(ctx context.Context) (string, error)
+	// journalErrors는 창 안의 journalctl -p err 기록이다. nil이면 읽지 않는다.
+	journalErrors func(ctx context.Context, start time.Time) (io.Reader, []string, error)
+}
+
+// eventsFailedUnit은 지금 failed 상태인 unit 하나다. 창과 상관없이 지금의 상태다.
+type eventsFailedUnit struct {
+	Unit, Load, Active, Sub, Description string
+}
+
+// eventsErrorSource는 오류 줄을 남긴 unit이나 program 하나다.
+type eventsErrorSource struct {
+	Name   string
+	Count  int
+	Latest journalEntry
 }
 
 type kmsgRecord struct {
@@ -91,6 +114,9 @@ type journalEntry struct {
 	MessageID string
 	Unit      string
 	Message   string
+	// SystemdUnit은 기록을 남긴 process의 unit이고, Identifier는 syslog 이름이다. 오류 줄을 묶을 때 쓴다.
+	SystemdUnit string
+	Identifier  string
 }
 
 type kernelLine struct {
@@ -122,6 +148,15 @@ type eventsFacts struct {
 	// Tainted는 kernel.tainted의 비트다. TaintedOK가 false면 읽지 못한 것이다.
 	Tainted   uint64
 	TaintedOK bool
+	// FailedUnits는 지금 failed인 unit이다. FailedChecked가 false면 읽지 않았고, FailedErr가 이유다.
+	FailedUnits   []eventsFailedUnit
+	FailedChecked bool
+	FailedErr     error
+	// ErrorSources는 창 안의 오류 줄을 많은 순으로 묶은 것이다. ErrorLines는 그 합이다.
+	ErrorSources []eventsErrorSource
+	ErrorLines   int
+	ErrorChecked bool
+	ErrorErr     error
 }
 
 var (
@@ -281,6 +316,9 @@ type journalRaw struct {
 	MessageID json.RawMessage `json:"MESSAGE_ID"`
 	Unit      json.RawMessage `json:"UNIT"`
 	Message   json.RawMessage `json:"MESSAGE"`
+	// SystemdUnit과 Identifier는 trusted field와 syslog 이름이다.
+	SystemdUnit json.RawMessage `json:"_SYSTEMD_UNIT"`
+	Identifier  json.RawMessage `json:"SYSLOG_IDENTIFIER"`
 }
 
 func parseJournalLine(line []byte) (journalEntry, bool) {
@@ -297,13 +335,15 @@ func parseJournalLine(line []byte) (journalEntry, bool) {
 		return journalEntry{}, false
 	}
 	return journalEntry{
-		Realtime:  realtime,
-		Monotonic: monotonic,
-		Boot:      journalField(raw.Boot),
-		Transport: journalField(raw.Transport),
-		MessageID: journalField(raw.MessageID),
-		Unit:      journalField(raw.Unit),
-		Message:   journalField(raw.Message),
+		Realtime:    realtime,
+		Monotonic:   monotonic,
+		Boot:        journalField(raw.Boot),
+		Transport:   journalField(raw.Transport),
+		MessageID:   journalField(raw.MessageID),
+		Unit:        journalField(raw.Unit),
+		Message:     journalField(raw.Message),
+		SystemdUnit: journalField(raw.SystemdUnit),
+		Identifier:  journalField(raw.Identifier),
 	}, true
 }
 
@@ -360,6 +400,7 @@ func collectEventsFacts(ctx context.Context, sources eventsSources, since time.D
 		}
 	}
 	facts.JournalErr = err
+	collectEventsUnitState(ctx, sources, &facts)
 
 	// /dev/kmsg는 현재 부팅의 ring buffer만 담는다. 재부팅 앞의 OOM이 사라지지 않게 journal을 먼저 쓴다.
 	if err == nil && len(kernel) > 0 {
@@ -542,6 +583,8 @@ func eventsSkip(id, source string, err error) Result {
 	switch {
 	case errors.Is(err, errEventsNoJournal):
 		return eventsResult(id, StatusSkip, T("events.skip.no_journal"))
+	case errors.Is(err, errEventsNoSystemd):
+		return eventsResult(id, StatusSkip, T("events.skip.no_systemd"))
 	case errors.Is(err, errEventsNeedsRoot), errors.Is(err, fs.ErrPermission):
 		return eventsResult(id, StatusSkip, T("events.skip.needs_root", source))
 	}
@@ -562,6 +605,8 @@ func evaluateEvents(facts eventsFacts) []Result {
 		eventsOopsResult(facts, byKind[eventsOops]),
 		eventsLinkResult(facts, byKind[eventsLink]),
 		eventsUnitsResult(facts, byKind[eventsUnits]),
+		eventsFailedResult(facts),
+		eventsErrorsResult(facts),
 		eventsKernelCategory(facts, eventsSegfault, byKind[eventsSegfault], StatusWarn),
 		eventsKernelCategory(facts, eventsHungTask, byKind[eventsHungTask], StatusWarn),
 		eventsClockResult(facts, byKind[eventsClock]),
@@ -895,6 +940,164 @@ func eventsOopsResult(facts eventsFacts, signals []eventsSignal) Result {
 	}
 	if taint.Letters != "" {
 		result.Evidence = append(result.Evidence, Evidence{Label: T("events.evidence.tainted"), Value: taint.Text})
+	}
+	return result
+}
+
+// collectEventsUnitState는 지금 failed인 unit과 창 안의 오류 줄을 읽는다. PID 1과 커널 기록과 따로 읽어,
+// unit 실패가 창 밖이어도 지금 상태로 보이고 일반 서비스의 오류 줄도 모인다.
+func collectEventsUnitState(ctx context.Context, sources eventsSources, facts *eventsFacts) {
+	if sources.failedUnits != nil {
+		facts.FailedChecked = true
+		output, err := sources.failedUnits(ctx)
+		facts.FailedErr = err
+		if err == nil {
+			facts.FailedUnits = parseFailedUnits(output)
+		}
+	}
+	if sources.journalErrors == nil {
+		return
+	}
+	facts.ErrorChecked = true
+	reader, warnings, err := sources.journalErrors(ctx, facts.Start)
+	facts.Warnings = append(facts.Warnings, warnings...)
+	if err != nil {
+		facts.ErrorErr = err
+		return
+	}
+	entries, truncated, err := readJournalEntries(reader, eventsJournalLimit)
+	if truncated {
+		facts.Warnings = append(facts.Warnings, T("events.window.truncated", "journalctl -p err"))
+	}
+	if err != nil {
+		facts.ErrorErr = err
+		return
+	}
+	facts.ErrorSources, facts.ErrorLines = groupErrorEntries(entries, facts.Start)
+}
+
+// parseFailedUnits는 list-units --plain --no-legend 출력을 읽는다. 열은 UNIT LOAD ACTIVE SUB DESCRIPTION이다.
+func parseFailedUnits(output string) []eventsFailedUnit {
+	var units []eventsFailedUnit
+	for _, line := range strings.Split(output, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 4 {
+			continue
+		}
+		// 오래된 systemctl은 --plain에서도 failed unit 앞에 ●를 붙인다.
+		if fields[0] == "●" || fields[0] == "*" {
+			fields = fields[1:]
+			if len(fields) < 4 {
+				continue
+			}
+		}
+		units = append(units, eventsFailedUnit{Unit: fields[0], Load: fields[1], Active: fields[2], Sub: fields[3], Description: strings.Join(fields[4:], " ")})
+	}
+	return units
+}
+
+// groupErrorEntries는 오류 줄을 unit별로 센다. 커널 기록은 앞의 범주가 이미 보므로 뺀다. unit이 없는 기록은 syslog 이름으로 묶는다.
+func groupErrorEntries(entries []journalEntry, start time.Time) ([]eventsErrorSource, int) {
+	byName := map[string]*eventsErrorSource{}
+	total := 0
+	for _, entry := range entries {
+		if entry.Transport == "kernel" || time.UnixMicro(entry.Realtime).Before(start) {
+			continue
+		}
+		name := entry.SystemdUnit
+		if name == "" {
+			name = entry.Identifier
+		}
+		if name == "" {
+			name = "-"
+		}
+		source := byName[name]
+		if source == nil {
+			source = &eventsErrorSource{Name: name}
+			byName[name] = source
+		}
+		source.Count++
+		if entry.Realtime >= source.Latest.Realtime {
+			source.Latest = entry
+		}
+		total++
+	}
+	sources := make([]eventsErrorSource, 0, len(byName))
+	for _, source := range byName {
+		sources = append(sources, *source)
+	}
+	sort.Slice(sources, func(i, j int) bool {
+		if sources[i].Count != sources[j].Count {
+			return sources[i].Count > sources[j].Count
+		}
+		return sources[i].Name < sources[j].Name
+	})
+	return sources, total
+}
+
+// eventsFailedResult는 지금 failed인 unit이다. 창과 상관없어서, 며칠 전에 죽어 아직 failed인 unit도 보인다.
+func eventsFailedResult(facts eventsFacts) Result {
+	const id = eventsFailed
+	switch {
+	case !facts.FailedChecked:
+		return eventsSkip(id, "systemctl", errEventsNoSystemd)
+	case facts.FailedErr != nil:
+		return eventsSkip(id, "systemctl", facts.FailedErr)
+	case len(facts.FailedUnits) == 0:
+		return eventsResult(id, StatusPass, T("events.failed_units.none"))
+	}
+	names := make([]string, 0, len(facts.FailedUnits))
+	lines := make([]string, 0, len(facts.FailedUnits))
+	for _, unit := range facts.FailedUnits {
+		names = append(names, unit.Unit)
+		lines = append(lines, strings.TrimSpace(fmt.Sprintf("%s  %s/%s/%s  %s", unit.Unit, unit.Load, unit.Active, unit.Sub, unit.Description)))
+	}
+	shown := names
+	if len(shown) > svcListenSummaryMax {
+		shown = append(append([]string{}, shown[:svcListenSummaryMax]...), fmt.Sprintf("+%d", len(names)-svcListenSummaryMax))
+	}
+	result := eventsResult(id, StatusFail, T("events.failed_units.found", len(names), strings.Join(shown, ", ")))
+	result.Error = &DiagnosticError{Kind: "events", Message: result.Summary}
+	result.Evidence = []Evidence{{Label: T("events.evidence.failed_units"), Value: strings.Join(lines, "\n")}}
+	result.Metrics = map[string]interface{}{"units": names}
+	result.Next = "systemctl status " + names[0]
+	return result
+}
+
+// eventsErrorsResult는 창 안의 오류 줄(priority err 이상)을 unit별로 센다. 오류 줄은 실패가 아니라 단서라 warn이다.
+func eventsErrorsResult(facts eventsFacts) Result {
+	const id = eventsErrors
+	switch {
+	case !facts.ErrorChecked:
+		return eventsSkip(id, "journal", errEventsNoJournal)
+	case facts.ErrorErr != nil:
+		return eventsSkip(id, "journal", facts.ErrorErr)
+	}
+	start := facts.Start.Format(eventsTimeLayout)
+	if facts.ErrorLines == 0 {
+		return eventsResult(id, StatusPass, T("events.journal_errors.none", start))
+	}
+	top := facts.ErrorSources[0]
+	result := eventsResult(id, StatusWarn, T("events.journal_errors.found", facts.ErrorLines, len(facts.ErrorSources), top.Name, top.Count))
+	lines := make([]string, 0, eventsErrorUnits+1)
+	counts := map[string]int{}
+	for index, source := range facts.ErrorSources {
+		counts[source.Name] = source.Count
+		if index >= eventsErrorUnits {
+			continue
+		}
+		at := time.UnixMicro(source.Latest.Realtime).In(facts.Now.Location()).Format(eventsTimeLayout)
+		lines = append(lines, fmt.Sprintf("%5d  %s  %s  %s", source.Count, source.Name, at, svcTruncate(firstLine(source.Latest.Message), svcJournalLineRunes)))
+	}
+	if hidden := len(facts.ErrorSources) - eventsErrorUnits; hidden > 0 {
+		lines = append(lines, T("events.evidence.more", hidden))
+	}
+	result.Evidence = []Evidence{{Label: T("events.evidence.error_sources"), Value: strings.Join(lines, "\n")}}
+	result.Metrics = map[string]interface{}{"lines": facts.ErrorLines, "sources": counts}
+	if strings.Contains(top.Name, ".") {
+		result.Next = fmt.Sprintf("journalctl -u %s -p err --since @%d", top.Name, facts.Start.Unix())
+	} else {
+		result.Next = fmt.Sprintf("journalctl -t %s -p err --since @%d", top.Name, facts.Start.Unix())
 	}
 	return result
 }

@@ -529,11 +529,15 @@ sudo edc events --json -        # 범주마다 결과 하나
 | `events.oops` | 커널이 `BUG`, `Oops`, general protection fault, panic을 보고함 | 커널이 `WARNING`을 냈거나, 기간 안에 oops가 없는데 커널이 `D`, `L`, `M`, `B`로 tainted됨 |
 | `events.link` | 네트워크 링크가 끊긴 뒤 다시 연결되지 않음 | 링크가 끊겼다가 다시 연결됨 |
 | `events.units` | unit의 마지막 기록이 실패 결과임 | unit이 실패한 뒤 재시작했거나 3번 이상 재시작함 |
+| `events.failed_units` | 지금 failed 상태인 unit이 있음. 기간 전에 실패한 unit도 포함 | |
+| `events.journal_errors` | | 기간 안 journal에 오류 줄(priority `err` 이상)이 있음. 근거는 unit별 개수와 가장 많은 unit 10개의 마지막 줄 |
 | `events.segfault` | | 프로세스가 segfault나 general protection fault로 멈춤 |
 | `events.hung_task` | | task가 hung task 한도(기본 120초)보다 오래 막힘 |
 | `events.clock` | | 벽시계가 1초 이상 점프함 |
 
 `events.window`는 기간과 원천을 밝히고, `-v`를 주면 모든 범주의 최근 신호 50개를 시간 순서로 보여 줍니다. 다른 결과는 횟수와 마지막 기록, 최근 기록 20개까지를 보여 줍니다.
+
+`events.failed_units`는 `systemctl list-units --state=failed`로 지금 상태를 묻습니다. 그래서 이틀 전에 실패해 아직 failed인 unit도 기본 6시간 창에서 보입니다. `events.journal_errors`는 기간 안의 `journalctl -p err`를 읽어 `_SYSTEMD_UNIT`으로, unit이 없는 줄은 syslog 이름으로 묶습니다. 커널 줄은 커널 범주가 이미 읽으므로 뺍니다. 오류 줄은 실패가 아니라 단서라 이 결과는 warn입니다. root나 `adm`, `systemd-journal` 그룹이 아니면 journalctl은 자기 기록만 보여 주므로 결과가 `skip`입니다. systemd가 PID 1이 아닌 호스트에서는 `events.failed_units`가 `skip`입니다.
 
 `events.oops`는 `/proc/sys/kernel/tainted`도 읽습니다. `D`, `W`, `L`, `M`, `B` flag는 부팅 뒤 커널에 oops, warning, soft lockup, machine check, bad page가 있었다는 표시라, 그 시각의 로그가 기간 밖이어도 남습니다. 결과는 flag를 근거로 보여 줍니다. `P`, `O`, `E` 같은 module flag는 근거에만 나오고 결과를 바꾸지 않습니다.
 

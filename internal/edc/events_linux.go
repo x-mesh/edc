@@ -38,9 +38,39 @@ func hostEventsSources() (eventsSources, bool) {
 			}
 			return readHostKmsg(ctx)
 		},
-		journal: readHostJournal,
-		tainted: readHostTainted,
+		journal:       readHostJournal,
+		tainted:       readHostTainted,
+		failedUnits:   readHostFailedUnits,
+		journalErrors: readHostJournalErrors,
 	}, true
+}
+
+// readHostFailedUnits는 지금 failed인 system unit을 묻는다. systemd가 PID 1이 아니면 묻지 않는다.
+// 이 목록은 누구나 읽을 수 있어 root가 필요 없다.
+func readHostFailedUnits(ctx context.Context) (string, error) {
+	if info, err := os.Stat("/run/systemd/system"); err != nil || !info.IsDir() {
+		return "", errEventsNoSystemd
+	}
+	path, err := exec.LookPath("systemctl")
+	if err != nil {
+		return "", errEventsNoSystemd
+	}
+	command := exec.CommandContext(ctx, path, "list-units", "--state=failed", "--all", "--plain", "--no-legend", "--no-pager")
+	command.Env = append(os.Environ(), "LC_ALL=C")
+	output, err := command.Output()
+	if ctx.Err() != nil {
+		return "", fmt.Errorf("systemctl: %w", ctx.Err())
+	}
+	if err != nil {
+		return "", fmt.Errorf("systemctl: %w", err)
+	}
+	return string(output), nil
+}
+
+// readHostJournalErrors는 창 안의 priority err 이상 기록이다. 권한이 없으면 자기 기록만 보이므로 needs root가 된다.
+func readHostJournalErrors(ctx context.Context, start time.Time) (io.Reader, []string, error) {
+	return runHostJournal(ctx, "-o", "json", "--no-pager", "--since", fmt.Sprintf("@%d", start.Unix()),
+		"-n", fmt.Sprint(eventsJournalMaxEntries), "-p", "err")
 }
 
 // readHostTainted는 root 없이도 읽힌다. 커널이 부팅 뒤 oops나 lockup을 겪었으면 로그가 창 밖이어도 비트가 남는다.
@@ -66,12 +96,16 @@ func readHostKmsg(ctx context.Context) ([]string, error) {
 }
 
 func readHostJournal(ctx context.Context, start time.Time) (io.Reader, []string, error) {
+	return runHostJournal(ctx, "-o", "json", "--no-pager", "--since", fmt.Sprintf("@%d", start.Unix()),
+		"-n", fmt.Sprint(eventsJournalMaxEntries), "_PID=1", "+", "_TRANSPORT=kernel")
+}
+
+func runHostJournal(ctx context.Context, args ...string) (io.Reader, []string, error) {
 	path, err := exec.LookPath("journalctl")
 	if err != nil {
 		return nil, nil, errEventsNoJournal
 	}
-	command := exec.CommandContext(ctx, path, "-o", "json", "--no-pager", "--since", fmt.Sprintf("@%d", start.Unix()),
-		"-n", fmt.Sprint(eventsJournalMaxEntries), "_PID=1", "+", "_TRANSPORT=kernel")
+	command := exec.CommandContext(ctx, path, args...)
 	command.Env = append(os.Environ(), "LC_ALL=C")
 	var stderr bytes.Buffer
 	command.Stderr = &stderr

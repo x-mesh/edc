@@ -567,11 +567,15 @@ sudo edc events --json -        # one result for each category
 | `events.oops` | the kernel reported a `BUG`, an `Oops`, a general protection fault, or a panic | the kernel issued a `WARNING`, or the kernel is tainted `D`, `L`, `M`, or `B` with no oops in the window |
 | `events.link` | a network link went down and did not come back up | a link went down and came back up |
 | `events.units` | the last event of a unit is a failure result | a unit failed and restarted, or restarted 3 times or more |
+| `events.failed_units` | a unit is in the failed state now, also when it failed before the window | |
+| `events.journal_errors` | | the journal has error lines (priority `err` or higher) in the window. The evidence counts them by unit and shows the latest line of the 10 busiest units |
 | `events.segfault` | | a process stopped on a segfault or a general protection fault |
 | `events.hung_task` | | a task stayed blocked for longer than the hung task limit, 120 seconds by default |
 | `events.clock` | | the wall clock jumped 1 second or more |
 
 `events.window` names the window and the sources. With `-v`, it also shows the 50 most recent signals of all categories in time order. Each other result shows its count, its latest event, and up to 20 recent events.
+
+`events.failed_units` asks `systemctl list-units --state=failed` for the state now, so a unit that failed two days ago and stays failed appears with the default 6-hour window. `events.journal_errors` reads `journalctl -p err` for the window and groups the lines by `_SYSTEMD_UNIT`, or by the syslog identifier when a line has no unit. It leaves out kernel lines, because the kernel categories read them. An error line is a clue, not a failure, so this result warns. Without root or the `adm` or `systemd-journal` group, journalctl shows only your own lines, and the result shows `skip`. On a host without systemd as PID 1, `events.failed_units` shows `skip`.
 
 `events.oops` also reads `/proc/sys/kernel/tainted`. The flags `D`, `W`, `L`, `M`, and `B` say that the kernel had an oops, a warning, a soft lockup, a machine check, or a bad page since boot, also when the log of that moment lies outside the window. The result shows the flags as evidence. Module flags such as `P`, `O`, and `E` appear in the evidence, but they do not change the result.
 

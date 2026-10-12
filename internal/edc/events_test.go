@@ -295,7 +295,7 @@ func TestEventsPrefersJournalKernelEntries(t *testing.T) {
 
 func TestEventsNeedsRootSkipsInsteadOfPassing(t *testing.T) {
 	results := evaluateEventsFixture(eventsTestSources("", errEventsNeedsRoot, nil, errEventsNeedsRoot))
-	if len(results) != 11 || results[0].Probe != "events.window" {
+	if len(results) != 13 || results[0].Probe != "events.window" {
 		t.Fatalf("results = %+v", results)
 	}
 	for _, result := range results {
@@ -536,6 +536,84 @@ func TestEventsLockupFailsAndHungTaskWarns(t *testing.T) {
 	for _, id := range []string{"oops", "oom", "segfault"} {
 		if result := eventsResultByID(t, results, id); result.Status != StatusPass {
 			t.Errorf("%s = %+v", id, result)
+		}
+	}
+}
+
+func TestParseFailedUnitsReadsPlainAndBulletRows(t *testing.T) {
+	output := "nginx.service loaded failed failed A high performance web server\n● backup.timer loaded failed failed Nightly backup\n\nshort row\n"
+	units := parseFailedUnits(output)
+	if len(units) != 2 || units[0] != (eventsFailedUnit{Unit: "nginx.service", Load: "loaded", Active: "failed", Sub: "failed", Description: "A high performance web server"}) || units[1].Unit != "backup.timer" || units[1].Description != "Nightly backup" {
+		t.Fatalf("units = %+v", units)
+	}
+}
+
+func journalErrorLine(ago time.Duration, transport, unit, identifier, message string) string {
+	realtime := eventsTestNow.Add(-ago).UnixMicro()
+	return fmt.Sprintf(`{"__REALTIME_TIMESTAMP":"%d","__MONOTONIC_TIMESTAMP":"1","_TRANSPORT":%q,"_SYSTEMD_UNIT":%q,"SYSLOG_IDENTIFIER":%q,"MESSAGE":%q}`, realtime, transport, unit, identifier, message)
+}
+
+func TestEventsFailedUnitsAndJournalErrors(t *testing.T) {
+	sources := eventsTestSources("", nil, nil, errors.New("unused"))
+	sources.failedUnits = func(context.Context) (string, error) {
+		return "nginx.service loaded failed failed web\nbackup.service loaded failed failed backup\n", nil
+	}
+	errorsJournal := strings.Join([]string{
+		journalErrorLine(5*time.Hour, "stdout", "app.service", "app", "db connection refused"),
+		journalErrorLine(2*time.Hour, "stdout", "app.service", "app", "db connection refused again"),
+		journalErrorLine(time.Hour, "syslog", "", "sshd", "error: kex_exchange_identification"),
+		// 커널 줄은 커널 범주가 보고, 창 밖 줄은 세지 않는다.
+		journalErrorLine(time.Hour, "kernel", "", "kernel", "I/O error, dev sda"),
+		journalErrorLine(7*time.Hour, "stdout", "old.service", "old", "too old"),
+	}, "\n") + "\n"
+	sources.journalErrors = func(context.Context, time.Time) (io.Reader, []string, error) {
+		return strings.NewReader(errorsJournal), nil, nil
+	}
+	results := evaluateEventsFixture(sources)
+	failed := eventsResultByID(t, results, "failed_units")
+	if failed.Status != StatusFail || failed.Error == nil || !strings.Contains(failed.Summary, "2 units are failed now: nginx.service, backup.service") || failed.Next != "systemctl status nginx.service" {
+		t.Fatalf("failed_units = %+v", failed)
+	}
+	if evidence := eventsEvidenceValue(failed, "events.evidence.failed_units"); !strings.Contains(evidence, "nginx.service  loaded/failed/failed  web") {
+		t.Fatalf("failed evidence = %q", evidence)
+	}
+	errorsResult := eventsResultByID(t, results, "journal_errors")
+	if errorsResult.Status != StatusWarn || !strings.Contains(errorsResult.Summary, "3 error lines from 2 units or programs, most from app.service (2)") {
+		t.Fatalf("journal_errors = %+v", errorsResult)
+	}
+	evidence := eventsEvidenceValue(errorsResult, "events.evidence.error_sources")
+	if !strings.Contains(evidence, "app.service") || !strings.Contains(evidence, "db connection refused again") || strings.Contains(evidence, "I/O error") || strings.Contains(evidence, "old.service") {
+		t.Fatalf("error evidence = %q", evidence)
+	}
+	if !strings.HasPrefix(errorsResult.Next, "journalctl -u app.service -p err --since @") {
+		t.Fatalf("next = %q", errorsResult.Next)
+	}
+
+	// 깨끗한 호스트는 둘 다 통과다.
+	sources.failedUnits = func(context.Context) (string, error) { return "", nil }
+	sources.journalErrors = func(context.Context, time.Time) (io.Reader, []string, error) { return strings.NewReader(""), nil, nil }
+	results = evaluateEventsFixture(sources)
+	for _, id := range []string{"failed_units", "journal_errors"} {
+		if result := eventsResultByID(t, results, id); result.Status != StatusPass {
+			t.Errorf("clean %s = %+v", id, result)
+		}
+	}
+
+	// systemd가 없거나 권한이 없으면 skip이다. 빈 결과를 통과로 보이지 않는다.
+	sources.failedUnits = func(context.Context) (string, error) { return "", errEventsNoSystemd }
+	sources.journalErrors = func(context.Context, time.Time) (io.Reader, []string, error) { return nil, nil, errEventsNeedsRoot }
+	results = evaluateEventsFixture(sources)
+	if result := eventsResultByID(t, results, "failed_units"); result.Status != StatusSkip {
+		t.Fatalf("no systemd = %+v", result)
+	}
+	if result := eventsResultByID(t, results, "journal_errors"); result.Status != StatusSkip || !strings.Contains(result.Summary, "needs root") {
+		t.Fatalf("needs root = %+v", result)
+	}
+	// 원천 함수가 없는 플랫폼도 skip이다.
+	plain := evaluateEventsFixture(eventsTestSources("", nil, nil, errors.New("unused")))
+	for _, id := range []string{"failed_units", "journal_errors"} {
+		if result := eventsResultByID(t, plain, id); result.Status != StatusSkip {
+			t.Errorf("unset %s = %+v", id, result)
 		}
 	}
 }

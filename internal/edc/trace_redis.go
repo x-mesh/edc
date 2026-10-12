@@ -160,6 +160,13 @@ type redisReader struct {
 	left      int64
 	bulkLen   int64
 
+	// inline 요청의 따옴표 상태다. quote는 열린 따옴표 byte, escape는 '\\' 뒤(1), "\\x" 뒤(2), "\\xH" 뒤(3)다.
+	quote      byte
+	escape     uint8
+	hex        byte
+	afterQuote bool
+	inlineNul  bool
+
 	word      [redisWordKeep]byte
 	wordLen   int
 	class     [redisNameLimit]byte
@@ -248,6 +255,7 @@ func (r *redisReader) begin(b byte, frame func(redisFrame)) bool {
 		switch {
 		case depth == 0 && b != '*':
 			r.state, r.lineLen = redisStateInline, 0
+			r.quote, r.escape, r.afterQuote, r.inlineNul = 0, 0, false, false
 			r.command.start(-1, r.showSecrets)
 			r.elemIndex, r.elemKeep = 0, -1
 			return r.inline(b, frame)
@@ -375,8 +383,8 @@ func (r *redisReader) line(b byte, frame func(redisFrame)) bool {
 	if r.elemKind == ':' && r.lineLen <= redisLengthLine {
 		r.digit(b, r.lineLen == 1)
 	}
-	r.hold(b)
 	r.classify(b)
+	r.hold(b)
 	return true
 }
 
@@ -432,6 +440,11 @@ func (r *redisReader) classify(b byte) {
 			r.shape = 5
 		case r.shape != 5:
 			r.shape = 6
+		}
+		if r.shape == 5 && r.elemKeep > 0 {
+			// MONITOR 줄의 '[' 뒤는 다른 client의 명령과 인자다. record를 넘어 쥐고 있지 않게 여기서 버린다.
+			r.dropHeld()
+			r.elemKeep = 0
 		}
 	}
 }
@@ -641,6 +654,7 @@ func (r *redisReader) finish(frame func(redisFrame)) bool {
 func (r *redisReader) dropFrame() {
 	r.inFrame, r.frame, r.policy = false, redisFrame{}, redisKeep{}
 	r.word, r.wordLen, r.class, r.classLen = [redisWordKeep]byte{}, 0, [redisNameLimit]byte{}, 0
+	r.quote, r.escape, r.hex, r.afterQuote, r.inlineNul = 0, 0, 0, false, false
 	r.state = redisStateType
 	r.command.clear()
 }
@@ -649,16 +663,19 @@ func redisSpace(b byte) bool {
 	return b == ' ' || b == '\t' || b == '\r' || b == '\v' || b == '\f'
 }
 
-// inline은 '*'로 시작하지 않는 요청 줄이다. Redis처럼 공백으로 나누고 LF에서 끝낸다. 단어를 하나씩 넘기므로 AUTH의
-// password는 이름을 본 뒤 쌓지 않는다.
+// inline은 '*'로 시작하지 않는 요청 줄이다. Redis의 sdssplitargs처럼 공백으로 나누고 큰따옴표(escape 포함)와 작은따옴표를
+// 풀며 LF에서 끝낸다. 단어를 하나씩 넘기므로 AUTH의 password는 이름을 본 뒤 쌓지 않는다.
 func (r *redisReader) inline(b byte, frame func(redisFrame)) bool {
 	r.lineLen++
 	if r.lineLen > redisInlineLimit {
 		return false
 	}
 	inWord := r.elemKeep >= 0
-	switch {
-	case b == '\n':
+	if b == '\n' {
+		if r.quote != 0 {
+			// Redis는 닫히지 않은 따옴표를 protocol 오류로 보고 연결을 끊는다.
+			return false
+		}
 		if inWord {
 			r.endWord()
 		}
@@ -674,18 +691,145 @@ func (r *redisReader) inline(b byte, frame func(redisFrame)) bool {
 			frame(out)
 		}
 		return true
-	case redisSpace(b):
+	}
+	switch {
+	case r.inlineNul:
+		// sdssplitargs는 NUL에서 인자 읽기를 멈춘다.
+		return true
+	case r.afterQuote:
+		r.afterQuote = false
+		switch {
+		case b == 0:
+			r.endWord()
+			r.inlineNul = true
+		case redisSpace(b):
+			r.endWord()
+		default:
+			// 닫는 따옴표 뒤에는 공백이나 줄 끝만 온다.
+			return false
+		}
+		return true
+	case r.quote == '"':
+		r.doubleQuoted(b)
+		return true
+	case r.quote == '\'':
+		r.singleQuoted(b)
+		return true
+	}
+	switch b {
+	case ' ', '\t', '\r':
 		if inWord {
 			r.endWord()
 		}
-	default:
-		if !inWord {
-			r.elemKeep, r.digits = r.command.want(r.elemIndex), 0
+	case '\v', '\f':
+		// 단어 앞에서는 공백으로 건너뛰고 단어 안에서는 글자다.
+		if inWord {
+			r.emit(b)
 		}
-		r.hold(b)
-		r.digits++
+	case 0:
+		if inWord {
+			r.endWord()
+		}
+		r.inlineNul = true
+	case '"', '\'':
+		r.startWord()
+		r.quote = b
+	default:
+		r.startWord()
+		r.emit(b)
 	}
 	return true
+}
+
+func (r *redisReader) startWord() {
+	if r.elemKeep < 0 {
+		r.elemKeep, r.digits = r.command.want(r.elemIndex), 0
+	}
+}
+
+func (r *redisReader) emit(b byte) {
+	r.hold(b)
+	r.digits++
+}
+
+func redisHex(b byte) (byte, bool) {
+	switch {
+	case b >= '0' && b <= '9':
+		return b - '0', true
+	case b >= 'a' && b <= 'f':
+		return b - 'a' + 10, true
+	case b >= 'A' && b <= 'F':
+		return b - 'A' + 10, true
+	}
+	return 0, false
+}
+
+func (r *redisReader) doubleQuoted(b byte) {
+	switch r.escape {
+	case 1:
+		r.escape = 0
+		switch b {
+		case 'x':
+			r.escape = 2
+			return
+		case 'n':
+			b = '\n'
+		case 'r':
+			b = '\r'
+		case 't':
+			b = '\t'
+		case 'b':
+			b = '\b'
+		case 'a':
+			b = '\a'
+		}
+		r.emit(b)
+		return
+	case 2:
+		if _, ok := redisHex(b); ok {
+			r.hex, r.escape = b, 3
+			return
+		}
+		// "\\x" 뒤에 hex 두 자리가 없으면 x 한 글자다.
+		r.escape = 0
+		r.emit('x')
+	case 3:
+		r.escape = 0
+		if lo, ok := redisHex(b); ok {
+			hi, _ := redisHex(r.hex)
+			r.emit(hi<<4 | lo)
+			return
+		}
+		r.emit('x')
+		r.emit(r.hex)
+	}
+	switch b {
+	case '\\':
+		r.escape = 1
+	case '"':
+		r.quote, r.afterQuote = 0, true
+	default:
+		r.emit(b)
+	}
+}
+
+func (r *redisReader) singleQuoted(b byte) {
+	if r.escape == 1 {
+		r.escape = 0
+		if b == '\'' {
+			r.emit(b)
+			return
+		}
+		r.emit('\\')
+	}
+	switch b {
+	case '\\':
+		r.escape = 1
+	case '\'':
+		r.quote, r.afterQuote = 0, true
+	default:
+		r.emit(b)
+	}
 }
 
 func (r *redisReader) endWord() {
@@ -699,7 +843,7 @@ func (r *redisReader) endWord() {
 var redisContainers = map[string]bool{
 	"ACL": true, "CLIENT": true, "CLUSTER": true, "COMMAND": true, "CONFIG": true, "DEBUG": true, "FUNCTION": true,
 	"LATENCY": true, "MEMORY": true, "MODULE": true, "OBJECT": true, "PUBSUB": true, "SCRIPT": true, "SLOWLOG": true,
-	"XGROUP": true, "XINFO": true,
+	"XGROUP": true, "XINFO": true, "SENTINEL": true, "REPLCONF": true,
 }
 
 // redisKeyAt은 첫 key의 인자 위치다. 표에 없는 명령은 key를 보이지 않는다. EVAL처럼 key 위치가 값에 따라 바뀌는 명령은 넣지 않는다.
@@ -731,10 +875,14 @@ var redisKeyAt = func() map[string]int {
 	return keys
 }()
 
-// redisSensitiveReplies는 응답 값과 오류 message에 password나 그 hash가 실릴 수 있는 명령이다.
+// redisSensitiveReplies는 응답 값과 오류 message에 password나 그 hash가 실릴 수 있는 명령이다. ACL과 SENTINEL은 subcommand와
+// 상관없이 모두 그렇게 본다(ACL GENPASS는 새 password를 돌려준다).
 var redisSensitiveReplies = map[string]bool{
-	"AUTH": true, "HELLO": true, "MIGRATE": true, "CONFIG SET": true, "CONFIG GET": true, "ACL SETUSER": true,
-	"ACL GETUSER": true, "ACL LIST": true, "ACL DRYRUN": true, "ACL LOG": true,
+	"AUTH": true, "HELLO": true, "MIGRATE": true, "CONFIG SET": true, "CONFIG GET": true,
+}
+
+func redisSensitiveReply(name string) bool {
+	return redisSensitiveReplies[name] || strings.HasPrefix(name, "ACL") || strings.HasPrefix(name, "SENTINEL")
 }
 
 var redisSubscribeKinds = map[string]bool{
@@ -754,8 +902,13 @@ type redisDecoder struct {
 	// secretFrom 이후의 인자는 password나 ACL 규칙이다. helloSecret까지의 인자는 HELLO AUTH의 user와 password다.
 	secretFrom  int
 	helloSecret int
-	proto       int
-	reply       string
+	// optionAt는 HELLO와 MIGRATE에서 다음 선택지 이름이 올 자리다. keys는 MIGRATE KEYS 뒤라 선택지를 더 읽지 않는다는 뜻이다.
+	optionAt int
+	keys     bool
+	// unsure는 비밀 범위를 정하는 단어를 정확히 읽지 못했다는 뜻이다. 그 뒤 인자는 모두 비밀이고 응답 값도 남기지 않는다.
+	unsure bool
+	proto  int
+	reply  string
 }
 
 func (d *redisDecoder) start(count int64, showSecrets bool) {
@@ -818,7 +971,8 @@ func redisName(raw []byte, length int64) (string, bool) {
 	return string(name), true
 }
 
-// done은 index번째 인자가 끝났을 때다. kept는 want만큼 남긴 앞부분이고 length는 인자 전체 길이다.
+// done은 index번째 인자가 끝났을 때다. kept는 want만큼 남긴 앞부분이고 length는 인자 전체 길이다. 비밀 범위를 정하는 단어를
+// 정확히 읽지 못하면 그 뒤 인자를 모두 비밀로 본다. 읽지 못한 단어 때문에 password가 보통 인자로 보이면 안 된다.
 func (d *redisDecoder) done(index int, kept []byte, length int64) {
 	if index == 0 {
 		name, ok := redisName(kept, length)
@@ -829,6 +983,10 @@ func (d *redisDecoder) done(index int, kept []byte, length int64) {
 		switch name {
 		case "AUTH":
 			d.secretFrom = 1
+		case "HELLO":
+			d.optionAt = 2
+		case "MIGRATE":
+			d.optionAt = 6
 		}
 		if at, ok := redisKeyAt[name]; ok && !d.container {
 			d.keyAt = at
@@ -845,13 +1003,14 @@ func (d *redisDecoder) done(index int, kept []byte, length int64) {
 	if index == 1 && d.container {
 		sub, ok := redisName(word, length)
 		if !ok {
+			d.secretFrom, d.unsure = 2, true
 			return
 		}
 		d.name += " " + sub
 		switch d.name {
 		case "CONFIG SET":
 			d.secretFrom = 2
-		case "ACL SETUSER":
+		case "ACL SETUSER", "ACL DRYRUN", "SENTINEL SET", "SENTINEL CONFIG":
 			d.secretFrom = 3
 		}
 		if at, ok := redisKeyAt[d.name]; ok {
@@ -864,10 +1023,28 @@ func (d *redisDecoder) done(index int, kept []byte, length int64) {
 		if len(word) == 1 && word[0] >= '2' && word[0] <= '3' {
 			d.proto = int(word[0] - '0')
 		}
-	case d.name == "HELLO" && bytes.EqualFold(word, []byte("AUTH")):
-		d.helloSecret = index + 2
-	case d.name == "MIGRATE" && index > 5 && (bytes.EqualFold(word, []byte("AUTH")) || bytes.EqualFold(word, []byte("AUTH2"))):
-		d.secretFrom = index + 1
+	case d.name == "HELLO" && index == d.optionAt:
+		switch {
+		case bytes.EqualFold(word, []byte("AUTH")):
+			d.helloSecret, d.optionAt = index+2, index+3
+		case bytes.EqualFold(word, []byte("SETNAME")):
+			d.optionAt = index + 2
+		default:
+			d.secretFrom, d.unsure = index, true
+			return
+		}
+	case d.name == "MIGRATE" && index == d.optionAt && !d.keys:
+		switch {
+		case bytes.EqualFold(word, []byte("AUTH")), bytes.EqualFold(word, []byte("AUTH2")):
+			d.secretFrom = index + 1
+		case bytes.EqualFold(word, []byte("KEYS")):
+			d.keys = true
+		case bytes.EqualFold(word, []byte("COPY")), bytes.EqualFold(word, []byte("REPLACE")):
+			d.optionAt = index + 1
+		default:
+			d.secretFrom, d.unsure = index, true
+			return
+		}
 	case d.name == "CLIENT REPLY" && index == 2:
 		if sub, ok := redisName(word, length); ok {
 			d.reply = sub
@@ -890,7 +1067,7 @@ func (d *redisDecoder) result(inline bool) *redisCommand {
 	if len(d.preview) > 0 {
 		command.preview = append([]string(nil), d.preview...)
 	}
-	command.sensitive = redisSensitiveReplies[d.name]
+	command.sensitive = d.name == "" || d.unsure || redisSensitiveReply(d.name)
 	if redisSubscribeKinds[d.name] {
 		command.channels = command.args
 	}
@@ -920,6 +1097,11 @@ type redisConn struct {
 	multi          bool
 	replyOff       bool
 	skipNext       bool
+	// replication은 PSYNC나 SYNC 뒤의 복제 연결이다. master가 보내는 명령 흐름은 응답이 아니므로 더 짝짓지 않는다.
+	replication bool
+	// gap은 요청 쪽에서 framing을 잃었거나 대기열이 넘쳐 버린 명령의 응답이 아직 올 수 있다는 뜻이다. 응답 record를 하나 볼
+	// 때까지 새 명령을 대기열에 넣지 않는다. 넣으면 버린 명령의 응답이 새 명령과 짝지어진다.
+	gap bool
 	// subKind는 마지막으로 짝지은 구독 계열 확인의 종류이고, subExtra는 같은 명령의 확인이 더 올 수다. -1은 모른다는 뜻이다.
 	subKind  string
 	subExtra int64
@@ -1023,6 +1205,8 @@ func (tracker *redisTracker) drop(conn *redisConn, at uint64) {
 			conn.monitor = true
 		case pending.name == "SUBSCRIBE" || pending.name == "PSUBSCRIBE" || pending.name == "SSUBSCRIBE":
 			conn.subscribed = conn.proto != 3
+		case pending.name == "PSYNC" || pending.name == "SYNC":
+			conn.replication = true
 		}
 		tracker.pending--
 	}
@@ -1090,6 +1274,7 @@ func (call *redisCall) request() {
 		// 요청을 놓쳤을 수 있다. 그 응답이 뒤 명령과 짝지어지지 않게 응답 쪽도 다시 맞춘다.
 		conn.requestSynced = false
 		call.lose()
+		conn.gap = true
 	}
 }
 
@@ -1106,6 +1291,11 @@ func (call *redisCall) command(f redisFrame) {
 	}
 	queue := true
 	switch {
+	case conn.replication, c.name == "REPLCONF ACK":
+		// 복제 연결의 REPLCONF ACK에는 응답이 없다.
+		queue = false
+	case c.name == "RESET":
+		// RESET은 CLIENT REPLY OFF여도 +RESET으로 답하고 응답 모드를 되돌린다.
 	case c.name == "CLIENT REPLY" && c.reply == "ON":
 		conn.replyOff, conn.skipNext = false, false
 	case c.name == "CLIENT REPLY" && c.reply == "OFF":
@@ -1117,11 +1307,12 @@ func (call *redisCall) command(f redisFrame) {
 	case conn.skipNext:
 		conn.skipNext, queue = false, false
 	}
-	if !queue {
+	if !queue || conn.gap {
 		return
 	}
 	if len(conn.pending) >= redisPendingLimit || call.tracker.pending >= redisPendingTotal {
 		call.lose()
+		conn.gap = true
 		return
 	}
 	conn.pending = append(conn.pending, redisPending{at: f.at, name: c.name, key: c.key, sensitive: c.sensitive, proto: c.proto, channels: c.channels})
@@ -1131,6 +1322,15 @@ func (call *redisCall) command(f redisFrame) {
 // response는 응답 방향 record 하나를 읽는다.
 func (call *redisCall) response() {
 	conn, record := call.conn, call.record
+	switch {
+	case conn.replication:
+		return
+	case conn.gap:
+		// 대기열이 빈 채로 응답 record를 봤다. 버린 명령의 응답일 수 있으므로 이 record도 버리고 다음부터 맞춘다.
+		conn.gap = false
+		call.tracker.drop(conn, record.bootTimeNS)
+		return
+	}
 	if !conn.responseSynced {
 		if !call.resync() {
 			// 버린 record 안에 답이 있었을 수 있는 명령은 응답 없음으로 버린다.
@@ -1174,6 +1374,9 @@ func (call *redisCall) resync() bool {
 // reply는 응답 방향 frame 하나다. RESP3 push, pub/sub message, MONITOR 줄은 대기 명령을 꺼내지 않는다.
 func (call *redisCall) reply(f redisFrame) {
 	conn := call.conn
+	if conn.replication {
+		return
+	}
 	if f.kind == '>' {
 		if kind := f.heads[0].text; f.heads[0].kind == '$' && redisSubscribeKinds[strings.ToUpper(kind)] {
 			call.confirm(f, kind, true)
@@ -1285,6 +1488,8 @@ func (call *redisCall) answer(f redisFrame, pushKind string) {
 		conn.resetModes()
 	case pending.name == "MONITOR" && !failed:
 		conn.monitor = true
+	case (pending.name == "PSYNC" || pending.name == "SYNC") && !failed:
+		conn.replication = true
 	}
 	info := &traceRedisEvent{Command: pending.name, Key: pending.key, Reply: redisReplyKind(f, conn.multi), Value: f.value, PushKind: pushKind, RESP: conn.proto}
 	if pushKind != "" {

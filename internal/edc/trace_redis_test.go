@@ -270,8 +270,8 @@ func TestRedisReaderDecodesCommands(t *testing.T) {
 		{redisArgs("OBJECT", "ENCODING", "k"), false, `* n=3 cmd="OBJECT ENCODING" key="k" args=2`},
 		{redisArgs("CLIENT", "REPLY", "skip"), false, `* n=3 cmd="CLIENT REPLY" key="" args=2 reply=SKIP`},
 		{redisArgs("SUBSCRIBE", "a", "b"), false, `* n=3 cmd="SUBSCRIBE" key="" args=2`},
-		{redisArgs("has space"), false, `* n=1 cmd="" key="" args=0`},
-		{redisArgs(strings.Repeat("A", redisNameLimit+1)), false, `* n=1 cmd="" key="" args=0`},
+		{redisArgs("has space"), false, `* n=1 cmd="" key="" args=0 sensitive`},
+		{redisArgs(strings.Repeat("A", redisNameLimit+1)), false, `* n=1 cmd="" key="" args=0 sensitive`},
 		{"*0\r\n*-1\r\nPING\r\n", false, `i n=0 cmd="PING" key="" args=0`},
 		{"set k  v\n", true, `i n=0 cmd="SET" key="k" args=2 preview=["k" "v"]`},
 		{"\r\n", false, ``},
@@ -1036,26 +1036,7 @@ func FuzzRedisTracker(f *testing.F) {
 		feed(false, auth[:split], split)
 		feed(false, auth[split:], len(auth)-split)
 		feed(true, []byte("+OK\r\n"), 5)
-		pos := 0
-		for i := 0; i+6 <= len(cuts) && i < 6*4096; i += 6 {
-			cut := cuts[i : i+6]
-			if cut[0]&2 != 0 {
-				tracker.forgetSocket(1)
-			}
-			n := int(cut[1]) | int(cut[2])<<8
-			hidden := int(cut[3]) | int(cut[4])<<8 | int(cut[5])<<16
-			chunk := data[min(pos, len(data)):min(pos+n, len(data))]
-			pos += len(chunk)
-			if len(chunk)+hidden == 0 {
-				continue
-			}
-			visible := chunk[:min(len(chunk), limit)]
-			feed(cut[0]&1 != 0, bytes.Clone(visible), len(chunk)+hidden)
-		}
-		if pos < len(data) {
-			rest := data[pos:]
-			feed(false, bytes.Clone(rest[:min(len(rest), limit)]), len(rest))
-		}
+		redisFuzzRecords(data, cuts, limit, func() { tracker.forgetSocket(1) }, feed)
 		for _, traced := range events {
 			if latency := traced.event.LatencyMS; latency != nil && *latency < 0 {
 				t.Fatalf("negative latency %v", *latency)
@@ -1083,6 +1064,217 @@ func FuzzRedisTracker(f *testing.F) {
 		redisWalk(reflect.ValueOf(tracker), map[uintptr]bool{}, func(s string) {
 			if strings.Contains(s, redisFuzzSecret) {
 				t.Fatal("tracker state keeps the AUTH password")
+			}
+		})
+	})
+}
+
+// redisPreviewOf는 show-secrets reader로 요청 record들을 읽고 frame 문자열을 돌려준다.
+func redisPreviewOf(records []string, sizes []int) string {
+	var data [][]byte
+	for _, record := range records {
+		data = append(data, []byte(record))
+	}
+	frames, _ := redisRead(redisRequestReader(true), data, sizes)
+	return strings.Join(frames, "|")
+}
+
+func TestRedisReaderSecretRangeFailsClosed(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		records []string
+		sizes   []int
+	}{
+		{"inline quoted CONFIG SET", []string{"CONFIG \"SET\" requirepass edc-pw\r\n"}, nil},
+		{"inline quoted HELLO AUTH", []string{"HELLO 3 \"AUTH\" u edc-pw\r\n"}, nil},
+		{"inline quoted ACL SETUSER", []string{"ACL 'SETUSER' u >edc-pw\r\n"}, nil},
+		{"inline quoted MIGRATE AUTH", []string{"MIGRATE h 1 k 0 1 \"AUTH\" edc-pw\r\n"}, nil},
+		{"inline quoted HELLO user", []string{"HELLO 3 AUTH \"us er\" edc-pw\r\n"}, nil},
+		{"inline escaped CONFIG SET", []string{"CONFIG \"S\\x45T\" requirepass edc-pw\r\n"}, nil},
+		// subcommand의 일부를 캡처하지 못해 읽을 수 없다.
+		{"hidden CONFIG subcommand", []string{"*4\r\n$6\r\nCONFIG\r\n$3\r\nS", "\r\n$11\r\nrequirepass\r\n$6\r\nedc-pw\r\n"}, []int{len("*4\r\n$6\r\nCONFIG\r\n$3\r\nS") + 2, 0}},
+		{"hidden HELLO token", []string{"*5\r\n$5\r\nHELLO\r\n$1\r\n3\r\n$4\r\nAU", "\r\n$1\r\nu\r\n$6\r\nedc-pw\r\n"}, []int{len("*5\r\n$5\r\nHELLO\r\n$1\r\n3\r\n$4\r\nAU") + 2, 0}},
+		{"unknown MIGRATE option", []string{redisArgs("MIGRATE", "h", "1", "k", "0", "1", "AUTX", "edc-pw")}, nil},
+		{"SENTINEL SET", []string{redisArgs("SENTINEL", "SET", "m", "auth-pass", "edc-pw")}, nil},
+		{"SENTINEL CONFIG SET", []string{redisArgs("SENTINEL", "CONFIG", "SET", "sentinel-pass", "edc-pw")}, nil},
+	} {
+		got := redisPreviewOf(tc.records, tc.sizes)
+		if got == "" || strings.Contains(got, "edc-pw") || !strings.Contains(got, "sensitive") {
+			t.Errorf("%s: %s", tc.name, got)
+		}
+	}
+	// 따옴표와 escape는 sdssplitargs처럼 푼다. 닫히지 않은 따옴표와 닫는 따옴표 뒤의 글자는 protocol 오류다.
+	if got := redisPreviewOf([]string{"SET \"a\\x41\\n\" 'b\\'c' \"\"\r\n"}, nil); got != `i n=0 cmd="SET" key="aA\n" args=3 preview=["aA\n" "b'c"]` {
+		t.Errorf("quoted inline: %s", got)
+	}
+	for _, in := range []string{"SET \"a b\r\n", "SET 'a'b\r\n"} {
+		if _, losses := redisRead(redisRequestReader(true), [][]byte{[]byte(in)}, nil); losses != 1 {
+			t.Errorf("%q accepted", in)
+		}
+	}
+}
+
+func TestRedisTrackerStopsAtReplication(t *testing.T) {
+	tracker := newRedisTracker("", false)
+	got := redisTokens(redisClient(tracker, 1, redisStart(
+		redisStep{true, redisArgs("PSYNC", "?", "-1"), 0},
+		redisStep{false, "+FULLRESYNC 8de1787ba490483314a4d30f1c628bc5025eb761 0\r\n$5\r\nREDIS", 0},
+		redisStep{true, redisArgs("REPLCONF", "ACK", "0"), 0},
+		redisStep{false, redisArgs("REPLCONF", "GETACK", "*"), 0},
+		redisStep{true, redisArgs("REPLCONF", "ACK", "31"), 0},
+		redisStep{false, redisArgs("SELECT", "0") + redisArgs("SET", "k", "v"), 0},
+	)))
+	if got != "C:PING R:PING/simple C:PSYNC R:PSYNC/simple C:REPLCONF ACK C:REPLCONF ACK" {
+		t.Fatalf("got %s", got)
+	}
+}
+
+func TestRedisTrackerWaitsAfterRequestLoss(t *testing.T) {
+	// 4096 byte보다 큰 pipeline record의 뒷부분을 캡처하지 못했다. 그 사이 client가 GET new를 보낸 뒤 옛 응답이 온다.
+	pipeline := strings.Repeat(redisArgs("GET", "old"), 300)
+	tracker := newRedisTracker("", false)
+	got := redisTokens(redisClient(tracker, 1, redisStart(
+		redisStep{true, pipeline[:4095], len(pipeline)},
+		redisStep{true, redisArgs("GET", "new"), 0},
+		redisStep{false, "$3\r\nold\r\n", 0},
+		redisStep{false, "$3\r\nnew\r\n", 0},
+		redisStep{true, redisArgs("PING"), 0},
+		redisStep{false, "+PONG\r\n", 0},
+	)))
+	if !strings.HasSuffix(got, "C:GET C:PING R:PING/simple") || strings.Contains(got, "R:GET") {
+		t.Fatalf("got %s", got)
+	}
+}
+
+func TestRedisTrackerQueuesResetAfterReplyOff(t *testing.T) {
+	tracker := newRedisTracker("", false)
+	got := redisTokens(redisClient(tracker, 1, redisStart(
+		redisStep{true, redisArgs("CLIENT", "REPLY", "OFF"), 0},
+		redisStep{true, redisArgs("RESET"), 0},
+		redisStep{false, "+RESET\r\n", 0},
+		redisStep{true, redisArgs("GET", "a"), 0},
+		redisStep{false, "$1\r\n1\r\n", 0},
+	)))
+	if got != "C:PING R:PING/simple C:CLIENT REPLY C:RESET R:RESET/simple C:GET R:GET/bulk" {
+		t.Fatalf("got %s", got)
+	}
+}
+
+func TestRedisTrackerDoesNotHoldMonitorLines(t *testing.T) {
+	// MONITOR는 trace 전에 시작했다. 줄이 record 둘로 나뉘어도 앞 record의 인자를 쥐고 있으면 안 된다.
+	tracker := newRedisTracker("", true)
+	redisClient(tracker, 1, redisStart(redisStep{true, redisArgs("PING"), 0}))
+	tracker.events(redisRecord(1, false, false, 9_000_000, []byte("+1791788445.996979 [0 127.0.0.1:1] \"AUTH\" \"edc-pw"), 49), 0)
+	redisWalk(reflect.ValueOf(tracker), map[uintptr]bool{}, func(s string) {
+		if strings.Contains(s, "edc-pw") || strings.Contains(s, "AUTH") {
+			t.Fatalf("tracker holds a MONITOR line: %q", s)
+		}
+	})
+}
+
+func TestRedisTrackerHidesGeneratedPasswords(t *testing.T) {
+	tracker := newRedisTracker("", true)
+	events := redisClient(tracker, 1, redisStart(
+		redisStep{true, redisArgs("ACL", "GENPASS"), 0},
+		redisStep{false, "$64\r\nedc-genpass-" + strings.Repeat("a", 52) + "\r\n", 0},
+	))
+	if text := fmt.Sprintf("%+v", *events[len(events)-1].redis); len(events) != 4 || strings.Contains(text, "edc-genpass") {
+		t.Fatalf("events %d, reply %s", len(events), text)
+	}
+}
+
+// redisFuzzRecords는 cuts의 6 byte 기술자대로 data를 record로 나눠 feed에 넘긴다. 남은 data는 요청 record 하나다.
+func redisFuzzRecords(data, cuts []byte, limit int, forget func(), feed func(response bool, payload []byte, size int)) {
+	pos := 0
+	for i := 0; i+6 <= len(cuts) && i < 6*4096; i += 6 {
+		cut := cuts[i : i+6]
+		if cut[0]&2 != 0 {
+			forget()
+		}
+		n := int(cut[1]) | int(cut[2])<<8
+		hidden := int(cut[3]) | int(cut[4])<<8 | int(cut[5])<<16
+		chunk := data[min(pos, len(data)):min(pos+n, len(data))]
+		pos += len(chunk)
+		if len(chunk)+hidden == 0 {
+			continue
+		}
+		feed(cut[0]&1 != 0, bytes.Clone(chunk[:min(len(chunk), limit)]), len(chunk)+hidden)
+	}
+	if pos < len(data) {
+		rest := data[pos:]
+		feed(false, bytes.Clone(rest[:min(len(rest), limit)]), len(rest))
+	}
+}
+
+// redisShowSecret는 show-secrets fuzz가 비밀 자리에만 심는 password다. seed에는 없다.
+const redisShowSecret = "edc-show-secret-77"
+
+// redisSecretTemplates는 password가 인자나 응답의 비밀 자리에 있는 요청과 응답이다. 빈 문자열은 그 방향 record가 없다는 뜻이다.
+var redisSecretTemplates = func() [][2]string {
+	pw := redisShowSecret
+	return [][2]string{
+		{redisArgs("AUTH", pw), "+OK\r\n"},
+		{redisArgs("AUTH", "u", pw), "-WRONGPASS invalid username-password pair '" + pw + "'\r\n"},
+		{redisArgs("HELLO", "3", "AUTH", "u", pw, "SETNAME", "c"), "%1\r\n$5\r\nproto\r\n:3\r\n"},
+		{redisArgs("CONFIG", "SET", "requirepass", pw), "+OK\r\n"},
+		{redisArgs("CONFIG", "GET", "requirepass"), "*2\r\n$11\r\nrequirepass\r\n$18\r\n" + pw + "\r\n"},
+		{redisArgs("ACL", "SETUSER", "u", "on", ">"+pw), "+OK\r\n"},
+		{redisArgs("ACL", "GENPASS"), "$18\r\n" + pw + "\r\n"},
+		{redisArgs("MIGRATE", "h", "1", "k", "0", "1", "COPY", "AUTH2", "u", pw), "-IOERR error\r\n"},
+		{redisArgs("SENTINEL", "SET", "m", "auth-pass", pw), "+OK\r\n"},
+		{redisArgs("SENTINEL", "CONFIG", "SET", "sentinel-pass", pw), "+OK\r\n"},
+		{"CONFIG \"SET\" requirepass \"" + pw + "\"\r\n", "+OK\r\n"},
+		{"HELLO 3 'AUTH' \"us er\" " + pw + "\r\n", "-WRONGPASS bad\r\n"},
+		{"AUTH \"" + pw + "\"\r\n", "+OK\r\n"},
+		{redisArgs("PING"), "+1791788445.996979 [0 127.0.0.1:1] \"AUTH\" \"" + pw + "\"\r\n"},
+	}
+}()
+
+// FuzzRedisTrackerShowSecrets는 --show-secrets에서도 비밀 자리의 password가 event와 tracker 상태에 남지 않는지 본다. fuzz는
+// 비밀 요청과 응답을 나누는 자리와 캡처 길이, 그 뒤에 이어지는 record를 고른다.
+func FuzzRedisTrackerShowSecrets(f *testing.F) {
+	for i := range redisSecretTemplates {
+		f.Add([]byte(nil), []byte(nil), uint16(4095), false, uint8(i), uint8(0), uint8(0))
+		f.Add([]byte(redisMixed), redisFuzzCut(true, false, len(redisMixed), 0), uint16(1023), true, uint8(i), uint8(7), uint8(30))
+	}
+	f.Fuzz(func(t *testing.T, data, cuts []byte, capture uint16, server bool, template, requestCut, responseCut uint8) {
+		if bytes.Contains(data, []byte(redisShowSecret)) {
+			return
+		}
+		limit := int(capture)%4096 + 1
+		tracker := newRedisTracker("", true)
+		var events []redisTraced
+		at := uint64(0)
+		feed := func(response bool, payload []byte, size int) {
+			at += 1_000_000
+			events = append(events, tracker.events(redisRecord(1, server, response == server, at, payload, size), 0)...)
+		}
+		split := func(response bool, record string, cut uint8) {
+			if record == "" {
+				return
+			}
+			pos := int(cut) % len(record)
+			for _, piece := range []string{record[:pos], record[pos:]} {
+				if piece != "" {
+					feed(response, []byte(piece[:min(len(piece), limit)]), len(piece))
+				}
+			}
+		}
+		pair := redisSecretTemplates[int(template)%len(redisSecretTemplates)]
+		split(false, pair[0], requestCut)
+		split(true, pair[1], responseCut)
+		redisFuzzRecords(data, cuts, limit, func() { tracker.forgetSocket(1) }, feed)
+		for _, traced := range events {
+			for _, part := range []any{traced.event, traced.redis} {
+				raw, err := json.Marshal(part)
+				if err != nil || bytes.Contains(raw, []byte(redisShowSecret)) {
+					t.Fatalf("event %s carries the password (%v)", raw, err)
+				}
+			}
+		}
+		redisWalk(reflect.ValueOf(tracker), map[uintptr]bool{}, func(s string) {
+			if strings.Contains(s, redisShowSecret) {
+				t.Fatalf("tracker state keeps the password: %q", s)
 			}
 		})
 	})

@@ -171,7 +171,7 @@ Setup wizard는 `edc log`의 저장 경로를 비워두고 실행별 파일을 �
 
 # system/network/disk 정보와 public IP
 ./bin/edc info
-# 외부 ipinfo.io 요청 없이 실행
+# 외부 public IP 조회 없이 실행
 ./bin/edc info --public=false
 
 # 기본 종합 진단
@@ -219,13 +219,25 @@ source <(./bin/edc completion zsh)
 
 공통 option은 `--timeout`, `--json <path|->`, `--verbose`, `--redact`입니다. Go `flag` 규칙에 따라 option은 target 앞에 둡니다.
 
-`edc info`는 public IP를 기본으로 ipinfo.io에 조회합니다. 3초 안에 응답이 없으면 요청을 멈추고 그 줄을 빼고 출력합니다. 요청을 끄려면 `--public=false`를, 제한 시간을 바꾸려면 `--timeout`을, 실패 원인을 보려면 `-v`를 씁니다.
+`edc info`는 기본으로 public IP를 조회합니다. `ns1.google.com`에 `o-o.myaddr.l.google.com` DNS 질의 하나를 IPv4로 보냅니다. `-v`를 주면 ipinfo.io에도 물어 기관, 도시, 지역, 국가, 시간대를 함께 보여 줍니다. 3초 안에 응답이 없으면 조회를 멈추고 그 줄을 빼고 출력합니다. 조회를 끄려면 `--public=false`를, 제한 시간을 바꾸려면 `--timeout`을, 실패 원인을 보려면 `-v`를 씁니다. 외부 DNS 서버로 가는 질의를 막는 네트워크에서는 기본 출력에 public IP가 나오지 않습니다.
 
 `edc info`는 메모리 상태, 프로세스 요약, 진단 기능의 지원 여부도 표시합니다. Linux의 사용량은 `MemTotal - MemAvailable`이며, 제공되는 캐시·buffer·회수 가능한 slab 값을 함께 보여 줍니다. macOS의 회수 가능량은 Mach의 free·inactive page를 기준으로 추정하며, 파일 기반 메모리와 압축된 물리 메모리를 구분합니다. 세부 카운터는 서로 겹칠 수 있으므로 합산하지 않습니다. 이 값만으로 메모리 압박을 판정하지 않습니다.
 
 프로세스 요약에는 관측한 프로세스 수, thread 수와 그 수집 범위, RSS가 높은 상위 3개를 표시합니다. 프로세스별 공유 page가 중복될 수 있으므로 RSS를 합산해 host 메모리 사용량으로 해석하지 않습니다.
 
-기본 출력은 관련 값을 한 행에 묶습니다. `-v`를 주면 긴 커널 정보, 메모리 계산 기준, 공유 page 주의사항도 표시합니다.
+`edc info`는 다음 신호도 기본으로 표시합니다. 모두 파일, syscall, sysctl에서 읽으며 외부 명령은 실행하지 않습니다.
+
+- `Platform`: DMI의 제조사와 제품 이름입니다(예: `Amazon EC2 m5.large`). Oracle Cloud에서는 chassis asset tag로 `Oracle Cloud`를 덧붙입니다. Linux에서는 CPU가 hypervisor를 알리거나 DMI가 QEMU나 가상 머신을 가리키면 `virtual machine`을, container runtime의 표식이 있으면 그 이름을 덧붙입니다. macOS에서는 모델 식별자를 표시합니다.
+- `Clock`(Linux): `adjtimex`가 알려 주는 커널의 시간 동기화 상태입니다. 오차는 표시하지 않습니다. 커널의 오차 값은 갱신 사이에 늘어나기만 하는 상한이라 실제 오차가 아닙니다.
+- `DNS`: `/etc/resolv.conf`의 nameserver와 search domain입니다. 파일이 systemd-resolved stub을 가리키면 실제 upstream 서버를 보여 줍니다.
+- `Pressure`와 `OOM kills since boot`(Linux): CPU, 메모리, I/O의 PSI some avg10과 `/proc/vmstat`의 `oom_kill` counter입니다.
+- 마운트가 읽기 전용이거나 inode 사용률이 80% 이상이면 디스크 줄 끝에 `(read-only)`나 `(inodes N%)`를 붙입니다. macOS의 서명된 system volume은 원래 읽기 전용이므로 표시하지 않습니다.
+
+`-v`는 시스템 전체의 열린 파일 수, IPv6 기본 경로(Linux), 인터페이스별 MTU·MAC·링크 속도(Linux)·IPv6 주소, 마운트 옵션을 더합니다. 인터페이스는 IPv4 주소나 링크 로컬이 아닌 IPv6 주소를 가진 것만 보여 줍니다.
+
+`Listening Ports`는 연결을 기다리는 TCP·UDP 소켓의 수를 표시합니다. loopback 주소에 바인드한 소켓은 개수에만 포함하고, 나머지는 포트·주소·프로세스를 최대 5줄까지 나열합니다. `-v`는 TCP·UDP 소켓을 모두 나열하며, 전체 표는 `edc listen`으로 봅니다. macOS에서 root가 아니면 다른 계정의 소켓은 목록에 나오지 않습니다.
+
+기본 출력은 관련 값을 한 행에 묶습니다. `-v`를 주면 긴 커널 정보, 메모리 계산 기준, 공유 page 주의사항, Python 버전도 표시합니다. Python 버전 확인은 pyenv 같은 shim을 거치면 수백 ms가 걸리므로 기본 출력에서는 하지 않습니다.
 
 진단 지원 여부는 현재 프로세스의 I/O 접근, PSI, eBPF 상세 조건을 확인합니다. 다른 PID의 접근 권한은 다를 수 있습니다. Linux의 eBPF 확인은 kernel BTF와 effective capability만 읽으며 program을 불러오거나 attach하지 않습니다. `prerequisites met`는 실제 attach 성공을 보장하지 않습니다. 미지원·권한 부족·확인 실패는 이유와 함께 표시합니다.
 
@@ -256,8 +268,6 @@ Linux에서는 `edc info`의 `Network Limits`에 conntrack 사용량과 한도, 
 기본·상세 표의 범위 열과 watch 변경 줄은 소켓이 바인딩한 주소를 loopback, 모든 인터페이스, 특정 주소, Unix, 알 수 없음으로 구분합니다.
 
 wildcard의 모든 인터페이스는 관측한 주소 계열의 바인딩을 뜻합니다. 외부 접근 가능 여부, 방화벽 규칙, IPv6 dual-stack 동작을 판단하는 값은 아닙니다.
-
-macOS의 lsof는 Unix 소켓 상태를 제공하지 않으므로 Unix 소켓 목록은 근사치입니다.
 
 ### 파일 감시와 action (Linux·macOS)
 

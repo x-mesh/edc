@@ -216,13 +216,7 @@ func collectHostDetails() (hostDetails, error) {
 		details.Processor = strings.TrimSpace(string(output))
 	}
 	if data, err := os.ReadFile("/proc/cpuinfo"); err == nil {
-		for _, line := range strings.Split(string(data), "\n") {
-			if strings.HasPrefix(line, "model name") {
-				_, details.Model, _ = strings.Cut(line, ":")
-				details.Model = strings.TrimSpace(details.Model)
-				break
-			}
-		}
+		details.Model = linuxCPUModel(string(data))
 	}
 	details.Cores = runtime.NumCPU()
 	memory, err := readMemInfo()

@@ -104,7 +104,7 @@ command:
   info:
     summary: "System, network, and disk information"
     option:
-      public: "skip the ipinfo.io request"
+      public: "skip the public IP lookup (DNS; ipinfo.io with -v)"
       timeout: "time limit of the public lookup"
       verbose: "print the cause of a failed lookup"
     notes:
@@ -137,11 +137,9 @@ command:
       - "A family flag is a filter. --tcp keeps TCP and drops the rest."
       - "Two flags keep both. --all adds unix domain sockets."
       - "A unix socket has a path, not a port. The port column shows -."
-      - "On macOS, lsof gives no unix socket state. The list is approximate."
       - "It skips connected sockets."
       - "-v adds the account, the file descriptor and the queue."
       - "The queue is Recv-Q/Send-Q. For a TCP listener it is the accept queue."
-      - "Only Linux gives the queue. On macOS the column shows -."
       - "-v adds columns only. The rows stay the same."
   quality:
     summary: "Network responsiveness (RPM) and throughput"

@@ -201,6 +201,9 @@ Setup wizard는 `edc log`의 저장 경로를 비워두고 실행별 파일을 �
 ./bin/edc listen              # 열려 있는 포트, --unix나 --all로 unix socket 포함
 ./bin/edc listen --watch -i 0.5 --duration 10s
 sudo ./bin/edc audit           # 노출 상태와 설정 점검, 읽기 전용 (Linux)
+sudo ./bin/edc svc nginx       # systemd service 하나를 한 화면에 (Linux)
+./bin/edc changes --since 2h   # 최근 패키지, /etc, service 변경 (Linux)
+sudo ./bin/edc events --since 6h   # 커널과 systemd의 장애 신호를 시간 순서로 정리 (Linux)
 ./bin/edc quality --timeout 60s
 ./bin/edc quality --server https://example.com/.well-known/nq   # 응답성 config URL
 
@@ -423,6 +426,91 @@ allow_ports = [5432]
 `sudo edc audit`로 실행하면 root의 설정 파일(예: `/root/.config/edc/config.toml`)을 읽습니다. `[audit]` 표는 그 파일에 넣으세요.
 
 `edc audit`는 패키지 버전을 CVE와 대조하지 않습니다. 파일 시스템 전체를 훑지 않고, 찾은 문제를 고치지도 않습니다.
+
+## 서비스 보기 (Linux)
+
+`edc svc <unit>`은 systemd service 하나를 한 화면에 보여 줍니다. unit 상태, process, fd, 소켓, journal을 읽기만 하고, unit을 시작·중지·reload하지 않습니다.
+
+```bash
+sudo edc svc nginx
+sudo edc svc -v nginx.service   # process 행, fd 행, 소켓, journal 줄 추가
+sudo edc svc --json - nginx     # 보기마다 결과 하나
+```
+
+option은 unit 이름 앞에 둡니다. `nginx`와 `nginx.service`는 같은 unit입니다. 이름에는 영문자, 숫자, `:_.@-`만 쓸 수 있고, `.timer`나 `.socket` 같은 다른 unit 종류는 받지 않습니다.
+
+| 결과 | pass | warn | fail |
+|---|---|---|---|
+| `svc.state` | unit이 active이고 재시작이 없음 | active지만 재시작했거나, 다른 상태임 | unit이 failed이거나 systemd가 unit을 불러오지 못함 |
+| `svc.processes` | unit cgroup의 process를 CPU%, RSS와 함께 보여 줌 | | |
+| `svc.fd` | 모든 process가 soft fd 한계의 80% 미만을 씀 | 한계의 80% 이상을 쓰는 process가 있음 | |
+| `svc.listen` | unit process가 가진 TCP·UDP 소켓을 보여 줌 | | |
+| `svc.journal` | 이 unit의 journal에 오류 줄이 없음 | 오류 줄이 있고, 마지막 5줄을 보여 줌 | |
+
+process 목록은 main process를 맨 앞에 두고 최대 10행까지 보여 줍니다. 개수와 RSS는 unit cgroup의 모든 process를 셉니다.
+
+root로 실행하세요. root가 아니면 다른 사용자의 fd, 소켓 주인, 전체 journal을 읽지 못합니다. 이 결과는 `pass`가 아니라 `skip`으로 나옵니다. process가 없는 unit은 process 관련 결과가 `skip`입니다.
+
+systemd만 쥔 소켓(socket activation)은 unit process의 것이 아니어서 보여 주지 않습니다.
+
+macOS나 systemd가 없는 Linux에서는 `skip` 하나를 내고 0으로 끝납니다. unit이 없으면 오류를 쓰고 1로 끝납니다. `fail` 결과가 있어도 1, 사용법 오류는 2입니다.
+
+## 최근 호스트 변경 (Linux)
+
+`edc changes`는 지정한 시간 범위 안에서 Linux 호스트에 일어난 변경을 보여 줍니다. 패키지 로그, `/etc` 아래 파일의 mtime, systemd unit 상태만 읽고, 아무것도 바꾸지 않으며 외부로 보내지 않습니다. 1초 안에 끝납니다.
+
+```bash
+edc changes                     # 최근 24시간
+edc changes --since 2h          # 최근 2시간
+edc changes -v                  # 최근 50건에서 자르지 않고 모두
+edc changes --json -            # 모든 변경을 metrics.events에 담음
+```
+
+원천마다 결과 한 줄을 먼저 출력하고, 이어서 모든 변경을 합친 표를 최근 것부터 출력합니다.
+
+| 결과 | 원천 |
+|---|---|
+| `changes.packages` | `/var/log/dpkg.log`, `/var/log/dnf.rpm.log`, `/var/log/yum.log`와 압축되지 않은 회전 로그 |
+| `changes.etc` | `/etc` 아래 파일과 symlink의 mtime |
+| `changes.services` | service unit마다 마지막 시작 시각과 재시작 횟수 |
+
+부팅이 시간 범위 안에 있으면 표에 `boot` 한 줄이 나옵니다. 부팅 중에 시작한 service는 이 줄로 묶습니다.
+
+원천을 읽지 못하면 결과는 이유와 함께 `skip`입니다. `skip`은 바뀐 것이 없다는 뜻이 아닙니다. 모든 원천을 읽으려면 root로 실행하세요. root가 아니면 `/etc` 아래 일부 디렉터리와 일부 패키지 로그를 읽지 못합니다.
+
+`edc changes`는 회전된 압축 로그를 풀지 않습니다. 압축 로그가 시간 범위 시작보다 새로우면 경고로 알립니다. `/etc`는 파일 내용이 아니라 mtime만 읽으므로 파일 안에서 무엇이 바뀌었는지는 보이지 않습니다. systemd는 unit마다 시작 시각을 하나만 남기므로, 여러 번 재시작한 unit은 마지막 시작 시각과 재시작 횟수로 보입니다. `/etc`는 항목 20000개에서 멈추고 `warn`으로 알립니다. `dnf history`와 `journalctl`은 실행하지 않습니다.
+
+## 커널과 systemd 이벤트 (Linux)
+
+`edc events`는 정한 기간의 커널 로그와 systemd journal을 읽어 장애 신호를 시간 순서로 정리합니다. 아무것도 바꾸지 않고 외부로 보내지 않습니다.
+
+```bash
+sudo edc events                 # 최근 6시간
+sudo edc events --since 48h
+sudo edc events -v              # 결과마다 근거가 된 기록과 시간순 기록 추가
+sudo edc events --json -        # 범주마다 결과 하나
+```
+
+| 결과 | fail | warn |
+|---|---|---|
+| `events.window` | | |
+| `events.oom` | 커널이 메모리 부족으로 프로세스를 죽임 | |
+| `events.disk_io` | 디스크나 파일 시스템이 I/O 오류를 보고함 | |
+| `events.fs_readonly` | 파일 시스템이 읽기 전용으로 바뀌거나 멈춤 | |
+| `events.link` | 네트워크 링크가 끊긴 뒤 다시 연결되지 않음 | 링크가 끊겼다가 다시 연결됨 |
+| `events.units` | unit의 마지막 기록이 실패 결과임 | unit이 실패한 뒤 재시작했거나 3번 이상 재시작함 |
+| `events.segfault` | | 프로세스가 segfault나 general protection fault로 멈춤 |
+| `events.clock` | | 벽시계가 1초 이상 점프함 |
+
+`events.window`는 기간과 원천을 밝히고, `-v`를 주면 모든 범주의 최근 신호 50개를 시간 순서로 보여 줍니다. 다른 결과는 횟수와 마지막 기록, 최근 기록 20개까지를 보여 줍니다.
+
+커널 신호는 journal의 커널 기록에서 읽습니다. 그 기간에 journal의 커널 기록이 없으면 `/dev/kmsg`를 읽는데, `/dev/kmsg`에는 현재 부팅의 기록만 있습니다. unit과 시계 신호는 journal의 PID 1 기록에서 읽습니다. 시계 점프는 두 기록 사이에서 벽시계와 monotonic 시계가 1초 이상, 그리고 간격의 0.1%보다 크게 다를 때만 셉니다. 그래서 NTP slew는 세지 않습니다.
+
+root나 `adm`, `systemd-journal` 그룹으로 실행하세요. 권한이 없으면 journalctl은 자기 기록만 보여 주고, `kernel.dmesg_restrict`가 `/dev/kmsg`를 막을 수 있습니다. 이때 결과는 `pass`가 아니라 `skip`으로 나옵니다. journalctl이 없으면 `events.units`와 `events.clock`이 `skip`입니다.
+
+journal 기록은 20000개, journal 출력은 32 MiB, `/dev/kmsg` 기록은 100000개까지 읽습니다. 상한에 닿으면 `events.window`가 경고를 냅니다.
+
+`edc events`는 로그 전체를 보여 주지 않습니다. 새 기록을 따라가지 않고, 애플리케이션 로그도 읽지 않습니다.
 
 ## Probe 임계값
 

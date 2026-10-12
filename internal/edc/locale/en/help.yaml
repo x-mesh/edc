@@ -63,6 +63,26 @@ command:
       - "Run it as root. Without root, some checks show skip."
       - "The firewall check sees this host only, not a cloud security group."
       - "It does not match package versions against CVEs."
+  changes:
+    summary: "Recent package, /etc, and service changes (Linux)"
+    notes:
+      - "It reads dpkg, dnf, and yum logs, /etc mtimes, and systemd unit state."
+      - "It changes nothing and sends nothing over the network."
+      - "Each service shows only its latest start and its restart count."
+      - "For /etc, it reports the file mtime only, not the content."
+      - "It does not read compressed logs, it warns about them."
+    option:
+      since: "how far back to look, a Go duration such as 24h or 90m"
+      verbose: "show every change, not only the newest 50"
+  events:
+    summary: "Kernel and systemd failure signals in time order (Linux)"
+    option:
+      since: "how far back to read, such as 30m or 48h"
+    notes:
+      - "It reads the kernel log and the systemd journal only."
+      - "Run it as root or as a member of adm or systemd-journal."
+      - "Without that access, the checks show skip, not pass."
+      - "It works on Linux only."
   net:
     summary: "Interfaces, route, ping, and trace"
   route:
@@ -149,6 +169,14 @@ command:
       - "-v adds the account, the file descriptor and the queue."
       - "The queue is Recv-Q/Send-Q. For a TCP listener it is the accept queue."
       - "-v adds columns only. The rows stay the same."
+  svc:
+    summary: "One systemd service on one screen (Linux)"
+    notes:
+      - "It shows state, uptime, restarts, processes, fds, sockets, and journal errors."
+      - "It reads only. It does not start, stop, or reload the unit."
+      - "It needs Linux with systemd. On other hosts it shows skip."
+      - "Run it as root. Without root, fds, socket owners, and the journal show skip."
+      - "A socket that only systemd holds (socket activation) is not in the list."
   quality:
     summary: "Network responsiveness (RPM) and throughput"
     option:

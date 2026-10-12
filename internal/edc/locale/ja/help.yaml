@@ -63,6 +63,26 @@ command:
       - "root で実行してください。root でなければ一部が skip です。"
       - "ファイアウォールはこのホストだけで、クラウド側は見ません。"
       - "パッケージのバージョンを CVE と照合しません。"
+  changes:
+    summary: "最近のパッケージ、/etc、service の変更 (Linux)"
+    notes:
+      - "dpkg・dnf・yum のログ、/etc の mtime、systemd の unit 状態だけを読みます。"
+      - "何も変更せず、外部へ送信しません。"
+      - "service ごとに最後の起動時刻と再起動回数だけを表示します。"
+      - "/etc はファイルの内容ではなく mtime だけを見ます。"
+      - "圧縮されたログは読まず、警告で知らせます。"
+    option:
+      since: "どこまでさかのぼるか、24h や 90m のような Go の duration"
+      verbose: "最新の 50 件で切らずにすべて表示"
+  events:
+    summary: "カーネルと systemd の障害シグナルを時系列で整理 (Linux)"
+    option:
+      since: "読む期間 (例: 30m、48h)"
+    notes:
+      - "カーネルログと systemd journal だけを読みます。"
+      - "root か adm、systemd-journal グループで実行してください。"
+      - "権限がなければ点検は pass ではなく skip です。"
+      - "Linux でのみ動作します。"
   net:
     summary: "interface、route、ping、trace"
   route:
@@ -149,6 +169,14 @@ command:
       - "-v はアカウントと file descriptor、キューの列を開きます。"
       - "キューは Recv-Q/Send-Q で、TCP listener では accept キューです。"
       - "-v が増やすのは列だけです。行は変わりません。"
+  svc:
+    summary: "systemd service 一つを一画面に (Linux)"
+    notes:
+      - "状態、稼働時間、再起動、process、fd、ソケット、journal のエラーを表示します。"
+      - "読むだけです。unit の起動・停止・reload はしません。"
+      - "systemd のある Linux でのみ動作し、他のホストでは skip です。"
+      - "root で実行してください。root 以外は fd、ソケット所有者、journal が skip。"
+      - "systemd だけが持つソケット (socket activation) は一覧に出ません。"
   quality:
     summary: "ネットワークの応答性 (RPM) とスループット"
     option:

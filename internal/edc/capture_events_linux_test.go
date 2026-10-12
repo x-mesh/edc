@@ -176,8 +176,8 @@ func TestCaptureEventFiltersFollowTheProtocol(t *testing.T) {
 		{traceScope{protocol: "mysql", port: 3307}, captureEventFilter{dnsSent: true, mysqlPort: 3307}},
 		{traceScope{protocol: "clickhouse"}, captureEventFilter{dnsSent: true, mysqlPort: 9000, mysqlResponseSize: 4096, clickHouseHTTPPort: 8123}},
 		{traceScope{protocol: "clickhouse", port: 9440, httpPort: 18123}, captureEventFilter{dnsSent: true, mysqlPort: 9440, mysqlResponseSize: 4096, clickHouseHTTPPort: 18123}},
-		{traceScope{protocol: "postgres"}, captureEventFilter{dnsSent: true, mysqlPort: 5432, mysqlResponseSize: 4096, mysqlTailSize: 64, allTCPDestroys: true}},
-		{traceScope{protocol: "postgres", port: 6432}, captureEventFilter{dnsSent: true, mysqlPort: 6432, mysqlResponseSize: 4096, mysqlTailSize: 64, allTCPDestroys: true}},
+		{traceScope{protocol: "postgres"}, captureEventFilter{dnsSent: true, mysqlPort: 5432, mysqlResponseSize: 4096, mysqlTailSize: postgresTailCapture, allTCPDestroys: true}},
+		{traceScope{protocol: "postgres", port: 6432}, captureEventFilter{dnsSent: true, mysqlPort: 6432, mysqlResponseSize: 4096, mysqlTailSize: postgresTailCapture, allTCPDestroys: true}},
 		{traceScope{protocol: "redis"}, captureEventFilter{dnsSent: true, mysqlPort: 6379, allTCPDestroys: true}},
 		{traceScope{protocol: "redis", port: 6380}, captureEventFilter{dnsSent: true, mysqlPort: 6380, allTCPDestroys: true}},
 	} {

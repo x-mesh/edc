@@ -772,7 +772,7 @@ func TestTCPRecvmsgArgumentCountMatchesKernel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if count != 5 && count != 6 {
+	if count != 4 && count != 5 && count != 6 {
 		t.Fatalf("tcp_recvmsg arguments = %d", count)
 	}
 }

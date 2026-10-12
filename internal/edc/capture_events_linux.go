@@ -717,17 +717,21 @@ func loadCaptureEventsFor(scope traceScope, objects *captureEventsObjects) error
 		}
 	}
 	selected := "tcp_recvmsg_exit"
-	if recvArgs == 6 {
+	switch recvArgs {
+	case 6:
 		selected = "tcp_recvmsg_exit_legacy"
+	case 4:
+		selected = "tcp_recvmsg_exit_short"
 	}
 	recvSpec := spec.Programs[selected]
 	if recvSpec == nil {
 		return fmt.Errorf("missing eBPF program %s", selected)
 	}
-	spec.Programs["tcp_recvmsg_exit"] = recvSpec.Copy()
-	spec.Programs["tcp_recvmsg_exit"].Name = "tcp_recvmsg_exit"
-	spec.Programs["tcp_recvmsg_exit_legacy"] = recvSpec.Copy()
-	spec.Programs["tcp_recvmsg_exit_legacy"].Name = "tcp_recvmsg_exit_legacy"
+	// 세 변형 모두 고른 program의 복사본으로 둔다. 붙이는 것은 tcp_recvmsg_exit 하나고, 나머지는 로딩만 통과하면 된다.
+	for _, name := range []string{"tcp_recvmsg_exit", "tcp_recvmsg_exit_legacy", "tcp_recvmsg_exit_short"} {
+		spec.Programs[name] = recvSpec.Copy()
+		spec.Programs[name].Name = name
+	}
 	selected = "inet_csk_accept_exit"
 	if acceptArgs == 4 {
 		selected = "inet_csk_accept_exit_legacy"
@@ -753,7 +757,8 @@ func tcpRecvmsgArgumentCount() (int, error) {
 		return 0, fmt.Errorf("find tcp_recvmsg in kernel BTF: %w", err)
 	}
 	prototype, ok := btf.UnderlyingType(function.Type).(*btf.FuncProto)
-	if !ok || (len(prototype.Params) != 5 && len(prototype.Params) != 6) {
+	// 5.15는 nonblock까지 6개, 5.19부터 5개, 7.x는 addr_len을 빼 4개다.
+	if !ok || (len(prototype.Params) != 4 && len(prototype.Params) != 5 && len(prototype.Params) != 6) {
 		return 0, fmt.Errorf("unsupported tcp_recvmsg argument count: %d", len(prototype.Params))
 	}
 	return len(prototype.Params), nil

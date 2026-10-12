@@ -50,8 +50,9 @@ const (
 	// postgresMaxLength는 message 길이 필드로 받아들이는 값의 상한이다. 서버의 할당 상한(1 GB - 1)과 같다.
 	postgresMaxLength = 0x3fffffff
 	// postgresTailCapture는 BPF가 응답 방향 쓰기나 읽기의 끝에서 더 읽는 byte 수다. ReadyForQuery(6 byte)와 그 앞의
-	// CommandComplete를 담는다. 큰 결과는 앞부분만으로 경계를 잃어도 이 끝부분으로 응답 시간을 잰다.
-	postgresTailCapture = 64
+	// CommandComplete, 흔한 ErrorResponse를 담는다. 큰 결과는 앞부분만으로 경계를 잃어도 이 끝부분으로 응답 시간을 잰다. BPF의
+	// 상한(MYSQL_TAIL_MAX)과 같다.
+	postgresTailCapture = 256
 )
 
 // protocol 상수는 PostgreSQL 문서의 Message Formats와 같다. 시작 message의 code는 길이 뒤 4 byte다.
@@ -575,9 +576,9 @@ func postgresEndTag(data []byte) (string, bool) {
 	return "", false
 }
 
-// postgresEndError는 끝의 ReadyForQuery 바로 앞에서 끝나는 ErrorResponse의 body다. 온전한 message가 보이면 field도 돌려주고,
-// 앞부분이 보이지 않아도 field 목록의 끝(NUL 둘)이 보이면 failed만 참이다. CommandComplete의 tag는 NUL 하나로 끝난다.
-func postgresEndError(data []byte) (body []byte, failed bool) {
+// postgresEndError는 끝의 ReadyForQuery 바로 앞에서 끝나는 온전한 ErrorResponse의 body다. 길이 field가 ReadyForQuery 앞에서
+// 정확히 끝나고 field 목록이 NUL 둘로 끝나야 한다.
+func postgresEndError(data []byte) ([]byte, bool) {
 	end := len(data) - 6
 	if end < 2 || data[end-1] != 0 || data[end-2] != 0 {
 		return nil, false
@@ -587,7 +588,24 @@ func postgresEndError(data []byte) (body []byte, failed bool) {
 			return data[i+5 : end], true
 		}
 	}
-	return nil, true
+	return nil, false
+}
+
+// postgresEndClosed는 data의 끝이 응답 단위의 끝인지 본다. ReadyForQuery의 6 byte만으로는 믿지 않는다. 'Z'로 끝나는 열 뒤에 I, T,
+// E로 시작하는 5 byte 열이 오는 DataRow도 같은 6 byte로 끝난다. 그래서 그 바로 앞에 온전한 CommandComplete나 ErrorResponse가
+// 있어야 한다.
+func postgresEndClosed(data []byte) (status byte, tag string, errorBody []byte, ok bool) {
+	status, ok = postgresEndsReady(data)
+	if !ok {
+		return 0, "", nil, false
+	}
+	if tag, found := postgresEndTag(data); found {
+		return status, tag, nil, true
+	}
+	if body, found := postgresEndError(data); found {
+		return status, "", body, true
+	}
+	return 0, "", nil, false
 }
 
 // postgresTagRows는 경계를 잃은 단위의 행 수다. DataRow를 다 세지 못했으므로 행 수를 담는 SELECT와 FETCH tag에서만 읽는다.
@@ -611,25 +629,23 @@ func (call *postgresCall) ready(status byte) {
 	}
 }
 
-// closeAtEnd는 경계를 잃은 응답의 끝이 ReadyForQuery일 때 기다리던 단위를 at에 닫는다. data는 응답 record의 끝이다. 끝까지
-// 캡처한 record이거나 끝부분 record다. 닫으면 다음 응답 record부터 경계를 다시 따라간다. 단위가 하나가 아니면 닫지 않는다.
-// 남는 위험: DataRow 값이 우연히 ReadyForQuery와 같은 6 byte로 쓰기를 끝내면 결과가 끝나기 전에 닫는다.
+// closeAtEnd는 경계를 잃은 응답이 CommandComplete나 ErrorResponse와 ReadyForQuery로 끝날 때 기다리던 단위를 at에 닫는다.
+// data는 응답 record의 끝이다. 끝까지 캡처한 record이거나 끝부분 record다. 닫으면 다음 응답 record부터 경계를 다시 따라간다.
+// 단위가 하나가 아니면 닫지 않는다.
+// 남는 위험: DataRow 값이 우연히 온전한 CommandComplete와 ReadyForQuery의 byte로 쓰기를 끝내면 결과가 끝나기 전에 닫는다.
 func (call *postgresCall) closeAtEnd(at uint64, data []byte, size int) bool {
 	conn := call.conn
-	status, ok := postgresEndsReady(data)
+	status, tag, errorBody, ok := postgresEndClosed(data)
 	head := call.lostHead()
 	if !ok || head == nil {
 		return false
 	}
 	head.responseBytes += size
-	if tag, ok := postgresEndTag(data); ok {
+	if errorBody == nil {
 		head.tag = postgresName([]byte(tag))
-	} else if body, failed := postgresEndError(data); failed && !head.failed {
-		// field가 끝부분 밖이면 오류라는 것만 안다.
+	} else if !head.failed {
 		head.failed = true
-		if body != nil {
-			head.severity, head.sqlState, head.message, head.detail = call.errorFields(body)
-		}
+		head.severity, head.sqlState, head.message, head.detail = call.errorFields(errorBody)
 	}
 	call.ready(status)
 	call.finish(head, at)
@@ -659,9 +675,13 @@ func (tracker *postgresTracker) tailEvents(record mysqlRecord, clockOffset int64
 	if call.closeAtEnd(record.bootTimeNS, record.payload, 0) {
 		return call.out
 	}
-	if status, ok := postgresEndsReady(record.payload); ok {
+	if status, _, _, ok := postgresEndClosed(record.payload); ok && call.lostHead() == nil {
 		// 기다리던 단위를 알 수 없으므로 닫지 않는다. 다음 응답 record에서 경계를 다시 찾고 그 전 단위를 버린다.
 		call.ready(status)
+		conn.resyncNext = true
+	} else if _, ok := postgresEndsReady(record.payload); ok && call.lostHead() == nil {
+		// 끝이 ReadyForQuery의 6 byte와 같을 뿐이면 DataRow일 수 있다. 다음 record를 경계로 보기만 하고, 그 record가 맞지 않으면
+		// 다시 경계를 잃는다. 기다리던 단위가 하나면 그 단위의 진짜 끝을 기다리도록 아무것도 바꾸지 않는다.
 		conn.resyncNext = true
 	}
 	return call.out

@@ -1897,7 +1897,8 @@ Ctrl-C 뒤의 요약은 쪽, 명령, SQL shape마다 한 행을 씁니다. `--gr
 - TLS와 GSSAPI 암호화는 읽지 않습니다. 암호화한 연결마다 `postgres_tls` 행 하나만 나옵니다.
 - TCP만 봅니다. unix socket 연결은 보이지 않습니다. `-h` 없는 `psql`은 unix socket을 쓰므로, 시험할 때는 `psql -h 127.0.0.1`을 씁니다.
 - 응답 쓰기나 읽기마다 앞 4 KiB만 남깁니다. 서버는 큰 결과를 8 KiB씩 나눠 쓰므로 message 경계를 잃습니다.
-- 큰 결과에서는 응답 쓰기나 읽기마다 끝 64 byte도 남깁니다. 그 byte가 ReadyForQuery로 끝나고 기다리는 요청이 하나면 그 시각에 그 요청을 닫습니다. tag는 그 byte 안의 CommandComplete에서, `rows`는 `SELECT`나 `FETCH` tag에서 읽습니다.
+- 큰 결과에서는 응답 쓰기나 읽기마다 끝 256 byte도 남깁니다. 그 byte가 온전한 CommandComplete나 ErrorResponse와 ReadyForQuery로 끝나고 기다리는 요청이 하나면 그 시각에 그 요청을 닫습니다. tag와 오류 field는 그 byte에서, `rows`는 `SELECT`나 `FETCH` tag에서 읽습니다.
+- DataRow도 ReadyForQuery와 같은 6 byte로 끝날 수 있어서 그 6 byte만으로는 닫지 않습니다. ErrorResponse가 끝 256 byte보다 길면 그 요청은 응답 없음으로 셉니다.
 - 경계를 잃을 때 기다리던 요청이 둘 이상이면 짐작하지 않고 응답 없음으로 셉니다. 다음 요청부터 다시 짝을 찾습니다.
 - 읽기의 끝이 첫 buffer 밖에 있으면 그 읽기의 끝부분은 남기지 않습니다. 쓰기의 끝부분은 마지막 buffer에서만 읽습니다.
 - 연결 중간에 trace를 시작하면 그 연결의 `postgres_connect`가 없습니다. edc는 다음 요청에서 경계를 찾습니다.

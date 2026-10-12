@@ -2034,7 +2034,8 @@ The summary after Ctrl-C shows one row for each side, command, and SQL shape. Wi
 - It does not read TLS or GSSAPI encryption. Each encrypted connection shows one `postgres_tls` row.
 - It reads TCP only. A unix socket connection is not visible. `psql` without `-h` uses a unix socket. Use `psql -h 127.0.0.1` in a test.
 - edc keeps the first 4 KiB of each response write or read. The server writes a large result in parts of 8 KiB, so edc loses the message boundary.
-- For a large result, edc also keeps the last 64 bytes of each response write or read. If they end with ReadyForQuery and one request waits, edc closes that request at that time. The tag comes from the CommandComplete in those bytes. `rows` comes from a `SELECT` or `FETCH` tag.
+- For a large result, edc also keeps the last 256 bytes of each response write or read. If they end with a whole CommandComplete or ErrorResponse and then ReadyForQuery, and one request waits, edc closes that request at that time. The tag or the error fields come from those bytes. `rows` comes from a `SELECT` or `FETCH` tag.
+- edc does not accept the six bytes of ReadyForQuery alone, because a data row can end with the same bytes. If an ErrorResponse is longer than the last 256 bytes, the request counts as unanswered.
 - If two or more requests wait when edc loses the boundary, edc does not guess. These requests count as unanswered. The next request gets its pair again.
 - If the end of a read is not in its first buffer, edc keeps no tail of that read. The tail of a write comes only from its last buffer.
 - If the trace starts in the middle of a connection, there is no `postgres_connect` for it. edc finds the boundary at a later request.

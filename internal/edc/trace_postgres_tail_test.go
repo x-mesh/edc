@@ -292,22 +292,101 @@ func TestPostgresVisibleEndClosesAfterLostFraming(t *testing.T) {
 	}
 }
 
-// 끝부분 record에는 긴 ErrorResponse의 앞이 보이지 않는다. field 목록의 끝이 보이면 오류로 닫고 field는 비운다.
-func TestPostgresTailOfAnErrorClosesAsAnError(t *testing.T) {
+// 끝부분 record에 온전한 ErrorResponse가 보이면 오류로 닫고 field를 읽는다. 끝부분보다 긴 ErrorResponse는 오류인지 DataRow인지
+// 가릴 수 없으므로 닫지 않고 응답 없음으로 둔다.
+func TestPostgresTailOfAnErrorClosesOnlyWhenTheWholeErrorIsVisible(t *testing.T) {
 	writes := pgBigResult(300)
-	failure := append(pgError("ERROR", "22012", "division by zero "+strings.Repeat("m", 80), ""), pgReady()...)
-	// 마지막 쓰기는 앞부분보다 길어야 끝부분 record가 생긴다.
-	last := bytes.Join(writes[len(writes)-2:], nil)
-	last = append(last[:bytes.LastIndexByte(last, 'C')], failure...)
+	for _, tc := range []struct {
+		message string
+		want    string
+	}{
+		{"division by zero", "Q e22012"},
+		{"division by zero " + strings.Repeat("m", pgTail), "Q"},
+	} {
+		failure := append(pgError("ERROR", "22012", tc.message, ""), pgReady()...)
+		// 마지막 쓰기는 앞부분보다 길어야 끝부분 record가 생긴다.
+		last := bytes.Join(writes[len(writes)-2:], nil)
+		last = append(last[:bytes.LastIndexByte(last, 'C')], failure...)
+		for _, server := range []bool{true, false} {
+			conn := newPGTestConn(server, false)
+			conn.login(t)
+			events := conn.req(pgQuery("SELECT big"))
+			for _, write := range append(writes[:len(writes)-2:len(writes)-2], last) {
+				events = append(events, conn.sendBPF(write, true)...)
+			}
+			if got := pgTokens(events); got != tc.want {
+				t.Fatalf("server=%v message %d bytes = %q %s", server, len(tc.message), got, pgJSON(t, events))
+			}
+			if tc.want != "Q" && (events[1].LatencyMS == nil || events[1].Postgres.Message != tc.message || events[1].Postgres.Tag != "" || events[1].Postgres.Rows != nil) {
+				t.Fatalf("server=%v error = %s", server, pgJSON(t, events))
+			}
+		}
+	}
+}
+
+// 리뷰가 찾은 오탐: 'Z'로 끝나는 시각 열 뒤에 "INBOX" 열이 오는 DataRow는 길이 field가 00 00 00 05이고 다음 byte가 'I'라
+// ReadyForQuery의 6 byte와 같다. 쓰기가 그 자리에서 끝나도 Query를 닫지 않고, CommandComplete가 앞에 온 진짜 끝에서 닫는다.
+func TestPostgresTailDoesNotTakeADataRowForReadyForQuery(t *testing.T) {
+	description := pgMsg('T', pgInt16(2),
+		pgCString("ts"), pgInt32(0), pgInt16(0), pgInt32(25), pgInt16(0xffff), pgInt32(0xffffffff), pgInt16(0),
+		pgCString("inbox"), pgInt32(0), pgInt16(0), pgInt32(25), pgInt16(0xffff), pgInt32(0xffffffff), pgInt16(0))
+	row := pgMsg('D', pgInt16(2), pgInt32(20), []byte("2026-10-12T00:00:00Z"), pgInt32(5), []byte("INBOX"))
+	result := bytes.Join([][]byte{description, bytes.Repeat(row, 2000), pgComplete("SELECT 2000"), pgReady()}, nil)
+	var writes [][]byte
+	for rest := result; len(rest) > 0; rest = rest[min(8192, len(rest)):] {
+		writes = append(writes, rest[:min(8192, len(rest))])
+	}
+	fake := -1
+	for i, write := range writes[:len(writes)-1] {
+		if _, ok := postgresEndsReady(write); ok {
+			fake = i
+			break
+		}
+	}
+	if len(writes) != 10 || fake != 3 {
+		t.Fatalf("%d writes, the first write that ends like ReadyForQuery is %d, want 10 and 3", len(writes), fake)
+	}
 	for _, server := range []bool{true, false} {
 		conn := newPGTestConn(server, false)
 		conn.login(t)
-		events := conn.req(pgQuery("SELECT big"))
-		for _, write := range append(writes[:len(writes)-2:len(writes)-2], last) {
-			events = append(events, conn.sendBPF(write, true)...)
+		events := conn.req(pgQuery("SELECT ts, inbox FROM mail"))
+		for i, write := range writes {
+			more := conn.sendBPF(write, true)
+			if i < len(writes)-1 && len(more) != 0 {
+				t.Fatalf("server=%v: write %d closed the query: %s", server, i, pgJSON(t, more))
+			}
+			events = append(events, more...)
 		}
-		if got := pgTokens(events); got != "Q e" || events[1].LatencyMS == nil || events[1].Postgres.Tag != "" || events[1].Postgres.Rows != nil {
+		if got := pgTokens(events); got != "Q rSELECT_2000" || events[1].BootTimeNS != conn.at || *events[1].Postgres.Rows != 2000 {
 			t.Fatalf("server=%v = %q %s", server, got, pgJSON(t, events))
+		}
+		follow := pgFollowUp(conn.tracker, 1, server, conn.at+1_000_000)
+		if got := pgTokens(follow); got != "Q rSELECT_1" {
+			t.Fatalf("server=%v follow-up = %q", server, got)
+		}
+	}
+}
+
+// 끝부분의 마지막 6 byte가 ReadyForQuery여도 그 앞이 온전한 CommandComplete나 ErrorResponse가 아니면 끝으로 보지 않는다.
+func TestPostgresEndClosedNeedsAWholeMessageBeforeReady(t *testing.T) {
+	for name, tc := range map[string]struct {
+		data []byte
+		ok   bool
+		tag  string
+	}{
+		"complete":     {append(pgComplete("SELECT 7"), pgReady()...), true, "SELECT 7"},
+		"error":        {append(pgError("ERROR", "42P01", "relation does not exist", ""), pgReady()...), true, ""},
+		"datarow":      {pgMsg('D', pgInt16(2), pgInt32(1), []byte("Z"), pgInt32(5), []byte("INBOX"))[:17], false, ""},
+		"bare ready":   {pgReady(), false, ""},
+		"cut complete": {append(pgComplete("SELECT 7")[3:], pgReady()...), false, ""},
+		"cut error":    {append(pgError("ERROR", "42P01", "relation does not exist", "")[4:], pgReady()...), false, ""},
+	} {
+		if _, ok := postgresEndsReady(tc.data); !ok {
+			t.Fatalf("%s: the fixture does not end with ReadyForQuery bytes", name)
+		}
+		status, tag, _, ok := postgresEndClosed(tc.data)
+		if ok != tc.ok || tag != tc.tag || ok && status != 'I' {
+			t.Errorf("%s: postgresEndClosed = %q, %q, %t; want %q, %t", name, status, tag, ok, tc.tag, tc.ok)
 		}
 	}
 }

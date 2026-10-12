@@ -102,12 +102,22 @@ func Run(args []string, version string) int {
 		return runListen(args[1:], version)
 	case "audit":
 		return runAudit(args[1:], version)
+	case "svc":
+		return runSvc(args[1:], version)
+	case "ctr":
+		return runCtr(args[1:], version)
+	case "changes":
+		return runChanges(args[1:], version)
+	case "events":
+		return runEvents(args[1:], version)
 	case "quality":
 		return runQuality(args[1:], version)
 	case "capture":
 		return runCapture(args[1:])
 	case "trace":
 		return runTrace(args[1:])
+	case "snapshot":
+		return runSnapshot(args[1:], version)
 	case "report":
 		return runReport(args[1:])
 	case "log":

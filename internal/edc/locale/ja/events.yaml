@@ -1,0 +1,70 @@
+# events コマンドの日本語メッセージ。
+events:
+  option:
+    since: "読む期間 (30m や 48h のような Go の duration)"
+  since_positive: "--since は 0 より大きくしてください"
+  skip:
+    linux_only: "events は Linux のカーネルと systemd のログだけを読みます"
+    needs_root: "%s を読むには root か adm、systemd-journal グループが必要です"
+    no_journal: "journalctl がインストールされていません"
+    no_systemd: "このホストでは systemd が動いていません"
+    unreadable: "%s を読めませんでした: %s"
+  window:
+    summary: "シグナル %d 件、直近 %s (%s 以降)"
+    none: "直近 %s のログ元を一つも読めませんでした"
+    truncated: "%s の出力がサイズ上限に達し、一部の記録が抜けています"
+  oom:
+    none: "%s 以降 OOM kill なし"
+    found: "OOM kill %d 回、最新 %s"
+  disk_io:
+    none: "%s 以降ディスク I/O エラーなし"
+    found: "ディスク I/O エラー %d 回、最新 %s"
+  fs_readonly:
+    none: "%s 以降読み取り専用になったファイルシステムなし"
+    found: "ファイルシステムが読み取り専用になるか停止した記録 %d 回、最新 %s"
+  link:
+    none: "%s 以降切れたリンクなし (リンク記録 %d 件)"
+    down: "%s は最後の記録で切れたままです (リンク記録 %d 件)"
+    flap: "%s は切れてから再びつながりました (リンク記録 %d 件)"
+  units:
+    none: "%s 以降失敗や再起動した unit なし"
+    ok: "unit 記録 %d 件、失敗したままや繰り返し再起動する unit なし"
+    failed: "失敗したままの unit %d 個、最新 %s"
+    restarting: "失敗後に再起動したか 3 回以上再起動した unit %d 個、最新 %s"
+  segfault:
+    none: "%s 以降 segfault や general protection fault なし"
+    found: "segfault や general protection fault %d 回、最新 %s"
+  lockup:
+    none: "%s 以降 CPU lockup や RCU stall なし"
+    found: "CPU lockup や RCU stall %d 回、最新 %s"
+  oops:
+    none: "%s 以降カーネルの oops や warning なし"
+    found: "カーネルの oops %d 回、最新 %s"
+    warned: "カーネルの warning %d 回、最新 %s"
+    tainted: "%s 以降カーネルの oops なし、ただし起動後にカーネルが %s で tainted"
+  hung_task:
+    none: "%s 以降 hung task の上限を超えて止まった task なし"
+    found: "hung task の報告 %d 回、最新 %s"
+  failed_units:
+    none: "いま failed 状態の unit なし"
+    found: "いま failed の unit %d 個: %s"
+  journal_errors:
+    none: "%s 以降 journal にエラー行なし"
+    found: "エラー行 %d 行、unit か program %d 個、最多は %s (%d)"
+  taint:
+    D: "D: カーネルに oops か BUG があった"
+    W: "W: カーネルが warning を出した"
+    L: "L: soft lockup があった"
+    M: "M: machine check exception があった"
+    B: "B: bad page が見つかった"
+  clock:
+    none: "%s 以降 1 秒以上の時計のジャンプなし"
+    found: "時計のジャンプ %d 回、最新 %s"
+  evidence:
+    timeline: "時系列"
+    source: "ソース"
+    events: "記録"
+    more: "... ほか %d 件"
+    tainted: "tainted"
+    failed_units: "failed の unit (load/active/sub)"
+    error_sources: "unit ごとのエラー行 (件数、unit、最新、メッセージ)"

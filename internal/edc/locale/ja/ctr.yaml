@@ -1,0 +1,27 @@
+# ctr コマンドの日本語メッセージ。
+ctr:
+  skip:
+    linux_only: "ctr は Linux の docker container だけを読みます"
+    no_docker: "この host に docker がインストールされていません"
+    not_running: "container に実行中の process がありません"
+    needs_docker_access: "docker daemon に接続するには root か docker グループが必要です"
+  error:
+    invalid_reference: "不正な container 名 %q: 英字、数字、_.-/ のみ使い、'-' で始められません"
+    not_found: "container %s がありません"
+  state:
+    summary: "%s、稼働 %s、再起動 %d 回、image %s"
+    inspect_failed: "docker inspect に失敗: %s"
+  listen:
+    none: "container の process が持つ listen 中の tcp・udp socket なし"
+  limits:
+    summary: "memory %s · OOM kill %s · CPU throttle %s · pids %s"
+    no_limit: "上限なし"
+    memory_high: "memory 使用量が上限に近いです: %s"
+    oom: "カーネルがこの container の process %d 個をメモリ不足で kill しました"
+    throttled: "CPU 上限が container を throttle しました: %s"
+    pids_high: "pids 上限がほぼ使われています: %s"
+  log:
+    none: "最後のログ %d 行にエラー行なし"
+    errors: "最後のログ %d 行のうちエラー %d 行、最新: %s"
+  evidence:
+    log: "ログ"

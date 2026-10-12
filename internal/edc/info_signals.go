@@ -1,13 +1,16 @@
 package edc
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"math"
 	"net"
 	"os"
 	"path/filepath"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -58,6 +61,167 @@ type diskSignal struct {
 	InodesUsed, InodesTotal uint64
 	// Options는 -v에서 보여 주는 마운트 옵션이다.
 	Options string
+	// DeletedOpen은 지워졌지만 process가 아직 열고 있는 파일이다. du에는 보이지 않는데 df에는 잡히는 공간이다.
+	DeletedOpen deletedOpenSummary
+}
+
+type deletedOpenFile struct {
+	Path string
+	Size uint64
+	PID  int
+	Comm string
+}
+
+type deletedOpenSummary struct {
+	Files uint64
+	Bytes uint64
+	// Partial은 fd를 하나라도 읽지 못한 것이다. root가 아니면 다른 사용자의 process를 읽지 못한다. 값은 하한이다.
+	Partial bool
+	// Top은 크기순 상위 파일이다. 잡고 있는 process가 다음 조치다.
+	Top []deletedOpenFile
+}
+
+type deletedOpenStat struct {
+	Dev, Inode, Size, Links uint64
+	Regular                 bool
+}
+
+const (
+	infoDeletedOpenTop = 5
+	// infoDeletedOpenFDLimit은 한 번에 보는 fd 수의 상한이다. 큰 호스트에서도 info가 일정하게 끝나게 한다.
+	infoDeletedOpenFDLimit = 200000
+	// infoDeletedOpenWarnPercent 이상을 지워진 파일이 잡고 있으면 snapshot이 warn을 낸다. 그 아래는 정보로만 보인다.
+	infoDeletedOpenWarnPercent = 10
+	deletedOpenSuffix          = " (deleted)"
+)
+
+// scanDeletedOpen은 /proc/<pid>/fd의 link 가운데 " (deleted)"로 끝나는 것을 st_dev별로 모은다.
+// 같은 inode를 여러 fd나 process가 열고 있으면 한 번만 센다. hard link가 남은 파일은 지워진 것이 아니라 뺀다.
+// stat은 fd link를 따라가 inode를 읽는다. /proc의 magic link는 지워진 파일도 따라간다.
+func scanDeletedOpen(procRoot string, stat func(path string) (deletedOpenStat, error), limit int) map[uint64]*deletedOpenSummary {
+	entries, err := os.ReadDir(procRoot)
+	if err != nil {
+		return nil
+	}
+	summaries := map[uint64]*deletedOpenSummary{}
+	seen := map[[2]uint64]bool{}
+	partial := false
+	examined := 0
+	unreadable := func(err error) {
+		// 사라진 process나 닫힌 fd는 빈틈이 아니다.
+		if !errors.Is(err, fs.ErrNotExist) {
+			partial = true
+		}
+	}
+scan:
+	for _, entry := range entries {
+		pid, err := strconv.Atoi(entry.Name())
+		if err != nil || !entry.IsDir() {
+			continue
+		}
+		fdDir := filepath.Join(procRoot, entry.Name(), "fd")
+		fds, err := os.ReadDir(fdDir)
+		if err != nil {
+			unreadable(err)
+			continue
+		}
+		comm := ""
+		for _, fd := range fds {
+			examined++
+			if examined > limit {
+				partial = true
+				break scan
+			}
+			path := filepath.Join(fdDir, fd.Name())
+			target, err := os.Readlink(path)
+			if err != nil {
+				unreadable(err)
+				continue
+			}
+			if !strings.HasSuffix(target, deletedOpenSuffix) {
+				continue
+			}
+			info, err := stat(path)
+			if err != nil {
+				unreadable(err)
+				continue
+			}
+			if !info.Regular || info.Links != 0 {
+				continue
+			}
+			key := [2]uint64{info.Dev, info.Inode}
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			summary := summaries[info.Dev]
+			if summary == nil {
+				summary = &deletedOpenSummary{}
+				summaries[info.Dev] = summary
+			}
+			if comm == "" {
+				data, _ := os.ReadFile(filepath.Join(procRoot, entry.Name(), "comm"))
+				comm = strings.TrimSpace(string(data))
+			}
+			summary.Files++
+			summary.Bytes += info.Size
+			summary.add(deletedOpenFile{Path: strings.TrimSuffix(target, deletedOpenSuffix), Size: info.Size, PID: pid, Comm: comm})
+		}
+	}
+	if partial {
+		for _, summary := range summaries {
+			summary.Partial = true
+		}
+	}
+	return summaries
+}
+
+func (summary *deletedOpenSummary) add(file deletedOpenFile) {
+	summary.Top = append(summary.Top, file)
+	sort.SliceStable(summary.Top, func(i, j int) bool { return summary.Top[i].Size > summary.Top[j].Size })
+	if len(summary.Top) > infoDeletedOpenTop {
+		summary.Top = summary.Top[:infoDeletedOpenTop]
+	}
+}
+
+// deletedOpenText는 디스크 줄 끝과 snapshot 요약에 쓰는 한 구절이다. 하한이면 ≥를 붙인다.
+func deletedOpenText(summary deletedOpenSummary) string {
+	bound := ""
+	if summary.Partial {
+		bound = "≥"
+	}
+	text := fmt.Sprintf("deleted-open %s%s in %d files", bound, formatSizeShort(summary.Bytes), summary.Files)
+	if summary.Files == 1 {
+		text = fmt.Sprintf("deleted-open %s%s in 1 file", bound, formatSizeShort(summary.Bytes))
+	}
+	if len(summary.Top) > 0 && summary.Top[0].Comm != "" {
+		text += ", " + summary.Top[0].Comm
+	}
+	return text
+}
+
+// deletedOpenLines는 상위 파일을 한 줄씩 적는다. 크기, process, 경로 순서라 무엇을 재시작할지 바로 보인다.
+func deletedOpenLines(summary deletedOpenSummary) []string {
+	lines := make([]string, 0, len(summary.Top))
+	for _, file := range summary.Top {
+		lines = append(lines, fmt.Sprintf("%9s  pid %d %s  %s", formatSizeShort(file.Size), file.PID, file.Comm, file.Path))
+	}
+	return lines
+}
+
+// formatSizeShort는 B부터 TB까지 단위를 고르고 소수 한 자리로 적는다. formatBytes는 디스크 크기용이라 작은 파일이 0.00 GB로 보인다.
+func formatSizeShort(bytes uint64) string {
+	units := []string{"B", "KB", "MB", "GB", "TB"}
+	value := float64(bytes)
+	index := 0
+	for value >= 1024 && index < len(units)-1 {
+		value /= 1024
+		index++
+	}
+	if index == 0 {
+		return fmt.Sprintf("%d B", bytes)
+	}
+	return fmt.Sprintf("%.1f %s", value, units[index])
 }
 
 // infoInodeWarnPercent를 넘으면 inode 사용률을 보여 준다. inode가 바닥나면 용량이 남아도 파일을 만들지 못한다.
@@ -228,6 +392,9 @@ func diskSignalSuffix(signal diskSignal) string {
 		if percent >= infoInodeWarnPercent {
 			parts = append(parts, fmt.Sprintf("inodes %.0f%%", percent))
 		}
+	}
+	if signal.DeletedOpen.Files > 0 {
+		parts = append(parts, deletedOpenText(signal.DeletedOpen))
 	}
 	if len(parts) == 0 {
 		return ""

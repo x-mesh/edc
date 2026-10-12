@@ -223,6 +223,10 @@ _edc() {
           # listen의 -v는 evidence를 펼치지 않고 열을 늘린다. 공용 설명을 빼고 이 명령의 것을 쓴다.
           _arguments ${common:#*verbose*} '--tcp[TCP socket만 봅니다]' '(-u --udp)'{-u,--udp}'[바인드된 UDP socket만 봅니다]' '--unix[unix domain socket만 봅니다]' '--all[TCP와 UDP, unix domain socket을 모두 봅니다]' '--watch[포트 변화 관측]' '(-i --interval)'{-i,--interval}'[관측 간격(초)]:seconds' '--duration[관측 시간]:duration' '(-v --verbose)'{-v,--verbose}'[계정과 descriptor, 큐 열을 함께 엽니다]'
           ;;
+        changes)
+          # changes의 -v는 evidence를 펼치지 않고 표의 모든 줄을 보인다.
+          _arguments ${common:#*verbose*} '--since[볼 시간 범위]:duration' '(-v --verbose)'{-v,--verbose}'[50줄에서 자르지 않고 모두 봅니다]'
+          ;;
         quality)
           _arguments $common '--server[응답성 측정 config URL]:url'
           ;;
@@ -230,13 +234,15 @@ _edc() {
           _arguments '--mode[캡처 방식]:mode:(pcap events)' '--interface[capture할 interface]:interface' '--duration[capture 시간]:duration' '--count[packet 수]:count' '--filter[BPF filter]:filter' '--output[pcap 저장 경로]:path:_files' '--yes[확인 생략]'
           ;;
         trace)
-          _arguments '1:subcommand:(tcp udp dns arp ndp http mysql clickhouse)'
+          _arguments '1:subcommand:(tcp udp dns arp ndp http mysql clickhouse postgres redis)'
           case $words[2] in
             tcp|udp) _arguments '--duration[trace 시간]:duration' '--json[JSON 저장 경로]:path:_files' '--raw[raw event JSONL 출력]' '--live[실시간 event 출력]' '--group-by[그룹 기준]:group:(source target port process event)' '--process[process filter]:process' '--destination[destination filter]:host:port' '(-d --detail)'{-d,--detail}'[연결별 상세 요약]' '--yes[확인 생략]' ;;
             dns) _arguments '--duration[trace 시간]:duration' '--json[JSON 저장 경로]:path:_files' '--raw[raw event JSONL 출력]' '--live[실시간 event 출력]' '--group-by[그룹 기준]:group:(source target process event)' '--process[process filter]:process' '--destination[DNS server filter]:host:port' '--side[DNS 관측 쪽]:side:(client server)' '--yes[확인 생략]' ;;
             http) _arguments '--duration[trace 시간]:duration' '--json[JSON 저장 경로]:path:_files' '--raw[raw event JSONL 출력]' '--live[실시간 event 출력]' '--group-by[그룹 기준]:group:(source target port process event path)' '--process[process filter]:process' '--destination[destination filter]:host:port' '--side[관측 쪽]:side:(client server)' '--payload=-[message 출력, =all은 전체]::mode:(all)' '--show-secrets[가린 header 값 출력]' '--tls=-[OpenSSL HTTPS 평문, =경로는 그 파일만]::path:_files' '--port[HTTP 서버 port]:port' '--yes[확인 생략]' ;;
             mysql) _arguments '--duration[trace 시간]:duration' '--json[JSON 저장 경로]:path:_files' '--raw[raw event JSONL 출력]' '--live[실시간 event 출력]' '--group-by[그룹 기준]:group:(source target port process event)' '--process[process filter]:process' '--destination[destination filter]:host:port' '--side[관측 쪽]:side:(client server)' '--show-secrets[SQL 문자열 출력]' '--port[MySQL 서버 port]:port' '--yes[확인 생략]' ;;
             clickhouse) _arguments '--duration[trace 시간]:duration' '--json[JSON 저장 경로]:path:_files' '--raw[raw event JSONL 출력]' '--live[실시간 event 출력]' '--group-by[그룹 기준]:group:(source target port process event)' '--process[process filter]:process' '--destination[destination filter]:host:port' '--side[관측 쪽]:side:(client server)' '--slow[느린 질의만, 예: 250ms]:duration' '--show-secrets[SQL 문자열 출력]' '--port[ClickHouse native port]:port' '--http-port[ClickHouse HTTP port]:port' '--yes[확인 생략]' ;;
+            postgres) _arguments '--duration[trace 시간]:duration' '--json[JSON 저장 경로]:path:_files' '--raw[raw event JSONL 출력]' '--live[실시간 event 출력]' '--group-by[그룹 기준]:group:(source target port process event)' '--process[process filter]:process' '--destination[destination filter]:host:port' '--side[관측 쪽]:side:(client server)' '--slow[느린 요청만, 예: 250ms]:duration' '--show-secrets[SQL 문자열 출력]' '--port[PostgreSQL 서버 port]:port' '--yes[확인 생략]' ;;
+            redis) _arguments '--duration[trace 시간]:duration' '--json[JSON 저장 경로]:path:_files' '--raw[raw event JSONL 출력]' '--live[실시간 event 출력]' '--group-by[그룹 기준]:group:(source target port process event)' '--process[process filter]:process' '--destination[destination filter]:host:port' '--side[관측 쪽]:side:(client server)' '--slow[느린 명령만, 예: 250ms]:duration' '--show-secrets[인자와 값 preview 출력]' '--port[Redis 서버 port]:port' '--yes[확인 생략]' ;;
             arp|ndp) _arguments '--duration[trace 시간]:duration' '--json[JSON 저장 경로]:path:_files' '--raw[raw event JSONL 출력]' '--live[실시간 event 출력]' '--group-by[그룹 기준]:group:(source target event)' '--destination[IP filter]:ip' ;;
           esac
           ;;
@@ -389,10 +395,11 @@ _edc() {
         COMPREPLY=($(compgen -d -- "$cur"))
       fi ;;
     listen) COMPREPLY=($(compgen -W "$common --tcp --udp --unix --all --watch -i --interval --duration" -- "$cur")) ;;
+    changes) COMPREPLY=($(compgen -W "$common --since" -- "$cur")) ;;
     quality) COMPREPLY=($(compgen -W "$common --server" -- "$cur")) ;;
     capture) COMPREPLY=($(compgen -W "--mode --interface --duration --count --filter --output --yes" -- "$cur")) ;;
     trace)
-      if [[ $COMP_CWORD -eq 2 ]]; then COMPREPLY=($(compgen -W "tcp udp dns arp ndp http mysql clickhouse" -- "$cur")); else COMPREPLY=($(compgen -W "--duration --json --raw --live --group-by --process --destination -d --detail --side --payload --payload=all --show-secrets --tls --port --http-port --yes" -- "$cur")); fi ;;
+      if [[ $COMP_CWORD -eq 2 ]]; then COMPREPLY=($(compgen -W "tcp udp dns arp ndp http mysql clickhouse postgres redis" -- "$cur")); else COMPREPLY=($(compgen -W "--duration --json --raw --live --group-by --process --destination -d --detail --side --payload --payload=all --show-secrets --tls --port --http-port --yes" -- "$cur")); fi ;;
     log)
       if [[ $COMP_CWORD -eq 2 && $cur != -* ]]; then COMPREPLY=($(compgen -W "history" -- "$cur")); return; fi
       if [[ ${COMP_WORDS[2]} == history ]]; then

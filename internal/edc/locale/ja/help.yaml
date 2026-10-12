@@ -63,6 +63,26 @@ command:
       - "root で実行してください。root でなければ一部が skip です。"
       - "ファイアウォールはこのホストだけで、クラウド側は見ません。"
       - "パッケージのバージョンを CVE と照合しません。"
+  changes:
+    summary: "最近のパッケージ、/etc、service の変更 (Linux)"
+    notes:
+      - "dpkg・dnf・yum のログ、/etc の mtime、systemd の unit 状態だけを読みます。"
+      - "何も変更せず、外部へ送信しません。"
+      - "service ごとに最後の起動時刻と再起動回数だけを表示します。"
+      - "/etc はファイルの内容ではなく mtime だけを見ます。"
+      - "圧縮されたログは読まず、警告で知らせます。"
+    option:
+      since: "どこまでさかのぼるか、24h や 90m のような Go の duration"
+      verbose: "最新の 50 件で切らずにすべて表示"
+  events:
+    summary: "カーネルと systemd の障害シグナルを時系列で整理 (Linux)"
+    option:
+      since: "読む期間 (例: 30m、48h)"
+    notes:
+      - "カーネルログと systemd journal だけを読みます。"
+      - "root か adm、systemd-journal グループで実行してください。"
+      - "権限がなければ点検は pass ではなく skip です。"
+      - "Linux でのみ動作します。"
   net:
     summary: "interface、route、ping、trace"
   route:
@@ -149,6 +169,21 @@ command:
       - "-v はアカウントと file descriptor、キューの列を開きます。"
       - "キューは Recv-Q/Send-Q で、TCP listener では accept キューです。"
       - "-v が増やすのは列だけです。行は変わりません。"
+  svc:
+    summary: "systemd service 一つを一画面に (Linux)"
+    notes:
+      - "状態、稼働時間、再起動、process、fd、ソケット、journal のエラーを表示します。"
+      - "読むだけです。unit の起動・停止・reload はしません。"
+      - "systemd のある Linux でのみ動作し、他のホストでは skip です。"
+      - "root で実行してください。root 以外は fd、ソケット所有者、journal が skip。"
+  ctr:
+    summary: "docker container 一つを一画面に (Linux)"
+    notes:
+      - "状態、稼働時間、再起動、process、上限、fd、ソケット、ログのエラーを表示します。"
+      - "読むだけです。container の起動・停止・再起動はしません。"
+      - "docker コマンドと cgroup v2 が必要で、他のホストでは skip です。"
+      - "root で実行してください。root 以外は fd とソケット所有者が skip。"
+      - "systemd だけが持つソケット (socket activation) は一覧に出ません。"
   quality:
     summary: "ネットワークの応答性 (RPM) とスループット"
     option:
@@ -175,7 +210,7 @@ command:
       - "PCAP には credential や個人情報が入ることがあります。"
       - "JSON の redaction は PCAP の payload には効きません。"
   trace:
-    summary: "network、I/O、socket、drop、scheduler を表示・要約"
+    summary: "network、I/O、socket、drop、scheduler、process を表示・要約"
     option:
       duration: "trace 時間、最大 60s。省略で Ctrl-C"
       slow: "最小 latency。例: 20us、250ms。io/sched の既定 1ms"
@@ -186,15 +221,16 @@ command:
       destination: "宛先 host と port で絞る"
       detail: "要約で接続や flow を 1 行ずつ表示"
       yes: "確認を省く"
-      side: "http、mysql、clickhouse は両側、dns は client 側"
+      side: "http と DB の trace は両側、dns は client 側"
       payload: "trace http, socket: 先頭 4 KiB、=all は 1 MiB まで"
-      show_secrets: "http --payload: header。mysql、clickhouse: SQL"
+      show_secrets: "http --payload: header。DB: SQL、redis の値"
       tls: "http: HTTPS 平文、=パス: プログラムまたはライブラリ"
-      port: "http: この port。mysql 3306、clickhouse 9000"
+      port: "http: この port。DB: server の port"
       http_port: "clickhouse: HTTP の port、既定 8123"
       container: "この docker container だけ、名前か ID"
       reason: "trace drop: この理由だけ、カンマ区切り"
       device: "trace io: block device major:minor"
+      signal: "trace exec: 記録する signal。名前の一覧、all、none"
     notes:
       - "terminal では既定で全画面の trace を開きます。"
       - "/ で process、destination、event、source を絞り込みます。"
@@ -211,6 +247,8 @@ command:
       - "trace io は device、process、cgroup、event で行をまとめます。"
       - "trace io の --slow は request latency の下限です。既定は 1ms です。"
       - "trace sched の --slow は span latency の下限です。既定は 1ms です。"
+      - "trace exec は exec、exit、signal を表示し、--signal で絞ります。"
+      - "trace show <raw.jsonl> は保存した --raw の要約を root なしで出します。"
       - "--slow には 20us、500us、2ms のように単位が必要です。数字だけは失敗します。"
       - "グループ画面は event 数を EVENT/s、socket payload traffic を表示します。"
       - "B/s は byte rate、bps と Mbps は bit rate です。Mbps は bps / 1,000,000 です。"
@@ -266,6 +304,26 @@ command:
       - "HTTP 要求を 1 回の write に 2 つ入れると、その接続の対応がずれます。"
       - "docker-proxy 自体の行は表示されません。"
       - "--process clickhouse-serv で server process の行だけにできます。"
+      - "trace postgres は Linux 5.15 以降で平文 PostgreSQL の要求と結果を表示します。"
+      - "両側を表示します。各行は client: または server: で始まります。"
+      - "--port は PostgreSQL server の port です。既定は 5432 です。"
+      - "--slow は応答時間がその値以上の組の行だけを残します。"
+      - "応答時間は要求の最初の message から ReadyForQuery までです。"
+      - "SQL の文字列値は隠します。--show-secrets はその値と error detail を表示します。"
+      - "password、Bind の値、COPY data は表示しません。"
+      - "TLS と GSSAPI の接続は postgres_tls の 1 行だけです。"
+      - "TCP だけを見ます。-h なしの psql は unix socket を使います。"
+      - "大きな結果は境界を失いますが、最後の書き込みの末尾で応答時間を測ります。"
+      - "その時 pipeline の 2 番目の要求があると、両方とも応答なしになります。"
+      - "trace redis は Linux 5.15 以降で平文 Redis のコマンドと応答を表示します。"
+      - "両側を表示します。--port は Redis の port で、既定は 6379 です。"
+      - "--slow は応答時間がその値以上の組の行だけを残します。"
+      - "--show-secrets は引数と値の preview を表示します。password は常に隠します。"
+      - "pub/sub の message と RESP3 の push はコマンドのない redis_push 行です。"
+      - "TLS 接続と unix socket は読みません。"
+      - "非常に大きな array 応答は境界を失い、次のコマンドで合わせ直します。"
+      - "引数の header が capture の外のコマンドだけ truncated とし、組にしません。"
+      - "例: 値 5,000 個の RPUSH。10 KB の SET は値をサイズで飛ばすので組になります。"
       - "trace socket <path> は Linux で stream unix socket ファイルを 1 つ見ます。"
       - "connect、accept、send、recv、eof、close を表示します。SOURCE は相手です。"
       - "client 側の相手は server process です。accept 前は listen した process です。"
@@ -293,6 +351,20 @@ command:
       - "Codex は codex app-server で照会します。"
       - "リセットを検出すると history DB の隣の ai-resets.jsonl に記録します。"
       - "最後に受け取った Claude の値は同じ場所の ai-claude.json に残します。"
+  snapshot:
+    summary: "report diff で比べる host の状態を 1 つの report に保存"
+    option:
+      output: "report ファイル、- は stdout"
+      since: "events と changes が見る期間 (既定 6h)"
+      force: "既存の出力ファイルを置き換える"
+    notes:
+      - "info、listen、audit、events、changes の結果を 1 つの report に保存します。"
+      - "ファイルの権限は 0600 です。アカウント、sudo 規則、process 名を含みます。"
+      - "既定のファイルは ./edc-snapshot-<host>-<UTC 時刻>.json です。"
+      - "既存のファイルは置き換えません。置き換えるには --force を付けます。"
+      - "2 つの snapshot の比較: edc report diff before.json after.json"
+      - "macOS では info.pressure、audit、events、changes が skip です。"
+      - "--redact が隠すのは host 名、ホームのパス、IP アドレスだけです。"
   report:
     summary: "保存した edc 診断結果の表示と比較"
     notes:

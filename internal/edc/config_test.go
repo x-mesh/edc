@@ -379,3 +379,35 @@ func TestLogSupervisionConfigDefaultsAndCLIOverrides(t *testing.T) {
 		}
 	}
 }
+
+func TestConfigAuditTableLoadsValidatesAndSurvivesSetup(t *testing.T) {
+	const table = "[audit]\naccept = [\"net.ip_forward\", \"ctr.root_user\"]\nallow_ports = [5432, 6379]\n"
+	config, err := loadConfigAt(writeTOMLFixture(t, table))
+	if err != nil || !reflect.DeepEqual(config.Audit, auditConfig{Accept: []string{"net.ip_forward", "ctr.root_user"}, AllowPorts: []int{5432, 6379}}) {
+		t.Fatalf("TOML audit = %#v, error = %v", config.Audit, err)
+	}
+	for content, field := range map[string]string{
+		"[audit]\naccept = [\"net.exposd\"]\n":        "audit.accept",
+		"[audit]\naccept = [\"audit.net.exposed\"]\n": "audit.accept",
+		"[audit]\nallow_ports = [0]\n":                "audit.allow_ports",
+		"[audit]\nallow_ports = [70000]\n":            "audit.allow_ports",
+	} {
+		if _, err := loadConfigAt(writeTOMLFixture(t, content)); err == nil || !strings.Contains(err.Error(), field) {
+			t.Errorf("config %q error = %v, want %s", content, err, field)
+		}
+	}
+	legacy, err := loadConfigAt(writeConfigFixture(t, "audit:\n  accept: [kernel.sysctl]\n  allow_ports: [9200]\n"))
+	if err != nil || !reflect.DeepEqual(legacy.Audit, auditConfig{Accept: []string{"kernel.sysctl"}, AllowPorts: []int{9200}}) {
+		t.Fatalf("YAML audit = %#v, error = %v", legacy.Audit, err)
+	}
+
+	path := writeTOMLFixture(t, "lang = \"en\"\n"+table)
+	var output, stderr strings.Builder
+	if code := runSetupWithIO(nil, strings.NewReader(setupMinimalInput("y")), &output, &stderr, true, path); code != 0 {
+		t.Fatalf("setup exit=%d stderr=%q", code, stderr.String())
+	}
+	saved, err := loadConfigAt(path)
+	if err != nil || !reflect.DeepEqual(saved.Audit, config.Audit) {
+		t.Fatalf("setup dropped [audit]: %#v, error = %v", saved.Audit, err)
+	}
+}

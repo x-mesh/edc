@@ -92,6 +92,12 @@ var commandDocs = []commandDoc{
 		usesCommon: true,
 	},
 	{
+		name: "events", group: "diagnose",
+		usage:      []string{"edc events [--since 6h] [options]"},
+		options:    []optionDoc{{"--since 6h", "command.events.option.since"}},
+		usesCommon: true,
+	},
+	{
 		name: "route", group: "host",
 		usage: []string{
 			"edc route check [options]",
@@ -226,6 +232,25 @@ var commandDocs = []commandDoc{
 		usesCommon: true,
 	},
 	{
+		name: "svc", group: "observe",
+		usage:      []string{"edc svc [options] <unit>"},
+		usesCommon: true,
+	},
+	{
+		name: "ctr", group: "observe",
+		usage:      []string{"edc ctr [options] <container>"},
+		usesCommon: true,
+	},
+	{
+		name: "changes", group: "observe",
+		usage: []string{"edc changes [--since 24h] [options]"},
+		options: []optionDoc{
+			{"--since 24h", "command.changes.option.since"},
+			{"-v, --verbose", "command.changes.option.verbose"},
+		},
+		usesCommon: true,
+	},
+	{
 		name: "quality", group: "observe",
 		usage:      []string{"edc quality [options]"},
 		options:    []optionDoc{{"--server <URL>", "command.quality.option.server"}},
@@ -246,7 +271,7 @@ var commandDocs = []commandDoc{
 	},
 	{
 		name: "trace", group: "observe",
-		usage: []string{"edc trace <tcp|udp|dns|arp|ndp|http|drop|mysql|clickhouse|io|sched> [options]", traceSocketUsage},
+		usage: []string{traceProtocolUsage, traceDatabaseUsage, traceSocketUsage, traceShowUsage},
 		options: []optionDoc{
 			{"--duration 15s", "command.trace.option.duration"},
 			{"--slow <duration>", "command.trace.option.slow"},
@@ -266,6 +291,7 @@ var commandDocs = []commandDoc{
 			{"--container <name>", "command.trace.option.container"},
 			{"--reason <names>", "command.trace.option.reason"},
 			{"--device <major:minor>", "command.trace.option.device"},
+			{"--signal <names>", "command.trace.option.signal"},
 			{"--yes", "command.trace.option.yes"},
 		},
 	},
@@ -280,6 +306,17 @@ var commandDocs = []commandDoc{
 			{"--poll 60s", "command.ai.option.poll"},
 			{"--count N", "command.ai.option.count"},
 			{"--json <path|->", "option.json"},
+		},
+	},
+	{
+		name: "snapshot", group: "record",
+		usage: []string{"edc snapshot [--output <file|->] [--since 6h] [--force]", "             [--timeout 15s] [--redact]"},
+		options: []optionDoc{
+			{"--output <file|->", "command.snapshot.option.output"},
+			{"--since 6h", "command.snapshot.option.since"},
+			{"--force", "command.snapshot.option.force"},
+			{"--timeout 15s", "option.timeout"},
+			{"--redact", "option.redact"},
 		},
 	},
 	{

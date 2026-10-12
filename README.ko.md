@@ -201,6 +201,9 @@ Setup wizard는 `edc log`의 저장 경로를 비워두고 실행별 파일을 �
 ./bin/edc listen              # 열려 있는 포트, --unix나 --all로 unix socket 포함
 ./bin/edc listen --watch -i 0.5 --duration 10s
 sudo ./bin/edc audit           # 노출 상태와 설정 점검, 읽기 전용 (Linux)
+sudo ./bin/edc svc nginx       # systemd service 하나를 한 화면에 (Linux)
+./bin/edc changes --since 2h   # 최근 패키지, /etc, service 변경 (Linux)
+sudo ./bin/edc events --since 6h   # 커널과 systemd의 장애 신호를 시간 순서로 정리 (Linux)
 ./bin/edc quality --timeout 60s
 ./bin/edc quality --server https://example.com/.well-known/nq   # 응답성 config URL
 
@@ -233,6 +236,7 @@ source <(./bin/edc completion zsh)
 - `DNS`: `/etc/resolv.conf`의 nameserver와 search domain입니다. 파일이 systemd-resolved stub을 가리키면 실제 upstream 서버를 보여 줍니다.
 - `Pressure`와 `OOM kills since boot`(Linux): CPU, 메모리, I/O의 PSI some avg10과 `/proc/vmstat`의 `oom_kill` counter입니다.
 - 마운트가 읽기 전용이거나 inode 사용률이 80% 이상이면 디스크 줄 끝에 `(read-only)`나 `(inodes N%)`를 붙입니다. macOS의 서명된 system volume은 원래 읽기 전용이므로 표시하지 않습니다.
+- Linux에서는 지워진 파일을 process가 아직 열고 있으면 디스크 줄 끝에 `(deleted-open 12.0 GB in 3 files, java)`도 붙입니다. 이 공간은 `du`에는 보이지 않지만 `df`에는 잡히고, 마지막 process가 파일을 닫아야 풀립니다. edc는 `/proc/<pid>/fd`를 읽어 inode마다 한 번만 세고, 가장 큰 파일을 잡은 process 이름을 적습니다. `-v`는 가장 큰 파일 5개를 PID, process, 경로와 함께 보여 줍니다. root가 아니면 다른 사용자의 파일을 읽지 못해 값이 하한이고 `≥`를 붙입니다. file descriptor 200000개에서 멈춥니다.
 
 `-v`는 시스템 전체의 열린 파일 수, IPv6 기본 경로(Linux), 인터페이스별 MTU·MAC·링크 속도(Linux)·IPv6 주소, 마운트 옵션을 더합니다. 인터페이스는 IPv4 주소나 링크 로컬이 아닌 IPv6 주소를 가진 것만 보여 줍니다.
 
@@ -244,7 +248,7 @@ source <(./bin/edc completion zsh)
 
 메모리나 프로세스 수집에 실패하면 오류를 표시하고 종료 코드 `1`을 반환합니다.
 
-Linux에서는 `edc info`의 `Network Limits`에 conntrack 사용량과 한도, 임시 port 범위와 예약 port, accept/SYN 대기열 한도, socket buffer 상한, 패킷 처리 backlog/budget, neighbor 한도, forwarding과 `rp_filter`를 요약합니다. `-v`는 TCP buffer 설정과 개별 sysctl 이름, 읽지 못한 이유도 표시합니다. 값이 없거나 권한이 부족하면 `unavailable`로 표시하며, macOS에서는 이 항목을 `unsupported`로 표시합니다. 설정값만으로 연결 실패를 판정하지 않습니다.
+Linux에서는 `edc info`의 `Network Limits`에 conntrack 사용량과 한도, `tcp_mem` 상한 대비 TCP memory page와 orphan socket 수, 임시 port 범위와 예약 port, accept/SYN 대기열 한도, socket buffer 상한, 패킷 처리 backlog/budget, neighbor 한도, forwarding과 `rp_filter`를 요약합니다. `-v`는 TCP buffer 설정과 개별 sysctl 이름, 읽지 못한 이유도 표시합니다. 값이 없거나 권한이 부족하면 `unavailable`로 표시하며, macOS에서는 이 항목을 `unsupported`로 표시합니다. 설정값만으로 연결 실패를 판정하지 않습니다.
 
 ### 이름 조회
 
@@ -393,8 +397,14 @@ sudo edc audit --json -         # 점검마다 결과 하나
 | `file.path_writable` | 다른 사용자가 root `PATH`의 디렉터리에 쓸 수 있거나 `PATH`에 상대 경로가 있음 | |
 | `kernel.sysctl` | | 하드닝 값이 권장 값과 다름 |
 | `patch.reboot` | | 패키지가 재부팅을 요구하거나, `/boot`에 실행 중인 것보다 새 커널이 있음 |
+| `ctr.privileged` | edc가 모든 capability를 가져 컨테이너가 privileged임 | |
+| `ctr.docker_sock` | 컨테이너 안의 `/var/run/docker.sock`이나 `/run/docker.sock`이 socket임 | |
+| `ctr.root_user` | | edc가 컨테이너 안에서 UID 0으로 실행됨 |
+| `ctr.host_ns` | 컨테이너가 호스트의 PID namespace를 씀 | |
 
 DB·제어 포트는 2375, 2379, 3306, 5432, 6379, 9200, 10250, 11211, 27017입니다.
+
+`ctr.*` 점검은 컨테이너 안에서만 실행됩니다. 컨테이너인지는 `edc info`와 같은 표식(`KUBERNETES_SERVICE_HOST`, `/.dockerenv`, `/run/.containerenv`)으로 판단하고, 호스트에서는 보고서에 나오지 않습니다. 컨테이너가 호스트의 PID namespace를 쓰면 `ctr.host_ns`는 network namespace도 PID 1의 것과 비교합니다.
 
 root로 실행하세요. root가 아니면 방화벽, `/etc/shadow`, `/etc/sudoers`, 다른 사용자의 홈 디렉터리를 읽지 못합니다. 이 점검은 `pass`가 아니라 `skip`으로 나옵니다.
 
@@ -402,7 +412,142 @@ root로 실행하세요. root가 아니면 방화벽, `/etc/shadow`, `/etc/sudoe
 
 SSH 점검은 `sshd_config`와 `Include`한 파일을 읽고, sshd처럼 처음 나온 값을 씁니다. `Match` 블록은 일부 연결에만 적용되므로 해석하지 않습니다. 실제 적용 값은 `sshd -T`로 확인하세요.
 
+이미 확인한 결과를 받아들이려면 `config.toml`에 `[audit]` 표를 넣으세요.
+
+```toml
+[audit]
+accept = ["net.ip_forward", "user.root_groups"]
+allow_ports = [5432]
+```
+
+`accept`에는 위 표의 점검 이름을 씁니다. `allow_ports`에 넣은 포트는 `net.exposed`가 판정하지 않고 경고로 알립니다. 없는 점검 이름이나 1~65535 밖의 포트가 있으면 설정이 잘못된 것으로 처리됩니다.
+
+받아들인 결과는 보고서에서 사라지지 않습니다. `skip`으로 나오고 요약 앞에 `받아들임 (fail)` 같은 표시가 붙습니다. 표시는 언어 설정을 따릅니다. JSON에서는 `metrics.accepted`가 `true`이고 `metrics.accepted_status`에 원래 상태가 남습니다. 받아들인 결과는 종료 코드를 바꾸지 않습니다.
+
+`sudo edc audit`로 실행하면 root의 설정 파일(예: `/root/.config/edc/config.toml`)을 읽습니다. `[audit]` 표는 그 파일에 넣으세요.
+
 `edc audit`는 패키지 버전을 CVE와 대조하지 않습니다. 파일 시스템 전체를 훑지 않고, 찾은 문제를 고치지도 않습니다.
+
+## 서비스 보기 (Linux)
+
+`edc svc <unit>`은 systemd service 하나를 한 화면에 보여 줍니다. unit 상태, process, fd, 소켓, journal을 읽기만 하고, unit을 시작·중지·reload하지 않습니다.
+
+```bash
+sudo edc svc nginx
+sudo edc svc -v nginx.service   # process 행, fd 행, 소켓, journal 줄 추가
+sudo edc svc --json - nginx     # 보기마다 결과 하나
+```
+
+option은 unit 이름 앞에 둡니다. `nginx`와 `nginx.service`는 같은 unit입니다. 이름에는 영문자, 숫자, `:_.@-`만 쓸 수 있고, `.timer`나 `.socket` 같은 다른 unit 종류는 받지 않습니다.
+
+| 결과 | pass | warn | fail |
+|---|---|---|---|
+| `svc.state` | unit이 active이고 재시작이 없음 | active지만 재시작했거나, 다른 상태임 | unit이 failed이거나 systemd가 unit을 불러오지 못함 |
+| `svc.processes` | unit cgroup의 process를 CPU%, RSS와 함께 보여 줌 | | |
+| `svc.fd` | 모든 process가 soft fd 한계의 80% 미만을 씀 | 한계의 80% 이상을 쓰는 process가 있음 | |
+| `svc.listen` | unit process가 가진 TCP·UDP 소켓을 보여 줌 | | |
+| `svc.journal` | 이 unit의 journal에 오류 줄이 없음 | 오류 줄이 있고, 마지막 5줄을 보여 줌 | |
+
+process 목록은 main process를 맨 앞에 두고 최대 10행까지 보여 줍니다. 개수와 RSS는 unit cgroup의 모든 process를 셉니다.
+
+root로 실행하세요. root가 아니면 다른 사용자의 fd, 소켓 주인, 전체 journal을 읽지 못합니다. 이 결과는 `pass`가 아니라 `skip`으로 나옵니다. process가 없는 unit은 process 관련 결과가 `skip`입니다.
+
+systemd만 쥔 소켓(socket activation)은 unit process의 것이 아니어서 보여 주지 않습니다.
+
+macOS나 systemd가 없는 Linux에서는 `skip` 하나를 내고 0으로 끝납니다. unit이 없으면 오류를 쓰고 1로 끝납니다. `fail` 결과가 있어도 1, 사용법 오류는 2입니다.
+
+## Container 보기 (Linux)
+
+`edc ctr <container>`는 docker container 하나를 한 화면에 보여 줍니다. `edc svc`가 unit을 보여 주는 것과 같습니다. 상태는 `docker inspect`에 묻고, container의 process, fd, 소켓, cgroup 한도를 읽고, `docker logs`의 마지막 줄을 읽습니다. container를 시작·중지·재시작하지 않습니다.
+
+```bash
+sudo edc ctr web
+sudo edc ctr -v 0123456789ab      # process 행, fd 행, 소켓, 로그 줄 추가
+sudo edc ctr --json - web         # 보기마다 결과 하나
+```
+
+이름이나 ID에는 영문자, 숫자, `_.-/`만 쓸 수 있습니다. option은 이름 앞이나 뒤에 둡니다.
+
+| 결과 | pass | warn | fail |
+|---|---|---|---|
+| `ctr.state` | container가 실행 중이고 재시작과 OOM kill이 없음 | 실행 중이지만 재시작했거나, OOM kill됐거나, unhealthy이거나, paused·created·restarting 상태임 | container가 exited이거나 dead임. 요약에 종료 코드를 보여 줌 |
+| `ctr.processes` | container cgroup의 process를 CPU%, RSS와 함께 보여 줌 | | |
+| `ctr.limits` | memory, OOM kill, CPU throttle, pids가 한도 아래임 | memory 사용량이 한도의 90% 이상, 커널이 container의 process를 메모리 부족으로 죽임, CPU 한도가 period의 25% 이상을 throttle함, pids가 한도의 90% 이상 | |
+| `ctr.fd` | 모든 process가 soft fd 한계의 80% 미만을 씀 | 한계의 80% 이상을 쓰는 process가 있음 | |
+| `ctr.listen` | container process가 가진 TCP·UDP 소켓을 보여 줌 | | |
+| `ctr.log` | 마지막 로그 50줄에 오류 줄이 없음 | 오류 줄이 있고, 마지막 5줄을 보여 줌 | |
+
+`ctr.limits`는 container의 cgroup v2를 읽습니다. `memory.current`와 `memory.max`, OOM kill은 `memory.events.local`, throttle된 period는 container가 시작된 뒤의 `cpu.stat`, 그리고 `pids.current`와 `pids.max`입니다. 오류 줄은 `error`, `fatal`, `panic`, `exception`, `traceback`, `oom`이 든 줄입니다. 로그는 `docker logs --tail 50`으로 읽으므로, 다른 곳에 쓰는 container는 오류 줄이 보이지 않습니다.
+
+`ctr.listen`은 edc가 있는 network namespace의 소켓을 읽습니다. 자기 network namespace를 가진 container는 소켓이 그 namespace 안에 있어 보이지 않고, 공개된 port는 `docker-proxy`나 방화벽 규칙의 것입니다. `--network host`인 container는 소켓이 보입니다.
+
+root로 실행하거나, docker 그룹으로 실행하고 fd는 root로 읽으세요. docker daemon에 접근하지 못하면 `skip` 하나를 냅니다. root가 아니면 다른 사용자의 fd와 소켓 주인을 읽지 못해 그 결과가 `skip`으로 나옵니다. 멈춘 container는 process 관련 결과가 `skip`이고 로그는 그대로 보여 줍니다. `docker` 명령과 cgroup v2가 필요합니다. macOS에서는 `skip` 하나를 내고 0으로 끝납니다. container가 없으면 오류를 쓰고 1로 끝납니다.
+
+## 최근 호스트 변경 (Linux)
+
+`edc changes`는 지정한 시간 범위 안에서 Linux 호스트에 일어난 변경을 보여 줍니다. 패키지 로그, `/etc` 아래 파일의 mtime, systemd unit 상태만 읽고, 아무것도 바꾸지 않으며 외부로 보내지 않습니다. 1초 안에 끝납니다.
+
+```bash
+edc changes                     # 최근 24시간
+edc changes --since 2h          # 최근 2시간
+edc changes -v                  # 최근 50건에서 자르지 않고 모두
+edc changes --json -            # 모든 변경을 metrics.events에 담음
+```
+
+원천마다 결과 한 줄을 먼저 출력하고, 이어서 모든 변경을 합친 표를 최근 것부터 출력합니다.
+
+| 결과 | 원천 |
+|---|---|
+| `changes.packages` | `/var/log/dpkg.log`, `/var/log/dnf.rpm.log`, `/var/log/yum.log`와 압축되지 않은 회전 로그 |
+| `changes.etc` | `/etc` 아래 파일과 symlink의 mtime |
+| `changes.services` | service unit마다 마지막 시작 시각과 재시작 횟수 |
+
+부팅이 시간 범위 안에 있으면 표에 `boot` 한 줄이 나옵니다. 부팅 중에 시작한 service는 이 줄로 묶습니다.
+
+원천을 읽지 못하면 결과는 이유와 함께 `skip`입니다. `skip`은 바뀐 것이 없다는 뜻이 아닙니다. 모든 원천을 읽으려면 root로 실행하세요. root가 아니면 `/etc` 아래 일부 디렉터리와 일부 패키지 로그를 읽지 못합니다.
+
+`edc changes`는 회전된 압축 로그를 풀지 않습니다. 압축 로그가 시간 범위 시작보다 새로우면 경고로 알립니다. `/etc`는 파일 내용이 아니라 mtime만 읽으므로 파일 안에서 무엇이 바뀌었는지는 보이지 않습니다. systemd는 unit마다 시작 시각을 하나만 남기므로, 여러 번 재시작한 unit은 마지막 시작 시각과 재시작 횟수로 보입니다. `/etc`는 항목 20000개에서 멈추고 `warn`으로 알립니다. `dnf history`와 `journalctl`은 실행하지 않습니다.
+
+## 커널과 systemd 이벤트 (Linux)
+
+`edc events`는 정한 기간의 커널 로그와 systemd journal을 읽어 장애 신호를 시간 순서로 정리합니다. 아무것도 바꾸지 않고 외부로 보내지 않습니다.
+
+```bash
+sudo edc events                 # 최근 6시간
+sudo edc events --since 48h
+sudo edc events -v              # 결과마다 근거가 된 기록과 시간순 기록 추가
+sudo edc events --json -        # 범주마다 결과 하나
+```
+
+| 결과 | fail | warn |
+|---|---|---|
+| `events.window` | | |
+| `events.oom` | 커널이 메모리 부족으로 프로세스를 죽임 | |
+| `events.disk_io` | 디스크나 파일 시스템이 I/O 오류를 보고함 | |
+| `events.fs_readonly` | 파일 시스템이 읽기 전용으로 바뀌거나 멈춤 | |
+| `events.lockup` | CPU가 soft lockup이나 hard lockup에 머물렀거나, RCU가 stall을 보고했거나, workqueue가 멈춤 | |
+| `events.oops` | 커널이 `BUG`, `Oops`, general protection fault, panic을 보고함 | 커널이 `WARNING`을 냈거나, 기간 안에 oops가 없는데 커널이 `D`, `L`, `M`, `B`로 tainted됨 |
+| `events.link` | 네트워크 링크가 끊긴 뒤 다시 연결되지 않음 | 링크가 끊겼다가 다시 연결됨 |
+| `events.units` | unit의 마지막 기록이 실패 결과임 | unit이 실패한 뒤 재시작했거나 3번 이상 재시작함 |
+| `events.failed_units` | 지금 failed 상태인 unit이 있음. 기간 전에 실패한 unit도 포함 | |
+| `events.journal_errors` | | 기간 안 journal에 오류 줄(priority `err` 이상)이 있음. 근거는 unit별 개수와 가장 많은 unit 10개의 마지막 줄 |
+| `events.segfault` | | 프로세스가 segfault나 general protection fault로 멈춤 |
+| `events.hung_task` | | task가 hung task 한도(기본 120초)보다 오래 막힘 |
+| `events.clock` | | 벽시계가 1초 이상 점프함 |
+
+`events.window`는 기간과 원천을 밝히고, `-v`를 주면 모든 범주의 최근 신호 50개를 시간 순서로 보여 줍니다. 다른 결과는 횟수와 마지막 기록, 최근 기록 20개까지를 보여 줍니다.
+
+`events.failed_units`는 `systemctl list-units --state=failed`로 지금 상태를 묻습니다. 그래서 이틀 전에 실패해 아직 failed인 unit도 기본 6시간 창에서 보입니다. `events.journal_errors`는 기간 안의 `journalctl -p err`를 읽어 `_SYSTEMD_UNIT`으로, unit이 없는 줄은 syslog 이름으로 묶습니다. 커널 줄은 커널 범주가 이미 읽으므로 뺍니다. 오류 줄은 실패가 아니라 단서라 이 결과는 warn입니다. root나 `adm`, `systemd-journal` 그룹이 아니면 journalctl은 자기 기록만 보여 주므로 결과가 `skip`입니다. systemd가 PID 1이 아닌 호스트에서는 `events.failed_units`가 `skip`입니다.
+
+`events.oops`는 `/proc/sys/kernel/tainted`도 읽습니다. `D`, `W`, `L`, `M`, `B` flag는 부팅 뒤 커널에 oops, warning, soft lockup, machine check, bad page가 있었다는 표시라, 그 시각의 로그가 기간 밖이어도 남습니다. 결과는 flag를 근거로 보여 줍니다. `P`, `O`, `E` 같은 module flag는 근거에만 나오고 결과를 바꾸지 않습니다.
+
+커널 신호는 journal의 커널 기록에서 읽습니다. 그 기간에 journal의 커널 기록이 없으면 `/dev/kmsg`를 읽는데, `/dev/kmsg`에는 현재 부팅의 기록만 있습니다. unit과 시계 신호는 journal의 PID 1 기록에서 읽습니다. 시계 점프는 두 기록 사이에서 벽시계와 monotonic 시계가 1초 이상, 그리고 간격의 0.1%보다 크게 다를 때만 셉니다. 그래서 NTP slew는 세지 않습니다.
+
+root나 `adm`, `systemd-journal` 그룹으로 실행하세요. 권한이 없으면 journalctl은 자기 기록만 보여 주고, `kernel.dmesg_restrict`가 `/dev/kmsg`를 막을 수 있습니다. 이때 결과는 `pass`가 아니라 `skip`으로 나옵니다. journalctl이 없으면 `events.units`와 `events.clock`이 `skip`입니다.
+
+journal 기록은 20000개, journal 출력은 32 MiB, `/dev/kmsg` 기록은 100000개까지 읽습니다. 상한에 닿으면 `events.window`가 경고를 냅니다.
+
+`edc events`는 로그 전체를 보여 주지 않습니다. 새 기록을 따라가지 않고, 애플리케이션 로그도 읽지 않습니다.
 
 ## Probe 임계값
 
@@ -424,6 +569,44 @@ SSH 점검은 `sshd_config`와 `Include`한 파일을 읽고, sshd처럼 처음 
 ![edc http check가 HTTP 200으로 PASS를 준 뒤, --expect-status 404가 기대값 불일치로 FAIL을 출력하는 화면](docs/media/http.gif)
 
 두 데모 모두 통과 한 번과 임계값 실패 한 번을 보여 줍니다.
+
+## 장애 snapshot
+
+`edc snapshot`은 이 호스트의 상태를 edc report 하나로 저장합니다. 변경이나 장애 전에 한 번, 후에 한 번 찍고 `edc report diff`로 비교합니다.
+
+읽기만 하는 명령입니다. 출력 파일만 쓰고 호스트의 다른 것은 바꾸지 않습니다. 외부로 아무것도 보내지 않으므로 공인 IP도 조회하지 않습니다.
+
+```bash
+edc snapshot                              # ./edc-snapshot-<host>-<UTC 시각>.json
+sudo edc snapshot --output before.json    # root는 모든 audit와 events 원천을 읽음
+sudo edc snapshot --output after.json
+sudo edc report diff before.json after.json
+edc snapshot --since 2h --output -        # report JSON만 stdout으로
+```
+
+report에는 다음 결과가 들어갑니다.
+
+| 결과 | 내용 |
+|---|---|
+| `info.host` | OS, 커널 release, CPU, uptime, load, swap, 열린 파일 한도 |
+| `info.memory` | 전체, 가용, 사용 메모리. 사용률 90% 이상이면 `warn` |
+| `info.pressure` | PSI some avg10과 부팅 뒤 OOM kill 횟수. PSI 10% 이상이거나 OOM kill이 있으면 `warn` |
+| `info.disk:<mount>` | `edc info`가 보여 주는 mount마다 결과 하나. 사용률 90% 이상, 읽기 전용 mount, inode 사용률 80% 이상, 또는 process가 아직 열고 있는 지워진 파일이 mount의 10% 이상을 잡고 있으면 `warn`. 가장 큰 deleted-open 파일이 근거로 남습니다 |
+| `info.processes` | process와 thread 수, RSS가 큰 process 5개 |
+| `listen` | `edc listen`이 보여 주는 대기 소켓 |
+| `audit.*` | `edc audit`의 점검 |
+| `events.*` | `--since` 기간(기본 6h)의 `edc events` 신호 |
+| `changes.*` | `--since` 기간의 `edc changes` 원천 |
+
+모든 항목은 `--timeout` 예산(기본 15s) 하나 안에서 동시에 돌아갑니다. 예산에 2초를 더해도 끝나지 않은 항목은 이유와 함께 `skip`이 됩니다. `audit`, `events`, `changes`는 점검마다 `skip`을 하나씩 남기므로 `report diff`가 같은 ID끼리 비교합니다. `info.disk`는 mount 목록을 알 수 없어서 `info.disk` skip 하나로 남습니다. 수집기가 실패하면 오류와 함께 `fail`이 됩니다. 어느 항목도 report에서 빠지지 않습니다.
+
+macOS에서는 `audit`, `events`, `changes`, `info.pressure`가 `skip`으로 나옵니다. Linux에서 root가 아니면 일부 audit와 events 원천이 `pass`가 아니라 `skip`으로 나옵니다.
+
+파일에 계정 이름, sudo 규칙, process 이름이 들어가므로 권한은 0600입니다. 출력 경로에 이미 파일이 있으면 바꾸지 않고, 그 자리의 symlink도 따라가지 않습니다. 이때 exit code는 `2`입니다. 바꾸려면 `--force`를 붙이세요. 그러면 새 0600 파일을 쓴 뒤 그 경로로 옮깁니다.
+
+`--redact`는 host 이름, 홈 경로, IP 주소만 가립니다. 기본 파일 이름에서도 host 이름을 뺍니다. 계정 이름, sudo 규칙, process 이름은 report에 그대로 남습니다.
+
+파일을 쓰고 나면 경로, 결과 개수, `report diff` 안내를 출력합니다. `fail` 결과가 하나라도 있으면 exit code는 `1`이고, 없으면 `0`입니다. 사용법 오류와 쓰기 오류는 `2`를 돌려줍니다.
 
 ## Report 비교
 
@@ -613,11 +796,11 @@ interval은 200ms, 500ms, 1s, 2s, 5s, 10s, 30s, 1m 사이를 오갑니다. 일�
 
 macOS에서 `edc`는 Mach `host_processor_info` 호출로 kernel에서 core별 CPU tick을 직접 읽고, Linux에서는 `/proc/stat`을 읽습니다. 두 운영체제 모두 모든 열이 interval을 따릅니다.
 
-Linux에서는 `n` 화면에 conntrack 사용률(`ct%`), listen overflow/s(`listen/s`), softnet drop/s(`soft/s`)를 추가합니다. 아래 패널은 선택한 시점의 conntrack entry, TCP socket 수, listen drop·SYN cookie·conntrack drop·UDP 수신 buffer 오류와 softnet budget 초과의 초당 증가량을 보여 줍니다. `↑`/`↓`로 이전 sample을 보고, `Enter`로 당시 설정을 펼치고, `h`로 최근 60초 최대값을 봅니다. `ct%`는 90%부터 경고, 98%부터 위험으로 표시하며 연결 실패가 확인됐다는 뜻은 아닙니다.
+Linux에서는 `n` 화면에 conntrack 사용률(`ct%`), listen overflow/s(`listen/s`), softnet drop/s(`soft/s`)를 추가합니다. 아래 패널은 선택한 시점의 conntrack entry, TCP socket 수, listen drop·SYN cookie·conntrack drop·UDP 수신 buffer 오류와 softnet budget 초과의 초당 증가량을 보여 줍니다. `tcp_mem` 상한 대비 TCP memory page, orphan socket, TCP memory pressure 진입·메모리 부족 abort·수신 대기열 prune의 초당 증가량도 보여 주고, `/proc/net/dev`에 없는 장치 쪽 drop도 보여 줍니다. 수신 ring이 가득 차 버린 `rx_missed_errors`와 FIFO overrun인 `rx_fifo_errors`, `tx_fifo_errors`를 loopback을 뺀 namespace의 interface 전체로 더한 값입니다. `↑`/`↓`로 이전 sample을 보고, `Enter`로 당시 설정을 펼치고, `h`로 최근 60초 최대값을 봅니다. `ct%`는 90%부터 경고, 98%부터 위험으로 표시하며 연결 실패가 확인됐다는 뜻은 아닙니다.
 
 수집은 현재 network namespace를 기준으로 하지만 softnet 카운터와 TCP TIME_WAIT 수는 host 전체 값일 수 있습니다. TCP `CurrEstab`는 ESTABLISHED와 CLOSE_WAIT를 포함합니다. socket 수는 임시 port 사용률이 아닙니다. 카운터 읽기 실패·초기화·기준점 부재 시 rate는 `—`로 표시합니다. conntrack 상세 통계는 `/proc/net/stat/nf_conntrack`이 노출될 때 수집하며, 없으면 해당 값만 빠집니다.
 
-`--json`의 `network_limits`에는 namespace, 설정(`settings`), 현재값(`gauges`), 누적값(`counters`), 초당 증가량(`rates`)이 들어갑니다. `counters`와 `rates`에는 `tcp_retrans_segs`, `tcp_out_rsts`, `tcp_attempt_fails`도 있습니다. 각 값에는 `status`와 필요한 경우 `reason`이 있으며, 관측하지 못한 숫자는 생략됩니다. 파일에 저장하면 외부 도구로 실행 후 추이를 분석할 수 있습니다.
+`--json`의 `network_limits`에는 namespace, 설정(`settings`), 현재값(`gauges`), 누적값(`counters`), 초당 증가량(`rates`)이 들어갑니다. `counters`와 `rates`에는 `tcp_retrans_segs`, `tcp_out_rsts`, `tcp_attempt_fails`, `tcp_memory_pressures`, `tcp_abort_on_memory`, `tcp_rcv_pruned`, `nic_rx_missed`, `nic_rx_fifo`, `nic_tx_fifo`도 있습니다. `gauges`에는 `tcp_orphans`와 `tcp_memory_pages`가, `settings`에는 `net.ipv4.tcp_mem`이 있습니다. 각 값에는 `status`와 필요한 경우 `reason`이 있으며, 관측하지 못한 숫자는 생략됩니다. 파일에 저장하면 외부 도구로 실행 후 추이를 분석할 수 있습니다.
 
 ## Top 이벤트
 
@@ -1243,6 +1426,7 @@ Linux와 macOS에서 `trace tcp` 또는 `trace udp`를 사용하면 network even
 ./bin/edc trace tcp --duration 15s
 ./bin/edc trace tcp --process slackbot --destination 100.66.11.194:443 --json trace.json
 ./bin/edc trace tcp --raw
+./bin/edc trace show trace.jsonl       # 저장한 --raw 파일의 요약을 root 없이, 어느 호스트에서나
 ./bin/edc trace udp --duration 15s
 ./bin/edc trace udp --group-by target
 ./bin/edc trace udp --group-by source
@@ -1434,6 +1618,10 @@ edc는 port가 아니라 data의 앞부분으로 HTTP를 찾으므로, 어느 po
 
 HTTPS는 암호문이라 method, path, 상태 코드를 읽을 수 없습니다. 연결을 시작할 때 보내는 TLS ClientHello는 평문이므로, edc는 이를 읽어 `tls_hello` event로 보여 줍니다. `target`은 서버 이름(SNI)이고, `alpn` 필드에는 client가 제안한 protocol이 `h2`, `http/1.1`처럼 들어 있습니다. event 행에는 첫 protocol만 표시합니다. ClientHello를 보낸 client는 `client:` 행으로, 받은 로컬 서버는 `server:` 행으로 보입니다. 요약은 이 연결을 별도의 `TLS connections` 표로 세고, JSON에는 `tls_connections`와 `tls`가 붙습니다. port 443의 HTTPS 연결만 보려면 `--port 443`을 씁니다.
 
+서버의 답도 키가 정해지기 전까지는 평문입니다. edc는 ServerHello를 `tls_server_hello` event로 보여 주며 `tls_version`과 `cipher`가 붙습니다. 예를 들어 `TLS1.3 TLS_AES_128_GCM_SHA256`입니다. `latency_ms`는 같은 연결의 ClientHello부터 잰 시간이라, client에서는 network와 서버가, 로컬 서버에서는 서버만 들어갑니다. TLS 1.2 서버는 고른 protocol도 `alpn`에 적습니다. TLS 1.3은 그 선택을 암호문으로 보냅니다. 한쪽이 handshake를 거절하면 alert record를 보냅니다. edc는 평문 alert를 `tls_alert` event로 보여 줍니다. 예를 들어 `fatal handshake_failure from server`, `fatal protocol_version from server`, `fatal unrecognized_name from server`, `fatal unknown_ca from client`입니다. `alert_from`은 보낸 쪽입니다. 요약의 TLS 표에는 `VERSION`과 `ALERTS` 열이, 그 위에는 alert 종류별 수를 적은 `TLS alerts` 줄이 붙고, JSON에는 `versions`, `alerts`, `tls_alerts`가 붙습니다.
+
+TLS 1.3은 ServerHello 뒤의 alert를 암호화할 수 있습니다. OpenSSL은 client가 서버 인증서를 거절하는 alert를 자기 암호화를 켜기 전에 보내므로, `curl`은 TLS 1.3에서도 TLS 1.2에서도 `fatal unknown_ca from client`를 보입니다. alert를 암호화하는 client는 `tls_server_hello` 뒤에 끝나는 연결만 보입니다. edc는 handshake 머리 뒤 방향마다 처음 8번의 읽기와 쓰기에서만 alert를 찾고, program이 5 byte record 머리와 2 byte alert를 두 번에 나눠 읽어도 찾으며, trace 전에 시작한 연결은 보지 못합니다.
+
 trace를 시작하기 전에 맺은 TLS 연결은 보이지 않습니다. client가 Encrypted Client Hello(ECH)를 쓰면 SNI는 서비스 제공자의 공개 이름입니다. HTTPS의 요청을 보려면 `--tls`를 씁니다. TLS를 푸는 곳 뒤의 평문 HTTP를 trace해도 됩니다. 예를 들어 backend로 평문 HTTP를 보내는 proxy가 있으면 그 구간을 봅니다.
 
 `--tls`를 사용하면 HTTPS 안의 HTTP/1.1과 HTTP/2 요청을 볼 수 있습니다. edc는 OpenSSL, GnuTLS, NSS, wolfSSL, Mbed TLS, rustls-ffi, Go TLS 또는 지원하는 BoringSSL 빌드에서 암호화하기 전과 복호화한 뒤의 평문을 읽으므로, 인증서나 key가 필요 없습니다.
@@ -1556,7 +1744,7 @@ Linux 5.15 이상에서 `trace mysql`을 사용하면 평문 MySQL 명령과 결
 
 JSON event에는 `"side": "client"`나 `"side": "server"`가 붙습니다. 한 쪽만 보려면 `--side client`나 `--side server`를 씁니다. 로컬 port가 MySQL port이면 서버 쪽 socket이고, 상대 port가 MySQL port이면 client 쪽 socket입니다.
 
-`--slow <duration>`은 `trace mysql`과 `trace clickhouse`에서만 씁니다. `250ms`, `1.5s` 같은 Go duration 문법을 받습니다. 묶지 않은 대화형 화면에서는 첫 paired response의 latency가 지정 시간 이상인 command 행만 남깁니다. 응답 없는 command, 짝이 없는 response, latency가 없는 response, TLS 행은 제외합니다. raw JSON, 비대화형 출력, 요약, group 보기, `--group-by`, `--side`에는 영향을 주지 않습니다.
+`--slow <duration>`은 `trace mysql`, `trace clickhouse`, `trace postgres`, `trace redis`에서만 씁니다. `250ms`, `1.5s` 같은 Go duration 문법을 받습니다. 묶지 않은 대화형 화면에서는 첫 paired response의 latency가 지정 시간 이상인 command 행만 남깁니다. 응답 없는 command, 짝이 없는 response, latency가 없는 response, TLS 행은 제외합니다. raw JSON, 비대화형 출력, 요약, group 보기, `--group-by`, `--side`에는 영향을 주지 않습니다.
 
 | 보려는 것 | 명령 |
 | --- | --- |
@@ -1704,6 +1892,97 @@ Ctrl-C 뒤의 요약은 쪽, 명령, SQL shape마다 한 행을 보여 줍니다
 - 잃어버린 event나 부분 송신 때문에 packet 경계가 어긋나면 그 연결의 다음 질의가 빠질 수 있습니다. 요약에서 lost event 수를 확인합니다.
 - host에 publish한 port로 보낸 질의는 client 행과 container 안 서버 행으로 보입니다. `docker-proxy` 자체의 행은 나오지 않고, 서버 행의 상대 주소는 Docker bridge gateway입니다. `--process clickhouse-serv`로 서버 process의 행만 남길 수 있습니다.
 
+Linux 5.15 이상에서 `trace postgres`를 사용하면 평문 PostgreSQL 요청과 결과를 발생 즉시 출력합니다. edc는 kernel에서 PostgreSQL port의 TCP 읽기와 쓰기마다 앞부분을 읽습니다. 기본 port는 5432이고, 다른 port는 `--port`로 지정합니다.
+
+```bash
+./bin/edc trace postgres
+./bin/edc trace postgres --side server
+./bin/edc trace postgres --port 6432
+./bin/edc trace postgres --slow 250ms
+./bin/edc trace postgres --group-by process
+./bin/edc trace postgres --show-secrets
+./bin/edc trace postgres --raw
+```
+
+`trace postgres`는 `trace mysql`처럼 두 쪽을 나눠 보여 줍니다. event 행은 `client:`나 `server:`로 시작하고, JSON event에는 `"side": "client"`나 `"side": "server"`가 붙습니다. 한 쪽만 보려면 `--side client`나 `--side server`를 씁니다. `--slow`는 `trace mysql`과 같게 동작합니다.
+
+| 보려는 것 | 명령 |
+| --- | --- |
+| 이 host의 PostgreSQL 전부 | `./bin/edc trace postgres` |
+| 로컬 서버가 받은 요청 | `./bin/edc trace postgres --side server` |
+| port 6432의 PostgreSQL | `./bin/edc trace postgres --port 6432` |
+| 250ms 이상 걸린 paired 요청 | `./bin/edc trace postgres --slow 250ms` |
+| 가리지 않은 SQL 원문 | `./bin/edc trace postgres --show-secrets` |
+
+요청은 아래 event 중 하나입니다. 필드는 JSON event의 `postgres` 객체에 들어 있습니다.
+
+- `postgres_connect`는 로그인입니다. `user`와 `database`가 있습니다.
+- `postgres_query`는 요청 단위 하나입니다. `command`는 `query`, `prepare`, `execute`, `function` 중 하나입니다.
+- `query`는 simple Query message 하나이고 `sql`이 있습니다.
+- `prepare`와 `execute`는 Sync로 끝나는 extended batch이고 `sql`, `statement`, `executes`가 있습니다.
+
+응답은 아래 event 중 하나입니다.
+
+- `postgres_result`에는 CommandComplete의 `tag`(예: `SELECT 3`)와 `rows`가 있습니다. 로그인의 응답에는 `server_version`이 있습니다.
+- `postgres_error`에는 `severity`, `sql_state`, `message`가 있습니다.
+
+응답 event에는 답한 요청의 `command`와 `sql`이 함께 들어 있습니다. `postgres_tls`는 요청이 아닙니다. 그 연결이 TLS나 GSSAPI로 암호화되었다는 뜻이고, edc는 그 연결을 더 읽지 않습니다.
+
+응답 시간은 요청 단위의 첫 message부터 ReadyForQuery까지입니다. client 쪽 응답 시간에는 network가 들어가고, 서버 쪽 응답 시간에는 서버의 처리와 결과 쓰기만 들어갑니다.
+
+기본으로 SQL의 문자열 상수와 dollar quote 본문은 `?`로 바꿉니다. `--show-secrets`를 쓰면 보낸 SQL 그대로와 오류의 `detail`을 보입니다. password, SASL data, Bind parameter 값, COPY data, function call 인자는 `--show-secrets`를 써도 표시하지 않습니다. 오류의 `message`는 가리지 않으므로, 공유하기 전에 값이 들어 있는지 확인하세요.
+
+Ctrl-C 뒤의 요약은 쪽, 명령, SQL shape마다 한 행을 씁니다. `--group-by`를 쓰면 행에 `CMD`, `RSP`, `ERR`, `NOANS`, `AVGms`, `MAXms`가 나옵니다.
+
+`trace postgres`에는 다음 제한이 있습니다.
+
+- TLS와 GSSAPI 암호화는 읽지 않습니다. 암호화한 연결마다 `postgres_tls` 행 하나만 나옵니다.
+- TCP만 봅니다. unix socket 연결은 보이지 않습니다. `-h` 없는 `psql`은 unix socket을 쓰므로, 시험할 때는 `psql -h 127.0.0.1`을 씁니다.
+- 응답 쓰기나 읽기마다 앞 4 KiB만 남깁니다. 서버는 큰 결과를 8 KiB씩 나눠 쓰므로 message 경계를 잃습니다.
+- 큰 결과에서는 응답 쓰기나 읽기마다 끝 256 byte도 남깁니다. 그 byte가 온전한 CommandComplete나 ErrorResponse와 ReadyForQuery로 끝나고 기다리는 요청이 하나면 그 시각에 그 요청을 닫습니다. tag와 오류 field는 그 byte에서, `rows`는 `SELECT`나 `FETCH` tag에서 읽습니다.
+- DataRow도 ReadyForQuery와 같은 6 byte로 끝날 수 있어서 그 6 byte만으로는 닫지 않습니다. ErrorResponse가 끝 256 byte보다 길면 그 요청은 응답 없음으로 셉니다.
+- 경계를 잃을 때 기다리던 요청이 둘 이상이면 짐작하지 않고 응답 없음으로 셉니다. 다음 요청부터 다시 짝을 찾습니다.
+- 읽기의 끝이 첫 buffer 밖에 있으면 그 읽기의 끝부분은 남기지 않습니다. 쓰기의 끝부분은 마지막 buffer에서만 읽습니다.
+- 연결 중간에 trace를 시작하면 그 연결의 `postgres_connect`가 없습니다. edc는 다음 요청에서 경계를 찾습니다.
+- event의 SQL은 1,024 byte까지 보이고, 잘랐으면 `sql_truncated`가 true입니다.
+
+Linux 5.15 이상에서 `trace redis`를 사용하면 평문 Redis 명령과 응답을 발생 즉시 출력합니다. edc는 kernel에서 Redis port의 TCP 읽기와 쓰기마다 앞부분을 읽습니다. 기본 port는 6379이고, 다른 port는 `--port`로 지정합니다.
+
+```bash
+./bin/edc trace redis
+./bin/edc trace redis --side server
+./bin/edc trace redis --port 6380
+./bin/edc trace redis --slow 5ms
+./bin/edc trace redis --group-by process
+./bin/edc trace redis --show-secrets
+./bin/edc trace redis --raw
+```
+
+`trace redis`도 `trace mysql`처럼 두 쪽을 나눠 보여 주고, event 행은 `client:`나 `server:`로 시작합니다. `--slow`는 `trace mysql`과 같게 동작합니다.
+
+JSON event의 `redis` 객체에는 아래 event의 필드가 들어 있습니다.
+
+- `redis_command`는 명령입니다. `command`, `key`, `args`가 있습니다. pipeline은 명령마다 event 하나를 냅니다.
+- `redis_reply`는 가장 오래 기다린 명령의 응답입니다. 응답 종류인 `reply`와 `elements`나 `bulk_length`가 있습니다.
+- `redis_error`는 오류 응답입니다. `error_class`(예: `WRONGTYPE`)가 있습니다.
+- `redis_push`는 pub/sub message나 RESP3 push입니다. 어느 명령의 응답도 아닙니다.
+
+edc는 한 연결의 명령과 응답을 순서대로 짝짓습니다. MULTI 안의 명령은 `queued` 응답을 받고, EXEC의 응답은 결과 array입니다. 응답 시간은 명령이 도착한 때부터 그 응답이 도착한 때까지입니다. pipeline에서는 한 번에 쓴 명령들이 시작 시각을, 한 번에 쓴 응답들이 끝 시각을 함께 씁니다.
+
+기본으로 인자 값, 응답 값, 오류 message는 표시하지 않습니다. `--show-secrets`를 쓰면 그 값의 짧은 preview를 보입니다. key 이름은 두 경우 모두 보입니다. AUTH, HELLO, MIGRATE, CONFIG GET, CONFIG SET, ACL, SENTINEL의 값은 `--show-secrets`를 써도 표시하지 않습니다.
+
+Ctrl-C 뒤의 요약은 쪽과 명령 이름마다 한 행을 쓰고, 명령 수, 오류 수, 응답 없는 명령 수, 평균과 최대 응답 시간을 보입니다.
+
+`trace redis`에는 다음 제한이 있습니다.
+
+- TLS는 읽지 않습니다. TLS 연결에서는 RESP 경계를 찾지 못해 event가 나오지 않습니다.
+- TCP만 봅니다. unix socket 연결은 보이지 않습니다.
+- 요청은 앞 4 KiB, 응답 쓰기나 읽기는 앞 1 KiB만 남깁니다. 5,000개 항목의 `LRANGE`처럼 아주 큰 array 응답은 경계를 잃습니다. 그 명령은 응답 없음으로 세고, 다음 명령에서 경계를 다시 맞춥니다.
+- bulk 값은 크기만큼 건너뛰므로 10 KB `SET`도 응답과 짝을 찾습니다. 5,000개 값을 넣는 `RPUSH`처럼 인자 header가 캡처 밖에 있는 명령은 `truncated: true`로 표시하고 응답과 짝짓지 않습니다.
+- `CLIENT REPLY OFF`나 `CLIENT REPLY SKIP` 뒤에는 서버가 답하지 않습니다. 이 명령에는 `no_reply: true`가 붙고, 응답 없음으로 세지 않습니다.
+- PSYNC나 SYNC 뒤의 복제 흐름은 응답으로 읽지 않습니다. replica는 master에 1초마다 `REPLCONF ACK`를 보냅니다. master에서 `--side server`로 보면 replica마다 1초에 하나씩 `no_reply: true`인 `REPLCONF ACK`가 보입니다.
+- 연결 중간에 trace를 시작하면 다음 명령에서 경계를 찾습니다.
+
 Linux에서 `trace socket`을 사용하면 unix domain socket 파일 하나에서 일어나는 일을 출력합니다. socket 파일의 경로를 지정하면 그 socket의 connect, accept, send, recv, data 끝(`eof`), close를 표시합니다. option은 경로 앞이나 뒤에 씁니다.
 
 ```bash
@@ -1733,6 +2012,21 @@ Linux에서 `trace drop`을 사용하면 kernel이 패킷을 버린 이유를 �
 kernel은 정상 동작 중에도 패킷을 해제합니다. 예를 들어 program이 읽지 않은 data가 남은 socket을 닫으면 `QUEUE_PURGE`나 `TCP_ABORT_ON_DATA`가 나옵니다. 이런 버림도 program이 data를 읽지 않았다는 뜻이라 함께 보여 줍니다.
 
 요약의 이유별 합계는 정확합니다. 한 CPU에서 1초에 1,000건이 넘게 버려지면 그 1초 동안은 event를 1,000건만 보내고 나머지는 세기만 합니다. 이 수는 요약에 `Sampled out`으로 나옵니다. process는 socket이 있는 패킷에만 붙습니다. 닫힌 port로 온 패킷에는 socket이 없습니다.
+
+Linux에서 `trace exec`를 사용하면 process가 뜨고 끝나는 것, 그리고 누가 신호를 보냈는지 볼 수 있습니다. `exec` event는 PID, 부모, 사용자, 명령줄의 처음 256 byte를 보여 줍니다. `exit` event는 종료 코드, process를 끝낸 신호, core dump 여부, 산 시간을 보여 줍니다. 산 시간은 task의 시작 시각에서 재므로 trace 전에 뜬 process에도 나옵니다. `signal` event는 신호, 보낸 쪽, 받는 쪽, kernel이 전달했는지 무시했는지를 보여 줍니다.
+
+```bash
+./bin/edc trace exec --duration 15s
+./bin/edc trace exec --process cron,sh --group-by parent
+./bin/edc trace exec --signal all --raw
+./bin/edc trace exec --group-by event --json exec.json
+```
+
+요약은 process 이름으로 행을 묶습니다. exec 수, exit 수, 0이 아닌 코드로 끝난 수, 신호로 끝난 수, 1초를 못 살고 끝난 수를 세고 평균과 가장 긴 수명을 보여 줍니다. `EXEC`와 `SHORT`가 함께 높으면 짧은 process가 쏟아지는 것입니다. 예를 들어 1초마다 shell을 띄우는 health check가 그렇습니다. 누가 띄우는지는 `--group-by parent`로 봅니다. 두 번째 표는 신호를 보낸 쪽과 받는 쪽으로 묶습니다. 결과 뒤의 `(kernel)`은 kernel이 만든 신호라는 뜻입니다. 예를 들어 fault 뒤의 `SIGSEGV`나 OOM killer의 `SIGKILL`이고, 이때 보낸 쪽은 그 순간 실행 중이던 process입니다.
+
+기본으로는 process를 끝내거나 core를 남기는 신호만 기록합니다. `HUP`, `INT`, `QUIT`, `ILL`, `TRAP`, `ABRT`, `BUS`, `FPE`, `KILL`, `USR1`, `SEGV`, `USR2`, `PIPE`, `TERM`, `STKFLT`, `XCPU`, `XFSZ`, `SYS`입니다. `CHLD`나 `ALRM`처럼 늘 오가는 신호는 뺍니다. `--signal`에 쉼표로 나눈 이름이나 번호, `all`, `none`을 줍니다. 필터가 버린 신호 수는 요약의 `filtered_signals`에 나옵니다. `--process`는 이름이나 PID를 받고, 신호는 받는 쪽으로 맞춥니다. `--container`는 container 하나의 event만 남깁니다.
+
+명령줄은 exec 시점에 새 process의 메모리에서 읽으므로 program이 받은 인자이고, 나중에 바뀐 값은 아닙니다. 읽지 못하면 실행 파일 경로를 보여 줍니다. 256 byte보다 긴 줄은 `…`로 끝나고 `args_truncated`에 셉니다. 스레드의 종료는 `exit` event가 아니고, process의 마지막 스레드만 `exit`를 냅니다. kernel thread는 보이지 않습니다. `sched_process_exec`, `sched_process_exit`, `signal_generate` tracepoint와 BTF가 필요합니다.
 
 kernel이 모든 버림을 이유와 함께 알리지는 않습니다. 예를 들어 listen socket의 accept 대기열이 가득 차면 kernel은 SYN을 정상 패킷처럼 해제합니다. 이 경우를 위해 요약에는 trace 동안 `/proc/net/netstat`의 `ListenOverflows`와 `ListenDrops`가 늘어난 수가 나옵니다. 이 값은 edc가 있는 network namespace의 모든 listen socket을 합한 것이라, `--container`를 써도 container만의 값이 아닙니다.
 

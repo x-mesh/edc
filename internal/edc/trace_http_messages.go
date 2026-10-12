@@ -48,7 +48,11 @@ const httpSplitLimit = 1024
 type httpSplitStarts map[httpStreamKey]httpPacket
 
 func tlsHandshakeComplete(payload []byte) bool {
-	if len(payload) < tlsHandshakeHeaderSize || payload[0] != tlsClientHelloType {
+	// alert는 BPF가 0x15, level, description을 머리 모양으로 넘기고 본문이 없다.
+	if len(payload) >= 3 && payload[0] == tlsAlertRecord {
+		return true
+	}
+	if len(payload) < tlsHandshakeHeaderSize || (payload[0] != tlsClientHelloType && payload[0] != tlsServerHelloType) {
 		return false
 	}
 	length := int(payload[1])<<16 | int(payload[2])<<8 | int(payload[3])
@@ -142,8 +146,8 @@ func (messages *httpMessages) add(packet httpPacket, clockOffset int64, now time
 	if !ok {
 		return done
 	}
-	// BPF는 ClientHello 뒤의 암호문을 따라가지 않으므로 message를 열어 두지 않는다.
-	if event.Event == traceTLSHelloEvent {
+	// BPF는 handshake 머리 뒤의 암호문을 따라가지 않으므로 message를 열어 두지 않는다.
+	if tlsHandshakeEvent(event.Event) {
 		return append(done, event)
 	}
 	// 반대쪽 message도 끝내서 요청 event가 응답 event보다 먼저 나오게 한다. 1xx는 중간 응답이라, 요청 본문이 아직

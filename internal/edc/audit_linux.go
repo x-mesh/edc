@@ -28,6 +28,7 @@ func hostAuditSources() (auditSources, bool) {
 			}
 			return stat.Uid, true
 		},
+		container: linuxContainer("/", os.Getenv("KUBERNETES_SERVICE_HOST") != ""),
 	}, true
 }
 

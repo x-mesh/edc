@@ -8,9 +8,13 @@ import (
 	"strings"
 )
 
-func collectNetworkHealth() *networkHealth { return collectLinuxNetworkHealth("/proc") }
+func collectNetworkHealth() *networkHealth { return collectLinuxNetworkHealth("/proc", "/sys") }
 
-func collectLinuxNetworkHealth(procRoot string) *networkHealth {
+// networkNICCounters는 /sys/class/net/<iface>/statistics에서 더하는 장치 쪽 drop이다. rx_missed_errors는 ring이 가득 차
+// 장치가 버린 패킷이고, fifo는 FIFO overrun이다. /proc/net/dev의 drop 열은 커널 쪽 rx_dropped라 이 둘을 담지 않는다.
+var networkNICCounters = map[string]string{"nic_rx_missed": "rx_missed_errors", "nic_rx_fifo": "rx_fifo_errors", "nic_tx_fifo": "tx_fifo_errors"}
+
+func collectLinuxNetworkHealth(procRoot, sysRoot string) *networkHealth {
 	health := &networkHealth{Supported: true, Scope: "current network namespace", Settings: make(map[string]networkReading), Gauges: make(map[string]networkReading), Counters: make(map[string]networkReading)}
 	if namespace, err := os.Readlink(filepath.Join(procRoot, "self/ns/net")); err == nil {
 		health.Scope = namespace
@@ -25,7 +29,7 @@ func collectLinuxNetworkHealth(procRoot string) *networkHealth {
 			text := strings.Join(strings.Fields(string(data)), " ")
 			if number, ok := parseNetworkUint(text, 10); ok {
 				value = networkNumber(number)
-			} else if name == "net.ipv4.ip_local_reserved_ports" || name == "net.ipv4.ip_local_port_range" || name == "net.ipv4.tcp_rmem" || name == "net.ipv4.tcp_wmem" {
+			} else if name == "net.ipv4.ip_local_reserved_ports" || name == "net.ipv4.ip_local_port_range" || name == "net.ipv4.tcp_rmem" || name == "net.ipv4.tcp_wmem" || name == "net.ipv4.tcp_mem" {
 				if text == "" {
 					text = "none"
 				}
@@ -44,7 +48,7 @@ func collectLinuxNetworkHealth(procRoot string) *networkHealth {
 		}
 	}
 	for path, fields := range map[string]map[string]string{
-		"net/netstat": {"listen_overflows": "TcpExt.ListenOverflows", "listen_drops": "TcpExt.ListenDrops", "syn_cookies_sent": "TcpExt.SyncookiesSent"},
+		"net/netstat": {"listen_overflows": "TcpExt.ListenOverflows", "listen_drops": "TcpExt.ListenDrops", "syn_cookies_sent": "TcpExt.SyncookiesSent", "tcp_memory_pressures": "TcpExt.TCPMemoryPressures", "tcp_abort_on_memory": "TcpExt.TCPAbortOnMemory", "tcp_rcv_pruned": "TcpExt.RcvPruned"},
 		"net/snmp":    {"udp_rcvbuf_errors": "Udp.RcvbufErrors", "udp_sndbuf_errors": "Udp.SndbufErrors", "tcp_established": "Tcp.CurrEstab", "tcp_retrans_segs": "Tcp.RetransSegs", "tcp_out_rsts": "Tcp.OutRsts", "tcp_attempt_fails": "Tcp.AttemptFails"},
 	} {
 		data, err := read(path)
@@ -62,7 +66,7 @@ func collectLinuxNetworkHealth(procRoot string) *networkHealth {
 		}
 	}
 	data, err = read("net/sockstat")
-	for _, name := range []string{"tcp_inuse", "tcp_time_wait"} {
+	for _, name := range []string{"tcp_inuse", "tcp_time_wait", "tcp_orphans", "tcp_memory_pages"} {
 		health.Gauges[name] = networkReadError(err)
 	}
 	if err == nil {
@@ -72,12 +76,16 @@ func collectLinuxNetworkHealth(procRoot string) *networkHealth {
 				continue
 			}
 			for i := 1; i+1 < len(fields); i += 2 {
-				name := map[string]string{"inuse": "tcp_inuse", "tw": "tcp_time_wait"}[fields[i]]
+				// mem은 page 단위다. tcp_mem의 세 값과 같은 단위라 그대로 비교한다.
+				name := map[string]string{"inuse": "tcp_inuse", "tw": "tcp_time_wait", "orphan": "tcp_orphans", "mem": "tcp_memory_pages"}[fields[i]]
 				if number, ok := parseNetworkUint(fields[i+1], 10); name != "" && ok {
 					health.Gauges[name] = networkNumber(number)
 				}
 			}
 		}
+	}
+	for name, value := range collectLinuxNICCounters(filepath.Join(sysRoot, "class/net")) {
+		health.Counters[name] = value
 	}
 	for path, columns := range map[string]map[string]string{
 		"net/softnet_stat":      {"softnet_dropped": "1", "softnet_time_squeeze": "2"},
@@ -94,6 +102,50 @@ func collectLinuxNetworkHealth(procRoot string) *networkHealth {
 		}
 	}
 	return health
+}
+
+// collectLinuxNICCounters는 loopback을 뺀 모든 interface의 장치 쪽 drop을 더한다. 현재 namespace의 interface만 보인다.
+// interface가 하나도 없거나 디렉터리를 읽지 못하면 unavailable이다. 한 interface의 파일을 읽지 못하면 그 값은 unavailable이다.
+func collectLinuxNICCounters(classNet string) map[string]networkReading {
+	result := map[string]networkReading{}
+	entries, err := os.ReadDir(classNet)
+	if err != nil {
+		for name := range networkNICCounters {
+			result[name] = networkReadError(err)
+		}
+		return result
+	}
+	for name, file := range networkNICCounters {
+		var total uint64
+		interfaces := 0
+		var failure error
+		for _, entry := range entries {
+			if entry.Name() == "lo" {
+				continue
+			}
+			data, err := os.ReadFile(filepath.Join(classNet, entry.Name(), "statistics", file))
+			if err != nil {
+				failure = err
+				continue
+			}
+			number, ok := parseNetworkUint(strings.TrimSpace(string(data)), 10)
+			if !ok {
+				failure = os.ErrInvalid
+				continue
+			}
+			total += number
+			interfaces++
+		}
+		switch {
+		case failure != nil:
+			result[name] = networkReadError(failure)
+		case interfaces == 0:
+			result[name] = networkUnavailable("no interface")
+		default:
+			result[name] = networkNumber(total)
+		}
+	}
+	return result
 }
 
 func networkReadError(err error) networkReading {

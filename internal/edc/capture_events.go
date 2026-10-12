@@ -65,8 +65,19 @@ type captureEvent struct {
 	MySQL *traceMySQLEvent `json:"mysql,omitempty"`
 	// ClickHouse는 ClickHouse event에만 붙는다. 응답에는 답한 요청의 명령과 SQL도 들어 있다.
 	ClickHouse *traceClickHouseEvent `json:"clickhouse,omitempty"`
-	// ALPN은 tls_hello event에만 붙는다. client가 ClientHello로 제안한 protocol이고, 서버가 고른 것은 암호문이라 모른다.
+	// Postgres는 PostgreSQL event에만 붙는다. 응답에는 답한 요청 단위의 명령과 SQL도 들어 있다.
+	Postgres *tracePostgresEvent `json:"postgres,omitempty"`
+	// Redis는 Redis event에만 붙는다. 응답에는 답한 명령과 key도 들어 있다.
+	Redis *traceRedisEvent `json:"redis,omitempty"`
+	// ALPN은 tls_hello에서는 client가 ClientHello로 제안한 protocol이고, tls_server_hello에서는 TLS 1.2 서버가 고른 protocol이다.
+	// TLS 1.3은 고른 protocol을 암호문으로 보내므로 모른다.
 	ALPN []string `json:"alpn,omitempty"`
+	// TLSVersion과 Cipher는 tls_server_hello에 붙는다. 서버가 고른 version과 cipher suite다.
+	TLSVersion string `json:"tls_version,omitempty"`
+	Cipher     string `json:"cipher,omitempty"`
+	// Alert는 tls_alert의 "fatal handshake_failure"처럼 level과 description이고, AlertFrom은 alert를 보낸 쪽이다.
+	Alert     string `json:"alert,omitempty"`
+	AlertFrom string `json:"alert_from,omitempty"`
 	// TLS는 trace http --tls가 OpenSSL에서 읽은 평문 event다. socket을 모르는 평문은 Source와 Destination이 비어 있다.
 	TLS bool `json:"tls,omitempty"`
 	// Payload는 trace http --payload일 때만 붙는 message 앞부분이다. 제어 문자를 이미 \xNN으로 바꿔 두어서
@@ -90,7 +101,10 @@ type captureEvent struct {
 	Transport string `json:"transport,omitempty"`
 	// Side는 DNS event에서는 로컬 DNS 서버가 받은 질의와 보낸 응답에만 server로 붙는다. HTTP와 socket event에는 client나
 	// server로 붙는다.
-	Side       string `json:"side,omitempty"`
+	Side string `json:"side,omitempty"`
+	// Socket은 --raw 출력에만 붙는 연결 번호다. 같은 socket의 event는 같은 번호를 받고, trace show가 이 번호로 다시 묶는다.
+	// kernel 주소인 SocketID는 밖에 내지 않는다.
+	Socket     uint64 `json:"socket,omitempty"`
 	LostEvents uint64 `json:"lost_events,omitempty"`
 	// answered는 응답이 답한 요청 수다. DNS는 응답 전에 같은 질의를 다시 보냈으면 1보다 크다.
 	answered uint64

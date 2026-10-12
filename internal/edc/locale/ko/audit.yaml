@@ -1,5 +1,6 @@
 # audit 명령의 한국어 메시지.
 audit:
+  accepted: "받아들임 (%s): %s"
   skip:
     linux_only: "audit는 Linux에서만 동작합니다"
     needs_root: "%s를 읽으려면 root가 필요합니다"
@@ -17,6 +18,7 @@ audit:
     firewall_drops: "%s: 규칙에 맞지 않는 트래픽 차단 (input chain %d개, 규칙 %d개)"
     firewall_rules: "%s: 기본 허용, input 규칙 %d개 (규칙 순서는 해석하지 않음)"
     firewall_open: "%s에 input 규칙이 없어 들어오는 트래픽을 모두 허용합니다"
+    allowed_ports: "설정의 allow_ports가 %s를 허용합니다"
     forward_off: "IP forwarding 꺼짐"
     forward_container: "IP forwarding 켜짐 (%s가 사용)"
     forward_on: "IP forwarding이 켜져 있는데 컨테이너 런타임을 찾지 못했습니다"
@@ -52,6 +54,17 @@ audit:
     reboot_kernel: "커널 %s가 설치되어 있는데 %s로 실행 중입니다"
     reboot_ok: "실행 중인 커널 %s가 설치된 것 중 최신"
     reboot_none: "재부팅 요청 없음"
+  ctr:
+    privileged: "edc가 모든 capability를 가집니다. %s container가 privileged입니다 (CapEff %s)"
+    caps_limited: "container가 일부 capability를 뺐습니다 (CapEff %s)"
+    sock_mounted: "%s가 마운트되어 있어 container가 호스트 docker daemon을 조작할 수 있습니다"
+    sock_none: "마운트된 docker socket 없음"
+    root_user: "edc가 %s container 안에서 UID 0으로 실행 중입니다"
+    user_ok: "edc가 UID %d로 실행 중"
+    own_pid: "container가 자신의 PID namespace를 씁니다 (%s). network namespace는 비교하지 않았습니다"
+    host_pid: "container가 호스트 PID namespace를 같이 씁니다"
+    host_pid_net: "container가 호스트 PID namespace와 network namespace를 같이 씁니다"
+    net_unknown: "%s를 읽지 못해 network namespace를 비교하지 않았습니다 (%s)"
   evidence:
     sockets: "소켓"
     files: "파일"

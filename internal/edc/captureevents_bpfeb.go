@@ -202,7 +202,7 @@ type captureEventsTlsPrefix struct {
 	Bytes    [9]uint8
 	Count    uint8
 	Terminal uint8
-	_        [1]byte
+	After    uint8
 	Offset   uint32
 	HelloEnd uint32
 }
@@ -297,6 +297,7 @@ const (
 	captureEventsProgTcpRecvmsgEntry           = "tcp_recvmsg_entry"
 	captureEventsProgTcpRecvmsgExit            = "tcp_recvmsg_exit"
 	captureEventsProgTcpRecvmsgExitLegacy      = "tcp_recvmsg_exit_legacy"
+	captureEventsProgTcpRecvmsgExitShort       = "tcp_recvmsg_exit_short"
 	captureEventsProgTcpRetransmitSkb          = "tcp_retransmit_skb"
 	captureEventsProgTcpSendLength             = "tcp_send_length"
 	captureEventsProgTcpSendReset              = "tcp_send_reset"
@@ -308,6 +309,7 @@ const (
 	captureEventsProgUdpV6SendSkbEntry         = "udp_v6_send_skb_entry"
 	captureEventsProgUdpV6SendSkbExit          = "udp_v6_send_skb_exit"
 	captureEventsVarClickhouseHttpPort         = "clickhouse_http_port"
+	captureEventsVarEmitAllTcpDestroys         = "emit_all_tcp_destroys"
 	captureEventsVarEmitDnsSent                = "emit_dns_sent"
 	captureEventsVarEmitDnsServer              = "emit_dns_server"
 	captureEventsVarEmitDnsTcpMessages         = "emit_dns_tcp_messages"
@@ -319,6 +321,7 @@ const (
 	captureEventsVarHttpPort                   = "http_port"
 	captureEventsVarMysqlPort                  = "mysql_port"
 	captureEventsVarMysqlResponseSize          = "mysql_response_size"
+	captureEventsVarMysqlTailSize              = "mysql_tail_size"
 	captureEventsVarTcpLengthFallback          = "tcp_length_fallback"
 	captureEventsVarTcpStatePort               = "tcp_state_port"
 	captureEventsVarUnusedHttpRecord           = "unused_http_record"
@@ -414,6 +417,7 @@ type captureEventsProgramSpecs struct {
 	TcpRecvmsgEntry           *ebpf.ProgramSpec `ebpf:"tcp_recvmsg_entry"`
 	TcpRecvmsgExit            *ebpf.ProgramSpec `ebpf:"tcp_recvmsg_exit"`
 	TcpRecvmsgExitLegacy      *ebpf.ProgramSpec `ebpf:"tcp_recvmsg_exit_legacy"`
+	TcpRecvmsgExitShort       *ebpf.ProgramSpec `ebpf:"tcp_recvmsg_exit_short"`
 	TcpRetransmitSkb          *ebpf.ProgramSpec `ebpf:"tcp_retransmit_skb"`
 	TcpSendLength             *ebpf.ProgramSpec `ebpf:"tcp_send_length"`
 	TcpSendReset              *ebpf.ProgramSpec `ebpf:"tcp_send_reset"`
@@ -464,6 +468,7 @@ type captureEventsMapSpecs struct {
 // It can be passed ebpf.CollectionSpec.Assign.
 type captureEventsVariableSpecs struct {
 	ClickhouseHttpPort *ebpf.VariableSpec `ebpf:"clickhouse_http_port"`
+	EmitAllTcpDestroys *ebpf.VariableSpec `ebpf:"emit_all_tcp_destroys"`
 	EmitDnsSent        *ebpf.VariableSpec `ebpf:"emit_dns_sent"`
 	EmitDnsServer      *ebpf.VariableSpec `ebpf:"emit_dns_server"`
 	EmitDnsTcpMessages *ebpf.VariableSpec `ebpf:"emit_dns_tcp_messages"`
@@ -475,6 +480,7 @@ type captureEventsVariableSpecs struct {
 	HttpPort           *ebpf.VariableSpec `ebpf:"http_port"`
 	MysqlPort          *ebpf.VariableSpec `ebpf:"mysql_port"`
 	MysqlResponseSize  *ebpf.VariableSpec `ebpf:"mysql_response_size"`
+	MysqlTailSize      *ebpf.VariableSpec `ebpf:"mysql_tail_size"`
 	TcpLengthFallback  *ebpf.VariableSpec `ebpf:"tcp_length_fallback"`
 	TcpStatePort       *ebpf.VariableSpec `ebpf:"tcp_state_port"`
 	UnusedHttpRecord   *ebpf.VariableSpec `ebpf:"unused_http_record"`
@@ -567,6 +573,7 @@ func (m *captureEventsMaps) Close() error {
 // It can be passed to loadCaptureEventsObjects or ebpf.CollectionSpec.LoadAndAssign.
 type captureEventsVariables struct {
 	ClickhouseHttpPort *ebpf.Variable `ebpf:"clickhouse_http_port"`
+	EmitAllTcpDestroys *ebpf.Variable `ebpf:"emit_all_tcp_destroys"`
 	EmitDnsSent        *ebpf.Variable `ebpf:"emit_dns_sent"`
 	EmitDnsServer      *ebpf.Variable `ebpf:"emit_dns_server"`
 	EmitDnsTcpMessages *ebpf.Variable `ebpf:"emit_dns_tcp_messages"`
@@ -578,6 +585,7 @@ type captureEventsVariables struct {
 	HttpPort           *ebpf.Variable `ebpf:"http_port"`
 	MysqlPort          *ebpf.Variable `ebpf:"mysql_port"`
 	MysqlResponseSize  *ebpf.Variable `ebpf:"mysql_response_size"`
+	MysqlTailSize      *ebpf.Variable `ebpf:"mysql_tail_size"`
 	TcpLengthFallback  *ebpf.Variable `ebpf:"tcp_length_fallback"`
 	TcpStatePort       *ebpf.Variable `ebpf:"tcp_state_port"`
 	UnusedHttpRecord   *ebpf.Variable `ebpf:"unused_http_record"`
@@ -635,6 +643,7 @@ type captureEventsPrograms struct {
 	TcpRecvmsgEntry           *ebpf.Program `ebpf:"tcp_recvmsg_entry"`
 	TcpRecvmsgExit            *ebpf.Program `ebpf:"tcp_recvmsg_exit"`
 	TcpRecvmsgExitLegacy      *ebpf.Program `ebpf:"tcp_recvmsg_exit_legacy"`
+	TcpRecvmsgExitShort       *ebpf.Program `ebpf:"tcp_recvmsg_exit_short"`
 	TcpRetransmitSkb          *ebpf.Program `ebpf:"tcp_retransmit_skb"`
 	TcpSendLength             *ebpf.Program `ebpf:"tcp_send_length"`
 	TcpSendReset              *ebpf.Program `ebpf:"tcp_send_reset"`
@@ -696,6 +705,7 @@ func (p *captureEventsPrograms) Close() error {
 		p.TcpRecvmsgEntry,
 		p.TcpRecvmsgExit,
 		p.TcpRecvmsgExitLegacy,
+		p.TcpRecvmsgExitShort,
 		p.TcpRetransmitSkb,
 		p.TcpSendLength,
 		p.TcpSendReset,

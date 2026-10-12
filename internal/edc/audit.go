@@ -93,6 +93,8 @@ type auditSources struct {
 	firewall func(context.Context) (auditFirewall, error)
 	kernel   func() string
 	owner    func(fs.FileInfo) (uint32, bool)
+	// container는 edc가 도는 container runtime이다. 비어 있으면 ctr.* 점검을 하지 않는다.
+	container string
 }
 
 type auditFirewall struct {
@@ -153,6 +155,24 @@ type auditFacts struct {
 	RebootFlag     bool
 	Running        string
 	Kernels        []string
+
+	// AllowPorts는 설정에서 열어 두기로 한 포트다. net.exposed 판정에서 빼고 따로 알린다.
+	AllowPorts []int
+
+	Container     string
+	EUID          int
+	CapEff        uint64
+	CapLast       int
+	CapSource     string
+	CapErr        error
+	DockerSock    string
+	DockerSockAt  string
+	DockerSockErr error
+	PIDNS         string
+	PIDNSErr      error
+	HostNet       bool
+	NetSource     string
+	NetErr        error
 }
 
 func runAudit(args []string, version string) int {
@@ -175,7 +195,43 @@ func runAudit(args []string, version string) int {
 	if !ok {
 		return emit(options, buildReport(version, started, nil, []Result{unsupported("audit", T("audit.skip.linux_only"))}, options.redact))
 	}
-	return emit(options, buildReport(version, started, nil, evaluateAudit(collectAuditFacts(ctx, sources)), options.redact))
+	facts := collectAuditFacts(ctx, sources)
+	facts.AllowPorts = activeConfig.Audit.AllowPorts
+	results := applyAuditAccept(evaluateAudit(facts), activeConfig.Audit.Accept)
+	return emit(options, buildReport(version, started, nil, results, options.redact))
+}
+
+// auditCheckIDs는 evaluateAudit가 돌려줄 수 있는 모든 id다. 설정의 accept에 오타가 있으면 이 목록으로 거른다.
+var auditCheckIDs = []string{
+	"net.exposed", "net.firewall", "net.ip_forward",
+	"ssh.root_login", "ssh.password_auth", "ssh.key_files",
+	"user.uid0", "user.empty_pass", "user.sudo_nopass", "user.root_groups",
+	"file.sensitive", "file.path_writable", "kernel.sysctl", "patch.reboot",
+	"ctr.privileged", "ctr.docker_sock", "ctr.root_user", "ctr.host_ns",
+}
+
+// applyAuditAccept는 받아들인 warn·fail을 skip으로 바꾼다. 결과를 지우지 않고 원래 판정을 요약과 metrics에 남긴다.
+func applyAuditAccept(results []Result, accept []string) []Result {
+	for index, result := range results {
+		if (result.Status == StatusWarn || result.Status == StatusFail) && slices.Contains(accept, strings.TrimPrefix(result.Probe, "audit.")) {
+			results[index] = acceptAuditResult(result)
+		}
+	}
+	return results
+}
+
+func acceptAuditResult(result Result) Result {
+	original := result.Status
+	result.Status = StatusSkip
+	result.Summary = T("audit.accepted", original, result.Summary)
+	result.Error = nil
+	result.Next = ""
+	if result.Metrics == nil {
+		result.Metrics = map[string]interface{}{}
+	}
+	result.Metrics["accepted"] = true
+	result.Metrics["accepted_status"] = original
+	return result
 }
 
 func (sources auditSources) file(path string) string { return filepath.Join(sources.root, path) }
@@ -237,7 +293,92 @@ func collectAuditFacts(ctx context.Context, sources auditSources) auditFacts {
 			facts.Kernels = append(facts.Kernels, release)
 		}
 	}
+	if sources.container != "" {
+		collectAuditContainer(sources, &facts)
+	}
 	return facts
+}
+
+// auditHostPIDNamespace는 커널이 처음 만든 PID namespace의 inode다(PROC_PID_INIT_INO). 커널마다 고정된 값이라 이 값이면 호스트의 PID namespace다.
+const auditHostPIDNamespace = "pid:[4026531836]"
+
+var auditDockerSockets = []string{"/var/run/docker.sock", "/run/docker.sock"}
+
+func collectAuditContainer(sources auditSources, facts *auditFacts) {
+	facts.Container = sources.container
+	facts.EUID = sources.euid
+	facts.CapEff, facts.CapLast, facts.CapSource, facts.CapErr = readAuditCaps(sources)
+	for _, path := range auditDockerSockets {
+		info, err := os.Stat(sources.file(path))
+		if err == nil && info.Mode()&fs.ModeSocket != 0 {
+			facts.DockerSock, facts.DockerSockAt, facts.DockerSockErr = path, "", nil
+			break
+		}
+		if err != nil && !errors.Is(err, fs.ErrNotExist) && facts.DockerSockErr == nil {
+			facts.DockerSockAt, facts.DockerSockErr = path, err
+		}
+	}
+	facts.PIDNS, facts.PIDNSErr = readAuditNamespace(sources, "/proc/self/ns/pid", "pid")
+	// container 자신의 PID namespace에서는 /proc/1이 container의 init이라 net namespace가 언제나 같다. 호스트 PID namespace일 때만 /proc/1이 호스트 init이다.
+	if facts.PIDNSErr == nil && facts.PIDNS == auditHostPIDNamespace {
+		self, err := readAuditNamespace(sources, "/proc/self/ns/net", "net")
+		if err != nil {
+			facts.NetSource, facts.NetErr = "/proc/self/ns/net", err
+			return
+		}
+		initNet, err := readAuditNamespace(sources, "/proc/1/ns/net", "net")
+		if err != nil {
+			facts.NetSource, facts.NetErr = "/proc/1/ns/net", err
+			return
+		}
+		facts.HostNet = self == initNet
+	}
+}
+
+// readAuditCaps는 CapEff와 cap_last_cap을 읽는다. 둘 중 하나라도 읽지 못하면 CapBnd 같은 다른 값으로 대신하지 않는다.
+func readAuditCaps(sources auditSources) (uint64, int, string, error) {
+	const status, lastCap = "/proc/self/status", "/proc/sys/kernel/cap_last_cap"
+	data, err := os.ReadFile(sources.file(status))
+	if err != nil {
+		return 0, 0, status, err
+	}
+	capEff, found := uint64(0), false
+	for _, line := range strings.Split(string(data), "\n") {
+		key, value, ok := strings.Cut(line, ":")
+		if !ok || key != "CapEff" {
+			continue
+		}
+		if capEff, err = strconv.ParseUint(strings.TrimSpace(value), 16, 64); err != nil {
+			return 0, 0, status, fmt.Errorf("CapEff %q is not hex", strings.TrimSpace(value))
+		}
+		found = true
+		break
+	}
+	if !found {
+		return 0, 0, status, errors.New("no CapEff line")
+	}
+	text, err := readTrimmed(sources.file(lastCap))
+	if err != nil {
+		return 0, 0, lastCap, err
+	}
+	last, err := strconv.Atoi(text)
+	if err != nil || last < 0 || last > 63 {
+		return 0, 0, lastCap, fmt.Errorf("%q is not in 0..63", text)
+	}
+	return capEff, last, "", nil
+}
+
+func readAuditNamespace(sources auditSources, path, kind string) (string, error) {
+	link, err := os.Readlink(sources.file(path))
+	if err != nil {
+		return "", err
+	}
+	inode, found := strings.CutPrefix(link, kind+":[")
+	inode, closed := strings.CutSuffix(inode, "]")
+	if _, err := strconv.ParseUint(inode, 10, 64); !found || !closed || err != nil {
+		return "", fmt.Errorf("unexpected link %q", link)
+	}
+	return link, nil
 }
 
 func readTrimmed(path string) (string, error) {
@@ -679,7 +820,7 @@ func auditSkip(id, source string, err error) Result {
 }
 
 func evaluateAudit(facts auditFacts) []Result {
-	return []Result{
+	results := []Result{
 		auditExposure(facts),
 		auditFirewallResult(facts),
 		auditIPForward(facts),
@@ -695,6 +836,30 @@ func evaluateAudit(facts auditFacts) []Result {
 		auditKernelSysctl(facts),
 		auditReboot(facts),
 	}
+	if facts.Container != "" {
+		results = append(results, auditPrivileged(facts), auditDockerSocket(facts), auditRootUser(facts), auditHostNamespace(facts))
+	}
+	return results
+}
+
+type auditExposed struct {
+	labels, evidence []string
+	ports            []int
+	published        bool
+}
+
+func (exposed *auditExposed) add(name string, socket listenSocket) {
+	label := fmt.Sprintf("%s/%d", name, socket.Port)
+	if !slices.Contains(exposed.labels, label) {
+		exposed.labels = append(exposed.labels, label)
+		exposed.ports = append(exposed.ports, socket.Port)
+	}
+	exposed.published = exposed.published || socket.Process == "docker-proxy"
+	line := fmt.Sprintf("%s %s:%d", socket.Proto, socket.Address, socket.Port)
+	if socket.Process != "" {
+		line += "  " + socket.Process
+	}
+	exposed.evidence = append(exposed.evidence, line)
 }
 
 func auditExposure(facts auditFacts) Result {
@@ -702,9 +867,8 @@ func auditExposure(facts auditFacts) Result {
 	if facts.ListenErr != nil {
 		return auditSkip(id, "sockets", facts.ListenErr)
 	}
-	var exposed, evidence []string
+	var rest, allowed auditExposed
 	seen := map[string]bool{}
-	published := false
 	for _, socket := range facts.Listen {
 		name, sensitive := auditSensitivePorts[socket.Port]
 		scope := listenBindingScope(socket.Proto, socket.Address)
@@ -716,21 +880,33 @@ func auditExposure(facts auditFacts) Result {
 			continue
 		}
 		seen[key] = true
-		label := fmt.Sprintf("%s/%d", name, socket.Port)
-		if !slices.Contains(exposed, label) {
-			exposed = append(exposed, label)
+		if slices.Contains(facts.AllowPorts, socket.Port) {
+			allowed.add(name, socket)
+		} else {
+			rest.add(name, socket)
 		}
-		published = published || socket.Process == "docker-proxy"
-		line := fmt.Sprintf("%s %s:%d", socket.Proto, socket.Address, socket.Port)
-		if socket.Process != "" {
-			line += "  " + socket.Process
-		}
-		evidence = append(evidence, line)
 	}
-	if len(exposed) == 0 {
+	switch {
+	case len(rest.labels) == 0 && len(allowed.labels) == 0:
 		return auditResult(id, StatusPass, T("audit.net.exposed_none", len(facts.Listen)))
+	case len(rest.labels) == 0:
+		// 모두 허용한 포트여도 판정을 지우지 않는다. 원래 판정을 accepted로 보인다.
+		result := acceptAuditResult(auditExposureResult(facts, allowed))
+		result.Metrics["allowed_ports"] = allowed.ports
+		result.Warnings = append(result.Warnings, T("audit.net.allowed_ports", strings.Join(allowed.labels, ", ")))
+		return result
 	}
-	ports := strings.Join(exposed, ", ")
+	result := auditExposureResult(facts, rest)
+	if len(allowed.labels) > 0 {
+		result.Metrics = map[string]interface{}{"allowed_ports": allowed.ports}
+		result.Warnings = append(result.Warnings, T("audit.net.allowed_ports", strings.Join(allowed.labels, ", ")))
+	}
+	return result
+}
+
+func auditExposureResult(facts auditFacts, exposed auditExposed) Result {
+	const id = "net.exposed"
+	ports := strings.Join(exposed.labels, ", ")
 	var result Result
 	switch {
 	case facts.FirewallErr != nil:
@@ -741,10 +917,10 @@ func auditExposure(facts auditFacts) Result {
 		result = auditResult(id, StatusFail, T("audit.net.exposed_open", ports))
 		result.Error = &DiagnosticError{Kind: "exposure", Message: result.Summary}
 	}
-	result.Evidence = []Evidence{{Label: T("audit.evidence.sockets"), Value: strings.Join(evidence, "\n")}}
+	result.Evidence = []Evidence{{Label: T("audit.evidence.sockets"), Value: strings.Join(exposed.evidence, "\n")}}
 	result.Warnings = []string{T("audit.net.cloud_note")}
 	// docker가 publish한 포트는 nat 표에서 DNAT되어 INPUT이 아니라 FORWARD를 지난다. INPUT의 drop 정책은 막지 못한다.
-	if published {
+	if exposed.published {
 		result.Warnings = append(result.Warnings, T("audit.net.docker_note"))
 	}
 	result.Next = "edc listen -v"
@@ -1047,4 +1223,60 @@ func auditReboot(facts auditFacts) Result {
 		return auditResult(id, StatusWarn, T("audit.patch.reboot_kernel", newest, facts.Running))
 	}
 	return auditResult(id, StatusPass, T("audit.patch.reboot_ok", facts.Running))
+}
+
+func auditPrivileged(facts auditFacts) Result {
+	const id = "ctr.privileged"
+	if facts.CapErr != nil {
+		return auditSkip(id, facts.CapSource, facts.CapErr)
+	}
+	capEff := fmt.Sprintf("0x%016x", facts.CapEff)
+	mask := uint64(1)<<(facts.CapLast+1) - 1
+	if facts.CapEff&mask != mask {
+		return auditResult(id, StatusPass, T("audit.ctr.caps_limited", capEff))
+	}
+	result := auditResult(id, StatusFail, T("audit.ctr.privileged", facts.Container, capEff))
+	result.Error = &DiagnosticError{Kind: "container", Message: result.Summary}
+	return result
+}
+
+func auditDockerSocket(facts auditFacts) Result {
+	const id = "ctr.docker_sock"
+	if facts.DockerSock != "" {
+		result := auditResult(id, StatusFail, T("audit.ctr.sock_mounted", facts.DockerSock))
+		result.Error = &DiagnosticError{Kind: "container", Message: result.Summary}
+		return result
+	}
+	if facts.DockerSockErr != nil {
+		return auditSkip(id, facts.DockerSockAt, facts.DockerSockErr)
+	}
+	return auditResult(id, StatusPass, T("audit.ctr.sock_none"))
+}
+
+func auditRootUser(facts auditFacts) Result {
+	const id = "ctr.root_user"
+	if facts.EUID == 0 {
+		return auditResult(id, StatusWarn, T("audit.ctr.root_user", facts.Container))
+	}
+	return auditResult(id, StatusPass, T("audit.ctr.user_ok", facts.EUID))
+}
+
+func auditHostNamespace(facts auditFacts) Result {
+	const id = "ctr.host_ns"
+	if facts.PIDNSErr != nil {
+		return auditSkip(id, "/proc/self/ns/pid", facts.PIDNSErr)
+	}
+	if facts.PIDNS != auditHostPIDNamespace {
+		return auditResult(id, StatusPass, T("audit.ctr.own_pid", facts.PIDNS))
+	}
+	summary := T("audit.ctr.host_pid")
+	if facts.NetErr == nil && facts.HostNet {
+		summary = T("audit.ctr.host_pid_net")
+	}
+	result := auditResult(id, StatusFail, summary)
+	result.Error = &DiagnosticError{Kind: "container", Message: result.Summary}
+	if facts.NetErr != nil {
+		result.Warnings = []string{T("audit.ctr.net_unknown", facts.NetSource, infoSingleLine(facts.NetErr.Error()))}
+	}
+	return result
 }

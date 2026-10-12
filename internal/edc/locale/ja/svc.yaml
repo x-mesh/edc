@@ -1,0 +1,37 @@
+# svc コマンドの日本語メッセージ。
+svc:
+  skip:
+    linux_only: "svc は Linux の systemd unit のみ読みます"
+    no_systemd: "このホストでは systemd が動いていません"
+    needs_root: "%s を読むには root が必要です"
+    unreadable: "%s を読めませんでした: %s"
+    not_running: "unit に実行中の process がありません"
+  error:
+    invalid_unit: "service 名 %q が正しくありません: 英字、数字、:_.@- のみを使い、'-' で始めたり service 以外の接尾辞を付けたりしないでください"
+    not_found: "unit %s は存在しません"
+  source:
+    fd: "unit process の fd"
+    sockets: "ソケットの所有者"
+  state:
+    summary: "%s、稼働 %s、再起動 %s 回"
+    load: "%s の状態は %s です"
+    show_failed: "systemctl show が失敗しました: %s"
+  processes:
+    summary: "process %d 個、CPU %.1f%%、RSS %s"
+  fd:
+    denied: "権限なし"
+    no_limit: "上限なし"
+    high: "fd 上限の 80%% 以上を使う process %d 個: %s"
+    unlimited: "fd 上限のない process %d 個"
+    ok: "fd を最も多く使う process: %s"
+  listen:
+    none: "unit process が持つ tcp・udp の待ち受けソケットなし"
+    summary: "%s で待ち受け"
+  journal:
+    none: "journal にエラー行なし"
+    errors: "最近のエラー %d 行、最新: %s"
+  evidence:
+    processes: "process (%d / %d)"
+    fd: "開いている fd / soft 上限"
+    sockets: "ソケット"
+    journal: "journal"

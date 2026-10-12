@@ -89,6 +89,8 @@ type httpTracker struct {
 	h2PayloadBytes int
 	// h2PayloadOpen은 socket마다 붙잡은 본문 수다. 연결이 끝날 때마다 h2Payload 전체를 훑지 않게 한다.
 	h2PayloadOpen map[uint64]int
+	// tls는 socket마다 본 ClientHello다. ServerHello와 alert가 handshake 시간과 쪽을 여기서 가져간다.
+	tls map[uint64]tlsConnection
 }
 
 // http2PayloadKey는 한 stream의 한 방향이다. 요청 본문과 응답 본문은 방향이 달라 따로 모은다.
@@ -124,7 +126,7 @@ type http2Direction struct {
 }
 
 func newHTTPTracker(side string, payload, showSecrets bool) *httpTracker {
-	return &httpTracker{side: side, payload: payload, showSecrets: showSecrets, pending: map[uint64][]httpPendingRequest{}, http2: map[httpStreamKey]*http2Direction{}, h2Pending: map[uint64]map[uint32]httpPendingRequest{}, h2Payload: map[http2PayloadKey]*http2Payload{}, h2PayloadOpen: map[uint64]int{}}
+	return &httpTracker{side: side, payload: payload, showSecrets: showSecrets, pending: map[uint64][]httpPendingRequest{}, http2: map[httpStreamKey]*http2Direction{}, h2Pending: map[uint64]map[uint32]httpPendingRequest{}, h2Payload: map[http2PayloadKey]*http2Payload{}, h2PayloadOpen: map[uint64]int{}, tls: map[uint64]tlsConnection{}}
 }
 
 var http2Preface = []byte("PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n")
@@ -452,6 +454,12 @@ func (tracker *httpTracker) event(packet httpPacket, clockOffset int64) (capture
 		if hello, ok := parseTLSClientHello(packet.payload, !packet.tlsHandshake); ok {
 			return tracker.tlsEvent(packet, hello, clockOffset)
 		}
+		if hello, ok := parseTLSServerHello(packet.payload, !packet.tlsHandshake); ok {
+			return tracker.tlsServerEvent(packet, hello, clockOffset)
+		}
+		if alert, ok := parseTLSAlert(packet.payload, !packet.tlsHandshake); ok {
+			return tracker.tlsAlertEvent(packet, alert, clockOffset)
+		}
 		if packet.tlsHandshake {
 			return captureEvent{}, false
 		}
@@ -523,10 +531,16 @@ func (tracker *httpTracker) tlsEvent(packet httpPacket, hello tlsClientHello, cl
 	if tracker.side != "" && side != tracker.side {
 		return captureEvent{}, false
 	}
+	target := emptyAs(hello.serverName, traceHTTPHost(packet.destination, side == traceServerSide))
+	// ServerHello와 alert가 이 socket의 SNI와 쪽을 이어받는다. 연결이 끝나면 forget이 지운다.
+	if len(tracker.tls) >= httpSplitLimit {
+		clear(tracker.tls)
+	}
+	tracker.tls[packet.socket] = tlsConnection{helloAt: packet.bootTimeNS, side: side, host: target}
 	return captureEvent{
 		SocketID: packet.socket, TimestampNS: uint64(int64(packet.bootTimeNS) + clockOffset), BootTimeNS: packet.bootTimeNS, Protocol: "http", Side: side,
 		PID: packet.pid, Process: packet.process, CgroupID: packet.cgroupID, Source: packet.source, Destination: packet.destination, Bytes: uint64(len(packet.payload)),
-		Event: traceTLSHelloEvent, Target: emptyAs(hello.serverName, traceHTTPHost(packet.destination, side == traceServerSide)), ALPN: hello.alpn,
+		Event: traceTLSHelloEvent, Target: target, ALPN: hello.alpn,
 	}, true
 }
 
@@ -646,6 +660,7 @@ func tlsALPN(data []byte) []string {
 func (tracker *httpTracker) forget(socket uint64) []captureEvent {
 	tracker.size -= len(tracker.pending[socket])
 	delete(tracker.pending, socket)
+	delete(tracker.tls, socket)
 	delete(tracker.http2, httpStreamKey{socket: socket, sent: true})
 	delete(tracker.http2, httpStreamKey{socket: socket, sent: false})
 	tracker.h2Size -= len(tracker.h2Pending[socket])
@@ -856,8 +871,8 @@ type traceHTTPCounts struct {
 }
 
 func (counts *traceHTTPCounts) observe(event captureEvent) {
-	// ClientHello는 요청도 응답도 아니다. 요약은 연결을 따로 센다.
-	if event.Event == traceTLSHelloEvent {
+	// handshake event는 요청도 응답도 아니다. 요약은 연결을 따로 센다.
+	if tlsHandshakeEvent(event.Event) {
 		return
 	}
 	if event.Event == traceHTTPRequestEvent {
@@ -935,15 +950,18 @@ func traceHTTPScrollLabels(event captureEvent) (string, string) {
 	if len(event.ALPN) > 0 {
 		label += " " + event.ALPN[0]
 	}
+	if tls := traceTLSLabel(event); tls != "" {
+		label += " " + tls
+	}
 	if event.LatencyMS != nil {
 		label += " " + traceLatency(event.LatencyMS, "ms")
 	}
 	return emptyAs(request, "-"), label
 }
 
-// traceHTTPScheme은 목적지 앞에 붙이는 scheme이다. --tls 평문과 ClientHello는 HTTPS다.
+// traceHTTPScheme은 목적지 앞에 붙이는 scheme이다. --tls 평문과 handshake event는 HTTPS다.
 func traceHTTPScheme(event captureEvent) string {
-	if event.TLS || event.Event == traceTLSHelloEvent {
+	if event.TLS || tlsHandshakeEvent(event.Event) {
 		return "https://"
 	}
 	return "http://"
@@ -976,9 +994,11 @@ type httpTraceReport struct {
 	// 서버 응답 시간에는 처리만 들어가서, 합친 평균은 뜻이 없다.
 	Client *traceHTTPCounts `json:"client,omitempty"`
 	Server *traceHTTPCounts `json:"server,omitempty"`
-	// TLSConnections와 TLS는 HTTPS 연결이다. 암호문이라 ClientHello의 SNI와 ALPN만 센다. 없으면 JSON에서 뺀다.
-	TLSConnections uint64       `json:"tls_connections,omitempty"`
-	TLS            []httpTLSRow `json:"tls,omitempty"`
+	// TLSConnections와 TLS는 HTTPS 연결이다. 암호문이라 ClientHello의 SNI와 ALPN, ServerHello의 version, alert만 센다. 없으면
+	// JSON에서 뺀다. TLSAlerts는 "fatal handshake_failure"처럼 level과 이름별 수다.
+	TLSConnections uint64            `json:"tls_connections,omitempty"`
+	TLS            []httpTLSRow      `json:"tls,omitempty"`
+	TLSAlerts      map[string]uint64 `json:"tls_alerts,omitempty"`
 	// TLSUnmapped는 --tls 평문 중 socket을 몰라 주소 없이 보인 event와, --port 때문에 버린 평문 레코드의 수다.
 	TLSUnmapped uint64 `json:"tls_unmapped,omitempty"`
 }
@@ -995,12 +1015,17 @@ type httpTLSRow struct {
 	ALPN        []string `json:"alpn,omitempty"`
 	Connections uint64   `json:"connections"`
 	Processes   []string `json:"processes,omitempty"`
+	// Versions는 ServerHello가 고른 version별 수이고, Alerts는 이 host의 연결에서 본 alert 수다.
+	Versions map[string]uint64 `json:"versions,omitempty"`
+	Alerts   uint64            `json:"alerts,omitempty"`
 }
 
 type httpTLSStats struct {
 	alpn        []string
 	connections uint64
 	processes   map[string]struct{}
+	versions    map[string]uint64
+	alerts      uint64
 }
 
 type httpTraceRowStats struct {
@@ -1015,14 +1040,17 @@ type httpTraceSummarizer struct {
 	counts traceHTTPCounts
 	// sides는 쪽마다 모은 합계다. 한 쪽만 있으면 보고서의 쪽이 되고, 두 쪽이 있으면 쪽별 합계로 낸다.
 	sides map[string]*traceHTTPCounts
-	// tls는 ClientHello를 쪽, SNI, ALPN마다 센다. HTTP 행과 합계에는 넣지 않는다.
-	tls map[httpTLSKey]*httpTLSStats
+	// tls는 ClientHello를 쪽, SNI, ALPN마다 센다. HTTP 행과 합계에는 넣지 않는다. tlsSockets는 socket마다 그 행이고,
+	// ServerHello와 alert를 같은 행에 더한다. alerts는 종류별 합계다.
+	tls        map[httpTLSKey]*httpTLSStats
+	tlsSockets map[uint64]httpTLSKey
+	alerts     map[string]uint64
 	// unmapped는 --tls 평문 중 주소 없는 event 수다.
 	unmapped uint64
 }
 
 func newHTTPTraceSummarizer() *httpTraceSummarizer {
-	return &httpTraceSummarizer{rows: map[httpTraceKey]*httpTraceRowStats{}, sides: map[string]*traceHTTPCounts{}, tls: map[httpTLSKey]*httpTLSStats{}}
+	return &httpTraceSummarizer{rows: map[httpTraceKey]*httpTraceRowStats{}, sides: map[string]*traceHTTPCounts{}, tls: map[httpTLSKey]*httpTLSStats{}, tlsSockets: map[uint64]httpTLSKey{}}
 }
 
 func (summarizer *httpTraceSummarizer) observe(event captureEvent) {
@@ -1037,6 +1065,32 @@ func (summarizer *httpTraceSummarizer) observe(event captureEvent) {
 		if event.Process != "" {
 			stats.processes[event.Process] = struct{}{}
 		}
+		if len(summarizer.tlsSockets) >= httpSplitLimit {
+			clear(summarizer.tlsSockets)
+		}
+		summarizer.tlsSockets[event.SocketID] = key
+		return
+	}
+	if event.Event == traceTLSServerHelloEvent || event.Event == traceTLSAlertEvent {
+		if event.Event == traceTLSAlertEvent {
+			if summarizer.alerts == nil {
+				summarizer.alerts = map[string]uint64{}
+			}
+			summarizer.alerts[event.Alert]++
+		}
+		// ClientHello를 본 socket만 host 행에 더한다. trace 전에 시작한 연결은 어느 host인지 모른다.
+		stats := summarizer.tls[summarizer.tlsSockets[event.SocketID]]
+		if stats == nil {
+			return
+		}
+		if event.Event == traceTLSAlertEvent {
+			stats.alerts++
+			return
+		}
+		if stats.versions == nil {
+			stats.versions = map[string]uint64{}
+		}
+		stats.versions[event.TLSVersion]++
 		return
 	}
 	if event.TLS && event.Source == "" && event.Destination == "" {
@@ -1099,7 +1153,10 @@ func (summarizer *httpTraceSummarizer) summarize(summary captureSummary, duratio
 	})
 	for key, stats := range summarizer.tls {
 		report.TLSConnections += stats.connections
-		report.TLS = append(report.TLS, httpTLSRow{Side: key.side, Host: key.host, ALPN: stats.alpn, Connections: stats.connections, Processes: slices.Sorted(maps.Keys(stats.processes))})
+		report.TLS = append(report.TLS, httpTLSRow{Side: key.side, Host: key.host, ALPN: stats.alpn, Connections: stats.connections, Processes: slices.Sorted(maps.Keys(stats.processes)), Versions: stats.versions, Alerts: stats.alerts})
+	}
+	if len(summarizer.alerts) > 0 {
+		report.TLSAlerts = summarizer.alerts
 	}
 	sort.Slice(report.TLS, func(i, j int) bool {
 		left, right := report.TLS[i], report.TLS[j]
@@ -1157,11 +1214,34 @@ func (report httpTraceReport) print(bool) {
 	if len(report.TLS) == 0 {
 		return
 	}
-	fmt.Fprintf(os.Stdout, "\nTLS connections: %d (HTTPS, only the ClientHello is plain text)\n", report.TLSConnections)
-	fmt.Fprintln(os.Stdout, "\nSIDE\tHOST\tALPN\tCONNECTIONS\tPROCESS")
-	for _, row := range report.TLS {
-		fmt.Fprintf(os.Stdout, "%s\t%s\t%s\t%d\t%s\n", emptyAs(row.Side, "-"), emptyAs(row.Host, "-"), emptyAs(strings.Join(row.ALPN, ","), "-"), row.Connections, emptyAs(strings.Join(row.Processes, ","), "-"))
+	fmt.Fprintf(os.Stdout, "\nTLS connections: %d (HTTPS, only the handshake headers are plain text)\n", report.TLSConnections)
+	if len(report.TLSAlerts) > 0 {
+		fmt.Fprintf(os.Stdout, "TLS alerts: %s\n", traceTLSAlertSummary(report.TLSAlerts))
 	}
+	fmt.Fprintln(os.Stdout, "\nSIDE\tHOST\tALPN\tCONNECTIONS\tVERSION\tALERTS\tPROCESS")
+	for _, row := range report.TLS {
+		fmt.Fprintf(os.Stdout, "%s\t%s\t%s\t%d\t%s\t%d\t%s\n", emptyAs(row.Side, "-"), emptyAs(row.Host, "-"), emptyAs(strings.Join(row.ALPN, ","), "-"), row.Connections, emptyAs(traceTLSVersionText(row.Versions), "-"), row.Alerts, emptyAs(strings.Join(row.Processes, ","), "-"))
+	}
+}
+
+// traceTLSVersionText는 많이 고른 version부터 쉼표로 잇는다. 수는 JSON에 있다.
+func traceTLSVersionText(versions map[string]uint64) string {
+	names := slices.Sorted(maps.Keys(versions))
+	sort.SliceStable(names, func(i, j int) bool { return versions[names[i]] > versions[names[j]] })
+	return strings.Join(names, ",")
+}
+
+// traceTLSAlertSummary는 "3 (fatal handshake_failure 2, fatal unrecognized_name 1)"처럼 합계와 종류별 수다.
+func traceTLSAlertSummary(alerts map[string]uint64) string {
+	names := slices.Sorted(maps.Keys(alerts))
+	sort.SliceStable(names, func(i, j int) bool { return alerts[names[i]] > alerts[names[j]] })
+	var total uint64
+	parts := make([]string, 0, len(names))
+	for _, name := range names {
+		total += alerts[name]
+		parts = append(parts, fmt.Sprintf("%s %d", name, alerts[name]))
+	}
+	return fmt.Sprintf("%d (%s)", total, strings.Join(parts, ", "))
 }
 
 func printHTTPCounts(indent string, counts traceHTTPCounts) {

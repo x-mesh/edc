@@ -1,0 +1,25 @@
+# snapshot 명령의 한국어 메시지.
+snapshot:
+  skip:
+    timeout: "%s가 %s 안에 끝나지 않았습니다"
+    pressure_unavailable: "이 host에서는 PSI와 OOM kill counter를 읽을 수 없습니다"
+  warning:
+    psi_unavailable: "이 host에서는 PSI를 읽을 수 없습니다"
+    oom_unavailable: "이 host에서는 OOM kill counter를 읽을 수 없습니다"
+    read_only: "%s가 읽기 전용으로 마운트되어 있습니다"
+    inodes: "%s의 inode 사용률이 %.0f%%입니다"
+    deleted_open: "%s에 지워졌지만 process가 아직 열고 있는 파일이 공간을 잡고 있습니다: %s"
+  evidence:
+    deleted_open: "지워졌지만 열린 파일"
+  summary:
+    host: "%s · %s · %d 코어 · load %.2f/%.2f/%.2f"
+    memory: "사용 %s / 전체 %s (%.2f%%), 가용 %s"
+    psi: "PSI some avg10: CPU %.2f%% · 메모리 %.2f%% · I/O %.2f%%"
+    oom: "부팅 뒤 OOM kill: %d회"
+    disk: "%s (%s): %s / %s (%.2f%%)"
+    processes: "process %d개, thread %d개 확인"
+  is_dir: "%s는 디렉터리입니다. 파일 이름을 지정하세요"
+  not_dir: "%s는 디렉터리가 아닙니다"
+  exists: "%s가 이미 있습니다. 바꾸려면 --force를 붙이세요"
+  saved: "저장: %s"
+  diff_hint: "비교: edc report diff <before> %s"

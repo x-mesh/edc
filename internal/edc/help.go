@@ -232,6 +232,15 @@ var commandDocs = []commandDoc{
 		usesCommon: true,
 	},
 	{
+		name: "changes", group: "observe",
+		usage: []string{"edc changes [--since 24h] [options]"},
+		options: []optionDoc{
+			{"--since 24h", "command.changes.option.since"},
+			{"-v, --verbose", "command.changes.option.verbose"},
+		},
+		usesCommon: true,
+	},
+	{
 		name: "quality", group: "observe",
 		usage:      []string{"edc quality [options]"},
 		options:    []optionDoc{{"--server <URL>", "command.quality.option.server"}},

@@ -63,6 +63,17 @@ command:
       - "root で実行してください。root でなければ一部が skip です。"
       - "ファイアウォールはこのホストだけで、クラウド側は見ません。"
       - "パッケージのバージョンを CVE と照合しません。"
+  changes:
+    summary: "最近のパッケージ、/etc、service の変更 (Linux)"
+    notes:
+      - "dpkg・dnf・yum のログ、/etc の mtime、systemd の unit 状態だけを読みます。"
+      - "何も変更せず、外部へ送信しません。"
+      - "service ごとに最後の起動時刻と再起動回数だけを表示します。"
+      - "/etc はファイルの内容ではなく mtime だけを見ます。"
+      - "圧縮されたログは読まず、警告で知らせます。"
+    option:
+      since: "どこまでさかのぼるか、24h や 90m のような Go の duration"
+      verbose: "最新の 50 件で切らずにすべて表示"
   events:
     summary: "カーネルと systemd の障害シグナルを時系列で整理 (Linux)"
     option:

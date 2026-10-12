@@ -201,6 +201,7 @@ Setup wizard는 `edc log`의 저장 경로를 비워두고 실행별 파일을 �
 ./bin/edc listen              # 열려 있는 포트, --unix나 --all로 unix socket 포함
 ./bin/edc listen --watch -i 0.5 --duration 10s
 sudo ./bin/edc audit           # 노출 상태와 설정 점검, 읽기 전용 (Linux)
+./bin/edc changes --since 2h   # 최근 패키지, /etc, service 변경 (Linux)
 sudo ./bin/edc events --since 6h   # 커널과 systemd의 장애 신호를 시간 순서로 정리 (Linux)
 ./bin/edc quality --timeout 60s
 ./bin/edc quality --server https://example.com/.well-known/nq   # 응답성 config URL
@@ -404,6 +405,31 @@ root로 실행하세요. root가 아니면 방화벽, `/etc/shadow`, `/etc/sudoe
 SSH 점검은 `sshd_config`와 `Include`한 파일을 읽고, sshd처럼 처음 나온 값을 씁니다. `Match` 블록은 일부 연결에만 적용되므로 해석하지 않습니다. 실제 적용 값은 `sshd -T`로 확인하세요.
 
 `edc audit`는 패키지 버전을 CVE와 대조하지 않습니다. 파일 시스템 전체를 훑지 않고, 찾은 문제를 고치지도 않습니다.
+
+## 최근 호스트 변경 (Linux)
+
+`edc changes`는 지정한 시간 범위 안에서 Linux 호스트에 일어난 변경을 보여 줍니다. 패키지 로그, `/etc` 아래 파일의 mtime, systemd unit 상태만 읽고, 아무것도 바꾸지 않으며 외부로 보내지 않습니다. 1초 안에 끝납니다.
+
+```bash
+edc changes                     # 최근 24시간
+edc changes --since 2h          # 최근 2시간
+edc changes -v                  # 최근 50건에서 자르지 않고 모두
+edc changes --json -            # 모든 변경을 metrics.events에 담음
+```
+
+원천마다 결과 한 줄을 먼저 출력하고, 이어서 모든 변경을 합친 표를 최근 것부터 출력합니다.
+
+| 결과 | 원천 |
+|---|---|
+| `changes.packages` | `/var/log/dpkg.log`, `/var/log/dnf.rpm.log`, `/var/log/yum.log`와 압축되지 않은 회전 로그 |
+| `changes.etc` | `/etc` 아래 파일과 symlink의 mtime |
+| `changes.services` | service unit마다 마지막 시작 시각과 재시작 횟수 |
+
+부팅이 시간 범위 안에 있으면 표에 `boot` 한 줄이 나옵니다. 부팅 중에 시작한 service는 이 줄로 묶습니다.
+
+원천을 읽지 못하면 결과는 이유와 함께 `skip`입니다. `skip`은 바뀐 것이 없다는 뜻이 아닙니다. 모든 원천을 읽으려면 root로 실행하세요. root가 아니면 `/etc` 아래 일부 디렉터리와 일부 패키지 로그를 읽지 못합니다.
+
+`edc changes`는 회전된 압축 로그를 풀지 않습니다. 압축 로그가 시간 범위 시작보다 새로우면 경고로 알립니다. `/etc`는 파일 내용이 아니라 mtime만 읽으므로 파일 안에서 무엇이 바뀌었는지는 보이지 않습니다. systemd는 unit마다 시작 시각을 하나만 남기므로, 여러 번 재시작한 unit은 마지막 시작 시각과 재시작 횟수로 보입니다. `/etc`는 항목 20000개에서 멈추고 `warn`으로 알립니다. `dnf history`와 `journalctl`은 실행하지 않습니다.
 
 ## 커널과 systemd 이벤트 (Linux)
 

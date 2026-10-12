@@ -223,6 +223,10 @@ _edc() {
           # listen의 -v는 evidence를 펼치지 않고 열을 늘린다. 공용 설명을 빼고 이 명령의 것을 쓴다.
           _arguments ${common:#*verbose*} '--tcp[TCP socket만 봅니다]' '(-u --udp)'{-u,--udp}'[바인드된 UDP socket만 봅니다]' '--unix[unix domain socket만 봅니다]' '--all[TCP와 UDP, unix domain socket을 모두 봅니다]' '--watch[포트 변화 관측]' '(-i --interval)'{-i,--interval}'[관측 간격(초)]:seconds' '--duration[관측 시간]:duration' '(-v --verbose)'{-v,--verbose}'[계정과 descriptor, 큐 열을 함께 엽니다]'
           ;;
+        changes)
+          # changes의 -v는 evidence를 펼치지 않고 표의 모든 줄을 보인다.
+          _arguments ${common:#*verbose*} '--since[볼 시간 범위]:duration' '(-v --verbose)'{-v,--verbose}'[50줄에서 자르지 않고 모두 봅니다]'
+          ;;
         quality)
           _arguments $common '--server[응답성 측정 config URL]:url'
           ;;
@@ -389,6 +393,7 @@ _edc() {
         COMPREPLY=($(compgen -d -- "$cur"))
       fi ;;
     listen) COMPREPLY=($(compgen -W "$common --tcp --udp --unix --all --watch -i --interval --duration" -- "$cur")) ;;
+    changes) COMPREPLY=($(compgen -W "$common --since" -- "$cur")) ;;
     quality) COMPREPLY=($(compgen -W "$common --server" -- "$cur")) ;;
     capture) COMPREPLY=($(compgen -W "--mode --interface --duration --count --filter --output --yes" -- "$cur")) ;;
     trace)

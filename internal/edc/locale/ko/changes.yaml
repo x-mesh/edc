@@ -1,0 +1,25 @@
+# changes 명령의 한국어 메시지.
+changes:
+  skip:
+    linux_only: "changes는 Linux에서만 동작합니다"
+    needs_root: "%s를 읽으려면 root가 필요합니다"
+    unreadable: "%s를 읽지 못했습니다: %s"
+    none_found: "읽을 원천이 없습니다. 확인한 경로: %s"
+    no_systemd: "systemd가 동작하지 않아 service 시작을 알 수 없습니다"
+  summary:
+    packages: "패키지 변경 %d건 (%s)"
+    etc: "/etc에서 바뀐 파일 %d개 (항목 %d개 확인)"
+    etc_truncated: "/etc에서 바뀐 파일 %d개, 항목 %d개에서 멈췄습니다"
+    services: "service 시작 %d건 (unit %d개 확인)"
+  warning:
+    compressed: "%s는 압축되어 읽지 않았습니다. 시간 범위 안의 변경이 있을 수 있습니다"
+    unreadable_dirs: "/etc 아래 디렉터리 %d개는 root가 아니면 읽을 수 없습니다"
+  detail:
+    restarts: "재시작 %d회"
+    boot: "부팅 중 service %d개 시작"
+  column:
+    time: "시각"
+    kind: "종류"
+    name: "이름"
+    detail: "내용"
+  more: "%d건 더 있음, -v로 모두 보기"

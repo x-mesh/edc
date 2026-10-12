@@ -176,10 +176,10 @@ func TestCaptureEventFiltersFollowTheProtocol(t *testing.T) {
 		{traceScope{protocol: "mysql", port: 3307}, captureEventFilter{dnsSent: true, mysqlPort: 3307}},
 		{traceScope{protocol: "clickhouse"}, captureEventFilter{dnsSent: true, mysqlPort: 9000, mysqlResponseSize: 4096, clickHouseHTTPPort: 8123}},
 		{traceScope{protocol: "clickhouse", port: 9440, httpPort: 18123}, captureEventFilter{dnsSent: true, mysqlPort: 9440, mysqlResponseSize: 4096, clickHouseHTTPPort: 18123}},
-		{traceScope{protocol: "postgres"}, captureEventFilter{dnsSent: true, mysqlPort: 5432, mysqlResponseSize: 4096, mysqlTailSize: 64}},
-		{traceScope{protocol: "postgres", port: 6432}, captureEventFilter{dnsSent: true, mysqlPort: 6432, mysqlResponseSize: 4096, mysqlTailSize: 64}},
-		{traceScope{protocol: "redis"}, captureEventFilter{dnsSent: true, mysqlPort: 6379}},
-		{traceScope{protocol: "redis", port: 6380}, captureEventFilter{dnsSent: true, mysqlPort: 6380}},
+		{traceScope{protocol: "postgres"}, captureEventFilter{dnsSent: true, mysqlPort: 5432, mysqlResponseSize: 4096, mysqlTailSize: 64, allTCPDestroys: true}},
+		{traceScope{protocol: "postgres", port: 6432}, captureEventFilter{dnsSent: true, mysqlPort: 6432, mysqlResponseSize: 4096, mysqlTailSize: 64, allTCPDestroys: true}},
+		{traceScope{protocol: "redis"}, captureEventFilter{dnsSent: true, mysqlPort: 6379, allTCPDestroys: true}},
+		{traceScope{protocol: "redis", port: 6380}, captureEventFilter{dnsSent: true, mysqlPort: 6380, allTCPDestroys: true}},
 	} {
 		if got := captureEventFilterFor(test.scope); got != test.want {
 			t.Fatalf("scope %+v filter = %+v, want %+v", test.scope, got, test.want)
@@ -205,8 +205,9 @@ func TestCaptureEventFiltersFollowTheProtocol(t *testing.T) {
 	var tlsPlaintext, uprobeArch uint8
 	// trace postgres만 끝부분 레코드를 켠다. 0이면 다른 protocol의 레코드가 이전과 같다.
 	var mysqlTailSize uint32
-	if err := variables.MysqlTailSize.Get(&mysqlTailSize); err != nil || mysqlTailSize != 0 {
-		t.Fatalf("mysql_tail_size default = %d (%v)", mysqlTailSize, err)
+	var allTCPDestroys uint8
+	if err := errors.Join(variables.MysqlTailSize.Get(&mysqlTailSize), variables.EmitAllTcpDestroys.Get(&allTCPDestroys)); err != nil || mysqlTailSize != 0 || allTCPDestroys != 0 {
+		t.Fatalf("mysql_tail_size, emit_all_tcp_destroys defaults = %d, %d (%v)", mysqlTailSize, allTCPDestroys, err)
 	}
 	if err := errors.Join(variables.EmitUdpEvents.Get(&udpEvents), variables.EmitDnsSent.Get(&dnsSent), variables.EmitDnsServer.Get(&server), variables.TcpStatePort.Get(&tcpStatePort), variables.HttpPayloadLimit.Get(&httpPayloadLimit), variables.HttpPort.Get(&httpPort), variables.HttpMessageLimit.Get(&httpMessageLimit), variables.MysqlPort.Get(&mysqlPort), variables.MysqlResponseSize.Get(&mysqlResponseSize), variables.ClickhouseHttpPort.Get(&clickHouseHTTPPort),
 		variables.EmitTlsPlaintext.Get(&tlsPlaintext), variables.UprobeArch.Get(&uprobeArch)); err != nil {

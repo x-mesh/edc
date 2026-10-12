@@ -628,6 +628,8 @@ type captureEventFilter struct {
 	mysqlResponseSize uint32
 	// mysqlTailSize가 0이 아니면 응답 방향에서 앞부분보다 긴 쓰기나 읽기의 끝 이 byte 수를 끝부분 레코드로 더 읽는다.
 	mysqlTailSize uint32
+	// allTCPDestroys는 끝난 socket을 port와 관계없이 알린다. 서버 쪽 socket은 닫힐 때 port를 놓아 port로 고를 수 없다.
+	allTCPDestroys bool
 	// clickHouseHTTPPort가 0이 아니면 trace clickhouse가 이 port의 socket도 mysqlPort와 같은 경로로 읽는다.
 	clickHouseHTTPPort uint16
 	// tlsPlaintext는 trace http --tls다. OpenSSL uprobe가 넘기는 평문 레코드를 낸다.
@@ -657,11 +659,11 @@ func captureEventFilterFor(scope traceScope) captureEventFilter {
 		filter.clickHouseHTTPPort = cmp.Or(scope.httpPort, traceClickHouseDefaultHTTPPort)
 	case "postgres":
 		filter.udpEvents, filter.mysqlPort = false, cmp.Or(scope.port, tracePostgresDefaultPort)
-		filter.mysqlResponseSize, filter.mysqlTailSize = postgresResponseCapture, postgresTailCapture
+		filter.mysqlResponseSize, filter.mysqlTailSize, filter.allTCPDestroys = postgresResponseCapture, postgresTailCapture, true
 	case "redis":
 		// 작은 응답은 모두 쓰기의 앞 1024 byte 안에서 끝나고, 4095로 늘려도 경계를 잃는 큰 array 응답은 그대로다
 		// (testdata/redis/capture.txt Findings 3, 4). 그래서 BPF 기본값을 쓴다.
-		filter.udpEvents, filter.mysqlPort = false, cmp.Or(scope.port, traceRedisDefaultPort)
+		filter.udpEvents, filter.mysqlPort, filter.allTCPDestroys = false, cmp.Or(scope.port, traceRedisDefaultPort), true
 	}
 	return filter
 }
@@ -696,7 +698,7 @@ func loadCaptureEventsFor(scope traceScope, objects *captureEventsObjects) error
 		return 0
 	}
 	if err := errors.Join(variables.EmitUdpEvents.Set(flag(filter.udpEvents)), variables.EmitDnsSent.Set(flag(filter.dnsSent)), variables.EmitDnsServer.Set(flag(filter.server)), variables.TcpStatePort.Set(filter.tcpStatePort), variables.TcpLengthFallback.Set(flag(tcpLengthFallback)),
-		variables.EmitHttpMessages.Set(flag(filter.httpMessages)), variables.EmitDnsTcpMessages.Set(flag(filter.dnsTCP)), variables.HttpPort.Set(filter.httpPort), variables.MysqlPort.Set(filter.mysqlPort), variables.MysqlResponseSize.Set(filter.mysqlResponseSize), variables.MysqlTailSize.Set(filter.mysqlTailSize), variables.ClickhouseHttpPort.Set(filter.clickHouseHTTPPort)); err != nil {
+		variables.EmitHttpMessages.Set(flag(filter.httpMessages)), variables.EmitDnsTcpMessages.Set(flag(filter.dnsTCP)), variables.HttpPort.Set(filter.httpPort), variables.MysqlPort.Set(filter.mysqlPort), variables.MysqlResponseSize.Set(filter.mysqlResponseSize), variables.MysqlTailSize.Set(filter.mysqlTailSize), variables.EmitAllTcpDestroys.Set(flag(filter.allTCPDestroys)), variables.ClickhouseHttpPort.Set(filter.clickHouseHTTPPort)); err != nil {
 		return err
 	}
 	if filter.httpPayload {

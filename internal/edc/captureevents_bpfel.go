@@ -308,6 +308,7 @@ const (
 	captureEventsProgUdpV6SendSkbEntry         = "udp_v6_send_skb_entry"
 	captureEventsProgUdpV6SendSkbExit          = "udp_v6_send_skb_exit"
 	captureEventsVarClickhouseHttpPort         = "clickhouse_http_port"
+	captureEventsVarEmitAllTcpDestroys         = "emit_all_tcp_destroys"
 	captureEventsVarEmitDnsSent                = "emit_dns_sent"
 	captureEventsVarEmitDnsServer              = "emit_dns_server"
 	captureEventsVarEmitDnsTcpMessages         = "emit_dns_tcp_messages"
@@ -465,6 +466,7 @@ type captureEventsMapSpecs struct {
 // It can be passed ebpf.CollectionSpec.Assign.
 type captureEventsVariableSpecs struct {
 	ClickhouseHttpPort *ebpf.VariableSpec `ebpf:"clickhouse_http_port"`
+	EmitAllTcpDestroys *ebpf.VariableSpec `ebpf:"emit_all_tcp_destroys"`
 	EmitDnsSent        *ebpf.VariableSpec `ebpf:"emit_dns_sent"`
 	EmitDnsServer      *ebpf.VariableSpec `ebpf:"emit_dns_server"`
 	EmitDnsTcpMessages *ebpf.VariableSpec `ebpf:"emit_dns_tcp_messages"`
@@ -569,6 +571,7 @@ func (m *captureEventsMaps) Close() error {
 // It can be passed to loadCaptureEventsObjects or ebpf.CollectionSpec.LoadAndAssign.
 type captureEventsVariables struct {
 	ClickhouseHttpPort *ebpf.Variable `ebpf:"clickhouse_http_port"`
+	EmitAllTcpDestroys *ebpf.Variable `ebpf:"emit_all_tcp_destroys"`
 	EmitDnsSent        *ebpf.Variable `ebpf:"emit_dns_sent"`
 	EmitDnsServer      *ebpf.Variable `ebpf:"emit_dns_server"`
 	EmitDnsTcpMessages *ebpf.Variable `ebpf:"emit_dns_tcp_messages"`

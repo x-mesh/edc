@@ -111,6 +111,10 @@ volatile const __u32 mysql_response_size = 0;
 // 더 넘긴다. 서버는 큰 결과를 8192 byte씩 보내서 앞부분만으로는 경계를 잃는데, ReadyForQuery는 마지막 쓰기의 끝 6 byte에 있다.
 // 0이면 verifier가 이 값에 걸린 분기를 지워 trace mysql, clickhouse, http, dns의 코드가 그대로다.
 volatile const __u32 mysql_tail_size = 0;
+// emit_all_tcp_destroys가 켜지면 tcp_destroy_sock을 port와 관계없이 넘긴다. trace postgres와 trace redis가 켠다. 서버가 받은
+// socket은 닫힐 때 local port를 0으로 놓아 mysql_socket이 거짓이 되고, 사용자 공간에 남은 그 연결의 상태가 같은 주소를 다시
+// 쓴 새 연결의 첫 message를 이어지는 byte로 읽는다. 0이면 trace mysql과 trace clickhouse의 레코드가 그대로다.
+volatile const __u8 emit_all_tcp_destroys = 0;
 // clickhouse_http_port가 0이 아니면 trace clickhouse가 mysql_port와 함께 이 port의 socket도 같은 경로로 넘긴다. HTTP interface의
 // 쿼리를 보려는 것이다. 0이면 verifier가 이 값에 걸린 분기를 지워 trace mysql과 trace http의 코드가 그대로다.
 volatile const __u16 clickhouse_http_port = 0;
@@ -2523,7 +2527,7 @@ int http_tcp_destroy_sock(__u64 *ctx) {
 		bpf_map_delete_elem(&http_streams, &key);
 		bpf_map_delete_elem(&tls_prefixes, &key);
 	}
-	if (!((emit_http_messages && http_socket(sk)) || (mysql_port && mysql_socket(sk)) || (emit_dns_tcp_messages && dns_tcp_socket(sk)))) {
+	if (!(emit_all_tcp_destroys || (emit_http_messages && http_socket(sk)) || (mysql_port && mysql_socket(sk)) || (emit_dns_tcp_messages && dns_tcp_socket(sk)))) {
 		return 0;
 	}
 	struct event *event = start_event(ctx, 5);

@@ -231,3 +231,38 @@ func TestRedisScrollLabelsSummaryAndScreenPairs(t *testing.T) {
 		}
 	}
 }
+
+func TestRedisDetailShowsTheFieldsAndHidesSecrets(t *testing.T) {
+	for _, show := range []bool{false, true} {
+		found := map[string]bool{}
+		for _, name := range []string{"secrets", "pipeline", "errors", "pubsub", "large_get"} {
+			runs, _ := replayRedis(loadRedisFixture(t, name), true, 1024, show)
+			for run := 0; run < len(runs); run++ {
+				for _, event := range runs[run] {
+					lines := newTraceDetail(event, "", nil, 1, 160).raw
+					if lines[0] != "event: "+event.Event {
+						t.Fatalf("%s detail starts with %q", event.Event, lines[0])
+					}
+					text := strings.Join(lines, "\n")
+					if strings.Contains(text, "edc-fixture-pass") {
+						t.Fatalf("show=%v: detail shows the password:\n%s", show, text)
+					}
+					found["edc-secret-value"] = found["edc-secret-value"] || strings.Contains(text, "edc-secret-value")
+					for _, line := range []string{"command: AUTH", "error: ", "push_kind: ", "latency: ", "elements: ", "bulk_length: ", "value: ", "arguments:"} {
+						found[line] = found[line] || strings.Contains(text, "\n"+line)
+					}
+				}
+			}
+		}
+		// 값과 인자 preview는 --show-secrets일 때만 생긴다. 그때만 secrets fixture의 값이 상세에 보여야 한다.
+		for line, want := range map[string]bool{"command: AUTH": true, "error: ": true, "push_kind: ": true, "latency: ": true, "elements: ": true, "bulk_length: ": true, "value: ": show, "arguments:": show, "edc-secret-value": show} {
+			if found[line] != want {
+				t.Errorf("show=%v: Redis detail has %q = %v, want %v", show, line, found[line], want)
+			}
+		}
+	}
+	// Redis 정보가 없는 연결 event는 다른 protocol처럼 JSON으로 보인다.
+	if lines := newTraceDetail(captureEvent{Protocol: "redis", Event: "close"}, "", nil, 1, 160).raw; lines[0] != "{" {
+		t.Fatalf("event without Redis fields: %q", lines)
+	}
+}

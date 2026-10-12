@@ -1,0 +1,43 @@
+# English messages for the events command.
+events:
+  option:
+    since: "how far back to read, as a Go duration such as 30m or 48h"
+  since_positive: "--since must be greater than 0"
+  skip:
+    linux_only: "edc events reads Linux kernel and systemd logs only"
+    needs_root: "needs root or the adm or systemd-journal group to read %s"
+    no_journal: "journalctl is not installed"
+    unreadable: "cannot read %s: %s"
+  window:
+    summary: "%d signals in the last %s (since %s)"
+    none: "no log source was readable for the last %s"
+    truncated: "%s output hit the size limit, so some entries are missing"
+  oom:
+    none: "no OOM kill since %s"
+    found: "%d OOM kills, latest %s"
+  disk_io:
+    none: "no disk I/O error since %s"
+    found: "%d disk I/O errors, latest %s"
+  fs_readonly:
+    none: "no file system went read-only since %s"
+    found: "%d file systems went read-only or shut down, latest %s"
+  link:
+    none: "no link went down since %s (%d link events)"
+    down: "%s stayed down after the last link event (%d link events)"
+    flap: "%s went down and came back up (%d link events)"
+  units:
+    none: "no unit failed or restarted since %s"
+    ok: "%d unit events, no unit stays failed or restarts repeatedly"
+    failed: "%d units stay failed, latest %s"
+    restarting: "%d units failed and restarted, or restarted 3 times or more, latest %s"
+  segfault:
+    none: "no segfault or general protection fault since %s"
+    found: "%d segfaults or general protection faults, latest %s"
+  clock:
+    none: "no clock step of 1s or more since %s"
+    found: "%d clock steps, latest %s"
+  evidence:
+    timeline: "timeline"
+    source: "source"
+    events: "events"
+    more: "... %d more"

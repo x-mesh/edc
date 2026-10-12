@@ -63,6 +63,15 @@ command:
       - "root로 실행하세요. root가 아니면 일부 점검이 skip입니다."
       - "방화벽 점검은 이 호스트만 보고 클라우드 보안 그룹은 보지 않습니다."
       - "패키지 버전을 CVE와 대조하지 않습니다."
+  events:
+    summary: "커널과 systemd의 장애 신호를 시간 순서로 정리 (Linux)"
+    option:
+      since: "읽을 기간 (예: 30m, 48h)"
+    notes:
+      - "커널 로그와 systemd journal만 읽습니다."
+      - "root나 adm, systemd-journal 그룹으로 실행하세요."
+      - "권한이 없으면 점검은 통과가 아니라 skip입니다."
+      - "Linux에서만 동작합니다."
   net:
     summary: "interface, route, ping, trace"
   route:

@@ -1,0 +1,1161 @@
+Redis 7.0.15 (Ubuntu apt package redis-server 5:7.0.15-3ubuntu0.1, arm64; "Redis server v=7.0.15 sha=00000000:0 malloc=jemalloc-5.3.0 bits=64 build=a6fac667c4193620"), measured with strace 6.14 (Ubuntu 6.14-0ubuntu1) on both the server and the client side.
+
+# T1 measurement: Redis RESP traffic fixtures for edc trace redis
+# Do not edit the .records files by hand. Re-run the procedure at the end of this file to regenerate. Companion fixtures: <scenario>.records in this directory.
+
+== Environment
+- Host: OrbStack Linux VM "ubuntu", Ubuntu 25.04 arm64, kernel 7.0.14-orbstack, 9 CPUs. Linux only; nothing was installed on the macOS host.
+- Packages installed in the VM with apt: redis-server and redis-tools 5:7.0.15-3ubuntu0.1, strace 6.14-0ubuntu1. The redis-server systemd unit was stopped and disabled right after the install; it never served a fixture.
+- The VM is shared with other work, so it was started with "orb start ubuntu" when needed and NOT stopped afterwards (deviation from the plan, which asked for "orb stop ubuntu"). All files of this capture lived under /tmp/edc-redis in the VM and were removed at the end.
+- Server: started by hand for every scenario (fresh process, empty data set) in a private UTS namespace with hostname fixture-host:
+  sudo unshare --uts sh -c "hostname fixture-host; exec redis-server --bind 127.0.0.1 --port 6379 --requirepass edc-fixture-pass --enable-debug-command local --save '' --appendonly no --dir /tmp/edc-redis/data --logfile /tmp/edc-redis/out/server.log --daemonize no"
+  The host name does not show up in any captured byte (RESP traffic carries no host name in these scenarios).
+- Clients ran in the VM and connected to 127.0.0.1:6379: redis-benchmark and redis-cli 7.0.15 (hiredis, 16384-byte reads), OpenBSD netcat 1.228 (inline), and /tmp/edc-redis/bin/client.py (Python 3.13 raw sockets, TCP_NODELAY, recv(16384) like hiredis, one sendall per step) for the scenarios that need two connections in a fixed order or replies with no fixed count.
+- Server tracing: sudo strace -f -yy -xx -ttt -s 2097152 -e trace=read,recvfrom,recvmsg,readv,write,sendto,sendmsg,writev -p <redis-server pid> -o <scenario>.server.st (attached 1 s before the client started, detached 0.5 s after it ended).
+- Client tracing: strace -f -yy -xx -ttt -s 2097152 -e trace=read,recvfrom,recvmsg,readv,write,sendto,sendmsg,writev -o <scenario>.client.st sh -c "<command>".
+- Only syscalls on a TCP socket with local port 6379 (server) or peer port 6379 (client) and a positive return value are kept. Calls returning -1 EAGAIN and 0 (EOF) are dropped. For writev/readv the iov_base strings are joined and cut to the return value.
+- strace slows both sides. Timestamps order the records; they are not benchmarks.
+
+== Fixture format
+- One file per scenario: <scenario>.records. Same format as ../clickhouse/http/*.records: header comments, then one section that starts at "# version: Redis server v=7.0.15 (Ubuntu apt redis-server 5:7.0.15-3ubuntu0.1 arm64)". Replay each section on its own.
+- Inside the section, every "# run <n>: <title>, <role>" starts one TCP connection, followed by "# command: <client command line>". Runs are in the order of the first record of each connection. Connections of one scenario were open at the same time (for example subscriber and publisher); their relative order is in the step logs below, not in the file.
+- Record line: "<server|client> <send|recv> <total bytes> <hex>". hex = exactly the first min(total,4096) bytes (no 64-byte shortening as in the ClickHouse HTTP fixtures, so len(hex)/2 == min(total,4096) always holds). One line per syscall, server and client lines interleaved by syscall time: filter by side.
+- server recv = request bytes read by redis-server, server send = reply bytes written by redis-server, client send = request bytes written by the client, client recv = reply bytes read by the client. Per connection, the server recv byte stream equals the client send stream and the server send stream equals the client recv stream (checked by the analysis: same frame lists); the record boundaries differ on the two sides.
+- One syscall = one record, which is what the BPF hook sees as one tcp_sendmsg/tcp_recvmsg (the same assumption as the ClickHouse fixtures). TCP segment boundaries were not measured.
+- Paths "in/..." in command lines are relative to /tmp/edc-redis in the VM.
+
+== Scenarios and steps
+pipeline: redis-benchmark -h 127.0.0.1 -p 6379 -a edc-fixture-pass -P 16 -c 1 -n 64 -t set,get,incr,lpush
+  run 0 is redis-benchmark's own setup connection (AUTH, CONFIG GET save, CONFIG GET appendonly); runs 1-4 are the SET, GET, INCR and LPUSH tests, one connection each. Each test connection sends AUTH plus the first 16 commands in one write (AUTH reply and 16 replies come back in one write), then 3 more writes of 16 commands.
+pubsub: python3 /tmp/edc-redis/bin/client.py pubsub (RESP2)
+  run 0 subscriber, run 1 publisher. Steps (send = one write, recv = frames read before the next step):
+    subscriber send AUTH edc-fixture-pass
+    subscriber recv +OK
+    publisher send AUTH edc-fixture-pass
+    publisher recv +OK
+    subscriber send SUBSCRIBE edc-ch1 edc-ch2
+    subscriber recv *3[$9] | *3[$9]
+    subscriber send PSUBSCRIBE edc-ch*
+    subscriber recv *3[$10]
+    publisher send PUBLISH edc-ch1 hello-1
+    publisher recv :2
+    subscriber recv *3[$7] | *4[$8]
+    publisher send PUBLISH edc-ch2 hello-2
+    publisher recv :2
+    subscriber recv *3[$7] | *4[$8]
+    subscriber send PING
+    subscriber recv *2[$4]
+    subscriber send PING edc-ping-arg
+    subscriber recv *2[$4]
+    subscriber send UNSUBSCRIBE
+    subscriber recv *3[$11] | *3[$11]
+    subscriber send PUNSUBSCRIBE
+    subscriber recv *3[$12]
+    subscriber send PING
+    subscriber recv +PONG
+multi: python3 /tmp/edc-redis/bin/client.py multi
+  run 0 client, run 1 other. Steps:
+    client send AUTH edc-fixture-pass
+    client recv +OK
+    other send AUTH edc-fixture-pass
+    other recv +OK
+    client send SET edc-ms notanumber
+    client recv +OK
+    client send MULTI
+    client recv +OK
+    client send SET edc-mk 1
+    client recv +QUEUED
+    client send INCR edc-ms
+    client recv +QUEUED
+    client send EXEC
+    client recv *2[+OK]
+    client send MULTI
+    client recv +OK
+    client send SET edc-mk 2
+    client recv +QUEUED
+    client send DISCARD
+    client recv +OK
+    client send WATCH edc-wk
+    client recv +OK
+    other send SET edc-wk changed
+    other recv +OK
+    client send MULTI
+    client recv +OK
+    client send SET edc-wk mine
+    client recv +QUEUED
+    client send EXEC
+    client recv *null
+    client send MULTI
+    client recv +OK
+    client send NOSUCHCMD edc-arg
+    client recv -ERR unknown command 'NOSUCHCMD', with ar
+    client send SET edc-mk 3
+    client recv +QUEUED
+    client send EXEC
+    client recv -EXECABORT Transaction discarded because 
+    client send MULTI | INCR edc-cnt | INCR edc-cnt | EXEC
+    client recv +OK | +QUEUED | +QUEUED | *2[:1]
+large_get: redis-cli -h 127.0.0.1 -p 6379 -a edc-fixture-pass --no-auth-warning -x SET edc-big < in/big.value && redis-cli -h 127.0.0.1 -p 6379 -a edc-fixture-pass --no-auth-warning GET edc-big > /dev/null
+  in/big.value is 200000 ASCII bytes "v00000-v00001-..." with no newline. run 0 = SET connection (AUTH, SET), run 1 = GET connection (AUTH, GET). redis-cli with a command on the command line sends no COMMAND DOCS (see finding 9).
+resp3: python3 /tmp/edc-redis/bin/client.py resp3
+  run 0 client, run 1 other. Steps:
+    client send AUTH edc-fixture-pass
+    client recv +OK
+    other send AUTH edc-fixture-pass
+    other recv +OK
+    client send HELLO 3
+    client recv %7[$6]
+    client send HSET edc-h f1 v1 f2 v2
+    client recv :2
+    client send HGETALL edc-h
+    client recv %2[$2]
+    client send SADD edc-s a b c
+    client recv :3
+    client send SMEMBERS edc-s
+    client recv ~3[$1]
+    client send ZADD edc-z 1.5 m
+    client recv :1
+    client send ZSCORE edc-z m
+    client recv ,1.5
+    client send DEBUG PROTOCOL string
+    client recv $11
+    client send DEBUG PROTOCOL integer
+    client recv :12345
+    client send DEBUG PROTOCOL double
+    client recv ,3.141
+    client send DEBUG PROTOCOL bignum
+    client recv (1234567999999999999999999999999999999
+    client send DEBUG PROTOCOL null
+    client recv _
+    client send DEBUG PROTOCOL array
+    client recv *3[:0]
+    client send DEBUG PROTOCOL set
+    client recv ~3[:0]
+    client send DEBUG PROTOCOL map
+    client recv %3[:0]
+    client send DEBUG PROTOCOL attrib
+    client recv |attr+$39
+    client send DEBUG PROTOCOL verbatim
+    client recv =29
+    client send DEBUG PROTOCOL true
+    client recv #t
+    client send DEBUG PROTOCOL false
+    client recv #f
+    client send DEBUG PROTOCOL push
+    client recv >2[$16] | $40
+    client send CLIENT TRACKING ON
+    client recv +OK
+    client send GET edc-tk
+    client recv _
+    other send SET edc-tk v1
+    other recv +OK
+    client recv >2[$10]
+    client send PING
+    client recv +PONG
+    client send SUBSCRIBE edc-r3
+    client recv >3[$9]
+    other send PUBLISH edc-r3 m3
+    other recv :1
+    client recv >3[$7]
+    client send PING
+    client recv +PONG
+    client send UNSUBSCRIBE
+    client recv >3[$11]
+    client send PING
+    client recv +PONG
+monitor: python3 /tmp/edc-redis/bin/client.py monitor
+  run 0 monitor, run 1 client. "drained" = read until the socket was idle for 0.4 s. Steps:
+    monitor send AUTH edc-fixture-pass
+    monitor recv +OK
+    monitor send MONITOR
+    monitor recv +OK
+    client send AUTH edc-fixture-pass
+    client recv +OK
+    client send SET edc-mon v1
+    client recv +OK
+    client send GET edc-mon
+    client recv $2
+    client send AUTH edc-wrong-pass
+    client recv -WRONGPASS invalid username-password pair
+    monitor drained 4 frames: +1791788445.996979 [0 127.0.0.1:59294] "A | +1791788445.997148 [0 127.0.0.1:59294] "S | +1791788445.997294 [0 127.0.0.1:59294] "G | +1791788445.997438 [0 127.0.0.1:59294] "A
+    monitor send RESET
+    monitor drained 1 frames: +RESET
+    monitor send PING
+    monitor recv -NOAUTH Authentication required.
+    monitor send AUTH edc-fixture-pass
+    monitor recv +OK
+    monitor send PING
+    monitor recv +PONG
+secrets: redis-cli -h 127.0.0.1 -p 6379 < in/secrets.txt (no -a; stdin lines, one command each, replies awaited one by one)
+  AUTH edc-fixture-pass
+  HELLO 3 AUTH default edc-fixture-pass SETNAME edc-fixture-client
+  CONFIG SET masterauth edc-secret-master
+  CONFIG GET requirepass
+  CONFIG GET masterauth
+  ACL SETUSER edc-user on >edc-secret-acl ~* +@all
+  ACL GETUSER edc-user
+  ACL LIST
+  SET k edc-secret-value
+  MIGRATE 127.0.0.1 6390 k 0 1000 AUTH edc-secret-migrate
+  MIGRATE 127.0.0.1 6390 k 0 1000 AUTH2 edc-user edc-secret-migrate
+  GET k
+  Nothing listens on 127.0.0.1:6390; both MIGRATE calls answer "-IOERR error or timeout writing to target instance". Before the first line redis-cli sends COMMAND DOCS and COMMAND by itself; both get NOAUTH (finding 9).
+errors: redis-cli -h 127.0.0.1 -p 6379 < in/errors.txt (no -a)
+  GET edc-k (NOAUTH), AUTH edc-wrong-pass (WRONGPASS), AUTH edc-fixture-pass, LPUSH edc-list a, GET edc-list (WRONGTYPE), FOOBAR edc-arg (ERR unknown command), EVALSHA ffffffffffffffffffffffffffffffffffffffff 0 (NOSCRIPT). redis-cli's own COMMAND DOCS and COMMAND come first and get NOAUTH.
+inline: (printf 'PING\r\n'; sleep 0.2; printf 'SET k v\r\nAUTH edc-fixture-pass\r\n'; sleep 0.2; printf 'PING\nSET k v\r\n'; sleep 0.3) | nc -q 1 127.0.0.1 6379
+  Three writes: "PING\r\n"; "SET k v\r\n" + "AUTH edc-fixture-pass\r\n"; "PING\n" (LF only) + "SET k v\r\n". Replies: -NOAUTH, -NOAUTH, +OK, +PONG, +OK.
+lrange_big: python3 /tmp/edc-redis/bin/client.py lrange_big
+  AUTH; RPUSH edc-list item-00000 ... item-04999 (5000 items, one 85032-byte write); LRANGE edc-list 0 -1; PING. Steps:
+    client send AUTH edc-fixture-pass
+    client recv +OK
+    client send RPUSH edc-list item-00000 item-00001 ... 5002 args
+    client recv :5000
+    client send LRANGE edc-list 0 -1
+    client recv *5000[$10]
+    client send PING
+    client recv +PONG
+
+== Findings (observed facts)
+1. Syscalls: redis-server reads with read() and writes with write(), and with writev() when a reply is spread over several reply buffers (large_get GET reply: one writev of 200011 bytes; lrange_big LRANGE reply: writev 77776 + write 7231; the 480-element COMMAND DOCS reply in an earlier trial: writev). redis-cli, redis-benchmark and Python use sendto/recvfrom; nc uses read/write. recvmsg, readv and sendmsg were not seen.
+2. Read sizes: hiredis (redis-cli, redis-benchmark) and client.py ask for 16384 bytes per recvfrom. redis-server asks for 16384 or 20474 bytes (the free space of its query buffer) and, for a big bulk argument, exactly the rest of that bulk (74085 and 179563 in large_get). So the server splits one 200037-byte client write into 4 reads (37+20474+105478+74085 for AUTH+SET) and one 85032-byte RPUSH write into reads of 20474, 20471, 20468, 20468 and 3151 bytes. A client read of a big reply is 16384 bytes (large_get GET: 13 reads on the client, 16384 bytes each except one of 13312 and a 6475-byte tail; 1 write of 200011 bytes on the server).
+3. Small replies: every reply in pipeline, pubsub, multi, resp3, monitor, secrets, errors and inline ends inside the first 1024 bytes of its record on both sides (largest small server write: 145 bytes, the HELLO 3 map; the ACL LIST reply in secrets is 217 bytes). Pipelined replies share a record: redis-benchmark gets 17 replies in the first read (AUTH +OK and 16 replies) and 16 in each later read; all of them end before byte 1024 (largest pipelined record: 149 bytes on the GET test).
+4. Where framing is lost: walking the headers (type lines and element headers; bulk payloads are skipped by declared length) with only the first 1024 or 4095 bytes of each record visible keeps the framing in every scenario except lrange_big:
+   - lrange_big reply (*5000 of 10-byte bulks): server send record 2 (77776 bytes) hides the first element header at offset 1027 (cap 1024) / 4104 (cap 4095); the client recv record 2 (16384 bytes) loses it at the same offsets. The PING reply "+PONG\r\n" is a 7-byte record of its own on both sides, so a reader that resyncs at a record start sees it.
+   - lrange_big request (RPUSH with 5000 arguments): hidden header at offset 1035 (cap 1024) / 4095 (cap 4095) of the first big record on both sides. The LRANGE request (45 bytes) and the PING request (14 bytes) are records of their own on both sides.
+   - large_get keeps the framing at both caps: the bulk header "$200000\r\n" is at offset 0 of the GET reply record and the payload is skipped by length (server: one 200011-byte record; client: 13 records). The SET request header "*3\r\n$3\r\nSET\r\n$7\r\nedc-big\r\n$200000\r\n" is in the first 1024 bytes of its record on both sides.
+   Full per-direction tables: see "Per-scenario analysis".
+5. MONITOR line shape: a simple string "+<unix seconds>.<6-digit microseconds> [<db> <client ip>:<client port>] \"<CMD>\" \"<arg>\" ...\r\n", one write per line on the server (56-61 bytes here); the monitor client read 4 lines in one 237-byte read. AUTH from the other client appears as "\"AUTH\" \"(redacted)\"" for both the good and the wrong password; SET and GET show key and value in clear. RESET on the monitor connection answers +RESET (no monitor line for RESET or MONITOR itself), and RESET also de-authenticates: the next PING got -NOAUTH, then AUTH and PING worked.
+6. DEBUG PROTOCOL worked (--enable-debug-command local, client on 127.0.0.1) for string, integer, double (",3.141"), bignum ("(1234567999999999999999999999999999999"), null ("_"), array, set ("~3"), map ("%3"), attrib, verbatim ("=29\r\ntxt:This is a verbatim\nstring\r\n"), true ("#t"), false ("#f") and push. attrib is one 93-byte write: "|1" attribute (key-popularity -> *2 [key:123, :90]) followed by the real reply "$39 Some real reply following the attribute". push is one 79-byte write: ">2 [server-cpu-usage, :42]" followed by "$40 Some real reply following the push reply". So an attribute and a push can share a record with the reply that follows.
+7. RESP3: HELLO 3 answers "%7" (server, version, proto, id, mode, role, modules). HGETALL answers "%2", SMEMBERS "~3", ZSCORE ",1.5", GET of a missing key "_". CLIENT TRACKING ON then GET edc-tk, then SET edc-tk from the other connection: the client gets ">2 [invalidate, *1 [edc-tk]]" as its own 37-byte record with no command pending. SUBSCRIBE in RESP3 answers with a push ">3 [subscribe, edc-r3, :1]", the published message arrives as ">3 [message, edc-r3, m3]", PING while subscribed answers a plain "+PONG" (not an array), UNSUBSCRIBE answers ">3 [unsubscribe, edc-r3, :0]".
+8. RESP2 pub/sub: SUBSCRIBE edc-ch1 edc-ch2 answers two "*3 [subscribe, <ch>, :n]" arrays in one write; PSUBSCRIBE answers "*3 [psubscribe, edc-ch*, :3]"; a PUBLISH to edc-ch1 delivers "*3 [message, edc-ch1, hello-1]" and "*4 [pmessage, edc-ch*, edc-ch1, hello-1]" in one write; PING while subscribed answers "*2 [pong, \"\"]" and PING edc-ping-arg answers "*2 [pong, edc-ping-arg]"; UNSUBSCRIBE without arguments answers two "*3 [unsubscribe, <ch>, :n]" (counts 2 and 1, the pattern still counts) in one write; PUNSUBSCRIBE answers "*3 [punsubscribe, edc-ch*, :0]"; the next PING answers "+PONG".
+9. redis-cli reading commands from stdin (secrets, errors) first sends "COMMAND DOCS" and then "COMMAND" by itself. Without a password both answer -NOAUTH. With -a the COMMAND DOCS reply is a 480-element map array of about 172 KB in several writes, and its framing is lost at cap 1024 (seen in a trial run; that is why large_get uses redis-cli with the command on the command line, which sends only AUTH and the command).
+10. MULTI/EXEC: MULTI +OK, each queued command +QUEUED, EXEC with SET and INCR on a non-integer value answers "*2 [+OK, -ERR value is not an integer or out of range]"; DISCARD +OK; WATCH edc-wk, SET edc-wk from the other connection, MULTI, SET, EXEC answers "*-1" (RESP2 null array); an unknown command inside MULTI answers "-ERR unknown command 'NOSUCHCMD', with args beginning with: 'edc-arg' ", the next command still answers +QUEUED, and EXEC answers "-EXECABORT Transaction discarded because of previous errors."; MULTI, INCR, INCR, EXEC in one write answer "+OK +QUEUED +QUEUED *2 [:1, :2]" in one write.
+11. Error replies seen: NOAUTH, WRONGPASS, WRONGTYPE, ERR (unknown command, echoes up to the first arguments in quotes), NOSCRIPT, EXECABORT, IOERR. The unknown-command error echoes the argument text ("'edc-arg'"), so error messages can carry argument bytes.
+12. Secrets in replies: CONFIG GET requirepass answers the password in clear (RESP3 map "%1 requirepass edc-fixture-pass"), CONFIG GET masterauth answers edc-secret-master in clear. ACL GETUSER and ACL LIST answer the SHA-256 of the ACL password ("#6fcd8525..." for edc-secret-acl, "#b989444c..." for edc-fixture-pass), not the password. The HELLO 3 AUTH reply carries no password.
+13. Inline: Redis accepts "PING\n" (LF only) as well as CRLF lines; replies are normal RESP. Two inline lines in one write are answered in one write.
+
+== Planted fake secrets (the only credentials in these files)
+- edc-fixture-pass: requirepass of the server (AUTH, HELLO AUTH, redis-cli -a, redis-benchmark -a, CONFIG GET requirepass reply).
+- edc-wrong-pass: wrong password for WRONGPASS (errors, monitor).
+- edc-secret-master: CONFIG SET masterauth value (also in the CONFIG GET masterauth reply).
+- edc-secret-acl: ACL SETUSER password (only in the request; replies carry its SHA-256).
+- edc-secret-migrate: MIGRATE AUTH and AUTH2 password.
+- edc-secret-value: value of SET k (secrets) and the GET k reply.
+- user names: default, edc-user. Client name: edc-fixture-client.
+Check (decode the hex, then grep; run in this directory):
+dec() { for f in *.records; do grep -v '^#' "$f" | cut -d' ' -f4 | tr -d '\n' | xxd -r -p; done; }
+$ dec | grep -a -i -c -E "<VM user>|<host user>|<mail name>|orbstack|ubuntu|[.]local|/Users/|/home/|192[.]168"   (names filled in when run, not written here)
+0
+$ grep -c -E "<VM user>|<host user>|<mail name>|orbstack|/Users/|/home/" *.records   (every file)
+0
+$ dec | grep -a -o -E "edc-(fixture-pass|secret-[a-z]+|wrong-pass)" | sort | uniq -c
+     44 edc-fixture-pass
+      2 edc-secret-acl
+      4 edc-secret-master
+      4 edc-secret-migrate
+      4 edc-secret-value
+      4 edc-wrong-pass
+$ dec | grep -a -o -E "127\.0\.0\.1[:0-9]*" | sort | uniq -c
+      4 127.0.0.1           (MIGRATE target host in the secrets requests)
+      8 127.0.0.1:<port>    (MONITOR lines)
+
+== Analysis legend
+Per run and direction: records, bytes and record sizes. "cap N" walks the frames seeing only the first N bytes of every record: frames = top-level frames (an attribute is folded into the frame after it; inline lines count as frames on the request side), leftover = bytes after the last whole frame, records_with_2plus_frames = records in which 2 or more top-level frames start, frame_end_offsets = where each top-level frame ends inside its last record (<=1024, <=4095, >4095), walk = OK or the first header byte that is outside the visible part ("rec<i>@<offset>/<record size>", 0-based record index in that direction). "frames:" lists the frames: type byte + length or element count, [first child] for aggregates, the first 40 bytes for simple strings and errors.
+
+== Per-scenario analysis
+== pipeline: redis-benchmark pipeline -P 16
+command: redis-benchmark -h 127.0.0.1 -p 6379 -a edc-fixture-pass -P 16 -c 1 -n 64 -t set,get,incr,lpush
+ -- run 0 (connection 1)
+  server recv: records=2 bytes=114 sizes=[37, 77]
+    cap 1024: frames=3 leftover=0 records_with_2plus_frames=1 frame_end_offsets={'<=1024': 3} walk=OK
+    cap 4095: frames=3 leftover=0 records_with_2plus_frames=1 frame_end_offsets={'<=1024': 3} walk=OK
+    frames: *2[$4] *3[$6] *3[$6]
+  client send: records=2 bytes=114 sizes=[37, 77]
+    cap 1024: frames=3 leftover=0 records_with_2plus_frames=1 frame_end_offsets={'<=1024': 3} walk=OK
+    cap 4095: frames=3 leftover=0 records_with_2plus_frames=1 frame_end_offsets={'<=1024': 3} walk=OK
+    frames: *2[$4] *3[$6] *3[$6]
+  server send: records=2 bytes=54 sizes=[5, 49]
+    cap 1024: frames=3 leftover=0 records_with_2plus_frames=1 frame_end_offsets={'<=1024': 3} walk=OK
+    cap 4095: frames=3 leftover=0 records_with_2plus_frames=1 frame_end_offsets={'<=1024': 3} walk=OK
+    frames: +OK *2[$4] *2[$10]
+  client recv: records=2 bytes=54 sizes=[5, 49]
+    cap 1024: frames=3 leftover=0 records_with_2plus_frames=1 frame_end_offsets={'<=1024': 3} walk=OK
+    cap 4095: frames=3 leftover=0 records_with_2plus_frames=1 frame_end_offsets={'<=1024': 3} walk=OK
+    frames: +OK *2[$4] *2[$10]
+ -- run 1 (connection 2)
+  server recv: records=4 bytes=2917 sizes=[757, 720, 720, 720]
+    cap 1024: frames=65 leftover=0 records_with_2plus_frames=4 frame_end_offsets={'<=1024': 65} walk=OK
+    cap 4095: frames=65 leftover=0 records_with_2plus_frames=4 frame_end_offsets={'<=1024': 65} walk=OK
+    frames: *2[$4] *3[$3] *3[$3] *3[$3] *3[$3] *3[$3] *3[$3] *3[$3] *3[$3] *3[$3] *3[$3] *3[$3] *3[$3] *3[$3] *3[$3] *3[$3] *3[$3] *3[$3] *3[$3] *3[$3] *3[$3] *3[$3] *3[$3] *3[$3] *3[$3] *3[$3] *3[$3] *3[$3] *3[$3] *3[$3] ... *3[$3] *3[$3] *3[$3] *3[$3] *3[$3] *3[$3]
+  client send: records=4 bytes=2917 sizes=[757, 720, 720, 720]
+    cap 1024: frames=65 leftover=0 records_with_2plus_frames=4 frame_end_offsets={'<=1024': 65} walk=OK
+    cap 4095: frames=65 leftover=0 records_with_2plus_frames=4 frame_end_offsets={'<=1024': 65} walk=OK
+    frames: *2[$4] *3[$3] *3[$3] *3[$3] *3[$3] *3[$3] *3[$3] *3[$3] *3[$3] *3[$3] *3[$3] *3[$3] *3[$3] *3[$3] *3[$3] *3[$3] *3[$3] *3[$3] *3[$3] *3[$3] *3[$3] *3[$3] *3[$3] *3[$3] *3[$3] *3[$3] *3[$3] *3[$3] *3[$3] *3[$3] ... *3[$3] *3[$3] *3[$3] *3[$3] *3[$3] *3[$3]
+  server send: records=4 bytes=325 sizes=[85, 80, 80, 80]
+    cap 1024: frames=65 leftover=0 records_with_2plus_frames=4 frame_end_offsets={'<=1024': 65} walk=OK
+    cap 4095: frames=65 leftover=0 records_with_2plus_frames=4 frame_end_offsets={'<=1024': 65} walk=OK
+    frames: +OK +OK +OK +OK +OK +OK +OK +OK +OK +OK +OK +OK +OK +OK +OK +OK +OK +OK +OK +OK +OK +OK +OK +OK +OK +OK +OK +OK +OK +OK ... +OK +OK +OK +OK +OK +OK
+  client recv: records=4 bytes=325 sizes=[85, 80, 80, 80]
+    cap 1024: frames=65 leftover=0 records_with_2plus_frames=4 frame_end_offsets={'<=1024': 65} walk=OK
+    cap 4095: frames=65 leftover=0 records_with_2plus_frames=4 frame_end_offsets={'<=1024': 65} walk=OK
+    frames: +OK +OK +OK +OK +OK +OK +OK +OK +OK +OK +OK +OK +OK +OK +OK +OK +OK +OK +OK +OK +OK +OK +OK +OK +OK +OK +OK +OK +OK +OK ... +OK +OK +OK +OK +OK +OK
+ -- run 2 (connection 3)
+  server recv: records=4 bytes=2341 sizes=[613, 576, 576, 576]
+    cap 1024: frames=65 leftover=0 records_with_2plus_frames=4 frame_end_offsets={'<=1024': 65} walk=OK
+    cap 4095: frames=65 leftover=0 records_with_2plus_frames=4 frame_end_offsets={'<=1024': 65} walk=OK
+    frames: *2[$4] *2[$3] *2[$3] *2[$3] *2[$3] *2[$3] *2[$3] *2[$3] *2[$3] *2[$3] *2[$3] *2[$3] *2[$3] *2[$3] *2[$3] *2[$3] *2[$3] *2[$3] *2[$3] *2[$3] *2[$3] *2[$3] *2[$3] *2[$3] *2[$3] *2[$3] *2[$3] *2[$3] *2[$3] *2[$3] ... *2[$3] *2[$3] *2[$3] *2[$3] *2[$3] *2[$3]
+  client send: records=4 bytes=2341 sizes=[613, 576, 576, 576]
+    cap 1024: frames=65 leftover=0 records_with_2plus_frames=4 frame_end_offsets={'<=1024': 65} walk=OK
+    cap 4095: frames=65 leftover=0 records_with_2plus_frames=4 frame_end_offsets={'<=1024': 65} walk=OK
+    frames: *2[$4] *2[$3] *2[$3] *2[$3] *2[$3] *2[$3] *2[$3] *2[$3] *2[$3] *2[$3] *2[$3] *2[$3] *2[$3] *2[$3] *2[$3] *2[$3] *2[$3] *2[$3] *2[$3] *2[$3] *2[$3] *2[$3] *2[$3] *2[$3] *2[$3] *2[$3] *2[$3] *2[$3] *2[$3] *2[$3] ... *2[$3] *2[$3] *2[$3] *2[$3] *2[$3] *2[$3]
+  server send: records=4 bytes=581 sizes=[149, 144, 144, 144]
+    cap 1024: frames=65 leftover=0 records_with_2plus_frames=4 frame_end_offsets={'<=1024': 65} walk=OK
+    cap 4095: frames=65 leftover=0 records_with_2plus_frames=4 frame_end_offsets={'<=1024': 65} walk=OK
+    frames: +OK $3 $3 $3 $3 $3 $3 $3 $3 $3 $3 $3 $3 $3 $3 $3 $3 $3 $3 $3 $3 $3 $3 $3 $3 $3 $3 $3 $3 $3 ... $3 $3 $3 $3 $3 $3
+  client recv: records=4 bytes=581 sizes=[149, 144, 144, 144]
+    cap 1024: frames=65 leftover=0 records_with_2plus_frames=4 frame_end_offsets={'<=1024': 65} walk=OK
+    cap 4095: frames=65 leftover=0 records_with_2plus_frames=4 frame_end_offsets={'<=1024': 65} walk=OK
+    frames: +OK $3 $3 $3 $3 $3 $3 $3 $3 $3 $3 $3 $3 $3 $3 $3 $3 $3 $3 $3 $3 $3 $3 $3 $3 $3 $3 $3 $3 $3 ... $3 $3 $3 $3 $3 $3
+ -- run 3 (connection 4)
+  server recv: records=4 bytes=2661 sizes=[693, 656, 656, 656]
+    cap 1024: frames=65 leftover=0 records_with_2plus_frames=4 frame_end_offsets={'<=1024': 65} walk=OK
+    cap 4095: frames=65 leftover=0 records_with_2plus_frames=4 frame_end_offsets={'<=1024': 65} walk=OK
+    frames: *2[$4] *2[$4] *2[$4] *2[$4] *2[$4] *2[$4] *2[$4] *2[$4] *2[$4] *2[$4] *2[$4] *2[$4] *2[$4] *2[$4] *2[$4] *2[$4] *2[$4] *2[$4] *2[$4] *2[$4] *2[$4] *2[$4] *2[$4] *2[$4] *2[$4] *2[$4] *2[$4] *2[$4] *2[$4] *2[$4] ... *2[$4] *2[$4] *2[$4] *2[$4] *2[$4] *2[$4]
+  client send: records=4 bytes=2661 sizes=[693, 656, 656, 656]
+    cap 1024: frames=65 leftover=0 records_with_2plus_frames=4 frame_end_offsets={'<=1024': 65} walk=OK
+    cap 4095: frames=65 leftover=0 records_with_2plus_frames=4 frame_end_offsets={'<=1024': 65} walk=OK
+    frames: *2[$4] *2[$4] *2[$4] *2[$4] *2[$4] *2[$4] *2[$4] *2[$4] *2[$4] *2[$4] *2[$4] *2[$4] *2[$4] *2[$4] *2[$4] *2[$4] *2[$4] *2[$4] *2[$4] *2[$4] *2[$4] *2[$4] *2[$4] *2[$4] *2[$4] *2[$4] *2[$4] *2[$4] *2[$4] *2[$4] ... *2[$4] *2[$4] *2[$4] *2[$4] *2[$4] *2[$4]
+  server send: records=4 bytes=316 sizes=[76, 80, 80, 80]
+    cap 1024: frames=65 leftover=0 records_with_2plus_frames=4 frame_end_offsets={'<=1024': 65} walk=OK
+    cap 4095: frames=65 leftover=0 records_with_2plus_frames=4 frame_end_offsets={'<=1024': 65} walk=OK
+    frames: +OK :1 :2 :3 :4 :5 :6 :7 :8 :9 :10 :11 :12 :13 :14 :15 :16 :17 :18 :19 :20 :21 :22 :23 :24 :25 :26 :27 :28 :29 ... :59 :60 :61 :62 :63 :64
+  client recv: records=4 bytes=316 sizes=[76, 80, 80, 80]
+    cap 1024: frames=65 leftover=0 records_with_2plus_frames=4 frame_end_offsets={'<=1024': 65} walk=OK
+    cap 4095: frames=65 leftover=0 records_with_2plus_frames=4 frame_end_offsets={'<=1024': 65} walk=OK
+    frames: +OK :1 :2 :3 :4 :5 :6 :7 :8 :9 :10 :11 :12 :13 :14 :15 :16 :17 :18 :19 :20 :21 :22 :23 :24 :25 :26 :27 :28 :29 ... :59 :60 :61 :62 :63 :64
+ -- run 4 (connection 5)
+  server recv: records=4 bytes=2341 sizes=[613, 576, 576, 576]
+    cap 1024: frames=65 leftover=0 records_with_2plus_frames=4 frame_end_offsets={'<=1024': 65} walk=OK
+    cap 4095: frames=65 leftover=0 records_with_2plus_frames=4 frame_end_offsets={'<=1024': 65} walk=OK
+    frames: *2[$4] *3[$5] *3[$5] *3[$5] *3[$5] *3[$5] *3[$5] *3[$5] *3[$5] *3[$5] *3[$5] *3[$5] *3[$5] *3[$5] *3[$5] *3[$5] *3[$5] *3[$5] *3[$5] *3[$5] *3[$5] *3[$5] *3[$5] *3[$5] *3[$5] *3[$5] *3[$5] *3[$5] *3[$5] *3[$5] ... *3[$5] *3[$5] *3[$5] *3[$5] *3[$5] *3[$5]
+  client send: records=4 bytes=2341 sizes=[613, 576, 576, 576]
+    cap 1024: frames=65 leftover=0 records_with_2plus_frames=4 frame_end_offsets={'<=1024': 65} walk=OK
+    cap 4095: frames=65 leftover=0 records_with_2plus_frames=4 frame_end_offsets={'<=1024': 65} walk=OK
+    frames: *2[$4] *3[$5] *3[$5] *3[$5] *3[$5] *3[$5] *3[$5] *3[$5] *3[$5] *3[$5] *3[$5] *3[$5] *3[$5] *3[$5] *3[$5] *3[$5] *3[$5] *3[$5] *3[$5] *3[$5] *3[$5] *3[$5] *3[$5] *3[$5] *3[$5] *3[$5] *3[$5] *3[$5] *3[$5] *3[$5] ... *3[$5] *3[$5] *3[$5] *3[$5] *3[$5] *3[$5]
+  server send: records=4 bytes=316 sizes=[76, 80, 80, 80]
+    cap 1024: frames=65 leftover=0 records_with_2plus_frames=4 frame_end_offsets={'<=1024': 65} walk=OK
+    cap 4095: frames=65 leftover=0 records_with_2plus_frames=4 frame_end_offsets={'<=1024': 65} walk=OK
+    frames: +OK :1 :2 :3 :4 :5 :6 :7 :8 :9 :10 :11 :12 :13 :14 :15 :16 :17 :18 :19 :20 :21 :22 :23 :24 :25 :26 :27 :28 :29 ... :59 :60 :61 :62 :63 :64
+  client recv: records=4 bytes=316 sizes=[76, 80, 80, 80]
+    cap 1024: frames=65 leftover=0 records_with_2plus_frames=4 frame_end_offsets={'<=1024': 65} walk=OK
+    cap 4095: frames=65 leftover=0 records_with_2plus_frames=4 frame_end_offsets={'<=1024': 65} walk=OK
+    frames: +OK :1 :2 :3 :4 :5 :6 :7 :8 :9 :10 :11 :12 :13 :14 :15 :16 :17 :18 :19 :20 :21 :22 :23 :24 :25 :26 :27 :28 :29 ... :59 :60 :61 :62 :63 :64
+ syscalls: client recv recvfrom x18, client send sendto x18, server recv read x18, server send write x18
+ recv buffer sizes asked (read/recvfrom count argument): 16384 x23, 20474 x13
+== pubsub: RESP2 pub/sub
+command: python3 /tmp/edc-redis/bin/client.py pubsub
+ -- run 0 (subscriber)
+  server recv: records=8 bytes=222 sizes=[37, 45, 34, 14, 33, 22, 23, 14]
+    cap 1024: frames=8 leftover=0 records_with_2plus_frames=0 frame_end_offsets={'<=1024': 8} walk=OK
+    cap 4095: frames=8 leftover=0 records_with_2plus_frames=0 frame_end_offsets={'<=1024': 8} walk=OK
+    frames: *2[$4] *3[$9] *2[$10] *1[$4] *2[$4] *1[$11] *1[$12] *1[$4]
+  client send: records=8 bytes=222 sizes=[37, 45, 34, 14, 33, 22, 23, 14]
+    cap 1024: frames=8 leftover=0 records_with_2plus_frames=0 frame_end_offsets={'<=1024': 8} walk=OK
+    cap 4095: frames=8 leftover=0 records_with_2plus_frames=0 frame_end_offsets={'<=1024': 8} walk=OK
+    frames: *2[$4] *3[$9] *2[$10] *1[$4] *2[$4] *1[$11] *1[$12] *1[$4]
+  server send: records=10 bytes=493 sizes=[5, 72, 38, 100, 100, 20, 33, 78, 40, 7]
+    cap 1024: frames=14 leftover=0 records_with_2plus_frames=4 frame_end_offsets={'<=1024': 14} walk=OK
+    cap 4095: frames=14 leftover=0 records_with_2plus_frames=4 frame_end_offsets={'<=1024': 14} walk=OK
+    frames: +OK *3[$9] *3[$9] *3[$10] *3[$7] *4[$8] *3[$7] *4[$8] *2[$4] *2[$4] *3[$11] *3[$11] *3[$12] +PONG
+  client recv: records=10 bytes=493 sizes=[5, 72, 38, 100, 100, 20, 33, 78, 40, 7]
+    cap 1024: frames=14 leftover=0 records_with_2plus_frames=4 frame_end_offsets={'<=1024': 14} walk=OK
+    cap 4095: frames=14 leftover=0 records_with_2plus_frames=4 frame_end_offsets={'<=1024': 14} walk=OK
+    frames: +OK *3[$9] *3[$9] *3[$10] *3[$7] *4[$8] *3[$7] *4[$8] *2[$4] *2[$4] *3[$11] *3[$11] *3[$12] +PONG
+ -- run 1 (publisher)
+  server recv: records=3 bytes=123 sizes=[37, 43, 43]
+    cap 1024: frames=3 leftover=0 records_with_2plus_frames=0 frame_end_offsets={'<=1024': 3} walk=OK
+    cap 4095: frames=3 leftover=0 records_with_2plus_frames=0 frame_end_offsets={'<=1024': 3} walk=OK
+    frames: *2[$4] *3[$7] *3[$7]
+  client send: records=3 bytes=123 sizes=[37, 43, 43]
+    cap 1024: frames=3 leftover=0 records_with_2plus_frames=0 frame_end_offsets={'<=1024': 3} walk=OK
+    cap 4095: frames=3 leftover=0 records_with_2plus_frames=0 frame_end_offsets={'<=1024': 3} walk=OK
+    frames: *2[$4] *3[$7] *3[$7]
+  server send: records=3 bytes=13 sizes=[5, 4, 4]
+    cap 1024: frames=3 leftover=0 records_with_2plus_frames=0 frame_end_offsets={'<=1024': 3} walk=OK
+    cap 4095: frames=3 leftover=0 records_with_2plus_frames=0 frame_end_offsets={'<=1024': 3} walk=OK
+    frames: +OK :2 :2
+  client recv: records=3 bytes=13 sizes=[5, 4, 4]
+    cap 1024: frames=3 leftover=0 records_with_2plus_frames=0 frame_end_offsets={'<=1024': 3} walk=OK
+    cap 4095: frames=3 leftover=0 records_with_2plus_frames=0 frame_end_offsets={'<=1024': 3} walk=OK
+    frames: +OK :2 :2
+ syscalls: client recv recvfrom x13, client send sendto x11, server recv read x11, server send write x13
+ recv buffer sizes asked (read/recvfrom count argument): 16384 x15, 20474 x9
+== multi: MULTI/EXEC
+command: python3 /tmp/edc-redis/bin/client.py multi
+ -- run 0 (client)
+  server recv: records=18 bytes=497 sizes=[37, 42, 15, 32, 26, 14, 15, 32, 17, 27, 15, 35, 14, 15, 32, 32, 14, 83]
+    cap 1024: frames=21 leftover=0 records_with_2plus_frames=1 frame_end_offsets={'<=1024': 21} walk=OK
+    cap 4095: frames=21 leftover=0 records_with_2plus_frames=1 frame_end_offsets={'<=1024': 21} walk=OK
+    frames: *2[$4] *3[$3] *1[$5] *3[$3] *2[$4] *1[$4] *1[$5] *3[$3] *1[$7] *2[$5] *1[$5] *3[$3] *1[$4] *1[$5] *2[$9] *3[$3] *1[$4] *1[$5] *2[$4] *2[$4] *1[$4]
+  client send: records=18 bytes=497 sizes=[37, 42, 15, 32, 26, 14, 15, 32, 17, 27, 15, 35, 14, 15, 32, 32, 14, 83]
+    cap 1024: frames=21 leftover=0 records_with_2plus_frames=1 frame_end_offsets={'<=1024': 21} walk=OK
+    cap 4095: frames=21 leftover=0 records_with_2plus_frames=1 frame_end_offsets={'<=1024': 21} walk=OK
+    frames: *2[$4] *3[$3] *1[$5] *3[$3] *2[$4] *1[$4] *1[$5] *3[$3] *1[$7] *2[$5] *1[$5] *3[$3] *1[$4] *1[$5] *2[$9] *3[$3] *1[$4] *1[$5] *2[$4] *2[$4] *1[$4]
+  server send: records=18 bytes=314 sizes=[5, 5, 5, 9, 9, 55, 5, 9, 5, 5, 5, 9, 5, 5, 72, 9, 62, 35]
+    cap 1024: frames=21 leftover=0 records_with_2plus_frames=1 frame_end_offsets={'<=1024': 21} walk=OK
+    cap 4095: frames=21 leftover=0 records_with_2plus_frames=1 frame_end_offsets={'<=1024': 21} walk=OK
+    frames: +OK +OK +OK +QUEUED +QUEUED *2[+OK] +OK +QUEUED +OK +OK +OK +QUEUED *null +OK -ERR unknown command 'NOSUCHCMD', with ar +QUEUED -EXECABORT Transaction discarded because  +OK +QUEUED +QUEUED *2[:1]
+  client recv: records=18 bytes=314 sizes=[5, 5, 5, 9, 9, 55, 5, 9, 5, 5, 5, 9, 5, 5, 72, 9, 62, 35]
+    cap 1024: frames=21 leftover=0 records_with_2plus_frames=1 frame_end_offsets={'<=1024': 21} walk=OK
+    cap 4095: frames=21 leftover=0 records_with_2plus_frames=1 frame_end_offsets={'<=1024': 21} walk=OK
+    frames: +OK +OK +OK +QUEUED +QUEUED *2[+OK] +OK +QUEUED +OK +OK +OK +QUEUED *null +OK -ERR unknown command 'NOSUCHCMD', with ar +QUEUED -EXECABORT Transaction discarded because  +OK +QUEUED +QUEUED *2[:1]
+ -- run 1 (other)
+  server recv: records=2 bytes=75 sizes=[37, 38]
+    cap 1024: frames=2 leftover=0 records_with_2plus_frames=0 frame_end_offsets={'<=1024': 2} walk=OK
+    cap 4095: frames=2 leftover=0 records_with_2plus_frames=0 frame_end_offsets={'<=1024': 2} walk=OK
+    frames: *2[$4] *3[$3]
+  client send: records=2 bytes=75 sizes=[37, 38]
+    cap 1024: frames=2 leftover=0 records_with_2plus_frames=0 frame_end_offsets={'<=1024': 2} walk=OK
+    cap 4095: frames=2 leftover=0 records_with_2plus_frames=0 frame_end_offsets={'<=1024': 2} walk=OK
+    frames: *2[$4] *3[$3]
+  server send: records=2 bytes=10 sizes=[5, 5]
+    cap 1024: frames=2 leftover=0 records_with_2plus_frames=0 frame_end_offsets={'<=1024': 2} walk=OK
+    cap 4095: frames=2 leftover=0 records_with_2plus_frames=0 frame_end_offsets={'<=1024': 2} walk=OK
+    frames: +OK +OK
+  client recv: records=2 bytes=10 sizes=[5, 5]
+    cap 1024: frames=2 leftover=0 records_with_2plus_frames=0 frame_end_offsets={'<=1024': 2} walk=OK
+    cap 4095: frames=2 leftover=0 records_with_2plus_frames=0 frame_end_offsets={'<=1024': 2} walk=OK
+    frames: +OK +OK
+ syscalls: client recv recvfrom x20, client send sendto x20, server recv read x20, server send write x20
+ recv buffer sizes asked (read/recvfrom count argument): 16384 x22, 20474 x18
+== large_get: SET and GET of a 200000-byte value
+command: redis-cli -h 127.0.0.1 -p 6379 -a edc-fixture-pass --no-auth-warning -x SET edc-big < in/big.value && redis-cli -h 127.0.0.1 -p 6379 -a edc-fixture-pass --no-auth-warning GET edc-big > /dev/null
+ -- run 0 (connection 1)
+  server recv: records=4 bytes=200074 sizes=[37, 20474, 105478, 74085]
+    cap 1024: frames=2 leftover=0 records_with_2plus_frames=0 frame_end_offsets={'<=1024': 1, '>4095': 1} walk=OK
+    cap 4095: frames=2 leftover=0 records_with_2plus_frames=0 frame_end_offsets={'<=1024': 1, '>4095': 1} walk=OK
+    frames: *2[$4] *3[$3]
+  client send: records=2 bytes=200074 sizes=[37, 200037]
+    cap 1024: frames=2 leftover=0 records_with_2plus_frames=0 frame_end_offsets={'<=1024': 1, '>4095': 1} walk=OK
+    cap 4095: frames=2 leftover=0 records_with_2plus_frames=0 frame_end_offsets={'<=1024': 1, '>4095': 1} walk=OK
+    frames: *2[$4] *3[$3]
+  server send: records=2 bytes=10 sizes=[5, 5]
+    cap 1024: frames=2 leftover=0 records_with_2plus_frames=0 frame_end_offsets={'<=1024': 2} walk=OK
+    cap 4095: frames=2 leftover=0 records_with_2plus_frames=0 frame_end_offsets={'<=1024': 2} walk=OK
+    frames: +OK +OK
+  client recv: records=2 bytes=10 sizes=[5, 5]
+    cap 1024: frames=2 leftover=0 records_with_2plus_frames=0 frame_end_offsets={'<=1024': 2} walk=OK
+    cap 4095: frames=2 leftover=0 records_with_2plus_frames=0 frame_end_offsets={'<=1024': 2} walk=OK
+    frames: +OK +OK
+ -- run 1 (connection 2)
+  server recv: records=2 bytes=63 sizes=[37, 26]
+    cap 1024: frames=2 leftover=0 records_with_2plus_frames=0 frame_end_offsets={'<=1024': 2} walk=OK
+    cap 4095: frames=2 leftover=0 records_with_2plus_frames=0 frame_end_offsets={'<=1024': 2} walk=OK
+    frames: *2[$4] *2[$3]
+  client send: records=2 bytes=63 sizes=[37, 26]
+    cap 1024: frames=2 leftover=0 records_with_2plus_frames=0 frame_end_offsets={'<=1024': 2} walk=OK
+    cap 4095: frames=2 leftover=0 records_with_2plus_frames=0 frame_end_offsets={'<=1024': 2} walk=OK
+    frames: *2[$4] *2[$3]
+  server send: records=2 bytes=200016 sizes=[5, 200011]
+    cap 1024: frames=2 leftover=0 records_with_2plus_frames=0 frame_end_offsets={'<=1024': 1, '>4095': 1} walk=OK
+    cap 4095: frames=2 leftover=0 records_with_2plus_frames=0 frame_end_offsets={'<=1024': 1, '>4095': 1} walk=OK
+    frames: +OK $200000
+  client recv: records=14 bytes=200016 sizes=[5, 16384, 16384, 16384, 16384, 16384, 16384, 16384, 16384, 16384, 13312, 16384, 16384, 6475]
+    cap 1024: frames=2 leftover=0 records_with_2plus_frames=0 frame_end_offsets={'<=1024': 1, '>4095': 1} walk=OK
+    cap 4095: frames=2 leftover=0 records_with_2plus_frames=0 frame_end_offsets={'<=1024': 1, '>4095': 1} walk=OK
+    frames: +OK $200000
+ syscalls: client recv recvfrom x16, client send sendto x4, server recv read x6, server send write x3, server send writev x1
+ recv buffer sizes asked (read/recvfrom count argument): 16384 x18, 20474 x2, 74085 x1, 179563 x1
+== resp3: RESP3 HELLO 3, DEBUG PROTOCOL, tracking and pub/sub pushes
+command: python3 /tmp/edc-redis/bin/client.py resp3
+ -- run 0 (client)
+  server recv: records=28 bytes=974 sizes=[37, 22, 57, 28, 46, 29, 41, 34, 41, 42, 41, 41] ... [31, 14, 22, 14] (min 14 max 57)
+    cap 1024: frames=28 leftover=0 records_with_2plus_frames=0 frame_end_offsets={'<=1024': 28} walk=OK
+    cap 4095: frames=28 leftover=0 records_with_2plus_frames=0 frame_end_offsets={'<=1024': 28} walk=OK
+    frames: *2[$4] *2[$5] *6[$4] *2[$7] *5[$4] *2[$8] *4[$4] *3[$6] *3[$5] *3[$5] *3[$5] *3[$5] *3[$5] *3[$5] *3[$5] *3[$5] *3[$5] *3[$5] *3[$5] *3[$5] *3[$5] *3[$6] *2[$3] *1[$4] *2[$9] *1[$4] *1[$11] *1[$4]
+  client send: records=28 bytes=974 sizes=[37, 22, 57, 28, 46, 29, 41, 34, 41, 42, 41, 41] ... [31, 14, 22, 14] (min 14 max 57)
+    cap 1024: frames=28 leftover=0 records_with_2plus_frames=0 frame_end_offsets={'<=1024': 28} walk=OK
+    cap 4095: frames=28 leftover=0 records_with_2plus_frames=0 frame_end_offsets={'<=1024': 28} walk=OK
+    frames: *2[$4] *2[$5] *6[$4] *2[$7] *5[$4] *2[$8] *4[$4] *3[$6] *3[$5] *3[$5] *3[$5] *3[$5] *3[$5] *3[$5] *3[$5] *3[$5] *3[$5] *3[$5] *3[$5] *3[$5] *3[$5] *3[$6] *2[$3] *1[$4] *2[$9] *1[$4] *1[$11] *1[$4]
+  server send: records=30 bytes=758 sizes=[5, 145, 4, 36, 4, 25, 4, 6, 18, 8, 8, 40] ... [37, 7, 38, 7] (min 3 max 145)
+    cap 1024: frames=31 leftover=0 records_with_2plus_frames=1 frame_end_offsets={'<=1024': 31} walk=OK
+    cap 4095: frames=31 leftover=0 records_with_2plus_frames=1 frame_end_offsets={'<=1024': 31} walk=OK
+    frames: +OK %7[$6] :2 %2[$2] :3 ~3[$1] :1 ,1.5 $11 :12345 ,3.141 (1234567999999999999999999999999999999 _ *3[:0] ~3[:0] %3[:0] |attr+$39 =29 #t #f >2[$16] $40 +OK _ >2[$10] +PONG >3[$9] >3[$7] +PONG >3[$11] +PONG
+  client recv: records=30 bytes=758 sizes=[5, 145, 4, 36, 4, 25, 4, 6, 18, 8, 8, 40] ... [37, 7, 38, 7] (min 3 max 145)
+    cap 1024: frames=31 leftover=0 records_with_2plus_frames=1 frame_end_offsets={'<=1024': 31} walk=OK
+    cap 4095: frames=31 leftover=0 records_with_2plus_frames=1 frame_end_offsets={'<=1024': 31} walk=OK
+    frames: +OK %7[$6] :2 %2[$2] :3 ~3[$1] :1 ,1.5 $11 :12345 ,3.141 (1234567999999999999999999999999999999 _ *3[:0] ~3[:0] %3[:0] |attr+$39 =29 #t #f >2[$16] $40 +OK _ >2[$10] +PONG >3[$9] >3[$7] +PONG >3[$11] +PONG
+ -- run 1 (other)
+  server recv: records=3 bytes=107 sizes=[37, 33, 37]
+    cap 1024: frames=3 leftover=0 records_with_2plus_frames=0 frame_end_offsets={'<=1024': 3} walk=OK
+    cap 4095: frames=3 leftover=0 records_with_2plus_frames=0 frame_end_offsets={'<=1024': 3} walk=OK
+    frames: *2[$4] *3[$3] *3[$7]
+  client send: records=3 bytes=107 sizes=[37, 33, 37]
+    cap 1024: frames=3 leftover=0 records_with_2plus_frames=0 frame_end_offsets={'<=1024': 3} walk=OK
+    cap 4095: frames=3 leftover=0 records_with_2plus_frames=0 frame_end_offsets={'<=1024': 3} walk=OK
+    frames: *2[$4] *3[$3] *3[$7]
+  server send: records=3 bytes=14 sizes=[5, 5, 4]
+    cap 1024: frames=3 leftover=0 records_with_2plus_frames=0 frame_end_offsets={'<=1024': 3} walk=OK
+    cap 4095: frames=3 leftover=0 records_with_2plus_frames=0 frame_end_offsets={'<=1024': 3} walk=OK
+    frames: +OK +OK :1
+  client recv: records=3 bytes=14 sizes=[5, 5, 4]
+    cap 1024: frames=3 leftover=0 records_with_2plus_frames=0 frame_end_offsets={'<=1024': 3} walk=OK
+    cap 4095: frames=3 leftover=0 records_with_2plus_frames=0 frame_end_offsets={'<=1024': 3} walk=OK
+    frames: +OK +OK :1
+ syscalls: client recv recvfrom x33, client send sendto x31, server recv read x31, server send write x32, server send writev x1
+ recv buffer sizes asked (read/recvfrom count argument): 16384 x35, 20474 x29
+== monitor: MONITOR
+command: python3 /tmp/edc-redis/bin/client.py monitor
+ -- run 0 (monitor)
+  server recv: records=6 bytes=134 sizes=[37, 17, 15, 14, 37, 14]
+    cap 1024: frames=6 leftover=0 records_with_2plus_frames=0 frame_end_offsets={'<=1024': 6} walk=OK
+    cap 4095: frames=6 leftover=0 records_with_2plus_frames=0 frame_end_offsets={'<=1024': 6} walk=OK
+    frames: *2[$4] *1[$7] *1[$5] *1[$4] *2[$4] *1[$4]
+  client send: records=6 bytes=134 sizes=[37, 17, 15, 14, 37, 14]
+    cap 1024: frames=6 leftover=0 records_with_2plus_frames=0 frame_end_offsets={'<=1024': 6} walk=OK
+    cap 4095: frames=6 leftover=0 records_with_2plus_frames=0 frame_end_offsets={'<=1024': 6} walk=OK
+    frames: *2[$4] *1[$7] *1[$5] *1[$4] *2[$4] *1[$4]
+  server send: records=10 bytes=301 sizes=[5, 5, 60, 61, 56, 60, 8, 34, 5, 7]
+    cap 1024: frames=10 leftover=0 records_with_2plus_frames=0 frame_end_offsets={'<=1024': 10} walk=OK
+    cap 4095: frames=10 leftover=0 records_with_2plus_frames=0 frame_end_offsets={'<=1024': 10} walk=OK
+    frames: +OK +OK +1791788445.996979 [0 127.0.0.1:59294] "A +1791788445.997148 [0 127.0.0.1:59294] "S +1791788445.997294 [0 127.0.0.1:59294] "G +1791788445.997438 [0 127.0.0.1:59294] "A +RESET -NOAUTH Authentication required. +OK +PONG
+  client recv: records=7 bytes=301 sizes=[5, 5, 237, 8, 34, 5, 7]
+    cap 1024: frames=10 leftover=0 records_with_2plus_frames=1 frame_end_offsets={'<=1024': 10} walk=OK
+    cap 4095: frames=10 leftover=0 records_with_2plus_frames=1 frame_end_offsets={'<=1024': 10} walk=OK
+    frames: +OK +OK +1791788445.996979 [0 127.0.0.1:59294] "A +1791788445.997148 [0 127.0.0.1:59294] "S +1791788445.997294 [0 127.0.0.1:59294] "G +1791788445.997438 [0 127.0.0.1:59294] "A +RESET -NOAUTH Authentication required. +OK +PONG
+ -- run 1 (client)
+  server recv: records=4 bytes=132 sizes=[37, 34, 26, 35]
+    cap 1024: frames=4 leftover=0 records_with_2plus_frames=0 frame_end_offsets={'<=1024': 4} walk=OK
+    cap 4095: frames=4 leftover=0 records_with_2plus_frames=0 frame_end_offsets={'<=1024': 4} walk=OK
+    frames: *2[$4] *3[$3] *2[$3] *2[$4]
+  client send: records=4 bytes=132 sizes=[37, 34, 26, 35]
+    cap 1024: frames=4 leftover=0 records_with_2plus_frames=0 frame_end_offsets={'<=1024': 4} walk=OK
+    cap 4095: frames=4 leftover=0 records_with_2plus_frames=0 frame_end_offsets={'<=1024': 4} walk=OK
+    frames: *2[$4] *3[$3] *2[$3] *2[$4]
+  server send: records=4 bytes=82 sizes=[5, 5, 8, 64]
+    cap 1024: frames=4 leftover=0 records_with_2plus_frames=0 frame_end_offsets={'<=1024': 4} walk=OK
+    cap 4095: frames=4 leftover=0 records_with_2plus_frames=0 frame_end_offsets={'<=1024': 4} walk=OK
+    frames: +OK +OK $2 -WRONGPASS invalid username-password pair
+  client recv: records=4 bytes=82 sizes=[5, 5, 8, 64]
+    cap 1024: frames=4 leftover=0 records_with_2plus_frames=0 frame_end_offsets={'<=1024': 4} walk=OK
+    cap 4095: frames=4 leftover=0 records_with_2plus_frames=0 frame_end_offsets={'<=1024': 4} walk=OK
+    frames: +OK +OK $2 -WRONGPASS invalid username-password pair
+ syscalls: client recv recvfrom x11, client send sendto x10, server recv read x10, server send write x14
+ recv buffer sizes asked (read/recvfrom count argument): 16384 x13, 20474 x8
+== secrets: planted fake secrets
+command: redis-cli -h 127.0.0.1 -p 6379 < in/secrets.txt
+ -- run 0 (connection 1)
+  server recv: records=14 bytes=770 sizes=[27, 17, 37, 106, 66, 43, 42, 89, 40, 23, 43, 101, 116, 20]
+    cap 1024: frames=14 leftover=0 records_with_2plus_frames=0 frame_end_offsets={'<=1024': 14} walk=OK
+    cap 4095: frames=14 leftover=0 records_with_2plus_frames=0 frame_end_offsets={'<=1024': 14} walk=OK
+    frames: *2[$7] *1[$7] *2[$4] *7[$5] *4[$6] *3[$6] *3[$6] *7[$3] *3[$3] *2[$3] *3[$3] *8[$7] *9[$7] *2[$3]
+  client send: records=14 bytes=770 sizes=[27, 17, 37, 106, 66, 43, 42, 89, 40, 23, 43, 101, 116, 20]
+    cap 1024: frames=14 leftover=0 records_with_2plus_frames=0 frame_end_offsets={'<=1024': 14} walk=OK
+    cap 4095: frames=14 leftover=0 records_with_2plus_frames=0 frame_end_offsets={'<=1024': 14} walk=OK
+    frames: *2[$7] *1[$7] *2[$4] *7[$5] *4[$6] *3[$6] *3[$6] *7[$3] *3[$3] *2[$3] *3[$3] *8[$7] *9[$7] *2[$3]
+  server send: records=14 bytes=866 sizes=[34, 34, 5, 145, 5, 45, 45, 5, 199, 217, 5, 52, 52, 23]
+    cap 1024: frames=14 leftover=0 records_with_2plus_frames=0 frame_end_offsets={'<=1024': 14} walk=OK
+    cap 4095: frames=14 leftover=0 records_with_2plus_frames=0 frame_end_offsets={'<=1024': 14} walk=OK
+    frames: -NOAUTH Authentication required. -NOAUTH Authentication required. +OK %7[$6] +OK %1[$11] %1[$10] +OK %6[$5] *2[$93] +OK -IOERR error or timeout writing to target -IOERR error or timeout writing to target $16
+  client recv: records=14 bytes=866 sizes=[34, 34, 5, 145, 5, 45, 45, 5, 199, 217, 5, 52, 52, 23]
+    cap 1024: frames=14 leftover=0 records_with_2plus_frames=0 frame_end_offsets={'<=1024': 14} walk=OK
+    cap 4095: frames=14 leftover=0 records_with_2plus_frames=0 frame_end_offsets={'<=1024': 14} walk=OK
+    frames: -NOAUTH Authentication required. -NOAUTH Authentication required. +OK %7[$6] +OK %1[$11] %1[$10] +OK %6[$5] *2[$93] +OK -IOERR error or timeout writing to target -IOERR error or timeout writing to target $16
+ syscalls: client recv recvfrom x14, client send sendto x14, server recv read x14, server send write x13, server send writev x1
+ recv buffer sizes asked (read/recvfrom count argument): 16384 x15, 20474 x13
+== errors: error replies
+command: redis-cli -h 127.0.0.1 -p 6379 < in/errors.txt
+ -- run 0 (connection 1)
+  server recv: records=9 bytes=303 sizes=[27, 17, 24, 35, 37, 36, 27, 29, 71]
+    cap 1024: frames=9 leftover=0 records_with_2plus_frames=0 frame_end_offsets={'<=1024': 9} walk=OK
+    cap 4095: frames=9 leftover=0 records_with_2plus_frames=0 frame_end_offsets={'<=1024': 9} walk=OK
+    frames: *2[$7] *1[$7] *2[$3] *2[$4] *2[$4] *3[$5] *2[$3] *2[$6] *3[$7]
+  client send: records=9 bytes=303 sizes=[27, 17, 24, 35, 37, 36, 27, 29, 71]
+    cap 1024: frames=9 leftover=0 records_with_2plus_frames=0 frame_end_offsets={'<=1024': 9} walk=OK
+    cap 4095: frames=9 leftover=0 records_with_2plus_frames=0 frame_end_offsets={'<=1024': 9} walk=OK
+    frames: *2[$7] *1[$7] *2[$3] *2[$4] *2[$4] *3[$5] *2[$3] *2[$6] *3[$7]
+  server send: records=9 bytes=360 sizes=[34, 34, 34, 64, 5, 4, 68, 69, 48]
+    cap 1024: frames=9 leftover=0 records_with_2plus_frames=0 frame_end_offsets={'<=1024': 9} walk=OK
+    cap 4095: frames=9 leftover=0 records_with_2plus_frames=0 frame_end_offsets={'<=1024': 9} walk=OK
+    frames: -NOAUTH Authentication required. -NOAUTH Authentication required. -NOAUTH Authentication required. -WRONGPASS invalid username-password pair +OK :1 -WRONGTYPE Operation against a key holdin -ERR unknown command 'FOOBAR', with args  -NOSCRIPT No matching script. Please use 
+  client recv: records=9 bytes=360 sizes=[34, 34, 34, 64, 5, 4, 68, 69, 48]
+    cap 1024: frames=9 leftover=0 records_with_2plus_frames=0 frame_end_offsets={'<=1024': 9} walk=OK
+    cap 4095: frames=9 leftover=0 records_with_2plus_frames=0 frame_end_offsets={'<=1024': 9} walk=OK
+    frames: -NOAUTH Authentication required. -NOAUTH Authentication required. -NOAUTH Authentication required. -WRONGPASS invalid username-password pair +OK :1 -WRONGTYPE Operation against a key holdin -ERR unknown command 'FOOBAR', with args  -NOSCRIPT No matching script. Please use 
+ syscalls: client recv recvfrom x9, client send sendto x9, server recv read x9, server send write x9
+ recv buffer sizes asked (read/recvfrom count argument): 16384 x10, 20474 x8
+== inline: inline commands
+command: (printf 'PING\r\n'; sleep 0.2; printf 'SET k v\r\nAUTH edc-fixture-pass\r\n'; sleep 0.2; printf 'PING\nSET k v\r\n'; sleep 0.3) | nc -q 1 127.0.0.1 6379
+ -- run 0 (connection 1)
+  server recv: records=3 bytes=52 sizes=[6, 32, 14]
+    cap 1024: frames=5 leftover=0 records_with_2plus_frames=2 frame_end_offsets={'<=1024': 5} walk=OK
+    cap 4095: frames=5 leftover=0 records_with_2plus_frames=2 frame_end_offsets={'<=1024': 5} walk=OK
+    frames: inline:PING inline:SET inline:AUTH inline:PING inline:SET
+  client send: records=3 bytes=52 sizes=[6, 32, 14]
+    cap 1024: frames=5 leftover=0 records_with_2plus_frames=2 frame_end_offsets={'<=1024': 5} walk=OK
+    cap 4095: frames=5 leftover=0 records_with_2plus_frames=2 frame_end_offsets={'<=1024': 5} walk=OK
+    frames: inline:PING inline:SET inline:AUTH inline:PING inline:SET
+  server send: records=3 bytes=85 sizes=[34, 39, 12]
+    cap 1024: frames=5 leftover=0 records_with_2plus_frames=2 frame_end_offsets={'<=1024': 5} walk=OK
+    cap 4095: frames=5 leftover=0 records_with_2plus_frames=2 frame_end_offsets={'<=1024': 5} walk=OK
+    frames: -NOAUTH Authentication required. -NOAUTH Authentication required. +OK +PONG +OK
+  client recv: records=3 bytes=85 sizes=[34, 39, 12]
+    cap 1024: frames=5 leftover=0 records_with_2plus_frames=2 frame_end_offsets={'<=1024': 5} walk=OK
+    cap 4095: frames=5 leftover=0 records_with_2plus_frames=2 frame_end_offsets={'<=1024': 5} walk=OK
+    frames: -NOAUTH Authentication required. -NOAUTH Authentication required. +OK +PONG +OK
+ syscalls: client recv read x3, client send write x3, server recv read x3, server send write x3
+ recv buffer sizes asked (read/recvfrom count argument): 16384 x4, 20474 x2
+== lrange_big: RPUSH 5000 items, LRANGE 0 -1, PING
+command: python3 /tmp/edc-redis/bin/client.py lrange_big
+ -- run 0 (client)
+  server recv: records=8 bytes=85128 sizes=[37, 20474, 20471, 20468, 20468, 3151, 45, 14]
+    cap 1024: frames=4 leftover=0 records_with_2plus_frames=0 frame_end_offsets={'<=1024': 3, '<=4095': 1} walk=LOST first hidden header byte rec1@1035/20474
+    cap 4095: frames=4 leftover=0 records_with_2plus_frames=0 frame_end_offsets={'<=1024': 3, '<=4095': 1} walk=LOST first hidden header byte rec1@4095/20474
+    frames: *2[$4] *5002[$5] *4[$6] *1[$4]
+  client send: records=4 bytes=85128 sizes=[37, 85032, 45, 14]
+    cap 1024: frames=4 leftover=0 records_with_2plus_frames=0 frame_end_offsets={'<=1024': 3, '>4095': 1} walk=LOST first hidden header byte rec1@1035/85032
+    cap 4095: frames=4 leftover=0 records_with_2plus_frames=0 frame_end_offsets={'<=1024': 3, '>4095': 1} walk=LOST first hidden header byte rec1@4095/85032
+    frames: *2[$4] *5002[$5] *4[$6] *1[$4]
+  server send: records=5 bytes=85026 sizes=[5, 7, 77776, 7231, 7]
+    cap 1024: frames=4 leftover=0 records_with_2plus_frames=0 frame_end_offsets={'<=1024': 3, '>4095': 1} walk=LOST first hidden header byte rec2@1027/77776
+    cap 4095: frames=4 leftover=0 records_with_2plus_frames=0 frame_end_offsets={'<=1024': 3, '>4095': 1} walk=LOST first hidden header byte rec2@4104/77776
+    frames: +OK :5000 *5000[$10] +PONG
+  client recv: records=9 bytes=85026 sizes=[5, 7, 16384, 16384, 16384, 16384, 16384, 3087, 7]
+    cap 1024: frames=4 leftover=0 records_with_2plus_frames=0 frame_end_offsets={'<=1024': 3, '<=4095': 1} walk=LOST first hidden header byte rec2@1027/16384
+    cap 4095: frames=4 leftover=0 records_with_2plus_frames=0 frame_end_offsets={'<=1024': 3, '<=4095': 1} walk=LOST first hidden header byte rec2@4104/16384
+    frames: +OK :5000 *5000[$10] +PONG
+ syscalls: client recv recvfrom x9, client send sendto x4, server recv read x8, server send write x3, server send writev x2
+ recv buffer sizes asked (read/recvfrom count argument): 16384 x10, 20468 x3, 20471 x1, 20474 x3
+
+== Procedure (regenerate)
+Run in the OrbStack ubuntu VM with redis-server, redis-tools and strace installed from apt and the four files below in /tmp/edc-redis/bin:
+  bash /tmp/edc-redis/bin/capture.sh [scenario ...]
+It writes /tmp/edc-redis/records/<scenario>.records and /tmp/edc-redis/out/<scenario>.analysis. Copy the .records files here and paste the analysis files above. Remove /tmp/edc-redis afterwards.
+
+--- /tmp/edc-redis/bin/capture.sh
+#!/bin/bash
+# Runs inside the OrbStack ubuntu VM. Everything lives under /tmp/edc-redis.
+set -euo pipefail
+R=/tmp/edc-redis
+PASS=edc-fixture-pass
+TRACE='read,recvfrom,recvmsg,readv,write,sendto,sendmsg,writev'
+STRACE_OPTS="-f -yy -xx -ttt -s 2097152 -e trace=$TRACE"
+VERSION="$(redis-server --version | sed 's/ sha=.*//') (Ubuntu apt redis-server $(dpkg-query -W -f='${Version} ${Architecture}' redis-server))"
+mkdir -p $R/out $R/records $R/data $R/in
+
+python3 - <<'EOF'
+R = "/tmp/edc-redis/in/"
+val = "".join("v%05d-" % i for i in range(200000 // 7 + 1))[:200000]
+open(R + "big.value", "w").write(val)
+open(R + "errors.txt", "w").write(
+    "GET edc-k\nAUTH edc-wrong-pass\nAUTH edc-fixture-pass\nLPUSH edc-list a\nGET edc-list\n"
+    "FOOBAR edc-arg\nEVALSHA ffffffffffffffffffffffffffffffffffffffff 0\n")
+open(R + "secrets.txt", "w").write(
+    "AUTH edc-fixture-pass\n"
+    "HELLO 3 AUTH default edc-fixture-pass SETNAME edc-fixture-client\n"
+    "CONFIG SET masterauth edc-secret-master\n"
+    "CONFIG GET requirepass\n"
+    "CONFIG GET masterauth\n"
+    "ACL SETUSER edc-user on >edc-secret-acl ~* +@all\n"
+    "ACL GETUSER edc-user\n"
+    "ACL LIST\n"
+    "SET k edc-secret-value\n"
+    "MIGRATE 127.0.0.1 6390 k 0 1000 AUTH edc-secret-migrate\n"
+    "MIGRATE 127.0.0.1 6390 k 0 1000 AUTH2 edc-user edc-secret-migrate\n"
+    "GET k\n")
+EOF
+
+start_server() {
+  sudo rm -rf $R/data && mkdir -p $R/data
+  sudo unshare --uts sh -c "hostname fixture-host; exec redis-server --bind 127.0.0.1 --port 6379 --requirepass $PASS --enable-debug-command local --save '' --appendonly no --dir $R/data --logfile $R/out/server.log --daemonize no" &
+  for _ in $(seq 50); do ss -ltn | grep -q '127.0.0.1:6379 ' && break; sleep 0.1; done
+  SPID=$(pgrep -f 'redis-server 127.0.0.1:6379')
+  [ "$(sudo nsenter -t $SPID -u hostname)" = fixture-host ]
+}
+
+stop_server() {
+  sudo kill $SPID
+  while sudo kill -0 $SPID 2>/dev/null; do sleep 0.1; done
+}
+
+run() {
+  local sc=$1 title=$2 cmd=$3
+  start_server
+  sudo strace $STRACE_OPTS -p $SPID -o $R/out/$sc.server.st 2>$R/out/$sc.strace.err &
+  local TPID=$!
+  sleep 1
+  (cd $R && strace $STRACE_OPTS -o $R/out/$sc.client.st sh -c "$cmd") >$R/out/$sc.ports 2>$R/out/$sc.log || echo "client exit $? for $sc" >>$R/out/$sc.log
+  sleep 0.5
+  sudo kill -INT $TPID; wait $TPID 2>/dev/null || true
+  stop_server
+  python3 $R/bin/convert.py "$sc" "$VERSION" "$title" "$cmd" $R/out $R/records
+}
+
+CLI="redis-cli -h 127.0.0.1 -p 6379"
+for sc in ${*:-pipeline pubsub multi large_get resp3 monitor secrets errors inline lrange_big}; do
+  case $sc in
+  pipeline) run pipeline "redis-benchmark pipeline -P 16" "redis-benchmark -h 127.0.0.1 -p 6379 -a $PASS -P 16 -c 1 -n 64 -t set,get,incr,lpush" ;;
+  pubsub) run pubsub "RESP2 pub/sub" "python3 /tmp/edc-redis/bin/client.py pubsub" ;;
+  multi) run multi "MULTI/EXEC" "python3 /tmp/edc-redis/bin/client.py multi" ;;
+  resp3) run resp3 "RESP3 HELLO 3, DEBUG PROTOCOL, tracking and pub/sub pushes" "python3 /tmp/edc-redis/bin/client.py resp3" ;;
+  monitor) run monitor "MONITOR" "python3 /tmp/edc-redis/bin/client.py monitor" ;;
+  large_get) run large_get "SET and GET of a 200000-byte value" "$CLI -a $PASS --no-auth-warning -x SET edc-big < in/big.value && $CLI -a $PASS --no-auth-warning GET edc-big > /dev/null" ;;
+  lrange_big) run lrange_big "RPUSH 5000 items, LRANGE 0 -1, PING" "python3 /tmp/edc-redis/bin/client.py lrange_big" ;;
+  errors) run errors "error replies" "$CLI < in/errors.txt" ;;
+  secrets) run secrets "planted fake secrets" "$CLI < in/secrets.txt" ;;
+  inline) run inline "inline commands" "(printf 'PING\\r\\n'; sleep 0.2; printf 'SET k v\\r\\nAUTH edc-fixture-pass\\r\\n'; sleep 0.2; printf 'PING\\nSET k v\\r\\n'; sleep 0.3) | nc -q 1 127.0.0.1 6379" ;;
+  esac
+done
+
+--- /tmp/edc-redis/bin/client.py
+"""Raw-socket Redis client for fixture scenarios. Reads with a 16384-byte buffer like hiredis.
+Prints 'port <name> <local port>' lines to stdout and the step log to stderr."""
+import socket
+import sys
+import time
+
+sys.path.insert(0, "/tmp/edc-redis/bin")
+import resp  # noqa: E402
+
+PASS = "edc-fixture-pass"
+
+
+class Conn:
+    def __init__(self, name):
+        self.name = name
+        self.s = socket.create_connection(("127.0.0.1", 6379))
+        self.s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        self.buf = b""
+        print("port %s %d" % (name, self.s.getsockname()[1]), flush=True)
+
+    def send(self, *cmds):
+        data = b"".join(resp.encode(c) for c in cmds)
+        log("%s send %s" % (self.name, " | ".join(" ".join(c if len(c) <= 8 else c[:4] + ["... %d args" % len(c)]) for c in cmds)))
+        self.s.sendall(data)
+
+    def expect(self, n, timeout=3.0):
+        got = []
+        deadline = time.time() + timeout
+        while True:
+            fr, _, pos = resp.frames(self.buf)
+            if len(fr) >= n:
+                end = fr[n - 1][1]
+                got = [d for _, _, d in fr[:n]]
+                self.buf = self.buf[end:]
+                break
+            left = deadline - time.time()
+            if left <= 0:
+                log("%s TIMEOUT waiting for %d frames, have %d" % (self.name, n, len(fr)))
+                sys.exit(2)
+            self.s.settimeout(left)
+            chunk = self.s.recv(16384)
+            if not chunk:
+                log("%s EOF" % self.name)
+                sys.exit(2)
+            self.buf += chunk
+        log("%s recv %s" % (self.name, " | ".join(got)))
+        return got
+
+    def drain(self, idle=0.4):
+        """Read until the connection is idle; for streams with no fixed reply count (MONITOR)."""
+        while True:
+            self.s.settimeout(idle)
+            try:
+                chunk = self.s.recv(16384)
+            except socket.timeout:
+                break
+            if not chunk:
+                break
+            self.buf += chunk
+        fr, _, pos = resp.frames(self.buf)
+        self.buf = self.buf[pos:]
+        log("%s drained %d frames: %s" % (self.name, len(fr), " | ".join(d for _, _, d in fr)))
+        return fr
+
+    def cmd(self, *args, n=1):
+        self.send(list(args))
+        return self.expect(n)
+
+    def close(self):
+        self.s.close()
+
+
+def log(msg):
+    print(msg, file=sys.stderr, flush=True)
+
+
+def pubsub():
+    a = Conn("subscriber")
+    b = Conn("publisher")
+    a.cmd("AUTH", PASS)
+    b.cmd("AUTH", PASS)
+    a.cmd("SUBSCRIBE", "edc-ch1", "edc-ch2", n=2)
+    a.cmd("PSUBSCRIBE", "edc-ch*")
+    b.cmd("PUBLISH", "edc-ch1", "hello-1")
+    a.expect(2)
+    b.cmd("PUBLISH", "edc-ch2", "hello-2")
+    a.expect(2)
+    a.cmd("PING")
+    a.cmd("PING", "edc-ping-arg")
+    a.cmd("UNSUBSCRIBE", n=2)
+    a.cmd("PUNSUBSCRIBE")
+    a.cmd("PING")
+    a.close()
+    b.close()
+
+
+def multi():
+    a = Conn("client")
+    b = Conn("other")
+    a.cmd("AUTH", PASS)
+    b.cmd("AUTH", PASS)
+    a.cmd("SET", "edc-ms", "notanumber")
+    a.cmd("MULTI")
+    a.cmd("SET", "edc-mk", "1")
+    a.cmd("INCR", "edc-ms")
+    a.cmd("EXEC")
+    a.cmd("MULTI")
+    a.cmd("SET", "edc-mk", "2")
+    a.cmd("DISCARD")
+    a.cmd("WATCH", "edc-wk")
+    b.cmd("SET", "edc-wk", "changed")
+    a.cmd("MULTI")
+    a.cmd("SET", "edc-wk", "mine")
+    a.cmd("EXEC")
+    a.cmd("MULTI")
+    a.cmd("NOSUCHCMD", "edc-arg")
+    a.cmd("SET", "edc-mk", "3")
+    a.cmd("EXEC")
+    a.send(["MULTI"], ["INCR", "edc-cnt"], ["INCR", "edc-cnt"], ["EXEC"])
+    a.expect(4)
+    a.close()
+    b.close()
+
+
+def resp3():
+    a = Conn("client")
+    b = Conn("other")
+    a.cmd("AUTH", PASS)
+    b.cmd("AUTH", PASS)
+    a.cmd("HELLO", "3")
+    a.cmd("HSET", "edc-h", "f1", "v1", "f2", "v2")
+    a.cmd("HGETALL", "edc-h")
+    a.cmd("SADD", "edc-s", "a", "b", "c")
+    a.cmd("SMEMBERS", "edc-s")
+    a.cmd("ZADD", "edc-z", "1.5", "m")
+    a.cmd("ZSCORE", "edc-z", "m")
+    for kind in ("string", "integer", "double", "bignum", "null", "array", "set", "map",
+                 "attrib", "verbatim", "true", "false"):
+        a.cmd("DEBUG", "PROTOCOL", kind)
+    a.cmd("DEBUG", "PROTOCOL", "push", n=2)
+    a.cmd("CLIENT", "TRACKING", "ON")
+    a.cmd("GET", "edc-tk")
+    b.cmd("SET", "edc-tk", "v1")
+    a.expect(1)
+    a.cmd("PING")
+    a.cmd("SUBSCRIBE", "edc-r3")
+    b.cmd("PUBLISH", "edc-r3", "m3")
+    a.expect(1)
+    a.cmd("PING")
+    a.cmd("UNSUBSCRIBE")
+    a.cmd("PING")
+    a.close()
+    b.close()
+
+
+def monitor():
+    m = Conn("monitor")
+    m.cmd("AUTH", PASS)
+    m.cmd("MONITOR")
+    c = Conn("client")
+    c.cmd("AUTH", PASS)
+    c.cmd("SET", "edc-mon", "v1")
+    c.cmd("GET", "edc-mon")
+    c.cmd("AUTH", "edc-wrong-pass")
+    m.drain()
+    m.send(["RESET"])
+    m.drain()
+    m.cmd("PING")
+    m.cmd("AUTH", PASS)
+    m.cmd("PING")
+    m.close()
+    c.close()
+
+
+def lrange_big():
+    a = Conn("client")
+    a.cmd("AUTH", PASS)
+    a.cmd("RPUSH", "edc-list", *["item-%05d" % i for i in range(5000)])
+    a.cmd("LRANGE", "edc-list", "0", "-1")
+    a.cmd("PING")
+    a.close()
+
+
+if __name__ == "__main__":
+    {"pubsub": pubsub, "multi": multi, "resp3": resp3, "monitor": monitor, "lrange_big": lrange_big}[sys.argv[1]]()
+
+--- /tmp/edc-redis/bin/resp.py
+"""Minimal RESP2/RESP3 frame walker for fixture capture and analysis (test tooling only)."""
+
+
+class Incomplete(Exception):
+    pass
+
+
+def _line(buf, pos):
+    le = buf.find(b"\r\n", pos)
+    if le < 0:
+        raise Incomplete()
+    return le
+
+
+def walk(buf, pos, headers, inline_ok=False):
+    """Parse one top-level frame at pos. Attributes are folded into the frame that follows.
+    Appends header line spans (start, end) to headers. Returns (end, desc)."""
+    if pos >= len(buf):
+        raise Incomplete()
+    t = buf[pos:pos + 1]
+    if inline_ok and t != b"*":
+        nl = buf.find(b"\n", pos)
+        if nl < 0:
+            raise Incomplete()
+        headers.append((pos, nl + 1))
+        return nl + 1, "inline:" + buf[pos:nl].split()[0].decode("latin1") if buf[pos:nl].split() else "inline:"
+    le = _line(buf, pos)
+    headers.append((pos, le + 2))
+    body = buf[pos + 1:le]
+    end = le + 2
+    if t in (b"+", b"-", b":", b"_", b",", b"#", b"("):
+        return end, t.decode() + body[:40].decode("latin1")
+    if t in (b"$", b"!", b"="):
+        n = int(body)
+        if n < 0:
+            return end, t.decode() + "null"
+        if len(buf) < end + n + 2:
+            raise Incomplete()
+        if buf[end + n:end + n + 2] != b"\r\n":
+            raise ValueError("bulk without CRLF at %d" % (end + n))
+        return end + n + 2, "%s%d" % (t.decode(), n)
+    if t in (b"*", b"~", b">", b"%", b"|"):
+        n = int(body)
+        if n < 0:
+            return end, t.decode() + "null"
+        kids = n * 2 if t in (b"%", b"|") else n
+        p = end
+        first = None
+        for i in range(kids):
+            p, d = walk(buf, p, headers)
+            if i == 0:
+                first = d
+        if t == b"|":
+            p, d = walk(buf, p, headers)
+            return p, "|attr+" + d
+        return p, "%s%d[%s]" % (t.decode(), n, first or "")
+    raise ValueError("unknown type byte %r at %d" % (t, pos))
+
+
+def frames(buf, inline_ok=False):
+    """Split a whole stream into top-level frames. Returns (list of (start, end, desc), headers, rest)."""
+    out, headers, pos = [], [], 0
+    while pos < len(buf):
+        h = []
+        try:
+            end, d = walk(buf, pos, h, inline_ok)
+        except Incomplete:
+            break
+        headers.extend(h)
+        out.append((pos, end, d))
+        pos = end
+    return out, headers, pos
+
+
+def encode(args):
+    out = [b"*%d\r\n" % len(args)]
+    for a in args:
+        if isinstance(a, str):
+            a = a.encode()
+        out.append(b"$%d\r\n%s\r\n" % (len(a), a))
+    return b"".join(out)
+
+--- /tmp/edc-redis/bin/convert.py
+"""Turn server and client strace logs of one scenario into a .records fixture and an analysis text.
+usage: convert.py <scenario> <version> <title> <command> <out dir> <records dir>"""
+import bisect
+import collections
+import os
+import re
+import sys
+
+sys.path.insert(0, "/tmp/edc-redis/bin")
+import resp  # noqa: E402
+
+PORT = 6379
+LINE = re.compile(r"^(?:(\d+)\s+)?(\d+\.\d+)\s+(.*)$")
+CALL = re.compile(r"^(\w+)\((\d+)<TCP:\[([\d.]+):(\d+)->([\d.]+):(\d+)\]>(.*)$")
+RET = re.compile(r"\)\s+=\s+(-?\d+)(?:\s.*)?$")
+STR = re.compile(r'"((?:\\x[0-9a-f]{2})*)"(\.\.\.)?')
+COUNT = re.compile(r'^, "(?:\\x[0-9a-f]{2})*"(?:\.\.\.)?, (\d+)')
+RECV = {"read", "recvfrom", "recvmsg", "readv"}
+SEND = {"write", "sendto", "sendmsg", "writev"}
+
+
+def parse_strace(path, side):
+    pending = {}
+    out = []
+    syscalls = collections.Counter()
+    bufsizes = collections.Counter()
+    for raw in open(path, encoding="latin1"):
+        m = LINE.match(raw.rstrip("\n"))
+        if not m:
+            continue
+        pid, ts, text = m.group(1) or "0", float(m.group(2)), m.group(3)
+        if text.endswith("<unfinished ...>"):
+            pending[pid] = (ts, text[: -len("<unfinished ...>")])
+            continue
+        r = re.match(r"^<\.\.\. (\w+) resumed>(.*)$", text)
+        if r:
+            if pid not in pending:
+                continue
+            ts, head = pending.pop(pid)
+            text = head + r.group(2)
+        c = CALL.match(text)
+        if not c:
+            continue
+        name, lport, rport = c.group(1), int(c.group(4)), int(c.group(6))
+        if name not in RECV and name not in SEND:
+            continue
+        if side == "server" and lport != PORT:
+            continue
+        if side == "client" and rport != PORT:
+            continue
+        rv = RET.search(text)
+        if not rv or int(rv.group(1)) <= 0:
+            continue
+        n = int(rv.group(1))
+        rest = c.group(7)
+        if name in ("read", "write", "recvfrom", "sendto"):
+            sm = STR.search(rest)
+            data = bytes.fromhex(sm.group(1).replace("\\x", "")) if sm else b""
+            cm = COUNT.match(rest)
+            if cm and name in RECV:
+                bufsizes[int(cm.group(1))] += 1
+        else:
+            data = b"".join(bytes.fromhex(s.group(1).replace("\\x", "")) for s in re.finditer(r'iov_base="((?:\\x[0-9a-f]{2})*)"', rest))
+        if any(s.group(2) for s in STR.finditer(rest)):
+            sys.exit("%s: string truncated by strace -s, raise -s" % path)
+        data = data[:n]
+        if len(data) != n:
+            sys.exit("%s: %s returned %d but strace showed %d bytes" % (path, name, n, len(data)))
+        conn = rport if side == "server" else lport
+        direction = "recv" if name in RECV else "send"
+        syscalls[(side, direction, name)] += 1
+        out.append((ts, side, direction, conn, data))
+    return out, syscalls, bufsizes
+
+
+def visible_walk(chunks, cap, request):
+    """Walk the frames of one direction seeing only the first cap bytes of every record.
+    Bulk payloads are skippable by length, so only header lines must be visible."""
+    stream = b"".join(chunks)
+    starts, g = [], 0
+    for ch in chunks:
+        starts.append(g)
+        g += len(ch)
+    fr, headers, rest = resp.frames(stream, inline_ok=request)
+
+    def where(pos):
+        i = bisect.bisect_right(starts, pos) - 1
+        return i, pos - starts[i]
+
+    lost = None
+    for a, b in headers:
+        for p in range(a, b):
+            i, off = where(p)
+            if off >= min(cap, len(chunks[i])):
+                lost = (i, off, len(chunks[i]))
+                break
+        if lost:
+            break
+    ends = collections.Counter()
+    multi = collections.Counter()
+    for a, b, _ in fr:
+        i, off = where(b - 1)
+        off += 1
+        ends["<=1024" if off <= 1024 else "<=4095" if off <= 4095 else ">4095"] += 1
+        multi[where(a)[0]] += 1
+    return {
+        "frames": len(fr),
+        "leftover": len(stream) - rest,
+        "lost": lost,
+        "ends": dict(ends),
+        "records_2plus": sum(1 for v in multi.values() if v > 1),
+        "descs": [d for _, _, d in fr],
+    }
+
+
+def main():
+    sc, version, title, command, outdir, recdir = sys.argv[1:7]
+    recs, sysc, bufs = [], collections.Counter(), collections.Counter()
+    for side in ("server", "client"):
+        p = os.path.join(outdir, sc + "." + side + ".st")
+        r, s, b = parse_strace(p, side)
+        recs += r
+        sysc += s
+        bufs += b
+    recs.sort(key=lambda x: x[0])
+    names = {}
+    pf = os.path.join(outdir, sc + ".ports")
+    if os.path.exists(pf):
+        for line in open(pf):
+            f = line.split()
+            if len(f) == 3 and f[0] == "port":
+                names[int(f[2])] = f[1]
+    conns = []
+    for ts, side, d, conn, data in recs:
+        if conn not in conns:
+            conns.append(conn)
+    lines = [
+        '# edc trace redis T1 fixture "%s". Format and rules: see capture.txt, section "Fixture format".' % sc,
+        "# Each record line: <server|client> <send|recv> <total bytes> <hex of the first min(total,4096) bytes>.",
+        "# Client and server lines are interleaved by syscall time. Filter by side. One run is one TCP connection; runs are in connection order.",
+        '# Sections start at a "# version:" line. Replay each section on its own.',
+        "# version: " + version,
+    ]
+    ana = ["== %s: %s" % (sc, title), "command: " + command]
+    for idx, conn in enumerate(conns):
+        role = names.get(conn, "connection %d" % (idx + 1))
+        lines.append("# run %d: %s, %s" % (idx, title, role))
+        lines.append("# command: " + command)
+        per = collections.defaultdict(list)
+        for ts, side, d, c, data in recs:
+            if c != conn:
+                continue
+            lines.append("%s %s %d %s" % (side, d, len(data), data[:4096].hex()))
+            per[(side, d)].append(data)
+        ana.append(" -- run %d (%s)" % (idx, role))
+        for key in (("server", "recv"), ("client", "send"), ("server", "send"), ("client", "recv")):
+            chunks = per.get(key, [])
+            if not chunks:
+                ana.append("  %s %s: no records" % key)
+                continue
+            request = key in (("server", "recv"), ("client", "send"))
+            sizes = [len(c) for c in chunks]
+            s = "  %s %s: records=%d bytes=%d sizes=%s" % (key[0], key[1], len(chunks), sum(sizes), sizes if len(sizes) <= 24 else "%s ... %s (min %d max %d)" % (sizes[:12], sizes[-4:], min(sizes), max(sizes)))
+            ana.append(s)
+            for cap in (1024, 4095):
+                w = visible_walk(chunks, cap, request)
+                ana.append("    cap %d: frames=%d leftover=%d records_with_2plus_frames=%d frame_end_offsets=%s walk=%s" % (
+                    cap, w["frames"], w["leftover"], w["records_2plus"], w["ends"],
+                    "OK" if not w["lost"] else "LOST first hidden header byte rec%d@%d/%d" % w["lost"]))
+            descs = visible_walk(chunks, 1 << 30, request)["descs"]
+            ana.append("    frames: " + (" ".join(descs) if len(descs) <= 40 else " ".join(descs[:30]) + " ... " + " ".join(descs[-6:])))
+    ana.append(" syscalls: " + ", ".join("%s %s %s x%d" % (k[0], k[1], k[2], v) for k, v in sorted(sysc.items())))
+    ana.append(" recv buffer sizes asked (read/recvfrom count argument): " + ", ".join("%d x%d" % kv for kv in sorted(bufs.items())))
+    with open(os.path.join(recdir, sc + ".records"), "w") as f:
+        f.write("\n".join(lines) + "\n")
+    with open(os.path.join(outdir, sc + ".analysis"), "w") as f:
+        f.write("\n".join(ana) + "\n")
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,125 @@
+ClickHouse 26.9.16.11 (official build), apt deb packages from packages.clickhouse.com (clickhouse-common-static/server/client_26.9.16.11_arm64.deb, dpkg/apt install on the VM, no docker); server VERSION_REVISION=54529 (select revision()), client binary is the same build; TCP protocol revision in Hello: server=54492, client=54492.
+
+# T1 measurement: ClickHouse native protocol write/read boundaries
+# Do not edit by hand. Re-run the procedure at the end of this file to regenerate.
+
+== Environment
+- Host: OrbStack Linux VM, Ubuntu 26.04 arm64, kernel 7.0.14-orbstack, 15 CPUs. Linux only; the macOS host was not used.
+- Server: clickhouse-server 26.9.16.11, tcp_port 9000 (plain), listen 127.0.0.1/::1, default config.xml, systemd unit stopped and the binary started by hand in a private UTS namespace with hostname "fixture-host" (so no real host name reaches the fixtures).
+- User: <user>edc</user> with <password>edc-fixture</password> (fake) in /etc/clickhouse-server/users.d/edc.xml.
+- Client: clickhouse-client 26.9.16.11, run as unix user "fixture" in a UTS namespace with hostname "fixture-host", --host 127.0.0.1 --port 9000 --user edc --password edc-fixture --compression 0|1 -q "<sql>", stdout to /dev/null.
+- Tracing: server: strace -f -p <pid> -yy -xx -ttt -s 2097152 -e trace=read,recvfrom,recvmsg,write,sendto,sendmsg,writev; client: strace -f -yy -xx -ttt -s 2097152 -e trace=... clickhouse-client ...
+  The 2 MiB string limit keeps whole syscalls, so a packet walker could verify every boundary. Fixtures keep only the first 8192 bytes of one syscall.
+- Syscalls seen: server sends with sendto, receives with recvfrom (1 MiB buffer); client the same. One syscall = one TCP send/recv record for edc.
+- strace slows both processes. Timestamps are only used to order records. Record boundaries on the client read side can change with timing.
+- Parser: all response bytes were walked packet by packet with a script; the walker reached the end of the stream exactly (no leftover bytes, no unknown packet) in all 16 runs on both sides (32 streams), and all 386 compressed blocks were decompressed (zstd) and parsed to the last byte with no mismatch.
+
+== Wire facts that differ from the plan (important for T2)
+1. TCP protocol revision (Hello field 5) is 54492, not the 54529 returned by revision(). Revision gating must use the Hello value. Source: ProtocolDefines.h says DBMS_TCP_PROTOCOL_VERSION is separate from VERSION_REVISION (master header shows 54494 at fetch time).
+2. Native block String columns, for min(client, server) revision >= 54492 (DBMS_MIN_REVISION_WITH_STRING_WITH_SIZE_STREAM_SERIALIZATION), are NOT varuint-length-prefixed per row. Layout: UInt64 LE cumulative offsets[rows], then the concatenated characters. Row data size = 8*rows + offsets[rows-1]. The walker must read the last offset at 8*(rows-1) from the column data start. Below 54492 the old layout (varuint length per row) applies. No per-column marker exists on the wire; NativeWriter chooses the layout by revision.
+   Verified: block column data for ProfileEvents (host_name, name) and Log-like repeat('x',100) blocks (65409 rows) parse to the last byte only with the offsets-first layout.
+3. CREATE TABLE ... ENGINE=Memory: the server sends ONLY a 1-byte EndOfStream (0x05) after the Query. No Progress, no ProfileEvents, no Data block. So there is no ProfileEvents block for DDL to measure; server_ddl_final.hex is that single byte.
+4. Query packet layout (rev 54492), offsets for "SELECT sleep(1)":
+   - 0 type=1, 1 query_id (empty String 00), ClientInfo ends and settings start at offset 74, then 01 00 = external_roles (String of length 1, content 00), 00 = interserver secret (empty String), stage 02, compression 00|01, query text (length byte + text), parameters terminator 00, then empty Data block (02 00 | block) in the same write.
+   - with the --compression flag the client also sends one setting: name "compression", flags 0, value "false"/"true". Query write = 130 bytes (compression 0), 163 bytes (compression 1; the trailing empty Data block is 48 bytes because it is a compressed frame). Query text length byte at offset 99 / 98, text at 100 / 99.
+   - without --compression flag (default, 127.0.0.1) the Query is 104 bytes for "SELECT 1", 0 settings, text length byte at offset 80, text at 81, compression=0. A remote host default is compression=1 (not measured, E21).
+   - ClientInfo: initial_user and os_user are empty strings; client_hostname = the client host name (so Query packets carry the client host name; do not print it). client_name "ClickHouse client", version 26.9, revision 54492, version_patch 16, quota_key empty, otel flag 0, client_agent empty.
+5. Client Hello (41 bytes): type 0, "ClickHouse client", 26, 9, revision 54492, database "", user "edc", password "edc-fixture" at offset 29 (11 bytes). Addendum (24 bytes, no type byte): quota_key "", proto_send_chunked "notchunked", proto_recv_chunked "notchunked", parallel replicas version 8. Server Hello is 77 bytes (revision varuint at offset 14, 3 bytes), proto caps "notchunked". Hello, Addendum and Query are three separate writes.
+6. Compression: default network_compression_method is ZSTD (method byte 0x90) on this server. All 386 frames-led blocks used 0x90; LZ4 (0x82) was not seen. Frames are [16 checksum][method][u32 compressed size incl 9][u32 uncompressed size].
+7. Compression flag 1 compresses Data, ProfileEvents, Totals, Extremes blocks (not the packet type byte or the table-name String). ProfileEvents blocks were compressed frames (rev >= 54481 confirmed). Log packets were not observed (send_logs_level default).
+8. ProfileEvents block (uncompressed): 6 columns host_name:String, current_time:DateTime, thread_id:UInt64, type:Enum8('increment' = 1, 'gauge' = 2), name:String, value:Int64. Table-name String is empty. Rows depend on query and thread count (this VM has 15 CPUs): final block 1544 bytes (39 rows, SELECT sleep), 2807 (repeat), 1384 (numbers), 2376 (32 rows, aggregation), 3494 (totals), 2868 (extremes). Compressed equivalents: 566, 939, 588, 768, 1029, 929 bytes.
+9. Exception packet: type 2, Int32 LE code 60, String "DB::Exception", String message (104 bytes, ends at offset 124), String stack trace (2990 bytes), UInt8 has_nested 0. Whole Exception is one 3117-byte write; there is no EndOfStream after it.
+10. The first server record after Hello is the empty header Data block (29..39 bytes uncompressed, 63..73 compressed). In SELECT sleep(1) each ~100 ms record starts with Progress (03) followed by ProfileEvents (0e).
+11. Large uncompressed results: the server cuts writes at 1 MiB (1048576) buffer boundaries in the middle of a packet (rep: 18 of 24 server writes start mid-packet; the first byte is then data, e.g. 0x78 for 'x').
+
+== Per-query table (a = --compression 0, b = --compression 1)
+columns: run | side | records (excluding Hello) | last record size | first packet of last record | EndOfStream/Exception offset | inside 1024 | inside 4096 | all packets before it can be walked using only the first 1024 / 4096 bytes
+
+sleep(1)  SELECT sleep(1)
+ a server 12 | last 1590 | ProfileInfo | EndOfStream@1589 | no  | yes | 1024: no (ProfileEvents block not readable) | 4096: yes
+ a client 12 | last 1590 | ProfileInfo | EndOfStream@1589 | no  | yes | 1024: no | 4096: yes
+ b server 12 | last 646  | ProfileInfo | EndOfStream@645  | yes | yes | 1024: yes | 4096: yes
+ b client 12 | last 646  | ProfileInfo | EndOfStream@645  | yes | yes | 1024: yes | 4096: yes
+ sizes (server=client): 30 2625 789 855 789 789 789 789 789 789 31 1590 (a); 64 884 425 402 428 403 401 403 403 402 65 646 (b)
+ total 10654 / 4926 bytes. elapsed Query->EndOfStream 1.007 s (a), 1.005 s (b) under strace.
+
+numbers(1e7)  SELECT number FROM numbers(1e7)
+ a server 157 | last 1442   | ProfileInfo | EndOfStream@1441  | no  | yes | 1024: no | 4096: yes
+ a client 85  | last 68297  | starts mid-Data (first byte 0x75) | EndOfStream@68296 | no | no | n/a (read starts inside a Data packet) | n/a
+ b server 157 | last 680    | ProfileInfo | EndOfStream@679   | yes | yes | 1024: yes | 4096: yes
+ b client 135 | last 680    | ProfileInfo | EndOfStream@679   | yes | yes | 1024: yes | 4096: yes
+ server writes (a): 29, 523303 (one Data block each) repeated, 462687, 1442; client reads (a): 29, 126976, 396327, ... 1048576 ... 68297 (73 of 85 reads start mid-packet).
+ server writes (b): 63, 104260, 66494, ... 58822, 680 (158 compressed Data blocks, one frame each).
+ total 80010775 bytes (a), 10206909 bytes (b). elapsed 0.28 s.
+
+repeat('x',100) FROM numbers(2e5)  (multi-frame compressed blocks)
+ a server 24 | last 2861    | ProfileInfo | EndOfStream@2860  | no  | yes | 1024: no | 4096: yes
+ a client 25 | last 907323  | starts mid-Data (first byte 0x78) | EndOfStream@907322 | no | no | n/a (Data + end packets in one read; Data@496938 ProfileInfo@904462 ... EndOfStream@907322) | n/a
+ b server 6  | last 1027    | ProfileInfo | EndOfStream@1026  | no (by 3 bytes) | yes | 1024: no | 4096: yes
+ b client 6  | last 1027    | ProfileInfo | EndOfStream@1026  | no (by 3 bytes) | yes | 1024: no | 4096: yes
+ server writes (a): 39, 1048576 x many (mid-packet starts), 772757, 407524, 2861; client reads (a): 39, 126976, 712651, 1048576 ..., 907323.
+ server writes (b): 73, 99290, 99290, 99290, 5901, 1027.
+ total 21603063 bytes (a), 304871 bytes (b).
+ Compressed: 7 Data blocks of 65409 rows each, every block is 7 frames; usz = 1048576 x6 then 772755.
+
+CREATE TABLE default.t_edc (x UInt8) ENGINE=Memory
+ a/b server 1 | last 1 | EndOfStream | EndOfStream@0 | yes | yes | yes | yes
+ a/b client 1 | last 1 | EndOfStream | EndOfStream@0 | yes | yes | yes | yes
+ No ProfileEvents block exists for this DDL (see fact 3).
+
+SELECT * FROM missing_table  (error)
+ a/b server 1 | last 3117 | Exception | Exception@0 | yes | yes | yes | yes   (Exception code 60, name "DB::Exception", message ends at offset 124)
+ a/b client 1 | last 3117 | Exception | Exception@0 | yes | yes | yes | yes
+
+Extra queries (not in the plan list):
+ totals  SELECT number % 3 AS k, count() FROM numbers(100) GROUP BY k WITH TOTALS
+   a server=client last 3589: Totals@0(+48) ProfileInfo@48 Progress@58 ProfileEvents@70(+3494) Data@3564 Progress@3578 EndOfStream@3588 | 1024: no, 4096: yes
+   b server=client last 1192: Totals@0(+82) ProfileInfo@82 ... EndOfStream@1191 | 1024: no, 2048: yes, 4096: yes
+ extremes SELECT number FROM numbers(10) SETTINGS extremes=1
+   a server=client last 2959: Extremes@0(+45) ProfileInfo@45 ... EndOfStream@2958 | 1024: no, 4096: yes
+   b server=client last 1088: Extremes@0(+79) ... EndOfStream@1087 | 1024: no, 2048: yes, 4096: yes
+ aggregation SELECT number % 10 AS k, count(), uniq(number), sum(number), quantile(0.5)(number) FROM numbers(2e7) GROUP BY k ORDER BY k
+   a server=client last 2428: ProfileInfo@0 ... ProfileEvents@27(+2376, 32 rows) ... EndOfStream@2427 | 1024: no, 2048: no, 4096: yes
+   b server=client last 854: EndOfStream@853 | 1024: yes
+
+== A2: server final write starts with 6/7/8 and contains EndOfStream  -> CONFIRMED (server side)
+In all 12 SELECT-type measurements (sleep, numbers, repeat, aggregation, totals, extremes; compression 0 and 1) the last server write starts with ProfileInfo (6), Totals (7) or Extremes (8) and ends with Progress + EndOfStream in the same write (EndOfStream is the last byte). Preceding records start with Data (1) or Progress (3) or are mid-packet bytes. Totals (7) and Extremes (8) were measured too.
+Caveats: (1) a mid-packet record of an uncompressed large result can start with byte 6/7/8 by chance, so a structure check is needed before inferring; (2) the Exception path (no EndOfStream) and DDL (EndOfStream only) are separate cases; (3) client-cancel path was not measured.
+Client read side: the final read had the same boundaries as the server write for all small and for all compressed results (EndOfStream inside the same read). It was NOT the same for large uncompressed results (see A3).
+
+== A3: one client read can mix Data and the end packets  -> CONFIRMED for large uncompressed results, not seen for compressed
+- numbers a client: last read 68297 bytes starts inside Data; Data bytes then ProfileInfo@66855 ... EndOfStream@68296.
+- repeat a client: last read 907323 bytes; Data@496938(+407524) then ProfileInfo@904462 ... EndOfStream@907322.
+- compressed runs (numbers b, repeat b, totals b, extremes b, aggregation b): the last client read always began at ProfileInfo/Totals/Extremes.
+- Client reads are up to 1048576 bytes and 73 of 85 (numbers a) / 22 of 25 (repeat a) reads start mid-packet.
+
+== A4: compressed block continues in the next frame when frame uncompressed size == 1048576  -> CONFIRMED
+repeat b: 3 Data blocks (of 7) used 7 frames each: usz [1048576 x6, 772755]; the frame with usz 772755 < 1048576 closed the block. Decompressing the frames and parsing them as one Native block consumed exactly 7064211 of 7064211 bytes (rows=65409, cols=1). No mismatch in any of the 386 compressed blocks of all runs. Not measured: a block whose uncompressed size is exactly 1048576 bytes (the rule would then expect another frame).
+
+== Branch decision for T4: (b), with a documented (c) limit
+(a) is rejected: server-side EndOfStream is outside the first 1024 bytes of the final write in 9 cases: uncompressed sleep 1589, numbers 1441, repeat 2860, totals 3588, extremes 2958, aggregation 2427; compressed repeat 1026, totals 1191, extremes 1087; the client sees the same offsets whenever its final read starts at the same boundary.
+(b) applies: for every case above the EndOfStream offset is inside 4096 and all packets before it can be walked from the first 4096 bytes (walker check: walk-ok at 4096, walk-FAIL at 1024 for these cases). Largest measured offset: 3588 (totals, uncompressed). Raise the BPF response capture limit to 4096 for the clickhouse protocol only.
+(c) still applies to:
+ - client reads of large uncompressed results where the final read starts in the middle of Data (numbers a: EndOfStream@68296, repeat a: @907322). The completion cannot be seen within 4096 bytes and cannot be inferred from the first byte. Document as a limit; the server side still sees the final write.
+ - servers with many threads or heavy queries: the uncompressed ProfileEvents block grows with the number of threads and counters (1384 to 3494 bytes here on 15 CPUs); a final uncompressed write above 4096 bytes is possible and was not measured. With compression 1 the block stays below 1100 bytes here.
+ - uncompressed ProfileEvents walking needs the String offsets (fact 2); at revision < 54492 the old layout would apply (not measured, different server version).
+
+== Re-run procedure (works on the Linux VM)
+1. Install: download clickhouse-common-static, clickhouse-server and clickhouse-client 26.9.16.11 arm64 .deb from https://packages.clickhouse.com/deb/pool/main/c/clickhouse/ and run apt-get install ./*.deb with a policy-rc.d that returns 101 (server does not start).
+2. Create /etc/clickhouse-server/users.d/edc.xml with user edc, password edc-fixture, networks ::/0; start: sudo unshare -u bash -c 'hostname fixture-host; exec setpriv --reuid=clickhouse --regid=clickhouse --init-groups clickhouse-server --config-file=/etc/clickhouse-server/config.xml'.
+3. For each query and --compression 0|1: start the server strace (see Environment), then run the client under strace in a UTS namespace as user fixture, then stop the straces.
+4. Walk the recorded streams: parse packet types 0..17 with the layouts above; fixtures are the first 8192 bytes of one syscall in -xx hex.
+5. Fixture list: client_hello (sleep a, client write 1), client_addendum (write 2), client_query (sleep a, write 3), client_query_compressed (sleep b, write 3), server_hello (server write 1), server_select_final (sleep a, last server write), server_select_final_compressed (repeat b, last server write), server_ddl_final (CREATE TABLE a, last server write), server_exception (missing_table a, last server write).
+6. Secrets: the only password in the files is the fake edc-fixture (client_hello.hex). The host name in the files is the neutral "fixture-host" (client_query*.hex, server_hello.hex, server_select_final.hex ProfileEvents host_name rows).
+
+== T4 result: response capture limit 4096 for trace clickhouse (BPF variable mysql_response_size)
+Verifier cost, "processed N insns" in the verifier log (limit 1000000), Linux 7.0.14 arm64 VM, clang 21.1.8. The VM kernel and bpftool report verified_insns as 0, so the log was read with cilium/ebpf LogLevelStats. before = the object committed before T4, after = regenerated with the new variable.
+program            trace mysql before -> after     trace clickhouse before -> after
+tcp_sendmsg_entry  244 -> 244                      244 -> 244
+tcp_sendmsg_exit   151329 -> 196634 (+30%)         151329 -> 196590 (+30%)
+tcp_recvmsg_entry  219 -> 219                      219 -> 219
+tcp_recvmsg_exit   1182 -> 1016                    1182 -> 638
+tcp_sendmsg_exit uses 20% of the limit after the change (196634 of 1000000). Both commands load.
+Regenerating the committed object with the unchanged source gave a different object by exactly one byte in each of captureevents_bpfel.o and captureevents_bpfeb.o (one register number in a jeq instruction), so the other byte differences come from the compiler version only.
+Live check (compression 0, 3 runs of each query, server on 9000): with the old object all 15 clickhouse_end events carry end_inferred=true and the server side shows no end for most queries; with the new object no event carries end_inferred and server clickhouse_end appears (SELECT 1: 3 of 3, 1.0 ms). Client SELECT sleep(1) end: 1003.8, 1006.6, 1004.2 ms.
+Known gap for T7: server clickhouse_query (and so the server end) is missing for many queries, for example SELECT sleep(1) on the server side in all runs.

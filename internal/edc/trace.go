@@ -1,6 +1,7 @@
 package edc
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -116,6 +117,11 @@ var traceProtocolRegistry = []traceProtocolRegistration{
 	{name: "mysql", view: traceProtocolView{selectorLabel: "mysql"}, spec: traceProtocolSpec{
 		ansiColor: "94", screenColor: "#818cf8", groupColumns: traceMySQLGroupColumns, hideTraffic: true, linuxOnly: true,
 		scrollLabels: traceMySQLScrollLabels, serverSide: true, prerequisites: httpTracePrerequisites, newSummarizer: func() traceSummarizer { return newMySQLTraceSummarizer() },
+	}},
+	// 평문 ClickHouse native protocol(TCP 9000)만 본다. TLS(9440) 안의 packet은 kernel에서 암호문이다. 색은 다른 protocol이 쓰지 않는 값이다.
+	{name: "clickhouse", view: traceProtocolView{selectorLabel: "clickhouse"}, spec: traceProtocolSpec{
+		ansiColor: "96", screenColor: "#2dd4bf", groupColumns: traceClickHouseGroupColumns(func(group traceGroupSummary) *traceClickHouseCounts { return group.ClickHouse }), hideTraffic: true, linuxOnly: true,
+		scrollLabels: traceClickHouseScrollLabels, serverSide: true, prerequisites: httpTracePrerequisites, newSummarizer: func() traceSummarizer { return newClickHouseTraceSummarizer() },
 	}},
 	{name: "io", view: traceProtocolView{selectorLabel: "io"}, spec: traceProtocolSpec{ansiColor: "33", screenColor: "#fbbf24", linuxOnly: true, prerequisites: ioTracePrerequisites}, run: runIOTrace},
 	// unix socket 파일 하나를 본다. 목적지는 늘 그 경로라서 port와 target 보기는 한 행뿐이다. source는 상대 process다.
@@ -249,6 +255,8 @@ type traceScope struct {
 	tls       traceTLSMode
 	tlsFinder *traceTLSFinder
 	port      uint16
+	// httpPort는 trace clickhouse가 HTTP interface로 볼 port다. 0이면 기본값을 쓴다.
+	httpPort uint16
 	// socketPath는 trace socket이 볼 unix socket 파일이다.
 	socketPath string
 	// dropReasons는 trace drop이 event로 볼 이유 이름이다. 비어 있으면 모든 이유를 본다.
@@ -257,7 +265,7 @@ type traceScope struct {
 
 func (options tcpTraceOptions) scope(protocol string) traceScope {
 	return traceScope{protocol: protocol, server: options.side == traceServerSide, side: options.side, payload: options.payload != "", payloadAll: options.payload == tracePayloadAll, http2Payload: options.payload != "",
-		showSecrets: options.showSecrets, tls: options.tls, tlsFinder: options.tlsFinder, port: uint16(options.port), socketPath: options.socketPath, dropReasons: splitDropReasons(options.dropReasons)}
+		showSecrets: options.showSecrets, tls: options.tls, tlsFinder: options.tlsFinder, port: uint16(options.port), httpPort: uint16(options.httpPort), socketPath: options.socketPath, dropReasons: splitDropReasons(options.dropReasons)}
 }
 
 // tracePayloadMode는 --payload 값이다. 값 없이 쓰면 message마다 앞 4KiB를, all이면 message 전체를 본다.
@@ -325,7 +333,7 @@ func (mode *traceTLSMode) IsBoolFlag() bool { return true }
 // traceLabel은 화면 머리글에 쓰는 trace 이름이다. 서버 쪽 trace는 client 쪽과 같은 event 이름을 쓰므로 머리글로 구분한다.
 // trace http는 기본으로 두 쪽을 모두 보므로, client만 고른 것도 머리글에 쓴다.
 func traceLabel(protocol, side string) string {
-	if side == traceServerSide || (side == traceClientSide && (protocol == "http" || protocol == "mysql")) {
+	if side == traceServerSide || (side == traceClientSide && (protocol == "http" || protocol == "mysql" || protocol == "clickhouse")) {
 		return protocol + " --side " + side
 	}
 	return protocol
@@ -441,7 +449,7 @@ func runTrace(args []string) int {
 }
 
 func traceUsage() {
-	fmt.Fprintln(os.Stderr, T("cli.usage", "edc trace <tcp|udp|dns|arp|ndp|http|drop|mysql|io|sched> [options]"))
+	fmt.Fprintln(os.Stderr, T("cli.usage", "edc trace <tcp|udp|dns|arp|ndp|http|drop|mysql|clickhouse|io|sched> [options]"))
 	fmt.Fprintln(os.Stderr, T("cli.usage", traceSocketUsage))
 }
 
@@ -466,6 +474,7 @@ func runTraceProtocol(args []string) int {
 	set.BoolVar(&options.showSecrets, "show-secrets", false, T("command.trace.option.show_secrets"))
 	set.Var(&options.tls, "tls", T("command.trace.option.tls"))
 	set.IntVar(&options.port, "port", 0, T("command.trace.option.port"))
+	set.IntVar(&options.httpPort, "http-port", 0, T("command.trace.option.http_port"))
 	set.StringVar(&options.containerRef, "container", "", T("command.trace.option.container"))
 	set.StringVar(&options.dropReasons, "reason", "", T("command.trace.option.reason"))
 	if err := set.Parse(args[1:]); err != nil {
@@ -499,7 +508,7 @@ func runTraceProtocol(args []string) int {
 		fmt.Fprintln(os.Stderr, T("cli.trace.slow_range"))
 		return 2
 	}
-	if slowSet && args[0] != "mysql" {
+	if slowSet && args[0] != "mysql" && args[0] != "clickhouse" {
 		fmt.Fprintln(os.Stderr, T("cli.trace.slow_protocol"))
 		return 2
 	}
@@ -540,7 +549,7 @@ func runTraceProtocol(args []string) int {
 		fmt.Fprintln(os.Stderr, T("cli.trace.payload_json_conflict"))
 		return 2
 	}
-	if options.showSecrets && options.payload == "" && args[0] != "mysql" {
+	if options.showSecrets && options.payload == "" && args[0] != "mysql" && args[0] != "clickhouse" {
 		fmt.Fprintln(os.Stderr, T("cli.trace.show_secrets_payload"))
 		return 2
 	}
@@ -555,8 +564,23 @@ func runTraceProtocol(args []string) int {
 		fmt.Fprintln(os.Stderr, T("cli.trace.port_range"))
 		return 2
 	}
-	if portSet && args[0] != "http" && args[0] != "mysql" {
+	if portSet && args[0] != "http" && args[0] != "mysql" && args[0] != "clickhouse" {
 		fmt.Fprintln(os.Stderr, T("cli.trace.port_protocol", args[0]))
+		return 2
+	}
+	httpPortSet := false
+	set.Visit(func(option *flag.Flag) { httpPortSet = httpPortSet || option.Name == "http-port" })
+	if httpPortSet && (options.httpPort < 1 || options.httpPort > 65535) {
+		fmt.Fprintln(os.Stderr, T("cli.trace.http_port_range"))
+		return 2
+	}
+	if httpPortSet && args[0] != "clickhouse" {
+		fmt.Fprintln(os.Stderr, T("cli.trace.http_port_protocol"))
+		return 2
+	}
+	// 같은 port를 native와 HTTP로 함께 읽으면 한 socket을 두 방식으로 해석한다. 기본값과 겹치는 경우도 막는다.
+	if args[0] == "clickhouse" && cmp.Or(options.port, traceClickHouseDefaultPort) == cmp.Or(options.httpPort, traceClickHouseDefaultHTTPPort) {
+		fmt.Fprintln(os.Stderr, T("cli.trace.port_conflict", cmp.Or(options.port, traceClickHouseDefaultPort)))
 		return 2
 	}
 	// ARP와 NDP event는 netlink에서 와서 process가 없으므로 process 보기도 없다. cgroup ID도 없다.
@@ -1043,6 +1067,7 @@ type traceGroup struct {
 	Neighbor        *traceNeighborCounts
 	HTTP            *traceHTTPCounts
 	MySQL           *traceMySQLCounts
+	ClickHouse      *traceClickHouseCounts
 	traceTraffic
 }
 
@@ -1065,6 +1090,8 @@ type traceGroupSummary struct {
 	Neighbor *traceNeighborCounts `json:"neighbor,omitempty"`
 	HTTP     *traceHTTPCounts     `json:"http,omitempty"`
 	MySQL    *traceMySQLCounts    `json:"mysql,omitempty"`
+	// ClickHouse는 ClickHouse group에만 있다.
+	ClickHouse *traceClickHouseCounts `json:"clickhouse,omitempty"`
 	traceTraffic
 }
 
@@ -1146,7 +1173,7 @@ func (summarizer *traceGroupSummarizer) observe(event captureEvent) {
 	key, server := traceGroupKey(event, summarizer.groupBy)
 	// 로컬 서버가 받은 HTTP 요청은 같은 process나 target이 보낸 요청과 다른 행에 둔다. 서버의 응답 시간은 처리 시간만
 	// 재므로, 섞으면 평균이 뜻을 잃는다.
-	if (event.Protocol == "http" || event.Protocol == "mysql") && event.Side == traceServerSide {
+	if (event.Protocol == "http" || event.Protocol == "mysql" || event.Protocol == "clickhouse") && event.Side == traceServerSide {
 		server = true
 	}
 	// 서버 행과 target 없는 client 행이 같은 주소일 수 있다. 섞이지 않도록 map key만 구분한다.
@@ -1170,6 +1197,9 @@ func (summarizer *traceGroupSummarizer) observe(event captureEvent) {
 		if event.MySQL != nil {
 			requestKey = mysqlEventPrefix + event.MySQL.Command
 		}
+		if event.ClickHouse != nil {
+			requestKey = clickHouseEventPrefix + event.ClickHouse.Command
+		}
 		if server {
 			requestKey += "\x00server"
 		}
@@ -1178,6 +1208,9 @@ func (summarizer *traceGroupSummarizer) observe(event captureEvent) {
 		}
 		if requests := summarizer.groups[requestKey]; requests != nil && requests.MySQL != nil {
 			requests.MySQL.answered += event.answered
+		}
+		if requests := summarizer.groups[requestKey]; requests != nil && requests.ClickHouse != nil {
+			requests.ClickHouse.answered += event.answered
 		}
 	}
 	summarizer.events++
@@ -1195,7 +1228,7 @@ func (summarizer *traceGroupSummarizer) report(summary captureSummary, duration 
 		result.Groups = append(result.Groups, traceGroupSummary{
 			Group: group.Group, Server: group.Server, Destinations: slices.Sorted(maps.Keys(group.Destinations)), Processes: slices.Sorted(maps.Keys(group.Processes)),
 			Events: group.Events, Rate: traceGroupRate(group.Events, duration), Tx: group.Tx, Rx: group.Rx, Connect: group.Connect,
-			Retransmissions: traceObserved(group.Retransmissions), Resets: traceObserved(group.Resets), LastEvent: group.LastEvent, DNS: traceDNSGroupSummary(group.DNS), Neighbor: traceNeighborGroupSummary(group.Neighbor), HTTP: traceHTTPGroupSummary(group.HTTP), MySQL: traceMySQLGroupSummary(group.MySQL), traceTraffic: traffic,
+			Retransmissions: traceObserved(group.Retransmissions), Resets: traceObserved(group.Resets), LastEvent: group.LastEvent, DNS: traceDNSGroupSummary(group.DNS), Neighbor: traceNeighborGroupSummary(group.Neighbor), HTTP: traceHTTPGroupSummary(group.HTTP), MySQL: traceMySQLGroupSummary(group.MySQL), ClickHouse: traceClickHouseGroupSummary(group.ClickHouse), traceTraffic: traffic,
 		})
 	}
 	if summarizer.groupBy == traceGroupByPort {
@@ -1371,6 +1404,11 @@ func observeTraceGroup(group *traceGroup, event captureEvent) {
 			group.MySQL = &traceMySQLCounts{}
 		}
 		group.MySQL.observe(event)
+	case "clickhouse":
+		if group.ClickHouse == nil {
+			group.ClickHouse = &traceClickHouseCounts{}
+		}
+		group.ClickHouse.observe(event)
 	}
 	group.traceTraffic.observe(event)
 	group.LastEvent = event.Event

@@ -214,6 +214,7 @@ The command also creates the parent for the legacy recommended `edc.log` path.
 ./bin/edc net interfaces
 ./bin/edc listen              # open ports, --unix or --all adds unix sockets
 ./bin/edc listen --watch -i 0.5 --duration 10s
+sudo ./bin/edc audit           # read-only check of exposure and settings (Linux)
 ./bin/edc quality --timeout 60s
 ./bin/edc quality --server https://example.com/.well-known/nq   # responsiveness config URL
 
@@ -403,6 +404,43 @@ The screen keeps the addresses as they are by default. Add `--redact` to hide th
 The demo masks the public IP as `222.XXX.XXX.XXX` and replaces the route addresses with private example addresses.
 
 `edc` states only what it confirms. It does not guess the line type from the jitter. The jitter column holds the number, and the reading stays with you.
+
+## Host audit (Linux)
+
+`edc audit` reads the exposure and the settings of a Linux host. It reads files, sysctl values, and the listening sockets. It changes nothing, and it sends nothing over the network. It ends in less than one second.
+
+```bash
+sudo edc audit
+sudo edc audit -v               # add the values and the rules behind each result
+sudo edc audit --json -         # one result for each check
+```
+
+| Check | Fail | Warn |
+|---|---|---|
+| `net.exposed` | a database or control port listens beyond loopback, and the host firewall accepts inbound traffic | the same port, but the firewall drops by default or edc cannot read it |
+| `net.firewall` | | the input chains have no rule |
+| `net.ip_forward` | | forwarding is on, and edc finds no container runtime |
+| `ssh.root_login` | | `PermitRootLogin yes` |
+| `ssh.password_auth` | `PermitEmptyPasswords yes` with password login | password login is on |
+| `ssh.key_files` | another user can write `~/.ssh` or `authorized_keys` | |
+| `user.uid0` | an account other than root has UID 0 | |
+| `user.empty_pass` | an account has an empty password | |
+| `user.sudo_nopass` | | a sudo rule runs every command without a password |
+| `user.root_groups` | | the `docker` or `lxd` group has members |
+| `file.sensitive` | other users can read `/etc/shadow`, or write `/etc/passwd`, `/etc/sudoers`, or `docker.sock` | |
+| `file.path_writable` | other users can write a directory in the root `PATH`, or `PATH` has a relative entry | |
+| `kernel.sysctl` | | a hardening value differs from the recommended value |
+| `patch.reboot` | | a package asks for a reboot, or `/boot` has a newer kernel than the running kernel |
+
+The database and control ports are 2375, 2379, 3306, 5432, 6379, 9200, 10250, 11211, and 27017.
+
+Run it as root. Without root, edc cannot read the firewall, `/etc/shadow`, `/etc/sudoers`, or the homes of other users. These checks show `skip`, not `pass`.
+
+The firewall check reads `nft list ruleset`. If nft shows no input chain, it reads `iptables-save`. It counts the input rules, but it does not read the rule order. The check sees only this host. A cloud security group can still block a port, so a `fail` means that the host itself does not block the port.
+
+The SSH checks read `sshd_config` and its `Include` files. The first value wins, as in sshd. A `Match` block applies only to some connections, so edc does not read it. Run `sshd -T` to see the effective values.
+
+`edc audit` does not match package versions against CVEs. It does not scan the whole file system, and it does not fix a finding.
 
 ## Probe thresholds
 
@@ -1655,7 +1693,7 @@ Use `trace mysql` on Linux 5.15 or later to print plain MySQL commands and resul
 
 JSON events have `"side": "client"` or `"side": "server"`. Use `--side client` or `--side server` to keep one side. If the local port is the MySQL port, the socket is on the server side. If the peer port is the MySQL port, the socket is on the client side.
 
-Use `--slow <duration>` only with `trace mysql`, `trace io`, or `trace sched`. It accepts Go duration syntax, such as `250ms` and `1.5s`. For `trace io`, it sets the minimum request latency. For `trace sched`, it sets the minimum span latency. The default for both is 1ms. For `trace mysql`, in the ungrouped interactive view, it keeps a command row only when its first paired response has latency at or above the duration. It excludes unanswered commands, unmatched responses, responses without latency, and TLS rows. It does not change raw JSON, noninteractive output, summaries, grouped views, `--group-by`, or `--side`.
+Use `--slow <duration>` only with `trace mysql`, `trace clickhouse`, `trace io`, or `trace sched`. It accepts Go duration syntax, such as `250ms` and `1.5s`. For `trace io`, it sets the minimum request latency. For `trace sched`, it sets the minimum span latency. The default for both is 1ms. For `trace mysql`, in the ungrouped interactive view, it keeps a command row only when its first paired response has latency at or above the duration. It excludes unanswered commands, unmatched responses, responses without latency, and TLS rows. It does not change raw JSON, noninteractive output, summaries, grouped views, `--group-by`, or `--side`.
 
 | To see | Command |
 | --- | --- |
@@ -1708,6 +1746,100 @@ The summary after Ctrl-C shows one row for each side, command, and SQL shape. Th
 - edc keeps the first 4 KiB of each command read or write. It keeps the first 1 KiB of each response read or write. An event shows up to 1,024 bytes of SQL, and `sql_truncated` is true if edc cuts it.
 - If a lost event or a partial send moves the packet boundary, edc can miss the next commands of that connection. The summary shows the lost events.
 - `docker run -p` starts `docker-proxy`. It shows one query on each hop. Use the container address to skip it.
+
+Use `trace clickhouse` on Linux 5.15 or later to print plain ClickHouse queries as they arrive. One trace reads the native TCP protocol and the HTTP interface. edc reads the start of each TCP read and write on the two ports in the kernel. The default ports are 9000 for native TCP and 8123 for HTTP.
+
+Use `--port` for another native port. Use `--http-port` for another HTTP port. `--http-port` works only with `trace clickhouse`, and its value must be from 1 to 65535. No option reads only one interface.
+
+The two ports must differ. If they are the same, edc exits with code 2. This includes the default of the other option. For example, `--port 8123` fails, because the HTTP port is 8123 by default.
+
+```bash
+./bin/edc trace clickhouse
+./bin/edc trace clickhouse --side server
+./bin/edc trace clickhouse --port 9001
+./bin/edc trace clickhouse --port 9440 --http-port 18123
+./bin/edc trace clickhouse --slow 500ms
+./bin/edc trace clickhouse --group-by process
+./bin/edc trace clickhouse --show-secrets
+./bin/edc trace clickhouse --raw
+```
+
+`trace clickhouse` shows two sides, like `trace mysql`. Each event row starts with the side:
+
+- `client:` is a query that this host sent to a ClickHouse server.
+- `server:` is a query that a local ClickHouse server received.
+
+JSON events have `"side": "client"` or `"side": "server"`. Use `--side client` or `--side server` to keep one side.
+
+Use `--slow <duration>` in the ungrouped interactive view. It accepts Go duration syntax, such as `250ms` and `1.5s`. It keeps a query row only when the latency of its paired response is at or above the duration. It excludes unanswered queries, unmatched responses, and responses without latency. If you use `--slow` with `--raw`, `--json`, `--group-by`, or output that is not a terminal, edc exits with code 2.
+
+| To see | Command |
+| --- | --- |
+| All ClickHouse on this host | `./bin/edc trace clickhouse` |
+| The queries that local servers received | `./bin/edc trace clickhouse --side server` |
+| The queries that this host sent | `./bin/edc trace clickhouse --side client` |
+| ClickHouse with native port 9001 | `./bin/edc trace clickhouse --port 9001` |
+| ClickHouse with HTTP port 18123 | `./bin/edc trace clickhouse --http-port 18123` |
+| Paired queries at or above 500ms | `./bin/edc trace clickhouse --slow 500ms` |
+| The latency of each process on each side | `./bin/edc trace clickhouse --group-by process` |
+| The SQL text without the mask | `./bin/edc trace clickhouse --show-secrets` |
+
+A request is one of these events. The `clickhouse` object of the JSON event has the fields.
+
+- `clickhouse_connect` is a login. It has `user`, `database`, `client_name`, `client_version`, and `revision`.
+- `clickhouse_query` is a query. It has `sql`, `query_id`, `user`, `database`, and `compressed`.
+
+A response is one of these events:
+
+- `clickhouse_hello` is the answer to a login. It has `server_name` and `server_version`.
+- `clickhouse_end` is the end of a query. It has `rows` when edc read the data blocks.
+- `clickhouse_exception` is a failed query. It has `error_code`, `error_name`, and `message`.
+
+A response event has the `command`, the `sql`, and the `query_id` of the request that it answers. If edc did not see the end of the stream but can tell that the query ended, `clickhouse_end` has `end_inferred: true`. `clickhouse_chunked` is not a request. It shows that the connection uses the chunked protocol. edc reads no more of that connection.
+
+The latency of a native query starts at the `Query` packet and stops at `EndOfStream` or `Exception`. This differs from `trace mysql`, which stops at the first response packet. So `latency_ms` is the time to the end of the result. On the server side, it starts when the server reads the query and stops when the server writes the last packet. On the client side, it stops when the client reads the last packet. The client latency includes the network.
+
+HTTP queries use the same events and fields. Each `clickhouse` object has `interface`, which is `native` or `http`. A response event of an HTTP query also has `http_status`. In the scroll view, an HTTP row has `http:` after the side, for example `server: http: SELECT 1`. The detail view of the full screen shows `interface`, and `http_status` for a response. For HTTP, `compressed` means that the request body is compressed. HTTP has no `clickhouse_connect` or `clickhouse_hello` event, and `rows` is not set.
+
+edc shows an HTTP request as a query in these cases:
+
+- A `GET` or `HEAD` request whose path starts with `?`, `/?`, or `/query?`.
+- A `POST` or `OPTIONS` request to `/`, or to one of those paths.
+
+Other endpoints, such as `/ping`, `/replicas_status`, and `/play`, have no event. A custom `http_handlers` path is not a query, so it has no event either.
+
+The SQL is the `query` parameter of the URL, a newline, and the start of the request body. edc keeps the first 4 KiB of the body. edc does not read a multipart body. edc does not read a compressed body (`Content-Encoding` or `decompress=1`) either, so the SQL can be only the `query` parameter. edc cuts an `INSERT` before its data, at `VALUES` or `FORMAT <name>`. The insert data is never shown.
+
+edc pairs the requests and responses of one connection in order. It skips the request body by its size (`Content-Length` or chunked), so it finds the next request on a keep-alive connection. It also handles `Expect: 100-continue`.
+
+The latency of an HTTP query starts at the first record of the request. It stops at the end of the response: the last chunk, the `Content-Length` bytes, or an `__exception__` block. edc does not use `elapsed_ns` of the `X-ClickHouse-Summary` header. The server writes that header before it sends all of the result. So the value can be much smaller than the time to the last chunk. On the server side, the latency is the time that the server takes to run the query. On the client side, it includes the network.
+
+By default, `wait_for_async_insert` is 1. For an async insert, the server answers after the flush of the buffer. So the latency includes the wait for the flush (`async_insert_busy_timeout_ms`). If `wait_for_async_insert` is 0, the latency stops when the server accepts the insert.
+
+If a query fails before the server sends output, the HTTP status shows the error. edc emits `clickhouse_exception` with `error_code` from `X-ClickHouse-Exception-Code`. If a query fails after the output starts, the status stays 200 and the body ends with an `__exception__` block. edc reads this block and emits `clickhouse_exception`. If the response is compressed, edc can fail to see the block. Then the query counts as unanswered. `error_name` is empty if edc cannot read it.
+
+By default, edc replaces the text of string literals in the SQL with `?`. The mask applies to the scroll view, the full screen, `--raw`, and the summary. Numbers, names, and comments are not hidden. Do not write a secret in a comment or a number.
+
+Use `--show-secrets` to show the SQL as sent. It needs no `--payload`. Do not share output that has it. The output never has the password of a login, also with `--show-secrets`. edc does not keep the values of settings and query parameters.
+
+For HTTP, edc never shows these values, also with `--show-secrets`: the password, `X-ClickHouse-Key`, the password of `Authorization: Basic`, other `Authorization` schemes, `X-ClickHouse-Quota`, `quota_key`, `session_id`, cookies, `param_*` values, and setting values. edc shows `user`, `database`, and `query_id`.
+
+edc does not hide the `message` of a `clickhouse_exception` event. The message can hold values, for example a table name or a key value. Check the output for values before you share it.
+
+The summary after Ctrl-C shows one row for each side, command, and SQL shape. The shape replaces the string values and the numbers with `?` and joins the spaces to one space. A row shows the number of queries, errors, and unanswered queries, the average and maximum latency, and the process. If the trace has both sides, the summary shows the totals of each side and adds a `SIDE` column. JSON has the same content. With `--group-by`, the rows show `CMD`, `RSP`, `ERR`, `NOANS`, `AVGms`, and `MAXms`. The grouped views keep the server side in separate rows. If the trace has both native and HTTP queries, the summary adds an `INTERFACE` column after `SIDE`. JSON rows always have `interface`. The `Connections` total counts native connections only.
+
+`trace clickhouse` has these limits:
+
+- It reads the native TCP protocol and HTTP/1.x. It does not read TLS (native port 9440, HTTPS port 8443) or HTTP/2, and shows no event for them. It does not read a chunked native connection.
+- An HTTP/1.0 response and a response with no length have an end that edc cannot see. These queries count as unanswered.
+- If a client sends two HTTP requests in one write, the server answers only the first. The pairs of that connection can be wrong.
+- It reads TCP only. A connection to a unix socket is not visible.
+- edc keeps the first 4 KiB of each read or write, for requests and for responses. An event shows up to 1,024 bytes of SQL, and `sql_truncated` is true if edc cuts it.
+- On the client side, the last read of a large result can start in the middle of a data block or an HTTP chunk. This occurs with and without compression. Then edc cannot see the end of the query, and the query counts as unanswered. The server side still sees the end.
+- If a heavy query makes the last write more than 4 KiB, edc cannot see the end. The uncompressed `ProfileEvents` block grows with the number of threads and counters.
+- If edc did not see the `Hello` of a connection, edc skips that connection. This happens when the trace starts in the middle of a connection. edc sees the connection after the client connects again.
+- If a lost event or a partial send moves the packet boundary, edc can miss the next queries of that connection. The summary shows the lost events.
+- At a published host port, edc shows the client row and the row of the server in the container. `docker-proxy` itself shows no rows. The server row shows the Docker bridge gateway as the peer. Use `--process clickhouse-serv` to keep the rows of the server process.
 
 Use `trace socket` on Linux to follow one unix domain socket file. Give the path of the socket file. edc prints each connect, accept, send, recv, end of data (`eof`), and close on that socket. The options can come before or after the path.
 

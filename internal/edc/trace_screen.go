@@ -90,6 +90,7 @@ type traceScreenRow struct {
 	hidden   bool
 }
 
+// traceMySQLPairKey는 요청과 응답을 짝짓는 key다. 이름은 mysql에서 왔지만 clickhouse도 같은 key를 쓴다.
 type traceMySQLPairKey struct {
 	socket  uint64
 	side    string
@@ -97,8 +98,38 @@ type traceMySQLPairKey struct {
 	sql     string
 }
 
+// traceScreenPairs는 요청과 응답을 한 행으로 짝지어 보이는 protocol인지다.
+func traceScreenPairs(protocol string) bool {
+	return protocol == "mysql" || protocol == "clickhouse"
+}
+
+// tracePairOf는 event의 짝 key와 응답 여부를 꺼낸다. pending이 아닌 event(mysql_tls, clickhouse_chunked)는 답이 오지
+// 않으므로 짝을 기다리지 않는다. ok가 false면 짝지을 값이 없는 event다.
+func tracePairOf(event captureEvent) (key traceMySQLPairKey, response, pending, ok bool) {
+	switch {
+	case event.MySQL != nil:
+		key = traceMySQLPairKey{socket: event.SocketID, side: event.Side, command: event.MySQL.Command, sql: event.MySQL.SQL}
+		return key, mysqlResponseEvent(event.Event), event.Event != mysqlEventTLS, true
+	case event.ClickHouse != nil:
+		key = traceMySQLPairKey{socket: event.SocketID, side: event.Side, command: event.ClickHouse.Command, sql: event.ClickHouse.SQL}
+		return key, clickHouseResponseEvent(event.Event), event.Event != clickHouseEventChunked, true
+	}
+	return traceMySQLPairKey{}, false, false, false
+}
+
+// tracePairResult는 짝지은 응답 event의 결과 글자다. 응답 event가 아니면 ok가 false다.
+func tracePairResult(response captureEvent) (string, bool) {
+	switch {
+	case response.MySQL != nil:
+		return traceMySQLResultText(response), true
+	case response.ClickHouse != nil:
+		return traceClickHouseResultText(response), true
+	}
+	return "", false
+}
+
 func (model traceScreenModel) displayRows() []traceScreenRow {
-	if model.protocol != "mysql" {
+	if !traceScreenPairs(model.protocol) {
 		rows := make([]traceScreenRow, 0, len(model.events))
 		for index := range model.events {
 			rows = append(rows, traceScreenRow{primary: model.first + index, response: -1})
@@ -118,13 +149,13 @@ func traceMySQLReferenceRows(events []captureEvent, first int, slow time.Duratio
 	rowIndexByPrimary := make(map[int]int, len(events))
 	for index, event := range events {
 		number := first + index
-		if event.MySQL == nil {
+		key, response, pendingEvent, ok := tracePairOf(event)
+		if !ok {
 			rows = append(rows, traceScreenRow{primary: number, response: -1})
 			rowIndexByPrimary[number] = len(rows) - 1
 			continue
 		}
-		key := traceMySQLPairKey{socket: event.SocketID, side: event.Side, command: event.MySQL.Command, sql: event.MySQL.SQL}
-		if mysqlResponseEvent(event.Event) {
+		if response {
 			queue := pending[key]
 			if len(queue) > 0 {
 				primary := queue[0]
@@ -140,7 +171,7 @@ func traceMySQLReferenceRows(events []captureEvent, first int, slow time.Duratio
 		}
 		rows = append(rows, traceScreenRow{primary: number, response: -1})
 		rowIndexByPrimary[number] = len(rows) - 1
-		if event.Event != mysqlEventTLS {
+		if pendingEvent {
 			pending[key] = append(pending[key], number)
 		}
 	}
@@ -179,12 +210,12 @@ func (model *traceScreenModel) appendMySQLRow(event captureEvent, number int) {
 		model.mysqlRowIndex[row.primary] = len(model.mysqlRows)
 		model.mysqlRows = append(model.mysqlRows, row)
 	}
-	if event.MySQL == nil {
+	key, response, pendingEvent, ok := tracePairOf(event)
+	if !ok {
 		appendRow(traceScreenRow{primary: number, response: -1})
 		return
 	}
-	key := traceMySQLPairKey{socket: event.SocketID, side: event.Side, command: event.MySQL.Command, sql: event.MySQL.SQL}
-	if mysqlResponseEvent(event.Event) {
+	if response {
 		appendRow(traceScreenRow{primary: number, response: -1, hidden: true})
 		if pending := model.mysqlPending[key]; len(pending) > 0 {
 			primary := pending[0]
@@ -203,7 +234,7 @@ func (model *traceScreenModel) appendMySQLRow(event captureEvent, number int) {
 		return
 	}
 	appendRow(traceScreenRow{primary: number, response: -1})
-	if event.Event != mysqlEventTLS {
+	if pendingEvent {
 		model.mysqlPending[key] = append(model.mysqlPending[key], number)
 		model.mysqlPendingKey[number] = key
 	}
@@ -253,10 +284,10 @@ func (model traceScreenModel) displayRowLabels(row traceScreenRow) (captureEvent
 		return captureEvent{}, "", "", false
 	}
 	destination, label := traceScrollLabels(event)
-	if row.response >= model.first && row.response < model.first+len(model.events) && event.Protocol == "mysql" {
+	if row.response >= model.first && row.response < model.first+len(model.events) && traceScreenPairs(event.Protocol) {
 		response := model.events[row.response-model.first]
-		if response.MySQL != nil {
-			destination += " → " + traceMySQLResultText(response)
+		if result, ok := tracePairResult(response); ok {
+			destination += " → " + result
 			label = response.Event
 			if response.LatencyMS != nil {
 				label += " " + traceLatency(response.LatencyMS, "ms")
@@ -274,7 +305,7 @@ func (model traceScreenModel) displayRow(row traceScreenRow) (captureEvent, bool
 }
 
 func (model traceScreenModel) displayRowMatches(row traceScreenRow) bool {
-	if row.hidden || (model.protocol == "mysql" && model.slow > 0 && !model.displayRowIsSlow(row)) {
+	if row.hidden || (traceScreenPairs(model.protocol) && model.slow > 0 && !model.displayRowIsSlow(row)) {
 		return false
 	}
 	event, ok := model.displayRow(row)
@@ -373,14 +404,14 @@ func (model traceScreenModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				event.Payload, event.gzipped = traceTrimText(event.Payload, httpPayloadHead), nil
 				model.events = append(model.events, event)
 				model.arrivals = append(model.arrivals, now)
-				if model.protocol == "mysql" {
+				if traceScreenPairs(model.protocol) {
 					model.appendMySQLRow(event, model.first+len(model.events)-1)
 				}
 			}
 		}
 		if len(model.events) > traceScreenEventLimit {
 			drop := len(model.events) - traceScreenEventLimit
-			if model.protocol == "mysql" {
+			if traceScreenPairs(model.protocol) {
 				for number := model.first; number < model.first+drop; number++ {
 					model.evictMySQLRow(number)
 				}
@@ -413,7 +444,7 @@ func (model *traceScreenModel) normalizeSelection() {
 	if model.selected < 0 {
 		return
 	}
-	if model.protocol == "mysql" {
+	if traceScreenPairs(model.protocol) {
 		rows := model.displayRows()
 		if index := model.displayRowForSelected(rows); index >= 0 && model.displayRowMatches(rows[index]) {
 			model.selected = rows[index].primary
@@ -635,7 +666,7 @@ func traceScreenHeader(model traceScreenModel) []string {
 		}
 		line += fmt.Sprintf(" grouped by %s  ·  %s  ·  events %d  ·  %s %d  ·  event/s %.1f%s  ·  filter %s", model.groupBy, status, report.Events, model.groupBy, len(report.Groups), report.Rate, traffic, filter)
 	} else {
-		if model.protocol == "mysql" {
+		if traceScreenPairs(model.protocol) {
 			line += fmt.Sprintf("  ·  %s  ·  raw events %d  ·  shown pairs %d  ·  slow %s  ·  filter %s", status, model.received, model.shownMySQLPairs(), model.slow, filter)
 		} else {
 			line += fmt.Sprintf("  ·  %s  ·  events %d  ·  filter %s", status, model.received, filter)

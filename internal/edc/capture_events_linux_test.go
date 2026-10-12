@@ -136,6 +136,8 @@ func TestCaptureAttachmentsFollowTheProtocol(t *testing.T) {
 		{"http", []string{}, []string{"fentry/skb_consume_udp", "fentry/tcp_sendmsg", "fentry/tcp_recvmsg", "fexit/tcp_recvmsg", "tp_btf/tcp_destroy_sock"}},
 		// MySQL 송신은 완료한 byte 수만 읽고, 끝난 socket의 상태도 지운다.
 		{"mysql", []string{}, []string{"fentry/skb_consume_udp", "fentry/tcp_sendmsg", "fexit/tcp_sendmsg", "fentry/tcp_recvmsg", "fexit/tcp_recvmsg", "tp_btf/tcp_destroy_sock"}},
+		// ClickHouse도 MySQL과 같은 송수신 hook을 쓴다.
+		{"clickhouse", []string{}, []string{"fentry/skb_consume_udp", "fentry/tcp_sendmsg", "fexit/tcp_sendmsg", "fentry/tcp_recvmsg", "fexit/tcp_recvmsg", "tp_btf/tcp_destroy_sock"}},
 	} {
 		tracepoints, tracing := captureAttachments(&captureEventsObjects{}, test.protocol)
 		gotTracepoints := []string{}
@@ -170,6 +172,8 @@ func TestCaptureEventFiltersFollowTheProtocol(t *testing.T) {
 		{traceScope{protocol: "http", tls: "/usr/lib/libssl.so.3", port: 443}, captureEventFilter{dnsSent: true, httpMessages: true, httpPort: 443, tlsPlaintext: true}},
 		{traceScope{protocol: "mysql"}, captureEventFilter{dnsSent: true, mysqlPort: 3306}},
 		{traceScope{protocol: "mysql", port: 3307}, captureEventFilter{dnsSent: true, mysqlPort: 3307}},
+		{traceScope{protocol: "clickhouse"}, captureEventFilter{dnsSent: true, mysqlPort: 9000, mysqlResponseSize: 4096, clickHouseHTTPPort: 8123}},
+		{traceScope{protocol: "clickhouse", port: 9440, httpPort: 18123}, captureEventFilter{dnsSent: true, mysqlPort: 9440, mysqlResponseSize: 4096, clickHouseHTTPPort: 18123}},
 	} {
 		if got := captureEventFilterFor(test.scope); got != test.want {
 			t.Fatalf("scope %+v filter = %+v, want %+v", test.scope, got, test.want)
@@ -190,8 +194,10 @@ func TestCaptureEventFiltersFollowTheProtocol(t *testing.T) {
 	var httpPort uint16
 	var httpMessageLimit uint32
 	var mysqlPort uint16
+	var mysqlResponseSize uint32
+	var clickHouseHTTPPort uint16
 	var tlsPlaintext, uprobeArch uint8
-	if err := errors.Join(variables.EmitUdpEvents.Get(&udpEvents), variables.EmitDnsSent.Get(&dnsSent), variables.EmitDnsServer.Get(&server), variables.TcpStatePort.Get(&tcpStatePort), variables.HttpPayloadLimit.Get(&httpPayloadLimit), variables.HttpPort.Get(&httpPort), variables.HttpMessageLimit.Get(&httpMessageLimit), variables.MysqlPort.Get(&mysqlPort),
+	if err := errors.Join(variables.EmitUdpEvents.Get(&udpEvents), variables.EmitDnsSent.Get(&dnsSent), variables.EmitDnsServer.Get(&server), variables.TcpStatePort.Get(&tcpStatePort), variables.HttpPayloadLimit.Get(&httpPayloadLimit), variables.HttpPort.Get(&httpPort), variables.HttpMessageLimit.Get(&httpMessageLimit), variables.MysqlPort.Get(&mysqlPort), variables.MysqlResponseSize.Get(&mysqlResponseSize), variables.ClickhouseHttpPort.Get(&clickHouseHTTPPort),
 		variables.EmitTlsPlaintext.Get(&tlsPlaintext), variables.UprobeArch.Get(&uprobeArch)); err != nil {
 		t.Fatal(err)
 	}
@@ -201,8 +207,8 @@ func TestCaptureEventFiltersFollowTheProtocol(t *testing.T) {
 	}
 	// capture는 모든 event와 client 쪽 DNS 레코드를 받는다. 서버 쪽 레코드는 trace dns --side server만 켠다.
 	// HTTP message는 --payload가 아니면 요청 줄과 Host가 들어가는 512바이트만 읽는다.
-	if udpEvents != 1 || dnsSent != 1 || server != 0 || tcpStatePort != 0 || httpPayloadLimit != 512 || httpPort != 0 || httpMessageLimit != 0 || mysqlPort != 0 {
-		t.Fatalf("BPF defaults = %d, %d, %d, %d, %d, %d, %d, %d", udpEvents, dnsSent, server, tcpStatePort, httpPayloadLimit, httpPort, httpMessageLimit, mysqlPort)
+	if udpEvents != 1 || dnsSent != 1 || server != 0 || tcpStatePort != 0 || httpPayloadLimit != 512 || httpPort != 0 || httpMessageLimit != 0 || mysqlPort != 0 || mysqlResponseSize != 0 || clickHouseHTTPPort != 0 {
+		t.Fatalf("BPF defaults = %d, %d, %d, %d, %d, %d, %d, %d, %d, %d", udpEvents, dnsSent, server, tcpStatePort, httpPayloadLimit, httpPort, httpMessageLimit, mysqlPort, mysqlResponseSize, clickHouseHTTPPort)
 	}
 }
 

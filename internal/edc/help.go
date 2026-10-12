@@ -87,6 +87,11 @@ var commandDocs = []commandDoc{
 		usesCommon: true,
 	},
 	{
+		name: "audit", group: "diagnose",
+		usage:      []string{"edc audit [options]"},
+		usesCommon: true,
+	},
+	{
 		name: "route", group: "host",
 		usage: []string{
 			"edc route check [options]",
@@ -241,7 +246,7 @@ var commandDocs = []commandDoc{
 	},
 	{
 		name: "trace", group: "observe",
-		usage: []string{"edc trace <tcp|udp|dns|arp|ndp|http|drop|mysql|io|sched> [options]", traceSocketUsage},
+		usage: []string{"edc trace <tcp|udp|dns|arp|ndp|http|drop|mysql|clickhouse|io|sched> [options]", traceSocketUsage},
 		options: []optionDoc{
 			{"--duration 15s", "command.trace.option.duration"},
 			{"--slow <duration>", "command.trace.option.slow"},
@@ -257,6 +262,7 @@ var commandDocs = []commandDoc{
 			{"--show-secrets", "command.trace.option.show_secrets"},
 			{"--tls[=<path>]", "command.trace.option.tls"},
 			{"--port <n>", "command.trace.option.port"},
+			{"--http-port <n>", "command.trace.option.http_port"},
 			{"--container <name>", "command.trace.option.container"},
 			{"--reason <names>", "command.trace.option.reason"},
 			{"--device <major:minor>", "command.trace.option.device"},

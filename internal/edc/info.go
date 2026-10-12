@@ -116,8 +116,9 @@ func runInfo(args []string, version string) int {
 	if public == nil && publicIPErr == nil && publicIP != "" {
 		public = &publicNetworkInfo{IP: publicIP}
 	}
-	printInfo(os.Stdout, version, details, interfaces, disks, public, signals, isTerminal(os.Stdout) && os.Getenv("NO_COLOR") == "", verbose)
-	printInfoResources(os.Stdout, memory, memoryErr, signals, processes, processErr, capabilities, verbose)
+	color := isTerminal(os.Stdout) && os.Getenv("NO_COLOR") == ""
+	printInfo(os.Stdout, version, details, interfaces, disks, public, signals, color, verbose)
+	printInfoResources(os.Stdout, memory, memoryErr, signals, processes, processErr, capabilities, color, verbose)
 	printInfoListen(os.Stdout, listen, runtime.GOOS == "darwin" && os.Geteuid() != 0, verbose)
 	printInfoNetworkHealth(os.Stdout, health, verbose)
 	// 포트 요약은 info에 새로 붙은 섹션이다. sock_diag나 libproc을 막는 sandbox에서 읽지 못해도 섹션에 Unavailable만 적고,
@@ -143,13 +144,13 @@ type infoCapability struct {
 	Name, State, Detail string
 }
 
-func printInfoResources(writer io.Writer, memory infoMemory, memoryErr error, signals infoSignals, processes []topProcess, processErr error, capabilities []infoCapability, verbose bool) {
+func printInfoResources(writer io.Writer, memory infoMemory, memoryErr error, signals infoSignals, processes []topProcess, processErr error, capabilities []infoCapability, color, verbose bool) {
 	fmt.Fprintln(writer, "\nMemory Status")
 	if memoryErr != nil {
 		fmt.Fprintf(writer, "└── Unavailable: %s\n", infoSingleLine(memoryErr.Error()))
 	} else {
 		fmt.Fprintf(writer, "├── Used: %s / %s (%.2f%%) · Available: %s\n", formatBytes(memory.Total-memory.Available), formatBytes(memory.Total), float64(memory.Total-memory.Available)/float64(memory.Total)*100, formatBytes(memory.Available))
-		if line := infoPressureLine(signals); line != "" {
+		if line := infoPressureLine(signals, color); line != "" {
 			fmt.Fprintf(writer, "├── %s\n", line)
 		}
 		for index := 0; index < len(memory.Details); index += 2 {

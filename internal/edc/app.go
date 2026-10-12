@@ -100,6 +100,8 @@ func Run(args []string, version string) int {
 		return runWhere(args[1:], version)
 	case "listen":
 		return runListen(args[1:], version)
+	case "audit":
+		return runAudit(args[1:], version)
 	case "quality":
 		return runQuality(args[1:], version)
 	case "capture":

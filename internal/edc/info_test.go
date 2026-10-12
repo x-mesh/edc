@@ -9,7 +9,7 @@ import (
 func TestInfoResourcesRanksRSSWithoutChangingTheProcessList(t *testing.T) {
 	processes := []topProcess{{PID: 1, CPU: 100, RSS: 1 << 20, Threads: 2, Command: "cpu-heavy"}, {PID: 2, RSS: 4 << 30, Threads: 3, Command: "/apps/memory-heavy"}, {PID: 3, RSS: 2 << 30, Command: "second"}, {PID: 4, RSS: 1 << 30, Command: "third"}}
 	var output strings.Builder
-	printInfoResources(&output, infoMemory{Total: 8 << 30, Available: 3 << 30, Basis: "test estimate", Details: []infoMemoryDetail{{"Cache", 1 << 30}}}, nil, infoSignals{}, processes, nil, []infoCapability{{"CPU wait / I/O latency", "permission required", "missing CAP_BPF\nCAP_PERFMON"}}, true)
+	printInfoResources(&output, infoMemory{Total: 8 << 30, Available: 3 << 30, Basis: "test estimate", Details: []infoMemoryDetail{{"Cache", 1 << 30}}}, nil, infoSignals{}, processes, nil, []infoCapability{{"CPU wait / I/O latency", "permission required", "missing CAP_BPF\nCAP_PERFMON"}}, false, true)
 	text := output.String()
 	for _, want := range []string{"Memory Status", "Available: 3.00 GB", "Basis: test estimate", "Cache: 1.00 GB", "Processes observed: 4", "Threads observed: 5 (2/4 processes)", "memory-heavy", "permission required", "missing CAP_BPF CAP_PERFMON"} {
 		if !strings.Contains(text, want) {
@@ -26,7 +26,7 @@ func TestInfoResourcesRanksRSSWithoutChangingTheProcessList(t *testing.T) {
 
 func TestInfoResourcesDistinguishesErrorsAndUnsupportedFeatures(t *testing.T) {
 	var output strings.Builder
-	printInfoResources(&output, infoMemory{}, errors.New("Mach read failed"), infoSignals{}, nil, errors.New("process read failed"), []infoCapability{{"PSI", "unsupported", "Linux-only"}}, false)
+	printInfoResources(&output, infoMemory{}, errors.New("Mach read failed"), infoSignals{}, nil, errors.New("process read failed"), []infoCapability{{"PSI", "unsupported", "Linux-only"}}, false, false)
 	text := output.String()
 	for _, want := range []string{"Unavailable: Mach read failed", "Unavailable: process read failed", "PSI: unsupported"} {
 		if !strings.Contains(text, want) {
@@ -55,8 +55,8 @@ func TestInfoSnapshotCollectorsReadLocalData(t *testing.T) {
 func TestInfoCompactMemoryKeepsValuesAndMovesExplanationToVerbose(t *testing.T) {
 	memory := infoMemory{Total: 8 << 30, Available: 3 << 30, Basis: "availability estimate, not pressure", Details: []infoMemoryDetail{{"File-backed", 1 << 30}, {"Wired", 2 << 30}, {"Compressed physical", 0}, {"Compressed original", 0}}}
 	var compact, verbose strings.Builder
-	printInfoResources(&compact, memory, nil, infoSignals{}, nil, nil, nil, false)
-	printInfoResources(&verbose, memory, nil, infoSignals{}, nil, nil, nil, true)
+	printInfoResources(&compact, memory, nil, infoSignals{}, nil, nil, nil, false, false)
+	printInfoResources(&verbose, memory, nil, infoSignals{}, nil, nil, nil, false, true)
 	section := strings.Split(strings.Split(compact.String(), "Memory Status\n")[1], "\n\n")[0]
 	if len(strings.Split(section, "\n")) != 3 {
 		t.Fatalf("compact memory must use three value rows: %q", section)

@@ -307,6 +307,7 @@ const (
 	captureEventsProgUdpSendSkbExit            = "udp_send_skb_exit"
 	captureEventsProgUdpV6SendSkbEntry         = "udp_v6_send_skb_entry"
 	captureEventsProgUdpV6SendSkbExit          = "udp_v6_send_skb_exit"
+	captureEventsVarClickhouseHttpPort         = "clickhouse_http_port"
 	captureEventsVarEmitDnsSent                = "emit_dns_sent"
 	captureEventsVarEmitDnsServer              = "emit_dns_server"
 	captureEventsVarEmitDnsTcpMessages         = "emit_dns_tcp_messages"
@@ -317,6 +318,7 @@ const (
 	captureEventsVarHttpPayloadLimit           = "http_payload_limit"
 	captureEventsVarHttpPort                   = "http_port"
 	captureEventsVarMysqlPort                  = "mysql_port"
+	captureEventsVarMysqlResponseSize          = "mysql_response_size"
 	captureEventsVarTcpLengthFallback          = "tcp_length_fallback"
 	captureEventsVarTcpStatePort               = "tcp_state_port"
 	captureEventsVarUnusedHttpRecord           = "unused_http_record"
@@ -461,6 +463,7 @@ type captureEventsMapSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type captureEventsVariableSpecs struct {
+	ClickhouseHttpPort *ebpf.VariableSpec `ebpf:"clickhouse_http_port"`
 	EmitDnsSent        *ebpf.VariableSpec `ebpf:"emit_dns_sent"`
 	EmitDnsServer      *ebpf.VariableSpec `ebpf:"emit_dns_server"`
 	EmitDnsTcpMessages *ebpf.VariableSpec `ebpf:"emit_dns_tcp_messages"`
@@ -471,6 +474,7 @@ type captureEventsVariableSpecs struct {
 	HttpPayloadLimit   *ebpf.VariableSpec `ebpf:"http_payload_limit"`
 	HttpPort           *ebpf.VariableSpec `ebpf:"http_port"`
 	MysqlPort          *ebpf.VariableSpec `ebpf:"mysql_port"`
+	MysqlResponseSize  *ebpf.VariableSpec `ebpf:"mysql_response_size"`
 	TcpLengthFallback  *ebpf.VariableSpec `ebpf:"tcp_length_fallback"`
 	TcpStatePort       *ebpf.VariableSpec `ebpf:"tcp_state_port"`
 	UnusedHttpRecord   *ebpf.VariableSpec `ebpf:"unused_http_record"`
@@ -562,6 +566,7 @@ func (m *captureEventsMaps) Close() error {
 //
 // It can be passed to loadCaptureEventsObjects or ebpf.CollectionSpec.LoadAndAssign.
 type captureEventsVariables struct {
+	ClickhouseHttpPort *ebpf.Variable `ebpf:"clickhouse_http_port"`
 	EmitDnsSent        *ebpf.Variable `ebpf:"emit_dns_sent"`
 	EmitDnsServer      *ebpf.Variable `ebpf:"emit_dns_server"`
 	EmitDnsTcpMessages *ebpf.Variable `ebpf:"emit_dns_tcp_messages"`
@@ -572,6 +577,7 @@ type captureEventsVariables struct {
 	HttpPayloadLimit   *ebpf.Variable `ebpf:"http_payload_limit"`
 	HttpPort           *ebpf.Variable `ebpf:"http_port"`
 	MysqlPort          *ebpf.Variable `ebpf:"mysql_port"`
+	MysqlResponseSize  *ebpf.Variable `ebpf:"mysql_response_size"`
 	TcpLengthFallback  *ebpf.Variable `ebpf:"tcp_length_fallback"`
 	TcpStatePort       *ebpf.Variable `ebpf:"tcp_state_port"`
 	UnusedHttpRecord   *ebpf.Variable `ebpf:"unused_http_record"`

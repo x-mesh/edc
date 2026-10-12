@@ -1,0 +1,2 @@
+# server last write of CREATE TABLE t (x UInt8) ENGINE=Memory, EndOfStream only; size=1 bytes; captured=1 bytes
+05

@@ -1,0 +1,25 @@
+# changes コマンドの日本語メッセージ。
+changes:
+  skip:
+    linux_only: "changes は Linux でのみ動作します"
+    needs_root: "%s を読むには root が必要です"
+    unreadable: "%s を読めませんでした: %s"
+    none_found: "読める情報源がありません。確認したパス: %s"
+    no_systemd: "systemd が動いていないため service の起動は分かりません"
+  summary:
+    packages: "パッケージ変更 %d 件 (%s)"
+    etc: "/etc で変更されたファイル %d 個 (項目 %d 個を確認)"
+    etc_truncated: "/etc で変更されたファイル %d 個、項目 %d 個で停止しました"
+    services: "service の起動 %d 件 (unit %d 個を確認)"
+  warning:
+    compressed: "%s は圧縮されているため読んでいません。期間内の変更を含む場合があります"
+    unreadable_dirs: "/etc の下のディレクトリ %d 個は root でないと読めません"
+  detail:
+    restarts: "再起動 %d 回"
+    boot: "起動中に service %d 個が開始"
+  column:
+    time: "時刻"
+    kind: "種類"
+    name: "名前"
+    detail: "内容"
+  more: "ほかに %d 件、-v ですべて表示"

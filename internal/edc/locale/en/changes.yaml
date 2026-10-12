@@ -1,0 +1,25 @@
+# English messages for the changes command.
+changes:
+  skip:
+    linux_only: "edc reads host changes on Linux only"
+    needs_root: "needs root to read %s"
+    unreadable: "cannot read %s: %s"
+    none_found: "no source found, checked %s"
+    no_systemd: "systemd is not running, so service starts are unknown"
+  summary:
+    packages: "%d package changes in %s"
+    etc: "%d files under /etc changed (%d entries checked)"
+    etc_truncated: "%d files under /etc changed, edc stopped after %d entries"
+    services: "%d service starts (%d units checked)"
+  warning:
+    compressed: "%s is compressed and was not read, it can hold changes in the window"
+    unreadable_dirs: "%d directories under /etc are unreadable without root"
+  detail:
+    restarts: "restarted %d times"
+    boot: "%d services started during boot"
+  column:
+    time: "TIME"
+    kind: "KIND"
+    name: "NAME"
+    detail: "DETAIL"
+  more: "%d more, -v shows all"

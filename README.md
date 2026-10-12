@@ -431,14 +431,34 @@ sudo edc audit --json -         # one result for each check
 | `file.path_writable` | other users can write a directory in the root `PATH`, or `PATH` has a relative entry | |
 | `kernel.sysctl` | | a hardening value differs from the recommended value |
 | `patch.reboot` | | a package asks for a reboot, or `/boot` has a newer kernel than the running kernel |
+| `ctr.privileged` | edc holds every capability, so the container is privileged | |
+| `ctr.docker_sock` | `/var/run/docker.sock` or `/run/docker.sock` is a socket in the container | |
+| `ctr.root_user` | | edc runs as UID 0 in the container |
+| `ctr.host_ns` | the container uses the PID namespace of the host | |
 
 The database and control ports are 2375, 2379, 3306, 5432, 6379, 9200, 10250, 11211, and 27017.
+
+The `ctr.*` checks run only inside a container. edc finds the container with the same markers as `edc info`: `KUBERNETES_SERVICE_HOST`, `/.dockerenv`, or `/run/.containerenv`. On a host, the report does not show these checks. If the container uses the PID namespace of the host, `ctr.host_ns` also compares the network namespace with the namespace of PID 1.
 
 Run it as root. Without root, edc cannot read the firewall, `/etc/shadow`, `/etc/sudoers`, or the homes of other users. These checks show `skip`, not `pass`.
 
 The firewall check reads `nft list ruleset`. If nft shows no input chain, it reads `iptables-save`. It counts the input rules, but it does not read the rule order. The check sees only this host. A cloud security group can still block a port, so a `fail` means that the host itself does not block the port.
 
 The SSH checks read `sshd_config` and its `Include` files. The first value wins, as in sshd. A `Match` block applies only to some connections, so edc does not read it. Run `sshd -T` to see the effective values.
+
+To accept a known finding, add an `[audit]` table to `config.toml`:
+
+```toml
+[audit]
+accept = ["net.ip_forward", "user.root_groups"]
+allow_ports = [5432]
+```
+
+`accept` holds check names from the table above. `net.exposed` does not judge the ports in `allow_ports`, and a warning names them. An unknown check name or a port outside 1 to 65535 makes the config invalid.
+
+An accepted finding stays in the report. It shows as `skip`, and its summary starts with a marker such as `accepted (fail)`. The marker follows the language setting. In JSON, `metrics.accepted` is `true`, and `metrics.accepted_status` holds the original status. An accepted finding does not change the exit code.
+
+If you run `sudo edc audit`, edc reads the config file of root, for example `/root/.config/edc/config.toml`. Put the `[audit]` table in that file.
 
 `edc audit` does not match package versions against CVEs. It does not scan the whole file system, and it does not fix a finding.
 

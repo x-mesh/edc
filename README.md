@@ -185,7 +185,7 @@ The command also creates the parent for the legacy recommended `edc.log` path.
 
 # system, network, and disk information, with the public IP
 ./bin/edc info
-# skip the ipinfo.io request
+# skip the public IP lookup
 ./bin/edc info --public=false
 
 # default diagnosis
@@ -233,11 +233,11 @@ source <(./bin/edc completion zsh)
 
 The common options are `--timeout`, `--json <path|->`, `--verbose`, and `--redact`. Go `flag` rules put an option before the target.
 
-`edc info` asks ipinfo.io for the public IP by default. The request stops after 3 seconds and the line disappears. Use `--public=false` to skip the request, `--timeout` to change the limit, and `-v` to print the cause of a failure.
+`edc info` gets the public IP by default. It sends one DNS query for `o-o.myaddr.l.google.com` to `ns1.google.com` over IPv4. `-v` also asks ipinfo.io for the provider, the city, the region, the country, and the time zone. A lookup stops after 3 seconds, and its line disappears. Use `--public=false` to skip the lookups, `--timeout` to change the limit, and `-v` to print the cause of a failure. If a network blocks DNS to external servers, the default output has no public IP.
 
 `edc info` also shows memory status, a process snapshot, and diagnostic support.
 
-The default output groups related values on one line. Use `-v` for kernel details, the memory calculation basis, and shared-page notes.
+The default output groups related values on one line. Use `-v` for kernel details, the memory calculation basis, shared-page notes, and the Python version. A shim such as pyenv can make the Python check take several hundred milliseconds, so the default output skips it.
 
 On Linux, used memory is `MemTotal - MemAvailable`. Cache counters include `Cached`, `Buffers`, and reclaimable slab when present.
 
@@ -246,6 +246,18 @@ On macOS, available memory is an estimate from free and inactive Mach pages. Fil
 Memory detail counters can overlap. They do not measure memory pressure and must not be added together.
 
 The process snapshot shows observed process and thread counts, plus the three processes with the highest RSS. Thread counts show coverage.
+
+`edc info` also shows these signals by default. It reads them from files, syscalls, and sysctl, and runs no external command.
+
+- `Platform`: the DMI vendor and product, for example `Amazon EC2 m5.large`. On Oracle Cloud, it adds `Oracle Cloud` from the chassis asset tag. On Linux, it adds `virtual machine` if the CPU reports a hypervisor or the DMI names QEMU or a virtual machine. It also adds the container runtime if it finds a marker. On macOS, it shows the model identifier.
+- `Clock` (Linux): the kernel time synchronization state from `adjtimex`. It does not show an offset. The kernel error values are bounds that only grow between updates, not the real offset.
+- `DNS`: the nameservers and search domains in `/etc/resolv.conf`. If the file points to the systemd-resolved stub, edc shows the upstream servers.
+- `Pressure` and `OOM kills since boot` (Linux): PSI some avg10 for CPU, memory, and I/O, and the `oom_kill` counter in `/proc/vmstat`.
+- A disk line ends with `(read-only)` or `(inodes N%)` if the mount is read-only or inode use is 80% or more. On macOS, the sealed system volume is read-only by design, so edc does not mark it.
+
+`-v` adds the system-wide open files, the IPv6 default route (Linux), the MTU, MAC, link speed (Linux), and IPv6 addresses of each interface, and the options of each mount. It lists only interfaces with an IPv4 address or a non-link-local IPv6 address.
+
+`Listening Ports` shows the count of TCP and UDP sockets that wait for connections. A socket on a loopback address adds to the count only. The other sockets show in a list of up to five rows with the port, the address, and the process. `-v` lists all TCP and UDP sockets. `edc listen` shows the full table. On macOS without root, the list does not include the sockets of other accounts.
 
 Diagnostic support tests process I/O access for the current process and PSI availability. Access to other PIDs can differ.
 
@@ -294,8 +306,6 @@ With completed samples, a failed sample returns exit code `1`. Otherwise, the ex
 The SCOPE column and watch events identify the socket's bound address: loopback, all interfaces, specific address, Unix, or unknown.
 
 For wildcard addresses, all interfaces refers to the observed address family. The scope does not establish external access, firewall rules, or IPv6 dual-stack behavior.
-
-On macOS, lsof provides no Unix socket state. The Unix socket list is approximate.
 
 ### File watching and actions (Linux and macOS)
 

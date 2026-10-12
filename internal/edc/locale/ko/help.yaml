@@ -104,7 +104,7 @@ command:
   info:
     summary: "system, network, disk 정보"
     option:
-      public: "외부 ipinfo.io 조회를 끕니다"
+      public: "외부 public IP 조회를 끕니다(DNS, -v에서는 ipinfo.io)"
       timeout: "public 조회 제한 시간"
       verbose: "public 조회 실패 원인 출력"
     notes:
@@ -137,11 +137,9 @@ command:
       - "종류 flag는 더하기가 아니라 filter입니다. --tcp는 TCP만 남깁니다."
       - "둘을 함께 주면 둘 다 남고 --all은 unix domain socket까지 봅니다."
       - "unix socket은 포트가 없어 경로를 주소에 적고 포트 열은 -로 둡니다."
-      - "macOS의 lsof는 unix socket 상태를 알려 주지 않아 근사치입니다."
       - "연결된 socket은 대상이 아닙니다."
       - "-v는 계정과 file descriptor, 큐 열을 함께 엽니다."
       - "큐는 Recv-Q/Send-Q이고 TCP listener에서는 accept 큐입니다."
-      - "큐를 주는 것은 Linux뿐이고 macOS에서는 -로 나옵니다."
       - "-v는 열만 늘립니다. 줄은 그대로입니다."
   quality:
     summary: "네트워크 응답성(RPM)과 처리량 측정"

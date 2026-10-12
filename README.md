@@ -571,6 +571,44 @@ A failure returns exit code `1`. Use these options in cron to get a synthetic ch
 
 The demo shows one pass and one threshold failure for each command.
 
+## Incident snapshot
+
+`edc snapshot` saves the state of this host as one edc report. Take one snapshot before a change or an incident, and one after. Then compare the two with `edc report diff`.
+
+The command reads only. It writes its output file and changes nothing else on the host. It sends nothing over the network, so it does not look up the public IP.
+
+```bash
+edc snapshot                              # ./edc-snapshot-<host>-<UTC time>.json
+sudo edc snapshot --output before.json    # root reads all audit and event sources
+sudo edc snapshot --output after.json
+sudo edc report diff before.json after.json
+edc snapshot --since 2h --output -        # only the report JSON to stdout
+```
+
+The report holds these results.
+
+| Result | Content |
+|---|---|
+| `info.host` | OS, kernel release, CPU, uptime, load, swap, and open file limits |
+| `info.memory` | total, available, and used memory. `warn` at 90% use or more. |
+| `info.pressure` | PSI some avg10 and OOM kills since boot. `warn` at PSI 10% or more, or after an OOM kill. |
+| `info.disk:<mount>` | one result for each mount that `edc info` shows. `warn` at 90% use, on a read-only mount, or at 80% inode use. |
+| `info.processes` | process and thread counts, and the 5 largest processes by RSS |
+| `listen` | the listen sockets, as `edc listen` shows them |
+| `audit.*` | the `edc audit` checks |
+| `events.*` | the `edc events` signals in the `--since` window (default 6h) |
+| `changes.*` | the `edc changes` sources in the `--since` window |
+
+All sections run at the same time under one `--timeout` budget (default 15s). If a section does not finish within the budget and 2 more seconds, its result is `skip` with the reason. For `audit`, `events`, and `changes`, each check gets its own `skip`, so `report diff` compares the same IDs. `info.disk` cannot know the mounts, so it gets one `info.disk` skip. If a collector fails, its result is `fail` with the error. Every section is in the report.
+
+On macOS, `audit`, `events`, `changes`, and `info.pressure` show `skip`. Without root on Linux, some audit and event sources show `skip`, not `pass`.
+
+The file has mode 0600 because it holds account names, sudo rules, and process names. edc does not replace a file that is already at the output path, and it does not follow a symlink there. This refusal returns exit code `2`. Add `--force` to replace the file. edc then writes a new 0600 file and moves it onto the path.
+
+`--redact` hides the host name, the home path, and IP addresses only. It also removes the host name from the default file name. Account names, sudo rules, and process names stay in the report.
+
+After the file write, edc prints the path, the result counts, and a `report diff` hint. The exit code is `1` if a result is `fail`, and `0` otherwise. Usage errors and write errors return `2`.
+
 ## Report diff
 
 `edc report` views and compares **edc diagnostic results** saved with `--json`. It supports `doctor` and other edc diagnostic commands that use the same report format. General JSON files and comparison JSON from `report diff` are unsupported. `edc log` saves command output as text separately. `edc report list [directory]` lists valid JSON reports in the specified directory (the current directory by default), newest run first, with the run time and PASS/WARN/FAIL/SKIP counts. It does not search subdirectories.

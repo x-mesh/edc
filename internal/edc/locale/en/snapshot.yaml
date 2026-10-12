@@ -1,0 +1,22 @@
+# English messages for the snapshot command.
+snapshot:
+  skip:
+    timeout: "%s did not finish within %s"
+    pressure_unavailable: "PSI and the OOM kill counter are not readable on this host"
+  warning:
+    psi_unavailable: "PSI is not readable on this host"
+    oom_unavailable: "the OOM kill counter is not readable on this host"
+    read_only: "%s is mounted read-only"
+    inodes: "%s has %.0f%% of its inodes in use"
+  summary:
+    host: "%s · %s · %d cores · load %.2f/%.2f/%.2f"
+    memory: "%s used of %s (%.2f%%), %s available"
+    psi: "PSI some avg10: CPU %.2f%% · memory %.2f%% · I/O %.2f%%"
+    oom: "OOM kills since boot: %d"
+    disk: "%s on %s: %s / %s (%.2f%%)"
+    processes: "%d processes, %d threads observed"
+  is_dir: "%s is a directory, name a file"
+  not_dir: "%s is not a directory"
+  exists: "%s already exists, add --force to replace it"
+  saved: "saved %s"
+  diff_hint: "compare with: edc report diff <before> %s"

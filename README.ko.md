@@ -533,6 +533,44 @@ journal 기록은 20000개, journal 출력은 32 MiB, `/dev/kmsg` 기록은 1000
 
 두 데모 모두 통과 한 번과 임계값 실패 한 번을 보여 줍니다.
 
+## 장애 snapshot
+
+`edc snapshot`은 이 호스트의 상태를 edc report 하나로 저장합니다. 변경이나 장애 전에 한 번, 후에 한 번 찍고 `edc report diff`로 비교합니다.
+
+읽기만 하는 명령입니다. 출력 파일만 쓰고 호스트의 다른 것은 바꾸지 않습니다. 외부로 아무것도 보내지 않으므로 공인 IP도 조회하지 않습니다.
+
+```bash
+edc snapshot                              # ./edc-snapshot-<host>-<UTC 시각>.json
+sudo edc snapshot --output before.json    # root는 모든 audit와 events 원천을 읽음
+sudo edc snapshot --output after.json
+sudo edc report diff before.json after.json
+edc snapshot --since 2h --output -        # report JSON만 stdout으로
+```
+
+report에는 다음 결과가 들어갑니다.
+
+| 결과 | 내용 |
+|---|---|
+| `info.host` | OS, 커널 release, CPU, uptime, load, swap, 열린 파일 한도 |
+| `info.memory` | 전체, 가용, 사용 메모리. 사용률 90% 이상이면 `warn` |
+| `info.pressure` | PSI some avg10과 부팅 뒤 OOM kill 횟수. PSI 10% 이상이거나 OOM kill이 있으면 `warn` |
+| `info.disk:<mount>` | `edc info`가 보여 주는 mount마다 결과 하나. 사용률 90% 이상, 읽기 전용 mount, inode 사용률 80% 이상이면 `warn` |
+| `info.processes` | process와 thread 수, RSS가 큰 process 5개 |
+| `listen` | `edc listen`이 보여 주는 대기 소켓 |
+| `audit.*` | `edc audit`의 점검 |
+| `events.*` | `--since` 기간(기본 6h)의 `edc events` 신호 |
+| `changes.*` | `--since` 기간의 `edc changes` 원천 |
+
+모든 항목은 `--timeout` 예산(기본 15s) 하나 안에서 동시에 돌아갑니다. 예산에 2초를 더해도 끝나지 않은 항목은 이유와 함께 `skip`이 됩니다. `audit`, `events`, `changes`는 점검마다 `skip`을 하나씩 남기므로 `report diff`가 같은 ID끼리 비교합니다. `info.disk`는 mount 목록을 알 수 없어서 `info.disk` skip 하나로 남습니다. 수집기가 실패하면 오류와 함께 `fail`이 됩니다. 어느 항목도 report에서 빠지지 않습니다.
+
+macOS에서는 `audit`, `events`, `changes`, `info.pressure`가 `skip`으로 나옵니다. Linux에서 root가 아니면 일부 audit와 events 원천이 `pass`가 아니라 `skip`으로 나옵니다.
+
+파일에 계정 이름, sudo 규칙, process 이름이 들어가므로 권한은 0600입니다. 출력 경로에 이미 파일이 있으면 바꾸지 않고, 그 자리의 symlink도 따라가지 않습니다. 이때 exit code는 `2`입니다. 바꾸려면 `--force`를 붙이세요. 그러면 새 0600 파일을 쓴 뒤 그 경로로 옮깁니다.
+
+`--redact`는 host 이름, 홈 경로, IP 주소만 가립니다. 기본 파일 이름에서도 host 이름을 뺍니다. 계정 이름, sudo 규칙, process 이름은 report에 그대로 남습니다.
+
+파일을 쓰고 나면 경로, 결과 개수, `report diff` 안내를 출력합니다. `fail` 결과가 하나라도 있으면 exit code는 `1`이고, 없으면 `0`입니다. 사용법 오류와 쓰기 오류는 `2`를 돌려줍니다.
+
 ## Report 비교
 
 `edc report`는 edc 진단 명령이 `--json`으로 저장한 **edc 진단 결과**를 읽고 비교합니다. `doctor`뿐 아니라 같은 report 형식을 사용하는 다른 edc 진단 명령의 결과도 지원합니다. 일반 JSON 파일이나 `report diff`가 생성한 비교 JSON은 지원하지 않습니다. `edc log`가 저장한 명령 출력 텍스트와는 별개입니다. `edc report list [directory]`는 지정한 디렉터리(기본값: 현재 디렉터리)의 유효한 JSON report를 실행 시각이 최신인 순서로 나열하며, 실행 시각과 PASS/WARN/FAIL/SKIP 개수를 보여 줍니다. 하위 디렉터리는 검색하지 않습니다.

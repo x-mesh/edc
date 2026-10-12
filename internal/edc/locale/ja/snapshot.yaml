@@ -1,0 +1,22 @@
+# snapshot コマンドの日本語メッセージ。
+snapshot:
+  skip:
+    timeout: "%s が %s 以内に終わりませんでした"
+    pressure_unavailable: "この host では PSI と OOM kill カウンタを読めません"
+  warning:
+    psi_unavailable: "この host では PSI を読めません"
+    oom_unavailable: "この host では OOM kill カウンタを読めません"
+    read_only: "%s は読み取り専用でマウントされています"
+    inodes: "%s の inode 使用率は %.0f%% です"
+  summary:
+    host: "%s · %s · %d コア · load %.2f/%.2f/%.2f"
+    memory: "使用 %s / 全体 %s (%.2f%%)、利用可能 %s"
+    psi: "PSI some avg10: CPU %.2f%% · メモリ %.2f%% · I/O %.2f%%"
+    oom: "起動後の OOM kill: %d 回"
+    disk: "%s (%s): %s / %s (%.2f%%)"
+    processes: "process %d 個、thread %d 個を確認"
+  is_dir: "%s はディレクトリです。ファイル名を指定してください"
+  not_dir: "%s はディレクトリではありません"
+  exists: "%s は既にあります。置き換えるには --force を付けてください"
+  saved: "保存: %s"
+  diff_hint: "比較: edc report diff <before> %s"

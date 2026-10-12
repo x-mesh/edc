@@ -114,6 +114,8 @@ func Run(args []string, version string) int {
 		return runCapture(args[1:])
 	case "trace":
 		return runTrace(args[1:])
+	case "snapshot":
+		return runSnapshot(args[1:], version)
 	case "report":
 		return runReport(args[1:])
 	case "log":

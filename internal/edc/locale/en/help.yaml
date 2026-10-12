@@ -321,6 +321,20 @@ command:
       - "Codex answers through codex app-server."
       - "Each detected reset goes to ai-resets.jsonl next to the history DB."
       - "The last Claude values stay in ai-claude.json in the same directory."
+  snapshot:
+    summary: "Save host state as one report for report diff"
+    option:
+      output: "report file, - for stdout"
+      since: "how far back events and changes look (default 6h)"
+      force: "replace an existing output file"
+    notes:
+      - "It saves info, listen, audit, events, and changes results in one report."
+      - "The file has mode 0600. It holds accounts, sudo rules, and process names."
+      - "The default file is ./edc-snapshot-<host>-<UTC time>.json."
+      - "It does not replace an existing file. Add --force to replace it."
+      - "Compare two snapshots: edc report diff before.json after.json"
+      - "On macOS, info.pressure, audit, events, and changes show skip."
+      - "--redact hides the host name, the home path, and IP addresses only."
   report:
     summary: "View and compare saved edc diagnostic results"
     notes:

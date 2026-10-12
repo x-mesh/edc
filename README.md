@@ -214,6 +214,7 @@ The command also creates the parent for the legacy recommended `edc.log` path.
 ./bin/edc net interfaces
 ./bin/edc listen              # open ports, --unix or --all adds unix sockets
 ./bin/edc listen --watch -i 0.5 --duration 10s
+sudo ./bin/edc audit           # read-only check of exposure and settings (Linux)
 ./bin/edc quality --timeout 60s
 ./bin/edc quality --server https://example.com/.well-known/nq   # responsiveness config URL
 
@@ -403,6 +404,43 @@ The screen keeps the addresses as they are by default. Add `--redact` to hide th
 The demo masks the public IP as `222.XXX.XXX.XXX` and replaces the route addresses with private example addresses.
 
 `edc` states only what it confirms. It does not guess the line type from the jitter. The jitter column holds the number, and the reading stays with you.
+
+## Host audit (Linux)
+
+`edc audit` reads the exposure and the settings of a Linux host. It reads files, sysctl values, and the listening sockets. It changes nothing, and it sends nothing over the network. It ends in less than one second.
+
+```bash
+sudo edc audit
+sudo edc audit -v               # add the values and the rules behind each result
+sudo edc audit --json -         # one result for each check
+```
+
+| Check | Fail | Warn |
+|---|---|---|
+| `net.exposed` | a database or control port listens beyond loopback, and the host firewall accepts inbound traffic | the same port, but the firewall drops by default or edc cannot read it |
+| `net.firewall` | | the input chains have no rule |
+| `net.ip_forward` | | forwarding is on, and edc finds no container runtime |
+| `ssh.root_login` | | `PermitRootLogin yes` |
+| `ssh.password_auth` | `PermitEmptyPasswords yes` with password login | password login is on |
+| `ssh.key_files` | another user can write `~/.ssh` or `authorized_keys` | |
+| `user.uid0` | an account other than root has UID 0 | |
+| `user.empty_pass` | an account has an empty password | |
+| `user.sudo_nopass` | | a sudo rule runs every command without a password |
+| `user.root_groups` | | the `docker` or `lxd` group has members |
+| `file.sensitive` | other users can read `/etc/shadow`, or write `/etc/passwd`, `/etc/sudoers`, or `docker.sock` | |
+| `file.path_writable` | other users can write a directory in the root `PATH`, or `PATH` has a relative entry | |
+| `kernel.sysctl` | | a hardening value differs from the recommended value |
+| `patch.reboot` | | a package asks for a reboot, or `/boot` has a newer kernel than the running kernel |
+
+The database and control ports are 2375, 2379, 3306, 5432, 6379, 9200, 10250, 11211, and 27017.
+
+Run it as root. Without root, edc cannot read the firewall, `/etc/shadow`, `/etc/sudoers`, or the homes of other users. These checks show `skip`, not `pass`.
+
+The firewall check reads `nft list ruleset`. If nft shows no input chain, it reads `iptables-save`. It counts the input rules, but it does not read the rule order. The check sees only this host. A cloud security group can still block a port, so a `fail` means that the host itself does not block the port.
+
+The SSH checks read `sshd_config` and its `Include` files. The first value wins, as in sshd. A `Match` block applies only to some connections, so edc does not read it. Run `sshd -T` to see the effective values.
+
+`edc audit` does not match package versions against CVEs. It does not scan the whole file system, and it does not fix a finding.
 
 ## Probe thresholds
 

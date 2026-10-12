@@ -55,6 +55,14 @@ command:
       expect_status: "応答 code が N と違えば fail にします"
     notes:
       - "既定では 4xx が warning、5xx が fail です。"
+  audit:
+    summary: "ホストの公開状態と設定を点検、読み取り専用 (Linux)"
+    notes:
+      - "ファイル、sysctl の値、listen ソケットだけを読みます。"
+      - "何も変更せず、外部へ送信しません。"
+      - "root で実行してください。root でなければ一部が skip です。"
+      - "ファイアウォールはこのホストだけで、クラウド側は見ません。"
+      - "パッケージのバージョンを CVE と照合しません。"
   net:
     summary: "interface、route、ping、trace"
   route:

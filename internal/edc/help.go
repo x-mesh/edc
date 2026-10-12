@@ -87,6 +87,11 @@ var commandDocs = []commandDoc{
 		usesCommon: true,
 	},
 	{
+		name: "audit", group: "diagnose",
+		usage:      []string{"edc audit [options]"},
+		usesCommon: true,
+	},
+	{
 		name: "route", group: "host",
 		usage: []string{
 			"edc route check [options]",

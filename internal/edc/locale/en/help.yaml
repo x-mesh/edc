@@ -55,6 +55,14 @@ command:
       expect_status: "a different status code is a failure"
     notes:
       - "A 4xx response is a warning. A 5xx response is a failure."
+  audit:
+    summary: "Read-only check of host exposure and settings (Linux)"
+    notes:
+      - "It reads files, sysctl values, and listening sockets."
+      - "It changes nothing and sends nothing over the network."
+      - "Run it as root. Without root, some checks show skip."
+      - "The firewall check sees this host only, not a cloud security group."
+      - "It does not match package versions against CVEs."
   net:
     summary: "Interfaces, route, ping, and trace"
   route:

@@ -1936,7 +1936,7 @@ Ctrl-C 뒤의 요약은 쪽과 명령 이름마다 한 행을 쓰고, 명령 수
 - TLS는 읽지 않습니다. TLS 연결에서는 RESP 경계를 찾지 못해 event가 나오지 않습니다.
 - TCP만 봅니다. unix socket 연결은 보이지 않습니다.
 - 요청은 앞 4 KiB, 응답 쓰기나 읽기는 앞 1 KiB만 남깁니다. 5,000개 항목의 `LRANGE`처럼 아주 큰 array 응답은 경계를 잃습니다. 그 명령은 응답 없음으로 세고, 다음 명령에서 경계를 다시 맞춥니다.
-- 5,000개 값을 넣는 `RPUSH`처럼 캡처보다 큰 명령은 `truncated: true`로 표시하고 응답과 짝짓지 않습니다.
+- bulk 값은 크기만큼 건너뛰므로 10 KB `SET`도 응답과 짝을 찾습니다. 5,000개 값을 넣는 `RPUSH`처럼 인자 header가 캡처 밖에 있는 명령은 `truncated: true`로 표시하고 응답과 짝짓지 않습니다.
 - `CLIENT REPLY OFF`나 `CLIENT REPLY SKIP` 뒤에는 서버가 답하지 않습니다. 이 명령에는 `no_reply: true`가 붙고, 응답 없음으로 세지 않습니다.
 - PSYNC나 SYNC 뒤의 복제 흐름은 응답으로 읽지 않습니다. replica는 master에 1초마다 `REPLCONF ACK`를 보냅니다. master에서 `--side server`로 보면 replica마다 1초에 하나씩 `no_reply: true`인 `REPLCONF ACK`가 보입니다.
 - 연결 중간에 trace를 시작하면 다음 명령에서 경계를 찾습니다.

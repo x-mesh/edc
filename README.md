@@ -2073,7 +2073,7 @@ The summary after Ctrl-C shows one row for each side and command name. A row sho
 - It does not read TLS. edc finds no RESP framing in a TLS connection, so it shows no events for it.
 - It reads TCP only. A unix socket connection is not visible.
 - edc keeps the first 4 KiB of each request and the first 1 KiB of each reply write or read. A very large array reply, for example `LRANGE` of 5,000 items, loses the framing. That command counts as unanswered, and the next command re-syncs.
-- A command larger than the capture, for example `RPUSH` with 5,000 values, shows `truncated: true` and gets no reply.
+- edc skips bulk values by their size, so a 10 KB `SET` still gets its reply. If the argument headers of a command are outside the capture, for example `RPUSH` with 5,000 values, the command shows `truncated: true` and gets no reply.
 - After `CLIENT REPLY OFF` or `CLIENT REPLY SKIP`, the server does not reply. These commands have `no_reply: true`, and edc does not count them as unanswered.
 - After PSYNC or SYNC, edc does not read the replication stream as replies. A replica sends `REPLCONF ACK` to its master each second. On the master, `--side server` shows one `REPLCONF ACK` with `no_reply: true` for each replica each second.
 - If the trace starts in the middle of a connection, edc finds the framing at a later command.

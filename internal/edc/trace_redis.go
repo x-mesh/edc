@@ -31,7 +31,39 @@ const (
 	// redisHeadKeep은 pub/sub와 push의 종류와 channel 이름을 읽으려고 남기는 byte 수다.
 	redisHeadKeep = 128
 	redisWordKeep = 8
+	// 아래 상한을 넘으면 그 연결의 대기 명령을 모두 버리고 framing을 잃은 것처럼 다시 맞춘다. 가장 오래된 것만 버리면 짝이 밀린다.
+	redisPendingLimit = 4096
+	redisPendingTotal = 65536
+	// redisSocketLimit에 닿으면 모든 연결의 상태를 비운다.
+	redisSocketLimit = 65536
 )
+
+// traceRedisEvent는 Redis event에만 붙는 값이다. 응답에는 답한 요청의 명령과 key도 붙인다. 인자와 값의 preview, 오류
+// message는 --show-secrets일 때만 붙고, password가 실릴 수 있는 명령에는 그때도 붙지 않는다.
+type traceRedisEvent struct {
+	Command    string   `json:"command,omitempty"`
+	Key        string   `json:"key,omitempty"`
+	Args       int64    `json:"args,omitempty"`
+	ArgPreview []string `json:"arg_preview,omitempty"`
+	Inline     bool     `json:"inline,omitempty"`
+	// Truncated는 명령 frame을 끝까지 읽지 못했다는 뜻이다. 그 명령의 응답은 짝짓지 않는다.
+	Truncated  bool   `json:"truncated,omitempty"`
+	Reply      string `json:"reply,omitempty"`
+	Elements   *int64 `json:"elements,omitempty"`
+	BulkLength *int64 `json:"bulk_length,omitempty"`
+	Value      string `json:"value,omitempty"`
+	ErrorClass string `json:"error_class,omitempty"`
+	Message    string `json:"message,omitempty"`
+	RESP       int    `json:"resp,omitempty"`
+	PushKind   string `json:"push_kind,omitempty"`
+	Channel    string `json:"channel,omitempty"`
+}
+
+// redisTraced는 captureEvent에 Redis 칸이 없어서 둘을 함께 넘긴다.
+type redisTraced struct {
+	event captureEvent
+	redis *traceRedisEvent
+}
 
 // redisKeep은 응답 frame 하나에서 무엇을 남길지다. 응답이 어느 명령의 것인지는 tracker만 알므로 frame이 시작할 때 묻는다.
 type redisKeep struct {
@@ -858,4 +890,415 @@ func (d *redisDecoder) result(inline bool) *redisCommand {
 		command.channels = command.args
 	}
 	return command
+}
+
+type redisPending struct {
+	at        uint64
+	name      string
+	key       string
+	sensitive bool
+	proto     int
+	channels  int64
+}
+
+// redisConn은 socket 하나의 두 방향 상태다. 새 socket은 두 쪽 모두 경계를 모르는 상태로 시작한다. 연결 중간에 trace를
+// 시작한 경우다.
+type redisConn struct {
+	request        redisReader
+	response       redisReader
+	requestSynced  bool
+	responseSynced bool
+	pending        []redisPending
+	proto          int
+	subscribed     bool
+	monitor        bool
+	multi          bool
+	replyOff       bool
+	skipNext       bool
+	// subKind는 마지막으로 짝지은 구독 계열 확인의 종류이고, subExtra는 같은 명령의 확인이 더 올 수다. -1은 모른다는 뜻이다.
+	subKind  string
+	subExtra int64
+}
+
+func (conn *redisConn) resetModes() {
+	conn.proto, conn.subscribed, conn.monitor, conn.multi, conn.replyOff, conn.skipNext = 2, false, false, false, false, false
+	conn.subKind, conn.subExtra = "", 0
+}
+
+// redisTracker는 socket마다 요청과 응답 frame을 FIFO로 짝짓는다. side는 tracker가 볼 쪽이고 비어 있으면 두 쪽을 모두 본다.
+type redisTracker struct {
+	side        string
+	showSecrets bool
+	conns       map[uint64]*redisConn
+	pending     int
+}
+
+func newRedisTracker(side string, showSecrets bool) *redisTracker {
+	return &redisTracker{side: side, showSecrets: showSecrets, conns: map[uint64]*redisConn{}}
+}
+
+type redisCall struct {
+	tracker *redisTracker
+	conn    *redisConn
+	record  mysqlRecord
+	side    string
+	offset  int64
+	out     []redisTraced
+}
+
+func (tracker *redisTracker) events(record mysqlRecord, clockOffset int64) []redisTraced {
+	side := traceClientSide
+	if record.server {
+		side = traceServerSide
+	}
+	if tracker.side != "" && side != tracker.side {
+		return nil
+	}
+	conn := tracker.conns[record.socket]
+	if conn == nil {
+		if len(tracker.conns) >= redisSocketLimit {
+			clear(tracker.conns)
+			tracker.pending = 0
+		}
+		conn = tracker.newConn()
+		tracker.conns[record.socket] = conn
+	}
+	call := &redisCall{tracker: tracker, conn: conn, record: record, side: side, offset: clockOffset}
+	// client는 요청을 보내고 응답을 받는다. 서버는 요청을 받고 응답을 보낸다.
+	if record.server != record.sent {
+		call.request()
+	} else {
+		call.response()
+	}
+	return call.out
+}
+
+func (tracker *redisTracker) newConn() *redisConn {
+	conn := &redisConn{}
+	conn.request = redisReader{request: true, showSecrets: tracker.showSecrets}
+	conn.response = redisReader{keep: func(kind byte) redisKeep { return tracker.keep(conn, kind) }}
+	return conn
+}
+
+func (tracker *redisTracker) forgetSocket(socket uint64) {
+	conn := tracker.conns[socket]
+	if conn == nil {
+		return
+	}
+	tracker.drop(conn, math.MaxUint64)
+	delete(tracker.conns, socket)
+}
+
+// keep은 응답 frame이 시작할 때 무엇을 남길지 정한다. 맨 앞 대기 명령이 password를 다루거나 MONITOR 중이면 값을 남기지 않는다.
+func (tracker *redisTracker) keep(conn *redisConn, kind byte) redisKeep {
+	var head *redisPending
+	if len(conn.pending) > 0 {
+		head = &conn.pending[0]
+	}
+	sensitive := conn.monitor || (head != nil && head.sensitive)
+	pubsub := kind == '*' && conn.proto != 3 && (conn.subscribed || (head != nil && redisSubscribeKinds[head.name]))
+	return redisKeep{
+		value:   tracker.showSecrets && !sensitive,
+		message: tracker.showSecrets && !sensitive,
+		word:    !conn.monitor,
+		heads:   kind == '>' || pubsub,
+	}
+}
+
+// drop은 시각이 at 이하인 대기 명령을 응답 없이 버린다. 버린 MONITOR와 구독 명령은 성공했을 수도 있으므로 그 모드를 켜 둔다.
+// MONITOR 줄이나 pub/sub message가 응답으로 짝지어지지 않게 한다.
+func (tracker *redisTracker) drop(conn *redisConn, at uint64) {
+	kept := conn.pending[:0]
+	for _, pending := range conn.pending {
+		switch {
+		case pending.at > at:
+			kept = append(kept, pending)
+			continue
+		case pending.name == "MONITOR":
+			conn.monitor = true
+		case pending.name == "SUBSCRIBE" || pending.name == "PSUBSCRIBE" || pending.name == "SSUBSCRIBE":
+			conn.subscribed = conn.proto != 3
+		}
+		tracker.pending--
+	}
+	clear(conn.pending[len(kept):cap(conn.pending)])
+	conn.pending = kept
+	tracker.pending = max(tracker.pending, 0)
+}
+
+// lose는 framing을 잃었을 때다. 대기 명령은 모두 응답 없음이 되고, 응답 쪽은 경계를 다시 찾을 때까지 record를 버린다.
+func (call *redisCall) lose() {
+	conn := call.conn
+	call.tracker.drop(conn, math.MaxUint64)
+	conn.responseSynced = false
+	conn.response.reset()
+}
+
+func (call *redisCall) event(name string, at uint64, length int64, info *traceRedisEvent) redisTraced {
+	record := call.record
+	return redisTraced{event: captureEvent{
+		SocketID: record.socket, TimestampNS: uint64(int64(at) + call.offset), BootTimeNS: at, Event: name, Protocol: "redis", Side: call.side,
+		PID: record.pid, Process: record.process, CgroupID: record.cgroupID, Source: record.source, Destination: record.destination, Bytes: uint64(length),
+	}, redis: info}
+}
+
+// redisKnownCommands는 inline 요청에서 경계를 다시 찾을 때 받는 이름이다. key 표와 subcommand 명령 밖에서 흔한 것만 둔다.
+var redisKnownCommands = map[string]bool{
+	"AUTH": true, "HELLO": true, "PING": true, "ECHO": true, "SELECT": true, "INFO": true, "MULTI": true, "EXEC": true,
+	"DISCARD": true, "QUIT": true, "RESET": true, "MONITOR": true, "DBSIZE": true, "FLUSHDB": true, "FLUSHALL": true,
+	"KEYS": true, "SCAN": true, "PUBLISH": true, "SPUBLISH": true, "EVAL": true, "EVALSHA": true, "FCALL": true,
+	"TIME": true, "ROLE": true, "UNWATCH": true, "RANDOMKEY": true,
+}
+
+// redisRequestStart는 경계를 모르는 요청 record가 명령의 시작인지 본다. "*<숫자>\r\n$"이나 알려진 inline 명령 이름이어야 한다.
+func redisRequestStart(data []byte) bool {
+	if len(data) > 0 && data[0] == '*' {
+		i := 1
+		for i < len(data) && i <= redisLengthLine && data[i] >= '0' && data[i] <= '9' {
+			i++
+		}
+		return i > 1 && len(data) >= i+3 && data[i] == '\r' && data[i+1] == '\n' && data[i+2] == '$'
+	}
+	end := 0
+	for end < len(data) && end <= redisNameLimit && !redisSpace(data[end]) && data[end] != '\n' {
+		end++
+	}
+	if end == 0 || end >= len(data) {
+		return false
+	}
+	name, ok := redisName(data[:end], int64(end))
+	_, keyed := redisKeyAt[name]
+	return ok && (keyed || redisContainers[name] || redisKnownCommands[name] || redisSubscribeKinds[name])
+}
+
+// request는 요청 방향 record 하나를 읽는다.
+func (call *redisCall) request() {
+	conn, record := call.conn, call.record
+	if !conn.requestSynced {
+		if !redisRequestStart(record.payload) {
+			return
+		}
+		conn.request.reset()
+		conn.requestSynced = true
+	}
+	if !conn.request.feed(record.payload, record.size, record.bootTimeNS, call.command) {
+		// 요청을 놓쳤을 수 있다. 그 응답이 뒤 명령과 짝지어지지 않게 응답 쪽도 다시 맞춘다.
+		conn.requestSynced = false
+		call.lose()
+	}
+}
+
+// command는 요청 frame 하나다. CLIENT REPLY OFF와 SKIP으로 응답이 없는 명령은 event만 내고 대기열에 넣지 않는다.
+func (call *redisCall) command(f redisFrame) {
+	conn, c := call.conn, f.command
+	if c == nil {
+		return
+	}
+	info := &traceRedisEvent{Command: c.name, Key: c.key, Args: c.args, ArgPreview: c.preview, Inline: c.inline, Truncated: f.lost, RESP: conn.proto}
+	call.out = append(call.out, call.event(redisEventCommand, f.at, f.bytes, info))
+	if f.lost {
+		return
+	}
+	queue := true
+	switch {
+	case c.name == "CLIENT REPLY" && c.reply == "ON":
+		conn.replyOff, conn.skipNext = false, false
+	case c.name == "CLIENT REPLY" && c.reply == "OFF":
+		conn.replyOff, queue = true, false
+	case c.name == "CLIENT REPLY" && c.reply == "SKIP":
+		conn.skipNext, queue = true, false
+	case conn.replyOff:
+		queue = false
+	case conn.skipNext:
+		conn.skipNext, queue = false, false
+	}
+	if !queue {
+		return
+	}
+	if len(conn.pending) >= redisPendingLimit || call.tracker.pending >= redisPendingTotal {
+		call.lose()
+		return
+	}
+	conn.pending = append(conn.pending, redisPending{at: f.at, name: c.name, key: c.key, sensitive: c.sensitive, proto: c.proto, channels: c.channels})
+	call.tracker.pending++
+}
+
+// response는 응답 방향 record 하나를 읽는다.
+func (call *redisCall) response() {
+	conn, record := call.conn, call.record
+	if !conn.responseSynced {
+		if !call.resync() {
+			// 버린 record 안에 답이 있었을 수 있는 명령은 응답 없음으로 버린다.
+			call.tracker.drop(conn, record.bootTimeNS)
+			return
+		}
+		conn.response.reset()
+		conn.responseSynced = true
+	}
+	if !conn.response.feed(record.payload, record.size, record.bootTimeNS, call.reply) {
+		call.lose()
+	}
+}
+
+// resync는 경계를 모르는 응답 record에서 짝짓기를 다시 시작할지 본다. record가 type byte로 시작하고, 캡처한 byte가 온전한
+// frame들로 끝나거나 건너뛸 수 있는 bulk 안에서 끝나고, push가 아닌 frame 수가 대기 명령 수 이하여야 한다. 우연히 이 모양인
+// 쓰레기 record는 다음 손실까지 짝을 틀리게 할 수 있다.
+func (call *redisCall) resync() bool {
+	data, size := call.record.payload, call.record.size
+	if len(data) == 0 || !redisTypeByte(data[0]) || len(call.conn.pending) == 0 {
+		return false
+	}
+	var trial redisReader
+	count := 0
+	if !trial.feed(data, size, 0, func(f redisFrame) {
+		if f.kind != '>' {
+			count++
+		}
+	}) {
+		return false
+	}
+	if !trial.idle() {
+		if !trial.skipping() {
+			return false
+		}
+		count++
+	}
+	return count <= len(call.conn.pending)
+}
+
+// reply는 응답 방향 frame 하나다. RESP3 push, pub/sub message, MONITOR 줄은 대기 명령을 꺼내지 않는다.
+func (call *redisCall) reply(f redisFrame) {
+	conn := call.conn
+	if f.kind == '>' {
+		if kind := f.heads[0].text; f.heads[0].kind == '$' && redisSubscribeKinds[strings.ToUpper(kind)] {
+			call.confirm(f, kind, true)
+		} else {
+			call.push(f, kind)
+		}
+		return
+	}
+	if f.kind == '+' && f.monitor && conn.monitor {
+		return
+	}
+	if f.kind == '*' && conn.proto != 3 && f.heads[0].kind == '$' && (conn.subscribed || (len(conn.pending) > 0 && redisSubscribeKinds[conn.pending[0].name])) {
+		switch kind := f.heads[0].text; {
+		case kind == "message" || kind == "pmessage" || kind == "smessage":
+			call.push(f, kind)
+			return
+		case redisSubscribeKinds[strings.ToUpper(kind)]:
+			call.confirm(f, kind, false)
+			return
+		}
+	}
+	call.answer(f, "")
+}
+
+// confirm은 구독 계열 확인이다. 첫 확인이 그 명령의 응답이고, 같은 명령이 더 보낸 확인은 event 없이 넘긴다.
+func (call *redisCall) confirm(f redisFrame, kind string, push bool) {
+	conn := call.conn
+	head := ""
+	if len(conn.pending) > 0 {
+		head = conn.pending[0].name
+	}
+	switch {
+	case head == strings.ToUpper(kind) && !(conn.subKind == kind && conn.subExtra > 0):
+		channels := conn.pending[0].channels
+		call.answer(f, kind)
+		conn.subKind, conn.subExtra = kind, channels-1
+		if channels == 0 {
+			conn.subExtra = -1
+		}
+	case conn.subKind == kind && conn.subExtra != 0:
+		if conn.subExtra > 0 {
+			conn.subExtra--
+		}
+	default:
+		call.push(f, kind)
+	}
+	if push {
+		return
+	}
+	if !strings.HasSuffix(kind, "unsubscribe") {
+		conn.subscribed = true
+	} else if count := f.heads[2]; count.number && count.integer == 0 {
+		conn.subscribed, conn.subExtra = false, 0
+	}
+}
+
+// push는 대기 명령과 짝짓지 않는 frame이다.
+func (call *redisCall) push(f redisFrame, kind string) {
+	info := &traceRedisEvent{Reply: redisReplyKind(f, false), PushKind: kind, Channel: redisChannel(f, kind), RESP: call.conn.proto}
+	info.Elements = &f.count
+	call.out = append(call.out, call.event(redisEventPush, f.at, f.bytes, info))
+}
+
+func redisChannel(f redisFrame, kind string) string {
+	head := f.heads[1]
+	if kind == "pmessage" {
+		head = f.heads[2]
+	}
+	if head.kind == '$' || head.kind == '+' {
+		return head.text
+	}
+	return ""
+}
+
+var redisReplyKinds = map[byte]string{
+	'+': "simple", '-': "error", ':': "integer", '$': "bulk", '*': "array", '%': "map", '~': "set", '_': "null",
+	',': "double", '#': "boolean", '(': "bignum", '=': "verbatim", '!': "error", '>': "push",
+}
+
+func redisReplyKind(f redisFrame, multi bool) string {
+	switch {
+	case f.null:
+		return "null"
+	case multi && f.kind == '+' && f.word == "QUEUED":
+		return "queued"
+	}
+	return redisReplyKinds[f.kind]
+}
+
+// answer는 맨 앞 대기 명령의 응답이다. 대기 명령이 없으면 무엇에 대한 응답인지 모르므로 event를 내지 않는다.
+func (call *redisCall) answer(f redisFrame, pushKind string) {
+	conn := call.conn
+	if len(conn.pending) == 0 {
+		return
+	}
+	pending := conn.pending[0]
+	conn.pending[0] = redisPending{}
+	conn.pending = conn.pending[1:]
+	call.tracker.pending--
+	failed := f.kind == '-' || f.kind == '!'
+	switch {
+	case pending.name == "MULTI" && !failed:
+		conn.multi = true
+	case pending.name == "EXEC" || pending.name == "DISCARD":
+		conn.multi = false
+	case pending.name == "HELLO" && !failed && pending.proto != 0:
+		conn.proto = pending.proto
+	case pending.name == "RESET" && !failed:
+		conn.resetModes()
+	case pending.name == "MONITOR" && !failed:
+		conn.monitor = true
+	}
+	info := &traceRedisEvent{Command: pending.name, Key: pending.key, Reply: redisReplyKind(f, conn.multi), Value: f.value, PushKind: pushKind, RESP: conn.proto}
+	if pushKind != "" {
+		info.Channel = redisChannel(f, pushKind)
+	}
+	name := redisEventReply
+	switch {
+	case failed:
+		name, info.ErrorClass, info.Message = redisEventError, f.class, f.message
+	case f.null:
+	case f.kind == '$' || f.kind == '=':
+		info.BulkLength = &f.count
+	case redisLengthType(f.kind):
+		info.Elements = &f.count
+	}
+	if f.kind == '!' {
+		info.BulkLength = &f.count
+	}
+	traced := call.event(name, f.at, f.bytes, info)
+	traced.event.LatencyMS, traced.event.answered = traceSpan(pending.at, f.at), 1
+	call.out = append(call.out, traced)
 }

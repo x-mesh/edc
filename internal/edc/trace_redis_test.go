@@ -2,7 +2,13 @@ package edc
 
 import (
 	"bytes"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
+	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -373,5 +379,564 @@ func TestRedisReaderInlineNeedsTerminator(t *testing.T) {
 	frames, losses := redisRead(redisRequestReader(false), [][]byte{[]byte("GE"), []byte("T k\r"), []byte("\n")}, nil)
 	if losses != 0 || strings.Join(frames, "|") != `i n=0 cmd="GET" key="k" args=1` {
 		t.Fatalf("split inline: %q %d", frames, losses)
+	}
+}
+
+type redisFixtureRecord struct {
+	run          int
+	server, sent bool
+	size         int
+	payload      []byte
+}
+
+// loadRedisFixture는 T1이 VM의 Redis 7.0에서 잰 record를 읽는다. hex는 record의 앞 min(size, 4096) byte 전부다.
+func loadRedisFixture(t testing.TB, name string) []redisFixtureRecord {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join("testdata", "redis", name+".records"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var records []redisFixtureRecord
+	run := -1
+	for _, line := range strings.Split(string(raw), "\n") {
+		switch {
+		case strings.HasPrefix(line, "# run "):
+			run++
+		case strings.HasPrefix(line, "#"), strings.TrimSpace(line) == "":
+		default:
+			fields := strings.Fields(line)
+			if len(fields) != 4 {
+				t.Fatalf("%s: bad record line %.60q", name, line)
+			}
+			size, err := strconv.Atoi(fields[2])
+			if err != nil {
+				t.Fatal(err)
+			}
+			payload, err := hex.DecodeString(fields[3])
+			if err != nil || len(payload) != min(size, 4096) {
+				t.Fatalf("%s: bad hex in %.60q", name, line)
+			}
+			records = append(records, redisFixtureRecord{run: run, server: fields[0] == "server", sent: fields[1] == "send", size: size, payload: payload})
+		}
+	}
+	return records
+}
+
+func redisRecord(socket uint64, server, sent bool, at uint64, payload []byte, size int) mysqlRecord {
+	record := mysqlRecord{bootTimeNS: at, pid: 7, process: "redis", socket: socket, server: server, sent: sent, size: size, payload: payload}
+	if server {
+		record.source, record.destination, record.localPort, record.peerPort = "127.0.0.1:6379", "127.0.0.1:40000", traceRedisDefaultPort, 40000
+	} else {
+		record.source, record.destination, record.localPort, record.peerPort = "127.0.0.1:40000", "127.0.0.1:6379", 40000, traceRedisDefaultPort
+	}
+	return record
+}
+
+// redisRequestCap과 응답 쪽 상한은 BPF가 record에서 넘기는 앞부분 길이다.
+const redisRequestCap = 4095
+
+// replayRedis는 한 쪽의 record를 run마다 다른 socket으로 한 tracker에 먹인다. 시각은 파일의 record 번호 x 1 ms다.
+func replayRedis(records []redisFixtureRecord, server bool, responseCap int, showSecrets bool) (map[int][]redisTraced, *redisTracker) {
+	tracker := newRedisTracker("", showSecrets)
+	events := map[int][]redisTraced{}
+	for i, record := range records {
+		if record.server != server {
+			continue
+		}
+		limit := responseCap
+		if record.server != record.sent {
+			limit = redisRequestCap
+		}
+		payload := bytes.Clone(record.payload[:min(len(record.payload), limit)])
+		events[record.run] = append(events[record.run], tracker.events(redisRecord(uint64(record.run+1), server, record.sent, uint64(i+1)*1_000_000, payload, record.size), 0)...)
+	}
+	return events, tracker
+}
+
+// redisPairs는 명령 이름 순서와 응답이 답한 명령 이름 순서를 돌려준다. 응답은 모두 answered와 0 이상의 latency가 있어야 한다.
+func redisPairs(t *testing.T, label string, events []redisTraced) (commands, answered []string) {
+	t.Helper()
+	for _, traced := range events {
+		event, info := traced.event, traced.redis
+		if event.Protocol != "redis" || info == nil {
+			t.Fatalf("%s: bad event %+v", label, event)
+		}
+		switch event.Event {
+		case redisEventCommand:
+			if event.LatencyMS != nil || event.answered != 0 {
+				t.Fatalf("%s: command with latency", label)
+			}
+			commands = append(commands, info.Command)
+		case redisEventReply, redisEventError:
+			if event.LatencyMS == nil || *event.LatencyMS < 0 || event.answered != 1 {
+				t.Fatalf("%s: reply without latency: %+v %+v", label, event, info)
+			}
+			answered = append(answered, info.Command)
+		case redisEventPush:
+			if event.LatencyMS != nil || event.answered != 0 {
+				t.Fatalf("%s: push with latency", label)
+			}
+		default:
+			t.Fatalf("%s: unknown event %s", label, event.Event)
+		}
+	}
+	return commands, answered
+}
+
+func redisAllAnswered(t *testing.T, label string, events []redisTraced) {
+	t.Helper()
+	commands, answered := redisPairs(t, label, events)
+	if len(commands) == 0 || strings.Join(commands, ",") != strings.Join(answered, ",") {
+		t.Fatalf("%s: commands %q answered %q", label, commands, answered)
+	}
+}
+
+func redisSelect(events []redisTraced, name string) []*traceRedisEvent {
+	var out []*traceRedisEvent
+	for _, traced := range events {
+		if traced.event.Event == name {
+			out = append(out, traced.redis)
+		}
+	}
+	return out
+}
+
+func TestRedisReplaysFixtures(t *testing.T) {
+	for _, server := range []bool{true, false} {
+		for _, responseCap := range []int{1024, 4095} {
+			label := func(name string) string { return fmt.Sprintf("%s server=%v cap=%d", name, server, responseCap) }
+			replay := func(name string) map[int][]redisTraced {
+				events, _ := replayRedis(loadRedisFixture(t, name), server, responseCap, false)
+				return events
+			}
+
+			pipeline := replay("pipeline")
+			if len(pipeline) != 5 {
+				t.Fatalf("%s: %d runs", label("pipeline"), len(pipeline))
+			}
+			for run, events := range pipeline {
+				redisAllAnswered(t, label(fmt.Sprintf("pipeline run %d", run)), events)
+			}
+			if commands, _ := redisPairs(t, label("pipeline"), pipeline[1]); len(commands) != 65 || commands[1] != "SET" {
+				t.Fatalf("%s: run 1 commands %q", label("pipeline"), commands)
+			}
+
+			pubsub := replay("pubsub")
+			redisAllAnswered(t, label("pubsub"), pubsub[0])
+			redisAllAnswered(t, label("pubsub publisher"), pubsub[1])
+			var pushes []string
+			for _, info := range redisSelect(pubsub[0], redisEventPush) {
+				pushes = append(pushes, info.PushKind+":"+info.Channel)
+			}
+			if strings.Join(pushes, " ") != "message:edc-ch1 pmessage:edc-ch1 message:edc-ch2 pmessage:edc-ch2" {
+				t.Fatalf("%s: pushes %q", label("pubsub"), pushes)
+			}
+
+			multi := replay("multi")
+			redisAllAnswered(t, label("multi"), multi[0])
+			var replies []string
+			for _, info := range append(redisSelect(multi[0], redisEventReply), redisSelect(multi[0], redisEventError)...) {
+				if info.Command == "EXEC" {
+					text := info.Reply
+					if info.Elements != nil {
+						text += fmt.Sprint(*info.Elements)
+					}
+					replies = append(replies, text+info.ErrorClass)
+				}
+			}
+			queued := 0
+			for _, info := range redisSelect(multi[0], redisEventReply) {
+				if info.Reply == "queued" {
+					queued++
+				}
+			}
+			if strings.Join(replies, " ") != "array2 null array2 errorEXECABORT" || queued != 7 {
+				t.Fatalf("%s: EXEC replies %q queued %d", label("multi"), replies, queued)
+			}
+
+			large := replay("large_get")
+			redisAllAnswered(t, label("large_get set"), large[0])
+			redisAllAnswered(t, label("large_get get"), large[1])
+			get := redisSelect(large[1], redisEventReply)
+			if len(get) != 2 || get[1].Command != "GET" || get[1].BulkLength == nil || *get[1].BulkLength != 200000 {
+				t.Fatalf("%s: GET reply %+v", label("large_get"), get)
+			}
+
+			resp3 := replay("resp3")
+			redisAllAnswered(t, label("resp3"), resp3[0])
+			kinds := map[string]bool{}
+			for _, info := range redisSelect(resp3[0], redisEventReply) {
+				kinds[info.Reply] = true
+			}
+			for _, kind := range []string{"simple", "integer", "bulk", "array", "map", "set", "null", "double", "boolean", "bignum", "verbatim", "push"} {
+				if !kinds[kind] {
+					t.Fatalf("%s: no %s reply in %v", label("resp3"), kind, kinds)
+				}
+			}
+			pushes = nil
+			for _, info := range redisSelect(resp3[0], redisEventPush) {
+				pushes = append(pushes, info.PushKind)
+			}
+			if strings.Join(pushes, " ") != "server-cpu-usage invalidate message" {
+				t.Fatalf("%s: pushes %q", label("resp3"), pushes)
+			}
+			if last := redisSelect(resp3[0], redisEventReply); last[len(last)-1].RESP != 3 {
+				t.Fatalf("%s: HELLO 3 did not switch the protocol", label("resp3"))
+			}
+
+			monitor := replay("monitor")
+			redisAllAnswered(t, label("monitor"), monitor[0])
+			if len(monitor[0]) != 12 {
+				t.Fatalf("%s: %d events, want 6 commands and 6 replies", label("monitor"), len(monitor[0]))
+			}
+
+			errors := replay("errors")
+			redisAllAnswered(t, label("errors"), errors[0])
+			var classes []string
+			for _, info := range redisSelect(errors[0], redisEventError) {
+				classes = append(classes, info.ErrorClass)
+			}
+			if strings.Join(classes, " ") != "NOAUTH NOAUTH NOAUTH WRONGPASS WRONGTYPE ERR NOSCRIPT" {
+				t.Fatalf("%s: classes %q", label("errors"), classes)
+			}
+
+			secrets := replay("secrets")
+			redisAllAnswered(t, label("secrets"), secrets[0])
+
+			inline := replay("inline")
+			redisAllAnswered(t, label("inline"), inline[0])
+			for _, info := range redisSelect(inline[0], redisEventCommand) {
+				if !info.Inline {
+					t.Fatalf("%s: command %q not inline", label("inline"), info.Command)
+				}
+			}
+
+			lrange := replay("lrange_big")
+			commands, answered := redisPairs(t, label("lrange_big"), lrange[0])
+			if strings.Join(commands, ",") != "AUTH,RPUSH,LRANGE,PING" || strings.Join(answered, ",") != "AUTH,PING" {
+				t.Fatalf("%s: commands %q answered %q", label("lrange_big"), commands, answered)
+			}
+			if rpush := redisSelect(lrange[0], redisEventCommand)[1]; !rpush.Truncated || rpush.Key != "edc-list" {
+				t.Fatalf("%s: RPUSH %+v", label("lrange_big"), rpush)
+			}
+		}
+	}
+}
+
+// redisStep은 표 test의 record 하나다. request가 참이면 client가 보낸 요청이다.
+type redisStep struct {
+	request bool
+	data    string
+	size    int
+}
+
+func redisClient(tracker *redisTracker, socket uint64, steps []redisStep) []redisTraced {
+	var out []redisTraced
+	for i, step := range steps {
+		size := step.size
+		if size == 0 {
+			size = len(step.data)
+		}
+		out = append(out, tracker.events(redisRecord(socket, false, step.request, uint64(i+1)*1_000_000, []byte(step.data), size), 0)...)
+	}
+	return out
+}
+
+// redisTokens는 event를 짧게 쓴다. C는 명령, R은 응답(명령/종류), E는 오류(명령/class), P는 push다.
+func redisTokens(events []redisTraced) string {
+	var tokens []string
+	for _, traced := range events {
+		info := traced.redis
+		switch traced.event.Event {
+		case redisEventCommand:
+			tokens = append(tokens, "C:"+info.Command)
+		case redisEventReply:
+			tokens = append(tokens, fmt.Sprintf("R:%s/%s", info.Command, info.Reply))
+		case redisEventError:
+			tokens = append(tokens, fmt.Sprintf("E:%s/%s", info.Command, info.ErrorClass))
+		case redisEventPush:
+			tokens = append(tokens, "P:"+info.PushKind)
+		}
+	}
+	return strings.Join(tokens, " ")
+}
+
+func redisStart(steps ...redisStep) []redisStep {
+	// 새 socket은 응답 쪽 경계를 모르므로 첫 명령의 응답으로 맞춘다.
+	return append([]redisStep{{true, redisArgs("PING"), 0}, {false, "+PONG\r\n", 0}}, steps...)
+}
+
+func TestRedisTrackerPairsTableInputs(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		steps []redisStep
+		want  string
+	}{
+		{"error classes", redisStart(
+			redisStep{true, redisArgs("GET", "a") + redisArgs("GET", "b") + redisArgs("GET", "c") + redisArgs("GET", "d") + redisArgs("GET", "e"), 0},
+			redisStep{false, "-MOVED 3999 127.0.0.1:6381\r\n-ASK 3999 127.0.0.1:6381\r\n-WRONGTYPE Operation\r\n-NOAUTH Authentication required.\r\n-oops lowercase\r\n", 0},
+		), "C:PING R:PING/simple C:GET C:GET C:GET C:GET C:GET E:GET/MOVED E:GET/ASK E:GET/WRONGTYPE E:GET/NOAUTH E:GET/"},
+		{"client reply off", redisStart(
+			redisStep{true, redisArgs("CLIENT", "REPLY", "OFF"), 0},
+			redisStep{true, redisArgs("SET", "a", "1"), 0},
+			redisStep{true, redisArgs("CLIENT", "REPLY", "ON"), 0},
+			redisStep{false, "+OK\r\n", 0},
+			redisStep{true, redisArgs("GET", "a"), 0},
+			redisStep{false, "$1\r\n1\r\n", 0},
+		), "C:PING R:PING/simple C:CLIENT REPLY C:SET C:CLIENT REPLY R:CLIENT REPLY/simple C:GET R:GET/bulk"},
+		{"client reply skip", redisStart(
+			redisStep{true, redisArgs("CLIENT", "REPLY", "SKIP") + redisArgs("SET", "a", "1") + redisArgs("GET", "a"), 0},
+			redisStep{false, "$1\r\n1\r\n", 0},
+		), "C:PING R:PING/simple C:CLIENT REPLY C:SET C:GET R:GET/bulk"},
+		{"hello switch and noproto", redisStart(
+			redisStep{true, redisArgs("HELLO", "3"), 0},
+			redisStep{false, "%1\r\n$5\r\nproto\r\n:3\r\n", 0},
+			redisStep{true, redisArgs("HELLO", "4"), 0},
+			redisStep{false, "-NOPROTO unsupported protocol version\r\n", 0},
+			redisStep{true, redisArgs("SUBSCRIBE", "a"), 0},
+			redisStep{false, ">3\r\n$9\r\nsubscribe\r\n$1\r\na\r\n:1\r\n", 0},
+			redisStep{true, redisArgs("LRANGE", "l", "0", "-1"), 0},
+			// RESP3에서는 "message"로 시작하는 배열도 응답이다.
+			redisStep{false, "*2\r\n$7\r\nmessage\r\n$1\r\nx\r\n", 0},
+			redisStep{true, redisArgs("RESET"), 0},
+			redisStep{false, "+RESET\r\n", 0},
+		), "C:PING R:PING/simple C:HELLO R:HELLO/map C:HELLO E:HELLO/NOPROTO C:SUBSCRIBE R:SUBSCRIBE/push C:LRANGE R:LRANGE/array C:RESET R:RESET/simple"},
+		{"resp2 subscribe confirmations", redisStart(
+			redisStep{true, redisArgs("SUBSCRIBE", "a", "b") + redisArgs("SUBSCRIBE", "c"), 0},
+			redisStep{false, "*3\r\n$9\r\nsubscribe\r\n$1\r\na\r\n:1\r\n*3\r\n$9\r\nsubscribe\r\n$1\r\nb\r\n:2\r\n*3\r\n$9\r\nsubscribe\r\n$1\r\nc\r\n:3\r\n", 0},
+			redisStep{false, "*3\r\n$7\r\nmessage\r\n$1\r\na\r\n$4\r\nbody\r\n", 0},
+			redisStep{true, redisArgs("PING"), 0},
+			redisStep{false, "*2\r\n$4\r\npong\r\n$0\r\n\r\n", 0},
+			redisStep{true, redisArgs("UNSUBSCRIBE"), 0},
+			redisStep{false, "*3\r\n$11\r\nunsubscribe\r\n$1\r\na\r\n:2\r\n*3\r\n$11\r\nunsubscribe\r\n$1\r\nb\r\n:1\r\n*3\r\n$11\r\nunsubscribe\r\n$1\r\nc\r\n:0\r\n", 0},
+			redisStep{true, redisArgs("LRANGE", "l", "0", "-1"), 0},
+			// 구독이 끝나면 "message"로 시작하는 배열도 LRANGE의 응답이다.
+			redisStep{false, "*2\r\n$7\r\nmessage\r\n$1\r\nx\r\n", 0},
+		), "C:PING R:PING/simple C:SUBSCRIBE C:SUBSCRIBE R:SUBSCRIBE/array R:SUBSCRIBE/array P:message C:PING R:PING/array C:UNSUBSCRIBE R:UNSUBSCRIBE/array C:LRANGE R:LRANGE/array"},
+		{"monitor lines", redisStart(
+			redisStep{true, redisArgs("MONITOR"), 0},
+			redisStep{false, "+OK\r\n+1791788445.996979 [0 127.0.0.1:1] \"SET\" \"k\" \"v\"\r\n", 0},
+			redisStep{false, "+1791788445.996980 [0 127.0.0.1:1] \"GET\" \"k\"\r\n", 0},
+			redisStep{true, redisArgs("RESET"), 0},
+			redisStep{false, "+1791788445.996981 [0 127.0.0.1:1] \"GET\" \"k\"\r\n+RESET\r\n", 0},
+		), "C:PING R:PING/simple C:MONITOR R:MONITOR/simple C:RESET R:RESET/simple"},
+		{"multi", redisStart(
+			redisStep{true, redisArgs("MULTI") + redisArgs("INCR", "a") + redisArgs("EXEC"), 0},
+			redisStep{false, "+OK\r\n+QUEUED\r\n*1\r\n:1\r\n", 0},
+		), "C:PING R:PING/simple C:MULTI C:INCR C:EXEC R:MULTI/simple R:INCR/queued R:EXEC/array"},
+		{"mid-connection start", []redisStep{
+			{false, "+OK\r\n", 0},
+			{true, "ue\r\n" + redisArgs("GET", "x"), 0},
+			{false, ":1\r\n", 0},
+			{true, redisArgs("GET", "a"), 0},
+			{false, "$1\r\nb\r\n", 0},
+		}, "C:GET R:GET/bulk"},
+		{"dropped response record", redisStart(
+			redisStep{true, redisArgs("GET", "a") + redisArgs("GET", "b") + redisArgs("GET", "c"), 0},
+			redisStep{false, "$1\r\na\r\n", 0},
+			// "$1\r\nb\r\n$1\r" record를 잃었다.
+			redisStep{false, "\nc\r\n", 0},
+			redisStep{true, redisArgs("PING"), 0},
+			redisStep{false, "+PONG\r\n", 0},
+		), "C:PING R:PING/simple C:GET C:GET C:GET R:GET/bulk C:PING R:PING/simple"},
+		{"header past the capture", redisStart(
+			redisStep{true, redisArgs("LRANGE", "l", "0", "-1"), 0},
+			redisStep{false, "*3\r\n$1\r\na\r\n", 100},
+			// 같은 응답의 나머지가 frame처럼 보여도 대기 명령보다 frame이 많으면 맞추지 않는다.
+			redisStep{false, "$1\r\nb\r\n$1\r\nc\r\n", 0},
+			redisStep{true, redisArgs("PING"), 0},
+			redisStep{false, "+PONG\r\n", 0},
+		), "C:PING R:PING/simple C:LRANGE C:PING R:PING/simple"},
+	} {
+		tracker := newRedisTracker("", false)
+		if got := redisTokens(redisClient(tracker, 1, tc.steps)); got != tc.want {
+			t.Errorf("%s:\n got %s\nwant %s", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestRedisTrackerSideAndLatency(t *testing.T) {
+	tracker := newRedisTracker(traceServerSide, false)
+	if events := redisClient(tracker, 1, redisStart()); len(events) != 0 {
+		t.Fatalf("client records passed the server side filter: %d", len(events))
+	}
+	tracker = newRedisTracker("", false)
+	request := redisRecord(5, true, false, 10_000_000, []byte(redisArgs("GET", "k")), 0)
+	request.size = len(request.payload)
+	events := tracker.events(request, 100)
+	reply := redisRecord(5, true, true, 13_500_000, []byte("$1\r\nv\r\n"), 7)
+	events = append(events, tracker.events(reply, 100)...)
+	if len(events) != 2 || events[1].event.LatencyMS == nil || *events[1].event.LatencyMS != 3.5 || events[1].event.Side != traceServerSide ||
+		events[1].event.TimestampNS != 13_500_100 || events[1].event.Bytes != 7 || events[1].redis.Key != "k" || events[1].redis.BulkLength == nil {
+		t.Fatalf("events %+v", events)
+	}
+}
+
+func TestRedisTrackerLimits(t *testing.T) {
+	tracker := newRedisTracker("", false)
+	ping := []byte(redisArgs("PING"))
+	for socket := uint64(1); socket <= redisSocketLimit; socket++ {
+		tracker.events(redisRecord(socket, false, true, 1, ping, len(ping)), 0)
+	}
+	if len(tracker.conns) != redisSocketLimit || tracker.pending != redisSocketLimit {
+		t.Fatalf("conns %d pending %d", len(tracker.conns), tracker.pending)
+	}
+	tracker.events(redisRecord(redisSocketLimit+1, false, true, 1, ping, len(ping)), 0)
+	if len(tracker.conns) != 1 || tracker.pending != 1 {
+		t.Fatalf("after the limit: conns %d pending %d", len(tracker.conns), tracker.pending)
+	}
+	tracker.forgetSocket(redisSocketLimit + 1)
+	if len(tracker.conns) != 0 || tracker.pending != 0 {
+		t.Fatalf("after forget: conns %d pending %d", len(tracker.conns), tracker.pending)
+	}
+
+	// 한 연결의 대기 명령이 상한을 넘으면 오래된 것만 버리지 않고 모두 응답 없음으로 버린다.
+	tracker = newRedisTracker("", false)
+	redisClient(tracker, 1, redisStart())
+	many := []byte(strings.Repeat(redisArgs("PING"), redisPendingLimit+1))
+	tracker.events(redisRecord(1, false, true, 5_000_000, many, len(many)), 0)
+	conn := tracker.conns[1]
+	if len(conn.pending) != 0 || tracker.pending != 0 || conn.responseSynced {
+		t.Fatalf("pending %d total %d synced %v", len(conn.pending), tracker.pending, conn.responseSynced)
+	}
+	if events := tracker.events(redisRecord(1, false, false, 6_000_000, []byte("+PONG\r\n"), 7), 0); len(events) != 0 {
+		t.Fatalf("reply after overflow paired: %s", redisTokens(events))
+	}
+}
+
+// redisPlanted는 fixture와 표 입력에 심은 가짜 비밀이다. 6fcd8525…는 ACL이 돌려주는 edc-secret-acl의 SHA-256이다.
+var redisPlanted = []string{"edc-fixture-pass", "edc-wrong-pass", "edc-secret-master", "edc-secret-acl", "edc-secret-migrate", "6fcd85253a6002c4"}
+
+// redisWalk는 v에서 닿는 모든 문자열과 byte slice를 용량 끝까지 본다. 비공개 필드, pointer, map, interface도 따라간다.
+func redisWalk(v reflect.Value, seen map[uintptr]bool, visit func(string)) {
+	switch v.Kind() {
+	case reflect.String:
+		visit(v.String())
+	case reflect.Pointer:
+		if v.IsNil() || seen[v.Pointer()] {
+			return
+		}
+		seen[v.Pointer()] = true
+		redisWalk(v.Elem(), seen, visit)
+	case reflect.Interface:
+		if !v.IsNil() {
+			redisWalk(v.Elem(), seen, visit)
+		}
+	case reflect.Struct:
+		for i := range v.NumField() {
+			redisWalk(v.Field(i), seen, visit)
+		}
+	case reflect.Array:
+		for i := range v.Len() {
+			redisWalk(v.Index(i), seen, visit)
+		}
+	case reflect.Slice:
+		if v.IsNil() {
+			return
+		}
+		full := v.Slice(0, v.Cap())
+		if v.Type().Elem().Kind() == reflect.Uint8 {
+			visit(string(full.Bytes()))
+			return
+		}
+		for i := range full.Len() {
+			redisWalk(full.Index(i), seen, visit)
+		}
+	case reflect.Map:
+		for iter := v.MapRange(); iter.Next(); {
+			redisWalk(iter.Key(), seen, visit)
+			redisWalk(iter.Value(), seen, visit)
+		}
+	}
+}
+
+// redisCheckSecrets는 event JSON과 tracker 상태에 심은 비밀이 없는지 본다. value가 보이는지 돌려준다.
+func redisCheckSecrets(t *testing.T, label string, events []redisTraced, tracker *redisTracker, value string) bool {
+	t.Helper()
+	var text strings.Builder
+	for _, traced := range events {
+		for _, part := range []any{traced.event, traced.redis} {
+			raw, err := json.Marshal(part)
+			if err != nil {
+				t.Fatal(err)
+			}
+			text.Write(raw)
+		}
+	}
+	for _, secret := range redisPlanted {
+		if strings.Contains(text.String(), secret) {
+			t.Fatalf("%s: event JSON contains %s", label, secret)
+		}
+	}
+	redisWalk(reflect.ValueOf(tracker), map[uintptr]bool{}, func(s string) {
+		for _, secret := range redisPlanted {
+			if strings.Contains(s, secret) {
+				t.Fatalf("%s: tracker state contains %s", label, secret)
+			}
+		}
+	})
+	return strings.Contains(text.String(), value)
+}
+
+func TestRedisSecretsNeverKept(t *testing.T) {
+	// walk가 쥔 byte와 대기 명령까지 닿는지 먼저 확인한다.
+	probe := newRedisTracker("", false)
+	redisClient(probe, 1, []redisStep{{true, redisArgs("GET", "walk-key") + "*2\r\n$3\r\nGET\r\n$10\r\nwalk-pr", 0}})
+	found := map[string]bool{}
+	redisWalk(reflect.ValueOf(probe), map[uintptr]bool{}, func(s string) {
+		found["walk-key"] = found["walk-key"] || strings.Contains(s, "walk-key")
+		found["walk-pr"] = found["walk-pr"] || strings.Contains(s, "walk-pr")
+	})
+	if !found["walk-key"] || !found["walk-pr"] {
+		t.Fatalf("walk misses tracker state: %v", found)
+	}
+	for _, show := range []bool{false, true} {
+		for _, server := range []bool{true, false} {
+			for _, responseCap := range []int{1024, 4095} {
+				label := fmt.Sprintf("show=%v server=%v cap=%d", show, server, responseCap)
+				for _, name := range []string{"secrets", "errors", "monitor", "inline", "pipeline", "resp3"} {
+					runs, tracker := replayRedis(loadRedisFixture(t, name), server, responseCap, show)
+					var events []redisTraced
+					for run := range len(runs) {
+						events = append(events, runs[run]...)
+					}
+					seen := redisCheckSecrets(t, label+" "+name, events, tracker, "edc-secret-value")
+					if name == "secrets" && seen != show {
+						t.Fatalf("%s: edc-secret-value visible %v", label, seen)
+					}
+				}
+			}
+		}
+	}
+	// 표 입력은 record를 모든 자리에서 나누고, 매 record 뒤 tracker 상태를 본다.
+	steps := redisStart(
+		redisStep{true, redisArgs("AUTH", "default", "edc-fixture-pass"), 0},
+		redisStep{false, "-WRONGPASS invalid username-password pair 'edc-fixture-pass'\r\n", 0},
+		redisStep{true, "AUTH edc-wrong-pass\r\n", 0},
+		redisStep{false, "+OK\r\n", 0},
+		redisStep{true, redisArgs("CONFIG", "GET", "masterauth"), 0},
+		redisStep{false, "*2\r\n$10\r\nmasterauth\r\n$17\r\nedc-secret-master\r\n", 0},
+		redisStep{true, redisArgs("ACL", "GETUSER", "u"), 0},
+		redisStep{false, "*2\r\n$9\r\npasswords\r\n*1\r\n$64\r\n6fcd85253a6002c4d4495e59b55843138d8ef21148dc4f26b5841983909ae0b4\r\n", 0},
+		redisStep{true, redisArgs("MONITOR"), 0},
+		redisStep{false, "+OK\r\n+1791788445.996979 [0 127.0.0.1:1] \"CONFIG\" \"SET\" \"masterauth\" \"edc-secret-master\"\r\n", 0},
+		redisStep{true, redisArgs("RESET"), 0},
+		redisStep{false, "+RESET\r\n", 0},
+		redisStep{true, redisArgs("SET", "k", "edc-secret-value"), 0},
+		redisStep{false, "+OK\r\n", 0},
+	)
+	for _, show := range []bool{false, true} {
+		for step := range steps {
+			data := steps[step].data
+			for cut := 1; cut < len(data); cut++ {
+				split := append(append(append([]redisStep(nil), steps[:step]...), redisStep{steps[step].request, data[:cut], 0}, redisStep{steps[step].request, data[cut:], 0}), steps[step+1:]...)
+				tracker := newRedisTracker("", show)
+				var events []redisTraced
+				for i := range split {
+					events = append(events, redisClient(tracker, 1, split[i:i+1])...)
+					redisCheckSecrets(t, fmt.Sprintf("show=%v step %d cut %d", show, step, cut), events, tracker, "")
+				}
+			}
+		}
 	}
 }

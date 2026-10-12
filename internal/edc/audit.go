@@ -93,6 +93,8 @@ type auditSources struct {
 	firewall func(context.Context) (auditFirewall, error)
 	kernel   func() string
 	owner    func(fs.FileInfo) (uint32, bool)
+	// container는 edc가 도는 container runtime이다. 비어 있으면 ctr.* 점검을 하지 않는다.
+	container string
 }
 
 type auditFirewall struct {
@@ -153,6 +155,21 @@ type auditFacts struct {
 	RebootFlag     bool
 	Running        string
 	Kernels        []string
+
+	Container     string
+	EUID          int
+	CapEff        uint64
+	CapLast       int
+	CapSource     string
+	CapErr        error
+	DockerSock    string
+	DockerSockAt  string
+	DockerSockErr error
+	PIDNS         string
+	PIDNSErr      error
+	HostNet       bool
+	NetSource     string
+	NetErr        error
 }
 
 func runAudit(args []string, version string) int {
@@ -237,7 +254,92 @@ func collectAuditFacts(ctx context.Context, sources auditSources) auditFacts {
 			facts.Kernels = append(facts.Kernels, release)
 		}
 	}
+	if sources.container != "" {
+		collectAuditContainer(sources, &facts)
+	}
 	return facts
+}
+
+// auditHostPIDNamespace는 커널이 처음 만든 PID namespace의 inode다(PROC_PID_INIT_INO). 커널마다 고정된 값이라 이 값이면 호스트의 PID namespace다.
+const auditHostPIDNamespace = "pid:[4026531836]"
+
+var auditDockerSockets = []string{"/var/run/docker.sock", "/run/docker.sock"}
+
+func collectAuditContainer(sources auditSources, facts *auditFacts) {
+	facts.Container = sources.container
+	facts.EUID = sources.euid
+	facts.CapEff, facts.CapLast, facts.CapSource, facts.CapErr = readAuditCaps(sources)
+	for _, path := range auditDockerSockets {
+		info, err := os.Stat(sources.file(path))
+		if err == nil && info.Mode()&fs.ModeSocket != 0 {
+			facts.DockerSock, facts.DockerSockAt, facts.DockerSockErr = path, "", nil
+			break
+		}
+		if err != nil && !errors.Is(err, fs.ErrNotExist) && facts.DockerSockErr == nil {
+			facts.DockerSockAt, facts.DockerSockErr = path, err
+		}
+	}
+	facts.PIDNS, facts.PIDNSErr = readAuditNamespace(sources, "/proc/self/ns/pid", "pid")
+	// container 자신의 PID namespace에서는 /proc/1이 container의 init이라 net namespace가 언제나 같다. 호스트 PID namespace일 때만 /proc/1이 호스트 init이다.
+	if facts.PIDNSErr == nil && facts.PIDNS == auditHostPIDNamespace {
+		self, err := readAuditNamespace(sources, "/proc/self/ns/net", "net")
+		if err != nil {
+			facts.NetSource, facts.NetErr = "/proc/self/ns/net", err
+			return
+		}
+		initNet, err := readAuditNamespace(sources, "/proc/1/ns/net", "net")
+		if err != nil {
+			facts.NetSource, facts.NetErr = "/proc/1/ns/net", err
+			return
+		}
+		facts.HostNet = self == initNet
+	}
+}
+
+// readAuditCaps는 CapEff와 cap_last_cap을 읽는다. 둘 중 하나라도 읽지 못하면 CapBnd 같은 다른 값으로 대신하지 않는다.
+func readAuditCaps(sources auditSources) (uint64, int, string, error) {
+	const status, lastCap = "/proc/self/status", "/proc/sys/kernel/cap_last_cap"
+	data, err := os.ReadFile(sources.file(status))
+	if err != nil {
+		return 0, 0, status, err
+	}
+	capEff, found := uint64(0), false
+	for _, line := range strings.Split(string(data), "\n") {
+		key, value, ok := strings.Cut(line, ":")
+		if !ok || key != "CapEff" {
+			continue
+		}
+		if capEff, err = strconv.ParseUint(strings.TrimSpace(value), 16, 64); err != nil {
+			return 0, 0, status, fmt.Errorf("CapEff %q is not hex", strings.TrimSpace(value))
+		}
+		found = true
+		break
+	}
+	if !found {
+		return 0, 0, status, errors.New("no CapEff line")
+	}
+	text, err := readTrimmed(sources.file(lastCap))
+	if err != nil {
+		return 0, 0, lastCap, err
+	}
+	last, err := strconv.Atoi(text)
+	if err != nil || last < 0 || last > 63 {
+		return 0, 0, lastCap, fmt.Errorf("%q is not in 0..63", text)
+	}
+	return capEff, last, "", nil
+}
+
+func readAuditNamespace(sources auditSources, path, kind string) (string, error) {
+	link, err := os.Readlink(sources.file(path))
+	if err != nil {
+		return "", err
+	}
+	inode, found := strings.CutPrefix(link, kind+":[")
+	inode, closed := strings.CutSuffix(inode, "]")
+	if _, err := strconv.ParseUint(inode, 10, 64); !found || !closed || err != nil {
+		return "", fmt.Errorf("unexpected link %q", link)
+	}
+	return link, nil
 }
 
 func readTrimmed(path string) (string, error) {
@@ -679,7 +781,7 @@ func auditSkip(id, source string, err error) Result {
 }
 
 func evaluateAudit(facts auditFacts) []Result {
-	return []Result{
+	results := []Result{
 		auditExposure(facts),
 		auditFirewallResult(facts),
 		auditIPForward(facts),
@@ -695,6 +797,10 @@ func evaluateAudit(facts auditFacts) []Result {
 		auditKernelSysctl(facts),
 		auditReboot(facts),
 	}
+	if facts.Container != "" {
+		results = append(results, auditPrivileged(facts), auditDockerSocket(facts), auditRootUser(facts), auditHostNamespace(facts))
+	}
+	return results
 }
 
 func auditExposure(facts auditFacts) Result {
@@ -1047,4 +1153,60 @@ func auditReboot(facts auditFacts) Result {
 		return auditResult(id, StatusWarn, T("audit.patch.reboot_kernel", newest, facts.Running))
 	}
 	return auditResult(id, StatusPass, T("audit.patch.reboot_ok", facts.Running))
+}
+
+func auditPrivileged(facts auditFacts) Result {
+	const id = "ctr.privileged"
+	if facts.CapErr != nil {
+		return auditSkip(id, facts.CapSource, facts.CapErr)
+	}
+	capEff := fmt.Sprintf("0x%016x", facts.CapEff)
+	mask := uint64(1)<<(facts.CapLast+1) - 1
+	if facts.CapEff&mask != mask {
+		return auditResult(id, StatusPass, T("audit.ctr.caps_limited", capEff))
+	}
+	result := auditResult(id, StatusFail, T("audit.ctr.privileged", facts.Container, capEff))
+	result.Error = &DiagnosticError{Kind: "container", Message: result.Summary}
+	return result
+}
+
+func auditDockerSocket(facts auditFacts) Result {
+	const id = "ctr.docker_sock"
+	if facts.DockerSock != "" {
+		result := auditResult(id, StatusFail, T("audit.ctr.sock_mounted", facts.DockerSock))
+		result.Error = &DiagnosticError{Kind: "container", Message: result.Summary}
+		return result
+	}
+	if facts.DockerSockErr != nil {
+		return auditSkip(id, facts.DockerSockAt, facts.DockerSockErr)
+	}
+	return auditResult(id, StatusPass, T("audit.ctr.sock_none"))
+}
+
+func auditRootUser(facts auditFacts) Result {
+	const id = "ctr.root_user"
+	if facts.EUID == 0 {
+		return auditResult(id, StatusWarn, T("audit.ctr.root_user", facts.Container))
+	}
+	return auditResult(id, StatusPass, T("audit.ctr.user_ok", facts.EUID))
+}
+
+func auditHostNamespace(facts auditFacts) Result {
+	const id = "ctr.host_ns"
+	if facts.PIDNSErr != nil {
+		return auditSkip(id, "/proc/self/ns/pid", facts.PIDNSErr)
+	}
+	if facts.PIDNS != auditHostPIDNamespace {
+		return auditResult(id, StatusPass, T("audit.ctr.own_pid", facts.PIDNS))
+	}
+	summary := T("audit.ctr.host_pid")
+	if facts.NetErr == nil && facts.HostNet {
+		summary = T("audit.ctr.host_pid_net")
+	}
+	result := auditResult(id, StatusFail, summary)
+	result.Error = &DiagnosticError{Kind: "container", Message: result.Summary}
+	if facts.NetErr != nil {
+		result.Warnings = []string{T("audit.ctr.net_unknown", facts.NetSource, infoSingleLine(facts.NetErr.Error()))}
+	}
+	return result
 }

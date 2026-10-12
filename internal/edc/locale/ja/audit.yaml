@@ -52,6 +52,17 @@ audit:
     reboot_kernel: "カーネル %s がインストール済みですが、%s で実行中です"
     reboot_ok: "実行中のカーネル %s がインストール済みの中で最新"
     reboot_none: "再起動の要求なし"
+  ctr:
+    privileged: "edc がすべての capability を持っています。%s コンテナは privileged です (CapEff %s)"
+    caps_limited: "コンテナは一部の capability を外しています (CapEff %s)"
+    sock_mounted: "%s がマウントされており、コンテナからホストの docker daemon を操作できます"
+    sock_none: "マウントされた docker socket なし"
+    root_user: "edc は %s コンテナ内で UID 0 として実行中です"
+    user_ok: "edc は UID %d で実行中"
+    own_pid: "コンテナは独自の PID namespace を使っています (%s)。network namespace は比較していません"
+    host_pid: "コンテナがホストの PID namespace を共有しています"
+    host_pid_net: "コンテナがホストの PID namespace と network namespace を共有しています"
+    net_unknown: "%s を読めないため network namespace を比較していません (%s)"
   evidence:
     sockets: "ソケット"
     files: "ファイル"

@@ -52,6 +52,17 @@ audit:
     reboot_kernel: "kernel %s is installed, %s is running"
     reboot_ok: "the running kernel %s is the newest installed"
     reboot_none: "no reboot request"
+  ctr:
+    privileged: "edc holds every capability, the %s container is privileged (CapEff %s)"
+    caps_limited: "the container drops some capabilities (CapEff %s)"
+    sock_mounted: "%s is mounted, the container can control the host docker daemon"
+    sock_none: "no docker socket is mounted"
+    root_user: "edc runs as UID 0 in the %s container"
+    user_ok: "edc runs as UID %d"
+    own_pid: "the container has its own PID namespace (%s), edc does not compare the network namespace"
+    host_pid: "the container shares the host PID namespace"
+    host_pid_net: "the container shares the host PID and network namespaces"
+    net_unknown: "cannot read %s (%s), edc did not compare the network namespace"
   evidence:
     sockets: "sockets"
     files: "files"

@@ -371,6 +371,20 @@ func TestRedisReaderPreviewLimits(t *testing.T) {
 	}
 }
 
+func TestRedisReaderPreviewStopsAtHiddenBytes(t *testing.T) {
+	in := redisArgs("GET", "edc-key-XXXXtail")
+	cut := len("*2\r\n$3\r\nGET\r\n$16\r\nedc-key-")
+	reader := redisRequestReader(false)
+	var frames []string
+	collect := func(f redisFrame) { frames = append(frames, redisFrameText(f)) }
+	// 앞 record의 끝 4 byte(XXXX)는 캡처하지 못했다.
+	reader.feed([]byte(in[:cut]), cut+4, 1, collect)
+	reader.feed([]byte(in[cut+4:]), len(in)-cut-4, 2, collect)
+	if len(frames) != 1 || frames[0] != `* n=2 cmd="GET" key="edc-key-" args=1` {
+		t.Fatalf("frames %q", frames)
+	}
+}
+
 func TestRedisReaderInlineNeedsTerminator(t *testing.T) {
 	// 줄 끝이 캡처한 byte 밖이면 잃는다. 다음 record로 이어지는 줄은 받는다.
 	if _, losses := redisRead(redisRequestReader(false), [][]byte{[]byte("GET k")}, []int{4000}); losses != 1 {
@@ -939,4 +953,137 @@ func TestRedisSecretsNeverKept(t *testing.T) {
 			}
 		}
 	}
+}
+
+// redisFuzzSecret는 fuzz 입력 앞에 붙이는 AUTH의 password다. seed에는 없다.
+const redisFuzzSecret = "edc-fuzz-secret-42"
+
+// redisFuzzCut은 fuzz의 record 하나를 6 byte로 적는다. flags의 bit 0은 응답 방향, bit 1은 이 record 앞에서 socket을 잊으라는
+// 뜻이다. n은 data에서 가져올 byte 수, hidden은 그 뒤에 캡처하지 못한 byte 수다.
+func redisFuzzCut(response, forget bool, n, hidden int) []byte {
+	flags := byte(0)
+	if response {
+		flags |= 1
+	}
+	if forget {
+		flags |= 2
+	}
+	return []byte{flags, byte(n), byte(n >> 8), byte(hidden), byte(hidden >> 8), byte(hidden >> 16)}
+}
+
+// redisFuzzSeed는 fixture의 한 run과 쪽을 fuzz 입력으로 바꾼다. 큰 입력은 새 입력을 줄이는 데 오래 걸려 fuzz가 멈춘 것처럼
+// 되므로 record마다 앞 redisFuzzSeedKeep byte만 남기고 나머지는 캡처하지 못한 byte로 둔다.
+const (
+	redisFuzzSeedKeep    = 512
+	redisFuzzSeedRecords = 48
+)
+
+func redisFuzzSeed(records []redisFixtureRecord, run int, server bool) (data, cuts []byte) {
+	for _, record := range records {
+		if record.run != run || record.server != server || len(cuts) >= 6*redisFuzzSeedRecords {
+			continue
+		}
+		payload := record.payload[:min(len(record.payload), redisFuzzSeedKeep)]
+		data = append(data, payload...)
+		cuts = append(cuts, redisFuzzCut(record.server == record.sent, false, len(payload), record.size-len(payload))...)
+	}
+	return data, cuts
+}
+
+func FuzzRedisTracker(f *testing.F) {
+	for _, name := range []string{"pipeline", "pubsub", "multi", "large_get", "resp3", "monitor", "secrets", "errors", "inline", "lrange_big"} {
+		records := loadRedisFixture(f, name)
+		runs := 0
+		for _, record := range records {
+			runs = max(runs, record.run+1)
+		}
+		for run := range runs {
+			for _, server := range []bool{true, false} {
+				data, cuts := redisFuzzSeed(records, run, server)
+				f.Add(data, cuts, uint16(1023), server)
+				f.Add(data, cuts, uint16(4094), server)
+			}
+		}
+	}
+	table := []struct {
+		request, response string
+	}{
+		{redisArgs("GET", "a") + redisArgs("SUBSCRIBE", "c"), redisMixed},
+		{"PING\r\nSET k v\nAUTH x\r\n", "+PONG\r\n+OK\r\n-WRONGPASS bad\r\n"},
+		{redisArgs("MONITOR") + redisArgs("RESET"), "+OK\r\n+1791788445.996979 [0 127.0.0.1:1] \"GET\" \"k\"\r\n+RESET\r\n"},
+		{redisArgs("CLIENT", "REPLY", "SKIP") + redisArgs("HELLO", "3") + redisArgs("GET", "k"), "%1\r\n$5\r\nproto\r\n:3\r\n_\r\n"},
+		{"*99999999999\r\n$-5\r\n", "$-5\r\n*99999999999\r\n" + strings.Repeat("*1\r\n", 40)},
+	}
+	for _, tc := range table {
+		data := []byte(tc.request + tc.response)
+		cuts := append(redisFuzzCut(false, false, len(tc.request), 0), redisFuzzCut(true, false, len(tc.response), 0)...)
+		f.Add(data, cuts, uint16(4095), false)
+		f.Add(data, append(cuts, redisFuzzCut(true, true, 3, 100)...), uint16(7), true)
+	}
+	f.Fuzz(func(t *testing.T, data, cuts []byte, capture uint16, server bool) {
+		limit := int(capture)%4096 + 1
+		tracker := newRedisTracker("", false)
+		var events []redisTraced
+		at := uint64(0)
+		feed := func(response bool, payload []byte, size int) {
+			at += 1_000_000
+			// 서버는 요청을 받고(sent=false) 응답을 보낸다. client는 반대다.
+			sent := response == server
+			events = append(events, tracker.events(redisRecord(1, server, sent, at, payload, size), 0)...)
+		}
+		auth := []byte(redisArgs("AUTH", redisFuzzSecret))
+		split := len(cuts) % len(auth)
+		feed(false, auth[:split], split)
+		feed(false, auth[split:], len(auth)-split)
+		feed(true, []byte("+OK\r\n"), 5)
+		pos := 0
+		for i := 0; i+6 <= len(cuts) && i < 6*4096; i += 6 {
+			cut := cuts[i : i+6]
+			if cut[0]&2 != 0 {
+				tracker.forgetSocket(1)
+			}
+			n := int(cut[1]) | int(cut[2])<<8
+			hidden := int(cut[3]) | int(cut[4])<<8 | int(cut[5])<<16
+			chunk := data[min(pos, len(data)):min(pos+n, len(data))]
+			pos += len(chunk)
+			if len(chunk)+hidden == 0 {
+				continue
+			}
+			visible := chunk[:min(len(chunk), limit)]
+			feed(cut[0]&1 != 0, bytes.Clone(visible), len(chunk)+hidden)
+		}
+		if pos < len(data) {
+			rest := data[pos:]
+			feed(false, bytes.Clone(rest[:min(len(rest), limit)]), len(rest))
+		}
+		for _, traced := range events {
+			if latency := traced.event.LatencyMS; latency != nil && *latency < 0 {
+				t.Fatalf("negative latency %v", *latency)
+			}
+		}
+		for _, conn := range tracker.conns {
+			if len(conn.pending) > redisPendingLimit {
+				t.Fatalf("pending %d", len(conn.pending))
+			}
+			for _, reader := range []*redisReader{&conn.request, &conn.response} {
+				if len(reader.held) > redisLineKeep || cap(reader.held) > redisLineKeep || len(reader.stack) > redisDepthLimit {
+					t.Fatalf("reader holds %d bytes (cap %d), depth %d", len(reader.held), cap(reader.held), len(reader.stack))
+				}
+			}
+		}
+		if bytes.Contains(data, []byte(redisFuzzSecret)) {
+			return
+		}
+		for _, traced := range events {
+			raw, err := json.Marshal(traced.redis)
+			if err != nil || bytes.Contains(raw, []byte(redisFuzzSecret)) {
+				t.Fatalf("event %s carries the AUTH password (%v)", raw, err)
+			}
+		}
+		redisWalk(reflect.ValueOf(tracker), map[uintptr]bool{}, func(s string) {
+			if strings.Contains(s, redisFuzzSecret) {
+				t.Fatal("tracker state keeps the AUTH password")
+			}
+		})
+	})
 }

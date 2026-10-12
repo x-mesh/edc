@@ -510,12 +510,17 @@ func (r *redisReader) frameNull() {
 // 보일 때만 확인한다.
 func (r *redisReader) bulk(visible []byte, n int) bool {
 	offset := r.bulkLen + 2 - r.left
-	payload := visible[:0]
+	payload, segment := visible[:0], int64(0)
 	if offset < r.bulkLen {
-		payload = visible[:min(int64(len(visible)), r.bulkLen-offset)]
+		segment = min(int64(n), r.bulkLen-offset)
+		payload = visible[:min(int64(len(visible)), segment)]
 	}
 	if r.elemKeep > 0 {
 		r.holdBytes(payload)
+		if int64(len(payload)) < segment {
+			// 본문 일부를 보지 못했다. 뒤 record의 byte를 이어 붙이면 없던 값이 되므로 여기서 멈춘다.
+			r.elemKeep = len(r.held)
+		}
 	}
 	for _, b := range payload {
 		if r.elemKind != '!' || r.classDone != 0 {

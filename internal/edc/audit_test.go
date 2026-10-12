@@ -2,10 +2,14 @@ package edc
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io/fs"
+	"net"
 	"os"
 	"path/filepath"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -285,5 +289,235 @@ func TestCollectAuditFactsFromFiles(t *testing.T) {
 		if entry == `"."` {
 			t.Error("root가 아닌 셸의 PATH를 root PATH로 보았다")
 		}
+	}
+}
+
+func linkAuditNamespace(t *testing.T, root, path, target string) {
+	t.Helper()
+	full := filepath.Join(root, path)
+	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, full); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// 임시 root에 /proc과 docker.sock을 만들어 container 점검을 수집부터 판정까지 지난다.
+func TestAuditContainerChecks(t *testing.T) {
+	const allCaps = "000001ffffffffff"
+	const dockerDefault = "00000000a80425fb"
+	tests := []struct {
+		name      string
+		container string
+		euid      int
+		capEff    string
+		lastCap   string
+		pidNS     string
+		selfNet   string
+		initNet   string
+		sock      string
+		want      map[string]Status
+		summary   map[string]string
+		warns     int
+	}{
+		{
+			name: "privileged with host namespaces and socket", container: "docker", euid: 0,
+			capEff: allCaps, lastCap: "40", pidNS: "pid:[4026531836]", selfNet: "net:[4026531840]", initNet: "net:[4026531840]", sock: "socket",
+			want:    map[string]Status{"ctr.privileged": StatusFail, "ctr.docker_sock": StatusFail, "ctr.root_user": StatusWarn, "ctr.host_ns": StatusFail},
+			summary: map[string]string{"ctr.privileged": "0x" + allCaps, "ctr.docker_sock": "/var/run/docker.sock", "ctr.host_ns": "network"},
+		},
+		{
+			name: "docker default caps in own namespace", container: "docker", euid: 1000,
+			capEff: dockerDefault, lastCap: "40", pidNS: "pid:[4026532300]", selfNet: "net:[4026532303]", initNet: "net:[4026532303]", sock: "file",
+			want:    map[string]Status{"ctr.privileged": StatusPass, "ctr.docker_sock": StatusPass, "ctr.root_user": StatusPass, "ctr.host_ns": StatusPass},
+			summary: map[string]string{"ctr.privileged": "0x" + dockerDefault, "ctr.root_user": "1000"},
+		},
+		{
+			name: "host pid without host network", container: "kubernetes", euid: 0,
+			capEff: dockerDefault, lastCap: "40", pidNS: "pid:[4026531836]", selfNet: "net:[4026532303]", initNet: "net:[4026531840]",
+			want: map[string]Status{"ctr.host_ns": StatusFail},
+		},
+		{
+			name: "host pid with unreadable init net", container: "podman", euid: 0,
+			capEff: dockerDefault, lastCap: "40", pidNS: "pid:[4026531836]", selfNet: "net:[4026531840]",
+			want: map[string]Status{"ctr.host_ns": StatusFail}, warns: 1,
+		},
+		{
+			name: "malformed CapEff", container: "docker", euid: 0,
+			capEff: "zz", lastCap: "40", pidNS: "pid:[4026532300]",
+			want:    map[string]Status{"ctr.privileged": StatusSkip},
+			summary: map[string]string{"ctr.privileged": "/proc/self/status"},
+		},
+		{
+			name: "missing CapEff line", container: "docker", euid: 0, lastCap: "40", pidNS: "pid:[4026532300]",
+			want:    map[string]Status{"ctr.privileged": StatusSkip},
+			summary: map[string]string{"ctr.privileged": "/proc/self/status"},
+		},
+		{
+			name: "cap_last_cap out of range", container: "docker", euid: 0, capEff: allCaps, lastCap: "64", pidNS: "pid:[4026532300]",
+			want:    map[string]Status{"ctr.privileged": StatusSkip},
+			summary: map[string]string{"ctr.privileged": "/proc/sys/kernel/cap_last_cap"},
+		},
+		{
+			name: "missing pid namespace link", container: "docker", euid: 0, capEff: allCaps,
+			want:    map[string]Status{"ctr.privileged": StatusSkip, "ctr.host_ns": StatusSkip},
+			summary: map[string]string{"ctr.privileged": "/proc/sys/kernel/cap_last_cap", "ctr.host_ns": "/proc/self/ns/pid"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			status := "Name:\tedc\nCapInh:\t0000000000000000\nCapBnd:\t000001ffffffffff\n"
+			if tt.capEff != "" {
+				status += "CapEff:\t" + tt.capEff + "\n"
+			}
+			writeAuditFile(t, root, "/proc/self/status", status, 0o644)
+			if tt.lastCap != "" {
+				writeAuditFile(t, root, "/proc/sys/kernel/cap_last_cap", tt.lastCap+"\n", 0o644)
+			}
+			for path, target := range map[string]string{"/proc/self/ns/pid": tt.pidNS, "/proc/self/ns/net": tt.selfNet, "/proc/1/ns/net": tt.initNet} {
+				if target != "" {
+					linkAuditNamespace(t, root, path, target)
+				}
+			}
+			switch tt.sock {
+			case "file":
+				writeAuditFile(t, root, "/var/run/docker.sock", "", 0o644)
+			case "socket":
+				if err := os.MkdirAll(filepath.Join(root, "var/run"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				// unix socket 경로는 100바이트 안팎으로 제한된다. macOS의 임시 디렉터리는 길어서 상대 경로로 만든다.
+				t.Chdir(root)
+				listener, err := net.Listen("unix", "var/run/docker.sock")
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { listener.Close() })
+			}
+			sources := auditSources{
+				root:      root,
+				euid:      tt.euid,
+				listen:    func() ([]listenSocket, error) { return nil, nil },
+				firewall:  func(context.Context) (auditFirewall, error) { return auditFirewall{}, errAuditNoFirewallTool },
+				kernel:    func() string { return "" },
+				owner:     func(fs.FileInfo) (uint32, bool) { return 0, false },
+				container: tt.container,
+			}
+			results := evaluateAudit(collectAuditFacts(context.Background(), sources))
+			for id, want := range tt.want {
+				if result := auditResultByID(t, results, id); result.Status != want {
+					t.Errorf("%s = %s %q, want %s", id, result.Status, result.Summary, want)
+				}
+			}
+			for id, part := range tt.summary {
+				if summary := auditResultByID(t, results, id).Summary; !strings.Contains(summary, part) {
+					t.Errorf("%s summary %q lacks %q", id, summary, part)
+				}
+			}
+			if warnings := auditResultByID(t, results, "ctr.host_ns").Warnings; len(warnings) != tt.warns {
+				t.Errorf("ctr.host_ns warnings = %q", warnings)
+			}
+		})
+	}
+	t.Run("host pid without host network names no network", func(t *testing.T) {
+		result := auditHostNamespace(auditFacts{Container: "docker", PIDNS: auditHostPIDNamespace})
+		if result.Status != StatusFail || result.Summary != T("audit.ctr.host_pid") {
+			t.Fatalf("got %s %q", result.Status, result.Summary)
+		}
+	})
+}
+
+func TestAuditOmitsContainerChecksOnHost(t *testing.T) {
+	root := t.TempDir()
+	writeAuditFile(t, root, "/proc/self/status", "CapEff:\t000001ffffffffff\n", 0o644)
+	writeAuditFile(t, root, "/proc/sys/kernel/cap_last_cap", "40\n", 0o644)
+	sources := auditSources{
+		root:     root,
+		listen:   func() ([]listenSocket, error) { return nil, nil },
+		firewall: func(context.Context) (auditFirewall, error) { return auditFirewall{}, errAuditNoFirewallTool },
+		kernel:   func() string { return "" },
+		owner:    func(fs.FileInfo) (uint32, bool) { return 0, false },
+	}
+	for _, result := range evaluateAudit(collectAuditFacts(context.Background(), sources)) {
+		if strings.HasPrefix(result.Probe, "audit.ctr.") {
+			t.Errorf("container 밖에서 %s를 보였다", result.Probe)
+		}
+	}
+}
+
+func TestAuditResultIDsFitTheLabel(t *testing.T) {
+	results := evaluateAudit(auditFacts{Container: "docker", CapErr: errors.New("x"), PIDNSErr: errors.New("x")})
+	for _, result := range results {
+		if len(result.Probe) > 24 {
+			t.Errorf("%s는 %d자로 24자를 넘는다", result.Probe, len(result.Probe))
+		}
+	}
+}
+
+func TestAuditCheckIDsMatchEvaluate(t *testing.T) {
+	var ids []string
+	for _, result := range evaluateAudit(auditFacts{Container: "docker", CapErr: errors.New("x"), PIDNSErr: errors.New("x")}) {
+		ids = append(ids, strings.TrimPrefix(result.Probe, "audit."))
+	}
+	if !slices.Equal(ids, auditCheckIDs) {
+		t.Fatalf("evaluateAudit ids = %q, auditCheckIDs = %q", ids, auditCheckIDs)
+	}
+}
+
+func TestApplyAuditAcceptKeepsFindingVisible(t *testing.T) {
+	failing := auditResult("user.uid0", StatusFail, "UID 0 also belongs to toor")
+	failing.Error = &DiagnosticError{Kind: "account", Message: failing.Summary}
+	failing.Next = "edit /etc/passwd"
+	passing := auditResult("kernel.sysctl", StatusPass, "8 hardening values match")
+	results := applyAuditAccept([]Result{failing, passing}, []string{"user.uid0", "kernel.sysctl"})
+
+	accepted := results[0]
+	if accepted.Status != StatusSkip || accepted.Error != nil || accepted.Next != "" || !strings.Contains(accepted.Summary, "toor") {
+		t.Fatalf("accepted = %#v", accepted)
+	}
+	if accepted.Summary != T("audit.accepted", StatusFail, failing.Summary) {
+		t.Fatalf("accepted summary = %q", accepted.Summary)
+	}
+	if accepted.Metrics["accepted"] != true || accepted.Metrics["accepted_status"] != StatusFail {
+		t.Fatalf("accepted metrics = %#v", accepted.Metrics)
+	}
+	if !reflect.DeepEqual(results[1], passing) {
+		t.Fatalf("pass result changed: %#v", results[1])
+	}
+	if code := exitCode(results); code != 0 {
+		t.Fatalf("exit code with an accepted fail = %d", code)
+	}
+	data, err := json.Marshal(accepted)
+	if err != nil || !strings.Contains(string(data), `"accepted":true`) || !strings.Contains(string(data), `"accepted_status":"fail"`) {
+		t.Fatalf("JSON = %s, error = %v", data, err)
+	}
+	if line := formatResultLine(accepted, false); !strings.HasPrefix(line, "SKIP") || !strings.Contains(line, "accepted (fail)") {
+		t.Fatalf("terminal line = %q", line)
+	}
+}
+
+func TestAuditExposureAllowPorts(t *testing.T) {
+	sockets := []listenSocket{
+		{Proto: "tcp", Address: "0.0.0.0", Port: 6379, Process: "redis-server"},
+		{Proto: "tcp", Address: "0.0.0.0", Port: 5432, Process: "postgres"},
+	}
+	open := auditFirewall{Tool: "nftables", Chains: 1}
+
+	all := auditExposure(auditFacts{Listen: sockets, Firewall: open, AllowPorts: []int{5432, 6379}})
+	if all.Status != StatusSkip || all.Metrics["accepted"] != true || all.Metrics["accepted_status"] != StatusFail || all.Error != nil {
+		t.Fatalf("all allowed = %s %q %#v", all.Status, all.Summary, all.Metrics)
+	}
+	if !reflect.DeepEqual(all.Metrics["allowed_ports"], []int{6379, 5432}) || !strings.Contains(all.Summary, "redis/6379") {
+		t.Fatalf("all allowed = %q %#v", all.Summary, all.Metrics)
+	}
+
+	partial := auditExposure(auditFacts{Listen: sockets, Firewall: open, AllowPorts: []int{5432}})
+	if partial.Status != StatusFail || strings.Contains(partial.Summary, "postgres") || !strings.Contains(partial.Summary, "redis/6379") {
+		t.Fatalf("partial = %s %q", partial.Status, partial.Summary)
+	}
+	if !reflect.DeepEqual(partial.Metrics["allowed_ports"], []int{5432}) || !slices.Contains(partial.Warnings, T("audit.net.allowed_ports", "postgres/5432")) {
+		t.Fatalf("partial metrics = %#v warnings = %q", partial.Metrics, partial.Warnings)
 	}
 }

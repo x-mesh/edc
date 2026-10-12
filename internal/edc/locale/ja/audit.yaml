@@ -1,5 +1,6 @@
 # audit コマンドの日本語メッセージ。
 audit:
+  accepted: "受け入れ済み (%s): %s"
   skip:
     linux_only: "audit は Linux でのみ動作します"
     needs_root: "%s を読むには root が必要です"
@@ -17,6 +18,7 @@ audit:
     firewall_drops: "%s: どのルールにも合わない受信を遮断 (input chain %d 個、ルール %d 個)"
     firewall_rules: "%s: 既定で許可、input ルール %d 個 (ルールの順序は解釈しない)"
     firewall_open: "%s に input ルールがなく、受信をすべて許可しています"
+    allowed_ports: "設定の allow_ports が %s を許可しています"
     forward_off: "IP forwarding オフ"
     forward_container: "IP forwarding オン (%s が使用)"
     forward_on: "IP forwarding がオンですが、コンテナランタイムが見つかりません"
@@ -52,6 +54,17 @@ audit:
     reboot_kernel: "カーネル %s がインストール済みですが、%s で実行中です"
     reboot_ok: "実行中のカーネル %s がインストール済みの中で最新"
     reboot_none: "再起動の要求なし"
+  ctr:
+    privileged: "edc がすべての capability を持っています。%s コンテナは privileged です (CapEff %s)"
+    caps_limited: "コンテナは一部の capability を外しています (CapEff %s)"
+    sock_mounted: "%s がマウントされており、コンテナからホストの docker daemon を操作できます"
+    sock_none: "マウントされた docker socket なし"
+    root_user: "edc は %s コンテナ内で UID 0 として実行中です"
+    user_ok: "edc は UID %d で実行中"
+    own_pid: "コンテナは独自の PID namespace を使っています (%s)。network namespace は比較していません"
+    host_pid: "コンテナがホストの PID namespace を共有しています"
+    host_pid_net: "コンテナがホストの PID namespace と network namespace を共有しています"
+    net_unknown: "%s を読めないため network namespace を比較していません (%s)"
   evidence:
     sockets: "ソケット"
     files: "ファイル"

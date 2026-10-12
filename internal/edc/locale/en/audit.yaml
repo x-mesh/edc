@@ -1,5 +1,6 @@
 # English messages for the audit command.
 audit:
+  accepted: "accepted (%s): %s"
   skip:
     linux_only: "edc audits Linux hosts only"
     needs_root: "needs root to read %s"
@@ -17,6 +18,7 @@ audit:
     firewall_drops: "%s drops inbound traffic that no rule accepts (%d input chains, %d rules)"
     firewall_rules: "%s accepts by default, %d input rules (edc does not read the rule order)"
     firewall_open: "%s has no input rule, the host accepts all inbound traffic"
+    allowed_ports: "allow_ports in the config accepts %s"
     forward_off: "IP forwarding is off"
     forward_container: "IP forwarding is on for %s"
     forward_on: "IP forwarding is on, and edc found no container runtime"
@@ -52,6 +54,17 @@ audit:
     reboot_kernel: "kernel %s is installed, %s is running"
     reboot_ok: "the running kernel %s is the newest installed"
     reboot_none: "no reboot request"
+  ctr:
+    privileged: "edc holds every capability, the %s container is privileged (CapEff %s)"
+    caps_limited: "the container drops some capabilities (CapEff %s)"
+    sock_mounted: "%s is mounted, the container can control the host docker daemon"
+    sock_none: "no docker socket is mounted"
+    root_user: "edc runs as UID 0 in the %s container"
+    user_ok: "edc runs as UID %d"
+    own_pid: "the container has its own PID namespace (%s), edc does not compare the network namespace"
+    host_pid: "the container shares the host PID namespace"
+    host_pid_net: "the container shares the host PID and network namespaces"
+    net_unknown: "cannot read %s (%s), edc did not compare the network namespace"
   evidence:
     sockets: "sockets"
     files: "files"

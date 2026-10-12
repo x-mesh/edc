@@ -901,10 +901,21 @@ const pgFuzzSecret = "edcFuzzSecret9Q7Z"
 
 // pgFuzzRecord는 fuzz 입력의 record 하나를 만든다. control bit0은 요청 방향, bit1은 서버 쪽, bit2는 두 번째 socket,
 // bit3은 이 record 뒤에 비밀을 넣으라는 뜻이고, 위 4 bit k가 0이 아니면 앞 k/16만 캡처한다. extra는 size에 더하는 캡처
-// 밖 byte 수다.
+// 밖 byte 수다(최대 0x7fff). tail이 nil이 아니면 extra의 bit15를 켜고 길이 1 byte와 그 끝부분 record를 뒤에 붙인다.
 func pgFuzzRecord(control byte, payload []byte, extra int) []byte {
+	return pgFuzzTailRecord(control, payload, extra, nil)
+}
+
+func pgFuzzTailRecord(control byte, payload []byte, extra int, tail []byte) []byte {
+	if tail != nil {
+		extra |= 0x8000
+	}
 	out := []byte{control, byte(len(payload) >> 8), byte(len(payload)), byte(extra >> 8), byte(extra)}
-	return append(out, payload...)
+	out = append(out, payload...)
+	if tail != nil {
+		out = append(append(out, byte(len(tail))), tail...)
+	}
+	return out
 }
 
 // pgFuzzSeeds는 fixture의 run마다 record를 그대로 이은 입력이다. 큰 record는 앞 4096 byte만 넣고 나머지를 extra로 둔다.
@@ -925,7 +936,12 @@ func pgFuzzSeeds(t testing.TB) [][]byte {
 				control |= 4
 			}
 			payload := record.payload[:min(len(record.payload), 4096)]
-			runs[record.run] = append(runs[record.run], pgFuzzRecord(control, payload, min(record.size-len(payload), 0xffff))...)
+			// 응답 방향 record가 앞부분보다 길면 BPF처럼 끝 64 byte를 끝부분 record로 붙인다.
+			var tail []byte
+			if !request && record.size > len(payload) {
+				tail = record.payload[len(record.payload)-min(postgresTailCapture, len(record.payload)):]
+			}
+			runs[record.run] = append(runs[record.run], pgFuzzTailRecord(control, payload, min(record.size-len(payload), 0x7fff), tail)...)
 		}
 		for _, seed := range runs {
 			seeds = append(seeds, seed)
@@ -1013,7 +1029,17 @@ func FuzzPostgresTracker(f *testing.F) {
 			data = data[5:]
 			payload := data[:min(length, len(data))]
 			data = data[len(payload):]
+			hasTail := extra&0x8000 != 0
+			extra &= 0x7fff
 			feed(control, payload, extra, at*1_000_000)
+			if hasTail && len(data) > 0 {
+				// 끝부분 record는 앞부분 record와 같은 쓰기의 마지막 byte다. 같은 size와 시각으로 넘긴다.
+				n := min(int(data[0]), len(data)-1)
+				tail := data[1 : 1+n]
+				data = data[1+n:]
+				socket, request, server := uint64(control>>2&1)+1, control&1 != 0, control&2 != 0
+				events = append(events, tracker.tailEvents(pgRecord(socket, server, request != server, at*1_000_000, tail, len(payload)+extra), 0)...)
+			}
 			if control&8 != 0 && control&1 != 0 && pgAtBoundary(tracker, uint64(control>>2&1)+1) {
 				// 비밀은 경계에서 시작하는 온전한 record로만 넣는다. 캡처는 자르지 않는다.
 				feed(control&0x0f, password, 0, at*1_000_000+1)

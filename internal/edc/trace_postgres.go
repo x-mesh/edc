@@ -49,6 +49,9 @@ const (
 	postgresStartupLimit = 10000
 	// postgresMaxLength는 message 길이 필드로 받아들이는 값의 상한이다. 서버의 할당 상한(1 GB - 1)과 같다.
 	postgresMaxLength = 0x3fffffff
+	// postgresTailCapture는 BPF가 응답 방향 쓰기나 읽기의 끝에서 더 읽는 byte 수다. ReadyForQuery(6 byte)와 그 앞의
+	// CommandComplete를 담는다. 큰 결과는 앞부분만으로 경계를 잃어도 이 끝부분으로 응답 시간을 잰다.
+	postgresTailCapture = 64
 )
 
 // protocol 상수는 PostgreSQL 문서의 Message Formats와 같다. 시작 message의 code는 길이 뒤 4 byte다.
@@ -107,6 +110,9 @@ type postgresStream struct {
 	held      []byte
 	delivered bool
 	at        uint64
+	// lostAt은 feed가 경계를 잃을 때까지 지나간 byte 수이고, garbage는 캡처 안의 header가 맞지 않아 잃었다는 뜻이다.
+	lostAt  int
+	garbage bool
 }
 
 // postgresKeep은 message에서 볼 body byte 수와, 그 앞부분이 다음 record로 이어질 때 쥐고 기다릴지를 정한다. 비밀이 섞일
@@ -158,6 +164,7 @@ func (stream *postgresStream) feed(data []byte, size int, at uint64, frontend bo
 				need = 4
 			}
 			if pos >= len(data) {
+				stream.lostAt = used
 				return false
 			}
 			if stream.headerLen == 0 {
@@ -173,10 +180,8 @@ func (stream *postgresStream) feed(data []byte, size int, at uint64, frontend bo
 				typ, raw = stream.header[0], stream.header[1:5]
 			}
 			length := int(int32(binary.BigEndian.Uint32(raw)))
-			switch {
-			case stream.untyped && (length < 8 || length > postgresStartupLimit):
-				return false
-			case !stream.untyped && (length < 4 || length > postgresMaxLength || !postgresTypeValid(frontend, typ)):
+			if stream.untyped && (length < 8 || length > postgresStartupLimit) || !stream.untyped && (length < 4 || length > postgresMaxLength || !postgresTypeValid(frontend, typ)) {
+				stream.lostAt, stream.garbage = used, true
 				return false
 			}
 			stream.typ, stream.length, stream.left = typ, length-4, length-4
@@ -283,6 +288,8 @@ type postgresUnit struct {
 	prepareSQL    string
 	prepareCut    bool
 	prepareName   string
+	// lost는 응답 방향이 이 단위의 응답 중에 경계를 잃었다는 뜻이다. 그 사이의 DataRow는 세지 못했다.
+	lost bool
 }
 
 type postgresStatement struct {
@@ -315,6 +322,17 @@ type postgresConn struct {
 	skip       int
 	statements map[string]postgresStatement
 	portals    map[string]string
+	// lost는 단위를 기다리는 동안 응답 방향의 경계를 잃었다는 뜻이고, lostMark는 그 응답 record의 번호다. 그때 기다리던 단위
+	// 하나만 응답의 끝에 보인 ReadyForQuery로 닫는다. blind는 그 뒤 끝을 보지 못한 응답 record가 있었거나 캡처 안에서 경계가
+	// 틀렸다는 뜻이다. 그러면 ReadyForQuery가 보이지 않게 지나갔을 수 있다.
+	lost     bool
+	lostMark uint64
+	blind    bool
+	// tailWant는 앞부분만 캡처한 마지막 응답 record의 size다. 그 record의 끝부분 record가 오면 0이 된다.
+	tailWant int
+	// resyncNext는 응답의 끝이 ReadyForQuery였다는 뜻이다. 서버는 ReadyForQuery 뒤에 출력을 비우므로 다음 응답 record는 message
+	// 경계에서 시작한다.
+	resyncNext bool
 }
 
 // postgresTracker는 socket마다 두 방향의 message를 따라가며 요청 단위와 ReadyForQuery를 짝짓는다. side는 tracker가 볼
@@ -429,6 +447,14 @@ func (call *postgresCall) response() {
 		return
 	}
 	data, size := record.payload, max(record.size, len(record.payload))
+	// 앞 record의 끝부분 record가 오지 않았으면 그 끝은 보지 못한 것이다.
+	if conn.tailWant != 0 {
+		conn.blind = true
+	}
+	conn.tailWant = 0
+	if len(data) < size {
+		conn.tailWant = size
+	}
 	if conn.answer != 0 {
 		kind := conn.answer
 		conn.answer = 0
@@ -448,20 +474,197 @@ func (call *postgresCall) response() {
 		}
 	}
 	if !conn.response.synced {
-		if size == 0 || !postgresCleanStart(data, size, false) {
+		switch {
+		case conn.resyncNext:
+			conn.resyncNext = false
+			call.resync(seen)
+		case conn.lost && len(data) == size && call.closeAtEnd(record.bootTimeNS, data, size):
+			return
+		case size != 0 && postgresCleanStart(data, size, false):
+			if call.keepLost() {
+				// 경계를 잃은 뒤 모든 응답 record의 끝을 보았고 어느 끝도 ReadyForQuery가 아니었다. 서버는 ReadyForQuery마다
+				// 출력을 비우므로 기다리던 단위는 아직 끝나지 않았다. 큰 결과 중간의 쓰기가 우연히 message 경계에서 시작한 경우다.
+				// 남는 위험: client 쪽 읽기는 ReadyForQuery 뒤에 바로 온 NotificationResponse까지 한 번에 읽을 수 있다. 그러면
+				// ReadyForQuery가 끝에 보이지 않아 이 단위가 다음 요청의 ReadyForQuery로 닫힌다.
+				conn.response, conn.lost = postgresStream{synced: true}, false
+			} else {
+				call.resync(seen)
+			}
+		default:
+			call.countLost(size)
 			return
 		}
-		conn.response = postgresStream{synced: true}
-		// 경계를 잃은 동안 건너뛴 응답 record는 앞 요청의 꼬리일 수 있다. 그 뒤에 들어온 단위만 이 record부터 짝짓는다.
-		// 남는 위험: pipeline client가 잘린 응답의 꼬리를 받기 전에 새 요청을 보내고, 그 꼬리가 깨끗한 record 하나로
-		// 오면 그 꼬리의 ReadyForQuery가 새 요청을 닫는다. 이 경우 응답 시간이 틀린다.
-		// 건너뛸 ReadyForQuery가 건너뛴 record에 있었는지 모르므로 skip도 비운다.
-		call.dropBefore(seen)
-		conn.skip = 0
 	}
 	if !conn.response.feed(data, size, record.bootTimeNS, false, call.backend) {
-		call.lose(false)
+		call.loseResponse(seen, size-conn.response.lostAt, conn.response.garbage)
 	}
+}
+
+// resync는 이 record부터 응답 방향의 경계를 다시 따라간다. 경계를 잃은 동안 건너뛴 응답 record는 앞 요청의 꼬리일 수 있다. 그
+// 뒤에 들어온 단위만 이 record부터 짝짓는다.
+// 남는 위험: pipeline client가 잘린 응답의 꼬리를 받기 전에 새 요청을 보내고, 그 꼬리가 깨끗한 record 하나로 오면 그 꼬리의
+// ReadyForQuery가 새 요청을 닫는다. 이 경우 응답 시간이 틀린다.
+// 건너뛸 ReadyForQuery가 건너뛴 record에 있었는지 모르므로 skip도 비운다.
+func (call *postgresCall) resync(seen uint64) {
+	conn := call.conn
+	conn.response = postgresStream{synced: true}
+	call.dropBefore(seen)
+	conn.skip, conn.lost, conn.blind = 0, false, false
+}
+
+// lostHead는 경계를 잃을 때 기다리던 단위가 줄에 하나만 남아 있으면 그 단위다. 이때 응답 방향에 오는 다음 ReadyForQuery는 그
+// 단위의 것이다. 둘 이상이면 보지 못한 byte에 어느 단위의 ReadyForQuery가 있었는지 모른다.
+func (call *postgresCall) lostHead() *postgresUnit {
+	conn := call.conn
+	if !conn.lost || conn.skip != 0 || len(conn.queue) != 1 || conn.queue[0].mark > conn.lostMark {
+		return nil
+	}
+	return conn.queue[0]
+}
+
+func (call *postgresCall) keepLost() bool {
+	return !call.conn.blind && call.lostHead() != nil
+}
+
+// countLost는 경계를 잃은 동안 건너뛴 응답 record의 byte를 기다리던 단위에 더한다.
+func (call *postgresCall) countLost(size int) {
+	if head := call.lostHead(); head != nil {
+		head.responseBytes += size
+	}
+}
+
+// loseResponse는 응답 방향의 header가 캡처 밖이거나 맞지 않아 경계를 잃은 때다. 기다리던 단위는 줄에 남긴다. 응답의 끝이
+// 보이면 closeAtEnd가 닫고, 경계를 다시 찾으면 resync가 그 전 단위를 버린다. rest는 이 record에서 읽지 못한 byte 수다.
+func (call *postgresCall) loseResponse(seen uint64, rest int, garbage bool) {
+	conn := call.conn
+	conn.response = postgresStream{}
+	if len(conn.queue) == 0 {
+		return
+	}
+	conn.lost, conn.lostMark, conn.blind = true, seen, garbage
+	if conn.skip == 0 {
+		head := conn.queue[0]
+		head.lost = true
+		head.responseBytes += max(rest, 0)
+	}
+}
+
+// postgresEndsReady는 data가 ReadyForQuery로 끝나는지와 그 트랜잭션 상태를 돌려준다.
+func postgresEndsReady(data []byte) (byte, bool) {
+	n := len(data)
+	if n < 6 || !bytes.Equal(data[n-6:n-1], []byte{'Z', 0, 0, 0, 5}) {
+		return 0, false
+	}
+	status := data[n-1]
+	return status, status == 'I' || status == 'T' || status == 'E'
+}
+
+// postgresEndTag는 끝의 ReadyForQuery 바로 앞에서 끝나는 온전한 CommandComplete의 tag다. 가장 앞에서 시작하는 후보를 고른다.
+func postgresEndTag(data []byte) (string, bool) {
+	end := len(data) - 6
+	for i := 0; i+6 <= end; i++ {
+		if data[i] != 'C' || int(binary.BigEndian.Uint32(data[i+1:i+5])) != end-i-1 || data[end-1] != 0 {
+			continue
+		}
+		tag := data[i+5 : end-1]
+		if len(tag) == 0 || len(tag) > postgresNameLimit || tag[0] < 'A' || tag[0] > 'Z' || bytes.ContainsFunc(tag, func(r rune) bool { return r < 0x20 || r > 0x7e }) {
+			continue
+		}
+		return string(tag), true
+	}
+	return "", false
+}
+
+// postgresEndError는 끝의 ReadyForQuery 바로 앞에서 끝나는 ErrorResponse의 body다. 온전한 message가 보이면 field도 돌려주고,
+// 앞부분이 보이지 않아도 field 목록의 끝(NUL 둘)이 보이면 failed만 참이다. CommandComplete의 tag는 NUL 하나로 끝난다.
+func postgresEndError(data []byte) (body []byte, failed bool) {
+	end := len(data) - 6
+	if end < 2 || data[end-1] != 0 || data[end-2] != 0 {
+		return nil, false
+	}
+	for i := 0; i+6 <= end; i++ {
+		if data[i] == 'E' && int(binary.BigEndian.Uint32(data[i+1:i+5])) == end-i-1 && data[i+5] >= 'A' && data[i+5] <= 'Z' {
+			return data[i+5 : end], true
+		}
+	}
+	return nil, true
+}
+
+// postgresTagRows는 경계를 잃은 단위의 행 수다. DataRow를 다 세지 못했으므로 행 수를 담는 SELECT와 FETCH tag에서만 읽는다.
+func postgresTagRows(tag string) (uint64, bool) {
+	command, count, ok := strings.Cut(tag, " ")
+	if !ok || command != "SELECT" && command != "FETCH" {
+		return 0, false
+	}
+	rows, err := strconv.ParseUint(count, 10, 64)
+	return rows, err == nil
+}
+
+// ready는 ReadyForQuery가 바꾸는 연결 상태다.
+func (call *postgresCall) ready(status byte) {
+	conn := call.conn
+	conn.startup, conn.copyIn = false, false
+	if status == 'I' {
+		// 트랜잭션 밖에서는 이름 있는 portal도 모두 닫힌다.
+		call.tracker.portals = max(0, call.tracker.portals-len(conn.portals))
+		conn.portals = nil
+	}
+}
+
+// closeAtEnd는 경계를 잃은 응답의 끝이 ReadyForQuery일 때 기다리던 단위를 at에 닫는다. data는 응답 record의 끝이다. 끝까지
+// 캡처한 record이거나 끝부분 record다. 닫으면 다음 응답 record부터 경계를 다시 따라간다. 단위가 하나가 아니면 닫지 않는다.
+// 남는 위험: DataRow 값이 우연히 ReadyForQuery와 같은 6 byte로 쓰기를 끝내면 결과가 끝나기 전에 닫는다.
+func (call *postgresCall) closeAtEnd(at uint64, data []byte, size int) bool {
+	conn := call.conn
+	status, ok := postgresEndsReady(data)
+	head := call.lostHead()
+	if !ok || head == nil {
+		return false
+	}
+	head.responseBytes += size
+	if tag, ok := postgresEndTag(data); ok {
+		head.tag = postgresName([]byte(tag))
+	} else if body, failed := postgresEndError(data); failed && !head.failed {
+		// field가 끝부분 밖이면 오류라는 것만 안다.
+		head.failed = true
+		if body != nil {
+			head.severity, head.sqlState, head.message, head.detail = call.errorFields(body)
+		}
+	}
+	call.ready(status)
+	call.finish(head, at)
+	conn.response, conn.lost, conn.blind, conn.resyncNext = postgresStream{}, false, false, true
+	return true
+}
+
+// tailEvents는 끝부분 record 하나를 읽는다. BPF는 앞부분 record를 낸 직후 같은 쓰기나 읽기의 마지막 byte를 이 record로 넘긴다.
+// 경계를 따라가는 중이면 끝부분은 message 본문 안이라 읽지 않는다. 경계를 잃었으면 끝이 ReadyForQuery인지만 본다.
+func (tracker *postgresTracker) tailEvents(record mysqlRecord, clockOffset int64) []captureEvent {
+	side := traceClientSide
+	if record.server {
+		side = traceServerSide
+	}
+	conn := tracker.conns[record.socket]
+	if tracker.side != "" && side != tracker.side || conn == nil || record.server != record.sent || conn.encrypted || conn.closed {
+		return nil
+	}
+	if conn.tailWant == 0 || record.size != conn.tailWant {
+		return nil
+	}
+	conn.tailWant = 0
+	if conn.response.synced || conn.resyncNext {
+		return nil
+	}
+	call := &postgresCall{tracker: tracker, conn: conn, record: record, side: side, offset: clockOffset}
+	if call.closeAtEnd(record.bootTimeNS, record.payload, 0) {
+		return call.out
+	}
+	if status, ok := postgresEndsReady(record.payload); ok {
+		// 기다리던 단위를 알 수 없으므로 닫지 않는다. 다음 응답 record에서 경계를 다시 찾고 그 전 단위를 버린다.
+		call.ready(status)
+		conn.resyncNext = true
+	}
+	return call.out
 }
 
 // lose는 header가 캡처 밖이라 그 방향의 경계를 잃은 때다. ReadyForQuery를 볼 수 없으므로 기다리던 단위를 모두 버린다.
@@ -497,7 +700,7 @@ func (call *postgresCall) dropBefore(seen uint64) {
 func (call *postgresCall) dropAll() {
 	conn := call.conn
 	call.tracker.pending = max(0, call.tracker.pending-len(conn.queue))
-	conn.queue, conn.skip = nil, 0
+	conn.queue, conn.skip, conn.lost, conn.blind = nil, 0, false, false
 }
 
 // encrypt는 TLS나 GSSAPI 암호화가 시작된 연결이다. 뒤 record는 읽을 수 없으므로 forgetSocket까지 모두 무시한다.
@@ -516,7 +719,7 @@ func (call *postgresCall) enqueue(unit *postgresUnit, name string) {
 	if tracker.pending >= postgresPendingLimit {
 		for _, other := range tracker.conns {
 			other.skip += len(other.queue)
-			other.queue = nil
+			other.queue, other.lost = nil, false
 		}
 		tracker.pending = 0
 	}
@@ -750,12 +953,11 @@ func (call *postgresCall) backend(message postgresMessage) bool {
 	}
 	switch message.typ {
 	case 'Z':
-		conn.startup, conn.copyIn = false, false
-		if len(message.body) == 1 && message.body[0] == 'I' {
-			// 트랜잭션 밖에서는 이름 있는 portal도 모두 닫힌다.
-			call.tracker.portals = max(0, call.tracker.portals-len(conn.portals))
-			conn.portals = nil
+		status := byte(0)
+		if len(message.body) == 1 {
+			status = message.body[0]
 		}
+		call.ready(status)
 		switch {
 		case conn.skip > 0:
 			conn.skip--
@@ -860,8 +1062,11 @@ func (call *postgresCall) finish(unit *postgresUnit, at uint64) {
 			info.ServerVersion = conn.serverVersion
 		}
 	}
-	if unit.rowsSeen || unit.rows > 0 {
-		rows := unit.rows
+	rows, rowsKnown := unit.rows, unit.rowsSeen || unit.rows > 0
+	if unit.lost {
+		rows, rowsKnown = postgresTagRows(unit.tag)
+	}
+	if rowsKnown {
 		info.Rows = &rows
 	}
 	event := call.event(name, at, unit.responseBytes, &info)

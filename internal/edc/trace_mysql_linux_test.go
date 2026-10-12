@@ -28,8 +28,11 @@ func TestParseMySQLRecordReadsOnlyMySQLRecords(t *testing.T) {
 	copy(sample[httpRecordPayloadOffset:], "abcdefgh")
 	record, ok := parseMySQLRecord(sample)
 	if !ok || !record.sent || !record.server || record.size != 9000 || string(record.payload) != "abcde" || record.socket != 0xabc || record.pid != 42 || record.bootTimeNS != 5_000 ||
-		record.process != "mysqld" || record.source != "10.0.0.2:3306" || record.destination != "192.0.2.1:40000" {
+		record.process != "mysqld" || record.source != "10.0.0.2:3306" || record.destination != "192.0.2.1:40000" || record.localPort != 3306 || record.peerPort != 40000 {
 		t.Fatalf("parseMySQLRecord = %#v, %t", record, ok)
+	}
+	if !record.onPort(3306) || !record.onPort(40000) || record.onPort(0) || record.onPort(8123) {
+		t.Fatalf("onPort = %t, %t, %t, %t", record.onPort(3306), record.onPort(40000), record.onPort(0), record.onPort(8123))
 	}
 	sample[38], sample[39] = 0, 0
 	if record, ok := parseMySQLRecord(sample); !ok || record.sent || record.server {
@@ -78,8 +81,8 @@ func TestMySQLTraceSlowOptionChecks(t *testing.T) {
 		{[]string{"mysql", "--slow", "-1ms"}, "--slow must be greater than 0"},
 		{[]string{"mysql", "--slow", "slow"}, "invalid value \"slow\" for flag -slow"},
 		{[]string{"mysql", "--slow", "1000000000000000000000h"}, "invalid value \"1000000000000000000000h\" for flag -slow"},
-		{[]string{"tcp", "--slow", "1ms"}, "--slow is only available for trace mysql, trace io, and trace sched"},
-		{[]string{"http", "--slow", "1ms"}, "--slow is only available for trace mysql, trace io, and trace sched"},
+		{[]string{"tcp", "--slow", "1ms"}, "--slow is only available for trace mysql, trace clickhouse, trace io, and trace sched"},
+		{[]string{"http", "--slow", "1ms"}, "--slow is only available for trace mysql, trace clickhouse, trace io, and trace sched"},
 	} {
 		var code int
 		stderr := captureTraceStderr(t, func() { code = runTrace(test.args) })

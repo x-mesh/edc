@@ -85,6 +85,8 @@ func newTraceDetail(event captureEvent, payload string, notes []string, number, 
 	detail := &traceDetail{title: traceEventTitle(event), number: number}
 	if event.Protocol == "mysql" && event.MySQL != nil {
 		detail.raw = traceMySQLDetailLines(event)
+	} else if event.Protocol == "clickhouse" && event.ClickHouse != nil {
+		detail.raw = traceClickHouseDetailLines(event)
 	} else {
 		fields := event
 		fields.Payload = ""
@@ -148,6 +150,63 @@ func traceMySQLDetailLines(event captureEvent) []string {
 	return lines
 }
 
+func traceClickHouseDetailLines(event captureEvent) []string {
+	info := event.ClickHouse
+	lines := []string{
+		"event: " + event.Event,
+		"time: " + traceEventClock(event),
+		"side: " + emptyAs(event.Side, "-"),
+		"process: " + emptyAs(event.Process, "-"),
+		"source: " + emptyAs(event.Source, "-"),
+		"destination: " + emptyAs(event.Destination, "-"),
+		"bytes: " + strconv.FormatUint(event.Bytes, 10),
+	}
+	if info.Interface != "" {
+		lines = append(lines, "interface: "+info.Interface)
+	}
+	if info.Command != "" {
+		lines = append(lines, "command: "+info.Command)
+	}
+	if info.HTTPStatus != 0 {
+		lines = append(lines, "http_status: "+strconv.Itoa(info.HTTPStatus))
+	}
+	if event.LatencyMS != nil {
+		lines = append(lines, "latency: "+traceLatency(event.LatencyMS, "ms"))
+	}
+	if info.QueryID != "" {
+		lines = append(lines, "query_id: "+info.QueryID)
+	}
+	if info.User != "" {
+		lines = append(lines, "user: "+info.User)
+	}
+	if info.Database != "" {
+		lines = append(lines, "database: "+info.Database)
+	}
+	if info.ClientName != "" {
+		lines = append(lines, "client: "+strings.TrimSpace(info.ClientName+" "+info.ClientVersion))
+	}
+	if info.ServerName != "" {
+		lines = append(lines, "server: "+strings.TrimSpace(info.ServerName+" "+info.ServerVersion))
+	}
+	if info.Rows != nil {
+		lines = append(lines, "rows: "+strconv.FormatUint(*info.Rows, 10))
+	}
+	if info.EndInferred {
+		lines = append(lines, "end_inferred: true")
+	}
+	if info.ErrorCode != 0 || info.ErrorName != "" || info.Message != "" {
+		lines = append(lines, "error: "+fmt.Sprintf("%d (%s) %s", info.ErrorCode, emptyAs(info.ErrorName, "-"), info.Message))
+	}
+	if info.SQL != "" {
+		lines = append(lines, "", "sql:")
+		lines = append(lines, strings.Split(info.SQL, "\n")...)
+		if info.SQLTruncated {
+			lines = append(lines, "(truncated)")
+		}
+	}
+	return lines
+}
+
 // buildDetail은 번호가 number인 event의 상세 보기를 만든다. 목록에서 빠진 event면 nil이다.
 func (model traceScreenModel) buildDetail(number int) *traceDetail {
 	if number < model.first || number >= model.first+len(model.events) {
@@ -155,21 +214,28 @@ func (model traceScreenModel) buildDetail(number int) *traceDetail {
 	}
 	event, payload, notes := model.detailPayload(number)
 	detail := newTraceDetail(event, payload, notes, number, model.width)
-	if model.protocol == "mysql" {
+	if traceScreenPairs(model.protocol) {
 		for _, row := range model.displayRows() {
 			if row.primary != number || row.response < model.first || row.response >= model.first+len(model.events) {
 				continue
 			}
 			response := model.events[row.response-model.first]
-			if response.MySQL == nil {
+			result, ok := tracePairResult(response)
+			if !ok {
 				break
 			}
-			detail.raw = append(detail.raw, "", "response:", "event: "+response.Event, "result: "+traceMySQLResultText(response))
+			detail.raw = append(detail.raw, "", "response:", "event: "+response.Event, "result: "+result)
 			if response.LatencyMS != nil {
 				detail.raw = append(detail.raw, "latency: "+traceLatency(response.LatencyMS, "ms"))
 			}
-			if response.MySQL.ErrorCode != 0 || response.MySQL.SQLState != "" || response.MySQL.Message != "" {
+			if response.MySQL != nil && (response.MySQL.ErrorCode != 0 || response.MySQL.SQLState != "" || response.MySQL.Message != "") {
 				detail.raw = append(detail.raw, "error: "+fmt.Sprintf("%d (%s) %s", response.MySQL.ErrorCode, emptyAs(response.MySQL.SQLState, "-"), response.MySQL.Message))
+			}
+			if info := response.ClickHouse; info != nil && info.HTTPStatus != 0 {
+				detail.raw = append(detail.raw, "http_status: "+strconv.Itoa(info.HTTPStatus))
+			}
+			if info := response.ClickHouse; info != nil && (info.ErrorCode != 0 || info.ErrorName != "" || info.Message != "") {
+				detail.raw = append(detail.raw, "error: "+fmt.Sprintf("%d (%s) %s", info.ErrorCode, emptyAs(info.ErrorName, "-"), info.Message))
 			}
 			detail.wrap(model.width)
 			break
@@ -311,7 +377,7 @@ func traceWrapLine(line string, width int) []string {
 // moveSelection은 고른 event에서 filter에 맞는 event를 step 방향으로 count개 건너간 번호다. 고른 event가 없으면
 // 가장 최근 event부터 센다. 더 갈 곳이 없으면 그대로 둔다.
 func (model traceScreenModel) moveSelection(step, count int) int {
-	if model.protocol == "mysql" {
+	if traceScreenPairs(model.protocol) {
 		rows := model.displayRows()
 		index := len(rows)
 		if model.selected >= 0 {

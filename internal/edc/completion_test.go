@@ -35,6 +35,25 @@ func TestCompletionScriptsCoverCommandsAndRemoteFlags(t *testing.T) {
 	}
 }
 
+func TestCompletionOffersTraceClickHouse(t *testing.T) {
+	if !strings.Contains(zshCompletion, "http mysql clickhouse)") || !strings.Contains(zshCompletion, "clickhouse) _arguments") {
+		t.Fatal("zsh trace completion must list clickhouse and its options")
+	}
+	for _, option := range []string{"--slow[", "--show-secrets[", "--port[ClickHouse", "--http-port[ClickHouse HTTP"} {
+		line := zshCompletion[strings.Index(zshCompletion, "clickhouse) _arguments"):]
+		line = line[:strings.Index(line, "\n")]
+		if !strings.Contains(line, option) {
+			t.Fatalf("zsh trace clickhouse completion misses %q", option)
+		}
+	}
+	if !strings.Contains(bashCompletion, "http mysql clickhouse\"") {
+		t.Fatal("bash trace completion must list clickhouse")
+	}
+	if !strings.Contains(bashCompletion, "--port --http-port --yes") {
+		t.Fatal("bash trace completion must offer --http-port")
+	}
+}
+
 func TestCompletionGroupsListInventoryGroups(t *testing.T) {
 	cwd := t.TempDir()
 	writeRemoteFixture(t, filepath.Join(cwd, "inventory.yaml"), "hosts: [{name: one}]\ngroups: {weekly: [one], daily: [one]}\n")

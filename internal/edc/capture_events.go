@@ -63,6 +63,8 @@ type captureEvent struct {
 	Status int    `json:"status,omitempty"`
 	// MySQL은 MySQL event에만 붙는다. 응답에는 답한 요청의 명령과 SQL도 들어 있다.
 	MySQL *traceMySQLEvent `json:"mysql,omitempty"`
+	// ClickHouse는 ClickHouse event에만 붙는다. 응답에는 답한 요청의 명령과 SQL도 들어 있다.
+	ClickHouse *traceClickHouseEvent `json:"clickhouse,omitempty"`
 	// ALPN은 tls_hello event에만 붙는다. client가 ClientHello로 제안한 protocol이고, 서버가 고른 것은 암호문이라 모른다.
 	ALPN []string `json:"alpn,omitempty"`
 	// TLS는 trace http --tls가 OpenSSL에서 읽은 평문 event다. socket을 모르는 평문은 Source와 Destination이 비어 있다.
@@ -368,6 +370,8 @@ type tcpTraceOptions struct {
 	tlsFinder *traceTLSFinder
 	// port는 trace http가 볼 HTTP 서버의 port다. client 쪽은 상대 port, 서버 쪽은 로컬 port다. 0이면 모든 port를 본다.
 	port int
+	// httpPort는 trace clickhouse가 HTTP interface로 볼 port다. 0이면 기본값을 쓴다.
+	httpPort int
 	// socketPath는 trace socket이 볼 unix socket 파일이다.
 	socketPath string
 	// dropReasons는 trace drop --reason 값이다. 쉼표로 이유 이름을 나눈다.

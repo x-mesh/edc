@@ -104,6 +104,12 @@ volatile const __u16 tcp_state_port = 0;
 // mysql_port가 0이 아니면 trace mysql이다. 로컬이나 상대 port가 이 값인 socket의 읽기와 쓰기 앞부분을 넘긴다. 0이면 trace
 // mysql이 아니라서 verifier가 이 값에 걸린 분기를 지운다.
 volatile const __u16 mysql_port = 0;
+// mysql_response_size가 0이 아니면 응답 방향을 MYSQL_RESPONSE_SIZE 대신 이 byte 수까지 읽는다. trace clickhouse는 서버의
+// 완료 packet(EndOfStream)이 마지막 쓰기의 1024 byte 밖에 있어서 4096으로 올린다. 0이면 trace mysql이라 기존 1024를 쓴다.
+volatile const __u32 mysql_response_size = 0;
+// clickhouse_http_port가 0이 아니면 trace clickhouse가 mysql_port와 함께 이 port의 socket도 같은 경로로 넘긴다. HTTP interface의
+// 쿼리를 보려는 것이다. 0이면 verifier가 이 값에 걸린 분기를 지워 trace mysql과 trace http의 코드가 그대로다.
+volatile const __u16 clickhouse_http_port = 0;
 // Linux 5.15에는 sock_send_length와 sock_recv_length tracepoint가 없다. 사용자 공간이 그때만 이 값을 켠다.
 volatile const __u8 tcp_length_fallback = 0;
 // emit_tls_plaintext는 trace http --tls다. OpenSSL uprobe가 암호화 전과 복호화 뒤의 평문을 넘긴다. 이 객체는 모든
@@ -1482,7 +1488,8 @@ static __always_inline int http_socket(struct sock *sk) {
 }
 
 // mysql_socket은 MySQL port의 socket이 어느 쪽인지 돌려준다. 로컬 port가 mysql_port면 서버, 상대 port가 mysql_port면
-// client이고 아니면 0이다. RST 뒤에는 kernel이 port를 지우므로 시작할 때 확인한 값을 쓴다.
+// client이고 아니면 0이다. clickhouse_http_port도 같은 식으로 본다. RST 뒤에는 kernel이 port를 지우므로 시작할 때 확인한 값을
+// 쓴다. clickhouse_http_port가 0일 때 비교하지 않는 것도 지워진 port 0을 서버로 오인하지 않기 위해서다.
 #define MYSQL_NONE 0
 #define MYSQL_CLIENT 1
 #define MYSQL_SERVER 2
@@ -1490,10 +1497,12 @@ static __always_inline int http_socket(struct sock *sk) {
 #define MYSQL_REQUEST_SIZE 4096
 #define MYSQL_RESPONSE_SIZE 1024
 static __always_inline __u8 mysql_socket(struct sock *sk) {
-	if (BPF_CORE_READ(sk, __sk_common.skc_num) == mysql_port) {
+	__u16 local = BPF_CORE_READ(sk, __sk_common.skc_num);
+	if (local == mysql_port || (clickhouse_http_port && local == clickhouse_http_port)) {
 		return MYSQL_SERVER;
 	}
-	if (bpf_ntohs(BPF_CORE_READ(sk, __sk_common.skc_dport)) == mysql_port) {
+	__u16 remote = bpf_ntohs(BPF_CORE_READ(sk, __sk_common.skc_dport));
+	if (remote == mysql_port || (clickhouse_http_port && remote == clickhouse_http_port)) {
 		return MYSQL_CLIENT;
 	}
 	return MYSQL_NONE;
@@ -1748,7 +1757,7 @@ static __always_inline void emit_mysql_iov(struct sock *sk, __u64 buffer, __u64 
 	if (!record) {
 		return;
 	}
-	__u32 cap = server != (direction == HTTP_SENT) ? MYSQL_REQUEST_SIZE : MYSQL_RESPONSE_SIZE;
+	__u32 cap = server != (direction == HTTP_SENT) ? MYSQL_REQUEST_SIZE : (mysql_response_size ? mysql_response_size : MYSQL_RESPONSE_SIZE);
 	if (cap >= MYSQL_REQUEST_SIZE) {
 		cap = MYSQL_REQUEST_SIZE - 1;
 	}
@@ -1827,7 +1836,7 @@ static __always_inline void emit_mysql_buffer(struct sock *sk, __u64 buffer, __u
 	if (!record) {
 		return;
 	}
-	__u64 cap = server != (direction == HTTP_SENT) ? MYSQL_REQUEST_SIZE : MYSQL_RESPONSE_SIZE;
+	__u64 cap = server != (direction == HTTP_SENT) ? MYSQL_REQUEST_SIZE : (mysql_response_size ? mysql_response_size : MYSQL_RESPONSE_SIZE);
 	__u64 len = size < limit ? size : limit;
 	if (len > cap) {
 		len = cap;

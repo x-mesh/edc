@@ -2,6 +2,7 @@ package edc
 
 import (
 	"bytes"
+	"cmp"
 	"compress/gzip"
 	"fmt"
 	"reflect"
@@ -641,5 +642,264 @@ func TestTraceSelectedEventUsesEmphasisWithoutABackground(t *testing.T) {
 	colored := traceSelectedEvent("curl  GET /", 20, true)
 	if strings.Contains(colored, liveReverse) || !strings.Contains(colored, "curl  GET /") {
 		t.Fatalf("colored selection = %q", colored)
+	}
+}
+
+func clickHouseScreenEvent(socket uint64, name, side, sql string, latency *float64, info traceClickHouseEvent) captureEvent {
+	info.Command, info.SQL = cmp.Or(info.Command, clickHouseCommandQuery), sql
+	return captureEvent{SocketID: socket, Protocol: "clickhouse", Event: name, Side: side, LatencyMS: latency, ClickHouse: &info}
+}
+
+func TestTraceScreenPairsClickHouseQueryAndResponseForDisplay(t *testing.T) {
+	model := newTraceScreenModel("clickhouse", tcpTraceOptions{}, make(chan captureEvent), make(chan traceFinishedMsg), nil)
+	model.width, model.height = 120, 10
+	latency := func(value float64) *float64 { return &value }
+	rows := uint64(3)
+	model.events = []captureEvent{
+		clickHouseScreenEvent(7, clickHouseEventConnect, traceServerSide, "", nil, traceClickHouseEvent{Command: clickHouseCommandConnect}),
+		clickHouseScreenEvent(7, clickHouseEventHello, traceServerSide, "", latency(0.2), traceClickHouseEvent{Command: clickHouseCommandConnect, ServerName: "ClickHouse", ServerVersion: "26.9"}),
+		clickHouseScreenEvent(7, clickHouseEventQuery, traceServerSide, "SELECT 1", nil, traceClickHouseEvent{}),
+		clickHouseScreenEvent(7, clickHouseEventEnd, traceServerSide, "SELECT 1", latency(0.4), traceClickHouseEvent{Rows: &rows}),
+		clickHouseScreenEvent(7, clickHouseEventChunked, traceServerSide, "", nil, traceClickHouseEvent{Command: clickHouseCommandConnect, Chunked: true}),
+	}
+	visible := traceVisibleScreenRows(model)
+	if len(visible) != 3 || visible[0].response != 1 || visible[1].response != 3 || visible[2].response != -1 {
+		t.Fatalf("display rows = %+v", visible)
+	}
+	_, destination, label, ok := model.displayRowLabels(visible[1])
+	if !ok || destination != "server: SELECT 1 → 3 rows" || label != "clickhouse_end 0.4ms" {
+		t.Fatalf("display row = %q, %q, %t", destination, label, ok)
+	}
+	model.filter = "3 rows"
+	if !model.displayRowMatches(visible[1]) {
+		t.Fatal("response text did not match the paired row")
+	}
+	model.selected = 3
+	model.normalizeSelection()
+	if model.selected != 2 {
+		t.Fatalf("selected response = %d, want primary 2", model.selected)
+	}
+}
+
+func clickHouseScreenSequence(socketBase uint64) []captureEvent {
+	query := func(socket uint64, sql string) captureEvent {
+		return clickHouseScreenEvent(socket, clickHouseEventQuery, traceServerSide, sql, nil, traceClickHouseEvent{})
+	}
+	end := func(socket uint64, sql string) captureEvent {
+		return clickHouseScreenEvent(socket, clickHouseEventEnd, traceServerSide, sql, nil, traceClickHouseEvent{EndInferred: true})
+	}
+	return []captureEvent{query(socketBase, "first"), query(socketBase, "first"), end(socketBase, "first"), end(socketBase, "first"), query(socketBase+1, "second"), end(socketBase+1, "second")}
+}
+
+func TestTraceScreenIncrementalClickHouseRowsMatchReference(t *testing.T) {
+	model := newTraceScreenModel("clickhouse", tcpTraceOptions{}, make(chan captureEvent), make(chan traceFinishedMsg), nil)
+	for _, event := range clickHouseScreenSequence(1) {
+		next, _ := model.Update(traceEventMsg{events: []captureEvent{event}})
+		model = next.(traceScreenModel)
+		if got, want := traceVisibleScreenRows(model), traceMySQLReferenceRows(model.events, model.first, 0); !slices.Equal(got, want) {
+			t.Fatalf("rows = %+v, want %+v", got, want)
+		}
+	}
+}
+
+func TestTraceScreenIncrementalClickHouseRowsMatchReferenceAfterEviction(t *testing.T) {
+	model := newTraceScreenModel("clickhouse", tcpTraceOptions{}, make(chan captureEvent), make(chan traceFinishedMsg), nil)
+	events := make([]captureEvent, 0, traceScreenEventLimit+3)
+	events = append(events,
+		clickHouseScreenEvent(1, clickHouseEventQuery, traceServerSide, "paired-primary", nil, traceClickHouseEvent{}),
+		clickHouseScreenEvent(1, clickHouseEventEnd, traceServerSide, "paired-primary", nil, traceClickHouseEvent{}),
+		clickHouseScreenEvent(2, clickHouseEventQuery, traceServerSide, "pending", nil, traceClickHouseEvent{}),
+		clickHouseScreenEvent(3, clickHouseEventEnd, traceServerSide, "standalone", nil, traceClickHouseEvent{}))
+	for len(events) < traceScreenEventLimit+3 {
+		events = append(events, clickHouseScreenEvent(4, clickHouseEventChunked, traceClientSide, "", nil, traceClickHouseEvent{Command: clickHouseCommandConnect, Chunked: true}))
+	}
+	for _, event := range events {
+		next, _ := model.Update(traceEventMsg{events: []captureEvent{event}})
+		model = next.(traceScreenModel)
+	}
+	if got, want := traceVisibleScreenRows(model), traceMySQLReferenceRows(model.events, model.first, 0); !slices.Equal(got, want) {
+		t.Fatalf("rows after eviction = %+v, want %+v", got[:min(5, len(got))], want[:min(5, len(want))])
+	}
+	for number := range model.mysqlPendingKey {
+		if number < model.first {
+			t.Fatalf("stale pending index %d before %d", number, model.first)
+		}
+	}
+}
+
+func TestTraceScreenFiltersClickHousePairsBySlowLatency(t *testing.T) {
+	model := newTraceScreenModel("clickhouse", tcpTraceOptions{slow: 1500 * time.Microsecond}, make(chan captureEvent), make(chan traceFinishedMsg), nil)
+	latency := func(value float64) *float64 { return &value }
+	pair := func(socket uint64, sql, response string, value *float64, info traceClickHouseEvent) []captureEvent {
+		return []captureEvent{
+			clickHouseScreenEvent(socket, clickHouseEventQuery, traceServerSide, sql, nil, traceClickHouseEvent{}),
+			clickHouseScreenEvent(socket, response, traceServerSide, sql, value, info),
+		}
+	}
+	model.events = slices.Concat(
+		pair(1, "below", clickHouseEventEnd, latency(1.499), traceClickHouseEvent{}),
+		pair(2, "exact", clickHouseEventEnd, latency(1.5), traceClickHouseEvent{}),
+		pair(3, "inferred", clickHouseEventEnd, latency(1.501), traceClickHouseEvent{EndInferred: true}),
+		pair(4, "failed", clickHouseEventException, latency(9), traceClickHouseEvent{ErrorCode: 60, ErrorName: "UNKNOWN_TABLE"}),
+		[]captureEvent{clickHouseScreenEvent(5, clickHouseEventQuery, traceServerSide, "pending", nil, traceClickHouseEvent{})},
+		pair(6, "missing", clickHouseEventEnd, nil, traceClickHouseEvent{}),
+		[]captureEvent{clickHouseScreenEvent(7, clickHouseEventEnd, traceServerSide, "unmatched", latency(4), traceClickHouseEvent{})},
+		[]captureEvent{clickHouseScreenEvent(8, clickHouseEventChunked, traceClientSide, "", nil, traceClickHouseEvent{Command: clickHouseCommandConnect, Chunked: true})},
+	)
+	rows := traceVisibleScreenRows(model)
+	want := []traceScreenRow{{primary: 2, response: 3}, {primary: 4, response: 5}, {primary: 6, response: 7}}
+	if !slices.Equal(rows, want) {
+		t.Fatalf("slow display rows = %+v, want %+v", rows, want)
+	}
+	for _, row := range rows {
+		if !model.displayRowMatches(row) {
+			t.Fatalf("row %+v does not match", row)
+		}
+	}
+	for _, row := range model.displayRows() {
+		if (row.primary == 0 || row.primary == 8 || row.primary == 9 || row.primary == 11 || row.primary == 12) && model.displayRowMatches(row) {
+			t.Fatalf("row %+v is shown", row)
+		}
+	}
+}
+
+func TestTraceScreenClickHouseHeaderCountsOnlyShownPairs(t *testing.T) {
+	model := newTraceScreenModel("clickhouse", tcpTraceOptions{slow: time.Millisecond}, make(chan captureEvent), make(chan traceFinishedMsg), nil)
+	latency := 2.0
+	next, _ := model.Update(traceEventMsg{events: []captureEvent{
+		clickHouseScreenEvent(1, clickHouseEventQuery, traceServerSide, "shown", nil, traceClickHouseEvent{}),
+		clickHouseScreenEvent(1, clickHouseEventEnd, traceServerSide, "shown", &latency, traceClickHouseEvent{}),
+		clickHouseScreenEvent(2, clickHouseEventQuery, traceServerSide, "pending", nil, traceClickHouseEvent{}),
+	}})
+	model = next.(traceScreenModel)
+	header := strings.Join(traceScreenHeader(model), "\n")
+	if !strings.Contains(header, "raw events 3") || !strings.Contains(header, "shown pairs 1") || !strings.Contains(header, "slow 1ms") {
+		t.Fatalf("header = %q", header)
+	}
+}
+
+func TestTraceScreenClickHouseDetailIncludesPairedResponse(t *testing.T) {
+	model := newTraceScreenModel("clickhouse", tcpTraceOptions{}, make(chan captureEvent), make(chan traceFinishedMsg), nil)
+	latency := 1.25
+	rows := uint64(10)
+	next, _ := model.Update(traceEventMsg{events: []captureEvent{
+		clickHouseScreenEvent(1, clickHouseEventQuery, traceServerSide, "SELECT 1\nFROM t", nil, traceClickHouseEvent{QueryID: "q-1", User: "edc", Database: "db"}),
+		clickHouseScreenEvent(1, clickHouseEventEnd, traceServerSide, "SELECT 1\nFROM t", &latency, traceClickHouseEvent{Rows: &rows, EndInferred: true}),
+		clickHouseScreenEvent(2, clickHouseEventQuery, traceServerSide, "SELECT * FROM missing", nil, traceClickHouseEvent{}),
+		clickHouseScreenEvent(2, clickHouseEventException, traceServerSide, "SELECT * FROM missing", &latency, traceClickHouseEvent{ErrorCode: 60, ErrorName: "UNKNOWN_TABLE", Message: "no such table"}),
+	}})
+	model = next.(traceScreenModel)
+	before := slices.Clone(model.events)
+	text := strings.Join(model.buildDetail(0).raw, "\n")
+	for _, want := range []string{"query_id: q-1", "user: edc", "database: db", "sql:\nSELECT 1\nFROM t", "response:", "event: clickhouse_end", "result: 10 rows (inferred)", "latency: 1.2ms"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("detail lacks %q: %q", want, text)
+		}
+	}
+	text = strings.Join(model.buildDetail(2).raw, "\n")
+	if !strings.Contains(text, "result: 60 (UNKNOWN_TABLE) no such table") || !strings.Contains(text, "error: 60 (UNKNOWN_TABLE) no such table") {
+		t.Fatalf("exception detail = %q", text)
+	}
+	if !slices.EqualFunc(model.events, before, func(a, b captureEvent) bool { return reflect.DeepEqual(a, b) }) {
+		t.Fatal("detail changed source events")
+	}
+}
+
+func clickHouseHTTPScreenEvent(socket uint64, name, sql string, latency *float64, info traceClickHouseEvent) captureEvent {
+	info.Interface = clickHouseInterfaceHTTP
+	return clickHouseScreenEvent(socket, name, traceServerSide, sql, latency, info)
+}
+
+func TestTraceScreenClickHouseHTTPLabelsAndMixedList(t *testing.T) {
+	model := newTraceScreenModel("clickhouse", tcpTraceOptions{}, make(chan captureEvent), make(chan traceFinishedMsg), nil)
+	model.width, model.height = 140, 10
+	latency := func(value float64) *float64 { return &value }
+	rows := uint64(3)
+	model.events = []captureEvent{
+		clickHouseScreenEvent(1, clickHouseEventQuery, traceServerSide, "SELECT 1", nil, traceClickHouseEvent{Interface: clickHouseInterfaceNative}),
+		clickHouseScreenEvent(1, clickHouseEventEnd, traceServerSide, "SELECT 1", latency(0.4), traceClickHouseEvent{Interface: clickHouseInterfaceNative, Rows: &rows}),
+		clickHouseHTTPScreenEvent(2, clickHouseEventQuery, "SELECT 2", nil, traceClickHouseEvent{}),
+		clickHouseHTTPScreenEvent(2, clickHouseEventEnd, "SELECT 2", latency(1.5), traceClickHouseEvent{HTTPStatus: 200}),
+		clickHouseHTTPScreenEvent(2, clickHouseEventQuery, "SELECT * FROM missing", nil, traceClickHouseEvent{}),
+		clickHouseHTTPScreenEvent(2, clickHouseEventException, "SELECT * FROM missing", latency(2), traceClickHouseEvent{HTTPStatus: 404, ErrorCode: 60, Message: "Table missing\ndoes not exist"}),
+	}
+	visible := traceVisibleScreenRows(model)
+	if len(visible) != 3 {
+		t.Fatalf("display rows = %+v", visible)
+	}
+	for i, want := range []string{"server: SELECT 1 → 3 rows", "server: http: SELECT 2 → ok 200", "server: http: SELECT * FROM missing → 60 HTTP 404 Table missing does not exist"} {
+		if _, destination, _, ok := model.displayRowLabels(visible[i]); !ok || destination != want {
+			t.Fatalf("display row %d = %q, %t, want %q", i, destination, ok, want)
+		}
+	}
+	destination, _ := traceClickHouseScrollLabels(model.events[3])
+	if destination != "server: http: ↳ ok 200" {
+		t.Fatalf("response scroll label = %q", destination)
+	}
+	destination, _ = traceClickHouseScrollLabels(model.events[1])
+	if destination != "server: ↳ 3 rows" {
+		t.Fatalf("native response scroll label = %q", destination)
+	}
+	text := strings.Join(model.buildDetail(2).raw, "\n")
+	for _, want := range []string{"interface: http", "response:", "http_status: 200", "result: ok 200"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("http detail lacks %q: %q", want, text)
+		}
+	}
+	text = strings.Join(model.buildDetail(4).raw, "\n")
+	if !strings.Contains(text, "http_status: 404") || !strings.Contains(text, "error: 60 (-) Table missing") {
+		t.Fatalf("http exception detail = %q", text)
+	}
+	if text = strings.Join(model.buildDetail(0).raw, "\n"); !strings.Contains(text, "interface: native") || strings.Contains(text, "http_status") {
+		t.Fatalf("native detail = %q", text)
+	}
+	if text = strings.Join(traceClickHouseDetailLines(model.events[3]), "\n"); !strings.Contains(text, "http_status: 200") {
+		t.Fatalf("response detail = %q", text)
+	}
+}
+
+func TestTraceScreenClickHouseHTTPKeepAlivePairsRequestsInOrder(t *testing.T) {
+	model := newTraceScreenModel("clickhouse", tcpTraceOptions{}, make(chan captureEvent), make(chan traceFinishedMsg), nil)
+	latency := func(value float64) *float64 { return &value }
+	events := []captureEvent{
+		clickHouseHTTPScreenEvent(5, clickHouseEventQuery, "SELECT 1", nil, traceClickHouseEvent{}),
+		clickHouseHTTPScreenEvent(5, clickHouseEventEnd, "SELECT 1", latency(1), traceClickHouseEvent{HTTPStatus: 200}),
+		clickHouseHTTPScreenEvent(5, clickHouseEventQuery, "SELECT 1", nil, traceClickHouseEvent{}),
+		clickHouseHTTPScreenEvent(5, clickHouseEventException, "SELECT 1", latency(2), traceClickHouseEvent{HTTPStatus: 500, ErrorCode: 241, Message: "memory"}),
+		clickHouseHTTPScreenEvent(5, clickHouseEventQuery, "SELECT 1", nil, traceClickHouseEvent{}),
+	}
+	for _, event := range events {
+		next, _ := model.Update(traceEventMsg{events: []captureEvent{event}})
+		model = next.(traceScreenModel)
+		if got, want := traceVisibleScreenRows(model), traceMySQLReferenceRows(model.events, model.first, 0); !slices.Equal(got, want) {
+			t.Fatalf("rows = %+v, want %+v", got, want)
+		}
+	}
+	want := []traceScreenRow{{primary: 0, response: 1}, {primary: 2, response: 3}, {primary: 4, response: -1}}
+	if got := traceVisibleScreenRows(model); !slices.Equal(got, want) {
+		t.Fatalf("keep-alive rows = %+v, want %+v", got, want)
+	}
+	if _, destination, _, _ := model.displayRowLabels(want[1]); destination != "server: http: SELECT 1 → 241 HTTP 500 memory" {
+		t.Fatalf("second request = %q", destination)
+	}
+}
+
+func TestTraceScreenClickHouseHTTPSlowBoundary(t *testing.T) {
+	model := newTraceScreenModel("clickhouse", tcpTraceOptions{slow: 1500 * time.Microsecond}, make(chan captureEvent), make(chan traceFinishedMsg), nil)
+	latency := func(value float64) *float64 { return &value }
+	pair := func(socket uint64, sql string, value *float64) []captureEvent {
+		return []captureEvent{
+			clickHouseHTTPScreenEvent(socket, clickHouseEventQuery, sql, nil, traceClickHouseEvent{}),
+			clickHouseHTTPScreenEvent(socket, clickHouseEventEnd, sql, value, traceClickHouseEvent{HTTPStatus: 200}),
+		}
+	}
+	model.events = slices.Concat(
+		pair(1, "below", latency(1.499)),
+		pair(2, "exact", latency(1.5)),
+		[]captureEvent{clickHouseHTTPScreenEvent(3, clickHouseEventQuery, "unanswered", nil, traceClickHouseEvent{})},
+	)
+	want := []traceScreenRow{{primary: 2, response: 3}}
+	if got := traceVisibleScreenRows(model); !slices.Equal(got, want) {
+		t.Fatalf("slow rows = %+v, want %+v", got, want)
 	}
 }

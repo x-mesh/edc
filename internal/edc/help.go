@@ -266,7 +266,7 @@ var commandDocs = []commandDoc{
 	},
 	{
 		name: "trace", group: "observe",
-		usage: []string{"edc trace <tcp|udp|dns|arp|ndp|http|drop|mysql|clickhouse|io|sched> [options]", traceSocketUsage},
+		usage: []string{traceProtocolUsage, traceDatabaseUsage, traceSocketUsage},
 		options: []optionDoc{
 			{"--duration 15s", "command.trace.option.duration"},
 			{"--slow <duration>", "command.trace.option.slow"},

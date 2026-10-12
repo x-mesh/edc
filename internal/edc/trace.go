@@ -468,8 +468,15 @@ func runTrace(args []string) int {
 	return runTraceProtocol(args)
 }
 
+// usage를 두 줄로 나눈다. 한 줄에 모든 protocol을 쓰면 help 화면의 80칸을 넘는다.
+const (
+	traceProtocolUsage = "edc trace <tcp|udp|dns|arp|ndp|http|drop|io|sched> [options]"
+	traceDatabaseUsage = "edc trace <mysql|clickhouse|postgres|redis> [options]"
+)
+
 func traceUsage() {
-	fmt.Fprintln(os.Stderr, T("cli.usage", "edc trace <tcp|udp|dns|arp|ndp|http|drop|mysql|clickhouse|postgres|redis|io|sched> [options]"))
+	fmt.Fprintln(os.Stderr, T("cli.usage", traceProtocolUsage))
+	fmt.Fprintln(os.Stderr, T("cli.usage", traceDatabaseUsage))
 	fmt.Fprintln(os.Stderr, T("cli.usage", traceSocketUsage))
 }
 

@@ -73,7 +73,7 @@ func TestRunTraceKeepsUsageOutsideTerminals(t *testing.T) {
 			t.Fatalf("code = %d", code)
 		}
 	})
-	if want := "usage: edc trace <tcp|udp|dns|arp|ndp|http|drop|mysql|clickhouse|postgres|redis|io|sched> [options]\nusage: " + traceSocketUsage + "\n"; stderr != want {
+	if want := "usage: edc trace <tcp|udp|dns|arp|ndp|http|drop|io|sched> [options]\nusage: edc trace <mysql|clickhouse|postgres|redis> [options]\nusage: " + traceSocketUsage + "\n"; stderr != want {
 		t.Fatalf("stderr = %q, want %q", stderr, want)
 	}
 }
@@ -84,7 +84,7 @@ func TestRunTraceKeepsUsageForAnUnknownProtocol(t *testing.T) {
 			t.Fatalf("code = %d", code)
 		}
 	})
-	if !strings.Contains(stderr, "edc trace <tcp|udp|dns|arp|ndp|http|drop|mysql|clickhouse|postgres|redis|io|sched> [options]") {
+	if !strings.Contains(stderr, "edc trace <tcp|udp|dns|arp|ndp|http|drop|io|sched> [options]") || !strings.Contains(stderr, "edc trace <mysql|clickhouse|postgres|redis> [options]") {
 		t.Fatalf("stderr = %q", stderr)
 	}
 }

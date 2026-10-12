@@ -1702,7 +1702,7 @@ Linux 5.15 이상에서 `trace mysql`을 사용하면 평문 MySQL 명령과 결
 
 JSON event에는 `"side": "client"`나 `"side": "server"`가 붙습니다. 한 쪽만 보려면 `--side client`나 `--side server`를 씁니다. 로컬 port가 MySQL port이면 서버 쪽 socket이고, 상대 port가 MySQL port이면 client 쪽 socket입니다.
 
-`--slow <duration>`은 `trace mysql`과 `trace clickhouse`에서만 씁니다. `250ms`, `1.5s` 같은 Go duration 문법을 받습니다. 묶지 않은 대화형 화면에서는 첫 paired response의 latency가 지정 시간 이상인 command 행만 남깁니다. 응답 없는 command, 짝이 없는 response, latency가 없는 response, TLS 행은 제외합니다. raw JSON, 비대화형 출력, 요약, group 보기, `--group-by`, `--side`에는 영향을 주지 않습니다.
+`--slow <duration>`은 `trace mysql`, `trace clickhouse`, `trace postgres`, `trace redis`에서만 씁니다. `250ms`, `1.5s` 같은 Go duration 문법을 받습니다. 묶지 않은 대화형 화면에서는 첫 paired response의 latency가 지정 시간 이상인 command 행만 남깁니다. 응답 없는 command, 짝이 없는 response, latency가 없는 response, TLS 행은 제외합니다. raw JSON, 비대화형 출력, 요약, group 보기, `--group-by`, `--side`에는 영향을 주지 않습니다.
 
 | 보려는 것 | 명령 |
 | --- | --- |
@@ -1849,6 +1849,95 @@ Ctrl-C 뒤의 요약은 쪽, 명령, SQL shape마다 한 행을 보여 줍니다
 - 연결의 `Hello`를 보지 못하면 그 연결은 건너뜁니다. 연결 중간에 trace를 시작하면 그렇게 됩니다. client가 다시 접속해야 그 연결이 보입니다.
 - 잃어버린 event나 부분 송신 때문에 packet 경계가 어긋나면 그 연결의 다음 질의가 빠질 수 있습니다. 요약에서 lost event 수를 확인합니다.
 - host에 publish한 port로 보낸 질의는 client 행과 container 안 서버 행으로 보입니다. `docker-proxy` 자체의 행은 나오지 않고, 서버 행의 상대 주소는 Docker bridge gateway입니다. `--process clickhouse-serv`로 서버 process의 행만 남길 수 있습니다.
+
+Linux 5.15 이상에서 `trace postgres`를 사용하면 평문 PostgreSQL 요청과 결과를 발생 즉시 출력합니다. edc는 kernel에서 PostgreSQL port의 TCP 읽기와 쓰기마다 앞부분을 읽습니다. 기본 port는 5432이고, 다른 port는 `--port`로 지정합니다.
+
+```bash
+./bin/edc trace postgres
+./bin/edc trace postgres --side server
+./bin/edc trace postgres --port 6432
+./bin/edc trace postgres --slow 250ms
+./bin/edc trace postgres --group-by process
+./bin/edc trace postgres --show-secrets
+./bin/edc trace postgres --raw
+```
+
+`trace postgres`는 `trace mysql`처럼 두 쪽을 나눠 보여 줍니다. event 행은 `client:`나 `server:`로 시작하고, JSON event에는 `"side": "client"`나 `"side": "server"`가 붙습니다. 한 쪽만 보려면 `--side client`나 `--side server`를 씁니다. `--slow`는 `trace mysql`과 같게 동작합니다.
+
+| 보려는 것 | 명령 |
+| --- | --- |
+| 이 host의 PostgreSQL 전부 | `./bin/edc trace postgres` |
+| 로컬 서버가 받은 요청 | `./bin/edc trace postgres --side server` |
+| port 6432의 PostgreSQL | `./bin/edc trace postgres --port 6432` |
+| 250ms 이상 걸린 paired 요청 | `./bin/edc trace postgres --slow 250ms` |
+| 가리지 않은 SQL 원문 | `./bin/edc trace postgres --show-secrets` |
+
+요청은 아래 event 중 하나입니다. 필드는 JSON event의 `postgres` 객체에 들어 있습니다.
+
+- `postgres_connect`는 로그인입니다. `user`와 `database`가 있습니다.
+- `postgres_query`는 요청 단위 하나입니다. `command`는 `query`, `prepare`, `execute`, `function` 중 하나입니다.
+- `query`는 simple Query message 하나이고 `sql`이 있습니다.
+- `prepare`와 `execute`는 Sync로 끝나는 extended batch이고 `sql`, `statement`, `executes`가 있습니다.
+
+응답은 아래 event 중 하나입니다.
+
+- `postgres_result`에는 CommandComplete의 `tag`(예: `SELECT 3`)와 `rows`가 있습니다. 로그인의 응답에는 `server_version`이 있습니다.
+- `postgres_error`에는 `severity`, `sql_state`, `message`가 있습니다.
+
+응답 event에는 답한 요청의 `command`와 `sql`이 함께 들어 있습니다. `postgres_tls`는 요청이 아닙니다. 그 연결이 TLS나 GSSAPI로 암호화되었다는 뜻이고, edc는 그 연결을 더 읽지 않습니다.
+
+응답 시간은 요청 단위의 첫 message부터 ReadyForQuery까지입니다. client 쪽 응답 시간에는 network가 들어가고, 서버 쪽 응답 시간에는 서버의 처리와 결과 쓰기만 들어갑니다.
+
+기본으로 SQL의 문자열 상수와 dollar quote 본문은 `?`로 바꿉니다. `--show-secrets`를 쓰면 보낸 SQL 그대로와 오류의 `detail`을 보입니다. password, SASL data, Bind parameter 값, COPY data, function call 인자는 `--show-secrets`를 써도 표시하지 않습니다. 오류의 `message`는 가리지 않으므로, 공유하기 전에 값이 들어 있는지 확인하세요.
+
+Ctrl-C 뒤의 요약은 쪽, 명령, SQL shape마다 한 행을 씁니다. `--group-by`를 쓰면 행에 `CMD`, `RSP`, `ERR`, `NOANS`, `AVGms`, `MAXms`가 나옵니다.
+
+`trace postgres`에는 다음 제한이 있습니다.
+
+- TLS와 GSSAPI 암호화는 읽지 않습니다. 암호화한 연결마다 `postgres_tls` 행 하나만 나옵니다.
+- TCP만 봅니다. unix socket 연결은 보이지 않습니다. `-h` 없는 `psql`은 unix socket을 쓰므로, 시험할 때는 `psql -h 127.0.0.1`을 씁니다.
+- 응답 쓰기나 읽기마다 앞 4 KiB만 남깁니다. 서버는 큰 결과를 8 KiB씩 나눠 쓰므로 message 경계를 잃습니다.
+- 큰 결과에서는 응답 쓰기나 읽기마다 끝 64 byte도 남깁니다. 그 byte가 ReadyForQuery로 끝나고 기다리는 요청이 하나면 그 시각에 그 요청을 닫습니다. tag는 그 byte 안의 CommandComplete에서, `rows`는 `SELECT`나 `FETCH` tag에서 읽습니다.
+- 경계를 잃을 때 기다리던 요청이 둘 이상이면 짐작하지 않고 응답 없음으로 셉니다. 다음 요청부터 다시 짝을 찾습니다.
+- 읽기의 끝이 첫 buffer 밖에 있으면 그 읽기의 끝부분은 남기지 않습니다. 쓰기의 끝부분은 마지막 buffer에서만 읽습니다.
+- 연결 중간에 trace를 시작하면 그 연결의 `postgres_connect`가 없습니다. edc는 다음 요청에서 경계를 찾습니다.
+- event의 SQL은 1,024 byte까지 보이고, 잘랐으면 `sql_truncated`가 true입니다.
+
+Linux 5.15 이상에서 `trace redis`를 사용하면 평문 Redis 명령과 응답을 발생 즉시 출력합니다. edc는 kernel에서 Redis port의 TCP 읽기와 쓰기마다 앞부분을 읽습니다. 기본 port는 6379이고, 다른 port는 `--port`로 지정합니다.
+
+```bash
+./bin/edc trace redis
+./bin/edc trace redis --side server
+./bin/edc trace redis --port 6380
+./bin/edc trace redis --slow 5ms
+./bin/edc trace redis --group-by process
+./bin/edc trace redis --show-secrets
+./bin/edc trace redis --raw
+```
+
+`trace redis`도 `trace mysql`처럼 두 쪽을 나눠 보여 주고, event 행은 `client:`나 `server:`로 시작합니다. `--slow`는 `trace mysql`과 같게 동작합니다.
+
+JSON event의 `redis` 객체에는 아래 event의 필드가 들어 있습니다.
+
+- `redis_command`는 명령입니다. `command`, `key`, `args`가 있습니다. pipeline은 명령마다 event 하나를 냅니다.
+- `redis_reply`는 가장 오래 기다린 명령의 응답입니다. 응답 종류인 `reply`와 `elements`나 `bulk_length`가 있습니다.
+- `redis_error`는 오류 응답입니다. `error_class`(예: `WRONGTYPE`)가 있습니다.
+- `redis_push`는 pub/sub message나 RESP3 push입니다. 어느 명령의 응답도 아닙니다.
+
+edc는 한 연결의 명령과 응답을 순서대로 짝짓습니다. MULTI 안의 명령은 `queued` 응답을 받고, EXEC의 응답은 결과 array입니다. 응답 시간은 명령이 도착한 때부터 그 응답이 도착한 때까지입니다. pipeline에서는 한 번에 쓴 명령들이 시작 시각을, 한 번에 쓴 응답들이 끝 시각을 함께 씁니다.
+
+기본으로 인자 값, 응답 값, 오류 message는 표시하지 않습니다. `--show-secrets`를 쓰면 그 값의 짧은 preview를 보입니다. key 이름은 두 경우 모두 보입니다. AUTH, HELLO, MIGRATE, CONFIG GET, CONFIG SET, ACL, SENTINEL의 값은 `--show-secrets`를 써도 표시하지 않습니다.
+
+Ctrl-C 뒤의 요약은 쪽과 명령 이름마다 한 행을 쓰고, 명령 수, 오류 수, 응답 없는 명령 수, 평균과 최대 응답 시간을 보입니다.
+
+`trace redis`에는 다음 제한이 있습니다.
+
+- TLS는 읽지 않습니다. TLS 연결에서는 RESP 경계를 찾지 못해 event가 나오지 않습니다.
+- TCP만 봅니다. unix socket 연결은 보이지 않습니다.
+- 요청은 앞 4 KiB, 응답 쓰기나 읽기는 앞 1 KiB만 남깁니다. 5,000개 항목의 `LRANGE`처럼 아주 큰 array 응답은 경계를 잃습니다. 그 명령은 응답 없음으로 세고, 다음 명령에서 경계를 다시 맞춥니다.
+- 5,000개 값을 넣는 `RPUSH`처럼 캡처보다 큰 명령은 `truncated: true`로 표시하고 응답과 짝짓지 않습니다.
+- `CLIENT REPLY OFF` 뒤의 명령은 응답이 없어 응답 없음으로 셉니다. PSYNC나 SYNC 뒤의 복제 흐름은 응답으로 읽지 않습니다.
+- 연결 중간에 trace를 시작하면 다음 명령에서 경계를 찾습니다.
 
 Linux에서 `trace socket`을 사용하면 unix domain socket 파일 하나에서 일어나는 일을 출력합니다. socket 파일의 경로를 지정하면 그 socket의 connect, accept, send, recv, data 끝(`eof`), close를 표시합니다. option은 경로 앞이나 뒤에 씁니다.
 

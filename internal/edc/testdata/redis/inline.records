@@ -1,0 +1,19 @@
+# edc trace redis T1 fixture "inline". Format and rules: see capture.txt, section "Fixture format".
+# Each record line: <server|client> <send|recv> <total bytes> <hex of the first min(total,4096) bytes>.
+# Client and server lines are interleaved by syscall time. Filter by side. One run is one TCP connection; runs are in connection order.
+# Sections start at a "# version:" line. Replay each section on its own.
+# version: Redis server v=7.0.15 (Ubuntu apt redis-server 5:7.0.15-3ubuntu0.1 arm64)
+# run 0: inline commands, connection 1
+# command: (printf 'PING\r\n'; sleep 0.2; printf 'SET k v\r\nAUTH edc-fixture-pass\r\n'; sleep 0.2; printf 'PING\nSET k v\r\n'; sleep 0.3) | nc -q 1 127.0.0.1 6379
+client send 6 50494e470d0a
+server recv 6 50494e470d0a
+server send 34 2d4e4f415554482041757468656e7469636174696f6e2072657175697265642e0d0a
+client recv 34 2d4e4f415554482041757468656e7469636174696f6e2072657175697265642e0d0a
+client send 32 534554206b20760d0a41555448206564632d666978747572652d706173730d0a
+server recv 32 534554206b20760d0a41555448206564632d666978747572652d706173730d0a
+server send 39 2d4e4f415554482041757468656e7469636174696f6e2072657175697265642e0d0a2b4f4b0d0a
+client recv 39 2d4e4f415554482041757468656e7469636174696f6e2072657175697265642e0d0a2b4f4b0d0a
+client send 14 50494e470a534554206b20760d0a
+server recv 14 50494e470a534554206b20760d0a
+server send 12 2b504f4e470d0a2b4f4b0d0a
+client recv 12 2b504f4e470d0a2b4f4b0d0a

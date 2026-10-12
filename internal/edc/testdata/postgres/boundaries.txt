@@ -1,0 +1,1250 @@
+PostgreSQL 16.15 (PGDG noble-pgdg arm64 binaries, run from /tmp on the OrbStack ubuntu VM, Ubuntu 25.04 arm64). Clients: psql 16.15 and pgbench 16.15 with libpq 18.6 (PGDG), and a python3 3.13.3 raw-socket harness.
+
+# T1 measurement: PostgreSQL v3 protocol write/read boundaries and fixtures for edc trace postgres
+# Do not edit by hand. Re-run the procedure near the end of this file to regenerate. Companion fixtures: <scenario>.records in this directory.
+
+== Environment
+- Host: OrbStack Linux VM "ubuntu", Ubuntu 25.04 (plucky) arm64, kernel 7.0.14-orbstack-00380-ga7e0a2dc9535, 9 CPUs, 9 GB RAM, glibc 2.41, OpenSSL 3.4.1, strace 6.14, python3 3.13.3. Linux only. The macOS host was not used for capture.
+- Server: postgres (PostgreSQL) 16.15 (Ubuntu 16.15-1.pgdg24.04+2). SHOW server_version = "16.15 (Ubuntu 16.15-1.pgdg24.04+2)". The ParameterStatus server_version in every fixture carries the same text.
+- Clients: psql (PostgreSQL) 16.15 and pgbench (PostgreSQL) 16.15 from postgresql-client-16 / postgresql-16 16.15-1.pgdg24.04+2, linked against libpq5 18.6-1.pgdg24.04+2 (PGDG ships only the newest libpq5). The libpq 18 default max_protocol_version is 3.0, and every captured StartupMessage has version 3.0 (00030000). python3 3.13.3 raw-socket harness: "m.py client <mode>" (SCRAM-SHA-256 written with hashlib/hmac, no driver).
+- Server setup: initdb --no-locale -E UTF8 with bootstrap superuser postgres (Unix socket only, trust). listen_addresses=127.0.0.1, port=5432, unix_socket_directories=/tmp/edc-pg/sock, password_encryption=scram-sha-256, jit=off, timezone=UTC, max_connections=20. Role edc with the fake password edc-fixture owns database edc. Tables: t (id int, v text), u (v text UNIQUE).
+- pg_hba: "local all edc scram-sha-256", "local all all trust", "host all edc 127.0.0.1/32 <method>". <method> = password (cleartext) for startup_cleartext, scram-sha-256 for every other scenario.
+- TLS: ssl=on with a self-signed RSA 2048 certificate (CN=fixture-host) made by openssl in /tmp/edc-pg/ssl for every scenario except ssl_refused (ssl=off). The ssl-cert package (snakeoil) is not installed on the VM, so an equivalent self-signed certificate was used. The ssl run negotiated TLS 1.3 (ServerHello supported_versions 0x0304).
+- Tracing: server: sudo strace -ff -yy -xx -ttt -s 2097152 -e trace=read,recvfrom,recvmsg,write,sendto,sendmsg,writev -p <postmaster pid> (-ff follows the forked backend into its own output file, so no "unfinished/resumed" split lines). Client: the same flags in front of the client command, plus -e trace-fds=!1 so psql output to stdout is not traced. Only syscalls on the TCP connection to 127.0.0.1:5432 (and, for gssenc_refused run 1, the Unix socket of the server) were kept. Failed calls (EAGAIN) were dropped.
+- Syscalls seen: sendto and recvfrom only, on both sides. One syscall = one record, the same unit the BPF hook sees as one tcp_sendmsg/tcp_recvmsg (boundaries.txt of clickhouse relies on the same equality). TCP segment boundaries were not measured.
+- strace slows both sides. Timestamps order the records and give rough latencies only. Client read sizes depend on the client and on timing: a re-run gives other client read sizes (see "Verification of this procedure").
+
+== Deviations from the plan (T1 Definition of Done)
+1. PGDG resolute-pgdg was not usable. The VM is Ubuntu 25.04 (plucky, glibc 2.41), not 26.04. The resolute-pgdg postgresql-16 package needs libc6 >= 2.43. The plucky-pgdg suite was moved to apt-archive.postgresql.org and holds amd64 only. So the PGDG noble-pgdg (Ubuntu 24.04, needs libc6 >= 2.38) arm64 packages postgresql-16, postgresql-client-16 and libpq5, plus libicu74 from ports.ubuntu.com noble-updates, were unpacked with dpkg-deb -x into /tmp/edc-pg/root and run from there with LD_LIBRARY_PATH. Nothing was installed system wide (no apt-get install, no dpkg -i). The major version is 16 as required.
+2. The VM was not stopped at the end. The ubuntu VM is shared with other agents that run at the same time, and the batch rules forbid stopping or restarting it. The server was stopped (pg_ctl stop -m fast) and /tmp/edc-pg was removed instead.
+3. gssenc_refused: the PGDG build has GSSAPI, and PostgreSQL 16 answers 'G' to a GSSENCRequest on any TCP socket, with or without a keytab (ProcessStartupPacket: gss = 'G' unless the socket is AF_UNIX). An 'N' answer over TCP needs a build without GSSAPI. The fixture therefore has two runs: run 0 = TCP, GSSENCRequest, 'G', client closes (no Kerberos credentials). Run 1 = the same server over its Unix socket, GSSENCRequest, 'N', plain StartupMessage, SCRAM, SELECT 1, Terminate. The run 1 bytes are the bytes a non-GSSAPI server sends over TCP; only the transport differs. libpq itself sends GSSENCRequest only when it finds Kerberos credentials (libpq documentation for gssencmode=prefer); psql in this environment never sent one.
+4. pipeline: pgbench 16 has \startpipeline and \endpipeline but no \syncpipeline (added in 17), so one pgbench pipeline is one Sync batch. Several Sync batches before the first ReadyForQuery come from the raw-socket harness (pipeline run 1).
+5. The extended scenario uses all three named options: psql 16 \bind (unnamed statement), pgbench -M prepared (named statement P_0), and the raw-socket harness (named statement edc_stmt, named portals edc_portal and edc_cursor, Execute with a row limit, Close, FunctionCall).
+6. large: the fixture file holds the N=1e3 run in full. The N=1e5, N=1e6 and generate_series(1,1e6) runs are 11 MB, 111 MB and 17 MB per direction, so the fixture keeps only their tail (see "Fixture format"). Their measurements below use every record.
+7. Extra runs not named in the plan: simple run 1 (CancelRequest on a second connection while SELECT pg_sleep(5) runs) and error run 0 also has a division by zero after 499 DataRows (error in the middle of a result).
+
+== Fixture format
+- One file per scenario: <scenario>.records. A file has one section: "# version: 16.15 (SHOW server_version: ...)". A section holds runs; "# run <n>: <label>" starts a run and "# command: <command>" names the client command (W/ = /tmp/edc-pg/ on the VM; m.py = the script at the end of this file). One run is one connection (TCP unless the label says Unix socket): replay each run with a new tracker and a new socket id. A client command that opened two connections (pgbench, cancel) becomes two runs with "[connection i of n]" in the label.
+- Record line: "<server|client> <send|recv> <total bytes> <hex>". hex = the first min(total,16384) bytes of the record. Client and server lines are interleaved by syscall time: filter by side. In every run except ssl, client send equals server recv byte for byte and server send equals client recv byte for byte (checked over the whole connection). ssl: each side's last 24-byte TLS alert (close_notify) was not read by the peer before it closed.
+- "# tail-only:" (large runs 1-3): the first records of the connection (startup, query, head of the result) are omitted. The run keeps every record, on both sides, from the earlier of the second-to-last server send and the second-to-last client recv. The tracker sees the connection for the first time at the first kept record, in the middle of a DataRow stream, and the request that started the result is not in the run.
+- Records are never longer than 16384 bytes in these captures (server sends <= 8192, libpq reads <= 16384), so every hex field holds the whole record. To test truncation (captured < size), cut the hex in the test.
+- Lines are not wrapped. A line can be 32 KB.
+
+== Table legend
+- Message letters are PostgreSQL v3 message types in the direction of the stream. client->server: P Parse, B Bind, D Describe, E Execute, S Sync, C Close, H Flush, Q Query, F FunctionCall, X Terminate, p PasswordMessage/SASLInitialResponse/SASLResponse, d CopyData, c CopyDone. server->client: R Authentication*, S ParameterStatus, K BackendKeyData, Z ReadyForQuery, T RowDescription, D DataRow, C CommandComplete, E ErrorResponse, 1 ParseComplete, 2 BindComplete, 3 CloseComplete, t ParameterDescription, s PortalSuspended, G CopyInResponse, H CopyOutResponse, d CopyData, c CopyDone, V FunctionCallResponse.
+- Untyped elements: startup = StartupMessage, sslreq = SSLRequest, gssreq = GSSENCRequest, cancel = CancelRequest, answerS/answerN/answerG = the 1-byte answer, tls = encrypted bytes to the end of the stream.
+- "messages client->server" and "messages server->client" list the whole stream; "Dx1000" = 1000 messages of the same type in a row.
+- "pattern=[...]": one token per record, "|" separates records, "+" joins messages that start in the same record, "~" prefix = the record starts in the middle of a message, "cont" = no message starts in the record, "<token>*N" = N records in a row with the same token.
+- "first header a prefix cannot reach": with a capture of only the first K bytes of each record, the first message header (5 bytes for a typed message, 8 for an untyped one, 1 for an answer byte) that has a byte at offset >= K of its record, written "rec<i>@<offset of the header start> <type>". "none" = with K bytes a tracker can walk the whole direction from its first record.
+- "ReadyForQuery inside K: yes" = the 6 bytes of the last ReadyForQuery of the run are inside the first K bytes of their record. It does not say that a tracker can reach it: that also needs "first header ... K: none" or a resync at a record that starts at a message boundary.
+- "records starting mid-message" = records whose offset 0 is not the start of a message (or of an untyped element).
+
+== Findings (for T2/T3)
+1. Server send unit (PostgreSQL PqSendBuffer = 8192 bytes): a result goes out in sends of exactly 8192 bytes, then one shorter last send that holds the end of the last DataRow, CommandComplete and ReadyForQuery. All 4 large runs: the last record starts in the middle of a DataRow ("that record starts at a message boundary: False"), ReadyForQuery is the last 6 bytes of the last record (offset = size - 6).
+2. Server sends start mid-message: large run 0 13 of 17 records, run 1 1342 of 1358, run 2 13427 of 13553, run 3 1950 of 2065. A resync at a later record boundary of the same result succeeds only by chance (run 3 has records like "Dx547" without "~"). The first record of the next response starts at a message boundary, because the server flushes at ReadyForQuery.
+3. Capture size verdicts. Server side: no record exceeds 8192, so with K = 8192 or 16384 a walk never loses a header ("none" in all runs); with K = 1024 or 4096 the first lost header is in record 3, the first 8192-byte send (rec3@1031 / rec3@4139 for repeat('x',100), rec3@1020 / rec3@4105 for generate_series), and ReadyForQuery inside 1024/4096 = no in all 4 runs. Client side: libpq reads up to 16384 bytes, so K = 16384 loses nothing, K = 8192 loses a header in every large run (rec13, rec28, rec41, rec5) and in run 0 ReadyForQuery is at offset 12826 of a 12832-byte read (inside 8192: no).
+4. Small responses: the whole answer of a short query (T D C Z, or 1 2 T D C Z) is one send and one read. The startup answer is 3 sends: AuthenticationSASL (24 bytes), AuthenticationSASLContinue (93), then AuthenticationSASLFinal + AuthenticationOk + 14 ParameterStatus + BackendKeyData + ReadyForQuery (492-499, the size depends on application_name). Cleartext: AuthenticationCleartextPassword (9 bytes) then AuthenticationOk + ParameterStatus x14 + BackendKeyData + ReadyForQuery.
+5. ErrorResponse is flushed alone and ReadyForQuery follows as a separate 6-byte send: error run 0 "E | Z" twice and "T+Dx499+E | Z" (division by zero after 499 rows), pipeline run 1 "1+E | Z", the cancel run "T+E | Z" (the client read "T+E+Z" in one read). A tracker must not end the unit at ErrorResponse.
+6. Pipelining (pipeline run 1): 3 Sync batches arrive in one 184-byte record before any answer. The server answers batch by batch: "1+2+T+D+C+Z | 1+E | Z | 1+2+D+C+Z". In the failing batch the server answers Parse (1) and the error (E), skips Bind/Execute and the whole second statement (Parse SELECT 3, Bind, Execute) without any message, then answers Sync with Z. pgbench pipeline (run 0, connection 2): each pipeline is one send "P+B+D+E+P+B+D+E+S" and one answer "1+2+T+D+C+1+2+T+D+C+Z".
+7. Extended protocol (extended): psql \bind sends P+B+D+E+S in one record, Parse with an unnamed statement. pgbench -M prepared sends "P+S" first (named statement P_0, answer "1+Z"), then "B+D+E+S" per transaction. The harness run shows Describe S (t ParameterDescription + T), PortalSuspended (s) after Execute with a row limit of 2, the second Execute of the same portal before Sync, Close portal/statement (3), and FunctionCall (V).
+8. COPY (copy): FROM STDIN = client "Q", server "G" (CopyInResponse), client "d+c" in one record (CopyData + CopyDone), server "C+Z". TO STDOUT = server "H+dx4+c+C+Z" in one record. CopyData carries row values (edc-copy-secret) in both directions.
+9. TLS (ssl): SSLRequest (8 bytes) is its own record, the answer 'S' is a 1-byte send/read, then TLS records. The TLS client reads are split into 5-byte record headers and bodies (OpenSSL reads), the server reads too. libpq's default sslmode is prefer: a plain "psql -h <host>" against a server with ssl=on is encrypted (seen before PGSSLMODE=disable was set for the plain scenarios). Plain-text capture therefore needs a client with sslmode=disable or a server with ssl=off.
+10. ssl_refused: SSLRequest, 1-byte 'N', then the StartupMessage in the next client record, then plain text as usual. gssenc_refused run 1 is the same shape with GSSENCRequest.
+11. CancelRequest (simple run 1, connection 2): a 16-byte record on a new connection, no answer from the server; the cancelled query on connection 1 ends with ErrorResponse 57014 then ReadyForQuery.
+12. ParameterStatus at startup: 14 messages including server_version "16.15 (Ubuntu 16.15-1.pgdg24.04+2)", standard_conforming_strings on, application_name, scram_iterations 4096 and default_transaction_read_only off.
+
+== Large result verdicts (summary of the per-scenario table)
+run  query                                         side          records  last size  RFQ offset  last starts at msg  mid-message starts  RFQ inside 1024/4096/8192/16384  first lost header 1024 / 4096 / 8192 / 16384
+0    repeat('x',100), generate_series(1,1000)      server send   17       4559       4553        no                  13                  no/no/yes/yes                    rec3@1031 / rec3@4139 / none / none
+0                                                  client recv   15       12832      12826       no                  11                  no/no/no/yes                     rec3@1031 / rec3@4139 / rec13@8244 / none
+1    repeat('x',100), generate_series(1,100000)    server send   1358     8089       8083        no                  1342                no/no/yes/yes                    rec3@1031 / rec3@4139 / none / none
+1                                                  client recv   1237     8089       8083        no                  1223                no/no/yes/yes                    rec3@1031 / rec3@4139 / rec28@8241 / none
+2    repeat('x',100), generate_series(1,1000000)   server send   13553    6650       6644        no                  13427               no/no/yes/yes                    rec3@1031 / rec3@4139 / none / none
+2                                                  client recv   12589    6650       6644        no                  12478               no/no/yes/yes                    rec3@1031 / rec3@4139 / rec41@8194 / none
+3    generate_series(1,1000000)                    server send   2065     5251       5245        no                  1950                no/no/yes/yes                    rec3@1020 / rec3@4105 / none / none
+3                                                  client recv   1746     5251       5245        no                  1571                no/no/yes/yes                    rec3@1020 / rec3@4105 / rec5@8200 / none
+ReadyForQuery is in the last record of the response in every run, on both sides.
+
+== Per-scenario table (generated by "m.py assemble"; client read sizes differ between runs, see Verification)
+== copy / run 0: psql: COPY t (id, v) FROM STDIN with a row containing edc-copy-secret, then COPY t TO STDOUT
+  command: PGPASSWORD=edc-fixture PGSSLMODE=disable PGGSSENCMODE=disable psql -X -h 127.0.0.1 -p 5432 -U edc -d edc -c 'COPY t (id, v) FROM STDIN' -c 'COPY t TO STDOUT' < W/copy.in; pg_hba method scram-sha-256; ssl=on; client rc=0 in 0.02 s; connections=1; unparsed socket syscalls=0
+ -- connection 1 of 1: request 311 bytes (client send == server recv: True), response 728 bytes (server send == client recv: True)
+  messages client->server: startup px2 Q d c Q X
+  messages server->client: Rx4 Sx14 K Z G C Z H dx4 c C Z
+  timing (strace start-of-call stamps, relative to the first record of the run): server: first request record +1.5 ms, last response record +10.4 ms
+  server recv: records=7 sizes n=7 total=311 min=5 median=36 max=109 last=5 rle=[53, 55, 109, 31, 36, 22, 5]
+    pattern=[startup | p*2 | Q | d+c | Q | X]
+    records starting mid-message=0; first header a prefix cannot reach: 1024: none; 4096: none; 8192: none; 16384: none
+  server send: records=6 sizes n=6 total=728 min=12 median=56 max=492 last=89 rle=[24, 93, 492, 12, 18, 89]
+    pattern=[R*2 | Rx2+Sx14+K+Z | G | C+Z | H+dx4+c+C+Z]
+    records starting mid-message=0; first header a prefix cannot reach: 1024: none; 4096: none; 8192: none; 16384: none
+    ReadyForQuery: record 5 of 6 (last record: True), offset 83 in a 89-byte record; that record starts at a message boundary: True
+    ReadyForQuery inside 1024: yes; ReadyForQuery inside 4096: yes; ReadyForQuery inside 8192: yes; ReadyForQuery inside 16384: yes
+  client send: records=7 sizes n=7 total=311 min=5 median=36 max=109 last=5 rle=[53, 55, 109, 31, 36, 22, 5]
+    pattern=[startup | p*2 | Q | d+c | Q | X]
+    records starting mid-message=0; first header a prefix cannot reach: 1024: none; 4096: none; 8192: none; 16384: none
+  client recv: records=6 sizes n=6 total=728 min=12 median=56 max=492 last=89 rle=[24, 93, 492, 12, 18, 89]
+    pattern=[R*2 | Rx2+Sx14+K+Z | G | C+Z | H+dx4+c+C+Z]
+    records starting mid-message=0; first header a prefix cannot reach: 1024: none; 4096: none; 8192: none; 16384: none
+    ReadyForQuery: record 5 of 6 (last record: True), offset 83 in a 89-byte record; that record starts at a message boundary: True
+    ReadyForQuery inside 1024: yes; ReadyForQuery inside 4096: yes; ReadyForQuery inside 8192: yes; ReadyForQuery inside 16384: yes
+
+== error / run 0: psql: syntax error 42601; INSERT twice into u(v UNIQUE) -> 23505 whose Detail echoes edc-detail-secret; division by zero after 499 DataRows
+  command: PGPASSWORD=edc-fixture PGSSLMODE=disable PGGSSENCMODE=disable psql -X -h 127.0.0.1 -p 5432 -U edc -d edc -c 'SELEC 1' -c 'INSERT INTO u VALUES ('\''edc-detail-secret'\'')' -c 'INSERT INTO u VALUES ('\''edc-detail-secret'\'')' -c 'SELECT 1/(g-500) FROM generate_series(1,1000) g'; pg_hba method scram-sha-256; ssl=on; client rc=1 in 0.03 s; connections=1; unparsed socket syscalls=0
+  client stderr (last lines): ERROR:  duplicate key value violates unique constraint "u_v_key" / DETAIL:  Key (v)=(edc-detail-secret) already exists. / ERROR:  division by zero
+ -- connection 1 of 1: request 384 bytes (client send == server recv: True), response 7018 bytes (server send == client recv: True)
+  messages client->server: startup px2 Qx4 X
+  messages server->client: Rx4 Sx14 K Z E Z C Z E Z T Dx499 E Z
+  timing (strace start-of-call stamps, relative to the first record of the run): server: first request record +1.7 ms, last response record +15.5 ms
+  server recv: records=8 sizes n=8 total=384 min=5 median=50 max=109 last=5 rle=[53, 55, 109, 13, 48x2, 53, 5]
+    pattern=[startup | p*2 | Q*4 | X]
+    records starting mid-message=0; first header a prefix cannot reach: 1024: none; 4096: none; 8192: none; 16384: none
+  server send: records=10 sizes n=10 total=7018 min=6 median=58 max=6089 last=6 rle=[24, 93, 492, 94, 6, 22, 186, 6, 6089, 6]
+    pattern=[R*2 | Rx2+Sx14+K+Z | E | Z | C+Z | E | Z | T+Dx499+E | Z]
+    records starting mid-message=0; first header a prefix cannot reach: 1024: rec8@1030 D; 4096: rec8@4102 D; 8192: none; 16384: none
+    ReadyForQuery: record 9 of 10 (last record: True), offset 0 in a 6-byte record; that record starts at a message boundary: True
+    ReadyForQuery inside 1024: yes; ReadyForQuery inside 4096: yes; ReadyForQuery inside 8192: yes; ReadyForQuery inside 16384: yes
+  client send: records=8 sizes n=8 total=384 min=5 median=50 max=109 last=5 rle=[53, 55, 109, 13, 48x2, 53, 5]
+    pattern=[startup | p*2 | Q*4 | X]
+    records starting mid-message=0; first header a prefix cannot reach: 1024: none; 4096: none; 8192: none; 16384: none
+  client recv: records=9 sizes n=9 total=7018 min=6 median=93 max=6089 last=6 rle=[24, 93, 492, 94, 6, 22, 192, 6089, 6]
+    pattern=[R*2 | Rx2+Sx14+K+Z | E | Z | C+Z | E+Z | T+Dx499+E | Z]
+    records starting mid-message=0; first header a prefix cannot reach: 1024: rec7@1030 D; 4096: rec7@4102 D; 8192: none; 16384: none
+    ReadyForQuery: record 8 of 9 (last record: True), offset 0 in a 6-byte record; that record starts at a message boundary: True
+    ReadyForQuery inside 1024: yes; ReadyForQuery inside 4096: yes; ReadyForQuery inside 8192: yes; ReadyForQuery inside 16384: yes
+
+== extended / run 0: psql 16 stdin: SELECT $1::text AS v \bind 'edc-param-secret' \g (unnamed statement)
+  command: PGPASSWORD=edc-fixture PGSSLMODE=disable PGGSSENCMODE=disable psql -X -h 127.0.0.1 -p 5432 -U edc -d edc -f - < W/bind.sql; pg_hba method scram-sha-256; ssl=on; client rc=0 in 0.03 s; connections=1; unparsed socket syscalls=0
+ -- connection 1 of 1: request 309 bytes (client send == server recv: True), response 693 bytes (server send == client recv: True)
+  messages client->server: startup px2 P B D E S X
+  messages server->client: Rx4 Sx14 K Z 1 2 T D C Z
+  timing (strace start-of-call stamps, relative to the first record of the run): server: first request record +1.2 ms, last response record +13.0 ms
+  server recv: records=5 sizes n=5 total=309 min=5 median=55 max=109 last=5 rle=[53, 55, 109, 87, 5]
+    pattern=[startup | p*2 | P+B+D+E+S | X]
+    records starting mid-message=0; first header a prefix cannot reach: 1024: none; 4096: none; 8192: none; 16384: none
+  server send: records=4 sizes n=4 total=693 min=24 median=88 max=492 last=84 rle=[24, 93, 492, 84]
+    pattern=[R*2 | Rx2+Sx14+K+Z | 1+2+T+D+C+Z]
+    records starting mid-message=0; first header a prefix cannot reach: 1024: none; 4096: none; 8192: none; 16384: none
+    ReadyForQuery: record 3 of 4 (last record: True), offset 78 in a 84-byte record; that record starts at a message boundary: True
+    ReadyForQuery inside 1024: yes; ReadyForQuery inside 4096: yes; ReadyForQuery inside 8192: yes; ReadyForQuery inside 16384: yes
+  client send: records=5 sizes n=5 total=309 min=5 median=55 max=109 last=5 rle=[53, 55, 109, 87, 5]
+    pattern=[startup | p*2 | P+B+D+E+S | X]
+    records starting mid-message=0; first header a prefix cannot reach: 1024: none; 4096: none; 8192: none; 16384: none
+  client recv: records=4 sizes n=4 total=693 min=24 median=88 max=492 last=84 rle=[24, 93, 492, 84]
+    pattern=[R*2 | Rx2+Sx14+K+Z | 1+2+T+D+C+Z]
+    records starting mid-message=0; first header a prefix cannot reach: 1024: none; 4096: none; 8192: none; 16384: none
+    ReadyForQuery: record 3 of 4 (last record: True), offset 78 in a 84-byte record; that record starts at a message boundary: True
+    ReadyForQuery inside 1024: yes; ReadyForQuery inside 4096: yes; ReadyForQuery inside 8192: yes; ReadyForQuery inside 16384: yes
+
+== extended / run 1: pgbench -M prepared -t 2 -D p=edc-param-secret, script SELECT length(:p::text) (named statement P_0)
+  command: PGPASSWORD=edc-fixture PGSSLMODE=disable PGGSSENCMODE=disable pgbench -n -c 1 -h 127.0.0.1 -p 5432 -U edc -M prepared -t 2 -D p=edc-param-secret -f W/prepared.sql edc; pg_hba method scram-sha-256; ssl=on; client rc=0 in 0.04 s; connections=2; unparsed socket syscalls=0
+ -- connection 1 of 2: request 225 bytes (client send == server recv: True), response 612 bytes (server send == client recv: True)
+  messages client->server: startup px2 X
+  messages server->client: Rx4 Sx14 K Z
+  timing (strace start-of-call stamps, relative to the first record of the run): server: first request record +1.7 ms, last response record +14.1 ms
+  server recv: records=4 sizes n=4 total=225 min=5 median=55 max=109 last=5 rle=[56, 55, 109, 5]
+    pattern=[startup | p*2 | X]
+    records starting mid-message=0; first header a prefix cannot reach: 1024: none; 4096: none; 8192: none; 16384: none
+  server send: records=3 sizes n=3 total=612 min=24 median=93 max=495 last=495 rle=[24, 93, 495]
+    pattern=[R*2 | Rx2+Sx14+K+Z]
+    records starting mid-message=0; first header a prefix cannot reach: 1024: none; 4096: none; 8192: none; 16384: none
+    ReadyForQuery: record 2 of 3 (last record: True), offset 489 in a 495-byte record; that record starts at a message boundary: True
+    ReadyForQuery inside 1024: yes; ReadyForQuery inside 4096: yes; ReadyForQuery inside 8192: yes; ReadyForQuery inside 16384: yes
+  client send: records=4 sizes n=4 total=225 min=5 median=55 max=109 last=5 rle=[56, 55, 109, 5]
+    pattern=[startup | p*2 | X]
+    records starting mid-message=0; first header a prefix cannot reach: 1024: none; 4096: none; 8192: none; 16384: none
+  client recv: records=3 sizes n=3 total=612 min=24 median=93 max=495 last=495 rle=[24, 93, 495]
+    pattern=[R*2 | Rx2+Sx14+K+Z]
+    records starting mid-message=0; first header a prefix cannot reach: 1024: none; 4096: none; 8192: none; 16384: none
+    ReadyForQuery: record 2 of 3 (last record: True), offset 489 in a 495-byte record; that record starts at a message boundary: True
+    ReadyForQuery inside 1024: yes; ReadyForQuery inside 4096: yes; ReadyForQuery inside 8192: yes; ReadyForQuery inside 16384: yes
+ -- connection 2 of 2: request 391 bytes (client send == server recv: True), response 753 bytes (server send == client recv: True)
+  messages client->server: startup px2 P S B D E S B D E S X
+  messages server->client: Rx4 Sx14 K Z 1 Z 2 T D C Z 2 T D C Z
+  timing (strace start-of-call stamps, relative to the first record of the run): server: first request record +17.2 ms, last response record +25.1 ms
+  server recv: records=7 sizes n=7 total=391 min=5 median=56 max=109 last=5 rle=[56, 55, 109, 46, 60x2, 5]
+    pattern=[startup | p*2 | P+S | B+D+E+S*2 | X]
+    records starting mid-message=0; first header a prefix cannot reach: 1024: none; 4096: none; 8192: none; 16384: none
+  server send: records=6 sizes n=6 total=753 min=11 median=65 max=495 last=65 rle=[24, 93, 495, 11, 65x2]
+    pattern=[R*2 | Rx2+Sx14+K+Z | 1+Z | 2+T+D+C+Z*2]
+    records starting mid-message=0; first header a prefix cannot reach: 1024: none; 4096: none; 8192: none; 16384: none
+    ReadyForQuery: record 5 of 6 (last record: True), offset 59 in a 65-byte record; that record starts at a message boundary: True
+    ReadyForQuery inside 1024: yes; ReadyForQuery inside 4096: yes; ReadyForQuery inside 8192: yes; ReadyForQuery inside 16384: yes
+  client send: records=7 sizes n=7 total=391 min=5 median=56 max=109 last=5 rle=[56, 55, 109, 46, 60x2, 5]
+    pattern=[startup | p*2 | P+S | B+D+E+S*2 | X]
+    records starting mid-message=0; first header a prefix cannot reach: 1024: none; 4096: none; 8192: none; 16384: none
+  client recv: records=6 sizes n=6 total=753 min=11 median=65 max=495 last=65 rle=[24, 93, 495, 11, 65x2]
+    pattern=[R*2 | Rx2+Sx14+K+Z | 1+Z | 2+T+D+C+Z*2]
+    records starting mid-message=0; first header a prefix cannot reach: 1024: none; 4096: none; 8192: none; 16384: none
+    ReadyForQuery: record 5 of 6 (last record: True), offset 59 in a 65-byte record; that record starts at a message boundary: True
+    ReadyForQuery inside 1024: yes; ReadyForQuery inside 4096: yes; ReadyForQuery inside 8192: yes; ReadyForQuery inside 16384: yes
+
+== extended / run 2: python3 raw-socket harness (m.py client) named: named statement and portal, Describe S/P, Execute with row limit (PortalSuspended), Close, FunctionCall length(text) (OID 1317) with argument edc-func-secret
+  command: PGPASSWORD=edc-fixture PGSSLMODE=disable PGGSSENCMODE=disable python3 m.py client named; pg_hba method scram-sha-256; ssl=on; client rc=0 in 0.05 s; connections=1; unparsed socket syscalls=0
+ -- connection 1 of 1: request 643 bytes (client send == server recv: True), response 913 bytes (server send == client recv: True)
+  messages client->server: startup px2 P D S B E S B D E S Q P B E S E C S Q C S F X
+  messages server->client: Rx4 Sx14 K Z 1 t T Z 2 D C Z 2 T D C Z C Z 1 2 Dx2 s Z D C 3 Z C Z 3 Z V Z
+  timing (strace start-of-call stamps, relative to the first record of the run): server: first request record +0.8 ms, last response record +5.4 ms
+  server recv: records=13 sizes n=13 total=643 min=5 median=55 max=109 last=5 rle=[60, 55, 109, 65, 76, 63, 11, 89, 42, 12, 20, 36, 5]
+    pattern=[startup | p*2 | P+D+S | B+E+S | B+D+E+S | Q | P+B+E+S | E+C+S | Q | C+S | F | X]
+    records starting mid-message=0; first header a prefix cannot reach: 1024: none; 4096: none; 8192: none; 16384: none
+  server send: records=12 sizes n=12 total=913 min=11 median=37 max=499 last=17 rle=[24, 93, 499, 49, 38, 65, 17, 45, 37, 18, 11, 17]
+    pattern=[R*2 | Rx2+Sx14+K+Z | 1+t+T+Z | 2+D+C+Z | 2+T+D+C+Z | C+Z | 1+2+Dx2+s+Z | D+C+3+Z | C+Z | 3+Z | V+Z]
+    records starting mid-message=0; first header a prefix cannot reach: 1024: none; 4096: none; 8192: none; 16384: none
+    ReadyForQuery: record 11 of 12 (last record: True), offset 11 in a 17-byte record; that record starts at a message boundary: True
+    ReadyForQuery inside 1024: yes; ReadyForQuery inside 4096: yes; ReadyForQuery inside 8192: yes; ReadyForQuery inside 16384: yes
+  client send: records=13 sizes n=13 total=643 min=5 median=55 max=109 last=5 rle=[60, 55, 109, 65, 76, 63, 11, 89, 42, 12, 20, 36, 5]
+    pattern=[startup | p*2 | P+D+S | B+E+S | B+D+E+S | Q | P+B+E+S | E+C+S | Q | C+S | F | X]
+    records starting mid-message=0; first header a prefix cannot reach: 1024: none; 4096: none; 8192: none; 16384: none
+  client recv: records=12 sizes n=12 total=913 min=11 median=37 max=499 last=17 rle=[24, 93, 499, 49, 38, 65, 17, 45, 37, 18, 11, 17]
+    pattern=[R*2 | Rx2+Sx14+K+Z | 1+t+T+Z | 2+D+C+Z | 2+T+D+C+Z | C+Z | 1+2+Dx2+s+Z | D+C+3+Z | C+Z | 3+Z | V+Z]
+    records starting mid-message=0; first header a prefix cannot reach: 1024: none; 4096: none; 8192: none; 16384: none
+    ReadyForQuery: record 11 of 12 (last record: True), offset 11 in a 17-byte record; that record starts at a message boundary: True
+    ReadyForQuery inside 1024: yes; ReadyForQuery inside 4096: yes; ReadyForQuery inside 8192: yes; ReadyForQuery inside 16384: yes
+
+== gssenc_refused / run 0: python3 raw-socket harness (m.py client) gssenc over TCP: GSSENCRequest, server answers G (PGDG build has GSSAPI), client closes (no Kerberos credentials)
+  command: PGPASSWORD=edc-fixture PGSSLMODE=disable PGGSSENCMODE=disable python3 m.py client gssenc; pg_hba method scram-sha-256; ssl=on; client rc=0 in 0.06 s; connections=1; unparsed socket syscalls=0
+ -- connection 1 of 1: request 8 bytes (client send == server recv: True), response 1 bytes (server send == client recv: True)
+  messages client->server: gssreq tls
+  messages server->client: answerG tls
+  timing (strace start-of-call stamps, relative to the first record of the run): server: first request record +0.7 ms, last response record +0.9 ms
+  server recv: records=1 sizes n=1 total=8 min=8 median=8 max=8 last=8 rle=[8]
+    pattern=[gssreq+tls]
+    records starting mid-message=0; first header a prefix cannot reach: 1024: none; 4096: none; 8192: none; 16384: none
+  server send: records=1 sizes n=1 total=1 min=1 median=1 max=1 last=1 rle=[1]
+    pattern=[answerG+tls]
+    records starting mid-message=0; first header a prefix cannot reach: 1024: none; 4096: none; 8192: none; 16384: none
+  client send: records=1 sizes n=1 total=8 min=8 median=8 max=8 last=8 rle=[8]
+    pattern=[gssreq+tls]
+    records starting mid-message=0; first header a prefix cannot reach: 1024: none; 4096: none; 8192: none; 16384: none
+  client recv: records=1 sizes n=1 total=1 min=1 median=1 max=1 last=1 rle=[1]
+    pattern=[answerG+tls]
+    records starting mid-message=0; first header a prefix cannot reach: 1024: none; 4096: none; 8192: none; 16384: none
+
+== gssenc_refused / run 1: python3 raw-socket harness (m.py client) gssenc over the Unix socket of the same server: GSSENCRequest, N, plain startup (SCRAM), SELECT 1, Terminate
+  command: PGPASSWORD=edc-fixture PGSSLMODE=disable PGGSSENCMODE=disable python3 m.py client gssenc_unix; pg_hba method scram-sha-256; ssl=on; client rc=0 in 0.04 s; connections=1; unparsed socket syscalls=0
+ -- connection 1 of 1: request 251 bytes (client send == server recv: True), response 683 bytes (server send == client recv: True)
+  messages client->server: gssreq startup px2 Q X
+  messages server->client: answerN Rx4 Sx14 K Z T D C Z
+  timing (strace start-of-call stamps, relative to the first record of the run): server: first request record +0.7 ms, last response record +4.1 ms
+  server recv: records=6 sizes n=6 total=251 min=5 median=34 max=109 last=5 rle=[8, 60, 55, 109, 14, 5]
+    pattern=[gssreq | startup | p*2 | Q | X]
+    records starting mid-message=0; first header a prefix cannot reach: 1024: none; 4096: none; 8192: none; 16384: none
+  server send: records=5 sizes n=5 total=683 min=1 median=66 max=499 last=66 rle=[1, 24, 93, 499, 66]
+    pattern=[answerN | R*2 | Rx2+Sx14+K+Z | T+D+C+Z]
+    records starting mid-message=0; first header a prefix cannot reach: 1024: none; 4096: none; 8192: none; 16384: none
+    ReadyForQuery: record 4 of 5 (last record: True), offset 60 in a 66-byte record; that record starts at a message boundary: True
+    ReadyForQuery inside 1024: yes; ReadyForQuery inside 4096: yes; ReadyForQuery inside 8192: yes; ReadyForQuery inside 16384: yes
+  client send: records=6 sizes n=6 total=251 min=5 median=34 max=109 last=5 rle=[8, 60, 55, 109, 14, 5]
+    pattern=[gssreq | startup | p*2 | Q | X]
+    records starting mid-message=0; first header a prefix cannot reach: 1024: none; 4096: none; 8192: none; 16384: none
+  client recv: records=5 sizes n=5 total=683 min=1 median=66 max=499 last=66 rle=[1, 24, 93, 499, 66]
+    pattern=[answerN | R*2 | Rx2+Sx14+K+Z | T+D+C+Z]
+    records starting mid-message=0; first header a prefix cannot reach: 1024: none; 4096: none; 8192: none; 16384: none
+    ReadyForQuery: record 4 of 5 (last record: True), offset 60 in a 66-byte record; that record starts at a message boundary: True
+    ReadyForQuery inside 1024: yes; ReadyForQuery inside 4096: yes; ReadyForQuery inside 8192: yes; ReadyForQuery inside 16384: yes
+
+== large / run 0: psql: SELECT repeat('x',100) FROM generate_series(1,1000)
+  command: PGPASSWORD=edc-fixture PGSSLMODE=disable PGGSSENCMODE=disable psql -X -h 127.0.0.1 -p 5432 -U edc -d edc -c 'SELECT repeat('\''x'\'',100) FROM generate_series(1,1000)'; pg_hba method scram-sha-256; ssl=on; client rc=0 in 0.01 s; connections=1; unparsed socket syscalls=0
+ -- connection 1 of 1: request 279 bytes (client send == server recv: True), response 111664 bytes (server send == client recv: True)
+  messages client->server: startup px2 Q X
+  messages server->client: Rx4 Sx14 K Z T Dx1000 C Z
+  timing (strace start-of-call stamps, relative to the first record of the run): server: first request record +0.7 ms, last response record +7.4 ms
+  server recv: records=5 sizes n=5 total=279 min=5 median=55 max=109 last=5 rle=[53, 55, 109, 57, 5]
+    pattern=[startup | p*2 | Q | X]
+    records starting mid-message=0; first header a prefix cannot reach: 1024: none; 4096: none; 8192: none; 16384: none
+  server send: records=17 sizes n=17 total=111664 min=24 median=8192 max=8192 last=4559 rle=[24, 93, 492, 8192x13, 4559]
+    pattern=[R*2 | Rx2+Sx14+K+Z | T+Dx74 | ~Dx74*2 | ~Dx73 | ~Dx74*4 | ~Dx73 | ~Dx74*4 | ~Dx40+C+Z]
+    records starting mid-message=13; first header a prefix cannot reach: 1024: rec3@1031 D; 4096: rec3@4139 D; 8192: none; 16384: none
+    ReadyForQuery: record 16 of 17 (last record: True), offset 4553 in a 4559-byte record; that record starts at a message boundary: False
+    ReadyForQuery inside 1024: no; ReadyForQuery inside 4096: no; ReadyForQuery inside 8192: yes; ReadyForQuery inside 16384: yes
+  client send: records=5 sizes n=5 total=279 min=5 median=55 max=109 last=5 rle=[53, 55, 109, 57, 5]
+    pattern=[startup | p*2 | Q | X]
+    records starting mid-message=0; first header a prefix cannot reach: 1024: none; 4096: none; 8192: none; 16384: none
+  client recv: records=15 sizes n=15 total=111664 min=24 median=8192 max=16303 last=12832 rle=[24, 93, 492, 8192x10, 16303, 12832]
+    pattern=[R*2 | Rx2+Sx14+K+Z | T+Dx74 | ~Dx74*2 | ~Dx73 | ~Dx74*4 | ~Dx73 | ~Dx74 | ~Dx147 | ~Dx115+C+Z]
+    records starting mid-message=11; first header a prefix cannot reach: 1024: rec3@1031 D; 4096: rec3@4139 D; 8192: rec13@8244 D; 16384: none
+    ReadyForQuery: record 14 of 15 (last record: True), offset 12826 in a 12832-byte record; that record starts at a message boundary: False
+    ReadyForQuery inside 1024: no; ReadyForQuery inside 4096: no; ReadyForQuery inside 8192: no; ReadyForQuery inside 16384: yes
+
+== large / run 1: psql: SELECT repeat('x',100) FROM generate_series(1,100000)
+  command: PGPASSWORD=edc-fixture PGSSLMODE=disable PGGSSENCMODE=disable psql -X -h 127.0.0.1 -p 5432 -U edc -d edc -c 'SELECT repeat('\''x'\'',100) FROM generate_series(1,100000)'; pg_hba method scram-sha-256; ssl=on; client rc=0 in 0.29 s; connections=1; unparsed socket syscalls=0
+ -- connection 1 of 1: request 281 bytes (client send == server recv: True), response 11100666 bytes (server send == client recv: True); fixture keeps the last 7 records only (tail-only)
+  messages client->server: startup px2 Q X
+  messages server->client: Rx4 Sx14 K Z T Dx100000 C Z
+  timing (strace start-of-call stamps, relative to the first record of the run): server: first request record +1.0 ms, last response record +75.6 ms
+  server recv: records=5 sizes n=5 total=281 min=5 median=55 max=109 last=5 rle=[53, 55, 109, 59, 5]
+    pattern=[startup | p*2 | Q | X]
+    records starting mid-message=0; first header a prefix cannot reach: 1024: none; 4096: none; 8192: none; 16384: none
+  server send: records=1358 sizes n=1358 total=11100666 min=24 median=8192 max=8192 last=8089 rle=[24, 93, 492, 8192x1354, 8089]
+    pattern=[R*2 | Rx2+Sx14+K+Z | T+Dx74 | ~Dx74*2 | ~Dx73 | ~Dx74*4 | ~Dx73 | ~Dx74*4 | ~Dx73 | ~Dx74*4 | ~Dx73 | ~Dx74*4 | ~Dx73 | ~Dx74*4 | ~Dx73 | ~Dx74*4 | ...(531 more) | ~Dx74*4 | ~Dx73 | ~Dx74*4 | ~Dx73 | ~Dx74*3 | ~Dx72+C+Z]
+    records starting mid-message=1342; first header a prefix cannot reach: 1024: rec3@1031 D; 4096: rec3@4139 D; 8192: none; 16384: none
+    ReadyForQuery: record 1357 of 1358 (last record: True), offset 8083 in a 8089-byte record; that record starts at a message boundary: False
+    ReadyForQuery inside 1024: no; ReadyForQuery inside 4096: no; ReadyForQuery inside 8192: yes; ReadyForQuery inside 16384: yes
+  client send: records=5 sizes n=5 total=281 min=5 median=55 max=109 last=5 rle=[53, 55, 109, 59, 5]
+    pattern=[startup | p*2 | Q | X]
+    records starting mid-message=0; first header a prefix cannot reach: 1024: none; 4096: none; 8192: none; 16384: none
+  client recv: records=1237 sizes n=1237 total=11100666 min=24 median=8192 max=16384 last=8089 rle=[24, 93, 492, 8192x25, 16300, 16317x20, 9616, 16358, 8218, 16313, ...(219 more runs), 8319, 8192, 8089]
+    pattern=[R*2 | Rx2+Sx14+K+Z | T+Dx74 | ~Dx74*2 | ~Dx73 | ~Dx74*4 | ~Dx73 | ~Dx74*4 | ~Dx73 | ~Dx74*4 | ~Dx73 | ~Dx74*4 | ~Dx73 | ~Dx74 | ~Dx147*21 | ~Dx87 | ...(561 more) | ~Dx73 | ~Dx74*2 | ~Dx147*2 | ~Dx75 | ~Dx74 | ~Dx72+C+Z]
+    records starting mid-message=1223; first header a prefix cannot reach: 1024: rec3@1031 D; 4096: rec3@4139 D; 8192: rec28@8241 D; 16384: none
+    ReadyForQuery: record 1236 of 1237 (last record: True), offset 8083 in a 8089-byte record; that record starts at a message boundary: False
+    ReadyForQuery inside 1024: no; ReadyForQuery inside 4096: no; ReadyForQuery inside 8192: yes; ReadyForQuery inside 16384: yes
+
+== large / run 2: psql: SELECT repeat('x',100) FROM generate_series(1,1000000)
+  command: PGPASSWORD=edc-fixture PGSSLMODE=disable PGGSSENCMODE=disable psql -X -h 127.0.0.1 -p 5432 -U edc -d edc -c 'SELECT repeat('\''x'\'',100) FROM generate_series(1,1000000)'; pg_hba method scram-sha-256; ssl=on; client rc=0 in 3.26 s; connections=1; unparsed socket syscalls=0
+ -- connection 1 of 1: request 282 bytes (client send == server recv: True), response 111000667 bytes (server send == client recv: True); fixture keeps the last 7 records only (tail-only)
+  messages client->server: startup px2 Q X
+  messages server->client: Rx4 Sx14 K Z T Dx1000000 C Z
+  timing (strace start-of-call stamps, relative to the first record of the run): server: first request record +2.2 ms, last response record +1176.9 ms
+  server recv: records=5 sizes n=5 total=282 min=5 median=55 max=109 last=5 rle=[53, 55, 109, 60, 5]
+    pattern=[startup | p*2 | Q | X]
+    records starting mid-message=0; first header a prefix cannot reach: 1024: none; 4096: none; 8192: none; 16384: none
+  server send: records=13553 sizes n=13553 total=111000667 min=24 median=8192 max=8192 last=6650 rle=[24, 93, 492, 8192x13549, 6650]
+    pattern=[R*2 | Rx2+Sx14+K+Z | T+Dx74 | ~Dx74*2 | ~Dx73 | ~Dx74*4 | ~Dx73 | ~Dx74*4 | ~Dx73 | ~Dx74*4 | ~Dx73 | ~Dx74*4 | ~Dx73 | ~Dx74*4 | ~Dx73 | ~Dx74*4 | ...(5475 more) | ~Dx74*4 | ~Dx73 | ~Dx74*4 | ~Dx73 | ~Dx74*3 | ~Dx59+C+Z]
+    records starting mid-message=13427; first header a prefix cannot reach: 1024: rec3@1031 D; 4096: rec3@4139 D; 8192: none; 16384: none
+    ReadyForQuery: record 13552 of 13553 (last record: True), offset 6644 in a 6650-byte record; that record starts at a message boundary: False
+    ReadyForQuery inside 1024: no; ReadyForQuery inside 4096: no; ReadyForQuery inside 8192: yes; ReadyForQuery inside 16384: yes
+  client send: records=5 sizes n=5 total=282 min=5 median=55 max=109 last=5 rle=[53, 55, 109, 60, 5]
+    pattern=[startup | p*2 | Q | X]
+    records starting mid-message=0; first header a prefix cannot reach: 1024: none; 4096: none; 8192: none; 16384: none
+  client recv: records=12589 sizes n=12589 total=111000667 min=4 median=8192 max=16384 last=6650 rle=[24, 93, 492, 8192x38, 16364, 8212, 16319, 16317x2, 8391, 16362, ...(977 more runs), 8249, 8192x3, 6650]
+    pattern=[R*2 | Rx2+Sx14+K+Z | T+Dx74 | ~Dx74*2 | ~Dx73 | ~Dx74*4 | ~Dx73 | ~Dx74*4 | ~Dx73 | ~Dx74*4 | ~Dx73 | ~Dx74*4 | ~Dx73 | ~Dx74*4 | ~Dx73 | ~Dx74*4 | ...(5266 more) | ~Dx74*4 | ~Dx73 | ~Dx74*2 | ~Dx147 | ~Dx74*4 | ~Dx59+C+Z]
+    records starting mid-message=12478; first header a prefix cannot reach: 1024: rec3@1031 D; 4096: rec3@4139 D; 8192: rec41@8194 D; 16384: none
+    ReadyForQuery: record 12588 of 12589 (last record: True), offset 6644 in a 6650-byte record; that record starts at a message boundary: False
+    ReadyForQuery inside 1024: no; ReadyForQuery inside 4096: no; ReadyForQuery inside 8192: yes; ReadyForQuery inside 16384: yes
+
+== large / run 3: psql: SELECT generate_series(1,1000000)
+  command: PGPASSWORD=edc-fixture PGSSLMODE=disable PGGSSENCMODE=disable psql -X -h 127.0.0.1 -p 5432 -U edc -d edc -c 'SELECT generate_series(1,1000000)'; pg_hba method scram-sha-256; ssl=on; client rc=0 in 0.51 s; connections=1; unparsed socket syscalls=0
+ -- connection 1 of 1: request 261 bytes (client send == server recv: True), response 16889572 bytes (server send == client recv: True); fixture keeps the last 6 records only (tail-only)
+  messages client->server: startup px2 Q X
+  messages server->client: Rx4 Sx14 K Z T Dx1000000 C Z
+  timing (strace start-of-call stamps, relative to the first record of the run): server: first request record +0.7 ms, last response record +200.3 ms
+  server recv: records=5 sizes n=5 total=261 min=5 median=53 max=109 last=5 rle=[53, 55, 109, 39, 5]
+    pattern=[startup | p*2 | Q | X]
+    records starting mid-message=0; first header a prefix cannot reach: 1024: none; 4096: none; 8192: none; 16384: none
+  server send: records=2065 sizes n=2065 total=16889572 min=24 median=8192 max=8192 last=5251 rle=[24, 93, 492, 8192x2061, 5251]
+    pattern=[R*2 | Rx2+Sx14+K+Z | T+Dx590 | ~Dx574 | ~Dx546*5 | Dx547 | ~Dx546*6 | ~Dx547 | ~Dx546*3 | ~Dx518 | ~Dx512*174 | ~Dx511 | ~Dx482*2 | ~Dx481 | Dx482 | ~Dx482*7 | ...(542 more) | ~Dx481 | Dx482 | ~Dx482*7 | ~Dx481 | ~Dx482*2 | ~Dx307+C+Z]
+    records starting mid-message=1950; first header a prefix cannot reach: 1024: rec3@1020 D; 4096: rec3@4105 D; 8192: none; 16384: none
+    ReadyForQuery: record 2064 of 2065 (last record: True), offset 5245 in a 5251-byte record; that record starts at a message boundary: False
+    ReadyForQuery inside 1024: no; ReadyForQuery inside 4096: no; ReadyForQuery inside 8192: yes; ReadyForQuery inside 16384: yes
+  client send: records=5 sizes n=5 total=261 min=5 median=53 max=109 last=5 rle=[53, 55, 109, 39, 5]
+    pattern=[startup | p*2 | Q | X]
+    records starting mid-message=0; first header a prefix cannot reach: 1024: none; 4096: none; 8192: none; 16384: none
+  client recv: records=1746 sizes n=1746 total=16889572 min=24 median=8192 max=16384 last=5251 rle=[24, 93, 492, 8192x2, 16379, 8197, 16373, 16380x6, 8227, 16375, ...(129 more runs), 8203, 8192x1195, 5251]
+    pattern=[R*2 | Rx2+Sx14+K+Z | T+Dx590 | ~Dx574 | ~Dx1092 | ~Dx546 | ~Dx1092*6 | ~Dx1064 | ~Dx514 | ~Dx1023 | Dx1024*5 | Dx513 | ~Dx1023 | Dx1024*79 | Dx993 | ~Dx963*11 | ...(499 more) | ~Dx481 | Dx482 | ~Dx482*7 | ~Dx481 | ~Dx482*2 | ~Dx307+C+Z]
+    records starting mid-message=1571; first header a prefix cannot reach: 1024: rec3@1020 D; 4096: rec3@4105 D; 8192: rec5@8200 D; 16384: none
+    ReadyForQuery: record 1745 of 1746 (last record: True), offset 5245 in a 5251-byte record; that record starts at a message boundary: False
+    ReadyForQuery inside 1024: no; ReadyForQuery inside 4096: no; ReadyForQuery inside 8192: yes; ReadyForQuery inside 16384: yes
+
+== pipeline / run 0: pgbench -M extended -t 2, \startpipeline SELECT 1; SELECT 2; \endpipeline
+  command: PGPASSWORD=edc-fixture PGSSLMODE=disable PGGSSENCMODE=disable pgbench -n -c 1 -h 127.0.0.1 -p 5432 -U edc -M extended -t 2 -f W/pipeline.sql edc; pg_hba method scram-sha-256; ssl=on; client rc=0 in 0.04 s; connections=2; unparsed socket syscalls=0
+ -- connection 1 of 2: request 225 bytes (client send == server recv: True), response 612 bytes (server send == client recv: True)
+  messages client->server: startup px2 X
+  messages server->client: Rx4 Sx14 K Z
+  timing (strace start-of-call stamps, relative to the first record of the run): server: first request record +1.8 ms, last response record +13.7 ms
+  server recv: records=4 sizes n=4 total=225 min=5 median=55 max=109 last=5 rle=[56, 55, 109, 5]
+    pattern=[startup | p*2 | X]
+    records starting mid-message=0; first header a prefix cannot reach: 1024: none; 4096: none; 8192: none; 16384: none
+  server send: records=3 sizes n=3 total=612 min=24 median=93 max=495 last=495 rle=[24, 93, 495]
+    pattern=[R*2 | Rx2+Sx14+K+Z]
+    records starting mid-message=0; first header a prefix cannot reach: 1024: none; 4096: none; 8192: none; 16384: none
+    ReadyForQuery: record 2 of 3 (last record: True), offset 489 in a 495-byte record; that record starts at a message boundary: True
+    ReadyForQuery inside 1024: yes; ReadyForQuery inside 4096: yes; ReadyForQuery inside 8192: yes; ReadyForQuery inside 16384: yes
+  client send: records=4 sizes n=4 total=225 min=5 median=55 max=109 last=5 rle=[56, 55, 109, 5]
+    pattern=[startup | p*2 | X]
+    records starting mid-message=0; first header a prefix cannot reach: 1024: none; 4096: none; 8192: none; 16384: none
+  client recv: records=3 sizes n=3 total=612 min=24 median=93 max=495 last=495 rle=[24, 93, 495]
+    pattern=[R*2 | Rx2+Sx14+K+Z]
+    records starting mid-message=0; first header a prefix cannot reach: 1024: none; 4096: none; 8192: none; 16384: none
+    ReadyForQuery: record 2 of 3 (last record: True), offset 489 in a 495-byte record; that record starts at a message boundary: True
+    ReadyForQuery inside 1024: yes; ReadyForQuery inside 4096: yes; ReadyForQuery inside 8192: yes; ReadyForQuery inside 16384: yes
+ -- connection 2 of 2: request 435 bytes (client send == server recv: True), response 904 bytes (server send == client recv: True)
+  messages client->server: startup px2 P B D E P B D E S P B D E P B D E S X
+  messages server->client: Rx4 Sx14 K Z 1 2 T D C 1 2 T D C Z 1 2 T D C 1 2 T D C Z
+  timing (strace start-of-call stamps, relative to the first record of the run): server: first request record +16.9 ms, last response record +24.2 ms
+  server recv: records=6 sizes n=6 total=435 min=5 median=80 max=109 last=5 rle=[56, 55, 109, 105x2, 5]
+    pattern=[startup | p*2 | P+B+D+E+P+B+D+E+S*2 | X]
+    records starting mid-message=0; first header a prefix cannot reach: 1024: none; 4096: none; 8192: none; 16384: none
+  server send: records=5 sizes n=5 total=904 min=24 median=146 max=495 last=146 rle=[24, 93, 495, 146x2]
+    pattern=[R*2 | Rx2+Sx14+K+Z | 1+2+T+D+C+1+2+T+D+C+Z*2]
+    records starting mid-message=0; first header a prefix cannot reach: 1024: none; 4096: none; 8192: none; 16384: none
+    ReadyForQuery: record 4 of 5 (last record: True), offset 140 in a 146-byte record; that record starts at a message boundary: True
+    ReadyForQuery inside 1024: yes; ReadyForQuery inside 4096: yes; ReadyForQuery inside 8192: yes; ReadyForQuery inside 16384: yes
+  client send: records=6 sizes n=6 total=435 min=5 median=80 max=109 last=5 rle=[56, 55, 109, 105x2, 5]
+    pattern=[startup | p*2 | P+B+D+E+P+B+D+E+S*2 | X]
+    records starting mid-message=0; first header a prefix cannot reach: 1024: none; 4096: none; 8192: none; 16384: none
+  client recv: records=5 sizes n=5 total=904 min=24 median=146 max=495 last=146 rle=[24, 93, 495, 146x2]
+    pattern=[R*2 | Rx2+Sx14+K+Z | 1+2+T+D+C+1+2+T+D+C+Z*2]
+    records starting mid-message=0; first header a prefix cannot reach: 1024: none; 4096: none; 8192: none; 16384: none
+    ReadyForQuery: record 4 of 5 (last record: True), offset 140 in a 146-byte record; that record starts at a message boundary: True
+    ReadyForQuery inside 1024: yes; ReadyForQuery inside 4096: yes; ReadyForQuery inside 8192: yes; ReadyForQuery inside 16384: yes
+
+== pipeline / run 1: python3 raw-socket harness (m.py client) pipeline: 3 Sync batches in one send before the first ReadyForQuery; batch 2 = SELECT 1/0 then SELECT 3 (skipped until Sync)
+  command: PGPASSWORD=edc-fixture PGSSLMODE=disable PGGSSENCMODE=disable python3 m.py client pipeline; pg_hba method scram-sha-256; ssl=on; client rc=0 in 0.06 s; connections=1; unparsed socket syscalls=0
+ -- connection 1 of 1: request 413 bytes (client send == server recv: True), response 811 bytes (server send == client recv: True)
+  messages client->server: startup px2 P B D E S P B E P B E S P B E S X
+  messages server->client: Rx4 Sx14 K Z 1 2 T D C Z 1 E Z 1 2 D C Z
+  timing (strace start-of-call stamps, relative to the first record of the run): server: first request record +0.7 ms, last response record +4.6 ms
+  server recv: records=5 sizes n=5 total=413 min=5 median=60 max=184 last=5 rle=[60, 55, 109, 184, 5]
+    pattern=[startup | p*2 | P+B+D+E+S+P+B+E+P+B+E+S+P+B+E+S | X]
+    records starting mid-message=0; first header a prefix cannot reach: 1024: none; 4096: none; 8192: none; 16384: none
+  server send: records=7 sizes n=7 total=811 min=6 median=71 max=499 last=42 rle=[24, 93, 499, 76, 71, 6, 42]
+    pattern=[R*2 | Rx2+Sx14+K+Z | 1+2+T+D+C+Z | 1+E | Z | 1+2+D+C+Z]
+    records starting mid-message=0; first header a prefix cannot reach: 1024: none; 4096: none; 8192: none; 16384: none
+    ReadyForQuery: record 6 of 7 (last record: True), offset 36 in a 42-byte record; that record starts at a message boundary: True
+    ReadyForQuery inside 1024: yes; ReadyForQuery inside 4096: yes; ReadyForQuery inside 8192: yes; ReadyForQuery inside 16384: yes
+  client send: records=5 sizes n=5 total=413 min=5 median=60 max=184 last=5 rle=[60, 55, 109, 184, 5]
+    pattern=[startup | p*2 | P+B+D+E+S+P+B+E+P+B+E+S+P+B+E+S | X]
+    records starting mid-message=0; first header a prefix cannot reach: 1024: none; 4096: none; 8192: none; 16384: none
+  client recv: records=7 sizes n=7 total=811 min=6 median=71 max=499 last=42 rle=[24, 93, 499, 76, 71, 6, 42]
+    pattern=[R*2 | Rx2+Sx14+K+Z | 1+2+T+D+C+Z | 1+E | Z | 1+2+D+C+Z]
+    records starting mid-message=0; first header a prefix cannot reach: 1024: none; 4096: none; 8192: none; 16384: none
+    ReadyForQuery: record 6 of 7 (last record: True), offset 36 in a 42-byte record; that record starts at a message boundary: True
+    ReadyForQuery inside 1024: yes; ReadyForQuery inside 4096: yes; ReadyForQuery inside 8192: yes; ReadyForQuery inside 16384: yes
+
+== simple / run 0: psql: SELECT 1; one Query with 'SELECT 1; SELECT 2'; SELECT with literal 'edc-literal-secret'; Terminate
+  command: PGPASSWORD=edc-fixture PGSSLMODE=disable PGGSSENCMODE=disable psql -X -h 127.0.0.1 -p 5432 -U edc -d edc -c 'SELECT 1' -c 'SELECT 1; SELECT 2' -c 'SELECT '\''edc-literal-secret'\'' AS s'; pg_hba method scram-sha-256; ssl=on; client rc=0 in 0.03 s; connections=1; unparsed socket syscalls=0
+ -- connection 1 of 1: request 298 bytes (client send == server recv: True), response 877 bytes (server send == client recv: True)
+  messages client->server: startup px2 Qx3 X
+  messages server->client: Rx4 Sx14 K Z T D C Z T D C T D C Z T D C Z
+  timing (strace start-of-call stamps, relative to the first record of the run): server: first request record +1.9 ms, last response record +15.2 ms
+  server recv: records=7 sizes n=7 total=298 min=5 median=38 max=109 last=5 rle=[53, 55, 109, 14, 24, 38, 5]
+    pattern=[startup | p*2 | Q*3 | X]
+    records starting mid-message=0; first header a prefix cannot reach: 1024: none; 4096: none; 8192: none; 16384: none
+  server send: records=6 sizes n=6 total=877 min=24 median=84 max=492 last=76 rle=[24, 93, 492, 66, 126, 76]
+    pattern=[R*2 | Rx2+Sx14+K+Z | T+D+C+Z | T+D+C+T+D+C+Z | T+D+C+Z]
+    records starting mid-message=0; first header a prefix cannot reach: 1024: none; 4096: none; 8192: none; 16384: none
+    ReadyForQuery: record 5 of 6 (last record: True), offset 70 in a 76-byte record; that record starts at a message boundary: True
+    ReadyForQuery inside 1024: yes; ReadyForQuery inside 4096: yes; ReadyForQuery inside 8192: yes; ReadyForQuery inside 16384: yes
+  client send: records=7 sizes n=7 total=298 min=5 median=38 max=109 last=5 rle=[53, 55, 109, 14, 24, 38, 5]
+    pattern=[startup | p*2 | Q*3 | X]
+    records starting mid-message=0; first header a prefix cannot reach: 1024: none; 4096: none; 8192: none; 16384: none
+  client recv: records=6 sizes n=6 total=877 min=24 median=84 max=492 last=76 rle=[24, 93, 492, 66, 126, 76]
+    pattern=[R*2 | Rx2+Sx14+K+Z | T+D+C+Z | T+D+C+T+D+C+Z | T+D+C+Z]
+    records starting mid-message=0; first header a prefix cannot reach: 1024: none; 4096: none; 8192: none; 16384: none
+    ReadyForQuery: record 5 of 6 (last record: True), offset 70 in a 76-byte record; that record starts at a message boundary: True
+    ReadyForQuery inside 1024: yes; ReadyForQuery inside 4096: yes; ReadyForQuery inside 8192: yes; ReadyForQuery inside 16384: yes
+
+== simple / run 1: python3 raw-socket harness (m.py client) cancel: SELECT pg_sleep(5) on connection 1, CancelRequest on connection 2
+  command: PGPASSWORD=edc-fixture PGSSLMODE=disable PGGSSENCMODE=disable python3 m.py client cancel; pg_hba method scram-sha-256; ssl=on; client rc=0 in 0.58 s; connections=2; unparsed socket syscalls=0
+ -- connection 1 of 2: request 253 bytes (client send == server recv: True), response 761 bytes (server send == client recv: True)
+  messages client->server: startup px2 Q X
+  messages server->client: Rx4 Sx14 K Z T E Z
+  timing (strace start-of-call stamps, relative to the first record of the run): server: first request record +0.8 ms, last response record +512.3 ms
+  server recv: records=5 sizes n=5 total=253 min=5 median=55 max=109 last=5 rle=[60, 55, 109, 24, 5]
+    pattern=[startup | p*2 | Q | X]
+    records starting mid-message=0; first header a prefix cannot reach: 1024: none; 4096: none; 8192: none; 16384: none
+  server send: records=5 sizes n=5 total=761 min=6 median=93 max=499 last=6 rle=[24, 93, 499, 139, 6]
+    pattern=[R*2 | Rx2+Sx14+K+Z | T+E | Z]
+    records starting mid-message=0; first header a prefix cannot reach: 1024: none; 4096: none; 8192: none; 16384: none
+    ReadyForQuery: record 4 of 5 (last record: True), offset 0 in a 6-byte record; that record starts at a message boundary: True
+    ReadyForQuery inside 1024: yes; ReadyForQuery inside 4096: yes; ReadyForQuery inside 8192: yes; ReadyForQuery inside 16384: yes
+  client send: records=5 sizes n=5 total=253 min=5 median=55 max=109 last=5 rle=[60, 55, 109, 24, 5]
+    pattern=[startup | p*2 | Q | X]
+    records starting mid-message=0; first header a prefix cannot reach: 1024: none; 4096: none; 8192: none; 16384: none
+  client recv: records=4 sizes n=4 total=761 min=24 median=119 max=499 last=145 rle=[24, 93, 499, 145]
+    pattern=[R*2 | Rx2+Sx14+K+Z | T+E+Z]
+    records starting mid-message=0; first header a prefix cannot reach: 1024: none; 4096: none; 8192: none; 16384: none
+    ReadyForQuery: record 3 of 4 (last record: True), offset 139 in a 145-byte record; that record starts at a message boundary: True
+    ReadyForQuery inside 1024: yes; ReadyForQuery inside 4096: yes; ReadyForQuery inside 8192: yes; ReadyForQuery inside 16384: yes
+ -- connection 2 of 2: request 16 bytes (client send == server recv: True), response 0 bytes (server send == client recv: True)
+  messages client->server: cancel
+  messages server->client: 
+  server recv: records=1 sizes n=1 total=16 min=16 median=16 max=16 last=16 rle=[16]
+    pattern=[cancel]
+    records starting mid-message=0; first header a prefix cannot reach: 1024: none; 4096: none; 8192: none; 16384: none
+  server send: records=0
+  client send: records=1 sizes n=1 total=16 min=16 median=16 max=16 last=16 rle=[16]
+    pattern=[cancel]
+    records starting mid-message=0; first header a prefix cannot reach: 1024: none; 4096: none; 8192: none; 16384: none
+  client recv: records=0
+
+== ssl / run 0: psql sslmode=require gssencmode=disable: SSLRequest, S, TLS
+  command: PGPASSWORD=edc-fixture PGSSLMODE=disable PGGSSENCMODE=disable psql -X -c 'SELECT 1' 'host=127.0.0.1 port=5432 user=edc dbname=edc sslmode=require gssencmode=disable'; pg_hba method scram-sha-256; ssl=on; client rc=0 in 0.04 s; connections=1; unparsed socket syscalls=0
+ -- connection 1 of 1: request 1221 bytes (client send == server recv: False), response 2276 bytes (server send == client recv: False)
+  messages client->server: sslreq tls
+  messages server->client: answerS tls
+  timing (strace start-of-call stamps, relative to the first record of the run): server: first request record +1.6 ms, last response record +20.3 ms
+  server recv: records=19 sizes n=19 total=1221 min=1 median=5 max=356 last=22 rle=[8, 5, 323, 5, 1, 5, 356, 5, 69, 5, ...(6 more runs), 31, 5, 22]
+    pattern=[sslreq | tls | ~cont*17]
+    records starting mid-message=17; first header a prefix cannot reach: 1024: none; 4096: none; 8192: none; 16384: none
+  server send: records=8 sizes n=8 total=2276 min=1 median=93 max=1370 last=24 rle=[1, 99, 1370, 65, 115, 514, 88, 24]
+    pattern=[answerS | tls | ~cont*6]
+    records starting mid-message=6; first header a prefix cannot reach: 1024: none; 4096: none; 8192: none; 16384: none
+  client send: records=10 sizes n=10 total=1245 min=8 median=74 max=367 last=24 rle=[8, 328, 367, 74, 75, 103, 203, 36, 27, 24]
+    pattern=[sslreq | tls | ~cont*8]
+    records starting mid-message=8; first header a prefix cannot reach: 1024: none; 4096: none; 8192: none; 16384: none
+  client recv: records=23 sizes n=23 total=2252 min=1 median=5 max=817 last=83 rle=[1, 5, 88, 5, 1, 5, 155, 5, 23, 5, ...(10 more runs), 509, 5, 83]
+    pattern=[answerS | tls | ~cont*21]
+    records starting mid-message=21; first header a prefix cannot reach: 1024: none; 4096: none; 8192: none; 16384: none
+
+== ssl_refused / run 0: psql sslmode=prefer gssencmode=disable against ssl=off: SSLRequest, N, plain startup
+  command: PGPASSWORD=edc-fixture PGSSLMODE=disable PGGSSENCMODE=disable psql -X -c 'SELECT 1' 'host=127.0.0.1 port=5432 user=edc dbname=edc sslmode=prefer gssencmode=disable'; pg_hba method scram-sha-256; ssl=off; client rc=0 in 0.03 s; connections=1; unparsed socket syscalls=0
+ -- connection 1 of 1: request 244 bytes (client send == server recv: True), response 676 bytes (server send == client recv: True)
+  messages client->server: sslreq startup px2 Q X
+  messages server->client: answerN Rx4 Sx14 K Z T D C Z
+  timing (strace start-of-call stamps, relative to the first record of the run): server: first request record +1.5 ms, last response record +13.3 ms
+  server recv: records=6 sizes n=6 total=244 min=5 median=33 max=109 last=5 rle=[8, 53, 55, 109, 14, 5]
+    pattern=[sslreq | startup | p*2 | Q | X]
+    records starting mid-message=0; first header a prefix cannot reach: 1024: none; 4096: none; 8192: none; 16384: none
+  server send: records=5 sizes n=5 total=676 min=1 median=66 max=492 last=66 rle=[1, 24, 93, 492, 66]
+    pattern=[answerN | R*2 | Rx2+Sx14+K+Z | T+D+C+Z]
+    records starting mid-message=0; first header a prefix cannot reach: 1024: none; 4096: none; 8192: none; 16384: none
+    ReadyForQuery: record 4 of 5 (last record: True), offset 60 in a 66-byte record; that record starts at a message boundary: True
+    ReadyForQuery inside 1024: yes; ReadyForQuery inside 4096: yes; ReadyForQuery inside 8192: yes; ReadyForQuery inside 16384: yes
+  client send: records=6 sizes n=6 total=244 min=5 median=33 max=109 last=5 rle=[8, 53, 55, 109, 14, 5]
+    pattern=[sslreq | startup | p*2 | Q | X]
+    records starting mid-message=0; first header a prefix cannot reach: 1024: none; 4096: none; 8192: none; 16384: none
+  client recv: records=5 sizes n=5 total=676 min=1 median=66 max=492 last=66 rle=[1, 24, 93, 492, 66]
+    pattern=[answerN | R*2 | Rx2+Sx14+K+Z | T+D+C+Z]
+    records starting mid-message=0; first header a prefix cannot reach: 1024: none; 4096: none; 8192: none; 16384: none
+    ReadyForQuery: record 4 of 5 (last record: True), offset 60 in a 66-byte record; that record starts at a message boundary: True
+    ReadyForQuery inside 1024: yes; ReadyForQuery inside 4096: yes; ReadyForQuery inside 8192: yes; ReadyForQuery inside 16384: yes
+
+== startup_cleartext / run 0: psql, pg_hba method password (cleartext PasswordMessage), SELECT 1
+  command: PGPASSWORD=edc-fixture PGSSLMODE=disable PGGSSENCMODE=disable psql -X -h 127.0.0.1 -p 5432 -U edc -d edc -c 'SELECT 1'; pg_hba method password; ssl=on; client rc=0 in 0.01 s; connections=1; unparsed socket syscalls=0
+ -- connection 1 of 1: request 89 bytes (client send == server recv: True), response 512 bytes (server send == client recv: True)
+  messages client->server: startup p Q X
+  messages server->client: Rx2 Sx14 K Z T D C Z
+  timing (strace start-of-call stamps, relative to the first record of the run): server: first request record +0.9 ms, last response record +7.8 ms
+  server recv: records=4 sizes n=4 total=89 min=5 median=15 max=53 last=5 rle=[53, 17, 14, 5]
+    pattern=[startup | p | Q | X]
+    records starting mid-message=0; first header a prefix cannot reach: 1024: none; 4096: none; 8192: none; 16384: none
+  server send: records=3 sizes n=3 total=512 min=9 median=66 max=437 last=66 rle=[9, 437, 66]
+    pattern=[R | R+Sx14+K+Z | T+D+C+Z]
+    records starting mid-message=0; first header a prefix cannot reach: 1024: none; 4096: none; 8192: none; 16384: none
+    ReadyForQuery: record 2 of 3 (last record: True), offset 60 in a 66-byte record; that record starts at a message boundary: True
+    ReadyForQuery inside 1024: yes; ReadyForQuery inside 4096: yes; ReadyForQuery inside 8192: yes; ReadyForQuery inside 16384: yes
+  client send: records=4 sizes n=4 total=89 min=5 median=15 max=53 last=5 rle=[53, 17, 14, 5]
+    pattern=[startup | p | Q | X]
+    records starting mid-message=0; first header a prefix cannot reach: 1024: none; 4096: none; 8192: none; 16384: none
+  client recv: records=3 sizes n=3 total=512 min=9 median=66 max=437 last=66 rle=[9, 437, 66]
+    pattern=[R | R+Sx14+K+Z | T+D+C+Z]
+    records starting mid-message=0; first header a prefix cannot reach: 1024: none; 4096: none; 8192: none; 16384: none
+    ReadyForQuery: record 2 of 3 (last record: True), offset 60 in a 66-byte record; that record starts at a message boundary: True
+    ReadyForQuery inside 1024: yes; ReadyForQuery inside 4096: yes; ReadyForQuery inside 8192: yes; ReadyForQuery inside 16384: yes
+
+== startup_scram / run 0: psql, pg_hba method scram-sha-256 (SASLInitialResponse, SASLResponse), SELECT 1
+  command: PGPASSWORD=edc-fixture PGSSLMODE=disable PGGSSENCMODE=disable psql -X -h 127.0.0.1 -p 5432 -U edc -d edc -c 'SELECT 1'; pg_hba method scram-sha-256; ssl=on; client rc=0 in 0.03 s; connections=1; unparsed socket syscalls=0
+ -- connection 1 of 1: request 236 bytes (client send == server recv: True), response 675 bytes (server send == client recv: True)
+  messages client->server: startup px2 Q X
+  messages server->client: Rx4 Sx14 K Z T D C Z
+  timing (strace start-of-call stamps, relative to the first record of the run): server: first request record +1.7 ms, last response record +13.9 ms
+  server recv: records=5 sizes n=5 total=236 min=5 median=53 max=109 last=5 rle=[53, 55, 109, 14, 5]
+    pattern=[startup | p*2 | Q | X]
+    records starting mid-message=0; first header a prefix cannot reach: 1024: none; 4096: none; 8192: none; 16384: none
+  server send: records=4 sizes n=4 total=675 min=24 median=79 max=492 last=66 rle=[24, 93, 492, 66]
+    pattern=[R*2 | Rx2+Sx14+K+Z | T+D+C+Z]
+    records starting mid-message=0; first header a prefix cannot reach: 1024: none; 4096: none; 8192: none; 16384: none
+    ReadyForQuery: record 3 of 4 (last record: True), offset 60 in a 66-byte record; that record starts at a message boundary: True
+    ReadyForQuery inside 1024: yes; ReadyForQuery inside 4096: yes; ReadyForQuery inside 8192: yes; ReadyForQuery inside 16384: yes
+  client send: records=5 sizes n=5 total=236 min=5 median=53 max=109 last=5 rle=[53, 55, 109, 14, 5]
+    pattern=[startup | p*2 | Q | X]
+    records starting mid-message=0; first header a prefix cannot reach: 1024: none; 4096: none; 8192: none; 16384: none
+  client recv: records=4 sizes n=4 total=675 min=24 median=79 max=492 last=66 rle=[24, 93, 492, 66]
+    pattern=[R*2 | Rx2+Sx14+K+Z | T+D+C+Z]
+    records starting mid-message=0; first header a prefix cannot reach: 1024: none; 4096: none; 8192: none; 16384: none
+    ReadyForQuery: record 3 of 4 (last record: True), offset 60 in a 66-byte record; that record starts at a message boundary: True
+    ReadyForQuery inside 1024: yes; ReadyForQuery inside 4096: yes; ReadyForQuery inside 8192: yes; ReadyForQuery inside 16384: yes
+
+
+== Re-run procedure (Linux VM, arm64, port 5432 free, sudo for strace -p)
+1. orb start ubuntu (if it is stopped). In the VM: mkdir -p /tmp/edc-pg, then extract the script: sed -n '/^%%BEGIN m.py/,/^%%END m.py/p' boundaries.txt | sed '1d;$d' > /tmp/edc-pg/m.py
+2. python3 /tmp/edc-pg/m.py fetch: downloads the newest postgresql-16, postgresql-client-16 and libpq5 from noble-pgdg arm64 and libicu74 from ports.ubuntu.com, and unpacks them into /tmp/edc-pg/root (no system install). Needs curl, dpkg-deb, openssl, strace and python3 on the VM.
+3. python3 /tmp/edc-pg/m.py setup: certificate, initdb, configuration (see Environment), server start, role edc, database edc, tables t and u.
+4. python3 /tmp/edc-pg/m.py run all (about 1.5 minutes; one scenario: "run simple", several: comma separated). Each run sets pg_hba and ssl, prepares the tables, attaches strace to the postmaster, runs the client under strace, then reduces the raw strace output to /tmp/edc-pg/red/<scenario>.<run>.json and deletes it (the 1e6 runs write about 1 GB of raw strace text to /tmp for a few seconds).
+5. python3 /tmp/edc-pg/m.py assemble /tmp/edc-pg/out: writes out/<scenario>.records (the fixtures) and out/analysis.txt (the per-scenario table of this file).
+6. Copy out/*.records into internal/edc/testdata/postgres/, replace the per-scenario table and the large result summary in this file, and run the grep of "Secrets and host names" again.
+7. python3 /tmp/edc-pg/m.py clean: stops the server and removes /tmp/edc-pg. Do not stop a VM that other people use.
+A re-run gets a newer 16.x when PGDG publishes one; the server send sizes depend on PqSendBuffer (8192) and not on the minor version (추정, not tested with another minor version).
+
+== Verification of this procedure
+The script text in this file was extracted with the sed command of step 1 (byte-identical to the script that made the fixtures, checked with cmp) and run again on the VM: "run simple,large" then "assemble".
+Result: the server send record sequence of every run is identical to the fixture (simple run 0: 24, 93, 492, 66, 126, 76; simple run 1: 24, 93, 499, 139, 6; large runs 0-3: 24, 93, 492, 8192 x 13 / 1354 / 13549 / 2061, then 4559 / 8089 / 6650 / 5251). The client reads differed only in read merging, as expected: large run 0 client recv 15 records in the fixture vs 17 in the re-run (the re-run mirrored the server sends), large run 3 1746 vs 2065. Not re-run: the other 8 scenarios.
+
+== Secrets and host names
+The planted values must stay in the fixtures: the tests use them to prove that the tracker drops them. All of them are fake and were made for this capture.
+Grep (decode the hex, then grep), run in internal/edc/testdata/postgres:
+dec() { grep -v '^#' "$1" | cut -d' ' -f4 | tr -d '\n' | xxd -r -p; }
+for f in *.records; do for v in edc-fixture edc-literal-secret edc-detail-secret edc-param-secret edc-copy-secret edc-func-secret ',p='; do dec $f | grep -a -o -- "$v" | wc -l; done; done
+Counts (each value is counted on both sides, so a message seen once is counted 2 times):
+- edc-fixture (the role password): startup_cleartext 2 = one PasswordMessage. Every other fixture: 0 in the data. The "# command:" comment lines of all files carry PGPASSWORD=edc-fixture (fake).
+- SCRAM client-final-message "c=biws,r=<nonce>,p=<proof>" (SASLResponse) and SASLInitialResponse "n,,n=,r=<nonce>": startup_scram 2, simple 4, error 2, extended 8, pipeline 6, copy 2, large 2 (run 0 only, the tail-only runs have no startup), ssl_refused 2, gssenc_refused 2 (run 1). AuthenticationSASLContinue (salt, iteration count 4096, server nonce) and AuthenticationSASLFinal (server signature) are in the same fixtures.
+- edc-literal-secret: simple 4 = the Query text and the DataRow value.
+- edc-detail-secret: error 6 = two Query texts and one ErrorResponse D field "Key (v)=(edc-detail-secret) already exists.".
+- edc-param-secret: extended 12 = Bind parameter values (psql \bind 1, pgbench -M prepared 2, harness 2) plus one DataRow (psql: SELECT $1::text echoes the value).
+- edc-copy-secret: copy 4 = one CopyData from the client (COPY FROM STDIN) and one CopyData from the server (COPY TO STDOUT).
+- edc-func-secret: extended 2 = the FunctionCall argument.
+- BackendKeyData (process id and cancel key) is in every plain startup answer. CancelRequest with the same key: simple run 1, connection 2.
+Host names and paths:
+$ for f in *.records; do dec $f; done | grep -a -o -i -E "jinwoo|orbstack|lkasa|edc-pg|/Users/|/home/|/tmp/|[.]local|PRIVATE KEY|fixture-host|ubuntu" | sort | uniq -c
+  32 Ubuntu
+"Ubuntu" is only the package version inside ParameterStatus server_version "16.15 (Ubuntu 16.15-1.pgdg24.04+2)", not a host name.
+$ grep -c -E "jinwoo|orbstack|lkasa|edc-pg|/Users/|/home/" *.records (comment lines, sum)
+0
+PostgreSQL does not send the host name. The certificate (CN=fixture-host, self-signed, made for this capture) travels inside encrypted TLS 1.3 records in ssl.records, so it is not readable. The private key never left /tmp/edc-pg/ssl on the VM and was deleted with /tmp/edc-pg. No real credential is stored.
+
+%%BEGIN m.py
+#!/usr/bin/env python3
+"""edc trace postgres T1: capture PostgreSQL 16 wire traffic with strace and write .records fixtures.
+usage: m.py fetch | setup | run <scenario[,scenario...]|all> | client <mode> | assemble <outdir> | stop | clean
+Everything lives under /tmp/edc-pg on the VM. Nothing is installed system wide.
+"""
+import base64, glob, itertools, hashlib, hmac, json, os, re, signal, socket, statistics, struct, subprocess, sys, time
+
+W = '/tmp/edc-pg'
+ROOT = W + '/root'
+BIN = ROOT + '/usr/lib/postgresql/16/bin'
+LIB = ROOT + '/usr/lib/aarch64-linux-gnu'
+DATA = W + '/data'
+SOCK = W + '/sock'
+RAW = W + '/raw'
+RED = W + '/red'
+SSLD = W + '/ssl'
+HOST, PORT = '127.0.0.1', 5432
+USER, PASSWORD, DB = 'edc', 'edc-fixture', 'edc'
+CAP = 16384
+CAPS = (1024, 4096, 8192, 16384)
+SYSC = 'read,recvfrom,recvmsg,write,sendto,sendmsg,writev'
+# -ff keeps each process in its own file, so no "unfinished/resumed" split lines. trace-fds=!1 drops psql output to stdout.
+STR = ['-ff', '-yy', '-xx', '-ttt', '-s', '2097152', '-e', 'trace=' + SYSC]
+CLI_STR = STR + ['-e', 'trace-fds=!1']
+SEND = {'write', 'sendto', 'sendmsg', 'writev'}
+PGDG = 'https://apt.postgresql.org/pub/repos/apt'
+ICU = 'http://ports.ubuntu.com/ubuntu-ports/pool/main/i/icu/libicu74_74.2-1ubuntu3.1_arm64.deb'
+SSL_CODE, GSS_CODE, CANCEL_CODE, V3 = 80877103, 80877104, 80877102, 196608
+TAIL = 2
+
+
+def env():
+    e = dict(os.environ)
+    e.update(LD_LIBRARY_PATH=LIB, PGPASSWORD=PASSWORD, PGCONNECT_TIMEOUT='10')
+    for k in ('PGHOST', 'PGPORT', 'PGUSER', 'PGDATABASE'):
+        e.pop(k, None)
+    # libpq 기본 sslmode=prefer는 ssl=on 서버와 TLS로 붙는다. 평문 시나리오는 끄고, ssl 시나리오는 conninfo로 덮어쓴다.
+    e.update(PGSSLMODE='disable', PGGSSENCMODE='disable')
+    return e
+
+
+def run(cmd, **kw):
+    return subprocess.run(cmd, shell=isinstance(cmd, str), check=True, env=env(), **kw)
+
+
+def out(cmd):
+    return subprocess.run(cmd, shell=True, capture_output=True, text=True, env=env()).stdout.strip()
+
+
+def su(sql, db='postgres'):
+    return out(f"{BIN}/psql -X -At -h {SOCK} -p {PORT} -U postgres -d {db} -c \"{sql}\"")
+
+
+# ---------------------------------------------------------------- install (no system change)
+def fetch():
+    os.makedirs(W + '/deb', exist_ok=True)
+    idx = subprocess.run(f'curl -sf {PGDG}/dists/noble-pgdg/main/binary-arm64/Packages.gz | gunzip', shell=True,
+                         capture_output=True, text=True, check=True).stdout
+    files = {}
+    for block in idx.split('\n\n'):
+        f = dict(l.split(': ', 1) for l in block.splitlines() if ': ' in l and not l.startswith(' '))
+        if f.get('Package') in ('postgresql-16', 'postgresql-client-16', 'libpq5'):
+            files.setdefault(f['Package'], []).append((f['Version'], f['Filename']))
+    urls = [f'{PGDG}/' + sorted(v, key=lambda x: x[0])[-1][1] for v in files.values()] + [ICU]
+    for u in urls:
+        run(['curl', '-sfo', W + '/deb/' + os.path.basename(u), u])
+    os.makedirs(ROOT, exist_ok=True)
+    for d in glob.glob(W + '/deb/*.deb'):
+        run(['dpkg-deb', '-x', d, ROOT])
+    print(out(f'{BIN}/postgres -V; {BIN}/psql -V; {BIN}/pgbench -V; ls {W}/deb'))
+
+
+def setup():
+    run(f'rm -rf {DATA} {SSLD}; mkdir -p {SOCK} {SSLD} {RAW} {RED}')
+    run(f"openssl req -x509 -newkey rsa:2048 -nodes -days 30 -subj /CN=fixture-host -keyout {SSLD}/server.key -out {SSLD}/server.crt 2>/dev/null; chmod 600 {SSLD}/server.key")
+    run([BIN + '/initdb', '-D', DATA, '-U', 'postgres', '-A', 'trust', '--no-locale', '-E', 'UTF8'], stdout=subprocess.DEVNULL)
+    with open(DATA + '/postgresql.conf', 'a') as f:
+        f.write(f"""
+listen_addresses = '{HOST}'
+port = {PORT}
+unix_socket_directories = '{SOCK}'
+ssl_cert_file = '{SSLD}/server.crt'
+ssl_key_file = '{SSLD}/server.key'
+password_encryption = 'scram-sha-256'
+jit = off
+timezone = 'UTC'
+max_connections = 20
+include_if_exists = 'edc.conf'
+""")
+    configure('scram-sha-256', True, reload=False)
+    run([BIN + '/pg_ctl', '-D', DATA, '-l', W + '/pg.log', '-w', 'start'], stdout=subprocess.DEVNULL)
+    su(f"CREATE ROLE {USER} LOGIN PASSWORD '{PASSWORD}'")
+    su(f'CREATE DATABASE {DB} OWNER {USER}')
+    out(f"{BIN}/psql -X -h {SOCK} -p {PORT} -U {USER} -d {DB} -c 'CREATE TABLE t (id int, v text)' -c 'CREATE TABLE u (v text UNIQUE)'")
+    print(su('SHOW server_version'))
+
+
+def configure(method, ssl, reload=True):
+    with open(DATA + '/pg_hba.conf', 'w') as f:
+        f.write(f'local all {USER} scram-sha-256\nlocal all all trust\nhost all {USER} {HOST}/32 {method}\n')
+    with open(DATA + '/edc.conf', 'w') as f:
+        f.write(f"ssl = {'on' if ssl else 'off'}\n")
+    if reload:
+        su('SELECT pg_reload_conf()')
+        time.sleep(0.5)
+        assert su('SHOW ssl') == ('on' if ssl else 'off')
+
+
+def postmaster():
+    with open(DATA + '/postmaster.pid') as f:
+        return int(f.readline())
+
+
+def stop():
+    subprocess.run([BIN + '/pg_ctl', '-D', DATA, '-m', 'fast', '-w', 'stop'], env=env())
+
+
+# ---------------------------------------------------------------- scenarios
+def P(*args):
+    return [BIN + '/psql', '-X', '-h', HOST, '-p', str(PORT), '-U', USER, '-d', DB, *args]
+
+
+def PB(script, *args):
+    return [BIN + '/pgbench', '-n', '-c', '1', '-h', HOST, '-p', str(PORT), '-U', USER, *args, '-f', W + '/' + script, DB]
+
+
+def H(mode):
+    return ['python3', W + '/m.py', 'client', mode]
+
+
+PY = 'python3 raw-socket harness (m.py client)'
+FILES = {
+    'bind.sql': "SELECT $1::text AS v \\bind 'edc-param-secret' \\g\n",
+    'prepared.sql': 'SELECT length(:p::text) AS n;\n',
+    'pipeline.sql': '\\startpipeline\nSELECT 1;\nSELECT 2;\n\\endpipeline\n',
+    'copy.in': '3\tedc-copy-secret\n4\tplain\n',
+}
+TRUNC = "TRUNCATE t; TRUNCATE u; INSERT INTO t VALUES (1, 'a'), (2, 'b')"
+
+
+def scenarios():
+    # name -> list of (label, argv, hba method, ssl, prep SQL as superuser, stdin file, tail-only)
+    S = {}
+
+    def one(name, label, argv, method='scram-sha-256', ssl=True, prep=None, stdin=None, tail=False):
+        S.setdefault(name, []).append(dict(label=label, argv=argv, method=method, ssl=ssl, prep=prep, stdin=stdin, tail=tail))
+
+    one('startup_cleartext', 'psql, pg_hba method password (cleartext PasswordMessage), SELECT 1', P('-c', 'SELECT 1'), method='password')
+    one('startup_scram', 'psql, pg_hba method scram-sha-256 (SASLInitialResponse, SASLResponse), SELECT 1', P('-c', 'SELECT 1'))
+    one('simple', "psql: SELECT 1; one Query with 'SELECT 1; SELECT 2'; SELECT with literal 'edc-literal-secret'; Terminate",
+        P('-c', 'SELECT 1', '-c', 'SELECT 1; SELECT 2', '-c', "SELECT 'edc-literal-secret' AS s"))
+    one('simple', PY + ' cancel: SELECT pg_sleep(5) on connection 1, CancelRequest on connection 2', H('cancel'))
+    one('error', "psql: syntax error 42601; INSERT twice into u(v UNIQUE) -> 23505 whose Detail echoes edc-detail-secret; division by zero after 499 DataRows",
+        P('-c', 'SELEC 1', '-c', "INSERT INTO u VALUES ('edc-detail-secret')", '-c', "INSERT INTO u VALUES ('edc-detail-secret')",
+          '-c', 'SELECT 1/(g-500) FROM generate_series(1,1000) g'), prep=TRUNC)
+    one('extended', "psql 16 stdin: SELECT $1::text AS v \\bind 'edc-param-secret' \\g (unnamed statement)", P('-f', '-'), stdin='bind.sql')
+    one('extended', 'pgbench -M prepared -t 2 -D p=edc-param-secret, script SELECT length(:p::text) (named statement P_0)',
+        PB('prepared.sql', '-M', 'prepared', '-t', '2', '-D', 'p=edc-param-secret'))
+    one('extended', PY + ' named: named statement and portal, Describe S/P, Execute with row limit (PortalSuspended), Close, FunctionCall length(text) (OID 1317) with argument edc-func-secret', H('named'))
+    one('pipeline', 'pgbench -M extended -t 2, \\startpipeline SELECT 1; SELECT 2; \\endpipeline', PB('pipeline.sql', '-M', 'extended', '-t', '2'))
+    one('pipeline', PY + ' pipeline: 3 Sync batches in one send before the first ReadyForQuery; batch 2 = SELECT 1/0 then SELECT 3 (skipped until Sync)', H('pipeline'))
+    for n in ('1000', '100000', '1000000'):
+        one('large', f"psql: SELECT repeat('x',100) FROM generate_series(1,{n})",
+            P('-c', f"SELECT repeat('x',100) FROM generate_series(1,{n})"), tail=(n != '1000'))
+    one('large', 'psql: SELECT generate_series(1,1000000)', P('-c', 'SELECT generate_series(1,1000000)'), tail=True)
+    one('ssl', 'psql sslmode=require gssencmode=disable: SSLRequest, S, TLS', [BIN + '/psql', '-X', '-c', 'SELECT 1',
+        f'host={HOST} port={PORT} user={USER} dbname={DB} sslmode=require gssencmode=disable'])
+    one('ssl_refused', 'psql sslmode=prefer gssencmode=disable against ssl=off: SSLRequest, N, plain startup', [BIN + '/psql', '-X', '-c', 'SELECT 1',
+        f'host={HOST} port={PORT} user={USER} dbname={DB} sslmode=prefer gssencmode=disable'], ssl=False)
+    one('gssenc_refused', PY + " gssenc over TCP: GSSENCRequest, server answers G (PGDG build has GSSAPI), client closes (no Kerberos credentials)", H('gssenc'))
+    one('gssenc_refused', PY + ' gssenc over the Unix socket of the same server: GSSENCRequest, N, plain startup (SCRAM), SELECT 1, Terminate', H('gssenc_unix'))
+    one('copy', 'psql: COPY t (id, v) FROM STDIN with a row containing edc-copy-secret, then COPY t TO STDOUT',
+        P('-c', 'COPY t (id, v) FROM STDIN', '-c', 'COPY t TO STDOUT'), prep=TRUNC, stdin='copy.in')
+    return S
+
+
+def capture(name, i, spec):
+    tag = f'{name}.{i}'
+    for f in glob.glob(f'{RAW}/{tag}.*'):
+        os.remove(f)
+    configure(spec['method'], spec['ssl'])
+    if spec['prep']:
+        out(f"{BIN}/psql -X -h {SOCK} -p {PORT} -U postgres -d {DB} -c \"{spec['prep']}\"")
+    srv = subprocess.Popen(['sudo', 'strace', *STR, '-o', f'{RAW}/{tag}.srv', '-p', str(postmaster())],
+                           stderr=subprocess.DEVNULL)
+    time.sleep(1.0)
+    stdin = open(W + '/' + spec['stdin']) if spec['stdin'] else subprocess.DEVNULL
+    t0 = time.time()
+    cli = subprocess.run(['strace', *CLI_STR, '-o', f'{RAW}/{tag}.cli', *spec['argv']], stdin=stdin,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, env=env())
+    took = time.time() - t0
+    time.sleep(1.0)
+    for pid in out(f'pgrep -P {srv.pid}').split():
+        subprocess.run(['sudo', 'kill', '-INT', pid])
+    srv.wait()
+    err = cli.stderr.decode(errors='replace').strip().splitlines()
+    return dict(rc=cli.returncode, stderr=err[-3:], seconds=round(took, 2))
+
+
+# ---------------------------------------------------------------- strace parsing
+LINE = re.compile(r'^(\d+\.\d+) (\w+)\((\d+)<TCP(?:v6)?:\[([0-9.]+):(\d+)->([0-9.]+):(\d+)\]>, (.*)$')
+ULINE = re.compile(r'^(\d+\.\d+) (\w+)\((\d+)<UNIX-STREAM:\[(\d+)(?:->(\d+))?(,"[^"]*")?\]>, (.*)$')
+STRS = re.compile(r'"((?:\\x[0-9a-f]{2})*)"')
+
+
+def parse(prefix, side):
+    recs, bad = [], 0
+    for path in sorted(glob.glob(prefix + '.*')):
+        with open(path) as f:
+            for line in f:
+                m = LINE.match(line)
+                if m:
+                    ts, call, _, la, lp, ra, rp, rest = m.groups()
+                    if (int(lp) if side == 'server' else int(rp)) != PORT:
+                        continue
+                    port = int(rp) if side == 'server' else int(lp)
+                else:
+                    m = ULINE.match(line)
+                    # 서버 쪽 listen socket에서 받은 연결만 경로를 단다. 경로 문자열은 -xx로 hex escape되어 있다.
+                    if not m or (side == 'server' and not m.group(6)):
+                        continue
+                    ts, call, _, mine, peer, _, rest = m.groups()
+                    port = 'unix:' + (peer if side == 'server' else mine)
+                args, _, ret = rest.rpartition(') = ')
+                ret = ret.split()[0] if ret else '-1'
+                if not ret.lstrip('-').isdigit() or int(ret) <= 0:
+                    continue
+                n = int(ret)
+                strs = STRS.findall(args)
+                if call in ('read', 'recvfrom', 'write', 'sendto'):
+                    strs = strs[:1]
+                data = bytes.fromhex(''.join(strs).replace('\\x', ''))[:n]
+                if len(data) != n and len(data) != 2097152:
+                    bad += 1
+                recs.append(dict(ts=float(ts), side=side, dir='send' if call in SEND else 'recv', size=n, data=data, conn=port))
+    return recs, bad
+
+
+# ---------------------------------------------------------------- PostgreSQL v3 walk
+def typed(buf, pos, msgs):
+    while pos + 5 <= len(buf):
+        t = buf[pos]
+        ln = struct.unpack('>i', buf[pos + 1:pos + 5])[0]
+        if ln < 4:
+            msgs.append((pos, '!bad', len(buf) - pos))
+            return
+        msgs.append((pos, chr(t), 1 + ln))
+        pos += 1 + ln
+    if pos < len(buf):
+        msgs.append((pos, '!partial', len(buf) - pos))
+
+
+def walk(front, back):
+    """Message list (offset, kind, length) for the client->server and server->client streams of one connection."""
+    fm, bm, fp, bp = [], [], 0, 0
+    while fp + 8 <= len(front):
+        ln, code = struct.unpack('>iI', front[fp:fp + 8])
+        if code in (SSL_CODE, GSS_CODE) and ln == 8:
+            fm.append((fp, 'sslreq' if code == SSL_CODE else 'gssreq', 8))
+            fp += 8
+            if bp >= len(back):
+                return fm, bm
+            a = chr(back[bp])
+            bm.append((bp, 'answer' + a, 1))
+            bp += 1
+            if a in 'SG':
+                fm.append((fp, 'tls', len(front) - fp))
+                bm.append((bp, 'tls', len(back) - bp))
+                return fm, bm
+            continue
+        if code == CANCEL_CODE and ln == 16:
+            fm.append((fp, 'cancel', 16))
+            return fm, bm
+        fm.append((fp, 'startup', ln))
+        fp += ln
+        break
+    typed(front, fp, fm)
+    typed(back, bp, bm)
+    return fm, bm
+
+
+def bounds(recs):
+    starts, pos = [], 0
+    for r in recs:
+        starts.append(pos)
+        pos += r['size']
+    return starts
+
+
+def locate(starts, recs, q):
+    lo, hi = 0, len(starts) - 1
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        if starts[mid] <= q:
+            lo = mid
+        else:
+            hi = mid - 1
+    return lo, q - starts[lo]
+
+
+def hdrlen(kind):
+    return 5 if len(kind) == 1 else (1 if kind.startswith('answer') else (0 if kind in ('tls', '!partial', '!bad') else 8))
+
+
+def side_report(recs, msgs, rfq):
+    """Summary of one direction on one side: sizes, patterns, mid-message starts, first header a K-byte prefix cannot reach."""
+    starts = bounds(recs)
+    if not recs:
+        return dict(records=0)
+    sizes = [r['size'] for r in recs]
+    begin = {}
+    for off, kind, ln in msgs:
+        r, o = locate(starts, recs, off)
+        begin.setdefault(r, []).append((o, kind))
+    msgstarts = {off for off, _, _ in msgs}
+    mid = sum(1 for s in starts if s not in msgstarts)
+    pattern = []
+    for i, s in enumerate(starts):
+        toks = [k for _, k in begin.get(i, [])]
+        tok = '+'.join(compress(toks)) if toks else ''
+        pattern.append(('~' if s not in msgstarts else '') + (tok or 'cont'))
+    rep = dict(records=len(recs), sizes=sizes_summary(sizes), mid_starts=mid, pattern=pattern_summary(pattern))
+    for K in CAPS:
+        lost = None
+        for off, kind, ln in msgs:
+            h = hdrlen(kind)
+            for q in range(off, off + h):
+                r, o = locate(starts, recs, q)
+                if o >= K:
+                    lost = (r, locate(starts, recs, off)[1], kind)
+                    break
+            if lost:
+                break
+        rep[f'lost{K}'] = 'none' if lost is None else f'rec{lost[0]}@{lost[1]} {lost[2]}'
+    if rfq is not None:
+        r, o = locate(starts, recs, rfq)
+        rep['rfq'] = dict(record=r, offset=o, last_size=sizes[-1], in_last=(r == len(recs) - 1),
+                          record_starts_at_message=starts[r] in msgstarts,
+                          inside={K: o + 6 <= K for K in CAPS})
+    return rep
+
+
+def compress(toks):
+    res, prev, n = [], None, 0
+    for t in toks + [None]:
+        if t == prev:
+            n += 1
+            continue
+        if prev is not None:
+            res.append(prev if n == 1 else f'{prev}x{n}')
+        prev, n = t, 1
+    return res
+
+
+def sizes_summary(sizes):
+    rle = compress([str(s) for s in sizes])
+    if len(rle) > 14:
+        rle = rle[:10] + [f'...({len(rle) - 13} more runs)'] + rle[-3:]
+    return dict(n=len(sizes), total=sum(sizes), min=min(sizes), median=int(statistics.median(sizes)), max=max(sizes),
+                last=sizes[-1], rle=rle)
+
+
+def pattern_summary(p):
+    # 같은 모양의 record가 이어지면 *N으로 줄인다. record 안 같은 message의 반복은 xN이다.
+    runs = [(k, len(list(g))) for k, g in itertools.groupby(p)]
+    p = [k if n == 1 else f'{k}*{n}' for k, n in runs]
+    if len(p) > 24:
+        p = p[:16] + [f'...({len(p) - 22} more)'] + p[-6:]
+    return ' | '.join(p)
+
+
+def reduce(name, i, spec, meta):
+    tag = f'{name}.{i}'
+    srv, bs = parse(f'{RAW}/{tag}.srv', 'server')
+    cli, bc = parse(f'{RAW}/{tag}.cli', 'client')
+    recs = sorted(srv + cli, key=lambda r: r['ts'])
+    conns = sorted({r['conn'] for r in srv}, key=lambda c: min(r['ts'] for r in recs if r['conn'] == c))
+    t0 = min((r['ts'] for r in recs), default=0)
+    res = dict(name=name, i=i, label=spec['label'], argv=spec['argv'], method=spec['method'], ssl=spec['ssl'],
+               stdin=spec['stdin'], tail=spec['tail'], meta=meta, bad=bs + bc, conns=[])
+    for c in conns:
+        rs = [r for r in recs if r['conn'] == c]
+        unix = isinstance(c, str)
+        part = {k: [r for r in rs if r['side'] == s and r['dir'] == d] for k, (s, d) in
+                dict(srv_recv=('server', 'recv'), srv_send=('server', 'send'), cli_send=('client', 'send'), cli_recv=('client', 'recv')).items()}
+        cat = {k: b''.join(r['data'] for r in v) for k, v in part.items()}
+        front = cat['srv_recv'] or cat['cli_send']
+        back = cat['srv_send'] or cat['cli_recv']
+        fm, bm = walk(front, back)
+        rfqs = [off for off, k, _ in bm if k == 'Z']
+        rfq = rfqs[-1] if rfqs else None
+        conn = dict(equal_req=cat['srv_recv'] == cat['cli_send'], equal_resp=cat['srv_send'] == cat['cli_recv'],
+                    bytes_req=len(front), bytes_resp=len(back), front=compress([k for _, k, _ in fm]), back=compress([k for _, k, _ in bm]),
+                    sides={k: side_report(v, fm if k in ('srv_recv', 'cli_send') else bm, rfq if k in ('srv_send', 'cli_recv') else None)
+                           for k, v in part.items()})
+        z = [r for r in rs if r['side'] == 'server' and r['dir'] == 'send']
+        q = [r for r in rs if r['side'] == 'server' and r['dir'] == 'recv']
+        if z and q:
+            conn['timing'] = f'server: first request record +{(q[0]["ts"] - t0) * 1000:.1f} ms, last response record +{(z[-1]["ts"] - t0) * 1000:.1f} ms'
+        keep = rs
+        if spec['tail']:
+            cut = min(part['srv_send'][-TAIL]['ts'], part['cli_recv'][-TAIL]['ts'])
+            keep = [r for r in rs if r['ts'] >= cut]
+            conn['tail'] = dict(omitted=len(rs) - len(keep), kept=len(keep))
+        conn['lines'] = [f"{r['side']} {r['dir']} {r['size']} {r['data'][:CAP].hex()}" for r in keep]
+        conn['unix'] = unix
+        res['conns'].append(conn)
+    with open(f'{RED}/{tag}.json', 'w') as f:
+        json.dump(res, f)
+    for p in glob.glob(f'{RAW}/{tag}.*'):
+        subprocess.run(['sudo', 'rm', '-f', p])
+    return res
+
+
+def run_scenarios(which):
+    S = scenarios()
+    for fn, text in FILES.items():
+        with open(W + '/' + fn, 'w') as f:
+            f.write(text)
+    for name in (S if which == 'all' else which.split(',')):
+        for i, spec in enumerate(S[name]):
+            meta = capture(name, i, spec)
+            res = reduce(name, i, spec, meta)
+            print(name, i, meta, [(len(c['lines']), c['equal_req'], c['equal_resp']) for c in res['conns']], 'bad', res['bad'], flush=True)
+    configure('scram-sha-256', True)
+
+
+# ---------------------------------------------------------------- raw-socket client
+def msg(t, body=b''):
+    return t + struct.pack('>I', len(body) + 4) + body
+
+
+def cs(x):
+    return (x if isinstance(x, bytes) else x.encode()) + b'\0'
+
+
+def parse_msg(name, sql):
+    return msg(b'P', cs(name) + cs(sql) + struct.pack('>H', 0))
+
+
+def bind(portal, stmt, params):
+    body = cs(portal) + cs(stmt) + struct.pack('>HH', 0, len(params))
+    for p in params:
+        body += struct.pack('>I', len(p)) + p
+    return msg(b'B', body + struct.pack('>H', 0))
+
+
+def execute(portal, rows=0):
+    return msg(b'E', cs(portal) + struct.pack('>I', rows))
+
+
+SYNC = msg(b'S')
+
+
+class Conn:
+    def __init__(self, gss_first=False, unix=False):
+        if unix:
+            self.s = socket.socket(socket.AF_UNIX)
+            self.s.connect(f'{SOCK}/.s.PGSQL.{PORT}')
+        else:
+            self.s = socket.create_connection((HOST, PORT))
+        self.buf = b''
+        if gss_first:
+            self.s.sendall(struct.pack('>II', 8, GSS_CODE))
+            assert self.s.recv(1) == b'N'
+        params = cs('user') + cs(USER) + cs('database') + cs(DB) + cs('application_name') + cs('edc-harness') + b'\0'
+        self.s.sendall(struct.pack('>II', 8 + len(params), V3) + params)
+        self.key = None
+        self.auth()
+        self.until_z()
+
+    def read(self):
+        while True:
+            if len(self.buf) >= 5:
+                ln = struct.unpack('>I', self.buf[1:5])[0]
+                if len(self.buf) >= 1 + ln:
+                    t, body, self.buf = self.buf[:1], self.buf[5:1 + ln], self.buf[1 + ln:]
+                    if t == b'K':
+                        self.key = body
+                    return t, body
+            d = self.s.recv(65536)
+            if not d:
+                raise EOFError
+            self.buf += d
+
+    def until_z(self, n=1):
+        got = []
+        while n:
+            t, body = self.read()
+            got.append(t.decode())
+            n -= t == b'Z'
+        return ''.join(got)
+
+    def auth(self):
+        t, body = self.read()
+        assert t == b'R' and struct.unpack('>I', body[:4])[0] == 10, (t, body)
+        nonce = base64.b64encode(os.urandom(18)).decode()
+        bare = 'n=,r=' + nonce
+        first = ('n,,' + bare).encode()
+        self.s.sendall(msg(b'p', cs('SCRAM-SHA-256') + struct.pack('>I', len(first)) + first))
+        t, body = self.read()
+        sfirst = body[4:].decode()
+        f = dict(kv.split('=', 1) for kv in sfirst.split(','))
+        salted = hashlib.pbkdf2_hmac('sha256', PASSWORD.encode(), base64.b64decode(f['s']), int(f['i']))
+        ckey = hmac.new(salted, b'Client Key', 'sha256').digest()
+        final = 'c=biws,r=' + f['r']
+        sig = hmac.new(hashlib.sha256(ckey).digest(), f'{bare},{sfirst},{final}'.encode(), 'sha256').digest()
+        proof = base64.b64encode(bytes(a ^ b for a, b in zip(ckey, sig))).decode()
+        self.s.sendall(msg(b'p', f'{final},p={proof}'.encode()))
+        t, body = self.read()
+        assert t == b'R' and struct.unpack('>I', body[:4])[0] == 12
+        t, body = self.read()
+        assert t == b'R' and struct.unpack('>I', body[:4])[0] == 0
+
+    def close(self):
+        self.s.sendall(msg(b'X'))
+        self.s.close()
+
+
+def client(mode):
+    if mode == 'gssenc':
+        s = socket.create_connection((HOST, PORT))
+        s.sendall(struct.pack('>II', 8, GSS_CODE))
+        print(s.recv(1))
+        s.close()
+    elif mode == 'gssenc_unix':
+        c = Conn(gss_first=True, unix=True)
+        c.s.sendall(msg(b'Q', cs('SELECT 1')))
+        print(c.until_z())
+        c.close()
+    elif mode == 'named':
+        c = Conn()
+        c.s.sendall(parse_msg('edc_stmt', 'SELECT length($1::text) AS n') + msg(b'D', b'S' + cs('edc_stmt')) + SYNC)
+        print(c.until_z())
+        c.s.sendall(bind('edc_portal', 'edc_stmt', [b'edc-param-secret']) + execute('edc_portal') + SYNC)
+        print(c.until_z())
+        c.s.sendall(bind('', 'edc_stmt', [b'edc-param-secret']) + msg(b'D', b'P' + cs('')) + execute('') + SYNC)
+        print(c.until_z())
+        c.s.sendall(msg(b'Q', cs('BEGIN')))
+        print(c.until_z())
+        c.s.sendall(parse_msg('', 'SELECT generate_series(1,3) AS g') + bind('edc_cursor', '', []) + execute('edc_cursor', 2) + SYNC)
+        print(c.until_z())
+        c.s.sendall(execute('edc_cursor', 0) + msg(b'C', b'P' + cs('edc_cursor')) + SYNC)
+        print(c.until_z())
+        c.s.sendall(msg(b'Q', cs('COMMIT')))
+        print(c.until_z())
+        c.s.sendall(msg(b'C', b'S' + cs('edc_stmt')) + SYNC)
+        print(c.until_z())
+        arg = b'edc-func-secret'
+        c.s.sendall(msg(b'F', struct.pack('>IHHHI', 1317, 1, 0, 1, len(arg)) + arg + struct.pack('>H', 0)))
+        print(c.until_z())
+        c.close()
+    elif mode == 'pipeline':
+        c = Conn()
+        b1 = parse_msg('', 'SELECT 1') + bind('', '', []) + msg(b'D', b'P' + cs('')) + execute('') + SYNC
+        b2 = (parse_msg('', 'SELECT 1/0') + bind('', '', []) + execute('') +
+              parse_msg('', 'SELECT 3') + bind('', '', []) + execute('') + SYNC)
+        b3 = parse_msg('', 'SELECT 4') + bind('', '', []) + execute('') + SYNC
+        c.s.sendall(b1 + b2 + b3)
+        print(c.until_z(3))
+        c.close()
+    elif mode == 'cancel':
+        c = Conn()
+        c.s.sendall(msg(b'Q', cs('SELECT pg_sleep(5)')))
+        time.sleep(0.5)
+        k = socket.create_connection((HOST, PORT))
+        k.sendall(struct.pack('>II', 16, CANCEL_CODE) + c.key)
+        k.recv(1)
+        k.close()
+        print(c.until_z())
+        c.close()
+
+
+# ---------------------------------------------------------------- fixture files and analysis text
+HEAD = """# edc trace postgres T1 fixture "{name}". Format and rules: see boundaries.txt, section "Fixture format".
+# Each record line: <server|client> <send|recv> <total bytes> <hex of the first min(total,16384) bytes>.
+# Client and server lines are interleaved by syscall time. Filter by side. One "# run" is one TCP connection: replay each run with a new tracker.
+# Sections start at a "# version:" line. Replay each section on its own.
+"""
+
+
+def cmdline(r):
+    words = []
+    for a in r['argv']:
+        a = a.replace(BIN + '/', '').replace(W + '/m.py', 'm.py').replace(W + '/', 'W/')
+        words.append(a if re.fullmatch(r'[\w./=:,-]+', a) else "'" + a.replace("'", "'\\''") + "'")
+    cmd = ' '.join(words)
+    if r['stdin']:
+        cmd += ' < W/' + r['stdin']
+    return f'PGPASSWORD={PASSWORD} PGSSLMODE=disable PGGSSENCMODE=disable ' + cmd
+
+
+def assemble(outdir):
+    os.makedirs(outdir, exist_ok=True)
+    version = su('SHOW server_version')
+    reds = [json.load(open(p)) for p in glob.glob(RED + '/*.json')]
+    reds.sort(key=lambda r: (r['name'], r['i']))
+    files, text = {}, []
+    for r in reds:
+        lines = files.setdefault(r['name'], [HEAD.format(name=r['name']), f'# version: {version.split()[0]} (SHOW server_version: {version})'])
+        n = len(r['conns'])
+        text.append(f"== {r['name']} / run {r['i']}: {r['label']}")
+        text.append(f"  command: {cmdline(r)}; pg_hba method {r['method']}; ssl={'on' if r['ssl'] else 'off'}; client rc={r['meta']['rc']} in {r['meta']['seconds']} s; connections={n}; unparsed socket syscalls={r['bad']}")
+        if r['meta']['stderr']:
+            text.append(f"  client stderr (last lines): {' / '.join(r['meta']['stderr'])}")
+        for j, c in enumerate(r['conns']):
+            run_label = r['label'] + (f' [connection {j + 1} of {n}]' if n > 1 else '') + (' [Unix socket, not TCP]' if c['unix'] else '')
+            lines.append(f"# run {sum(1 for l in lines if l.startswith('# run '))}: {run_label}")
+            lines.append(f'# command: {cmdline(r)}')
+            if 'tail' in c:
+                lines.append(f"# tail-only: the first {c['tail']['omitted']} records of this connection are omitted (they hold the startup, the query and the head of the result). "
+                             f"The tracker sees this connection first at the next record, in the middle of the result.")
+            lines.extend(c['lines'])
+            text.append(f" -- connection {j + 1} of {n}: request {c['bytes_req']} bytes (client send == server recv: {c['equal_req']}), response {c['bytes_resp']} bytes (server send == client recv: {c['equal_resp']})"
+                        + (f"; fixture keeps the last {c['tail']['kept']} records only (tail-only)" if 'tail' in c else ''))
+            text.append(f"  messages client->server: {' '.join(c['front']) if len(c['front']) < 40 else ' '.join(c['front'][:20]) + ' ... ' + ' '.join(c['front'][-8:])}")
+            text.append(f"  messages server->client: {' '.join(c['back']) if len(c['back']) < 40 else ' '.join(c['back'][:20]) + ' ... ' + ' '.join(c['back'][-8:])}")
+            if c.get('timing'):
+                text.append(f"  timing (strace start-of-call stamps, relative to the first record of the run): {c['timing']}")
+            for k, label in (('srv_recv', 'server recv'), ('srv_send', 'server send'), ('cli_send', 'client send'), ('cli_recv', 'client recv')):
+                s = c['sides'][k]
+                if not s['records']:
+                    text.append(f'  {label}: records=0')
+                    continue
+                z = s['sizes']
+                text.append(f"  {label}: records={s['records']} sizes n={z['n']} total={z['total']} min={z['min']} median={z['median']} max={z['max']} last={z['last']} rle=[{', '.join(z['rle'])}]")
+                text.append(f"    pattern=[{s['pattern']}]")
+                text.append(f"    records starting mid-message={s['mid_starts']}; first header a prefix cannot reach: " +
+                            '; '.join(f"{K}: {s[f'lost{K}']}" for K in CAPS))
+                if s.get('rfq'):
+                    q = s['rfq']
+                    text.append(f"    ReadyForQuery: record {q['record']} of {s['records']} (last record: {q['in_last']}), offset {q['offset']} in a {z['last'] if q['in_last'] else '?'}-byte record; that record starts at a message boundary: {q['record_starts_at_message']}")
+                    text.append('    ' + '; '.join(f"ReadyForQuery inside {K}: {'yes' if q['inside'][str(K)] else 'no'}" for K in CAPS))
+        text.append('')
+    for name, lines in files.items():
+        with open(f'{outdir}/{name}.records', 'w') as f:
+            f.write('\n'.join(lines) + '\n')
+    with open(f'{outdir}/analysis.txt', 'w') as f:
+        f.write('\n'.join(text) + '\n')
+
+
+def clean():
+    stop()
+    subprocess.run(['sudo', 'rm', '-rf', W])
+
+
+if __name__ == '__main__':
+    cmd = sys.argv[1]
+    if cmd == 'fetch':
+        fetch()
+    elif cmd == 'setup':
+        setup()
+    elif cmd == 'run':
+        run_scenarios(sys.argv[2])
+    elif cmd == 'client':
+        client(sys.argv[2])
+    elif cmd == 'assemble':
+        assemble(sys.argv[2])
+    elif cmd == 'stop':
+        stop()
+    elif cmd == 'clean':
+        clean()
+%%END m.py

@@ -22,6 +22,7 @@ PostgreSQL 16.15 (PGDG noble-pgdg arm64 binaries, run from /tmp on the OrbStack 
 5. The extended scenario uses all three named options: psql 16 \bind (unnamed statement), pgbench -M prepared (named statement P_0), and the raw-socket harness (named statement edc_stmt, named portals edc_portal and edc_cursor, Execute with a row limit, Close, FunctionCall).
 6. large: the fixture file holds the N=1e3 run in full. The N=1e5, N=1e6 and generate_series(1,1e6) runs are 11 MB, 111 MB and 17 MB per direction, so the fixture keeps only their tail (see "Fixture format"). Their measurements below use every record.
 7. Extra runs not named in the plan: simple run 1 (CancelRequest on a second connection while SELECT pg_sleep(5) runs) and error run 0 also has a division by zero after 499 DataRows (error in the middle of a result).
+8. copy_extended was added after a review, in a second capture on the same VM with the same setup: "m.py fetch; m.py setup; m.py run copy_extended". The script at the end of this file is the script of that second capture. It differs from the first capture only by the copy_extended scenario, its input file copy_bind.sql and the client mode copy_extended.
 
 == Fixture format
 - One file per scenario: <scenario>.records. A file has one section: "# version: 16.15 (SHOW server_version: ...)". A section holds runs; "# run <n>: <label>" starts a run and "# command: <command>" names the client command (W/ = /tmp/edc-pg/ on the VM; m.py = the script at the end of this file). One run is one connection (TCP unless the label says Unix socket): replay each run with a new tracker and a new socket id. A client command that opened two connections (pgbench, cancel) becomes two runs with "[connection i of n]" in the label.
@@ -52,6 +53,7 @@ PostgreSQL 16.15 (PGDG noble-pgdg arm64 binaries, run from /tmp on the OrbStack 
 10. ssl_refused: SSLRequest, 1-byte 'N', then the StartupMessage in the next client record, then plain text as usual. gssenc_refused run 1 is the same shape with GSSENCRequest.
 11. CancelRequest (simple run 1, connection 2): a 16-byte record on a new connection, no answer from the server; the cancelled query on connection 1 ends with ErrorResponse 57014 then ReadyForQuery.
 12. ParameterStatus at startup: 14 messages including server_version "16.15 (Ubuntu 16.15-1.pgdg24.04+2)", standard_conforming_strings on, application_name, scram_iterations 4096 and default_transaction_read_only off.
+13. COPY FROM STDIN in the extended protocol (copy_extended): libpq (psql 16 \bind, PQsendQueryParams) sends "P+B+D+E+S" in one record, the server answers "1+2+n+G" (CopyInResponse), the client sends "d+c+S", and the server answers "C+Z". The client sent two Syncs and the server sent one ReadyForQuery for the COPY: the server ignores the Sync that arrives during copy-in, and only the Sync after CopyDone ends the unit. The harness run checked that no second ReadyForQuery arrives within 0.3 s. Both runs then got exactly one ReadyForQuery per simple query. A tracker that makes a unit per Sync shifts every later pair by one on this connection.
 
 == Large result verdicts (summary of the per-scenario table)
 run  query                                         side          records  last size  RFQ offset  last starts at msg  mid-message starts  RFQ inside 1024/4096/8192/16384  first lost header 1024 / 4096 / 8192 / 16384
@@ -87,6 +89,52 @@ ReadyForQuery is in the last record of the response in every run, on both sides.
     pattern=[R*2 | Rx2+Sx14+K+Z | G | C+Z | H+dx4+c+C+Z]
     records starting mid-message=0; first header a prefix cannot reach: 1024: none; 4096: none; 8192: none; 16384: none
     ReadyForQuery: record 5 of 6 (last record: True), offset 83 in a 89-byte record; that record starts at a message boundary: True
+    ReadyForQuery inside 1024: yes; ReadyForQuery inside 4096: yes; ReadyForQuery inside 8192: yes; ReadyForQuery inside 16384: yes
+
+== copy_extended / run 0: psql 16 stdin: COPY t (id, v) FROM STDIN \bind \g (libpq PQsendQueryParams: P B D E S, then CopyData CopyDone Sync), then SELECT pg_sleep(0.05) and SELECT 1
+  command: PGPASSWORD=edc-fixture PGSSLMODE=disable PGGSSENCMODE=disable psql -X -h 127.0.0.1 -p 5432 -U edc -d edc -f - < W/copy_bind.sql; pg_hba method scram-sha-256; ssl=on; client rc=0 in 0.08 s; connections=1; unparsed socket syscalls=0
+ -- connection 1 of 1: request 373 bytes (client send == server recv: True), response 785 bytes (server send == client recv: True)
+  messages client->server: startup px2 P B D E S d c S Qx2 X
+  messages server->client: Rx4 Sx14 K Z 1 2 n G C Z T D C Z T D C Z
+  timing (strace start-of-call stamps, relative to the first record of the run): server: first request record +1.6 ms, last response record +67.3 ms
+  server recv: records=8 sizes n=8 total=373 min=5 median=44 max=109 last=5 rle=[53, 55, 109, 72, 36, 28, 15, 5]
+    pattern=[startup | p*2 | P+B+D+E+S | d+c+S | Q*2 | X]
+    records starting mid-message=0; first header a prefix cannot reach: 1024: none; 4096: none; 8192: none; 16384: none
+  server send: records=7 sizes n=7 total=785 min=18 median=65 max=492 last=66 rle=[24, 93, 492, 27, 18, 65, 66]
+    pattern=[R*2 | Rx2+Sx14+K+Z | 1+2+n+G | C+Z | T+D+C+Z*2]
+    records starting mid-message=0; first header a prefix cannot reach: 1024: none; 4096: none; 8192: none; 16384: none
+    ReadyForQuery: record 6 of 7 (last record: True), offset 60 in a 66-byte record; that record starts at a message boundary: True
+    ReadyForQuery inside 1024: yes; ReadyForQuery inside 4096: yes; ReadyForQuery inside 8192: yes; ReadyForQuery inside 16384: yes
+  client send: records=8 sizes n=8 total=373 min=5 median=44 max=109 last=5 rle=[53, 55, 109, 72, 36, 28, 15, 5]
+    pattern=[startup | p*2 | P+B+D+E+S | d+c+S | Q*2 | X]
+    records starting mid-message=0; first header a prefix cannot reach: 1024: none; 4096: none; 8192: none; 16384: none
+  client recv: records=7 sizes n=7 total=785 min=18 median=65 max=492 last=66 rle=[24, 93, 492, 27, 18, 65, 66]
+    pattern=[R*2 | Rx2+Sx14+K+Z | 1+2+n+G | C+Z | T+D+C+Z*2]
+    records starting mid-message=0; first header a prefix cannot reach: 1024: none; 4096: none; 8192: none; 16384: none
+    ReadyForQuery: record 6 of 7 (last record: True), offset 60 in a 66-byte record; that record starts at a message boundary: True
+    ReadyForQuery inside 1024: yes; ReadyForQuery inside 4096: yes; ReadyForQuery inside 8192: yes; ReadyForQuery inside 16384: yes
+
+== copy_extended / run 1: python3 raw-socket harness (m.py client) copy_extended: the same byte sequence, checks that no second ReadyForQuery arrives within 0.3 s, then the two queries
+  command: PGPASSWORD=edc-fixture PGSSLMODE=disable PGGSSENCMODE=disable python3 m.py client copy_extended; pg_hba method scram-sha-256; ssl=on; client rc=0 in 0.41 s; connections=1; unparsed socket syscalls=0
+ -- connection 1 of 1: request 372 bytes (client send == server recv: True), response 792 bytes (server send == client recv: True)
+  messages client->server: startup px2 P B D E S d c S Qx2 X
+  messages server->client: Rx4 Sx14 K Z 1 2 n G C Z T D C Z T D C Z
+  timing (strace start-of-call stamps, relative to the first record of the run): server: first request record +0.7 ms, last response record +364.0 ms
+  server recv: records=8 sizes n=8 total=372 min=5 median=44 max=109 last=5 rle=[60, 55, 109, 69, 33, 27, 14, 5]
+    pattern=[startup | p*2 | P+B+D+E+S | d+c+S | Q*2 | X]
+    records starting mid-message=0; first header a prefix cannot reach: 1024: none; 4096: none; 8192: none; 16384: none
+  server send: records=7 sizes n=7 total=792 min=18 median=65 max=499 last=66 rle=[24, 93, 499, 27, 18, 65, 66]
+    pattern=[R*2 | Rx2+Sx14+K+Z | 1+2+n+G | C+Z | T+D+C+Z*2]
+    records starting mid-message=0; first header a prefix cannot reach: 1024: none; 4096: none; 8192: none; 16384: none
+    ReadyForQuery: record 6 of 7 (last record: True), offset 60 in a 66-byte record; that record starts at a message boundary: True
+    ReadyForQuery inside 1024: yes; ReadyForQuery inside 4096: yes; ReadyForQuery inside 8192: yes; ReadyForQuery inside 16384: yes
+  client send: records=8 sizes n=8 total=372 min=5 median=44 max=109 last=5 rle=[60, 55, 109, 69, 33, 27, 14, 5]
+    pattern=[startup | p*2 | P+B+D+E+S | d+c+S | Q*2 | X]
+    records starting mid-message=0; first header a prefix cannot reach: 1024: none; 4096: none; 8192: none; 16384: none
+  client recv: records=7 sizes n=7 total=792 min=18 median=65 max=499 last=66 rle=[24, 93, 499, 27, 18, 65, 66]
+    pattern=[R*2 | Rx2+Sx14+K+Z | 1+2+n+G | C+Z | T+D+C+Z*2]
+    records starting mid-message=0; first header a prefix cannot reach: 1024: none; 4096: none; 8192: none; 16384: none
+    ReadyForQuery: record 6 of 7 (last record: True), offset 60 in a 66-byte record; that record starts at a message boundary: True
     ReadyForQuery inside 1024: yes; ReadyForQuery inside 4096: yes; ReadyForQuery inside 8192: yes; ReadyForQuery inside 16384: yes
 
 == error / run 0: psql: syntax error 42601; INSERT twice into u(v UNIQUE) -> 23505 whose Detail echoes edc-detail-secret; division by zero after 499 DataRows
@@ -559,7 +607,7 @@ ReadyForQuery is in the last record of the response in every run, on both sides.
 A re-run gets a newer 16.x when PGDG publishes one; the server send sizes depend on PqSendBuffer (8192) and not on the minor version (추정, not tested with another minor version).
 
 == Verification of this procedure
-The script text in this file was extracted with the sed command of step 1 (byte-identical to the script that made the fixtures, checked with cmp) and run again on the VM: "run simple,large" then "assemble".
+The script text in this file was extracted with the sed command of step 1 (byte-identical to the script that made the fixtures, checked with cmp; see deviation 8 for copy_extended) and run again on the VM: "run simple,large" then "assemble".
 Result: the server send record sequence of every run is identical to the fixture (simple run 0: 24, 93, 492, 66, 126, 76; simple run 1: 24, 93, 499, 139, 6; large runs 0-3: 24, 93, 492, 8192 x 13 / 1354 / 13549 / 2061, then 4559 / 8089 / 6650 / 5251). The client reads differed only in read merging, as expected: large run 0 client recv 15 records in the fixture vs 17 in the re-run (the re-run mirrored the server sends), large run 3 1746 vs 2065. Not re-run: the other 8 scenarios.
 
 == Secrets and host names
@@ -569,11 +617,11 @@ dec() { grep -v '^#' "$1" | cut -d' ' -f4 | tr -d '\n' | xxd -r -p; }
 for f in *.records; do for v in edc-fixture edc-literal-secret edc-detail-secret edc-param-secret edc-copy-secret edc-func-secret ',p='; do dec $f | grep -a -o -- "$v" | wc -l; done; done
 Counts (each value is counted on both sides, so a message seen once is counted 2 times):
 - edc-fixture (the role password): startup_cleartext 2 = one PasswordMessage. Every other fixture: 0 in the data. The "# command:" comment lines of all files carry PGPASSWORD=edc-fixture (fake).
-- SCRAM client-final-message "c=biws,r=<nonce>,p=<proof>" (SASLResponse) and SASLInitialResponse "n,,n=,r=<nonce>": startup_scram 2, simple 4, error 2, extended 8, pipeline 6, copy 2, large 2 (run 0 only, the tail-only runs have no startup), ssl_refused 2, gssenc_refused 2 (run 1). AuthenticationSASLContinue (salt, iteration count 4096, server nonce) and AuthenticationSASLFinal (server signature) are in the same fixtures.
+- SCRAM client-final-message "c=biws,r=<nonce>,p=<proof>" (SASLResponse) and SASLInitialResponse "n,,n=,r=<nonce>": startup_scram 2, simple 4, error 2, extended 8, pipeline 6, copy 2, large 2 (run 0 only, the tail-only runs have no startup), ssl_refused 2, gssenc_refused 2 (run 1), copy_extended 4. AuthenticationSASLContinue (salt, iteration count 4096, server nonce) and AuthenticationSASLFinal (server signature) are in the same fixtures.
 - edc-literal-secret: simple 4 = the Query text and the DataRow value.
 - edc-detail-secret: error 6 = two Query texts and one ErrorResponse D field "Key (v)=(edc-detail-secret) already exists.".
 - edc-param-secret: extended 12 = Bind parameter values (psql \bind 1, pgbench -M prepared 2, harness 2) plus one DataRow (psql: SELECT $1::text echoes the value).
-- edc-copy-secret: copy 4 = one CopyData from the client (COPY FROM STDIN) and one CopyData from the server (COPY TO STDOUT).
+- edc-copy-secret: copy 4 = one CopyData from the client (COPY FROM STDIN) and one CopyData from the server (COPY TO STDOUT). copy_extended 4 = one client CopyData in each of the 2 runs.
 - edc-func-secret: extended 2 = the FunctionCall argument.
 - BackendKeyData (process id and cancel key) is in every plain startup answer. CancelRequest with the same key: simple run 1, connection 2.
 Host names and paths:
@@ -721,6 +769,7 @@ FILES = {
     'prepared.sql': 'SELECT length(:p::text) AS n;\n',
     'pipeline.sql': '\\startpipeline\nSELECT 1;\nSELECT 2;\n\\endpipeline\n',
     'copy.in': '3\tedc-copy-secret\n4\tplain\n',
+    'copy_bind.sql': 'COPY t (id, v) FROM STDIN \\bind \\g\n5\tedc-copy-secret\n\\.\nSELECT pg_sleep(0.05);\nSELECT 1;\n',
 }
 TRUNC = "TRUNCATE t; TRUNCATE u; INSERT INTO t VALUES (1, 'a'), (2, 'b')"
 
@@ -758,6 +807,9 @@ def scenarios():
     one('gssenc_refused', PY + ' gssenc over the Unix socket of the same server: GSSENCRequest, N, plain startup (SCRAM), SELECT 1, Terminate', H('gssenc_unix'))
     one('copy', 'psql: COPY t (id, v) FROM STDIN with a row containing edc-copy-secret, then COPY t TO STDOUT',
         P('-c', 'COPY t (id, v) FROM STDIN', '-c', 'COPY t TO STDOUT'), prep=TRUNC, stdin='copy.in')
+    one('copy_extended', "psql 16 stdin: COPY t (id, v) FROM STDIN \\bind \\g (libpq PQsendQueryParams: P B D E S, then CopyData CopyDone Sync), then SELECT pg_sleep(0.05) and SELECT 1",
+        P('-f', '-'), prep=TRUNC, stdin='copy_bind.sql')
+    one('copy_extended', PY + ' copy_extended: the same byte sequence, checks that no second ReadyForQuery arrives within 0.3 s, then the two queries', H('copy_extended'), prep=TRUNC)
     return S
 
 
@@ -1145,6 +1197,26 @@ def client(mode):
         b3 = parse_msg('', 'SELECT 4') + bind('', '', []) + execute('') + SYNC
         c.s.sendall(b1 + b2 + b3)
         print(c.until_z(3))
+        c.close()
+    elif mode == 'copy_extended':
+        c = Conn()
+        c.s.sendall(parse_msg('', 'COPY t (id, v) FROM STDIN') + bind('', '', []) + msg(b'D', b'P' + cs('')) + execute('') + SYNC)
+        got = ''
+        while not got.endswith('G'):
+            got += c.read()[0].decode()
+        c.s.sendall(msg(b'd', b'6\tedc-copy-secret\n') + msg(b'c') + SYNC)
+        got += c.until_z()
+        c.s.settimeout(0.3)
+        try:
+            extra = c.buf or c.s.recv(1)
+        except socket.timeout:
+            extra = b''
+        c.s.settimeout(None)
+        assert extra == b'', extra
+        for sql in ('SELECT pg_sleep(0.05)', 'SELECT 1'):
+            c.s.sendall(msg(b'Q', cs(sql)))
+            got += ' ' + c.until_z()
+        print(got)
         c.close()
     elif mode == 'cancel':
         c = Conn()

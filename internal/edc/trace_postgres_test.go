@@ -77,18 +77,18 @@ func TestPostgresSQLTextMasksCapsAndEscapes(t *testing.T) {
 	masked := newPostgresTracker("", false)
 	shown := newPostgresTracker("", true)
 	sql := []byte("SELECT 'edc-literal-secret'\x01\x1b[31m")
-	if got, truncated := masked.sqlText(sql, false, true); got != `SELECT '?'\x01\x1b[31m` || truncated {
+	if got, truncated := masked.sqlText(sql, false, postgresStringsOn); got != `SELECT '?'\x01\x1b[31m` || truncated {
 		t.Fatalf("masked = %q, %v", got, truncated)
 	}
-	if got, _ := shown.sqlText(sql, false, true); got != `SELECT 'edc-literal-secret'\x01\x1b[31m` {
+	if got, _ := shown.sqlText(sql, false, postgresStringsOn); got != `SELECT 'edc-literal-secret'\x01\x1b[31m` {
 		t.Fatalf("shown = %q", got)
 	}
 	long := []byte("SELECT " + strings.Repeat("é", postgresSQLLimit))
-	got, truncated := shown.sqlText(long, false, true)
+	got, truncated := shown.sqlText(long, false, postgresStringsOn)
 	if !truncated || len(got) > postgresSQLLimit || !strings.HasPrefix(got, "SELECT é") || strings.HasSuffix(got, "\\x") {
 		t.Fatalf("long = %d bytes, truncated %v, tail %q", len(got), truncated, got[len(got)-8:])
 	}
-	if _, truncated := masked.sqlText([]byte("SELECT 1"), true, true); !truncated {
+	if _, truncated := masked.sqlText([]byte("SELECT 1"), true, postgresStringsOn); !truncated {
 		t.Fatal("a cut message must stay truncated")
 	}
 }
@@ -301,7 +301,7 @@ func pgJSON(t testing.TB, events []postgresEvent) string {
 }
 
 // pgFixtures는 T1 fixture 전부다. 표의 run 순서는 fixture 파일의 "# run" 순서다.
-var pgFixtures = []string{"startup_cleartext", "startup_scram", "simple", "error", "extended", "pipeline", "large", "ssl", "ssl_refused", "gssenc_refused", "copy"}
+var pgFixtures = []string{"startup_cleartext", "startup_scram", "simple", "error", "extended", "pipeline", "large", "ssl", "ssl_refused", "gssenc_refused", "copy", "copy_extended"}
 
 // 표의 값은 T1 fixture를 서버 쪽과 client 쪽에서 재생한 결과를 boundaries.txt의 message 순서와 맞춰 본 것이다. 두 쪽이
 // 같아야 한다. 큰 결과의 tail-only run(large 1-3)은 결과 중간에서 처음 보는 연결이라 event가 없어야 한다.
@@ -318,6 +318,7 @@ func TestPostgresFixtureReplay(t *testing.T) {
 		"ssl_refused":       {"C r Q rSELECT_1"},
 		"gssenc_refused":    {"tls/gssapi", "C r Q rSELECT_1"},
 		"copy":              {"C r Q rCOPY_2 Q rCOPY_4"},
+		"copy_extended":     {"C r E rCOPY_1 Q rSELECT_1 Q rSELECT_1", "C r E rCOPY_1 Q rSELECT_1 Q rSELECT_1"},
 	}
 	for _, name := range pgFixtures {
 		records := loadPostgresFixture(t, name)
@@ -1020,14 +1021,16 @@ func FuzzPostgresTracker(f *testing.F) {
 					feed(control&0x0f, bind, 0, at*1_000_000+2)
 				}
 			}
-			queued, statements := 0, 0
+			queued, statements, portals := 0, 0, 0
 			for _, conn := range tracker.conns {
 				queued += len(conn.queue)
 				statements += len(conn.statements)
+				portals += len(conn.portals)
 			}
 			if len(tracker.conns) > postgresSocketLimit || queued > postgresPendingLimit || queued != tracker.pending ||
-				statements > postgresStatementLimit || statements != tracker.statements {
-				t.Fatalf("conns %d, queued %d (pending %d), statements %d (%d)", len(tracker.conns), queued, tracker.pending, statements, tracker.statements)
+				statements > postgresStatementLimit || statements != tracker.statements || portals > postgresPortalLimit || portals != tracker.portals {
+				t.Fatalf("conns %d, queued %d (pending %d), statements %d (%d), portals %d (%d)", len(tracker.conns), queued, tracker.pending,
+					statements, tracker.statements, portals, tracker.portals)
 			}
 		}
 		raw, err := json.Marshal(events)
@@ -1044,4 +1047,102 @@ func FuzzPostgresTracker(f *testing.F) {
 			pgCheckText(t, reflect.ValueOf(event))
 		}
 	})
+}
+
+func pgCopyIn() []byte { return pgMsg('G', []byte{0}, pgInt16(2), pgInt16(0), pgInt16(0)) }
+
+// libpq의 PQsendQueryParams("COPY ... FROM STDIN")은 P B D E S를 보내고 CopyInResponse를 받은 뒤 CopyData, CopyDone, Sync를
+// 보낸다. 서버는 copy-in 중의 Sync를 무시하고 ReadyForQuery를 하나만 보낸다. 두 번째 Sync가 단위를 만들면 뒤 Query의
+// 응답과 응답 시간이 한 칸씩 밀린다.
+func TestPostgresExtendedCopyInSyncDoesNotShiftPairs(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		end  [][]byte
+		resp [][]byte
+		want string
+	}{
+		{"copy done", [][]byte{pgMsg('d', []byte("5\tedc-copy-secret\n")), pgMsg('c'), pgSync()}, [][]byte{pgComplete("COPY 1"), pgReady()}, "E rCOPY_1"},
+		{"copy fail", [][]byte{pgMsg('d', []byte("5\t")), pgMsg('f', pgCString("edc-copy-secret aborted")), pgSync()},
+			[][]byte{pgError("ERROR", "57014", "COPY from stdin failed", ""), pgReady()}, "E e57014"},
+		// 서버가 COPY 중 오류를 내면 Sync까지 버리므로 CopyDone 뒤 Sync에 ReadyForQuery가 하나 온다.
+		{"error during copy", [][]byte{pgMsg('d', []byte("x\n")), pgMsg('c'), pgSync()},
+			[][]byte{pgError("ERROR", "22P02", "invalid input syntax", ""), pgReady()}, "E e22P02"},
+	} {
+		for _, server := range []bool{true, false} {
+			conn := newPGTestConn(server, false)
+			conn.login(t)
+			events := conn.req(pgParse("", "COPY t (id, v) FROM STDIN"), pgBind("", ""), pgMsg('D', []byte{'P'}, pgCString("")), pgExecute(""), pgSync())
+			events = append(events, conn.resp(pgMsg('1'), pgMsg('2'), pgMsg('n'), pgCopyIn())...)
+			events = append(events, conn.req(tc.end...)...)
+			events = append(events, conn.resp(tc.resp...)...)
+			events = append(events, conn.req(pgQuery("SELECT pg_sleep(0.05)"))...)
+			conn.at += 49_000_000
+			events = append(events, conn.resp(pgRowDescription(), pgRow(""), pgComplete("SELECT 1"), pgReady())...)
+			events = append(events, conn.req(pgQuery("SELECT 1"))...)
+			events = append(events, conn.resp(pgRowDescription(), pgRow("1"), pgComplete("SELECT 1"), pgReady())...)
+			if got := pgTokens(events); got != tc.want+" Q rSELECT_1 Q rSELECT_1" || conn.tracker.pending != 0 {
+				t.Fatalf("%s server=%v = %q, pending %d", tc.name, server, got, conn.tracker.pending)
+			}
+			pgCheckPairs(t, tc.name, events)
+			if sleep, one := *events[3].LatencyMS, *events[5].LatencyMS; sleep != 50 || one != 1 || events[3].Postgres.SQL != "SELECT pg_sleep(0.05)" {
+				t.Fatalf("%s server=%v latencies = %v / %v", tc.name, server, sleep, one)
+			}
+		}
+	}
+}
+
+// 이름 있는 portal은 트랜잭션 안에서 쌓인다. 상한은 모든 연결의 합계다.
+func TestPostgresPortalLimitIsTrackerWide(t *testing.T) {
+	tracker := newPostgresTracker("", false)
+	var binds []byte
+	for i := range postgresPortalLimit/2 + 1 {
+		binds = append(binds, pgBind(fmt.Sprintf("p%d", i), "")...)
+	}
+	for socket := uint64(1); socket <= 2; socket++ {
+		tracker.events(pgRecord(socket, true, false, 1, pgQuery("BEGIN"), len(pgQuery("BEGIN"))), 0)
+		tracker.events(pgRecord(socket, true, false, 2, binds, len(binds)), 0)
+	}
+	portals := len(tracker.conns[1].portals) + len(tracker.conns[2].portals)
+	if tracker.portals > postgresPortalLimit || portals != tracker.portals {
+		t.Fatalf("portals %d, counted %d", portals, tracker.portals)
+	}
+	close := pgMsg('C', []byte{'P'}, pgCString(fmt.Sprintf("p%d", postgresPortalLimit/2)))
+	tracker.events(pgRecord(2, true, false, 3, close, len(close)), 0)
+	idle := pgReady()
+	tracker.events(pgRecord(1, true, true, 4, idle, len(idle)), 0)
+	if want := len(tracker.conns[2].portals); tracker.portals != want || len(tracker.conns[1].portals) != 0 {
+		t.Fatalf("after close and idle: counted %d, want %d", tracker.portals, want)
+	}
+	tracker.forgetSocket(2)
+	if tracker.portals != 0 {
+		t.Fatalf("after forget: %d", tracker.portals)
+	}
+}
+
+// 연결 중간부터 보면 standard_conforming_strings를 모른다. 그때 '...' 안의 backslash는 literal 끝을 알 수 없으므로 끝까지
+// 가린다.
+func TestPostgresUnknownStandardStringsMasksConservatively(t *testing.T) {
+	sql := `SELECT 'it\'s sec27 here', 1`
+	for _, tc := range []struct {
+		strings postgresStrings
+		want    string
+	}{
+		{postgresStringsUnknown, `SELECT '?`},
+		{postgresStringsOff, `SELECT '?', 1`},
+		{postgresStringsOn, `SELECT '?'s sec27 here'?`},
+	} {
+		if got := string(postgresMask([]byte(sql), tc.strings)); got != tc.want {
+			t.Errorf("strings %d = %q, want %q", tc.strings, got, tc.want)
+		}
+	}
+	if got := string(postgresMask([]byte(`SELECT 'a', E'b\'c', $$d\$$, 'e'`), postgresStringsUnknown)); got != `SELECT '?', E'?', $$?$$, '?'` {
+		t.Fatalf("no plain backslash = %q", got)
+	}
+	conn := newPGTestConn(true, false)
+	events := conn.req(pgQuery(sql))
+	conn.resp(pgParam("standard_conforming_strings", "off"), pgComplete("SET"), pgReady())
+	events = append(events, conn.req(pgQuery(sql))...)
+	if events[0].Postgres.SQL != `SELECT '?` || events[1].Postgres.SQL != `SELECT '?', 1` || strings.Contains(pgJSON(t, events), "sec27") {
+		t.Fatalf("mid-stream = %s", pgJSON(t, events))
+	}
 }

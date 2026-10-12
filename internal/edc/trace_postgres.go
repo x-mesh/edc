@@ -22,9 +22,11 @@ const (
 	postgresSQLLimit = 1024
 	// postgresMessageLimit은 ErrorResponse의 message와 detail 상한이다.
 	postgresMessageLimit = 1024
-	// 아래 세 상한은 넘으면 모두 비운다. 비운 뒤 이어지는 응답은 짝 없이 사라지고, execute는 SQL 없이 보인다.
+	// 아래 세 상한은 연결 수와 모든 연결의 statement, portal 합계 상한이다. 넘으면 모두 비운다. 비운 뒤 이어지는 응답은 짝
+	// 없이 사라지고, execute는 SQL 없이 보인다.
 	postgresSocketLimit    = 65536
 	postgresStatementLimit = 65536
+	postgresPortalLimit    = 65536
 	// postgresPendingLimit은 ReadyForQuery를 기다리는 요청 단위의 모든 연결 합계 상한이다. 연결마다 두면 연결 상한과 곱해져
 	// 메모리가 커진다.
 	postgresPendingLimit = 1024
@@ -298,8 +300,13 @@ type postgresConn struct {
 	encrypted bool
 	// closed는 CancelRequest처럼 더 읽을 message가 없는 연결이다.
 	closed bool
-	// nonStandard는 ParameterStatus standard_conforming_strings=off다. 0 값이 서버 기본값(on)이 되도록 반대로 둔다.
-	nonStandard   bool
+	// strings는 ParameterStatus로 받은 standard_conforming_strings다. 연결 중간부터 보면 모른다.
+	strings postgresStrings
+	// copyIn은 extended batch가 CopyInResponse를 받았다는 뜻이고, copySync는 그 COPY가 CopyDone이나 CopyFail로 끝났다는
+	// 뜻이다. 서버는 copy-in 중의 Sync를 무시하고 CopyDone 뒤의 Sync에만 ReadyForQuery를 하나 보낸다. COPY 중 오류가 나도
+	// Sync까지 버린 뒤 하나만 보낸다. 이 Sync들로 단위를 더 만들면 뒤 응답이 모두 한 칸씩 밀린다.
+	copyIn        bool
+	copySync      bool
 	serverVersion string
 	batch         *postgresUnit
 	queue         []*postgresUnit
@@ -317,6 +324,7 @@ type postgresTracker struct {
 	conns       map[uint64]*postgresConn
 	pending     int
 	statements  int
+	portals     int
 }
 
 func newPostgresTracker(side string, showSecrets bool) *postgresTracker {
@@ -345,7 +353,7 @@ func (tracker *postgresTracker) events(record mysqlRecord, clockOffset int64) []
 	if conn == nil {
 		if len(tracker.conns) >= postgresSocketLimit {
 			clear(tracker.conns)
-			tracker.pending, tracker.statements = 0, 0
+			tracker.pending, tracker.statements, tracker.portals = 0, 0, 0
 		}
 		conn = &postgresConn{}
 		tracker.conns[record.socket] = conn
@@ -367,6 +375,7 @@ func (tracker *postgresTracker) forgetSocket(socket uint64) {
 	}
 	tracker.pending = max(0, tracker.pending-len(conn.queue))
 	tracker.statements = max(0, tracker.statements-len(conn.statements))
+	tracker.portals = max(0, tracker.portals-len(conn.portals))
 	delete(tracker.conns, socket)
 }
 
@@ -565,12 +574,31 @@ func (call *postgresCall) forgetStatement(name string) {
 	}
 }
 
-// bindPortal은 portal이 가리키는 statement 이름만 둔다. parameter 값은 읽지 않는다. 연결마다 상한을 넘으면 비운다.
-func (conn *postgresConn) bindPortal(portal, statement string) {
-	if conn.portals == nil || len(conn.portals) >= postgresPendingLimit {
+// bindPortal은 portal이 가리키는 statement 이름만 둔다. parameter 값은 읽지 않는다. 모든 연결의 합계가 상한을 넘으면 모두
+// 비운다. 이름 있는 portal은 트랜잭션이 끝나야 닫히므로 연결마다 세면 연결 상한과 곱해져 메모리가 커진다.
+func (call *postgresCall) bindPortal(portal, statement string) {
+	conn, tracker := call.conn, call.tracker
+	if _, ok := conn.portals[portal]; !ok {
+		if tracker.portals >= postgresPortalLimit {
+			for _, other := range tracker.conns {
+				other.portals = nil
+			}
+			tracker.portals = 0
+		}
+		tracker.portals++
+	}
+	if conn.portals == nil {
 		conn.portals = map[string]string{}
 	}
 	conn.portals[portal] = statement
+}
+
+func (call *postgresCall) forgetPortal(name string) {
+	conn := call.conn
+	if _, ok := conn.portals[name]; ok {
+		delete(conn.portals, name)
+		call.tracker.portals = max(0, call.tracker.portals-1)
+	}
 }
 
 // frontend는 요청 방향 message 하나를 읽는다.
@@ -585,7 +613,7 @@ func (call *postgresCall) frontend(message postgresMessage) bool {
 		conn.batch = nil
 		unit := &postgresUnit{at: message.at, bytes: size, info: tracePostgresEvent{Command: postgresCommandQuery}}
 		sql, _, _ := postgresCString(message.body)
-		unit.info.SQL, unit.info.SQLTruncated = tracker.sqlText(sql, message.truncated, !conn.nonStandard)
+		unit.info.SQL, unit.info.SQLTruncated = tracker.sqlText(sql, message.truncated, conn.strings)
 		call.enqueue(unit, postgresEventQuery)
 	case 'F':
 		conn.batch = nil
@@ -599,7 +627,7 @@ func (call *postgresCall) frontend(message postgresMessage) bool {
 		}
 		sql, _, closed := postgresCString(rest)
 		var statement postgresStatement
-		statement.sql, statement.truncated = tracker.sqlText(sql, !closed, !conn.nonStandard)
+		statement.sql, statement.truncated = tracker.sqlText(sql, !closed, conn.strings)
 		call.remember(postgresName(name), statement)
 		if !batch.parsed {
 			batch.parsed, batch.prepareSQL, batch.prepareCut, batch.prepareName = true, statement.sql, statement.truncated, postgresName(name)
@@ -609,7 +637,7 @@ func (call *postgresCall) frontend(message postgresMessage) bool {
 		portal, rest, ok := postgresCString(message.body)
 		statement, _, closed := postgresCString(rest)
 		if ok && closed {
-			conn.bindPortal(postgresName(portal), postgresName(statement))
+			call.bindPortal(postgresName(portal), postgresName(statement))
 		}
 	case 'E':
 		batch := conn.openBatch(message.at)
@@ -629,17 +657,25 @@ func (call *postgresCall) frontend(message postgresMessage) bool {
 				case 'S':
 					call.forgetStatement(postgresName(name))
 				case 'P':
-					delete(conn.portals, postgresName(name))
+					call.forgetPortal(postgresName(name))
 				}
 			}
 		}
 	case 'D', 'H':
 		conn.openBatch(message.at).bytes += size
+	case 'c', 'f':
+		if conn.copyIn {
+			conn.copyIn, conn.copySync = false, true
+		}
 	case 'S':
+		call.forgetPortal("")
+		if conn.copyIn || conn.copySync {
+			conn.copySync, conn.batch = false, nil
+			return true
+		}
 		batch := conn.openBatch(message.at)
 		conn.batch = nil
 		batch.bytes += size
-		delete(conn.portals, "")
 		switch {
 		case batch.info.Executes > 0:
 			batch.info.Command = postgresCommandExecute
@@ -712,9 +748,10 @@ func (call *postgresCall) backend(message postgresMessage) bool {
 	}
 	switch message.typ {
 	case 'Z':
-		conn.startup = false
+		conn.startup, conn.copyIn = false, false
 		if len(message.body) == 1 && message.body[0] == 'I' {
 			// 트랜잭션 밖에서는 이름 있는 portal도 모두 닫힌다.
+			call.tracker.portals = max(0, call.tracker.portals-len(conn.portals))
 			conn.portals = nil
 		}
 		switch {
@@ -736,6 +773,8 @@ func (call *postgresCall) backend(message postgresMessage) bool {
 		if head != nil {
 			head.rowsSeen = true
 		}
+	case 'G':
+		conn.copyIn = head != nil && !head.silent && head.info.Command == postgresCommandExecute
 	case 'E':
 		severity, state, text, detail := call.errorFields(message.body)
 		if head == nil {
@@ -758,7 +797,10 @@ func (call *postgresCall) backend(message postgresMessage) bool {
 		case "server_version":
 			conn.serverVersion = postgresName(value)
 		case "standard_conforming_strings":
-			conn.nonStandard = string(value) == "off"
+			conn.strings = postgresStringsOn
+			if string(value) == "off" {
+				conn.strings = postgresStringsOff
+			}
 		}
 	}
 	return true
@@ -825,11 +867,19 @@ func (call *postgresCall) finish(unit *postgresUnit, at uint64) {
 	call.out = append(call.out, event)
 }
 
-// sqlText는 event에 붙일 SQL이다. 문자열 literal은 --show-secrets가 아니면 가린다. standardStrings는 연결의
-// standard_conforming_strings이고, 꺼져 있으면 '...' 안의 backslash가 escape다.
-func (tracker *postgresTracker) sqlText(raw []byte, truncated, standardStrings bool) (string, bool) {
+// postgresStrings는 연결의 standard_conforming_strings다. 꺼져 있으면 '...' 안의 backslash가 escape다.
+type postgresStrings uint8
+
+const (
+	postgresStringsUnknown postgresStrings = iota
+	postgresStringsOn
+	postgresStringsOff
+)
+
+// sqlText는 event에 붙일 SQL이다. 문자열 literal은 --show-secrets가 아니면 가린다.
+func (tracker *postgresTracker) sqlText(raw []byte, truncated bool, strings postgresStrings) (string, bool) {
 	if !tracker.showSecrets {
-		raw = postgresMaskSQL(raw, standardStrings)
+		raw = postgresMask(raw, strings)
 	}
 	text := string(raw)
 	if len(text) > postgresSQLLimit {
@@ -933,9 +983,22 @@ func postgresDollarTag(sql []byte, i int) (int, bool) {
 // 주석, 숫자, $1 parameter는 그대로 둔다. E'...', U&'...', B'...', X'...', N'...'은 앞 글자를 남기고 본문만 가린다.
 // MySQL과 달리 standard_conforming_strings=on이면 '...' 안의 backslash는 escape가 아니다.
 func postgresMaskSQL(sql []byte, standardStrings bool) []byte {
+	if standardStrings {
+		return postgresMask(sql, postgresStringsOn)
+	}
+	return postgresMask(sql, postgresStringsOff)
+}
+
+// postgresMask는 postgresMaskSQL과 같고, standard_conforming_strings를 모를 때도 가린다.
+func postgresMask(sql []byte, strings postgresStrings) []byte {
 	out := make([]byte, 0, len(sql))
 	literal := func(i int, backslash bool) int {
 		end, closed := postgresLiteralEnd(sql, i, backslash)
+		// 설정을 모르는데 '...' 안에 backslash가 있으면 두 해석에서 literal의 끝이 다를 수 있다. 앞부분은 두 해석이 같으므로
+		// 그 literal부터 끝까지 가린다.
+		if strings == postgresStringsUnknown && !backslash && bytes.IndexByte(sql[i+1:end], '\\') >= 0 {
+			end, closed = len(sql), false
+		}
 		out = append(out, '\'', '?')
 		if closed {
 			out = append(out, '\'')
@@ -953,7 +1016,7 @@ func postgresMaskSQL(sql []byte, standardStrings bool) []byte {
 		}
 		switch {
 		case value == '\'':
-			i = literal(i, !standardStrings)
+			i = literal(i, strings == postgresStringsOff)
 		case tokenStart && (value == 'E' || value == 'e') && next(1) == '\'':
 			out = append(out, value)
 			i = literal(i+1, true)
@@ -965,7 +1028,7 @@ func postgresMaskSQL(sql []byte, standardStrings bool) []byte {
 			i = literal(i+1, false)
 		case tokenStart && (value == 'N' || value == 'n') && next(1) == '\'':
 			out = append(out, value)
-			i = literal(i+1, !standardStrings)
+			i = literal(i+1, strings == postgresStringsOff)
 		case value == '"':
 			end := postgresQuotedEnd(sql, i)
 			out = append(out, sql[i:end]...)

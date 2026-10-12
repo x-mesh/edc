@@ -2396,5 +2396,6 @@ func (model topModel) networkPeakLines(last topDashboardRow) []string {
 		"peaks 60s · conntrack " + usage,
 		"listen overflow " + peak("listen_overflows") + " · drop " + peak("listen_drops"),
 		"softnet drop " + peak("softnet_dropped") + " · UDP buffer " + peak("udp_rcvbuf_errors"),
+		"TCP mem pressure " + peak("tcp_memory_pressures") + " · NIC rx missed " + peak("nic_rx_missed") + " · rx fifo " + peak("nic_rx_fifo"),
 	}
 }

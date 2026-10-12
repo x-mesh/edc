@@ -1102,7 +1102,9 @@ func TestTLSHandshakeCompleteRejectsMalformedLengths(t *testing.T) {
 	for name, payload := range map[string][]byte{
 		"short":                  {tlsClientHelloType, 0, 0},
 		"declared after payload": {tlsClientHelloType, 0, 0, 5, 3, 3},
-		"other handshake":        {2, 0, 0, 0},
+		// ServerHello(2)는 ClientHello처럼 기다리고, Certificate(11) 같은 다른 handshake는 읽지 않는다.
+		"other handshake":    {11, 0, 0, 0},
+		"short server hello": {tlsServerHelloType, 0, 0, 5, 3, 3},
 	} {
 		if tlsHandshakeComplete(payload) {
 			t.Fatalf("%s was complete", name)
@@ -1166,7 +1168,7 @@ func TestHTTPTraceSummaryCountsTLSConnectionsApart(t *testing.T) {
 		}
 	}
 	output := traceCaptureOutput(t, &os.Stdout, func() { report.print(false) })
-	for _, text := range []string{"\nRequests: 1\n", "\nTLS connections: 2 (HTTPS, only the ClientHello is plain text)\n", "\nclient\tapi.example\th2,http/1.1\t2\tcurl\n"} {
+	for _, text := range []string{"\nRequests: 1\n", "\nTLS connections: 2 (HTTPS, only the handshake headers are plain text)\n", "\nclient\tapi.example\th2,http/1.1\t2\t-\t0\tcurl\n"} {
 		if !strings.Contains(output, text) {
 			t.Fatalf("summary %q does not contain %q", output, text)
 		}
@@ -1336,5 +1338,196 @@ func TestTraceTLSOptionNeedsHTTP(t *testing.T) {
 	finder := &traceTLSFinder{targets: []traceTLSTarget{{path: "/lib/libssl.so.3"}}}
 	if scope := (tcpTraceOptions{tls: traceTLSAuto, tlsFinder: finder}).scope("http"); scope.tls != traceTLSAuto || scope.tlsFinder != finder {
 		t.Fatalf("scope = %+v", scope)
+	}
+}
+
+// tlsHandBuiltServerHello는 ServerHello record를 만든다. supported가 0이 아니면 supported_versions 확장에 넣는다. TLS 1.3은
+// legacy version 자리에 TLS 1.2를 적고 진짜 version은 확장에 둔다.
+func tlsHandBuiltServerHello(cipher uint16, supported uint16, alpn string) []byte {
+	vector := func(size int, data []byte) []byte {
+		prefix := make([]byte, size)
+		for index := range size {
+			prefix[index] = byte(len(data) >> (8 * (size - 1 - index)))
+		}
+		return append(prefix, data...)
+	}
+	extension := func(kind int, data []byte) []byte {
+		return append([]byte{byte(kind >> 8), byte(kind)}, vector(2, data)...)
+	}
+	var extensions []byte
+	if supported != 0 {
+		extensions = append(extensions, extension(tlsExtensionSupportedVersions, []byte{byte(supported >> 8), byte(supported)})...)
+	}
+	if alpn != "" {
+		extensions = append(extensions, extension(tlsExtensionALPN, vector(2, vector(1, []byte(alpn))))...)
+	}
+	body := append([]byte{3, 3}, make([]byte, 32)...)
+	body = append(body, vector(1, []byte{1, 2, 3})...)
+	body = append(body, byte(cipher>>8), byte(cipher), 0)
+	body = append(body, vector(2, extensions)...)
+	handshake := append([]byte{tlsServerHelloType}, vector(3, body)...)
+	return append([]byte{tlsHandshakeRecord, 3, 3}, vector(2, handshake)...)
+}
+
+func tlsHandBuiltAlert(level, description byte) []byte {
+	return []byte{tlsAlertRecord, 3, 3, 0, 2, level, description}
+}
+
+func TestParseTLSServerHelloReadsVersionCipherAndALPN(t *testing.T) {
+	hello, ok := parseTLSServerHello(tlsHandBuiltServerHello(0xc02f, 0, "h2"), true)
+	if !ok || hello.version != "TLS1.2" || hello.cipher != "ECDHE_RSA_AES_128_GCM_SHA256" || hello.alpn != "h2" {
+		t.Fatalf("TLS 1.2 = %+v, %t", hello, ok)
+	}
+	hello, ok = parseTLSServerHello(tlsHandBuiltServerHello(0x1301, 0x0304, "")[tlsRecordHeaderSize:], false)
+	if !ok || hello.version != "TLS1.3" || hello.cipher != "TLS_AES_128_GCM_SHA256" || hello.alpn != "" {
+		t.Fatalf("TLS 1.3 = %+v, %t", hello, ok)
+	}
+	if hello, ok := parseTLSServerHello(tlsHandBuiltServerHello(0xffff, 0, ""), true); !ok || hello.cipher != "0xffff" {
+		t.Fatalf("unknown cipher = %+v, %t", hello, ok)
+	}
+	for _, bad := range [][]byte{nil, tlsHandBuiltClientHello("api.example"), tlsHandBuiltServerHello(0x1301, 0, "")[:20], {tlsHandshakeRecord, 3, 3, 0, 1, 9}} {
+		if hello, ok := parseTLSServerHello(bad, true); ok {
+			t.Fatalf("%x was read as a ServerHello: %+v", bad, hello)
+		}
+	}
+}
+
+func TestParseTLSAlertReadsRecordAndSyntheticForms(t *testing.T) {
+	alert, ok := parseTLSAlert(tlsHandBuiltAlert(2, 40), true)
+	if !ok || alert.String() != "fatal handshake_failure" {
+		t.Fatalf("record = %+v, %t", alert, ok)
+	}
+	alert, ok = parseTLSAlert([]byte{tlsAlertRecord, 1, 0, 0}, false)
+	if !ok || alert.String() != "warning close_notify" {
+		t.Fatalf("synthetic = %+v, %t", alert, ok)
+	}
+	if alert, ok := parseTLSAlert([]byte{tlsAlertRecord, 3, 200, 0}, false); !ok || alert.String() != "level_3 alert_200" {
+		t.Fatalf("unknown = %+v, %t", alert, ok)
+	}
+	for _, bad := range [][]byte{nil, {tlsAlertRecord, 2}, {tlsAlertRecord, 3, 3, 0, 3, 2, 40}, tlsHandBuiltClientHello("x")} {
+		if alert, ok := parseTLSAlert(bad, true); ok {
+			t.Fatalf("%x was read as an alert: %+v", bad, alert)
+		}
+	}
+	if !tlsHandshakeComplete([]byte{tlsAlertRecord, 2, 40, 0}) || !tlsHandshakeComplete(tlsHandBuiltServerHello(0x1301, 0x0304, "")[tlsRecordHeaderSize:]) {
+		t.Fatal("alert marker or ServerHello was not complete")
+	}
+}
+
+func TestHTTPTrackerPairsServerHelloAndAlertsWithTheClientHello(t *testing.T) {
+	tracker := newHTTPTracker("", false, false)
+	hello, ok := tracker.event(httpTestPacket(string(tlsHandBuiltClientHello("api.example", "h2")), 1_000_000, true), 0)
+	if !ok || hello.Event != traceTLSHelloEvent {
+		t.Fatalf("hello = %#v, %t", hello, ok)
+	}
+	server, ok := tracker.event(httpTestPacket(string(tlsHandBuiltServerHello(0x1301, 0x0304, "")), 3_000_000, false), 0)
+	if !ok || server.Event != traceTLSServerHelloEvent || server.Side != traceClientSide || server.Target != "api.example" || server.TLSVersion != "TLS1.3" || server.Cipher != "TLS_AES_128_GCM_SHA256" || server.LatencyMS == nil || *server.LatencyMS != 2 || len(server.ALPN) != 0 {
+		t.Fatalf("server hello = %#v, %t", server, ok)
+	}
+	if destination, label := traceHTTPScrollLabels(server); destination != "client: https://api.example (127.0.0.1:8080)" || !strings.HasPrefix(label, "tls_server_hello TLS1.3 TLS_AES_128_GCM_SHA256 ") {
+		t.Fatalf("labels = %q, %q", destination, label)
+	}
+	// TLS 1.2의 인증서 거절은 client가 평문 alert로 보낸다. 같은 socket이라 ClientHello의 쪽과 host를 이어받는다.
+	alert, ok := tracker.event(httpTestPacket(string(tlsHandBuiltAlert(2, 48)), 4_000_000, true), 0)
+	if !ok || alert.Event != traceTLSAlertEvent || alert.Side != traceClientSide || alert.AlertFrom != traceClientSide || alert.Alert != "fatal unknown_ca" || alert.Target != "api.example" || alert.LatencyMS == nil || *alert.LatencyMS != 3 {
+		t.Fatalf("client alert = %#v, %t", alert, ok)
+	}
+	if _, label := traceHTTPScrollLabels(alert); !strings.HasPrefix(label, "tls_alert fatal unknown_ca from client") {
+		t.Fatalf("alert label = %q", label)
+	}
+	received, _ := tracker.event(httpTestPacket(string(tlsHandBuiltAlert(2, 112)), 5_000_000, false), 0)
+	if received.AlertFrom != traceServerSide || received.Alert != "fatal unrecognized_name" {
+		t.Fatalf("server alert = %#v", received)
+	}
+	// ClientHello를 못 본 socket은 쪽을 모른다. 보낸 방향만 적는다.
+	tracker.forget(received.SocketID)
+	unknown, ok := tracker.event(httpTestPacket(string(tlsHandBuiltAlert(2, 70)), 6_000_000, false), 0)
+	if !ok || unknown.Side != "" || unknown.AlertFrom != "peer" || unknown.LatencyMS != nil || unknown.Target != "127.0.0.1:8080" {
+		t.Fatalf("unknown alert = %#v, %t", unknown, ok)
+	}
+	// 로컬 서버는 ServerHello를 보낸다. --side client에서는 보이지 않는다.
+	serverSide := newHTTPTracker(traceServerSide, false, false)
+	if _, ok := serverSide.event(httpTestPacket(string(tlsHandBuiltClientHello("local.example")), 1, false), 0); !ok {
+		t.Fatal("server-side hello")
+	}
+	sent, ok := serverSide.event(httpTestPacket(string(tlsHandBuiltServerHello(0xc030, 0, "http/1.1")), 2, true), 0)
+	if !ok || sent.Side != traceServerSide || sent.Target != "local.example" || strings.Join(sent.ALPN, ",") != "http/1.1" || sent.TLSVersion != "TLS1.2" {
+		t.Fatalf("server-side ServerHello = %#v, %t", sent, ok)
+	}
+	if _, ok := newHTTPTracker(traceClientSide, false, false).event(httpTestPacket(string(tlsHandBuiltServerHello(0xc030, 0, "")), 2, true), 0); ok {
+		t.Fatal("client-side tracker kept a sent ServerHello")
+	}
+	// 합산 지표는 handshake event를 요청이나 응답으로 세지 않는다.
+	var counts traceHTTPCounts
+	for _, event := range []captureEvent{hello, server, alert} {
+		counts.observe(event)
+	}
+	if counts.Requests != 0 || counts.Responses != 0 {
+		t.Fatalf("counts = %+v", counts)
+	}
+}
+
+func TestHTTPMessagesPassTLSServerHelloAndAlertsThrough(t *testing.T) {
+	messages := newHTTPMessages(newHTTPTracker("", false, false), 0, false)
+	now := time.Unix(0, 0)
+	hello := httpTestPacket(string(tlsHandBuiltClientHello("api.example")), 1_000_000, true)
+	server := httpTestPacket(string(tlsHandBuiltServerHello(0x1302, 0x0304, "")), 2_000_000, false)
+	alert := httpTestPacket(string([]byte{tlsAlertRecord, 2, 40, 0}), 3_000_000, false)
+	alert.tlsHandshake = true
+	var events []captureEvent
+	for _, packet := range []httpPacket{hello, server, alert} {
+		events = append(events, messages.add(packet, 0, now)...)
+	}
+	if len(events) != 3 || events[1].Event != traceTLSServerHelloEvent || events[2].Event != traceTLSAlertEvent || events[2].Alert != "fatal handshake_failure" || events[2].AlertFrom != traceServerSide {
+		t.Fatalf("events = %#v", events)
+	}
+	if len(messages.open) != 0 {
+		t.Fatalf("open messages = %#v", messages.open)
+	}
+	joined, ok := (httpSplitStarts{}).join(alert)
+	if !ok || string(joined.payload) != string(alert.payload) {
+		t.Fatalf("alert join = %#v, %t", joined, ok)
+	}
+}
+
+func TestHTTPTraceSummaryCountsTLSVersionsAndAlerts(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	tracker := newHTTPTracker("", false, false)
+	var events []captureEvent
+	for _, packet := range []httpPacket{
+		httpTestPacket(string(tlsHandBuiltClientHello("api.example", "h2")), 1_000_000, true),
+		httpTestPacket(string(tlsHandBuiltServerHello(0x1301, 0x0304, "")), 2_000_000, false),
+		httpTestPacket(string(tlsHandBuiltAlert(2, 40)), 3_000_000, false),
+		httpTestPacket(string(tlsHandBuiltAlert(2, 40)), 4_000_000, false),
+	} {
+		event, ok := tracker.event(packet, 0)
+		if !ok {
+			t.Fatalf("packet %x made no event", packet.payload)
+		}
+		events = append(events, event)
+	}
+	// trace 전에 시작한 연결의 alert는 host를 모른다. 합계에만 센다.
+	stray := events[3]
+	stray.SocketID, stray.Alert = 99, "fatal protocol_version"
+	events = append(events, stray)
+	summarizer := newHTTPTraceSummarizer()
+	for _, event := range events {
+		summarizer.observe(event)
+	}
+	report := summarizer.summarize(captureSummary{}, time.Second).(httpTraceReport)
+	if report.TLSConnections != 1 || len(report.TLS) != 1 || report.TLS[0].Alerts != 2 || report.TLS[0].Versions["TLS1.3"] != 1 || report.TLSAlerts["fatal handshake_failure"] != 2 || report.TLSAlerts["fatal protocol_version"] != 1 {
+		t.Fatalf("report = %#v", report)
+	}
+	data, _ := json.Marshal(report)
+	for _, field := range []string{`"versions":{"TLS1.3":1}`, `"alerts":2`, `"tls_alerts":{"fatal handshake_failure":2,"fatal protocol_version":1}`} {
+		if !strings.Contains(string(data), field) {
+			t.Fatalf("report JSON %s does not contain %s", data, field)
+		}
+	}
+	output := traceCaptureOutput(t, &os.Stdout, func() { report.print(false) })
+	for _, text := range []string{"TLS alerts: 3 (fatal handshake_failure 2, fatal protocol_version 1)\n", "\nclient\tapi.example\th2\t1\tTLS1.3\t2\tcurl\n"} {
+		if !strings.Contains(output, text) {
+			t.Fatalf("summary %q does not contain %q", output, text)
+		}
 	}
 }

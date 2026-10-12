@@ -347,10 +347,10 @@ func printInfo(writer io.Writer, version string, details hostDetails, interfaces
 			fmt.Fprintf(writer, "    %s %s\n", branch, infoInterfaceLine(iface))
 		}
 	}
-	printDiskUsage(writer, disks, signals.Disks, color)
+	printDiskUsage(writer, disks, signals.Disks, color, verbose)
 }
 
-func printDiskUsage(writer io.Writer, disks []diskDetails, signals map[string]diskSignal, color bool) {
+func printDiskUsage(writer io.Writer, disks []diskDetails, signals map[string]diskSignal, color, verbose bool) {
 	fmt.Fprintln(writer, "\n💾 Disk Usage")
 	visible := visibleDisks(disks)
 	// 열 폭을 값에서 잰다. 고정 폭은 긴 mount 경로나 LVM 장치 이름에서 뒤 열을 모두 밀어낸다.
@@ -365,13 +365,19 @@ func printDiskUsage(writer io.Writer, disks []diskDetails, signals map[string]di
 			branch = "└──"
 		}
 		fmt.Fprintf(writer, "%s %s %s: %9s / %9s %s%s\n", branch, liveCell(disk.Mount, mountWidth), liveCell(disk.Device, deviceWidth), formatBytes(disk.Used), formatBytes(disk.Total), formatUsageBar(disk.Percent, color), diskSignalSuffix(signals[disk.Mount]))
+		indent := "│   "
+		if index == len(visible)-1 {
+			indent = "    "
+		}
 		// 마운트 옵션은 -v에서만 읽으므로 기본 출력에서는 비어 있다.
 		if options := signals[disk.Mount].Options; options != "" {
-			indent := "│   "
-			if index == len(visible)-1 {
-				indent = "    "
-			}
 			fmt.Fprintf(writer, "%soptions: %s\n", indent, options)
+		}
+		// 지워진 파일의 목록은 길어서 -v에서만 보인다. 기본 출력은 줄 끝의 합계로 충분하다.
+		if verbose {
+			for _, line := range deletedOpenLines(signals[disk.Mount].DeletedOpen) {
+				fmt.Fprintf(writer, "%sdeleted-open: %s\n", indent, line)
+			}
 		}
 	}
 }

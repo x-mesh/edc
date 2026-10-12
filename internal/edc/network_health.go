@@ -79,6 +79,39 @@ func calculateNetworkHealthRate(previous, current *networkHealth, seconds float6
 	return result
 }
 
+// networkTCPMemoryUsage는 TCP가 쓰는 page를 tcp_mem의 상한(세 번째 값)과 비교한다. 상한에 닿으면 커널이 새 버퍼를 거부하고
+// 연결을 끊는다. 두 번째 값(pressure)부터는 버퍼를 줄이기 시작한다.
+func networkTCPMemoryUsage(health *networkHealth) (float64, bool) {
+	if health == nil {
+		return 0, false
+	}
+	pages := health.Gauges["tcp_memory_pages"].Value
+	fields := strings.Fields(health.Settings["net.ipv4.tcp_mem"].Text)
+	if pages == nil || len(fields) != 3 {
+		return 0, false
+	}
+	limit, ok := parseNetworkUint(fields[2], 10)
+	if !ok || limit == 0 {
+		return 0, false
+	}
+	return float64(*pages) / float64(limit) * 100, true
+}
+
+func networkTCPMemoryText(health *networkHealth) string {
+	if health == nil {
+		return "—"
+	}
+	limit := "—"
+	if fields := strings.Fields(health.Settings["net.ipv4.tcp_mem"].Text); len(fields) == 3 {
+		limit = fields[2]
+	}
+	text := networkReadingText(health.Gauges["tcp_memory_pages"]) + "/" + limit + " pages"
+	if usage, ok := networkTCPMemoryUsage(health); ok {
+		text += fmt.Sprintf(" (%.1f%%)", usage)
+	}
+	return text
+}
+
 func networkConntrackUsage(health *networkHealth) (float64, bool) {
 	if health == nil {
 		return 0, false
@@ -103,6 +136,7 @@ func printInfoNetworkHealth(writer io.Writer, health *networkHealth, verbose boo
 	setting := func(name string) string { return networkReadingText(health.Settings[name]) }
 	lines := []string{
 		"Conntrack: " + ct,
+		"TCP memory: " + networkTCPMemoryText(health) + " · orphans=" + networkReadingText(health.Gauges["tcp_orphans"]),
 		"Local ports: " + setting("net.ipv4.ip_local_port_range") + " · Reserved: " + setting("net.ipv4.ip_local_reserved_ports"),
 		"Listen: accept=" + setting("net.core.somaxconn") + " · SYN=" + setting("net.ipv4.tcp_max_syn_backlog") + " · syncookies=" + setting("net.ipv4.tcp_syncookies"),
 		"Socket buffer max: receive=" + setting("net.core.rmem_max") + " · send=" + setting("net.core.wmem_max") + " bytes",
@@ -134,7 +168,7 @@ var networkSettingNames = []string{
 	"net.netfilter.nf_conntrack_max",
 	"net.ipv4.ip_local_port_range", "net.ipv4.ip_local_reserved_ports",
 	"net.core.somaxconn", "net.ipv4.tcp_max_syn_backlog", "net.ipv4.tcp_syncookies",
-	"net.core.rmem_max", "net.core.wmem_max", "net.ipv4.tcp_rmem", "net.ipv4.tcp_wmem",
+	"net.core.rmem_max", "net.core.wmem_max", "net.ipv4.tcp_rmem", "net.ipv4.tcp_wmem", "net.ipv4.tcp_mem",
 	"net.core.netdev_max_backlog", "net.core.netdev_budget", "net.core.netdev_budget_usecs",
 	"net.ipv4.neigh.default.gc_thresh3", "net.ipv6.neigh.default.gc_thresh3",
 	"net.ipv4.conf.all.rp_filter", "net.ipv4.conf.default.rp_filter",
@@ -169,6 +203,8 @@ func networkHealthLines(health *networkHealthRate) []string {
 		"listen/s · overflow " + networkRateText(health, "listen_overflows") + " · drop " + networkRateText(health, "listen_drops") + " · SYN cookies " + networkRateText(health, "syn_cookies_sent"),
 		"drop/s · conntrack drop " + networkRateText(health, "conntrack_drop") + " · early " + networkRateText(health, "conntrack_early_drop") + " · UDP buffer " + networkRateText(health, "udp_rcvbuf_errors"),
 		"softnet/s (host) · drop " + networkRateText(health, "softnet_dropped") + " · budget exhausted " + networkRateText(health, "softnet_time_squeeze"),
+		"TCP mem " + networkTCPMemoryText(&health.networkHealth) + " · orphans " + networkGaugeText(health, "tcp_orphans") + " · pressure/s " + networkRateText(health, "tcp_memory_pressures") + " · abort " + networkRateText(health, "tcp_abort_on_memory"),
+		"NIC/s · rx missed " + networkRateText(health, "nic_rx_missed") + " · rx fifo " + networkRateText(health, "nic_rx_fifo") + " · tx fifo " + networkRateText(health, "nic_tx_fifo") + " · rcv pruned " + networkRateText(health, "tcp_rcv_pruned"),
 		"local ports " + networkReadingText(health.Settings["net.ipv4.ip_local_port_range"]) + " · accept/SYN " + networkReadingText(health.Settings["net.core.somaxconn"]) + "/" + networkReadingText(health.Settings["net.ipv4.tcp_max_syn_backlog"]),
 		"— unavailable · counts are not port utilization · rates use consecutive samples",
 	}
@@ -242,6 +278,7 @@ func networkSettingLines(health *networkHealthRate) []string {
 		"buffer max bytes · receive " + setting("net.core.rmem_max") + " · send " + setting("net.core.wmem_max"),
 		"TCP buffer min/default/max · receive " + setting("net.ipv4.tcp_rmem"),
 		"TCP buffer min/default/max · send " + setting("net.ipv4.tcp_wmem"),
+		"TCP memory min/pressure/max pages " + setting("net.ipv4.tcp_mem"),
 		"receive backlog " + setting("net.core.netdev_max_backlog") + " · budget " + setting("net.core.netdev_budget") + " / " + setting("net.core.netdev_budget_usecs") + "us",
 		"neighbor max · IPv4 " + setting("net.ipv4.neigh.default.gc_thresh3") + " · IPv6 " + setting("net.ipv6.neigh.default.gc_thresh3"),
 		"forward IPv4/IPv6 " + setting("net.ipv4.ip_forward") + "/" + setting("net.ipv6.conf.all.forwarding") + " · rp_filter all/default " + setting("net.ipv4.conf.all.rp_filter") + "/" + setting("net.ipv4.conf.default.rp_filter"),

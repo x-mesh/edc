@@ -145,6 +145,8 @@ var traceProtocolRegistry = []traceProtocolRegistration{
 		scrollLabels: traceDropScrollLabels, prerequisites: dropTracePrerequisites, newSummarizer: func() traceSummarizer { return newDropTraceSummarizer() },
 	}},
 	{name: "sched", view: traceProtocolView{selectorLabel: "sched"}, spec: traceProtocolSpec{hideTraffic: true, hiddenViews: []string{traceGroupBySource, traceGroupByTarget, traceGroupByPort}}, run: runTraceSched},
+	// process의 exec, exit, signal이다. 주소와 port가 없어 process와 event 보기만 뜻이 있다.
+	{name: "exec", view: traceProtocolView{selectorLabel: "exec"}, spec: traceProtocolSpec{hideTraffic: true, hiddenViews: []string{traceGroupBySource, traceGroupByTarget, traceGroupByPort}, linuxOnly: true, prerequisites: execTracePrerequisites}, run: runTraceExec},
 }
 
 var traceProtocols = traceProtocolSpecs(traceProtocolRegistry)
@@ -457,6 +459,9 @@ func runTrace(args []string) int {
 		}
 		args = []string{protocol}
 	}
+	if args[0] == "show" {
+		return runTraceShow(args[1:])
+	}
 	registration, ok := traceProtocolRegistrationFor(args[0])
 	if !ok {
 		traceUsage()
@@ -470,7 +475,7 @@ func runTrace(args []string) int {
 
 // usage를 두 줄로 나눈다. 한 줄에 모든 protocol을 쓰면 help 화면의 80칸을 넘는다.
 const (
-	traceProtocolUsage = "edc trace <tcp|udp|dns|arp|ndp|http|drop|io|sched> [options]"
+	traceProtocolUsage = "edc trace <tcp|udp|dns|arp|ndp|http|drop|io|sched|exec> [options]"
 	traceDatabaseUsage = "edc trace <mysql|clickhouse|postgres|redis> [options]"
 )
 
@@ -478,6 +483,7 @@ func traceUsage() {
 	fmt.Fprintln(os.Stderr, T("cli.usage", traceProtocolUsage))
 	fmt.Fprintln(os.Stderr, T("cli.usage", traceDatabaseUsage))
 	fmt.Fprintln(os.Stderr, T("cli.usage", traceSocketUsage))
+	fmt.Fprintln(os.Stderr, T("cli.usage", traceShowUsage))
 }
 
 func runTraceProtocol(args []string) int {
@@ -693,6 +699,7 @@ func runTraceProtocol(args []string) int {
 	var encoder *json.Encoder
 	var written uint64
 	aggregate := newTraceAggregate(args[0], options.groupBy)
+	rawSockets := traceRawSockets{}
 	if options.raw {
 		encoder = json.NewEncoder(os.Stdout)
 	} else if options.jsonPath == "" && options.groupBy == "" {
@@ -707,6 +714,7 @@ func runTraceProtocol(args []string) int {
 		}
 		if options.raw {
 			written++
+			event.Socket = rawSockets.number(event.SocketID)
 			return encoder.Encode(event)
 		}
 		aggregate.observe(event)

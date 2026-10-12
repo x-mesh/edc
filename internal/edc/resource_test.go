@@ -475,7 +475,7 @@ func TestPrintDiskUsageKeepsColumnsAligned(t *testing.T) {
 		{Mount: t.TempDir(), Device: "/dev/mapper/ubuntu--vg-ubuntu--lv", Total: 2 << 40, Used: 1 << 40, Percent: 50},
 	}
 	var output strings.Builder
-	printDiskUsage(&output, disks, nil, false)
+	printDiskUsage(&output, disks, nil, false, false)
 	columns, rows := map[int]bool{}, 0
 	for _, line := range strings.Split(output.String(), "\n") {
 		index := strings.Index(line, ": ")

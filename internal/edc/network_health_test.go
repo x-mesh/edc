@@ -100,6 +100,35 @@ func TestNetworkInfoAndJSONPreserveMissingValues(t *testing.T) {
 	}
 }
 
+// TCP memory는 page 수를 tcp_mem의 세 번째 값과 비교한다. 설정이 세 값이 아니거나 0이면 비율을 내지 않는다.
+func TestNetworkTCPMemoryUsageComparesPagesWithTheCeiling(t *testing.T) {
+	health := &networkHealth{Supported: true, Settings: map[string]networkReading{"net.ipv4.tcp_mem": {Status: "observed", Text: "100 200 400"}}, Gauges: map[string]networkReading{"tcp_memory_pages": networkNumber(100), "tcp_orphans": networkNumber(3)}}
+	if usage, ok := networkTCPMemoryUsage(health); !ok || usage != 25 {
+		t.Fatalf("usage = %v %v", usage, ok)
+	}
+	if text := networkTCPMemoryText(health); text != "100/400 pages (25.0%)" {
+		t.Fatalf("text = %q", text)
+	}
+	for _, bad := range []networkReading{{Status: "observed", Text: "100 200"}, {Status: "observed", Text: "100 200 0"}, networkUnavailable("not exposed")} {
+		health.Settings["net.ipv4.tcp_mem"] = bad
+		if _, ok := networkTCPMemoryUsage(health); ok {
+			t.Fatalf("%+v produced a usage", bad)
+		}
+	}
+	if text := networkTCPMemoryText(health); text != "100/— pages" {
+		t.Fatalf("text without a ceiling = %q", text)
+	}
+	lines := strings.Join(networkHealthLines(calculateNetworkHealthRate(nil, health, 1)), "\n")
+	if !strings.Contains(lines, "TCP mem 100/— pages · orphans 3 · pressure/s —") || !strings.Contains(lines, "NIC/s · rx missed —") {
+		t.Fatalf("lines = %s", lines)
+	}
+	var output bytes.Buffer
+	printInfoNetworkHealth(&output, health, false)
+	if !strings.Contains(output.String(), "TCP memory: 100/— pages · orphans=3") {
+		t.Fatalf("info = %s", output.String())
+	}
+}
+
 func TestNetworkHistoryUsesSelectedSampleAndFitsTerminal(t *testing.T) {
 	makeHealth := func(count uint64) *networkHealthRate {
 		return calculateNetworkHealthRate(nil, &networkHealth{Supported: true, Scope: "net:[1]", Gauges: map[string]networkReading{"conntrack_entries": networkNumber(count)}, Settings: map[string]networkReading{"net.netfilter.nf_conntrack_max": networkNumber(1000)}}, 1)

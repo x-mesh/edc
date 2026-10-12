@@ -1,0 +1,27 @@
+# English messages for the ctr command.
+ctr:
+  skip:
+    linux_only: "edc ctr reads docker containers on Linux only"
+    no_docker: "docker is not installed on this host"
+    not_running: "the container has no running process"
+    needs_docker_access: "needs root or the docker group to talk to the docker daemon"
+  error:
+    invalid_reference: "invalid container reference %q: use letters, digits, and _.-/ only, without a leading '-'"
+    not_found: "container %s does not exist"
+  state:
+    summary: "%s, up %s, %d restarts, image %s"
+    inspect_failed: "docker inspect failed: %s"
+  listen:
+    none: "the container processes own no listening tcp or udp socket"
+  limits:
+    summary: "memory %s · OOM kills %s · CPU throttled %s · pids %s"
+    no_limit: "no limit"
+    memory_high: "memory use is near the limit: %s"
+    oom: "the kernel killed %d processes in this container for memory"
+    throttled: "the CPU limit throttled the container: %s"
+    pids_high: "the pids limit is nearly used: %s"
+  log:
+    none: "no error lines in the last %d log lines"
+    errors: "%d error lines in the last %d log lines, latest: %s"
+  evidence:
+    log: "log"

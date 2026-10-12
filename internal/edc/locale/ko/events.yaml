@@ -7,6 +7,7 @@ events:
     linux_only: "events는 Linux의 커널과 systemd 로그만 읽습니다"
     needs_root: "%s를 읽으려면 root나 adm, systemd-journal 그룹이 필요합니다"
     no_journal: "journalctl이 설치되어 있지 않습니다"
+    no_systemd: "이 호스트에서 systemd가 실행 중이지 않습니다"
     unreadable: "%s를 읽지 못했습니다: %s"
   window:
     summary: "신호 %d개, 최근 %s (%s부터)"
@@ -33,6 +34,29 @@ events:
   segfault:
     none: "%s 이후 segfault나 general protection fault 없음"
     found: "segfault나 general protection fault %d번, 최근 %s"
+  lockup:
+    none: "%s 이후 CPU lockup이나 RCU stall 없음"
+    found: "CPU lockup이나 RCU stall %d번, 최근 %s"
+  oops:
+    none: "%s 이후 커널 oops나 warning 없음"
+    found: "커널 oops %d번, 최근 %s"
+    warned: "커널 warning %d번, 최근 %s"
+    tainted: "%s 이후 커널 oops 없음, 다만 부팅 뒤 커널이 %s로 tainted됨"
+  hung_task:
+    none: "%s 이후 hung task 한도를 넘겨 막힌 task 없음"
+    found: "hung task 보고 %d번, 최근 %s"
+  failed_units:
+    none: "지금 failed 상태인 unit 없음"
+    found: "지금 failed인 unit %d개: %s"
+  journal_errors:
+    none: "%s 이후 journal에 오류 줄 없음"
+    found: "오류 줄 %d개, unit이나 program %d개, 가장 많은 것 %s (%d)"
+  taint:
+    D: "D: 커널에 oops나 BUG가 있었음"
+    W: "W: 커널이 warning을 냈음"
+    L: "L: soft lockup이 있었음"
+    M: "M: machine check exception이 있었음"
+    B: "B: bad page를 찾았음"
   clock:
     none: "%s 이후 1초 이상의 시계 점프 없음"
     found: "시계 점프 %d번, 최근 %s"
@@ -41,3 +65,6 @@ events:
     source: "원천"
     events: "기록"
     more: "... %d개 더"
+    tainted: "tainted"
+    failed_units: "failed unit (load/active/sub)"
+    error_sources: "unit별 오류 줄 (개수, unit, 최근, 메시지)"

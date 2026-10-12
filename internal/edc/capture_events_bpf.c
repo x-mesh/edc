@@ -1140,8 +1140,9 @@ int tcp_create_openreq_child_exit(__u64 *ctx) {
 // HTTP_NO_SEQ는 http_capture에 TCP 순번이 없다는 표시다. 수신은 실제로 읽은 byte만 넘기므로 순번 없이 센다.
 #define HTTP_NO_SEQ (~0ULL)
 static const char http2_preface_bytes[HTTP2_PREFACE_LEN + 1] = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
-// HTTPS는 암호문이라 ClientHello만 읽는다. SNI와 ALPN이 그 안에 평문으로 있다. post-quantum key share를 보내는 client는
-// ClientHello가 2KB에 가깝고 확장 순서를 섞어서, SNI가 앞 512 byte 밖에 있을 수 있다.
+// HTTPS는 암호문이라 평문인 handshake 머리만 읽는다. ClientHello에는 SNI와 ALPN이, ServerHello에는 고른 version과 cipher가
+// 있고, handshake가 실패하면 alert record가 평문으로 온다. post-quantum key share를 보내는 client는 ClientHello가 2KB에
+// 가깝고 확장 순서를 섞어서, SNI가 앞 512 byte 밖에 있을 수 있다.
 #define TLS_HELLO_SIZE 4096
 #define TLS_RECORD_HEADER_SIZE 5
 #define TLS_CLIENT_HELLO 0x01
@@ -1153,6 +1154,15 @@ static const char http2_preface_bytes[HTTP2_PREFACE_LEN + 1] = "PRI * HTTP/2.0\r
 #define TLS_PREFIX_NON_TLS 1
 #define TLS_PREFIX_CLIENT_HELLO 2
 #define TLS_PREFIX_DONE 3
+#define TLS_ALERT 0x15
+#define TLS_SERVER_HELLO 0x02
+#define TLS_ALERT_RECORD_SIZE 7
+#define TLS_SERVER_HELLO_MIN_LENGTH 38
+// TLS_ALERT_WATCH는 handshake 머리를 다 본 뒤 평문 alert record를 찾아보는 호출 수다. TLS 1.2는 인증서를 거절하는 alert를
+// handshake 중에 평문으로 보내고, 그 뒤와 TLS 1.3의 alert는 암호문이라 더 볼 것이 없다.
+#define TLS_ALERT_WATCH 8
+// TLS_PREFIX_ALERT_HEADER는 alert record의 머리 5 byte만 읽은 상태다. OpenSSL 서버는 머리와 본문을 따로 읽는다.
+#define TLS_PREFIX_ALERT_HEADER 4
 // TLS 접두 9 byte는 읽기 하나의 앞쪽 iovec 세 개까지만 따라간다. 바이트마다 펼친 반복이라 개수를 늘리면 verifier 비용이
 // 곱으로 는다. [5, 4, 본문]처럼 record 머리와 handshake 머리를 따로 받는 readv도 세 개면 담긴다.
 #define TLS_SEGMENTS 3
@@ -1211,6 +1221,8 @@ struct tls_prefix {
 	__u8 bytes[TLS_PREFIX_SIZE];
 	__u8 count;
 	__u8 terminal;
+	// after는 DONE 뒤에 alert를 찾아본 호출 수다.
+	__u8 after;
 	__u32 offset;
 	__u32 hello_end;
 };
@@ -1317,7 +1329,7 @@ static __always_inline int tls_start(const __u8 *p) {
 	return p[0] == 0x16 && p[1] == 0x03 && p[2] <= 0x04;
 }
 
-// tls_client_hello는 buffer의 at 위치가 ClientHello handshake인지 본다. ServerHello와 다른 handshake는 읽지 않는다.
+// tls_client_hello는 buffer의 at 위치가 ClientHello handshake인지 본다. 이어지는 조각을 가려낼 때만 쓴다.
 static __always_inline int tls_client_hello(__u64 buffer, __u64 limit, __u64 at) {
 	__u8 type = 0;
 	return limit > at && !bpf_probe_read_user(&type, sizeof(type), (void *)(buffer + at)) && type == TLS_CLIENT_HELLO;
@@ -1361,14 +1373,80 @@ static __always_inline int tls_segment_at(const struct tls_segments *segments, _
 	return -1;
 }
 
-// tls_prefix_client_hello는 이번 읽기가 첫 ClientHello type byte를 줄 때만 true를 돌린다. terminal 상태는 이후
-// TLS 암호문을 새 record로 다시 읽지 않는다. 위치는 첫 iovec 길이가 아니라 이번 읽기의 byte 수(size)로 옮긴다.
+// tls_alert_record는 이번 호출의 앞 byte가 평문 alert record인지 본다. 7 byte가 다 있으면 handshake에 0x15, level,
+// description을 담고 1을 돌린다. 머리 5 byte만 있으면 2를 돌리고, 다음 호출이 level과 description을 준다. 첫 iovec만 본다.
+static __always_inline int tls_alert_record(const struct tls_segments *segments, __u64 size, __u8 *handshake) {
+	__u8 alert[TLS_ALERT_RECORD_SIZE] = {};
+	if (size < TLS_RECORD_HEADER_SIZE || segments->len[0] < TLS_RECORD_HEADER_SIZE || bpf_probe_read_user(alert, TLS_RECORD_HEADER_SIZE, (void *)segments->base[0])) {
+		return 0;
+	}
+	if (alert[0] != TLS_ALERT || alert[1] != 0x03 || alert[2] > 0x04 || alert[3] != 0 || alert[4] != 2) {
+		return 0;
+	}
+	if (size < TLS_ALERT_RECORD_SIZE || segments->len[0] < TLS_ALERT_RECORD_SIZE) {
+		return 2;
+	}
+	if (bpf_probe_read_user(alert + TLS_RECORD_HEADER_SIZE, TLS_ALERT_RECORD_SIZE - TLS_RECORD_HEADER_SIZE, (void *)(segments->base[0] + TLS_RECORD_HEADER_SIZE))) {
+		return 0;
+	}
+	handshake[0] = TLS_ALERT;
+	handshake[1] = alert[5];
+	handshake[2] = alert[6];
+	handshake[3] = 0;
+	return 1;
+}
+
+// tls_alert_body는 머리를 따로 읽은 뒤의 호출에서 level과 description 2 byte를 읽는다.
+static __always_inline int tls_alert_body(const struct tls_segments *segments, __u64 size, __u8 *handshake) {
+	__u8 body[2] = {};
+	if (size < 2 || segments->len[0] < 2 || bpf_probe_read_user(body, sizeof(body), (void *)segments->base[0])) {
+		return 0;
+	}
+	handshake[0] = TLS_ALERT;
+	handshake[1] = body[0];
+	handshake[2] = body[1];
+	handshake[3] = 0;
+	return 1;
+}
+
+// tls_prefix_client_hello는 이번 읽기가 첫 ClientHello나 ServerHello type byte를 줄 때, 또는 평문 alert record일 때만
+// 1을 돌린다. terminal 상태는 이후 TLS 암호문을 새 record로 다시 읽지 않는다. 위치는 첫 iovec 길이가 아니라 이번 읽기의
+// byte 수(size)로 옮긴다. handshake 머리를 다 본 뒤에는 TLS_ALERT_WATCH번까지 호출의 첫 byte에서 alert만 찾는다.
 static __always_inline int tls_prefix_client_hello(const struct http_stream_key *key, const struct tls_segments *segments, __u64 size, __u64 *output, __u64 *captured, __u8 *handshake) {
 	struct tls_prefix next = {};
 	struct tls_prefix *stored = bpf_map_lookup_elem(&tls_prefixes, key);
 	if (stored) {
 		if (stored->terminal == TLS_PREFIX_NON_TLS) {
 			return 0;
+		}
+		if (stored->terminal == TLS_PREFIX_ALERT_HEADER) {
+			next = *stored;
+			next.terminal = TLS_PREFIX_DONE;
+			bpf_map_update_elem(&tls_prefixes, key, &next, BPF_ANY);
+			if (!tls_alert_body(segments, size, handshake)) {
+				return 0;
+			}
+			*output = 2;
+			*captured = 0;
+			return 1;
+		}
+		if (stored->terminal == TLS_PREFIX_DONE) {
+			if (stored->after >= TLS_ALERT_WATCH) {
+				return 0;
+			}
+			next = *stored;
+			next.after++;
+			int alert = tls_alert_record(segments, size, handshake);
+			if (alert == 2) {
+				next.terminal = TLS_PREFIX_ALERT_HEADER;
+			}
+			bpf_map_update_elem(&tls_prefixes, key, &next, BPF_ANY);
+			if (alert != 1) {
+				return 0;
+			}
+			*output = TLS_ALERT_RECORD_SIZE;
+			*captured = 0;
+			return 1;
 		}
 		if (stored->terminal == TLS_PREFIX_CLIENT_HELLO) {
 			if (stored->offset >= stored->hello_end) {
@@ -1435,23 +1513,36 @@ static __always_inline int tls_prefix_client_hello(const struct http_stream_key 
 			return 0;
 		}
 		next.count = position + 1;
-		if ((position == 0 && byte != 0x16) || (position == 1 && byte != 0x03) || (position == 2 && byte > 0x04)) {
+		if ((position == 0 && byte != 0x16 && byte != TLS_ALERT) || (position == 1 && byte != 0x03) || (position == 2 && byte > 0x04)) {
 			next.terminal = TLS_PREFIX_NON_TLS;
 			bpf_map_update_elem(&tls_prefixes, key, &next, BPF_ANY);
 			return 0;
 		}
 		if (position == TLS_RECORD_HEADER_SIZE - 1) {
 			__u16 record_length = ((__u16)next.bytes[3] << 8) | next.bytes[4];
-			if (record_length < TLS_HANDSHAKE_HEADER_SIZE) {
+			// alert record의 본문은 level과 description 2 byte다.
+			if (next.bytes[0] == TLS_ALERT ? record_length != 2 : record_length < TLS_HANDSHAKE_HEADER_SIZE) {
 				next.terminal = TLS_PREFIX_NON_TLS;
 				bpf_map_update_elem(&tls_prefixes, key, &next, BPF_ANY);
 				return 0;
 			}
 		}
+		if (position == TLS_ALERT_RECORD_SIZE - 1 && next.bytes[0] == TLS_ALERT) {
+			handshake[0] = TLS_ALERT;
+			handshake[1] = next.bytes[5];
+			handshake[2] = next.bytes[6];
+			handshake[3] = 0;
+			next.terminal = TLS_PREFIX_DONE;
+			bpf_map_update_elem(&tls_prefixes, key, &next, BPF_ANY);
+			*output = index + 1;
+			*captured = 0;
+			return 1;
+		}
 		if (position == TLS_PREFIX_SIZE - 1) {
 			__u16 record_length = ((__u16)next.bytes[3] << 8) | next.bytes[4];
 			__u32 handshake_length = ((__u32)next.bytes[6] << 16) | ((__u32)next.bytes[7] << 8) | next.bytes[8];
-			if (next.bytes[5] != TLS_CLIENT_HELLO || handshake_length < TLS_CLIENT_HELLO_MIN_LENGTH || TLS_HANDSHAKE_HEADER_SIZE + handshake_length > record_length) {
+			__u32 minimum_length = next.bytes[5] == TLS_SERVER_HELLO ? TLS_SERVER_HELLO_MIN_LENGTH : TLS_CLIENT_HELLO_MIN_LENGTH;
+			if ((next.bytes[5] != TLS_CLIENT_HELLO && next.bytes[5] != TLS_SERVER_HELLO) || handshake_length < minimum_length || TLS_HANDSHAKE_HEADER_SIZE + handshake_length > record_length) {
 				next.terminal = TLS_PREFIX_NON_TLS;
 				bpf_map_update_elem(&tls_prefixes, key, &next, BPF_ANY);
 				return 0;
@@ -2505,6 +2596,12 @@ int tcp_recvmsg_exit(__u64 *ctx) {
 SEC("fexit/tcp_recvmsg")
 int tcp_recvmsg_exit_legacy(__u64 *ctx) {
 	return finish_tcp_recvmsg(ctx, *(int *)&ctx[6]);
+}
+
+// Linux 7.x는 tcp_recvmsg에서 addr_len을 뺐다. 인자 4개 뒤에 반환값이 온다.
+SEC("fexit/tcp_recvmsg")
+int tcp_recvmsg_exit_short(__u64 *ctx) {
+	return finish_tcp_recvmsg(ctx, *(int *)&ctx[4]);
 }
 
 // trace http는 끝난 socket의 짝짓기 상태를 지운다. kernel은 해제한 socket의 주소를 새 socket에 다시 써서, 응답을 놓친

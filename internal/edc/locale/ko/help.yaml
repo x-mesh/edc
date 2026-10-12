@@ -176,6 +176,13 @@ command:
       - "읽기만 합니다. unit을 시작·중지·reload하지 않습니다."
       - "systemd가 있는 Linux에서만 동작하고, 다른 호스트에서는 skip입니다."
       - "root로 실행하세요. root가 아니면 fd, 소켓 주인, journal이 skip입니다."
+  ctr:
+    summary: "docker container 하나를 한 화면에 (Linux)"
+    notes:
+      - "상태, 가동 시간, 재시작, process, 한도, fd, 소켓, 로그 오류를 보여 줍니다."
+      - "읽기만 합니다. container를 시작·중지·재시작하지 않습니다."
+      - "docker 명령과 cgroup v2가 필요하고, 다른 호스트에서는 skip입니다."
+      - "root로 실행하세요. root가 아니면 fd와 소켓 주인이 skip입니다."
       - "systemd만 쥔 소켓(socket activation)은 목록에 나오지 않습니다."
   quality:
     summary: "네트워크 응답성(RPM)과 처리량 측정"
@@ -203,7 +210,7 @@ command:
       - "PCAP에는 credential과 개인정보가 들어갈 수 있습니다."
       - "JSON redaction은 PCAP payload에 적용되지 않습니다."
   trace:
-    summary: "network, I/O, socket, drop, scheduler event 출력과 요약"
+    summary: "network, I/O, socket, drop, scheduler, process event 출력과 요약"
     option:
       duration: "trace 시간, 최대 60s. 생략하면 Ctrl-C"
       slow: "최소 latency. 예: 20us, 250ms. io/sched 기본 1ms"
@@ -223,6 +230,7 @@ command:
       container: "이 docker container만, 이름이나 ID"
       reason: "trace drop: 이 이유만, 쉼표로 구분"
       device: "trace io: block device major:minor"
+      signal: "trace exec: 기록할 신호. 이름 목록, all, none"
     notes:
       - "terminal에서는 기본으로 전체 화면 trace를 엽니다."
       - "/를 누르면 process, destination, event, source를 필터할 수 있습니다."
@@ -239,6 +247,8 @@ command:
       - "trace io는 device, process, cgroup, event로 행을 묶습니다."
       - "trace io의 --slow는 요청 latency 하한입니다. 기본값은 1ms입니다."
       - "trace sched의 --slow는 span latency 하한입니다. 기본값은 1ms입니다."
+      - "trace exec는 exec, exit, signal을 보여 줍니다. --signal로 신호를 고릅니다."
+      - "trace show <raw.jsonl>은 저장한 --raw 파일의 요약을 root 없이 냅니다."
       - "--slow에는 20us, 500us, 2ms처럼 단위가 필요합니다. 숫자만 쓰면 실패합니다."
       - "그룹 화면은 event 수를 EVENT/s로 표시하고 socket payload traffic을 표시합니다."
       - "B/s는 byte rate이며 bps와 Mbps는 bit rate입니다. Mbps는 bps / 1,000,000입니다."

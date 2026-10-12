@@ -1,0 +1,27 @@
+# ctr 명령의 한국어 메시지.
+ctr:
+  skip:
+    linux_only: "ctr은 Linux에서 docker container만 읽습니다"
+    no_docker: "이 host에 docker가 설치되어 있지 않습니다"
+    not_running: "container에 실행 중인 process가 없습니다"
+    needs_docker_access: "docker daemon에 접근하려면 root나 docker 그룹이 필요합니다"
+  error:
+    invalid_reference: "잘못된 container 이름 %q: 영문자, 숫자, _.-/만 쓰고 '-'로 시작할 수 없습니다"
+    not_found: "container %s가 없습니다"
+  state:
+    summary: "%s, 가동 %s, 재시작 %d번, image %s"
+    inspect_failed: "docker inspect 실패: %s"
+  listen:
+    none: "container process가 가진 listen 중인 tcp·udp 소켓 없음"
+  limits:
+    summary: "memory %s · OOM kill %s · CPU throttle %s · pids %s"
+    no_limit: "한도 없음"
+    memory_high: "memory 사용량이 한도에 가깝습니다: %s"
+    oom: "커널이 이 container의 process %d개를 메모리 부족으로 죽였습니다"
+    throttled: "CPU 한도가 container를 throttle했습니다: %s"
+    pids_high: "pids 한도가 거의 찼습니다: %s"
+  log:
+    none: "마지막 로그 %d줄에 오류 줄 없음"
+    errors: "마지막 로그 %d줄 가운데 오류 %d줄, 최근: %s"
+  evidence:
+    log: "로그"

@@ -1,6 +1,7 @@
 package edc
 
 import (
+	"fmt"
 	"math"
 	"os"
 	"path/filepath"
@@ -76,6 +77,10 @@ func TestDiskSignalSuffix(t *testing.T) {
 		{diskSignal{ReadOnly: true, InodesUsed: 95, InodesTotal: 100}, "  (read-only · inodes 95%)"},
 		{diskSignal{ReadOnly: true}, "  (read-only)"},
 		{diskSignal{}, ""},
+		{diskSignal{DeletedOpen: deletedOpenSummary{Files: 3, Bytes: 12 << 30, Top: []deletedOpenFile{{Comm: "java"}}}}, "  (deleted-open 12.0 GB in 3 files, java)"},
+		{diskSignal{ReadOnly: true, DeletedOpen: deletedOpenSummary{Files: 1, Bytes: 1 << 20, Partial: true}}, "  (read-only · deleted-open ≥1.0 MB in 1 file)"},
+		// 읽지 못한 fd가 있어도 찾은 파일이 없으면 줄에 붙이지 않는다. 하한 0은 정보가 아니다.
+		{diskSignal{DeletedOpen: deletedOpenSummary{Partial: true}}, ""},
 	}
 	for _, tt := range tests {
 		if got := diskSignalSuffix(tt.signal); got != tt.want {
@@ -129,5 +134,97 @@ func TestInfoPressureLineColorsOOMKillsOnlyWhenPresent(t *testing.T) {
 	}
 	if got := infoPressureLine(infoSignals{OOMKills: &some}, false); got != "OOM kills since boot: 2" {
 		t.Fatalf("색이 꺼졌는데 escape가 남았다: %q", got)
+	}
+}
+
+// 가짜 /proc에서 지워진 파일을 센다. 같은 inode를 두 process가 열어도 한 번이고, hard link가 남은 파일과 디렉터리는 빼며,
+// 읽지 못한 fd가 있으면 하한으로 표시한다.
+func TestScanDeletedOpenCountsEachInodeOnce(t *testing.T) {
+	root := t.TempDir()
+	link := func(pid, fd, target string) {
+		dir := filepath.Join(root, pid, "fd")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(target, filepath.Join(dir, fd)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	comm := func(pid, name string) {
+		if err := os.WriteFile(filepath.Join(root, pid, "comm"), []byte(name+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	link("100", "3", "/var/log/app.log (deleted)")
+	link("100", "4", "/var/log/app.log (deleted)")
+	link("100", "5", "/etc/hosts")
+	link("100", "6", "/tmp/linked (deleted)")
+	link("100", "7", "/tmp/dir (deleted)")
+	comm("100", "java")
+	link("200", "3", "/var/log/app.log (deleted)")
+	link("200", "4", "/data/db/wal.0 (deleted)")
+	link("200", "5", "/missing (deleted)")
+	comm("200", "postgres")
+	if err := os.MkdirAll(filepath.Join(root, "notapid", "fd"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stats := map[string]deletedOpenStat{
+		"/var/log/app.log (deleted)": {Dev: 1, Inode: 10, Size: 4 << 30, Regular: true},
+		"/tmp/linked (deleted)":      {Dev: 1, Inode: 11, Size: 1 << 30, Links: 1, Regular: true},
+		"/tmp/dir (deleted)":         {Dev: 1, Inode: 12, Size: 4096},
+		"/data/db/wal.0 (deleted)":   {Dev: 2, Inode: 20, Size: 16 << 20, Regular: true},
+	}
+	stat := func(path string) (deletedOpenStat, error) {
+		target, err := os.Readlink(path)
+		if err != nil {
+			return deletedOpenStat{}, err
+		}
+		info, ok := stats[target]
+		if !ok {
+			return deletedOpenStat{}, os.ErrNotExist
+		}
+		return info, nil
+	}
+	summaries := scanDeletedOpen(root, stat, infoDeletedOpenFDLimit)
+	if len(summaries) != 2 {
+		t.Fatalf("summaries = %+v", summaries)
+	}
+	first := summaries[1]
+	if first.Files != 1 || first.Bytes != 4<<30 || first.Partial || len(first.Top) != 1 || first.Top[0] != (deletedOpenFile{Path: "/var/log/app.log", Size: 4 << 30, PID: 100, Comm: "java"}) {
+		t.Fatalf("dev 1 = %+v, top %+v", first, first.Top)
+	}
+	second := summaries[2]
+	if second.Files != 1 || second.Bytes != 16<<20 || second.Top[0].Comm != "postgres" || second.Top[0].PID != 200 {
+		t.Fatalf("dev 2 = %+v, top %+v", second, second.Top)
+	}
+	// fd 상한에 닿으면 멈추고 하한으로 표시한다.
+	limited := scanDeletedOpen(root, stat, 2)
+	if len(limited) != 1 || !limited[1].Partial || limited[1].Files != 1 {
+		t.Fatalf("limited = %+v", limited)
+	}
+	// 읽지 못한 fd 디렉터리는 다른 사용자의 process다. 찾은 값은 하한이 된다.
+	if err := os.Chmod(filepath.Join(root, "200", "fd"), 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(filepath.Join(root, "200", "fd"), 0o755) })
+	if os.Getuid() != 0 {
+		denied := scanDeletedOpen(root, stat, infoDeletedOpenFDLimit)
+		if len(denied) != 1 || !denied[1].Partial {
+			t.Fatalf("denied = %+v", denied)
+		}
+	}
+}
+
+func TestDeletedOpenSummaryKeepsTheLargestFiles(t *testing.T) {
+	var summary deletedOpenSummary
+	for size := uint64(1); size <= 8; size++ {
+		summary.add(deletedOpenFile{Path: fmt.Sprint("/f", size), Size: size})
+	}
+	if len(summary.Top) != infoDeletedOpenTop || summary.Top[0].Size != 8 || summary.Top[4].Size != 4 {
+		t.Fatalf("top = %+v", summary.Top)
+	}
+	lines := deletedOpenLines(deletedOpenSummary{Top: []deletedOpenFile{{Path: "/var/log/app.log", Size: 4 << 30, PID: 100, Comm: "java"}}})
+	if len(lines) != 1 || lines[0] != "   4.0 GB  pid 100 java  /var/log/app.log" {
+		t.Fatalf("lines = %q", lines)
 	}
 }

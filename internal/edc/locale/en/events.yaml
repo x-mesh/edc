@@ -7,6 +7,7 @@ events:
     linux_only: "edc events reads Linux kernel and systemd logs only"
     needs_root: "needs root or the adm or systemd-journal group to read %s"
     no_journal: "journalctl is not installed"
+    no_systemd: "systemd is not running on this host"
     unreadable: "cannot read %s: %s"
   window:
     summary: "%d signals in the last %s (since %s)"
@@ -33,6 +34,29 @@ events:
   segfault:
     none: "no segfault or general protection fault since %s"
     found: "%d segfaults or general protection faults, latest %s"
+  lockup:
+    none: "no CPU lockup or RCU stall since %s"
+    found: "%d CPU lockups or RCU stalls, latest %s"
+  oops:
+    none: "no kernel oops or warning since %s"
+    found: "%d kernel oops, latest %s"
+    warned: "%d kernel warnings, latest %s"
+    tainted: "no kernel oops since %s, but the kernel is tainted %s since boot"
+  hung_task:
+    none: "no task blocked beyond the hung task limit since %s"
+    found: "%d hung task reports, latest %s"
+  failed_units:
+    none: "no unit is in the failed state now"
+    found: "%d units are failed now: %s"
+  journal_errors:
+    none: "no error line in the journal since %s"
+    found: "%d error lines from %d units or programs, most from %s (%d)"
+  taint:
+    D: "D: the kernel had an oops or a BUG"
+    W: "W: the kernel issued a warning"
+    L: "L: a soft lockup happened"
+    M: "M: a machine check exception happened"
+    B: "B: a bad page was found"
   clock:
     none: "no clock step of 1s or more since %s"
     found: "%d clock steps, latest %s"
@@ -41,3 +65,6 @@ events:
     source: "source"
     events: "events"
     more: "... %d more"
+    tainted: "tainted"
+    failed_units: "failed units (load/active/sub)"
+    error_sources: "error lines by unit (count, unit, latest, message)"

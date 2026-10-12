@@ -202,7 +202,7 @@ type captureEventsTlsPrefix struct {
 	Bytes    [9]uint8
 	Count    uint8
 	Terminal uint8
-	_        [1]byte
+	After    uint8
 	Offset   uint32
 	HelloEnd uint32
 }
@@ -297,6 +297,7 @@ const (
 	captureEventsProgTcpRecvmsgEntry           = "tcp_recvmsg_entry"
 	captureEventsProgTcpRecvmsgExit            = "tcp_recvmsg_exit"
 	captureEventsProgTcpRecvmsgExitLegacy      = "tcp_recvmsg_exit_legacy"
+	captureEventsProgTcpRecvmsgExitShort       = "tcp_recvmsg_exit_short"
 	captureEventsProgTcpRetransmitSkb          = "tcp_retransmit_skb"
 	captureEventsProgTcpSendLength             = "tcp_send_length"
 	captureEventsProgTcpSendReset              = "tcp_send_reset"
@@ -416,6 +417,7 @@ type captureEventsProgramSpecs struct {
 	TcpRecvmsgEntry           *ebpf.ProgramSpec `ebpf:"tcp_recvmsg_entry"`
 	TcpRecvmsgExit            *ebpf.ProgramSpec `ebpf:"tcp_recvmsg_exit"`
 	TcpRecvmsgExitLegacy      *ebpf.ProgramSpec `ebpf:"tcp_recvmsg_exit_legacy"`
+	TcpRecvmsgExitShort       *ebpf.ProgramSpec `ebpf:"tcp_recvmsg_exit_short"`
 	TcpRetransmitSkb          *ebpf.ProgramSpec `ebpf:"tcp_retransmit_skb"`
 	TcpSendLength             *ebpf.ProgramSpec `ebpf:"tcp_send_length"`
 	TcpSendReset              *ebpf.ProgramSpec `ebpf:"tcp_send_reset"`
@@ -641,6 +643,7 @@ type captureEventsPrograms struct {
 	TcpRecvmsgEntry           *ebpf.Program `ebpf:"tcp_recvmsg_entry"`
 	TcpRecvmsgExit            *ebpf.Program `ebpf:"tcp_recvmsg_exit"`
 	TcpRecvmsgExitLegacy      *ebpf.Program `ebpf:"tcp_recvmsg_exit_legacy"`
+	TcpRecvmsgExitShort       *ebpf.Program `ebpf:"tcp_recvmsg_exit_short"`
 	TcpRetransmitSkb          *ebpf.Program `ebpf:"tcp_retransmit_skb"`
 	TcpSendLength             *ebpf.Program `ebpf:"tcp_send_length"`
 	TcpSendReset              *ebpf.Program `ebpf:"tcp_send_reset"`
@@ -702,6 +705,7 @@ func (p *captureEventsPrograms) Close() error {
 		p.TcpRecvmsgEntry,
 		p.TcpRecvmsgExit,
 		p.TcpRecvmsgExitLegacy,
+		p.TcpRecvmsgExitShort,
 		p.TcpRetransmitSkb,
 		p.TcpSendLength,
 		p.TcpSendReset,

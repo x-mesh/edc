@@ -92,6 +92,12 @@ var commandDocs = []commandDoc{
 		usesCommon: true,
 	},
 	{
+		name: "events", group: "diagnose",
+		usage:      []string{"edc events [--since 6h] [options]"},
+		options:    []optionDoc{{"--since 6h", "command.events.option.since"}},
+		usesCommon: true,
+	},
+	{
 		name: "route", group: "host",
 		usage: []string{
 			"edc route check [options]",
@@ -228,6 +234,15 @@ var commandDocs = []commandDoc{
 	{
 		name: "svc", group: "observe",
 		usage:      []string{"edc svc [options] <unit>"},
+		usesCommon: true,
+	},
+	{
+		name: "changes", group: "observe",
+		usage: []string{"edc changes [--since 24h] [options]"},
+		options: []optionDoc{
+			{"--since 24h", "command.changes.option.since"},
+			{"-v, --verbose", "command.changes.option.verbose"},
+		},
 		usesCommon: true,
 	},
 	{

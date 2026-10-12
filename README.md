@@ -216,6 +216,8 @@ The command also creates the parent for the legacy recommended `edc.log` path.
 ./bin/edc listen --watch -i 0.5 --duration 10s
 sudo ./bin/edc audit           # read-only check of exposure and settings (Linux)
 sudo ./bin/edc svc nginx       # one systemd service on one screen (Linux)
+./bin/edc changes --since 2h   # recent package, /etc, and service changes (Linux)
+sudo ./bin/edc events --since 6h   # kernel and systemd failure signals in time order (Linux)
 ./bin/edc quality --timeout 60s
 ./bin/edc quality --server https://example.com/.well-known/nq   # responsiveness config URL
 
@@ -470,6 +472,63 @@ Run it as root. Without root, edc cannot read the fds of other users, the socket
 A socket that only systemd holds (socket activation) does not belong to a unit process. edc does not show that socket.
 
 On macOS, or on Linux without systemd, `edc svc` shows one `skip` and exits with 0. If the unit does not exist, edc writes an error and exits with 1. A `fail` result also gives exit code 1. A usage error gives exit code 2.
+
+## Recent host changes (Linux)
+
+`edc changes` lists the changes on a Linux host in a time window. It reads package logs, the mtime of the files under `/etc`, and the systemd unit state. It changes nothing, and it sends nothing over the network. It ends in less than one second.
+
+```bash
+edc changes                     # the last 24 hours
+edc changes --since 2h          # the last two hours
+edc changes -v                  # all rows, not only the newest 50
+edc changes --json -            # all changes in metrics.events
+```
+
+The output starts with one result for each source. A merged table follows, with the newest change first.
+
+| Result | Source |
+|---|---|
+| `changes.packages` | `/var/log/dpkg.log`, `/var/log/dnf.rpm.log`, `/var/log/yum.log`, and their uncompressed rotated files |
+| `changes.etc` | the mtime of each file and symlink under `/etc` |
+| `changes.services` | the latest start of each service unit and its restart count |
+
+If a boot is in the window, the table shows one `boot` row. That row holds the services that started during the boot.
+
+If edc cannot read a source, the result is `skip` with the reason. A `skip` does not mean that nothing changed. Run it as root to read all sources. Without root, edc cannot read some directories under `/etc` and some package logs.
+
+`edc changes` does not decompress rotated logs. If a compressed log is newer than the window start, edc shows a warning. It reads the mtime under `/etc`, not the file content, so it does not show the change inside a file. systemd keeps one start time for each unit, so a unit that restarted several times shows its latest start and the restart count. The `/etc` walk stops after 20000 entries and shows `warn`. edc does not run `dnf history` or `journalctl`.
+
+## Kernel and systemd events (Linux)
+
+`edc events` reads the kernel log and the systemd journal for a time window. It finds failure signals and puts them in time order. It changes nothing, and it sends nothing over the network.
+
+```bash
+sudo edc events                 # the last 6 hours
+sudo edc events --since 48h
+sudo edc events -v              # add the events behind each result and the timeline
+sudo edc events --json -        # one result for each category
+```
+
+| Result | Fail | Warn |
+|---|---|---|
+| `events.window` | | |
+| `events.oom` | the kernel killed a process for memory | |
+| `events.disk_io` | a disk or a file system reported an I/O error | |
+| `events.fs_readonly` | a file system went read-only or shut down | |
+| `events.link` | a network link went down and did not come back up | a link went down and came back up |
+| `events.units` | the last event of a unit is a failure result | a unit failed and restarted, or restarted 3 times or more |
+| `events.segfault` | | a process stopped on a segfault or a general protection fault |
+| `events.clock` | | the wall clock jumped 1 second or more |
+
+`events.window` names the window and the sources. With `-v`, it also shows the 50 most recent signals of all categories in time order. Each other result shows its count, its latest event, and up to 20 recent events.
+
+The kernel signals come from the journal entries of the kernel. If the journal has no kernel entry in the window, edc reads `/dev/kmsg`. `/dev/kmsg` holds the current boot only. The unit and clock signals come from the journal entries of PID 1. A clock jump counts only when the wall clock and the monotonic clock differ by 1 second or more, and by more than 0.1% of the time between two entries. Thus NTP slew does not count.
+
+Run it as root, or as a member of the `adm` or `systemd-journal` group. Without that access, journalctl shows only your own entries, and `kernel.dmesg_restrict` can block `/dev/kmsg`. These results show `skip`, not `pass`. If journalctl is not installed, `events.units` and `events.clock` show `skip`.
+
+edc reads at most 20000 journal entries, 32 MiB of journal output, and 100000 `/dev/kmsg` records. If it hits a limit, `events.window` gives a warning.
+
+`edc events` does not show the full log. It does not follow new entries, and it does not read application logs.
 
 ## Probe thresholds
 

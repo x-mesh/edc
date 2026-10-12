@@ -52,6 +52,32 @@ func TestParseMySQLRecordReadsOnlyMySQLRecords(t *testing.T) {
 	}
 }
 
+// 끝부분 레코드는 type 11과 배치가 같고 type만 다르다. 두 parser는 서로의 레코드를 받지 않는다. 12와 13은 struct event의
+// tcp_sample과 tcp_app_accept라 쓰지 않는다.
+func TestParseMySQLTailRecordReadsOnlyTailRecords(t *testing.T) {
+	sample := make([]byte, httpRecordPayloadOffset+6)
+	binary.LittleEndian.PutUint32(sample[8:12], mysqlTailRecordType)
+	binary.LittleEndian.PutUint64(sample[24:32], 0xabc)
+	binary.LittleEndian.PutUint32(sample[32:36], 6)
+	sample[38], sample[39] = httpRecordSent, mysqlRecordServer
+	binary.LittleEndian.PutUint32(sample[92:96], 8089)
+	copy(sample[httpRecordPayloadOffset:], []byte{'Z', 0, 0, 0, 5, 'I'})
+	record, ok := parseMySQLTailRecord(sample)
+	if !ok || record.size != 8089 || string(record.payload) != "Z\x00\x00\x00\x05I" || !record.sent || !record.server || record.socket != 0xabc {
+		t.Fatalf("parseMySQLTailRecord = %#v, %t", record, ok)
+	}
+	if _, ok := parseMySQLRecord(sample); ok {
+		t.Fatal("a tail record was read as a head record")
+	}
+	binary.LittleEndian.PutUint32(sample[8:12], mysqlRecordType)
+	if _, ok := parseMySQLTailRecord(sample); ok {
+		t.Fatal("a head record was read as a tail record")
+	}
+	if mysqlTailRecordType == 12 || mysqlTailRecordType == 13 || mysqlTailRecordType == tcpDestroyEventType {
+		t.Fatalf("tail record type %d is used by struct event", mysqlTailRecordType)
+	}
+}
+
 func TestMySQLTraceOptionChecks(t *testing.T) {
 	for _, test := range []struct {
 		args   []string

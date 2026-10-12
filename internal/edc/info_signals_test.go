@@ -45,10 +45,10 @@ func TestInfoSignalLines(t *testing.T) {
 	if got := infoPlatformLine(signals); got != "Amazon EC2 m5.large · virtual machine · container: docker" {
 		t.Fatalf("platform = %q", got)
 	}
-	if got := infoPressureLine(signals); got != "Pressure (some avg10): CPU 0.50% · Memory 12.25% · I/O 0.00% · OOM kills since boot: 3" {
+	if got := infoPressureLine(signals, false); got != "Pressure (some avg10): CPU 0.50% · Memory 12.25% · I/O 0.00% · OOM kills since boot: 3" {
 		t.Fatalf("pressure = %q", got)
 	}
-	if got := infoPressureLine(infoSignals{}); got != "" {
+	if got := infoPressureLine(infoSignals{}, false); got != "" {
 		t.Fatalf("값이 없는데 pressure = %q", got)
 	}
 	if got := infoClockLine(&infoClock{Synced: true}); got != "synchronized" {
@@ -116,5 +116,18 @@ func TestInfoVerboseNetworkAndDiskDetails(t *testing.T) {
 	printInfo(&compact, "test", hostDetails{}, interfaces, disks, nil, infoSignals{DNS: signals.DNS}, false, false)
 	if !strings.Contains(compact.String(), "└── Local IP\n    └── eno1") || strings.Contains(compact.String(), "Interfaces") || strings.Contains(compact.String(), "options:") {
 		t.Fatalf("기본 출력이 바뀌었다:\n%s", compact.String())
+	}
+}
+
+func TestInfoPressureLineColorsOOMKillsOnlyWhenPresent(t *testing.T) {
+	none, some := uint64(0), uint64(2)
+	if got := infoPressureLine(infoSignals{OOMKills: &none}, true); got != "OOM kills since boot: 0" {
+		t.Fatalf("0회에 색을 입혔다: %q", got)
+	}
+	if got := infoPressureLine(infoSignals{OOMKills: &some}, true); got != topColorWarn+"OOM kills since boot: 2"+topColorReset {
+		t.Fatalf("OOM이 있는데 강조하지 않았다: %q", got)
+	}
+	if got := infoPressureLine(infoSignals{OOMKills: &some}, false); got != "OOM kills since boot: 2" {
+		t.Fatalf("색이 꺼졌는데 escape가 남았다: %q", got)
 	}
 }

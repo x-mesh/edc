@@ -201,13 +201,18 @@ func infoDNSLine(dns infoDNS) string {
 	return line
 }
 
-func infoPressureLine(signals infoSignals) string {
+func infoPressureLine(signals infoSignals, color bool) string {
 	var parts []string
 	if len(signals.Pressure) == 3 {
 		parts = append(parts, fmt.Sprintf("Pressure (some avg10): CPU %.2f%% · Memory %.2f%% · I/O %.2f%%", signals.Pressure[0], signals.Pressure[1], signals.Pressure[2]))
 	}
 	if signals.OOMKills != nil {
-		parts = append(parts, fmt.Sprintf("OOM kills since boot: %d", *signals.OOMKills))
+		// 누적 횟수라 한 번이라도 있으면 원인을 볼 일이다. 0과 같은 모양이면 줄 끝에 묻혀 놓친다.
+		level := topLevelNormal
+		if *signals.OOMKills > 0 {
+			level = topLevelWarn
+		}
+		parts = append(parts, topPaint(fmt.Sprintf("OOM kills since boot: %d", *signals.OOMKills), level, color))
 	}
 	return strings.Join(parts, " · ")
 }

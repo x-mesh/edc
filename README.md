@@ -215,6 +215,7 @@ The command also creates the parent for the legacy recommended `edc.log` path.
 ./bin/edc listen              # open ports, --unix or --all adds unix sockets
 ./bin/edc listen --watch -i 0.5 --duration 10s
 sudo ./bin/edc audit           # read-only check of exposure and settings (Linux)
+sudo ./bin/edc svc nginx       # one systemd service on one screen (Linux)
 ./bin/edc quality --timeout 60s
 ./bin/edc quality --server https://example.com/.well-known/nq   # responsiveness config URL
 
@@ -441,6 +442,34 @@ The firewall check reads `nft list ruleset`. If nft shows no input chain, it rea
 The SSH checks read `sshd_config` and its `Include` files. The first value wins, as in sshd. A `Match` block applies only to some connections, so edc does not read it. Run `sshd -T` to see the effective values.
 
 `edc audit` does not match package versions against CVEs. It does not scan the whole file system, and it does not fix a finding.
+
+## Service view (Linux)
+
+`edc svc <unit>` shows one systemd service on one screen. It reads the unit state, the processes, the fds, the sockets, and the journal. It does not start, stop, or reload the unit.
+
+```bash
+sudo edc svc nginx
+sudo edc svc -v nginx.service   # add the process rows, the fd rows, the sockets, and the journal lines
+sudo edc svc --json - nginx     # one result for each view
+```
+
+Put the options before the unit name. `nginx` and `nginx.service` give the same unit. edc accepts letters, digits, and `:_.@-` only, and it refuses other unit types such as `.timer` or `.socket`.
+
+| Result | Pass | Warn | Fail |
+|---|---|---|---|
+| `svc.state` | the unit is active, with no restart | the unit is active but restarted, or it is in a different state | the unit failed, or systemd cannot load it |
+| `svc.processes` | edc lists the processes in the unit cgroup, with CPU% and RSS | | |
+| `svc.fd` | each process uses less than 80% of its soft fd limit | a process uses 80% or more of its limit | |
+| `svc.listen` | edc lists the TCP and UDP sockets that the unit processes own | | |
+| `svc.journal` | the journal has no error line for the unit | the journal has error lines, and edc shows the last 5 | |
+
+The process list shows the main process first and 10 rows at most. The count and the RSS include all processes in the unit cgroup.
+
+Run it as root. Without root, edc cannot read the fds of other users, the socket owners, or the full journal. These results show `skip`, not `pass`. A unit with no process shows `skip` for the process views.
+
+A socket that only systemd holds (socket activation) does not belong to a unit process. edc does not show that socket.
+
+On macOS, or on Linux without systemd, `edc svc` shows one `skip` and exits with 0. If the unit does not exist, edc writes an error and exits with 1. A `fail` result also gives exit code 1. A usage error gives exit code 2.
 
 ## Probe thresholds
 

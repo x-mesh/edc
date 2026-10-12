@@ -201,6 +201,7 @@ Setup wizard는 `edc log`의 저장 경로를 비워두고 실행별 파일을 �
 ./bin/edc listen              # 열려 있는 포트, --unix나 --all로 unix socket 포함
 ./bin/edc listen --watch -i 0.5 --duration 10s
 sudo ./bin/edc audit           # 노출 상태와 설정 점검, 읽기 전용 (Linux)
+sudo ./bin/edc svc nginx       # systemd service 하나를 한 화면에 (Linux)
 ./bin/edc quality --timeout 60s
 ./bin/edc quality --server https://example.com/.well-known/nq   # 응답성 config URL
 
@@ -403,6 +404,34 @@ root로 실행하세요. root가 아니면 방화벽, `/etc/shadow`, `/etc/sudoe
 SSH 점검은 `sshd_config`와 `Include`한 파일을 읽고, sshd처럼 처음 나온 값을 씁니다. `Match` 블록은 일부 연결에만 적용되므로 해석하지 않습니다. 실제 적용 값은 `sshd -T`로 확인하세요.
 
 `edc audit`는 패키지 버전을 CVE와 대조하지 않습니다. 파일 시스템 전체를 훑지 않고, 찾은 문제를 고치지도 않습니다.
+
+## 서비스 보기 (Linux)
+
+`edc svc <unit>`은 systemd service 하나를 한 화면에 보여 줍니다. unit 상태, process, fd, 소켓, journal을 읽기만 하고, unit을 시작·중지·reload하지 않습니다.
+
+```bash
+sudo edc svc nginx
+sudo edc svc -v nginx.service   # process 행, fd 행, 소켓, journal 줄 추가
+sudo edc svc --json - nginx     # 보기마다 결과 하나
+```
+
+option은 unit 이름 앞에 둡니다. `nginx`와 `nginx.service`는 같은 unit입니다. 이름에는 영문자, 숫자, `:_.@-`만 쓸 수 있고, `.timer`나 `.socket` 같은 다른 unit 종류는 받지 않습니다.
+
+| 결과 | pass | warn | fail |
+|---|---|---|---|
+| `svc.state` | unit이 active이고 재시작이 없음 | active지만 재시작했거나, 다른 상태임 | unit이 failed이거나 systemd가 unit을 불러오지 못함 |
+| `svc.processes` | unit cgroup의 process를 CPU%, RSS와 함께 보여 줌 | | |
+| `svc.fd` | 모든 process가 soft fd 한계의 80% 미만을 씀 | 한계의 80% 이상을 쓰는 process가 있음 | |
+| `svc.listen` | unit process가 가진 TCP·UDP 소켓을 보여 줌 | | |
+| `svc.journal` | 이 unit의 journal에 오류 줄이 없음 | 오류 줄이 있고, 마지막 5줄을 보여 줌 | |
+
+process 목록은 main process를 맨 앞에 두고 최대 10행까지 보여 줍니다. 개수와 RSS는 unit cgroup의 모든 process를 셉니다.
+
+root로 실행하세요. root가 아니면 다른 사용자의 fd, 소켓 주인, 전체 journal을 읽지 못합니다. 이 결과는 `pass`가 아니라 `skip`으로 나옵니다. process가 없는 unit은 process 관련 결과가 `skip`입니다.
+
+systemd만 쥔 소켓(socket activation)은 unit process의 것이 아니어서 보여 주지 않습니다.
+
+macOS나 systemd가 없는 Linux에서는 `skip` 하나를 내고 0으로 끝납니다. unit이 없으면 오류를 쓰고 1로 끝납니다. `fail` 결과가 있어도 1, 사용법 오류는 2입니다.
 
 ## Probe 임계값
 

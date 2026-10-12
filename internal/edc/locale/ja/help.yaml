@@ -104,7 +104,7 @@ command:
   info:
     summary: "system、network、disk の情報"
     option:
-      public: "外部 ipinfo.io への問い合わせを止める"
+      public: "外部 public IP の問い合わせを止める(DNS、-v では ipinfo.io)"
       timeout: "public 取得の制限時間"
       verbose: "public 取得に失敗した理由を表示"
     notes:
@@ -137,11 +137,9 @@ command:
       - "種類の flag は加算ではなく filter です。--tcp は TCP だけ残します。"
       - "二つ渡せば両方残り、--all は unix domain socket まで表示します。"
       - "unix socket は port がなく、経路を住所に書き port 列は - にします。"
-      - "macOS の lsof は unix socket の状態を返さないため近似です。"
       - "接続済み socket は対象外です。"
       - "-v はアカウントと file descriptor、キューの列を開きます。"
       - "キューは Recv-Q/Send-Q で、TCP listener では accept キューです。"
-      - "キューを返すのは Linux だけで、macOS では - になります。"
       - "-v が増やすのは列だけです。行は変わりません。"
   quality:
     summary: "ネットワークの応答性 (RPM) とスループット"

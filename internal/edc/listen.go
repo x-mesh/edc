@@ -21,11 +21,14 @@ type listenSocket struct {
 	// 아래 세 값은 -v에서만 화면에 나온다. JSON에는 언제나 담는다. 도구가 주지 않는 값은 비운다.
 	User string `json:"user,omitempty"`
 	FD   string `json:"fd,omitempty"`
-	// Queue는 ss의 Recv-Q/Send-Q다. TCP listener에서는 accept 큐의 깊이와 한계이고, UDP에서는
+	// Queue는 ss가 Recv-Q/Send-Q로 적는 값이다. TCP listener에서는 accept 큐의 깊이와 한계이고, UDP에서는
 	// 수신·송신 버퍼의 바이트다. 0도 뜻이 있으므로 아는지 여부를 따로 둔다.
 	RecvQ    int  `json:"recv_q"`
 	SendQ    int  `json:"send_q"`
 	HasQueue bool `json:"has_queue"`
+
+	// inode는 Linux에서 소켓을 /proc/*/fd의 주인과 잇는 열쇠다. 출력하지 않는다.
+	inode uint32
 }
 
 // listenSocketKey는 사람이 보기에 같은 소켓인지를 정한다. fd나 큐 깊이는 같은 소켓의 순간 상태일
@@ -104,186 +107,6 @@ func (families listenFamilies) wants(proto string) bool {
 	}
 }
 
-// parseLsofFields는 `lsof -F` 출력을 읽는다. -F는 필드마다 한 줄을 쓰고 앞 글자로 종류를 표시하므로
-// 열을 쪼갤 일이 없다. 명령 이름에 공백이 있어도 안전하다.
-//
-// 블록 구조다. p는 프로세스를 열고 c는 그 이름, L은 그 소유 계정, f는 소켓 하나를 열면서 그 값이
-// fd다. P는 프로토콜, t는 종류, n은 주소, TST=는 TCP 상태다.
-// 읽지 못한 소켓은 버리지 않고 개수로 돌려준다.
-func parseLsofFields(text string, families listenFamilies) (sockets []listenSocket, unparsed int) {
-	var pid, command, owner, fd, proto, kindField, name, state string
-	flush := func() {
-		if proto == "" && name == "" {
-			return
-		}
-		defer func() { fd, proto, kindField, name, state = "", "", "", "", "" }()
-		// 유닉스 소켓에는 P 필드가 없다. 그때만 t 필드로 종류를 읽는다.
-		if proto == "" {
-			proto = kindField
-		}
-		kind := listenProtoName(proto)
-		if !listenSocketWanted(kind, state, name, families) {
-			return
-		}
-		if kind == "unix" {
-			// lsof는 유닉스 소켓의 상태를 알려 주지 않는다. 경로가 있으면 바인드된 것으로 본다.
-			sockets = append(sockets, listenSocket{
-				Proto: kind, Address: name,
-				Process: command, PID: pid, User: owner, FD: fd,
-			})
-			return
-		}
-		address, port, ok := splitHostPort(name)
-		if !ok {
-			// *:*는 포트를 아직 정하지 않은 소켓이다. 읽지 못한 것이 아니라 보여 줄 포트가 없다.
-			if name != "*:*" {
-				unparsed++
-			}
-			return
-		}
-		sockets = append(sockets, listenSocket{
-			Proto: kind, Address: address, Port: port,
-			Process: command, PID: pid, User: owner, FD: fd,
-		})
-	}
-	for _, line := range strings.Split(text, "\n") {
-		if line == "" {
-			continue
-		}
-		switch line[0] {
-		case 'p':
-			flush()
-			pid, command, owner = line[1:], "", ""
-		case 'c':
-			command = line[1:]
-		case 'L':
-			owner = line[1:]
-		case 'f':
-			flush()
-			fd = line[1:]
-		case 'P':
-			proto = line[1:]
-		case 't':
-			kindField = line[1:]
-		case 'n':
-			name = line[1:]
-		case 'T':
-			if value, found := strings.CutPrefix(line[1:], "ST="); found {
-				state = value
-			}
-		}
-	}
-	flush()
-	return sockets, unparsed
-}
-
-// parseSSRows는 `ss -Htulnpe` 출력을 읽는다. -t와 -u를 함께 주면 맨 앞에 프로토콜 열이 생기므로
-// TCP만 볼 때도 같은 형식으로 묻고 여기서 거른다. 형식이 하나면 파서도 하나다.
-// -e는 줄 끝에 uid를 붙인다. ss는 계정 이름을 주지 않으므로 번호를 이름으로 바꾸는 일이 남는다.
-func parseSSRows(text string, families listenFamilies) (sockets []listenSocket, unparsed int) {
-	for _, line := range strings.Split(text, "\n") {
-		if strings.TrimSpace(line) == "" {
-			continue
-		}
-		fields := strings.Fields(line)
-		if len(fields) < 5 {
-			unparsed++
-			continue
-		}
-		kind, state, local := listenProtoName(fields[0]), fields[1], fields[4]
-		if !listenSocketWanted(kind, state, local, families) {
-			continue
-		}
-		socket := listenSocket{Proto: kind}
-		if kind == "unix" {
-			// ss는 경로 뒤에 inode를 따로 적는다. 경로만 쓴다.
-			socket.Address = local
-		} else {
-			address, port, ok := splitHostPort(local)
-			if !ok {
-				if local != "*:*" {
-					unparsed++
-				}
-				continue
-			}
-			socket.Address, socket.Port = address, port
-		}
-		// Recv-Q와 Send-Q다. TCP listener에서는 accept 큐의 현재 깊이와 한계를 뜻한다.
-		recvQ, recvErr := strconv.Atoi(fields[2])
-		sendQ, sendErr := strconv.Atoi(fields[3])
-		if recvErr == nil && sendErr == nil {
-			socket.RecvQ, socket.SendQ, socket.HasQueue = recvQ, sendQ, true
-		}
-		for _, field := range fields[5:] {
-			if strings.HasPrefix(field, "users:") {
-				socket.Process, socket.PID, socket.FD = parseSSUsers(field)
-			}
-			if value, found := strings.CutPrefix(field, "uid:"); found {
-				socket.User = lookupUserName(value)
-			}
-		}
-		// ss는 uid가 0이면 uid: 자체를 적지 않는다(테스트 VM에서 /proc 소유자와 대조해 확인). 소켓을
-		// 읽었는데 uid가 없다는 것은 root가 가졌다는 뜻이다. 여기서 비워 두면 가장 흔한 소유자만
-		// 모른다고 답하게 된다.
-		if socket.User == "" && socket.PID != "" {
-			socket.User = lookupUserName("0")
-		}
-		sockets = append(sockets, socket)
-	}
-	return sockets, unparsed
-}
-
-// listenProtoName은 도구마다 다른 표기를 한 이름으로 모은다. ss는 유닉스 소켓을 u_str와 u_dgr로,
-// lsof는 unix로 적는다.
-func listenProtoName(value string) string {
-	lower := strings.ToLower(value)
-	if strings.HasPrefix(lower, "u_") || lower == "unix" {
-		return "unix"
-	}
-	return lower
-}
-
-// listenSocketWanted는 연결을 기다리는 소켓만 고른다. TCP와 유닉스 스트림은 LISTEN 상태로 가려낸다.
-// UDP에는 상태가 없어서 lsof가 연결된 흐름까지 함께 돌려주므로 주소로 가려낸다.
-func listenSocketWanted(kind, state, name string, families listenFamilies) bool {
-	if !families.wants(kind) {
-		return false
-	}
-	// lsof는 연결된 소켓의 주소를 로컬->원격으로 적는다. QUIC 흐름이나 익명 유닉스 쌍이 여기 걸린다.
-	if strings.Contains(name, "->") {
-		return false
-	}
-	switch kind {
-	case "tcp":
-		return strings.EqualFold(state, "LISTEN")
-	case "unix":
-		// ss는 LISTEN을 알려 주므로 그대로 쓴다. lsof는 상태가 비어 있어 경로가 있으면 받는다.
-		return state == "" || strings.EqualFold(state, "LISTEN")
-	default:
-		return true
-	}
-}
-
-// parseSSUsers는 `users:(("sshd",pid=21571,fd=3),...)`에서 첫 프로세스만 꺼낸다. 같은 포트를 여러
-// 프로세스가 물려받은 경우 첫 번째가 그 포트를 연 쪽이다.
-func parseSSUsers(field string) (process, pid, fd string) {
-	inner := strings.TrimSuffix(strings.TrimPrefix(field, "users:(("), "))")
-	first, _, _ := strings.Cut(inner, "),(")
-	parts := strings.Split(first, ",")
-	if len(parts) > 0 {
-		process = strings.Trim(parts[0], `"`)
-	}
-	for _, part := range parts {
-		if value, found := strings.CutPrefix(part, "pid="); found {
-			pid = value
-		}
-		if value, found := strings.CutPrefix(part, "fd="); found {
-			fd = value
-		}
-	}
-	return process, pid, fd
-}
-
 // userNames는 같은 uid를 되풀이해 찾지 않으려고 둔다. 한 호스트의 소켓 수십 개가 몇 개의 계정으로
 // 모이므로 조회는 그 수만큼만 일어난다.
 var userNames = map[string]string{}
@@ -300,27 +123,6 @@ func lookupUserName(uid string) string {
 	}
 	userNames[uid] = name
 	return name
-}
-
-// splitHostPort는 포트를 마지막 콜론 뒤에서 읽는다. IPv6의 [::]와 ss가 붙이는 %iface 표기를 함께 다룬다.
-func splitHostPort(value string) (host string, port int, ok bool) {
-	index := strings.LastIndex(value, ":")
-	if index < 0 {
-		return "", 0, false
-	}
-	host, portText := value[:index], value[index+1:]
-	number, err := strconv.Atoi(portText)
-	if err != nil {
-		return "", 0, false
-	}
-	host = strings.TrimSuffix(strings.TrimPrefix(host, "["), "]")
-	if scoped, _, found := strings.Cut(host, "%"); found {
-		host = scoped
-	}
-	if host == "" || host == "*" {
-		host = "*"
-	}
-	return host, number, true
 }
 
 // dedupeListenSockets는 같은 소켓을 한 줄로 모은다. 한 포트를 IPv4와 IPv6로 함께 열면 도구가 두 줄을
@@ -417,7 +219,7 @@ func listenCell(value string) string {
 	return value
 }
 
-// listenQueueCell은 Recv-Q/Send-Q를 한 칸에 적는다. macOS의 lsof는 이 값을 주지 않는다.
+// listenQueueCell은 Recv-Q/Send-Q를 한 칸에 적는다.
 func listenQueueCell(socket listenSocket) string {
 	if !socket.HasQueue {
 		return "-"

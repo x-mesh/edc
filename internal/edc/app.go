@@ -104,6 +104,8 @@ func Run(args []string, version string) int {
 		return runAudit(args[1:], version)
 	case "changes":
 		return runChanges(args[1:], version)
+	case "events":
+		return runEvents(args[1:], version)
 	case "quality":
 		return runQuality(args[1:], version)
 	case "capture":

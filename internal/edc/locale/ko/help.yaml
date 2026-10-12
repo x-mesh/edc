@@ -74,6 +74,15 @@ command:
     option:
       since: "얼마나 이전까지 볼지, 24h나 90m 같은 Go duration"
       verbose: "최근 50건에서 자르지 않고 모두 보기"
+  events:
+    summary: "커널과 systemd의 장애 신호를 시간 순서로 정리 (Linux)"
+    option:
+      since: "읽을 기간 (예: 30m, 48h)"
+    notes:
+      - "커널 로그와 systemd journal만 읽습니다."
+      - "root나 adm, systemd-journal 그룹으로 실행하세요."
+      - "권한이 없으면 점검은 통과가 아니라 skip입니다."
+      - "Linux에서만 동작합니다."
   net:
     summary: "interface, route, ping, trace"
   route:

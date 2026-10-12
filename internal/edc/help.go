@@ -92,6 +92,12 @@ var commandDocs = []commandDoc{
 		usesCommon: true,
 	},
 	{
+		name: "events", group: "diagnose",
+		usage:      []string{"edc events [--since 6h] [options]"},
+		options:    []optionDoc{{"--since 6h", "command.events.option.since"}},
+		usesCommon: true,
+	},
+	{
 		name: "route", group: "host",
 		usage: []string{
 			"edc route check [options]",

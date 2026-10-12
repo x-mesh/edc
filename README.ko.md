@@ -202,6 +202,7 @@ Setup wizard는 `edc log`의 저장 경로를 비워두고 실행별 파일을 �
 ./bin/edc listen --watch -i 0.5 --duration 10s
 sudo ./bin/edc audit           # 노출 상태와 설정 점검, 읽기 전용 (Linux)
 ./bin/edc changes --since 2h   # 최근 패키지, /etc, service 변경 (Linux)
+sudo ./bin/edc events --since 6h   # 커널과 systemd의 장애 신호를 시간 순서로 정리 (Linux)
 ./bin/edc quality --timeout 60s
 ./bin/edc quality --server https://example.com/.well-known/nq   # 응답성 config URL
 
@@ -429,6 +430,38 @@ edc changes --json -            # 모든 변경을 metrics.events에 담음
 원천을 읽지 못하면 결과는 이유와 함께 `skip`입니다. `skip`은 바뀐 것이 없다는 뜻이 아닙니다. 모든 원천을 읽으려면 root로 실행하세요. root가 아니면 `/etc` 아래 일부 디렉터리와 일부 패키지 로그를 읽지 못합니다.
 
 `edc changes`는 회전된 압축 로그를 풀지 않습니다. 압축 로그가 시간 범위 시작보다 새로우면 경고로 알립니다. `/etc`는 파일 내용이 아니라 mtime만 읽으므로 파일 안에서 무엇이 바뀌었는지는 보이지 않습니다. systemd는 unit마다 시작 시각을 하나만 남기므로, 여러 번 재시작한 unit은 마지막 시작 시각과 재시작 횟수로 보입니다. `/etc`는 항목 20000개에서 멈추고 `warn`으로 알립니다. `dnf history`와 `journalctl`은 실행하지 않습니다.
+
+## 커널과 systemd 이벤트 (Linux)
+
+`edc events`는 정한 기간의 커널 로그와 systemd journal을 읽어 장애 신호를 시간 순서로 정리합니다. 아무것도 바꾸지 않고 외부로 보내지 않습니다.
+
+```bash
+sudo edc events                 # 최근 6시간
+sudo edc events --since 48h
+sudo edc events -v              # 결과마다 근거가 된 기록과 시간순 기록 추가
+sudo edc events --json -        # 범주마다 결과 하나
+```
+
+| 결과 | fail | warn |
+|---|---|---|
+| `events.window` | | |
+| `events.oom` | 커널이 메모리 부족으로 프로세스를 죽임 | |
+| `events.disk_io` | 디스크나 파일 시스템이 I/O 오류를 보고함 | |
+| `events.fs_readonly` | 파일 시스템이 읽기 전용으로 바뀌거나 멈춤 | |
+| `events.link` | 네트워크 링크가 끊긴 뒤 다시 연결되지 않음 | 링크가 끊겼다가 다시 연결됨 |
+| `events.units` | unit의 마지막 기록이 실패 결과임 | unit이 실패한 뒤 재시작했거나 3번 이상 재시작함 |
+| `events.segfault` | | 프로세스가 segfault나 general protection fault로 멈춤 |
+| `events.clock` | | 벽시계가 1초 이상 점프함 |
+
+`events.window`는 기간과 원천을 밝히고, `-v`를 주면 모든 범주의 최근 신호 50개를 시간 순서로 보여 줍니다. 다른 결과는 횟수와 마지막 기록, 최근 기록 20개까지를 보여 줍니다.
+
+커널 신호는 journal의 커널 기록에서 읽습니다. 그 기간에 journal의 커널 기록이 없으면 `/dev/kmsg`를 읽는데, `/dev/kmsg`에는 현재 부팅의 기록만 있습니다. unit과 시계 신호는 journal의 PID 1 기록에서 읽습니다. 시계 점프는 두 기록 사이에서 벽시계와 monotonic 시계가 1초 이상, 그리고 간격의 0.1%보다 크게 다를 때만 셉니다. 그래서 NTP slew는 세지 않습니다.
+
+root나 `adm`, `systemd-journal` 그룹으로 실행하세요. 권한이 없으면 journalctl은 자기 기록만 보여 주고, `kernel.dmesg_restrict`가 `/dev/kmsg`를 막을 수 있습니다. 이때 결과는 `pass`가 아니라 `skip`으로 나옵니다. journalctl이 없으면 `events.units`와 `events.clock`이 `skip`입니다.
+
+journal 기록은 20000개, journal 출력은 32 MiB, `/dev/kmsg` 기록은 100000개까지 읽습니다. 상한에 닿으면 `events.window`가 경고를 냅니다.
+
+`edc events`는 로그 전체를 보여 주지 않습니다. 새 기록을 따라가지 않고, 애플리케이션 로그도 읽지 않습니다.
 
 ## Probe 임계값
 

@@ -458,3 +458,23 @@ func TestRunSvcExitCodes(t *testing.T) {
 		t.Fatalf("healthy = %+v", report)
 	}
 }
+
+// 실패한 상태는 실패 상자에 원인을 적는다. Error가 비면 상자에 phase와 cause가 없다.
+func TestSvcFailedStateFillsTheErrorBox(t *testing.T) {
+	for _, show := range []svcShow{
+		{ID: "app.service", LoadState: "loaded", ActiveState: "failed", SubState: "failed", Result: "exit-code"},
+		{ID: "app.service", LoadState: "masked"},
+	} {
+		result := svcStateResult(svcFacts{Unit: "app.service", Show: show})
+		if result.Status != StatusFail || result.Error == nil || result.Error.Message != result.Summary {
+			t.Errorf("%s/%s = %s, error %+v", show.LoadState, show.ActiveState, result.Status, result.Error)
+		}
+	}
+}
+
+// disk grow처럼 unit 뒤에 온 option도 받는다. flag 패키지는 첫 위치 인자에서 멈춘다.
+func TestRunSvcAcceptsOptionsAfterTheUnit(t *testing.T) {
+	if code := runSvcWith([]string{"nginx", "--json", filepath.Join(t.TempDir(), "svc.json")}, "test", svcSources{}, false); code != 0 {
+		t.Fatalf("exit = %d", code)
+	}
+}

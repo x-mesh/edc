@@ -106,7 +106,15 @@ func runSvcWith(args []string, version string, sources svcSources, ok bool) int 
 	set := flag.NewFlagSet("svc", flag.ContinueOnError)
 	set.SetOutput(os.Stderr)
 	bindCommon(set, &options)
-	if err := set.Parse(args); err != nil {
+	// `edc svc nginx -v`처럼 unit 뒤에 온 flag도 받는다. flag 패키지는 첫 위치 인자에서 멈춘다.
+	ordered, err := reorderFSWatchArgs(set, args)
+	if err == nil {
+		err = set.Parse(ordered)
+	}
+	if err != nil {
+		if !errors.Is(err, flag.ErrHelp) {
+			fmt.Fprintln(os.Stderr, err)
+		}
 		return 2
 	}
 	usage := T("cli.usage", "edc svc [options] <unit>")
@@ -386,10 +394,16 @@ func evaluateSvc(facts svcFacts) []Result {
 	return []Result{state, svcProcessesResult(facts), svcFDResult(facts), svcListenResult(facts), svcJournalResult(facts)}
 }
 
+// svcFailed는 실패 상자에 원인을 채운다. Error가 비면 상자에 phase와 cause 줄이 없다.
+func svcFailed(result Result) Result {
+	result.Error = &DiagnosticError{Kind: "state", Message: result.Summary}
+	return result
+}
+
 func svcStateResult(facts svcFacts) Result {
 	show := facts.Show
 	if show.LoadState != "loaded" {
-		return svcResult("state", StatusFail, T("svc.state.load", facts.Unit, show.LoadState))
+		return svcFailed(svcResult("state", StatusFail, T("svc.state.load", facts.Unit, show.LoadState)))
 	}
 	state := show.ActiveState + " (" + show.SubState + ")"
 	if show.Result != "" && show.Result != "success" {
@@ -414,6 +428,9 @@ func svcStateResult(facts svcFacts) Result {
 		status = StatusWarn
 	}
 	result := svcResult("state", status, T("svc.state.summary", state, uptime, restarts))
+	if status == StatusFail {
+		result = svcFailed(result)
+	}
 	result.Metrics = map[string]interface{}{"active_state": show.ActiveState, "sub_state": show.SubState, "result": show.Result, "main_pid": show.MainPID}
 	if show.NRestarts != nil {
 		result.Metrics["n_restarts"] = *show.NRestarts

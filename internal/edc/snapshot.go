@@ -330,6 +330,18 @@ func snapshotDiskResults(started time.Time, disks []diskDetails, signals map[str
 				result.Warnings = append(result.Warnings, T("snapshot.warning.inodes", mount, inodes))
 			}
 		}
+		if deleted := signal.DeletedOpen; deleted.Files > 0 || deleted.Partial {
+			result.Metrics["deleted_open_files"] = deleted.Files
+			result.Metrics["deleted_open_bytes"] = deleted.Bytes
+			result.Metrics["deleted_open_partial"] = deleted.Partial
+			if disk.Total > 0 && deleted.Bytes >= disk.Total/100*infoDeletedOpenWarnPercent {
+				result.Status = StatusWarn
+				result.Warnings = append(result.Warnings, T("snapshot.warning.deleted_open", mount, deletedOpenText(deleted)))
+			}
+			if len(deleted.Top) > 0 {
+				result.Evidence = append(result.Evidence, Evidence{Label: T("snapshot.evidence.deleted_open"), Value: strings.Join(deletedOpenLines(deleted), "\n")})
+			}
+		}
 		results = append(results, result)
 	}
 	return results

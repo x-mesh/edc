@@ -8,6 +8,9 @@ snapshot:
     oom_unavailable: "the OOM kill counter is not readable on this host"
     read_only: "%s is mounted read-only"
     inodes: "%s has %.0f%% of its inodes in use"
+    deleted_open: "%s holds space in deleted files that a process still has open: %s"
+  evidence:
+    deleted_open: "deleted but open"
   summary:
     host: "%s · %s · %d cores · load %.2f/%.2f/%.2f"
     memory: "%s used of %s (%.2f%%), %s available"

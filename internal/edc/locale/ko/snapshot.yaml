@@ -8,6 +8,9 @@ snapshot:
     oom_unavailable: "이 host에서는 OOM kill counter를 읽을 수 없습니다"
     read_only: "%s가 읽기 전용으로 마운트되어 있습니다"
     inodes: "%s의 inode 사용률이 %.0f%%입니다"
+    deleted_open: "%s에 지워졌지만 process가 아직 열고 있는 파일이 공간을 잡고 있습니다: %s"
+  evidence:
+    deleted_open: "지워졌지만 열린 파일"
   summary:
     host: "%s · %s · %d 코어 · load %.2f/%.2f/%.2f"
     memory: "사용 %s / 전체 %s (%.2f%%), 가용 %s"

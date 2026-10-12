@@ -207,6 +207,24 @@ func TestSnapshotDiskResultsSetStatusAndKeepOnePerMount(t *testing.T) {
 	}
 }
 
+// 지워졌지만 열린 파일은 mount의 10% 이상을 잡을 때만 warn이다. 그 아래는 metric과 근거로만 남는다.
+func TestSnapshotDiskResultsWarnOnDeletedOpenFiles(t *testing.T) {
+	disk := []diskDetails{{Mount: "/var", Device: "/dev/sda2", Used: 500, Total: 1000, Percent: 50}}
+	top := []deletedOpenFile{{Path: "/var/log/app.log", Size: 90, PID: 42, Comm: "java"}}
+	small := snapshotDiskResults(time.Now(), disk, map[string]diskSignal{"/var": {DeletedOpen: deletedOpenSummary{Files: 1, Bytes: 90, Top: top}}}, nil)[0]
+	if small.Status != StatusPass || small.Metrics["deleted_open_bytes"] != uint64(90) || len(small.Warnings) != 0 || len(small.Evidence) != 1 || !strings.Contains(small.Evidence[0].Value, "pid 42 java  /var/log/app.log") {
+		t.Fatalf("small = %+v", small)
+	}
+	large := snapshotDiskResults(time.Now(), disk, map[string]diskSignal{"/var": {DeletedOpen: deletedOpenSummary{Files: 2, Bytes: 100, Partial: true, Top: top}}}, nil)[0]
+	if large.Status != StatusWarn || len(large.Warnings) != 1 || !strings.Contains(large.Warnings[0], "deleted-open ≥100 B in 2 files, java") || large.Metrics["deleted_open_partial"] != true {
+		t.Fatalf("large = %+v", large)
+	}
+	none := snapshotDiskResults(time.Now(), disk, map[string]diskSignal{"/var": {}}, nil)[0]
+	if _, ok := none.Metrics["deleted_open_files"]; ok || len(none.Evidence) != 0 {
+		t.Fatalf("none = %+v", none)
+	}
+}
+
 func TestSnapshotProcessResultKeepsTheTopFive(t *testing.T) {
 	var processes []topProcess
 	for pid := 1; pid <= 8; pid++ {

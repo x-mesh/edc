@@ -122,13 +122,38 @@ func collectDiskSignals(disks []diskDetails, verbose bool) map[string]diskSignal
 		}
 	}
 	signals := map[string]diskSignal{}
+	deleted := scanDeletedOpen("/proc", linuxDeletedOpenStat, infoDeletedOpenFDLimit)
 	for _, disk := range visibleDisks(disks) {
 		if signal, ok := statfsDiskSignal(disk.Mount); ok {
 			signal.Options = options[disk.Mount]
+			if dev, ok := mountDevice(disk.Mount); ok && deleted[dev] != nil {
+				signal.DeletedOpen = *deleted[dev]
+			}
 			signals[disk.Mount] = signal
 		}
 	}
 	return signals
+}
+
+func linuxDeletedOpenStat(path string) (deletedOpenStat, error) {
+	var stat unix.Stat_t
+	if err := unix.Stat(path, &stat); err != nil {
+		return deletedOpenStat{}, err
+	}
+	size := stat.Size
+	if size < 0 {
+		size = 0
+	}
+	return deletedOpenStat{Dev: uint64(stat.Dev), Inode: stat.Ino, Size: uint64(size), Links: uint64(stat.Nlink), Regular: stat.Mode&unix.S_IFMT == unix.S_IFREG}, nil
+}
+
+// mountDevice는 마운트 지점의 st_dev다. 같은 파일 시스템의 파일은 같은 값을 가지므로 fd의 st_dev와 맞춘다.
+func mountDevice(mount string) (uint64, bool) {
+	var stat unix.Stat_t
+	if err := unix.Stat(mount, &stat); err != nil {
+		return 0, false
+	}
+	return uint64(stat.Dev), true
 }
 
 // parseLinuxMountOptions는 /proc/self/mounts에서 마운트 지점마다 옵션을 읽는다. 같은 곳에 겹쳐 붙이면 마지막 것이 보인다.

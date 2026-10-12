@@ -8,6 +8,9 @@ snapshot:
     oom_unavailable: "この host では OOM kill カウンタを読めません"
     read_only: "%s は読み取り専用でマウントされています"
     inodes: "%s の inode 使用率は %.0f%% です"
+    deleted_open: "%s では削除されたのに process がまだ開いているファイルが領域を占めています: %s"
+  evidence:
+    deleted_open: "削除済みだが開いているファイル"
   summary:
     host: "%s · %s · %d コア · load %.2f/%.2f/%.2f"
     memory: "使用 %s / 全体 %s (%.2f%%)、利用可能 %s"

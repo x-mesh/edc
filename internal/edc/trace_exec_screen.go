@@ -112,13 +112,13 @@ func (m execTraceScreenModel) updateKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd
 			m.selected = max(0, m.selected-1)
 		}
 	case "down", "j":
-		if m.groupBy == "" && len(m.events) > 0 {
-			m.selected = min(len(m.events)-1, max(0, m.selected+1))
+		if count := len(m.matching()); m.groupBy == "" && count > 0 {
+			m.selected = min(count-1, max(0, m.selected+1))
 		}
 	case "enter":
-		if m.groupBy == "" && len(m.events) > 0 {
+		if count := len(m.matching()); m.groupBy == "" && count > 0 {
 			if m.selected < 0 {
-				m.selected = len(m.events) - 1
+				m.selected = count - 1
 			}
 			m.detail = true
 		}
@@ -157,8 +157,8 @@ func (m execTraceScreenModel) View() tea.View {
 	} else {
 		lines = append(lines, "/ filter  tab view  p process  a parent  e event  c cgroup  g scroll  ↑↓ select  enter detail  q quit  ctrl-c stop")
 	}
-	if m.detail && m.selected >= 0 && m.selected < len(m.events) {
-		event := m.events[m.selected]
+	if matching := m.matching(); m.detail && m.selected >= 0 && m.selected < len(matching) {
+		event := matching[m.selected]
 		lines = append(lines,
 			fmt.Sprintf("%s  %s  pid %d  process %s  uid %d  cgroup %d", execScreenTime(event), event.Event, event.PID, event.Process, event.UID, event.CgroupID),
 			fmt.Sprintf("parent %s (pid %d)", emptyAs(event.Parent, "-"), event.PPID),

@@ -107,6 +107,14 @@ volatile const __u16 mysql_port = 0;
 // mysql_response_size가 0이 아니면 응답 방향을 MYSQL_RESPONSE_SIZE 대신 이 byte 수까지 읽는다. trace clickhouse는 서버의
 // 완료 packet(EndOfStream)이 마지막 쓰기의 1024 byte 밖에 있어서 4096으로 올린다. 0이면 trace mysql이라 기존 1024를 쓴다.
 volatile const __u32 mysql_response_size = 0;
+// mysql_tail_size가 0이 아니면 trace postgres다. 응답 방향의 쓰기나 읽기가 앞부분보다 길면 그 끝의 이 byte 수를 레코드 하나로
+// 더 넘긴다. 서버는 큰 결과를 8192 byte씩 보내서 앞부분만으로는 경계를 잃는데, ReadyForQuery는 마지막 쓰기의 끝 6 byte에 있다.
+// 0이면 verifier가 이 값에 걸린 분기를 지워 trace mysql, clickhouse, http, dns의 코드가 그대로다.
+volatile const __u32 mysql_tail_size = 0;
+// emit_all_tcp_destroys가 켜지면 tcp_destroy_sock을 port와 관계없이 넘긴다. trace postgres와 trace redis가 켠다. 서버가 받은
+// socket은 닫힐 때 local port를 0으로 놓아 mysql_socket이 거짓이 되고, 사용자 공간에 남은 그 연결의 상태가 같은 주소를 다시
+// 쓴 새 연결의 첫 message를 이어지는 byte로 읽는다. 0이면 trace mysql과 trace clickhouse의 레코드가 그대로다.
+volatile const __u8 emit_all_tcp_destroys = 0;
 // clickhouse_http_port가 0이 아니면 trace clickhouse가 mysql_port와 함께 이 port의 socket도 같은 경로로 넘긴다. HTTP interface의
 // 쿼리를 보려는 것이다. 0이면 verifier가 이 값에 걸린 분기를 지워 trace mysql과 trace http의 코드가 그대로다.
 volatile const __u16 clickhouse_http_port = 0;
@@ -1496,6 +1504,10 @@ static __always_inline int http_socket(struct sock *sk) {
 // 요청은 client가 보내고 서버가 받는 방향이다. 요청에 명령 SQL이 있어 응답보다 넉넉히 읽는다.
 #define MYSQL_REQUEST_SIZE 4096
 #define MYSQL_RESPONSE_SIZE 1024
+// 끝부분 레코드다. 배치는 type 11과 같고 len은 끝부분 byte 수, offset은 그 쓰기나 읽기의 전체 byte 수다. 12와 13은 struct event가
+// 쓴다.
+#define MYSQL_TAIL_RECORD 14
+#define MYSQL_TAIL_MAX 256
 static __always_inline __u8 mysql_socket(struct sock *sk) {
 	__u16 local = BPF_CORE_READ(sk, __sk_common.skc_num);
 	if (local == mysql_port || (clickhouse_http_port && local == clickhouse_http_port)) {
@@ -1748,6 +1760,27 @@ static __always_inline void http_capture(struct sock *sk, __u64 buffer, __u64 li
 
 // emit_mysql은 MySQL port socket의 읽기나 쓰기 앞부분을 레코드 하나로 넘긴다. TLS record로 시작하면 암호문이라 넘기지 않는다.
 // 사용자 공간이 packet 경계를 따라가므로 이 함수는 상태를 두지 않는다.
+// emit_mysql_tail은 앞부분 레코드를 낸 record를 그대로 두고 payload만 end 앞의 끝부분으로 바꿔 한 번 더 넘긴다. avail은 end 앞에서
+// 읽을 수 있는 byte 수다. 앞부분 레코드를 넘기지 못했으면 부르지 않는다. 끝부분만 오면 사용자 공간이 어느 쓰기의 것인지 모른다.
+static __always_inline void emit_mysql_tail(struct http_record *record, __u64 end, __u64 avail) {
+	__u64 tail = mysql_tail_size < avail ? mysql_tail_size : avail;
+	if (tail > MYSQL_TAIL_MAX) {
+		tail = MYSQL_TAIL_MAX;
+	}
+	if (tail == 0 || bpf_probe_read_user(record->payload, tail, (void *)(end - tail))) {
+		return;
+	}
+	record->event_type = MYSQL_TAIL_RECORD;
+	record->len = tail;
+	if (bpf_ringbuf_output(&events, record, __builtin_offsetof(struct http_record, payload) + tail, 0)) {
+		__u32 zero = 0;
+		__u64 *lost = bpf_map_lookup_elem(&lost_events, &zero);
+		if (lost) {
+			__sync_fetch_and_add(lost, 1);
+		}
+	}
+}
+
 static __always_inline void emit_mysql_iov(struct sock *sk, __u64 buffer, __u64 limit, const struct iovec *iov, __u64 nr_segs, __u64 size, __u8 direction, __u8 server) {
 	if (!buffer || size == 0) {
 		return;
@@ -1824,6 +1857,36 @@ static __always_inline void emit_mysql_iov(struct sock *sk, __u64 buffer, __u64 
 		if (lost) {
 			__sync_fetch_and_add(lost, 1);
 		}
+		return;
+	}
+	if (!mysql_tail_size || server != (direction == HTTP_SENT) || size <= copied) {
+		return;
+	}
+	// 보낸 byte의 끝이 든 버퍼를 찾는다. 끝부분은 그 버퍼 안에서만 읽으므로, 끝 버퍼가 끝부분보다 짧으면 더 짧게 넘긴다.
+	__u64 end = size;
+	__u64 base = buffer;
+	__u64 left = limit;
+	__u64 tail_end = 0;
+	__u64 tail_avail = 0;
+	for (int segment = 0; segment < HTTP_MAX_SEGMENTS; segment++) {
+		if (end <= left) {
+			tail_end = base + end;
+			tail_avail = end;
+			break;
+		}
+		end -= left;
+		if (!iov || segment + 1 >= nr_segs) {
+			break;
+		}
+		struct iovec vector = {};
+		if (bpf_probe_read_kernel(&vector, sizeof(vector), iov + segment + 1)) {
+			break;
+		}
+		base = (__u64)vector.iov_base;
+		left = vector.iov_len;
+	}
+	if (tail_avail) {
+		emit_mysql_tail(record, tail_end, tail_avail);
 	}
 }
 
@@ -1861,6 +1924,11 @@ static __always_inline void emit_mysql_buffer(struct sock *sk, __u64 buffer, __u
 		if (lost) {
 			__sync_fetch_and_add(lost, 1);
 		}
+		return;
+	}
+	// readv처럼 받은 byte가 첫 버퍼를 넘으면 끝이 다른 버퍼에 있어 끝부분을 넘기지 않는다.
+	if (mysql_tail_size && server == (direction == HTTP_SENT) && size > len && size <= limit) {
+		emit_mysql_tail(record, buffer + size, size);
 	}
 }
 
@@ -2459,7 +2527,7 @@ int http_tcp_destroy_sock(__u64 *ctx) {
 		bpf_map_delete_elem(&http_streams, &key);
 		bpf_map_delete_elem(&tls_prefixes, &key);
 	}
-	if (!((emit_http_messages && http_socket(sk)) || (mysql_port && mysql_socket(sk)) || (emit_dns_tcp_messages && dns_tcp_socket(sk)))) {
+	if (!(emit_all_tcp_destroys || (emit_http_messages && http_socket(sk)) || (mysql_port && mysql_socket(sk)) || (emit_dns_tcp_messages && dns_tcp_socket(sk)))) {
 		return 0;
 	}
 	struct event *event = start_event(ctx, 5);

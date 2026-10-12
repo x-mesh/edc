@@ -65,6 +65,10 @@ type captureEvent struct {
 	MySQL *traceMySQLEvent `json:"mysql,omitempty"`
 	// ClickHouse는 ClickHouse event에만 붙는다. 응답에는 답한 요청의 명령과 SQL도 들어 있다.
 	ClickHouse *traceClickHouseEvent `json:"clickhouse,omitempty"`
+	// Postgres는 PostgreSQL event에만 붙는다. 응답에는 답한 요청 단위의 명령과 SQL도 들어 있다.
+	Postgres *tracePostgresEvent `json:"postgres,omitempty"`
+	// Redis는 Redis event에만 붙는다. 응답에는 답한 명령과 key도 들어 있다.
+	Redis *traceRedisEvent `json:"redis,omitempty"`
 	// ALPN은 tls_hello event에만 붙는다. client가 ClientHello로 제안한 protocol이고, 서버가 고른 것은 암호문이라 모른다.
 	ALPN []string `json:"alpn,omitempty"`
 	// TLS는 trace http --tls가 OpenSSL에서 읽은 평문 event다. socket을 모르는 평문은 Source와 Destination이 비어 있다.

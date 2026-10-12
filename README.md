@@ -1839,7 +1839,7 @@ Use `trace mysql` on Linux 5.15 or later to print plain MySQL commands and resul
 
 JSON events have `"side": "client"` or `"side": "server"`. Use `--side client` or `--side server` to keep one side. If the local port is the MySQL port, the socket is on the server side. If the peer port is the MySQL port, the socket is on the client side.
 
-Use `--slow <duration>` only with `trace mysql`, `trace clickhouse`, `trace io`, or `trace sched`. It accepts Go duration syntax, such as `250ms` and `1.5s`. For `trace io`, it sets the minimum request latency. For `trace sched`, it sets the minimum span latency. The default for both is 1ms. For `trace mysql`, in the ungrouped interactive view, it keeps a command row only when its first paired response has latency at or above the duration. It excludes unanswered commands, unmatched responses, responses without latency, and TLS rows. It does not change raw JSON, noninteractive output, summaries, grouped views, `--group-by`, or `--side`.
+Use `--slow <duration>` only with `trace mysql`, `trace clickhouse`, `trace postgres`, `trace redis`, `trace io`, or `trace sched`. It accepts Go duration syntax, such as `250ms` and `1.5s`. For `trace io`, it sets the minimum request latency. For `trace sched`, it sets the minimum span latency. The default for both is 1ms. For `trace mysql`, in the ungrouped interactive view, it keeps a command row only when its first paired response has latency at or above the duration. It excludes unanswered commands, unmatched responses, responses without latency, and TLS rows. It does not change raw JSON, noninteractive output, summaries, grouped views, `--group-by`, or `--side`.
 
 | To see | Command |
 | --- | --- |
@@ -1986,6 +1986,97 @@ The summary after Ctrl-C shows one row for each side, command, and SQL shape. Th
 - If edc did not see the `Hello` of a connection, edc skips that connection. This happens when the trace starts in the middle of a connection. edc sees the connection after the client connects again.
 - If a lost event or a partial send moves the packet boundary, edc can miss the next queries of that connection. The summary shows the lost events.
 - At a published host port, edc shows the client row and the row of the server in the container. `docker-proxy` itself shows no rows. The server row shows the Docker bridge gateway as the peer. Use `--process clickhouse-serv` to keep the rows of the server process.
+
+Use `trace postgres` on Linux 5.15 or later to print plain PostgreSQL requests and results as they arrive. edc reads the start of each TCP read and write on the PostgreSQL port in the kernel. The default port is 5432. Use `--port` for another port.
+
+```bash
+./bin/edc trace postgres
+./bin/edc trace postgres --side server
+./bin/edc trace postgres --port 6432
+./bin/edc trace postgres --slow 250ms
+./bin/edc trace postgres --group-by process
+./bin/edc trace postgres --show-secrets
+./bin/edc trace postgres --raw
+```
+
+`trace postgres` shows two sides, like `trace mysql`. Each event row starts with `client:` or `server:`. JSON events have `"side": "client"` or `"side": "server"`. Use `--side client` or `--side server` to keep one side. `--slow` works as in `trace mysql`.
+
+| To see | Command |
+| --- | --- |
+| All PostgreSQL on this host | `./bin/edc trace postgres` |
+| The requests that local servers received | `./bin/edc trace postgres --side server` |
+| PostgreSQL on port 6432 | `./bin/edc trace postgres --port 6432` |
+| Paired requests at or above 250ms | `./bin/edc trace postgres --slow 250ms` |
+| The SQL text without the mask | `./bin/edc trace postgres --show-secrets` |
+
+A request is one of these events. The `postgres` object of the JSON event has the fields.
+
+- `postgres_connect` is a login. It has `user` and `database`.
+- `postgres_query` is one request unit. Its `command` is `query`, `prepare`, `execute`, or `function`.
+- A `query` is one simple Query message. It has `sql`.
+- A `prepare` or an `execute` is an extended batch that ends with Sync. It has `sql`, `statement`, and `executes`.
+
+A response is one of these events:
+
+- `postgres_result` has the `tag` of CommandComplete, for example `SELECT 3`, and `rows`. The answer to a login has `server_version`.
+- `postgres_error` has `severity`, `sql_state`, and `message`.
+
+A response event has the `command` and the `sql` of the request that it answers. `postgres_tls` is not a request. It shows that the connection uses TLS or GSSAPI encryption. edc reads no more of that connection.
+
+The latency starts at the first message of the request unit and stops at ReadyForQuery. On the client side, the latency includes the network. On the server side, it includes the work of the server and the write of the result.
+
+By default, edc replaces string constants and dollar-quoted text in the SQL with `?`. Use `--show-secrets` to show the SQL as sent and the `detail` of an error. edc never shows the password, the SASL data, the Bind parameter values, the COPY data, or the arguments of a function call. edc does not hide the `message` of an error. Check it for values before you share it.
+
+The summary after Ctrl-C shows one row for each side, command, and SQL shape. With `--group-by`, the rows show `CMD`, `RSP`, `ERR`, `NOANS`, `AVGms`, and `MAXms`.
+
+`trace postgres` has these limits:
+
+- It does not read TLS or GSSAPI encryption. Each encrypted connection shows one `postgres_tls` row.
+- It reads TCP only. A unix socket connection is not visible. `psql` without `-h` uses a unix socket. Use `psql -h 127.0.0.1` in a test.
+- edc keeps the first 4 KiB of each response write or read. The server writes a large result in parts of 8 KiB, so edc loses the message boundary.
+- For a large result, edc also keeps the last 256 bytes of each response write or read. If they end with a whole CommandComplete or ErrorResponse and then ReadyForQuery, and one request waits, edc closes that request at that time. The tag or the error fields come from those bytes. `rows` comes from a `SELECT` or `FETCH` tag.
+- edc does not accept the six bytes of ReadyForQuery alone, because a data row can end with the same bytes. If an ErrorResponse is longer than the last 256 bytes, the request counts as unanswered.
+- If two or more requests wait when edc loses the boundary, edc does not guess. These requests count as unanswered. The next request gets its pair again.
+- If the end of a read is not in its first buffer, edc keeps no tail of that read. The tail of a write comes only from its last buffer.
+- If the trace starts in the middle of a connection, there is no `postgres_connect` for it. edc finds the boundary at a later request.
+- An event shows up to 1,024 bytes of SQL. `sql_truncated` is true if edc cuts it.
+
+Use `trace redis` on Linux 5.15 or later to print plain Redis commands and replies as they arrive. edc reads the start of each TCP read and write on the Redis port in the kernel. The default port is 6379. Use `--port` for another port.
+
+```bash
+./bin/edc trace redis
+./bin/edc trace redis --side server
+./bin/edc trace redis --port 6380
+./bin/edc trace redis --slow 5ms
+./bin/edc trace redis --group-by process
+./bin/edc trace redis --show-secrets
+./bin/edc trace redis --raw
+```
+
+`trace redis` shows two sides, like `trace mysql`. Each event row starts with `client:` or `server:`. `--slow` works as in `trace mysql`.
+
+The `redis` object of the JSON event has the fields of these events:
+
+- `redis_command` is a command. It has `command`, `key`, and `args`. A pipeline shows one event for each command.
+- `redis_reply` answers the oldest waiting command. It has `reply`, the type of the reply, and `elements` or `bulk_length`.
+- `redis_error` is an error reply. It has `error_class`, for example `WRONGTYPE`.
+- `redis_push` is a pub/sub message or a RESP3 push. It answers no command.
+
+edc pairs the commands and replies of one connection in order. A command inside MULTI gets the reply `queued`, and the reply to EXEC is the array of the results. The latency starts when the command arrives and stops when its reply arrives. In a pipeline, the commands of one write share the start, and the replies of one write share the end.
+
+By default, edc does not show argument values, reply values, or error messages. Use `--show-secrets` to show short previews of them. edc shows key names in both cases. edc never shows the values of AUTH, HELLO, MIGRATE, CONFIG GET, CONFIG SET, ACL, or SENTINEL, also with `--show-secrets`.
+
+The summary after Ctrl-C shows one row for each side and command name. A row shows the number of commands, errors, and unanswered commands, and the average and maximum latency.
+
+`trace redis` has these limits:
+
+- It does not read TLS. edc finds no RESP framing in a TLS connection, so it shows no events for it.
+- It reads TCP only. A unix socket connection is not visible.
+- edc keeps the first 4 KiB of each request and the first 1 KiB of each reply write or read. A very large array reply, for example `LRANGE` of 5,000 items, loses the framing. That command counts as unanswered, and the next command re-syncs.
+- edc skips bulk values by their size, so a 10 KB `SET` still gets its reply. If the argument headers of a command are outside the capture, for example `RPUSH` with 5,000 values, the command shows `truncated: true` and gets no reply.
+- After `CLIENT REPLY OFF` or `CLIENT REPLY SKIP`, the server does not reply. These commands have `no_reply: true`, and edc does not count them as unanswered.
+- After PSYNC or SYNC, edc does not read the replication stream as replies. A replica sends `REPLCONF ACK` to its master each second. On the master, `--side server` shows one `REPLCONF ACK` with `no_reply: true` for each replica each second.
+- If the trace starts in the middle of a connection, edc finds the framing at a later command.
 
 Use `trace socket` on Linux to follow one unix domain socket file. Give the path of the socket file. edc prints each connect, accept, send, recv, end of data (`eof`), and close on that socket. The options can come before or after the path.
 

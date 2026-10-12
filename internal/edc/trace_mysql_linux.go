@@ -9,13 +9,24 @@ import (
 
 // mysqlRecordType은 BPF가 MySQL 읽기와 쓰기의 앞부분을 넘기는 레코드다. 배치는 HTTP 레코드와 같다. kind는 서버 쪽 여부이고
 // offset은 그 읽기나 쓰기의 전체 byte 수이며, 앞의 len byte만 payload에 있다.
+// mysqlTailRecordType은 trace postgres에서 응답 방향 쓰기나 읽기의 끝부분을 넘기는 레코드다. 배치는 mysqlRecordType과 같고
+// payload는 앞부분 대신 마지막 len byte다. BPF는 앞부분 레코드 바로 뒤에 낸다.
 const (
-	mysqlRecordType   = 11
-	mysqlRecordServer = 1
+	mysqlRecordType     = 11
+	mysqlTailRecordType = 14
+	mysqlRecordServer   = 1
 )
 
 func parseMySQLRecord(sample []byte) (mysqlRecord, bool) {
-	if len(sample) < httpRecordPayloadOffset || binary.LittleEndian.Uint32(sample[8:12]) != mysqlRecordType {
+	return parseMySQLRecordOf(sample, mysqlRecordType)
+}
+
+func parseMySQLTailRecord(sample []byte) (mysqlRecord, bool) {
+	return parseMySQLRecordOf(sample, mysqlTailRecordType)
+}
+
+func parseMySQLRecordOf(sample []byte, recordType uint32) (mysqlRecord, bool) {
+	if len(sample) < httpRecordPayloadOffset || binary.LittleEndian.Uint32(sample[8:12]) != recordType {
 		return mysqlRecord{}, false
 	}
 	family := binary.LittleEndian.Uint16(sample[36:38])

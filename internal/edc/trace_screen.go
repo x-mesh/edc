@@ -100,7 +100,7 @@ type traceMySQLPairKey struct {
 
 // traceScreenPairs는 요청과 응답을 한 행으로 짝지어 보이는 protocol인지다.
 func traceScreenPairs(protocol string) bool {
-	return protocol == "mysql" || protocol == "clickhouse"
+	return traceDatabaseProtocol(protocol)
 }
 
 // tracePairOf는 event의 짝 key와 응답 여부를 꺼낸다. pending이 아닌 event(mysql_tls, clickhouse_chunked)는 답이 오지
@@ -113,6 +113,14 @@ func tracePairOf(event captureEvent) (key traceMySQLPairKey, response, pending, 
 	case event.ClickHouse != nil:
 		key = traceMySQLPairKey{socket: event.SocketID, side: event.Side, command: event.ClickHouse.Command, sql: event.ClickHouse.SQL}
 		return key, clickHouseResponseEvent(event.Event), event.Event != clickHouseEventChunked, true
+	case event.Postgres != nil:
+		key = traceMySQLPairKey{socket: event.SocketID, side: event.Side, command: event.Postgres.Command, sql: event.Postgres.SQL}
+		return key, postgresResponseEvent(event.Event), event.Event != postgresEventTLS, true
+	case event.Redis != nil:
+		// redis는 SQL 자리에 key를 둔다. push, 끝까지 읽지 못한 명령, 서버가 답하지 않는 명령은 tracker가 짝짓지 않으므로 기다리지
+		// 않는다.
+		key = traceMySQLPairKey{socket: event.SocketID, side: event.Side, command: event.Redis.Command, sql: event.Redis.Key}
+		return key, redisResponseEvent(event.Event), event.Event == redisEventCommand && !event.Redis.Truncated && !event.Redis.NoReply, true
 	}
 	return traceMySQLPairKey{}, false, false, false
 }
@@ -124,6 +132,10 @@ func tracePairResult(response captureEvent) (string, bool) {
 		return traceMySQLResultText(response), true
 	case response.ClickHouse != nil:
 		return traceClickHouseResultText(response), true
+	case response.Postgres != nil:
+		return tracePostgresResultText(response), true
+	case response.Redis != nil:
+		return traceRedisResultText(response), true
 	}
 	return "", false
 }

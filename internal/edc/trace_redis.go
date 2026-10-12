@@ -2,8 +2,15 @@ package edc
 
 import (
 	"bytes"
+	"fmt"
+	"maps"
 	"math"
+	"os"
+	"slices"
+	"sort"
+	"strconv"
 	"strings"
+	"time"
 )
 
 const (
@@ -47,7 +54,10 @@ type traceRedisEvent struct {
 	ArgPreview []string `json:"arg_preview,omitempty"`
 	Inline     bool     `json:"inline,omitempty"`
 	// Truncated는 명령 frame을 끝까지 읽지 못했다는 뜻이다. 그 명령의 응답은 짝짓지 않는다.
-	Truncated  bool   `json:"truncated,omitempty"`
+	Truncated bool `json:"truncated,omitempty"`
+	// NoReply는 서버가 답하지 않는 명령이다. CLIENT REPLY OFF와 SKIP 뒤의 명령, 그 둘 자신, 복제 연결의 REPLCONF ACK다. 응답
+	// 없음으로 세지 않는다.
+	NoReply    bool   `json:"no_reply,omitempty"`
 	Reply      string `json:"reply,omitempty"`
 	Elements   *int64 `json:"elements,omitempty"`
 	BulkLength *int64 `json:"bulk_length,omitempty"`
@@ -57,12 +67,6 @@ type traceRedisEvent struct {
 	RESP       int    `json:"resp,omitempty"`
 	PushKind   string `json:"push_kind,omitempty"`
 	Channel    string `json:"channel,omitempty"`
-}
-
-// redisTraced는 captureEvent에 Redis 칸이 없어서 둘을 함께 넘긴다.
-type redisTraced struct {
-	event captureEvent
-	redis *traceRedisEvent
 }
 
 // redisKeep은 응답 frame 하나에서 무엇을 남길지다. 응답이 어느 명령의 것인지는 tracker만 알므로 frame이 시작할 때 묻는다.
@@ -1130,10 +1134,10 @@ type redisCall struct {
 	record  mysqlRecord
 	side    string
 	offset  int64
-	out     []redisTraced
+	out     []captureEvent
 }
 
-func (tracker *redisTracker) events(record mysqlRecord, clockOffset int64) []redisTraced {
+func (tracker *redisTracker) events(record mysqlRecord, clockOffset int64) []captureEvent {
 	side := traceClientSide
 	if record.server {
 		side = traceServerSide
@@ -1223,12 +1227,13 @@ func (call *redisCall) lose() {
 	conn.response.reset()
 }
 
-func (call *redisCall) event(name string, at uint64, length int64, info *traceRedisEvent) redisTraced {
+func (call *redisCall) event(name string, at uint64, length int64, info *traceRedisEvent) captureEvent {
 	record := call.record
-	return redisTraced{event: captureEvent{
+	return captureEvent{
 		SocketID: record.socket, TimestampNS: uint64(int64(at) + call.offset), BootTimeNS: at, Event: name, Protocol: "redis", Side: call.side,
 		PID: record.pid, Process: record.process, CgroupID: record.cgroupID, Source: record.source, Destination: record.destination, Bytes: uint64(length),
-	}, redis: info}
+		Redis: info,
+	}
 }
 
 // redisKnownCommands는 inline 요청에서 경계를 다시 찾을 때 받는 이름이다. key 표와 subcommand 명령 밖에서 흔한 것만 둔다.
@@ -1307,6 +1312,7 @@ func (call *redisCall) command(f redisFrame) {
 	case conn.skipNext:
 		conn.skipNext, queue = false, false
 	}
+	info.NoReply = !queue
 	if !queue || conn.gap {
 		return
 	}
@@ -1509,6 +1515,331 @@ func (call *redisCall) answer(f redisFrame, pushKind string) {
 		info.BulkLength = &f.count
 	}
 	traced := call.event(name, f.at, f.bytes, info)
-	traced.event.LatencyMS, traced.event.answered = traceSpan(pending.at, f.at), 1
+	traced.LatencyMS, traced.answered = traceSpan(pending.at, f.at), 1
 	call.out = append(call.out, traced)
+}
+
+func redisResponseEvent(name string) bool {
+	return name == redisEventReply || name == redisEventError
+}
+
+// traceRedisCounts는 Redis group 행과 요약이 함께 쓰는 값이다. redis_push는 명령의 응답이 아니라서 따로 센다.
+type traceRedisCounts struct {
+	// Commands에는 답이 없는 명령(no_reply)도 들지만 Unanswered에는 들지 않는다.
+	Commands     uint64   `json:"commands"`
+	Replies      uint64   `json:"replies"`
+	Errors       uint64   `json:"errors"`
+	Unanswered   uint64   `json:"unanswered"`
+	LatencyAvgMS *float64 `json:"latency_avg_ms"`
+	LatencyMaxMS *float64 `json:"latency_max_ms"`
+	Pushes       uint64   `json:"pushes,omitempty"`
+	noReply      uint64
+	answered     uint64
+	latency      traceSpans
+}
+
+func (counts *traceRedisCounts) observe(event captureEvent) {
+	switch event.Event {
+	case redisEventCommand:
+		counts.Commands++
+		if event.Redis != nil && event.Redis.NoReply {
+			counts.noReply++
+		}
+	case redisEventReply, redisEventError:
+		counts.Replies++
+		if event.Event == redisEventError {
+			counts.Errors++
+		}
+		counts.answered += event.answered
+		counts.latency.observe(event.LatencyMS)
+	case redisEventPush:
+		counts.Pushes++
+	}
+}
+
+func (counts traceRedisCounts) finished() traceRedisCounts {
+	expected := counts.Commands - min(counts.Commands, counts.noReply)
+	counts.Unanswered = expected - min(expected, counts.answered)
+	counts.LatencyAvgMS, counts.LatencyMaxMS = counts.latency.summary()
+	return counts
+}
+
+func traceRedisGroupSummary(counts *traceRedisCounts) *traceRedisCounts {
+	if counts == nil {
+		return nil
+	}
+	finished := counts.finished()
+	return &finished
+}
+
+func traceRedisColumn(value func(counts traceRedisCounts) string) func(traceGroupSummary) string {
+	return func(group traceGroupSummary) string {
+		if group.Redis == nil {
+			return "-"
+		}
+		return value(*group.Redis)
+	}
+}
+
+var traceRedisGroupColumns = []traceGroupColumn{
+	{screenTitle: "CMD", reportTitle: "COMMANDS", width: 5, value: traceRedisColumn(func(counts traceRedisCounts) string { return strconv.FormatUint(counts.Commands, 10) })},
+	{screenTitle: "RSP", reportTitle: "REPLIES", width: 5, value: traceRedisColumn(func(counts traceRedisCounts) string { return strconv.FormatUint(counts.Replies, 10) })},
+	{screenTitle: "ERR", reportTitle: "ERRORS", width: 4, value: traceRedisColumn(func(counts traceRedisCounts) string { return strconv.FormatUint(counts.Errors, 10) })},
+	{screenTitle: "NOANS", reportTitle: "UNANSWERED", width: 5, value: traceRedisColumn(func(counts traceRedisCounts) string { return strconv.FormatUint(counts.Unanswered, 10) })},
+	{screenTitle: "AVGms", reportTitle: "AVG_MS", width: 6, value: traceRedisColumn(func(counts traceRedisCounts) string { return traceLatency(counts.LatencyAvgMS, "") })},
+	{screenTitle: "MAXms", reportTitle: "MAX_MS", width: 6, value: traceRedisColumn(func(counts traceRedisCounts) string { return traceLatency(counts.LatencyMaxMS, "") })},
+}
+
+// traceRedisCommandText는 event가 어떤 명령인지 한 줄로 쓴다. 응답 event도 답한 명령과 key를 쓴다.
+func traceRedisCommandText(event captureEvent) string {
+	info := event.Redis
+	text := strings.TrimSpace(info.Command + " " + info.Key)
+	if len(info.ArgPreview) > 0 {
+		text += " " + strings.Join(info.ArgPreview, " ")
+	}
+	if info.Truncated {
+		text += " (truncated)"
+	}
+	return traceMySQLLine(emptyAs(text, "command"))
+}
+
+// traceRedisResultText는 응답과 push event의 결과를 쓴다.
+func traceRedisResultText(event captureEvent) string {
+	info := event.Redis
+	if event.Event == redisEventError {
+		return traceMySQLLine(strings.TrimSpace(emptyAs(info.ErrorClass, "error") + " " + info.Message))
+	}
+	parts := []string{emptyAs(info.Reply, "reply")}
+	if event.Event == redisEventPush || info.PushKind != "" {
+		parts = append(parts, info.PushKind, info.Channel)
+	}
+	switch {
+	case info.BulkLength != nil:
+		parts = append(parts, fmt.Sprintf("%d bytes", *info.BulkLength))
+	case info.Elements != nil:
+		parts = append(parts, fmt.Sprintf("%d elements", *info.Elements))
+	}
+	if info.Value != "" {
+		parts = append(parts, info.Value)
+	}
+	return traceMySQLLine(strings.Join(slices.DeleteFunc(parts, func(value string) bool { return value == "" }), " "))
+}
+
+// traceRedisScrollLabels는 목적지 칸에 쪽, 명령, 응답이면 결과를, event 칸에 event 이름과 응답 시간을 쓴다.
+func traceRedisScrollLabels(event captureEvent) (string, string) {
+	label := event.Event
+	if event.LatencyMS != nil {
+		label += " " + traceLatency(event.LatencyMS, "ms")
+	}
+	if event.Redis == nil {
+		return emptyAs(event.Destination, "-"), label
+	}
+	text := traceRedisCommandText(event)
+	switch {
+	case redisResponseEvent(event.Event):
+		text = "↳ " + traceRedisResultText(event)
+	case event.Event == redisEventPush:
+		text = "push " + traceRedisResultText(event)
+	}
+	if event.Side != "" {
+		text = event.Side + ": " + text
+	}
+	return text, label
+}
+
+type redisTraceKey struct {
+	side    string
+	command string
+}
+
+type redisTraceRow struct {
+	Side      string   `json:"side,omitempty"`
+	Command   string   `json:"command"`
+	Processes []string `json:"processes,omitempty"`
+	traceRedisCounts
+}
+
+type redisTraceReport struct {
+	Side       string          `json:"side,omitempty"`
+	DurationMS int64           `json:"duration_ms"`
+	LostEvents uint64          `json:"lost_events"`
+	Rows       []redisTraceRow `json:"rows"`
+	traceRedisCounts
+	// Client와 Server는 두 쪽이 섞인 trace의 쪽별 합계다. 두 쪽의 응답 시간은 뜻이 달라 합친 평균은 뜻이 없다.
+	Client *traceRedisCounts `json:"client,omitempty"`
+	Server *traceRedisCounts `json:"server,omitempty"`
+}
+
+type redisTraceRowStats struct {
+	processes map[string]struct{}
+	counts    traceRedisCounts
+}
+
+// redisTraceSummarizer는 --group-by 없이 끝난 Redis trace를 쪽과 명령 이름마다 한 행으로 묶는다. key는 값처럼 종류가 많아
+// 행으로 나누지 않는다.
+type redisTraceSummarizer struct {
+	rows   map[redisTraceKey]*redisTraceRowStats
+	counts traceRedisCounts
+	sides  map[string]*traceRedisCounts
+}
+
+func newRedisTraceSummarizer() *redisTraceSummarizer {
+	return &redisTraceSummarizer{rows: map[redisTraceKey]*redisTraceRowStats{}, sides: map[string]*traceRedisCounts{}}
+}
+
+func (summarizer *redisTraceSummarizer) observe(event captureEvent) {
+	if event.Redis == nil {
+		return
+	}
+	summarizer.counts.observe(event)
+	if event.Side != "" {
+		counts := summarizer.sides[event.Side]
+		if counts == nil {
+			counts = &traceRedisCounts{}
+			summarizer.sides[event.Side] = counts
+		}
+		counts.observe(event)
+	}
+	// push는 명령이 없어서 합계에만 센다.
+	if event.Event == redisEventPush {
+		return
+	}
+	key := redisTraceKey{side: event.Side, command: emptyAs(event.Redis.Command, "(unknown)")}
+	stats := summarizer.rows[key]
+	if stats == nil {
+		stats = &redisTraceRowStats{processes: map[string]struct{}{}}
+		summarizer.rows[key] = stats
+	}
+	if event.Process != "" {
+		stats.processes[event.Process] = struct{}{}
+	}
+	stats.counts.observe(event)
+}
+
+func (summarizer *redisTraceSummarizer) summarize(summary captureSummary, duration time.Duration) traceReport {
+	report := redisTraceReport{DurationMS: duration.Milliseconds(), LostEvents: summary.LostEvents, traceRedisCounts: summarizer.counts.finished()}
+	if len(summarizer.sides) == 1 {
+		for side := range summarizer.sides {
+			report.Side = side
+		}
+	} else if len(summarizer.sides) > 1 {
+		report.Client, report.Server = traceRedisGroupSummary(summarizer.sides[traceClientSide]), traceRedisGroupSummary(summarizer.sides[traceServerSide])
+	}
+	report.Rows = make([]redisTraceRow, 0, len(summarizer.rows))
+	for key, stats := range summarizer.rows {
+		report.Rows = append(report.Rows, redisTraceRow{Side: key.side, Command: key.command, Processes: slices.Sorted(maps.Keys(stats.processes)), traceRedisCounts: stats.counts.finished()})
+	}
+	sort.Slice(report.Rows, func(i, j int) bool {
+		left, right := report.Rows[i], report.Rows[j]
+		switch {
+		case left.Commands != right.Commands:
+			return left.Commands > right.Commands
+		case left.Command != right.Command:
+			return left.Command < right.Command
+		}
+		return left.Side < right.Side
+	})
+	return report
+}
+
+// -d는 연결마다 한 행을 쓰는 option이다. Redis 요약은 명령마다 한 행이라 같은 표를 쓴다.
+func (report redisTraceReport) print(bool) {
+	title := "Redis trace"
+	if report.Side == traceServerSide {
+		title = "Redis server trace"
+	}
+	fmt.Fprintf(os.Stdout, "%s: %s\n\n", title, (time.Duration(report.DurationMS) * time.Millisecond).String())
+	mixed := report.Client != nil && report.Server != nil
+	if mixed {
+		for _, side := range []struct {
+			heading string
+			counts  *traceRedisCounts
+		}{{"Client side (commands that this host sent):", report.Client}, {"Server side (commands that local servers received):", report.Server}} {
+			fmt.Fprintln(os.Stdout, side.heading)
+			printRedisCounts("  ", *side.counts)
+			fmt.Fprintln(os.Stdout)
+		}
+	} else {
+		printRedisCounts("", report.traceRedisCounts)
+	}
+	fmt.Fprintf(os.Stdout, "Lost events: %d\n", report.LostEvents)
+	if len(report.Rows) == 0 {
+		return
+	}
+	sideColumn := func(value string) string {
+		if !mixed {
+			return ""
+		}
+		return value + "\t"
+	}
+	fmt.Fprintln(os.Stdout, "\n"+sideColumn("SIDE")+"COMMAND\tCOUNT\tERRORS\tUNANSWERED\tAVG\tMAX\tPROCESS")
+	for _, row := range report.Rows {
+		fmt.Fprintf(os.Stdout, "%s%s\t%d\t%d\t%d\t%s\t%s\t%s\n", sideColumn(emptyAs(row.Side, "-")), row.Command, row.Commands, row.Errors, row.Unanswered, traceLatency(row.LatencyAvgMS, "ms"), traceLatency(row.LatencyMaxMS, "ms"), emptyAs(strings.Join(row.Processes, ","), "-"))
+	}
+}
+
+func printRedisCounts(indent string, counts traceRedisCounts) {
+	for _, line := range []string{
+		fmt.Sprintf("Commands: %d", counts.Commands),
+		fmt.Sprintf("Replies: %d", counts.Replies),
+		fmt.Sprintf("Errors: %d", counts.Errors),
+		fmt.Sprintf("Unanswered: %d", counts.Unanswered),
+		"Latency avg: " + traceLatency(counts.LatencyAvgMS, "ms"),
+		"Latency max: " + traceLatency(counts.LatencyMaxMS, "ms"),
+		fmt.Sprintf("Pushes: %d", counts.Pushes),
+	} {
+		fmt.Fprintln(os.Stdout, indent+line)
+	}
+}
+
+func traceRedisDetailLines(event captureEvent) []string {
+	info := event.Redis
+	lines := []string{
+		"event: " + event.Event,
+		"time: " + traceEventClock(event),
+		"side: " + emptyAs(event.Side, "-"),
+		"process: " + emptyAs(event.Process, "-"),
+		"source: " + emptyAs(event.Source, "-"),
+		"destination: " + emptyAs(event.Destination, "-"),
+		"bytes: " + strconv.FormatUint(event.Bytes, 10),
+	}
+	for _, field := range [][2]string{
+		{"command", info.Command}, {"key", info.Key}, {"reply", info.Reply}, {"push_kind", info.PushKind}, {"channel", info.Channel},
+	} {
+		if field[1] != "" {
+			lines = append(lines, field[0]+": "+field[1])
+		}
+	}
+	if event.LatencyMS != nil {
+		lines = append(lines, "latency: "+traceLatency(event.LatencyMS, "ms"))
+	}
+	if info.Args != 0 {
+		lines = append(lines, "args: "+strconv.FormatInt(info.Args, 10))
+	}
+	if info.Inline {
+		lines = append(lines, "inline: true")
+	}
+	if info.Truncated {
+		lines = append(lines, "truncated: true")
+	}
+	if info.RESP != 0 {
+		lines = append(lines, "resp: "+strconv.Itoa(info.RESP))
+	}
+	if info.Elements != nil {
+		lines = append(lines, "elements: "+strconv.FormatInt(*info.Elements, 10))
+	}
+	if info.BulkLength != nil {
+		lines = append(lines, "bulk_length: "+strconv.FormatInt(*info.BulkLength, 10))
+	}
+	if info.ErrorClass != "" || info.Message != "" {
+		lines = append(lines, "error: "+strings.TrimSpace(info.ErrorClass+" "+info.Message))
+	}
+	if info.Value != "" {
+		lines = append(lines, "value: "+info.Value)
+	}
+	if len(info.ArgPreview) > 0 {
+		lines = append(lines, "", "arguments:")
+		lines = append(lines, info.ArgPreview...)
+	}
+	return lines
 }

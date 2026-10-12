@@ -36,7 +36,7 @@ func TestCompletionScriptsCoverCommandsAndRemoteFlags(t *testing.T) {
 }
 
 func TestCompletionOffersTraceClickHouse(t *testing.T) {
-	if !strings.Contains(zshCompletion, "http mysql clickhouse)") || !strings.Contains(zshCompletion, "clickhouse) _arguments") {
+	if !strings.Contains(zshCompletion, "http mysql clickhouse postgres redis)") || !strings.Contains(zshCompletion, "clickhouse) _arguments") {
 		t.Fatal("zsh trace completion must list clickhouse and its options")
 	}
 	for _, option := range []string{"--slow[", "--show-secrets[", "--port[ClickHouse", "--http-port[ClickHouse HTTP"} {
@@ -46,7 +46,7 @@ func TestCompletionOffersTraceClickHouse(t *testing.T) {
 			t.Fatalf("zsh trace clickhouse completion misses %q", option)
 		}
 	}
-	if !strings.Contains(bashCompletion, "http mysql clickhouse\"") {
+	if !strings.Contains(bashCompletion, "http mysql clickhouse postgres redis\"") {
 		t.Fatal("bash trace completion must list clickhouse")
 	}
 	if !strings.Contains(bashCompletion, "--port --http-port --yes") {
@@ -118,6 +118,25 @@ func TestBashWatchCompletionSeparatesHTTPAndFS(t *testing.T) {
 		}
 		if strings.Contains(string(output), test.absent) {
 			t.Fatalf("%s unexpected %s: %s", test.words, test.absent, output)
+		}
+	}
+}
+
+func TestCompletionOffersTracePostgresAndRedis(t *testing.T) {
+	for _, protocol := range []string{"postgres", "redis"} {
+		start := strings.Index(zshCompletion, "            "+protocol+") _arguments")
+		if start < 0 {
+			t.Fatalf("zsh trace completion misses %s", protocol)
+		}
+		line := zshCompletion[start:]
+		line = line[:strings.Index(line, "\n")]
+		for _, option := range []string{"--side[", "--slow[", "--show-secrets[", "--port[", "--group-by[", "--yes["} {
+			if !strings.Contains(line, option) {
+				t.Fatalf("zsh trace %s completion misses %q", protocol, option)
+			}
+		}
+		if strings.Contains(line, "--http-port") || strings.Contains(line, "--payload") {
+			t.Fatalf("zsh trace %s completion offers an option it rejects: %q", protocol, line)
 		}
 	}
 }

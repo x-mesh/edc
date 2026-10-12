@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestPostgresMaskSQLTable(t *testing.T) {
@@ -892,4 +893,155 @@ func TestPostgresSideFilterForgetAndSocketLimit(t *testing.T) {
 	if len(tracker.conns) > postgresSocketLimit || tracker.pending > postgresPendingLimit {
 		t.Fatalf("conns %d, pending %d", len(tracker.conns), tracker.pending)
 	}
+}
+
+// pgFuzzSecret은 fuzz가 PasswordMessage와 Bind 값 자리에만 넣는 값이다. 입력에 우연히 같은 byte가 있으면 검사하지 않는다.
+const pgFuzzSecret = "edcFuzzSecret9Q7Z"
+
+// pgFuzzRecord는 fuzz 입력의 record 하나를 만든다. control bit0은 요청 방향, bit1은 서버 쪽, bit2는 두 번째 socket,
+// bit3은 이 record 뒤에 비밀을 넣으라는 뜻이고, 위 4 bit k가 0이 아니면 앞 k/16만 캡처한다. extra는 size에 더하는 캡처
+// 밖 byte 수다.
+func pgFuzzRecord(control byte, payload []byte, extra int) []byte {
+	out := []byte{control, byte(len(payload) >> 8), byte(len(payload)), byte(extra >> 8), byte(extra)}
+	return append(out, payload...)
+}
+
+// pgFuzzSeeds는 fixture의 run마다 record를 그대로 이은 입력이다. 큰 record는 앞 4096 byte만 넣고 나머지를 extra로 둔다.
+func pgFuzzSeeds(t testing.TB) [][]byte {
+	var seeds [][]byte
+	for _, name := range pgFixtures {
+		runs := map[int][]byte{}
+		for _, record := range loadPostgresFixture(t, name) {
+			control := byte(0)
+			request := record.server != record.sent
+			if request {
+				control |= 1
+			}
+			// 서버 쪽과 client 쪽은 같은 연결을 따로 본 것이라 socket을 나눈다.
+			if record.server {
+				control |= 2
+			} else {
+				control |= 4
+			}
+			payload := record.payload[:min(len(record.payload), 4096)]
+			runs[record.run] = append(runs[record.run], pgFuzzRecord(control, payload, min(record.size-len(payload), 0xffff))...)
+		}
+		for _, seed := range runs {
+			seeds = append(seeds, seed)
+		}
+	}
+	synthetic := [][][]byte{
+		{pgStartup("user", "edc", "database", "db"), {}, bytes.Join([][]byte{pgAuthOK(), pgParam("server_version", "16.15"), pgKeyData(), pgReady()}, nil)},
+		{pgQuery("SELECT 'a', $$b$$, E'c\\'d'"), {}, bytes.Join([][]byte{pgRowDescription(), pgRow("x"), pgComplete("SELECT 1"), pgReady()}, nil)},
+		{bytes.Join([][]byte{pgParse("s", "SELECT $1"), pgBind("p", "s", "v"), pgExecute("p"), pgSync(), pgParse("", "SELECT 1/0"), pgBind("", ""), pgExecute(""), pgSync()}, nil),
+			{}, bytes.Join([][]byte{pgMsg('1'), pgMsg('2'), pgRow("v"), pgComplete("SELECT 1"), pgReady(), pgMsg('1'), pgError("ERROR", "22012", "division by zero", ""), pgReady()}, nil)},
+		{pgUntyped(80877103, nil), {}, {'N'}, pgStartup("user", "edc"), {}, pgError("FATAL", "28P01", "auth", "")},
+		{pgUntyped(80877104, nil), {}, {'G'}, pgQuery("SELECT 1")},
+	}
+	for _, records := range synthetic {
+		var seed []byte
+		request := true
+		for _, record := range records {
+			if len(record) == 0 {
+				request = !request
+				continue
+			}
+			control := byte(2)
+			if request {
+				control |= 1 | 8
+			}
+			seed = append(seed, pgFuzzRecord(control, record, 0)...)
+		}
+		seeds = append(seeds, seed)
+	}
+	return seeds
+}
+
+// pgAtBoundary는 socket의 요청 흐름이 message 경계에 있어 다음 record가 새 message로 읽힌다는 뜻이다. 경계를 모르는 흐름은
+// 다음 record를 첫 byte부터 걸어 본 뒤에만 받아들이므로 이것도 경계다.
+func pgAtBoundary(tracker *postgresTracker, socket uint64) bool {
+	conn := tracker.conns[socket]
+	return conn == nil || !conn.request.synced || (conn.request.headerLen == 0 && !conn.request.inBody && !conn.request.untyped)
+}
+
+func pgCheckText(t *testing.T, value reflect.Value) {
+	switch value.Kind() {
+	case reflect.String:
+		text := value.String()
+		for i, r := range text {
+			if r == utf8.RuneError && !strings.HasPrefix(text[i:], "�") || r < 0x20 && r != '\t' && r != '\n' && r != '\r' || r == 0x7f || r >= 0x80 && r < 0xa0 {
+				t.Fatalf("raw control byte in %q", text)
+			}
+		}
+	case reflect.Pointer:
+		if !value.IsNil() {
+			pgCheckText(t, value.Elem())
+		}
+	case reflect.Struct:
+		for index := range value.NumField() {
+			pgCheckText(t, value.Field(index))
+		}
+	case reflect.Slice:
+		for index := range value.Len() {
+			pgCheckText(t, value.Index(index))
+		}
+	}
+}
+
+func FuzzPostgresTracker(f *testing.F) {
+	for _, seed := range pgFuzzSeeds(f) {
+		f.Add(seed, false)
+	}
+	f.Fuzz(func(t *testing.T, data []byte, showSecrets bool) {
+		tracker := newPostgresTracker("", showSecrets)
+		checkSecret := !bytes.Contains(data, []byte(pgFuzzSecret))
+		password := pgMsg('p', pgCString(pgFuzzSecret))
+		bind := pgBind("", "", pgFuzzSecret)
+		var events []postgresEvent
+		feed := func(control byte, payload []byte, extra int, at uint64) {
+			socket := uint64(control>>2&1) + 1
+			request, server := control&1 != 0, control&2 != 0
+			size := len(payload) + extra
+			if k := int(control >> 4); k > 0 {
+				payload = payload[:len(payload)*k/16]
+			}
+			events = append(events, tracker.events(pgRecord(socket, server, request != server, at, payload, size), 0)...)
+		}
+		for at := uint64(1); len(data) >= 5; at++ {
+			control, length, extra := data[0], int(data[1])<<8|int(data[2]), int(data[3])<<8|int(data[4])
+			data = data[5:]
+			payload := data[:min(length, len(data))]
+			data = data[len(payload):]
+			feed(control, payload, extra, at*1_000_000)
+			if control&8 != 0 && control&1 != 0 && pgAtBoundary(tracker, uint64(control>>2&1)+1) {
+				// 비밀은 경계에서 시작하는 온전한 record로만 넣는다. 캡처는 자르지 않는다.
+				feed(control&0x0f, password, 0, at*1_000_000+1)
+				if pgAtBoundary(tracker, uint64(control>>2&1)+1) {
+					feed(control&0x0f, bind, 0, at*1_000_000+2)
+				}
+			}
+			queued, statements := 0, 0
+			for _, conn := range tracker.conns {
+				queued += len(conn.queue)
+				statements += len(conn.statements)
+			}
+			if len(tracker.conns) > postgresSocketLimit || queued > postgresPendingLimit || queued != tracker.pending ||
+				statements > postgresStatementLimit || statements != tracker.statements {
+				t.Fatalf("conns %d, queued %d (pending %d), statements %d (%d)", len(tracker.conns), queued, tracker.pending, statements, tracker.statements)
+			}
+		}
+		raw, err := json.Marshal(events)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if checkSecret && strings.Contains(string(raw), pgFuzzSecret) {
+			t.Fatalf("secret in events: %s", raw)
+		}
+		for _, event := range events {
+			if (event.LatencyMS != nil) != (event.answered == 1) {
+				t.Fatalf("latency without an answer: %#v", event)
+			}
+			pgCheckText(t, reflect.ValueOf(event))
+		}
+	})
 }

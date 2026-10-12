@@ -215,6 +215,7 @@ The command also creates the parent for the legacy recommended `edc.log` path.
 ./bin/edc listen              # open ports, --unix or --all adds unix sockets
 ./bin/edc listen --watch -i 0.5 --duration 10s
 sudo ./bin/edc audit           # read-only check of exposure and settings (Linux)
+sudo ./bin/edc events --since 6h   # kernel and systemd failure signals in time order (Linux)
 ./bin/edc quality --timeout 60s
 ./bin/edc quality --server https://example.com/.well-known/nq   # responsiveness config URL
 
@@ -441,6 +442,38 @@ The firewall check reads `nft list ruleset`. If nft shows no input chain, it rea
 The SSH checks read `sshd_config` and its `Include` files. The first value wins, as in sshd. A `Match` block applies only to some connections, so edc does not read it. Run `sshd -T` to see the effective values.
 
 `edc audit` does not match package versions against CVEs. It does not scan the whole file system, and it does not fix a finding.
+
+## Kernel and systemd events (Linux)
+
+`edc events` reads the kernel log and the systemd journal for a time window. It finds failure signals and puts them in time order. It changes nothing, and it sends nothing over the network.
+
+```bash
+sudo edc events                 # the last 6 hours
+sudo edc events --since 48h
+sudo edc events -v              # add the events behind each result and the timeline
+sudo edc events --json -        # one result for each category
+```
+
+| Result | Fail | Warn |
+|---|---|---|
+| `events.window` | | |
+| `events.oom` | the kernel killed a process for memory | |
+| `events.disk_io` | a disk or a file system reported an I/O error | |
+| `events.fs_readonly` | a file system went read-only or shut down | |
+| `events.link` | a network link went down and did not come back up | a link went down and came back up |
+| `events.units` | the last event of a unit is a failure result | a unit failed and restarted, or restarted 3 times or more |
+| `events.segfault` | | a process stopped on a segfault or a general protection fault |
+| `events.clock` | | the wall clock jumped 1 second or more |
+
+`events.window` names the window and the sources. With `-v`, it also shows the 50 most recent signals of all categories in time order. Each other result shows its count, its latest event, and up to 20 recent events.
+
+The kernel signals come from the journal entries of the kernel. If the journal has no kernel entry in the window, edc reads `/dev/kmsg`. `/dev/kmsg` holds the current boot only. The unit and clock signals come from the journal entries of PID 1. A clock jump counts only when the wall clock and the monotonic clock differ by 1 second or more, and by more than 0.1% of the time between two entries. Thus NTP slew does not count.
+
+Run it as root, or as a member of the `adm` or `systemd-journal` group. Without that access, journalctl shows only your own entries, and `kernel.dmesg_restrict` can block `/dev/kmsg`. These results show `skip`, not `pass`. If journalctl is not installed, `events.units` and `events.clock` show `skip`.
+
+edc reads at most 20000 journal entries, 32 MiB of journal output, and 100000 `/dev/kmsg` records. If it hits a limit, `events.window` gives a warning.
+
+`edc events` does not show the full log. It does not follow new entries, and it does not read application logs.
 
 ## Probe thresholds
 

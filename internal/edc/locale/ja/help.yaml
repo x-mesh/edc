@@ -63,6 +63,15 @@ command:
       - "root で実行してください。root でなければ一部が skip です。"
       - "ファイアウォールはこのホストだけで、クラウド側は見ません。"
       - "パッケージのバージョンを CVE と照合しません。"
+  events:
+    summary: "カーネルと systemd の障害シグナルを時系列で整理 (Linux)"
+    option:
+      since: "読む期間 (例: 30m、48h)"
+    notes:
+      - "カーネルログと systemd journal だけを読みます。"
+      - "root か adm、systemd-journal グループで実行してください。"
+      - "権限がなければ点検は pass ではなく skip です。"
+      - "Linux でのみ動作します。"
   net:
     summary: "interface、route、ping、trace"
   route:

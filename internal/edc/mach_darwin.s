@@ -56,3 +56,13 @@ TEXT machTimebaseInfoTrampoline<>(SB),NOSPLIT,$0-0
 	JMP	libc_mach_timebase_info(SB)
 GLOBL	·machTimebaseInfoAddr(SB), RODATA, $8
 DATA	·machTimebaseInfoAddr(SB)/8, $machTimebaseInfoTrampoline<>(SB)
+
+TEXT procListAllPIDsTrampoline<>(SB),NOSPLIT,$0-0
+	JMP	libc_proc_listallpids(SB)
+GLOBL	·procListAllPIDsAddr(SB), RODATA, $8
+DATA	·procListAllPIDsAddr(SB)/8, $procListAllPIDsTrampoline<>(SB)
+
+TEXT procPIDFDInfoTrampoline<>(SB),NOSPLIT,$0-0
+	JMP	libc_proc_pidfdinfo(SB)
+GLOBL	·procPIDFDInfoAddr(SB), RODATA, $8
+DATA	·procPIDFDInfoAddr(SB)/8, $procPIDFDInfoTrampoline<>(SB)

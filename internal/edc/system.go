@@ -303,68 +303,24 @@ const listenProbeID = "listen"
 // 정한다. UDP에는 LISTEN 상태가 없지만 ss -ul과 마찬가지로 바인드되어 수신을 기다리는 소켓을 같은
 // 관점으로 다룬다.
 //
-// 두 플랫폼 모두 기계용 출력을 쓴다. lsof -F는 필드마다 한 줄을 쓰고, ss는 -t와 -u를 함께 주면
-// 프로토콜 열이 생겨 형식이 하나로 고정된다. 사람용 표를 열로 쪼개지 않는다.
-func probeListen(ctx context.Context, families listenFamilies) Result {
-	var result Result
-	var sockets []listenSocket
-	var unparsed int
-	switch runtime.GOOS {
-	case "darwin":
-		// -i와 -U는 선택 조건이라 함께 주면 합집합이 된다. 유닉스 소켓에는 P(프로토콜) 필드가 없어
-		// t(종류) 필드를 함께 받는다.
-		args := []string{"-nP", "-FpcntPTL"}
-		if families.TCP || families.UDP {
-			args = append(args, "-i")
-		}
-		if families.Unix {
-			args = append(args, "-U")
-		}
-		result = probeCommand(ctx, listenProbeID, "/usr/sbin/lsof", args...)
-		if result.Status != StatusPass {
-			return result
-		}
-		sockets, unparsed = parseLsofFields(socketOutput(result), families)
-	case "linux":
-		// TCP만 볼 때도 -tu로 물어 프로토콜 열을 얻는다. 형식이 하나면 파서도 하나다.
-		// -e는 uid를 붙인다. 계정 이름은 -v에서만 쓰지만 한 형식으로 물어야 파서가 하나로 남는다.
-		flags := "-Htulnpe"
-		if families.Unix {
-			flags = "-Htulxnpe"
-		}
-		result = probeCommand(ctx, listenProbeID, "ss", flags)
-		if result.Status != StatusPass {
-			return result
-		}
-		sockets, unparsed = parseSSRows(socketOutput(result), families)
-	default:
+// 외부 명령을 띄우지 않는다. macOS는 libproc으로, Linux는 sock_diag netlink로 소켓을 직접 읽는다.
+// lsof와 ss는 실행만으로 수십 ms가 들었다.
+func probeListen(_ context.Context, families listenFamilies) Result {
+	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
 		return unsupported(listenProbeID, unsupportedOSReason())
 	}
+	started := time.Now()
+	sockets, err := collectListenSockets(families)
+	if err != nil {
+		return resultFromError(listenProbeID, started, "system", err)
+	}
+	result := Result{Probe: listenProbeID, Status: StatusPass, StartedAt: started.UTC(), DurationMS: time.Since(started).Milliseconds()}
 	sockets = dedupeListenSockets(sockets)
 	result.Summary = T("observe.system.listen", len(sockets))
 	// 표는 화면에 직접 그리므로 evidence에 넣지 않는다. 넣으면 -v에서 두 번 나온다.
 	// JSON에는 사람이 읽는 표 대신 구조화된 목록을 담는다.
 	result.Metrics = map[string]interface{}{"listening": len(sockets), "sockets": sockets}
-	if unparsed > 0 {
-		result.Status = StatusWarn
-		result.Warnings = append(result.Warnings, T("observe.listen.warn.unparsed", unparsed))
-	}
-	// lsof는 유닉스 소켓의 상태를 알려 주지 않는다. 경로를 가진 소켓과 정말로 연결을 기다리는 소켓을
-	// 가를 수 없으므로 근사치임을 밝힌다. 상태를 알 수 없는 것과 목록이 틀린 것은 다르다.
-	if families.Unix && runtime.GOOS == "darwin" {
-		result.Warnings = append(result.Warnings, T("observe.listen.warn.unix_state"))
-	}
 	return result
-}
-
-// socketOutput은 probeCommand가 남긴 원문을 꺼낸다.
-func socketOutput(result Result) string {
-	for _, evidence := range result.Evidence {
-		if evidence.Label == "output" {
-			return evidence.Value
-		}
-	}
-	return ""
 }
 
 // countSocketRows는 열 제목을 뺀 소켓 줄 수를 센다. 소켓이 하나도 없으면 lsof는 아무 줄도 내지
@@ -525,8 +481,6 @@ func runListen(args []string, version string) int {
 		output = &buffer
 	}
 	fmt.Fprint(output, formatResultLine(result, color))
-	// evidence는 lsof -F와 ss의 원문, 곧 파서의 입력이다. 사람에게 그것을 펼치면 표가 감추려던
-	// 형식을 도로 보여 주는 셈이므로 화면에서는 열지 않는다. 원문은 --json에 그대로 남는다.
 	printResultDetail(output, result, false, color)
 	// 표는 화면에서 언제나 보여 준다. 개수 한 줄로는 "어느 포트가 열려 있나"에 답이 되지 않는다.
 	if table := listenTableOf(result, options.verbose); table != "" {

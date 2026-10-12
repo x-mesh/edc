@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 func redisKeepAll(byte) redisKeep {
@@ -1278,4 +1279,64 @@ func FuzzRedisTrackerShowSecrets(f *testing.F) {
 			}
 		})
 	})
+}
+
+// CLIENT REPLY OFF와 SKIP 뒤의 명령, 그 둘 자신, 복제 연결의 REPLCONF ACK는 서버가 답하지 않는다. 요약과 화면은 이 명령을
+// 응답 없음으로 세지 않는다. MySQL의 COM_STMT_CLOSE와 같다.
+func TestRedisCommandsWithoutAReplyAreNotUnanswered(t *testing.T) {
+	tracker := newRedisTracker("", false)
+	events := redisClient(tracker, 1, redisStart(
+		redisStep{true, redisArgs("CLIENT", "REPLY", "OFF"), 0},
+		redisStep{true, redisArgs("SET", "a", "1"), 0},
+		redisStep{true, redisArgs("SET", "b", "2"), 0},
+		redisStep{true, redisArgs("CLIENT", "REPLY", "ON"), 0},
+		redisStep{false, "+OK\r\n", 0},
+		redisStep{true, redisArgs("CLIENT", "REPLY", "SKIP"), 0},
+		redisStep{true, redisArgs("SET", "c", "3"), 0},
+		redisStep{true, redisArgs("GET", "c"), 0},
+		redisStep{false, "$1\r\n3\r\n", 0},
+	))
+	events = append(events, redisClient(tracker, 2, redisStart(
+		redisStep{true, redisArgs("PSYNC", "?", "-1"), 0},
+		redisStep{false, "+FULLRESYNC 8de1787ba490483314a4d30f1c628bc5025eb761 0\r\n$5\r\nREDIS", 0},
+		redisStep{true, redisArgs("REPLCONF", "ACK", "0"), 0},
+	))...)
+	var silent []string
+	for _, event := range events {
+		if event.Event == redisEventCommand && event.Redis.NoReply {
+			silent = append(silent, event.Redis.Command+" "+event.Redis.Key)
+		}
+		if _, _, pending, _ := tracePairOf(event); pending && event.Redis.NoReply {
+			t.Fatalf("%s waits for a reply on the screen", event.Redis.Command)
+		}
+	}
+	if got := strings.Join(silent, "|"); got != "CLIENT REPLY |SET a|SET b|CLIENT REPLY |SET c|REPLCONF ACK " {
+		t.Fatalf("no-reply commands = %q", got)
+	}
+	summarizer := newRedisTraceSummarizer()
+	for _, event := range events {
+		summarizer.observe(event)
+	}
+	report := summarizer.summarize(captureSummary{}, time.Second).(redisTraceReport)
+	if report.Commands != 11 || report.Unanswered != 0 || report.Replies != 5 {
+		t.Fatalf("report = %+v", report.traceRedisCounts)
+	}
+	for _, group := range summarizeTraceGroups("redis", traceGroupByEvent, events, captureSummary{}, time.Second, "", "").Groups {
+		if group.Group == redisEventCommand && group.Redis.Unanswered != 0 {
+			t.Fatalf("command row = %+v", *group.Redis)
+		}
+	}
+	raw, err := json.Marshal(events[2])
+	if err != nil || !strings.Contains(string(raw), `"no_reply":true`) {
+		t.Fatalf("json = %s, %v", raw, err)
+	}
+	// 답을 기다리는 명령에 응답이 없으면 그대로 응답 없음이다.
+	unanswered := redisClient(newRedisTracker("", false), 3, redisStart(redisStep{true, redisArgs("GET", "x"), 0}))
+	one := newRedisTraceSummarizer()
+	for _, event := range unanswered {
+		one.observe(event)
+	}
+	if got := one.summarize(captureSummary{}, time.Second).(redisTraceReport); got.Unanswered != 1 {
+		t.Fatalf("unanswered GET = %+v", got.traceRedisCounts)
+	}
 }

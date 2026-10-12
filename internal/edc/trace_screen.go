@@ -117,9 +117,10 @@ func tracePairOf(event captureEvent) (key traceMySQLPairKey, response, pending, 
 		key = traceMySQLPairKey{socket: event.SocketID, side: event.Side, command: event.Postgres.Command, sql: event.Postgres.SQL}
 		return key, postgresResponseEvent(event.Event), event.Event != postgresEventTLS, true
 	case event.Redis != nil:
-		// redis는 SQL 자리에 key를 둔다. push와 끝까지 읽지 못한 명령은 tracker가 짝짓지 않으므로 기다리지 않는다.
+		// redis는 SQL 자리에 key를 둔다. push, 끝까지 읽지 못한 명령, 서버가 답하지 않는 명령은 tracker가 짝짓지 않으므로 기다리지
+		// 않는다.
 		key = traceMySQLPairKey{socket: event.SocketID, side: event.Side, command: event.Redis.Command, sql: event.Redis.Key}
-		return key, redisResponseEvent(event.Event), event.Event == redisEventCommand && !event.Redis.Truncated, true
+		return key, redisResponseEvent(event.Event), event.Event == redisEventCommand && !event.Redis.Truncated && !event.Redis.NoReply, true
 	}
 	return traceMySQLPairKey{}, false, false, false
 }

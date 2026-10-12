@@ -54,7 +54,10 @@ type traceRedisEvent struct {
 	ArgPreview []string `json:"arg_preview,omitempty"`
 	Inline     bool     `json:"inline,omitempty"`
 	// Truncated는 명령 frame을 끝까지 읽지 못했다는 뜻이다. 그 명령의 응답은 짝짓지 않는다.
-	Truncated  bool   `json:"truncated,omitempty"`
+	Truncated bool `json:"truncated,omitempty"`
+	// NoReply는 서버가 답하지 않는 명령이다. CLIENT REPLY OFF와 SKIP 뒤의 명령, 그 둘 자신, 복제 연결의 REPLCONF ACK다. 응답
+	// 없음으로 세지 않는다.
+	NoReply    bool   `json:"no_reply,omitempty"`
 	Reply      string `json:"reply,omitempty"`
 	Elements   *int64 `json:"elements,omitempty"`
 	BulkLength *int64 `json:"bulk_length,omitempty"`
@@ -1309,6 +1312,7 @@ func (call *redisCall) command(f redisFrame) {
 	case conn.skipNext:
 		conn.skipNext, queue = false, false
 	}
+	info.NoReply = !queue
 	if !queue || conn.gap {
 		return
 	}
@@ -1521,6 +1525,7 @@ func redisResponseEvent(name string) bool {
 
 // traceRedisCounts는 Redis group 행과 요약이 함께 쓰는 값이다. redis_push는 명령의 응답이 아니라서 따로 센다.
 type traceRedisCounts struct {
+	// Commands에는 답이 없는 명령(no_reply)도 들지만 Unanswered에는 들지 않는다.
 	Commands     uint64   `json:"commands"`
 	Replies      uint64   `json:"replies"`
 	Errors       uint64   `json:"errors"`
@@ -1528,6 +1533,7 @@ type traceRedisCounts struct {
 	LatencyAvgMS *float64 `json:"latency_avg_ms"`
 	LatencyMaxMS *float64 `json:"latency_max_ms"`
 	Pushes       uint64   `json:"pushes,omitempty"`
+	noReply      uint64
 	answered     uint64
 	latency      traceSpans
 }
@@ -1536,6 +1542,9 @@ func (counts *traceRedisCounts) observe(event captureEvent) {
 	switch event.Event {
 	case redisEventCommand:
 		counts.Commands++
+		if event.Redis != nil && event.Redis.NoReply {
+			counts.noReply++
+		}
 	case redisEventReply, redisEventError:
 		counts.Replies++
 		if event.Event == redisEventError {
@@ -1549,7 +1558,8 @@ func (counts *traceRedisCounts) observe(event captureEvent) {
 }
 
 func (counts traceRedisCounts) finished() traceRedisCounts {
-	counts.Unanswered = counts.Commands - min(counts.Commands, counts.answered)
+	expected := counts.Commands - min(counts.Commands, counts.noReply)
+	counts.Unanswered = expected - min(expected, counts.answered)
 	counts.LatencyAvgMS, counts.LatencyMaxMS = counts.latency.summary()
 	return counts
 }

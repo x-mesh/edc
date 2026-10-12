@@ -1937,7 +1937,8 @@ Ctrl-C 뒤의 요약은 쪽과 명령 이름마다 한 행을 쓰고, 명령 수
 - TCP만 봅니다. unix socket 연결은 보이지 않습니다.
 - 요청은 앞 4 KiB, 응답 쓰기나 읽기는 앞 1 KiB만 남깁니다. 5,000개 항목의 `LRANGE`처럼 아주 큰 array 응답은 경계를 잃습니다. 그 명령은 응답 없음으로 세고, 다음 명령에서 경계를 다시 맞춥니다.
 - 5,000개 값을 넣는 `RPUSH`처럼 캡처보다 큰 명령은 `truncated: true`로 표시하고 응답과 짝짓지 않습니다.
-- `CLIENT REPLY OFF` 뒤의 명령은 응답이 없어 응답 없음으로 셉니다. PSYNC나 SYNC 뒤의 복제 흐름은 응답으로 읽지 않습니다.
+- `CLIENT REPLY OFF`나 `CLIENT REPLY SKIP` 뒤에는 서버가 답하지 않습니다. 이 명령에는 `no_reply: true`가 붙고, 응답 없음으로 세지 않습니다.
+- PSYNC나 SYNC 뒤의 복제 흐름은 응답으로 읽지 않습니다. replica는 master에 1초마다 `REPLCONF ACK`를 보냅니다. master에서 `--side server`로 보면 replica마다 1초에 하나씩 `no_reply: true`인 `REPLCONF ACK`가 보입니다.
 - 연결 중간에 trace를 시작하면 다음 명령에서 경계를 찾습니다.
 
 Linux에서 `trace socket`을 사용하면 unix domain socket 파일 하나에서 일어나는 일을 출력합니다. socket 파일의 경로를 지정하면 그 socket의 connect, accept, send, recv, data 끝(`eof`), close를 표시합니다. option은 경로 앞이나 뒤에 씁니다.

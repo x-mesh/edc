@@ -62,12 +62,12 @@ func TestTraceHelpDescribesSourceTargetAndEventKeys(t *testing.T) {
 			t.Fatalf("trace help is missing for %s", language)
 		}
 		text := output.String()
-		for _, value := range []string{"io", "--device <major:minor>", "--group-by <view>", "--slow <duration>", "source", "target", "port", "process", "device", "cgroup", "event", "g"} {
+		for _, value := range []string{"io", "--device <major:minor>", "--group-by <view>", "--slow <duration>", "--http-port <n>", "source", "target", "port", "process", "device", "cgroup", "event", "g"} {
 			if !strings.Contains(text, value) {
 				t.Fatalf("%s trace help misses %q: %q", language, value, text)
 			}
 		}
-		for _, value := range []string{"Linux 5.15", "trace http", "trace mysql"} {
+		for _, value := range []string{"Linux 5.15", "trace http", "trace mysql", "trace clickhouse"} {
 			if !strings.Contains(text, value) {
 				t.Fatalf("%s trace help misses %q: %q", language, value, text)
 			}

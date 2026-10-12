@@ -94,10 +94,19 @@ type mysqlRecord struct {
 	socket      uint64
 	source      string
 	destination string
-	sent        bool
-	server      bool
-	size        int
-	payload     []byte
+	// localPort와 peerPort는 BPF record의 sport와 dport다. 사용자 공간이 native와 HTTP record를 나누는 근거다.
+	localPort uint16
+	peerPort  uint16
+	sent      bool
+	server    bool
+	size      int
+	payload   []byte
+}
+
+// onPort는 로컬이나 상대 port가 port인 record인지 알려 준다. port가 0이면 거짓이다. RST 뒤에는 kernel이 port를 0으로
+// 지우므로 0을 같은 port로 보지 않는다.
+func (record mysqlRecord) onPort(port uint16) bool {
+	return port != 0 && (record.localPort == port || record.peerPort == port)
 }
 
 // mysqlPacket은 3-byte 길이와 1-byte sequence id가 붙은 packet이다. payload는 앞부분이고 truncated는 그 뒤를 보지

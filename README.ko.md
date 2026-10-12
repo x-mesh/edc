@@ -1508,7 +1508,7 @@ Linux 5.15 이상에서 `trace mysql`을 사용하면 평문 MySQL 명령과 결
 
 JSON event에는 `"side": "client"`나 `"side": "server"`가 붙습니다. 한 쪽만 보려면 `--side client`나 `--side server`를 씁니다. 로컬 port가 MySQL port이면 서버 쪽 socket이고, 상대 port가 MySQL port이면 client 쪽 socket입니다.
 
-`--slow <duration>`은 `trace mysql`에서만 씁니다. `250ms`, `1.5s` 같은 Go duration 문법을 받습니다. 묶지 않은 대화형 화면에서는 첫 paired response의 latency가 지정 시간 이상인 command 행만 남깁니다. 응답 없는 command, 짝이 없는 response, latency가 없는 response, TLS 행은 제외합니다. raw JSON, 비대화형 출력, 요약, group 보기, `--group-by`, `--side`에는 영향을 주지 않습니다.
+`--slow <duration>`은 `trace mysql`과 `trace clickhouse`에서만 씁니다. `250ms`, `1.5s` 같은 Go duration 문법을 받습니다. 묶지 않은 대화형 화면에서는 첫 paired response의 latency가 지정 시간 이상인 command 행만 남깁니다. 응답 없는 command, 짝이 없는 response, latency가 없는 response, TLS 행은 제외합니다. raw JSON, 비대화형 출력, 요약, group 보기, `--group-by`, `--side`에는 영향을 주지 않습니다.
 
 | 보려는 것 | 명령 |
 | --- | --- |
@@ -1561,6 +1561,100 @@ Ctrl-C 뒤의 요약은 쪽, 명령, SQL shape마다 한 행을 보여 줍니다
 - 명령은 읽기나 쓰기마다 앞 4KiB, 응답은 읽기나 쓰기마다 앞 1KiB만 가져옵니다. event의 SQL은 1,024 byte까지이고, 잘리면 `sql_truncated`가 true입니다.
 - 잃어버린 event나 부분 송신 때문에 packet 경계가 어긋나면 그 연결의 다음 명령이 빠질 수 있습니다. 요약에서 lost event 수를 확인합니다.
 - `docker run -p`는 `docker-proxy`를 거치므로 query 하나가 구간마다 한 번씩 보입니다. container 주소로 접속하면 피할 수 있습니다.
+
+Linux 5.15 이상에서 `trace clickhouse`를 사용하면 평문 ClickHouse 질의를 발생 즉시 출력합니다. 한 번의 trace가 native TCP protocol과 HTTP interface를 함께 봅니다. edc는 kernel에서 두 port의 TCP 읽기와 쓰기마다 앞부분을 읽습니다. 기본 port는 native TCP 9000, HTTP 8123입니다.
+
+native port는 `--port`로, HTTP port는 `--http-port`로 바꿉니다. `--http-port`는 `trace clickhouse`에서만 쓸 수 있고, 값은 1부터 65535까지입니다. 한쪽 interface만 보는 option은 없습니다.
+
+두 port는 서로 달라야 합니다. 같으면 종료 코드 2로 끝납니다. 다른 option의 기본값과 겹치는 경우도 마찬가지입니다. 예를 들어 HTTP port의 기본값이 8123이므로 `--port 8123`만 주면 실패합니다.
+
+```bash
+./bin/edc trace clickhouse
+./bin/edc trace clickhouse --side server
+./bin/edc trace clickhouse --port 9001
+./bin/edc trace clickhouse --port 9440 --http-port 18123
+./bin/edc trace clickhouse --slow 500ms
+./bin/edc trace clickhouse --group-by process
+./bin/edc trace clickhouse --show-secrets
+./bin/edc trace clickhouse --raw
+```
+
+`trace clickhouse`는 `trace mysql`처럼 두 쪽을 나눠 보여 줍니다. event 행 앞에 쪽이 붙습니다.
+
+- `client:`는 이 host가 ClickHouse 서버로 보낸 질의입니다.
+- `server:`는 로컬 ClickHouse 서버가 받은 질의입니다.
+
+JSON event에는 `"side": "client"`나 `"side": "server"`가 붙습니다. 한 쪽만 보려면 `--side client`나 `--side server`를 씁니다.
+
+`--slow <duration>`은 묶지 않은 대화형 화면에서 씁니다. `250ms`, `1.5s` 같은 Go duration 문법을 받습니다. 짝지은 응답의 latency가 지정 시간 이상인 질의 행만 남기고, 응답 없는 질의, 짝이 없는 응답, latency가 없는 응답은 제외합니다. `--raw`, `--json`, `--group-by`나 terminal이 아닌 출력과 함께 쓰면 종료 코드 2로 끝납니다.
+
+| 보려는 것 | 명령 |
+| --- | --- |
+| 이 host의 ClickHouse 전부 | `./bin/edc trace clickhouse` |
+| 로컬 서버가 받은 질의 | `./bin/edc trace clickhouse --side server` |
+| 이 host가 보낸 질의 | `./bin/edc trace clickhouse --side client` |
+| native port 9001의 ClickHouse | `./bin/edc trace clickhouse --port 9001` |
+| HTTP port 18123의 ClickHouse | `./bin/edc trace clickhouse --http-port 18123` |
+| 500ms 이상 걸린 paired 질의 | `./bin/edc trace clickhouse --slow 500ms` |
+| 쪽마다 process별 응답 시간 | `./bin/edc trace clickhouse --group-by process` |
+| 가리지 않은 SQL 원문 | `./bin/edc trace clickhouse --show-secrets` |
+
+요청은 아래 event 중 하나입니다. 필드는 JSON event의 `clickhouse` 객체에 들어 있습니다.
+
+- `clickhouse_connect`는 로그인입니다. `user`, `database`, `client_name`, `client_version`, `revision`이 있습니다.
+- `clickhouse_query`는 질의입니다. `sql`, `query_id`, `user`, `database`, `compressed`가 있습니다.
+
+응답은 아래 event 중 하나입니다.
+
+- `clickhouse_hello`는 로그인의 응답입니다. `server_name`과 `server_version`이 있습니다.
+- `clickhouse_end`는 질의의 끝입니다. edc가 data block을 읽었으면 `rows`가 있습니다.
+- `clickhouse_exception`은 실패한 질의입니다. `error_code`, `error_name`, `message`가 있습니다.
+
+응답 event에는 답한 요청의 `command`, `sql`, `query_id`가 함께 들어 있습니다. edc가 스트림의 끝(EndOfStream)을 보지 못했지만 질의가 끝났다고 판단할 수 있으면 `clickhouse_end`에 `end_inferred: true`가 붙습니다. `clickhouse_chunked`는 요청이 아니고, 연결이 chunked protocol을 쓴다는 표시입니다. edc는 그 연결을 더 읽지 않습니다.
+
+native 질의의 latency는 `Query` packet부터 `EndOfStream` 또는 `Exception`까지입니다. 첫 응답 packet에서 끝나는 `trace mysql`과 다르므로, `latency_ms`는 결과의 끝까지 걸린 시간입니다. 서버 쪽에서는 서버가 질의를 읽은 때부터 마지막 packet을 쓴 때까지이고, client 쪽에서는 client가 마지막 packet을 읽은 때까지입니다. client 응답 시간에는 network가 들어갑니다.
+
+HTTP 질의도 같은 event와 필드를 씁니다. `clickhouse` 객체마다 `interface`가 있고, 값은 `native`나 `http`입니다. HTTP 질의의 응답 event에는 `http_status`도 붙습니다. scroll 보기에서 HTTP 행은 쪽 뒤에 `http:`가 붙습니다. 예를 들어 `server: http: SELECT 1`입니다. 전체 화면의 상세 보기에는 `interface` 줄이 나오고, 응답이면 `http_status` 줄도 나옵니다. HTTP에서 `compressed`는 요청 body가 압축됐다는 뜻입니다. HTTP에는 `clickhouse_connect`와 `clickhouse_hello` event가 없고 `rows`도 채우지 않습니다.
+
+edc는 다음 HTTP 요청을 질의로 봅니다.
+
+- 경로가 `?`, `/?`, `/query?`로 시작하는 `GET`이나 `HEAD` 요청
+- `/`나 위 경로로 보낸 `POST`나 `OPTIONS` 요청
+
+`/ping`, `/replicas_status`, `/play` 같은 다른 endpoint는 event가 없습니다. 사용자 정의 `http_handlers` 경로도 질의로 보지 않으므로 event가 없습니다.
+
+SQL은 URL의 `query` parameter, 줄바꿈, 요청 body의 앞부분을 이은 것입니다. body는 앞 4KiB만 가져옵니다. multipart body는 읽지 않습니다. 압축 body(`Content-Encoding`이나 `decompress=1`)도 읽지 않으므로 SQL이 `query` parameter만일 수 있습니다. `INSERT`는 data가 시작하기 전인 `VALUES`나 `FORMAT <이름>`까지만 남기고, insert data는 보이지 않습니다.
+
+edc는 한 연결의 요청과 응답을 순서대로 짝짓습니다. 요청 body는 크기(`Content-Length`나 chunked)로 건너뛰므로 keep-alive 연결의 다음 요청을 찾습니다. `Expect: 100-continue`도 처리합니다.
+
+HTTP 질의의 latency는 요청의 첫 record부터 응답이 끝나는 곳까지입니다. 끝은 마지막 chunk, `Content-Length`만큼의 byte, 또는 `__exception__` block입니다. edc는 `X-ClickHouse-Summary` header의 `elapsed_ns`를 쓰지 않습니다. 서버는 결과를 모두 보내기 전에 이 header를 쓰므로, 값이 마지막 chunk까지 걸린 시간보다 훨씬 작을 수 있습니다. 서버 쪽에서는 서버가 질의를 실행한 시간이고, client 쪽에서는 network가 들어갑니다.
+
+기본값은 `wait_for_async_insert=1`입니다. async insert는 서버가 buffer를 flush한 뒤에 응답하므로, latency에 flush를 기다린 시간(`async_insert_busy_timeout_ms`)이 들어갑니다. `wait_for_async_insert=0`이면 서버가 insert를 접수할 때까지만 잽니다.
+
+서버가 출력을 보내기 전에 질의가 실패하면 HTTP status가 오류를 알려 줍니다. edc는 `X-ClickHouse-Exception-Code`를 `error_code`로 하는 `clickhouse_exception`을 냅니다. 출력이 시작된 뒤에 실패하면 status는 200으로 남고 body 끝에 `__exception__` block이 붙습니다. edc는 이 block을 읽어 `clickhouse_exception`을 냅니다. 응답이 압축돼 있으면 block을 보지 못할 수 있고, 그러면 응답 없음으로 셉니다. edc가 읽지 못하면 `error_name`은 비어 있습니다.
+
+edc는 기본으로 SQL의 문자열 literal 안 글자를 `?`로 가립니다. 가리기는 scroll 보기, 전체 화면, `--raw`, 요약에 모두 적용됩니다. 숫자, 이름, 주석은 가리지 않으므로 주석이나 숫자에 비밀을 쓰지 않습니다.
+
+`--show-secrets`를 사용하면 SQL 원문을 보냈던 그대로 봅니다. `--payload`는 필요 없습니다. 이런 출력은 공유하지 않습니다. 로그인의 password는 `--show-secrets`를 써도 출력에 나오지 않습니다. setting과 query parameter의 값도 저장하지 않습니다.
+
+HTTP에서는 `--show-secrets`를 써도 password, `X-ClickHouse-Key`, `Authorization: Basic`의 password, 다른 scheme의 `Authorization`, `X-ClickHouse-Quota`, `quota_key`, `session_id`, cookie, `param_*` 값, setting 값을 보이지 않습니다. `user`, `database`, `query_id`는 보입니다.
+
+`clickhouse_exception` event의 `message`는 가리지 않으며, 값이 들어 있을 수 있습니다. 예를 들어 table 이름이나 key 값이 들어갑니다. 출력을 공유하기 전에 값이 들어 있는지 확인합니다.
+
+Ctrl-C 뒤의 요약은 쪽, 명령, SQL shape마다 한 행을 보여 줍니다. shape는 문자열 값과 숫자를 `?`로 바꾸고 공백을 한 칸으로 합칩니다. 행에는 질의 수, 오류 수, 응답이 없는 질의 수, 평균과 최대 응답 시간, process가 나옵니다. 두 쪽이 섞이면 쪽별 합계를 보여 주고 `SIDE` 열을 더합니다. JSON에도 같은 내용이 들어 있습니다. `--group-by`를 쓰면 행에 `CMD`, `RSP`, `ERR`, `NOANS`, `AVGms`, `MAXms`가 나오고, group 보기는 server 쪽을 별도 행으로 둡니다. native와 HTTP 질의가 섞이면 요약에 `SIDE` 열 다음에 `INTERFACE` 열이 붙습니다. JSON 행에는 항상 `interface`가 있습니다. `Connections` 합계는 native 연결만 셉니다.
+
+`trace clickhouse`에는 다음 제한이 있습니다.
+
+- native TCP protocol과 HTTP/1.x를 읽습니다. TLS(native 9440, HTTPS 8443)와 HTTP/2는 읽지 않으며 event도 나오지 않습니다. chunked native 연결도 읽지 않습니다.
+- HTTP/1.0 응답과 길이가 없는 응답은 edc가 끝을 볼 수 없습니다. 이런 질의는 응답 없음으로 셉니다.
+- client가 HTTP 요청 두 개를 한 번에 쓰면 서버는 첫 요청만 답합니다. 그 연결의 짝이 어긋날 수 있습니다.
+- TCP만 봅니다. unix socket 연결은 보이지 않습니다.
+- 요청과 응답 모두 읽기나 쓰기마다 앞 4KiB만 가져옵니다. event의 SQL은 1,024 byte까지이고, 잘리면 `sql_truncated`가 true입니다.
+- client 쪽에서 큰 결과는 압축 여부와 관계없이 마지막 읽기가 data block이나 HTTP chunk 중간에서 시작할 수 있습니다. 이때 edc는 질의의 끝을 보지 못해 응답 없음으로 셉니다. 서버 쪽에서는 끝이 보입니다.
+- 무거운 질의의 비압축 `ProfileEvents` block은 thread와 counter 수에 따라 커집니다. 마지막 쓰기가 4KiB를 넘으면 edc는 끝을 보지 못합니다.
+- 연결의 `Hello`를 보지 못하면 그 연결은 건너뜁니다. 연결 중간에 trace를 시작하면 그렇게 됩니다. client가 다시 접속해야 그 연결이 보입니다.
+- 잃어버린 event나 부분 송신 때문에 packet 경계가 어긋나면 그 연결의 다음 질의가 빠질 수 있습니다. 요약에서 lost event 수를 확인합니다.
+- host에 publish한 port로 보낸 질의는 client 행과 container 안 서버 행으로 보입니다. `docker-proxy` 자체의 행은 나오지 않고, 서버 행의 상대 주소는 Docker bridge gateway입니다. `--process clickhouse-serv`로 서버 process의 행만 남길 수 있습니다.
 
 Linux에서 `trace socket`을 사용하면 unix domain socket 파일 하나에서 일어나는 일을 출력합니다. socket 파일의 경로를 지정하면 그 socket의 connect, accept, send, recv, data 끝(`eof`), close를 표시합니다. option은 경로 앞이나 뒤에 씁니다.
 

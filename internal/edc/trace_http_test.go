@@ -637,6 +637,11 @@ func TestTracePortOptionNeedsHTTPAndAPort(t *testing.T) {
 			t.Fatalf("trace %q exit = %d, want 2", args, code)
 		}
 	}
+	for _, protocol := range []string{"tcp", "http", "mysql"} {
+		if code := runTrace([]string{protocol, "--http-port", "8123"}); code != 2 {
+			t.Fatalf("trace %s --http-port exit = %d, want 2", protocol, code)
+		}
+	}
 	if scope := (tcpTraceOptions{side: traceServerSide, port: 8080}).scope("http"); scope.port != 8080 || !scope.server {
 		t.Fatalf("scope = %+v", scope)
 	}
@@ -851,7 +856,7 @@ func TestOnlyHTTPTraceHasThePathView(t *testing.T) {
 	if got := nextTraceGroup(traceGroupViews("http"), traceGroupByPath, 1); got != "" {
 		t.Fatalf("tab after path = %q, want the event scroll", got)
 	}
-	for _, protocol := range []string{"tcp", "udp", "dns", "mysql", "socket", "drop"} {
+	for _, protocol := range []string{"tcp", "udp", "dns", "mysql", "clickhouse", "socket", "drop"} {
 		if slices.Contains(traceGroupViews(protocol), traceGroupByPath) {
 			t.Fatalf("%s has the path view", protocol)
 		}
@@ -1317,7 +1322,7 @@ func TestHTTPSplitStartsKeepTLSPlaintextApart(t *testing.T) {
 }
 
 func TestTraceTLSOptionNeedsHTTP(t *testing.T) {
-	for _, args := range [][]string{{"tcp", "--tls"}, {"mysql", "--tls"}, {"dns", "--tls=/usr/lib/libssl.so.3"}, {"http", "--tls="}} {
+	for _, args := range [][]string{{"tcp", "--tls"}, {"mysql", "--tls"}, {"clickhouse", "--tls"}, {"dns", "--tls=/usr/lib/libssl.so.3"}, {"http", "--tls="}} {
 		if code := runTrace(args); code != 2 {
 			t.Fatalf("trace %q exit = %d, want 2", args, code)
 		}

@@ -22,6 +22,8 @@ func parseMySQLRecord(sample []byte) (mysqlRecord, bool) {
 	var source, destination [16]byte
 	copy(source[:], sample[44:60])
 	copy(destination[:], sample[60:76])
+	localPort := binary.LittleEndian.Uint16(sample[40:42])
+	peerPort := binary.LittleEndian.Uint16(sample[42:44])
 	record := mysqlRecord{
 		bootTimeNS:  binary.LittleEndian.Uint64(sample[0:8]),
 		pid:         binary.LittleEndian.Uint32(sample[12:16]),
@@ -29,8 +31,10 @@ func parseMySQLRecord(sample []byte) (mysqlRecord, bool) {
 		socket:      binary.LittleEndian.Uint64(sample[24:32]),
 		sent:        sample[38] == httpRecordSent,
 		server:      sample[39] == mysqlRecordServer,
-		source:      formatCaptureAddress(family, source, binary.LittleEndian.Uint16(sample[40:42])),
-		destination: formatCaptureAddress(family, destination, binary.LittleEndian.Uint16(sample[42:44])),
+		source:      formatCaptureAddress(family, source, localPort),
+		destination: formatCaptureAddress(family, destination, peerPort),
+		localPort:   localPort,
+		peerPort:    peerPort,
 		process:     strings.TrimRight(string(sample[76:92]), "\x00"),
 		size:        int(binary.LittleEndian.Uint32(sample[92:96])),
 		payload:     sample[httpRecordPayloadOffset:],

@@ -237,6 +237,11 @@ var commandDocs = []commandDoc{
 		usesCommon: true,
 	},
 	{
+		name: "ctr", group: "observe",
+		usage:      []string{"edc ctr [options] <container>"},
+		usesCommon: true,
+	},
+	{
 		name: "changes", group: "observe",
 		usage: []string{"edc changes [--since 24h] [options]"},
 		options: []optionDoc{
@@ -266,7 +271,7 @@ var commandDocs = []commandDoc{
 	},
 	{
 		name: "trace", group: "observe",
-		usage: []string{"edc trace <tcp|udp|dns|arp|ndp|http|drop|mysql|clickhouse|io|sched> [options]", traceSocketUsage},
+		usage: []string{"edc trace <tcp|udp|dns|arp|ndp|http|mysql|clickhouse|drop> [options]", "edc trace <io|sched|exec> [options]", traceSocketUsage, traceShowUsage},
 		options: []optionDoc{
 			{"--duration 15s", "command.trace.option.duration"},
 			{"--slow <duration>", "command.trace.option.slow"},
@@ -286,6 +291,7 @@ var commandDocs = []commandDoc{
 			{"--container <name>", "command.trace.option.container"},
 			{"--reason <names>", "command.trace.option.reason"},
 			{"--device <major:minor>", "command.trace.option.device"},
+			{"--signal <names>", "command.trace.option.signal"},
 			{"--yes", "command.trace.option.yes"},
 		},
 	},

@@ -176,6 +176,13 @@ command:
       - "It reads only. It does not start, stop, or reload the unit."
       - "It needs Linux with systemd. On other hosts it shows skip."
       - "Run it as root. Without root, fds, socket owners, and the journal show skip."
+  ctr:
+    summary: "One docker container on one screen (Linux)"
+    notes:
+      - "State, uptime, restarts, processes, limits, fds, sockets, and log errors."
+      - "It reads only. It does not start, stop, or restart the container."
+      - "It needs the docker command and cgroup v2. On other hosts it shows skip."
+      - "Run it as root. Without root, fds and socket owners show skip."
       - "A socket that only systemd holds (socket activation) is not in the list."
   quality:
     summary: "Network responsiveness (RPM) and throughput"
@@ -203,7 +210,7 @@ command:
       - "A PCAP file can hold credentials and personal data."
       - "The JSON redaction does not apply to the PCAP payload."
   trace:
-    summary: "Trace network, I/O, socket, drop, and scheduler events"
+    summary: "Trace network, I/O, socket, drop, scheduler, and process events"
     option:
       duration: "trace time, max 60s. Omit for Ctrl-C"
       slow: "min latency, e.g. 20us, 250ms. Default io/sched 1ms"
@@ -223,6 +230,7 @@ command:
       container: "only this docker container, by name or ID"
       reason: "trace drop: only these reasons, comma separated"
       device: "trace io: block device major:minor"
+      signal: "trace exec: signals to record, names, all, or none"
     notes:
       - "The default output opens a full-screen trace view in a terminal."
       - "Use / to filter process, destination, event, or source text."
@@ -239,6 +247,8 @@ command:
       - "trace io groups rows by device, process, cgroup, or event."
       - "trace io --slow sets the minimum request latency. The default is 1ms."
       - "trace sched --slow sets the minimum span latency. The default is 1ms."
+      - "trace exec shows exec, exit, and signal events. --signal picks the signals."
+      - "trace show <raw.jsonl> prints the summary of a saved --raw file, without root."
       - "--slow needs a unit, such as 20us, 500us, or 2ms. A bare number fails."
       - "Grouped rows label the event count rate EVENT/s and show payload traffic."
       - "B/s is a byte rate. bps and Mbps are bit rates. Mbps is bps / 1,000,000."

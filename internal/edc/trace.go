@@ -135,6 +135,8 @@ var traceProtocolRegistry = []traceProtocolRegistration{
 		scrollLabels: traceDropScrollLabels, prerequisites: dropTracePrerequisites, newSummarizer: func() traceSummarizer { return newDropTraceSummarizer() },
 	}},
 	{name: "sched", view: traceProtocolView{selectorLabel: "sched"}, spec: traceProtocolSpec{hideTraffic: true, hiddenViews: []string{traceGroupBySource, traceGroupByTarget, traceGroupByPort}}, run: runTraceSched},
+	// process의 exec, exit, signal이다. 주소와 port가 없어 process와 event 보기만 뜻이 있다.
+	{name: "exec", view: traceProtocolView{selectorLabel: "exec"}, spec: traceProtocolSpec{hideTraffic: true, hiddenViews: []string{traceGroupBySource, traceGroupByTarget, traceGroupByPort}, linuxOnly: true, prerequisites: execTracePrerequisites}, run: runTraceExec},
 }
 
 var traceProtocols = traceProtocolSpecs(traceProtocolRegistry)
@@ -437,6 +439,9 @@ func runTrace(args []string) int {
 		}
 		args = []string{protocol}
 	}
+	if args[0] == "show" {
+		return runTraceShow(args[1:])
+	}
 	registration, ok := traceProtocolRegistrationFor(args[0])
 	if !ok {
 		traceUsage()
@@ -449,8 +454,10 @@ func runTrace(args []string) int {
 }
 
 func traceUsage() {
-	fmt.Fprintln(os.Stderr, T("cli.usage", "edc trace <tcp|udp|dns|arp|ndp|http|drop|mysql|clickhouse|io|sched> [options]"))
+	fmt.Fprintln(os.Stderr, T("cli.usage", "edc trace <tcp|udp|dns|arp|ndp|http|mysql|clickhouse|drop> [options]"))
+	fmt.Fprintln(os.Stderr, T("cli.usage", "edc trace <io|sched|exec> [options]"))
 	fmt.Fprintln(os.Stderr, T("cli.usage", traceSocketUsage))
+	fmt.Fprintln(os.Stderr, T("cli.usage", traceShowUsage))
 }
 
 func runTraceProtocol(args []string) int {
@@ -666,6 +673,7 @@ func runTraceProtocol(args []string) int {
 	var encoder *json.Encoder
 	var written uint64
 	aggregate := newTraceAggregate(args[0], options.groupBy)
+	rawSockets := traceRawSockets{}
 	if options.raw {
 		encoder = json.NewEncoder(os.Stdout)
 	} else if options.jsonPath == "" && options.groupBy == "" {
@@ -680,6 +688,7 @@ func runTraceProtocol(args []string) int {
 		}
 		if options.raw {
 			written++
+			event.Socket = rawSockets.number(event.SocketID)
 			return encoder.Encode(event)
 		}
 		aggregate.observe(event)

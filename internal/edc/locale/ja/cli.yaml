@@ -247,6 +247,7 @@ cli:
     duration_range: "--duration は省略、0 秒、または 1ns から 60 秒の範囲で指定します"
     slow_range: "--slow は 0 より大きく指定します"
     slow_protocol: "--slow は trace mysql、trace clickhouse、trace io、trace sched だけで使えます"
+    show_failed: "%s を読めませんでした: %s"
     raw_json_conflict: "--raw と --json は同時に使えません"
     group_by_range: "--group-by は source、target、port、process、event、path のいずれかで指定します"
     group_by_raw_conflict: "--group-by は --raw と同時に使えません"

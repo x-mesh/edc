@@ -138,6 +138,8 @@ func TestCaptureAttachmentsFollowTheProtocol(t *testing.T) {
 		{"mysql", []string{}, []string{"fentry/skb_consume_udp", "fentry/tcp_sendmsg", "fexit/tcp_sendmsg", "fentry/tcp_recvmsg", "fexit/tcp_recvmsg", "tp_btf/tcp_destroy_sock"}},
 		// ClickHouse도 MySQL과 같은 송수신 hook을 쓴다.
 		{"clickhouse", []string{}, []string{"fentry/skb_consume_udp", "fentry/tcp_sendmsg", "fexit/tcp_sendmsg", "fentry/tcp_recvmsg", "fexit/tcp_recvmsg", "tp_btf/tcp_destroy_sock"}},
+		{"postgres", []string{}, []string{"fentry/skb_consume_udp", "fentry/tcp_sendmsg", "fexit/tcp_sendmsg", "fentry/tcp_recvmsg", "fexit/tcp_recvmsg", "tp_btf/tcp_destroy_sock"}},
+		{"redis", []string{}, []string{"fentry/skb_consume_udp", "fentry/tcp_sendmsg", "fexit/tcp_sendmsg", "fentry/tcp_recvmsg", "fexit/tcp_recvmsg", "tp_btf/tcp_destroy_sock"}},
 	} {
 		tracepoints, tracing := captureAttachments(&captureEventsObjects{}, test.protocol)
 		gotTracepoints := []string{}
@@ -174,6 +176,10 @@ func TestCaptureEventFiltersFollowTheProtocol(t *testing.T) {
 		{traceScope{protocol: "mysql", port: 3307}, captureEventFilter{dnsSent: true, mysqlPort: 3307}},
 		{traceScope{protocol: "clickhouse"}, captureEventFilter{dnsSent: true, mysqlPort: 9000, mysqlResponseSize: 4096, clickHouseHTTPPort: 8123}},
 		{traceScope{protocol: "clickhouse", port: 9440, httpPort: 18123}, captureEventFilter{dnsSent: true, mysqlPort: 9440, mysqlResponseSize: 4096, clickHouseHTTPPort: 18123}},
+		{traceScope{protocol: "postgres"}, captureEventFilter{dnsSent: true, mysqlPort: 5432, mysqlResponseSize: 4096}},
+		{traceScope{protocol: "postgres", port: 6432}, captureEventFilter{dnsSent: true, mysqlPort: 6432, mysqlResponseSize: 4096}},
+		{traceScope{protocol: "redis"}, captureEventFilter{dnsSent: true, mysqlPort: 6379}},
+		{traceScope{protocol: "redis", port: 6380}, captureEventFilter{dnsSent: true, mysqlPort: 6380}},
 	} {
 		if got := captureEventFilterFor(test.scope); got != test.want {
 			t.Fatalf("scope %+v filter = %+v, want %+v", test.scope, got, test.want)

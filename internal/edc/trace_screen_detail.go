@@ -87,6 +87,10 @@ func newTraceDetail(event captureEvent, payload string, notes []string, number, 
 		detail.raw = traceMySQLDetailLines(event)
 	} else if event.Protocol == "clickhouse" && event.ClickHouse != nil {
 		detail.raw = traceClickHouseDetailLines(event)
+	} else if event.Protocol == "postgres" && event.Postgres != nil {
+		detail.raw = tracePostgresDetailLines(event)
+	} else if event.Protocol == "redis" && event.Redis != nil {
+		detail.raw = traceRedisDetailLines(event)
 	} else {
 		fields := event
 		fields.Payload = ""
@@ -236,6 +240,12 @@ func (model traceScreenModel) buildDetail(number int) *traceDetail {
 			}
 			if info := response.ClickHouse; info != nil && (info.ErrorCode != 0 || info.ErrorName != "" || info.Message != "") {
 				detail.raw = append(detail.raw, "error: "+fmt.Sprintf("%d (%s) %s", info.ErrorCode, emptyAs(info.ErrorName, "-"), info.Message))
+			}
+			if info := response.Postgres; info != nil && info.Rows != nil {
+				detail.raw = append(detail.raw, "rows: "+strconv.FormatUint(*info.Rows, 10))
+			}
+			if info := response.Postgres; info != nil && info.Detail != "" {
+				detail.raw = append(detail.raw, "detail: "+info.Detail)
 			}
 			detail.wrap(model.width)
 			break

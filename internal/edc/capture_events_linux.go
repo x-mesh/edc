@@ -551,13 +551,13 @@ func captureAttachments(objects *captureEventsObjects, protocol string) ([]captu
 		// DNS 응답 시간을 network와 읽기 지연으로 나누려고 수신 큐에 들어간 시각을 잰다.
 		{[]string{"dns"}, "fentry/__udp_enqueue_schedule_skb", objects.UdpEnqueueEntry},
 		{nil, "fentry/skb_consume_udp", objects.SkbConsumeUdpEntry},
-		// HTTP, MySQL, ClickHouse, DNS over TCP는 TCP로 주고받는 사용자 버퍼의 앞부분을 읽는다.
-		{[]string{"http", "mysql", "clickhouse", "dns"}, "fentry/tcp_sendmsg", objects.TcpSendmsgEntry},
-		{[]string{"mysql", "clickhouse"}, "fexit/tcp_sendmsg", objects.TcpSendmsgExit},
-		{[]string{"http", "mysql", "clickhouse", "dns"}, "fentry/tcp_recvmsg", objects.TcpRecvmsgEntry},
-		{[]string{"http", "mysql", "clickhouse", "dns"}, "fexit/tcp_recvmsg", objects.TcpRecvmsgExit},
+		// HTTP, MySQL, ClickHouse, PostgreSQL, Redis, DNS over TCP는 TCP로 주고받는 사용자 버퍼의 앞부분을 읽는다.
+		{[]string{"http", "mysql", "clickhouse", "postgres", "redis", "dns"}, "fentry/tcp_sendmsg", objects.TcpSendmsgEntry},
+		{[]string{"mysql", "clickhouse", "postgres", "redis"}, "fexit/tcp_sendmsg", objects.TcpSendmsgExit},
+		{[]string{"http", "mysql", "clickhouse", "postgres", "redis", "dns"}, "fentry/tcp_recvmsg", objects.TcpRecvmsgEntry},
+		{[]string{"http", "mysql", "clickhouse", "postgres", "redis", "dns"}, "fexit/tcp_recvmsg", objects.TcpRecvmsgExit},
 		// trace http는 끝난 socket의 짝짓기 상태를 지운다. tracepoint와 달리 tracefs 없이 붙는다.
-		{[]string{"http", "mysql", "clickhouse", "dns"}, "tp_btf/tcp_destroy_sock", objects.HttpTcpDestroySock},
+		{[]string{"http", "mysql", "clickhouse", "postgres", "redis", "dns"}, "tp_btf/tcp_destroy_sock", objects.HttpTcpDestroySock},
 		// 서버 쪽 DNS over TCP도 받은 연결의 process를 알아야 해서 dns가 함께 쓴다.
 		{[]string{"tcp", "dns"}, "fentry/inet_csk_accept", objects.InetCskAcceptEntry},
 		{[]string{"tcp"}, "fexit/inet_csk_accept", objects.InetCskAcceptExit},
@@ -593,7 +593,7 @@ func captureAttachmentsFor(objects *captureEventsObjects, scope traceScope) ([]c
 			captureTracing{[]string{"tcp"}, "fentry/tcp_cleanup_rbuf", objects.TcpCleanupRbufEntry},
 		)
 	}
-	if scope.payloadAll && scope.protocol != "mysql" && scope.protocol != "clickhouse" {
+	if scope.payloadAll && !slices.Contains([]string{"mysql", "clickhouse", "postgres", "redis"}, scope.protocol) {
 		tracing = append(tracing, captureTracing{[]string{"http"}, "fexit/tcp_sendmsg", objects.TcpSendmsgExit})
 	}
 	return tracepoints, tracing
@@ -603,6 +603,10 @@ func captureAttachmentsFor(objects *captureEventsObjects, scope traceScope) ([]c
 // clickHouseResponseCapture는 trace clickhouse가 응답 방향에서 읽는 byte 수다. 서버의 EndOfStream이 마지막 쓰기의 3588 byte
 // 까지 밀리는 경우를 측정했다(testdata/clickhouse/boundaries.txt).
 const clickHouseResponseCapture = 4096
+
+// postgresResponseCapture는 trace postgres가 응답 방향에서 읽는 byte 수다. 서버는 결과를 8192 byte씩 보내므로 이 값으로도 큰
+// 결과의 경계는 잃지만, 작은 결과의 마지막 쓰기(CommandComplete와 ReadyForQuery)는 담는다(testdata/postgres/boundaries.txt).
+const postgresResponseCapture = 4096
 
 type captureEventFilter struct {
 	udpEvents    bool
@@ -649,6 +653,13 @@ func captureEventFilterFor(scope traceScope) captureEventFilter {
 		filter.udpEvents, filter.mysqlPort = false, cmp.Or(scope.port, traceClickHouseDefaultPort)
 		filter.mysqlResponseSize = clickHouseResponseCapture
 		filter.clickHouseHTTPPort = cmp.Or(scope.httpPort, traceClickHouseDefaultHTTPPort)
+	case "postgres":
+		filter.udpEvents, filter.mysqlPort = false, cmp.Or(scope.port, tracePostgresDefaultPort)
+		filter.mysqlResponseSize = postgresResponseCapture
+	case "redis":
+		// 작은 응답은 모두 쓰기의 앞 1024 byte 안에서 끝나고, 4095로 늘려도 경계를 잃는 큰 array 응답은 그대로다
+		// (testdata/redis/capture.txt Findings 3, 4). 그래서 BPF 기본값을 쓴다.
+		filter.udpEvents, filter.mysqlPort = false, cmp.Or(scope.port, traceRedisDefaultPort)
 	}
 	return filter
 }
@@ -890,6 +901,8 @@ func collectCaptureEventsFor(scope traceScope, duration time.Duration, onEvent f
 	}
 	streams := newDNSTCPStreams()
 	mysql := newMySQLTracker(scope.side, scope.showSecrets)
+	postgres := newPostgresTracker(scope.side, scope.showSecrets)
+	redis := newRedisTracker(scope.side, scope.showSecrets)
 	clickhouse := newClickHouseTracker(scope.side, scope.showSecrets, captureEventFilterFor(scope).clickHouseHTTPPort)
 	var goOrder *goTLSOrder
 	if scope.tlsFinder != nil && slices.ContainsFunc(scope.tlsFinder.targets, func(target traceTLSTarget) bool { return target.goReturns != nil }) {
@@ -1069,9 +1082,14 @@ func collectCaptureEventsFor(scope traceScope, duration time.Duration, onEvent f
 			}
 			// record 형식은 두 protocol이 같고 port 필터만 다르므로, trace의 protocol이 해석할 쪽을 정한다.
 			var events []captureEvent
-			if protocol == "clickhouse" {
+			switch protocol {
+			case "clickhouse":
 				events = clickhouse.events(packet, clockOffset)
-			} else {
+			case "postgres":
+				events = postgres.events(packet, clockOffset)
+			case "redis":
+				events = redis.events(packet, clockOffset)
+			default:
 				events = mysql.events(packet, clockOffset)
 			}
 			if err := emit(events); err != nil {
@@ -1088,6 +1106,12 @@ func collectCaptureEventsFor(scope traceScope, duration time.Duration, onEvent f
 			}
 			if protocol == "mysql" {
 				mysql.forgetSocket(socket)
+			}
+			if protocol == "postgres" {
+				postgres.forgetSocket(socket)
+			}
+			if protocol == "redis" {
+				redis.forgetSocket(socket)
 			}
 			if protocol == "clickhouse" {
 				if err := emit(clickhouse.forgetSocket(socket)); err != nil {

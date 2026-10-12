@@ -3,6 +3,14 @@ package edc
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
+	"maps"
+	"os"
+	"slices"
+	"sort"
+	"strconv"
+	"strings"
+	"time"
 )
 
 const (
@@ -1062,4 +1070,416 @@ func postgresMask(sql []byte, strings postgresStrings) []byte {
 		}
 	}
 	return out
+}
+
+// postgresScrollLabelSQL은 스크롤 행에 쓰는 SQL의 길이 상한이다. 전체는 --raw와 상세 보기에 있다.
+const postgresScrollLabelSQL = 200
+
+func postgresResponseEvent(name string) bool {
+	return name == postgresEventResult || name == postgresEventError
+}
+
+// tracePostgresShape는 SQL에서 값을 뺀 모양이다. 문자열, dollar quote, 숫자 literal을 ?로, 연속 공백을 한 칸으로 바꾼다.
+// $1 parameter와 identifier 안의 숫자는 그대로 둔다. --show-secrets로 본 SQL과 가린 SQL이 같은 shape를 만든다.
+func tracePostgresShape(sql string) string {
+	text := postgresMask([]byte(sql), postgresStringsUnknown)
+	digit := func(value byte) bool { return value >= '0' && value <= '9' }
+	var out strings.Builder
+	space := false
+	for i := 0; i < len(text); {
+		value := text[i]
+		if value == ' ' || value == '\t' || value == '\n' || value == '\r' {
+			space = true
+			i++
+			continue
+		}
+		if space && out.Len() > 0 {
+			out.WriteByte(' ')
+		}
+		space = false
+		switch {
+		case value == '\'':
+			end, _ := postgresLiteralEnd(text, i, false)
+			out.WriteByte('?')
+			i = end
+		case value == '"':
+			end := postgresQuotedEnd(text, i)
+			out.Write(text[i:end])
+			i = end
+		case value == '$' && i+1 < len(text) && digit(text[i+1]):
+			end := i + 1
+			for end < len(text) && digit(text[end]) {
+				end++
+			}
+			out.Write(text[i:end])
+			i = end
+		case digit(value):
+			end := i
+			for end < len(text) && (digit(text[end]) || text[end] == '.') {
+				end++
+			}
+			if end+1 < len(text) && (text[end] == 'e' || text[end] == 'E') && (digit(text[end+1]) || text[end+1] == '+' || text[end+1] == '-') {
+				for end += 2; end < len(text) && digit(text[end]); end++ {
+				}
+			}
+			if end < len(text) && postgresIdentifierByte(text[end]) {
+				for ; end < len(text) && postgresIdentifierByte(text[end]); end++ {
+				}
+				out.Write(text[i:end])
+			} else {
+				out.WriteByte('?')
+			}
+			i = end
+		case postgresIdentifierByte(value):
+			end := i
+			for end < len(text) && postgresIdentifierByte(text[end]) {
+				end++
+			}
+			out.Write(text[i:end])
+			i = end
+		default:
+			if end := postgresCommentEnd(text, i); end > i {
+				out.Write(text[i:end])
+				i = end
+				continue
+			}
+			out.WriteByte(value)
+			i++
+		}
+	}
+	shape := out.String()
+	if len(shape) > mysqlShapeLimit {
+		shape = traceTrimText(shape, mysqlShapeLimit) + "..."
+	}
+	return shape
+}
+
+// tracePostgresCounts는 PostgreSQL group 행과 요약이 함께 쓰는 값이다. postgres_tls는 요청으로 세지 않고 연결로만 센다.
+type tracePostgresCounts struct {
+	Commands       uint64   `json:"commands"`
+	Responses      uint64   `json:"responses"`
+	Errors         uint64   `json:"errors"`
+	Unanswered     uint64   `json:"unanswered"`
+	LatencyAvgMS   *float64 `json:"latency_avg_ms"`
+	LatencyMaxMS   *float64 `json:"latency_max_ms"`
+	Connections    uint64   `json:"connections,omitempty"`
+	TLSConnections uint64   `json:"tls_connections,omitempty"`
+	answered       uint64
+	latency        traceSpans
+}
+
+func (counts *tracePostgresCounts) observe(event captureEvent) {
+	switch {
+	case event.Event == postgresEventTLS:
+		counts.Connections++
+		counts.TLSConnections++
+	case postgresResponseEvent(event.Event):
+		counts.Responses++
+		if event.Event == postgresEventError {
+			counts.Errors++
+		}
+		counts.answered += event.answered
+		counts.latency.observe(event.LatencyMS)
+	default:
+		counts.Commands++
+		if event.Event == postgresEventConnect {
+			counts.Connections++
+		}
+	}
+}
+
+func (counts tracePostgresCounts) finished() tracePostgresCounts {
+	counts.Unanswered = counts.Commands - min(counts.Commands, counts.answered)
+	counts.LatencyAvgMS, counts.LatencyMaxMS = counts.latency.summary()
+	return counts
+}
+
+func tracePostgresGroupSummary(counts *tracePostgresCounts) *tracePostgresCounts {
+	if counts == nil {
+		return nil
+	}
+	finished := counts.finished()
+	return &finished
+}
+
+func tracePostgresColumn(value func(counts tracePostgresCounts) string) func(traceGroupSummary) string {
+	return func(group traceGroupSummary) string {
+		if group.Postgres == nil {
+			return "-"
+		}
+		return value(*group.Postgres)
+	}
+}
+
+var tracePostgresGroupColumns = []traceGroupColumn{
+	{screenTitle: "CMD", reportTitle: "COMMANDS", width: 5, value: tracePostgresColumn(func(counts tracePostgresCounts) string { return strconv.FormatUint(counts.Commands, 10) })},
+	{screenTitle: "RSP", reportTitle: "RESPONSES", width: 5, value: tracePostgresColumn(func(counts tracePostgresCounts) string { return strconv.FormatUint(counts.Responses, 10) })},
+	{screenTitle: "ERR", reportTitle: "ERRORS", width: 4, value: tracePostgresColumn(func(counts tracePostgresCounts) string { return strconv.FormatUint(counts.Errors, 10) })},
+	{screenTitle: "NOANS", reportTitle: "UNANSWERED", width: 5, value: tracePostgresColumn(func(counts tracePostgresCounts) string { return strconv.FormatUint(counts.Unanswered, 10) })},
+	{screenTitle: "AVGms", reportTitle: "AVG_MS", width: 6, value: tracePostgresColumn(func(counts tracePostgresCounts) string { return traceLatency(counts.LatencyAvgMS, "") })},
+	{screenTitle: "MAXms", reportTitle: "MAX_MS", width: 6, value: tracePostgresColumn(func(counts tracePostgresCounts) string { return traceLatency(counts.LatencyMaxMS, "") })},
+}
+
+// tracePostgresCommandText는 event가 어떤 요청 단위인지 한 줄로 쓴다. 응답 event도 답한 요청의 명령을 쓴다.
+func tracePostgresCommandText(event captureEvent) string {
+	info := event.Postgres
+	sql := traceMySQLLine(traceTrimText(info.SQL, postgresScrollLabelSQL))
+	if len(info.SQL) > postgresScrollLabelSQL {
+		sql += "..."
+	}
+	switch {
+	case event.Event == postgresEventTLS:
+		return "tls " + info.Encryption
+	case info.Command == postgresCommandConnect:
+		return emptyAs(strings.Join(slices.DeleteFunc([]string{info.User, info.Database}, func(value string) bool { return value == "" }), " "), postgresCommandConnect)
+	case info.Command == postgresCommandPrepare || info.Command == postgresCommandExecute:
+		return strings.TrimSpace(strings.Join(slices.DeleteFunc([]string{info.Command, info.Statement, sql}, func(value string) bool { return value == "" }), " "))
+	}
+	return emptyAs(sql, info.Command)
+}
+
+// tracePostgresResultText는 응답 event의 결과를 쓴다.
+func tracePostgresResultText(event captureEvent) string {
+	info := event.Postgres
+	if event.Event == postgresEventError {
+		return strings.TrimSpace(fmt.Sprintf("%s %s %s", emptyAs(info.Severity, "-"), emptyAs(info.SQLState, "-"), traceMySQLLine(info.Message)))
+	}
+	switch {
+	case info.Command == postgresCommandConnect:
+		return strings.TrimSpace("ready " + info.ServerVersion)
+	case info.Tag != "":
+		return info.Tag
+	case info.Rows != nil:
+		return fmt.Sprintf("%d rows", *info.Rows)
+	}
+	return "ok"
+}
+
+// tracePostgresScrollLabels는 목적지 칸에 쪽, 명령, 응답이면 결과를, event 칸에 event 이름과 응답 시간을 쓴다.
+func tracePostgresScrollLabels(event captureEvent) (string, string) {
+	label := event.Event
+	if event.LatencyMS != nil {
+		label += " " + traceLatency(event.LatencyMS, "ms")
+	}
+	if event.Postgres == nil {
+		return emptyAs(event.Destination, "-"), label
+	}
+	text := tracePostgresCommandText(event)
+	if postgresResponseEvent(event.Event) {
+		text = "↳ " + tracePostgresResultText(event)
+	}
+	if event.Side != "" {
+		text = event.Side + ": " + text
+	}
+	return text, label
+}
+
+type postgresTraceKey struct {
+	side    string
+	command string
+	shape   string
+}
+
+type postgresTraceRow struct {
+	Side      string   `json:"side,omitempty"`
+	Command   string   `json:"command"`
+	Shape     string   `json:"shape"`
+	Processes []string `json:"processes,omitempty"`
+	tracePostgresCounts
+}
+
+type postgresTraceReport struct {
+	Side       string             `json:"side,omitempty"`
+	DurationMS int64              `json:"duration_ms"`
+	LostEvents uint64             `json:"lost_events"`
+	Statements []postgresTraceRow `json:"statements"`
+	tracePostgresCounts
+	// Client와 Server는 두 쪽이 섞인 trace의 쪽별 합계다. 두 쪽의 응답 시간은 뜻이 달라 합친 평균은 뜻이 없다.
+	Client *tracePostgresCounts `json:"client,omitempty"`
+	Server *tracePostgresCounts `json:"server,omitempty"`
+}
+
+type postgresTraceRowStats struct {
+	processes map[string]struct{}
+	counts    tracePostgresCounts
+}
+
+// postgresTraceSummarizer는 --group-by 없이 끝난 PostgreSQL trace를 쪽, 명령, SQL shape마다 한 행으로 묶는다.
+type postgresTraceSummarizer struct {
+	rows   map[postgresTraceKey]*postgresTraceRowStats
+	counts tracePostgresCounts
+	sides  map[string]*tracePostgresCounts
+}
+
+func newPostgresTraceSummarizer() *postgresTraceSummarizer {
+	return &postgresTraceSummarizer{rows: map[postgresTraceKey]*postgresTraceRowStats{}, sides: map[string]*tracePostgresCounts{}}
+}
+
+// postgresTraceShape는 요약 행의 SQL 자리다. SQL이 없는 요청은 그 사정을 쓴다.
+func postgresTraceShape(info *tracePostgresEvent) string {
+	switch {
+	case info.Command == postgresCommandConnect:
+		return "(connect)"
+	case info.Command == postgresCommandFunction:
+		return "(function call)"
+	case info.Command == postgresCommandExecute && info.SQL == "":
+		return "(statement not seen)"
+	case info.SQL == "":
+		return "(no SQL)"
+	}
+	return traceMySQLLine(tracePostgresShape(info.SQL))
+}
+
+func (summarizer *postgresTraceSummarizer) observe(event captureEvent) {
+	if event.Postgres == nil {
+		return
+	}
+	summarizer.counts.observe(event)
+	if event.Side != "" {
+		counts := summarizer.sides[event.Side]
+		if counts == nil {
+			counts = &tracePostgresCounts{}
+			summarizer.sides[event.Side] = counts
+		}
+		counts.observe(event)
+	}
+	// 암호화한 연결은 요청이 없어서 합계에만 센다.
+	if event.Event == postgresEventTLS {
+		return
+	}
+	key := postgresTraceKey{side: event.Side, command: event.Postgres.Command, shape: postgresTraceShape(event.Postgres)}
+	stats := summarizer.rows[key]
+	if stats == nil {
+		stats = &postgresTraceRowStats{processes: map[string]struct{}{}}
+		summarizer.rows[key] = stats
+	}
+	if event.Process != "" {
+		stats.processes[event.Process] = struct{}{}
+	}
+	stats.counts.observe(event)
+}
+
+func (summarizer *postgresTraceSummarizer) summarize(summary captureSummary, duration time.Duration) traceReport {
+	report := postgresTraceReport{DurationMS: duration.Milliseconds(), LostEvents: summary.LostEvents, tracePostgresCounts: summarizer.counts.finished()}
+	if len(summarizer.sides) == 1 {
+		for side := range summarizer.sides {
+			report.Side = side
+		}
+	} else if len(summarizer.sides) > 1 {
+		report.Client, report.Server = tracePostgresGroupSummary(summarizer.sides[traceClientSide]), tracePostgresGroupSummary(summarizer.sides[traceServerSide])
+	}
+	report.Statements = make([]postgresTraceRow, 0, len(summarizer.rows))
+	for key, stats := range summarizer.rows {
+		report.Statements = append(report.Statements, postgresTraceRow{Side: key.side, Command: key.command, Shape: key.shape, Processes: slices.Sorted(maps.Keys(stats.processes)), tracePostgresCounts: stats.counts.finished()})
+	}
+	sort.Slice(report.Statements, func(i, j int) bool {
+		left, right := report.Statements[i], report.Statements[j]
+		switch {
+		case left.Commands != right.Commands:
+			return left.Commands > right.Commands
+		case left.Shape != right.Shape:
+			return left.Shape < right.Shape
+		case left.Command != right.Command:
+			return left.Command < right.Command
+		}
+		return left.Side < right.Side
+	})
+	return report
+}
+
+// -d는 연결마다 한 행을 쓰는 option이다. PostgreSQL 요약은 SQL 모양마다 한 행이라 같은 표를 쓴다.
+func (report postgresTraceReport) print(bool) {
+	title := "PostgreSQL trace"
+	if report.Side == traceServerSide {
+		title = "PostgreSQL server trace"
+	}
+	fmt.Fprintf(os.Stdout, "%s: %s\n\n", title, (time.Duration(report.DurationMS) * time.Millisecond).String())
+	mixed := report.Client != nil && report.Server != nil
+	if mixed {
+		for _, side := range []struct {
+			heading string
+			counts  *tracePostgresCounts
+		}{{"Client side (requests that this host sent):", report.Client}, {"Server side (requests that local servers received):", report.Server}} {
+			fmt.Fprintln(os.Stdout, side.heading)
+			printPostgresCounts("  ", *side.counts)
+			fmt.Fprintln(os.Stdout)
+		}
+	} else {
+		printPostgresCounts("", report.tracePostgresCounts)
+	}
+	fmt.Fprintf(os.Stdout, "Lost events: %d\n", report.LostEvents)
+	if len(report.Statements) == 0 {
+		return
+	}
+	sideColumn := func(value string) string {
+		if !mixed {
+			return ""
+		}
+		return value + "\t"
+	}
+	fmt.Fprintln(os.Stdout, "\n"+sideColumn("SIDE")+"COMMAND\tSQL\tCOUNT\tERRORS\tUNANSWERED\tAVG\tMAX\tPROCESS")
+	for _, row := range report.Statements {
+		fmt.Fprintf(os.Stdout, "%s%s\t%s\t%d\t%d\t%d\t%s\t%s\t%s\n", sideColumn(emptyAs(row.Side, "-")), row.Command, row.Shape, row.Commands, row.Errors, row.Unanswered, traceLatency(row.LatencyAvgMS, "ms"), traceLatency(row.LatencyMaxMS, "ms"), emptyAs(strings.Join(row.Processes, ","), "-"))
+	}
+}
+
+func printPostgresCounts(indent string, counts tracePostgresCounts) {
+	for _, line := range []string{
+		fmt.Sprintf("Commands: %d", counts.Commands),
+		fmt.Sprintf("Responses: %d", counts.Responses),
+		fmt.Sprintf("Errors: %d", counts.Errors),
+		fmt.Sprintf("Unanswered: %d", counts.Unanswered),
+		"Latency avg: " + traceLatency(counts.LatencyAvgMS, "ms"),
+		"Latency max: " + traceLatency(counts.LatencyMaxMS, "ms"),
+		fmt.Sprintf("Connections: %d", counts.Connections),
+		fmt.Sprintf("TLS connections: %d", counts.TLSConnections),
+	} {
+		fmt.Fprintln(os.Stdout, indent+line)
+	}
+}
+
+func tracePostgresDetailLines(event captureEvent) []string {
+	info := event.Postgres
+	lines := []string{
+		"event: " + event.Event,
+		"time: " + traceEventClock(event),
+		"side: " + emptyAs(event.Side, "-"),
+		"process: " + emptyAs(event.Process, "-"),
+		"source: " + emptyAs(event.Source, "-"),
+		"destination: " + emptyAs(event.Destination, "-"),
+		"bytes: " + strconv.FormatUint(event.Bytes, 10),
+	}
+	for _, field := range [][2]string{
+		{"command", info.Command}, {"statement", info.Statement}, {"user", info.User}, {"database", info.Database},
+		{"server_version", info.ServerVersion}, {"encryption", info.Encryption}, {"tag", info.Tag},
+	} {
+		if field[1] != "" {
+			lines = append(lines, field[0]+": "+field[1])
+		}
+	}
+	if event.LatencyMS != nil {
+		lines = append(lines, "latency: "+traceLatency(event.LatencyMS, "ms"))
+	}
+	if info.Executes > 1 {
+		lines = append(lines, "executes: "+strconv.Itoa(info.Executes))
+	}
+	if info.Rows != nil {
+		lines = append(lines, "rows: "+strconv.FormatUint(*info.Rows, 10))
+	}
+	if info.Severity != "" || info.SQLState != "" {
+		lines = append(lines, "error: "+tracePostgresResultText(event))
+	} else if event.Event == postgresEventTLS && info.Message != "" {
+		lines = append(lines, "note: "+info.Message)
+	}
+	if info.Detail != "" {
+		lines = append(lines, "detail: "+info.Detail)
+	}
+	if info.SQL != "" {
+		lines = append(lines, "", "sql:")
+		lines = append(lines, strings.Split(info.SQL, "\n")...)
+		if info.SQLTruncated {
+			lines = append(lines, "(truncated)")
+		}
+	}
+	return lines
 }

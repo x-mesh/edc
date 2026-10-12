@@ -188,9 +188,9 @@ func pgTokens(events []captureEvent) string {
 
 // 연결 topic이 몇 줄로 끝나도록 mysql/clickhouse tracker와 같은 모양을 고정한다.
 var (
-	_ func(string, bool) *postgresTracker                        = newPostgresTracker
+	_ func(string, bool) *postgresTracker                       = newPostgresTracker
 	_ func(*postgresTracker, mysqlRecord, int64) []captureEvent = (*postgresTracker).events
-	_ func(*postgresTracker, uint64)                             = (*postgresTracker).forgetSocket
+	_ func(*postgresTracker, uint64)                            = (*postgresTracker).forgetSocket
 )
 
 func pgCString(text string) []byte { return append([]byte(text), 0) }

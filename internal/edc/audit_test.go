@@ -2,11 +2,14 @@ package edc
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io/fs"
 	"net"
 	"os"
 	"path/filepath"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -450,5 +453,71 @@ func TestAuditResultIDsFitTheLabel(t *testing.T) {
 		if len(result.Probe) > 24 {
 			t.Errorf("%s는 %d자로 24자를 넘는다", result.Probe, len(result.Probe))
 		}
+	}
+}
+
+func TestAuditCheckIDsMatchEvaluate(t *testing.T) {
+	var ids []string
+	for _, result := range evaluateAudit(auditFacts{Container: "docker", CapErr: errors.New("x"), PIDNSErr: errors.New("x")}) {
+		ids = append(ids, strings.TrimPrefix(result.Probe, "audit."))
+	}
+	if !slices.Equal(ids, auditCheckIDs) {
+		t.Fatalf("evaluateAudit ids = %q, auditCheckIDs = %q", ids, auditCheckIDs)
+	}
+}
+
+func TestApplyAuditAcceptKeepsFindingVisible(t *testing.T) {
+	failing := auditResult("user.uid0", StatusFail, "UID 0 also belongs to toor")
+	failing.Error = &DiagnosticError{Kind: "account", Message: failing.Summary}
+	failing.Next = "edit /etc/passwd"
+	passing := auditResult("kernel.sysctl", StatusPass, "8 hardening values match")
+	results := applyAuditAccept([]Result{failing, passing}, []string{"user.uid0", "kernel.sysctl"})
+
+	accepted := results[0]
+	if accepted.Status != StatusSkip || accepted.Error != nil || accepted.Next != "" || !strings.Contains(accepted.Summary, "toor") {
+		t.Fatalf("accepted = %#v", accepted)
+	}
+	if accepted.Summary != T("audit.accepted", StatusFail, failing.Summary) {
+		t.Fatalf("accepted summary = %q", accepted.Summary)
+	}
+	if accepted.Metrics["accepted"] != true || accepted.Metrics["accepted_status"] != StatusFail {
+		t.Fatalf("accepted metrics = %#v", accepted.Metrics)
+	}
+	if !reflect.DeepEqual(results[1], passing) {
+		t.Fatalf("pass result changed: %#v", results[1])
+	}
+	if code := exitCode(results); code != 0 {
+		t.Fatalf("exit code with an accepted fail = %d", code)
+	}
+	data, err := json.Marshal(accepted)
+	if err != nil || !strings.Contains(string(data), `"accepted":true`) || !strings.Contains(string(data), `"accepted_status":"fail"`) {
+		t.Fatalf("JSON = %s, error = %v", data, err)
+	}
+	if line := formatResultLine(accepted, false); !strings.HasPrefix(line, "SKIP") || !strings.Contains(line, "accepted (fail)") {
+		t.Fatalf("terminal line = %q", line)
+	}
+}
+
+func TestAuditExposureAllowPorts(t *testing.T) {
+	sockets := []listenSocket{
+		{Proto: "tcp", Address: "0.0.0.0", Port: 6379, Process: "redis-server"},
+		{Proto: "tcp", Address: "0.0.0.0", Port: 5432, Process: "postgres"},
+	}
+	open := auditFirewall{Tool: "nftables", Chains: 1}
+
+	all := auditExposure(auditFacts{Listen: sockets, Firewall: open, AllowPorts: []int{5432, 6379}})
+	if all.Status != StatusSkip || all.Metrics["accepted"] != true || all.Metrics["accepted_status"] != StatusFail || all.Error != nil {
+		t.Fatalf("all allowed = %s %q %#v", all.Status, all.Summary, all.Metrics)
+	}
+	if !reflect.DeepEqual(all.Metrics["allowed_ports"], []int{6379, 5432}) || !strings.Contains(all.Summary, "redis/6379") {
+		t.Fatalf("all allowed = %q %#v", all.Summary, all.Metrics)
+	}
+
+	partial := auditExposure(auditFacts{Listen: sockets, Firewall: open, AllowPorts: []int{5432}})
+	if partial.Status != StatusFail || strings.Contains(partial.Summary, "postgres") || !strings.Contains(partial.Summary, "redis/6379") {
+		t.Fatalf("partial = %s %q", partial.Status, partial.Summary)
+	}
+	if !reflect.DeepEqual(partial.Metrics["allowed_ports"], []int{5432}) || !slices.Contains(partial.Warnings, T("audit.net.allowed_ports", "postgres/5432")) {
+		t.Fatalf("partial metrics = %#v warnings = %q", partial.Metrics, partial.Warnings)
 	}
 }

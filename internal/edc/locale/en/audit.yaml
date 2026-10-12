@@ -1,5 +1,6 @@
 # English messages for the audit command.
 audit:
+  accepted: "accepted (%s): %s"
   skip:
     linux_only: "edc audits Linux hosts only"
     needs_root: "needs root to read %s"
@@ -17,6 +18,7 @@ audit:
     firewall_drops: "%s drops inbound traffic that no rule accepts (%d input chains, %d rules)"
     firewall_rules: "%s accepts by default, %d input rules (edc does not read the rule order)"
     firewall_open: "%s has no input rule, the host accepts all inbound traffic"
+    allowed_ports: "allow_ports in the config accepts %s"
     forward_off: "IP forwarding is off"
     forward_container: "IP forwarding is on for %s"
     forward_on: "IP forwarding is on, and edc found no container runtime"

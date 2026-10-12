@@ -1,5 +1,6 @@
 # audit コマンドの日本語メッセージ。
 audit:
+  accepted: "受け入れ済み (%s): %s"
   skip:
     linux_only: "audit は Linux でのみ動作します"
     needs_root: "%s を読むには root が必要です"
@@ -17,6 +18,7 @@ audit:
     firewall_drops: "%s: どのルールにも合わない受信を遮断 (input chain %d 個、ルール %d 個)"
     firewall_rules: "%s: 既定で許可、input ルール %d 個 (ルールの順序は解釈しない)"
     firewall_open: "%s に input ルールがなく、受信をすべて許可しています"
+    allowed_ports: "設定の allow_ports が %s を許可しています"
     forward_off: "IP forwarding オフ"
     forward_container: "IP forwarding オン (%s が使用)"
     forward_on: "IP forwarding がオンですが、コンテナランタイムが見つかりません"

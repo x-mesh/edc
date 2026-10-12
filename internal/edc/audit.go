@@ -156,6 +156,9 @@ type auditFacts struct {
 	Running        string
 	Kernels        []string
 
+	// AllowPorts는 설정에서 열어 두기로 한 포트다. net.exposed 판정에서 빼고 따로 알린다.
+	AllowPorts []int
+
 	Container     string
 	EUID          int
 	CapEff        uint64
@@ -192,7 +195,43 @@ func runAudit(args []string, version string) int {
 	if !ok {
 		return emit(options, buildReport(version, started, nil, []Result{unsupported("audit", T("audit.skip.linux_only"))}, options.redact))
 	}
-	return emit(options, buildReport(version, started, nil, evaluateAudit(collectAuditFacts(ctx, sources)), options.redact))
+	facts := collectAuditFacts(ctx, sources)
+	facts.AllowPorts = activeConfig.Audit.AllowPorts
+	results := applyAuditAccept(evaluateAudit(facts), activeConfig.Audit.Accept)
+	return emit(options, buildReport(version, started, nil, results, options.redact))
+}
+
+// auditCheckIDs는 evaluateAudit가 돌려줄 수 있는 모든 id다. 설정의 accept에 오타가 있으면 이 목록으로 거른다.
+var auditCheckIDs = []string{
+	"net.exposed", "net.firewall", "net.ip_forward",
+	"ssh.root_login", "ssh.password_auth", "ssh.key_files",
+	"user.uid0", "user.empty_pass", "user.sudo_nopass", "user.root_groups",
+	"file.sensitive", "file.path_writable", "kernel.sysctl", "patch.reboot",
+	"ctr.privileged", "ctr.docker_sock", "ctr.root_user", "ctr.host_ns",
+}
+
+// applyAuditAccept는 받아들인 warn·fail을 skip으로 바꾼다. 결과를 지우지 않고 원래 판정을 요약과 metrics에 남긴다.
+func applyAuditAccept(results []Result, accept []string) []Result {
+	for index, result := range results {
+		if (result.Status == StatusWarn || result.Status == StatusFail) && slices.Contains(accept, strings.TrimPrefix(result.Probe, "audit.")) {
+			results[index] = acceptAuditResult(result)
+		}
+	}
+	return results
+}
+
+func acceptAuditResult(result Result) Result {
+	original := result.Status
+	result.Status = StatusSkip
+	result.Summary = T("audit.accepted", original, result.Summary)
+	result.Error = nil
+	result.Next = ""
+	if result.Metrics == nil {
+		result.Metrics = map[string]interface{}{}
+	}
+	result.Metrics["accepted"] = true
+	result.Metrics["accepted_status"] = original
+	return result
 }
 
 func (sources auditSources) file(path string) string { return filepath.Join(sources.root, path) }
@@ -803,14 +842,33 @@ func evaluateAudit(facts auditFacts) []Result {
 	return results
 }
 
+type auditExposed struct {
+	labels, evidence []string
+	ports            []int
+	published        bool
+}
+
+func (exposed *auditExposed) add(name string, socket listenSocket) {
+	label := fmt.Sprintf("%s/%d", name, socket.Port)
+	if !slices.Contains(exposed.labels, label) {
+		exposed.labels = append(exposed.labels, label)
+		exposed.ports = append(exposed.ports, socket.Port)
+	}
+	exposed.published = exposed.published || socket.Process == "docker-proxy"
+	line := fmt.Sprintf("%s %s:%d", socket.Proto, socket.Address, socket.Port)
+	if socket.Process != "" {
+		line += "  " + socket.Process
+	}
+	exposed.evidence = append(exposed.evidence, line)
+}
+
 func auditExposure(facts auditFacts) Result {
 	const id = "net.exposed"
 	if facts.ListenErr != nil {
 		return auditSkip(id, "sockets", facts.ListenErr)
 	}
-	var exposed, evidence []string
+	var rest, allowed auditExposed
 	seen := map[string]bool{}
-	published := false
 	for _, socket := range facts.Listen {
 		name, sensitive := auditSensitivePorts[socket.Port]
 		scope := listenBindingScope(socket.Proto, socket.Address)
@@ -822,21 +880,33 @@ func auditExposure(facts auditFacts) Result {
 			continue
 		}
 		seen[key] = true
-		label := fmt.Sprintf("%s/%d", name, socket.Port)
-		if !slices.Contains(exposed, label) {
-			exposed = append(exposed, label)
+		if slices.Contains(facts.AllowPorts, socket.Port) {
+			allowed.add(name, socket)
+		} else {
+			rest.add(name, socket)
 		}
-		published = published || socket.Process == "docker-proxy"
-		line := fmt.Sprintf("%s %s:%d", socket.Proto, socket.Address, socket.Port)
-		if socket.Process != "" {
-			line += "  " + socket.Process
-		}
-		evidence = append(evidence, line)
 	}
-	if len(exposed) == 0 {
+	switch {
+	case len(rest.labels) == 0 && len(allowed.labels) == 0:
 		return auditResult(id, StatusPass, T("audit.net.exposed_none", len(facts.Listen)))
+	case len(rest.labels) == 0:
+		// 모두 허용한 포트여도 판정을 지우지 않는다. 원래 판정을 accepted로 보인다.
+		result := acceptAuditResult(auditExposureResult(facts, allowed))
+		result.Metrics["allowed_ports"] = allowed.ports
+		result.Warnings = append(result.Warnings, T("audit.net.allowed_ports", strings.Join(allowed.labels, ", ")))
+		return result
 	}
-	ports := strings.Join(exposed, ", ")
+	result := auditExposureResult(facts, rest)
+	if len(allowed.labels) > 0 {
+		result.Metrics = map[string]interface{}{"allowed_ports": allowed.ports}
+		result.Warnings = append(result.Warnings, T("audit.net.allowed_ports", strings.Join(allowed.labels, ", ")))
+	}
+	return result
+}
+
+func auditExposureResult(facts auditFacts, exposed auditExposed) Result {
+	const id = "net.exposed"
+	ports := strings.Join(exposed.labels, ", ")
 	var result Result
 	switch {
 	case facts.FirewallErr != nil:
@@ -847,10 +917,10 @@ func auditExposure(facts auditFacts) Result {
 		result = auditResult(id, StatusFail, T("audit.net.exposed_open", ports))
 		result.Error = &DiagnosticError{Kind: "exposure", Message: result.Summary}
 	}
-	result.Evidence = []Evidence{{Label: T("audit.evidence.sockets"), Value: strings.Join(evidence, "\n")}}
+	result.Evidence = []Evidence{{Label: T("audit.evidence.sockets"), Value: strings.Join(exposed.evidence, "\n")}}
 	result.Warnings = []string{T("audit.net.cloud_note")}
 	// docker가 publish한 포트는 nat 표에서 DNAT되어 INPUT이 아니라 FORWARD를 지난다. INPUT의 drop 정책은 막지 못한다.
-	if published {
+	if exposed.published {
 		result.Warnings = append(result.Warnings, T("audit.net.docker_note"))
 	}
 	result.Next = "edc listen -v"

@@ -1,5 +1,6 @@
 # audit 명령의 한국어 메시지.
 audit:
+  accepted: "받아들임 (%s): %s"
   skip:
     linux_only: "audit는 Linux에서만 동작합니다"
     needs_root: "%s를 읽으려면 root가 필요합니다"
@@ -17,6 +18,7 @@ audit:
     firewall_drops: "%s: 규칙에 맞지 않는 트래픽 차단 (input chain %d개, 규칙 %d개)"
     firewall_rules: "%s: 기본 허용, input 규칙 %d개 (규칙 순서는 해석하지 않음)"
     firewall_open: "%s에 input 규칙이 없어 들어오는 트래픽을 모두 허용합니다"
+    allowed_ports: "설정의 allow_ports가 %s를 허용합니다"
     forward_off: "IP forwarding 꺼짐"
     forward_container: "IP forwarding 켜짐 (%s가 사용)"
     forward_on: "IP forwarding이 켜져 있는데 컨테이너 런타임을 찾지 못했습니다"

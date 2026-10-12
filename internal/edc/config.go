@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"time"
 
@@ -70,6 +71,13 @@ func (duration configDuration) MarshalText() ([]byte, error) {
 type edcConfig struct {
 	Lang     string         `yaml:"lang,omitempty" toml:"lang,omitempty"`
 	Defaults configDefaults `yaml:"defaults,omitempty" toml:"defaults,omitempty"`
+	Audit    auditConfig    `yaml:"audit,omitempty" toml:"audit,omitempty"`
+}
+
+// auditConfig는 사용자가 확인하고 받아들인 audit 결과다. 받아들인 결과도 숨기지 않고 accepted로 보인다.
+type auditConfig struct {
+	Accept     []string `yaml:"accept,omitempty" toml:"accept,omitempty"`
+	AllowPorts []int    `yaml:"allow_ports,omitempty" toml:"allow_ports,omitempty"`
 }
 
 type configDefaults struct {
@@ -371,6 +379,16 @@ func validateConfig(config edcConfig) error {
 	}
 	if d.Log.CommandDisplay != nil && *d.Log.CommandDisplay != "full" && *d.Log.CommandDisplay != "name" && *d.Log.CommandDisplay != "none" {
 		return invalidConfig("defaults.log.command_display", "must be full, name, or none")
+	}
+	for _, id := range config.Audit.Accept {
+		if !slices.Contains(auditCheckIDs, id) {
+			return invalidConfig("audit.accept", fmt.Sprintf("%q is not an audit check id", id))
+		}
+	}
+	for _, port := range config.Audit.AllowPorts {
+		if port < 1 || port > 65535 {
+			return invalidConfig("audit.allow_ports", fmt.Sprintf("%d must be between 1 and 65535", port))
+		}
 	}
 
 	if err := validateLogPolicy(logOptions{

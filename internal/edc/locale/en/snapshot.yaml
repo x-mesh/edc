@@ -15,6 +15,8 @@ snapshot:
     oom: "OOM kills since boot: %d"
     disk: "%s on %s: %s / %s (%.2f%%)"
     processes: "%d processes, %d threads observed"
+  is_dir: "%s is a directory, name a file"
+  not_dir: "%s is not a directory"
   exists: "%s already exists, add --force to replace it"
   saved: "saved %s"
   diff_hint: "compare with: edc report diff <before> %s"

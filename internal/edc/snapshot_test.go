@@ -412,3 +412,74 @@ func TestSnapshotDefaultPathSanitizesTheHost(t *testing.T) {
 		}
 	}
 }
+
+// section 이름 하나로 skip을 남기면 report diff가 개별 점검을 removed로만 보이고 악화로 세지 않는다.
+func TestCollectSnapshotSkipsEachKnownIDOnTimeout(t *testing.T) {
+	block := make(chan struct{})
+	defer close(block)
+	sections := []snapshotSection{{
+		name: "audit",
+		run:  func(context.Context) []Result { <-block; return nil },
+		ids:  func() []string { return []string{"audit.net.exposed", "audit.ssh.root_login"} },
+	}}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	results := collectSnapshot(ctx, sections, 20*time.Millisecond)
+	indexed := snapshotResultsByProbe(results)
+	if len(results) != 2 || indexed["audit.net.exposed"].Status != StatusSkip || indexed["audit.ssh.root_login"].Status != StatusSkip {
+		t.Fatalf("results = %+v, want one timeout skip per known ID", results)
+	}
+	if _, ok := indexed["audit"]; ok {
+		t.Fatalf("results = %+v, the section name must not replace the IDs", results)
+	}
+}
+
+func TestSnapshotSectionIDsAreStable(t *testing.T) {
+	for _, section := range snapshotSections(6 * time.Hour) {
+		if section.ids == nil {
+			continue
+		}
+		ids := section.ids()
+		seen := map[string]bool{}
+		for _, id := range ids {
+			if !strings.HasPrefix(id, section.name+".") || seen[id] {
+				t.Errorf("%s: id %q is not unique or not under the section", section.name, id)
+			}
+			seen[id] = true
+		}
+		if len(ids) == 0 {
+			t.Errorf("%s: no ids", section.name)
+		}
+	}
+}
+
+// 수집은 timeout까지 걸리므로 쓸 수 없는 경로는 수집 전에 실패해야 한다.
+func TestCheckSnapshotPath(t *testing.T) {
+	directory := t.TempDir()
+	existing := filepath.Join(directory, "old.json")
+	if err := os.WriteFile(existing, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name  string
+		path  string
+		force bool
+		ok    bool
+	}{
+		{"new file", filepath.Join(directory, "new.json"), false, true},
+		{"existing without force", existing, false, false},
+		{"existing with force", existing, true, true},
+		{"directory with force", directory, true, false},
+		{"missing parent", filepath.Join(directory, "missing", "new.json"), false, false},
+		{"parent is a file", filepath.Join(existing, "new.json"), true, false},
+	}
+	for _, tt := range tests {
+		err := checkSnapshotPath(tt.path, tt.force)
+		if (err == nil) != tt.ok {
+			t.Errorf("%s: err = %v", tt.name, err)
+		}
+	}
+	if err := checkSnapshotPath(existing, false); !errors.Is(err, errSnapshotExists) {
+		t.Errorf("existing file err = %v, want errSnapshotExists", err)
+	}
+}

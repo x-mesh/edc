@@ -333,7 +333,7 @@ command:
       - "既定のファイルは ./edc-snapshot-<host>-<UTC 時刻>.json です。"
       - "既存のファイルは置き換えません。置き換えるには --force を付けます。"
       - "2 つの snapshot の比較: edc report diff before.json after.json"
-      - "macOS では audit、events、changes は skip になります。"
+      - "macOS では info.pressure、audit、events、changes が skip です。"
       - "--redact が隠すのは host 名、ホームのパス、IP アドレスだけです。"
   report:
     summary: "保存した edc 診断結果の表示と比較"

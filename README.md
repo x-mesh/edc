@@ -599,7 +599,7 @@ The report holds these results.
 | `events.*` | the `edc events` signals in the `--since` window (default 6h) |
 | `changes.*` | the `edc changes` sources in the `--since` window |
 
-All sections run at the same time under one `--timeout` budget (default 15s). If a section does not finish within the budget and 2 more seconds, its result is `skip` with the reason. If a collector fails, its result is `fail` with the error. Every section is in the report.
+All sections run at the same time under one `--timeout` budget (default 15s). If a section does not finish within the budget and 2 more seconds, its result is `skip` with the reason. For `audit`, `events`, and `changes`, each check gets its own `skip`, so `report diff` compares the same IDs. `info.disk` cannot know the mounts, so it gets one `info.disk` skip. If a collector fails, its result is `fail` with the error. Every section is in the report.
 
 On macOS, `audit`, `events`, `changes`, and `info.pressure` show `skip`. Without root on Linux, some audit and event sources show `skip`, not `pass`.
 

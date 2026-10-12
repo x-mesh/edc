@@ -15,6 +15,8 @@ snapshot:
     oom: "起動後の OOM kill: %d 回"
     disk: "%s (%s): %s / %s (%.2f%%)"
     processes: "process %d 個、thread %d 個を確認"
+  is_dir: "%s はディレクトリです。ファイル名を指定してください"
+  not_dir: "%s はディレクトリではありません"
   exists: "%s は既にあります。置き換えるには --force を付けてください"
   saved: "保存: %s"
   diff_hint: "比較: edc report diff <before> %s"

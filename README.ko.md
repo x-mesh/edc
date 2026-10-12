@@ -561,7 +561,7 @@ report에는 다음 결과가 들어갑니다.
 | `events.*` | `--since` 기간(기본 6h)의 `edc events` 신호 |
 | `changes.*` | `--since` 기간의 `edc changes` 원천 |
 
-모든 항목은 `--timeout` 예산(기본 15s) 하나 안에서 동시에 돌아갑니다. 예산에 2초를 더해도 끝나지 않은 항목은 이유와 함께 `skip`이 됩니다. 수집기가 실패하면 오류와 함께 `fail`이 됩니다. 어느 항목도 report에서 빠지지 않습니다.
+모든 항목은 `--timeout` 예산(기본 15s) 하나 안에서 동시에 돌아갑니다. 예산에 2초를 더해도 끝나지 않은 항목은 이유와 함께 `skip`이 됩니다. `audit`, `events`, `changes`는 점검마다 `skip`을 하나씩 남기므로 `report diff`가 같은 ID끼리 비교합니다. `info.disk`는 mount 목록을 알 수 없어서 `info.disk` skip 하나로 남습니다. 수집기가 실패하면 오류와 함께 `fail`이 됩니다. 어느 항목도 report에서 빠지지 않습니다.
 
 macOS에서는 `audit`, `events`, `changes`, `info.pressure`가 `skip`으로 나옵니다. Linux에서 root가 아니면 일부 audit와 events 원천이 `pass`가 아니라 `skip`으로 나옵니다.
 

@@ -333,7 +333,7 @@ command:
       - "The default file is ./edc-snapshot-<host>-<UTC time>.json."
       - "It does not replace an existing file. Add --force to replace it."
       - "Compare two snapshots: edc report diff before.json after.json"
-      - "On macOS, audit, events, and changes show skip."
+      - "On macOS, info.pressure, audit, events, and changes show skip."
       - "--redact hides the host name, the home path, and IP addresses only."
   report:
     summary: "View and compare saved edc diagnostic results"

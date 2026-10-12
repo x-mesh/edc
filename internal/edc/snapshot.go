@@ -49,10 +49,10 @@ func runSnapshot(args []string, version string) int {
 		hostname, _ := os.Hostname()
 		path = snapshotDefaultPath(hostname, started, options.redact)
 	}
-	// 수집은 timeout까지 걸릴 수 있으므로 덮어쓰지 못할 경로는 먼저 거른다. 쓸 때 O_EXCL로 다시 막는다.
-	if path != "-" && !*force {
-		if _, err := os.Lstat(path); err == nil {
-			fmt.Fprintln(os.Stderr, snapshotExistsError{path: path})
+	// 수집은 timeout까지 걸릴 수 있으므로 쓰지 못할 경로는 먼저 거른다. 쓸 때 O_EXCL로 다시 막는다.
+	if path != "-" {
+		if err := checkSnapshotPath(path, *force); err != nil {
+			fmt.Fprintln(os.Stderr, err)
 			return 2
 		}
 	}
@@ -119,27 +119,38 @@ func snapshotSections(since time.Duration) []snapshotSection {
 			facts := collectAuditFacts(ctx, sources)
 			facts.AllowPorts = activeConfig.Audit.AllowPorts
 			return applyAuditAccept(evaluateAudit(facts), activeConfig.Audit.Accept)
-		}},
+		}, ids: func() []string { return snapshotProbeIDs(evaluateAudit(auditFacts{})) }},
 		{name: "events", run: func(ctx context.Context) []Result {
 			sources, ok := hostEventsSources()
 			if !ok {
 				return []Result{unsupported("events", T("events.skip.linux_only"))}
 			}
 			return evaluateEvents(collectEventsFacts(ctx, sources, since))
-		}},
+		}, ids: func() []string { return snapshotProbeIDs(evaluateEvents(eventsFacts{})) }},
 		{name: "changes", run: func(ctx context.Context) []Result {
 			sources, ok := hostChangesSources()
 			if !ok {
 				return []Result{unsupported("changes", T("changes.skip.linux_only"))}
 			}
 			return evaluateChanges(ctx, sources, since)
-		}},
+		}, ids: func() []string { return []string{"changes.packages", "changes.etc", "changes.services"} }},
 	}
 }
 
 type snapshotSection struct {
 	name string
 	run  func(context.Context) []Result
+	// ids는 section이 정상일 때 내는 결과의 probe ID다. timeout이면 이 ID마다 skip을 남긴다. section 이름 하나로 남기면
+	// report diff가 개별 점검을 removed로만 보이고 악화로 세지 않는다. 비어 있으면 section 이름 하나로 남긴다.
+	ids func() []string
+}
+
+func snapshotProbeIDs(results []Result) []string {
+	ids := make([]string, 0, len(results))
+	for _, result := range results {
+		ids = append(ids, result.Probe)
+	}
+	return ids
 }
 
 // collectSnapshot은 section마다 goroutine을 하나 띄우고, 모두 끝나거나 ctx가 끝난 뒤 grace가 지날 때까지 기다린다.
@@ -164,13 +175,24 @@ func collectSnapshot(ctx context.Context, sections []snapshotSection, grace time
 	expired := false
 	for index, channel := range channels {
 		name := sections[index].name
-		timedOut := func() Result { return unsupported(name, T("snapshot.skip.timeout", name, budget())) }
+		section := sections[index]
+		timedOut := func() []Result {
+			reason := T("snapshot.skip.timeout", name, budget())
+			if section.ids == nil {
+				return []Result{unsupported(name, reason)}
+			}
+			var skipped []Result
+			for _, id := range section.ids() {
+				skipped = append(skipped, unsupported(id, reason))
+			}
+			return skipped
+		}
 		if expired {
 			select {
 			case section := <-channel:
 				results = append(results, section...)
 			default:
-				results = append(results, timedOut())
+				results = append(results, timedOut()...)
 			}
 			continue
 		}
@@ -188,7 +210,7 @@ func collectSnapshot(ctx context.Context, sections []snapshotSection, grace time
 			results = append(results, section...)
 		case <-cutoff:
 			expired = true
-			results = append(results, timedOut())
+			results = append(results, timedOut()...)
 		}
 	}
 	return results
@@ -340,6 +362,24 @@ func snapshotProcessResult(started time.Time, processes []topProcess, err error)
 
 // errSnapshotExists는 --force 없이 이미 있는 경로를 만났다는 뜻이다. caller는 errors.Is로 구별한다.
 var errSnapshotExists = errors.New("snapshot path exists")
+
+// checkSnapshotPath는 수집 전에 경로를 본다. 디렉터리는 --force로도 바꿀 수 없고, 없는 디렉터리 아래에는 쓸 수 없다.
+func checkSnapshotPath(path string, force bool) error {
+	if info, err := os.Lstat(path); err == nil {
+		if info.IsDir() {
+			return errors.New(T("snapshot.is_dir", path))
+		}
+		if !force {
+			return snapshotExistsError{path: path}
+		}
+	}
+	if info, err := os.Stat(filepath.Dir(path)); err != nil {
+		return err
+	} else if !info.IsDir() {
+		return errors.New(T("snapshot.not_dir", filepath.Dir(path)))
+	}
+	return nil
+}
 
 type snapshotExistsError struct{ path string }
 

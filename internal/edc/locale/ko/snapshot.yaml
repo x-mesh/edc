@@ -15,6 +15,8 @@ snapshot:
     oom: "부팅 뒤 OOM kill: %d회"
     disk: "%s (%s): %s / %s (%.2f%%)"
     processes: "process %d개, thread %d개 확인"
+  is_dir: "%s는 디렉터리입니다. 파일 이름을 지정하세요"
+  not_dir: "%s는 디렉터리가 아닙니다"
   exists: "%s가 이미 있습니다. 바꾸려면 --force를 붙이세요"
   saved: "저장: %s"
   diff_hint: "비교: edc report diff <before> %s"

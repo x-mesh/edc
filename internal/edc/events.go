@@ -345,9 +345,8 @@ func collectEventsFacts(ctx context.Context, sources eventsSources, since time.D
 			}
 			kernel = append(kernel, kernelLine{Time: at, Message: record.Message})
 		}
-	} else if err == nil {
-		facts.KernelSource = "journal"
 	} else {
+		// journal에 커널 줄이 없으면 조용한 호스트인지 journal이 커널을 모으지 않는지 알 수 없다. 통과로 보이지 않게 skip한다.
 		facts.KernelErr = kmsgErr
 	}
 

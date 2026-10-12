@@ -421,3 +421,17 @@ func TestParseEventsFlagsRejectsBadSince(t *testing.T) {
 		t.Fatalf("duration = %q", text)
 	}
 }
+
+// journal이 커널 메시지를 모으지 않는 호스트(컨테이너, ForwardToKmsg만 켠 설정)와 조용한 호스트는 모두 커널 줄이 0개다.
+// 둘을 구분할 수 없으므로 /dev/kmsg도 못 읽으면 커널 항목은 통과가 아니라 skip이다.
+func TestEventsEmptyKernelJournalWithoutKmsgSkips(t *testing.T) {
+	results := evaluateEventsFixture(eventsTestSources("", nil, nil, errEventsNeedsRoot))
+	for _, id := range []string{"oom", "disk_io", "fs_readonly", "segfault", "link"} {
+		if result := eventsResultByID(t, results, id); result.Status != StatusSkip {
+			t.Errorf("%s = %s: %s", id, result.Status, result.Summary)
+		}
+	}
+	if units := eventsResultByID(t, results, "units"); units.Status == StatusSkip {
+		t.Errorf("journal은 읽었는데 units가 skip이다: %s", units.Summary)
+	}
+}

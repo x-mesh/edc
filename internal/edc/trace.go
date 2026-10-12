@@ -123,6 +123,16 @@ var traceProtocolRegistry = []traceProtocolRegistration{
 		ansiColor: "96", screenColor: "#2dd4bf", groupColumns: traceClickHouseGroupColumns(func(group traceGroupSummary) *traceClickHouseCounts { return group.ClickHouse }), hideTraffic: true, linuxOnly: true,
 		scrollLabels: traceClickHouseScrollLabels, serverSide: true, prerequisites: httpTracePrerequisites, newSummarizer: func() traceSummarizer { return newClickHouseTraceSummarizer() },
 	}},
+	// 평문 PostgreSQL v3 protocol만 본다. TLS와 GSSAPI 암호화 연결은 postgres_tls 한 줄만 남는다. 색은 다른 protocol이 쓰지 않는 값이다.
+	{name: "postgres", view: traceProtocolView{selectorLabel: "postgres"}, spec: traceProtocolSpec{
+		ansiColor: "92", screenColor: "#a3e635", groupColumns: tracePostgresGroupColumns, hideTraffic: true, linuxOnly: true,
+		scrollLabels: tracePostgresScrollLabels, serverSide: true, prerequisites: httpTracePrerequisites, newSummarizer: func() traceSummarizer { return newPostgresTraceSummarizer() },
+	}},
+	// 평문 RESP(Redis 6379)만 본다. TLS 연결의 byte는 암호문이라 framing을 찾지 못하고 버린다. 색은 다른 protocol이 쓰지 않는 값이다.
+	{name: "redis", view: traceProtocolView{selectorLabel: "redis"}, spec: traceProtocolSpec{
+		ansiColor: "31", screenColor: "#e11d48", groupColumns: traceRedisGroupColumns, hideTraffic: true, linuxOnly: true,
+		scrollLabels: traceRedisScrollLabels, serverSide: true, prerequisites: httpTracePrerequisites, newSummarizer: func() traceSummarizer { return newRedisTraceSummarizer() },
+	}},
 	{name: "io", view: traceProtocolView{selectorLabel: "io"}, spec: traceProtocolSpec{ansiColor: "33", screenColor: "#fbbf24", linuxOnly: true, prerequisites: ioTracePrerequisites}, run: runIOTrace},
 	// unix socket 파일 하나를 본다. 목적지는 늘 그 경로라서 port와 target 보기는 한 행뿐이다. source는 상대 process다.
 	{name: "socket", view: traceProtocolView{selectorLabel: "socket"}, spec: traceProtocolSpec{
@@ -335,10 +345,20 @@ func (mode *traceTLSMode) IsBoolFlag() bool { return true }
 // traceLabel은 화면 머리글에 쓰는 trace 이름이다. 서버 쪽 trace는 client 쪽과 같은 event 이름을 쓰므로 머리글로 구분한다.
 // trace http는 기본으로 두 쪽을 모두 보므로, client만 고른 것도 머리글에 쓴다.
 func traceLabel(protocol, side string) string {
-	if side == traceServerSide || (side == traceClientSide && (protocol == "http" || protocol == "mysql" || protocol == "clickhouse")) {
+	if side == traceServerSide || (side == traceClientSide && traceBothSides(protocol)) {
 		return protocol + " --side " + side
 	}
 	return protocol
+}
+
+// traceBothSides는 --side 없이 client와 서버 쪽을 함께 보는 protocol이다.
+func traceBothSides(protocol string) bool {
+	return protocol == "http" || traceDatabaseProtocol(protocol)
+}
+
+// traceDatabaseProtocol은 요청과 응답을 짝짓는 database protocol이다. --slow, --show-secrets, --port를 함께 받는다.
+func traceDatabaseProtocol(protocol string) bool {
+	return protocol == "mysql" || protocol == "clickhouse" || protocol == "postgres" || protocol == "redis"
 }
 
 // traceClientSide와 traceServerSide는 --side 값이다. 서버 쪽 event와 요약에는 Side가 server로 붙는다. HTTP event에는
@@ -453,9 +473,15 @@ func runTrace(args []string) int {
 	return runTraceProtocol(args)
 }
 
+// usage를 두 줄로 나눈다. 한 줄에 모든 protocol을 쓰면 help 화면의 80칸을 넘는다.
+const (
+	traceProtocolUsage = "edc trace <tcp|udp|dns|arp|ndp|http|drop|io|sched|exec> [options]"
+	traceDatabaseUsage = "edc trace <mysql|clickhouse|postgres|redis> [options]"
+)
+
 func traceUsage() {
-	fmt.Fprintln(os.Stderr, T("cli.usage", "edc trace <tcp|udp|dns|arp|ndp|http|mysql|clickhouse|drop> [options]"))
-	fmt.Fprintln(os.Stderr, T("cli.usage", "edc trace <io|sched|exec> [options]"))
+	fmt.Fprintln(os.Stderr, T("cli.usage", traceProtocolUsage))
+	fmt.Fprintln(os.Stderr, T("cli.usage", traceDatabaseUsage))
 	fmt.Fprintln(os.Stderr, T("cli.usage", traceSocketUsage))
 	fmt.Fprintln(os.Stderr, T("cli.usage", traceShowUsage))
 }
@@ -515,7 +541,7 @@ func runTraceProtocol(args []string) int {
 		fmt.Fprintln(os.Stderr, T("cli.trace.slow_range"))
 		return 2
 	}
-	if slowSet && args[0] != "mysql" && args[0] != "clickhouse" {
+	if slowSet && !traceDatabaseProtocol(args[0]) {
 		fmt.Fprintln(os.Stderr, T("cli.trace.slow_protocol"))
 		return 2
 	}
@@ -556,7 +582,7 @@ func runTraceProtocol(args []string) int {
 		fmt.Fprintln(os.Stderr, T("cli.trace.payload_json_conflict"))
 		return 2
 	}
-	if options.showSecrets && options.payload == "" && args[0] != "mysql" && args[0] != "clickhouse" {
+	if options.showSecrets && options.payload == "" && !traceDatabaseProtocol(args[0]) {
 		fmt.Fprintln(os.Stderr, T("cli.trace.show_secrets_payload"))
 		return 2
 	}
@@ -571,7 +597,7 @@ func runTraceProtocol(args []string) int {
 		fmt.Fprintln(os.Stderr, T("cli.trace.port_range"))
 		return 2
 	}
-	if portSet && args[0] != "http" && args[0] != "mysql" && args[0] != "clickhouse" {
+	if portSet && args[0] != "http" && !traceDatabaseProtocol(args[0]) {
 		fmt.Fprintln(os.Stderr, T("cli.trace.port_protocol", args[0]))
 		return 2
 	}
@@ -1077,6 +1103,8 @@ type traceGroup struct {
 	HTTP            *traceHTTPCounts
 	MySQL           *traceMySQLCounts
 	ClickHouse      *traceClickHouseCounts
+	Postgres        *tracePostgresCounts
+	Redis           *traceRedisCounts
 	traceTraffic
 }
 
@@ -1101,6 +1129,9 @@ type traceGroupSummary struct {
 	MySQL    *traceMySQLCounts    `json:"mysql,omitempty"`
 	// ClickHouse는 ClickHouse group에만 있다.
 	ClickHouse *traceClickHouseCounts `json:"clickhouse,omitempty"`
+	// Postgres와 Redis는 그 protocol의 group에만 있다.
+	Postgres *tracePostgresCounts `json:"postgres,omitempty"`
+	Redis    *traceRedisCounts    `json:"redis,omitempty"`
 	traceTraffic
 }
 
@@ -1182,7 +1213,7 @@ func (summarizer *traceGroupSummarizer) observe(event captureEvent) {
 	key, server := traceGroupKey(event, summarizer.groupBy)
 	// 로컬 서버가 받은 HTTP 요청은 같은 process나 target이 보낸 요청과 다른 행에 둔다. 서버의 응답 시간은 처리 시간만
 	// 재므로, 섞으면 평균이 뜻을 잃는다.
-	if (event.Protocol == "http" || event.Protocol == "mysql" || event.Protocol == "clickhouse") && event.Side == traceServerSide {
+	if traceBothSides(event.Protocol) && event.Side == traceServerSide {
 		server = true
 	}
 	// 서버 행과 target 없는 client 행이 같은 주소일 수 있다. 섞이지 않도록 map key만 구분한다.
@@ -1209,6 +1240,16 @@ func (summarizer *traceGroupSummarizer) observe(event captureEvent) {
 		if event.ClickHouse != nil {
 			requestKey = clickHouseEventPrefix + event.ClickHouse.Command
 		}
+		// PostgreSQL 요청은 connect만 postgres_connect이고 나머지 명령은 모두 postgres_query다.
+		if event.Postgres != nil {
+			requestKey = postgresEventQuery
+			if event.Postgres.Command == postgresCommandConnect {
+				requestKey = postgresEventConnect
+			}
+		}
+		if event.Redis != nil {
+			requestKey = redisEventCommand
+		}
 		if server {
 			requestKey += "\x00server"
 		}
@@ -1220,6 +1261,12 @@ func (summarizer *traceGroupSummarizer) observe(event captureEvent) {
 		}
 		if requests := summarizer.groups[requestKey]; requests != nil && requests.ClickHouse != nil {
 			requests.ClickHouse.answered += event.answered
+		}
+		if requests := summarizer.groups[requestKey]; requests != nil && requests.Postgres != nil {
+			requests.Postgres.answered += event.answered
+		}
+		if requests := summarizer.groups[requestKey]; requests != nil && requests.Redis != nil {
+			requests.Redis.answered += event.answered
 		}
 	}
 	summarizer.events++
@@ -1237,7 +1284,7 @@ func (summarizer *traceGroupSummarizer) report(summary captureSummary, duration 
 		result.Groups = append(result.Groups, traceGroupSummary{
 			Group: group.Group, Server: group.Server, Destinations: slices.Sorted(maps.Keys(group.Destinations)), Processes: slices.Sorted(maps.Keys(group.Processes)),
 			Events: group.Events, Rate: traceGroupRate(group.Events, duration), Tx: group.Tx, Rx: group.Rx, Connect: group.Connect,
-			Retransmissions: traceObserved(group.Retransmissions), Resets: traceObserved(group.Resets), LastEvent: group.LastEvent, DNS: traceDNSGroupSummary(group.DNS), Neighbor: traceNeighborGroupSummary(group.Neighbor), HTTP: traceHTTPGroupSummary(group.HTTP), MySQL: traceMySQLGroupSummary(group.MySQL), ClickHouse: traceClickHouseGroupSummary(group.ClickHouse), traceTraffic: traffic,
+			Retransmissions: traceObserved(group.Retransmissions), Resets: traceObserved(group.Resets), LastEvent: group.LastEvent, DNS: traceDNSGroupSummary(group.DNS), Neighbor: traceNeighborGroupSummary(group.Neighbor), HTTP: traceHTTPGroupSummary(group.HTTP), MySQL: traceMySQLGroupSummary(group.MySQL), ClickHouse: traceClickHouseGroupSummary(group.ClickHouse), Postgres: tracePostgresGroupSummary(group.Postgres), Redis: traceRedisGroupSummary(group.Redis), traceTraffic: traffic,
 		})
 	}
 	if summarizer.groupBy == traceGroupByPort {
@@ -1418,6 +1465,16 @@ func observeTraceGroup(group *traceGroup, event captureEvent) {
 			group.ClickHouse = &traceClickHouseCounts{}
 		}
 		group.ClickHouse.observe(event)
+	case "postgres":
+		if group.Postgres == nil {
+			group.Postgres = &tracePostgresCounts{}
+		}
+		group.Postgres.observe(event)
+	case "redis":
+		if group.Redis == nil {
+			group.Redis = &traceRedisCounts{}
+		}
+		group.Redis.observe(event)
 	}
 	group.traceTraffic.observe(event)
 	group.LastEvent = event.Event

@@ -122,8 +122,9 @@ func saveAIClaudeSnapshot(provider aiProvider) error {
 	return saveAIClaudeState(path, aiClaudeState{aiProvider: provider})
 }
 
-// readAIClaudeSnapshot은 statusline이 남긴 값을 읽는다. 리셋 시각이 지난 창은 Claude Code처럼 뺀다.
-func readAIClaudeSnapshot(path string, now time.Time) aiProvider {
+// readAIClaudeSnapshot은 statusline이 남긴 값을 읽는다. 리셋 시각이 지난 창도 상태 줄이 다시 그려질 때까지 남긴다.
+// 빼면 창이 오류 없이 사라지고, 수집기가 앞선 리셋 시각을 잃어 다음 값이 와도 리셋을 기록하지 못한다.
+func readAIClaudeSnapshot(path string) aiProvider {
 	state, ok := loadAIClaudeState(path)
 	if !ok || state.FetchedAt.IsZero() {
 		provider := aiProvider{Name: "claude", Windows: []aiWindow{}, Err: "unreadable Claude usage from the status line"}
@@ -132,15 +133,7 @@ func readAIClaudeSnapshot(path string, now time.Time) aiProvider {
 		}
 		return provider
 	}
-	provider := state.aiProvider
-	windows := []aiWindow{}
-	for _, window := range provider.Windows {
-		if window.ResetsAt.IsZero() || now.Before(window.ResetsAt) {
-			windows = append(windows, window)
-		}
-	}
-	provider.Windows = windows
-	return provider
+	return state.aiProvider
 }
 
 func runAIStatuslineSetup(install bool) int {

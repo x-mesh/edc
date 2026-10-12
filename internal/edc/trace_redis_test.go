@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 func redisKeepAll(byte) redisKeep {
@@ -450,9 +451,9 @@ func redisRecord(socket uint64, server, sent bool, at uint64, payload []byte, si
 const redisRequestCap = 4095
 
 // replayRedis는 한 쪽의 record를 run마다 다른 socket으로 한 tracker에 먹인다. 시각은 파일의 record 번호 x 1 ms다.
-func replayRedis(records []redisFixtureRecord, server bool, responseCap int, showSecrets bool) (map[int][]redisTraced, *redisTracker) {
+func replayRedis(records []redisFixtureRecord, server bool, responseCap int, showSecrets bool) (map[int][]captureEvent, *redisTracker) {
 	tracker := newRedisTracker("", showSecrets)
-	events := map[int][]redisTraced{}
+	events := map[int][]captureEvent{}
 	for i, record := range records {
 		if record.server != server {
 			continue
@@ -468,10 +469,10 @@ func replayRedis(records []redisFixtureRecord, server bool, responseCap int, sho
 }
 
 // redisPairs는 명령 이름 순서와 응답이 답한 명령 이름 순서를 돌려준다. 응답은 모두 answered와 0 이상의 latency가 있어야 한다.
-func redisPairs(t *testing.T, label string, events []redisTraced) (commands, answered []string) {
+func redisPairs(t *testing.T, label string, events []captureEvent) (commands, answered []string) {
 	t.Helper()
 	for _, traced := range events {
-		event, info := traced.event, traced.redis
+		event, info := traced, traced.Redis
 		if event.Protocol != "redis" || info == nil {
 			t.Fatalf("%s: bad event %+v", label, event)
 		}
@@ -497,7 +498,7 @@ func redisPairs(t *testing.T, label string, events []redisTraced) (commands, ans
 	return commands, answered
 }
 
-func redisAllAnswered(t *testing.T, label string, events []redisTraced) {
+func redisAllAnswered(t *testing.T, label string, events []captureEvent) {
 	t.Helper()
 	commands, answered := redisPairs(t, label, events)
 	if len(commands) == 0 || strings.Join(commands, ",") != strings.Join(answered, ",") {
@@ -505,11 +506,11 @@ func redisAllAnswered(t *testing.T, label string, events []redisTraced) {
 	}
 }
 
-func redisSelect(events []redisTraced, name string) []*traceRedisEvent {
+func redisSelect(events []captureEvent, name string) []*traceRedisEvent {
 	var out []*traceRedisEvent
 	for _, traced := range events {
-		if traced.event.Event == name {
-			out = append(out, traced.redis)
+		if traced.Event == name {
+			out = append(out, traced.Redis)
 		}
 	}
 	return out
@@ -519,7 +520,7 @@ func TestRedisReplaysFixtures(t *testing.T) {
 	for _, server := range []bool{true, false} {
 		for _, responseCap := range []int{1024, 4095} {
 			label := func(name string) string { return fmt.Sprintf("%s server=%v cap=%d", name, server, responseCap) }
-			replay := func(name string) map[int][]redisTraced {
+			replay := func(name string) map[int][]captureEvent {
 				events, _ := replayRedis(loadRedisFixture(t, name), server, responseCap, false)
 				return events
 			}
@@ -644,8 +645,8 @@ type redisStep struct {
 	size    int
 }
 
-func redisClient(tracker *redisTracker, socket uint64, steps []redisStep) []redisTraced {
-	var out []redisTraced
+func redisClient(tracker *redisTracker, socket uint64, steps []redisStep) []captureEvent {
+	var out []captureEvent
 	for i, step := range steps {
 		size := step.size
 		if size == 0 {
@@ -657,11 +658,11 @@ func redisClient(tracker *redisTracker, socket uint64, steps []redisStep) []redi
 }
 
 // redisTokens는 event를 짧게 쓴다. C는 명령, R은 응답(명령/종류), E는 오류(명령/class), P는 push다.
-func redisTokens(events []redisTraced) string {
+func redisTokens(events []captureEvent) string {
 	var tokens []string
 	for _, traced := range events {
-		info := traced.redis
-		switch traced.event.Event {
+		info := traced.Redis
+		switch traced.Event {
 		case redisEventCommand:
 			tokens = append(tokens, "C:"+info.Command)
 		case redisEventReply:
@@ -780,8 +781,8 @@ func TestRedisTrackerSideAndLatency(t *testing.T) {
 	events := tracker.events(request, 100)
 	reply := redisRecord(5, true, true, 13_500_000, []byte("$1\r\nv\r\n"), 7)
 	events = append(events, tracker.events(reply, 100)...)
-	if len(events) != 2 || events[1].event.LatencyMS == nil || *events[1].event.LatencyMS != 3.5 || events[1].event.Side != traceServerSide ||
-		events[1].event.TimestampNS != 13_500_100 || events[1].event.Bytes != 7 || events[1].redis.Key != "k" || events[1].redis.BulkLength == nil {
+	if len(events) != 2 || events[1].LatencyMS == nil || *events[1].LatencyMS != 3.5 || events[1].Side != traceServerSide ||
+		events[1].TimestampNS != 13_500_100 || events[1].Bytes != 7 || events[1].Redis.Key != "k" || events[1].Redis.BulkLength == nil {
 		t.Fatalf("events %+v", events)
 	}
 }
@@ -865,11 +866,11 @@ func redisWalk(v reflect.Value, seen map[uintptr]bool, visit func(string)) {
 }
 
 // redisCheckSecrets는 event JSON과 tracker 상태에 심은 비밀이 없는지 본다. value가 보이는지 돌려준다.
-func redisCheckSecrets(t *testing.T, label string, events []redisTraced, tracker *redisTracker, value string) bool {
+func redisCheckSecrets(t *testing.T, label string, events []captureEvent, tracker *redisTracker, value string) bool {
 	t.Helper()
 	var text strings.Builder
 	for _, traced := range events {
-		for _, part := range []any{traced.event, traced.redis} {
+		for _, part := range []any{traced, traced.Redis} {
 			raw, err := json.Marshal(part)
 			if err != nil {
 				t.Fatal(err)
@@ -910,7 +911,7 @@ func TestRedisSecretsNeverKept(t *testing.T) {
 				label := fmt.Sprintf("show=%v server=%v cap=%d", show, server, responseCap)
 				for _, name := range []string{"secrets", "errors", "monitor", "inline", "pipeline", "resp3"} {
 					runs, tracker := replayRedis(loadRedisFixture(t, name), server, responseCap, show)
-					var events []redisTraced
+					var events []captureEvent
 					for run := range len(runs) {
 						events = append(events, runs[run]...)
 					}
@@ -945,7 +946,7 @@ func TestRedisSecretsNeverKept(t *testing.T) {
 			for cut := 1; cut < len(data); cut++ {
 				split := append(append(append([]redisStep(nil), steps[:step]...), redisStep{steps[step].request, data[:cut], 0}, redisStep{steps[step].request, data[cut:], 0}), steps[step+1:]...)
 				tracker := newRedisTracker("", show)
-				var events []redisTraced
+				var events []captureEvent
 				for i := range split {
 					events = append(events, redisClient(tracker, 1, split[i:i+1])...)
 					redisCheckSecrets(t, fmt.Sprintf("show=%v step %d cut %d", show, step, cut), events, tracker, "")
@@ -1023,7 +1024,7 @@ func FuzzRedisTracker(f *testing.F) {
 	f.Fuzz(func(t *testing.T, data, cuts []byte, capture uint16, server bool) {
 		limit := int(capture)%4096 + 1
 		tracker := newRedisTracker("", false)
-		var events []redisTraced
+		var events []captureEvent
 		at := uint64(0)
 		feed := func(response bool, payload []byte, size int) {
 			at += 1_000_000
@@ -1038,7 +1039,7 @@ func FuzzRedisTracker(f *testing.F) {
 		feed(true, []byte("+OK\r\n"), 5)
 		redisFuzzRecords(data, cuts, limit, func() { tracker.forgetSocket(1) }, feed)
 		for _, traced := range events {
-			if latency := traced.event.LatencyMS; latency != nil && *latency < 0 {
+			if latency := traced.LatencyMS; latency != nil && *latency < 0 {
 				t.Fatalf("negative latency %v", *latency)
 			}
 		}
@@ -1056,7 +1057,7 @@ func FuzzRedisTracker(f *testing.F) {
 			return
 		}
 		for _, traced := range events {
-			raw, err := json.Marshal(traced.redis)
+			raw, err := json.Marshal(traced.Redis)
 			if err != nil || bytes.Contains(raw, []byte(redisFuzzSecret)) {
 				t.Fatalf("event %s carries the AUTH password (%v)", raw, err)
 			}
@@ -1178,7 +1179,7 @@ func TestRedisTrackerHidesGeneratedPasswords(t *testing.T) {
 		redisStep{true, redisArgs("ACL", "GENPASS"), 0},
 		redisStep{false, "$64\r\nedc-genpass-" + strings.Repeat("a", 52) + "\r\n", 0},
 	))
-	if text := fmt.Sprintf("%+v", *events[len(events)-1].redis); len(events) != 4 || strings.Contains(text, "edc-genpass") {
+	if text := fmt.Sprintf("%+v", *events[len(events)-1].Redis); len(events) != 4 || strings.Contains(text, "edc-genpass") {
 		t.Fatalf("events %d, reply %s", len(events), text)
 	}
 }
@@ -1243,7 +1244,7 @@ func FuzzRedisTrackerShowSecrets(f *testing.F) {
 		}
 		limit := int(capture)%4096 + 1
 		tracker := newRedisTracker("", true)
-		var events []redisTraced
+		var events []captureEvent
 		at := uint64(0)
 		feed := func(response bool, payload []byte, size int) {
 			at += 1_000_000
@@ -1265,7 +1266,7 @@ func FuzzRedisTrackerShowSecrets(f *testing.F) {
 		split(true, pair[1], responseCut)
 		redisFuzzRecords(data, cuts, limit, func() { tracker.forgetSocket(1) }, feed)
 		for _, traced := range events {
-			for _, part := range []any{traced.event, traced.redis} {
+			for _, part := range []any{traced, traced.Redis} {
 				raw, err := json.Marshal(part)
 				if err != nil || bytes.Contains(raw, []byte(redisShowSecret)) {
 					t.Fatalf("event %s carries the password (%v)", raw, err)
@@ -1278,4 +1279,64 @@ func FuzzRedisTrackerShowSecrets(f *testing.F) {
 			}
 		})
 	})
+}
+
+// CLIENT REPLY OFF와 SKIP 뒤의 명령, 그 둘 자신, 복제 연결의 REPLCONF ACK는 서버가 답하지 않는다. 요약과 화면은 이 명령을
+// 응답 없음으로 세지 않는다. MySQL의 COM_STMT_CLOSE와 같다.
+func TestRedisCommandsWithoutAReplyAreNotUnanswered(t *testing.T) {
+	tracker := newRedisTracker("", false)
+	events := redisClient(tracker, 1, redisStart(
+		redisStep{true, redisArgs("CLIENT", "REPLY", "OFF"), 0},
+		redisStep{true, redisArgs("SET", "a", "1"), 0},
+		redisStep{true, redisArgs("SET", "b", "2"), 0},
+		redisStep{true, redisArgs("CLIENT", "REPLY", "ON"), 0},
+		redisStep{false, "+OK\r\n", 0},
+		redisStep{true, redisArgs("CLIENT", "REPLY", "SKIP"), 0},
+		redisStep{true, redisArgs("SET", "c", "3"), 0},
+		redisStep{true, redisArgs("GET", "c"), 0},
+		redisStep{false, "$1\r\n3\r\n", 0},
+	))
+	events = append(events, redisClient(tracker, 2, redisStart(
+		redisStep{true, redisArgs("PSYNC", "?", "-1"), 0},
+		redisStep{false, "+FULLRESYNC 8de1787ba490483314a4d30f1c628bc5025eb761 0\r\n$5\r\nREDIS", 0},
+		redisStep{true, redisArgs("REPLCONF", "ACK", "0"), 0},
+	))...)
+	var silent []string
+	for _, event := range events {
+		if event.Event == redisEventCommand && event.Redis.NoReply {
+			silent = append(silent, event.Redis.Command+" "+event.Redis.Key)
+		}
+		if _, _, pending, _ := tracePairOf(event); pending && event.Redis.NoReply {
+			t.Fatalf("%s waits for a reply on the screen", event.Redis.Command)
+		}
+	}
+	if got := strings.Join(silent, "|"); got != "CLIENT REPLY |SET a|SET b|CLIENT REPLY |SET c|REPLCONF ACK " {
+		t.Fatalf("no-reply commands = %q", got)
+	}
+	summarizer := newRedisTraceSummarizer()
+	for _, event := range events {
+		summarizer.observe(event)
+	}
+	report := summarizer.summarize(captureSummary{}, time.Second).(redisTraceReport)
+	if report.Commands != 11 || report.Unanswered != 0 || report.Replies != 5 {
+		t.Fatalf("report = %+v", report.traceRedisCounts)
+	}
+	for _, group := range summarizeTraceGroups("redis", traceGroupByEvent, events, captureSummary{}, time.Second, "", "").Groups {
+		if group.Group == redisEventCommand && group.Redis.Unanswered != 0 {
+			t.Fatalf("command row = %+v", *group.Redis)
+		}
+	}
+	raw, err := json.Marshal(events[2])
+	if err != nil || !strings.Contains(string(raw), `"no_reply":true`) {
+		t.Fatalf("json = %s, %v", raw, err)
+	}
+	// 답을 기다리는 명령에 응답이 없으면 그대로 응답 없음이다.
+	unanswered := redisClient(newRedisTracker("", false), 3, redisStart(redisStep{true, redisArgs("GET", "x"), 0}))
+	one := newRedisTraceSummarizer()
+	for _, event := range unanswered {
+		one.observe(event)
+	}
+	if got := one.summarize(captureSummary{}, time.Second).(redisTraceReport); got.Unanswered != 1 {
+		t.Fatalf("unanswered GET = %+v", got.traceRedisCounts)
+	}
 }

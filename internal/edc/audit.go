@@ -360,7 +360,8 @@ func collectAuditKeyFiles(sources auditSources, passwd []auditPasswd) ([]auditFi
 func auditPathEntries(sources auditSources) ([]string, []string) {
 	entries := strings.Split(auditDefaultPath, ":")
 	// root가 아닌 셸의 PATH는 root가 쓰는 PATH가 아니다. root로 실행할 때만 지금 PATH를 더한다.
-	if sources.euid == 0 {
+	// PATH가 아예 없으면 빈 항목 하나로 쪼개져 현재 디렉터리로 오판한다. cron처럼 PATH 없이 실행한 경우다.
+	if sources.euid == 0 && sources.path != "" {
 		for _, entry := range strings.Split(sources.path, ":") {
 			if !slices.Contains(entries, entry) {
 				entries = append(entries, entry)
@@ -517,7 +518,8 @@ func readSudoersFile(root, path string, depth int, rules *[]string) error {
 			}
 			continue
 		}
-		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, "Defaults") {
+		// "#1000 ALL=..."처럼 # 뒤에 숫자가 오면 주석이 아니라 uid로 쓴 사용자다.
+		if line == "" || (strings.HasPrefix(line, "#") && !(len(line) > 1 && isDigit(line[1]))) || strings.HasPrefix(line, "Defaults") {
 			continue
 		}
 		if sudoRunsAllWithoutPassword(line) {
@@ -539,6 +541,10 @@ func sudoRunsAllWithoutPassword(rule string) bool {
 			tag, rest, found := strings.Cut(command, ":")
 			if !found || tag == "" || strings.ToUpper(tag) != tag || strings.ContainsAny(tag, " /") {
 				break
+			}
+			// PASSWD: 뒤의 명령은 다시 비밀번호를 묻는다.
+			if tag == "PASSWD" {
+				return false
 			}
 			command = strings.TrimSpace(rest)
 		}
@@ -698,6 +704,7 @@ func auditExposure(facts auditFacts) Result {
 	}
 	var exposed, evidence []string
 	seen := map[string]bool{}
+	published := false
 	for _, socket := range facts.Listen {
 		name, sensitive := auditSensitivePorts[socket.Port]
 		scope := listenBindingScope(socket.Proto, socket.Address)
@@ -713,6 +720,7 @@ func auditExposure(facts auditFacts) Result {
 		if !slices.Contains(exposed, label) {
 			exposed = append(exposed, label)
 		}
+		published = published || socket.Process == "docker-proxy"
 		line := fmt.Sprintf("%s %s:%d", socket.Proto, socket.Address, socket.Port)
 		if socket.Process != "" {
 			line += "  " + socket.Process
@@ -735,6 +743,10 @@ func auditExposure(facts auditFacts) Result {
 	}
 	result.Evidence = []Evidence{{Label: T("audit.evidence.sockets"), Value: strings.Join(evidence, "\n")}}
 	result.Warnings = []string{T("audit.net.cloud_note")}
+	// docker가 publish한 포트는 nat 표에서 DNAT되어 INPUT이 아니라 FORWARD를 지난다. INPUT의 drop 정책은 막지 못한다.
+	if published {
+		result.Warnings = append(result.Warnings, T("audit.net.docker_note"))
+	}
 	result.Next = "edc listen -v"
 	return result
 }
@@ -994,7 +1006,7 @@ func auditKernelSysctl(facts auditFacts) Result {
 		all = append(all, line)
 	}
 	if len(all) == 0 {
-		return auditResult(id, StatusSkip, T("audit.skip.unreadable", "/proc/sys", "no value"))
+		return auditResult(id, StatusSkip, T("audit.skip.no_sysctl"))
 	}
 	var result Result
 	if len(bad) == 0 {

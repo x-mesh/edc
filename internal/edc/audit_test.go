@@ -68,13 +68,15 @@ func TestReadSudoNoPasswdRules(t *testing.T) {
 	writeAuditFile(t, root, "/etc/sudoers", "Defaults env_reset\nroot ALL=(ALL:ALL) ALL\n%admin ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart app\n@includedir /etc/sudoers.d\n", 0o440)
 	writeAuditFile(t, root, "/etc/sudoers.d/90-cloud-init-users", "# comment\nubuntu ALL=(ALL) NOPASSWD:ALL\n", 0o440)
 	writeAuditFile(t, root, "/etc/sudoers.d/deploy", "deploy ALL=(ALL) NOPASSWD: SETENV: /bin/ls, \\\n  ALL\n", 0o440)
+	// uid로 쓴 사용자는 주석이 아니다. PASSWD: 뒤의 ALL은 비밀번호를 묻는다.
+	writeAuditFile(t, root, "/etc/sudoers.d/uid", "#1001 ALL=(ALL) NOPASSWD: ALL\nops ALL=(ALL) NOPASSWD: /bin/ls, PASSWD: ALL\n", 0o440)
 	// sudo는 '.'이 들어간 이름을 읽지 않는다.
 	writeAuditFile(t, root, "/etc/sudoers.d/old.bak", "old ALL=(ALL) NOPASSWD: ALL\n", 0o440)
 	rules, err := readSudoNoPasswdRules(root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(rules) != 2 || !strings.Contains(rules[0], "ubuntu") || !strings.Contains(rules[1], "deploy") {
+	if len(rules) != 3 || !strings.Contains(rules[0], "ubuntu") || !strings.Contains(rules[1], "deploy") || !strings.Contains(rules[2], "#1001") {
 		t.Fatalf("rules = %q", rules)
 	}
 }
@@ -156,6 +158,10 @@ func TestAuditExposureNeedsFirewallToFail(t *testing.T) {
 			}
 		})
 	}
+	published := []listenSocket{{Proto: "tcp", Address: "0.0.0.0", Port: 5432, Process: "docker-proxy"}}
+	if result := auditExposure(auditFacts{Listen: published, Firewall: auditFirewall{Drops: true}}); len(result.Warnings) != 2 {
+		t.Fatalf("docker가 publish한 포트에 FORWARD 안내가 없다: %q", result.Warnings)
+	}
 	if result := auditExposure(auditFacts{Listen: sockets[1:]}); result.Status != StatusPass {
 		t.Fatalf("loopback과 ssh만 열린 호스트 = %s %q", result.Status, result.Summary)
 	}
@@ -234,19 +240,19 @@ func TestCollectAuditFactsFromFiles(t *testing.T) {
 	}
 	results := evaluateAudit(collectAuditFacts(context.Background(), sources))
 	want := map[string]Status{
-		"net.exposed":            StatusPass,
-		"net.firewall":           StatusSkip,
-		"net.ip_forward":         StatusWarn,
-		"ssh.root_login":         StatusSkip,
-		"ssh.key_files":    StatusFail,
-		"user.uid0":           StatusFail,
-		"user.empty_pass": StatusFail,
-		"user.sudo_nopass":  StatusSkip,
-		"user.root_groups":    StatusWarn,
-		"file.sensitive":         StatusFail,
-		"file.path_writable":     StatusFail,
-		"kernel.sysctl":          StatusWarn,
-		"patch.reboot":           StatusWarn,
+		"net.exposed":        StatusPass,
+		"net.firewall":       StatusSkip,
+		"net.ip_forward":     StatusWarn,
+		"ssh.root_login":     StatusSkip,
+		"ssh.key_files":      StatusFail,
+		"user.uid0":          StatusFail,
+		"user.empty_pass":    StatusFail,
+		"user.sudo_nopass":   StatusSkip,
+		"user.root_groups":   StatusWarn,
+		"file.sensitive":     StatusFail,
+		"file.path_writable": StatusFail,
+		"kernel.sysctl":      StatusWarn,
+		"patch.reboot":       StatusWarn,
 	}
 	for id, status := range want {
 		if result := auditResultByID(t, results, id); result.Status != status {
@@ -261,6 +267,12 @@ func TestCollectAuditFactsFromFiles(t *testing.T) {
 	}
 	if summary := auditResultByID(t, results, "patch.reboot").Summary; !strings.HasSuffix(summary, "linux-base") {
 		t.Errorf("재부팅 패키지 = %q", summary)
+	}
+
+	// PATH 없이 실행한 root를 현재 디렉터리가 PATH에 있는 것으로 보지 않는다.
+	sources.path = ""
+	if summary := auditResultByID(t, evaluateAudit(collectAuditFacts(context.Background(), sources)), "file.path_writable").Summary; strings.Contains(summary, `""`) {
+		t.Errorf("빈 PATH를 상대 경로로 보았다: %q", summary)
 	}
 
 	// root가 아니면 지금 셸의 PATH는 root의 PATH가 아니므로 보지 않는다.

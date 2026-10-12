@@ -64,8 +64,16 @@ command:
       - "The firewall check sees this host only, not a cloud security group."
       - "It does not match package versions against CVEs."
   changes:
+    summary: "Recent package, /etc, and service changes (Linux)"
+    notes:
+      - "It reads dpkg, dnf, and yum logs, /etc mtimes, and systemd unit state."
+      - "It changes nothing and sends nothing over the network."
+      - "Each service shows only its latest start and its restart count."
+      - "For /etc, it reports the file mtime only, not the content."
+      - "It does not read compressed logs, it warns about them."
     option:
       since: "how far back to look, a Go duration such as 24h or 90m"
+      verbose: "show every change, not only the newest 50"
   net:
     summary: "Interfaces, route, ping, and trace"
   route:

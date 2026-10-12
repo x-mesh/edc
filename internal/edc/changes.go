@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"context"
 	"errors"
+	"flag"
+	"fmt"
 	"io"
 	"io/fs"
 	"os"
@@ -42,6 +44,50 @@ type changesSources struct {
 	now       time.Time
 	systemctl func(ctx context.Context, args ...string) ([]byte, error)
 	bootTime  func() (time.Time, error)
+}
+
+func runChanges(args []string, version string) int {
+	options := configuredCommon(15 * time.Second)
+	set := flag.NewFlagSet("changes", flag.ContinueOnError)
+	set.SetOutput(os.Stderr)
+	bindCommon(set, &options)
+	since := set.Duration("since", 24*time.Hour, T("command.changes.option.since"))
+	if err := set.Parse(args); err != nil {
+		return 2
+	}
+	if set.NArg() != 0 || *since <= 0 {
+		fmt.Fprintln(os.Stderr, T("cli.usage", "edc changes [--since 24h] [options]"))
+		return 2
+	}
+	started := time.Now()
+	ctx, cancel, deadline := probeContext(options.timeout)
+	defer cancel()
+	defer deadline()
+	sources, ok := hostChangesSources()
+	if !ok {
+		return emit(options, buildReport(version, started, nil, []Result{unsupported("changes", T("changes.skip.linux_only"))}, options.redact))
+	}
+	results := evaluateChanges(ctx, sources, *since)
+	if options.jsonPath != "" {
+		return emit(options, buildReport(version, started, nil, results, options.redact))
+	}
+	color := isTerminal(os.Stdout) && os.Getenv("NO_COLOR") == ""
+	var output io.Writer = os.Stdout
+	var buffer strings.Builder
+	if options.redact {
+		output = &buffer
+	}
+	for _, result := range results {
+		fmt.Fprint(output, formatResultLine(result, color))
+		printResultDetail(output, result, false, color)
+	}
+	if table := formatChangesTable(changesEventsOf(results), options.verbose); table != "" {
+		fmt.Fprint(output, "\n"+table)
+	}
+	if options.redact {
+		fmt.Fprint(os.Stdout, redactIPAddresses(buffer.String()))
+	}
+	return exitCode(results)
 }
 
 func (sources changesSources) file(path string) string { return filepath.Join(sources.root, path) }

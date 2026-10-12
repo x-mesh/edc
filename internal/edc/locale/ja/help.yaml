@@ -63,6 +63,9 @@ command:
       - "root で実行してください。root でなければ一部が skip です。"
       - "ファイアウォールはこのホストだけで、クラウド側は見ません。"
       - "パッケージのバージョンを CVE と照合しません。"
+  changes:
+    option:
+      since: "どこまでさかのぼるか、24h や 90m のような Go の duration"
   net:
     summary: "interface、route、ping、trace"
   route:

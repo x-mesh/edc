@@ -63,6 +63,9 @@ command:
       - "Run it as root. Without root, some checks show skip."
       - "The firewall check sees this host only, not a cloud security group."
       - "It does not match package versions against CVEs."
+  changes:
+    option:
+      since: "how far back to look, a Go duration such as 24h or 90m"
   net:
     summary: "Interfaces, route, ping, and trace"
   route:

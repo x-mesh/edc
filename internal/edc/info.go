@@ -120,7 +120,9 @@ func runInfo(args []string, version string) int {
 	printInfoResources(os.Stdout, memory, memoryErr, signals, processes, processErr, capabilities, verbose)
 	printInfoListen(os.Stdout, listen, runtime.GOOS == "darwin" && os.Geteuid() != 0, verbose)
 	printInfoNetworkHealth(os.Stdout, health, verbose)
-	if interfaceErr != nil || diskErr != nil || memoryErr != nil || processErr != nil || listen.Status == StatusFail {
+	// 포트 요약은 info에 새로 붙은 섹션이다. sock_diag나 libproc을 막는 sandbox에서 읽지 못해도 섹션에 Unavailable만 적고,
+	// 전에 0으로 끝나던 info의 exit code는 바꾸지 않는다.
+	if interfaceErr != nil || diskErr != nil || memoryErr != nil || processErr != nil {
 		return 1
 	}
 	return 0

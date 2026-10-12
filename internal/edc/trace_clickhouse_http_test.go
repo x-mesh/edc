@@ -804,11 +804,15 @@ func TestClickHouseHTTPChunkWalker(t *testing.T) {
 		{"bare lf", []string{"3\nabc"}, []httpWalk{httpWalkLost}},
 		{"missing crlf", []string{"3\r\nabcXY0\r\n"}, []httpWalk{httpWalkLost}},
 		{"long size line", []string{strings.Repeat("0", 70)}, []httpWalk{httpWalkLost}},
+		// ParseInt는 부호를 받아들인다. 음수 크기는 slice 경계를 뒤집어 panic을 냈다.
+		{"negative size", []string{"-1\r\nabc"}, []httpWalk{httpWalkLost}},
+		{"signed size", []string{"+3\r\nabc\r\n0\r\n\r\n"}, []httpWalk{httpWalkLost}},
 	} {
 		var chunks clickHouseHTTPChunks
 		var got []httpWalk
 		for _, piece := range tc.pieces {
-			result, _ := chunks.step([]byte(piece), len(piece), 0, nil)
+			// visit을 넘겨야 실제 경로처럼 chunk data를 잘라 본다.
+			result, _ := chunks.step([]byte(piece), len(piece), 0, func([]byte, bool) bool { return false })
 			got = append(got, result)
 		}
 		if !reflect.DeepEqual(got, tc.want) {

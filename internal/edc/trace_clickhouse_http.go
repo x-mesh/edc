@@ -319,8 +319,10 @@ func httpChunkSizeOf(line []byte) (int64, bool) {
 	if len(digits) == 0 || len(digits) > 15 {
 		return 0, false
 	}
-	size, err := strconv.ParseInt(string(digits), 16, 64)
-	return size, err == nil
+	// ParseInt는 '-'와 '+'를 받아들인다. 음수 크기는 chunk data의 slice 경계를 뒤집어 panic을 낸다.
+	// 15자리 16진수는 2^60보다 작아 int64에 들어간다.
+	size, err := strconv.ParseUint(string(digits), 16, 64)
+	return int64(size), err == nil
 }
 
 // step은 data[pos:]를 읽는다. visit은 chunk data의 보이는 부분을 받고, cut이면 그 뒤가 캡처 밖이다. true를 돌려주면 멈춘다.

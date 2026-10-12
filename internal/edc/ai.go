@@ -172,7 +172,7 @@ func (collector *aiCollector) poll(ctx context.Context, poll time.Duration) aiPo
 	var stateErr error
 	// poll 간격과 조회 시간이 겹쳐 예정 시각보다 조금 일찍 깨도 이번 차례로 본다.
 	if collector.claudeSnapshot != "" {
-		fetched = append(fetched, readAIClaudeSnapshot(collector.claudeSnapshot, now))
+		fetched = append(fetched, readAIClaudeSnapshot(collector.claudeSnapshot))
 	} else if !now.Add(time.Second).Before(collector.claudeNext) {
 		claude := fetchAIClaude(ctx, collector.http, collector.claudeDir, now)
 		collector.scheduleClaude(claude.rateLimited, now, poll)

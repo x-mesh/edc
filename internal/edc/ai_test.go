@@ -650,8 +650,7 @@ const aiStatuslineFixture = `{"model":{"display_name":"Opus"},"rate_limits":{` +
 	`"seven_day":{"used_percentage":41.2,"resets_at":1791880800},` +
 	`"spend_limit":{"used_percentage":62.8,"resets_at":1793000000}}}`
 
-// aiStatuslineInputAt는 재설정 시각이 now 뒤인 statusline 입력이다. 실제 시각으로 스냅샷을 읽는 시험은 지난
-// 창을 버리므로 고정된 재설정 시각을 쓰면 그 시각이 지난 뒤에 실패한다.
+// aiStatuslineInputAt는 재설정 시각이 now 뒤인 statusline 입력이다.
 func aiStatuslineInputAt(now time.Time) string {
 	return fmt.Sprintf(`{"model":{"display_name":"Opus"},"rate_limits":{`+
 		`"five_hour":{"used_percentage":23.5,"resets_at":%d},`+
@@ -680,14 +679,14 @@ func TestParseAIStatuslineInputKeepsTheLimitWindows(t *testing.T) {
 	}
 }
 
-func TestReadAIClaudeSnapshotDropsPassedWindows(t *testing.T) {
+func TestReadAIClaudeSnapshotKeepsPassedWindows(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, aiClaudeSnapshotName)
-	if provider := readAIClaudeSnapshot(path, time.Now()); provider.Err != errAIStatuslineMissing.Error() {
+	if provider := readAIClaudeSnapshot(path); provider.Err != errAIStatuslineMissing.Error() {
 		t.Fatalf("missing snapshot: %+v", provider)
 	}
 	writeAIFixture(t, path, "{not json")
-	if provider := readAIClaudeSnapshot(path, time.Now()); provider.Err == "" || provider.Err == errAIStatuslineMissing.Error() {
+	if provider := readAIClaudeSnapshot(path); provider.Err == "" || provider.Err == errAIStatuslineMissing.Error() {
 		t.Fatalf("broken snapshot: %+v", provider)
 	}
 	now := time.Date(2026, 10, 7, 3, 0, 0, 0, time.UTC)
@@ -698,8 +697,8 @@ func TestReadAIClaudeSnapshotDropsPassedWindows(t *testing.T) {
 	if err := saveAIClaudeState(path, aiClaudeState{aiProvider: saved}); err != nil {
 		t.Fatal(err)
 	}
-	provider := readAIClaudeSnapshot(path, now)
-	if provider.Err != "" || !provider.FetchedAt.Equal(saved.FetchedAt) || len(provider.Windows) != 1 || provider.Windows[0].Name != "7d" {
+	provider := readAIClaudeSnapshot(path)
+	if provider.Err != "" || !provider.FetchedAt.Equal(saved.FetchedAt) || len(provider.Windows) != 2 || provider.Windows[0].Name != "5h" {
 		t.Errorf("snapshot %+v", provider)
 	}
 }
@@ -729,6 +728,33 @@ func TestAIPollReadsTheStatuslineSnapshotInsteadOfTheAPI(t *testing.T) {
 	}
 }
 
+// 리셋 시각이 지난 뒤 Claude Code가 상태 줄을 다시 그리기 전에 조회해도 리셋을 놓치지 않는다.
+func TestAIPollFindsASnapshotResetAfterAPollPastTheResetTime(t *testing.T) {
+	stateDir := t.TempDir()
+	snapshot := filepath.Join(stateDir, aiClaudeSnapshotName)
+	save := func(window aiWindow) {
+		t.Helper()
+		if err := saveAIClaudeState(snapshot, aiClaudeState{aiProvider: aiProvider{Name: "claude", FetchedAt: time.Now(), Windows: []aiWindow{window}}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	collector := newAICollector(t.TempDir(), t.TempDir(), stateDir, time.Now())
+	collector.claudeSnapshot = snapshot
+	resetAt := time.Now().Add(time.Second).Truncate(time.Second)
+	save(aiWindow{Name: "5h", Used: 80, ResetsAt: resetAt})
+	collector.poll(context.Background(), time.Minute)
+	time.Sleep(time.Until(resetAt) + 100*time.Millisecond)
+	result := collector.poll(context.Background(), time.Minute)
+	if window, ok := result.providers[0].window("5h"); !ok || window.Used != 80 {
+		t.Fatalf("the passed window must stay until the status line refreshes: %+v", result.providers[0])
+	}
+	save(aiWindow{Name: "5h", Used: 1, ResetsAt: resetAt.Add(5 * time.Hour)})
+	result = collector.poll(context.Background(), time.Minute)
+	if event, ok := result.lastResets["claude"]; !ok || !event.ResetAt.Equal(resetAt) || event.UsedBefore != 80 || event.UsedAfter != 1 {
+		t.Errorf("reset %+v, %v", event, ok)
+	}
+}
+
 func TestRunAIStatuslinePassesTheInputToTheCommand(t *testing.T) {
 	stateHome := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", stateHome)
@@ -751,7 +777,7 @@ func TestRunAIStatuslinePassesTheInputToTheCommand(t *testing.T) {
 	if data, err := os.ReadFile(copied); err != nil || string(data) != statusline {
 		t.Errorf("the command got %q, %v", data, err)
 	}
-	provider := readAIClaudeSnapshot(filepath.Join(stateHome, "edc", aiClaudeSnapshotName), time.Now())
+	provider := readAIClaudeSnapshot(filepath.Join(stateHome, "edc", aiClaudeSnapshotName))
 	if provider.Err != "" || len(provider.Windows) != 2 {
 		t.Errorf("snapshot %+v", provider)
 	}

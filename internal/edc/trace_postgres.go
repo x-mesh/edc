@@ -72,13 +72,6 @@ type tracePostgresEvent struct {
 	Detail        string  `json:"detail,omitempty"`
 }
 
-// postgresEvent는 captureEvent에 PostgreSQL 값을 붙인 것이다. 이 topic은 기존 파일을 고치지 않으므로 captureEvent에 아직
-// Postgres 필드가 없다. trace에 연결하는 topic이 Postgres를 captureEvent로 옮기면 이 type은 captureEvent로 바뀐다.
-type postgresEvent struct {
-	captureEvent
-	Postgres *tracePostgresEvent `json:"postgres,omitempty"`
-}
-
 // postgresMessage는 message 하나다. typ이 0이면 type byte가 없는 시작 message(StartupMessage, SSLRequest 등)다. body는
 // 앞부분이고 record payload를 가리킬 수 있으므로 deliver 밖에 두지 않는다. truncated는 body 뒤를 보지 못했다는 뜻이다.
 type postgresMessage struct {
@@ -338,10 +331,10 @@ type postgresCall struct {
 	record  mysqlRecord
 	side    string
 	offset  int64
-	out     []postgresEvent
+	out     []captureEvent
 }
 
-func (tracker *postgresTracker) events(record mysqlRecord, clockOffset int64) []postgresEvent {
+func (tracker *postgresTracker) events(record mysqlRecord, clockOffset int64) []captureEvent {
 	side := traceClientSide
 	if record.server {
 		side = traceServerSide
@@ -379,12 +372,13 @@ func (tracker *postgresTracker) forgetSocket(socket uint64) {
 	delete(tracker.conns, socket)
 }
 
-func (call *postgresCall) event(name string, at uint64, length int, info *tracePostgresEvent) postgresEvent {
+func (call *postgresCall) event(name string, at uint64, length int, info *tracePostgresEvent) captureEvent {
 	record := call.record
-	return postgresEvent{captureEvent: captureEvent{
+	return captureEvent{
 		SocketID: record.socket, TimestampNS: uint64(int64(at) + call.offset), BootTimeNS: at, Event: name, Protocol: "postgres", Side: call.side,
 		PID: record.pid, Process: record.process, CgroupID: record.cgroupID, Source: record.source, Destination: record.destination, Bytes: uint64(length),
-	}, Postgres: info}
+		Postgres: info,
+	}
 }
 
 // request는 요청 방향 record 하나를 읽는다.

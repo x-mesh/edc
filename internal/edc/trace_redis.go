@@ -59,12 +59,6 @@ type traceRedisEvent struct {
 	Channel    string `json:"channel,omitempty"`
 }
 
-// redisTraced는 captureEvent에 Redis 칸이 없어서 둘을 함께 넘긴다.
-type redisTraced struct {
-	event captureEvent
-	redis *traceRedisEvent
-}
-
 // redisKeep은 응답 frame 하나에서 무엇을 남길지다. 응답이 어느 명령의 것인지는 tracker만 알므로 frame이 시작할 때 묻는다.
 type redisKeep struct {
 	value   bool
@@ -1130,10 +1124,10 @@ type redisCall struct {
 	record  mysqlRecord
 	side    string
 	offset  int64
-	out     []redisTraced
+	out     []captureEvent
 }
 
-func (tracker *redisTracker) events(record mysqlRecord, clockOffset int64) []redisTraced {
+func (tracker *redisTracker) events(record mysqlRecord, clockOffset int64) []captureEvent {
 	side := traceClientSide
 	if record.server {
 		side = traceServerSide
@@ -1223,12 +1217,13 @@ func (call *redisCall) lose() {
 	conn.response.reset()
 }
 
-func (call *redisCall) event(name string, at uint64, length int64, info *traceRedisEvent) redisTraced {
+func (call *redisCall) event(name string, at uint64, length int64, info *traceRedisEvent) captureEvent {
 	record := call.record
-	return redisTraced{event: captureEvent{
+	return captureEvent{
 		SocketID: record.socket, TimestampNS: uint64(int64(at) + call.offset), BootTimeNS: at, Event: name, Protocol: "redis", Side: call.side,
 		PID: record.pid, Process: record.process, CgroupID: record.cgroupID, Source: record.source, Destination: record.destination, Bytes: uint64(length),
-	}, redis: info}
+		Redis: info,
+	}
 }
 
 // redisKnownCommands는 inline 요청에서 경계를 다시 찾을 때 받는 이름이다. key 표와 subcommand 명령 밖에서 흔한 것만 둔다.
@@ -1509,6 +1504,6 @@ func (call *redisCall) answer(f redisFrame, pushKind string) {
 		info.BulkLength = &f.count
 	}
 	traced := call.event(name, f.at, f.bytes, info)
-	traced.event.LatencyMS, traced.event.answered = traceSpan(pending.at, f.at), 1
+	traced.LatencyMS, traced.answered = traceSpan(pending.at, f.at), 1
 	call.out = append(call.out, traced)
 }

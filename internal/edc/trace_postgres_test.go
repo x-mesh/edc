@@ -146,9 +146,9 @@ func pgRecord(socket uint64, server, sent bool, at uint64, payload []byte, size 
 
 // replayPostgres는 한 쪽의 record를 run마다 새 tracker에 순서대로 먹인다. 시각은 fixture 안 record 번호 x 1 ms다.
 // cut이 0보다 크면 payload를 앞 cut byte로 자른다(캡처 상한 흉내).
-func replayPostgres(records []pgFixtureRecord, server, showSecrets bool, cut int) map[int][]postgresEvent {
+func replayPostgres(records []pgFixtureRecord, server, showSecrets bool, cut int) map[int][]captureEvent {
 	trackers := map[int]*postgresTracker{}
-	events := map[int][]postgresEvent{}
+	events := map[int][]captureEvent{}
 	for i, record := range records {
 		if record.server != server {
 			continue
@@ -166,7 +166,7 @@ func replayPostgres(records []pgFixtureRecord, server, showSecrets bool, cut int
 }
 
 // pgTokens는 event 순서를 짧게 쓴다. 요청은 command 첫 글자(대문자), 응답은 r<tag>나 e<SQLSTATE>, TLS는 tls/<encryption>이다.
-func pgTokens(events []postgresEvent) string {
+func pgTokens(events []captureEvent) string {
 	var tokens []string
 	for _, event := range events {
 		info := event.Postgres
@@ -189,7 +189,7 @@ func pgTokens(events []postgresEvent) string {
 // 연결 topic이 몇 줄로 끝나도록 mysql/clickhouse tracker와 같은 모양을 고정한다.
 var (
 	_ func(string, bool) *postgresTracker                        = newPostgresTracker
-	_ func(*postgresTracker, mysqlRecord, int64) []postgresEvent = (*postgresTracker).events
+	_ func(*postgresTracker, mysqlRecord, int64) []captureEvent = (*postgresTracker).events
 	_ func(*postgresTracker, uint64)                             = (*postgresTracker).forgetSocket
 )
 
@@ -265,7 +265,7 @@ func newPGTestConn(server, showSecrets bool) *pgTestConn {
 	return &pgTestConn{tracker: newPostgresTracker("", showSecrets), socket: 1, server: server}
 }
 
-func (conn *pgTestConn) send(request bool, data []byte, captured int) []postgresEvent {
+func (conn *pgTestConn) send(request bool, data []byte, captured int) []captureEvent {
 	conn.at += 1_000_000
 	payload := data
 	if captured >= 0 && captured < len(data) {
@@ -274,10 +274,10 @@ func (conn *pgTestConn) send(request bool, data []byte, captured int) []postgres
 	return conn.tracker.events(pgRecord(conn.socket, conn.server, request != conn.server, conn.at, payload, len(data)), 0)
 }
 
-func (conn *pgTestConn) req(parts ...[]byte) []postgresEvent {
+func (conn *pgTestConn) req(parts ...[]byte) []captureEvent {
 	return conn.send(true, bytes.Join(parts, nil), -1)
 }
-func (conn *pgTestConn) resp(parts ...[]byte) []postgresEvent {
+func (conn *pgTestConn) resp(parts ...[]byte) []captureEvent {
 	return conn.send(false, bytes.Join(parts, nil), -1)
 }
 
@@ -291,7 +291,7 @@ func (conn *pgTestConn) login(t *testing.T) {
 	}
 }
 
-func pgJSON(t testing.TB, events []postgresEvent) string {
+func pgJSON(t testing.TB, events []captureEvent) string {
 	t.Helper()
 	raw, err := json.Marshal(events)
 	if err != nil {
@@ -349,7 +349,7 @@ func TestPostgresFixtureReplay(t *testing.T) {
 }
 
 func TestPostgresFixtureReplayFields(t *testing.T) {
-	pick := func(name string, run int, server bool) []postgresEvent {
+	pick := func(name string, run int, server bool) []captureEvent {
 		return replayPostgres(loadPostgresFixture(t, name), server, false, 0)[run]
 	}
 	for _, server := range []bool{true, false} {
@@ -458,7 +458,7 @@ func TestPostgresTruncationMatchesBoundaries(t *testing.T) {
 }
 
 // pgCheckPairs는 응답 event마다 아직 답을 받지 않은 가장 오래된 요청이 같은 command와 SQL인지 본다.
-func pgCheckPairs(t *testing.T, label string, events []postgresEvent) {
+func pgCheckPairs(t *testing.T, label string, events []captureEvent) {
 	t.Helper()
 	var open []*tracePostgresEvent
 	for _, event := range events {
@@ -508,7 +508,7 @@ func TestPostgresMidStreamPrefixes(t *testing.T) {
 	}
 }
 
-func pgLastRequest(events []postgresEvent) *postgresEvent {
+func pgLastRequest(events []captureEvent) *captureEvent {
 	for i := len(events) - 1; i >= 0; i-- {
 		if events[i].Event == postgresEventConnect || events[i].Event == postgresEventQuery {
 			return &events[i]
@@ -517,7 +517,7 @@ func pgLastRequest(events []postgresEvent) *postgresEvent {
 	return nil
 }
 
-func pgAnswered(events []postgresEvent, request *postgresEvent) bool {
+func pgAnswered(events []captureEvent, request *captureEvent) bool {
 	after := false
 	for i := range events {
 		if &events[i] == request {
@@ -566,7 +566,7 @@ func TestPostgresTrackerKeepsSecretsOutOfEventsAndState(t *testing.T) {
 		if !showSecrets {
 			forbidden = append(slices.Clone(always), "edc-literal-secret", "edc-detail-secret")
 		}
-		var all []postgresEvent
+		var all []captureEvent
 		for _, name := range pgFixtures {
 			for _, server := range []bool{true, false} {
 				trackers := map[int]*postgresTracker{}
@@ -602,15 +602,15 @@ func TestPostgresTrackerKeepsSecretsOutOfEventsAndState(t *testing.T) {
 func TestPostgresEncryptionEmitsOneEventAndIgnoresTheRest(t *testing.T) {
 	for _, tc := range []struct {
 		name, want string
-		start      func(conn *pgTestConn) []postgresEvent
+		start      func(conn *pgTestConn) []captureEvent
 	}{
-		{"ssl", "tls/ssl", func(conn *pgTestConn) []postgresEvent {
+		{"ssl", "tls/ssl", func(conn *pgTestConn) []captureEvent {
 			return append(conn.req(pgUntyped(80877103, nil)), conn.resp([]byte{'S'})...)
 		}},
-		{"gssapi", "tls/gssapi", func(conn *pgTestConn) []postgresEvent {
+		{"gssapi", "tls/gssapi", func(conn *pgTestConn) []captureEvent {
 			return append(conn.req(pgUntyped(80877104, nil)), conn.resp([]byte{'G'})...)
 		}},
-		{"direct", "tls/ssl", func(conn *pgTestConn) []postgresEvent {
+		{"direct", "tls/ssl", func(conn *pgTestConn) []captureEvent {
 			return conn.req([]byte{0x16, 0x03, 0x01, 0x00, 0x05, 'h', 'e', 'l', 'l', 'o'})
 		}},
 	} {
@@ -998,7 +998,7 @@ func FuzzPostgresTracker(f *testing.F) {
 		checkSecret := !bytes.Contains(data, []byte(pgFuzzSecret))
 		password := pgMsg('p', pgCString(pgFuzzSecret))
 		bind := pgBind("", "", pgFuzzSecret)
-		var events []postgresEvent
+		var events []captureEvent
 		feed := func(control byte, payload []byte, extra int, at uint64) {
 			socket := uint64(control>>2&1) + 1
 			request, server := control&1 != 0, control&2 != 0

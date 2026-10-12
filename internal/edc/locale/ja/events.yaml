@@ -33,6 +33,23 @@ events:
   segfault:
     none: "%s 以降 segfault や general protection fault なし"
     found: "segfault や general protection fault %d 回、最新 %s"
+  lockup:
+    none: "%s 以降 CPU lockup や RCU stall なし"
+    found: "CPU lockup や RCU stall %d 回、最新 %s"
+  oops:
+    none: "%s 以降カーネルの oops や warning なし"
+    found: "カーネルの oops %d 回、最新 %s"
+    warned: "カーネルの warning %d 回、最新 %s"
+    tainted: "%s 以降カーネルの oops なし、ただし起動後にカーネルが %s で tainted"
+  hung_task:
+    none: "%s 以降 hung task の上限を超えて止まった task なし"
+    found: "hung task の報告 %d 回、最新 %s"
+  taint:
+    D: "D: カーネルに oops か BUG があった"
+    W: "W: カーネルが warning を出した"
+    L: "L: soft lockup があった"
+    M: "M: machine check exception があった"
+    B: "B: bad page が見つかった"
   clock:
     none: "%s 以降 1 秒以上の時計のジャンプなし"
     found: "時計のジャンプ %d 回、最新 %s"
@@ -41,3 +58,4 @@ events:
     source: "ソース"
     events: "記録"
     more: "... ほか %d 件"
+    tainted: "tainted"

@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 
@@ -38,7 +39,17 @@ func hostEventsSources() (eventsSources, bool) {
 			return readHostKmsg(ctx)
 		},
 		journal: readHostJournal,
+		tainted: readHostTainted,
 	}, true
+}
+
+// readHostTainted는 root 없이도 읽힌다. 커널이 부팅 뒤 oops나 lockup을 겪었으면 로그가 창 밖이어도 비트가 남는다.
+func readHostTainted() (uint64, error) {
+	data, err := os.ReadFile("/proc/sys/kernel/tainted")
+	if err != nil {
+		return 0, err
+	}
+	return strconv.ParseUint(strings.TrimSpace(string(data)), 10, 64)
 }
 
 func readHostKmsg(ctx context.Context) ([]string, error) {

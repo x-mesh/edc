@@ -33,6 +33,23 @@ events:
   segfault:
     none: "no segfault or general protection fault since %s"
     found: "%d segfaults or general protection faults, latest %s"
+  lockup:
+    none: "no CPU lockup or RCU stall since %s"
+    found: "%d CPU lockups or RCU stalls, latest %s"
+  oops:
+    none: "no kernel oops or warning since %s"
+    found: "%d kernel oops, latest %s"
+    warned: "%d kernel warnings, latest %s"
+    tainted: "no kernel oops since %s, but the kernel is tainted %s since boot"
+  hung_task:
+    none: "no task blocked beyond the hung task limit since %s"
+    found: "%d hung task reports, latest %s"
+  taint:
+    D: "D: the kernel had an oops or a BUG"
+    W: "W: the kernel issued a warning"
+    L: "L: a soft lockup happened"
+    M: "M: a machine check exception happened"
+    B: "B: a bad page was found"
   clock:
     none: "no clock step of 1s or more since %s"
     found: "%d clock steps, latest %s"
@@ -41,3 +58,4 @@ events:
     source: "source"
     events: "events"
     more: "... %d more"
+    tainted: "tainted"

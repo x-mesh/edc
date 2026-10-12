@@ -53,7 +53,17 @@ const (
 	eventsLink       = "link"
 	eventsUnits      = "units"
 	eventsClock      = "clock"
+	eventsLockup     = "lockup"
+	eventsOops       = "oops"
+	eventsHungTask   = "hung_task"
 )
+
+// eventsTaintLetters는 Documentation/admin-guide/tainted-kernels.rst의 비트 순서다. 비트 0은 P(proprietary module)다.
+const eventsTaintLetters = "PFSRMBUDAWCIOELKXTN"
+
+// eventsTaintIncident는 사고와 이어지는 flag다. W를 뺀 넷은 창에 기록이 없어도 oops 결과를 warn으로 만든다.
+// W는 펌웨어 문제로 부팅 때부터 켜진 호스트가 흔해 근거로만 남긴다.
+var eventsTaintIncident = []byte{'D', 'W', 'L', 'M', 'B'}
 
 // eventsSources는 events가 읽는 원천이다. 테스트는 함수를 가짜로 넣는다.
 type eventsSources struct {
@@ -62,6 +72,8 @@ type eventsSources struct {
 	boot    time.Time
 	kmsg    func(ctx context.Context) ([]string, error)
 	journal func(ctx context.Context, start time.Time) (io.Reader, []string, error)
+	// tainted는 kernel.tainted의 값이다. nil이면 읽지 않는다.
+	tainted func() (uint64, error)
 }
 
 type kmsgRecord struct {
@@ -107,6 +119,9 @@ type eventsFacts struct {
 	JournalErr   error
 	Signals      []eventsSignal
 	Warnings     []string
+	// Tainted는 kernel.tainted의 비트다. TaintedOK가 false면 읽지 못한 것이다.
+	Tainted   uint64
+	TaintedOK bool
 }
 
 var (
@@ -131,6 +146,21 @@ var (
 	eventsLinkNIC   = regexp.MustCompile(`(\S+):? NIC Link is (Up|Down)`)
 	eventsLinkPlain = regexp.MustCompile(`(\S+): Link is (Up|Down)`)
 	eventsLinkReady = regexp.MustCompile(`(\S+): link becomes ready`)
+	// comm에 콜론이 들어가도(kworker/u8:3) 탐욕 매칭이 마지막 콜론을 pid 앞으로 둔다.
+	eventsHungTaskLine    = regexp.MustCompile(`INFO: task (\S+):(\d+) blocked for more than (\d+) seconds`)
+	eventsSoftLockup      = regexp.MustCompile(`BUG: soft lockup - CPU#(\d+) stuck for (\d+)s! \[(.+):(\d+)\]`)
+	eventsHardLockup      = regexp.MustCompile(`Watchdog detected hard LOCKUP on cpu (\d+)`)
+	eventsRCUStall        = regexp.MustCompile(`INFO: (rcu_\w+) (?:detected (?:expedited )?stalls on CPUs/tasks|self-detected stall on CPU)`)
+	eventsWorkqueueLockup = regexp.MustCompile(`BUG: workqueue lockup - pool cpus=(\d+)`)
+	// 첫 group이 요약이다. 주소와 register 값은 뺀다.
+	eventsOopsLines = []*regexp.Regexp{
+		regexp.MustCompile(`(BUG: unable to handle [^:]*?)(?: at | for address:)`),
+		regexp.MustCompile(`(kernel BUG at \S+)`),
+		regexp.MustCompile(`(Oops): [0-9a-fA-F]+ \[#\d+\]`),
+		regexp.MustCompile(`(Kernel panic) - not syncing`),
+		regexp.MustCompile(`(general protection fault)[^\[]*\[#\d+\]`),
+	}
+	eventsKernelWarning = regexp.MustCompile(`WARNING: CPU: (\d+) PID: (\d+) at (\S+)`)
 )
 
 func runEvents(args []string, version string) int {
@@ -304,6 +334,11 @@ func journalField(raw json.RawMessage) string {
 
 func collectEventsFacts(ctx context.Context, sources eventsSources, since time.Duration) eventsFacts {
 	facts := eventsFacts{Now: sources.now, Start: sources.now.Add(-since), Since: since}
+	if sources.tainted != nil {
+		if value, err := sources.tainted(); err == nil {
+			facts.Tainted, facts.TaintedOK = value, true
+		}
+	}
 	var kernel []kernelLine
 	var journal []journalEntry
 	reader, warnings, err := sources.journal(ctx, facts.Start)
@@ -417,6 +452,9 @@ func matchKernelLine(line kernelLine, cgroups map[string]string) (eventsSignal, 
 			return signal, true
 		}
 	}
+	if fault, ok := matchKernelFault(signal, message); ok {
+		return fault, true
+	}
 	for _, pattern := range []*regexp.Regexp{eventsLinkNIC, eventsLinkPlain} {
 		if match := pattern.FindStringSubmatch(message); match != nil {
 			return linkSignal(signal, match[1], match[2] == "Up"), true
@@ -520,9 +558,12 @@ func evaluateEvents(facts eventsFacts) []Result {
 		eventsKernelCategory(facts, eventsOOM, byKind[eventsOOM], StatusFail),
 		eventsKernelCategory(facts, eventsDiskIO, byKind[eventsDiskIO], StatusFail),
 		eventsKernelCategory(facts, eventsFSReadonly, byKind[eventsFSReadonly], StatusFail),
+		eventsKernelCategory(facts, eventsLockup, byKind[eventsLockup], StatusFail),
+		eventsOopsResult(facts, byKind[eventsOops]),
 		eventsLinkResult(facts, byKind[eventsLink]),
 		eventsUnitsResult(facts, byKind[eventsUnits]),
 		eventsKernelCategory(facts, eventsSegfault, byKind[eventsSegfault], StatusWarn),
+		eventsKernelCategory(facts, eventsHungTask, byKind[eventsHungTask], StatusWarn),
 		eventsClockResult(facts, byKind[eventsClock]),
 	}
 }
@@ -744,4 +785,116 @@ func eventsDurationText(value time.Duration) string {
 		text = strings.TrimSuffix(text, "0m")
 	}
 	return text
+}
+
+// matchKernelFault는 커널 자신의 멈춤과 오류다. soft lockup도 BUG:로 시작하므로 oops보다 먼저 본다.
+func matchKernelFault(signal eventsSignal, message string) (eventsSignal, bool) {
+	if match := eventsHungTaskLine.FindStringSubmatch(message); match != nil {
+		signal.Kind, signal.Subject = eventsHungTask, match[1]
+		signal.Brief = fmt.Sprintf("%s pid=%s %ss", match[1], match[2], match[3])
+		return signal, true
+	}
+	if match := eventsSoftLockup.FindStringSubmatch(message); match != nil {
+		signal.Kind, signal.Subject = eventsLockup, "cpu"+match[1]
+		signal.Brief = fmt.Sprintf("soft lockup cpu=%s %ss %s pid=%s", match[1], match[2], match[3], match[4])
+		return signal, true
+	}
+	if match := eventsHardLockup.FindStringSubmatch(message); match != nil {
+		signal.Kind, signal.Subject = eventsLockup, "cpu"+match[1]
+		signal.Brief = "hard lockup cpu=" + match[1]
+		return signal, true
+	}
+	if match := eventsRCUStall.FindStringSubmatch(message); match != nil {
+		signal.Kind, signal.Subject = eventsLockup, match[1]
+		signal.Brief = match[1] + " stall"
+		return signal, true
+	}
+	if match := eventsWorkqueueLockup.FindStringSubmatch(message); match != nil {
+		signal.Kind, signal.Subject = eventsLockup, "workqueue"
+		signal.Brief = "workqueue lockup cpus=" + match[1]
+		return signal, true
+	}
+	for _, pattern := range eventsOopsLines {
+		if match := pattern.FindStringSubmatch(message); match != nil {
+			signal.Kind, signal.Subject, signal.Failed = eventsOops, "kernel", true
+			signal.Brief = match[1]
+			return signal, true
+		}
+	}
+	if match := eventsKernelWarning.FindStringSubmatch(message); match != nil {
+		signal.Kind, signal.Subject = eventsOops, match[3]
+		signal.Brief = fmt.Sprintf("WARNING at %s pid=%s", match[3], match[2])
+		return signal, true
+	}
+	return eventsSignal{}, false
+}
+
+type eventsTaint struct {
+	// Letters는 켜진 flag의 글자를 띄어 쓴 것이다. 비어 있으면 taint가 없거나 읽지 못한 것이다.
+	Letters string
+	// Incident는 D, L, M, B 가운데 하나라도 켜진 것이다.
+	Incident bool
+	Text     string
+}
+
+func eventsTaintOf(facts eventsFacts) eventsTaint {
+	if !facts.TaintedOK || facts.Tainted == 0 {
+		return eventsTaint{}
+	}
+	var letters []string
+	for bit := 0; bit < len(eventsTaintLetters); bit++ {
+		if facts.Tainted&(1<<uint(bit)) != 0 {
+			letters = append(letters, string(eventsTaintLetters[bit]))
+		}
+	}
+	taint := eventsTaint{Letters: strings.Join(letters, " ")}
+	lines := []string{fmt.Sprintf("%s (%d)", taint.Letters, facts.Tainted)}
+	for _, letter := range eventsTaintIncident {
+		if !strings.Contains(taint.Letters, string(letter)) {
+			continue
+		}
+		if letter != 'W' {
+			taint.Incident = true
+		}
+		lines = append(lines, T("events.taint."+string(letter)))
+	}
+	taint.Text = strings.Join(lines, "\n")
+	return taint
+}
+
+// eventsOopsResult는 커널 자신의 오류다. BUG, Oops, panic은 fail이고 WARNING만 있으면 warn이다.
+// 창에 기록이 없어도 kernel.tainted의 D, L, M, B는 부팅 뒤 커널이 스스로 남긴 사고 표시라 warn으로 둔다.
+func eventsOopsResult(facts eventsFacts, signals []eventsSignal) Result {
+	const id = eventsOops
+	if result, skip := eventsKernelSkip(facts, id); skip {
+		return result
+	}
+	taint := eventsTaintOf(facts)
+	start := facts.Start.Format(eventsTimeLayout)
+	var failed []eventsSignal
+	for _, signal := range signals {
+		if signal.Failed {
+			failed = append(failed, signal)
+		}
+	}
+	var result Result
+	switch {
+	case len(failed) > 0:
+		result = eventsResult(id, StatusFail, T("events.oops.found", len(failed), eventsLatest(failed[len(failed)-1])))
+		result.Error = &DiagnosticError{Kind: "events", Message: result.Summary}
+	case len(signals) > 0:
+		result = eventsResult(id, StatusWarn, T("events.oops.warned", len(signals), eventsLatest(signals[len(signals)-1])))
+	case taint.Incident:
+		result = eventsResult(id, StatusWarn, T("events.oops.tainted", start, taint.Letters))
+	default:
+		result = eventsResult(id, StatusPass, T("events.oops.none", start))
+	}
+	if len(signals) > 0 {
+		result.Evidence = eventsEvidence(signals)
+		result.Next = eventsKernelNext(facts)
+	}
+	if taint.Letters != "" {
+		result.Evidence = append(result.Evidence, Evidence{Label: T("events.evidence.tainted"), Value: taint.Text})
+	}
+	return result
 }

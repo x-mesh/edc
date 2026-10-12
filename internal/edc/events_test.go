@@ -86,6 +86,22 @@ func TestEventsKernelMatchersReadRealLines(t *testing.T) {
 		{"igb 0000:01:00.0 eth1: igb: eth1 NIC Link is Up 1000 Mbps Full Duplex, Flow Control: RX/TX", eventsLink, "eth1 up"},
 		{"r8169 0000:02:00.0 enp2s0: Link is Down", eventsLink, "enp2s0 down"},
 		{"IPv6: ADDRCONF(NETDEV_CHANGE): ens3: link becomes ready", eventsLink, "ens3 up"},
+		{"INFO: task kworker/u8:3:1234 blocked for more than 122 seconds.", eventsHungTask, "kworker/u8:3 pid=1234 122s"},
+		{"INFO: task java:4242 blocked for more than 120 seconds.", eventsHungTask, "java pid=4242 120s"},
+		{"watchdog: BUG: soft lockup - CPU#3 stuck for 23s! [java:4242]", eventsLockup, "soft lockup cpu=3 23s java pid=4242"},
+		{"NMI watchdog: Watchdog detected hard LOCKUP on cpu 2", eventsLockup, "hard lockup cpu=2"},
+		{"rcu: INFO: rcu_sched detected stalls on CPUs/tasks:", eventsLockup, "rcu_sched stall"},
+		{"INFO: rcu_preempt self-detected stall on CPU", eventsLockup, "rcu_preempt stall"},
+		{"BUG: workqueue lockup - pool cpus=1 node=0 flags=0x0 nice=0 stuck for 35s!", eventsLockup, "workqueue lockup cpus=1"},
+		{"BUG: unable to handle kernel NULL pointer dereference at 0000000000000010", eventsOops, "BUG: unable to handle kernel NULL pointer dereference"},
+		{"BUG: unable to handle page fault for address: ffffffffc0a1b2c3", eventsOops, "BUG: unable to handle page fault"},
+		{"kernel BUG at mm/slub.c:1234!", eventsOops, "kernel BUG at mm/slub.c:1234!"},
+		{"Oops: 0002 [#1] SMP PTI", eventsOops, "Oops"},
+		{"Kernel panic - not syncing: Fatal exception", eventsOops, "Kernel panic"},
+		{"general protection fault, probably for non-canonical address 0xdead000000000100: 0000 [#1] SMP NOPTI", eventsOops, "general protection fault"},
+		{"WARNING: CPU: 2 PID: 345 at drivers/net/ethernet/intel/igb/igb_main.c:1234 igb_poll+0x12/0x34 [igb]", eventsOops, "WARNING at drivers/net/ethernet/intel/igb/igb_main.c:1234 pid=345"},
+		{"Call Trace:", "", ""},
+		{"RIP: 0010:igb_poll+0x12/0x34 [igb]", "", ""},
 		{"systemd-journald[300]: Received SIGTERM", "", ""},
 		{"audit: type=1400 audit(1700000000.123:45): apparmor=\"DENIED\"", "", ""},
 	}
@@ -279,7 +295,7 @@ func TestEventsPrefersJournalKernelEntries(t *testing.T) {
 
 func TestEventsNeedsRootSkipsInsteadOfPassing(t *testing.T) {
 	results := evaluateEventsFixture(eventsTestSources("", errEventsNeedsRoot, nil, errEventsNeedsRoot))
-	if len(results) != 8 || results[0].Probe != "events.window" {
+	if len(results) != 11 || results[0].Probe != "events.window" {
 		t.Fatalf("results = %+v", results)
 	}
 	for _, result := range results {
@@ -433,5 +449,93 @@ func TestEventsEmptyKernelJournalWithoutKmsgSkips(t *testing.T) {
 	}
 	if units := eventsResultByID(t, results, "units"); units.Status == StatusSkip {
 		t.Errorf("journal은 읽었는데 units가 skip이다: %s", units.Summary)
+	}
+}
+
+func TestEventsOopsFailsOnBugAndWarnsOnWarning(t *testing.T) {
+	warning := kernelJournalLine(2*time.Hour, "WARNING: CPU: 2 PID: 345 at drivers/net/foo.c:12 foo_poll+0x12/0x34 [foo]")
+	results := evaluateEventsFixture(eventsTestSources(warning+"\n", nil, nil, errors.New("unused")))
+	oops := eventsResultByID(t, results, "oops")
+	if oops.Status != StatusWarn || oops.Error != nil || !strings.Contains(oops.Summary, "WARNING at drivers/net/foo.c:12 pid=345") {
+		t.Fatalf("warning only: %+v", oops)
+	}
+	bug := kernelJournalLine(time.Hour, "BUG: unable to handle kernel NULL pointer dereference at 0000000000000010")
+	results = evaluateEventsFixture(eventsTestSources(warning+"\n"+bug+"\n", nil, nil, errors.New("unused")))
+	oops = eventsResultByID(t, results, "oops")
+	if oops.Status != StatusFail || oops.Error == nil || !strings.HasPrefix(oops.Summary, "1 kernel oops") {
+		t.Fatalf("bug: %+v", oops)
+	}
+	if events := eventsEvidenceValue(oops, "events.evidence.events"); !strings.Contains(events, "WARNING: CPU: 2") || !strings.Contains(events, "NULL pointer") {
+		t.Fatalf("evidence = %q", events)
+	}
+	if oops.Next != "journalctl -k --since @"+fmt.Sprint(eventsTestNow.Add(-6*time.Hour).Unix()) {
+		t.Fatalf("next = %q", oops.Next)
+	}
+}
+
+func TestEventsTaintedKernelWarnsWithoutSignalsInTheWindow(t *testing.T) {
+	cases := []struct {
+		tainted uint64
+		status  Status
+		letters string
+	}{
+		{0, StatusPass, ""},
+		// W는 펌웨어 때문에 부팅 때부터 켜진 호스트가 흔하다. 근거로만 남긴다.
+		{1 << 9, StatusPass, "W"},
+		// D는 oops, P와 O는 module flag다. module flag는 사고가 아니다.
+		{1 | 1<<7 | 1<<12, StatusWarn, "P D O"},
+		{1 << 14, StatusWarn, "L"},
+	}
+	for _, test := range cases {
+		sources := eventsTestSources(kernelJournalLine(time.Hour, "r8169 eth0: Link is Up")+"\n", nil, nil, errors.New("unused"))
+		sources.tainted = func() (uint64, error) { return test.tainted, nil }
+		oops := eventsResultByID(t, evaluateEventsFixture(sources), "oops")
+		if oops.Status != test.status {
+			t.Errorf("tainted=%d: status = %s, want %s: %+v", test.tainted, oops.Status, test.status, oops)
+		}
+		evidence := eventsEvidenceValue(oops, "events.evidence.tainted")
+		if test.letters == "" && evidence != "" {
+			t.Errorf("tainted=%d: evidence = %q", test.tainted, evidence)
+		}
+		if test.letters != "" && !strings.HasPrefix(evidence, test.letters+" (") {
+			t.Errorf("tainted=%d: evidence = %q, want prefix %q", test.tainted, evidence, test.letters)
+		}
+		if test.status == StatusWarn && !strings.Contains(oops.Summary, test.letters) {
+			t.Errorf("tainted=%d: summary = %q", test.tainted, oops.Summary)
+		}
+	}
+	// 읽기에 실패하면 taint를 모르는 것이지 깨끗한 것이 아니다. 근거 없이 통과한다.
+	sources := eventsTestSources(kernelJournalLine(time.Hour, "r8169 eth0: Link is Up")+"\n", nil, nil, errors.New("unused"))
+	sources.tainted = func() (uint64, error) { return 0, errors.New("unreadable") }
+	if oops := eventsResultByID(t, evaluateEventsFixture(sources), "oops"); oops.Status != StatusPass || len(oops.Evidence) != 0 {
+		t.Fatalf("unreadable taint: %+v", oops)
+	}
+}
+
+func TestEventsLockupFailsAndHungTaskWarns(t *testing.T) {
+	journal := strings.Join([]string{
+		kernelJournalLine(3*time.Hour, "INFO: task kworker/u8:3:1234 blocked for more than 122 seconds."),
+		kernelJournalLine(2*time.Hour, "watchdog: BUG: soft lockup - CPU#3 stuck for 23s! [java:4242]"),
+		kernelJournalLine(time.Hour, "rcu: INFO: rcu_sched detected stalls on CPUs/tasks:"),
+	}, "\n") + "\n"
+	results := evaluateEventsFixture(eventsTestSources(journal, nil, nil, errors.New("unused")))
+	lockup := eventsResultByID(t, results, "lockup")
+	if lockup.Status != StatusFail || lockup.Error == nil || !strings.HasPrefix(lockup.Summary, "2 CPU lockups") || !strings.Contains(lockup.Summary, "rcu_sched stall") {
+		t.Fatalf("lockup = %+v", lockup)
+	}
+	hung := eventsResultByID(t, results, "hung_task")
+	if hung.Status != StatusWarn || hung.Error != nil || !strings.Contains(hung.Summary, "kworker/u8:3 pid=1234 122s") {
+		t.Fatalf("hung_task = %+v", hung)
+	}
+	timeline := eventsEvidenceValue(eventsResultByID(t, results, "window"), "events.evidence.timeline")
+	for _, kind := range []string{"hung_task", "lockup"} {
+		if !strings.Contains(timeline, kind) {
+			t.Errorf("timeline lacks %s: %q", kind, timeline)
+		}
+	}
+	for _, id := range []string{"oops", "oom", "segfault"} {
+		if result := eventsResultByID(t, results, id); result.Status != StatusPass {
+			t.Errorf("%s = %+v", id, result)
+		}
 	}
 }

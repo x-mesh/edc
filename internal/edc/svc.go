@@ -75,6 +75,8 @@ type svcFacts struct {
 	Unit    string
 	Root    bool
 	Systemd bool
+	// Probe는 결과 ID의 접두사다. 비어 있으면 svc이고, edc ctr은 같은 builder를 ctr로 쓴다.
+	Probe string
 
 	Show       svcShow
 	ShowOutput string
@@ -363,15 +365,29 @@ func svcListenHidden(facts svcFacts) bool {
 	return false
 }
 
-func svcResult(id string, status Status, summary string) Result {
-	return Result{Probe: svcProbeID + "." + id, Status: status, StartedAt: time.Now().UTC(), Summary: summary}
+func (facts svcFacts) probe() string {
+	if facts.Probe == "" {
+		return svcProbeID
+	}
+	return facts.Probe
 }
 
-func svcSkip(id, source string, err error) Result {
+// key는 접두사에 따라 다른 문구다. unit과 container는 "실행 중인 process가 없다"를 다르게 말한다.
+func (facts svcFacts) key(name string) string { return facts.probe() + "." + name }
+
+func svcResult(id string, status Status, summary string) Result {
+	return svcResultFor(svcProbeID, id, status, summary)
+}
+
+func svcResultFor(probe, id string, status Status, summary string) Result {
+	return Result{Probe: probe + "." + id, Status: status, StartedAt: time.Now().UTC(), Summary: summary}
+}
+
+func svcSkipFor(probe, id, source string, err error) Result {
 	if errors.Is(err, errSvcNeedsRoot) {
-		return svcResult(id, StatusSkip, T("svc.skip.needs_root", source))
+		return svcResultFor(probe, id, StatusSkip, T("svc.skip.needs_root", source))
 	}
-	return svcResult(id, StatusSkip, T("svc.skip.unreadable", source, infoSingleLine(err.Error())))
+	return svcResultFor(probe, id, StatusSkip, T("svc.skip.unreadable", source, infoSingleLine(err.Error())))
 }
 
 func evaluateSvc(facts svcFacts) []Result {
@@ -383,7 +399,7 @@ func evaluateSvc(facts svcFacts) []Result {
 		if detail == "" {
 			detail = facts.ShowErr.Error()
 		}
-		result := svcResult("state", StatusFail, T("svc.state.show_failed", infoSingleLine(firstLine(detail))))
+		result := svcResultFor(facts.probe(), "state", StatusFail, T("svc.state.show_failed", infoSingleLine(firstLine(detail))))
 		result.Error = &DiagnosticError{Kind: "command", Message: strings.TrimSpace(detail)}
 		return []Result{result}
 	}
@@ -403,7 +419,7 @@ func svcFailed(result Result) Result {
 func svcStateResult(facts svcFacts) Result {
 	show := facts.Show
 	if show.LoadState != "loaded" {
-		return svcFailed(svcResult("state", StatusFail, T("svc.state.load", facts.Unit, show.LoadState)))
+		return svcFailed(svcResultFor(facts.probe(), "state", StatusFail, T("svc.state.load", facts.Unit, show.LoadState)))
 	}
 	state := show.ActiveState + " (" + show.SubState + ")"
 	if show.Result != "" && show.Result != "success" {
@@ -427,7 +443,7 @@ func svcStateResult(facts svcFacts) Result {
 	if status == StatusPass && show.NRestarts != nil && *show.NRestarts > 0 {
 		status = StatusWarn
 	}
-	result := svcResult("state", status, T("svc.state.summary", state, uptime, restarts))
+	result := svcResultFor(facts.probe(), "state", status, T("svc.state.summary", state, uptime, restarts))
 	if status == StatusFail {
 		result = svcFailed(result)
 	}
@@ -459,10 +475,10 @@ func svcFormatUptime(value time.Duration) string {
 
 func svcProcessesResult(facts svcFacts) Result {
 	if facts.ProcessErr != nil {
-		return svcSkip("processes", "/proc", facts.ProcessErr)
+		return svcSkipFor(facts.probe(), "processes", "/proc", facts.ProcessErr)
 	}
 	if len(facts.Processes) == 0 {
-		return svcResult("processes", StatusSkip, T("svc.skip.not_running"))
+		return svcResultFor(facts.probe(), "processes", StatusSkip, T(facts.key("skip.not_running")))
 	}
 	var rss uint64
 	var cpu float64
@@ -479,7 +495,7 @@ func svcProcessesResult(facts svcFacts) Result {
 		}
 		lines = append(lines, line)
 	}
-	result := svcResult("processes", StatusPass, T("svc.processes.summary", len(facts.Processes), cpu, traceBytes(rss)))
+	result := svcResultFor(facts.probe(), "processes", StatusPass, T("svc.processes.summary", len(facts.Processes), cpu, traceBytes(rss)))
 	result.Metrics = map[string]interface{}{"count": len(facts.Processes), "rss_bytes": rss, "cpu_percent": cpu}
 	result.Evidence = []Evidence{{Label: T("svc.evidence.processes", len(rows), len(facts.Processes)), Value: strings.Join(lines, "\n")}}
 	return result
@@ -488,7 +504,7 @@ func svcProcessesResult(facts svcFacts) Result {
 func svcFDResult(facts svcFacts) Result {
 	rows := svcRows(facts.Processes, facts.Show.MainPID)
 	if facts.ProcessErr != nil || len(rows) == 0 {
-		return svcResult("fd", StatusSkip, T("svc.skip.not_running"))
+		return svcResultFor(facts.probe(), "fd", StatusSkip, T(facts.key("skip.not_running")))
 	}
 	var lines, high []string
 	denied, failed, readable := 0, 0, 0
@@ -525,19 +541,19 @@ func svcFDResult(facts svcFacts) Result {
 	var result Result
 	switch {
 	case len(high) > 0:
-		result = svcResult("fd", StatusWarn, T("svc.fd.high", len(high), high[0]))
+		result = svcResultFor(facts.probe(), "fd", StatusWarn, T("svc.fd.high", len(high), high[0]))
 		if denied > 0 {
 			result.Warnings = []string{T("svc.skip.needs_root", T("svc.source.fd"))}
 		}
 	case denied > 0:
 		// 일부만 읽었다면 읽지 못한 process가 한계에 가까울 수 있어 통과로 두지 않는다.
-		result = svcResult("fd", StatusSkip, T("svc.skip.needs_root", T("svc.source.fd")))
+		result = svcResultFor(facts.probe(), "fd", StatusSkip, T("svc.skip.needs_root", T("svc.source.fd")))
 	case failed > 0:
-		result = svcResult("fd", StatusSkip, T("svc.skip.unreadable", T("svc.source.fd"), lines[0]))
+		result = svcResultFor(facts.probe(), "fd", StatusSkip, T("svc.skip.unreadable", T("svc.source.fd"), lines[0]))
 	case maxLine == "":
-		result = svcResult("fd", StatusPass, T("svc.fd.unlimited", readable))
+		result = svcResultFor(facts.probe(), "fd", StatusPass, T("svc.fd.unlimited", readable))
 	default:
-		result = svcResult("fd", StatusPass, T("svc.fd.ok", maxLine))
+		result = svcResultFor(facts.probe(), "fd", StatusPass, T("svc.fd.ok", maxLine))
 	}
 	result.Evidence = []Evidence{{Label: T("svc.evidence.fd"), Value: strings.Join(lines, "\n")}}
 	return result
@@ -546,11 +562,11 @@ func svcFDResult(facts svcFacts) Result {
 func svcListenResult(facts svcFacts) Result {
 	switch {
 	case facts.ProcessErr != nil || len(facts.Processes) == 0:
-		return svcResult("listen", StatusSkip, T("svc.skip.not_running"))
+		return svcResultFor(facts.probe(), "listen", StatusSkip, T(facts.key("skip.not_running")))
 	case svcListenHidden(facts):
-		return svcSkip("listen", T("svc.source.sockets"), errSvcNeedsRoot)
+		return svcSkipFor(facts.probe(), "listen", T("svc.source.sockets"), errSvcNeedsRoot)
 	case facts.ListenErr != nil:
-		return svcSkip("listen", T("svc.source.sockets"), facts.ListenErr)
+		return svcSkipFor(facts.probe(), "listen", T("svc.source.sockets"), facts.ListenErr)
 	}
 	members := map[string]bool{}
 	for _, process := range facts.Processes {
@@ -568,13 +584,13 @@ func svcListenResult(facts svcFacts) Result {
 		lines = append(lines, fmt.Sprintf("%s  %s %s", label, socket.PID, socket.Process))
 	}
 	if len(labels) == 0 {
-		return svcResult("listen", StatusPass, T("svc.listen.none"))
+		return svcResultFor(facts.probe(), "listen", StatusPass, T(facts.key("listen.none")))
 	}
 	shown := labels
 	if len(shown) > svcListenSummaryMax {
 		shown = append(slices.Clone(shown[:svcListenSummaryMax]), fmt.Sprintf("+%d", len(labels)-svcListenSummaryMax))
 	}
-	result := svcResult("listen", StatusPass, T("svc.listen.summary", strings.Join(shown, ", ")))
+	result := svcResultFor(facts.probe(), "listen", StatusPass, T("svc.listen.summary", strings.Join(shown, ", ")))
 	result.Metrics = map[string]interface{}{"sockets": len(labels)}
 	result.Evidence = []Evidence{{Label: T("svc.evidence.sockets"), Value: strings.Join(lines, "\n")}}
 	return result
@@ -582,13 +598,13 @@ func svcListenResult(facts svcFacts) Result {
 
 func svcJournalResult(facts svcFacts) Result {
 	if facts.JournalErr != nil {
-		return svcSkip("journal", "journal", facts.JournalErr)
+		return svcSkipFor(facts.probe(), "journal", "journal", facts.JournalErr)
 	}
 	lines := facts.Journal.Lines
 	if len(lines) == 0 {
-		return svcResult("journal", StatusPass, T("svc.journal.none"))
+		return svcResultFor(facts.probe(), "journal", StatusPass, T("svc.journal.none"))
 	}
-	result := svcResult("journal", StatusWarn, T("svc.journal.errors", len(lines), lines[len(lines)-1]))
+	result := svcResultFor(facts.probe(), "journal", StatusWarn, T("svc.journal.errors", len(lines), lines[len(lines)-1]))
 	result.Evidence = []Evidence{{Label: T("svc.evidence.journal"), Value: strings.Join(lines, "\n")}}
 	return result
 }

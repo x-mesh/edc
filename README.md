@@ -258,6 +258,7 @@ The process snapshot shows observed process and thread counts, plus the three pr
 - `DNS`: the nameservers and search domains in `/etc/resolv.conf`. If the file points to the systemd-resolved stub, edc shows the upstream servers.
 - `Pressure` and `OOM kills since boot` (Linux): PSI some avg10 for CPU, memory, and I/O, and the `oom_kill` counter in `/proc/vmstat`.
 - A disk line ends with `(read-only)` or `(inodes N%)` if the mount is read-only or inode use is 80% or more. On macOS, the sealed system volume is read-only by design, so edc does not mark it.
+- On Linux, a disk line also ends with `(deleted-open 12.0 GB in 3 files, java)` if a process still holds a file that was deleted. `du` does not see this space, but `df` counts it, and the file system frees it only when the last process closes the file. edc reads `/proc/<pid>/fd`, counts each inode once, and names the process that holds the largest file. `-v` lists the five largest files with the PID, the process, and the path. Without root, edc cannot read the files of other users, so the value is a lower bound and shows `≥`. edc stops after 200000 file descriptors.
 
 `-v` adds the system-wide open files, the IPv6 default route (Linux), the MTU, MAC, link speed (Linux), and IPv6 addresses of each interface, and the options of each mount. It lists only interfaces with an IPv4 address or a non-link-local IPv6 address.
 
@@ -271,7 +272,7 @@ The Linux eBPF check reads kernel BTF and effective capabilities. It does not lo
 
 If memory or process collection fails, the command shows the error and returns exit code `1`.
 
-On Linux, `edc info` adds `Network Limits`: conntrack occupancy, the local port range and reserved ports, accept/SYN backlog limits, socket buffer ceilings, receive backlog/budgets, neighbor limits, forwarding, and `rp_filter`. Use `-v` for TCP buffer settings, sysctl names, and reasons for unavailable values. Missing or inaccessible values are `unavailable`; these Linux limits are `unsupported` on macOS. Configuration alone does not establish a connection failure.
+On Linux, `edc info` adds `Network Limits`: conntrack occupancy, TCP memory pages against the `tcp_mem` ceiling with the orphan socket count, the local port range and reserved ports, accept/SYN backlog limits, socket buffer ceilings, receive backlog/budgets, neighbor limits, forwarding, and `rp_filter`. Use `-v` for TCP buffer settings, sysctl names, and reasons for unavailable values. Missing or inaccessible values are `unavailable`; these Linux limits are `unsupported` on macOS. Configuration alone does not establish a connection failure.
 
 ### Name lookup
 
@@ -493,6 +494,33 @@ A socket that only systemd holds (socket activation) does not belong to a unit p
 
 On macOS, or on Linux without systemd, `edc svc` shows one `skip` and exits with 0. If the unit does not exist, edc writes an error and exits with 1. A `fail` result also gives exit code 1. A usage error gives exit code 2.
 
+## Container view (Linux)
+
+`edc ctr <container>` shows one docker container on one screen, as `edc svc` shows a unit. It asks `docker inspect` for the state, reads the processes, the fds, the sockets, and the cgroup limits of the container, and reads the last lines of `docker logs`. It does not start, stop, or restart the container.
+
+```bash
+sudo edc ctr web
+sudo edc ctr -v 0123456789ab      # add the process rows, the fd rows, the sockets, and the log lines
+sudo edc ctr --json - web         # one result for each view
+```
+
+The name or the ID accepts letters, digits, and `_.-/`. Options can come before or after the name.
+
+| Result | Pass | Warn | Fail |
+|---|---|---|---|
+| `ctr.state` | the container runs, with no restart and no OOM kill | it runs but restarted, was OOM killed, or is unhealthy, or it is paused, created, or restarting | the container exited or is dead. The summary shows the exit code |
+| `ctr.processes` | edc lists the processes in the container cgroup, with CPU% and RSS | | |
+| `ctr.limits` | memory, OOM kills, CPU throttling, and pids stay below the limits | memory use is 90% of the limit or more, the kernel killed a process in the container for memory, the CPU limit throttled 25% of the periods or more, or pids use 90% of the limit or more | |
+| `ctr.fd` | each process uses less than 80% of its soft fd limit | a process uses 80% or more of its limit | |
+| `ctr.listen` | edc lists the TCP and UDP sockets that the container processes own | | |
+| `ctr.log` | the last 50 log lines have no error line | the log has error lines, and edc shows the last 5 | |
+
+`ctr.limits` reads the cgroup v2 of the container: `memory.current` and `memory.max`, `memory.events.local` for the OOM kills, `cpu.stat` for the throttled periods since the container started, and `pids.current` and `pids.max`. An error line is a line with `error`, `fatal`, `panic`, `exception`, `traceback`, or `oom`. edc reads the log with `docker logs --tail 50`, so a container that writes somewhere else shows no error line.
+
+`ctr.listen` reads the sockets of the network namespace of edc. A container with its own network namespace shows no socket, because its sockets live in that namespace, and a published port belongs to `docker-proxy` or to a firewall rule. A container with `--network host` shows its sockets.
+
+Run it as root, or as a member of the `docker` group with root for the fds. Without access to the docker daemon, the command shows one `skip`. Without root, edc cannot read the fds of other users or the socket owners, and these results show `skip`. A stopped container shows `skip` for the process views and still shows the log. The command needs the `docker` command and cgroup v2. On macOS, it shows one `skip` and exits with 0. If the container does not exist, edc writes an error and exits with 1.
+
 ## Recent host changes (Linux)
 
 `edc changes` lists the changes on a Linux host in a time window. It reads package logs, the mtime of the files under `/etc`, and the systemd unit state. It changes nothing, and it sends nothing over the network. It ends in less than one second.
@@ -535,12 +563,17 @@ sudo edc events --json -        # one result for each category
 | `events.oom` | the kernel killed a process for memory | |
 | `events.disk_io` | a disk or a file system reported an I/O error | |
 | `events.fs_readonly` | a file system went read-only or shut down | |
+| `events.lockup` | a CPU stayed in a soft or hard lockup, RCU reported a stall, or a workqueue locked up | |
+| `events.oops` | the kernel reported a `BUG`, an `Oops`, a general protection fault, or a panic | the kernel issued a `WARNING`, or the kernel is tainted `D`, `L`, `M`, or `B` with no oops in the window |
 | `events.link` | a network link went down and did not come back up | a link went down and came back up |
 | `events.units` | the last event of a unit is a failure result | a unit failed and restarted, or restarted 3 times or more |
 | `events.segfault` | | a process stopped on a segfault or a general protection fault |
+| `events.hung_task` | | a task stayed blocked for longer than the hung task limit, 120 seconds by default |
 | `events.clock` | | the wall clock jumped 1 second or more |
 
 `events.window` names the window and the sources. With `-v`, it also shows the 50 most recent signals of all categories in time order. Each other result shows its count, its latest event, and up to 20 recent events.
+
+`events.oops` also reads `/proc/sys/kernel/tainted`. The flags `D`, `W`, `L`, `M`, and `B` say that the kernel had an oops, a warning, a soft lockup, a machine check, or a bad page since boot, also when the log of that moment lies outside the window. The result shows the flags as evidence. Module flags such as `P`, `O`, and `E` appear in the evidence, but they do not change the result.
 
 The kernel signals come from the journal entries of the kernel. If the journal has no kernel entry in the window, edc reads `/dev/kmsg`. `/dev/kmsg` holds the current boot only. The unit and clock signals come from the journal entries of PID 1. A clock jump counts only when the wall clock and the monotonic clock differ by 1 second or more, and by more than 0.1% of the time between two entries. Thus NTP slew does not count.
 
@@ -592,7 +625,7 @@ The report holds these results.
 | `info.host` | OS, kernel release, CPU, uptime, load, swap, and open file limits |
 | `info.memory` | total, available, and used memory. `warn` at 90% use or more. |
 | `info.pressure` | PSI some avg10 and OOM kills since boot. `warn` at PSI 10% or more, or after an OOM kill. |
-| `info.disk:<mount>` | one result for each mount that `edc info` shows. `warn` at 90% use, on a read-only mount, or at 80% inode use. |
+| `info.disk:<mount>` | one result for each mount that `edc info` shows. `warn` at 90% use, on a read-only mount, at 80% inode use, or when deleted files that a process still holds open take 10% of the mount or more. The largest deleted-open files are evidence. |
 | `info.processes` | process and thread counts, and the 5 largest processes by RSS |
 | `listen` | the listen sockets, as `edc listen` shows them |
 | `audit.*` | the `edc audit` checks |
@@ -835,11 +868,11 @@ The dashboard quits to the previous screen and leaves no rows behind. Use `--wri
 
 On macOS, `edc` reads the CPU ticks of each core from the kernel with the Mach `host_processor_info` call. On Linux, `edc` reads `/proc/stat`. On both systems, every column follows the interval.
 
-On Linux, the `n` view adds conntrack occupancy (`ct%`), listen overflows/s (`listen/s`), and softnet drops/s (`soft/s`). Its panel shows the selected sample's conntrack entries, TCP socket counts, and rates for listen drops, SYN cookies, conntrack drops, UDP receive-buffer errors, and softnet budget exhaustion. Use `↑`/`↓` for history, `Enter` for settings at that sample, and `h` for peaks in the last 60 seconds. Conntrack occupancy warns at 90% and marks risk at 98%; neither proves a connection failure.
+On Linux, the `n` view adds conntrack occupancy (`ct%`), listen overflows/s (`listen/s`), and softnet drops/s (`soft/s`). Its panel shows the selected sample's conntrack entries, TCP socket counts, and rates for listen drops, SYN cookies, conntrack drops, UDP receive-buffer errors, and softnet budget exhaustion. It also shows TCP memory pages against the `tcp_mem` ceiling, orphan sockets, and the rates of TCP memory pressure entries, aborts for memory, and pruned receive queues, plus the device-side drops that `/proc/net/dev` does not show: `rx_missed_errors` for a full receive ring and `rx_fifo_errors` and `tx_fifo_errors` for FIFO overruns, summed over the interfaces of the namespace except loopback. Use `↑`/`↓` for history, `Enter` for settings at that sample, and `h` for peaks in the last 60 seconds. Conntrack occupancy warns at 90% and marks risk at 98%; neither proves a connection failure.
 
 Collection uses the current network namespace, but softnet counters and TCP TIME_WAIT can be host-wide. TCP `CurrEstab` includes ESTABLISHED and CLOSE_WAIT. Socket counts are not local port utilization. Missing baselines, failed reads, or counter resets show `—` for rates. Conntrack statistics require an exposed `/proc/net/stat/nf_conntrack`; missing statistics do not prevent other collection.
 
-JSON samples add `network_limits` with the namespace, `settings`, `gauges`, cumulative `counters`, and per-second `rates`. The counters and rates include `tcp_retrans_segs`, `tcp_out_rsts`, and `tcp_attempt_fails`. Readings include `status` and, where needed, `reason`; unobserved numbers are omitted. Save JSON Lines to analyze trends after the command exits.
+JSON samples add `network_limits` with the namespace, `settings`, `gauges`, cumulative `counters`, and per-second `rates`. The counters and rates include `tcp_retrans_segs`, `tcp_out_rsts`, `tcp_attempt_fails`, `tcp_memory_pressures`, `tcp_abort_on_memory`, `tcp_rcv_pruned`, `nic_rx_missed`, `nic_rx_fifo`, and `nic_tx_fifo`. The gauges include `tcp_orphans` and `tcp_memory_pages`, and the settings include `net.ipv4.tcp_mem`. Readings include `status` and, where needed, `reason`; unobserved numbers are omitted. Save JSON Lines to analyze trends after the command exits.
 
 ## Top events
 
@@ -1525,7 +1558,31 @@ Use `trace sched` on Linux to measure scheduler delays. The trace reports wakeup
 
 By default, the trace emits spans of at least 1 ms. Use `--slow <duration>` to change this threshold, for example `--slow 100us`. It uses fixed pending maps and a fixed ring buffer. The summary and raw JSON summary show ring loss, map full, unmatched, repeated wakeup, and omitted span counts. On Linux kernels that expose the required BTF fields, raw events include the cgroup v2 ID and `--container` filters this ID. Use `--group-by cgroup` to group rows by this ID. edc verifies these fields before it loads the program. The trace works on Linux 5.15. In each raw event, `timestamp_ns` is Unix epoch time in nanoseconds, the same clock as the summary line. `boot_time_ns` is the kernel monotonic time since boot.
 
+Use `trace exec` on Linux to see processes start and end, and to see who sends a signal. Each `exec` event shows the PID, the parent, the user, and the first 256 bytes of the command line. Each `exit` event shows the exit code, the signal that ended the process, whether it dumped core, and how long the process lived. The lifetime comes from the start time of the task, so a process that started before the trace also shows it. Each `signal` event shows the signal, the sender, the target, and whether the kernel delivered or ignored it.
+
+```bash
+./bin/edc trace exec --duration 15s
+./bin/edc trace exec --process cron,sh --group-by parent
+./bin/edc trace exec --signal all --raw
+./bin/edc trace exec --group-by event --json exec.json
+```
+
+The summary groups the rows by process name. It counts the execs, the exits, the exits with a non-zero code, the exits by a signal, and the processes that lived less than 1 second, with the average and the longest lifetime. A high `SHORT` count with a high `EXEC` count is a storm of short-lived processes, for example a health check that forks a shell every second. Use `--group-by parent` to see which process starts them. A second table lists the signals by sender and target. `(kernel)` after the result means that the kernel made the signal, for example `SIGSEGV` after a fault or `SIGKILL` from the OOM killer, and the sender is then the process that was running at that moment.
+
+By default, edc records the signals that end a process or dump core: `HUP`, `INT`, `QUIT`, `ILL`, `TRAP`, `ABRT`, `BUS`, `FPE`, `KILL`, `USR1`, `SEGV`, `USR2`, `PIPE`, `TERM`, `STKFLT`, `XCPU`, `XFSZ`, and `SYS`. It leaves out the signals that run all the time, such as `CHLD` and `ALRM`. Use `--signal` with a comma-separated list of names or numbers, `--signal all`, or `--signal none`. The summary counts the signals that the filter dropped as `filtered_signals`. `--process` accepts names or PIDs, and a signal matches on the target. `--container` keeps the events of one container.
+
+edc reads the command line from the memory of the new process at the time of the exec, so it holds the arguments that the program received, not later changes. If edc cannot read it, the event shows the path of the executable. Lines longer than 256 bytes end with `…`, and `args_truncated` counts them. A thread that exits does not make an `exit` event, only the last thread of a process does. Kernel threads do not appear. The trace needs the `sched_process_exec`, `sched_process_exit`, and `signal_generate` tracepoints with BTF.
+
 Use `--raw` to print JSONL events as they arrive. Use `--json` to write the connection summary after Ctrl-C.
+
+Use `trace show <raw.jsonl>` to print the summary of a saved `--raw` file later, on any host and without root. It takes the same `--group-by`, `--process`, `--destination`, `-d`, and `--json` options as the live trace, and it prints the same tables. `-` reads standard input. The file holds one trace: the network, DNS, HTTP, database, socket, and drop traces, and `trace exec`. `trace io` and `trace sched` files are not supported. Each `--raw` event carries a `socket` number, and `trace show` uses it to join the events of one connection, so a file from an earlier edc without that number groups the UDP flows and the database commands less precisely.
+
+```bash
+sudo ./bin/edc trace http --raw --duration 30s > http.jsonl
+./bin/edc trace show http.jsonl
+./bin/edc trace show http.jsonl --group-by path -d
+./bin/edc trace show exec.jsonl --group-by parent --json exec.json
+```
 The text summary at the end groups the rows by process and peer. A client row shows the destination. A server row shows the local service, for example `127.0.0.1:2379 (server)`, because each client uses a different port. A TCP row shows the number of connections, the connections for each result, the mean connect time, and the traffic. A UDP row shows the datagrams and the traffic. Use `-d` or `--detail` to show one row for each connection or UDP flow. The JSON output always has one row for each connection or flow. The `trace dns` summary always has one row for each name and record type, so `-d` does not change it.
 The connection detail shows one row for each socket, from its creation to its destruction. The kernel can give the address of a closed socket to a new socket, so edc starts a new row when a socket is destroyed. The summary keeps the rows of the open connections and of the last 1,000 closed connections. The totals count all connections. `connections_omitted` in the JSON output shows the number of closed connections that have no row.
 Each row has one of these results:
@@ -1706,6 +1763,10 @@ Use `--show-secrets` with `--payload` to show the values of the headers that `--
 The summary after Ctrl-C shows one row for each side, method, host, and path. If the trace has both sides, the summary shows the totals of each side and adds a `SIDE` column. JSON adds the `client` and `server` objects with the totals of each side. Grouped rows show the requests, the responses, the 4xx and 5xx responses, the unanswered requests, and the average and maximum latency.
 
 HTTPS is encrypted, so edc cannot read the method, the path, or the status. The TLS ClientHello at the start of each connection is plain text. edc reads it and shows a `tls_hello` event. The `target` is the server name (SNI). The `alpn` field lists the protocols that the client offers, for example `h2` and `http/1.1`, and the event row shows the first one. A client that sends a ClientHello makes a `client:` row. A local server that receives one makes a `server:` row. The summary counts these connections in a separate `TLS connections` table, and JSON adds `tls_connections` and `tls`. Use `--port 443` to see only the HTTPS connections on port 443.
+
+The answer of the server is plain text too, up to the point where the keys are set. edc shows the ServerHello as a `tls_server_hello` event with `tls_version` and `cipher`, for example `TLS1.3 TLS_AES_128_GCM_SHA256`, and `latency_ms` is the time from the ClientHello on the same connection. On the client it holds the network and the server, and on a local server it holds only the server. A TLS 1.2 server also names the protocol it chose in `alpn`. TLS 1.3 encrypts that choice. If a side refuses the handshake, it sends an alert record. edc shows a plain-text alert as a `tls_alert` event, for example `fatal handshake_failure from server`, `fatal protocol_version from server`, `fatal unrecognized_name from server`, or `fatal unknown_ca from client`. `alert_from` names the side that sent it. The summary adds `VERSION` and `ALERTS` to the TLS table, a `TLS alerts` line with the count of each alert, and JSON adds `versions`, `alerts`, and `tls_alerts`.
+
+TLS 1.3 can encrypt an alert after the ServerHello. A client that rejects the certificate of the server sends the alert before it turns on its own encryption in OpenSSL, so `curl` shows `fatal unknown_ca from client` in TLS 1.3 and in TLS 1.2. A client that encrypts the alert shows only a connection that ends after the `tls_server_hello`. edc looks for an alert in the first 8 reads and writes of each direction after the handshake header, also when a program reads the 5-byte record header and the 2-byte alert in two reads, and it does not see a connection that started before the trace.
 
 edc does not see a TLS connection that started before the trace. If a client uses Encrypted Client Hello (ECH), the SNI is the public name of the provider. To see the requests of HTTPS, use `--tls`. You can also trace the plain HTTP behind the TLS end point, for example a proxy that sends plain HTTP to its backend.
 

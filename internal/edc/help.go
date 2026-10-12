@@ -232,6 +232,11 @@ var commandDocs = []commandDoc{
 		usesCommon: true,
 	},
 	{
+		name: "svc", group: "observe",
+		usage:      []string{"edc svc [options] <unit>"},
+		usesCommon: true,
+	},
+	{
 		name: "changes", group: "observe",
 		usage: []string{"edc changes [--since 24h] [options]"},
 		options: []optionDoc{

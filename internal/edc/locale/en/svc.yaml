@@ -1,0 +1,37 @@
+# English messages for the svc command.
+svc:
+  skip:
+    linux_only: "edc svc reads systemd units on Linux only"
+    no_systemd: "systemd is not running on this host"
+    needs_root: "needs root to read %s"
+    unreadable: "cannot read %s: %s"
+    not_running: "the unit has no running process"
+  error:
+    invalid_unit: "invalid service name %q: use letters, digits, and :_.@- only, without a leading '-' or a non-service suffix"
+    not_found: "unit %s does not exist"
+  source:
+    fd: "the fds of the unit processes"
+    sockets: "the socket owners"
+  state:
+    summary: "%s, up %s, %s restarts"
+    load: "%s is %s"
+    show_failed: "systemctl show failed: %s"
+  processes:
+    summary: "%d processes, CPU %.1f%%, RSS %s"
+  fd:
+    denied: "permission denied"
+    no_limit: "no limit"
+    high: "%d processes use 80%% or more of the fd limit: %s"
+    unlimited: "%d processes have no fd limit"
+    ok: "highest fd use: %s"
+  listen:
+    none: "the unit processes own no listening tcp or udp socket"
+    summary: "listens on %s"
+  journal:
+    none: "no error lines in the journal"
+    errors: "%d recent error lines, latest: %s"
+  evidence:
+    processes: "processes (%d of %d)"
+    fd: "open fds / soft limit"
+    sockets: "sockets"
+    journal: "journal"

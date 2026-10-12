@@ -169,6 +169,14 @@ command:
       - "-v adds the account, the file descriptor and the queue."
       - "The queue is Recv-Q/Send-Q. For a TCP listener it is the accept queue."
       - "-v adds columns only. The rows stay the same."
+  svc:
+    summary: "One systemd service on one screen (Linux)"
+    notes:
+      - "It shows state, uptime, restarts, processes, fds, sockets, and journal errors."
+      - "It reads only. It does not start, stop, or reload the unit."
+      - "It needs Linux with systemd. On other hosts it shows skip."
+      - "Run it as root. Without root, fds, socket owners, and the journal show skip."
+      - "A socket that only systemd holds (socket activation) is not in the list."
   quality:
     summary: "Network responsiveness (RPM) and throughput"
     option:

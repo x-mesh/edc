@@ -169,6 +169,14 @@ command:
       - "-v はアカウントと file descriptor、キューの列を開きます。"
       - "キューは Recv-Q/Send-Q で、TCP listener では accept キューです。"
       - "-v が増やすのは列だけです。行は変わりません。"
+  svc:
+    summary: "systemd service 一つを一画面に (Linux)"
+    notes:
+      - "状態、稼働時間、再起動、process、fd、ソケット、journal のエラーを表示します。"
+      - "読むだけです。unit の起動・停止・reload はしません。"
+      - "systemd のある Linux でのみ動作し、他のホストでは skip です。"
+      - "root で実行してください。root 以外は fd、ソケット所有者、journal が skip。"
+      - "systemd だけが持つソケット (socket activation) は一覧に出ません。"
   quality:
     summary: "ネットワークの応答性 (RPM) とスループット"
     option:

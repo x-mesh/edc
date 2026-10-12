@@ -3,6 +3,7 @@ package edc
 import (
 	"context"
 	"errors"
+	"flag"
 	"fmt"
 	"io/fs"
 	"os"
@@ -21,6 +22,120 @@ const (
 	// snapshotPressureWarn은 PSI some avg10의 경고 기준(%)이다. 10초 중 1초 넘게 기다렸다는 뜻이다.
 	snapshotPressureWarn = 10
 )
+
+const snapshotUsage = "edc snapshot [--output <file|->] [--since 6h] [--force] [--timeout 15s] [--redact]"
+
+// runSnapshot은 host 상태를 report 하나로 저장한다. 장애 전후에 한 번씩 찍어 edc report diff로 비교하려는 것이다.
+// 공인 IP 조회처럼 host 밖으로 나가는 요청은 하지 않는다.
+func runSnapshot(args []string, version string) int {
+	options := configuredCommon(15 * time.Second)
+	set := flag.NewFlagSet("snapshot", flag.ContinueOnError)
+	set.SetOutput(os.Stderr)
+	output := set.String("output", "", T("command.snapshot.option.output"))
+	since := set.Duration("since", 6*time.Hour, T("command.snapshot.option.since"))
+	force := set.Bool("force", false, T("command.snapshot.option.force"))
+	set.DurationVar(&options.timeout, "timeout", options.timeout, T("option.timeout"))
+	set.BoolVar(&options.redact, "redact", options.redact, T("option.redact"))
+	if err := set.Parse(args); err != nil {
+		return 2
+	}
+	if set.NArg() != 0 || *since <= 0 || options.timeout <= 0 {
+		fmt.Fprintln(os.Stderr, T("cli.usage", snapshotUsage))
+		return 2
+	}
+	started := time.Now()
+	path := *output
+	if path == "" {
+		hostname, _ := os.Hostname()
+		path = snapshotDefaultPath(hostname, started, options.redact)
+	}
+	// 수집은 timeout까지 걸릴 수 있으므로 덮어쓰지 못할 경로는 먼저 거른다. 쓸 때 O_EXCL로 다시 막는다.
+	if path != "-" && !*force {
+		if _, err := os.Lstat(path); err == nil {
+			fmt.Fprintln(os.Stderr, snapshotExistsError{path: path})
+			return 2
+		}
+	}
+	ctx, cancel, deadline := probeContext(options.timeout)
+	defer cancel()
+	defer deadline()
+	results := collectSnapshot(ctx, snapshotSections(*since), snapshotGrace)
+	sortResults(results)
+	report := buildReport(version, started, map[string]interface{}{"since": since.String()}, results, options.redact)
+	if path == "-" {
+		if err := writeJSON(os.Stdout, report); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 2
+		}
+		return exitCode(report.Results)
+	}
+	if err := writeSnapshotFile(path, report, *force); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 2
+	}
+	fmt.Fprintln(os.Stdout, T("snapshot.saved", path))
+	fmt.Fprintln(os.Stdout, summaryLine(report.Results))
+	fmt.Fprintln(os.Stdout, T("snapshot.diff_hint", path))
+	return exitCode(report.Results)
+}
+
+// snapshotSections는 각 명령이 쓰는 수집기와 판정을 그대로 부른다. 판정 기준이 명령과 snapshot에서 갈라지지 않게 한다.
+func snapshotSections(since time.Duration) []snapshotSection {
+	return []snapshotSection{
+		{name: "info.host", run: func(context.Context) []Result {
+			started := time.Now()
+			details, err := collectHostDetails()
+			return []Result{snapshotHostResult(started, details, err)}
+		}},
+		{name: "info.memory", run: func(context.Context) []Result {
+			started := time.Now()
+			memory, err := collectInfoMemory()
+			return []Result{snapshotMemoryResult(started, memory, err)}
+		}},
+		{name: "info.pressure", run: func(context.Context) []Result {
+			return []Result{snapshotPressureResult(time.Now(), collectInfoSignals(false))}
+		}},
+		{name: "info.disk", run: func(context.Context) []Result {
+			started := time.Now()
+			disks, err := collectDisks()
+			if err != nil {
+				return snapshotDiskResults(started, nil, nil, err)
+			}
+			return snapshotDiskResults(started, visibleDisks(disks), collectDiskSignals(disks, false), nil)
+		}},
+		{name: "info.processes", run: func(context.Context) []Result {
+			started := time.Now()
+			processes, err := collectInfoProcesses()
+			return []Result{snapshotProcessResult(started, processes, err)}
+		}},
+		{name: listenProbeID, run: func(ctx context.Context) []Result {
+			return []Result{probeListen(ctx, defaultListenFamilies())}
+		}},
+		{name: "audit", run: func(ctx context.Context) []Result {
+			sources, ok := hostAuditSources()
+			if !ok {
+				return []Result{unsupported("audit", T("audit.skip.linux_only"))}
+			}
+			facts := collectAuditFacts(ctx, sources)
+			facts.AllowPorts = activeConfig.Audit.AllowPorts
+			return applyAuditAccept(evaluateAudit(facts), activeConfig.Audit.Accept)
+		}},
+		{name: "events", run: func(ctx context.Context) []Result {
+			sources, ok := hostEventsSources()
+			if !ok {
+				return []Result{unsupported("events", T("events.skip.linux_only"))}
+			}
+			return evaluateEvents(collectEventsFacts(ctx, sources, since))
+		}},
+		{name: "changes", run: func(ctx context.Context) []Result {
+			sources, ok := hostChangesSources()
+			if !ok {
+				return []Result{unsupported("changes", T("changes.skip.linux_only"))}
+			}
+			return evaluateChanges(ctx, sources, since)
+		}},
+	}
+}
 
 type snapshotSection struct {
 	name string

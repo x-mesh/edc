@@ -303,6 +303,17 @@ var commandDocs = []commandDoc{
 		},
 	},
 	{
+		name: "snapshot", group: "record",
+		usage: []string{"edc snapshot [--output <file|->] [--since 6h] [--force]", "             [--timeout 15s] [--redact]"},
+		options: []optionDoc{
+			{"--output <file|->", "command.snapshot.option.output"},
+			{"--since 6h", "command.snapshot.option.since"},
+			{"--force", "command.snapshot.option.force"},
+			{"--timeout 15s", "option.timeout"},
+			{"--redact", "option.redact"},
+		},
+	},
+	{
 		name: "report", group: "record",
 		usage: []string{
 			"edc report list [directory]",

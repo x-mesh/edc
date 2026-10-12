@@ -321,6 +321,20 @@ command:
       - "Codex は codex app-server で照会します。"
       - "リセットを検出すると history DB の隣の ai-resets.jsonl に記録します。"
       - "最後に受け取った Claude の値は同じ場所の ai-claude.json に残します。"
+  snapshot:
+    summary: "report diff で比べる host の状態を 1 つの report に保存"
+    option:
+      output: "report ファイル、- は stdout"
+      since: "events と changes が見る期間 (既定 6h)"
+      force: "既存の出力ファイルを置き換える"
+    notes:
+      - "info、listen、audit、events、changes の結果を 1 つの report に保存します。"
+      - "ファイルの権限は 0600 です。アカウント、sudo 規則、process 名を含みます。"
+      - "既定のファイルは ./edc-snapshot-<host>-<UTC 時刻>.json です。"
+      - "既存のファイルは置き換えません。置き換えるには --force を付けます。"
+      - "2 つの snapshot の比較: edc report diff before.json after.json"
+      - "macOS では audit、events、changes は skip になります。"
+      - "--redact が隠すのは host 名、ホームのパス、IP アドレスだけです。"
   report:
     summary: "保存した edc 診断結果の表示と比較"
     notes:

@@ -200,6 +200,7 @@ Setup wizard는 `edc log`의 저장 경로를 비워두고 실행별 파일을 �
 ./bin/edc net interfaces
 ./bin/edc listen              # 열려 있는 포트, --unix나 --all로 unix socket 포함
 ./bin/edc listen --watch -i 0.5 --duration 10s
+sudo ./bin/edc audit           # 노출 상태와 설정 점검, 읽기 전용 (Linux)
 ./bin/edc quality --timeout 60s
 ./bin/edc quality --server https://example.com/.well-known/nq   # 응답성 config URL
 
@@ -365,6 +366,43 @@ terminal에서는 몇 곳을 확인했는지 진행 줄로 보여 줍니다. `q`
 데모 화면은 public IP를 `222.XXX.XXX.XXX`로 가리고, route 주소를 사설 예시 주소로 바꿨습니다.
 
 `edc`는 확인한 것만 밝힙니다. 지터로 회선 종류를 짐작하지 않습니다. 지터는 숫자로 남기고 판단은 사용자에게 맡깁니다.
+
+## 호스트 점검 (Linux)
+
+`edc audit`는 Linux 호스트의 노출 상태와 설정을 읽습니다. 파일, sysctl 값, listen 소켓만 읽고, 아무것도 바꾸지 않으며 외부로 보내지 않습니다. 1초 안에 끝납니다.
+
+```bash
+sudo edc audit
+sudo edc audit -v               # 결과마다 근거가 된 값과 규칙 추가
+sudo edc audit --json -         # 점검마다 결과 하나
+```
+
+| 점검 | fail | warn |
+|---|---|---|
+| `net.exposed` | DB·제어 포트가 loopback 밖에 열려 있고 호스트 방화벽이 들어오는 트래픽을 허용함 | 같은 포트가 열려 있지만 방화벽이 기본으로 차단하거나, 방화벽을 읽지 못함 |
+| `net.firewall` | | input chain에 규칙이 없음 |
+| `net.ip_forward` | | forwarding이 켜져 있는데 컨테이너 런타임이 없음 |
+| `ssh.root_login` | | `PermitRootLogin yes` |
+| `ssh.password_auth` | 비밀번호 로그인이 켜져 있고 `PermitEmptyPasswords yes` | 비밀번호 로그인이 켜져 있음 |
+| `ssh.key_files` | 다른 사용자가 `~/.ssh`나 `authorized_keys`에 쓸 수 있음 | |
+| `user.uid0` | root 외에 UID 0인 계정이 있음 | |
+| `user.empty_pass` | 빈 비밀번호 계정이 있음 | |
+| `user.sudo_nopass` | | 비밀번호 없이 모든 명령을 허용하는 sudo 규칙이 있음 |
+| `user.root_groups` | | `docker`나 `lxd` 그룹에 멤버가 있음 |
+| `file.sensitive` | 다른 사용자가 `/etc/shadow`를 읽거나 `/etc/passwd`, `/etc/sudoers`, `docker.sock`에 쓸 수 있음 | |
+| `file.path_writable` | 다른 사용자가 root `PATH`의 디렉터리에 쓸 수 있거나 `PATH`에 상대 경로가 있음 | |
+| `kernel.sysctl` | | 하드닝 값이 권장 값과 다름 |
+| `patch.reboot` | | 패키지가 재부팅을 요구하거나, `/boot`에 실행 중인 것보다 새 커널이 있음 |
+
+DB·제어 포트는 2375, 2379, 3306, 5432, 6379, 9200, 10250, 11211, 27017입니다.
+
+root로 실행하세요. root가 아니면 방화벽, `/etc/shadow`, `/etc/sudoers`, 다른 사용자의 홈 디렉터리를 읽지 못합니다. 이 점검은 `pass`가 아니라 `skip`으로 나옵니다.
+
+방화벽 점검은 `nft list ruleset`을 읽고, nft에 input chain이 없으면 `iptables-save`를 읽습니다. input 규칙의 수는 세지만 규칙 순서는 해석하지 않습니다. 이 호스트만 보므로 클라우드 보안 그룹이 포트를 막고 있을 수 있습니다. `fail`은 호스트 자체가 그 포트를 막지 않는다는 뜻입니다.
+
+SSH 점검은 `sshd_config`와 `Include`한 파일을 읽고, sshd처럼 처음 나온 값을 씁니다. `Match` 블록은 일부 연결에만 적용되므로 해석하지 않습니다. 실제 적용 값은 `sshd -T`로 확인하세요.
+
+`edc audit`는 패키지 버전을 CVE와 대조하지 않습니다. 파일 시스템 전체를 훑지 않고, 찾은 문제를 고치지도 않습니다.
 
 ## Probe 임계값
 

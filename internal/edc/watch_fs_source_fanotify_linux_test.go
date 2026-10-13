@@ -81,37 +81,94 @@ func TestFSWatchAutoDriverPrefersFanotifyForRecursiveWatches(t *testing.T) {
 	}
 }
 
-// filesystem mark는 마운트 경계를 넘지 않는다. 그 아래 마운트가 있으면 auto는 inotify로 감시하고, fanotify를
-// 고르면 이유와 함께 실패한다.
-func TestFSWatchFanotifyRefusesAMountBelowTheRoot(t *testing.T) {
+// filesystem mark는 마운트 경계를 넘지 않으므로 루트 아래의 마운트마다 mark를 건다. sysfs처럼 mark를 걸 수 없는
+// 마운트와 루트 밖 디렉터리를 bind mount한 지점은 빼고 알린다.
+func TestFSWatchFanotifyWatchesTheMountsBelowTheRoot(t *testing.T) {
 	fsWatchSkipUnavailableDriver(t, fsWatchDriverFanotify)
 	root, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	mount := filepath.Join(root, "mnt")
-	if err := os.Mkdir(mount, 0700); err != nil {
+	outside := t.TempDir()
+	mount := func(name, source, kind string, flags uintptr) {
+		t.Helper()
+		point := filepath.Join(root, name)
+		if err := os.Mkdir(point, 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := unix.Mount(source, point, kind, flags, ""); err != nil {
+			t.Skipf("mount %s: %v", kind, err)
+		}
+		t.Cleanup(func() { unix.Unmount(point, unix.MNT_DETACH) })
+	}
+	mount("cache", "tmpfs", "tmpfs", 0)
+	mount("sys", "sysfs", "sysfs", 0)
+	mount("shared", outside, "", unix.MS_BIND)
+	var notice strings.Builder
+	previous := fsWatchNotice
+	fsWatchNotice = &notice
+	defer func() { fsWatchNotice = previous }()
+	source := fsWatchTestSource(t, root, true, fsWatchDriverAuto)
+	if source.driver != fsWatchDriverFanotify {
+		t.Fatalf("driver = %q, want fanotify", source.driver)
+	}
+	for _, want := range []string{filepath.Join(root, "sys"), filepath.Join(root, "shared")} {
+		if !strings.Contains(notice.String(), want) {
+			t.Fatalf("notice %q does not name %s", notice.String(), want)
+		}
+	}
+	if strings.Contains(notice.String(), filepath.Join(root, "cache")) {
+		t.Fatalf("notice %q names the tmpfs mount", notice.String())
+	}
+	if err := os.WriteFile(filepath.Join(root, "cache", "inside.txt"), nil, 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := unix.Mount("tmpfs", mount, "tmpfs", 0, ""); err != nil {
-		t.Skipf("mount tmpfs: %v", err)
+	fsWatchWaitEvent(t, source, "create", "cache/inside.txt")
+}
+
+func TestFSWatchPlansTheMountsBelowTheRoot(t *testing.T) {
+	mounts := parseFSWatchMounts(strings.Join([]string{
+		"1 0 8:3 / / rw - xfs /dev/sda3 rw",
+		"2 1 8:3 /etc /etc ro - xfs /dev/sda3 rw",
+		"3 1 0:5 / /srv/data/cache rw - tmpfs tmpfs rw",
+		"4 1 0:6 / /srv/data/cache rw - tmpfs tmpfs rw",
+		"5 1 0:7 / /srv/data/sys rw - sysfs sysfs rw",
+		"6 5 0:8 / /srv/data/sys/kernel/debug rw - debugfs debugfs rw",
+		"7 1 8:3 /mnt/other /srv/data/shared rw - xfs /dev/sda3 rw",
+		"8 1 8:3 /srv/data/real /srv/data/alias rw - xfs /dev/sda3 rw",
+		"9 1 0:9 / /srv/data/build rw - tmpfs tmpfs rw",
+		`10 1 0:10 / /srv/data/with\040space rw - tmpfs tmpfs rw`,
+		"11 1 0:11 / /elsewhere rw - tmpfs tmpfs rw",
+	}, "\n"))
+	excluded := func(relative string) bool { return relative == "build" }
+	filesystems, skipped := planFSWatchMounts(mounts, "/srv/data", true, excluded)
+	var points [][]string
+	for _, filesystem := range filesystems {
+		points = append(points, filesystem.points)
 	}
-	t.Cleanup(func() { unix.Unmount(mount, 0) })
-	if _, err := newFSWatchSource(fsWatchOptions{root: root, recursive: true, driver: fsWatchDriverFanotify}); err == nil || !strings.Contains(err.Error(), mount) {
-		t.Fatalf("fanotify error = %v, want the mount %s", err, mount)
+	want := [][]string{{"/srv/data", "/srv/data/alias"}, {"/srv/data/cache"}, {"/srv/data/sys"}, {"/srv/data/with space"}, {"/srv/data/sys/kernel/debug"}}
+	if !slices.EqualFunc(points, want, slices.Equal) {
+		t.Fatalf("points = %v, want %v", points, want)
 	}
-	source, err := newFSWatchSource(fsWatchOptions{root: root, recursive: true, driver: fsWatchDriverAuto})
-	if err != nil {
-		t.Fatal(err)
+	if filesystems[0].mount.point != "/" || filesystems[1].mount.device != "0:6" {
+		t.Fatalf("filesystems = %+v", filesystems)
 	}
-	source.close()
-	if source.driver != fsWatchDriverInotify {
-		t.Fatalf("driver = %q, want inotify", source.driver)
+	if !slices.Equal(skipped, []string{"/srv/data/shared"}) {
+		t.Fatalf("skipped = %v", skipped)
+	}
+	if filesystems, skipped := planFSWatchMounts(mounts, "/srv/data", false, excluded); len(filesystems) != 1 || len(skipped) != 0 {
+		t.Fatalf("non-recursive plan = %+v, %v", filesystems, skipped)
+	}
+	if got := fsWatchOutermostPaths([]string{"/sys/kernel/debug", "/proc", "/sys", "/system"}); !slices.Equal(got, []string{"/proc", "/sys", "/system"}) {
+		t.Fatalf("outermost = %v", got)
+	}
+	if got := fsWatchShortList([]string{"/a", "/b", "/c", "/d", "/e", "/f", "/g"}); got != "/a, /b, /c, /d, /e … (+2)" {
+		t.Fatalf("short list = %q", got)
 	}
 }
 
 func fsWatchFanotifyTestKey(name string) string {
-	return fsWatchFanotifyKey(unix.NewFileHandle(1, []byte(name)))
+	return "testfsid" + fsWatchFanotifyHandleKey(unix.NewFileHandle(1, []byte(name)))
 }
 
 // fsWatchFanotifyTestEvent는 커널과 같은 배치로 이벤트 하나를 만든다. info record 길이는 4 byte 단위로 맞춘다.
@@ -119,8 +176,9 @@ func fsWatchFanotifyTestEvent(mask uint64, parent, name, target string) []byte {
 	record := func(kind byte, key, name string) []byte {
 		body := make([]byte, fsWatchFanotifyHandleOffset)
 		body[0] = kind
-		binary.NativeEndian.PutUint32(body[12:16], uint32(len(key)-4))
-		body = append(body, key...)
+		copy(body[fsWatchFanotifyFSIDOffset:], key[:fsWatchFanotifyFSIDSize])
+		binary.NativeEndian.PutUint32(body[12:16], uint32(len(key)-fsWatchFanotifyFSIDSize-4))
+		body = append(body, key[fsWatchFanotifyFSIDSize:]...)
 		if kind == unix.FAN_EVENT_INFO_TYPE_DFID_NAME {
 			body = append(append(body, name...), 0)
 		}

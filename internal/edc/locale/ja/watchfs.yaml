@@ -40,7 +40,7 @@ watchfs:
     permission: "CAP_SYS_ADMIN権限が必要です。rootで実行してください。"
     kernel: "カーネルがFAN_REPORT_TARGET_FIDに対応していません。Linux 5.17以降が必要です。"
     filesystem: "このファイルシステムはfanotifyに必要なfile handleに対応していません。"
-    mount: "監視ディレクトリの下に別のファイルシステムがマウントされています: %s"
+    skipped: "fanotifyは監視ディレクトリ配下のマウント%d個を監視できないため、その配下の変更は通知しません: %s"
     path: "file handleから求めた監視ディレクトリのパスが異なります: %s"
     dropped: "パスを特定できなかったイベント%d件を破棄しました。監視ディレクトリ内の変更が抜けている可能性があります。"
   walking: "%s 配下の各ディレクトリを監視に登録中… ツリーが大きいと時間がかかります。準備ができると出力を開始します。"

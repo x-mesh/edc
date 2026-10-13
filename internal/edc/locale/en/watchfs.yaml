@@ -45,7 +45,7 @@ watchfs:
     permission: "CAP_SYS_ADMIN is required; run as root."
     kernel: "The kernel does not support FAN_REPORT_TARGET_FID; Linux 5.17 or later is required."
     filesystem: "This filesystem does not support the file handles that fanotify needs."
-    mount: "Another filesystem is mounted below the watched directory: %s"
+    skipped: "fanotify cannot watch %d mounts below the watched directory; changes below them are not reported: %s"
     path: "The file handle of the watched directory resolves to a different path: %s"
     dropped: "Dropped %d events whose path could not be found; changes in the watched directory can be missing."
   walking: "Adding a watch to each directory under %s… A large tree takes time. Output starts when edc is ready."

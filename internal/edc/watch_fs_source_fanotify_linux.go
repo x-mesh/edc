@@ -37,6 +37,10 @@ const (
 	fsWatchFanotifyMetadataSize = 24
 	// fsWatchFanotifyHandleOffset은 info record에서 handle_type이 시작하는 위치다. header 4, fsid 8, handle_bytes 4 byte 뒤에 온다.
 	fsWatchFanotifyHandleOffset = 16
+	fsWatchFanotifyFSIDOffset   = 4
+	fsWatchFanotifyFSIDSize     = 8
+	// fsWatchSkippedShown은 건너뛴 마운트 안내에 이름을 보일 수다.
+	fsWatchSkippedShown = 5
 )
 
 // newFSWatchSource는 --driver에 맞는 Linux 감시를 만든다. auto는 재귀 감시에서 fanotify를 먼저 쓰고, 쓸 수
@@ -66,7 +70,7 @@ func newFSWatchSource(options fsWatchOptions) (fsWatchSource, error) {
 }
 
 // fsWatchFanotifyEvent는 FAN_REPORT_DFID_NAME_TARGET 이벤트 하나다. parent는 name 항목이 든 디렉터리, target은 그
-// 항목 자신의 file handle이고, 둘 다 handle_type과 handle을 그대로 이은 key다.
+// 항목 자신의 file handle이고, 둘 다 fsid, handle_type과 handle을 그대로 이은 key다.
 type fsWatchFanotifyEvent struct {
 	mask   uint64
 	parent string
@@ -120,43 +124,53 @@ func newFanotifyWatchSource(options fsWatchOptions) (fsWatchSource, error) {
 	if err != nil {
 		return fsWatchSource{}, fsWatchFanotifyReason(err)
 	}
-	// open_by_handle_at은 O_PATH로 연 mount fd를 받지 않는다.
-	mountFD, err := unix.Open(options.root, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
-	if err != nil {
+	mountFDs := map[string]int{}
+	release := func() {
 		unix.Close(fd)
-		return fsWatchSource{}, err
+		for _, mountFD := range mountFDs {
+			unix.Close(mountFD)
+		}
 	}
-	release := func() { unix.Close(fd); unix.Close(mountFD) }
-	if err := unix.FanotifyMark(fd, unix.FAN_MARK_ADD|unix.FAN_MARK_FILESYSTEM, fsWatchFanotifyMask, unix.AT_FDCWD, options.root); err != nil {
-		release()
-		return fsWatchSource{}, fsWatchFanotifyReason(err)
-	}
-	lookup := func(key string) (string, error) { return fsWatchOpenHandle(mountFD, key) }
-	// mark가 성공해도 파일시스템에 따라 handle을 경로로 되돌리지 못할 수 있다. 감시 루트로 먼저 확인한다.
-	handle, _, err := unix.NameToHandleAt(unix.AT_FDCWD, options.root, 0)
-	var resolved string
-	if err == nil {
-		resolved, err = lookup(fsWatchFanotifyKey(handle))
-	}
-	if err != nil {
-		release()
-		return fsWatchSource{}, fsWatchFanotifyReason(err)
-	}
-	if resolved != options.root {
-		release()
-		return fsWatchSource{}, errors.New(T("watchfs.fanotify.path", resolved))
-	}
-	var wake int
-	mount, err := fsWatchMountBelow(options.root)
-	if err == nil && mount != "" {
-		err = errors.New(T("watchfs.fanotify.mount", mount))
-	}
-	if err == nil {
-		wake, err = unix.Eventfd(0, unix.EFD_CLOEXEC|unix.EFD_NONBLOCK)
-	}
+	mountinfo, err := os.ReadFile("/proc/self/mountinfo")
 	if err != nil {
 		release()
 		return fsWatchSource{}, err
+	}
+	excludedDirectories := map[string]bool{}
+	excluded := func(relative string) bool {
+		return fsWatchExcluded(options.exclude, filepath.ToSlash(relative)) || fsWatchUnderExcluded(options.exclude, excludedDirectories, relative)
+	}
+	filesystems, skipped := planFSWatchMounts(parseFSWatchMounts(string(mountinfo)), options.root, options.recursive, excluded)
+	for index, filesystem := range filesystems {
+		point := filesystem.mount.point
+		if index == 0 {
+			point = options.root
+		}
+		err := fsWatchFanotifyAdd(fd, point, mountFDs)
+		if err == nil {
+			continue
+		}
+		// 감시 루트의 파일시스템을 볼 수 없으면 fanotify를 쓸 이유가 없다. 그 아래 sysfs나 devpts 같은 마운트는 빼고 감시한다.
+		if index == 0 {
+			release()
+			return fsWatchSource{}, err
+		}
+		skipped = append(skipped, filesystem.points...)
+	}
+	lookup := func(key string) (string, error) {
+		mountFD, ok := mountFDs[key[:min(len(key), fsWatchFanotifyFSIDSize)]]
+		if !ok {
+			return "", unix.ESTALE
+		}
+		return fsWatchOpenHandle(mountFD, key[fsWatchFanotifyFSIDSize:])
+	}
+	wake, err := unix.Eventfd(0, unix.EFD_CLOEXEC|unix.EFD_NONBLOCK)
+	if err != nil {
+		release()
+		return fsWatchSource{}, err
+	}
+	if skipped = fsWatchOutermostPaths(skipped); len(skipped) > 0 {
+		fmt.Fprintln(fsWatchNotice, T("watchfs.fanotify.skipped", len(skipped), fsWatchShortList(skipped)))
 	}
 	events := make(chan fsWatchEvent, 256)
 	failures := make(chan error, 1)
@@ -254,27 +268,142 @@ func fsWatchFanotifyReason(err error) error {
 	return err
 }
 
-// fsWatchMountBelow는 root 아래에 마운트된 경로를 찾는다. filesystem mark는 마운트 경계를 넘지 않으므로 그 아래의
-// 변경을 놓친다.
-func fsWatchMountBelow(root string) (string, error) {
-	data, err := os.ReadFile("/proc/self/mountinfo")
+// fsWatchFanotifyAdd는 point가 있는 파일시스템에 mark를 걸고, 그 파일시스템의 handle을 열 mount fd를 fsid로 둔다.
+// mark를 받아도 handle을 경로로 되돌리지 못하는 파일시스템이 있으므로, point의 handle을 먼저 다시 열어 본다.
+func fsWatchFanotifyAdd(fd int, point string, mountFDs map[string]int) error {
+	var stat unix.Statfs_t
+	if err := unix.Statfs(point, &stat); err != nil {
+		return err
+	}
+	fsid := string(binary.NativeEndian.AppendUint32(binary.NativeEndian.AppendUint32(nil, uint32(stat.Fsid.Val[0])), uint32(stat.Fsid.Val[1])))
+	// 이벤트는 fsid로만 파일시스템을 가린다. 같은 fsid가 둘이면 어느 마운트로 경로를 찾을지 알 수 없다.
+	if _, ok := mountFDs[fsid]; ok {
+		return unix.EXDEV
+	}
+	// open_by_handle_at은 O_PATH로 연 mount fd를 받지 않는다.
+	mountFD, err := unix.Open(point, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
 	if err != nil {
-		return "", err
+		return err
 	}
-	prefix := root + string(filepath.Separator)
-	if root == string(filepath.Separator) {
-		prefix = root
+	handle, _, err := unix.NameToHandleAt(unix.AT_FDCWD, point, 0)
+	var resolved string
+	if err == nil {
+		resolved, err = fsWatchOpenHandle(mountFD, fsWatchFanotifyHandleKey(handle))
 	}
-	for _, line := range strings.Split(string(data), "\n") {
+	if err == nil && resolved != point {
+		err = errors.New(T("watchfs.fanotify.path", resolved))
+	} else if err == nil {
+		err = unix.FanotifyMark(fd, unix.FAN_MARK_ADD|unix.FAN_MARK_FILESYSTEM, fsWatchFanotifyMask, unix.AT_FDCWD, point)
+	}
+	if err != nil {
+		unix.Close(mountFD)
+		return fsWatchFanotifyReason(err)
+	}
+	mountFDs[fsid] = mountFD
+	return nil
+}
+
+// fsWatchMount는 /proc/self/mountinfo의 한 줄이다. source는 파일시스템 안에서 이 마운트가 보여 주는 경로다.
+type fsWatchMount struct {
+	device string
+	source string
+	point  string
+}
+
+// fsWatchFilesystem은 mark를 걸 파일시스템 하나다. mount는 handle을 경로로 바꿀 때 쓰는 마운트이고, points는 감시
+// 루트 아래에서 이 파일시스템을 마운트한 지점이다.
+type fsWatchFilesystem struct {
+	mount  fsWatchMount
+	points []string
+}
+
+func parseFSWatchMounts(mountinfo string) []fsWatchMount {
+	var mounts []fsWatchMount
+	for _, line := range strings.Split(mountinfo, "\n") {
 		fields := strings.Fields(line)
 		if len(fields) < 5 {
 			continue
 		}
-		if point := fsWatchUnescapeMount(fields[4]); point != root && strings.HasPrefix(point, prefix) {
-			return point, nil
+		mounts = append(mounts, fsWatchMount{device: fields[2], source: fsWatchUnescapeMount(fields[3]), point: fsWatchUnescapeMount(fields[4])})
+	}
+	return mounts
+}
+
+// planFSWatchMounts는 mark를 걸 파일시스템을 고른다. 첫 항목은 감시 루트가 있는 파일시스템이다. 하나의 mark는
+// 마운트 경계를 넘지 않으므로 재귀 감시는 루트 아래의 다른 파일시스템마다 mark를 건다. 이미 고른 파일시스템을
+// 다시 마운트한 지점의 이벤트는 처음 고른 마운트를 거친 경로로 나온다. 그 경로가 감시 루트 밖이면 알릴 수 없으므로
+// skipped에 넣는다. excluded는 --exclude에 걸린 마운트를 거른다.
+func planFSWatchMounts(mounts []fsWatchMount, root string, recursive bool, excluded func(string) bool) ([]fsWatchFilesystem, []string) {
+	// 같은 지점에 다시 마운트하면 나중 줄이 앞의 마운트를 가린다.
+	visible := map[string]fsWatchMount{}
+	for _, mount := range mounts {
+		visible[mount.point] = mount
+	}
+	var top fsWatchMount
+	var below []string
+	for point, mount := range visible {
+		if fsWatchPathUnder(point, root) && len(point) >= len(top.point) {
+			top = mount
+		}
+		if point != root && fsWatchPathUnder(root, point) {
+			below = append(below, point)
 		}
 	}
-	return "", nil
+	filesystems := []fsWatchFilesystem{{mount: top, points: []string{root}}}
+	if !recursive {
+		return filesystems, nil
+	}
+	// 얕은 지점부터 보아야 같은 파일시스템의 마운트 중 위쪽을 기준으로 삼는다.
+	slices.SortFunc(below, func(first, second string) int {
+		return cmp.Or(cmp.Compare(strings.Count(first, "/"), strings.Count(second, "/")), cmp.Compare(first, second))
+	})
+	index := map[string]int{top.device: 0}
+	var skipped []string
+	for _, point := range below {
+		relative, err := filepath.Rel(root, point)
+		if err != nil || excluded(relative) {
+			continue
+		}
+		mount := visible[point]
+		at, ok := index[mount.device]
+		if !ok {
+			index[mount.device] = len(filesystems)
+			filesystems = append(filesystems, fsWatchFilesystem{mount: mount, points: []string{point}})
+			continue
+		}
+		base := filesystems[at].mount
+		if !fsWatchPathUnder(base.source, mount.source) || !fsWatchPathUnder(root, filepath.Join(base.point, strings.TrimPrefix(mount.source, base.source))) {
+			skipped = append(skipped, point)
+			continue
+		}
+		filesystems[at].points = append(filesystems[at].points, point)
+	}
+	return filesystems, skipped
+}
+
+// fsWatchPathUnder는 path가 parent이거나 그 아래에 있는지 본다.
+func fsWatchPathUnder(parent, path string) bool {
+	return path == parent || parent == string(filepath.Separator) || strings.HasPrefix(path, parent+string(filepath.Separator))
+}
+
+// fsWatchOutermostPaths는 다른 경로 아래에 있는 경로를 뺀다. /sys를 건너뛰면 /sys/kernel/debug는 따로 알릴 필요가 없다.
+func fsWatchOutermostPaths(paths []string) []string {
+	slices.Sort(paths)
+	var outermost []string
+	for _, path := range paths {
+		if len(outermost) == 0 || !fsWatchPathUnder(outermost[len(outermost)-1], path) {
+			outermost = append(outermost, path)
+		}
+	}
+	return outermost
+}
+
+// fsWatchShortList는 앞의 몇 개만 보이고 나머지는 개수로 줄인다.
+func fsWatchShortList(paths []string) string {
+	if len(paths) <= fsWatchSkippedShown {
+		return strings.Join(paths, ", ")
+	}
+	return fmt.Sprintf("%s … (+%d)", strings.Join(paths[:fsWatchSkippedShown], ", "), len(paths)-fsWatchSkippedShown)
 }
 
 // fsWatchUnescapeMount는 mountinfo가 공백, tab, 줄바꿈과 backslash를 바꿔 쓴 \ooo 8진수를 되돌린다.
@@ -296,13 +425,14 @@ func fsWatchUnescapeMount(text string) string {
 	return builder.String()
 }
 
-func fsWatchFanotifyKey(handle unix.FileHandle) string {
+// fsWatchFanotifyHandleKey는 handle_type과 handle을 이벤트 record와 같은 배치로 잇는다.
+func fsWatchFanotifyHandleKey(handle unix.FileHandle) string {
 	key := binary.NativeEndian.AppendUint32(nil, uint32(handle.Type()))
 	return string(append(key, handle.Bytes()...))
 }
 
 // fsWatchOpenHandle은 디렉터리 file handle을 지금 경로로 바꾼다. 지워진 디렉터리는 ESTALE이 되거나, 아직 열려
-// 있으면 경로 뒤에 " (deleted)"가 붙는다.
+// 있으면 경로 뒤에 " (deleted)"가 붙는다. key는 fsid를 뺀 handle_type과 handle이다.
 func fsWatchOpenHandle(mountFD int, key string) (string, error) {
 	if len(key) < 4 {
 		return "", unix.EINVAL
@@ -352,7 +482,8 @@ func parseFSWatchFanotify(buffer []byte) ([]fsWatchFanotifyEvent, error) {
 			if end > size {
 				return nil, errFSWatchFanotifyMalformed
 			}
-			key := string(record[fsWatchFanotifyHandleOffset:end])
+			// 마운트마다 파일시스템이 다르므로 handle 앞에 fsid를 붙여야 서로 겹치지 않는다.
+			key := string(record[fsWatchFanotifyFSIDOffset:fsWatchFanotifyFSIDOffset+fsWatchFanotifyFSIDSize]) + string(record[fsWatchFanotifyHandleOffset:end])
 			if kind == unix.FAN_EVENT_INFO_TYPE_FID {
 				event.target = key
 				continue

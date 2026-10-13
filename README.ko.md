@@ -301,8 +301,9 @@ Linux에서는 `--driver`로 감시 방식을 고릅니다. 기본값은 `auto`�
 
 - root로 실행하지 않았습니다.
 - 커널이 Linux 5.17보다 오래되었습니다.
-- 파일시스템이 `fanotify`에 필요한 file handle을 지원하지 않습니다. btrfs subvolume이 그 예입니다.
-- 감시 루트 아래에 다른 파일시스템이 마운트되어 있습니다. mark 하나는 파일시스템 하나만 감시합니다.
+- 감시 루트가 있는 파일시스템이 `fanotify`에 필요한 file handle을 지원하지 않습니다. btrfs subvolume이 그 예입니다.
+
+mark 하나는 파일시스템 하나만 감시합니다. 그래서 `--recursive`이면 감시 루트 아래에 마운트된 파일시스템마다 mark를 겁니다. sysfs나 devpts처럼 mark를 받지 않는 파일시스템이 있고, 감시 루트 밖의 디렉터리를 bind mount한 지점은 그 변경을 감시 루트 안의 경로로 알릴 수 없습니다. `edc`는 이런 마운트를 건너뛰고 stderr에 한 줄로 알리며, 건너뛴 마운트 아래의 변경은 알리지 않습니다. 이 변경이 필요하면 `--driver inotify`를 씁니다. `--exclude`에 걸린 마운트에는 mark를 걸지 않습니다.
 
 `fanotify`는 파일시스템 전체의 이벤트를 받고, `edc`가 감시 루트 밖의 이벤트를 버립니다. 그래서 파일시스템이 바쁘면 CPU를 씁니다. 이벤트가 적게 올 때는 읽기 사이에 5ms를 기다립니다. CPU 사용이 부담되면 `--driver inotify`를 씁니다.
 

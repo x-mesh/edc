@@ -40,7 +40,7 @@ watchfs:
     permission: "CAP_SYS_ADMIN 권한이 필요합니다. root로 실행하세요."
     kernel: "커널이 FAN_REPORT_TARGET_FID를 지원하지 않습니다. Linux 5.17 이상이 필요합니다."
     filesystem: "이 파일시스템은 fanotify에 필요한 file handle을 지원하지 않습니다."
-    mount: "감시 디렉터리 아래에 다른 파일시스템이 마운트되어 있습니다: %s"
+    skipped: "fanotify가 감시 디렉터리 아래 마운트 %d개를 감시할 수 없어, 그 아래 변경은 알리지 않습니다: %s"
     path: "file handle로 찾은 감시 디렉터리 경로가 다릅니다: %s"
     dropped: "경로를 확인하지 못한 이벤트 %d개를 버렸습니다. 감시 디렉터리 안의 변경이 빠졌을 수 있습니다."
   walking: "%s 아래 디렉터리마다 감시 등록 중… 트리가 크면 시간이 걸립니다. 준비되면 출력을 시작합니다."

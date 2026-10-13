@@ -339,8 +339,9 @@ With `--recursive`, `auto` tries `fanotify` first. If `fanotify` cannot start, `
 
 - `edc` does not run as root.
 - The kernel is older than Linux 5.17.
-- The filesystem does not supply the file handles that `fanotify` needs. A btrfs subvolume is an example.
-- Another filesystem is mounted below the watch root. One mark covers only one filesystem.
+- The filesystem of the watch root does not supply the file handles that `fanotify` needs. A btrfs subvolume is an example.
+
+One mark covers one filesystem. With `--recursive`, `edc` puts a mark on each filesystem that is mounted below the watch root. Some filesystems do not accept a mark, for example sysfs and devpts. The changes in a bind mount of a directory outside the watch root also cannot show inside the root. `edc` skips these mounts and names them in one line on stderr. Changes below a skipped mount are not reported. If you need these changes, use `--driver inotify`. `edc` does not mark a mount that `--exclude` covers.
 
 `fanotify` receives the events of the whole filesystem, and `edc` discards the events outside the watch root. Thus a busy filesystem costs CPU time. When few events arrive, `edc` waits 5ms between reads. If the CPU cost is too high, use `--driver inotify`.
 

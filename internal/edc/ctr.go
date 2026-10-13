@@ -35,8 +35,11 @@ const (
 )
 
 // ctrInspectFormat은 docker inspect에 넘기는 template이다. Health는 healthcheck가 없으면 nil이라 with로 감싼다.
-// NetworkSettings도 with로 감싼다. 여러 container를 한 번에 읽을 때 template 오류 하나가 나머지 출력까지 막는다.
-const ctrInspectFormat = "{{.State.Pid}}|{{.Name}}|{{.State.Status}}|{{.State.StartedAt}}|{{.State.FinishedAt}}|{{.RestartCount}}|{{.State.OOMKilled}}|{{.State.ExitCode}}|{{.Config.Image}}|{{.Id}}|{{with index .State \"Health\"}}{{index . \"Status\"}}{{end}}|{{with .NetworkSettings}}{{json .Ports}}{{end}}"
+// NetworkSettings와 HostConfig도 with로 감싼다. 여러 container를 한 번에 읽을 때 template 오류 하나가 나머지 출력까지 막는다.
+const ctrInspectFormat = "{{.State.Pid}}|{{.Name}}|{{.State.Status}}|{{.State.StartedAt}}|{{.State.FinishedAt}}|{{.RestartCount}}|{{.State.OOMKilled}}|{{.State.ExitCode}}|{{.Config.Image}}|{{.Id}}|{{with index .State \"Health\"}}{{index . \"Status\"}}{{end}}|{{with .NetworkSettings}}{{json .Ports}}{{end}}|{{with .HostConfig}}{{with .RestartPolicy}}{{.Name}}:{{.MaximumRetryCount}}{{end}}{{end}}"
+
+// ctrHealthFormat은 healthcheck 기록이다. 검사 출력이 길 수 있어 목록에는 넣지 않고 container 하나를 볼 때만 읽는다.
+const ctrHealthFormat = "{{json .State.Health}}"
 
 var errCtrInvalidReference = errors.New("invalid container reference")
 
@@ -56,6 +59,22 @@ type ctrInspect struct {
 	OOMKilled    bool
 	ExitCode     int
 	Ports        []ctrPublishedPort
+	// RestartPolicy는 docker의 --restart 이름이고, RestartMax는 on-failure의 재시도 한도다. 0이면 한도가 없다.
+	RestartPolicy string
+	RestartMax    int
+}
+
+// ctrHealth는 docker가 남긴 healthcheck 기록이다. docker는 최근 검사 5개만 남긴다.
+type ctrHealth struct {
+	Status        string
+	FailingStreak int
+	Log           []ctrHealthCheck
+}
+
+type ctrHealthCheck struct {
+	Start    time.Time
+	ExitCode int
+	Output   string
 }
 
 // ctrPublishedPort는 host에 publish한 container port다. docker는 IPv4와 IPv6에 따로 bind하므로 Hosts가 여럿일 수 있다.
@@ -105,6 +124,7 @@ type ctrSources struct {
 	// listen은 pid가 속한 network namespace의 대기 소켓이다.
 	listen func(pid int) ([]listenSocket, error)
 	logs   func(ctx context.Context, id string, lines int) (string, error)
+	health func(ctx context.Context, id string) (string, error)
 	now    func() time.Time
 	// listIDs는 모든 container의 ID이고, inspectMany는 여러 container를 한 번에 읽는다. container마다 docker를 부르면 수백 번이 된다.
 	listIDs     func(ctx context.Context) (string, error)
@@ -118,6 +138,8 @@ type ctrFacts struct {
 	Inspect       ctrInspect
 	InspectOutput string
 	InspectErr    error
+	Health        ctrHealth
+	HealthErr     error
 	Limits        ctrLimits
 	LimitsErr     error
 	Log           ctrLog
@@ -196,7 +218,7 @@ func ctrNotFound(output string) bool {
 // parseCtrInspect는 ctrInspectFormat 출력을 읽는다. 시각은 RFC 3339이고, 멈춘 적 없는 container의 FinishedAt은 0001년이다.
 func parseCtrInspect(output string) (ctrInspect, error) {
 	fields := strings.Split(strings.TrimSpace(output), "|")
-	if len(fields) != 12 {
+	if len(fields) != 13 {
 		return ctrInspect{}, fmt.Errorf("unexpected docker inspect output %q", output)
 	}
 	pid, err := strconv.Atoi(fields[0])
@@ -215,13 +237,33 @@ func parseCtrInspect(output string) (ctrInspect, error) {
 	if err != nil {
 		return ctrInspect{}, fmt.Errorf("unexpected docker inspect ports %q", fields[11])
 	}
+	policy, maximum, err := parseCtrRestartPolicy(fields[12])
+	if err != nil {
+		return ctrInspect{}, fmt.Errorf("unexpected docker inspect restart policy %q", fields[12])
+	}
 	inspect := ctrInspect{
 		PID: pid, Name: strings.TrimPrefix(fields[1], "/"), Status: fields[2], RestartCount: restarts, OOMKilled: fields[6] == "true",
-		ExitCode: exitCode, Image: fields[8], ID: fields[9], Health: fields[10], Ports: ports,
+		ExitCode: exitCode, Image: fields[8], ID: fields[9], Health: fields[10], Ports: ports, RestartPolicy: policy, RestartMax: maximum,
 	}
 	inspect.StartedAt, _ = time.Parse(time.RFC3339Nano, fields[3])
 	inspect.FinishedAt, _ = time.Parse(time.RFC3339Nano, fields[4])
 	return inspect, nil
+}
+
+// parseCtrRestartPolicy는 "on-failure:5"처럼 이름과 재시도 한도를 읽는다. HostConfig를 읽지 못한 container는 칸이 빈다.
+func parseCtrRestartPolicy(text string) (string, int, error) {
+	if text == "" {
+		return "", 0, nil
+	}
+	name, count, found := strings.Cut(text, ":")
+	if !found {
+		return "", 0, errors.New("missing retry count")
+	}
+	maximum, err := strconv.Atoi(count)
+	if err != nil {
+		return "", 0, err
+	}
+	return name, maximum, nil
 }
 
 // parseCtrPorts는 NetworkSettings.Ports의 JSON을 읽는다. EXPOSE만 하고 publish하지 않은 port는 binding이 null이라 뺀다.
@@ -301,6 +343,9 @@ func collectCtrFacts(ctx context.Context, reference string, sources ctrSources) 
 			facts.Uptime, facts.UptimeKnown = uptime, true
 		}
 	}
+	if inspect.Health != "" {
+		facts.Health, facts.HealthErr = readCtrHealth(ctx, sources, inspect.ID)
+	}
 	facts.Show = svcShow{ID: inspect.Name, LoadState: "loaded", ActiveState: inspect.Status, MainPID: inspect.PID}
 	if inspect.PID > 0 {
 		path, err := sources.cgroupPath(inspect.PID)
@@ -331,6 +376,18 @@ func collectCtrFacts(ctx context.Context, reference string, sources ctrSources) 
 		facts.Log = filterCtrLog(output)
 	}
 	return facts
+}
+
+func readCtrHealth(ctx context.Context, sources ctrSources, id string) (ctrHealth, error) {
+	output, err := sources.health(ctx, id)
+	if err != nil {
+		return ctrHealth{}, fmt.Errorf("docker inspect: %w: %s", err, infoSingleLine(firstLine(output)))
+	}
+	var health ctrHealth
+	if err := json.Unmarshal([]byte(output), &health); err != nil {
+		return ctrHealth{}, fmt.Errorf("unexpected docker health output: %w", err)
+	}
+	return health, nil
 }
 
 func evaluateCtr(facts ctrFacts) []Result {
@@ -436,7 +493,8 @@ func ctrStateResult(facts ctrFacts) Result {
 	case "exited", "dead":
 		status = StatusFail
 	}
-	result := svcResultFor(ctrProbeID, "state", status, T("ctr.state.summary", state, uptime, inspect.RestartCount, inspect.Image))
+	policy := ctrRestartPolicyText(inspect)
+	result := svcResultFor(ctrProbeID, "state", status, T("ctr.state.summary", state, uptime, inspect.RestartCount, policy, inspect.Image))
 	if status == StatusFail {
 		result = svcFailed(result)
 	}
@@ -444,14 +502,72 @@ func ctrStateResult(facts ctrFacts) Result {
 	if len(id) > ctrShortIDLength {
 		id = id[:ctrShortIDLength]
 	}
-	result.Metrics = map[string]interface{}{"status": inspect.Status, "pid": inspect.PID, "restart_count": inspect.RestartCount, "oom_killed": inspect.OOMKilled, "exit_code": inspect.ExitCode, "image": inspect.Image, "id": id}
+	result.Metrics = map[string]interface{}{"status": inspect.Status, "pid": inspect.PID, "restart_count": inspect.RestartCount, "oom_killed": inspect.OOMKilled, "exit_code": inspect.ExitCode, "image": inspect.Image, "id": id, "restart_policy": inspect.RestartPolicy}
+	if inspect.RestartPolicy == "on-failure" {
+		result.Metrics["restart_max"] = inspect.RestartMax
+	}
+	// on-failure의 한도만큼 재시작한 뒤 멈춘 container는 docker가 다시 띄우지 않는다. 누가 시작하기 전까지 멈춰 있다.
+	if inspect.Status == "exited" && inspect.RestartPolicy == "on-failure" && inspect.RestartMax > 0 && inspect.RestartCount >= inspect.RestartMax {
+		result.Warnings = append(result.Warnings, T("ctr.state.restart_gave_up", inspect.RestartCount, policy))
+	}
 	if inspect.Health != "" {
 		result.Metrics["health"] = inspect.Health
+		addCtrHealth(&result, facts)
 	}
 	if facts.UptimeKnown {
 		result.Metrics["uptime_s"] = int64(facts.Uptime.Seconds())
 	}
 	return result
+}
+
+// ctrRestartPolicyText는 docker --restart의 표기를 그대로 쓴다. HostConfig를 읽지 못해 정책을 모르면 -이다.
+func ctrRestartPolicyText(inspect ctrInspect) string {
+	switch {
+	case inspect.RestartPolicy == "":
+		return "-"
+	case inspect.RestartPolicy == "no":
+		return T("ctr.state.no_policy")
+	case inspect.RestartPolicy == "on-failure" && inspect.RestartMax > 0:
+		return fmt.Sprintf("on-failure:%d", inspect.RestartMax)
+	}
+	return inspect.RestartPolicy
+}
+
+// addCtrHealth는 healthcheck 기록을 상세에 붙인다. unhealthy이면 가장 최근에 실패한 검사의 출력을 warning으로 올린다.
+// 기록을 읽지 못해도 상태는 docker inspect가 준 값이 맞으므로, 읽지 못한 까닭만 상세에 적는다.
+func addCtrHealth(result *Result, facts ctrFacts) {
+	if facts.HealthErr != nil {
+		result.Evidence = append(result.Evidence, Evidence{Label: T("ctr.evidence.health"), Value: facts.HealthErr.Error()})
+		return
+	}
+	health := facts.Health
+	result.Metrics["health_failing_streak"] = health.FailingStreak
+	if len(health.Log) == 0 {
+		return
+	}
+	var lines []string
+	var failed *ctrHealthCheck
+	for index, check := range health.Log {
+		lines = append(lines, fmt.Sprintf("%s  exit %d  %s", check.Start.Local().Format(time.DateTime), check.ExitCode, ctrHealthOutput(check.Output)))
+		if check.ExitCode != 0 {
+			failed = &health.Log[index]
+		}
+	}
+	last := health.Log[len(health.Log)-1]
+	result.Metrics["health_last_exit_code"], result.Metrics["health_last_output"] = last.ExitCode, ctrHealthOutput(last.Output)
+	result.Evidence = append(result.Evidence, Evidence{Label: T("ctr.evidence.health"), Value: strings.Join(lines, "\n")})
+	if facts.Inspect.Health == "unhealthy" && failed != nil {
+		result.Warnings = append(result.Warnings, T("ctr.state.health_failed", health.FailingStreak, failed.ExitCode, ctrHealthOutput(failed.Output)))
+	}
+}
+
+// ctrHealthOutput은 검사 출력의 첫 줄이다. 출력이 없는 검사는 -이다.
+func ctrHealthOutput(output string) string {
+	line, _, _ := strings.Cut(strings.TrimSpace(output), "\n")
+	if line = strings.TrimSpace(line); line == "" {
+		return "-"
+	}
+	return svcTruncate(line, svcJournalLineRunes)
 }
 
 func ctrLimitsResult(facts ctrFacts) Result {

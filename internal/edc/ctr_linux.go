@@ -30,6 +30,10 @@ func hostCtrSources() (ctrSources, bool) {
 		health: func(ctx context.Context, id string) (string, error) {
 			return commandOutput(ctx, "docker", "inspect", "--type", "container", "--format", ctrHealthFormat, id)
 		},
+		// 이미지 참조는 docker가 준 값이지만 --로 option과 나눈다.
+		image: func(ctx context.Context, reference string) (string, error) {
+			return commandOutput(ctx, "docker", "image", "inspect", "--format", ctrImageFormat, "--", reference)
+		},
 		disk: func(ctx context.Context, id string) (string, error) {
 			return commandOutput(ctx, "docker", "inspect", "--type", "container", "--size", "--format", ctrDiskFormat, id)
 		},

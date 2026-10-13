@@ -24,6 +24,12 @@ ctr:
     restart_gave_up: "%d 回再起動して %s の上限に達したため、docker は再起動しない"
     health_failed: "health check が %d 回連続で失敗、最新の exit %d: %s"
     inspect_failed: "docker inspect に失敗: %s"
+  image:
+    current: "image の参照は実行中の image を指す、%s 作成"
+    outdated: "%s は今 %s(%s 作成)を指すが、container は %s(%s 作成)で実行中。反映するには container を作り直す必要がある"
+    no_tag: "%s がこのホストにないため比較できない。container は %s(%s 作成)で実行中"
+    no_id: "docker inspect が container の image ID を返さない"
+    created: "%s(%s 前)"
   listen:
     none: "container の process が持つ listen 中の tcp・udp socket なし"
     published_none: "%s(%s で publish)を listen する container の process なし"

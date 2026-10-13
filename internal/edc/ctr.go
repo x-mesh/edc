@@ -36,10 +36,16 @@ const (
 
 // ctrInspectFormat은 docker inspect에 넘기는 template이다. Health는 healthcheck가 없으면 nil이라 with로 감싼다.
 // NetworkSettings와 HostConfig도 with로 감싼다. 여러 container를 한 번에 읽을 때 template 오류 하나가 나머지 출력까지 막는다.
-const ctrInspectFormat = "{{.State.Pid}}|{{.Name}}|{{.State.Status}}|{{.State.StartedAt}}|{{.State.FinishedAt}}|{{.RestartCount}}|{{.State.OOMKilled}}|{{.State.ExitCode}}|{{.Config.Image}}|{{.Id}}|{{with index .State \"Health\"}}{{index . \"Status\"}}{{end}}|{{with .NetworkSettings}}{{json .Ports}}{{end}}|{{with .HostConfig}}{{with .RestartPolicy}}{{.Name}}:{{.MaximumRetryCount}}{{end}}{{end}}"
+const ctrInspectFormat = "{{.State.Pid}}|{{.Name}}|{{.State.Status}}|{{.State.StartedAt}}|{{.State.FinishedAt}}|{{.RestartCount}}|{{.State.OOMKilled}}|{{.State.ExitCode}}|{{.Config.Image}}|{{.Id}}|{{with index .State \"Health\"}}{{index . \"Status\"}}{{end}}|{{with .NetworkSettings}}{{json .Ports}}{{end}}|{{with .HostConfig}}{{with .RestartPolicy}}{{.Name}}:{{.MaximumRetryCount}}{{end}}{{end}}|{{with .Image}}{{.}}{{end}}"
 
 // ctrHealthFormat은 healthcheck 기록이다. 검사 출력이 길 수 있어 목록에는 넣지 않고 container 하나를 볼 때만 읽는다.
 const ctrHealthFormat = "{{json .State.Health}}"
+
+// ctrImageFormat은 docker image inspect에 넘기는 template이다.
+const ctrImageFormat = "{{.Id}}|{{.Created}}"
+
+// errCtrNoImage는 이 호스트에 없는 이미지다. tag를 지웠거나 다른 호스트에서 만든 container다.
+var errCtrNoImage = errors.New("no such image")
 
 // ctrDiskFormat은 writable layer 크기와 log 설정이다. --size는 layer를 세어야 하므로 container 하나를 볼 때만 읽는다.
 // log option의 값(tag 등)에는 |가 들어갈 수 있어 맨 끝에 둔다. SizeRw는 json으로 받아야 큰 수가 지수 표기로 나오지 않는다.
@@ -73,6 +79,18 @@ type ctrInspect struct {
 	// RestartPolicy는 docker의 --restart 이름이고, RestartMax는 on-failure의 재시도 한도다. 0이면 한도가 없다.
 	RestartPolicy string
 	RestartMax    int
+	// ImageID는 container가 실행 중인 이미지다. Image는 만들 때 쓴 참조라, 그 tag가 다른 이미지로 옮겨 가도 그대로 남는다.
+	ImageID string
+}
+
+// ctrImage는 이미지 참조가 지금 가리키는 이미지와 container가 실행 중인 이미지의 생성 시각이다. pull이나 build가 tag를
+// 옮겨도 실행 중인 container는 다시 만들기 전까지 예전 이미지로 돈다.
+type ctrImage struct {
+	TagID      string
+	TagCreated time.Time
+	TagMissing bool
+	Created    time.Time
+	Now        time.Time
 }
 
 // ctrHealth는 docker가 남긴 healthcheck 기록이다. docker는 최근 검사 5개만 남긴다.
@@ -147,6 +165,7 @@ type ctrSources struct {
 	listen func(pid int) ([]listenSocket, error)
 	logs   func(ctx context.Context, id string, lines int) (string, error)
 	health func(ctx context.Context, id string) (string, error)
+	image  func(ctx context.Context, reference string) (string, error)
 	disk   func(ctx context.Context, id string) (string, error)
 	// fileSize는 log 파일의 크기다. docker 저장소는 root만 읽을 수 있다.
 	fileSize func(path string) (int64, error)
@@ -165,6 +184,8 @@ type ctrFacts struct {
 	InspectErr    error
 	Health        ctrHealth
 	HealthErr     error
+	Image         ctrImage
+	ImageErr      error
 	Limits        ctrLimits
 	LimitsErr     error
 	Log           ctrLog
@@ -245,7 +266,7 @@ func ctrNotFound(output string) bool {
 // parseCtrInspect는 ctrInspectFormat 출력을 읽는다. 시각은 RFC 3339이고, 멈춘 적 없는 container의 FinishedAt은 0001년이다.
 func parseCtrInspect(output string) (ctrInspect, error) {
 	fields := strings.Split(strings.TrimSpace(output), "|")
-	if len(fields) != 13 {
+	if len(fields) != 14 {
 		return ctrInspect{}, fmt.Errorf("unexpected docker inspect output %q", output)
 	}
 	pid, err := strconv.Atoi(fields[0])
@@ -271,6 +292,7 @@ func parseCtrInspect(output string) (ctrInspect, error) {
 	inspect := ctrInspect{
 		PID: pid, Name: strings.TrimPrefix(fields[1], "/"), Status: fields[2], RestartCount: restarts, OOMKilled: fields[6] == "true",
 		ExitCode: exitCode, Image: fields[8], ID: fields[9], Health: fields[10], Ports: ports, RestartPolicy: policy, RestartMax: maximum,
+		ImageID: fields[13],
 	}
 	inspect.StartedAt, _ = time.Parse(time.RFC3339Nano, fields[3])
 	inspect.FinishedAt, _ = time.Parse(time.RFC3339Nano, fields[4])
@@ -373,6 +395,9 @@ func collectCtrFacts(ctx context.Context, reference string, sources ctrSources) 
 	if inspect.Health != "" {
 		facts.Health, facts.HealthErr = readCtrHealth(ctx, sources, inspect.ID)
 	}
+	if inspect.ImageID != "" {
+		facts.Image, facts.ImageErr = readCtrImage(ctx, sources, inspect)
+	}
 	// 멈춘 container도 log와 writable layer를 남기므로 상태와 상관없이 읽는다.
 	facts.Disk, facts.DiskErr = readCtrDisk(ctx, sources, inspect.ID)
 	facts.Show = svcShow{ID: inspect.Name, LoadState: "loaded", ActiveState: inspect.Status, MainPID: inspect.PID}
@@ -417,6 +442,47 @@ func readCtrHealth(ctx context.Context, sources ctrSources, id string) (ctrHealt
 		return ctrHealth{}, fmt.Errorf("unexpected docker health output: %w", err)
 	}
 	return health, nil
+}
+
+// readCtrImage는 이미지 참조를 먼저 읽는다. 참조가 실행 중인 이미지를 가리키면 한 번으로 끝나고, 다른 이미지를 가리키거나
+// 이 호스트에 없을 때만 실행 중인 이미지의 생성 시각을 한 번 더 읽는다.
+func readCtrImage(ctx context.Context, sources ctrSources, inspect ctrInspect) (ctrImage, error) {
+	image := ctrImage{Now: sources.now()}
+	id, created, err := lookupCtrImage(ctx, sources, inspect.Image)
+	switch {
+	case errors.Is(err, errCtrNoImage):
+		image.TagMissing = true
+	case err != nil:
+		return ctrImage{}, err
+	default:
+		image.TagID, image.TagCreated = id, created
+	}
+	if image.TagID == inspect.ImageID {
+		image.Created = created
+		return image, nil
+	}
+	// 실행 중인 이미지는 docker rmi -f로 tag만 지워져도 ID로 남는다. 그마저 없으면 생성 시각만 모른다.
+	if _, image.Created, err = lookupCtrImage(ctx, sources, inspect.ImageID); err != nil && !errors.Is(err, errCtrNoImage) {
+		return ctrImage{}, err
+	}
+	return image, nil
+}
+
+func lookupCtrImage(ctx context.Context, sources ctrSources, reference string) (string, time.Time, error) {
+	output, err := sources.image(ctx, reference)
+	text := strings.TrimSpace(output)
+	switch {
+	case err != nil && strings.Contains(text, "No such image"):
+		return "", time.Time{}, errCtrNoImage
+	case err != nil:
+		return "", time.Time{}, fmt.Errorf("docker image inspect: %w: %s", err, infoSingleLine(firstLine(text)))
+	}
+	id, created, found := strings.Cut(text, "|")
+	if !found || !strings.HasPrefix(id, "sha256:") {
+		return "", time.Time{}, fmt.Errorf("unexpected docker image inspect output %q", text)
+	}
+	when, _ := time.Parse(time.RFC3339Nano, created)
+	return id, when, nil
 }
 
 func readCtrDisk(ctx context.Context, sources ctrSources, id string) (ctrDisk, error) {
@@ -481,7 +547,61 @@ func evaluateCtr(facts ctrFacts) []Result {
 		result.Error = &DiagnosticError{Kind: "command", Message: detail}
 		return []Result{result}
 	}
-	return []Result{ctrStateResult(facts), svcProcessesResult(facts.svcFacts), ctrLimitsResult(facts), svcFDResult(facts.svcFacts), ctrListenResult(facts), ctrLogResult(facts), ctrDiskResult(facts)}
+	return []Result{ctrStateResult(facts), ctrImageResult(facts), svcProcessesResult(facts.svcFacts), ctrLimitsResult(facts), svcFDResult(facts.svcFacts), ctrListenResult(facts), ctrLogResult(facts), ctrDiskResult(facts)}
+}
+
+// ctrImageResult는 이미지 참조가 지금 가리키는 이미지와 container가 실행 중인 이미지를 맞춰 본다. 다르면 새 이미지를
+// 받았지만 container를 다시 만들지 않은 것이다.
+func ctrImageResult(facts ctrFacts) Result {
+	inspect, image := facts.Inspect, facts.Image
+	switch {
+	case inspect.ImageID == "":
+		return svcResultFor(ctrProbeID, "image", StatusSkip, T("ctr.image.no_id"))
+	case facts.ImageErr != nil:
+		return svcSkipFor(ctrProbeID, "image", "docker image inspect", facts.ImageErr)
+	}
+	created := ctrImageCreated(image.Created, image.Now)
+	metrics := map[string]interface{}{"reference": inspect.Image, "image_id": inspect.ImageID, "tag_missing": image.TagMissing}
+	if !image.Created.IsZero() {
+		metrics["image_created"] = image.Created.UTC().Format(time.RFC3339)
+	}
+	var result Result
+	switch {
+	case image.TagMissing:
+		result = svcResultFor(ctrProbeID, "image", StatusPass, T("ctr.image.no_tag", inspect.Image, ctrShortImageID(inspect.ImageID), created))
+	case image.TagID == inspect.ImageID:
+		result = svcResultFor(ctrProbeID, "image", StatusPass, T("ctr.image.current", created))
+	default:
+		result = svcResultFor(ctrProbeID, "image", StatusWarn, T("ctr.image.outdated", inspect.Image, ctrShortImageID(image.TagID), ctrImageCreated(image.TagCreated, image.Now), ctrShortImageID(inspect.ImageID), created))
+	}
+	if !image.TagMissing {
+		metrics["tag_image_id"] = image.TagID
+		if !image.TagCreated.IsZero() {
+			metrics["tag_image_created"] = image.TagCreated.UTC().Format(time.RFC3339)
+		}
+	}
+	result.Metrics = metrics
+	return result
+}
+
+func ctrShortImageID(id string) string {
+	id = strings.TrimPrefix(id, "sha256:")
+	if len(id) > ctrShortIDLength {
+		return id[:ctrShortIDLength]
+	}
+	return id
+}
+
+// ctrImageCreated는 이미지 생성일과 지난 시간이다. 생성 시각을 모르면 -이다.
+func ctrImageCreated(created, now time.Time) string {
+	if created.IsZero() {
+		return "-"
+	}
+	date := created.Local().Format(time.DateOnly)
+	if age := now.Sub(created); age >= 0 {
+		return T("ctr.image.created", date, svcFormatUptime(age))
+	}
+	return date
 }
 
 // ctrListenResult는 svc의 listen 결과에 publish한 port를 맞춰 본다. docker는 host port로 온 연결을 container IP로 넘기므로,

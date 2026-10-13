@@ -45,6 +45,7 @@ type fsWatchConfig struct {
 type fsWatchOptions struct {
 	root       string
 	recursive  bool
+	driver     string
 	exclude    []string
 	events     []string
 	match      string
@@ -67,6 +68,7 @@ func parseFSWatchOptions(args []string, output io.Writer) (fsWatchOptions, error
 	set := flag.NewFlagSet("watch fs", flag.ContinueOnError)
 	set.SetOutput(output)
 	set.BoolVar(&options.recursive, "recursive", false, T("watchfs.option.recursive"))
+	set.StringVar(&options.driver, "driver", fsWatchDriverAuto, T("watchfs.option.driver"))
 	eventText := set.String("event", "create,modify,remove,rename", T("watchfs.option.event"))
 	set.StringVar(&options.match, "match", "**", T("watchfs.option.match"))
 	command := set.String("exec", "", T("watchfs.option.exec"))
@@ -94,6 +96,11 @@ func parseFSWatchOptions(args []string, output io.Writer) (fsWatchOptions, error
 	}
 	if *rulesPath != "" && *command != "" {
 		return options, errors.New(T("watchfs.rules_exec_conflict"))
+	}
+	switch options.driver {
+	case fsWatchDriverAuto, fsWatchDriverFanotify, fsWatchDriverInotify:
+	default:
+		return options, errors.New(T("watchfs.invalid_driver", options.driver))
 	}
 	options.events, err = fsWatchEvents(*eventText)
 	if err != nil {

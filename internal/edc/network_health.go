@@ -20,6 +20,9 @@ type networkHealth struct {
 	Settings  map[string]networkReading `json:"settings,omitempty"`
 	Gauges    map[string]networkReading `json:"gauges,omitempty"`
 	Counters  map[string]networkReading `json:"counters,omitempty"`
+	// NICInterfaces는 interface마다 읽은 장치 쪽 drop이다. Counters의 nic_* 값은 이를 모두 더한 값이고, top --interface는
+	// 고른 interface만 다시 더한다.
+	NICInterfaces map[string]map[string]networkReading `json:"-"`
 }
 
 type networkCounterRate struct {
@@ -41,6 +44,45 @@ func networkUnavailable(reason string) networkReading {
 	return networkReading{Status: "unavailable", Reason: reason}
 }
 
+// sumNetworkNICCounters는 keep에 맞는 interface의 장치 쪽 drop을 counter마다 더한다. 더할 interface 하나라도 읽지 못했으면
+// 합은 그 interface의 unavailable이고, 맞는 interface가 없으면 no interface다.
+func sumNetworkNICCounters(perInterface map[string]map[string]networkReading, keep func(string) bool) map[string]networkReading {
+	type sum struct {
+		total   uint64
+		counted int
+		failure *networkReading
+	}
+	sums := map[string]*sum{}
+	for iface, counters := range perInterface {
+		for name, reading := range counters {
+			if sums[name] == nil {
+				sums[name] = &sum{}
+			}
+			if !keep(iface) {
+				continue
+			}
+			if reading.Value == nil {
+				sums[name].failure = &reading
+				continue
+			}
+			sums[name].total += *reading.Value
+			sums[name].counted++
+		}
+	}
+	result := make(map[string]networkReading, len(sums))
+	for name, value := range sums {
+		switch {
+		case value.failure != nil:
+			result[name] = *value.failure
+		case value.counted == 0:
+			result[name] = networkUnavailable("no interface")
+		default:
+			result[name] = networkNumber(value.total)
+		}
+	}
+	return result
+}
+
 func networkReadingText(value networkReading) string {
 	if value.Value != nil {
 		return fmt.Sprint(*value.Value)
@@ -59,6 +101,8 @@ func calculateNetworkHealthRate(previous, current *networkHealth, seconds float6
 		return nil
 	}
 	result := &networkHealthRate{networkHealth: *current, Rates: make(map[string]networkCounterRate)}
+	// 대시보드는 rate를 수백 행 보관한다. interface마다의 값은 snapshot에서만 쓰므로 rate에 남기지 않는다.
+	result.NICInterfaces = nil
 	for name, now := range current.Counters {
 		rate := networkCounterRate{Status: "unavailable", Reason: "two consecutive observations required"}
 		if now.Value == nil {

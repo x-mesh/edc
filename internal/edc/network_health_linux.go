@@ -84,9 +84,11 @@ func collectLinuxNetworkHealth(procRoot, sysRoot string) *networkHealth {
 			}
 		}
 	}
-	for name, value := range collectLinuxNICCounters(filepath.Join(sysRoot, "class/net")) {
+	totals, perInterface := collectLinuxNICCounters(filepath.Join(sysRoot, "class/net"))
+	for name, value := range totals {
 		health.Counters[name] = value
 	}
+	health.NICInterfaces = perInterface
 	for path, columns := range map[string]map[string]string{
 		"net/softnet_stat":      {"softnet_dropped": "1", "softnet_time_squeeze": "2"},
 		"net/stat/nf_conntrack": {"conntrack_drop": "drop", "conntrack_early_drop": "early_drop", "conntrack_insert_failed": "insert_failed"},
@@ -104,48 +106,46 @@ func collectLinuxNetworkHealth(procRoot, sysRoot string) *networkHealth {
 	return health
 }
 
-// collectLinuxNICCounters는 loopback을 뺀 모든 interface의 장치 쪽 drop을 더한다. 현재 namespace의 interface만 보인다.
-// interface가 하나도 없거나 디렉터리를 읽지 못하면 unavailable이다. 한 interface의 파일을 읽지 못하면 그 값은 unavailable이다.
-func collectLinuxNICCounters(classNet string) map[string]networkReading {
-	result := map[string]networkReading{}
+// collectLinuxNICCounters는 loopback을 뺀 interface마다 장치 쪽 drop을 읽고, 모든 interface의 합도 낸다. 현재 namespace의
+// interface만 보인다. interface가 하나도 없거나 디렉터리를 읽지 못하면 unavailable이다. 한 interface의 파일을 읽지 못하면 그 값은
+// unavailable이다.
+func collectLinuxNICCounters(classNet string) (map[string]networkReading, map[string]map[string]networkReading) {
 	entries, err := os.ReadDir(classNet)
 	if err != nil {
+		result := map[string]networkReading{}
 		for name := range networkNICCounters {
 			result[name] = networkReadError(err)
 		}
-		return result
+		return result, nil
 	}
-	for name, file := range networkNICCounters {
-		var total uint64
-		interfaces := 0
-		var failure error
-		for _, entry := range entries {
-			if entry.Name() == "lo" {
-				continue
-			}
+	perInterface := map[string]map[string]networkReading{}
+	for _, entry := range entries {
+		if entry.Name() == "lo" {
+			continue
+		}
+		counters := map[string]networkReading{}
+		for name, file := range networkNICCounters {
 			data, err := os.ReadFile(filepath.Join(classNet, entry.Name(), "statistics", file))
 			if err != nil {
-				failure = err
+				counters[name] = networkReadError(err)
 				continue
 			}
 			number, ok := parseNetworkUint(strings.TrimSpace(string(data)), 10)
 			if !ok {
-				failure = os.ErrInvalid
+				counters[name] = networkReadError(os.ErrInvalid)
 				continue
 			}
-			total += number
-			interfaces++
+			counters[name] = networkNumber(number)
 		}
-		switch {
-		case failure != nil:
-			result[name] = networkReadError(failure)
-		case interfaces == 0:
-			result[name] = networkUnavailable("no interface")
-		default:
-			result[name] = networkNumber(total)
+		perInterface[entry.Name()] = counters
+	}
+	totals := sumNetworkNICCounters(perInterface, func(string) bool { return true })
+	for name := range networkNICCounters {
+		if _, ok := totals[name]; !ok {
+			totals[name] = networkUnavailable("no interface")
 		}
 	}
-	return result
+	return totals, perInterface
 }
 
 func networkReadError(err error) networkReading {

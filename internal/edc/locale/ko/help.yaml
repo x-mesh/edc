@@ -171,12 +171,16 @@ command:
       - "큐는 Recv-Q/Send-Q이고 TCP listener에서는 accept 큐입니다."
       - "-v는 열만 늘립니다. 줄은 그대로입니다."
   svc:
-    summary: "systemd service 하나를 한 화면에 (Linux)"
+    summary: "systemd service 목록, 또는 service 하나를 한 화면에 (Linux)"
     notes:
+      - "unit 없이 실행하면 service 목록을 보여 줍니다. 실패한 것이 먼저 옵니다."
+      - "터미널에서는 Enter로 service 하나를 열고 Esc로 돌아옵니다."
       - "상태, 가동 시간, 재시작, process, fd, 소켓, journal 오류를 보여 줍니다."
       - "읽기만 합니다. unit을 시작·중지·reload하지 않습니다."
       - "systemd가 있는 Linux에서만 동작하고, 다른 호스트에서는 skip입니다."
       - "root로 실행하세요. root가 아니면 fd, 소켓 주인, journal이 skip입니다."
+    option:
+      all: "실행 중이 아닌 service도 목록에 포함"
   ctr:
     summary: "docker container 하나를 한 화면에 (Linux)"
     notes:

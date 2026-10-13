@@ -234,7 +234,8 @@ var commandDocs = []commandDoc{
 	},
 	{
 		name: "svc", group: "observe",
-		usage:      []string{"edc svc [options] <unit>"},
+		usage:      []string{"edc svc [options] [--all]", "edc svc [options] <unit>"},
+		options:    []optionDoc{{"--all", "command.svc.option.all"}},
 		usesCommon: true,
 	},
 	{

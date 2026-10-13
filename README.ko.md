@@ -202,6 +202,7 @@ Setup wizard는 `edc log`의 저장 경로를 비워두고 실행별 파일을 �
 ./bin/edc listen --watch -i 0.5 --duration 10s
 sudo ./bin/edc audit           # 노출 상태와 설정 점검, 읽기 전용 (Linux)
 sudo ./bin/edc svc nginx       # systemd service 하나를 한 화면에 (Linux)
+./bin/edc svc                  # systemd service 목록, 실패한 것이 먼저 (Linux)
 ./bin/edc changes --since 2h   # 최근 패키지, /etc, service 변경 (Linux)
 sudo ./bin/edc events --since 6h   # 커널과 systemd의 장애 신호를 시간 순서로 정리 (Linux)
 ./bin/edc quality --timeout 60s
@@ -455,6 +456,20 @@ root로 실행하세요. root가 아니면 다른 사용자의 fd, 소켓 주인
 systemd만 쥔 소켓(socket activation)은 unit process의 것이 아니어서 보여 주지 않습니다.
 
 macOS나 systemd가 없는 Linux에서는 `skip` 하나를 내고 0으로 끝납니다. unit이 없으면 오류를 쓰고 1로 끝납니다. `fail` 결과가 있어도 1, 사용법 오류는 2입니다.
+
+### 서비스 목록
+
+unit 없이 `edc svc`를 실행하면 service 목록을 보여 줍니다. 실패한 service가 먼저 오고, 그다음 시작 중이거나 재시작을 기다리는 service, 재시작 기록이 있는 service 순입니다. 실행 중이 아닌 service는 `--all`을 줄 때만 보입니다.
+
+```bash
+edc svc               # 목록. 터미널에서는 화면으로 열림
+edc svc --all         # 실행 중이 아닌 service도 포함
+edc svc --json -      # 목록이 metrics.services에 들어감
+```
+
+터미널에서는 목록이 2초마다 갱신됩니다. `↑`/`↓`로 고르고, `Enter`로 열고, `Esc`로 돌아옵니다. `/`는 이름 필터, `f`는 실패한 service만 보기, `a`는 `--all` 전환, `r`은 목록 다시 읽기, `q`는 종료입니다. 연 service에는 `edc svc -v <unit>`과 같은 결과가 나오고, `r`로 다시 읽습니다.
+
+pipe나 `--json`에서는 `svc.list` 결과 하나와 표를 출력합니다. 실패한 service가 있으면 결과는 `fail`, exit code는 1입니다. 시작 중이거나 재시작을 기다리는 service가 있으면 `warn`입니다. 목록은 root 없이 읽지만, 연 service는 위와 같이 root가 필요합니다.
 
 ## Container 보기 (Linux)
 

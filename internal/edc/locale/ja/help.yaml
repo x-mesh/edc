@@ -171,12 +171,16 @@ command:
       - "キューは Recv-Q/Send-Q で、TCP listener では accept キューです。"
       - "-v が増やすのは列だけです。行は変わりません。"
   svc:
-    summary: "systemd service 一つを一画面に (Linux)"
+    summary: "systemd service の一覧、または service 一つを一画面に (Linux)"
     notes:
+      - "unit なしで実行すると service の一覧を表示します。失敗したものが先です。"
+      - "端末では Enter で service を一つ開き、Esc で戻ります。"
       - "状態、稼働時間、再起動、process、fd、ソケット、journal のエラーを表示します。"
       - "読むだけです。unit の起動・停止・reload はしません。"
       - "systemd のある Linux でのみ動作し、他のホストでは skip です。"
       - "root で実行してください。root 以外は fd、ソケット所有者、journal が skip。"
+    option:
+      all: "動いていない service も一覧に含める"
   ctr:
     summary: "docker container 一つを一画面に (Linux)"
     notes:

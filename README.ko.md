@@ -656,7 +656,7 @@ macOS에서는 `audit`, `events`, `changes`, `info.pressure`가 `skip`으로 나
 ./bin/edc report show report.json
 ```
 
-경로 없이 `edc report show`나 `edc report diff`를 실행하면 최근 report 최대 20개 중에서 선택하거나 다른 JSON 파일 경로를 직접 입력할 수 있습니다. report가 없으면 저장 예시를 안내합니다.
+경로 없이 `edc report show`나 `edc report diff`를 실행하면 최근 report 최대 20개 중에서 선택하거나 다른 JSON 파일 경로를 직접 입력할 수 있습니다. report가 없으면 저장 예시를 안내합니다. `edc report diff`는 report를 한 화면에 보여 주고 가장 최근 두 개를 미리 골라 둡니다. Space로 선택을 바꾸고 Enter로 비교합니다. 시간이 이른 쪽이 언제나 이전이 됩니다. 반대 순서로 비교하려면 두 경로를 직접 주세요.
 
 `edc report diff`는 두 JSON report를 probe 이름으로 맞춰 비교합니다. probe마다 status 변화와 scalar metric 차이를 보여 줍니다.
 

@@ -45,6 +45,69 @@ func promptReportPaths(command string, titles, labels []string) ([]string, bool)
 	return values, true
 }
 
+// promptReportPair는 report diff의 두 report를 받는다. 현재 디렉터리에 report가 있으면 한 화면에서 두 개를 고르고,
+// 없으면 이전과 이후의 경로를 차례로 입력받는다.
+func promptReportPair() ([]string, bool) {
+	file, ok := terminalInput(os.Stdin)
+	if !ok {
+		return nil, false
+	}
+	reports, err := discoverReports(".")
+	if err != nil || len(reports) == 0 {
+		return promptReportPaths("edc report diff",
+			[]string{T("cli.prompt.report_before_title"), T("cli.prompt.report_after_title")},
+			[]string{T("cli.prompt.report_before_label"), T("cli.prompt.report_after_label")})
+	}
+	model, err := runReportPair(file, os.Stdout, newReportPairModel(reports[:min(len(reports), reportCandidateLimit)], time.Now()))
+	if err != nil {
+		return nil, false
+	}
+	reader := bufio.NewReader(file)
+	readPath := func(label string) (savedReport, error) {
+		path, err := promptRemoteText(reader, os.Stdout, T("cli.report.path_label", label), "")
+		if err != nil {
+			return savedReport{}, err
+		}
+		// 읽지 못한 파일은 시각 없이 둔다. 그 오류는 diff가 파일을 열 때 알린다.
+		report, _ := loadReport(path)
+		return savedReport{path: path, report: report}, nil
+	}
+	var before, after savedReport
+	switch picked := model.pickedReports(); len(picked) {
+	case 2:
+		before, after = orderReportPair(picked[0], picked[1])
+	case 1:
+		other, err := readPath(T("cli.report.other_label"))
+		if err != nil {
+			return nil, false
+		}
+		before, after = orderReportPair(picked[0], other)
+	default:
+		if before, err = readPath(T("cli.prompt.report_before_label")); err != nil {
+			return nil, false
+		}
+		if after, err = readPath(T("cli.prompt.report_after_label")); err != nil {
+			return nil, false
+		}
+	}
+	printReportPair(os.Stdout, before, after)
+	promptEcho(os.Stdout, "edc report diff "+before.path+" "+after.path)
+	return []string{before.path, after.path}, true
+}
+
+// printReportPair는 선택 화면을 닫은 뒤 어느 파일을 이전과 이후로 비교하는지 남긴다.
+func printReportPair(output io.Writer, before, after savedReport) {
+	labels := []string{T("cli.prompt.report_before_label"), T("cli.prompt.report_after_label")}
+	width := max(liveWidth(labels[0]), liveWidth(labels[1]))
+	for index, report := range []savedReport{before, after} {
+		started := "-"
+		if !report.report.Run.StartedAt.IsZero() {
+			started = report.report.Run.StartedAt.Local().Format(time.DateTime)
+		}
+		fmt.Fprintf(output, "%s  %s  %s\n", liveCell(labels[index], width), started, reportIdentityValue(report.path))
+	}
+}
+
 func promptReportValue(file *os.File, title, label string) (string, error) {
 	candidates := reportCandidates()
 	if len(candidates) > 0 {
@@ -301,9 +364,7 @@ func runReportDiff(args []string) int {
 	}
 	first, second := set.Arg(0), set.Arg(1)
 	if set.NArg() == 0 {
-		values, ok := promptReportPaths("edc report diff",
-			[]string{T("cli.prompt.report_before_title"), T("cli.prompt.report_after_title")},
-			[]string{T("cli.prompt.report_before_label"), T("cli.prompt.report_after_label")})
+		values, ok := promptReportPair()
 		if !ok {
 			fmt.Fprintln(os.Stderr, T("cli.usage", "edc report diff [--json <path|->] <before> <after>"))
 			return 2

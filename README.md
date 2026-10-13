@@ -774,6 +774,18 @@ Network errors and drops count as a warning from one per second. Use the network
 
 The network values add the counters of all interfaces except loopback. On Linux, edc reads the interfaces of its own network namespace. On macOS, it reads the interfaces that are up. A bridge, a veth pair, or a tunnel also counts, so one packet can count on two or more interfaces. edc subtracts the counters of each interface separately. An interface that appears or disappears between two samples adds nothing to that interval.
 
+Use `--interface` to add only some interfaces. Write interface names, glob patterns, or `physical`, separated by commas. `physical` selects the interfaces with a device under them. On Linux, `/sys/class/net/<name>/device` exists for these interfaces. `physical` leaves out bridges, veth pairs, bonds, VLANs, and tunnels, so a packet counts once on the NIC. `all` adds every interface, and it is the default.
+
+```bash
+edc top --interface physical
+edc top --interface eth0,ens5
+edc top --interface 'en*' --json -
+```
+
+The selection applies to the table, the dashboard, JSON, `--write`, and the device-side drops in the `n` view. If an interface name does not exist when edc starts, edc exits with code 2. If a glob or `physical` matches no interface, edc shows a warning. Until an interface that matches appears, the byte and packet rates stay at 0, `err` and `drop` show `—`, and JSON sets `network_health_supported` to `false`. With `--interface`, each JSON sample adds `interface_filter` and `interfaces`. `interfaces` holds the values of each selected interface with traffic in that interval. `edc history list` shows the selection in the `INTERFACES` column.
+
+Set `defaults.top.interface` in the config file to use the same selection every time. `physical` is not available on macOS. There, edc shows a warning and adds every interface, so one config file can serve Linux and macOS hosts.
+
 If you select an earlier row, collection continues. Press `End` to follow the latest row.
 
 If collection fails, the dashboard keeps the last row and retries at the next interval.

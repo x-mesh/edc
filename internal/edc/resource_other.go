@@ -147,6 +147,12 @@ func readDarwinLoad() float64 {
 	return load
 }
 
+// topPhysicalSupported는 --interface physical을 판정할 수 있는지다. macOS에는 Linux의 /sys/class/net/<이름>/device 같은
+// 구분이 없다.
+const topPhysicalSupported = false
+
+func topInterfacePhysical(string) bool { return false }
+
 // readDarwinNetwork의 bool은 counter를 읽었는지다.
 func readDarwinNetwork() ([]netInterfaceCounters, bool) {
 	counters, err := readDarwinNetworkCounters()

@@ -319,7 +319,9 @@ type historyRun struct {
 	MemoryTotal uint64     `json:"memory_total_bytes"`
 	IntervalS   float64    `json:"interval_s"`
 	Process     string     `json:"process_filter"`
-	Detail      bool       `json:"detail"`
+	// Interfaces는 net 값에 더한 interface다. 비었으면 loopback을 뺀 모든 interface다.
+	Interfaces string `json:"interface_filter,omitempty"`
+	Detail     bool   `json:"detail"`
 }
 
 type topRecorder struct {
@@ -334,7 +336,7 @@ type topRecorder struct {
 	closeErr error
 }
 
-func newTopRecorder(path, version string, details hostDetails, interval time.Duration, filter string, detail bool) (*topRecorder, error) {
+func newTopRecorder(path, version string, details hostDetails, interval time.Duration, filter, interfaces string, detail bool) (*topRecorder, error) {
 	db, err := openHistoryDB(path, true)
 	if err != nil {
 		return nil, err
@@ -342,7 +344,7 @@ func newTopRecorder(path, version string, details hostDetails, interval time.Dur
 	started := time.Now().UTC()
 	run := historyRun{ID: runID(started), Command: "top", Hostname: details.Hostname, StartedAt: started,
 		Status: "unfinished", Version: version, System: details.System, OS: details.OS,
-		Cores: details.Cores, MemoryTotal: details.MemoryTotal, IntervalS: interval.Seconds(), Process: filter, Detail: detail}
+		Cores: details.Cores, MemoryTotal: details.MemoryTotal, IntervalS: interval.Seconds(), Process: filter, Interfaces: interfaces, Detail: detail}
 	payload, err := json.Marshal(run)
 	if err == nil {
 		_, err = db.Exec("INSERT INTO runs(id, command, hostname, started_ns, status, payload) VALUES (?, ?, ?, ?, ?, ?)", run.ID, run.Command, run.Hostname, started.UnixNano(), run.Status, string(payload))

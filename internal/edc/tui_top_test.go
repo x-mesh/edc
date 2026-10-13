@@ -1823,3 +1823,22 @@ func TestTopSignalsUseMemoryPressureAndBlockedWithoutIOWait(t *testing.T) {
 		t.Error("kernel blocked tasks without iowait must not warn")
 	}
 }
+
+func TestTopShowsTheInterfaceSelection(t *testing.T) {
+	model := topFixtureModel(nil)
+	model.interfaces, _ = parseTopInterfaceFilter("physical")
+	model.view, model.detail = topViewNetwork, true
+	model.rows = []topDashboardRow{{at: time.Unix(1, 0), rate: resourceRate{NetHealthValid: true, NetInterfaces: []netInterfaceRate{{Name: "eno1", In: 1 << 20}}}}}
+	if lines := model.detailLines(); lines[1] != "interfaces /s · busiest first · net columns add --interface physical" {
+		t.Fatalf("header = %q", lines[1])
+	}
+	if status := strings.Join(model.statusLines(), "\n"); !strings.Contains(status, "net physical · interval") {
+		t.Fatalf("status = %q", status)
+	}
+	// 상태 줄은 화면 폭에서 잘린다. 긴 목록을 써도 80열에서 줄 끝의 키 안내가 남아야 한다.
+	model.interfaces, _ = parseTopInterfaceFilter("eno1,eno2,eno3,eno4,tailscale0")
+	model.width = 80
+	if lines := model.statusLines(); !strings.HasSuffix(strings.TrimRight(ansi.Strip(lines[0]), " "), "f candidates / filter") || !strings.Contains(lines[1], "? help") {
+		t.Fatalf("status at 80 columns:\n%s", strings.Join(lines, "\n"))
+	}
+}

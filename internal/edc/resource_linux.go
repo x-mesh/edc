@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -171,6 +172,18 @@ func collectResourceSnapshot() (resourceSnapshot, error) {
 	}
 	return snapshot, nil
 }
+
+// topPhysicalSupported는 --interface physical을 판정할 수 있는지다.
+const topPhysicalSupported = true
+
+// linuxPhysicalInterface는 장치(PCI, virtio, USB)가 뒤에 있는 interface인지 본다. bridge, veth, bond, VLAN, tunnel에는
+// device가 없으므로, 이 interface만 더하면 같은 packet을 두 번 세지 않는다.
+func linuxPhysicalInterface(classNet, name string) bool {
+	_, err := os.Stat(filepath.Join(classNet, name, "device"))
+	return err == nil
+}
+
+func topInterfacePhysical(name string) bool { return linuxPhysicalInterface("/sys/class/net", name) }
 
 // parseLinuxNetDev는 /proc/net/dev에서 loopback을 뺀 interface마다 counter를 읽는다. 이 file은 edc가 있는 network namespace의
 // interface만 보인다.

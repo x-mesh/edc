@@ -10,6 +10,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 
@@ -44,6 +45,57 @@ func (request linuxInetDiagRequest) Serialize() []byte {
 }
 
 func collectListenSockets(families listenFamilies) ([]listenSocket, error) {
+	sockets, err := linuxInetListenSockets(families)
+	if err != nil {
+		return nil, err
+	}
+	if families.Unix {
+		unixSockets, err := linuxUnixListenSockets()
+		if err != nil {
+			return nil, fmt.Errorf("sock_diag unix: %w", err)
+		}
+		sockets = append(sockets, unixSockets...)
+	}
+	attachLinuxSocketOwners("/proc", sockets)
+	return sockets, nil
+}
+
+// collectNetnsListenSockets는 pid가 속한 network namespace의 TCP·UDP 대기 소켓을 읽는다. 자기 network namespace를 가진
+// container의 소켓은 그 안에만 있어 host에서 덤프하면 보이지 않는다.
+func collectNetnsListenSockets(pid int) ([]listenSocket, error) {
+	type dump struct {
+		sockets []listenSocket
+		err     error
+	}
+	done := make(chan dump, 1)
+	go func() {
+		// netlink 소켓은 만든 thread의 namespace에 속한다. 이 thread는 원래 namespace로 되돌리지 않는다. UnlockOSThread 없이
+		// goroutine이 끝나면 Go runtime이 thread를 버리므로, 되돌리다 실패한 thread에서 다른 goroutine이 돌 일이 없다.
+		runtime.LockOSThread()
+		namespace, err := os.Open(filepath.Join("/proc", strconv.Itoa(pid), "ns", "net"))
+		if err != nil {
+			done <- dump{err: err}
+			return
+		}
+		err = unix.Setns(int(namespace.Fd()), unix.CLONE_NEWNET)
+		namespace.Close()
+		if err != nil {
+			done <- dump{err: fmt.Errorf("setns %s: %w", namespace.Name(), err)}
+			return
+		}
+		sockets, err := linuxInetListenSockets(listenFamilies{TCP: true, UDP: true})
+		done <- dump{sockets, err}
+	}()
+	result := <-done
+	if result.err != nil {
+		return nil, result.err
+	}
+	attachLinuxSocketOwners("/proc", result.sockets)
+	return result.sockets, nil
+}
+
+// linuxInetListenSockets는 지금 thread가 속한 network namespace의 TCP·UDP 대기 소켓이다. 소켓 주인은 붙이지 않는다.
+func linuxInetListenSockets(families listenFamilies) ([]listenSocket, error) {
 	var sockets []listenSocket
 	type query struct {
 		proto    string
@@ -67,14 +119,6 @@ func collectListenSockets(families listenFamilies) ([]listenSocket, error) {
 			}
 		}
 	}
-	if families.Unix {
-		unixSockets, err := linuxUnixListenSockets()
-		if err != nil {
-			return nil, fmt.Errorf("sock_diag unix: %w", err)
-		}
-		sockets = append(sockets, unixSockets...)
-	}
-	attachLinuxSocketOwners("/proc", sockets)
 	return sockets, nil
 }
 

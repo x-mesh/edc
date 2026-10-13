@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"testing"
 
@@ -264,6 +265,65 @@ func TestCollectLinuxListenSocketsFindsOwnSockets(t *testing.T) {
 		if socket.Proto == "udp" && socket.Port == connectedPort {
 			t.Fatalf("연결된 UDP 소켓이 섞였다: %s", key)
 		}
+	}
+}
+
+// container처럼 다른 network namespace에 있는 소켓은 host 덤프에 없고, 그 namespace에 들어가 읽어야 보인다.
+func TestCollectNetnsListenSocketsReadsAnotherNamespace(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("unshare(CLONE_NEWNET)에는 root가 필요하다")
+	}
+	type opened struct {
+		tid, port int
+		err       error
+	}
+	ready, release := make(chan opened, 1), make(chan struct{})
+	defer close(release)
+	go func() {
+		// 이 thread는 새 namespace에 남긴 채 버린다. UnlockOSThread를 부르지 않는다.
+		runtime.LockOSThread()
+		if err := unix.Unshare(unix.CLONE_NEWNET); err != nil {
+			ready <- opened{err: err}
+			return
+		}
+		listener, err := net.Listen("tcp4", "0.0.0.0:0")
+		if err != nil {
+			ready <- opened{err: err}
+			return
+		}
+		defer listener.Close()
+		ready <- opened{tid: unix.Gettid(), port: listener.Addr().(*net.TCPAddr).Port}
+		<-release
+	}()
+	got := <-ready
+	if got.err != nil {
+		t.Fatal(got.err)
+	}
+	pid, want := strconv.Itoa(os.Getpid()), "tcp 0.0.0.0 "+strconv.Itoa(got.port)
+	owned := func(sockets []listenSocket) bool {
+		for _, socket := range sockets {
+			if socket.PID == pid && socket.Proto+" "+socket.Address+" "+strconv.Itoa(socket.Port) == want {
+				return true
+			}
+		}
+		return false
+	}
+	sockets, err := collectNetnsListenSockets(got.tid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !owned(sockets) {
+		t.Fatalf("새 namespace에서 %q를 찾지 못했다: %+v", want, sockets)
+	}
+	host, err := collectListenSockets(listenFamilies{TCP: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if owned(host) {
+		t.Fatalf("%q가 host namespace에도 보인다", want)
+	}
+	if _, err := collectNetnsListenSockets(-1); err == nil {
+		t.Fatal("없는 process의 namespace를 읽었다")
 	}
 }
 

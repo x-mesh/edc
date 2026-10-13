@@ -23,6 +23,8 @@ ctr:
     inspect_failed: "docker inspect に失敗: %s"
   listen:
     none: "container の process が持つ listen 中の tcp・udp socket なし"
+    published_none: "%s(%s で publish)を listen する container の process なし"
+    published_loopback: "%s(%s で publish)を loopback でのみ listen。publish した port からの接続は loopback に届かない"
   limits:
     summary: "memory %s · OOM kill %s · CPU throttle %s · pids %s"
     no_limit: "上限なし"
@@ -35,3 +37,4 @@ ctr:
     errors: "最後のログ %d 行のうちエラー %d 行、最新: %s"
   evidence:
     log: "ログ"
+    published: "publish した port"

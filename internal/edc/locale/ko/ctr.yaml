@@ -23,6 +23,8 @@ ctr:
     inspect_failed: "docker inspect 실패: %s"
   listen:
     none: "container process가 가진 listen 중인 tcp·udp 소켓 없음"
+    published_none: "%s(%s로 publish)를 listen하는 container process 없음"
+    published_loopback: "%s(%s로 publish)를 loopback에서만 listen함. publish한 port로 들어온 연결은 loopback에 닿지 않음"
   limits:
     summary: "memory %s · OOM kill %s · CPU throttle %s · pids %s"
     no_limit: "한도 없음"
@@ -35,3 +37,4 @@ ctr:
     errors: "마지막 로그 %d줄 가운데 오류 %d줄, 최근: %s"
   evidence:
     log: "로그"
+    published: "publish한 port"

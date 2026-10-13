@@ -1842,3 +1842,57 @@ func TestTopShowsTheInterfaceSelection(t *testing.T) {
 		t.Fatalf("status at 80 columns:\n%s", strings.Join(lines, "\n"))
 	}
 }
+
+func TestTopInterfaceKeyChangesTheSelectionFromTheNextSample(t *testing.T) {
+	model := topFixtureModel(nil)
+	model.limits.color = false
+	var applied []string
+	model.setInterfaces = func(filter topInterfaceFilter) { applied = append(applied, filter.String()) }
+	model.presentInterfaces = func() ([]string, error) { return []string{"eth0", "wg0"}, nil }
+	model = topAfter(t, model, topSampleMsg{snapshot: topSampleAt(1)})
+	rows := len(model.rows)
+	model = topAfter(t, model, topKey("i"))
+	if !model.input || !model.inputInterfaces || !strings.HasPrefix(model.statusLines()[0], "interfaces: █") {
+		t.Fatalf("i opens the input: input %t, interfaces %t, status %q", model.input, model.inputInterfaces, model.statusLines()[0])
+	}
+	model = topAfter(t, model, topKey("e"), topKey("t"), topKey("h"), topKey("0"), topKey("enter"))
+	if model.input || model.inputInterfaces || model.interfaces.String() != "eth0" || !reflect.DeepEqual(applied, []string{"eth0"}) {
+		t.Fatalf("enter applies the selection: input %t, selection %q, applied %v", model.input, model.interfaces, applied)
+	}
+	// 전환 뒤 첫 sample은 다른 interface를 담으므로 기준점만 세운다.
+	model = topAfter(t, model, topSampleMsg{seq: model.seq, snapshot: topSampleAt(2)})
+	if len(model.rows) != rows {
+		t.Fatalf("the first sample after the switch added a row: %d rows", len(model.rows))
+	}
+	model = topAfter(t, model, topSampleMsg{seq: model.seq, snapshot: topSampleAt(3)})
+	if len(model.rows) != rows+1 {
+		t.Fatalf("the second sample after the switch must add a row: %d rows", len(model.rows))
+	}
+	for _, tc := range []struct {
+		keys   []string
+		notice string
+	}{
+		{[]string{"x", "enter"}, T("observe.top.interface_missing", "eth0x")},
+		{[]string{",", "enter"}, "--interface: empty name"},
+		{[]string{"z", "esc"}, ""},
+	} {
+		keys := []tea.Msg{topKey("i")}
+		for _, key := range tc.keys {
+			keys = append(keys, topKey(key))
+		}
+		model = topAfter(t, model, keys...)
+		if model.interfaces.String() != "eth0" || len(applied) != 1 || model.input || !strings.HasPrefix(model.statusLines()[0], tc.notice) {
+			t.Fatalf("%v kept selection %q, applied %v, status %q", tc.keys, model.interfaces, applied, model.statusLines()[0])
+		}
+	}
+	// 맞는 interface가 없는 glob은 안내하고 그대로 적용한다.
+	model = topAfter(t, model, topKey("i"), topKey("backspace"), topKey("backspace"), topKey("backspace"), topKey("backspace"), topKey("e"), topKey("n"), topKey("*"), topKey("enter"))
+	if model.interfaces.String() != "en*" || !strings.HasPrefix(model.statusLines()[0], T("observe.top.interface_none_notice", "en*")) {
+		t.Fatalf("glob without a match: selection %q, status %q", model.interfaces, model.statusLines()[0])
+	}
+	model.record = func(historyTopSample) error { return nil }
+	model = topAfter(t, model, topKey("i"))
+	if model.input || !strings.HasPrefix(model.statusLines()[0], T("observe.top.interface_recording")) {
+		t.Fatalf("i while recording: input %t, status %q", model.input, model.statusLines()[0])
+	}
+}

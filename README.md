@@ -759,6 +759,7 @@ If stdin and stdout are terminals, `edc top` opens a full-screen dashboard. The 
 | `Tab` | Switch between history and process selection. |
 | `?` | Open help. Use arrows to scroll. Press `Esc` to return. |
 | `/` | type a process filter: a command name or a PID, comma-separated |
+| `i` | Type the interfaces for the network values, as with `--interface`. The selection applies from the next sample. While `-w` records, the key is off. |
 | `Esc` | Close help or process selection. Otherwise, clear the process filter. |
 | `↑`, `↓`, `PgUp`, `PgDn`, `End` | select an earlier row, move one screen, or return to the live row |
 | `Enter` | Show time details. If process selection is active, focus the selected PID. |

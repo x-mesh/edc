@@ -715,6 +715,7 @@ stdin과 stdout이 모두 terminal이면 `edc top`은 전체 화면 대시보드
 | `Tab` | 이력 탐색과 process 후보 선택 사이 이동 |
 | `?` | 도움말 표시. 화살표로 스크롤하고 `Esc`로 닫기 |
 | `/` | process 필터 입력: command 이름이나 PID, 쉼표로 구분 |
+| `i` | network 값에 더할 interface 입력: `--interface`와 같은 값. 다음 sample부터 적용하며, `-w`로 기록하는 동안에는 쓸 수 없음 |
 | `Esc` | 도움말이나 후보 선택 닫기. 그 외에는 process 필터 해제 |
 | `↑`, `↓`, `PgUp`, `PgDn`, `End` | 과거 행 선택, 한 화면씩 이동, 실시간 행 추적 재개 |
 | `Enter` | 선택한 시점의 상세 표시. 후보 선택 중에는 선택한 PID에 초점 |

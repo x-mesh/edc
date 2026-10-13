@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
@@ -21,10 +22,16 @@ func runTopDashboard(interval time.Duration, version string, filter topProcessFi
 		return 1
 	}
 	// interface 선택은 수집 직후에 적용한다. 기록, 표, 상세가 모두 같은 snapshot에서 나오므로 따로 맞추지 않아도 된다.
+	// 수집은 tea.Cmd goroutine에서 돌고 i는 Update에서 바꾸므로 lock으로 건넨다.
+	var selection sync.Mutex
+	current := interfaces
 	selected := func(sample func() (resourceSnapshot, error)) func() (resourceSnapshot, error) {
 		return func() (resourceSnapshot, error) {
 			snapshot, err := sample()
-			return interfaces.apply(snapshot, topInterfacePhysical), err
+			selection.Lock()
+			filter := current
+			selection.Unlock()
+			return filter.apply(snapshot, topInterfacePhysical), err
 		}
 	}
 	sample := selected(sampleTopDashboard)
@@ -38,7 +45,12 @@ func runTopDashboard(interval time.Duration, version string, filter topProcessFi
 	}
 	model := newTopModel(details, first, interval, selected(sampleTopDashboard))
 	model.sampleNow, model.setFilter, model.setScanIO = selected(sampleTopDashboardNow), processSampler.setFilter, processSampler.setScanIO
-	model.version, model.interfaces = version, interfaces
+	model.version, model.interfaces, model.presentInterfaces = version, interfaces, topPresentInterfaces
+	model.setInterfaces = func(filter topInterfaceFilter) {
+		selection.Lock()
+		current = filter
+		selection.Unlock()
+	}
 	model.limits.color = os.Getenv("NO_COLOR") == ""
 	processSampler.mutex.Lock()
 	model.probeEnabled = processSampler.observe != nil
@@ -190,8 +202,13 @@ type topModel struct {
 	lastErr       error
 	version       string
 	processFilter topProcessFilter
-	// interfaces는 --interface로 고른 interface다. 수집 함수가 이미 적용했으므로 화면은 표시에만 쓴다.
+	// interfaces는 --interface나 i로 고른 interface다. 수집 함수가 이미 적용했으므로 화면은 표시에만 쓴다.
 	interfaces topInterfaceFilter
+	// setInterfaces는 i로 바꾼 선택을 수집 함수에 알린다. presentInterfaces는 적은 이름이 있는지 확인할 때 쓴다.
+	setInterfaces     func(topInterfaceFilter)
+	presentInterfaces func() ([]string, error)
+	// inputInterfaces는 열린 입력이 / process 필터가 아니라 i interface 선택인지다.
+	inputInterfaces bool
 	// focusName은 f로 PID에 초점을 맞췄을 때 배너에 함께 보일 process 이름이다.
 	focusName string
 	// sampleNow는 필터가 있을 때 쓰는 수집 함수다. 없으면 sample을 쓴다.
@@ -417,6 +434,13 @@ func (model topModel) updateKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		model = model.stepEvent(-1)
 	case "]":
 		model = model.stepEvent(1)
+	case "i":
+		// 기록 중에 바꾸면 한 run의 net 값이 서로 다른 interface의 합이 된다. run에는 시작할 때의 선택만 남는다.
+		if model.record != nil {
+			model.notice = T("observe.top.interface_recording")
+			return model, nil
+		}
+		model.input, model.inputInterfaces, model.inputText = true, true, model.interfaces.String()
 	case "/":
 		model.input, model.inputText = true, model.processFilter.String()
 		if model.inputText == "" {
@@ -520,9 +544,13 @@ func (model topModel) updateInput(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "ctrl+c":
 		return model, tea.Quit
 	case "esc":
-		model.input = false
+		model.input, model.inputInterfaces = false, false
 	case "enter":
 		model.input = false
+		if model.inputInterfaces {
+			model.inputInterfaces = false
+			return model.applyInterfaces(model.inputText)
+		}
 		filter, err := parseTopProcessFilter(model.inputText)
 		if err != nil {
 			model.notice = T("observe.top.process_invalid")
@@ -539,6 +567,47 @@ func (model topModel) updateInput(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 	return model, nil
+}
+
+// applyInterfaces는 실행 중에 net 값에 더할 interface를 바꾼다. 잘못된 값이나 없는 이름은 안내만 하고 선택을 그대로 둔다.
+// 전환 전 snapshot과 다음 snapshot은 다른 interface를 담으므로, 다음 sample은 기준점만 세우고 행을 만들지 않는다.
+func (model topModel) applyInterfaces(text string) (tea.Model, tea.Cmd) {
+	filter, err := parseTopInterfaceFilter(text)
+	if err != nil {
+		model.notice = T("observe.top.interface_invalid", err)
+		return model, nil
+	}
+	if filter.physical && !topPhysicalSupported {
+		model.notice = T("observe.top.interface_physical_unsupported")
+		filter = filter.withoutPhysical()
+	}
+	if filter.active() && model.presentInterfaces != nil {
+		present, err := model.presentInterfaces()
+		if err != nil {
+			model.notice = err.Error()
+			return model, nil
+		}
+		if missing := filter.missingNames(present); len(missing) > 0 {
+			model.notice = T("observe.top.interface_missing", strings.Join(missing, ", "))
+			return model, nil
+		}
+		if !filter.matchesAny(present, topInterfacePhysical) {
+			model.notice = T("observe.top.interface_none_notice", filter)
+		}
+	}
+	if filter.String() == model.interfaces.String() {
+		return model, nil
+	}
+	model.interfaces = filter
+	if model.setInterfaces != nil {
+		model.setInterfaces(filter)
+	}
+	model.baseline = true
+	model.seq++
+	if model.paused {
+		return model, nil
+	}
+	return model, model.tick()
 }
 
 // applyFilter는 실행 중에 필터를 바꾼다. 순번을 올려 이전 필터로 수집 중인 표본을 버리고, 필터가 있으면 process 보기로 연다.
@@ -723,7 +792,7 @@ func (model topModel) infoLines() []string {
 		lines = model.peakLines()
 	case model.view == topViewNetwork && model.previous.NetworkHealth != nil:
 		if row, ok := model.selectedRow(); ok {
-			lines = append([]string{"network " + row.at.Format("15:04:05") + " · current namespace · Enter interfaces and settings"}, networkHealthLines(row.rate.NetworkHealth)...)
+			lines = append([]string{"network " + row.at.Format("15:04:05") + " · current namespace · Enter interfaces and settings · i select"}, networkHealthLines(row.rate.NetworkHealth)...)
 		}
 	}
 	if model.lastErr != nil {
@@ -962,9 +1031,13 @@ func (model topModel) statusLines() []string {
 		keys = strings.TrimSuffix(keys, " ? help")
 	}
 	views := fmt.Sprintf("%s · %s", state, keys)
+	inputLabel := "process filter: "
+	if model.inputInterfaces {
+		inputLabel = "interfaces: "
+	}
 	switch {
 	case model.input:
-		views = "process filter: " + model.inputText + "█ · Enter apply · Esc cancel"
+		views = inputLabel + model.inputText + "█ · Enter apply · Esc cancel"
 	case model.notice != "":
 		views = model.notice
 	}
@@ -979,7 +1052,10 @@ func (model topModel) statusLines() []string {
 		if model.processFocus {
 			actions = "↑↓ select · Enter focus · Esc back"
 		}
-		if model.input {
+		if model.input && model.inputInterfaces {
+			views = "net: " + model.inputText + "█"
+			actions = "Enter apply · Esc cancel"
+		} else if model.input {
 			views = "filter: " + model.inputText + "█"
 			actions = "Enter apply · Esc cancel"
 		} else if model.notice != "" {
@@ -1241,6 +1317,7 @@ func (model topModel) helpLines() []string {
 		"Events: warnings that last 5s are kept with their candidates · e list · Enter jump · [ ] previous/next · ! marks the start row",
 		"Events that start within 5s share one line. ≤ means the warning was already on when edc started.",
 		"Filter: / edit names or PIDs · Enter apply · Esc cancel or clear",
+		"Interfaces: i edit the net selection (names, globs, physical, all) · it applies from the next sample · off while -w records",
 		"Details: Enter on history · h peaks from the last 60 seconds",
 		"CPU: host % uses all cores. Process 100% uses one core. RSS is resident memory.",
 		"— means unavailable or no baseline. Read the process I/O status for errors.",

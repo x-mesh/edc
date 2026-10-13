@@ -3,9 +3,25 @@
 package edc
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 )
+
+func TestLinuxPhysicalInterfaceNeedsADevice(t *testing.T) {
+	classNet := t.TempDir()
+	for _, path := range []string{"eno1/device", "docker0/bridge", "veth48baa04"} {
+		if err := os.MkdirAll(filepath.Join(classNet, path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for name, want := range map[string]bool{"eno1": true, "docker0": false, "veth48baa04": false, "missing0": false} {
+		if got := linuxPhysicalInterface(classNet, name); got != want {
+			t.Errorf("%s = %v, want %v", name, got, want)
+		}
+	}
+}
 
 func TestParseLinuxNetDevSkipsLoopbackAndAddsBothDirections(t *testing.T) {
 	data := `Inter-|   Receive                                                |  Transmit

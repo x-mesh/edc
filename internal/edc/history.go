@@ -241,7 +241,7 @@ func printHistory(output io.Writer, db *sql.DB, command string, options historyO
 	if !jsonOutput {
 		header := "RUN\tTIME\tHOST\tCPU%\tMEM%\tLOAD\tPROCESS FILTER"
 		if command == "list" {
-			header = "RUN\tSTART\tEND\tHOST\tSTATUS\tSAMPLES\tINTERVAL\tPROCESS FILTER"
+			header = "RUN\tSTART\tEND\tHOST\tSTATUS\tSAMPLES\tINTERVAL\tPROCESS FILTER\tINTERFACES"
 		} else if command == "process" {
 			header = "RUN\tTIME\tPID\tSTARTED\tCPU%\tRSS\tCOMMAND"
 		}
@@ -275,7 +275,7 @@ func printHistory(output io.Writer, db *sql.DB, command string, options historyO
 				run.EndedAt, end = &at, at.Format(time.RFC3339Nano)
 			}
 			value = run
-			line = fmt.Sprintf("%s\t%s\t%s\t%s\t%s\t%d\t%gs\t%s", run.ID, run.StartedAt.Format(time.RFC3339Nano), end, historyTerminalText(run.Hostname), historyTerminalText(run.Status), count, run.IntervalS, historyTerminalText(run.Process))
+			line = fmt.Sprintf("%s\t%s\t%s\t%s\t%s\t%d\t%gs\t%s\t%s", run.ID, run.StartedAt.Format(time.RFC3339Nano), end, historyTerminalText(run.Hostname), historyTerminalText(run.Status), count, run.IntervalS, historyTerminalText(run.Process), historyTerminalText(emptyAs(run.Interfaces, "all")))
 		case "top":
 			var sample historyTopSample
 			if err := rows.Scan(&payload); err != nil {

@@ -14,24 +14,31 @@ import (
 )
 
 // runTopDashboard는 alt screen 대시보드를 실행한다. 종료하면 화면이 원래대로 돌아온다.
-func runTopDashboard(interval time.Duration, version string, filter topProcessFilter, recorder *topRecorder, split []topView) int {
+func runTopDashboard(interval time.Duration, version string, filter topProcessFilter, interfaces topInterfaceFilter, recorder *topRecorder, split []topView) int {
 	details, err := collectHostDetails()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, T("observe.top.error.host", err))
 		return 1
 	}
-	sample := sampleTopDashboard
+	// interface 선택은 수집 직후에 적용한다. 기록, 표, 상세가 모두 같은 snapshot에서 나오므로 따로 맞추지 않아도 된다.
+	selected := func(sample func() (resourceSnapshot, error)) func() (resourceSnapshot, error) {
+		return func() (resourceSnapshot, error) {
+			snapshot, err := sample()
+			return interfaces.apply(snapshot, topInterfacePhysical), err
+		}
+	}
+	sample := selected(sampleTopDashboard)
 	if filter.active() {
-		sample = sampleTopDashboardNow
+		sample = selected(sampleTopDashboardNow)
 	}
 	first, err := sample()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, T("observe.top.error.resource", err))
 		return 1
 	}
-	model := newTopModel(details, first, interval, sampleTopDashboard)
-	model.sampleNow, model.setFilter, model.setScanIO = sampleTopDashboardNow, processSampler.setFilter, processSampler.setScanIO
-	model.version = version
+	model := newTopModel(details, first, interval, selected(sampleTopDashboard))
+	model.sampleNow, model.setFilter, model.setScanIO = selected(sampleTopDashboardNow), processSampler.setFilter, processSampler.setScanIO
+	model.version, model.interfaces = version, interfaces
 	model.limits.color = os.Getenv("NO_COLOR") == ""
 	processSampler.mutex.Lock()
 	model.probeEnabled = processSampler.observe != nil
@@ -118,6 +125,9 @@ const (
 	topProcessNameWidth = 10
 	// topInterfaceRows는 network 상세가 보이는 interface 수다. 아래 칸은 좁고 그 뒤에 limit와 설정 줄이 이어진다.
 	topInterfaceRows = 5
+	// topStatusInterfaceWidth는 상태 줄에 보이는 --interface 값의 폭이다. "net physical"은 줄지 않고, 긴 목록도 80열에서 키 안내를
+	// 밀어내지 않는다.
+	topStatusInterfaceWidth = 8
 	// topSignalProcessNameWidth는 signal 열의 process 이름 폭이다.
 	topSignalProcessNameWidth = 4
 	// topProcessSignalCPU는 process 하나가 signal에 오르는 CPU%다. core 하나가 100%다.
@@ -180,6 +190,8 @@ type topModel struct {
 	lastErr       error
 	version       string
 	processFilter topProcessFilter
+	// interfaces는 --interface로 고른 interface다. 수집 함수가 이미 적용했으므로 화면은 표시에만 쓴다.
+	interfaces topInterfaceFilter
 	// focusName은 f로 PID에 초점을 맞췄을 때 배너에 함께 보일 process 이름이다.
 	focusName string
 	// sampleNow는 필터가 있을 때 쓰는 수집 함수다. 없으면 sample을 쓴다.
@@ -872,7 +884,7 @@ func (model topModel) detailLines() []string {
 	if model.view == topViewNetwork {
 		// limit 줄은 Enter 없이도 n 보기 패널에 있으므로 맨 뒤에 둔다. 24행 화면에서는 아래 칸이 잘리는데, interface와 설정은
 		// 이 상세에만 있다.
-		lines := append([]string{"network detail " + row.at.Format("15:04:05")}, topInterfaceLines(rate)...)
+		lines := append([]string{"network detail " + row.at.Format("15:04:05")}, topInterfaceLines(rate, model.interfaces)...)
 		return append(append(lines, networkSettingLines(rate.NetworkHealth)...), networkHealthLines(rate.NetworkHealth)...)
 	}
 	lines := []string{
@@ -929,6 +941,10 @@ func (model topModel) peakLines() []string {
 
 func (model topModel) statusLines() []string {
 	state := "interval " + model.interval.String()
+	if model.interfaces.active() {
+		// 긴 목록이 80열에서 키 안내를 밀어내지 않게 줄인다. 전체 값은 n 보기 상세 머리줄에 있다.
+		state = "net " + ansi.Truncate(model.interfaces.String(), topStatusInterfaceWidth, "…") + " · " + state
+	}
 	if model.record != nil {
 		state = "SQLite · " + state
 	}
@@ -940,6 +956,10 @@ func (model topModel) statusLines() []string {
 	keys := "c cpu m mem d disk n net f candidates / filter ? help"
 	if model.processFilter.active() {
 		keys = "1 host f proc / edit Esc clear ? help"
+	}
+	if model.interfaces.active() {
+		// net 표시가 붙으면 80열에서 줄 끝이 잘린다. ? help는 아래 줄에도 있으므로 여기서 뺀다.
+		keys = strings.TrimSuffix(keys, " ? help")
 	}
 	views := fmt.Sprintf("%s · %s", state, keys)
 	switch {
@@ -2044,7 +2064,7 @@ func topDiskDetail(rate resourceRate) string {
 
 // topInterfaceLines는 net 열을 이루는 interface를 byte/s가 큰 순으로 보인다. net 열은 이 interface들의 합이고, bridge와 veth처럼
 // 같은 packet이 지나는 interface가 함께 더해지므로 어느 쪽이 큰지 여기서 가린다.
-func topInterfaceLines(rate resourceRate) []string {
+func topInterfaceLines(rate resourceRate, interfaces topInterfaceFilter) []string {
 	if !rate.NetHealthValid {
 		return []string{"interfaces —"}
 	}
@@ -2053,7 +2073,11 @@ func topInterfaceLines(rate resourceRate) []string {
 	}
 	items := append([]netInterfaceRate(nil), rate.NetInterfaces...)
 	sort.SliceStable(items, func(i, j int) bool { return items[i].In+items[i].Out > items[j].In+items[j].Out })
-	lines := []string{"interfaces /s · busiest first · net columns add every interface"}
+	header := "interfaces /s · busiest first · net columns add every interface"
+	if interfaces.active() {
+		header = "interfaces /s · busiest first · net columns add --interface " + interfaces.String()
+	}
+	lines := []string{header}
 	for _, item := range items[:min(topInterfaceRows, len(items))] {
 		lines = append(lines, fmt.Sprintf("  %-15s in %5s out %5s · pkts %s/%s · err %s drop %s", item.Name, formatRate(item.In), formatRate(item.Out), topCompactCount(item.PacketsIn, 6), topCompactCount(item.PacketsOut, 6), topCompactCount(item.Errors, 4), topCompactCount(item.Drops, 4)))
 	}

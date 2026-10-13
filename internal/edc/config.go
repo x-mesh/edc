@@ -22,7 +22,7 @@ const legacyRecommendedLogOutput = "/var/log/job.log"
 
 var configScalarTypes = map[string]string{
 	"lang": "!!str", "defaults.common.json": "!!str", "defaults.doctor.profile": "!!str",
-	"defaults.top.json": "!!str", "defaults.top.split": "!!str", "defaults.where.provider": "!!str",
+	"defaults.top.json": "!!str", "defaults.top.split": "!!str", "defaults.top.interface": "!!str", "defaults.where.provider": "!!str",
 	"defaults.capture.interface": "!!str", "defaults.capture.filter": "!!str", "defaults.capture.output": "!!str",
 	"defaults.remote.inventory": "!!str", "defaults.remote.recipe": "!!str",
 	"defaults.log.stream": "!!str", "defaults.log.output": "!!str", "defaults.log.command_display": "!!str", "defaults.log.restart": "!!str",
@@ -116,6 +116,8 @@ type topConfig struct {
 	NoHeader *bool           `yaml:"no_header,omitempty" toml:"no_header,omitempty"`
 	JSON     *string         `yaml:"json,omitempty" toml:"json,omitempty"`
 	Split    *string         `yaml:"split,omitempty" toml:"split,omitempty"`
+	// Interface는 net 값에 더할 interface다. 여러 host가 같은 설정을 쓰므로, macOS에서 physical은 경고만 내고 모두 더한다.
+	Interface *string `yaml:"interface,omitempty" toml:"interface,omitempty"`
 }
 type infoConfig struct {
 	Public  *bool           `yaml:"public,omitempty" toml:"public,omitempty"`
@@ -328,6 +330,11 @@ func validateConfig(config edcConfig) error {
 	if d.Top.Split != nil && *d.Top.Split != "" {
 		if _, err := parseTopSplit(*d.Top.Split); err != nil {
 			return invalidConfig("defaults.top.split", "must be all, none, or cpu, mem, disk, net, psi, comma-separated, each once")
+		}
+	}
+	if d.Top.Interface != nil {
+		if _, err := parseTopInterfaceFilter(*d.Top.Interface); err != nil {
+			return invalidConfig("defaults.top.interface", "must be all, or interface names, globs, and physical, comma-separated: "+err.Error())
 		}
 	}
 	if d.Info.Timeout != nil && d.Info.Timeout.Duration <= 0 {

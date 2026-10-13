@@ -158,6 +158,7 @@ var commandDocs = []commandDoc{
 			{"--process <filter>", "command.top.option.process"},
 			{"--full", "command.top.option.full"},
 			{"--split [list]", "command.top.option.split"},
+			{"--interface <list>", "command.top.option.interface"},
 			{"-d, --detail", "command.top.option.detail"},
 			{"--ebpf", "command.top.option.ebpf"},
 			{"--json <path|->", "command.top.option.json"},

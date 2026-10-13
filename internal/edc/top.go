@@ -25,6 +25,7 @@ func runTop(args []string, version string) (code int) {
 	processValue := set.String("process", "", T("command.top.option.process"))
 	fullCommand := set.Bool("full", false, T("command.top.option.full"))
 	splitValue := set.String("split", "", T("command.top.option.split"))
+	interfaceValue := set.String("interface", configuredString(config.Interface, ""), T("command.top.option.interface"))
 	ebpf := set.Bool("ebpf", false, T("command.top.option.ebpf"))
 	// -d와 --detail은 사용자에게 보이는 이름이다. v0.28.0의 --ebpf도 같은 값으로 계속 받는다.
 	set.BoolVar(ebpf, "detail", false, T("command.top.option.detail"))
@@ -101,6 +102,29 @@ func runTop(args []string, version string) (code int) {
 		fmt.Fprintln(os.Stderr, T("observe.top.split_needs_view"))
 		return 2
 	}
+	interfaces, err := parseTopInterfaceFilter(*interfaceValue)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, T("observe.top.interface_invalid", err))
+		return 2
+	}
+	if interfaces.physical && !topPhysicalSupported {
+		fmt.Fprintln(os.Stderr, T("observe.top.interface_physical_unsupported"))
+		interfaces = interfaces.withoutPhysical()
+	}
+	if interfaces.active() {
+		present, err := topPresentInterfaces()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		if missing := interfaces.missingNames(present); len(missing) > 0 {
+			fmt.Fprintln(os.Stderr, T("observe.top.interface_missing", strings.Join(missing, ", ")))
+			return 2
+		}
+		if !interfaces.matchesAny(present, topInterfacePhysical) {
+			fmt.Fprintln(os.Stderr, T("observe.top.interface_none", interfaces))
+		}
+	}
 	var writer io.Writer = os.Stdout
 	if *jsonPath != "" && *jsonPath != "-" {
 		file, err := os.OpenFile(*jsonPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
@@ -152,7 +176,7 @@ func runTop(args []string, version string) (code int) {
 				return 1
 			}
 		}
-		recorder, err = newTopRecorder(*writePath, version, details, *interval, filter.String(), *ebpf)
+		recorder, err = newTopRecorder(*writePath, version, details, *interval, filter.String(), interfaces.String(), *ebpf)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, T("history.error.write", err))
 			return 1
@@ -169,14 +193,14 @@ func runTop(args []string, version string) (code int) {
 		}()
 	}
 	if dashboard {
-		return runTopDashboard(*interval, version, filter, recorder, split)
+		return runTopDashboard(*interval, version, filter, interfaces, recorder, split)
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	return streamTop(ctx, writer, topOptions{
 		interval: *interval, count: *count, json: jsonOutput,
 		process:  filter.active(),
-		recorder: recorder, filter: filter.String(),
+		recorder: recorder, filter: filter.String(), interfaces: interfaces,
 		header: !*noHeader && !jsonOutput,
 		color:  !jsonOutput && isTerminal(os.Stdout) && os.Getenv("NO_COLOR") == "",
 	})
@@ -238,6 +262,8 @@ type topOptions struct {
 	process  bool // sample에 필터에 맞는 process 목록을 더한다
 	recorder *topRecorder
 	filter   string
+	// interfaces는 net 값에 더할 interface다. JSON에는 고른 interface마다의 값도 더한다.
+	interfaces topInterfaceFilter
 }
 
 // topSample은 --json이 sample마다 한 줄로 내는 값이다. rate는 bytes/s와 percent다.
@@ -253,24 +279,27 @@ type topSample struct {
 	NetErrors     float64            `json:"network_errors_per_s"`
 	NetDrops      float64            `json:"network_drops_per_s"`
 	NetHealth     bool               `json:"network_health_supported"`
-	Load1         float64            `json:"load1"`
-	CPUUser       float64            `json:"cpu_user_pct"`
-	CPUSystem     float64            `json:"cpu_system_pct"`
-	CPUIOWait     float64            `json:"cpu_iowait_pct"`
-	DiskRead      float64            `json:"disk_read_bytes_per_s"`
-	DiskWrite     float64            `json:"disk_write_bytes_per_s"`
-	DiskIOPS      float64            `json:"disk_iops"`
-	DiskAwait     float64            `json:"disk_await_ms"`
-	DiskBusy      float64            `json:"disk_busy_pct"`
-	DiskHealth    bool               `json:"disk_health_supported"`
-	DiskBusyOK    bool               `json:"disk_busy_supported"`
-	PSICPU        float64            `json:"psi_cpu_some_avg10_pct"`
-	PSIMemory     float64            `json:"psi_memory_some_avg10_pct"`
-	PSIIO         float64            `json:"psi_io_some_avg10_pct"`
-	PSIMemoryFull float64            `json:"psi_memory_full_avg10_pct"`
-	PSIIOFull     float64            `json:"psi_io_full_avg10_pct"`
-	PSIValid      bool               `json:"psi_supported"`
-	MemoryPct     float64            `json:"memory_pct"`
+	// InterfaceFilter와 Interfaces는 --interface를 쓸 때만 나온다. Interfaces는 고른 interface 중 이 구간에 값이 있는 것이다.
+	InterfaceFilter string                `json:"interface_filter,omitempty"`
+	Interfaces      *[]topInterfaceSample `json:"interfaces,omitempty"`
+	Load1           float64               `json:"load1"`
+	CPUUser         float64               `json:"cpu_user_pct"`
+	CPUSystem       float64               `json:"cpu_system_pct"`
+	CPUIOWait       float64               `json:"cpu_iowait_pct"`
+	DiskRead        float64               `json:"disk_read_bytes_per_s"`
+	DiskWrite       float64               `json:"disk_write_bytes_per_s"`
+	DiskIOPS        float64               `json:"disk_iops"`
+	DiskAwait       float64               `json:"disk_await_ms"`
+	DiskBusy        float64               `json:"disk_busy_pct"`
+	DiskHealth      bool                  `json:"disk_health_supported"`
+	DiskBusyOK      bool                  `json:"disk_busy_supported"`
+	PSICPU          float64               `json:"psi_cpu_some_avg10_pct"`
+	PSIMemory       float64               `json:"psi_memory_some_avg10_pct"`
+	PSIIO           float64               `json:"psi_io_some_avg10_pct"`
+	PSIMemoryFull   float64               `json:"psi_memory_full_avg10_pct"`
+	PSIIOFull       float64               `json:"psi_io_full_avg10_pct"`
+	PSIValid        bool                  `json:"psi_supported"`
+	MemoryPct       float64               `json:"memory_pct"`
 	// MemoryPressure는 macOS kernel의 memory 압박 단계(normal, warn, critical)다. 다른 host에서는 빠진다.
 	MemoryPressure          string  `json:"memory_pressure,omitempty"`
 	MemoryPressureSupported bool    `json:"memory_pressure_supported"`
@@ -279,6 +308,27 @@ type topSample struct {
 	Processes *[]topProcessSample `json:"processes,omitempty"`
 	// ProcessTotal은 필터에 맞은 process 전체의 합이다. Processes는 CPU 상위만 남기지만 합은 모두 센다.
 	ProcessTotal *topProcessTotalSample `json:"process_total,omitempty"`
+}
+
+type topInterfaceSample struct {
+	Name       string  `json:"name"`
+	In         float64 `json:"in_bytes_per_s"`
+	Out        float64 `json:"out_bytes_per_s"`
+	PacketsIn  float64 `json:"packets_in_per_s"`
+	PacketsOut float64 `json:"packets_out_per_s"`
+	Errors     float64 `json:"errors_per_s"`
+	Drops      float64 `json:"drops_per_s"`
+}
+
+func newTopInterfaceSamples(rates []netInterfaceRate) *[]topInterfaceSample {
+	samples := make([]topInterfaceSample, 0, len(rates))
+	for _, rate := range rates {
+		samples = append(samples, topInterfaceSample{
+			Name: rate.Name, In: roundTopValue(rate.In), Out: roundTopValue(rate.Out), PacketsIn: roundTopValue(rate.PacketsIn), PacketsOut: roundTopValue(rate.PacketsOut),
+			Errors: roundTopValue(rate.Errors), Drops: roundTopValue(rate.Drops),
+		})
+	}
+	return &samples
 }
 
 type topProcessTotalSample struct {
@@ -417,6 +467,7 @@ func streamTop(ctx context.Context, writer io.Writer, options topOptions) int {
 		fmt.Fprintln(os.Stderr, T("observe.top.error.resource", err))
 		return 1
 	}
+	previous = options.interfaces.apply(previous, topInterfacePhysical)
 	encoder := json.NewEncoder(writer)
 	ticker := time.NewTicker(options.interval)
 	defer ticker.Stop()
@@ -440,6 +491,7 @@ func streamTop(ctx context.Context, writer io.Writer, options topOptions) int {
 				fmt.Fprintln(os.Stderr, T("observe.top.error.resource", err))
 				return 1
 			}
+			current = options.interfaces.apply(current, topInterfacePhysical)
 			rate := calculateRate(previous, current)
 			if options.process {
 				current.Processes, current.ProcessTotal, current.ProcessesValid, current.ProcessesAt = processSampler.refreshNowAt()
@@ -453,6 +505,9 @@ func streamTop(ctx context.Context, writer io.Writer, options topOptions) int {
 			}
 			if options.json {
 				sample := newTopSample(details, current.TakenAt, rate)
+				if options.interfaces.active() {
+					sample.InterfaceFilter, sample.Interfaces = options.interfaces.String(), newTopInterfaceSamples(rate.NetInterfaces)
+				}
 				if options.process {
 					if current.ProcessesValid {
 						sample.Processes = newTopProcessSamples(current.Processes)

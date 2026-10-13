@@ -752,14 +752,15 @@ If stdin and stdout are terminals, `edc top` opens a full-screen dashboard. The 
 | `p` | pause and resume |
 | `+` | make the interval longer |
 | `-` | make the interval shorter |
-| `1`, `c`, `m`, `d`, `n` | switch to all, CPU, memory, disk, or network columns |
+| `1`, `c`, `m`, `d`, `n` | switch to all, CPU, memory, disk, or network columns. `1` is the first view. |
 | `s` | switch to pressure columns |
 | `v` | Return to the box screen. |
 | `f` | Open the signal view. Press again to select a process candidate. If a filter is active, open the process view. |
 | `Tab` | Switch between history and process selection. |
 | `?` | Open help. Use arrows to scroll. Press `Esc` to return. |
 | `/` | type a process filter: a command name or a PID, comma-separated |
-| `Esc` | Close help or process selection. Otherwise, clear the process filter. |
+| `i` | Open a box with the interfaces and their traffic. Press `Space` to check an interface, `a` for all, or `p` for physical. `Enter` applies the selection from the next sample. While `-w` records, the key is off. |
+| `Esc` | Go back one step. Esc closes help, a list, or process selection. Then it closes the detail or peaks panel, returns to the live row, and returns to the first view. Last, it clears the process filter. |
 | `↑`, `↓`, `PgUp`, `PgDn`, `End` | select an earlier row, move one screen, or return to the live row |
 | `Enter` | Show time details. If process selection is active, focus the selected PID. |
 | `h` | show the load, CPU, iowait, and memory peaks from the last 60 seconds, each with its time |
@@ -771,6 +772,20 @@ The `signal` column shows the highest-priority host warning and the number of ot
 On Linux, the `signal` column shows `blocked N` when `i/o` is at the warning level and 4 or more tasks wait for I/O. macOS has no `i/o` value. The `U` state also covers page-in waits, so macOS shows `blocked N` when 4 or more processes are in the `U` state and `await` is at the warning level or the memory pressure level is `warn` or `critical`. On macOS, the `signal` column also shows `mem pressure warn` or `mem pressure critical` when the kernel raises the memory pressure level. A process group also gets a warning when its CPU total is 80% or more, or its I/O total is 50 MB/s or more. The warning shows the name and the process count, for example `gm (200) 100%`. Only the disk view calculates the I/O total, so the I/O warning of a group shows only in the disk view.
 
 Network errors and drops count as a warning from one per second. Use the network view for packet counts.
+
+The network values add the counters of all interfaces except loopback. On Linux, edc reads the interfaces of its own network namespace. On macOS, it reads the interfaces that are up. A bridge, a veth pair, or a tunnel also counts, so one packet can count on two or more interfaces. edc subtracts the counters of each interface separately. An interface that appears or disappears between two samples adds nothing to that interval.
+
+Use `--interface` to add only some interfaces. Write interface names, glob patterns, or `physical`, separated by commas. `physical` selects the interfaces with a device under them. On Linux, `/sys/class/net/<name>/device` exists for these interfaces. `physical` leaves out bridges, veth pairs, bonds, VLANs, and tunnels, so a packet counts once on the NIC. `all` adds every interface, and it is the default.
+
+```bash
+edc top --interface physical
+edc top --interface eth0,ens5
+edc top --interface 'en*' --json -
+```
+
+The selection applies to the table, the dashboard, JSON, `--write`, and the device-side drops in the `n` view. If an interface name does not exist when edc starts, edc exits with code 2. If a glob or `physical` matches no interface, edc shows a warning. Until an interface that matches appears, the byte and packet rates stay at 0, `err` and `drop` show `—`, and JSON sets `network_health_supported` to `false`. With `--interface`, each JSON sample adds `interface_filter` and `interfaces`. `interfaces` holds the values of each selected interface with traffic in that interval. `edc history list` shows the selection in the `INTERFACES` column.
+
+Set `defaults.top.interface` in the config file to use the same selection every time. `physical` is not available on macOS. There, edc shows a warning and adds every interface, so one config file can serve Linux and macOS hosts.
 
 If you select an earlier row, collection continues. Press `End` to follow the latest row.
 
@@ -872,7 +887,7 @@ The dashboard quits to the previous screen and leaves no rows behind. Use `--wri
 
 On macOS, `edc` reads the CPU ticks of each core from the kernel with the Mach `host_processor_info` call. On Linux, `edc` reads `/proc/stat`. On both systems, every column follows the interval.
 
-On Linux, the `n` view adds conntrack occupancy (`ct%`), listen overflows/s (`listen/s`), and softnet drops/s (`soft/s`). Its panel shows the selected sample's conntrack entries, TCP socket counts, and rates for listen drops, SYN cookies, conntrack drops, UDP receive-buffer errors, and softnet budget exhaustion. It also shows TCP memory pages against the `tcp_mem` ceiling, orphan sockets, and the rates of TCP memory pressure entries, aborts for memory, and pruned receive queues, plus the device-side drops that `/proc/net/dev` does not show: `rx_missed_errors` for a full receive ring and `rx_fifo_errors` and `tx_fifo_errors` for FIFO overruns, summed over the interfaces of the namespace except loopback. Use `↑`/`↓` for history, `Enter` for settings at that sample, and `h` for peaks in the last 60 seconds. Conntrack occupancy warns at 90% and marks risk at 98%; neither proves a connection failure.
+On Linux, the `n` view adds conntrack occupancy (`ct%`), listen overflows/s (`listen/s`), and softnet drops/s (`soft/s`). Its panel shows the selected sample's conntrack entries, TCP socket counts, and rates for listen drops, SYN cookies, conntrack drops, UDP receive-buffer errors, and softnet budget exhaustion. It also shows TCP memory pages against the `tcp_mem` ceiling, orphan sockets, and the rates of TCP memory pressure entries, aborts for memory, and pruned receive queues, plus the device-side drops that `/proc/net/dev` does not show: `rx_missed_errors` for a full receive ring and `rx_fifo_errors` and `tx_fifo_errors` for FIFO overruns, summed over the interfaces of the namespace except loopback. Use `↑`/`↓` for history, `Enter` for the five busiest interfaces and the settings at that sample, and `h` for peaks in the last 60 seconds. Conntrack occupancy warns at 90% and marks risk at 98%; neither proves a connection failure.
 
 Collection uses the current network namespace, but softnet counters and TCP TIME_WAIT can be host-wide. TCP `CurrEstab` includes ESTABLISHED and CLOSE_WAIT. Socket counts are not local port utilization. Missing baselines, failed reads, or counter resets show `—` for rates. Conntrack statistics require an exposed `/proc/net/stat/nf_conntrack`; missing statistics do not prevent other collection.
 

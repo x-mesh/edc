@@ -708,21 +708,34 @@ stdin과 stdout이 모두 terminal이면 `edc top`은 전체 화면 대시보드
 | `p` | 일시정지와 재개 |
 | `+` | interval 늘리기 |
 | `-` | interval 줄이기 |
-| `1`, `c`, `m`, `d`, `n` | 전체, CPU, memory, disk, network 열로 전환 |
+| `1`, `c`, `m`, `d`, `n` | 전체, CPU, memory, disk, network 열로 전환. `1`이 처음 보기 |
 | `s` | pressure 열로 전환 |
 | `v` | 박스 화면으로 돌아가기 |
 | `f` | 선택한 행의 signal 보기로 이동하고, 한 번 더 누르면 process 후보 선택. 필터가 있으면 process 보기로 전환 |
 | `Tab` | 이력 탐색과 process 후보 선택 사이 이동 |
 | `?` | 도움말 표시. 화살표로 스크롤하고 `Esc`로 닫기 |
 | `/` | process 필터 입력: command 이름이나 PID, 쉼표로 구분 |
-| `Esc` | 도움말이나 후보 선택 닫기. 그 외에는 process 필터 해제 |
+| `i` | interface 선택 상자: 목록과 traffic을 보고 `Space`로 체크, `a` 전체, `p` physical. `Enter`로 다음 sample부터 적용하며, `-w`로 기록하는 동안에는 쓸 수 없음 |
+| `Esc` | 한 단계 뒤로: 도움말, 목록, 후보 선택을 닫고, 그다음 상세나 최고치 패널 닫기, 최신 행으로 복귀, 처음 보기로 복귀, 마지막으로 process 필터 해제 |
 | `↑`, `↓`, `PgUp`, `PgDn`, `End` | 과거 행 선택, 한 화면씩 이동, 실시간 행 추적 재개 |
 | `Enter` | 선택한 시점의 상세 표시. 후보 선택 중에는 선택한 PID에 초점 |
 | `h` | 최근 60초의 load, CPU, iowait, memory 최고치를 각각 시각과 함께 표시 |
 | `e` | 이벤트 목록 열기. 화살표로 고르고 `Enter`로 그 시작 시점으로 이동, `e`나 `Esc`로 닫기 |
 | `[`, `]` | 이전·다음 이벤트의 시작 시점으로 이동 |
 
-기본 표의 `signal` 열은 load, CPU, iowait, memory, disk await, network errors·drops 중 가장 심각한 항목과 추가 개수를 보여 줍니다. network errors·drops는 초당 1개부터 경고로 셉니다. 패킷 수는 network 보기에서 확인합니다. 과거 행을 선택해도 수집은 계속되며 `End`로 최신 행을 다시 따라갑니다. 수집이 잠시 실패하면 마지막 행을 유지하고 다음 interval에 다시 시도합니다.
+기본 표의 `signal` 열은 load, CPU, iowait, memory, disk await, network errors·drops 중 가장 심각한 항목과 추가 개수를 보여 줍니다. network errors·drops는 초당 1개부터 경고로 셉니다. 패킷 수는 network 보기에서 확인합니다. network 값은 loopback을 뺀 모든 interface의 counter를 더한 값입니다. Linux에서는 edc가 있는 network namespace의 interface를, macOS에서는 켜진 interface를 읽습니다. bridge, veth, tunnel도 더하므로 같은 packet이 둘 이상의 interface에서 셀 수 있습니다. counter는 interface마다 따로 빼므로, 두 sample 사이에 생기거나 사라진 interface는 그 구간에 더하지 않습니다. 과거 행을 선택해도 수집은 계속되며 `End`로 최신 행을 다시 따라갑니다. 수집이 잠시 실패하면 마지막 행을 유지하고 다음 interval에 다시 시도합니다.
+
+일부 interface만 더하려면 `--interface`를 씁니다. interface 이름, glob, `physical`을 쉼표로 구분해 적습니다. `physical`은 장치가 뒤에 있는 interface를 고릅니다. Linux에서는 `/sys/class/net/<이름>/device`가 있는 interface입니다. bridge, veth, bond, VLAN, tunnel이 빠지므로 같은 packet을 NIC에서 한 번만 셉니다. `all`은 모든 interface를 더하며 기본값입니다.
+
+```bash
+edc top --interface physical
+edc top --interface eth0,ens5
+edc top --interface 'en*' --json -
+```
+
+선택은 표, 대시보드, JSON, `--write`, `n` 보기의 장치 쪽 drop에 모두 적용됩니다. 적은 interface 이름이 시작할 때 없으면 exit code 2로 끝납니다. glob이나 `physical`에 맞는 interface가 없으면 경고를 보입니다. 맞는 interface가 생길 때까지 byte와 packet 값은 0으로 남고, `err`와 `drop`은 `—`로 보이며, JSON의 `network_health_supported`는 `false`입니다. `--interface`를 쓰면 JSON sample마다 `interface_filter`와 `interfaces`가 붙습니다. `interfaces`에는 고른 interface 중 그 구간에 traffic이 있는 interface의 값이 들어갑니다. `edc history list`는 `INTERFACES` 열에 선택을 보입니다.
+
+매번 같은 선택을 쓰려면 설정 파일에 `defaults.top.interface`를 둡니다. macOS에서는 `physical`을 쓸 수 없습니다. 이때는 경고를 보이고 모든 interface를 더하므로, 설정 파일 하나를 Linux와 macOS host가 함께 쓸 수 있습니다.
 
 Linux에서는 `i/o`가 경고 수준이고 I/O를 기다리는 작업이 4개 이상이면 `signal` 열에 `blocked N`을 표시합니다. macOS에는 `i/o` 값이 없습니다. `U` 상태는 page-in 대기에서도 생기므로, macOS는 `U` 상태 process가 4개 이상이고 `await`가 경고 수준이거나 memory 압박 단계가 `warn`이나 `critical`일 때 `blocked N`을 표시합니다. macOS에서는 kernel이 memory 압박 단계를 올리면 `signal` 열에 `mem pressure warn`이나 `mem pressure critical`도 표시합니다. process 묶음도 CPU 합이 80% 이상이거나 I/O 합이 50 MB/s 이상이면 `gm (200) 100%`처럼 이름과 process 수로 경고합니다. I/O 합은 disk 보기에서만 계산하므로 묶음의 I/O 경고도 disk 보기에서만 나옵니다.
 
@@ -796,7 +809,7 @@ interval은 200ms, 500ms, 1s, 2s, 5s, 10s, 30s, 1m 사이를 오갑니다. 일�
 
 macOS에서 `edc`는 Mach `host_processor_info` 호출로 kernel에서 core별 CPU tick을 직접 읽고, Linux에서는 `/proc/stat`을 읽습니다. 두 운영체제 모두 모든 열이 interval을 따릅니다.
 
-Linux에서는 `n` 화면에 conntrack 사용률(`ct%`), listen overflow/s(`listen/s`), softnet drop/s(`soft/s`)를 추가합니다. 아래 패널은 선택한 시점의 conntrack entry, TCP socket 수, listen drop·SYN cookie·conntrack drop·UDP 수신 buffer 오류와 softnet budget 초과의 초당 증가량을 보여 줍니다. `tcp_mem` 상한 대비 TCP memory page, orphan socket, TCP memory pressure 진입·메모리 부족 abort·수신 대기열 prune의 초당 증가량도 보여 주고, `/proc/net/dev`에 없는 장치 쪽 drop도 보여 줍니다. 수신 ring이 가득 차 버린 `rx_missed_errors`와 FIFO overrun인 `rx_fifo_errors`, `tx_fifo_errors`를 loopback을 뺀 namespace의 interface 전체로 더한 값입니다. `↑`/`↓`로 이전 sample을 보고, `Enter`로 당시 설정을 펼치고, `h`로 최근 60초 최대값을 봅니다. `ct%`는 90%부터 경고, 98%부터 위험으로 표시하며 연결 실패가 확인됐다는 뜻은 아닙니다.
+Linux에서는 `n` 화면에 conntrack 사용률(`ct%`), listen overflow/s(`listen/s`), softnet drop/s(`soft/s`)를 추가합니다. 아래 패널은 선택한 시점의 conntrack entry, TCP socket 수, listen drop·SYN cookie·conntrack drop·UDP 수신 buffer 오류와 softnet budget 초과의 초당 증가량을 보여 줍니다. `tcp_mem` 상한 대비 TCP memory page, orphan socket, TCP memory pressure 진입·메모리 부족 abort·수신 대기열 prune의 초당 증가량도 보여 주고, `/proc/net/dev`에 없는 장치 쪽 drop도 보여 줍니다. 수신 ring이 가득 차 버린 `rx_missed_errors`와 FIFO overrun인 `rx_fifo_errors`, `tx_fifo_errors`를 loopback을 뺀 namespace의 interface 전체로 더한 값입니다. `↑`/`↓`로 이전 sample을 보고, `Enter`로 그때 가장 바쁜 interface 다섯 개와 당시 설정을 펼치고, `h`로 최근 60초 최대값을 봅니다. `ct%`는 90%부터 경고, 98%부터 위험으로 표시하며 연결 실패가 확인됐다는 뜻은 아닙니다.
 
 수집은 현재 network namespace를 기준으로 하지만 softnet 카운터와 TCP TIME_WAIT 수는 host 전체 값일 수 있습니다. TCP `CurrEstab`는 ESTABLISHED와 CLOSE_WAIT를 포함합니다. socket 수는 임시 port 사용률이 아닙니다. 카운터 읽기 실패·초기화·기준점 부재 시 rate는 `—`로 표시합니다. conntrack 상세 통계는 `/proc/net/stat/nf_conntrack`이 노출될 때 수집하며, 없으면 해당 값만 빠집니다.
 

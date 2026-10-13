@@ -20,7 +20,7 @@ import (
 
 func topHistoryFixture(t *testing.T, path string) *topRecorder {
 	t.Helper()
-	recorder, err := newTopRecorder(path, "test", hostDetails{Hostname: "fixture", Cores: 8, MemoryTotal: 1024}, time.Second, "", false)
+	recorder, err := newTopRecorder(path, "test", hostDetails{Hostname: "fixture", Cores: 8, MemoryTotal: 1024}, time.Second, "", "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -666,5 +666,36 @@ func TestTopBareWriteUsesDefaultAndHistoryReadsIt(t *testing.T) {
 	}
 	if code := runTop([]string{"--write=", "--count", "1"}, "test"); code != 2 {
 		t.Fatal("explicit empty path was treated as a default")
+	}
+}
+
+func TestHistoryListShowsTheInterfaceFilter(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "record.db")
+	for _, interfaces := range []string{"", "physical,wg0"} {
+		recorder, err := newTopRecorder(path, "test", hostDetails{Hostname: "fixture", Cores: 8}, time.Second, "", interfaces, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := recorder.Close("finished"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	db, err := openHistoryDB(path, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	runs := historyJSONRows(t, db, "list", historyOptions{})
+	if len(runs) != 2 || string(runs[0]["interface_filter"]) != `"physical,wg0"` || runs[1]["interface_filter"] != nil {
+		t.Fatalf("runs = %s", mustHistoryJSON(t, runs))
+	}
+	var text bytes.Buffer
+	if err := printHistory(&text, db, "list", historyOptions{}, false); err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(text.String()), "\n")
+	last := func(line string) string { fields := strings.Fields(line); return fields[len(fields)-1] }
+	if len(lines) != 3 || last(lines[0]) != "INTERFACES" || last(lines[1]) != "physical,wg0" || last(lines[2]) != "all" {
+		t.Fatalf("list:\n%s", text.String())
 	}
 }

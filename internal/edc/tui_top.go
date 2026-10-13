@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
@@ -14,24 +15,42 @@ import (
 )
 
 // runTopDashboard는 alt screen 대시보드를 실행한다. 종료하면 화면이 원래대로 돌아온다.
-func runTopDashboard(interval time.Duration, version string, filter topProcessFilter, recorder *topRecorder, split []topView) int {
+func runTopDashboard(interval time.Duration, version string, filter topProcessFilter, interfaces topInterfaceFilter, recorder *topRecorder, split []topView) int {
 	details, err := collectHostDetails()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, T("observe.top.error.host", err))
 		return 1
 	}
-	sample := sampleTopDashboard
+	// interface 선택은 수집 직후에 적용한다. 기록, 표, 상세가 모두 같은 snapshot에서 나오므로 따로 맞추지 않아도 된다.
+	// 수집은 tea.Cmd goroutine에서 돌고 i는 Update에서 바꾸므로 lock으로 건넨다.
+	var selection sync.Mutex
+	current := interfaces
+	selected := func(sample func() (resourceSnapshot, error)) func() (resourceSnapshot, error) {
+		return func() (resourceSnapshot, error) {
+			snapshot, err := sample()
+			selection.Lock()
+			filter := current
+			selection.Unlock()
+			return filter.apply(snapshot, topInterfacePhysical), err
+		}
+	}
+	sample := selected(sampleTopDashboard)
 	if filter.active() {
-		sample = sampleTopDashboardNow
+		sample = selected(sampleTopDashboardNow)
 	}
 	first, err := sample()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, T("observe.top.error.resource", err))
 		return 1
 	}
-	model := newTopModel(details, first, interval, sampleTopDashboard)
-	model.sampleNow, model.setFilter, model.setScanIO = sampleTopDashboardNow, processSampler.setFilter, processSampler.setScanIO
-	model.version = version
+	model := newTopModel(details, first, interval, selected(sampleTopDashboard))
+	model.sampleNow, model.setFilter, model.setScanIO = selected(sampleTopDashboardNow), processSampler.setFilter, processSampler.setScanIO
+	model.version, model.interfaces = version, interfaces
+	model.setInterfaces = func(filter topInterfaceFilter) {
+		selection.Lock()
+		current = filter
+		selection.Unlock()
+	}
 	model.limits.color = os.Getenv("NO_COLOR") == ""
 	processSampler.mutex.Lock()
 	model.probeEnabled = processSampler.observe != nil
@@ -116,6 +135,11 @@ const (
 	topTallHeight = 40
 	// topProcessNameWidth는 상세 패널의 process 이름 폭이다. 세 개가 80열 한 줄에 들어간다.
 	topProcessNameWidth = 10
+	// topInterfaceRows는 network 상세가 보이는 interface 수다. 아래 칸은 좁고 그 뒤에 limit와 설정 줄이 이어진다.
+	topInterfaceRows = 5
+	// topStatusInterfaceWidth는 상태 줄에 보이는 --interface 값의 폭이다. "net physical"은 줄지 않고, 긴 목록도 80열에서 키 안내를
+	// 밀어내지 않는다.
+	topStatusInterfaceWidth = 8
 	// topSignalProcessNameWidth는 signal 열의 process 이름 폭이다.
 	topSignalProcessNameWidth = 4
 	// topProcessSignalCPU는 process 하나가 signal에 오르는 CPU%다. core 하나가 100%다.
@@ -178,6 +202,18 @@ type topModel struct {
 	lastErr       error
 	version       string
 	processFilter topProcessFilter
+	// interfaces는 --interface나 i로 고른 interface다. 수집 함수가 이미 적용했으므로 화면은 표시에만 쓴다.
+	interfaces topInterfaceFilter
+	// setInterfaces는 i로 바꾼 선택을 수집 함수에 알린다. listInterfaces는 i 상자에 보일 interface 목록이다.
+	setInterfaces  func(topInterfaceFilter)
+	listInterfaces func() ([]topInterfaceInfo, error)
+	// interfacePhysical과 physicalSupported는 physical 판정이다. 시험은 sysfs 대신 정해 둔 값을 쓴다.
+	interfacePhysical func(string) bool
+	physicalSupported bool
+	// picker는 i로 연 interface 선택 상자이고, 닫혀 있으면 nil이다. interfaceRates는 고르기 전 모든 interface의 최근
+	// rate로, 상자가 고르지 않은 interface의 traffic도 보이게 한다.
+	picker         *topInterfacePicker
+	interfaceRates []netInterfaceRate
 	// focusName은 f로 PID에 초점을 맞췄을 때 배너에 함께 보일 process 이름이다.
 	focusName string
 	// sampleNow는 필터가 있을 때 쓰는 수집 함수다. 없으면 sample을 쓴다.
@@ -216,7 +252,8 @@ type topSampleMsg struct {
 }
 
 func newTopModel(details hostDetails, first resourceSnapshot, interval time.Duration, sample func() (resourceSnapshot, error)) topModel {
-	return topModel{details: details, limits: newTopLimits(details.Cores, true), interval: interval, previous: first, view: topViewAll, follow: true, sample: sample, events: &topEventLog{}}
+	return topModel{details: details, limits: newTopLimits(details.Cores, true), interval: interval, previous: first, view: topViewAll, follow: true, sample: sample, events: &topEventLog{},
+		listInterfaces: topListInterfaces, interfacePhysical: topInterfacePhysical, physicalSupported: topPhysicalSupported}
 }
 
 // withProcessFilter는 필터를 건다. 필터를 건 사용자는 그 process를 보려는 것이므로 host 지표 대신 process 묶음 보기로 연다.
@@ -268,6 +305,9 @@ func (model topModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return model, model.tick()
 		}
 		rate := calculateRate(model.previous, value.snapshot)
+		if seconds := value.snapshot.TakenAt.Sub(model.previous.TakenAt).Seconds(); seconds > 0 {
+			model.interfaceRates = calculateNetInterfaceRates(model.previous.allNetInterfaces(), value.snapshot.allNetInterfaces(), seconds)
+		}
 		if model.record != nil {
 			if err := model.record(newHistoryTopSample(model.details, model.previous, value.snapshot, rate, model.processFilter.String())); err != nil {
 				model.recordingErr = err
@@ -300,6 +340,9 @@ func (model topModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (model topModel) updateKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if model.input {
 		return model.updateInput(key)
+	}
+	if model.picker != nil {
+		return model.updatePicker(key)
 	}
 	model.notice = ""
 	if model.help {
@@ -403,6 +446,8 @@ func (model topModel) updateKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		model = model.stepEvent(-1)
 	case "]":
 		model = model.stepEvent(1)
+	case "i":
+		return model.openInterfacePicker()
 	case "/":
 		model.input, model.inputText = true, model.processFilter.String()
 		if model.inputText == "" {
@@ -411,10 +456,7 @@ func (model topModel) updateKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 	case "esc":
-		if model.processFilter.active() {
-			model.notice = "process filter cleared"
-			return model.applyFilter(topProcessFilter{}, "")
-		}
+		return model.back()
 	case "enter":
 		model.detail = !model.detail
 		if model.detail {
@@ -453,6 +495,47 @@ func (model topModel) updateKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 	if key.String() == "1" || key.String() == "c" || key.String() == "m" || key.String() == "d" || key.String() == "n" || key.String() == "s" || key.String() == "v" {
 		model.processSelected = 0
+	}
+	return model, nil
+}
+
+// homeView는 Esc가 돌아가는 처음 보기다. process 필터가 있으면 그 process 보기, --split으로 시작했으면 박스 화면이다.
+func (model topModel) homeView() topView {
+	if model.processFilter.active() {
+		return topViewProcess
+	}
+	if len(model.split) > 0 && len(model.splitViews()) > 0 {
+		return topViewSplit
+	}
+	return topViewAll
+}
+
+// canGoBack은 Esc로 되돌릴 것이 있는지다. 있으면 상태 줄에 Esc back을 보인다.
+func (model topModel) canGoBack() bool {
+	return model.detail || model.peaks || !model.follow || model.view != model.homeView() || model.processFilter.active()
+}
+
+// back은 Esc 한 번에 한 단계만 되돌린다. 아래 패널, 과거 행 선택, 처음 보기, process 필터 순서라서 Esc를 몇 번 누르면
+// 처음 화면으로 돌아온다. 보기 키를 몰라도 돌아올 수 있게 한다.
+func (model topModel) back() (tea.Model, tea.Cmd) {
+	switch {
+	case model.detail || model.peaks:
+		model.detail, model.peaks = false, false
+	case !model.follow:
+		if len(model.rows) > 0 {
+			model.selected = len(model.rows) - 1
+		}
+		model.follow = true
+	case model.view != model.homeView():
+		if home := model.homeView(); home == topViewSplit {
+			model = model.enterSplit()
+		} else {
+			model.view = home
+		}
+		model.processSelected = 0
+	case model.processFilter.active():
+		model.notice = "process filter cleared"
+		return model.applyFilter(topProcessFilter{}, "")
 	}
 	return model, nil
 }
@@ -527,6 +610,48 @@ func (model topModel) updateInput(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	return model, nil
 }
 
+// applyInterfaces는 실행 중에 net 값에 더할 interface를 바꾼다. 잘못된 값이나 없는 이름은 안내만 하고 선택을 그대로 둔다.
+// 전환 전 snapshot과 다음 snapshot은 다른 interface를 담으므로, 다음 sample은 기준점만 세우고 행을 만들지 않는다.
+func (model topModel) applyInterfaces(text string) (tea.Model, tea.Cmd) {
+	filter, err := parseTopInterfaceFilter(text)
+	if err != nil {
+		model.notice = T("observe.top.interface_invalid", err)
+		return model, nil
+	}
+	if filter.physical && !model.physicalSupported {
+		model.notice = T("observe.top.interface_physical_unsupported")
+		filter = filter.withoutPhysical()
+	}
+	if filter.active() && model.listInterfaces != nil {
+		list, err := model.listInterfaces()
+		if err != nil {
+			model.notice = err.Error()
+			return model, nil
+		}
+		present := topInterfaceNames(list)
+		if missing := filter.missingNames(present); len(missing) > 0 {
+			model.notice = T("observe.top.interface_missing", strings.Join(missing, ", "))
+			return model, nil
+		}
+		if !filter.matchesAny(present, model.interfacePhysical) {
+			model.notice = T("observe.top.interface_none_notice", filter)
+		}
+	}
+	if filter.String() == model.interfaces.String() {
+		return model, nil
+	}
+	model.interfaces = filter
+	if model.setInterfaces != nil {
+		model.setInterfaces(filter)
+	}
+	model.baseline = true
+	model.seq++
+	if model.paused {
+		return model, nil
+	}
+	return model, model.tick()
+}
+
 // applyFilter는 실행 중에 필터를 바꾼다. 순번을 올려 이전 필터로 수집 중인 표본을 버리고, 필터가 있으면 process 보기로 연다.
 func (model topModel) applyFilter(filter topProcessFilter, name string) (tea.Model, tea.Cmd) {
 	model.processFocus, model.processSelected = false, 0
@@ -595,6 +720,14 @@ func (model topModel) bodyLines() int {
 }
 
 func (model topModel) View() tea.View {
+	view := model.dashboardView()
+	if model.picker != nil && !(model.width > 0 && (model.width < 24 || model.height < 8)) {
+		view.Content = overlayTopBox(view.Content, model.picker.lines(model.interfaceRates, model.displayWidth(), model.height), model.displayWidth(), model.limits.color)
+	}
+	return view
+}
+
+func (model topModel) dashboardView() tea.View {
 	if model.width > 0 && (model.width < 24 || model.height < 8) {
 		view := tea.NewView(ansi.Truncate("terminal too small · q quit", model.displayWidth(), "") + "\n" + ansi.Truncate("resize to at least 24×8", model.displayWidth(), ""))
 		view.AltScreen = true
@@ -709,7 +842,7 @@ func (model topModel) infoLines() []string {
 		lines = model.peakLines()
 	case model.view == topViewNetwork && model.previous.NetworkHealth != nil:
 		if row, ok := model.selectedRow(); ok {
-			lines = append([]string{"network " + row.at.Format("15:04:05") + " · current namespace · Enter settings"}, networkHealthLines(row.rate.NetworkHealth)...)
+			lines = append([]string{"network " + row.at.Format("15:04:05") + " · current namespace · Enter interfaces and settings · i select"}, networkHealthLines(row.rate.NetworkHealth)...)
 		}
 	}
 	if model.lastErr != nil {
@@ -868,7 +1001,10 @@ func (model topModel) detailLines() []string {
 	}
 	rate := row.rate
 	if model.view == topViewNetwork {
-		return append(append([]string{"network detail " + row.at.Format("15:04:05")}, networkHealthLines(rate.NetworkHealth)...), networkSettingLines(rate.NetworkHealth)...)
+		// limit 줄은 Enter 없이도 n 보기 패널에 있으므로 맨 뒤에 둔다. 24행 화면에서는 아래 칸이 잘리는데, interface와 설정은
+		// 이 상세에만 있다.
+		lines := append([]string{"network detail " + row.at.Format("15:04:05")}, topInterfaceLines(rate, model.interfaces)...)
+		return append(append(lines, networkSettingLines(rate.NetworkHealth)...), networkHealthLines(rate.NetworkHealth)...)
 	}
 	lines := []string{
 		fmt.Sprintf("detail %s · load %.1f · cpu %.1f/%.1f%% · iowait %.1f%% · mem %.1f%%", row.at.Format("15:04:05"), rate.Load1, rate.CPUUser, rate.CPUSystem, rate.CPUIOWait, rate.MemoryPercent),
@@ -924,6 +1060,10 @@ func (model topModel) peakLines() []string {
 
 func (model topModel) statusLines() []string {
 	state := "interval " + model.interval.String()
+	if model.interfaces.active() {
+		// 긴 목록이 80열에서 키 안내를 밀어내지 않게 줄인다. 전체 값은 n 보기 상세 머리줄에 있다.
+		state = "net " + ansi.Truncate(model.interfaces.String(), topStatusInterfaceWidth, "…") + " · " + state
+	}
 	if model.record != nil {
 		state = "SQLite · " + state
 	}
@@ -934,7 +1074,11 @@ func (model topModel) statusLines() []string {
 	}
 	keys := "c cpu m mem d disk n net f candidates / filter ? help"
 	if model.processFilter.active() {
-		keys = "1 host f proc / edit Esc clear ? help"
+		keys = "1 host f proc / edit Esc back ? help"
+	}
+	if model.interfaces.active() {
+		// net 표시가 붙으면 80열에서 줄 끝이 잘린다. ? help는 아래 줄에도 있으므로 여기서 뺀다.
+		keys = strings.TrimSuffix(keys, " ? help")
 	}
 	views := fmt.Sprintf("%s · %s", state, keys)
 	switch {
@@ -945,12 +1089,18 @@ func (model topModel) statusLines() []string {
 	}
 	// PgUp/Dn을 넣어도 80열에서 끝의 +/-가 잘리지 않게 구분 공백을 두 칸으로 맞췄다.
 	actions := "↑↓ history  Tab processes  Enter detail  End live  ? help  q quit"
+	if model.canGoBack() {
+		actions = "↑↓ history  Tab processes  Enter detail  End live  Esc back  ? help  q quit"
+	}
 	if model.processFocus {
 		actions = "↑↓ select  Enter focus PID  Tab/Esc history  End live  ? help  q quit"
 	}
 	if model.displayWidth() < 70 {
 		views = state + " · / filter · ? help · q quit"
 		actions = "Tab processes · ↑↓ history · End live"
+		if model.canGoBack() {
+			actions += " · Esc back"
+		}
 		if model.processFocus {
 			actions = "↑↓ select · Enter focus · Esc back"
 		}
@@ -1215,7 +1365,9 @@ func (model topModel) helpLines() []string {
 		"Signals: f opens its view, then selects candidates. A candidate is not a confirmed cause.",
 		"Events: warnings that last 5s are kept with their candidates · e list · Enter jump · [ ] previous/next · ! marks the start row",
 		"Events that start within 5s share one line. ≤ means the warning was already on when edc started.",
-		"Filter: / edit names or PIDs · Enter apply · Esc cancel or clear",
+		"Filter: / edit names or PIDs · Enter apply · Esc cancel",
+		"Back: Esc closes the panel, returns to the live row, then to the first view, then clears the process filter",
+		"Interfaces: i opens the list · Space check · a all · p physical · Enter applies from the next sample · off while -w records",
 		"Details: Enter on history · h peaks from the last 60 seconds",
 		"CPU: host % uses all cores. Process 100% uses one core. RSS is resident memory.",
 		"— means unavailable or no baseline. Read the process I/O status for errors.",
@@ -2035,6 +2187,31 @@ func topDiskDetail(rate resourceRate) string {
 		busy = fmt.Sprintf("%.0f%% busy", rate.DiskBusy)
 	}
 	return fmt.Sprintf("disk %.0f iops %.1fms %s", rate.DiskIOPS, rate.DiskAwait, busy)
+}
+
+// topInterfaceLines는 net 열을 이루는 interface를 byte/s가 큰 순으로 보인다. net 열은 이 interface들의 합이고, bridge와 veth처럼
+// 같은 packet이 지나는 interface가 함께 더해지므로 어느 쪽이 큰지 여기서 가린다.
+func topInterfaceLines(rate resourceRate, interfaces topInterfaceFilter) []string {
+	if !rate.NetHealthValid {
+		return []string{"interfaces —"}
+	}
+	if len(rate.NetInterfaces) == 0 {
+		return []string{"interfaces · no traffic in this interval"}
+	}
+	items := append([]netInterfaceRate(nil), rate.NetInterfaces...)
+	sort.SliceStable(items, func(i, j int) bool { return items[i].In+items[i].Out > items[j].In+items[j].Out })
+	header := "interfaces /s · busiest first · net columns add every interface"
+	if interfaces.active() {
+		header = "interfaces /s · busiest first · net columns add --interface " + interfaces.String()
+	}
+	lines := []string{header}
+	for _, item := range items[:min(topInterfaceRows, len(items))] {
+		lines = append(lines, fmt.Sprintf("  %-15s in %5s out %5s · pkts %s/%s · err %s drop %s", item.Name, formatRate(item.In), formatRate(item.Out), topCompactCount(item.PacketsIn, 6), topCompactCount(item.PacketsOut, 6), topCompactCount(item.Errors, 4), topCompactCount(item.Drops, 4)))
+	}
+	if rest := len(items) - topInterfaceRows; rest > 0 {
+		lines = append(lines, fmt.Sprintf("  +%d more with traffic", rest))
+	}
+	return lines
 }
 
 func topNetworkDetail(rate resourceRate) string {

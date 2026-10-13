@@ -81,6 +81,13 @@ func TestNetworkLinuxProcFixture(t *testing.T) {
 	if rate.Rates["listen_drops"].PerSecond != nil {
 		t.Fatal("failed read produced a rate")
 	}
+	// top --interface가 다시 더할 수 있게 interface마다의 값도 남긴다. 깨진 file은 그 interface의 값만 unavailable이다.
+	if eth0, eth1 := after.NICInterfaces["eth0"]["nic_rx_missed"], after.NICInterfaces["eth1"]["nic_rx_missed"]; eth0.Value == nil || *eth0.Value != 5 || eth1.Value != nil || after.NICInterfaces["lo"] != nil {
+		t.Fatalf("per interface = %+v", after.NICInterfaces)
+	}
+	if rate.NICInterfaces != nil {
+		t.Fatal("the rate must not keep the values of each interface")
+	}
 }
 
 func TestNetworkLinuxMissingProcDoesNotReportZero(t *testing.T) {

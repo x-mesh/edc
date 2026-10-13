@@ -282,35 +282,33 @@ const (
 	darwinIfDataOffset = 52
 )
 
-// readDarwinNetworkCounters는 켜진 non-loopback interface의 kernel 통계를 더한다.
+// readDarwinNetworkCounters는 켜진 non-loopback interface마다 kernel 통계를 읽는다.
 // NET_RT_IFLIST2의 byte counter는 32비트에서 넘어간 뒤 반올림된 값이라 쓰지 않고 net.link.generic.ifdata를 읽는다.
-func readDarwinNetworkCounters() (darwinNetwork, error) {
+func readDarwinNetworkCounters() ([]netInterfaceCounters, error) {
 	interfaces, err := net.Interfaces()
 	if err != nil {
-		return darwinNetwork{}, err
+		return nil, err
 	}
-	var total darwinNetwork
+	var result []netInterfaceCounters
 	for _, iface := range interfaces {
 		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
 			continue
 		}
 		data, err := readDarwinInterfaceData(iface.Index)
 		if err != nil {
-			return darwinNetwork{}, fmt.Errorf("%s: %w", iface.Name, err)
+			return nil, fmt.Errorf("%s: %w", iface.Name, err)
 		}
-		// 목록을 읽은 뒤 interface가 사라지고 index가 재사용되면 다른 interface를 더하게 된다.
+		// 목록을 읽은 뒤 interface가 사라지고 index가 재사용되면 다른 interface의 값을 읽게 된다.
 		if name := strings.TrimRight(string(data[:16]), "\x00"); name != iface.Name {
-			return darwinNetwork{}, fmt.Errorf("ifdata %d is %q, want %q", iface.Index, name, iface.Name)
+			return nil, fmt.Errorf("ifdata %d is %q, want %q", iface.Index, name, iface.Name)
 		}
 		counters := parseDarwinInterfaceData(data)
-		total.packetsIn += counters.packetsIn
-		total.packetsOut += counters.packetsOut
-		total.bytesIn += counters.bytesIn
-		total.bytesOut += counters.bytesOut
-		total.errors += counters.errors
-		total.drops += counters.drops
+		result = append(result, netInterfaceCounters{
+			Name: iface.Name, BytesIn: counters.bytesIn, BytesOut: counters.bytesOut, PacketsIn: counters.packetsIn, PacketsOut: counters.packetsOut,
+			Errors: counters.errors, Drops: counters.drops,
+		})
 	}
-	return total, nil
+	return result, nil
 }
 
 // readDarwinInterfaceData는 interface 하나의 ifmibdata를 읽는다.

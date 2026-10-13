@@ -15,10 +15,22 @@ type fsWatchEvent struct {
 	IsDir bool      `json:"is_directory"`
 }
 
+// --driver 값이다. auto는 OS가 고르고, fanotify와 inotify는 Linux에서만 쓴다.
+const (
+	fsWatchDriverAuto     = "auto"
+	fsWatchDriverFanotify = "fanotify"
+	fsWatchDriverInotify  = "inotify"
+)
+
+// fsWatchExcludeEntries는 제외 여부를 기억할 상위 디렉터리 수다. 이름이 매번 다른 디렉터리가 쌓이면 비운다.
+const fsWatchExcludeEntries = 4096
+
 type fsWatchSource struct {
 	events <-chan fsWatchEvent
 	errors <-chan error
 	close  func()
+	// driver는 ready 기록에 나가는 실제 감시 방식이다.
+	driver string
 }
 
 // fsWatchIgnored는 감시 루트 밖의 경로, JSON 출력 파일과 exclude glob에 맞는 경로를 거른다. entry는 walk에서
@@ -49,6 +61,32 @@ func fsWatchIgnored(options fsWatchOptions) func(string, fs.DirEntry) bool {
 		}
 		return fsWatchExcluded(options.exclude, filepath.ToSlash(relative))
 	}
+}
+
+// fsWatchUnderExcluded는 제외된 디렉터리 아래의 경로를 거른다. FSEvents와 fanotify는 제외와 관계없이 하위 트리
+// 전체를 보낸다. 상위 디렉터리는 출력 파일과 비교할 필요가 없으므로 glob만 비교하고 그 결과를 cache에 둔다.
+func fsWatchUnderExcluded(patterns []string, cache map[string]bool, relative string) bool {
+	name := filepath.ToSlash(relative)
+	for index := strings.IndexByte(name, '/'); index >= 0; {
+		parent := name[:index]
+		excluded, ok := cache[parent]
+		if !ok {
+			if len(cache) >= fsWatchExcludeEntries {
+				clear(cache)
+			}
+			excluded = fsWatchExcluded(patterns, parent)
+			cache[parent] = excluded
+		}
+		if excluded {
+			return true
+		}
+		next := strings.IndexByte(name[index+1:], '/')
+		if next < 0 {
+			break
+		}
+		index += next + 1
+	}
+	return false
 }
 
 // fsWatchExcluded는 감시 루트 기준 slash 경로가 exclude glob에 맞는지 본다.

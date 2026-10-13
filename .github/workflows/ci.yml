@@ -38,6 +38,16 @@ jobs:
       - name: Test and vet
         run: make check
 
+      # fanotify는 CAP_SYS_ADMIN이 있어야 시작하므로 make check는 fanotify 시험을 건너뛴다. root로 다시 돌리고,
+      # EDC_TEST_FANOTIFY=required로 건너뛰는 대신 실패하게 한다.
+      - name: Test watch fs drivers as root
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          go test -c -o edc.test ./internal/edc
+          cd internal/edc
+          sudo env EDC_TEST_FANOTIFY=required ../../edc.test -test.run '^TestFSWatch' -test.count=1
+
       - name: Build
         run: make build VERSION=ci
 

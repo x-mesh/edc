@@ -23,9 +23,8 @@ const fsWatchLatency = 50 * time.Millisecond
 // 삭제된 경로의 상태는 같은 경로의 늦은 이벤트를 다시 알리지 않을 만큼만 둔다. 빌드 디렉터리처럼 이름이 매번
 // 다른 파일이 생겼다 사라지는 트리에서 상태가 계속 쌓이지 않게 한다.
 const (
-	fsWatchGoneTTL        = time.Minute
-	fsWatchSweepInterval  = 30 * time.Second
-	fsWatchExcludeEntries = 4096
+	fsWatchGoneTTL       = time.Minute
+	fsWatchSweepInterval = 30 * time.Second
 	// fsWatchRescanLimit는 한 번 다시 훑을 항목 수다. 큰 트리를 끝까지 훑으면 그동안 이벤트를 받지 못해
 	// 다시 유실이 생긴다. 이 Mac에서 약 112만 항목을 훑는 데 10초 이상 걸렸다.
 	fsWatchRescanLimit = 200_000
@@ -110,6 +109,9 @@ func newFSWatchFSEvents(options fsWatchOptions, started time.Time, emit func(fsW
 }
 
 func newFSWatchSource(options fsWatchOptions) (fsWatchSource, error) {
+	if options.driver != "" && options.driver != fsWatchDriverAuto {
+		return fsWatchSource{}, errors.New(T("watchfs.driver_unsupported", options.driver))
+	}
 	started := time.Now()
 	stream, err := fsevents.Start(options.root, fsWatchLatency)
 	if err != nil {
@@ -151,7 +153,7 @@ func newFSWatchSource(options fsWatchOptions) (fsWatchSource, error) {
 		}
 	}()
 	var once sync.Once
-	return fsWatchSource{events: events, errors: failures, close: func() {
+	return fsWatchSource{events: events, errors: failures, driver: "fsevents", close: func() {
 		once.Do(func() { close(done); stream.Close(); <-finished })
 	}}, nil
 }
@@ -229,34 +231,7 @@ func (watch *fsWatchFSEvents) skipped(relative string, entry fs.DirEntry) bool {
 	if !watch.options.recursive && strings.Contains(relative, string(filepath.Separator)) {
 		return true
 	}
-	return watch.underExcluded(relative) || watch.ignored(filepath.Join(watch.options.root, relative), entry)
-}
-
-// underExcluded는 제외된 디렉터리 아래의 경로를 거른다. FSEvents는 제외와 관계없이 하위 트리 전체를 보낸다.
-// 상위 디렉터리는 출력 파일과 비교할 필요가 없으므로 glob만 비교하고 그 결과를 둔다. 이름이 매번 다른
-// 디렉터리가 쌓이면 비운다.
-func (watch *fsWatchFSEvents) underExcluded(relative string) bool {
-	name := filepath.ToSlash(relative)
-	for index := strings.IndexByte(name, '/'); index >= 0; {
-		parent := name[:index]
-		excluded, ok := watch.excludedDirectories[parent]
-		if !ok {
-			if len(watch.excludedDirectories) >= fsWatchExcludeEntries {
-				clear(watch.excludedDirectories)
-			}
-			excluded = fsWatchExcluded(watch.options.exclude, parent)
-			watch.excludedDirectories[parent] = excluded
-		}
-		if excluded {
-			return true
-		}
-		next := strings.IndexByte(name[index+1:], '/')
-		if next < 0 {
-			break
-		}
-		index += next + 1
-	}
-	return false
+	return fsWatchUnderExcluded(watch.options.exclude, watch.excludedDirectories, relative) || watch.ignored(filepath.Join(watch.options.root, relative), entry)
 }
 
 // update는 한 경로를 lstat해서 상태를 갱신하고 바뀐 내용을 알린다.

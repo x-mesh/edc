@@ -14,6 +14,11 @@ import (
 	"github.com/x-mesh/edc/internal/fsevents"
 )
 
+// macOS에는 FSEvents 하나뿐이다.
+var fsWatchTestDrivers = []string{fsWatchDriverAuto}
+
+func fsWatchSkipUnavailableDriver(*testing.T, string) {}
+
 func TestFSWatchClassifyHandlesAccumulatedFlags(t *testing.T) {
 	started := time.Unix(1000, 0)
 	before, after := started.Add(-time.Second), started.Add(time.Second)

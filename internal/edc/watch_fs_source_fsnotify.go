@@ -17,7 +17,9 @@ import (
 	"github.com/fsnotify/fsnotify"
 )
 
-func newFSWatchSource(options fsWatchOptions) (fsWatchSource, error) {
+// newFSNotifyWatchSource는 디렉터리마다 watch를 등록한다. Linux에서는 inotify이고, fanotify를 쓸 수 없거나
+// --driver inotify일 때 쓴다.
+func newFSNotifyWatchSource(options fsWatchOptions) (fsWatchSource, error) {
 	watcher, err := fsnotify.NewBufferedWatcher(256)
 	if err != nil {
 		return fsWatchSource{}, err
@@ -87,6 +89,10 @@ func newFSWatchSource(options fsWatchOptions) (fsWatchSource, error) {
 			}
 			return nil
 		})
+	}
+	// 재귀 감시는 모든 디렉터리를 등록한 뒤에야 첫 줄을 낸다. 큰 트리에서는 오래 걸려 멈춘 것처럼 보이므로 터미널에 먼저 알린다.
+	if options.recursive && isTerminal(os.Stderr) {
+		fmt.Fprintln(fsWatchNotice, T("watchfs.walking", terminalJSON(options.root)))
 	}
 	if err := addTree(options.root, false); err != nil {
 		watcher.Close()
@@ -174,7 +180,11 @@ func newFSWatchSource(options fsWatchOptions) (fsWatchSource, error) {
 		}
 	}()
 	var once sync.Once
-	return fsWatchSource{events: events, errors: failures, close: func() {
+	driver := "fsnotify"
+	if runtime.GOOS == "linux" {
+		driver = fsWatchDriverInotify
+	}
+	return fsWatchSource{events: events, errors: failures, driver: driver, close: func() {
 		once.Do(func() { close(done); watcher.Close(); <-finished })
 	}}, nil
 }

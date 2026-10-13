@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -149,105 +151,189 @@ func TestFSWatchDefaultExcludesCanBeTurnedOff(t *testing.T) {
 	}
 }
 
-func fsWatchTestSource(t *testing.T, root string, recursive bool) fsWatchSource {
+// fsWatchEachDriver는 이 OS에서 쓸 수 있는 감시 방식마다 test를 실행한다. auto가 고르는 방식만 시험하면 다른 방식이
+// 시험되지 않는다.
+func fsWatchEachDriver(t *testing.T, test func(t *testing.T, driver string)) {
+	for _, driver := range fsWatchTestDrivers {
+		t.Run(driver, func(t *testing.T) {
+			fsWatchSkipUnavailableDriver(t, driver)
+			test(t, driver)
+		})
+	}
+}
+
+func fsWatchTestSource(t *testing.T, root string, recursive bool, driver string) fsWatchSource {
 	t.Helper()
 	root, err := filepath.EvalSymlinks(root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	source, err := newFSWatchSource(fsWatchOptions{root: root, recursive: recursive, exclude: []string{".git/**"}})
+	source, err := newFSWatchSource(fsWatchOptions{root: root, recursive: recursive, driver: driver, exclude: []string{".git/**"}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(source.close)
+	if driver != fsWatchDriverAuto && source.driver != driver {
+		t.Fatalf("driver = %q, want %q", source.driver, driver)
+	}
 	return source
 }
 
 func TestFSWatchNativeFileLifecycle(t *testing.T) {
-	root := t.TempDir()
-	if err := os.WriteFile(filepath.Join(root, "existing.txt"), []byte("before"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	source := fsWatchTestSource(t, root, false)
-	file := filepath.Join(root, "text.txt")
-	if err := os.WriteFile(file, []byte("created"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	fsWatchWaitEvent(t, source, "create", "text.txt")
-	if err := os.WriteFile(file, []byte("changed"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	fsWatchWaitEvent(t, source, "modify", "text.txt")
-	renamed := filepath.Join(root, "renamed.txt")
-	if err := os.Rename(file, renamed); err != nil {
-		t.Fatal(err)
-	}
-	fsWatchWaitEvent(t, source, "rename", "text.txt")
-	if err := os.Remove(renamed); err != nil {
-		t.Fatal(err)
-	}
-	fsWatchWaitEvent(t, source, "remove", "renamed.txt")
+	fsWatchEachDriver(t, func(t *testing.T, driver string) {
+		root := t.TempDir()
+		if err := os.WriteFile(filepath.Join(root, "existing.txt"), []byte("before"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		source := fsWatchTestSource(t, root, false, driver)
+		file := filepath.Join(root, "text.txt")
+		if err := os.WriteFile(file, []byte("created"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		fsWatchWaitEvent(t, source, "create", "text.txt")
+		if err := os.WriteFile(file, []byte("changed"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		fsWatchWaitEvent(t, source, "modify", "text.txt")
+		renamed := filepath.Join(root, "renamed.txt")
+		if err := os.Rename(file, renamed); err != nil {
+			t.Fatal(err)
+		}
+		fsWatchWaitEvent(t, source, "rename", "text.txt")
+		if err := os.Remove(renamed); err != nil {
+			t.Fatal(err)
+		}
+		fsWatchWaitEvent(t, source, "remove", "renamed.txt")
+	})
 }
 
 func TestFSWatchRecursiveNewTreeAndRename(t *testing.T) {
+	fsWatchEachDriver(t, func(t *testing.T, driver string) {
+		root := t.TempDir()
+		source := fsWatchTestSource(t, root, true, driver)
+		sub := filepath.Join(root, "new", "deep")
+		if err := os.MkdirAll(sub, 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(sub, "text.txt"), []byte("new"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		fsWatchWaitEvent(t, source, "create", "new/deep/text.txt")
+		if err := os.Rename(filepath.Join(root, "new"), filepath.Join(root, "moved")); err != nil {
+			t.Fatal(err)
+		}
+		fsWatchWaitEvent(t, source, "create", "moved/deep/text.txt")
+		if err := os.WriteFile(filepath.Join(root, "moved", "deep", "later.txt"), []byte("later"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		fsWatchWaitEvent(t, source, "create", "moved/deep/later.txt")
+	})
+}
+
+// 디렉터리를 통째로 지우면 그 안의 항목도 하나씩 remove로 알리고, 디렉터리 자신은 마지막에 알린다. fanotify는
+// 이벤트를 읽을 때 부모 디렉터리가 이미 지워졌어도 그 디렉터리의 삭제 이벤트로 경로를 잇는다.
+func TestFSWatchRemovedTreeReportsEveryEntry(t *testing.T) {
+	fsWatchEachDriver(t, func(t *testing.T, driver string) {
+		root := t.TempDir()
+		missing := map[string]bool{"tree": true}
+		for _, directory := range []string{"a", "a/deep", "b"} {
+			if err := os.MkdirAll(filepath.Join(root, "tree", directory), 0700); err != nil {
+				t.Fatal(err)
+			}
+			missing["tree/"+directory] = true
+			for _, name := range []string{"one.txt", "two.txt"} {
+				if err := os.WriteFile(filepath.Join(root, "tree", directory, name), nil, 0600); err != nil {
+					t.Fatal(err)
+				}
+				missing["tree/"+directory+"/"+name] = true
+			}
+		}
+		source := fsWatchTestSource(t, root, true, driver)
+		if err := os.RemoveAll(filepath.Join(root, "tree")); err != nil {
+			t.Fatal(err)
+		}
+		timer := time.NewTimer(5 * time.Second)
+		defer timer.Stop()
+		var removed []string
+		for len(missing) > 0 {
+			select {
+			case event, ok := <-source.events:
+				if !ok {
+					t.Fatal("event source closed")
+				}
+				if event.Event == "remove" {
+					delete(missing, event.Path)
+					removed = append(removed, event.Path)
+				}
+			case err := <-source.errors:
+				t.Fatalf("watch error: %v", err)
+			case <-timer.C:
+				t.Fatalf("missing remove %v after %v", slices.Sorted(maps.Keys(missing)), removed)
+			}
+		}
+		if removed[len(removed)-1] != "tree" {
+			t.Fatalf("tree removed before its entries: %v", removed)
+		}
+	})
+}
+
+func TestFSWatchDriverOption(t *testing.T) {
 	root := t.TempDir()
-	source := fsWatchTestSource(t, root, true)
-	sub := filepath.Join(root, "new", "deep")
-	if err := os.MkdirAll(sub, 0700); err != nil {
-		t.Fatal(err)
+	options, err := parseFSWatchOptions([]string{root}, io.Discard)
+	if err != nil || options.driver != fsWatchDriverAuto {
+		t.Fatalf("default driver = %q, %v", options.driver, err)
 	}
-	if err := os.WriteFile(filepath.Join(sub, "text.txt"), []byte("new"), 0600); err != nil {
-		t.Fatal(err)
+	options, err = parseFSWatchOptions([]string{root, "--driver", "inotify"}, io.Discard)
+	if err != nil || options.driver != fsWatchDriverInotify {
+		t.Fatalf("driver = %q, %v", options.driver, err)
 	}
-	fsWatchWaitEvent(t, source, "create", "new/deep/text.txt")
-	if err := os.Rename(filepath.Join(root, "new"), filepath.Join(root, "moved")); err != nil {
-		t.Fatal(err)
+	if _, err := parseFSWatchOptions([]string{root, "--driver", "kqueue"}, io.Discard); err == nil || !strings.Contains(err.Error(), "kqueue") {
+		t.Fatalf("unknown driver error = %v", err)
 	}
-	fsWatchWaitEvent(t, source, "create", "moved/deep/text.txt")
-	if err := os.WriteFile(filepath.Join(root, "moved", "deep", "later.txt"), []byte("later"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	fsWatchWaitEvent(t, source, "create", "moved/deep/later.txt")
 }
 
 func TestFSWatchReportsAnOldFileMovedIn(t *testing.T) {
-	root, outside := t.TempDir(), t.TempDir()
-	old := filepath.Join(outside, "old.txt")
-	if err := os.WriteFile(old, []byte("old"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	source := fsWatchTestSource(t, root, false)
-	if err := os.Rename(old, filepath.Join(root, "old.txt")); err != nil {
-		t.Fatal(err)
-	}
-	fsWatchWaitEvent(t, source, "create", "old.txt")
+	fsWatchEachDriver(t, func(t *testing.T, driver string) {
+		root, outside := t.TempDir(), t.TempDir()
+		old := filepath.Join(outside, "old.txt")
+		if err := os.WriteFile(old, []byte("old"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		source := fsWatchTestSource(t, root, false, driver)
+		if err := os.Rename(old, filepath.Join(root, "old.txt")); err != nil {
+			t.Fatal(err)
+		}
+		fsWatchWaitEvent(t, source, "create", "old.txt")
+	})
 }
 
 func TestFSWatchNoInitialOrExcludedEvents(t *testing.T) {
-	root := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(root, ".git"), 0700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(filepath.Join(root, "nested"), 0700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(root, "existing.txt"), []byte("before"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	source := fsWatchTestSource(t, root, false)
-	if err := os.WriteFile(filepath.Join(root, ".git", "HEAD"), []byte("ignored"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(root, "nested", "child"), []byte("ignored"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	select {
-	case event := <-source.events:
-		t.Fatalf("unexpected event: %+v", event)
-	case err := <-source.errors:
-		t.Fatal(err)
-	case <-time.After(150 * time.Millisecond):
-	}
+	fsWatchEachDriver(t, func(t *testing.T, driver string) {
+		root := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(root, ".git"), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(filepath.Join(root, "nested"), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(root, "existing.txt"), []byte("before"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		source := fsWatchTestSource(t, root, false, driver)
+		if err := os.WriteFile(filepath.Join(root, ".git", "HEAD"), []byte("ignored"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(root, "nested", "child"), []byte("ignored"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case event := <-source.events:
+			t.Fatalf("unexpected event: %+v", event)
+		case err := <-source.errors:
+			t.Fatal(err)
+		case <-time.After(150 * time.Millisecond):
+		}
+	})
 }
 
 type fsWatchTestSink struct {
@@ -498,150 +584,158 @@ func TestFSWatchDebounceAndFailureKeepsWatching(t *testing.T) {
 }
 
 func TestFSWatchNativeOutputIsExcludedAndRootRenameFails(t *testing.T) {
-	root := t.TempDir()
-	root, _ = filepath.EvalSymlinks(root)
-	output := filepath.Join(root, "events.jsonl")
-	file, err := os.Create(output)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer file.Close()
-	info, _ := file.Stat()
-	source, err := newFSWatchSource(fsWatchOptions{root: root, outputPath: output, outputInfo: info})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer source.close()
-	if _, err := file.WriteString("output\n"); err != nil {
-		t.Fatal(err)
-	}
-	select {
-	case event := <-source.events:
-		t.Fatalf("self output event: %+v", event)
-	case err := <-source.errors:
-		t.Fatal(err)
-	case <-time.After(100 * time.Millisecond):
-	}
-	moved := root + "-moved"
-	if err := os.Rename(root, moved); err != nil {
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(moved)
-	select {
-	case err := <-source.errors:
-		if err == nil || !strings.Contains(err.Error(), root) {
-			t.Fatalf("root error=%v", err)
+	fsWatchEachDriver(t, func(t *testing.T, driver string) {
+		root := t.TempDir()
+		root, _ = filepath.EvalSymlinks(root)
+		output := filepath.Join(root, "events.jsonl")
+		file, err := os.Create(output)
+		if err != nil {
+			t.Fatal(err)
 		}
-	case <-time.After(3 * time.Second):
-		t.Fatal("root rename was not reported")
-	}
+		defer file.Close()
+		info, _ := file.Stat()
+		source, err := newFSWatchSource(fsWatchOptions{root: root, driver: driver, outputPath: output, outputInfo: info})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer source.close()
+		if _, err := file.WriteString("output\n"); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case event := <-source.events:
+			t.Fatalf("self output event: %+v", event)
+		case err := <-source.errors:
+			t.Fatal(err)
+		case <-time.After(100 * time.Millisecond):
+		}
+		moved := root + "-moved"
+		if err := os.Rename(root, moved); err != nil {
+			t.Fatal(err)
+		}
+		defer os.RemoveAll(moved)
+		select {
+		case err := <-source.errors:
+			if err == nil || !strings.Contains(err.Error(), root) {
+				t.Fatalf("root error=%v", err)
+			}
+		case <-time.After(3 * time.Second):
+			t.Fatal("root rename was not reported")
+		}
+	})
 }
 
 func TestFSWatchMovedTreeHidesOutputAndItsLink(t *testing.T) {
-	root, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	tree := filepath.Join(t.TempDir(), "tree")
-	if err := os.Mkdir(tree, 0700); err != nil {
-		t.Fatal(err)
-	}
-	file, err := os.Create(filepath.Join(tree, "events.jsonl"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer file.Close()
-	info, _ := file.Stat()
-	if err := os.Symlink("events.jsonl", filepath.Join(tree, "link")); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(tree, "z.txt"), []byte("z"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	source, err := newFSWatchSource(fsWatchOptions{root: root, recursive: true, outputInfo: info})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer source.close()
-	if err := os.Rename(tree, filepath.Join(root, "tree")); err != nil {
-		t.Fatal(err)
-	}
-	// walk는 이름 순서로 알리므로 z.txt보다 먼저 나오는 출력 파일과 link가 이때까지 보이지 않아야 한다.
-	timer := time.NewTimer(5 * time.Second)
-	defer timer.Stop()
-	for {
-		select {
-		case event := <-source.events:
-			if event.Path == "tree/events.jsonl" || event.Path == "tree/link" {
-				t.Fatalf("output event: %+v", event)
-			}
-			if event.Path == "tree/z.txt" {
-				return
-			}
-		case err := <-source.errors:
+	fsWatchEachDriver(t, func(t *testing.T, driver string) {
+		root, err := filepath.EvalSymlinks(t.TempDir())
+		if err != nil {
 			t.Fatal(err)
-		case <-timer.C:
-			t.Fatal("missing create tree/z.txt")
 		}
-	}
+		tree := filepath.Join(t.TempDir(), "tree")
+		if err := os.Mkdir(tree, 0700); err != nil {
+			t.Fatal(err)
+		}
+		file, err := os.Create(filepath.Join(tree, "events.jsonl"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer file.Close()
+		info, _ := file.Stat()
+		if err := os.Symlink("events.jsonl", filepath.Join(tree, "link")); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(tree, "z.txt"), []byte("z"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		source, err := newFSWatchSource(fsWatchOptions{root: root, recursive: true, driver: driver, outputInfo: info})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer source.close()
+		if err := os.Rename(tree, filepath.Join(root, "tree")); err != nil {
+			t.Fatal(err)
+		}
+		// walk는 이름 순서로 알리므로 z.txt보다 먼저 나오는 출력 파일과 link가 이때까지 보이지 않아야 한다.
+		timer := time.NewTimer(5 * time.Second)
+		defer timer.Stop()
+		for {
+			select {
+			case event := <-source.events:
+				if event.Path == "tree/events.jsonl" || event.Path == "tree/link" {
+					t.Fatalf("output event: %+v", event)
+				}
+				if event.Path == "tree/z.txt" {
+					return
+				}
+			case err := <-source.errors:
+				t.Fatal(err)
+			case <-timer.C:
+				t.Fatal("missing create tree/z.txt")
+			}
+		}
+	})
 }
 
 func TestFSWatchSkipsTheTreeOfAnExcludedDirectory(t *testing.T) {
-	root := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(root, "build", "deep"), 0700); err != nil {
-		t.Fatal(err)
-	}
-	resolved, err := filepath.EvalSymlinks(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	source, err := newFSWatchSource(fsWatchOptions{root: resolved, recursive: true, exclude: []string{"build"}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(source.close)
-	if err := os.WriteFile(filepath.Join(root, "build", "deep", "out.o"), []byte("ignored"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(root, "kept.txt"), []byte("kept"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	timeout := time.After(5 * time.Second)
-	for kept := false; ; {
-		select {
-		case event := <-source.events:
-			if strings.HasPrefix(event.Path, "build") {
-				t.Fatalf("excluded tree event: %+v", event)
-			}
-			kept = kept || event.Path == "kept.txt"
-		case err := <-source.errors:
+	fsWatchEachDriver(t, func(t *testing.T, driver string) {
+		root := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(root, "build", "deep"), 0700); err != nil {
 			t.Fatal(err)
-		case <-time.After(150 * time.Millisecond):
-			if kept {
-				return
-			}
-		case <-timeout:
-			t.Fatal("missing create kept.txt")
 		}
-	}
+		resolved, err := filepath.EvalSymlinks(root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		source, err := newFSWatchSource(fsWatchOptions{root: resolved, recursive: true, driver: driver, exclude: []string{"build"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(source.close)
+		if err := os.WriteFile(filepath.Join(root, "build", "deep", "out.o"), []byte("ignored"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(root, "kept.txt"), []byte("kept"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		timeout := time.After(5 * time.Second)
+		for kept := false; ; {
+			select {
+			case event := <-source.events:
+				if strings.HasPrefix(event.Path, "build") {
+					t.Fatalf("excluded tree event: %+v", event)
+				}
+				kept = kept || event.Path == "kept.txt"
+			case err := <-source.errors:
+				t.Fatal(err)
+			case <-time.After(150 * time.Millisecond):
+				if kept {
+					return
+				}
+			case <-timeout:
+				t.Fatal("missing create kept.txt")
+			}
+		}
+	})
 }
 
 func TestFSWatchDirectorySymlinkNotFollowed(t *testing.T) {
-	root, outside := t.TempDir(), t.TempDir()
-	if err := os.Symlink(outside, filepath.Join(root, "linked")); err != nil {
-		t.Fatal(err)
-	}
-	source := fsWatchTestSource(t, root, true)
-	if err := os.WriteFile(filepath.Join(outside, "text.txt"), []byte("outside"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	select {
-	case event := <-source.events:
-		t.Fatalf("symlink subtree followed: %+v", event)
-	case err := <-source.errors:
-		t.Fatal(err)
-	case <-time.After(100 * time.Millisecond):
-	}
+	fsWatchEachDriver(t, func(t *testing.T, driver string) {
+		root, outside := t.TempDir(), t.TempDir()
+		if err := os.Symlink(outside, filepath.Join(root, "linked")); err != nil {
+			t.Fatal(err)
+		}
+		source := fsWatchTestSource(t, root, true, driver)
+		if err := os.WriteFile(filepath.Join(outside, "text.txt"), []byte("outside"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case event := <-source.events:
+			t.Fatalf("symlink subtree followed: %+v", event)
+		case err := <-source.errors:
+			t.Fatal(err)
+		case <-time.After(100 * time.Millisecond):
+		}
+	})
 }
 
 func TestFSWatchSubcommandHelpStaysSpecific(t *testing.T) {

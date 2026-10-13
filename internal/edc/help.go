@@ -186,6 +186,7 @@ var commandDocs = []commandDoc{
 			{"--duration 1m", "command.watch.option.duration"},
 			{"--expect-status N", "command.http.option.expect_status"},
 			{"--recursive", "watchfs.option.recursive"},
+			{"--driver auto", "watchfs.option.driver"},
 			{"--event <events>", "watchfs.option.event"},
 			{"--match <glob>", "watchfs.option.match"},
 			{"--exec <command>", "watchfs.option.exec"},

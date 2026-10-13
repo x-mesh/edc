@@ -1,0 +1,320 @@
+//go:build linux
+
+package edc
+
+import (
+	"encoding/binary"
+	"errors"
+	"os"
+	"path/filepath"
+	"slices"
+	"strings"
+	"sync"
+	"testing"
+
+	"golang.org/x/sys/unix"
+)
+
+var fsWatchTestDrivers = []string{fsWatchDriverInotify, fsWatchDriverFanotify}
+
+var fsWatchFanotifyProbe struct {
+	once sync.Once
+	err  error
+}
+
+// fsWatchFanotifyUnavailable은 이 환경에서 fanotify를 시작하지 못하는 이유다. 일반 사용자로 돌리면 권한이 없다.
+func fsWatchFanotifyUnavailable(t *testing.T) error {
+	t.Helper()
+	fsWatchFanotifyProbe.once.Do(func() {
+		root, err := os.MkdirTemp("", "edc-fanotify")
+		if err != nil {
+			fsWatchFanotifyProbe.err = err
+			return
+		}
+		defer os.RemoveAll(root)
+		if root, err = filepath.EvalSymlinks(root); err != nil {
+			fsWatchFanotifyProbe.err = err
+			return
+		}
+		source, err := newFanotifyWatchSource(fsWatchOptions{root: root, recursive: true})
+		if err == nil {
+			source.close()
+		}
+		fsWatchFanotifyProbe.err = err
+	})
+	return fsWatchFanotifyProbe.err
+}
+
+// fsWatchSkipUnavailableDriver는 fanotify를 쓸 수 없으면 fanotify test를 건너뛴다. CI는 root로 돌릴 때
+// EDC_TEST_FANOTIFY=required를 주어 건너뛰지 않고 실패하게 한다.
+func fsWatchSkipUnavailableDriver(t *testing.T, driver string) {
+	t.Helper()
+	if driver != fsWatchDriverFanotify {
+		return
+	}
+	if err := fsWatchFanotifyUnavailable(t); err != nil {
+		if os.Getenv("EDC_TEST_FANOTIFY") == "required" {
+			t.Fatalf("fanotify: %v", err)
+		}
+		t.Skipf("fanotify: %v", err)
+	}
+}
+
+func TestFSWatchAutoDriverPrefersFanotifyForRecursiveWatches(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, recursive := range []bool{false, true} {
+		source, err := newFSWatchSource(fsWatchOptions{root: root, recursive: recursive, driver: fsWatchDriverAuto})
+		if err != nil {
+			t.Fatal(err)
+		}
+		source.close()
+		want := fsWatchDriverInotify
+		if recursive && fsWatchFanotifyUnavailable(t) == nil {
+			want = fsWatchDriverFanotify
+		}
+		if source.driver != want {
+			t.Fatalf("recursive=%t driver = %q, want %q", recursive, source.driver, want)
+		}
+	}
+}
+
+// filesystem mark는 마운트 경계를 넘지 않는다. 그 아래 마운트가 있으면 auto는 inotify로 감시하고, fanotify를
+// 고르면 이유와 함께 실패한다.
+func TestFSWatchFanotifyRefusesAMountBelowTheRoot(t *testing.T) {
+	fsWatchSkipUnavailableDriver(t, fsWatchDriverFanotify)
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	mount := filepath.Join(root, "mnt")
+	if err := os.Mkdir(mount, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := unix.Mount("tmpfs", mount, "tmpfs", 0, ""); err != nil {
+		t.Skipf("mount tmpfs: %v", err)
+	}
+	t.Cleanup(func() { unix.Unmount(mount, 0) })
+	if _, err := newFSWatchSource(fsWatchOptions{root: root, recursive: true, driver: fsWatchDriverFanotify}); err == nil || !strings.Contains(err.Error(), mount) {
+		t.Fatalf("fanotify error = %v, want the mount %s", err, mount)
+	}
+	source, err := newFSWatchSource(fsWatchOptions{root: root, recursive: true, driver: fsWatchDriverAuto})
+	if err != nil {
+		t.Fatal(err)
+	}
+	source.close()
+	if source.driver != fsWatchDriverInotify {
+		t.Fatalf("driver = %q, want inotify", source.driver)
+	}
+}
+
+func fsWatchFanotifyTestKey(name string) string {
+	return fsWatchFanotifyKey(unix.NewFileHandle(1, []byte(name)))
+}
+
+// fsWatchFanotifyTestEvent는 커널과 같은 배치로 이벤트 하나를 만든다. info record 길이는 4 byte 단위로 맞춘다.
+func fsWatchFanotifyTestEvent(mask uint64, parent, name, target string) []byte {
+	record := func(kind byte, key, name string) []byte {
+		body := make([]byte, fsWatchFanotifyHandleOffset)
+		body[0] = kind
+		binary.NativeEndian.PutUint32(body[12:16], uint32(len(key)-4))
+		body = append(body, key...)
+		if kind == unix.FAN_EVENT_INFO_TYPE_DFID_NAME {
+			body = append(append(body, name...), 0)
+		}
+		for len(body)%4 != 0 {
+			body = append(body, 0)
+		}
+		binary.NativeEndian.PutUint16(body[2:4], uint16(len(body)))
+		return body
+	}
+	var info []byte
+	if parent != "" {
+		info = record(unix.FAN_EVENT_INFO_TYPE_DFID_NAME, parent, name)
+	}
+	if target != "" {
+		info = append(info, record(unix.FAN_EVENT_INFO_TYPE_FID, target, "")...)
+	}
+	event := make([]byte, fsWatchFanotifyMetadataSize)
+	binary.NativeEndian.PutUint32(event[0:4], uint32(len(event)+len(info)))
+	event[4] = unix.FANOTIFY_METADATA_VERSION
+	binary.NativeEndian.PutUint16(event[6:8], fsWatchFanotifyMetadataSize)
+	binary.NativeEndian.PutUint64(event[8:16], mask)
+	binary.NativeEndian.PutUint32(event[16:20], 0xffffffff)
+	return append(event, info...)
+}
+
+func TestFSWatchFanotifyParsesEventRecords(t *testing.T) {
+	parent, target := fsWatchFanotifyTestKey("parent"), fsWatchFanotifyTestKey("child-dir")
+	buffer := slices.Concat(
+		fsWatchFanotifyTestEvent(unix.FAN_DELETE|unix.FAN_ONDIR, parent, "gone", target),
+		fsWatchFanotifyTestEvent(unix.FAN_MODIFY, parent, "file.txt", ""),
+		fsWatchFanotifyTestEvent(unix.FAN_Q_OVERFLOW, "", "", ""),
+	)
+	events, err := parseFSWatchFanotify(buffer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []fsWatchFanotifyEvent{
+		{mask: unix.FAN_DELETE | unix.FAN_ONDIR, parent: parent, name: "gone", target: target},
+		{mask: unix.FAN_MODIFY, parent: parent, name: "file.txt"},
+		{mask: unix.FAN_Q_OVERFLOW},
+	}
+	if !slices.Equal(events, want) {
+		t.Fatalf("events = %+v, want %+v", events, want)
+	}
+	version := slices.Clone(buffer)
+	version[4]++
+	for name, broken := range map[string][]byte{
+		"truncated": buffer[:len(buffer)-1],
+		"short":     buffer[:fsWatchFanotifyMetadataSize-1],
+		"version":   version,
+	} {
+		if _, err := parseFSWatchFanotify(broken); !errors.Is(err, errFSWatchFanotifyMalformed) {
+			t.Fatalf("%s: err = %v", name, err)
+		}
+	}
+}
+
+func TestFSWatchFanotifyOrdersMergedMasks(t *testing.T) {
+	for _, test := range []struct {
+		mask          uint64
+		exists, isDir bool
+		want          []string
+	}{
+		{unix.FAN_CREATE | unix.FAN_MODIFY, true, false, []string{"create", "modify"}},
+		{unix.FAN_MODIFY | unix.FAN_MOVED_FROM, false, false, []string{"modify", "rename"}},
+		{unix.FAN_MOVED_TO | unix.FAN_DELETE, false, false, []string{"create", "remove"}},
+		{unix.FAN_DELETE | unix.FAN_CREATE, true, false, []string{"remove", "create"}},
+		{unix.FAN_DELETE | unix.FAN_MODIFY, true, false, []string{"modify", "remove"}},
+		{unix.FAN_CREATE | unix.FAN_MODIFY, true, true, []string{"create"}},
+	} {
+		if got := fsWatchFanotifyOperations(test.mask, test.exists, test.isDir); !slices.Equal(got, test.want) {
+			t.Fatalf("mask %#x exists=%t dir=%t = %v, want %v", test.mask, test.exists, test.isDir, got, test.want)
+		}
+	}
+}
+
+// fsWatchFanotifyTestWatch는 handle을 paths에 있는 경로로만 여는 감시다. 나머지 handle은 지워진 디렉터리처럼 ESTALE이다.
+// 경로 ""는 감시 루트, ".."는 그 부모 디렉터리다.
+func fsWatchFanotifyTestWatch(t *testing.T, paths map[string]string) (*fsWatchFanotify, *[]string) {
+	t.Helper()
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for key, path := range paths {
+		switch path {
+		case "":
+			paths[key] = root
+		case "..":
+			paths[key] = filepath.Dir(root)
+		}
+	}
+	var emitted []string
+	lookup := func(key string) (string, error) {
+		if path, ok := paths[key]; ok {
+			return path, nil
+		}
+		return "", unix.ESTALE
+	}
+	watch := newFSWatchFanotify(fsWatchOptions{root: root, recursive: true}, lookup, func(event fsWatchEvent) bool {
+		emitted = append(emitted, event.Event+" "+event.Path)
+		return true
+	})
+	return watch, &emitted
+}
+
+func TestFSWatchFanotifyJoinsTheEntriesOfARemovedTree(t *testing.T) {
+	root, tree, a, deep := fsWatchFanotifyTestKey("root"), fsWatchFanotifyTestKey("tree"), fsWatchFanotifyTestKey("a"), fsWatchFanotifyTestKey("deep")
+	watch, emitted := fsWatchFanotifyTestWatch(t, map[string]string{root: ""})
+	for _, event := range []fsWatchFanotifyEvent{
+		{mask: unix.FAN_DELETE, parent: deep, name: "one.txt"},
+		{mask: unix.FAN_DELETE | unix.FAN_ONDIR, parent: a, name: "deep", target: deep},
+		{mask: unix.FAN_DELETE, parent: a, name: "two.txt"},
+		{mask: unix.FAN_DELETE | unix.FAN_ONDIR, parent: tree, name: "a", target: a},
+	} {
+		if err := watch.handle(event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(*emitted) != 0 || watch.waitingCount != 4 {
+		t.Fatalf("emitted %v with %d waiting before the tree was removed", *emitted, watch.waitingCount)
+	}
+	if err := watch.handle(fsWatchFanotifyEvent{mask: unix.FAN_DELETE | unix.FAN_ONDIR, parent: root, name: "tree", target: tree}); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"remove tree/a/deep/one.txt", "remove tree/a/deep", "remove tree/a/two.txt", "remove tree/a", "remove tree"}
+	if !slices.Equal(*emitted, want) {
+		t.Fatalf("emitted %v, want %v", *emitted, want)
+	}
+	if watch.waitingCount != 0 || len(watch.waiting) != 0 || len(watch.stale) != 0 {
+		t.Fatalf("left %d waiting, %d stale", watch.waitingCount, len(watch.stale))
+	}
+}
+
+// 옮긴 뒤 지운 디렉터리는 옮기기 전의 이벤트를 이전 경로에, 옮긴 뒤의 이벤트를 새 경로에 붙인다.
+func TestFSWatchFanotifyJoinsEventsAcrossADirectoryMove(t *testing.T) {
+	root, moved := fsWatchFanotifyTestKey("root"), fsWatchFanotifyTestKey("moved")
+	watch, emitted := fsWatchFanotifyTestWatch(t, map[string]string{root: ""})
+	for _, event := range []fsWatchFanotifyEvent{
+		{mask: unix.FAN_CREATE, parent: moved, name: "before.txt"},
+		{mask: unix.FAN_MOVED_FROM | unix.FAN_ONDIR, parent: root, name: "old", target: moved},
+		{mask: unix.FAN_MOVED_TO | unix.FAN_ONDIR, parent: root, name: "new", target: moved},
+		{mask: unix.FAN_CREATE, parent: moved, name: "after.txt"},
+		{mask: unix.FAN_DELETE | unix.FAN_ONDIR, parent: root, name: "new", target: moved},
+	} {
+		if err := watch.handle(event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want := []string{"create old/before.txt", "rename old", "create new", "create new/after.txt", "remove new"}
+	if !slices.Equal(*emitted, want) {
+		t.Fatalf("emitted %v, want %v", *emitted, want)
+	}
+}
+
+// 감시 루트 밖에서 지운 트리의 이벤트도 경로가 이어질 때까지 기다리고, 이어지면 알리지 않고 버린다.
+func TestFSWatchFanotifyDropsRemovedTreesOutsideTheRoot(t *testing.T) {
+	root, outside, build := fsWatchFanotifyTestKey("root"), fsWatchFanotifyTestKey("outside"), fsWatchFanotifyTestKey("build")
+	watch, emitted := fsWatchFanotifyTestWatch(t, map[string]string{root: "", outside: "/elsewhere"})
+	for _, event := range []fsWatchFanotifyEvent{
+		{mask: unix.FAN_DELETE, parent: build, name: "out.o"},
+		{mask: unix.FAN_DELETE | unix.FAN_ONDIR, parent: outside, name: "build", target: build},
+	} {
+		if err := watch.handle(event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(*emitted) != 0 || watch.waitingCount != 0 {
+		t.Fatalf("emitted %v with %d waiting", *emitted, watch.waitingCount)
+	}
+}
+
+func TestFSWatchFanotifyReportsRootRemovalAndOverflow(t *testing.T) {
+	parent := fsWatchFanotifyTestKey("parent")
+	watch, _ := fsWatchFanotifyTestWatch(t, map[string]string{parent: ".."})
+	err := watch.handle(fsWatchFanotifyEvent{mask: unix.FAN_MOVED_FROM | unix.FAN_ONDIR, parent: parent, name: filepath.Base(watch.options.root)})
+	if err == nil || !strings.Contains(err.Error(), watch.options.root) {
+		t.Fatalf("root move error = %v", err)
+	}
+	if err := watch.handle(fsWatchFanotifyEvent{mask: unix.FAN_Q_OVERFLOW}); err == nil || err.Error() != T("watchfs.overflow") {
+		t.Fatalf("overflow error = %v", err)
+	}
+}
+
+func TestFSWatchUnescapeMount(t *testing.T) {
+	for text, want := range map[string]string{
+		"/mnt/plain":            "/mnt/plain",
+		`/mnt/with\040space`:    "/mnt/with space",
+		`/mnt/back\134slash`:    `/mnt/back\slash`,
+		`/mnt/trailing\04`:      `/mnt/trailing\04`,
+		`/mnt/tab\011and\012nl`: "/mnt/tab\tand\nnl",
+	} {
+		if got := fsWatchUnescapeMount(text); got != want {
+			t.Fatalf("unescape %q = %q, want %q", text, got, want)
+		}
+	}
+}

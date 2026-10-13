@@ -573,7 +573,7 @@ edc du                          # 현재 디렉터리
 edc du /var                     # /var 아래에서 큰 항목
 edc du --top 40 /var            # 40줄
 edc du --workers 1 /var         # 디렉터리를 하나씩 읽음
-edc du --cross-mounts /         # 경로 아래의 마운트도 셈
+edc du --cross-mounts /var      # /var 아래의 마운트도 셈
 edc du --json - /var            # 항목을 metrics.rows에 담음
 ```
 

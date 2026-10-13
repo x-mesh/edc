@@ -611,7 +611,7 @@ edc du                          # the current directory
 edc du /var                     # the largest entries under /var
 edc du --top 40 /var            # 40 rows
 edc du --workers 1 /var         # read one directory at a time
-edc du --cross-mounts /         # count the mounts below the path too
+edc du --cross-mounts /var      # count the mounts below /var too
 edc du --json - /var            # the rows in metrics.rows
 ```
 

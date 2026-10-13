@@ -13,8 +13,8 @@ import (
 
 func TestCalculateRate(t *testing.T) {
 	start := time.Unix(0, 0)
-	previous := resourceSnapshot{TakenAt: start, CPUUser: 10, CPUSystem: 5, CPUIOWait: 2, CPUTotal: 100, NetInBytes: 1000, NetOutBytes: 2000, PacketsIn: 10, PacketsOut: 20, DiskRead: 100, DiskWrite: 200}
-	current := resourceSnapshot{TakenAt: start.Add(2 * time.Second), CPUUser: 30, CPUSystem: 15, CPUIOWait: 4, CPUTotal: 200, NetInBytes: 3000, NetOutBytes: 6000, PacketsIn: 30, PacketsOut: 60, DiskRead: 2100, DiskWrite: 4200, MemoryUsed: 25, MemoryTotal: 100, Load1: 1.5}
+	previous := resourceSnapshot{TakenAt: start, CPUUser: 10, CPUSystem: 5, CPUIOWait: 2, CPUTotal: 100, NetInterfaces: []netInterfaceCounters{{Name: "eth0", BytesIn: 1000, BytesOut: 2000, PacketsIn: 10, PacketsOut: 20}}, DiskRead: 100, DiskWrite: 200}
+	current := resourceSnapshot{TakenAt: start.Add(2 * time.Second), CPUUser: 30, CPUSystem: 15, CPUIOWait: 4, CPUTotal: 200, NetInterfaces: []netInterfaceCounters{{Name: "eth0", BytesIn: 3000, BytesOut: 6000, PacketsIn: 30, PacketsOut: 60}}, DiskRead: 2100, DiskWrite: 4200, MemoryUsed: 25, MemoryTotal: 100, Load1: 1.5}
 	rate := calculateRate(previous, current)
 	if rate.NetIn != 1000 || rate.NetOut != 2000 || rate.PacketsIn != 10 || rate.DiskRead != 1000 {
 		t.Fatalf("unexpected rate: %#v", rate)
@@ -28,9 +28,9 @@ func TestCalculateRateSkipsCountersAfterMissingRead(t *testing.T) {
 	start := time.Unix(0, 0)
 	// 앞 sample은 network를 읽지 못해 counter가 0이고 disk만 읽었다.
 	previous := resourceSnapshot{TakenAt: start, NetMissing: true, DiskRead: 1000, DiskWrite: 1000}
-	current := resourceSnapshot{TakenAt: start.Add(time.Second), NetInBytes: 5 << 40, NetOutBytes: 4 << 40, PacketsIn: 1 << 30, PacketsOut: 1 << 30, DiskRead: 3000, DiskWrite: 5000}
+	current := resourceSnapshot{TakenAt: start.Add(time.Second), NetInterfaces: []netInterfaceCounters{{Name: "eth0", BytesIn: 5 << 40, BytesOut: 4 << 40, PacketsIn: 1 << 30, PacketsOut: 1 << 30}}, DiskRead: 3000, DiskWrite: 5000}
 	rate := calculateRate(previous, current)
-	if rate.NetIn != 0 || rate.NetOut != 0 || rate.PacketsIn != 0 || rate.PacketsOut != 0 || rate.NetHealthValid {
+	if rate.NetIn != 0 || rate.NetOut != 0 || rate.PacketsIn != 0 || rate.PacketsOut != 0 || rate.NetHealthValid || rate.NetInterfaces != nil {
 		t.Fatalf("network rate after a missing read = %#v", rate)
 	}
 	if rate.DiskRead != 2000 || rate.DiskWrite != 4000 {
@@ -44,8 +44,8 @@ func TestCalculateRateSkipsCountersAfterMissingRead(t *testing.T) {
 
 func TestCalculateRateIncludesHealthCounters(t *testing.T) {
 	start := time.Unix(0, 0)
-	previous := resourceSnapshot{TakenAt: start, DiskOps: 10, DiskWaitMS: 100, DiskBusyMS: 500, NetErrors: 4, NetDrops: 2, DiskHealthValid: true, DiskBusyValid: true, NetHealthValid: true}
-	current := resourceSnapshot{TakenAt: start.Add(2 * time.Second), DiskOps: 30, DiskWaitMS: 500, DiskBusyMS: 1300, NetErrors: 10, NetDrops: 6, DiskHealthValid: true, DiskBusyValid: true, NetHealthValid: true}
+	previous := resourceSnapshot{TakenAt: start, DiskOps: 10, DiskWaitMS: 100, DiskBusyMS: 500, NetInterfaces: []netInterfaceCounters{{Name: "eth0", Errors: 4, Drops: 2}}, DiskHealthValid: true, DiskBusyValid: true, NetHealthValid: true}
+	current := resourceSnapshot{TakenAt: start.Add(2 * time.Second), DiskOps: 30, DiskWaitMS: 500, DiskBusyMS: 1300, NetInterfaces: []netInterfaceCounters{{Name: "eth0", Errors: 10, Drops: 6}}, DiskHealthValid: true, DiskBusyValid: true, NetHealthValid: true}
 	rate := calculateRate(previous, current)
 	if rate.DiskIOPS != 10 || rate.DiskAwait != 20 || rate.DiskBusy != 40 || rate.NetErrors != 3 || rate.NetDrops != 2 {
 		t.Fatalf("health rate = %#v", rate)
@@ -57,6 +57,29 @@ func TestCalculateRateIncludesHealthCounters(t *testing.T) {
 	previous.DiskBusyValid, current.DiskBusyValid = false, false
 	if rate := calculateRate(previous, current); rate.DiskIOPS != 10 || rate.DiskAwait != 20 || rate.DiskBusy != 0 || rate.DiskBusyValid || !rate.DiskHealthValid {
 		t.Fatalf("rate without busy time = %#v", rate)
+	}
+}
+
+func TestCalculateRateSumsInterfacesInBothSamples(t *testing.T) {
+	start := time.Unix(0, 0)
+	previous := resourceSnapshot{TakenAt: start, NetHealthValid: true, NetInterfaces: []netInterfaceCounters{
+		{Name: "eth0", BytesIn: 1000, BytesOut: 500, PacketsIn: 10, PacketsOut: 5},
+		{Name: "veth1", BytesIn: 9 << 30, BytesOut: 9 << 30},
+		{Name: "docker0", BytesIn: 700, BytesOut: 700},
+	}}
+	// veth1은 container와 함께 사라졌고 veth2는 새로 생겼다. 합계끼리 빼면 합이 줄어 이 구간이 0이 된다.
+	current := resourceSnapshot{TakenAt: start.Add(2 * time.Second), NetHealthValid: true, NetInterfaces: []netInterfaceCounters{
+		{Name: "veth2", BytesIn: 5 << 30, BytesOut: 5 << 30},
+		{Name: "eth0", BytesIn: 5000, BytesOut: 2500, PacketsIn: 30, PacketsOut: 15, Errors: 2, Drops: 4},
+		{Name: "docker0", BytesIn: 700, BytesOut: 700},
+	}}
+	rate := calculateRate(previous, current)
+	if rate.NetIn != 2000 || rate.NetOut != 1000 || rate.PacketsIn != 10 || rate.PacketsOut != 5 || rate.NetErrors != 1 || rate.NetDrops != 2 {
+		t.Fatalf("network rate = %+v", rate)
+	}
+	want := []netInterfaceRate{{Name: "eth0", In: 2000, Out: 1000, PacketsIn: 10, PacketsOut: 5, Errors: 1, Drops: 2}}
+	if !reflect.DeepEqual(rate.NetInterfaces, want) {
+		t.Fatalf("interfaces = %+v, want %+v", rate.NetInterfaces, want)
 	}
 }
 

@@ -23,12 +23,7 @@ type resourceSnapshot struct {
 	CPUIOWait       uint64
 	CPUIdle         uint64
 	CPUTotal        uint64
-	NetInBytes      uint64
-	NetOutBytes     uint64
-	PacketsIn       uint64
-	PacketsOut      uint64
-	NetErrors       uint64
-	NetDrops        uint64
+	NetInterfaces   []netInterfaceCounters
 	DiskRead        uint64
 	DiskWrite       uint64
 	DiskOps         uint64
@@ -786,8 +781,25 @@ func parseTopProcesses(output string) []topProcess {
 
 type resourceCPU struct{ Total, Idle uint64 }
 
+// netInterfaceCounters는 loopback이 아닌 interface 하나의 부팅 뒤 누적 counter다.
+type netInterfaceCounters struct {
+	Name                                     string
+	BytesIn, BytesOut, PacketsIn, PacketsOut uint64
+	Errors, Drops                            uint64
+}
+
+// netInterfaceRate는 두 sample 사이 interface 하나의 초당 값이다.
+type netInterfaceRate struct {
+	Name                           string
+	In, Out, PacketsIn, PacketsOut float64
+	Errors, Drops                  float64
+}
+
 type resourceRate struct {
-	NetworkHealth                   *networkHealthRate
+	NetworkHealth *networkHealthRate
+	// NetInterfaces는 이 구간에 값이 0이 아닌 interface만 이름 순으로 담는다. 0인 interface는 합에 보태는 것이 없고,
+	// 화면은 이 rate를 수백 행 보관하므로 veth가 많은 host에서도 커지지 않게 한다.
+	NetInterfaces                   []netInterfaceRate
 	NetIn, NetOut                   float64
 	PacketsIn, PacketsOut           float64
 	NetErrors, NetDrops             float64
@@ -846,17 +858,20 @@ func calculateRate(previous, current resourceSnapshot) resourceRate {
 	}
 	rate := resourceRate{
 		NetworkHealth: calculateNetworkHealthRate(previous.NetworkHealth, current.NetworkHealth, current.TakenAt.Sub(previous.TakenAt).Seconds()),
-		NetIn:         float64(delta(current.NetInBytes, previous.NetInBytes)) / seconds,
-		NetOut:        float64(delta(current.NetOutBytes, previous.NetOutBytes)) / seconds,
-		PacketsIn:     float64(delta(current.PacketsIn, previous.PacketsIn)) / seconds,
-		PacketsOut:    float64(delta(current.PacketsOut, previous.PacketsOut)) / seconds,
-		NetErrors:     float64(delta(current.NetErrors, previous.NetErrors)) / seconds,
-		NetDrops:      float64(delta(current.NetDrops, previous.NetDrops)) / seconds,
+		NetInterfaces: calculateNetInterfaceRates(previous.NetInterfaces, current.NetInterfaces, seconds),
 		DiskRead:      float64(delta(current.DiskRead, previous.DiskRead)) / seconds,
 		DiskWrite:     float64(delta(current.DiskWrite, previous.DiskWrite)) / seconds,
 		DiskIOPS:      float64(delta(current.DiskOps, previous.DiskOps)) / seconds,
 		CPUUser:       percent(current.CPUUser, previous.CPUUser), CPUSystem: percent(current.CPUSystem, previous.CPUSystem), CPUIOWait: percent(current.CPUIOWait, previous.CPUIOWait),
 		MemoryPercent: memoryPercent, Load1: current.Load1,
+	}
+	for _, item := range rate.NetInterfaces {
+		rate.NetIn += item.In
+		rate.NetOut += item.Out
+		rate.PacketsIn += item.PacketsIn
+		rate.PacketsOut += item.PacketsOut
+		rate.NetErrors += item.Errors
+		rate.NetDrops += item.Drops
 	}
 	rate.NetHealthValid = current.NetHealthValid && previous.NetHealthValid
 	rate.DiskHealthValid = current.DiskHealthValid && previous.DiskHealthValid
@@ -877,6 +892,7 @@ func calculateRate(previous, current resourceSnapshot) resourceRate {
 	// 한쪽 sample이 counter를 읽지 못했으면 이 구간의 rate는 알 수 없다. 0으로 남은 counter와 비교하지 않는다.
 	if previous.NetMissing || current.NetMissing {
 		rate.NetIn, rate.NetOut, rate.PacketsIn, rate.PacketsOut, rate.NetErrors, rate.NetDrops, rate.NetHealthValid = 0, 0, 0, 0, 0, 0, false
+		rate.NetInterfaces = nil
 	}
 	if previous.DiskMissing || current.DiskMissing {
 		rate.DiskRead, rate.DiskWrite, rate.DiskIOPS, rate.DiskAwait, rate.DiskBusy, rate.DiskQueue, rate.DiskHealthValid, rate.DiskBusyValid = 0, 0, 0, 0, 0, 0, false, false
@@ -927,6 +943,36 @@ func parsePressureAvg10(input, kind string) (float64, bool) {
 		}
 	}
 	return 0, false
+}
+
+// calculateNetInterfaceRates는 두 sample에 모두 있는 interface만 센다. 합계끼리 빼면 container가 멈춰 veth가 사라진 구간은
+// 합이 줄어 0이 되고, 새로 생긴 interface는 그때까지의 누적값 전체가 한 구간에 몰린다.
+func calculateNetInterfaceRates(previous, current []netInterfaceCounters, seconds float64) []netInterfaceRate {
+	before := make(map[string]netInterfaceCounters, len(previous))
+	for _, item := range previous {
+		before[item.Name] = item
+	}
+	var rates []netInterfaceRate
+	for _, now := range current {
+		then, ok := before[now.Name]
+		if !ok {
+			continue
+		}
+		item := netInterfaceRate{
+			Name:       now.Name,
+			In:         float64(delta(now.BytesIn, then.BytesIn)) / seconds,
+			Out:        float64(delta(now.BytesOut, then.BytesOut)) / seconds,
+			PacketsIn:  float64(delta(now.PacketsIn, then.PacketsIn)) / seconds,
+			PacketsOut: float64(delta(now.PacketsOut, then.PacketsOut)) / seconds,
+			Errors:     float64(delta(now.Errors, then.Errors)) / seconds,
+			Drops:      float64(delta(now.Drops, then.Drops)) / seconds,
+		}
+		if item.In+item.Out+item.PacketsIn+item.PacketsOut+item.Errors+item.Drops > 0 {
+			rates = append(rates, item)
+		}
+	}
+	sort.Slice(rates, func(i, j int) bool { return rates[i].Name < rates[j].Name })
+	return rates
 }
 
 func delta(current, previous uint64) uint64 {

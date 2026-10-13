@@ -147,19 +147,8 @@ func collectResourceSnapshot() (resourceSnapshot, error) {
 		snapshot.SwapMissing = true
 	}
 	if network, err := os.ReadFile("/proc/net/dev"); err == nil {
-		for _, line := range strings.Split(string(network), "\n") {
-			parts := strings.Fields(strings.Replace(line, ":", " ", 1))
-			if len(parts) < 17 || parts[0] == "lo" {
-				continue
-			}
-			snapshot.NetInBytes += parseUint(parts[1])
-			snapshot.PacketsIn += parseUint(parts[2])
-			snapshot.NetErrors += parseUint(parts[3]) + parseUint(parts[11])
-			snapshot.NetDrops += parseUint(parts[4]) + parseUint(parts[12])
-			snapshot.NetOutBytes += parseUint(parts[9])
-			snapshot.PacketsOut += parseUint(parts[10])
-			snapshot.NetHealthValid = true
-		}
+		snapshot.NetInterfaces = parseLinuxNetDev(string(network))
+		snapshot.NetHealthValid = len(snapshot.NetInterfaces) > 0
 	} else {
 		snapshot.NetMissing = true
 	}
@@ -181,6 +170,28 @@ func collectResourceSnapshot() (resourceSnapshot, error) {
 		snapshot.DiskMissing = true
 	}
 	return snapshot, nil
+}
+
+// parseLinuxNetDev는 /proc/net/dev에서 loopback을 뺀 interface마다 counter를 읽는다. 이 file은 edc가 있는 network namespace의
+// interface만 보인다.
+func parseLinuxNetDev(data string) []netInterfaceCounters {
+	var interfaces []netInterfaceCounters
+	for _, line := range strings.Split(data, "\n") {
+		parts := strings.Fields(strings.Replace(line, ":", " ", 1))
+		if len(parts) < 17 || parts[0] == "lo" {
+			continue
+		}
+		interfaces = append(interfaces, netInterfaceCounters{
+			Name:       parts[0],
+			BytesIn:    parseUint(parts[1]),
+			PacketsIn:  parseUint(parts[2]),
+			Errors:     parseUint(parts[3]) + parseUint(parts[11]),
+			Drops:      parseUint(parts[4]) + parseUint(parts[12]),
+			BytesOut:   parseUint(parts[9]),
+			PacketsOut: parseUint(parts[10]),
+		})
+	}
+	return interfaces
 }
 
 func readLinuxPressure(path string, kinds ...string) ([]float64, bool) {

@@ -82,9 +82,16 @@ func ctrTestSources(inspect string, inspectErr error) ctrSources {
 		health: func(context.Context, string) (string, error) {
 			return ctrHealthJSON("healthy", 0, ctrHealthCheck{Start: ctrTestNow.Add(-time.Minute), Output: "ok\n"}, ctrHealthCheck{Start: ctrTestNow.Add(-30 * time.Second), Output: "ok\n"}), nil
 		},
-		now: func() time.Time { return ctrTestNow },
+		disk: func(context.Context, string) (string, error) {
+			return ctrTestDisk, nil
+		},
+		fileSize: func(string) (int64, error) { return 540440, nil },
+		now:      func() time.Time { return ctrTestNow },
 	}
 }
+
+// ctrTestDisk는 docker inspect --size --format ctrDiskFormat의 출력이다. rotation 없는 json-file log를 쓴다.
+const ctrTestDisk = "4096|json-file|/var/lib/docker/containers/0123/0123-json.log|{}"
 
 func ctrByID(t *testing.T, results []Result, id string) Result {
 	t.Helper()
@@ -148,7 +155,7 @@ func TestFilterCtrLogKeepsTheLastErrorLines(t *testing.T) {
 func TestEvaluateCtrRunningContainer(t *testing.T) {
 	facts := collectCtrFacts(context.Background(), "web", ctrTestSources(ctrInspectLine("running", 0, false, 0, "healthy"), nil))
 	results := evaluateCtr(facts)
-	if len(results) != 6 {
+	if len(results) != 7 {
 		t.Fatalf("results = %d: %+v", len(results), results)
 	}
 	for _, result := range results {
@@ -179,6 +186,90 @@ func TestEvaluateCtrRunningContainer(t *testing.T) {
 	log := ctrByID(t, results, "log")
 	if log.Status != StatusWarn || !strings.Contains(log.Summary, "1 error lines in the last 3 log lines") || !strings.Contains(log.Evidence[0].Value, "upstream timed out") {
 		t.Fatalf("log = %+v", log)
+	}
+	if disk := ctrByID(t, results, "disk"); disk.Status != StatusPass || disk.Summary != "log 527.8KiB (json-file, no rotation) · writable layer 4.0KiB" || disk.Metrics["log_bytes"] != uint64(540440) || disk.Metrics["writable_bytes"] != uint64(4096) || disk.Evidence[0].Value != "/var/lib/docker/containers/0123/0123-json.log" {
+		t.Fatalf("disk = %+v", disk)
+	}
+}
+
+// json-file log는 max-size가 없으면 줄지 않고, writable layer는 container를 다시 만들면 사라진다. 둘 다 크기로만 알린다.
+func TestCtrDiskShowsTheLogAndTheWritableLayer(t *testing.T) {
+	const gib = 1 << 30
+	cases := []struct {
+		name, output string
+		logBytes     int64
+		status       Status
+		summary      string
+		warning      string
+	}{
+		{"rotated", `4096|json-file|/log|{"max-file":"3","max-size":"10m"}`, 2 * gib, StatusPass, "log 2.0GiB (json-file, max-size 10m, max-file 3) · writable layer 4.0KiB", ""},
+		{"max-size only", `0|local|/log|{"max-size":"20m"}`, 1024, StatusPass, "log 1.0KiB (local, max-size 20m) · writable layer 0B", ""},
+		{"small and unbounded", "4096|json-file|/log|{}", gib - 1, StatusPass, "log 1024.0MiB (json-file, no rotation)", ""},
+		{"large and unbounded", "4096|json-file|/log|null", gib, StatusWarn, "log 1.0GiB (json-file, no rotation)", "the json-file log has no max-size and is 1.0GiB"},
+		{"large layer", "10737418240|json-file|/log|{}", 1, StatusWarn, "writable layer 10.0GiB", "the container wrote 10.0GiB into its writable layer"},
+		// log option 값에 |가 있어도 맨 끝 칸이라 읽힌다.
+		{"tag with a bar", `4096|json-file|/log|{"tag":"a|b","max-size":"5m"}`, 1, StatusPass, "(json-file, max-size 5m)", ""},
+		{"no layer size", "null|json-file|/log|{}", 1, StatusPass, "writable layer -", ""},
+	}
+	for _, test := range cases {
+		sources := ctrTestSources(ctrInspectLine("running", 0, false, 0, ""), nil)
+		sources.disk = func(_ context.Context, id string) (string, error) {
+			if id != "0123456789abcdef0123456789abcdef" {
+				t.Errorf("%s: disk read %q, want the full container ID", test.name, id)
+			}
+			return test.output, nil
+		}
+		sources.fileSize = func(path string) (int64, error) {
+			if path != "/log" {
+				t.Errorf("%s: stat %q", test.name, path)
+			}
+			return test.logBytes, nil
+		}
+		disk := ctrByID(t, evaluateCtr(collectCtrFacts(context.Background(), "web", sources)), "disk")
+		if disk.Status != test.status || !strings.Contains(disk.Summary, test.summary) {
+			t.Errorf("%s: %s %q, want %s containing %q", test.name, disk.Status, disk.Summary, test.status, test.summary)
+		}
+		if (test.warning == "") != (len(disk.Warnings) == 0) || test.warning != "" && !strings.Contains(disk.Warnings[0], test.warning) {
+			t.Errorf("%s: warnings = %q", test.name, disk.Warnings)
+		}
+	}
+
+	// journald처럼 파일이 없는 driver는 크기를 재지 않는다. 멈춘 container도 읽는다.
+	sources := ctrTestSources(ctrInspectLine("exited", 0, false, 1, ""), nil)
+	sources.disk = func(context.Context, string) (string, error) { return "8192|journald||{}", nil }
+	sources.fileSize = func(path string) (int64, error) {
+		t.Errorf("stat %q for a driver without a log file", path)
+		return 0, nil
+	}
+	if disk := ctrByID(t, evaluateCtr(collectCtrFacts(context.Background(), "web", sources)), "disk"); disk.Status != StatusPass || disk.Summary != "log driver journald · writable layer 8.0KiB" || len(disk.Evidence) != 0 || disk.Metrics["log_bytes"] != nil {
+		t.Fatalf("journald = %+v", disk)
+	}
+
+	// root가 아니면 docker 저장소의 log 파일을 읽지 못한다. 크기는 -이고, 까닭을 상세에 적는다.
+	sources = ctrTestSources(ctrInspectLine("running", 0, false, 0, ""), nil)
+	sources.fileSize = func(path string) (int64, error) {
+		return 0, &os.PathError{Op: "stat", Path: path, Err: os.ErrPermission}
+	}
+	if disk := ctrByID(t, evaluateCtr(collectCtrFacts(context.Background(), "web", sources)), "disk"); disk.Status != StatusPass || !strings.HasPrefix(disk.Summary, "log - (json-file, no rotation)") || !strings.Contains(disk.Evidence[0].Value, "permission denied") {
+		t.Fatalf("unreadable log = %+v", disk)
+	}
+
+	// docker를 부르지 못했거나 출력이 틀리면 skip이다.
+	for _, bad := range []struct {
+		output string
+		err    error
+		text   string
+	}{
+		{"Error response from daemon: busy", errors.New("exit status 1"), "Error response from daemon: busy"},
+		{"x|json-file|/log|{}", nil, `unexpected docker inspect size "x"`},
+		{"4096|json-file", nil, "unexpected docker inspect output"},
+		{"4096|json-file|/log|{", nil, "unexpected docker log options"},
+	} {
+		sources := ctrTestSources(ctrInspectLine("running", 0, false, 0, ""), nil)
+		sources.disk = func(context.Context, string) (string, error) { return bad.output, bad.err }
+		if disk := ctrByID(t, evaluateCtr(collectCtrFacts(context.Background(), "web", sources)), "disk"); disk.Status != StatusSkip || !strings.Contains(disk.Summary, bad.text) {
+			t.Errorf("%q: %+v", bad.output, disk)
+		}
 	}
 }
 

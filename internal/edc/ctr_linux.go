@@ -30,6 +30,16 @@ func hostCtrSources() (ctrSources, bool) {
 		health: func(ctx context.Context, id string) (string, error) {
 			return commandOutput(ctx, "docker", "inspect", "--type", "container", "--format", ctrHealthFormat, id)
 		},
+		disk: func(ctx context.Context, id string) (string, error) {
+			return commandOutput(ctx, "docker", "inspect", "--type", "container", "--size", "--format", ctrDiskFormat, id)
+		},
+		fileSize: func(path string) (int64, error) {
+			info, err := os.Stat(path)
+			if err != nil {
+				return 0, err
+			}
+			return info.Size(), nil
+		},
 		now: time.Now,
 		listIDs: func(ctx context.Context) (string, error) {
 			return commandOutput(ctx, "docker", "ps", "--all", "--quiet", "--no-trunc")

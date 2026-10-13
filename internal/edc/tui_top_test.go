@@ -3,6 +3,7 @@ package edc
 import (
 	"errors"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -802,6 +803,46 @@ func TestTopPanelsFitTheTableWidth(t *testing.T) {
 	model.detail, model.peaks = true, false
 	if got := strings.Count(model.View().Content, "\n") + 1; got > 20 {
 		t.Fatalf("view has %d lines for height 20", got)
+	}
+}
+
+func TestTopNetworkDetailListsTheBusiestInterfaces(t *testing.T) {
+	model := topFixtureModel(nil)
+	model.view, model.detail = topViewNetwork, true
+	var interfaces []netInterfaceRate
+	for index, name := range []string{"br-124fd779b3cd", "docker0", "eno1", "eno2", "tailscale0", "veth48baa04", "vxlan.calico"} {
+		interfaces = append(interfaces, netInterfaceRate{Name: name, In: float64(index+1) * (1 << 20), Out: 1 << 20, PacketsIn: 1234567, PacketsOut: 10, Errors: 99999, Drops: 3})
+	}
+	health := &networkHealthRate{networkHealth: networkHealth{Supported: true}}
+	model.rows = []topDashboardRow{{at: time.Unix(1, 0), rate: resourceRate{NetHealthValid: true, NetInterfaces: interfaces, NetworkHealth: health}}}
+	lines := model.detailLines()
+	var names []string
+	for _, line := range lines[2:7] {
+		names = append(names, strings.Fields(line)[0])
+	}
+	if got := strings.Join(names, ","); got != "vxlan.calico,veth48baa04,tailscale0,eno2,eno1" || lines[7] != "  +2 more with traffic" {
+		t.Fatalf("interface lines:\n%s", strings.Join(lines[:8], "\n"))
+	}
+	// 설정은 interface 바로 뒤에, Enter 없이도 보이는 limit 줄은 맨 뒤에 온다. 24행 화면에서 잘리는 것은 limit 줄이다.
+	if settings, limits := slices.IndexFunc(lines, func(line string) bool { return strings.HasPrefix(line, "reserved ports") }), slices.IndexFunc(lines, func(line string) bool { return strings.HasPrefix(line, "netns ·") }); settings != 8 || limits <= settings {
+		t.Fatalf("settings at %d, limits at %d:\n%s", settings, limits, strings.Join(lines, "\n"))
+	}
+	for _, line := range lines[1:8] {
+		if got := len([]rune(line)); got > topTableWidth {
+			t.Fatalf("interface line is %d wide: %q", got, line)
+		}
+	}
+	for _, tc := range []struct {
+		rate resourceRate
+		want string
+	}{
+		{resourceRate{}, "interfaces —"},
+		{resourceRate{NetHealthValid: true}, "interfaces · no traffic in this interval"},
+	} {
+		model.rows[0].rate = tc.rate
+		if got := model.detailLines()[1]; got != tc.want {
+			t.Fatalf("interface line = %q, want %q", got, tc.want)
+		}
 	}
 }
 

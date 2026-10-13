@@ -171,20 +171,28 @@ command:
       - "The queue is Recv-Q/Send-Q. For a TCP listener it is the accept queue."
       - "-v adds columns only. The rows stay the same."
   svc:
-    summary: "One systemd service on one screen (Linux)"
+    summary: "systemd services, or one service on one screen (Linux)"
     notes:
+      - "Without a unit, it lists the services. Failed ones come first."
+      - "In a terminal, Enter opens one service and Esc goes back."
       - "It shows state, uptime, restarts, processes, fds, sockets, and journal errors."
       - "It reads only. It does not start, stop, or reload the unit."
       - "It needs Linux with systemd. On other hosts it shows skip."
       - "Run it as root. Without root, fds, socket owners, and the journal show skip."
+    option:
+      all: "also list the services that are not running"
   ctr:
-    summary: "One docker container on one screen (Linux)"
+    summary: "docker containers, or one container on one screen (Linux)"
     notes:
+      - "Without a container, it lists the containers. Failed ones come first."
+      - "In a terminal, Enter opens one container and Esc goes back."
       - "State, uptime, restarts, processes, limits, fds, sockets, and log errors."
       - "It reads only. It does not start, stop, or restart the container."
       - "It needs the docker command and cgroup v2. On other hosts it shows skip."
       - "Run it as root. Without root, fds and socket owners show skip."
       - "A socket that only systemd holds (socket activation) is not in the list."
+    option:
+      all: "also list the containers that exited with code 0"
   quality:
     summary: "Network responsiveness (RPM) and throughput"
     option:

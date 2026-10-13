@@ -91,6 +91,9 @@ type ctrSources struct {
 	listen     func() ([]listenSocket, error)
 	logs       func(ctx context.Context, id string, lines int) (string, error)
 	now        func() time.Time
+	// listIDs는 모든 container의 ID이고, inspectMany는 여러 container를 한 번에 읽는다. container마다 docker를 부르면 수백 번이 된다.
+	listIDs     func(ctx context.Context) (string, error)
+	inspectMany func(ctx context.Context, ids []string) (string, error)
 }
 
 type ctrFacts struct {
@@ -116,6 +119,7 @@ func runCtrWith(args []string, version string, sources ctrSources, ok bool) int 
 	set := flag.NewFlagSet("ctr", flag.ContinueOnError)
 	set.SetOutput(os.Stderr)
 	bindCommon(set, &options)
+	all := set.Bool("all", false, T("command.ctr.option.all"))
 	ordered, err := reorderFSWatchArgs(set, args)
 	if err == nil {
 		err = set.Parse(ordered)
@@ -126,8 +130,12 @@ func runCtrWith(args []string, version string, sources ctrSources, ok bool) int 
 		}
 		return 2
 	}
-	usage := T("cli.usage", "edc ctr [options] <container>")
-	if set.NArg() != 1 {
+	usage := T("cli.usage", "edc ctr [options] [--all] | edc ctr [options] <container>")
+	if set.NArg() == 0 {
+		return runCtrList(options, version, sources, ok, *all)
+	}
+	// --all은 목록에서 정상 종료한 container까지 보이는 option이다. container 하나를 볼 때 받으면 무엇이 바뀌는지 오해한다.
+	if set.NArg() != 1 || *all {
 		fmt.Fprintln(os.Stderr, usage)
 		return 2
 	}
@@ -288,8 +296,8 @@ func evaluateCtr(facts ctrFacts) []Result {
 	return []Result{ctrStateResult(facts), svcProcessesResult(facts.svcFacts), ctrLimitsResult(facts), svcFDResult(facts.svcFacts), svcListenResult(facts.svcFacts), ctrLogResult(facts)}
 }
 
-func ctrStateResult(facts ctrFacts) Result {
-	inspect := facts.Inspect
+// ctrStateText는 상세와 목록이 같이 쓰는 상태 문구다. 한 번도 돈 적 없는 container는 종료 코드가 없다.
+func ctrStateText(inspect ctrInspect) string {
 	state := inspect.Status
 	if inspect.Health != "" {
 		state += " (" + inspect.Health + ")"
@@ -300,6 +308,12 @@ func ctrStateResult(facts ctrFacts) Result {
 	if inspect.OOMKilled {
 		state += ", OOM killed"
 	}
+	return state
+}
+
+func ctrStateResult(facts ctrFacts) Result {
+	inspect := facts.Inspect
+	state := ctrStateText(inspect)
 	uptime := "-"
 	if facts.UptimeKnown {
 		uptime = svcFormatUptime(facts.Uptime)

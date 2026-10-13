@@ -423,7 +423,8 @@ func svcReadReport(t *testing.T, path string) Report {
 func TestRunSvcExitCodes(t *testing.T) {
 	quiet := func(context.Context) (string, string, error) { return "-- No entries --\n", "", nil }
 	sources := (&svcFakeSources{}).sources(0, svcActiveShow, quiet)
-	for _, args := range [][]string{nil, {"a", "b"}, {"--", "-p"}, {"x;y"}, {"foo.timer"}} {
+	// unit 없이 부르면 목록이다. TestRunSvcWithoutAUnitListsTheServices가 본다.
+	for _, args := range [][]string{{"a", "b"}, {"--", "-p"}, {"x;y"}, {"foo.timer"}} {
 		if code := runSvcWith(args, "test", sources, true); code != 2 {
 			t.Errorf("runSvcWith(%q) = %d, want 2", args, code)
 		}

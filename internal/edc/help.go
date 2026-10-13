@@ -234,12 +234,14 @@ var commandDocs = []commandDoc{
 	},
 	{
 		name: "svc", group: "observe",
-		usage:      []string{"edc svc [options] <unit>"},
+		usage:      []string{"edc svc [options] [--all]", "edc svc [options] <unit>"},
+		options:    []optionDoc{{"--all", "command.svc.option.all"}},
 		usesCommon: true,
 	},
 	{
 		name: "ctr", group: "observe",
-		usage:      []string{"edc ctr [options] <container>"},
+		usage:      []string{"edc ctr [options] [--all]", "edc ctr [options] <container>"},
+		options:    []optionDoc{{"--all", "command.ctr.option.all"}},
 		usesCommon: true,
 	},
 	{

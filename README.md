@@ -216,6 +216,8 @@ The command also creates the parent for the legacy recommended `edc.log` path.
 ./bin/edc listen --watch -i 0.5 --duration 10s
 sudo ./bin/edc audit           # read-only check of exposure and settings (Linux)
 sudo ./bin/edc svc nginx       # one systemd service on one screen (Linux)
+./bin/edc svc                  # the systemd services, failed first (Linux)
+sudo ./bin/edc ctr             # the docker containers, failed first (Linux)
 ./bin/edc changes --since 2h   # recent package, /etc, and service changes (Linux)
 sudo ./bin/edc events --since 6h   # kernel and systemd failure signals in time order (Linux)
 ./bin/edc quality --timeout 60s
@@ -494,6 +496,20 @@ A socket that only systemd holds (socket activation) does not belong to a unit p
 
 On macOS, or on Linux without systemd, `edc svc` shows one `skip` and exits with 0. If the unit does not exist, edc writes an error and exits with 1. A `fail` result also gives exit code 1. A usage error gives exit code 2.
 
+### Service list
+
+Run `edc svc` without a unit to list the services. The failed services come first. Then come the services that start or wait to restart, and then the services with restarts. The services that are not running stay out unless you add `--all`.
+
+```bash
+edc svc               # the list; a terminal opens it as a screen
+edc svc --all         # also the services that are not running
+edc svc --json -      # the list in metrics.services
+```
+
+In a terminal, the list refreshes every 2 seconds. Use `↑`/`↓` to select a service, `Enter` to open it, and `Esc` to go back. `/` filters by name, `f` shows only the failed services, `a` switches `--all`, `r` reads the list again, and `q` quits. An open service shows the same results as `edc svc -v <unit>`, and `r` reads it again.
+
+In a pipe or with `--json`, edc prints one `svc.list` result and a table. A failed service makes the result `fail` and the exit code 1. A service that starts or waits to restart makes it `warn`. edc reads the list without root, but an open service needs root as above.
+
 ## Container view (Linux)
 
 `edc ctr <container>` shows one docker container on one screen, as `edc svc` shows a unit. It asks `docker inspect` for the state, reads the processes, the fds, the sockets, and the cgroup limits of the container, and reads the last lines of `docker logs`. It does not start, stop, or restart the container.
@@ -520,6 +536,20 @@ The name or the ID accepts letters, digits, and `_.-/`. Options can come before 
 `ctr.listen` reads the sockets of the network namespace of edc. A container with its own network namespace shows no socket, because its sockets live in that namespace, and a published port belongs to `docker-proxy` or to a firewall rule. A container with `--network host` shows its sockets.
 
 Run it as root, or as a member of the `docker` group with root for the fds. Without access to the docker daemon, the command shows one `skip`. Without root, edc cannot read the fds of other users or the socket owners, and these results show `skip`. A stopped container shows `skip` for the process views and still shows the log. The command needs the `docker` command and cgroup v2. On macOS, it shows one `skip` and exits with 0. If the container does not exist, edc writes an error and exits with 1.
+
+### Container list
+
+Run `edc ctr` without a container to list the containers. The failed containers come first: an exit with a code other than 0, an OOM kill, or the `dead` state. Then come the containers that restart, pause, are unhealthy, or were only created. Then come the containers with restarts. The containers that exited with code 0 stay out unless you add `--all`.
+
+```bash
+sudo edc ctr          # the list; a terminal opens it as a screen
+sudo edc ctr --all    # also the containers that exited with code 0
+sudo edc ctr --json - # the list in metrics.containers
+```
+
+The list makes two docker calls for any number of containers, and reads the memory of each running container from its cgroup. The terminal screen has the same keys as `edc svc`. `Enter` opens the same results as `edc ctr -v <container>`, and `Esc` goes back. At 80 columns, the `IMAGE` column drops first.
+
+In a pipe or with `--json`, edc prints one `ctr.list` result and a table. A failed container makes the result `fail` and the exit code 1. A container that restarts, pauses, is unhealthy, or was only created makes it `warn`. Without access to the docker daemon, the list shows one `skip`.
 
 ## Recent host changes (Linux)
 

@@ -53,6 +53,9 @@ type svcSources struct {
 	journal   func(ctx context.Context, unit string) (stdout, stderr string, err error)
 	// monotonic은 CLOCK_MONOTONIC이다. ActiveEnterTimestampMonotonic과 같은 시계라 시각 변경에 흔들리지 않는다.
 	monotonic func() (time.Duration, bool)
+	// list는 service unit 목록이고, showUnits는 여러 unit의 속성을 한 번에 읽는다. unit마다 systemctl을 부르면 수백 번이 된다.
+	list      func(ctx context.Context) (string, error)
+	showUnits func(ctx context.Context, units []string) (string, error)
 }
 
 type svcShow struct {
@@ -63,6 +66,9 @@ type svcShow struct {
 	NRestarts *uint64
 	// ActiveEnterMonotonic은 마지막으로 active가 된 CLOCK_MONOTONIC 마이크로초다. 0이면 모른다.
 	ActiveEnterMonotonic uint64
+	// MemoryCurrent는 unit cgroup의 메모리다. memory accounting이 꺼져 있으면 nil이다.
+	MemoryCurrent *uint64
+	Description   string
 }
 
 type svcJournal struct {
@@ -108,6 +114,7 @@ func runSvcWith(args []string, version string, sources svcSources, ok bool) int 
 	set := flag.NewFlagSet("svc", flag.ContinueOnError)
 	set.SetOutput(os.Stderr)
 	bindCommon(set, &options)
+	all := set.Bool("all", false, T("command.svc.option.all"))
 	// `edc svc nginx -v`처럼 unit 뒤에 온 flag도 받는다. flag 패키지는 첫 위치 인자에서 멈춘다.
 	ordered, err := reorderFSWatchArgs(set, args)
 	if err == nil {
@@ -119,8 +126,12 @@ func runSvcWith(args []string, version string, sources svcSources, ok bool) int 
 		}
 		return 2
 	}
-	usage := T("cli.usage", "edc svc [options] <unit>")
-	if set.NArg() != 1 {
+	usage := T("cli.usage", "edc svc [options] [--all] | edc svc [options] <unit>")
+	if set.NArg() == 0 {
+		return runSvcList(options, version, sources, ok, *all)
+	}
+	// --all은 목록에서 멈춘 unit까지 보이는 option이다. unit 하나를 볼 때 받으면 무엇이 바뀌는지 오해한다.
+	if set.NArg() != 1 || *all {
 		fmt.Fprintln(os.Stderr, usage)
 		return 2
 	}
@@ -203,6 +214,13 @@ func parseSvcShow(output string) svcShow {
 			if stamp, err := strconv.ParseUint(value, 10, 64); err == nil {
 				show.ActiveEnterMonotonic = stamp
 			}
+		case "MemoryCurrent":
+			// accounting이 꺼져 있으면 "[not set]"이고, 오래된 systemd는 2^64-1을 낸다. 둘 다 모르는 값이다.
+			if memory, err := strconv.ParseUint(value, 10, 64); err == nil && memory != ^uint64(0) {
+				show.MemoryCurrent = &memory
+			}
+		case "Description":
+			show.Description = value
 		}
 	}
 	return show

@@ -5,6 +5,16 @@ ctr:
     no_docker: "이 host에 docker가 설치되어 있지 않습니다"
     not_running: "container에 실행 중인 process가 없습니다"
     needs_docker_access: "docker daemon에 접근하려면 root나 docker 그룹이 필요합니다"
+  list:
+    summary: "container %d개, 실패 %d개, 재시작·일시 중지·unhealthy %d개"
+    failed: "container 목록을 읽지 못했습니다: %s"
+    column:
+      name: "이름"
+      state: "상태"
+      restarts: "재시작"
+      uptime: "가동"
+      memory: "메모리"
+      image: "IMAGE"
   error:
     invalid_reference: "잘못된 container 이름 %q: 영문자, 숫자, _.-/만 쓰고 '-'로 시작할 수 없습니다"
     not_found: "container %s가 없습니다"

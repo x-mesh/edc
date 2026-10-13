@@ -25,7 +25,19 @@ func hostSvcSources() (svcSources, bool) {
 		listen:    func() ([]listenSocket, error) { return collectListenSockets(listenFamilies{TCP: true, UDP: true}) },
 		journal:   linuxSvcJournal,
 		monotonic: linuxMonotonicNow,
+		list:      linuxSvcList,
+		showUnits: linuxSvcShowUnits,
 	}, true
+}
+
+func linuxSvcList(ctx context.Context) (string, error) {
+	return commandOutput(ctx, "systemctl", "list-units", "--type=service", "--all", "--plain", "--no-legend", "--no-pager")
+}
+
+// linuxSvcShowUnits는 unit 이름을 systemctl이 낸 그대로 넘긴다. "--" 뒤에 두어 이름이 option으로 읽히지 않게 한다.
+func linuxSvcShowUnits(ctx context.Context, units []string) (string, error) {
+	args := append([]string{"show", "--no-pager", "-p", strings.Join(svcListProperties, ","), "--"}, units...)
+	return commandOutput(ctx, "systemctl", args...)
 }
 
 // linuxSystemdRunning은 sd_booted()와 같은 기준을 쓴다. container와 Alpine에는 systemctl만 있고 systemd가 없을 수 있다.

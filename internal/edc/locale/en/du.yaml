@@ -1,0 +1,20 @@
+# English messages for the du command.
+du:
+  skip:
+    linux_only: "edc du reads directories on Linux only"
+  error:
+    path: "cannot read %s"
+  summary: "%s in %s, %d entries, %s, workers %d"
+  summary_partial: "%s in %s so far, %d entries, stopped at %s"
+  warning:
+    partial: "edc stopped at the time limit, so the size covers only what it read"
+    unreadable_root: "%d directories are unreadable and not counted, run as root to count them"
+    unreadable: "%d directories are unreadable and not counted"
+    no_mountinfo: "cannot read the mount table (%s), so bind mounts below the path are counted"
+  evidence:
+    unreadable: "unreadable directories"
+  other: "(%d other entries)"
+  mounts:
+    title: "skipped mounts"
+    used: "%s used"
+    more: "%d more, -v shows all"

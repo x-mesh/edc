@@ -139,6 +139,19 @@ command:
     notes:
       - "edc asks for the public IP by default and drops the line after the time limit."
       - "Disk usage is the total size minus the available space."
+  du:
+    summary: "Disk usage under a directory, largest first (Linux)"
+    option:
+      top: "rows to show, the default fits the terminal"
+      workers: "directories to read at the same time"
+      cross_mounts: "count the mounts below the path too"
+      timeout: "time limit, after it edc shows what it counted"
+      verbose: "show every unreadable directory and skipped mount"
+    notes:
+      - "It reads only. It changes and deletes nothing."
+      - "It counts disk blocks as du does. A hard link counts once."
+      - "It stays on one file system and lists the mounts that it skipped."
+      - "A bind or overlay mount shares a file system, so its size shows as -."
   where:
     summary: "The near region and the shape of this network"
     option:

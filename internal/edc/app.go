@@ -78,6 +78,8 @@ func Run(args []string, version string) int {
 		return runWatch(args[1:])
 	case "info":
 		return runInfo(args[1:], version)
+	case "du":
+		return runDu(args[1:], version)
 	case "doctor":
 		return runDoctor(args[1:], version)
 	case "dns":

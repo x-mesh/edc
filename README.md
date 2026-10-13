@@ -188,6 +188,9 @@ The command also creates the parent for the legacy recommended `edc.log` path.
 # skip the public IP lookup
 ./bin/edc info --public=false
 
+# disk usage under a directory, largest entries first (Linux)
+./bin/edc du /var
+
 # default diagnosis
 ./bin/edc doctor https://example.com
 
@@ -598,6 +601,27 @@ If a boot is in the window, the table shows one `boot` row. That row holds the s
 If edc cannot read a source, the result is `skip` with the reason. A `skip` does not mean that nothing changed. Run it as root to read all sources. Without root, edc cannot read some directories under `/etc` and some package logs.
 
 `edc changes` does not decompress rotated logs. If a compressed log is newer than the window start, edc shows a warning. It reads the mtime under `/etc`, not the file content, so it does not show the change inside a file. systemd keeps one start time for each unit, so a unit that restarted several times shows its latest start and the restart count. The `/etc` walk stops after 20000 entries and shows `warn`. edc does not run `dnf history` or `journalctl`.
+
+## Disk usage of a directory (Linux)
+
+`edc du` shows the disk usage under a directory. It counts the allocated blocks, as `du` does. A file with more than one hard link counts once. It changes nothing, and it sends nothing over the network.
+
+```bash
+edc du                          # the current directory
+edc du /var                     # the largest entries under /var
+edc du --top 40 /var            # 40 rows
+edc du --workers 1 /var         # read one directory at a time
+edc du --cross-mounts /         # count the mounts below the path too
+edc du --json - /var            # the rows in metrics.rows
+```
+
+The output starts with one `du.scan` result. It shows the total size, the number of entries, the time, and the number of workers. The rows follow. edc opens the largest entry first. When edc opens a directory, the entries in that directory become candidates. A directory row ends with `/`. The last row holds the entries that edc does not show. In a terminal, the rows fit the screen height. In a pipe, edc shows 20 rows.
+
+By default, edc counts one file system only. It does not go into a mount below the path. It lists each skipped mount with its file system type and the used space from `statfs`. A bind mount or an overlay mount shares a file system with another path, so its used space shows as `-`. edc counts a directory that is bind mounted onto itself, because its files have no other location.
+
+edc reads 4 directories at the same time, so that it uses little CPU on a busy host. Use `--workers` to change the number. edc keeps one record for each directory and for the largest files only. The memory use grows with the number of directories, not with the number of files.
+
+edc stops at the time limit, 60 seconds by default. Then the result is `warn`, `metrics.partial` is `true`, and the size includes only the directories that edc read. If edc cannot read a directory, the result is `warn`, and `-v` lists the directories. Run it as root to read all directories. On macOS, the result is `skip`.
 
 ## Kernel and systemd events (Linux)
 

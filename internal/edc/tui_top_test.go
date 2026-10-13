@@ -1842,3 +1842,46 @@ func TestTopShowsTheInterfaceSelection(t *testing.T) {
 		t.Fatalf("status at 80 columns:\n%s", strings.Join(lines, "\n"))
 	}
 }
+
+func TestTopEscGoesBackOneStepAtATime(t *testing.T) {
+	status := func(model topModel) string { return strings.Join(model.statusLines(), " ") }
+	model := topFixtureModel(nil)
+	model.limits.color = false
+	model = topAfter(t, model, topSampleMsg{snapshot: topSampleAt(1)}, topSampleMsg{snapshot: topSampleAt(2)}, topSampleMsg{snapshot: topSampleAt(3)})
+	if model.canGoBack() || strings.Contains(status(model), "Esc back") {
+		t.Fatalf("the first screen has nothing to go back to: %q", status(model))
+	}
+	model = topAfter(t, model, topKey("n"), topKey("up"), topKey("enter"))
+	if model.view != topViewNetwork || model.follow || !model.detail || !strings.Contains(status(model), "Esc back") {
+		t.Fatalf("network detail on an earlier row: view %s, follow %v, detail %v, status %q", model.view, model.follow, model.detail, status(model))
+	}
+	for index, want := range []struct {
+		detail, follow bool
+		view           topView
+	}{{false, false, topViewNetwork}, {false, true, topViewNetwork}, {false, true, topViewAll}} {
+		model = topAfter(t, model, topKey("esc"))
+		if model.detail != want.detail || model.follow != want.follow || model.view != want.view {
+			t.Fatalf("esc %d: detail %v, follow %v, view %s", index+1, model.detail, model.follow, model.view)
+		}
+	}
+	if model.canGoBack() || model.selected != len(model.rows)-1 {
+		t.Fatalf("after three Esc the first screen is back: selected %d of %d", model.selected, len(model.rows))
+	}
+
+	split := topFixtureModel(nil).withSplit([]topView{topViewCPU, topViewNetwork})
+	split = topAfter(t, split, topKey("n"), topKey("esc"))
+	if split.view != topViewSplit {
+		t.Fatalf("a --split dashboard goes back to the boxes, not %s", split.view)
+	}
+
+	filter, _ := parseTopProcessFilter("nginx")
+	filtered := topFixtureModel(nil).withProcessFilter(filter)
+	filtered = topAfter(t, filtered, topKey("1"), topKey("esc"))
+	if filtered.view != topViewProcess || !filtered.processFilter.active() {
+		t.Fatalf("with a filter the first Esc goes back to the process view: view %s", filtered.view)
+	}
+	filtered = topAfter(t, filtered, topKey("esc"))
+	if filtered.processFilter.active() || filtered.view != topViewAll || filtered.canGoBack() {
+		t.Fatalf("the next Esc clears the filter: filter %q, view %s", filtered.processFilter, filtered.view)
+	}
+}

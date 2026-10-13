@@ -752,7 +752,7 @@ If stdin and stdout are terminals, `edc top` opens a full-screen dashboard. The 
 | `p` | pause and resume |
 | `+` | make the interval longer |
 | `-` | make the interval shorter |
-| `1`, `c`, `m`, `d`, `n` | switch to all, CPU, memory, disk, or network columns |
+| `1`, `c`, `m`, `d`, `n` | switch to all, CPU, memory, disk, or network columns. `1` is the first view. |
 | `s` | switch to pressure columns |
 | `v` | Return to the box screen. |
 | `f` | Open the signal view. Press again to select a process candidate. If a filter is active, open the process view. |
@@ -760,7 +760,7 @@ If stdin and stdout are terminals, `edc top` opens a full-screen dashboard. The 
 | `?` | Open help. Use arrows to scroll. Press `Esc` to return. |
 | `/` | type a process filter: a command name or a PID, comma-separated |
 | `i` | Open a box with the interfaces and their traffic. Press `Space` to check an interface, `a` for all, or `p` for physical. `Enter` applies the selection from the next sample. While `-w` records, the key is off. |
-| `Esc` | Close help or process selection. Otherwise, clear the process filter. |
+| `Esc` | Go back one step. Esc closes help, a list, or process selection. Then it closes the detail or peaks panel, returns to the live row, and returns to the first view. Last, it clears the process filter. |
 | `↑`, `↓`, `PgUp`, `PgDn`, `End` | select an earlier row, move one screen, or return to the live row |
 | `Enter` | Show time details. If process selection is active, focus the selected PID. |
 | `h` | show the load, CPU, iowait, and memory peaks from the last 60 seconds, each with its time |

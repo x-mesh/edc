@@ -456,10 +456,7 @@ func (model topModel) updateKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 	case "esc":
-		if model.processFilter.active() {
-			model.notice = "process filter cleared"
-			return model.applyFilter(topProcessFilter{}, "")
-		}
+		return model.back()
 	case "enter":
 		model.detail = !model.detail
 		if model.detail {
@@ -498,6 +495,47 @@ func (model topModel) updateKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 	if key.String() == "1" || key.String() == "c" || key.String() == "m" || key.String() == "d" || key.String() == "n" || key.String() == "s" || key.String() == "v" {
 		model.processSelected = 0
+	}
+	return model, nil
+}
+
+// homeView는 Esc가 돌아가는 처음 보기다. process 필터가 있으면 그 process 보기, --split으로 시작했으면 박스 화면이다.
+func (model topModel) homeView() topView {
+	if model.processFilter.active() {
+		return topViewProcess
+	}
+	if len(model.split) > 0 && len(model.splitViews()) > 0 {
+		return topViewSplit
+	}
+	return topViewAll
+}
+
+// canGoBack은 Esc로 되돌릴 것이 있는지다. 있으면 상태 줄에 Esc back을 보인다.
+func (model topModel) canGoBack() bool {
+	return model.detail || model.peaks || !model.follow || model.view != model.homeView() || model.processFilter.active()
+}
+
+// back은 Esc 한 번에 한 단계만 되돌린다. 아래 패널, 과거 행 선택, 처음 보기, process 필터 순서라서 Esc를 몇 번 누르면
+// 처음 화면으로 돌아온다. 보기 키를 몰라도 돌아올 수 있게 한다.
+func (model topModel) back() (tea.Model, tea.Cmd) {
+	switch {
+	case model.detail || model.peaks:
+		model.detail, model.peaks = false, false
+	case !model.follow:
+		if len(model.rows) > 0 {
+			model.selected = len(model.rows) - 1
+		}
+		model.follow = true
+	case model.view != model.homeView():
+		if home := model.homeView(); home == topViewSplit {
+			model = model.enterSplit()
+		} else {
+			model.view = home
+		}
+		model.processSelected = 0
+	case model.processFilter.active():
+		model.notice = "process filter cleared"
+		return model.applyFilter(topProcessFilter{}, "")
 	}
 	return model, nil
 }
@@ -1036,7 +1074,7 @@ func (model topModel) statusLines() []string {
 	}
 	keys := "c cpu m mem d disk n net f candidates / filter ? help"
 	if model.processFilter.active() {
-		keys = "1 host f proc / edit Esc clear ? help"
+		keys = "1 host f proc / edit Esc back ? help"
 	}
 	if model.interfaces.active() {
 		// net 표시가 붙으면 80열에서 줄 끝이 잘린다. ? help는 아래 줄에도 있으므로 여기서 뺀다.
@@ -1051,12 +1089,18 @@ func (model topModel) statusLines() []string {
 	}
 	// PgUp/Dn을 넣어도 80열에서 끝의 +/-가 잘리지 않게 구분 공백을 두 칸으로 맞췄다.
 	actions := "↑↓ history  Tab processes  Enter detail  End live  ? help  q quit"
+	if model.canGoBack() {
+		actions = "↑↓ history  Tab processes  Enter detail  End live  Esc back  ? help  q quit"
+	}
 	if model.processFocus {
 		actions = "↑↓ select  Enter focus PID  Tab/Esc history  End live  ? help  q quit"
 	}
 	if model.displayWidth() < 70 {
 		views = state + " · / filter · ? help · q quit"
 		actions = "Tab processes · ↑↓ history · End live"
+		if model.canGoBack() {
+			actions += " · Esc back"
+		}
 		if model.processFocus {
 			actions = "↑↓ select · Enter focus · Esc back"
 		}
@@ -1321,7 +1365,8 @@ func (model topModel) helpLines() []string {
 		"Signals: f opens its view, then selects candidates. A candidate is not a confirmed cause.",
 		"Events: warnings that last 5s are kept with their candidates · e list · Enter jump · [ ] previous/next · ! marks the start row",
 		"Events that start within 5s share one line. ≤ means the warning was already on when edc started.",
-		"Filter: / edit names or PIDs · Enter apply · Esc cancel or clear",
+		"Filter: / edit names or PIDs · Enter apply · Esc cancel",
+		"Back: Esc closes the panel, returns to the live row, then to the first view, then clears the process filter",
 		"Interfaces: i opens the list · Space check · a all · p physical · Enter applies from the next sample · off while -w records",
 		"Details: Enter on history · h peaks from the last 60 seconds",
 		"CPU: host % uses all cores. Process 100% uses one core. RSS is resident memory.",

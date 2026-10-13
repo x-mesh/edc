@@ -694,7 +694,7 @@ After the file write, edc prints the path, the result counts, and a `report diff
 ./bin/edc report show report.json
 ```
 
-Without paths, `edc report show` and `edc report diff` let you choose from up to 20 recent reports or enter another JSON file path. If no report is found, they show an example of how to save one.
+Without paths, `edc report show` and `edc report diff` let you choose from up to 20 recent reports or enter another JSON file path. If no report is found, they show an example of how to save one. `edc report diff` shows the reports on one screen, with the two newest selected. Press Space to change the selection, and Enter to compare. The earlier report is always the before side. To compare in the other order, give the two paths.
 
 `edc report diff` compares two JSON reports by probe name. It shows the status change and the scalar metric differences of each probe.
 

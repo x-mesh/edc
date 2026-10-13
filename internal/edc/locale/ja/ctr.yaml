@@ -5,6 +5,16 @@ ctr:
     no_docker: "この host に docker がインストールされていません"
     not_running: "container に実行中の process がありません"
     needs_docker_access: "docker daemon に接続するには root か docker グループが必要です"
+  list:
+    summary: "container %d 件、失敗 %d 件、再起動・一時停止・unhealthy %d 件"
+    failed: "container 一覧を読めません: %s"
+    column:
+      name: "名前"
+      state: "状態"
+      restarts: "再起動"
+      uptime: "稼働"
+      memory: "メモリ"
+      image: "IMAGE"
   error:
     invalid_reference: "不正な container 名 %q: 英字、数字、_.-/ のみ使い、'-' で始められません"
     not_found: "container %s がありません"

@@ -182,13 +182,17 @@ command:
     option:
       all: "動いていない service も一覧に含める"
   ctr:
-    summary: "docker container 一つを一画面に (Linux)"
+    summary: "docker container の一覧、または container 一つを一画面に (Linux)"
     notes:
+      - "container なしで実行すると container の一覧を表示します。失敗したものが先です。"
+      - "端末では Enter で container を一つ開き、Esc で戻ります。"
       - "状態、稼働時間、再起動、process、上限、fd、ソケット、ログのエラーを表示します。"
       - "読むだけです。container の起動・停止・再起動はしません。"
       - "docker コマンドと cgroup v2 が必要で、他のホストでは skip です。"
       - "root で実行してください。root 以外は fd とソケット所有者が skip。"
       - "systemd だけが持つソケット (socket activation) は一覧に出ません。"
+    option:
+      all: "コード 0 で終了した container も一覧に含める"
   quality:
     summary: "ネットワークの応答性 (RPM) とスループット"
     option:

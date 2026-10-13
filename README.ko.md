@@ -203,6 +203,7 @@ Setup wizard는 `edc log`의 저장 경로를 비워두고 실행별 파일을 �
 sudo ./bin/edc audit           # 노출 상태와 설정 점검, 읽기 전용 (Linux)
 sudo ./bin/edc svc nginx       # systemd service 하나를 한 화면에 (Linux)
 ./bin/edc svc                  # systemd service 목록, 실패한 것이 먼저 (Linux)
+sudo ./bin/edc ctr             # docker container 목록, 실패한 것이 먼저 (Linux)
 ./bin/edc changes --since 2h   # 최근 패키지, /etc, service 변경 (Linux)
 sudo ./bin/edc events --since 6h   # 커널과 systemd의 장애 신호를 시간 순서로 정리 (Linux)
 ./bin/edc quality --timeout 60s
@@ -497,6 +498,20 @@ sudo edc ctr --json - web         # 보기마다 결과 하나
 `ctr.listen`은 edc가 있는 network namespace의 소켓을 읽습니다. 자기 network namespace를 가진 container는 소켓이 그 namespace 안에 있어 보이지 않고, 공개된 port는 `docker-proxy`나 방화벽 규칙의 것입니다. `--network host`인 container는 소켓이 보입니다.
 
 root로 실행하거나, docker 그룹으로 실행하고 fd는 root로 읽으세요. docker daemon에 접근하지 못하면 `skip` 하나를 냅니다. root가 아니면 다른 사용자의 fd와 소켓 주인을 읽지 못해 그 결과가 `skip`으로 나옵니다. 멈춘 container는 process 관련 결과가 `skip`이고 로그는 그대로 보여 줍니다. `docker` 명령과 cgroup v2가 필요합니다. macOS에서는 `skip` 하나를 내고 0으로 끝납니다. container가 없으면 오류를 쓰고 1로 끝납니다.
+
+### Container 목록
+
+container 없이 `edc ctr`를 실행하면 container 목록을 보여 줍니다. 실패한 container가 먼저 옵니다. 0이 아닌 코드로 끝났거나, OOM으로 죽었거나, `dead` 상태인 container입니다. 그다음 재시작 중, 일시 중지, unhealthy, 생성만 된 container가 오고, 그다음 재시작 기록이 있는 container가 옵니다. 코드 0으로 끝난 container는 `--all`을 줄 때만 보입니다.
+
+```bash
+sudo edc ctr          # 목록. 터미널에서는 화면으로 열림
+sudo edc ctr --all    # 코드 0으로 끝난 container도 포함
+sudo edc ctr --json - # 목록이 metrics.containers에 들어감
+```
+
+container가 몇 개든 docker를 두 번만 부르고, 실행 중인 container의 메모리는 cgroup에서 읽습니다. 터미널 화면의 키는 `edc svc`와 같습니다. `Enter`를 누르면 `edc ctr -v <container>`와 같은 결과가 나오고, `Esc`로 돌아옵니다. 80열에서는 `IMAGE` 열이 먼저 빠집니다.
+
+pipe나 `--json`에서는 `ctr.list` 결과 하나와 표를 출력합니다. 실패한 container가 있으면 결과는 `fail`, exit code는 1입니다. 재시작 중, 일시 중지, unhealthy, 생성만 된 container가 있으면 `warn`입니다. docker daemon에 접근하지 못하면 목록은 `skip` 하나를 냅니다.
 
 ## 최근 호스트 변경 (Linux)
 

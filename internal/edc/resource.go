@@ -16,35 +16,38 @@ import (
 )
 
 type resourceSnapshot struct {
-	NetworkHealth   *networkHealth
-	TakenAt         time.Time
-	CPUUser         uint64
-	CPUSystem       uint64
-	CPUIOWait       uint64
-	CPUIdle         uint64
-	CPUTotal        uint64
-	NetInterfaces   []netInterfaceCounters
-	DiskRead        uint64
-	DiskWrite       uint64
-	DiskOps         uint64
-	DiskWaitMS      uint64
-	DiskBusyMS      uint64
-	MemoryUsed      uint64
-	MemoryTotal     uint64
-	Load1           float64
-	Cores           []resourceCPU
-	PSICPU          float64
-	PSIMemory       float64
-	PSIIO           float64
-	PSIMemoryFull   float64
-	PSIIOFull       float64
-	PSIValid        bool
-	Processes       []topProcess
-	ProcessesValid  bool
-	ProcessesAt     time.Time
-	ProcessTotal    topProcessTotal
-	NetHealthValid  bool
-	DiskHealthValid bool
+	NetworkHealth *networkHealth
+	TakenAt       time.Time
+	CPUUser       uint64
+	CPUSystem     uint64
+	CPUIOWait     uint64
+	CPUIdle       uint64
+	CPUTotal      uint64
+	NetInterfaces []netInterfaceCounters
+	// NetInterfacesAll은 --interface로 고르기 전의 interface다. 대시보드의 i 상자가 고르지 않은 interface의 traffic도
+	// 보이도록 남긴다. 고르지 않았으면 비어 있고 NetInterfaces가 전부다.
+	NetInterfacesAll []netInterfaceCounters
+	DiskRead         uint64
+	DiskWrite        uint64
+	DiskOps          uint64
+	DiskWaitMS       uint64
+	DiskBusyMS       uint64
+	MemoryUsed       uint64
+	MemoryTotal      uint64
+	Load1            float64
+	Cores            []resourceCPU
+	PSICPU           float64
+	PSIMemory        float64
+	PSIIO            float64
+	PSIMemoryFull    float64
+	PSIIOFull        float64
+	PSIValid         bool
+	Processes        []topProcess
+	ProcessesValid   bool
+	ProcessesAt      time.Time
+	ProcessTotal     topProcessTotal
+	NetHealthValid   bool
+	DiskHealthValid  bool
 	// DiskBusyValid는 busy 시간을 읽었는지다. macOS는 IOPS와 await는 주지만 I/O가 진행 중이던 시간은 주지 않는다.
 	DiskBusyValid bool
 	// NetMissing과 DiskMissing은 이 sample이 누적 counter를 읽지 못했다는 뜻이다.

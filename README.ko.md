@@ -708,14 +708,15 @@ stdin과 stdout이 모두 terminal이면 `edc top`은 전체 화면 대시보드
 | `p` | 일시정지와 재개 |
 | `+` | interval 늘리기 |
 | `-` | interval 줄이기 |
-| `1`, `c`, `m`, `d`, `n` | 전체, CPU, memory, disk, network 열로 전환 |
+| `1`, `c`, `m`, `d`, `n` | 전체, CPU, memory, disk, network 열로 전환. `1`이 처음 보기 |
 | `s` | pressure 열로 전환 |
 | `v` | 박스 화면으로 돌아가기 |
 | `f` | 선택한 행의 signal 보기로 이동하고, 한 번 더 누르면 process 후보 선택. 필터가 있으면 process 보기로 전환 |
 | `Tab` | 이력 탐색과 process 후보 선택 사이 이동 |
 | `?` | 도움말 표시. 화살표로 스크롤하고 `Esc`로 닫기 |
 | `/` | process 필터 입력: command 이름이나 PID, 쉼표로 구분 |
-| `Esc` | 도움말이나 후보 선택 닫기. 그 외에는 process 필터 해제 |
+| `i` | interface 선택 상자: 목록과 traffic을 보고 `Space`로 체크, `a` 전체, `p` physical. `Enter`로 다음 sample부터 적용하며, `-w`로 기록하는 동안에는 쓸 수 없음 |
+| `Esc` | 한 단계 뒤로: 도움말, 목록, 후보 선택을 닫고, 그다음 상세나 최고치 패널 닫기, 최신 행으로 복귀, 처음 보기로 복귀, 마지막으로 process 필터 해제 |
 | `↑`, `↓`, `PgUp`, `PgDn`, `End` | 과거 행 선택, 한 화면씩 이동, 실시간 행 추적 재개 |
 | `Enter` | 선택한 시점의 상세 표시. 후보 선택 중에는 선택한 PID에 초점 |
 | `h` | 최근 60초의 load, CPU, iowait, memory 최고치를 각각 시각과 함께 표시 |

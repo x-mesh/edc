@@ -46,6 +46,8 @@ observe:
     interface_missing: "--interface: %s という interface はありません"
     interface_none: "--interface %s に一致する interface が今はありません。一致する interface が現れるまで network の値は 0 のままです"
     interface_physical_unsupported: "--interface physical は Linux でのみ使えます。すべての interface を加えます"
+    interface_recording: "-w で記録中は i を使えません。run は最初の選択を保ちます"
+    interface_none_notice: "net %s: 今は一致する interface がありません"
     ebpf_needs_process: "-d/--detail は --process と一緒か、ダッシュボードで使ってください"
     stopped: "停止しました"
     paused: "一時停止"

@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"syscall"
@@ -43,6 +44,10 @@ func newFSWatchSource(options fsWatchOptions) (fsWatchSource, error) {
 			if err != nil {
 				return err
 			}
+			// inotify는 디렉터리에만 watch를 건다. 처음 등록할 때는 파일마다 경로를 비교하고 출력 파일인지 stat하는 비용만 든다.
+			if !announce && !entry.IsDir() {
+				return nil
+			}
 			if filename != options.root && ignored(filename, entry) {
 				if entry.IsDir() {
 					return filepath.SkipDir
@@ -61,6 +66,10 @@ func newFSWatchSource(options fsWatchOptions) (fsWatchSource, error) {
 						}
 						if errors.Is(err, syscall.EMFILE) || errors.Is(err, syscall.ENFILE) {
 							return fmt.Errorf("%s: %w", T("watchfs.too_many_files"), err)
+						}
+						// inotify는 fs.inotify.max_user_watches를 넘으면 ENOSPC를 돌려준다. 그대로 두면 디스크 공간 오류로 보인다.
+						if runtime.GOOS == "linux" && errors.Is(err, syscall.ENOSPC) {
+							return fmt.Errorf("%s: %w", T("watchfs.watch_limit"), err)
 						}
 						return err
 					}

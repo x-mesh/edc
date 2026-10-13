@@ -17,6 +17,7 @@ watchfs:
   directory_required: "監視/actionディレクトリを使用できません: %s"
   too_many_rules: "action ruleは最大128個です。"
   too_many_files: "監視するファイルが開けるファイル数の上限を超えました。--excludeで範囲を絞ってください"
+  watch_limit: "inotify watchの上限(fs.inotify.max_user_watches)を超えました。--excludeで範囲を絞るか上限を上げてください"
   duplicate_rule: "重複したrule名: %s"
   command_required: "rule %sには空でないcommand argvリストが必要です。"
   unknown_option: "不明なオプション"

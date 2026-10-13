@@ -102,6 +102,7 @@ func (filter topInterfaceFilter) apply(snapshot resourceSnapshot, physical func(
 		return snapshot
 	}
 	keep := func(name string) bool { return filter.matches(name, physical) }
+	snapshot.NetInterfacesAll = snapshot.NetInterfaces
 	var kept []netInterfaceCounters
 	for _, item := range snapshot.NetInterfaces {
 		if keep(item.Name) {
@@ -121,17 +122,46 @@ func (filter topInterfaceFilter) apply(snapshot resourceSnapshot, physical func(
 	return snapshot
 }
 
-// topPresentInterfaces는 loopback이 아닌 interface의 이름이다. 수집을 시작하기 전에 --interface를 확인할 때 쓴다.
-func topPresentInterfaces() ([]string, error) {
+func (snapshot resourceSnapshot) allNetInterfaces() []netInterfaceCounters {
+	if snapshot.NetInterfacesAll != nil {
+		return snapshot.NetInterfacesAll
+	}
+	return snapshot.NetInterfaces
+}
+
+// topInterfaceInfo는 loopback이 아닌 interface 하나다. 꺼진 interface도 목록에 남긴다.
+type topInterfaceInfo struct {
+	name string
+	up   bool
+}
+
+func topListInterfaces() ([]topInterfaceInfo, error) {
 	interfaces, err := net.Interfaces()
 	if err != nil {
 		return nil, err
 	}
-	var names []string
+	var list []topInterfaceInfo
 	for _, iface := range interfaces {
 		if iface.Flags&net.FlagLoopback == 0 {
-			names = append(names, iface.Name)
+			list = append(list, topInterfaceInfo{name: iface.Name, up: iface.Flags&net.FlagUp != 0})
 		}
 	}
-	return names, nil
+	return list, nil
+}
+
+// topPresentInterfaces는 loopback이 아닌 interface의 이름이다. 수집을 시작하기 전에 --interface를 확인할 때 쓴다.
+func topPresentInterfaces() ([]string, error) {
+	list, err := topListInterfaces()
+	if err != nil {
+		return nil, err
+	}
+	return topInterfaceNames(list), nil
+}
+
+func topInterfaceNames(list []topInterfaceInfo) []string {
+	names := make([]string, 0, len(list))
+	for _, item := range list {
+		names = append(names, item.name)
+	}
+	return names
 }

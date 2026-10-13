@@ -85,9 +85,8 @@ func runFSWatch(args []string) int {
 	// 상태줄은 사람이 보는 터미널에만 그린다. pipe, 파일과 JSON 출력은 바뀌지 않는다.
 	if options.jsonPath == "" && isTerminal(os.Stdout) {
 		options.status = newFSWatchStatus(os.Stdout, terminalWidth, time.Now, options.events, len(options.rules) > 0)
-		previous := fsWatchNotice
-		fsWatchNotice = options.status.through(os.Stderr)
-		defer func() { fsWatchNotice = previous }()
+		previous := fsWatchNotice.swap(options.status.through(os.Stderr))
+		defer fsWatchNotice.swap(previous)
 	}
 	code, err := streamFSWatch(ctx, writer, source, options, executeFSWatchAction)
 	if err != nil {

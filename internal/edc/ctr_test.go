@@ -17,6 +17,12 @@ var ctrTestNow = time.Date(2026, 10, 12, 12, 0, 0, 0, time.UTC)
 // ctrTestPorts는 8080을 host 80에 publish하고 80은 EXPOSE만 한 container다.
 const ctrTestPorts = `{"80/tcp":null,"8080/tcp":[{"HostIp":"0.0.0.0","HostPort":"80"}]}`
 
+// ctrTestImageID는 container가 실행 중인 이미지이고, ctrTestImageCreated는 그 이미지를 만든 시각이다.
+var (
+	ctrTestImageID      = "sha256:" + strings.Repeat("a", 64)
+	ctrTestImageCreated = ctrTestNow.Add(-77 * 24 * time.Hour)
+)
+
 func ctrInspectLine(status string, restarts int, oom bool, exitCode int, health string) string {
 	started := ctrTestNow.Add(-90 * time.Minute).Format(time.RFC3339Nano)
 	finished := "0001-01-01T00:00:00Z"
@@ -25,7 +31,12 @@ func ctrInspectLine(status string, restarts int, oom bool, exitCode int, health 
 		finished = ctrTestNow.Add(-time.Minute).Format(time.RFC3339Nano)
 		pid = 0
 	}
-	return strings.Join([]string{itoa(pid), "/web", status, started, finished, itoa(restarts), boolText(oom), itoa(exitCode), "nginx:1.27", "0123456789abcdef0123456789abcdef", health, ctrTestPorts, "unless-stopped:0"}, "|")
+	return strings.Join([]string{itoa(pid), "/web", status, started, finished, itoa(restarts), boolText(oom), itoa(exitCode), "nginx:1.27", "0123456789abcdef0123456789abcdef", health, ctrTestPorts, "unless-stopped:0", ctrTestImageID}, "|")
+}
+
+// ctrImageLine은 docker image inspect --format ctrImageFormat의 출력이다.
+func ctrImageLine(id string, created time.Time) string {
+	return id + "|" + created.Format(time.RFC3339Nano) + "\n"
 }
 
 func ctrInspectLineWithPorts(ports string) string {
@@ -82,6 +93,9 @@ func ctrTestSources(inspect string, inspectErr error) ctrSources {
 		health: func(context.Context, string) (string, error) {
 			return ctrHealthJSON("healthy", 0, ctrHealthCheck{Start: ctrTestNow.Add(-time.Minute), Output: "ok\n"}, ctrHealthCheck{Start: ctrTestNow.Add(-30 * time.Second), Output: "ok\n"}), nil
 		},
+		image: func(context.Context, string) (string, error) {
+			return ctrImageLine(ctrTestImageID, ctrTestImageCreated), nil
+		},
 		now: func() time.Time { return ctrTestNow },
 	}
 }
@@ -98,8 +112,8 @@ func ctrByID(t *testing.T, results []Result, id string) Result {
 }
 
 func TestParseCtrInspect(t *testing.T) {
-	inspect, err := parseCtrInspect(`4321|/web|running|2026-10-12T10:30:00.123456789Z|0001-01-01T00:00:00Z|2|true|137|nginx:1.27|abcdef0123456789|healthy|{"5432/tcp":[{"HostIp":"127.0.0.1","HostPort":"5432"}],"80/tcp":null,"53/udp":[{"HostIp":"0.0.0.0","HostPort":"53"},{"HostIp":"::","HostPort":"53"}]}|on-failure:5` + "\n")
-	if err != nil || inspect.PID != 4321 || inspect.Name != "web" || inspect.Status != "running" || inspect.RestartCount != 2 || !inspect.OOMKilled || inspect.ExitCode != 137 || inspect.Image != "nginx:1.27" || inspect.ID != "abcdef0123456789" || inspect.Health != "healthy" || inspect.RestartPolicy != "on-failure" || inspect.RestartMax != 5 {
+	inspect, err := parseCtrInspect(`4321|/web|running|2026-10-12T10:30:00.123456789Z|0001-01-01T00:00:00Z|2|true|137|nginx:1.27|abcdef0123456789|healthy|{"5432/tcp":[{"HostIp":"127.0.0.1","HostPort":"5432"}],"80/tcp":null,"53/udp":[{"HostIp":"0.0.0.0","HostPort":"53"},{"HostIp":"::","HostPort":"53"}]}|on-failure:5|sha256:fedcba` + "\n")
+	if err != nil || inspect.PID != 4321 || inspect.Name != "web" || inspect.Status != "running" || inspect.RestartCount != 2 || !inspect.OOMKilled || inspect.ExitCode != 137 || inspect.Image != "nginx:1.27" || inspect.ID != "abcdef0123456789" || inspect.Health != "healthy" || inspect.RestartPolicy != "on-failure" || inspect.RestartMax != 5 || inspect.ImageID != "sha256:fedcba" {
 		t.Fatalf("inspect = %+v, %v", inspect, err)
 	}
 	if inspect.StartedAt.Year() != 2026 || !inspect.FinishedAt.IsZero() {
@@ -111,11 +125,11 @@ func TestParseCtrInspect(t *testing.T) {
 	}
 	// network를 읽지 못한 container는 ports 칸이 비고, 멈춘 container는 null이다. HostConfig를 읽지 못하면 정책 칸이 빈다.
 	for _, empty := range []string{"", "null", "{}"} {
-		if inspect, err := parseCtrInspect("1|/web|exited|t|t|0|false|0|img|id||" + empty + "|"); err != nil || len(inspect.Ports) != 0 || inspect.RestartPolicy != "" {
+		if inspect, err := parseCtrInspect("1|/web|exited|t|t|0|false|0|img|id||" + empty + "||"); err != nil || len(inspect.Ports) != 0 || inspect.RestartPolicy != "" || inspect.ImageID != "" {
 			t.Errorf("ports %q = %+v, %v", empty, inspect, err)
 		}
 	}
-	for _, bad := range []string{"", "x|y", "p|/web|running|t|t|0|false|0|img|id||{}|no:0", "4321|/web|running|t|t|r|false|0|img|id||{}|no:0", "1|/web|running|t|t|0|false|0|img|id||{|no:0", `1|/web|running|t|t|0|false|0|img|id||{"x/tcp":[{"HostIp":"","HostPort":"1"}]}|no:0`, "1|/web|running|t|t|0|false|0|img|id||{}|on-failure", "1|/web|running|t|t|0|false|0|img|id||{}|on-failure:x", "1|/web|running|t|t|0|false|0|img|id||{}"} {
+	for _, bad := range []string{"", "x|y", "p|/web|running|t|t|0|false|0|img|id||{}|no:0|sha256:x", "4321|/web|running|t|t|r|false|0|img|id||{}|no:0|sha256:x", "1|/web|running|t|t|0|false|0|img|id||{|no:0|sha256:x", `1|/web|running|t|t|0|false|0|img|id||{"x/tcp":[{"HostIp":"","HostPort":"1"}]}|no:0|sha256:x`, "1|/web|running|t|t|0|false|0|img|id||{}|on-failure|sha256:x", "1|/web|running|t|t|0|false|0|img|id||{}|on-failure:x|sha256:x", "1|/web|running|t|t|0|false|0|img|id||{}|no:0"} {
 		if _, err := parseCtrInspect(bad); err == nil {
 			t.Errorf("%q was accepted", bad)
 		}
@@ -148,7 +162,7 @@ func TestFilterCtrLogKeepsTheLastErrorLines(t *testing.T) {
 func TestEvaluateCtrRunningContainer(t *testing.T) {
 	facts := collectCtrFacts(context.Background(), "web", ctrTestSources(ctrInspectLine("running", 0, false, 0, "healthy"), nil))
 	results := evaluateCtr(facts)
-	if len(results) != 6 {
+	if len(results) != 7 {
 		t.Fatalf("results = %d: %+v", len(results), results)
 	}
 	for _, result := range results {
@@ -165,6 +179,10 @@ func TestEvaluateCtrRunningContainer(t *testing.T) {
 	if len(state.Evidence) != 1 || state.Evidence[0].Value != wantChecks || state.Metrics["health_failing_streak"] != 0 || state.Metrics["health_last_output"] != "ok" {
 		t.Fatalf("state health = %+v", state)
 	}
+	created := ctrTestImageCreated.Local().Format(time.DateOnly)
+	if image := results[1]; image.Probe != "ctr.image" || image.Status != StatusPass || image.Summary != "the image reference points to the running image, created "+created+" (77d 0h ago)" || image.Metrics["tag_image_id"] != ctrTestImageID {
+		t.Fatalf("image = %+v", image)
+	}
 	processes := ctrByID(t, results, "processes")
 	if processes.Status != StatusPass || !strings.Contains(processes.Evidence[0].Value, "(main)") {
 		t.Fatalf("processes = %+v", processes)
@@ -179,6 +197,65 @@ func TestEvaluateCtrRunningContainer(t *testing.T) {
 	log := ctrByID(t, results, "log")
 	if log.Status != StatusWarn || !strings.Contains(log.Summary, "1 error lines in the last 3 log lines") || !strings.Contains(log.Evidence[0].Value, "upstream timed out") {
 		t.Fatalf("log = %+v", log)
+	}
+}
+
+// pull이나 build가 tag를 옮겨도 실행 중인 container는 예전 이미지로 돈다. 참조가 가리키는 이미지와 실행 중인 이미지를 맞춰 본다.
+func TestCtrImageComparesTheReference(t *testing.T) {
+	newer, newerCreated := "sha256:"+strings.Repeat("b", 64), ctrTestNow.Add(-24*time.Hour)
+	created, newerDate := ctrTestImageCreated.Local().Format(time.DateOnly), newerCreated.Local().Format(time.DateOnly)
+	cases := []struct {
+		name      string
+		reference string
+		images    map[string]string
+		status    Status
+		summary   string
+		asked     []string
+	}{
+		{"current", "nginx:1.27", map[string]string{"nginx:1.27": ctrImageLine(ctrTestImageID, ctrTestImageCreated)}, StatusPass,
+			"the image reference points to the running image, created " + created + " (77d 0h ago)", []string{"nginx:1.27"}},
+		// digest로 고정한 참조도 그대로 docker에 넘긴다.
+		{"digest", "postgres:17.6-alpine@sha256:" + strings.Repeat("a", 64), map[string]string{"postgres:17.6-alpine@sha256:" + strings.Repeat("a", 64): ctrImageLine(ctrTestImageID, ctrTestImageCreated)}, StatusPass,
+			"points to the running image", []string{"postgres:17.6-alpine@sha256:" + strings.Repeat("a", 64)}},
+		{"outdated", "nginx:1.27", map[string]string{"nginx:1.27": ctrImageLine(newer, newerCreated), ctrTestImageID: ctrImageLine(ctrTestImageID, ctrTestImageCreated)}, StatusWarn,
+			"nginx:1.27 now points to bbbbbbbbbbbb, created " + newerDate + " (1d 0h ago), but the container runs aaaaaaaaaaaa, created " + created + " (77d 0h ago). Recreate the container to use it", []string{"nginx:1.27", ctrTestImageID}},
+		{"tag missing", "nginx:1.27", map[string]string{ctrTestImageID: ctrImageLine(ctrTestImageID, ctrTestImageCreated)}, StatusPass,
+			"nginx:1.27 is not on this host, so edc cannot compare it. The container runs aaaaaaaaaaaa, created " + created + " (77d 0h ago)", []string{"nginx:1.27", ctrTestImageID}},
+		// tag만 지워지고 이미지도 없으면 생성 시각만 모른다.
+		{"both missing", "nginx:1.27", map[string]string{}, StatusPass,
+			"nginx:1.27 is not on this host, so edc cannot compare it. The container runs aaaaaaaaaaaa, created -", []string{"nginx:1.27", ctrTestImageID}},
+	}
+	for _, test := range cases {
+		var asked []string
+		sources := ctrTestSources(ctrInspectField(ctrInspectLine("running", 0, false, 0, ""), 8, test.reference), nil)
+		sources.image = func(_ context.Context, reference string) (string, error) {
+			asked = append(asked, reference)
+			if line, ok := test.images[reference]; ok {
+				return line, nil
+			}
+			return "\nError response from daemon: No such image: " + reference + "\n", errors.New("exit status 1")
+		}
+		image := ctrByID(t, evaluateCtr(collectCtrFacts(context.Background(), "web", sources)), "image")
+		if image.Status != test.status || !strings.Contains(image.Summary, test.summary) || strings.Join(asked, " ") != strings.Join(test.asked, " ") {
+			t.Errorf("%s: %s %q, asked %q", test.name, image.Status, image.Summary, asked)
+		}
+	}
+	// docker가 다른 까닭으로 실패하면 비교하지 않고 skip이다.
+	sources := ctrTestSources(ctrInspectLine("running", 0, false, 0, ""), nil)
+	sources.image = func(context.Context, string) (string, error) {
+		return "permission denied while trying to connect to the docker API", errors.New("exit status 1")
+	}
+	if image := ctrByID(t, evaluateCtr(collectCtrFacts(context.Background(), "web", sources)), "image"); image.Status != StatusSkip || !strings.Contains(image.Summary, "permission denied") {
+		t.Errorf("docker failure = %+v", image)
+	}
+	// 이미지 ID 칸이 비면 docker를 부르지 않는다.
+	sources = ctrTestSources(ctrInspectField(ctrInspectLine("running", 0, false, 0, ""), 13, ""), nil)
+	sources.image = func(context.Context, string) (string, error) {
+		t.Error("image was read without an image ID")
+		return "", nil
+	}
+	if image := ctrByID(t, evaluateCtr(collectCtrFacts(context.Background(), "web", sources)), "image"); image.Status != StatusSkip || image.Summary != "docker inspect gave no image ID for the container" {
+		t.Errorf("no image ID = %+v", image)
 	}
 }
 

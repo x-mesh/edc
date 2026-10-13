@@ -525,6 +525,7 @@ The name or the ID accepts letters, digits, and `_.-/`. Options can come before 
 | Result | Pass | Warn | Fail |
 |---|---|---|---|
 | `ctr.state` | the container runs, with no restart and no OOM kill | it runs but restarted, was OOM killed, or is unhealthy, or it is paused, created, or restarting. For an unhealthy container, a warning shows the output of the last failed health check | the container exited or is dead. The summary shows the exit code. A warning tells when the `on-failure` limit stops the restarts |
+| `ctr.image` | the image reference points to the image that the container runs, or the reference is not on the host | the image reference points to a different image. Recreate the container to use it | |
 | `ctr.processes` | edc lists the processes in the container cgroup, with CPU% and RSS | | |
 | `ctr.limits` | memory, OOM kills, CPU throttling, and pids stay below the limits | memory use is 90% of the limit or more, the kernel killed a process in the container for memory, the CPU limit throttled 25% of the periods or more, or pids use 90% of the limit or more | |
 | `ctr.fd` | each process uses less than 80% of its soft fd limit | a process uses 80% or more of its limit | |
@@ -532,6 +533,8 @@ The name or the ID accepts letters, digits, and `_.-/`. Options can come before 
 | `ctr.log` | the last 50 log lines have no error line | the log has error lines, and edc shows the last 5 | |
 
 The summary of `ctr.state` shows the restart policy, for example `1 restarts (on-failure:5)`. With `-v`, it shows the health checks that docker keeps, with the exit code and the first line of the output. edc reads them only for a container with a health check.
+
+`ctr.image` asks `docker image inspect` for the image that the image reference of the container points to now. A `docker pull` or a build can move a tag to a new image. A running container keeps its old image until you recreate it.
 
 `ctr.limits` reads the cgroup v2 of the container: `memory.current` and `memory.max`, `memory.events.local` for the OOM kills, `cpu.stat` for the throttled periods since the container started, and `pids.current` and `pids.max`. An error line is a line with `error`, `fatal`, `panic`, `exception`, `traceback`, or `oom`. edc reads the log with `docker logs --tail 50`, so a container that writes somewhere else shows no error line.
 

@@ -24,6 +24,12 @@ ctr:
     restart_gave_up: "docker does not restart it again: it restarted %d times, the limit of %s"
     health_failed: "the health check failed %d times in a row, latest exit %d: %s"
     inspect_failed: "docker inspect failed: %s"
+  image:
+    current: "the image reference points to the running image, created %s"
+    outdated: "%s now points to %s, created %s, but the container runs %s, created %s. Recreate the container to use it"
+    no_tag: "%s is not on this host, so edc cannot compare it. The container runs %s, created %s"
+    no_id: "docker inspect gave no image ID for the container"
+    created: "%s (%s ago)"
   listen:
     none: "the container processes own no listening tcp or udp socket"
     published_none: "%s is published on %s, but no container process listens on it"

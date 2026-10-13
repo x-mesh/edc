@@ -97,7 +97,7 @@ func collectResourceSnapshot() (resourceSnapshot, error) {
 	// 남은 값은 서로 독립이므로 함께 읽는다. 차례로 부르면 0.6초가 그대로 주기에 붙는다.
 	var (
 		group   sync.WaitGroup
-		network darwinNetwork
+		network []netInterfaceCounters
 		disk    darwinDisk
 		memory  darwinMemory
 		load    float64
@@ -115,9 +115,7 @@ func collectResourceSnapshot() (resourceSnapshot, error) {
 	group.Wait()
 
 	snapshot.NetMissing, snapshot.DiskMissing = !networkOK, !diskOK
-	snapshot.PacketsIn, snapshot.PacketsOut = network.packetsIn, network.packetsOut
-	snapshot.NetInBytes, snapshot.NetOutBytes = network.bytesIn, network.bytesOut
-	snapshot.NetErrors, snapshot.NetDrops, snapshot.NetHealthValid = network.errors, network.drops, networkOK
+	snapshot.NetInterfaces, snapshot.NetHealthValid = network, networkOK
 	snapshot.DiskRead, snapshot.DiskWrite = disk.read, disk.write
 	snapshot.DiskOps, snapshot.DiskWaitMS, snapshot.DiskHealthValid = disk.operations, disk.waitNS/uint64(time.Millisecond), diskOK
 	snapshot.MemoryTotal, snapshot.MemoryUsed = memory.total, memory.used
@@ -150,7 +148,7 @@ func readDarwinLoad() float64 {
 }
 
 // readDarwinNetwork의 bool은 counter를 읽었는지다.
-func readDarwinNetwork() (darwinNetwork, bool) {
+func readDarwinNetwork() ([]netInterfaceCounters, bool) {
 	counters, err := readDarwinNetworkCounters()
 	return counters, err == nil
 }

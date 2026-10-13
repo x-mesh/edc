@@ -116,6 +116,8 @@ const (
 	topTallHeight = 40
 	// topProcessNameWidth는 상세 패널의 process 이름 폭이다. 세 개가 80열 한 줄에 들어간다.
 	topProcessNameWidth = 10
+	// topInterfaceRows는 network 상세가 보이는 interface 수다. 아래 칸은 좁고 그 뒤에 limit와 설정 줄이 이어진다.
+	topInterfaceRows = 5
 	// topSignalProcessNameWidth는 signal 열의 process 이름 폭이다.
 	topSignalProcessNameWidth = 4
 	// topProcessSignalCPU는 process 하나가 signal에 오르는 CPU%다. core 하나가 100%다.
@@ -709,7 +711,7 @@ func (model topModel) infoLines() []string {
 		lines = model.peakLines()
 	case model.view == topViewNetwork && model.previous.NetworkHealth != nil:
 		if row, ok := model.selectedRow(); ok {
-			lines = append([]string{"network " + row.at.Format("15:04:05") + " · current namespace · Enter settings"}, networkHealthLines(row.rate.NetworkHealth)...)
+			lines = append([]string{"network " + row.at.Format("15:04:05") + " · current namespace · Enter interfaces and settings"}, networkHealthLines(row.rate.NetworkHealth)...)
 		}
 	}
 	if model.lastErr != nil {
@@ -868,7 +870,10 @@ func (model topModel) detailLines() []string {
 	}
 	rate := row.rate
 	if model.view == topViewNetwork {
-		return append(append([]string{"network detail " + row.at.Format("15:04:05")}, networkHealthLines(rate.NetworkHealth)...), networkSettingLines(rate.NetworkHealth)...)
+		// limit 줄은 Enter 없이도 n 보기 패널에 있으므로 맨 뒤에 둔다. 24행 화면에서는 아래 칸이 잘리는데, interface와 설정은
+		// 이 상세에만 있다.
+		lines := append([]string{"network detail " + row.at.Format("15:04:05")}, topInterfaceLines(rate)...)
+		return append(append(lines, networkSettingLines(rate.NetworkHealth)...), networkHealthLines(rate.NetworkHealth)...)
 	}
 	lines := []string{
 		fmt.Sprintf("detail %s · load %.1f · cpu %.1f/%.1f%% · iowait %.1f%% · mem %.1f%%", row.at.Format("15:04:05"), rate.Load1, rate.CPUUser, rate.CPUSystem, rate.CPUIOWait, rate.MemoryPercent),
@@ -2035,6 +2040,27 @@ func topDiskDetail(rate resourceRate) string {
 		busy = fmt.Sprintf("%.0f%% busy", rate.DiskBusy)
 	}
 	return fmt.Sprintf("disk %.0f iops %.1fms %s", rate.DiskIOPS, rate.DiskAwait, busy)
+}
+
+// topInterfaceLines는 net 열을 이루는 interface를 byte/s가 큰 순으로 보인다. net 열은 이 interface들의 합이고, bridge와 veth처럼
+// 같은 packet이 지나는 interface가 함께 더해지므로 어느 쪽이 큰지 여기서 가린다.
+func topInterfaceLines(rate resourceRate) []string {
+	if !rate.NetHealthValid {
+		return []string{"interfaces —"}
+	}
+	if len(rate.NetInterfaces) == 0 {
+		return []string{"interfaces · no traffic in this interval"}
+	}
+	items := append([]netInterfaceRate(nil), rate.NetInterfaces...)
+	sort.SliceStable(items, func(i, j int) bool { return items[i].In+items[i].Out > items[j].In+items[j].Out })
+	lines := []string{"interfaces /s · busiest first · net columns add every interface"}
+	for _, item := range items[:min(topInterfaceRows, len(items))] {
+		lines = append(lines, fmt.Sprintf("  %-15s in %5s out %5s · pkts %s/%s · err %s drop %s", item.Name, formatRate(item.In), formatRate(item.Out), topCompactCount(item.PacketsIn, 6), topCompactCount(item.PacketsOut, 6), topCompactCount(item.Errors, 4), topCompactCount(item.Drops, 4)))
+	}
+	if rest := len(items) - topInterfaceRows; rest > 0 {
+		lines = append(lines, fmt.Sprintf("  +%d more with traffic", rest))
+	}
+	return lines
 }
 
 func topNetworkDetail(rate resourceRate) string {

@@ -490,12 +490,12 @@ sudo edc ctr --json - web         # 보기마다 결과 하나
 | `ctr.processes` | container cgroup의 process를 CPU%, RSS와 함께 보여 줌 | | |
 | `ctr.limits` | memory, OOM kill, CPU throttle, pids가 한도 아래임 | memory 사용량이 한도의 90% 이상, 커널이 container의 process를 메모리 부족으로 죽임, CPU 한도가 period의 25% 이상을 throttle함, pids가 한도의 90% 이상 | |
 | `ctr.fd` | 모든 process가 soft fd 한계의 80% 미만을 씀 | 한계의 80% 이상을 쓰는 process가 있음 | |
-| `ctr.listen` | container process가 가진 TCP·UDP 소켓을 보여 줌 | | |
+| `ctr.listen` | container process가 가진 TCP·UDP 소켓을 보여 주고, publish한 port마다 listen하는 process가 있음 | publish한 port를 container 안에서 listen하는 process가 없거나, loopback 주소에서만 listen함 | |
 | `ctr.log` | 마지막 로그 50줄에 오류 줄이 없음 | 오류 줄이 있고, 마지막 5줄을 보여 줌 | |
 
 `ctr.limits`는 container의 cgroup v2를 읽습니다. `memory.current`와 `memory.max`, OOM kill은 `memory.events.local`, throttle된 period는 container가 시작된 뒤의 `cpu.stat`, 그리고 `pids.current`와 `pids.max`입니다. 오류 줄은 `error`, `fatal`, `panic`, `exception`, `traceback`, `oom`이 든 줄입니다. 로그는 `docker logs --tail 50`으로 읽으므로, 다른 곳에 쓰는 container는 오류 줄이 보이지 않습니다.
 
-`ctr.listen`은 edc가 있는 network namespace의 소켓을 읽습니다. 자기 network namespace를 가진 container는 소켓이 그 namespace 안에 있어 보이지 않고, 공개된 port는 `docker-proxy`나 방화벽 규칙의 것입니다. `--network host`인 container는 소켓이 보입니다.
+`ctr.listen`은 container의 network namespace에서 소켓을 읽습니다. docker는 publish한 port로 들어온 연결을 container 주소로 넘기므로, container 안에서 `127.0.0.1`이나 `::1`에서만 listen하는 process에는 연결이 닿지 않습니다. 막 시작해 아직 listen하지 않은 container도 이 warn을 낼 수 있습니다.
 
 root로 실행하거나, docker 그룹으로 실행하고 fd는 root로 읽으세요. docker daemon에 접근하지 못하면 `skip` 하나를 냅니다. root가 아니면 다른 사용자의 fd와 소켓 주인을 읽지 못해 그 결과가 `skip`으로 나옵니다. 멈춘 container는 process 관련 결과가 `skip`이고 로그는 그대로 보여 줍니다. `docker` 명령과 cgroup v2가 필요합니다. macOS에서는 `skip` 하나를 내고 0으로 끝납니다. container가 없으면 오류를 쓰고 1로 끝납니다.
 

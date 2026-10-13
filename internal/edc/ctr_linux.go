@@ -25,7 +25,7 @@ func hostCtrSources() (ctrSources, bool) {
 		limits:     linuxCtrLimits,
 		processes:  linuxSvcProcesses,
 		fdLimit:    func(pid int) topFDLimit { return readLinuxFDLimit(filepath.Join("/proc", strconv.Itoa(pid))) },
-		listen:     func() ([]listenSocket, error) { return collectListenSockets(listenFamilies{TCP: true, UDP: true}) },
+		listen:     collectNetnsListenSockets,
 		logs:       linuxCtrLogs,
 		now:        time.Now,
 		listIDs: func(ctx context.Context) (string, error) {

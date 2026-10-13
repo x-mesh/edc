@@ -1,13 +1,18 @@
 package edc
 
 import (
+	"cmp"
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"net"
+	"net/netip"
 	"os"
 	"os/exec"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -29,8 +34,9 @@ const (
 	ctrShortIDLength       = 12
 )
 
-// ctrInspectFormat은 docker inspect에 넘기는 template이다. Health는 healthcheck가 없으면 nil이라 if로 감싼다.
-const ctrInspectFormat = "{{.State.Pid}}|{{.Name}}|{{.State.Status}}|{{.State.StartedAt}}|{{.State.FinishedAt}}|{{.RestartCount}}|{{.State.OOMKilled}}|{{.State.ExitCode}}|{{.Config.Image}}|{{.Id}}|{{with index .State \"Health\"}}{{index . \"Status\"}}{{end}}"
+// ctrInspectFormat은 docker inspect에 넘기는 template이다. Health는 healthcheck가 없으면 nil이라 with로 감싼다.
+// NetworkSettings도 with로 감싼다. 여러 container를 한 번에 읽을 때 template 오류 하나가 나머지 출력까지 막는다.
+const ctrInspectFormat = "{{.State.Pid}}|{{.Name}}|{{.State.Status}}|{{.State.StartedAt}}|{{.State.FinishedAt}}|{{.RestartCount}}|{{.State.OOMKilled}}|{{.State.ExitCode}}|{{.Config.Image}}|{{.Id}}|{{with index .State \"Health\"}}{{index . \"Status\"}}{{end}}|{{with .NetworkSettings}}{{json .Ports}}{{end}}"
 
 var errCtrInvalidReference = errors.New("invalid container reference")
 
@@ -49,6 +55,14 @@ type ctrInspect struct {
 	RestartCount int
 	OOMKilled    bool
 	ExitCode     int
+	Ports        []ctrPublishedPort
+}
+
+// ctrPublishedPort는 host에 publish한 container port다. docker는 IPv4와 IPv6에 따로 bind하므로 Hosts가 여럿일 수 있다.
+type ctrPublishedPort struct {
+	Proto string
+	Port  int
+	Hosts []string
 }
 
 // ctrLimits는 container cgroup의 한도와 사용량이다. CPU는 누적 counter라 container가 산 동안의 비율이다.
@@ -88,9 +102,10 @@ type ctrSources struct {
 	limits     func(path string) ctrLimits
 	processes  func(ctx context.Context, controlGroup string, mainPID int) ([]topProcess, error)
 	fdLimit    func(pid int) topFDLimit
-	listen     func() ([]listenSocket, error)
-	logs       func(ctx context.Context, id string, lines int) (string, error)
-	now        func() time.Time
+	// listen은 pid가 속한 network namespace의 대기 소켓이다.
+	listen func(pid int) ([]listenSocket, error)
+	logs   func(ctx context.Context, id string, lines int) (string, error)
+	now    func() time.Time
 	// listIDs는 모든 container의 ID이고, inspectMany는 여러 container를 한 번에 읽는다. container마다 docker를 부르면 수백 번이 된다.
 	listIDs     func(ctx context.Context) (string, error)
 	inspectMany func(ctx context.Context, ids []string) (string, error)
@@ -181,7 +196,7 @@ func ctrNotFound(output string) bool {
 // parseCtrInspect는 ctrInspectFormat 출력을 읽는다. 시각은 RFC 3339이고, 멈춘 적 없는 container의 FinishedAt은 0001년이다.
 func parseCtrInspect(output string) (ctrInspect, error) {
 	fields := strings.Split(strings.TrimSpace(output), "|")
-	if len(fields) != 11 {
+	if len(fields) != 12 {
 		return ctrInspect{}, fmt.Errorf("unexpected docker inspect output %q", output)
 	}
 	pid, err := strconv.Atoi(fields[0])
@@ -196,13 +211,55 @@ func parseCtrInspect(output string) (ctrInspect, error) {
 	if err != nil {
 		return ctrInspect{}, fmt.Errorf("unexpected docker inspect exit code %q", fields[7])
 	}
+	ports, err := parseCtrPorts(fields[11])
+	if err != nil {
+		return ctrInspect{}, fmt.Errorf("unexpected docker inspect ports %q", fields[11])
+	}
 	inspect := ctrInspect{
 		PID: pid, Name: strings.TrimPrefix(fields[1], "/"), Status: fields[2], RestartCount: restarts, OOMKilled: fields[6] == "true",
-		ExitCode: exitCode, Image: fields[8], ID: fields[9], Health: fields[10],
+		ExitCode: exitCode, Image: fields[8], ID: fields[9], Health: fields[10], Ports: ports,
 	}
 	inspect.StartedAt, _ = time.Parse(time.RFC3339Nano, fields[3])
 	inspect.FinishedAt, _ = time.Parse(time.RFC3339Nano, fields[4])
 	return inspect, nil
+}
+
+// parseCtrPorts는 NetworkSettings.Ports의 JSON을 읽는다. EXPOSE만 하고 publish하지 않은 port는 binding이 null이라 뺀다.
+func parseCtrPorts(text string) ([]ctrPublishedPort, error) {
+	if text == "" {
+		return nil, nil
+	}
+	var bindings map[string][]struct {
+		HostIP   string `json:"HostIp"`
+		HostPort string `json:"HostPort"`
+	}
+	if err := json.Unmarshal([]byte(text), &bindings); err != nil {
+		return nil, err
+	}
+	var ports []ctrPublishedPort
+	for key, hosts := range bindings {
+		if len(hosts) == 0 {
+			continue
+		}
+		number, proto, _ := strings.Cut(key, "/")
+		port, err := strconv.Atoi(number)
+		if err != nil {
+			return nil, err
+		}
+		published := ctrPublishedPort{Proto: proto, Port: port}
+		for _, host := range hosts {
+			address := host.HostIP
+			if address == "" {
+				address = "*"
+			}
+			published.Hosts = append(published.Hosts, net.JoinHostPort(address, host.HostPort))
+		}
+		ports = append(ports, published)
+	}
+	slices.SortFunc(ports, func(a, b ctrPublishedPort) int {
+		return cmp.Or(cmp.Compare(a.Port, b.Port), cmp.Compare(a.Proto, b.Proto))
+	})
+	return ports, nil
 }
 
 // filterCtrLog는 docker logs 출력에서 오류 줄만 마지막 ctrLogShown줄 남긴다.
@@ -259,7 +316,7 @@ func collectCtrFacts(ctx context.Context, reference string, sources ctrSources) 
 			facts.FD[process.PID] = sources.fdLimit(process.PID)
 		}
 		if len(facts.Processes) > 0 && !svcListenHidden(facts.svcFacts) {
-			facts.Listen, facts.ListenErr = sources.listen()
+			facts.Listen, facts.ListenErr = sources.listen(inspect.PID)
 		}
 	}
 	output, err := sources.logs(ctx, inspect.ID, ctrLogLines)
@@ -293,7 +350,58 @@ func evaluateCtr(facts ctrFacts) []Result {
 		result.Error = &DiagnosticError{Kind: "command", Message: detail}
 		return []Result{result}
 	}
-	return []Result{ctrStateResult(facts), svcProcessesResult(facts.svcFacts), ctrLimitsResult(facts), svcFDResult(facts.svcFacts), svcListenResult(facts.svcFacts), ctrLogResult(facts)}
+	return []Result{ctrStateResult(facts), svcProcessesResult(facts.svcFacts), ctrLimitsResult(facts), svcFDResult(facts.svcFacts), ctrListenResult(facts), ctrLogResult(facts)}
+}
+
+// ctrListenResult는 svc의 listen 결과에 publish한 port를 맞춰 본다. docker는 host port로 온 연결을 container IP로 넘기므로,
+// 안에서 그 port를 listen하는 process가 없거나 loopback에서만 listen하면 publish한 port로는 닿지 않는다. 막 시작한 container는
+// 아직 listen하기 전일 수 있어 fail이 아니라 warn이다.
+func ctrListenResult(facts ctrFacts) Result {
+	result := svcListenResult(facts.svcFacts)
+	if result.Status == StatusSkip || len(facts.Inspect.Ports) == 0 {
+		return result
+	}
+	members := map[string]bool{}
+	for _, process := range facts.Processes {
+		members[strconv.Itoa(process.PID)] = true
+	}
+	var lines []string
+	var published []map[string]interface{}
+	for _, port := range facts.Inspect.Ports {
+		reachable, loopback := false, false
+		for _, socket := range facts.Listen {
+			if socket.Proto != port.Proto || socket.Port != port.Port || !members[socket.PID] {
+				continue
+			}
+			if address, err := netip.ParseAddr(socket.Address); err == nil && address.Unmap().IsLoopback() {
+				loopback = true
+			} else {
+				reachable = true
+			}
+		}
+		label, hosts := fmt.Sprintf("%d/%s", port.Port, port.Proto), strings.Join(port.Hosts, ", ")
+		state := "listening"
+		switch {
+		case reachable:
+		case loopback:
+			state = "loopback_only"
+			result.Warnings = append(result.Warnings, T("ctr.listen.published_loopback", label, hosts))
+		default:
+			state = "not_listening"
+			result.Warnings = append(result.Warnings, T("ctr.listen.published_none", label, hosts))
+		}
+		lines = append(lines, label+" ← "+hosts)
+		published = append(published, map[string]interface{}{"port": port.Port, "proto": port.Proto, "hosts": port.Hosts, "state": state})
+	}
+	if len(result.Warnings) > 0 {
+		result.Status = StatusWarn
+	}
+	if result.Metrics == nil {
+		result.Metrics = map[string]interface{}{}
+	}
+	result.Metrics["published"] = published
+	result.Evidence = append(result.Evidence, Evidence{Label: T("ctr.evidence.published"), Value: strings.Join(lines, "\n")})
+	return result
 }
 
 // ctrStateText는 상세와 목록이 같이 쓰는 상태 문구다. 한 번도 돈 적 없는 container는 종료 코드가 없다.

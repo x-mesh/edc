@@ -23,6 +23,8 @@ ctr:
     inspect_failed: "docker inspect failed: %s"
   listen:
     none: "the container processes own no listening tcp or udp socket"
+    published_none: "%s is published on %s, but no container process listens on it"
+    published_loopback: "%s is published on %s, but the container listens on it only on loopback, which the published port does not reach"
   limits:
     summary: "memory %s · OOM kills %s · CPU throttled %s · pids %s"
     no_limit: "no limit"
@@ -35,3 +37,4 @@ ctr:
     errors: "%d error lines in the last %d log lines, latest: %s"
   evidence:
     log: "log"
+    published: "published ports"

@@ -251,7 +251,8 @@ func TestRunCtrExitCodes(t *testing.T) {
 	if code := runCtrWith([]string{"web"}, "test", ctrSources{}, false); code != 0 {
 		t.Fatalf("unsupported = %d", code)
 	}
-	for _, args := range [][]string{{}, {"-x"}, {"a", "b"}, {"--timeout", "x", "web"}} {
+	// container 없이 부르면 목록이다. TestRunCtrWithoutAContainerListsThem이 본다.
+	for _, args := range [][]string{{"-x"}, {"a", "b"}, {"--timeout", "x", "web"}} {
 		if code := runCtrWith(args, "test", ctrTestSources(ctrInspectLine("running", 0, false, 0, ""), nil), true); code != 2 {
 			t.Errorf("args %q = %d, want 2", args, code)
 		}

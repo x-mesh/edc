@@ -28,7 +28,17 @@ func hostCtrSources() (ctrSources, bool) {
 		listen:     func() ([]listenSocket, error) { return collectListenSockets(listenFamilies{TCP: true, UDP: true}) },
 		logs:       linuxCtrLogs,
 		now:        time.Now,
+		listIDs: func(ctx context.Context) (string, error) {
+			return commandOutput(ctx, "docker", "ps", "--all", "--quiet", "--no-trunc")
+		},
+		inspectMany: linuxCtrInspectMany,
 	}, true
+}
+
+// linuxCtrInspectMany는 ID를 docker ps가 낸 그대로 넘긴다. 16진수라 option으로 읽힐 일이 없다.
+func linuxCtrInspectMany(ctx context.Context, ids []string) (string, error) {
+	args := append([]string{"inspect", "--type", "container", "--format", ctrInspectFormat}, ids...)
+	return commandOutput(ctx, "docker", args...)
 }
 
 // linuxCtrInspect는 stdout과 stderr를 합쳐 돌려준다. "No such container"는 stderr에 나온다.

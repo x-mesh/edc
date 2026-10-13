@@ -5,6 +5,16 @@ ctr:
     no_docker: "docker is not installed on this host"
     not_running: "the container has no running process"
     needs_docker_access: "needs root or the docker group to talk to the docker daemon"
+  list:
+    summary: "%d containers, %d failed, %d restarting, paused, or unhealthy"
+    failed: "cannot list the containers: %s"
+    column:
+      name: "NAME"
+      state: "STATE"
+      restarts: "RESTARTS"
+      uptime: "UPTIME"
+      memory: "MEM"
+      image: "IMAGE"
   error:
     invalid_reference: "invalid container reference %q: use letters, digits, and _.-/ only, without a leading '-'"
     not_found: "container %s does not exist"

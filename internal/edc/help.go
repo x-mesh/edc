@@ -240,7 +240,8 @@ var commandDocs = []commandDoc{
 	},
 	{
 		name: "ctr", group: "observe",
-		usage:      []string{"edc ctr [options] <container>"},
+		usage:      []string{"edc ctr [options] [--all]", "edc ctr [options] <container>"},
+		options:    []optionDoc{{"--all", "command.ctr.option.all"}},
 		usesCommon: true,
 	},
 	{

@@ -44,7 +44,15 @@ ctr:
   log:
     none: "最後のログ %d 行にエラー行なし"
     errors: "最後のログ %d 行のうちエラー %d 行、最新: %s"
+  disk:
+    summary: "%s · writable layer %s"
+    log_file: "log %s (%s)"
+    log_driver: "log driver %s"
+    no_rotation: "rotation なし"
+    log_unbounded: "json-file の log に max-size がなく、%s まで大きくなりました。container か daemon の log option で max-size を設定してください"
+    writable_large: "container が writable layer に %s を書きました。container を作り直すと消えるため、データは volume に置いてください"
   evidence:
     log: "ログ"
+    log_file: "log ファイル"
     health: "health check の記録"
     published: "publish した port"

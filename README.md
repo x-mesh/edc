@@ -531,6 +531,7 @@ The name or the ID accepts letters, digits, and `_.-/`. Options can come before 
 | `ctr.fd` | each process uses less than 80% of its soft fd limit | a process uses 80% or more of its limit | |
 | `ctr.listen` | edc lists the TCP and UDP sockets that the container processes own, and a process listens on each published port | no process in the container listens on a published port, or a process listens on it only on a loopback address | |
 | `ctr.log` | the last 50 log lines have no error line | the log has error lines, and edc shows the last 5 | |
+| `ctr.disk` | edc shows the size of the log file and of the writable layer | the json-file log has no `max-size` and is 1 GiB or more, or the writable layer is 10 GiB or more | |
 
 The summary of `ctr.state` shows the restart policy, for example `1 restarts (on-failure:5)`. With `-v`, it shows the health checks that docker keeps, with the exit code and the first line of the output. edc reads them only for a container with a health check.
 
@@ -539,6 +540,8 @@ The summary of `ctr.state` shows the restart policy, for example `1 restarts (on
 `ctr.limits` reads the cgroup v2 of the container: `memory.current` and `memory.max`, `memory.events.local` for the OOM kills, `cpu.stat` for the throttled periods since the container started, and `pids.current` and `pids.max`. An error line is a line with `error`, `fatal`, `panic`, `exception`, `traceback`, or `oom`. edc reads the log with `docker logs --tail 50`, so a container that writes somewhere else shows no error line.
 
 `ctr.listen` reads the sockets in the network namespace of the container. Docker sends a connection on a published port to the address of the container, so a listener on `127.0.0.1` or `::1` in the container does not get it. A container that starts can show this warn before it listens.
+
+`ctr.disk` asks `docker inspect --size` for the writable layer and the log options, and reads the size of the log file. A json-file log without `max-size` does not rotate. A new container does not keep the data in the writable layer. Without root, edc cannot read the log file, and the log size shows `-`.
 
 Run it as root, or as a member of the `docker` group with root for the fds. Without access to the docker daemon, the command shows one `skip`. Without root, edc cannot read the fds of other users or the socket owners, and these results show `skip`. A stopped container shows `skip` for the process views and still shows the log. The command needs the `docker` command and cgroup v2. On macOS, it shows one `skip` and exits with 0. If the container does not exist, edc writes an error and exits with 1.
 

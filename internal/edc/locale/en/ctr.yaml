@@ -44,7 +44,15 @@ ctr:
   log:
     none: "no error lines in the last %d log lines"
     errors: "%d error lines in the last %d log lines, latest: %s"
+  disk:
+    summary: "%s · writable layer %s"
+    log_file: "log %s (%s)"
+    log_driver: "log driver %s"
+    no_rotation: "no rotation"
+    log_unbounded: "the json-file log has no max-size and is %s: set max-size in the log options of the container or the daemon"
+    writable_large: "the container wrote %s into its writable layer, which a new container does not keep: put the data in a volume"
   evidence:
     log: "log"
+    log_file: "log file"
     health: "health checks"
     published: "published ports"

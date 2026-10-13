@@ -493,6 +493,7 @@ sudo edc ctr --json - web         # 보기마다 결과 하나
 | `ctr.fd` | 모든 process가 soft fd 한계의 80% 미만을 씀 | 한계의 80% 이상을 쓰는 process가 있음 | |
 | `ctr.listen` | container process가 가진 TCP·UDP 소켓을 보여 주고, publish한 port마다 listen하는 process가 있음 | publish한 port를 container 안에서 listen하는 process가 없거나, loopback 주소에서만 listen함 | |
 | `ctr.log` | 마지막 로그 50줄에 오류 줄이 없음 | 오류 줄이 있고, 마지막 5줄을 보여 줌 | |
+| `ctr.disk` | log 파일과 writable layer의 크기를 보여 줌 | json-file log에 `max-size`가 없고 1 GiB 이상이거나, writable layer가 10 GiB 이상임 | |
 
 `ctr.state` 요약에는 재시작 정책이 함께 나옵니다(예: `재시작 1번(on-failure:5)`). `-v`를 주면 docker가 남긴 health check를 exit code, 출력 첫 줄과 함께 보여 줍니다. health check 기록은 healthcheck가 있는 container에서만 읽습니다.
 
@@ -501,6 +502,8 @@ sudo edc ctr --json - web         # 보기마다 결과 하나
 `ctr.limits`는 container의 cgroup v2를 읽습니다. `memory.current`와 `memory.max`, OOM kill은 `memory.events.local`, throttle된 period는 container가 시작된 뒤의 `cpu.stat`, 그리고 `pids.current`와 `pids.max`입니다. 오류 줄은 `error`, `fatal`, `panic`, `exception`, `traceback`, `oom`이 든 줄입니다. 로그는 `docker logs --tail 50`으로 읽으므로, 다른 곳에 쓰는 container는 오류 줄이 보이지 않습니다.
 
 `ctr.listen`은 container의 network namespace에서 소켓을 읽습니다. docker는 publish한 port로 들어온 연결을 container 주소로 넘기므로, container 안에서 `127.0.0.1`이나 `::1`에서만 listen하는 process에는 연결이 닿지 않습니다. 막 시작해 아직 listen하지 않은 container도 이 warn을 낼 수 있습니다.
+
+`ctr.disk`는 writable layer 크기와 log option을 `docker inspect --size`에 묻고, log 파일 크기를 읽습니다. `max-size`가 없는 json-file log는 rotation하지 않습니다. writable layer의 데이터는 container를 다시 만들면 사라집니다. root가 아니면 log 파일을 읽지 못해 log 크기가 `-`로 나옵니다.
 
 root로 실행하거나, docker 그룹으로 실행하고 fd는 root로 읽으세요. docker daemon에 접근하지 못하면 `skip` 하나를 냅니다. root가 아니면 다른 사용자의 fd와 소켓 주인을 읽지 못해 그 결과가 `skip`으로 나옵니다. 멈춘 container는 process 관련 결과가 `skip`이고 로그는 그대로 보여 줍니다. `docker` 명령과 cgroup v2가 필요합니다. macOS에서는 `skip` 하나를 내고 0으로 끝납니다. container가 없으면 오류를 쓰고 1로 끝납니다.
 

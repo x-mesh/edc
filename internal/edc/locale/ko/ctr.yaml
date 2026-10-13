@@ -44,7 +44,15 @@ ctr:
   log:
     none: "마지막 로그 %d줄에 오류 줄 없음"
     errors: "마지막 로그 %d줄 가운데 오류 %d줄, 최근: %s"
+  disk:
+    summary: "%s · writable layer %s"
+    log_file: "log %s (%s)"
+    log_driver: "log driver %s"
+    no_rotation: "rotation 없음"
+    log_unbounded: "json-file log에 max-size가 없고 %s까지 자랐습니다. container나 daemon의 log option에 max-size를 정하세요"
+    writable_large: "container가 writable layer에 %s를 썼습니다. container를 다시 만들면 사라지므로 데이터를 volume에 두세요"
   evidence:
     log: "로그"
+    log_file: "log 파일"
     health: "health check 기록"
     published: "publish한 port"

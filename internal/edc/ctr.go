@@ -47,6 +47,17 @@ const ctrImageFormat = "{{.Id}}|{{.Created}}"
 // errCtrNoImage는 이 호스트에 없는 이미지다. tag를 지웠거나 다른 호스트에서 만든 container다.
 var errCtrNoImage = errors.New("no such image")
 
+// ctrDiskFormat은 writable layer 크기와 log 설정이다. --size는 layer를 세어야 하므로 container 하나를 볼 때만 읽는다.
+// log option의 값(tag 등)에는 |가 들어갈 수 있어 맨 끝에 둔다. SizeRw는 json으로 받아야 큰 수가 지수 표기로 나오지 않는다.
+const ctrDiskFormat = "{{json .SizeRw}}|{{with .HostConfig}}{{with .LogConfig}}{{.Type}}{{end}}{{end}}|{{.LogPath}}|{{with .HostConfig}}{{with .LogConfig}}{{json .Config}}{{end}}{{end}}"
+
+const (
+	// json-file log에 max-size가 없으면 container를 지울 때까지 줄지 않는다. 이만큼 자라면 알린다.
+	ctrLogWarnBytes = 1 << 30
+	// writable layer는 container를 다시 만들면 사라진다. 이만큼 쓰는 container는 데이터를 volume에 둬야 한다.
+	ctrWritableWarnBytes = 10 << 30
+)
+
 var errCtrInvalidReference = errors.New("invalid container reference")
 
 // ctrLogErrorLine은 로그에서 오류로 보는 줄이다. 로그 형식을 모르므로 흔한 낱말로만 고른다.
@@ -129,6 +140,17 @@ type ctrLog struct {
 	Scanned int
 }
 
+// ctrDisk는 container가 docker 저장소에 남기는 것이다. 크기가 nil이면 읽지 못했다.
+type ctrDisk struct {
+	Writable   *uint64
+	LogDriver  string
+	LogPath    string
+	LogMaxSize string
+	LogMaxFile string
+	LogBytes   *uint64
+	LogSizeErr error
+}
+
 // ctrSources는 ctr이 읽는 원천이다. 테스트는 함수를 가짜로 넣는다.
 type ctrSources struct {
 	euid    int
@@ -144,7 +166,10 @@ type ctrSources struct {
 	logs   func(ctx context.Context, id string, lines int) (string, error)
 	health func(ctx context.Context, id string) (string, error)
 	image  func(ctx context.Context, reference string) (string, error)
-	now    func() time.Time
+	disk   func(ctx context.Context, id string) (string, error)
+	// fileSize는 log 파일의 크기다. docker 저장소는 root만 읽을 수 있다.
+	fileSize func(path string) (int64, error)
+	now      func() time.Time
 	// listIDs는 모든 container의 ID이고, inspectMany는 여러 container를 한 번에 읽는다. container마다 docker를 부르면 수백 번이 된다.
 	listIDs     func(ctx context.Context) (string, error)
 	inspectMany func(ctx context.Context, ids []string) (string, error)
@@ -165,6 +190,8 @@ type ctrFacts struct {
 	LimitsErr     error
 	Log           ctrLog
 	LogErr        error
+	Disk          ctrDisk
+	DiskErr       error
 }
 
 func runCtr(args []string, version string) int {
@@ -371,6 +398,8 @@ func collectCtrFacts(ctx context.Context, reference string, sources ctrSources) 
 	if inspect.ImageID != "" {
 		facts.Image, facts.ImageErr = readCtrImage(ctx, sources, inspect)
 	}
+	// 멈춘 container도 log와 writable layer를 남기므로 상태와 상관없이 읽는다.
+	facts.Disk, facts.DiskErr = readCtrDisk(ctx, sources, inspect.ID)
 	facts.Show = svcShow{ID: inspect.Name, LoadState: "loaded", ActiveState: inspect.Status, MainPID: inspect.PID}
 	if inspect.PID > 0 {
 		path, err := sources.cgroupPath(inspect.PID)
@@ -456,6 +485,51 @@ func lookupCtrImage(ctx context.Context, sources ctrSources, reference string) (
 	return id, when, nil
 }
 
+func readCtrDisk(ctx context.Context, sources ctrSources, id string) (ctrDisk, error) {
+	output, err := sources.disk(ctx, id)
+	if err != nil {
+		return ctrDisk{}, fmt.Errorf("docker inspect --size: %w: %s", err, infoSingleLine(firstLine(output)))
+	}
+	disk, err := parseCtrDisk(output)
+	if err != nil {
+		return ctrDisk{}, err
+	}
+	if disk.LogPath != "" {
+		size, err := sources.fileSize(disk.LogPath)
+		if err != nil {
+			disk.LogSizeErr = err
+		} else {
+			value := uint64(size)
+			disk.LogBytes = &value
+		}
+	}
+	return disk, nil
+}
+
+// parseCtrDisk는 ctrDiskFormat 출력을 읽는다. HostConfig를 읽지 못하면 driver와 option 칸이 빈다.
+func parseCtrDisk(output string) (ctrDisk, error) {
+	fields := strings.SplitN(strings.TrimSpace(output), "|", 4)
+	if len(fields) != 4 {
+		return ctrDisk{}, fmt.Errorf("unexpected docker inspect output %q", output)
+	}
+	disk := ctrDisk{LogDriver: fields[1], LogPath: fields[2]}
+	if fields[0] != "null" {
+		value, err := strconv.ParseUint(fields[0], 10, 64)
+		if err != nil {
+			return ctrDisk{}, fmt.Errorf("unexpected docker inspect size %q", fields[0])
+		}
+		disk.Writable = &value
+	}
+	if fields[3] != "" {
+		var options map[string]string
+		if err := json.Unmarshal([]byte(fields[3]), &options); err != nil {
+			return ctrDisk{}, fmt.Errorf("unexpected docker log options %q", fields[3])
+		}
+		disk.LogMaxSize, disk.LogMaxFile = options["max-size"], options["max-file"]
+	}
+	return disk, nil
+}
+
 func evaluateCtr(facts ctrFacts) []Result {
 	if !facts.Docker {
 		return []Result{unsupported(ctrProbeID, T("ctr.skip.no_docker"))}
@@ -473,7 +547,7 @@ func evaluateCtr(facts ctrFacts) []Result {
 		result.Error = &DiagnosticError{Kind: "command", Message: detail}
 		return []Result{result}
 	}
-	return []Result{ctrStateResult(facts), ctrImageResult(facts), svcProcessesResult(facts.svcFacts), ctrLimitsResult(facts), svcFDResult(facts.svcFacts), ctrListenResult(facts), ctrLogResult(facts)}
+	return []Result{ctrStateResult(facts), ctrImageResult(facts), svcProcessesResult(facts.svcFacts), ctrLimitsResult(facts), svcFDResult(facts.svcFacts), ctrListenResult(facts), ctrLogResult(facts), ctrDiskResult(facts)}
 }
 
 // ctrImageResult는 이미지 참조가 지금 가리키는 이미지와 container가 실행 중인 이미지를 맞춰 본다. 다르면 새 이미지를
@@ -772,4 +846,74 @@ func ctrLogResult(facts ctrFacts) Result {
 	result := svcResultFor(ctrProbeID, "log", StatusWarn, T("ctr.log.errors", len(lines), facts.Log.Scanned, lines[len(lines)-1]))
 	result.Evidence = []Evidence{{Label: T("ctr.evidence.log"), Value: strings.Join(lines, "\n")}}
 	return result
+}
+
+func ctrDiskResult(facts ctrFacts) Result {
+	if facts.DiskErr != nil {
+		return svcSkipFor(ctrProbeID, "disk", "docker inspect --size", facts.DiskErr)
+	}
+	disk := facts.Disk
+	driver := disk.LogDriver
+	if driver == "" {
+		driver = "-"
+	}
+	metrics := map[string]interface{}{"log_driver": disk.LogDriver}
+	var warnings, files []string
+	// journald처럼 파일을 남기지 않는 driver는 docker가 크기를 모른다. driver 이름만 적는다.
+	logText := T("ctr.disk.log_driver", driver)
+	if disk.LogPath != "" {
+		size := "-"
+		if disk.LogBytes != nil {
+			size = traceBytes(*disk.LogBytes)
+			metrics["log_bytes"] = *disk.LogBytes
+			if disk.LogDriver == "json-file" && disk.LogMaxSize == "" && *disk.LogBytes >= ctrLogWarnBytes {
+				warnings = append(warnings, T("ctr.disk.log_unbounded", size))
+			}
+		}
+		if rotation := ctrLogRotation(disk); rotation != "" {
+			driver += ", " + rotation
+		}
+		logText = T("ctr.disk.log_file", size, driver)
+		files = append(files, disk.LogPath)
+		if disk.LogSizeErr != nil {
+			files = append(files, disk.LogSizeErr.Error())
+		}
+	}
+	if disk.LogMaxSize != "" {
+		metrics["log_max_size"] = disk.LogMaxSize
+	}
+	if disk.LogMaxFile != "" {
+		metrics["log_max_file"] = disk.LogMaxFile
+	}
+	writable := "-"
+	if disk.Writable != nil {
+		writable = traceBytes(*disk.Writable)
+		metrics["writable_bytes"] = *disk.Writable
+		if *disk.Writable >= ctrWritableWarnBytes {
+			warnings = append(warnings, T("ctr.disk.writable_large", writable))
+		}
+	}
+	status := StatusPass
+	if len(warnings) > 0 {
+		status = StatusWarn
+	}
+	result := svcResultFor(ctrProbeID, "disk", status, T("ctr.disk.summary", logText, writable))
+	result.Metrics, result.Warnings = metrics, warnings
+	if len(files) > 0 {
+		result.Evidence = []Evidence{{Label: T("ctr.evidence.log_file"), Value: strings.Join(files, "\n")}}
+	}
+	return result
+}
+
+// ctrLogRotation은 log가 얼마나 커질 수 있는지 적는다. json-file은 max-size가 없으면 rotation하지 않는다.
+func ctrLogRotation(disk ctrDisk) string {
+	switch {
+	case disk.LogMaxSize != "" && disk.LogMaxFile != "":
+		return "max-size " + disk.LogMaxSize + ", max-file " + disk.LogMaxFile
+	case disk.LogMaxSize != "":
+		return "max-size " + disk.LogMaxSize
+	case disk.LogDriver == "json-file":
+		return T("ctr.disk.no_rotation")
+	}
+	return ""
 }

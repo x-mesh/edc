@@ -1,0 +1,20 @@
+# du コマンドの日本語メッセージ。
+du:
+  skip:
+    linux_only: "du は Linux でのみ動作します"
+  error:
+    path: "%s を読めませんでした"
+  summary: "%s (%s)、項目 %d 個、%s、worker %d 個"
+  summary_partial: "ここまで %s (%s)、項目 %d 個、制限時間 %s で停止"
+  warning:
+    partial: "制限時間で止まったため、サイズは読んだ部分だけの値です"
+    unreadable_root: "ディレクトリ %d 個を読めず数えていません。root で実行すると数えます"
+    unreadable: "ディレクトリ %d 個を読めず数えていません"
+    no_mountinfo: "マウント表を読めないため(%s)、パスの下の bind mount も数えます"
+  evidence:
+    unreadable: "読めなかったディレクトリ"
+  other: "(残りの項目 %d 個)"
+  mounts:
+    title: "スキップしたマウント"
+    used: "%s 使用"
+    more: "ほか %d 個、-v ですべて表示"

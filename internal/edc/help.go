@@ -210,6 +210,18 @@ var commandDocs = []commandDoc{
 		},
 	},
 	{
+		name: "du", group: "observe",
+		usage: []string{"edc du [options] [path]"},
+		options: []optionDoc{
+			{"--top N", "command.du.option.top"},
+			{"--workers 4", "command.du.option.workers"},
+			{"--cross-mounts", "command.du.option.cross_mounts"},
+			{"--timeout 60s", "command.du.option.timeout"},
+			{"-v, --verbose", "command.du.option.verbose"},
+		},
+		usesCommon: true,
+	},
+	{
 		name: "where", group: "observe",
 		usage: []string{"edc where [--provider all|aws|gcp] [--count 3] [options]"},
 		options: []optionDoc{

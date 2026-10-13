@@ -5,12 +5,14 @@ package edc
 import (
 	"encoding/binary"
 	"errors"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
@@ -105,9 +107,8 @@ func TestFSWatchFanotifyWatchesTheMountsBelowTheRoot(t *testing.T) {
 	mount("sys", "sysfs", "sysfs", 0)
 	mount("shared", outside, "", unix.MS_BIND)
 	var notice strings.Builder
-	previous := fsWatchNotice
-	fsWatchNotice = &notice
-	defer func() { fsWatchNotice = previous }()
+	previous := fsWatchNotice.swap(&notice)
+	defer fsWatchNotice.swap(previous)
 	source := fsWatchTestSource(t, root, true, fsWatchDriverAuto)
 	if source.driver != fsWatchDriverFanotify {
 		t.Fatalf("driver = %q, want fanotify", source.driver)
@@ -313,6 +314,67 @@ func TestFSWatchFanotifyJoinsTheEntriesOfARemovedTree(t *testing.T) {
 	}
 }
 
+// 커널은 아직 읽지 않은 디렉터리의 생성과 삭제를 한 이벤트로 합쳐 그 안의 이벤트보다 앞에 둔다.
+func TestFSWatchFanotifyJoinsTheEntriesOfAMergedDirectory(t *testing.T) {
+	root, a, b := fsWatchFanotifyTestKey("root"), fsWatchFanotifyTestKey("a"), fsWatchFanotifyTestKey("b")
+	watch, emitted := fsWatchFanotifyTestWatch(t, map[string]string{root: ""})
+	for _, event := range []fsWatchFanotifyEvent{
+		{mask: unix.FAN_CREATE | unix.FAN_DELETE | unix.FAN_ONDIR, parent: root, name: "a", target: a},
+		{mask: unix.FAN_CREATE | unix.FAN_DELETE | unix.FAN_ONDIR, parent: a, name: "b", target: b},
+		{mask: unix.FAN_CREATE | unix.FAN_MODIFY | unix.FAN_DELETE, parent: b, name: "f.txt"},
+	} {
+		if err := watch.handle(event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want := []string{"create a", "remove a", "create a/b", "remove a/b", "create a/b/f.txt", "modify a/b/f.txt", "remove a/b/f.txt"}
+	if !slices.Equal(*emitted, want) {
+		t.Fatalf("emitted %v, want %v", *emitted, want)
+	}
+	if watch.waitingCount != 0 {
+		t.Fatalf("left %d waiting", watch.waitingCount)
+	}
+}
+
+// reader는 적게 읽은 뒤 다음 read까지 기다린다. 그동안 생겼다 지워진 트리는 커널이 디렉터리 이벤트를 합쳐 보낸다.
+func TestFSWatchFanotifyReportsATreeRemovedBeforeItWasRead(t *testing.T) {
+	fsWatchSkipUnavailableDriver(t, fsWatchDriverFanotify)
+	root := t.TempDir()
+	source := fsWatchTestSource(t, root, true, fsWatchDriverFanotify)
+	if err := os.WriteFile(filepath.Join(root, "first.txt"), nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	fsWatchWaitEvent(t, source, "create", "first.txt")
+	if err := os.MkdirAll(filepath.Join(root, "a", "b"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "a", "b", "f.txt"), []byte("x"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(filepath.Join(root, "a")); err != nil {
+		t.Fatal(err)
+	}
+	missing := map[string]bool{}
+	for _, want := range []string{"create a", "create a/b", "create a/b/f.txt", "modify a/b/f.txt", "remove a/b/f.txt", "remove a/b", "remove a"} {
+		missing[want] = true
+	}
+	timer := time.NewTimer(5 * time.Second)
+	defer timer.Stop()
+	for len(missing) > 0 {
+		select {
+		case event, ok := <-source.events:
+			if !ok {
+				t.Fatal("event source closed")
+			}
+			delete(missing, event.Event+" "+event.Path)
+		case err := <-source.errors:
+			t.Fatalf("watch error: %v", err)
+		case <-timer.C:
+			t.Fatalf("missing %v", slices.Sorted(maps.Keys(missing)))
+		}
+	}
+}
+
 // 옮긴 뒤 지운 디렉터리는 옮기기 전의 이벤트를 이전 경로에, 옮긴 뒤의 이벤트를 새 경로에 붙인다.
 func TestFSWatchFanotifyJoinsEventsAcrossADirectoryMove(t *testing.T) {
 	root, moved := fsWatchFanotifyTestKey("root"), fsWatchFanotifyTestKey("moved")
@@ -334,13 +396,15 @@ func TestFSWatchFanotifyJoinsEventsAcrossADirectoryMove(t *testing.T) {
 	}
 }
 
-// 감시 루트 밖에서 지운 트리의 이벤트도 경로가 이어질 때까지 기다리고, 이어지면 알리지 않고 버린다.
+// 감시 루트 밖에서 지운 트리의 이벤트도 경로가 이어질 때까지 기다리고, 이어지면 알리지 않고 버린다. 지운
+// 디렉터리에서 아직 열려 있는 파일에 쓴 이벤트도 기다리지 않고 버린다.
 func TestFSWatchFanotifyDropsRemovedTreesOutsideTheRoot(t *testing.T) {
 	root, outside, build := fsWatchFanotifyTestKey("root"), fsWatchFanotifyTestKey("outside"), fsWatchFanotifyTestKey("build")
 	watch, emitted := fsWatchFanotifyTestWatch(t, map[string]string{root: "", outside: "/elsewhere"})
 	for _, event := range []fsWatchFanotifyEvent{
 		{mask: unix.FAN_DELETE, parent: build, name: "out.o"},
 		{mask: unix.FAN_DELETE | unix.FAN_ONDIR, parent: outside, name: "build", target: build},
+		{mask: unix.FAN_MODIFY, parent: build, name: "build.log"},
 	} {
 		if err := watch.handle(event); err != nil {
 			t.Fatal(err)

@@ -125,9 +125,8 @@ func TestFSWatchRescansAfterDroppedEvents(t *testing.T) {
 		t.Fatal(err)
 	}
 	var notice bytes.Buffer
-	previous := fsWatchNotice
-	fsWatchNotice = &notice
-	defer func() { fsWatchNotice = previous }()
+	previous := fsWatchNotice.swap(&notice)
+	defer fsWatchNotice.swap(previous)
 	emitted = nil
 	batch := []fsevents.Event{
 		{Path: filepath.Join(root, "node_modules"), Flags: fsevents.FlagMustScanSubDirs},

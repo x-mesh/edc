@@ -603,6 +603,14 @@ func fsWatchFanotifyLinksTarget(event fsWatchFanotifyEvent) bool {
 // report는 경로를 찾은 이벤트를 감시 범위로 거른 뒤 알린다. 이벤트 대부분은 감시 루트 밖에서 오므로 경로를
 // 합치기 전에 디렉터리 접두사로 먼저 거른다. 루트의 부모 디렉터리는 루트 자신의 삭제와 이동을 알린다.
 func (watch *fsWatchFanotify) report(directory string, event fsWatchFanotifyEvent) error {
+	// 지운 디렉터리의 handle은 더 이상 경로로 열리지 않는다. 커널은 아직 읽지 않은 디렉터리의 생성과 삭제를 한
+	// 이벤트로 합쳐 그 안의 이벤트보다 앞에 두므로, 뒤에 오는 이벤트가 이 경로를 찾게 둔다.
+	if fsWatchFanotifyLinksTarget(event) && event.mask&unix.FAN_DELETE != 0 {
+		if len(watch.paths) >= fsWatchFanotifyPathEntries {
+			clear(watch.paths)
+		}
+		watch.paths[event.target] = filepath.Join(directory, event.name)
+	}
 	root := watch.options.root
 	if directory != root && directory != watch.rootParent && !strings.HasPrefix(directory, watch.rootPrefix) {
 		return nil

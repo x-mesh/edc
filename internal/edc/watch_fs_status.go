@@ -14,7 +14,29 @@ import (
 
 // fsWatchNotice는 감시 중에 생긴 안내를 받는다. 이벤트 출력과 섞이지 않게 stderr로 보낸다. 상태줄을 그리면
 // 상태줄을 지운 뒤 안내를 쓰도록 바뀐다.
-var fsWatchNotice io.Writer = os.Stderr
+var fsWatchNotice = &fsWatchNoticeWriter{target: os.Stderr}
+
+// fsWatchNoticeWriter는 안내를 받을 writer를 잠그고 바꾼다. 상태줄은 감시를 시작한 뒤에 그리므로, 이벤트
+// goroutine이 안내를 쓰는 동안 runFSWatch가 writer를 바꾼다.
+type fsWatchNoticeWriter struct {
+	mutex  sync.Mutex
+	target io.Writer
+}
+
+func (notice *fsWatchNoticeWriter) Write(data []byte) (int, error) {
+	notice.mutex.Lock()
+	defer notice.mutex.Unlock()
+	return notice.target.Write(data)
+}
+
+// swap은 안내를 target에 쓰게 하고 이전 writer를 돌려준다.
+func (notice *fsWatchNoticeWriter) swap(target io.Writer) io.Writer {
+	notice.mutex.Lock()
+	defer notice.mutex.Unlock()
+	previous := notice.target
+	notice.target = target
+	return previous
+}
 
 // fsWatchRateWindow는 초당 이벤트 수를 평균하는 구간이다.
 const fsWatchRateWindow = 10

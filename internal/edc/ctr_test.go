@@ -2,6 +2,7 @@ package edc
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -24,13 +25,23 @@ func ctrInspectLine(status string, restarts int, oom bool, exitCode int, health 
 		finished = ctrTestNow.Add(-time.Minute).Format(time.RFC3339Nano)
 		pid = 0
 	}
-	return strings.Join([]string{itoa(pid), "/web", status, started, finished, itoa(restarts), boolText(oom), itoa(exitCode), "nginx:1.27", "0123456789abcdef0123456789abcdef", health, ctrTestPorts}, "|")
+	return strings.Join([]string{itoa(pid), "/web", status, started, finished, itoa(restarts), boolText(oom), itoa(exitCode), "nginx:1.27", "0123456789abcdef0123456789abcdef", health, ctrTestPorts, "unless-stopped:0"}, "|")
 }
 
 func ctrInspectLineWithPorts(ports string) string {
-	fields := strings.Split(ctrInspectLine("running", 0, false, 0, ""), "|")
-	fields[11] = ports
+	return ctrInspectField(ctrInspectLine("running", 0, false, 0, ""), 11, ports)
+}
+
+func ctrInspectField(line string, index int, value string) string {
+	fields := strings.Split(line, "|")
+	fields[index] = value
 	return strings.Join(fields, "|")
+}
+
+// ctrHealthJSON은 docker inspect --format '{{json .State.Health}}'의 출력이다.
+func ctrHealthJSON(status string, streak int, checks ...ctrHealthCheck) string {
+	data, _ := json.Marshal(ctrHealth{Status: status, FailingStreak: streak, Log: checks})
+	return string(data)
 }
 
 func itoa(value int) string { return strconv.Itoa(value) }
@@ -68,6 +79,9 @@ func ctrTestSources(inspect string, inspectErr error) ctrSources {
 		logs: func(context.Context, string, int) (string, error) {
 			return "2026-10-12T11:59:00Z info ready\n2026-10-12T11:59:30Z [error] upstream timed out\n2026-10-12T11:59:40Z info ok\n", nil
 		},
+		health: func(context.Context, string) (string, error) {
+			return ctrHealthJSON("healthy", 0, ctrHealthCheck{Start: ctrTestNow.Add(-time.Minute), Output: "ok\n"}, ctrHealthCheck{Start: ctrTestNow.Add(-30 * time.Second), Output: "ok\n"}), nil
+		},
 		now: func() time.Time { return ctrTestNow },
 	}
 }
@@ -84,8 +98,8 @@ func ctrByID(t *testing.T, results []Result, id string) Result {
 }
 
 func TestParseCtrInspect(t *testing.T) {
-	inspect, err := parseCtrInspect(`4321|/web|running|2026-10-12T10:30:00.123456789Z|0001-01-01T00:00:00Z|2|true|137|nginx:1.27|abcdef0123456789|healthy|{"5432/tcp":[{"HostIp":"127.0.0.1","HostPort":"5432"}],"80/tcp":null,"53/udp":[{"HostIp":"0.0.0.0","HostPort":"53"},{"HostIp":"::","HostPort":"53"}]}` + "\n")
-	if err != nil || inspect.PID != 4321 || inspect.Name != "web" || inspect.Status != "running" || inspect.RestartCount != 2 || !inspect.OOMKilled || inspect.ExitCode != 137 || inspect.Image != "nginx:1.27" || inspect.ID != "abcdef0123456789" || inspect.Health != "healthy" {
+	inspect, err := parseCtrInspect(`4321|/web|running|2026-10-12T10:30:00.123456789Z|0001-01-01T00:00:00Z|2|true|137|nginx:1.27|abcdef0123456789|healthy|{"5432/tcp":[{"HostIp":"127.0.0.1","HostPort":"5432"}],"80/tcp":null,"53/udp":[{"HostIp":"0.0.0.0","HostPort":"53"},{"HostIp":"::","HostPort":"53"}]}|on-failure:5` + "\n")
+	if err != nil || inspect.PID != 4321 || inspect.Name != "web" || inspect.Status != "running" || inspect.RestartCount != 2 || !inspect.OOMKilled || inspect.ExitCode != 137 || inspect.Image != "nginx:1.27" || inspect.ID != "abcdef0123456789" || inspect.Health != "healthy" || inspect.RestartPolicy != "on-failure" || inspect.RestartMax != 5 {
 		t.Fatalf("inspect = %+v, %v", inspect, err)
 	}
 	if inspect.StartedAt.Year() != 2026 || !inspect.FinishedAt.IsZero() {
@@ -95,13 +109,13 @@ func TestParseCtrInspect(t *testing.T) {
 	if got := fmt.Sprintf("%v", inspect.Ports); got != "[{udp 53 [0.0.0.0:53 [::]:53]} {tcp 5432 [127.0.0.1:5432]}]" {
 		t.Fatalf("ports = %s", got)
 	}
-	// network를 읽지 못한 container는 ports 칸이 비고, 멈춘 container는 null이다.
+	// network를 읽지 못한 container는 ports 칸이 비고, 멈춘 container는 null이다. HostConfig를 읽지 못하면 정책 칸이 빈다.
 	for _, empty := range []string{"", "null", "{}"} {
-		if inspect, err := parseCtrInspect("1|/web|exited|t|t|0|false|0|img|id||" + empty); err != nil || len(inspect.Ports) != 0 {
-			t.Errorf("ports %q = %+v, %v", empty, inspect.Ports, err)
+		if inspect, err := parseCtrInspect("1|/web|exited|t|t|0|false|0|img|id||" + empty + "|"); err != nil || len(inspect.Ports) != 0 || inspect.RestartPolicy != "" {
+			t.Errorf("ports %q = %+v, %v", empty, inspect, err)
 		}
 	}
-	for _, bad := range []string{"", "x|y", "p|/web|running|t|t|0|false|0|img|id||{}", "4321|/web|running|t|t|r|false|0|img|id||{}", "1|/web|running|t|t|0|false|0|img|id||{", `1|/web|running|t|t|0|false|0|img|id||{"x/tcp":[{"HostIp":"","HostPort":"1"}]}`} {
+	for _, bad := range []string{"", "x|y", "p|/web|running|t|t|0|false|0|img|id||{}|no:0", "4321|/web|running|t|t|r|false|0|img|id||{}|no:0", "1|/web|running|t|t|0|false|0|img|id||{|no:0", `1|/web|running|t|t|0|false|0|img|id||{"x/tcp":[{"HostIp":"","HostPort":"1"}]}|no:0`, "1|/web|running|t|t|0|false|0|img|id||{}|on-failure", "1|/web|running|t|t|0|false|0|img|id||{}|on-failure:x", "1|/web|running|t|t|0|false|0|img|id||{}"} {
 		if _, err := parseCtrInspect(bad); err == nil {
 			t.Errorf("%q was accepted", bad)
 		}
@@ -143,8 +157,13 @@ func TestEvaluateCtrRunningContainer(t *testing.T) {
 		}
 	}
 	state := ctrByID(t, results, "state")
-	if state.Status != StatusPass || !strings.Contains(state.Summary, "running (healthy), up 1h 30m, 0 restarts, image nginx:1.27") || state.Metrics["id"] != "0123456789ab" {
+	if state.Status != StatusPass || !strings.Contains(state.Summary, "running (healthy), up 1h 30m, 0 restarts (unless-stopped), image nginx:1.27") || state.Metrics["id"] != "0123456789ab" || state.Metrics["restart_policy"] != "unless-stopped" || len(state.Warnings) != 0 {
 		t.Fatalf("state = %+v", state)
+	}
+	// 정상인 healthcheck도 -v에서 최근 검사를 보여 준다.
+	wantChecks := ctrTestNow.Add(-time.Minute).Local().Format(time.DateTime) + "  exit 0  ok\n" + ctrTestNow.Add(-30*time.Second).Local().Format(time.DateTime) + "  exit 0  ok"
+	if len(state.Evidence) != 1 || state.Evidence[0].Value != wantChecks || state.Metrics["health_failing_streak"] != 0 || state.Metrics["health_last_output"] != "ok" {
+		t.Fatalf("state health = %+v", state)
 	}
 	processes := ctrByID(t, results, "processes")
 	if processes.Status != StatusPass || !strings.Contains(processes.Evidence[0].Value, "(main)") {
@@ -212,6 +231,66 @@ func TestCtrListenChecksThePublishedPorts(t *testing.T) {
 	}
 	if listen := ctrByID(t, evaluateCtr(collectCtrFacts(context.Background(), "web", sources)), "listen"); listen.Status != StatusSkip || len(listen.Warnings) != 0 || !strings.Contains(listen.Summary, "operation not permitted") {
 		t.Errorf("unreadable = %+v", listen)
+	}
+}
+
+// unhealthy의 까닭은 healthcheck 출력에 있다. 상태 줄만으로는 무엇이 실패했는지 모른다.
+func TestCtrStateExplainsAnUnhealthyContainer(t *testing.T) {
+	sources := ctrTestSources(ctrInspectLine("running", 0, false, 0, "unhealthy"), nil)
+	sources.health = func(_ context.Context, id string) (string, error) {
+		if id != "0123456789abcdef0123456789abcdef" {
+			t.Errorf("health read %q, want the full container ID", id)
+		}
+		return ctrHealthJSON("unhealthy", 3,
+			ctrHealthCheck{Start: ctrTestNow.Add(-90 * time.Second), Output: "ok"},
+			ctrHealthCheck{Start: ctrTestNow.Add(-60 * time.Second), ExitCode: 1, Output: "curl: (7) Failed to connect\nmore detail"},
+			ctrHealthCheck{Start: ctrTestNow.Add(-30 * time.Second), ExitCode: 1, Output: "  curl: (7) connection refused \n"}), nil
+	}
+	state := ctrByID(t, evaluateCtr(collectCtrFacts(context.Background(), "web", sources)), "state")
+	if state.Status != StatusWarn || len(state.Warnings) != 1 || state.Warnings[0] != "the health check failed 3 times in a row, latest exit 1: curl: (7) connection refused" {
+		t.Fatalf("unhealthy = %+v", state)
+	}
+	if lines := strings.Split(state.Evidence[0].Value, "\n"); len(lines) != 3 || !strings.HasSuffix(lines[1], "  exit 1  curl: (7) Failed to connect") || state.Metrics["health_last_exit_code"] != 1 {
+		t.Fatalf("checks = %q, metrics = %+v", state.Evidence[0].Value, state.Metrics)
+	}
+	// 기록을 읽지 못해도 상태는 그대로이고, 읽지 못한 까닭을 상세에 적는다.
+	sources.health = func(context.Context, string) (string, error) {
+		return "Error response from daemon: busy", errors.New("exit status 1")
+	}
+	state = ctrByID(t, evaluateCtr(collectCtrFacts(context.Background(), "web", sources)), "state")
+	if state.Status != StatusWarn || len(state.Warnings) != 0 || !strings.Contains(state.Evidence[0].Value, "Error response from daemon: busy") {
+		t.Fatalf("unreadable health = %+v", state)
+	}
+	// healthcheck가 없는 container는 기록을 읽지 않는다.
+	sources = ctrTestSources(ctrInspectLine("running", 0, false, 0, ""), nil)
+	sources.health = func(context.Context, string) (string, error) {
+		t.Error("health was read for a container without a healthcheck")
+		return "", nil
+	}
+	if state := ctrByID(t, evaluateCtr(collectCtrFacts(context.Background(), "web", sources)), "state"); len(state.Evidence) != 0 || state.Metrics["health"] != nil {
+		t.Fatalf("no healthcheck = %+v", state)
+	}
+}
+
+// on-failure:N은 N번까지만 다시 띄운다. 한도에 닿아 멈춘 container는 누가 시작하기 전까지 그대로다.
+func TestCtrStateShowsTheRestartPolicy(t *testing.T) {
+	cases := []struct {
+		name, line, summary, warning string
+	}{
+		{"gave up", ctrInspectField(ctrInspectLine("exited", 3, false, 1, ""), 12, "on-failure:3"), "3 restarts (on-failure:3)", "docker does not restart it again: it restarted 3 times, the limit of on-failure:3"},
+		{"retries left", ctrInspectField(ctrInspectLine("exited", 2, false, 1, ""), 12, "on-failure:3"), "2 restarts (on-failure:3)", ""},
+		{"no limit", ctrInspectField(ctrInspectLine("running", 4, false, 0, ""), 12, "on-failure:0"), "4 restarts (on-failure)", ""},
+		{"no policy", ctrInspectField(ctrInspectLine("exited", 0, false, 1, ""), 12, "no:0"), "0 restarts (no restart policy)", ""},
+		{"unknown", ctrInspectField(ctrInspectLine("running", 0, false, 0, ""), 12, ""), "0 restarts (-)", ""},
+	}
+	for _, test := range cases {
+		state := ctrByID(t, evaluateCtr(collectCtrFacts(context.Background(), "web", ctrTestSources(test.line, nil))), "state")
+		if !strings.Contains(state.Summary, test.summary) {
+			t.Errorf("%s: summary %q, want %q", test.name, state.Summary, test.summary)
+		}
+		if (test.warning == "") != (len(state.Warnings) == 0) || test.warning != "" && state.Warnings[0] != test.warning {
+			t.Errorf("%s: warnings = %q", test.name, state.Warnings)
+		}
 	}
 }
 

@@ -27,7 +27,10 @@ func hostCtrSources() (ctrSources, bool) {
 		fdLimit:    func(pid int) topFDLimit { return readLinuxFDLimit(filepath.Join("/proc", strconv.Itoa(pid))) },
 		listen:     collectNetnsListenSockets,
 		logs:       linuxCtrLogs,
-		now:        time.Now,
+		health: func(ctx context.Context, id string) (string, error) {
+			return commandOutput(ctx, "docker", "inspect", "--type", "container", "--format", ctrHealthFormat, id)
+		},
+		now: time.Now,
 		listIDs: func(ctx context.Context) (string, error) {
 			return commandOutput(ctx, "docker", "ps", "--all", "--quiet", "--no-trunc")
 		},

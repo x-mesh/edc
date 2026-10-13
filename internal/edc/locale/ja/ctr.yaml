@@ -19,7 +19,10 @@ ctr:
     invalid_reference: "不正な container 名 %q: 英字、数字、_.-/ のみ使い、'-' で始められません"
     not_found: "container %s がありません"
   state:
-    summary: "%s、稼働 %s、再起動 %d 回、image %s"
+    summary: "%s、稼働 %s、再起動 %d 回(%s)、image %s"
+    no_policy: "再起動ポリシーなし"
+    restart_gave_up: "%d 回再起動して %s の上限に達したため、docker は再起動しない"
+    health_failed: "health check が %d 回連続で失敗、最新の exit %d: %s"
     inspect_failed: "docker inspect に失敗: %s"
   listen:
     none: "container の process が持つ listen 中の tcp・udp socket なし"
@@ -37,4 +40,5 @@ ctr:
     errors: "最後のログ %d 行のうちエラー %d 行、最新: %s"
   evidence:
     log: "ログ"
+    health: "health check の記録"
     published: "publish した port"

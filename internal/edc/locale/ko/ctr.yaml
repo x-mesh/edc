@@ -19,7 +19,10 @@ ctr:
     invalid_reference: "잘못된 container 이름 %q: 영문자, 숫자, _.-/만 쓰고 '-'로 시작할 수 없습니다"
     not_found: "container %s가 없습니다"
   state:
-    summary: "%s, 가동 %s, 재시작 %d번, image %s"
+    summary: "%s, 가동 %s, 재시작 %d번(%s), image %s"
+    no_policy: "재시작 정책 없음"
+    restart_gave_up: "%d번 재시작해 %s 한도에 닿았으므로 docker가 다시 시작하지 않음"
+    health_failed: "health check %d번 연속 실패, 최근 exit %d: %s"
     inspect_failed: "docker inspect 실패: %s"
   listen:
     none: "container process가 가진 listen 중인 tcp·udp 소켓 없음"
@@ -37,4 +40,5 @@ ctr:
     errors: "마지막 로그 %d줄 가운데 오류 %d줄, 최근: %s"
   evidence:
     log: "로그"
+    health: "health check 기록"
     published: "publish한 port"

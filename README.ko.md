@@ -486,12 +486,14 @@ sudo edc ctr --json - web         # 보기마다 결과 하나
 
 | 결과 | pass | warn | fail |
 |---|---|---|---|
-| `ctr.state` | container가 실행 중이고 재시작과 OOM kill이 없음 | 실행 중이지만 재시작했거나, OOM kill됐거나, unhealthy이거나, paused·created·restarting 상태임 | container가 exited이거나 dead임. 요약에 종료 코드를 보여 줌 |
+| `ctr.state` | container가 실행 중이고 재시작과 OOM kill이 없음 | 실행 중이지만 재시작했거나, OOM kill됐거나, unhealthy이거나, paused·created·restarting 상태임. unhealthy이면 마지막으로 실패한 health check의 출력을 warning으로 보여 줌 | container가 exited이거나 dead임. 요약에 종료 코드를 보여 줌. `on-failure` 한도에 닿아 더 재시작하지 않으면 warning으로 알림 |
 | `ctr.processes` | container cgroup의 process를 CPU%, RSS와 함께 보여 줌 | | |
 | `ctr.limits` | memory, OOM kill, CPU throttle, pids가 한도 아래임 | memory 사용량이 한도의 90% 이상, 커널이 container의 process를 메모리 부족으로 죽임, CPU 한도가 period의 25% 이상을 throttle함, pids가 한도의 90% 이상 | |
 | `ctr.fd` | 모든 process가 soft fd 한계의 80% 미만을 씀 | 한계의 80% 이상을 쓰는 process가 있음 | |
 | `ctr.listen` | container process가 가진 TCP·UDP 소켓을 보여 주고, publish한 port마다 listen하는 process가 있음 | publish한 port를 container 안에서 listen하는 process가 없거나, loopback 주소에서만 listen함 | |
 | `ctr.log` | 마지막 로그 50줄에 오류 줄이 없음 | 오류 줄이 있고, 마지막 5줄을 보여 줌 | |
+
+`ctr.state` 요약에는 재시작 정책이 함께 나옵니다(예: `재시작 1번(on-failure:5)`). `-v`를 주면 docker가 남긴 health check를 exit code, 출력 첫 줄과 함께 보여 줍니다. health check 기록은 healthcheck가 있는 container에서만 읽습니다.
 
 `ctr.limits`는 container의 cgroup v2를 읽습니다. `memory.current`와 `memory.max`, OOM kill은 `memory.events.local`, throttle된 period는 container가 시작된 뒤의 `cpu.stat`, 그리고 `pids.current`와 `pids.max`입니다. 오류 줄은 `error`, `fatal`, `panic`, `exception`, `traceback`, `oom`이 든 줄입니다. 로그는 `docker logs --tail 50`으로 읽으므로, 다른 곳에 쓰는 container는 오류 줄이 보이지 않습니다.
 

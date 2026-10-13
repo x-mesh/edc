@@ -6,6 +6,16 @@ svc:
     needs_root: "%s を読むには root が必要です"
     unreadable: "%s を読めませんでした: %s"
     not_running: "unit に実行中の process がありません"
+  list:
+    summary: "service %d 件、失敗 %d 件、起動・再起動中 %d 件"
+    failed: "service 一覧を読めません: %s"
+    column:
+      unit: "UNIT"
+      state: "状態"
+      restarts: "再起動"
+      uptime: "稼働"
+      memory: "メモリ"
+      pid: "PID"
   error:
     invalid_unit: "service 名 %q が正しくありません: 英字、数字、:_.@- のみを使い、'-' で始めたり service 以外の接尾辞を付けたりしないでください"
     not_found: "unit %s は存在しません"

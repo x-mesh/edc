@@ -6,6 +6,16 @@ svc:
     needs_root: "needs root to read %s"
     unreadable: "cannot read %s: %s"
     not_running: "the unit has no running process"
+  list:
+    summary: "%d services, %d failed, %d starting or restarting"
+    failed: "cannot list the services: %s"
+    column:
+      unit: "UNIT"
+      state: "STATE"
+      restarts: "RESTARTS"
+      uptime: "UPTIME"
+      memory: "MEM"
+      pid: "PID"
   error:
     invalid_unit: "invalid service name %q: use letters, digits, and :_.@- only, without a leading '-' or a non-service suffix"
     not_found: "unit %s does not exist"

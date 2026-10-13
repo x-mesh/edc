@@ -216,6 +216,7 @@ The command also creates the parent for the legacy recommended `edc.log` path.
 ./bin/edc listen --watch -i 0.5 --duration 10s
 sudo ./bin/edc audit           # read-only check of exposure and settings (Linux)
 sudo ./bin/edc svc nginx       # one systemd service on one screen (Linux)
+./bin/edc svc                  # the systemd services, failed first (Linux)
 ./bin/edc changes --since 2h   # recent package, /etc, and service changes (Linux)
 sudo ./bin/edc events --since 6h   # kernel and systemd failure signals in time order (Linux)
 ./bin/edc quality --timeout 60s
@@ -493,6 +494,20 @@ Run it as root. Without root, edc cannot read the fds of other users, the socket
 A socket that only systemd holds (socket activation) does not belong to a unit process. edc does not show that socket.
 
 On macOS, or on Linux without systemd, `edc svc` shows one `skip` and exits with 0. If the unit does not exist, edc writes an error and exits with 1. A `fail` result also gives exit code 1. A usage error gives exit code 2.
+
+### Service list
+
+Run `edc svc` without a unit to list the services. The failed services come first. Then come the services that start or wait to restart, and then the services with restarts. The services that are not running stay out unless you add `--all`.
+
+```bash
+edc svc               # the list; a terminal opens it as a screen
+edc svc --all         # also the services that are not running
+edc svc --json -      # the list in metrics.services
+```
+
+In a terminal, the list refreshes every 2 seconds. Use `↑`/`↓` to select a service, `Enter` to open it, and `Esc` to go back. `/` filters by name, `f` shows only the failed services, `a` switches `--all`, `r` reads the list again, and `q` quits. An open service shows the same results as `edc svc -v <unit>`, and `r` reads it again.
+
+In a pipe or with `--json`, edc prints one `svc.list` result and a table. A failed service makes the result `fail` and the exit code 1. A service that starts or waits to restart makes it `warn`. edc reads the list without root, but an open service needs root as above.
 
 ## Container view (Linux)
 

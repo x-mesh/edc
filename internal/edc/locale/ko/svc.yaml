@@ -6,6 +6,16 @@ svc:
     needs_root: "%s 항목은 root여야 읽을 수 있습니다"
     unreadable: "%s 항목을 읽지 못했습니다: %s"
     not_running: "unit에 실행 중인 process가 없습니다"
+  list:
+    summary: "service %d개, 실패 %d개, 시작·재시작 중 %d개"
+    failed: "service 목록을 읽지 못했습니다: %s"
+    column:
+      unit: "UNIT"
+      state: "상태"
+      restarts: "재시작"
+      uptime: "가동"
+      memory: "메모리"
+      pid: "PID"
   error:
     invalid_unit: "service 이름 %q가 올바르지 않습니다: 영문자, 숫자, :_.@-만 쓰고 '-'로 시작하거나 service가 아닌 접미사를 붙이지 마세요"
     not_found: "unit %s가 없습니다"

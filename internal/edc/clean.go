@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"syscall"
@@ -33,8 +34,9 @@ const (
 	cleanProbeID     = "clean.scan"
 	cleanOutputLimit = 64 << 10
 	cleanStderrLimit = 4 << 10
-	// cleanDerivedGroups는 터미널에 보이는 DerivedData 묶음 수다.
+	// cleanDerivedGroups는 기본 출력에 보이는 묶음 수이고, cleanVerboseGroups는 -v에 보이는 묶음 수다.
 	cleanDerivedGroups = 5
+	cleanVerboseGroups = 30
 	cleanDetailRunes   = 80
 	cleanDerivedID     = "xcode-derived-data"
 )
@@ -64,6 +66,7 @@ const (
 	cleanReasonSameAs         = "same_as"
 	cleanReasonUnreadableDirs = "unreadable_dirs"
 	cleanReasonSkippedMounts  = "skipped_mounts"
+	cleanReasonInvalidEnv     = "invalid_env"
 )
 
 // 번역 키를 조합하는 값의 전체 목록이다. 시험이 세 언어에서 모두 번역이 있는지 확인한다.
@@ -72,18 +75,24 @@ var (
 		cleanUnreadable, cleanRejected, cleanDuplicate, cleanNotScanned}
 	cleanReasons = []string{cleanReasonTimeout, cleanReasonStopped, cleanReasonToolTimeout, cleanReasonToolFailed,
 		cleanReasonInvalidOutput, cleanReasonPermission, cleanReasonStatError, cleanReasonRootUnreadable,
-		cleanReasonCoversUserData, cleanReasonSameAs, cleanReasonUnreadableDirs, cleanReasonSkippedMounts}
-	cleanCategories  = []string{"build_cache", "package_cache"}
-	cleanCosts       = []string{"low", "medium"}
-	cleanSpecIDs     = []string{"go-build", "go-mod", "npm", "pnpm", "uv", "homebrew", cleanDerivedID, "swiftpm"}
+		cleanReasonCoversUserData, cleanReasonSameAs, cleanReasonUnreadableDirs, cleanReasonSkippedMounts,
+		cleanReasonInvalidEnv}
+	cleanCategories = []string{"build_cache", "package_cache", "downloaded_binary", "xcode_support", "app_cache", "logs", "model", "toolchain"}
+	cleanCosts      = []string{"low", "medium", "high", "unknown", "lost"}
+	cleanSpecIDs    = []string{"go-build", "go-mod", "npm", "pnpm", "uv", "homebrew", cleanDerivedID, "swiftpm",
+		"cargo-registry", "cargo-git", "zig", "bun", "pip", "playwright", "puppeteer", "node-gyp", "electron",
+		"xcode-device-support", "coresimulator-caches", "app-updates", "app-logs", "huggingface", "rustup-toolchains", "ollama",
+		"app-caches", "dot-cache"}
 	cleanNotMeasured = []cleanNotMeasuredItem{
 		{"docker_engine", "engine_accounting"},
 		{"vm_disks_volumes_db", "user_data"},
-		{"app_caches_logs", "per_app_rules"},
 		{"worktrees", "unsaved_work"},
 		{"trash_downloads", "user_files"},
 		{"project_build_dirs", "project_root"},
-		{"sdk_simulators_models", "costly_to_restore"},
+		{"simulators", "device_data"},
+		{"sdks", "costly_to_restore"},
+		{"app_data", "user_data"},
+		{"other_tool_caches", "unverified_location"},
 	}
 )
 
@@ -92,44 +101,123 @@ type cleanNotMeasuredItem struct {
 	Reason string `json:"reason"`
 }
 
-// cleanSpec은 카탈로그의 후보 하나다. fixed가 있으면 고정 경로이고, 없으면 tool에 위치를 묻는다.
-type cleanSpec struct {
-	id        string
-	category  string
-	fixed     string
-	tool      string
-	args      []string
-	env       []string
-	lines     int
-	line      int
-	cost      string
-	cleanup   string
-	groupApps bool
+// cleanEnv는 위치를 정하는 환경변수 하나다. 값에 suffix를 이어 붙인 경로가 캐시 폴더다.
+type cleanEnv struct {
+	name   string
+	suffix string
 }
 
-// cleanCatalog는 OS별 후보 목록이다. Linux 전용 고정 경로는 아직 없다.
+// cleanSpec은 카탈로그의 후보 하나다. tool이 있으면 도구에 위치를 묻고, 없으면 envs를 순서대로 보다가
+// 환경변수가 하나도 없을 때 fixed를 쓴다.
+type cleanSpec struct {
+	id            string
+	category      string
+	priority      string
+	fixed         string
+	envs          []cleanEnv
+	tool          string
+	args          []string
+	env           []string
+	lines         int
+	line          int
+	regenerable   bool
+	cost          string
+	cleanup       string
+	groupApps     bool
+	groupChildren bool
+	children      *cleanChildren
+}
+
+// cleanChildren은 fixed 폴더의 1단계 항목을 따로 재는 묶음 후보다. suffix가 있으면 이름 끝이 맞는 항목만 재고,
+// 없으면 앞선 후보를 뺀 나머지 항목을 모두 잰다.
+type cleanChildren struct {
+	suffix string
+}
+
+// cleanCatalog는 OS별 후보 목록이다. Linux 기본 경로는 소스, man page, 문서로 확인한 것만 둔다.
 func cleanCatalog(goos, home string) []cleanSpec {
+	at := func(parts ...string) string { return filepath.Join(append([]string{home}, parts...)...) }
+	darwin := goos == "darwin"
 	goEnv := []string{"GOTOOLCHAIN=local"}
 	specs := []cleanSpec{
-		{id: "go-build", category: "build_cache", tool: "go", args: []string{"env", "GOCACHE", "GOMODCACHE"}, env: goEnv,
-			lines: 2, line: 0, cost: "low", cleanup: "go clean -cache"},
-		{id: "go-mod", category: "package_cache", tool: "go", args: []string{"env", "GOCACHE", "GOMODCACHE"}, env: goEnv,
-			lines: 2, line: 1, cost: "medium", cleanup: "go clean -modcache"},
-		{id: "npm", category: "package_cache", tool: "npm", args: []string{"config", "get", "cache"},
-			env: []string{"npm_config_update_notifier=false"}, lines: 1, cost: "medium", cleanup: "npm cache clean --force"},
-		{id: "pnpm", category: "package_cache", tool: "pnpm", args: []string{"store", "path"}, lines: 1,
-			cost: "medium", cleanup: "pnpm store prune"},
-		{id: "uv", category: "package_cache", tool: "uv", args: []string{"cache", "dir"}, lines: 1,
-			cost: "medium", cleanup: "uv cache clean"},
-		{id: "homebrew", category: "package_cache", tool: "brew", args: []string{"--cache"}, lines: 1,
-			cost: "medium", cleanup: "brew cleanup -s"},
+		{id: "go-build", category: "build_cache", priority: "P1", tool: "go", args: []string{"env", "GOCACHE", "GOMODCACHE"}, env: goEnv,
+			lines: 2, line: 0, regenerable: true, cost: "low", cleanup: "go clean -cache"},
+		{id: "go-mod", category: "package_cache", priority: "P1", tool: "go", args: []string{"env", "GOCACHE", "GOMODCACHE"}, env: goEnv,
+			lines: 2, line: 1, regenerable: true, cost: "medium", cleanup: "go clean -modcache"},
+		{id: "npm", category: "package_cache", priority: "P1", tool: "npm", args: []string{"config", "get", "cache"},
+			env: []string{"npm_config_update_notifier=false"}, lines: 1, regenerable: true, cost: "medium", cleanup: "npm cache clean --force"},
+		{id: "pnpm", category: "package_cache", priority: "P1", tool: "pnpm", args: []string{"store", "path"}, lines: 1,
+			regenerable: true, cost: "medium", cleanup: "pnpm store prune"},
+		{id: "uv", category: "package_cache", priority: "P1", tool: "uv", args: []string{"cache", "dir"}, lines: 1,
+			regenerable: true, cost: "medium", cleanup: "uv cache clean"},
+		{id: "homebrew", category: "package_cache", priority: "P1", tool: "brew", args: []string{"--cache"}, lines: 1,
+			regenerable: true, cost: "medium", cleanup: "brew cleanup -s"},
 	}
-	if goos == "darwin" {
+	if darwin {
 		specs = append(specs,
-			cleanSpec{id: cleanDerivedID, category: "build_cache", fixed: filepath.Join(home, "Library/Developer/Xcode/DerivedData"),
-				cost: "medium", groupApps: true},
-			cleanSpec{id: "swiftpm", category: "package_cache", fixed: filepath.Join(home, "Library/Caches/org.swift.swiftpm"),
-				cost: "medium", cleanup: "swift package purge-cache"},
+			cleanSpec{id: cleanDerivedID, category: "build_cache", priority: "P1", fixed: at("Library/Developer/Xcode/DerivedData"),
+				regenerable: true, cost: "medium", groupApps: true},
+			cleanSpec{id: "swiftpm", category: "package_cache", priority: "P1", fixed: at("Library/Caches/org.swift.swiftpm"),
+				regenerable: true, cost: "medium", cleanup: "swift package purge-cache"},
+		)
+	}
+	// 도구 설정 파일(bunfig.toml, .npmrc, .puppeteerrc)은 읽지 않는다. 기본 경로로 잰 값과 보고 경로로 차이를 볼 수 있다.
+	specs = append(specs,
+		cleanSpec{id: "cargo-registry", category: "package_cache", priority: "P1", fixed: at(".cargo/registry"),
+			envs: []cleanEnv{{"CARGO_HOME", "registry"}}, regenerable: true, cost: "medium"},
+		cleanSpec{id: "cargo-git", category: "package_cache", priority: "P1", fixed: at(".cargo/git"),
+			envs: []cleanEnv{{"CARGO_HOME", "git"}}, regenerable: true, cost: "medium"},
+		cleanSpec{id: "zig", category: "build_cache", priority: "P1", fixed: at(".cache/zig"),
+			envs: []cleanEnv{{"ZIG_GLOBAL_CACHE_DIR", ""}, {"XDG_CACHE_HOME", "zig"}}, regenerable: true, cost: "medium"},
+		cleanSpec{id: "bun", category: "package_cache", priority: "P1", fixed: at(".bun/install/cache"),
+			envs:        []cleanEnv{{"BUN_INSTALL_CACHE_DIR", ""}, {"BUN_INSTALL", "install/cache"}, {"XDG_CACHE_HOME", ".bun/install/cache"}},
+			regenerable: true, cost: "medium", cleanup: "bun pm cache rm"},
+		cleanSpec{id: "pip", category: "package_cache", priority: "P1", tool: "pip3", args: []string{"cache", "dir"}, lines: 1,
+			regenerable: true, cost: "medium", cleanup: "pip3 cache purge"},
+	)
+	playwright := cleanSpec{id: "playwright", category: "downloaded_binary", priority: "P2", fixed: at(".cache/ms-playwright"),
+		envs:        []cleanEnv{{"PLAYWRIGHT_BROWSERS_PATH", ""}, {"XDG_CACHE_HOME", "ms-playwright"}},
+		regenerable: true, cost: "high"}
+	nodeGyp := cleanSpec{id: "node-gyp", category: "downloaded_binary", priority: "P2", fixed: at(".cache/node-gyp"),
+		envs: []cleanEnv{{"npm_config_devdir", ""}, {"XDG_CACHE_HOME", "node-gyp"}}, regenerable: true, cost: "medium"}
+	if darwin {
+		// macOS의 Playwright와 node-gyp는 XDG_CACHE_HOME을 보지 않고 ~/Library/Caches를 쓴다.
+		playwright.fixed, playwright.envs = at("Library/Caches/ms-playwright"), playwright.envs[:1]
+		nodeGyp.fixed, nodeGyp.envs = at("Library/Caches/node-gyp"), nodeGyp.envs[:1]
+	}
+	specs = append(specs, playwright,
+		cleanSpec{id: "puppeteer", category: "downloaded_binary", priority: "P2", fixed: at(".cache/puppeteer"),
+			envs: []cleanEnv{{"PUPPETEER_CACHE_DIR", ""}}, regenerable: true, cost: "high"},
+		nodeGyp)
+	if darwin {
+		specs = append(specs,
+			cleanSpec{id: "electron", category: "downloaded_binary", priority: "P2", fixed: at("Library/Caches/electron"),
+				envs: []cleanEnv{{"electron_config_cache", ""}}, regenerable: true, cost: "medium"},
+			cleanSpec{id: "xcode-device-support", category: "xcode_support", priority: "P2", fixed: at("Library/Developer/Xcode"),
+				children: &cleanChildren{suffix: "DeviceSupport"}, regenerable: true, cost: "high"},
+			cleanSpec{id: "coresimulator-caches", category: "xcode_support", priority: "P2", fixed: at("Library/Developer/CoreSimulator/Caches"),
+				regenerable: true, cost: "low"},
+			// 앱이 남긴 폴더는 무엇이 들었는지 모르므로 다시 만들 수 있다고 하지 않는다.
+			cleanSpec{id: "app-updates", category: "app_cache", priority: "P2", fixed: at("Library/Caches"),
+				children: &cleanChildren{suffix: ".ShipIt"}, cost: "unknown"},
+			cleanSpec{id: "app-logs", category: "logs", priority: "P2", fixed: at("Library/Logs"), groupChildren: true, cost: "lost"},
+		)
+	}
+	specs = append(specs,
+		cleanSpec{id: "huggingface", category: "model", priority: "P3", fixed: at(".cache/huggingface/hub"),
+			envs:        []cleanEnv{{"HF_HUB_CACHE", ""}, {"HUGGINGFACE_HUB_CACHE", ""}, {"HF_HOME", "hub"}, {"XDG_CACHE_HOME", "huggingface/hub"}},
+			regenerable: true, cost: "high", cleanup: "hf cache delete"},
+		cleanSpec{id: "rustup-toolchains", category: "toolchain", priority: "P3", fixed: at(".rustup/toolchains"),
+			envs: []cleanEnv{{"RUSTUP_HOME", "toolchains"}}, regenerable: true, cost: "high", groupChildren: true,
+			cleanup: "rustup toolchain uninstall <toolchain>"},
+	)
+	if darwin {
+		specs = append(specs, cleanSpec{id: "ollama", category: "model", priority: "P3", fixed: at(".ollama/models"),
+			envs: []cleanEnv{{"OLLAMA_MODELS", ""}}, regenerable: true, cost: "high"})
+		// 나머지 묶음은 앞선 모든 후보의 측정 경로를 알아야 하므로 카탈로그 끝에 둔다.
+		specs = append(specs,
+			cleanSpec{id: "app-caches", category: "app_cache", priority: "P2", fixed: at("Library/Caches"), children: &cleanChildren{}, cost: "unknown"},
+			cleanSpec{id: "dot-cache", category: "app_cache", priority: "P2", fixed: at(".cache"), children: &cleanChildren{}, cost: "unknown"},
 		)
 	}
 	return specs
@@ -159,15 +247,30 @@ type cleanToolOutput struct {
 var errCleanToolTimeout = errors.New("tool lookup timed out")
 
 type cleanDeps struct {
-	home     string
-	lookPath func(string) (string, error)
-	run      func(ctx context.Context, spec cleanToolSpec) cleanToolOutput
-	measure  func(ctx context.Context, options duOptions, sources duSources) (duScan, error)
-	sources  duSources
+	home      string
+	lookPath  func(string) (string, error)
+	run       func(ctx context.Context, spec cleanToolSpec) cleanToolOutput
+	lookupEnv func(string) (string, bool)
+	deviceOf  func(string) (uint64, error)
+	measure   func(ctx context.Context, options duOptions, sources duSources) (duScan, error)
+	sources   duSources
 }
 
 func hostCleanDeps(home string, host duSources) cleanDeps {
-	return cleanDeps{home: home, lookPath: exec.LookPath, run: runCleanTool, measure: duMeasure, sources: cleanSources(host)}
+	return cleanDeps{home: home, lookPath: exec.LookPath, run: runCleanTool, lookupEnv: os.LookupEnv, deviceOf: cleanDeviceOf, measure: duMeasure, sources: cleanSources(host)}
+}
+
+// cleanDeviceOf는 경로가 있는 장치 번호다. symlink는 따라가지 않는다.
+func cleanDeviceOf(path string) (uint64, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return 0, err
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return 0, errors.New("no device number")
+	}
+	return uint64(stat.Dev), nil
 }
 
 // runCleanTool은 stdout만 제한 버퍼로 읽는다. stderr의 경고가 경로에 섞이지 않게 따로 받는다.
@@ -235,6 +338,11 @@ type cleanItem struct {
 	RegenCost       string              `json:"regen_cost"`
 	Cleanup         string              `json:"cleanup,omitempty"`
 	Groups          []cleanGroup        `json:"groups,omitempty"`
+	Match           string              `json:"match,omitempty"`
+	Excludes        []string            `json:"excludes,omitempty"`
+	// roots는 실제로 잰 경로다. 단일 경로 후보는 하나이고 묶음 후보는 잰 항목마다 하나다. 포함 판정이 이것을 쓴다.
+	roots   []string
+	grouped bool
 }
 
 func (item cleanItem) counted() bool {
@@ -262,10 +370,17 @@ type cleanQuery struct {
 	detail string
 }
 
+type cleanRoot struct {
+	path string
+	id   string
+}
+
 type cleanScanner struct {
 	deps    cleanDeps
 	home    string
 	queries map[string]cleanQuery
+	// roots는 앞선 후보가 잰 경로다. 같은 경로를 다시 재거나 나머지 묶음이 다시 탐색하지 않으려고 모은다.
+	roots []cleanRoot
 }
 
 func cleanScan(ctx context.Context, deps cleanDeps, specs []cleanSpec) []cleanItem {
@@ -275,15 +390,14 @@ func cleanScan(ctx context.Context, deps cleanDeps, specs []cleanSpec) []cleanIt
 		resolvedHome = resolved
 	}
 	items := make([]cleanItem, 0, len(specs))
-	seen := map[string]string{}
 	for _, spec := range specs {
-		item := cleanItem{ID: spec.id, Category: spec.category, Priority: "P1", Regenerable: true, RegenCost: spec.cost, Cleanup: spec.cleanup}
+		item := cleanItem{ID: spec.id, Category: spec.category, Priority: spec.priority, Regenerable: spec.regenerable, RegenCost: spec.cost, Cleanup: spec.cleanup}
 		if err := ctx.Err(); err != nil {
 			item.Status, item.Reasons = cleanNotScanned, []string{cleanContextReason(err)}
 			items = append(items, item)
 			continue
 		}
-		scanner.measureOne(ctx, spec, &item, resolvedHome, seen)
+		scanner.measureOne(ctx, spec, &item, resolvedHome)
 		items = append(items, item)
 	}
 	cleanMarkInside(items)
@@ -297,7 +411,7 @@ func cleanContextReason(err error) string {
 	return cleanReasonStopped
 }
 
-func (scanner *cleanScanner) measureOne(ctx context.Context, spec cleanSpec, item *cleanItem, resolvedHome string, seen map[string]string) {
+func (scanner *cleanScanner) measureOne(ctx context.Context, spec cleanSpec, item *cleanItem, resolvedHome string) {
 	reported, ok := scanner.locate(ctx, spec, item)
 	if !ok {
 		return
@@ -314,11 +428,18 @@ func (scanner *cleanScanner) measureOne(ctx context.Context, spec cleanSpec, ite
 		item.Status, item.Reasons = cleanRejected, []string{cleanReasonCoversUserData}
 		return
 	}
-	if first, dup := seen[resolved]; dup {
-		item.Status, item.Reasons, item.SameAs = cleanDuplicate, []string{cleanReasonSameAs}, first
+	if spec.children != nil {
+		scanner.measureChildren(ctx, spec, item, resolved)
 		return
 	}
-	seen[resolved] = item.ID
+	for _, root := range scanner.roots {
+		if root.path == resolved {
+			item.Status, item.Reasons, item.SameAs = cleanDuplicate, []string{cleanReasonSameAs}, root.id
+			return
+		}
+	}
+	scanner.roots = append(scanner.roots, cleanRoot{path: resolved, id: item.ID})
+	item.roots = []string{resolved}
 	started := time.Now()
 	scan, err := scanner.deps.measure(ctx, duOptions{root: resolved, workers: duDefaultWorkers}, scanner.deps.sources)
 	if err != nil {
@@ -352,16 +473,232 @@ func (scanner *cleanScanner) measureOne(ctx context.Context, spec cleanSpec, ite
 	if len(item.Reasons) > 0 {
 		item.Status, item.LowerBound = cleanPartial, true
 	}
-	if spec.groupApps {
+	switch {
+	case spec.groupApps:
 		item.Groups = cleanGroupDerivedData(scan.root)
+	case spec.groupChildren:
+		item.Groups = cleanGroupFolders(scan.root, nil)
 	}
+}
+
+// measureChildren은 부모 폴더의 1단계 항목을 하나씩 잰다. 앞선 후보가 잰 경로는 다시 재지 않고 excludes에 남긴다.
+// 그 경로를 품은 폴더는 자신의 block만 더하고 하위로 내려가 품지 않은 부분만 잰다.
+func (scanner *cleanScanner) measureChildren(ctx context.Context, spec cleanSpec, item *cleanItem, parent string) {
+	item.grouped = true
+	for _, root := range scanner.roots {
+		if pathUnder(parent, root.path) {
+			item.Status, item.Reasons, item.SameAs = cleanDuplicate, []string{cleanReasonSameAs}, root.id
+			return
+		}
+	}
+	device, err := scanner.deps.deviceOf(parent)
+	if err != nil {
+		cleanPathFailure(item, err)
+		return
+	}
+	entries, err := os.ReadDir(parent)
+	if err != nil {
+		cleanPathFailure(item, err)
+		return
+	}
+	if spec.children.suffix != "" {
+		item.Match = "*" + spec.children.suffix
+		matched := entries[:0:0]
+		for _, entry := range entries {
+			if strings.HasSuffix(entry.Name(), spec.children.suffix) {
+				matched = append(matched, entry)
+			}
+		}
+		if len(matched) == 0 {
+			item.Status = cleanAbsent
+			return
+		}
+		entries = matched
+	}
+	walk := &cleanChildWalk{scanner: scanner, device: device, excluded: map[string]string{}, hit: map[string]bool{},
+		groups: map[string]*cleanGroup{}}
+	for _, root := range scanner.roots {
+		if root.path != parent && pathUnder(root.path, parent) {
+			walk.excluded[root.path] = root.id
+		}
+	}
+	started := time.Now()
+	walk.visit(ctx, parent, entries, "")
+	at := started.UTC()
+	elapsed := time.Since(started).Milliseconds()
+	item.MeasuredAt, item.ElapsedMS = &at, &elapsed
+	if walk.filesystem.Mount != "" {
+		item.Filesystem = &cleanFilesystemRef{Mount: walk.filesystem.Mount, FSType: walk.filesystem.FSType}
+	}
+	usage := walk.usage
+	item.UsageBytes, item.Entries = &usage, walk.entries
+	item.Unreadable, item.UnreadablePaths, item.SkippedMounts = walk.unreadable, walk.unreadablePaths, walk.mounts
+	item.roots = walk.roots
+	for _, root := range walk.roots {
+		scanner.roots = append(scanner.roots, cleanRoot{path: root, id: item.ID})
+	}
+	for id := range walk.hit {
+		item.Excludes = append(item.Excludes, id)
+	}
+	sort.Strings(item.Excludes)
+	for _, group := range walk.groups {
+		item.Groups = append(item.Groups, *group)
+	}
+	sort.Slice(item.Groups, func(i, j int) bool {
+		if item.Groups[i].UsageBytes != item.Groups[j].UsageBytes {
+			return item.Groups[i].UsageBytes > item.Groups[j].UsageBytes
+		}
+		return item.Groups[i].Name < item.Groups[j].Name
+	})
+	item.Status = cleanMeasured
+	if walk.stopped {
+		item.Reasons = append(item.Reasons, cleanContextReason(ctx.Err()))
+	}
+	if walk.unreadable > 0 {
+		item.Reasons = append(item.Reasons, cleanReasonUnreadableDirs)
+	}
+	if walk.mounts > 0 {
+		item.Reasons = append(item.Reasons, cleanReasonSkippedMounts)
+	}
+	if len(item.Reasons) > 0 {
+		item.Status, item.LowerBound = cleanPartial, true
+	}
+}
+
+// cleanChildWalk는 묶음 후보 하나를 재는 동안의 상태다.
+type cleanChildWalk struct {
+	scanner         *cleanScanner
+	device          uint64
+	excluded        map[string]string
+	hit             map[string]bool
+	groups          map[string]*cleanGroup
+	roots           []string
+	usage           uint64
+	entries         int64
+	mounts          int
+	unreadable      int64
+	unreadablePaths []string
+	filesystem      duFilesystem
+	stopped         bool
+}
+
+func (walk *cleanChildWalk) visit(ctx context.Context, dir string, entries []os.DirEntry, group string) {
+	for _, entry := range entries {
+		if walk.stopped || ctx.Err() != nil {
+			walk.stopped = true
+			return
+		}
+		path := filepath.Join(dir, entry.Name())
+		name := group
+		if name == "" {
+			name = entry.Name()
+		}
+		info, err := os.Lstat(path)
+		if err != nil {
+			walk.fail(path, err)
+			continue
+		}
+		if info.Mode()&fs.ModeSymlink != 0 {
+			continue
+		}
+		if id, skip := walk.excluded[path]; skip {
+			walk.hit[id] = true
+			continue
+		}
+		device, err := walk.scanner.deps.deviceOf(path)
+		if err != nil {
+			walk.fail(path, err)
+			continue
+		}
+		if device != walk.device {
+			walk.mounts++
+			continue
+		}
+		if info.IsDir() && walk.holdsExcluded(path) {
+			walk.add(name, cleanBlocks(info), 1)
+			children, err := os.ReadDir(path)
+			if err != nil {
+				walk.fail(path, err)
+				continue
+			}
+			walk.visit(ctx, path, children, name)
+			continue
+		}
+		walk.measure(ctx, path, name)
+	}
+}
+
+func (walk *cleanChildWalk) holdsExcluded(dir string) bool {
+	for path := range walk.excluded {
+		if pathUnder(path, dir) {
+			return true
+		}
+	}
+	return false
+}
+
+func (walk *cleanChildWalk) measure(ctx context.Context, path, name string) {
+	scanner := walk.scanner
+	scan, err := scanner.deps.measure(ctx, duOptions{root: path, workers: duDefaultWorkers}, scanner.deps.sources)
+	if err != nil {
+		walk.fail(path, err)
+		return
+	}
+	if walk.filesystem.Mount == "" {
+		walk.filesystem = scan.filesystem
+	}
+	if scan.root.unreadable {
+		walk.unreadable++
+		walk.keep(path)
+		return
+	}
+	walk.roots = append(walk.roots, path)
+	walk.add(name, scan.root.total, scan.root.count)
+	walk.unreadable += scan.unreadableCount
+	for _, unreadable := range scan.unreadable {
+		walk.keep(unreadable)
+	}
+	walk.mounts += len(scan.mounts)
+	walk.stopped = walk.stopped || scan.partial
+}
+
+func (walk *cleanChildWalk) add(name string, bytes uint64, entries int64) {
+	group := walk.groups[name]
+	if group == nil {
+		group = &cleanGroup{Name: name, Folders: 1}
+		walk.groups[name] = group
+	}
+	group.UsageBytes += bytes
+	walk.usage += bytes
+	walk.entries += entries
+}
+
+// fail은 측정하지 못한 항목을 센다. 목록을 만든 뒤 사라진 항목은 건너뛴다.
+func (walk *cleanChildWalk) fail(path string, err error) {
+	if errors.Is(err, fs.ErrNotExist) {
+		return
+	}
+	walk.unreadable++
+	walk.keep(path)
+}
+
+func (walk *cleanChildWalk) keep(path string) {
+	if len(walk.unreadablePaths) < duUnreadableKeep {
+		walk.unreadablePaths = append(walk.unreadablePaths, path)
+	}
+}
+
+func cleanBlocks(info fs.FileInfo) uint64 {
+	if stat, ok := info.Sys().(*syscall.Stat_t); ok {
+		return uint64(stat.Blocks) * 512
+	}
+	return uint64(info.Size())
 }
 
 // locate는 후보의 보고된 경로를 낸다. 찾지 못하면 item에 상태를 적고 false를 낸다. 경로를 추측하지 않는다.
 func (scanner *cleanScanner) locate(ctx context.Context, spec cleanSpec, item *cleanItem) (string, bool) {
-	if spec.fixed != "" {
-		item.LocatedBy = "fixed_path"
-		return spec.fixed, true
+	if spec.tool == "" {
+		return scanner.locateByPath(spec, item)
 	}
 	item.LocatedBy = strings.Join(append([]string{spec.tool}, spec.args...), " ")
 	if _, err := scanner.deps.lookPath(spec.tool); err != nil {
@@ -382,6 +719,29 @@ func (scanner *cleanScanner) locate(ctx context.Context, spec cleanSpec, item *c
 		return "", false
 	}
 	return query.lines[spec.line], true
+}
+
+// locateByPath는 처음으로 환경에 있는 변수만 쓴다. 값이 비었거나 절대 경로가 아니면 다음 변수나 기본 경로로 넘어가지 않고
+// 위치를 모른다고 둔다. 설정이 잘못됐는데 다른 폴더를 그 도구의 캐시로 재면 안 되기 때문이다.
+func (scanner *cleanScanner) locateByPath(spec cleanSpec, item *cleanItem) (string, bool) {
+	for _, candidate := range spec.envs {
+		value, set := scanner.deps.lookupEnv(candidate.name)
+		if !set {
+			continue
+		}
+		item.LocatedBy = "env:" + candidate.name
+		if !filepath.IsAbs(value) {
+			item.Status, item.Reasons = cleanUnknownLocation, []string{cleanReasonInvalidEnv}
+			item.Detail = cleanFirstLine(candidate.name + "=" + value)
+			return "", false
+		}
+		return filepath.Join(value, candidate.suffix), true
+	}
+	item.LocatedBy = "fixed_path"
+	if len(spec.envs) > 0 {
+		item.LocatedBy = "default_path"
+	}
+	return spec.fixed, true
 }
 
 func (scanner *cleanScanner) query(ctx context.Context, spec cleanSpec) cleanQuery {
@@ -439,16 +799,14 @@ func cleanPathFailure(item *cleanItem, err error) {
 }
 
 // cleanMarkInside는 다른 후보 안에 있는 후보를 표시한다. 파일 시스템 합계에서 한 번만 세려는 것이다.
+// 포함 기준은 후보가 실제로 잰 경로뿐이다. 묶음 후보의 부모 폴더는 기준으로 쓰지 않는다.
 func cleanMarkInside(items []cleanItem) {
 	for index := range items {
 		if !items[index].counted() {
 			continue
 		}
 		for other := range items {
-			if other == index || !items[other].counted() {
-				continue
-			}
-			if items[index].ResolvedPath != items[other].ResolvedPath && pathUnder(items[index].ResolvedPath, items[other].ResolvedPath) {
+			if other != index && items[other].counted() && cleanInsideRoots(items[index], items[other]) {
 				items[index].Inside = items[other].ID
 				break
 			}
@@ -456,19 +814,37 @@ func cleanMarkInside(items []cleanItem) {
 	}
 }
 
+func cleanInsideRoots(item, other cleanItem) bool {
+	for _, root := range other.roots {
+		// 묶음 후보는 부모 폴더 자체가 다른 후보의 측정 경로일 때도 그 안에 있다.
+		if pathUnder(item.ResolvedPath, root) && (item.grouped || item.ResolvedPath != root) {
+			return true
+		}
+	}
+	return false
+}
+
 var cleanDerivedName = regexp.MustCompile(`^(.+)-[a-z]{28}$`)
 
 // cleanGroupDerivedData는 DerivedData의 1단계 폴더를 앱 이름별로 묶는다. 이름 규칙에 맞지 않는 폴더는
 // 앱으로 추정하지 않고 이름 그대로 한 묶음으로 둔다.
 func cleanGroupDerivedData(root *duNode) []cleanGroup {
+	return cleanGroupFolders(root, cleanDerivedName)
+}
+
+// cleanGroupFolders는 root의 1단계 폴더를 묶는다. appName이 있으면 그 규칙에 맞는 폴더를 앱 이름별로 합치고,
+// nil이면 폴더 이름마다 한 묶음이다.
+func cleanGroupFolders(root *duNode, appName *regexp.Regexp) []cleanGroup {
 	byName := map[string]*cleanGroup{}
 	for _, child := range root.children {
 		if !child.dir {
 			continue
 		}
 		name := child.name
-		if match := cleanDerivedName.FindStringSubmatch(name); match != nil {
-			name = match[1]
+		if appName != nil {
+			if match := appName.FindStringSubmatch(name); match != nil {
+				name = match[1]
+			}
 		}
 		group := byName[name]
 		if group == nil {
@@ -496,13 +872,11 @@ func cleanFilesystems(items []cleanItem, sources duSources) []cleanFilesystem {
 	var list []cleanFilesystem
 	index := map[string]int{}
 	for _, item := range items {
-		if !item.counted() || item.Inside != "" {
+		// 잴 항목이 없어 파일 시스템을 모르는 묶음은 합계에 넣지 않는다.
+		if !item.counted() || item.Inside != "" || item.Filesystem == nil {
 			continue
 		}
-		mount, fstype := "", ""
-		if item.Filesystem != nil {
-			mount, fstype = item.Filesystem.Mount, item.Filesystem.FSType
-		}
+		mount, fstype := item.Filesystem.Mount, item.Filesystem.FSType
 		position, found := index[mount]
 		if !found {
 			entry := cleanFilesystem{Mount: mount, FSType: fstype, SharedBlocks: fstype == "apfs"}
@@ -701,24 +1075,40 @@ func cleanPrint(stdout io.Writer, options commonOptions, result Result, color bo
 	return exitCode([]Result{result})
 }
 
+// cleanQuiet는 기본 출력에서 상태별 한 줄로 접는 상태다. 크기가 없고 확인할 것도 없다.
+var cleanQuiet = []string{cleanAbsent, cleanToolAbsent, cleanDuplicate}
+
+// cleanWrap은 width가 0보다 크면 줄바꿈하고, 0이면 한 줄로 낸다. 이름이 잘려 사라지지 않게 한다.
+func cleanWrap(text string, width int) string {
+	var builder strings.Builder
+	for _, line := range traceWrapLine(text, width) {
+		builder.WriteString(line + "\n")
+	}
+	return builder.String()
+}
+
 func formatCleanItems(items []cleanItem, verbose bool, width int) string {
+	sorted := append([]cleanItem(nil), items...)
+	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].Priority < sorted[j].Priority })
+	var shown []cleanItem
+	folded := map[string][]string{}
+	for _, item := range sorted {
+		if !verbose && slices.Contains(cleanQuiet, item.Status) {
+			folded[item.Status] = append(folded[item.Status], cleanFoldedName(item))
+			continue
+		}
+		shown = append(shown, item)
+	}
 	var categoryWidth, nameWidth, valueWidth int
-	for _, item := range items {
+	for _, item := range shown {
 		categoryWidth = max(categoryWidth, ansi.StringWidth(T("clean.category."+item.Category)))
 		nameWidth = max(nameWidth, ansi.StringWidth(T("clean.candidate."+item.ID)))
 		valueWidth = max(valueWidth, ansi.StringWidth(cleanValue(item)))
 	}
 	var builder strings.Builder
-	for _, item := range items {
-		location := "-"
-		if item.ReportedPath != "" {
-			location = item.ReportedPath
-			if item.ResolvedPath != "" && item.ResolvedPath != item.ReportedPath {
-				location = T("clean.resolved", item.ReportedPath, item.ResolvedPath)
-			}
-		}
+	for _, item := range shown {
 		line := fmt.Sprintf("%s  %s  %s  %s  %s", item.Priority, cleanPad(T("clean.category."+item.Category), categoryWidth),
-			cleanPad(T("clean.candidate."+item.ID), nameWidth), cleanPad(cleanValue(item), valueWidth), location)
+			cleanPad(T("clean.candidate."+item.ID), nameWidth), cleanPad(cleanValue(item), valueWidth), cleanLocation(item))
 		builder.WriteString(duFit(line, width) + "\n")
 		if item.Inside != "" {
 			builder.WriteString(duFit("      "+T("clean.inside", item.Inside), width) + "\n")
@@ -730,20 +1120,58 @@ func formatCleanItems(items []cleanItem, verbose bool, width int) string {
 			builder.WriteString(formatCleanDetail(item, width))
 		}
 	}
+	for _, status := range cleanQuiet {
+		if names := folded[status]; len(names) > 0 {
+			builder.WriteString(cleanWrap(T("clean.fold."+status, strings.Join(names, ", ")), width))
+		}
+	}
 	return builder.String()
 }
 
+func cleanFoldedName(item cleanItem) string {
+	name := T("clean.candidate." + item.ID)
+	switch item.Status {
+	case cleanToolAbsent:
+		return T("clean.fold.tool_item", name, strings.Fields(item.LocatedBy)[0])
+	case cleanDuplicate:
+		return T("clean.fold.duplicate_item", name, T("clean.candidate."+item.SameAs))
+	}
+	return name
+}
+
+// cleanLocation은 후보의 위치 칸이다. 묶음 후보는 부모 폴더에 이름 규칙이나 제외 표시를 붙인다.
+func cleanLocation(item cleanItem) string {
+	if item.ReportedPath == "" {
+		return "-"
+	}
+	location := item.ReportedPath
+	if item.ResolvedPath != "" && item.ResolvedPath != item.ReportedPath {
+		location = T("clean.resolved", item.ReportedPath, item.ResolvedPath)
+	}
+	switch {
+	case item.Match != "":
+		return location + "/" + item.Match
+	case item.grouped:
+		return T("clean.remainder", location)
+	}
+	return location
+}
+
 func formatCleanGroups(groups []cleanGroup, verbose bool, width int) string {
+	limit, more := cleanDerivedGroups, "clean.group_more"
+	if verbose {
+		limit, more = cleanVerboseGroups, "clean.group_more_json"
+	}
 	shown := groups
-	if !verbose && len(shown) > cleanDerivedGroups {
-		shown = shown[:cleanDerivedGroups]
+	if len(shown) > limit {
+		shown = shown[:limit]
 	}
 	var builder strings.Builder
 	for _, group := range shown {
 		builder.WriteString(duFit("      "+T("clean.group", group.Name, group.Folders, formatSizeShort(group.UsageBytes)), width) + "\n")
 	}
 	if len(shown) < len(groups) {
-		builder.WriteString("      " + T("clean.group_more", len(groups)-len(shown)) + "\n")
+		builder.WriteString("      " + T(more, len(groups)-len(shown)) + "\n")
 	}
 	return builder.String()
 }
@@ -769,6 +1197,16 @@ func formatCleanDetail(item cleanItem, width int) string {
 	}
 	if item.counted() {
 		line(T("clean.regen", T("clean.cost."+item.RegenCost)))
+	}
+	if len(item.Excludes) > 0 {
+		names := make([]string, 0, len(item.Excludes))
+		for _, id := range item.Excludes {
+			names = append(names, T("clean.candidate."+id))
+		}
+		line(T("clean.excludes", strings.Join(names, ", ")))
+	}
+	if item.SkippedMounts > 0 {
+		line(T("clean.skipped_mounts", item.SkippedMounts))
 	}
 	if item.Cleanup != "" {
 		line(T("clean.cleanup", item.Cleanup))
@@ -802,7 +1240,7 @@ func formatCleanNotMeasured(verbose bool, width int) string {
 		for _, item := range cleanNotMeasured {
 			names = append(names, T("clean.not_measured."+item.ID))
 		}
-		return "\n" + duFit(T("clean.not_measured_line", strings.Join(names, "; ")), width) + "\n"
+		return "\n" + cleanWrap(T("clean.not_measured_line", strings.Join(names, "; ")), width)
 	}
 	var builder strings.Builder
 	builder.WriteString("\n" + T("clean.not_measured_title") + "\n")

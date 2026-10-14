@@ -652,24 +652,63 @@ On Linux, if `docker` is on the `PATH`, edc also asks docker for its containers 
 
 ```bash
 edc clean                       # measure the known caches
-edc clean -v                    # add reasons, unreadable paths, and cleanup commands
+edc clean -v                    # show every candidate, more groups, reasons, and cleanup commands
 edc clean --timeout 2m          # give edc more time
 edc clean --json -              # the candidates in metrics.candidates
 ```
 
-edc asks the tool that owns each cache for its path. It does not guess a path. If the tool is not on the `PATH`, the status is `tool_absent`.
+edc finds the location of each candidate in one of three ways. For `go-build`, `go-mod`, `npm`, `pnpm`, `uv`, `homebrew`, and `pip`, edc asks the tool that owns the cache. If the tool is not on the `PATH`, the status is `tool_absent`.
+
+For the other candidates, edc reads the environment variables in the order of the table. The first variable that is set decides the path. If no variable is set, edc uses the default path. `located_by` shows which source edc used.
+
+If the first variable that is set is empty or not an absolute path, the status is `unknown_location` with the reason `invalid_env`. edc does not try the next variable or the default path.
+
+edc does not read tool configuration files such as `bunfig.toml`, `.npmrc`, and `.puppeteerrc`. If a file moved a cache, set the environment variable.
 
 | Candidate | How edc finds it |
 | --- | --- |
-| Go build cache and Go module cache | `go env GOCACHE GOMODCACHE` |
-| npm cache | `npm config get cache` |
-| pnpm store | `pnpm store path` |
-| uv cache | `uv cache dir` |
-| Homebrew cache | `brew --cache` |
-| Xcode DerivedData (macOS) | `~/Library/Developer/Xcode/DerivedData` |
-| SwiftPM cache (macOS) | `~/Library/Caches/org.swift.swiftpm` |
+| `go-build`, `go-mod` | `go env GOCACHE GOMODCACHE` |
+| `npm` | `npm config get cache` |
+| `pnpm` | `pnpm store path` |
+| `uv` | `uv cache dir` |
+| `homebrew` | `brew --cache` |
+| `pip` | `pip3 cache dir` |
+| `xcode-derived-data` (macOS) | `~/Library/Developer/Xcode/DerivedData` |
+| `swiftpm` (macOS) | `~/Library/Caches/org.swift.swiftpm` |
+| `cargo-registry`, `cargo-git` | `$CARGO_HOME/registry`, `$CARGO_HOME/git`, then `~/.cargo/registry`, `~/.cargo/git` |
+| `zig` | `$ZIG_GLOBAL_CACHE_DIR`, `$XDG_CACHE_HOME/zig`, then `~/.cache/zig` |
+| `bun` | `$BUN_INSTALL_CACHE_DIR`, `$BUN_INSTALL/install/cache`, `$XDG_CACHE_HOME/.bun/install/cache`, then `~/.bun/install/cache` |
+| `playwright` | `$PLAYWRIGHT_BROWSERS_PATH`, then `~/Library/Caches/ms-playwright` (macOS) or `$XDG_CACHE_HOME/ms-playwright`, `~/.cache/ms-playwright` (Linux) |
+| `puppeteer` | `$PUPPETEER_CACHE_DIR`, then `~/.cache/puppeteer` |
+| `node-gyp` | `$npm_config_devdir`, then `~/Library/Caches/node-gyp` (macOS) or `$XDG_CACHE_HOME/node-gyp`, `~/.cache/node-gyp` (Linux) |
+| `electron` (macOS) | `$electron_config_cache`, then `~/Library/Caches/electron` |
+| `xcode-device-support` (macOS) | The `*DeviceSupport` folders in `~/Library/Developer/Xcode` |
+| `coresimulator-caches` (macOS) | `~/Library/Developer/CoreSimulator/Caches` |
+| `app-updates` (macOS) | The `*.ShipIt` folders in `~/Library/Caches` |
+| `app-logs` (macOS) | `~/Library/Logs` |
+| `huggingface` | `$HF_HUB_CACHE`, `$HUGGINGFACE_HUB_CACHE`, `$HF_HOME/hub`, `$XDG_CACHE_HOME/huggingface/hub`, then `~/.cache/huggingface/hub` |
+| `rustup-toolchains` | `$RUSTUP_HOME/toolchains`, then `~/.rustup/toolchains` |
+| `ollama` (macOS) | `$OLLAMA_MODELS`, then `~/.ollama/models` |
+| `app-caches` (macOS) | The other folders in `~/Library/Caches` |
+| `dot-cache` (macOS) | The other folders in `~/.cache` |
 
-edc reuses the size code of `edc du`. It measures one candidate at a time. It does not go into a mount below a path. A symlink path shows the reported path and the real path, and edc measures the real path. DerivedData shows the folders grouped by app name.
+On Linux, edc measures the candidates that the table does not mark as macOS. It does not measure the rest of `~/.cache` on Linux.
+
+Each candidate has a priority. P1 holds the tool caches. P2 holds downloaded browsers, Xcode data, app caches, and logs. P3 holds models and toolchains. The text output lists P1 first.
+
+edc reuses the size code of `edc du`. It measures one candidate at a time. It does not go into a mount below a path. A symlink path shows the reported path and the real path, and edc measures the real path. DerivedData shows its folders grouped by app name. `rustup-toolchains` and `app-logs` show their folders by name.
+
+Four candidates measure the first-level items of a folder one by one: `xcode-device-support`, `app-updates`, `app-caches`, and `dot-cache`. The first two measure only the items whose name ends with `DeviceSupport` or `.ShipIt`. If no item has such a name, the status is `absent`.
+
+`app-caches` and `dot-cache` measure all other items. They skip every path that an earlier candidate measures. If an item holds such a path, edc measures only the rest of that item. `excludes` lists the skipped candidates. The result shows one group for each item name.
+
+For these four candidates, edc does not follow a symlink. It skips an item on another device and marks the result `partial`. A hard link counts once for each item that edc measures.
+
+edc does not know what an app keeps in its folders. The candidates `app-caches`, `dot-cache`, `app-updates`, and `app-logs` have `regenerable` set to `false`. Their cost to recreate is `unknown` or `lost`.
+
+edc measures only the cache folder of a tool. For Hugging Face it measures `hub`. For Cargo it measures `registry` and `git`. For Ollama it measures `models`. It never measures a token or a credential file.
+
+edc never calls Xcode Archives, simulator devices, `Application Support`, or `Containers` a cache.
 
 Each candidate has one status.
 
@@ -677,29 +716,35 @@ Each candidate has one status.
 | --- | --- |
 | `measured` | edc read the whole path. The size is complete. |
 | `partial` | The size is a lower bound. A directory is unreadable, a mount was skipped, or the time ended. |
-| `absent` | The path does not exist. |
+| `absent` | The path does not exist, or no item has the name that the candidate needs. |
 | `tool_absent` | The tool is not on the `PATH`. |
-| `unknown_location` | The tool failed, timed out, or gave an unexpected answer. |
+| `unknown_location` | The tool failed, timed out, or gave an unexpected answer. An environment variable that is not an absolute path gives this status too. |
 | `unreadable` | A permission error or another error blocked the read. |
 | `rejected` | The path covers `/`, the home directory, or a parent of it. edc does not measure it. |
-| `duplicate` | An earlier candidate has the same real path. |
+| `duplicate` | An earlier candidate has the same real path or holds this path. |
 | `not_scanned` | The time ended or you pressed `Ctrl-C` before edc reached the candidate. |
 
 Only `measured` and `partial` have `usage_bytes`. No other status shows `0 B`. A candidate inside another candidate is not added twice to the sum.
 
+The text output shows one line for each candidate that has a size or needs a check. It folds `absent`, `tool_absent`, and `duplicate` into one line for each status. A group list shows 5 items. `-v` shows every candidate and 30 items for each group. `--json` shows all items.
+
 The sum for each file system is usage. It is not the space that a cleanup frees. APFS clones and snapshots can make the sum larger than the freed space. A hard link counts once in one candidate. A hard link between two candidates counts twice. The pnpm store and the uv cache use hard links. edc shows no reclaimable value.
+
+A candidate shows a cleanup command only if the tool documents one. The candidates `bun`, `pip`, `huggingface`, and `rustup-toolchains` show one. The candidates `cargo-registry`, `zig`, `app-caches`, and a few more show none. edc never runs a command.
 
 The output always lists the types that edc does not measure. Use `-v` to see the reason for each type.
 
 - The Docker engine
 - VM disks, Docker volumes, and databases
-- App caches and logs
 - Worktrees
 - Trash and downloads
 - Project build folders
-- SDKs, simulators, and models
+- Simulator devices
+- SDKs
+- App data
+- Caches of other tools whose location edc did not verify
 
-The time limit is 60 seconds by default, and all candidates share it. If the time ends, the result is `warn`, and `next` shows a command with a longer limit. `Ctrl-C` stops the run and keeps the results so far. On Linux, edc measures the tool caches only. `-v` shows the cleanup command of each candidate. edc never runs that command.
+The time limit is 60 seconds by default, and all candidates share it. edc measures the P1 candidates first and the two remainder candidates last. If the time ends, the result is `warn`, and `next` shows a command with a longer limit. `Ctrl-C` stops the run and keeps the results so far.
 
 ## Kernel and systemd events (Linux)
 

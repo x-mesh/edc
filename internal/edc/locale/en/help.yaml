@@ -161,14 +161,14 @@ command:
     summary: "Disk usage of known dev caches, read only (Linux and macOS)"
     option:
       timeout: "time limit, after it edc marks the rest not scanned"
-      verbose: "show reasons, unreadable paths, and cleanup commands"
+      verbose: "show every candidate, more groups, reasons, cleanup commands"
     notes:
       - "It reads only. It changes and deletes nothing."
-      - "It measures known caches: Go, npm, pnpm, uv, Homebrew, Xcode, SwiftPM."
+      - "It measures tool caches, browsers, Xcode data, app caches, logs, and models."
       - "It shows usage. It does not show how much a cleanup frees."
       - "APFS clones, snapshots, and hard links can make a sum larger."
       - "A missing tool or a failed check shows a status, never 0 B."
-      - "It does not measure Docker, VM disks, volumes, databases, or app data."
+      - "It skips Docker, VM disks, volumes, databases, app data, and simulators."
       - "It lists what it does not measure. -v shows why."
   where:
     summary: "The near region and the shape of this network"

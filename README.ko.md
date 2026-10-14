@@ -604,24 +604,63 @@ edc du --json - /var            # 항목을 metrics.rows에 담음
 
 ```bash
 edc clean                       # 알려진 캐시를 잼
-edc clean -v                    # 이유, 읽지 못한 경로, 정리 명령 추가
+edc clean -v                    # 모든 후보, 더 많은 묶음, 이유, 정리 명령 추가
 edc clean --timeout 2m          # 제한 시간을 늘림
 edc clean --json -              # 후보를 metrics.candidates에 담음
 ```
 
-캐시 위치는 그 캐시를 가진 도구에 물어서 찾으며, 경로를 추측하지 않습니다. 도구가 `PATH`에 없으면 상태는 `tool_absent`입니다.
+후보의 위치는 세 가지 방법 중 하나로 찾습니다. `go-build`, `go-mod`, `npm`, `pnpm`, `uv`, `homebrew`, `pip`는 그 캐시를 가진 도구에 물어서 찾습니다. 도구가 `PATH`에 없으면 상태는 `tool_absent`입니다.
+
+나머지 후보는 표의 순서대로 환경변수를 읽습니다. 처음으로 설정된 변수가 경로를 정하고, 변수가 하나도 없으면 기본 경로를 씁니다. `located_by`에 어떤 방법을 썼는지 나옵니다.
+
+처음으로 설정된 변수가 비었거나 절대 경로가 아니면 상태는 `unknown_location`이고 이유는 `invalid_env`입니다. 다음 변수나 기본 경로로 넘어가지 않습니다.
+
+`bunfig.toml`, `.npmrc`, `.puppeteerrc` 같은 도구 설정 파일은 읽지 않습니다. 설정 파일로 캐시를 옮겼다면 환경변수를 지정하십시오.
 
 | 후보 | 위치를 찾는 방법 |
 | --- | --- |
-| Go 빌드 캐시, Go 모듈 캐시 | `go env GOCACHE GOMODCACHE` |
-| npm 캐시 | `npm config get cache` |
-| pnpm 저장소 | `pnpm store path` |
-| uv 캐시 | `uv cache dir` |
-| Homebrew 캐시 | `brew --cache` |
-| Xcode DerivedData (macOS) | `~/Library/Developer/Xcode/DerivedData` |
-| SwiftPM 캐시 (macOS) | `~/Library/Caches/org.swift.swiftpm` |
+| `go-build`, `go-mod` | `go env GOCACHE GOMODCACHE` |
+| `npm` | `npm config get cache` |
+| `pnpm` | `pnpm store path` |
+| `uv` | `uv cache dir` |
+| `homebrew` | `brew --cache` |
+| `pip` | `pip3 cache dir` |
+| `xcode-derived-data` (macOS) | `~/Library/Developer/Xcode/DerivedData` |
+| `swiftpm` (macOS) | `~/Library/Caches/org.swift.swiftpm` |
+| `cargo-registry`, `cargo-git` | `$CARGO_HOME/registry`, `$CARGO_HOME/git`, 없으면 `~/.cargo/registry`, `~/.cargo/git` |
+| `zig` | `$ZIG_GLOBAL_CACHE_DIR`, `$XDG_CACHE_HOME/zig`, 없으면 `~/.cache/zig` |
+| `bun` | `$BUN_INSTALL_CACHE_DIR`, `$BUN_INSTALL/install/cache`, `$XDG_CACHE_HOME/.bun/install/cache`, 없으면 `~/.bun/install/cache` |
+| `playwright` | `$PLAYWRIGHT_BROWSERS_PATH`, 없으면 `~/Library/Caches/ms-playwright` (macOS) 또는 `$XDG_CACHE_HOME/ms-playwright`, `~/.cache/ms-playwright` (Linux) |
+| `puppeteer` | `$PUPPETEER_CACHE_DIR`, 없으면 `~/.cache/puppeteer` |
+| `node-gyp` | `$npm_config_devdir`, 없으면 `~/Library/Caches/node-gyp` (macOS) 또는 `$XDG_CACHE_HOME/node-gyp`, `~/.cache/node-gyp` (Linux) |
+| `electron` (macOS) | `$electron_config_cache`, 없으면 `~/Library/Caches/electron` |
+| `xcode-device-support` (macOS) | `~/Library/Developer/Xcode`의 `*DeviceSupport` 폴더 |
+| `coresimulator-caches` (macOS) | `~/Library/Developer/CoreSimulator/Caches` |
+| `app-updates` (macOS) | `~/Library/Caches`의 `*.ShipIt` 폴더 |
+| `app-logs` (macOS) | `~/Library/Logs` |
+| `huggingface` | `$HF_HUB_CACHE`, `$HUGGINGFACE_HUB_CACHE`, `$HF_HOME/hub`, `$XDG_CACHE_HOME/huggingface/hub`, 없으면 `~/.cache/huggingface/hub` |
+| `rustup-toolchains` | `$RUSTUP_HOME/toolchains`, 없으면 `~/.rustup/toolchains` |
+| `ollama` (macOS) | `$OLLAMA_MODELS`, 없으면 `~/.ollama/models` |
+| `app-caches` (macOS) | `~/Library/Caches`의 나머지 폴더 |
+| `dot-cache` (macOS) | `~/.cache`의 나머지 폴더 |
 
-크기는 `edc du`의 측정 코드를 재사용해 후보를 하나씩 잽니다. 경로 아래의 마운트에는 들어가지 않습니다. symlink 경로는 보고된 경로와 실제 경로를 함께 보여 주고 실제 경로를 잽니다. DerivedData는 폴더를 앱 이름별로 묶어 보여 줍니다.
+Linux에서는 표에 macOS라고 적지 않은 후보만 잽니다. Linux의 `~/.cache` 나머지 폴더는 재지 않습니다.
+
+후보마다 우선순위가 있습니다. P1은 도구 캐시, P2는 내려받은 브라우저·바이너리, Xcode 부가 데이터, 앱 캐시, 로그이고, P3는 모델과 툴체인입니다. 텍스트 출력은 P1부터 나열합니다.
+
+크기는 `edc du`의 측정 코드를 재사용해 후보를 하나씩 잽니다. 경로 아래의 마운트에는 들어가지 않습니다. symlink 경로는 보고된 경로와 실제 경로를 함께 보여 주고 실제 경로를 잽니다. DerivedData는 폴더를 앱 이름별로, `rustup-toolchains`와 `app-logs`는 폴더 이름별로 묶어 보여 줍니다.
+
+`xcode-device-support`, `app-updates`, `app-caches`, `dot-cache` 네 후보는 폴더의 1단계 항목을 하나씩 잽니다. 앞의 둘은 이름이 `DeviceSupport` 또는 `.ShipIt`으로 끝나는 항목만 잽니다. 그런 이름의 항목이 없으면 상태는 `absent`입니다.
+
+`app-caches`와 `dot-cache`는 나머지 항목을 모두 잽니다. 앞선 후보가 잰 경로는 건너뛰고, 그 경로를 품은 항목은 품지 않은 부분만 잽니다. 건너뛴 후보는 `excludes`에 나옵니다. 결과는 항목 이름별 묶음입니다.
+
+이 네 후보는 symlink를 따라가지 않습니다. 다른 장치에 있는 항목은 재지 않고 결과를 `partial`로 표시합니다. hard link는 edc가 재는 항목마다 한 번씩 셉니다.
+
+앱이 폴더에 무엇을 두는지는 edc가 알 수 없습니다. `app-caches`, `dot-cache`, `app-updates`, `app-logs`는 `regenerable`이 `false`이고 다시 만드는 비용은 `unknown` 또는 `lost`입니다.
+
+도구의 캐시 폴더만 잽니다. Hugging Face는 `hub`, Cargo는 `registry`와 `git`, Ollama는 `models`입니다. 토큰이나 자격 증명 파일은 재지 않습니다.
+
+Xcode Archives, 시뮬레이터 기기, `Application Support`, `Containers`는 캐시로 분류하지 않습니다.
 
 후보마다 상태가 하나 있습니다.
 
@@ -629,29 +668,35 @@ edc clean --json -              # 후보를 metrics.candidates에 담음
 | --- | --- |
 | `measured` | 경로 전체를 읽었습니다. 크기가 완전합니다. |
 | `partial` | 크기가 하한입니다. 읽지 못한 디렉터리가 있거나, 마운트를 건너뛰었거나, 시간이 끝났습니다. |
-| `absent` | 경로가 없습니다. |
+| `absent` | 경로가 없거나, 후보가 찾는 이름의 항목이 없습니다. |
 | `tool_absent` | 도구가 `PATH`에 없습니다. |
-| `unknown_location` | 도구가 실패했거나, 시간이 초과됐거나, 예상과 다른 답을 냈습니다. |
+| `unknown_location` | 도구가 실패했거나, 시간이 초과됐거나, 예상과 다른 답을 냈습니다. 환경변수가 절대 경로가 아니어도 이 상태입니다. |
 | `unreadable` | 권한 오류 등으로 읽지 못했습니다. |
 | `rejected` | 경로가 `/`, 홈 디렉터리, 그 상위를 덮습니다. 재지 않습니다. |
-| `duplicate` | 앞선 후보와 실제 경로가 같습니다. |
+| `duplicate` | 앞선 후보와 실제 경로가 같거나 앞선 후보가 이 경로를 품고 있습니다. |
 | `not_scanned` | edc가 닿기 전에 시간이 끝났거나 `Ctrl-C`를 눌렀습니다. |
 
 `usage_bytes`는 `measured`와 `partial`에만 있고, 다른 상태에서는 `0 B`를 표시하지 않습니다. 다른 후보 안에 있는 후보는 합계에 두 번 더하지 않습니다.
 
+텍스트 출력은 크기가 있거나 확인이 필요한 후보만 한 줄씩 보여 줍니다. `absent`, `tool_absent`, `duplicate`는 상태별로 한 줄에 접습니다. 묶음은 기본 5개를 보여 주고, `-v`는 모든 후보와 묶음 30개를 보여 줍니다. `--json`은 모두 보여 줍니다.
+
 파일 시스템별 합계는 사용량이며, 정리하면 비워지는 양이 아닙니다. APFS clone과 snapshot 때문에 합계가 비워지는 양보다 클 수 있습니다. hard link는 후보 하나 안에서는 한 번만 세지만, 두 후보에 걸친 hard link는 두 번 셉니다. pnpm 저장소와 uv 캐시가 hard link를 씁니다. 회수 가능량은 표시하지 않습니다.
+
+정리 명령은 도구가 문서로 제공할 때만 보여 줍니다. `bun`, `pip`, `huggingface`, `rustup-toolchains`는 명령을 보여 주고, `cargo-registry`, `zig`, `app-caches` 등은 보여 주지 않습니다. edc는 명령을 실행하지 않습니다.
 
 출력은 재지 않는 유형을 항상 나열하며, `-v`로 유형마다 이유를 볼 수 있습니다.
 
 - Docker 엔진
 - VM 디스크, Docker 볼륨, DB
-- 앱 캐시와 로그
 - worktree
 - 휴지통과 다운로드
 - 프로젝트 빌드 폴더
-- SDK, 시뮬레이터, 모델
+- 시뮬레이터 기기
+- SDK
+- 앱 데이터
+- 위치를 확인하지 못한 그 밖의 도구 캐시
 
-제한 시간은 기본 60초이며 모든 후보가 나눠 씁니다. 시간이 끝나면 결과는 `warn`이고 `next`에 더 긴 제한 시간의 명령을 보여 줍니다. `Ctrl-C`는 실행을 멈추고 그때까지의 결과를 남깁니다. Linux에서는 도구 캐시만 잽니다. `-v`는 후보마다 정리 명령을 보여 주지만 edc는 그 명령을 실행하지 않습니다.
+제한 시간은 기본 60초이며 모든 후보가 나눠 씁니다. P1 후보부터 재고 나머지 묶음 두 후보는 마지막에 잽니다. 시간이 끝나면 결과는 `warn`이고 `next`에 더 긴 제한 시간의 명령을 보여 줍니다. `Ctrl-C`는 실행을 멈추고 그때까지의 결과를 남깁니다.
 
 ## 커널과 systemd 이벤트 (Linux)
 

@@ -117,6 +117,7 @@ func runTraceExec(args []string) int {
 		fmt.Fprintln(os.Stderr, "trace exec failed:", err)
 		return 1
 	}
+	execOOMNotice(summary)
 	if options.raw {
 		summary.EventCount = written
 		if err := encoder.Encode(summary); err != nil {
@@ -183,7 +184,15 @@ func runExecTraceScreen(options execTraceOptions) int {
 	report := aggregator.report(time.Since(started), finished.summary)
 	mutex.Unlock()
 	report.print()
+	execOOMNotice(finished.summary)
 	return 0
+}
+
+// execOOMNotice는 stderr로 가므로 --json -와 --raw의 stdout을 바꾸지 않는다.
+func execOOMNotice(summary execSummary) {
+	if summary.OOMUnavailable != "" {
+		fmt.Fprintln(os.Stderr, "trace exec: no oom events, attach oom/mark_victim:", summary.OOMUnavailable)
+	}
 }
 
 var execTracepoints = []string{"sched_process_exec", "sched_process_exit", "signal_generate"}
@@ -215,8 +224,7 @@ func execKernelSupported(spec *btf.Spec) error {
 			return fmt.Errorf("kernel BTF has no field %s.%s", required.name, missing)
 		}
 	}
-	// mark_victim은 tp_btf가 아니라 tracefs의 tracepoint로 붙인다. 5.15와 6.x의 인자 모양이 달라 tp_btf로는 둘을 함께 읽지 못한다.
-	return traceTracepointsAvailable(spec, append(execTracepoints, "mark_victim"))
+	return traceTracepointsAvailable(spec, execTracepoints)
 }
 
 // execMissingBTFMembers는 이름 없는 안쪽 struct와 union도 들어가 본다. mm_struct는 field를 이름 없는 struct로 감싸므로
@@ -303,11 +311,14 @@ func collectExecEvents(duration time.Duration, signalMask uint64, onEvent func(e
 		}
 		links = append(links, attached)
 	}
-	oom, err := link.Tracepoint("oom", "mark_victim", objects.ExecOomMarkVictim, nil)
-	if err != nil {
-		return execSummary{}, fmt.Errorf("attach tracepoint/oom/mark_victim: %w", err)
+	// mark_victim은 tp_btf가 아니라 tracefs의 tracepoint로 붙인다. 5.15와 6.x의 인자 모양이 달라 tp_btf로는 둘을 함께 읽지
+	// 못한다. container에는 tracefs가 없을 수 있으므로, 붙지 않으면 oom event만 빼고 나머지를 계속 본다.
+	oomUnavailable := ""
+	if oom, err := link.Tracepoint("oom", "mark_victim", objects.ExecOomMarkVictim, nil); err != nil {
+		oomUnavailable = err.Error()
+	} else {
+		links = append(links, oom)
 	}
-	links = append(links, oom)
 	reader, err := ringbuf.NewReader(objects.Events)
 	if err != nil {
 		return execSummary{}, err
@@ -361,7 +372,7 @@ func collectExecEvents(duration time.Duration, signalMask uint64, onEvent func(e
 			}
 		}
 	}
-	summary := execSummary{TimestampNS: uint64(time.Now().UnixNano()), Event: "capture_summary", EventCount: count}
+	summary := execSummary{TimestampNS: uint64(time.Now().UnixNano()), Event: "capture_summary", EventCount: count, OOMUnavailable: oomUnavailable}
 	var counters execEventsExecCounters
 	if err := objects.Counters.Lookup(uint32(0), &counters); err == nil {
 		summary.LostEvents = counters.LostEvents

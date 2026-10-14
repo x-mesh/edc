@@ -72,6 +72,8 @@ type execSummary struct {
 	LostEvents      uint64 `json:"lost_events"`
 	FilteredSignals uint64 `json:"filtered_signals"`
 	ArgsTruncated   uint64 `json:"args_truncated"`
+	// OOMUnavailable는 oom/mark_victim을 붙이지 못한 이유다. 그때는 oom event가 없고, exit의 oom_killed 표시는 남는다.
+	OOMUnavailable string `json:"oom_unavailable,omitempty"`
 }
 
 func execSignalName(number int32) string {

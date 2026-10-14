@@ -734,12 +734,12 @@ func (probe *cleanWorktreeProbe) times() {
 	}
 }
 
-func formatCleanWorktrees(section cleanWorktrees, verbose bool, width int) string {
+func formatCleanWorktrees(section cleanWorktrees, verbose bool, width int, home string) string {
 	var builder strings.Builder
 	line := func(indent, text string) { builder.WriteString(duFit(indent+text, width) + "\n") }
 	switch section.Status {
 	case cleanAbsent:
-		builder.WriteString("\n" + cleanWrap(T("clean.worktree.fold_absent", section.Root), width))
+		builder.WriteString("\n" + cleanWrap(T("clean.worktree.fold_absent", cleanHomePath(section.Root, home)), width))
 		return builder.String()
 	case cleanMeasured, cleanPartial:
 	default:
@@ -749,7 +749,7 @@ func formatCleanWorktrees(section cleanWorktrees, verbose bool, width int) strin
 		}
 		return builder.String()
 	}
-	line("\n", T("clean.worktree.title", section.Root))
+	line("\n", T("clean.worktree.title", cleanHomePath(section.Root, home)))
 	if section.Status == cleanPartial {
 		line("  ", T("clean.worktree.state", cleanStateText(section.Status, section.Reasons)))
 	}
@@ -767,19 +767,18 @@ func formatCleanWorktrees(section cleanWorktrees, verbose bool, width int) strin
 		measured[item.Verdict]++
 		lower[item.Verdict] = lower[item.Verdict] || item.LowerBound
 	}
+	type summaryRow struct{ size, verdict, count string }
+	var summary []summaryRow
 	for _, verdict := range cleanWorktreeVerdicts {
 		if counts[verdict] == 0 {
 			continue
 		}
-		// 크기를 하나도 모르는 묶음은 0 B가 아니라 상태 단어로 보인다.
-		size := T("clean.status.not_reported")
+		// 크기를 하나도 모르는 묶음은 0 B가 아니라 크기 없음으로 보인다.
+		size := cleanNoSize
 		if measured[verdict] > 0 {
-			size = formatSizeShort(sizes[verdict])
-			if lower[verdict] {
-				size = T("clean.lower_bound", size)
-			}
+			size = cleanSize(sizes[verdict], lower[verdict])
 		}
-		line("  ", T("clean.worktree.summary", T("clean.worktree.verdict."+verdict), counts[verdict], size))
+		summary = append(summary, summaryRow{size, T("clean.worktree.verdict." + verdict), T("clean.worktree.count", counts[verdict])})
 	}
 	sorted := append([]cleanWorktree(nil), section.Items...)
 	sort.SliceStable(sorted, func(i, j int) bool {
@@ -794,11 +793,26 @@ func formatCleanWorktrees(section cleanWorktrees, verbose bool, width int) strin
 	if !verbose && len(shown) > cleanWorktreeShown {
 		shown = shown[:cleanWorktreeShown]
 	}
+	// 요약 줄과 worktree 줄은 크기와 판정 칸을 함께 맞춘다.
+	var columns cleanWorktreeColumns
+	var countWidth int
+	for _, row := range summary {
+		columns.size = max(columns.size, liveWidth(row.size))
+		columns.verdict = max(columns.verdict, liveWidth(row.verdict))
+		countWidth = max(countWidth, liveWidth(row.count))
+	}
 	for _, item := range shown {
-		builder.WriteString(formatCleanWorktree(item, section.Root, verbose, width))
+		columns.size = max(columns.size, liveWidth(cleanWorktreeSize(item)))
+		columns.verdict = max(columns.verdict, liveWidth(T("clean.worktree.verdict."+item.Verdict)))
+	}
+	for _, row := range summary {
+		line("  ", cleanPadLeft(row.size, columns.size)+"  "+cleanPad(row.verdict, columns.verdict)+"  "+cleanPadLeft(row.count, countWidth))
+	}
+	for _, item := range shown {
+		builder.WriteString(formatCleanWorktree(item, section.Root, verbose, width, columns, home))
 	}
 	if len(shown) < len(sorted) {
-		line("  ", T("clean.group_more", len(sorted)-len(shown)))
+		line(strings.Repeat(" ", 2+columns.size+2), T("clean.group_more", len(sorted)-len(shown)))
 	}
 	if section.Leftover != nil {
 		size := formatSizeShort(section.Leftover.UsageBytes)
@@ -813,16 +827,23 @@ func formatCleanWorktrees(section cleanWorktrees, verbose bool, width int) strin
 	return builder.String()
 }
 
-func formatCleanWorktree(item cleanWorktree, root string, verbose bool, width int) string {
+type cleanWorktreeColumns struct {
+	size    int
+	verdict int
+}
+
+func cleanWorktreeSize(item cleanWorktree) string {
+	if item.UsageBytes == nil {
+		return cleanNoSize
+	}
+	return cleanSize(*item.UsageBytes, item.LowerBound)
+}
+
+func formatCleanWorktree(item cleanWorktree, root string, verbose bool, width int, columns cleanWorktreeColumns, home string) string {
 	var builder strings.Builder
 	line := func(indent, text string) { builder.WriteString(duFit(indent+text, width) + "\n") }
-	size := T("clean.status.not_reported")
-	if item.UsageBytes != nil {
-		size = formatSizeShort(*item.UsageBytes)
-		if item.LowerBound {
-			size = T("clean.lower_bound", size)
-		}
-	}
+	// 자세한 줄은 판정 칸보다 두 칸 안쪽에 둔다.
+	detail := strings.Repeat(" ", 2+columns.size+4)
 	name, err := filepath.Rel(root, item.Path)
 	if err != nil {
 		name = item.Path
@@ -830,7 +851,7 @@ func formatCleanWorktree(item cleanWorktree, root string, verbose bool, width in
 	if item.Branch != "" {
 		name += " (" + item.Branch + ")"
 	}
-	text := T("clean.worktree.line", size, T("clean.worktree.verdict."+item.Verdict), name)
+	text := cleanPadLeft(cleanWorktreeSize(item), columns.size) + "  " + cleanPad(T("clean.worktree.verdict."+item.Verdict), columns.verdict) + "  " + name
 	if item.Changes != nil && item.Untracked != nil && (*item.Changes > 0 || *item.Untracked > 0) {
 		counts := T("clean.worktree.counts", *item.Changes, *item.Untracked)
 		if item.CountsLowerBound {
@@ -850,7 +871,7 @@ func formatCleanWorktree(item cleanWorktree, root string, verbose bool, width in
 		if item.Ahead != nil {
 			ahead = strconv.Itoa(*item.Ahead)
 		}
-		line("      ", T("clean.worktree.base", item.Base, T("clean.worktree.base_source."+item.BaseSource), ahead))
+		line(detail, T("clean.worktree.base", item.Base, T("clean.worktree.base_source."+item.BaseSource), ahead))
 	}
 	if item.LastCommitAt != nil || item.HeadMovedAt != nil {
 		date := func(at *time.Time) string {
@@ -859,17 +880,17 @@ func formatCleanWorktree(item cleanWorktree, root string, verbose bool, width in
 			}
 			return at.Format("2006-01-02")
 		}
-		line("      ", T("clean.worktree.activity", date(item.LastCommitAt), date(item.HeadMovedAt)))
+		line(detail, T("clean.worktree.activity", date(item.LastCommitAt), date(item.HeadMovedAt)))
 	}
 	if len(item.Reasons) > 0 {
 		reasons := make([]string, 0, len(item.Reasons))
 		for _, reason := range item.Reasons {
 			reasons = append(reasons, T("clean.reason."+reason))
 		}
-		line("      ", strings.Join(reasons, ", "))
+		line(detail, strings.Join(reasons, ", "))
 	}
 	if item.Detail != "" {
-		line("      ", item.Detail)
+		line(detail, cleanHomePath(item.Detail, home))
 	}
 	return builder.String()
 }

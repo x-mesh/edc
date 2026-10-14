@@ -666,7 +666,7 @@ func TestRunCleanTextAndJSONShowProjectBuildFolders(t *testing.T) {
 		t.Fatalf("exit code = %d", code)
 	}
 	for _, want := range []string{"Project build folders", "Cargo target", "node_modules", "marker Cargo.toml, git: not a git repository, can be recreated",
-		filepath.Join(root, "ultrasync", "target"), "1 name matches without a marker file not measured"} {
+		filepath.Join("~", "work", "ultrasync", "target"), "1 name matches without a marker file not measured"} {
 		if !strings.Contains(text.String(), want) {
 			t.Fatalf("text lacks %q:\n%s", want, text.String())
 		}

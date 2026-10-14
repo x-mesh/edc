@@ -223,6 +223,16 @@ var commandDocs = []commandDoc{
 		usesCommon: true,
 	},
 	{
+		name: "clean", group: "observe",
+		usage: []string{"edc clean [options]"},
+		options: []optionDoc{
+			{"--timeout 60s", "command.clean.option.timeout"},
+			{"--project DIR", "command.clean.option.project"},
+			{"-v, --verbose", "command.clean.option.verbose"},
+		},
+		usesCommon: true,
+	},
+	{
 		name: "where", group: "observe",
 		usage: []string{"edc where [--provider all|aws|gcp] [--count 3] [options]"},
 		options: []optionDoc{

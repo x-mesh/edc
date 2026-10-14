@@ -177,6 +177,9 @@ Setup wizard는 `edc log`의 저장 경로를 비워두고 실행별 파일을 �
 # 디렉터리 아래 디스크 사용량, 큰 항목부터 (Linux)
 ./bin/edc du /var
 
+# 알려진 개발 캐시 사용량, 읽기 전용 (Linux, macOS)
+./bin/edc clean
+
 # 기본 종합 진단
 ./bin/edc doctor https://example.com
 
@@ -594,6 +597,224 @@ edc du --json - /var            # 항목을 metrics.rows에 담음
 어느 디렉터리가 늘었는지 보려면 두 번의 실행을 `--json`으로 저장하고 `edc report diff`로 비교합니다. `metrics.largest_dirs`에는 깊이와 관계없이 가장 큰 디렉터리 200개가 들어갑니다. `report diff`는 이 목록을 경로로 맞춰 변화가 가장 큰 디렉터리를 최대 10개 보여 줍니다. 하위 디렉터리 하나가 상위 디렉터리 변화의 90% 이상을 차지하면 상위 대신 그 하위 디렉터리를 보여 줍니다. 한쪽 목록에만 있는 디렉터리는 반대쪽 값을 그 목록의 가장 작은 크기 이하(`≤`)로 표시합니다. 같은 경로를 끝까지 읽은 두 결과만 비교합니다. hard link 이름이 두 디렉터리에 있는 파일은 먼저 읽은 디렉터리에 세므로, 실행마다 그 두 디렉터리 사이에서 크기가 옮겨 갈 수 있습니다.
 
 `PATH`에 `docker`가 있으면 `docker ps`와 `docker inspect`로 container 목록도 읽습니다. 형식은 container마다 이름, 로그 경로, 마운트, layer 경로만 읽습니다. 이 정보로 로그 디렉터리, writable layer, 실행 중인 container의 root 파일 시스템, volume, bind mount 원본에 `volume pgdata (db-1 사용)`처럼 container 이름을 붙입니다. JSON에서는 `label`에 들어갑니다. containerd image store를 쓰면 멈춘 container의 writable layer는 마운트되어 있지 않아 이름이 붙지 않습니다. docker가 3초 안에 답하지 않으면 이름 없이 출력합니다.
+
+## 알려진 개발 캐시 사용량 (Linux와 macOS)
+
+`edc clean`은 알려진 개발 캐시의 디스크 사용량을 보여 줍니다. 읽기만 하며 파일을 지우거나 바꾸지 않습니다.
+
+```bash
+edc clean                       # 알려진 캐시를 잼
+edc clean -v                    # 모든 후보, 더 많은 묶음, 이유, 정리 명령 추가
+edc clean --timeout 2m          # 제한 시간을 늘림
+edc clean --project ~/work      # ~/work에서 빌드 폴더도 찾음
+edc clean --project ~/a --project ~/b   # 루트를 더 지정하려면 옵션을 반복
+edc clean --json -              # 후보를 metrics.candidates에 담음
+```
+
+후보의 위치는 세 가지 방법 중 하나로 찾습니다. `go-build`, `go-mod`, `npm`, `pnpm`, `uv`, `homebrew`, `pip`는 그 캐시를 가진 도구에 물어서 찾습니다. 도구가 `PATH`에 없으면 상태는 `tool_absent`입니다.
+
+나머지 후보는 표의 순서대로 환경변수를 읽습니다. 처음으로 설정된 변수가 경로를 정하고, 변수가 하나도 없으면 기본 경로를 씁니다. `located_by`에 어떤 방법을 썼는지 나옵니다.
+
+처음으로 설정된 변수가 비었거나 절대 경로가 아니면 상태는 `unknown_location`이고 이유는 `invalid_env`입니다. 다음 변수나 기본 경로로 넘어가지 않습니다.
+
+`bunfig.toml`, `.npmrc`, `.puppeteerrc` 같은 도구 설정 파일은 읽지 않습니다. 설정 파일로 캐시를 옮겼다면 환경변수를 지정하십시오.
+
+| 후보 | 위치를 찾는 방법 |
+| --- | --- |
+| `go-build`, `go-mod` | `go env GOCACHE GOMODCACHE` |
+| `npm` | `npm config get cache` |
+| `pnpm` | `pnpm store path` |
+| `uv` | `uv cache dir` |
+| `homebrew` | `brew --cache` |
+| `pip` | `pip3 cache dir` |
+| `xcode-derived-data` (macOS) | `~/Library/Developer/Xcode/DerivedData` |
+| `swiftpm` (macOS) | `~/Library/Caches/org.swift.swiftpm` |
+| `cargo-registry`, `cargo-git` | `$CARGO_HOME/registry`, `$CARGO_HOME/git`, 없으면 `~/.cargo/registry`, `~/.cargo/git` |
+| `zig` | `$ZIG_GLOBAL_CACHE_DIR`, `$XDG_CACHE_HOME/zig`, 없으면 `~/.cache/zig` |
+| `bun` | `$BUN_INSTALL_CACHE_DIR`, `$BUN_INSTALL/install/cache`, `$XDG_CACHE_HOME/.bun/install/cache`, 없으면 `~/.bun/install/cache` |
+| `playwright` | `$PLAYWRIGHT_BROWSERS_PATH`, 없으면 `~/Library/Caches/ms-playwright` (macOS) 또는 `$XDG_CACHE_HOME/ms-playwright`, `~/.cache/ms-playwright` (Linux) |
+| `puppeteer` | `$PUPPETEER_CACHE_DIR`, 없으면 `~/.cache/puppeteer` |
+| `node-gyp` | `$npm_config_devdir`, 없으면 `~/Library/Caches/node-gyp` (macOS) 또는 `$XDG_CACHE_HOME/node-gyp`, `~/.cache/node-gyp` (Linux) |
+| `electron` (macOS) | `$electron_config_cache`, 없으면 `~/Library/Caches/electron` |
+| `xcode-device-support` (macOS) | `~/Library/Developer/Xcode`의 `*DeviceSupport` 폴더 |
+| `coresimulator-caches` (macOS) | `~/Library/Developer/CoreSimulator/Caches` |
+| `app-updates` (macOS) | `~/Library/Caches`의 `*.ShipIt` 폴더 |
+| `app-logs` (macOS) | `~/Library/Logs` |
+| `huggingface` | `$HF_HUB_CACHE`, `$HUGGINGFACE_HUB_CACHE`, `$HF_HOME/hub`, `$XDG_CACHE_HOME/huggingface/hub`, 없으면 `~/.cache/huggingface/hub` |
+| `rustup-toolchains` | `$RUSTUP_HOME/toolchains`, 없으면 `~/.rustup/toolchains` |
+| `ollama` (macOS) | `$OLLAMA_MODELS`, 없으면 `~/.ollama/models` |
+| `app-caches` (macOS) | `~/Library/Caches`의 나머지 폴더 |
+| `dot-cache` (macOS) | `~/.cache`의 나머지 폴더 |
+
+Linux에서는 표에 macOS라고 적지 않은 후보만 잽니다. Linux의 `~/.cache` 나머지 폴더는 재지 않습니다.
+
+후보마다 우선순위가 있습니다. P1은 도구 캐시, P2는 내려받은 브라우저·바이너리, Xcode 부가 데이터, 앱 캐시, 로그이고, P3는 모델과 툴체인입니다. 텍스트 출력은 P1부터 나열합니다.
+
+크기는 `edc du`의 측정 코드를 재사용해 후보를 하나씩 잽니다. 경로 아래의 마운트에는 들어가지 않습니다. symlink 경로는 보고된 경로와 실제 경로를 함께 보여 주고 실제 경로를 잽니다. DerivedData는 폴더를 앱 이름별로, `rustup-toolchains`와 `app-logs`는 폴더 이름별로 묶어 보여 줍니다.
+
+`xcode-device-support`, `app-updates`, `app-caches`, `dot-cache` 네 후보는 폴더의 1단계 항목을 하나씩 잽니다. 앞의 둘은 이름이 `DeviceSupport` 또는 `.ShipIt`으로 끝나는 항목만 잽니다. 그런 이름의 항목이 없으면 상태는 `absent`입니다.
+
+`app-caches`와 `dot-cache`는 나머지 항목을 모두 잽니다. 앞선 후보가 잰 경로는 건너뛰고, 그 경로를 품은 항목은 품지 않은 부분만 잽니다. 건너뛴 후보는 `excludes`에 나옵니다. 결과는 항목 이름별 묶음입니다.
+
+이 네 후보는 symlink를 따라가지 않습니다. 다른 장치에 있는 항목은 재지 않고 결과를 `partial`로 표시합니다. hard link는 edc가 재는 항목마다 한 번씩 셉니다.
+
+앱이 폴더에 무엇을 두는지는 edc가 알 수 없습니다. `app-caches`, `dot-cache`, `app-updates`, `app-logs`는 `regenerable`이 `false`이고 다시 만드는 비용은 `unknown` 또는 `lost`입니다.
+
+도구의 캐시 폴더만 잽니다. Hugging Face는 `hub`, Cargo는 `registry`와 `git`, Ollama는 `models`입니다. 토큰이나 자격 증명 파일은 재지 않습니다.
+
+Xcode Archives, 시뮬레이터 기기, `Application Support`, `Containers`는 캐시로 분류하지 않습니다.
+
+후보마다 상태가 하나 있습니다.
+
+| 상태 | 뜻 |
+| --- | --- |
+| `measured` | 경로 전체를 읽었습니다. 크기가 완전합니다. |
+| `partial` | 크기가 하한입니다. 읽지 못한 디렉터리가 있거나, 마운트를 건너뛰었거나, 시간이 끝났습니다. |
+| `absent` | 경로가 없거나, 후보가 찾는 이름의 항목이 없습니다. |
+| `tool_absent` | 도구가 `PATH`에 없습니다. |
+| `unknown_location` | 도구가 실패했거나, 시간이 초과됐거나, 예상과 다른 답을 냈습니다. 환경변수가 절대 경로가 아니어도 이 상태입니다. |
+| `unreadable` | 권한 오류 등으로 읽지 못했습니다. |
+| `rejected` | 경로가 `/`, 홈 디렉터리, 그 상위를 덮습니다. 재지 않습니다. |
+| `duplicate` | 앞선 후보와 실제 경로가 같거나 앞선 후보가 이 경로를 품고 있습니다. |
+| `not_scanned` | edc가 닿기 전에 시간이 끝났거나 `Ctrl-C`를 눌렀습니다. |
+
+`usage_bytes`는 `measured`와 `partial`에만 있고, 다른 상태에서는 `0 B`를 표시하지 않습니다. 다른 후보 안에 있는 후보는 합계에 두 번 더하지 않습니다.
+
+텍스트 출력은 크기가 있거나 확인이 필요한 후보만 한 줄씩 보여 줍니다. `absent`, `tool_absent`, `duplicate`는 상태별로 한 줄에 접습니다. 묶음은 기본 5개를 보여 주고, `-v`는 모든 후보와 묶음 30개를 보여 줍니다. `--json`은 모두 보여 줍니다.
+
+파일 시스템별 합계는 사용량이며, 정리하면 비워지는 양이 아닙니다. APFS clone과 snapshot 때문에 합계가 비워지는 양보다 클 수 있습니다. hard link는 후보 하나 안에서는 한 번만 세지만, 두 후보에 걸친 hard link는 두 번 셉니다. pnpm 저장소와 uv 캐시가 hard link를 씁니다. 후보에는 회수 가능량이 없고, Docker 섹션만 엔진이 보고한 회수 가능량을 보여 줍니다.
+
+정리 명령은 도구가 문서로 제공할 때만 보여 줍니다. `bun`, `pip`, `huggingface`, `rustup-toolchains`는 명령을 보여 주고, `cargo-registry`, `zig`, `app-caches` 등은 보여 주지 않습니다. edc는 명령을 실행하지 않습니다.
+
+후보 뒤에 섹션 네 개가 더 있습니다. 섹션마다 `metrics`에 따로 키가 있고, 섹션은 후보가 아닙니다.
+
+| `metrics` 키 | 내용 |
+| --- | --- |
+| `candidates` | 위 표의 캐시 |
+| `filesystems` | 파일 시스템별 사용량 합계 |
+| `project_build_dirs` | `--project`로 지정한 루트의 빌드 폴더 |
+| `docker` | Docker 엔진이 보고한 집계 |
+| `vm_disks` | 가상 머신의 디스크 파일(예: OrbStack) |
+| `worktrees` | `~/.gk/worktree`의 git-kit worktree |
+| `not_measured` | 재지 않는 유형과 이유 |
+
+섹션은 후보, 빌드 폴더, Docker, VM 디스크, worktree 순서로 실행하고 제한 시간 하나를 나눠 씁니다.
+
+파일 시스템 합계에는 다시 만들 수 있는 빌드 폴더만 더합니다. 엔진 집계, VM 디스크, worktree는 어떤 합계에도 더하지 않습니다.
+
+### 프로젝트 빌드 폴더
+
+`--project DIR`은 찾을 루트를 지정합니다. 루트를 더 지정하려면 옵션을 반복합니다. `--project`가 없으면 찾지 않고 `project_build_dirs`의 상태는 `no_project_root`입니다. 이 상태는 정상입니다.
+
+루트 아래 폴더를 깊이 6까지 읽습니다. symlink는 따라가지 않고, 다른 장치의 마운트에는 들어가지 않습니다. `.git`, 찾은 빌드 폴더, 후보가 재는 경로 아래로도 내려가지 않습니다.
+
+폴더 300,000개 또는 빌드 폴더 256개에서 멈추고, 섹션은 이유 `project_limit`인 `partial`입니다. 닿지 못한 루트의 상태는 `not_scanned`입니다.
+
+없는 루트의 상태는 `absent`, 파일인 루트는 `rejected`입니다. 같은 루트나 다른 루트 안의 루트는 한 번만 걷고 상태는 `duplicate`입니다.
+
+빌드 폴더는 같은 부모 폴더에 표지 파일이 있어야 합니다.
+
+| 폴더 | 표지 파일 |
+| --- | --- |
+| `.zig-cache`, `zig-out` | `build.zig` |
+| `target` | `Cargo.toml` |
+| `node_modules` | `package.json` |
+| `.build` | `Package.swift` |
+| `build` | `build.gradle` 또는 `build.gradle.kts` |
+
+이름만 같고 표지 파일이 없는 폴더는 소스일 수 있어 재지 않고 루트의 `unmarked`로 셉니다.
+
+표지가 있는 폴더마다 git에 물어봅니다. git 저장소 밖의 폴더는 표지 파일만으로 다시 만들 수 있다고 봅니다. `git` 필드는 `none`입니다.
+
+저장소 안에서는 폴더에 추적 파일이 없어야 합니다. git이 추적하는 파일이 있으면 `regenerable`은 `false`이고 이유는 `tracked_files`입니다. 무시 규칙이 있어도 추적 파일이 먼저입니다. `git` 필드는 `ignored` 또는 `not_ignored`입니다.
+
+git이 실패하거나 시간이 초과되면 `regenerable`은 `false`, 이유는 `git_unknown`, `git` 필드는 `unknown`입니다. 추측하지 않습니다.
+
+```json
+{
+  "kind": "cargo_target",
+  "path": "/Users/me/work/app/target",
+  "marker": "Cargo.toml",
+  "git": "ignored",
+  "regenerable": true,
+  "status": "measured",
+  "usage_bytes": 4831838208
+}
+```
+
+`regenerable`이 `false`인 빌드 폴더는 합계에 넣지 않습니다. 후보와 경로가 같은 빌드 폴더의 상태는 `duplicate`이고, 후보 안에 있는 빌드 폴더는 `inside`를 표시해 두 번 세지 않습니다.
+
+worktree 안의 빌드 폴더에는 `inside_worktree`가 있고, worktree 항목의 `build_dirs`에 그 수가 나옵니다. 빌드 폴더를 찾지 않았으면 `build_dirs`는 `null`입니다.
+
+텍스트 출력은 큰 빌드 폴더 10개와 나머지 수를 보여 주고 `-v`는 모두 보여 줍니다. 루트마다 읽은 폴더 수와 `unmarked` 폴더 수가 나옵니다.
+
+### Docker 엔진
+
+엔진에는 API socket으로 `GET`만 보냅니다. 다른 메서드는 보내지 않고 `prune` 명령도 실행하지 않습니다.
+
+socket 경로는 `docker context inspect`에 물어서 `DOCKER_HOST`와 현재 context가 반영됩니다. `unix://` 끝점만 지원하고, 다른 끝점은 `unsupported`입니다.
+
+`docker`가 `PATH`에 없으면 상태는 `tool_absent`, socket 파일이 없으면 `not_running`입니다. 두 상태는 정상으로 봅니다.
+
+엔진은 API 1.52 이상이어야 합니다. 더 낮은 버전은 이유 `api_version`인 `unsupported`이고, 목록에서 집계를 계산하지 않습니다.
+
+`types`에는 `images`, `containers`, `build_cache`, `volumes`가 하나씩 있고, 각각 `total_bytes`, `reclaimable_bytes`, `total_count`, `active_count`를 담습니다. 값은 엔진이 보고한 그대로입니다.
+
+요청 하나가 실패하면 그 유형만 `failed`이고 섹션은 `partial`입니다. 볼륨 요청은 최대 20초까지 기다립니다.
+
+`reclaimable_bytes`는 정리하면 비워진다고 엔진이 알려 준 양이며, 출력에서 회수 가능량을 내는 값은 이것뿐입니다. 정리 명령(예: `docker image prune -a`)은 문자열로만 보여 주고 실행하지 않습니다.
+
+볼륨은 사용자 데이터입니다. `volumes` 항목은 `user_data`가 `true`이고 `reclaimable_bytes`와 정리 명령이 없습니다.
+
+`docker system df`는 크기를 반올림하고 1000바이트 단위를 씁니다. edc 텍스트 출력은 1024바이트 단위를 써서 두 수치가 다릅니다. JSON에는 정확한 바이트 수가 있습니다.
+
+### VM 디스크
+
+macOS에서는 `~/Library/Group Containers/HUAQ24HBR6.dev.orbstack/data`의 OrbStack 데이터 디스크를 잽니다. 이 파일은 sparse 파일이라 논리 크기가 아니라 할당된 block을 잽니다.
+
+이 디스크에는 Docker 엔진 데이터와 Linux 머신이 들어 있습니다. 엔진이 OrbStack이면 `docker.inside`가 `orbstack`입니다.
+
+엔진 집계와 디스크 크기는 같은 데이터를 다른 방법으로 본 값이라 서로 더하지 않고 어떤 합계에도 넣지 않습니다. 디스크는 사용자 데이터이고 `user_data`가 `true`입니다.
+
+Docker Desktop이나 다른 VM의 디스크는 재지 않습니다. Linux에는 VM 디스크 항목이 없습니다.
+
+### worktree
+
+git-kit의 폴더인 `~/.gk/worktree`를 읽습니다. 깊이 5까지 `.git`이 있는 폴더를 찾고 그 아래로는 내려가지 않습니다. 폴더가 없으면 상태는 `absent`이고 정상입니다.
+
+루트를 한 번 재고 worktree별 크기는 그 트리에서 읽습니다. `leftover`는 루트의 그 밖의 파일 크기입니다.
+
+worktree를 쓰는지는 파일 수정 시각이 아니라 git 상태로 판단합니다. git은 읽기 하위 명령만 `GIT_OPTIONAL_LOCKS=0`과 `core.fsmonitor=false`로 실행해 `.git`의 파일을 바꾸지 않습니다.
+
+worktree마다 `verdict`가 하나 있고, 아래 순서에서 처음 맞는 값을 고릅니다.
+
+| verdict | 뜻 |
+| --- | --- |
+| `unlinked` | worktree의 git 디렉터리가 없음 |
+| `has_changes` | 변경된 파일이나 추적하지 않는 파일이 있음 |
+| `state_unknown` | git 명령이 실패해 알 수 없음 |
+| `locked` | worktree가 잠겨 있음 |
+| `not_merged` | 기준에 없는 커밋이 브랜치에 있음 |
+| `base_unknown` | 비교할 기준 브랜치를 찾지 못함 |
+| `merged_clean` | 기준에 브랜치가 들어 있고 변경이 없음 |
+
+기준은 git 설정의 브랜치 `gk-parent`이고, 없으면 `origin/HEAD`입니다. `main`이라고 가정하지 않습니다.
+
+`merged_clean`은 git 명령이 모두 성공해야 나옵니다. edc는 worktree를 정리하지 않으며, 실행할 명령으로 `git-kit worktree cleanup`을 보여 줍니다.
+
+### 재지 않는 유형
+
+출력은 재지 않는 유형을 항상 나열하며, `-v`로 유형마다 이유를 볼 수 있습니다.
+
+- OrbStack 외의 VM 디스크, DB
+- `~/.gk/worktree` 밖의 worktree
+- 휴지통과 다운로드
+- 시뮬레이터 기기
+- SDK
+- 앱 데이터
+- 위치를 확인하지 못한 그 밖의 도구 캐시
+
+제한 시간은 기본 60초이며 모든 후보와 섹션이 나눠 씁니다. P1 후보부터 재고 나머지 묶음 두 후보는 마지막에 잽니다. 시작하지 못한 섹션의 상태는 `not_scanned`입니다. 시간이 끝나면 결과는 `warn`이고 `next`에 더 긴 제한 시간의 명령을 보여 줍니다. `Ctrl-C`는 실행을 멈추고 그때까지의 결과를 남깁니다.
 
 ## 커널과 systemd 이벤트 (Linux)
 

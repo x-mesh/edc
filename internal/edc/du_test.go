@@ -1,9 +1,13 @@
 package edc
 
 import (
+	"context"
 	"fmt"
 	"math/rand"
+	"os"
+	"path/filepath"
 	"reflect"
+	"runtime"
 	"sort"
 	"strings"
 	"testing"
@@ -337,5 +341,58 @@ func TestFormatDuGraphRowsPreservesLabelsAndFits(t *testing.T) {
 	}
 	if text := formatDuRows([]duRow{{Path: "empty", Dir: true}}, duOther{}, 0, true, 0); !strings.Contains(text, duBar(0, 0)) {
 		t.Fatal("zero-size graph is missing")
+	}
+}
+
+func TestDuMeasureLeavesHostWideSourcesAlone(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "a", "b"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "a", "b", "file"), make([]byte, 32<<10), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sources, ok := hostDuSources()
+	if !ok {
+		t.Skip("du is not supported on this platform")
+	}
+	var deletedCalls, labelCalls int
+	sources.deletedOpen = func() (map[uint64]*deletedOpenSummary, bool) {
+		deletedCalls++
+		return nil, false
+	}
+	sources.containerLabels = func(context.Context) map[string]string {
+		labelCalls++
+		return nil
+	}
+	options := duOptions{root: root, workers: duDefaultWorkers}
+	walked, err := duWalk(context.Background(), options, sources)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantCalls := 1
+	if runtime.GOOS != "linux" {
+		wantCalls = 0
+	}
+	if deletedCalls != wantCalls || labelCalls != wantCalls {
+		t.Fatalf("duWalk calls: deletedOpen %d, containerLabels %d, want %d each", deletedCalls, labelCalls, wantCalls)
+	}
+	deletedCalls, labelCalls = 0, 0
+	measured, err := duMeasure(context.Background(), options, sources)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deletedCalls != 0 || labelCalls != 0 {
+		t.Fatalf("duMeasure calls: deletedOpen %d, containerLabels %d, want 0", deletedCalls, labelCalls)
+	}
+	if measured.root.total != walked.root.total || measured.root.count != walked.root.count {
+		t.Fatalf("duMeasure total %d count %d, duWalk total %d count %d",
+			measured.root.total, measured.root.count, walked.root.total, walked.root.count)
+	}
+	if measured.filesystem.Mount != walked.filesystem.Mount {
+		t.Fatalf("duMeasure filesystem %q, duWalk %q", measured.filesystem.Mount, walked.filesystem.Mount)
 	}
 }

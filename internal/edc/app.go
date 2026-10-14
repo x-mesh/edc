@@ -80,6 +80,8 @@ func Run(args []string, version string) int {
 		return runInfo(args[1:], version)
 	case "du":
 		return runDu(args[1:], version)
+	case "clean":
+		return runClean(args[1:], version)
 	case "doctor":
 		return runDoctor(args[1:], version)
 	case "dns":

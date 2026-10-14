@@ -180,13 +180,16 @@ func collectSyscallStats(options syscallTraceOptions, stop <-chan struct{}, onEv
 		}
 	} else {
 		end := started.Add(options.duration)
-		for !traceStopRequested(stop) && (options.duration == 0 || time.Now().Before(end)) {
+		finished := func() bool {
+			return traceStopRequested(stop) || (options.duration > 0 && !time.Now().Before(end))
+		}
+		for !finished() {
 			wake := time.Now().Add(syscallEventPoll)
 			if options.duration > 0 && end.Before(wake) {
 				wake = end
 			}
 			reader.SetDeadline(wake)
-			if err := readSyscallEvents(reader, clockOffset, onEvent, &events); err != nil {
+			if err := readSyscallEvents(reader, clockOffset, onEvent, &events, finished); err != nil {
 				return syscallCollection{}, err
 			}
 		}
@@ -200,7 +203,7 @@ func collectSyscallStats(options syscallTraceOptions, stop <-chan struct{}, onEv
 	if reader != nil {
 		// 떼기 전에 ring에 들어온 event를 마저 읽는다. 마감이 지나도 Read는 남은 기록을 먼저 돌려준다.
 		reader.SetDeadline(time.Now())
-		if err := readSyscallEvents(reader, clockOffset, onEvent, &events); err != nil {
+		if err := readSyscallEvents(reader, clockOffset, onEvent, &events, func() bool { return false }); err != nil {
 			return syscallCollection{}, err
 		}
 	}
@@ -364,9 +367,15 @@ func parseSyscallErrnos(value string) (bool, []uint32, error) {
 	return false, errnos, nil
 }
 
-// readSyscallEvents는 reader의 마감까지 event를 읽는다.
-func readSyscallEvents(reader *ringbuf.Reader, clockOffset int64, onEvent func(syscallEvent) error, count *uint64) error {
-	for {
+// syscallEventReader는 ringbuf.Reader의 Read다. 시험이 끝나지 않는 event 흐름을 넣는다.
+type syscallEventReader interface {
+	Read() (ringbuf.Record, error)
+}
+
+// readSyscallEvents는 done이 참이 되거나 reader의 마감이 올 때까지 event를 읽는다. ring에 기록이 남아 있으면 Read는
+// 마감을 보지 않으므로, event가 쓰는 속도보다 빨리 들어와도 --duration과 Ctrl-C에 멈추도록 기록마다 done을 본다.
+func readSyscallEvents(reader syscallEventReader, clockOffset int64, onEvent func(syscallEvent) error, count *uint64, done func() bool) error {
+	for !done() {
 		record, err := reader.Read()
 		if errors.Is(err, os.ErrDeadlineExceeded) {
 			return nil
@@ -385,6 +394,7 @@ func readSyscallEvents(reader *ringbuf.Reader, clockOffset int64, onEvent func(s
 			}
 		}
 	}
+	return nil
 }
 
 func parseSyscallEvent(sample []byte, clockOffset int64) (syscallEvent, bool) {

@@ -16,6 +16,8 @@ import (
 	"testing"
 	"time"
 	"unsafe"
+
+	"github.com/cilium/ebpf/ringbuf"
 )
 
 const (
@@ -373,6 +375,28 @@ func TestParseSyscallErrnosTakesLinuxNames(t *testing.T) {
 	}
 	if _, _, err := parseSyscallErrnos("ENOENT,ENOPE"); err == nil {
 		t.Fatal("an unknown errno was accepted")
+	}
+}
+
+// endlessSyscallEvents는 쓰는 속도보다 빨리 들어오는 event다. ring이 비지 않아 Read가 마감을 돌려주지 않는다.
+type endlessSyscallEvents struct{ reads int }
+
+func (source *endlessSyscallEvents) Read() (ringbuf.Record, error) {
+	source.reads++
+	if source.reads > 10000 {
+		return ringbuf.Record{}, errors.New("events were still read after the trace stopped")
+	}
+	return ringbuf.Record{RawSample: make([]byte, syscallEventSize)}, nil
+}
+
+func TestReadSyscallEventsStopsWhileEventsKeepComing(t *testing.T) {
+	source := &endlessSyscallEvents{}
+	var count uint64
+	if err := readSyscallEvents(source, 0, nil, &count, func() bool { return count >= 3 }); err != nil {
+		t.Fatal(err)
+	}
+	if count != 3 || source.reads != 3 {
+		t.Fatalf("count = %d, reads = %d", count, source.reads)
 	}
 }
 

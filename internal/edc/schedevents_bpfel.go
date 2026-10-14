@@ -20,7 +20,9 @@ type schedEventsOffcpu struct {
 	CgroupId      uint64
 	Comm          [16]int8
 	Klass         uint8
-	_             [7]byte
+	_             [1]byte
+	SyscallNr     uint16
+	_             [4]byte
 }
 
 type schedEventsPending struct {
@@ -50,7 +52,7 @@ type schedEventsSchedRecord struct {
 	Comm          [16]int8
 	Kind          uint8
 	OffcpuClass   uint8
-	Reserved      uint16
+	SyscallNr     uint16
 }
 
 type schedEventsTaskKey struct {

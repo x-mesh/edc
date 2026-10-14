@@ -1242,7 +1242,7 @@ sudo ./bin/edc top --process output-mesh -d
 sudo ./bin/edc top --process output-mesh -d --json /tmp/edc-host.jsonl
 ```
 
-대시보드는 상세 보기에 세 번째 줄을 더합니다. 예: `ebpf 1s · runq 7584 avg 5.80ms p95 <16.384ms · io 704 avg 0.07ms p95 <0.256ms`. `--json`에서는 process마다, 그리고 `process_total`에 `ebpf` 객체가 붙습니다.
+대시보드는 상세 보기에 세 번째 줄을 더합니다. 예: `ebpf 1s · runq 7584 avg 5.80ms p95 <16.384ms · io 704 avg 0.07ms p95 <0.256ms`. Linux에서는 이 줄 끝에 대기 시간이 긴 syscall 세 개가 붙습니다. 예: `· wait futex 1.20s epoll_wait 800.00ms read 12.00ms`. `--json`에서는 process마다, 그리고 `process_total`에 `ebpf` 객체가 붙습니다.
 
 | 필드 | 뜻 |
 |---|---|
@@ -1250,6 +1250,7 @@ sudo ./bin/edc top --process output-mesh -d --json /tmp/edc-host.jsonl
 | `io_supported`, `p95_supported` | 이 source가 block I/O를 세고 분포를 남기는지입니다. `ebpf`는 둘 다 `true`, `libproc`은 둘 다 `false`입니다. |
 | `runq_count`, `runq_avg_ms`, `runq_p95_ms` | Linux에서는 process의 thread가 실행 가능 상태가 된 뒤 CPU를 받기까지의 횟수와 대기 시간입니다. macOS에서는 이 시간 동안의 context switch 수와 switch 한 번당 평균 대기이고 p95는 없습니다. `cpu_pct`가 낮은데 대기가 길면 CPU가 모자란 것입니다. |
 | `io_ops`, `io_bytes`, `io_avg_ms`, `io_p95_ms` | process가 낸 block I/O 요청 수, byte, 요청부터 완료까지의 시간 |
+| `waits` | Linux 전용입니다. 이 시간 동안 대기가 가장 긴 syscall을 최대 5개 보여 줍니다. 대기는 process의 스레드가 잠들며 CPU를 떠날 때 시작해 다시 실행될 때 끝납니다. 항목마다 `syscall`, `count`, `total_ms`가 있습니다. `-`는 page fault처럼 syscall 밖에서 기다린 대기입니다. |
 | `context_switches`, `unreadable` | macOS 전용입니다. 이 시간 동안의 context switch 수(`runq_count`와 같은 값)와 macOS가 읽지 못하게 막은 process 수입니다. |
 
 `p95`는 95번째 백분위가 든 2의 거듭제곱 구간의 위쪽 경계라서 실제 값은 그 아래입니다. 이벤트가 없으면 지연 값은 빠집니다. `process_total`은 맞은 process 전체를 합치고, p95도 합친 분포에서 구합니다. `edc`는 맞은 process 중 가장 바쁜 4096개까지 감시합니다.
@@ -1258,6 +1259,7 @@ sudo ./bin/edc top --process output-mesh -d --json /tmp/edc-host.jsonl
 - `edc`가 커널의 PID를 자신이 속한 PID namespace 기준으로 바꾸므로 컨테이너 안에서도 필터가 맞습니다.
 - process가 나타난 뒤 첫 sample에는 `ebpf` 객체가 없습니다. `edc`가 그 process를 감시하기 시작할 때부터 세기 때문입니다.
 - `ebpf` 객체의 `source`는 값을 센 방법입니다. Linux는 `ebpf`, macOS는 `libproc`입니다.
+- 대기는 끝난 sample에서 셉니다. window 내내 잠든 스레드는 그 window에 더해지지 않습니다. 대기에는 깨어난 뒤 CPU를 기다린 run-queue 대기도 들어 있으므로 `waits`와 `runq_avg_ms`를 더하지 마세요. `edc`가 process를 감시하기 시작한 뒤에는, 스레드가 한 번 깨어난 다음부터 그 스레드의 대기를 셉니다.
 
 macOS에는 scheduler와 block I/O event를 주는 공개 hook이 없습니다. 그래서 `-d`는 root 없이 libproc의 누적 counter로 CPU 대기만 셉니다. 대기 시간은 실행 가능했던 시간에서 CPU를 쓴 시간을 뺀 값이고, `runq_count`는 그동안의 context switch 수입니다. 따라서 `runq_avg_ms`는 switch 한 번당 평균 대기입니다. 분포가 없어 `runq_p95_ms`는 빠지고, I/O 값은 셀 수 없으므로 `io_*` 필드가 없습니다. 대시보드는 그 칸을 `n/a`로 보입니다. root가 아니면 macOS는 다른 사용자의 process를 읽지 못하게 막습니다. `edc`는 그 수를 `unreadable`에 세고, 맞은 process를 하나도 읽지 못했으면 `runq_*` 필드를 빼며, 대시보드에는 `root`를 보입니다. x86_64 build는 Rosetta에서 `-d`를 멈춥니다. 번역된 시계가 kernel counter와 맞지 않을 수 있기 때문이니 arm64 build를 쓰세요.
 

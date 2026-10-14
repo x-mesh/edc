@@ -17,12 +17,24 @@ typedef __u32 __wsum;
 #define BPF_MAP_TYPE_PERCPU_HASH 5
 #define BPF_MAP_TYPE_LRU_HASH 9
 #define BPF_MAP_TYPE_ARRAY 2
+#define BPF_MAP_TYPE_TASK_STORAGE 29
+#define BPF_F_NO_PREALLOC 1
+#define BPF_LOCAL_STORAGE_GET_F_CREATE 1
 #define BPF_NOEXIST 1
 #define WATCHED_MAX 4096
 #define PENDING_MAX 65536
 #define STATS_MAX 4096
 #define HIST_BUCKETS 24
 #define TASK_RUNNING 0
+#define WAITS_MAX 4096
+// nr은 64비트 번호이고, 32비트 호환 호출은 WAIT_SYSCALL_COMPAT bit로 표시한다. syscall 밖이면 WAIT_NO_SYSCALL이다.
+#define WAIT_NO_SYSCALL 0xFFFF
+#define WAIT_SYSCALL_COMPAT 0x8000
+#define TS_COMPAT 0x0002
+// 사용자 모드로 들어온 적이 없는 스레드는 register 영역이 비어 있어 번호 0이 syscall처럼 보인다.
+#define PF_IO_WORKER 0x00000010
+#define PF_USER_WORKER 0x00004000
+#define PF_KTHREAD 0x00200000
 
 #define PIDTYPE_TGID 1
 #define PID_LEVELS 8
@@ -36,6 +48,10 @@ struct task_struct { int pid; struct signal_struct *signal; unsigned int __state
 // 5.14 전 kernel은 같은 값을 state라는 이름으로 둔다.
 struct task_struct___pre514 { long state; } __attribute__((preserve_access_index));
 struct request { __u32 __data_len; } __attribute__((preserve_access_index));
+struct pt_regs___x86 { unsigned long orig_ax; } __attribute__((preserve_access_index));
+struct pt_regs___arm64 { int syscallno; } __attribute__((preserve_access_index));
+struct thread_info___x86 { __u32 status; } __attribute__((preserve_access_index));
+struct task_struct___syscall { unsigned int flags; struct thread_info___x86 thread_info; } __attribute__((preserve_access_index));
 
 // bucket i는 [2^i, 2^(i+1)) 마이크로초다. 누적 count의 차이로 구간별 분포를 구한다.
 struct process_stats {
@@ -44,6 +60,14 @@ struct process_stats {
 };
 const struct process_stats *unused_process_stats __attribute__((unused));
 struct io_start { __u64 start_ns; __u64 bytes; __u32 tgid; __u32 pad; };
+// top_task는 감시 중인 스레드의 대기 상태다. watched와 tgid는 깨어날 때(enqueue) 이미 계산한 값을 남겨, 잠들 때마다
+// PID namespace를 따라가며 tgid를 다시 계산하지 않게 한다. wait_start_ns는 잠들며 CPU를 떠난 시각이고, 0이면 대기 중이
+// 아니다. 대기는 다시 CPU를 받을 때 센다.
+struct top_task { __u64 wait_start_ns; __u32 tgid; __u32 nr; __u8 watched; };
+struct wait_key { __u32 tgid; __u32 nr; };
+struct wait_stats { __u64 count; __u64 sum_ns; };
+const struct wait_key *unused_wait_key __attribute__((unused));
+const struct wait_stats *unused_wait_stats __attribute__((unused));
 
 // edc가 속한 PID namespace의 inode다. 감시하는 pid는 /proc에서 읽은 그 namespace의 값이므로 BPF가 보는 pid를 이 값으로 바꿔 비교한다.
 volatile const __u32 target_ns_inum = 0;
@@ -52,6 +76,9 @@ struct { __uint(type, BPF_MAP_TYPE_HASH); __uint(max_entries, WATCHED_MAX); __ty
 struct { __uint(type, BPF_MAP_TYPE_LRU_HASH); __uint(max_entries, PENDING_MAX); __type(key, __u32); __type(value, __u64); } runq_start SEC(".maps");
 struct { __uint(type, BPF_MAP_TYPE_LRU_HASH); __uint(max_entries, PENDING_MAX); __type(key, void *); __type(value, struct io_start); } io_pending SEC(".maps");
 struct { __uint(type, BPF_MAP_TYPE_PERCPU_HASH); __uint(max_entries, STATS_MAX); __type(key, __u32); __type(value, struct process_stats); } stats SEC(".maps");
+// 모든 sched_switch에서 보므로 hash map보다 빠른 task local storage에 둔다. 스레드가 끝나면 kernel이 지운다.
+struct { __uint(type, BPF_MAP_TYPE_TASK_STORAGE); __uint(map_flags, BPF_F_NO_PREALLOC); __type(key, int); __type(value, struct top_task); } top_tasks SEC(".maps");
+struct { __uint(type, BPF_MAP_TYPE_PERCPU_HASH); __uint(max_entries, WAITS_MAX); __type(key, struct wait_key); __type(value, struct wait_stats); } waits SEC(".maps");
 
 static __always_inline __u32 log2_bucket(__u64 microseconds) {
 	__u64 value = microseconds + 1;
@@ -96,9 +123,55 @@ static __always_inline struct process_stats *stats_for(__u32 tgid) {
 	return bpf_map_lookup_elem(&stats, &tgid);
 }
 
+// current_syscall은 스레드가 CPU를 떠날 때 들어가 있던 syscall이다. kernel은 syscall로 들어올 때 번호를 register 영역에
+// 남기고, page fault나 interrupt로 들어올 때는 -1을 둔다. x86은 orig_ax, arm64는 syscallno에 둔다.
+static __always_inline __u32 current_syscall(struct task_struct *task) {
+	struct task_struct___syscall *flavor = (void *)task;
+	if (bpf_core_field_exists(flavor->flags) && (flavor->flags & (PF_KTHREAD | PF_IO_WORKER | PF_USER_WORKER))) return WAIT_NO_SYSCALL;
+	void *regs = (void *)bpf_task_pt_regs((void *)task);
+	if (!regs) return WAIT_NO_SYSCALL;
+	long nr = -1;
+	struct pt_regs___x86 *x86 = regs;
+	struct pt_regs___arm64 *arm64 = regs;
+	if (bpf_core_field_exists(x86->orig_ax)) nr = (long)x86->orig_ax;
+	else if (bpf_core_field_exists(arm64->syscallno)) nr = arm64->syscallno;
+	if (nr < 0 || nr >= WAIT_SYSCALL_COMPAT) return WAIT_NO_SYSCALL;
+	if (bpf_core_field_exists(flavor->thread_info.status) && (flavor->thread_info.status & TS_COMPAT)) nr |= WAIT_SYSCALL_COMPAT;
+	return (__u32)nr;
+}
+
+// wait_out은 감시 중인 스레드가 잠들며 CPU를 떠날 때 부른다. 감시를 멈춘 process의 표시는 여기서 지운다.
+static __always_inline void wait_out(struct task_struct *task) {
+	struct top_task *state = bpf_task_storage_get(&top_tasks, task, 0, 0);
+	if (!state || !state->watched) return;
+	if (!is_watched(state->tgid)) {
+		state->watched = 0;
+		return;
+	}
+	state->wait_start_ns = bpf_ktime_get_ns();
+	state->nr = current_syscall(task);
+}
+
+static __always_inline void wait_in(struct task_struct *task) {
+	struct top_task *state = bpf_task_storage_get(&top_tasks, task, 0, 0);
+	if (!state || !state->wait_start_ns) return;
+	__u64 latency = bpf_ktime_get_ns() - state->wait_start_ns;
+	struct wait_key key = {.tgid = state->tgid, .nr = state->nr};
+	state->wait_start_ns = 0;
+	struct wait_stats *value = bpf_map_lookup_elem(&waits, &key);
+	if (!value) {
+		struct wait_stats zero = {};
+		bpf_map_update_elem(&waits, &key, &zero, BPF_NOEXIST);
+		value = bpf_map_lookup_elem(&waits, &key);
+	}
+	if (value) { value->count++; value->sum_ns += latency; }
+}
+
 static __always_inline void enqueue(struct task_struct *task) {
 	__u32 tgid = ns_tgid(task), pid = BPF_CORE_READ(task, pid);
 	if (!tgid || !is_watched(tgid)) return;
+	struct top_task *state = bpf_task_storage_get(&top_tasks, task, 0, BPF_LOCAL_STORAGE_GET_F_CREATE);
+	if (state) { state->tgid = tgid; state->watched = 1; }
 	__u64 now = bpf_ktime_get_ns();
 	bpf_map_update_elem(&runq_start, &pid, &now, 0);
 }
@@ -112,6 +185,7 @@ static __always_inline long task_state(struct task_struct *task) {
 
 static __always_inline void switch_in(struct task_struct *next) {
 	__u32 next_pid = BPF_CORE_READ(next, pid);
+	wait_in(next);
 	__u64 *start = bpf_map_lookup_elem(&runq_start, &next_pid);
 	if (start) {
 		__u64 latency = bpf_ktime_get_ns() - *start;
@@ -126,6 +200,7 @@ static __always_inline void switch_in(struct task_struct *next) {
 SEC("tp_btf/sched_switch") int top_switch(__u64 *ctx) {
 	switch_in((struct task_struct *)ctx[2]);
 	if ((__u32)ctx[3] == TASK_RUNNING) enqueue((struct task_struct *)ctx[1]);
+	else wait_out((struct task_struct *)ctx[1]);
 	return 0;
 }
 // 5.15처럼 sched_switch에 prev_state가 없는 kernel용이다. tp_btf는 없는 인자를 읽을 수 없으므로, 그 kernel의 tracepoint가
@@ -134,6 +209,7 @@ SEC("tp_btf/sched_switch") int top_switch_legacy(__u64 *ctx) {
 	struct task_struct *prev = (struct task_struct *)ctx[1];
 	switch_in((struct task_struct *)ctx[2]);
 	if ((__u8)ctx[0] || task_state(prev) == TASK_RUNNING) enqueue(prev);
+	else wait_out(prev);
 	return 0;
 }
 SEC("tp_btf/sched_process_exit") int top_exit(__u64 *ctx) {

@@ -2,12 +2,13 @@
 
 package edc
 
-//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -go-package edc -type process_stats topProcessEvents top_process_bpf.c -- -I./bpf
+//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -go-package edc -type process_stats -type wait_key -type wait_stats topProcessEvents top_process_bpf.c -- -I./bpf
 
 import (
 	"errors"
 	"fmt"
 	"os"
+	"runtime"
 	"syscall"
 	"time"
 
@@ -203,16 +204,20 @@ func (tracer *topProcessBPF) observe(pids []int) map[int]topProbeStats {
 		want[pid] = struct{}{}
 	}
 	observed := make(map[int]topProbeStats, len(tracer.watched))
+	waits, waitKeys := tracer.readWaits()
 	for pid := range tracer.watched {
 		if _, keep := want[pid]; !keep {
 			key := uint32(pid)
 			_ = tracer.objects.Watched.Delete(key)
 			_ = tracer.objects.Stats.Delete(key)
+			for _, waitKey := range waitKeys[key] {
+				_ = tracer.objects.Waits.Delete(waitKey)
+			}
 			delete(tracer.watched, pid)
 			delete(tracer.previous, pid)
 			continue
 		}
-		cumulative, err := tracer.read(pid)
+		cumulative, err := tracer.read(pid, waits[uint32(pid)])
 		if err != nil {
 			continue
 		}
@@ -229,15 +234,50 @@ func (tracer *topProcessBPF) observe(pids []int) map[int]topProbeStats {
 			continue
 		}
 		tracer.watched[pid] = struct{}{}
-		tracer.previous[pid] = topProbeStats{RunqHist: &topProbeHist{}, IO: &topProbeIO{}}
+		tracer.previous[pid] = topProbeStats{RunqHist: &topProbeHist{}, IO: &topProbeIO{}, Waits: map[string]topProbeWait{}}
 	}
 	tracer.at = now
 	return observed
 }
 
+// topWaitNoSyscall과 topWaitSyscallCompat은 top_process_bpf.c의 WAIT_NO_SYSCALL과 WAIT_SYSCALL_COMPAT이다.
+const (
+	topWaitNoSyscall     = 0xFFFF
+	topWaitSyscallCompat = 0x8000
+)
+
+// readWaits는 대기 map을 한 번 돌아 tgid별 누적 대기와, 감시를 멈출 때 지울 key를 돌려준다. 읽지 못하면 비어 있다.
+func (tracer *topProcessBPF) readWaits() (map[uint32]map[string]topProbeWait, map[uint32][]topProcessEventsWaitKey) {
+	waits := map[uint32]map[string]topProbeWait{}
+	keys := map[uint32][]topProcessEventsWaitKey{}
+	var key topProcessEventsWaitKey
+	var perCPU []topProcessEventsWaitStats
+	iterator := tracer.objects.Waits.Iterate()
+	for iterator.Next(&key, &perCPU) {
+		name := "-"
+		if key.Nr != topWaitNoSyscall {
+			name = syscallName(runtime.GOARCH, key.Nr&^topWaitSyscallCompat, key.Nr&topWaitSyscallCompat != 0)
+		}
+		if waits[key.Tgid] == nil {
+			waits[key.Tgid] = map[string]topProbeWait{}
+		}
+		total := waits[key.Tgid][name]
+		for _, cpu := range perCPU {
+			total.Count += cpu.Count
+			total.SumNS += cpu.SumNs
+		}
+		waits[key.Tgid][name] = total
+		keys[key.Tgid] = append(keys[key.Tgid], key)
+	}
+	return waits, keys
+}
+
 // read는 pid의 누적값을 모든 CPU에 걸쳐 더한다. 아직 이벤트가 없으면 0이다. eBPF는 분포와 I/O를 세므로 0이어도 채운다.
-func (tracer *topProcessBPF) read(pid int) (topProbeStats, error) {
-	total := topProbeStats{RunqHist: &topProbeHist{}, IO: &topProbeIO{}}
+func (tracer *topProcessBPF) read(pid int, waits map[string]topProbeWait) (topProbeStats, error) {
+	total := topProbeStats{RunqHist: &topProbeHist{}, IO: &topProbeIO{}, Waits: map[string]topProbeWait{}}
+	for name, wait := range waits {
+		total.Waits[name] = wait
+	}
 	var perCPU []topProcessEventsProcessStats
 	if err := tracer.objects.Stats.Lookup(uint32(pid), &perCPU); err != nil {
 		if errors.Is(err, ebpf.ErrKeyNotExist) {

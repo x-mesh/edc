@@ -5,7 +5,6 @@ package edc
 import (
 	"fmt"
 	"sort"
-	"strconv"
 	"strings"
 
 	"charm.land/bubbles/v2/textinput"
@@ -30,7 +29,7 @@ type schedTraceEventMsg struct{ events []schedEvent }
 func newSchedTraceScreenModel(stop func()) schedTraceScreenModel {
 	input := textinput.New()
 	input.Prompt = "filter / "
-	input.Placeholder = "process or event"
+	input.Placeholder = "process, event, or syscall"
 	input.SetWidth(48)
 	return schedTraceScreenModel{stop: stop, input: input, selected: -1, width: 80, height: 24}
 }
@@ -95,6 +94,8 @@ func (m schedTraceScreenModel) updateKey(key tea.KeyPressMsg) (tea.Model, tea.Cm
 		m.groupBy = traceGroupByEvent
 	case "c":
 		m.groupBy = "cgroup"
+	case "s":
+		m.groupBy = schedGroupBySyscall
 	case "g":
 		m.groupBy = ""
 	case "tab":
@@ -104,6 +105,8 @@ func (m schedTraceScreenModel) updateKey(key tea.KeyPressMsg) (tea.Model, tea.Cm
 			m.groupBy = traceGroupByEvent
 		} else if m.groupBy == traceGroupByEvent {
 			m.groupBy = "cgroup"
+		} else if m.groupBy == "cgroup" {
+			m.groupBy = schedGroupBySyscall
 		} else {
 			m.groupBy = ""
 		}
@@ -135,7 +138,7 @@ func (m schedTraceScreenModel) matching() []schedEvent {
 	result := make([]schedEvent, 0, len(m.events))
 	filter := strings.ToLower(strings.TrimSpace(m.filter))
 	for _, event := range m.events {
-		if filter == "" || strings.Contains(strings.ToLower(event.Process+" "+event.Event), filter) {
+		if filter == "" || strings.Contains(strings.ToLower(event.Process+" "+event.Event+" "+event.Syscall), filter) {
 			result = append(result, event)
 		}
 	}
@@ -151,22 +154,15 @@ func (m schedTraceScreenModel) View() tea.View {
 	if m.filtering {
 		lines = append(lines, m.input.View()+"  enter apply  esc cancel")
 	} else {
-		lines = append(lines, "/ filter  tab view  p process  e event  c cgroup  g scroll  ↑↓ select  enter detail  q quit  ctrl-c stop")
+		lines = append(lines, "/ filter  tab view  p process  e event  c cgroup  s syscall  g scroll  ↑↓ select  enter detail  q quit  ctrl-c stop")
 	}
 	if m.detail && m.selected >= 0 && m.selected < len(m.events) {
 		event := m.events[m.selected]
-		lines = append(lines, fmt.Sprintf("%s pid %d process %s latency %.3fms", event.Event, event.PID, event.Process, event.LatencyMS), fmt.Sprintf("cgroup %d  ·  offcpu class %s", event.CgroupID, emptyAs(event.OffCPUClass, "-")))
+		lines = append(lines, fmt.Sprintf("%s pid %d process %s latency %.3fms", event.Event, event.PID, event.Process, event.LatencyMS), fmt.Sprintf("cgroup %d  ·  offcpu class %s  ·  syscall %s", event.CgroupID, emptyAs(event.OffCPUClass, "-"), emptyAs(event.Syscall, schedNoSyscall)))
 	} else if m.groupBy != "" {
 		counts := map[string]int{}
 		for _, event := range m.matching() {
-			key := event.Process
-			if m.groupBy == traceGroupByEvent {
-				key = event.Event
-			}
-			if m.groupBy == "cgroup" {
-				key = strconv.FormatUint(event.CgroupID, 10)
-			}
-			counts[key]++
+			counts[schedGroupKey(event, m.groupBy)]++
 		}
 		keys := make([]string, 0, len(counts))
 		for key := range counts {
@@ -178,13 +174,13 @@ func (m schedTraceScreenModel) View() tea.View {
 			lines = append(lines, fmt.Sprintf("%-24s %d", key, counts[key]))
 		}
 	} else {
-		lines = append(lines, "EVENT              PROCESS                  LATENCY  CLASS")
+		lines = append(lines, "EVENT              PROCESS                  LATENCY  CLASS      SYSCALL")
 		for index, event := range m.matching() {
 			prefix := " "
 			if m.selected == index {
 				prefix = liveSelectedBar
 			}
-			lines = append(lines, fmt.Sprintf("%s%-18s %-24s %7.3f  %s", prefix, event.Event, event.Process, event.LatencyMS, emptyAs(event.OffCPUClass, "-")))
+			lines = append(lines, fmt.Sprintf("%s%-18s %-24s %7.3f  %-9s  %s", prefix, event.Event, event.Process, event.LatencyMS, emptyAs(event.OffCPUClass, "-"), emptyAs(event.Syscall, schedNoSyscall)))
 		}
 	}
 	view := liveFrame(strings.Join(lines, "\n")+"\n", m.height)

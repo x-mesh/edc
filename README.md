@@ -1362,7 +1362,7 @@ sudo ./bin/edc top --process output-mesh -d
 sudo ./bin/edc top --process output-mesh -d --json /tmp/edc-host.jsonl
 ```
 
-The dashboard adds a third line to the detail view: `ebpf 1s · runq 7584 avg 5.80ms p95 <16.384ms · io 704 avg 0.07ms p95 <0.256ms`. With `--json`, each process and `process_total` get an `ebpf` object:
+The dashboard adds a third line to the detail view: `ebpf 1s · runq 7584 avg 5.80ms p95 <16.384ms · io 704 avg 0.07ms p95 <0.256ms`. On Linux, the line ends with the three system calls with the longest waits, for example `· wait futex 1.20s epoll_wait 800.00ms read 12.00ms`. With `--json`, each process and `process_total` get an `ebpf` object:
 
 | Field | Meaning |
 |---|---|
@@ -1370,6 +1370,7 @@ The dashboard adds a third line to the detail view: `ebpf 1s · runq 7584 avg 5.
 | `io_supported`, `p95_supported` | whether the source can count block I/O and keep a distribution. Both are `true` for `ebpf` and `false` for `libproc`. |
 | `runq_count`, `runq_avg_ms`, `runq_p95_ms` | On Linux, times a thread of the process became runnable and then got a CPU, and the wait in between. On macOS, the context switches in the window and the average wait per switch, with no p95. A high wait with a low `cpu_pct` means the CPU is oversubscribed. |
 | `io_ops`, `io_bytes`, `io_avg_ms`, `io_p95_ms` | block I/O requests the process issued, their bytes, and the time from issue to completion |
+| `waits` | Linux only: up to five system calls with the longest waits in the window. A wait starts when a thread of the process sleeps and leaves the CPU, and it ends when the thread runs again. Each entry has `syscall`, `count`, and `total_ms`. `-` is a wait outside a system call, for example in a page fault. |
 | `context_switches`, `unreadable` | macOS only: the context switches in the window, which `runq_count` repeats, and the matches that macOS refused to read |
 
 `p95` is the upper edge of the power-of-two bucket that holds the 95th percentile, so the real value is below it. A latency is left out when there were no events. `process_total` merges every match, and its p95 comes from the merged distribution. `edc` watches the 4096 busiest matches.
@@ -1378,6 +1379,7 @@ The dashboard adds a third line to the detail view: `ebpf 1s · runq 7584 avg 5.
 - `edc` translates the kernel's PIDs into the PID namespace it runs in, so the filter matches inside a container as well.
 - The first sample after a process appears has no `ebpf` object, because the counts start when `edc` begins to watch it.
 - `source` in the `ebpf` object names how the values were counted: `ebpf` on Linux, `libproc` on macOS.
+- A wait counts in the sample in which it ends. A thread that sleeps for the whole window does not add to that window. A wait includes the run-queue wait after the wakeup, so do not add `waits` to `runq_avg_ms`. After `edc` starts to watch a process, it counts the waits of a thread only after the thread wakes once.
 
 macOS has no public hook for scheduler or block I/O events. On macOS, `-d` therefore counts only the CPU wait, without root, from libproc's cumulative counters. The wait is the runnable time minus the CPU time, and `runq_count` is the number of context switches in the window, so `runq_avg_ms` is the average wait per switch. There is no distribution, so `runq_p95_ms` is left out, and I/O cannot be counted, so the `io_*` fields are absent. The dashboard shows `n/a` in those cells. Without root, macOS refuses to read the processes of other users. `edc` counts them in `unreadable`, leaves out the `runq_*` fields when it read none of the matches, and shows `root` in the dashboard. The x86_64 build stops `-d` under Rosetta, because the translated clock may not match the kernel counters; use the arm64 build.
 
@@ -1888,14 +1890,17 @@ Use `--group-by device`, `--group-by process`, `--group-by cgroup`, or `--group-
 ./bin/edc trace tcp -d
 ```
 
-Use `trace sched` on Linux to measure scheduler delays. The trace reports wakeup-to-run after sleep, runnable queue after preemption, and off-CPU spans. The off-CPU spans include the two delay types as subsets. It reports voluntary and preempted off-CPU spans separately. The trace does not identify sleep, lock, or I/O causes.
+Use `trace sched` on Linux to measure scheduler delays. The trace reports wakeup-to-run after sleep, runnable queue after preemption, and off-CPU spans. The off-CPU spans include the two delay types as subsets. It reports voluntary and preempted off-CPU spans separately.
 
 ```bash
 ./bin/edc trace sched --duration 15s
 ./bin/edc trace sched --process api --group-by process
 ./bin/edc trace sched --group-by event --json sched.json
+./bin/edc trace sched --process api --group-by syscall
 ./bin/edc trace sched --raw
 ```
+
+Each span also shows the system call that the thread was in when it left the CPU. The name tells the type of wait. For example, `futex` is usually a lock or a condition variable, `epoll_wait` and `poll` wait for events, `read` and `recvfrom` wait for data, and `nanosleep` is a sleep. The wakeup span has the same system call as the off-CPU span before it. `-` means that the thread did not wait in a system call, for example in a page fault, or that it is a kernel thread. Use `--group-by syscall` to add the spans by system call. In the full-screen view, press `s`. Raw events have a `syscall` field. edc reads the number from the saved user registers when the thread leaves the CPU, so the trace does not attach to the system call tracepoints.
 
 By default, the trace emits spans of at least 1 ms. Use `--slow <duration>` to change this threshold, for example `--slow 100us`. It uses fixed pending maps and a fixed ring buffer. The summary and raw JSON summary show ring loss, map full, unmatched, repeated wakeup, and omitted span counts. On Linux kernels that expose the required BTF fields, raw events include the cgroup v2 ID and `--container` filters this ID. Use `--group-by cgroup` to group rows by this ID. edc verifies these fields before it loads the program. The trace works on Linux 5.15. In each raw event, `timestamp_ns` is Unix epoch time in nanoseconds, the same clock as the summary line. `boot_time_ns` is the kernel monotonic time since boot.
 

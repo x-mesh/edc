@@ -82,8 +82,12 @@ type duUsage struct{ Size, Used uint64 }
 
 // duFilesystem은 경로가 속한 파일 시스템이다. 크기와 사용량은 df와 같이 statfs에서 읽는다.
 type duFilesystem struct {
-	Mount     string `json:"mount"`
-	FSType    string `json:"fstype"`
+	Mount  string `json:"mount"`
+	FSType string `json:"fstype"`
+	// Source와 Root는 mountinfo의 장치와, 그 장치에서 이 마운트에 붙인 디렉터리다. Root가 /가 아니면 bind mount라
+	// 크기와 사용량이 마운트가 아니라 장치 전체의 값이다.
+	Source    string `json:"source"`
+	Root      string `json:"root"`
 	SizeBytes uint64 `json:"size_bytes"`
 	UsedBytes uint64 `json:"used_bytes"`
 	// Whole은 경로가 파일 시스템의 root를 붙인 마운트 지점이고 모두 읽었다는 뜻이다. 그때만 사용량과 센 크기의
@@ -414,7 +418,12 @@ func formatDuFilesystem(filesystem duFilesystem, deleted duDeletedOpen, counted,
 		return ""
 	}
 	var builder strings.Builder
-	title := T("du.fs.title", filesystem.Mount, filesystem.FSType, formatSizeShort(filesystem.UsedBytes), formatSizeShort(filesystem.SizeBytes))
+	// findmnt처럼 장치[디렉터리]로 적어 사용량이 마운트가 아니라 장치 전체의 값임을 보인다.
+	mount := filesystem.Mount
+	if filesystem.Root != "" && filesystem.Root != "/" {
+		mount = fmt.Sprintf("%s (%s[%s])", filesystem.Mount, filesystem.Source, filesystem.Root)
+	}
+	title := T("du.fs.title", mount, filesystem.FSType, formatSizeShort(filesystem.UsedBytes), formatSizeShort(filesystem.SizeBytes))
 	builder.WriteString("\n" + duFit(title, width) + "\n")
 	var labels, values []string
 	if filesystem.Whole {

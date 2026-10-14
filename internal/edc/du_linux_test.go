@@ -292,8 +292,9 @@ func TestDuWalkDoesNotCompareAPartOfAFileSystem(t *testing.T) {
 	}
 }
 
-// 이 process가 연 채로 지운 파일을 실제 /proc에서 찾는다. 크기는 파일 길이가 아니라 할당된 block이다.
-func TestDuDeletedOpenStatFindsAnUnlinkedFile(t *testing.T) {
+// 가짜 /proc에 fd link 하나만 둔다. link의 글자는 커널이 지운 파일에 붙이는 이름과 같고, 따라가면 이 process가
+// 연 채로 지운 inode에 닿는다. 실제 /proc을 훑으면 fd 수 한도나 다른 큰 파일 때문에 결과가 호스트마다 달라진다.
+func TestDuDeletedOpenStatCountsTheBlocksOfAnUnlinkedFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "held.log")
 	file, err := os.Create(path)
 	if err != nil {
@@ -313,19 +314,27 @@ func TestDuDeletedOpenStatFindsAnUnlinkedFile(t *testing.T) {
 	if err := os.Remove(path); err != nil {
 		t.Fatal(err)
 	}
-	summary := scanDeletedOpen("/proc", duDeletedOpenStat, infoDeletedOpenFDLimit)[stat.Dev]
-	if summary == nil {
-		t.Fatal("no deleted file on the device of the temporary directory")
+	if err := os.Symlink(fmt.Sprintf("/proc/self/fd/%d", file.Fd()), path+deletedOpenSuffix); err != nil {
+		t.Fatal(err)
 	}
-	for _, found := range summary.Top {
-		if found.Path == path && found.PID == os.Getpid() {
-			if found.Size != uint64(stat.Blocks)*512 {
-				t.Fatalf("size %d, want %d blocks", found.Size, stat.Blocks)
-			}
-			return
-		}
+	procRoot := t.TempDir()
+	fdDir := filepath.Join(procRoot, "42", "fd")
+	if err := os.MkdirAll(fdDir, 0o755); err != nil {
+		t.Fatal(err)
 	}
-	t.Fatalf("%s is not in %+v", path, summary.Top)
+	if err := os.WriteFile(filepath.Join(procRoot, "42", "comm"), []byte("app\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(path+deletedOpenSuffix, filepath.Join(fdDir, "3")); err != nil {
+		t.Fatal(err)
+	}
+	summary := scanDeletedOpen(procRoot, duDeletedOpenStat, infoDeletedOpenFDLimit)[stat.Dev]
+	if summary == nil || summary.Files != 1 || summary.Bytes != uint64(stat.Blocks)*512 || len(summary.Top) != 1 {
+		t.Fatalf("summary = %+v, want %d blocks", summary, stat.Blocks)
+	}
+	if top := summary.Top[0]; top.Path != path || top.PID != 42 || top.Comm != "app" {
+		t.Fatalf("top = %+v", top)
+	}
 }
 
 func TestDuProcPartialReadsALinkNotOnlyTheList(t *testing.T) {

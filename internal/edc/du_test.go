@@ -144,6 +144,10 @@ func TestFormatDuFilesystemComparesOnlyAWholeFileSystem(t *testing.T) {
 			t.Fatalf("partial =\n%s", partial)
 		}
 	}
+	bind := formatDuFilesystem(duFilesystem{Mount: "/usr", FSType: "xfs", Source: "/dev/sda3", Root: "/usr", SizeBytes: 1 << 30}, duDeletedOpen{}, 0, 0, 0)
+	if !strings.HasPrefix(bind, "\nfile system  /usr (/dev/sda3[/usr])  xfs  0 B used of 1.0 GB\n") {
+		t.Fatalf("bind =\n%s", bind)
+	}
 	if formatDuFilesystem(duFilesystem{}, deleted, 0, 0, 0) != "" {
 		t.Fatal("unknown file system printed")
 	}

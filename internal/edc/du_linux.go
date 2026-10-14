@@ -152,7 +152,9 @@ func duReadFilesystem(scan *duScan, options duOptions, sources duSources, mounts
 	if !found || !ok {
 		return
 	}
-	scan.filesystem = duFilesystem{Mount: mount.Point, FSType: mount.FSType, SizeBytes: usage.Size, UsedBytes: usage.Used}
+	scan.filesystem = duFilesystem{
+		Mount: mount.Point, FSType: mount.FSType, Source: mount.Source, Root: mount.Root, SizeBytes: usage.Size, UsedBytes: usage.Used,
+	}
 	summaries, partial := sources.deletedOpen()
 	scan.deleted.Partial = partial
 	if summary := summaries[dev]; summary != nil {

@@ -160,11 +160,11 @@ func TestDuResultWarnsWhenDeletedFilesHoldTheSameShareAsInfo(t *testing.T) {
 	top := []duDeletedFile{{Path: "/data/app.log", Bytes: 100, PID: 42, Comm: "app"}}
 
 	scan.deleted = duDeletedOpen{Bytes: 99, Files: 1, Top: top, Partial: true}
-	if result := duResult(Result{StartedAt: time.Now()}, options, scan, time.Minute); result.Status != StatusPass || len(result.Warnings) != 0 {
+	if result := duResult(Result{StartedAt: time.Now()}, options, scan, time.Minute, false); result.Status != StatusPass || len(result.Warnings) != 0 {
 		t.Fatalf("below the share: %s %q", result.Status, result.Warnings)
 	}
 	scan.deleted = duDeletedOpen{Bytes: 100, Files: 1, Top: top}
-	result := duResult(Result{StartedAt: time.Now()}, options, scan, time.Minute)
+	result := duResult(Result{StartedAt: time.Now()}, options, scan, time.Minute, false)
 	if result.Status != StatusWarn || len(result.Warnings) != 1 || !strings.Contains(result.Warnings[0], "app (pid 42)") {
 		t.Fatalf("at the share: %s %q", result.Status, result.Warnings)
 	}

@@ -153,6 +153,7 @@ command:
       - "It stays on one file system and lists the mounts that it skipped."
       - "A bind or overlay mount shares a file system, so its size shows as -."
       - "It also shows deleted files that a process still holds open."
+      - "In a terminal, it opens a screen to browse. q prints the result."
   where:
     summary: "The near region and the shape of this network"
     option:

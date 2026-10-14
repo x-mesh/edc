@@ -48,7 +48,11 @@ func TestDuContainerLabelsReadInspectAndMountinfo(t *testing.T) {
 
 // /var/lib/docker가 다른 디스크로 가는 symlink면 탐색은 symlink를 푼 경로를 읽는다.
 func TestDuResolveLabelPathsAddsTheRealPath(t *testing.T) {
-	base := t.TempDir()
+	// macOS의 임시 디렉터리는 /var/folders인데 /var가 /private/var로 가는 symlink다. 기대값도 푼 경로로 만든다.
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	real := filepath.Join(base, "disk", "docker")
 	if err := os.MkdirAll(filepath.Join(real, "containers", "aaaa"), 0o755); err != nil {
 		t.Fatal(err)

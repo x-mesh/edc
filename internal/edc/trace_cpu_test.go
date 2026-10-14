@@ -7,7 +7,7 @@ import (
 )
 
 func TestParseCPUKallsymsKeepsTextSymbols(t *testing.T) {
-	symbols, err := parseCPUKallsyms(strings.NewReader(strings.Join([]string{
+	symbols, all, err := parseCPUKallsyms(strings.NewReader(strings.Join([]string{
 		"ffffffff81000300 T do_syscall_64",
 		"ffffffff81000100 t helper",
 		"ffffffff82000000 D jiffies",
@@ -21,6 +21,9 @@ func TestParseCPUKallsymsKeepsTextSymbols(t *testing.T) {
 	}
 	if len(symbols) != 4 || symbols[0].name != "helper" || symbols[3].name != "nf_hook" {
 		t.Fatalf("symbols = %+v", symbols)
+	}
+	if len(all) != 5 || all[3].name != "jiffies" {
+		t.Fatalf("all = %+v", all)
 	}
 	for addr, want := range map[uint64]string{0xffffffff81000150: "helper", 0xffffffff81000300: "do_syscall_64", 0xffffffff810003ff: "do_syscall_64", 0xffffffffc0001010: "nf_hook"} {
 		if got, ok := cpuLookup(symbols, addr); !ok || got != want {
@@ -54,7 +57,7 @@ func TestParseCPUMapsKeepsExecutableMappings(t *testing.T) {
 		"7f1000000000-7f1000100000 rwxp 00000000 00:00 0 ",
 		"7ffd00000000-7ffd00002000 r-xp 00000000 00:00 0 [vdso]",
 		"7f2000000000-7f2000001000 r-xp 00000000 fd:01 77 /tmp/old app (deleted)",
-	}, "\n")))
+	}, "\n")), false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,12 +93,14 @@ func TestCPUSymbolizerNamesUnresolvedFrames(t *testing.T) {
 	symbolizer := newCPUSymbolizer("/nonexistent")
 	key := cpuProcessKey{TGID: 7, Comm: "app"}
 	symbolizer.processes[key] = &cpuProcess{mappings: []cpuMapping{
-		{start: 0x1000, end: 0x2000, path: "/usr/lib/libz.so.1", key: "fd:01:5"},
-		{start: 0x3000, end: 0x4000, path: "[vdso]"},
-		{start: 0x5000, end: 0x6000},
+		{start: 0x1000, end: 0x2000, path: "/usr/lib/libz.so.1", key: "fd:01:5", exec: true},
+		{start: 0x3000, end: 0x4000, path: "[vdso]", exec: true},
+		{start: 0x5000, end: 0x6000, exec: true},
+		// 실행 권한이 없는 mapping은 함수 주소로 보지 않는다.
+		{start: 0x7000, end: 0x8000, path: "/usr/lib/libz.so.1", key: "fd:01:5"},
 	}, perfMap: []cpuSymbol{{addr: 0x5100, size: 0x10, name: "jit_fn"}}}
 	symbolizer.files["fd:01:5"] = &cpuFileRef{base: "libz.so.1", loaded: &cpuSymbolFile{base: "libz.so.1"}}
-	for addr, want := range map[uint64]string{0x1500: "[libz.so.1]", 0x3500: "[vdso]", 0x5108: "jit_fn", 0x5200: "[anon]", 0x9000: "[unknown]"} {
+	for addr, want := range map[uint64]string{0x1500: "[libz.so.1]", 0x3500: "[vdso]", 0x5108: "jit_fn", 0x5200: "[anon]", 0x7100: "[unknown]", 0x9000: "[unknown]"} {
 		if got := symbolizer.userFrame(key, addr); got != want {
 			t.Errorf("frame %x = %q, want %q", addr, got, want)
 		}

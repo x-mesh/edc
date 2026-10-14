@@ -36,7 +36,7 @@ func cpuTestMapping(t *testing.T, pc uint64) cpuMapping {
 		t.Fatal(err)
 	}
 	defer maps.Close()
-	mappings, err := parseCPUMaps(bufio.NewReader(maps))
+	mappings, err := parseCPUMaps(bufio.NewReader(maps), false)
 	if err != nil {
 		t.Fatal(err)
 	}

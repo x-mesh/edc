@@ -298,7 +298,7 @@ var commandDocs = []commandDoc{
 	},
 	{
 		name: "trace", group: "observe",
-		usage: []string{traceProtocolUsage, traceDatabaseUsage, traceSocketUsage, traceSyscallUsage, traceCPUUsage, traceShowUsage},
+		usage: []string{traceProtocolUsage, traceDatabaseUsage, traceSocketUsage, traceSyscallUsage, traceCPUUsage, traceLockUsage, traceShowUsage},
 		options: []optionDoc{
 			{"--duration 15s", "command.trace.option.duration"},
 			{"--slow <duration>", "command.trace.option.slow"},
@@ -323,6 +323,7 @@ var commandDocs = []commandDoc{
 			{"--errors <all|names>", "command.trace.option.errors"},
 			{"--frequency 99", "command.trace.option.frequency"},
 			{"--folded <path|->", "command.trace.option.folded"},
+			{"--kind kernel|futex", "command.trace.option.lock_kind"},
 			{"--yes", "command.trace.option.yes"},
 		},
 	},

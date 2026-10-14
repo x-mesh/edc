@@ -2355,6 +2355,27 @@ Linux에서 `trace exec`를 사용하면 process가 뜨고 끝나는 것, 그리
 
 명령줄은 exec 시점에 새 process의 메모리에서 읽으므로 program이 받은 인자이고, 나중에 바뀐 값은 아닙니다. 읽지 못하면 실행 파일 경로를 보여 줍니다. 256 byte보다 긴 줄은 `…`로 끝나고 `args_truncated`에 셉니다. 스레드의 종료는 `exit` event가 아니고, process의 마지막 스레드만 `exit`를 냅니다. kernel thread는 보이지 않습니다. `sched_process_exec`, `sched_process_exit`, `signal_generate` tracepoint와 BTF가 필요합니다.
 
+Linux에서 `trace lock`을 사용하면 thread가 lock을 기다리는 곳을 볼 수 있습니다. edc는 두 가지 기다림을 재고 끝날 때 요약을 한 번 출력합니다.
+
+- kernel lock 기다림은 kernel 안의 spinlock, rwlock, mutex, rwsem, per-CPU semaphore 경합입니다. Linux 5.19 이상에 있는 `lock:contention_begin`과 `lock:contention_end` tracepoint를 씁니다.
+- futex 기다림은 사용자 공간에서 부른 `futex_wait`입니다. 경합한 `pthread_mutex`, condition variable, Go runtime이 모두 이렇게 기다리므로 futex 기다림이 늘 경합은 아닙니다.
+
+```bash
+./bin/edc trace lock --duration 10s
+./bin/edc trace lock --process api --kind futex
+./bin/edc trace lock --container db --json lock.json
+```
+
+`KERNEL LOCK` 표는 lock, lock 종류, 부른 함수로 기다림을 묶습니다. 정적 lock은 `tasklist_lock`이나 `rtnl_mutex`처럼 이름을, 나머지는 주소를 보여 줍니다. 종류는 `perf lock`의 이름을 씁니다: `spinlock`, `rwlock:R`, `rwlock:W`, `rwsem:R`, `rwsem:W`, `mutex`, `rtmutex`, `pcpu-sem:R`, `pcpu-sem:W`. 부른 함수는 stack에서 lock 함수가 아닌 첫 kernel 함수입니다. `PROCESS`는 가장 자주 기다린 process입니다.
+
+`FUTEX` 표는 process와 futex 주소로 기다림을 묶습니다. 주소가 전역 변수이면 ELF 심볼에서 `main.hotWord`나 `runtime.sched+0x120`처럼 이름을 찾습니다. 나머지 주소는 `[anon] 0x7f3a1c000960`처럼 mapping과 주소를 보여 줍니다. `-s`로 build한 Go program처럼 심볼표가 없는 program은 file 이름만 나옵니다. `CODE`는 기다린 시간이 가장 긴 stack의 안쪽 두 사용자 frame입니다.
+
+edc의 집계를 맞춰 보았습니다. 시험 program이 전역 futex 하나에서 800번 기다렸고, edc는 Linux 6.17과 Linux 5.15에서 모두 `main.hotWord`의 기다림 800번을 셌습니다. thread 8개가 메모리를 mapping하고 해제하는 program에서 `perf stat`은 `lock:contention_end`를 359,516번, edc는 359,506번 셌습니다. `perf stat`은 program이 이름을 얻기 전인 fork부터 셉니다.
+
+trace가 도는 동안 host의 모든 kernel lock 경합과 futex 기다림이 BPF program을 거칩니다. Linux 6.17, CPU 12개 host에서 고른 process의 경합 한 번은 두 program에서 1.57µs와 0.34µs가 걸렸고, 대부분은 stack을 읽는 시간입니다. 필터가 고르지 않은 process는 0.26µs와 0.07µs였습니다. futex 기다림은 1.59µs와 0.42µs, 고르지 않으면 0.29µs와 0.08µs였습니다. 시험 program은 trace가 있을 때와 없을 때 같은 시간에 같은 양의 일을 했습니다. trace가 경합 한 번을 길게 만들어 경합 횟수는 바뀔 수 있습니다. 같은 program이 아무것도 고르지 않는 필터에서는 358,687번, trace 대상일 때는 203,922번 경합했습니다.
+
+Linux 5.15에는 contention tracepoint가 없습니다. 그러면 알림을 출력하고 futex 기다림만 보여 줍니다. BTF와 task local storage가 필요합니다.
+
 Linux에서 `trace syscall`을 사용하면 process별 system call 수와 시간을 볼 수 있습니다. edc는 kernel 안에서 세고, 끝날 때 요약을 한 번 출력합니다. `--slow`나 `--errors`를 주면 조건에 맞는 호출도 하나씩 출력합니다.
 
 ```bash

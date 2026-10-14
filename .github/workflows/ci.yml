@@ -109,6 +109,14 @@ jobs:
           sudo ../../edc.test -test.run '^TestTraceCPUSamplesUserAndKernelStacks$' -test.count=1 -test.v 2>&1 | tee cpu.log
           grep -q -- '--- PASS: TestTraceCPUSamplesUserAndKernelStacks' cpu.log
 
+      # trace lock은 helper가 전역 futex에서 정해진 횟수만큼 기다리고 mmap_lock을 두고 다툰다. 그 수와 이름을 runner kernel에서 본다.
+      - name: Trace lock counts futex and kernel waits
+        shell: bash
+        working-directory: internal/edc
+        run: |
+          sudo ../../edc.test -test.run '^TestTraceLockCountsFutexAndKernelWaits$' -test.count=1 -test.v 2>&1 | tee lock.log
+          grep -q -- '--- PASS: TestTraceLockCountsFutexAndKernelWaits' lock.log
+
       # trace sched와 top -d의 BPF도 make check에서 root가 아니라 건너뛴다. runner kernel에서 기다린 구간에 syscall 이름이 붙는지 본다.
       # 이름은 사용자 register에서 읽으므로 arm64 runner가 arm64 배치를 확인한다.
       - name: Trace sched and top -d name the syscall of a wait

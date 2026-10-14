@@ -41,9 +41,10 @@ func cpuSortSymbols(symbols []cpuSymbol) []cpuSymbol {
 	return symbols
 }
 
-// parseCPUKallsyms는 text 심볼만 남긴다. 주소가 모두 0이면 kptr_restrict가 주소를 가린 것이라 빈 표를 돌려준다.
-func parseCPUKallsyms(reader io.Reader) ([]cpuSymbol, error) {
-	var symbols []cpuSymbol
+// parseCPUKallsyms는 text 심볼과, 모든 종류의 심볼 두 표를 돌려준다. 둘째 표는 정적 lock 같은 data 이름을 찾는 데 쓴다.
+// 주소가 모두 0이면 kptr_restrict가 주소를 가린 것이라 빈 표를 돌려준다.
+func parseCPUKallsyms(reader io.Reader) ([]cpuSymbol, []cpuSymbol, error) {
+	var symbols, all []cpuSymbol
 	scanner := bufio.NewScanner(reader)
 	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
 	for scanner.Scan() {
@@ -51,38 +52,43 @@ func parseCPUKallsyms(reader io.Reader) ([]cpuSymbol, error) {
 		if len(fields) < 3 {
 			continue
 		}
-		switch fields[1] {
-		case "t", "T", "w", "W":
-		default:
-			continue
-		}
 		addr, err := strconv.ParseUint(fields[0], 16, 64)
 		if err != nil || addr == 0 {
 			continue
 		}
-		symbols = append(symbols, cpuSymbol{addr: addr, name: fields[2]})
+		symbol := cpuSymbol{addr: addr, name: fields[2]}
+		// per-CPU 변수(A)는 주소가 아니라 per-CPU 영역 안의 offset이라 data 표에서도 뺀다.
+		if fields[1] != "a" && fields[1] != "A" {
+			all = append(all, symbol)
+		}
+		switch fields[1] {
+		case "t", "T", "w", "W":
+			symbols = append(symbols, symbol)
+		}
 	}
 	if err := scanner.Err(); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return cpuSortSymbols(symbols), nil
+	return cpuSortSymbols(symbols), cpuSortSymbols(all), nil
 }
 
 type cpuMapping struct {
 	start, end, offset uint64
 	path               string
 	// key는 같은 file을 한 번만 읽기 위한 dev와 inode다. 익명 mapping과 [vdso] 같은 특수 mapping은 비어 있다.
-	key string
+	key  string
+	exec bool
 }
 
-// parseCPUMaps는 실행 권한이 있는 mapping만 남긴다. 주소가 그 밖이면 함수가 아니다.
-func parseCPUMaps(reader io.Reader) ([]cpuMapping, error) {
+// parseCPUMaps는 all이 아니면 실행 권한이 있는 mapping만 남긴다. 주소가 그 밖이면 함수가 아니다. data 주소의 이름을 찾을
+// 때는 .data와 .bss가 있는 쓰기 mapping도 필요하다.
+func parseCPUMaps(reader io.Reader, all bool) ([]cpuMapping, error) {
 	var mappings []cpuMapping
 	scanner := bufio.NewScanner(reader)
 	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
 	for scanner.Scan() {
 		fields := strings.Fields(scanner.Text())
-		if len(fields) < 5 || !strings.Contains(fields[1], "x") {
+		if len(fields) < 5 || (!all && !strings.Contains(fields[1], "x")) {
 			continue
 		}
 		bounds := strings.SplitN(fields[0], "-", 2)
@@ -95,7 +101,7 @@ func parseCPUMaps(reader io.Reader) ([]cpuMapping, error) {
 		if err1 != nil || err2 != nil || err3 != nil {
 			continue
 		}
-		mapping := cpuMapping{start: start, end: end, offset: offset}
+		mapping := cpuMapping{start: start, end: end, offset: offset, exec: strings.Contains(fields[1], "x")}
 		if len(fields) >= 6 {
 			mapping.path = strings.Join(fields[5:], " ")
 		}
@@ -132,6 +138,8 @@ type cpuSymbolFile struct {
 	base    string
 	loads   []elf.ProgHeader
 	symbols []cpuSymbol
+	// objects는 전역 변수의 심볼이다. data 주소의 이름을 찾는 데만 쓴다.
+	objects []cpuSymbol
 	gopcln  *gosym.Table
 }
 
@@ -154,18 +162,24 @@ func loadCPUSymbolFile(reader io.ReaderAt, base string) (*cpuSymbolFile, error) 
 		}
 		for _, symbol := range symbols {
 			kind := elf.ST_TYPE(symbol.Info)
-			if (kind != elf.STT_FUNC && kind != elf.STT_GNU_IFUNC) || symbol.Value == 0 || symbol.Section == elf.SHN_UNDEF {
+			if symbol.Value == 0 || symbol.Section == elf.SHN_UNDEF {
 				continue
 			}
 			// .dynsym의 이름에는 "pthread_mutex_lock@@GLIBC_2.2.5"처럼 symbol version이 붙는다. C 이름에는 '@'가 없다.
 			name, _, _ := strings.Cut(symbol.Name, "@")
-			result.symbols = append(result.symbols, cpuSymbol{addr: symbol.Value, size: symbol.Size, name: name})
+			switch kind {
+			case elf.STT_FUNC, elf.STT_GNU_IFUNC:
+				result.symbols = append(result.symbols, cpuSymbol{addr: symbol.Value, size: symbol.Size, name: name})
+			case elf.STT_OBJECT:
+				result.objects = append(result.objects, cpuSymbol{addr: symbol.Value, size: symbol.Size, name: name})
+			}
 		}
 		if len(result.symbols) > 0 {
 			break
 		}
 	}
 	cpuSortSymbols(result.symbols)
+	cpuSortSymbols(result.objects)
 	result.gopcln = cpuGoPCLN(file)
 	return result, nil
 }
@@ -275,15 +289,35 @@ func cpuGoText(file *elf.File, text *elf.Section, pcln cpuPCLN) uint64 {
 	return text.Addr
 }
 
-// lookup은 file offset의 함수 이름이다. 실행 파일의 PT_LOAD로 offset을 링크 주소로 바꾼 뒤 찾는다.
-func (file *cpuSymbolFile) lookup(fileOffset uint64) (string, bool) {
-	addr, ok := fileOffset, false
+// vaddr는 file offset을 PT_LOAD로 링크 주소로 바꾼다.
+func (file *cpuSymbolFile) vaddr(fileOffset uint64) (uint64, bool) {
 	for _, load := range file.loads {
 		if fileOffset >= load.Off && fileOffset < load.Off+load.Filesz {
-			addr, ok = fileOffset-load.Off+load.Vaddr, true
-			break
+			return fileOffset - load.Off + load.Vaddr, true
 		}
 	}
+	return 0, false
+}
+
+// object는 링크 주소를 덮는 전역 변수의 이름이다. 변수 안쪽이면 offset을 붙인다. 크기가 0인 심볼은 그 주소에만 맞는다.
+func (file *cpuSymbolFile) object(addr uint64) (string, bool) {
+	index := sort.Search(len(file.objects), func(i int) bool { return file.objects[i].addr > addr }) - 1
+	if index < 0 {
+		return "", false
+	}
+	symbol := file.objects[index]
+	switch {
+	case addr == symbol.addr:
+		return symbol.name, true
+	case addr < symbol.addr+symbol.size:
+		return fmt.Sprintf("%s+0x%x", symbol.name, addr-symbol.addr), true
+	}
+	return "", false
+}
+
+// lookup은 file offset의 함수 이름이다. 실행 파일의 PT_LOAD로 offset을 링크 주소로 바꾼 뒤 찾는다.
+func (file *cpuSymbolFile) lookup(fileOffset uint64) (string, bool) {
+	addr, ok := file.vaddr(fileOffset)
 	if !ok {
 		return "", false
 	}
@@ -321,8 +355,12 @@ type cpuProcess struct {
 // cpuSymbolizer는 process와 file의 심볼을 모은다. process가 끝나면 /proc에서 사라지므로, trace 중에 처음 본 process를
 // snapshot으로 바로 읽어 둔다.
 type cpuSymbolizer struct {
-	proc      string
-	kernel    []cpuSymbol
+	proc   string
+	kernel []cpuSymbol
+	// kernelData는 모든 종류의 kernel 심볼이다. 정적 lock의 이름을 찾는다.
+	kernelData []cpuSymbol
+	// data이면 snapshot이 쓰기 mapping과 익명 mapping도 남긴다. data 주소의 이름을 찾는 trace만 켠다.
+	data      bool
 	processes map[cpuProcessKey]*cpuProcess
 	files     map[string]*cpuFileRef
 }
@@ -337,7 +375,7 @@ func (symbolizer *cpuSymbolizer) loadKernel() error {
 		return err
 	}
 	defer file.Close()
-	symbolizer.kernel, err = parseCPUKallsyms(file)
+	symbolizer.kernel, symbolizer.kernelData, err = parseCPUKallsyms(file)
 	return err
 }
 
@@ -359,7 +397,7 @@ func (symbolizer *cpuSymbolizer) snapshot(key cpuProcessKey) {
 		}
 		return
 	}
-	mappings, err := parseCPUMaps(maps)
+	mappings, err := parseCPUMaps(maps, symbolizer.data)
 	maps.Close()
 	if err != nil {
 		return
@@ -477,7 +515,7 @@ func (symbolizer *cpuSymbolizer) userFrame(key cpuProcessKey, addr uint64) strin
 		return name
 	}
 	for _, mapping := range process.mappings {
-		if addr < mapping.start || addr >= mapping.end {
+		if !mapping.exec || addr < mapping.start || addr >= mapping.end {
 			continue
 		}
 		if ref, file := symbolizer.symbolFile(mapping.key); ref != nil {
@@ -502,4 +540,92 @@ func (symbolizer *cpuSymbolizer) userFrame(key cpuProcessKey, addr uint64) strin
 // cpuFileBase는 maps가 지워진 file 뒤에 붙이는 " (deleted)"를 뗀 file 이름이다.
 func cpuFileBase(path string) string {
 	return filepath.Base(strings.TrimSuffix(path, " (deleted)"))
+}
+
+// cpuKernelDataWindow보다 먼 심볼은 그 주소의 이름으로 보지 않는다. 큰 정적 배열 안의 lock도 이 안에 든다.
+const cpuKernelDataWindow = 64 << 10
+
+// kernelData는 kernel 주소의 data 이름이다. heap과 vmalloc 주소는 kernel text보다 낮아 이름이 없고 빈 문자열이다.
+func (symbolizer *cpuSymbolizer) kernelDataName(addr uint64) string {
+	if len(symbolizer.kernel) == 0 || addr < symbolizer.kernel[0].addr {
+		return ""
+	}
+	index := sort.Search(len(symbolizer.kernelData), func(i int) bool { return symbolizer.kernelData[i].addr > addr }) - 1
+	if index < 0 {
+		return ""
+	}
+	symbol := symbolizer.kernelData[index]
+	switch offset := addr - symbol.addr; {
+	case offset == 0:
+		return symbol.name
+	case offset < cpuKernelDataWindow:
+		return fmt.Sprintf("%s+0x%x", symbol.name, offset)
+	}
+	return ""
+}
+
+// userDataName은 사용자 주소의 전역 변수 이름이다. .data는 file mapping 안에 있고, .bss는 그 뒤의 익명 mapping에 있어
+// file의 load bias로 링크 주소를 구한다. 이름이 없으면 [heap], [stack], [file 이름], [anon] 중 하나다.
+func (symbolizer *cpuSymbolizer) userDataName(key cpuProcessKey, addr uint64) string {
+	process := symbolizer.processes[key]
+	if process == nil {
+		return "[unknown]"
+	}
+	var container *cpuMapping
+	for index := range process.mappings {
+		if mapping := &process.mappings[index]; addr >= mapping.start && addr < mapping.end {
+			container = mapping
+			break
+		}
+	}
+	// file mapping의 마지막 page에는 .data 끝과 .bss 앞이 함께 있다. .bss는 file에 없으므로 offset이 아니라 mapping 시작의
+	// 링크 주소에서 거리로 구하고, PT_LOAD의 Memsz 안인지 본다.
+	if container != nil && container.key != "" {
+		ref, file := symbolizer.symbolFile(container.key)
+		if file != nil {
+			if start, ok := file.vaddr(container.offset); ok {
+				vaddr := start + (addr - container.start)
+				for _, load := range file.loads {
+					if vaddr >= load.Vaddr && vaddr < load.Vaddr+load.Memsz {
+						if name, found := file.object(vaddr); found {
+							return name
+						}
+					}
+				}
+			}
+		}
+		if ref != nil {
+			return "[" + ref.base + "]"
+		}
+	}
+	// .bss는 file이 아니라 익명 mapping에 있다. 같은 process에 mapping된 file마다 load bias를 구해 PT_LOAD의 Memsz 안인지 본다.
+	seen := map[string]bool{}
+	for _, mapping := range process.mappings {
+		if mapping.key == "" || seen[mapping.key] {
+			continue
+		}
+		seen[mapping.key] = true
+		ref, file := symbolizer.symbolFile(mapping.key)
+		if file == nil {
+			continue
+		}
+		start, ok := file.vaddr(mapping.offset)
+		if !ok || mapping.start < start {
+			continue
+		}
+		bias := mapping.start - start
+		vaddr := addr - bias
+		for _, load := range file.loads {
+			if addr >= bias && vaddr >= load.Vaddr && vaddr < load.Vaddr+load.Memsz {
+				if name, found := file.object(vaddr); found {
+					return name
+				}
+				return "[" + ref.base + "]"
+			}
+		}
+	}
+	if container != nil && strings.HasPrefix(container.path, "[") {
+		return container.path
+	}
+	return "[anon]"
 }

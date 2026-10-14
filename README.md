@@ -1919,6 +1919,27 @@ By default, edc records the signals that end a process or dump core: `HUP`, `INT
 
 edc reads the command line from the memory of the new process at the time of the exec, so it holds the arguments that the program received, not later changes. If edc cannot read it, the event shows the path of the executable. Lines longer than 256 bytes end with `…`, and `args_truncated` counts them. A thread that exits does not make an `exit` event, only the last thread of a process does. Kernel threads do not appear. The trace needs the `sched_process_exec`, `sched_process_exit`, and `signal_generate` tracepoints with BTF.
 
+Use `trace lock` on Linux to see where threads wait for locks. edc measures two kinds of wait and prints one summary at the end.
+
+- A kernel lock wait is a contended spinlock, rwlock, mutex, rwsem, or per-CPU semaphore in the kernel. edc uses the `lock:contention_begin` and `lock:contention_end` tracepoints, which Linux 5.19 and later have.
+- A futex wait is a call to `futex_wait` from user space. A contended `pthread_mutex`, a condition variable, and the Go runtime all wait this way, so a futex wait is not always contention.
+
+```bash
+./bin/edc trace lock --duration 10s
+./bin/edc trace lock --process api --kind futex
+./bin/edc trace lock --container db --json lock.json
+```
+
+The `KERNEL LOCK` table groups the waits by lock, lock type, and caller. A static lock shows its name, for example `tasklist_lock` or `rtnl_mutex`, and other locks show their address. The type uses the names of `perf lock`: `spinlock`, `rwlock:R`, `rwlock:W`, `rwsem:R`, `rwsem:W`, `mutex`, `rtmutex`, `pcpu-sem:R`, and `pcpu-sem:W`. The caller is the first kernel function in the stack that is not a lock function. `PROCESS` is the process that waited most often.
+
+The `FUTEX` table groups the waits by process and futex address. If the address is a global variable, edc shows its name from the ELF symbols, for example `main.hotWord` or `runtime.sched+0x120`. Other addresses show the mapping and the address, for example `[anon] 0x7f3a1c000960`. A program without a symbol table, such as a Go program built with `-s`, shows only the file name. `CODE` is the two innermost user frames of the stack with the most wait time.
+
+edc checked the counts. A test program waited 800 times on one global futex. edc counted 800 waits on `main.hotWord`, on Linux 6.17 and on Linux 5.15. For a program that maps and unmaps memory from 8 threads, `perf stat` counted 359,516 `lock:contention_end` events, and edc counted 359,506 waits. `perf stat` also counts from the fork, before the program has its name.
+
+When the trace runs, each kernel lock contention and each futex wait on the host goes through a BPF program. On a 12-CPU host with Linux 6.17, a contention took 1.57 µs and 0.34 µs in the two programs for a selected process, mostly to read the stack. A process that the filter does not select took 0.26 µs and 0.07 µs. A futex wait took 1.59 µs and 0.42 µs, or 0.29 µs and 0.08 µs. The test program did the same work in the same time with and without the trace. Because the trace makes each contention longer, the number of contentions can change: the same program had 358,687 contentions with a filter that selected nothing and 203,922 with the trace on it.
+
+On Linux 5.15, the kernel has no contention tracepoints. edc prints a note and shows only the futex waits. The trace needs BTF and task local storage.
+
 Use `trace syscall` on Linux to count the system calls of each process. edc counts in the kernel and prints one summary at the end. With `--slow` or `--errors`, it also prints each call that matches.
 
 ```bash

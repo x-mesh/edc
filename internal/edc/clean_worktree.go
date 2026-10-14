@@ -89,9 +89,11 @@ type cleanWorktree struct {
 	HeadMovedAt      *time.Time `json:"head_moved_at"`
 	UsageBytes       *uint64    `json:"usage_bytes,omitempty"`
 	LowerBound       bool       `json:"lower_bound,omitempty"`
-	Verdict          string     `json:"verdict"`
-	Reasons          []string   `json:"reasons,omitempty"`
-	Detail           string     `json:"detail,omitempty"`
+	// BuildDirs는 --project로 찾은 빌드 폴더 수다. 빌드 폴더를 찾지 않았으면 0이 아니라 null이다.
+	BuildDirs *int     `json:"build_dirs"`
+	Verdict   string   `json:"verdict"`
+	Reasons   []string `json:"reasons,omitempty"`
+	Detail    string   `json:"detail,omitempty"`
 	// failed는 git 명령이 하나라도 답하지 못했다는 뜻이다. 이 경우 merged_clean이 될 수 없다.
 	failed bool
 }
@@ -129,8 +131,7 @@ func cleanAddReason(reasons []string, reason string) []string {
 
 // cleanWorktreesQuiet는 확인할 일이 없는 상태다. 루트가 없는 것은 worktree를 쓰지 않는 호스트의 정상 상태다.
 func cleanWorktreesQuiet(section cleanWorktrees) bool {
-	// 빈 상태는 이 섹션 없이 만든 cleanReport다. cleanWorktreeScan은 항상 상태를 정한다.
-	return section.Status == "" || section.Status == cleanMeasured || section.Status == cleanAbsent
+	return section.Status == cleanMeasured || section.Status == cleanAbsent
 }
 
 // cleanWorktreeScan은 worktree 루트를 걸어 worktree를 찾고, 루트를 한 번 재서 worktree별 용량을 읽고,
@@ -812,6 +813,9 @@ func formatCleanWorktree(item cleanWorktree, root string, verbose bool, width in
 			counts = T("clean.lower_bound", counts)
 		}
 		text += "  " + counts
+	}
+	if item.BuildDirs != nil && *item.BuildDirs > 0 {
+		text += "  " + T("clean.worktree.build_dirs", *item.BuildDirs)
 	}
 	line("  ", text)
 	if !verbose {

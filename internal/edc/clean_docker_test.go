@@ -582,18 +582,23 @@ func TestCleanVMScanFailuresAreNotZeroBytes(t *testing.T) {
 
 func TestCleanResultReflectsTheSectionStates(t *testing.T) {
 	disk := func(status string) []cleanVMDisk { return []cleanVMDisk{{ID: cleanOrbStack, Status: status}} }
+	// 다른 섹션은 확인할 일이 없는 상태로 둔다.
+	report := func(docker cleanDocker, disks []cleanVMDisk) cleanReport {
+		return cleanReport{docker: docker, vmDisks: disks, worktrees: cleanWorktrees{Status: cleanAbsent},
+			projectBuildDirs: cleanProjectBuildDirs{Status: cleanNoProjectRoot}}
+	}
 	tests := []struct {
 		name   string
 		report cleanReport
 		status Status
 	}{
-		{"no engine tool and no disk", cleanReport{docker: cleanDocker{Status: cleanToolAbsent}, vmDisks: disk(cleanAbsent)}, StatusPass},
-		{"a stopped engine", cleanReport{docker: cleanDocker{Status: cleanNotRunning}}, StatusPass},
-		{"a measured engine and disk", cleanReport{docker: cleanDocker{Status: cleanMeasured}, vmDisks: disk(cleanMeasured)}, StatusPass},
-		{"an unreachable engine", cleanReport{docker: cleanDocker{Status: cleanUnreachable}}, StatusWarn},
-		{"a partial engine", cleanReport{docker: cleanDocker{Status: cleanPartial}}, StatusWarn},
-		{"an unsupported engine", cleanReport{docker: cleanDocker{Status: cleanUnsupported}}, StatusWarn},
-		{"an unreadable disk", cleanReport{docker: cleanDocker{Status: cleanToolAbsent}, vmDisks: disk(cleanUnreadable)}, StatusWarn},
+		{"no engine tool and no disk", report(cleanDocker{Status: cleanToolAbsent}, disk(cleanAbsent)), StatusPass},
+		{"a stopped engine", report(cleanDocker{Status: cleanNotRunning}, nil), StatusPass},
+		{"a measured engine and disk", report(cleanDocker{Status: cleanMeasured}, disk(cleanMeasured)), StatusPass},
+		{"an unreachable engine", report(cleanDocker{Status: cleanUnreachable}, nil), StatusWarn},
+		{"a partial engine", report(cleanDocker{Status: cleanPartial}, nil), StatusWarn},
+		{"an unsupported engine", report(cleanDocker{Status: cleanUnsupported}, nil), StatusWarn},
+		{"an unreadable disk", report(cleanDocker{Status: cleanToolAbsent}, disk(cleanUnreadable)), StatusWarn},
 	}
 	for _, test := range tests {
 		if got := cleanResult(Result{}, test.report, time.Minute, nil); got.Status != test.status {

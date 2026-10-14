@@ -161,6 +161,7 @@ command:
     summary: "Disk usage of known dev caches, read only (Linux and macOS)"
     option:
       timeout: "time limit, after it edc marks the rest not scanned"
+      project: "root to search for marked build folders, repeat for more"
       verbose: "show every candidate, more groups, reasons, cleanup commands"
     notes:
       - "It reads only. It changes and deletes nothing."

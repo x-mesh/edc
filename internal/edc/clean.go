@@ -74,13 +74,14 @@ const (
 var (
 	cleanStatuses = []string{cleanMeasured, cleanPartial, cleanAbsent, cleanToolAbsent, cleanUnknownLocation,
 		cleanUnreadable, cleanRejected, cleanDuplicate, cleanNotScanned, cleanNotRunning, cleanUnreachable, cleanUnsupported,
-		cleanFailed, cleanNotReported}
+		cleanFailed, cleanNotReported, cleanNoProjectRoot}
 	cleanReasons = []string{cleanReasonTimeout, cleanReasonStopped, cleanReasonToolTimeout, cleanReasonToolFailed,
 		cleanReasonInvalidOutput, cleanReasonPermission, cleanReasonStatError, cleanReasonRootUnreadable,
 		cleanReasonCoversUserData, cleanReasonSameAs, cleanReasonUnreadableDirs, cleanReasonSkippedMounts,
 		cleanReasonInvalidEnv, cleanReasonEndpointScheme, cleanReasonSocketMissing, cleanReasonConnectionRefused,
 		cleanReasonEngineTimeout, cleanReasonAPIVersion, cleanReasonHTTPStatus, cleanReasonRequestFailed,
-		cleanReasonGitOutputTruncated, cleanReasonBaseMissing, cleanReasonGitdirMissing, cleanReasonWorktreeLimit}
+		cleanReasonGitOutputTruncated, cleanReasonBaseMissing, cleanReasonGitdirMissing, cleanReasonWorktreeLimit,
+		cleanReasonNotDirectory, cleanReasonProjectLimit, cleanReasonTrackedFiles, cleanReasonGitUnknown}
 	cleanCategories = []string{"build_cache", "package_cache", "downloaded_binary", "xcode_support", "app_cache", "logs", "model", "toolchain"}
 	cleanCosts      = []string{"low", "medium", "high", "unknown", "lost"}
 	cleanSpecIDs    = []string{"go-build", "go-mod", "npm", "pnpm", "uv", "homebrew", cleanDerivedID, "swiftpm",
@@ -91,7 +92,6 @@ var (
 		{"other_vm_disks_db", "user_data"},
 		{"other_worktrees", "outside_root"},
 		{"trash_downloads", "user_files"},
-		{"project_build_dirs", "project_root"},
 		{"simulators", "device_data"},
 		{"sdks", "costly_to_restore"},
 		{"app_data", "user_data"},
@@ -923,14 +923,34 @@ func cleanGroupFolders(root *duNode, appName *regexp.Regexp) []cleanGroup {
 
 // cleanFilesystems는 파일 시스템별로 사용량을 더한다. 다른 후보 안에 있는 후보는 빼고, partial이 섞이면 하한이다.
 func cleanFilesystems(items []cleanItem, sources duSources) []cleanFilesystem {
-	var list []cleanFilesystem
-	index := map[string]int{}
+	return cleanFilesystemsWith(items, nil, sources)
+}
+
+// cleanFilesystemsWith는 후보 합계에 프로젝트 빌드 폴더를 더한다. 재생성 가능하다고 확인했고 다른 곳에서 세지 않은 폴더만
+// 넣는다. 표지나 git 근거가 없는 폴더는 후보가 아니므로 합계에 들어가지 않는다.
+func cleanFilesystemsWith(items []cleanItem, dirs []cleanBuildDir, sources duSources) []cleanFilesystem {
+	type term struct {
+		id         string
+		usage      uint64
+		lowerBound bool
+		filesystem *cleanFilesystemRef
+	}
+	var terms []term
 	for _, item := range items {
 		// 잴 항목이 없어 파일 시스템을 모르는 묶음은 합계에 넣지 않는다.
-		if !item.counted() || item.Inside != "" || item.Filesystem == nil {
-			continue
+		if item.counted() && item.Inside == "" && item.Filesystem != nil {
+			terms = append(terms, term{item.ID, *item.UsageBytes, item.LowerBound, item.Filesystem})
 		}
-		mount, fstype := item.Filesystem.Mount, item.Filesystem.FSType
+	}
+	for _, dir := range dirs {
+		if dir.counted() && dir.Regenerable && dir.Inside == "" && dir.Filesystem != nil {
+			terms = append(terms, term{dir.Path, *dir.UsageBytes, dir.LowerBound, dir.Filesystem})
+		}
+	}
+	var list []cleanFilesystem
+	index := map[string]int{}
+	for _, item := range terms {
+		mount, fstype := item.filesystem.Mount, item.filesystem.FSType
 		position, found := index[mount]
 		if !found {
 			entry := cleanFilesystem{Mount: mount, FSType: fstype, SharedBlocks: fstype == "apfs"}
@@ -947,9 +967,9 @@ func cleanFilesystems(items []cleanItem, sources duSources) []cleanFilesystem {
 			list = append(list, entry)
 		}
 		entry := &list[position]
-		entry.UsageBytes += *item.UsageBytes
-		entry.LowerBound = entry.LowerBound || item.LowerBound
-		entry.Candidates = append(entry.Candidates, item.ID)
+		entry.UsageBytes += item.usage
+		entry.LowerBound = entry.LowerBound || item.lowerBound
+		entry.Candidates = append(entry.Candidates, item.id)
 	}
 	return list
 }
@@ -969,6 +989,8 @@ func runCleanWith(args []string, version string, deps cleanDeps, ok bool, homeEr
 	set := flag.NewFlagSet("clean", flag.ContinueOnError)
 	set.SetOutput(os.Stderr)
 	bindCommon(set, &options)
+	var projects cleanProjects
+	set.Var(&projects, "project", T("command.clean.option.project"))
 	if err := set.Parse(args); err != nil {
 		if !errors.Is(err, flag.ErrHelp) {
 			fmt.Fprintln(os.Stderr, err)
@@ -999,7 +1021,7 @@ func runCleanWith(args []string, version string, deps cleanDeps, ok bool, homeEr
 		ctx, deadline := context.WithTimeout(base, options.timeout)
 		defer deadline()
 		scan := func() Result {
-			return cleanResult(result, cleanCollect(ctx, deps, runtime.GOOS), options.timeout, ctx.Err())
+			return cleanResult(result, cleanCollect(ctx, deps, runtime.GOOS, projects...), options.timeout, ctx.Err())
 		}
 		if live {
 			// 화면에서 Ctrl-C는 신호가 아니라 키로 들어오므로 stop으로 탐색을 멈춘다.
@@ -1044,22 +1066,26 @@ func cleanScanLive(scan func() Result, redact bool, cancel context.CancelFunc) (
 
 // cleanReport는 한 번의 탐색이 만든 결과 전체다. 섹션은 후보 밖에 따로 붙인다.
 type cleanReport struct {
-	candidates  []cleanItem
-	filesystems []cleanFilesystem
-	docker      cleanDocker
-	vmDisks     []cleanVMDisk
-	worktrees   cleanWorktrees
+	candidates       []cleanItem
+	filesystems      []cleanFilesystem
+	projectBuildDirs cleanProjectBuildDirs
+	docker           cleanDocker
+	vmDisks          []cleanVMDisk
+	worktrees        cleanWorktrees
 }
 
-// cleanCollect는 섹션을 카탈로그, Docker 엔진, VM 디스크, worktree 순서로 실행한다. 하나의 ctx를 순차로 나눠 쓴다.
-// 파일 시스템 합계는 후보에서만 만든다. 엔진 수치와 VM 디스크는 같은 데이터를 다른 방법으로 본 값이고,
-// worktree는 안의 빌드 폴더와 겹칠 수 있어 더하지 않는다.
-func cleanCollect(ctx context.Context, deps cleanDeps, goos string) cleanReport {
+// cleanCollect는 섹션을 카탈로그, 프로젝트 빌드 폴더, Docker 엔진, VM 디스크, worktree 순서로 실행한다.
+// 하나의 ctx를 순차로 나눠 쓴다. 파일 시스템 합계는 후보와 재생성 가능한 빌드 폴더만 더한다. 엔진 수치와 VM 디스크는
+// 같은 데이터를 다른 방법으로 본 값이고, worktree는 안의 빌드 폴더와 겹칠 수 있어 더하지 않는다.
+func cleanCollect(ctx context.Context, deps cleanDeps, goos string, projects ...string) cleanReport {
 	items := cleanScan(ctx, deps, cleanCatalog(goos, deps.home))
-	report := cleanReport{candidates: items, filesystems: cleanFilesystems(items, deps.sources)}
+	report := cleanReport{candidates: items}
+	report.projectBuildDirs = cleanProjectScan(ctx, deps, projects, items)
+	report.filesystems = cleanFilesystemsWith(items, report.projectBuildDirs.Items, deps.sources)
 	report.docker = cleanDockerScan(ctx, deps)
 	report.vmDisks = cleanVMScan(ctx, deps, goos)
 	report.worktrees = cleanWorktreeScan(ctx, deps)
+	cleanLinkWorktrees(&report.projectBuildDirs, &report.worktrees)
 	return report
 }
 
@@ -1076,7 +1102,8 @@ func cleanResult(result Result, report cleanReport, timeout time.Duration, ctxEr
 		}
 	}
 	result.Status = StatusPass
-	if !quiet || !cleanSectionsQuiet(report) || !cleanWorktreesQuiet(report.worktrees) {
+	if !quiet || !cleanSectionsQuiet(report) || !cleanWorktreesQuiet(report.worktrees) ||
+		!cleanProjectQuiet(report.projectBuildDirs) {
 		result.Status = StatusWarn
 	}
 	result.Summary = T("clean.summary", len(items), measured, len(items)-measured)
@@ -1093,8 +1120,9 @@ func cleanResult(result Result, report cleanReport, timeout time.Duration, ctxEr
 		result.Status = StatusWarn
 		result.Warnings = append(result.Warnings, T("clean.warning.stopped"))
 	}
-	result.Metrics = map[string]interface{}{"candidates": items, "filesystems": report.filesystems, "docker": report.docker,
-		"vm_disks": report.vmDisks, "worktrees": report.worktrees, "not_measured": cleanNotMeasured}
+	result.Metrics = map[string]interface{}{"candidates": items, "filesystems": report.filesystems,
+		"project_build_dirs": report.projectBuildDirs, "docker": report.docker, "vm_disks": report.vmDisks,
+		"worktrees": report.worktrees, "not_measured": cleanNotMeasured}
 	return result
 }
 
@@ -1141,11 +1169,13 @@ func cleanPrint(stdout io.Writer, options commonOptions, result Result, color bo
 	if result.Status != StatusFail {
 		items, _ := result.Metrics["candidates"].([]cleanItem)
 		filesystems, _ := result.Metrics["filesystems"].([]cleanFilesystem)
+		projects, _ := result.Metrics["project_build_dirs"].(cleanProjectBuildDirs)
 		docker, _ := result.Metrics["docker"].(cleanDocker)
 		disks, _ := result.Metrics["vm_disks"].([]cleanVMDisk)
 		worktrees, _ := result.Metrics["worktrees"].(cleanWorktrees)
 		fmt.Fprint(output, "\n"+formatCleanItems(items, options.verbose, width))
 		fmt.Fprint(output, formatCleanFilesystems(filesystems, width))
+		fmt.Fprint(output, formatCleanProject(projects, options.verbose, width))
 		fmt.Fprint(output, formatCleanDocker(docker, options.verbose, width))
 		fmt.Fprint(output, formatCleanVMDisks(disks, docker.Inside, width))
 		fmt.Fprint(output, formatCleanWorktrees(worktrees, options.verbose, width))

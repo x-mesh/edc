@@ -1555,6 +1555,12 @@ func TestCleanMessagesCoverEveryCode(t *testing.T) {
 	for _, verdict := range cleanWorktreeVerdicts {
 		keys = append(keys, "clean.worktree.verdict."+verdict)
 	}
+	for _, kind := range cleanProjectKinds {
+		keys = append(keys, "clean.project.kind."+kind.id)
+	}
+	for _, state := range cleanProjectGitStates {
+		keys = append(keys, "clean.project.git."+state)
+	}
 	for _, source := range cleanWorktreeBaseSources {
 		keys = append(keys, "clean.worktree.base_source."+source)
 	}

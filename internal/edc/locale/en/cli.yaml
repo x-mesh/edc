@@ -301,6 +301,13 @@ cli:
     socket_payload_kernel: "--payload for trace socket needs Linux 6.4 or later: the kernel iov_iter has no %s field"
     io_group_by: "--group-by must be device, process, cgroup, or event"
     io_failed: "trace io failed: %v"
+    syscall_group_by: "--group-by must be process, syscall, or cgroup"
+    syscall_process: "--process: %v"
+    syscall_failed: "trace syscall failed: %v"
+    syscall_map_full: "trace syscall: the BPF maps were full, so %d calls are not in the counts. Use --process, --container, or a shorter --duration"
+    syscall_running: "trace syscall: counting system calls until Ctrl-C"
+    syscall_running_for: "trace syscall: counting system calls for %s. Ctrl-C stops early"
+    syscall_self_included: "edc runs outside the host PID namespace, so the counts include the calls of edc itself"
   report:
     description: "report reads results saved with --json by edc diagnostic commands.\nGeneral JSON, report diff output, and edc log text logs are unsupported."
     command_show: "show  — view a saved edc diagnostic result"

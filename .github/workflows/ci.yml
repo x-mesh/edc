@@ -100,6 +100,17 @@ jobs:
           sudo ../../edc.test -test.run '^TestTraceExecCapturesExecSignalAndExit$' -test.count=1 -test.v 2>&1 | tee exec.log
           grep -q -- '--- PASS: TestTraceExecCapturesExecSignalAndExit' exec.log
 
+      # trace syscall의 BPF도 make check에서 root가 아니라 건너뛴다. runner kernel에서 필터, 오류, 진행 중인 호출,
+      # edc 자신의 제외를 본다. 32비트 호환 호출은 x86_64에만 있어 arm64 runner는 그 시험을 건너뛴다.
+      - name: Trace syscall counts
+        shell: bash
+        working-directory: internal/edc
+        run: |
+          sudo env "PATH=$PATH" EDC_TEST_GO="$(command -v go)" ../../edc.test -test.run '^TestTraceSyscall(CountsTheSelectedProcesses|LeavesOutEdcItself|NamesCompatCalls)$' -test.count=1 -test.v 2>&1 | tee syscall.log
+          grep -q -- '--- PASS: TestTraceSyscallCountsTheSelectedProcesses' syscall.log
+          grep -q -- '--- PASS: TestTraceSyscallLeavesOutEdcItself' syscall.log
+          if [ "$(uname -m)" = x86_64 ]; then grep -q -- '--- PASS: TestTraceSyscallNamesCompatCalls' syscall.log; fi
+
       - uses: actions/setup-go@v6
         with:
           go-version: '1.26.8'

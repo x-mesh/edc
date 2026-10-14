@@ -2132,6 +2132,37 @@ Linux에서 `trace exec`를 사용하면 process가 뜨고 끝나는 것, 그리
 
 명령줄은 exec 시점에 새 process의 메모리에서 읽으므로 program이 받은 인자이고, 나중에 바뀐 값은 아닙니다. 읽지 못하면 실행 파일 경로를 보여 줍니다. 256 byte보다 긴 줄은 `…`로 끝나고 `args_truncated`에 셉니다. 스레드의 종료는 `exit` event가 아니고, process의 마지막 스레드만 `exit`를 냅니다. kernel thread는 보이지 않습니다. `sched_process_exec`, `sched_process_exit`, `signal_generate` tracepoint와 BTF가 필요합니다.
 
+Linux에서 `trace syscall`을 사용하면 process별 system call 수와 시간을 볼 수 있습니다. edc는 kernel 안에서 세고, 끝날 때 요약을 한 번 출력합니다. 호출을 하나씩 출력하지는 않습니다.
+
+```bash
+./bin/edc trace syscall --duration 10s
+./bin/edc trace syscall --process nginx,1234 --duration 30s
+./bin/edc trace syscall --group-by syscall --json syscall.json
+./bin/edc trace syscall --container web --group-by cgroup
+```
+
+행 하나는 process 이름 하나와 system call 하나입니다. 행마다 호출 수, 오류 수와 가장 많은 errno, 호출 안에 머문 시간의 합계, 평균, p95, 최댓값을 보여 줍니다. 시간은 CPU 시간이 아니라 호출 안에 머문 실제 시간입니다. 그래서 `epoll_wait`나 `futex`처럼 기다리는 호출이 위에 옵니다. 합계는 모든 스레드의 시간을 더하므로 trace 시간보다 길 수 있습니다. 행은 합계 시간 순서입니다. 표에는 20행이 나오고, `--json`에는 모든 행이 들어갑니다. p95는 `top -d`와 같은 histogram bucket의 위쪽 경계라서 `<1.05s`처럼 보입니다.
+
+`--group-by syscall`, `--group-by process`, `--group-by cgroup`은 한 열로 묶어 더합니다. `--process`는 쉼표로 나눈 PID와 command 이름을 받습니다. kernel 안에서 비교하므로 이름은 process의 command 이름과 정확히 같아야 하고, 15 byte까지만 봅니다. PID는 그 process의 모든 스레드에 맞습니다. `--container`는 container 하나의 호출만 셉니다.
+
+`IN FLIGHT AT STOP` 표는 trace 중에 시작해 끝날 때까지 돌아오지 않은 호출입니다. trace 내내 기다린 스레드는 호출이 돌아오지 않아 위의 표에 나오지 않습니다. trace 전에 시작한 호출은 시작 시각 없이 돌아옵니다. 요약은 이 복귀를 `fork`나 `clone`으로 생긴 스레드의 첫 복귀와 함께 `unmatched`로 셉니다. `--process`나 `--container`를 주면 세지 않고 `-`로 보여 줍니다. `exit`와 `exit_group`은 돌아오지 않으므로 시간 없이 횟수만 셉니다.
+
+edc 자신의 호출은 뺍니다. edc가 자기 PID namespace가 있는 container 안에서 실행되면 자신의 호출을 찾을 수 없어서, 요약 뒤에 이 사실을 알립니다. amd64에서 32비트 program은 다른 system call 번호를 씁니다. 이 호출은 이름 뒤에 `(32-bit)`를 붙여 보여 줍니다. 신호로 끊긴 호출은 kernel 안에서만 쓰는 재시작 값으로 돌아올 수 있습니다. 예를 들어 `ERESTARTSYS`입니다. 표는 이 값도 이름으로 보여 줍니다.
+
+집계는 크기가 정해진 per-CPU map에 쌓습니다. edc는 map을 모두 합쳐 32 MiB, 최대 16,384개 항목으로 잡습니다. 항목 하나는 process 이름 하나와 system call 하나입니다. map이 가득 차면 넘친 호출은 세지 않습니다. 요약은 그 수를 `map_full`로 보여 주고, edc는 경고를 출력합니다. `--group-by cgroup`은 항목마다 cgroup을 더하므로 항목을 더 씁니다. 예를 들어 SSH login마다 새 cgroup이 생길 수 있습니다.
+
+trace가 도는 동안 host의 모든 system call이 BPF program 두 개를 거칩니다. 필터에 걸리지 않는 process도 이 비용을 냅니다. 12 CPU x86_64 host(Linux 6.17)에서 `perf bench syscall basic`으로 잰 호출당 비용은 다음과 같습니다.
+
+| 조건 | `getppid` | 추가 비용 |
+|---|---|---|
+| trace 없음 | 0.577 µs | - |
+| trace 중, 필터에 걸리지 않는 process | 0.735 µs | 0.16 µs |
+| trace 중, 대상 process | 0.809 µs | 0.23 µs |
+
+이 host에서는 초당 약 32,500건의 호출이 전체 CPU 시간의 0.1% 미만을 더했습니다. 바쁜 server에서 오래 trace하려면 먼저 그 host에서 비용을 재 보세요.
+
+`sys_enter`, `sys_exit` tracepoint와 BTF, task local storage, task iterator가 필요합니다.
+
 kernel이 모든 버림을 이유와 함께 알리지는 않습니다. 예를 들어 listen socket의 accept 대기열이 가득 차면 kernel은 SYN을 정상 패킷처럼 해제합니다. 이 경우를 위해 요약에는 trace 동안 `/proc/net/netstat`의 `ListenOverflows`와 `ListenDrops`가 늘어난 수가 나옵니다. 이 값은 edc가 있는 network namespace의 모든 listen socket을 합한 것이라, `--container`를 써도 container만의 값이 아닙니다.
 
 ```bash

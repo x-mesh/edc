@@ -1683,6 +1683,37 @@ By default, edc records the signals that end a process or dump core: `HUP`, `INT
 
 edc reads the command line from the memory of the new process at the time of the exec, so it holds the arguments that the program received, not later changes. If edc cannot read it, the event shows the path of the executable. Lines longer than 256 bytes end with `…`, and `args_truncated` counts them. A thread that exits does not make an `exit` event, only the last thread of a process does. Kernel threads do not appear. The trace needs the `sched_process_exec`, `sched_process_exit`, and `signal_generate` tracepoints with BTF.
 
+Use `trace syscall` on Linux to count the system calls of each process. edc counts in the kernel and prints one summary at the end. It does not print each call.
+
+```bash
+./bin/edc trace syscall --duration 10s
+./bin/edc trace syscall --process nginx,1234 --duration 30s
+./bin/edc trace syscall --group-by syscall --json syscall.json
+./bin/edc trace syscall --container web --group-by cgroup
+```
+
+Each row is one process name and one system call. The row shows the calls, the errors with the most frequent errno, and the time in the call: total, average, p95, and maximum. The time is wall time inside the call, not CPU time. Calls that wait, such as `epoll_wait` and `futex`, are therefore at the top. The total adds the time of all threads, so it can be longer than the trace. The rows are in order of total time. The table shows 20 rows, and `--json` holds all rows. P95 is the upper bound of a histogram bucket, the same as in `top -d`. The table shows it as `<1.05s`.
+
+Use `--group-by syscall`, `--group-by process`, or `--group-by cgroup` to add the rows over one column. `--process` takes PIDs and command names, separated by commas. edc compares them in the kernel, so a name must be the exact command name of the process, up to 15 bytes. A PID matches all threads of the process. `--container` keeps the calls of one container.
+
+The `IN FLIGHT AT STOP` table lists the calls that started during the trace and did not return before the end. A thread that waits for the whole trace is not in the main table, because its call does not return. A call that started before the trace returns without a start time. The summary counts these returns as `unmatched`, together with the first return of a new thread after `fork` or `clone`. With `--process` or `--container`, edc does not count them, and the summary shows `-`. `exit` and `exit_group` do not return, so edc counts them without a time.
+
+edc leaves out its own calls. If edc runs in a container with its own PID namespace, it cannot find its own calls, and it prints a note after the summary. On amd64, a 32-bit program uses other system call numbers. edc shows these calls with `(32-bit)` after the name. A call that a signal interrupts can return a restart code that only the kernel uses, for example `ERESTARTSYS`. The table shows these codes by name.
+
+The counts use a per-CPU map with a fixed size. edc sizes the map to 32 MiB in total, with at most 16,384 entries. Each entry is one process name and one system call. If the map is full, edc does not count the extra calls. The summary shows them as `map_full`, and edc prints a warning. `--group-by cgroup` adds the cgroup to each entry, so it uses more entries. For example, each SSH login can make a new cgroup.
+
+When the trace runs, each system call on the host goes through two BPF programs. The cost applies also to the processes that the filter does not select. `perf bench syscall basic` measured these costs per call on a 12-CPU x86_64 host with Linux 6.17:
+
+| Condition | `getppid` | Added cost |
+|---|---|---|
+| No trace | 0.577 µs | - |
+| Trace runs, process not selected | 0.735 µs | 0.16 µs |
+| Trace runs, process selected | 0.809 µs | 0.23 µs |
+
+On that host, about 32,500 calls per second added less than 0.1% of the total CPU time. On a busy server, measure the cost on that host before a long trace.
+
+The trace needs the `sys_enter` and `sys_exit` tracepoints with BTF, task local storage, and the task iterator.
+
 Use `--raw` to print JSONL events as they arrive. Use `--json` to write the connection summary after Ctrl-C.
 
 Use `trace show <raw.jsonl>` to print the summary of a saved `--raw` file later, on any host and without root. It takes the same `--group-by`, `--process`, `--destination`, `-d`, and `--json` options as the live trace, and it prints the same tables. `-` reads standard input. The file holds one trace: the network, DNS, HTTP, database, socket, and drop traces, and `trace exec`. `trace io` and `trace sched` files are not supported. Each `--raw` event carries a `socket` number, and `trace show` uses it to join the events of one connection, so a file from an earlier edc without that number groups the UDP flows and the database commands less precisely.

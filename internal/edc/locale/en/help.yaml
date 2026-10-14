@@ -235,7 +235,7 @@ command:
       - "A PCAP file can hold credentials and personal data."
       - "The JSON redaction does not apply to the PCAP payload."
   trace:
-    summary: "Trace network, I/O, socket, drop, scheduler, and process events"
+    summary: "Trace network, I/O, socket, drop, sched, process, and syscall events"
     option:
       duration: "trace time, max 60s. Omit for Ctrl-C"
       slow: "min latency, e.g. 20us, 250ms. Default io/sched 1ms"
@@ -263,6 +263,8 @@ command:
       - "Press g to scroll events."
       - "In the event list, press Up or Down to select an event. The list stops."
       - "Enter shows all fields and the whole payload. l or Esc follows again."
+      - "trace syscall counts in the kernel and prints one summary at the end."
+      - "trace syscall --process takes PIDs or exact command names, 15 bytes max."
       - "Press f to follow the newest event in the detail view."
       - "Press i to show a preview under the list. J and K scroll it."
       - "trace http: v shows payload lines, m shows secrets, z decodes gzip."

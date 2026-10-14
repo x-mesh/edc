@@ -181,6 +181,20 @@ func TestDuResultWarnsWhenDeletedFilesHoldTheSameShareAsInfo(t *testing.T) {
 	}
 }
 
+// 지워졌지만 열린 파일을 찾지 않은 실행은 JSON에서 deleted_open을 빼서 0건과 구분한다. macOS가 그렇다(#266).
+func TestDuResultLeavesOutDeletedOpenThatWasNotChecked(t *testing.T) {
+	scan := duScan{root: duTestDir("/data", 4, duTestFile("a", 10))}
+	duTotal(scan.root)
+	options := duOptions{root: "/data", workers: 4, rows: 5}
+	if _, ok := duResult(Result{StartedAt: time.Now()}, options, scan, time.Minute, false).Metrics["deleted_open"]; ok {
+		t.Fatal("deleted_open without a check")
+	}
+	scan.deletedChecked = true
+	if _, ok := duResult(Result{StartedAt: time.Now()}, options, scan, time.Minute, false).Metrics["deleted_open"]; !ok {
+		t.Fatal("no deleted_open after a check")
+	}
+}
+
 func TestDuLargestKeepsTheBiggestDirectoriesBelowTheRoot(t *testing.T) {
 	root := duTestDir("/data", 4,
 		duTestDir("a", 4, duTestFile("big", 60), duTestDir("nested", 4, duTestFile("x", 26))),

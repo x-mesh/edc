@@ -90,6 +90,9 @@ type duScan struct {
 	warnings        []string
 	filesystem      duFilesystem
 	deleted         duDeletedOpen
+	// deletedChecked는 지워졌지만 열린 파일을 찾았다는 뜻이다. Linux는 경로의 파일 시스템을 찾았을 때만 찾고, macOS는
+	// 찾지 않는다. 찾지 않았으면 JSON에서 deleted_open을 빼서 0건과 구분한다.
+	deletedChecked bool
 	// notFound는 filesystem.Whole일 때만 뜻이 있다. df의 사용량에서 센 크기와 지워졌지만 열린 파일을 뺀 값이다.
 	notFound uint64
 	// labels는 절대 경로마다 그 경로를 쓰는 container다. docker가 없으면 비어 있다.
@@ -309,7 +312,10 @@ func duResult(result Result, options duOptions, scan duScan, timeout time.Durati
 		"path": options.root, "bytes": root.total, "entries": root.count, "directories": scan.directories,
 		"workers": options.workers, "partial": scan.partial, "unreadable": scan.unreadableCount,
 		"rows": rows, "other": other, "skipped_mounts": scan.mounts,
-		"filesystem": filesystem, "deleted_open": deleted, "largest_dirs": largest,
+		"filesystem": filesystem, "largest_dirs": largest,
+	}
+	if scan.deletedChecked {
+		result.Metrics["deleted_open"] = deleted
 	}
 	if filesystem.Whole {
 		result.Metrics["not_found_bytes"] = scan.notFound

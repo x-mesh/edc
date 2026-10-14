@@ -316,8 +316,8 @@ func (scanner *cleanProjectScanner) visit(root *cleanProjectRoot, dir string, de
 			scanner.mounts++
 			continue
 		}
-		if kind, named := cleanProjectKindOf(entry.Name()); named {
-			scanner.candidate(root, path, kind, files)
+		// 표지가 없는 같은 이름의 폴더는 소스 폴더일 수 있으므로, 재지 않고 다른 폴더처럼 안으로 들어간다.
+		if kind, named := cleanProjectKindOf(entry.Name()); named && scanner.candidate(root, path, kind, files) {
 			continue
 		}
 		if scanner.underCatalog(path) || depth+1 >= cleanProjectDepthLimit {
@@ -341,8 +341,8 @@ func (scanner *cleanProjectScanner) underCatalog(path string) bool {
 	return slices.ContainsFunc(scanner.catalog, func(root cleanRoot) bool { return pathUnder(path, root.path) })
 }
 
-// candidate는 표지가 있는 폴더만 모은다. 표지가 없으면 소스 폴더일 수 있으므로 재지 않고 센다.
-func (scanner *cleanProjectScanner) candidate(root *cleanProjectRoot, path string, kind cleanProjectKind, files map[string]bool) {
+// candidate는 표지가 있는 폴더만 모으고, 모았는지를 돌려준다. 표지가 없으면 소스 폴더일 수 있으므로 재지 않고 센다.
+func (scanner *cleanProjectScanner) candidate(root *cleanProjectRoot, path string, kind cleanProjectKind, files map[string]bool) bool {
 	marker := ""
 	for _, name := range kind.markers {
 		if files[name] {
@@ -352,11 +352,11 @@ func (scanner *cleanProjectScanner) candidate(root *cleanProjectRoot, path strin
 	}
 	if marker == "" {
 		scanner.unmarked++
-		return
+		return false
 	}
 	if len(scanner.found) >= cleanProjectItems {
 		scanner.limited = true
-		return
+		return true
 	}
 	relative, err := filepath.Rel(root.ResolvedPath, path)
 	if err != nil {
@@ -365,6 +365,7 @@ func (scanner *cleanProjectScanner) candidate(root *cleanProjectRoot, path strin
 	reported := filepath.Join(root.Path, relative)
 	scanner.found = append(scanner.found, cleanBuildDir{Kind: kind.id, Path: reported, ResolvedPath: path,
 		Project: filepath.Dir(reported), Marker: marker})
+	return true
 }
 
 // measure는 찾은 순서대로 git 근거를 읽고 잰다.

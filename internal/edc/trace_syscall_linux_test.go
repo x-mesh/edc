@@ -12,6 +12,7 @@ import (
 	"reflect"
 	"runtime"
 	"strconv"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -26,6 +27,22 @@ const (
 	syscallHelperPause  = 30 * time.Millisecond
 	syscallHelperPath   = "/nonexistent/edc-trace-syscall"
 )
+
+// syscallHelperExactPath는 event에 남는 최대 길이인 255 byte 경로이고, syscallHelperLongPath는 그보다 길어 잘린다.
+// 한 component가 255 byte를 넘으면 ENAMETOOLONG이 나므로 component를 나눈다. 잘린 긴 경로가 255 byte 경로와 같아지지
+// 않도록 다른 글자로 채운다.
+var (
+	syscallHelperExactPath = syscallHelperPathOfLength(255, "x")
+	syscallHelperLongPath  = syscallHelperPathOfLength(300, "y")
+)
+
+func syscallHelperPathOfLength(length int, fill string) string {
+	path := "/nonexistent"
+	for len(path) < length {
+		path += "/" + strings.Repeat(fill, min(200, length-len(path)-1))
+	}
+	return path
+}
 
 func TestSyscallBPFStructsMatchTheParser(t *testing.T) {
 	var record syscallEventsSyscallInFlight
@@ -111,6 +128,14 @@ func TestTraceSyscallHelperProcess(t *testing.T) {
 		if buffer[0] == 's' {
 			pause := syscall.NsecToTimespec(int64(syscallHelperPause))
 			_ = syscall.Nanosleep(&pause, nil)
+			continue
+		}
+		if buffer[0] == 'p' {
+			for _, path := range []string{syscallHelperExactPath, syscallHelperLongPath} {
+				if fd, err := syscall.Open(path, syscall.O_RDONLY, 0); err == nil {
+					syscall.Close(fd)
+				}
+			}
 			continue
 		}
 		for range syscallHelperCalls {
@@ -397,6 +422,40 @@ func TestReadSyscallEventsStopsWhileEventsKeepComing(t *testing.T) {
 	}
 	if count != 3 || source.reads != 3 {
 		t.Fatalf("count = %d, reads = %d", count, source.reads)
+	}
+}
+
+// event의 경로는 255 byte까지 남는다. 정확히 255 byte인 경로는 다 남았으므로 잘린 것이 아니고, 더 긴 경로만 잘린 것이다.
+// BPF helper는 두 경우 모두 같은 길이를 돌려주므로 kernel 안에서 다음 byte로 가른다(#269).
+func TestTraceSyscallMarksOnlyLongerPathsAsTruncated(t *testing.T) {
+	requireSyscallTrace(t)
+	helper, err := startSyscallHelper(t, exec.Command(os.Args[0], "-test.run=^TestTraceSyscallHelperProcess$", "--", syscallHelperMarker))
+	if err != nil {
+		t.Fatal(err)
+	}
+	syscalls, compat, err := parseSyscallNames(runtime.GOARCH, "openat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	options := syscallTraceOptions{pids: []uint32{helper.pid()}, syscalls: syscalls, compatSyscalls: compat, errorsAll: true}
+	var exact, long []syscallEvent
+	traceSyscallHelpers(t, options, []syscallHelper{helper}, func() {
+		helper.send(t, 'p')
+		time.Sleep(200 * time.Millisecond)
+	}, func(event syscallEvent) error {
+		switch {
+		case event.Path == syscallHelperExactPath:
+			exact = append(exact, event)
+		case strings.HasPrefix(syscallHelperLongPath, event.Path) && len(event.Path) == len(syscallHelperExactPath):
+			long = append(long, event)
+		}
+		return nil
+	})
+	if len(exact) == 0 || exact[0].PathTruncated {
+		t.Errorf("255-byte path events = %+v", exact)
+	}
+	if len(long) == 0 || !long[0].PathTruncated {
+		t.Errorf("300-byte path events = %+v", long)
 	}
 }
 

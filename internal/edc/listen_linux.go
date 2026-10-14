@@ -69,21 +69,35 @@ func collectNetnsListenSockets(pid int) ([]listenSocket, error) {
 	}
 	done := make(chan dump, 1)
 	go func() {
-		// netlink 소켓은 만든 thread의 namespace에 속한다. 이 thread는 원래 namespace로 되돌리지 않는다. UnlockOSThread 없이
-		// goroutine이 끝나면 Go runtime이 thread를 버리므로, 되돌리다 실패한 thread에서 다른 goroutine이 돌 일이 없다.
+		// netlink 소켓은 만든 thread의 namespace에 속한다. 읽은 뒤에는 원래 namespace로 되돌린다. 이 goroutine이 main thread에서
+		// 돌면 Go runtime은 그 thread를 끝내지 못하고 남겨 두는데, /proc/self/net과 /proc/net은 main thread의 namespace를 보인다.
+		// 되돌리지 않으면 process 전체가 그 뒤로 container의 /proc/net을 읽는다. 되돌리지 못했을 때만 UnlockOSThread 없이 끝내
+		// runtime이 그 thread를 버리게 한다.
 		runtime.LockOSThread()
+		original, err := os.Open("/proc/thread-self/ns/net")
+		if err != nil {
+			runtime.UnlockOSThread()
+			done <- dump{err: err}
+			return
+		}
+		defer original.Close()
 		namespace, err := os.Open(filepath.Join("/proc", strconv.Itoa(pid), "ns", "net"))
 		if err != nil {
+			runtime.UnlockOSThread()
 			done <- dump{err: err}
 			return
 		}
 		err = unix.Setns(int(namespace.Fd()), unix.CLONE_NEWNET)
 		namespace.Close()
 		if err != nil {
+			runtime.UnlockOSThread()
 			done <- dump{err: fmt.Errorf("setns %s: %w", namespace.Name(), err)}
 			return
 		}
 		sockets, err := linuxInetListenSockets(listenFamilies{TCP: true, UDP: true})
+		if unix.Setns(int(original.Fd()), unix.CLONE_NEWNET) == nil {
+			runtime.UnlockOSThread()
+		}
 		done <- dump{sockets, err}
 	}()
 	result := <-done

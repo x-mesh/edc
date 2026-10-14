@@ -113,11 +113,13 @@ type cleanEnv struct {
 // cleanSpec은 카탈로그의 후보 하나다. tool이 있으면 도구에 위치를 묻고, 없으면 envs를 순서대로 보다가
 // 환경변수가 하나도 없을 때 fixed를 쓴다.
 type cleanSpec struct {
-	id            string
-	category      string
-	priority      string
-	fixed         string
-	envs          []cleanEnv
+	id       string
+	category string
+	priority string
+	fixed    string
+	envs     []cleanEnv
+	// emptyUnset은 값이 비어 있으면 없는 것처럼 보는 변수다. 도구가 그렇게 읽는다고 확인한 변수만 넣는다.
+	emptyUnset    []string
 	tool          string
 	args          []string
 	env           []string
@@ -171,7 +173,9 @@ func cleanCatalog(goos, home string) []cleanSpec {
 		cleanSpec{id: "cargo-git", category: "package_cache", priority: "P1", fixed: at(".cargo/git"),
 			envs: []cleanEnv{{"CARGO_HOME", "git"}}, regenerable: true, cost: "medium"},
 		cleanSpec{id: "zig", category: "build_cache", priority: "P1", fixed: at(".cache/zig"),
-			envs: []cleanEnv{{"ZIG_GLOBAL_CACHE_DIR", ""}, {"XDG_CACHE_HOME", "zig"}}, regenerable: true, cost: "medium"},
+			envs: []cleanEnv{{"ZIG_GLOBAL_CACHE_DIR", ""}, {"XDG_CACHE_HOME", "zig"}}, regenerable: true, cost: "medium",
+			// zig의 resolveGlobalCacheDir(src/introspect.zig)는 빈 XDG_CACHE_HOME을 건너뛰고 ~/.cache/zig를 쓴다.
+			emptyUnset: []string{"XDG_CACHE_HOME"}},
 		cleanSpec{id: "bun", category: "package_cache", priority: "P1", fixed: at(".bun/install/cache"),
 			envs:        []cleanEnv{{"BUN_INSTALL_CACHE_DIR", ""}, {"BUN_INSTALL", "install/cache"}, {"XDG_CACHE_HOME", ".bun/install/cache"}},
 			regenerable: true, cost: "medium", cleanup: "bun pm cache rm"},
@@ -775,7 +779,7 @@ func (scanner *cleanScanner) locate(ctx context.Context, spec cleanSpec, item *c
 func (scanner *cleanScanner) locateByPath(spec cleanSpec, item *cleanItem) (string, bool) {
 	for _, candidate := range spec.envs {
 		value, set := scanner.deps.lookupEnv(candidate.name)
-		if !set {
+		if !set || value == "" && slices.Contains(spec.emptyUnset, candidate.name) {
 			continue
 		}
 		item.LocatedBy = "env:" + candidate.name

@@ -376,6 +376,19 @@ func TestSnapshotAddsDuOnlyWithAPath(t *testing.T) {
 	}
 }
 
+// Linux는 경로의 파일 시스템을 찾았을 때 /proc에서 지워졌지만 열린 파일을 찾는다. 찾지 못하면 확인하지 않은 것이다.
+func TestDuWalkChecksDeletedOpenOnlyWithTheFileSystem(t *testing.T) {
+	root := duTestTree(t)
+	scan, err := duWalk(context.Background(), duOptions{root: root, workers: 2, rows: 3}, duWholeSources(t, root, "/", 1<<30, nil, false))
+	if err != nil || !scan.deletedChecked {
+		t.Fatalf("with the file system: checked %t, err %v", scan.deletedChecked, err)
+	}
+	scan, err = duWalk(context.Background(), duOptions{root: root, workers: 2, rows: 3}, duNoMounts())
+	if err != nil || scan.deletedChecked {
+		t.Fatalf("without the file system: checked %t, err %v", scan.deletedChecked, err)
+	}
+}
+
 func TestDuResultLabelsRowsMountsAndLargestDirs(t *testing.T) {
 	root := duTestTree(t)
 	sources := duNoMounts()

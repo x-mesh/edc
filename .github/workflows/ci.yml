@@ -93,12 +93,52 @@ jobs:
 
       # trace exec의 BPF는 make check에서 root가 아니라 건너뛴다. runner kernel의 verifier에 올려 실제 process를 잡아 본다.
       # 건너뛰거나 시험 이름이 바뀌어 아무것도 돌지 않아도 PASS 줄이 없으므로 실패한다.
-      - name: Trace exec, signal, and exit
+      # OOM 시험은 memory.max를 건 시험용 cgroup 안에서만 OOM을 일으킨다.
+      - name: Trace exec, signal, exit, and OOM
         shell: bash
         working-directory: internal/edc
         run: |
-          sudo ../../edc.test -test.run '^TestTraceExecCapturesExecSignalAndExit$' -test.count=1 -test.v 2>&1 | tee exec.log
+          sudo ../../edc.test -test.run '^(TestTraceExecCapturesExecSignalAndExit|TestTraceExecReportsAnOOMKill)$' -test.count=1 -test.v 2>&1 | tee exec.log
           grep -q -- '--- PASS: TestTraceExecCapturesExecSignalAndExit' exec.log
+          grep -q -- '--- PASS: TestTraceExecReportsAnOOMKill' exec.log
+
+      # trace cpu는 CPU마다 perf event를 열고 BPF를 붙인다. helper process의 샘플 수가 frequency와 맞는지, Go stack과
+      # kernel stack에 이름이 붙는지 runner kernel에서 본다.
+      - name: Trace cpu samples user and kernel stacks
+        shell: bash
+        working-directory: internal/edc
+        run: |
+          sudo ../../edc.test -test.run '^(TestTraceCPUSamplesUserAndKernelStacks|TestTraceCPUOffCPURecordsSleepTime)$' -test.count=1 -test.v 2>&1 | tee cpu.log
+          grep -q -- '--- PASS: TestTraceCPUSamplesUserAndKernelStacks' cpu.log
+          grep -q -- '--- PASS: TestTraceCPUOffCPURecordsSleepTime' cpu.log
+
+      # trace lock은 helper가 전역 futex에서 정해진 횟수만큼 기다리고 mmap_lock을 두고 다툰다. 그 수와 이름을 runner kernel에서 본다.
+      # 같은 thread가 pipe mutex에서 여러 번 잠들어도 기다림의 깊이가 차지 않는지도 본다.
+      - name: Trace lock counts futex and kernel waits
+        shell: bash
+        working-directory: internal/edc
+        run: |
+          sudo ../../edc.test -test.run '^(TestTraceLockCountsFutexAndKernelWaits|TestTraceLockCountsEachSleepingMutexWaitOnce)$' -test.count=1 -test.v 2>&1 | tee lock.log
+          grep -q -- '--- PASS: TestTraceLockCountsFutexAndKernelWaits' lock.log
+          grep -q -- '--- PASS: TestTraceLockCountsEachSleepingMutexWaitOnce' lock.log
+
+      # trace reclaim은 시험용 cgroup의 memory.max와 memory.high로 memcg 회수와 throttle을 일으킨다. 회수할 file은 tmpfs가
+      # 아닌 곳에 있어야 하므로 work tree 안에 둔다.
+      - name: Trace reclaim counts memcg reclaim and throttle
+        shell: bash
+        working-directory: internal/edc
+        run: |
+          mkdir -p reclaim-data
+          sudo EDC_RECLAIM_DIR="$PWD/reclaim-data" ../../edc.test -test.run '^TestTraceReclaimCountsMemcgReclaimAndThrottle$' -test.count=1 -test.v 2>&1 | tee reclaim.log
+          grep -q -- '--- PASS: TestTraceReclaimCountsMemcgReclaimAndThrottle' reclaim.log
+
+      # trace priv는 helper thread가 CAP_SYS_NICE를 지운 뒤 100번 거부당하고, egid를 바꿨다 되돌린다. 그 수를 runner kernel에서 본다.
+      - name: Trace priv counts denied checks and credential changes
+        shell: bash
+        working-directory: internal/edc
+        run: |
+          sudo ../../edc.test -test.run '^TestTracePrivCountsDeniedChecksAndCredentialChanges$' -test.count=1 -test.v 2>&1 | tee priv.log
+          grep -q -- '--- PASS: TestTracePrivCountsDeniedChecksAndCredentialChanges' priv.log
 
       # trace sched와 top -d의 BPF도 make check에서 root가 아니라 건너뛴다. runner kernel에서 기다린 구간에 syscall 이름이 붙는지 본다.
       # 이름은 사용자 register에서 읽으므로 arm64 runner가 arm64 배치를 확인한다.
@@ -116,10 +156,11 @@ jobs:
         shell: bash
         working-directory: internal/edc
         run: |
-          sudo env "PATH=$PATH" EDC_TEST_GO="$(command -v go)" ../../edc.test -test.run '^TestTraceSyscall(CountsTheSelectedProcesses|LeavesOutEdcItself|NamesCompatCalls|PrintsFailedAndSlowCalls)$' -test.count=1 -test.v 2>&1 | tee syscall.log
+          sudo env "PATH=$PATH" EDC_TEST_GO="$(command -v go)" ../../edc.test -test.run '^TestTraceSyscall(CountsTheSelectedProcesses|LeavesOutEdcItself|NamesCompatCalls|PrintsFailedAndSlowCalls|MarksOnlyLongerPathsAsTruncated)$' -test.count=1 -test.v 2>&1 | tee syscall.log
           grep -q -- '--- PASS: TestTraceSyscallCountsTheSelectedProcesses' syscall.log
           grep -q -- '--- PASS: TestTraceSyscallLeavesOutEdcItself' syscall.log
           grep -q -- '--- PASS: TestTraceSyscallPrintsFailedAndSlowCalls' syscall.log
+          grep -q -- '--- PASS: TestTraceSyscallMarksOnlyLongerPathsAsTruncated' syscall.log
           if [ "$(uname -m)" = x86_64 ]; then grep -q -- '--- PASS: TestTraceSyscallNamesCompatCalls' syscall.log; fi
 
       - uses: actions/setup-go@v6

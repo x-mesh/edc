@@ -244,6 +244,23 @@ func TestDuNoBrowseShowsProgressAndQuitsWithoutNavigation(t *testing.T) {
 	}
 }
 
+// --no-browse는 alt screen을 쓰지 않으므로 마지막 화면이 결과 위에 남는다. 스캔이 끝난 뒤에는 진행 줄을 그리지 않는다(#265).
+func TestDuNoBrowseLeavesNoProgressLineAfterTheScan(t *testing.T) {
+	for _, partial := range []bool{false, true} {
+		job := &duScanJob{finished: make(chan struct{})}
+		now := time.Now()
+		model := newDuBrowser("/data", new(atomic.Int64), func() {}, job, now, time.Now, false)
+		model.noBrowse = true
+		job.scan = duScan{root: duBrowserTree(), partial: partial}
+		duTotal(job.scan.root)
+		close(job.finished)
+		next, _ := model.Update(duScanDoneMsg{})
+		if view := next.(duBrowser).View(); view.Content != "" || view.AltScreen {
+			t.Fatalf("partial %t: final frame = %q", partial, view.Content)
+		}
+	}
+}
+
 func TestDuNoBrowseCtrlCStopsAndQuits(t *testing.T) {
 	cancelled := 0
 	job := &duScanJob{finished: make(chan struct{})}

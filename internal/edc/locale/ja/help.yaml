@@ -154,6 +154,7 @@ command:
       - "bind・overlay mount はファイルシステムを共有するため、サイズを - と表示します。"
       - "削除済みでも process が開いているファイルも表示します。"
       - "端末では閲覧画面を開き、q で閉じると結果を出力します。"
+      - "docker があれば、ログ、layer、volume、bind 元に container 名を付けます。"
   where:
     summary: "近い地域とこの網の姿"
     option:

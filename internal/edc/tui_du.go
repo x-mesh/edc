@@ -229,7 +229,11 @@ func duNodePath(node *duNode) string {
 
 func (model duBrowser) rowText(row duBrowseRow) string {
 	if row.mount != nil {
-		return fmt.Sprintf("%9s  %s       %s/  %s", "-", strings.Repeat(" ", duBarWidth), row.name(), T("du.browse.mount", row.mount.FSType))
+		text := fmt.Sprintf("%9s  %s       %s/  %s", "-", strings.Repeat(" ", duBarWidth), row.name(), T("du.browse.mount", row.mount.FSType))
+		if label := model.scan.labels[row.mount.Path]; label != "" {
+			text += "  " + label
+		}
+		return text
 	}
 	total, share := model.current.total, 0
 	if total > 0 {
@@ -246,6 +250,11 @@ func (model duBrowser) rowText(row duBrowseRow) string {
 	}
 	if row.node != nil && row.node.unreadable {
 		name += "  " + T("du.browse.unreadable")
+	}
+	if row.node != nil {
+		if label := model.scan.labels[duNodePath(row.node)]; label != "" {
+			name += "  " + label
+		}
 	}
 	return fmt.Sprintf("%9s  %s %3d%%  %s", formatSizeShort(row.bytes), duBar(row.bytes, total), share, name)
 }

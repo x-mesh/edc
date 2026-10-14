@@ -196,3 +196,17 @@ func TestDuBrowserCtrlCDuringTheScanQuits(t *testing.T) {
 		t.Fatal("ctrl+c during the scan does not quit")
 	}
 }
+
+func TestDuBrowserShowsContainerLabels(t *testing.T) {
+	root := duBrowserTree()
+	// 나머지 파일 줄은 node가 없다. 이름표를 찾을 때 그 줄을 건너뛰어야 한다.
+	root.bytes, root.entries = 4+45, 4
+	scan := duScan{root: root, mounts: []duMount{{Path: "/data/vol", FSType: "overlay"}},
+		labels: map[string]string{"/data/lib": "container api-1", "/data/vol": "root file system of db"}}
+	view := duBrowserOn(scan, 120, 14).View().Content
+	for _, want := range []string{"lib/  container api-1", "vol/  (overlay mount, not counted)  root file system of db", "(3 other files)"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("missing %q in\n%s", want, view)
+		}
+	}
+}

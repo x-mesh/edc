@@ -250,3 +250,15 @@ func TestDuCompareDirsSaysWhyItDidNotCompare(t *testing.T) {
 		t.Fatalf("deltas %v note %q", deltas, note)
 	}
 }
+
+func TestDuCompareDirsKeepsTheContainerLabel(t *testing.T) {
+	before := duTestDirMetrics("/var/lib/docker", true, duLargeDir{Path: "containers/aaaa", Bytes: 10, Label: "container api-1"})
+	after := duTestDirMetrics("/var/lib/docker", true, duLargeDir{Path: "containers/aaaa", Bytes: 90, Label: "container api-1"})
+	deltas, _ := duCompareDirs(before, after)
+	if len(deltas) != 1 || deltas[0].Label != "container api-1" {
+		t.Fatalf("deltas = %+v", deltas)
+	}
+	if line := formatDuDirDeltas(deltas)[0]; !strings.HasSuffix(line, "10 B → 90 B  container api-1") {
+		t.Fatalf("line = %q", line)
+	}
+}

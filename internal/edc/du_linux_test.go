@@ -375,3 +375,33 @@ func TestSnapshotAddsDuOnlyWithAPath(t *testing.T) {
 		t.Fatalf("largest = %+v", largest)
 	}
 }
+
+func TestDuResultLabelsRowsMountsAndLargestDirs(t *testing.T) {
+	root := duTestTree(t)
+	sources := duNoMounts()
+	sources.mountinfo = func() (string, error) {
+		return fmt.Sprintf("40 1 0:99 / %s rw - ext4 /dev/other rw", filepath.Join(root, "d")), nil
+	}
+	sources.statfs = func(string) (duUsage, bool) { return duUsage{Used: 1 << 20}, true }
+	sources.containerLabels = func(context.Context) map[string]string {
+		return map[string]string{filepath.Join(root, "a"): "container api-1", filepath.Join(root, "d"): "mounted in db"}
+	}
+	options := duOptions{root: root, workers: 2, rows: 5}
+	scan, err := duWalk(context.Background(), options, sources)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := duResult(Result{StartedAt: time.Now()}, options, scan, time.Minute, false)
+	rows := result.Metrics["rows"].([]duRow)
+	mounts := result.Metrics["skipped_mounts"].([]duMount)
+	largest := result.Metrics["largest_dirs"].(duLargestList)
+	if rows[0].Path != "a" || rows[0].Label != "container api-1" || rows[1].Label != "" {
+		t.Fatalf("rows = %+v", rows)
+	}
+	if len(mounts) != 1 || mounts[0].Label != "mounted in db" || largest.Dirs[0].Path != "a" || largest.Dirs[0].Label != "container api-1" {
+		t.Fatalf("mounts = %+v, largest = %+v", mounts, largest.Dirs)
+	}
+	if text := formatDuRows(rows, duOther{}, 0) + formatDuMounts(mounts, false, 0); !strings.Contains(text, "  a/  container api-1\n") || !strings.Contains(text, "used  mounted in db\n") {
+		t.Fatalf("text =\n%s", text)
+	}
+}

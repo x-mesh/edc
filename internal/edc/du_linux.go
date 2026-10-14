@@ -7,8 +7,10 @@ import (
 	"errors"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -26,7 +28,26 @@ func hostDuSources() (duSources, bool) {
 		deletedOpen: func() (map[uint64]*deletedOpenSummary, bool) {
 			return scanDeletedOpen("/proc", duDeletedOpenStat, infoDeletedOpenFDLimit), duProcPartial("/proc/1/fd")
 		},
+		containerLabels: duHostContainerLabels,
 	}, true
+}
+
+// duHostContainerLabels는 docker에 container를 묻는다. docker가 없거나 답하지 않으면 이름표 없이 둔다.
+func duHostContainerLabels(ctx context.Context) map[string]string {
+	if _, err := exec.LookPath("docker"); err != nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, duDockerTimeout)
+	defer cancel()
+	ids, err := commandOutput(ctx, "docker", "ps", "--all", "--quiet", "--no-trunc")
+	if err != nil || strings.TrimSpace(ids) == "" {
+		return nil
+	}
+	// ID는 docker ps가 낸 16진수라 option으로 읽힐 일이 없다. 목록을 읽은 뒤 지운 container가 있으면 inspect는
+	// 실패하지만 나머지 줄은 낸다.
+	inspect, _ := commandOutput(ctx, "docker", append([]string{"inspect", "--type", "container", "--format", duDockerFormat}, strings.Fields(ids)...)...)
+	mountinfo, _ := os.ReadFile("/proc/self/mountinfo")
+	return duResolveLabelPaths(duContainerLabels(inspect, string(mountinfo)))
 }
 
 // duProcPartial은 다른 process의 fd link를 읽을 수 없는지 본다. scanDeletedOpen은 파일을 찾은 장치에만 Partial을
@@ -120,6 +141,12 @@ func duWalk(ctx context.Context, options duOptions, sources duSources) (duScan, 
 	if walker.directories == nil {
 		walker.directories = new(atomic.Int64)
 	}
+	// docker 조회는 탐색과 함께 돌려 시간을 더하지 않는다.
+	var labels chan map[string]string
+	if sources.containerLabels != nil {
+		labels = make(chan map[string]string, 1)
+		go func() { labels <- sources.containerLabels(ctx) }()
+	}
 	var warnings []string
 	text, err := sources.mountinfo()
 	walker.mounts = parseMountInfo(text)
@@ -148,6 +175,9 @@ func duWalk(ctx context.Context, options duOptions, sources duSources) (duScan, 
 		unreadableCount: walker.unreadableCount, partial: walker.stopped.Load(), warnings: warnings,
 	}
 	duReadFilesystem(&scan, options, sources, walker.mounts, stat.Dev)
+	if labels != nil {
+		scan.labels = <-labels
+	}
 	scan.elapsed = time.Since(started)
 	return scan, nil
 }

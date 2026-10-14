@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -57,7 +58,14 @@ func cleanTestDeps(home string, run func(context.Context, cleanToolSpec) cleanTo
 	return cleanDeps{
 		home: home, run: run, measure: duMeasure, sources: cleanSources(host),
 		lookupEnv: func(string) (string, bool) { return "", false }, deviceOf: cleanDeviceOf,
-		lookPath: func(name string) (string, error) { return "/bin/" + name, nil },
+		// 실행 중인 docker에 연결하면 결과가 호스트마다 달라진다. docker를 찾지 못하게 하고 연결하면 시험을 멈춘다.
+		lookPath: func(name string) (string, error) {
+			if name == "docker" {
+				return "", errors.New("not found")
+			}
+			return "/bin/" + name, nil
+		},
+		dockerDial: func(context.Context, string) (net.Conn, error) { panic("a test dialed the Docker socket") },
 	}
 }
 
@@ -1206,10 +1214,8 @@ func TestRunCleanJSONHasTheThreeMetricsAndNoReclaimableKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, key := range []string{"deleted_open", "reclaimable"} {
-		if strings.Contains(string(data), key) {
-			t.Fatalf("JSON contains %q", key)
-		}
+	if strings.Contains(string(data), "deleted_open") {
+		t.Fatal("JSON contains deleted_open")
 	}
 	var report struct {
 		Results []struct {
@@ -1225,9 +1231,15 @@ func TestRunCleanJSONHasTheThreeMetricsAndNoReclaimableKey(t *testing.T) {
 	if result.Probe != "clean.scan" {
 		t.Fatalf("probe = %q", result.Probe)
 	}
-	for _, key := range []string{"candidates", "filesystems", "not_measured"} {
+	for _, key := range []string{"candidates", "filesystems", "docker", "vm_disks", "not_measured"} {
 		if _, ok := result.Metrics[key]; !ok {
 			t.Fatalf("metrics lack %q", key)
+		}
+	}
+	// 회수 가능량은 Docker 엔진이 보고하는 값만 낸다. 후보와 파일 시스템 합계에는 없다.
+	for _, key := range []string{"candidates", "filesystems"} {
+		if strings.Contains(string(result.Metrics[key]), "reclaimable") {
+			t.Fatalf("%s contain a reclaimable value", key)
 		}
 	}
 	var candidates []map[string]interface{}
@@ -1381,7 +1393,7 @@ func TestCleanTextWrapsInsteadOfCutting(t *testing.T) {
 
 func TestCleanPrintSkipsTheResultLineTheSpinnerLeft(t *testing.T) {
 	items := []cleanItem{{ID: "go-build", Category: "build_cache", Priority: "P1", Status: cleanAbsent}}
-	result := cleanResult(Result{Probe: cleanProbeID}, items, nil, time.Minute, nil)
+	result := cleanResult(Result{Probe: cleanProbeID}, cleanReport{candidates: items}, time.Minute, nil)
 	var plain, shown bytes.Buffer
 	cleanPrint(&plain, commonOptions{}, result, false, 0, false)
 	cleanPrint(&shown, commonOptions{}, result, false, 0, true)
@@ -1404,14 +1416,93 @@ func TestRunCleanFailsWithoutAHomeDirectory(t *testing.T) {
 
 func TestCleanResultWarnsAndOffersALongerLimitOnlyForATimeout(t *testing.T) {
 	items := []cleanItem{{ID: "a", Status: cleanNotScanned, Reasons: []string{cleanReasonTimeout}}}
-	timed := cleanResult(Result{}, items, nil, time.Minute, context.DeadlineExceeded)
+	timed := cleanResult(Result{}, cleanReport{candidates: items}, time.Minute, context.DeadlineExceeded)
 	if timed.Status != StatusWarn || timed.Next != "edc clean --timeout 4m0s" {
 		t.Fatalf("timed = %+v", timed)
 	}
-	stopped := cleanResult(Result{}, items, nil, time.Minute, context.Canceled)
+	stopped := cleanResult(Result{}, cleanReport{candidates: items}, time.Minute, context.Canceled)
 	if stopped.Status != StatusWarn || stopped.Next != "" {
 		t.Fatalf("stopped = %+v", stopped)
 	}
+}
+
+func TestCleanMeasurePathMapsScanStates(t *testing.T) {
+	measure := func(ctx context.Context, scan duScan, err error) (cleanMeasurement, error) {
+		deps := cleanTestDeps(t.TempDir(), nil)
+		deps.measure = func(context.Context, duOptions, duSources) (duScan, error) { return scan, err }
+		return cleanMeasurePath(ctx, deps, "/x")
+	}
+	t.Run("measured", func(t *testing.T) {
+		got, err := measure(context.Background(), cleanFakeScan(4096), nil)
+		if err != nil || got.status != cleanMeasured || len(got.reasons) != 0 || got.lowerBound || got.usage == nil || *got.usage != 4096 {
+			t.Fatalf("got = %+v (%v)", got, err)
+		}
+		if got.filesystem == nil || got.filesystem.Mount != "/data" || got.measuredAt.IsZero() {
+			t.Fatalf("got = %+v", got)
+		}
+	})
+	t.Run("an unreadable root has no usage", func(t *testing.T) {
+		scan := cleanFakeScan(4096)
+		scan.root.unreadable = true
+		got, err := measure(context.Background(), scan, nil)
+		if err != nil || got.status != cleanUnreadable || got.reasons[0] != cleanReasonRootUnreadable || got.usage != nil {
+			t.Fatalf("got = %+v (%v)", got, err)
+		}
+	})
+	t.Run("a scan stopped by the time limit or by you is partial", func(t *testing.T) {
+		timed, cancelTimed := context.WithTimeout(context.Background(), time.Nanosecond)
+		defer cancelTimed()
+		<-timed.Done()
+		stopped, cancelStopped := context.WithCancel(context.Background())
+		cancelStopped()
+		for ctx, reason := range map[context.Context]string{timed: cleanReasonTimeout, stopped: cleanReasonStopped} {
+			scan := cleanFakeScan(4096)
+			scan.partial = true
+			got, err := measure(ctx, scan, nil)
+			if err != nil || got.status != cleanPartial || !got.lowerBound || got.reasons[0] != reason || got.usage == nil {
+				t.Fatalf("%s: got = %+v (%v)", reason, got, err)
+			}
+		}
+	})
+	t.Run("unreadable directories and skipped mounts are lower bounds", func(t *testing.T) {
+		scan := cleanFakeScan(4096)
+		scan.unreadableCount, scan.unreadable = 2, []string{"/x/a"}
+		scan.mounts = []duMount{{Path: "/x/m", FSType: "ext4"}}
+		got, err := measure(context.Background(), scan, nil)
+		want := []string{cleanReasonUnreadableDirs, cleanReasonSkippedMounts}
+		if err != nil || got.status != cleanPartial || !got.lowerBound || !reflect.DeepEqual(got.reasons, want) ||
+			got.unreadable != 2 || got.skippedMounts != 1 || !reflect.DeepEqual(got.unreadablePaths, []string{"/x/a"}) {
+			t.Fatalf("got = %+v (%v)", got, err)
+		}
+		var item cleanItem
+		got.applyTo(&item)
+		if item.Status != cleanPartial || !item.LowerBound || item.UsageBytes == nil || item.Unreadable != 2 || item.SkippedMounts != 1 || item.MeasuredAt == nil {
+			t.Fatalf("item = %+v", item)
+		}
+	})
+	t.Run("a measure error is returned", func(t *testing.T) {
+		if _, err := measure(context.Background(), duScan{}, fs.ErrPermission); !errors.Is(err, fs.ErrPermission) {
+			t.Fatalf("err = %v", err)
+		}
+	})
+	t.Run("failures map to a status and reasons", func(t *testing.T) {
+		tests := []struct {
+			err     error
+			status  string
+			reasons []string
+			detail  bool
+		}{
+			{fs.ErrNotExist, cleanAbsent, nil, false},
+			{fs.ErrPermission, cleanUnreadable, []string{cleanReasonPermission}, false},
+			{errors.New("boom"), cleanUnreadable, []string{cleanReasonStatError}, true},
+		}
+		for _, test := range tests {
+			status, reasons, detail := cleanFailure(test.err)
+			if status != test.status || !reflect.DeepEqual(reasons, test.reasons) || (detail != "") != test.detail {
+				t.Fatalf("%v: %q %v %q", test.err, status, reasons, detail)
+			}
+		}
+	})
 }
 
 func TestCleanHelpSaysItOnlyReads(t *testing.T) {
@@ -1454,6 +1545,12 @@ func TestCleanMessagesCoverEveryCode(t *testing.T) {
 	}
 	for _, item := range cleanNotMeasured {
 		keys = append(keys, "clean.not_measured."+item.ID, "clean.not_measured_reason."+item.Reason)
+	}
+	for _, kind := range cleanDockerTypes {
+		keys = append(keys, "clean.docker.type."+kind)
+	}
+	for _, spec := range append(cleanVMDisks("darwin", "/h"), cleanVMDisks("linux", "/h")...) {
+		keys = append(keys, "clean.vm.disk."+spec.id)
 	}
 	for _, language := range supportedLanguages {
 		for _, key := range keys {

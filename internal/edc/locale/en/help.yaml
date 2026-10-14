@@ -165,10 +165,10 @@ command:
     notes:
       - "It reads only. It changes and deletes nothing."
       - "It measures tool caches, browsers, Xcode data, app caches, logs, and models."
-      - "It shows usage. It does not show how much a cleanup frees."
+      - "It shows usage. Only the Docker engine reports what a cleanup can free."
       - "APFS clones, snapshots, and hard links can make a sum larger."
       - "A missing tool or a failed check shows a status, never 0 B."
-      - "It skips Docker, VM disks, volumes, databases, app data, and simulators."
+      - "It reads Docker by local socket and the OrbStack disk. Neither is summed."
       - "It lists what it does not measure. -v shows why."
   where:
     summary: "The near region and the shape of this network"

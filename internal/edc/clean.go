@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"net"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -72,11 +73,13 @@ const (
 // 번역 키를 조합하는 값의 전체 목록이다. 시험이 세 언어에서 모두 번역이 있는지 확인한다.
 var (
 	cleanStatuses = []string{cleanMeasured, cleanPartial, cleanAbsent, cleanToolAbsent, cleanUnknownLocation,
-		cleanUnreadable, cleanRejected, cleanDuplicate, cleanNotScanned}
+		cleanUnreadable, cleanRejected, cleanDuplicate, cleanNotScanned, cleanNotRunning, cleanUnreachable, cleanUnsupported,
+		cleanFailed, cleanNotReported}
 	cleanReasons = []string{cleanReasonTimeout, cleanReasonStopped, cleanReasonToolTimeout, cleanReasonToolFailed,
 		cleanReasonInvalidOutput, cleanReasonPermission, cleanReasonStatError, cleanReasonRootUnreadable,
 		cleanReasonCoversUserData, cleanReasonSameAs, cleanReasonUnreadableDirs, cleanReasonSkippedMounts,
-		cleanReasonInvalidEnv}
+		cleanReasonInvalidEnv, cleanReasonEndpointScheme, cleanReasonSocketMissing, cleanReasonConnectionRefused,
+		cleanReasonEngineTimeout, cleanReasonAPIVersion, cleanReasonHTTPStatus, cleanReasonRequestFailed}
 	cleanCategories = []string{"build_cache", "package_cache", "downloaded_binary", "xcode_support", "app_cache", "logs", "model", "toolchain"}
 	cleanCosts      = []string{"low", "medium", "high", "unknown", "lost"}
 	cleanSpecIDs    = []string{"go-build", "go-mod", "npm", "pnpm", "uv", "homebrew", cleanDerivedID, "swiftpm",
@@ -84,8 +87,7 @@ var (
 		"xcode-device-support", "coresimulator-caches", "app-updates", "app-logs", "huggingface", "rustup-toolchains", "ollama",
 		"app-caches", "dot-cache"}
 	cleanNotMeasured = []cleanNotMeasuredItem{
-		{"docker_engine", "engine_accounting"},
-		{"vm_disks_volumes_db", "user_data"},
+		{"other_vm_disks_db", "user_data"},
 		{"worktrees", "unsaved_work"},
 		{"trash_downloads", "user_files"},
 		{"project_build_dirs", "project_root"},
@@ -252,12 +254,20 @@ type cleanDeps struct {
 	run       func(ctx context.Context, spec cleanToolSpec) cleanToolOutput
 	lookupEnv func(string) (string, bool)
 	deviceOf  func(string) (uint64, error)
-	measure   func(ctx context.Context, options duOptions, sources duSources) (duScan, error)
-	sources   duSources
+	// dockerDial은 Docker API socket에 연결한다. 시험이 서버에 연결하도록 바꾼다.
+	dockerDial func(ctx context.Context, path string) (net.Conn, error)
+	measure    func(ctx context.Context, options duOptions, sources duSources) (duScan, error)
+	sources    duSources
 }
 
 func hostCleanDeps(home string, host duSources) cleanDeps {
-	return cleanDeps{home: home, lookPath: exec.LookPath, run: runCleanTool, lookupEnv: os.LookupEnv, deviceOf: cleanDeviceOf, measure: duMeasure, sources: cleanSources(host)}
+	return cleanDeps{home: home, lookPath: exec.LookPath, run: runCleanTool, lookupEnv: os.LookupEnv, deviceOf: cleanDeviceOf,
+		dockerDial: cleanDockerDial, measure: duMeasure, sources: cleanSources(host)}
+}
+
+func cleanDockerDial(ctx context.Context, path string) (net.Conn, error) {
+	var dialer net.Dialer
+	return dialer.DialContext(ctx, "unix", path)
 }
 
 // cleanDeviceOf는 경로가 있는 장치 번호다. symlink는 따라가지 않는다.
@@ -440,45 +450,83 @@ func (scanner *cleanScanner) measureOne(ctx context.Context, spec cleanSpec, ite
 	}
 	scanner.roots = append(scanner.roots, cleanRoot{path: resolved, id: item.ID})
 	item.roots = []string{resolved}
-	started := time.Now()
-	scan, err := scanner.deps.measure(ctx, duOptions{root: resolved, workers: duDefaultWorkers}, scanner.deps.sources)
+	measurement, err := cleanMeasurePath(ctx, scanner.deps, resolved)
 	if err != nil {
 		cleanPathFailure(item, err)
 		return
 	}
-	at := started.UTC()
-	elapsed := scan.elapsed.Milliseconds()
-	item.MeasuredAt, item.ElapsedMS = &at, &elapsed
-	if scan.filesystem.Mount != "" {
-		item.Filesystem = &cleanFilesystemRef{Mount: scan.filesystem.Mount, FSType: scan.filesystem.FSType}
-	}
-	if scan.root.unreadable {
-		item.Status, item.Reasons = cleanUnreadable, []string{cleanReasonRootUnreadable}
+	measurement.applyTo(item)
+	if item.UsageBytes == nil {
 		return
-	}
-	usage := scan.root.total
-	item.UsageBytes, item.Entries = &usage, scan.root.count
-	item.Unreadable, item.SkippedMounts = scan.unreadableCount, len(scan.mounts)
-	item.UnreadablePaths = scan.unreadable
-	item.Status = cleanMeasured
-	if scan.partial {
-		item.Reasons = append(item.Reasons, cleanContextReason(ctx.Err()))
-	}
-	if scan.unreadableCount > 0 {
-		item.Reasons = append(item.Reasons, cleanReasonUnreadableDirs)
-	}
-	if len(scan.mounts) > 0 {
-		item.Reasons = append(item.Reasons, cleanReasonSkippedMounts)
-	}
-	if len(item.Reasons) > 0 {
-		item.Status, item.LowerBound = cleanPartial, true
 	}
 	switch {
 	case spec.groupApps:
-		item.Groups = cleanGroupDerivedData(scan.root)
+		item.Groups = cleanGroupDerivedData(measurement.scan.root)
 	case spec.groupChildren:
-		item.Groups = cleanGroupFolders(scan.root, nil)
+		item.Groups = cleanGroupFolders(measurement.scan.root, nil)
 	}
+}
+
+// cleanMeasurement는 경로 하나를 잰 결과다. 후보뿐 아니라 다른 섹션도 같은 상태 규칙으로 쓴다.
+// 사용량이 없으면 root를 읽지 못한 것이다.
+type cleanMeasurement struct {
+	scan            duScan
+	status          string
+	reasons         []string
+	lowerBound      bool
+	measuredAt      time.Time
+	elapsedMS       int64
+	filesystem      *cleanFilesystemRef
+	usage           *uint64
+	entries         int64
+	unreadable      int64
+	unreadablePaths []string
+	skippedMounts   int
+}
+
+// cleanMeasurePath는 resolved 경로의 block 사용량을 잰다. 시간 초과와 중단, 읽지 못한 디렉터리, 건너뛴 마운트는
+// partial과 하한으로 남긴다.
+func cleanMeasurePath(ctx context.Context, deps cleanDeps, resolved string) (cleanMeasurement, error) {
+	started := time.Now()
+	scan, err := deps.measure(ctx, duOptions{root: resolved, workers: duDefaultWorkers}, deps.sources)
+	if err != nil {
+		return cleanMeasurement{}, err
+	}
+	measurement := cleanMeasurement{scan: scan, measuredAt: started.UTC(), elapsedMS: scan.elapsed.Milliseconds()}
+	if scan.filesystem.Mount != "" {
+		measurement.filesystem = &cleanFilesystemRef{Mount: scan.filesystem.Mount, FSType: scan.filesystem.FSType}
+	}
+	if scan.root.unreadable {
+		measurement.status, measurement.reasons = cleanUnreadable, []string{cleanReasonRootUnreadable}
+		return measurement, nil
+	}
+	usage := scan.root.total
+	measurement.usage, measurement.entries = &usage, scan.root.count
+	measurement.unreadable, measurement.skippedMounts = scan.unreadableCount, len(scan.mounts)
+	measurement.unreadablePaths = scan.unreadable
+	measurement.status = cleanMeasured
+	if scan.partial {
+		measurement.reasons = append(measurement.reasons, cleanContextReason(ctx.Err()))
+	}
+	if scan.unreadableCount > 0 {
+		measurement.reasons = append(measurement.reasons, cleanReasonUnreadableDirs)
+	}
+	if len(scan.mounts) > 0 {
+		measurement.reasons = append(measurement.reasons, cleanReasonSkippedMounts)
+	}
+	if len(measurement.reasons) > 0 {
+		measurement.status, measurement.lowerBound = cleanPartial, true
+	}
+	return measurement, nil
+}
+
+func (measurement cleanMeasurement) applyTo(item *cleanItem) {
+	at, elapsed := measurement.measuredAt, measurement.elapsedMS
+	item.MeasuredAt, item.ElapsedMS = &at, &elapsed
+	item.Filesystem = measurement.filesystem
+	item.Status, item.Reasons, item.LowerBound = measurement.status, measurement.reasons, measurement.lowerBound
+	item.UsageBytes, item.Entries = measurement.usage, measurement.entries
+	item.Unreadable, item.UnreadablePaths, item.SkippedMounts = measurement.unreadable, measurement.unreadablePaths, measurement.skippedMounts
 }
 
 // measureChildren은 부모 폴더의 1단계 항목을 하나씩 잰다. 앞선 후보가 잰 경로는 다시 재지 않고 excludes에 남긴다.
@@ -787,15 +835,20 @@ func cleanFirstLine(text string) string {
 	return line
 }
 
-func cleanPathFailure(item *cleanItem, err error) {
+// cleanFailure는 경로를 읽지 못한 오류를 상태와 이유로 바꾼다. 없는 경로는 이유가 없다.
+func cleanFailure(err error) (status string, reasons []string, detail string) {
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
-		item.Status = cleanAbsent
+		return cleanAbsent, nil, ""
 	case errors.Is(err, fs.ErrPermission):
-		item.Status, item.Reasons = cleanUnreadable, []string{cleanReasonPermission}
+		return cleanUnreadable, []string{cleanReasonPermission}, ""
 	default:
-		item.Status, item.Reasons, item.Detail = cleanUnreadable, []string{cleanReasonStatError}, err.Error()
+		return cleanUnreadable, []string{cleanReasonStatError}, err.Error()
 	}
+}
+
+func cleanPathFailure(item *cleanItem, err error) {
+	item.Status, item.Reasons, item.Detail = cleanFailure(err)
 }
 
 // cleanMarkInside는 다른 후보 안에 있는 후보를 표시한다. 파일 시스템 합계에서 한 번만 세려는 것이다.
@@ -945,8 +998,7 @@ func runCleanWith(args []string, version string, deps cleanDeps, ok bool, homeEr
 		ctx, deadline := context.WithTimeout(base, options.timeout)
 		defer deadline()
 		scan := func() Result {
-			items := cleanScan(ctx, deps, cleanCatalog(runtime.GOOS, deps.home))
-			return cleanResult(result, items, cleanFilesystems(items, deps.sources), options.timeout, ctx.Err())
+			return cleanResult(result, cleanCollect(ctx, deps, runtime.GOOS), options.timeout, ctx.Err())
 		}
 		if live {
 			// 화면에서 Ctrl-C는 신호가 아니라 키로 들어오므로 stop으로 탐색을 멈춘다.
@@ -989,7 +1041,26 @@ func cleanScanLive(scan func() Result, redact bool, cancel context.CancelFunc) (
 	return result, true
 }
 
-func cleanResult(result Result, items []cleanItem, filesystems []cleanFilesystem, timeout time.Duration, ctxErr error) Result {
+// cleanReport는 한 번의 탐색이 만든 결과 전체다. 섹션은 후보 밖에 따로 붙인다.
+type cleanReport struct {
+	candidates  []cleanItem
+	filesystems []cleanFilesystem
+	docker      cleanDocker
+	vmDisks     []cleanVMDisk
+}
+
+// cleanCollect는 섹션을 카탈로그, Docker 엔진, VM 디스크 순서로 실행한다. 하나의 ctx를 순차로 나눠 쓴다.
+// 파일 시스템 합계는 후보에서만 만든다. 엔진 수치와 VM 디스크는 같은 데이터를 다른 방법으로 본 값이라 더하지 않는다.
+func cleanCollect(ctx context.Context, deps cleanDeps, goos string) cleanReport {
+	items := cleanScan(ctx, deps, cleanCatalog(goos, deps.home))
+	report := cleanReport{candidates: items, filesystems: cleanFilesystems(items, deps.sources)}
+	report.docker = cleanDockerScan(ctx, deps)
+	report.vmDisks = cleanVMScan(ctx, deps, goos)
+	return report
+}
+
+func cleanResult(result Result, report cleanReport, timeout time.Duration, ctxErr error) Result {
+	items := report.candidates
 	measured, quiet := 0, true
 	for _, item := range items {
 		switch item.Status {
@@ -1001,7 +1072,7 @@ func cleanResult(result Result, items []cleanItem, filesystems []cleanFilesystem
 		}
 	}
 	result.Status = StatusPass
-	if !quiet {
+	if !quiet || !cleanSectionsQuiet(report) {
 		result.Status = StatusWarn
 	}
 	result.Summary = T("clean.summary", len(items), measured, len(items)-measured)
@@ -1018,7 +1089,8 @@ func cleanResult(result Result, items []cleanItem, filesystems []cleanFilesystem
 		result.Status = StatusWarn
 		result.Warnings = append(result.Warnings, T("clean.warning.stopped"))
 	}
-	result.Metrics = map[string]interface{}{"candidates": items, "filesystems": filesystems, "not_measured": cleanNotMeasured}
+	result.Metrics = map[string]interface{}{"candidates": items, "filesystems": report.filesystems, "docker": report.docker,
+		"vm_disks": report.vmDisks, "not_measured": cleanNotMeasured}
 	return result
 }
 
@@ -1065,8 +1137,12 @@ func cleanPrint(stdout io.Writer, options commonOptions, result Result, color bo
 	if result.Status != StatusFail {
 		items, _ := result.Metrics["candidates"].([]cleanItem)
 		filesystems, _ := result.Metrics["filesystems"].([]cleanFilesystem)
+		docker, _ := result.Metrics["docker"].(cleanDocker)
+		disks, _ := result.Metrics["vm_disks"].([]cleanVMDisk)
 		fmt.Fprint(output, "\n"+formatCleanItems(items, options.verbose, width))
 		fmt.Fprint(output, formatCleanFilesystems(filesystems, width))
+		fmt.Fprint(output, formatCleanDocker(docker, options.verbose, width))
+		fmt.Fprint(output, formatCleanVMDisks(disks, docker.Inside, width))
 		fmt.Fprint(output, formatCleanNotMeasured(options.verbose, width))
 	}
 	if options.redact {

@@ -149,6 +149,8 @@ var traceProtocolRegistry = []traceProtocolRegistration{
 	{name: "exec", view: traceProtocolView{selectorLabel: "exec"}, spec: traceProtocolSpec{hideTraffic: true, hiddenViews: []string{traceGroupBySource, traceGroupByTarget, traceGroupByPort}, linuxOnly: true, prerequisites: execTracePrerequisites}, run: runTraceExec},
 	// process와 syscall별 호출 수와 시간이다. event를 하나씩 내지 않고 kernel 안에서 모아 끝날 때 한 번 출력한다.
 	{name: "syscall", view: traceProtocolView{selectorLabel: "syscall"}, spec: traceProtocolSpec{hideTraffic: true, hiddenViews: []string{traceGroupBySource, traceGroupByTarget, traceGroupByPort}, linuxOnly: true, prerequisites: syscallTracePrerequisites}, run: runTraceSyscall},
+	// capability 검사, 자격 변경, module 적재다. 검사는 kernel 안에서 세고, 거부와 변경과 적재는 하나씩 출력한다.
+	{name: "priv", view: traceProtocolView{selectorLabel: "priv"}, spec: traceProtocolSpec{hideTraffic: true, hiddenViews: []string{traceGroupBySource, traceGroupByTarget, traceGroupByPort}, linuxOnly: true, prerequisites: privTracePrerequisites}, run: runTracePriv},
 	// 메모리를 할당하던 task가 회수와 throttle로 멈춘 시간이다. syscall처럼 kernel 안에서 모아 끝날 때 한 번 출력한다.
 	{name: "reclaim", view: traceProtocolView{selectorLabel: "reclaim"}, spec: traceProtocolSpec{hideTraffic: true, hiddenViews: []string{traceGroupBySource, traceGroupByTarget, traceGroupByPort}, linuxOnly: true, prerequisites: reclaimTracePrerequisites}, run: runTraceReclaim},
 	// CPU마다 일정한 간격으로 stack을 샘플링한다. event가 아니라 끝날 때 함수별 요약과 folded stack을 한 번 낸다.

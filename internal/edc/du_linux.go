@@ -113,19 +113,50 @@ func duWalk(ctx context.Context, options duOptions, sources duSources) (duScan, 
 		duFinish(root, nil)
 		return duScan{root: root, elapsed: time.Since(started)}, nil
 	}
-	walker := &duWalker{
-		ctx: ctx, options: options, sources: sources, rootDev: stat.Dev,
-		mountPoints: map[string]diskMount{}, files: duFiles{limit: max(options.rows, options.keepFiles)}, seen: map[duInode]struct{}{},
-		directories: options.progress,
-	}
-	if walker.directories == nil {
-		walker.directories = new(atomic.Int64)
-	}
 	// docker 조회는 탐색과 함께 돌려 시간을 더하지 않는다.
 	var labels chan map[string]string
 	if sources.containerLabels != nil {
 		labels = make(chan map[string]string, 1)
 		go func() { labels <- sources.containerLabels(ctx) }()
+	}
+	scan, mounts := duWalkTree(ctx, options, sources, root, stat.Dev)
+	duReadFilesystem(&scan, options, sources, mounts, stat.Dev)
+	if labels != nil {
+		scan.labels = <-labels
+	}
+	scan.elapsed = time.Since(started)
+	return scan, nil
+}
+
+// duMeasure는 경로 하나의 사용량과 파일 시스템만 잰다. duWalk와 달리 지워졌지만 열린 파일(/proc 전체)과 docker
+// 이름표를 읽지 않으므로 호출자가 경로를 여럿 재도 호스트 전체 조회가 되풀이되지 않는다.
+func duMeasure(ctx context.Context, options duOptions, sources duSources) (duScan, error) {
+	started := time.Now()
+	var stat unix.Stat_t
+	if err := unix.Stat(options.root, &stat); err != nil {
+		return duScan{}, err
+	}
+	own := uint64(stat.Blocks) * 512
+	root := &duNode{name: options.root, dir: stat.Mode&unix.S_IFMT == unix.S_IFDIR, bytes: own, own: own, entries: 1}
+	if !root.dir {
+		duFinish(root, nil)
+		return duScan{root: root, elapsed: time.Since(started)}, nil
+	}
+	scan, mounts := duWalkTree(ctx, options, sources, root, stat.Dev)
+	scan.filesystem, _, _, _ = duFilesystemOf(options, sources, mounts)
+	scan.elapsed = time.Since(started)
+	return scan, nil
+}
+
+// duWalkTree는 디렉터리 root 아래를 세어 duScan을 만든다. 파일 시스템 정보와 지워졌지만 열린 파일은 채우지 않는다.
+func duWalkTree(ctx context.Context, options duOptions, sources duSources, root *duNode, dev uint64) (duScan, []diskMount) {
+	walker := &duWalker{
+		ctx: ctx, options: options, sources: sources, rootDev: dev,
+		mountPoints: map[string]diskMount{}, files: duFiles{limit: max(options.rows, options.keepFiles)}, seen: map[duInode]struct{}{},
+		directories: options.progress,
+	}
+	if walker.directories == nil {
+		walker.directories = new(atomic.Int64)
 	}
 	var warnings []string
 	text, err := sources.mountinfo()
@@ -154,25 +185,29 @@ func duWalk(ctx context.Context, options duOptions, sources duSources) (duScan, 
 		root: root, directories: walker.directories.Load(), mounts: walker.skipped, unreadable: walker.unreadable,
 		unreadableCount: walker.unreadableCount, partial: walker.stopped.Load(), warnings: warnings,
 	}
-	duReadFilesystem(&scan, options, sources, walker.mounts, stat.Dev)
-	if labels != nil {
-		scan.labels = <-labels
+	return scan, walker.mounts
+}
+
+// duFilesystemOf는 경로가 속한 마운트를 찾아 크기와 사용량을 읽는다. 마운트를 찾지 못하거나 statfs가 실패하면 ok가 false다.
+func duFilesystemOf(options duOptions, sources duSources, mounts []diskMount) (duFilesystem, diskMount, duUsage, bool) {
+	mount, found := findDiskMount(mounts, options.root)
+	usage, ok := sources.statfs(options.root)
+	if !found || !ok {
+		return duFilesystem{}, diskMount{}, duUsage{}, false
 	}
-	scan.elapsed = time.Since(started)
-	return scan, nil
+	return duFilesystem{
+		Mount: mount.Point, FSType: mount.FSType, Source: mount.Source, Root: mount.Root, SizeBytes: usage.Size, UsedBytes: usage.Used,
+	}, mount, usage, true
 }
 
 // duReadFilesystem은 경로가 속한 파일 시스템의 크기, 사용량, 지워졌지만 열린 파일을 채운다. 사용량과 센 크기의
 // 차이는 경로가 파일 시스템의 root를 붙인 마운트 지점이고, 모든 디렉터리와 fd를 읽었을 때만 계산한다.
 func duReadFilesystem(scan *duScan, options duOptions, sources duSources, mounts []diskMount, dev uint64) {
-	mount, found := findDiskMount(mounts, options.root)
-	usage, ok := sources.statfs(options.root)
-	if !found || !ok {
+	filesystem, mount, usage, ok := duFilesystemOf(options, sources, mounts)
+	if !ok {
 		return
 	}
-	scan.filesystem = duFilesystem{
-		Mount: mount.Point, FSType: mount.FSType, Source: mount.Source, Root: mount.Root, SizeBytes: usage.Size, UsedBytes: usage.Used,
-	}
+	scan.filesystem = filesystem
 	summaries, partial := sources.deletedOpen()
 	scan.deleted.Partial = partial
 	if summary := summaries[dev]; summary != nil {

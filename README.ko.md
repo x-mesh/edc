@@ -177,6 +177,9 @@ Setup wizard는 `edc log`의 저장 경로를 비워두고 실행별 파일을 �
 # 디렉터리 아래 디스크 사용량, 큰 항목부터 (Linux)
 ./bin/edc du /var
 
+# 알려진 개발 캐시 사용량, 읽기 전용 (Linux, macOS)
+./bin/edc clean
+
 # 기본 종합 진단
 ./bin/edc doctor https://example.com
 
@@ -594,6 +597,61 @@ edc du --json - /var            # 항목을 metrics.rows에 담음
 어느 디렉터리가 늘었는지 보려면 두 번의 실행을 `--json`으로 저장하고 `edc report diff`로 비교합니다. `metrics.largest_dirs`에는 깊이와 관계없이 가장 큰 디렉터리 200개가 들어갑니다. `report diff`는 이 목록을 경로로 맞춰 변화가 가장 큰 디렉터리를 최대 10개 보여 줍니다. 하위 디렉터리 하나가 상위 디렉터리 변화의 90% 이상을 차지하면 상위 대신 그 하위 디렉터리를 보여 줍니다. 한쪽 목록에만 있는 디렉터리는 반대쪽 값을 그 목록의 가장 작은 크기 이하(`≤`)로 표시합니다. 같은 경로를 끝까지 읽은 두 결과만 비교합니다. hard link 이름이 두 디렉터리에 있는 파일은 먼저 읽은 디렉터리에 세므로, 실행마다 그 두 디렉터리 사이에서 크기가 옮겨 갈 수 있습니다.
 
 `PATH`에 `docker`가 있으면 `docker ps`와 `docker inspect`로 container 목록도 읽습니다. 형식은 container마다 이름, 로그 경로, 마운트, layer 경로만 읽습니다. 이 정보로 로그 디렉터리, writable layer, 실행 중인 container의 root 파일 시스템, volume, bind mount 원본에 `volume pgdata (db-1 사용)`처럼 container 이름을 붙입니다. JSON에서는 `label`에 들어갑니다. containerd image store를 쓰면 멈춘 container의 writable layer는 마운트되어 있지 않아 이름이 붙지 않습니다. docker가 3초 안에 답하지 않으면 이름 없이 출력합니다.
+
+## 알려진 개발 캐시 사용량 (Linux와 macOS)
+
+`edc clean`은 알려진 개발 캐시의 디스크 사용량을 보여 줍니다. 읽기만 하며 파일을 지우거나 바꾸지 않습니다.
+
+```bash
+edc clean                       # 알려진 캐시를 잼
+edc clean -v                    # 이유, 읽지 못한 경로, 정리 명령 추가
+edc clean --timeout 2m          # 제한 시간을 늘림
+edc clean --json -              # 후보를 metrics.candidates에 담음
+```
+
+캐시 위치는 그 캐시를 가진 도구에 물어서 찾으며, 경로를 추측하지 않습니다. 도구가 `PATH`에 없으면 상태는 `tool_absent`입니다.
+
+| 후보 | 위치를 찾는 방법 |
+| --- | --- |
+| Go 빌드 캐시, Go 모듈 캐시 | `go env GOCACHE GOMODCACHE` |
+| npm 캐시 | `npm config get cache` |
+| pnpm 저장소 | `pnpm store path` |
+| uv 캐시 | `uv cache dir` |
+| Homebrew 캐시 | `brew --cache` |
+| Xcode DerivedData (macOS) | `~/Library/Developer/Xcode/DerivedData` |
+| SwiftPM 캐시 (macOS) | `~/Library/Caches/org.swift.swiftpm` |
+
+크기는 `edc du`의 측정 코드를 재사용해 후보를 하나씩 잽니다. 경로 아래의 마운트에는 들어가지 않습니다. symlink 경로는 보고된 경로와 실제 경로를 함께 보여 주고 실제 경로를 잽니다. DerivedData는 폴더를 앱 이름별로 묶어 보여 줍니다.
+
+후보마다 상태가 하나 있습니다.
+
+| 상태 | 뜻 |
+| --- | --- |
+| `measured` | 경로 전체를 읽었습니다. 크기가 완전합니다. |
+| `partial` | 크기가 하한입니다. 읽지 못한 디렉터리가 있거나, 마운트를 건너뛰었거나, 시간이 끝났습니다. |
+| `absent` | 경로가 없습니다. |
+| `tool_absent` | 도구가 `PATH`에 없습니다. |
+| `unknown_location` | 도구가 실패했거나, 시간이 초과됐거나, 예상과 다른 답을 냈습니다. |
+| `unreadable` | 권한 오류 등으로 읽지 못했습니다. |
+| `rejected` | 경로가 `/`, 홈 디렉터리, 그 상위를 덮습니다. 재지 않습니다. |
+| `duplicate` | 앞선 후보와 실제 경로가 같습니다. |
+| `not_scanned` | edc가 닿기 전에 시간이 끝났거나 `Ctrl-C`를 눌렀습니다. |
+
+`usage_bytes`는 `measured`와 `partial`에만 있고, 다른 상태에서는 `0 B`를 표시하지 않습니다. 다른 후보 안에 있는 후보는 합계에 두 번 더하지 않습니다.
+
+파일 시스템별 합계는 사용량이며, 정리하면 비워지는 양이 아닙니다. APFS clone과 snapshot 때문에 합계가 비워지는 양보다 클 수 있습니다. hard link는 후보 하나 안에서는 한 번만 세지만, 두 후보에 걸친 hard link는 두 번 셉니다. pnpm 저장소와 uv 캐시가 hard link를 씁니다. 회수 가능량은 표시하지 않습니다.
+
+출력은 재지 않는 유형을 항상 나열하며, `-v`로 유형마다 이유를 볼 수 있습니다.
+
+- Docker 엔진
+- VM 디스크, Docker 볼륨, DB
+- 앱 캐시와 로그
+- worktree
+- 휴지통과 다운로드
+- 프로젝트 빌드 폴더
+- SDK, 시뮬레이터, 모델
+
+제한 시간은 기본 60초이며 모든 후보가 나눠 씁니다. 시간이 끝나면 결과는 `warn`이고 `next`에 더 긴 제한 시간의 명령을 보여 줍니다. `Ctrl-C`는 실행을 멈추고 그때까지의 결과를 남깁니다. Linux에서는 도구 캐시만 잽니다. `-v`는 후보마다 정리 명령을 보여 주지만 edc는 그 명령을 실행하지 않습니다.
 
 ## 커널과 systemd 이벤트 (Linux)
 

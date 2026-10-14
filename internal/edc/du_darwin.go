@@ -66,6 +66,11 @@ func duDarwinMounts() ([]diskMount, error) {
 	return mounts, nil
 }
 
+// duMeasure는 duWalk에 맡긴다. darwin의 duWalk는 stat, getfsstat, statfs만 읽고 호스트 전체 원천이 없다.
+func duMeasure(ctx context.Context, options duOptions, sources duSources) (duScan, error) {
+	return duWalk(ctx, options, sources)
+}
+
 func duWalk(ctx context.Context, options duOptions, sources duSources) (duScan, error) {
 	started := time.Now()
 	var stat unix.Stat_t

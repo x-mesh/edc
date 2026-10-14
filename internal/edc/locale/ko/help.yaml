@@ -157,6 +157,19 @@ command:
       - "터미널에서는 탐색 화면을 열고, q로 닫으면 결과를 출력합니다."
       - "Linux에서는 docker 저장 경로에 container 이름도 표시합니다."
       - "macOS에서는 APFS 공유 블록과 스냅샷 때문에 찾지 못한 공간을 계산하지 않습니다."
+  clean:
+    summary: "알려진 개발 캐시의 디스크 사용량, 읽기 전용 (Linux와 macOS)"
+    option:
+      timeout: "제한 시간, 지나면 남은 후보는 측정 안 함으로 표시"
+      verbose: "이유, 읽지 못한 경로, 정리 명령을 표시"
+    notes:
+      - "읽기만 합니다. 아무것도 바꾸거나 지우지 않습니다."
+      - "알려진 캐시를 잽니다: Go, npm, pnpm, uv, Homebrew, Xcode, SwiftPM."
+      - "사용량을 보여 줍니다. 정리하면 얼마가 비워지는지는 보여 주지 않습니다."
+      - "APFS clone, snapshot, hard link 때문에 합계가 더 클 수 있습니다."
+      - "도구가 없거나 확인에 실패하면 0 B가 아니라 상태를 표시합니다."
+      - "Docker, VM 디스크, 볼륨, DB, 앱 데이터는 측정하지 않습니다."
+      - "측정하지 않는 대상을 나열하고, -v로 이유를 보여 줍니다."
   where:
     summary: "가까운 지역과 이 망의 모습"
     option:

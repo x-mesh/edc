@@ -191,6 +191,9 @@ The command also creates the parent for the legacy recommended `edc.log` path.
 # disk usage under a directory, largest entries first (Linux and macOS)
 ./bin/edc du /var
 
+# known development cache sizes, read only (Linux and macOS)
+./bin/edc clean
+
 # default diagnosis
 ./bin/edc doctor https://example.com
 
@@ -642,6 +645,61 @@ APFS volumes can share storage, and snapshots can retain blocks. The measured si
 To find the directories that grew, save two runs with `--json` and compare them with `edc report diff`. `metrics.largest_dirs` holds the 200 largest directories at any depth. `report diff` matches them by path and shows up to 10 directories with the largest change. If a subdirectory holds 90% or more of the change of its parent, edc shows the subdirectory and not the parent. If a directory is in only one list, its other value shows as `≤` the smallest size in that list. edc compares only two scans of the same path that both reached the end. A file with hard links in two directories counts in the directory that edc reads first, so its size can move between those directories from one run to the next.
 
 On Linux, if `docker` is on the `PATH`, edc also asks docker for its containers with `docker ps` and `docker inspect`. The format reads only the name, the log path, the mounts, and the layer path of each container. edc then names the container of a log directory, a writable layer, the root file system of a running container, a volume, and a bind mount source, for example `volume pgdata of db-1`. The JSON holds the name in `label`. With the containerd image store, a stopped container has no writable layer name, because its layer is not mounted. If docker does not answer in 3 seconds, edc shows no names.
+
+## Known cache sizes (Linux and macOS)
+
+`edc clean` shows the disk usage of known development caches. It reads only. It does not delete or change a file.
+
+```bash
+edc clean                       # measure the known caches
+edc clean -v                    # add reasons, unreadable paths, and cleanup commands
+edc clean --timeout 2m          # give edc more time
+edc clean --json -              # the candidates in metrics.candidates
+```
+
+edc asks the tool that owns each cache for its path. It does not guess a path. If the tool is not on the `PATH`, the status is `tool_absent`.
+
+| Candidate | How edc finds it |
+| --- | --- |
+| Go build cache and Go module cache | `go env GOCACHE GOMODCACHE` |
+| npm cache | `npm config get cache` |
+| pnpm store | `pnpm store path` |
+| uv cache | `uv cache dir` |
+| Homebrew cache | `brew --cache` |
+| Xcode DerivedData (macOS) | `~/Library/Developer/Xcode/DerivedData` |
+| SwiftPM cache (macOS) | `~/Library/Caches/org.swift.swiftpm` |
+
+edc reuses the size code of `edc du`. It measures one candidate at a time. It does not go into a mount below a path. A symlink path shows the reported path and the real path, and edc measures the real path. DerivedData shows the folders grouped by app name.
+
+Each candidate has one status.
+
+| Status | Meaning |
+| --- | --- |
+| `measured` | edc read the whole path. The size is complete. |
+| `partial` | The size is a lower bound. A directory is unreadable, a mount was skipped, or the time ended. |
+| `absent` | The path does not exist. |
+| `tool_absent` | The tool is not on the `PATH`. |
+| `unknown_location` | The tool failed, timed out, or gave an unexpected answer. |
+| `unreadable` | A permission error or another error blocked the read. |
+| `rejected` | The path covers `/`, the home directory, or a parent of it. edc does not measure it. |
+| `duplicate` | An earlier candidate has the same real path. |
+| `not_scanned` | The time ended or you pressed `Ctrl-C` before edc reached the candidate. |
+
+Only `measured` and `partial` have `usage_bytes`. No other status shows `0 B`. A candidate inside another candidate is not added twice to the sum.
+
+The sum for each file system is usage. It is not the space that a cleanup frees. APFS clones and snapshots can make the sum larger than the freed space. A hard link counts once in one candidate. A hard link between two candidates counts twice. The pnpm store and the uv cache use hard links. edc shows no reclaimable value.
+
+The output always lists the types that edc does not measure. Use `-v` to see the reason for each type.
+
+- The Docker engine
+- VM disks, Docker volumes, and databases
+- App caches and logs
+- Worktrees
+- Trash and downloads
+- Project build folders
+- SDKs, simulators, and models
+
+The time limit is 60 seconds by default, and all candidates share it. If the time ends, the result is `warn`, and `next` shows a command with a longer limit. `Ctrl-C` stops the run and keeps the results so far. On Linux, edc measures the tool caches only. `-v` shows the cleanup command of each candidate. edc never runs that command.
 
 ## Kernel and systemd events (Linux)
 

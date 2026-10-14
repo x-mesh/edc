@@ -2411,7 +2411,7 @@ Linux에서 `trace cpu`를 사용하면 CPU를 쓰는 함수를 찾을 수 있�
 ./bin/edc trace cpu --frequency 499 --folded - | flamegraph.pl > cpu.svg
 ```
 
-첫 줄은 샘플 수와 CPU가 바빴던 비율입니다. 쉬는 CPU에서는 idle task가 샘플되고, edc는 이 샘플을 `idle`로 셉니다. `PROCESS` 표는 process별 샘플 수입니다. `FUNCTION` 표의 `SELF`는 그 함수가 가장 안쪽 frame이었던 샘플이고, `TOTAL`은 그 함수가 stack 어디에든 있던 샘플입니다. kernel 함수는 이름 뒤에 `[k]`가 붙습니다. 비율은 필터를 통과한 샘플에 대한 값입니다. 표는 함수 20개를 보여 주고, `--json`에는 모든 함수가 들어갑니다.
+첫 줄은 샘플 수와 CPU가 바빴던 비율입니다. 쉬는 CPU에서는 idle task가 샘플되고, edc는 이 샘플을 `idle`로 셉니다. 바빴던 비율은 idle이 아닌 샘플을, 그 시간 동안 모든 CPU에서 frequency대로 받았어야 할 샘플 수로 나눈 값입니다. 어떤 VM은 쉬는 CPU에서 샘플을 덜 줍니다. CPU 4개인 GitHub runner에서 쉬는 CPU는 받아야 할 샘플의 약 57%를 받았고, 바쁜 CPU는 모두 받았습니다. `PROCESS` 표는 process별 샘플 수입니다. `FUNCTION` 표의 `SELF`는 그 함수가 가장 안쪽 frame이었던 샘플이고, `TOTAL`은 그 함수가 stack 어디에든 있던 샘플입니다. kernel 함수는 이름 뒤에 `[k]`가 붙습니다. 비율은 필터를 통과한 샘플에 대한 값입니다. 표는 함수 20개를 보여 주고, `--json`에는 모든 함수가 들어갑니다.
 
 `--folded <path>`는 stack마다 바깥 frame부터 가장 안쪽 frame까지 한 줄로 쓰고, 끝에 샘플 수를 붙입니다. `flamegraph.pl`이나 speedscope 같은 flame graph 도구가 이 형식을 읽습니다. kernel frame은 `_[k]`로 끝납니다. `--folded -`로 stdout에 쓰면 표는 출력하지 않습니다. `--process`와 `--container`는 `trace syscall`과 같습니다. kernel 안에서 비교하므로 나머지 샘플은 map을 쓰지 않습니다.
 

@@ -148,8 +148,9 @@ func TestTraceCPUSamplesUserAndKernelStacks(t *testing.T) {
 			if got := float64(report.Summary.Profiled); got < expected*0.8 || got > expected*1.1 {
 				t.Errorf("profiled %v samples, want about %.0f: %+v", got, expected, report.Summary)
 			}
-			if report.Summary.Samples < uint64(expected)*uint64(summary.CPUs)*8/10 {
-				t.Errorf("samples = %d on %d CPUs, want about %.0f each", report.Summary.Samples, summary.CPUs, expected)
+			// helper가 CPU 하나를 채우므로 바쁜 비율은 적어도 CPU 하나만큼이다. 쉬는 CPU의 샘플 수는 VM에 따라 모자라 보지 않는다.
+			if minimum := 80 / float64(summary.CPUs); report.Summary.BusyPercent < minimum || report.Summary.BusyPercent > 100 {
+				t.Errorf("busy = %.1f%% on %d CPUs, want at least %.1f%%", report.Summary.BusyPercent, summary.CPUs, minimum)
 			}
 			var hot, tRunner, kernel, getppid uint64
 			for _, stack := range stacks {

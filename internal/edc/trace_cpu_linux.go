@@ -287,7 +287,7 @@ func collectCPUStacks(options cpuTraceOptions, stop <-chan struct{}) ([]cpuStack
 	summary.UserStackMissing, summary.UserStackCollision = totals[cpuCounterUserMissing], totals[cpuCounterUserCollision]
 	summary.KernelStackEmpty, summary.KernelStackCollision = totals[cpuCounterKernelEmpty], totals[cpuCounterKernelCollision]
 	summary.FreshLost = totals[cpuCounterFreshLost]
-	summary.BusyPercent = cpuPercent(summary.Samples-summary.Idle, summary.Samples)
+	summary.BusyPercent = cpuBusyPercent(summary.Samples-summary.Idle, options.frequency, elapsed, len(cpus))
 	stacks, err := readCPUStacks(objects, symbolizer)
 	if err != nil {
 		return nil, cpuSummary{}, err

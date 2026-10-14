@@ -5,10 +5,13 @@ package edc
 import (
 	"bytes"
 	"encoding/binary"
+	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/cilium/ebpf/btf"
+	"golang.org/x/sys/unix"
 )
 
 func TestIOTracepointsComeFromKernelBTF(t *testing.T) {
@@ -78,4 +81,59 @@ func TestParseIORecordRejectsShortSample(t *testing.T) {
 	if _, ok := parseIORecord(make([]byte, 87), 0); ok {
 		t.Fatal("short sample was accepted")
 	}
+}
+
+// 기준을 1시간으로 두면 모든 요청이 기준보다 빨리 끝난다. 그 요청은 event로 나오지 않고 omitted_below_threshold로만 남는다.
+// write-back cache가 있는 장치에서 기본 기준 1ms로 재면 쓰기가 모두 이렇게 빠져, 이 수가 없으면 쓰기가 없던 것처럼 보인다.
+func TestTraceIOCountsTheRequestsBelowTheThreshold(t *testing.T) {
+	capabilities, err := effectiveCapabilities()
+	if err != nil || missingCapabilities(bpfTraceCapabilities, capabilities) != "" {
+		t.Skip("trace io needs BPF capabilities")
+	}
+	if err := ioTracePrerequisites(); err != nil {
+		t.Skip(err)
+	}
+	// tmpfs에 쓰면 block 요청이 생기지 않는다. 시험 binary가 도는 작업 directory는 disk에 있다.
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fs unix.Statfs_t
+	if err := unix.Statfs(dir, &fs); err != nil || fs.Type == unix.TMPFS_MAGIC {
+		t.Skipf("%s is not on a block device", dir)
+	}
+	stop := make(chan struct{})
+	type result struct {
+		summary ioSummary
+		err     error
+	}
+	finished := make(chan result, 1)
+	var events uint64
+	go func() {
+		summary, err := collectIOEvents(ioTraceOptions{slow: time.Hour}, func(ioEvent) error { events++; return nil }, stop)
+		finished <- result{summary, err}
+	}()
+	time.Sleep(time.Second)
+	file, err := os.CreateTemp(dir, "edc-io-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(file.Name())
+	if _, err := file.Write(bytes.Repeat([]byte{1}, 1<<20)); err != nil {
+		t.Fatal(err)
+	}
+	// fsync는 쓰기 요청이 끝난 뒤에 돌아오므로, 그 완료는 trace를 멈추기 전에 BPF를 지난다.
+	if err := file.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	file.Close()
+	close(stop)
+	done := <-finished
+	if done.err != nil {
+		t.Fatal(done.err)
+	}
+	if done.summary.OmittedBelowThreshold == 0 || events != 0 || done.summary.EventCount != 0 {
+		t.Fatalf("omitted %d, events %d, summary %+v", done.summary.OmittedBelowThreshold, events, done.summary)
+	}
+	t.Logf("omitted_below_threshold %d", done.summary.OmittedBelowThreshold)
 }

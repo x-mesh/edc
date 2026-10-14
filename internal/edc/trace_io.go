@@ -65,6 +65,8 @@ type ioSummary struct {
 	UnmatchedCompletion uint64 `json:"unmatched_completion"`
 	Incomplete          uint64 `json:"incomplete"`
 	Requeue             uint64 `json:"requeue"`
+	// OmittedBelowThreshold는 --slow보다 빨리 끝나 BPF가 버린 요청이다. 이 수가 없으면 빠른 장치에서 쓰기가 없는 것처럼 보인다.
+	OmittedBelowThreshold uint64 `json:"omitted_below_threshold"`
 }
 
 type ioLatency struct {
@@ -272,7 +274,7 @@ func runIOTrace(args []string) int {
 }
 
 func printIOReport(report ioReport, events []ioEvent, detail bool) {
-	fmt.Printf("I/O trace\n\nOps: %d\nBytes: %s\nReads: %d\nWrites: %d\nQueue avg/p95/max: %s / %s / %s\nService avg/p95/max: %s / %s / %s\nTotal avg/p95/max: %s / %s / %s\nLost events: %d\nMap full: %d\nUnmatched completion: %d\nIncomplete: %d\nRequeue: %d\n", report.EventCount, traceBytes(report.Bytes), report.ReadOps, report.WriteOps, traceLatency(report.Queue.AverageMS, "ms"), traceLatency(report.Queue.P95MS, "ms"), traceLatency(report.Queue.MaxMS, "ms"), traceLatency(report.Service.AverageMS, "ms"), traceLatency(report.Service.P95MS, "ms"), traceLatency(report.Service.MaxMS, "ms"), traceLatency(report.Total.AverageMS, "ms"), traceLatency(report.Total.P95MS, "ms"), traceLatency(report.Total.MaxMS, "ms"), report.LostEvents, report.MapFull, report.UnmatchedCompletion, report.Incomplete, report.Requeue)
+	fmt.Printf("I/O trace\n\nOps: %d\nBytes: %s\nReads: %d\nWrites: %d\nQueue avg/p95/max: %s / %s / %s\nService avg/p95/max: %s / %s / %s\nTotal avg/p95/max: %s / %s / %s\nLost events: %d\nMap full: %d\nUnmatched completion: %d\nIncomplete: %d\nRequeue: %d\nBelow threshold: %d\n", report.EventCount, traceBytes(report.Bytes), report.ReadOps, report.WriteOps, traceLatency(report.Queue.AverageMS, "ms"), traceLatency(report.Queue.P95MS, "ms"), traceLatency(report.Queue.MaxMS, "ms"), traceLatency(report.Service.AverageMS, "ms"), traceLatency(report.Service.P95MS, "ms"), traceLatency(report.Service.MaxMS, "ms"), traceLatency(report.Total.AverageMS, "ms"), traceLatency(report.Total.P95MS, "ms"), traceLatency(report.Total.MaxMS, "ms"), report.LostEvents, report.MapFull, report.UnmatchedCompletion, report.Incomplete, report.Requeue, report.OmittedBelowThreshold)
 	for _, row := range report.Rows {
 		fmt.Printf("%s ops=%d bytes=%s read=%d write=%d queue=%s/%s/%s service=%s/%s/%s total=%s/%s/%s\n", row.Group, row.Ops, traceBytes(row.Bytes), row.ReadOps, row.WriteOps, traceLatency(row.Queue.AverageMS, "ms"), traceLatency(row.Queue.P95MS, "ms"), traceLatency(row.Queue.MaxMS, "ms"), traceLatency(row.Service.AverageMS, "ms"), traceLatency(row.Service.P95MS, "ms"), traceLatency(row.Service.MaxMS, "ms"), traceLatency(row.Total.AverageMS, "ms"), traceLatency(row.Total.P95MS, "ms"), traceLatency(row.Total.MaxMS, "ms"))
 	}

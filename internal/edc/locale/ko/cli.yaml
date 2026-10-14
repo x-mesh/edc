@@ -320,6 +320,8 @@ cli:
     cpu_collisions: "trace cpu: stack map의 hash 충돌로 샘플 %d건의 stack을 잃었습니다"
     cpu_no_kallsyms: "trace cpu: /proc/kallsyms에서 kernel 심볼을 읽지 못해 kernel frame을 [kernel]로 표시합니다"
     cpu_shallow: "trace cpu: 샘플의 %.0f%%는 사용자 stack이 frame 하나뿐입니다. frame pointer 없이 build한 program은 가장 안쪽 함수만 보입니다"
+    cpu_off_frequency: "--frequency는 CPU 위의 샘플에만 씁니다. --off-cpu는 잠들 때마다 기록합니다"
+    cpu_off_running: "trace cpu --off-cpu: 끝날 때까지 잠든 thread의 stack을 기록합니다"
     cpu_self_included: "edc가 host PID namespace 밖에서 실행되어, profile에 edc 자신이 들어 있습니다"
   report:
     description: "report는 edc 진단 명령이 --json으로 저장한 결과를 읽습니다.\n일반 JSON, report diff 결과, edc log의 텍스트 로그는 지원하지 않습니다."

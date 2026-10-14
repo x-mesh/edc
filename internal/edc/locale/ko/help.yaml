@@ -276,6 +276,7 @@ command:
       errors: "trace syscall: 실패한 호출 출력. all이나 errno 이름"
       frequency: "trace cpu: CPU마다 1초에 샘플링할 횟수, 기본 99"
       folded: "trace cpu: flame graph용 folded stack 저장"
+      off_cpu: "trace cpu: thread가 잠든 시간을 stack별로"
     notes:
       - "terminal에서는 기본으로 전체 화면 trace를 엽니다."
       - "/를 누르면 process, destination, event, source를 필터할 수 있습니다."

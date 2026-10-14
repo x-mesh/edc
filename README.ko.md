@@ -2435,6 +2435,32 @@ Linux 6.17, CPU 12개 x86_64 host에서 비용을 측정했습니다. CPU를 쓰
 
 BTF, online CPU마다 여는 `perf_event_open`의 cpu-clock event, perf event용 BPF link가 필요합니다. Linux 5.15에는 셋 다 있습니다.
 
+`trace cpu --off-cpu`를 사용하면 thread가 도는 곳이 아니라 잠드는 곳을 찾을 수 있습니다. edc는 thread가 잠들 때 stack을 기록하고, 그 thread가 다시 돌 때 잠든 시간을 그 stack에 더합니다. scheduler가 선점한 thread는 runnable이므로 세지 않습니다.
+
+```bash
+./bin/edc trace cpu --off-cpu --process api --duration 10s
+./bin/edc trace cpu --off-cpu --container db --folded db-offcpu.folded
+```
+
+`PROCESS` 표는 process별로 잠든 횟수와 시간을 보여 줍니다. `CODE`와 `KERNEL` 표는 그 시간이 어디서 쓰였는지 보여 줍니다. `CODE`는 사용자 stack의 안쪽 두 frame입니다. `KERNEL`은 `futex`나 `epoll_wait`처럼 잠든 system call이거나 `page_fault`입니다. 시간은 모든 thread의 잠든 시간을 더하므로 trace보다 길 수 있습니다. `--folded` 출력의 수는 잠든 시간의 마이크로초입니다. `--off-cpu`와 `--frequency`를 함께 주면 오류로 끝납니다.
+
+trace 중에 시작하고 끝난 잠만 셉니다. trace 전에 시작했거나 끝날 때까지 깨지 않은 잠은 결과에 없습니다. 그래서 trace 내내 기다리는 thread는 보이지 않습니다.
+
+같은 host에서 `perf bench sched pipe`로 비용을 쟀습니다. 한 번의 작업에 context switch가 두 번 있습니다.
+
+| 조건 | 작업당 시간 | 늘어난 비용 |
+|---|---|---|
+| trace 없음 | 3.471 µs | - |
+| `--off-cpu --process no-such-process` | 3.495 µs | 0.02 µs |
+| `--off-cpu --process sched-pipe` | 4.379 µs | 0.91 µs |
+| `--off-cpu`, 필터 없음 | 4.475 µs | 1.00 µs |
+
+BPF program은 host의 모든 context switch에서 돕니다. 필터가 고르지 않은 process에는 191ns, 고른 process에는 1.25~1.38µs가 걸렸고, 대부분은 두 stack을 읽는 시간입니다. 바쁜 host에서는 `--process`나 `--container`를 쓰세요.
+
+필터가 없으면 stack map의 hash 칸 하나를 두 stack이 쓰려 할 수 있습니다. host 전체를 8초 기록하자 잠 25,402번 중 180번이 이렇게 stack을 잃었습니다. edc는 이 수를 `collisions`로 세고 알림을 출력합니다. `--process`를 주자 같은 시험에서 충돌이 없었습니다.
+
+off-CPU trace에는 `sched_switch` tracepoint와 BTF, task local storage도 필요합니다.
+
 kernel이 모든 버림을 이유와 함께 알리지는 않습니다. 예를 들어 listen socket의 accept 대기열이 가득 차면 kernel은 SYN을 정상 패킷처럼 해제합니다. 이 경우를 위해 요약에는 trace 동안 `/proc/net/netstat`의 `ListenOverflows`와 `ListenDrops`가 늘어난 수가 나옵니다. 이 값은 edc가 있는 network namespace의 모든 listen socket을 합한 것이라, `--container`를 써도 container만의 값이 아닙니다.
 
 ```bash

@@ -276,6 +276,7 @@ command:
       errors: "trace syscall: failed calls, all or errno names"
       frequency: "trace cpu: samples per second per CPU, default 99"
       folded: "trace cpu: write folded stacks for a flame graph"
+      off_cpu: "trace cpu: time that threads sleep, by stack"
     notes:
       - "The default output opens a full-screen trace view in a terminal."
       - "Use / to filter process, destination, event, or source text."

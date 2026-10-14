@@ -11,6 +11,8 @@ func cpuTracePrerequisites() error {
 	return fmt.Errorf("trace cpu requires Linux, not %s", runtime.GOOS)
 }
 
+func cpuOffCPUPrerequisites() error { return cpuTracePrerequisites() }
+
 func collectCPUStacks(cpuTraceOptions, <-chan struct{}) ([]cpuStack, cpuSummary, error) {
 	return nil, cpuSummary{}, cpuTracePrerequisites()
 }

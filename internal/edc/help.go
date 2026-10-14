@@ -323,6 +323,7 @@ var commandDocs = []commandDoc{
 			{"--errors <all|names>", "command.trace.option.errors"},
 			{"--frequency 99", "command.trace.option.frequency"},
 			{"--folded <path|->", "command.trace.option.folded"},
+			{"--off-cpu", "command.trace.option.off_cpu"},
 			{"--yes", "command.trace.option.yes"},
 		},
 	},

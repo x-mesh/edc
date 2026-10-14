@@ -301,6 +301,13 @@ cli:
     socket_payload_kernel: "trace socket の --payload には Linux 6.4 以降が必要です。kernel の iov_iter に %s field がありません"
     io_group_by: "--group-by は device、process、cgroup、event だけを使用できます"
     io_failed: "trace io に失敗しました: %v"
+    syscall_group_by: "--group-by は process、syscall、cgroup だけを使用できます"
+    syscall_process: "--process: %v"
+    syscall_failed: "trace syscall に失敗しました: %v"
+    syscall_map_full: "trace syscall: BPF map が満杯になり、%d 件の呼び出しが集計から漏れました。--process、--container で絞るか --duration を短くしてください"
+    syscall_running: "trace syscall: Ctrl-C を押すまで system call を数えます"
+    syscall_running_for: "trace syscall: %s のあいだ system call を数えます。Ctrl-C で早めに終了できます"
+    syscall_self_included: "edc は host の PID namespace の外で動いているため、集計に edc 自身の呼び出しが含まれます"
   report:
     description: "report は edc 診断コマンドが --json で保存した結果を読みます。\n一般 JSON、report diff の出力、edc log のテキストログは非対応です。"
     command_show: "show  — 保存した edc 診断結果を表示"

@@ -287,7 +287,7 @@ var commandDocs = []commandDoc{
 	},
 	{
 		name: "trace", group: "observe",
-		usage: []string{traceProtocolUsage, traceDatabaseUsage, traceSocketUsage, traceShowUsage},
+		usage: []string{traceProtocolUsage, traceDatabaseUsage, traceSocketUsage, traceSyscallUsage, traceShowUsage},
 		options: []optionDoc{
 			{"--duration 15s", "command.trace.option.duration"},
 			{"--slow <duration>", "command.trace.option.slow"},

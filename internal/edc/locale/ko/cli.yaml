@@ -301,6 +301,13 @@ cli:
     socket_payload_kernel: "trace socket의 --payload는 Linux 6.4 이상이 필요합니다. kernel의 iov_iter에 %s field가 없습니다"
     io_group_by: "--group-by는 device, process, cgroup, event만 사용할 수 있습니다"
     io_failed: "trace io 실패: %v"
+    syscall_group_by: "--group-by는 process, syscall, cgroup만 사용할 수 있습니다"
+    syscall_process: "--process: %v"
+    syscall_failed: "trace syscall 실패: %v"
+    syscall_map_full: "trace syscall: BPF map이 가득 차서 호출 %d건이 집계에 빠졌습니다. --process, --container로 좁히거나 --duration을 줄이세요"
+    syscall_running: "trace syscall: Ctrl-C를 누를 때까지 system call을 셉니다"
+    syscall_running_for: "trace syscall: %s 동안 system call을 셉니다. Ctrl-C로 일찍 끝낼 수 있습니다"
+    syscall_self_included: "edc가 host PID namespace 밖에서 실행되어, 집계에 edc 자신의 호출이 들어 있습니다"
   report:
     description: "report는 edc 진단 명령이 --json으로 저장한 결과를 읽습니다.\n일반 JSON, report diff 결과, edc log의 텍스트 로그는 지원하지 않습니다."
     command_show: "show  — 저장한 edc 진단 결과 보기"

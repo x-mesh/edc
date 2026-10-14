@@ -629,6 +629,8 @@ After the rows, edc shows the file system of the path. The line shows the mount 
 
 If the path is the mount point of a whole file system, edc also compares the numbers. `not found` is the used space minus the counted size and the open deleted files. Files under a mount point and file system metadata can use this space. edc compares only if it read all directories and all processes, and the time limit did not stop it. A bind mount or a subdirectory shows no comparison. The JSON holds these values in `metrics.filesystem`, `metrics.deleted_open`, and `metrics.not_found_bytes`.
 
+To find the directories that grew, save two runs with `--json` and compare them with `edc report diff`. `metrics.largest_dirs` holds the 200 largest directories at any depth. `report diff` matches them by path and shows up to 10 directories with the largest change. If a subdirectory holds 90% or more of the change of its parent, edc shows the subdirectory and not the parent. If a directory is in only one list, its other value shows as `≤` the smallest size in that list. edc compares only two scans of the same path that both reached the end.
+
 ## Kernel and systemd events (Linux)
 
 `edc events` reads the kernel log and the systemd journal for a time window. It finds failure signals and puts them in time order. It changes nothing, and it sends nothing over the network.
@@ -701,6 +703,7 @@ The command reads only. It writes its output file and changes nothing else on th
 edc snapshot                              # ./edc-snapshot-<host>-<UTC time>.json
 sudo edc snapshot --output before.json    # root reads all audit and event sources
 sudo edc snapshot --output after.json
+sudo edc snapshot --du /var --output after.json   # also edc du of /var (Linux)
 sudo edc report diff before.json after.json
 edc snapshot --since 2h --output -        # only the report JSON to stdout
 ```
@@ -718,6 +721,9 @@ The report holds these results.
 | `audit.*` | the `edc audit` checks |
 | `events.*` | the `edc events` signals in the `--since` window (default 6h) |
 | `changes.*` | the `edc changes` sources in the `--since` window |
+| `du.scan` | only with `--du <path>`: `edc du` of that path, with the largest directories for `report diff` |
+
+A large tree can need a longer `--timeout` for `--du`. At the limit, the `du.scan` result is partial, and `report diff` does not compare its directories.
 
 All sections run at the same time under one `--timeout` budget (default 15s). If a section does not finish within the budget and 2 more seconds, its result is `skip` with the reason. For `audit`, `events`, and `changes`, each check gets its own `skip`, so `report diff` compares the same IDs. `info.disk` cannot know the mounts, so it gets one `info.disk` skip. If a collector fails, its result is `fail` with the error. Every section is in the report.
 

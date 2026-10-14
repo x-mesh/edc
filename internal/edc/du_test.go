@@ -1,6 +1,7 @@
 package edc
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -170,5 +171,82 @@ func TestDuResultWarnsWhenDeletedFilesHoldTheSameShareAsInfo(t *testing.T) {
 	}
 	if _, ok := result.Metrics["not_found_bytes"]; ok {
 		t.Fatal("not_found_bytes without a whole file system")
+	}
+}
+
+func TestDuLargestKeepsTheBiggestDirectoriesBelowTheRoot(t *testing.T) {
+	root := duTestDir("/data", 4,
+		duTestDir("a", 4, duTestFile("big", 60), duTestDir("nested", 4, duTestFile("x", 26))),
+		duTestDir("b", 50),
+		duTestFile("c", 10),
+	)
+	duTotal(root)
+	all := duLargest(root, 10)
+	if !all.Complete || len(all.Dirs) != 3 || all.Dirs[0] != (duLargeDir{Path: "a", Bytes: 94, Entries: 4}) || all.Dirs[2].Path != "a/nested" {
+		t.Fatalf("all = %+v", all)
+	}
+	top := duLargest(root, 2)
+	if top.Complete || len(top.Dirs) != 2 || top.Dirs[1].Path != "b" {
+		t.Fatalf("top = %+v", top)
+	}
+}
+
+func duTestDirMetrics(path string, complete bool, dirs ...duLargeDir) map[string]interface{} {
+	return map[string]interface{}{"path": path, "partial": false, "largest_dirs": duLargestList{Complete: complete, Dirs: dirs}}
+}
+
+func TestDuCompareDirsShowsTheDeepestGrowthAndBounds(t *testing.T) {
+	before := duTestDirMetrics("/var", false,
+		duLargeDir{Path: "lib", Bytes: 300}, duLargeDir{Path: "lib/docker", Bytes: 250}, duLargeDir{Path: "lib/docker/overlay2", Bytes: 200},
+		duLargeDir{Path: "log", Bytes: 100}, duLargeDir{Path: "cache", Bytes: 50})
+	after := duTestDirMetrics("/var", false,
+		duLargeDir{Path: "lib", Bytes: 340}, duLargeDir{Path: "lib/docker", Bytes: 290}, duLargeDir{Path: "lib/docker/overlay2", Bytes: 240},
+		duLargeDir{Path: "log", Bytes: 102}, duLargeDir{Path: "new", Bytes: 80})
+	deltas, note := duCompareDirs(before, after)
+	if note != "" {
+		t.Fatalf("note %q", note)
+	}
+	// lib와 lib/docker는 overlay2가 증가를 모두 설명하므로 빠진다. cache는 after 목록의 하한(80)보다 작았을 수 있어
+	// 줄었는지 알 수 없다. new는 before 목록에 없어 before가 50 이하다.
+	want := []duDirDelta{
+		{Path: "lib/docker/overlay2", Before: 200, After: 240, Delta: 40},
+		{Path: "new", Before: 50, After: 80, Delta: 30, Bound: "before"},
+		{Path: "log", Before: 100, After: 102, Delta: 2},
+	}
+	if fmt.Sprint(deltas) != fmt.Sprint(want) {
+		t.Fatalf("deltas = %+v", deltas)
+	}
+	lines := formatDuDirDeltas(deltas)
+	if lines[0] != "     +40 B  lib/docker/overlay2  200 B → 240 B" || lines[1] != "     +30 B  new                  ≤50 B → 80 B" {
+		t.Fatalf("lines = %q", lines)
+	}
+}
+
+func TestDuCompareDirsWithCompleteListsCountsMissingAsZero(t *testing.T) {
+	before := duTestDirMetrics("/srv", true, duLargeDir{Path: "old", Bytes: 70}, duLargeDir{Path: "keep", Bytes: 10})
+	after := duTestDirMetrics("/srv", true, duLargeDir{Path: "keep", Bytes: 10})
+	deltas, _ := duCompareDirs(before, after)
+	if len(deltas) != 1 || deltas[0] != (duDirDelta{Path: "old", Before: 70, After: 0, Delta: -70}) {
+		t.Fatalf("deltas = %+v", deltas)
+	}
+	if lines := formatDuDirDeltas(deltas); lines[0] != "     -70 B  old  70 B → 0 B" {
+		t.Fatalf("lines = %q", lines)
+	}
+}
+
+func TestDuCompareDirsSaysWhyItDidNotCompare(t *testing.T) {
+	var_ := duTestDirMetrics("/var", true, duLargeDir{Path: "a", Bytes: 1})
+	usr := duTestDirMetrics("/usr", true, duLargeDir{Path: "a", Bytes: 2})
+	if deltas, note := duCompareDirs(var_, usr); deltas != nil || note != "directories not compared, the paths differ: /var → /usr" {
+		t.Fatalf("deltas %v note %q", deltas, note)
+	}
+	partial := duTestDirMetrics("/var", true, duLargeDir{Path: "a", Bytes: 2})
+	partial["partial"] = true
+	if deltas, note := duCompareDirs(var_, partial); deltas != nil || !strings.Contains(note, "stopped before the end") {
+		t.Fatalf("deltas %v note %q", deltas, note)
+	}
+	// 3단계까지의 report에는 목록이 없다. 이유 없이 scalar 차이만 남긴다.
+	if deltas, note := duCompareDirs(map[string]interface{}{"path": "/var"}, var_); deltas != nil || note != "" {
+		t.Fatalf("deltas %v note %q", deltas, note)
 	}
 }

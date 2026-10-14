@@ -466,3 +466,49 @@ func TestMissingReportSuggestsListAndJSONPath(t *testing.T) {
 		t.Fatalf("missing report error = %v", err)
 	}
 }
+
+// du.scan은 큰 디렉터리 목록을 경로로 맞춘다. 파일에서 다시 읽은 report는 목록이 map이 되므로 그 길로 비교한다.
+func TestRunReportDiffComparesDuDirectories(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name string, bytes uint64, dirs ...duLargeDir) string {
+		path := filepath.Join(dir, name)
+		result := Result{Probe: duProbeID, Status: StatusPass, Metrics: map[string]interface{}{
+			"path": "/var", "bytes": bytes, "partial": false, "largest_dirs": duLargestList{Complete: true, Dirs: dirs},
+		}}
+		data, err := json.Marshal(buildReport("test", time.Now(), nil, []Result{result}, false))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	before := write("before.json", 1000, duLargeDir{Path: "log", Bytes: 600}, duLargeDir{Path: "log/app", Bytes: 500})
+	after := write("after.json", 3000, duLargeDir{Path: "log", Bytes: 2600}, duLargeDir{Path: "log/app", Bytes: 2500}, duLargeDir{Path: "tmp", Bytes: 10})
+	output := filepath.Join(dir, "diff.json")
+	if code := runReportDiff([]string{"--json", output, before, after}); code != 0 {
+		t.Fatalf("exit code = %d", code)
+	}
+	data, err := os.ReadFile(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var diff reportDiff
+	if err := json.Unmarshal(data, &diff); err != nil {
+		t.Fatal(err)
+	}
+	if len(diff.Entries) != 1 || fmt.Sprint(diff.Entries[0].Directories) != fmt.Sprint([]duDirDelta{
+		{Path: "log/app", Before: 500, After: 2500, Delta: 2000},
+		{Path: "tmp", Before: 0, After: 10, Delta: 10},
+	}) {
+		t.Fatalf("entries = %+v", diff.Entries)
+	}
+	var text strings.Builder
+	printReportDiff(&text, diff, false)
+	for _, want := range []string{"2 directory deltas (e detail)", "+2.0 KB  log/app  500 B → 2.4 KB"} {
+		if !strings.Contains(text.String(), want) {
+			t.Fatalf("missing %q in\n%s", want, text.String())
+		}
+	}
+}

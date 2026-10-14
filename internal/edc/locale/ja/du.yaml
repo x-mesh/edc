@@ -39,6 +39,10 @@ du:
     deleted: "削除済み・オープン中 %s"
     partial: "一部のみ"
     unreadable_count: "読めない %d 個"
+  diff:
+    count: "ディレクトリの差 %d 件 (e 詳細)"
+    path_differs: "パスが異なるためディレクトリを比較しませんでした: %s → %s"
+    partial: "片方の走査が最後まで終わらなかったためディレクトリを比較しませんでした"
   mounts:
     title: "スキップしたマウント"
     used: "%s 使用"

@@ -381,6 +381,7 @@ command:
       output: "report file, - for stdout"
       since: "how far back events and changes look (default 6h)"
       force: "replace an existing output file"
+      du: "also save edc du of this path (Linux)"
     notes:
       - "It saves info, listen, audit, events, and changes results in one report."
       - "The file has mode 0600. It holds accounts, sudo rules, and process names."

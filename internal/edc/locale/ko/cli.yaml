@@ -323,6 +323,12 @@ cli:
     cpu_off_frequency: "--frequency는 CPU 위의 샘플에만 씁니다. --off-cpu는 잠들 때마다 기록합니다"
     cpu_off_running: "trace cpu --off-cpu: 끝날 때까지 잠든 thread의 stack을 기록합니다"
     cpu_self_included: "edc가 host PID namespace 밖에서 실행되어, profile에 edc 자신이 들어 있습니다"
+    lock_kind: "--kind는 kernel이나 futex만 사용할 수 있습니다"
+    lock_failed: "trace lock 실패: %v"
+    lock_running: "trace lock: Ctrl-C를 누를 때까지 lock을 기다린 시간을 셉니다"
+    lock_running_for: "trace lock: %s 동안 lock을 기다린 시간을 셉니다. Ctrl-C로 일찍 끝낼 수 있습니다"
+    lock_unavailable: "trace lock: %s lock의 기다림은 세지 않았습니다: %s"
+    lock_map_full: "trace lock: BPF map이 가득 차서 기다림 %d건이 집계에 빠졌습니다. --process나 --container로 좁히세요"
   report:
     description: "report는 edc 진단 명령이 --json으로 저장한 결과를 읽습니다.\n일반 JSON, report diff 결과, edc log의 텍스트 로그는 지원하지 않습니다."
     command_show: "show  — 저장한 edc 진단 결과 보기"

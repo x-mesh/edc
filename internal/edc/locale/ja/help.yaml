@@ -276,6 +276,7 @@ command:
       errors: "trace syscall: 失敗した呼び出し。all か errno 名"
       frequency: "trace cpu: CPU ごとの毎秒 sample 数、既定 99"
       folded: "trace cpu: flame graph 用の folded stack を保存"
+      lock_kind: "trace lock: kernel か futex の待ちだけ"
       off_cpu: "trace cpu: thread が眠った時間を stack ごとに"
     notes:
       - "terminal では既定で全画面の trace を開きます。"
@@ -287,6 +288,7 @@ command:
       - "trace syscall は kernel 内で数え、終了時に要約を一度だけ表示します。"
       - "trace syscall --process は PID か正確な command 名 (15 byte まで)。"
       - "trace cpu は CPU ごとに stack を sampling し、CPU を多く使う関数を表示します。"
+      - "trace lock は kernel lock の競合とアドレスごとの futex 待ちを表示します。"
       - "f で詳細表示が最新の event を追います。"
       - "i で一覧の下にプレビューを開閉し、J と K でスクロールします。"
       - "trace http: v は payload 行、m は secret、z は gzip 展開を切り替えます。"

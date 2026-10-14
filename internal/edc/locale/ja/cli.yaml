@@ -323,6 +323,12 @@ cli:
     cpu_off_frequency: "--frequency は CPU 上の sample にだけ使います。--off-cpu は眠るたびに記録します"
     cpu_off_running: "trace cpu --off-cpu: 終了まで眠っている thread の stack を記録します"
     cpu_self_included: "edc は host の PID namespace の外で動いているため、profile に edc 自身が含まれます"
+    lock_kind: "--kind は kernel か futex です"
+    lock_failed: "trace lock に失敗しました: %v"
+    lock_running: "trace lock: Ctrl-C を押すまで lock を待った時間を数えます"
+    lock_running_for: "trace lock: %s の間 lock を待った時間を数えます。Ctrl-C で早く終了できます"
+    lock_unavailable: "trace lock: %s lock の待ちは数えていません: %s"
+    lock_map_full: "trace lock: BPF map が一杯になり、待ち %d 件が集計から抜けました。--process か --container で絞ってください"
   report:
     description: "report は edc 診断コマンドが --json で保存した結果を読みます。\n一般 JSON、report diff の出力、edc log のテキストログは非対応です。"
     command_show: "show  — 保存した edc 診断結果を表示"

@@ -276,6 +276,7 @@ command:
       errors: "trace syscall: failed calls, all or errno names"
       frequency: "trace cpu: samples per second per CPU, default 99"
       folded: "trace cpu: write folded stacks for a flame graph"
+      lock_kind: "trace lock: kernel or futex waits only"
       off_cpu: "trace cpu: time that threads sleep, by stack"
     notes:
       - "The default output opens a full-screen trace view in a terminal."
@@ -287,6 +288,7 @@ command:
       - "trace syscall counts in the kernel and prints one summary at the end."
       - "trace syscall --process takes PIDs or exact command names, 15 bytes max."
       - "trace cpu samples the stacks on each CPU and prints the hot functions."
+      - "trace lock shows kernel lock contention and futex waits by address."
       - "Press f to follow the newest event in the detail view."
       - "Press i to show a preview under the list. J and K scroll it."
       - "trace http: v shows payload lines, m shows secrets, z decodes gzip."

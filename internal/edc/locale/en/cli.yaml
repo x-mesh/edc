@@ -323,6 +323,12 @@ cli:
     cpu_off_frequency: "--frequency applies to the samples on the CPU. --off-cpu records each sleep"
     cpu_off_running: "trace cpu --off-cpu: recording the stacks of sleeping threads until the end"
     cpu_self_included: "edc runs outside the host PID namespace, so the profile includes edc itself"
+    lock_kind: "--kind must be kernel or futex"
+    lock_failed: "trace lock failed: %v"
+    lock_running: "trace lock: counting lock waits until Ctrl-C"
+    lock_running_for: "trace lock: counting lock waits for %s. Ctrl-C stops early"
+    lock_unavailable: "trace lock: no %s lock waits: %s"
+    lock_map_full: "trace lock: the BPF map was full, so %d waits are not in the counts. Use --process or --container"
   report:
     description: "report reads results saved with --json by edc diagnostic commands.\nGeneral JSON, report diff output, and edc log text logs are unsupported."
     command_show: "show  — view a saved edc diagnostic result"

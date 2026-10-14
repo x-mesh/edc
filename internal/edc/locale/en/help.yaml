@@ -251,7 +251,7 @@ command:
       - "A PCAP file can hold credentials and personal data."
       - "The JSON redaction does not apply to the PCAP payload."
   trace:
-    summary: "Trace network, I/O, socket, drop, sched, process, and syscall events"
+    summary: "Trace network, I/O, socket, drop, sched, process, syscall, and CPU"
     option:
       duration: "trace time, max 60s. Omit for Ctrl-C"
       slow: "min latency, e.g. 20us, 250ms. Default io/sched 1ms"
@@ -274,6 +274,8 @@ command:
       signal: "trace exec: signals to record, names, all, or none"
       syscall: "trace syscall: only these calls, comma-separated"
       errors: "trace syscall: failed calls, all or errno names"
+      frequency: "trace cpu: samples per second per CPU, default 99"
+      folded: "trace cpu: write folded stacks for a flame graph"
     notes:
       - "The default output opens a full-screen trace view in a terminal."
       - "Use / to filter process, destination, event, or source text."
@@ -283,6 +285,7 @@ command:
       - "Enter shows all fields and the whole payload. l or Esc follows again."
       - "trace syscall counts in the kernel and prints one summary at the end."
       - "trace syscall --process takes PIDs or exact command names, 15 bytes max."
+      - "trace cpu samples the stacks on each CPU and prints the hot functions."
       - "Press f to follow the newest event in the detail view."
       - "Press i to show a preview under the list. J and K scroll it."
       - "trace http: v shows payload lines, m shows secrets, z decodes gzip."

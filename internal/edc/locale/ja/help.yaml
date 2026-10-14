@@ -251,7 +251,7 @@ command:
       - "PCAP には credential や個人情報が入ることがあります。"
       - "JSON の redaction は PCAP の payload には効きません。"
   trace:
-    summary: "network、I/O、socket、drop、scheduler、process、syscall を表示・要約"
+    summary: "network、I/O、socket、drop、sched、process、syscall、CPU の要約"
     option:
       duration: "trace 時間、最大 60s。省略で Ctrl-C"
       slow: "最小 latency。例: 20us、250ms。io/sched の既定 1ms"
@@ -274,6 +274,8 @@ command:
       signal: "trace exec: 記録する signal。名前の一覧、all、none"
       syscall: "trace syscall: この system call だけ、カンマ区切り"
       errors: "trace syscall: 失敗した呼び出し。all か errno 名"
+      frequency: "trace cpu: CPU ごとの毎秒 sample 数、既定 99"
+      folded: "trace cpu: flame graph 用の folded stack を保存"
     notes:
       - "terminal では既定で全画面の trace を開きます。"
       - "/ で process、destination、event、source を絞り込みます。"
@@ -283,6 +285,7 @@ command:
       - "Enter で全 field と payload 全体を表示し、l か Esc で最新に戻ります。"
       - "trace syscall は kernel 内で数え、終了時に要約を一度だけ表示します。"
       - "trace syscall --process は PID か正確な command 名 (15 byte まで)。"
+      - "trace cpu は CPU ごとに stack を sampling し、CPU を多く使う関数を表示します。"
       - "f で詳細表示が最新の event を追います。"
       - "i で一覧の下にプレビューを開閉し、J と K でスクロールします。"
       - "trace http: v は payload 行、m は secret、z は gzip 展開を切り替えます。"

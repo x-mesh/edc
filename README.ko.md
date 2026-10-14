@@ -2404,6 +2404,37 @@ trace가 도는 동안 host의 모든 system call이 BPF program 두 개를 거�
 
 `sys_enter`, `sys_exit` tracepoint와 BTF, task local storage, task iterator, BPF ring buffer가 필요합니다.
 
+Linux에서 `trace cpu`를 사용하면 CPU를 쓰는 함수를 찾을 수 있습니다. edc는 CPU마다 실행 중인 task의 stack을 기본 1초에 99번 샘플링합니다. 샘플은 kernel 안에서 세고, 끝날 때 요약을 한 번 출력합니다.
+
+```bash
+./bin/edc trace cpu --duration 30s
+./bin/edc trace cpu --process api,1234 --duration 10s
+./bin/edc trace cpu --container web --folded cpu.folded
+./bin/edc trace cpu --frequency 499 --folded - | flamegraph.pl > cpu.svg
+```
+
+첫 줄은 샘플 수와 CPU가 바빴던 비율입니다. 쉬는 CPU에서는 idle task가 샘플되고, edc는 이 샘플을 `idle`로 셉니다. 바빴던 비율은 idle이 아닌 샘플을, 그 시간 동안 모든 CPU에서 frequency대로 받았어야 할 샘플 수로 나눈 값입니다. 어떤 VM은 쉬는 CPU에서 샘플을 덜 줍니다. CPU 4개인 GitHub runner에서 쉬는 CPU는 받아야 할 샘플의 약 57%를 받았고, 바쁜 CPU는 모두 받았습니다. `PROCESS` 표는 process별 샘플 수입니다. `FUNCTION` 표의 `SELF`는 그 함수가 가장 안쪽 frame이었던 샘플이고, `TOTAL`은 그 함수가 stack 어디에든 있던 샘플입니다. kernel 함수는 이름 뒤에 `[k]`가 붙습니다. 비율은 필터를 통과한 샘플에 대한 값입니다. 표는 함수 20개를 보여 주고, `--json`에는 모든 함수가 들어갑니다.
+
+`--folded <path>`는 stack마다 바깥 frame부터 가장 안쪽 frame까지 한 줄로 쓰고, 끝에 샘플 수를 붙입니다. `flamegraph.pl`이나 speedscope 같은 flame graph 도구가 이 형식을 읽습니다. kernel frame은 `_[k]`로 끝납니다. `--folded -`로 stdout에 쓰면 표는 출력하지 않습니다. `--process`와 `--container`는 `trace syscall`과 같습니다. kernel 안에서 비교하므로 나머지 샘플은 map을 쓰지 않습니다.
+
+kernel 함수 이름은 `/proc/kallsyms`에서 찾습니다. 사용자 함수 이름은 mapping된 file의 ELF 심볼표에서 찾습니다. Go program은 `.gopclntab`도 읽으므로 `-s -w`로 심볼표를 지운 Go program도 함수 이름이 나옵니다. JIT runtime은 그 process의 mount namespace 안 `/tmp/perf-<pid>.map`을 읽습니다. 예를 들어 `node --perf-basic-prof`가 이 file을 씁니다. file은 `/proc/<pid>/map_files`로 열므로 container 안의 file과 지워진 file도 읽습니다. 심볼이 없는 frame은 `[libc.so.6]`처럼 file 이름으로, 어느 mapping에도 없는 주소는 `[unknown]`으로 나옵니다. C++과 Rust 이름은 demangle하지 않습니다.
+
+kernel은 frame pointer를 따라 사용자 stack을 읽습니다. frame pointer 없이 build한 program은 stack의 일부만 보이고, 끊긴 뒤의 주소는 `[unknown]`으로 나올 수 있습니다. 예를 들어 같은 C program을 `-O2 -fomit-frame-pointer`로 build하면 `_start;__libc_start_main;leaf_work`만 보였고, `-fno-omit-frame-pointer`로 build하면 `main;outer_work;leaf_work`가 보였습니다. 자기 frame을 만들지 않는 함수, 흔히 짧은 leaf 함수는 자신을 부른 함수를 가립니다. 이 예에서 `middle_work`가 빠진 이유입니다. `-O0`에서는 stack 전체가 보였습니다. Go program은 frame pointer를 유지합니다. 샘플의 절반이 넘게 사용자 stack이 frame 하나뿐이면 edc가 알림을 출력합니다.
+
+몇 ms 안에 끝나는 process는 edc가 mapping을 읽기 전에 끝날 수 있고, 그러면 사용자 frame이 `[unknown]`으로 나옵니다. edc는 BPF program이 새 process를 처음 볼 때 mapping을 읽고, 20ms 뒤와 200ms 뒤에 다시 읽습니다.
+
+Linux 6.17, CPU 12개 x86_64 host에서 비용을 측정했습니다. CPU를 쓰는 program을 CPU 12개에 모두 5초 동안 돌렸고, 조건마다 세 번 쟀습니다.
+
+| 조건 | 처리한 일 | 변화 | 샘플당 BPF 시간 |
+|---|---|---|---|
+| trace 없음 | 2,649,850 | - | - |
+| `--frequency 99` | 2,652,236 | +0.09% | 1.5 µs |
+| `--frequency 999` | 2,639,584 | -0.39% | 1.1 µs |
+
+99Hz에서 edc 자신은 샘플링하는 6초 동안 CPU 120ms를 썼습니다. 8초 trace 전체로는 약 1초를 썼고, 대부분은 시작과 끝의 심볼 읽기입니다. 메모리는 최대 131MiB였습니다.
+
+BTF, online CPU마다 여는 `perf_event_open`의 cpu-clock event, perf event용 BPF link가 필요합니다. Linux 5.15에는 셋 다 있습니다.
+
 kernel이 모든 버림을 이유와 함께 알리지는 않습니다. 예를 들어 listen socket의 accept 대기열이 가득 차면 kernel은 SYN을 정상 패킷처럼 해제합니다. 이 경우를 위해 요약에는 trace 동안 `/proc/net/netstat`의 `ListenOverflows`와 `ListenDrops`가 늘어난 수가 나옵니다. 이 값은 edc가 있는 network namespace의 모든 listen socket을 합한 것이라, `--container`를 써도 container만의 값이 아닙니다.
 
 ```bash

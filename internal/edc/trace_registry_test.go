@@ -17,7 +17,7 @@ func TestTraceProtocolSelectItemsUseRegistryOrder(t *testing.T) {
 		}
 		got = append(got, item.value)
 	}
-	want := []string{"tcp", "udp", "dns", "arp", "ndp", "http", "mysql", "clickhouse", "postgres", "redis", "io", "socket", "drop", "sched", "exec", "syscall"}
+	want := []string{"tcp", "udp", "dns", "arp", "ndp", "http", "mysql", "clickhouse", "postgres", "redis", "io", "socket", "drop", "sched", "exec", "syscall", "cpu"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("protocols = %#v, want %#v", got, want)
 	}

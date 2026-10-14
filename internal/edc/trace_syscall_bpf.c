@@ -317,8 +317,9 @@ SEC("tp_btf/sys_exit") int syscall_exit(__u64 *ctx) {
 	struct syscall_start *start = bpf_task_storage_get(&starts, task, 0, 0);
 	if (!start || !start->start_ns) {
 		// trace를 붙이기 전에 시작한 호출, 그리고 fork와 clone으로 생긴 thread가 처음 돌아오는 복귀다. 필터가 있으면
-		// 대상이 아닌 호출과 구분하려고 모든 복귀에서 필터를 다시 봐야 하므로 세지 않는다.
-		if (!filter_process && !filter_cgroup && selected(task, bpf_get_current_pid_tgid() >> 32)) count(SYSCALL_UNMATCHED);
+		// 대상이 아닌 호출과 구분하려고 모든 복귀에서 필터를 다시 봐야 하므로 세지 않는다. --syscall은 복귀에서 번호를
+		// 알 수 없어 구분하지 못한다.
+		if (!filter_process && !filter_cgroup && !filter_syscall && selected(task, bpf_get_current_pid_tgid() >> 32)) count(SYSCALL_UNMATCHED);
 		return 0;
 	}
 	__u64 latency = bpf_ktime_get_ns() - start->start_ns;

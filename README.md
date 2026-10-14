@@ -1710,7 +1710,7 @@ edc reads the path only for the calls that it prints, when the call returns. It 
 
 edc prints at most 1,000 lines per second on each CPU. The summary counts the other lines as `sampled_out`, and the table still counts all calls. `ring_lost` counts the lines that did not fit in the event buffer. With `--json`, edc counts the lines but does not print them. Use `--raw` to print each line as JSON, with the summary as the last line.
 
-The `IN FLIGHT AT STOP` table lists the calls that started during the trace and did not return before the end. A thread that waits for the whole trace is not in the main table, because its call does not return. A call that started before the trace returns without a start time. The summary counts these returns as `unmatched`, together with the first return of a new thread after `fork` or `clone`. With `--process` or `--container`, edc does not count them, and the summary shows `-`. `exit` and `exit_group` do not return, so edc counts them without a time.
+The `IN FLIGHT AT STOP` table lists the calls that started during the trace and did not return before the end. A thread that waits for the whole trace is not in the main table, because its call does not return. A call that started before the trace returns without a start time. The summary counts these returns as `unmatched`, together with the first return of a new thread after `fork` or `clone`. With `--process`, `--container`, or `--syscall`, edc does not count them, and the summary shows `-`. `exit` and `exit_group` do not return, so edc counts them without a time.
 
 edc leaves out its own calls. If edc runs in a container with its own PID namespace, it cannot find its own calls, and it prints a note after the summary. On amd64, a 32-bit program uses other system call numbers. edc shows these calls with `(32-bit)` after the name. A call that a signal interrupts can return a restart code that only the kernel uses, for example `ERESTARTSYS`. The table shows these codes by name.
 
@@ -1726,13 +1726,13 @@ When the trace runs, each system call on the host goes through two BPF programs.
 
 On that host, about 32,500 calls per second added less than 0.1% of the total CPU time. On a busy server, measure the cost on that host before a long trace.
 
-`--syscall` lowers the cost of the other calls. With `--syscall openat`, `getppid` took 0.696 µs, 0.12 µs more than without the trace. A call that fails costs about 0.1 µs more, because edc also counts its errno. A printed line costs about 0.6 µs more, and a line over the limit costs about 0.05 µs more. With the limit, a 12-CPU host prints at most 12,000 lines per second.
+`--syscall` lowers the cost of the other calls. With `--syscall openat`, `getppid` took 0.697 µs. Without the trace, it took 0.585 µs in the same measurement. A call that fails costs about 0.1 µs more, because edc also counts its errno. A printed line costs about 0.6 µs more, and a line over the limit costs about 0.05 µs more. With the limit, a 12-CPU host prints at most 12,000 lines per second.
 
 The trace needs the `sys_enter` and `sys_exit` tracepoints with BTF, task local storage, the task iterator, and the BPF ring buffer.
 
 Use `--raw` to print JSONL events as they arrive. Use `--json` to write the connection summary after Ctrl-C.
 
-Use `trace show <raw.jsonl>` to print the summary of a saved `--raw` file later, on any host and without root. It takes the same `--group-by`, `--process`, `--destination`, `-d`, and `--json` options as the live trace, and it prints the same tables. `-` reads standard input. The file holds one trace: the network, DNS, HTTP, database, socket, and drop traces, and `trace exec`. `trace io` and `trace sched` files are not supported. Each `--raw` event carries a `socket` number, and `trace show` uses it to join the events of one connection, so a file from an earlier edc without that number groups the UDP flows and the database commands less precisely.
+Use `trace show <raw.jsonl>` to print the summary of a saved `--raw` file later, on any host and without root. It takes the same `--group-by`, `--process`, `--destination`, `-d`, and `--json` options as the live trace, and it prints the same tables. `-` reads standard input. The file holds one trace: the network, DNS, HTTP, database, socket, and drop traces, and `trace exec`. `trace io`, `trace sched`, and `trace syscall` files are not supported. Each `--raw` event carries a `socket` number, and `trace show` uses it to join the events of one connection, so a file from an earlier edc without that number groups the UDP flows and the database commands less precisely.
 
 ```bash
 sudo ./bin/edc trace http --raw --duration 30s > http.jsonl

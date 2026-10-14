@@ -254,7 +254,7 @@ func collectSyscallStats(options syscallTraceOptions, stop <-chan struct{}, onEv
 	for _, window := range windows {
 		summary.SampledOut += window.Suppressed
 	}
-	if len(options.pids)+len(options.comms) == 0 && options.container == nil {
+	if len(options.pids)+len(options.comms)+len(options.syscalls)+len(options.compatSyscalls) == 0 && options.container == nil {
 		unmatched := counters.Values[3]
 		summary.Unmatched = &unmatched
 	}

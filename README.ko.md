@@ -2159,7 +2159,7 @@ Linux에서 `trace syscall`을 사용하면 process별 system call 수와 시간
 
 edc는 CPU마다 1초에 1,000줄까지만 출력합니다. 넘친 줄은 요약의 `sampled_out`으로 세고, 표는 모든 호출을 계속 셉니다. event buffer에 들어가지 못한 줄은 `ring_lost`로 셉니다. `--json`을 주면 줄 수만 세고 출력하지 않습니다. `--raw`를 주면 줄마다 JSON으로 출력하고, 마지막 줄에 요약을 붙입니다.
 
-`IN FLIGHT AT STOP` 표는 trace 중에 시작해 끝날 때까지 돌아오지 않은 호출입니다. trace 내내 기다린 스레드는 호출이 돌아오지 않아 위의 표에 나오지 않습니다. trace 전에 시작한 호출은 시작 시각 없이 돌아옵니다. 요약은 이 복귀를 `fork`나 `clone`으로 생긴 스레드의 첫 복귀와 함께 `unmatched`로 셉니다. `--process`나 `--container`를 주면 세지 않고 `-`로 보여 줍니다. `exit`와 `exit_group`은 돌아오지 않으므로 시간 없이 횟수만 셉니다.
+`IN FLIGHT AT STOP` 표는 trace 중에 시작해 끝날 때까지 돌아오지 않은 호출입니다. trace 내내 기다린 스레드는 호출이 돌아오지 않아 위의 표에 나오지 않습니다. trace 전에 시작한 호출은 시작 시각 없이 돌아옵니다. 요약은 이 복귀를 `fork`나 `clone`으로 생긴 스레드의 첫 복귀와 함께 `unmatched`로 셉니다. `--process`, `--container`, `--syscall`을 주면 세지 않고 `-`로 보여 줍니다. `exit`와 `exit_group`은 돌아오지 않으므로 시간 없이 횟수만 셉니다.
 
 edc 자신의 호출은 뺍니다. edc가 자기 PID namespace가 있는 container 안에서 실행되면 자신의 호출을 찾을 수 없어서, 요약 뒤에 이 사실을 알립니다. amd64에서 32비트 program은 다른 system call 번호를 씁니다. 이 호출은 이름 뒤에 `(32-bit)`를 붙여 보여 줍니다. 신호로 끊긴 호출은 kernel 안에서만 쓰는 재시작 값으로 돌아올 수 있습니다. 예를 들어 `ERESTARTSYS`입니다. 표는 이 값도 이름으로 보여 줍니다.
 
@@ -2175,7 +2175,7 @@ trace가 도는 동안 host의 모든 system call이 BPF program 두 개를 거�
 
 이 host에서는 초당 약 32,500건의 호출이 전체 CPU 시간의 0.1% 미만을 더했습니다. 바쁜 server에서 오래 trace하려면 먼저 그 host에서 비용을 재 보세요.
 
-`--syscall`을 주면 다른 호출의 비용이 줄어듭니다. `--syscall openat`일 때 `getppid`는 0.696 µs로, trace가 없을 때보다 0.12 µs 더 걸렸습니다. 실패한 호출은 errno도 세므로 약 0.1 µs가 더 듭니다. 출력하는 줄 하나는 약 0.6 µs, 상한을 넘어 세기만 하는 줄은 약 0.05 µs가 더 듭니다. 상한이 있으므로 12 CPU host는 1초에 최대 12,000줄을 출력합니다.
+`--syscall`을 주면 다른 호출의 비용이 줄어듭니다. `--syscall openat`일 때 `getppid`는 0.697 µs가 걸렸습니다. 같은 측정에서 trace가 없을 때는 0.585 µs였습니다. 실패한 호출은 errno도 세므로 약 0.1 µs가 더 듭니다. 출력하는 줄 하나는 약 0.6 µs, 상한을 넘어 세기만 하는 줄은 약 0.05 µs가 더 듭니다. 상한이 있으므로 12 CPU host는 1초에 최대 12,000줄을 출력합니다.
 
 `sys_enter`, `sys_exit` tracepoint와 BTF, task local storage, task iterator, BPF ring buffer가 필요합니다.
 

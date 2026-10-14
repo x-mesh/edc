@@ -1,7 +1,7 @@
 # English messages for the du command.
 du:
   skip:
-    linux_only: "edc du reads directories on Linux only"
+    unsupported: "edc du reads directories on Linux and macOS only"
   error:
     path: "cannot read %s"
   summary: "%s in %s, %d entries, %s, workers %d"
@@ -30,6 +30,7 @@ du:
     help: "↑↓ move · Enter open · ← up · q quit"
     reading: "reading %s · %d directories · %s"
     stop_help: "q stops and shows what edc read"
+    cancel_help: "Ctrl-C stops and prints what edc read"
     stopping: "stopping…"
     empty: "(empty)"
     other: "(%d other files)"

@@ -188,7 +188,7 @@ The command also creates the parent for the legacy recommended `edc.log` path.
 # skip the public IP lookup
 ./bin/edc info --public=false
 
-# disk usage under a directory, largest entries first (Linux)
+# disk usage under a directory, largest entries first (Linux and macOS)
 ./bin/edc du /var
 
 # default diagnosis
@@ -602,7 +602,7 @@ If edc cannot read a source, the result is `skip` with the reason. A `skip` does
 
 `edc changes` does not decompress rotated logs. If a compressed log is newer than the window start, edc shows a warning. It reads the mtime under `/etc`, not the file content, so it does not show the change inside a file. systemd keeps one start time for each unit, so a unit that restarted several times shows its latest start and the restart count. The `/etc` walk stops after 20000 entries and shows `warn`. edc does not run `dnf history` or `journalctl`.
 
-## Disk usage of a directory (Linux)
+## Disk usage of a directory (Linux and macOS)
 
 `edc du` shows the disk usage under a directory. It counts the allocated blocks, as `du` does. A file with more than one hard link counts once. It changes nothing, and it sends nothing over the network.
 
@@ -610,6 +610,8 @@ If edc cannot read a source, the result is `skip` with the reason. A `skip` does
 edc du                          # the current directory
 edc du /var                     # the largest entries under /var
 edc du --top 40 /var            # 40 rows
+edc du -B /var                  # show progress and size bars, then exit
+edc du --no-browse /var         # the same as -B
 edc du --workers 1 /var         # read one directory at a time
 edc du --cross-mounts /var      # count the mounts below /var too
 edc du --json - /var            # the rows in metrics.rows
@@ -617,21 +619,29 @@ edc du --json - /var            # the rows in metrics.rows
 
 In a terminal, `edc du` opens a screen. While edc reads, the screen shows the number of directories that it read. Press `q` to stop, and the screen shows what edc read. `Ctrl-C` stops and closes the screen. The screen lists the current directory, with the largest entry first. Press `Enter` or `→` to open a directory. Press `←`, `Backspace`, or `Esc` to go up. `↑`, `↓`, `PgUp`, `PgDn`, `g`, and `G` move the cursor. Press `q` to close the screen, and edc prints the result. The screen does not change or delete a file. In a pipe, with `--json`, or with `NO_COLOR` set, edc prints the result and opens no screen. For the screen, edc keeps the 10,000 largest files. In each directory, the other files show as one `(N other files)` row.
 
+In a terminal, `--no-browse` or `-B` shows a spinner during the scan. When the scan ends, edc prints size bars and exits.
+
+These options preserve color and disable directory navigation. With `NO_COLOR`, a pipe, or `--json`, edc uses static output.
+
 The output starts with one `du.scan` result. It shows the total size, the number of entries, the time, and the number of workers. The rows follow. edc opens the largest entry first. When edc opens a directory, the entries in that directory become candidates. A directory row ends with `/`. The last row holds the entries that edc does not show. After the screen, the rows fit the terminal height. In a pipe, edc shows 20 rows. `--top` sets the rows of this printed result, not of the screen.
 
 By default, edc counts one file system only. It does not go into a mount below the path. It lists each skipped mount with its file system type and the used space from `statfs`. A bind mount or an overlay mount shares a file system with another path, so its used space shows as `-`. edc counts a directory that is bind mounted onto itself, because its files have no other location.
 
-edc reads 4 directories at the same time, so that it uses little CPU on a busy host. Use `--workers` to change the number. edc keeps one record for each directory and for the largest files only. The memory use grows with the number of directories, not with the number of files.
+Linux uses 4 workers by default. macOS uses 1 worker to limit CPU time. Use `--workers` to change the number. edc keeps one record for each directory and for the largest files only. The memory use grows with the number of directories, not with the number of files.
 
-edc stops at the time limit, 60 seconds by default. Then the result is `warn`, `metrics.partial` is `true`, and the size includes only the directories that edc read. If edc cannot read a directory, the result is `warn`, and `-v` lists the directories. Run it as root to read all directories. On macOS, the result is `skip`.
+edc stops at the time limit, 60 seconds by default. Then the result is `warn`, `metrics.partial` is `true`, and the size includes only the directories that edc read. If edc cannot read a directory, the result is `warn`, and `-v` lists the directories. Run it as root to read all directories. On macOS, privacy permissions can also block access.
 
-After the rows, edc shows the file system of the path. The line shows the mount point, the type, and the used and total space, as `df` shows them. edc also shows the deleted files that a process still holds open on that file system. `df` counts these files, but `du` cannot see them. Each row shows the size, the process, and the old path. Restart the process, or make it open the file again, to free the space. The value is for the whole file system, not only for the path. Without root, edc cannot read the files of all processes, so the value starts with `≥`. If open deleted files take 10% of the file system or more, the result is `warn`.
+After the rows, edc shows the file system of the path. The line shows the mount point, the type, and the used and total space, as `df` shows them. On Linux, edc also shows the deleted files that a process still holds open on that file system. `df` counts these files, but `du` cannot see them. Each row shows the size, the process, and the old path. Restart the process, or make it open the file again, to free the space. The value is for the whole file system, not only for the path. Without root, edc cannot read the files of all processes, so the value starts with `≥`. If open deleted files take 10% of the file system or more, the result is `warn`.
 
-If the path is the mount point of a whole file system, edc also compares the numbers. `not found` is the used space minus the counted size and the open deleted files. Files under a mount point and file system metadata can use this space. edc compares only if it read all directories and all processes, and the time limit did not stop it. A bind mount or a subdirectory shows no comparison. The JSON holds these values in `metrics.filesystem`, `metrics.deleted_open`, and `metrics.not_found_bytes`.
+On Linux, if the path is the mount point of a whole file system, edc also compares the numbers. `not found` is the used space minus the counted size and the open deleted files. Files under a mount point and file system metadata can use this space. edc compares only if it read all directories and all processes, and the time limit did not stop it. A bind mount or a subdirectory shows no comparison. The JSON holds these values in `metrics.filesystem`, `metrics.deleted_open`, and `metrics.not_found_bytes`.
+
+On macOS, edc reads metadata in batches. It follows APFS firmlinks and uses the mount table for boundaries.
+
+APFS volumes can share storage, and snapshots can retain blocks. The measured size does not predict the space that deletion will free. macOS shows no open deleted files or `not found` comparison.
 
 To find the directories that grew, save two runs with `--json` and compare them with `edc report diff`. `metrics.largest_dirs` holds the 200 largest directories at any depth. `report diff` matches them by path and shows up to 10 directories with the largest change. If a subdirectory holds 90% or more of the change of its parent, edc shows the subdirectory and not the parent. If a directory is in only one list, its other value shows as `≤` the smallest size in that list. edc compares only two scans of the same path that both reached the end. A file with hard links in two directories counts in the directory that edc reads first, so its size can move between those directories from one run to the next.
 
-If `docker` is on the `PATH`, edc also asks docker for its containers with `docker ps` and `docker inspect`. The format reads only the name, the log path, the mounts, and the layer path of each container. edc then names the container of a log directory, a writable layer, the root file system of a running container, a volume, and a bind mount source, for example `volume pgdata of db-1`. The JSON holds the name in `label`. With the containerd image store, a stopped container has no writable layer name, because its layer is not mounted. If docker does not answer in 3 seconds, edc shows no names.
+On Linux, if `docker` is on the `PATH`, edc also asks docker for its containers with `docker ps` and `docker inspect`. The format reads only the name, the log path, the mounts, and the layer path of each container. edc then names the container of a log directory, a writable layer, the root file system of a running container, a volume, and a bind mount source, for example `volume pgdata of db-1`. The JSON holds the name in `label`. With the containerd image store, a stopped container has no writable layer name, because its layer is not mounted. If docker does not answer in 3 seconds, edc shows no names.
 
 ## Kernel and systemd events (Linux)
 
@@ -705,7 +715,7 @@ The command reads only. It writes its output file and changes nothing else on th
 edc snapshot                              # ./edc-snapshot-<host>-<UTC time>.json
 sudo edc snapshot --output before.json    # root reads all audit and event sources
 sudo edc snapshot --output after.json
-sudo edc snapshot --du /var --output after.json   # also edc du of /var (Linux)
+sudo edc snapshot --du /var --output after.json   # also edc du of /var (Linux and macOS)
 sudo edc report diff before.json after.json
 edc snapshot --since 2h --output -        # only the report JSON to stdout
 ```

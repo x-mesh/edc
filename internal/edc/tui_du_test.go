@@ -210,3 +210,52 @@ func TestDuBrowserShowsContainerLabels(t *testing.T) {
 		}
 	}
 }
+
+func TestDuNoBrowseShowsProgressAndQuitsWithoutNavigation(t *testing.T) {
+	started := time.Date(2026, 10, 14, 9, 0, 0, 0, time.UTC)
+	job := &duScanJob{finished: make(chan struct{})}
+	model := newDuBrowser("/data", new(atomic.Int64), nil, job, started, func() time.Time { return started }, false)
+	model.noBrowse = true
+	view := model.View()
+	if view.AltScreen || !strings.Contains(view.Content, liveSpinnerFrames[0]+" reading /data") || strings.Contains(view.Content, "q stops") {
+		t.Fatalf("progress=%+v", view)
+	}
+	next, _ := model.Update(duTickMsg{})
+	model = next.(duBrowser)
+	if !strings.Contains(model.View().Content, liveSpinnerFrames[1]) {
+		t.Fatal("spinner does not advance")
+	}
+	model = duBrowserPress(t, model, "enter", "right", "down", "q")
+	if model.stopping || model.current != nil {
+		t.Fatal("navigation key affected the scan")
+	}
+	job.scan = duScan{root: duBrowserTree()}
+	duTotal(job.scan.root)
+	close(job.finished)
+	next, command := model.Update(duScanDoneMsg{})
+	if command == nil || !next.(duBrowser).scanned || next.(duBrowser).current != nil {
+		t.Fatal("no-browse did not finish automatically")
+	}
+	if _, ok := command().(tea.QuitMsg); !ok {
+		t.Fatal("completion did not quit")
+	}
+	if after, command := next.Update(tea.KeyPressMsg{Code: tea.KeyEnter}); command != nil || after.(duBrowser).current != nil {
+		t.Fatal("enter enabled directory navigation")
+	}
+}
+
+func TestDuNoBrowseCtrlCStopsAndQuits(t *testing.T) {
+	cancelled := 0
+	job := &duScanJob{finished: make(chan struct{})}
+	now := time.Now()
+	model := newDuBrowser("/data", new(atomic.Int64), func() { cancelled++ }, job, now, time.Now, false)
+	model.noBrowse = true
+	next, _ := model.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+	job.scan = duScan{root: duBrowserTree(), partial: true}
+	duTotal(job.scan.root)
+	close(job.finished)
+	next, command := next.Update(duScanDoneMsg{})
+	if cancelled != 1 || !next.(duBrowser).scan.partial || command == nil {
+		t.Fatal("ctrl-c did not preserve the partial scan and quit")
+	}
+}

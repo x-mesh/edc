@@ -140,11 +140,12 @@ command:
       - "既定で public IP を取得し、制限時間内に応答がなければその行を外します。"
       - "disk 使用量は全体から空き容量を引いた値です。"
   du:
-    summary: "ディレクトリ以下のディスク使用量、大きい順 (Linux)"
+    summary: "ディレクトリ以下のディスク使用量、大きい順 (Linux と macOS)"
     option:
       top: "表示する行数、既定は端末の高さに合わせる"
       workers: "同時に読むディレクトリ数"
       cross_mounts: "パスの下のマウントも数える"
+      no_browse: "進行状況と容量バーを表示し、自動終了"
       timeout: "制限時間、過ぎるとそれまでの値を表示"
       verbose: "読めないディレクトリとスキップしたマウントをすべて表示"
     notes:
@@ -152,9 +153,10 @@ command:
       - "du と同じく disk block を数え、hard link は一度だけ数えます。"
       - "一つのファイルシステムの中だけを数え、スキップしたマウントを表示します。"
       - "bind・overlay mount はファイルシステムを共有するため、サイズを - と表示します。"
-      - "削除済みでも process が開いているファイルも表示します。"
+      - "Linux では削除済みでも process が開いているファイルも表示します。"
       - "端末では閲覧画面を開き、q で閉じると結果を出力します。"
-      - "docker があれば、ログ、layer、volume、bind 元に container 名を付けます。"
+      - "Linux では docker の保存パスに container 名も表示します。"
+      - "macOS では APFS の共有ブロック等により、未検出容量を計算しません。"
   where:
     summary: "近い地域とこの網の姿"
     option:
@@ -384,7 +386,7 @@ command:
       output: "report ファイル、- は stdout"
       since: "events と changes が見る期間 (既定 6h)"
       force: "既存の出力ファイルを置き換える"
-      du: "このパスの edc du の結果も保存 (Linux)"
+      du: "このパスの edc du の結果も保存 (Linux と macOS)"
     notes:
       - "info、listen、audit、events、changes の結果を 1 つの report に保存します。"
       - "ファイルの権限は 0600 です。アカウント、sudo 規則、process 名を含みます。"

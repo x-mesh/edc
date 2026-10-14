@@ -401,7 +401,7 @@ func TestDuResultLabelsRowsMountsAndLargestDirs(t *testing.T) {
 	if len(mounts) != 1 || mounts[0].Label != "mounted in db" || largest.Dirs[0].Path != "a" || largest.Dirs[0].Label != "container api-1" {
 		t.Fatalf("mounts = %+v, largest = %+v", mounts, largest.Dirs)
 	}
-	if text := formatDuRows(rows, duOther{}, 0) + formatDuMounts(mounts, false, 0); !strings.Contains(text, "  a/  container api-1\n") || !strings.Contains(text, "used  mounted in db\n") {
+	if text := formatDuRows(rows, duOther{}, 0, false, 0) + formatDuMounts(mounts, false, 0); !strings.Contains(text, "  a/  container api-1\n") || !strings.Contains(text, "used  mounted in db\n") {
 		t.Fatalf("text =\n%s", text)
 	}
 }

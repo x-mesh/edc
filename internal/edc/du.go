@@ -25,9 +25,6 @@ import (
 
 const (
 	duProbeID = "du.scan"
-	// 12코어 호스트의 /usr(캐시가 채워진 상태)에서 worker 4개가 du보다 3배 빨랐고 순간 사용량은 약 5코어였다.
-	// 코어 수를 넘기면 더 빨라지지 않았다. 운영 호스트에서 CPU를 덜 쓰는 쪽을 기본으로 둔다.
-	duDefaultWorkers = 4
 	// 캐시가 빈 회전 디스크에서는 큰 트리를 읽는 데 오래 걸린다. 시간이 다 되면 그때까지 센 값을 partial로 보인다.
 	duDefaultTimeout = 60 * time.Second
 	duPipedRows      = 20
@@ -171,6 +168,8 @@ func runDuWith(args []string, version string, sources duSources, ok bool, stdout
 	workers := set.Int("workers", duDefaultWorkers, T("command.du.option.workers"))
 	rows := set.Int("top", 0, T("command.du.option.top"))
 	crossMounts := set.Bool("cross-mounts", false, T("command.du.option.cross_mounts"))
+	noBrowse := set.Bool("no-browse", false, T("command.du.option.no_browse"))
+	set.BoolVar(noBrowse, "B", false, T("command.du.option.no_browse"))
 	ordered, err := reorderFSWatchArgs(set, args)
 	if err == nil {
 		err = set.Parse(ordered)
@@ -192,11 +191,12 @@ func runDuWith(args []string, version string, sources duSources, ok bool, stdout
 	started := time.Now()
 	target := map[string]interface{}{"path": path}
 	if !ok {
-		return emit(options, buildReport(version, started, target, []Result{unsupported(duProbeID, T("du.skip.linux_only"))}, options.redact))
+		return emit(options, buildReport(version, started, target, []Result{unsupported(duProbeID, T("du.skip.unsupported"))}, options.redact))
 	}
 	terminal := options.jsonPath == "" && isTerminal(stdout)
 	// svc, ctr과 같이 사람이 보는 터미널에서만 화면을 연다. pipe, --json, NO_COLOR는 그대로 출력한다.
-	browse := terminal && liveTerminal()
+	live := terminal && liveTerminal()
+	browse := live && !*noBrowse
 	scanOptions := duOptions{workers: *workers, rows: *rows, crossMounts: *crossMounts}
 	if scanOptions.rows == 0 {
 		scanOptions.rows = duDefaultRows(stdout, terminal)
@@ -211,8 +211,8 @@ func runDuWith(args []string, version string, sources duSources, ok bool, stdout
 	// 넘긴 경로가 symlink면 링크 자체가 아니라 가리키는 디렉터리를 잰다. 링크 하나의 크기는 쓸모가 없다.
 	scanOptions.root, err = duResolveRoot(path)
 	var scan duScan
-	if err == nil && browse {
-		scan, err = duBrowse(ctx, cancel, scanOptions, sources, started)
+	if err == nil && live {
+		scan, err = duBrowse(ctx, cancel, scanOptions, sources, started, *noBrowse)
 	} else if err == nil {
 		scan, err = duWalk(ctx, scanOptions, sources)
 	}
@@ -232,7 +232,7 @@ func runDuWith(args []string, version string, sources duSources, ok bool, stdout
 	if terminal {
 		width = terminalWidth()
 	}
-	return duPrint(stdout, options, result, terminal && os.Getenv("NO_COLOR") == "", width)
+	return duPrint(stdout, options, result, terminal && os.Getenv("NO_COLOR") == "", live && *noBrowse, width)
 }
 
 func duResolveRoot(path string) (string, error) {
@@ -317,7 +317,7 @@ func duResult(result Result, options duOptions, scan duScan, timeout time.Durati
 	return result
 }
 
-func duPrint(stdout io.Writer, options commonOptions, result Result, color bool, width int) int {
+func duPrint(stdout io.Writer, options commonOptions, result Result, color, graph bool, width int) int {
 	var output io.Writer = stdout
 	var buffer strings.Builder
 	if options.redact {
@@ -328,12 +328,12 @@ func duPrint(stdout io.Writer, options commonOptions, result Result, color bool,
 	if result.Status != StatusFail {
 		rows, _ := result.Metrics["rows"].([]duRow)
 		other, _ := result.Metrics["other"].(duOther)
-		fmt.Fprint(output, "\n"+formatDuRows(rows, other, width))
+		counted, _ := result.Metrics["bytes"].(uint64)
+		fmt.Fprint(output, "\n"+formatDuRows(rows, other, width, graph, counted))
 		mounts, _ := result.Metrics["skipped_mounts"].([]duMount)
 		fmt.Fprint(output, formatDuMounts(mounts, options.verbose, width))
 		filesystem, _ := result.Metrics["filesystem"].(duFilesystem)
 		deleted, _ := result.Metrics["deleted_open"].(duDeletedOpen)
-		counted, _ := result.Metrics["bytes"].(uint64)
 		notFound, _ := result.Metrics["not_found_bytes"].(uint64)
 		fmt.Fprint(output, formatDuFilesystem(filesystem, deleted, counted, notFound, width))
 	}
@@ -413,10 +413,13 @@ func duFit(text string, width int) string {
 	return ansi.Truncate(text, width, "…")
 }
 
-func formatDuRows(rows []duRow, other duOther, width int) string {
+func formatDuRows(rows []duRow, other duOther, width int, graph bool, total uint64) string {
 	var builder strings.Builder
-	line := func(size, label string) {
-		builder.WriteString(duFit(fmt.Sprintf("  %9s  %s", size, label), width))
+	line := func(bytes uint64, label string) {
+		if graph {
+			label = duBar(bytes, total) + "  " + label
+		}
+		builder.WriteString(duFit(fmt.Sprintf("  %9s  %s", formatSizeShort(bytes), label), width))
 		builder.WriteString("\n")
 	}
 	for _, row := range rows {
@@ -427,10 +430,10 @@ func formatDuRows(rows []duRow, other duOther, width int) string {
 		if row.Label != "" {
 			name += "  " + row.Label
 		}
-		line(formatSizeShort(row.Bytes), strings.Repeat("  ", row.Depth)+name)
+		line(row.Bytes, strings.Repeat("  ", row.Depth)+name)
 	}
 	if other.Entries > 0 {
-		line(formatSizeShort(other.Bytes), T("du.other", other.Entries))
+		line(other.Bytes, T("du.other", other.Entries))
 	}
 	return builder.String()
 }
@@ -599,6 +602,44 @@ type duLargeDir struct {
 func duLargest(root *duNode, limit int) duLargestList {
 	var dirs []duLargeDir
 	count := 0
+	offer := func(candidate duLargeDir) {
+		if limit == 0 {
+			return
+		}
+		if len(dirs) < limit {
+			if dirs == nil {
+				dirs = make([]duLargeDir, 0, limit)
+			}
+			dirs = append(dirs, candidate)
+			for index := len(dirs) - 1; index > 0; {
+				parent := (index - 1) / 2
+				if !duLargeBefore(dirs[parent], dirs[index]) {
+					break
+				}
+				dirs[parent], dirs[index] = dirs[index], dirs[parent]
+				index = parent
+			}
+			return
+		}
+		if !duLargeBefore(candidate, dirs[0]) {
+			return
+		}
+		dirs[0] = candidate
+		for index := 0; ; {
+			child := 2*index + 1
+			if child >= len(dirs) {
+				break
+			}
+			if child+1 < len(dirs) && duLargeBefore(dirs[child], dirs[child+1]) {
+				child++
+			}
+			if !duLargeBefore(dirs[index], dirs[child]) {
+				break
+			}
+			dirs[index], dirs[child] = dirs[child], dirs[index]
+			index = child
+		}
+	}
 	var visit func(node *duNode, prefix string)
 	visit = func(node *duNode, prefix string) {
 		for _, child := range node.children {
@@ -607,21 +648,23 @@ func duLargest(root *duNode, limit int) duLargestList {
 			}
 			count++
 			path := prefix + child.name
-			dirs = append(dirs, duLargeDir{Path: path, Bytes: child.total, Entries: child.count})
+			offer(duLargeDir{Path: path, Bytes: child.total, Entries: child.count})
 			visit(child, path+"/")
 		}
 	}
 	visit(root, "")
-	sort.Slice(dirs, func(i, j int) bool {
-		if dirs[i].Bytes != dirs[j].Bytes {
-			return dirs[i].Bytes > dirs[j].Bytes
-		}
-		return dirs[i].Path < dirs[j].Path
-	})
-	if len(dirs) > limit {
-		dirs = dirs[:limit]
+	if limit == 0 && count > 0 {
+		dirs = []duLargeDir{}
 	}
+	sort.Slice(dirs, func(i, j int) bool { return duLargeBefore(dirs[i], dirs[j]) })
 	return duLargestList{Complete: count <= limit, Dirs: dirs}
+}
+
+func duLargeBefore(a, b duLargeDir) bool {
+	if a.Bytes != b.Bytes {
+		return a.Bytes > b.Bytes
+	}
+	return a.Path < b.Path
 }
 
 // duDirDelta는 report diff의 디렉터리 하나다. Bound가 있으면 그쪽 report의 목록에 이 디렉터리가 없어, 그쪽 값은
@@ -813,7 +856,7 @@ func duSnapshotResult(ctx context.Context, path string, timeout time.Duration) R
 	started := time.Now()
 	sources, ok := hostDuSources()
 	if !ok {
-		return unsupported(duProbeID, T("du.skip.linux_only"))
+		return unsupported(duProbeID, T("du.skip.unsupported"))
 	}
 	result := Result{Probe: duProbeID, StartedAt: started.UTC()}
 	options := duOptions{workers: duDefaultWorkers, rows: duPipedRows}

@@ -113,12 +113,14 @@ jobs:
           grep -q -- '--- PASS: TestTraceCPUOffCPURecordsSleepTime' cpu.log
 
       # trace lock은 helper가 전역 futex에서 정해진 횟수만큼 기다리고 mmap_lock을 두고 다툰다. 그 수와 이름을 runner kernel에서 본다.
+      # 같은 thread가 pipe mutex에서 여러 번 잠들어도 기다림의 깊이가 차지 않는지도 본다.
       - name: Trace lock counts futex and kernel waits
         shell: bash
         working-directory: internal/edc
         run: |
-          sudo ../../edc.test -test.run '^TestTraceLockCountsFutexAndKernelWaits$' -test.count=1 -test.v 2>&1 | tee lock.log
+          sudo ../../edc.test -test.run '^(TestTraceLockCountsFutexAndKernelWaits|TestTraceLockCountsEachSleepingMutexWaitOnce)$' -test.count=1 -test.v 2>&1 | tee lock.log
           grep -q -- '--- PASS: TestTraceLockCountsFutexAndKernelWaits' lock.log
+          grep -q -- '--- PASS: TestTraceLockCountsEachSleepingMutexWaitOnce' lock.log
 
       # trace reclaim은 시험용 cgroup의 memory.max와 memory.high로 memcg 회수와 throttle을 일으킨다. 회수할 file은 tmpfs가
       # 아닌 곳에 있어야 하므로 work tree 안에 둔다.

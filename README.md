@@ -1952,7 +1952,7 @@ edc reads the command line from the memory of the new process at the time of the
 
 Use `trace lock` on Linux to see where threads wait for locks. edc measures two kinds of wait and prints one summary at the end.
 
-- A kernel lock wait is a contended spinlock, rwlock, mutex, rwsem, or per-CPU semaphore in the kernel. edc uses the `lock:contention_begin` and `lock:contention_end` tracepoints, which Linux 5.19 and later have.
+- A kernel lock wait is a contended spinlock, rwlock, mutex, rwsem, or per-CPU semaphore in the kernel. edc uses the `lock:contention_begin` and `lock:contention_end` tracepoints, which Linux 5.19 and later have. A mutex wait starts when the task starts to spin and includes the sleep after the spin.
 - A futex wait is a call to `futex_wait` from user space. A contended `pthread_mutex`, a condition variable, and the Go runtime all wait this way, so a futex wait is not always contention.
 
 ```bash

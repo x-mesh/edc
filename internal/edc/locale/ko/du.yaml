@@ -9,7 +9,7 @@ du:
   summary_stopped: "지금까지 %s (%s), 항목 %d개, 멈춤"
   warning:
     partial: "제한 시간에 멈춰서 크기는 읽은 부분만 센 값입니다"
-    stopped: "q로 멈춰서 크기는 읽은 부분만 센 값입니다"
+    stopped: "사용자가 멈춰서 크기는 읽은 부분만 센 값입니다"
     unreadable_root: "디렉터리 %d개를 읽지 못해 세지 않았습니다. root로 실행하면 셀 수 있습니다"
     unreadable: "디렉터리 %d개를 읽지 못해 세지 않았습니다"
     no_mountinfo: "마운트 표를 읽지 못해(%s) 경로 아래의 bind mount도 셉니다"

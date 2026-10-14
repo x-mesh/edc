@@ -24,15 +24,17 @@ type duBrowser struct {
 	cancel   context.CancelFunc
 	job      *duScanJob
 	stopping bool
-	scanned  bool
-	scan     duScan
-	err      error
-	current  *duNode
-	cursor   int
-	offset   int
-	width    int
-	height   int
-	color    bool
+	// quitAfterScan은 탐색 중에 Ctrl-C를 눌렀다는 뜻이다. 탐색이 멈추면 화면을 열지 않고 닫는다.
+	quitAfterScan bool
+	scanned       bool
+	scan          duScan
+	err           error
+	current       *duNode
+	cursor        int
+	offset        int
+	width         int
+	height        int
+	color         bool
 }
 
 // duScanJob은 화면 밖에서 도는 탐색이다. finished를 닫아 끝을 알린다. 화면이 먼저 끝나도 결과를 다시 읽을 수
@@ -110,7 +112,7 @@ func (model duBrowser) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case duScanDoneMsg:
 		model.scanned, model.scan, model.err = true, model.job.scan, model.job.err
-		if model.err != nil {
+		if model.err != nil || model.quitAfterScan {
 			return model, tea.Quit
 		}
 		model.current, model.cursor, model.offset = model.scan.root, 0, 0
@@ -123,11 +125,14 @@ func (model duBrowser) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	return model, nil
 }
 
-// stopKey는 탐색 중의 키다. q, Esc, Ctrl-C는 탐색을 멈추고 그때까지 센 결과를 연다. 화면을 바로 닫으면 오래
-// 기다린 탐색 결과를 볼 수 없다.
+// stopKey는 탐색 중의 키다. q와 Esc는 탐색을 멈추고 그때까지 센 결과를 화면에 연다. 오래 기다린 탐색 결과를
+// 바로 버리지 않으려는 것이다. Ctrl-C는 다른 화면처럼 빠져나가되, 멈춘 결과는 닫은 뒤에 출력한다.
 func (model duBrowser) stopKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch key.String() {
-	case "q", "esc", "ctrl+c":
+	case "ctrl+c":
+		model.quitAfterScan = true
+		fallthrough
+	case "q", "esc":
 		if !model.stopping && model.cancel != nil {
 			model.stopping = true
 			model.cancel()

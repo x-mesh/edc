@@ -159,7 +159,7 @@ func TestDuBrowserStopsTheScanAndOpensWhatItRead(t *testing.T) {
 	if view := model.View().Content; !strings.HasPrefix(view, "reading /data · 1234 directories · 3.2s\nq stops") {
 		t.Fatalf("view %q", view)
 	}
-	model = duBrowserPress(t, model, "q", "ctrl+c")
+	model = duBrowserPress(t, model, "q", "esc")
 	if cancelled != 1 || !model.stopping || model.scanned || !strings.Contains(model.View().Content, "stopping…") {
 		t.Fatalf("cancelled %d, stopping %v, scanned %v", cancelled, model.stopping, model.scanned)
 	}
@@ -175,5 +175,24 @@ func TestDuBrowserStopsTheScanAndOpensWhatItRead(t *testing.T) {
 		t.Fatal("q does not quit after the scan")
 	} else if _, ok := command().(tea.QuitMsg); !ok {
 		t.Fatal("q does not quit after the scan")
+	}
+}
+
+// 탐색 중의 Ctrl-C는 멈춘 결과를 화면에 열지 않고 닫는다. 결과는 닫은 뒤에 출력한다.
+func TestDuBrowserCtrlCDuringTheScanQuits(t *testing.T) {
+	cancelled := 0
+	job := &duScanJob{finished: make(chan struct{})}
+	started := time.Date(2026, 10, 14, 9, 0, 0, 0, time.UTC)
+	model := newDuBrowser("/data", new(atomic.Int64), func() { cancelled++ }, job, started, func() time.Time { return started }, false)
+	next, _ := model.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+	job.scan = duScan{root: duBrowserTree(), partial: true}
+	duTotal(job.scan.root)
+	close(job.finished)
+	next, command := next.Update(duScanDoneMsg{})
+	if cancelled != 1 || !next.(duBrowser).scanned || command == nil {
+		t.Fatalf("cancelled %d, command %v", cancelled, command)
+	}
+	if _, ok := command().(tea.QuitMsg); !ok {
+		t.Fatal("ctrl+c during the scan does not quit")
 	}
 }

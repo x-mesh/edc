@@ -9,7 +9,7 @@ du:
   summary_stopped: "ここまで %s (%s)、項目 %d 個、停止"
   warning:
     partial: "制限時間で止まったため、サイズは読んだ部分だけの値です"
-    stopped: "q で止めたため、サイズは読んだ部分だけの値です"
+    stopped: "停止したため、サイズは読んだ部分だけの値です"
     unreadable_root: "ディレクトリ %d 個を読めず数えていません。root で実行すると数えます"
     unreadable: "ディレクトリ %d 個を読めず数えていません"
     no_mountinfo: "マウント表を読めないため(%s)、パスの下の bind mount も数えます"

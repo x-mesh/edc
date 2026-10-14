@@ -293,6 +293,10 @@ func (model *duBrowser) keepCursor() {
 }
 
 func (model duBrowser) View() tea.View {
+	// --no-browse는 alt screen 없이 그리므로 종료할 때의 마지막 화면이 결과 위에 남는다. 스캔이 끝나면 비운다.
+	if model.noBrowse && model.scanned {
+		return tea.NewView("")
+	}
 	var lines []string
 	if model.scanned && model.current != nil {
 		lines = model.browseLines()

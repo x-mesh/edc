@@ -1306,9 +1306,11 @@ func TestCleanTextCollapsesQuietStatusesAndSortsByPriority(t *testing.T) {
 		{ID: "dot-cache", Category: "app_cache", Priority: "P2", Status: cleanDuplicate, SameAs: "app-caches", ReportedPath: "/h/.cache"},
 		{ID: "zig", Category: "build_cache", Priority: "P1", Status: cleanUnknownLocation, Reasons: []string{cleanReasonInvalidEnv}},
 		cleanSizedItem("coresimulator-caches", "xcode_support", "P2", 0),
+		cleanSizedItem("uv", "package_cache", "P1", 120<<30),
 	}
-	text := formatCleanItems(items, false, 0)
-	order := []string{"Go build cache", "Zig cache", "Puppeteer browsers", "CoreSimulator caches", "Hugging Face models"}
+	text := formatCleanItems(items, false, 0, "/h")
+	// 우선순위 안에서는 큰 후보가 먼저이고, 크기가 없는 후보는 그 우선순위의 끝이다.
+	order := []string{"uv cache", "Go build cache", "Zig cache", "Puppeteer browsers", "CoreSimulator caches", "Hugging Face models"}
 	last := -1
 	for _, name := range order {
 		index := strings.Index(text, name)
@@ -1317,13 +1319,33 @@ func TestCleanTextCollapsesQuietStatusesAndSortsByPriority(t *testing.T) {
 		}
 		last = index
 	}
+	// 크기는 오른쪽에 맞추므로 이름이 모두 같은 열에서 시작한다.
+	column := -1
+	for _, line := range strings.Split(strings.TrimSpace(text), "\n") {
+		if !strings.HasPrefix(line, "P") {
+			continue
+		}
+		start := 0
+		for _, name := range order {
+			if index := strings.Index(line, name); index >= 0 {
+				start = index
+			}
+		}
+		if column >= 0 && start != column {
+			t.Fatalf("names start at columns %d and %d:\n%s", column, start, text)
+		}
+		column = start
+	}
+	if !strings.Contains(text, "~/go-build\n") || strings.Contains(text, "/h/") || strings.Contains(text, T("clean.category.downloaded_binary")) {
+		t.Fatalf("paths should start with ~ and the category should not show:\n%s", text)
+	}
 	for _, want := range []string{"not found: Playwright browsers\n", "tool not found: pip cache (pip3)\n",
 		"duplicate: other ~/.cache folders = other app caches\n", "environment variable is not an absolute path"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("missing %q in:\n%s", want, text)
 		}
 	}
-	if lines := strings.Count(text, "\n"); lines != 8 {
+	if lines := strings.Count(text, "\n"); lines != 9 {
 		t.Fatalf("default output has %d lines:\n%s", lines, text)
 	}
 	if !strings.Contains(text, " 0 B ") {
@@ -1334,7 +1356,7 @@ func TestCleanTextCollapsesQuietStatusesAndSortsByPriority(t *testing.T) {
 			t.Fatalf("%q shows 0 B", line)
 		}
 	}
-	verbose := formatCleanItems(items, true, 0)
+	verbose := formatCleanItems(items, true, 0, "")
 	for _, name := range []string{"Playwright browsers", "pip cache", "other ~/.cache folders"} {
 		if !strings.Contains(verbose, "  "+name+" ") && !strings.Contains(verbose, name+"  ") {
 			t.Fatalf("-v lacks a line for %q:\n%s", name, verbose)
@@ -1353,12 +1375,17 @@ func TestCleanTextCapsGroups(t *testing.T) {
 	for index := 0; index < 40; index++ {
 		item.Groups = append(item.Groups, cleanGroup{Name: fmt.Sprintf("app%02d", index), Folders: 1, UsageBytes: uint64(40-index) << 20})
 	}
-	count := func(text string) int { return strings.Count(text, "folder(s)") }
-	normal := formatCleanItems([]cleanItem{item}, false, 0)
-	if count(normal) != 5 || !strings.Contains(normal, "35 more, -v shows more") {
+	item.Groups[0].Folders = 3
+	count := func(text string) int { return strings.Count(text, "    app") }
+	normal := formatCleanItems([]cleanItem{item}, false, 0, "")
+	if count(normal) != 3 || !strings.Contains(normal, "37 more, -v shows more") {
 		t.Fatalf("default output:\n%s", normal)
 	}
-	verbose := formatCleanItems([]cleanItem{item}, true, 0)
+	// 폴더가 하나인 묶음은 폴더 수를 쓰지 않는다.
+	if !strings.Contains(normal, "app00  3 folders\n") || strings.Contains(normal, "1 folders") {
+		t.Fatalf("folder counts:\n%s", normal)
+	}
+	verbose := formatCleanItems([]cleanItem{item}, true, 0, "")
 	if count(verbose) != 30 || !strings.Contains(verbose, "10 more, --json shows all") {
 		t.Fatalf("-v output:\n%s", verbose)
 	}
@@ -1378,11 +1405,14 @@ func TestCleanTextWrapsInsteadOfCutting(t *testing.T) {
 	if len(strings.Split(strings.TrimSpace(text), "\n")) < 2 {
 		t.Fatalf("a narrow screen should wrap:\n%s", text)
 	}
+	if !reflect.DeepEqual(strings.Fields(text), strings.Fields(formatCleanNotMeasured(false, 0))) {
+		t.Fatalf("wrapping split a word:\n%s", text)
+	}
 	var absent []cleanItem
 	for _, spec := range cleanCatalog("darwin", "/h") {
 		absent = append(absent, cleanItem{ID: spec.id, Priority: spec.priority, Status: cleanAbsent})
 	}
-	folded := formatCleanItems(absent, false, 40)
+	folded := formatCleanItems(absent, false, 40, "")
 	for _, spec := range cleanCatalog("darwin", "/h") {
 		if !strings.Contains(squeeze(folded), squeeze(T("clean.candidate."+spec.id))) {
 			t.Errorf("the folded line lost %s:\n%s", spec.id, folded)
@@ -1397,8 +1427,8 @@ func TestCleanPrintSkipsTheResultLineTheSpinnerLeft(t *testing.T) {
 	items := []cleanItem{{ID: "go-build", Category: "build_cache", Priority: "P1", Status: cleanAbsent}}
 	result := cleanResult(Result{Probe: cleanProbeID}, cleanReport{candidates: items}, time.Minute, nil)
 	var plain, shown bytes.Buffer
-	cleanPrint(&plain, commonOptions{}, result, false, 0, false)
-	cleanPrint(&shown, commonOptions{}, result, false, 0, true)
+	cleanPrint(&plain, commonOptions{}, result, false, 0, false, "")
+	cleanPrint(&shown, commonOptions{}, result, false, 0, true, "")
 	line := formatResultLine(result, false)
 	if !strings.HasPrefix(plain.String(), line) {
 		t.Fatalf("plain output should start with the result line:\n%s", plain.String())

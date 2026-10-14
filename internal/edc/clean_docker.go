@@ -518,19 +518,33 @@ func formatCleanDocker(section cleanDocker, verbose bool, width int) string {
 		suffix = " (" + strings.Join(info, ", ") + ")"
 	}
 	line("\n", T("clean.docker.title", suffix))
-	for _, result := range section.Types {
-		name := T("clean.docker.type." + result.Type)
+	sizes := make([]string, len(section.Types))
+	var sizeWidth, nameWidth, reclaimWidth int
+	for index, result := range section.Types {
+		sizes[index] = cleanNoSize
+		if result.Status == cleanMeasured {
+			sizes[index] = formatSizeShort(uint64(*result.TotalBytes))
+			if result.Type != cleanDockerVolumes {
+				reclaimWidth = max(reclaimWidth, liveWidth(T("clean.docker.reclaimable", formatSizeShort(uint64(*result.ReclaimableBytes)))))
+			}
+		}
+		sizeWidth = max(sizeWidth, liveWidth(sizes[index]))
+		nameWidth = max(nameWidth, liveWidth(T("clean.docker.type."+result.Type)))
+	}
+	for index, result := range section.Types {
+		var rest string
 		switch {
 		case result.Status != cleanMeasured:
-			line("  ", T("clean.docker.line_state", name, cleanStateText(result.Status, result.Reasons)))
+			rest = cleanStateText(result.Status, result.Reasons)
 		case result.Type == cleanDockerVolumes:
-			line("  ", T("clean.docker.line_volumes", name, formatSizeShort(uint64(*result.TotalBytes)), *result.TotalCount, *result.ActiveCount))
+			rest = T("clean.docker.no_reclaim") + "  " + T("clean.docker.items", *result.TotalCount, *result.ActiveCount)
 		default:
-			line("  ", T("clean.docker.line", name, formatSizeShort(uint64(*result.TotalBytes)), formatSizeShort(uint64(*result.ReclaimableBytes)),
-				*result.TotalCount, *result.ActiveCount))
+			rest = cleanPad(T("clean.docker.reclaimable", formatSizeShort(uint64(*result.ReclaimableBytes))), reclaimWidth) + "  " +
+				T("clean.docker.items", *result.TotalCount, *result.ActiveCount)
 		}
+		line("  ", cleanPadLeft(sizes[index], sizeWidth)+"  "+cleanPad(T("clean.docker.type."+result.Type), nameWidth)+"  "+rest)
 		if verbose && result.Cleanup != "" {
-			line("      ", T("clean.cleanup", result.Cleanup))
+			line(strings.Repeat(" ", 2+sizeWidth+4), T("clean.cleanup", result.Cleanup))
 		}
 	}
 	if verbose && section.Endpoint != "" {
@@ -539,7 +553,7 @@ func formatCleanDocker(section cleanDocker, verbose bool, width int) string {
 	return builder.String()
 }
 
-func formatCleanVMDisks(disks []cleanVMDisk, inside string, width int) string {
+func formatCleanVMDisks(disks []cleanVMDisk, inside string, width int, home string) string {
 	var shown []cleanVMDisk
 	var absent []string
 	for _, disk := range disks {
@@ -549,21 +563,29 @@ func formatCleanVMDisks(disks []cleanVMDisk, inside string, width int) string {
 		}
 		shown = append(shown, disk)
 	}
+	size := func(disk cleanVMDisk) string {
+		if disk.counted() {
+			return cleanSize(*disk.UsageBytes, disk.LowerBound)
+		}
+		return cleanNoSize
+	}
+	var sizeWidth, nameWidth int
+	for _, disk := range shown {
+		sizeWidth = max(sizeWidth, liveWidth(size(disk)))
+		nameWidth = max(nameWidth, liveWidth(T("clean.vm.disk."+disk.ID)))
+	}
 	var builder strings.Builder
 	if len(shown) > 0 {
 		builder.WriteString("\n" + duFit(T("clean.vm.title"), width) + "\n")
 	}
 	for _, disk := range shown {
-		value := cleanStateText(disk.Status, disk.Reasons)
-		if disk.counted() {
-			value = formatSizeShort(*disk.UsageBytes)
-			if disk.LowerBound {
-				value = T("clean.lower_bound", value)
-			}
+		place := cleanHomePath(disk.Path, home)
+		if !disk.counted() {
+			place = strings.TrimSpace(cleanStateText(disk.Status, disk.Reasons) + "  " + place)
 		}
-		builder.WriteString(duFit("  "+T("clean.vm.line", T("clean.vm.disk."+disk.ID), value, disk.Path), width) + "\n")
+		builder.WriteString(duFit("  "+cleanPadLeft(size(disk), sizeWidth)+"  "+cleanPad(T("clean.vm.disk."+disk.ID), nameWidth)+"  "+place, width) + "\n")
 		if disk.ID == cleanOrbStack && inside == cleanOrbStack {
-			builder.WriteString(duFit("  "+T("clean.vm.inside"), width) + "\n")
+			builder.WriteString(duFit(strings.Repeat(" ", 2+sizeWidth+2)+T("clean.vm.inside"), width) + "\n")
 		}
 	}
 	if len(absent) > 0 {

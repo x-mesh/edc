@@ -283,6 +283,7 @@ command:
       - "Enter で全 field と payload 全体を表示し、l か Esc で最新に戻ります。"
       - "trace syscall は kernel 内で数え、終了時に要約を一度だけ表示します。"
       - "trace syscall --process は PID か正確な command 名 (15 byte まで)。"
+      - "trace reclaim は task がメモリ回収を待った時間を数えます。"
       - "f で詳細表示が最新の event を追います。"
       - "i で一覧の下にプレビューを開閉し、J と K でスクロールします。"
       - "trace http: v は payload 行、m は secret、z は gzip 展開を切り替えます。"

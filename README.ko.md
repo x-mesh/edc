@@ -2402,6 +2402,39 @@ trace가 도는 동안 host의 모든 system call이 BPF program 두 개를 거�
 
 `sys_enter`, `sys_exit` tracepoint와 BTF, task local storage, task iterator, BPF ring buffer가 필요합니다.
 
+Linux에서 `trace reclaim`을 사용하면 task가 메모리를 기다린 시간을 볼 수 있습니다. edc는 네 가지 정지를 kernel 안에서 세고, 끝날 때 요약을 한 번 출력합니다.
+
+| 종류 | task가 멈추는 때 |
+|---|---|
+| `direct` | zone의 남은 메모리가 모자라, 할당하던 task가 직접 메모리를 회수합니다. |
+| `memcg` | cgroup이 `memory.max`나 `memory.high`에 닿아, task가 그 cgroup의 메모리를 회수합니다. |
+| `throttle` | cgroup이 `memory.high`를 넘었습니다. task가 사용자 공간으로 돌아가기 전에 kernel이 회수하고 task를 재웁니다. |
+| `compact` | task가 큰 page가 필요해 직접 메모리를 compaction합니다. |
+
+```bash
+./bin/edc trace reclaim --duration 30s
+./bin/edc trace reclaim --container web --slow 10ms
+./bin/edc trace reclaim --group-by cgroup --json reclaim.json
+```
+
+행 하나는 process 이름 하나와 종류 하나입니다. 정지 횟수, 합계·평균·p95·최대 시간, 그리고 `direct`와 `memcg`가 회수한 메모리를 보여 줍니다. 합계는 모든 thread의 정지를 더하므로 trace보다 길 수 있습니다. `throttle` 정지에는 그 안에서 돈 `memcg` 회수가 들어 있으므로 두 행을 더하지 마세요. `--group-by process`, `--group-by cgroup`, `--group-by kind`로 한 칸에 대해 행을 합칩니다. `--process`와 `--container`는 `trace syscall`과 같습니다.
+
+`--slow <duration>`을 주면 그 시간 이상 멈춘 정지를 하나씩 출력합니다.
+
+```
+02:13:24.479122  api 1456919/1456920  throttle  588.57ms  cgroup 15040023
+```
+
+CPU마다 1초에 최대 1,000줄을 출력하고, 나머지는 `sampled_out`으로 셉니다. `--slow`와 함께 `--raw`를 주면 줄마다 JSON으로 출력합니다.
+
+`kswapd`와 `kcompactd`의 작업은 세지 않습니다. 이 kernel thread는 뒤에서 회수와 compaction을 하고, 할당하던 task를 멈추지 않습니다. 메모리 cgroup이 없는 kernel처럼 어떤 종류의 hook이 없으면 알림을 출력하고 나머지 종류를 셉니다.
+
+edc의 집계를 kernel과 맞춰 보았습니다. 메모리 압박을 건 Linux 5.15 VM에서 tracefs는 시험 program의 `mm_vmscan_direct_reclaim_end`를 187번, `mm_compaction_end`를 166번 셌고, edc는 `direct` 187번과 `compact` 166번을 셌습니다. `/proc/vmstat`의 `allocstall`은 둘보다 많았습니다. 회수 한 번이 다시 시도하면 kernel이 `allocstall`을 또 세기 때문입니다. `memory.max` 16MiB 시험 cgroup에서 64MiB file을 세 번 읽자 `memcg` 정지가 584번 생겼고 182.5MiB를 회수했습니다. `memory.high` 16MiB에 swap이 없는 시험 cgroup에서는 40MiB를 쓰는 program이 한 번에 최대 1.28초 멈췄습니다.
+
+kernel은 task가 처리할 일을 안고 사용자 공간으로 돌아갈 때마다 `memory.high` 처리 함수를 부릅니다. Linux 6.17, CPU 12개 host에서 1초에 약 2,600번이었습니다. edc는 task가 `memory.high`를 넘었을 때만 정지를 시작합니다. 두 BPF program은 호출마다 214ns와 267ns가 걸렸습니다. 나머지 hook은 task가 회수나 compaction을 할 때만 돕니다.
+
+BTF, task local storage와 다음 hook 중 하나 이상이 필요합니다: `mm_vmscan_direct_reclaim`, `mm_vmscan_memcg_reclaim`, `mm_compaction` tracepoint, `mem_cgroup_handle_over_high` 함수.
+
 kernel이 모든 버림을 이유와 함께 알리지는 않습니다. 예를 들어 listen socket의 accept 대기열이 가득 차면 kernel은 SYN을 정상 패킷처럼 해제합니다. 이 경우를 위해 요약에는 trace 동안 `/proc/net/netstat`의 `ListenOverflows`와 `ListenDrops`가 늘어난 수가 나옵니다. 이 값은 edc가 있는 network namespace의 모든 listen socket을 합한 것이라, `--container`를 써도 container만의 값이 아닙니다.
 
 ```bash

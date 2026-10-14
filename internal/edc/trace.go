@@ -149,6 +149,8 @@ var traceProtocolRegistry = []traceProtocolRegistration{
 	{name: "exec", view: traceProtocolView{selectorLabel: "exec"}, spec: traceProtocolSpec{hideTraffic: true, hiddenViews: []string{traceGroupBySource, traceGroupByTarget, traceGroupByPort}, linuxOnly: true, prerequisites: execTracePrerequisites}, run: runTraceExec},
 	// process와 syscall별 호출 수와 시간이다. event를 하나씩 내지 않고 kernel 안에서 모아 끝날 때 한 번 출력한다.
 	{name: "syscall", view: traceProtocolView{selectorLabel: "syscall"}, spec: traceProtocolSpec{hideTraffic: true, hiddenViews: []string{traceGroupBySource, traceGroupByTarget, traceGroupByPort}, linuxOnly: true, prerequisites: syscallTracePrerequisites}, run: runTraceSyscall},
+	// 메모리를 할당하던 task가 회수와 throttle로 멈춘 시간이다. syscall처럼 kernel 안에서 모아 끝날 때 한 번 출력한다.
+	{name: "reclaim", view: traceProtocolView{selectorLabel: "reclaim"}, spec: traceProtocolSpec{hideTraffic: true, hiddenViews: []string{traceGroupBySource, traceGroupByTarget, traceGroupByPort}, linuxOnly: true, prerequisites: reclaimTracePrerequisites}, run: runTraceReclaim},
 }
 
 var traceProtocols = traceProtocolSpecs(traceProtocolRegistry)

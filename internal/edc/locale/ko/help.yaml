@@ -139,6 +139,38 @@ command:
     notes:
       - "public IP를 기본으로 조회하고, 제한 시간 안에 응답이 없으면 그 줄을 뺍니다."
       - "disk 사용량은 전체 크기에서 남은 공간을 뺀 값입니다."
+  du:
+    summary: "디렉터리 아래 디스크 사용량, 큰 항목부터 (Linux와 macOS)"
+    option:
+      top: "보여 줄 줄 수, 기본값은 터미널 높이에 맞춤"
+      workers: "동시에 읽는 디렉터리 수"
+      cross_mounts: "경로 아래의 마운트도 셈"
+      no_browse: "진행 상황과 용량 막대를 보여 주고 자동 종료"
+      timeout: "제한 시간, 지나면 그때까지 센 크기를 보여 줌"
+      verbose: "읽지 못한 디렉터리와 건너뛴 마운트를 모두 표시"
+    notes:
+      - "읽기만 합니다. 아무것도 바꾸거나 지우지 않습니다."
+      - "du처럼 disk block을 세고, hard link는 한 번만 셉니다."
+      - "한 파일 시스템 안에서만 세고, 건너뛴 마운트를 보여 줍니다."
+      - "bind·overlay mount는 파일 시스템을 공유하므로 크기를 -로 표시합니다."
+      - "Linux에서는 지워졌지만 process가 아직 열고 있는 파일도 보여 줍니다."
+      - "터미널에서는 탐색 화면을 열고, q로 닫으면 결과를 출력합니다."
+      - "Linux에서는 docker 저장 경로에 container 이름도 표시합니다."
+      - "macOS에서는 APFS 공유 블록과 스냅샷 때문에 찾지 못한 공간을 계산하지 않습니다."
+  clean:
+    summary: "알려진 개발 캐시의 디스크 사용량, 읽기 전용 (Linux와 macOS)"
+    option:
+      timeout: "제한 시간, 지나면 남은 후보는 측정 안 함으로 표시"
+      project: "빌드 폴더를 찾을 루트, 여러 번 지정 가능"
+      verbose: "모든 후보, 더 많은 묶음, 이유, 정리 명령을 표시"
+    notes:
+      - "읽기만 합니다. 아무것도 바꾸거나 지우지 않습니다."
+      - "도구 캐시, 브라우저, Xcode 데이터, 앱 캐시·로그, 모델을 잽니다."
+      - "사용량을 보여 줍니다. 정리 시 비워지는 양은 Docker 엔진만 알려 줍니다."
+      - "APFS clone, snapshot, hard link 때문에 합계가 더 클 수 있습니다."
+      - "도구가 없거나 확인에 실패하면 0 B가 아니라 상태를 표시합니다."
+      - "Docker, OrbStack 디스크, worktree는 읽기만 하고 합계에 넣지 않습니다."
+      - "측정하지 않는 대상을 나열하고, -v로 이유를 보여 줍니다."
   where:
     summary: "가까운 지역과 이 망의 모습"
     option:
@@ -219,7 +251,7 @@ command:
       - "PCAP에는 credential과 개인정보가 들어갈 수 있습니다."
       - "JSON redaction은 PCAP payload에 적용되지 않습니다."
   trace:
-    summary: "network, I/O, socket, drop, scheduler, process event 출력과 요약"
+    summary: "network, I/O, socket, drop, scheduler, process, syscall 출력과 요약"
     option:
       duration: "trace 시간, 최대 60s. 생략하면 Ctrl-C"
       slow: "최소 latency. 예: 20us, 250ms. io/sched 기본 1ms"
@@ -240,6 +272,8 @@ command:
       reason: "trace drop: 이 이유만, 쉼표로 구분"
       device: "trace io: block device major:minor"
       signal: "trace exec: 기록할 신호. 이름 목록, all, none"
+      syscall: "trace syscall: 이 system call만, 쉼표로 구분"
+      errors: "trace syscall: 실패한 호출 출력. all이나 errno 이름"
     notes:
       - "terminal에서는 기본으로 전체 화면 trace를 엽니다."
       - "/를 누르면 process, destination, event, source를 필터할 수 있습니다."
@@ -247,6 +281,8 @@ command:
       - "g는 event 스크롤을 표시합니다."
       - "event 목록에서 Up이나 Down을 누르면 event를 고르고 목록이 멈춥니다."
       - "Enter는 모든 field와 payload 전체를 보여 주고, l이나 Esc는 다시 따라갑니다."
+      - "trace syscall은 kernel 안에서 세고, 끝날 때 요약을 한 번 출력합니다."
+      - "trace syscall --process는 PID나 정확한 command 이름(최대 15 byte)만 받습니다."
       - "f는 상세 보기에서 가장 최근 event를 따라갑니다."
       - "i는 목록 아래 미리 보기를 열고 닫으며, J와 K로 스크롤합니다."
       - "trace http: v는 payload 줄, m은 가린 값, z는 gzip 풀기를 켜고 끕니다."
@@ -366,6 +402,7 @@ command:
       output: "report 파일, -는 stdout"
       since: "events와 changes가 볼 기간 (기본 6h)"
       force: "이미 있는 출력 파일을 바꿈"
+      du: "이 경로의 edc du 결과도 저장 (Linux와 macOS)"
     notes:
       - "info, listen, audit, events, changes 결과를 report 하나에 저장합니다."
       - "파일 권한은 0600입니다. 계정, sudo 규칙, process 이름이 들어갑니다."

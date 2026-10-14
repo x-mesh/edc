@@ -11,7 +11,6 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
-	"runtime"
 	"strings"
 	"sync"
 	"syscall"
@@ -23,6 +22,7 @@ type fsWatchRecord struct {
 	Time            time.Time `json:"time"`
 	Root            string    `json:"root,omitempty"`
 	Recursive       bool      `json:"recursive,omitempty"`
+	Driver          string    `json:"driver,omitempty"`
 	Event           string    `json:"event,omitempty"`
 	Path            string    `json:"path,omitempty"`
 	IsDir           bool      `json:"is_directory,omitempty"`
@@ -69,11 +69,6 @@ func runFSWatch(args []string) int {
 	if file, ok := writer.(*os.File); ok {
 		options.outputInfo, _ = file.Stat()
 	}
-	// 재귀 감시는 모든 디렉터리를 등록한 뒤에야 첫 줄을 낸다. 큰 트리에서는 수십 초 걸려 멈춘 것처럼 보이므로 터미널에 먼저 알린다.
-	// macOS의 FSEvents는 디렉터리를 등록하지 않고 바로 시작한다.
-	if options.recursive && runtime.GOOS != "darwin" && isTerminal(os.Stderr) {
-		fmt.Fprintln(os.Stderr, T("watchfs.walking", terminalJSON(options.root)))
-	}
 	source, err := newFSWatchSource(options)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -90,9 +85,8 @@ func runFSWatch(args []string) int {
 	// 상태줄은 사람이 보는 터미널에만 그린다. pipe, 파일과 JSON 출력은 바뀌지 않는다.
 	if options.jsonPath == "" && isTerminal(os.Stdout) {
 		options.status = newFSWatchStatus(os.Stdout, terminalWidth, time.Now, options.events, len(options.rules) > 0)
-		previous := fsWatchNotice
-		fsWatchNotice = options.status.through(os.Stderr)
-		defer func() { fsWatchNotice = previous }()
+		previous := fsWatchNotice.swap(options.status.through(os.Stderr))
+		defer fsWatchNotice.swap(previous)
 	}
 	code, err := streamFSWatch(ctx, writer, source, options, executeFSWatchAction)
 	if err != nil {
@@ -127,7 +121,7 @@ func streamFSWatch(ctx context.Context, writer io.Writer, source fsWatchSource, 
 		_, err := options.status.through(writer).Write(buffer.Bytes())
 		return err
 	}
-	if err := emit(fsWatchRecord{Type: "ready", Time: time.Now().UTC(), Root: options.root, Recursive: options.recursive}); err != nil {
+	if err := emit(fsWatchRecord{Type: "ready", Time: time.Now().UTC(), Root: options.root, Recursive: options.recursive, Driver: source.driver}); err != nil {
 		return 2, err
 	}
 	states := make([]fsWatchRuleState, len(options.rules))
@@ -370,7 +364,7 @@ func writeFSWatchRecord(writer io.Writer, record fsWatchRecord, jsonOutput bool)
 	stamp := record.Time.Local().Format("15:04:05.000")
 	switch record.Type {
 	case "ready":
-		_, err := fmt.Fprintf(writer, "%s  %s\n", stamp, T("watchfs.ready", terminalJSON(record.Root), record.Recursive))
+		_, err := fmt.Fprintf(writer, "%s  %s\n", stamp, T("watchfs.ready", terminalJSON(record.Root), record.Recursive, record.Driver))
 		return err
 	case "event":
 		_, err := fmt.Fprintf(writer, "%s  %-7s  %s\n", stamp, strings.ToUpper(record.Event), terminalJSON(record.Path))

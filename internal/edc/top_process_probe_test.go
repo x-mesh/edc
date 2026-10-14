@@ -242,3 +242,53 @@ func TestTopProbeStatsWithoutSourceDoNotClaimIO(t *testing.T) {
 		t.Fatalf("detail = %q", got)
 	}
 }
+
+// 대기는 syscall마다 따로 빼고 더한다. 한 syscall의 횟수가 줄면 그 항목만 현재 값을 쓴다.
+func TestTopProbeWaitsSubtractAndAddPerSyscall(t *testing.T) {
+	previous := topProbeStats{Waits: map[string]topProbeWait{"read": {10, 1000}, "futex": {5, 500}, "poll": {9, 900}}}
+	current := topProbeStats{Waits: map[string]topProbeWait{"read": {15, 3000}, "futex": {5, 500}, "-": {2, 200}, "epoll_wait": {1, 9000}, "poll": {3, 100}}}
+	delta := current.sub(previous)
+	want := map[string]topProbeWait{"read": {5, 2000}, "-": {2, 200}, "epoll_wait": {1, 9000}, "poll": {3, 100}}
+	if len(delta.Waits) != len(want) {
+		t.Fatalf("delta = %+v", delta.Waits)
+	}
+	for name, wait := range want {
+		if delta.Waits[name] != wait {
+			t.Fatalf("delta %s = %+v, want %+v", name, delta.Waits[name], wait)
+		}
+	}
+	total := topProbeStats{}
+	total.add(delta)
+	total.add(topProbeStats{Waits: map[string]topProbeWait{"read": {1, 10}}})
+	total.Waits["read"] = topProbeWait{99, 99}
+	if total.Waits["epoll_wait"] != (topProbeWait{1, 9000}) || delta.Waits["read"] != (topProbeWait{5, 2000}) {
+		t.Fatalf("add shared its input: total %+v, delta %+v", total.Waits, delta.Waits)
+	}
+	if rows := topProbeWaitRows(delta.Waits, 2); len(rows) != 2 || rows[0].Syscall != "epoll_wait" || rows[1].Syscall != "read" {
+		t.Fatalf("rows = %+v", rows)
+	}
+	libproc := topProbeStats{}
+	libproc.add(topProbeStats{Source: topProbeSourceLibproc, Measured: 1, RunqCount: 4})
+	if libproc.Waits != nil {
+		t.Fatalf("libproc waits = %+v", libproc.Waits)
+	}
+}
+
+func TestTopProbeDetailAndSampleShowTheLongestWaits(t *testing.T) {
+	stats := topProbeStats{Window: time.Second, Source: topProbeSourceEBPF, Measured: 1, RunqHist: &topProbeHist{}, IO: &topProbeIO{},
+		Waits: map[string]topProbeWait{"futex": {4, 1_200_000_000}, "read": {9, 12_000_000}, "-": {1, 1_000}, "epoll_wait": {2, 800_000_000}}}
+	if got := topProbeDetail(stats); !strings.HasSuffix(got, " · wait futex 1.20s epoll_wait 800.00ms read 12.00ms") {
+		t.Fatalf("detail = %q", got)
+	}
+	data, err := json.Marshal(newTopProbeSample(&stats))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"waits":[{"syscall":"futex","count":4,"total_ms":1200},{"syscall":"epoll_wait","count":2,"total_ms":800},{"syscall":"read","count":9,"total_ms":12},{"syscall":"-","count":1,"total_ms":0.001}]`) {
+		t.Fatalf("sample = %s", data)
+	}
+	libproc := topProbeStats{Window: time.Second, Source: topProbeSourceLibproc, Measured: 1, RunqCount: 4}
+	if data, _ := json.Marshal(newTopProbeSample(&libproc)); strings.Contains(string(data), "waits") || strings.Contains(topProbeDetail(libproc), "wait") {
+		t.Fatalf("libproc shows waits: %s", data)
+	}
+}

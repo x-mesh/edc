@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"syscall"
@@ -16,7 +17,9 @@ import (
 	"github.com/fsnotify/fsnotify"
 )
 
-func newFSWatchSource(options fsWatchOptions) (fsWatchSource, error) {
+// newFSNotifyWatchSource는 디렉터리마다 watch를 등록한다. Linux에서는 inotify이고, fanotify를 쓸 수 없거나
+// --driver inotify일 때 쓴다.
+func newFSNotifyWatchSource(options fsWatchOptions) (fsWatchSource, error) {
 	watcher, err := fsnotify.NewBufferedWatcher(256)
 	if err != nil {
 		return fsWatchSource{}, err
@@ -43,6 +46,10 @@ func newFSWatchSource(options fsWatchOptions) (fsWatchSource, error) {
 			if err != nil {
 				return err
 			}
+			// inotify는 디렉터리에만 watch를 건다. 처음 등록할 때는 파일마다 경로를 비교하고 출력 파일인지 stat하는 비용만 든다.
+			if !announce && !entry.IsDir() {
+				return nil
+			}
 			if filename != options.root && ignored(filename, entry) {
 				if entry.IsDir() {
 					return filepath.SkipDir
@@ -62,6 +69,10 @@ func newFSWatchSource(options fsWatchOptions) (fsWatchSource, error) {
 						if errors.Is(err, syscall.EMFILE) || errors.Is(err, syscall.ENFILE) {
 							return fmt.Errorf("%s: %w", T("watchfs.too_many_files"), err)
 						}
+						// inotify는 fs.inotify.max_user_watches를 넘으면 ENOSPC를 돌려준다. 그대로 두면 디스크 공간 오류로 보인다.
+						if runtime.GOOS == "linux" && errors.Is(err, syscall.ENOSPC) {
+							return fmt.Errorf("%s: %w", T("watchfs.watch_limit"), err)
+						}
 						return err
 					}
 					watched[filename] = true
@@ -78,6 +89,10 @@ func newFSWatchSource(options fsWatchOptions) (fsWatchSource, error) {
 			}
 			return nil
 		})
+	}
+	// 재귀 감시는 모든 디렉터리를 등록한 뒤에야 첫 줄을 낸다. 큰 트리에서는 오래 걸려 멈춘 것처럼 보이므로 터미널에 먼저 알린다.
+	if options.recursive && isTerminal(os.Stderr) {
+		fmt.Fprintln(fsWatchNotice, T("watchfs.walking", terminalJSON(options.root)))
 	}
 	if err := addTree(options.root, false); err != nil {
 		watcher.Close()
@@ -165,7 +180,11 @@ func newFSWatchSource(options fsWatchOptions) (fsWatchSource, error) {
 		}
 	}()
 	var once sync.Once
-	return fsWatchSource{events: events, errors: failures, close: func() {
+	driver := "fsnotify"
+	if runtime.GOOS == "linux" {
+		driver = fsWatchDriverInotify
+	}
+	return fsWatchSource{events: events, errors: failures, driver: driver, close: func() {
 		once.Do(func() { close(done); watcher.Close(); <-finished })
 	}}, nil
 }

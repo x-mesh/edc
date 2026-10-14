@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"runtime"
 	"sort"
 	"strconv"
 	"sync"
@@ -51,6 +52,28 @@ type schedEvent struct {
 	CgroupUnavailable bool    `json:"cgroup_unavailable"`
 	LatencyMS         float64 `json:"latency_ms"`
 	OffCPUClass       string  `json:"offcpu_class,omitempty"`
+	// Syscall은 스레드가 CPU를 떠날 때 들어가 있던 syscall이다. syscall 밖에서 떠났으면 비어 있다.
+	Syscall string `json:"syscall,omitempty"`
+}
+
+// schedGroupBySyscall은 대기를 syscall로 묶는다. syscall 밖에서 기다린 구간은 schedNoSyscall 행이 된다.
+const (
+	schedGroupBySyscall = "syscall"
+	schedNoSyscall      = "-"
+)
+
+// schedGroupKey는 행을 묶는 값이다. 묶지 않으면 process 이름으로 묶는다.
+func schedGroupKey(event schedEvent, groupBy string) string {
+	key := event.Process
+	switch groupBy {
+	case traceGroupByEvent:
+		key = event.Event
+	case "cgroup":
+		key = strconv.FormatUint(event.CgroupID, 10)
+	case schedGroupBySyscall:
+		key = emptyAs(event.Syscall, schedNoSyscall)
+	}
+	return emptyAs(key, "-")
 }
 
 type schedTraceFinishedMsg struct {
@@ -158,8 +181,8 @@ func runTraceSched(args []string) int {
 		fmt.Fprintln(os.Stderr, T("cli.trace.slow_range"))
 		return 2
 	}
-	if options.groupBy != "" && options.groupBy != "process" && options.groupBy != "cgroup" && options.groupBy != "event" {
-		fmt.Fprintln(os.Stderr, "trace sched --group-by must be process, cgroup, or event")
+	if options.groupBy != "" && options.groupBy != "process" && options.groupBy != "cgroup" && options.groupBy != "event" && options.groupBy != schedGroupBySyscall {
+		fmt.Fprintln(os.Stderr, "trace sched --group-by must be process, cgroup, event, or syscall")
 		return 2
 	}
 	if err := schedTracePrerequisites(); err != nil {
@@ -194,16 +217,7 @@ func runTraceSched(args []string) int {
 			written++
 			return encoder.Encode(event)
 		}
-		group := event.Process
-		if options.groupBy == "event" {
-			group = event.Event
-		}
-		if options.groupBy == "cgroup" {
-			group = strconv.FormatUint(event.CgroupID, 10)
-		}
-		if group == "" {
-			group = "-"
-		}
+		group := schedGroupKey(event, options.groupBy)
 		row := rows[group]
 		if row == nil {
 			row = &schedReportRow{Group: group}
@@ -294,16 +308,7 @@ func runSchedTraceScreen(options schedTraceOptions) int {
 	}
 	groups := map[string]*schedReportRow{}
 	for _, event := range rows {
-		key := event.Process
-		if options.groupBy == traceGroupByEvent {
-			key = event.Event
-		}
-		if options.groupBy == "cgroup" {
-			key = strconv.FormatUint(event.CgroupID, 10)
-		}
-		if key == "" {
-			key = "-"
-		}
+		key := schedGroupKey(event, options.groupBy)
 		row := groups[key]
 		if row == nil {
 			row = &schedReportRow{Group: key}
@@ -473,7 +478,12 @@ func collectSchedEvents(duration, slow time.Duration, onEvent func(schedEvent) e
 	return summary, nil
 }
 
-const schedRecordSize = 56
+const (
+	schedRecordSize = 56
+	// schedSyscallNone과 schedSyscallCompat은 BPF의 SCHED_NO_SYSCALL과 SCHED_SYSCALL_COMPAT이다.
+	schedSyscallNone   = 0xFFFF
+	schedSyscallCompat = 0x8000
+)
 
 func parseSchedRecord(sample []byte, clockOffset int64) (schedEvent, bool) {
 	if len(sample) < schedRecordSize {
@@ -494,7 +504,15 @@ func parseSchedRecord(sample []byte, clockOffset int64) (schedEvent, bool) {
 		Process:     string(bytesTrimNUL(sample[36:52])),
 		LatencyMS:   float64(binary.LittleEndian.Uint64(sample[8:16])) / float64(time.Millisecond),
 		OffCPUClass: schedOffCPUClass(sample[52], sample[53]),
+		Syscall:     schedSyscallName(binary.LittleEndian.Uint16(sample[54:56])),
 	}, true
+}
+
+func schedSyscallName(value uint16) string {
+	if value == schedSyscallNone {
+		return ""
+	}
+	return syscallName(runtime.GOARCH, uint32(value&^schedSyscallCompat), value&schedSyscallCompat != 0)
 }
 
 func schedOffCPUClass(kind, value byte) string {

@@ -14,6 +14,11 @@ import (
 	"github.com/x-mesh/edc/internal/fsevents"
 )
 
+// macOS에는 FSEvents 하나뿐이다.
+var fsWatchTestDrivers = []string{fsWatchDriverAuto}
+
+func fsWatchSkipUnavailableDriver(*testing.T, string) {}
+
 func TestFSWatchClassifyHandlesAccumulatedFlags(t *testing.T) {
 	started := time.Unix(1000, 0)
 	before, after := started.Add(-time.Second), started.Add(time.Second)
@@ -120,9 +125,8 @@ func TestFSWatchRescansAfterDroppedEvents(t *testing.T) {
 		t.Fatal(err)
 	}
 	var notice bytes.Buffer
-	previous := fsWatchNotice
-	fsWatchNotice = &notice
-	defer func() { fsWatchNotice = previous }()
+	previous := fsWatchNotice.swap(&notice)
+	defer fsWatchNotice.swap(previous)
 	emitted = nil
 	batch := []fsevents.Event{
 		{Path: filepath.Join(root, "node_modules"), Flags: fsevents.FlagMustScanSubDirs},

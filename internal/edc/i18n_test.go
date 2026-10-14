@@ -3,10 +3,14 @@ package edc
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 // 언어팩이 갈라지면 어떤 언어에서만 키가 보인다. 세 파일이 같은 키를 갖는지 잰다.
@@ -357,4 +361,95 @@ func TestEveryReferencedKeyExists(t *testing.T) {
 		t.Fatal("the scan found no keys, so it guards nothing")
 	}
 	t.Logf("checked %d referenced keys", seen)
+}
+
+func coldTestCatalog(language string) catalog {
+	loadCatalogs()
+	files := make(map[string]*sync.Once, len(catalogs[language].files))
+	for name := range catalogs[language].files {
+		files[name] = new(sync.Once)
+	}
+	return catalog{language: language, tree: map[string]interface{}{}, mu: new(sync.RWMutex), files: files}
+}
+
+func TestCatalogLoadsOnlyRequestedFiles(t *testing.T) {
+	c := coldTestCatalog("en")
+	if len(c.tree) != 0 {
+		t.Fatal("catalog parsed messages before lookup")
+	}
+	if _, ok := c.text("du.summary"); !ok {
+		t.Fatal("du summary missing")
+	}
+	if len(c.tree) != 1 || c.tree["du"] == nil {
+		t.Fatalf("loaded sections: %v", c.tree)
+	}
+	if _, ok := c.text("command.du.option.workers"); !ok {
+		t.Fatal("du option missing")
+	}
+	if c.tree["command"] == nil || c.tree["history"] == nil || c.tree["cli"] != nil {
+		t.Fatal("command sources do not match help and history")
+	}
+}
+
+func TestCatalogLazyLookupMatchesEverySource(t *testing.T) {
+	loadCatalogs()
+	for _, language := range supportedLanguages {
+		for name := range catalogs[language].files {
+			c := coldTestCatalog(language)
+			data, err := localeFiles.ReadFile("locale/" + language + "/" + name + ".yaml")
+			if err != nil {
+				t.Fatal(err)
+			}
+			var source map[string]interface{}
+			if err := yaml.Unmarshal(data, &source); err != nil {
+				t.Fatal(err)
+			}
+			var check func(string, interface{})
+			check = func(key string, value interface{}) {
+				if branch, ok := value.(map[string]interface{}); ok {
+					for child, value := range branch {
+						next := child
+						if key != "" {
+							next = key + "." + child
+						}
+						check(next, value)
+					}
+					return
+				}
+				got, ok := c.lookup(key)
+				if !ok || !reflect.DeepEqual(got, value) {
+					t.Errorf("%s/%s %s: got %v, want %v", language, name, key, got, value)
+				}
+			}
+			check("", source)
+		}
+	}
+}
+
+func TestCatalogConcurrentLazyLookup(t *testing.T) {
+	c := coldTestCatalog("ko")
+	keys := []string{"du.summary", "cli.usage", "command.du.option.workers", "help.tagline"}
+	var group sync.WaitGroup
+	for range 8 {
+		for _, key := range keys {
+			group.Add(1)
+			go func() {
+				defer group.Done()
+				if _, ok := c.text(key); !ok {
+					t.Errorf("missing %s", key)
+				}
+			}()
+		}
+	}
+	group.Wait()
+}
+
+func BenchmarkDuCatalogStartup(b *testing.B) {
+	loadCatalogs()
+	b.ReportAllocs()
+	for b.Loop() {
+		c := coldTestCatalog("en")
+		c.text("du.summary")
+		c.text("command.du.option.workers")
+	}
 }

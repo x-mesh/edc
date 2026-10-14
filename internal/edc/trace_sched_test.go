@@ -6,8 +6,11 @@ import (
 	"encoding/binary"
 	"io"
 	"os"
+	"os/exec"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 	"unsafe"
 
 	tea "charm.land/bubbletea/v2"
@@ -22,6 +25,7 @@ func schedSample(kind, offcpu byte) []byte {
 	binary.LittleEndian.PutUint32(sample[32:36], 42)
 	copy(sample[36:52], "worker")
 	sample[52], sample[53] = kind, offcpu
+	binary.LittleEndian.PutUint16(sample[54:56], schedSyscallNone)
 	return sample
 }
 
@@ -34,7 +38,7 @@ func TestSchedBPFSeparatesWakeupAndPreemptionLifecycles(t *testing.T) {
 	if strings.Contains(text, "emit(next_pid,wake->comm,1,0,wake->timestamp_ns)") {
 		t.Fatal("wakeup lifecycle also emits runqueue")
 	}
-	if !strings.Contains(text, "if(off->klass) emit(&next_key,off->cgroup_id,off->comm,1,0,off->timestamp_ns)") {
+	if !strings.Contains(text, "if(off->klass) emit(&next_key,off->cgroup_id,off->comm,1,0,off->timestamp_ns,syscall_nr)") {
 		t.Fatal("preempted off-CPU lifecycle does not emit runqueue")
 	}
 	if strings.Contains(text, "else { struct sched_counters*c=counter(); if(c)__sync_fetch_and_add(&c->unmatched,1); } struct offcpu") {
@@ -55,6 +59,40 @@ func TestSchedRecordGeneratedLayoutMatchesParser(t *testing.T) {
 	}
 	if got := unsafe.Offsetof(record.Kind); got != 52 {
 		t.Fatalf("kind offset = %d", got)
+	}
+	if got := unsafe.Offsetof(record.SyscallNr); got != 54 {
+		t.Fatalf("syscall_nr offset = %d", got)
+	}
+}
+
+func TestParseSchedRecordNamesTheSyscall(t *testing.T) {
+	futex, _ := syscallNumber(runtime.GOARCH, "futex")
+	sample := schedSample(2, 0)
+	binary.LittleEndian.PutUint16(sample[54:56], uint16(futex))
+	if event, _ := parseSchedRecord(sample, 0); event.Syscall != "futex" {
+		t.Fatalf("syscall = %q", event.Syscall)
+	}
+	binary.LittleEndian.PutUint16(sample[54:56], uint16(futex)|schedSyscallCompat)
+	if event, _ := parseSchedRecord(sample, 0); event.Syscall != syscallName(runtime.GOARCH, futex, true) {
+		t.Fatalf("compat syscall = %q", event.Syscall)
+	}
+	if event, _ := parseSchedRecord(schedSample(2, 0), 0); event.Syscall != "" {
+		t.Fatalf("no syscall = %q", event.Syscall)
+	}
+	for _, test := range []struct {
+		event   schedEvent
+		groupBy string
+		want    string
+	}{
+		{schedEvent{Process: "api", Syscall: "futex"}, schedGroupBySyscall, "futex"},
+		{schedEvent{Process: "api"}, schedGroupBySyscall, schedNoSyscall},
+		{schedEvent{Process: "api", Syscall: "futex"}, "", "api"},
+		{schedEvent{Event: "sched_offcpu"}, traceGroupByEvent, "sched_offcpu"},
+		{schedEvent{CgroupID: 7}, "cgroup", "7"},
+	} {
+		if got := schedGroupKey(test.event, test.groupBy); got != test.want {
+			t.Errorf("schedGroupKey(%+v, %q) = %q, want %q", test.event, test.groupBy, got, test.want)
+		}
 	}
 }
 
@@ -143,9 +181,69 @@ func TestSchedTraceScreenViewsAndKeys(t *testing.T) {
 	if got := next.(schedTraceScreenModel).groupBy; got != "cgroup" {
 		t.Fatalf("group = %q", got)
 	}
+	next, _ = next.(schedTraceScreenModel).updateKey(tea.KeyPressMsg{Code: tea.KeyTab})
+	if got := next.(schedTraceScreenModel).groupBy; got != schedGroupBySyscall {
+		t.Fatalf("tab after cgroup = %q", got)
+	}
+	next, _ = model.updateKey(tea.KeyPressMsg{Code: 's', Text: "s"})
+	grouped := next.(schedTraceScreenModel)
+	grouped.events = append(grouped.events, schedEvent{Event: "sched_offcpu", Process: "worker", Syscall: "futex"})
+	if got, view := grouped.groupBy, grouped.View().Content; got != schedGroupBySyscall || !strings.Contains(view, "futex") || !strings.Contains(view, schedNoSyscall+" ") {
+		t.Fatalf("group = %q, view = %q", got, view)
+	}
 	next, _ = model.updateKey(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if !next.(schedTraceScreenModel).detail {
 		t.Fatal("Enter did not open detail")
+	}
+}
+
+// CI의 tls-smoke job이 root로 이 시험을 돌린다. 기다린 구간에 syscall 이름이 붙는지 본다. helper는 stdin의 read에서
+// 기다리고, sleep은 nanosleep 계열에서 잔다. 이름은 사용자 register에서 읽으므로 arm64 runner가 arm64 배치를 확인한다.
+func TestTraceSchedNamesTheSyscallOfAWait(t *testing.T) {
+	capabilities, err := effectiveCapabilities()
+	if err != nil || missingCapabilities(bpfTraceCapabilities, capabilities) != "" {
+		t.Skip("trace sched needs BPF and perf capabilities")
+	}
+	if err := schedTracePrerequisites(); err != nil {
+		t.Skip(err)
+	}
+	helper, err := startSyscallHelper(t, exec.Command(os.Args[0], "-test.run=^TestTraceSyscallHelperProcess$", "--", syscallHelperMarker))
+	if err != nil {
+		t.Fatal(err)
+	}
+	comm := syscallTestComm()
+	stop := make(chan struct{})
+	reads, sleeps := 0, 0
+	finished := make(chan error, 1)
+	go func() {
+		_, err := collectSchedEvents(0, time.Millisecond, func(event schedEvent) error {
+			if event.Event != "sched_offcpu" {
+				return nil
+			}
+			if event.Process == comm && event.Syscall == "read" {
+				reads++
+			}
+			if event.Process == "sleep" && strings.HasSuffix(event.Syscall, "nanosleep") {
+				sleeps++
+			}
+			return nil
+		}, stop)
+		finished <- err
+	}()
+	// program을 붙인 때를 알 수 없으므로 2초 남짓 여러 번 기다리게 한다.
+	for range 10 {
+		helper.send(t, 'r')
+		if err := exec.Command("sleep", "0.05").Run(); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	close(stop)
+	if err := <-finished; err != nil {
+		t.Fatal(err)
+	}
+	if reads == 0 || sleeps == 0 {
+		t.Errorf("read waits %d, sleep waits %d", reads, sleeps)
 	}
 }
 

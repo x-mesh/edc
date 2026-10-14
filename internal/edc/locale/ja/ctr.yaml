@@ -19,10 +19,21 @@ ctr:
     invalid_reference: "不正な container 名 %q: 英字、数字、_.-/ のみ使い、'-' で始められません"
     not_found: "container %s がありません"
   state:
-    summary: "%s、稼働 %s、再起動 %d 回、image %s"
+    summary: "%s、稼働 %s、再起動 %d 回(%s)、image %s"
+    no_policy: "再起動ポリシーなし"
+    restart_gave_up: "%d 回再起動して %s の上限に達したため、docker は再起動しない"
+    health_failed: "health check が %d 回連続で失敗、最新の exit %d: %s"
     inspect_failed: "docker inspect に失敗: %s"
+  image:
+    current: "image の参照は実行中の image を指す、%s 作成"
+    outdated: "%s は今 %s(%s 作成)を指すが、container は %s(%s 作成)で実行中。反映するには container を作り直す必要がある"
+    no_tag: "%s がこのホストにないため比較できない。container は %s(%s 作成)で実行中"
+    no_id: "docker inspect が container の image ID を返さない"
+    created: "%s(%s 前)"
   listen:
     none: "container の process が持つ listen 中の tcp・udp socket なし"
+    published_none: "%s(%s で publish)を listen する container の process なし"
+    published_loopback: "%s(%s で publish)を loopback でのみ listen。publish した port からの接続は loopback に届かない"
   limits:
     summary: "memory %s · OOM kill %s · CPU throttle %s · pids %s"
     no_limit: "上限なし"
@@ -33,5 +44,15 @@ ctr:
   log:
     none: "最後のログ %d 行にエラー行なし"
     errors: "最後のログ %d 行のうちエラー %d 行、最新: %s"
+  disk:
+    summary: "%s · writable layer %s"
+    log_file: "log %s (%s)"
+    log_driver: "log driver %s"
+    no_rotation: "rotation なし"
+    log_unbounded: "json-file の log に max-size がなく、%s まで大きくなりました。container か daemon の log option で max-size を設定してください"
+    writable_large: "container が writable layer に %s を書きました。container を作り直すと消えるため、データは volume に置いてください"
   evidence:
     log: "ログ"
+    log_file: "log ファイル"
+    health: "health check の記録"
+    published: "publish した port"

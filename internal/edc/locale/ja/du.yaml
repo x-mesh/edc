@@ -1,0 +1,56 @@
+# du コマンドの日本語メッセージ。
+du:
+  skip:
+    unsupported: "du は Linux と macOS でのみ動作します"
+  error:
+    path: "%s を読めませんでした"
+  summary: "%s (%s)、項目 %d 個、%s、worker %d 個"
+  summary_partial: "ここまで %s (%s)、項目 %d 個、制限時間 %s で停止"
+  summary_stopped: "ここまで %s (%s)、項目 %d 個、停止"
+  warning:
+    partial: "制限時間で止まったため、サイズは読んだ部分だけの値です"
+    stopped: "停止したため、サイズは読んだ部分だけの値です"
+    unreadable_root: "ディレクトリ %d 個を読めず数えていません。root で実行すると数えます"
+    unreadable: "ディレクトリ %d 個を読めず数えていません"
+    no_mountinfo: "マウント表を読めないため(%s)、パスの下の bind mount も数えます"
+    deleted_open: "削除済みでも process が開いたままのファイルが %s あります(%s)。最大のものは %s(pid %d)が開いています"
+  evidence:
+    unreadable: "読めなかったディレクトリ"
+  other: "(残りの項目 %d 個)"
+  fs:
+    title: "ファイルシステム  %s  %s  %s 使用 / 全体 %s"
+    counted: "数えた量"
+    deleted: "削除済み・オープン中"
+    files: "(ファイル %d 個)"
+    not_found: "見つからない"
+    not_found_hint: "マウントの下に隠れたファイル、またはファイルシステムの metadata"
+    partial_hint: "root で実行するとすべての process を読みます"
+  browse:
+    title: "edc du · %s · %s · 項目 %d 個"
+    help: "↑↓ 移動 · Enter 開く · ← 上へ · q 終了"
+    reading: "%s を読み込み中 · ディレクトリ %d 個 · %s"
+    stop_help: "q で止めて読んだ分を表示します"
+    cancel_help: "Ctrl-C で止めて読んだ分を出力します"
+    stopping: "停止中…"
+    empty: "(空)"
+    other: "(残りのファイル %d 個)"
+    unreadable: "(読めない)"
+    mount: "(%s マウント、数えない)"
+    fs: "ファイルシステム %s %s · %s 使用 / 全体 %s"
+    deleted: "削除済み・オープン中 %s"
+    partial: "一部のみ"
+    unreadable_count: "読めない %d 個"
+  diff:
+    count: "ディレクトリの差 %d 件 (e 詳細)"
+    path_differs: "パスが異なるためディレクトリを比較しませんでした: %s → %s"
+    partial: "片方の走査が最後まで終わらなかったためディレクトリを比較しませんでした"
+  label:
+    container: "container %s"
+    layer: "%s の writable layer"
+    rootfs: "%s の root ファイルシステム"
+    volume: "volume %s (%s が使用)"
+    bind: "%s にマウント"
+  mounts:
+    title: "スキップしたマウント"
+    used: "%s 使用"
+    more: "ほか %d 個、-v ですべて表示"

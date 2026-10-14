@@ -139,6 +139,38 @@ command:
     notes:
       - "edc asks for the public IP by default and drops the line after the time limit."
       - "Disk usage is the total size minus the available space."
+  du:
+    summary: "Disk usage under a directory, largest first (Linux and macOS)"
+    option:
+      top: "rows to show, the default fits the terminal"
+      workers: "directories to read at the same time"
+      cross_mounts: "count the mounts below the path too"
+      no_browse: "show progress and bars, then exit"
+      timeout: "time limit, after it edc shows what it counted"
+      verbose: "show every unreadable directory and skipped mount"
+    notes:
+      - "It reads only. It changes and deletes nothing."
+      - "It counts disk blocks as du does. A hard link counts once."
+      - "It stays on one file system and lists the mounts that it skipped."
+      - "A bind or overlay mount shares a file system, so its size shows as -."
+      - "On Linux, it also shows deleted files that a process still holds open."
+      - "In a terminal, it opens a screen to browse. q prints the result."
+      - "On Linux, docker storage paths also show container names."
+      - "On macOS, APFS shared blocks and snapshots prevent a not found comparison."
+  clean:
+    summary: "Disk usage of known dev caches, read only (Linux and macOS)"
+    option:
+      timeout: "time limit, after it edc marks the rest not scanned"
+      project: "root to search for marked build folders, repeat for more"
+      verbose: "show every candidate, more groups, reasons, cleanup commands"
+    notes:
+      - "It reads only. It changes and deletes nothing."
+      - "It measures tool caches, browsers, Xcode data, app caches, logs, and models."
+      - "It shows usage. Only the Docker engine reports what a cleanup can free."
+      - "APFS clones, snapshots, and hard links can make a sum larger."
+      - "A missing tool or a failed check shows a status, never 0 B."
+      - "It reads Docker by socket, the OrbStack disk, and worktrees. None is summed."
+      - "It lists what it does not measure. -v shows why."
   where:
     summary: "The near region and the shape of this network"
     option:
@@ -219,7 +251,7 @@ command:
       - "A PCAP file can hold credentials and personal data."
       - "The JSON redaction does not apply to the PCAP payload."
   trace:
-    summary: "Trace network, I/O, socket, drop, scheduler, and process events"
+    summary: "Trace network, I/O, socket, drop, sched, process, and syscall events"
     option:
       duration: "trace time, max 60s. Omit for Ctrl-C"
       slow: "min latency, e.g. 20us, 250ms. Default io/sched 1ms"
@@ -240,6 +272,8 @@ command:
       reason: "trace drop: only these reasons, comma separated"
       device: "trace io: block device major:minor"
       signal: "trace exec: signals to record, names, all, or none"
+      syscall: "trace syscall: only these calls, comma-separated"
+      errors: "trace syscall: failed calls, all or errno names"
     notes:
       - "The default output opens a full-screen trace view in a terminal."
       - "Use / to filter process, destination, event, or source text."
@@ -247,6 +281,8 @@ command:
       - "Press g to scroll events."
       - "In the event list, press Up or Down to select an event. The list stops."
       - "Enter shows all fields and the whole payload. l or Esc follows again."
+      - "trace syscall counts in the kernel and prints one summary at the end."
+      - "trace syscall --process takes PIDs or exact command names, 15 bytes max."
       - "Press f to follow the newest event in the detail view."
       - "Press i to show a preview under the list. J and K scroll it."
       - "trace http: v shows payload lines, m shows secrets, z decodes gzip."
@@ -366,6 +402,7 @@ command:
       output: "report file, - for stdout"
       since: "how far back events and changes look (default 6h)"
       force: "replace an existing output file"
+      du: "also save edc du of this path (Linux and macOS)"
     notes:
       - "It saves info, listen, audit, events, and changes results in one report."
       - "The file has mode 0600. It holds accounts, sudo rules, and process names."

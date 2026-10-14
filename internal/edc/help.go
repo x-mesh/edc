@@ -187,6 +187,7 @@ var commandDocs = []commandDoc{
 			{"--duration 1m", "command.watch.option.duration"},
 			{"--expect-status N", "command.http.option.expect_status"},
 			{"--recursive", "watchfs.option.recursive"},
+			{"--driver auto", "watchfs.option.driver"},
 			{"--event <events>", "watchfs.option.event"},
 			{"--match <glob>", "watchfs.option.match"},
 			{"--exec <command>", "watchfs.option.exec"},
@@ -207,6 +208,29 @@ var commandDocs = []commandDoc{
 			{"--timeout 3s", "command.info.option.timeout"},
 			{"-v, --verbose", "command.info.option.verbose"},
 		},
+	},
+	{
+		name: "du", group: "observe",
+		usage: []string{"edc du [options] [path]"},
+		options: []optionDoc{
+			{"--top N", "command.du.option.top"},
+			{"--workers 4", "command.du.option.workers"},
+			{"--cross-mounts", "command.du.option.cross_mounts"},
+			{"-B, --no-browse", "command.du.option.no_browse"},
+			{"--timeout 60s", "command.du.option.timeout"},
+			{"-v, --verbose", "command.du.option.verbose"},
+		},
+		usesCommon: true,
+	},
+	{
+		name: "clean", group: "observe",
+		usage: []string{"edc clean [options]"},
+		options: []optionDoc{
+			{"--timeout 60s", "command.clean.option.timeout"},
+			{"--project DIR", "command.clean.option.project"},
+			{"-v, --verbose", "command.clean.option.verbose"},
+		},
+		usesCommon: true,
 	},
 	{
 		name: "where", group: "observe",
@@ -274,7 +298,7 @@ var commandDocs = []commandDoc{
 	},
 	{
 		name: "trace", group: "observe",
-		usage: []string{traceProtocolUsage, traceDatabaseUsage, traceSocketUsage, traceShowUsage},
+		usage: []string{traceProtocolUsage, traceDatabaseUsage, traceSocketUsage, traceSyscallUsage, traceShowUsage},
 		options: []optionDoc{
 			{"--duration 15s", "command.trace.option.duration"},
 			{"--slow <duration>", "command.trace.option.slow"},
@@ -295,6 +319,8 @@ var commandDocs = []commandDoc{
 			{"--reason <names>", "command.trace.option.reason"},
 			{"--device <major:minor>", "command.trace.option.device"},
 			{"--signal <names>", "command.trace.option.signal"},
+			{"--syscall <names>", "command.trace.option.syscall"},
+			{"--errors <all|names>", "command.trace.option.errors"},
 			{"--yes", "command.trace.option.yes"},
 		},
 	},
@@ -313,11 +339,12 @@ var commandDocs = []commandDoc{
 	},
 	{
 		name: "snapshot", group: "record",
-		usage: []string{"edc snapshot [--output <file|->] [--since 6h] [--force]", "             [--timeout 15s] [--redact]"},
+		usage: []string{"edc snapshot [--output <file|->] [--since 6h] [--force]", "             [--du <path>] [--timeout 15s] [--redact]"},
 		options: []optionDoc{
 			{"--output <file|->", "command.snapshot.option.output"},
 			{"--since 6h", "command.snapshot.option.since"},
 			{"--force", "command.snapshot.option.force"},
+			{"--du <path>", "command.snapshot.option.du"},
 			{"--timeout 15s", "option.timeout"},
 			{"--redact", "option.redact"},
 		},

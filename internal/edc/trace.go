@@ -147,6 +147,8 @@ var traceProtocolRegistry = []traceProtocolRegistration{
 	{name: "sched", view: traceProtocolView{selectorLabel: "sched"}, spec: traceProtocolSpec{hideTraffic: true, hiddenViews: []string{traceGroupBySource, traceGroupByTarget, traceGroupByPort}}, run: runTraceSched},
 	// process의 exec, exit, signal이다. 주소와 port가 없어 process와 event 보기만 뜻이 있다.
 	{name: "exec", view: traceProtocolView{selectorLabel: "exec"}, spec: traceProtocolSpec{hideTraffic: true, hiddenViews: []string{traceGroupBySource, traceGroupByTarget, traceGroupByPort}, linuxOnly: true, prerequisites: execTracePrerequisites}, run: runTraceExec},
+	// process와 syscall별 호출 수와 시간이다. event를 하나씩 내지 않고 kernel 안에서 모아 끝날 때 한 번 출력한다.
+	{name: "syscall", view: traceProtocolView{selectorLabel: "syscall"}, spec: traceProtocolSpec{hideTraffic: true, hiddenViews: []string{traceGroupBySource, traceGroupByTarget, traceGroupByPort}, linuxOnly: true, prerequisites: syscallTracePrerequisites}, run: runTraceSyscall},
 }
 
 var traceProtocols = traceProtocolSpecs(traceProtocolRegistry)
@@ -483,6 +485,7 @@ func traceUsage() {
 	fmt.Fprintln(os.Stderr, T("cli.usage", traceProtocolUsage))
 	fmt.Fprintln(os.Stderr, T("cli.usage", traceDatabaseUsage))
 	fmt.Fprintln(os.Stderr, T("cli.usage", traceSocketUsage))
+	fmt.Fprintln(os.Stderr, T("cli.usage", traceSyscallUsage))
 	fmt.Fprintln(os.Stderr, T("cli.usage", traceShowUsage))
 }
 

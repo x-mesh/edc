@@ -23,7 +23,7 @@ const (
 	snapshotPressureWarn = 10
 )
 
-const snapshotUsage = "edc snapshot [--output <file|->] [--since 6h] [--force] [--timeout 15s] [--redact]"
+const snapshotUsage = "edc snapshot [--output <file|->] [--since 6h] [--force] [--du <path>] [--timeout 15s] [--redact]"
 
 // runSnapshot은 host 상태를 report 하나로 저장한다. 장애 전후에 한 번씩 찍어 edc report diff로 비교하려는 것이다.
 // 공인 IP 조회처럼 host 밖으로 나가는 요청은 하지 않는다.
@@ -34,6 +34,7 @@ func runSnapshot(args []string, version string) int {
 	output := set.String("output", "", T("command.snapshot.option.output"))
 	since := set.Duration("since", 6*time.Hour, T("command.snapshot.option.since"))
 	force := set.Bool("force", false, T("command.snapshot.option.force"))
+	duPath := set.String("du", "", T("command.snapshot.option.du"))
 	set.DurationVar(&options.timeout, "timeout", options.timeout, T("option.timeout"))
 	set.BoolVar(&options.redact, "redact", options.redact, T("option.redact"))
 	if err := set.Parse(args); err != nil {
@@ -59,7 +60,7 @@ func runSnapshot(args []string, version string) int {
 	ctx, cancel, deadline := probeContext(options.timeout)
 	defer cancel()
 	defer deadline()
-	results := collectSnapshot(ctx, snapshotSections(*since), snapshotGrace)
+	results := collectSnapshot(ctx, snapshotSections(*since, *duPath, options.timeout), snapshotGrace)
 	sortResults(results)
 	report := buildReport(version, started, map[string]interface{}{"since": since.String()}, results, options.redact)
 	if path == "-" {
@@ -80,8 +81,9 @@ func runSnapshot(args []string, version string) int {
 }
 
 // snapshotSections는 각 명령이 쓰는 수집기와 판정을 그대로 부른다. 판정 기준이 명령과 snapshot에서 갈라지지 않게 한다.
-func snapshotSections(since time.Duration) []snapshotSection {
-	return []snapshotSection{
+// du는 경로 아래를 모두 읽어 오래 걸리므로 --du로 경로를 줄 때만 넣는다.
+func snapshotSections(since time.Duration, duPath string, timeout time.Duration) []snapshotSection {
+	sections := []snapshotSection{
 		{name: "info.host", run: func(context.Context) []Result {
 			started := time.Now()
 			details, err := collectHostDetails()
@@ -135,6 +137,12 @@ func snapshotSections(since time.Duration) []snapshotSection {
 			return evaluateChanges(ctx, sources, since)
 		}, ids: func() []string { return []string{"changes.packages", "changes.etc", "changes.services"} }},
 	}
+	if duPath != "" {
+		sections = append(sections, snapshotSection{name: duProbeID, run: func(ctx context.Context) []Result {
+			return []Result{duSnapshotResult(ctx, duPath, timeout)}
+		}})
+	}
+	return sections
 }
 
 type snapshotSection struct {

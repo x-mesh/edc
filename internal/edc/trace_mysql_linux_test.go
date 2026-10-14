@@ -107,8 +107,8 @@ func TestMySQLTraceSlowOptionChecks(t *testing.T) {
 		{[]string{"mysql", "--slow", "-1ms"}, "--slow must be greater than 0"},
 		{[]string{"mysql", "--slow", "slow"}, "invalid value \"slow\" for flag -slow"},
 		{[]string{"mysql", "--slow", "1000000000000000000000h"}, "invalid value \"1000000000000000000000h\" for flag -slow"},
-		{[]string{"tcp", "--slow", "1ms"}, "--slow is only available for trace mysql, clickhouse, postgres, redis, io, and sched"},
-		{[]string{"http", "--slow", "1ms"}, "--slow is only available for trace mysql, clickhouse, postgres, redis, io, and sched"},
+		{[]string{"tcp", "--slow", "1ms"}, "--slow is only available for trace mysql, clickhouse, postgres, redis, io, sched, and syscall"},
+		{[]string{"http", "--slow", "1ms"}, "--slow is only available for trace mysql, clickhouse, postgres, redis, io, sched, and syscall"},
 	} {
 		var code int
 		stderr := captureTraceStderr(t, func() { code = runTrace(test.args) })

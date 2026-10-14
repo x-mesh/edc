@@ -25,9 +25,26 @@ func hostCtrSources() (ctrSources, bool) {
 		limits:     linuxCtrLimits,
 		processes:  linuxSvcProcesses,
 		fdLimit:    func(pid int) topFDLimit { return readLinuxFDLimit(filepath.Join("/proc", strconv.Itoa(pid))) },
-		listen:     func() ([]listenSocket, error) { return collectListenSockets(listenFamilies{TCP: true, UDP: true}) },
+		listen:     collectNetnsListenSockets,
 		logs:       linuxCtrLogs,
-		now:        time.Now,
+		health: func(ctx context.Context, id string) (string, error) {
+			return commandOutput(ctx, "docker", "inspect", "--type", "container", "--format", ctrHealthFormat, id)
+		},
+		// 이미지 참조는 docker가 준 값이지만 --로 option과 나눈다.
+		image: func(ctx context.Context, reference string) (string, error) {
+			return commandOutput(ctx, "docker", "image", "inspect", "--format", ctrImageFormat, "--", reference)
+		},
+		disk: func(ctx context.Context, id string) (string, error) {
+			return commandOutput(ctx, "docker", "inspect", "--type", "container", "--size", "--format", ctrDiskFormat, id)
+		},
+		fileSize: func(path string) (int64, error) {
+			info, err := os.Stat(path)
+			if err != nil {
+				return 0, err
+			}
+			return info.Size(), nil
+		},
+		now: time.Now,
 		listIDs: func(ctx context.Context) (string, error) {
 			return commandOutput(ctx, "docker", "ps", "--all", "--quiet", "--no-trunc")
 		},

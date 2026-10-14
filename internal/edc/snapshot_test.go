@@ -453,7 +453,7 @@ func TestCollectSnapshotSkipsEachKnownIDOnTimeout(t *testing.T) {
 }
 
 func TestSnapshotSectionIDsAreStable(t *testing.T) {
-	for _, section := range snapshotSections(6 * time.Hour) {
+	for _, section := range snapshotSections(6*time.Hour, "/data", time.Minute) {
 		if section.ids == nil {
 			continue
 		}

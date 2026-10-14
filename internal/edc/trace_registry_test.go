@@ -17,7 +17,7 @@ func TestTraceProtocolSelectItemsUseRegistryOrder(t *testing.T) {
 		}
 		got = append(got, item.value)
 	}
-	want := []string{"tcp", "udp", "dns", "arp", "ndp", "http", "mysql", "clickhouse", "postgres", "redis", "io", "socket", "drop", "sched", "exec"}
+	want := []string{"tcp", "udp", "dns", "arp", "ndp", "http", "mysql", "clickhouse", "postgres", "redis", "io", "socket", "drop", "sched", "exec", "syscall"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("protocols = %#v, want %#v", got, want)
 	}
@@ -73,7 +73,7 @@ func TestRunTraceKeepsUsageOutsideTerminals(t *testing.T) {
 			t.Fatalf("code = %d", code)
 		}
 	})
-	if want := "usage: edc trace <tcp|udp|dns|arp|ndp|http|drop|io|sched|exec> [options]\nusage: edc trace <mysql|clickhouse|postgres|redis> [options]\nusage: " + traceSocketUsage + "\nusage: " + traceShowUsage + "\n"; stderr != want {
+	if want := "usage: edc trace <tcp|udp|dns|arp|ndp|http|drop|io|sched|exec> [options]\nusage: edc trace <mysql|clickhouse|postgres|redis> [options]\nusage: " + traceSocketUsage + "\nusage: " + traceSyscallUsage + "\nusage: " + traceShowUsage + "\n"; stderr != want {
 		t.Fatalf("stderr = %q, want %q", stderr, want)
 	}
 }

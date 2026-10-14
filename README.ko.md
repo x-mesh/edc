@@ -174,6 +174,12 @@ Setup wizard는 `edc log`의 저장 경로를 비워두고 실행별 파일을 �
 # 외부 public IP 조회 없이 실행
 ./bin/edc info --public=false
 
+# 디렉터리 아래 디스크 사용량, 큰 항목부터 (Linux)
+./bin/edc du /var
+
+# 알려진 개발 캐시 사용량, 읽기 전용 (Linux, macOS)
+./bin/edc clean
+
 # 기본 종합 진단
 ./bin/edc doctor https://example.com
 
@@ -293,7 +299,22 @@ edc watch fs --duration 1m --json events.jsonl
 
 기본으로 `.git`, `node_modules`, `.venv`, `venv`, `__pycache__`, `.mypy_cache`, `.pytest_cache`, `.ruff_cache`, `.tox`, `.next`, `.gradle`을 모든 깊이에서 제외합니다. 빌드 결과물을 감시할 수 있도록 `build`와 `dist`는 제외하지 않습니다. `--exclude 'build/**'`처럼 제외 glob을 반복해서 추가할 수 있습니다. 기본 제외 디렉터리도 감시하려면 `--no-default-exclude`를 쓰며, 이때도 `--exclude`로 준 패턴은 적용됩니다.
 
-Linux에서 `--recursive`이면 `edc`는 디렉터리마다 감시를 등록한 뒤에 출력을 시작합니다. 트리가 크면 시간이 걸립니다. stderr가 터미널이면 이 동안 안내를 출력합니다.
+Linux에서는 `--driver`로 감시 방식을 고릅니다. 기본값은 `auto`입니다.
+
+- `fanotify`: 파일시스템 전체에 mark 하나를 겁니다. 시작할 때 트리를 훑지 않고, inotify watch 한도도 받지 않습니다. root(`CAP_SYS_ADMIN`)와 Linux 5.17 이상이 필요합니다.
+- `inotify`: 디렉터리마다 감시를 등록한 뒤에 출력을 시작합니다. 트리가 크면 시간이 걸리며, stderr가 터미널이면 이 동안 안내를 출력합니다. 디렉터리 수가 `fs.inotify.max_user_watches`를 넘으면 오류로 멈춥니다.
+
+`--recursive`이면 `auto`는 `fanotify`를 먼저 시도하고, 시작할 수 없으면 `inotify`를 씁니다. stderr가 터미널이면 그 이유를 한 줄로 알립니다. `--recursive`가 없으면 감시가 하나뿐이므로 `inotify`를 씁니다. 실제로 쓴 방식은 `ready` 기록의 `driver`에 나옵니다. `--driver fanotify`를 지정했는데 `fanotify`를 시작할 수 없으면 이유를 출력하고 멈춥니다.
+
+`fanotify`는 다음 경우에 시작할 수 없습니다.
+
+- root로 실행하지 않았습니다.
+- 커널이 Linux 5.17보다 오래되었습니다.
+- 감시 루트가 있는 파일시스템이 `fanotify`에 필요한 file handle을 지원하지 않습니다. btrfs subvolume이 그 예입니다.
+
+mark 하나는 파일시스템 하나만 감시합니다. 그래서 `--recursive`이면 감시 루트 아래에 마운트된 파일시스템마다 mark를 겁니다. sysfs나 devpts처럼 mark를 받지 않는 파일시스템이 있고, 감시 루트 밖의 디렉터리를 bind mount한 지점은 그 변경을 감시 루트 안의 경로로 알릴 수 없습니다. `edc`는 이런 마운트를 건너뛰고 stderr에 한 줄로 알리며, 건너뛴 마운트 아래의 변경은 알리지 않습니다. 이 변경이 필요하면 `--driver inotify`를 씁니다. `--exclude`에 걸린 마운트에는 mark를 걸지 않습니다.
+
+`fanotify`는 파일시스템 전체의 이벤트를 받고, `edc`가 감시 루트 밖의 이벤트를 버립니다. 그래서 파일시스템이 바쁘면 CPU를 씁니다. 이벤트가 적게 올 때는 읽기 사이에 5ms를 기다립니다. CPU 사용이 부담되면 `--driver inotify`를 씁니다.
 
 macOS에서는 `watch fs`가 FSEvents를 사용합니다. stream 하나가 트리 전체를 감시하므로 파일 수만큼 file descriptor를 쓰지 않습니다. FSEvents는 변경을 최대 50ms 동안 모아서 보냅니다. macOS가 이벤트를 유실하면 `watch fs`는 그 디렉터리를 다시 훑어서 달라진 점을 `create`, `modify`, `remove`로 알립니다. 이때 이동은 `remove`와 `create`로 나옵니다. 한 번에 최대 200,000개 항목을 훑으며, 다시 훑었다는 사실과 상한에서 멈췄는지를 stderr에 한 줄로 알립니다. 제외한 디렉터리의 변경도 FSEvents가 보내지만 `edc`가 버립니다.
 
@@ -486,16 +507,24 @@ sudo edc ctr --json - web         # 보기마다 결과 하나
 
 | 결과 | pass | warn | fail |
 |---|---|---|---|
-| `ctr.state` | container가 실행 중이고 재시작과 OOM kill이 없음 | 실행 중이지만 재시작했거나, OOM kill됐거나, unhealthy이거나, paused·created·restarting 상태임 | container가 exited이거나 dead임. 요약에 종료 코드를 보여 줌 |
+| `ctr.state` | container가 실행 중이고 재시작과 OOM kill이 없음 | 실행 중이지만 재시작했거나, OOM kill됐거나, unhealthy이거나, paused·created·restarting 상태임. unhealthy이면 마지막으로 실패한 health check의 출력을 warning으로 보여 줌 | container가 exited이거나 dead임. 요약에 종료 코드를 보여 줌. `on-failure` 한도에 닿아 더 재시작하지 않으면 warning으로 알림 |
+| `ctr.image` | 이미지 참조가 container가 실행 중인 이미지를 가리키거나, 그 참조가 이 호스트에 없음 | 이미지 참조가 다른 이미지를 가리킴. 반영하려면 container를 다시 만들어야 함 | |
 | `ctr.processes` | container cgroup의 process를 CPU%, RSS와 함께 보여 줌 | | |
 | `ctr.limits` | memory, OOM kill, CPU throttle, pids가 한도 아래임 | memory 사용량이 한도의 90% 이상, 커널이 container의 process를 메모리 부족으로 죽임, CPU 한도가 period의 25% 이상을 throttle함, pids가 한도의 90% 이상 | |
 | `ctr.fd` | 모든 process가 soft fd 한계의 80% 미만을 씀 | 한계의 80% 이상을 쓰는 process가 있음 | |
-| `ctr.listen` | container process가 가진 TCP·UDP 소켓을 보여 줌 | | |
+| `ctr.listen` | container process가 가진 TCP·UDP 소켓을 보여 주고, publish한 port마다 listen하는 process가 있음 | publish한 port를 container 안에서 listen하는 process가 없거나, loopback 주소에서만 listen함 | |
 | `ctr.log` | 마지막 로그 50줄에 오류 줄이 없음 | 오류 줄이 있고, 마지막 5줄을 보여 줌 | |
+| `ctr.disk` | log 파일과 writable layer의 크기를 보여 줌 | json-file log에 `max-size`가 없고 1 GiB 이상이거나, writable layer가 10 GiB 이상임 | |
+
+`ctr.state` 요약에는 재시작 정책이 함께 나옵니다(예: `재시작 1번(on-failure:5)`). `-v`를 주면 docker가 남긴 health check를 exit code, 출력 첫 줄과 함께 보여 줍니다. health check 기록은 healthcheck가 있는 container에서만 읽습니다.
+
+`ctr.image`는 container의 이미지 참조가 지금 가리키는 이미지를 `docker image inspect`로 읽습니다. `docker pull`이나 build는 tag를 새 이미지로 옮길 수 있지만, 실행 중인 container는 다시 만들기 전까지 예전 이미지로 돕니다.
 
 `ctr.limits`는 container의 cgroup v2를 읽습니다. `memory.current`와 `memory.max`, OOM kill은 `memory.events.local`, throttle된 period는 container가 시작된 뒤의 `cpu.stat`, 그리고 `pids.current`와 `pids.max`입니다. 오류 줄은 `error`, `fatal`, `panic`, `exception`, `traceback`, `oom`이 든 줄입니다. 로그는 `docker logs --tail 50`으로 읽으므로, 다른 곳에 쓰는 container는 오류 줄이 보이지 않습니다.
 
-`ctr.listen`은 edc가 있는 network namespace의 소켓을 읽습니다. 자기 network namespace를 가진 container는 소켓이 그 namespace 안에 있어 보이지 않고, 공개된 port는 `docker-proxy`나 방화벽 규칙의 것입니다. `--network host`인 container는 소켓이 보입니다.
+`ctr.listen`은 container의 network namespace에서 소켓을 읽습니다. docker는 publish한 port로 들어온 연결을 container 주소로 넘기므로, container 안에서 `127.0.0.1`이나 `::1`에서만 listen하는 process에는 연결이 닿지 않습니다. 막 시작해 아직 listen하지 않은 container도 이 warn을 낼 수 있습니다.
+
+`ctr.disk`는 writable layer 크기와 log option을 `docker inspect --size`에 묻고, log 파일 크기를 읽습니다. `max-size`가 없는 json-file log는 rotation하지 않습니다. writable layer의 데이터는 container를 다시 만들면 사라집니다. root가 아니면 log 파일을 읽지 못해 log 크기가 `-`로 나옵니다.
 
 root로 실행하거나, docker 그룹으로 실행하고 fd는 root로 읽으세요. docker daemon에 접근하지 못하면 `skip` 하나를 냅니다. root가 아니면 다른 사용자의 fd와 소켓 주인을 읽지 못해 그 결과가 `skip`으로 나옵니다. 멈춘 container는 process 관련 결과가 `skip`이고 로그는 그대로 보여 줍니다. `docker` 명령과 cgroup v2가 필요합니다. macOS에서는 `skip` 하나를 내고 0으로 끝납니다. container가 없으면 오류를 쓰고 1로 끝납니다.
 
@@ -537,6 +566,255 @@ edc changes --json -            # 모든 변경을 metrics.events에 담음
 원천을 읽지 못하면 결과는 이유와 함께 `skip`입니다. `skip`은 바뀐 것이 없다는 뜻이 아닙니다. 모든 원천을 읽으려면 root로 실행하세요. root가 아니면 `/etc` 아래 일부 디렉터리와 일부 패키지 로그를 읽지 못합니다.
 
 `edc changes`는 회전된 압축 로그를 풀지 않습니다. 압축 로그가 시간 범위 시작보다 새로우면 경고로 알립니다. `/etc`는 파일 내용이 아니라 mtime만 읽으므로 파일 안에서 무엇이 바뀌었는지는 보이지 않습니다. systemd는 unit마다 시작 시각을 하나만 남기므로, 여러 번 재시작한 unit은 마지막 시작 시각과 재시작 횟수로 보입니다. `/etc`는 항목 20000개에서 멈추고 `warn`으로 알립니다. `dnf history`와 `journalctl`은 실행하지 않습니다.
+
+## 디렉터리 디스크 사용량 (Linux)
+
+`edc du`는 디렉터리 아래의 디스크 사용량을 보여 줍니다. `du`처럼 할당된 block을 세고, hard link가 여러 개인 파일은 한 번만 셉니다. 아무것도 바꾸지 않으며 외부로 보내지 않습니다.
+
+```bash
+edc du                          # 현재 디렉터리
+edc du /var                     # /var 아래에서 큰 항목
+edc du --top 40 /var            # 40줄
+edc du --workers 1 /var         # 디렉터리를 하나씩 읽음
+edc du --cross-mounts /var      # /var 아래의 마운트도 셈
+edc du --json - /var            # 항목을 metrics.rows에 담음
+```
+
+터미널에서는 탐색 화면을 엽니다. 읽는 동안에는 읽은 디렉터리 수를 보여 주고, `q`를 누르면 멈추고 그때까지 읽은 결과를 보여 주며, `Ctrl-C`는 멈춘 뒤 화면을 닫습니다. 화면은 지금 디렉터리의 항목을 큰 것부터 나열합니다. `Enter`나 `→`로 디렉터리를 열고, `←`, `Backspace`, `Esc`로 위로 올라갑니다. `↑`, `↓`, `PgUp`, `PgDn`, `g`, `G`로 커서를 옮기고, `q`로 화면을 닫으면 결과를 출력합니다. 화면에서는 파일을 바꾸거나 지우지 않습니다. pipe로 넘기거나 `--json`을 쓰거나 `NO_COLOR`를 설정하면 화면 없이 결과만 출력합니다. 화면을 열 때는 가장 큰 파일 10,000개를 남기고, 남기지 않은 파일은 디렉터리마다 `(N other files)` 한 줄로 보여 줍니다.
+
+출력은 `du.scan` 결과 한 줄로 시작합니다. 이 줄에는 전체 크기, 항목 수, 걸린 시간, worker 수가 있고, 그 아래에 항목이 이어집니다. edc는 가장 큰 항목부터 고르고, 디렉터리를 고르면 그 안의 항목도 후보에 올립니다. 디렉터리 줄은 `/`로 끝나고, 마지막 줄은 보이지 않은 나머지 항목의 합입니다. 화면을 닫은 뒤의 출력은 터미널 높이에 맞춰 줄 수를 정하고, pipe로 넘기면 20줄을 보여 줍니다. `--top`은 화면이 아니라 이 출력의 줄 수를 정합니다.
+
+기본으로 한 파일 시스템 안에서만 셉니다. 경로 아래의 마운트에는 들어가지 않고, 건너뛴 마운트마다 파일 시스템 종류와 `statfs`가 알려 준 사용량을 보여 줍니다. bind mount와 overlay mount는 다른 경로와 파일 시스템을 공유하므로 사용량을 `-`로 표시합니다. 디렉터리를 자기 자신 위에 bind mount한 경우에는 그 파일이 다른 곳에 없으므로 건너뛰지 않고 셉니다.
+
+바쁜 호스트에서도 CPU를 적게 쓰도록 기본으로 디렉터리 4개를 동시에 읽습니다. `--workers`로 이 수를 바꿀 수 있습니다. 디렉터리마다 기록 하나와 가장 큰 파일 몇 개만 남기므로, 메모리 사용량은 파일 수가 아니라 디렉터리 수에 따라 늘어납니다.
+
+제한 시간(기본 60초)이 지나면 탐색을 멈춥니다. 이때 결과는 `warn`이고 `metrics.partial`은 `true`이며, 크기는 읽은 디렉터리만 센 값입니다. 읽지 못한 디렉터리가 있으면 결과는 `warn`이고 `-v`로 그 목록을 볼 수 있습니다. 모든 디렉터리를 읽으려면 root로 실행합니다. macOS에서는 결과가 `skip`입니다.
+
+항목 아래에는 경로가 속한 파일 시스템을 보여 줍니다. 마운트 지점, 종류, `df`와 같은 사용량과 전체 크기가 나옵니다. 그 파일 시스템에서 지워졌지만 process가 아직 열고 있는 파일도 보여 줍니다. 이 파일은 `df`에는 잡히지만 `du`로는 보이지 않습니다. 줄마다 크기, process, 지우기 전 경로가 나오며, 그 process를 재시작하거나 파일을 다시 열게 하면 공간이 돌아옵니다. 이 값은 경로 아래만이 아니라 파일 시스템 전체 기준입니다. root가 아니면 모든 process의 파일을 읽지 못하므로 값 앞에 `≥`를 붙입니다. 지워졌지만 열린 파일이 파일 시스템의 10% 이상이면 결과는 `warn`입니다.
+
+경로가 파일 시스템 전체의 마운트 지점이면 숫자를 맞춰 봅니다. `not found`는 사용량에서 센 크기와 지워졌지만 열린 파일을 뺀 값이고, 마운트 아래에 가려진 파일이나 파일 시스템 metadata가 이 공간을 쓸 수 있습니다. 모든 디렉터리와 process를 읽었고 제한 시간에 멈추지 않았을 때만 계산합니다. bind mount나 하위 디렉터리를 재면 이 비교는 나오지 않습니다. JSON에서는 `metrics.filesystem`, `metrics.deleted_open`, `metrics.not_found_bytes`에 이 값이 들어갑니다.
+
+어느 디렉터리가 늘었는지 보려면 두 번의 실행을 `--json`으로 저장하고 `edc report diff`로 비교합니다. `metrics.largest_dirs`에는 깊이와 관계없이 가장 큰 디렉터리 200개가 들어갑니다. `report diff`는 이 목록을 경로로 맞춰 변화가 가장 큰 디렉터리를 최대 10개 보여 줍니다. 하위 디렉터리 하나가 상위 디렉터리 변화의 90% 이상을 차지하면 상위 대신 그 하위 디렉터리를 보여 줍니다. 한쪽 목록에만 있는 디렉터리는 반대쪽 값을 그 목록의 가장 작은 크기 이하(`≤`)로 표시합니다. 같은 경로를 끝까지 읽은 두 결과만 비교합니다. hard link 이름이 두 디렉터리에 있는 파일은 먼저 읽은 디렉터리에 세므로, 실행마다 그 두 디렉터리 사이에서 크기가 옮겨 갈 수 있습니다.
+
+`PATH`에 `docker`가 있으면 `docker ps`와 `docker inspect`로 container 목록도 읽습니다. 형식은 container마다 이름, 로그 경로, 마운트, layer 경로만 읽습니다. 이 정보로 로그 디렉터리, writable layer, 실행 중인 container의 root 파일 시스템, volume, bind mount 원본에 `volume pgdata (db-1 사용)`처럼 container 이름을 붙입니다. JSON에서는 `label`에 들어갑니다. containerd image store를 쓰면 멈춘 container의 writable layer는 마운트되어 있지 않아 이름이 붙지 않습니다. docker가 3초 안에 답하지 않으면 이름 없이 출력합니다.
+
+## 알려진 개발 캐시 사용량 (Linux와 macOS)
+
+`edc clean`은 알려진 개발 캐시의 디스크 사용량을 보여 줍니다. 읽기만 하며 파일을 지우거나 바꾸지 않습니다.
+
+```bash
+edc clean                       # 알려진 캐시를 잼
+edc clean -v                    # 모든 후보, 더 많은 묶음, 이유, 정리 명령 추가
+edc clean --timeout 2m          # 제한 시간을 늘림
+edc clean --project ~/work      # ~/work에서 빌드 폴더도 찾음
+edc clean --project ~/a --project ~/b   # 루트를 더 지정하려면 옵션을 반복
+edc clean --json -              # 후보를 metrics.candidates에 담음
+```
+
+후보의 위치는 세 가지 방법 중 하나로 찾습니다. `go-build`, `go-mod`, `npm`, `pnpm`, `uv`, `homebrew`, `pip`는 그 캐시를 가진 도구에 물어서 찾습니다. 도구가 `PATH`에 없으면 상태는 `tool_absent`입니다.
+
+나머지 후보는 표의 순서대로 환경변수를 읽습니다. 처음으로 설정된 변수가 경로를 정하고, 변수가 하나도 없으면 기본 경로를 씁니다. `located_by`에 어떤 방법을 썼는지 나옵니다.
+
+처음으로 설정된 변수가 비었거나 절대 경로가 아니면 상태는 `unknown_location`이고 이유는 `invalid_env`입니다. 다음 변수나 기본 경로로 넘어가지 않습니다.
+
+`bunfig.toml`, `.npmrc`, `.puppeteerrc` 같은 도구 설정 파일은 읽지 않습니다. 설정 파일로 캐시를 옮겼다면 환경변수를 지정하십시오.
+
+| 후보 | 위치를 찾는 방법 |
+| --- | --- |
+| `go-build`, `go-mod` | `go env GOCACHE GOMODCACHE` |
+| `npm` | `npm config get cache` |
+| `pnpm` | `pnpm store path` |
+| `uv` | `uv cache dir` |
+| `homebrew` | `brew --cache` |
+| `pip` | `pip3 cache dir` |
+| `xcode-derived-data` (macOS) | `~/Library/Developer/Xcode/DerivedData` |
+| `swiftpm` (macOS) | `~/Library/Caches/org.swift.swiftpm` |
+| `cargo-registry`, `cargo-git` | `$CARGO_HOME/registry`, `$CARGO_HOME/git`, 없으면 `~/.cargo/registry`, `~/.cargo/git` |
+| `zig` | `$ZIG_GLOBAL_CACHE_DIR`, `$XDG_CACHE_HOME/zig`, 없으면 `~/.cache/zig` |
+| `bun` | `$BUN_INSTALL_CACHE_DIR`, `$BUN_INSTALL/install/cache`, `$XDG_CACHE_HOME/.bun/install/cache`, 없으면 `~/.bun/install/cache` |
+| `playwright` | `$PLAYWRIGHT_BROWSERS_PATH`, 없으면 `~/Library/Caches/ms-playwright` (macOS) 또는 `$XDG_CACHE_HOME/ms-playwright`, `~/.cache/ms-playwright` (Linux) |
+| `puppeteer` | `$PUPPETEER_CACHE_DIR`, 없으면 `~/.cache/puppeteer` |
+| `node-gyp` | `$npm_config_devdir`, 없으면 `~/Library/Caches/node-gyp` (macOS) 또는 `$XDG_CACHE_HOME/node-gyp`, `~/.cache/node-gyp` (Linux) |
+| `electron` (macOS) | `$electron_config_cache`, 없으면 `~/Library/Caches/electron` |
+| `xcode-device-support` (macOS) | `~/Library/Developer/Xcode`의 `*DeviceSupport` 폴더 |
+| `coresimulator-caches` (macOS) | `~/Library/Developer/CoreSimulator/Caches` |
+| `app-updates` (macOS) | `~/Library/Caches`의 `*.ShipIt` 폴더 |
+| `app-logs` (macOS) | `~/Library/Logs` |
+| `huggingface` | `$HF_HUB_CACHE`, `$HUGGINGFACE_HUB_CACHE`, `$HF_HOME/hub`, `$XDG_CACHE_HOME/huggingface/hub`, 없으면 `~/.cache/huggingface/hub` |
+| `rustup-toolchains` | `$RUSTUP_HOME/toolchains`, 없으면 `~/.rustup/toolchains` |
+| `ollama` (macOS) | `$OLLAMA_MODELS`, 없으면 `~/.ollama/models` |
+| `app-caches` (macOS) | `~/Library/Caches`의 나머지 폴더 |
+| `dot-cache` (macOS) | `~/.cache`의 나머지 폴더 |
+
+Linux에서는 표에 macOS라고 적지 않은 후보만 잽니다. Linux의 `~/.cache` 나머지 폴더는 재지 않습니다.
+
+후보마다 우선순위가 있습니다. P1은 도구 캐시, P2는 내려받은 브라우저·바이너리, Xcode 부가 데이터, 앱 캐시, 로그이고, P3는 모델과 툴체인입니다. 텍스트 출력은 P1부터 나열합니다.
+
+크기는 `edc du`의 측정 코드를 재사용해 후보를 하나씩 잽니다. 경로 아래의 마운트에는 들어가지 않습니다. symlink 경로는 보고된 경로와 실제 경로를 함께 보여 주고 실제 경로를 잽니다. DerivedData는 폴더를 앱 이름별로, `rustup-toolchains`와 `app-logs`는 폴더 이름별로 묶어 보여 줍니다.
+
+`xcode-device-support`, `app-updates`, `app-caches`, `dot-cache` 네 후보는 폴더의 1단계 항목을 하나씩 잽니다. 앞의 둘은 이름이 `DeviceSupport` 또는 `.ShipIt`으로 끝나는 항목만 잽니다. 그런 이름의 항목이 없으면 상태는 `absent`입니다.
+
+`app-caches`와 `dot-cache`는 나머지 항목을 모두 잽니다. 앞선 후보가 잰 경로는 건너뛰고, 그 경로를 품은 항목은 품지 않은 부분만 잽니다. 건너뛴 후보는 `excludes`에 나옵니다. 결과는 항목 이름별 묶음입니다.
+
+이 네 후보는 symlink를 따라가지 않습니다. 다른 장치에 있는 항목은 재지 않고 결과를 `partial`로 표시합니다. hard link는 edc가 재는 항목마다 한 번씩 셉니다.
+
+앱이 폴더에 무엇을 두는지는 edc가 알 수 없습니다. `app-caches`, `dot-cache`, `app-updates`, `app-logs`는 `regenerable`이 `false`이고 다시 만드는 비용은 `unknown` 또는 `lost`입니다.
+
+도구의 캐시 폴더만 잽니다. Hugging Face는 `hub`, Cargo는 `registry`와 `git`, Ollama는 `models`입니다. 토큰이나 자격 증명 파일은 재지 않습니다.
+
+Xcode Archives, 시뮬레이터 기기, `Application Support`, `Containers`는 캐시로 분류하지 않습니다.
+
+후보마다 상태가 하나 있습니다.
+
+| 상태 | 뜻 |
+| --- | --- |
+| `measured` | 경로 전체를 읽었습니다. 크기가 완전합니다. |
+| `partial` | 크기가 하한입니다. 읽지 못한 디렉터리가 있거나, 마운트를 건너뛰었거나, 시간이 끝났습니다. |
+| `absent` | 경로가 없거나, 후보가 찾는 이름의 항목이 없습니다. |
+| `tool_absent` | 도구가 `PATH`에 없습니다. |
+| `unknown_location` | 도구가 실패했거나, 시간이 초과됐거나, 예상과 다른 답을 냈습니다. 환경변수가 절대 경로가 아니어도 이 상태입니다. |
+| `unreadable` | 권한 오류 등으로 읽지 못했습니다. |
+| `rejected` | 경로가 `/`, 홈 디렉터리, 그 상위를 덮습니다. 재지 않습니다. |
+| `duplicate` | 앞선 후보와 실제 경로가 같거나 앞선 후보가 이 경로를 품고 있습니다. |
+| `not_scanned` | edc가 닿기 전에 시간이 끝났거나 `Ctrl-C`를 눌렀습니다. |
+
+`usage_bytes`는 `measured`와 `partial`에만 있고, 다른 상태에서는 `0 B`를 표시하지 않습니다. 다른 후보 안에 있는 후보는 합계에 두 번 더하지 않습니다.
+
+텍스트 출력은 크기가 있거나 확인이 필요한 후보만 한 줄씩 보여 줍니다. `absent`, `tool_absent`, `duplicate`는 상태별로 한 줄에 접습니다. 묶음은 기본 5개를 보여 주고, `-v`는 모든 후보와 묶음 30개를 보여 줍니다. `--json`은 모두 보여 줍니다.
+
+파일 시스템별 합계는 사용량이며, 정리하면 비워지는 양이 아닙니다. APFS clone과 snapshot 때문에 합계가 비워지는 양보다 클 수 있습니다. hard link는 후보 하나 안에서는 한 번만 세지만, 두 후보에 걸친 hard link는 두 번 셉니다. pnpm 저장소와 uv 캐시가 hard link를 씁니다. 후보에는 회수 가능량이 없고, Docker 섹션만 엔진이 보고한 회수 가능량을 보여 줍니다.
+
+정리 명령은 도구가 문서로 제공할 때만 보여 줍니다. `bun`, `pip`, `huggingface`, `rustup-toolchains`는 명령을 보여 주고, `cargo-registry`, `zig`, `app-caches` 등은 보여 주지 않습니다. edc는 명령을 실행하지 않습니다.
+
+후보 뒤에 섹션 네 개가 더 있습니다. 섹션마다 `metrics`에 따로 키가 있고, 섹션은 후보가 아닙니다.
+
+| `metrics` 키 | 내용 |
+| --- | --- |
+| `candidates` | 위 표의 캐시 |
+| `filesystems` | 파일 시스템별 사용량 합계 |
+| `project_build_dirs` | `--project`로 지정한 루트의 빌드 폴더 |
+| `docker` | Docker 엔진이 보고한 집계 |
+| `vm_disks` | 가상 머신의 디스크 파일(예: OrbStack) |
+| `worktrees` | `~/.gk/worktree`의 git-kit worktree |
+| `not_measured` | 재지 않는 유형과 이유 |
+
+섹션은 후보, 빌드 폴더, Docker, VM 디스크, worktree 순서로 실행하고 제한 시간 하나를 나눠 씁니다.
+
+파일 시스템 합계에는 다시 만들 수 있는 빌드 폴더만 더합니다. 엔진 집계, VM 디스크, worktree는 어떤 합계에도 더하지 않습니다.
+
+### 프로젝트 빌드 폴더
+
+`--project DIR`은 찾을 루트를 지정합니다. 루트를 더 지정하려면 옵션을 반복합니다. `--project`가 없으면 찾지 않고 `project_build_dirs`의 상태는 `no_project_root`입니다. 이 상태는 정상입니다.
+
+루트 아래 폴더를 깊이 6까지 읽습니다. symlink는 따라가지 않고, 다른 장치의 마운트에는 들어가지 않습니다. `.git`, 찾은 빌드 폴더, 후보가 재는 경로 아래로도 내려가지 않습니다.
+
+폴더 300,000개 또는 빌드 폴더 256개에서 멈추고, 섹션은 이유 `project_limit`인 `partial`입니다. 닿지 못한 루트의 상태는 `not_scanned`입니다.
+
+없는 루트의 상태는 `absent`, 파일인 루트는 `rejected`입니다. 같은 루트나 다른 루트 안의 루트는 한 번만 걷고 상태는 `duplicate`입니다.
+
+빌드 폴더는 같은 부모 폴더에 표지 파일이 있어야 합니다.
+
+| 폴더 | 표지 파일 |
+| --- | --- |
+| `.zig-cache`, `zig-out` | `build.zig` |
+| `target` | `Cargo.toml` |
+| `node_modules` | `package.json` |
+| `.build` | `Package.swift` |
+| `build` | `build.gradle` 또는 `build.gradle.kts` |
+
+이름만 같고 표지 파일이 없는 폴더는 소스일 수 있어 재지 않고 루트의 `unmarked`로 셉니다.
+
+표지가 있는 폴더마다 git에 물어봅니다. git 저장소 밖의 폴더는 표지 파일만으로 다시 만들 수 있다고 봅니다. `git` 필드는 `none`입니다.
+
+저장소 안에서는 폴더에 추적 파일이 없어야 합니다. git이 추적하는 파일이 있으면 `regenerable`은 `false`이고 이유는 `tracked_files`입니다. 무시 규칙이 있어도 추적 파일이 먼저입니다. `git` 필드는 `ignored` 또는 `not_ignored`입니다.
+
+git이 실패하거나 시간이 초과되면 `regenerable`은 `false`, 이유는 `git_unknown`, `git` 필드는 `unknown`입니다. 추측하지 않습니다.
+
+```json
+{
+  "kind": "cargo_target",
+  "path": "/Users/me/work/app/target",
+  "marker": "Cargo.toml",
+  "git": "ignored",
+  "regenerable": true,
+  "status": "measured",
+  "usage_bytes": 4831838208
+}
+```
+
+`regenerable`이 `false`인 빌드 폴더는 합계에 넣지 않습니다. 후보와 경로가 같은 빌드 폴더의 상태는 `duplicate`이고, 후보 안에 있는 빌드 폴더는 `inside`를 표시해 두 번 세지 않습니다.
+
+worktree 안의 빌드 폴더에는 `inside_worktree`가 있고, worktree 항목의 `build_dirs`에 그 수가 나옵니다. 빌드 폴더를 찾지 않았으면 `build_dirs`는 `null`입니다.
+
+텍스트 출력은 큰 빌드 폴더 10개와 나머지 수를 보여 주고 `-v`는 모두 보여 줍니다. 루트마다 읽은 폴더 수와 `unmarked` 폴더 수가 나옵니다.
+
+### Docker 엔진
+
+엔진에는 API socket으로 `GET`만 보냅니다. 다른 메서드는 보내지 않고 `prune` 명령도 실행하지 않습니다.
+
+socket 경로는 `docker context inspect`에 물어서 `DOCKER_HOST`와 현재 context가 반영됩니다. `unix://` 끝점만 지원하고, 다른 끝점은 `unsupported`입니다.
+
+`docker`가 `PATH`에 없으면 상태는 `tool_absent`, socket 파일이 없으면 `not_running`입니다. 두 상태는 정상으로 봅니다.
+
+엔진은 API 1.52 이상이어야 합니다. 더 낮은 버전은 이유 `api_version`인 `unsupported`이고, 목록에서 집계를 계산하지 않습니다.
+
+`types`에는 `images`, `containers`, `build_cache`, `volumes`가 하나씩 있고, 각각 `total_bytes`, `reclaimable_bytes`, `total_count`, `active_count`를 담습니다. 값은 엔진이 보고한 그대로입니다.
+
+요청 하나가 실패하면 그 유형만 `failed`이고 섹션은 `partial`입니다. 볼륨 요청은 최대 20초까지 기다립니다.
+
+`reclaimable_bytes`는 정리하면 비워진다고 엔진이 알려 준 양이며, 출력에서 회수 가능량을 내는 값은 이것뿐입니다. 정리 명령(예: `docker image prune -a`)은 문자열로만 보여 주고 실행하지 않습니다.
+
+볼륨은 사용자 데이터입니다. `volumes` 항목은 `user_data`가 `true`이고 `reclaimable_bytes`와 정리 명령이 없습니다.
+
+`docker system df`는 크기를 반올림하고 1000바이트 단위를 씁니다. edc 텍스트 출력은 1024바이트 단위를 써서 두 수치가 다릅니다. JSON에는 정확한 바이트 수가 있습니다.
+
+### VM 디스크
+
+macOS에서는 `~/Library/Group Containers/HUAQ24HBR6.dev.orbstack/data`의 OrbStack 데이터 디스크를 잽니다. 이 파일은 sparse 파일이라 논리 크기가 아니라 할당된 block을 잽니다.
+
+이 디스크에는 Docker 엔진 데이터와 Linux 머신이 들어 있습니다. 엔진이 OrbStack이면 `docker.inside`가 `orbstack`입니다.
+
+엔진 집계와 디스크 크기는 같은 데이터를 다른 방법으로 본 값이라 서로 더하지 않고 어떤 합계에도 넣지 않습니다. 디스크는 사용자 데이터이고 `user_data`가 `true`입니다.
+
+Docker Desktop이나 다른 VM의 디스크는 재지 않습니다. Linux에는 VM 디스크 항목이 없습니다.
+
+### worktree
+
+git-kit의 폴더인 `~/.gk/worktree`를 읽습니다. 깊이 5까지 `.git`이 있는 폴더를 찾고 그 아래로는 내려가지 않습니다. 폴더가 없으면 상태는 `absent`이고 정상입니다.
+
+루트를 한 번 재고 worktree별 크기는 그 트리에서 읽습니다. `leftover`는 루트의 그 밖의 파일 크기입니다.
+
+worktree를 쓰는지는 파일 수정 시각이 아니라 git 상태로 판단합니다. git은 읽기 하위 명령만 `GIT_OPTIONAL_LOCKS=0`과 `core.fsmonitor=false`로 실행해 `.git`의 파일을 바꾸지 않습니다.
+
+worktree마다 `verdict`가 하나 있고, 아래 순서에서 처음 맞는 값을 고릅니다.
+
+| verdict | 뜻 |
+| --- | --- |
+| `unlinked` | worktree의 git 디렉터리가 없음 |
+| `has_changes` | 변경된 파일이나 추적하지 않는 파일이 있음 |
+| `state_unknown` | git 명령이 실패해 알 수 없음 |
+| `locked` | worktree가 잠겨 있음 |
+| `not_merged` | 기준에 없는 커밋이 브랜치에 있음 |
+| `base_unknown` | 비교할 기준 브랜치를 찾지 못함 |
+| `merged_clean` | 기준에 브랜치가 들어 있고 변경이 없음 |
+
+기준은 git 설정의 브랜치 `gk-parent`이고, 없으면 `origin/HEAD`입니다. `main`이라고 가정하지 않습니다.
+
+`merged_clean`은 git 명령이 모두 성공해야 나옵니다. edc는 worktree를 정리하지 않으며, 실행할 명령으로 `git-kit worktree cleanup`을 보여 줍니다.
+
+### 재지 않는 유형
+
+출력은 재지 않는 유형을 항상 나열하며, `-v`로 유형마다 이유를 볼 수 있습니다.
+
+- OrbStack 외의 VM 디스크, DB
+- `~/.gk/worktree` 밖의 worktree
+- 휴지통과 다운로드
+- 시뮬레이터 기기
+- SDK
+- 앱 데이터
+- 위치를 확인하지 못한 그 밖의 도구 캐시
+
+제한 시간은 기본 60초이며 모든 후보와 섹션이 나눠 씁니다. P1 후보부터 재고 나머지 묶음 두 후보는 마지막에 잽니다. 시작하지 못한 섹션의 상태는 `not_scanned`입니다. 시간이 끝나면 결과는 `warn`이고 `next`에 더 긴 제한 시간의 명령을 보여 줍니다. `Ctrl-C`는 실행을 멈추고 그때까지의 결과를 남깁니다.
 
 ## 커널과 systemd 이벤트 (Linux)
 
@@ -610,6 +888,7 @@ journal 기록은 20000개, journal 출력은 32 MiB, `/dev/kmsg` 기록은 1000
 edc snapshot                              # ./edc-snapshot-<host>-<UTC 시각>.json
 sudo edc snapshot --output before.json    # root는 모든 audit와 events 원천을 읽음
 sudo edc snapshot --output after.json
+sudo edc snapshot --du /var --output after.json   # /var의 edc du 결과도 함께 (Linux)
 sudo edc report diff before.json after.json
 edc snapshot --since 2h --output -        # report JSON만 stdout으로
 ```
@@ -627,6 +906,9 @@ report에는 다음 결과가 들어갑니다.
 | `audit.*` | `edc audit`의 점검 |
 | `events.*` | `--since` 기간(기본 6h)의 `edc events` 신호 |
 | `changes.*` | `--since` 기간의 `edc changes` 원천 |
+| `du.scan` | `--du <path>`를 줄 때만: 그 경로의 `edc du` 결과와 `report diff`용 큰 디렉터리 목록 |
+
+큰 트리에 `--du`를 쓰면 `--timeout`을 늘려야 할 수 있습니다. 제한 시간에 걸리면 `du.scan` 결과는 일부만 센 값이 되고, `report diff`는 그 디렉터리를 비교하지 않습니다.
 
 모든 항목은 `--timeout` 예산(기본 15s) 하나 안에서 동시에 돌아갑니다. 예산에 2초를 더해도 끝나지 않은 항목은 이유와 함께 `skip`이 됩니다. `audit`, `events`, `changes`는 점검마다 `skip`을 하나씩 남기므로 `report diff`가 같은 ID끼리 비교합니다. `info.disk`는 mount 목록을 알 수 없어서 `info.disk` skip 하나로 남습니다. 수집기가 실패하면 오류와 함께 `fail`이 됩니다. 어느 항목도 report에서 빠지지 않습니다.
 
@@ -648,7 +930,7 @@ macOS에서는 `audit`, `events`, `changes`, `info.pressure`가 `skip`으로 나
 ./bin/edc report show report.json
 ```
 
-경로 없이 `edc report show`나 `edc report diff`를 실행하면 최근 report 최대 20개 중에서 선택하거나 다른 JSON 파일 경로를 직접 입력할 수 있습니다. report가 없으면 저장 예시를 안내합니다.
+경로 없이 `edc report show`나 `edc report diff`를 실행하면 최근 report 최대 20개 중에서 선택하거나 다른 JSON 파일 경로를 직접 입력할 수 있습니다. report가 없으면 저장 예시를 안내합니다. `edc report diff`는 report를 한 화면에 보여 주고 가장 최근 두 개를 미리 골라 둡니다. Space로 선택을 바꾸고 Enter로 비교합니다. 시간이 이른 쪽이 언제나 이전이 됩니다. 반대 순서로 비교하려면 두 경로를 직접 주세요.
 
 `edc report diff`는 두 JSON report를 probe 이름으로 맞춰 비교합니다. probe마다 status 변화와 scalar metric 차이를 보여 줍니다.
 
@@ -960,7 +1242,7 @@ sudo ./bin/edc top --process output-mesh -d
 sudo ./bin/edc top --process output-mesh -d --json /tmp/edc-host.jsonl
 ```
 
-대시보드는 상세 보기에 세 번째 줄을 더합니다. 예: `ebpf 1s · runq 7584 avg 5.80ms p95 <16.384ms · io 704 avg 0.07ms p95 <0.256ms`. `--json`에서는 process마다, 그리고 `process_total`에 `ebpf` 객체가 붙습니다.
+대시보드는 상세 보기에 세 번째 줄을 더합니다. 예: `ebpf 1s · runq 7584 avg 5.80ms p95 <16.384ms · io 704 avg 0.07ms p95 <0.256ms`. Linux에서는 이 줄 끝에 대기 시간이 긴 syscall 세 개가 붙습니다. 예: `· wait futex 1.20s epoll_wait 800.00ms read 12.00ms`. `--json`에서는 process마다, 그리고 `process_total`에 `ebpf` 객체가 붙습니다.
 
 | 필드 | 뜻 |
 |---|---|
@@ -968,6 +1250,7 @@ sudo ./bin/edc top --process output-mesh -d --json /tmp/edc-host.jsonl
 | `io_supported`, `p95_supported` | 이 source가 block I/O를 세고 분포를 남기는지입니다. `ebpf`는 둘 다 `true`, `libproc`은 둘 다 `false`입니다. |
 | `runq_count`, `runq_avg_ms`, `runq_p95_ms` | Linux에서는 process의 thread가 실행 가능 상태가 된 뒤 CPU를 받기까지의 횟수와 대기 시간입니다. macOS에서는 이 시간 동안의 context switch 수와 switch 한 번당 평균 대기이고 p95는 없습니다. `cpu_pct`가 낮은데 대기가 길면 CPU가 모자란 것입니다. |
 | `io_ops`, `io_bytes`, `io_avg_ms`, `io_p95_ms` | process가 낸 block I/O 요청 수, byte, 요청부터 완료까지의 시간 |
+| `waits` | Linux 전용입니다. 이 시간 동안 대기가 가장 긴 syscall을 최대 5개 보여 줍니다. 대기는 process의 스레드가 잠들며 CPU를 떠날 때 시작해 다시 실행될 때 끝납니다. 항목마다 `syscall`, `count`, `total_ms`가 있습니다. `-`는 page fault처럼 syscall 밖에서 기다린 대기입니다. |
 | `context_switches`, `unreadable` | macOS 전용입니다. 이 시간 동안의 context switch 수(`runq_count`와 같은 값)와 macOS가 읽지 못하게 막은 process 수입니다. |
 
 `p95`는 95번째 백분위가 든 2의 거듭제곱 구간의 위쪽 경계라서 실제 값은 그 아래입니다. 이벤트가 없으면 지연 값은 빠집니다. `process_total`은 맞은 process 전체를 합치고, p95도 합친 분포에서 구합니다. `edc`는 맞은 process 중 가장 바쁜 4096개까지 감시합니다.
@@ -976,6 +1259,7 @@ sudo ./bin/edc top --process output-mesh -d --json /tmp/edc-host.jsonl
 - `edc`가 커널의 PID를 자신이 속한 PID namespace 기준으로 바꾸므로 컨테이너 안에서도 필터가 맞습니다.
 - process가 나타난 뒤 첫 sample에는 `ebpf` 객체가 없습니다. `edc`가 그 process를 감시하기 시작할 때부터 세기 때문입니다.
 - `ebpf` 객체의 `source`는 값을 센 방법입니다. Linux는 `ebpf`, macOS는 `libproc`입니다.
+- 대기는 끝난 sample에서 셉니다. window 내내 잠든 스레드는 그 window에 더해지지 않습니다. 대기에는 깨어난 뒤 CPU를 기다린 run-queue 대기도 들어 있으므로 `waits`와 `runq_avg_ms`를 더하지 마세요. `edc`가 process를 감시하기 시작한 뒤에는, 스레드가 한 번 깨어난 다음부터 그 스레드의 대기를 셉니다.
 
 macOS에는 scheduler와 block I/O event를 주는 공개 hook이 없습니다. 그래서 `-d`는 root 없이 libproc의 누적 counter로 CPU 대기만 셉니다. 대기 시간은 실행 가능했던 시간에서 CPU를 쓴 시간을 뺀 값이고, `runq_count`는 그동안의 context switch 수입니다. 따라서 `runq_avg_ms`는 switch 한 번당 평균 대기입니다. 분포가 없어 `runq_p95_ms`는 빠지고, I/O 값은 셀 수 없으므로 `io_*` 필드가 없습니다. 대시보드는 그 칸을 `n/a`로 보입니다. root가 아니면 macOS는 다른 사용자의 process를 읽지 못하게 막습니다. `edc`는 그 수를 `unreadable`에 세고, 맞은 process를 하나도 읽지 못했으면 `runq_*` 필드를 빼며, 대시보드에는 `root`를 보입니다. x86_64 build는 Rosetta에서 `-d`를 멈춥니다. 번역된 시계가 kernel counter와 맞지 않을 수 있기 때문이니 arm64 build를 쓰세요.
 
@@ -2070,6 +2354,53 @@ Linux에서 `trace exec`를 사용하면 process가 뜨고 끝나는 것, 그리
 기본으로는 process를 끝내거나 core를 남기는 신호만 기록합니다. `HUP`, `INT`, `QUIT`, `ILL`, `TRAP`, `ABRT`, `BUS`, `FPE`, `KILL`, `USR1`, `SEGV`, `USR2`, `PIPE`, `TERM`, `STKFLT`, `XCPU`, `XFSZ`, `SYS`입니다. `CHLD`나 `ALRM`처럼 늘 오가는 신호는 뺍니다. `--signal`에 쉼표로 나눈 이름이나 번호, `all`, `none`을 줍니다. 필터가 버린 신호 수는 요약의 `filtered_signals`에 나옵니다. `--process`는 이름이나 PID를 받고, 신호는 받는 쪽으로 맞춥니다. `--container`는 container 하나의 event만 남깁니다.
 
 명령줄은 exec 시점에 새 process의 메모리에서 읽으므로 program이 받은 인자이고, 나중에 바뀐 값은 아닙니다. 읽지 못하면 실행 파일 경로를 보여 줍니다. 256 byte보다 긴 줄은 `…`로 끝나고 `args_truncated`에 셉니다. 스레드의 종료는 `exit` event가 아니고, process의 마지막 스레드만 `exit`를 냅니다. kernel thread는 보이지 않습니다. `sched_process_exec`, `sched_process_exit`, `signal_generate` tracepoint와 BTF가 필요합니다.
+
+Linux에서 `trace syscall`을 사용하면 process별 system call 수와 시간을 볼 수 있습니다. edc는 kernel 안에서 세고, 끝날 때 요약을 한 번 출력합니다. `--slow`나 `--errors`를 주면 조건에 맞는 호출도 하나씩 출력합니다.
+
+```bash
+./bin/edc trace syscall --duration 10s
+./bin/edc trace syscall --process nginx,1234 --duration 30s
+./bin/edc trace syscall --group-by syscall --json syscall.json
+./bin/edc trace syscall --container web --group-by cgroup
+./bin/edc trace syscall --process api --errors ENOENT,EACCES
+./bin/edc trace syscall --syscall openat,statx --slow 10ms --raw
+```
+
+행 하나는 process 이름 하나와 system call 하나입니다. 행마다 호출 수, 오류 수와 가장 많은 errno, 호출 안에 머문 시간의 합계, 평균, p95, 최댓값을 보여 줍니다. 시간은 CPU 시간이 아니라 호출 안에 머문 실제 시간입니다. 그래서 `epoll_wait`나 `futex`처럼 기다리는 호출이 위에 옵니다. 합계는 모든 스레드의 시간을 더하므로 trace 시간보다 길 수 있습니다. 행은 합계 시간 순서입니다. 표에는 20행이 나오고, `--json`에는 모든 행이 들어갑니다. p95는 `top -d`와 같은 histogram bucket의 위쪽 경계라서 `<1.05s`처럼 보입니다.
+
+`--group-by syscall`, `--group-by process`, `--group-by cgroup`은 한 열로 묶어 더합니다. `--process`는 쉼표로 나눈 PID와 command 이름을 받습니다. kernel 안에서 비교하므로 이름은 process의 command 이름과 정확히 같아야 하고, 15 byte까지만 봅니다. PID는 그 process의 모든 스레드에 맞습니다. `--container`는 container 하나의 호출만 셉니다.
+
+`--syscall`에 쉼표로 나눈 이름을 주면 그 system call만 셉니다. kernel 안에서 번호를 확인하므로 다른 호출은 map에 들어가지 않습니다. 이름은 CPU 아키텍처의 system call 표에서 찾습니다. amd64에서는 같은 이름의 32비트 호출도 함께 고릅니다.
+
+`--slow <시간>`을 주면 그 시간 이상 걸린 호출을 하나씩 출력합니다. `--errors all`은 실패한 모든 호출을, `--errors ENOENT,EACCES`는 그 오류로 실패한 호출만 출력합니다. 두 조건 모두 kernel 안에서 확인합니다. 한 줄에는 시각, process, PID와 스레드 ID, system call, 반환값이나 errno, 호출 안에 머문 시간, 경로가 나옵니다.
+
+```
+15:04:05.000123  nginx 1234/1240  openat  ENOENT  12.3us  /etc/nginx/missing.conf
+```
+
+경로는 출력하는 호출에서만, 호출이 돌아올 때 읽습니다. 256 byte까지 읽고, 더 긴 경로는 `…`로 끝납니다. 경로는 `openat`, `statx`, `unlinkat`, `mkdirat`, `execve` 같은 약 50개 호출의 첫 경로 인자입니다. 32비트 호출의 경로는 읽지 않습니다. 성공한 `execve`의 경로도 읽지 않습니다. 새 program이 register와 memory를 바꿨기 때문입니다. 호출 중에 다른 스레드가 경로 buffer를 바꾸면 바뀐 글자가 나올 수 있습니다. 경로의 제어 문자는 `\xNN`으로 보여 줍니다.
+
+edc는 CPU마다 1초에 1,000줄까지만 출력합니다. 넘친 줄은 요약의 `sampled_out`으로 세고, 표는 모든 호출을 계속 셉니다. event buffer에 들어가지 못한 줄은 `ring_lost`로 셉니다. `--json`을 주면 줄 수만 세고 출력하지 않습니다. `--raw`를 주면 줄마다 JSON으로 출력하고, 마지막 줄에 요약을 붙입니다.
+
+`IN FLIGHT AT STOP` 표는 trace 중에 시작해 끝날 때까지 돌아오지 않은 호출입니다. trace 내내 기다린 스레드는 호출이 돌아오지 않아 위의 표에 나오지 않습니다. trace 전에 시작한 호출은 시작 시각 없이 돌아옵니다. 요약은 이 복귀를 `fork`나 `clone`으로 생긴 스레드의 첫 복귀와 함께 `unmatched`로 셉니다. `--process`, `--container`, `--syscall`을 주면 세지 않고 `-`로 보여 줍니다. `exit`와 `exit_group`은 돌아오지 않으므로 시간 없이 횟수만 셉니다.
+
+edc 자신의 호출은 뺍니다. edc가 자기 PID namespace가 있는 container 안에서 실행되면 자신의 호출을 찾을 수 없어서, 요약 뒤에 이 사실을 알립니다. amd64에서 32비트 program은 다른 system call 번호를 씁니다. 이 호출은 이름 뒤에 `(32-bit)`를 붙여 보여 줍니다. 신호로 끊긴 호출은 kernel 안에서만 쓰는 재시작 값으로 돌아올 수 있습니다. 예를 들어 `ERESTARTSYS`입니다. 표는 이 값도 이름으로 보여 줍니다.
+
+집계는 크기가 정해진 per-CPU map에 쌓습니다. edc는 map을 모두 합쳐 32 MiB, 최대 16,384개 항목으로 잡습니다. 항목 하나는 process 이름 하나와 system call 하나입니다. map이 가득 차면 넘친 호출은 세지 않습니다. 요약은 그 수를 `map_full`로 보여 주고, edc는 경고를 출력합니다. `--group-by cgroup`은 항목마다 cgroup을 더하므로 항목을 더 씁니다. 예를 들어 SSH login마다 새 cgroup이 생길 수 있습니다.
+
+trace가 도는 동안 host의 모든 system call이 BPF program 두 개를 거칩니다. 필터에 걸리지 않는 process도 이 비용을 냅니다. 12 CPU x86_64 host(Linux 6.17)에서 `perf bench syscall basic`으로 잰 호출당 비용은 다음과 같습니다.
+
+| 조건 | `getppid` | 추가 비용 |
+|---|---|---|
+| trace 없음 | 0.577 µs | - |
+| trace 중, 필터에 걸리지 않는 process | 0.735 µs | 0.16 µs |
+| trace 중, 대상 process | 0.809 µs | 0.23 µs |
+
+이 host에서는 초당 약 32,500건의 호출이 전체 CPU 시간의 0.1% 미만을 더했습니다. 바쁜 server에서 오래 trace하려면 먼저 그 host에서 비용을 재 보세요.
+
+`--syscall`을 주면 다른 호출의 비용이 줄어듭니다. `--syscall openat`일 때 `getppid`는 0.697 µs가 걸렸습니다. 같은 측정에서 trace가 없을 때는 0.585 µs였습니다. 실패한 호출은 errno도 세므로 약 0.1 µs가 더 듭니다. 출력하는 줄 하나는 약 0.6 µs, 상한을 넘어 세기만 하는 줄은 약 0.05 µs가 더 듭니다. 상한이 있으므로 12 CPU host는 1초에 최대 12,000줄을 출력합니다.
+
+`sys_enter`, `sys_exit` tracepoint와 BTF, task local storage, task iterator, BPF ring buffer가 필요합니다.
 
 kernel이 모든 버림을 이유와 함께 알리지는 않습니다. 예를 들어 listen socket의 accept 대기열이 가득 차면 kernel은 SYN을 정상 패킷처럼 해제합니다. 이 경우를 위해 요약에는 trace 동안 `/proc/net/netstat`의 `ListenOverflows`와 `ListenDrops`가 늘어난 수가 나옵니다. 이 값은 edc가 있는 network namespace의 모든 listen socket을 합한 것이라, `--container`를 써도 container만의 값이 아닙니다.
 

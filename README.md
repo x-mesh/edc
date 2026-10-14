@@ -188,6 +188,12 @@ The command also creates the parent for the legacy recommended `edc.log` path.
 # skip the public IP lookup
 ./bin/edc info --public=false
 
+# disk usage under a directory, largest entries first (Linux and macOS)
+./bin/edc du /var
+
+# known development cache sizes, read only (Linux and macOS)
+./bin/edc clean
+
 # default diagnosis
 ./bin/edc doctor https://example.com
 
@@ -331,7 +337,22 @@ Events are `create`, `modify`, `remove`, and `rename`. A rename reports the old 
 
 By default, `edc` excludes `.git`, `node_modules`, `.venv`, `venv`, `__pycache__`, `.mypy_cache`, `.pytest_cache`, `.ruff_cache`, `.tox`, `.next`, and `.gradle` at any depth. It does not exclude `build` or `dist`, because you can watch build output. Repeat `--exclude 'build/**'` to add exclusions. To watch the default directories too, use `--no-default-exclude`. Your `--exclude` patterns still apply.
 
-On Linux, with `--recursive`, `edc` adds a watch to each directory before its first output. A large tree takes time. If stderr is a terminal, `edc` shows a notice during this step.
+On Linux, `--driver` selects how `edc` watches the tree. The default is `auto`.
+
+- `fanotify` puts one mark on the whole filesystem. `edc` does not read the tree at startup, and the inotify watch limit does not apply. This driver needs root (`CAP_SYS_ADMIN`) and Linux 5.17 or later.
+- `inotify` adds a watch to each directory before the first output. A large tree takes time. If stderr is a terminal, `edc` shows a notice during this step. If the tree has more directories than `fs.inotify.max_user_watches` allows, the watch stops with an error.
+
+With `--recursive`, `auto` tries `fanotify` first. If `fanotify` cannot start, `edc` uses `inotify`. If stderr is a terminal, a line on stderr gives the reason. Without `--recursive`, `auto` uses `inotify`, because one watch is sufficient. The `driver` field of the `ready` record shows the driver in use. If you set `--driver fanotify` and `fanotify` cannot start, `edc` stops and shows the reason.
+
+`fanotify` cannot start in these conditions:
+
+- `edc` does not run as root.
+- The kernel is older than Linux 5.17.
+- The filesystem of the watch root does not supply the file handles that `fanotify` needs. A btrfs subvolume is an example.
+
+One mark covers one filesystem. With `--recursive`, `edc` puts a mark on each filesystem that is mounted below the watch root. Some filesystems do not accept a mark, for example sysfs and devpts. The changes in a bind mount of a directory outside the watch root also cannot show inside the root. `edc` skips these mounts and names them in one line on stderr. Changes below a skipped mount are not reported. If you need these changes, use `--driver inotify`. `edc` does not mark a mount that `--exclude` covers.
+
+`fanotify` receives the events of the whole filesystem, and `edc` discards the events outside the watch root. Thus a busy filesystem costs CPU time. When few events arrive, `edc` waits 5ms between reads. If the CPU cost is too high, use `--driver inotify`.
 
 On macOS, `watch fs` uses FSEvents. One stream watches the whole tree, so the number of files does not use file descriptors. FSEvents collects changes for up to 50ms before it sends them. If macOS drops events, `watch fs` scans that directory again and reports the differences as `create`, `modify`, and `remove`. A move then shows as a `remove` and a `create`. One scan reads at most 200,000 entries. A line on stderr tells you about each scan, and it also tells you if the scan stopped at the limit. FSEvents also reports changes in excluded directories, and `edc` discards them.
 
@@ -524,16 +545,24 @@ The name or the ID accepts letters, digits, and `_.-/`. Options can come before 
 
 | Result | Pass | Warn | Fail |
 |---|---|---|---|
-| `ctr.state` | the container runs, with no restart and no OOM kill | it runs but restarted, was OOM killed, or is unhealthy, or it is paused, created, or restarting | the container exited or is dead. The summary shows the exit code |
+| `ctr.state` | the container runs, with no restart and no OOM kill | it runs but restarted, was OOM killed, or is unhealthy, or it is paused, created, or restarting. For an unhealthy container, a warning shows the output of the last failed health check | the container exited or is dead. The summary shows the exit code. A warning tells when the `on-failure` limit stops the restarts |
+| `ctr.image` | the image reference points to the image that the container runs, or the reference is not on the host | the image reference points to a different image. Recreate the container to use it | |
 | `ctr.processes` | edc lists the processes in the container cgroup, with CPU% and RSS | | |
 | `ctr.limits` | memory, OOM kills, CPU throttling, and pids stay below the limits | memory use is 90% of the limit or more, the kernel killed a process in the container for memory, the CPU limit throttled 25% of the periods or more, or pids use 90% of the limit or more | |
 | `ctr.fd` | each process uses less than 80% of its soft fd limit | a process uses 80% or more of its limit | |
-| `ctr.listen` | edc lists the TCP and UDP sockets that the container processes own | | |
+| `ctr.listen` | edc lists the TCP and UDP sockets that the container processes own, and a process listens on each published port | no process in the container listens on a published port, or a process listens on it only on a loopback address | |
 | `ctr.log` | the last 50 log lines have no error line | the log has error lines, and edc shows the last 5 | |
+| `ctr.disk` | edc shows the size of the log file and of the writable layer | the json-file log has no `max-size` and is 1 GiB or more, or the writable layer is 10 GiB or more | |
+
+The summary of `ctr.state` shows the restart policy, for example `1 restarts (on-failure:5)`. With `-v`, it shows the health checks that docker keeps, with the exit code and the first line of the output. edc reads them only for a container with a health check.
+
+`ctr.image` asks `docker image inspect` for the image that the image reference of the container points to now. A `docker pull` or a build can move a tag to a new image. A running container keeps its old image until you recreate it.
 
 `ctr.limits` reads the cgroup v2 of the container: `memory.current` and `memory.max`, `memory.events.local` for the OOM kills, `cpu.stat` for the throttled periods since the container started, and `pids.current` and `pids.max`. An error line is a line with `error`, `fatal`, `panic`, `exception`, `traceback`, or `oom`. edc reads the log with `docker logs --tail 50`, so a container that writes somewhere else shows no error line.
 
-`ctr.listen` reads the sockets of the network namespace of edc. A container with its own network namespace shows no socket, because its sockets live in that namespace, and a published port belongs to `docker-proxy` or to a firewall rule. A container with `--network host` shows its sockets.
+`ctr.listen` reads the sockets in the network namespace of the container. Docker sends a connection on a published port to the address of the container, so a listener on `127.0.0.1` or `::1` in the container does not get it. A container that starts can show this warn before it listens.
+
+`ctr.disk` asks `docker inspect --size` for the writable layer and the log options, and reads the size of the log file. A json-file log without `max-size` does not rotate. A new container does not keep the data in the writable layer. Without root, edc cannot read the log file, and the log size shows `-`.
 
 Run it as root, or as a member of the `docker` group with root for the fds. Without access to the docker daemon, the command shows one `skip`. Without root, edc cannot read the fds of other users or the socket owners, and these results show `skip`. A stopped container shows `skip` for the process views and still shows the log. The command needs the `docker` command and cgroup v2. On macOS, it shows one `skip` and exits with 0. If the container does not exist, edc writes an error and exits with 1.
 
@@ -575,6 +604,265 @@ If a boot is in the window, the table shows one `boot` row. That row holds the s
 If edc cannot read a source, the result is `skip` with the reason. A `skip` does not mean that nothing changed. Run it as root to read all sources. Without root, edc cannot read some directories under `/etc` and some package logs.
 
 `edc changes` does not decompress rotated logs. If a compressed log is newer than the window start, edc shows a warning. It reads the mtime under `/etc`, not the file content, so it does not show the change inside a file. systemd keeps one start time for each unit, so a unit that restarted several times shows its latest start and the restart count. The `/etc` walk stops after 20000 entries and shows `warn`. edc does not run `dnf history` or `journalctl`.
+
+## Disk usage of a directory (Linux and macOS)
+
+`edc du` shows the disk usage under a directory. It counts the allocated blocks, as `du` does. A file with more than one hard link counts once. It changes nothing, and it sends nothing over the network.
+
+```bash
+edc du                          # the current directory
+edc du /var                     # the largest entries under /var
+edc du --top 40 /var            # 40 rows
+edc du -B /var                  # show progress and size bars, then exit
+edc du --no-browse /var         # the same as -B
+edc du --workers 1 /var         # read one directory at a time
+edc du --cross-mounts /var      # count the mounts below /var too
+edc du --json - /var            # the rows in metrics.rows
+```
+
+In a terminal, `edc du` opens a screen. While edc reads, the screen shows the number of directories that it read. Press `q` to stop, and the screen shows what edc read. `Ctrl-C` stops and closes the screen. The screen lists the current directory, with the largest entry first. Press `Enter` or `→` to open a directory. Press `←`, `Backspace`, or `Esc` to go up. `↑`, `↓`, `PgUp`, `PgDn`, `g`, and `G` move the cursor. Press `q` to close the screen, and edc prints the result. The screen does not change or delete a file. In a pipe, with `--json`, or with `NO_COLOR` set, edc prints the result and opens no screen. For the screen, edc keeps the 10,000 largest files. In each directory, the other files show as one `(N other files)` row.
+
+In a terminal, `--no-browse` or `-B` shows a spinner during the scan. When the scan ends, edc prints size bars and exits.
+
+These options preserve color and disable directory navigation. With `NO_COLOR`, a pipe, or `--json`, edc uses static output.
+
+The output starts with one `du.scan` result. It shows the total size, the number of entries, the time, and the number of workers. The rows follow. edc opens the largest entry first. When edc opens a directory, the entries in that directory become candidates. A directory row ends with `/`. The last row holds the entries that edc does not show. After the screen, the rows fit the terminal height. In a pipe, edc shows 20 rows. `--top` sets the rows of this printed result, not of the screen.
+
+By default, edc counts one file system only. It does not go into a mount below the path. It lists each skipped mount with its file system type and the used space from `statfs`. A bind mount or an overlay mount shares a file system with another path, so its used space shows as `-`. edc counts a directory that is bind mounted onto itself, because its files have no other location.
+
+Linux uses 4 workers by default. macOS uses 1 worker to limit CPU time. Use `--workers` to change the number. edc keeps one record for each directory and for the largest files only. The memory use grows with the number of directories, not with the number of files.
+
+edc stops at the time limit, 60 seconds by default. Then the result is `warn`, `metrics.partial` is `true`, and the size includes only the directories that edc read. If edc cannot read a directory, the result is `warn`, and `-v` lists the directories. Run it as root to read all directories. On macOS, privacy permissions can also block access.
+
+After the rows, edc shows the file system of the path. The line shows the mount point, the type, and the used and total space, as `df` shows them. On Linux, edc also shows the deleted files that a process still holds open on that file system. `df` counts these files, but `du` cannot see them. Each row shows the size, the process, and the old path. Restart the process, or make it open the file again, to free the space. The value is for the whole file system, not only for the path. Without root, edc cannot read the files of all processes, so the value starts with `≥`. If open deleted files take 10% of the file system or more, the result is `warn`.
+
+On Linux, if the path is the mount point of a whole file system, edc also compares the numbers. `not found` is the used space minus the counted size and the open deleted files. Files under a mount point and file system metadata can use this space. edc compares only if it read all directories and all processes, and the time limit did not stop it. A bind mount or a subdirectory shows no comparison. The JSON holds these values in `metrics.filesystem`, `metrics.deleted_open`, and `metrics.not_found_bytes`.
+
+On macOS, edc reads metadata in batches. It follows APFS firmlinks and uses the mount table for boundaries.
+
+APFS volumes can share storage, and snapshots can retain blocks. The measured size does not predict the space that deletion will free. macOS shows no open deleted files or `not found` comparison.
+
+To find the directories that grew, save two runs with `--json` and compare them with `edc report diff`. `metrics.largest_dirs` holds the 200 largest directories at any depth. `report diff` matches them by path and shows up to 10 directories with the largest change. If a subdirectory holds 90% or more of the change of its parent, edc shows the subdirectory and not the parent. If a directory is in only one list, its other value shows as `≤` the smallest size in that list. edc compares only two scans of the same path that both reached the end. A file with hard links in two directories counts in the directory that edc reads first, so its size can move between those directories from one run to the next.
+
+On Linux, if `docker` is on the `PATH`, edc also asks docker for its containers with `docker ps` and `docker inspect`. The format reads only the name, the log path, the mounts, and the layer path of each container. edc then names the container of a log directory, a writable layer, the root file system of a running container, a volume, and a bind mount source, for example `volume pgdata of db-1`. The JSON holds the name in `label`. With the containerd image store, a stopped container has no writable layer name, because its layer is not mounted. If docker does not answer in 3 seconds, edc shows no names.
+
+## Known cache sizes (Linux and macOS)
+
+`edc clean` shows the disk usage of known development caches. It reads only. It does not delete or change a file.
+
+```bash
+edc clean                       # measure the known caches
+edc clean -v                    # show every candidate, more groups, reasons, and cleanup commands
+edc clean --timeout 2m          # give edc more time
+edc clean --project ~/work      # also search ~/work for build folders
+edc clean --project ~/a --project ~/b   # repeat the option for more roots
+edc clean --json -              # the candidates in metrics.candidates
+```
+
+edc finds the location of each candidate in one of three ways. For `go-build`, `go-mod`, `npm`, `pnpm`, `uv`, `homebrew`, and `pip`, edc asks the tool that owns the cache. If the tool is not on the `PATH`, the status is `tool_absent`.
+
+For the other candidates, edc reads the environment variables in the order of the table. The first variable that is set decides the path. If no variable is set, edc uses the default path. `located_by` shows which source edc used.
+
+If the first variable that is set is empty or not an absolute path, the status is `unknown_location` with the reason `invalid_env`. edc does not try the next variable or the default path.
+
+edc does not read tool configuration files such as `bunfig.toml`, `.npmrc`, and `.puppeteerrc`. If a file moved a cache, set the environment variable.
+
+| Candidate | How edc finds it |
+| --- | --- |
+| `go-build`, `go-mod` | `go env GOCACHE GOMODCACHE` |
+| `npm` | `npm config get cache` |
+| `pnpm` | `pnpm store path` |
+| `uv` | `uv cache dir` |
+| `homebrew` | `brew --cache` |
+| `pip` | `pip3 cache dir` |
+| `xcode-derived-data` (macOS) | `~/Library/Developer/Xcode/DerivedData` |
+| `swiftpm` (macOS) | `~/Library/Caches/org.swift.swiftpm` |
+| `cargo-registry`, `cargo-git` | `$CARGO_HOME/registry`, `$CARGO_HOME/git`, then `~/.cargo/registry`, `~/.cargo/git` |
+| `zig` | `$ZIG_GLOBAL_CACHE_DIR`, `$XDG_CACHE_HOME/zig`, then `~/.cache/zig` |
+| `bun` | `$BUN_INSTALL_CACHE_DIR`, `$BUN_INSTALL/install/cache`, `$XDG_CACHE_HOME/.bun/install/cache`, then `~/.bun/install/cache` |
+| `playwright` | `$PLAYWRIGHT_BROWSERS_PATH`, then `~/Library/Caches/ms-playwright` (macOS) or `$XDG_CACHE_HOME/ms-playwright`, `~/.cache/ms-playwright` (Linux) |
+| `puppeteer` | `$PUPPETEER_CACHE_DIR`, then `~/.cache/puppeteer` |
+| `node-gyp` | `$npm_config_devdir`, then `~/Library/Caches/node-gyp` (macOS) or `$XDG_CACHE_HOME/node-gyp`, `~/.cache/node-gyp` (Linux) |
+| `electron` (macOS) | `$electron_config_cache`, then `~/Library/Caches/electron` |
+| `xcode-device-support` (macOS) | The `*DeviceSupport` folders in `~/Library/Developer/Xcode` |
+| `coresimulator-caches` (macOS) | `~/Library/Developer/CoreSimulator/Caches` |
+| `app-updates` (macOS) | The `*.ShipIt` folders in `~/Library/Caches` |
+| `app-logs` (macOS) | `~/Library/Logs` |
+| `huggingface` | `$HF_HUB_CACHE`, `$HUGGINGFACE_HUB_CACHE`, `$HF_HOME/hub`, `$XDG_CACHE_HOME/huggingface/hub`, then `~/.cache/huggingface/hub` |
+| `rustup-toolchains` | `$RUSTUP_HOME/toolchains`, then `~/.rustup/toolchains` |
+| `ollama` (macOS) | `$OLLAMA_MODELS`, then `~/.ollama/models` |
+| `app-caches` (macOS) | The other folders in `~/Library/Caches` |
+| `dot-cache` (macOS) | The other folders in `~/.cache` |
+
+On Linux, edc measures the candidates that the table does not mark as macOS. It does not measure the rest of `~/.cache` on Linux.
+
+Each candidate has a priority. P1 holds the tool caches. P2 holds downloaded browsers, Xcode data, app caches, and logs. P3 holds models and toolchains. The text output lists P1 first.
+
+edc reuses the size code of `edc du`. It measures one candidate at a time. It does not go into a mount below a path. A symlink path shows the reported path and the real path, and edc measures the real path. DerivedData shows its folders grouped by app name. `rustup-toolchains` and `app-logs` show their folders by name.
+
+Four candidates measure the first-level items of a folder one by one: `xcode-device-support`, `app-updates`, `app-caches`, and `dot-cache`. The first two measure only the items whose name ends with `DeviceSupport` or `.ShipIt`. If no item has such a name, the status is `absent`.
+
+`app-caches` and `dot-cache` measure all other items. They skip every path that an earlier candidate measures. If an item holds such a path, edc measures only the rest of that item. `excludes` lists the skipped candidates. The result shows one group for each item name.
+
+For these four candidates, edc does not follow a symlink. It skips an item on another device and marks the result `partial`. A hard link counts once for each item that edc measures.
+
+edc does not know what an app keeps in its folders. The candidates `app-caches`, `dot-cache`, `app-updates`, and `app-logs` have `regenerable` set to `false`. Their cost to recreate is `unknown` or `lost`.
+
+edc measures only the cache folder of a tool. For Hugging Face it measures `hub`. For Cargo it measures `registry` and `git`. For Ollama it measures `models`. It never measures a token or a credential file.
+
+edc never calls Xcode Archives, simulator devices, `Application Support`, or `Containers` a cache.
+
+Each candidate has one status.
+
+| Status | Meaning |
+| --- | --- |
+| `measured` | edc read the whole path. The size is complete. |
+| `partial` | The size is a lower bound. A directory is unreadable, a mount was skipped, or the time ended. |
+| `absent` | The path does not exist, or no item has the name that the candidate needs. |
+| `tool_absent` | The tool is not on the `PATH`. |
+| `unknown_location` | The tool failed, timed out, or gave an unexpected answer. An environment variable that is not an absolute path gives this status too. |
+| `unreadable` | A permission error or another error blocked the read. |
+| `rejected` | The path covers `/`, the home directory, or a parent of it. edc does not measure it. |
+| `duplicate` | An earlier candidate has the same real path or holds this path. |
+| `not_scanned` | The time ended or you pressed `Ctrl-C` before edc reached the candidate. |
+
+Only `measured` and `partial` have `usage_bytes`. No other status shows `0 B`. A candidate inside another candidate is not added twice to the sum.
+
+The text output shows one line for each candidate that has a size or needs a check. It folds `absent`, `tool_absent`, and `duplicate` into one line for each status. A group list shows 5 items. `-v` shows every candidate and 30 items for each group. `--json` shows all items.
+
+The sum for each file system is usage. It is not the space that a cleanup frees. APFS clones and snapshots can make the sum larger than the freed space. A hard link counts once in one candidate. A hard link between two candidates counts twice. The pnpm store and the uv cache use hard links. No candidate has a reclaimable value. Only the Docker section shows one, and the engine reports it.
+
+A candidate shows a cleanup command only if the tool documents one. The candidates `bun`, `pip`, `huggingface`, and `rustup-toolchains` show one. The candidates `cargo-registry`, `zig`, `app-caches`, and a few more show none. edc never runs a command.
+
+Four more sections follow the candidates. Each section has its own key in `metrics`. A section is not a candidate.
+
+| Key in `metrics` | Content |
+| --- | --- |
+| `candidates` | The caches in the table above |
+| `filesystems` | The usage sum for each file system |
+| `project_build_dirs` | The build folders in the roots that you give with `--project` |
+| `docker` | The totals that the Docker engine reports |
+| `vm_disks` | The disk file of a virtual machine, for example OrbStack |
+| `worktrees` | The git-kit worktrees in `~/.gk/worktree` |
+| `not_measured` | The types that edc does not measure, and the reason |
+
+edc runs the sections in this order: candidates, build folders, Docker, VM disks, and worktrees. They share one time limit.
+
+Only the recreatable build folders join the sum of a file system. The engine totals, the VM disks, and the worktrees never join a sum.
+
+### Project build folders
+
+`--project DIR` names a root to search. Repeat the option for more roots. Without `--project`, edc does not search, and `project_build_dirs` has the status `no_project_root`. This state is normal.
+
+edc reads the folders of a root to a depth of 6. It does not follow a symlink. It does not enter a mount on another device. It does not enter `.git`, a build folder, or a path that a candidate measures.
+
+edc stops after 300,000 folders or 256 build folders. The section is then `partial` with the reason `project_limit`. A root that edc did not reach has the status `not_scanned`.
+
+A root that does not exist has the status `absent`. A root that is a file has the status `rejected`. edc walks a root once. A root that equals another root, or lies inside it, has the status `duplicate`.
+
+A build folder needs a marker file in the same parent folder.
+
+| Folder | Marker file |
+| --- | --- |
+| `.zig-cache`, `zig-out` | `build.zig` |
+| `target` | `Cargo.toml` |
+| `node_modules` | `package.json` |
+| `.build` | `Package.swift` |
+| `build` | `build.gradle` or `build.gradle.kts` |
+
+A folder with one of these names and no marker file can hold source. edc does not measure it. The root counts it in `unmarked`.
+
+edc then asks git about each build folder. A folder outside a git repository is recreatable when it has a marker file. The `git` field is `none`.
+
+Inside a repository, the folder must have no tracked file. If git tracks a file in it, `regenerable` is `false` with the reason `tracked_files`. A tracked file decides before an ignore rule. The `git` field is `ignored` or `not_ignored`.
+
+If git fails or times out, `regenerable` is `false` with the reason `git_unknown`, and the `git` field is `unknown`. edc does not guess.
+
+```json
+{
+  "kind": "cargo_target",
+  "path": "/Users/me/work/app/target",
+  "marker": "Cargo.toml",
+  "git": "ignored",
+  "regenerable": true,
+  "status": "measured",
+  "usage_bytes": 4831838208
+}
+```
+
+A build folder with `regenerable` set to `false` is not in the sum. A build folder that equals the path of a candidate has the status `duplicate`. A build folder inside a candidate has `inside` and is not counted twice.
+
+A build folder inside a worktree has `inside_worktree`. The worktree item shows the number of these folders in `build_dirs`. Without a search, `build_dirs` is `null`.
+
+The text output shows the 10 largest build folders and the number of the rest. `-v` shows all of them. Each root shows the number of folders that edc read and the number of `unmarked` folders.
+
+### Docker engine
+
+edc reads the engine with `GET` requests to the API socket. It sends no other method and runs no `prune` command.
+
+edc asks `docker context inspect` for the socket path, so `DOCKER_HOST` and the current context apply. Only a `unix://` endpoint works. Any other endpoint gives `unsupported`.
+
+If `docker` is not on the `PATH`, the status is `tool_absent`. If the socket file does not exist, the status is `not_running`. These two states are normal.
+
+The engine needs API version 1.52 or later. An older engine gives `unsupported` with the reason `api_version`. edc does not compute the totals from the lists.
+
+`types` has one entry each for `images`, `containers`, `build_cache`, and `volumes`. An entry holds `total_bytes`, `reclaimable_bytes`, `total_count`, and `active_count`. The values come from the engine.
+
+If one request fails, only that type has the status `failed`, and the section is `partial`. The volume request can take up to 20 seconds.
+
+`reclaimable_bytes` is the amount that the engine says a cleanup frees. It is the only reclaimable value in the output. The entry shows the cleanup command as text, for example `docker image prune -a`. edc never runs it.
+
+Volumes hold user data. The `volumes` entry has `user_data` set to `true`. It has no `reclaimable_bytes` and no cleanup command.
+
+`docker system df` rounds the sizes and uses units of 1000 bytes. The text output of edc uses units of 1024 bytes. The two numbers differ for this reason. The JSON holds exact bytes.
+
+### VM disks
+
+On macOS, edc measures the OrbStack data disk in `~/Library/Group Containers/HUAQ24HBR6.dev.orbstack/data`. The file is sparse, so edc measures the allocated blocks and not the logical size.
+
+The disk holds the Docker engine data and the Linux machines. When the engine is OrbStack, `docker.inside` is `orbstack`.
+
+The engine totals and the disk size describe the same data in two ways. edc never adds them together or to a sum. The disk is user data, and `user_data` is `true`.
+
+edc does not measure the disks of Docker Desktop or of other VMs. Linux has no VM disk entry.
+
+### Worktrees
+
+edc reads `~/.gk/worktree`, the folder of git-kit. It looks for a folder with `.git` to a depth of 5 and does not enter it. If the folder does not exist, the status is `absent`. This state is normal.
+
+edc measures the root once and reads the size of each worktree from that tree. `leftover` is the size of the other files in the root.
+
+edc decides the use of a worktree from the state of git. It does not read the modification time of a file. It runs only read commands of git with `GIT_OPTIONAL_LOCKS=0` and `core.fsmonitor=false`. The files in `.git` do not change.
+
+Each worktree has one `verdict`. edc picks the first match in this order.
+
+| Verdict | Meaning |
+| --- | --- |
+| `unlinked` | The git directory of the worktree does not exist |
+| `has_changes` | A file is changed or untracked |
+| `state_unknown` | A git command failed, so edc cannot tell |
+| `locked` | The worktree is locked |
+| `not_merged` | The branch has commits that the base does not have |
+| `base_unknown` | edc found no base branch to compare |
+| `merged_clean` | The base has the branch, and no file changed |
+
+The base is the `gk-parent` of the branch in the git configuration. If it does not exist, the base is `origin/HEAD`. edc never assumes `main`.
+
+A `merged_clean` verdict needs every git command to succeed. edc cleans nothing. The output names `git-kit worktree cleanup` as the command to run.
+
+### What edc does not measure
+
+The output always lists the types that edc does not measure. Use `-v` to see the reason for each type.
+
+- VM disks other than OrbStack, and databases
+- Worktrees outside `~/.gk/worktree`
+- Trash and downloads
+- Simulator devices
+- SDKs
+- App data
+- Caches of other tools whose location edc did not verify
+
+The time limit is 60 seconds by default, and all candidates and sections share it. edc measures the P1 candidates first and the two remainder candidates last. A section that edc did not start has the status `not_scanned`. If the time ends, the result is `warn`, and `next` shows a command with a longer limit. `Ctrl-C` stops the run and keeps the results so far.
 
 ## Kernel and systemd events (Linux)
 
@@ -648,6 +936,7 @@ The command reads only. It writes its output file and changes nothing else on th
 edc snapshot                              # ./edc-snapshot-<host>-<UTC time>.json
 sudo edc snapshot --output before.json    # root reads all audit and event sources
 sudo edc snapshot --output after.json
+sudo edc snapshot --du /var --output after.json   # also edc du of /var (Linux and macOS)
 sudo edc report diff before.json after.json
 edc snapshot --since 2h --output -        # only the report JSON to stdout
 ```
@@ -665,6 +954,9 @@ The report holds these results.
 | `audit.*` | the `edc audit` checks |
 | `events.*` | the `edc events` signals in the `--since` window (default 6h) |
 | `changes.*` | the `edc changes` sources in the `--since` window |
+| `du.scan` | only with `--du <path>`: `edc du` of that path, with the largest directories for `report diff` |
+
+A large tree can need a longer `--timeout` for `--du`. At the limit, the `du.scan` result is partial, and `report diff` does not compare its directories.
 
 All sections run at the same time under one `--timeout` budget (default 15s). If a section does not finish within the budget and 2 more seconds, its result is `skip` with the reason. For `audit`, `events`, and `changes`, each check gets its own `skip`, so `report diff` compares the same IDs. `info.disk` cannot know the mounts, so it gets one `info.disk` skip. If a collector fails, its result is `fail` with the error. Every section is in the report.
 
@@ -686,7 +978,7 @@ After the file write, edc prints the path, the result counts, and a `report diff
 ./bin/edc report show report.json
 ```
 
-Without paths, `edc report show` and `edc report diff` let you choose from up to 20 recent reports or enter another JSON file path. If no report is found, they show an example of how to save one.
+Without paths, `edc report show` and `edc report diff` let you choose from up to 20 recent reports or enter another JSON file path. If no report is found, they show an example of how to save one. `edc report diff` shows the reports on one screen, with the two newest selected. Press Space to change the selection, and Enter to compare. The earlier report is always the before side. To compare in the other order, give the two paths.
 
 `edc report diff` compares two JSON reports by probe name. It shows the status change and the scalar metric differences of each probe.
 
@@ -1070,7 +1362,7 @@ sudo ./bin/edc top --process output-mesh -d
 sudo ./bin/edc top --process output-mesh -d --json /tmp/edc-host.jsonl
 ```
 
-The dashboard adds a third line to the detail view: `ebpf 1s · runq 7584 avg 5.80ms p95 <16.384ms · io 704 avg 0.07ms p95 <0.256ms`. With `--json`, each process and `process_total` get an `ebpf` object:
+The dashboard adds a third line to the detail view: `ebpf 1s · runq 7584 avg 5.80ms p95 <16.384ms · io 704 avg 0.07ms p95 <0.256ms`. On Linux, the line ends with the three system calls with the longest waits, for example `· wait futex 1.20s epoll_wait 800.00ms read 12.00ms`. With `--json`, each process and `process_total` get an `ebpf` object:
 
 | Field | Meaning |
 |---|---|
@@ -1078,6 +1370,7 @@ The dashboard adds a third line to the detail view: `ebpf 1s · runq 7584 avg 5.
 | `io_supported`, `p95_supported` | whether the source can count block I/O and keep a distribution. Both are `true` for `ebpf` and `false` for `libproc`. |
 | `runq_count`, `runq_avg_ms`, `runq_p95_ms` | On Linux, times a thread of the process became runnable and then got a CPU, and the wait in between. On macOS, the context switches in the window and the average wait per switch, with no p95. A high wait with a low `cpu_pct` means the CPU is oversubscribed. |
 | `io_ops`, `io_bytes`, `io_avg_ms`, `io_p95_ms` | block I/O requests the process issued, their bytes, and the time from issue to completion |
+| `waits` | Linux only: up to five system calls with the longest waits in the window. A wait starts when a thread of the process sleeps and leaves the CPU, and it ends when the thread runs again. Each entry has `syscall`, `count`, and `total_ms`. `-` is a wait outside a system call, for example in a page fault. |
 | `context_switches`, `unreadable` | macOS only: the context switches in the window, which `runq_count` repeats, and the matches that macOS refused to read |
 
 `p95` is the upper edge of the power-of-two bucket that holds the 95th percentile, so the real value is below it. A latency is left out when there were no events. `process_total` merges every match, and its p95 comes from the merged distribution. `edc` watches the 4096 busiest matches.
@@ -1086,6 +1379,7 @@ The dashboard adds a third line to the detail view: `ebpf 1s · runq 7584 avg 5.
 - `edc` translates the kernel's PIDs into the PID namespace it runs in, so the filter matches inside a container as well.
 - The first sample after a process appears has no `ebpf` object, because the counts start when `edc` begins to watch it.
 - `source` in the `ebpf` object names how the values were counted: `ebpf` on Linux, `libproc` on macOS.
+- A wait counts in the sample in which it ends. A thread that sleeps for the whole window does not add to that window. A wait includes the run-queue wait after the wakeup, so do not add `waits` to `runq_avg_ms`. After `edc` starts to watch a process, it counts the waits of a thread only after the thread wakes once.
 
 macOS has no public hook for scheduler or block I/O events. On macOS, `-d` therefore counts only the CPU wait, without root, from libproc's cumulative counters. The wait is the runnable time minus the CPU time, and `runq_count` is the number of context switches in the window, so `runq_avg_ms` is the average wait per switch. There is no distribution, so `runq_p95_ms` is left out, and I/O cannot be counted, so the `io_*` fields are absent. The dashboard shows `n/a` in those cells. Without root, macOS refuses to read the processes of other users. `edc` counts them in `unreadable`, leaves out the `runq_*` fields when it read none of the matches, and shows `root` in the dashboard. The x86_64 build stops `-d` under Rosetta, because the translated clock may not match the kernel counters; use the arm64 build.
 
@@ -1596,14 +1890,17 @@ Use `--group-by device`, `--group-by process`, `--group-by cgroup`, or `--group-
 ./bin/edc trace tcp -d
 ```
 
-Use `trace sched` on Linux to measure scheduler delays. The trace reports wakeup-to-run after sleep, runnable queue after preemption, and off-CPU spans. The off-CPU spans include the two delay types as subsets. It reports voluntary and preempted off-CPU spans separately. The trace does not identify sleep, lock, or I/O causes.
+Use `trace sched` on Linux to measure scheduler delays. The trace reports wakeup-to-run after sleep, runnable queue after preemption, and off-CPU spans. The off-CPU spans include the two delay types as subsets. It reports voluntary and preempted off-CPU spans separately.
 
 ```bash
 ./bin/edc trace sched --duration 15s
 ./bin/edc trace sched --process api --group-by process
 ./bin/edc trace sched --group-by event --json sched.json
+./bin/edc trace sched --process api --group-by syscall
 ./bin/edc trace sched --raw
 ```
+
+Each span also shows the system call that the thread was in when it left the CPU. The name tells the type of wait. For example, `futex` is usually a lock or a condition variable, `epoll_wait` and `poll` wait for events, `read` and `recvfrom` wait for data, and `nanosleep` is a sleep. The wakeup span has the same system call as the off-CPU span before it. `-` means that the thread did not wait in a system call, for example in a page fault, or that it is a kernel thread. Use `--group-by syscall` to add the spans by system call. In the full-screen view, press `s`. Raw events have a `syscall` field. edc reads the number from the saved user registers when the thread leaves the CPU, so the trace does not attach to the system call tracepoints.
 
 By default, the trace emits spans of at least 1 ms. Use `--slow <duration>` to change this threshold, for example `--slow 100us`. It uses fixed pending maps and a fixed ring buffer. The summary and raw JSON summary show ring loss, map full, unmatched, repeated wakeup, and omitted span counts. On Linux kernels that expose the required BTF fields, raw events include the cgroup v2 ID and `--container` filters this ID. Use `--group-by cgroup` to group rows by this ID. edc verifies these fields before it loads the program. The trace works on Linux 5.15. In each raw event, `timestamp_ns` is Unix epoch time in nanoseconds, the same clock as the summary line. `boot_time_ns` is the kernel monotonic time since boot.
 
@@ -1622,9 +1919,56 @@ By default, edc records the signals that end a process or dump core: `HUP`, `INT
 
 edc reads the command line from the memory of the new process at the time of the exec, so it holds the arguments that the program received, not later changes. If edc cannot read it, the event shows the path of the executable. Lines longer than 256 bytes end with `…`, and `args_truncated` counts them. A thread that exits does not make an `exit` event, only the last thread of a process does. Kernel threads do not appear. The trace needs the `sched_process_exec`, `sched_process_exit`, and `signal_generate` tracepoints with BTF.
 
+Use `trace syscall` on Linux to count the system calls of each process. edc counts in the kernel and prints one summary at the end. With `--slow` or `--errors`, it also prints each call that matches.
+
+```bash
+./bin/edc trace syscall --duration 10s
+./bin/edc trace syscall --process nginx,1234 --duration 30s
+./bin/edc trace syscall --group-by syscall --json syscall.json
+./bin/edc trace syscall --container web --group-by cgroup
+./bin/edc trace syscall --process api --errors ENOENT,EACCES
+./bin/edc trace syscall --syscall openat,statx --slow 10ms --raw
+```
+
+Each row is one process name and one system call. The row shows the calls, the errors with the most frequent errno, and the time in the call: total, average, p95, and maximum. The time is wall time inside the call, not CPU time. Calls that wait, such as `epoll_wait` and `futex`, are therefore at the top. The total adds the time of all threads, so it can be longer than the trace. The rows are in order of total time. The table shows 20 rows, and `--json` holds all rows. P95 is the upper bound of a histogram bucket, the same as in `top -d`. The table shows it as `<1.05s`.
+
+Use `--group-by syscall`, `--group-by process`, or `--group-by cgroup` to add the rows over one column. `--process` takes PIDs and command names, separated by commas. edc compares them in the kernel, so a name must be the exact command name of the process, up to 15 bytes. A PID matches all threads of the process. `--container` keeps the calls of one container.
+
+Use `--syscall` with names separated by commas to count only these system calls. edc checks the number in the kernel, so the other calls do not reach the map. The names come from the system call table of the CPU architecture. On amd64, a name also selects the 32-bit call with that name.
+
+Use `--slow <duration>` to print each call that takes at least that time. Use `--errors all` to print each failed call, or `--errors ENOENT,EACCES` to print only these errors. edc checks both conditions in the kernel. Each line shows the time, the process, the PID and the thread ID, the system call, the return value or the errno, the time in the call, and the path:
+
+```
+15:04:05.000123  nginx 1234/1240  openat  ENOENT  12.3us  /etc/nginx/missing.conf
+```
+
+edc reads the path only for the calls that it prints, when the call returns. It reads up to 256 bytes, and a longer path ends with `…`. The path is the first path argument of about 50 calls, such as `openat`, `statx`, `unlinkat`, `mkdirat`, and `execve`. edc does not read the path of a 32-bit call. It does not read the path of an `execve` that succeeded, because the new program replaced the registers and the memory. If another thread changes the path buffer during the call, the line can show the new text. Control characters in the path show as `\xNN`.
+
+edc prints at most 1,000 lines per second on each CPU. The summary counts the other lines as `sampled_out`, and the table still counts all calls. `ring_lost` counts the lines that did not fit in the event buffer. With `--json`, edc counts the lines but does not print them. Use `--raw` to print each line as JSON, with the summary as the last line.
+
+The `IN FLIGHT AT STOP` table lists the calls that started during the trace and did not return before the end. A thread that waits for the whole trace is not in the main table, because its call does not return. A call that started before the trace returns without a start time. The summary counts these returns as `unmatched`, together with the first return of a new thread after `fork` or `clone`. With `--process`, `--container`, or `--syscall`, edc does not count them, and the summary shows `-`. `exit` and `exit_group` do not return, so edc counts them without a time.
+
+edc leaves out its own calls. If edc runs in a container with its own PID namespace, it cannot find its own calls, and it prints a note after the summary. On amd64, a 32-bit program uses other system call numbers. edc shows these calls with `(32-bit)` after the name. A call that a signal interrupts can return a restart code that only the kernel uses, for example `ERESTARTSYS`. The table shows these codes by name.
+
+The counts use a per-CPU map with a fixed size. edc sizes the map to 32 MiB in total, with at most 16,384 entries. Each entry is one process name and one system call. If the map is full, edc does not count the extra calls. The summary shows them as `map_full`, and edc prints a warning. `--group-by cgroup` adds the cgroup to each entry, so it uses more entries. For example, each SSH login can make a new cgroup.
+
+When the trace runs, each system call on the host goes through two BPF programs. The cost applies also to the processes that the filter does not select. `perf bench syscall basic` measured these costs per call on a 12-CPU x86_64 host with Linux 6.17:
+
+| Condition | `getppid` | Added cost |
+|---|---|---|
+| No trace | 0.577 µs | - |
+| Trace runs, process not selected | 0.735 µs | 0.16 µs |
+| Trace runs, process selected | 0.809 µs | 0.23 µs |
+
+On that host, about 32,500 calls per second added less than 0.1% of the total CPU time. On a busy server, measure the cost on that host before a long trace.
+
+`--syscall` lowers the cost of the other calls. With `--syscall openat`, `getppid` took 0.697 µs. Without the trace, it took 0.585 µs in the same measurement. A call that fails costs about 0.1 µs more, because edc also counts its errno. A printed line costs about 0.6 µs more, and a line over the limit costs about 0.05 µs more. With the limit, a 12-CPU host prints at most 12,000 lines per second.
+
+The trace needs the `sys_enter` and `sys_exit` tracepoints with BTF, task local storage, the task iterator, and the BPF ring buffer.
+
 Use `--raw` to print JSONL events as they arrive. Use `--json` to write the connection summary after Ctrl-C.
 
-Use `trace show <raw.jsonl>` to print the summary of a saved `--raw` file later, on any host and without root. It takes the same `--group-by`, `--process`, `--destination`, `-d`, and `--json` options as the live trace, and it prints the same tables. `-` reads standard input. The file holds one trace: the network, DNS, HTTP, database, socket, and drop traces, and `trace exec`. `trace io` and `trace sched` files are not supported. Each `--raw` event carries a `socket` number, and `trace show` uses it to join the events of one connection, so a file from an earlier edc without that number groups the UDP flows and the database commands less precisely.
+Use `trace show <raw.jsonl>` to print the summary of a saved `--raw` file later, on any host and without root. It takes the same `--group-by`, `--process`, `--destination`, `-d`, and `--json` options as the live trace, and it prints the same tables. `-` reads standard input. The file holds one trace: the network, DNS, HTTP, database, socket, and drop traces, and `trace exec`. `trace io`, `trace sched`, and `trace syscall` files are not supported. Each `--raw` event carries a `socket` number, and `trace show` uses it to join the events of one connection, so a file from an earlier edc without that number groups the UDP flows and the database commands less precisely.
 
 ```bash
 sudo ./bin/edc trace http --raw --duration 30s > http.jsonl
@@ -1949,7 +2293,7 @@ Use `trace mysql` on Linux 5.15 or later to print plain MySQL commands and resul
 
 JSON events have `"side": "client"` or `"side": "server"`. Use `--side client` or `--side server` to keep one side. If the local port is the MySQL port, the socket is on the server side. If the peer port is the MySQL port, the socket is on the client side.
 
-Use `--slow <duration>` only with `trace mysql`, `trace clickhouse`, `trace postgres`, `trace redis`, `trace io`, or `trace sched`. It accepts Go duration syntax, such as `250ms` and `1.5s`. For `trace io`, it sets the minimum request latency. For `trace sched`, it sets the minimum span latency. The default for both is 1ms. For `trace mysql`, in the ungrouped interactive view, it keeps a command row only when its first paired response has latency at or above the duration. It excludes unanswered commands, unmatched responses, responses without latency, and TLS rows. It does not change raw JSON, noninteractive output, summaries, grouped views, `--group-by`, or `--side`.
+Use `--slow <duration>` only with `trace mysql`, `trace clickhouse`, `trace postgres`, `trace redis`, `trace io`, `trace sched`, or `trace syscall`. It accepts Go duration syntax, such as `250ms` and `1.5s`. For `trace io`, it sets the minimum request latency. For `trace sched`, it sets the minimum span latency. The default for both is 1ms. For `trace syscall`, it prints each call that takes at least the duration, and it has no default. For `trace mysql`, in the ungrouped interactive view, it keeps a command row only when its first paired response has latency at or above the duration. It excludes unanswered commands, unmatched responses, responses without latency, and TLS rows. It does not change raw JSON, noninteractive output, summaries, grouped views, `--group-by`, or `--side`.
 
 | To see | Command |
 | --- | --- |

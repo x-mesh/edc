@@ -279,8 +279,13 @@ static __always_inline void emit(__u64 *ctx, struct task_struct *task, __u32 tgi
 		const void *path = (const void *)syscall_arg((void *)ctx[0], rule->path_arg - 1);
 		long length = bpf_probe_read_user_str(record->path, sizeof(record->path), path);
 		if (length < 0) record->path_state = 2;
-		else if (length == sizeof(record->path)) record->path_state = 3;
-		else record->path_state = 1;
+		else if (length == sizeof(record->path)) {
+			// helper가 돌려주는 길이는 NUL을 포함하므로, 꼭 맞는 255 byte 경로와 잘린 긴 경로가 모두 256이다. 사용자
+			// memory의 다음 byte가 NUL이면 꼭 맞은 것이다. 그 byte를 읽지 못하면 잘린 것으로 둔다.
+			char next = 1;
+			bpf_probe_read_user(&next, 1, path + sizeof(record->path) - 1);
+			record->path_state = next ? 3 : 1;
+		} else record->path_state = 1;
 	}
 	bpf_ringbuf_submit(record, 0);
 }

@@ -251,7 +251,7 @@ command:
       - "PCAP에는 credential과 개인정보가 들어갈 수 있습니다."
       - "JSON redaction은 PCAP payload에 적용되지 않습니다."
   trace:
-    summary: "network, I/O, socket, drop, scheduler, process, syscall 출력과 요약"
+    summary: "network, I/O, socket, drop, sched, process, syscall, CPU 출력과 요약"
     option:
       duration: "trace 시간, 최대 60s. 생략하면 Ctrl-C"
       slow: "최소 latency. 예: 20us, 250ms. io/sched 기본 1ms"
@@ -274,6 +274,8 @@ command:
       signal: "trace exec: 기록할 신호. 이름 목록, all, none"
       syscall: "trace syscall: 이 system call만, 쉼표로 구분"
       errors: "trace syscall: 실패한 호출 출력. all이나 errno 이름"
+      frequency: "trace cpu: CPU마다 1초에 샘플링할 횟수, 기본 99"
+      folded: "trace cpu: flame graph용 folded stack 저장"
     notes:
       - "terminal에서는 기본으로 전체 화면 trace를 엽니다."
       - "/를 누르면 process, destination, event, source를 필터할 수 있습니다."
@@ -283,6 +285,7 @@ command:
       - "Enter는 모든 field와 payload 전체를 보여 주고, l이나 Esc는 다시 따라갑니다."
       - "trace syscall은 kernel 안에서 세고, 끝날 때 요약을 한 번 출력합니다."
       - "trace syscall --process는 PID나 정확한 command 이름(최대 15 byte)만 받습니다."
+      - "trace cpu는 CPU마다 stack을 샘플링해 CPU를 많이 쓴 함수를 보여 줍니다."
       - "f는 상세 보기에서 가장 최근 event를 따라갑니다."
       - "i는 목록 아래 미리 보기를 열고 닫으며, J와 K로 스크롤합니다."
       - "trace http: v는 payload 줄, m은 가린 값, z는 gzip 풀기를 켜고 끕니다."

@@ -1966,6 +1966,37 @@ On that host, about 32,500 calls per second added less than 0.1% of the total CP
 
 The trace needs the `sys_enter` and `sys_exit` tracepoints with BTF, task local storage, the task iterator, and the BPF ring buffer.
 
+Use `trace cpu` on Linux to find the functions that use the CPU. edc samples the stack of the running task on each CPU, 99 times per second by default. It counts the samples in the kernel and prints one summary at the end.
+
+```bash
+./bin/edc trace cpu --duration 30s
+./bin/edc trace cpu --process api,1234 --duration 10s
+./bin/edc trace cpu --container web --folded cpu.folded
+./bin/edc trace cpu --frequency 499 --folded - | flamegraph.pl > cpu.svg
+```
+
+The first line shows the samples and the busy share of the CPUs. An idle CPU gives a sample of the idle task, and edc counts these samples as `idle`. The `PROCESS` table shows the samples of each process. The `FUNCTION` table shows `SELF`, the samples where the function was the innermost frame, and `TOTAL`, the samples where the function was anywhere in the stack. A kernel function has `[k]` after the name. The percentages are of the samples that the filter kept. The table shows 20 functions, and `--json` holds all of them.
+
+`--folded <path>` writes one line for each stack, from the outer frame to the innermost frame, with the count at the end. Flame graph tools, such as `flamegraph.pl` and speedscope, read this format. Kernel frames end with `_[k]`. If `--folded -` writes to standard output, edc does not print the tables. `--process` and `--container` work as in `trace syscall`. edc compares them in the kernel, so the other samples do not use the maps.
+
+edc finds the kernel names in `/proc/kallsyms`. It finds the user names in the ELF symbol table of each mapped file. For a Go program, it also reads `.gopclntab`, so a Go program that `-s -w` stripped still shows its function names. For a JIT runtime, it reads `/tmp/perf-<pid>.map` in the mount namespace of the process. For example, `node --perf-basic-prof` writes this file. edc opens the files through `/proc/<pid>/map_files`, so the files of a container and deleted files also work. A frame without a symbol shows the file name, for example `[libc.so.6]`. A frame outside all mappings shows `[unknown]`. C++ and Rust names are not demangled.
+
+The kernel follows the frame pointers to read the user stack. A program built without frame pointers shows only part of its stack, and an address after the break can show as `[unknown]`. For example, a C program built with `-O2 -fomit-frame-pointer` showed `_start;__libc_start_main;leaf_work`, but the same program with `-fno-omit-frame-pointer` showed `main;outer_work;leaf_work`. A function that does not make its own frame, often a short leaf function, hides its caller. In the example, `middle_work` is missing for this reason. With `-O0`, the full stack showed. Go programs keep frame pointers. If more than half of the samples have a user stack of one frame, edc prints a note.
+
+A process that ends within a few milliseconds can end before edc reads its mappings, and its user frames show as `[unknown]`. edc reads the mappings of a new process when the BPF program first sees it, and again after 20 ms and 200 ms.
+
+edc measured these costs on a 12-CPU x86_64 host with Linux 6.17. The test ran a CPU-bound program on all 12 CPUs for 5 seconds, three times for each condition:
+
+| Condition | Work done | Change | BPF time per sample |
+|---|---|---|---|
+| No trace | 2,649,850 | - | - |
+| `--frequency 99` | 2,652,236 | +0.09% | 1.5 µs |
+| `--frequency 999` | 2,639,584 | -0.39% | 1.1 µs |
+
+At 99 Hz, edc itself used 120 ms of CPU time in 6 seconds of sampling. It used about 1 second in total for an 8-second trace, mostly to start and to read the symbols at the end, and its memory peak was 131 MiB.
+
+The trace needs BTF, a `perf_event_open` cpu-clock event on each online CPU, and a BPF link for perf events. Linux 5.15 has all three.
+
 Use `--raw` to print JSONL events as they arrive. Use `--json` to write the connection summary after Ctrl-C.
 
 Use `trace show <raw.jsonl>` to print the summary of a saved `--raw` file later, on any host and without root. It takes the same `--group-by`, `--process`, `--destination`, `-d`, and `--json` options as the live trace, and it prints the same tables. `-` reads standard input. The file holds one trace: the network, DNS, HTTP, database, socket, and drop traces, and `trace exec`. `trace io`, `trace sched`, and `trace syscall` files are not supported. Each `--raw` event carries a `socket` number, and `trace show` uses it to join the events of one connection, so a file from an earlier edc without that number groups the UDP flows and the database commands less precisely.

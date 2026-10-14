@@ -193,3 +193,71 @@ func TestTraceCPUSamplesUserAndKernelStacks(t *testing.T) {
 		})
 	}
 }
+
+// 외부 linker는 C 시작 코드를 .text 앞에 두어 runtime.text가 .text의 시작보다 뒤에 온다. 심볼표 없이 찾은 runtime.text가
+// 실제 심볼과 같은지, 그리고 그 값으로 pclntab이 함수 이름을 맞게 찾는지 본다. PIE build는 .gopclntab이 없을 수 있다.
+func TestCPUGoTextMatchesRuntimeText(t *testing.T) {
+	goTool, err := exec.LookPath("go")
+	if err != nil {
+		t.Skip("needs the go tool")
+	}
+	if _, err := exec.LookPath("gcc"); err != nil {
+		t.Skip("needs gcc for external linking")
+	}
+	dir := t.TempDir()
+	source := "package main\n\n//go:noinline\nfunc hot(n int) int { for i := 0; i < n; i++ { n ^= i }; return n }\n\nfunc main() { println(hot(3)) }\n"
+	if err := os.WriteFile(dir+"/main.go", []byte(source), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dir+"/go.mod", []byte("module cputext\n\ngo 1.22\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for name, args := range map[string][]string{
+		"external":     {"-ldflags=-linkmode=external"},
+		"external-pie": {"-buildmode=pie", "-ldflags=-linkmode=external"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			output := dir + "/" + name
+			build := exec.Command(goTool, append([]string{"build", "-o", output}, args...)...)
+			build.Dir = dir
+			build.Env = append(os.Environ(), "CGO_ENABLED=1", "GOFLAGS=")
+			if out, err := build.CombinedOutput(); err != nil {
+				t.Skipf("build %s: %v\n%s", name, err, out)
+			}
+			file, err := elf.Open(output)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer file.Close()
+			symbols, err := file.Symbols()
+			if err != nil {
+				t.Fatal(err)
+			}
+			var runtimeText, hot uint64
+			for _, symbol := range symbols {
+				switch symbol.Name {
+				case "runtime.text":
+					runtimeText = symbol.Value
+				case "main.hot":
+					hot = symbol.Value
+				}
+			}
+			text := file.Section(".text")
+			candidates := cpuPCLNCandidates(file)
+			if runtimeText == 0 || hot == 0 || text == nil || len(candidates) == 0 {
+				t.Fatalf("runtime.text %x main.hot %x text %v candidates %d", runtimeText, hot, text, len(candidates))
+			}
+			if got := cpuGoText(file, text, candidates[0]); got != runtimeText {
+				t.Fatalf("runtime.text = %x, want %x (.text starts at %x)", got, runtimeText, text.Addr)
+			}
+			table := cpuGoPCLN(file)
+			if table == nil {
+				t.Fatal("no pclntab")
+			}
+			if function := table.PCToFunc(hot + 1); function == nil || function.Name != "main.hot" {
+				t.Fatalf("pclntab at main.hot = %+v", function)
+			}
+			t.Logf(".text %x runtime.text %x", text.Addr, runtimeText)
+		})
+	}
+}

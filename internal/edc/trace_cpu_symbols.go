@@ -170,22 +170,109 @@ func loadCPUSymbolFile(reader io.ReaderAt, base string) (*cpuSymbolFile, error) 
 	return result, nil
 }
 
-// cpuGoPCLN은 Go binary의 .gopclntab을 읽는다. -s로 심볼표를 지워도 runtime이 쓰는 이 표는 남는다. Go binary가 아니면 nil이다.
+// cpuPCLNMagics는 Go 버전별 pclntab header의 첫 4 byte다. 1.2, 1.16, 1.18, 1.20 순서다.
+var cpuPCLNMagics = map[uint32]bool{0xfffffffb: true, 0xfffffffa: true, 0xfffffff0: true, 0xfffffff1: true}
+
+// cpuGoPCLN은 Go binary의 pclntab을 읽는다. -s로 심볼표를 지워도 runtime이 쓰는 이 표는 남는다. Go binary가 아니면 nil이다.
 // cgo binary는 .dynsym에 C 심볼 몇 개만 있어서, 심볼이 있어도 Go 함수는 이 표에서만 찾을 수 있다.
 func cpuGoPCLN(file *elf.File) *gosym.Table {
-	pcln, text := file.Section(".gopclntab"), file.Section(".text")
-	if pcln == nil || text == nil {
+	text := file.Section(".text")
+	if text == nil {
 		return nil
 	}
-	data, err := pcln.Data()
-	if err != nil {
-		return nil
+	for _, candidate := range cpuPCLNCandidates(file) {
+		table, err := gosym.NewTable(nil, gosym.NewLineTable(candidate.data, cpuGoText(file, text, candidate)))
+		if err == nil && len(table.Funcs) > 0 {
+			return table
+		}
 	}
-	table, err := gosym.NewTable(nil, gosym.NewLineTable(data, text.Addr))
-	if err != nil {
-		return nil
+	return nil
+}
+
+type cpuPCLN struct {
+	data []byte
+	addr uint64
+}
+
+// cpuPCLNCandidates는 pclntab일 수 있는 byte열과 그 주소다. 내부 linker는 .gopclntab section을 만든다. PIE를 외부
+// linker로 build하면 그 section 없이 .data.rel.ro 안에 표가 들어가므로, header의 모양으로 찾는다.
+func cpuPCLNCandidates(file *elf.File) []cpuPCLN {
+	if section := file.Section(".gopclntab"); section != nil {
+		if data, err := section.Data(); err == nil {
+			return []cpuPCLN{{data, section.Addr}}
+		}
 	}
-	return table
+	var candidates []cpuPCLN
+	for _, name := range []string{".data.rel.ro", ".rodata"} {
+		section := file.Section(name)
+		if section == nil {
+			continue
+		}
+		data, err := section.Data()
+		if err != nil {
+			continue
+		}
+		for offset := 0; offset+8 <= len(data); offset += 4 {
+			header := data[offset:]
+			if !cpuPCLNMagics[file.ByteOrder.Uint32(header)] || header[4] != 0 || header[5] != 0 {
+				continue
+			}
+			if quantum := header[6]; quantum != 1 && quantum != 2 && quantum != 4 {
+				continue
+			}
+			if pointer := header[7]; pointer != 4 && pointer != 8 {
+				continue
+			}
+			candidates = append(candidates, cpuPCLN{header, section.Addr + uint64(offset)})
+		}
+	}
+	return candidates
+}
+
+// cpuModuleTextWord는 runtime.moduledata에서 text 칸의 위치다. 첫 칸이 pclntab header의 주소이고, 그 뒤에 slice 6개
+// (word 18개), findfunctab, minpc, maxpc가 온 다음 text다. Go 1.16부터 이 순서다.
+const cpuModuleTextWord = 22
+
+// cpuGoText는 runtime.text의 주소다. 외부 linker로 build하면 C 시작 코드가 .text 앞에 오므로 runtime.text는 .text의
+// 시작보다 뒤에 있고, .text의 시작을 넘기면 모든 함수 경계가 그만큼 어긋난다. runtime.firstmoduledata가 header의 주소와
+// runtime.text를 함께 담으므로 그 값을 쓴다. 찾지 못하면 1.18 이상 header의 textStart, 그것도 0이면 .text의 시작이다.
+func cpuGoText(file *elf.File, text *elf.Section, pcln cpuPCLN) uint64 {
+	if len(pcln.data) < 8 {
+		return text.Addr
+	}
+	pointer := int(pcln.data[7])
+	word := func(data []byte) uint64 {
+		if pointer == 4 {
+			return uint64(file.ByteOrder.Uint32(data))
+		}
+		return file.ByteOrder.Uint64(data)
+	}
+	// Go 1.27부터 moduledata는 .go.module에 있고, 그 전에는 .noptrdata에 있다.
+	for _, name := range []string{".go.module", ".noptrdata", ".data", ".data.rel.ro"} {
+		section := file.Section(name)
+		if section == nil || section.Type == elf.SHT_NOBITS {
+			continue
+		}
+		data, err := section.Data()
+		if err != nil {
+			continue
+		}
+		last := len(data) - pointer*(cpuModuleTextWord+1)
+		for offset := 0; offset <= last; offset += pointer {
+			if word(data[offset:]) != pcln.addr {
+				continue
+			}
+			if value := word(data[offset+pointer*cpuModuleTextWord:]); value >= text.Addr && value < text.Addr+text.Size {
+				return value
+			}
+		}
+	}
+	if magic := file.ByteOrder.Uint32(pcln.data); (magic == 0xfffffff0 || magic == 0xfffffff1) && len(pcln.data) >= 8+3*pointer {
+		if value := word(pcln.data[8+2*pointer:]); value != 0 {
+			return value
+		}
+	}
+	return text.Addr
 }
 
 // lookup은 file offset의 함수 이름이다. 실행 파일의 PT_LOAD로 offset을 링크 주소로 바꾼 뒤 찾는다.

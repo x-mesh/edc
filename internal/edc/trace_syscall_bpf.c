@@ -16,6 +16,8 @@ typedef __u32 __wsum;
 #define BPF_MAP_TYPE_HASH 1
 #define BPF_MAP_TYPE_ARRAY 2
 #define BPF_MAP_TYPE_PERCPU_HASH 5
+#define BPF_MAP_TYPE_PERCPU_ARRAY 6
+#define BPF_MAP_TYPE_RINGBUF 27
 #define BPF_MAP_TYPE_TASK_STORAGE 29
 #define BPF_F_NO_PREALLOC 1
 #define BPF_LOCAL_STORAGE_GET_F_CREATE 1
@@ -24,15 +26,24 @@ typedef __u32 __wsum;
 #define HIST_BUCKETS 24
 #define ERRNOS_MAX 4096
 #define MAX_ERRNO 4095
+#define NSEC_PER_SEC 1000000000ULL
+// rules는 64비트 번호를 그대로, 32비트 호환 번호는 SYSCALL_NR_MAX를 더한 자리에 둔다. 두 표 모두 번호가 500 아래다.
+#define SYSCALL_NR_MAX 1024
+#define SYSCALL_PATH_MAX 256
 // x86 thread_info.status의 TS_COMPAT이다. 32비트 진입점이 syscall마다 켜고 사용자 공간으로 돌아가기 전에 끈다.
 #define TS_COMPAT 0x0002
 #define SYSCALL_COMPAT 0x80000000U
 
-enum syscall_counter { SYSCALL_STARTS_FULL, SYSCALL_STATS_FULL, SYSCALL_ERRNOS_FULL, SYSCALL_UNMATCHED, SYSCALL_COUNTERS };
+enum syscall_counter { SYSCALL_STARTS_FULL, SYSCALL_STATS_FULL, SYSCALL_ERRNOS_FULL, SYSCALL_UNMATCHED, SYSCALL_RING_LOST, SYSCALL_COUNTERS };
+enum syscall_events { SYSCALL_EVENTS_OFF, SYSCALL_EVENTS_ALL_ERRORS, SYSCALL_EVENTS_LISTED_ERRORS };
 
 struct thread_info___x86 { __u32 status; } __attribute__((preserve_access_index));
 struct task_struct___x86 { struct thread_info___x86 thread_info; } __attribute__((preserve_access_index));
 struct task_struct { struct task_struct *group_leader; char comm[TASK_COMM_LEN]; } __attribute__((preserve_access_index));
+// sys_exit tracepoint가 주는 사용자 register다. 하나의 object가 두 아키텍처에서 돌므로 field가 있는 쪽을 쓴다.
+// arm64는 x0을 반환값으로 덮으므로 첫 인자는 orig_x0에 남는다.
+struct pt_regs___x86 { unsigned long di; unsigned long si; unsigned long dx; unsigned long r10; unsigned long r8; unsigned long r9; } __attribute__((preserve_access_index));
+struct pt_regs___arm64 { __u64 regs[31]; __u64 orig_x0; } __attribute__((preserve_access_index));
 struct seq_file;
 struct bpf_iter_meta { struct seq_file *seq; } __attribute__((preserve_access_index));
 struct bpf_iter__task { struct bpf_iter_meta *meta; struct task_struct *task; } __attribute__((preserve_access_index));
@@ -50,6 +61,12 @@ struct syscall_in_flight { __u64 start_ns; __u32 tgid; __u32 nr; char comm[TASK_
 struct syscall_errno_key { struct syscall_key owner; __u32 err; __u32 pad; };
 struct syscall_comm { char comm[TASK_COMM_LEN]; };
 struct syscall_counters { __u64 values[SYSCALL_COUNTERS]; };
+// path_arg는 경로 인자의 위치에 1을 더한 값이고, 0이면 경로가 없다. path_gone은 성공하면 경로를 읽을 수 없는 호출이다.
+// execve가 성공하면 register와 memory가 새 program의 것으로 바뀐다.
+struct syscall_rule { __u8 allowed; __u8 path_arg; __u8 path_gone; __u8 pad; };
+struct syscall_window { __u64 start_ns; __u64 sent; __u64 suppressed; };
+// path_state는 0이면 경로가 없는 호출, 1이면 읽은 경로, 2이면 읽지 못한 경로, 3이면 잘린 경로다.
+struct syscall_event { __u64 timestamp_ns; __u64 latency_ns; __s64 ret; __u32 tgid; __u32 tid; __u32 nr; __u8 path_state; __u8 pad[3]; char comm[TASK_COMM_LEN]; char path[SYSCALL_PATH_MAX]; };
 const struct syscall_key *unused_syscall_key __attribute__((unused));
 const struct syscall_stats *unused_syscall_stats __attribute__((unused));
 const struct syscall_start *unused_syscall_start __attribute__((unused));
@@ -57,6 +74,9 @@ const struct syscall_in_flight *unused_syscall_in_flight __attribute__((unused))
 const struct syscall_errno_key *unused_syscall_errno_key __attribute__((unused));
 const struct syscall_comm *unused_syscall_comm __attribute__((unused));
 const struct syscall_counters *unused_syscall_counters __attribute__((unused));
+const struct syscall_rule *unused_syscall_rule __attribute__((unused));
+const struct syscall_window *unused_syscall_window __attribute__((unused));
+const struct syscall_event *unused_syscall_event __attribute__((unused));
 
 // stats의 max_entries는 사용자 공간이 CPU 수와 메모리 상한으로 다시 정한다. per-CPU 값이라 CPU마다 항목 하나를 미리 잡는다.
 struct { __uint(type, BPF_MAP_TYPE_PERCPU_HASH); __uint(max_entries, 4096); __type(key, struct syscall_key); __type(value, struct syscall_stats); } stats SEC(".maps");
@@ -68,6 +88,11 @@ struct { __uint(type, BPF_MAP_TYPE_HASH); __uint(max_entries, 1024); __type(key,
 struct { __uint(type, BPF_MAP_TYPE_HASH); __uint(max_entries, 64); __type(key, struct syscall_comm); __type(value, __u8); } allowed_comms SEC(".maps");
 struct { __uint(type, BPF_MAP_TYPE_HASH); __uint(max_entries, 4096); __type(key, __u64); __type(value, __u8); } allowed_cgroups SEC(".maps");
 struct { __uint(type, BPF_MAP_TYPE_ARRAY); __uint(max_entries, 1); __type(key, __u32); __type(value, struct syscall_counters); } counters SEC(".maps");
+struct { __uint(type, BPF_MAP_TYPE_ARRAY); __uint(max_entries, 2 * SYSCALL_NR_MAX); __type(key, __u32); __type(value, struct syscall_rule); } rules SEC(".maps");
+struct { __uint(type, BPF_MAP_TYPE_ARRAY); __uint(max_entries, MAX_ERRNO + 1); __type(key, __u32); __type(value, __u8); } event_errnos SEC(".maps");
+struct { __uint(type, BPF_MAP_TYPE_RINGBUF); __uint(max_entries, 1 << 22); } events SEC(".maps");
+// event_windows는 CPU마다 지금 1초 창에서 보낸 event 수다. 오류가 쏟아지면 event만 줄이고 합계는 계속 센다.
+struct { __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY); __uint(max_entries, 1); __type(key, __u32); __type(value, struct syscall_window); } event_windows SEC(".maps");
 
 // self_tgid는 edc 자신이다. edc가 init pid namespace 밖에 있으면 BPF가 보는 tgid를 알 수 없어 0으로 두고 제외하지 않는다.
 volatile const __u32 self_tgid = 0;
@@ -79,6 +104,12 @@ volatile const __u32 exit_nr = 0xFFFFFFFFU;
 volatile const __u32 exit_group_nr = 0xFFFFFFFFU;
 volatile const __u32 compat_exit_nr = 0xFFFFFFFFU;
 volatile const __u32 compat_exit_group_nr = 0xFFFFFFFFU;
+// filter_syscall이면 rules의 allowed가 있는 syscall만 센다.
+volatile const __u8 filter_syscall = 0;
+// slow_ns가 0이 아니면 그 시간 이상 걸린 호출을, event_errors가 켜져 있으면 실패한 호출을 event로 낸다.
+volatile const __u64 slow_ns = 0;
+volatile const __u8 event_errors = SYSCALL_EVENTS_OFF;
+volatile const __u32 event_limit = 1000;
 
 static __always_inline void count(__u32 index) {
 	__u32 key = 0;
@@ -170,11 +201,99 @@ static __always_inline void count_errno(struct syscall_key *owner, __u32 err) {
 	else count(SYSCALL_ERRNOS_FULL);
 }
 
+static __always_inline struct syscall_rule *rule_for(__u32 nr) {
+	__u32 index = nr & ~SYSCALL_COMPAT;
+	if (index >= SYSCALL_NR_MAX) return 0;
+	if (nr & SYSCALL_COMPAT) index += SYSCALL_NR_MAX;
+	return bpf_map_lookup_elem(&rules, &index);
+}
+
+// syscall_arg는 복귀 시점의 register에서 인자 하나를 읽는다. BTF pointer는 상수 위치로만 읽을 수 있어 위치마다 나눈다.
+static __always_inline __u64 syscall_arg(void *regs, __u8 index) {
+	struct pt_regs___x86 *x86 = regs;
+	if (bpf_core_field_exists(x86->di)) {
+		switch (index) {
+		case 0: return x86->di;
+		case 1: return x86->si;
+		case 2: return x86->dx;
+		case 3: return x86->r10;
+		case 4: return x86->r8;
+		default: return x86->r9;
+		}
+	}
+	struct pt_regs___arm64 *arm64 = regs;
+	if (bpf_core_field_exists(arm64->orig_x0)) {
+		switch (index) {
+		case 0: return arm64->orig_x0;
+		case 1: return arm64->regs[1];
+		case 2: return arm64->regs[2];
+		case 3: return arm64->regs[3];
+		case 4: return arm64->regs[4];
+		default: return arm64->regs[5];
+		}
+	}
+	return 0;
+}
+
+static __always_inline int event_wanted(__u64 latency, long ret) {
+	if (slow_ns && latency >= slow_ns) return 1;
+	if (event_errors == SYSCALL_EVENTS_OFF || ret >= 0 || ret < -MAX_ERRNO) return 0;
+	if (event_errors == SYSCALL_EVENTS_ALL_ERRORS) return 1;
+	__u32 err = (__u32)-ret;
+	__u8 *allowed = bpf_map_lookup_elem(&event_errnos, &err);
+	return allowed && *allowed;
+}
+
+// emit은 호출 하나를 event로 낸다. 경로는 낼 때만 사용자 memory에서 읽는다. 복귀 시점에는 kernel이 방금 그 page를 읽었다.
+static __always_inline void emit(__u64 *ctx, struct task_struct *task, __u32 tgid, __u32 nr, __u64 latency, long ret) {
+	__u32 zero = 0;
+	__u64 now = bpf_ktime_get_ns();
+	struct syscall_window *window = bpf_map_lookup_elem(&event_windows, &zero);
+	if (!window) return;
+	if (now - window->start_ns >= NSEC_PER_SEC) {
+		window->start_ns = now;
+		window->sent = 0;
+	}
+	if (window->sent >= event_limit) {
+		window->suppressed++;
+		return;
+	}
+	struct syscall_event *record = bpf_ringbuf_reserve(&events, sizeof(*record), 0);
+	if (!record) {
+		count(SYSCALL_RING_LOST);
+		return;
+	}
+	window->sent++;
+	record->timestamp_ns = now;
+	record->latency_ns = latency;
+	record->ret = ret;
+	record->tgid = tgid;
+	record->tid = (__u32)bpf_get_current_pid_tgid();
+	record->nr = nr;
+	record->path_state = 0;
+	leader_comm(task, record->comm);
+	record->path[0] = 0;
+	struct syscall_rule *rule = rule_for(nr);
+	// 32비트 호환 호출은 인자가 다른 register에 있어 경로를 읽지 않는다.
+	if (rule && rule->path_arg && !(nr & SYSCALL_COMPAT) && !(rule->path_gone && ret == 0)) {
+		const void *path = (const void *)syscall_arg((void *)ctx[0], rule->path_arg - 1);
+		long length = bpf_probe_read_user_str(record->path, sizeof(record->path), path);
+		if (length < 0) record->path_state = 2;
+		else if (length == sizeof(record->path)) record->path_state = 3;
+		else record->path_state = 1;
+	}
+	bpf_ringbuf_submit(record, 0);
+}
+
 SEC("tp_btf/sys_enter") int syscall_enter(__u64 *ctx) {
 	__u32 tgid = bpf_get_current_pid_tgid() >> 32;
 	struct task_struct *task = bpf_get_current_task_btf();
 	if (!selected(task, tgid)) return 0;
 	__u32 nr = syscall_nr(task, (long)ctx[1]);
+	if (filter_syscall) {
+		struct syscall_rule *rule = rule_for(nr);
+		if (!rule || !rule->allowed) return 0;
+	}
 	if (nr == exit_nr || nr == exit_group_nr || nr == compat_exit_nr || nr == compat_exit_group_nr) {
 		struct syscall_key key = {};
 		struct syscall_stats *value = stats_for(task, nr, &key);
@@ -198,12 +317,13 @@ SEC("tp_btf/sys_exit") int syscall_exit(__u64 *ctx) {
 	struct syscall_start *start = bpf_task_storage_get(&starts, task, 0, 0);
 	if (!start || !start->start_ns) {
 		// trace를 붙이기 전에 시작한 호출, 그리고 fork와 clone으로 생긴 thread가 처음 돌아오는 복귀다. 필터가 있으면
-		// 대상이 아닌 호출과 구분하려고 모든 복귀에서 필터를 다시 봐야 하므로 세지 않는다.
-		if (!filter_process && !filter_cgroup && selected(task, bpf_get_current_pid_tgid() >> 32)) count(SYSCALL_UNMATCHED);
+		// 대상이 아닌 호출과 구분하려고 모든 복귀에서 필터를 다시 봐야 하므로 세지 않는다. --syscall은 복귀에서 번호를
+		// 알 수 없어 구분하지 못한다.
+		if (!filter_process && !filter_cgroup && !filter_syscall && selected(task, bpf_get_current_pid_tgid() >> 32)) count(SYSCALL_UNMATCHED);
 		return 0;
 	}
 	__u64 latency = bpf_ktime_get_ns() - start->start_ns;
-	__u32 nr = start->nr;
+	__u32 nr = start->nr, tgid = start->tgid;
 	start->start_ns = 0;
 	struct syscall_key key = {};
 	struct syscall_stats *value = stats_for(task, nr, &key);
@@ -218,6 +338,7 @@ SEC("tp_btf/sys_exit") int syscall_exit(__u64 *ctx) {
 		value->errors++;
 		count_errno(&key, (__u32)-ret);
 	}
+	if (event_wanted(latency, ret)) emit(ctx, task, tgid, nr, latency, ret);
 	return 0;
 }
 

@@ -272,6 +272,8 @@ command:
       reason: "trace drop: only these reasons, comma separated"
       device: "trace io: block device major:minor"
       signal: "trace exec: signals to record, names, all, or none"
+      syscall: "trace syscall: only these calls, comma-separated"
+      errors: "trace syscall: failed calls, all or errno names"
     notes:
       - "The default output opens a full-screen trace view in a terminal."
       - "Use / to filter process, destination, event, or source text."

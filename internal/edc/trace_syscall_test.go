@@ -187,3 +187,68 @@ func TestRunTraceSyscallRejectsBadOptionsBeforeTracing(t *testing.T) {
 		})
 	}
 }
+
+func TestParseSyscallNamesKeepsBothTablesOnAmd64(t *testing.T) {
+	native, compat, err := parseSyscallNames("amd64", "openat, GETPPID")
+	if err != nil || !reflect.DeepEqual(native, []uint32{257, 110}) || !reflect.DeepEqual(compat, []uint32{295, 64}) {
+		t.Fatalf("amd64 = %v %v %v", native, compat, err)
+	}
+	native, compat, err = parseSyscallNames("arm64", "openat")
+	if err != nil || !reflect.DeepEqual(native, []uint32{56}) || compat != nil {
+		t.Fatalf("arm64 = %v %v %v", native, compat, err)
+	}
+	// arm64에는 open이 없고 openat만 있다.
+	if _, _, err := parseSyscallNames("arm64", "open"); err == nil || !strings.Contains(err.Error(), `"open"`) {
+		t.Fatalf("arm64 open = %v", err)
+	}
+	if _, _, err := parseSyscallNames("amd64", "openat,,read"); err == nil {
+		t.Fatal("an empty item was accepted")
+	}
+}
+
+func TestSyscallEventLineShowsTheResultAndThePath(t *testing.T) {
+	for _, test := range []struct {
+		event syscallEvent
+		want  string
+	}{
+		{syscallEvent{PID: 7, TID: 9, Process: "api", Syscall: "openat", Return: -2, Errno: "ENOENT", LatencyMS: 0.0123, Path: "/etc/app.conf"}, "  api 7/9  openat  ENOENT  12.3us  /etc/app.conf"},
+		{syscallEvent{PID: 7, TID: 7, Process: "api", Syscall: "read", Return: 512, LatencyMS: 25}, "  api 7/7  read  512  25.00ms"},
+		{syscallEvent{PID: 7, TID: 7, Process: "api", Syscall: "statx", Return: -2, Errno: "ENOENT", LatencyMS: 0.001, Path: "/tmp/\x1b[2Jx", PathTruncated: true}, `  statx  ENOENT  1.0us  /tmp/\x1b[2Jx…`},
+		{syscallEvent{PID: 7, TID: 7, Process: "api", Syscall: "unlinkat", Return: -14, Errno: "EFAULT", LatencyMS: 0.001, PathUnreadable: true}, "  EFAULT  1.0us  (path unreadable)"},
+	} {
+		if line := test.event.line(); !strings.HasSuffix(line, test.want) {
+			t.Errorf("line = %q, want suffix %q", line, test.want)
+		}
+	}
+}
+
+func TestSyscallReportPrintsEventCountsOnlyWithEvents(t *testing.T) {
+	collection := syscallTestCollection()
+	var out bytes.Buffer
+	syscallReportFor(collection, "").print(&out)
+	if strings.Contains(out.String(), "sampled_out") {
+		t.Fatalf("event counts without events:\n%s", out.String())
+	}
+	report := syscallReportFor(collection, "")
+	report.Summary.ErrorFilter, report.Summary.Events, report.Summary.SampledOut = "all", 12, 3
+	out.Reset()
+	report.print(&out)
+	if !strings.Contains(out.String(), "events 12  sampled_out 3  ring_lost 0") {
+		t.Fatalf("no event counts:\n%s", out.String())
+	}
+}
+
+func TestRunTraceSyscallRejectsBadEventOptions(t *testing.T) {
+	for _, args := range [][]string{
+		{"--syscall", "no_such_call"},
+		{"--slow", "-1ms"},
+		{"--raw", "--errors", "all", "--json", "out.json"},
+		{"--raw", "--slow", "1ms", "--group-by", "syscall"},
+	} {
+		captureTraceStderr(t, func() {
+			if code := runTraceSyscall(args); code != 2 {
+				t.Errorf("runTraceSyscall(%q) = %d, want 2", args, code)
+			}
+		})
+	}
+}

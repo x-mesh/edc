@@ -272,6 +272,8 @@ command:
       reason: "trace drop: この理由だけ、カンマ区切り"
       device: "trace io: block device major:minor"
       signal: "trace exec: 記録する signal。名前の一覧、all、none"
+      syscall: "trace syscall: この system call だけ、カンマ区切り"
+      errors: "trace syscall: 失敗した呼び出し。all か errno 名"
     notes:
       - "terminal では既定で全画面の trace を開きます。"
       - "/ で process、destination、event、source を絞り込みます。"

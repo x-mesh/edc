@@ -98,6 +98,16 @@ func cpuTestSpin(until time.Time) uint64 {
 	return sum
 }
 
+// cpuTestSleep은 10ms nanosleep을 되풀이한다. Go runtime을 거치지 않는 syscall이라 이 thread가 그대로 잠든다.
+//
+//go:noinline
+func cpuTestSleep(until time.Time) {
+	request := syscall.Timespec{Nsec: int64(10 * time.Millisecond)}
+	for time.Now().Before(until) {
+		_ = syscall.Nanosleep(&request, nil)
+	}
+}
+
 // TestCPUProfileHelper는 아래 시험이 띄우는 process다. spin은 사용자 공간에서, syscall은 kernel 안에서 CPU를 쓴다.
 func TestCPUProfileHelper(t *testing.T) {
 	until := time.Now().Add(4 * time.Second)
@@ -110,6 +120,8 @@ func TestCPUProfileHelper(t *testing.T) {
 				syscall.Getppid()
 			}
 		}
+	case "sleep":
+		cpuTestSleep(until)
 	default:
 		t.Skip("helper process for TestTraceCPUSamplesUserAndKernelStacks")
 	}
@@ -260,4 +272,49 @@ func TestCPUGoTextMatchesRuntimeText(t *testing.T) {
 			t.Logf(".text %x runtime.text %x", text.Addr, runtimeText)
 		})
 	}
+}
+
+// 10ms nanosleep을 되풀이하는 thread 하나를 2초 기록한다. 이 thread가 잠든 시간의 합은 기록한 시간과 거의 같아야 하고,
+// 처음과 끝에 걸친 두 번은 빠진다. kernel 진입은 nanosleep이어야 한다.
+func TestTraceCPUOffCPURecordsSleepTime(t *testing.T) {
+	capabilities, err := effectiveCapabilities()
+	if err != nil || missingCapabilities(bpfTraceCapabilities, capabilities) != "" {
+		t.Skip("trace cpu needs BPF and perf capabilities")
+	}
+	if err := cpuOffCPUPrerequisites(); err != nil {
+		t.Skip(err)
+	}
+	command := exec.Command(os.Args[0], "-test.run=^TestCPUProfileHelper$", "-test.count=1")
+	command.Env = append(os.Environ(), "EDC_CPU_HELPER=sleep")
+	if err := command.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = command.Process.Kill(); _ = command.Wait() }()
+	time.Sleep(300 * time.Millisecond)
+	stop := make(chan struct{})
+	go func() { time.Sleep(2 * time.Second); close(stop) }()
+	stacks, summary, err := collectCPUStacks(cpuTraceOptions{offCPU: true, pids: []uint32{uint32(command.Process.Pid)}}, stop)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var slept, blocks uint64
+	for _, stack := range stacks {
+		if !strings.Contains(strings.Join(stack.User, ";"), ".cpuTestSleep") {
+			continue
+		}
+		if kernel := cpuWaitKernel(stack.Kernel); kernel != "nanosleep" {
+			t.Errorf("cpuTestSleep slept in %q: %v", kernel, stack.Kernel)
+		}
+		slept += stack.OffCPUNS
+		blocks += stack.Samples
+	}
+	window := time.Duration(summary.DurationMS) * time.Millisecond
+	if got := time.Duration(slept); got < window*9/10 || got > window {
+		t.Errorf("cpuTestSleep slept %v in a %v trace", got, window)
+	}
+	// 한 번은 10ms에 timer slack과 깨어나는 시간을 더한 만큼 걸린다.
+	if want := uint64(window / (10 * time.Millisecond)); blocks < want*8/10 || blocks > want {
+		t.Errorf("cpuTestSleep slept %d times in %v, want about %d", blocks, window, want)
+	}
+	t.Logf("slept %v in %d blocks over %v", time.Duration(slept), blocks, window)
 }

@@ -20,7 +20,7 @@ type cpuEventsCpuComm struct {
 
 type cpuEventsCpuCounters struct {
 	_      structs.HostLayout
-	Values [11]uint64
+	Values [12]uint64
 }
 
 type cpuEventsCpuFresh struct {
@@ -39,6 +39,18 @@ type cpuEventsCpuKey struct {
 	Comm        [16]int8
 }
 
+type cpuEventsCpuValue struct {
+	_     structs.HostLayout
+	Count uint64
+	OffNs uint64
+}
+
+type cpuEventsOffcpuStart struct {
+	_       structs.HostLayout
+	StartNs uint64
+	Key     cpuEventsCpuKey
+}
+
 // Names of all BPF objects in the ELF.
 //
 // Used for safe lookups in a Collection or CollectionSpec.
@@ -49,9 +61,11 @@ const (
 	cpuEventsMapCounters          = "counters"
 	cpuEventsMapCounts            = "counts"
 	cpuEventsMapFresh             = "fresh"
+	cpuEventsMapOffcpuStarts      = "offcpu_starts"
 	cpuEventsMapSeen              = "seen"
 	cpuEventsMapStacks            = "stacks"
 	cpuEventsProgCpuSample        = "cpu_sample"
+	cpuEventsProgOffcpuSwitch     = "offcpu_switch"
 	cpuEventsVarFilterCgroup      = "filter_cgroup"
 	cpuEventsVarFilterProcess     = "filter_process"
 	cpuEventsVarSelfTgid          = "self_tgid"
@@ -59,6 +73,7 @@ const (
 	cpuEventsVarUnusedCpuCounters = "unused_cpu_counters"
 	cpuEventsVarUnusedCpuFresh    = "unused_cpu_fresh"
 	cpuEventsVarUnusedCpuKey      = "unused_cpu_key"
+	cpuEventsVarUnusedCpuValue    = "unused_cpu_value"
 )
 
 // loadCpuEvents returns the embedded CollectionSpec for cpuEvents.
@@ -103,7 +118,8 @@ type cpuEventsSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type cpuEventsProgramSpecs struct {
-	CpuSample *ebpf.ProgramSpec `ebpf:"cpu_sample"`
+	CpuSample    *ebpf.ProgramSpec `ebpf:"cpu_sample"`
+	OffcpuSwitch *ebpf.ProgramSpec `ebpf:"offcpu_switch"`
 }
 
 // cpuEventsMapSpecs contains maps before they are loaded into the kernel.
@@ -116,6 +132,7 @@ type cpuEventsMapSpecs struct {
 	Counters       *ebpf.MapSpec `ebpf:"counters"`
 	Counts         *ebpf.MapSpec `ebpf:"counts"`
 	Fresh          *ebpf.MapSpec `ebpf:"fresh"`
+	OffcpuStarts   *ebpf.MapSpec `ebpf:"offcpu_starts"`
 	Seen           *ebpf.MapSpec `ebpf:"seen"`
 	Stacks         *ebpf.MapSpec `ebpf:"stacks"`
 }
@@ -131,6 +148,7 @@ type cpuEventsVariableSpecs struct {
 	UnusedCpuCounters *ebpf.VariableSpec `ebpf:"unused_cpu_counters"`
 	UnusedCpuFresh    *ebpf.VariableSpec `ebpf:"unused_cpu_fresh"`
 	UnusedCpuKey      *ebpf.VariableSpec `ebpf:"unused_cpu_key"`
+	UnusedCpuValue    *ebpf.VariableSpec `ebpf:"unused_cpu_value"`
 }
 
 // cpuEventsObjects contains all objects after they have been loaded into the kernel.
@@ -159,6 +177,7 @@ type cpuEventsMaps struct {
 	Counters       *ebpf.Map `ebpf:"counters"`
 	Counts         *ebpf.Map `ebpf:"counts"`
 	Fresh          *ebpf.Map `ebpf:"fresh"`
+	OffcpuStarts   *ebpf.Map `ebpf:"offcpu_starts"`
 	Seen           *ebpf.Map `ebpf:"seen"`
 	Stacks         *ebpf.Map `ebpf:"stacks"`
 }
@@ -171,6 +190,7 @@ func (m *cpuEventsMaps) Close() error {
 		m.Counters,
 		m.Counts,
 		m.Fresh,
+		m.OffcpuStarts,
 		m.Seen,
 		m.Stacks,
 	)
@@ -187,18 +207,21 @@ type cpuEventsVariables struct {
 	UnusedCpuCounters *ebpf.Variable `ebpf:"unused_cpu_counters"`
 	UnusedCpuFresh    *ebpf.Variable `ebpf:"unused_cpu_fresh"`
 	UnusedCpuKey      *ebpf.Variable `ebpf:"unused_cpu_key"`
+	UnusedCpuValue    *ebpf.Variable `ebpf:"unused_cpu_value"`
 }
 
 // cpuEventsPrograms contains all programs after they have been loaded into the kernel.
 //
 // It can be passed to loadCpuEventsObjects or ebpf.CollectionSpec.LoadAndAssign.
 type cpuEventsPrograms struct {
-	CpuSample *ebpf.Program `ebpf:"cpu_sample"`
+	CpuSample    *ebpf.Program `ebpf:"cpu_sample"`
+	OffcpuSwitch *ebpf.Program `ebpf:"offcpu_switch"`
 }
 
 func (p *cpuEventsPrograms) Close() error {
 	return _CpuEventsClose(
 		p.CpuSample,
+		p.OffcpuSwitch,
 	)
 }
 

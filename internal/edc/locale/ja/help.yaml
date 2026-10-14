@@ -276,6 +276,7 @@ command:
       errors: "trace syscall: 失敗した呼び出し。all か errno 名"
       frequency: "trace cpu: CPU ごとの毎秒 sample 数、既定 99"
       folded: "trace cpu: flame graph 用の folded stack を保存"
+      off_cpu: "trace cpu: thread が眠った時間を stack ごとに"
     notes:
       - "terminal では既定で全画面の trace を開きます。"
       - "/ で process、destination、event、source を絞り込みます。"

@@ -2,7 +2,7 @@
 
 package edc
 
-//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -go-package edc -type cpu_key -type cpu_comm -type cpu_counters -type cpu_fresh cpuEvents trace_cpu_bpf.c -- -I./bpf
+//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -go-package edc -type cpu_key -type cpu_comm -type cpu_counters -type cpu_fresh -type cpu_value cpuEvents trace_cpu_bpf.c -- -I./bpf
 
 import (
 	"encoding/binary"
@@ -36,6 +36,7 @@ const (
 	cpuCounterKernelCollision
 	cpuCounterStacksFull
 	cpuCounterFreshLost
+	cpuCounterOffCPUStartsFull
 )
 
 const (
@@ -55,10 +56,21 @@ func cpuTracePrerequisites() error {
 		if err := kernel.TypeByName("task_struct", &task); err != nil {
 			return errors.New("kernel BTF has no type task_struct")
 		}
-		if missing := execMissingBTFMembers(task.Members, []string{"flags", "group_leader", "comm"}); missing != "" {
+		if missing := execMissingBTFMembers(task.Members, []string{"flags", "pid", "tgid", "group_leader", "comm"}); missing != "" {
 			return fmt.Errorf("kernel BTF has no field task_struct.%s", missing)
 		}
 		return nil
+	})
+}
+
+// cpuOffCPUPrerequisites는 --off-cpu가 더 쓰는 sched_switch tracepoint와 task local storage를 본다.
+func cpuOffCPUPrerequisites() error {
+	return traceBPFPrerequisites("trace cpu --off-cpu", func(kernel *btf.Spec) error {
+		var storage *btf.Func
+		if err := kernel.TypeByName("bpf_task_storage_get", &storage); err != nil {
+			return errors.New("kernel BTF has no task local storage")
+		}
+		return traceTracepointsAvailable(kernel, []string{"sched_switch"})
 	})
 }
 
@@ -162,12 +174,20 @@ func collectCPUStacks(options cpuTraceOptions, stop <-chan struct{}) ([]cpuStack
 		links, fds = nil, nil
 	}
 	defer detach()
-	for _, cpu := range cpus {
-		fd, attached, err := openCPUSampler(cpu, options.frequency, objects.CpuSample)
+	if options.offCPU {
+		attached, err := link.AttachTracing(link.TracingOptions{Program: objects.OffcpuSwitch})
 		if err != nil {
-			return nil, cpuSummary{}, err
+			return nil, cpuSummary{}, fmt.Errorf("attach tp_btf/sched_switch: %w", err)
 		}
-		fds, links = append(fds, fd), append(links, attached)
+		links = append(links, attached)
+	} else {
+		for _, cpu := range cpus {
+			fd, attached, err := openCPUSampler(cpu, options.frequency, objects.CpuSample)
+			if err != nil {
+				return nil, cpuSummary{}, err
+			}
+			fds, links = append(fds, fd), append(links, attached)
+		}
 	}
 	reader, err := ringbuf.NewReader(objects.Fresh)
 	if err != nil {
@@ -203,9 +223,9 @@ func collectCPUStacks(options cpuTraceOptions, stop <-chan struct{}) ([]cpuStack
 	// snapshot은 fresh 알림으로 읽지 못한 process를 counts map에서 찾아 읽는다. 이미 읽은 process는 건너뛴다.
 	snapshot := func() {
 		var key cpuEventsCpuKey
-		var count uint64
+		var value cpuEventsCpuValue
 		iterator := objects.Counts.Iterate()
-		for iterator.Next(&key, &count) {
+		for iterator.Next(&key, &value) {
 			if process := (cpuProcessKey{TGID: key.Tgid, Comm: syscallComm(key.Comm)}); symbolizer.processes[process] == nil {
 				symbolizer.snapshot(process)
 			}
@@ -276,7 +296,7 @@ func collectCPUStacks(options cpuTraceOptions, stop <-chan struct{}) ([]cpuStack
 	if err := objects.Counters.Lookup(uint32(0), &perCPU); err != nil {
 		return nil, cpuSummary{}, fmt.Errorf("read cpu counters: %w", err)
 	}
-	var totals [cpuCounterFreshLost + 1]uint64
+	var totals [cpuCounterOffCPUStartsFull + 1]uint64
 	for _, counters := range perCPU {
 		for index := range totals {
 			totals[index] += counters.Values[index]
@@ -287,6 +307,8 @@ func collectCPUStacks(options cpuTraceOptions, stop <-chan struct{}) ([]cpuStack
 	summary.UserStackMissing, summary.UserStackCollision = totals[cpuCounterUserMissing], totals[cpuCounterUserCollision]
 	summary.KernelStackEmpty, summary.KernelStackCollision = totals[cpuCounterKernelEmpty], totals[cpuCounterKernelCollision]
 	summary.FreshLost = totals[cpuCounterFreshLost]
+	summary.OffCPUStartsFull = totals[cpuCounterOffCPUStartsFull]
+	summary.OffCPU = options.offCPU
 	summary.BusyPercent = cpuPercent(summary.Samples-summary.Idle, summary.Samples)
 	stacks, err := readCPUStacks(objects, symbolizer)
 	if err != nil {
@@ -346,10 +368,10 @@ func readCPUStacks(objects cpuEventsObjects, symbolizer *cpuSymbolizer) ([]cpuSt
 	}
 	var stacks []cpuStack
 	var key cpuEventsCpuKey
-	var count uint64
+	var value cpuEventsCpuValue
 	iterator := objects.Counts.Iterate()
-	for iterator.Next(&key, &count) {
-		stack := cpuStack{TGID: key.Tgid, Process: syscallComm(key.Comm), CgroupID: key.CgroupId, Samples: count}
+	for iterator.Next(&key, &value) {
+		stack := cpuStack{TGID: key.Tgid, Process: syscallComm(key.Comm), CgroupID: key.CgroupId, Samples: value.Count, OffCPUNS: value.OffNs}
 		for _, ip := range read(key.KernelStack) {
 			stack.Kernel = append(stack.Kernel, symbolizer.kernelFrame(ip))
 		}

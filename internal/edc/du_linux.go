@@ -11,6 +11,7 @@ import (
 	"sort"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
@@ -89,7 +90,7 @@ type duWalker struct {
 	mounts      []diskMount
 	mountPoints map[string]diskMount
 	files       duFiles
-	directories atomic.Int64
+	directories *atomic.Int64
 	stopped     atomic.Bool
 
 	mu              sync.Mutex
@@ -100,18 +101,24 @@ type duWalker struct {
 }
 
 func duWalk(ctx context.Context, options duOptions, sources duSources) (duScan, error) {
+	started := time.Now()
 	var stat unix.Stat_t
 	if err := unix.Stat(options.root, &stat); err != nil {
 		return duScan{}, err
 	}
-	root := &duNode{name: options.root, dir: stat.Mode&unix.S_IFMT == unix.S_IFDIR, bytes: uint64(stat.Blocks) * 512, entries: 1}
+	own := uint64(stat.Blocks) * 512
+	root := &duNode{name: options.root, dir: stat.Mode&unix.S_IFMT == unix.S_IFDIR, bytes: own, own: own, entries: 1}
 	if !root.dir {
 		duFinish(root, nil)
-		return duScan{root: root}, nil
+		return duScan{root: root, elapsed: time.Since(started)}, nil
 	}
 	walker := &duWalker{
 		ctx: ctx, options: options, sources: sources, rootDev: stat.Dev,
-		mountPoints: map[string]diskMount{}, files: duFiles{limit: options.rows}, seen: map[duInode]struct{}{},
+		mountPoints: map[string]diskMount{}, files: duFiles{limit: max(options.rows, options.keepFiles)}, seen: map[duInode]struct{}{},
+		directories: options.progress,
+	}
+	if walker.directories == nil {
+		walker.directories = new(atomic.Int64)
 	}
 	var warnings []string
 	text, err := sources.mountinfo()
@@ -141,6 +148,7 @@ func duWalk(ctx context.Context, options duOptions, sources duSources) (duScan, 
 		unreadableCount: walker.unreadableCount, partial: walker.stopped.Load(), warnings: warnings,
 	}
 	duReadFilesystem(&scan, options, sources, walker.mounts, stat.Dev)
+	scan.elapsed = time.Since(started)
 	return scan, nil
 }
 
@@ -220,7 +228,7 @@ func (walker *duWalker) parallel(start duDir, workers int) {
 func (walker *duWalker) scan(dir duDir) []duDir {
 	fd, err := unix.Open(dir.path, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
 	if err != nil {
-		walker.unreadableDir(dir.path, err)
+		dir.node.unreadable = walker.unreadableDir(dir.path, err)
 		return nil
 	}
 	file := os.NewFile(uintptr(fd), dir.path)
@@ -244,7 +252,7 @@ func (walker *duWalker) scan(dir duDir) []duDir {
 			if walker.boundary(path, stat.Dev) {
 				continue
 			}
-			child := &duNode{name: name, parent: dir.node, dir: true, bytes: bytes, entries: 1}
+			child := &duNode{name: name, parent: dir.node, dir: true, bytes: bytes, own: bytes, entries: 1}
 			dir.node.children = append(dir.node.children, child)
 			subdirs = append(subdirs, duDir{node: child, path: path})
 			continue
@@ -257,7 +265,7 @@ func (walker *duWalker) scan(dir duDir) []duDir {
 		walker.files.offer(dir.node, name, bytes)
 	}
 	if readErr != nil {
-		walker.unreadableDir(dir.path, readErr)
+		dir.node.unreadable = walker.unreadableDir(dir.path, readErr)
 	}
 	return subdirs
 }
@@ -323,10 +331,11 @@ func (walker *duWalker) counted(dev, ino uint64) bool {
 	return false
 }
 
-func (walker *duWalker) unreadableDir(path string, err error) {
+// unreadableDir는 path를 읽지 못한 디렉터리로 세고, 센 경우에 true를 돌려준다.
+func (walker *duWalker) unreadableDir(path string, err error) bool {
 	// 읽는 사이에 지워졌거나 디렉터리가 아닌 것으로 바뀐 항목은 읽지 못한 것이 아니다.
 	if errors.Is(err, unix.ENOENT) || errors.Is(err, unix.ENOTDIR) {
-		return
+		return false
 	}
 	walker.mu.Lock()
 	defer walker.mu.Unlock()
@@ -334,6 +343,7 @@ func (walker *duWalker) unreadableDir(path string, err error) {
 	if len(walker.unreadable) < duUnreadableKeep {
 		walker.unreadable = append(walker.unreadable, path)
 	}
+	return true
 }
 
 // duQueue는 worker가 함께 쓰는 작업 목록이다. pending은 queue에 있거나 읽는 중인 디렉터리 수다.

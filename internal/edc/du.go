@@ -2,6 +2,7 @@ package edc
 
 import (
 	"container/heap"
+	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -33,6 +34,9 @@ const (
 	duMountRows = 10
 	// duUnreadableKeep은 읽지 못한 경로를 담는 상한이다. 개수는 모두 센다.
 	duUnreadableKeep = 1000
+	// duBrowseFiles는 탐색 화면을 열 때 남기는 큰 파일 수다. 화면은 디렉터리마다 그 안의 큰 파일을 보여야 하므로
+	// 출력 줄 수보다 많이 남긴다. 나머지 파일은 디렉터리마다 한 줄로 합친다.
+	duBrowseFiles = 10000
 )
 
 type duOptions struct {
@@ -40,6 +44,10 @@ type duOptions struct {
 	workers     int
 	rows        int
 	crossMounts bool
+	// keepFiles는 남길 큰 파일 수다. rows보다 작으면 rows를 쓴다.
+	keepFiles int
+	// progress는 읽은 디렉터리 수를 탐색 중에 바깥에서 읽게 한다. nil이면 탐색기가 따로 센다.
+	progress *atomic.Int64
 }
 
 // duNode는 디렉터리 하나, 또는 화면에 오를 수 있는 큰 파일 하나다. bytes와 entries는 자기 자신과
@@ -53,6 +61,9 @@ type duNode struct {
 	children []*duNode
 	total    uint64
 	count    int64
+	// own은 디렉터리 자신의 block이다. bytes에서 빼면 children으로 따로 두지 않은 파일의 합이 남는다.
+	own        uint64
+	unreadable bool
 }
 
 type duMount struct {
@@ -76,6 +87,8 @@ type duScan struct {
 	deleted         duDeletedOpen
 	// notFound는 filesystem.Whole일 때만 뜻이 있다. df의 사용량에서 센 크기와 지워졌지만 열린 파일을 뺀 값이다.
 	notFound uint64
+	// elapsed는 탐색에 걸린 시간이다. 화면을 닫은 뒤 결과를 만들므로 화면을 본 시간을 넣지 않으려고 따로 잰다.
+	elapsed time.Duration
 }
 
 type duUsage struct{ Size, Used uint64 }
@@ -169,9 +182,14 @@ func runDuWith(args []string, version string, sources duSources, ok bool, stdout
 		return emit(options, buildReport(version, started, target, []Result{unsupported(duProbeID, T("du.skip.linux_only"))}, options.redact))
 	}
 	terminal := options.jsonPath == "" && isTerminal(stdout)
+	// svc, ctr과 같이 사람이 보는 터미널에서만 화면을 연다. pipe, --json, NO_COLOR는 그대로 출력한다.
+	browse := terminal && liveTerminal()
 	scanOptions := duOptions{workers: *workers, rows: *rows, crossMounts: *crossMounts}
 	if scanOptions.rows == 0 {
 		scanOptions.rows = duDefaultRows(stdout, terminal)
+	}
+	if browse {
+		scanOptions.keepFiles = duBrowseFiles
 	}
 	ctx, cancel, deadline := probeContext(options.timeout)
 	defer cancel()
@@ -180,14 +198,18 @@ func runDuWith(args []string, version string, sources duSources, ok bool, stdout
 	// 넘긴 경로가 symlink면 링크 자체가 아니라 가리키는 디렉터리를 잰다. 링크 하나의 크기는 쓸모가 없다.
 	scanOptions.root, err = duResolveRoot(path)
 	var scan duScan
-	if err == nil {
+	if err == nil && browse {
+		scan, err = duBrowse(ctx, cancel, scanOptions, sources, started)
+	} else if err == nil {
 		scan, err = duWalk(ctx, scanOptions, sources)
 	}
 	if err != nil {
 		result.Status, result.Summary = StatusFail, T("du.error.path", path)
 		result.Error = &DiagnosticError{Kind: "path", Message: err.Error()}
 	} else {
-		result = duResult(result, scanOptions, scan, options.timeout)
+		// 화면에서 q로 멈추면 base context가 취소된다. 시간 초과와 구분해 다음 명령을 권하지 않는다.
+		stopped := scan.partial && errors.Is(ctx.Err(), context.Canceled)
+		result = duResult(result, scanOptions, scan, options.timeout, stopped)
 	}
 	result.DurationMS = time.Since(started).Milliseconds()
 	if options.jsonPath != "" {
@@ -221,14 +243,18 @@ func duDefaultRows(stdout *os.File, terminal bool) int {
 	return max(5, height-12)
 }
 
-func duResult(result Result, options duOptions, scan duScan, timeout time.Duration) Result {
+func duResult(result Result, options duOptions, scan duScan, timeout time.Duration, stopped bool) Result {
 	root := scan.root
 	rows, other := duSelect(root, options.rows)
-	elapsed := time.Since(result.StartedAt).Round(time.Millisecond)
+	elapsed := scan.elapsed.Round(time.Millisecond)
 	result.Status = StatusPass
 	result.Summary = T("du.summary", formatSizeShort(root.total), options.root, root.count, elapsed, options.workers)
 	result.Warnings = append(result.Warnings, scan.warnings...)
-	if scan.partial {
+	if scan.partial && stopped {
+		result.Status = StatusWarn
+		result.Summary = T("du.summary_stopped", formatSizeShort(root.total), options.root, root.count)
+		result.Warnings = append(result.Warnings, T("du.warning.stopped"))
+	} else if scan.partial {
 		result.Status = StatusWarn
 		result.Summary = T("du.summary_partial", formatSizeShort(root.total), options.root, root.count, timeout)
 		result.Warnings = append(result.Warnings, T("du.warning.partial"))
@@ -411,6 +437,14 @@ func formatDuMounts(mounts []duMount, verbose bool, width int) string {
 	return builder.String()
 }
 
+// duMountLabel은 bind mount를 findmnt처럼 장치[디렉터리]로 적어 사용량이 마운트가 아니라 장치 전체의 값임을 보인다.
+func duMountLabel(filesystem duFilesystem) string {
+	if filesystem.Root != "" && filesystem.Root != "/" {
+		return fmt.Sprintf("%s (%s[%s])", filesystem.Mount, filesystem.Source, filesystem.Root)
+	}
+	return filesystem.Mount
+}
+
 // formatDuFilesystem은 경로가 속한 파일 시스템을 보인다. 경로가 파일 시스템 전체일 때만 df의 사용량과 센 크기를
 // 맞춰 보고, 하위 디렉터리를 쟀으면 지워졌지만 열린 파일이 있을 때만 그 줄을 보인다.
 func formatDuFilesystem(filesystem duFilesystem, deleted duDeletedOpen, counted, notFound uint64, width int) string {
@@ -418,12 +452,7 @@ func formatDuFilesystem(filesystem duFilesystem, deleted duDeletedOpen, counted,
 		return ""
 	}
 	var builder strings.Builder
-	// findmnt처럼 장치[디렉터리]로 적어 사용량이 마운트가 아니라 장치 전체의 값임을 보인다.
-	mount := filesystem.Mount
-	if filesystem.Root != "" && filesystem.Root != "/" {
-		mount = fmt.Sprintf("%s (%s[%s])", filesystem.Mount, filesystem.Source, filesystem.Root)
-	}
-	title := T("du.fs.title", mount, filesystem.FSType, formatSizeShort(filesystem.UsedBytes), formatSizeShort(filesystem.SizeBytes))
+	title := T("du.fs.title", duMountLabel(filesystem), filesystem.FSType, formatSizeShort(filesystem.UsedBytes), formatSizeShort(filesystem.SizeBytes))
 	builder.WriteString("\n" + duFit(title, width) + "\n")
 	var labels, values []string
 	if filesystem.Whole {

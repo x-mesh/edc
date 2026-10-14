@@ -122,3 +122,20 @@ func duOverlayMounts(mountinfo string) []duOverlayMount {
 	}
 	return mounts
 }
+
+// duResolveLabelPaths는 이름표마다 symlink를 푼 경로도 함께 등록한다. 탐색은 symlink를 푼 경로를 읽으므로,
+// /var/lib/docker가 다른 디스크로 가는 symlink인 호스트에서는 docker가 알려 준 경로로는 이름표를 찾지 못한다.
+func duResolveLabelPaths(labels map[string]string) map[string]string {
+	resolved := make(map[string]string, len(labels))
+	for path, label := range labels {
+		resolved[path] = label
+	}
+	for path, label := range labels {
+		if real, err := filepath.EvalSymlinks(path); err == nil && real != path {
+			if _, taken := resolved[real]; !taken {
+				resolved[real] = label
+			}
+		}
+	}
+	return resolved
+}

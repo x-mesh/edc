@@ -1,6 +1,8 @@
 package edc
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -41,5 +43,25 @@ func TestDuContainerLabelsReadInspectAndMountinfo(t *testing.T) {
 	}
 	if got := duContainerLabels("", ""); len(got) != 0 {
 		t.Fatalf("labels without docker = %v", got)
+	}
+}
+
+// /var/lib/docker가 다른 디스크로 가는 symlink면 탐색은 symlink를 푼 경로를 읽는다.
+func TestDuResolveLabelPathsAddsTheRealPath(t *testing.T) {
+	base := t.TempDir()
+	real := filepath.Join(base, "disk", "docker")
+	if err := os.MkdirAll(filepath.Join(real, "containers", "aaaa"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(base, "docker")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+	labels := duResolveLabelPaths(map[string]string{
+		filepath.Join(link, "containers", "aaaa"): "container api-1",
+		filepath.Join(link, "gone"):               "container old",
+	})
+	if labels[filepath.Join(real, "containers", "aaaa")] != "container api-1" || labels[filepath.Join(link, "containers", "aaaa")] != "container api-1" || len(labels) != 3 {
+		t.Fatalf("labels = %v", labels)
 	}
 }

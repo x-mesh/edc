@@ -47,7 +47,7 @@ func duHostContainerLabels(ctx context.Context) map[string]string {
 	// 실패하지만 나머지 줄은 낸다.
 	inspect, _ := commandOutput(ctx, "docker", append([]string{"inspect", "--type", "container", "--format", duDockerFormat}, strings.Fields(ids)...)...)
 	mountinfo, _ := os.ReadFile("/proc/self/mountinfo")
-	return duContainerLabels(inspect, string(mountinfo))
+	return duResolveLabelPaths(duContainerLabels(inspect, string(mountinfo)))
 }
 
 // duProcPartial은 다른 process의 fd link를 읽을 수 없는지 본다. scanDeletedOpen은 파일을 찾은 장치에만 Partial을

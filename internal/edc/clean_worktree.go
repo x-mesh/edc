@@ -505,40 +505,64 @@ func cleanWorktreeInspect(ctx context.Context, deps cleanDeps, item *cleanWorktr
 	probe.times()
 }
 
+// status는 바뀐 파일과 추적하지 않는 파일을 센다. git status는 stat이 바뀐 파일을 저장소가 정한 clean filter(git-lfs 같은)로
+// 읽어 내용을 비교하므로, 검사가 저장소 설정의 program을 실행하고 느린 filter가 시간 한도를 다 쓴다. 그래서 filter를 부르지
+// 않는 세 명령으로 센다. diff-files는 stat만 비교하므로 touch만 한 파일도 바뀐 것으로 센다. 이 오차는 정리 대상에서 빠지는
+// 쪽으로만 난다.
 func (probe *cleanWorktreeProbe) status() {
 	item := probe.item
-	output, code, ok := probe.run("status", "--porcelain=v2", "--branch", "--untracked-files=normal")
-	if !ok {
-		return
+	failed, truncated := false, false
+	names := func(args ...string) []string {
+		output, code, ok := probe.run(args...)
+		if !ok {
+			failed = true
+			return nil
+		}
+		if code != 0 {
+			failed = true
+			probe.fail(cleanReasonToolFailed, fmt.Sprintf("exit %d: %s", code, cleanFirstLine(output.Stderr)))
+			return nil
+		}
+		lines := strings.Split(strings.TrimRight(output.Stdout, "\n"), "\n")
+		if output.Truncated {
+			// 마지막 줄은 중간에서 잘렸을 수 있다. 개수는 하한이고 변경이 있다는 사실은 유지한다.
+			lines, truncated = lines[:len(lines)-1], true
+		}
+		return slices.DeleteFunc(lines, func(line string) bool { return line == "" })
 	}
-	if code != 0 {
+	// 커밋이 없는 저장소는 HEAD가 없고(종료 코드 1), index의 항목이 모두 staged다. HEAD를 읽지 못하면 staged는 세지 않는다.
+	var staged []string
+	output, code, ok := probe.run("rev-parse", "--verify", "--quiet", "HEAD")
+	switch {
+	case !ok:
+		failed = true
+	case code == 0:
+		head := strings.TrimSpace(output.Stdout)
+		item.Head = head[:min(len(head), 12)]
+		staged = names("diff-index", "--cached", "--name-only", "HEAD")
+	case code == 1:
+		staged = names("ls-files")
+	default:
+		failed = true
 		probe.fail(cleanReasonToolFailed, fmt.Sprintf("exit %d: %s", code, cleanFirstLine(output.Stderr)))
-		return
 	}
-	lines := strings.Split(output.Stdout, "\n")
-	if output.Truncated {
-		// 마지막 줄은 중간에서 잘렸을 수 있다. 개수는 하한이고 변경이 있다는 사실은 유지한다.
-		lines = lines[:len(lines)-1]
+	changed := map[string]bool{}
+	for _, name := range append(staged, names("diff-files", "--name-only")...) {
+		changed[name] = true
+	}
+	untracked := len(names("ls-files", "--others", "--exclude-standard", "--directory", "--no-empty-directory"))
+	if truncated {
 		item.CountsLowerBound = true
 		probe.item.Reasons = cleanAddReason(probe.item.Reasons, cleanReasonGitOutputTruncated)
 	}
-	changes, untracked := 0, 0
-	for _, line := range lines {
-		switch {
-		case strings.HasPrefix(line, "# branch.oid "):
-			if oid := strings.TrimPrefix(line, "# branch.oid "); oid != "(initial)" {
-				item.Head = oid[:min(len(oid), 12)]
-			}
-		case strings.HasPrefix(line, "1 "), strings.HasPrefix(line, "2 "), strings.HasPrefix(line, "u "):
-			changes++
-		case strings.HasPrefix(line, "? "):
-			untracked++
-		}
-	}
-	item.Changes, item.Untracked = &changes, &untracked
-	if output.Truncated && changes == 0 && untracked == 0 {
+	changes := len(changed)
+	switch {
+	case !failed && !truncated, changes > 0 || untracked > 0:
+		// 한 명령이 실패하거나 잘려도, 다른 명령이 확인한 변경은 변경이 있다는 사실로 남긴다.
+		item.Changes, item.Untracked = &changes, &untracked
+		item.CountsLowerBound = item.CountsLowerBound || failed
+	case truncated && !failed:
 		// 개수를 하나도 읽지 못했다. 변경 없음으로 보이면 안 된다.
-		item.Changes, item.Untracked = nil, nil
 		probe.fail(cleanReasonGitOutputTruncated, "")
 	}
 }

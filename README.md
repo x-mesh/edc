@@ -832,7 +832,7 @@ edc reads `~/.gk/worktree`, the folder of git-kit. It looks for a folder with `.
 
 edc measures the root once and reads the size of each worktree from that tree. `leftover` is the size of the other files in the root.
 
-edc decides the use of a worktree from the state of git. It does not read the modification time of a file. It runs only read commands of git with `GIT_OPTIONAL_LOCKS=0` and `core.fsmonitor=false`. The files in `.git` do not change.
+edc decides the use of a worktree from the state of git. It does not read the modification time of a file. It runs only read commands of git with `GIT_OPTIONAL_LOCKS=0` and `core.fsmonitor=false`. The files in `.git` do not change. edc does not run `git status`, because it reads a changed file through the clean filter of the repository, for example git-lfs. It compares the file stat with the index instead, so a file that was only touched also counts as changed.
 
 Each worktree has one `verdict`. edc picks the first match in this order.
 

@@ -1093,10 +1093,11 @@ func cleanResult(result Result, report cleanReport, timeout time.Duration, ctxEr
 	items := report.candidates
 	measured, quiet := 0, true
 	for _, item := range items {
-		switch item.Status {
-		case cleanMeasured:
+		if item.counted() {
 			measured++
-		case cleanAbsent, cleanToolAbsent, cleanDuplicate:
+		}
+		switch item.Status {
+		case cleanMeasured, cleanAbsent, cleanToolAbsent, cleanDuplicate:
 		default:
 			quiet = false
 		}

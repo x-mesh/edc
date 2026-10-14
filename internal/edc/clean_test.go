@@ -1426,6 +1426,22 @@ func TestCleanResultWarnsAndOffersALongerLimitOnlyForATimeout(t *testing.T) {
 	}
 }
 
+func TestCleanSummaryCountsAPartialSizeAsMeasured(t *testing.T) {
+	usage := uint64(4096)
+	items := []cleanItem{
+		{ID: "a", Status: cleanMeasured, UsageBytes: &usage},
+		{ID: "b", Status: cleanPartial, Reasons: []string{cleanReasonUnreadableDirs}, UsageBytes: &usage, LowerBound: true},
+		{ID: "c", Status: cleanAbsent},
+	}
+	result := cleanResult(Result{}, cleanReport{candidates: items}, time.Minute, nil)
+	if want := T("clean.summary", 3, 2, 1); result.Summary != want {
+		t.Fatalf("summary = %q, want %q", result.Summary, want)
+	}
+	if result.Status != StatusWarn {
+		t.Fatalf("a partial candidate should warn, status = %s", result.Status)
+	}
+}
+
 func TestCleanMeasurePathMapsScanStates(t *testing.T) {
 	measure := func(ctx context.Context, scan duScan, err error) (cleanMeasurement, error) {
 		deps := cleanTestDeps(t.TempDir(), nil)

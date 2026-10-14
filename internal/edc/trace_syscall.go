@@ -172,13 +172,16 @@ func runTraceSyscall(args []string) int {
 	}
 	report := syscallReportFor(collection, options.groupBy)
 	// 두 알림은 stderr로 가므로 --json -의 stdout을 바꾸지 않는다. JSON만 받는 사용자도 빠진 호출을 알아야 한다.
-	if full := report.Summary.StatsFull + report.Summary.StartsFull; full > 0 {
-		fmt.Fprintln(os.Stderr, T("cli.trace.syscall_map_full", full))
-	}
-	if !report.Summary.SelfExcluded {
-		fmt.Fprintln(os.Stderr, T("cli.trace.syscall_self_included"))
+	notices := func() {
+		if full := report.Summary.StatsFull + report.Summary.StartsFull; full > 0 {
+			fmt.Fprintln(os.Stderr, T("cli.trace.syscall_map_full", full))
+		}
+		if !report.Summary.SelfExcluded {
+			fmt.Fprintln(os.Stderr, T("cli.trace.syscall_self_included"))
+		}
 	}
 	if options.jsonPath != "" {
+		notices()
 		if err := writeJSONOutput(options.jsonPath, report); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			return 2
@@ -186,6 +189,7 @@ func runTraceSyscall(args []string) int {
 		return 0
 	}
 	report.print(os.Stdout)
+	notices()
 	return 0
 }
 

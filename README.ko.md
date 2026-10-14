@@ -2326,6 +2326,35 @@ Linux에서 `trace socket`을 사용하면 unix domain socket 파일 하나에�
 
 서버가 재시작하면서 socket 파일을 다시 만들면 edc는 1초 안에 새 파일을 찾습니다. 이전 파일로 맺은 연결도 계속 표시합니다. `trace socket`은 stream socket만 지원합니다. datagram과 seqpacket socket, abstract socket, socketpair는 볼 수 없습니다. `sendfile`과 `splice`로 옮긴 data는 보이지 않습니다. 실패한 connect는 program이 명령과 같은 경로를 쓸 때만 표시합니다.
 
+Linux에서 `trace priv`를 사용하면 process가 권한을 어떻게 쓰는지 볼 수 있습니다. edc는 세 가지를 보고 끝날 때 요약을 한 번 출력합니다.
+
+- capability 검사: `capable()`과 `ns_capable()`의 결과를 kernel 안에서 process, capability, 결과별로 셉니다.
+- 자격 변경: thread의 uid, euid, gid, egid가 바뀔 때마다 기록합니다. 예를 들어 `setuid()`, `setresgid()`, `sudo` 같은 setuid program의 exec입니다.
+- module 적재: process가 적재한 kernel module과 그 이름을 기록합니다.
+
+```bash
+./bin/edc trace priv --duration 30s
+./bin/edc trace priv --denied --container web
+./bin/edc trace priv --raw
+```
+
+capability 표는 거부된 검사를 먼저 보여 줍니다. `denied` 뒤의 `(noaudit)`는 kernel이 무엇을 할지 고르려고 process에 capability가 있는지만 물어본 것이라는 뜻입니다. 이런 검사는 동작을 막지 않으며, 요약의 `denied`에도 들어가지 않습니다. 예를 들어 database process가 이렇게 `CAP_SYS_ADMIN`을 1초에 수백 번 물을 수 있습니다. `--denied`를 주면 허용된 검사를 숨깁니다.
+
+`DENIED`, `CREDENTIALS`, `MODULES`는 event를 하나씩 보여 줍니다.
+
+```
+17:54:46.615953  sudo 3969/3969  cred  euid 1000→0
+17:54:46.648788  modprobe 3970/3970  module  dummy
+```
+
+거부된 검사는 CPU마다 1초에 최대 1,000개를 출력하고 나머지는 `sampled_out`으로 셉니다. capability 집합만 바뀌는 것처럼 uid, euid, gid, egid가 그대로인 자격 변경은 출력하지 않습니다. `--raw`는 event를 하나씩 JSON으로 출력하고 마지막 줄에 요약을 둡니다.
+
+Linux 6.17과 Linux 5.15에서 edc의 집계를 맞춰 보았습니다. 시험 thread가 자기 effective 집합에서 `CAP_SYS_NICE`를 지우고 nice 값을 낮추려 100번 시도하자, edc는 `CAP_SYS_NICE` 거부 100번을 셌습니다. egid를 12345로 바꿨다가 되돌린 thread는 `egid 0→12345`와 `egid 12345→0`으로 나왔습니다. 5.15 VM에서는 `sudo`가 `euid 1000→0`과 `uid 1000→0`으로, `modprobe dummy`가 module 적재로 나왔습니다.
+
+Linux 6.17, CPU 12개 host에서 capability program은 1초에 약 670번 돌았고 검사 한 번에 0.6µs가 걸렸습니다. 자격 program은 1초에 24번 돌았고 0.75µs가 걸렸습니다.
+
+BTF와 `cap_capable`, `commit_creds` 함수, `module_load` tracepoint가 필요합니다. 하나가 없으면 알림을 출력하고 나머지를 봅니다.
+
 Linux에서 `trace drop`을 사용하면 kernel이 패킷을 버린 이유를 볼 수 있습니다. 버린 패킷마다 이유, kernel 함수, 주소와 port, 크기를 보여 줍니다. 패킷이 local socket에 속하면 process도 보여 줍니다.
 
 ```bash

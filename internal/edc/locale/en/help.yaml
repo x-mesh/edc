@@ -274,6 +274,7 @@ command:
       signal: "trace exec: signals to record, names, all, or none"
       syscall: "trace syscall: only these calls, comma-separated"
       errors: "trace syscall: failed calls, all or errno names"
+      denied: "trace priv: only denied capability checks"
     notes:
       - "The default output opens a full-screen trace view in a terminal."
       - "Use / to filter process, destination, event, or source text."
@@ -283,6 +284,7 @@ command:
       - "Enter shows all fields and the whole payload. l or Esc follows again."
       - "trace syscall counts in the kernel and prints one summary at the end."
       - "trace syscall --process takes PIDs or exact command names, 15 bytes max."
+      - "trace priv shows capability checks, uid and gid changes, and module loads."
       - "Press f to follow the newest event in the detail view."
       - "Press i to show a preview under the list. J and K scroll it."
       - "trace http: v shows payload lines, m shows secrets, z decodes gzip."

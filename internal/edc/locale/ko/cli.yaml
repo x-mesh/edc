@@ -311,6 +311,12 @@ cli:
     syscall_running: "trace syscall: Ctrl-C를 누를 때까지 system call을 셉니다"
     syscall_running_for: "trace syscall: %s 동안 system call을 셉니다. Ctrl-C로 일찍 끝낼 수 있습니다"
     syscall_self_included: "edc가 host PID namespace 밖에서 실행되어, 집계에 edc 자신의 호출이 들어 있습니다"
+    priv_failed: "trace priv 실패: %v"
+    priv_running: "trace priv: Ctrl-C를 누를 때까지 capability 검사, 자격 변경, module 적재를 봅니다"
+    priv_running_for: "trace priv: %s 동안 capability 검사, 자격 변경, module 적재를 봅니다. Ctrl-C로 일찍 끝낼 수 있습니다"
+    priv_unavailable: "trace priv: %s은 보지 않았습니다: %s"
+    priv_map_full: "trace priv: BPF map이 가득 차서 capability 검사 %d건이 집계에 빠졌습니다. --process나 --container로 좁히세요"
+    priv_self_included: "edc가 host PID namespace 밖에서 실행되어, 집계에 edc 자신이 들어 있습니다"
   report:
     description: "report는 edc 진단 명령이 --json으로 저장한 결과를 읽습니다.\n일반 JSON, report diff 결과, edc log의 텍스트 로그는 지원하지 않습니다."
     command_show: "show  — 저장한 edc 진단 결과 보기"

@@ -1890,6 +1890,35 @@ Use `--group-by device`, `--group-by process`, `--group-by cgroup`, or `--group-
 ./bin/edc trace tcp -d
 ```
 
+Use `trace priv` on Linux to see how processes use privileges. edc watches three things and prints one summary at the end.
+
+- Capability checks: each `capable()` and `ns_capable()` result, counted in the kernel by process, capability, and result.
+- Credential changes: each change of the uid, euid, gid, or egid of a thread, for example from `setuid()`, `setresgid()`, or the exec of a setuid program such as `sudo`.
+- Module loads: each kernel module that a process loads, with the module name.
+
+```bash
+./bin/edc trace priv --duration 30s
+./bin/edc trace priv --denied --container web
+./bin/edc trace priv --raw
+```
+
+The capability table shows denied checks first. `(noaudit)` after `denied` means that the kernel only asked whether the process has the capability, to choose what to do. Such a check does not refuse an operation, and the `denied` count in the summary does not include it. For example, a database process can ask for `CAP_SYS_ADMIN` hundreds of times per second in this way. Use `--denied` to hide the allowed checks.
+
+The `DENIED`, `CREDENTIALS`, and `MODULES` sections list each event:
+
+```
+17:54:46.615953  sudo 3969/3969  cred  euid 1000→0
+17:54:46.648788  modprobe 3970/3970  module  dummy
+```
+
+edc prints at most 1,000 denied checks per second on each CPU and counts the others as `sampled_out`. It does not print the credential changes that keep the same uid, euid, gid, and egid, such as a change of the capability sets. `--raw` prints each event as JSON, with the summary as the last line.
+
+edc checked the counts on Linux 6.17 and on Linux 5.15. A test thread removed `CAP_SYS_NICE` from its effective set and asked for a lower nice value 100 times. edc counted 100 denied `CAP_SYS_NICE` checks. A thread that set its egid to 12345 and back showed `egid 0→12345` and `egid 12345→0`. In the 5.15 VM, `sudo` showed `euid 1000→0` and `uid 1000→0`, and `modprobe dummy` showed the module load.
+
+On a 12-CPU host with Linux 6.17, the capability program ran about 670 times per second and took 0.6 µs per check. The credential program ran 24 times per second and took 0.75 µs.
+
+The trace needs BTF and the `cap_capable` and `commit_creds` functions and the `module_load` tracepoint. If one is missing, edc prints a note and watches the others.
+
 Use `trace sched` on Linux to measure scheduler delays. The trace reports wakeup-to-run after sleep, runnable queue after preemption, and off-CPU spans. The off-CPU spans include the two delay types as subsets. It reports voluntary and preempted off-CPU spans separately.
 
 ```bash

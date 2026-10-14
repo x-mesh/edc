@@ -311,6 +311,12 @@ cli:
     syscall_running: "trace syscall: counting system calls until Ctrl-C"
     syscall_running_for: "trace syscall: counting system calls for %s. Ctrl-C stops early"
     syscall_self_included: "edc runs outside the host PID namespace, so the counts include the calls of edc itself"
+    priv_failed: "trace priv failed: %v"
+    priv_running: "trace priv: watching capability checks, credential changes, and module loads until Ctrl-C"
+    priv_running_for: "trace priv: watching capability checks, credential changes, and module loads for %s. Ctrl-C stops early"
+    priv_unavailable: "trace priv: no %s: %s"
+    priv_map_full: "trace priv: the BPF map was full, so %d capability checks are not in the counts. Use --process or --container"
+    priv_self_included: "edc runs outside the host PID namespace, so the counts include edc itself"
   report:
     description: "report reads results saved with --json by edc diagnostic commands.\nGeneral JSON, report diff output, and edc log text logs are unsupported."
     command_show: "show  — view a saved edc diagnostic result"

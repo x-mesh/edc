@@ -4,8 +4,11 @@ package edc
 
 import (
 	"bytes"
+	"os"
+	"os/exec"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/cilium/ebpf/btf"
 )
@@ -111,5 +114,39 @@ func TestTopProcessKernelSupportedAcceptsSchedSwitchWithoutPrevState(t *testing.
 	}
 	if err := topProcessKernelSupported(kernel(3, "__state")); err == nil || !strings.Contains(err.Error(), "sched_switch has 2 arguments") {
 		t.Fatalf("a kernel without next must be unsupported: %v", err)
+	}
+}
+
+// CI의 tls-smoke job이 root로 이 시험을 돌린다. top -d가 감시하는 process의 대기를 syscall로 나누는지 본다. helper는
+// stdin의 read에서 기다린다. 깨어날 때 감시 표시를 남기므로 첫 대기는 빠질 수 있어 여러 번 깨운다.
+func TestTopProcessProbeCountsWaitsBySyscall(t *testing.T) {
+	capabilities, err := effectiveCapabilities()
+	if err != nil || missingCapabilities(bpfTraceCapabilities, capabilities) != "" {
+		t.Skip("top -d needs BPF and perf capabilities")
+	}
+	if err := topProcessBPFPrerequisites(); err != nil {
+		t.Skip(err)
+	}
+	helper, err := startSyscallHelper(t, exec.Command(os.Args[0], "-test.run=^TestTraceSyscallHelperProcess$", "--", syscallHelperMarker))
+	if err != nil {
+		t.Fatal(err)
+	}
+	observe, closeProbe, err := startTopProcessProbe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeProbe()
+	pid := int(helper.pid())
+	observe([]int{pid})
+	for range 10 {
+		helper.send(t, 'r')
+		time.Sleep(50 * time.Millisecond)
+	}
+	stats, ok := observe([]int{pid})[pid]
+	if !ok {
+		t.Fatal("the helper was not observed")
+	}
+	if read := stats.Waits["read"]; read.Count == 0 || read.SumNS < uint64(40*time.Millisecond) {
+		t.Fatalf("waits = %+v", stats.Waits)
 	}
 }

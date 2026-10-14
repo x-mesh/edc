@@ -1,6 +1,9 @@
 package edc
 
-import "time"
+import (
+	"sort"
+	"time"
+)
 
 // topProbeBuckets는 top_process_bpf.c의 HIST_BUCKETS다. bucket i는 [2^i, 2^(i+1)) 마이크로초다.
 const topProbeBuckets = 24
@@ -42,6 +45,37 @@ type topProbeStats struct {
 	RunqCount, RunqSumNS uint64
 	RunqHist             *topProbeHist
 	IO                   *topProbeIO
+	// Waits는 잠들며 CPU를 떠난 뒤 다시 CPU를 받은 대기를, 떠날 때 들어가 있던 syscall 이름으로 나눈 것이다.
+	// syscall 밖의 대기는 "-"이다. eBPF만 세고, macOS는 nil이다.
+	Waits map[string]topProbeWait
+}
+
+// topProbeWait는 대기 횟수와 그 시간의 합이다. 대기는 다시 CPU를 받을 때 센다.
+type topProbeWait struct {
+	Count, SumNS uint64
+}
+
+// topProbeWaitRow는 대기 시간 순으로 정렬한 syscall 하나다.
+type topProbeWaitRow struct {
+	Syscall string
+	topProbeWait
+}
+
+// topProbeWaitRows는 대기 시간이 긴 순서로 limit개까지다. 시간이 같으면 이름 순이다.
+func topProbeWaitRows(waits map[string]topProbeWait, limit int) []topProbeWaitRow {
+	rows := make([]topProbeWaitRow, 0, len(waits))
+	for name, wait := range waits {
+		if wait.Count > 0 {
+			rows = append(rows, topProbeWaitRow{Syscall: name, topProbeWait: wait})
+		}
+	}
+	sort.Slice(rows, func(i, j int) bool {
+		if rows[i].SumNS != rows[j].SumNS {
+			return rows[i].SumNS > rows[j].SumNS
+		}
+		return rows[i].Syscall < rows[j].Syscall
+	})
+	return rows[:min(len(rows), limit)]
 }
 
 // add와 sub는 포인터 필드를 새로 만든다. 받은 값의 포인터에 쓰면 tracer가 보관한 이전 값이나 process별 값이 바뀐다.
@@ -79,6 +113,19 @@ func (stats *topProbeStats) add(other topProbeStats) {
 		}
 		stats.IO = &io
 	}
+	if other.Waits != nil {
+		waits := make(map[string]topProbeWait, len(stats.Waits)+len(other.Waits))
+		for name, wait := range stats.Waits {
+			waits[name] = wait
+		}
+		for name, wait := range other.Waits {
+			total := waits[name]
+			total.Count += wait.Count
+			total.SumNS += wait.SumNS
+			waits[name] = total
+		}
+		stats.Waits = waits
+	}
 }
 
 // sub는 누적값 current에서 previous를 뺀다. 카운터가 줄었다면 map이 비워졌다는 뜻이므로 current를 그대로 쓴다.
@@ -110,6 +157,21 @@ func (current topProbeStats) sub(previous topProbeStats) topProbeStats {
 			}
 		}
 		delta.IO = &io
+	}
+	if current.Waits != nil {
+		// syscall마다 따로 뺀다. 한 syscall의 횟수가 줄었다면 그 항목이 지워졌다가 다시 생긴 것이므로 current를 쓴다.
+		waits := make(map[string]topProbeWait, len(current.Waits))
+		for name, wait := range current.Waits {
+			before := previous.Waits[name]
+			if wait.Count >= before.Count {
+				wait.Count -= before.Count
+				wait.SumNS -= min(before.SumNS, wait.SumNS)
+			}
+			if wait.Count > 0 {
+				waits[name] = wait
+			}
+		}
+		delta.Waits = waits
 	}
 	return delta
 }

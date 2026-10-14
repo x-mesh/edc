@@ -2499,6 +2499,14 @@ func topProbeDetail(stats topProbeStats) string {
 		io = fmt.Sprintf("io %d %s", stats.IO.Count, latency(stats.IO.SumNS, stats.IO.Count, &stats.IO.Hist))
 	}
 	detail := fmt.Sprintf("%s %.0fs · %s · %s", stats.Source, stats.Window.Seconds(), runq, io)
+	// 상세 줄은 한 줄이라 대기 시간이 긴 syscall 세 개만 붙인다. 전체는 JSON의 waits에 있다.
+	if rows := topProbeWaitRows(stats.Waits, 3); len(rows) > 0 {
+		parts := make([]string, 0, len(rows))
+		for _, row := range rows {
+			parts = append(parts, row.Syscall+" "+syscallTime(float64(row.SumNS)))
+		}
+		detail += " · wait " + strings.Join(parts, " ")
+	}
 	if stats.Unreadable > 0 {
 		detail += fmt.Sprintf(" · %d need root", stats.Unreadable)
 	}

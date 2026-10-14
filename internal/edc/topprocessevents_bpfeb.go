@@ -32,6 +32,27 @@ type topProcessEventsProcessStats struct {
 	IoHist    [24]uint64
 }
 
+type topProcessEventsTopTask struct {
+	_           structs.HostLayout
+	WaitStartNs uint64
+	Tgid        uint32
+	Nr          uint32
+	Watched     uint8
+	_           [7]byte
+}
+
+type topProcessEventsWaitKey struct {
+	_    structs.HostLayout
+	Tgid uint32
+	Nr   uint32
+}
+
+type topProcessEventsWaitStats struct {
+	_     structs.HostLayout
+	Count uint64
+	SumNs uint64
+}
+
 // Names of all BPF objects in the ELF.
 //
 // Used for safe lookups in a Collection or CollectionSpec.
@@ -39,6 +60,8 @@ const (
 	topProcessEventsMapIoPending          = "io_pending"
 	topProcessEventsMapRunqStart          = "runq_start"
 	topProcessEventsMapStats              = "stats"
+	topProcessEventsMapTopTasks           = "top_tasks"
+	topProcessEventsMapWaits              = "waits"
 	topProcessEventsMapWatched            = "watched"
 	topProcessEventsProgTopComplete       = "top_complete"
 	topProcessEventsProgTopExit           = "top_exit"
@@ -50,6 +73,8 @@ const (
 	topProcessEventsProgTopWakeupNew      = "top_wakeup_new"
 	topProcessEventsVarTargetNsInum       = "target_ns_inum"
 	topProcessEventsVarUnusedProcessStats = "unused_process_stats"
+	topProcessEventsVarUnusedWaitKey      = "unused_wait_key"
+	topProcessEventsVarUnusedWaitStats    = "unused_wait_stats"
 )
 
 // loadTopProcessEvents returns the embedded CollectionSpec for topProcessEvents.
@@ -111,6 +136,8 @@ type topProcessEventsMapSpecs struct {
 	IoPending *ebpf.MapSpec `ebpf:"io_pending"`
 	RunqStart *ebpf.MapSpec `ebpf:"runq_start"`
 	Stats     *ebpf.MapSpec `ebpf:"stats"`
+	TopTasks  *ebpf.MapSpec `ebpf:"top_tasks"`
+	Waits     *ebpf.MapSpec `ebpf:"waits"`
 	Watched   *ebpf.MapSpec `ebpf:"watched"`
 }
 
@@ -120,6 +147,8 @@ type topProcessEventsMapSpecs struct {
 type topProcessEventsVariableSpecs struct {
 	TargetNsInum       *ebpf.VariableSpec `ebpf:"target_ns_inum"`
 	UnusedProcessStats *ebpf.VariableSpec `ebpf:"unused_process_stats"`
+	UnusedWaitKey      *ebpf.VariableSpec `ebpf:"unused_wait_key"`
+	UnusedWaitStats    *ebpf.VariableSpec `ebpf:"unused_wait_stats"`
 }
 
 // topProcessEventsObjects contains all objects after they have been loaded into the kernel.
@@ -145,6 +174,8 @@ type topProcessEventsMaps struct {
 	IoPending *ebpf.Map `ebpf:"io_pending"`
 	RunqStart *ebpf.Map `ebpf:"runq_start"`
 	Stats     *ebpf.Map `ebpf:"stats"`
+	TopTasks  *ebpf.Map `ebpf:"top_tasks"`
+	Waits     *ebpf.Map `ebpf:"waits"`
 	Watched   *ebpf.Map `ebpf:"watched"`
 }
 
@@ -153,6 +184,8 @@ func (m *topProcessEventsMaps) Close() error {
 		m.IoPending,
 		m.RunqStart,
 		m.Stats,
+		m.TopTasks,
+		m.Waits,
 		m.Watched,
 	)
 }
@@ -163,6 +196,8 @@ func (m *topProcessEventsMaps) Close() error {
 type topProcessEventsVariables struct {
 	TargetNsInum       *ebpf.Variable `ebpf:"target_ns_inum"`
 	UnusedProcessStats *ebpf.Variable `ebpf:"unused_process_stats"`
+	UnusedWaitKey      *ebpf.Variable `ebpf:"unused_wait_key"`
+	UnusedWaitStats    *ebpf.Variable `ebpf:"unused_wait_stats"`
 }
 
 // topProcessEventsPrograms contains all programs after they have been loaded into the kernel.

@@ -398,6 +398,17 @@ type topProbeSample struct {
 	IOBytes         *uint64        `json:"io_bytes,omitempty"`
 	IOAvgMS         *float64       `json:"io_avg_ms,omitempty"`
 	IOP95MS         *float64       `json:"io_p95_ms,omitempty"`
+	// Waits는 대기 시간이 긴 syscall부터 topProbeWaitLimit개다. 셀 수 없으면 빠진다.
+	Waits []topProbeWaitSample `json:"waits,omitempty"`
+}
+
+// topProbeWaitLimit은 JSON에 남기는 대기 syscall 수다.
+const topProbeWaitLimit = 5
+
+type topProbeWaitSample struct {
+	Syscall string  `json:"syscall"`
+	Count   uint64  `json:"count"`
+	TotalMS float64 `json:"total_ms"`
 }
 
 func newTopProbeSample(stats *topProbeStats) *topProbeSample {
@@ -429,6 +440,9 @@ func newTopProbeSample(stats *topProbeStats) *topProbeSample {
 		sample.IOOps, sample.IOBytes = &ops, &bytes
 		sample.IOAvgMS = rounded(topProbeAverageMS(io.SumNS, io.Count))
 		sample.IOP95MS = rounded(topProbePercentileMS(io.Hist, 0.95))
+	}
+	for _, row := range topProbeWaitRows(stats.Waits, topProbeWaitLimit) {
+		sample.Waits = append(sample.Waits, topProbeWaitSample{Syscall: row.Syscall, Count: row.Count, TotalMS: math.Round(float64(row.SumNS)/float64(time.Millisecond)*1000) / 1000})
 	}
 	return sample
 }

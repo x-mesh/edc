@@ -79,7 +79,8 @@ var (
 		cleanReasonInvalidOutput, cleanReasonPermission, cleanReasonStatError, cleanReasonRootUnreadable,
 		cleanReasonCoversUserData, cleanReasonSameAs, cleanReasonUnreadableDirs, cleanReasonSkippedMounts,
 		cleanReasonInvalidEnv, cleanReasonEndpointScheme, cleanReasonSocketMissing, cleanReasonConnectionRefused,
-		cleanReasonEngineTimeout, cleanReasonAPIVersion, cleanReasonHTTPStatus, cleanReasonRequestFailed}
+		cleanReasonEngineTimeout, cleanReasonAPIVersion, cleanReasonHTTPStatus, cleanReasonRequestFailed,
+		cleanReasonGitOutputTruncated, cleanReasonBaseMissing, cleanReasonGitdirMissing, cleanReasonWorktreeLimit}
 	cleanCategories = []string{"build_cache", "package_cache", "downloaded_binary", "xcode_support", "app_cache", "logs", "model", "toolchain"}
 	cleanCosts      = []string{"low", "medium", "high", "unknown", "lost"}
 	cleanSpecIDs    = []string{"go-build", "go-mod", "npm", "pnpm", "uv", "homebrew", cleanDerivedID, "swiftpm",
@@ -88,7 +89,7 @@ var (
 		"app-caches", "dot-cache"}
 	cleanNotMeasured = []cleanNotMeasuredItem{
 		{"other_vm_disks_db", "user_data"},
-		{"worktrees", "unsaved_work"},
+		{"other_worktrees", "outside_root"},
 		{"trash_downloads", "user_files"},
 		{"project_build_dirs", "project_root"},
 		{"simulators", "device_data"},
@@ -1047,15 +1048,18 @@ type cleanReport struct {
 	filesystems []cleanFilesystem
 	docker      cleanDocker
 	vmDisks     []cleanVMDisk
+	worktrees   cleanWorktrees
 }
 
-// cleanCollect는 섹션을 카탈로그, Docker 엔진, VM 디스크 순서로 실행한다. 하나의 ctx를 순차로 나눠 쓴다.
-// 파일 시스템 합계는 후보에서만 만든다. 엔진 수치와 VM 디스크는 같은 데이터를 다른 방법으로 본 값이라 더하지 않는다.
+// cleanCollect는 섹션을 카탈로그, Docker 엔진, VM 디스크, worktree 순서로 실행한다. 하나의 ctx를 순차로 나눠 쓴다.
+// 파일 시스템 합계는 후보에서만 만든다. 엔진 수치와 VM 디스크는 같은 데이터를 다른 방법으로 본 값이고,
+// worktree는 안의 빌드 폴더와 겹칠 수 있어 더하지 않는다.
 func cleanCollect(ctx context.Context, deps cleanDeps, goos string) cleanReport {
 	items := cleanScan(ctx, deps, cleanCatalog(goos, deps.home))
 	report := cleanReport{candidates: items, filesystems: cleanFilesystems(items, deps.sources)}
 	report.docker = cleanDockerScan(ctx, deps)
 	report.vmDisks = cleanVMScan(ctx, deps, goos)
+	report.worktrees = cleanWorktreeScan(ctx, deps)
 	return report
 }
 
@@ -1072,7 +1076,7 @@ func cleanResult(result Result, report cleanReport, timeout time.Duration, ctxEr
 		}
 	}
 	result.Status = StatusPass
-	if !quiet || !cleanSectionsQuiet(report) {
+	if !quiet || !cleanSectionsQuiet(report) || !cleanWorktreesQuiet(report.worktrees) {
 		result.Status = StatusWarn
 	}
 	result.Summary = T("clean.summary", len(items), measured, len(items)-measured)
@@ -1090,7 +1094,7 @@ func cleanResult(result Result, report cleanReport, timeout time.Duration, ctxEr
 		result.Warnings = append(result.Warnings, T("clean.warning.stopped"))
 	}
 	result.Metrics = map[string]interface{}{"candidates": items, "filesystems": report.filesystems, "docker": report.docker,
-		"vm_disks": report.vmDisks, "not_measured": cleanNotMeasured}
+		"vm_disks": report.vmDisks, "worktrees": report.worktrees, "not_measured": cleanNotMeasured}
 	return result
 }
 
@@ -1139,10 +1143,12 @@ func cleanPrint(stdout io.Writer, options commonOptions, result Result, color bo
 		filesystems, _ := result.Metrics["filesystems"].([]cleanFilesystem)
 		docker, _ := result.Metrics["docker"].(cleanDocker)
 		disks, _ := result.Metrics["vm_disks"].([]cleanVMDisk)
+		worktrees, _ := result.Metrics["worktrees"].(cleanWorktrees)
 		fmt.Fprint(output, "\n"+formatCleanItems(items, options.verbose, width))
 		fmt.Fprint(output, formatCleanFilesystems(filesystems, width))
 		fmt.Fprint(output, formatCleanDocker(docker, options.verbose, width))
 		fmt.Fprint(output, formatCleanVMDisks(disks, docker.Inside, width))
+		fmt.Fprint(output, formatCleanWorktrees(worktrees, options.verbose, width))
 		fmt.Fprint(output, formatCleanNotMeasured(options.verbose, width))
 	}
 	if options.redact {

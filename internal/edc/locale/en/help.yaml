@@ -168,7 +168,7 @@ command:
       - "It shows usage. Only the Docker engine reports what a cleanup can free."
       - "APFS clones, snapshots, and hard links can make a sum larger."
       - "A missing tool or a failed check shows a status, never 0 B."
-      - "It reads Docker by local socket and the OrbStack disk. Neither is summed."
+      - "It reads Docker by socket, the OrbStack disk, and worktrees. None is summed."
       - "It lists what it does not measure. -v shows why."
   where:
     summary: "The near region and the shape of this network"

@@ -1231,7 +1231,7 @@ func TestRunCleanJSONHasTheThreeMetricsAndNoReclaimableKey(t *testing.T) {
 	if result.Probe != "clean.scan" {
 		t.Fatalf("probe = %q", result.Probe)
 	}
-	for _, key := range []string{"candidates", "filesystems", "docker", "vm_disks", "not_measured"} {
+	for _, key := range []string{"candidates", "filesystems", "docker", "vm_disks", "worktrees", "not_measured"} {
 		if _, ok := result.Metrics[key]; !ok {
 			t.Fatalf("metrics lack %q", key)
 		}
@@ -1551,6 +1551,12 @@ func TestCleanMessagesCoverEveryCode(t *testing.T) {
 	}
 	for _, spec := range append(cleanVMDisks("darwin", "/h"), cleanVMDisks("linux", "/h")...) {
 		keys = append(keys, "clean.vm.disk."+spec.id)
+	}
+	for _, verdict := range cleanWorktreeVerdicts {
+		keys = append(keys, "clean.worktree.verdict."+verdict)
+	}
+	for _, source := range cleanWorktreeBaseSources {
+		keys = append(keys, "clean.worktree.base_source."+source)
 	}
 	for _, language := range supportedLanguages {
 		for _, key := range keys {

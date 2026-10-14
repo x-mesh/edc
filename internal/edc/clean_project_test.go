@@ -198,6 +198,28 @@ func TestCleanProjectRootsAreWalkedOnce(t *testing.T) {
 	}
 }
 
+// 이름만 맞고 표지가 없는 폴더는 재지 않지만, 그 안의 project는 찾는다(#267).
+func TestCleanProjectLooksInsideAnUnmarkedBuildFolder(t *testing.T) {
+	home := cleanTestHome(t)
+	root := filepath.Join(home, "root")
+	cleanProjectTouch(t, filepath.Join(root, "build", "inner", "Cargo.toml"))
+	cleanWriteFile(t, filepath.Join(root, "build", "inner", "target", "f"), 4<<10)
+	recorder := &cleanRecorder{}
+	deps := cleanProjectDeps(t, home, nil)
+	deps.measure = recorder.measure
+	section := cleanProjectScan(context.Background(), deps, []string{root}, nil)
+	byPath := cleanProjectByPath(t, section)
+	if dir, ok := byPath[filepath.Join(root, "build", "inner", "target")]; !ok || dir.Kind != "cargo_target" || dir.Marker != "Cargo.toml" {
+		t.Fatalf("items = %v", cleanProjectPaths(section))
+	}
+	if section.Roots[0].Unmarked == nil || *section.Roots[0].Unmarked != 1 {
+		t.Fatalf("unmarked = %v, want 1", section.Roots[0].Unmarked)
+	}
+	if build, target := recorder.touching(filepath.Join(root, "build")), recorder.touching(filepath.Join(root, "build", "inner", "target")); build != 0 || target != 1 {
+		t.Fatalf("build was measured %d times and its target %d times, want 0 and 1", build, target)
+	}
+}
+
 func TestCleanProjectMarkerTable(t *testing.T) {
 	home := cleanTestHome(t)
 	root := filepath.Join(home, "root")

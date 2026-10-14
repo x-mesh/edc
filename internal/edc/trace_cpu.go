@@ -58,32 +58,34 @@ type cpuStack struct {
 // cpuSummary의 Samples는 CPU마다 perf event가 program을 부른 수다. Idle, Self, Filtered를 뺀 나머지가 Profiled이고,
 // 표의 비율은 Profiled에 대한 값이다.
 type cpuSummary struct {
-	DurationMS           int64   `json:"duration_ms"`
-	FrequencyHz          int     `json:"frequency_hz"`
-	CPUs                 int     `json:"cpus"`
-	Samples              uint64  `json:"samples"`
-	Idle                 uint64  `json:"idle"`
-	BusyPercent          float64 `json:"busy_percent"`
-	Self                 uint64  `json:"self"`
-	SelfExcluded         bool    `json:"self_excluded"`
-	Filtered             uint64  `json:"filtered"`
-	Profiled             uint64  `json:"profiled"`
-	Stacks               int     `json:"stacks"`
-	CountsFull           uint64  `json:"counts_full"`
-	StacksFull           uint64  `json:"stacks_full"`
-	UserStackMissing     uint64  `json:"user_stack_missing"`
-	UserStackCollision   uint64  `json:"user_stack_collision"`
-	KernelStackEmpty     uint64  `json:"kernel_stack_empty"`
-	KernelStackCollision uint64  `json:"kernel_stack_collision"`
+	DurationMS int64 `json:"duration_ms"`
+	// FrequencyHz와 BusyPercent는 on-CPU 샘플링에만 있다. --off-cpu는 샘플링하지 않으므로 두 칸을 내지 않는다.
+	FrequencyHz          int      `json:"frequency_hz,omitempty"`
+	CPUs                 int      `json:"cpus"`
+	Samples              uint64   `json:"samples"`
+	Idle                 uint64   `json:"idle"`
+	BusyPercent          *float64 `json:"busy_percent,omitempty"`
+	Self                 uint64   `json:"self"`
+	SelfExcluded         bool     `json:"self_excluded"`
+	Filtered             uint64   `json:"filtered"`
+	Profiled             uint64   `json:"profiled"`
+	Stacks               int      `json:"stacks"`
+	CountsFull           uint64   `json:"counts_full"`
+	StacksFull           uint64   `json:"stacks_full"`
+	UserStackMissing     uint64   `json:"user_stack_missing"`
+	UserStackCollision   uint64   `json:"user_stack_collision"`
+	KernelStackEmpty     uint64   `json:"kernel_stack_empty"`
+	KernelStackCollision uint64   `json:"kernel_stack_collision"`
 	// ShallowUserSamples는 사용자 stack이 frame 하나뿐인 샘플이다. frame pointer 없이 build한 program에서 많다.
 	ShallowUserSamples uint64 `json:"shallow_user_samples"`
 	KernelSymbols      bool   `json:"kernel_symbols"`
 	// FreshLost는 새 process 알림을 ring에 넣지 못한 수다. 그 process는 다음 1초 훑기에서 읽고, 그 전에 끝났으면 이름이 빈다.
 	FreshLost uint64 `json:"fresh_lost"`
 	// OffCPU는 --off-cpu로 잰 결과다. 그때 Profiled는 잠든 횟수이고 OffCPUMS는 잠든 시간의 합이다.
-	OffCPU           bool    `json:"off_cpu,omitempty"`
-	OffCPUMS         float64 `json:"off_cpu_ms,omitempty"`
-	OffCPUStartsFull uint64  `json:"off_cpu_starts_full,omitempty"`
+	OffCPU bool `json:"off_cpu,omitempty"`
+	// OffCPUMS는 --off-cpu에서만 있다. 잠든 시간이 0이어도 칸을 낸다.
+	OffCPUMS         *float64 `json:"off_cpu_ms,omitempty"`
+	OffCPUStartsFull uint64   `json:"off_cpu_starts_full,omitempty"`
 }
 
 // cpuProcessRow의 Samples는 off-CPU에서 잠든 횟수이고, 그때 Percent는 잠든 시간의 비율이다.
@@ -344,7 +346,8 @@ func cpuReportFor(stacks []cpuStack, summary cpuSummary) cpuReport {
 		report.Processes = append(report.Processes, row)
 	}
 	if summary.OffCPU {
-		report.Summary.OffCPUMS = float64(total) / float64(time.Millisecond)
+		ms := float64(total) / float64(time.Millisecond)
+		report.Summary.OffCPUMS = &ms
 		for _, row := range waits {
 			if row.Blocks > 0 {
 				row.AvgMS = row.TimeMS / float64(row.Blocks)
@@ -425,7 +428,7 @@ func (report cpuReport) print(out io.Writer) {
 		return
 	}
 	summary := report.Summary
-	fmt.Fprintf(out, "CPU PROFILE  duration %s  %d Hz  %d CPUs  samples %d  busy %.1f%%  profiled %d\n", time.Duration(summary.DurationMS)*time.Millisecond, summary.FrequencyHz, summary.CPUs, summary.Samples, summary.BusyPercent, summary.Profiled)
+	fmt.Fprintf(out, "CPU PROFILE  duration %s  %d Hz  %d CPUs  samples %d  busy %.1f%%  profiled %d\n", time.Duration(summary.DurationMS)*time.Millisecond, summary.FrequencyHz, summary.CPUs, summary.Samples, cpuOptional(summary.BusyPercent), summary.Profiled)
 	fmt.Fprintf(out, "%-24s %8s %8s %7s\n", "PROCESS", "PID", "SAMPLES", "SHARE")
 	for index, row := range report.Processes {
 		if index == cpuProcessRows {
@@ -451,7 +454,7 @@ func (report cpuReport) print(out io.Writer) {
 
 func (report cpuReport) printOffCPU(out io.Writer) {
 	summary := report.Summary
-	fmt.Fprintf(out, "OFF-CPU PROFILE  duration %s  blocks %d  off-cpu %s\n", time.Duration(summary.DurationMS)*time.Millisecond, summary.Profiled, cpuMilliseconds(summary.OffCPUMS))
+	fmt.Fprintf(out, "OFF-CPU PROFILE  duration %s  blocks %d  off-cpu %s\n", time.Duration(summary.DurationMS)*time.Millisecond, summary.Profiled, cpuMilliseconds(cpuOptional(summary.OffCPUMS)))
 	fmt.Fprintf(out, "%-24s %8s %8s %10s %7s\n", "PROCESS", "PID", "BLOCKS", "OFF-CPU", "SHARE")
 	for index, row := range report.Processes {
 		if index == cpuProcessRows {
@@ -469,6 +472,13 @@ func (report cpuReport) printOffCPU(out io.Writer) {
 	}
 	fmt.Fprintf(out, "stacks %d  self %d  filtered %d  counts_full %d  starts_full %d  stacks_full %d  user_missing %d  collisions %d\n",
 		summary.Stacks, summary.Self, summary.Filtered, summary.CountsFull, summary.OffCPUStartsFull, summary.StacksFull, summary.UserStackMissing, summary.UserStackCollision+summary.KernelStackCollision)
+}
+
+func cpuOptional(value *float64) float64 {
+	if value == nil {
+		return 0
+	}
+	return *value
 }
 
 // cpuMilliseconds는 ms 값을 크기에 맞는 단위로 쓴다.

@@ -287,6 +287,7 @@ command:
       - "Enter shows all fields and the whole payload. l or Esc follows again."
       - "trace syscall counts in the kernel and prints one summary at the end."
       - "trace syscall --process takes PIDs or exact command names, 15 bytes max."
+      - "trace reclaim counts the time that tasks wait for memory reclaim."
       - "trace cpu samples the stacks on each CPU and prints the hot functions."
       - "trace lock shows kernel lock contention and futex waits by address."
       - "Press f to follow the newest event in the detail view."

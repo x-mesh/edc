@@ -287,6 +287,7 @@ command:
       - "Enter で全 field と payload 全体を表示し、l か Esc で最新に戻ります。"
       - "trace syscall は kernel 内で数え、終了時に要約を一度だけ表示します。"
       - "trace syscall --process は PID か正確な command 名 (15 byte まで)。"
+      - "trace reclaim は task がメモリ回収を待った時間を数えます。"
       - "trace cpu は CPU ごとに stack を sampling し、CPU を多く使う関数を表示します。"
       - "trace lock は kernel lock の競合とアドレスごとの futex 待ちを表示します。"
       - "f で詳細表示が最新の event を追います。"

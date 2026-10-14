@@ -1989,6 +1989,38 @@ On that host, about 32,500 calls per second added less than 0.1% of the total CP
 
 The trace needs the `sys_enter` and `sys_exit` tracepoints with BTF, task local storage, the task iterator, and the BPF ring buffer.
 
+Use `trace reclaim` on Linux to see how long tasks wait for memory. edc measures four kinds of stall, counts them in the kernel, and prints one summary at the end.
+
+| Kind | When a task stalls |
+|---|---|
+| `direct` | The zone has too little free memory, and the task that allocates reclaims memory itself. |
+| `memcg` | The cgroup reaches `memory.max` or `memory.high`, and the task reclaims memory in that cgroup. |
+| `throttle` | The cgroup is above `memory.high`. Before the task returns to user space, the kernel reclaims and then puts the task to sleep. |
+| `compact` | The task needs a large page and compacts memory itself. |
+
+```bash
+./bin/edc trace reclaim --duration 30s
+./bin/edc trace reclaim --container web --slow 10ms
+./bin/edc trace reclaim --group-by cgroup --json reclaim.json
+```
+
+Each row is one process name and one kind. The row shows the stalls, the total, average, p95, and maximum time, and the memory that `direct` and `memcg` reclaimed. The total adds the stalls of all threads, so it can be longer than the trace. A `throttle` stall includes the `memcg` reclaim that runs in it, so do not add these two rows. Use `--group-by process`, `--group-by cgroup`, or `--group-by kind` to add the rows over one column. `--process` and `--container` work as in `trace syscall`.
+
+Use `--slow <duration>` to print each stall that takes at least that time:
+
+```
+02:13:24.479122  api 1456919/1456920  throttle  588.57ms  cgroup 15040023
+```
+
+edc prints at most 1,000 lines per second on each CPU, and counts the other lines as `sampled_out`. Use `--raw` with `--slow` to print each line as JSON.
+
+edc does not count the work of `kswapd` and `kcompactd`. These kernel threads reclaim and compact in the background, and they do not stop the task that allocates. If a kernel has no hook for a kind, for example a kernel without memory cgroups, edc prints a note and counts the other kinds.
+
+edc checked the counts against the kernel. In a Linux 5.15 VM under memory pressure, tracefs counted 187 `mm_vmscan_direct_reclaim_end` events for the test program and 166 `mm_compaction_end` events. edc counted 187 `direct` and 166 `compact` stalls. `/proc/vmstat` showed more `allocstall` than either, because the kernel counts `allocstall` again when one reclaim retries. In a test cgroup with `memory.max` 16 MiB, reading a 64 MiB file three times gave 584 `memcg` stalls that reclaimed 182.5 MiB. In a test cgroup with `memory.high` 16 MiB and no swap, a program that used 40 MiB stalled for up to 1.28 s at a time.
+
+The kernel calls the `memory.high` handler each time a task returns to user space with pending work. On a 12-CPU host with Linux 6.17, this was about 2,600 calls per second. edc checks whether the task is above `memory.high`, and it starts a stall only then. The two BPF programs took 214 ns and 267 ns per call. The other hooks run only when a task reclaims or compacts.
+
+The trace needs BTF, task local storage, and at least one of these hooks: the `mm_vmscan_direct_reclaim`, `mm_vmscan_memcg_reclaim`, and `mm_compaction` tracepoints, and the `mem_cgroup_handle_over_high` function.
 Use `trace cpu` on Linux to find the functions that use the CPU. edc samples the stack of the running task on each CPU, 99 times per second by default. It counts the samples in the kernel and prints one summary at the end.
 
 ```bash
@@ -2373,7 +2405,7 @@ Use `trace mysql` on Linux 5.15 or later to print plain MySQL commands and resul
 
 JSON events have `"side": "client"` or `"side": "server"`. Use `--side client` or `--side server` to keep one side. If the local port is the MySQL port, the socket is on the server side. If the peer port is the MySQL port, the socket is on the client side.
 
-Use `--slow <duration>` only with `trace mysql`, `trace clickhouse`, `trace postgres`, `trace redis`, `trace io`, `trace sched`, or `trace syscall`. It accepts Go duration syntax, such as `250ms` and `1.5s`. For `trace io`, it sets the minimum request latency. For `trace sched`, it sets the minimum span latency. The default for both is 1ms. For `trace syscall`, it prints each call that takes at least the duration, and it has no default. For `trace mysql`, in the ungrouped interactive view, it keeps a command row only when its first paired response has latency at or above the duration. It excludes unanswered commands, unmatched responses, responses without latency, and TLS rows. It does not change raw JSON, noninteractive output, summaries, grouped views, `--group-by`, or `--side`.
+Use `--slow <duration>` only with `trace mysql`, `trace clickhouse`, `trace postgres`, `trace redis`, `trace io`, `trace sched`, `trace syscall`, or `trace reclaim`. It accepts Go duration syntax, such as `250ms` and `1.5s`. For `trace io`, it sets the minimum request latency. For `trace sched`, it sets the minimum span latency. The default for both is 1ms. For `trace syscall`, it prints each call that takes at least the duration, and it has no default. For `trace mysql`, in the ungrouped interactive view, it keeps a command row only when its first paired response has latency at or above the duration. It excludes unanswered commands, unmatched responses, responses without latency, and TLS rows. It does not change raw JSON, noninteractive output, summaries, grouped views, `--group-by`, or `--side`.
 
 | To see | Command |
 | --- | --- |

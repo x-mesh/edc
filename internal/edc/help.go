@@ -216,6 +216,7 @@ var commandDocs = []commandDoc{
 			{"--top N", "command.du.option.top"},
 			{"--workers 4", "command.du.option.workers"},
 			{"--cross-mounts", "command.du.option.cross_mounts"},
+			{"-B, --no-browse", "command.du.option.no_browse"},
 			{"--timeout 60s", "command.du.option.timeout"},
 			{"-v, --verbose", "command.du.option.verbose"},
 		},

@@ -140,11 +140,12 @@ command:
       - "edc asks for the public IP by default and drops the line after the time limit."
       - "Disk usage is the total size minus the available space."
   du:
-    summary: "Disk usage under a directory, largest first (Linux)"
+    summary: "Disk usage under a directory, largest first (Linux and macOS)"
     option:
       top: "rows to show, the default fits the terminal"
       workers: "directories to read at the same time"
       cross_mounts: "count the mounts below the path too"
+      no_browse: "show progress and bars, then exit"
       timeout: "time limit, after it edc shows what it counted"
       verbose: "show every unreadable directory and skipped mount"
     notes:
@@ -152,9 +153,10 @@ command:
       - "It counts disk blocks as du does. A hard link counts once."
       - "It stays on one file system and lists the mounts that it skipped."
       - "A bind or overlay mount shares a file system, so its size shows as -."
-      - "It also shows deleted files that a process still holds open."
+      - "On Linux, it also shows deleted files that a process still holds open."
       - "In a terminal, it opens a screen to browse. q prints the result."
-      - "With docker, it names the container of a log, layer, volume, or bind source."
+      - "On Linux, docker storage paths also show container names."
+      - "On macOS, APFS shared blocks and snapshots prevent a not found comparison."
   where:
     summary: "The near region and the shape of this network"
     option:
@@ -382,7 +384,7 @@ command:
       output: "report file, - for stdout"
       since: "how far back events and changes look (default 6h)"
       force: "replace an existing output file"
-      du: "also save edc du of this path (Linux)"
+      du: "also save edc du of this path (Linux and macOS)"
     notes:
       - "It saves info, listen, audit, events, and changes results in one report."
       - "The file has mode 0600. It holds accounts, sudo rules, and process names."

@@ -17,13 +17,15 @@ import (
 // duBrowser는 사람이 보는 터미널에서 부른 edc du다. 탐색이 도는 동안 읽은 디렉터리 수를 보이고, 끝나면 큰
 // 항목부터 디렉터리를 내려가며 본다. 읽기만 한다. 파일을 지우거나 바꾸는 키는 두지 않는다.
 type duBrowser struct {
-	root     string
-	started  time.Time
-	now      func() time.Time
-	progress *atomic.Int64
-	cancel   context.CancelFunc
-	job      *duScanJob
-	stopping bool
+	root         string
+	started      time.Time
+	now          func() time.Time
+	progress     *atomic.Int64
+	cancel       context.CancelFunc
+	job          *duScanJob
+	stopping     bool
+	noBrowse     bool
+	spinnerFrame int
 	// quitAfterScan은 탐색 중에 Ctrl-C를 눌렀다는 뜻이다. 탐색이 멈추면 화면을 열지 않고 닫는다.
 	quitAfterScan bool
 	scanned       bool
@@ -62,7 +64,7 @@ const (
 	duBarWidth   = 10
 )
 
-func duBrowse(ctx context.Context, cancel context.CancelFunc, options duOptions, sources duSources, started time.Time) (duScan, error) {
+func duBrowse(ctx context.Context, cancel context.CancelFunc, options duOptions, sources duSources, started time.Time, noBrowse bool) (duScan, error) {
 	options.progress = new(atomic.Int64)
 	job := &duScanJob{finished: make(chan struct{})}
 	go func() {
@@ -70,6 +72,7 @@ func duBrowse(ctx context.Context, cancel context.CancelFunc, options duOptions,
 		close(job.finished)
 	}()
 	model := newDuBrowser(options.root, options.progress, cancel, job, started, time.Now, true)
+	model.noBrowse = noBrowse
 	final, err := tea.NewProgram(model, tea.WithInput(os.Stdin), tea.WithOutput(os.Stdout)).Run()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -108,15 +111,19 @@ func (model duBrowser) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		model.keepCursor()
 	case duTickMsg:
 		if !model.scanned {
+			model.spinnerFrame = (model.spinnerFrame + 1) % len(liveSpinnerFrames)
 			return model, model.tick()
 		}
 	case duScanDoneMsg:
 		model.scanned, model.scan, model.err = true, model.job.scan, model.job.err
-		if model.err != nil || model.quitAfterScan {
+		if model.err != nil || model.quitAfterScan || model.noBrowse {
 			return model, tea.Quit
 		}
 		model.current, model.cursor, model.offset = model.scan.root, 0, 0
 	case tea.KeyPressMsg:
+		if model.noBrowse && value.String() != "ctrl+c" {
+			return model, nil
+		}
 		if !model.scanned {
 			return model.stopKey(value)
 		}
@@ -296,7 +303,7 @@ func (model duBrowser) View() tea.View {
 		lines[index] = model.fit(line)
 	}
 	view := tea.NewView(strings.Join(lines, "\n"))
-	view.AltScreen = true
+	view.AltScreen = !model.noBrowse
 	return view
 }
 
@@ -313,7 +320,14 @@ func (model duBrowser) progressLines() []string {
 	if model.stopping {
 		help = T("du.browse.stopping")
 	}
-	return []string{T("du.browse.reading", model.root, model.progress.Load(), elapsed), liveMuted(help, model.color)}
+	reading := T("du.browse.reading", model.root, model.progress.Load(), elapsed)
+	if model.noBrowse {
+		reading = liveSpinnerFrames[model.spinnerFrame] + " " + reading
+		if !model.stopping {
+			help = T("du.browse.cancel_help")
+		}
+	}
+	return []string{reading, liveMuted(help, model.color)}
 }
 
 func (model duBrowser) browseLines() []string {

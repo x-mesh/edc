@@ -2,6 +2,9 @@ package edc
 
 import (
 	"fmt"
+	"math/rand"
+	"reflect"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -84,12 +87,12 @@ func TestFormatDuRowsIndentsMarksDirectoriesAndFits(t *testing.T) {
 		{Path: "lib/firmware-with-a-long-name", Bytes: 600 << 20, Dir: true, Depth: 1},
 		{Path: "lib/core", Bytes: 2 << 20, Depth: 1},
 	}
-	text := formatDuRows(rows, duOther{Bytes: 1 << 10, Entries: 7}, 0)
+	text := formatDuRows(rows, duOther{Bytes: 1 << 10, Entries: 7}, 0, false, 0)
 	want := "     3.0 GB  lib/\n   600.0 MB    firmware-with-a-long-name/\n     2.0 MB    core\n     1.0 KB  (7 other entries)\n"
 	if text != want {
 		t.Fatalf("text =\n%s", text)
 	}
-	for _, line := range strings.Split(strings.TrimRight(formatDuRows(rows, duOther{}, 24), "\n"), "\n") {
+	for _, line := range strings.Split(strings.TrimRight(formatDuRows(rows, duOther{}, 24, false, 0), "\n"), "\n") {
 		if width := liveWidth(line); width > 24 {
 			t.Errorf("line %q is %d columns", line, width)
 		}
@@ -260,5 +263,79 @@ func TestDuCompareDirsKeepsTheContainerLabel(t *testing.T) {
 	}
 	if line := formatDuDirDeltas(deltas)[0]; !strings.HasSuffix(line, "10 B → 90 B  container api-1") {
 		t.Fatalf("line = %q", line)
+	}
+}
+
+func TestDuLargestMatchesFullSortWithTiesAndLimits(t *testing.T) {
+	random := rand.New(rand.NewSource(19))
+	root := duTestDir("/data", 0)
+	for _, index := range random.Perm(1200) {
+		child := duTestDir(fmt.Sprintf("dir-%04d", index), uint64(index%13))
+		if index%7 == 0 {
+			child.children = append(child.children, duTestDir("nested", uint64(index%5)))
+		}
+		root.children = append(root.children, child)
+	}
+	duTotal(root)
+	var expected []duLargeDir
+	var collect func(*duNode, string)
+	collect = func(node *duNode, prefix string) {
+		for _, child := range node.children {
+			if child.dir {
+				path := prefix + child.name
+				expected = append(expected, duLargeDir{Path: path, Bytes: child.total, Entries: child.count})
+				collect(child, path+"/")
+			}
+		}
+	}
+	collect(root, "")
+	sort.Slice(expected, func(i, j int) bool {
+		if expected[i].Bytes != expected[j].Bytes {
+			return expected[i].Bytes > expected[j].Bytes
+		}
+		return expected[i].Path < expected[j].Path
+	})
+	for _, limit := range []int{0, 1, 2, 200, len(expected), len(expected) + 1} {
+		result := duLargest(root, limit)
+		wanted := expected[:min(limit, len(expected))]
+		if result.Complete != (len(expected) <= limit) || !reflect.DeepEqual(result.Dirs, wanted) {
+			t.Fatalf("limit %d: result differs from full sort", limit)
+		}
+	}
+	if result := duLargest(duTestDir("/empty", 0), 200); !result.Complete || result.Dirs != nil {
+		t.Fatalf("empty=%+v", result)
+	}
+}
+
+func BenchmarkDuLargestManyDirectories(b *testing.B) {
+	root := duTestDir("/data", 0)
+	for index := range 10000 {
+		root.children = append(root.children, duTestDir(fmt.Sprintf("dir-%05d", index), uint64(index%17)))
+	}
+	duTotal(root)
+	b.ReportAllocs()
+	for b.Loop() {
+		duLargest(root, duLargestDirs)
+	}
+}
+
+func TestFormatDuGraphRowsPreservesLabelsAndFits(t *testing.T) {
+	rows := []duRow{{Path: "lib", Bytes: 75, Dir: true, Label: "container api"}, {Path: "lib/file", Bytes: 25, Depth: 1}}
+	text := formatDuRows(rows, duOther{Bytes: 25, Entries: 2}, 0, true, 100)
+	for _, value := range []string{duBar(75, 100), duBar(25, 100), "lib/  container api", "  file", "(2 other entries)"} {
+		if !strings.Contains(text, value) {
+			t.Fatalf("missing %q in %q", value, text)
+		}
+	}
+	for _, line := range strings.Split(strings.TrimRight(formatDuRows(rows, duOther{}, 34, true, 100), "\n"), "\n") {
+		if liveWidth(line) > 34 {
+			t.Fatalf("wide graph row: %q", line)
+		}
+	}
+	if text := formatDuRows(rows, duOther{}, 0, false, 100); strings.Contains(text, "█") || strings.Contains(text, "░") {
+		t.Fatal("static output contains graph bars")
+	}
+	if text := formatDuRows([]duRow{{Path: "empty", Dir: true}}, duOther{}, 0, true, 0); !strings.Contains(text, duBar(0, 0)) {
+		t.Fatal("zero-size graph is missing")
 	}
 }

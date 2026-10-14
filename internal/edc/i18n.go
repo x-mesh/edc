@@ -33,6 +33,8 @@ var supportedLanguages = []string{"en", "ja", "ko"}
 type catalog struct {
 	language string
 	tree     map[string]interface{}
+	mu       *sync.RWMutex
+	files    map[string]*sync.Once
 }
 
 var (
@@ -41,8 +43,6 @@ var (
 	activeLang  = defaultLanguage
 )
 
-// loadCatalogs는 언어마다 locale/<lang> 아래의 파일을 모두 읽어 하나로 합친다.
-// 영역별로 파일을 나누면 여러 사람이 같은 파일을 고치지 않는다.
 func loadCatalogs() {
 	catalogOnce.Do(func() {
 		catalogs = make(map[string]catalog, len(supportedLanguages))
@@ -51,21 +51,35 @@ func loadCatalogs() {
 			if err != nil {
 				continue
 			}
-			sort.Strings(paths)
-			tree := map[string]interface{}{}
+			files := make(map[string]*sync.Once, len(paths))
 			for _, path := range paths {
-				data, err := localeFiles.ReadFile(path)
-				if err != nil {
-					continue
-				}
-				var part map[string]interface{}
-				if err := yaml.Unmarshal(data, &part); err != nil {
-					continue
-				}
-				mergeTree(tree, part)
+				files[strings.TrimSuffix(filepath.Base(path), ".yaml")] = new(sync.Once)
 			}
-			catalogs[language] = catalog{language: language, tree: tree}
+			catalogs[language] = catalog{language: language, tree: map[string]interface{}{}, mu: new(sync.RWMutex), files: files}
 		}
+	})
+}
+
+func (c catalog) loadFile(name string) {
+	if name == "history" {
+		c.loadFile("help")
+	}
+	once := c.files[name]
+	if once == nil {
+		return
+	}
+	once.Do(func() {
+		data, err := localeFiles.ReadFile("locale/" + c.language + "/" + name + ".yaml")
+		if err != nil {
+			return
+		}
+		var part map[string]interface{}
+		if err := yaml.Unmarshal(data, &part); err != nil {
+			return
+		}
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		mergeTree(c.tree, part)
 	})
 }
 
@@ -138,6 +152,20 @@ func setLanguage(language string) {
 }
 
 func (c catalog) lookup(key string) (interface{}, bool) {
+	section, _, _ := strings.Cut(key, ".")
+	switch section {
+	case "command":
+		c.loadFile("help")
+		c.loadFile("history")
+	case "help", "option":
+		c.loadFile("help")
+	default:
+		c.loadFile(section)
+	}
+	if c.mu != nil {
+		c.mu.RLock()
+		defer c.mu.RUnlock()
+	}
 	var current interface{} = c.tree
 	for _, part := range strings.Split(key, ".") {
 		branch, ok := current.(map[string]interface{})
@@ -232,6 +260,19 @@ func hasMessage(language, key string) bool {
 // catalogKeys는 언어 하나가 가진 모든 키를 평탄하게 편다.
 func catalogKeys(language string) []string {
 	loadCatalogs()
+	c := catalogs[language]
+	var files []string
+	for name := range c.files {
+		files = append(files, name)
+	}
+	sort.Strings(files)
+	for _, name := range files {
+		c.loadFile(name)
+	}
+	if c.mu != nil {
+		c.mu.RLock()
+		defer c.mu.RUnlock()
+	}
 	var keys []string
 	var walk func(prefix string, node interface{})
 	walk = func(prefix string, node interface{}) {

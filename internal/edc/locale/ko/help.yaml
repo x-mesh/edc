@@ -140,11 +140,12 @@ command:
       - "public IP를 기본으로 조회하고, 제한 시간 안에 응답이 없으면 그 줄을 뺍니다."
       - "disk 사용량은 전체 크기에서 남은 공간을 뺀 값입니다."
   du:
-    summary: "디렉터리 아래 디스크 사용량, 큰 항목부터 (Linux)"
+    summary: "디렉터리 아래 디스크 사용량, 큰 항목부터 (Linux와 macOS)"
     option:
       top: "보여 줄 줄 수, 기본값은 터미널 높이에 맞춤"
       workers: "동시에 읽는 디렉터리 수"
       cross_mounts: "경로 아래의 마운트도 셈"
+      no_browse: "진행 상황과 용량 막대를 보여 주고 자동 종료"
       timeout: "제한 시간, 지나면 그때까지 센 크기를 보여 줌"
       verbose: "읽지 못한 디렉터리와 건너뛴 마운트를 모두 표시"
     notes:
@@ -152,9 +153,10 @@ command:
       - "du처럼 disk block을 세고, hard link는 한 번만 셉니다."
       - "한 파일 시스템 안에서만 세고, 건너뛴 마운트를 보여 줍니다."
       - "bind·overlay mount는 파일 시스템을 공유하므로 크기를 -로 표시합니다."
-      - "지워졌지만 process가 아직 열고 있는 파일도 보여 줍니다."
+      - "Linux에서는 지워졌지만 process가 아직 열고 있는 파일도 보여 줍니다."
       - "터미널에서는 탐색 화면을 열고, q로 닫으면 결과를 출력합니다."
-      - "docker가 있으면 로그, layer, volume, bind 원본에 container 이름을 붙입니다."
+      - "Linux에서는 docker 저장 경로에 container 이름도 표시합니다."
+      - "macOS에서는 APFS 공유 블록과 스냅샷 때문에 찾지 못한 공간을 계산하지 않습니다."
   where:
     summary: "가까운 지역과 이 망의 모습"
     option:
@@ -382,7 +384,7 @@ command:
       output: "report 파일, -는 stdout"
       since: "events와 changes가 볼 기간 (기본 6h)"
       force: "이미 있는 출력 파일을 바꿈"
-      du: "이 경로의 edc du 결과도 저장 (Linux)"
+      du: "이 경로의 edc du 결과도 저장 (Linux와 macOS)"
     notes:
       - "info, listen, audit, events, changes 결과를 report 하나에 저장합니다."
       - "파일 권한은 0600입니다. 계정, sudo 규칙, process 이름이 들어갑니다."

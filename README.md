@@ -1904,7 +1904,7 @@ Each span also shows the system call that the thread was in when it left the CPU
 
 By default, the trace emits spans of at least 1 ms. Use `--slow <duration>` to change this threshold, for example `--slow 100us`. It uses fixed pending maps and a fixed ring buffer. The summary and raw JSON summary show ring loss, map full, unmatched, repeated wakeup, and omitted span counts. On Linux kernels that expose the required BTF fields, raw events include the cgroup v2 ID and `--container` filters this ID. Use `--group-by cgroup` to group rows by this ID. edc verifies these fields before it loads the program. The trace works on Linux 5.15. In each raw event, `timestamp_ns` is Unix epoch time in nanoseconds, the same clock as the summary line. `boot_time_ns` is the kernel monotonic time since boot.
 
-Use `trace exec` on Linux to see processes start and end, and to see who sends a signal. Each `exec` event shows the PID, the parent, the user, and the first 256 bytes of the command line. Each `exit` event shows the exit code, the signal that ended the process, whether it dumped core, and how long the process lived. The lifetime comes from the start time of the task, so a process that started before the trace also shows it. Each `signal` event shows the signal, the sender, the target, and whether the kernel delivered or ignored it.
+Use `trace exec` on Linux to see processes start and end, to see who sends a signal, and to see which process the OOM killer stops. Each `exec` event shows the PID, the parent, the user, and the first 256 bytes of the command line. Each `exit` event shows the exit code, the signal that ended the process, whether it dumped core, and how long the process lived. The lifetime comes from the start time of the task, so a process that started before the trace also shows it. Each `signal` event shows the signal, the sender, the target, and whether the kernel delivered or ignored it.
 
 ```bash
 ./bin/edc trace exec --duration 15s
@@ -1915,9 +1915,32 @@ Use `trace exec` on Linux to see processes start and end, and to see who sends a
 
 The summary groups the rows by process name. It counts the execs, the exits, the exits with a non-zero code, the exits by a signal, and the processes that lived less than 1 second, with the average and the longest lifetime. A high `SHORT` count with a high `EXEC` count is a storm of short-lived processes, for example a health check that forks a shell every second. Use `--group-by parent` to see which process starts them. A second table lists the signals by sender and target. `(kernel)` after the result means that the kernel made the signal, for example `SIGSEGV` after a fault or `SIGKILL` from the OOM killer, and the sender is then the process that was running at that moment.
 
+An `oom` event shows each process that the OOM killer selects. The `TRIGGER` column shows the task that tried to allocate memory when the kernel ran out. On Linux 6.x, the event also shows the name of the victim, its anonymous, file, and shmem RSS, and its `oom_score_adj`. On Linux 5.15, the kernel gives only the PID of the victim. The `exit` event of the victim shows `oom-killed`, and the `OOM` column counts these exits. This mark comes from the kernel state of the process, so it is also correct on Linux 5.15. The `--container` filter matches the cgroup of the trigger task for an `oom` event.
+
 By default, edc records the signals that end a process or dump core: `HUP`, `INT`, `QUIT`, `ILL`, `TRAP`, `ABRT`, `BUS`, `FPE`, `KILL`, `USR1`, `SEGV`, `USR2`, `PIPE`, `TERM`, `STKFLT`, `XCPU`, `XFSZ`, and `SYS`. It leaves out the signals that run all the time, such as `CHLD` and `ALRM`. Use `--signal` with a comma-separated list of names or numbers, `--signal all`, or `--signal none`. The summary counts the signals that the filter dropped as `filtered_signals`. `--process` accepts names or PIDs, and a signal matches on the target. `--container` keeps the events of one container.
 
-edc reads the command line from the memory of the new process at the time of the exec, so it holds the arguments that the program received, not later changes. If edc cannot read it, the event shows the path of the executable. Lines longer than 256 bytes end with `…`, and `args_truncated` counts them. A thread that exits does not make an `exit` event, only the last thread of a process does. Kernel threads do not appear. The trace needs the `sched_process_exec`, `sched_process_exit`, and `signal_generate` tracepoints with BTF.
+edc reads the command line from the memory of the new process at the time of the exec, so it holds the arguments that the program received, not later changes. If edc cannot read it, the event shows the path of the executable. Lines longer than 256 bytes end with `…`, and `args_truncated` counts them. A thread that exits does not make an `exit` event, only the last thread of a process does. Kernel threads do not appear. The trace needs the `sched_process_exec`, `sched_process_exit`, and `signal_generate` tracepoints with BTF. The `oom` event also needs the `oom/mark_victim` tracepoint in tracefs. If tracefs is not available, for example in a container, edc prints a notice and traces the other events.
+
+Use `trace lock` on Linux to see where threads wait for locks. edc measures two kinds of wait and prints one summary at the end.
+
+- A kernel lock wait is a contended spinlock, rwlock, mutex, rwsem, or per-CPU semaphore in the kernel. edc uses the `lock:contention_begin` and `lock:contention_end` tracepoints, which Linux 5.19 and later have.
+- A futex wait is a call to `futex_wait` from user space. A contended `pthread_mutex`, a condition variable, and the Go runtime all wait this way, so a futex wait is not always contention.
+
+```bash
+./bin/edc trace lock --duration 10s
+./bin/edc trace lock --process api --kind futex
+./bin/edc trace lock --container db --json lock.json
+```
+
+The `KERNEL LOCK` table groups the waits by lock, lock type, and caller. A static lock shows its name, for example `tasklist_lock` or `rtnl_mutex`, and other locks show their address. The type uses the names of `perf lock`: `spinlock`, `rwlock:R`, `rwlock:W`, `rwsem:R`, `rwsem:W`, `mutex`, `rtmutex`, `pcpu-sem:R`, and `pcpu-sem:W`. The caller is the first kernel function in the stack that is not a lock function. `PROCESS` is the process that waited most often.
+
+The `FUTEX` table groups the waits by process and futex address. If the address is a global variable, edc shows its name from the ELF symbols, for example `main.hotWord` or `runtime.sched+0x120`. Other addresses show the mapping and the address, for example `[anon] 0x7f3a1c000960`. A program without a symbol table, such as a Go program built with `-s`, shows only the file name. `CODE` is the two innermost user frames of the stack with the most wait time.
+
+edc checked the counts. A test program waited 800 times on one global futex. edc counted 800 waits on `main.hotWord`, on Linux 6.17 and on Linux 5.15. For a program that maps and unmaps memory from 8 threads, `perf stat` counted 359,516 `lock:contention_end` events, and edc counted 359,506 waits. `perf stat` also counts from the fork, before the program has its name.
+
+When the trace runs, each kernel lock contention and each futex wait on the host goes through a BPF program. On a 12-CPU host with Linux 6.17, a contention took 1.57 µs and 0.34 µs in the two programs for a selected process, mostly to read the stack. A process that the filter does not select took 0.26 µs and 0.07 µs. A futex wait took 1.59 µs and 0.42 µs, or 0.29 µs and 0.08 µs. The test program did the same work in the same time with and without the trace. Because the trace makes each contention longer, the number of contentions can change: the same program had 358,687 contentions with a filter that selected nothing and 203,922 with the trace on it.
+
+On Linux 5.15, the kernel has no contention tracepoints. edc prints a note and shows only the futex waits. The trace needs BTF and task local storage.
 
 Use `trace syscall` on Linux to count the system calls of each process. edc counts in the kernel and prints one summary at the end. With `--slow` or `--errors`, it also prints each call that matches.
 
@@ -1998,6 +2021,62 @@ edc checked the counts against the kernel. In a Linux 5.15 VM under memory press
 The kernel calls the `memory.high` handler each time a task returns to user space with pending work. On a 12-CPU host with Linux 6.17, this was about 2,600 calls per second. edc checks whether the task is above `memory.high`, and it starts a stall only then. The two BPF programs took 214 ns and 267 ns per call. The other hooks run only when a task reclaims or compacts.
 
 The trace needs BTF, task local storage, and at least one of these hooks: the `mm_vmscan_direct_reclaim`, `mm_vmscan_memcg_reclaim`, and `mm_compaction` tracepoints, and the `mem_cgroup_handle_over_high` function.
+Use `trace cpu` on Linux to find the functions that use the CPU. edc samples the stack of the running task on each CPU, 99 times per second by default. It counts the samples in the kernel and prints one summary at the end.
+
+```bash
+./bin/edc trace cpu --duration 30s
+./bin/edc trace cpu --process api,1234 --duration 10s
+./bin/edc trace cpu --container web --folded cpu.folded
+./bin/edc trace cpu --frequency 499 --folded - | flamegraph.pl > cpu.svg
+```
+
+The first line shows the samples and the busy share of the CPUs. An idle CPU gives a sample of the idle task, and edc counts these samples as `idle`. The busy share is the samples that are not idle, divided by the samples that the frequency gives in that time on all CPUs. Some virtual machines give fewer samples on an idle CPU. On a 4-CPU GitHub runner, the idle CPUs gave about 57% of their samples, and the busy CPU gave all of its samples. The `PROCESS` table shows the samples of each process. The `FUNCTION` table shows `SELF`, the samples where the function was the innermost frame, and `TOTAL`, the samples where the function was anywhere in the stack. A kernel function has `[k]` after the name. The percentages are of the samples that the filter kept. The table shows 20 functions, and `--json` holds all of them.
+
+`--folded <path>` writes one line for each stack, from the outer frame to the innermost frame, with the count at the end. Flame graph tools, such as `flamegraph.pl` and speedscope, read this format. Kernel frames end with `_[k]`. If `--folded -` writes to standard output, edc does not print the tables. `--process` and `--container` work as in `trace syscall`. edc compares them in the kernel, so the other samples do not use the maps.
+
+edc finds the kernel names in `/proc/kallsyms`. It finds the user names in the ELF symbol table of each mapped file. For a Go program, it also reads `.gopclntab`, so a Go program that `-s -w` stripped still shows its function names. For a JIT runtime, it reads `/tmp/perf-<pid>.map` in the mount namespace of the process. For example, `node --perf-basic-prof` writes this file. edc opens the files through `/proc/<pid>/map_files`, so the files of a container and deleted files also work. A frame without a symbol shows the file name, for example `[libc.so.6]`. A frame outside all mappings shows `[unknown]`. C++ and Rust names are not demangled.
+
+The kernel follows the frame pointers to read the user stack. A program built without frame pointers shows only part of its stack, and an address after the break can show as `[unknown]`. For example, a C program built with `-O2 -fomit-frame-pointer` showed `_start;__libc_start_main;leaf_work`, but the same program with `-fno-omit-frame-pointer` showed `main;outer_work;leaf_work`. A function that does not make its own frame, often a short leaf function, hides its caller. In the example, `middle_work` is missing for this reason. With `-O0`, the full stack showed. Go programs keep frame pointers. If more than half of the samples have a user stack of one frame, edc prints a note.
+
+A process that ends within a few milliseconds can end before edc reads its mappings, and its user frames show as `[unknown]`. edc reads the mappings of a new process when the BPF program first sees it, and again after 20 ms and 200 ms.
+
+edc measured these costs on a 12-CPU x86_64 host with Linux 6.17. The test ran a CPU-bound program on all 12 CPUs for 5 seconds, three times for each condition:
+
+| Condition | Work done | Change | BPF time per sample |
+|---|---|---|---|
+| No trace | 2,649,850 | - | - |
+| `--frequency 99` | 2,652,236 | +0.09% | 1.5 µs |
+| `--frequency 999` | 2,639,584 | -0.39% | 1.1 µs |
+
+At 99 Hz, edc itself used 120 ms of CPU time in 6 seconds of sampling. It used about 1 second in total for an 8-second trace, mostly to start and to read the symbols at the end, and its memory peak was 131 MiB.
+
+The trace needs BTF, a `perf_event_open` cpu-clock event on each online CPU, and a BPF link for perf events. Linux 5.15 has all three.
+
+Use `trace cpu --off-cpu` to find where threads sleep instead of where they run. edc records the stack of a thread when it goes to sleep, and adds the sleep time to that stack when the thread runs again. A thread that the scheduler preempts is runnable, so edc does not count it.
+
+```bash
+./bin/edc trace cpu --off-cpu --process api --duration 10s
+./bin/edc trace cpu --off-cpu --container db --folded db-offcpu.folded
+```
+
+The `PROCESS` table shows the sleeps and the sleep time of each process. The `CODE` and `KERNEL` table shows where the time goes. `CODE` is the two innermost user frames. `KERNEL` is the system call that slept, such as `futex` or `epoll_wait`, or `page_fault`. The time adds the sleeps of all threads, so it can be longer than the trace. In `--folded` output, the count is the sleep time in microseconds. Do not use `--frequency` with `--off-cpu`. edc stops with an error.
+
+edc counts only the sleeps that start and end during the trace. A sleep that started before the trace, or that does not end before the end, is not in the result. A thread that waits for the whole trace therefore does not show.
+
+edc measured these costs with `perf bench sched pipe` on the same host. Each operation has two context switches:
+
+| Condition | Time per operation | Added cost |
+|---|---|---|
+| No trace | 3.471 µs | - |
+| `--off-cpu --process no-such-process` | 3.495 µs | 0.02 µs |
+| `--off-cpu --process sched-pipe` | 4.379 µs | 0.91 µs |
+| `--off-cpu`, no filter | 4.475 µs | 1.00 µs |
+
+The BPF program ran on each context switch of the host. It took 191 ns for a process that the filter does not select and 1.25 µs to 1.38 µs for a selected process, mostly to read the two stacks. On a busy host, use `--process` or `--container`.
+
+Without a filter, the stack map can fill one hash slot with two stacks. In an 8-second trace of the host, 180 of 25,402 sleeps lost a stack in this way. edc counts them as `collisions` and prints a note. With `--process`, the same test had no collisions.
+
+The off-CPU trace also needs the `sched_switch` tracepoint with BTF and task local storage.
 
 Use `--raw` to print JSONL events as they arrive. Use `--json` to write the connection summary after Ctrl-C.
 

@@ -2340,7 +2340,7 @@ kernel은 정상 동작 중에도 패킷을 해제합니다. 예를 들어 progr
 
 요약의 이유별 합계는 정확합니다. 한 CPU에서 1초에 1,000건이 넘게 버려지면 그 1초 동안은 event를 1,000건만 보내고 나머지는 세기만 합니다. 이 수는 요약에 `Sampled out`으로 나옵니다. process는 socket이 있는 패킷에만 붙습니다. 닫힌 port로 온 패킷에는 socket이 없습니다.
 
-Linux에서 `trace exec`를 사용하면 process가 뜨고 끝나는 것, 그리고 누가 신호를 보냈는지 볼 수 있습니다. `exec` event는 PID, 부모, 사용자, 명령줄의 처음 256 byte를 보여 줍니다. `exit` event는 종료 코드, process를 끝낸 신호, core dump 여부, 산 시간을 보여 줍니다. 산 시간은 task의 시작 시각에서 재므로 trace 전에 뜬 process에도 나옵니다. `signal` event는 신호, 보낸 쪽, 받는 쪽, kernel이 전달했는지 무시했는지를 보여 줍니다.
+Linux에서 `trace exec`를 사용하면 process가 뜨고 끝나는 것, 누가 신호를 보냈는지, OOM killer가 어느 process를 끝냈는지 볼 수 있습니다. `exec` event는 PID, 부모, 사용자, 명령줄의 처음 256 byte를 보여 줍니다. `exit` event는 종료 코드, process를 끝낸 신호, core dump 여부, 산 시간을 보여 줍니다. 산 시간은 task의 시작 시각에서 재므로 trace 전에 뜬 process에도 나옵니다. `signal` event는 신호, 보낸 쪽, 받는 쪽, kernel이 전달했는지 무시했는지를 보여 줍니다.
 
 ```bash
 ./bin/edc trace exec --duration 15s
@@ -2351,9 +2351,32 @@ Linux에서 `trace exec`를 사용하면 process가 뜨고 끝나는 것, 그리
 
 요약은 process 이름으로 행을 묶습니다. exec 수, exit 수, 0이 아닌 코드로 끝난 수, 신호로 끝난 수, 1초를 못 살고 끝난 수를 세고 평균과 가장 긴 수명을 보여 줍니다. `EXEC`와 `SHORT`가 함께 높으면 짧은 process가 쏟아지는 것입니다. 예를 들어 1초마다 shell을 띄우는 health check가 그렇습니다. 누가 띄우는지는 `--group-by parent`로 봅니다. 두 번째 표는 신호를 보낸 쪽과 받는 쪽으로 묶습니다. 결과 뒤의 `(kernel)`은 kernel이 만든 신호라는 뜻입니다. 예를 들어 fault 뒤의 `SIGSEGV`나 OOM killer의 `SIGKILL`이고, 이때 보낸 쪽은 그 순간 실행 중이던 process입니다.
 
+`oom` event는 OOM killer가 고른 process를 보여 줍니다. `TRIGGER` 칸은 메모리가 모자랄 때 메모리를 할당하려던 task입니다. Linux 6.x에서는 victim의 이름, anon·file·shmem RSS, `oom_score_adj`도 보여 줍니다. Linux 5.15의 kernel은 victim의 PID만 줍니다. victim의 `exit` event에는 `oom-killed`가 붙고, 요약의 `OOM` 칸이 이 종료를 셉니다. 이 표시는 process의 kernel 상태에서 읽으므로 Linux 5.15에서도 정확합니다. `oom` event에서 `--container`는 TRIGGER task의 cgroup으로 맞춥니다.
+
 기본으로는 process를 끝내거나 core를 남기는 신호만 기록합니다. `HUP`, `INT`, `QUIT`, `ILL`, `TRAP`, `ABRT`, `BUS`, `FPE`, `KILL`, `USR1`, `SEGV`, `USR2`, `PIPE`, `TERM`, `STKFLT`, `XCPU`, `XFSZ`, `SYS`입니다. `CHLD`나 `ALRM`처럼 늘 오가는 신호는 뺍니다. `--signal`에 쉼표로 나눈 이름이나 번호, `all`, `none`을 줍니다. 필터가 버린 신호 수는 요약의 `filtered_signals`에 나옵니다. `--process`는 이름이나 PID를 받고, 신호는 받는 쪽으로 맞춥니다. `--container`는 container 하나의 event만 남깁니다.
 
-명령줄은 exec 시점에 새 process의 메모리에서 읽으므로 program이 받은 인자이고, 나중에 바뀐 값은 아닙니다. 읽지 못하면 실행 파일 경로를 보여 줍니다. 256 byte보다 긴 줄은 `…`로 끝나고 `args_truncated`에 셉니다. 스레드의 종료는 `exit` event가 아니고, process의 마지막 스레드만 `exit`를 냅니다. kernel thread는 보이지 않습니다. `sched_process_exec`, `sched_process_exit`, `signal_generate` tracepoint와 BTF가 필요합니다.
+명령줄은 exec 시점에 새 process의 메모리에서 읽으므로 program이 받은 인자이고, 나중에 바뀐 값은 아닙니다. 읽지 못하면 실행 파일 경로를 보여 줍니다. 256 byte보다 긴 줄은 `…`로 끝나고 `args_truncated`에 셉니다. 스레드의 종료는 `exit` event가 아니고, process의 마지막 스레드만 `exit`를 냅니다. kernel thread는 보이지 않습니다. `sched_process_exec`, `sched_process_exit`, `signal_generate` tracepoint와 BTF가 필요합니다. `oom` event에는 tracefs의 `oom/mark_victim` tracepoint도 필요합니다. container처럼 tracefs가 없으면 알림을 출력하고 나머지 event를 봅니다.
+
+Linux에서 `trace lock`을 사용하면 thread가 lock을 기다리는 곳을 볼 수 있습니다. edc는 두 가지 기다림을 재고 끝날 때 요약을 한 번 출력합니다.
+
+- kernel lock 기다림은 kernel 안의 spinlock, rwlock, mutex, rwsem, per-CPU semaphore 경합입니다. Linux 5.19 이상에 있는 `lock:contention_begin`과 `lock:contention_end` tracepoint를 씁니다.
+- futex 기다림은 사용자 공간에서 부른 `futex_wait`입니다. 경합한 `pthread_mutex`, condition variable, Go runtime이 모두 이렇게 기다리므로 futex 기다림이 늘 경합은 아닙니다.
+
+```bash
+./bin/edc trace lock --duration 10s
+./bin/edc trace lock --process api --kind futex
+./bin/edc trace lock --container db --json lock.json
+```
+
+`KERNEL LOCK` 표는 lock, lock 종류, 부른 함수로 기다림을 묶습니다. 정적 lock은 `tasklist_lock`이나 `rtnl_mutex`처럼 이름을, 나머지는 주소를 보여 줍니다. 종류는 `perf lock`의 이름을 씁니다: `spinlock`, `rwlock:R`, `rwlock:W`, `rwsem:R`, `rwsem:W`, `mutex`, `rtmutex`, `pcpu-sem:R`, `pcpu-sem:W`. 부른 함수는 stack에서 lock 함수가 아닌 첫 kernel 함수입니다. `PROCESS`는 가장 자주 기다린 process입니다.
+
+`FUTEX` 표는 process와 futex 주소로 기다림을 묶습니다. 주소가 전역 변수이면 ELF 심볼에서 `main.hotWord`나 `runtime.sched+0x120`처럼 이름을 찾습니다. 나머지 주소는 `[anon] 0x7f3a1c000960`처럼 mapping과 주소를 보여 줍니다. `-s`로 build한 Go program처럼 심볼표가 없는 program은 file 이름만 나옵니다. `CODE`는 기다린 시간이 가장 긴 stack의 안쪽 두 사용자 frame입니다.
+
+edc의 집계를 맞춰 보았습니다. 시험 program이 전역 futex 하나에서 800번 기다렸고, edc는 Linux 6.17과 Linux 5.15에서 모두 `main.hotWord`의 기다림 800번을 셌습니다. thread 8개가 메모리를 mapping하고 해제하는 program에서 `perf stat`은 `lock:contention_end`를 359,516번, edc는 359,506번 셌습니다. `perf stat`은 program이 이름을 얻기 전인 fork부터 셉니다.
+
+trace가 도는 동안 host의 모든 kernel lock 경합과 futex 기다림이 BPF program을 거칩니다. Linux 6.17, CPU 12개 host에서 고른 process의 경합 한 번은 두 program에서 1.57µs와 0.34µs가 걸렸고, 대부분은 stack을 읽는 시간입니다. 필터가 고르지 않은 process는 0.26µs와 0.07µs였습니다. futex 기다림은 1.59µs와 0.42µs, 고르지 않으면 0.29µs와 0.08µs였습니다. 시험 program은 trace가 있을 때와 없을 때 같은 시간에 같은 양의 일을 했습니다. trace가 경합 한 번을 길게 만들어 경합 횟수는 바뀔 수 있습니다. 같은 program이 아무것도 고르지 않는 필터에서는 358,687번, trace 대상일 때는 203,922번 경합했습니다.
+
+Linux 5.15에는 contention tracepoint가 없습니다. 그러면 알림을 출력하고 futex 기다림만 보여 줍니다. BTF와 task local storage가 필요합니다.
 
 Linux에서 `trace syscall`을 사용하면 process별 system call 수와 시간을 볼 수 있습니다. edc는 kernel 안에서 세고, 끝날 때 요약을 한 번 출력합니다. `--slow`나 `--errors`를 주면 조건에 맞는 호출도 하나씩 출력합니다.
 
@@ -2434,6 +2457,62 @@ edc의 집계를 kernel과 맞춰 보았습니다. 메모리 압박을 건 Linux
 kernel은 task가 처리할 일을 안고 사용자 공간으로 돌아갈 때마다 `memory.high` 처리 함수를 부릅니다. Linux 6.17, CPU 12개 host에서 1초에 약 2,600번이었습니다. edc는 task가 `memory.high`를 넘었을 때만 정지를 시작합니다. 두 BPF program은 호출마다 214ns와 267ns가 걸렸습니다. 나머지 hook은 task가 회수나 compaction을 할 때만 돕니다.
 
 BTF, task local storage와 다음 hook 중 하나 이상이 필요합니다: `mm_vmscan_direct_reclaim`, `mm_vmscan_memcg_reclaim`, `mm_compaction` tracepoint, `mem_cgroup_handle_over_high` 함수.
+Linux에서 `trace cpu`를 사용하면 CPU를 쓰는 함수를 찾을 수 있습니다. edc는 CPU마다 실행 중인 task의 stack을 기본 1초에 99번 샘플링합니다. 샘플은 kernel 안에서 세고, 끝날 때 요약을 한 번 출력합니다.
+
+```bash
+./bin/edc trace cpu --duration 30s
+./bin/edc trace cpu --process api,1234 --duration 10s
+./bin/edc trace cpu --container web --folded cpu.folded
+./bin/edc trace cpu --frequency 499 --folded - | flamegraph.pl > cpu.svg
+```
+
+첫 줄은 샘플 수와 CPU가 바빴던 비율입니다. 쉬는 CPU에서는 idle task가 샘플되고, edc는 이 샘플을 `idle`로 셉니다. 바빴던 비율은 idle이 아닌 샘플을, 그 시간 동안 모든 CPU에서 frequency대로 받았어야 할 샘플 수로 나눈 값입니다. 어떤 VM은 쉬는 CPU에서 샘플을 덜 줍니다. CPU 4개인 GitHub runner에서 쉬는 CPU는 받아야 할 샘플의 약 57%를 받았고, 바쁜 CPU는 모두 받았습니다. `PROCESS` 표는 process별 샘플 수입니다. `FUNCTION` 표의 `SELF`는 그 함수가 가장 안쪽 frame이었던 샘플이고, `TOTAL`은 그 함수가 stack 어디에든 있던 샘플입니다. kernel 함수는 이름 뒤에 `[k]`가 붙습니다. 비율은 필터를 통과한 샘플에 대한 값입니다. 표는 함수 20개를 보여 주고, `--json`에는 모든 함수가 들어갑니다.
+
+`--folded <path>`는 stack마다 바깥 frame부터 가장 안쪽 frame까지 한 줄로 쓰고, 끝에 샘플 수를 붙입니다. `flamegraph.pl`이나 speedscope 같은 flame graph 도구가 이 형식을 읽습니다. kernel frame은 `_[k]`로 끝납니다. `--folded -`로 stdout에 쓰면 표는 출력하지 않습니다. `--process`와 `--container`는 `trace syscall`과 같습니다. kernel 안에서 비교하므로 나머지 샘플은 map을 쓰지 않습니다.
+
+kernel 함수 이름은 `/proc/kallsyms`에서 찾습니다. 사용자 함수 이름은 mapping된 file의 ELF 심볼표에서 찾습니다. Go program은 `.gopclntab`도 읽으므로 `-s -w`로 심볼표를 지운 Go program도 함수 이름이 나옵니다. JIT runtime은 그 process의 mount namespace 안 `/tmp/perf-<pid>.map`을 읽습니다. 예를 들어 `node --perf-basic-prof`가 이 file을 씁니다. file은 `/proc/<pid>/map_files`로 열므로 container 안의 file과 지워진 file도 읽습니다. 심볼이 없는 frame은 `[libc.so.6]`처럼 file 이름으로, 어느 mapping에도 없는 주소는 `[unknown]`으로 나옵니다. C++과 Rust 이름은 demangle하지 않습니다.
+
+kernel은 frame pointer를 따라 사용자 stack을 읽습니다. frame pointer 없이 build한 program은 stack의 일부만 보이고, 끊긴 뒤의 주소는 `[unknown]`으로 나올 수 있습니다. 예를 들어 같은 C program을 `-O2 -fomit-frame-pointer`로 build하면 `_start;__libc_start_main;leaf_work`만 보였고, `-fno-omit-frame-pointer`로 build하면 `main;outer_work;leaf_work`가 보였습니다. 자기 frame을 만들지 않는 함수, 흔히 짧은 leaf 함수는 자신을 부른 함수를 가립니다. 이 예에서 `middle_work`가 빠진 이유입니다. `-O0`에서는 stack 전체가 보였습니다. Go program은 frame pointer를 유지합니다. 샘플의 절반이 넘게 사용자 stack이 frame 하나뿐이면 edc가 알림을 출력합니다.
+
+몇 ms 안에 끝나는 process는 edc가 mapping을 읽기 전에 끝날 수 있고, 그러면 사용자 frame이 `[unknown]`으로 나옵니다. edc는 BPF program이 새 process를 처음 볼 때 mapping을 읽고, 20ms 뒤와 200ms 뒤에 다시 읽습니다.
+
+Linux 6.17, CPU 12개 x86_64 host에서 비용을 측정했습니다. CPU를 쓰는 program을 CPU 12개에 모두 5초 동안 돌렸고, 조건마다 세 번 쟀습니다.
+
+| 조건 | 처리한 일 | 변화 | 샘플당 BPF 시간 |
+|---|---|---|---|
+| trace 없음 | 2,649,850 | - | - |
+| `--frequency 99` | 2,652,236 | +0.09% | 1.5 µs |
+| `--frequency 999` | 2,639,584 | -0.39% | 1.1 µs |
+
+99Hz에서 edc 자신은 샘플링하는 6초 동안 CPU 120ms를 썼습니다. 8초 trace 전체로는 약 1초를 썼고, 대부분은 시작과 끝의 심볼 읽기입니다. 메모리는 최대 131MiB였습니다.
+
+BTF, online CPU마다 여는 `perf_event_open`의 cpu-clock event, perf event용 BPF link가 필요합니다. Linux 5.15에는 셋 다 있습니다.
+
+`trace cpu --off-cpu`를 사용하면 thread가 도는 곳이 아니라 잠드는 곳을 찾을 수 있습니다. edc는 thread가 잠들 때 stack을 기록하고, 그 thread가 다시 돌 때 잠든 시간을 그 stack에 더합니다. scheduler가 선점한 thread는 runnable이므로 세지 않습니다.
+
+```bash
+./bin/edc trace cpu --off-cpu --process api --duration 10s
+./bin/edc trace cpu --off-cpu --container db --folded db-offcpu.folded
+```
+
+`PROCESS` 표는 process별로 잠든 횟수와 시간을 보여 줍니다. `CODE`와 `KERNEL` 표는 그 시간이 어디서 쓰였는지 보여 줍니다. `CODE`는 사용자 stack의 안쪽 두 frame입니다. `KERNEL`은 `futex`나 `epoll_wait`처럼 잠든 system call이거나 `page_fault`입니다. 시간은 모든 thread의 잠든 시간을 더하므로 trace보다 길 수 있습니다. `--folded` 출력의 수는 잠든 시간의 마이크로초입니다. `--off-cpu`와 `--frequency`를 함께 주면 오류로 끝납니다.
+
+trace 중에 시작하고 끝난 잠만 셉니다. trace 전에 시작했거나 끝날 때까지 깨지 않은 잠은 결과에 없습니다. 그래서 trace 내내 기다리는 thread는 보이지 않습니다.
+
+같은 host에서 `perf bench sched pipe`로 비용을 쟀습니다. 한 번의 작업에 context switch가 두 번 있습니다.
+
+| 조건 | 작업당 시간 | 늘어난 비용 |
+|---|---|---|
+| trace 없음 | 3.471 µs | - |
+| `--off-cpu --process no-such-process` | 3.495 µs | 0.02 µs |
+| `--off-cpu --process sched-pipe` | 4.379 µs | 0.91 µs |
+| `--off-cpu`, 필터 없음 | 4.475 µs | 1.00 µs |
+
+BPF program은 host의 모든 context switch에서 돕니다. 필터가 고르지 않은 process에는 191ns, 고른 process에는 1.25~1.38µs가 걸렸고, 대부분은 두 stack을 읽는 시간입니다. 바쁜 host에서는 `--process`나 `--container`를 쓰세요.
+
+필터가 없으면 stack map의 hash 칸 하나를 두 stack이 쓰려 할 수 있습니다. host 전체를 8초 기록하자 잠 25,402번 중 180번이 이렇게 stack을 잃었습니다. edc는 이 수를 `collisions`로 세고 알림을 출력합니다. `--process`를 주자 같은 시험에서 충돌이 없었습니다.
+
+off-CPU trace에는 `sched_switch` tracepoint와 BTF, task local storage도 필요합니다.
 
 kernel이 모든 버림을 이유와 함께 알리지는 않습니다. 예를 들어 listen socket의 accept 대기열이 가득 차면 kernel은 SYN을 정상 패킷처럼 해제합니다. 이 경우를 위해 요약에는 trace 동안 `/proc/net/netstat`의 `ListenOverflows`와 `ListenDrops`가 늘어난 수가 나옵니다. 이 값은 edc가 있는 network namespace의 모든 listen socket을 합한 것이라, `--container`를 써도 container만의 값이 아닙니다.
 

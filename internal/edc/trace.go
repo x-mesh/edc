@@ -151,6 +151,10 @@ var traceProtocolRegistry = []traceProtocolRegistration{
 	{name: "syscall", view: traceProtocolView{selectorLabel: "syscall"}, spec: traceProtocolSpec{hideTraffic: true, hiddenViews: []string{traceGroupBySource, traceGroupByTarget, traceGroupByPort}, linuxOnly: true, prerequisites: syscallTracePrerequisites}, run: runTraceSyscall},
 	// 메모리를 할당하던 task가 회수와 throttle로 멈춘 시간이다. syscall처럼 kernel 안에서 모아 끝날 때 한 번 출력한다.
 	{name: "reclaim", view: traceProtocolView{selectorLabel: "reclaim"}, spec: traceProtocolSpec{hideTraffic: true, hiddenViews: []string{traceGroupBySource, traceGroupByTarget, traceGroupByPort}, linuxOnly: true, prerequisites: reclaimTracePrerequisites}, run: runTraceReclaim},
+	// CPU마다 일정한 간격으로 stack을 샘플링한다. event가 아니라 끝날 때 함수별 요약과 folded stack을 한 번 낸다.
+	{name: "cpu", view: traceProtocolView{selectorLabel: "cpu"}, spec: traceProtocolSpec{hideTraffic: true, hiddenViews: []string{traceGroupBySource, traceGroupByTarget, traceGroupByPort}, linuxOnly: true, prerequisites: cpuTracePrerequisites}, run: runTraceCPU},
+	// kernel lock 경합과 사용자 futex 기다림이다. kernel 안에서 모아 끝날 때 lock과 주소별로 한 번 출력한다.
+	{name: "lock", view: traceProtocolView{selectorLabel: "lock"}, spec: traceProtocolSpec{hideTraffic: true, hiddenViews: []string{traceGroupBySource, traceGroupByTarget, traceGroupByPort}, linuxOnly: true, prerequisites: lockTracePrerequisites}, run: runTraceLock},
 }
 
 var traceProtocols = traceProtocolSpecs(traceProtocolRegistry)

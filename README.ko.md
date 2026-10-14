@@ -2388,7 +2388,7 @@ Linux에서 `trace exec`를 사용하면 process가 뜨고 끝나는 것, 누가
 
 Linux에서 `trace lock`을 사용하면 thread가 lock을 기다리는 곳을 볼 수 있습니다. edc는 두 가지 기다림을 재고 끝날 때 요약을 한 번 출력합니다.
 
-- kernel lock 기다림은 kernel 안의 spinlock, rwlock, mutex, rwsem, per-CPU semaphore 경합입니다. Linux 5.19 이상에 있는 `lock:contention_begin`과 `lock:contention_end` tracepoint를 씁니다.
+- kernel lock 기다림은 kernel 안의 spinlock, rwlock, mutex, rwsem, per-CPU semaphore 경합입니다. Linux 5.19 이상에 있는 `lock:contention_begin`과 `lock:contention_end` tracepoint를 씁니다. mutex 기다림은 task가 spin을 시작할 때 시작하고, spin 뒤에 잠든 시간까지 포함합니다.
 - futex 기다림은 사용자 공간에서 부른 `futex_wait`입니다. 경합한 `pthread_mutex`, condition variable, Go runtime이 모두 이렇게 기다리므로 futex 기다림이 늘 경합은 아닙니다.
 
 ```bash

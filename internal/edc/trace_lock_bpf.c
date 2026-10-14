@@ -155,6 +155,10 @@ SEC("tp_btf/contention_begin") int lock_contention_begin(__u64 *ctx) {
 	struct lock_task *state = bpf_task_storage_get(&tasks, task, 0, BPF_LOCAL_STORAGE_GET_F_CREATE);
 	if (!state) return 0;
 	__u32 depth = state->depth;
+	// mutex의 느린 길은 spin하기 전과 잠들기 전에 contention_begin을 두 번 부르고 contention_end는 한 번 부른다. 맨 위가
+	// 같은 lock이면 같은 기다림이 이어지는 것이라 새로 쌓지 않는다. 쌓으면 끝이 하나만 꺼내 남은 칸이 thread가 끝날 때까지
+	// 깊이를 차지한다. 기다린 시간은 첫 시작부터 잰다.
+	if (depth > 0 && state->kernel[(depth - 1) & (LOCK_DEPTH - 1)].lock == ctx[0]) return 0;
 	if (depth >= LOCK_DEPTH) {
 		count(LOCK_DEPTH_FULL);
 		return 0;

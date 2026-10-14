@@ -14,6 +14,8 @@ import (
 	"testing"
 	"time"
 	"unsafe"
+
+	"golang.org/x/sys/unix"
 )
 
 // lockTestWord는 helper가 기다리는 futex다. 깨우는 thread가 없으므로 기다림마다 시간 초과로 돌아온다.
@@ -58,10 +60,142 @@ func TestTraceLockHelper(t *testing.T) {
 				}
 			}()
 		}
+	case "mutex":
+		lockTestSleepingMutex(t)
 	default:
-		t.Skip("helper process for TestTraceLockCountsFutexAndKernelWaits")
+		t.Skip("helper process for the trace lock tests")
 	}
 	group.Wait()
+}
+
+// lockTestMutexRounds는 helper가 pipe mutex에서 잠드는 횟수다. BPF가 thread마다 쌓는 깊이 4보다 커야 한다.
+const lockTestMutexRounds = 8
+
+// userfaultfd의 ioctl 번호다. _IOWR(0xAA, nr, size)라 amd64와 arm64에서 같다.
+const (
+	lockTestUffdioAPI      = 0xC018AA3F
+	lockTestUffdioRegister = 0xC020AA00
+	lockTestUffdioZeropage = 0xC020AA04
+)
+
+// lockTestSleepingMutex는 한 thread가 pipe mutex를 쥔 채 userfaultfd page의 fault에서 멈추게 한다. 그동안 다른 thread가
+// 같은 pipe에 쓰면 mutex의 주인이 잠들어 있으므로 spin을 그만두고 잠든다. 잠드는 thread는 매번 같은 thread다.
+func lockTestSleepingMutex(t *testing.T) {
+	uffd, _, errno := syscall.Syscall(unix.SYS_USERFAULTFD, syscall.O_CLOEXEC, 0, 0)
+	if errno != 0 {
+		t.Skipf("userfaultfd: %v", errno)
+	}
+	defer syscall.Close(int(uffd))
+	ioctl := func(request uintptr, argument unsafe.Pointer) {
+		if _, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uffd, request, uintptr(argument)); errno != 0 {
+			t.Fatalf("ioctl 0x%x: %v", request, errno)
+		}
+	}
+	api := [3]uint64{0xAA, 0, 0}
+	ioctl(lockTestUffdioAPI, unsafe.Pointer(&api))
+	var pipe [2]int
+	if err := syscall.Pipe2(pipe[:], syscall.O_CLOEXEC); err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		buffer := make([]byte, 1<<16)
+		for {
+			if count, err := syscall.Read(pipe[0], buffer); count <= 0 || err != nil {
+				return
+			}
+		}
+	}()
+	trigger, written := make(chan struct{}), make(chan struct{})
+	go func() {
+		runtime.LockOSThread()
+		block := make([]byte, 16)
+		for range trigger {
+			_, _ = syscall.Write(pipe[1], block)
+			written <- struct{}{}
+		}
+	}()
+	for range lockTestMutexRounds {
+		region, err := syscall.Mmap(-1, 0, 4096, syscall.PROT_READ|syscall.PROT_WRITE, syscall.MAP_PRIVATE|syscall.MAP_ANON)
+		if err != nil {
+			t.Fatal(err)
+		}
+		start := uint64(uintptr(unsafe.Pointer(&region[0])))
+		// UFFDIO_REGISTER_MODE_MISSING(1)이다. page를 채우기 전까지 그 page를 읽는 kernel 복사가 멈춘다.
+		register := [4]uint64{start, 4096, 1, 0}
+		ioctl(lockTestUffdioRegister, unsafe.Pointer(&register))
+		faulted := make(chan struct{})
+		go func() {
+			syscall.Syscall(syscall.SYS_WRITE, uintptr(pipe[1]), uintptr(start), 4096)
+			close(faulted)
+		}()
+		time.Sleep(50 * time.Millisecond)
+		trigger <- struct{}{}
+		time.Sleep(50 * time.Millisecond)
+		zero := [4]uint64{start, 4096, 0, 0}
+		ioctl(lockTestUffdioZeropage, unsafe.Pointer(&zero))
+		<-faulted
+		<-written
+		_ = syscall.Munmap(region)
+	}
+	close(trigger)
+}
+
+// mutex의 느린 길은 contention_begin을 spin 전과 잠들기 전에 두 번 부르고 contention_end는 한 번 부른다. 같은 thread가
+// 잠드는 mutex 기다림을 여러 번 겪어도 기다림의 깊이가 차지 않고, 기다림마다 한 번씩 세는지 본다.
+func TestTraceLockCountsEachSleepingMutexWaitOnce(t *testing.T) {
+	capabilities, err := effectiveCapabilities()
+	if err != nil || missingCapabilities(bpfTraceCapabilities, capabilities) != "" {
+		t.Skip("trace lock needs BPF capabilities")
+	}
+	if err := lockTracePrerequisites(); err != nil {
+		t.Skip(err)
+	}
+	comm, err := os.ReadFile("/proc/self/comm")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stop := make(chan struct{})
+	type result struct {
+		collection lockCollection
+		err        error
+	}
+	finished := make(chan result, 1)
+	go func() {
+		collection, err := collectLockStats(lockTraceOptions{comms: []string{strings.TrimSpace(string(comm))}, kind: lockKindKernel}, stop)
+		finished <- result{collection, err}
+	}()
+	time.Sleep(time.Second)
+	command := exec.Command(os.Args[0], "-test.run=^TestTraceLockHelper$", "-test.count=1", "-test.v")
+	command.Env = append(os.Environ(), "EDC_LOCK_HELPER=mutex")
+	output, helperErr := command.CombinedOutput()
+	close(stop)
+	done := <-finished
+	if helperErr != nil {
+		t.Fatalf("helper: %v\n%s", helperErr, output)
+	}
+	if done.err != nil {
+		if strings.Contains(done.err.Error(), "no lock hook to attach") {
+			t.Skip(done.err)
+		}
+		t.Fatal(done.err)
+	}
+	if strings.Contains(string(output), "--- SKIP") {
+		t.Skipf("helper skipped:\n%s", output)
+	}
+	report := lockReportFor(done.collection)
+	if report.Summary.DepthFull != 0 || report.Summary.Unmatched != 0 {
+		t.Errorf("depth_full %d unmatched %d, want 0", report.Summary.DepthFull, report.Summary.Unmatched)
+	}
+	var waits uint64
+	for _, row := range report.Kernel {
+		if row.Type == "mutex" && strings.Contains(row.Caller, "pipe_write") {
+			waits += row.Waits
+		}
+	}
+	if waits < lockTestMutexRounds {
+		t.Errorf("mutex waits in pipe_write = %d, want at least %d: %+v", waits, lockTestMutexRounds, report.Kernel)
+	}
+	t.Logf("mutex waits in pipe_write %d", waits)
 }
 
 // CI의 tls-smoke job이 root로 이 시험을 돌린다. futex 기다림의 수가 helper가 기다린 수와 같은지, 그 주소에 변수 이름이

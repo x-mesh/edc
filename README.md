@@ -1683,18 +1683,32 @@ By default, edc records the signals that end a process or dump core: `HUP`, `INT
 
 edc reads the command line from the memory of the new process at the time of the exec, so it holds the arguments that the program received, not later changes. If edc cannot read it, the event shows the path of the executable. Lines longer than 256 bytes end with `…`, and `args_truncated` counts them. A thread that exits does not make an `exit` event, only the last thread of a process does. Kernel threads do not appear. The trace needs the `sched_process_exec`, `sched_process_exit`, and `signal_generate` tracepoints with BTF.
 
-Use `trace syscall` on Linux to count the system calls of each process. edc counts in the kernel and prints one summary at the end. It does not print each call.
+Use `trace syscall` on Linux to count the system calls of each process. edc counts in the kernel and prints one summary at the end. With `--slow` or `--errors`, it also prints each call that matches.
 
 ```bash
 ./bin/edc trace syscall --duration 10s
 ./bin/edc trace syscall --process nginx,1234 --duration 30s
 ./bin/edc trace syscall --group-by syscall --json syscall.json
 ./bin/edc trace syscall --container web --group-by cgroup
+./bin/edc trace syscall --process api --errors ENOENT,EACCES
+./bin/edc trace syscall --syscall openat,statx --slow 10ms --raw
 ```
 
 Each row is one process name and one system call. The row shows the calls, the errors with the most frequent errno, and the time in the call: total, average, p95, and maximum. The time is wall time inside the call, not CPU time. Calls that wait, such as `epoll_wait` and `futex`, are therefore at the top. The total adds the time of all threads, so it can be longer than the trace. The rows are in order of total time. The table shows 20 rows, and `--json` holds all rows. P95 is the upper bound of a histogram bucket, the same as in `top -d`. The table shows it as `<1.05s`.
 
 Use `--group-by syscall`, `--group-by process`, or `--group-by cgroup` to add the rows over one column. `--process` takes PIDs and command names, separated by commas. edc compares them in the kernel, so a name must be the exact command name of the process, up to 15 bytes. A PID matches all threads of the process. `--container` keeps the calls of one container.
+
+Use `--syscall` with names separated by commas to count only these system calls. edc checks the number in the kernel, so the other calls do not reach the map. The names come from the system call table of the CPU architecture. On amd64, a name also selects the 32-bit call with that name.
+
+Use `--slow <duration>` to print each call that takes at least that time. Use `--errors all` to print each failed call, or `--errors ENOENT,EACCES` to print only these errors. edc checks both conditions in the kernel. Each line shows the time, the process, the PID and the thread ID, the system call, the return value or the errno, the time in the call, and the path:
+
+```
+15:04:05.000123  nginx 1234/1240  openat  ENOENT  12.3us  /etc/nginx/missing.conf
+```
+
+edc reads the path only for the calls that it prints, when the call returns. It reads up to 256 bytes, and a longer path ends with `…`. The path is the first path argument of about 50 calls, such as `openat`, `statx`, `unlinkat`, `mkdirat`, and `execve`. edc does not read the path of a 32-bit call. It does not read the path of an `execve` that succeeded, because the new program replaced the registers and the memory. If another thread changes the path buffer during the call, the line can show the new text. Control characters in the path show as `\xNN`.
+
+edc prints at most 1,000 lines per second on each CPU. The summary counts the other lines as `sampled_out`, and the table still counts all calls. `ring_lost` counts the lines that did not fit in the event buffer. With `--json`, edc counts the lines but does not print them. Use `--raw` to print each line as JSON, with the summary as the last line.
 
 The `IN FLIGHT AT STOP` table lists the calls that started during the trace and did not return before the end. A thread that waits for the whole trace is not in the main table, because its call does not return. A call that started before the trace returns without a start time. The summary counts these returns as `unmatched`, together with the first return of a new thread after `fork` or `clone`. With `--process` or `--container`, edc does not count them, and the summary shows `-`. `exit` and `exit_group` do not return, so edc counts them without a time.
 
@@ -1712,7 +1726,9 @@ When the trace runs, each system call on the host goes through two BPF programs.
 
 On that host, about 32,500 calls per second added less than 0.1% of the total CPU time. On a busy server, measure the cost on that host before a long trace.
 
-The trace needs the `sys_enter` and `sys_exit` tracepoints with BTF, task local storage, and the task iterator.
+`--syscall` lowers the cost of the other calls. With `--syscall openat`, `getppid` took 0.696 µs, 0.12 µs more than without the trace. A call that fails costs about 0.1 µs more, because edc also counts its errno. A printed line costs about 0.6 µs more, and a line over the limit costs about 0.05 µs more. With the limit, a 12-CPU host prints at most 12,000 lines per second.
+
+The trace needs the `sys_enter` and `sys_exit` tracepoints with BTF, task local storage, the task iterator, and the BPF ring buffer.
 
 Use `--raw` to print JSONL events as they arrive. Use `--json` to write the connection summary after Ctrl-C.
 
@@ -2041,7 +2057,7 @@ Use `trace mysql` on Linux 5.15 or later to print plain MySQL commands and resul
 
 JSON events have `"side": "client"` or `"side": "server"`. Use `--side client` or `--side server` to keep one side. If the local port is the MySQL port, the socket is on the server side. If the peer port is the MySQL port, the socket is on the client side.
 
-Use `--slow <duration>` only with `trace mysql`, `trace clickhouse`, `trace postgres`, `trace redis`, `trace io`, or `trace sched`. It accepts Go duration syntax, such as `250ms` and `1.5s`. For `trace io`, it sets the minimum request latency. For `trace sched`, it sets the minimum span latency. The default for both is 1ms. For `trace mysql`, in the ungrouped interactive view, it keeps a command row only when its first paired response has latency at or above the duration. It excludes unanswered commands, unmatched responses, responses without latency, and TLS rows. It does not change raw JSON, noninteractive output, summaries, grouped views, `--group-by`, or `--side`.
+Use `--slow <duration>` only with `trace mysql`, `trace clickhouse`, `trace postgres`, `trace redis`, `trace io`, `trace sched`, or `trace syscall`. It accepts Go duration syntax, such as `250ms` and `1.5s`. For `trace io`, it sets the minimum request latency. For `trace sched`, it sets the minimum span latency. The default for both is 1ms. For `trace syscall`, it prints each call that takes at least the duration, and it has no default. For `trace mysql`, in the ungrouped interactive view, it keeps a command row only when its first paired response has latency at or above the duration. It excludes unanswered commands, unmatched responses, responses without latency, and TLS rows. It does not change raw JSON, noninteractive output, summaries, grouped views, `--group-by`, or `--side`.
 
 | To see | Command |
 | --- | --- |

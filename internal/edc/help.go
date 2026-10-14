@@ -308,6 +308,8 @@ var commandDocs = []commandDoc{
 			{"--reason <names>", "command.trace.option.reason"},
 			{"--device <major:minor>", "command.trace.option.device"},
 			{"--signal <names>", "command.trace.option.signal"},
+			{"--syscall <names>", "command.trace.option.syscall"},
+			{"--errors <all|names>", "command.trace.option.errors"},
 			{"--yes", "command.trace.option.yes"},
 		},
 	},

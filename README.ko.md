@@ -2132,18 +2132,32 @@ Linux에서 `trace exec`를 사용하면 process가 뜨고 끝나는 것, 그리
 
 명령줄은 exec 시점에 새 process의 메모리에서 읽으므로 program이 받은 인자이고, 나중에 바뀐 값은 아닙니다. 읽지 못하면 실행 파일 경로를 보여 줍니다. 256 byte보다 긴 줄은 `…`로 끝나고 `args_truncated`에 셉니다. 스레드의 종료는 `exit` event가 아니고, process의 마지막 스레드만 `exit`를 냅니다. kernel thread는 보이지 않습니다. `sched_process_exec`, `sched_process_exit`, `signal_generate` tracepoint와 BTF가 필요합니다.
 
-Linux에서 `trace syscall`을 사용하면 process별 system call 수와 시간을 볼 수 있습니다. edc는 kernel 안에서 세고, 끝날 때 요약을 한 번 출력합니다. 호출을 하나씩 출력하지는 않습니다.
+Linux에서 `trace syscall`을 사용하면 process별 system call 수와 시간을 볼 수 있습니다. edc는 kernel 안에서 세고, 끝날 때 요약을 한 번 출력합니다. `--slow`나 `--errors`를 주면 조건에 맞는 호출도 하나씩 출력합니다.
 
 ```bash
 ./bin/edc trace syscall --duration 10s
 ./bin/edc trace syscall --process nginx,1234 --duration 30s
 ./bin/edc trace syscall --group-by syscall --json syscall.json
 ./bin/edc trace syscall --container web --group-by cgroup
+./bin/edc trace syscall --process api --errors ENOENT,EACCES
+./bin/edc trace syscall --syscall openat,statx --slow 10ms --raw
 ```
 
 행 하나는 process 이름 하나와 system call 하나입니다. 행마다 호출 수, 오류 수와 가장 많은 errno, 호출 안에 머문 시간의 합계, 평균, p95, 최댓값을 보여 줍니다. 시간은 CPU 시간이 아니라 호출 안에 머문 실제 시간입니다. 그래서 `epoll_wait`나 `futex`처럼 기다리는 호출이 위에 옵니다. 합계는 모든 스레드의 시간을 더하므로 trace 시간보다 길 수 있습니다. 행은 합계 시간 순서입니다. 표에는 20행이 나오고, `--json`에는 모든 행이 들어갑니다. p95는 `top -d`와 같은 histogram bucket의 위쪽 경계라서 `<1.05s`처럼 보입니다.
 
 `--group-by syscall`, `--group-by process`, `--group-by cgroup`은 한 열로 묶어 더합니다. `--process`는 쉼표로 나눈 PID와 command 이름을 받습니다. kernel 안에서 비교하므로 이름은 process의 command 이름과 정확히 같아야 하고, 15 byte까지만 봅니다. PID는 그 process의 모든 스레드에 맞습니다. `--container`는 container 하나의 호출만 셉니다.
+
+`--syscall`에 쉼표로 나눈 이름을 주면 그 system call만 셉니다. kernel 안에서 번호를 확인하므로 다른 호출은 map에 들어가지 않습니다. 이름은 CPU 아키텍처의 system call 표에서 찾습니다. amd64에서는 같은 이름의 32비트 호출도 함께 고릅니다.
+
+`--slow <시간>`을 주면 그 시간 이상 걸린 호출을 하나씩 출력합니다. `--errors all`은 실패한 모든 호출을, `--errors ENOENT,EACCES`는 그 오류로 실패한 호출만 출력합니다. 두 조건 모두 kernel 안에서 확인합니다. 한 줄에는 시각, process, PID와 스레드 ID, system call, 반환값이나 errno, 호출 안에 머문 시간, 경로가 나옵니다.
+
+```
+15:04:05.000123  nginx 1234/1240  openat  ENOENT  12.3us  /etc/nginx/missing.conf
+```
+
+경로는 출력하는 호출에서만, 호출이 돌아올 때 읽습니다. 256 byte까지 읽고, 더 긴 경로는 `…`로 끝납니다. 경로는 `openat`, `statx`, `unlinkat`, `mkdirat`, `execve` 같은 약 50개 호출의 첫 경로 인자입니다. 32비트 호출의 경로는 읽지 않습니다. 성공한 `execve`의 경로도 읽지 않습니다. 새 program이 register와 memory를 바꿨기 때문입니다. 호출 중에 다른 스레드가 경로 buffer를 바꾸면 바뀐 글자가 나올 수 있습니다. 경로의 제어 문자는 `\xNN`으로 보여 줍니다.
+
+edc는 CPU마다 1초에 1,000줄까지만 출력합니다. 넘친 줄은 요약의 `sampled_out`으로 세고, 표는 모든 호출을 계속 셉니다. event buffer에 들어가지 못한 줄은 `ring_lost`로 셉니다. `--json`을 주면 줄 수만 세고 출력하지 않습니다. `--raw`를 주면 줄마다 JSON으로 출력하고, 마지막 줄에 요약을 붙입니다.
 
 `IN FLIGHT AT STOP` 표는 trace 중에 시작해 끝날 때까지 돌아오지 않은 호출입니다. trace 내내 기다린 스레드는 호출이 돌아오지 않아 위의 표에 나오지 않습니다. trace 전에 시작한 호출은 시작 시각 없이 돌아옵니다. 요약은 이 복귀를 `fork`나 `clone`으로 생긴 스레드의 첫 복귀와 함께 `unmatched`로 셉니다. `--process`나 `--container`를 주면 세지 않고 `-`로 보여 줍니다. `exit`와 `exit_group`은 돌아오지 않으므로 시간 없이 횟수만 셉니다.
 
@@ -2161,7 +2175,9 @@ trace가 도는 동안 host의 모든 system call이 BPF program 두 개를 거�
 
 이 host에서는 초당 약 32,500건의 호출이 전체 CPU 시간의 0.1% 미만을 더했습니다. 바쁜 server에서 오래 trace하려면 먼저 그 host에서 비용을 재 보세요.
 
-`sys_enter`, `sys_exit` tracepoint와 BTF, task local storage, task iterator가 필요합니다.
+`--syscall`을 주면 다른 호출의 비용이 줄어듭니다. `--syscall openat`일 때 `getppid`는 0.696 µs로, trace가 없을 때보다 0.12 µs 더 걸렸습니다. 실패한 호출은 errno도 세므로 약 0.1 µs가 더 듭니다. 출력하는 줄 하나는 약 0.6 µs, 상한을 넘어 세기만 하는 줄은 약 0.05 µs가 더 듭니다. 상한이 있으므로 12 CPU host는 1초에 최대 12,000줄을 출력합니다.
+
+`sys_enter`, `sys_exit` tracepoint와 BTF, task local storage, task iterator, BPF ring buffer가 필요합니다.
 
 kernel이 모든 버림을 이유와 함께 알리지는 않습니다. 예를 들어 listen socket의 accept 대기열이 가득 차면 kernel은 SYN을 정상 패킷처럼 해제합니다. 이 경우를 위해 요약에는 trace 동안 `/proc/net/netstat`의 `ListenOverflows`와 `ListenDrops`가 늘어난 수가 나옵니다. 이 값은 edc가 있는 network namespace의 모든 listen socket을 합한 것이라, `--container`를 써도 container만의 값이 아닙니다.
 

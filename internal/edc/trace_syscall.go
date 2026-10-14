@@ -4,11 +4,13 @@ package edc
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
 	"os"
 	"os/signal"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -34,6 +36,53 @@ type syscallTraceOptions struct {
 	container    *traceContainer
 	groupBy      string
 	jsonPath     string
+	// syscalls는 --syscall로 고른 번호다. compat은 amd64의 32비트 호환 번호다.
+	syscalls       []uint32
+	compatSyscalls []uint32
+	slow           time.Duration
+	errors         string
+	errorsAll      bool
+	errnos         []uint32
+	raw            bool
+}
+
+func (options syscallTraceOptions) eventsEnabled() bool {
+	return options.slow > 0 || options.errorsAll || len(options.errnos) > 0
+}
+
+// syscallEvent는 --slow나 --errors에 맞은 호출 하나다. Return은 kernel이 돌려준 값이고, 실패하면 Errno에 이름이 있다.
+type syscallEvent struct {
+	TimestampNS    uint64  `json:"timestamp_ns"`
+	Event          string  `json:"event"`
+	PID            uint32  `json:"pid"`
+	TID            uint32  `json:"tid"`
+	Process        string  `json:"process"`
+	Syscall        string  `json:"syscall"`
+	Return         int64   `json:"return"`
+	Errno          string  `json:"errno,omitempty"`
+	LatencyMS      float64 `json:"latency_ms"`
+	Path           string  `json:"path,omitempty"`
+	PathTruncated  bool    `json:"path_truncated,omitempty"`
+	PathUnreadable bool    `json:"path_unreadable,omitempty"`
+}
+
+// line은 event 하나를 한 줄로 쓴다. 경로의 제어 문자는 터미널을 바꾸지 못하게 \xNN으로 쓴다.
+func (event syscallEvent) line() string {
+	result := event.Errno
+	if result == "" {
+		result = strconv.FormatInt(event.Return, 10)
+	}
+	text := fmt.Sprintf("%s  %s %d/%d  %s  %s  %s", time.Unix(0, int64(event.TimestampNS)).Format("15:04:05.000000"), event.Process, event.PID, event.TID, event.Syscall, result, syscallTime(event.LatencyMS*float64(time.Millisecond)))
+	switch {
+	case event.PathUnreadable:
+		text += "  (path unreadable)"
+	case event.Path != "":
+		text += "  " + execPrintable([]byte(event.Path))
+		if event.PathTruncated {
+			text += "…"
+		}
+	}
+	return text
 }
 
 // syscallSample은 BPF map에서 읽은 cgroup, process 이름, syscall 하나의 값이다. Timed는 돌아온 호출 수다.
@@ -58,6 +107,8 @@ type syscallInFlightSample struct {
 }
 
 type syscallSummary struct {
+	// Event는 --raw의 마지막 줄에만 붙는다. 앞의 event 줄과 구분한다.
+	Event      string `json:"event,omitempty"`
 	DurationMS int64  `json:"duration_ms"`
 	Calls      uint64 `json:"calls"`
 	Errors     uint64 `json:"errors"`
@@ -70,6 +121,12 @@ type syscallSummary struct {
 	StartsFull   uint64  `json:"starts_full"`
 	ErrnosFull   uint64  `json:"errnos_full"`
 	SelfExcluded bool    `json:"self_excluded"`
+	// SlowMS와 ErrorFilter는 event를 낸 조건이다. 둘 다 없으면 event를 내지 않았다.
+	SlowMS      *float64 `json:"slow_ms,omitempty"`
+	ErrorFilter string   `json:"error_filter,omitempty"`
+	Events      uint64   `json:"events,omitempty"`
+	SampledOut  uint64   `json:"sampled_out,omitempty"`
+	RingLost    uint64   `json:"ring_lost,omitempty"`
 }
 
 type syscallCollection struct {
@@ -120,6 +177,11 @@ func runTraceSyscall(args []string) int {
 	set.StringVar(&options.containerRef, "container", "", T("command.trace.option.container"))
 	set.StringVar(&options.groupBy, "group-by", "", "process, syscall, or cgroup")
 	set.StringVar(&options.jsonPath, "json", "", T("option.json"))
+	var syscalls string
+	set.StringVar(&syscalls, "syscall", "", T("command.trace.option.syscall"))
+	set.DurationVar(&options.slow, "slow", 0, T("command.trace.option.slow"))
+	set.StringVar(&options.errors, "errors", "", T("command.trace.option.errors"))
+	set.BoolVar(&options.raw, "raw", false, T("command.trace.option.raw"))
 	if err := set.Parse(args); err != nil {
 		return 2
 	}
@@ -143,6 +205,31 @@ func runTraceSyscall(args []string) int {
 		return 2
 	}
 	options.pids, options.comms = pids, comms
+	if strings.TrimSpace(syscalls) != "" {
+		if options.syscalls, options.compatSyscalls, err = parseSyscallNames(runtime.GOARCH, syscalls); err != nil {
+			fmt.Fprintln(os.Stderr, T("cli.trace.syscall_names", err))
+			return 2
+		}
+	}
+	if options.slow < 0 {
+		fmt.Fprintln(os.Stderr, T("cli.trace.slow_range"))
+		return 2
+	}
+	if options.errorsAll, options.errnos, err = parseSyscallErrnos(options.errors); err != nil {
+		fmt.Fprintln(os.Stderr, T("cli.trace.syscall_errors", err))
+		return 2
+	}
+	switch {
+	case options.raw && options.jsonPath != "":
+		fmt.Fprintln(os.Stderr, T("cli.trace.raw_json_conflict"))
+		return 2
+	case options.raw && options.groupBy != "":
+		fmt.Fprintln(os.Stderr, T("cli.trace.group_by_raw_conflict"))
+		return 2
+	case options.raw && !options.eventsEnabled():
+		fmt.Fprintln(os.Stderr, T("cli.trace.syscall_raw_events"))
+		return 2
+	}
 	if err := syscallTracePrerequisites(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 3
@@ -165,12 +252,31 @@ func runTraceSyscall(args []string) int {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	collection, err := collectSyscallStats(options, ctx.Done())
+	// event는 도착하는 대로 쓴다. --json은 요약만 쓰므로 event 수만 센다.
+	var onEvent func(syscallEvent) error
+	encoder := json.NewEncoder(os.Stdout)
+	switch {
+	case options.raw:
+		onEvent = func(event syscallEvent) error { return encoder.Encode(event) }
+	case options.jsonPath == "" && options.eventsEnabled():
+		onEvent = func(event syscallEvent) error {
+			_, err := fmt.Fprintln(os.Stdout, event.line())
+			return err
+		}
+	}
+	collection, err := collectSyscallStats(options, ctx.Done(), onEvent)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, T("cli.trace.syscall_failed", err))
 		return 1
 	}
 	report := syscallReportFor(collection, options.groupBy)
+	if options.slow > 0 {
+		slow := float64(options.slow) / float64(time.Millisecond)
+		report.Summary.SlowMS = &slow
+	}
+	if options.errorsAll || len(options.errnos) > 0 {
+		report.Summary.ErrorFilter = strings.TrimSpace(options.errors)
+	}
 	// 두 알림은 stderr로 가므로 --json -의 stdout을 바꾸지 않는다. JSON만 받는 사용자도 빠진 호출을 알아야 한다.
 	notices := func() {
 		if full := report.Summary.StatsFull + report.Summary.StartsFull; full > 0 {
@@ -180,6 +286,16 @@ func runTraceSyscall(args []string) int {
 			fmt.Fprintln(os.Stderr, T("cli.trace.syscall_self_included"))
 		}
 	}
+	if options.raw {
+		notices()
+		summary := report.Summary
+		summary.Event = "syscall_summary"
+		if err := encoder.Encode(summary); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		return 0
+	}
 	if options.jsonPath != "" {
 		notices()
 		if err := writeJSONOutput(options.jsonPath, report); err != nil {
@@ -187,6 +303,9 @@ func runTraceSyscall(args []string) int {
 			return 2
 		}
 		return 0
+	}
+	if report.Summary.Events > 0 {
+		fmt.Fprintln(os.Stdout)
 	}
 	report.print(os.Stdout)
 	notices()
@@ -438,6 +557,9 @@ func (report syscallReport) print(out io.Writer) {
 		unmatched = strconv.FormatUint(*summary.Unmatched, 10)
 	}
 	fmt.Fprintf(out, "\nin_flight %d  unmatched %s  map_full %d  stats %d/%d\n", summary.InFlight, unmatched, summary.StatsFull+summary.StartsFull+summary.ErrnosFull, summary.StatsEntries, summary.StatsLimit)
+	if summary.SlowMS != nil || summary.ErrorFilter != "" {
+		fmt.Fprintf(out, "events %d  sampled_out %d  ring_lost %d\n", summary.Events, summary.SampledOut, summary.RingLost)
+	}
 }
 
 func (row syscallReportRow) cells(groupBy string) []string {

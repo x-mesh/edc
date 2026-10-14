@@ -256,6 +256,8 @@ command:
       reason: "trace drop: 이 이유만, 쉼표로 구분"
       device: "trace io: block device major:minor"
       signal: "trace exec: 기록할 신호. 이름 목록, all, none"
+      syscall: "trace syscall: 이 system call만, 쉼표로 구분"
+      errors: "trace syscall: 실패한 호출 출력. all이나 errno 이름"
     notes:
       - "terminal에서는 기본으로 전체 화면 trace를 엽니다."
       - "/를 누르면 process, destination, event, source를 필터할 수 있습니다."

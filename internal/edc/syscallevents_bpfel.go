@@ -20,7 +20,7 @@ type syscallEventsSyscallComm struct {
 
 type syscallEventsSyscallCounters struct {
 	_      structs.HostLayout
-	Values [4]uint64
+	Values [5]uint64
 }
 
 type syscallEventsSyscallErrnoKey struct {
@@ -28,6 +28,20 @@ type syscallEventsSyscallErrnoKey struct {
 	Owner syscallEventsSyscallKey
 	Err   uint32
 	Pad   uint32
+}
+
+type syscallEventsSyscallEvent struct {
+	_           structs.HostLayout
+	TimestampNs uint64
+	LatencyNs   uint64
+	Ret         int64
+	Tgid        uint32
+	Tid         uint32
+	Nr          uint32
+	PathState   uint8
+	Pad         [3]uint8
+	Comm        [16]int8
+	Path        [256]int8
 }
 
 type syscallEventsSyscallInFlight struct {
@@ -44,6 +58,14 @@ type syscallEventsSyscallKey struct {
 	Comm     [16]int8
 	Nr       uint32
 	Pad      uint32
+}
+
+type syscallEventsSyscallRule struct {
+	_        structs.HostLayout
+	Allowed  uint8
+	PathArg  uint8
+	PathGone uint8
+	Pad      uint8
 }
 
 type syscallEventsSyscallStart struct {
@@ -63,6 +85,13 @@ type syscallEventsSyscallStats struct {
 	Hist   [24]uint64
 }
 
+type syscallEventsSyscallWindow struct {
+	_          structs.HostLayout
+	StartNs    uint64
+	Sent       uint64
+	Suppressed uint64
+}
+
 // Names of all BPF objects in the ELF.
 //
 // Used for safe lookups in a Collection or CollectionSpec.
@@ -72,6 +101,10 @@ const (
 	syscallEventsMapAllowedPids           = "allowed_pids"
 	syscallEventsMapCounters              = "counters"
 	syscallEventsMapErrnos                = "errnos"
+	syscallEventsMapEventErrnos           = "event_errnos"
+	syscallEventsMapEventWindows          = "event_windows"
+	syscallEventsMapEvents                = "events"
+	syscallEventsMapRules                 = "rules"
 	syscallEventsMapStarts                = "starts"
 	syscallEventsMapStats                 = "stats"
 	syscallEventsProgSyscallEnter         = "syscall_enter"
@@ -79,19 +112,26 @@ const (
 	syscallEventsProgSyscallIterInFlight  = "syscall_iter_in_flight"
 	syscallEventsVarCompatExitGroupNr     = "compat_exit_group_nr"
 	syscallEventsVarCompatExitNr          = "compat_exit_nr"
+	syscallEventsVarEventErrors           = "event_errors"
+	syscallEventsVarEventLimit            = "event_limit"
 	syscallEventsVarExitGroupNr           = "exit_group_nr"
 	syscallEventsVarExitNr                = "exit_nr"
 	syscallEventsVarFilterCgroup          = "filter_cgroup"
 	syscallEventsVarFilterProcess         = "filter_process"
+	syscallEventsVarFilterSyscall         = "filter_syscall"
 	syscallEventsVarKeyCgroup             = "key_cgroup"
 	syscallEventsVarSelfTgid              = "self_tgid"
+	syscallEventsVarSlowNs                = "slow_ns"
 	syscallEventsVarUnusedSyscallComm     = "unused_syscall_comm"
 	syscallEventsVarUnusedSyscallCounters = "unused_syscall_counters"
 	syscallEventsVarUnusedSyscallErrnoKey = "unused_syscall_errno_key"
+	syscallEventsVarUnusedSyscallEvent    = "unused_syscall_event"
 	syscallEventsVarUnusedSyscallInFlight = "unused_syscall_in_flight"
 	syscallEventsVarUnusedSyscallKey      = "unused_syscall_key"
+	syscallEventsVarUnusedSyscallRule     = "unused_syscall_rule"
 	syscallEventsVarUnusedSyscallStart    = "unused_syscall_start"
 	syscallEventsVarUnusedSyscallStats    = "unused_syscall_stats"
+	syscallEventsVarUnusedSyscallWindow   = "unused_syscall_window"
 )
 
 // loadSyscallEvents returns the embedded CollectionSpec for syscallEvents.
@@ -150,6 +190,10 @@ type syscallEventsMapSpecs struct {
 	AllowedPids    *ebpf.MapSpec `ebpf:"allowed_pids"`
 	Counters       *ebpf.MapSpec `ebpf:"counters"`
 	Errnos         *ebpf.MapSpec `ebpf:"errnos"`
+	EventErrnos    *ebpf.MapSpec `ebpf:"event_errnos"`
+	EventWindows   *ebpf.MapSpec `ebpf:"event_windows"`
+	Events         *ebpf.MapSpec `ebpf:"events"`
+	Rules          *ebpf.MapSpec `ebpf:"rules"`
 	Starts         *ebpf.MapSpec `ebpf:"starts"`
 	Stats          *ebpf.MapSpec `ebpf:"stats"`
 }
@@ -160,19 +204,26 @@ type syscallEventsMapSpecs struct {
 type syscallEventsVariableSpecs struct {
 	CompatExitGroupNr     *ebpf.VariableSpec `ebpf:"compat_exit_group_nr"`
 	CompatExitNr          *ebpf.VariableSpec `ebpf:"compat_exit_nr"`
+	EventErrors           *ebpf.VariableSpec `ebpf:"event_errors"`
+	EventLimit            *ebpf.VariableSpec `ebpf:"event_limit"`
 	ExitGroupNr           *ebpf.VariableSpec `ebpf:"exit_group_nr"`
 	ExitNr                *ebpf.VariableSpec `ebpf:"exit_nr"`
 	FilterCgroup          *ebpf.VariableSpec `ebpf:"filter_cgroup"`
 	FilterProcess         *ebpf.VariableSpec `ebpf:"filter_process"`
+	FilterSyscall         *ebpf.VariableSpec `ebpf:"filter_syscall"`
 	KeyCgroup             *ebpf.VariableSpec `ebpf:"key_cgroup"`
 	SelfTgid              *ebpf.VariableSpec `ebpf:"self_tgid"`
+	SlowNs                *ebpf.VariableSpec `ebpf:"slow_ns"`
 	UnusedSyscallComm     *ebpf.VariableSpec `ebpf:"unused_syscall_comm"`
 	UnusedSyscallCounters *ebpf.VariableSpec `ebpf:"unused_syscall_counters"`
 	UnusedSyscallErrnoKey *ebpf.VariableSpec `ebpf:"unused_syscall_errno_key"`
+	UnusedSyscallEvent    *ebpf.VariableSpec `ebpf:"unused_syscall_event"`
 	UnusedSyscallInFlight *ebpf.VariableSpec `ebpf:"unused_syscall_in_flight"`
 	UnusedSyscallKey      *ebpf.VariableSpec `ebpf:"unused_syscall_key"`
+	UnusedSyscallRule     *ebpf.VariableSpec `ebpf:"unused_syscall_rule"`
 	UnusedSyscallStart    *ebpf.VariableSpec `ebpf:"unused_syscall_start"`
 	UnusedSyscallStats    *ebpf.VariableSpec `ebpf:"unused_syscall_stats"`
+	UnusedSyscallWindow   *ebpf.VariableSpec `ebpf:"unused_syscall_window"`
 }
 
 // syscallEventsObjects contains all objects after they have been loaded into the kernel.
@@ -200,6 +251,10 @@ type syscallEventsMaps struct {
 	AllowedPids    *ebpf.Map `ebpf:"allowed_pids"`
 	Counters       *ebpf.Map `ebpf:"counters"`
 	Errnos         *ebpf.Map `ebpf:"errnos"`
+	EventErrnos    *ebpf.Map `ebpf:"event_errnos"`
+	EventWindows   *ebpf.Map `ebpf:"event_windows"`
+	Events         *ebpf.Map `ebpf:"events"`
+	Rules          *ebpf.Map `ebpf:"rules"`
 	Starts         *ebpf.Map `ebpf:"starts"`
 	Stats          *ebpf.Map `ebpf:"stats"`
 }
@@ -211,6 +266,10 @@ func (m *syscallEventsMaps) Close() error {
 		m.AllowedPids,
 		m.Counters,
 		m.Errnos,
+		m.EventErrnos,
+		m.EventWindows,
+		m.Events,
+		m.Rules,
 		m.Starts,
 		m.Stats,
 	)
@@ -222,19 +281,26 @@ func (m *syscallEventsMaps) Close() error {
 type syscallEventsVariables struct {
 	CompatExitGroupNr     *ebpf.Variable `ebpf:"compat_exit_group_nr"`
 	CompatExitNr          *ebpf.Variable `ebpf:"compat_exit_nr"`
+	EventErrors           *ebpf.Variable `ebpf:"event_errors"`
+	EventLimit            *ebpf.Variable `ebpf:"event_limit"`
 	ExitGroupNr           *ebpf.Variable `ebpf:"exit_group_nr"`
 	ExitNr                *ebpf.Variable `ebpf:"exit_nr"`
 	FilterCgroup          *ebpf.Variable `ebpf:"filter_cgroup"`
 	FilterProcess         *ebpf.Variable `ebpf:"filter_process"`
+	FilterSyscall         *ebpf.Variable `ebpf:"filter_syscall"`
 	KeyCgroup             *ebpf.Variable `ebpf:"key_cgroup"`
 	SelfTgid              *ebpf.Variable `ebpf:"self_tgid"`
+	SlowNs                *ebpf.Variable `ebpf:"slow_ns"`
 	UnusedSyscallComm     *ebpf.Variable `ebpf:"unused_syscall_comm"`
 	UnusedSyscallCounters *ebpf.Variable `ebpf:"unused_syscall_counters"`
 	UnusedSyscallErrnoKey *ebpf.Variable `ebpf:"unused_syscall_errno_key"`
+	UnusedSyscallEvent    *ebpf.Variable `ebpf:"unused_syscall_event"`
 	UnusedSyscallInFlight *ebpf.Variable `ebpf:"unused_syscall_in_flight"`
 	UnusedSyscallKey      *ebpf.Variable `ebpf:"unused_syscall_key"`
+	UnusedSyscallRule     *ebpf.Variable `ebpf:"unused_syscall_rule"`
 	UnusedSyscallStart    *ebpf.Variable `ebpf:"unused_syscall_start"`
 	UnusedSyscallStats    *ebpf.Variable `ebpf:"unused_syscall_stats"`
+	UnusedSyscallWindow   *ebpf.Variable `ebpf:"unused_syscall_window"`
 }
 
 // syscallEventsPrograms contains all programs after they have been loaded into the kernel.

@@ -2,7 +2,7 @@
 
 package edc
 
-//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -go-package edc -type syscall_key -type syscall_stats -type syscall_start -type syscall_in_flight -type syscall_errno_key -type syscall_comm -type syscall_counters syscallEvents trace_syscall_bpf.c -- -I./bpf
+//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -go-package edc -type syscall_key -type syscall_stats -type syscall_start -type syscall_in_flight -type syscall_errno_key -type syscall_comm -type syscall_counters -type syscall_rule -type syscall_window -type syscall_event syscallEvents trace_syscall_bpf.c -- -I./bpf
 
 import (
 	"encoding/binary"
@@ -12,12 +12,14 @@ import (
 	"os"
 	"runtime"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/btf"
 	"github.com/cilium/ebpf/link"
+	"github.com/cilium/ebpf/ringbuf"
 	"github.com/cilium/ebpf/rlimit"
 	"golang.org/x/sys/unix"
 )
@@ -30,6 +32,20 @@ const (
 	syscallStatsMaxEntries = 16384
 	syscallCompatBit       = 0x80000000
 	syscallNoNumber        = 0xFFFFFFFF
+	// syscallNrMax는 BPF rules에서 64비트 번호가 차지하는 칸 수다. 32비트 호환 번호는 그 뒤에 온다.
+	syscallNrMax    = 1024
+	syscallMaxErrno = 4095
+	// syscallEventSize는 BPF의 struct syscall_event 크기다.
+	syscallEventSize = 312
+	// syscallEventPoll은 event를 기다리는 한 번의 시간이다. Ctrl-C는 이 시간 안에 멈춘다.
+	syscallEventPoll = 200 * time.Millisecond
+)
+
+// BPF의 enum syscall_events다.
+const (
+	syscallEventsOff uint8 = iota
+	syscallEventsAllErrors
+	syscallEventsListedErrors
 )
 
 var syscallTracepoints = []string{"sys_enter", "sys_exit"}
@@ -74,7 +90,9 @@ func syscallExitNumbers(arch string) (exit, exitGroup, compatExit, compatExitGro
 	return exit, exitGroup, compatExit, compatExitGroup
 }
 
-func collectSyscallStats(options syscallTraceOptions, stop <-chan struct{}) (syscallCollection, error) {
+// collectSyscallStats는 stop이 닫히거나 options.duration이 지날 때까지 센다. onEvent는 event가 도착할 때마다 불리고,
+// nil이면 event 수만 센다.
+func collectSyscallStats(options syscallTraceOptions, stop <-chan struct{}, onEvent func(syscallEvent) error) (syscallCollection, error) {
 	if err := rlimit.RemoveMemlock(); err != nil {
 		return syscallCollection{}, fmt.Errorf("remove memlock limit: %w", err)
 	}
@@ -104,6 +122,9 @@ func collectSyscallStats(options syscallTraceOptions, stop <-chan struct{}) (sys
 		variables.ExitGroupNr.Set(exitGroup),
 		variables.CompatExitNr.Set(compatExit),
 		variables.CompatExitGroupNr.Set(compatExitGroup),
+		variables.FilterSyscall.Set(boolByte(len(options.syscalls)+len(options.compatSyscalls) > 0)),
+		variables.SlowNs.Set(uint64(options.slow)),
+		variables.EventErrors.Set(syscallEventErrors(options)),
 	); err != nil {
 		return syscallCollection{}, fmt.Errorf("set eBPF variable: %w", err)
 	}
@@ -114,6 +135,20 @@ func collectSyscallStats(options syscallTraceOptions, stop <-chan struct{}) (sys
 	defer objects.Close()
 	if err := fillSyscallFilters(objects, options); err != nil {
 		return syscallCollection{}, err
+	}
+	if err := fillSyscallRules(objects, options); err != nil {
+		return syscallCollection{}, err
+	}
+	var reader *ringbuf.Reader
+	var clockOffset int64
+	if options.eventsEnabled() {
+		if clockOffset, err = captureClockOffset(); err != nil {
+			return syscallCollection{}, fmt.Errorf("read monotonic clock: %w", err)
+		}
+		if reader, err = ringbuf.NewReader(objects.Events); err != nil {
+			return syscallCollection{}, fmt.Errorf("open event ring: %w", err)
+		}
+		defer reader.Close()
 	}
 	// sys_exit를 sys_enter보다 먼저 붙인다. 반대 순서면 그 사이에 돌아온 호출의 시작 시각이 남아 진행 중으로 보인다.
 	links := make([]link.Link, 0, 2)
@@ -131,15 +166,30 @@ func collectSyscallStats(options syscallTraceOptions, stop <-chan struct{}) (sys
 		links = append(links, attached)
 	}
 	started := time.Now()
-	var deadline <-chan time.Time
-	if options.duration > 0 {
-		timer := time.NewTimer(options.duration)
-		defer timer.Stop()
-		deadline = timer.C
-	}
-	select {
-	case <-stop:
-	case <-deadline:
+	var events uint64
+	if reader == nil {
+		var deadline <-chan time.Time
+		if options.duration > 0 {
+			timer := time.NewTimer(options.duration)
+			defer timer.Stop()
+			deadline = timer.C
+		}
+		select {
+		case <-stop:
+		case <-deadline:
+		}
+	} else {
+		end := started.Add(options.duration)
+		for !traceStopRequested(stop) && (options.duration == 0 || time.Now().Before(end)) {
+			wake := time.Now().Add(syscallEventPoll)
+			if options.duration > 0 && end.Before(wake) {
+				wake = end
+			}
+			reader.SetDeadline(wake)
+			if err := readSyscallEvents(reader, clockOffset, onEvent, &events); err != nil {
+				return syscallCollection{}, err
+			}
+		}
 	}
 	// sys_enter를 먼저 떼고 sys_exit를 뗀다. 그 사이에 돌아온 호출은 세고, 그래도 남은 시작 시각만 진행 중이다.
 	for index := len(links) - 1; index >= 0; index-- {
@@ -147,6 +197,13 @@ func collectSyscallStats(options syscallTraceOptions, stop <-chan struct{}) (sys
 	}
 	links = nil
 	elapsed := time.Since(started)
+	if reader != nil {
+		// 떼기 전에 ring에 들어온 event를 마저 읽는다. 마감이 지나도 Read는 남은 기록을 먼저 돌려준다.
+		reader.SetDeadline(time.Now())
+		if err := readSyscallEvents(reader, clockOffset, onEvent, &events); err != nil {
+			return syscallCollection{}, err
+		}
+	}
 	var now unix.Timespec
 	if err := unix.ClockGettime(unix.CLOCK_MONOTONIC, &now); err != nil {
 		return syscallCollection{}, fmt.Errorf("read monotonic clock: %w", err)
@@ -188,7 +245,15 @@ func collectSyscallStats(options syscallTraceOptions, stop <-chan struct{}) (sys
 		return syscallCollection{}, fmt.Errorf("read syscall counters: %w", err)
 	}
 	summary := &collection.summary
-	summary.StartsFull, summary.StatsFull, summary.ErrnosFull = counters.Values[0], counters.Values[1], counters.Values[2]
+	summary.StartsFull, summary.StatsFull, summary.ErrnosFull, summary.RingLost = counters.Values[0], counters.Values[1], counters.Values[2], counters.Values[4]
+	summary.Events = events
+	var windows []syscallEventsSyscallWindow
+	if err := objects.EventWindows.Lookup(uint32(0), &windows); err != nil {
+		return syscallCollection{}, fmt.Errorf("read event windows: %w", err)
+	}
+	for _, window := range windows {
+		summary.SampledOut += window.Suppressed
+	}
 	if len(options.pids)+len(options.comms) == 0 && options.container == nil {
 		unmatched := counters.Values[3]
 		summary.Unmatched = &unmatched
@@ -220,6 +285,137 @@ func fillSyscallFilters(objects syscallEventsObjects, options syscallTraceOption
 		}
 	}
 	return nil
+}
+
+func syscallEventErrors(options syscallTraceOptions) uint8 {
+	switch {
+	case options.errorsAll:
+		return syscallEventsAllErrors
+	case len(options.errnos) > 0:
+		return syscallEventsListedErrors
+	}
+	return syscallEventsOff
+}
+
+// fillSyscallRules는 syscall마다 --syscall에 든 것인지와 경로 인자의 위치를 채운다. 경로는 지금 아키텍처의
+// 64비트 호출만 읽는다.
+func fillSyscallRules(objects syscallEventsObjects, options syscallTraceOptions) error {
+	rules := map[uint32]syscallEventsSyscallRule{}
+	for name, arg := range syscallPathArgs {
+		if nr, ok := syscallNumber(runtime.GOARCH, name); ok && nr < syscallNrMax {
+			rule := rules[nr]
+			rule.PathArg = arg + 1
+			rule.PathGone = boolByte(syscallPathGone[name])
+			rules[nr] = rule
+		}
+	}
+	allow := func(index uint32) {
+		rule := rules[index]
+		rule.Allowed = 1
+		rules[index] = rule
+	}
+	for _, nr := range options.syscalls {
+		if nr < syscallNrMax {
+			allow(nr)
+		}
+	}
+	for _, nr := range options.compatSyscalls {
+		if nr < syscallNrMax {
+			allow(nr + syscallNrMax)
+		}
+	}
+	for index, rule := range rules {
+		if err := objects.Rules.Put(index, rule); err != nil {
+			return fmt.Errorf("set syscall rule %d: %w", index, err)
+		}
+	}
+	for _, errno := range options.errnos {
+		if err := objects.EventErrnos.Put(errno, uint8(1)); err != nil {
+			return fmt.Errorf("set --errors %d: %w", errno, err)
+		}
+	}
+	return nil
+}
+
+// parseSyscallErrnos는 --errors 값이다. all이면 모든 오류이고, 그 밖에는 쉼표로 나눈 Linux errno 이름이다.
+func parseSyscallErrnos(value string) (bool, []uint32, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return false, nil, nil
+	}
+	if strings.EqualFold(value, "all") {
+		return true, nil, nil
+	}
+	numbers := map[string]uint32{}
+	for number := uint32(1); number <= syscallMaxErrno; number++ {
+		if name := syscallErrnoName(number); !strings.HasPrefix(name, "errno ") {
+			numbers[name] = number
+		}
+	}
+	var errnos []uint32
+	for _, name := range strings.Split(value, ",") {
+		name = strings.ToUpper(strings.TrimSpace(name))
+		number, ok := numbers[name]
+		if !ok {
+			return false, nil, fmt.Errorf("unknown errno %q", name)
+		}
+		errnos = append(errnos, number)
+	}
+	return false, errnos, nil
+}
+
+// readSyscallEvents는 reader의 마감까지 event를 읽는다.
+func readSyscallEvents(reader *ringbuf.Reader, clockOffset int64, onEvent func(syscallEvent) error, count *uint64) error {
+	for {
+		record, err := reader.Read()
+		if errors.Is(err, os.ErrDeadlineExceeded) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("read syscall events: %w", err)
+		}
+		event, ok := parseSyscallEvent(record.RawSample, clockOffset)
+		if !ok {
+			continue
+		}
+		*count++
+		if onEvent != nil {
+			if err := onEvent(event); err != nil {
+				return err
+			}
+		}
+	}
+}
+
+func parseSyscallEvent(sample []byte, clockOffset int64) (syscallEvent, bool) {
+	if len(sample) < syscallEventSize {
+		return syscallEvent{}, false
+	}
+	boot := binary.NativeEndian.Uint64(sample[0:8])
+	ret := int64(binary.NativeEndian.Uint64(sample[16:24]))
+	nr := binary.NativeEndian.Uint32(sample[32:36])
+	event := syscallEvent{
+		TimestampNS: uint64(int64(boot) + clockOffset),
+		Event:       "syscall",
+		PID:         binary.NativeEndian.Uint32(sample[24:28]),
+		TID:         binary.NativeEndian.Uint32(sample[28:32]),
+		Process:     string(bytesTrimNUL(sample[40:56])),
+		Syscall:     syscallName(runtime.GOARCH, nr&^syscallCompatBit, nr&syscallCompatBit != 0),
+		Return:      ret,
+		LatencyMS:   float64(binary.NativeEndian.Uint64(sample[8:16])) / float64(time.Millisecond),
+	}
+	if ret < 0 && ret >= -syscallMaxErrno {
+		event.Errno = syscallErrnoName(uint32(-ret))
+	}
+	switch sample[36] {
+	case 1:
+		event.Path = string(bytesTrimNUL(sample[56:syscallEventSize]))
+	case 2:
+		event.PathUnreadable = true
+	case 3:
+		event.Path, event.PathTruncated = string(bytesTrimNUL(sample[56:syscallEventSize])), true
+	}
+	return event, true
 }
 
 // syscallInFlightSize는 BPF의 struct syscall_in_flight 크기다. iterator는 이 크기의 기록을 이어서 쓴다.

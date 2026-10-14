@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 	"unsafe"
@@ -30,7 +31,11 @@ func TestExecRecordOffsetsMatchTheBPFStruct(t *testing.T) {
 		"flags":        {unsafe.Offsetof(record.Flags), 81},
 		"args_len":     {unsafe.Offsetof(record.ArgsLen), 82},
 		"args":         {unsafe.Offsetof(record.Args), 84},
-		"args_end":     {unsafe.Offsetof(record.Args) + unsafe.Sizeof(record.Args), execRecordSize},
+		"total_vm_kb":  {unsafe.Offsetof(record.TotalVmKb), 344},
+		"anon_rss_kb":  {unsafe.Offsetof(record.AnonRssKb), 352},
+		"file_rss_kb":  {unsafe.Offsetof(record.FileRssKb), 360},
+		"shmem_rss_kb": {unsafe.Offsetof(record.ShmemRssKb), 368},
+		"record_end":   {unsafe.Sizeof(record), execRecordSize},
 	} {
 		if offsets[0] != offsets[1] {
 			t.Fatalf("%s is at %d in the BPF struct, parseExecRecord reads %d", name, offsets[0], offsets[1])
@@ -129,4 +134,150 @@ func TestTraceExecCapturesExecSignalAndExit(t *testing.T) {
 	if done.summary.EventCount == 0 {
 		t.Errorf("summary = %+v", done.summary)
 	}
+}
+
+// TestTraceExecOOMHelper는 아래 시험이 cgroup 안에서 띄우는 process다. memory.max를 넘을 때까지 page를 채운다.
+func TestTraceExecOOMHelper(t *testing.T) {
+	if os.Getenv("EDC_TRACE_OOM_HELPER") != "1" {
+		t.Skip("helper process for TestTraceExecReportsAnOOMKill")
+	}
+	var held [][]byte
+	for range 512 {
+		chunk := make([]byte, 1<<20)
+		for index := 0; index < len(chunk); index += 4096 {
+			chunk[index] = 1
+		}
+		held = append(held, chunk)
+	}
+	t.Fatalf("allocated %d MiB without an OOM kill", len(held))
+}
+
+// 시험용 cgroup의 memory.max를 32MiB로 두고 그 안에서 page를 채우게 해 memcg OOM을 일으킨다. OOM killer는 그 cgroup 안에서만
+// victim을 고르므로 다른 process는 영향을 받지 않는다. oom event와, 같은 PID의 exit에 붙는 oom_killed를 함께 본다.
+func TestTraceExecReportsAnOOMKill(t *testing.T) {
+	capabilities, err := effectiveCapabilities()
+	if err != nil || missingCapabilities(bpfTraceCapabilities, capabilities) != "" {
+		t.Skip("trace exec needs BPF and perf capabilities")
+	}
+	if err := execTracePrerequisites(); err != nil {
+		t.Skip(err)
+	}
+	controllers, err := os.ReadFile("/sys/fs/cgroup/cgroup.subtree_control")
+	if err != nil || !strings.Contains(string(controllers), "memory") {
+		t.Skip("needs cgroup v2 with the memory controller")
+	}
+	dir := fmt.Sprintf("/sys/fs/cgroup/edc-trace-oom-%d", os.Getpid())
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Skip(err)
+	}
+	defer func() {
+		// 마지막 victim이 사라진 뒤에야 rmdir이 된다.
+		for range 50 {
+			if os.Remove(dir) == nil {
+				return
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+		t.Errorf("remove %s", dir)
+	}()
+	if err := os.WriteFile(dir+"/memory.max", []byte("32M"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// swap이 있으면 page가 swap으로 빠져 OOM까지 오래 걸린다.
+	_ = os.WriteFile(dir+"/memory.swap.max", []byte("0"), 0o644)
+	cgroup, err := os.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cgroup.Close()
+
+	stop := make(chan struct{})
+	observed := make(chan execEvent, 256)
+	type result struct {
+		summary execSummary
+		err     error
+	}
+	finished := make(chan result, 1)
+	pids := make(chan uint32, 64)
+	go func() {
+		watched := map[uint32]bool{}
+		summary, err := collectExecEvents(30*time.Second, 0, func(event execEvent) error {
+			for drained := false; !drained; {
+				select {
+				case pid := <-pids:
+					watched[pid] = true
+				default:
+					drained = true
+				}
+			}
+			if event.Event == execEventOOM || watched[event.PID] {
+				select {
+				case observed <- event:
+				default:
+				}
+			}
+			return nil
+		}, stop)
+		finished <- result{summary, err}
+	}()
+
+	var oom, exit *execEvent
+	var child uint32
+	deadline := time.Now().Add(20 * time.Second)
+	for (oom == nil || exit == nil) && time.Now().Before(deadline) {
+		command := exec.Command(os.Args[0], "-test.run=^TestTraceExecOOMHelper$", "-test.count=1")
+		command.Env = append(os.Environ(), "EDC_TRACE_OOM_HELPER=1")
+		command.SysProcAttr = &syscall.SysProcAttr{UseCgroupFD: true, CgroupFD: int(cgroup.Fd())}
+		if err := command.Start(); err != nil {
+			t.Fatal(err)
+		}
+		child = uint32(command.Process.Pid)
+		pids <- child
+		_ = command.Wait()
+		if status, ok := command.ProcessState.Sys().(syscall.WaitStatus); !ok || status.Signal() != syscall.SIGKILL {
+			t.Fatalf("helper ended with %v, want SIGKILL from the OOM killer", command.ProcessState)
+		}
+		oom, exit = nil, nil
+		wait := time.After(500 * time.Millisecond)
+	drain:
+		for {
+			select {
+			case event := <-observed:
+				if event.PID != child {
+					continue
+				}
+				copied := event
+				switch event.Event {
+				case execEventOOM:
+					oom = &copied
+				case execEventExit:
+					exit = &copied
+				}
+				if oom != nil && exit != nil {
+					break drain
+				}
+			case <-wait:
+				break drain
+			}
+		}
+	}
+	close(stop)
+	done := <-finished
+	if done.err != nil {
+		t.Fatal(done.err)
+	}
+	if oom == nil || exit == nil {
+		t.Fatalf("pid %d: oom %+v exit %+v, summary %+v", child, oom, exit, done.summary)
+	}
+	// memcg OOM은 메모리를 할당하던 victim 자신이 일으킨다.
+	if oom.SenderPID == nil || *oom.SenderPID != child || !oom.FromKernel {
+		t.Errorf("oom trigger = %+v", oom)
+	}
+	if oom.AnonRSSKB != nil && (*oom.AnonRSSKB < 8*1024 || *oom.AnonRSSKB > 64*1024 || oom.Process == "") {
+		t.Errorf("oom detail = %+v anon %d kB", oom, *oom.AnonRSSKB)
+	}
+	if !exit.OOMKilled || exit.Signal != "SIGKILL" {
+		t.Errorf("exit = %+v", exit)
+	}
+	t.Logf("oom %s · exit %s", execEventDetail(*oom), execEventDetail(*exit))
 }

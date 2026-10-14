@@ -309,7 +309,7 @@ func collectCPUStacks(options cpuTraceOptions, stop <-chan struct{}) ([]cpuStack
 	summary.FreshLost = totals[cpuCounterFreshLost]
 	summary.OffCPUStartsFull = totals[cpuCounterOffCPUStartsFull]
 	summary.OffCPU = options.offCPU
-	summary.BusyPercent = cpuPercent(summary.Samples-summary.Idle, summary.Samples)
+	summary.BusyPercent = cpuBusyPercent(summary.Samples-summary.Idle, options.frequency, elapsed, len(cpus))
 	stacks, err := readCPUStacks(objects, symbolizer)
 	if err != nil {
 		return nil, cpuSummary{}, err

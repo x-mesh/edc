@@ -233,3 +233,16 @@ func TestCPUOffCPUReportWeighsBySleepTime(t *testing.T) {
 		t.Fatalf("folded = %v", lines)
 	}
 }
+
+func TestCPUBusyPercentUsesTheExpectedSamples(t *testing.T) {
+	// 4 CPU, 99Hz, 2초면 792건을 받아야 한다. 쉬는 CPU의 샘플이 빠져도 바쁜 샘플 198건은 CPU 하나, 25%다.
+	if got := cpuBusyPercent(198, 99, 2*time.Second, 4); got != 25 {
+		t.Errorf("busy = %v", got)
+	}
+	if got := cpuBusyPercent(900, 99, 2*time.Second, 4); got != 100 {
+		t.Errorf("busy over the expected samples = %v", got)
+	}
+	if got := cpuBusyPercent(10, 99, 0, 4); got != 0 {
+		t.Errorf("busy without time = %v", got)
+	}
+}

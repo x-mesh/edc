@@ -249,6 +249,17 @@ func cpuPercent(part, whole uint64) float64 {
 
 func cpuKernelName(name string) string { return name + cpuKernelSuffix }
 
+// cpuBusyPercent는 idle이 아닌 샘플을 그 시간에 받았어야 할 샘플 수와 견준다. 전체 샘플을 분모로 쓰지 않는 것은 쉬는 CPU의
+// 샘플이 빠지는 VM이 있기 때문이다. GitHub runner에서는 쉬는 CPU가 받아야 할 샘플의 약 57%만 받았고, 바쁜 CPU는 모두
+// 받았다. 전체 샘플을 분모로 쓰면 그만큼 바쁜 비율이 커진다.
+func cpuBusyPercent(busy uint64, frequency int, elapsed time.Duration, cpus int) float64 {
+	expected := float64(frequency) * elapsed.Seconds() * float64(cpus)
+	if expected <= 0 {
+		return 0
+	}
+	return min(float64(busy)*100/expected, 100)
+}
+
 func cpuReportFor(stacks []cpuStack, summary cpuSummary) cpuReport {
 	report := cpuReport{Summary: summary, Processes: []cpuProcessRow{}, Functions: []cpuFunctionRow{}}
 	report.Summary.Stacks = len(stacks)

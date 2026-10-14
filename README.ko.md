@@ -2340,7 +2340,7 @@ kernel은 정상 동작 중에도 패킷을 해제합니다. 예를 들어 progr
 
 요약의 이유별 합계는 정확합니다. 한 CPU에서 1초에 1,000건이 넘게 버려지면 그 1초 동안은 event를 1,000건만 보내고 나머지는 세기만 합니다. 이 수는 요약에 `Sampled out`으로 나옵니다. process는 socket이 있는 패킷에만 붙습니다. 닫힌 port로 온 패킷에는 socket이 없습니다.
 
-Linux에서 `trace exec`를 사용하면 process가 뜨고 끝나는 것, 그리고 누가 신호를 보냈는지 볼 수 있습니다. `exec` event는 PID, 부모, 사용자, 명령줄의 처음 256 byte를 보여 줍니다. `exit` event는 종료 코드, process를 끝낸 신호, core dump 여부, 산 시간을 보여 줍니다. 산 시간은 task의 시작 시각에서 재므로 trace 전에 뜬 process에도 나옵니다. `signal` event는 신호, 보낸 쪽, 받는 쪽, kernel이 전달했는지 무시했는지를 보여 줍니다.
+Linux에서 `trace exec`를 사용하면 process가 뜨고 끝나는 것, 누가 신호를 보냈는지, OOM killer가 어느 process를 끝냈는지 볼 수 있습니다. `exec` event는 PID, 부모, 사용자, 명령줄의 처음 256 byte를 보여 줍니다. `exit` event는 종료 코드, process를 끝낸 신호, core dump 여부, 산 시간을 보여 줍니다. 산 시간은 task의 시작 시각에서 재므로 trace 전에 뜬 process에도 나옵니다. `signal` event는 신호, 보낸 쪽, 받는 쪽, kernel이 전달했는지 무시했는지를 보여 줍니다.
 
 ```bash
 ./bin/edc trace exec --duration 15s
@@ -2351,9 +2351,11 @@ Linux에서 `trace exec`를 사용하면 process가 뜨고 끝나는 것, 그리
 
 요약은 process 이름으로 행을 묶습니다. exec 수, exit 수, 0이 아닌 코드로 끝난 수, 신호로 끝난 수, 1초를 못 살고 끝난 수를 세고 평균과 가장 긴 수명을 보여 줍니다. `EXEC`와 `SHORT`가 함께 높으면 짧은 process가 쏟아지는 것입니다. 예를 들어 1초마다 shell을 띄우는 health check가 그렇습니다. 누가 띄우는지는 `--group-by parent`로 봅니다. 두 번째 표는 신호를 보낸 쪽과 받는 쪽으로 묶습니다. 결과 뒤의 `(kernel)`은 kernel이 만든 신호라는 뜻입니다. 예를 들어 fault 뒤의 `SIGSEGV`나 OOM killer의 `SIGKILL`이고, 이때 보낸 쪽은 그 순간 실행 중이던 process입니다.
 
+`oom` event는 OOM killer가 고른 process를 보여 줍니다. `TRIGGER` 칸은 메모리가 모자랄 때 메모리를 할당하려던 task입니다. Linux 6.x에서는 victim의 이름, anon·file·shmem RSS, `oom_score_adj`도 보여 줍니다. Linux 5.15의 kernel은 victim의 PID만 줍니다. victim의 `exit` event에는 `oom-killed`가 붙고, 요약의 `OOM` 칸이 이 종료를 셉니다. 이 표시는 process의 kernel 상태에서 읽으므로 Linux 5.15에서도 정확합니다. `oom` event에서 `--container`는 TRIGGER task의 cgroup으로 맞춥니다.
+
 기본으로는 process를 끝내거나 core를 남기는 신호만 기록합니다. `HUP`, `INT`, `QUIT`, `ILL`, `TRAP`, `ABRT`, `BUS`, `FPE`, `KILL`, `USR1`, `SEGV`, `USR2`, `PIPE`, `TERM`, `STKFLT`, `XCPU`, `XFSZ`, `SYS`입니다. `CHLD`나 `ALRM`처럼 늘 오가는 신호는 뺍니다. `--signal`에 쉼표로 나눈 이름이나 번호, `all`, `none`을 줍니다. 필터가 버린 신호 수는 요약의 `filtered_signals`에 나옵니다. `--process`는 이름이나 PID를 받고, 신호는 받는 쪽으로 맞춥니다. `--container`는 container 하나의 event만 남깁니다.
 
-명령줄은 exec 시점에 새 process의 메모리에서 읽으므로 program이 받은 인자이고, 나중에 바뀐 값은 아닙니다. 읽지 못하면 실행 파일 경로를 보여 줍니다. 256 byte보다 긴 줄은 `…`로 끝나고 `args_truncated`에 셉니다. 스레드의 종료는 `exit` event가 아니고, process의 마지막 스레드만 `exit`를 냅니다. kernel thread는 보이지 않습니다. `sched_process_exec`, `sched_process_exit`, `signal_generate` tracepoint와 BTF가 필요합니다.
+명령줄은 exec 시점에 새 process의 메모리에서 읽으므로 program이 받은 인자이고, 나중에 바뀐 값은 아닙니다. 읽지 못하면 실행 파일 경로를 보여 줍니다. 256 byte보다 긴 줄은 `…`로 끝나고 `args_truncated`에 셉니다. 스레드의 종료는 `exit` event가 아니고, process의 마지막 스레드만 `exit`를 냅니다. kernel thread는 보이지 않습니다. `sched_process_exec`, `sched_process_exit`, `signal_generate` tracepoint와 BTF가 필요합니다. `oom` event에는 tracefs의 `oom/mark_victim` tracepoint도 필요합니다. container처럼 tracefs가 없으면 알림을 출력하고 나머지 event를 봅니다.
 
 Linux에서 `trace lock`을 사용하면 thread가 lock을 기다리는 곳을 볼 수 있습니다. edc는 두 가지 기다림을 재고 끝날 때 요약을 한 번 출력합니다.
 
@@ -2453,6 +2455,32 @@ Linux 6.17, CPU 12개 x86_64 host에서 비용을 측정했습니다. CPU를 쓰
 99Hz에서 edc 자신은 샘플링하는 6초 동안 CPU 120ms를 썼습니다. 8초 trace 전체로는 약 1초를 썼고, 대부분은 시작과 끝의 심볼 읽기입니다. 메모리는 최대 131MiB였습니다.
 
 BTF, online CPU마다 여는 `perf_event_open`의 cpu-clock event, perf event용 BPF link가 필요합니다. Linux 5.15에는 셋 다 있습니다.
+
+`trace cpu --off-cpu`를 사용하면 thread가 도는 곳이 아니라 잠드는 곳을 찾을 수 있습니다. edc는 thread가 잠들 때 stack을 기록하고, 그 thread가 다시 돌 때 잠든 시간을 그 stack에 더합니다. scheduler가 선점한 thread는 runnable이므로 세지 않습니다.
+
+```bash
+./bin/edc trace cpu --off-cpu --process api --duration 10s
+./bin/edc trace cpu --off-cpu --container db --folded db-offcpu.folded
+```
+
+`PROCESS` 표는 process별로 잠든 횟수와 시간을 보여 줍니다. `CODE`와 `KERNEL` 표는 그 시간이 어디서 쓰였는지 보여 줍니다. `CODE`는 사용자 stack의 안쪽 두 frame입니다. `KERNEL`은 `futex`나 `epoll_wait`처럼 잠든 system call이거나 `page_fault`입니다. 시간은 모든 thread의 잠든 시간을 더하므로 trace보다 길 수 있습니다. `--folded` 출력의 수는 잠든 시간의 마이크로초입니다. `--off-cpu`와 `--frequency`를 함께 주면 오류로 끝납니다.
+
+trace 중에 시작하고 끝난 잠만 셉니다. trace 전에 시작했거나 끝날 때까지 깨지 않은 잠은 결과에 없습니다. 그래서 trace 내내 기다리는 thread는 보이지 않습니다.
+
+같은 host에서 `perf bench sched pipe`로 비용을 쟀습니다. 한 번의 작업에 context switch가 두 번 있습니다.
+
+| 조건 | 작업당 시간 | 늘어난 비용 |
+|---|---|---|
+| trace 없음 | 3.471 µs | - |
+| `--off-cpu --process no-such-process` | 3.495 µs | 0.02 µs |
+| `--off-cpu --process sched-pipe` | 4.379 µs | 0.91 µs |
+| `--off-cpu`, 필터 없음 | 4.475 µs | 1.00 µs |
+
+BPF program은 host의 모든 context switch에서 돕니다. 필터가 고르지 않은 process에는 191ns, 고른 process에는 1.25~1.38µs가 걸렸고, 대부분은 두 stack을 읽는 시간입니다. 바쁜 host에서는 `--process`나 `--container`를 쓰세요.
+
+필터가 없으면 stack map의 hash 칸 하나를 두 stack이 쓰려 할 수 있습니다. host 전체를 8초 기록하자 잠 25,402번 중 180번이 이렇게 stack을 잃었습니다. edc는 이 수를 `collisions`로 세고 알림을 출력합니다. `--process`를 주자 같은 시험에서 충돌이 없었습니다.
+
+off-CPU trace에는 `sched_switch` tracepoint와 BTF, task local storage도 필요합니다.
 
 kernel이 모든 버림을 이유와 함께 알리지는 않습니다. 예를 들어 listen socket의 accept 대기열이 가득 차면 kernel은 SYN을 정상 패킷처럼 해제합니다. 이 경우를 위해 요약에는 trace 동안 `/proc/net/netstat`의 `ListenOverflows`와 `ListenDrops`가 늘어난 수가 나옵니다. 이 값은 edc가 있는 network namespace의 모든 listen socket을 합한 것이라, `--container`를 써도 container만의 값이 아닙니다.
 

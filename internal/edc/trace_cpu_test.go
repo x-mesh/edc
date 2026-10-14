@@ -159,7 +159,7 @@ func TestCPUFoldedLinesPutTheRootFirst(t *testing.T) {
 		{Process: "api", User: []string{"hash", "main"}, Samples: 1},
 		{Process: "odd name", User: []string{"a;b"}, Samples: 1},
 		{Process: "", Samples: 4},
-	})
+	}, false)
 	want := []string{
 		"api;main;read;ksys_read_[k];copy_to_user_[k] 5",
 		"-;[unknown] 4",
@@ -177,6 +177,65 @@ func TestCPUShortenKeepsTheEnd(t *testing.T) {
 	}
 	if got := cpuShorten("github.com/x/y.(*Server).handle", 12); got != "…ver).handle" || len([]rune(got)) != 12 {
 		t.Errorf("long = %q", got)
+	}
+}
+
+func TestCPUWaitNamesTheSyscallOrTheFault(t *testing.T) {
+	for want, kernel := range map[string][]string{
+		"futex":         {"finish_task_switch.isra.0", "__schedule", "schedule", "futex_wait", "do_futex", "__x64_sys_futex", "x64_sys_call", "do_syscall_64", "entry_SYSCALL_64_after_hwframe"},
+		"nanosleep":     {"__schedule", "do_nanosleep", "hrtimer_nanosleep", "__arm64_sys_nanosleep", "invoke_syscall", "el0_svc"},
+		"page_fault":    {"__schedule", "io_schedule", "filemap_fault", "handle_mm_fault", "do_user_addr_fault", "exc_page_fault", "asm_exc_page_fault"},
+		"ret_from_fork": {"__schedule", "schedule", "ret_from_fork"},
+		"-":             nil,
+	} {
+		if got := cpuWaitKernel(kernel); got != want {
+			t.Errorf("wait kernel of %v = %q, want %q", kernel, got, want)
+		}
+	}
+	for want, user := range map[string][]string{"-": nil, "leaf": {"leaf"}, "leaf ← caller": {"leaf", "caller", "main"}} {
+		if got := cpuWaitCode(user); got != want {
+			t.Errorf("wait code of %v = %q, want %q", user, got, want)
+		}
+	}
+	for ms, want := range map[float64]string{0.25: "250us", 12.34: "12.3ms", 2500: "2.50s"} {
+		if got := cpuMilliseconds(ms); got != want {
+			t.Errorf("%v ms = %q, want %q", ms, got, want)
+		}
+	}
+}
+
+func TestCPUOffCPUReportWeighsBySleepTime(t *testing.T) {
+	futex := []string{"__schedule", "futex_wait", "__x64_sys_futex", "do_syscall_64"}
+	stacks := []cpuStack{
+		{TGID: 10, Process: "db", User: []string{"pthread_cond_wait", "worker"}, Kernel: futex, Samples: 2, OffCPUNS: 300 * uint64(time.Millisecond)},
+		{TGID: 10, Process: "db", User: []string{"pthread_cond_wait", "worker"}, Kernel: futex, Samples: 1, OffCPUNS: 100 * uint64(time.Millisecond)},
+		{TGID: 11, Process: "api", User: []string{"read", "handle"}, Kernel: []string{"__schedule", "__x64_sys_read"}, Samples: 50, OffCPUNS: 100 * uint64(time.Millisecond)},
+	}
+	report := cpuReportFor(stacks, cpuSummary{OffCPU: true})
+	summary := report.Summary
+	if summary.Profiled != 53 || summary.OffCPUMS != 500 {
+		t.Fatalf("summary = %+v", summary)
+	}
+	db := report.Processes[0]
+	if db.Process != "db" || db.Samples != 3 || db.TimeMS == nil || *db.TimeMS != 400 || db.Percent != 80 {
+		t.Fatalf("processes = %+v", report.Processes)
+	}
+	if len(report.Waits) != 2 {
+		t.Fatalf("waits = %+v", report.Waits)
+	}
+	wait := report.Waits[0]
+	if wait.Process != "db" || wait.Code != "pthread_cond_wait ← worker" || wait.Kernel != "futex" || wait.Blocks != 3 || wait.TimeMS != 400 || wait.Percent != 80 {
+		t.Fatalf("wait = %+v", wait)
+	}
+	if avg := wait.AvgMS; avg < 133.3 || avg > 133.4 {
+		t.Fatalf("avg = %v", avg)
+	}
+	if report.Waits[1].Kernel != "read" || report.Waits[1].AvgMS != 2 {
+		t.Fatalf("second wait = %+v", report.Waits[1])
+	}
+	lines := cpuFoldedLines(stacks, true)
+	if len(lines) != 2 || lines[0] != "db;worker;pthread_cond_wait;do_syscall_64_[k];__x64_sys_futex_[k];futex_wait_[k];__schedule_[k] 400000" {
+		t.Fatalf("folded = %v", lines)
 	}
 }
 

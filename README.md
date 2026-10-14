@@ -1904,7 +1904,7 @@ Each span also shows the system call that the thread was in when it left the CPU
 
 By default, the trace emits spans of at least 1 ms. Use `--slow <duration>` to change this threshold, for example `--slow 100us`. It uses fixed pending maps and a fixed ring buffer. The summary and raw JSON summary show ring loss, map full, unmatched, repeated wakeup, and omitted span counts. On Linux kernels that expose the required BTF fields, raw events include the cgroup v2 ID and `--container` filters this ID. Use `--group-by cgroup` to group rows by this ID. edc verifies these fields before it loads the program. The trace works on Linux 5.15. In each raw event, `timestamp_ns` is Unix epoch time in nanoseconds, the same clock as the summary line. `boot_time_ns` is the kernel monotonic time since boot.
 
-Use `trace exec` on Linux to see processes start and end, and to see who sends a signal. Each `exec` event shows the PID, the parent, the user, and the first 256 bytes of the command line. Each `exit` event shows the exit code, the signal that ended the process, whether it dumped core, and how long the process lived. The lifetime comes from the start time of the task, so a process that started before the trace also shows it. Each `signal` event shows the signal, the sender, the target, and whether the kernel delivered or ignored it.
+Use `trace exec` on Linux to see processes start and end, to see who sends a signal, and to see which process the OOM killer stops. Each `exec` event shows the PID, the parent, the user, and the first 256 bytes of the command line. Each `exit` event shows the exit code, the signal that ended the process, whether it dumped core, and how long the process lived. The lifetime comes from the start time of the task, so a process that started before the trace also shows it. Each `signal` event shows the signal, the sender, the target, and whether the kernel delivered or ignored it.
 
 ```bash
 ./bin/edc trace exec --duration 15s
@@ -1915,9 +1915,11 @@ Use `trace exec` on Linux to see processes start and end, and to see who sends a
 
 The summary groups the rows by process name. It counts the execs, the exits, the exits with a non-zero code, the exits by a signal, and the processes that lived less than 1 second, with the average and the longest lifetime. A high `SHORT` count with a high `EXEC` count is a storm of short-lived processes, for example a health check that forks a shell every second. Use `--group-by parent` to see which process starts them. A second table lists the signals by sender and target. `(kernel)` after the result means that the kernel made the signal, for example `SIGSEGV` after a fault or `SIGKILL` from the OOM killer, and the sender is then the process that was running at that moment.
 
+An `oom` event shows each process that the OOM killer selects. The `TRIGGER` column shows the task that tried to allocate memory when the kernel ran out. On Linux 6.x, the event also shows the name of the victim, its anonymous, file, and shmem RSS, and its `oom_score_adj`. On Linux 5.15, the kernel gives only the PID of the victim. The `exit` event of the victim shows `oom-killed`, and the `OOM` column counts these exits. This mark comes from the kernel state of the process, so it is also correct on Linux 5.15. The `--container` filter matches the cgroup of the trigger task for an `oom` event.
+
 By default, edc records the signals that end a process or dump core: `HUP`, `INT`, `QUIT`, `ILL`, `TRAP`, `ABRT`, `BUS`, `FPE`, `KILL`, `USR1`, `SEGV`, `USR2`, `PIPE`, `TERM`, `STKFLT`, `XCPU`, `XFSZ`, and `SYS`. It leaves out the signals that run all the time, such as `CHLD` and `ALRM`. Use `--signal` with a comma-separated list of names or numbers, `--signal all`, or `--signal none`. The summary counts the signals that the filter dropped as `filtered_signals`. `--process` accepts names or PIDs, and a signal matches on the target. `--container` keeps the events of one container.
 
-edc reads the command line from the memory of the new process at the time of the exec, so it holds the arguments that the program received, not later changes. If edc cannot read it, the event shows the path of the executable. Lines longer than 256 bytes end with `…`, and `args_truncated` counts them. A thread that exits does not make an `exit` event, only the last thread of a process does. Kernel threads do not appear. The trace needs the `sched_process_exec`, `sched_process_exit`, and `signal_generate` tracepoints with BTF.
+edc reads the command line from the memory of the new process at the time of the exec, so it holds the arguments that the program received, not later changes. If edc cannot read it, the event shows the path of the executable. Lines longer than 256 bytes end with `…`, and `args_truncated` counts them. A thread that exits does not make an `exit` event, only the last thread of a process does. Kernel threads do not appear. The trace needs the `sched_process_exec`, `sched_process_exit`, and `signal_generate` tracepoints with BTF. The `oom` event also needs the `oom/mark_victim` tracepoint in tracefs. If tracefs is not available, for example in a container, edc prints a notice and traces the other events.
 
 Use `trace lock` on Linux to see where threads wait for locks. edc measures two kinds of wait and prints one summary at the end.
 
@@ -2017,6 +2019,32 @@ edc measured these costs on a 12-CPU x86_64 host with Linux 6.17. The test ran a
 At 99 Hz, edc itself used 120 ms of CPU time in 6 seconds of sampling. It used about 1 second in total for an 8-second trace, mostly to start and to read the symbols at the end, and its memory peak was 131 MiB.
 
 The trace needs BTF, a `perf_event_open` cpu-clock event on each online CPU, and a BPF link for perf events. Linux 5.15 has all three.
+
+Use `trace cpu --off-cpu` to find where threads sleep instead of where they run. edc records the stack of a thread when it goes to sleep, and adds the sleep time to that stack when the thread runs again. A thread that the scheduler preempts is runnable, so edc does not count it.
+
+```bash
+./bin/edc trace cpu --off-cpu --process api --duration 10s
+./bin/edc trace cpu --off-cpu --container db --folded db-offcpu.folded
+```
+
+The `PROCESS` table shows the sleeps and the sleep time of each process. The `CODE` and `KERNEL` table shows where the time goes. `CODE` is the two innermost user frames. `KERNEL` is the system call that slept, such as `futex` or `epoll_wait`, or `page_fault`. The time adds the sleeps of all threads, so it can be longer than the trace. In `--folded` output, the count is the sleep time in microseconds. Do not use `--frequency` with `--off-cpu`. edc stops with an error.
+
+edc counts only the sleeps that start and end during the trace. A sleep that started before the trace, or that does not end before the end, is not in the result. A thread that waits for the whole trace therefore does not show.
+
+edc measured these costs with `perf bench sched pipe` on the same host. Each operation has two context switches:
+
+| Condition | Time per operation | Added cost |
+|---|---|---|
+| No trace | 3.471 µs | - |
+| `--off-cpu --process no-such-process` | 3.495 µs | 0.02 µs |
+| `--off-cpu --process sched-pipe` | 4.379 µs | 0.91 µs |
+| `--off-cpu`, no filter | 4.475 µs | 1.00 µs |
+
+The BPF program ran on each context switch of the host. It took 191 ns for a process that the filter does not select and 1.25 µs to 1.38 µs for a selected process, mostly to read the two stacks. On a busy host, use `--process` or `--container`.
+
+Without a filter, the stack map can fill one hash slot with two stacks. In an 8-second trace of the host, 180 of 25,402 sleeps lost a stack in this way. edc counts them as `collisions` and prints a note. With `--process`, the same test had no collisions.
+
+The off-CPU trace also needs the `sched_switch` tracepoint with BTF and task local storage.
 
 Use `--raw` to print JSONL events as they arrive. Use `--json` to write the connection summary after Ctrl-C.
 

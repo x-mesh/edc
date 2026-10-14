@@ -277,6 +277,7 @@ command:
       frequency: "trace cpu: samples per second per CPU, default 99"
       folded: "trace cpu: write folded stacks for a flame graph"
       lock_kind: "trace lock: kernel or futex waits only"
+      off_cpu: "trace cpu: time that threads sleep, by stack"
     notes:
       - "The default output opens a full-screen trace view in a terminal."
       - "Use / to filter process, destination, event, or source text."
@@ -297,7 +298,7 @@ command:
       - "trace io groups rows by device, process, cgroup, or event."
       - "trace io --slow sets the minimum request latency. The default is 1ms."
       - "trace sched --slow sets the minimum span latency. The default is 1ms."
-      - "trace exec shows exec, exit, and signal events. --signal picks the signals."
+      - "trace exec shows exec, exit, signal, and oom events. --signal picks signals."
       - "trace show <raw.jsonl> prints the summary of a saved --raw file, without root."
       - "--slow needs a unit, such as 20us, 500us, or 2ms. A bare number fails."
       - "Grouped rows label the event count rate EVENT/s and show payload traffic."

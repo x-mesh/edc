@@ -324,6 +324,7 @@ var commandDocs = []commandDoc{
 			{"--frequency 99", "command.trace.option.frequency"},
 			{"--folded <path|->", "command.trace.option.folded"},
 			{"--kind kernel|futex", "command.trace.option.lock_kind"},
+			{"--off-cpu", "command.trace.option.off_cpu"},
 			{"--yes", "command.trace.option.yes"},
 		},
 	},

@@ -320,6 +320,8 @@ cli:
     cpu_collisions: "trace cpu: %d samples lost a stack to a hash collision in the stack map"
     cpu_no_kallsyms: "trace cpu: cannot read kernel symbols from /proc/kallsyms, so kernel frames show as [kernel]"
     cpu_shallow: "trace cpu: %.0f%% of the samples have a user stack of one frame. A program built without frame pointers shows only its innermost function"
+    cpu_off_frequency: "--frequency applies to the samples on the CPU. --off-cpu records each sleep"
+    cpu_off_running: "trace cpu --off-cpu: recording the stacks of sleeping threads until the end"
     cpu_self_included: "edc runs outside the host PID namespace, so the profile includes edc itself"
     lock_kind: "--kind must be kernel or futex"
     lock_failed: "trace lock failed: %v"

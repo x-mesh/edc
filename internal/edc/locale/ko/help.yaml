@@ -154,6 +154,7 @@ command:
       - "bind·overlay mount는 파일 시스템을 공유하므로 크기를 -로 표시합니다."
       - "지워졌지만 process가 아직 열고 있는 파일도 보여 줍니다."
       - "터미널에서는 탐색 화면을 열고, q로 닫으면 결과를 출력합니다."
+      - "docker가 있으면 로그, layer, volume, bind 원본에 container 이름을 붙입니다."
   where:
     summary: "가까운 지역과 이 망의 모습"
     option:

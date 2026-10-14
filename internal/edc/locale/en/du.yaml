@@ -43,6 +43,12 @@ du:
     count: "%d directory deltas (e detail)"
     path_differs: "directories not compared, the paths differ: %s → %s"
     partial: "directories not compared, one scan stopped before the end"
+  label:
+    container: "container %s"
+    layer: "writable layer of %s"
+    rootfs: "root file system of %s"
+    volume: "volume %s of %s"
+    bind: "mounted in %s"
   mounts:
     title: "skipped mounts"
     used: "%s used"

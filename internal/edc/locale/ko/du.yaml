@@ -43,6 +43,12 @@ du:
     count: "디렉터리 차이 %d개 (e 상세)"
     path_differs: "경로가 달라 디렉터리를 비교하지 않았습니다: %s → %s"
     partial: "한쪽 탐색이 끝까지 가지 않아 디렉터리를 비교하지 않았습니다"
+  label:
+    container: "container %s"
+    layer: "%s의 writable layer"
+    rootfs: "%s의 root 파일 시스템"
+    volume: "volume %s (%s 사용)"
+    bind: "%s에 마운트됨"
   mounts:
     title: "건너뛴 마운트"
     used: "%s 사용"

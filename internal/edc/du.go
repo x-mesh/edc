@@ -79,6 +79,8 @@ type duMount struct {
 	// Shared는 statfs가 이 마운트가 아니라 밑에 있는 파일 시스템 전체를 답하는 경우다. bind mount와 overlay가 그렇다.
 	// 그 값을 마운트의 크기처럼 보이면 같은 숫자가 마운트마다 되풀이된다.
 	Shared bool `json:"shared,omitempty"`
+	// Label은 이 경로를 쓰는 container다. docker가 있을 때만 붙는다.
+	Label string `json:"label,omitempty"`
 }
 
 type duScan struct {
@@ -93,6 +95,8 @@ type duScan struct {
 	deleted         duDeletedOpen
 	// notFound는 filesystem.Whole일 때만 뜻이 있다. df의 사용량에서 센 크기와 지워졌지만 열린 파일을 뺀 값이다.
 	notFound uint64
+	// labels는 절대 경로마다 그 경로를 쓰는 container다. docker가 없으면 비어 있다.
+	labels map[string]string
 	// elapsed는 탐색에 걸린 시간이다. 화면을 닫은 뒤 결과를 만들므로 화면을 본 시간을 넣지 않으려고 따로 잰다.
 	elapsed time.Duration
 }
@@ -136,6 +140,7 @@ type duRow struct {
 	Entries int64  `json:"entries"`
 	Dir     bool   `json:"dir"`
 	Depth   int    `json:"depth"`
+	Label   string `json:"label,omitempty"`
 }
 
 type duOther struct {
@@ -149,6 +154,8 @@ type duSources struct {
 	statfs    func(path string) (duUsage, bool)
 	// deletedOpen의 bool은 다른 사용자의 process를 읽지 못해 값이 하한이라는 뜻이다.
 	deletedOpen func() (map[uint64]*deletedOpenSummary, bool)
+	// containerLabels는 docker 저장 경로의 이름표다. nil이면 이름표를 붙이지 않는다.
+	containerLabels func(ctx context.Context) map[string]string
 }
 
 func runDu(args []string, version string) int {
@@ -286,11 +293,23 @@ func duResult(result Result, options duOptions, scan duScan, timeout time.Durati
 		top := deleted.Top[0]
 		result.Warnings = append(result.Warnings, T("du.warning.deleted_open", formatSizeShort(deleted.Bytes), filesystem.Mount, top.Comm, top.PID))
 	}
+	largest := duLargest(root, duLargestDirs)
+	if len(scan.labels) > 0 {
+		for index := range rows {
+			rows[index].Label = scan.labels[filepath.Join(options.root, rows[index].Path)]
+		}
+		for index := range scan.mounts {
+			scan.mounts[index].Label = scan.labels[scan.mounts[index].Path]
+		}
+		for index := range largest.Dirs {
+			largest.Dirs[index].Label = scan.labels[filepath.Join(options.root, largest.Dirs[index].Path)]
+		}
+	}
 	result.Metrics = map[string]interface{}{
 		"path": options.root, "bytes": root.total, "entries": root.count, "directories": scan.directories,
 		"workers": options.workers, "partial": scan.partial, "unreadable": scan.unreadableCount,
 		"rows": rows, "other": other, "skipped_mounts": scan.mounts,
-		"filesystem": filesystem, "deleted_open": deleted, "largest_dirs": duLargest(root, duLargestDirs),
+		"filesystem": filesystem, "deleted_open": deleted, "largest_dirs": largest,
 	}
 	if filesystem.Whole {
 		result.Metrics["not_found_bytes"] = scan.notFound
@@ -405,6 +424,9 @@ func formatDuRows(rows []duRow, other duOther, width int) string {
 		if row.Dir {
 			name += "/"
 		}
+		if row.Label != "" {
+			name += "  " + row.Label
+		}
 		line(formatSizeShort(row.Bytes), strings.Repeat("  ", row.Depth)+name)
 	}
 	if other.Entries > 0 {
@@ -434,6 +456,9 @@ func formatDuMounts(mounts []duMount, verbose bool, width int) string {
 			used = T("du.mounts.used", formatSizeShort(mount.UsedBytes))
 		}
 		text := "  " + liveCell(mount.Path, pathWidth+2) + liveCell(mount.FSType, typeWidth+2) + used
+		if mount.Label != "" {
+			text += "  " + mount.Label
+		}
 		builder.WriteString(duFit(text, width) + "\n")
 	}
 	if hidden := len(mounts) - len(shown); hidden > 0 {
@@ -567,6 +592,7 @@ type duLargeDir struct {
 	Path    string `json:"path"`
 	Bytes   uint64 `json:"bytes"`
 	Entries int64  `json:"entries"`
+	Label   string `json:"label,omitempty"`
 }
 
 // duLargest는 root를 뺀 디렉터리 가운데 큰 것 limit개를 크기순으로 고른다. 경로는 root 기준이다.
@@ -606,6 +632,7 @@ type duDirDelta struct {
 	After  uint64 `json:"after_bytes"`
 	Delta  int64  `json:"delta_bytes"`
 	Bound  string `json:"bound,omitempty"`
+	Label  string `json:"label,omitempty"`
 }
 
 // duCompareDirs는 두 du.scan 결과의 큰 디렉터리 목록을 경로로 맞춘다. 비교하지 않으면 그 이유를 돌려준다.
@@ -630,9 +657,18 @@ func duCompareDirs(before, after map[string]interface{}) ([]duDirDelta, string) 
 	}
 	oldBytes, oldBound := duLargestIndex(old)
 	currentBytes, currentBound := duLargestIndex(current)
+	// 이름표는 나중 report의 것을 쓴다. 지운 디렉터리는 앞 report에만 이름표가 있다.
+	labels := map[string]string{}
+	for _, list := range []duLargestList{old, current} {
+		for _, dir := range list.Dirs {
+			if dir.Label != "" {
+				labels[dir.Path] = dir.Label
+			}
+		}
+	}
 	var deltas []duDirDelta
 	for path := range duPathUnion(oldBytes, currentBytes) {
-		delta := duDirDelta{Path: path}
+		delta := duDirDelta{Path: path, Label: labels[path]}
 		var hadBefore, hasAfter bool
 		delta.Before, hadBefore = oldBytes[path]
 		delta.After, hasAfter = currentBytes[path]
@@ -762,7 +798,11 @@ func formatDuDirDeltas(deltas []duDirDelta) []string {
 			after = "≤" + after
 		}
 		path := ansi.Truncate(delta.Path, pathWidth, "…")
-		lines = append(lines, fmt.Sprintf("%10s  %s%s → %s", sign+formatSizeShort(uint64(duAbs(delta.Delta))), liveCell(path, pathWidth+2), before, after))
+		line := fmt.Sprintf("%10s  %s%s → %s", sign+formatSizeShort(uint64(duAbs(delta.Delta))), liveCell(path, pathWidth+2), before, after)
+		if delta.Label != "" {
+			line += "  " + delta.Label
+		}
+		lines = append(lines, line)
 	}
 	return lines
 }

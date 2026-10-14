@@ -43,6 +43,12 @@ du:
     count: "ディレクトリの差 %d 件 (e 詳細)"
     path_differs: "パスが異なるためディレクトリを比較しませんでした: %s → %s"
     partial: "片方の走査が最後まで終わらなかったためディレクトリを比較しませんでした"
+  label:
+    container: "container %s"
+    layer: "%s の writable layer"
+    rootfs: "%s の root ファイルシステム"
+    volume: "volume %s (%s が使用)"
+    bind: "%s にマウント"
   mounts:
     title: "スキップしたマウント"
     used: "%s 使用"

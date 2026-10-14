@@ -437,7 +437,7 @@ func TestCleanBoundaryWorktreeVerdicts(t *testing.T) {
 		return lab, worktree
 	}
 	t.Run("one failing command is state_unknown", func(t *testing.T) {
-		for _, sub := range []string{"rev-parse", "status", "worktree", "config", "merge-base", "rev-list", "log"} {
+		for _, sub := range []string{"rev-parse", "diff-index", "diff-files", "ls-files", "worktree", "config", "merge-base", "rev-list", "log"} {
 			lab, _ := clean(t)
 			spy := &cleanGitSpy{override: func(got string, spec cleanToolSpec, output cleanToolOutput) cleanToolOutput {
 				if got == sub {
@@ -490,8 +490,9 @@ func TestCleanBoundaryWorktreeVerdicts(t *testing.T) {
 	t.Run("a cut status keeps the change and marks the count a lower bound", func(t *testing.T) {
 		lab, worktree := clean(t)
 		lab.write(filepath.Join(worktree, "new"), "n\n")
+		lab.write(filepath.Join(worktree, "new2"), "n\n")
 		spy := &cleanGitSpy{override: func(sub string, _ cleanToolSpec, output cleanToolOutput) cleanToolOutput {
-			if sub == "status" {
+			if sub == "ls-files" {
 				output.Truncated = true
 			}
 			return output
@@ -505,7 +506,7 @@ func TestCleanBoundaryWorktreeVerdicts(t *testing.T) {
 	t.Run("a cut status without a counted line is not a clean tree", func(t *testing.T) {
 		lab, _ := clean(t)
 		spy := &cleanGitSpy{override: func(sub string, _ cleanToolSpec, output cleanToolOutput) cleanToolOutput {
-			if sub == "status" {
+			if sub == "ls-files" {
 				output.Truncated = true
 			}
 			return output
@@ -559,7 +560,7 @@ func TestCleanBoundaryWorktreeVerdicts(t *testing.T) {
 		cleanGitRun(t, repo, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
 		spy := &cleanGitSpy{}
 		lab.scan(spy.run)
-		allowed := []string{"rev-parse", "status", "worktree", "config", "symbolic-ref", "merge-base", "rev-list", "log", "reflog"}
+		allowed := []string{"rev-parse", "diff-index", "diff-files", "ls-files", "worktree", "config", "symbolic-ref", "merge-base", "rev-list", "log", "reflog"}
 		if len(spy.calls) == 0 {
 			t.Fatal("git did not run")
 		}
@@ -920,5 +921,35 @@ func TestCleanNotMeasuredNamesWorktreesOutsideTheRoot(t *testing.T) {
 	}
 	if !slices.Contains(cleanNotMeasured, cleanNotMeasuredItem{"other_worktrees", "outside_root"}) {
 		t.Fatalf("not_measured = %+v", cleanNotMeasured)
+	}
+}
+
+// 바뀐 파일을 셀 때 저장소가 정한 clean filter(git-lfs 같은)를 실행하지 않는다. git status는 stat이 바뀐 파일을 filter로
+// 읽어 비교한다. stat만 비교하므로 touch만 한 파일도 바뀐 것으로 센다(#268).
+func TestCleanWorktreeCountsChangesWithoutCleanFilters(t *testing.T) {
+	lab := newCleanWorktreeLab(t)
+	repo := lab.repo("main")
+	marker := filepath.Join(lab.home, "filter-ran")
+	cleanGitRun(t, repo, "config", "filter.probe.clean", "sh -c 'echo ran >> "+marker+"; cat'")
+	cleanGitRun(t, repo, "config", "filter.probe.smudge", "cat")
+	lab.write(filepath.Join(repo, ".gitattributes"), "*.dat filter=probe\n")
+	lab.write(filepath.Join(repo, "a.dat"), "data\n")
+	cleanGitRun(t, repo, "add", ".gitattributes", "a.dat")
+	cleanGitRun(t, repo, "commit", "-q", "-m", "data")
+	worktree := lab.add(repo, "w", "work")
+	if err := os.Remove(marker); err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatal(err)
+	}
+	// stat을 index와 다르게 만든다. 1초 안의 변경은 mtime이 같을 수 있다.
+	later := time.Now().Add(2 * time.Second)
+	if err := os.Chtimes(filepath.Join(worktree, "a.dat"), later, later); err != nil {
+		t.Fatal(err)
+	}
+	item := lab.only(lab.scan((&cleanGitSpy{}).run))
+	if data, err := os.ReadFile(marker); err == nil {
+		t.Fatalf("the clean filter ran: %q", data)
+	}
+	if item.Changes == nil || *item.Changes != 1 || item.Untracked == nil || *item.Untracked != 0 || item.Verdict != cleanVerdictHasChanges {
+		t.Fatalf("item = %+v", item)
 	}
 }

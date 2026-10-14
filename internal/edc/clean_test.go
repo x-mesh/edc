@@ -180,6 +180,8 @@ func TestCleanLocatesFromEnvironmentInOrder(t *testing.T) {
 		{"linux", "zig", nil, filepath.Join(home, ".cache/zig"), "default_path"},
 		{"linux", "zig", map[string]string{"XDG_CACHE_HOME": other}, filepath.Join(other, "zig"), "env:XDG_CACHE_HOME"},
 		{"linux", "zig", map[string]string{"XDG_CACHE_HOME": other, "ZIG_GLOBAL_CACHE_DIR": other + "/z"}, other + "/z", "env:ZIG_GLOBAL_CACHE_DIR"},
+		// zig는 빈 XDG_CACHE_HOME을 없는 것처럼 보고 ~/.cache/zig를 쓴다(src/introspect.zig의 resolveGlobalCacheDir, #267).
+		{"linux", "zig", map[string]string{"XDG_CACHE_HOME": ""}, filepath.Join(home, ".cache/zig"), "default_path"},
 		{"linux", "bun", nil, filepath.Join(home, ".bun/install/cache"), "default_path"},
 		{"linux", "bun", map[string]string{"BUN_INSTALL": other, "XDG_CACHE_HOME": other + "/xdg"}, filepath.Join(other, "install/cache"), "env:BUN_INSTALL"},
 		{"linux", "bun", map[string]string{"XDG_CACHE_HOME": other}, filepath.Join(other, ".bun/install/cache"), "env:XDG_CACHE_HOME"},

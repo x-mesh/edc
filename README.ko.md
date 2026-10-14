@@ -784,7 +784,7 @@ git-kit의 폴더인 `~/.gk/worktree`를 읽습니다. 깊이 5까지 `.git`이 
 
 루트를 한 번 재고 worktree별 크기는 그 트리에서 읽습니다. `leftover`는 루트의 그 밖의 파일 크기입니다.
 
-worktree를 쓰는지는 파일 수정 시각이 아니라 git 상태로 판단합니다. git은 읽기 하위 명령만 `GIT_OPTIONAL_LOCKS=0`과 `core.fsmonitor=false`로 실행해 `.git`의 파일을 바꾸지 않습니다.
+worktree를 쓰는지는 파일 수정 시각이 아니라 git 상태로 판단합니다. git은 읽기 하위 명령만 `GIT_OPTIONAL_LOCKS=0`과 `core.fsmonitor=false`로 실행해 `.git`의 파일을 바꾸지 않습니다. `git status`는 바뀐 파일을 git-lfs 같은 저장소의 clean filter로 읽으므로 쓰지 않습니다. 대신 파일의 stat을 index와 비교하므로, touch만 한 파일도 바뀐 것으로 셉니다.
 
 worktree마다 `verdict`가 하나 있고, 아래 순서에서 처음 맞는 값을 고릅니다.
 

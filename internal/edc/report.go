@@ -431,6 +431,10 @@ type reportDiffEntry struct {
 	BeforeSummary string        `json:"before_summary,omitempty"`
 	AfterSummary  string        `json:"after_summary,omitempty"`
 	Metrics       []metricDelta `json:"metrics,omitempty"`
+	// Directories와 DirectoriesNote는 du.scan에만 있다. 배열 metric은 diffMetrics가 건너뛰므로 du의 큰 디렉터리
+	// 목록을 경로로 맞춘 결과를 따로 둔다. Note는 비교하지 않은 이유다.
+	Directories     []duDirDelta `json:"directories,omitempty"`
+	DirectoriesNote string       `json:"directories_note,omitempty"`
 }
 
 type reportDiffSide struct {
@@ -484,6 +488,9 @@ func diffReports(beforePath string, before Report, afterPath string, after Repor
 			entry.BeforeStatus, entry.AfterStatus = old.Status, current.Status
 			entry.BeforeSummary, entry.AfterSummary = old.Summary, current.Summary
 			entry.Metrics = diffMetrics(old.Metrics, current.Metrics)
+			if probe == duProbeID {
+				entry.Directories, entry.DirectoriesNote = duCompareDirs(old.Metrics, current.Metrics)
+			}
 			// probe 실행 시간은 metrics 밖에 있으므로 따로 앞에 붙인다.
 			if old.DurationMS != current.DurationMS {
 				delta := float64(current.DurationMS - old.DurationMS)
@@ -671,12 +678,21 @@ func printReportDiffEntry(line, detail io.Writer, entry reportDiffEntry, color b
 	if len(entry.Metrics) > 0 {
 		fmt.Fprintf(line, "         %s\n", T("cli.report.delta_count", len(entry.Metrics)))
 	}
+	if len(entry.Directories) > 0 {
+		fmt.Fprintf(line, "         %s\n", T("du.diff.count", len(entry.Directories)))
+	}
 	for _, metric := range entry.Metrics {
 		if metric.Delta != nil {
 			fmt.Fprintf(detail, "         %-24s  %v → %v (%s)\n", metric.Key, metric.Before, metric.After, formatDelta(*metric.Delta))
 		} else {
 			fmt.Fprintf(detail, "         %-24s  %v → %v\n", metric.Key, metric.Before, metric.After)
 		}
+	}
+	for _, text := range formatDuDirDeltas(entry.Directories) {
+		fmt.Fprintf(detail, "       %s\n", text)
+	}
+	if entry.DirectoriesNote != "" {
+		fmt.Fprintf(detail, "         %s\n", entry.DirectoriesNote)
 	}
 }
 

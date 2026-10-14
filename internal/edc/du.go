@@ -3,6 +3,7 @@ package edc
 import (
 	"container/heap"
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -34,6 +35,11 @@ const (
 	duMountRows = 10
 	// duUnreadableKeep은 읽지 못한 경로를 담는 상한이다. 개수는 모두 센다.
 	duUnreadableKeep = 1000
+	// duLargestDirs는 report diff가 두 시점을 맞춰 보도록 JSON에 남기는 큰 디렉터리 수다. 화면용 rows는 고른
+	// 줄이라 두 시점의 줄이 서로 맞지 않는다.
+	duLargestDirs = 200
+	// duDiffDirs는 report diff가 보여 주는 디렉터리 변화 수다.
+	duDiffDirs = 10
 	// duBrowseFiles는 탐색 화면을 열 때 남기는 큰 파일 수다. 화면은 디렉터리마다 그 안의 큰 파일을 보여야 하므로
 	// 출력 줄 수보다 많이 남긴다. 나머지 파일은 디렉터리마다 한 줄로 합친다.
 	duBrowseFiles = 10000
@@ -204,8 +210,7 @@ func runDuWith(args []string, version string, sources duSources, ok bool, stdout
 		scan, err = duWalk(ctx, scanOptions, sources)
 	}
 	if err != nil {
-		result.Status, result.Summary = StatusFail, T("du.error.path", path)
-		result.Error = &DiagnosticError{Kind: "path", Message: err.Error()}
+		result = duPathFailure(result, path, err)
 	} else {
 		// 화면에서 q로 멈추면 base context가 취소된다. 시간 초과와 구분해 다음 명령을 권하지 않는다.
 		stopped := scan.partial && errors.Is(ctx.Err(), context.Canceled)
@@ -285,7 +290,7 @@ func duResult(result Result, options duOptions, scan duScan, timeout time.Durati
 		"path": options.root, "bytes": root.total, "entries": root.count, "directories": scan.directories,
 		"workers": options.workers, "partial": scan.partial, "unreadable": scan.unreadableCount,
 		"rows": rows, "other": other, "skipped_mounts": scan.mounts,
-		"filesystem": filesystem, "deleted_open": deleted,
+		"filesystem": filesystem, "deleted_open": deleted, "largest_dirs": duLargest(root, duLargestDirs),
 	}
 	if filesystem.Whole {
 		result.Metrics["not_found_bytes"] = scan.notFound
@@ -549,4 +554,246 @@ func duTotal(node *duNode) {
 		node.total += child.total
 		node.count += child.count
 	}
+}
+
+// duLargestList는 깊이와 관계없이 가장 큰 디렉터리다. Complete면 모든 디렉터리가 들어 있어, 목록에 없는 디렉터리는
+// 없던 것이다. 아니면 목록에 없는 디렉터리는 가장 작은 항목 이하다.
+type duLargestList struct {
+	Complete bool         `json:"complete"`
+	Dirs     []duLargeDir `json:"dirs"`
+}
+
+type duLargeDir struct {
+	Path    string `json:"path"`
+	Bytes   uint64 `json:"bytes"`
+	Entries int64  `json:"entries"`
+}
+
+// duLargest는 root를 뺀 디렉터리 가운데 큰 것 limit개를 크기순으로 고른다. 경로는 root 기준이다.
+func duLargest(root *duNode, limit int) duLargestList {
+	var dirs []duLargeDir
+	count := 0
+	var visit func(node *duNode, prefix string)
+	visit = func(node *duNode, prefix string) {
+		for _, child := range node.children {
+			if !child.dir {
+				continue
+			}
+			count++
+			path := prefix + child.name
+			dirs = append(dirs, duLargeDir{Path: path, Bytes: child.total, Entries: child.count})
+			visit(child, path+"/")
+		}
+	}
+	visit(root, "")
+	sort.Slice(dirs, func(i, j int) bool {
+		if dirs[i].Bytes != dirs[j].Bytes {
+			return dirs[i].Bytes > dirs[j].Bytes
+		}
+		return dirs[i].Path < dirs[j].Path
+	})
+	if len(dirs) > limit {
+		dirs = dirs[:limit]
+	}
+	return duLargestList{Complete: count <= limit, Dirs: dirs}
+}
+
+// duDirDelta는 report diff의 디렉터리 하나다. Bound가 있으면 그쪽 report의 목록에 이 디렉터리가 없어, 그쪽 값은
+// 그 목록의 가장 작은 크기 이하라는 상한이다. 그때 Delta는 변화의 하한이다.
+type duDirDelta struct {
+	Path   string `json:"path"`
+	Before uint64 `json:"before_bytes"`
+	After  uint64 `json:"after_bytes"`
+	Delta  int64  `json:"delta_bytes"`
+	Bound  string `json:"bound,omitempty"`
+}
+
+// duCompareDirs는 두 du.scan 결과의 큰 디렉터리 목록을 경로로 맞춘다. 비교하지 않으면 그 이유를 돌려준다.
+// 목록이 없는 이전 report는 이유 없이 건너뛴다.
+func duCompareDirs(before, after map[string]interface{}) ([]duDirDelta, string) {
+	old, oldOK := duLargestOf(before)
+	current, currentOK := duLargestOf(after)
+	if !oldOK || !currentOK {
+		return nil, ""
+	}
+	oldPath, _ := before["path"].(string)
+	currentPath, _ := after["path"].(string)
+	if oldPath != currentPath {
+		return nil, T("du.diff.path_differs", oldPath, currentPath)
+	}
+	// 일부만 센 쪽은 빠진 디렉터리가 줄어든 것처럼 보인다.
+	if partial, _ := before["partial"].(bool); partial {
+		return nil, T("du.diff.partial")
+	}
+	if partial, _ := after["partial"].(bool); partial {
+		return nil, T("du.diff.partial")
+	}
+	oldBytes, oldBound := duLargestIndex(old)
+	currentBytes, currentBound := duLargestIndex(current)
+	var deltas []duDirDelta
+	for path := range duPathUnion(oldBytes, currentBytes) {
+		delta := duDirDelta{Path: path}
+		var hadBefore, hasAfter bool
+		delta.Before, hadBefore = oldBytes[path]
+		delta.After, hasAfter = currentBytes[path]
+		if !hadBefore {
+			delta.Before = oldBound
+			if !old.Complete {
+				delta.Bound = "before"
+			}
+		}
+		if !hasAfter {
+			delta.After = currentBound
+			if !current.Complete {
+				delta.Bound = "after"
+			}
+		}
+		delta.Delta = int64(delta.After) - int64(delta.Before)
+		// 상한과 비교해 변화가 없거나 반대로 나오면 실제 변화의 방향을 알 수 없다.
+		if delta.Delta == 0 || (delta.Bound == "before" && delta.Delta < 0) || (delta.Bound == "after" && delta.Delta > 0) {
+			continue
+		}
+		deltas = append(deltas, delta)
+	}
+	return duTopDeltas(duFoldAncestors(deltas), duDiffDirs), ""
+}
+
+func duLargestOf(metrics map[string]interface{}) (duLargestList, bool) {
+	value, ok := metrics["largest_dirs"]
+	if !ok {
+		return duLargestList{}, false
+	}
+	// 파일에서 읽은 report는 map이고, 같은 process에서 만든 결과는 duLargestList다. JSON으로 한 번 맞춘다.
+	data, err := json.Marshal(value)
+	if err != nil {
+		return duLargestList{}, false
+	}
+	var list duLargestList
+	if err := json.Unmarshal(data, &list); err != nil {
+		return duLargestList{}, false
+	}
+	return list, true
+}
+
+// duLargestIndex는 경로별 크기와, 목록에 없는 디렉터리의 크기를 돌려준다. 목록이 완전하면 없는 디렉터리는 0이다.
+func duLargestIndex(list duLargestList) (map[string]uint64, uint64) {
+	index := make(map[string]uint64, len(list.Dirs))
+	var smallest uint64
+	for position, dir := range list.Dirs {
+		index[dir.Path] = dir.Bytes
+		if position == 0 || dir.Bytes < smallest {
+			smallest = dir.Bytes
+		}
+	}
+	if list.Complete {
+		return index, 0
+	}
+	return index, smallest
+}
+
+func duPathUnion(first, second map[string]uint64) map[string]struct{} {
+	union := make(map[string]struct{}, len(first)+len(second))
+	for path := range first {
+		union[path] = struct{}{}
+	}
+	for path := range second {
+		union[path] = struct{}{}
+	}
+	return union
+}
+
+// duFoldAncestors는 같은 방향의 변화를 90% 이상 설명하는 하위 디렉터리가 있으면 상위 디렉터리를 뺀다.
+// 그대로 두면 /var, /var/lib, /var/lib/docker가 같은 증가로 줄을 모두 차지한다.
+func duFoldAncestors(deltas []duDirDelta) []duDirDelta {
+	var kept []duDirDelta
+	for _, delta := range deltas {
+		explained := false
+		for _, other := range deltas {
+			if strings.HasPrefix(other.Path, delta.Path+"/") && (other.Delta > 0) == (delta.Delta > 0) &&
+				duAbs(other.Delta)*10 >= duAbs(delta.Delta)*9 {
+				explained = true
+				break
+			}
+		}
+		if !explained {
+			kept = append(kept, delta)
+		}
+	}
+	return kept
+}
+
+func duTopDeltas(deltas []duDirDelta, limit int) []duDirDelta {
+	sort.Slice(deltas, func(i, j int) bool {
+		if duAbs(deltas[i].Delta) != duAbs(deltas[j].Delta) {
+			return duAbs(deltas[i].Delta) > duAbs(deltas[j].Delta)
+		}
+		return deltas[i].Path < deltas[j].Path
+	})
+	if len(deltas) > limit {
+		deltas = deltas[:limit]
+	}
+	return deltas
+}
+
+func duAbs(value int64) int64 {
+	if value < 0 {
+		return -value
+	}
+	return value
+}
+
+// formatDuDirDeltas는 report diff의 상세 줄이다. 한쪽 목록에 없던 디렉터리는 그쪽 값 앞에 ≤를 붙인다.
+func formatDuDirDeltas(deltas []duDirDelta) []string {
+	pathWidth := 0
+	for _, delta := range deltas {
+		pathWidth = min(max(pathWidth, liveWidth(delta.Path)), 40)
+	}
+	lines := make([]string, 0, len(deltas))
+	for _, delta := range deltas {
+		sign := "+"
+		if delta.Delta < 0 {
+			sign = "-"
+		}
+		before, after := formatSizeShort(delta.Before), formatSizeShort(delta.After)
+		switch delta.Bound {
+		case "before":
+			before = "≤" + before
+		case "after":
+			after = "≤" + after
+		}
+		path := ansi.Truncate(delta.Path, pathWidth, "…")
+		lines = append(lines, fmt.Sprintf("%10s  %s%s → %s", sign+formatSizeShort(uint64(duAbs(delta.Delta))), liveCell(path, pathWidth+2), before, after))
+	}
+	return lines
+}
+
+// duSnapshotResult는 edc snapshot --du의 결과다. edc du와 같은 탐색과 판정을 쓰고, snapshot의 제한 시간에 걸리면
+// 그때까지 센 값을 partial로 남긴다.
+func duSnapshotResult(ctx context.Context, path string, timeout time.Duration) Result {
+	started := time.Now()
+	sources, ok := hostDuSources()
+	if !ok {
+		return unsupported(duProbeID, T("du.skip.linux_only"))
+	}
+	result := Result{Probe: duProbeID, StartedAt: started.UTC()}
+	options := duOptions{workers: duDefaultWorkers, rows: duPipedRows}
+	root, err := duResolveRoot(path)
+	var scan duScan
+	if err == nil {
+		options.root = root
+		scan, err = duWalk(ctx, options, sources)
+	}
+	if err != nil {
+		result = duPathFailure(result, path, err)
+	} else {
+		result = duResult(result, options, scan, timeout, false)
+	}
+	result.DurationMS = time.Since(started).Milliseconds()
+	return result
+}
+
+func duPathFailure(result Result, path string, err error) Result {
+	result.Status, result.Summary = StatusFail, T("du.error.path", path)
+	result.Error = &DiagnosticError{Kind: "path", Message: err.Error()}
+	return result
 }

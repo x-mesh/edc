@@ -381,6 +381,7 @@ command:
       output: "report 파일, -는 stdout"
       since: "events와 changes가 볼 기간 (기본 6h)"
       force: "이미 있는 출력 파일을 바꿈"
+      du: "이 경로의 edc du 결과도 저장 (Linux)"
     notes:
       - "info, listen, audit, events, changes 결과를 report 하나에 저장합니다."
       - "파일 권한은 0600입니다. 계정, sudo 규칙, process 이름이 들어갑니다."

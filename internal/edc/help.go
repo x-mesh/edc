@@ -326,11 +326,12 @@ var commandDocs = []commandDoc{
 	},
 	{
 		name: "snapshot", group: "record",
-		usage: []string{"edc snapshot [--output <file|->] [--since 6h] [--force]", "             [--timeout 15s] [--redact]"},
+		usage: []string{"edc snapshot [--output <file|->] [--since 6h] [--force]", "             [--du <path>] [--timeout 15s] [--redact]"},
 		options: []optionDoc{
 			{"--output <file|->", "command.snapshot.option.output"},
 			{"--since 6h", "command.snapshot.option.since"},
 			{"--force", "command.snapshot.option.force"},
+			{"--du <path>", "command.snapshot.option.du"},
 			{"--timeout 15s", "option.timeout"},
 			{"--redact", "option.redact"},
 		},

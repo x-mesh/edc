@@ -591,6 +591,8 @@ edc du --json - /var            # 항목을 metrics.rows에 담음
 
 경로가 파일 시스템 전체의 마운트 지점이면 숫자를 맞춰 봅니다. `not found`는 사용량에서 센 크기와 지워졌지만 열린 파일을 뺀 값이고, 마운트 아래에 가려진 파일이나 파일 시스템 metadata가 이 공간을 쓸 수 있습니다. 모든 디렉터리와 process를 읽었고 제한 시간에 멈추지 않았을 때만 계산합니다. bind mount나 하위 디렉터리를 재면 이 비교는 나오지 않습니다. JSON에서는 `metrics.filesystem`, `metrics.deleted_open`, `metrics.not_found_bytes`에 이 값이 들어갑니다.
 
+어느 디렉터리가 늘었는지 보려면 두 번의 실행을 `--json`으로 저장하고 `edc report diff`로 비교합니다. `metrics.largest_dirs`에는 깊이와 관계없이 가장 큰 디렉터리 200개가 들어갑니다. `report diff`는 이 목록을 경로로 맞춰 변화가 가장 큰 디렉터리를 최대 10개 보여 줍니다. 하위 디렉터리 하나가 상위 디렉터리 변화의 90% 이상을 차지하면 상위 대신 그 하위 디렉터리를 보여 줍니다. 한쪽 목록에만 있는 디렉터리는 반대쪽 값을 그 목록의 가장 작은 크기 이하(`≤`)로 표시합니다. 같은 경로를 끝까지 읽은 두 결과만 비교합니다. hard link 이름이 두 디렉터리에 있는 파일은 먼저 읽은 디렉터리에 세므로, 실행마다 그 두 디렉터리 사이에서 크기가 옮겨 갈 수 있습니다.
+
 ## 커널과 systemd 이벤트 (Linux)
 
 `edc events`는 정한 기간의 커널 로그와 systemd journal을 읽어 장애 신호를 시간 순서로 정리합니다. 아무것도 바꾸지 않고 외부로 보내지 않습니다.
@@ -663,6 +665,7 @@ journal 기록은 20000개, journal 출력은 32 MiB, `/dev/kmsg` 기록은 1000
 edc snapshot                              # ./edc-snapshot-<host>-<UTC 시각>.json
 sudo edc snapshot --output before.json    # root는 모든 audit와 events 원천을 읽음
 sudo edc snapshot --output after.json
+sudo edc snapshot --du /var --output after.json   # /var의 edc du 결과도 함께 (Linux)
 sudo edc report diff before.json after.json
 edc snapshot --since 2h --output -        # report JSON만 stdout으로
 ```
@@ -680,6 +683,9 @@ report에는 다음 결과가 들어갑니다.
 | `audit.*` | `edc audit`의 점검 |
 | `events.*` | `--since` 기간(기본 6h)의 `edc events` 신호 |
 | `changes.*` | `--since` 기간의 `edc changes` 원천 |
+| `du.scan` | `--du <path>`를 줄 때만: 그 경로의 `edc du` 결과와 `report diff`용 큰 디렉터리 목록 |
+
+큰 트리에 `--du`를 쓰면 `--timeout`을 늘려야 할 수 있습니다. 제한 시간에 걸리면 `du.scan` 결과는 일부만 센 값이 되고, `report diff`는 그 디렉터리를 비교하지 않습니다.
 
 모든 항목은 `--timeout` 예산(기본 15s) 하나 안에서 동시에 돌아갑니다. 예산에 2초를 더해도 끝나지 않은 항목은 이유와 함께 `skip`이 됩니다. `audit`, `events`, `changes`는 점검마다 `skip`을 하나씩 남기므로 `report diff`가 같은 ID끼리 비교합니다. `info.disk`는 mount 목록을 알 수 없어서 `info.disk` skip 하나로 남습니다. 수집기가 실패하면 오류와 함께 `fail`이 됩니다. 어느 항목도 report에서 빠지지 않습니다.
 

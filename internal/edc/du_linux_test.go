@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
@@ -350,5 +351,27 @@ func TestDuProcPartialReadsALinkNotOnlyTheList(t *testing.T) {
 	}
 	if !duProcPartial(filepath.Join(fdDir, "missing")) {
 		t.Fatal("an unreadable fd list is partial")
+	}
+}
+
+func TestSnapshotAddsDuOnlyWithAPath(t *testing.T) {
+	for _, section := range snapshotSections(time.Hour, "", time.Minute) {
+		if section.name == duProbeID {
+			t.Fatal("du runs without --du")
+		}
+	}
+	root := duTestTree(t)
+	sections := snapshotSections(time.Hour, root, time.Minute)
+	last := sections[len(sections)-1]
+	if last.name != duProbeID {
+		t.Fatalf("last section %q", last.name)
+	}
+	results := last.run(context.Background())
+	if len(results) != 1 || results[0].Probe != duProbeID || results[0].Status != StatusPass {
+		t.Fatalf("results = %+v", results)
+	}
+	largest, ok := duLargestOf(results[0].Metrics)
+	if !ok || !largest.Complete || len(largest.Dirs) != 4 || largest.Dirs[0].Path != "a" {
+		t.Fatalf("largest = %+v", largest)
 	}
 }

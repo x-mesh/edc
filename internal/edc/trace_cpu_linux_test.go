@@ -161,8 +161,8 @@ func TestTraceCPUSamplesUserAndKernelStacks(t *testing.T) {
 				t.Errorf("profiled %v samples, want about %.0f: %+v", got, expected, report.Summary)
 			}
 			// helper가 CPU 하나를 채우므로 바쁜 비율은 적어도 CPU 하나만큼이다. 쉬는 CPU의 샘플 수는 VM에 따라 모자라 보지 않는다.
-			if minimum := 80 / float64(summary.CPUs); report.Summary.BusyPercent < minimum || report.Summary.BusyPercent > 100 {
-				t.Errorf("busy = %.1f%% on %d CPUs, want at least %.1f%%", report.Summary.BusyPercent, summary.CPUs, minimum)
+			if minimum := 80 / float64(summary.CPUs); report.Summary.BusyPercent == nil || *report.Summary.BusyPercent < minimum || *report.Summary.BusyPercent > 100 {
+				t.Errorf("busy = %v on %d CPUs, want at least %.1f%%", report.Summary.BusyPercent, summary.CPUs, minimum)
 			}
 			var hot, tRunner, kernel, getppid uint64
 			for _, stack := range stacks {
@@ -297,6 +297,9 @@ func TestTraceCPUOffCPURecordsSleepTime(t *testing.T) {
 	stacks, summary, err := collectCPUStacks(cpuTraceOptions{offCPU: true, pids: []uint32{uint32(command.Process.Pid)}}, stop)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if summary.FrequencyHz != 0 || summary.BusyPercent != nil {
+		t.Errorf("off-CPU summary has on-CPU fields: frequency %d busy %v", summary.FrequencyHz, summary.BusyPercent)
 	}
 	var slept, blocks uint64
 	for _, stack := range stacks {

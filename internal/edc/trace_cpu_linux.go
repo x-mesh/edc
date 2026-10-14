@@ -291,7 +291,7 @@ func collectCPUStacks(options cpuTraceOptions, stop <-chan struct{}) ([]cpuStack
 	}
 	snapshot()
 	symbolizer.refreshPerfMaps()
-	summary := cpuSummary{DurationMS: elapsed.Milliseconds(), FrequencyHz: options.frequency, CPUs: len(cpus), SelfExcluded: selfExcluded, KernelSymbols: kernelErr == nil && len(symbolizer.kernel) > 0}
+	summary := cpuSummary{DurationMS: elapsed.Milliseconds(), CPUs: len(cpus), SelfExcluded: selfExcluded, KernelSymbols: kernelErr == nil && len(symbolizer.kernel) > 0}
 	var perCPU []cpuEventsCpuCounters
 	if err := objects.Counters.Lookup(uint32(0), &perCPU); err != nil {
 		return nil, cpuSummary{}, fmt.Errorf("read cpu counters: %w", err)
@@ -309,7 +309,10 @@ func collectCPUStacks(options cpuTraceOptions, stop <-chan struct{}) ([]cpuStack
 	summary.FreshLost = totals[cpuCounterFreshLost]
 	summary.OffCPUStartsFull = totals[cpuCounterOffCPUStartsFull]
 	summary.OffCPU = options.offCPU
-	summary.BusyPercent = cpuBusyPercent(summary.Samples-summary.Idle, options.frequency, elapsed, len(cpus))
+	if !options.offCPU {
+		busy := cpuBusyPercent(summary.Samples-summary.Idle, options.frequency, elapsed, len(cpus))
+		summary.FrequencyHz, summary.BusyPercent = options.frequency, &busy
+	}
 	stacks, err := readCPUStacks(objects, symbolizer)
 	if err != nil {
 		return nil, cpuSummary{}, err

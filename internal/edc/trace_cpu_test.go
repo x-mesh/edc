@@ -1,6 +1,7 @@
 package edc
 
 import (
+	"encoding/json"
 	"reflect"
 	"strings"
 	"testing"
@@ -204,6 +205,33 @@ func TestCPUWaitNamesTheSyscallOrTheFault(t *testing.T) {
 	}
 }
 
+// --off-cpu는 샘플링하지 않으므로 frequency_hz와 busy_percent가 없고, 잠든 시간이 0이어도 off_cpu_ms는 있다.
+func TestCPUSummaryJSONHasTheFieldsOfItsMode(t *testing.T) {
+	busy := 12.5
+	for _, test := range []struct {
+		summary       cpuSummary
+		want, missing []string
+	}{
+		{cpuSummary{OffCPU: true}, []string{`"off_cpu_ms":0`}, []string{"frequency_hz", "busy_percent"}},
+		{cpuSummary{FrequencyHz: 99, BusyPercent: &busy}, []string{`"frequency_hz":99`, `"busy_percent":12.5`}, []string{"off_cpu_ms"}},
+	} {
+		data, err := json.Marshal(cpuReportFor(nil, test.summary).Summary)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, field := range test.want {
+			if !strings.Contains(string(data), field) {
+				t.Errorf("%s has no %s", data, field)
+			}
+		}
+		for _, field := range test.missing {
+			if strings.Contains(string(data), `"`+field+`"`) {
+				t.Errorf("%s has %s", data, field)
+			}
+		}
+	}
+}
+
 func TestCPUOffCPUReportWeighsBySleepTime(t *testing.T) {
 	futex := []string{"__schedule", "futex_wait", "__x64_sys_futex", "do_syscall_64"}
 	stacks := []cpuStack{
@@ -213,7 +241,7 @@ func TestCPUOffCPUReportWeighsBySleepTime(t *testing.T) {
 	}
 	report := cpuReportFor(stacks, cpuSummary{OffCPU: true})
 	summary := report.Summary
-	if summary.Profiled != 53 || summary.OffCPUMS != 500 {
+	if summary.Profiled != 53 || summary.OffCPUMS == nil || *summary.OffCPUMS != 500 {
 		t.Fatalf("summary = %+v", summary)
 	}
 	db := report.Processes[0]

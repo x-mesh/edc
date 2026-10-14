@@ -10,15 +10,16 @@ import (
 	"time"
 )
 
-// trace exec은 process의 시작(exec), 끝(exit), 신호(signal)를 본다. 세 event는 모두 같은 record 모양으로 오고,
+// trace exec은 process의 시작(exec), 끝(exit), 신호(signal), OOM killer의 선택(oom)을 본다. 네 event는 모두 같은 record 모양으로 오고,
 // 이 파일은 record 읽기와 요약처럼 kernel이 필요 없는 부분이다. BPF 로딩은 trace_exec.go에 있다.
 
 const (
 	execEventExec   = "exec"
 	execEventExit   = "exit"
 	execEventSignal = "signal"
-	// execRecordSize는 trace_exec_bpf.c의 exec_record에서 args 끝까지의 크기다. 그 뒤의 padding은 읽지 않는다.
-	execRecordSize = 340
+	execEventOOM    = "oom"
+	// execRecordSize는 trace_exec_bpf.c의 exec_record 전체 크기다. args 뒤 4 byte padding 다음에 OOM의 메모리 칸 넷이 온다.
+	execRecordSize = 376
 	execArgsMax    = 256
 	// execShortLifetime보다 짧게 살다 끝난 process는 요약에서 따로 센다. 짧은 process가 쏟아지는 것이 exec 폭풍이다.
 	execShortLifetime = time.Second
@@ -55,6 +56,13 @@ type execEvent struct {
 	Sender        string   `json:"sender,omitempty"`
 	FromKernel    bool     `json:"from_kernel,omitempty"`
 	Result        string   `json:"result,omitempty"`
+	OOMKilled     bool     `json:"oom_killed,omitempty"`
+	// 아래 칸은 oom event에만 있다. 5.15 kernel의 tracepoint는 victim의 pid만 주므로 이 칸들과 process 이름이 빈다.
+	TotalVMKB   *uint64 `json:"total_vm_kb,omitempty"`
+	AnonRSSKB   *uint64 `json:"anon_rss_kb,omitempty"`
+	FileRSSKB   *uint64 `json:"file_rss_kb,omitempty"`
+	ShmemRSSKB  *uint64 `json:"shmem_rss_kb,omitempty"`
+	OOMScoreAdj *int32  `json:"oom_score_adj,omitempty"`
 }
 
 type execSummary struct {
@@ -64,6 +72,8 @@ type execSummary struct {
 	LostEvents      uint64 `json:"lost_events"`
 	FilteredSignals uint64 `json:"filtered_signals"`
 	ArgsTruncated   uint64 `json:"args_truncated"`
+	// OOMUnavailable는 oom/mark_victim을 붙이지 못한 이유다. 그때는 oom event가 없고, exit의 oom_killed 표시는 남는다.
+	OOMUnavailable string `json:"oom_unavailable,omitempty"`
 }
 
 func execSignalName(number int32) string {
@@ -146,6 +156,7 @@ func parseExecRecord(sample []byte, clockOffset int64) (execEvent, bool) {
 			event.Signal = execSignalName(signal)
 		}
 		event.CoreDumped = flags&2 != 0
+		event.OOMKilled = flags&8 != 0
 		lifetime := float64(binary.LittleEndian.Uint64(sample[16:24])) / float64(time.Millisecond)
 		event.LifetimeMS = &lifetime
 	case 2:
@@ -159,6 +170,21 @@ func parseExecRecord(sample []byte, clockOffset int64) (execEvent, bool) {
 			event.Result = execSignalResults[signal]
 		} else {
 			event.Result = fmt.Sprintf("result_%d", signal)
+		}
+	case 3:
+		// OOM을 일으킨 task는 sender 칸으로 온다. 신호 event처럼 "누가 이 process를 끝냈는가"의 답이다.
+		event.Event = execEventOOM
+		sender := binary.LittleEndian.Uint32(sample[32:36])
+		event.SenderPID = &sender
+		event.Sender = other
+		event.FromKernel = true
+		if flags&16 != 0 {
+			values := make([]uint64, 4)
+			for index := range values {
+				values[index] = binary.LittleEndian.Uint64(sample[344+8*index:])
+			}
+			adj := code
+			event.TotalVMKB, event.AnonRSSKB, event.FileRSSKB, event.ShmemRSSKB, event.OOMScoreAdj = &values[0], &values[1], &values[2], &values[3], &adj
 		}
 	default:
 		return execEvent{}, false
@@ -220,6 +246,9 @@ func execEventDetail(event execEvent) string {
 		if event.CoreDumped {
 			parts = append(parts, "core")
 		}
+		if event.OOMKilled {
+			parts = append(parts, "oom-killed")
+		}
 		if event.LifetimeMS != nil {
 			parts = append(parts, "after "+execLifetimeText(*event.LifetimeMS))
 		}
@@ -233,8 +262,21 @@ func execEventDetail(event execEvent) string {
 			}
 		}
 		return fmt.Sprintf("%s ← %s · %s", event.Signal, sender, event.Result)
+	case execEventOOM:
+		text := "oom victim ← " + execOOMTrigger(event)
+		if event.AnonRSSKB != nil {
+			text += fmt.Sprintf(" · anon %s file %s shmem %s · adj %d", traceBytes(*event.AnonRSSKB*1024), traceBytes(*event.FileRSSKB*1024), traceBytes(*event.ShmemRSSKB*1024), *event.OOMScoreAdj)
+		}
+		return text
 	}
 	return ""
+}
+
+func execOOMTrigger(event execEvent) string {
+	if event.SenderPID == nil {
+		return "-"
+	}
+	return fmt.Sprintf("%s(%d)", emptyAs(event.Sender, "-"), *event.SenderPID)
 }
 
 func execLifetimeText(ms float64) string {
@@ -253,7 +295,7 @@ func execGroupKey(groupBy string, event execEvent) string {
 	case traceGroupByEvent:
 		return event.Event
 	case execGroupByParent:
-		if event.Event == execEventSignal {
+		if event.Event == execEventSignal || event.Event == execEventOOM {
 			return emptyAs(event.Sender, "-")
 		}
 		return emptyAs(event.Parent, "-")
@@ -287,6 +329,7 @@ type execReportRow struct {
 	NonZeroExits uint64
 	Signaled     uint64
 	ShortLived   uint64
+	OOMKilled    uint64
 	lifetimes    []float64
 }
 
@@ -297,6 +340,7 @@ type execReportOutputRow struct {
 	NonZeroExits  uint64   `json:"nonzero_exits"`
 	Signaled      uint64   `json:"signaled"`
 	ShortLived    uint64   `json:"short_lived"`
+	OOMKilled     uint64   `json:"oom_killed"`
 	AvgLifetimeMS *float64 `json:"avg_lifetime_ms"`
 	MaxLifetimeMS *float64 `json:"max_lifetime_ms"`
 }
@@ -316,6 +360,7 @@ type execReport struct {
 	ShortLifetimeMS int64                 `json:"short_lifetime_ms"`
 	Rows            []execReportOutputRow `json:"rows"`
 	Signals         []execSignalRow       `json:"signals"`
+	OOMs            []execEvent           `json:"ooms"`
 	Summary         execSummary           `json:"summary"`
 }
 
@@ -324,6 +369,7 @@ type execAggregator struct {
 	groupBy string
 	rows    map[string]*execReportRow
 	signals map[string]*execSignalRow
+	ooms    []execEvent
 }
 
 func newExecAggregator(groupBy string) *execAggregator {
@@ -348,6 +394,9 @@ func (aggregator *execAggregator) add(event execEvent) {
 		if event.Signal != "" {
 			row.Signaled++
 		}
+		if event.OOMKilled {
+			row.OOMKilled++
+		}
 		if event.LifetimeMS != nil {
 			row.lifetimes = append(row.lifetimes, *event.LifetimeMS)
 			if *event.LifetimeMS < float64(execShortLifetime/time.Millisecond) {
@@ -366,16 +415,18 @@ func (aggregator *execAggregator) add(event execEvent) {
 			aggregator.signals[signalKey] = signal
 		}
 		signal.Count++
+	case execEventOOM:
+		aggregator.ooms = append(aggregator.ooms, event)
 	}
 }
 
 func (aggregator *execAggregator) report(duration time.Duration, summary execSummary) execReport {
-	report := execReport{DurationMS: duration.Milliseconds(), GroupBy: aggregator.groupBy, ShortLifetimeMS: execShortLifetime.Milliseconds(), Summary: summary, Rows: []execReportOutputRow{}, Signals: []execSignalRow{}}
+	report := execReport{DurationMS: duration.Milliseconds(), GroupBy: aggregator.groupBy, ShortLifetimeMS: execShortLifetime.Milliseconds(), Summary: summary, Rows: []execReportOutputRow{}, Signals: []execSignalRow{}, OOMs: append([]execEvent{}, aggregator.ooms...)}
 	if report.DurationMS < 1 {
 		report.DurationMS = 1
 	}
 	for _, row := range aggregator.rows {
-		output := execReportOutputRow{Group: row.Group, Execs: row.Execs, Exits: row.Exits, NonZeroExits: row.NonZeroExits, Signaled: row.Signaled, ShortLived: row.ShortLived}
+		output := execReportOutputRow{Group: row.Group, Execs: row.Execs, Exits: row.Exits, NonZeroExits: row.NonZeroExits, Signaled: row.Signaled, ShortLived: row.ShortLived, OOMKilled: row.OOMKilled}
 		if len(row.lifetimes) > 0 {
 			var total, maximum float64
 			for _, value := range row.lifetimes {
@@ -411,9 +462,9 @@ func (aggregator *execAggregator) report(duration time.Duration, summary execSum
 
 func (report execReport) print() {
 	fmt.Printf("EXEC TRACE  duration %dms  short-lived under %dms\n", report.DurationMS, report.ShortLifetimeMS)
-	fmt.Printf("%-24s %6s %6s %8s %8s %6s %10s %10s\n", "GROUP", "EXEC", "EXIT", "NONZERO", "SIGNALED", "SHORT", "AVG LIFE", "MAX LIFE")
+	fmt.Printf("%-24s %6s %6s %8s %8s %6s %4s %10s %10s\n", "GROUP", "EXEC", "EXIT", "NONZERO", "SIGNALED", "SHORT", "OOM", "AVG LIFE", "MAX LIFE")
 	for _, row := range report.Rows {
-		fmt.Printf("%-24s %6d %6d %8d %8d %6d %10s %10s\n", row.Group, row.Execs, row.Exits, row.NonZeroExits, row.Signaled, row.ShortLived, execOptionalLifetime(row.AvgLifetimeMS), execOptionalLifetime(row.MaxLifetimeMS))
+		fmt.Printf("%-24s %6d %6d %8d %8d %6d %4d %10s %10s\n", row.Group, row.Execs, row.Exits, row.NonZeroExits, row.Signaled, row.ShortLived, row.OOMKilled, execOptionalLifetime(row.AvgLifetimeMS), execOptionalLifetime(row.MaxLifetimeMS))
 	}
 	if len(report.Signals) > 0 {
 		fmt.Printf("%-10s %-20s %-20s %-18s %6s\n", "SIGNAL", "SENDER", "TARGET", "RESULT", "COUNT")
@@ -423,6 +474,16 @@ func (report execReport) print() {
 				result += " (kernel)"
 			}
 			fmt.Printf("%-10s %-20s %-20s %-18s %6d\n", row.Signal, row.Sender, row.Target, result, row.Count)
+		}
+	}
+	if len(report.OOMs) > 0 {
+		fmt.Printf("%-12s %-8s %-16s %-24s %s\n", "OOM", "PID", "VICTIM", "TRIGGER", "MEMORY")
+		for _, event := range report.OOMs {
+			memory := "-"
+			if event.AnonRSSKB != nil {
+				memory = fmt.Sprintf("anon %s file %s shmem %s adj %d", traceBytes(*event.AnonRSSKB*1024), traceBytes(*event.FileRSSKB*1024), traceBytes(*event.ShmemRSSKB*1024), *event.OOMScoreAdj)
+			}
+			fmt.Printf("%-12s %-8d %-16s %-24s %s\n", time.Unix(0, int64(event.TimestampNS)).Format("15:04:05.000"), event.PID, emptyAs(event.Process, "-"), execOOMTrigger(event), memory)
 		}
 	}
 	fmt.Printf("events %d  ring_lost %d  filtered_signals %d  args_truncated %d\n", report.Summary.EventCount, report.Summary.LostEvents, report.Summary.FilteredSignals, report.Summary.ArgsTruncated)

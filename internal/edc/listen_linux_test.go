@@ -4,6 +4,7 @@ package edc
 
 import (
 	"encoding/binary"
+	"fmt"
 	"net"
 	"os"
 	"os/user"
@@ -277,11 +278,40 @@ func TestCollectNetnsListenSocketsReadsAnotherNamespace(t *testing.T) {
 		tid, port int
 		err       error
 	}
-	ready, release := make(chan opened, 1), make(chan struct{})
-	defer close(release)
+	hostNamespace, err := os.Readlink("/proc/self/ns/net")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ready, release, restored := make(chan opened, 1), make(chan struct{}), make(chan error, 1)
+	defer func() {
+		close(release)
+		if err := <-restored; err != nil {
+			t.Error(err)
+		}
+		// /proc/self는 main thread의 namespace를 보인다. 이 goroutine이 main thread에서 돌았어도 원래대로여야 한다.
+		if now, err := os.Readlink("/proc/self/ns/net"); err != nil || now != hostNamespace {
+			t.Errorf("/proc/self/ns/net = %s %v after the test, want %s", now, err, hostNamespace)
+		}
+	}()
 	go func() {
-		// 이 thread는 새 namespace에 남긴 채 버린다. UnlockOSThread를 부르지 않는다.
+		// 끝날 때 원래 namespace로 되돌린다. 이 goroutine이 main thread에서 돌면 runtime이 thread를 끝내지 못해, 되돌리지
+		// 않으면 뒤의 시험이 /proc/net에서 이 namespace를 읽는다.
 		runtime.LockOSThread()
+		original, err := os.Open("/proc/thread-self/ns/net")
+		if err != nil {
+			restored <- nil
+			ready <- opened{err: err}
+			return
+		}
+		defer original.Close()
+		defer func() {
+			if err := unix.Setns(int(original.Fd()), unix.CLONE_NEWNET); err != nil {
+				restored <- fmt.Errorf("restore the network namespace: %w", err)
+				return
+			}
+			runtime.UnlockOSThread()
+			restored <- nil
+		}()
 		if err := unix.Unshare(unix.CLONE_NEWNET); err != nil {
 			ready <- opened{err: err}
 			return

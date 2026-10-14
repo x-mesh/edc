@@ -9,7 +9,7 @@ import (
 
 // execTestRecord는 trace_exec_bpf.c의 exec_record와 같은 자리에 값을 둔다. 순서가 어긋나면 kernel에서 온 기록을 잘못 읽는다.
 func execTestRecord(kind, flags byte, pid, ppid, sender, uid uint32, code, signal int32, duration uint64, comm, other string, args []byte) []byte {
-	record := make([]byte, 344)
+	record := make([]byte, execRecordSize)
 	binary.LittleEndian.PutUint64(record[0:8], 1_000)
 	binary.LittleEndian.PutUint64(record[8:16], 77)
 	binary.LittleEndian.PutUint64(record[16:24], duration)
@@ -51,7 +51,24 @@ func TestParseExecRecordReadsEachKind(t *testing.T) {
 	if unknown.Signal != "SIG34" || unknown.Result != "result_9" {
 		t.Fatalf("unknown signal = %+v", unknown)
 	}
-	for _, bad := range [][]byte{nil, make([]byte, execRecordSize-1), execTestRecord(3, 0, 1, 1, 0, 0, 0, 0, 0, "x", "y", nil)} {
+	killed, _ := parseExecRecord(execTestRecord(1, 8, 4242, 1, 0, 0, 0, 9, 10, "java", "systemd", nil), 0)
+	if !killed.OOMKilled || killed.Signal != "SIGKILL" {
+		t.Fatalf("oom exit = %+v", killed)
+	}
+	// 5.15의 mark_victim은 victim의 pid만 준다. 이름과 메모리 칸은 비고, OOM을 일으킨 task만 sender로 온다.
+	bare, ok := parseExecRecord(execTestRecord(3, 0, 4243, 0, 900, 0, 0, 0, 0, "", "stress", nil), 0)
+	if !ok || bare.Event != execEventOOM || bare.PID != 4243 || bare.Process != "" || bare.SenderPID == nil || *bare.SenderPID != 900 || bare.Sender != "stress" || !bare.FromKernel || bare.AnonRSSKB != nil || bare.OOMScoreAdj != nil {
+		t.Fatalf("oom without detail = %+v %v", bare, ok)
+	}
+	detailed := execTestRecord(3, 16, 4243, 0, 900, 1000, -500, 0, 0, "java", "stress", nil)
+	for index, value := range []uint64{4_000_000, 2_000_000, 3_000, 512} {
+		binary.LittleEndian.PutUint64(detailed[344+8*index:], value)
+	}
+	oom, ok := parseExecRecord(detailed, 0)
+	if !ok || oom.Process != "java" || oom.UID != 1000 || *oom.TotalVMKB != 4_000_000 || *oom.AnonRSSKB != 2_000_000 || *oom.FileRSSKB != 3_000 || *oom.ShmemRSSKB != 512 || *oom.OOMScoreAdj != -500 {
+		t.Fatalf("oom with detail = %+v %v", oom, ok)
+	}
+	for _, bad := range [][]byte{nil, make([]byte, execRecordSize-1), execTestRecord(4, 0, 1, 1, 0, 0, 0, 0, 0, "x", "y", nil)} {
 		if event, ok := parseExecRecord(bad, 0); ok {
 			t.Fatalf("read a bad record: %+v", event)
 		}
@@ -107,6 +124,8 @@ func TestExecAggregatorCountsShortLivedAndSignals(t *testing.T) {
 		{Event: execEventSignal, Process: "java", PID: 20, Signal: "SIGTERM", Sender: "systemd", SenderPID: &sender, Result: "delivered"},
 		{Event: execEventSignal, Process: "java", PID: 20, Signal: "SIGTERM", Sender: "systemd", SenderPID: &sender, Result: "delivered"},
 		{Event: execEventSignal, Process: "java", PID: 20, Signal: "SIGKILL", Sender: "kworker", FromKernel: true, Result: "delivered"},
+		{Event: execEventExit, Process: "java", Parent: "systemd", PID: 21, ExitCode: &code0, Signal: "SIGKILL", OOMKilled: true, LifetimeMS: &long},
+		{Event: execEventOOM, Process: "java", PID: 21, Sender: "java", SenderPID: &sender, FromKernel: true},
 	}
 	aggregator := newExecAggregator("")
 	for _, event := range events {
@@ -121,25 +140,28 @@ func TestExecAggregatorCountsShortLivedAndSignals(t *testing.T) {
 		t.Fatalf("curl = %+v", curl)
 	}
 	java := report.Rows[1]
-	if java.Execs != 0 || java.Exits != 1 || java.Signaled != 1 || java.ShortLived != 0 || *java.AvgLifetimeMS != 90_000 {
+	if java.Execs != 0 || java.Exits != 2 || java.Signaled != 2 || java.OOMKilled != 1 || java.ShortLived != 0 || *java.AvgLifetimeMS != 90_000 {
 		t.Fatalf("java = %+v", java)
 	}
 	if len(report.Signals) != 2 || report.Signals[0].Count != 2 || report.Signals[0].Sender != "systemd" || report.Signals[0].Target != "java" || report.Signals[1].Sender != "kernel" || !report.Signals[1].FromKernel {
 		t.Fatalf("signals = %+v", report.Signals)
+	}
+	if len(report.OOMs) != 1 || report.OOMs[0].PID != 21 {
+		t.Fatalf("ooms = %+v", report.OOMs)
 	}
 	byParent := newExecAggregator(execGroupByParent)
 	for _, event := range events {
 		byParent.add(event)
 	}
 	parents := byParent.report(time.Second, execSummary{})
-	if len(parents.Rows) != 3 || parents.Rows[0].Group != "cron" || parents.Rows[0].Execs != 2 {
+	if len(parents.Rows) != 4 || parents.Rows[0].Group != "cron" || parents.Rows[0].Execs != 2 {
 		t.Fatalf("by parent = %+v", parents.Rows)
 	}
 	byEvent := newExecAggregator(traceGroupByEvent)
 	for _, event := range events {
 		byEvent.add(event)
 	}
-	if rows := byEvent.report(time.Second, execSummary{}).Rows; len(rows) != 3 || rows[0].Group != "exit" || rows[0].Exits != 3 {
+	if rows := byEvent.report(time.Second, execSummary{}).Rows; len(rows) != 4 || rows[0].Group != "exit" || rows[0].Exits != 4 {
 		t.Fatalf("by event = %+v", rows)
 	}
 }
@@ -148,6 +170,8 @@ func TestExecEventDetailAndProcessFilter(t *testing.T) {
 	code := int32(137)
 	life := 2500.0
 	sender := uint32(99)
+	zero, adj := int32(0), int32(-500)
+	anon, file, shmem := uint64(2*1024*1024), uint64(3*1024), uint64(0)
 	cases := []struct {
 		event execEvent
 		want  string
@@ -157,6 +181,9 @@ func TestExecEventDetailAndProcessFilter(t *testing.T) {
 		{execEvent{Event: execEventSignal, Signal: "SIGTERM", Sender: "systemd", SenderPID: &sender, Result: "delivered"}, "SIGTERM ← systemd(99) · delivered"},
 		{execEvent{Event: execEventSignal, Signal: "SIGSEGV", Sender: "app", SenderPID: &sender, FromKernel: true, Result: "delivered"}, "SIGSEGV ← kernel via app(99) · delivered"},
 		{execEvent{Event: execEventSignal, Signal: "SIGKILL", Result: "delivered"}, "SIGKILL ← kernel · delivered"},
+		{execEvent{Event: execEventExit, ExitCode: &zero, Signal: "SIGKILL", OOMKilled: true, LifetimeMS: &life}, "code 0 · SIGKILL · oom-killed · after 2.5s"},
+		{execEvent{Event: execEventOOM, Sender: "stress", SenderPID: &sender}, "oom victim ← stress(99)"},
+		{execEvent{Event: execEventOOM, Sender: "stress", SenderPID: &sender, AnonRSSKB: &anon, FileRSSKB: &file, ShmemRSSKB: &shmem, OOMScoreAdj: &adj}, "oom victim ← stress(99) · anon 2.0GiB file 3.0MiB shmem 0B · adj -500"},
 	}
 	for _, test := range cases {
 		if got := execEventDetail(test.event); got != test.want {

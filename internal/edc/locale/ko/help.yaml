@@ -152,6 +152,7 @@ command:
       - "du처럼 disk block을 세고, hard link는 한 번만 셉니다."
       - "한 파일 시스템 안에서만 세고, 건너뛴 마운트를 보여 줍니다."
       - "bind·overlay mount는 파일 시스템을 공유하므로 크기를 -로 표시합니다."
+      - "지워졌지만 process가 아직 열고 있는 파일도 보여 줍니다."
   where:
     summary: "가까운 지역과 이 망의 모습"
     option:

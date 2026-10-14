@@ -3,6 +3,7 @@ package edc
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 func duTestDir(name string, bytes uint64, children ...*duNode) *duNode {
@@ -112,5 +113,58 @@ func TestFormatDuMountsShowsSharedMountsWithoutASize(t *testing.T) {
 	}
 	if text := formatDuMounts(many, true, 0); strings.Contains(text, "more") {
 		t.Fatalf("verbose text =\n%s", text)
+	}
+}
+
+func TestFormatDuFilesystemComparesOnlyAWholeFileSystem(t *testing.T) {
+	deleted := duDeletedOpen{Bytes: 3 << 20, Files: 2, Top: []duDeletedFile{{Path: "/var/log/app.log", Bytes: 3 << 20, PID: 42, Comm: "app"}}}
+	whole := formatDuFilesystem(duFilesystem{Mount: "/var", FSType: "xfs", SizeBytes: 1 << 30, UsedBytes: 10 << 20, Whole: true}, deleted, 6<<20, 1<<20, 0)
+	for _, want := range []string{
+		"\nfile system  /var  xfs  10.0 MB used of 1.0 GB\n",
+		"  counted        6.0 MB\n",
+		"  deleted, open  3.0 MB in 2 files\n",
+		"  not found      1.0 MB  files under a mount point, or file system metadata\n",
+		"       3.0 MB  pid 42 app  /var/log/app.log\n",
+	} {
+		if !strings.Contains(whole, want) {
+			t.Fatalf("missing %q in\n%s", want, whole)
+		}
+	}
+	part := formatDuFilesystem(duFilesystem{Mount: "/", FSType: "xfs", SizeBytes: 1 << 30, UsedBytes: 10 << 20}, duDeletedOpen{}, 6<<20, 0, 0)
+	if strings.Count(part, "\n") != 2 || strings.Contains(part, "counted") || strings.Contains(part, "deleted") {
+		t.Fatalf("part =\n%s", part)
+	}
+	// 다른 사용자의 process를 읽지 못했으면 찾은 파일이 없어도 하한임을 보인다.
+	for files, want := range map[uint64]string{
+		0: "  deleted, open  ≥0 B  run as root to read every process\n",
+		1: "  deleted, open  ≥1.0 MB in 1 files  run as root to read every process\n",
+	} {
+		partial := formatDuFilesystem(duFilesystem{Mount: "/", FSType: "xfs"}, duDeletedOpen{Bytes: files << 20, Files: files, Partial: true}, 0, 0, 0)
+		if !strings.Contains(partial, want) {
+			t.Fatalf("partial =\n%s", partial)
+		}
+	}
+	if formatDuFilesystem(duFilesystem{}, deleted, 0, 0, 0) != "" {
+		t.Fatal("unknown file system printed")
+	}
+}
+
+func TestDuResultWarnsWhenDeletedFilesHoldTheSameShareAsInfo(t *testing.T) {
+	scan := duScan{root: duTestDir("/data", 4, duTestFile("a", 10)), filesystem: duFilesystem{Mount: "/data", FSType: "xfs", SizeBytes: 1000}}
+	duTotal(scan.root)
+	options := duOptions{root: "/data", workers: 4, rows: 5}
+	top := []duDeletedFile{{Path: "/data/app.log", Bytes: 100, PID: 42, Comm: "app"}}
+
+	scan.deleted = duDeletedOpen{Bytes: 99, Files: 1, Top: top, Partial: true}
+	if result := duResult(Result{StartedAt: time.Now()}, options, scan, time.Minute); result.Status != StatusPass || len(result.Warnings) != 0 {
+		t.Fatalf("below the share: %s %q", result.Status, result.Warnings)
+	}
+	scan.deleted = duDeletedOpen{Bytes: 100, Files: 1, Top: top}
+	result := duResult(Result{StartedAt: time.Now()}, options, scan, time.Minute)
+	if result.Status != StatusWarn || len(result.Warnings) != 1 || !strings.Contains(result.Warnings[0], "app (pid 42)") {
+		t.Fatalf("at the share: %s %q", result.Status, result.Warnings)
+	}
+	if _, ok := result.Metrics["not_found_bytes"]; ok {
+		t.Fatal("not_found_bytes without a whole file system")
 	}
 }

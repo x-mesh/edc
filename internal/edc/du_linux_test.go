@@ -81,7 +81,11 @@ func duTestDevice(t *testing.T, path string) string {
 }
 
 func duNoMounts() duSources {
-	return duSources{mountinfo: func() (string, error) { return "", nil }, statfs: func(string) (uint64, bool) { return 0, false }}
+	return duSources{
+		mountinfo:   func() (string, error) { return "", nil },
+		statfs:      func(string) (duUsage, bool) { return duUsage{}, false },
+		deletedOpen: func() (map[uint64]*deletedOpenSummary, bool) { return nil, false },
+	}
 }
 
 func TestDuWalkMatchesTheBlocksThatDuCounts(t *testing.T) {
@@ -115,7 +119,12 @@ func TestDuWalkSkipsMountsButNotSelfBinds(t *testing.T) {
 	}, "\n")
 	sources := duSources{
 		mountinfo: func() (string, error) { return mountinfo, nil },
-		statfs:    func(string) (uint64, bool) { t.Error("statfs of a shared mount"); return 0, false },
+		statfs: func(path string) (duUsage, bool) {
+			if path != root {
+				t.Errorf("statfs of the shared mount %s", path)
+			}
+			return duUsage{}, false
+		},
 	}
 	scan, err := duWalk(context.Background(), duOptions{root: root, workers: 2, rows: 5}, sources)
 	if err != nil {
@@ -143,7 +152,7 @@ func TestDuWalkReportsTheUsageOfASeparateFileSystem(t *testing.T) {
 	mountinfo := fmt.Sprintf("40 1 0:99 / %s rw - ext4 /dev/other rw", filepath.Join(root, "d"))
 	sources := duSources{
 		mountinfo: func() (string, error) { return mountinfo, nil },
-		statfs:    func(path string) (uint64, bool) { return 42 << 20, path == filepath.Join(root, "d") },
+		statfs:    func(path string) (duUsage, bool) { return duUsage{Used: 42 << 20}, path == filepath.Join(root, "d") },
 	}
 	scan, err := duWalk(context.Background(), duOptions{root: root, workers: 1, rows: 5}, sources)
 	if err != nil {
@@ -190,7 +199,8 @@ func TestDuWalkCountsUnreadableDirectories(t *testing.T) {
 
 func TestDuWalkWarnsWithoutTheMountTable(t *testing.T) {
 	root := duTestTree(t)
-	sources := duSources{mountinfo: func() (string, error) { return "", os.ErrPermission }, statfs: func(string) (uint64, bool) { return 0, false }}
+	sources := duNoMounts()
+	sources.mountinfo = func() (string, error) { return "", os.ErrPermission }
 	scan, err := duWalk(context.Background(), duOptions{root: root, workers: 1, rows: 3}, sources)
 	if err != nil {
 		t.Fatal(err)
@@ -221,5 +231,115 @@ func TestRunDuPrintsTheTreeAndRejectsBadOptions(t *testing.T) {
 		if code := runDuWith(args, "test", duNoMounts(), true, output); code != 2 {
 			t.Errorf("%q: exit %d", args, code)
 		}
+	}
+}
+
+// duWholeSources는 root를 파일 시스템의 마운트 지점처럼 보이게 한다. 실제 마운트는 만들지 않는다.
+func duWholeSources(t *testing.T, root, mountRoot string, used uint64, deleted *deletedOpenSummary, partial bool) duSources {
+	t.Helper()
+	var stat unix.Stat_t
+	if err := unix.Stat(root, &stat); err != nil {
+		t.Fatal(err)
+	}
+	mountinfo := fmt.Sprintf("50 1 %s %s %s rw - xfs /dev/test rw", duTestDevice(t, root), mountRoot, root)
+	return duSources{
+		mountinfo: func() (string, error) { return mountinfo, nil },
+		statfs:    func(string) (duUsage, bool) { return duUsage{Size: 1 << 30, Used: used}, true },
+		deletedOpen: func() (map[uint64]*deletedOpenSummary, bool) {
+			if deleted == nil {
+				return nil, partial
+			}
+			return map[uint64]*deletedOpenSummary{stat.Dev: deleted}, partial
+		},
+	}
+}
+
+func TestDuWalkComparesTheUsageOfAWholeFileSystem(t *testing.T) {
+	root := duTestTree(t)
+	counted := duExpectedBytes(t, root, "")
+	deleted := &deletedOpenSummary{Files: 1, Bytes: 3 << 20, Top: []deletedOpenFile{{Path: "/data/app.log", Size: 3 << 20, PID: 42, Comm: "app"}}}
+	scan, err := duWalk(context.Background(), duOptions{root: root, workers: 2, rows: 3}, duWholeSources(t, root, "/", counted+deleted.Bytes+(1<<20), deleted, false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !scan.filesystem.Whole || scan.filesystem.Mount != root || scan.filesystem.FSType != "xfs" || scan.notFound != 1<<20 {
+		t.Fatalf("filesystem %+v, not found %d", scan.filesystem, scan.notFound)
+	}
+	if scan.deleted.Bytes != 3<<20 || len(scan.deleted.Top) != 1 || scan.deleted.Top[0].PID != 42 || scan.deleted.Partial {
+		t.Fatalf("deleted %+v", scan.deleted)
+	}
+}
+
+func TestDuWalkDoesNotCompareAPartOfAFileSystem(t *testing.T) {
+	root := duTestTree(t)
+	counted := duExpectedBytes(t, root, "")
+	for name, test := range map[string]struct {
+		mountRoot string
+		partial   bool
+		ctx       func() context.Context
+	}{
+		"bind mount":         {mountRoot: "/srv/tree", ctx: context.Background},
+		"unreadable fds":     {mountRoot: "/", partial: true, ctx: context.Background},
+		"stopped by timeout": {mountRoot: "/", ctx: func() context.Context { ctx, cancel := context.WithCancel(context.Background()); cancel(); return ctx }},
+	} {
+		scan, err := duWalk(test.ctx(), duOptions{root: root, workers: 1, rows: 3}, duWholeSources(t, root, test.mountRoot, counted+(5<<20), nil, test.partial))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if scan.filesystem.Whole || scan.notFound != 0 || scan.filesystem.UsedBytes != counted+(5<<20) || scan.deleted.Partial != test.partial {
+			t.Errorf("%s: filesystem %+v, not found %d, deleted %+v", name, scan.filesystem, scan.notFound, scan.deleted)
+		}
+	}
+}
+
+// 이 process가 연 채로 지운 파일을 실제 /proc에서 찾는다. 크기는 파일 길이가 아니라 할당된 block이다.
+func TestDuDeletedOpenStatFindsAnUnlinkedFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "held.log")
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	if _, err := file.Write(make([]byte, 256<<10)); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	var stat unix.Stat_t
+	if err := unix.Fstat(int(file.Fd()), &stat); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	summary := scanDeletedOpen("/proc", duDeletedOpenStat, infoDeletedOpenFDLimit)[stat.Dev]
+	if summary == nil {
+		t.Fatal("no deleted file on the device of the temporary directory")
+	}
+	for _, found := range summary.Top {
+		if found.Path == path && found.PID == os.Getpid() {
+			if found.Size != uint64(stat.Blocks)*512 {
+				t.Fatalf("size %d, want %d blocks", found.Size, stat.Blocks)
+			}
+			return
+		}
+	}
+	t.Fatalf("%s is not in %+v", path, summary.Top)
+}
+
+func TestDuProcPartialReadsALinkNotOnlyTheList(t *testing.T) {
+	fdDir := t.TempDir()
+	if duProcPartial(fdDir) {
+		t.Fatal("an empty fd list is not partial")
+	}
+	if err := os.Symlink("/dev/null", filepath.Join(fdDir, "0")); err != nil {
+		t.Fatal(err)
+	}
+	if duProcPartial(fdDir) {
+		t.Fatal("a readable link is not partial")
+	}
+	if !duProcPartial(filepath.Join(fdDir, "missing")) {
+		t.Fatal("an unreadable fd list is partial")
 	}
 }

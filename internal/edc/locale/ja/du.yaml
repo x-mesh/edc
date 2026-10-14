@@ -11,9 +11,18 @@ du:
     unreadable_root: "ディレクトリ %d 個を読めず数えていません。root で実行すると数えます"
     unreadable: "ディレクトリ %d 個を読めず数えていません"
     no_mountinfo: "マウント表を読めないため(%s)、パスの下の bind mount も数えます"
+    deleted_open: "削除済みでも process が開いたままのファイルが %s あります(%s)。最大のものは %s(pid %d)が開いています"
   evidence:
     unreadable: "読めなかったディレクトリ"
   other: "(残りの項目 %d 個)"
+  fs:
+    title: "ファイルシステム  %s  %s  %s 使用 / 全体 %s"
+    counted: "数えた量"
+    deleted: "削除済み・オープン中"
+    files: "(ファイル %d 個)"
+    not_found: "見つからない"
+    not_found_hint: "マウントの下に隠れたファイル、またはファイルシステムの metadata"
+    partial_hint: "root で実行するとすべての process を読みます"
   mounts:
     title: "スキップしたマウント"
     used: "%s 使用"

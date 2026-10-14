@@ -72,6 +72,39 @@ type duScan struct {
 	unreadableCount int64
 	partial         bool
 	warnings        []string
+	filesystem      duFilesystem
+	deleted         duDeletedOpen
+	// notFound는 filesystem.Whole일 때만 뜻이 있다. df의 사용량에서 센 크기와 지워졌지만 열린 파일을 뺀 값이다.
+	notFound uint64
+}
+
+type duUsage struct{ Size, Used uint64 }
+
+// duFilesystem은 경로가 속한 파일 시스템이다. 크기와 사용량은 df와 같이 statfs에서 읽는다.
+type duFilesystem struct {
+	Mount     string `json:"mount"`
+	FSType    string `json:"fstype"`
+	SizeBytes uint64 `json:"size_bytes"`
+	UsedBytes uint64 `json:"used_bytes"`
+	// Whole은 경로가 파일 시스템의 root를 붙인 마운트 지점이고 모두 읽었다는 뜻이다. 그때만 사용량과 센 크기의
+	// 차이가 "찾지 못한 공간"이 된다. 하위 디렉터리나 bind mount를 재면 차이는 당연히 크다.
+	Whole bool `json:"whole"`
+}
+
+// duDeletedOpen은 같은 파일 시스템에서 지워졌지만 process가 아직 열고 있는 파일이다. 경로 아래만이 아니라
+// 파일 시스템 전체의 값이다. Partial이면 다른 사용자의 process를 읽지 못해 값이 하한이다.
+type duDeletedOpen struct {
+	Bytes   uint64          `json:"bytes"`
+	Files   uint64          `json:"files"`
+	Partial bool            `json:"partial"`
+	Top     []duDeletedFile `json:"top,omitempty"`
+}
+
+type duDeletedFile struct {
+	Path  string `json:"path"`
+	Bytes uint64 `json:"bytes"`
+	PID   int    `json:"pid"`
+	Comm  string `json:"comm"`
 }
 
 type duRow struct {
@@ -90,7 +123,9 @@ type duOther struct {
 // duSources는 탐색이 읽는 호스트 원천이다. 테스트는 마운트 표를 가짜로 넣어 실제 마운트를 만들지 않는다.
 type duSources struct {
 	mountinfo func() (string, error)
-	statfs    func(path string) (uint64, bool)
+	statfs    func(path string) (duUsage, bool)
+	// deletedOpen의 bool은 다른 사용자의 process를 읽지 못해 값이 하한이라는 뜻이다.
+	deletedOpen func() (map[uint64]*deletedOpenSummary, bool)
 }
 
 func runDu(args []string, version string) int {
@@ -170,7 +205,7 @@ func duResolveRoot(path string) (string, error) {
 	return filepath.EvalSymlinks(absolute)
 }
 
-// duDefaultRows는 결과 줄, 빈 줄, 나머지 줄, 건너뛴 마운트 몇 줄이 화면에 함께 들어가게 남긴다.
+// duDefaultRows는 결과 줄, 나머지 줄, 건너뛴 마운트 몇 줄, 파일 시스템 줄이 화면에 함께 들어가게 남긴다.
 func duDefaultRows(stdout *os.File, terminal bool) int {
 	if !terminal {
 		return duPipedRows
@@ -179,7 +214,7 @@ func duDefaultRows(stdout *os.File, terminal bool) int {
 	if err != nil || height <= 0 {
 		return duPipedRows
 	}
-	return max(5, height-8)
+	return max(5, height-12)
 }
 
 func duResult(result Result, options duOptions, scan duScan, timeout time.Duration) Result {
@@ -208,10 +243,22 @@ func duResult(result Result, options duOptions, scan duScan, timeout time.Durati
 		}
 		result.Evidence = append(result.Evidence, Evidence{Label: T("du.evidence.unreadable"), Value: strings.Join(scan.unreadable, "\n")})
 	}
+	// info.disk와 snapshot과 같은 기준이다. 읽지 못한 fd가 있어 하한이어도 그것만으로는 warn하지 않는다.
+	// root가 아니면 늘 하한이라 모든 실행이 warn이 된다.
+	filesystem, deleted := scan.filesystem, scan.deleted
+	if filesystem.SizeBytes > 0 && len(deleted.Top) > 0 && deleted.Bytes*100 >= filesystem.SizeBytes*infoDeletedOpenWarnPercent {
+		result.Status = StatusWarn
+		top := deleted.Top[0]
+		result.Warnings = append(result.Warnings, T("du.warning.deleted_open", formatSizeShort(deleted.Bytes), filesystem.Mount, top.Comm, top.PID))
+	}
 	result.Metrics = map[string]interface{}{
 		"path": options.root, "bytes": root.total, "entries": root.count, "directories": scan.directories,
 		"workers": options.workers, "partial": scan.partial, "unreadable": scan.unreadableCount,
 		"rows": rows, "other": other, "skipped_mounts": scan.mounts,
+		"filesystem": filesystem, "deleted_open": deleted,
+	}
+	if filesystem.Whole {
+		result.Metrics["not_found_bytes"] = scan.notFound
 	}
 	return result
 }
@@ -230,6 +277,11 @@ func duPrint(stdout io.Writer, options commonOptions, result Result, color bool,
 		fmt.Fprint(output, "\n"+formatDuRows(rows, other, width))
 		mounts, _ := result.Metrics["skipped_mounts"].([]duMount)
 		fmt.Fprint(output, formatDuMounts(mounts, options.verbose, width))
+		filesystem, _ := result.Metrics["filesystem"].(duFilesystem)
+		deleted, _ := result.Metrics["deleted_open"].(duDeletedOpen)
+		counted, _ := result.Metrics["bytes"].(uint64)
+		notFound, _ := result.Metrics["not_found_bytes"].(uint64)
+		fmt.Fprint(output, formatDuFilesystem(filesystem, deleted, counted, notFound, width))
 	}
 	if options.redact {
 		fmt.Fprint(stdout, redactIPAddresses(buffer.String()))
@@ -351,6 +403,49 @@ func formatDuMounts(mounts []duMount, verbose bool, width int) string {
 	}
 	if hidden := len(mounts) - len(shown); hidden > 0 {
 		builder.WriteString("  " + T("du.mounts.more", hidden) + "\n")
+	}
+	return builder.String()
+}
+
+// formatDuFilesystem은 경로가 속한 파일 시스템을 보인다. 경로가 파일 시스템 전체일 때만 df의 사용량과 센 크기를
+// 맞춰 보고, 하위 디렉터리를 쟀으면 지워졌지만 열린 파일이 있을 때만 그 줄을 보인다.
+func formatDuFilesystem(filesystem duFilesystem, deleted duDeletedOpen, counted, notFound uint64, width int) string {
+	if filesystem.Mount == "" {
+		return ""
+	}
+	var builder strings.Builder
+	title := T("du.fs.title", filesystem.Mount, filesystem.FSType, formatSizeShort(filesystem.UsedBytes), formatSizeShort(filesystem.SizeBytes))
+	builder.WriteString("\n" + duFit(title, width) + "\n")
+	var labels, values []string
+	if filesystem.Whole {
+		labels, values = append(labels, T("du.fs.counted")), append(values, formatSizeShort(counted))
+	}
+	// 하나도 찾지 못했어도 하한이면 줄을 남긴다. 줄이 없으면 지워진 파일이 없다고 읽힌다.
+	if filesystem.Whole || deleted.Files > 0 || deleted.Partial {
+		value := formatSizeShort(deleted.Bytes)
+		if deleted.Partial {
+			value = "≥" + value
+		}
+		if deleted.Files > 0 {
+			value += " " + T("du.fs.files", deleted.Files)
+		}
+		if deleted.Partial {
+			value += "  " + T("du.fs.partial_hint")
+		}
+		labels, values = append(labels, T("du.fs.deleted")), append(values, value)
+	}
+	if filesystem.Whole {
+		labels, values = append(labels, T("du.fs.not_found")), append(values, formatSizeShort(notFound)+"  "+T("du.fs.not_found_hint"))
+	}
+	labelWidth := 0
+	for _, label := range labels {
+		labelWidth = max(labelWidth, liveWidth(label))
+	}
+	for index, label := range labels {
+		builder.WriteString(duFit("  "+liveCell(label, labelWidth+2)+values[index], width) + "\n")
+	}
+	for _, file := range deleted.Top {
+		builder.WriteString(duFit(fmt.Sprintf("    %9s  pid %d %s  %s", formatSizeShort(file.Bytes), file.PID, file.Comm, file.Path), width) + "\n")
 	}
 	return builder.String()
 }

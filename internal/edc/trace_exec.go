@@ -117,6 +117,7 @@ func runTraceExec(args []string) int {
 		fmt.Fprintln(os.Stderr, "trace exec failed:", err)
 		return 1
 	}
+	execOOMNotice(summary)
 	if options.raw {
 		summary.EventCount = written
 		if err := encoder.Encode(summary); err != nil {
@@ -183,7 +184,15 @@ func runExecTraceScreen(options execTraceOptions) int {
 	report := aggregator.report(time.Since(started), finished.summary)
 	mutex.Unlock()
 	report.print()
+	execOOMNotice(finished.summary)
 	return 0
+}
+
+// execOOMNotice는 stderr로 가므로 --json -와 --raw의 stdout을 바꾸지 않는다.
+func execOOMNotice(summary execSummary) {
+	if summary.OOMUnavailable != "" {
+		fmt.Fprintln(os.Stderr, "trace exec: no oom events, attach oom/mark_victim:", summary.OOMUnavailable)
+	}
 }
 
 var execTracepoints = []string{"sched_process_exec", "sched_process_exit", "signal_generate"}
@@ -197,7 +206,8 @@ func execKernelSupported(spec *btf.Spec) error {
 		name    string
 		members []string
 	}{
-		{"task_struct", []string{"real_parent", "exit_code", "start_boottime", "flags", "mm", "cgroups"}},
+		{"task_struct", []string{"real_parent", "exit_code", "start_boottime", "flags", "mm", "cgroups", "signal"}},
+		{"signal_struct", []string{"oom_mm"}},
 		{"mm_struct", []string{"arg_start", "arg_end"}},
 		{"linux_binprm", []string{"filename"}},
 		{"css_set", []string{"dfl_cgrp"}},
@@ -277,7 +287,7 @@ func collectExecEvents(duration time.Duration, signalMask uint64, onEvent func(e
 		return execSummary{}, err
 	}
 	defer objects.Close()
-	links := make([]link.Link, 0, 3)
+	links := make([]link.Link, 0, 4)
 	defer func() {
 		for _, attached := range links {
 			_ = attached.Close()
@@ -300,6 +310,14 @@ func collectExecEvents(duration time.Duration, signalMask uint64, onEvent func(e
 			return execSummary{}, fmt.Errorf("attach tp_btf/%s: %w", hook.name, err)
 		}
 		links = append(links, attached)
+	}
+	// mark_victim은 tp_btf가 아니라 tracefs의 tracepoint로 붙인다. 5.15와 6.x의 인자 모양이 달라 tp_btf로는 둘을 함께 읽지
+	// 못한다. container에는 tracefs가 없을 수 있으므로, 붙지 않으면 oom event만 빼고 나머지를 계속 본다.
+	oomUnavailable := ""
+	if oom, err := link.Tracepoint("oom", "mark_victim", objects.ExecOomMarkVictim, nil); err != nil {
+		oomUnavailable = err.Error()
+	} else {
+		links = append(links, oom)
 	}
 	reader, err := ringbuf.NewReader(objects.Events)
 	if err != nil {
@@ -354,7 +372,7 @@ func collectExecEvents(duration time.Duration, signalMask uint64, onEvent func(e
 			}
 		}
 	}
-	summary := execSummary{TimestampNS: uint64(time.Now().UnixNano()), Event: "capture_summary", EventCount: count}
+	summary := execSummary{TimestampNS: uint64(time.Now().UnixNano()), Event: "capture_summary", EventCount: count, OOMUnavailable: oomUnavailable}
 	var counters execEventsExecCounters
 	if err := objects.Counters.Lookup(uint32(0), &counters); err == nil {
 		summary.LostEvents = counters.LostEvents

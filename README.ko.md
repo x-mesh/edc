@@ -2340,7 +2340,7 @@ kernel은 정상 동작 중에도 패킷을 해제합니다. 예를 들어 progr
 
 요약의 이유별 합계는 정확합니다. 한 CPU에서 1초에 1,000건이 넘게 버려지면 그 1초 동안은 event를 1,000건만 보내고 나머지는 세기만 합니다. 이 수는 요약에 `Sampled out`으로 나옵니다. process는 socket이 있는 패킷에만 붙습니다. 닫힌 port로 온 패킷에는 socket이 없습니다.
 
-Linux에서 `trace exec`를 사용하면 process가 뜨고 끝나는 것, 그리고 누가 신호를 보냈는지 볼 수 있습니다. `exec` event는 PID, 부모, 사용자, 명령줄의 처음 256 byte를 보여 줍니다. `exit` event는 종료 코드, process를 끝낸 신호, core dump 여부, 산 시간을 보여 줍니다. 산 시간은 task의 시작 시각에서 재므로 trace 전에 뜬 process에도 나옵니다. `signal` event는 신호, 보낸 쪽, 받는 쪽, kernel이 전달했는지 무시했는지를 보여 줍니다.
+Linux에서 `trace exec`를 사용하면 process가 뜨고 끝나는 것, 누가 신호를 보냈는지, OOM killer가 어느 process를 끝냈는지 볼 수 있습니다. `exec` event는 PID, 부모, 사용자, 명령줄의 처음 256 byte를 보여 줍니다. `exit` event는 종료 코드, process를 끝낸 신호, core dump 여부, 산 시간을 보여 줍니다. 산 시간은 task의 시작 시각에서 재므로 trace 전에 뜬 process에도 나옵니다. `signal` event는 신호, 보낸 쪽, 받는 쪽, kernel이 전달했는지 무시했는지를 보여 줍니다.
 
 ```bash
 ./bin/edc trace exec --duration 15s
@@ -2351,9 +2351,11 @@ Linux에서 `trace exec`를 사용하면 process가 뜨고 끝나는 것, 그리
 
 요약은 process 이름으로 행을 묶습니다. exec 수, exit 수, 0이 아닌 코드로 끝난 수, 신호로 끝난 수, 1초를 못 살고 끝난 수를 세고 평균과 가장 긴 수명을 보여 줍니다. `EXEC`와 `SHORT`가 함께 높으면 짧은 process가 쏟아지는 것입니다. 예를 들어 1초마다 shell을 띄우는 health check가 그렇습니다. 누가 띄우는지는 `--group-by parent`로 봅니다. 두 번째 표는 신호를 보낸 쪽과 받는 쪽으로 묶습니다. 결과 뒤의 `(kernel)`은 kernel이 만든 신호라는 뜻입니다. 예를 들어 fault 뒤의 `SIGSEGV`나 OOM killer의 `SIGKILL`이고, 이때 보낸 쪽은 그 순간 실행 중이던 process입니다.
 
+`oom` event는 OOM killer가 고른 process를 보여 줍니다. `TRIGGER` 칸은 메모리가 모자랄 때 메모리를 할당하려던 task입니다. Linux 6.x에서는 victim의 이름, anon·file·shmem RSS, `oom_score_adj`도 보여 줍니다. Linux 5.15의 kernel은 victim의 PID만 줍니다. victim의 `exit` event에는 `oom-killed`가 붙고, 요약의 `OOM` 칸이 이 종료를 셉니다. 이 표시는 process의 kernel 상태에서 읽으므로 Linux 5.15에서도 정확합니다. `oom` event에서 `--container`는 TRIGGER task의 cgroup으로 맞춥니다.
+
 기본으로는 process를 끝내거나 core를 남기는 신호만 기록합니다. `HUP`, `INT`, `QUIT`, `ILL`, `TRAP`, `ABRT`, `BUS`, `FPE`, `KILL`, `USR1`, `SEGV`, `USR2`, `PIPE`, `TERM`, `STKFLT`, `XCPU`, `XFSZ`, `SYS`입니다. `CHLD`나 `ALRM`처럼 늘 오가는 신호는 뺍니다. `--signal`에 쉼표로 나눈 이름이나 번호, `all`, `none`을 줍니다. 필터가 버린 신호 수는 요약의 `filtered_signals`에 나옵니다. `--process`는 이름이나 PID를 받고, 신호는 받는 쪽으로 맞춥니다. `--container`는 container 하나의 event만 남깁니다.
 
-명령줄은 exec 시점에 새 process의 메모리에서 읽으므로 program이 받은 인자이고, 나중에 바뀐 값은 아닙니다. 읽지 못하면 실행 파일 경로를 보여 줍니다. 256 byte보다 긴 줄은 `…`로 끝나고 `args_truncated`에 셉니다. 스레드의 종료는 `exit` event가 아니고, process의 마지막 스레드만 `exit`를 냅니다. kernel thread는 보이지 않습니다. `sched_process_exec`, `sched_process_exit`, `signal_generate` tracepoint와 BTF가 필요합니다.
+명령줄은 exec 시점에 새 process의 메모리에서 읽으므로 program이 받은 인자이고, 나중에 바뀐 값은 아닙니다. 읽지 못하면 실행 파일 경로를 보여 줍니다. 256 byte보다 긴 줄은 `…`로 끝나고 `args_truncated`에 셉니다. 스레드의 종료는 `exit` event가 아니고, process의 마지막 스레드만 `exit`를 냅니다. kernel thread는 보이지 않습니다. `sched_process_exec`, `sched_process_exit`, `signal_generate` tracepoint와 BTF가 필요합니다. `oom` event에는 tracefs의 `oom/mark_victim` tracepoint도 필요합니다. container처럼 tracefs가 없으면 알림을 출력하고 나머지 event를 봅니다.
 
 Linux에서 `trace syscall`을 사용하면 process별 system call 수와 시간을 볼 수 있습니다. edc는 kernel 안에서 세고, 끝날 때 요약을 한 번 출력합니다. `--slow`나 `--errors`를 주면 조건에 맞는 호출도 하나씩 출력합니다.
 

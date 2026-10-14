@@ -108,7 +108,7 @@ func runTraceShow(args []string) int {
 	return printTraceShow(file, options)
 }
 
-// readTraceShowFile은 JSONL을 한 줄씩 읽는다. protocol이 있는 줄은 네트워크·DB·socket·drop event이고, exec·exit·signal은
+// readTraceShowFile은 JSONL을 한 줄씩 읽는다. protocol이 있는 줄은 네트워크·DB·socket·drop event이고, exec·exit·signal·oom은
 // trace exec의 event다. 마지막 capture_summary 줄은 잃은 event 수를 준다.
 func readTraceShowFile(reader io.Reader) (*traceShowFile, error) {
 	file := &traceShowFile{}
@@ -138,7 +138,7 @@ func readTraceShowFile(reader io.Reader) (*traceShowFile, error) {
 			if err := json.Unmarshal(line, &file.summary); err != nil {
 				return nil, fmt.Errorf("line %d: %w", file.lines, err)
 			}
-		case head.Event == execEventExec || head.Event == execEventExit || head.Event == execEventSignal:
+		case head.Event == execEventExec || head.Event == execEventExit || head.Event == execEventSignal || head.Event == execEventOOM:
 			if err := file.setProtocol(traceShowExec, file.lines); err != nil {
 				return nil, err
 			}

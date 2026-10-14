@@ -292,7 +292,7 @@ command:
       - "trace io는 device, process, cgroup, event로 행을 묶습니다."
       - "trace io의 --slow는 요청 latency 하한입니다. 기본값은 1ms입니다."
       - "trace sched의 --slow는 span latency 하한입니다. 기본값은 1ms입니다."
-      - "trace exec는 exec, exit, signal을 보여 줍니다. --signal로 신호를 고릅니다."
+      - "trace exec는 exec, exit, signal, oom을 보여 줍니다. --signal로 신호를 고릅니다."
       - "trace show <raw.jsonl>은 저장한 --raw 파일의 요약을 root 없이 냅니다."
       - "--slow에는 20us, 500us, 2ms처럼 단위가 필요합니다. 숫자만 쓰면 실패합니다."
       - "그룹 화면은 event 수를 EVENT/s로 표시하고 socket payload traffic을 표시합니다."

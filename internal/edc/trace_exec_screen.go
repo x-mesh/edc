@@ -172,9 +172,9 @@ func (m execTraceScreenModel) View() tea.View {
 			aggregator.add(event)
 		}
 		report := aggregator.report(time.Second, execSummary{})
-		lines = append(lines, fmt.Sprintf("%-24s %6s %6s %8s %8s %6s %10s", strings.ToUpper(m.groupBy), "EXEC", "EXIT", "NONZERO", "SIGNALED", "SHORT", "AVG LIFE"))
+		lines = append(lines, fmt.Sprintf("%-24s %6s %6s %8s %8s %6s %4s %10s", strings.ToUpper(m.groupBy), "EXEC", "EXIT", "NONZERO", "SIGNALED", "SHORT", "OOM", "AVG LIFE"))
 		for _, row := range report.Rows {
-			lines = append(lines, fmt.Sprintf("%-24s %6d %6d %8d %8d %6d %10s", row.Group, row.Execs, row.Exits, row.NonZeroExits, row.Signaled, row.ShortLived, execOptionalLifetime(row.AvgLifetimeMS)))
+			lines = append(lines, fmt.Sprintf("%-24s %6d %6d %8d %8d %6d %4d %10s", row.Group, row.Execs, row.Exits, row.NonZeroExits, row.Signaled, row.ShortLived, row.OOMKilled, execOptionalLifetime(row.AvgLifetimeMS)))
 		}
 		if len(report.Signals) > 0 {
 			lines = append(lines, "", fmt.Sprintf("%-10s %-20s %-20s %-18s %6s", "SIGNAL", "SENDER", "TARGET", "RESULT", "COUNT"))

@@ -197,7 +197,8 @@ func execKernelSupported(spec *btf.Spec) error {
 		name    string
 		members []string
 	}{
-		{"task_struct", []string{"real_parent", "exit_code", "start_boottime", "flags", "mm", "cgroups"}},
+		{"task_struct", []string{"real_parent", "exit_code", "start_boottime", "flags", "mm", "cgroups", "signal"}},
+		{"signal_struct", []string{"oom_mm"}},
 		{"mm_struct", []string{"arg_start", "arg_end"}},
 		{"linux_binprm", []string{"filename"}},
 		{"css_set", []string{"dfl_cgrp"}},
@@ -214,7 +215,8 @@ func execKernelSupported(spec *btf.Spec) error {
 			return fmt.Errorf("kernel BTF has no field %s.%s", required.name, missing)
 		}
 	}
-	return traceTracepointsAvailable(spec, execTracepoints)
+	// mark_victim은 tp_btf가 아니라 tracefs의 tracepoint로 붙인다. 5.15와 6.x의 인자 모양이 달라 tp_btf로는 둘을 함께 읽지 못한다.
+	return traceTracepointsAvailable(spec, append(execTracepoints, "mark_victim"))
 }
 
 // execMissingBTFMembers는 이름 없는 안쪽 struct와 union도 들어가 본다. mm_struct는 field를 이름 없는 struct로 감싸므로
@@ -277,7 +279,7 @@ func collectExecEvents(duration time.Duration, signalMask uint64, onEvent func(e
 		return execSummary{}, err
 	}
 	defer objects.Close()
-	links := make([]link.Link, 0, 3)
+	links := make([]link.Link, 0, 4)
 	defer func() {
 		for _, attached := range links {
 			_ = attached.Close()
@@ -301,6 +303,11 @@ func collectExecEvents(duration time.Duration, signalMask uint64, onEvent func(e
 		}
 		links = append(links, attached)
 	}
+	oom, err := link.Tracepoint("oom", "mark_victim", objects.ExecOomMarkVictim, nil)
+	if err != nil {
+		return execSummary{}, fmt.Errorf("attach tracepoint/oom/mark_victim: %w", err)
+	}
+	links = append(links, oom)
 	reader, err := ringbuf.NewReader(objects.Events)
 	if err != nil {
 		return execSummary{}, err

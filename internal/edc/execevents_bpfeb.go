@@ -38,6 +38,10 @@ type execEventsExecRecord struct {
 	ArgsLen     uint16
 	Args        [256]int8
 	_           [4]byte
+	TotalVmKb   uint64
+	AnonRssKb   uint64
+	FileRssKb   uint64
+	ShmemRssKb  uint64
 }
 
 // Names of all BPF objects in the ELF.
@@ -46,6 +50,7 @@ type execEventsExecRecord struct {
 const (
 	execEventsMapCounters            = "counters"
 	execEventsMapEvents              = "events"
+	execEventsProgExecOomMarkVictim  = "exec_oom_mark_victim"
 	execEventsProgExecProcessExec    = "exec_process_exec"
 	execEventsProgExecProcessExit    = "exec_process_exit"
 	execEventsProgExecSignalGenerate = "exec_signal_generate"
@@ -96,6 +101,7 @@ type execEventsSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type execEventsProgramSpecs struct {
+	ExecOomMarkVictim  *ebpf.ProgramSpec `ebpf:"exec_oom_mark_victim"`
 	ExecProcessExec    *ebpf.ProgramSpec `ebpf:"exec_process_exec"`
 	ExecProcessExit    *ebpf.ProgramSpec `ebpf:"exec_process_exit"`
 	ExecSignalGenerate *ebpf.ProgramSpec `ebpf:"exec_signal_generate"`
@@ -162,6 +168,7 @@ type execEventsVariables struct {
 //
 // It can be passed to loadExecEventsObjects or ebpf.CollectionSpec.LoadAndAssign.
 type execEventsPrograms struct {
+	ExecOomMarkVictim  *ebpf.Program `ebpf:"exec_oom_mark_victim"`
 	ExecProcessExec    *ebpf.Program `ebpf:"exec_process_exec"`
 	ExecProcessExit    *ebpf.Program `ebpf:"exec_process_exit"`
 	ExecSignalGenerate *ebpf.Program `ebpf:"exec_signal_generate"`
@@ -169,6 +176,7 @@ type execEventsPrograms struct {
 
 func (p *execEventsPrograms) Close() error {
 	return _ExecEventsClose(
+		p.ExecOomMarkVictim,
 		p.ExecProcessExec,
 		p.ExecProcessExit,
 		p.ExecSignalGenerate,

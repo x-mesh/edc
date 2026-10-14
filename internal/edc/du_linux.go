@@ -5,6 +5,7 @@ package edc
 import (
 	"context"
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -20,21 +21,57 @@ func hostDuSources() (duSources, bool) {
 			data, err := os.ReadFile("/proc/self/mountinfo")
 			return string(data), err
 		},
-		statfs: duStatfsUsed,
+		statfs: duStatfs,
+		deletedOpen: func() (map[uint64]*deletedOpenSummary, bool) {
+			return scanDeletedOpen("/proc", duDeletedOpenStat, infoDeletedOpenFDLimit), duProcPartial("/proc/1/fd")
+		},
 	}, true
 }
 
-// duStatfsUsed는 df의 Used와 같은 값이다. root 예약 block은 사용 중으로 세지 않는다.
-func duStatfsUsed(path string) (uint64, bool) {
+// duProcPartial은 다른 process의 fd link를 읽을 수 없는지 본다. scanDeletedOpen은 파일을 찾은 장치에만 Partial을
+// 적으므로, 하나도 찾지 못했을 때도 값이 하한인지 알려고 PID 1의 link를 읽어 본다. CAP_SYS_PTRACE가 없으면
+// 목록은 읽혀도 link는 EACCES이므로 목록이 아니라 link를 읽는다.
+func duProcPartial(fdDir string) bool {
+	entries, err := os.ReadDir(fdDir)
+	if err != nil {
+		return true
+	}
+	for _, entry := range entries {
+		_, err := os.Readlink(filepath.Join(fdDir, entry.Name()))
+		if err == nil {
+			return false
+		}
+		if !errors.Is(err, fs.ErrNotExist) {
+			return true
+		}
+	}
+	return false
+}
+
+// duStatfs의 Used는 df의 Used와 같은 값이다. root 예약 block은 사용 중으로 세지 않는다.
+func duStatfs(path string) (duUsage, bool) {
 	var stat unix.Statfs_t
 	if err := unix.Statfs(path, &stat); err != nil {
-		return 0, false
+		return duUsage{}, false
 	}
 	size := uint64(stat.Frsize)
 	if size == 0 {
 		size = uint64(stat.Bsize)
 	}
-	return (stat.Blocks - stat.Bfree) * size, true
+	return duUsage{Size: stat.Blocks * size, Used: (stat.Blocks - stat.Bfree) * size}, true
+}
+
+// duDeletedOpenStat은 info와 달리 파일 길이가 아니라 할당된 block을 크기로 준다. df의 사용량, du의 합과
+// 같은 단위여야 차이를 맞춰 볼 수 있다.
+func duDeletedOpenStat(path string) (deletedOpenStat, error) {
+	var stat unix.Stat_t
+	if err := unix.Stat(path, &stat); err != nil {
+		return deletedOpenStat{}, err
+	}
+	return deletedOpenStat{
+		Dev: stat.Dev, Inode: stat.Ino, Size: uint64(stat.Blocks) * 512, Links: uint64(stat.Nlink),
+		Regular: stat.Mode&unix.S_IFMT == unix.S_IFREG,
+	}, nil
 }
 
 type duInode struct{ dev, ino uint64 }
@@ -77,13 +114,13 @@ func duWalk(ctx context.Context, options duOptions, sources duSources) (duScan, 
 		mountPoints: map[string]diskMount{}, files: duFiles{limit: options.rows}, seen: map[duInode]struct{}{},
 	}
 	var warnings []string
+	text, err := sources.mountinfo()
+	walker.mounts = parseMountInfo(text)
 	if !options.crossMounts {
 		// 장치 번호만 보면 같은 파일 시스템을 다시 붙인 bind mount를 지나쳐 같은 파일을 두 번 센다.
-		text, err := sources.mountinfo()
 		if err != nil {
 			warnings = append(warnings, T("du.warning.no_mountinfo", err.Error()))
 		}
-		walker.mounts = parseMountInfo(text)
 		for _, mount := range walker.mounts {
 			if mount.Point != options.root && pathUnder(mount.Point, options.root) && !duSelfBind(walker.mounts, mount) {
 				walker.mountPoints[mount.Point] = mount
@@ -99,10 +136,43 @@ func duWalk(ctx context.Context, options duOptions, sources duSources) (duScan, 
 	duFinish(root, walker.files.heap)
 	sort.Slice(walker.skipped, func(i, j int) bool { return walker.skipped[i].Path < walker.skipped[j].Path })
 	sort.Strings(walker.unreadable)
-	return duScan{
+	scan := duScan{
 		root: root, directories: walker.directories.Load(), mounts: walker.skipped, unreadable: walker.unreadable,
 		unreadableCount: walker.unreadableCount, partial: walker.stopped.Load(), warnings: warnings,
-	}, nil
+	}
+	duReadFilesystem(&scan, options, sources, walker.mounts, stat.Dev)
+	return scan, nil
+}
+
+// duReadFilesystem은 경로가 속한 파일 시스템의 크기, 사용량, 지워졌지만 열린 파일을 채운다. 사용량과 센 크기의
+// 차이는 경로가 파일 시스템의 root를 붙인 마운트 지점이고, 모든 디렉터리와 fd를 읽었을 때만 계산한다.
+func duReadFilesystem(scan *duScan, options duOptions, sources duSources, mounts []diskMount, dev uint64) {
+	mount, found := findDiskMount(mounts, options.root)
+	usage, ok := sources.statfs(options.root)
+	if !found || !ok {
+		return
+	}
+	scan.filesystem = duFilesystem{
+		Mount: mount.Point, FSType: mount.FSType, Source: mount.Source, Root: mount.Root, SizeBytes: usage.Size, UsedBytes: usage.Used,
+	}
+	summaries, partial := sources.deletedOpen()
+	scan.deleted.Partial = partial
+	if summary := summaries[dev]; summary != nil {
+		scan.deleted.Bytes, scan.deleted.Files = summary.Bytes, summary.Files
+		scan.deleted.Partial = partial || summary.Partial
+		for _, file := range summary.Top {
+			scan.deleted.Top = append(scan.deleted.Top, duDeletedFile{Path: file.Path, Bytes: file.Size, PID: file.PID, Comm: file.Comm})
+		}
+	}
+	// overlay의 statfs는 upper 파일 시스템 전체를 답하고, Root가 /가 아닌 마운트는 파일 시스템의 일부만 붙인 것이다.
+	sameDevice := mount.Major == int(unix.Major(dev)) && mount.Minor == int(unix.Minor(dev))
+	scan.filesystem.Whole = mount.Point == options.root && mount.Root == "/" && mount.FSType != "overlay" && sameDevice &&
+		!options.crossMounts && !scan.partial && scan.unreadableCount == 0 && !scan.deleted.Partial
+	if scan.filesystem.Whole {
+		if accounted := scan.root.total + scan.deleted.Bytes; usage.Used > accounted {
+			scan.notFound = usage.Used - accounted
+		}
+	}
 }
 
 // sequential은 worker가 하나일 때 goroutine 없이 탐색한다. 디렉터리마다 다른 thread로 차례를 넘기면
@@ -229,8 +299,8 @@ func (walker *duWalker) boundary(path string, dev uint64) bool {
 	rootMajor, rootMinor := int(unix.Major(walker.rootDev)), int(unix.Minor(walker.rootDev))
 	skipped.Shared = !listed || mount.FSType == "overlay" || (mount.Major == rootMajor && mount.Minor == rootMinor)
 	if !skipped.Shared {
-		used, ok := walker.sources.statfs(path)
-		skipped.UsedBytes, skipped.Shared = used, !ok
+		usage, ok := walker.sources.statfs(path)
+		skipped.UsedBytes, skipped.Shared = usage.Used, !ok
 	}
 	if skipped.FSType == "" {
 		skipped.FSType = "-"

@@ -11,9 +11,18 @@ du:
     unreadable_root: "%d directories are unreadable and not counted, run as root to count them"
     unreadable: "%d directories are unreadable and not counted"
     no_mountinfo: "cannot read the mount table (%s), so bind mounts below the path are counted"
+    deleted_open: "%s in deleted files that processes still hold open on %s, the largest by %s (pid %d)"
   evidence:
     unreadable: "unreadable directories"
   other: "(%d other entries)"
+  fs:
+    title: "file system  %s  %s  %s used of %s"
+    counted: "counted"
+    deleted: "deleted, open"
+    files: "in %d files"
+    not_found: "not found"
+    not_found_hint: "files under a mount point, or file system metadata"
+    partial_hint: "run as root to read every process"
   mounts:
     title: "skipped mounts"
     used: "%s used"

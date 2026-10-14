@@ -152,6 +152,7 @@ command:
       - "It counts disk blocks as du does. A hard link counts once."
       - "It stays on one file system and lists the mounts that it skipped."
       - "A bind or overlay mount shares a file system, so its size shows as -."
+      - "It also shows deleted files that a process still holds open."
   where:
     summary: "The near region and the shape of this network"
     option:

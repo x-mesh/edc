@@ -152,6 +152,7 @@ command:
       - "du と同じく disk block を数え、hard link は一度だけ数えます。"
       - "一つのファイルシステムの中だけを数え、スキップしたマウントを表示します。"
       - "bind・overlay mount はファイルシステムを共有するため、サイズを - と表示します。"
+      - "削除済みでも process が開いているファイルも表示します。"
   where:
     summary: "近い地域とこの網の姿"
     option:

@@ -19,10 +19,10 @@ typedef __u32 __wsum;
 #define BPF_MAP_TYPE_RINGBUF 27
 #define NSEC_PER_MSEC 1000000ULL
 #define IO_PENDING_MAX 65536
-#define IO_COUNTER_MAX 5
+#define IO_COUNTER_MAX 6
 #define BPF_NOEXIST 1
 
-enum io_counter { IO_MAP_FULL, IO_UNMATCHED_COMPLETE, IO_INCOMPLETE, IO_REQUEUE, IO_RING_LOST };
+enum io_counter { IO_MAP_FULL, IO_UNMATCHED_COMPLETE, IO_INCOMPLETE, IO_REQUEUE, IO_RING_LOST, IO_BELOW_THRESHOLD };
 enum io_stage { IO_INSERT = 1, IO_ISSUE = 2 };
 
 struct block_device { __u32 bd_dev; } __attribute__((preserve_access_index));
@@ -63,7 +63,7 @@ SEC("tp_btf/block_rq_complete") int complete(unsigned long long *ctx) { struct r
 	if ((__u32)ctx[2] < BPF_CORE_READ(rq, __data_len)) return 0;
 	__u64 now = bpf_ktime_get_ns(); if (value->stage != IO_ISSUE || !value->issue_ns) { count(IO_INCOMPLETE); bpf_map_delete_elem(&pending, &rq); return 0; }
 	// I/O scheduler가 none인 장치는 대부분의 요청을 block_rq_insert 없이 바로 issue한다. 그 요청은 queue 구간이 없고, 주인은 issue 시점의 문맥이다.
-	__u8 inserted = value->insert_ns != 0; __u64 total = now - (inserted ? value->insert_ns : value->issue_ns); if (total < minimum_latency_ns) { bpf_map_delete_elem(&pending, &rq); return 0; }
+	__u8 inserted = value->insert_ns != 0; __u64 total = now - (inserted ? value->insert_ns : value->issue_ns); if (total < minimum_latency_ns) { count(IO_BELOW_THRESHOLD); bpf_map_delete_elem(&pending, &rq); return 0; }
 	struct io_record *record = bpf_ringbuf_reserve(&events, sizeof(*record), 0); if (!record) { count(IO_RING_LOST); bpf_map_delete_elem(&pending, &rq); return 0; }
 	record->timestamp_ns = now; record->cgroup_id = value->cgroup_id; record->bytes = value->bytes; record->queue_ns = inserted ? value->issue_ns - value->insert_ns : 0; record->service_ns = now - value->issue_ns; record->total_ns = total; record->dev = value->dev; record->pid = value->pid; __builtin_memcpy(record->comm, value->comm, sizeof(record->comm)); __builtin_memcpy(record->rwbs, value->rwbs, sizeof(record->rwbs)); record->attribution = inserted ? IO_INSERT : IO_ISSUE; bpf_ringbuf_submit(record, 0); bpf_map_delete_elem(&pending, &rq); return 0;
 }

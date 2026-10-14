@@ -89,6 +89,7 @@ func collectIOEvents(options ioTraceOptions, onEvent func(ioEvent) error, stop <
 			return ioSummary{}, fmt.Errorf("read I/O counters: %w", err)
 		}
 		summary.MapFull, summary.UnmatchedCompletion, summary.Incomplete, summary.Requeue, summary.LostEvents = counters.Values[0], counters.Values[1], counters.Values[2], counters.Values[3], counters.Values[4]
+		summary.OmittedBelowThreshold = counters.Values[5]
 		return summary, nil
 	}
 	for {

@@ -15,7 +15,7 @@ import (
 
 type ioEventsIoCounters struct {
 	_      structs.HostLayout
-	Values [5]uint64
+	Values [6]uint64
 }
 
 type ioEventsIoPending struct {

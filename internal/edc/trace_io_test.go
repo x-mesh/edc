@@ -15,7 +15,7 @@ func ioFixtureEvents() []ioEvent {
 }
 
 func TestIOGroupedReportHasRowsAndLatencyJSON(t *testing.T) {
-	report := ioGroupedReportFor(ioFixtureEvents(), ioSummary{EventCount: 2}, traceGroupByDevice)
+	report := ioGroupedReportFor(ioFixtureEvents(), ioSummary{EventCount: 2, OmittedBelowThreshold: 196}, traceGroupByDevice)
 	if report.GroupBy != traceGroupByDevice || len(report.Rows) != 2 || report.Rows[0].Group != "8:0" || report.Rows[0].WriteOps != 1 || report.Rows[1].ReadOps != 1 {
 		t.Fatalf("report = %+v", report)
 	}
@@ -30,6 +30,9 @@ func TestIOGroupedReportHasRowsAndLatencyJSON(t *testing.T) {
 	queue, ok := value["queue"].(map[string]any)
 	if !ok || queue["average_ms"] != 2.5 || queue["p95_ms"] != 4.0 || queue["max_ms"] != 4.0 {
 		t.Fatalf("queue JSON = %#v", value["queue"])
+	}
+	if value["omitted_below_threshold"] != 196.0 {
+		t.Fatalf("omitted_below_threshold JSON = %#v", value["omitted_below_threshold"])
 	}
 	if rows, ok := value["rows"].([]any); !ok || len(rows) != 2 {
 		t.Fatalf("rows JSON = %#v", value["rows"])

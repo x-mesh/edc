@@ -116,10 +116,11 @@ jobs:
         shell: bash
         working-directory: internal/edc
         run: |
-          sudo env "PATH=$PATH" EDC_TEST_GO="$(command -v go)" ../../edc.test -test.run '^TestTraceSyscall(CountsTheSelectedProcesses|LeavesOutEdcItself|NamesCompatCalls|PrintsFailedAndSlowCalls)$' -test.count=1 -test.v 2>&1 | tee syscall.log
+          sudo env "PATH=$PATH" EDC_TEST_GO="$(command -v go)" ../../edc.test -test.run '^TestTraceSyscall(CountsTheSelectedProcesses|LeavesOutEdcItself|NamesCompatCalls|PrintsFailedAndSlowCalls|MarksOnlyLongerPathsAsTruncated)$' -test.count=1 -test.v 2>&1 | tee syscall.log
           grep -q -- '--- PASS: TestTraceSyscallCountsTheSelectedProcesses' syscall.log
           grep -q -- '--- PASS: TestTraceSyscallLeavesOutEdcItself' syscall.log
           grep -q -- '--- PASS: TestTraceSyscallPrintsFailedAndSlowCalls' syscall.log
+          grep -q -- '--- PASS: TestTraceSyscallMarksOnlyLongerPathsAsTruncated' syscall.log
           if [ "$(uname -m)" = x86_64 ]; then grep -q -- '--- PASS: TestTraceSyscallNamesCompatCalls' syscall.log; fi
 
       - uses: actions/setup-go@v6

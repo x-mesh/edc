@@ -1109,7 +1109,7 @@ process 패널은 `PID`, `COMMAND`, `STATE`, `CPU%`, `MEM`을 보여 줍니다. 
 
 terminal이 60열 이상이면 `READ`와 `WRITE` 열을 붙입니다. disk 보기와 `--process`에서는 항상 붙이고, 다른 보기에서는 값이 있을 때만 붙입니다. `/proc/<pid>/io`에서 읽은, 저장 장치에 닿은 초당 byte입니다. 값을 읽지 못하면 `—`로 표시합니다. 다른 사용자의 process까지 보려면 `edc top`을 root로 실행합니다.
 
-`MEM`은 process가 차지한 메모리입니다. macOS는 압축된 메모리까지 포함하는 physical footprint, Linux는 RSS에 swap으로 나간 양(`VmSwap`)을 더한 값입니다. RSS는 압축되거나 swap으로 나간 page를 세지 않으므로 누수로 커진 process도 RSS는 작게 보일 수 있습니다. `MEM`을 읽지 못하면 그 자리에 RSS를 흐린 색으로 보여 줍니다. macOS에서는 root나 `_windowserver`처럼 다른 사용자 소유인 process의 값을 읽지 못합니다.
+`MEM`은 process가 차지한 메모리입니다. macOS는 압축된 메모리까지 포함하는 physical footprint, Linux는 RSS에 swap으로 나간 양(`VmSwap`)을 더한 값입니다. RSS는 압축되거나 swap으로 나간 page를 세지 않으므로 누수로 커진 process도 RSS는 작게 보일 수 있습니다. `MEM`을 읽지 못하면 그 자리에 RSS를 흐린 색으로 보여 줍니다. macOS에서는 root나 `_windowserver`처럼 다른 사용자 소유인 process의 값을 읽지 못합니다. `sudo`로 실행하면 읽습니다.
 
 후보 순위는 기본이 CPU, memory 보기는 `MEM`, disk 보기는 I/O입니다. disk 보기는 모든 process의 I/O를 읽으므로 CPU는 낮고 I/O가 큰 process도 후보에 오릅니다. 다른 보기는 후보의 I/O만 읽습니다. 목록을 자르기 전에 CPU, `MEM`, `iowait` 상태 기준 상위 5개를 각각 보존하고, disk 보기는 I/O 상위 5개도 보존합니다. 후보는 3개를 표시하고, terminal이 40행 이상이면 5개를 표시합니다.
 

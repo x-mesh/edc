@@ -635,7 +635,7 @@ func TestCheckPutsTheGrowCommandOnItsOwnLine(t *testing.T) {
 	if !strings.Contains(plain.String(), "\n      next: edc disk grow '/mnt data'\n") {
 		t.Fatalf("plain = %q", plain.String())
 	}
-	if !strings.Contains(colored.String(), "next: \033[1medc disk grow '/mnt data'\033[0m") {
+	if !strings.Contains(colored.String(), "next:\033[0m \033[1;36medc disk grow '/mnt data'\033[0m") {
 		t.Fatalf("colored = %q", colored.String())
 	}
 }

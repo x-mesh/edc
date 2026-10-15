@@ -154,7 +154,7 @@ func (model doctorModel) View() tea.View {
 			continue
 		}
 		// spinner glyph는 여러 byte라 폭 기준으로 채워야 결과 줄과 열이 맞는다.
-		builder.WriteString(fmt.Sprintf(resultLineFormat, liveCell(model.spinner.View(), resultStatusWidth), row.name, ""))
+		builder.WriteString(fmt.Sprintf(resultLineFormat, resultPendingStatus(model.spinner.View(), model.color), row.name, ""))
 	}
 	if !model.finished {
 		builder.WriteString(model.statusLine())

@@ -378,14 +378,8 @@ func (table *historyColorTable) add(line string, paints []historyPaint) {
 
 // String은 tabwriter와 같은 배치(가장 긴 칸 + 2칸, 마지막 칸은 채우지 않음)를 공용 색 표로 그린다.
 func (table historyColorTable) String() string {
-	if len(table.rows) == 0 {
-		return ""
-	}
-	body := make([]textTableRow, 0, len(table.rows)-1)
-	for _, row := range table.rows[1:] {
-		body = append(body, textTableRow{cells: row})
-	}
-	return table.style.colorTable(table.rows[0], body, func(row, column int, _, shown string) string {
+	// 첫 열이 다른 history 명령에 넣는 run ID라 줄이지 않는다.
+	return table.style.colorTableRows(table.rows, false, func(row, column int, _, shown string) string {
 		if paints := table.paints[row+1]; column < len(paints) && paints[column] != nil {
 			return paints[column](shown)
 		}

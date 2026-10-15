@@ -1594,7 +1594,7 @@ func formatCleanNotMeasured(verbose bool, width int, style cleanStyle) string {
 // cleanStyle은 색을 쓰는 터미널에서만 글자를 칠한다. false면 모든 메서드가 받은 글자를 그대로 돌려줘 평문이 바뀌지 않는다.
 type cleanStyle bool
 
-// text는 같은 색 규칙을 쓰는 textStyle이다. dim, warn, phrase는 textStyle의 구현을 그대로 쓴다.
+// cleanStyle은 bool로 둔다. clean 테스트가 formatter에 false를 그대로 넘긴다.
 func (style cleanStyle) text() textStyle { return textStyle{color: bool(style)} }
 
 func (style cleanStyle) dim(text string) string { return style.text().dim(text) }

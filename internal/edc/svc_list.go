@@ -236,11 +236,8 @@ func formatSvcListTable(items []svcListItem, style textStyle) string {
 // 칸 폭은 평문으로 정한 뒤 칠해, 색을 써도 열이 맞는다.
 func formatListTable(rows [][]string, colors [][]string, style textStyle) string {
 	if style.color {
-		body := make([]textTableRow, 0, len(rows)-1)
-		for _, row := range rows[1:] {
-			body = append(body, textTableRow{cells: row})
-		}
-		return style.colorTable(rows[0], body, func(row, column int, _, shown string) string {
+		// 첫 열이 unit이나 container 이름이라 줄이지 않는다.
+		return style.colorTableRows(rows, false, func(row, column int, _, shown string) string {
 			if column < len(colors[row+1]) {
 				return style.paint(shown, colors[row+1][column])
 			}

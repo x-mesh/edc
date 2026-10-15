@@ -162,10 +162,12 @@ const (
 )
 
 // colorTable은 색을 쓰는 터미널의 표다. 칸 폭은 색을 입히기 전의 글자로 재고, 칸을 채운 뒤 색을 입혀 열이 어긋나지
-// 않는다. 첫 줄은 칸마다 회색인 머리글이고 마지막 열은 채우지 않는다. 터미널보다 넓으면 가장 넓은 열부터 줄여, 줄 끝을 자를
-// 때처럼 오른쪽 열을 통째로 잃지 않는다. paint는 자르기 전의 칸(original)과 화면에 둘 칸(shown)을 받아 색을 입힌다.
-// row는 머리글을 뺀 행 번호다. paint가 nil이면 칸을 그대로 둔다.
-func (style textStyle) colorTable(header []string, rows []textTableRow, paint func(row, column int, original, shown string) string) string {
+// 않는다. 첫 줄은 칸마다 회색인 머리글이고 행의 마지막 칸은 채우지 않는다. paint는 자르기 전의 칸(original)과 화면에 둘
+// 칸(shown)을 받아 색을 입힌다. row는 머리글을 뺀 행 번호다. paint가 nil이면 칸을 그대로 둔다.
+//
+// shrink면 터미널보다 넓을 때 가장 넓은 열부터 줄여, 오른쪽 열을 통째로 잃지 않는다. 가장 넓은 열이 사용자가 복사해 쓰는
+// 식별자(run ID, unit 이름)인 표는 shrink를 끄고 줄 끝을 자른다. 식별자가 …로 잘리면 다음 명령에 넣을 수 없다.
+func (style textStyle) colorTable(header []string, rows []textTableRow, shrink bool, paint func(row, column int, original, shown string) string) string {
 	widths := make([]int, len(header))
 	for index, title := range header {
 		widths[index] = liveWidth(title)
@@ -178,9 +180,11 @@ func (style textStyle) colorTable(header []string, rows []textTableRow, paint fu
 			widths[index] = max(widths[index], liveWidth(cell))
 		}
 	}
-	textTableShrink(widths, header, style.width)
-	pad := func(text string, index int) string {
-		if index == len(widths)-1 {
+	if shrink {
+		textTableShrink(widths, header, style.width)
+	}
+	pad := func(text string, index, cells int) string {
+		if index == cells-1 {
 			return ""
 		}
 		return strings.Repeat(" ", max(widths[index]-liveWidth(text), 0)) + textTableGap
@@ -188,7 +192,7 @@ func (style textStyle) colorTable(header []string, rows []textTableRow, paint fu
 	var builder strings.Builder
 	head := ""
 	for index, title := range header {
-		head += style.dim(title) + pad(title, index)
+		head += style.dim(title) + pad(title, index, len(header))
 	}
 	builder.WriteString(style.fit(head) + "\n")
 	for rowIndex, row := range rows {
@@ -206,11 +210,23 @@ func (style textStyle) colorTable(header []string, rows []textTableRow, paint fu
 			if paint != nil {
 				painted = paint(rowIndex, index, cell, shown)
 			}
-			line += painted + pad(shown, index)
+			line += painted + pad(shown, index, len(row.cells))
 		}
 		builder.WriteString(style.fit(line) + "\n")
 	}
 	return builder.String()
+}
+
+// colorTableRows는 첫 행이 머리글인 [][]string 표를 colorTable로 그린다. paint의 row는 머리글을 뺀 행 번호다.
+func (style textStyle) colorTableRows(rows [][]string, shrink bool, paint func(row, column int, original, shown string) string) string {
+	if len(rows) == 0 {
+		return ""
+	}
+	body := make([]textTableRow, 0, len(rows)-1)
+	for _, row := range rows[1:] {
+		body = append(body, textTableRow{cells: row})
+	}
+	return style.colorTable(rows[0], body, shrink, paint)
 }
 
 // textTableShrink는 표가 width보다 넓으면 가장 넓은 열부터 한 칸씩 줄인다. 수를 담는 좁은 열은 그대로 남는다.

@@ -263,7 +263,7 @@ func (style traceSummaryStyle) writeTable(out io.Writer, table traceTable) {
 	for _, row := range table.rows {
 		rows = append(rows, textTableRow{cells: row.cells, note: row.note})
 	}
-	io.WriteString(out, style.colorTable(table.titles, rows, func(row, column int, original, shown string) string {
+	io.WriteString(out, style.colorTable(table.titles, rows, true, func(row, column int, original, shown string) string {
 		title := ""
 		if column < len(table.titles) {
 			title = table.titles[column]

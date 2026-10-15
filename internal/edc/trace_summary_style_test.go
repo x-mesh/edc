@@ -126,8 +126,8 @@ func TestTraceSummaryTablesColorTheProblemColumns(t *testing.T) {
 			t.Errorf("%s misses %q:\n%q", test.fixture, richExpect(test.want), output[test.fixture])
 		}
 	}
-	// 표 제목은 회색이고, 수와 이름은 기본색이다.
-	if !strings.Contains(output["redis"], richExpect("\x1b[90mCOMMAND  COUNT  ERRORS  UNANSWERED  AVG    MAX    PROCESS\x1b[0m\nGET      3      0       0           0.2\x1b[90mms\x1b[0m")) {
+	// 표 제목은 칸마다 회색이고, 수와 이름은 기본색이다.
+	if !strings.Contains(output["redis"], richExpect("\x1b[90mCOMMAND\x1b[0m  \x1b[90mCOUNT\x1b[0m  \x1b[90mERRORS\x1b[0m  \x1b[90mUNANSWERED\x1b[0m  \x1b[90mAVG\x1b[0m    \x1b[90mMAX\x1b[0m    \x1b[90mPROCESS\x1b[0m\nGET      3      0       0           0.2\x1b[90mms\x1b[0m")) {
 		t.Errorf("redis table:\n%q", output["redis"])
 	}
 }

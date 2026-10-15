@@ -1594,19 +1594,12 @@ func formatCleanNotMeasured(verbose bool, width int, style cleanStyle) string {
 // cleanStyle은 색을 쓰는 터미널에서만 글자를 칠한다. false면 모든 메서드가 받은 글자를 그대로 돌려줘 평문이 바뀌지 않는다.
 type cleanStyle bool
 
-func (style cleanStyle) dim(text string) string {
-	if style {
-		return richDim(text)
-	}
-	return text
-}
+// cleanStyle은 bool로 둔다. clean 테스트가 formatter에 false를 그대로 넘긴다.
+func (style cleanStyle) text() textStyle { return textStyle{color: bool(style)} }
 
-func (style cleanStyle) warn(text string) string {
-	if style {
-		return richPaint(text, richYellow, false)
-	}
-	return text
-}
+func (style cleanStyle) dim(text string) string { return style.text().dim(text) }
+
+func (style cleanStyle) warn(text string) string { return style.text().warn(text) }
 
 func (style cleanStyle) size(text string, bytes uint64, bold bool) string {
 	if style {
@@ -1626,14 +1619,8 @@ func (style cleanStyle) state(text, status string) string {
 	return style.dim(text)
 }
 
-// phrase는 key의 문장을 회색으로, %s 자리의 value를 color로 칠한다. 문장 전체를 회색으로 감싸면 value의 reset 뒤가
-// 회색을 잃는다.
 func (style cleanStyle) phrase(key, value, color string) string {
-	if !style {
-		return T(key, value)
-	}
-	before, after, _ := strings.Cut(T(key, "\x00"), "\x00")
-	return richDim(before) + richPaint(value, color, false) + richDim(after)
+	return style.text().phrase(key, value, color)
 }
 
 // wrap은 cleanWrap처럼 줄을 바꾼 뒤 줄마다 회색으로 칠한다. 칠한 뒤에 바꾸면 둘째 줄부터 색이 빠진다.

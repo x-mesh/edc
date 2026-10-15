@@ -295,3 +295,61 @@ func TestDoctorGuidanceColorKeepsText(t *testing.T) {
 		}
 	}
 }
+
+// 공용 색 표는 칸을 채운 뒤 칠해 평문과 같은 열에 두고, 좁으면 가장 넓은 열부터 줄인다.
+func TestColorTableAlignsShrinksAndPaints(t *testing.T) {
+	header := []string{"NAME", "STATE", "N"}
+	rows := []textTableRow{
+		{cells: []string{"a-very-long-service-name.service", "failed", "1"}},
+		{note: "1 more"},
+		{cells: []string{"short", "active", "22"}},
+	}
+	var originals []string
+	paint := func(row, column int, original, shown string) string {
+		if column == 1 {
+			originals = append(originals, original)
+			return richPaint(shown, richRed, false)
+		}
+		return shown
+	}
+	wide := textStyle{color: true, width: 200}.colorTable(header, rows, true, paint)
+	if got := ansi.Strip(wide); got != "NAME                              STATE   N\na-very-long-service-name.service  failed  1\n1 more\nshort                             active  22\n" {
+		t.Errorf("wide = %q", got)
+	}
+	if !strings.Contains(wide, richPaint("failed", richRed, false)) || !strings.Contains(wide, richDim("1 more")) || !strings.Contains(wide, richDim("NAME")) {
+		t.Errorf("colors = %q", wide)
+	}
+	narrow := textStyle{color: true, width: 30}.colorTable(header, rows, true, paint)
+	for _, line := range strings.Split(strings.TrimSuffix(narrow, "\n"), "\n") {
+		if liveWidth(line) > 30 {
+			t.Errorf("line is %d wide: %q", liveWidth(line), ansi.Strip(line))
+		}
+	}
+	if !strings.Contains(ansi.Strip(narrow), "a-very-long-servi…  failed") {
+		t.Errorf("the widest column should shrink first:\n%s", ansi.Strip(narrow))
+	}
+	if originals[len(originals)-1] != "active" {
+		t.Errorf("paint gets the cell before it is cut: %q", originals)
+	}
+}
+
+// 식별자가 가장 넓은 표는 열을 줄이지 않고 줄 끝을 자른다. run ID나 unit 이름이 …로 잘리면 다음 명령에 넣을 수 없다.
+func TestColorTableKeepsIdentifiersWhenNotShrinking(t *testing.T) {
+	rows := [][]string{{"UNIT", "STATE", "PID"}, {"systemd-networkd-wait-online.service", "failed", "123"}, {"a", "ok"}}
+	style := textStyle{color: true, width: 40}
+	out := style.colorTableRows(rows, false, nil)
+	if !strings.Contains(ansi.Strip(out), "systemd-networkd-wait-online.service  f") {
+		t.Errorf("the unit name must stay whole:\n%s", ansi.Strip(out))
+	}
+	for _, line := range strings.Split(strings.TrimSuffix(out, "\n"), "\n") {
+		if liveWidth(line) > 40 {
+			t.Errorf("line is %d wide: %q", liveWidth(line), ansi.Strip(line))
+		}
+		if strings.HasSuffix(ansi.Strip(line), " ") {
+			t.Errorf("no trailing space: %q", ansi.Strip(line))
+		}
+	}
+	if svc := formatListTable(rows, [][]string{{}, {"", richRed}, {}}, style); !strings.Contains(ansi.Strip(svc), "systemd-networkd-wait-online.service") {
+		t.Errorf("svc list must keep the unit name:\n%s", ansi.Strip(svc))
+	}
+}

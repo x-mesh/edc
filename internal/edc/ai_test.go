@@ -978,7 +978,7 @@ func TestFormatAITableColorsUsageByThreshold(t *testing.T) {
 	}
 	for _, want := range []string{
 		richExpect("\033[90m" + at + "\033[0m"),
-		richExpect("\033[32m 42%\033[0m  ") + reset + richExpect("  \033[90min 02:16:46\033[0m"),
+		richExpect("\033[32m 42%\033[0m  \033[90m"+reset+"\033[0m  in 02:16:46"),
 		richExpect("\033[33m 85%\033[0m"),
 		richExpect("\033[31m 97%\033[0m  \033[90mno reset time\033[0m"),
 		richExpect("\033[90m  0%\033[0m"),

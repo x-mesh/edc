@@ -360,7 +360,8 @@ func aiStyleReset(style textStyle, text string) string {
 	if !found {
 		return style.dim(text)
 	}
-	return at + "  " + style.dim(left)
+	// 대시보드(aiPaintReset)와 같이 시각은 회색, 남은 시간은 기본색이다. 언제 풀리는지보다 얼마 남았는지를 먼저 본다.
+	return style.dim(at) + "  " + left
 }
 
 func aiResetText(at, now time.Time) string {

@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/charmbracelet/x/ansi"
 )
 
 func TestCalculateRate(t *testing.T) {
@@ -394,14 +396,20 @@ func TestFormatUsageBar(t *testing.T) {
 }
 
 func TestFormatUsageBarColorsByThreshold(t *testing.T) {
-	tests := map[float64]string{92: topColorWarn, 97: topColorDanger}
+	// 막대는 차분한 색, 백분율은 기준을 넘을 때만 강조색이다.
+	tests := map[float64]string{92: richYellow, 97: richRed}
 	for percent, code := range tests {
-		if got := formatUsageBar(percent, true); !strings.Contains(got, code) {
+		got := formatUsageBar(percent, true)
+		if !strings.Contains(got, richFill(strings.Repeat(diskBarFull, int(percent/100*diskBarWidth)), code)) || !strings.Contains(got, richPaint(fmt.Sprintf(" %6.2f%%", percent), code, false)) {
 			t.Fatalf("formatUsageBar(%v) = %q does not use %q", percent, got, code)
 		}
 	}
-	if got := formatUsageBar(40, true); strings.Contains(got, "\033[") {
-		t.Fatalf("normal bar must have no escape: %q", got)
+	normal := formatUsageBar(40, true)
+	if !strings.HasPrefix(normal, richFill(strings.Repeat(diskBarFull, 8), richGreen)) || !strings.HasSuffix(normal, " 40.00%") {
+		t.Fatalf("normal bar must keep the percent in the default color: %q", normal)
+	}
+	if ansi.Strip(normal) != formatUsageBar(40, false) {
+		t.Fatalf("color must not change the text: %q", normal)
 	}
 	if strings.Contains(formatUsageBar(97, false), "\033[") {
 		t.Fatal("색을 끄면 escape가 없어야 한다")

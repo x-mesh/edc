@@ -167,43 +167,47 @@ func networkConntrackUsage(health *networkHealth) (float64, bool) {
 	return float64(*count) / float64(*limit) * 100, true
 }
 
-func printInfoNetworkHealth(writer io.Writer, health *networkHealth, verbose bool) {
-	fmt.Fprintln(writer, "\nNetwork Limits")
+func printInfoNetworkHealth(writer io.Writer, health *networkHealth, color, verbose bool) {
+	style := newTextStyle(color)
+	fmt.Fprintln(writer)
+	style.line(writer, style.heading("Network Limits"))
 	if health == nil || !health.Supported {
-		fmt.Fprintln(writer, "└── Unsupported: Linux network limits require Linux")
+		style.tree(writer, "└──", style.dim("Unsupported: Linux network limits require Linux"))
 		return
 	}
 	ct := networkReadingText(health.Gauges["conntrack_entries"]) + " / " + networkReadingText(health.Settings["net.netfilter.nf_conntrack_max"])
 	if usage, ok := networkConntrackUsage(health); ok {
-		ct += fmt.Sprintf(" (%.1f%%)", usage)
+		// edc top의 conntrack 칸과 같은 기준이다.
+		ct += " " + style.level(fmt.Sprintf("(%.1f%%)", usage), topThreshold{warn: 90, danger: 98}.level(usage))
 	}
 	setting := func(name string) string { return networkReadingText(health.Settings[name]) }
+	entry := func(label string, parts ...string) string { return style.kv(label, style.join(" · ", parts...)) }
 	lines := []string{
-		"Conntrack: " + ct,
-		"TCP memory: " + networkTCPMemoryText(health) + " · orphans=" + networkReadingText(health.Gauges["tcp_orphans"]),
-		"Local ports: " + setting("net.ipv4.ip_local_port_range") + " · Reserved: " + setting("net.ipv4.ip_local_reserved_ports"),
-		"Listen: accept=" + setting("net.core.somaxconn") + " · SYN=" + setting("net.ipv4.tcp_max_syn_backlog") + " · syncookies=" + setting("net.ipv4.tcp_syncookies"),
-		"Socket buffer max: receive=" + setting("net.core.rmem_max") + " · send=" + setting("net.core.wmem_max") + " bytes",
-		"Receive backlog: " + setting("net.core.netdev_max_backlog") + " · budget=" + setting("net.core.netdev_budget") + " · budget_us=" + setting("net.core.netdev_budget_usecs"),
-		"Neighbor max: IPv4=" + setting("net.ipv4.neigh.default.gc_thresh3") + " · IPv6=" + setting("net.ipv6.neigh.default.gc_thresh3"),
-		"Routing: forward(v4/v6)=" + setting("net.ipv4.ip_forward") + "/" + setting("net.ipv6.conf.all.forwarding") + " · rp_filter(all/default)=" + setting("net.ipv4.conf.all.rp_filter") + "/" + setting("net.ipv4.conf.default.rp_filter"),
+		entry("Conntrack", ct),
+		entry("TCP memory", networkTCPMemoryText(health), "orphans="+networkReadingText(health.Gauges["tcp_orphans"])),
+		entry("Local ports", setting("net.ipv4.ip_local_port_range"), style.kv("Reserved", setting("net.ipv4.ip_local_reserved_ports"))),
+		entry("Listen", "accept="+setting("net.core.somaxconn"), "SYN="+setting("net.ipv4.tcp_max_syn_backlog"), "syncookies="+setting("net.ipv4.tcp_syncookies")),
+		entry("Socket buffer max", "receive="+setting("net.core.rmem_max"), "send="+setting("net.core.wmem_max")+" bytes"),
+		entry("Receive backlog", setting("net.core.netdev_max_backlog"), "budget="+setting("net.core.netdev_budget"), "budget_us="+setting("net.core.netdev_budget_usecs")),
+		entry("Neighbor max", "IPv4="+setting("net.ipv4.neigh.default.gc_thresh3"), "IPv6="+setting("net.ipv6.neigh.default.gc_thresh3")),
+		entry("Routing", "forward(v4/v6)="+setting("net.ipv4.ip_forward")+"/"+setting("net.ipv6.conf.all.forwarding"), "rp_filter(all/default)="+setting("net.ipv4.conf.all.rp_filter")+"/"+setting("net.ipv4.conf.default.rp_filter")),
 	}
 	for index, line := range lines {
 		branch := "├──"
 		if index == len(lines)-1 {
 			branch = "└──"
 		}
-		fmt.Fprintf(writer, "%s %s\n", branch, line)
+		style.tree(writer, branch, line)
 	}
 	if verbose {
-		fmt.Fprintf(writer, "    Scope: %s; softnet and TCP TIME_WAIT can be host-wide.\n", health.Scope)
+		style.line(writer, style.dim(fmt.Sprintf("    Scope: %s; softnet and TCP TIME_WAIT can be host-wide.", health.Scope)))
 		for _, name := range networkSettingNames {
 			reading := health.Settings[name]
-			fmt.Fprintf(writer, "    %s: %s", name, networkReadingText(reading))
+			line := "    " + style.kv(name, networkReadingText(reading))
 			if reading.Reason != "" {
-				fmt.Fprintf(writer, " (%s)", infoSingleLine(reading.Reason))
+				line += style.dim(" (" + infoSingleLine(reading.Reason) + ")")
 			}
-			fmt.Fprintln(writer)
+			style.line(writer, line)
 		}
 	}
 }

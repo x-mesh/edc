@@ -1,6 +1,7 @@
 package edc
 
 import (
+	"bytes"
 	"database/sql"
 	"encoding/json"
 	"flag"
@@ -237,7 +238,15 @@ func printHistory(output io.Writer, db *sql.DB, command string, options historyO
 	}
 	defer rows.Close()
 	encoder := json.NewEncoder(output)
-	writer := tabwriter.NewWriter(output, 0, 4, 2, ' ', 0)
+	// tabwriter는 escape도 칸 폭으로 세므로 색을 쓰면 표를 다 맞춘 뒤 머리글 줄만 칠한다.
+	file, isFile := output.(*os.File)
+	color := !jsonOutput && isFile && richEnabled(file)
+	var table bytes.Buffer
+	tableOutput := output
+	if color {
+		tableOutput = &table
+	}
+	writer := tabwriter.NewWriter(tableOutput, 0, 4, 2, ' ', 0)
 	if !jsonOutput {
 		header := "RUN\tTIME\tHOST\tCPU%\tMEM%\tLOAD\tPROCESS FILTER"
 		if command == "list" {
@@ -323,7 +332,11 @@ func printHistory(output io.Writer, db *sql.DB, command string, options historyO
 		return err
 	}
 	if !jsonOutput {
-		return writer.Flush()
+		if err := writer.Flush(); err != nil || !color {
+			return err
+		}
+		_, err := io.WriteString(output, newTextStyle(true).table(table.String()))
+		return err
 	}
 	return nil
 }

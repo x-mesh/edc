@@ -139,6 +139,7 @@ func streamWatch(ctx context.Context, writer io.Writer, interval, timeout time.D
 	var latencyTotal int64
 	var failureStart time.Time
 	var previousDNS string
+	style := newTextStyle(!jsonOutput && helpColor(writer))
 	for ctx.Err() == nil {
 		sampleCtx, cancel := context.WithTimeout(ctx, timeout)
 		result := probe(sampleCtx)
@@ -166,7 +167,7 @@ func streamWatch(ctx context.Context, writer io.Writer, interval, timeout time.D
 				return 2
 			}
 		} else {
-			fmt.Fprintln(writer, formatWatchSample(sample))
+			fmt.Fprintln(writer, formatWatchSample(sample, style))
 		}
 		summary.Samples++
 		latencyCounts[sample.DurationMS]++
@@ -290,43 +291,67 @@ func watchSampleOf(result Result) watchSample {
 	return sample
 }
 
-func formatWatchSample(sample watchSample) string {
-	http := "HTTP —"
-	if sample.HTTPStatus != 0 {
-		http = fmt.Sprintf("HTTP %d", sample.HTTPStatus)
+func formatWatchSample(sample watchSample, style textStyle) string {
+	status := strings.ToUpper(string(sample.Status))
+	if style.color {
+		status = richStatusBadge(sample.Status)
 	}
-	parts := []string{sample.Time.Local().Format("15:04:05.000"), strings.ToUpper(string(sample.Status)), http, fmt.Sprintf("%d bytes", sample.BodyBytes), fmt.Sprintf("%dms", sample.DurationMS)}
+	http := style.dim("HTTP —")
+	if sample.HTTPStatus != 0 {
+		http = style.dim("HTTP") + " " + style.paint(fmt.Sprint(sample.HTTPStatus), richHTTPCodeColor(sample.HTTPStatus))
+	}
+	latency := topLevelNormal
+	if latencyStatus(time.Duration(sample.DurationMS)*time.Millisecond) == StatusWarn {
+		latency = topLevelWarn
+	}
+	parts := []string{style.dim(sample.Time.Local().Format("15:04:05.000")), status, http, fmt.Sprint(sample.BodyBytes) + " " + style.dim("bytes"), style.level(fmt.Sprintf("%dms", sample.DurationMS), latency)}
 	if sample.PeerIP != "" {
-		parts = append(parts, "peer "+sample.PeerIP)
+		parts = append(parts, style.dim("peer "+sample.PeerIP))
 	}
 	for _, phase := range []struct {
 		name  string
 		value *int64
 	}{{"DNS", sample.DNSMS}, {"TCP", sample.TCPMS}, {"TLS", sample.TLSMS}, {"TTFB", sample.TTFBMS}} {
 		if phase.value != nil {
-			parts = append(parts, fmt.Sprintf("%s %dms", phase.name, *phase.value))
+			parts = append(parts, style.dim(phase.name)+fmt.Sprintf(" %dms", *phase.value))
 		}
 	}
 	if sample.DNSChanged {
-		parts = append(parts, "DNS["+sample.DNSHost+"] "+strings.Join(sample.DNSAddresses, ","))
+		// 첫 sample도 바뀐 것으로 적으므로 문제 색이 아니라 눈에 띄는 청록이다.
+		parts = append(parts, style.paint("DNS["+sample.DNSHost+"] "+strings.Join(sample.DNSAddresses, ","), richCyan))
 	}
 	if sample.Phase != "" {
-		parts = append(parts, "phase "+sample.Phase)
+		parts = append(parts, style.dim("phase")+" "+style.bad(sample.Phase))
 	}
 	if sample.Error != "" {
-		parts = append(parts, sample.Error)
+		parts = append(parts, style.bad(sample.Error))
 	}
-	return strings.Join(parts, "  ")
+	// 이어지는 줄은 시각 열 뒤에서 시작해 시각 열이 그대로 보인다.
+	return style.wrap(parts, "  ", strings.Repeat(" ", len("15:04:05.000")+2))
 }
 
 func printWatchSubcommandHelp(writer io.Writer, mode string) {
-	doc, _ := findCommandDoc("watch")
+	doc, usage, options := watchSubcommandHelp(mode)
+	if helpColor(writer) {
+		printRichWatchSubcommandHelp(writer, mode, doc, usage, options)
+		return
+	}
 	fmt.Fprintf(writer, "edc watch %s — %s\n\n%s\n", mode, doc.summary(), T("help.usage_label"))
+	fmt.Fprintf(writer, "  %s\n\n%s\n", usage, T("help.options_label"))
+	printOptionDocs(writer, options)
+	if mode == "http" {
+		fmt.Fprintf(writer, "\n%s\n", T("help.common_options_label"))
+		printOptionDocs(writer, commonOptionDocs)
+	}
+}
+
+// watchSubcommandHelp는 하위 명령 help의 usage와 그 하위 명령이 받는 option이다.
+func watchSubcommandHelp(mode string) (commandDoc, string, []optionDoc) {
+	doc, _ := findCommandDoc("watch")
 	usage := doc.usage[0]
 	if mode == "fs" {
 		usage = fsWatchUsage
 	}
-	fmt.Fprintf(writer, "  %s\n\n%s\n", usage, T("help.options_label"))
 	var options []optionDoc
 	for _, option := range doc.options {
 		isFS := strings.HasPrefix(option.key, "watchfs.")
@@ -340,9 +365,21 @@ func printWatchSubcommandHelp(writer io.Writer, mode string) {
 	if mode == "fs" {
 		options = append(options, optionDoc{"--json <path|->", "watchfs.option.json"})
 	}
-	printOptionDocs(writer, options)
+	return doc, usage, options
+}
+
+// printRichWatchSubcommandHelp는 help.go의 printRichCommandHelp와 같은 모양으로 하위 명령의 help를 그린다.
+func printRichWatchSubcommandHelp(writer io.Writer, mode string, doc commandDoc, usage string, options []optionDoc) {
+	fmt.Fprintf(writer, "%s %s\n\n", richBadge("edc watch "+mode, richMagenta), richBold(doc.summary()))
+	fmt.Fprintln(writer, richPanelTop(T("help.usage_label"), "", ""))
+	fmt.Fprintln(writer, richPanelLine(usage, ""))
+	fmt.Fprintln(writer, richPanelBottom(""))
+	fmt.Fprintf(writer, "\n%s\n", richPanelTop(T("help.options_label"), "", ""))
+	printRichOptionDocs(writer, options)
+	fmt.Fprintln(writer, richPanelBottom(""))
 	if mode == "http" {
-		fmt.Fprintf(writer, "\n%s\n", T("help.common_options_label"))
-		printOptionDocs(writer, commonOptionDocs)
+		fmt.Fprintf(writer, "\n%s\n", richPanelTop(T("help.common_options_label"), "", ""))
+		printRichOptionDocs(writer, commonOptionDocs)
+		fmt.Fprintln(writer, richPanelBottom(""))
 	}
 }

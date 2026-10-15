@@ -84,7 +84,9 @@ func runFSWatch(args []string) int {
 	}
 	// 상태줄은 사람이 보는 터미널에만 그린다. pipe, 파일과 JSON 출력은 바뀌지 않는다.
 	if options.jsonPath == "" && isTerminal(os.Stdout) {
+		options.color = richEnabled(os.Stdout)
 		options.status = newFSWatchStatus(os.Stdout, terminalWidth, time.Now, options.events, len(options.rules) > 0)
+		options.status.color = options.color
 		previous := fsWatchNotice.swap(options.status.through(os.Stderr))
 		defer fsWatchNotice.swap(previous)
 	}
@@ -109,13 +111,13 @@ func streamFSWatch(ctx context.Context, writer io.Writer, source fsWatchSource, 
 	}
 	emit := func(record fsWatchRecord) error {
 		if options.status == nil {
-			return writeFSWatchRecord(writer, record, options.jsonPath != "")
+			return writeFSWatchRecord(writer, record, options.jsonPath != "", newTextStyle(options.color))
 		}
 		if record.Type == "summary" {
 			options.status.close()
 		}
 		var buffer bytes.Buffer
-		if err := writeFSWatchRecord(&buffer, record, options.jsonPath != ""); err != nil {
+		if err := writeFSWatchRecord(&buffer, record, options.jsonPath != "", newTextStyle(options.color)); err != nil {
 			return err
 		}
 		_, err := options.status.through(writer).Write(buffer.Bytes())
@@ -350,7 +352,7 @@ func (output *fsWatchActionOutput) text() string {
 	return strings.ToValidUTF8(string(output.data), "�")
 }
 
-func writeFSWatchRecord(writer io.Writer, record fsWatchRecord, jsonOutput bool) error {
+func writeFSWatchRecord(writer io.Writer, record fsWatchRecord, jsonOutput bool, style textStyle) error {
 	if jsonOutput {
 		if record.Type == "summary" {
 			summary := map[string]interface{}{"type": record.Type, "time": record.Time, "root": record.Root, "events": record.Events, "actions": record.Actions, "failed": record.Failed, "duration_ms": record.DurationMS, "stop_reason": record.StopReason}
@@ -361,39 +363,46 @@ func writeFSWatchRecord(writer io.Writer, record fsWatchRecord, jsonOutput bool)
 		}
 		return json.NewEncoder(writer).Encode(record)
 	}
-	stamp := record.Time.Local().Format("15:04:05.000")
+	stamp := style.dim(record.Time.Local().Format("15:04:05.000"))
 	switch record.Type {
 	case "ready":
-		_, err := fmt.Fprintf(writer, "%s  %s\n", stamp, T("watchfs.ready", terminalJSON(record.Root), record.Recursive, record.Driver))
+		_, err := fmt.Fprintln(writer, style.fit(stamp+"  "+T("watchfs.ready", terminalJSON(record.Root), record.Recursive, record.Driver)))
 		return err
 	case "event":
-		_, err := fmt.Fprintf(writer, "%s  %-7s  %s\n", stamp, strings.ToUpper(record.Event), terminalJSON(record.Path))
+		kind := style.paint(fmt.Sprintf("%-7s", strings.ToUpper(record.Event)), fsWatchEventColor(record.Event))
+		_, err := fmt.Fprintln(writer, style.fit(stamp+"  "+kind+"  "+terminalJSON(record.Path)))
 		return err
 	case "action_start":
-		_, err := fmt.Fprintf(writer, "%s  START    %s · %s · %s\n", stamp, terminalJSON(record.Rule), terminalJSON(record.Path), terminalJSON(strings.Join(record.Command, " ")))
+		line := stamp + "  " + style.paint("START", richBlue) + "    " + style.join(" · ", terminalJSON(record.Rule), terminalJSON(record.Path), style.command(terminalJSON(strings.Join(record.Command, " "))))
+		_, err := fmt.Fprintln(writer, style.fit(line))
 		return err
 	case "action_result":
 		exit := "—"
 		if record.ExitCode != nil {
 			exit = fmt.Sprint(*record.ExitCode)
+			if *record.ExitCode != 0 {
+				exit = style.bad(exit)
+			}
 		}
-		if _, err := fmt.Fprintf(writer, "%s  DONE     %s · %s · exit %s · %dms\n", stamp, terminalJSON(record.Rule), record.Status, exit, record.DurationMS); err != nil {
+		color := fsWatchActionColor(record.Status)
+		line := stamp + "  " + style.paint("DONE", color) + "     " + style.join(" · ", terminalJSON(record.Rule), style.paint(record.Status, color), "exit "+exit, fmt.Sprintf("%dms", record.DurationMS))
+		if _, err := fmt.Fprintln(writer, style.fit(line)); err != nil {
 			return err
 		}
 		if record.Output != "" {
 			for _, line := range strings.Split(strings.TrimSuffix(record.Output, "\n"), "\n") {
-				if _, err := fmt.Fprintf(writer, "          %s | %s\n", terminalJSON(record.Rule), terminalJSON(line)); err != nil {
+				if _, err := fmt.Fprintln(writer, style.fit(style.dim("          "+terminalJSON(record.Rule)+" |")+" "+terminalJSON(line))); err != nil {
 					return err
 				}
 			}
 		}
 		if record.OutputTruncated {
-			if _, err := fmt.Fprintln(writer, T("watchfs.output_truncated", fsWatchOutputLimit)); err != nil {
+			if _, err := fmt.Fprintln(writer, style.warn(T("watchfs.output_truncated", fsWatchOutputLimit))); err != nil {
 				return err
 			}
 		}
 		if record.Error != "" {
-			_, err := fmt.Fprintln(writer, "          "+terminalJSON(record.Error))
+			_, err := fmt.Fprintln(writer, "          "+style.bad(terminalJSON(record.Error)))
 			return err
 		}
 	case "summary":
@@ -401,6 +410,32 @@ func writeFSWatchRecord(writer io.Writer, record fsWatchRecord, jsonOutput bool)
 		return err
 	}
 	return nil
+}
+
+func fsWatchEventColor(event string) string {
+	switch event {
+	case "create":
+		return richGreen
+	case "modify":
+		return richCyan
+	case "remove":
+		return richRed
+	case "rename":
+		return richYellow
+	}
+	return ""
+}
+
+func fsWatchActionColor(status string) string {
+	switch status {
+	case "success":
+		return richGreen
+	case "failed", "timeout":
+		return richRed
+	case "cancelled":
+		return richYellow
+	}
+	return richGray
 }
 
 func fsWatchStopLabel(reason string) string {

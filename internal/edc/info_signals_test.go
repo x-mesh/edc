@@ -126,10 +126,11 @@ func TestInfoVerboseNetworkAndDiskDetails(t *testing.T) {
 
 func TestInfoPressureLineColorsOOMKillsOnlyWhenPresent(t *testing.T) {
 	none, some := uint64(0), uint64(2)
-	if got := infoPressureLine(infoSignals{OOMKills: &none}, true); got != "OOM kills since boot: 0" {
+	label := richDim("OOM kills since boot:") + " "
+	if got := infoPressureLine(infoSignals{OOMKills: &none}, true); got != label+"0" {
 		t.Fatalf("0회에 색을 입혔다: %q", got)
 	}
-	if got := infoPressureLine(infoSignals{OOMKills: &some}, true); got != topColorWarn+"OOM kills since boot: 2"+topColorReset {
+	if got := infoPressureLine(infoSignals{OOMKills: &some}, true); got != label+richPaint("2", richYellow, false) {
 		t.Fatalf("OOM이 있는데 강조하지 않았다: %q", got)
 	}
 	if got := infoPressureLine(infoSignals{OOMKills: &some}, false); got != "OOM kills since boot: 2" {

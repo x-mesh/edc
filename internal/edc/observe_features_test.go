@@ -31,7 +31,7 @@ func TestParseObserveInterval(t *testing.T) {
 func TestWatchSampleIncludesStatusAndBodySize(t *testing.T) {
 	result := Result{Status: StatusPass, DurationMS: 12, Metrics: map[string]interface{}{"status_code": 204, "bytes_read": int64(1234), "peer_ip": "192.0.2.10", "dns_ms": int64(2), "resolved_host": "example.test", "resolved_addresses": []string{"192.0.2.10"}}}
 	sample := watchSampleOf(result)
-	line := formatWatchSample(sample)
+	line := formatWatchSample(sample, textStyle{})
 	if sample.HTTPStatus != 204 || sample.BodyBytes != 1234 || sample.DNSMS == nil || *sample.DNSMS != 2 || len(sample.DNSAddresses) != 1 || !strings.Contains(line, "HTTP 204") || !strings.Contains(line, "1234 bytes") || !strings.Contains(line, "DNS 2ms") {
 		t.Fatalf("sample = %#v, line = %q", sample, line)
 	}

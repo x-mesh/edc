@@ -19,7 +19,7 @@ int main(int argc, char **argv) {
 	if (!context) fail("wolfSSL_CTX_new", NULL, 0);
 	/* loopback 시험 서버의 임시 self-signed 인증서를 사용한다. */
 	wolfSSL_CTX_set_verify(context, WOLFSSL_VERIFY_NONE, NULL);
-	puts("ready"); fflush(stdout); sleep(3);
+	puts("ready"); fflush(stdout); { char start[8]; if (!fgets(start, sizeof(start), stdin)) _exit(3); }
 	for (int request = 0; request < 6; request++) {
 		int fd = socket(AF_INET, SOCK_STREAM, 0);
 		struct sockaddr_in address = {.sin_family = AF_INET, .sin_port = htons(atoi(argv[1])), .sin_addr = {.s_addr = htonl(INADDR_LOOPBACK)}};

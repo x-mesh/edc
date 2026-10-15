@@ -64,6 +64,10 @@ func TestTraceTLSMbedTLSCapturesResetContext(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	stdin, err := command.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := command.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -72,6 +76,7 @@ func TestTraceTLSMbedTLSCapturesResetContext(t *testing.T) {
 		t.Fatalf("Mbed TLS ready: %q, %v", line, err)
 	}
 	requests, responses := map[string]int{}, map[string]int{}
+	startTLSFixtureOnAttach(t, stdin)
 	summary, err := collectTraceEventsLive(traceScope{protocol: "http", tls: traceTLSMode(library), tlsFinder: finder, payload: true}, 5*time.Second, func(event captureEvent) error {
 		if event.PID != uint32(command.Process.Pid) || !event.TLS {
 			return nil
@@ -181,7 +186,7 @@ __attribute__((noinline)) void FREE(void *conn) { __asm__ volatile("" : : "r"(co
 __attribute__((noinline)) int RESET(void *conn) { __asm__ volatile("" : : "r"(conn) : "memory"); return -1; }
 #endif
 int main(void) {
- puts("ready"); fflush(stdout); sleep(3);
+ puts("ready"); fflush(stdout); { char start[8]; if (!fgets(start, sizeof(start), stdin)) _exit(3); }
  int conn = 0; size_t out = 999;
  unsigned char old[] = "GET /stale HTTP/1.1\r\nHost: localhost\r\n";
  WRITE(&conn, old, sizeof(old) CALL_EXTRA);
@@ -216,10 +221,14 @@ int main(void) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	command := exec.CommandContext(ctx, fixture)
 	stdout, err := command.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdin, err := command.StdinPipe()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -231,6 +240,7 @@ int main(void) {
 		t.Fatalf("TLS ABI ready: %q, %v", line, err)
 	}
 	requests, responses := 0, 0
+	startTLSFixtureOnAttach(t, stdin)
 	summary, err := collectTraceEventsLive(traceScope{protocol: "http", tls: traceTLSMode(fixture), tlsFinder: finder, payload: true}, 4*time.Second, func(event captureEvent) error {
 		if event.PID != uint32(command.Process.Pid) || !event.TLS {
 			return nil

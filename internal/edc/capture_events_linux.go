@@ -779,6 +779,10 @@ func tcpRecvmsgArgumentCount() (int, error) {
 	return len(prototype.Params), nil
 }
 
+// captureAttachedHook은 시험만 쓴다. 모든 hook이 붙고 ring을 읽기 시작할 때 불린다. TLS 시험의 fixture는 이 신호를 받은
+// 뒤에 요청을 보낸다. 정해진 시간만 기다리면 BPF 적재가 느린 host에서 요청이 모두 attach보다 먼저 지나갔다.
+var captureAttachedHook func()
+
 func collectCaptureEventsFor(scope traceScope, duration time.Duration, onEvent func(captureEvent) error, stop <-chan struct{}) (captureSummary, error) {
 	protocol := scope.protocol
 	if err := rlimit.RemoveMemlock(); err != nil {
@@ -893,6 +897,9 @@ func collectCaptureEventsFor(scope traceScope, duration time.Duration, onEvent f
 			}
 		}()
 		defer close(readerDone)
+	}
+	if captureAttachedHook != nil {
+		captureAttachedHook()
 	}
 
 	targets := newCommandTargetCache(commandTarget)

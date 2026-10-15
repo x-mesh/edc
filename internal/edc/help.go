@@ -45,8 +45,8 @@ func (doc commandDoc) summary() string { return T("command." + doc.name + ".summ
 
 func (doc commandDoc) notes() []string { return TList("command." + doc.name + ".notes") }
 
-// subcommandChoices는 선택기와 usage에 쓰는 하위 명령 이름이다. commandDocs의 subcommands가 유일한 출처라서,
-// 하위 명령을 더할 때 설명을 빠뜨리면 TestPickerSubcommandsHaveDescriptions가 실패한다.
+// subcommandChoices는 선택기와 usage 오류에 쓰는 하위 명령 이름이다. 하위 명령을 실행하는 run* 함수의 분기는
+// 따로 적혀 있고, completion script와의 일치는 TestCompletionScriptsListThePickerSubcommands가 확인한다.
 func subcommandChoices(name string) []string {
 	doc, _ := findCommandDoc(name)
 	names := make([]string, 0, len(doc.subcommands))

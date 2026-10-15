@@ -47,7 +47,7 @@ func runRoute(args []string, version string) int {
 	usage := T("cli.usage", subcommandUsage("route")+" ...")
 	if len(args) == 0 {
 		// 하위 command만 고르게 한다. switch와 rollback의 값은 flag로만 받아 재현할 수 있게 둔다.
-		choice, ok := promptMissingChoice("edc route", subcommandChoices("route"))
+		choice, ok := promptMissingSubcommand("route")
 		if !ok {
 			fmt.Fprintln(os.Stderr, usage)
 			return 2

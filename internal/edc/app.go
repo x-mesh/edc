@@ -224,7 +224,7 @@ func runDoctor(args []string, version string) int {
 
 func runDNS(args []string, version string) int {
 	if len(args) == 0 {
-		choice, ok := promptMissingChoice("edc dns", subcommandChoices("dns"))
+		choice, ok := promptMissingSubcommand("dns")
 		if !ok {
 			fmt.Fprintln(os.Stderr, T("cli.usage", subcommandUsage("dns")+" ..."))
 			return 2
@@ -349,7 +349,7 @@ func runHTTP(args []string, version string) int {
 
 func runNet(args []string, version string) int {
 	if len(args) == 0 {
-		choice, ok := promptMissingChoice("edc net", subcommandChoices("net"))
+		choice, ok := promptMissingSubcommand("net")
 		if !ok {
 			fmt.Fprintln(os.Stderr, T("cli.usage", subcommandUsage("net")))
 			return 2

@@ -47,7 +47,17 @@ func promptArgsWithColor(reader *bufio.Reader, output io.Writer, command string,
 
 // promptMissingChoice는 하위 command가 빠졌을 때 terminal에서 고르게 한다. 하위 command도
 // 명령에 꼭 필요한 값이라, 값을 제대로 준 실행에는 나타나지 않는다.
+// promptMissingSubcommand는 commandDocs의 하위 명령에서 고르게 한다. 명령 이름을 한 번만 받아, 선택기와 설명이
+// 서로 다른 명령을 가리킬 수 없다.
+func promptMissingSubcommand(name string) (string, bool) {
+	return promptMissingChoice("edc "+name, subcommandChoices(name))
+}
+
 func promptMissingChoice(command string, choices []string) (string, bool) {
+	// 항목이 없는 선택 화면은 Ctrl-C까지 모든 키를 무시해서 터미널이 멈춘다. 고를 것이 없으면 usage로 끝낸다.
+	if len(choices) == 0 {
+		return "", false
+	}
 	file, ok := terminalInput(os.Stdin)
 	// 선택 화면은 stdout에 그린다. stdout이 파이프나 파일이면 화면이 그쪽으로 가고 입력만 기다리게 된다.
 	if !ok || !isTerminal(os.Stdout) {

@@ -370,7 +370,7 @@ func TestPlainCommandBriefLabelsTheForms(t *testing.T) {
 	}
 }
 
-// 하위 명령 이름을 commandDocs에서 만들어도 평문 usage는 예전 글자 그대로다. script가 읽는 stderr가 바뀌지 않는다.
+// usage 오류 문구는 script가 stderr에서 읽을 수 있으므로 글자까지 고정한다.
 func TestSubcommandUsageKeepsTheOldText(t *testing.T) {
 	for name, want := range map[string]string{
 		"dns":        "edc dns <lookup|compare|config>",
@@ -379,8 +379,6 @@ func TestSubcommandUsageKeepsTheOldText(t *testing.T) {
 		"disk":       "edc disk <check|grow>",
 		"change":     "edc change <apply|status|confirm|rollback>",
 		"completion": "edc completion <zsh|bash|groups>",
-		"watch":      "edc watch <http|fs>",
-		"history":    "edc history <list|top|process>",
 	} {
 		if got := subcommandUsage(name); got != want {
 			t.Errorf("subcommandUsage(%q) = %q, want %q", name, got, want)
@@ -388,23 +386,48 @@ func TestSubcommandUsageKeepsTheOldText(t *testing.T) {
 	}
 }
 
-// 선택기가 고르게 하는 하위 명령은 모두 설명이 있어야 한다. 설명이 빠지면 그 항목만 이름으로 나와도 눈치채기 어렵다.
+var pickerCommands = []string{"dns", "net", "route", "disk", "change", "completion", "watch", "history"}
+
+// 선택기를 띄우는 명령은 하위 명령을 commandDocs에 두고, 하위 명령마다 언어별 설명 문구가 있어야 한다.
+// 문구가 빠지면 T가 키 문자열을 돌려주어 화면에는 키가 그대로 보인다.
 func TestPickerSubcommandsHaveDescriptions(t *testing.T) {
-	restore := currentLanguage()
-	defer setLanguage(restore)
-	for _, name := range []string{"dns", "net", "route", "disk", "change", "completion", "watch", "history"} {
-		choices := subcommandChoices(name)
-		if len(choices) < 2 {
-			t.Errorf("%s needs its subcommands in commandDocs, got %q", name, choices)
+	for _, name := range pickerCommands {
+		doc, _ := findCommandDoc(name)
+		if len(doc.subcommands) < 2 {
+			t.Errorf("%s needs its subcommands in commandDocs, got %d", name, len(doc.subcommands))
 			continue
 		}
-		for _, language := range supportedLanguages {
-			setLanguage(language)
-			for _, item := range subcommandSelectItems(name, choices) {
-				if !strings.Contains(item.label, " — ") {
-					t.Errorf("%s %s %s has no description: %q", language, name, item.value, item.label)
+		for _, sub := range doc.subcommands {
+			for _, language := range supportedLanguages {
+				if !hasMessage(language, doc.subcommandKey(sub.name)) {
+					t.Errorf("%s has no %s", language, doc.subcommandKey(sub.name))
 				}
 			}
 		}
+	}
+}
+
+// completion script는 하위 명령을 따로 적는다. 선택기와 같은 목록인지 확인한다.
+func TestCompletionScriptsListThePickerSubcommands(t *testing.T) {
+	zsh := renderCompletion(zshCompletion, zshCommandList())
+	bash := renderCompletion(bashCompletion, bashCommandList())
+	for _, name := range pickerCommands {
+		words := strings.Join(subcommandChoices(name), " ")
+		if !strings.Contains(zsh, "("+words+")") {
+			t.Errorf("zsh completion misses %s subcommands (%s)", name, words)
+		}
+		if !strings.Contains(bash, `"`+words+`"`) {
+			t.Errorf("bash completion misses %s subcommands %q", name, words)
+		}
+	}
+}
+
+// 고를 것이 없는 선택 화면은 모든 키를 무시해 터미널이 멈춘다. 목록이 비면 선택기를 띄우지 않는다.
+func TestPromptMissingChoiceRefusesAnEmptyList(t *testing.T) {
+	if choice, ok := promptMissingChoice("edc nope", nil); ok || choice != "" {
+		t.Errorf("empty choices = %q, %t", choice, ok)
+	}
+	if got := subcommandChoices("nope"); len(got) != 0 {
+		t.Errorf("an unknown command has no subcommands: %q", got)
 	}
 }

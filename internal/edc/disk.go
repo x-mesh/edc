@@ -514,7 +514,7 @@ func diskCommandMessage(stderr, stdout string) string {
 func runDisk(args []string, version string) int {
 	usage := T("cli.usage", subcommandUsage("disk")+" ...")
 	if len(args) == 0 {
-		choice, ok := promptMissingChoice("edc disk", subcommandChoices("disk"))
+		choice, ok := promptMissingSubcommand("disk")
 		if !ok {
 			fmt.Fprintln(os.Stderr, usage)
 			return 2

@@ -10,7 +10,7 @@ import (
 func runCompletion(args []string) int {
 	usage := T("cli.usage", subcommandUsage("completion"))
 	if len(args) == 0 {
-		choice, ok := promptMissingChoice("edc completion", subcommandChoices("completion"))
+		choice, ok := promptMissingSubcommand("completion")
 		if !ok {
 			fmt.Fprintln(os.Stderr, usage)
 			return 2

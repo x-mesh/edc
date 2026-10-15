@@ -179,6 +179,10 @@ func richResultCounts(results []Result, width int) string {
 		segments = append(segments, richSegment{value: float64(entry.count), color: richStatusColor(entry.status)})
 	}
 	text := strings.Join(parts, "  ")
+	// 결과가 하나면 막대가 한 색으로 꽉 차서 개수 글자 이상을 알려 주지 않는다.
+	if len(results) < 2 {
+		return text
+	}
 	bar := richSegments(segments, min(resultCountsBarWidth, width-liveWidth(text)-2))
 	if bar == "" {
 		return text

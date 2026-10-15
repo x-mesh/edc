@@ -1707,8 +1707,8 @@ func TestCleanColorGroupsCandidatesUnderPriorityBadges(t *testing.T) {
 			t.Fatalf("a row still starts with its priority: %q", line)
 		}
 	}
-	// 10 GB 이상은 굵은 빨강이고, 막대도 같은 색이다. 가장 큰 후보가 막대를 다 채운다.
-	if !strings.Contains(text, richExpect("\033[1;31m125.0 GB\033[0m")) || !strings.Contains(text, richExpect("\033[31m")+strings.Repeat("█", 20)+"\033[0m") {
+	// 10 GB 이상은 굵은 빨강이고, 막대는 같은 빨강을 낮춘 색이다. 가장 큰 후보가 막대를 다 채운다.
+	if !strings.Contains(text, richExpect("\033[1;31m125.0 GB\033[0m")) || !strings.Contains(text, richFill(strings.Repeat("█", 20), richRed)) {
 		t.Fatalf("the largest row lacks a red size and a full bar:\n%q", text)
 	}
 	if !strings.Contains(text, richExpect("\033[1;33m  2.0 GB\033[0m")) {

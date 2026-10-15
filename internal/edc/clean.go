@@ -1326,7 +1326,7 @@ func richCleanItems(items []cleanItem, verbose bool, width int, home string) str
 		if barWidth == 0 {
 			return ""
 		}
-		return style.size(richBar(float64(bytes), float64(largest), barWidth), bytes, false) + "  "
+		return richFill(richBar(float64(bytes), float64(largest), barWidth), richSizeColor(int64(bytes))) + "  "
 	}
 	blank := ""
 	if barWidth > 0 {

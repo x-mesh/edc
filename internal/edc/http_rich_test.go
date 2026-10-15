@@ -154,7 +154,7 @@ func TestRichHTTPWaterfallSharesOneScale(t *testing.T) {
 	if !strings.Contains(plain[2], "DNS 2 · TCP 3 · TTFB 24 · peer 192.0.2.1") || !strings.Contains(plain[5], "gzip decoded") {
 		t.Errorf("details:\n%s", strings.Join(plain, "\n"))
 	}
-	if !strings.Contains(strings.Join(lines, "\n"), richExpect("\033[34m█")) {
+	if !strings.Contains(strings.Join(lines, "\n"), strings.TrimSuffix(richFill("█", richBlue), richReset)) {
 		t.Error("DNS is blue")
 	}
 }

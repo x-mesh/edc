@@ -101,3 +101,14 @@ func TestRichSGRUsesTheFixedPalette(t *testing.T) {
 		t.Errorf("gray must not fall back to a theme color: %d", got)
 	}
 }
+
+// 막대는 강조색을 바탕색과 섞은 색이다. 글자와 같은 강조색으로 넓게 칠하지 않는다.
+func TestRichFillMutesTheBarColor(t *testing.T) {
+	t.Setenv("COLORTERM", "truecolor")
+	if got := richFill("██", richGreen); got != "\x1b[38;2;48;132;79m██\x1b[0m" {
+		t.Errorf("fill = %q", got)
+	}
+	if richFill("██", richGreen) == richPaint("██", richGreen, false) {
+		t.Error("a bar must not use the text color")
+	}
+}

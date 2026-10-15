@@ -117,7 +117,7 @@ func TestColorSummaryLine(t *testing.T) {
 	if !strings.HasPrefix(stripped, "\n"+strings.Repeat("█", resultCountsBarWidth)+"  ") || !strings.HasSuffix(stripped, "  2 pass  0 warn  1 fail  0 skip\n") {
 		t.Fatalf("stripped = %q", stripped)
 	}
-	for _, code := range []string{richExpect("\033[1;32m2 pass\033[0m"), richExpect("\033[90m0 warn\033[0m"), richExpect("\033[1;31m1 fail\033[0m"), richExpect("\033[90m0 skip\033[0m"), richExpect("\033[32m████")} {
+	for _, code := range []string{richExpect("\033[1;32m2 pass\033[0m"), richExpect("\033[90m0 warn\033[0m"), richExpect("\033[1;31m1 fail\033[0m"), richExpect("\033[90m0 skip\033[0m"), strings.TrimSuffix(richFill("████", richGreen), richReset)} {
 		if !strings.Contains(colored.String(), code) {
 			t.Errorf("summary lacks %q: %q", code, colored.String())
 		}
@@ -127,5 +127,14 @@ func TestColorSummaryLine(t *testing.T) {
 	}
 	if line := ansi.Strip(richResultCounts(nil, 80)); line != "0 pass  0 warn  0 fail  0 skip" {
 		t.Errorf("empty summary = %q", line)
+	}
+}
+
+// 결과가 하나면 막대가 한 색으로 꽉 차서 화면만 차지한다. 개수 글자만 남긴다.
+func TestColorSummaryOmitsTheBarForOneResult(t *testing.T) {
+	var colored strings.Builder
+	printResultSummary(&colored, []Result{{Probe: "http.check", Status: StatusPass}}, true)
+	if stripped := ansi.Strip(colored.String()); stripped != "\n1 pass  0 warn  0 fail  0 skip\n" {
+		t.Errorf("stripped = %q", stripped)
 	}
 }

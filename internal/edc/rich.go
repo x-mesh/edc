@@ -272,6 +272,24 @@ func richBar(value, largest float64, width int) string {
 	return bar + strings.Repeat(" ", width-liveWidth(bar))
 }
 
+// richFillShare는 막대 색에서 강조색이 차지하는 비율이다. 나머지는 터미널 바탕색이다. 꽉 찬 막대를 글자와 같은
+// 강조색으로 칠하면 화면의 넓은 면적이 한 색으로 쨍해서, 막대만 채도를 낮춘다.
+const richFillShare = 0.55
+
+// richFill은 막대 조각을 칠한다. 글자와 배지는 richPaint와 richBadge가 강조색 그대로 칠한다.
+func richFill(text, color string) string {
+	entry, ok := richPalette[color]
+	if text == "" || !ok || entry.background {
+		return richSGR(text, color)
+	}
+	return "\033[" + richRGBCode(richBlend(entry.rgb, richPalette["30"].rgb, richFillShare), false, richTruecolor()) + "m" + text + richReset
+}
+
+func richBlend(color, base richRGB, share float64) richRGB {
+	mix := func(a, b int) int { return int(float64(a)*share + float64(b)*(1-share) + 0.5) }
+	return richRGB{mix(color.r, base.r), mix(color.g, base.g), mix(color.b, base.b)}
+}
+
 // richSegment는 여러 색으로 나눈 막대의 한 구간이다.
 type richSegment struct {
 	value float64
@@ -301,7 +319,7 @@ func richSegments(segments []richSegment, cells int) string {
 		}
 		seen += segment.value
 		end := max(int(seen/total*float64(cells)+0.5), used+1)
-		builder.WriteString(richSGR(strings.Repeat("█", end-used), segment.color))
+		builder.WriteString(richFill(strings.Repeat("█", end-used), segment.color))
 		used = end
 	}
 	return builder.String()

@@ -1087,9 +1087,9 @@ func (model topModel) detailLines() []string {
 		fmt.Sprintf("  %s · %s · %s", topDiskDetail(rate), topNetworkDetail(rate), topPressureDetail(rate)),
 	}
 	if !model.processFilter.active() {
-		return append(lines, "  "+topProcessDetail(row.processes, row.processesValid))
+		return append(lines, "  "+topProcessDetail(row.processes, row.processesValid, model.limits.color))
 	}
-	for index, line := range topMatchDetail(row.processes, row.processTotal, row.processesValid) {
+	for index, line := range topMatchDetail(row.processes, row.processTotal, row.processesValid, model.limits.color) {
 		if index == 0 {
 			line = "  " + line
 		}
@@ -1372,7 +1372,9 @@ func (model topModel) candidateLines() []string {
 	if showIO {
 		nameRoom = model.displayWidth() - topProcessColumnsWidth - topProcessIOColumnsWidth
 	}
-	showRSS := model.displayWidth() >= 40 && nameRoom-topProcessRSSColumnWidth >= topProcessRSSMinNameWidth
+	// RSS 칸은 I/O 칸이 붙어도 들어갈 때만 둔다. I/O 값은 refresh마다 생겼다 없어져서, 그에 따라 정하면 열 구성이 바뀐다.
+	rssRoom := model.displayWidth() - topProcessColumnsWidth - topProcessIOColumnsWidth - topProcessRSSColumnWidth
+	showRSS := model.displayWidth() >= 40 && rssRoom >= topProcessRSSMinNameWidth
 	if showRSS {
 		nameRoom -= topProcessRSSColumnWidth
 	}
@@ -1470,6 +1472,7 @@ func (model topModel) helpLines() []string {
 		"Interfaces: i opens the list · Space check · a all · p physical · Enter applies from the next sample · off while -w records",
 		"Details: Enter on history · h peaks from the last 60 seconds",
 		"CPU: host % uses all cores. Process 100% uses one core. RSS is resident memory.",
+		"MEM counts the memory a process holds, also when it is compressed or swapped out. A gray MEM value is RSS, used when edc could not read MEM.",
 		"— means unavailable or no baseline. Read the process I/O status for errors.",
 		"no ev means the -d observer is active but collected no events in that interval. n/a means this OS cannot measure it.",
 	}
@@ -1478,9 +1481,11 @@ func (model topModel) helpLines() []string {
 			"macOS: -d gives the average CPU wait per context switch from libproc. It has no p95 and no I/O latency.",
 			"macOS: root in the runq column means macOS refused to read another user's process. Run as root to measure it.",
 			"macOS: mem lvl is the kernel memory pressure level. blocked counts processes in the U state.",
+			"macOS: MEM is phys_footprint, the Memory column of Activity Monitor. Run as root to read it for other users' processes.",
 			"macOS: FDs, PSI, CPU iowait, disk busy and network limits are not collected.")
 	} else {
-		lines = append(lines, "Linux: process CPU uses sample deltas. Runq and I/O latency require -d at startup.")
+		lines = append(lines, "Linux: process CPU uses sample deltas. Runq and I/O latency require -d at startup.",
+			"Linux: MEM is RSS plus VmSwap from /proc/<pid>/status.")
 	}
 	var wrapped []string
 	for _, line := range lines {
@@ -1670,6 +1675,15 @@ func topViewColumns(view topView) []topColumn {
 type topCell struct {
 	text  string
 	level topLevel
+	// estimated는 RSS로 대신 더한 memory 값이다. 후보 줄처럼 흐리게 둬 측정값과 구분한다.
+	estimated bool
+}
+
+func (cell topCell) paint(text string, color bool) string {
+	if cell.estimated {
+		return topDim(text, color)
+	}
+	return topTint(text, cell.level, color)
 }
 
 // topPlainCell은 임계치가 없어 색을 쓰지 않는 칸이다.
@@ -1747,7 +1761,7 @@ func formatTopColumnsWidth(at string, columns []topColumn, cells []topCell, colo
 			width = max(0, targetWidth-used)
 		}
 		used += width
-		line.WriteString(topTint(topFitCell(cells[index].text, width, column.left), cells[index].level, color))
+		line.WriteString(cells[index].paint(topFitCell(cells[index].text, width, column.left), color))
 	}
 	return line.String()
 }
@@ -1897,7 +1911,7 @@ func formatTopAllLine(first string, columns []topAllColumn, cells []topCell, sig
 			line.WriteByte(' ')
 		}
 		line.WriteString(strings.Repeat(" ", column.indent))
-		line.WriteString(topTint(topFitCell(cells[index].text, column.width-column.indent, column.left), cells[index].level, color))
+		line.WriteString(cells[index].paint(topFitCell(cells[index].text, column.width-column.indent, column.left), color))
 		if index == len(columns)-1 || columns[index+1].group != column.group {
 			line.WriteString("│")
 		}
@@ -2356,31 +2370,40 @@ func topPressureDetail(rate resourceRate) string {
 }
 
 // topProcessDetail은 CPU 순으로 process 세 개를 보인다. 필터가 있으면 topMatchDetail로 넘어간다.
-func topProcessDetail(processes []topProcess, valid bool) string {
+func topProcessDetail(processes []topProcess, valid, color bool) string {
 	if !valid {
 		return "processes —"
 	}
-	return "top " + strings.Join(topProcessItems(processes), ", ")
+	return "top " + strings.Join(topProcessItems(processes, color), ", ")
 }
 
-func topProcessItems(processes []topProcess) []string {
+func topProcessItems(processes []topProcess, color bool) []string {
 	items := make([]string, 0, min(3, len(processes)))
 	for _, process := range processes[:min(3, len(processes))] {
-		items = append(items, fmt.Sprintf("%s %.0f%% %s", topProcessName(process.Command, topProcessNameWidth), process.CPU, formatProcessRSS(process.memory())))
+		items = append(items, fmt.Sprintf("%s %.0f%% %s", topProcessName(process.Command, topProcessNameWidth), process.CPU, topEstimatedMemory(process.memory(), !process.MemoryValid, color)))
 	}
 	return items
 }
 
+// topEstimatedMemory는 memory 값이다. RSS로 대신한 값이면 후보 줄의 MEM 칸처럼 흐리게 둔다.
+func topEstimatedMemory(bytes uint64, estimated, color bool) string {
+	text := formatProcessRSS(bytes)
+	if estimated {
+		return topDim(text, color)
+	}
+	return text
+}
+
 // topMatchDetail은 필터에 맞은 process 전체의 합 한 줄과, CPU 상위 세 개와 남은 개수 한 줄이다. 한 줄에 다 담으면 80열에서 잘린다.
 // 디스크와 fd는 목록에 남은 process만 읽으므로 합도 그 범위다.
-func topMatchDetail(processes []topProcess, total topProcessTotal, valid bool) []string {
+func topMatchDetail(processes []topProcess, total topProcessTotal, valid, color bool) []string {
 	if !valid {
 		return []string{"processes —"}
 	}
 	if total.Count == 0 {
 		return []string{"match none"}
 	}
-	summary := fmt.Sprintf("match %d · cpu %.0f%% · mem %s", total.Count, total.CPU, formatProcessRSS(total.Memory))
+	summary := fmt.Sprintf("match %d · cpu %.0f%% · mem %s", total.Count, total.CPU, topEstimatedMemory(total.Memory, total.MemoryEstimated, color))
 	if total.Threads > 0 {
 		summary += fmt.Sprintf(" · thr %d", total.Threads)
 	}
@@ -2391,7 +2414,7 @@ func topMatchDetail(processes []topProcess, total topProcessTotal, valid bool) [
 	if diskKnown {
 		summary += fmt.Sprintf(" · io r %s/s w %s/s", formatRate(read), formatRate(write))
 	}
-	items := topProcessItems(processes)
+	items := topProcessItems(processes, color)
 	if rest := total.Count - len(items); rest > 0 {
 		items = append(items, fmt.Sprintf("+%d", rest))
 	}
@@ -2468,7 +2491,7 @@ func (model topModel) processBanner() []string {
 		parts = []string{"no match"}
 	default:
 		total := row.processTotal
-		parts = []string{fmt.Sprintf("%d matched", total.Count), fmt.Sprintf("cpu %.0f%%", total.CPU), "mem " + formatProcessRSS(total.Memory)}
+		parts = []string{fmt.Sprintf("%d matched", total.Count), fmt.Sprintf("cpu %.0f%%", total.CPU), "mem " + topEstimatedMemory(total.Memory, total.MemoryEstimated, model.limits.color)}
 		if probe := total.Probe; probe != nil {
 			if average, ok := topProbeAverageMS(probe.RunqSumNS, probe.RunqCount); ok {
 				parts = append(parts, fmt.Sprintf("runq %.2fms", average))
@@ -2554,7 +2577,7 @@ func topProcessViewCells(row topDashboardRow) []topCell {
 	}
 	fds, read, write, diskKnown := topMatchIO(row.processes)
 	cells := []topCell{
-		topPlainCell(fmt.Sprintf("%d", total.Count)), topPlainCell(fmt.Sprintf("%.1f", total.CPU)), topPlainCell(formatProcessRSS(total.Memory)),
+		topPlainCell(fmt.Sprintf("%d", total.Count)), topPlainCell(fmt.Sprintf("%.1f", total.CPU)), {text: formatProcessRSS(total.Memory), estimated: total.MemoryEstimated},
 		topPlainCell(topOptionalValue(total.Threads > 0, "%.0f", float64(total.Threads))), topPlainCell(topOptionalValue(fds > 0, "%.0f", float64(fds))),
 		topPlainCell(topOptionalRate(diskKnown, read)), topPlainCell(topOptionalRate(diskKnown, write)), empty, empty,
 	}

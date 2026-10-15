@@ -474,11 +474,11 @@ func TestTopCoresColumnFollowsTheCoreCount(t *testing.T) {
 
 func TestTopProcessDetailUsesTheSelectedSnapshot(t *testing.T) {
 	processes := []topProcess{{PID: 4, CPU: 99, RSS: 2 * 1024 * 1024, Command: "java"}, {PID: 7, CPU: 12, RSS: 1024, Command: "node"}}
-	got := topProcessDetail(processes, true)
+	got := topProcessDetail(processes, true, false)
 	if !strings.Contains(got, "java 99% 2.0M") || !strings.Contains(got, "node 12%") {
 		t.Fatalf("process detail = %q", got)
 	}
-	if got := topProcessDetail(nil, false); got != "processes —" {
+	if got := topProcessDetail(nil, false, false); got != "processes —" {
 		t.Fatalf("process fallback = %q", got)
 	}
 }
@@ -489,17 +489,17 @@ func TestTopMatchDetailSumsEveryMatchAndNamesTheRest(t *testing.T) {
 		{PID: 2, CPU: 40, RSS: 2 << 20, Command: "worker-b", FDs: 5, DiskValid: true, DiskWrite: 1 << 20},
 	}
 	total := topProcessTotal{Count: 5, CPU: 130, RSS: 9 << 20, Memory: 9 << 20, Threads: 12}
-	lines := topMatchDetail(processes, total, true)
+	lines := topMatchDetail(processes, total, true, false)
 	if len(lines) != 2 || lines[0] != "match 5 · cpu 130% · mem 9.0M · thr 12 · fds 15 · io r 1.00M/s w 3.00M/s" || lines[1] != "  worker-a 50% 3.0M, worker-b 40% 2.0M, +3" {
 		t.Fatalf("match detail = %q", lines)
 	}
-	if got := topMatchDetail(nil, topProcessTotal{}, true); len(got) != 1 || got[0] != "match none" {
+	if got := topMatchDetail(nil, topProcessTotal{}, true, false); len(got) != 1 || got[0] != "match none" {
 		t.Fatalf("no match detail = %q", got)
 	}
-	if got := topMatchDetail(nil, topProcessTotal{}, false); len(got) != 1 || got[0] != "processes —" {
+	if got := topMatchDetail(nil, topProcessTotal{}, false, false); len(got) != 1 || got[0] != "processes —" {
 		t.Fatalf("no sample detail = %q", got)
 	}
-	quiet := topMatchDetail([]topProcess{{PID: 3, CPU: 1, Command: "x"}}, topProcessTotal{Count: 1, CPU: 1}, true)
+	quiet := topMatchDetail([]topProcess{{PID: 3, CPU: 1, Command: "x"}}, topProcessTotal{Count: 1, CPU: 1}, true, false)
 	if strings.Contains(quiet[0], "fds") || strings.Contains(quiet[0], "io r") || strings.Contains(quiet[0], "thr") {
 		t.Fatalf("unknown values must not appear: %q", quiet)
 	}
@@ -791,8 +791,10 @@ func TestTopPanelsFitTheTableWidth(t *testing.T) {
 	lines := model.detailLines()
 	model.detail, model.peaks = false, true
 	lines = append(lines, model.peakLines()...)
-	for _, line := range lines {
-		if got := len([]rune(line)); got > topTableWidth {
+	// fixture process는 MemoryValid가 없어 memory 값이 흐린 색으로 칠해진다. 폭과 글자는 색을 뺀 값으로 본다.
+	for index, line := range lines {
+		lines[index] = ansi.Strip(line)
+		if got := ansi.StringWidth(line); got > topTableWidth {
 			t.Fatalf("panel line is %d wide and would be clipped: %q", got, line)
 		}
 	}
@@ -1494,6 +1496,47 @@ func TestTopCandidatesShowRSSBesideMemoryOnlyWhenWide(t *testing.T) {
 	}
 	if measured, estimated := topProcessMemoryCell("1.0M", false, true), topProcessMemoryCell("1.0M", true, true); measured != "  1.0M" || estimated == measured {
 		t.Fatalf("estimated memory must look different: %q, %q", measured, estimated)
+	}
+}
+
+// RSS 칸은 폭으로만 정한다. I/O 값이 생기고 없어질 때마다 RSS 칸이 나타났다 사라지면 같은 자리가 다른 값으로 읽힌다.
+func TestTopCandidatesKeepRSSWhetherIOArrives(t *testing.T) {
+	for width := 40; width <= 140; width++ {
+		var shown []bool
+		for _, diskValid := range []bool{false, true} {
+			model := topFixtureModel(nil)
+			model.limits.color = false
+			model.rows = []topDashboardRow{{at: time.Unix(1, 0), processesValid: true, processes: []topProcess{
+				{PID: 7, CPU: 1, RSS: 49 << 20, Memory: 3 << 30, MemoryValid: true, DiskValid: diskValid, Command: "leak"},
+			}}}
+			model.width, model.height = width, 40
+			shown = append(shown, strings.Contains(strings.Join(model.candidateLines(), "\n"), " RSS"))
+		}
+		if shown[0] != shown[1] {
+			t.Fatalf("%d columns: RSS shown without I/O = %v, with I/O = %v", width, shown[0], shown[1])
+		}
+	}
+}
+
+// 필터 합과 상위 세 개에 RSS로 대신한 값이 섞이면 후보 줄처럼 흐리게 둔다. 색이 없으면 글자는 그대로다.
+func TestTopEstimatedMemoryIsMutedInSummaries(t *testing.T) {
+	processes := []topProcess{{PID: 1, CPU: 5, RSS: 300 << 20, Memory: 300 << 20, Command: "other"}}
+	total := topProcessTotal{Count: 1, CPU: 5, Memory: 300 << 20, MemoryEstimated: true}
+	plain := topMatchDetail(processes, total, true, false)
+	colored := topMatchDetail(processes, total, true, true)
+	muted := richDim("300.0M")
+	for index := range plain {
+		if strings.Contains(plain[index], "\033[") || ansi.Strip(colored[index]) != plain[index] || !strings.Contains(colored[index], muted) {
+			t.Errorf("line %d: plain %q, colored %q", index, plain[index], colored[index])
+		}
+	}
+	measured := []topProcess{{PID: 1, CPU: 5, RSS: 300 << 20, Memory: 300 << 20, MemoryValid: true, Command: "mine"}}
+	if line := topMatchDetail(measured, topProcessTotal{Count: 1, CPU: 5, Memory: 300 << 20}, true, true); strings.Contains(strings.Join(line, "\n"), muted) {
+		t.Errorf("measured memory is muted: %q", line)
+	}
+	cells := topProcessViewCells(topDashboardRow{processesValid: true, processes: processes, processTotal: total})
+	if !cells[2].estimated || cells[2].paint("300.0M", true) != muted || cells[2].paint("300.0M", false) != "300.0M" {
+		t.Errorf("process view MEM cell = %+v", cells[2])
 	}
 }
 

@@ -2,7 +2,6 @@ package edc
 
 import (
 	"context"
-	"flag"
 	"fmt"
 	"io"
 	"net"
@@ -443,7 +442,7 @@ func sortResults(results []Result) {
 // 되지 않는다. where와 마찬가지로 JSON이면 JSON을, 터미널이면 표를 직접 그린다.
 func runListen(args []string, version string) int {
 	options := configuredCommon(15 * time.Second)
-	set := flag.NewFlagSet(listenProbeID, flag.ContinueOnError)
+	set := newFlagSet(listenProbeID)
 	set.SetOutput(os.Stderr)
 	bindCommon(set, &options)
 	tcp := set.Bool("tcp", false, T("command.listen.option.tcp"))

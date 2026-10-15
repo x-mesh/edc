@@ -496,7 +496,7 @@ func traceUsage() {
 
 func runTraceProtocol(args []string) int {
 	options := tcpTraceOptions{}
-	set := flag.NewFlagSet("trace "+args[0], flag.ContinueOnError)
+	set := newFlagSet("trace " + args[0])
 	set.SetOutput(os.Stderr)
 	set.DurationVar(&options.duration, "duration", 0, T("command.trace.option.duration"))
 	set.DurationVar(&options.slow, "slow", 0, T("command.trace.option.slow"))

@@ -9,7 +9,6 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"os"
 	"os/signal"
@@ -163,7 +162,7 @@ func schedMS(v *float64) string {
 
 func runTraceSched(args []string) int {
 	options := schedTraceOptions{}
-	set := flag.NewFlagSet("trace sched", flag.ContinueOnError)
+	set := newFlagSet("trace sched")
 	set.SetOutput(os.Stderr)
 	set.DurationVar(&options.duration, "duration", 0, "trace duration")
 	set.DurationVar(&options.slow, "slow", schedMinimumLatency, "minimum span latency with a unit, such as 20us, 500us, or 2ms")

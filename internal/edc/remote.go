@@ -96,7 +96,7 @@ func runRemoteRun(group string, args []string, version string) int {
 	dryRun := false
 	list := false
 	groupFlag := ""
-	set := flag.NewFlagSet("remote", flag.ContinueOnError)
+	set := newFlagSet("remote")
 	set.SetOutput(os.Stderr)
 	bindCommon(set, &options)
 	set.StringVar(&remoteOptions.inventoryPath, "inventory", remoteOptions.inventoryPath, T("command.remote.option.inventory"))

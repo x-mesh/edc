@@ -3,7 +3,6 @@ package edc
 import (
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 	"os"
 	"os/exec"
@@ -111,19 +110,12 @@ func runSvc(args []string, version string) int {
 
 func runSvcWith(args []string, version string, sources svcSources, ok bool) int {
 	options := configuredCommon(15 * time.Second)
-	set := flag.NewFlagSet("svc", flag.ContinueOnError)
+	set := newFlagSet("svc")
 	set.SetOutput(os.Stderr)
 	bindCommon(set, &options)
 	all := set.Bool("all", false, T("command.svc.option.all"))
 	// `edc svc nginx -v`처럼 unit 뒤에 온 flag도 받는다. flag 패키지는 첫 위치 인자에서 멈춘다.
-	ordered, err := reorderFSWatchArgs(set, args)
-	if err == nil {
-		err = set.Parse(ordered)
-	}
-	if err != nil {
-		if !errors.Is(err, flag.ErrHelp) {
-			fmt.Fprintln(os.Stderr, err)
-		}
+	if err := parseReordered(set, args); err != nil {
 		return 2
 	}
 	usage := T("cli.usage", "edc svc [options] [--all] | edc svc [options] <unit>")

@@ -3,7 +3,6 @@ package edc
 import (
 	"context"
 	"encoding/json"
-	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -141,7 +140,7 @@ type privReport struct {
 func runTracePriv(args []string) int {
 	options := privTraceOptions{}
 	var process string
-	set := flag.NewFlagSet("trace priv", flag.ContinueOnError)
+	set := newFlagSet("trace priv")
 	set.SetOutput(os.Stderr)
 	set.DurationVar(&options.duration, "duration", 0, T("command.trace.option.duration"))
 	set.StringVar(&process, "process", "", T("command.trace.option.process"))

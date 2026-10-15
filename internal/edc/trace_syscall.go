@@ -5,7 +5,6 @@ package edc
 import (
 	"context"
 	"encoding/json"
-	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -170,7 +169,7 @@ type syscallInFlightRow struct {
 func runTraceSyscall(args []string) int {
 	options := syscallTraceOptions{}
 	var process string
-	set := flag.NewFlagSet("trace syscall", flag.ContinueOnError)
+	set := newFlagSet("trace syscall")
 	set.SetOutput(os.Stderr)
 	set.DurationVar(&options.duration, "duration", 0, T("command.trace.option.duration"))
 	set.StringVar(&process, "process", "", T("command.trace.option.process"))

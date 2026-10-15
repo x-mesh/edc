@@ -3,7 +3,6 @@ package edc
 import (
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 	"net"
 	"os"
@@ -46,7 +45,7 @@ type dnsCompareRow struct {
 
 func runDNSCompare(args []string, version string) int {
 	options := configuredCommon(15 * time.Second)
-	set := flag.NewFlagSet("dns compare", flag.ContinueOnError)
+	set := newFlagSet("dns compare")
 	set.SetOutput(os.Stderr)
 	bindCommon(set, &options)
 	var resolvers resolverFlags

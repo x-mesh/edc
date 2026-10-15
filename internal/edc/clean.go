@@ -3,7 +3,6 @@ package edc
 import (
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"io/fs"
@@ -992,15 +991,12 @@ func runClean(args []string, version string) int {
 
 func runCleanWith(args []string, version string, deps cleanDeps, ok bool, homeErr error, stdout io.Writer) int {
 	options := configuredCommon(duDefaultTimeout)
-	set := flag.NewFlagSet("clean", flag.ContinueOnError)
+	set := newFlagSet("clean")
 	set.SetOutput(os.Stderr)
 	bindCommon(set, &options)
 	var projects cleanProjects
 	set.Var(&projects, "project", T("command.clean.option.project"))
 	if err := set.Parse(args); err != nil {
-		if !errors.Is(err, flag.ErrHelp) {
-			fmt.Fprintln(os.Stderr, err)
-		}
 		return 2
 	}
 	if set.NArg() > 0 {

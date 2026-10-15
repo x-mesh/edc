@@ -3,7 +3,6 @@ package edc
 import (
 	"context"
 	"encoding/json"
-	"flag"
 	"fmt"
 	"io"
 	"net/http"
@@ -38,7 +37,7 @@ func runAI(args []string, version string) int {
 	if len(args) > 0 && args[0] == "statusline" {
 		return runAIStatusline(args[1:])
 	}
-	set := flag.NewFlagSet("ai", flag.ContinueOnError)
+	set := newFlagSet("ai")
 	set.SetOutput(os.Stderr)
 	poll := set.Duration("poll", aiDefaultPoll, T("command.ai.option.poll"))
 	count := set.Int("count", 0, T("command.ai.option.count"))

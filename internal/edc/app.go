@@ -50,8 +50,9 @@ func Run(args []string, version string) int {
 		printHelp(os.Stdout, version)
 		return 0
 	}
-	// `edc <command> --help`도 같은 상세 화면으로 보낸다. flag의 기본 usage와 어긋나지 않게 한다.
-	if len(args) > 1 && (args[1] == "--help" || args[1] == "-h") && printCommandHelp(os.Stdout, args[0]) {
+	// `edc <command> [subcommand] ... --help`는 그 명령의 edc help로 보낸다. flag의 기본 usage는 대시 하나짜리 목록이라
+	// edc help와 모양이 다르다. watch는 http와 fs마다 따로 help를 그리므로 runWatch가 같은 판정으로 처리한다.
+	if len(args) > 1 && args[0] != "watch" && helpRequested(args[1:]) && printCommandHelp(os.Stdout, args[0]) {
 		return 0
 	}
 	switch args[0] {
@@ -141,7 +142,7 @@ func Run(args []string, version string) int {
 
 func runDoctor(args []string, version string) int {
 	options := configuredCommon(15 * time.Second)
-	set := flag.NewFlagSet("doctor", flag.ContinueOnError)
+	set := newFlagSet("doctor")
 	set.SetOutput(os.Stderr)
 	bindCommon(set, &options)
 	profile := set.String("profile", configuredString(activeConfig.Defaults.Doctor.Profile, "default"), T("command.doctor.option.profile"))
@@ -389,7 +390,7 @@ func runTargetProbe(args []string, version, name, probeID, prompt string, probe 
 
 func runTargetProbeWithFlags(args []string, version, name, probeID string, extra probeFlags, probe func(context.Context, string) Result) int {
 	options := configuredCommon(15 * time.Second)
-	set := flag.NewFlagSet(name, flag.ContinueOnError)
+	set := newFlagSet(name)
 	set.SetOutput(os.Stderr)
 	bindCommon(set, &options)
 	if extra.bind != nil {
@@ -491,7 +492,7 @@ func runSimple(args []string, version, name, probeID string, probe func(context.
 }
 
 func runSimpleWithOptions(args []string, version, name, probeID string, options commonOptions, extra probeFlags, probe func(context.Context) Result) int {
-	set := flag.NewFlagSet(name, flag.ContinueOnError)
+	set := newFlagSet(name)
 	set.SetOutput(os.Stderr)
 	bindCommon(set, &options)
 	if extra.bind != nil {

@@ -3,7 +3,6 @@ package edc
 import (
 	"context"
 	"encoding/json"
-	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -122,7 +121,7 @@ type reclaimReport struct {
 func runTraceReclaim(args []string) int {
 	options := reclaimTraceOptions{}
 	var process string
-	set := flag.NewFlagSet("trace reclaim", flag.ContinueOnError)
+	set := newFlagSet("trace reclaim")
 	set.SetOutput(os.Stderr)
 	set.DurationVar(&options.duration, "duration", 0, T("command.trace.option.duration"))
 	set.StringVar(&process, "process", "", T("command.trace.option.process"))

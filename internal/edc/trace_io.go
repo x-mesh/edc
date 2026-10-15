@@ -5,7 +5,6 @@ package edc
 import (
 	"context"
 	"encoding/json"
-	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -180,7 +179,7 @@ func (options ioTraceOptions) matches(event ioEvent) bool {
 
 func runIOTrace(args []string) int {
 	options := ioTraceOptions{}
-	set := flag.NewFlagSet("trace io", flag.ContinueOnError)
+	set := newFlagSet("trace io")
 	set.SetOutput(os.Stderr)
 	set.DurationVar(&options.duration, "duration", 0, "trace duration")
 	set.DurationVar(&options.slow, "slow", ioLatencyThreshold, "minimum request latency with a unit, such as 20us, 500us, or 2ms")

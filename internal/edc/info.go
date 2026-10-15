@@ -3,7 +3,6 @@ package edc
 import (
 	"context"
 	"encoding/json"
-	"flag"
 	"fmt"
 	"io"
 	"net/http"
@@ -25,7 +24,7 @@ type publicNetworkInfo struct {
 }
 
 func runInfo(args []string, version string) int {
-	set := flag.NewFlagSet("info", flag.ContinueOnError)
+	set := newFlagSet("info")
 	set.SetOutput(os.Stderr)
 	config := activeConfig.Defaults.Info
 	includePublic := set.Bool("public", configuredBool(config.Public, true), T("command.info.option.public"))

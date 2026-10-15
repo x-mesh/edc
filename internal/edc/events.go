@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"io/fs"
@@ -216,7 +215,7 @@ func runEvents(args []string, version string) int {
 
 // parseEventsFlags는 원천을 읽기 전에 --since를 검사한다. 0이나 음수가 창을 조용히 비우거나 넓히지 않게 한다.
 func parseEventsFlags(args []string, options commonOptions, stderr io.Writer) (commonOptions, time.Duration, bool) {
-	set := flag.NewFlagSet("events", flag.ContinueOnError)
+	set := newFlagSet("events")
 	set.SetOutput(stderr)
 	bindCommon(set, &options)
 	since := set.Duration("since", eventsDefaultSince, T("events.option.since"))

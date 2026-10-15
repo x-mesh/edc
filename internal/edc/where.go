@@ -3,7 +3,6 @@ package edc
 import (
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"net"
@@ -107,7 +106,7 @@ type whereReport struct {
 
 func runWhere(args []string, version string) int {
 	options := configuredCommon(20 * time.Second)
-	set := flag.NewFlagSet("where", flag.ContinueOnError)
+	set := newFlagSet("where")
 	set.SetOutput(os.Stderr)
 	bindCommon(set, &options)
 	provider := set.String("provider", configuredString(activeConfig.Defaults.Where.Provider, "all"), T("command.where.option.provider"))

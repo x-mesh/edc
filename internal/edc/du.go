@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -165,7 +164,7 @@ func runDu(args []string, version string) int {
 
 func runDuWith(args []string, version string, sources duSources, ok bool, stdout *os.File) int {
 	options := configuredCommon(duDefaultTimeout)
-	set := flag.NewFlagSet("du", flag.ContinueOnError)
+	set := newFlagSet("du")
 	set.SetOutput(os.Stderr)
 	bindCommon(set, &options)
 	workers := set.Int("workers", duDefaultWorkers, T("command.du.option.workers"))
@@ -173,14 +172,8 @@ func runDuWith(args []string, version string, sources duSources, ok bool, stdout
 	crossMounts := set.Bool("cross-mounts", false, T("command.du.option.cross_mounts"))
 	noBrowse := set.Bool("no-browse", false, T("command.du.option.no_browse"))
 	set.BoolVar(noBrowse, "B", false, T("command.du.option.no_browse"))
-	ordered, err := reorderFSWatchArgs(set, args)
-	if err == nil {
-		err = set.Parse(ordered)
-	}
+	err := parseReordered(set, args)
 	if err != nil {
-		if !errors.Is(err, flag.ErrHelp) {
-			fmt.Fprintln(os.Stderr, err)
-		}
 		return 2
 	}
 	if set.NArg() > 1 || *workers < 1 || *rows < 0 {

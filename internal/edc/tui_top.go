@@ -236,10 +236,13 @@ type topModel struct {
 	helpOffset      int
 	processFocus    bool
 	processSelected int
-	probeEnabled    bool
-	record          func(historyTopSample) error
-	recordFailure   tea.Cmd
-	recordingErr    error
+	// panelSort는 o로 고른 process 패널 정렬 기준이다. topViewCPU, topViewMemory, topViewDisk 중 하나이고,
+	// 비어 있으면 보기를 따른다. 보기를 바꾸면 비운다.
+	panelSort     topView
+	probeEnabled  bool
+	record        func(historyTopSample) error
+	recordFailure tea.Cmd
+	recordingErr  error
 	// split은 박스로 보일 보기 목록이고, 비어 있으면 전체다. boxed는 박스 안에서 그리는 표임을 나타낸다.
 	split []topView
 	boxed bool
@@ -277,7 +280,7 @@ func (model topModel) Init() tea.Cmd { return tea.Batch(model.tick(), model.reco
 func (model topModel) tick() tea.Cmd {
 	seq, sample := model.seq, model.sample
 	if model.setScanIO != nil {
-		model.setScanIO(model.view == topViewDisk)
+		model.setScanIO(model.panelRank() == topViewDisk)
 	}
 	if model.processFilter.active() && model.sampleNow != nil {
 		sample = model.sampleNow
@@ -423,19 +426,21 @@ func (model topModel) updateKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "-", "_":
 		return model.withInterval(nextTopInterval(model.interval, -1))
 	case "1":
-		model.view = topViewAll
+		model.view, model.panelSort = topViewAll, ""
 	case "c":
-		model.view = topViewCPU
+		model.view, model.panelSort = topViewCPU, ""
 	case "m":
-		model.view = topViewMemory
+		model.view, model.panelSort = topViewMemory, ""
 	case "d":
-		model.view = topViewDisk
+		model.view, model.panelSort = topViewDisk, ""
 	case "n":
-		model.view = topViewNetwork
+		model.view, model.panelSort = topViewNetwork, ""
 	case "v":
 		model = model.enterSplit()
 	case "s":
-		model.view = topViewPressure
+		model.view, model.panelSort = topViewPressure, ""
+	case "o":
+		model.panelSort = nextTopPanelSort(model.panelSort)
 	case "?":
 		model.help = true
 		model.helpOffset = 0
@@ -1212,6 +1217,32 @@ func (model topModel) displayWidth() int {
 	return model.width
 }
 
+// panelRank은 process 패널의 정렬 기준이다. o로 고른 기준이 없으면 보기를 따르고, 메모리와 디스크 보기 밖에서는 CPU 순이다.
+func (model topModel) panelRank() topView {
+	view := model.view
+	if model.panelSort != "" {
+		view = model.panelSort
+	}
+	switch view {
+	case topViewMemory, topViewDisk:
+		return view
+	}
+	return topViewCPU
+}
+
+// nextTopPanelSort는 o를 누를 때의 다음 정렬 기준이다. 마지막 다음은 다시 보기를 따른다.
+func nextTopPanelSort(current topView) topView {
+	switch current {
+	case "":
+		return topViewCPU
+	case topViewCPU:
+		return topViewMemory
+	case topViewMemory:
+		return topViewDisk
+	}
+	return ""
+}
+
 func (model topModel) candidates() []topProcess {
 	row, ok := model.selectedRow()
 	row = model.currentFilterRow(row)
@@ -1219,7 +1250,7 @@ func (model topModel) candidates() []topProcess {
 		return nil
 	}
 	processes := append([]topProcess(nil), row.processes...)
-	switch model.view {
+	switch model.panelRank() {
 	case topViewMemory:
 		// signal이 가리키는 가장 많이 늘어난 process 하나만 크기와 상관없이 앞에 둔다. 다섯 줄로 자를 때 그 줄이 빠지면
 		// 안 된다. 늘어나는 process를 모두 앞에 두면 같은 일을 하는 worker 여럿이 가장 큰 process를 밀어낸다.
@@ -1247,7 +1278,7 @@ func (model topModel) showsProcessIO(processes []topProcess) bool {
 	if model.displayWidth() < topProcessIOMinWidth {
 		return false
 	}
-	if model.processFilter.active() || model.view == topViewDisk {
+	if model.processFilter.active() || model.panelRank() == topViewDisk {
 		return true
 	}
 	for _, process := range processes {
@@ -1360,7 +1391,7 @@ func (model topModel) candidateLines() []string {
 		return []string{topHeading("processes · waiting for a sample with this filter", model.limits.color)}
 	}
 	rank := "CPU"
-	if model.view == topViewMemory {
+	if model.panelRank() == topViewMemory {
 		rank = "MEM"
 	}
 	state := "live"
@@ -1368,10 +1399,14 @@ func (model topModel) candidateLines() []string {
 		state = "history"
 	}
 	title := rank
-	if model.view == topViewDisk {
+	if model.panelRank() == topViewDisk {
 		title = "I/O"
 	}
-	lines := []string{topHeading(fmt.Sprintf("processes · %s rank · %s %s · Tab select", title, state, row.at.Format("15:04:05")), model.limits.color)}
+	chosen := ""
+	if model.panelSort != "" {
+		chosen = " (o)"
+	}
+	lines := []string{topHeading(fmt.Sprintf("processes · %s rank%s · %s %s · Tab select · o sort", title, chosen, state, row.at.Format("15:04:05")), model.limits.color)}
 	processes := model.candidates()
 	if len(processes) == 0 {
 		return append(lines, "no match · / edit filter · Esc clear")
@@ -1407,7 +1442,7 @@ func (model topModel) candidateLines() []string {
 		lines = append(lines, topDim(header, model.limits.color))
 	}
 	if model.displayWidth() >= 40 && !model.processFilter.active() {
-		groups := topViewProcessGroups(row.processTotal.Groups, model.view)
+		groups := topViewProcessGroups(row.processTotal.Groups, model.panelRank())
 		// 묶음이 process 줄을 모두 밀어내지 않도록 process 한 줄은 남긴다.
 		groups = groups[:min(len(groups), max(0, room-len(lines)-1))]
 		for _, group := range groups {
@@ -1448,7 +1483,7 @@ func (model topModel) candidateLines() []string {
 		}
 		if model.displayWidth() < 40 {
 			value := fmt.Sprintf("%6s", fmt.Sprintf("%.1f%%", process.CPU))
-			if model.view == topViewMemory {
+			if model.panelRank() == topViewMemory {
 				value = memory
 			}
 			line = fmt.Sprintf("%s %7d %s %6s", marker, process.PID, topFitCell(topProcessName(process.Command, nameWidth), nameWidth, true), value)
@@ -1477,7 +1512,7 @@ func (model topModel) helpLines() []string {
 	lines := []string{
 		"Views: 1 all · c CPU · m memory · d disk · n network · s pressure · v boxes",
 		"History: ↑↓ or PgUp/PgDn · End live · p pause · +/- interval",
-		"Processes: Tab select · ↑↓ choose · Enter focus PID · Tab/Esc back",
+		"Processes: Tab select · ↑↓ choose · Enter focus PID · Tab/Esc back · o sort by CPU, MEM, I/O, then the view",
 		"Signals: f opens its view, then selects candidates. A candidate is not a confirmed cause.",
 		"Events: warnings that last 5s are kept with their candidates · e list · Enter jump · [ ] previous/next · ! marks the start row",
 		"Events that start within 5s share one line. ≤ means the warning was already on when edc started.",
@@ -1485,7 +1520,7 @@ func (model topModel) helpLines() []string {
 		"Back: Esc closes the panel, returns to the live row, then to the first view, then clears the process filter",
 		"Interfaces: i opens the list · Space check · a all · p physical · Enter applies from the next sample · off while -w records",
 		"Details: Enter on history · h peaks from the last 60 seconds",
-		"CPU: host % uses all cores. Process 100% uses one core. RSS is resident memory.",
+		"CPU: host % uses all cores. Process 100% uses one core. MEM is the footprint on macOS and RSS plus swap on Linux.",
 		"MEM counts the memory a process holds, also when it is compressed or swapped out. A gray MEM value is RSS, used when edc could not read MEM.",
 		"— means unavailable or no baseline. Read the process I/O status for errors.",
 		"no ev means the -d observer is active but collected no events in that interval. n/a means this OS cannot measure it.",

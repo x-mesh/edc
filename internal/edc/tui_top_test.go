@@ -2048,3 +2048,31 @@ func TestRichTopHeaderKeepsTheTableHeader(t *testing.T) {
 func topTintPrefix(level topLevel) string {
 	return strings.TrimSuffix(topTint("x", level, true), "x"+richReset)
 }
+
+func TestTopProcessSortKeyCyclesWithoutChangingTheView(t *testing.T) {
+	model := topFixtureModel(nil)
+	model.limits.color = false
+	model.width, model.height = 120, 40
+	model.rows = []topDashboardRow{{at: time.Unix(1, 0), processesValid: true, processes: []topProcess{
+		{PID: 1, CPU: 90, RSS: 1 << 20, Command: "busy"},
+		{PID: 2, CPU: 1, RSS: 4 << 30, Command: "heavy"},
+		{PID: 3, CPU: 2, RSS: 1 << 20, Command: "writer", DiskValid: true, DiskWrite: 50 << 20},
+	}}}
+	var scanIO []bool
+	model.setScanIO = func(on bool) { scanIO = append(scanIO, on) }
+	for _, tc := range []struct {
+		title  string
+		first  int
+		scanIO bool
+	}{{"CPU rank (o)", 1, false}, {"MEM rank (o)", 2, false}, {"I/O rank (o)", 3, true}, {"CPU rank ·", 1, false}} {
+		model = topAfter(t, model, topKey("o"))
+		model.tick()
+		if title := model.candidateLines()[0]; model.view != topViewAll || !strings.Contains(title, "processes · "+tc.title) || model.candidates()[0].PID != tc.first || scanIO[len(scanIO)-1] != tc.scanIO {
+			t.Fatalf("%s: view %s, title %q, first %d, scanIO %v", tc.title, model.view, title, model.candidates()[0].PID, scanIO)
+		}
+	}
+	model = topAfter(t, model, topKey("o"), topKey("o"), topKey("d"))
+	if model.panelSort != "" || model.panelRank() != topViewDisk {
+		t.Fatalf("a view key must drop the chosen sort: sort %q, rank %s", model.panelSort, model.panelRank())
+	}
+}

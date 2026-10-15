@@ -112,3 +112,9 @@ func TestRichFillMutesTheBarColor(t *testing.T) {
 		t.Error("a bar must not use the text color")
 	}
 }
+
+func TestRichHexMatchesTheEscapeColors(t *testing.T) {
+	if richHex(richGreen) != "#4ce27d" || richFillHex(richGreen) != "#30844f" || richChipHex() != "#262b33" || richHex("1") != "" {
+		t.Errorf("hex = %s %s %s", richHex(richGreen), richFillHex(richGreen), richChipHex())
+	}
+}

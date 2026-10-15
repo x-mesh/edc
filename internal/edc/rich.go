@@ -290,6 +290,30 @@ func richBlend(color, base richRGB, share float64) richRGB {
 	return richRGB{mix(color.r, base.r), mix(color.g, base.g), mix(color.b, base.b)}
 }
 
+// richHex는 lipgloss와 Bubble Tea 화면이 쓰는 같은 팔레트의 색이다. 화면을 그리는 쪽이 터미널이 받는 색 수에 맞춰 줄인다.
+// code는 richRed 같은 ANSI 번호다. 팔레트에 없는 번호는 빈 문자열이다.
+func richHex(code string) string {
+	entry, ok := richPalette[code]
+	if !ok {
+		return ""
+	}
+	return richRGBHex(entry.rgb)
+}
+
+// richFillHex는 넓은 면적과 막대에 쓰는 차분한 색이다. richFill과 같은 색이다.
+func richFillHex(code string) string {
+	entry, ok := richPalette[code]
+	if !ok {
+		return ""
+	}
+	return richRGBHex(richBlend(entry.rgb, richPalette["30"].rgb, richFillShare))
+}
+
+// richChipHex는 chip과 고른 줄의 바탕색이다.
+func richChipHex() string { return richRGBHex(richChipBackground) }
+
+func richRGBHex(rgb richRGB) string { return fmt.Sprintf("#%02x%02x%02x", rgb.r, rgb.g, rgb.b) }
+
 // richSegment는 여러 색으로 나눈 막대의 한 구간이다.
 type richSegment struct {
 	value float64

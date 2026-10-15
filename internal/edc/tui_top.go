@@ -279,9 +279,7 @@ func (model topModel) Init() tea.Cmd { return tea.Batch(model.tick(), model.reco
 
 func (model topModel) tick() tea.Cmd {
 	seq, sample := model.seq, model.sample
-	if model.setScanIO != nil {
-		model.setScanIO(model.panelRank() == topViewDisk)
-	}
+	model.syncScanIO()
 	if model.processFilter.active() && model.sampleNow != nil {
 		sample = model.sampleNow
 	}
@@ -505,10 +503,18 @@ func (model topModel) updateKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			model.selected, model.follow = len(model.rows)-1, true
 		}
 	}
-	if key.String() == "1" || key.String() == "c" || key.String() == "m" || key.String() == "d" || key.String() == "n" || key.String() == "s" || key.String() == "v" {
+	if key.String() == "1" || key.String() == "c" || key.String() == "m" || key.String() == "d" || key.String() == "n" || key.String() == "s" || key.String() == "v" || key.String() == "o" {
 		model.processSelected = 0
+		// 이미 예약한 표본도 새 순위로 읽게 바로 알린다. tick에서만 알리면 한 interval 동안 앞 순위의 후보가 남는다.
+		model.syncScanIO()
 	}
 	return model, nil
+}
+
+func (model topModel) syncScanIO() {
+	if model.setScanIO != nil {
+		model.setScanIO(model.panelRank() == topViewDisk)
+	}
 }
 
 // homeView는 Esc가 돌아가는 처음 보기다. process 필터가 있으면 그 process 보기, --split으로 시작했으면 박스 화면이다.
@@ -524,10 +530,10 @@ func (model topModel) homeView() topView {
 
 // canGoBack은 Esc로 되돌릴 것이 있는지다. 있으면 상태 줄에 Esc back을 보인다.
 func (model topModel) canGoBack() bool {
-	return model.detail || model.peaks || !model.follow || model.view != model.homeView() || model.processFilter.active()
+	return model.detail || model.peaks || !model.follow || model.panelSort != "" || model.view != model.homeView() || model.processFilter.active()
 }
 
-// back은 Esc 한 번에 한 단계만 되돌린다. 아래 패널, 과거 행 선택, 처음 보기, process 필터 순서라서 Esc를 몇 번 누르면
+// back은 Esc 한 번에 한 단계만 되돌린다. 아래 패널, 과거 행 선택, o로 고른 정렬, 처음 보기, process 필터 순서라서 Esc를 몇 번 누르면
 // 처음 화면으로 돌아온다. 보기 키를 몰라도 돌아올 수 있게 한다.
 func (model topModel) back() (tea.Model, tea.Cmd) {
 	switch {
@@ -538,6 +544,9 @@ func (model topModel) back() (tea.Model, tea.Cmd) {
 			model.selected = len(model.rows) - 1
 		}
 		model.follow = true
+	case model.panelSort != "":
+		model.panelSort, model.processSelected = "", 0
+		model.syncScanIO()
 	case model.view != model.homeView():
 		if home := model.homeView(); home == topViewSplit {
 			model = model.enterSplit()
@@ -545,6 +554,7 @@ func (model topModel) back() (tea.Model, tea.Cmd) {
 			model.view = home
 		}
 		model.processSelected = 0
+		model.syncScanIO()
 	case model.processFilter.active():
 		model.notice = "process filter cleared"
 		return model.applyFilter(topProcessFilter{}, "")
@@ -554,7 +564,8 @@ func (model topModel) back() (tea.Model, tea.Cmd) {
 
 func (model topModel) followSignal() (tea.Model, tea.Cmd) {
 	if model.processFilter.active() {
-		model.view = topViewProcess
+		model.view, model.panelSort = topViewProcess, ""
+		model.syncScanIO()
 		return model, nil
 	}
 	row, ok := model.selectedRow()
@@ -564,7 +575,8 @@ func (model topModel) followSignal() (tea.Model, tea.Cmd) {
 	}
 	items := topDashboardSignalItems(row.rate, row.processes, row.processTotal.Groups, row.processesValid, model.limits)
 	if len(items) > 0 && items[0].view != topViewProcess && model.view != items[0].view {
-		model.view = items[0].view
+		model.view, model.panelSort, model.processSelected = items[0].view, "", 0
+		model.syncScanIO()
 		model.notice = fmt.Sprintf("f: %s → %s view · f again selects a candidate", items[0].text, items[0].view)
 		return model, nil
 	}
@@ -672,7 +684,7 @@ func (model topModel) applyFilter(filter topProcessFilter, name string) (tea.Mod
 	if model.setFilter != nil {
 		model.setFilter(filter)
 	}
-	model.view = topViewAll
+	model.view, model.panelSort = topViewAll, ""
 	if filter.active() {
 		model.view = topViewProcess
 	}
@@ -1167,10 +1179,11 @@ func (model topModel) statusLines() []string {
 		}
 	}
 	if model.interfaces.active() {
-		// net 표시가 붙으면 80열에서 줄 끝이 잘린다. ? help는 아래 줄에도 있고, o로 고른 정렬은 패널 제목의 (o)로 보이므로 둘을 뺀다.
+		// net 표시가 붙으면 80열에서 / filter까지 잘린다. ? help는 아래 줄에도 있고, o는 ? 도움말에 있으며 고른 뒤에는
+		// 패널 제목의 (o)로 보이므로 둘을 뺀다.
 		kept := topKeyHints{}
-		for _, hint := range keys[:len(keys)-1] {
-			if hint.key != "o" {
+		for _, hint := range keys {
+			if hint.key != "?" && hint.key != "o" {
 				kept = append(kept, hint)
 			}
 		}
@@ -1267,8 +1280,18 @@ func (model topModel) sortHint() topKeyHint {
 	if model.panelSort == "" {
 		return topKeyHint{key: "o", label: "sort"}
 	}
-	name := map[topView]string{topViewCPU: "CPU", topViewMemory: "MEM", topViewDisk: "I/O"}[model.panelSort]
-	return topKeyHint{key: "o", label: "sort:" + name, on: true}
+	return topKeyHint{key: "o", label: "sort:" + topRankName(model.panelSort), on: true}
+}
+
+// topRankName은 패널 순위의 이름이다. 안내 줄의 sort:MEM과 패널 제목의 MEM rank가 같은 이름을 쓴다.
+func topRankName(rank topView) string {
+	switch rank {
+	case topViewMemory:
+		return "MEM"
+	case topViewDisk:
+		return "I/O"
+	}
+	return "CPU"
 }
 
 // topStatusLine은 안내 줄의 색 없는 글자와 색을 입힌 글자다. 폭과 합칠지는 plain으로 정한다.
@@ -1467,18 +1490,11 @@ func (model topModel) candidateLines() []string {
 	if !ok || !row.processesValid {
 		return []string{topHeading("processes · waiting for a sample with this filter", model.limits.color)}
 	}
-	rank := "CPU"
-	if model.panelRank() == topViewMemory {
-		rank = "MEM"
-	}
 	state := "live"
 	if !model.follow {
 		state = "history"
 	}
-	title := rank
-	if model.panelRank() == topViewDisk {
-		title = "I/O"
-	}
+	title := topRankName(model.panelRank())
 	chosen := ""
 	if model.panelSort != "" {
 		chosen = " (o)"
@@ -1514,7 +1530,12 @@ func (model topModel) candidateLines() []string {
 			header += fmt.Sprintf(" %6s %6s", "READ", "WRITE")
 		}
 		if model.displayWidth() < 40 {
-			header = fmt.Sprintf("  %7s %s %6s", "PID", topFitCell("COMMAND", nameWidth, true), rank)
+			// 좁은 화면은 값 하나만 둔다. I/O 순위에도 CPU를 보이므로 MEM 순위만 MEM이다.
+			value := "CPU"
+			if model.panelRank() == topViewMemory {
+				value = "MEM"
+			}
+			header = fmt.Sprintf("  %7s %s %6s", "PID", topFitCell("COMMAND", nameWidth, true), value)
 		}
 		lines = append(lines, topDim(header, model.limits.color))
 	}
@@ -1594,7 +1615,7 @@ func (model topModel) helpLines() []string {
 		"Events: warnings that last 5s are kept with their candidates · e list · Enter jump · [ ] previous/next · ! marks the start row",
 		"Events that start within 5s share one line. ≤ means the warning was already on when edc started.",
 		"Filter: / edit names or PIDs · Enter apply · Esc cancel",
-		"Back: Esc closes the panel, returns to the live row, then to the first view, then clears the process filter",
+		"Back: Esc closes the panel, returns to the live row, drops the o rank, returns to the first view, then clears the process filter",
 		"Interfaces: i opens the list · Space check · a all · p physical · Enter applies from the next sample · off while -w records",
 		"Details: Enter on history · h peaks from the last 60 seconds",
 		"CPU: host % uses all cores. Process 100% uses one core. MEM is the footprint on macOS and RSS plus swap on Linux.",

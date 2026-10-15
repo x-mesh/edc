@@ -2086,3 +2086,71 @@ func TestTopProcessSortKeyCyclesWithoutChangingTheView(t *testing.T) {
 		t.Fatalf("a view key must drop the chosen sort: sort %q, rank %s", model.panelSort, model.panelRank())
 	}
 }
+
+// o로 고른 정렬은 보기를 바꾸는 모든 경로와 Esc에서 풀린다. 고른 정렬만 남아도 Esc back이 보인다.
+func TestTopChosenSortFollowsEveryViewChange(t *testing.T) {
+	newModel := func() topModel {
+		model := topFixtureModel(nil)
+		model.limits.color = false
+		model.width, model.height = 120, 40
+		model.rows = []topDashboardRow{{at: time.Unix(1, 0), processesValid: true,
+			rate: resourceRate{DiskHealthValid: true, DiskAwait: 1000},
+			processes: []topProcess{
+				{PID: 1, CPU: 90, RSS: 1 << 20, Command: "busy"},
+				{PID: 2, CPU: 1, RSS: 4 << 30, Command: "heavy"},
+			}}}
+		return model
+	}
+	model := topAfter(t, newModel(), topKey("o"))
+	if !model.canGoBack() || !strings.Contains(strings.Join(model.statusLines(), "\n"), "Esc back") {
+		t.Fatalf("a chosen sort alone must show Esc back: %q", model.statusLines())
+	}
+	model = topAfter(t, newModel(), topKey("m"), topKey("o"), topKey("esc"))
+	if model.panelSort != "" || model.view != topViewMemory || model.panelRank() != topViewMemory {
+		t.Fatalf("Esc must drop the chosen sort first: view %s, sort %q", model.view, model.panelSort)
+	}
+	model = topAfter(t, model, topKey("esc"))
+	if model.view != topViewAll || model.canGoBack() {
+		t.Fatalf("the second Esc must return to the first view: view %s", model.view)
+	}
+	model = topAfter(t, newModel(), topKey("o"), topKey("o"), topKey("f"))
+	if model.view != topViewDisk || model.panelSort != "" || model.panelRank() != topViewDisk {
+		t.Fatalf("f must open the signal view with its rank: view %s, sort %q", model.view, model.panelSort)
+	}
+	model = newModel()
+	model.split = []topView{topViewCPU, topViewMemory}
+	model = topAfter(t, model, topKey("o"), topKey("v"))
+	if model.view != topViewSplit || model.panelSort != "" {
+		t.Fatalf("v must drop the chosen sort: view %s, sort %q", model.view, model.panelSort)
+	}
+	model = topAfter(t, newModel(), topKey("o"))
+	next, _ := model.applyFilter(topProcessFilter{}, "")
+	if model = next.(topModel); model.panelSort != "" {
+		t.Fatalf("a filter change must drop the chosen sort: %q", model.panelSort)
+	}
+}
+
+// o는 후보 순서를 바꾸므로 고른 후보를 처음으로 되돌린다. 같은 자리에 다른 PID가 와서 Enter가 다른 process에 걸리지 않게 한다.
+func TestTopSortKeyResetsTheCandidateSelection(t *testing.T) {
+	model := topFixtureModel(nil)
+	model.limits.color = false
+	model.width, model.height = 120, 40
+	model.rows = []topDashboardRow{{at: time.Unix(1, 0), processesValid: true, processes: []topProcess{
+		{PID: 1, CPU: 90, RSS: 1 << 20, Command: "busy"},
+		{PID: 2, CPU: 1, RSS: 4 << 30, Command: "heavy"},
+	}}}
+	var scanIO []bool
+	model.setScanIO = func(on bool) { scanIO = append(scanIO, on) }
+	model = topAfter(t, model, topKey("tab"), topKey("down"))
+	if model.candidates()[model.processSelected].PID != 2 {
+		t.Fatalf("setup: selected PID %d", model.candidates()[model.processSelected].PID)
+	}
+	model = topAfter(t, model, topKey("o"))
+	if model.processSelected != 0 {
+		t.Fatalf("o must reset the selection: %d", model.processSelected)
+	}
+	model = topAfter(t, model, topKey("o"), topKey("o"))
+	if len(scanIO) == 0 || !scanIO[len(scanIO)-1] {
+		t.Fatalf("choosing the I/O rank must turn on the full I/O scan at once: %v", scanIO)
+	}
+}

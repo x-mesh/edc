@@ -135,7 +135,7 @@ func (model topModel) enterSplit() topModel {
 	if len(views) == 0 {
 		return model
 	}
-	model.view = topViewSplit
+	model.view, model.panelSort = topViewSplit, ""
 	return model
 }
 

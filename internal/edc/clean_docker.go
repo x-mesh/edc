@@ -496,16 +496,16 @@ func cleanStateText(status string, reasons []string) string {
 	return word
 }
 
-func formatCleanDocker(section cleanDocker, verbose bool, width int) string {
+func formatCleanDocker(section cleanDocker, verbose bool, width int, style cleanStyle) string {
 	var builder strings.Builder
-	line := func(indent, text string) { builder.WriteString(duFit(indent+text, width) + "\n") }
 	if section.Status != cleanMeasured && section.Status != cleanPartial {
-		line("\n", T("clean.docker.state", cleanStateText(section.Status, section.Reasons)))
+		builder.WriteString(duFit("\n"+style.state(T("clean.docker.state", cleanStateText(section.Status, section.Reasons)), section.Status), width) + "\n")
 		if section.Detail != "" && (verbose || section.Status != cleanToolAbsent && section.Status != cleanNotRunning) {
-			line("  ", section.Detail)
+			builder.WriteString(duFit("  "+style.dim(section.Detail), width) + "\n")
 		}
 		return builder.String()
 	}
+	line := func(indent, text string) { builder.WriteString(style.row(indent, text, width)) }
 	var info []string
 	if section.OperatingSystem != "" {
 		info = append(info, section.OperatingSystem)
@@ -517,7 +517,8 @@ func formatCleanDocker(section cleanDocker, verbose bool, width int) string {
 	if len(info) > 0 {
 		suffix = " (" + strings.Join(info, ", ") + ")"
 	}
-	line("\n", T("clean.docker.title", suffix))
+	builder.WriteString(style.open(T("clean.docker.title", suffix), T("clean.docker.panel"),
+		strings.Join(append(info, T("clean.docker.note")), " · "), width))
 	sizes := make([]string, len(section.Types))
 	items := make([]string, len(section.Types))
 	var sizeWidth, nameWidth, itemsWidth int
@@ -535,26 +536,32 @@ func formatCleanDocker(section cleanDocker, verbose bool, width int) string {
 		// 길이가 같은 개수 칸을 앞에 두고, 종류마다 길이가 다른 회수 가능량 문구는 끝에 둔다. 문구를 칸으로 맞추면 가장 긴
 		// volumes 문구가 모든 행의 개수를 오른쪽으로 민다.
 		var rest string
+		var bytes uint64
 		switch {
 		case result.Status != cleanMeasured:
-			rest = cleanStateText(result.Status, result.Reasons)
+			rest = style.state(cleanStateText(result.Status, result.Reasons), result.Status)
 		case result.Type == cleanDockerVolumes:
-			rest = cleanPad(items[index], itemsWidth) + "  " + T("clean.docker.no_reclaim")
+			bytes = uint64(*result.TotalBytes)
+			rest = style.dim(cleanPad(items[index], itemsWidth) + "  " + T("clean.docker.no_reclaim"))
 		default:
-			rest = cleanPad(items[index], itemsWidth) + "  " + T("clean.docker.reclaimable", formatSizeShort(uint64(*result.ReclaimableBytes)))
+			bytes = uint64(*result.TotalBytes)
+			reclaimable := uint64(*result.ReclaimableBytes)
+			rest = style.dim(cleanPad(items[index], itemsWidth)+"  ") +
+				style.phrase("clean.docker.reclaimable", formatSizeShort(reclaimable), richSizeColor(int64(reclaimable)))
 		}
-		line("  ", cleanPadLeft(sizes[index], sizeWidth)+"  "+cleanPad(T("clean.docker.type."+result.Type), nameWidth)+"  "+rest)
+		line("  ", style.size(cleanPadLeft(sizes[index], sizeWidth), bytes, true)+"  "+cleanPad(T("clean.docker.type."+result.Type), nameWidth)+"  "+rest)
 		if verbose && result.Cleanup != "" {
-			line(strings.Repeat(" ", 2+sizeWidth+4), T("clean.cleanup", result.Cleanup))
+			line(strings.Repeat(" ", 2+sizeWidth+4), style.phrase("clean.cleanup", result.Cleanup, richCyan))
 		}
 	}
 	if verbose && section.Endpoint != "" {
-		line("  ", T("clean.docker.endpoint", section.Endpoint))
+		line("  ", style.dim(T("clean.docker.endpoint", section.Endpoint)))
 	}
+	builder.WriteString(style.close())
 	return builder.String()
 }
 
-func formatCleanVMDisks(disks []cleanVMDisk, inside string, width int, home string) string {
+func formatCleanVMDisks(disks []cleanVMDisk, inside string, width int, home string, style cleanStyle) string {
 	var shown []cleanVMDisk
 	var absent []string
 	for _, disk := range disks {
@@ -577,23 +584,29 @@ func formatCleanVMDisks(disks []cleanVMDisk, inside string, width int, home stri
 	}
 	var builder strings.Builder
 	if len(shown) > 0 {
-		builder.WriteString("\n" + duFit(T("clean.vm.title"), width) + "\n")
+		builder.WriteString(style.open(T("clean.vm.title"), T("clean.vm.panel"), T("clean.vm.note"), width))
 	}
 	for _, disk := range shown {
-		place := cleanHomePath(disk.Path, home)
-		if !disk.counted() {
-			place = strings.TrimSpace(cleanStateText(disk.Status, disk.Reasons) + "  " + place)
+		place := style.dim(cleanHomePath(disk.Path, home))
+		var bytes uint64
+		if disk.counted() {
+			bytes = *disk.UsageBytes
+		} else {
+			place = strings.TrimSpace(style.state(cleanStateText(disk.Status, disk.Reasons), disk.Status) + "  " + place)
 		}
-		builder.WriteString(duFit("  "+cleanPadLeft(size(disk), sizeWidth)+"  "+cleanPad(T("clean.vm.disk."+disk.ID), nameWidth)+"  "+place, width) + "\n")
+		builder.WriteString(style.row("  ", style.size(cleanPadLeft(size(disk), sizeWidth), bytes, true)+"  "+cleanPad(T("clean.vm.disk."+disk.ID), nameWidth)+"  "+place, width))
 		if disk.ID == cleanOrbStack && inside == cleanOrbStack {
-			builder.WriteString(duFit(strings.Repeat(" ", 2+sizeWidth+2)+T("clean.vm.inside"), width) + "\n")
+			builder.WriteString(style.row(strings.Repeat(" ", 2+sizeWidth+2), style.dim(T("clean.vm.inside")), width))
 		}
+	}
+	if len(shown) > 0 {
+		builder.WriteString(style.close())
 	}
 	if len(absent) > 0 {
 		if len(shown) == 0 {
 			builder.WriteString("\n")
 		}
-		builder.WriteString(cleanWrap(T("clean.vm.fold_absent", strings.Join(absent, ", ")), width))
+		builder.WriteString(style.wrap(T("clean.vm.fold_absent", strings.Join(absent, ", ")), width))
 	}
 	return builder.String()
 }

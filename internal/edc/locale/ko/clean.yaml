@@ -114,6 +114,11 @@ clean:
   group_folders: "폴더 %d개"
   group_more: "%d개 더 있음, -v로 더 표시"
   group_more_json: "%d개 더 있음, --json으로 모두 표시"
+  group_more_short: "%d개 더"
+  priority:
+    P1: "도구 캐시"
+    P2: "브라우저, Xcode 데이터, 앱 캐시, 로그"
+    P3: "모델과 툴체인"
   unreadable: "읽지 못한 디렉터리 %d개는 세지 않았습니다"
   regen: "다시 만드는 비용: %s"
   cleanup: "정리하려면 %s 실행 (edc는 실행하지 않음)"
@@ -121,8 +126,13 @@ clean:
     title: "파일 시스템 %s (%s)  사용량 합 %s, 여유 %s"
     not_reclaim: "합계는 사용량입니다. 정리해도 이만큼 비워지지는 않을 수 있습니다."
     apfs: "APFS clone과 snapshot 때문에 합계가 정리로 비워지는 양보다 클 수 있습니다."
+    label: "파일 시스템"
+    usage: "사용량 합"
+    free: "여유"
   docker:
     title: "Docker 엔진%s  엔진 집계, 합계에 넣지 않음"
+    panel: "Docker 엔진"
+    note: "엔진 집계, 합계에 넣지 않음"
     state: "Docker 엔진: %s"
     api: "API %s"
     endpoint: "끝점: %s"
@@ -136,12 +146,16 @@ clean:
     items: "%d개, 사용 중 %d개"
   vm:
     title: "VM 디스크 (사용자 데이터, 합계에 넣지 않음)"
+    panel: "VM 디스크"
+    note: "사용자 데이터, 합계에 넣지 않음"
     inside: "위 Docker 엔진 데이터는 이 디스크 안에 있습니다."
     fold_absent: "VM 디스크 없음: %s"
     disk:
       orbstack: "OrbStack"
   worktree:
     title: "%s 아래의 worktree  합계에 넣지 않음"
+    panel: "worktree"
+    note: "합계에 넣지 않음"
     state: "worktree: %s"
     fold_absent: "worktree 폴더 없음: %s"
     none: "worktree 없음"
@@ -164,6 +178,8 @@ clean:
       merged_clean: "병합됨, 변경 없음"
   project:
     title: "프로젝트 빌드 폴더  다시 만들 수 있는 폴더만 파일 시스템 합계에 더함"
+    panel: "프로젝트 빌드 폴더"
+    note: "다시 만들 수 있는 폴더만 파일 시스템 합계에 더함"
     state: "프로젝트 빌드 폴더: %s"
     fold_none: "프로젝트 빌드 폴더: 찾지 않음, --project DIR로 지정하면 찾음"
     root: "%s  폴더 %d개 탐색, 표지 파일이 없는 같은 이름의 폴더 %d개는 재지 않음"

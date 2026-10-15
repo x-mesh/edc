@@ -854,7 +854,7 @@ func TestCleanWorktreeTextShowsStatesAndCapsTheList(t *testing.T) {
 	unknown := cleanWorktree{Path: "/h/.gk/worktree/repo/unknown", Kind: cleanWorktreeLinked, Verdict: cleanVerdictStateUnk, Reasons: []string{cleanReasonToolFailed}, Detail: "exit 3"}
 	section.Items = append(section.Items, dirty, unknown)
 
-	text := formatCleanWorktrees(section, false, 0, "/h")
+	text := formatCleanWorktrees(section, false, 0, "/h", false)
 	for _, want := range []string{"Worktrees under ~/.gk/worktree", "not added to any total", "merged, no changes  12",
 		"at least 2 changed, 1 untracked", "more, -v shows more", "git-kit worktree cleanup", "other files in the folder: 1.0 MB"} {
 		if !strings.Contains(text, want) {
@@ -885,16 +885,16 @@ func TestCleanWorktreeTextShowsStatesAndCapsTheList(t *testing.T) {
 	if strings.Contains(text, "0 B") {
 		t.Errorf("text shows 0 B:\n%s", text)
 	}
-	verbose := formatCleanWorktrees(section, true, 0, "")
+	verbose := formatCleanWorktrees(section, true, 0, "", false)
 	if strings.Count(verbose, "repo/w")+strings.Count(verbose, "repo/unknown") != len(section.Items) || !strings.Contains(verbose, "exit 3") ||
 		!strings.Contains(verbose, "tool failed") || strings.Contains(verbose, "more, -v shows more") {
 		t.Errorf("verbose text:\n%s", verbose)
 	}
-	absent := formatCleanWorktrees(cleanWorktrees{Status: cleanAbsent, Root: "/h/.gk/worktree"}, false, 0, "")
+	absent := formatCleanWorktrees(cleanWorktrees{Status: cleanAbsent, Root: "/h/.gk/worktree"}, false, 0, "", false)
 	if !strings.Contains(absent, "worktree folder not found: /h/.gk/worktree") || strings.Contains(absent, "0 B") {
 		t.Errorf("absent text:\n%s", absent)
 	}
-	failed := formatCleanWorktrees(cleanWorktrees{Status: cleanUnreadable, Reasons: []string{cleanReasonPermission}}, false, 0, "")
+	failed := formatCleanWorktrees(cleanWorktrees{Status: cleanUnreadable, Reasons: []string{cleanReasonPermission}}, false, 0, "", false)
 	if !strings.Contains(failed, "Worktrees: unreadable (permission denied)") {
 		t.Errorf("failed text:\n%s", failed)
 	}

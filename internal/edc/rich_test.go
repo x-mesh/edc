@@ -87,10 +87,10 @@ func richExpect(text string) string {
 // 터미널 테마가 아니라 시안의 색을 쓴다. truecolor를 알리지 않는 터미널은 가장 가까운 256색을 받는다.
 func TestRichSGRUsesTheFixedPalette(t *testing.T) {
 	t.Setenv("COLORTERM", "truecolor")
-	if got := richPaint("ok", richGreen, true); got != "\x1b[1;38;2;111;207;142mok\x1b[0m" {
+	if got := richPaint("ok", richGreen, true); got != "\x1b[1;38;2;76;226;125mok\x1b[0m" {
 		t.Errorf("truecolor green = %q", got)
 	}
-	if got := richBadge("FAIL", richRed); got != "\x1b[1;38;2;14;17;22;48;2;240;114;123m FAIL \x1b[0m" {
+	if got := richBadge("FAIL", richRed); got != "\x1b[1;38;2;14;17;22;48;2;255;84;96m FAIL \x1b[0m" {
 		t.Errorf("truecolor badge = %q", got)
 	}
 	t.Setenv("COLORTERM", "")

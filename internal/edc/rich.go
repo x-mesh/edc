@@ -44,7 +44,7 @@ func richSGR(text string, codes ...string) string {
 	return "\033[" + strings.Join(params, ";") + "m" + text + richReset
 }
 
-// richRGB는 시안의 어두운 터미널 색이다.
+// richRGB는 시안의 어두운 터미널 색이다. 강조색 여섯 개는 시안보다 채도를 높였다. 시안 그대로는 흐려 보였다.
 type richRGB struct{ r, g, b int }
 
 // richPalette는 ANSI 번호를 시안의 고정 색으로 바꾼다. 3x는 글자색, 4x와 100은 배경색이다.
@@ -54,20 +54,20 @@ var richPalette = map[string]struct {
 	background bool
 }{
 	"30": {richRGB{0x0e, 0x11, 0x16}, false},
-	"31": {richRGB{0xf0, 0x72, 0x7b}, false},
-	"32": {richRGB{0x6f, 0xcf, 0x8e}, false},
-	"33": {richRGB{0xe8, 0xb9, 0x60}, false},
-	"34": {richRGB{0x6a, 0xa8, 0xf5}, false},
-	"35": {richRGB{0xc3, 0x9c, 0xf5}, false},
-	"36": {richRGB{0x5c, 0xcf, 0xd6}, false},
+	"31": {richRGB{0xff, 0x54, 0x60}, false},
+	"32": {richRGB{0x4c, 0xe2, 0x7d}, false},
+	"33": {richRGB{0xff, 0xbb, 0x3a}, false},
+	"34": {richRGB{0x51, 0x9e, 0xff}, false},
+	"35": {richRGB{0xb9, 0x83, 0xff}, false},
+	"36": {richRGB{0x33, 0xe5, 0xef}, false},
 	"90": {richRGB{0x7c, 0x85, 0x91}, false},
 	"97": {richRGB{0xd6, 0xda, 0xe0}, false},
-	"41": {richRGB{0xf0, 0x72, 0x7b}, true},
-	"42": {richRGB{0x6f, 0xcf, 0x8e}, true},
-	"43": {richRGB{0xe8, 0xb9, 0x60}, true},
-	"44": {richRGB{0x6a, 0xa8, 0xf5}, true},
-	"45": {richRGB{0xc3, 0x9c, 0xf5}, true},
-	"46": {richRGB{0x5c, 0xcf, 0xd6}, true},
+	"41": {richRGB{0xff, 0x54, 0x60}, true},
+	"42": {richRGB{0x4c, 0xe2, 0x7d}, true},
+	"43": {richRGB{0xff, 0xbb, 0x3a}, true},
+	"44": {richRGB{0x51, 0x9e, 0xff}, true},
+	"45": {richRGB{0xb9, 0x83, 0xff}, true},
+	"46": {richRGB{0x33, 0xe5, 0xef}, true},
 	// 100은 두 곳에 쓴다. 회색 배지 바탕과 chip 바탕이다. chip은 글자(97)와 함께 오므로 richChip이 따로 고른다.
 	"100": {richRGB{0x7c, 0x85, 0x91}, true},
 }

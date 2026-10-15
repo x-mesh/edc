@@ -83,6 +83,11 @@ func TestRichHelpScreensStayWithinTheLineLimit(t *testing.T) {
 			var detail strings.Builder
 			printRichCommandHelp(&detail, doc)
 			assertWidth(t, language+" rich help "+doc.name, detail.String())
+			if len(doc.subcommands) > 0 {
+				var brief strings.Builder
+				printRichCommandBrief(&brief, doc)
+				assertWidth(t, language+" rich brief "+doc.name, brief.String())
+			}
 		}
 	}
 }
@@ -324,5 +329,25 @@ func TestSubcommandSelectItemsDescribeEachChoice(t *testing.T) {
 	plain := subcommandSelectItems("tcp", []string{"check"})
 	if len(plain) != 1 || plain[0] != (selectItem{label: "check", value: "check"}) {
 		t.Errorf("a choice without a description keeps its name, got %+v", plain)
+	}
+}
+
+// 색 안내 화면은 평문과 같은 형태와 예시를 담고, 그대로 칠 수 있는 명령을 굵은 청록으로 칠한다.
+func TestRichCommandBriefKeepsTheFormsAndExamples(t *testing.T) {
+	restore := currentLanguage()
+	defer setLanguage(restore)
+	setLanguage("en")
+	doc, _ := findCommandDoc("log")
+	var colored, plain strings.Builder
+	printRichCommandBrief(&colored, doc)
+	printCommandBrief(&plain, "log")
+	text := ansi.Strip(colored.String())
+	for _, want := range []string{"edc log -- <command> [args...]", "edc log history [<command>]", "edc log -- ls -l /tmp", "edc help log", T("command.log.sub.run")} {
+		if !strings.Contains(text, want) || !strings.Contains(plain.String(), want) {
+			t.Errorf("brief misses %q:\n%s", want, text)
+		}
+	}
+	if !strings.Contains(colored.String(), richPaint("edc log -- ls -l /tmp", richCyan, true)) {
+		t.Errorf("examples should be bold cyan: %q", colored.String())
 	}
 }

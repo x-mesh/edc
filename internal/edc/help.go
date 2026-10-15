@@ -666,11 +666,37 @@ func printCommandBrief(writer io.Writer, name string) bool {
 	if !ok || len(doc.subcommands) == 0 {
 		return false
 	}
+	if helpColor(writer) {
+		printRichCommandBrief(writer, doc)
+		return true
+	}
 	fmt.Fprintf(writer, "edc %s — %s\n\n", doc.name, doc.summary())
 	printOptionDocs(writer, doc.subcommandLines())
 	printExamples(writer, doc.examples)
 	fmt.Fprintf(writer, "\n%s  edc help %s\n", T("help.detail_label"), doc.name)
 	return true
+}
+
+// printRichCommandBrief는 안내 화면을 색 help와 같은 배지와 패널로 그린다. 형태와 예시는 그대로 칠 수 있는
+// 명령이라 굵은 청록이다.
+func printRichCommandBrief(writer io.Writer, doc commandDoc) {
+	fmt.Fprintf(writer, "%s %s\n\n", richBadge("edc "+doc.name, richMagenta), richBold(doc.summary()))
+	fmt.Fprintln(writer, richPanelTop(T("help.usage_label"), "", ""))
+	printRichOptionDocs(writer, doc.subcommandLines())
+	fmt.Fprintln(writer, richPanelBottom(""))
+	printRichExamples(writer, doc.examples)
+	fmt.Fprintf(writer, "\n%s  %s\n", richDim(T("help.detail_label")), richPaint("edc help "+doc.name, richCyan, true))
+}
+
+func printRichExamples(writer io.Writer, examples []string) {
+	if len(examples) == 0 {
+		return
+	}
+	fmt.Fprintf(writer, "\n%s\n", richPanelTop(T("help.examples_label"), "", ""))
+	for _, example := range examples {
+		fmt.Fprintln(writer, richPanelLine(richPaint(example, richCyan, true), ""))
+	}
+	fmt.Fprintln(writer, richPanelBottom(""))
 }
 
 func printExamples(writer io.Writer, examples []string) {
@@ -715,6 +741,7 @@ func printRichCommandHelp(writer io.Writer, doc commandDoc) {
 		fmt.Fprintln(writer, richPanelLine(line, ""))
 	}
 	fmt.Fprintln(writer, richPanelBottom(""))
+	printRichExamples(writer, doc.examples)
 	if len(doc.options) > 0 {
 		fmt.Fprintf(writer, "\n%s\n", richPanelTop(T("help.options_label"), "", ""))
 		printRichOptionDocs(writer, doc.options)

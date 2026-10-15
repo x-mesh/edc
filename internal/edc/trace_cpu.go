@@ -129,7 +129,7 @@ type cpuReport struct {
 func runTraceCPU(args []string) int {
 	options := cpuTraceOptions{}
 	var process string
-	set := flag.NewFlagSet("trace cpu", flag.ContinueOnError)
+	set := newFlagSet("trace cpu")
 	set.SetOutput(os.Stderr)
 	set.DurationVar(&options.duration, "duration", 0, T("command.trace.option.duration"))
 	set.IntVar(&options.frequency, "frequency", cpuDefaultFrequency, T("command.trace.option.frequency"))

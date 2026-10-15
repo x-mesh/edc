@@ -22,6 +22,7 @@ cli:
   error:
     unknown_command: "unknown command: %s"
     help_hint: "run edc help to see the command list"
+    flag_help: "run %s to see the options"
     host_port_required: "the target needs the host:port form: %s"
     one_target_required: "%s needs one target"
     no_positional: "%s takes no positional argument"

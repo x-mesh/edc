@@ -79,7 +79,7 @@ func runWatch(args []string) int {
 
 func runHTTPWatch(args []string) int {
 	options := configuredCommon(15 * time.Second)
-	set := flag.NewFlagSet("watch http", flag.ContinueOnError)
+	set := newFlagSet("watch http")
 	set.SetOutput(os.Stderr)
 	set.Usage = func() { printWatchSubcommandHelp(set.Output(), "http") }
 	bindCommon(set, &options)

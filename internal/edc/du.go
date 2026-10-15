@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -165,7 +164,7 @@ func runDu(args []string, version string) int {
 
 func runDuWith(args []string, version string, sources duSources, ok bool, stdout *os.File) int {
 	options := configuredCommon(duDefaultTimeout)
-	set := flag.NewFlagSet("du", flag.ContinueOnError)
+	set := newFlagSet("du")
 	set.SetOutput(os.Stderr)
 	bindCommon(set, &options)
 	workers := set.Int("workers", duDefaultWorkers, T("command.du.option.workers"))
@@ -174,13 +173,13 @@ func runDuWith(args []string, version string, sources duSources, ok bool, stdout
 	noBrowse := set.Bool("no-browse", false, T("command.du.option.no_browse"))
 	set.BoolVar(noBrowse, "B", false, T("command.du.option.no_browse"))
 	ordered, err := reorderFSWatchArgs(set, args)
-	if err == nil {
-		err = set.Parse(ordered)
-	}
 	if err != nil {
-		if !errors.Is(err, flag.ErrHelp) {
-			fmt.Fprintln(os.Stderr, err)
-		}
+		// 순서를 정리하다 난 오류는 flag package가 출력하지 않는다. Parse 오류는 이미 출력했다.
+		fmt.Fprintln(os.Stderr, err)
+		set.Usage()
+		return 2
+	}
+	if err := set.Parse(ordered); err != nil {
 		return 2
 	}
 	if set.NArg() > 1 || *workers < 1 || *rows < 0 {

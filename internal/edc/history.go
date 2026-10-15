@@ -46,7 +46,7 @@ func runHistory(args []string) int {
 		printCommandHelp(os.Stdout, "history")
 		return 0
 	}
-	set := flag.NewFlagSet("history "+command, flag.ContinueOnError)
+	set := newFlagSet("history " + command)
 	set.SetOutput(os.Stderr)
 	var options historyOptions
 	set.StringVar(&options.run, "run", "", T("history.option.run"))

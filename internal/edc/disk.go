@@ -3,7 +3,6 @@ package edc
 import (
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 	"os"
 	"os/signal"
@@ -534,7 +533,7 @@ func runDisk(args []string, version string) int {
 
 func runDiskCheck(args []string, version string) int {
 	options := configuredCommon(15 * time.Second)
-	set := flag.NewFlagSet("disk check", flag.ContinueOnError)
+	set := newFlagSet("disk check")
 	set.SetOutput(os.Stderr)
 	bindCommon(set, &options)
 	if err := set.Parse(args); err != nil {
@@ -557,7 +556,7 @@ func runDiskCheck(args []string, version string) int {
 
 func runDiskGrow(args []string, version string) int {
 	options := configuredCommon(5 * time.Minute)
-	set := flag.NewFlagSet("disk grow", flag.ContinueOnError)
+	set := newFlagSet("disk grow")
 	set.SetOutput(os.Stderr)
 	bindCommon(set, &options)
 	yes := set.Bool("yes", false, T("disk.flag.yes"))
@@ -565,15 +564,13 @@ func runDiskGrow(args []string, version string) int {
 	set.BoolVar(dryRun, "n", false, T("disk.flag.dry_run"))
 	// `edc disk grow / -n`처럼 마운트 뒤에 온 flag도 받는다. flag 패키지는 첫 위치 인자에서 멈춘다.
 	ordered, err := reorderFSWatchArgs(set, args)
-	if err == nil {
-		err = set.Parse(ordered)
-	}
 	if err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			set.Usage()
-		} else {
-			fmt.Fprintln(os.Stderr, err)
-		}
+		// 순서를 정리하다 난 오류는 flag package가 출력하지 않는다. Parse 오류는 이미 출력했다.
+		fmt.Fprintln(os.Stderr, err)
+		set.Usage()
+		return 2
+	}
+	if err := set.Parse(ordered); err != nil {
 		return 2
 	}
 	if set.NArg() != 1 {

@@ -22,6 +22,7 @@ cli:
   error:
     unknown_command: "不明な command: %s"
     help_hint: "edc help で command の一覧を表示します"
+    flag_help: "オプションは %s で確認できます"
     host_port_required: "host:port の形式が必要です: %s"
     one_target_required: "%s には target が 1 つ必要です"
     no_positional: "%s は positional argument を受け取りません"

@@ -22,7 +22,7 @@ type logHistoryOptions struct {
 
 func parseLogHistoryOptions(args []string, output io.Writer) (logHistoryOptions, error) {
 	options := logHistoryOptions{Limit: 20}
-	set := flag.NewFlagSet("log history", flag.ContinueOnError)
+	set := newFlagSet("log history")
 	set.SetOutput(output)
 	set.StringVar(&options.Directory, "dir", "", T("cli.log_history.option.dir"))
 	set.StringVar(&options.File, "file", "", T("cli.log_history.option.file"))
@@ -46,7 +46,10 @@ func parseLogHistoryOptions(args []string, output io.Writer) (logHistoryOptions,
 	set.IntVar(&options.Limit, "limit", 20, T("cli.log_history.option.limit"))
 	set.BoolVar(&options.Failed, "failed", false, T("cli.log_history.option.failed"))
 	if err := set.Parse(args); err != nil {
-		return options, err
+		if errors.Is(err, flag.ErrHelp) {
+			return options, err
+		}
+		return options, errFlagReported
 	}
 	if options.Directory != "" && options.File != "" || options.Limit < 1 || options.Limit > 1000 {
 		return options, errors.New(T("cli.log_history.usage"))
@@ -272,6 +275,9 @@ func runLogHistory(args []string, streams logStreams) int {
 	options, err := parseLogHistoryOptions(args, streams.stderr)
 	if errors.Is(err, flag.ErrHelp) {
 		return 0
+	}
+	if errors.Is(err, errFlagReported) {
+		return 2
 	}
 	if err != nil {
 		fmt.Fprintln(streams.stderr, err)

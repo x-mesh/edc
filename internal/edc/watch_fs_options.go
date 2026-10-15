@@ -67,7 +67,7 @@ func (values *fsWatchExcludes) Set(value string) error { *values = append(*value
 
 func parseFSWatchOptions(args []string, output io.Writer) (fsWatchOptions, error) {
 	options := fsWatchOptions{match: "**"}
-	set := flag.NewFlagSet("watch fs", flag.ContinueOnError)
+	set := newFlagSet("watch fs")
 	set.SetOutput(output)
 	set.BoolVar(&options.recursive, "recursive", false, T("watchfs.option.recursive"))
 	set.StringVar(&options.driver, "driver", fsWatchDriverAuto, T("watchfs.option.driver"))

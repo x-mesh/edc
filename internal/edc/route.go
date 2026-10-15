@@ -3,7 +3,6 @@ package edc
 import (
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 	"os"
 	"os/signal"
@@ -71,7 +70,7 @@ func runRoute(args []string, version string) int {
 
 func runRouteCheck(args []string, version string) int {
 	options := configuredCommon(15 * time.Second)
-	set := flag.NewFlagSet("route check", flag.ContinueOnError)
+	set := newFlagSet("route check")
 	set.SetOutput(os.Stderr)
 	bindCommon(set, &options)
 	if err := set.Parse(args); err != nil {
@@ -336,7 +335,7 @@ type routeRollbackOutcome struct {
 
 func runRouteRollback(args []string, version string) int {
 	options := configuredCommon(30 * time.Second)
-	set := flag.NewFlagSet("route rollback", flag.ContinueOnError)
+	set := newFlagSet("route rollback")
 	set.SetOutput(os.Stderr)
 	bindCommon(set, &options)
 	statePath := set.String("state", "", T("route.flag.state"))
@@ -500,7 +499,7 @@ type routeSwitchOutcome struct {
 
 func runRouteSwitch(args []string, version string) int {
 	options := configuredCommon(60 * time.Second)
-	set := flag.NewFlagSet("route switch", flag.ContinueOnError)
+	set := newFlagSet("route switch")
 	set.SetOutput(os.Stderr)
 	bindCommon(set, &options)
 	to := set.String("to", "", T("route.flag.to"))
@@ -790,7 +789,7 @@ func routeSwitchAutoConfirm(_ string, _ string, initial bool) (bool, error) {
 
 func runRouteStatus(args []string, version string) int {
 	options := configuredCommon(15 * time.Second)
-	set := flag.NewFlagSet("route status", flag.ContinueOnError)
+	set := newFlagSet("route status")
 	set.SetOutput(os.Stderr)
 	bindCommon(set, &options)
 	if err := set.Parse(args); err != nil {

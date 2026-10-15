@@ -16,7 +16,7 @@ import (
 )
 
 func runTop(args []string, version string) (code int) {
-	set := flag.NewFlagSet("top", flag.ContinueOnError)
+	set := newFlagSet("top")
 	set.SetOutput(os.Stderr)
 	config := activeConfig.Defaults.Top
 	interval := set.Duration("interval", configuredDuration(config.Interval, time.Second), T("command.top.option.interval"))

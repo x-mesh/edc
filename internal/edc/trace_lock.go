@@ -2,7 +2,6 @@ package edc
 
 import (
 	"context"
-	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -117,7 +116,7 @@ type lockReport struct {
 func runTraceLock(args []string) int {
 	options := lockTraceOptions{}
 	var process string
-	set := flag.NewFlagSet("trace lock", flag.ContinueOnError)
+	set := newFlagSet("trace lock")
 	set.SetOutput(os.Stderr)
 	set.DurationVar(&options.duration, "duration", 0, T("command.trace.option.duration"))
 	set.StringVar(&process, "process", "", T("command.trace.option.process"))

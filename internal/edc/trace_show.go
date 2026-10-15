@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -69,7 +68,7 @@ func (file *traceShowFile) duration() time.Duration {
 
 func runTraceShow(args []string) int {
 	options := traceShowOptions{}
-	set := flag.NewFlagSet("trace show", flag.ContinueOnError)
+	set := newFlagSet("trace show")
 	set.SetOutput(os.Stderr)
 	set.StringVar(&options.groupBy, "group-by", "", T("command.trace.option.group_by"))
 	set.StringVar(&options.process, "process", "", T("command.trace.option.process"))

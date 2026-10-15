@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"io/fs"
@@ -48,7 +47,7 @@ type changesSources struct {
 
 func runChanges(args []string, version string) int {
 	options := configuredCommon(15 * time.Second)
-	set := flag.NewFlagSet("changes", flag.ContinueOnError)
+	set := newFlagSet("changes")
 	set.SetOutput(os.Stderr)
 	bindCommon(set, &options)
 	since := set.Duration("since", 24*time.Hour, T("command.changes.option.since"))

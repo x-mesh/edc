@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -181,7 +180,7 @@ func parseLogOptions(args []string, stderr io.Writer) (logOptions, bool) {
 		fmt.Fprintln(stderr, T("cli.log.command_required"))
 		return logOptions{}, false
 	}
-	set := flag.NewFlagSet("log", flag.ContinueOnError)
+	set := newFlagSet("log")
 	set.SetOutput(stderr)
 	set.StringVar(&options.stream, "stream", options.stream, T("command.log.option.stream"))
 	set.StringVar(&options.output, "output", options.output, T("command.log.option.output"))

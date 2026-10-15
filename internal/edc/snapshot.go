@@ -3,7 +3,6 @@ package edc
 import (
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 	"io/fs"
 	"os"
@@ -29,7 +28,7 @@ const snapshotUsage = "edc snapshot [--output <file|->] [--since 6h] [--force] [
 // 공인 IP 조회처럼 host 밖으로 나가는 요청은 하지 않는다.
 func runSnapshot(args []string, version string) int {
 	options := configuredCommon(15 * time.Second)
-	set := flag.NewFlagSet("snapshot", flag.ContinueOnError)
+	set := newFlagSet("snapshot")
 	set.SetOutput(os.Stderr)
 	output := set.String("output", "", T("command.snapshot.option.output"))
 	since := set.Duration("since", 6*time.Hour, T("command.snapshot.option.since"))

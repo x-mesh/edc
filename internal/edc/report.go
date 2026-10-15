@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"math"
@@ -394,7 +393,7 @@ func runReportShow(path string) int {
 }
 
 func runReportDiff(args []string) int {
-	set := flag.NewFlagSet("report diff", flag.ContinueOnError)
+	set := newFlagSet("report diff")
 	set.SetOutput(os.Stderr)
 	jsonPath := set.String("json", configuredString(activeConfig.Defaults.Common.JSON, ""), T("option.json"))
 	if err := set.Parse(args); err != nil {

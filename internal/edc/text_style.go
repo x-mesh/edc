@@ -148,3 +148,96 @@ func (style textStyle) table(text string) string {
 	}
 	return strings.Join(lines, "\n")
 }
+
+// textTableRow는 색 표의 한 행이다. note가 있으면 칸 대신 그 줄을 회색으로 쓴다.
+type textTableRow struct {
+	cells []string
+	note  string
+}
+
+const (
+	textTableGap = "  "
+	// textTableMinWidth는 줄인 열에 남기는 최소 폭이다. 주소와 이름의 앞부분을 알아볼 만큼 둔다.
+	textTableMinWidth = 12
+)
+
+// colorTable은 색을 쓰는 터미널의 표다. 칸 폭은 색을 입히기 전의 글자로 재고, 칸을 채운 뒤 색을 입혀 열이 어긋나지
+// 않는다. 첫 줄은 칸마다 회색인 머리글이고 마지막 열은 채우지 않는다. 터미널보다 넓으면 가장 넓은 열부터 줄여, 줄 끝을 자를
+// 때처럼 오른쪽 열을 통째로 잃지 않는다. paint는 자르기 전의 칸(original)과 화면에 둘 칸(shown)을 받아 색을 입힌다.
+// row는 머리글을 뺀 행 번호다. paint가 nil이면 칸을 그대로 둔다.
+func (style textStyle) colorTable(header []string, rows []textTableRow, paint func(row, column int, original, shown string) string) string {
+	widths := make([]int, len(header))
+	for index, title := range header {
+		widths[index] = liveWidth(title)
+	}
+	for _, row := range rows {
+		for index, cell := range row.cells {
+			if index == len(widths) {
+				widths = append(widths, 0)
+			}
+			widths[index] = max(widths[index], liveWidth(cell))
+		}
+	}
+	textTableShrink(widths, header, style.width)
+	pad := func(text string, index int) string {
+		if index == len(widths)-1 {
+			return ""
+		}
+		return strings.Repeat(" ", max(widths[index]-liveWidth(text), 0)) + textTableGap
+	}
+	var builder strings.Builder
+	head := ""
+	for index, title := range header {
+		head += style.dim(title) + pad(title, index)
+	}
+	builder.WriteString(style.fit(head) + "\n")
+	for rowIndex, row := range rows {
+		if row.cells == nil {
+			builder.WriteString(style.fit(style.dim(row.note)) + "\n")
+			continue
+		}
+		line := ""
+		for index, cell := range row.cells {
+			shown := cell
+			if liveWidth(cell) > widths[index] {
+				shown = ansi.Truncate(cell, widths[index], "…")
+			}
+			painted := shown
+			if paint != nil {
+				painted = paint(rowIndex, index, cell, shown)
+			}
+			line += painted + pad(shown, index)
+		}
+		builder.WriteString(style.fit(line) + "\n")
+	}
+	return builder.String()
+}
+
+// textTableShrink는 표가 width보다 넓으면 가장 넓은 열부터 한 칸씩 줄인다. 수를 담는 좁은 열은 그대로 남는다.
+// 열은 머리글 폭이나 textTableMinWidth보다 좁아지지 않는다.
+func textTableShrink(widths []int, header []string, width int) {
+	if width <= 0 || len(widths) == 0 {
+		return
+	}
+	total := (len(widths) - 1) * len(textTableGap)
+	for _, value := range widths {
+		total += value
+	}
+	for total > width {
+		widest := -1
+		for index, value := range widths {
+			floor := textTableMinWidth
+			if index < len(header) {
+				floor = max(liveWidth(header[index]), textTableMinWidth)
+			}
+			if value > floor && (widest < 0 || value > widths[widest]) {
+				widest = index
+			}
+		}
+		if widest < 0 {
+			return
+		}
+		widths[widest]--
+		total--
+	}
+}

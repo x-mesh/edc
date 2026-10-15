@@ -235,6 +235,18 @@ func formatSvcListTable(items []svcListItem, style textStyle) string {
 // formatListTable은 svc와 ctr 목록 표다. 첫 줄은 머리글이다. 색을 쓰면 머리글은 회색이고 칸은 colors의 색이다.
 // 칸 폭은 평문으로 정한 뒤 칠해, 색을 써도 열이 맞는다.
 func formatListTable(rows [][]string, colors [][]string, style textStyle) string {
+	if style.color {
+		body := make([]textTableRow, 0, len(rows)-1)
+		for _, row := range rows[1:] {
+			body = append(body, textTableRow{cells: row})
+		}
+		return style.colorTable(rows[0], body, func(row, column int, _, shown string) string {
+			if column < len(colors[row+1]) {
+				return style.paint(shown, colors[row+1][column])
+			}
+			return shown
+		})
+	}
 	widths := make([]int, len(rows[0]))
 	for _, row := range rows {
 		for index, cell := range row {
@@ -242,28 +254,16 @@ func formatListTable(rows [][]string, colors [][]string, style textStyle) string
 		}
 	}
 	var builder strings.Builder
-	for rowIndex, row := range rows {
+	for _, row := range rows {
 		var line strings.Builder
 		for index, cell := range row {
-			text := cell
-			switch {
-			case !style.color:
-			case rowIndex == 0:
-				text = style.dim(cell)
-			case index < len(colors[rowIndex]):
-				text = style.paint(cell, colors[rowIndex][index])
-			}
 			if index == len(row)-1 {
-				line.WriteString(text)
+				line.WriteString(cell)
 				break
-			}
-			if style.color {
-				line.WriteString(text + strings.Repeat(" ", widths[index]+2-liveWidth(cell)))
-				continue
 			}
 			line.WriteString(liveCell(cell, widths[index]+2))
 		}
-		builder.WriteString(style.fit(line.String()) + "\n")
+		builder.WriteString(line.String() + "\n")
 	}
 	return builder.String()
 }

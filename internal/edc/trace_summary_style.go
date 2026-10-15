@@ -7,8 +7,6 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-
-	"github.com/charmbracelet/x/ansi"
 )
 
 // traceSummaryTerminal은 trace가 끝날 때 내는 요약에 색을 쓸지와 한 줄의 폭이다. 파이프, NO_COLOR, test의
@@ -248,8 +246,6 @@ func (table *traceTable) addNote(text string) {
 	table.rows = append(table.rows, traceTableRow{note: text})
 }
 
-const traceTableGap = "  "
-
 func (style traceSummaryStyle) writeTable(out io.Writer, table traceTable) {
 	if !style.color {
 		lines := []string{strings.Join(table.titles, "\t")}
@@ -263,82 +259,23 @@ func (style traceSummaryStyle) writeTable(out io.Writer, table traceTable) {
 		io.WriteString(out, strings.Join(lines, "\n")+"\n")
 		return
 	}
-	widths := make([]int, len(table.titles))
-	for index, title := range table.titles {
-		widths[index] = liveWidth(title)
-	}
+	rows := make([]textTableRow, 0, len(table.rows))
 	for _, row := range table.rows {
-		for index, cell := range row.cells {
-			if index < len(widths) {
-				widths[index] = max(widths[index], liveWidth(cell))
-			}
-		}
+		rows = append(rows, textTableRow{cells: row.cells, note: row.note})
 	}
-	traceTableShrink(widths, table.titles, style.width)
-	pad := func(text string, index int) string {
-		if index == len(widths)-1 {
-			return text
+	io.WriteString(out, style.colorTable(table.titles, rows, func(row, column int, original, shown string) string {
+		title := ""
+		if column < len(table.titles) {
+			title = table.titles[column]
 		}
-		return text + strings.Repeat(" ", max(widths[index]-liveWidth(text), 0)) + traceTableGap
-	}
-	header := ""
-	for index, title := range table.titles {
-		header += pad(title, index)
-	}
-	style.line(out, style.dim(header))
-	for _, row := range table.rows {
-		if row.cells == nil {
-			style.line(out, style.dim(row.note))
-			continue
+		// 문제의 수는 자르기 전의 값으로 판단한다.
+		color := traceSummaryProblem(title, original)
+		if colors := table.rows[row].colors; column < len(colors) && colors[column] != "" {
+			color = colors[column]
 		}
-		line := ""
-		for index, cell := range row.cells {
-			title := ""
-			if index < len(table.titles) {
-				title = table.titles[index]
-			}
-			// 문제의 수는 자르기 전의 값으로 판단한다.
-			color := traceSummaryProblem(title, cell)
-			if index < len(row.colors) && row.colors[index] != "" {
-				color = row.colors[index]
-			}
-			if index < len(widths) && liveWidth(cell) > widths[index] {
-				cell = ansi.Truncate(cell, widths[index], "…")
-			}
-			line += style.tableCell(title, cell, color, pad(cell, index)[len(cell):])
-		}
-		style.line(out, line)
-	}
+		return style.tableCell(title, shown, color, "")
+	}))
 }
-
-// traceTableShrink는 표가 width보다 넓으면 가장 넓은 열부터 한 칸씩 줄인다. 수를 담는 좁은 열은 남아서, 줄 끝을
-// 잘랐을 때처럼 오른쪽의 문제 열을 잃지 않는다. 열은 제목 폭이나 traceTableMinWidth보다 좁아지지 않는다.
-func traceTableShrink(widths []int, titles []string, width int) {
-	if width <= 0 || len(widths) == 0 {
-		return
-	}
-	total := (len(widths) - 1) * len(traceTableGap)
-	for _, value := range widths {
-		total += value
-	}
-	for total > width {
-		widest := -1
-		for index, value := range widths {
-			floor := max(liveWidth(titles[index]), traceTableMinWidth)
-			if value > floor && (widest < 0 || value > widths[widest]) {
-				widest = index
-			}
-		}
-		if widest < 0 {
-			return
-		}
-		widths[widest]--
-		total--
-	}
-}
-
-// traceTableMinWidth는 줄인 열에 남기는 최소 폭이다. 주소와 이름의 앞부분을 알아볼 만큼 둔다.
-const traceTableMinWidth = 12
 
 // tableCell은 표의 한 칸이다. color는 칸의 색이고, padding은 칸 뒤의 공백이다.
 func (style traceSummaryStyle) tableCell(title, cell, color, padding string) string {

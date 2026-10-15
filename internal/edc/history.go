@@ -376,37 +376,21 @@ func (table *historyColorTable) add(line string, paints []historyPaint) {
 	table.paints = append(table.paints, paints)
 }
 
-// String은 tabwriter와 같은 배치를 쓴다. 칸 폭은 열의 가장 긴 칸에 2칸을 더한 값이고 마지막 칸은 채우지 않는다.
-// 첫 줄은 머리글이라 회색이다.
+// String은 tabwriter와 같은 배치(가장 긴 칸 + 2칸, 마지막 칸은 채우지 않음)를 공용 색 표로 그린다.
 func (table historyColorTable) String() string {
-	var widths []int
-	for _, row := range table.rows {
-		for index, cell := range row {
-			if index == len(widths) {
-				widths = append(widths, 0)
-			}
-			widths[index] = max(widths[index], liveWidth(cell))
-		}
+	if len(table.rows) == 0 {
+		return ""
 	}
-	var builder strings.Builder
-	for rowIndex, row := range table.rows {
-		var line strings.Builder
-		for index, cell := range row {
-			text := cell
-			switch {
-			case rowIndex == 0:
-				text = table.style.dim(cell)
-			case index < len(table.paints[rowIndex]) && table.paints[rowIndex][index] != nil:
-				text = table.paints[rowIndex][index](cell)
-			}
-			line.WriteString(text)
-			if index < len(row)-1 {
-				line.WriteString(strings.Repeat(" ", widths[index]+2-liveWidth(cell)))
-			}
-		}
-		builder.WriteString(table.style.fit(line.String()) + "\n")
+	body := make([]textTableRow, 0, len(table.rows)-1)
+	for _, row := range table.rows[1:] {
+		body = append(body, textTableRow{cells: row})
 	}
-	return builder.String()
+	return table.style.colorTable(table.rows[0], body, func(row, column int, _, shown string) string {
+		if paints := table.paints[row+1]; column < len(paints) && paints[column] != nil {
+			return paints[column](shown)
+		}
+		return shown
+	})
 }
 
 // historyStatusPaint는 기록의 상태다. 끝난 기록은 초록, 기록 중이거나 끝내지 못한 기록은 노랑, 오류로 끝난 기록은 빨강이다.

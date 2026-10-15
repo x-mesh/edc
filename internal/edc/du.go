@@ -342,11 +342,34 @@ func duPrint(stdout io.Writer, options commonOptions, result Result, color, grap
 		deleted, _ := result.Metrics["deleted_open"].(duDeletedOpen)
 		notFound, _ := result.Metrics["not_found_bytes"].(uint64)
 		fmt.Fprint(output, formatDuFilesystem(filesystem, deleted, counted, notFound, width))
+		fmt.Fprint(output, formatDuPartial(result, options.timeout, color))
 	}
 	if options.redact {
 		fmt.Fprint(stdout, redactIPAddresses(buffer.String()))
 	}
 	return exitCode([]Result{result})
+}
+
+// formatDuPartial은 부분 결과임을 출력 끝에 다시 알린다. 맨 위의 경고는 긴 트리에 밀려 화면 밖으로 나가고,
+// 바로 위의 파일 시스템 사용량이 읽은 부분만 센 크기와 나란히 보여 빠진 파일이 있는 것처럼 읽힌다.
+func formatDuPartial(result Result, timeout time.Duration, color bool) string {
+	if partial, _ := result.Metrics["partial"].(bool); !partial {
+		return ""
+	}
+	counted, _ := result.Metrics["bytes"].(uint64)
+	// Next는 시간 초과일 때만 채운다. 사용자가 멈췄으면 더 긴 제한 시간을 권하지 않는다.
+	line := T("du.partial.stopped", formatSizeShort(counted))
+	if result.Next != "" {
+		line = T("du.partial.timeout", timeout, formatSizeShort(counted))
+	}
+	if color {
+		line = "\033[1;33m" + line + "\033[0m"
+	}
+	text := "\n" + line + "\n"
+	if result.Next != "" {
+		text += "  " + T("du.partial.next", result.Next) + "\n"
+	}
+	return text
 }
 
 // duSelect는 큰 항목부터 골라 펼친다. 디렉터리를 고르면 그 안의 항목이 후보에 오른다. 조상은 언제나 자손보다

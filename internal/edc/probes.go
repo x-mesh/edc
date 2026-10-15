@@ -297,7 +297,7 @@ func probeHTTPWithOptions(ctx context.Context, rawURL string, options httpCheckO
 	}
 	response, err := client.Do(request)
 	if err != nil {
-		return withHTTPHops(resultFromError("http.check", started, classifyNetworkError(err), err), hops, options.detail)
+		return withHTTPHops(resultFromError("http.check", started, classifyNetworkError(err), err), hops, options)
 	}
 	defer response.Body.Close()
 	recordHop(response)
@@ -310,7 +310,7 @@ func probeHTTPWithOptions(ctx context.Context, rawURL string, options httpCheckO
 		var sink io.Writer = body
 		if options.bodyPath != "" {
 			if saved, err = openHTTPBodyFile(options.bodyPath); err != nil {
-				return withHTTPHops(resultFromError("http.check", started, "output", err), hops, options.detail)
+				return withHTTPHops(resultFromError("http.check", started, "output", err), hops, options)
 			}
 			sink = io.MultiWriter(body, saved)
 		}
@@ -323,12 +323,15 @@ func probeHTTPWithOptions(ctx context.Context, rawURL string, options httpCheckO
 				saved.err = closeErr
 			}
 			if saved.err != nil {
-				return withHTTPHops(resultFromError("http.check", started, "output", saved.err), hops, options.detail)
+				return withHTTPHops(resultFromError("http.check", started, "output", saved.err), hops, options)
 			}
 		}
 		if readErr != nil {
-			return withHTTPHops(resultFromError("http.check", started, "response", readErr), hops, options.detail)
+			return withHTTPHops(resultFromError("http.check", started, "response", readErr), hops, options)
 		}
+	}
+	if body.size > int64(len(body.preview)) {
+		body.preview = httpTrimPartialRune(body.preview)
 	}
 	bytesRead := body.size
 	total := time.Since(started)
@@ -354,6 +357,13 @@ func probeHTTPWithOptions(ctx context.Context, rawURL string, options httpCheckO
 		metrics["resolved_addresses"] = observedAddresses
 	}
 	traceMu.Unlock()
+	peerIsProxy := false
+	if observedPeer != "" {
+		if proxy, _ := http.ProxyFromEnvironment(response.Request); proxy != nil && options.dialAddress == "" {
+			metrics["peer_is_proxy"] = true
+			peerIsProxy = true
+		}
+	}
 	metrics["redirects"] = redirects
 	metrics["timing_scope"] = "final_request"
 	summary := fmt.Sprintf("HTTP %d, %s, %d bytes", response.StatusCode, total.Round(time.Millisecond), bytesRead)
@@ -366,7 +376,7 @@ func probeHTTPWithOptions(ctx context.Context, rawURL string, options httpCheckO
 			summary += ", " + T("observe.probe.redirects", redirects)
 		}
 		result := Result{Probe: "http.check", Status: status, StartedAt: started.UTC(), DurationMS: total.Milliseconds(), Summary: summary, Metrics: metrics, Error: diagnostic}
-		result = withHTTPHops(result, hops, options.detail)
+		result = withHTTPHops(result, hops, options)
 		if options.detail == httpDetailFull && !options.headersOnly {
 			metrics["content_type"] = response.Header.Get("Content-Type")
 			metrics["body_lines"] = body.lines()
@@ -376,7 +386,7 @@ func probeHTTPWithOptions(ctx context.Context, rawURL string, options httpCheckO
 			if httpTextMedia(response.Header.Get("Content-Type"), response.Header.Get("Content-Encoding"), body.preview) {
 				metrics["body_preview"] = traceEscapeText(body.preview)
 			}
-			result.Evidence = append(result.Evidence, Evidence{Label: T("observe.http.body"), Value: formatHTTPBody(response.Header, body, terminalWidth())})
+			result.Evidence = append(result.Evidence, Evidence{Label: T("observe.http.body"), Value: formatHTTPBody(response.Header, body, httpOutputWidth(options))})
 		}
 		return withHTTPBodyOutput(result, saved, bytesRead)
 	}
@@ -384,8 +394,7 @@ func probeHTTPWithOptions(ctx context.Context, rawURL string, options httpCheckO
 		metrics["hops"] = httpHopMetrics(hops)
 	}
 	if observedPeer != "" {
-		if proxy, _ := http.ProxyFromEnvironment(response.Request); proxy != nil && options.dialAddress == "" {
-			metrics["peer_is_proxy"] = true
+		if peerIsProxy {
 			summary += ", " + T("observe.probe.proxy_peer_ip", observedPeer)
 		} else {
 			summary += ", " + T("observe.probe.peer_ip", observedPeer)
@@ -394,7 +403,7 @@ func probeHTTPWithOptions(ctx context.Context, rawURL string, options httpCheckO
 	if redirects > 0 {
 		summary += ", " + T("observe.probe.final_request")
 	}
-	for _, phase := range []struct{ key, label string }{{"dns_ms", "DNS"}, {"connect_ms", "TCP"}, {"tls_ms", "TLS"}, {"ttfb_ms", "TTFB"}} {
+	for _, phase := range httpTimingLabels {
 		if value, ok := observedTimings[phase.key]; ok {
 			summary += fmt.Sprintf(", %s %dms", phase.label, value)
 		}
@@ -484,14 +493,14 @@ func tlsVersion(version uint16) string {
 }
 
 // withHTTPHops는 지나온 요청을 결과에 붙인다. 실패한 결과에도 붙여서 몇 번째 redirect에서 멈췄는지 보이게 한다.
-func withHTTPHops(result Result, hops []httpHop, detail httpDetail) Result {
-	if detail == httpDetailOff || len(hops) == 0 {
+func withHTTPHops(result Result, hops []httpHop, options httpCheckOptions) Result {
+	if options.detail == httpDetailOff || len(hops) == 0 {
 		return result
 	}
 	if result.Metrics == nil {
 		result.Metrics = map[string]interface{}{}
 	}
 	result.Metrics["hops"] = httpHopMetrics(hops)
-	result.Evidence = append(result.Evidence, Evidence{Label: T("observe.http.requests"), Value: formatHTTPHops(hops, terminalWidth())})
+	result.Evidence = append(result.Evidence, Evidence{Label: T("observe.http.requests"), Value: formatHTTPHops(hops, httpOutputWidth(options))})
 	return result
 }

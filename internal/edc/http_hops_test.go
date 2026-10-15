@@ -165,7 +165,7 @@ func TestHTTPCheckFailureKeepsTheRequestsSoFar(t *testing.T) {
 }
 
 func TestHTTPHeaderFlagsRejectBrokenHeaders(t *testing.T) {
-	for _, value := range []string{"NoColon", "Bad Name: x", ": x", "X-A: one\r\nX-B: two", "X-A: a\nb"} {
+	for _, value := range []string{"NoColon", "Bad Name: x", ": x", "X-A: one\r\nX-B: two", "X-A: a\nb", "X-A: a\x01b", "X-A: a\x7fb"} {
 		var headers httpHeaderFlags
 		if err := headers.Set(value); err == nil {
 			t.Errorf("Set(%q) must fail", value)
@@ -302,5 +302,71 @@ func TestHTTPCheckFailsWhenTheBodyCannotBeSaved(t *testing.T) {
 	result := probeHTTPWithOptions(context.Background(), server.URL+"/login", httpCheckOptions{detail: httpDetailHops, bodyPath: path})
 	if result.Status != StatusFail || result.Error == nil || result.Error.Kind != "output" {
 		t.Errorf("result = %#v", result)
+	}
+}
+
+// 4 KiB 미리보기가 멀티바이트 문자 중간에서 잘리면 Content-Type이 없는 텍스트가 binary로 판정되었다.
+func TestHTTPCheckKeepsATextBodyCutInsideARune(t *testing.T) {
+	restore := currentLanguage()
+	defer setLanguage(restore)
+	setLanguage("en")
+	body := strings.Repeat("가", 2000)
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.Header()["Content-Type"] = nil
+		_, _ = writer.Write([]byte(body))
+	}))
+	defer server.Close()
+
+	result := probeHTTPWithOptions(context.Background(), server.URL, httpCheckOptions{detail: httpDetailFull})
+	preview, _ := evidenceValue(result, T("observe.http.body"))
+	if strings.Contains(preview, T("observe.http.binary")) || strings.Contains(preview, `\x`) || !strings.Contains(preview, "가가가") {
+		t.Errorf("a UTF-8 body cut at the preview limit must stay text:\n%s", preview)
+	}
+}
+
+func TestHTTPTrimPartialRune(t *testing.T) {
+	whole := []byte("ab가")
+	for cut, want := range map[int]string{len(whole): "ab가", len(whole) - 1: "ab", len(whole) - 2: "ab", 2: "ab"} {
+		if got := string(httpTrimPartialRune(whole[:cut])); got != want {
+			t.Errorf("cut %d = %q, want %q", cut, got, want)
+		}
+	}
+}
+
+// --body -의 stdout이 터미널이면 상대가 보낸 escape sequence를 실행하지 않도록 바꿔 쓴다.
+func TestHTTPBodyFileEscapesForATerminal(t *testing.T) {
+	file, err := os.Create(filepath.Join(t.TempDir(), "out"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved := &httpBodyFile{path: "-", file: file, escaped: true}
+	_, _ = saved.Write([]byte("hi \x1b]52;c;ZXZpbA==\x07 there\n"))
+	if err := saved.close(); err != nil || saved.err != nil {
+		t.Fatal(err, saved.err)
+	}
+	_ = file.Close()
+	written, _ := os.ReadFile(file.Name())
+	if strings.ContainsRune(string(written), 0x1b) || !strings.Contains(string(written), `\x1b]52`) || !strings.HasSuffix(string(written), "there\n") {
+		t.Errorf("written = %q", written)
+	}
+}
+
+// flag 값이 "--"이면 위치 인자의 끝 표시가 아니다.
+func TestParseInterspersedKeepsADashDashValue(t *testing.T) {
+	set := flag.NewFlagSet("test", flag.ContinueOnError)
+	body := set.String("body", "", "")
+	verbose := set.Bool("v", false, "")
+	positional, err := parseInterspersed(set, []string{"--body", "--", "https://example.com", "-v"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if *body != "--" || !*verbose || strings.Join(positional, " ") != "https://example.com" {
+		t.Errorf("body = %q, verbose = %t, positional = %q", *body, *verbose, positional)
+	}
+	set = flag.NewFlagSet("test", flag.ContinueOnError)
+	set.Bool("v", false, "")
+	positional, _ = parseInterspersed(set, []string{"-v", "--", "-v"})
+	if strings.Join(positional, " ") != "-v" {
+		t.Errorf("after a boolean flag, -- still ends the flags: %q", positional)
 	}
 }

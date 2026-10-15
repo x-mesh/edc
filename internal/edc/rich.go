@@ -322,6 +322,7 @@ type richSegment struct {
 }
 
 // richSegments는 구간들을 합계에 비례해 cells칸에 나눠 그린다. 0보다 큰 구간은 적어도 한 칸을 받는다.
+// 그리는 칸 수는 cells와 0보다 큰 구간 수 중 큰 값과 늘 같다. 폭을 맞춰 부르는 caller가 줄을 넘기지 않게 한다.
 // 개수 막대와 http 구간 막대가 쓴다.
 func richSegments(segments []richSegment, cells int) string {
 	total := 0.0
@@ -335,19 +336,49 @@ func richSegments(segments []richSegment, cells int) string {
 	if total <= 0 || cells <= 0 {
 		return ""
 	}
-	cells = max(cells, nonzero)
+	counts := richSegmentCells(segments, total, max(cells, nonzero))
 	var builder strings.Builder
-	used, seen := 0, 0.0
-	for _, segment := range segments {
+	for index, segment := range segments {
+		if counts[index] > 0 {
+			builder.WriteString(richFill(strings.Repeat("█", counts[index]), segment.color))
+		}
+	}
+	return builder.String()
+}
+
+// richSegmentCells는 최대 나머지 방식으로 cells칸을 나눈다. 비례한 값의 내림에 한 칸의 하한을 둔 뒤, 남는 칸은
+// 나머지가 큰 구간에, 넘친 칸은 두 칸 이상인 구간 중 나머지가 작은 구간에서 뺀다. 같으면 앞 구간이 먼저다.
+func richSegmentCells(segments []richSegment, total float64, cells int) []int {
+	counts := make([]int, len(segments))
+	shares := make([]float64, len(segments))
+	used := 0
+	for index, segment := range segments {
 		if segment.value <= 0 {
 			continue
 		}
-		seen += segment.value
-		end := max(int(seen/total*float64(cells)+0.5), used+1)
-		builder.WriteString(richFill(strings.Repeat("█", end-used), segment.color))
-		used = end
+		shares[index] = segment.value / total * float64(cells)
+		counts[index] = max(int(shares[index]), 1)
+		used += counts[index]
 	}
-	return builder.String()
+	for ; used < cells; used++ {
+		best := -1
+		for index := range segments {
+			if segments[index].value > 0 && (best < 0 || shares[index]-float64(counts[index]) > shares[best]-float64(counts[best])) {
+				best = index
+			}
+		}
+		counts[best]++
+	}
+	for ; used > cells; used-- {
+		best := -1
+		for index := range segments {
+			if counts[index] > 1 && (best < 0 || shares[index]-float64(counts[index]) < shares[best]-float64(counts[best])) {
+				best = index
+			}
+		}
+		counts[best]--
+	}
+	return counts
 }
 
 // richDetailRenderers는 색을 쓰는 터미널에서 probe의 evidence 블록 대신 그릴 줄이다. 키는 probe ID다.

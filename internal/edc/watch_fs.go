@@ -109,15 +109,17 @@ func streamFSWatch(ctx context.Context, writer io.Writer, source fsWatchSource, 
 		defer ticker.Stop()
 		tick = ticker.C
 	}
+	// 기록 줄은 자르지 않으므로 폭이 필요 없다. 기록마다 터미널 폭을 묻지 않게 한 번만 만든다.
+	style := textStyle{color: options.color}
 	emit := func(record fsWatchRecord) error {
 		if options.status == nil {
-			return writeFSWatchRecord(writer, record, options.jsonPath != "", newTextStyle(options.color))
+			return writeFSWatchRecord(writer, record, options.jsonPath != "", style)
 		}
 		if record.Type == "summary" {
 			options.status.close()
 		}
 		var buffer bytes.Buffer
-		if err := writeFSWatchRecord(&buffer, record, options.jsonPath != "", newTextStyle(options.color)); err != nil {
+		if err := writeFSWatchRecord(&buffer, record, options.jsonPath != "", style); err != nil {
 			return err
 		}
 		_, err := options.status.through(writer).Write(buffer.Bytes())
@@ -366,15 +368,15 @@ func writeFSWatchRecord(writer io.Writer, record fsWatchRecord, jsonOutput bool,
 	stamp := style.dim(record.Time.Local().Format("15:04:05.000"))
 	switch record.Type {
 	case "ready":
-		_, err := fmt.Fprintln(writer, style.fit(stamp+"  "+T("watchfs.ready", terminalJSON(record.Root), record.Recursive, record.Driver)))
+		_, err := fmt.Fprintln(writer, stamp+"  "+T("watchfs.ready", terminalJSON(record.Root), record.Recursive, record.Driver))
 		return err
 	case "event":
 		kind := style.paint(fmt.Sprintf("%-7s", strings.ToUpper(record.Event)), fsWatchEventColor(record.Event))
-		_, err := fmt.Fprintln(writer, style.fit(stamp+"  "+kind+"  "+terminalJSON(record.Path)))
+		_, err := fmt.Fprintln(writer, stamp+"  "+kind+"  "+terminalJSON(record.Path))
 		return err
 	case "action_start":
 		line := stamp + "  " + style.paint("START", richBlue) + "    " + style.join(" · ", terminalJSON(record.Rule), terminalJSON(record.Path), style.command(terminalJSON(strings.Join(record.Command, " "))))
-		_, err := fmt.Fprintln(writer, style.fit(line))
+		_, err := fmt.Fprintln(writer, line)
 		return err
 	case "action_result":
 		exit := "—"
@@ -386,12 +388,12 @@ func writeFSWatchRecord(writer io.Writer, record fsWatchRecord, jsonOutput bool,
 		}
 		color := fsWatchActionColor(record.Status)
 		line := stamp + "  " + style.paint("DONE", color) + "     " + style.join(" · ", terminalJSON(record.Rule), style.paint(record.Status, color), "exit "+exit, fmt.Sprintf("%dms", record.DurationMS))
-		if _, err := fmt.Fprintln(writer, style.fit(line)); err != nil {
+		if _, err := fmt.Fprintln(writer, line); err != nil {
 			return err
 		}
 		if record.Output != "" {
 			for _, line := range strings.Split(strings.TrimSuffix(record.Output, "\n"), "\n") {
-				if _, err := fmt.Fprintln(writer, style.fit(style.dim("          "+terminalJSON(record.Rule)+" |")+" "+terminalJSON(line))); err != nil {
+				if _, err := fmt.Fprintln(writer, style.dim("          "+terminalJSON(record.Rule)+" |")+" "+terminalJSON(line)); err != nil {
 					return err
 				}
 			}

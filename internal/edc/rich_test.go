@@ -38,6 +38,37 @@ func TestRichSegmentsGiveEveryNonzeroPartACell(t *testing.T) {
 	}
 }
 
+// 막대 폭은 요청한 칸 수와 같다. 0보다 큰 구간이 더 많을 때만 그 개수로 늘어난다.
+func TestRichSegmentsDrawExactlyTheRequestedCells(t *testing.T) {
+	for _, test := range []struct {
+		values []float64
+		cells  int
+		want   []int
+	}{
+		{[]float64{98, 1, 1}, 36, []int{34, 1, 1}},
+		{[]float64{100, 1, 1}, 3, []int{1, 1, 1}},
+		{[]float64{90, 10}, 10, []int{9, 1}},
+		{[]float64{1, 1, 1}, 10, []int{4, 3, 3}},
+		{[]float64{2, 0, 1}, 1, []int{1, 0, 1}},
+	} {
+		colors := []string{richBlue, richCyan, richGreen}
+		segments := make([]richSegment, len(test.values))
+		for index, value := range test.values {
+			segments[index] = richSegment{value, colors[index]}
+		}
+		got := richSegments(segments, test.cells)
+		want := ""
+		for index, count := range test.want {
+			if count > 0 {
+				want += richFill(strings.Repeat("█", count), colors[index])
+			}
+		}
+		if got != want {
+			t.Errorf("%v in %d cells = %q (%d cells), want %v", test.values, test.cells, ansi.Strip(got), liveWidth(got), test.want)
+		}
+	}
+}
+
 func TestRichStatusBadgesShareOneWidth(t *testing.T) {
 	for _, status := range []Status{StatusPass, StatusWarn, StatusFail, StatusSkip} {
 		if width := liveWidth(richStatusBadge(status)); width != richStatusBadgeWidth {

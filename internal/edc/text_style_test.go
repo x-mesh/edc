@@ -211,6 +211,23 @@ func TestFSWatchColorLines(t *testing.T) {
 	}
 }
 
+// 색을 써도 기록 줄은 평문처럼 터미널이 접게 둔다. 자르면 파일 이름과 실행한 명령을 잃는다.
+func TestFSWatchColorRecordsKeepLongLines(t *testing.T) {
+	at := time.Date(2026, 10, 15, 1, 2, 3, 0, time.UTC)
+	style := textStyle{color: true, width: 40}
+	for _, record := range []fsWatchRecord{
+		{Type: "event", Time: at, Event: "modify", Path: "src/a/very/long/directory/name/file.go"},
+		{Type: "action_start", Time: at, Rule: "build", Path: "src/file.go", Command: []string{"go", "test", "./internal/edc/...", "-run", "TestSomething"}},
+	} {
+		var colored, plain bytes.Buffer
+		writeFSWatchRecord(&colored, record, false, style)
+		writeFSWatchRecord(&plain, record, false, textStyle{})
+		if ansi.Strip(colored.String()) != plain.String() {
+			t.Fatalf("%s line = %q, want %q", record.Type, ansi.Strip(colored.String()), plain.String())
+		}
+	}
+}
+
 func TestFSWatchStatusColorIsGray(t *testing.T) {
 	clock := time.Unix(1000, 0)
 	var out bytes.Buffer

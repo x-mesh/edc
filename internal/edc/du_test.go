@@ -458,6 +458,25 @@ func TestDuPartialNoticeIsAYellowBadgeOnColorTerminals(t *testing.T) {
 	}
 }
 
+// 좁은 터미널에서도 다시 실행할 명령은 한 줄에 그대로 남는다. 복사하면 그대로 실행되어야 한다.
+func TestDuPartialKeepsTheRerunCommandWhole(t *testing.T) {
+	command := "edc du --timeout 4m0s /very/long/path/to/the/data/directory"
+	result := Result{Next: command, Metrics: map[string]interface{}{"partial": true, "bytes": uint64(10)}}
+	text := formatDuPartial(result, time.Minute, true, 40)
+	whole := false
+	for _, line := range strings.Split(ansi.Strip(text), "\n") {
+		if strings.Contains(line, command) {
+			whole = true
+		}
+	}
+	if !whole || !strings.Contains(text, richPaint(command, richCyan, true)) {
+		t.Fatalf("the command is broken in %q", ansi.Strip(text))
+	}
+	if !strings.Contains(text, "  "+richDim("to count the whole tree:")+"\n") {
+		t.Fatalf("the hint lost its label: %q", text)
+	}
+}
+
 func TestDuMeasureLeavesHostWideSourcesAlone(t *testing.T) {
 	root, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {

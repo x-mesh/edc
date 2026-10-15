@@ -2,6 +2,7 @@ package edc
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -212,6 +213,20 @@ func paintStatus(text string, status Status, color bool) string {
 // terminalWidth는 stdout의 폭이다. 알 수 없으면 기본값을 쓴다.
 func terminalWidth() int {
 	width, _, err := term.GetSize(int(os.Stdout.Fd()))
+	if err != nil || width <= 0 {
+		return remoteDefaultWidth
+	}
+	return width
+}
+
+// writerWidth는 writer가 파일이면 그 파일의 폭이다. http check --body -처럼 보고를 stderr로 보내면 stdout의 폭은
+// 보고가 그려지는 터미널과 다르다. 파일이 아니면 stdout의 폭을 쓴다.
+func writerWidth(writer io.Writer) int {
+	file, ok := writer.(*os.File)
+	if !ok {
+		return terminalWidth()
+	}
+	width, _, err := term.GetSize(int(file.Fd()))
 	if err != nil || width <= 0 {
 		return remoteDefaultWidth
 	}

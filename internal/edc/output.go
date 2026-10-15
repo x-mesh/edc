@@ -120,7 +120,7 @@ func printResultDetail(writer io.Writer, result Result, verbose, color bool) {
 	}
 	// http.check는 edc http check에서만 기본으로 redirect 경로를 남긴다. doctor는 -v일 때만 남긴다.
 	if (verbose || result.Probe == endpointProbeID || result.Probe == "dns.compare" || result.Probe == "http.check") && result.Status != StatusFail && !isRemoteResult(result) {
-		if lines := richEvidenceLines(color, result); lines != nil {
+		if lines := richEvidenceLinesWidth(color, result, writerWidth(writer)); lines != nil {
 			for _, line := range lines {
 				fmt.Fprintln(writer, line)
 			}
@@ -151,7 +151,7 @@ func evidenceValueLines(value string) []string {
 
 func printResultSummary(writer io.Writer, results []Result, color bool) {
 	if color {
-		fmt.Fprintf(writer, "\n%s\n", richResultCounts(results, terminalWidth()))
+		fmt.Fprintf(writer, "\n%s\n", richResultCounts(results, writerWidth(writer)))
 		return
 	}
 	fmt.Fprintf(writer, "\n%s\n", resultCounts(results))
@@ -184,7 +184,8 @@ func richResultCounts(results []Result, width int) string {
 		return text
 	}
 	bar := richSegments(segments, min(resultCountsBarWidth, width-liveWidth(text)-2))
-	if bar == "" {
+	// 칸이 상태 수보다 적으면 richSegments가 상태마다 한 칸을 주어 줄이 폭을 넘는다.
+	if bar == "" || liveWidth(bar)+2+liveWidth(text) > width {
 		return text
 	}
 	return bar + "  " + text
@@ -210,21 +211,10 @@ func printFailureBox(writer io.Writer, probe string, result Result, color bool) 
 		printFailurePanel(writer, probe, result)
 		return
 	}
-	title := "ERROR  " + probe
-	if color {
-		title = "\033[31m" + title + "\033[0m"
-	}
-	fmt.Fprintf(writer, "┌─ %s\n", title)
+	fmt.Fprintf(writer, "┌─ ERROR  %s\n", probe)
 	if result.Error != nil {
 		fmt.Fprintf(writer, "│ phase   %s\n", result.Error.Kind)
 		fmt.Fprintf(writer, "│ cause   %s\n", result.Error.Message)
-	}
-	if lines := richEvidenceLines(color, result); lines != nil {
-		for _, line := range lines {
-			fmt.Fprintf(writer, "│ %s\n", line)
-		}
-		fmt.Fprintln(writer, "└─")
-		return
 	}
 	for _, evidence := range result.Evidence {
 		fmt.Fprintf(writer, "│\n│ %s\n", evidence.Label)
@@ -247,7 +237,7 @@ func printFailurePanel(writer io.Writer, probe string, result Result) {
 		fmt.Fprintln(writer, richPanelLine(richDim("cause")+"  "+result.Error.Message, richRed))
 	}
 	// 줄 앞에 "│ "가 붙으므로 그림은 그만큼 좁게 그린다.
-	if lines := richEvidenceLinesWidth(true, result, terminalWidth()-2); lines != nil {
+	if lines := richEvidenceLinesWidth(true, result, writerWidth(writer)-2); lines != nil {
 		fmt.Fprintln(writer, richPanelLine("", richRed))
 		for _, line := range lines {
 			fmt.Fprintln(writer, richPanelLine(line, richRed))

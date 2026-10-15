@@ -1,6 +1,7 @@
 package edc
 
 import (
+	"os"
 	"strings"
 	"testing"
 
@@ -102,6 +103,31 @@ func TestColorEvidenceIsAGrayPanel(t *testing.T) {
 	}
 	if !strings.Contains(output.String(), richExpect("\033[90m╭─ \033[0m\033[1;35moutput\033[0m")) {
 		t.Fatalf("panel = %q", output.String())
+	}
+}
+
+// 막대를 둘 칸이 0보다 큰 상태 수보다 적으면 막대를 뺀다. 구간마다 한 칸을 주면 줄이 폭을 넘는다.
+func TestColorSummaryNeverOverflowsANarrowLine(t *testing.T) {
+	results := []Result{{Status: StatusPass}, {Status: StatusWarn}, {Status: StatusFail}}
+	text := "1 pass  1 warn  1 fail  0 skip"
+	width := len(text) + 3
+	if line := richResultCounts(results, width); liveWidth(line) > width {
+		t.Fatalf("summary is %d cells, wider than %d: %q", liveWidth(line), width, ansi.Strip(line))
+	}
+}
+
+// 보고를 stderr로 보내면 stdout이 아니라 그 파일의 폭을 잰다. 터미널이 아닌 파일은 기본 폭이다.
+func TestWriterWidthMeasuresTheWriter(t *testing.T) {
+	file, err := os.CreateTemp(t.TempDir(), "width")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	if got := writerWidth(file); got != remoteDefaultWidth {
+		t.Errorf("file width = %d, want %d", got, remoteDefaultWidth)
+	}
+	if got := writerWidth(&strings.Builder{}); got != terminalWidth() {
+		t.Errorf("buffer width = %d, want the stdout width %d", got, terminalWidth())
 	}
 }
 

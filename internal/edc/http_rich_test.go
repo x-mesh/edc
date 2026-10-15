@@ -122,6 +122,47 @@ func TestRichHTTPFailureRowsHaveNoPanel(t *testing.T) {
 	}
 }
 
+// 실패한 응답의 본문도 평문의 ERROR 상자처럼 title, 미리보기, 저장한 곳을 hop 줄 뒤에 남긴다.
+func TestRichHTTPFailureKeepsTheBodyRows(t *testing.T) {
+	restore := currentLanguage()
+	defer setLanguage(restore)
+	setLanguage("en")
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "text/html; charset=utf-8")
+		writer.WriteHeader(http.StatusInternalServerError)
+		_, _ = writer.Write([]byte("<html><head><title>Server Broke</title></head>\n<body>stack trace here</body></html>\n"))
+	}))
+	defer server.Close()
+	path := filepath.Join(t.TempDir(), "page.html")
+	result := probeHTTPWithOptions(context.Background(), server.URL, httpCheckOptions{detail: httpDetailFull, bodyPath: path})
+	if result.Status != StatusFail {
+		t.Fatalf("status = %s", result.Status)
+	}
+	plain := richHTTPStripped(richEvidenceLines(true, result))
+	if strings.ContainsAny(plain, "╭╰│") {
+		t.Fatalf("failure rows draw a panel: %q", plain)
+	}
+	for _, want := range []string{"1  500   " + server.URL, "body  text/html; charset=utf-8 · ", "Server Broke", "stack trace here", "saved to "} {
+		if !strings.Contains(plain, want) {
+			t.Errorf("missing %q in\n%s", want, plain)
+		}
+	}
+}
+
+// 실패 상자는 줄마다 "│ "를 붙이고 그만큼 좁힌 폭을 넘긴다. 받은 폭을 다시 줄이지 않는다.
+func TestRichHTTPFailureRowsUseTheGivenWidth(t *testing.T) {
+	result := Result{Probe: "http.check", Status: StatusFail, Evidence: []Evidence{{Label: "requests", Value: "x"}}, Metrics: map[string]interface{}{
+		"hops": []map[string]interface{}{{"url": "http://a.example/" + strings.Repeat("x", 100), "status_code": 500, "proto": "HTTP/1.1"}},
+	}}
+	widest := 0
+	for _, line := range richHTTPCheck(result, 60) {
+		widest = max(widest, liveWidth(line))
+	}
+	if widest != 60 {
+		t.Fatalf("widest failure row = %d cells, want 60", widest)
+	}
+}
+
 func TestRichHTTPWaterfallSharesOneScale(t *testing.T) {
 	restore := currentLanguage()
 	defer setLanguage(restore)

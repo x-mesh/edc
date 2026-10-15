@@ -379,7 +379,8 @@ func formatDuPartial(result Result, timeout time.Duration, color bool, width int
 }
 
 // richDuPartial은 en, ko, ja가 모두 쓰는 "머리: 본문" 꼴에서 머리를 노란 배지로 바꾸고, 본문은 배지 뒤에 맞춰
-// 줄을 바꾼다. 다시 실행할 명령은 자르지 않는다. 복사할 글자가 사라지면 안 된다.
+// 줄을 바꾼다. 다시 실행할 명령은 자르거나 접지 않는다. 복사한 글자가 그대로 실행되어야 한다. 안내와 함께 폭을 넘으면
+// 명령만 다음 줄에 둔다.
 func richDuPartial(line, next string, width int) string {
 	badge := ""
 	if head, body, ok := strings.Cut(line, ": "); ok {
@@ -391,9 +392,11 @@ func richDuPartial(line, next string, width int) string {
 	}
 	text := "\n" + badge + line + "\n"
 	if next != "" {
-		hint := "  " + duPhrase(T("du.partial.next", "\x00"), richDim, richPaint(next, richCyan, true))
-		if width > 0 {
-			hint = ansi.Wrap(hint, width, "")
+		command := richPaint(next, richCyan, true)
+		hint := "  " + duPhrase(T("du.partial.next", "\x00"), richDim, command)
+		if width > 0 && liveWidth(hint) > width {
+			before, after, _ := strings.Cut(T("du.partial.next", "\x00"), "\x00")
+			hint = "  " + richDim(strings.TrimRight(before, " ")) + "\n  " + command + richDim(after)
 		}
 		text += hint + "\n"
 	}

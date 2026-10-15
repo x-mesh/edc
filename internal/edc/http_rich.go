@@ -61,17 +61,26 @@ func (hop httpRichHop) details() string {
 	return strings.Join(items, " · ")
 }
 
-// richHTTPCheck는 실패면 output.go의 ERROR 상자 안에 들어갈 hop 줄만, 아니면 패널 전체를 돌려준다.
-// 두 경우 모두 앞에 "│ "가 붙으므로 내용 폭은 width-2다.
+// richHTTPCheck는 실패면 output.go의 ERROR 상자 안에 들어갈 hop 줄과 body 줄을 상자 없이, 아니면 패널 전체를
+// 돌려준다. 실패 상자는 "│ "를 붙일 만큼 줄인 폭을 넘기므로 그 폭을 그대로 쓴다. 패널은 직접 "│ "를 붙이므로
+// 안쪽 줄을 width-2로 그린다.
 func richHTTPCheck(result Result, width int) []string {
 	hops := httpRichHops(result.Metrics["hops"])
 	if len(hops) == 0 {
 		return nil
 	}
-	inner := width - 2
+	_, hasType := result.Metrics["content_type"]
+	_, hasOutput := result.Metrics["body_output"]
 	if result.Status == StatusFail {
-		return httpRichHopRows(hops, inner)
+		rows := httpRichHopRows(hops, width)
+		if hasType || hasOutput {
+			detail, body := httpRichBody(result.Metrics, hops[len(hops)-1], width)
+			label := richBold(T("observe.http.body")) + "  " + richDim(detail)
+			rows = append(append(rows, "", ansi.Truncate(label, width, "…")), body...)
+		}
+		return rows
 	}
+	inner := width - 2
 	var lines []string
 	// --body만 주고 redirect가 없으면 평문에도 requests 블록이 없다. 같은 내용만 그린다.
 	if httpRichHasEvidence(result, T("observe.http.requests")) {
@@ -81,8 +90,6 @@ func richHTTPCheck(result Result, width int) []string {
 		}
 		lines = append(lines, richPanelBottom(""))
 	}
-	_, hasType := result.Metrics["content_type"]
-	_, hasOutput := result.Metrics["body_output"]
 	if hasType || hasOutput {
 		detail, body := httpRichBody(result.Metrics, hops[len(hops)-1], inner)
 		lines = append(lines, httpRichPanelTop(T("observe.http.body"), detail, width))

@@ -519,28 +519,29 @@ func formatCleanDocker(section cleanDocker, verbose bool, width int) string {
 	}
 	line("\n", T("clean.docker.title", suffix))
 	sizes := make([]string, len(section.Types))
-	var sizeWidth, nameWidth, reclaimWidth int
+	items := make([]string, len(section.Types))
+	var sizeWidth, nameWidth, itemsWidth int
 	for index, result := range section.Types {
 		sizes[index] = cleanNoSize
 		if result.Status == cleanMeasured {
 			sizes[index] = formatSizeShort(uint64(*result.TotalBytes))
-			if result.Type != cleanDockerVolumes {
-				reclaimWidth = max(reclaimWidth, liveWidth(T("clean.docker.reclaimable", formatSizeShort(uint64(*result.ReclaimableBytes)))))
-			}
+			items[index] = T("clean.docker.items", *result.TotalCount, *result.ActiveCount)
 		}
 		sizeWidth = max(sizeWidth, liveWidth(sizes[index]))
 		nameWidth = max(nameWidth, liveWidth(T("clean.docker.type."+result.Type)))
+		itemsWidth = max(itemsWidth, liveWidth(items[index]))
 	}
 	for index, result := range section.Types {
+		// 길이가 같은 개수 칸을 앞에 두고, 종류마다 길이가 다른 회수 가능량 문구는 끝에 둔다. 문구를 칸으로 맞추면 가장 긴
+		// volumes 문구가 모든 행의 개수를 오른쪽으로 민다.
 		var rest string
 		switch {
 		case result.Status != cleanMeasured:
 			rest = cleanStateText(result.Status, result.Reasons)
 		case result.Type == cleanDockerVolumes:
-			rest = T("clean.docker.no_reclaim") + "  " + T("clean.docker.items", *result.TotalCount, *result.ActiveCount)
+			rest = cleanPad(items[index], itemsWidth) + "  " + T("clean.docker.no_reclaim")
 		default:
-			rest = cleanPad(T("clean.docker.reclaimable", formatSizeShort(uint64(*result.ReclaimableBytes))), reclaimWidth) + "  " +
-				T("clean.docker.items", *result.TotalCount, *result.ActiveCount)
+			rest = cleanPad(items[index], itemsWidth) + "  " + T("clean.docker.reclaimable", formatSizeShort(uint64(*result.ReclaimableBytes)))
 		}
 		line("  ", cleanPadLeft(sizes[index], sizeWidth)+"  "+cleanPad(T("clean.docker.type."+result.Type), nameWidth)+"  "+rest)
 		if verbose && result.Cleanup != "" {

@@ -195,6 +195,30 @@ func TestDuResultLeavesOutDeletedOpenThatWasNotChecked(t *testing.T) {
 	}
 }
 
+// 부분 결과의 경고는 긴 트리 위에 있어 화면 밖으로 밀린다. 파일 시스템 사용량 아래, 출력 끝에서도 알린다.
+func TestDuPrintEndsAPartialResultWithTheNotice(t *testing.T) {
+	scan := duScan{root: duTestDir("/data", 4, duTestFile("a", 10)), partial: true, filesystem: duFilesystem{Mount: "/data", FSType: "xfs", UsedBytes: 900, SizeBytes: 1000}}
+	duTotal(scan.root)
+	options := duOptions{root: "/data", workers: 4, rows: 5}
+	print := func(stopped bool) []string {
+		var output strings.Builder
+		duPrint(&output, commonOptions{timeout: time.Minute}, duResult(Result{StartedAt: time.Now()}, options, scan, time.Minute, stopped), false, false, 0)
+		return strings.Split(strings.TrimRight(output.String(), "\n"), "\n")
+	}
+	lines := print(false)
+	if last := lines[len(lines)-2:]; !strings.HasPrefix(last[0], "PARTIAL: edc stopped at the 1m0s time limit") || last[1] != "  to count the whole tree: edc du --timeout 4m0s /data" {
+		t.Fatalf("time limit: %q", last)
+	}
+	lines = print(true)
+	if last := lines[len(lines)-1]; !strings.HasPrefix(last, "PARTIAL: you stopped edc") {
+		t.Fatalf("stopped: %q", last)
+	}
+	scan.partial = false
+	if lines := print(false); strings.Contains(strings.Join(lines, "\n"), "PARTIAL") {
+		t.Fatalf("whole scan: %q", lines)
+	}
+}
+
 func TestDuLargestKeepsTheBiggestDirectoriesBelowTheRoot(t *testing.T) {
 	root := duTestDir("/data", 4,
 		duTestDir("a", 4, duTestFile("big", 60), duTestDir("nested", 4, duTestFile("x", 26))),

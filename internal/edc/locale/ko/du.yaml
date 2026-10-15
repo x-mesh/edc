@@ -17,6 +17,10 @@ du:
   evidence:
     unreadable: "읽지 못한 디렉터리"
   other: "(나머지 항목 %d개)"
+  partial:
+    timeout: "부분 결과: 제한 시간 %s에서 멈췄습니다. 위의 크기와 합계 %s는 읽은 부분만 센 값입니다"
+    stopped: "부분 결과: 사용자가 멈췄습니다. 위의 크기와 합계 %s는 읽은 부분만 센 값입니다"
+    next: "전체를 세려면: %s"
   fs:
     title: "파일 시스템  %s  %s  %s 사용 / 전체 %s"
     counted: "센 크기"

@@ -94,6 +94,7 @@ observe:
     final_request: "最終リクエスト"
     days_remaining: "残り %d 日"
     http_redirect: "redirect %d 回 → %s"
+    redirects: "redirect %d 回"
     ping_loss: "パケット損失 %s%% (受信 %d/%d)"
     ping_target: "対象 %s"
     ping_average: "平均 RTT %sms"
@@ -114,6 +115,21 @@ observe:
     invalid_url: "正しくない URL: %s"
     unsupported_scheme: "http または https の URL だけに対応します: %s"
     cancelling: "中断中、実行中の command を終了します"
+
+  http:
+    requests: "リクエスト"
+    body: "本文"
+    body_meta: "%s、%d bytes、%d 行"
+    body_size: "%s、%d bytes"
+    encoded: "%s で符号化されているため表示しない"
+    no_content_type: "content-type なし"
+    binary: "binary のため表示しない"
+    title: "タイトル  %s"
+    reused: "接続を再利用"
+    decompressed: "gzip を展開"
+    body_saved: "%s に保存、%d bytes"
+    body_stdout: "stdout に出力、%d bytes"
+    body_truncated: "%s で打ち切り、それ以降の本文は読まない"
 
   listen:
     label: "接続を待つソケット"

@@ -29,6 +29,8 @@ cli:
     min_days_range: "--min-days는 0 이상이어야 합니다"
     quality_server: "--server는 host가 있고 사용자 정보가 없는 http 또는 https 절대 URL이어야 합니다: %s"
     expect_status_range: "--expect-status는 100에서 599 사이여야 합니다"
+    http_header: "-H에는 Name: value 형식으로, 올바른 header 이름과 줄바꿈 없는 값을 줍니다"
+    body_json_stdout: "--body -와 --json -는 둘 다 stdout에 씁니다. 하나는 파일로 지정하세요"
   doctor:
     tls_skipped_for_http: "HTTP target에는 TLS를 적용하지 않습니다"
   info:

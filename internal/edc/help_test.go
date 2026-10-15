@@ -80,13 +80,13 @@ func TestRichHelpPaintsBadgePanelsAndNames(t *testing.T) {
 	text := output.String()
 
 	for _, code := range []string{
-		"\x1b[1;30;45m edc \x1b[0m",
-		"\x1b[90m0.18.0\x1b[0m",
-		"\x1b[90m╭─ \x1b[0m\x1b[1;35m" + T("help.group.diagnose"),
-		"\x1b[90m│ \x1b[0m\x1b[1;36mdoctor\x1b[0m",
-		"\x1b[90m╰─\x1b[0m",
-		"\x1b[100;97m --redact \x1b[0m",
-		"\x1b[1;36medc help <command>\x1b[0m",
+		richExpect("\x1b[1;30;45m edc \x1b[0m"),
+		richExpect("\x1b[90m0.18.0\x1b[0m"),
+		richExpect("\x1b[90m╭─ \x1b[0m\x1b[1;35m") + T("help.group.diagnose"),
+		richExpect("\x1b[90m│ \x1b[0m\x1b[1;36mdoctor\x1b[0m"),
+		richExpect("\x1b[90m╰─\x1b[0m"),
+		richExpect("\x1b[100;97m --redact \x1b[0m"),
+		richExpect("\x1b[1;36medc help <command>\x1b[0m"),
 	} {
 		if !strings.Contains(text, code) {
 			t.Errorf("the colored first screen misses %q", code)
@@ -119,11 +119,11 @@ func TestRichCommandHelpKeepsThePlainSections(t *testing.T) {
 	text := colored.String()
 
 	for _, code := range []string{
-		"\x1b[1;30;45m edc http \x1b[0m \x1b[1m" + doc.summary() + "\x1b[0m",
-		"\x1b[1;35m" + T("help.usage_label") + "\x1b[0m",
-		"\x1b[1;35m" + T("help.options_label") + "\x1b[0m",
-		"\x1b[1;35m" + T("help.common_options_label") + "\x1b[0m",
-		"\x1b[1;36m--expect-status N         \x1b[0m  " + T("command.http.option.expect_status"),
+		richExpect("\x1b[1;30;45m edc http \x1b[0m \x1b[1m") + doc.summary() + richExpect("\x1b[0m"),
+		richExpect("\x1b[1;35m") + T("help.usage_label") + richExpect("\x1b[0m"),
+		richExpect("\x1b[1;35m") + T("help.options_label") + richExpect("\x1b[0m"),
+		richExpect("\x1b[1;35m") + T("help.common_options_label") + richExpect("\x1b[0m"),
+		richExpect("\x1b[1;36m--expect-status N         \x1b[0m  ") + T("command.http.option.expect_status"),
 	} {
 		if !strings.Contains(text, code) {
 			t.Errorf("colored http help misses %q", code)
@@ -149,7 +149,7 @@ func TestHelpStaysPlainWhenTheWriterIsNotATerminal(t *testing.T) {
 	if !printCommandHelp(&output, "trace") {
 		t.Fatal("trace help is missing")
 	}
-	if strings.Contains(output.String(), "\x1b[") {
+	if strings.Contains(output.String(), richExpect("\x1b[")) {
 		t.Fatal("help for a non-terminal writer must hold no escape codes")
 	}
 }

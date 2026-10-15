@@ -51,17 +51,17 @@ func TestRichHTTPDrawsTheRequestAndBodyPanels(t *testing.T) {
 		}
 	}
 	for _, want := range []string{
-		"\033[1;30;46m 301 \033[0m",
-		"\033[1;30;42m 200 \033[0m",
-		"\033[1;4m" + server.URL + "/start\033[0m",
-		"\033[33m> x-debug\033[0m",
-		"\033[1mLog & in\033[0m",
+		richExpect("\033[1;30;46m 301 \033[0m"),
+		richExpect("\033[1;30;42m 200 \033[0m"),
+		richExpect("\033[1;4m") + server.URL + richExpect("/start\033[0m"),
+		richExpect("\033[33m> x-debug\033[0m"),
+		richExpect("\033[1mLog & in\033[0m"),
 	} {
 		if !strings.Contains(drawn, want) {
 			t.Errorf("missing SGR %q:\n%q", want, drawn)
 		}
 	}
-	if strings.Contains(drawn, "\x1b[31m</body>") {
+	if strings.Contains(drawn, richExpect("\x1b[31m</body>")) {
 		t.Error("the body preview must keep the escaped escape bytes")
 	}
 	if richEvidenceLines(false, result) != nil {
@@ -154,7 +154,7 @@ func TestRichHTTPWaterfallSharesOneScale(t *testing.T) {
 	if !strings.Contains(plain[2], "DNS 2 · TCP 3 · TTFB 24 · peer 192.0.2.1") || !strings.Contains(plain[5], "gzip decoded") {
 		t.Errorf("details:\n%s", strings.Join(plain, "\n"))
 	}
-	if !strings.Contains(strings.Join(lines, "\n"), "\033[34m█") {
+	if !strings.Contains(strings.Join(lines, "\n"), richExpect("\033[34m█")) {
 		t.Error("DNS is blue")
 	}
 }

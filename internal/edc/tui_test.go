@@ -84,7 +84,7 @@ func TestLiveTerminalRespectsNoColor(t *testing.T) {
 func TestLiveCellKeepsColorAndWidth(t *testing.T) {
 	colored := terminalStatus(StatusPass, true)
 	cell := liveCell(colored, 10)
-	if !strings.Contains(cell, "\033[32m") {
+	if !strings.Contains(cell, richExpect("\033[32m")) {
 		t.Fatalf("padding dropped the color: %q", cell)
 	}
 	if liveWidth(cell) != 10 {

@@ -11,7 +11,7 @@ func TestColorResultLineUsesTheBadgeAndKeepsTheColumns(t *testing.T) {
 	result := Result{Probe: "tcp.check", Status: StatusPass, Summary: "example.com:443 connected"}
 	plain := formatResultLine(result, false)
 	colored := formatResultLine(result, true)
-	if !strings.HasPrefix(colored, "\033[1;30;42m PASS \033[0m  \033[1mtcp.check") {
+	if !strings.HasPrefix(colored, richExpect("\033[1;30;42m PASS \033[0m  \033[1mtcp.check")) {
 		t.Fatalf("colored = %q", colored)
 	}
 	// 배지가 두 칸 넓으므로 label과 summary는 평문보다 두 칸 뒤에서 시작하고, 나머지는 평문과 같다.
@@ -42,7 +42,7 @@ func TestColorFailurePanel(t *testing.T) {
 	var output strings.Builder
 	printTerminalWithColor(&output, results, false, true)
 	colored := output.String()
-	for _, code := range []string{"\033[31m╭─ \033[0m\033[1;31mERROR\033[0m", "\033[33mconnection_refused\033[0m", "\033[90mcause\033[0m", "\033[31m╰─\033[0m"} {
+	for _, code := range []string{richExpect("\033[31m╭─ \033[0m\033[1;31mERROR\033[0m"), richExpect("\033[33mconnection_refused\033[0m"), richExpect("\033[90mcause\033[0m"), richExpect("\033[31m╰─\033[0m")} {
 		if !strings.Contains(colored, code) {
 			t.Errorf("panel lacks %q: %q", code, colored)
 		}
@@ -86,7 +86,7 @@ func TestColorNextAndWarningLines(t *testing.T) {
 	if ansi.Strip(colored.String()) != plain.String() {
 		t.Fatalf("stripped colored = %q", ansi.Strip(colored.String()))
 	}
-	for _, code := range []string{"\033[90mnext:\033[0m", "\033[1;36medc disk grow /\033[0m", "\033[1;33mwarning:\033[0m"} {
+	for _, code := range []string{richExpect("\033[90mnext:\033[0m"), richExpect("\033[1;36medc disk grow /\033[0m"), richExpect("\033[1;33mwarning:\033[0m")} {
 		if !strings.Contains(colored.String(), code) {
 			t.Errorf("colored lacks %q: %q", code, colored.String())
 		}
@@ -100,7 +100,7 @@ func TestColorEvidenceIsAGrayPanel(t *testing.T) {
 	if got, want := ansi.Strip(output.String()), "╭─ output  net.route ───\n│ route to: 192.0.2.1\n│ gateway: 192.0.2.254\n╰─\n"; got != want {
 		t.Fatalf("stripped = %q, want %q", got, want)
 	}
-	if !strings.Contains(output.String(), "\033[90m╭─ \033[0m\033[1;35moutput\033[0m") {
+	if !strings.Contains(output.String(), richExpect("\033[90m╭─ \033[0m\033[1;35moutput\033[0m")) {
 		t.Fatalf("panel = %q", output.String())
 	}
 }
@@ -117,7 +117,7 @@ func TestColorSummaryLine(t *testing.T) {
 	if !strings.HasPrefix(stripped, "\n"+strings.Repeat("█", resultCountsBarWidth)+"  ") || !strings.HasSuffix(stripped, "  2 pass  0 warn  1 fail  0 skip\n") {
 		t.Fatalf("stripped = %q", stripped)
 	}
-	for _, code := range []string{"\033[1;32m2 pass\033[0m", "\033[90m0 warn\033[0m", "\033[1;31m1 fail\033[0m", "\033[90m0 skip\033[0m", "\033[32m████"} {
+	for _, code := range []string{richExpect("\033[1;32m2 pass\033[0m"), richExpect("\033[90m0 warn\033[0m"), richExpect("\033[1;31m1 fail\033[0m"), richExpect("\033[90m0 skip\033[0m"), richExpect("\033[32m████")} {
 		if !strings.Contains(colored.String(), code) {
 			t.Errorf("summary lacks %q: %q", code, colored.String())
 		}

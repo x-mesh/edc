@@ -1708,13 +1708,13 @@ func TestCleanColorGroupsCandidatesUnderPriorityBadges(t *testing.T) {
 		}
 	}
 	// 10 GB 이상은 굵은 빨강이고, 막대도 같은 색이다. 가장 큰 후보가 막대를 다 채운다.
-	if !strings.Contains(text, "\033[1;31m125.0 GB\033[0m") || !strings.Contains(text, "\033[31m"+strings.Repeat("█", 20)+"\033[0m") {
+	if !strings.Contains(text, richExpect("\033[1;31m125.0 GB\033[0m")) || !strings.Contains(text, richExpect("\033[31m")+strings.Repeat("█", 20)+"\033[0m") {
 		t.Fatalf("the largest row lacks a red size and a full bar:\n%q", text)
 	}
-	if !strings.Contains(text, "\033[1;33m  2.0 GB\033[0m") {
+	if !strings.Contains(text, richExpect("\033[1;33m  2.0 GB\033[0m")) {
 		t.Fatalf("a size under 10 GB should be yellow:\n%q", text)
 	}
-	if !strings.Contains(text, "\033[33m"+T("clean.with_reason", T("clean.status.unreadable"), T("clean.reason.permission_denied"))) {
+	if !strings.Contains(text, richExpect("\033[33m")+T("clean.with_reason", T("clean.status.unreadable"), T("clean.reason.permission_denied"))) {
 		t.Fatalf("an unreadable row should show its state in yellow:\n%q", text)
 	}
 	if !strings.Contains(text, richDim(T("clean.fold.absent", T("clean.candidate.playwright")))) {
@@ -1742,11 +1742,11 @@ func TestCleanColorVerboseListsGroupsAndCommands(t *testing.T) {
 	if strings.Contains(plain, "▸") {
 		t.Fatalf("-v should list each group:\n%s", plain)
 	}
-	if !strings.Contains(text, "\033[33m  6.0 GB\033[0m") || !strings.Contains(text, richDim(T("clean.group_folders", 2))) {
+	if !strings.Contains(text, richExpect("\033[33m  6.0 GB\033[0m")) || !strings.Contains(text, richDim(T("clean.group_folders", 2))) {
 		t.Fatalf("-v group lines need a colored size and a gray folder count:\n%q", text)
 	}
 	for _, command := range []string{"rm -rf ~/Library/Developer/Xcode/DerivedData", "docker image prune", "git-kit worktree cleanup"} {
-		if !strings.Contains(text, "\033[36m"+command+"\033[0m") {
+		if !strings.Contains(text, richExpect("\033[36m")+command+richExpect("\033[0m")) {
 			t.Fatalf("%q should be cyan:\n%q", command, text)
 		}
 	}
@@ -1776,7 +1776,7 @@ func TestCleanColorDrawsSectionsAsPanels(t *testing.T) {
 	if images < 0 || volumes < 0 {
 		t.Fatalf("docker rows lost their columns:\n%s", plain)
 	}
-	if !strings.Contains(text, "\033[1;31m80.0 GB\033[0m") {
+	if !strings.Contains(text, richExpect("\033[1;31m80.0 GB\033[0m")) {
 		t.Fatalf("panel sizes should be colored:\n%q", text)
 	}
 	footer := richChip("file system") + " " + richBold("/System/Volumes/Data") + "  " + richDim("apfs") + "   " + richDim("usage sum") + " " +
@@ -1821,7 +1821,7 @@ func TestCleanColorShowsTheProjectFlagAsAChip(t *testing.T) {
 	}
 	// 줄을 바꾼 회색 문장은 줄마다 색을 다시 입힌다.
 	for _, line := range strings.Split(strings.TrimSpace(formatCleanNotMeasured(false, 40, true)), "\n") {
-		if !strings.HasPrefix(line, "\033[90m") {
+		if !strings.HasPrefix(line, richExpect("\033[90m")) {
 			t.Fatalf("a wrapped line lost its color: %q", line)
 		}
 	}
@@ -1830,7 +1830,7 @@ func TestCleanColorShowsTheProjectFlagAsAChip(t *testing.T) {
 func TestCleanPlainOutputHasNoEscapes(t *testing.T) {
 	var output bytes.Buffer
 	cleanPrint(&output, commonOptions{verbose: true}, cleanColorResult(), false, 80, false, "/h")
-	if strings.Contains(output.String(), "\033[") || strings.Contains(output.String(), "╭") || strings.Contains(output.String(), "▸") {
+	if strings.Contains(output.String(), richExpect("\033[")) || strings.Contains(output.String(), "╭") || strings.Contains(output.String(), "▸") {
 		t.Fatalf("plain output carries color or panels:\n%q", output.String())
 	}
 }

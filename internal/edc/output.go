@@ -279,7 +279,7 @@ func terminalStatus(status Status, color bool) string {
 	if code == "" {
 		return label
 	}
-	return "\033[" + code + "m" + label + "\033[0m"
+	return richSGR(label, code)
 }
 
 func isRemoteResult(result Result) bool {

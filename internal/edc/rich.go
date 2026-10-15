@@ -1,15 +1,16 @@
 package edc
 
 import (
+	"fmt"
 	"os"
 	"strings"
 )
 
 // rich.go는 색을 쓰는 터미널에서만 쓰는 배지, 패널, 막대다. 파이프, NO_COLOR, --json은 이 함수를 거치지 않고
-// 지금의 평문을 그대로 낸다. 색은 ANSI 기본 16색만 쓴다. 실제 색은 사용자의 터미널 테마가 정하므로 밝은 테마에서도
-// 그 테마의 빨강과 초록이 쓰인다.
+// 지금의 평문을 그대로 낸다. 색은 시안에서 고른 고정 색이다. ANSI 16색 번호를 그대로 내면 터미널 테마가 색을 정해,
+// 형광 연두나 연보라처럼 시안과 전혀 다른 배지가 나왔다. 코드는 ANSI 번호로 색을 부르고 richSGR이 고정 색으로 바꾼다.
 
-// ANSI 전경색 번호다. 배경색은 여기에 10을 더한다.
+// 색 이름 대신 쓰는 ANSI 전경색 번호다. 배경색은 richBackground가 고른다.
 const (
 	richRed     = "31"
 	richGreen   = "32"
@@ -35,7 +36,103 @@ func richSGR(text string, codes ...string) string {
 	if text == "" || len(codes) == 0 {
 		return text
 	}
-	return "\033[" + strings.Join(codes, ";") + "m" + text + richReset
+	truecolor := richTruecolor()
+	params := make([]string, 0, len(codes))
+	for _, code := range codes {
+		params = append(params, richFixedColor(code, truecolor))
+	}
+	return "\033[" + strings.Join(params, ";") + "m" + text + richReset
+}
+
+// richRGB는 시안의 어두운 터미널 색이다.
+type richRGB struct{ r, g, b int }
+
+// richPalette는 ANSI 번호를 시안의 고정 색으로 바꾼다. 3x는 글자색, 4x와 100은 배경색이다.
+// 30은 배지 글자(터미널 바탕에 가까운 검정), 97은 chip 글자다.
+var richPalette = map[string]struct {
+	rgb        richRGB
+	background bool
+}{
+	"30": {richRGB{0x0e, 0x11, 0x16}, false},
+	"31": {richRGB{0xf0, 0x72, 0x7b}, false},
+	"32": {richRGB{0x6f, 0xcf, 0x8e}, false},
+	"33": {richRGB{0xe8, 0xb9, 0x60}, false},
+	"34": {richRGB{0x6a, 0xa8, 0xf5}, false},
+	"35": {richRGB{0xc3, 0x9c, 0xf5}, false},
+	"36": {richRGB{0x5c, 0xcf, 0xd6}, false},
+	"90": {richRGB{0x7c, 0x85, 0x91}, false},
+	"97": {richRGB{0xd6, 0xda, 0xe0}, false},
+	"41": {richRGB{0xf0, 0x72, 0x7b}, true},
+	"42": {richRGB{0x6f, 0xcf, 0x8e}, true},
+	"43": {richRGB{0xe8, 0xb9, 0x60}, true},
+	"44": {richRGB{0x6a, 0xa8, 0xf5}, true},
+	"45": {richRGB{0xc3, 0x9c, 0xf5}, true},
+	"46": {richRGB{0x5c, 0xcf, 0xd6}, true},
+	// 100은 두 곳에 쓴다. 회색 배지 바탕과 chip 바탕이다. chip은 글자(97)와 함께 오므로 richChip이 따로 고른다.
+	"100": {richRGB{0x7c, 0x85, 0x91}, true},
+}
+
+// richChipBackground는 chip의 바탕이다. 시안의 터미널 바탕보다 조금 밝은 회색이다.
+var richChipBackground = richRGB{0x26, 0x2b, 0x33}
+
+// richTruecolor는 24비트 색을 써도 되는지다. 터미널은 COLORTERM으로 알린다. 모르면 256색으로 줄인다.
+func richTruecolor() bool {
+	value := strings.ToLower(os.Getenv("COLORTERM"))
+	return value == "truecolor" || value == "24bit"
+}
+
+func richFixedColor(code string, truecolor bool) string {
+	entry, ok := richPalette[code]
+	if !ok {
+		return code
+	}
+	return richRGBCode(entry.rgb, entry.background, truecolor)
+}
+
+func richRGBCode(rgb richRGB, background, truecolor bool) string {
+	lead := "38"
+	if background {
+		lead = "48"
+	}
+	if truecolor {
+		return fmt.Sprintf("%s;2;%d;%d;%d", lead, rgb.r, rgb.g, rgb.b)
+	}
+	return fmt.Sprintf("%s;5;%d", lead, rich256(rgb))
+}
+
+// rich256은 xterm 256색에서 가장 가까운 색이다. 6단계 색 정육면체와 24단계 회색 중 거리가 짧은 쪽을 고른다.
+func rich256(rgb richRGB) int {
+	levels := []int{0, 95, 135, 175, 215, 255}
+	nearest := func(value int) int {
+		best := 0
+		for index, level := range levels {
+			if abs(level-value) < abs(levels[best]-value) {
+				best = index
+			}
+		}
+		return best
+	}
+	r, g, b := nearest(rgb.r), nearest(rgb.g), nearest(rgb.b)
+	cube := 16 + 36*r + 6*g + b
+	cubeDistance := richDistance(rgb, richRGB{levels[r], levels[g], levels[b]})
+	average := (rgb.r + rgb.g + rgb.b) / 3
+	step := min(max((average-8+5)/10, 0), 23)
+	gray := 8 + step*10
+	if richDistance(rgb, richRGB{gray, gray, gray}) < cubeDistance {
+		return 232 + step
+	}
+	return cube
+}
+
+func richDistance(a, b richRGB) int {
+	return (a.r-b.r)*(a.r-b.r) + (a.g-b.g)*(a.g-b.g) + (a.b-b.b)*(a.b-b.b)
+}
+
+func abs(value int) int {
+	if value < 0 {
+		return -value
+	}
+	return value
 }
 
 // richPaint는 글자에 색을 입힌다. bold면 굵게도 한다.
@@ -87,7 +184,10 @@ const richStatusBadgeWidth = 6
 
 // richChip은 flag나 짧은 값을 회색 바탕에 담는다.
 func richChip(text string) string {
-	return richSGR(" "+text+" ", "100", "97")
+	if text == "" {
+		return text
+	}
+	return "\033[" + richRGBCode(richChipBackground, true, richTruecolor()) + ";" + richFixedColor("97", richTruecolor()) + "m " + text + " " + richReset
 }
 
 // richHTTPCodeColor는 HTTP 상태 code의 색이다. 2xx 초록, 3xx 청록, 4xx 노랑, 5xx 빨강.

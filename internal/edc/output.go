@@ -100,6 +100,12 @@ func printResultDetail(writer io.Writer, result Result, verbose, color bool) {
 	}
 	// http.check는 edc http check에서만 기본으로 redirect 경로를 남긴다. doctor는 -v일 때만 남긴다.
 	if (verbose || result.Probe == endpointProbeID || result.Probe == "dns.compare" || result.Probe == "http.check") && result.Status != StatusFail && !isRemoteResult(result) {
+		if lines := richEvidenceLines(color, result); lines != nil {
+			for _, line := range lines {
+				fmt.Fprintln(writer, line)
+			}
+			return
+		}
 		for _, evidence := range result.Evidence {
 			fmt.Fprintf(writer, "      %s:\n%s\n", evidence.Label, indent(evidence.Value, "        "))
 		}
@@ -134,6 +140,13 @@ func printFailureBox(writer io.Writer, probe string, result Result, color bool) 
 	if result.Error != nil {
 		fmt.Fprintf(writer, "│ phase   %s\n", result.Error.Kind)
 		fmt.Fprintf(writer, "│ cause   %s\n", result.Error.Message)
+	}
+	if lines := richEvidenceLines(color, result); lines != nil {
+		for _, line := range lines {
+			fmt.Fprintf(writer, "│ %s\n", line)
+		}
+		fmt.Fprintln(writer, "└─")
+		return
 	}
 	for _, evidence := range result.Evidence {
 		fmt.Fprintf(writer, "│\n│ %s\n", evidence.Label)
@@ -235,4 +248,12 @@ func exitCode(results []Result) int {
 		}
 	}
 	return 0
+}
+
+// richEvidenceLines는 색을 쓸 때 probe 전용 그림이 있으면 그 줄을 돌려준다. evidence가 없으면 그리지 않는다.
+func richEvidenceLines(color bool, result Result) []string {
+	if !color || len(result.Evidence) == 0 {
+		return nil
+	}
+	return richEvidence(result, terminalWidth())
 }

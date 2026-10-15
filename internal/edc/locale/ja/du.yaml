@@ -29,6 +29,8 @@ du:
     not_found: "見つからない"
     not_found_hint: "マウントの下に隠れたファイル、またはファイルシステムの metadata"
     partial_hint: "root で実行するとすべての process を読みます"
+    label: "ファイルシステム"
+    usage: "%s 使用 / 全体 %s"
   browse:
     title: "edc du · %s · %s · 項目 %d 個"
     help: "↑↓ 移動 · Enter 開く · ← 上へ · q 終了"

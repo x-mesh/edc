@@ -29,6 +29,8 @@ du:
     not_found: "not found"
     not_found_hint: "files under a mount point, or file system metadata"
     partial_hint: "run as root to read every process"
+    label: "file system"
+    usage: "%s used of %s"
   browse:
     title: "edc du · %s · %s · %d entries"
     help: "↑↓ move · Enter open · ← up · q quit"

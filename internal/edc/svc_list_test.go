@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/charmbracelet/x/ansi"
 )
 
 const svcListUnitsOutput = `apparmor.service        loaded    active   exited  Load AppArmor profiles
@@ -177,7 +179,7 @@ func TestEvaluateSvcListNamesTheFailedUnits(t *testing.T) {
 func TestFormatSvcListTableAlignsColumns(t *testing.T) {
 	var asked []string
 	items, _ := collectSvcList(context.Background(), svcListFakeSources(&asked), false)
-	lines := strings.Split(strings.TrimRight(formatSvcListTable(items), "\n"), "\n")
+	lines := strings.Split(strings.TrimRight(formatSvcListTable(items, textStyle{}), "\n"), "\n")
 	if len(lines) != 6 || !strings.HasPrefix(lines[0], "UNIT") || !strings.HasPrefix(lines[1], "web.service") {
 		t.Fatalf("table:\n%s", strings.Join(lines, "\n"))
 	}
@@ -190,6 +192,27 @@ func TestFormatSvcListTableAlignsColumns(t *testing.T) {
 	}
 	if !strings.Contains(lines[2], "activating (auto-restart), exit-code") || !strings.Contains(lines[5], "952K") {
 		t.Fatalf("cells:\n%s", strings.Join(lines, "\n"))
+	}
+}
+
+// 터미널에 쓰는 표는 머리글이 회색이고 상태 칸은 대화형 화면과 같은 색이다. 색을 벗기면 평문 표와 같아야 열이 맞는다.
+func TestFormatSvcListTableColorsTheState(t *testing.T) {
+	var asked []string
+	items, _ := collectSvcList(context.Background(), svcListFakeSources(&asked), false)
+	plain, colored := formatSvcListTable(items, textStyle{}), formatSvcListTable(items, textStyle{color: true})
+	if ansi.Strip(colored) != plain {
+		t.Fatalf("plain:\n%s\ncolored:\n%q", plain, colored)
+	}
+	if !strings.HasPrefix(colored, richExpect("\033[90mUNIT\033[0m")) {
+		t.Fatalf("header = %q", strings.SplitN(colored, "\n", 2)[0])
+	}
+	for _, item := range items {
+		if !strings.Contains(colored, richPaint(item.state(), item.stateColor(), false)) {
+			t.Fatalf("%s state is not %s: %q", item.Unit, item.stateColor(), colored)
+		}
+	}
+	if items[0].stateColor() != richRed || items[1].stateColor() != richYellow {
+		t.Fatalf("fixture order changed: %s %s", items[0].state(), items[1].state())
 	}
 }
 

@@ -92,11 +92,11 @@ func TestWhereNetworkShapeReportsOnlyFacts(t *testing.T) {
 }
 
 func TestWhereGeographyDropsRepeatedName(t *testing.T) {
-	got := whereGeography(whereLocation{Country: "KR", Region: "Seoul", City: "Seoul"})
+	got := whereGeography(whereLocation{Country: "KR", Region: "Seoul", City: "Seoul"}, textStyle{})
 	if got != "KR  ·  Seoul" {
 		t.Fatalf("geography = %q", got)
 	}
-	got = whereGeography(whereLocation{Country: "US", Region: "Oregon", City: "Portland"})
+	got = whereGeography(whereLocation{Country: "US", Region: "Oregon", City: "Portland"}, textStyle{})
 	if got != "US  ·  Oregon  ·  Portland" {
 		t.Fatalf("geography = %q", got)
 	}

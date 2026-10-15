@@ -92,6 +92,7 @@ func TestLogHistoryBrowserResizeEmptyAndSafeOutput(t *testing.T) {
 }
 
 func TestLogHistoryBrowserCompactEnglishAndColor(t *testing.T) {
+	t.Setenv("NO_COLOR", "")
 	restore := currentLanguage()
 	defer setLanguage(restore)
 	setLanguage("en")
@@ -105,7 +106,7 @@ func TestLogHistoryBrowserCompactEnglishAndColor(t *testing.T) {
 	if len(strings.Split(view, "\n")) > 8 || strings.Contains(view, groups[0].Key) || strings.Contains(view, "0 unknown") || !strings.Contains(view, "Command") || !strings.Contains(view, "Last run") {
 		t.Fatalf("not compact: %q", view)
 	}
-	if !strings.Contains(view, "\x1b[38;5;81") || !strings.Contains(view, "\x1b[48;5;236m") || !strings.Contains(view, "\x1b[33m") {
+	if !strings.Contains(view, liveChipBase()) || !strings.Contains(view, historySGR(richMagenta, false)+liveSelectedBar) || !strings.Contains(view, historySGR(richYellow, false)) {
 		t.Fatal("selection and notice colors missing")
 	}
 	for _, line := range strings.Split(view, "\n") {
@@ -115,7 +116,7 @@ func TestLogHistoryBrowserCompactEnglishAndColor(t *testing.T) {
 	}
 	model = historyBrowserAfter(t, model, "enter")
 	view = model.View().Content
-	if !strings.Contains(view, "✓ PASS") || !strings.Contains(view, "\x1b[32m") || strings.Contains(view, "fixture.log") || strings.Contains(view, "key ") {
+	if !strings.Contains(view, "✓ PASS") || !strings.Contains(view, historySGR(richGreen, false)) || strings.Contains(view, "fixture.log") || strings.Contains(view, "key ") {
 		t.Fatalf("run overview cluttered or uncolored: %q", view)
 	}
 	if !strings.Contains(view, "1 passed") || !strings.Contains(view, "success avg") {
@@ -171,6 +172,7 @@ func TestLogHistoryRelativeDateAndColumnAlignment(t *testing.T) {
 }
 
 func TestLogHistoryBrowserFailureAndUnknownVisibility(t *testing.T) {
+	t.Setenv("NO_COLOR", "")
 	restore := currentLanguage()
 	defer setLanguage(restore)
 	setLanguage("en")
@@ -180,11 +182,11 @@ func TestLogHistoryBrowserFailureAndUnknownVisibility(t *testing.T) {
 	model := newLogHistoryBrowser(groups, logHistoryOptions{Limit: 20}, nil)
 	model.color = true
 	model.refreshList()
-	if !strings.Contains(model.View().Content, "\x1b[31;1m") {
+	if !strings.Contains(model.View().Content, historySGR(richRed, true)) {
 		t.Fatal("nonzero failure count is not emphasized")
 	}
 	model = historyBrowserAfter(t, model, "enter")
-	if !strings.Contains(model.View().Content, "✗ FAIL") || !strings.Contains(model.View().Content, "\x1b[31;1m") {
+	if !strings.Contains(model.View().Content, "✗ FAIL") || !strings.Contains(model.View().Content, historySGR(richRed, true)) {
 		t.Fatal("failure result is not visible in red")
 	}
 	groups[0].Rows[0].Outcome = "UNKNOWN"
@@ -193,7 +195,7 @@ func TestLogHistoryBrowserFailureAndUnknownVisibility(t *testing.T) {
 	model = newLogHistoryBrowser(groups, logHistoryOptions{Limit: 20}, nil)
 	model.color = true
 	model.refreshList()
-	if !strings.Contains(model.View().Content, "Unknown") || !strings.Contains(model.View().Content, "\x1b[33m") {
+	if !strings.Contains(model.View().Content, "Unknown") || !strings.Contains(model.View().Content, historySGR(richYellow, false)) {
 		t.Fatal("unknown records are not exposed")
 	}
 	model = historyBrowserAfter(t, model, "enter")

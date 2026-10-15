@@ -31,7 +31,7 @@ func TestParseObserveInterval(t *testing.T) {
 func TestWatchSampleIncludesStatusAndBodySize(t *testing.T) {
 	result := Result{Status: StatusPass, DurationMS: 12, Metrics: map[string]interface{}{"status_code": 204, "bytes_read": int64(1234), "peer_ip": "192.0.2.10", "dns_ms": int64(2), "resolved_host": "example.test", "resolved_addresses": []string{"192.0.2.10"}}}
 	sample := watchSampleOf(result)
-	line := formatWatchSample(sample)
+	line := formatWatchSample(sample, textStyle{})
 	if sample.HTTPStatus != 204 || sample.BodyBytes != 1234 || sample.DNSMS == nil || *sample.DNSMS != 2 || len(sample.DNSAddresses) != 1 || !strings.Contains(line, "HTTP 204") || !strings.Contains(line, "1234 bytes") || !strings.Contains(line, "DNS 2ms") {
 		t.Fatalf("sample = %#v, line = %q", sample, line)
 	}
@@ -141,7 +141,7 @@ func TestListenWatchJSONRedactsSocket(t *testing.T) {
 func TestListenWatchHighlightsOnlyTerminalChangeText(t *testing.T) {
 	event := listenWatchEvent{Type: "open", Time: time.Date(2026, time.September, 24, 0, 0, 0, 0, time.UTC), Socket: listenSocket{Proto: "tcp", Address: "192.0.2.10:8080", Process: "app", PID: "42"}}
 	highlighted := formatListenWatchEvent(event, true, true)
-	if !strings.HasPrefix(highlighted, liveReverse) || !strings.HasSuffix(highlighted, liveReset) || strings.Contains(highlighted, "192.0.2.10") || !strings.Contains(highlighted, "<ip:") {
+	if !strings.Contains(highlighted, richRGBCode(richChipBackground, true, richTruecolor())) || !strings.HasSuffix(highlighted, liveReset) || strings.Contains(highlighted, "192.0.2.10") || !strings.Contains(highlighted, "<ip:") {
 		t.Fatalf("highlighted event = %q", highlighted)
 	}
 	plain := formatListenWatchEvent(event, false, false)

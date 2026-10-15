@@ -335,14 +335,20 @@ func duPrint(stdout io.Writer, options commonOptions, result Result, color, grap
 		rows, _ := result.Metrics["rows"].([]duRow)
 		other, _ := result.Metrics["other"].(duOther)
 		counted, _ := result.Metrics["bytes"].(uint64)
-		fmt.Fprint(output, "\n"+formatDuRows(rows, other, width, graph, counted))
 		mounts, _ := result.Metrics["skipped_mounts"].([]duMount)
-		fmt.Fprint(output, formatDuMounts(mounts, options.verbose, width))
 		filesystem, _ := result.Metrics["filesystem"].(duFilesystem)
 		deleted, _ := result.Metrics["deleted_open"].(duDeletedOpen)
 		notFound, _ := result.Metrics["not_found_bytes"].(uint64)
-		fmt.Fprint(output, formatDuFilesystem(filesystem, deleted, counted, notFound, width))
-		fmt.Fprint(output, formatDuPartial(result, options.timeout, color))
+		if color {
+			fmt.Fprint(output, "\n"+richDuRows(rows, other, width, graph))
+			fmt.Fprint(output, richDuMounts(mounts, options.verbose, width))
+			fmt.Fprint(output, richDuFilesystem(filesystem, deleted, counted, notFound, width))
+		} else {
+			fmt.Fprint(output, "\n"+formatDuRows(rows, other, width))
+			fmt.Fprint(output, formatDuMounts(mounts, options.verbose, width))
+			fmt.Fprint(output, formatDuFilesystem(filesystem, deleted, counted, notFound, width))
+		}
+		fmt.Fprint(output, formatDuPartial(result, options.timeout, color, width))
 	}
 	if options.redact {
 		fmt.Fprint(stdout, redactIPAddresses(buffer.String()))
@@ -352,7 +358,7 @@ func duPrint(stdout io.Writer, options commonOptions, result Result, color, grap
 
 // formatDuPartial은 부분 결과임을 출력 끝에 다시 알린다. 맨 위의 경고는 긴 트리에 밀려 화면 밖으로 나가고,
 // 바로 위의 파일 시스템 사용량이 읽은 부분만 센 크기와 나란히 보여 빠진 파일이 있는 것처럼 읽힌다.
-func formatDuPartial(result Result, timeout time.Duration, color bool) string {
+func formatDuPartial(result Result, timeout time.Duration, color bool, width int) string {
 	if partial, _ := result.Metrics["partial"].(bool); !partial {
 		return ""
 	}
@@ -363,13 +369,59 @@ func formatDuPartial(result Result, timeout time.Duration, color bool) string {
 		line = T("du.partial.timeout", timeout, formatSizeShort(counted))
 	}
 	if color {
-		line = "\033[1;33m" + line + "\033[0m"
+		return richDuPartial(line, result.Next, width)
 	}
 	text := "\n" + line + "\n"
 	if result.Next != "" {
 		text += "  " + T("du.partial.next", result.Next) + "\n"
 	}
 	return text
+}
+
+// richDuPartial은 en, ko, ja가 모두 쓰는 "머리: 본문" 꼴에서 머리를 노란 배지로 바꾸고, 본문은 배지 뒤에 맞춰
+// 줄을 바꾼다. 다시 실행할 명령은 자르거나 접지 않는다. 복사한 글자가 그대로 실행되어야 한다. 안내와 함께 폭을 넘으면
+// 명령만 다음 줄에 둔다.
+func richDuPartial(line, next string, width int) string {
+	badge := ""
+	if head, body, ok := strings.Cut(line, ": "); ok {
+		badge, line = richBadge(head, richYellow)+" ", body
+	}
+	lead := liveWidth(badge)
+	if room := width - lead; width > 0 && room >= 20 {
+		line = strings.ReplaceAll(ansi.Wrap(line, room, ""), "\n", "\n"+strings.Repeat(" ", lead))
+	}
+	text := "\n" + badge + line + "\n"
+	if next != "" {
+		command := richPaint(next, richCyan, true)
+		hint := "  " + duPhrase(T("du.partial.next", "\x00"), richDim, command)
+		if width > 0 && liveWidth(hint) > width {
+			before, after, _ := strings.Cut(T("du.partial.next", "\x00"), "\x00")
+			hint = "  " + richDim(strings.TrimRight(before, " ")) + "\n  " + command + richDim(after)
+		}
+		text += hint + "\n"
+	}
+	return text
+}
+
+// duPhrase는 \x00, \x01 같은 표지를 넣어 만든 문장에서 표지 자리에 values의 칠한 값을 넣고 나머지 글자는 base로
+// 칠한다. 문장 전체를 칠하면 값 뒤의 reset이 나머지 글자의 색을 지운다. 표지의 순서는 언어마다 달라도 된다.
+func duPhrase(text string, base func(string) string, values ...string) string {
+	var builder strings.Builder
+	start := 0
+	for index, char := range text {
+		if int(char) >= len(values) {
+			continue
+		}
+		if index > start {
+			builder.WriteString(base(text[start:index]))
+		}
+		builder.WriteString(values[char])
+		start = index + 1
+	}
+	if start < len(text) {
+		builder.WriteString(base(text[start:]))
+	}
+	return builder.String()
 }
 
 // duSelect는 큰 항목부터 골라 펼친다. 디렉터리를 고르면 그 안의 항목이 후보에 오른다. 조상은 언제나 자손보다
@@ -442,20 +494,14 @@ func duFit(text string, width int) string {
 	return ansi.Truncate(text, width, "…")
 }
 
-func formatDuRows(rows []duRow, other duOther, width int, graph bool, total uint64) string {
+func formatDuRows(rows []duRow, other duOther, width int) string {
 	var builder strings.Builder
 	line := func(bytes uint64, label string) {
-		if graph {
-			label = duBar(bytes, total) + "  " + label
-		}
 		builder.WriteString(duFit(fmt.Sprintf("  %9s  %s", formatSizeShort(bytes), label), width))
 		builder.WriteString("\n")
 	}
 	for _, row := range rows {
-		name := row.Path[strings.LastIndex(row.Path, "/")+1:]
-		if row.Dir {
-			name += "/"
-		}
+		name := duRowName(row)
 		if row.Label != "" {
 			name += "  " + row.Label
 		}
@@ -467,19 +513,59 @@ func formatDuRows(rows []duRow, other duOther, width int, graph bool, total uint
 	return builder.String()
 }
 
+func duRowName(row duRow) string {
+	name := row.Path[strings.LastIndex(row.Path, "/")+1:]
+	if row.Dir {
+		name += "/"
+	}
+	return name
+}
+
+// richDuRows는 색을 쓰는 터미널의 트리다. 크기는 크기 색으로 칠하고 맨 위 단계는 굵게 한다. graph면 크기 옆에
+// 가장 큰 줄에 맞춘 막대를 둔다. 막대를 둘 줄이 하나뿐이면 늘 가득 차므로 뺀다.
+func richDuRows(rows []duRow, other duOther, width int, graph bool) string {
+	var largest uint64
+	bars := len(rows)
+	for _, row := range rows {
+		if row.Bytes > largest {
+			largest = row.Bytes
+		}
+	}
+	if other.Entries > 0 {
+		if other.Bytes > largest {
+			largest = other.Bytes
+		}
+		bars++
+	}
+	graph = graph && bars > 1
+	bar := func(bytes uint64, color string) string {
+		if !graph {
+			return ""
+		}
+		return richFill(richBar(float64(bytes), float64(largest), duBarWidth), color) + "  "
+	}
+	var builder strings.Builder
+	write := func(text string) { builder.WriteString(duFit(text, width) + "\n") }
+	for _, row := range rows {
+		color := richSizeColor(int64(row.Bytes))
+		text := "  " + richPaint(fmt.Sprintf("%9s", formatSizeShort(row.Bytes)), color, row.Depth == 0) + "  " +
+			bar(row.Bytes, color) + strings.Repeat("  ", row.Depth) + duRowName(row)
+		if row.Label != "" {
+			text += "  " + richDim(row.Label)
+		}
+		write(text)
+	}
+	if other.Entries > 0 {
+		write("  " + richDim(fmt.Sprintf("%9s", formatSizeShort(other.Bytes))) + "  " + bar(other.Bytes, richGray) + richDim(T("du.other", other.Entries)))
+	}
+	return builder.String()
+}
+
 func formatDuMounts(mounts []duMount, verbose bool, width int) string {
 	if len(mounts) == 0 {
 		return ""
 	}
-	shown := mounts
-	if !verbose && len(shown) > duMountRows {
-		shown = shown[:duMountRows]
-	}
-	pathWidth, typeWidth := 0, 0
-	for _, mount := range shown {
-		pathWidth = max(pathWidth, liveWidth(mount.Path))
-		typeWidth = max(typeWidth, liveWidth(mount.FSType))
-	}
+	shown, pathWidth, typeWidth := duShownMounts(mounts, verbose)
 	var builder strings.Builder
 	builder.WriteString("\n" + T("du.mounts.title") + "\n")
 	for _, mount := range shown {
@@ -496,6 +582,47 @@ func formatDuMounts(mounts []duMount, verbose bool, width int) string {
 	if hidden := len(mounts) - len(shown); hidden > 0 {
 		builder.WriteString("  " + T("du.mounts.more", hidden) + "\n")
 	}
+	return builder.String()
+}
+
+func duShownMounts(mounts []duMount, verbose bool) (shown []duMount, pathWidth, typeWidth int) {
+	shown = mounts
+	if !verbose && len(shown) > duMountRows {
+		shown = shown[:duMountRows]
+	}
+	for _, mount := range shown {
+		pathWidth = max(pathWidth, liveWidth(mount.Path))
+		typeWidth = max(typeWidth, liveWidth(mount.FSType))
+	}
+	return shown, pathWidth, typeWidth
+}
+
+// richDuMounts는 건너뛴 마운트를 회색 패널로 그린다. 경로는 기본 색, 파일 시스템 종류와 이름표는 회색이다.
+func richDuMounts(mounts []duMount, verbose bool, width int) string {
+	if len(mounts) == 0 {
+		return ""
+	}
+	shown, pathWidth, typeWidth := duShownMounts(mounts, verbose)
+	var builder strings.Builder
+	write := func(text string) { builder.WriteString(duFit(text, width) + "\n") }
+	builder.WriteString("\n")
+	write(richPanelTop(T("du.mounts.title"), "", ""))
+	for _, mount := range shown {
+		used := richDim("-")
+		if !mount.Shared {
+			used = duPhrase(T("du.mounts.used", "\x00"), richDim, richPaint(formatSizeShort(mount.UsedBytes), richSizeColor(int64(mount.UsedBytes)), false))
+		}
+		text := liveCell(mount.Path, pathWidth+2) + richDim(liveCell(mount.FSType, typeWidth+2)) + used
+		if mount.Label != "" {
+			text += "  " + richDim(mount.Label)
+		}
+		write(richPanelLine(text, ""))
+	}
+	if hidden := len(mounts) - len(shown); hidden > 0 {
+		more := strings.Replace(T("du.mounts.more", hidden), "-v", "\x00", 1)
+		write(richPanelLine(duPhrase(more, richDim, richPaint("-v", richCyan, true)), ""))
+	}
+	write(richPanelBottom(""))
 	return builder.String()
 }
 
@@ -516,36 +643,81 @@ func formatDuFilesystem(filesystem duFilesystem, deleted duDeletedOpen, counted,
 	var builder strings.Builder
 	title := T("du.fs.title", duMountLabel(filesystem), filesystem.FSType, formatSizeShort(filesystem.UsedBytes), formatSizeShort(filesystem.SizeBytes))
 	builder.WriteString("\n" + duFit(title, width) + "\n")
-	var labels, values []string
-	if filesystem.Whole {
-		labels, values = append(labels, T("du.fs.counted")), append(values, formatSizeShort(counted))
-	}
-	// 하나도 찾지 못했어도 하한이면 줄을 남긴다. 줄이 없으면 지워진 파일이 없다고 읽힌다.
-	if filesystem.Whole || deleted.Files > 0 || deleted.Partial {
-		value := formatSizeShort(deleted.Bytes)
-		if deleted.Partial {
-			value = "≥" + value
+	rows, labelWidth := duFilesystemRows(filesystem, deleted, counted, notFound)
+	for _, row := range rows {
+		value := row.size
+		if row.files != "" {
+			value += " " + row.files
 		}
-		if deleted.Files > 0 {
-			value += " " + T("du.fs.files", deleted.Files)
+		if row.hint != "" {
+			value += "  " + row.hint
 		}
-		if deleted.Partial {
-			value += "  " + T("du.fs.partial_hint")
-		}
-		labels, values = append(labels, T("du.fs.deleted")), append(values, value)
-	}
-	if filesystem.Whole {
-		labels, values = append(labels, T("du.fs.not_found")), append(values, formatSizeShort(notFound)+"  "+T("du.fs.not_found_hint"))
-	}
-	labelWidth := 0
-	for _, label := range labels {
-		labelWidth = max(labelWidth, liveWidth(label))
-	}
-	for index, label := range labels {
-		builder.WriteString(duFit("  "+liveCell(label, labelWidth+2)+values[index], width) + "\n")
+		builder.WriteString(duFit("  "+liveCell(row.label, labelWidth+2)+value, width) + "\n")
 	}
 	for _, file := range deleted.Top {
 		builder.WriteString(duFit(fmt.Sprintf("    %9s  pid %d %s  %s", formatSizeShort(file.Bytes), file.PID, file.Comm, file.Path), width) + "\n")
+	}
+	return builder.String()
+}
+
+// duFilesystemRow는 파일 시스템 아래의 한 줄이다. 값은 크기, 파일 수, 안내 순서로 붙인다.
+type duFilesystemRow struct {
+	label, size, files, hint string
+	bytes                    uint64
+}
+
+func duFilesystemRows(filesystem duFilesystem, deleted duDeletedOpen, counted, notFound uint64) ([]duFilesystemRow, int) {
+	var rows []duFilesystemRow
+	if filesystem.Whole {
+		rows = append(rows, duFilesystemRow{label: T("du.fs.counted"), size: formatSizeShort(counted), bytes: counted})
+	}
+	// 하나도 찾지 못했어도 하한이면 줄을 남긴다. 줄이 없으면 지워진 파일이 없다고 읽힌다.
+	if filesystem.Whole || deleted.Files > 0 || deleted.Partial {
+		row := duFilesystemRow{label: T("du.fs.deleted"), size: formatSizeShort(deleted.Bytes), bytes: deleted.Bytes}
+		if deleted.Partial {
+			row.size = "≥" + row.size
+			row.hint = T("du.fs.partial_hint")
+		}
+		if deleted.Files > 0 {
+			row.files = T("du.fs.files", deleted.Files)
+		}
+		rows = append(rows, row)
+	}
+	if filesystem.Whole {
+		rows = append(rows, duFilesystemRow{label: T("du.fs.not_found"), size: formatSizeShort(notFound), bytes: notFound, hint: T("du.fs.not_found_hint")})
+	}
+	labelWidth := 0
+	for _, row := range rows {
+		labelWidth = max(labelWidth, liveWidth(row.label))
+	}
+	return rows, labelWidth
+}
+
+// richDuFilesystem은 clean의 파일 시스템 줄처럼 chip 이름표 뒤에 마운트와 사용량을 둔다. 아래 줄의 이름표와 안내는
+// 회색이고 크기는 크기 색이다.
+func richDuFilesystem(filesystem duFilesystem, deleted duDeletedOpen, counted, notFound uint64, width int) string {
+	if filesystem.Mount == "" {
+		return ""
+	}
+	var builder strings.Builder
+	write := func(text string) { builder.WriteString(duFit(text, width) + "\n") }
+	usage := duPhrase(T("du.fs.usage", "\x00", "\x01"), richDim, richBold(formatSizeShort(filesystem.UsedBytes)), formatSizeShort(filesystem.SizeBytes))
+	builder.WriteString("\n")
+	write(richChip(T("du.fs.label")) + " " + richBold(duMountLabel(filesystem)) + "  " + richDim(filesystem.FSType) + "  " + usage)
+	rows, labelWidth := duFilesystemRows(filesystem, deleted, counted, notFound)
+	for _, row := range rows {
+		text := "  " + richDim(liveCell(row.label, labelWidth+2)) + richPaint(row.size, richSizeColor(int64(row.bytes)), false)
+		if row.files != "" {
+			text += " " + richDim(row.files)
+		}
+		if row.hint != "" {
+			text += "  " + richDim(row.hint)
+		}
+		write(text)
+	}
+	for _, file := range deleted.Top {
+		write("    " + richPaint(fmt.Sprintf("%9s", formatSizeShort(file.Bytes)), richSizeColor(int64(file.Bytes)), false) +
+			fmt.Sprintf("  pid %d %s  ", file.PID, file.Comm) + richDim(file.Path))
 	}
 	return builder.String()
 }

@@ -56,6 +56,8 @@ type fsWatchOptions struct {
 	outputPath string
 	outputInfo os.FileInfo
 	status     *fsWatchStatus
+	// color는 기록 줄에 색을 쓰는지다. 상태줄과 같이 사람이 보는 터미널에서만 켠다.
+	color bool
 }
 
 type fsWatchExcludes []string

@@ -8,6 +8,8 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 )
 
 func duBrowserOn(scan duScan, width, height int) duBrowser {
@@ -146,6 +148,54 @@ func TestDuBrowserScrollsAndFitsTheScreen(t *testing.T) {
 	scan.filesystem = duFilesystem{Mount: "/usr", FSType: "xfs", Source: "/dev/sda3", Root: "/usr", SizeBytes: 1 << 30}
 	if footer := duBrowserOn(scan, 120, 10).footer(); !strings.HasPrefix(footer, "file system /usr (/dev/sda3[/usr]) xfs") {
 		t.Fatalf("footer %q", footer)
+	}
+}
+
+// 색 화면은 평문 화면과 같은 글자를 쓴다. 고른 줄은 chip 바탕의 굵은 평문이고, 나머지 줄은 크기 색과 차분한 막대를 쓴다.
+func TestDuBrowserColorsRowsAndMarksTheSelectedRowWithAChip(t *testing.T) {
+	t.Setenv("COLORTERM", "truecolor")
+	scan := duScan{root: duBrowserTree(), filesystem: duFilesystem{Mount: "/", FSType: "xfs", SizeBytes: 1 << 30, UsedBytes: 1 << 20}, partial: true}
+	plain := duBrowserOn(scan, 80, 12)
+	model := plain
+	model.color = true
+	lines := strings.Split(model.View().Content, "\n")
+	plainLines := strings.Split(plain.View().Content, "\n")
+	if len(lines) != len(plainLines) {
+		t.Fatalf("%d lines, plain %d", len(lines), len(plainLines))
+	}
+	// 고른 줄은 칸마다 칠하지 않고 한 번에 chip으로 감싼다. 칸 사이의 reset이 바탕을 끊지 않는다.
+	selected := ansi.Strip(lines[2])
+	if !strings.Contains(lines[2], richRGBCode(richChipBackground, true, true)) || strings.Count(lines[2], "\x1b[") != 2 ||
+		liveWidth(selected) != liveWidth(plainLines[2]) || !strings.Contains(selected, richBar(94, 94, duBarWidth)+"  68%  lib/") {
+		t.Fatalf("selected row %q, plain %q", lines[2], plainLines[2])
+	}
+	magenta := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(richHex(richMagenta))).Render("edc du")
+	if !strings.HasPrefix(lines[0], magenta) {
+		t.Fatalf("title %q", lines[0])
+	}
+	// 막대는 합계(138)가 아니라 가장 큰 lib(94)에 맞춘다. 평문의 ░ 자리는 비운다.
+	log := ansi.Strip(lines[3])
+	if !strings.Contains(log, richBar(30, 94, duBarWidth)+"  21%  log/") || strings.Contains(log, "░") {
+		t.Fatalf("log row %q", log)
+	}
+	yellow := lipgloss.NewStyle().Foreground(lipgloss.Color(richHex(richYellow))).Render("partial")
+	if !strings.Contains(lines[len(lines)-1], yellow) {
+		t.Fatalf("footer %q", lines[len(lines)-1])
+	}
+	for _, line := range lines {
+		if liveWidth(line) > 80 || strings.Contains(line, liveReverse) || strings.Contains(line, liveDim) {
+			t.Errorf("line %q", line)
+		}
+	}
+	// 항목이 하나뿐인 디렉터리는 막대가 늘 가득 차므로 뺀다.
+	nested := duBrowserPress(t, model, "enter", "down", "enter")
+	if row := ansi.Strip(strings.Split(nested.View().Content, "\n")[2]); strings.Contains(row, "█") {
+		t.Fatalf("single row keeps a bar: %q", row)
+	}
+	// 256색 터미널에서도 chip 바탕은 rich256의 회색이다. Bubble Tea가 줄이면 남색(17)이 된다.
+	t.Setenv("COLORTERM", "")
+	if line := strings.Split(model.View().Content, "\n")[2]; !strings.Contains(line, richRGBCode(richChipBackground, true, false)) {
+		t.Fatalf("256 color selected row %q", line)
 	}
 }
 

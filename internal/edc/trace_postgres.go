@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"io"
 	"maps"
 	"os"
 	"slices"
@@ -1618,49 +1619,52 @@ func (report postgresTraceReport) print(bool) {
 	if report.Side == traceServerSide {
 		title = "PostgreSQL server trace"
 	}
-	fmt.Fprintf(os.Stdout, "%s: %s\n\n", title, (time.Duration(report.DurationMS) * time.Millisecond).String())
+	out := os.Stdout
+	style := newTraceSummaryStyle(out)
+	style.line(out, style.title(title, (time.Duration(report.DurationMS)*time.Millisecond).String()))
+	io.WriteString(out, "\n")
 	mixed := report.Client != nil && report.Server != nil
 	if mixed {
 		for _, side := range []struct {
 			heading string
 			counts  *tracePostgresCounts
 		}{{"Client side (requests that this host sent):", report.Client}, {"Server side (requests that local servers received):", report.Server}} {
-			fmt.Fprintln(os.Stdout, side.heading)
-			printPostgresCounts("  ", *side.counts)
-			fmt.Fprintln(os.Stdout)
+			style.line(out, style.subheading(side.heading))
+			printPostgresCounts(style, "  ", *side.counts)
+			io.WriteString(out, "\n")
 		}
 	} else {
-		printPostgresCounts("", report.tracePostgresCounts)
+		printPostgresCounts(style, "", report.tracePostgresCounts)
 	}
-	fmt.Fprintf(os.Stdout, "Lost events: %d\n", report.LostEvents)
+	style.fields(out, "", "Lost events", fmt.Sprint(report.LostEvents))
 	if len(report.Statements) == 0 {
 		return
 	}
-	sideColumn := func(value string) string {
+	sideColumn := func(value string) []string {
 		if !mixed {
-			return ""
+			return nil
 		}
-		return value + "\t"
+		return []string{value}
 	}
-	fmt.Fprintln(os.Stdout, "\n"+sideColumn("SIDE")+"COMMAND\tSQL\tCOUNT\tERRORS\tUNANSWERED\tAVG\tMAX\tPROCESS")
+	table := traceTable{titles: append(sideColumn("SIDE"), "COMMAND", "SQL", "COUNT", "ERRORS", "UNANSWERED", "AVG", "MAX", "PROCESS")}
 	for _, row := range report.Statements {
-		fmt.Fprintf(os.Stdout, "%s%s\t%s\t%d\t%d\t%d\t%s\t%s\t%s\n", sideColumn(emptyAs(row.Side, "-")), row.Command, row.Shape, row.Commands, row.Errors, row.Unanswered, traceLatency(row.LatencyAvgMS, "ms"), traceLatency(row.LatencyMaxMS, "ms"), emptyAs(strings.Join(row.Processes, ","), "-"))
+		table.add(append(sideColumn(emptyAs(row.Side, "-")), row.Command, row.Shape, fmt.Sprint(row.Commands), fmt.Sprint(row.Errors), fmt.Sprint(row.Unanswered), traceLatency(row.LatencyAvgMS, "ms"), traceLatency(row.LatencyMaxMS, "ms"), emptyAs(strings.Join(row.Processes, ","), "-"))...)
 	}
+	io.WriteString(out, "\n")
+	style.writeTable(out, table)
 }
 
-func printPostgresCounts(indent string, counts tracePostgresCounts) {
-	for _, line := range []string{
-		fmt.Sprintf("Commands: %d", counts.Commands),
-		fmt.Sprintf("Responses: %d", counts.Responses),
-		fmt.Sprintf("Errors: %d", counts.Errors),
-		fmt.Sprintf("Unanswered: %d", counts.Unanswered),
-		"Latency avg: " + traceLatency(counts.LatencyAvgMS, "ms"),
-		"Latency max: " + traceLatency(counts.LatencyMaxMS, "ms"),
-		fmt.Sprintf("Connections: %d", counts.Connections),
-		fmt.Sprintf("TLS connections: %d", counts.TLSConnections),
-	} {
-		fmt.Fprintln(os.Stdout, indent+line)
-	}
+func printPostgresCounts(style traceSummaryStyle, indent string, counts tracePostgresCounts) {
+	style.fields(os.Stdout, indent,
+		"Commands", fmt.Sprint(counts.Commands),
+		"Responses", fmt.Sprint(counts.Responses),
+		"Errors", fmt.Sprint(counts.Errors),
+		"Unanswered", fmt.Sprint(counts.Unanswered),
+		"Latency avg", traceLatency(counts.LatencyAvgMS, "ms"),
+		"Latency max", traceLatency(counts.LatencyMaxMS, "ms"),
+		"Connections", fmt.Sprint(counts.Connections),
+		"TLS connections", fmt.Sprint(counts.TLSConnections),
+	)
 }
 
 func tracePostgresDetailLines(event captureEvent) []string {

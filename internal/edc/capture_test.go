@@ -14,6 +14,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 )
 
 func TestCaptureSupportedOS(t *testing.T) {
@@ -793,7 +794,7 @@ func TestTraceScreenGroupKeys(t *testing.T) {
 		}
 	}
 	model := newTraceScreenModel("udp", tcpTraceOptions{groupBy: traceGroupBySource}, make(chan captureEvent), make(chan traceFinishedMsg), nil)
-	if header := strings.Join(traceScreenHeader(model), "\n"); !strings.Contains(header, "SOURCE") || !strings.Contains(header, "grouped by source") {
+	if header := ansi.Strip(strings.Join(traceScreenHeader(model), "\n")); !strings.Contains(header, "SOURCE") || !strings.Contains(header, "grouped by source") {
 		t.Fatalf("source header = %q", header)
 	}
 }

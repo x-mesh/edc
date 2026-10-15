@@ -29,6 +29,7 @@ type execTraceEventMsg struct{ events []execEvent }
 
 func newExecTraceScreenModel(stop func()) execTraceScreenModel {
 	input := textinput.New()
+	input.SetStyles(traceInputStyles())
 	input.Prompt = "filter / "
 	input.Placeholder = "process, args, signal, or event"
 	input.SetWidth(48)
@@ -142,20 +143,33 @@ func (m execTraceScreenModel) matching() []execEvent {
 	return result
 }
 
+// execEventSeverity는 exec event가 알리는 문제의 색이다. OOM은 빨강, signal과 0이 아닌 종료는 노랑이다.
+func execEventSeverity(event execEvent) string {
+	switch {
+	case event.Event == execEventOOM || event.OOMKilled:
+		return richRed
+	case event.Event == execEventSignal, event.Event == execEventExit && (event.Signal != "" || (event.ExitCode != nil && *event.ExitCode != 0)):
+		return richYellow
+	}
+	return ""
+}
+
 func execScreenTime(event execEvent) string {
 	return time.Unix(0, int64(event.TimestampNS)).Format("15:04:05.000")
 }
 
 func (m execTraceScreenModel) View() tea.View {
-	status := "live"
-	if m.stopping {
-		status = "stopping"
+	color := traceScreenColor()
+	// 평문 화면은 예전처럼 자르지 않는다. 색을 쓰면 칠한 줄이 화면 폭을 넘지 않게 자른다.
+	width := 0
+	if color {
+		width = m.width
 	}
-	lines := []string{fmt.Sprintf("edc trace exec  ·  %s  ·  events %d  ·  filter %s", status, len(m.events), emptyAs(m.filter, "all"))}
+	lines := []string{traceTexts(traceStatusSpans("edc trace exec", m.stopping, len(m.events), m.filter), width, color)}
 	if m.filtering {
-		lines = append(lines, m.input.View()+"  enter apply  esc cancel")
+		lines = append(lines, traceFilterHints(m.input.View(), width, color))
 	} else {
-		lines = append(lines, "/ filter  tab view  p process  a parent  e event  c cgroup  g scroll  ↑↓ select  enter detail  q quit  ctrl-c stop")
+		lines = append(lines, traceKeyHints("/ filter  tab view  p process  a parent  e event  c cgroup  g scroll  ↑↓ select  enter detail  q quit  ctrl-c stop", width, color))
 	}
 	if matching := m.matching(); m.detail && m.selected >= 0 && m.selected < len(matching) {
 		event := matching[m.selected]
@@ -172,25 +186,34 @@ func (m execTraceScreenModel) View() tea.View {
 			aggregator.add(event)
 		}
 		report := aggregator.report(time.Second, execSummary{})
-		lines = append(lines, fmt.Sprintf("%-24s %6s %6s %8s %8s %6s %4s %10s", strings.ToUpper(m.groupBy), "EXEC", "EXIT", "NONZERO", "SIGNALED", "SHORT", "OOM", "AVG LIFE"))
+		lines = append(lines, traceColumnTitles(fmt.Sprintf("%-24s %6s %6s %8s %8s %6s %4s %10s", strings.ToUpper(m.groupBy), "EXEC", "EXIT", "NONZERO", "SIGNALED", "SHORT", "OOM", "AVG LIFE"), width, color))
 		for _, row := range report.Rows {
 			lines = append(lines, fmt.Sprintf("%-24s %6d %6d %8d %8d %6d %4d %10s", row.Group, row.Execs, row.Exits, row.NonZeroExits, row.Signaled, row.ShortLived, row.OOMKilled, execOptionalLifetime(row.AvgLifetimeMS)))
 		}
 		if len(report.Signals) > 0 {
-			lines = append(lines, "", fmt.Sprintf("%-10s %-20s %-20s %-18s %6s", "SIGNAL", "SENDER", "TARGET", "RESULT", "COUNT"))
+			lines = append(lines, "", traceColumnTitles(fmt.Sprintf("%-10s %-20s %-20s %-18s %6s", "SIGNAL", "SENDER", "TARGET", "RESULT", "COUNT"), width, color))
 			sort.SliceStable(report.Signals, func(i, j int) bool { return report.Signals[i].Count > report.Signals[j].Count })
 			for _, row := range report.Signals {
 				lines = append(lines, fmt.Sprintf("%-10s %-20s %-20s %-18s %6d", row.Signal, row.Sender, row.Target, row.Result, row.Count))
 			}
 		}
 	} else {
-		lines = append(lines, "TIME          EVENT   PID      PROCESS           DETAIL")
+		lines = append(lines, traceColumnTitles("TIME          EVENT   PID      PROCESS           DETAIL", width, color))
 		for index, event := range m.matching() {
 			prefix := " "
 			if m.selected == index {
 				prefix = liveSelectedBar
 			}
-			lines = append(lines, fmt.Sprintf("%s%s  %-6s  %-7d  %-16s  %s", prefix, execScreenTime(event), event.Event, event.PID, event.Process, execEventDetail(event)))
+			line := fmt.Sprintf("%s%s  %-6s  %-7d  %-16s  %s", prefix, execScreenTime(event), event.Event, event.PID, event.Process, execEventDetail(event))
+			switch {
+			case !color:
+			case m.selected == index:
+				line = traceSelectedEvent(traceFit(line, width), width, true)
+			default:
+				line = traceTexts([]traceText{{text: prefix}, traceLabelSpan(execScreenTime(event)), {text: "  "}, {text: fmt.Sprintf("%-6s", event.Event), color: execEventSeverity(event)},
+					{text: fmt.Sprintf("  %-7d  %-16s  %s", event.PID, event.Process, execEventDetail(event))}}, width, true)
+			}
+			lines = append(lines, line)
 		}
 	}
 	view := liveFrame(strings.Join(lines, "\n")+"\n", m.height)

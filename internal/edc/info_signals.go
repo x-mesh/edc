@@ -366,9 +366,14 @@ func infoDNSLine(dns infoDNS) string {
 }
 
 func infoPressureLine(signals infoSignals, color bool) string {
+	style := textStyle{color: color}
 	var parts []string
 	if len(signals.Pressure) == 3 {
-		parts = append(parts, fmt.Sprintf("Pressure (some avg10): CPU %.2f%% · Memory %.2f%% · I/O %.2f%%", signals.Pressure[0], signals.Pressure[1], signals.Pressure[2]))
+		psi := newTopLimits(1, false).psi
+		value := func(label string, percent float64) string {
+			return label + " " + style.level(fmt.Sprintf("%.2f%%", percent), psi.level(percent))
+		}
+		parts = append(parts, style.kv("Pressure (some avg10)", style.join(" · ", value("CPU", signals.Pressure[0]), value("Memory", signals.Pressure[1]), value("I/O", signals.Pressure[2]))))
 	}
 	if signals.OOMKills != nil {
 		// 누적 횟수라 한 번이라도 있으면 원인을 볼 일이다. 0과 같은 모양이면 줄 끝에 묻혀 놓친다.
@@ -376,9 +381,9 @@ func infoPressureLine(signals infoSignals, color bool) string {
 		if *signals.OOMKills > 0 {
 			level = topLevelWarn
 		}
-		parts = append(parts, topPaint(fmt.Sprintf("OOM kills since boot: %d", *signals.OOMKills), level, color))
+		parts = append(parts, style.kv("OOM kills since boot", style.level(fmt.Sprint(*signals.OOMKills), level)))
 	}
-	return strings.Join(parts, " · ")
+	return style.join(" · ", parts...)
 }
 
 // diskSignalSuffix는 디스크 줄 끝에 붙일 경고다. 정상이면 빈 문자열이다.

@@ -778,7 +778,7 @@ func TestTerminalJSONKeepsShellOperators(t *testing.T) {
 func TestFSWatchTerminalLines(t *testing.T) {
 	var buffer bytes.Buffer
 	start := fsWatchRecord{Type: "action_start", Time: time.Now(), Rule: "command", Path: "text.txt", Command: []string{"/bin/sh", "-c", "echo ok > out.txt"}}
-	if err := writeFSWatchRecord(&buffer, start, false); err != nil {
+	if err := writeFSWatchRecord(&buffer, start, false, textStyle{}); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(buffer.String(), "echo ok > out.txt") {
@@ -786,7 +786,7 @@ func TestFSWatchTerminalLines(t *testing.T) {
 	}
 	for reason, key := range map[string]string{"duration": "watchfs.stop.duration", "cancelled": "watchfs.stop.cancelled", "watch_error": "watchfs.stop.watch_error"} {
 		buffer.Reset()
-		if err := writeFSWatchRecord(&buffer, fsWatchRecord{Type: "summary", Time: time.Now(), StopReason: reason}, false); err != nil {
+		if err := writeFSWatchRecord(&buffer, fsWatchRecord{Type: "summary", Time: time.Now(), StopReason: reason}, false, textStyle{}); err != nil {
 			t.Fatal(err)
 		}
 		if !strings.HasSuffix(strings.TrimSpace(buffer.String()), T(key)) {
@@ -794,7 +794,7 @@ func TestFSWatchTerminalLines(t *testing.T) {
 		}
 	}
 	buffer.Reset()
-	if err := writeFSWatchRecord(&buffer, fsWatchRecord{Type: "summary", Time: time.Now(), StopReason: "duration"}, true); err != nil {
+	if err := writeFSWatchRecord(&buffer, fsWatchRecord{Type: "summary", Time: time.Now(), StopReason: "duration"}, true, textStyle{}); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(buffer.String(), `"stop_reason":"duration"`) {

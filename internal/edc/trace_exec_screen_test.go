@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 )
 
 func pressExecScreenKeys(model execTraceScreenModel, keys ...tea.KeyPressMsg) (execTraceScreenModel, tea.Cmd) {
@@ -97,5 +98,36 @@ func TestExecTraceScreenQuitStopsTheCapture(t *testing.T) {
 	}
 	if content := model.View().Content; !strings.Contains(content, "stopping") {
 		t.Fatalf("view after q:\n%s", content)
+	}
+}
+
+func TestExecTraceScreenColorKeepsThePlainTextAndWidth(t *testing.T) {
+	code := int32(1)
+	model := newExecTraceScreenModel(nil)
+	model.width = 60
+	next, _ := model.Update(execTraceEventMsg{events: []execEvent{
+		{Event: execEventExec, PID: 10, Process: "make", Parent: "bash", Args: "make all --jobs=8 --keep-going --output-sync=target"},
+		{Event: execEventExit, PID: 11, Process: "cc", ExitCode: &code},
+		{Event: execEventOOM, PID: 12, Process: "java"},
+	}})
+	model = next.(execTraceScreenModel)
+	model.selected = 0
+	t.Setenv("NO_COLOR", "1")
+	plain := strings.Split(model.View().Content, "\n")
+	t.Setenv("NO_COLOR", "")
+	colored := strings.Split(model.View().Content, "\n")
+	for index := range plain {
+		if want := traceFit(plain[index], model.width); strings.TrimRight(ansi.Strip(colored[index]), " ") != strings.TrimRight(want, " ") {
+			t.Fatalf("line %d:\nplain   %q\ncolored %q", index, want, ansi.Strip(colored[index]))
+		}
+		if liveWidth(colored[index]) > model.width {
+			t.Fatalf("line %d is %d columns: %q", index, liveWidth(colored[index]), colored[index])
+		}
+	}
+	if !strings.HasPrefix(colored[0], tracePaint("edc trace exec", richMagenta, true)) || !strings.Contains(colored[3], traceTestSGR(richChipBackground, true)) {
+		t.Fatalf("title or selected row:\n%q\n%q", colored[0], colored[3])
+	}
+	if !strings.Contains(colored[4], tracePaint("exit  ", richYellow, false)) || !strings.Contains(colored[5], tracePaint("oom   ", richRed, false)) {
+		t.Fatalf("exit and oom rows:\n%q\n%q", colored[4], colored[5])
 	}
 }

@@ -114,6 +114,11 @@ clean:
   group_folders: "フォルダ %d 個"
   group_more: "ほか %d 個、-v でさらに表示"
   group_more_json: "ほか %d 個、--json ですべて表示"
+  group_more_short: "ほか %d 個"
+  priority:
+    P1: "ツールのキャッシュ"
+    P2: "ブラウザ、Xcode データ、アプリのキャッシュ、ログ"
+    P3: "モデルとツールチェーン"
   unreadable: "読めないディレクトリ %d 個は数えていません"
   regen: "再作成のコスト: %s"
   cleanup: "整理するには %s を実行 (edc は実行しません)"
@@ -121,8 +126,13 @@ clean:
     title: "ファイルシステム %s (%s)  使用量の合計 %s、空き %s"
     not_reclaim: "合計は使用量です。整理しても同じだけ空くとは限りません。"
     apfs: "APFS の clone と snapshot により、合計が整理で空く量より大きくなることがあります。"
+    label: "ファイルシステム"
+    usage: "使用量の合計"
+    free: "空き"
   docker:
     title: "Docker エンジン%s  エンジンの集計、合計に含めません"
+    panel: "Docker エンジン"
+    note: "エンジンの集計、合計に含めません"
     state: "Docker エンジン: %s"
     api: "API %s"
     endpoint: "エンドポイント: %s"
@@ -136,12 +146,16 @@ clean:
     items: "%d 個、使用中 %d 個"
   vm:
     title: "VM ディスク (ユーザーデータ、合計に含めません)"
+    panel: "VM ディスク"
+    note: "ユーザーデータ、合計に含めません"
     inside: "上の Docker エンジンのデータはこのディスクの中にあります。"
     fold_absent: "VM ディスクなし: %s"
     disk:
       orbstack: "OrbStack"
   worktree:
     title: "%s 以下の worktree  合計に含めません"
+    panel: "worktree"
+    note: "合計に含めません"
     state: "worktree: %s"
     fold_absent: "worktree フォルダなし: %s"
     none: "worktree なし"
@@ -164,6 +178,8 @@ clean:
       merged_clean: "マージ済み、変更なし"
   project:
     title: "プロジェクトのビルドフォルダ  再作成できるものだけをファイルシステムの合計に含めます"
+    panel: "プロジェクトのビルドフォルダ"
+    note: "再作成できるものだけをファイルシステムの合計に含めます"
     state: "プロジェクトのビルドフォルダ: %s"
     fold_none: "プロジェクトのビルドフォルダ: 探していません、--project DIR で指定します"
     root: "%s  フォルダ %d 個を探索、目印ファイルのない同名フォルダ %d 個は測りません"

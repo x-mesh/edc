@@ -5,6 +5,7 @@ package edc
 import (
 	"encoding/binary"
 	"fmt"
+	"io"
 	"os"
 	"sort"
 	"strings"
@@ -363,13 +364,18 @@ func (summarizer *socketTraceSummarizer) summarize(summary captureSummary, durat
 
 // -d는 연결마다 한 행을 쓰는 option이다. socket 요약은 이미 process와 상대마다 한 행이라 같은 표를 쓴다.
 func (report socketTraceReport) print(bool) {
-	fmt.Fprintf(os.Stdout, "SOCKET trace: %s\n\n", (time.Duration(report.DurationMS) * time.Millisecond).String())
-	fmt.Fprintf(os.Stdout, "Path: %s\nEvents: %d\nSent: %s\nReceived: %s\nFailures: %d\nLost events: %d\n", emptyAs(report.Path, "-"), report.Events, traceBytes(report.TXBytes), traceBytes(report.RXBytes), report.Failures, report.LostEvents)
+	out := os.Stdout
+	style := newTraceSummaryStyle(out)
+	style.line(out, style.title("SOCKET trace", (time.Duration(report.DurationMS)*time.Millisecond).String()))
+	io.WriteString(out, "\n")
+	style.fields(out, "", "Path", emptyAs(report.Path, "-"), "Events", fmt.Sprint(report.Events), "Sent", traceBytes(report.TXBytes), "Received", traceBytes(report.RXBytes), "Failures", fmt.Sprint(report.Failures), "Lost events", fmt.Sprint(report.LostEvents))
 	if len(report.Rows) == 0 {
 		return
 	}
-	fmt.Fprintln(os.Stdout, "\nPROCESS\tPEER\tSIDE\tEVENTS\tCONNECT\tACCEPT\tSEND\tSENT\tRECV\tRECEIVED\tFAIL\tCLOSE")
+	table := traceTable{titles: []string{"PROCESS", "PEER", "SIDE", "EVENTS", "CONNECT", "ACCEPT", "SEND", "SENT", "RECV", "RECEIVED", "FAIL", "CLOSE"}}
 	for _, row := range report.Rows {
-		fmt.Fprintf(os.Stdout, "%s\t%s\t%s\t%d\t%d\t%d\t%d\t%s\t%d\t%s\t%d\t%d\n", emptyAs(row.Process, "-"), emptyAs(row.Peer, "-"), row.Side, row.Events, row.Connects, row.Accepts, row.Sends, traceBytes(row.TXBytes), row.Recvs, traceBytes(row.RXBytes), row.Failures, row.Closes)
+		table.add(emptyAs(row.Process, "-"), emptyAs(row.Peer, "-"), row.Side, fmt.Sprint(row.Events), fmt.Sprint(row.Connects), fmt.Sprint(row.Accepts), fmt.Sprint(row.Sends), traceBytes(row.TXBytes), fmt.Sprint(row.Recvs), traceBytes(row.RXBytes), fmt.Sprint(row.Failures), fmt.Sprint(row.Closes))
 	}
+	io.WriteString(out, "\n")
+	style.writeTable(out, table)
 }

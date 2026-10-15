@@ -78,7 +78,7 @@ func TestNetworkParsersKeepUnavailableDistinctFromZero(t *testing.T) {
 func TestNetworkInfoAndJSONPreserveMissingValues(t *testing.T) {
 	health := &networkHealth{Supported: true, Scope: "net:[1]", Settings: map[string]networkReading{"net.netfilter.nf_conntrack_max": networkNumber(1000)}, Gauges: map[string]networkReading{"conntrack_entries": networkNumber(980)}, Counters: map[string]networkReading{"listen_drops": networkUnavailable("permission denied")}}
 	var output bytes.Buffer
-	printInfoNetworkHealth(&output, health, false)
+	printInfoNetworkHealth(&output, health, false, false)
 	if !strings.Contains(output.String(), "980 / 1000 (98.0%)") || !strings.Contains(output.String(), "Local ports: unavailable") {
 		t.Fatalf("info = %s", output.String())
 	}
@@ -123,7 +123,7 @@ func TestNetworkTCPMemoryUsageComparesPagesWithTheCeiling(t *testing.T) {
 		t.Fatalf("lines = %s", lines)
 	}
 	var output bytes.Buffer
-	printInfoNetworkHealth(&output, health, false)
+	printInfoNetworkHealth(&output, health, false, false)
 	if !strings.Contains(output.String(), "TCP memory: 100/— pages · orphans=3") {
 		t.Fatalf("info = %s", output.String())
 	}

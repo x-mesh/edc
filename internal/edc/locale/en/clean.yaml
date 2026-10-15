@@ -114,6 +114,11 @@ clean:
   group_folders: "%d folders"
   group_more: "%d more, -v shows more"
   group_more_json: "%d more, --json shows all"
+  group_more_short: "%d more"
+  priority:
+    P1: "tool caches"
+    P2: "browsers, Xcode data, app caches, logs"
+    P3: "models and toolchains"
   unreadable: "%d unreadable directories are not counted"
   regen: "cost to recreate: %s"
   cleanup: "to clean, run %s (edc does not run it)"
@@ -121,8 +126,13 @@ clean:
     title: "file system %s (%s)  usage sum %s, %s free"
     not_reclaim: "The sum is usage. A cleanup does not always free this much."
     apfs: "APFS clones and snapshots can make the sum larger than what a cleanup frees."
+    label: "file system"
+    usage: "usage sum"
+    free: "free"
   docker:
     title: "Docker engine%s  engine totals, not added to any total"
+    panel: "Docker engine"
+    note: "engine totals, not added to any total"
     state: "Docker engine: %s"
     api: "API %s"
     endpoint: "endpoint: %s"
@@ -136,12 +146,16 @@ clean:
     items: "%d items, %d in use"
   vm:
     title: "VM disks (user data, not added to any total)"
+    panel: "VM disks"
+    note: "user data, not added to any total"
     inside: "The Docker engine data above is inside this disk."
     fold_absent: "VM disks not found: %s"
     disk:
       orbstack: "OrbStack"
   worktree:
     title: "Worktrees under %s  not added to any total"
+    panel: "Worktrees"
+    note: "not added to any total"
     state: "Worktrees: %s"
     fold_absent: "worktree folder not found: %s"
     none: "no worktrees found"
@@ -164,6 +178,8 @@ clean:
       merged_clean: "merged, no changes"
   project:
     title: "Project build folders  only recreatable ones are added to the file system sum"
+    panel: "Project build folders"
+    note: "only recreatable ones are added to the file system sum"
     state: "Project build folders: %s"
     fold_none: "project build folders: not searched, add --project DIR to search"
     root: "%s  %d folders searched, %d name matches without a marker file not measured"

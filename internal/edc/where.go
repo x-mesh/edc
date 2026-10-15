@@ -158,7 +158,7 @@ func runWhere(args []string, version string) int {
 		}
 		return whereExitCode(measurements)
 	}
-	printWhere(os.Stdout, report, options.verbose)
+	printWhere(os.Stdout, report, richEnabled(os.Stdout), options.verbose)
 	return whereExitCode(measurements)
 }
 
@@ -474,18 +474,21 @@ func groupByCity(measurements []whereMeasurement) []cityRow {
 	return result
 }
 
-func printWhere(writer io.Writer, report whereReport, verbose bool) {
-	printWhereLocation(writer, report.Location)
+func printWhere(writer io.Writer, report whereReport, color, verbose bool) {
+	style := newTextStyle(color)
+	printWhereLocation(writer, report.Location, style)
 
 	rows := groupByCity(report.Regions)
-	fmt.Fprintf(writer, "\n%s\n", T("observe.where.heading.nearest"))
+	fmt.Fprintln(writer)
+	style.line(writer, style.heading(T("observe.where.heading.nearest")))
 	if verbose {
-		printWhereDetail(writer, rows)
+		printWhereDetail(writer, rows, style)
 	} else {
-		printWhereSummary(writer, rows)
+		printWhereSummary(writer, rows, style)
 	}
 	if line := whereConclusion(rows, report.Location); line != "" {
-		fmt.Fprintf(writer, "\n%s\n", line)
+		fmt.Fprintln(writer)
+		style.line(writer, line)
 	}
 }
 
@@ -501,18 +504,18 @@ func whereLabelWidth() int {
 	return width + 2
 }
 
-func printWhereLocation(writer io.Writer, location whereLocation) {
-	fmt.Fprintln(writer, T("observe.where.heading.location"))
+func printWhereLocation(writer io.Writer, location whereLocation, style textStyle) {
+	style.line(writer, style.heading(T("observe.where.heading.location")))
 	width := whereLabelWidth()
 	line := func(label, value string) {
 		if value == "" {
 			return
 		}
-		fmt.Fprintf(writer, "  %s %s\n", padRight(label, width), value)
+		style.line(writer, "  "+style.dim(padRight(label, width))+" "+value)
 	}
-	line("public IP", joinFields(location.PublicIP, whereGeography(location), location.Org))
+	line("public IP", whereJoin(style, location.PublicIP, whereGeography(location, style), location.Org))
 	if location.CloudflarePoP != "" {
-		line("Cloudflare", joinFields(location.CloudflarePoP+" PoP", location.CloudflareLoc))
+		line("Cloudflare", whereJoin(style, location.CloudflarePoP+" PoP", location.CloudflareLoc))
 	}
 	if location.Interface != "" {
 		route := location.Interface
@@ -520,7 +523,7 @@ func printWhereLocation(writer io.Writer, location whereLocation) {
 			route += "  " + location.LocalAddress
 		}
 		if location.Gateway != "" {
-			route += " → " + location.Gateway
+			route += style.dim(" → ") + location.Gateway
 		}
 		line(T("observe.where.label.route"), route)
 	}
@@ -528,11 +531,11 @@ func printWhereLocation(writer io.Writer, location whereLocation) {
 }
 
 // whereGeography는 나라, 광역, 도시를 잇는다. ipinfo가 광역과 도시에 같은 이름을 주는 곳이 있어 중복은 뺀다.
-func whereGeography(location whereLocation) string {
+func whereGeography(location whereLocation, style textStyle) string {
 	if strings.EqualFold(location.Region, location.City) {
-		return joinFields(location.Country, location.City)
+		return whereJoin(style, location.Country, location.City)
 	}
-	return joinFields(location.Country, location.Region, location.City)
+	return whereJoin(style, location.Country, location.Region, location.City)
 }
 
 // whereNetworkShape은 확인한 것만 적는다. 회선 종류처럼 추측이 필요한 값은 넣지 않는다.
@@ -552,14 +555,15 @@ func whereNetworkShape(location whereLocation) string {
 	return strings.Join(parts, "  ·  ")
 }
 
-func joinFields(values ...string) string {
+// whereJoin은 빈 값을 빼고 잇는다. 구분점만 회색이다.
+func whereJoin(style textStyle, values ...string) string {
 	var kept []string
 	for _, value := range values {
 		if strings.TrimSpace(value) != "" {
 			kept = append(kept, value)
 		}
 	}
-	return strings.Join(kept, "  ·  ")
+	return style.join("  ·  ", kept...)
 }
 
 const (
@@ -591,43 +595,42 @@ func whereProviderWidth() int {
 	return width
 }
 
-func printWhereSummary(writer io.Writer, rows []cityRow) {
+func printWhereSummary(writer io.Writer, rows []cityRow, style textStyle) {
 	width := cityColumnWidth(rows)
 	value := whereValueWidth()
-	fmt.Fprintf(writer, "  %s  %s  %s  %s  %s\n", padRight("", width),
+	style.line(writer, style.dim(fmt.Sprintf("  %s  %s  %s  %s  %s", padRight("", width),
 		padLeft(T("observe.where.column.min"), value), padLeft(T("observe.where.column.median"), value),
-		padLeft(T("observe.where.column.jitter"), value), T("observe.where.column.provider"))
+		padLeft(T("observe.where.column.jitter"), value), T("observe.where.column.provider"))))
 	for _, row := range rows {
 		if !row.reached {
-			fmt.Fprintf(writer, "  %s  %s\n", padRight(row.city, width), padLeft(T("observe.where.unreachable"), value))
+			style.line(writer, "  "+padRight(row.city, width)+"  "+style.warn(padLeft(T("observe.where.unreachable"), value)))
 			continue
 		}
-		fmt.Fprintf(writer, "  %s  %s  %s  %s  %s\n", padRight(row.city, width),
+		style.line(writer, fmt.Sprintf("  %s  %s  %s  %s  ", padRight(row.city, width),
 			padLeft(formatMillis(row.best.Min), value),
 			padLeft(formatMillis(row.best.Median), value),
-			padLeft(formatMillis(row.best.Jitter), value), row.best.Provider)
+			padLeft(formatMillis(row.best.Jitter), value))+style.dim(row.best.Provider))
 	}
 }
 
-func printWhereDetail(writer io.Writer, rows []cityRow) {
+func printWhereDetail(writer io.Writer, rows []cityRow, style textStyle) {
 	width := cityColumnWidth(rows)
 	value := whereValueWidth()
 	provider := whereProviderWidth()
-	fmt.Fprintf(writer, "  %s  %s  %s  %s  %s  %s\n", padRight("", width), padRight(T("observe.where.column.provider"), provider),
+	style.line(writer, style.dim(fmt.Sprintf("  %s  %s  %s  %s  %s  %s", padRight("", width), padRight(T("observe.where.column.provider"), provider),
 		padLeft(T("observe.where.column.min"), value), padLeft(T("observe.where.column.median"), value),
-		padLeft(T("observe.where.column.jitter"), value), "region")
+		padLeft(T("observe.where.column.jitter"), value), "region")))
 	for _, row := range rows {
 		for _, measurement := range row.all {
 			if measurement.Error != "" {
-				fmt.Fprintf(writer, "  %s  %s  %s  %s\n", padRight(row.city, width),
-					padRight(measurement.Provider, provider), padLeft("–", value), measurement.Error)
+				style.line(writer, "  "+padRight(row.city, width)+"  "+style.dim(padRight(measurement.Provider, provider))+"  "+
+					style.dim(padLeft("–", value))+"  "+style.warn(measurement.Error))
 				continue
 			}
-			fmt.Fprintf(writer, "  %s  %s  %s  %s  %s  %s\n", padRight(row.city, width),
-				padRight(measurement.Provider, provider),
-				padLeft(formatMillis(measurement.Min), value),
-				padLeft(formatMillis(measurement.Median), value),
-				padLeft(formatMillis(measurement.Jitter), value), measurement.Region)
+			style.line(writer, "  "+padRight(row.city, width)+"  "+style.dim(padRight(measurement.Provider, provider))+
+				fmt.Sprintf("  %s  %s  %s  ", padLeft(formatMillis(measurement.Min), value),
+					padLeft(formatMillis(measurement.Median), value),
+					padLeft(formatMillis(measurement.Jitter), value))+style.dim(measurement.Region))
 		}
 	}
 }

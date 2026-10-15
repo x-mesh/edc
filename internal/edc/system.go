@@ -484,7 +484,7 @@ func runListen(args []string, version string) int {
 	printResultDetail(output, result, false, color)
 	// 표는 화면에서 언제나 보여 준다. 개수 한 줄로는 "어느 포트가 열려 있나"에 답이 되지 않는다.
 	if table := listenTableOf(result, options.verbose); table != "" {
-		fmt.Fprint(output, "\n"+table)
+		fmt.Fprint(output, "\n"+newTextStyle(color).table(table))
 	}
 	if options.redact {
 		fmt.Fprint(os.Stdout, redactIPAddresses(buffer.String()))

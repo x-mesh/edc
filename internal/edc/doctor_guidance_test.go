@@ -26,7 +26,7 @@ func TestDoctorGuidanceObservedStages(t *testing.T) {
 			report := Report{Results: tc.results, Summary: summarize(tc.results)}
 			before, _ := json.Marshal(report)
 			var out bytes.Buffer
-			printDoctorGuidance(&out, report)
+			printDoctorGuidance(&out, report, false)
 			after, _ := json.Marshal(report)
 			if !bytes.Equal(before, after) {
 				t.Fatal("report mutated")
@@ -63,7 +63,7 @@ func TestDoctorCompletionGuidanceAndJSON(t *testing.T) {
 	}, true)
 	before, _ := json.Marshal(report)
 	var guidance, tail bytes.Buffer
-	printDoctorGuidance(&guidance, report)
+	printDoctorGuidance(&guidance, report, false)
 	printDoctorTail(&tail, report, false, false)
 	var code int
 	plain := traceCaptureOutput(t, &os.Stdout, func() { code = emitDoctor(commonOptions{}, report) })
@@ -106,7 +106,7 @@ func TestDoctorCompletionGuidanceAndJSON(t *testing.T) {
 func TestDoctorGuidanceKindsAndSafeEvidence(t *testing.T) {
 	report := Report{Results: []Result{{Probe: "tls.check", Status: StatusWarn, Summary: "certificate expiry\x1b[31m\nnext", Error: &DiagnosticError{Kind: "expiry\nkind\x00"}, Evidence: []Evidence{{Label: "days", Value: "7\tleft"}}}}}
 	var output bytes.Buffer
-	printDoctorGuidance(&output, report)
+	printDoctorGuidance(&output, report, false)
 	value := output.String()
 	for _, fragment := range []string{"tls.check [warn] · expiry kind", "certificate expiry next · days: 7 left", "edc tls check 'HOST:PORT'"} {
 		if !strings.Contains(value, fragment) {

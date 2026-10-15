@@ -74,10 +74,25 @@ func runSnapshot(args []string, version string) int {
 		fmt.Fprintln(os.Stderr, err)
 		return 2
 	}
-	fmt.Fprintln(os.Stdout, T("snapshot.saved", path))
-	fmt.Fprintln(os.Stdout, summaryLine(report.Results))
-	fmt.Fprintln(os.Stdout, T("snapshot.diff_hint", path))
+	style := newTextStyle(richEnabled(os.Stdout))
+	fmt.Fprintln(os.Stdout, style.phrase("snapshot.saved", path, ""))
+	if style.color {
+		fmt.Fprintln(os.Stdout, richResultCounts(report.Results, style.width))
+	} else {
+		fmt.Fprintln(os.Stdout, summaryLine(report.Results))
+	}
+	fmt.Fprintln(os.Stdout, snapshotDiffHint(style, path))
 	return exitCode(report.Results)
+}
+
+// snapshotDiffHint는 비교 안내다. 색을 쓰면 그대로 복사할 명령 부분만 굵은 청록이다.
+func snapshotDiffHint(style textStyle, path string) string {
+	hint := T("snapshot.diff_hint", path)
+	index := strings.Index(hint, "edc ")
+	if !style.color || index < 0 {
+		return hint
+	}
+	return style.dim(hint[:index]) + style.command(hint[index:])
 }
 
 // snapshotSections는 각 명령이 쓰는 수집기와 판정을 그대로 부른다. 판정 기준이 명령과 snapshot에서 갈라지지 않게 한다.

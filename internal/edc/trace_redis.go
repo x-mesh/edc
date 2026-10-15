@@ -3,6 +3,7 @@ package edc
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"maps"
 	"math"
 	"os"
@@ -1748,48 +1749,51 @@ func (report redisTraceReport) print(bool) {
 	if report.Side == traceServerSide {
 		title = "Redis server trace"
 	}
-	fmt.Fprintf(os.Stdout, "%s: %s\n\n", title, (time.Duration(report.DurationMS) * time.Millisecond).String())
+	out := os.Stdout
+	style := newTraceSummaryStyle(out)
+	style.line(out, style.title(title, (time.Duration(report.DurationMS)*time.Millisecond).String()))
+	io.WriteString(out, "\n")
 	mixed := report.Client != nil && report.Server != nil
 	if mixed {
 		for _, side := range []struct {
 			heading string
 			counts  *traceRedisCounts
 		}{{"Client side (commands that this host sent):", report.Client}, {"Server side (commands that local servers received):", report.Server}} {
-			fmt.Fprintln(os.Stdout, side.heading)
-			printRedisCounts("  ", *side.counts)
-			fmt.Fprintln(os.Stdout)
+			style.line(out, style.subheading(side.heading))
+			printRedisCounts(style, "  ", *side.counts)
+			io.WriteString(out, "\n")
 		}
 	} else {
-		printRedisCounts("", report.traceRedisCounts)
+		printRedisCounts(style, "", report.traceRedisCounts)
 	}
-	fmt.Fprintf(os.Stdout, "Lost events: %d\n", report.LostEvents)
+	style.fields(out, "", "Lost events", fmt.Sprint(report.LostEvents))
 	if len(report.Rows) == 0 {
 		return
 	}
-	sideColumn := func(value string) string {
+	sideColumn := func(value string) []string {
 		if !mixed {
-			return ""
+			return nil
 		}
-		return value + "\t"
+		return []string{value}
 	}
-	fmt.Fprintln(os.Stdout, "\n"+sideColumn("SIDE")+"COMMAND\tCOUNT\tERRORS\tUNANSWERED\tAVG\tMAX\tPROCESS")
+	table := traceTable{titles: append(sideColumn("SIDE"), "COMMAND", "COUNT", "ERRORS", "UNANSWERED", "AVG", "MAX", "PROCESS")}
 	for _, row := range report.Rows {
-		fmt.Fprintf(os.Stdout, "%s%s\t%d\t%d\t%d\t%s\t%s\t%s\n", sideColumn(emptyAs(row.Side, "-")), row.Command, row.Commands, row.Errors, row.Unanswered, traceLatency(row.LatencyAvgMS, "ms"), traceLatency(row.LatencyMaxMS, "ms"), emptyAs(strings.Join(row.Processes, ","), "-"))
+		table.add(append(sideColumn(emptyAs(row.Side, "-")), row.Command, fmt.Sprint(row.Commands), fmt.Sprint(row.Errors), fmt.Sprint(row.Unanswered), traceLatency(row.LatencyAvgMS, "ms"), traceLatency(row.LatencyMaxMS, "ms"), emptyAs(strings.Join(row.Processes, ","), "-"))...)
 	}
+	io.WriteString(out, "\n")
+	style.writeTable(out, table)
 }
 
-func printRedisCounts(indent string, counts traceRedisCounts) {
-	for _, line := range []string{
-		fmt.Sprintf("Commands: %d", counts.Commands),
-		fmt.Sprintf("Replies: %d", counts.Replies),
-		fmt.Sprintf("Errors: %d", counts.Errors),
-		fmt.Sprintf("Unanswered: %d", counts.Unanswered),
-		"Latency avg: " + traceLatency(counts.LatencyAvgMS, "ms"),
-		"Latency max: " + traceLatency(counts.LatencyMaxMS, "ms"),
-		fmt.Sprintf("Pushes: %d", counts.Pushes),
-	} {
-		fmt.Fprintln(os.Stdout, indent+line)
-	}
+func printRedisCounts(style traceSummaryStyle, indent string, counts traceRedisCounts) {
+	style.fields(os.Stdout, indent,
+		"Commands", fmt.Sprint(counts.Commands),
+		"Replies", fmt.Sprint(counts.Replies),
+		"Errors", fmt.Sprint(counts.Errors),
+		"Unanswered", fmt.Sprint(counts.Unanswered),
+		"Latency avg", traceLatency(counts.LatencyAvgMS, "ms"),
+		"Latency max", traceLatency(counts.LatencyMaxMS, "ms"),
+		"Pushes", fmt.Sprint(counts.Pushes),
+	)
 }
 
 func traceRedisDetailLines(event captureEvent) []string {

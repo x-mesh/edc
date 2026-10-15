@@ -2,6 +2,7 @@ package edc
 
 import (
 	"fmt"
+	"io"
 	"maps"
 	"net"
 	"os"
@@ -300,13 +301,18 @@ func traceNeighborLost(lost uint64) string {
 
 // -d는 연결마다 한 행을 쓰는 option이다. ARP와 NDP 요약은 이미 neighbor마다 한 행이라 같은 표를 쓴다.
 func (report neighborTraceReport) print(bool) {
-	fmt.Fprintf(os.Stdout, "%s trace: %s\n\n", strings.ToUpper(report.protocol), (time.Duration(report.DurationMS) * time.Millisecond).String())
-	fmt.Fprintf(os.Stdout, "Events: %d\nNeighbors: %d\nMAC changes: %d\nFailures: %d\nLost events: %s\n", report.Events, len(report.Neighbors), report.MACChanges, report.Failures, traceNeighborLost(report.LostEvents))
+	out := os.Stdout
+	style := newTraceSummaryStyle(out)
+	style.line(out, style.title(strings.ToUpper(report.protocol)+" trace", (time.Duration(report.DurationMS)*time.Millisecond).String()))
+	io.WriteString(out, "\n")
+	style.fields(out, "", "Events", fmt.Sprint(report.Events), "Neighbors", strconv.Itoa(len(report.Neighbors)), "MAC changes", fmt.Sprint(report.MACChanges), "Failures", fmt.Sprint(report.Failures), "Lost events", traceNeighborLost(report.LostEvents))
 	if len(report.Neighbors) == 0 {
 		return
 	}
-	fmt.Fprintln(os.Stdout, "\nINTERFACE\tIP\tMAC\tSTATE\tEVENTS\tMAC_CHANGES\tFAILURES\tMACS")
+	table := traceTable{titles: []string{"INTERFACE", "IP", "MAC", "STATE", "EVENTS", "MAC_CHANGES", "FAILURES", "MACS"}}
 	for _, neighbor := range report.Neighbors {
-		fmt.Fprintf(os.Stdout, "%s\t%s\t%s\t%s\t%d\t%d\t%d\t%d\n", neighbor.Interface, neighbor.IP, emptyAs(neighbor.MAC, "-"), emptyAs(neighbor.State, "-"), neighbor.Events, neighbor.MACChanges, neighbor.Failures, len(neighbor.MACs))
+		table.add(neighbor.Interface, neighbor.IP, emptyAs(neighbor.MAC, "-"), emptyAs(neighbor.State, "-"), fmt.Sprint(neighbor.Events), fmt.Sprint(neighbor.MACChanges), fmt.Sprint(neighbor.Failures), strconv.Itoa(len(neighbor.MACs)))
 	}
+	io.WriteString(out, "\n")
+	style.writeTable(out, table)
 }

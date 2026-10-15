@@ -5,6 +5,7 @@ import (
 	"cmp"
 	"encoding/binary"
 	"fmt"
+	"io"
 	"maps"
 	"os"
 	"slices"
@@ -1180,48 +1181,58 @@ func (report httpTraceReport) print(bool) {
 	if report.Side == traceServerSide {
 		title = "HTTP server trace"
 	}
-	fmt.Fprintf(os.Stdout, "%s: %s\n\n", title, (time.Duration(report.DurationMS) * time.Millisecond).String())
+	out := os.Stdout
+	style := newTraceSummaryStyle(out)
+	style.line(out, style.title(title, (time.Duration(report.DurationMS)*time.Millisecond).String()))
+	io.WriteString(out, "\n")
 	mixed := report.Client != nil && report.Server != nil
 	if mixed {
 		for _, side := range []struct {
 			heading string
 			counts  *traceHTTPCounts
 		}{{"Client side (requests that this host sent):", report.Client}, {"Server side (requests that local servers received):", report.Server}} {
-			fmt.Fprintln(os.Stdout, side.heading)
-			printHTTPCounts("  ", *side.counts)
-			fmt.Fprintln(os.Stdout)
+			style.line(out, style.subheading(side.heading))
+			printHTTPCounts(style, "  ", *side.counts)
+			io.WriteString(out, "\n")
 		}
 	} else {
-		printHTTPCounts("", report.traceHTTPCounts)
+		printHTTPCounts(style, "", report.traceHTTPCounts)
 	}
-	fmt.Fprintf(os.Stdout, "Lost events: %d\n", report.LostEvents)
+	style.fields(out, "", "Lost events", fmt.Sprint(report.LostEvents))
 	if report.TLSUnmapped > 0 {
-		fmt.Fprintf(os.Stdout, "TLS plaintext without an address: %d\n", report.TLSUnmapped)
+		style.fields(out, "", "TLS plaintext without an address", fmt.Sprint(report.TLSUnmapped))
 	}
 	if len(report.Paths) > 0 {
 		// 한 쪽만 있으면 SIDE 칸은 모든 행이 같아서 뺀다.
-		sideColumn := func(value string) string {
-			if !mixed {
-				return ""
-			}
-			return value + "\t"
+		var titles []string
+		if mixed {
+			titles = append(titles, "SIDE")
 		}
-		fmt.Fprintln(os.Stdout, "\n"+sideColumn("SIDE")+"METHOD\tHOST\tPATH\tREQUESTS\tSTATUS\tUNANSWERED\tAVG\tMAX\tPROCESS")
+		table := traceTable{titles: append(titles, "METHOD", "HOST", "PATH", "REQUESTS", "STATUS", "UNANSWERED", "AVG", "MAX", "PROCESS")}
 		for _, row := range report.Paths {
-			fmt.Fprintf(os.Stdout, "%s%s\t%s\t%s\t%d\t%s\t%d\t%s\t%s\t%s\n", sideColumn(emptyAs(row.Side, "-")), emptyAs(row.Method, "-"), emptyAs(row.Host, "-"), emptyAs(row.Path, "-"), row.Requests, traceResultCounts(row.Statuses), row.Unanswered, traceLatency(row.LatencyAvgMS, "ms"), traceLatency(row.LatencyMaxMS, "ms"), emptyAs(strings.Join(row.Processes, ","), "-"))
+			var cells []string
+			if mixed {
+				cells = append(cells, emptyAs(row.Side, "-"))
+			}
+			table.add(append(cells, emptyAs(row.Method, "-"), emptyAs(row.Host, "-"), emptyAs(row.Path, "-"), fmt.Sprint(row.Requests), traceResultCounts(row.Statuses), fmt.Sprint(row.Unanswered), traceLatency(row.LatencyAvgMS, "ms"), traceLatency(row.LatencyMaxMS, "ms"), emptyAs(strings.Join(row.Processes, ","), "-"))...)
 		}
+		io.WriteString(out, "\n")
+		style.writeTable(out, table)
 	}
 	if len(report.TLS) == 0 {
 		return
 	}
-	fmt.Fprintf(os.Stdout, "\nTLS connections: %d (HTTPS, only the handshake headers are plain text)\n", report.TLSConnections)
+	io.WriteString(out, "\n")
+	style.fields(out, "", "TLS connections", fmt.Sprintf("%d (HTTPS, only the handshake headers are plain text)", report.TLSConnections))
 	if len(report.TLSAlerts) > 0 {
-		fmt.Fprintf(os.Stdout, "TLS alerts: %s\n", traceTLSAlertSummary(report.TLSAlerts))
+		style.fields(out, "", "TLS alerts", traceTLSAlertSummary(report.TLSAlerts))
 	}
-	fmt.Fprintln(os.Stdout, "\nSIDE\tHOST\tALPN\tCONNECTIONS\tVERSION\tALERTS\tPROCESS")
+	table := traceTable{titles: []string{"SIDE", "HOST", "ALPN", "CONNECTIONS", "VERSION", "ALERTS", "PROCESS"}}
 	for _, row := range report.TLS {
-		fmt.Fprintf(os.Stdout, "%s\t%s\t%s\t%d\t%s\t%d\t%s\n", emptyAs(row.Side, "-"), emptyAs(row.Host, "-"), emptyAs(strings.Join(row.ALPN, ","), "-"), row.Connections, emptyAs(traceTLSVersionText(row.Versions), "-"), row.Alerts, emptyAs(strings.Join(row.Processes, ","), "-"))
+		table.add(emptyAs(row.Side, "-"), emptyAs(row.Host, "-"), emptyAs(strings.Join(row.ALPN, ","), "-"), fmt.Sprint(row.Connections), emptyAs(traceTLSVersionText(row.Versions), "-"), fmt.Sprint(row.Alerts), emptyAs(strings.Join(row.Processes, ","), "-"))
 	}
+	io.WriteString(out, "\n")
+	style.writeTable(out, table)
 }
 
 // traceTLSVersionText는 많이 고른 version부터 쉼표로 잇는다. 수는 JSON에 있다.
@@ -1244,16 +1255,14 @@ func traceTLSAlertSummary(alerts map[string]uint64) string {
 	return fmt.Sprintf("%d (%s)", total, strings.Join(parts, ", "))
 }
 
-func printHTTPCounts(indent string, counts traceHTTPCounts) {
-	for _, line := range []string{
-		fmt.Sprintf("Requests: %d", counts.Requests),
-		fmt.Sprintf("Responses: %d", counts.Responses),
-		fmt.Sprintf("Client errors (4xx): %d", counts.ClientErrors),
-		fmt.Sprintf("Server errors (5xx): %d", counts.ServerErrors),
-		fmt.Sprintf("Unanswered: %d", counts.Unanswered),
-		"Latency avg: " + traceLatency(counts.LatencyAvgMS, "ms"),
-		"Latency max: " + traceLatency(counts.LatencyMaxMS, "ms"),
-	} {
-		fmt.Fprintln(os.Stdout, indent+line)
-	}
+func printHTTPCounts(style traceSummaryStyle, indent string, counts traceHTTPCounts) {
+	style.fields(os.Stdout, indent,
+		"Requests", fmt.Sprint(counts.Requests),
+		"Responses", fmt.Sprint(counts.Responses),
+		"Client errors (4xx)", fmt.Sprint(counts.ClientErrors),
+		"Server errors (5xx)", fmt.Sprint(counts.ServerErrors),
+		"Unanswered", fmt.Sprint(counts.Unanswered),
+		"Latency avg", traceLatency(counts.LatencyAvgMS, "ms"),
+		"Latency max", traceLatency(counts.LatencyMaxMS, "ms"),
+	)
 }

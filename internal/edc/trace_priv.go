@@ -290,20 +290,25 @@ func privReportFor(collection privCollection, deniedOnly bool) privReport {
 }
 
 func (report privReport) print(out io.Writer) {
+	style := newTraceSummaryStyle(out)
 	summary := report.Summary
-	fmt.Fprintf(out, "PRIV TRACE  duration %s  checks %d  denied %d\n", syscallTime(float64(summary.DurationMS)*float64(time.Millisecond)), summary.Checks, summary.Denied)
+	style.line(out, style.headline("PRIV TRACE", traceStat{"duration", syscallTime(float64(summary.DurationMS) * float64(time.Millisecond))}, traceStat{"checks", fmt.Sprint(summary.Checks)}, traceStat{"denied", fmt.Sprint(summary.Denied)}))
 	if _, missing := summary.Unavailable["capability"]; !missing {
-		fmt.Fprintf(out, "%-16s %-24s %-16s %10s\n", "PROCESS", "CAPABILITY", "RESULT", "CHECKS")
+		style.line(out, style.dim(fmt.Sprintf("%-16s %-24s %-16s %10s", "PROCESS", "CAPABILITY", "RESULT", "CHECKS")))
 		for index, row := range report.Capabilities {
 			if index == privTraceRows {
-				fmt.Fprintf(out, "... %d more rows in --json\n", len(report.Capabilities)-privTraceRows)
+				style.line(out, style.hint(fmt.Sprintf("... %d more rows in --json", len(report.Capabilities)-privTraceRows)))
 				break
 			}
 			result := row.Result
 			if row.NoAudit {
 				result += " (noaudit)"
 			}
-			fmt.Fprintf(out, "%-16.16s %-24s %-16s %10d\n", row.Process, row.Capability, result, row.Checks)
+			cell := traceCell{value: result, on: style.color}
+			if row.Result == "denied" {
+				cell.color = richRed
+			}
+			style.printf(out, "%-16.16s %-24s %-16s %10d\n", row.Process, row.Capability, cell, row.Checks)
 		}
 	}
 	for _, section := range []struct {
@@ -313,14 +318,18 @@ func (report privReport) print(out io.Writer) {
 		if len(section.events) == 0 {
 			continue
 		}
-		fmt.Fprintln(out, section.title)
+		heading := style.subheading(section.title)
+		if section.title == "DENIED" && style.color {
+			heading = richPaint(section.title, richRed, true)
+		}
+		style.line(out, heading)
 		for index, event := range section.events {
 			if index == privTraceRows {
-				fmt.Fprintf(out, "... %d more in --json\n", len(section.events)-privTraceRows)
+				style.line(out, style.hint(fmt.Sprintf("... %d more in --json", len(section.events)-privTraceRows)))
 				break
 			}
-			fmt.Fprintln(out, "  "+event.line())
+			style.line(out, "  "+event.line())
 		}
 	}
-	fmt.Fprintf(out, "entries %d  stats_full %d  events %d  sampled_out %d  ring_lost %d\n", summary.StatsEntries, summary.StatsFull, summary.Events, summary.SampledOut, summary.RingLost)
+	style.line(out, style.stats(traceStat{"entries", fmt.Sprint(summary.StatsEntries)}, traceStat{"stats_full", fmt.Sprint(summary.StatsFull)}, traceStat{"events", fmt.Sprint(summary.Events)}, traceStat{"sampled_out", fmt.Sprint(summary.SampledOut)}, traceStat{"ring_lost", fmt.Sprint(summary.RingLost)}))
 }

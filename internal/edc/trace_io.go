@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"sort"
@@ -274,13 +275,34 @@ func runIOTrace(args []string) int {
 }
 
 func printIOReport(report ioReport, events []ioEvent, detail bool) {
-	fmt.Printf("I/O trace\n\nOps: %d\nBytes: %s\nReads: %d\nWrites: %d\nQueue avg/p95/max: %s / %s / %s\nService avg/p95/max: %s / %s / %s\nTotal avg/p95/max: %s / %s / %s\nLost events: %d\nMap full: %d\nUnmatched completion: %d\nIncomplete: %d\nRequeue: %d\nBelow threshold: %d\n", report.EventCount, traceBytes(report.Bytes), report.ReadOps, report.WriteOps, traceLatency(report.Queue.AverageMS, "ms"), traceLatency(report.Queue.P95MS, "ms"), traceLatency(report.Queue.MaxMS, "ms"), traceLatency(report.Service.AverageMS, "ms"), traceLatency(report.Service.P95MS, "ms"), traceLatency(report.Service.MaxMS, "ms"), traceLatency(report.Total.AverageMS, "ms"), traceLatency(report.Total.P95MS, "ms"), traceLatency(report.Total.MaxMS, "ms"), report.LostEvents, report.MapFull, report.UnmatchedCompletion, report.Incomplete, report.Requeue, report.OmittedBelowThreshold)
+	out := os.Stdout
+	style := newTraceSummaryStyle(out)
+	// spans는 요약 줄의 "avg / p95 / max"이고, latencies는 행의 "avg/p95/max"다.
+	spans := func(span ioLatency) string {
+		return traceLatency(span.AverageMS, "ms") + " / " + traceLatency(span.P95MS, "ms") + " / " + traceLatency(span.MaxMS, "ms")
+	}
+	latencies := func(span ioLatency) string {
+		return style.join("/", style.units(traceLatency(span.AverageMS, "ms")), style.units(traceLatency(span.P95MS, "ms")), style.units(traceLatency(span.MaxMS, "ms")))
+	}
+	style.line(out, style.heading("I/O trace"))
+	io.WriteString(out, "\n")
+	style.fields(out, "", "Ops", fmt.Sprint(report.EventCount), "Bytes", traceBytes(report.Bytes), "Reads", fmt.Sprint(report.ReadOps), "Writes", fmt.Sprint(report.WriteOps),
+		"Queue avg/p95/max", spans(report.Queue), "Service avg/p95/max", spans(report.Service), "Total avg/p95/max", spans(report.Total),
+		"Lost events", fmt.Sprint(report.LostEvents), "Map full", fmt.Sprint(report.MapFull), "Unmatched completion", fmt.Sprint(report.UnmatchedCompletion), "Incomplete", fmt.Sprint(report.Incomplete),
+		"Requeue", fmt.Sprint(report.Requeue), "Below threshold", fmt.Sprint(report.OmittedBelowThreshold))
 	for _, row := range report.Rows {
-		fmt.Printf("%s ops=%d bytes=%s read=%d write=%d queue=%s/%s/%s service=%s/%s/%s total=%s/%s/%s\n", row.Group, row.Ops, traceBytes(row.Bytes), row.ReadOps, row.WriteOps, traceLatency(row.Queue.AverageMS, "ms"), traceLatency(row.Queue.P95MS, "ms"), traceLatency(row.Queue.MaxMS, "ms"), traceLatency(row.Service.AverageMS, "ms"), traceLatency(row.Service.P95MS, "ms"), traceLatency(row.Service.MaxMS, "ms"), traceLatency(row.Total.AverageMS, "ms"), traceLatency(row.Total.P95MS, "ms"), traceLatency(row.Total.MaxMS, "ms"))
+		parts := []string{row.Group}
+		for _, pair := range [][2]string{
+			{"ops", fmt.Sprint(row.Ops)}, {"bytes", style.units(traceBytes(row.Bytes))}, {"read", fmt.Sprint(row.ReadOps)}, {"write", fmt.Sprint(row.WriteOps)},
+			{"queue", latencies(row.Queue)}, {"service", latencies(row.Service)}, {"total", latencies(row.Total)},
+		} {
+			parts = append(parts, style.dim(pair[0]+"=")+pair[1])
+		}
+		style.line(out, strings.Join(parts, " "))
 	}
 	if detail {
 		for _, event := range events {
-			fmt.Println(ioDetail(event))
+			style.line(out, ioDetail(event))
 		}
 	}
 }

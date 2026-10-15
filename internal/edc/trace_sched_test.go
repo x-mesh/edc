@@ -14,6 +14,7 @@ import (
 	"unsafe"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/cilium/ebpf/btf"
 )
 
@@ -265,4 +266,30 @@ func captureSchedStdout(t *testing.T, run func()) string {
 		t.Fatal(err)
 	}
 	return string(value)
+}
+
+func TestSchedReportColorsOnlyTheHeaderAndLosses(t *testing.T) {
+	t.Setenv("COLORTERM", "truecolor")
+	avg, p95 := 1.25, 4.0
+	report := schedReport{DurationMS: 2000, Rows: []schedReportOutputRow{{Group: "api", Wakeup: schedReportValue{Samples: 3, AverageMS: &avg, P95MS: &p95, MaxMS: &p95}}},
+		Summary: schedSummary{EventCount: 3, LostEvents: 2, MinimumLatencyMS: 0.5}}
+	setTraceSummaryTerminal(t, false, 0)
+	plain := traceCaptureOutput(t, &os.Stdout, report.print)
+	want := "SCHEDULER TRACE  duration 2000ms  minimum 0.5ms\n" +
+		"GROUP                  WAKE N      AVG      P95      MAX     RUN N      AVG      P95      MAX     OFF N      AVG      P95      MAX\n" +
+		"api                         3      1.2      4.0      4.0         0        -        -        -         0        -        -        -\n" +
+		"events 3  ring_lost 2  map_full 0  unmatched 0  repeated_wakeup 0  below_threshold 0\n"
+	if plain != want {
+		t.Fatalf("plain =\n%q\nwant\n%q", plain, want)
+	}
+	setTraceSummaryTerminal(t, true, 400)
+	colored := traceCaptureOutput(t, &os.Stdout, report.print)
+	if ansi.Strip(colored) != plain {
+		t.Fatalf("colored text =\n%q", ansi.Strip(colored))
+	}
+	for _, part := range []string{"\x1b[1;35mSCHEDULER TRACE\x1b[0m", "\x1b[90mGROUP ", "\x1b[90mring_lost\x1b[0m \x1b[33m2\x1b[0m", "\x1b[90mmap_full\x1b[0m 0"} {
+		if !strings.Contains(colored, richExpect(part)) {
+			t.Errorf("colored misses %q:\n%q", richExpect(part), colored)
+		}
+	}
 }

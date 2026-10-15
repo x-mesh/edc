@@ -189,8 +189,9 @@ func reportCandidates() []selectItem {
 }
 
 func printReportEmpty(output io.Writer, directory string) {
+	color := reportListColor(output)
 	fmt.Fprintln(output, T("cli.report.empty", reportIdentityValue(directory)))
-	fmt.Fprintln(output, T("cli.report.save_hint"))
+	fmt.Fprintln(output, reportHint(T("cli.report.save_hint"), color))
 }
 
 func listReports(output io.Writer, directory string) error {
@@ -198,16 +199,53 @@ func listReports(output io.Writer, directory string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprintln(output, T("cli.report.description"))
+	color := reportListColor(output)
+	description := T("cli.report.description")
+	if color {
+		description = reportHint(description, true)
+	}
+	fmt.Fprintln(output, description)
 	if len(reports) == 0 {
 		printReportEmpty(output, directory)
 		return nil
 	}
 	for _, report := range reports {
+		if color {
+			fmt.Fprintln(output, savedReportRichLabel(report))
+			continue
+		}
 		fmt.Fprintln(output, savedReportLabel(report))
 	}
-	fmt.Fprintln(output, T("cli.report.show_hint"))
+	fmt.Fprintln(output, reportHint(T("cli.report.show_hint"), color))
 	return nil
+}
+
+// reportListColor는 목록을 칠할지다. 터미널인 stdout에만 칠하고, 파이프와 NO_COLOR와 다른 writer는 평문 그대로 둔다.
+func reportListColor(output io.Writer) bool {
+	return output == io.Writer(os.Stdout) && richEnabled(os.Stdout)
+}
+
+// savedReportRichLabel은 savedReportLabel과 같은 글자다. 시각과 구분자는 회색, 결과 수는 상태 색이다.
+func savedReportRichLabel(report savedReport) string {
+	separator := richDim("  ·  ")
+	return reportIdentityValue(report.path) + separator + richDim(report.report.Run.StartedAt.Format(time.RFC3339)) + separator +
+		reportPaintCounts(summaryLine(report.report.Results), " · ", reportSummaryColors, false)
+}
+
+// reportHint는 안내 줄을 칠한다. "이름표: edc ..." 줄은 이름표를 회색, 명령을 굵은 청록으로, 나머지 줄은 회색으로 둔다.
+func reportHint(text string, color bool) string {
+	if !color {
+		return text
+	}
+	lines := strings.Split(text, "\n")
+	for index, line := range lines {
+		if label, command, found := strings.Cut(line, ": edc "); found {
+			lines[index] = richDim(label+": ") + richPaint("edc "+command, richCyan, true)
+			continue
+		}
+		lines[index] = richDim(line)
+	}
+	return strings.Join(lines, "\n")
 }
 
 func loadReport(path string) (Report, error) {
@@ -344,7 +382,7 @@ func runReportShow(path string) int {
 		return 2
 	}
 	if liveTerminal() {
-		title := reportViewerTitle("report show", path, summaryLine(report.Results))
+		title := reportViewerHeading("report show", path, summaryLine(report.Results), " · ", reportSummaryColors)
 		if err := runReportViewer(title, resultEntries(report.Results, true), resultFilters()); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			return 2
@@ -392,7 +430,7 @@ func runReportDiff(args []string) int {
 			return 2
 		}
 	case liveTerminal():
-		title := reportViewerTitle("report diff", first+" → "+second, diffSummaryLine(diff.Summary)) + "\n" + reportDiffIdentity(diff)
+		title := reportViewerHeading("report diff", first+" → "+second, diffSummaryLine(diff.Summary), "  ·  ", reportDiffColors) + "\n" + reportDiffIdentityHeading(reportDiffIdentity(diff))
 		if err := runReportViewer(title, diffEntries(diff, true), diffFilters()); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			return 2
@@ -658,28 +696,36 @@ func printReportDiffEntry(line, detail io.Writer, entry reportDiffEntry, color b
 	}
 	if entry.Regressed {
 		label = "WORSE"
-		if color {
-			label = "\033[31m" + label + "\033[0m"
-		}
 	}
 	probe := strings.TrimPrefix(entry.Probe, "remote.")
 	// label에 색이 붙으면 byte 폭이 달라지므로 표시 폭으로 채운다. summary는 여러 줄일 수 있어 첫 줄만 쓴다.
-	padded := liveCell(label, diffLabelWidth)
+	padded := liveCell(reportDiffLabel(label, entry, color), diffLabelWidth)
+	status := func(value Status) string {
+		if color {
+			return richStatusBadge(value)
+		}
+		return terminalStatus(value, false)
+	}
+	arrow, note := "→", T("cli.report.delta_count", len(entry.Metrics))
+	directories := T("du.diff.count", len(entry.Directories))
+	if color {
+		arrow, note, directories = richDim(arrow), richDim(note), richDim(directories)
+	}
 	switch entry.Change {
 	case changeSame:
-		fmt.Fprintf(line, "%s %-24s  %s\n", padded, probe, terminalStatus(entry.AfterStatus, color))
+		fmt.Fprintf(line, "%s %-24s  %s\n", padded, probe, status(entry.AfterStatus))
 	case changeChanged:
-		fmt.Fprintf(line, "%s %-24s  %s → %s  %s\n", padded, probe, terminalStatus(entry.BeforeStatus, color), terminalStatus(entry.AfterStatus, color), firstLine(entry.AfterSummary))
+		fmt.Fprintf(line, "%s %-24s  %s %s %s  %s\n", padded, probe, status(entry.BeforeStatus), arrow, status(entry.AfterStatus), firstLine(entry.AfterSummary))
 	case changeAdded:
-		fmt.Fprintf(line, "%s %-24s  %s  %s\n", padded, probe, terminalStatus(entry.AfterStatus, color), firstLine(entry.AfterSummary))
+		fmt.Fprintf(line, "%s %-24s  %s  %s\n", padded, probe, status(entry.AfterStatus), firstLine(entry.AfterSummary))
 	case changeRemoved:
-		fmt.Fprintf(line, "%s %-24s  %s  %s\n", padded, probe, terminalStatus(entry.BeforeStatus, color), firstLine(entry.BeforeSummary))
+		fmt.Fprintf(line, "%s %-24s  %s  %s\n", padded, probe, status(entry.BeforeStatus), firstLine(entry.BeforeSummary))
 	}
 	if len(entry.Metrics) > 0 {
-		fmt.Fprintf(line, "         %s\n", T("cli.report.delta_count", len(entry.Metrics)))
+		fmt.Fprintf(line, "         %s\n", note)
 	}
 	if len(entry.Directories) > 0 {
-		fmt.Fprintf(line, "         %s\n", T("du.diff.count", len(entry.Directories)))
+		fmt.Fprintf(line, "         %s\n", directories)
 	}
 	for _, metric := range entry.Metrics {
 		if metric.Delta != nil {
@@ -694,6 +740,27 @@ func printReportDiffEntry(line, detail io.Writer, entry reportDiffEntry, color b
 	if entry.DirectoriesNote != "" {
 		fmt.Fprintf(detail, "         %s\n", entry.DirectoriesNote)
 	}
+}
+
+// reportDiffLabel은 변화 이름의 색이다. 나빠짐과 사라짐은 빨강, 나아짐과 추가는 초록, 그대로는 회색이다.
+// PASS와 SKIP 사이처럼 순위가 같은 변화는 나아진 것이 아니라 기본 색으로 둔다.
+func reportDiffLabel(label string, entry reportDiffEntry, color bool) string {
+	if !color {
+		return label
+	}
+	switch {
+	case entry.Regressed:
+		return richPaint(label, richRed, true)
+	case entry.Change == changeRemoved:
+		return richPaint(label, richRed, false)
+	case entry.Change == changeAdded:
+		return richPaint(label, richGreen, false)
+	case entry.Change == changeChanged && statusRank(entry.AfterStatus) < statusRank(entry.BeforeStatus):
+		return richPaint(label, richGreen, false)
+	case entry.Change == changeChanged:
+		return label
+	}
+	return richDim(label)
 }
 
 func formatDelta(delta float64) string {

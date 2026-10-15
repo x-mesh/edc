@@ -100,7 +100,11 @@ func TestReportPairRowsFitTheWidth(t *testing.T) {
 	}
 	for _, test := range cases {
 		model.width = test.width
+		// 색을 쓰는 목록이다. 배치는 칠하기 전의 글자로 본다.
 		rows := model.rows()
+		for index := range rows {
+			rows[index] = ansi.Strip(rows[index])
+		}
 		first := rows[0]
 		if !strings.HasPrefix(first, "[x] "+started+"  ") || strings.Contains(first, "6m ago") != test.age || strings.Contains(first, "2 pass · 1 warn") != test.counts || strings.Contains(first, "…") != test.ellipsis {
 			t.Errorf("width %d: %q", test.width, first)

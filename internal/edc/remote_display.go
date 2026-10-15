@@ -122,7 +122,7 @@ func (display *remoteDisplay) WriteLine(prefix, line string) {
 	display.mu.Lock()
 	defer display.mu.Unlock()
 	if display.color {
-		fmt.Fprintf(display.output, "\033[90m  %-30s │\033[0m %s\n", prefix, line)
+		fmt.Fprintf(display.output, "%s %s\n", richDim(fmt.Sprintf("  %-30s │", prefix)), line)
 	} else {
 		fmt.Fprintf(display.output, "  %-30s | %s\n", prefix, line)
 	}
@@ -131,7 +131,7 @@ func (display *remoteDisplay) WriteLine(prefix, line string) {
 func (display *remoteDisplay) phaseLabel(host, step, phase string) string {
 	label := fmt.Sprintf("› %s  %s  %s", host, step, phase)
 	if display.color {
-		return "\033[90m" + label + "\033[0m"
+		return richDim(label)
 	}
 	return label
 }

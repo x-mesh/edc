@@ -769,7 +769,7 @@ func TestTopSelectionMarkerKeepsTheTime(t *testing.T) {
 func TestTopStatusLinesAreMuted(t *testing.T) {
 	model := topFixtureModel(nil)
 	for _, line := range model.statusLines() {
-		if !strings.HasPrefix(line, liveDim) || !strings.HasSuffix(line, liveReset) {
+		if !strings.HasPrefix(line, strings.TrimSuffix(richDim("x"), "x"+richReset)) || !strings.HasSuffix(line, liveReset) {
 			t.Fatalf("status line is not muted: %q", line)
 		}
 		if got := liveWidth(line); got != topTableWidth {

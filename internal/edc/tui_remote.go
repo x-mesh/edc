@@ -3,6 +3,7 @@ package edc
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -57,6 +58,7 @@ type remoteModel struct {
 	color      bool
 	verbose    bool
 	logs       []string
+	width      int
 	height     int
 	running    string // 지금 실행 중인 host / step / phase
 	finished   bool
@@ -85,17 +87,29 @@ func newRemoteModel(view remotePlanView, confirm bool, color, verbose bool, canc
 		stage = remoteStageConfirm
 	}
 	header := remoteRunHeader(group, view.inventoryPath, view.recipePath, view.cwd, hosts, recipe) + view.search
+	if color {
+		header = remotePaintHeader(header)
+	}
 	if view.command != "" {
-		// 재현 명령은 복사해 갈 값이고 실행 상태가 아니므로 흐리게 둔다.
-		header = liveMuted(view.command, color) + "\n" + header
+		// 재현 명령은 복사해 갈 값이라 다른 명령처럼 굵은 청록으로 둔다.
+		command := view.command
+		if color {
+			command = richPaint(command, richCyan, true)
+		}
+		header = command + "\n" + header
+	}
+	table := newRemoteTable(hosts, recipe, view.width)
+	if color {
+		table.badges = true
+		table = table.withWidth(view.width)
 	}
 	model := remoteModel{
 		group: group, stage: stage, answered: make(chan bool, 1),
 		header:    header,
 		legend:    remoteStepLegend(recipe, hosts),
-		table:     newRemoteTable(hosts, recipe, view.width),
+		table:     table,
 		hostIndex: make(map[string]int, len(hosts)), stepIndex: make(map[string]int, len(recipe.Steps)),
-		spinner: liveSpinner(), started: time.Now(), now: time.Now, color: color, verbose: verbose, cancel: cancel,
+		spinner: liveSpinner(), started: time.Now(), now: time.Now, color: color, verbose: verbose, cancel: cancel, width: view.width,
 	}
 	for index, host := range hosts {
 		model.hostIndex[host.Name] = index
@@ -115,6 +129,19 @@ func newRemoteModel(view remotePlanView, confirm bool, color, verbose bool, canc
 		}
 	}
 	return model
+}
+
+// remoteHeaderLabel은 머리말의 inventory, recipe, search 이름표다. 줄 맨 앞이나 앞 칸과 공백 여섯 칸 뒤에 온다.
+var remoteHeaderLabel = regexp.MustCompile(`(?m)(^|\s{6})(inventory|recipe|search)(\s{2,})`)
+
+// remotePaintHeader는 머리말의 요약 줄을 굵은 자홍으로, 파일 이름표를 회색으로 칠한다. 경로는 기본 색이다.
+func remotePaintHeader(header string) string {
+	summary, rest, _ := strings.Cut(header, "\n")
+	rest = remoteHeaderLabel.ReplaceAllStringFunc(rest, func(match string) string {
+		parts := remoteHeaderLabel.FindStringSubmatch(match)
+		return parts[1] + richDim(parts[2]) + parts[3]
+	})
+	return richPaint(summary, richMagenta, true) + "\n" + rest
 }
 
 const (
@@ -146,7 +173,7 @@ func (model remoteModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		model.stage = remoteStageDone
 		return model, tea.Quit
 	case tea.WindowSizeMsg:
-		model.height = value.Height
+		model.width, model.height = value.Width, value.Height
 		model.table = model.table.withWidth(value.Width)
 		return model, nil
 	case tea.KeyPressMsg:
@@ -243,7 +270,7 @@ func (model remoteModel) View() tea.View {
 	var builder strings.Builder
 	builder.WriteString(model.header)
 	builder.WriteString("\n")
-	builder.WriteString(model.table.header() + "\n")
+	builder.WriteString(liveMuted(model.table.header(), model.color) + "\n")
 	visible := model.visibleHosts()
 	for hostIndex, host := range visible {
 		cells := make([]string, 0, len(model.cells[hostIndex]))
@@ -253,10 +280,10 @@ func (model remoteModel) View() tea.View {
 		builder.WriteString(model.table.row(host, cells) + "\n")
 	}
 	if hidden := len(model.table.hosts) - len(visible); hidden > 0 {
-		builder.WriteString(T("remote.label.hidden_hosts", hidden) + "\n")
+		builder.WriteString(liveMuted(T("remote.label.hidden_hosts", hidden), model.color) + "\n")
 	}
 	if model.table.symbols {
-		builder.WriteString(remoteSymbolLegend() + "\n")
+		builder.WriteString(liveMuted(remoteSymbolLegend(), model.color) + "\n")
 	}
 	// 확인과 진행 상황은 표 바로 아래에 둔다. 실행 대상을 본 자리에서 답하고, 같은 자리가 상태줄로 바뀐다.
 	builder.WriteString("\n")
@@ -306,14 +333,14 @@ func (model remoteModel) visibleHosts() []string {
 func (model remoteModel) cellText(cell remoteCell) string {
 	switch cell.state {
 	case remoteCellPending:
-		return remoteGlyphPending
+		return liveMuted(remoteGlyphPending, model.color)
 	case remoteCellRunning:
 		// phase는 상태줄에서 알려 준다. 칸은 좁게 둔다.
 		return model.spinner.View()
 	case remoteCellDone:
 		return model.table.statusCell(cell.status, model.color)
 	default:
-		return remoteGlyphAbsent
+		return liveMuted(remoteGlyphAbsent, model.color)
 	}
 }
 
@@ -325,11 +352,53 @@ func (model remoteModel) statusLine() string {
 		return "\n"
 	}
 	completed := T("remote.label.completed_count", model.completed, model.total)
+	if model.color {
+		return model.richStatusLine(completed) + "\n"
+	}
 	line := fmt.Sprintf("%s  %s  %s", model.spinner.View(), completed, model.elapsed())
 	if model.running != "" {
 		line = fmt.Sprintf("%s  %s  ·  %s  %s", model.spinner.View(), model.running, completed, model.elapsed())
 	}
 	return line + "\n"
+}
+
+// remoteProgressCells는 진행 막대의 칸 수다.
+const remoteProgressCells = 20
+
+// richStatusLine은 색을 쓰는 상태줄이다. 끝난 칸을 상태 색으로, 남은 칸을 회색으로 나눈 차분한 막대를 완료 수 앞에 둔다.
+// 칸이 하나뿐이면 막대는 늘 한 색이라 빼고, 막대를 넣어 줄이 화면 폭을 넘으면 막대를 뺀다.
+func (model remoteModel) richStatusLine(completed string) string {
+	line := func(progress string) string {
+		if model.running != "" {
+			return model.spinner.View() + "  " + model.running + richDim("  ·  ") + progress + "  " + richDim(model.elapsed())
+		}
+		return model.spinner.View() + "  " + progress + "  " + richDim(model.elapsed())
+	}
+	if model.total <= 1 {
+		return line(completed)
+	}
+	withBar := line(model.progressBar() + " " + completed)
+	if model.width > 0 && liveWidth(withBar) > model.width {
+		return line(completed)
+	}
+	return withBar
+}
+
+func (model remoteModel) progressBar() string {
+	counts := map[Status]int{}
+	for _, row := range model.cells {
+		for _, cell := range row {
+			if cell.state == remoteCellDone {
+				counts[cell.status]++
+			}
+		}
+	}
+	segments := []richSegment{}
+	for _, status := range []Status{StatusPass, StatusWarn, StatusFail, StatusSkip} {
+		segments = append(segments, richSegment{value: float64(counts[status]), color: richStatusColor(status)})
+	}
+	bar := richSegments(segments, remoteProgressCells*model.completed/model.total)
+	return bar + richDim(strings.Repeat("░", max(0, remoteProgressCells-liveWidth(bar))))
 }
 
 func (model remoteModel) elapsed() string {

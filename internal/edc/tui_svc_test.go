@@ -134,3 +134,31 @@ func TestSvcBrowserFitsNarrowTerminals(t *testing.T) {
 		}
 	}
 }
+
+// 색을 쓰면 상태 칸과 고른 줄만 칠한다. 칠한 것을 걷으면 고른 줄의 표시 말고는 평문 화면과 같다.
+func TestSvcBrowserColorsStatesAndTheSelection(t *testing.T) {
+	t.Setenv("COLORTERM", "truecolor")
+	t.Setenv("NO_COLOR", "")
+	plain, _ := svcBrowserFixture(t)
+	colored := plain
+	colored.color = true
+	plainLines, coloredLines := plain.listLines(), colored.listLines()
+	if len(plainLines) != len(coloredLines) {
+		t.Fatalf("%d colored lines, want %d", len(coloredLines), len(plainLines))
+	}
+	for index, line := range coloredLines {
+		stripped := strings.TrimRight(strings.Replace(ansi.Strip(line), liveSelectedBar+" ", "› ", 1), " ")
+		if stripped != strings.TrimRight(plainLines[index], " ") {
+			t.Fatalf("line %d = %q, want %q", index, stripped, plainLines[index])
+		}
+	}
+	view := strings.Join(coloredLines, "\n")
+	for _, want := range []string{richPaint("edc svc", richMagenta, true), richPaint("1 failed", richRed, false), liveChipBase(), historySGR(richRed, false) + "failed", historySGR(richGreen, false) + "active"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("colored list misses %q:\n%q", want, view)
+		}
+	}
+	if strings.Count(view, liveChipBase()+"\033[") < 1 || strings.Count(view, liveSelectedBar) != 1 {
+		t.Fatalf("one selected row expected:\n%q", view)
+	}
+}

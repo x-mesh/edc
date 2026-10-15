@@ -44,6 +44,8 @@ type remoteTable struct {
 	nameWidth  int
 	widths     []int
 	symbols    bool // 상태를 기호로 줄여 쓴다
+	// badges는 상태 단어를 배지로 그린다. 배지는 단어보다 두 칸 넓어 열 폭을 그만큼 잡는다. 색을 쓰는 실시간 화면만 켠다.
+	badges bool
 }
 
 func newRemoteTable(hosts []remoteHost, recipe remoteRecipe, width int) remoteTable {
@@ -63,13 +65,17 @@ func (table remoteTable) withWidth(width int) remoteTable {
 	if width <= 0 {
 		width = remoteDefaultWidth
 	}
-	if fitted := table.apply(remoteWordWidth, false, 0, 0); fitted.total() <= width {
+	wordWidth := remoteWordWidth
+	if table.badges {
+		wordWidth = richStatusBadgeWidth
+	}
+	if fitted := table.apply(wordWidth, false, 0, 0); fitted.total() <= width {
 		return fitted
 	}
 	// 상태 단어는 열 이름을 줄여서라도 지킨다. 단어 폭보다 좁아지면 그때 기호로 바꾼다.
 	longestStep := table.longestName(table.steps)
-	for limit := longestStep - 1; limit >= remoteWordWidth; limit-- {
-		if fitted := table.apply(remoteWordWidth, false, limit, 0); fitted.total() <= width {
+	for limit := longestStep - 1; limit >= wordWidth; limit-- {
+		if fitted := table.apply(wordWidth, false, limit, 0); fitted.total() <= width {
 			return fitted
 		}
 	}
@@ -171,6 +177,9 @@ func (table remoteTable) hostLabel(host string) string {
 }
 
 func (table remoteTable) statusCell(status Status, color bool) string {
+	if !table.symbols && color && table.badges {
+		return richStatusBadge(status)
+	}
 	if !table.symbols {
 		return terminalStatus(status, color)
 	}
@@ -193,21 +202,11 @@ func paintStatus(text string, status Status, color bool) string {
 	if !color {
 		return text
 	}
-	code := ""
 	switch status {
-	case StatusPass:
-		code = "32"
-	case StatusFail:
-		code = "31"
-	case StatusWarn:
-		code = "33"
-	case StatusSkip:
-		code = "90"
+	case StatusPass, StatusFail, StatusWarn, StatusSkip:
+		return richPaint(text, richStatusColor(status), false)
 	}
-	if code == "" {
-		return text
-	}
-	return "\033[" + code + "m" + text + "\033[0m"
+	return text
 }
 
 // terminalWidth는 stdout의 폭이다. 알 수 없으면 기본값을 쓴다.

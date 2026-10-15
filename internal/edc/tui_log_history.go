@@ -203,32 +203,35 @@ func (model logHistoryBrowser) View() tea.View {
 	} else if model.detail {
 		group := model.groups[model.cursor]
 		title := historyCommand(group.Representative) + " · " + T("cli.log_history.run_count", len(model.rows()))
-		lines = []string{historyTint(title, "1", model.color), ""}
+		if model.color {
+			title = richPaint(historyCommand(group.Representative), richCyan, true) + richDim(" · "+T("cli.log_history.run_count", len(model.rows())))
+		}
+		lines = []string{title, ""}
 		if !model.expanded {
-			lines = append(lines, historyTint(historyRunHeader(model.contentWidth()), "38;5;246", model.color))
+			lines = append(lines, historyTint(historyRunHeader(model.contentWidth()), richGray, model.color))
 		}
 		lines = append(lines, strings.TrimRight(model.history.View(), "\n"), "")
 		if !model.expanded {
 			lines = append(lines, model.summary()...)
 			lines = append(lines, "")
 		}
-		lines = append(lines, historyTint(T("cli.log_history.detail_help"), "38;5;246", model.color))
+		lines = append(lines, liveKeyHints(T("cli.log_history.detail_help"), model.color))
 		if model.expanded {
-			lines[len(lines)-1] = historyTint(T("cli.log_history.expanded_help"), "38;5;246", model.color)
+			lines[len(lines)-1] = liveKeyHints(T("cli.log_history.expanded_help"), model.color)
 		}
 	} else {
-		lines = []string{historyTint(T("cli.log_history.browser_title", len(model.groups)), "1", model.color), "", historyTint(historyKeyHeader(model.contentWidth(), model.groups), "38;5;246", model.color)}
+		lines = []string{historyStrong(T("cli.log_history.browser_title", len(model.groups)), richMagenta, model.color), "", historyTint(historyKeyHeader(model.contentWidth(), model.groups), richGray, model.color)}
 		if len(model.groups) > 0 {
 			lines = append(lines, strings.TrimRight(model.list.View(), "\n"))
 		} else {
 			lines = append(lines, T("cli.log_history.no_match"))
 		}
-		lines = append(lines, "", historyTint(T("cli.log_history.list_help"), "38;5;246", model.color))
+		lines = append(lines, "", liveKeyHints(T("cli.log_history.list_help"), model.color))
 	}
 	if len(model.notices) > 0 {
-		lines = append(lines, historyTint(model.notices[0], "33", model.color))
+		lines = append(lines, historyTint(model.notices[0], richYellow, model.color))
 		if len(model.notices) > 1 {
-			lines = append(lines, historyTint(T("cli.log_history.more_notices", len(model.notices)-1), "33", model.color))
+			lines = append(lines, historyTint(T("cli.log_history.more_notices", len(model.notices)-1), richYellow, model.color))
 		}
 	}
 	body := strings.Split(strings.Join(lines, "\n"), "\n")

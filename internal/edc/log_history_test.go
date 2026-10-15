@@ -330,15 +330,23 @@ func TestLogHistoryFollowsNamedSymlinkDirectory(t *testing.T) {
 	}
 }
 
+// historySGR은 richPaint가 code로 칠할 때 앞에 붙는 escape다.
+func historySGR(code string, bold bool) string {
+	return strings.TrimSuffix(richPaint("x", code, bold), "x"+richReset)
+}
+
 func TestLogHistoryRunRowColorsEveryFailureRed(t *testing.T) {
 	for _, outcome := range []logHistoryOutcome{historyOutcomeFail, historyOutcomeTimeout, historyOutcomeSignal, historyOutcomeError} {
 		row := historyRunRow(logHistoryAttempt{Outcome: outcome}, 80, false, true)
-		if !strings.Contains(row, "\x1b[31;1m") {
+		if !strings.Contains(row, historySGR(richRed, true)) {
 			t.Fatalf("%s not red: %q", outcome, row)
 		}
 	}
-	if row := historyRunRow(logHistoryAttempt{Outcome: "UNKNOWN"}, 80, false, true); !strings.Contains(row, "\x1b[33m") {
+	if row := historyRunRow(logHistoryAttempt{Outcome: "UNKNOWN"}, 80, false, true); !strings.Contains(row, historySGR(richYellow, false)) {
 		t.Fatalf("UNKNOWN not yellow: %q", row)
+	}
+	if row := historyRunRow(logHistoryAttempt{Outcome: historyOutcomeSuccess}, 80, false, true); !strings.Contains(row, historySGR(richGreen, false)) {
+		t.Fatalf("success not green: %q", row)
 	}
 }
 

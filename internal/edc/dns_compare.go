@@ -15,6 +15,9 @@ import (
 	"github.com/miekg/dns"
 )
 
+// resolver별 답 표가 이 probe의 본문이라 -v 없이도 보인다.
+func init() { evidenceShownProbes["dns.compare"] = true }
+
 type resolverFlags []string
 
 func (flags *resolverFlags) String() string { return strings.Join(*flags, ",") }

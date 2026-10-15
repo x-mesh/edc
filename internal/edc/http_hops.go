@@ -19,6 +19,9 @@ import (
 	"golang.org/x/term"
 )
 
+// redirect 경로는 edc http check의 기본 출력이다. doctor는 -v일 때만 상세 기록을 켜므로, 기본 화면에는 evidence가 없다.
+func init() { evidenceShownProbes["http.check"] = true }
+
 // httpDetail은 http probe가 redirect 경로와 응답 내용을 얼마나 남기는지다. doctor와 watch는 같은 probe를
 // 짧은 간격으로 여러 번 부르므로 기본값은 아무것도 더 남기지 않는다.
 type httpDetail int

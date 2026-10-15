@@ -623,6 +623,8 @@ func (threshold topThreshold) level(value float64) topLevel {
 type topLimits struct {
 	load, cpu, io, memory, await, psi, network topThreshold
 	color                                      bool
+	// memoryTotal은 host memory 크기(byte)다. memory 증가 경고가 남은 양을 다 쓰는 시간을 구할 때 쓴다. 모르면 0이다.
+	memoryTotal uint64
 }
 
 func newTopLimits(cores int, color bool) topLimits {

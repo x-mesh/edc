@@ -256,7 +256,9 @@ type topSampleMsg struct {
 }
 
 func newTopModel(details hostDetails, first resourceSnapshot, interval time.Duration, sample func() (resourceSnapshot, error)) topModel {
-	return topModel{details: details, limits: newTopLimits(details.Cores, true), interval: interval, previous: first, view: topViewAll, follow: true, sample: sample, events: &topEventLog{},
+	limits := newTopLimits(details.Cores, true)
+	limits.memoryTotal = details.MemoryTotal
+	return topModel{details: details, limits: limits, interval: interval, previous: first, view: topViewAll, follow: true, sample: sample, events: &topEventLog{},
 		listInterfaces: topListInterfaces, interfacePhysical: topInterfacePhysical, physicalSupported: topPhysicalSupported}
 }
 
@@ -1218,7 +1220,18 @@ func (model topModel) candidates() []topProcess {
 	processes := append([]topProcess(nil), row.processes...)
 	switch model.view {
 	case topViewMemory:
-		sort.SliceStable(processes, func(i, j int) bool { return processes[i].memory() > processes[j].memory() })
+		// 늘어나는 process는 크기와 상관없이 앞에 둔다. 다섯 줄로 자를 때 signal이 가리키는 줄이 빠지면 안 되고,
+		// 칸 색이 크기 순서와 다른 이유를 보여 준다.
+		sort.SliceStable(processes, func(i, j int) bool {
+			before, after := processes[i].Growth, processes[j].Growth
+			if (before != nil) != (after != nil) {
+				return before != nil
+			}
+			if before != nil && before.Bytes != after.Bytes {
+				return before.Bytes > after.Bytes
+			}
+			return processes[i].memory() > processes[j].memory()
+		})
 	case topViewDisk:
 		// 디스크 대기는 CPU를 쓰지 않으므로 I/O가 큰 process를 앞에 둔다. I/O를 읽지 못했거나 같으면
 		// I/O를 기다리며 멈춘 process를 CPU 순위보다 앞에 둔다.
@@ -1428,6 +1441,10 @@ func (model topModel) candidateLines() []string {
 			state = topTint(state, topLevelWarn, color)
 		}
 		memory := topProcessMemoryCell(formatProcessRSS(process.memory()), !process.MemoryValid, color)
+		if growth := process.Growth; growth != nil {
+			// 꾸준히 늘어나는 process는 크기와 상관없이 칸을 칠해 signal이 가리키는 줄을 찾게 한다.
+			memory = topTint(fmt.Sprintf("%6s", formatProcessRSS(process.memory())), topSignalItem{score: topMemoryGrowthScore(*growth, model.limits.memoryTotal, row.rate.MemoryPercent)}.level(), color)
+		}
 		line := fmt.Sprintf("%s %7d %s %s %6.1f%% %s", marker, process.PID, topFitCell(topProcessName(process.Command, nameWidth), nameWidth, true), state, process.CPU, memory)
 		if showRSS {
 			line += fmt.Sprintf(" %6s", formatProcessRSS(process.RSS))
@@ -2026,9 +2043,27 @@ func topDashboardSignalItems(rate resourceRate, processes []topProcess, groups [
 		signals = append(signals, topSignalItem{text: process, view: topViewProcess, kind: "process " + strconv.Itoa(processes[0].PID)})
 	}
 	if valid {
+		if growth, ok := topMemoryGrowthSignal(processes, limits.memoryTotal, rate.MemoryPercent); ok {
+			signals = append(signals, growth)
+		}
 		signals = append(signals, topProcessGroupSignals(groups)...)
 	}
 	return signals
+}
+
+// topMemoryGrowthSignal은 가장 많이 늘어난 process 하나를 경고한다. 누수는 크기 순위보다 증가에서 먼저 드러난다.
+func topMemoryGrowthSignal(processes []topProcess, memoryTotal uint64, memoryPercent float64) (topSignalItem, bool) {
+	leading, ok := topFastestGrowing(processes)
+	if !ok {
+		return topSignalItem{}, false
+	}
+	growth := *leading.Growth
+	return topSignalItem{
+		text:  fmt.Sprintf("%s +%s/%.0fm", topProcessName(leading.Command, topSignalProcessNameWidth), formatProcessRSS(growth.Bytes), growth.Window.Minutes()),
+		score: topMemoryGrowthScore(growth, memoryTotal, memoryPercent),
+		view:  topViewMemory,
+		kind:  "memory growth " + strconv.Itoa(leading.PID),
+	}, true
 }
 
 // topProcessGroupSignals는 묶음 합이 process 하나의 경고 기준을 넘을 때 경고한다. 하나하나는 작아 process 경고에

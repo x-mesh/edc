@@ -138,6 +138,10 @@ func topEventCulprit(row topDashboardRow, view topView) string {
 	case topViewPressure:
 		view = topViewDisk
 	}
+	// 늘어나는 process는 아직 작거나 같은 이름의 묶음에 들어 크기 순위로는 가려진다. memory 경고의 원인으로 먼저 적는다.
+	if growing, ok := topFastestGrowing(row.processes); ok && view == topViewMemory {
+		return topProcessName(growing.Command, topEventNameWidth) + " +" + formatProcessRSS(growing.Growth.Bytes) + " " + formatProcessRSS(growing.memory())
+	}
 	parts, processes := []string{}, row.processes
 	if groups := topViewProcessGroups(row.processTotal.Groups, view); len(groups) > 0 {
 		group := groups[0]

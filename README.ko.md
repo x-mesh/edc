@@ -1734,7 +1734,9 @@ $ edc capture
 → edc capture --interface en0
 ```
 
-command 묶음은 어떤 command를 실행할지 묻습니다. `edc dns`, `edc net`, `edc report`, `edc route`, `edc change`, `edc disk`, `edc completion`이 각자의 command를 보여 줍니다. `edc report show`와 `edc report diff`는 이어서 현재 디렉터리의 report를 나열합니다.
+command 묶음은 어떤 command를 실행할지 묻습니다. `edc dns`, `edc net`, `edc report`, `edc route`, `edc change`, `edc disk`, `edc history`, `edc completion`이 각자의 command를 짧은 설명과 함께 보여 줍니다. `edc report show`와 `edc report diff`는 이어서 현재 디렉터리의 report를 나열합니다.
+
+`edc log`는 묻지 않습니다. 인자 없이 실행하면 사용 형태와 예시를 출력하고 exit code `2`를 돌려줍니다.
 
 `edc change confirm`, `edc change rollback`, `edc route rollback`은 아직 대기 중인 변경을 나열합니다. run id를 옮겨 적는 대신 고릅니다.
 

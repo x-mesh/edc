@@ -51,6 +51,19 @@ func TestHelpScreensStayWithinTheLineLimit(t *testing.T) {
 				t.Fatalf("printCommandHelp(%q) returned false", doc.name)
 			}
 			assertWidth(t, language+" help "+doc.name, detail.String())
+
+			var brief strings.Builder
+			if printCommandBrief(&brief, doc.name) {
+				assertWidth(t, language+" brief "+doc.name, brief.String())
+			}
+
+			names := make([]string, 0, len(doc.subcommands))
+			for _, sub := range doc.subcommands {
+				names = append(names, sub.name)
+			}
+			for _, item := range subcommandSelectItems(doc.name, names) {
+				assertWidth(t, language+" select "+doc.name, liveSelectedBar+" "+item.label)
+			}
 		}
 	}
 }
@@ -70,6 +83,11 @@ func TestRichHelpScreensStayWithinTheLineLimit(t *testing.T) {
 			var detail strings.Builder
 			printRichCommandHelp(&detail, doc)
 			assertWidth(t, language+" rich help "+doc.name, detail.String())
+			if len(doc.subcommands) > 0 {
+				var brief strings.Builder
+				printRichCommandBrief(&brief, doc)
+				assertWidth(t, language+" rich brief "+doc.name, brief.String())
+			}
 		}
 	}
 }
@@ -214,6 +232,13 @@ func TestEveryCommandDocIsComplete(t *testing.T) {
 		if !groups[doc.group] {
 			t.Errorf("%s has group %q, which printHelp never prints", doc.name, doc.group)
 		}
+		for _, sub := range doc.subcommands {
+			for _, language := range supportedLanguages {
+				if !hasMessage(language, doc.subcommandKey(sub.name)) {
+					t.Errorf("%s has no %s description of %s %s", language, doc.subcommandKey(sub.name), doc.name, sub.name)
+				}
+			}
+		}
 		// zsh completion은 이름과 설명을 콜론으로 나누므로 설명에 콜론이 있으면 깨진다.
 		// summary가 언어마다 다르므로 세 언어를 모두 본다.
 		restore := currentLanguage()
@@ -244,5 +269,103 @@ func TestCompletionScriptsFollowTheCommandTable(t *testing.T) {
 		if strings.Contains(script, "@@COMMANDS@@") {
 			t.Error("the placeholder must be replaced")
 		}
+	}
+}
+
+// 인자 없이 친 edc log가 "-- 뒤에 명령이 필요하다"는 오류만 내면 log가 무엇을 하는지 알 수 없다.
+func TestBareLogPrintsTheBrief(t *testing.T) {
+	restore := currentLanguage()
+	defer setLanguage(restore)
+	setLanguage("en")
+
+	var stdout, stderr strings.Builder
+	code := runLogWithStreams(nil, logStreams{stdin: strings.NewReader(""), stdout: &stdout, stderr: &stderr})
+	if code != 2 {
+		t.Fatalf("bare edc log must return 2, got %d", code)
+	}
+	for _, want := range []string{"edc log -- <command> [args...]", "edc log history [<command>]", "edc log -- ls -l /tmp", "edc help log"} {
+		if !strings.Contains(stderr.String(), want) {
+			t.Errorf("the brief misses %q:\n%s", want, stderr.String())
+		}
+	}
+	if strings.Contains(stderr.String(), T("cli.log.command_required")) {
+		t.Errorf("bare edc log must not print the -- error:\n%s", stderr.String())
+	}
+	if stdout.Len() != 0 {
+		t.Errorf("the brief belongs on stderr, stdout got %q", stdout.String())
+	}
+}
+
+func TestPrintCommandBriefNeedsSubcommands(t *testing.T) {
+	var output strings.Builder
+	if printCommandBrief(&output, "doctor") || printCommandBrief(&output, "nope") {
+		t.Fatal("a command without subcommand docs has no brief")
+	}
+	if output.Len() != 0 {
+		t.Fatalf("no brief must write nothing, got %q", output.String())
+	}
+}
+
+func TestSubcommandSelectItemsDescribeEachChoice(t *testing.T) {
+	restore := currentLanguage()
+	defer setLanguage(restore)
+	setLanguage("en")
+
+	items := subcommandSelectItems("dns", []string{"lookup", "compare", "config"})
+	want := []selectItem{
+		{label: "lookup   — " + T("command.dns.sub.lookup"), value: "lookup"},
+		{label: "compare  — " + T("command.dns.sub.compare"), value: "compare"},
+		{label: "config   — " + T("command.dns.sub.config"), value: "config"},
+	}
+	if len(items) != len(want) {
+		t.Fatalf("got %d items, want %d", len(items), len(want))
+	}
+	for index := range want {
+		if items[index] != want[index] {
+			t.Errorf("item %d = %+v, want %+v", index, items[index], want[index])
+		}
+	}
+
+	plain := subcommandSelectItems("tcp", []string{"check"})
+	if len(plain) != 1 || plain[0] != (selectItem{label: "check", value: "check"}) {
+		t.Errorf("a choice without a description keeps its name, got %+v", plain)
+	}
+}
+
+// 색 안내 화면은 평문과 같은 형태와 예시를 담고, 그대로 칠 수 있는 명령을 굵은 청록으로 칠한다.
+func TestRichCommandBriefKeepsTheFormsAndExamples(t *testing.T) {
+	restore := currentLanguage()
+	defer setLanguage(restore)
+	setLanguage("en")
+	doc, _ := findCommandDoc("log")
+	var colored, plain strings.Builder
+	printRichCommandBrief(&colored, doc)
+	printCommandBrief(&plain, "log")
+	text := ansi.Strip(colored.String())
+	for _, want := range []string{"edc log -- <command> [args...]", "edc log history [<command>]", "edc log -- ls -l /tmp", "edc help log", T("command.log.sub.run")} {
+		if !strings.Contains(text, want) || !strings.Contains(plain.String(), want) {
+			t.Errorf("brief misses %q:\n%s", want, text)
+		}
+	}
+	if !strings.Contains(colored.String(), richPaint("edc log -- ls -l /tmp", richCyan, true)) {
+		t.Errorf("examples should be bold cyan: %q", colored.String())
+	}
+}
+
+// 평문 안내 화면도 색 화면처럼 형태 목록 위에 usage 머리줄을 둔다. history 예시는 history 명령만 담는다.
+func TestPlainCommandBriefLabelsTheForms(t *testing.T) {
+	restore := currentLanguage()
+	defer setLanguage(restore)
+	setLanguage("en")
+	var brief strings.Builder
+	if !printCommandBrief(&brief, "history") {
+		t.Fatal("history has a brief")
+	}
+	lines := strings.Split(brief.String(), "\n")
+	if len(lines) < 3 || lines[2] != T("help.usage_label") || !strings.Contains(brief.String(), "edc history list [options] [DB]") {
+		t.Errorf("brief = %q", brief.String())
+	}
+	if strings.Contains(brief.String(), "\n  edc top -w\n") {
+		t.Errorf("history examples must run history: %q", brief.String())
 	}
 }

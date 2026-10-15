@@ -46,7 +46,13 @@ func runLog(args []string) int {
 }
 
 func runLogWithStreams(args []string, streams logStreams) int {
-	if len(args) > 0 && args[0] == "history" {
+	if len(args) == 0 {
+		if !printCommandBrief(streams.stderr, "log") {
+			fmt.Fprintln(streams.stderr, T("cli.log.command_required"))
+		}
+		return 2
+	}
+	if args[0] == "history" {
 		return runLogHistory(args[1:], streams)
 	}
 	options, ok := parseLogOptions(args, streams.stderr)

@@ -9,6 +9,7 @@ help:
   detail_hint: "edc help <command>"
   options_label: "options"
   common_options_label: "common options"
+  examples_label: "examples"
   group:
     diagnose: "diagnose"
     observe: "observe"
@@ -34,6 +35,10 @@ command:
       - "Press Ctrl-C to cancel. edc returns exit code 4."
   dns:
     summary: "Name lookup and resolver setup"
+    sub:
+      lookup: "addresses that the system resolver returns"
+      compare: "system DNS against 1.1.1.1 or --resolver"
+      config: "resolver settings of this host"
     option:
       resolver: "compare against this DNS server; repeat for more"
     notes:
@@ -91,8 +96,18 @@ command:
       - "It works on Linux only."
   net:
     summary: "Interfaces, route, ping, and trace"
+    sub:
+      interfaces: "network interfaces and their addresses"
+      route: "the interface and gateway toward a host"
+      ping: "ping a host"
+      trace: "the path to a host, with traceroute or tracepath"
   route:
     summary: "Check, switch, and roll back the default route on a gateway VM"
+    sub:
+      check: "inspect the current state, change nothing"
+      switch: "switch with a rollback timer, then verify"
+      status: "show a pending or finished switch"
+      rollback: "restore one state file"
     notes:
       - "This command runs locally on the gateway VM whose route it changes."
       - "switch and rollback need root. edc does not add sudo itself."
@@ -100,6 +115,9 @@ command:
       - "status reads /run/edc. rollback --state repeats one state file."
   disk:
     summary: "Grow a partition and file system after a disk resize"
+    sub:
+      check: "show the mounts that can grow, change nothing"
+      grow: "grow a partition and its file system"
     notes:
       - "check reads the layers and changes nothing."
       - "Run check as root to see the size of every layer."
@@ -107,6 +125,11 @@ command:
       - "grow cannot be undone. Take a snapshot of the volume first."
   change:
     summary: "Protected host changes with automatic rollback"
+    sub:
+      apply: "apply, then roll back unless confirmed"
+      status: "pending changes and their remaining time"
+      confirm: "keep a change, stop its rollback timer"
+      rollback: "restore the state from before apply"
   top:
     summary: "Live resource dashboard"
     option:
@@ -128,6 +151,9 @@ command:
       - "f follows a signal: its view, then the busiest process. / filters, Esc clears."
   watch:
     summary: "Observe HTTP or file changes and run explicit file actions"
+    sub:
+      http: "request a URL again and again until Ctrl-C"
+      fs: "watch file changes, optionally run a command"
     option:
       interval: "seconds between samples (minimum 0.1)"
       duration: "stop after this time; omit to run until Ctrl-C"
@@ -438,6 +464,9 @@ command:
       - "A worse probe returns exit code 1."
   log:
     summary: "Record command output and exit status"
+    sub:
+      run: "run a command, save its output and exit status"
+      history: "browse the saved runs of each command"
     option:
       stream: "stream to record (default both)"
       output: "log file; default creates one file per run"
@@ -482,6 +511,10 @@ command:
       - "Ctrl-C marks the remaining steps as SKIP and returns exit code 4."
   completion:
     summary: "Print the shell completion script"
+    sub:
+      zsh: "print the zsh completion script"
+      bash: "print the bash completion script"
+      groups: "print the inventory group names, one per line"
     notes:
       - "source <(edc completion zsh) or source <(edc completion bash)."
       - "groups prints the group names of the inventory, one per line."
@@ -509,3 +542,7 @@ command:
 
   history:
     summary: "Search recorded resource observations"
+    sub:
+      list: "runs that edc top -w recorded"
+      top: "host samples, newest first"
+      process: "process samples, newest first"

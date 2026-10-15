@@ -3,6 +3,7 @@ package edc
 import (
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -103,7 +104,8 @@ func (live *liveProgram) finish(msg tea.Msg) (tea.Model, error) {
 
 // liveSpinner는 기존 remote 상태줄과 같은 frame을 쓴다.
 func liveSpinner() spinner.Model {
-	return spinner.New(spinner.WithSpinner(spinner.Spinner{Frames: liveSpinnerFrames, FPS: liveSpinnerFPS}))
+	return spinner.New(spinner.WithSpinner(spinner.Spinner{Frames: liveSpinnerFrames, FPS: liveSpinnerFPS}),
+		spinner.WithStyle(lipgloss.NewStyle().Foreground(lipgloss.Color(richHex(richMagenta)))))
 }
 
 var liveSpinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
@@ -118,26 +120,107 @@ const (
 	// liveSelectedBar는 고른 줄 왼쪽에 두는 막대다. 색을 못 써도 어느 줄인지 알 수 있다.
 	liveSelectedBar = "▌"
 	liveIdleBar     = " "
-	// liveReverse는 고른 칸의 글자와 배경을 뒤집는다. 색 지각과 무관하게 대비가 크다.
+	// liveReverse와 liveDim은 아직 팔레트로 옮기지 않은 화면(listen watch)이 쓴다.
 	liveReverse = "\033[7m"
 	liveDim     = "\033[2m"
 	liveReset   = "\033[0m"
 )
 
-// liveSelected는 고른 항목을 반전으로 칠한다.
+// liveRich는 팔레트 색을 써도 되는지다. 선택기와 확인 화면은 NO_COLOR에서도 color를 켠 채로 뜨므로, 그때는 색 없이
+// 반전과 흐림만 쓰던 예전 글자를 그대로 낸다.
+func liveRich(color bool) bool {
+	return color && os.Getenv("NO_COLOR") == ""
+}
+
+// liveSelected는 고른 항목을 chip 바탕에 굵은 글씨로 칠한다. 맨 앞의 막대는 자홍으로 칠한다.
+// 칸마다 색을 입힌 줄은 칸 끝의 reset이 바탕까지 지우므로, reset 뒤마다 바탕을 다시 건다.
 func liveSelected(text string, color bool) string {
 	if !color {
 		return text
 	}
-	return liveReverse + text + liveReset
+	if !liveRich(color) {
+		return liveReverse + text + liveReset
+	}
+	base := "\033[1;" + richRGBCode(richChipBackground, true, richTruecolor()) + "m"
+	bar := ""
+	if rest, ok := strings.CutPrefix(text, liveSelectedBar); ok {
+		// 39는 글자색만 기본으로 돌린다. reset을 쓰면 막대 뒤에서 바탕이 끊긴다.
+		bar = "\033[" + richFixedColor(richMagenta, richTruecolor()) + "m" + liveSelectedBar + "\033[39m"
+		text = rest
+	}
+	return base + bar + strings.ReplaceAll(text, richReset, richReset+base) + richReset
 }
 
-// liveMuted는 고르지 않은 항목과 키 안내를 흐리게 만든다.
+// liveMuted는 고르지 않은 항목과 키 안내를 회색으로 칠한다. 안쪽에 색을 입힌 조각이 있어도 그 뒤를 다시 회색으로 둔다.
 func liveMuted(text string, color bool) string {
-	if !color {
+	if !color || text == "" {
 		return text
 	}
-	return liveDim + text + liveReset
+	if !liveRich(color) {
+		return liveDim + text + liveReset
+	}
+	gray := strings.TrimSuffix(richDim("x"), "x"+richReset)
+	return gray + strings.ReplaceAll(text, richReset, richReset+gray) + richReset
+}
+
+// liveHintSeparator는 키 안내의 묶음 사이 구분자다. 언어팩은 " · ", 공백 세 칸, ", " 중 하나로 묶음을 나눈다.
+var liveHintSeparator = regexp.MustCompile(`\s*·\s*|\s{3,}|,\s+`)
+
+// liveHintKeys는 키 안내에서 키로 읽는 낱말이다. 한 글자 키는 liveHintKey가 따로 받는다.
+var liveHintKeys = map[string]bool{
+	"↑/↓": true, "↑↓": true, "←/→": true, "Enter": true, "enter": true, "Esc": true, "esc": true, "Tab": true,
+	"Esc/b": true, "End": true, "Home": true, "PgUp/PgDn": true, "space": true, "y/n": true, "Backspace": true, "Ctrl-C": true,
+}
+
+func liveHintKey(token string) bool {
+	if liveHintKeys[token] {
+		return true
+	}
+	if len(token) != 1 {
+		return false
+	}
+	character := token[0]
+	return character >= 'a' && character <= 'z' || character >= 'A' && character <= 'Z' || strings.ContainsRune("/+-", rune(character))
+}
+
+// liveKeyHints는 "키 설명" 묶음의 키를 굵은 청록으로, 설명과 구분자를 회색으로 칠한다. 키로 시작하지 않는 묶음은 모두 회색이다.
+func liveKeyHints(text string, color bool) string {
+	if !liveRich(color) || text == "" {
+		return liveMuted(text, color)
+	}
+	var builder strings.Builder
+	last := 0
+	for _, bounds := range append(liveHintSeparator.FindAllStringIndex(text, -1), []int{len(text), len(text)}) {
+		builder.WriteString(liveHintGroup(text[last:bounds[0]]))
+		builder.WriteString(richDim(text[bounds[0]:bounds[1]]))
+		last = bounds[1]
+	}
+	return builder.String()
+}
+
+func liveHintGroup(group string) string {
+	trimmed := strings.TrimLeft(group, " ")
+	lead := group[:len(group)-len(trimmed)]
+	key, rest, _ := strings.Cut(trimmed, " ")
+	if !liveHintKey(key) {
+		return lead + richDim(trimmed)
+	}
+	if rest != "" {
+		rest = " " + rest
+	}
+	return lead + richPaint(key, richCyan, true) + richDim(rest)
+}
+
+// liveTitleHints는 "질문   키 설명   키 설명" 꼴의 제목이다. 질문은 굵게, 뒤의 키 안내는 liveKeyHints로 칠한다.
+func liveTitleHints(text string, color bool) string {
+	if !liveRich(color) {
+		return text
+	}
+	title, hints, found := strings.Cut(text, "   ")
+	if !found {
+		return richBold(text)
+	}
+	return richBold(title) + liveKeyHints("   "+hints, true)
 }
 
 // liveCell은 ANSI escape를 포함한 문자열을 표시 폭 기준으로 채운다.

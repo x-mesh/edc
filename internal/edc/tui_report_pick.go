@@ -126,7 +126,7 @@ func (model reportPairModel) pickedReports() []savedReport {
 
 func (model reportPairModel) View() tea.View {
 	rows := model.rows()
-	lines := []string{model.fit(T("cli.report.pick_title")), liveMuted(model.fit(T("cli.report.pick_help")), model.color)}
+	lines := []string{model.paint(model.fit(T("cli.report.pick_title")), "", true), liveKeyHints(model.fit(T("cli.report.pick_help")), model.color)}
 	start, end := model.window(len(rows))
 	width := 0
 	for _, row := range rows {
@@ -144,12 +144,24 @@ func (model reportPairModel) View() tea.View {
 			lines = append(lines, liveIdleBar+" "+row)
 			continue
 		}
-		lines = append(lines, liveSelectedBar+" "+liveSelected(liveCell(row, width), model.color))
+		if !liveRich(model.color) {
+			lines = append(lines, liveSelectedBar+" "+liveSelected(liveCell(row, width), model.color))
+			continue
+		}
+		lines = append(lines, liveSelected(liveSelectedBar+" "+liveCell(row, width), true))
 	}
 	lines = append(lines, model.notice)
 	view := tea.NewView(strings.Join(lines, "\n"))
 	view.AltScreen = true
 	return view
+}
+
+// paint는 색을 쓸 때만 칠한다. code가 비면 굵게만 한다.
+func (model reportPairModel) paint(text, code string, bold bool) string {
+	if !liveRich(model.color) {
+		return text
+	}
+	return svcBrowserPaint(text, code, bold, true)
 }
 
 // fit은 제목과 안내 줄을 화면 폭에 맞춰 자른다. 폭을 아직 모르면 그대로 둔다.
@@ -206,18 +218,26 @@ func (model reportPairModel) rows() []string {
 	}
 	rows := make([]string, 0, len(cells)+1)
 	for _, cell := range cells {
-		line := cell.box + " " + cell.started + "  "
+		box := model.paint(cell.box, richGray, false)
+		if cell.box == "[x]" {
+			box = model.paint(cell.box, richCyan, true)
+		}
+		line := box + " " + cell.started + "  "
 		if showAge {
-			line += liveCell(cell.age, ageWidth) + "  "
+			line += model.paint(liveCell(cell.age, ageWidth), richGray, false) + "  "
 		}
 		if showCounts {
-			line += liveCell(cell.counts, countsWidth) + "  "
+			counts := cell.counts
+			if liveRich(model.color) {
+				counts = reportPaintCounts(counts, " · ", reportSummaryColors, false)
+			}
+			line += liveCell(counts, countsWidth) + "  "
 		}
 		file := cell.file
 		if model.width > 0 {
 			file = ansi.Truncate(file, max(reportPairMinFile/2, available-liveWidth(line)), "…")
 		}
-		rows = append(rows, line+file)
+		rows = append(rows, line+model.paint(file, richGray, false))
 	}
 	return append(rows, strings.Repeat(" ", liveWidth("[ ] "))+T("cli.report.enter_path"))
 }

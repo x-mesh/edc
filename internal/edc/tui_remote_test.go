@@ -6,6 +6,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 )
 
 func remoteFixtureModel(cancel func()) remoteModel {
@@ -235,5 +236,58 @@ func TestRemoteModelConfirmRejects(t *testing.T) {
 	confirmed, _ := moved.(remoteModel).Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if got := <-confirmed.(remoteModel).answered; !got {
 		t.Fatal("enter on 예 must confirm the run")
+	}
+}
+
+// 색을 쓰는 화면은 상태를 배지로 그리고, 열 폭을 배지에 맞춘다. 진행 막대는 끝난 칸만 칠한다.
+func TestRemoteModelDrawsBadgesAndAMutedProgressBar(t *testing.T) {
+	t.Setenv("COLORTERM", "truecolor")
+	t.Setenv("NO_COLOR", "")
+	hosts := []remoteHost{{Name: "workstation", Tags: []string{"mac"}}, {Name: "build-server", Tags: []string{"linux"}}}
+	recipe := remoteRecipe{Name: "daily", Steps: []remoteStep{
+		{Name: "git-kit", Command: "git-kit update", Timeout: time.Minute},
+		{Name: "brew", Command: "brew upgrade", Timeout: time.Minute, Tags: []string{"mac"}},
+	}}
+	model := newRemoteModel(remotePlanView{group: "daily", hosts: hosts, recipe: recipe, width: 100, command: "edc remote run daily"}, false, true, false, nil)
+	model = remoteAfter(t, model, remoteResultMsg{host: "workstation", step: "git-kit", status: StatusPass}, remoteResultMsg{host: "build-server", step: "git-kit", status: StatusFail})
+	view := model.View().Content
+	for _, want := range []string{richStatusBadge(StatusPass), richStatusBadge(StatusFail), richPaint("edc remote run daily", richCyan, true), richFill("█", richGreen)[:4]} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("view misses %q:\n%q", want, view)
+		}
+	}
+	plain := ansi.Strip(view)
+	if !strings.Contains(plain, "░") || !strings.Contains(plain, T("remote.label.completed_count", 2, 3)) {
+		t.Fatalf("progress = %q", plain)
+	}
+	lines := strings.Split(plain, "\n")
+	for index, line := range lines {
+		if !strings.HasPrefix(line, "host ") {
+			continue
+		}
+		start := strings.Index(line, "git-kit")
+		for _, row := range lines[index+1 : index+3] {
+			if cell := row[start:]; !strings.HasPrefix(cell, " PASS ") && !strings.HasPrefix(cell, " FAIL ") {
+				t.Fatalf("badge is not under its step: %q / %q", line, row)
+			}
+		}
+	}
+	if model.table.widths[0] < richStatusBadgeWidth {
+		t.Fatalf("badge column is %d wide", model.table.widths[0])
+	}
+}
+
+func TestRemoteModelDropsTheProgressBarWhenNarrow(t *testing.T) {
+	t.Setenv("NO_COLOR", "")
+	hosts := []remoteHost{{Name: "workstation"}, {Name: "build-server"}}
+	recipe := remoteRecipe{Name: "daily", Steps: []remoteStep{{Name: "git-kit", Command: "git-kit update", Timeout: time.Minute}}}
+	model := newRemoteModel(remotePlanView{group: "daily", hosts: hosts, recipe: recipe, width: 100}, false, true, false, nil)
+	model = remoteAfter(t, model, remoteStartMsg{host: "workstation", step: "git-kit", phase: remotePhaseCommand})
+	if !strings.Contains(ansi.Strip(model.statusLine()), "░") {
+		t.Fatalf("wide status = %q", ansi.Strip(model.statusLine()))
+	}
+	model = remoteAfter(t, model, tea.WindowSizeMsg{Width: 55, Height: 30})
+	if line := strings.TrimSuffix(model.statusLine(), "\n"); strings.Contains(line, "░") || liveWidth(line) > 55 {
+		t.Fatalf("narrow status = %q", ansi.Strip(line))
 	}
 }

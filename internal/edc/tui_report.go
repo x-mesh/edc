@@ -7,6 +7,7 @@ import (
 
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // viewerFixedLines는 제목과 도움말이 차지하는 줄 수다.
@@ -35,6 +36,7 @@ type viewerModel struct {
 	view     viewport.Model
 	width    int
 	height   int
+	color    bool
 }
 
 func newViewerModel(title string, entries []viewerEntry, filters []viewerFilter) viewerModel {
@@ -102,12 +104,31 @@ func (model viewerModel) body() string {
 }
 
 func (model viewerModel) View() tea.View {
-	view := tea.NewView(model.title + "\n" + model.view.View() + "\n" + model.help())
+	view := tea.NewView(model.fit(model.title) + "\n" + model.view.View() + "\n" + model.fit(model.help()))
 	view.AltScreen = true
 	return view
 }
 
+// fit은 제목과 키 안내의 줄마다 화면 폭에 맞춰 자른다. 넘치는 줄은 renderer가 다음 줄로 넘겨 본문을 밀어낸다.
+func (model viewerModel) fit(text string) string {
+	if model.width <= 0 {
+		return text
+	}
+	lines := strings.Split(text, "\n")
+	for index, line := range lines {
+		lines[index] = ansi.Truncate(line, model.width, "…")
+	}
+	return strings.Join(lines, "\n")
+}
+
 func (model viewerModel) help() string {
+	if model.color {
+		state := richDim(T("cli.report.filter_label")) + richBold(model.filters[model.filter].label)
+		if model.expanded {
+			state += richDim(T("cli.report.detail_open"))
+		}
+		return state + liveKeyHints(T("cli.report.viewer_help"), true)
+	}
 	state := T("cli.report.filter_label") + model.filters[model.filter].label
 	if model.expanded {
 		state += T("cli.report.detail_open")
@@ -117,7 +138,9 @@ func (model viewerModel) help() string {
 
 // runReportViewer는 목록을 alt screen으로 보여 준다. 종료하면 화면이 원래대로 돌아온다.
 func runReportViewer(title string, entries []viewerEntry, filters []viewerFilter) error {
-	_, err := tea.NewProgram(newViewerModel(title, entries, filters), tea.WithInput(os.Stdin), tea.WithOutput(os.Stdout)).Run()
+	model := newViewerModel(title, entries, filters)
+	model.color = true
+	_, err := tea.NewProgram(model, tea.WithInput(os.Stdin), tea.WithOutput(os.Stdout)).Run()
 	return err
 }
 
@@ -194,6 +217,46 @@ func diffFilters() []viewerFilter {
 
 func reportViewerTitle(label, path string, summary string) string {
 	return fmt.Sprintf("%s  %s  ·  %s", label, path, summary)
+}
+
+// reportViewerHeading은 색을 쓰는 뷰어의 제목이다. 글자는 reportViewerTitle과 같다.
+// summary의 개수 묶음은 sep으로 나뉘고, 0이 아닌 묶음은 colors에서 낱말에 맞는 색을 받는다. 0인 묶음은 회색이다.
+func reportViewerHeading(label, path, summary, sep string, colors map[string]string) string {
+	return richPaint(label, richMagenta, true) + "  " + richDim(path) + richDim("  ·  ") + reportPaintCounts(summary, sep, colors, true)
+}
+
+// reportPaintCounts는 "2 pass · 1 fail" 꼴의 개수 묶음을 칠한다. 구분자는 회색이다.
+func reportPaintCounts(summary, sep string, colors map[string]string, bold bool) string {
+	parts := strings.Split(summary, sep)
+	for index, part := range parts {
+		count, word, _ := strings.Cut(part, " ")
+		switch {
+		case count == "0":
+			parts[index] = richDim(part)
+		case colors[word] != "":
+			parts[index] = richPaint(part, colors[word], bold)
+		}
+	}
+	return strings.Join(parts, richDim(sep))
+}
+
+// reportSummaryColors와 reportDiffColors는 제목의 개수 묶음 색이다. 키는 숫자 뒤의 첫 낱말이다.
+var (
+	reportSummaryColors = map[string]string{"pass": richGreen, "warn": richYellow, "fail": richRed}
+	reportDiffColors    = map[string]string{"worse": richRed}
+)
+
+// reportDiffIdentityHeading은 diff 제목 아래의 대상 비교 줄이다. 보조 정보라 회색으로, 대상이 다르다는 경고만 노랑으로 둔다.
+func reportDiffIdentityHeading(identity string) string {
+	lines := strings.Split(identity, "\n")
+	for index, line := range lines {
+		if line == T("cli.report.identity_differs") {
+			lines[index] = richPaint(line, richYellow, false)
+			continue
+		}
+		lines[index] = richDim(line)
+	}
+	return strings.Join(lines, "\n")
 }
 
 func summaryLine(results []Result) string {

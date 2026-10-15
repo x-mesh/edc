@@ -912,3 +912,33 @@ func TestAICacheHitCountsCacheWritesAsMisses(t *testing.T) {
 		}
 	}
 }
+
+// 한도 사용률은 기준에 따라 글자를 칠하고, 막대는 같은 색의 차분한 채움으로 그린다. 상자는 오른쪽이 열린 패널이다.
+func TestAIDashboardColorsUsageByThreshold(t *testing.T) {
+	t.Setenv("COLORTERM", "truecolor")
+	t.Setenv("NO_COLOR", "")
+	for used, color := range map[float64]string{22: richGreen, 85: richYellow, 97: richRed, 0: richGray} {
+		if got := aiPaintPercent(" 22%", used); got != richPaint(" 22%", color, false) {
+			t.Errorf("%.0f%% painted %q", used, got)
+		}
+	}
+	if got, want := aiUsageBar(97), richFill(strings.Repeat("█", 10), richRed); got != want {
+		t.Errorf("full bar = %q, want %q", got, want)
+	}
+	if got, want := aiUsageBar(22), richFill("██", richGreen)+richDim(strings.Repeat("░", 8)); got != want {
+		t.Errorf("bar = %q, want %q", got, want)
+	}
+	model := aiDashboardFixture(time.Date(2026, 10, 6, 1, 0, 30, 0, time.Local))
+	text := ansi.Strip(model.View().Content)
+	for _, want := range []string{"╭─ Claude · max", "│ 5h", "╰─"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("dashboard misses %q", want)
+		}
+	}
+	if strings.Contains(text, "╮") || strings.Contains(text, "╯") {
+		t.Error("limit panels must stay open on the right")
+	}
+	if !strings.Contains(model.View().Content, richPaint("! codex app-server exited", richRed, false)) {
+		t.Error("provider error must be red")
+	}
+}

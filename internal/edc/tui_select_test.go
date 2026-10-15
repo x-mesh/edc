@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 )
 
 func pressKey(model tea.Model, key string) (tea.Model, tea.Cmd) {
@@ -91,8 +92,8 @@ func TestSelectModelEnterChooses(t *testing.T) {
 	if !strings.Contains(view.Content, liveSelectedBar+" weekly") {
 		t.Fatalf("final view must mark the chosen item: %q", view.Content)
 	}
-	// 고른 뒤에는 반전을 걷어 기록으로만 남긴다.
-	if strings.Contains(view.Content, liveReverse) {
+	// 고른 뒤에는 바탕을 걷어 기록으로만 남긴다.
+	if strings.Contains(view.Content, "\033[") {
 		t.Fatalf("final view must not stay reversed: %q", view.Content)
 	}
 	if liveLineCount(view.Content) != final.frameHeight() {
@@ -118,7 +119,7 @@ func TestSelectModelCancels(t *testing.T) {
 		if !strings.HasPrefix(content, T("remote.select.cancelled", T(selectGroupLabel))+"\n") {
 			t.Fatalf("%s view = %q", key, content)
 		}
-		if strings.Contains(content, liveSelectedBar) || strings.Contains(content, liveReverse) {
+		if strings.Contains(content, liveSelectedBar) || strings.Contains(content, "\033[") {
 			t.Fatalf("%s must clear the highlight: %q", key, content)
 		}
 		if liveLineCount(content) != final.frameHeight() {
@@ -146,16 +147,22 @@ func cancelMod(key string) tea.KeyMod {
 }
 
 func TestSelectModelViewListsItems(t *testing.T) {
+	t.Setenv("COLORTERM", "truecolor")
+	t.Setenv("NO_COLOR", "")
 	model := newSelectModel(selectGroupTitle, selectGroupLabel, selectItemsFromValues([]string{"daily", "weekly"}))
 	view := model.View().Content
-	// 고른 줄은 막대와 반전으로, 나머지는 그대로 그린다.
-	for _, expected := range []string{T(selectGroupTitle) + "\n", liveReverse + liveSelectedBar + " daily", "  weekly\n"} {
+	// 제목의 질문은 굵게, 고른 줄은 막대와 chip 바탕으로, 나머지는 그대로 그린다.
+	title, _, _ := strings.Cut(T(selectGroupTitle), "   ")
+	for _, expected := range []string{richBold(title), liveSelected(liveSelectedBar+" daily ", true), "  weekly\n"} {
 		if !strings.Contains(view, expected) {
 			t.Fatalf("view %q does not contain %q", view, expected)
 		}
 	}
-	if strings.Count(view, liveReverse) != 1 {
-		t.Fatalf("한 줄만 반전되어야 한다: %q", view)
+	if !strings.HasPrefix(ansi.Strip(view), T(selectGroupTitle)+"\n") {
+		t.Fatalf("plain title = %q", ansi.Strip(view))
+	}
+	if strings.Count(view, liveChipBase()) != 1 {
+		t.Fatalf("한 줄만 칠해야 한다: %q", view)
 	}
 	if !strings.HasSuffix(view, "\n") {
 		t.Fatalf("view must end with a newline: %q", view)

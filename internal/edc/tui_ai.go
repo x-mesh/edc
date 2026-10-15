@@ -180,18 +180,18 @@ func (model aiModel) View() tea.View {
 		view.AltScreen = true
 		return view
 	}
-	lines := []string{model.title(width), model.groupHeader(), aiColumnHeader()}
+	lines := []string{model.title(width), richDim(model.groupHeader()), richDim(aiColumnHeader())}
 	if !model.scanned {
-		lines = append(lines, "reading the local logs")
+		lines = append(lines, richDim("reading the local logs"))
 	} else {
 		rows := model.usage.rows(model.now.Add(-time.Duration(model.back)*model.rowSize), model.rowSize, model.bodyLines())
 		for index, row := range rows {
-			lines = append(lines, aiTableRow(row, model.rowSize, model.back == 0 && index == len(rows)-1))
+			lines = append(lines, aiTableBorders(aiTableRow(row, model.rowSize, model.back == 0 && index == len(rows)-1)))
 		}
-		lines = append(lines, aiTableSeparator())
+		lines = append(lines, richDim(aiTableSeparator()))
 		// Σ 행은 기록을 거슬러 봐도 지금 기준이다. 행 간격과도 관계없다.
 		for _, total := range model.usage.totals(model.now) {
-			lines = append(lines, aiTotalRow(total))
+			lines = append(lines, aiTableBorders(aiTotalRow(total)))
 		}
 	}
 	lines = append(lines, model.boxLines(width)...)
@@ -219,10 +219,18 @@ func (model aiModel) title(width int) string {
 	}
 	right := state + " · " + model.now.Local().Format("15:04:05 MST") + " 🐰"
 	space := min(width, aiBoxWidth) - ansi.StringWidth(left) - ansi.StringWidth(right)
+	head, place, _ := strings.Cut(left, " · ")
+	left = richPaint(head, richMagenta, true) + richDim(" · "+place)
 	if space < 2 {
-		return left + " · " + right
+		return left + richDim(" · "+right)
 	}
-	return left + strings.Repeat(" ", space) + right
+	return left + strings.Repeat(" ", space) + richDim(right)
+}
+
+// aiTableBorders는 표 줄의 세로 테두리를 회색으로 칠한다. 진행 중인 행의 ▸는 자홍으로 둔다.
+func aiTableBorders(line string) string {
+	line = strings.ReplaceAll(line, "│", richDim("│"))
+	return strings.Replace(line, "▸", richPaint("▸", richMagenta, true), 1)
 }
 
 func aiGroupWidth() int {
@@ -357,49 +365,59 @@ func (model aiModel) boxBody(provider aiProvider, nameWidth int) []string {
 	var lines []string
 	for _, window := range provider.Windows {
 		lines = append(lines, fmt.Sprintf("%-*s  %s %s   %s", nameWidth, window.Name, aiUsageBar(window.Used),
-			aiPaintPercent(fmt.Sprintf("%3.0f%%", window.Used), window.Used), aiResetText(window.ResetsAt, model.now)))
+			aiPaintPercent(fmt.Sprintf("%3.0f%%", window.Used), window.Used), aiPaintReset(aiResetText(window.ResetsAt, model.now))))
 	}
 	if provider.Err != "" {
-		lines = append(lines, topColorDanger+"! "+provider.Err+topColorReset)
+		lines = append(lines, richPaint("! "+provider.Err, richRed, false))
 	} else if len(provider.Windows) == 0 {
-		lines = append(lines, "no limits reported")
+		lines = append(lines, richDim("no limits reported"))
 	}
 	return lines
 }
 
-// aiBox는 제목과 메모가 위 테두리에 붙은 상자다. 폭이 모자라면 메모를 뺀다.
-func aiBox(title, note string, body []string, width int) []string {
-	head := "╭─ " + title + " "
-	tail := "╮"
-	if note != "" {
-		tail = " " + note + " ─╮"
+// aiPaintReset은 리셋 시각을 회색으로, 남은 시간을 기본 색으로 둔다.
+func aiPaintReset(text string) string {
+	at, left, found := strings.Cut(text, "  ")
+	if !found {
+		return richDim(text)
 	}
-	fill := width - ansi.StringWidth(head) - ansi.StringWidth(tail)
-	if fill < 1 {
-		tail = "╮"
-		fill = max(0, width-ansi.StringWidth(head)-1)
-	}
-	lines := []string{head + strings.Repeat("─", fill) + tail}
-	for _, text := range body {
-		lines = append(lines, "│ "+topDashboardFitWidth(text, width-4)+" │")
-	}
-	return append(lines, "╰"+strings.Repeat("─", max(0, width-2))+"╯")
+	return richDim(at) + "  " + left
 }
 
+// aiBox는 제목과 메모가 윗줄에 붙은 열린 패널이다. 폭이 모자라면 메모를 뺀다.
+func aiBox(title, note string, body []string, width int) []string {
+	if note != "" && liveWidth("╭─ "+title+"  "+note+" ───") > width {
+		note = ""
+	}
+	lines := []string{richPanelTop(title, note, "")}
+	for _, text := range body {
+		lines = append(lines, richPanelLine(topDashboardFitWidth(text, width-2), ""))
+	}
+	return append(lines, richPanelBottom(""))
+}
+
+// aiUsageBar는 차분한 색으로 채운 칸과 회색 바탕 칸이다. 넓은 면적이라 강조색을 그대로 쓰지 않는다.
 func aiUsageBar(used float64) string {
 	filled := int(math.Round(used / 100 * aiUsageBarWidth))
 	filled = min(aiUsageBarWidth, max(0, filled))
-	return aiPaintPercent(strings.Repeat("█", filled), used) + strings.Repeat("░", aiUsageBarWidth-filled)
+	return richFill(strings.Repeat("█", filled), aiPercentColor(used)) + richDim(strings.Repeat("░", aiUsageBarWidth-filled))
 }
 
 func aiPaintPercent(text string, used float64) string {
+	return richPaint(text, aiPercentColor(used), false)
+}
+
+// aiPercentColor는 한도 사용률의 색이다. 95% 이상 빨강, 80% 이상 노랑, 그 아래 초록, 0은 회색이다.
+func aiPercentColor(used float64) string {
 	switch {
 	case used >= aiDangerPercent:
-		return topColorDanger + text + topColorReset
+		return richRed
 	case used >= aiWarnPercent:
-		return topColorWarn + text + topColorReset
+		return richYellow
+	case used <= 0:
+		return richGray
 	}
-	return text
+	return richGreen
 }
 
 func aiAgo(elapsed time.Duration) string {
@@ -419,17 +437,17 @@ func aiAgo(elapsed time.Duration) string {
 func (model aiModel) statusLine(width int) string {
 	switch {
 	case model.logErr != nil:
-		return topColorDanger + topDashboardFitWidth(T("observe.ai.error.reset_log", model.logErr), width) + topColorReset
+		return richPaint(topDashboardFitWidth(T("observe.ai.error.reset_log", model.logErr), width), richRed, false)
 	case model.stateErr != nil:
-		return topColorDanger + topDashboardFitWidth(T("observe.ai.error.state", model.stateErr), width) + topColorReset
+		return richPaint(topDashboardFitWidth(T("observe.ai.error.state", model.stateErr), width), richRed, false)
 	case model.usage.Err != "":
-		return topColorDanger + topDashboardFitWidth("scan error · "+model.usage.Err, width) + topColorReset
+		return richPaint(topDashboardFitWidth("scan error · "+model.usage.Err, width), richRed, false)
 	}
-	return topDashboardFitWidth(aiRowSizeHint(model.rowSize)+liveMuted("  row size · ↑↓ history · End live · q quit", true), width)
+	return topDashboardFitWidth(aiRowSizeHint(model.rowSize)+liveKeyHints("  row size · ↑↓ history · End live · q quit", true), width)
 }
 
 // aiRowSizeHint는 -가 왼쪽(짧게), +가 오른쪽(길게)으로 옮긴다는 것을 단계 순서로 보인다.
-// 지금 단계는 대괄호와 반전으로 표시해 색이 없어도 구분된다.
+// 지금 단계는 대괄호와 chip 바탕으로 표시해 색이 없어도 구분된다.
 func aiRowSizeHint(current time.Duration) string {
 	parts := []string{liveMuted("-", true)}
 	for _, size := range aiRowSizes {

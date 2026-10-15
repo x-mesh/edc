@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 )
 
 type stubModel struct {
@@ -92,5 +93,118 @@ func TestLiveCellKeepsColorAndWidth(t *testing.T) {
 	}
 	if liveWidth(colored) != 4 {
 		t.Fatalf("colored status width = %d, want 4", liveWidth(colored))
+	}
+}
+
+// liveChipBase는 liveSelected가 줄 앞과 reset 뒤마다 거는 굵은 글씨와 chip 바탕이다.
+func liveChipBase() string {
+	return "\033[1;" + richRGBCode(richChipBackground, true, richTruecolor()) + "m"
+}
+
+func TestLiveSelectedKeepsTheChipAcrossCells(t *testing.T) {
+	t.Setenv("COLORTERM", "truecolor")
+	t.Setenv("NO_COLOR", "")
+	row := liveSelectedBar + " " + richDim("10:00") + " web"
+	got := liveSelected(row, true)
+	want := liveChipBase() + "\033[" + richFixedColor(richMagenta, true) + "m" + liveSelectedBar + "\033[39m" +
+		" " + strings.TrimSuffix(richDim("10:00"), richReset) + richReset + liveChipBase() + " web" + richReset
+	if got != want {
+		t.Fatalf("selected = %q, want %q", got, want)
+	}
+	if liveWidth(got) != liveWidth(row) {
+		t.Fatalf("width = %d, want %d", liveWidth(got), liveWidth(row))
+	}
+	if liveSelected(row, false) != row {
+		t.Fatal("plain selection must not change")
+	}
+}
+
+func TestLiveMutedRepaintsAfterInnerResets(t *testing.T) {
+	t.Setenv("COLORTERM", "")
+	t.Setenv("NO_COLOR", "")
+	if got := liveMuted("q quit", true); got != richDim("q quit") {
+		t.Fatalf("muted = %q", got)
+	}
+	gray := strings.TrimSuffix(richDim("x"), "x"+richReset)
+	if got := liveMuted("a"+richBold("b")+"c", true); got != gray+"a"+strings.TrimSuffix(richBold("b"), richReset)+richReset+gray+"c"+richReset {
+		t.Fatalf("muted = %q", got)
+	}
+	if liveMuted("q quit", false) != "q quit" {
+		t.Fatal("plain hint must not change")
+	}
+}
+
+func TestLiveKeyHintsPaintsKeysOnly(t *testing.T) {
+	t.Setenv("COLORTERM", "truecolor")
+	t.Setenv("NO_COLOR", "")
+	key := func(text string) string { return richPaint(text, richCyan, true) }
+	for text, want := range map[string]string{
+		"←/→ move   Enter select": key("←/→") + richDim(" move") + richDim("   ") + key("Enter") + richDim(" select"),
+		"↑↓ select · 3 shown":     key("↑↓") + richDim(" select") + richDim(" · ") + richDim("3 shown"),
+		"  ·  f filter, q quit":   richDim("  ·  ") + key("f") + richDim(" filter") + richDim(", ") + key("q") + richDim(" quit"),
+	} {
+		got := liveKeyHints(text, true)
+		if got != want {
+			t.Fatalf("hints(%q) = %q, want %q", text, got, want)
+		}
+		if ansi.Strip(got) != text {
+			t.Fatalf("hints(%q) changed the text: %q", text, ansi.Strip(got))
+		}
+	}
+	if liveKeyHints("q quit", false) != "q quit" {
+		t.Fatal("plain hint must not change")
+	}
+	title := "Select the group   ↑/↓ move"
+	if got := liveTitleHints(title, true); got != richBold("Select the group")+liveKeyHints("   ↑/↓ move", true) {
+		t.Fatalf("title = %q", got)
+	}
+}
+
+// 선택기와 확인 화면은 NO_COLOR에서도 color를 켠 채 뜬다. 그때는 예전처럼 반전과 흐림만 쓰고 팔레트 색을 내지 않는다.
+func TestLiveHelpersKeepTheMonochromeOutputUnderNoColor(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	row := liveSelectedBar + " daily "
+	if got := liveSelected(row, true); got != liveReverse+row+liveReset {
+		t.Fatalf("selected = %q", got)
+	}
+	if got := liveMuted("q quit", true); got != liveDim+"q quit"+liveReset {
+		t.Fatalf("muted = %q", got)
+	}
+	if got := liveKeyHints("q quit", true); got != liveDim+"q quit"+liveReset {
+		t.Fatalf("hints = %q", got)
+	}
+	if got := liveTitleHints("Select   q cancel", true); got != "Select   q cancel" {
+		t.Fatalf("title = %q", got)
+	}
+	if got := confirmPrompt("Run?", false, true); strings.Contains(got, "\033[38") || strings.Contains(got, "\033[48") {
+		t.Fatalf("confirm prompt carries palette colors: %q", got)
+	}
+}
+
+// 언어팩의 키 안내는 묶음마다 키로 시작해야 키가 청록으로 칠해진다. 새 키 이름이 생기면 liveHintKeys에 더한다.
+func TestLocaleKeyHintsStartWithKnownKeys(t *testing.T) {
+	restore := currentLanguage()
+	defer setLanguage(restore)
+	hints := []string{"ui.confirm.help", "cli.report.pick_help", "cli.report.viewer_help", "cli.log_history.list_help", "cli.log_history.detail_help", "cli.log_history.expanded_help"}
+	for _, language := range []string{"en", "ko", "ja"} {
+		setLanguage(language)
+		texts := []string{}
+		for _, key := range hints {
+			texts = append(texts, T(key))
+		}
+		for _, key := range []string{selectGroupTitle, selectInventoryTitle, selectRecipeTitle} {
+			_, rest, _ := strings.Cut(T(key), "   ")
+			texts = append(texts, rest)
+		}
+		for _, text := range texts {
+			for _, group := range liveHintSeparator.Split(text, -1) {
+				if group = strings.TrimSpace(group); group == "" {
+					continue
+				}
+				if key, _, _ := strings.Cut(group, " "); !liveHintKey(key) {
+					t.Errorf("%s: %q starts with %q, not a key", language, text, key)
+				}
+			}
+		}
 	}
 }

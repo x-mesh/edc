@@ -290,13 +290,17 @@ func (model svcBrowser) View() tea.View {
 }
 
 func (model svcBrowser) detailLines() []string {
-	detail := model.detail
-	title := "edc svc · " + detail.unit + " · ↑↓ scroll · r reload · Esc back · q quit"
+	return svcBrowserDetailLines("edc svc", model.detail, model.height, model.color)
+}
+
+// svcBrowserDetailLines는 svc와 ctr의 상세 화면이다. 첫 줄은 제목과 키 안내다.
+func svcBrowserDetailLines(command string, detail *svcBrowserDetail, height int, color bool) []string {
+	parts := []string{svcBrowserPaint(detail.unit, "", true, color), liveKeyHints("↑↓ scroll · r reload · Esc back · q quit", color)}
 	if detail.loading {
-		title = "edc svc · " + detail.unit + " · loading… · Esc back · q quit"
+		parts = []string{svcBrowserPaint(detail.unit, "", true, color), liveMuted("loading…", color), liveKeyHints("Esc back · q quit", color)}
 	}
-	lines := []string{liveMuted(title, model.color)}
-	end := min(len(detail.lines), detail.offset+max(1, model.height-1))
+	lines := []string{svcBrowserHeading(command, parts, color)}
+	end := min(len(detail.lines), detail.offset+max(1, height-1))
 	return append(lines, detail.lines[min(detail.offset, end):end]...)
 }
 
@@ -311,13 +315,16 @@ func (model svcBrowser) listLines() []string {
 			changing++
 		}
 	}
-	title := fmt.Sprintf("edc svc · %d services · %d failed · %d starting or restarting", len(model.items), failed, changing)
+	parts := []string{fmt.Sprintf("%d services", len(model.items)),
+		svcBrowserCount(fmt.Sprintf("%d failed", failed), failed, richRed, model.color),
+		svcBrowserCount(fmt.Sprintf("%d starting or restarting", changing), changing, richYellow, model.color)}
 	if model.all {
-		title += " · all"
+		parts = append(parts, liveMuted("all", model.color))
 	}
 	if !model.updated.IsZero() {
-		title += " · " + model.updated.Format("15:04:05")
+		parts = append(parts, liveMuted(model.updated.Format("15:04:05"), model.color))
 	}
+	title := svcBrowserHeading("edc svc", parts, model.color)
 	keys := "↑↓ select · Enter open · / filter · f failed · a all · r refresh · q quit"
 	switch {
 	case model.filtering:
@@ -332,14 +339,14 @@ func (model svcBrowser) listLines() []string {
 		}
 		keys = fmt.Sprintf("%s · %d shown · Esc clear · Enter open · q quit", shown, len(visible))
 	}
-	lines := []string{title, liveMuted(keys, model.color)}
+	lines := []string{title, liveKeyHints(keys, model.color)}
 	switch {
 	case !model.loaded:
-		return append(lines, "loading…")
+		return append(lines, liveMuted("loading…", model.color))
 	case model.err != nil:
-		return append(lines, evaluateSvcList(nil, model.err).Summary)
+		return append(lines, svcBrowserPaint(evaluateSvcList(nil, model.err).Summary, richRed, false, model.color))
 	case len(visible) == 0:
-		return append(lines, "no service matches")
+		return append(lines, liveMuted("no service matches", model.color))
 	}
 	unitWidth, stateWidth := 4, 5
 	for _, item := range visible {
@@ -360,28 +367,71 @@ func (model svcBrowser) listLines() []string {
 	if overflow > 0 {
 		stateWidth = max(svcBrowserStateMin, stateWidth-overflow)
 	}
-	row := func(prefix string, cells []string) string {
+	row := func(cells []string, state string) string {
 		values := []any{cells[2], cells[3], cells[4], cells[5]}
-		return prefix + svcBrowserCell(cells[0], unitWidth) + "  " + svcBrowserCell(cells[1], stateWidth) + "  " + fmt.Sprintf(tail, values[:strings.Count(tail, "%")]...)
+		return svcBrowserCell(cells[0], unitWidth) + "  " + svcBrowserPaint(svcBrowserCell(cells[1], stateWidth), state, false, model.color) + "  " + fmt.Sprintf(tail, values[:strings.Count(tail, "%")]...)
 	}
-	lines = append(lines, row("  ", svcListHeaders()))
+	lines = append(lines, liveMuted("  "+row(svcListHeaders(), ""), model.color))
 	end := min(len(visible), model.offset+max(1, model.listRows()))
 	for index := model.offset; index < end; index++ {
 		item := visible[index]
-		prefix := "  "
-		if index == model.cursor {
-			prefix = "› "
-		}
-		line := row(prefix, svcListCells(item))
-		switch {
-		case item.failed():
-			line = topPaint(line, topLevelDanger, model.color)
-		case item.changing():
-			line = topPaint(line, topLevelWarn, model.color)
-		}
-		lines = append(lines, line)
+		lines = append(lines, svcBrowserRow(row(svcListCells(item), item.stateColor()), index == model.cursor, model.color, model.width))
 	}
 	return lines
+}
+
+// stateColor는 상태 칸의 색이다. 실패는 빨강, 바뀌는 중은 노랑, 실행 중은 초록, 나머지는 회색이다.
+func (item svcListItem) stateColor() string {
+	switch {
+	case item.failed():
+		return richRed
+	case item.changing():
+		return richYellow
+	case item.ActiveState == "active":
+		return richGreen
+	}
+	return richGray
+}
+
+// svcBrowserHeading은 "edc svc · 부분 · 부분" 줄이다. 색을 쓰면 command는 굵은 자홍, 구분자는 회색이다. parts는 caller가 칠한다.
+func svcBrowserHeading(command string, parts []string, color bool) string {
+	if !color {
+		return strings.Join(append([]string{command}, parts...), " · ")
+	}
+	return strings.Join(append([]string{richPaint(command, richMagenta, true)}, parts...), richDim(" · "))
+}
+
+// svcBrowserCount는 제목의 개수다. 0이면 회색, 아니면 code 색이다.
+func svcBrowserCount(text string, count int, code string, color bool) string {
+	if count == 0 {
+		return liveMuted(text, color)
+	}
+	return svcBrowserPaint(text, code, false, color)
+}
+
+// svcBrowserPaint는 색을 쓸 때만 칠한다. code가 비면 bold만 따른다.
+func svcBrowserPaint(text, code string, bold, color bool) string {
+	switch {
+	case !color:
+		return text
+	case code == "" && bold:
+		return richBold(text)
+	case code == "":
+		return text
+	}
+	return richPaint(text, code, bold)
+}
+
+// svcBrowserRow는 표의 한 줄이다. 고른 줄은 색을 쓰면 막대와 chip 바탕을 화면 폭까지 칠하고, 아니면 "› "로 표시한다.
+func svcBrowserRow(line string, selected, color bool, width int) string {
+	switch {
+	case !selected:
+		return "  " + line
+	case !color:
+		return "› " + line
+	}
+	line = liveSelectedBar + " " + line
+	return liveSelected(line+strings.Repeat(" ", max(0, width-liveWidth(line))), true)
 }
 
 // svcBrowserCell은 칸 폭에 맞춰 자르고 채운다. 긴 unit 이름은 끝을 "…"로 줄인다.

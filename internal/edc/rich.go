@@ -72,8 +72,9 @@ var richPalette = map[string]struct {
 	"100": {richRGB{0x7c, 0x85, 0x91}, true},
 }
 
-// richChipBackground는 chip의 바탕이다. 시안의 터미널 바탕보다 조금 밝은 회색이다.
-var richChipBackground = richRGB{0x26, 0x2b, 0x33}
+// richChipBackground는 chip과 고른 줄의 바탕이다. 시안의 터미널 바탕보다 조금 밝은 회색이다.
+// 파란 기가 있는 #262b33은 Bubble Tea가 256색으로 줄일 때 남색(17)이 되어, 거의 무채색인 값을 쓴다.
+var richChipBackground = richRGB{0x2a, 0x2a, 0x2e}
 
 // richTruecolor는 24비트 색을 써도 되는지다. 터미널은 COLORTERM으로 알린다. 모르면 256색으로 줄인다.
 func richTruecolor() bool {

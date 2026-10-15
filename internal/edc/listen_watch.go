@@ -153,7 +153,7 @@ func formatListenWatchEvent(event listenWatchEvent, redact, highlight bool) stri
 		line = redactIPAddresses(line)
 	}
 	if highlight {
-		return liveReverse + line + liveReset
+		return liveSelected(line, true)
 	}
 	return line
 }

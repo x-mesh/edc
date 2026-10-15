@@ -114,7 +114,7 @@ func TestRichFillMutesTheBarColor(t *testing.T) {
 }
 
 func TestRichHexMatchesTheEscapeColors(t *testing.T) {
-	if richHex(richGreen) != "#4ce27d" || richFillHex(richGreen) != "#30844f" || richChipHex() != "#262b33" || richHex("1") != "" {
+	if richHex(richGreen) != "#4ce27d" || richFillHex(richGreen) != "#30844f" || richChipHex() != "#2a2a2e" || richHex("1") != "" {
 		t.Errorf("hex = %s %s %s", richHex(richGreen), richFillHex(richGreen), richChipHex())
 	}
 }

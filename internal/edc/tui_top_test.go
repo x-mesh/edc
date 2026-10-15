@@ -321,7 +321,7 @@ func TestTopDiskCandidatesColorHeavyIOAndShowGroups(t *testing.T) {
 	// 고른 줄은 바탕 한 번으로 그리고 칸 색을 넣지 않는다.
 	model.processFocus, model.processSelected = true, 0
 	selected := model.candidateLines()[3]
-	if strings.Count(selected, topColorReset) != 1 {
+	if strings.Count(selected, richReset) != 1 {
 		t.Fatalf("selected line = %q", selected)
 	}
 	model.processFilter, _ = parseTopProcessFilter("gm")
@@ -1139,13 +1139,13 @@ func TestTopDashboardPaintsValuesOverTheThreshold(t *testing.T) {
 		view topView
 		want string
 	}{
-		{"all load danger", topViewAll, topTintPrefix(topLevelDanger) + "12.0" + topColorReset},
-		{"all system warn", topViewAll, topTintPrefix(topLevelWarn) + " 75.0" + topColorReset},
-		{"all memory danger", topViewAll, topTintPrefix(topLevelDanger) + " 97.0" + topColorReset},
-		{"memory percent danger", topViewMemory, topTintPrefix(topLevelDanger) + "  97.0" + topColorReset},
-		{"disk await danger", topViewDisk, topTintPrefix(topLevelDanger) + "  80.0" + topColorReset},
-		{"network drop warn", topViewNetwork, topTintPrefix(topLevelWarn) + "     5" + topColorReset},
-		{"pressure memory warn", topViewPressure, topTintPrefix(topLevelWarn) + "   12.0" + topColorReset},
+		{"all load danger", topViewAll, topTintPrefix(topLevelDanger) + "12.0" + richReset},
+		{"all system warn", topViewAll, topTintPrefix(topLevelWarn) + " 75.0" + richReset},
+		{"all memory danger", topViewAll, topTintPrefix(topLevelDanger) + " 97.0" + richReset},
+		{"memory percent danger", topViewMemory, topTintPrefix(topLevelDanger) + "  97.0" + richReset},
+		{"disk await danger", topViewDisk, topTintPrefix(topLevelDanger) + "  80.0" + richReset},
+		{"network drop warn", topViewNetwork, topTintPrefix(topLevelWarn) + "     5" + richReset},
+		{"pressure memory warn", topViewPressure, topTintPrefix(topLevelWarn) + "   12.0" + richReset},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -1310,7 +1310,7 @@ func TestTopProcessBannerLeadsWithTheMatchedGroup(t *testing.T) {
 		t.Fatalf("no filter banner = %q", banner)
 	}
 	colored := plain.withProcessFilter(filter).processBanner()[0]
-	if !strings.HasPrefix(colored, richBadge("PROCESS", richMagenta)+topBannerStyle()) || !strings.HasSuffix(colored, topColorReset) || ansi.StringWidth(colored) != plain.displayWidth() {
+	if !strings.HasPrefix(colored, richBadge("PROCESS", richMagenta)+topBannerStyle()) || !strings.HasSuffix(colored, richReset) || ansi.StringWidth(colored) != plain.displayWidth() {
 		t.Fatalf("colored banner = %q", colored)
 	}
 	model := plain.withProcessFilter(filter)
@@ -1587,7 +1587,7 @@ func TestTopSelectedRowHighlightsTheActivePane(t *testing.T) {
 	for _, line := range strings.Split(model.View().Content, "\n") {
 		if strings.Contains(line, topBannerStyle()) {
 			selected++
-			if !strings.HasPrefix(line, topBannerStyle()+">       2") || ansi.StringWidth(line) != model.width || !strings.HasSuffix(line, topColorReset) {
+			if !strings.HasPrefix(line, topBannerStyle()+">       2") || ansi.StringWidth(line) != model.width || !strings.HasSuffix(line, richReset) {
 				t.Fatalf("selected process must highlight the full row: %q", line)
 			}
 		}

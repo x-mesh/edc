@@ -141,7 +141,7 @@ func TestListenWatchJSONRedactsSocket(t *testing.T) {
 func TestListenWatchHighlightsOnlyTerminalChangeText(t *testing.T) {
 	event := listenWatchEvent{Type: "open", Time: time.Date(2026, time.September, 24, 0, 0, 0, 0, time.UTC), Socket: listenSocket{Proto: "tcp", Address: "192.0.2.10:8080", Process: "app", PID: "42"}}
 	highlighted := formatListenWatchEvent(event, true, true)
-	if !strings.HasPrefix(highlighted, liveReverse) || !strings.HasSuffix(highlighted, liveReset) || strings.Contains(highlighted, "192.0.2.10") || !strings.Contains(highlighted, "<ip:") {
+	if !strings.Contains(highlighted, richRGBCode(richChipBackground, true, richTruecolor())) || !strings.HasSuffix(highlighted, liveReset) || strings.Contains(highlighted, "192.0.2.10") || !strings.Contains(highlighted, "<ip:") {
 		t.Fatalf("highlighted event = %q", highlighted)
 	}
 	plain := formatListenWatchEvent(event, false, false)

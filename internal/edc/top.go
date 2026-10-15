@@ -584,16 +584,6 @@ func formatTopHeader(details hostDetails) string {
 	return fmt.Sprintf("╭%s╮\n│ %s%s │\n╰%s╯\n%s\n", border, title, strings.Repeat(" ", width-4-titleWidth), border, topColumnHeader)
 }
 
-// 색은 둘뿐이다. 정상값은 terminal 기본색으로 두어야 경고와 위험만 눈에 들어온다.
-// 이 escape는 topPaint를 쓰는 info, ctr, svc, ai 화면 몫이다. top은 rich 팔레트를 쓰는 topTint를 쓴다.
-const (
-	// 경고는 terminal 팔레트의 yellow다. 고정 색은 밝은 배경에서 묻히고, 주황은 적록색약에서
-	// 위험의 빨강과 명도까지 비슷해져 붙는다. terminalStatus의 WARN과도 같은 색이다.
-	topColorWarn   = "\033[33m"
-	topColorDanger = "\033[91m"
-	topColorReset  = "\033[0m"
-)
-
 type topThreshold struct{ warn, danger float64 }
 
 // topLevel은 값이 임계치를 넘은 정도다. 색 문자열과 나눠 두어야 칸의 폭을 먼저 맞춘 뒤 색을 입힐 수 있다.
@@ -649,15 +639,9 @@ func (limits topLimits) tint(text string, threshold topThreshold, value float64)
 }
 
 // topPaint는 폭을 이미 맞춘 칸에 색을 입힌다.
+// 정상값은 터미널 기본색으로 두어야 경고와 위험만 눈에 들어온다. 색은 topTint와 같은 rich 팔레트다.
 func topPaint(text string, level topLevel, color bool) string {
-	if !color || level == topLevelNormal {
-		return text
-	}
-	code := topColorWarn
-	if level == topLevelDanger {
-		code = topColorDanger
-	}
-	return code + text + topColorReset
+	return topTint(text, level, color)
 }
 
 // topTint는 top의 topPaint다. 폭을 이미 맞춘 칸에 경고는 노랑, 위험은 빨강을 rich 팔레트로 입힌다.

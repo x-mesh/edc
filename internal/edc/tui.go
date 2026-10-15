@@ -120,7 +120,7 @@ const (
 	// liveSelectedBar는 고른 줄 왼쪽에 두는 막대다. 색을 못 써도 어느 줄인지 알 수 있다.
 	liveSelectedBar = "▌"
 	liveIdleBar     = " "
-	// liveReverse와 liveDim은 아직 팔레트로 옮기지 않은 화면(listen watch)이 쓴다.
+	// liveReverse와 liveDim은 NO_COLOR에서 뜨는 선택기와 확인 화면의 흑백 표시다.
 	liveReverse = "\033[7m"
 	liveDim     = "\033[2m"
 	liveReset   = "\033[0m"

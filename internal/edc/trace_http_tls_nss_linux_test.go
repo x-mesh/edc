@@ -80,6 +80,10 @@ func TestTraceTLSNSSCapturesOnlySecureIO(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	stdin, err := command.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := command.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -89,6 +93,7 @@ func TestTraceTLSNSSCapturesOnlySecureIO(t *testing.T) {
 		t.Fatalf("NSS ready: %q, %v, %s", line, err, stderr.String())
 	}
 	var events []captureEvent
+	startTLSFixtureOnAttach(t, stdin)
 	summary, err := collectTraceEventsLive(traceScope{protocol: "http", tls: traceTLSMode(finder.targets[0].path), tlsFinder: finder, payload: true}, 5*time.Second, func(event captureEvent) error {
 		if event.PID == uint32(command.Process.Pid) {
 			events = append(events, event)
@@ -158,14 +163,21 @@ func TestTraceTLSNSSAcceptsASecureConnection(t *testing.T) {
 	defer cancel()
 	command := exec.CommandContext(ctx, fixture, "server")
 	command.Env = []string{"PATH=/usr/bin:/bin"}
-	command.Stdin = &input
 	var stderr bytes.Buffer
 	command.Stderr = &stderr
 	stdout, err := command.StdoutPipe()
 	if err != nil {
 		t.Fatal(err)
 	}
+	stdin, err := command.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := command.Start(); err != nil {
+		t.Fatal(err)
+	}
+	// 인증서와 key를 먼저 쓴다. fixture는 그 뒤에 trace가 붙었다는 go 줄을 기다린다.
+	if _, err := stdin.Write(input.Bytes()); err != nil {
 		t.Fatal(err)
 	}
 	reader := bufio.NewReader(stdout)
@@ -204,6 +216,7 @@ func TestTraceTLSNSSAcceptsASecureConnection(t *testing.T) {
 		clientDone <- err
 	}()
 	requests, responses := 0, 0
+	startTLSFixtureOnAttach(t, stdin)
 	summary, err := collectTraceEventsLive(traceScope{protocol: "http", tls: traceTLSMode(finder.targets[0].path), tlsFinder: finder, payload: true}, 5*time.Second, func(event captureEvent) error {
 		if event.PID == uint32(command.Process.Pid) && event.TLS && event.Path == "/nss-server" {
 			if event.Event == "http_request" {

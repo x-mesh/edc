@@ -30,7 +30,7 @@ int main(int argc, char **argv) {
 	mbedtls_ssl_conf_authmode(&config, MBEDTLS_SSL_VERIFY_NONE);
 	mbedtls_ssl_conf_rng(&config, mbedtls_ctr_drbg_random, &rng);
 	check("setup", mbedtls_ssl_setup(&ssl, &config));
-	puts("ready"); fflush(stdout); sleep(3);
+	puts("ready"); fflush(stdout); { char start[8]; if (!fgets(start, sizeof(start), stdin)) _exit(3); }
 	for (int i = 0; i < 6; i++) {
 		check("connect", mbedtls_net_connect(&net, "127.0.0.1", argv[1], MBEDTLS_NET_PROTO_TCP));
 		mbedtls_ssl_set_bio(&ssl, &net, mbedtls_net_send, mbedtls_net_recv, NULL);

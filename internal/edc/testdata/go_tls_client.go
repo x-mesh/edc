@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"crypto/tls"
 	"fmt"
@@ -77,7 +78,7 @@ func runStress() {
 	defer transport.CloseIdleConnections()
 	client := &http.Client{Transport: transport, Timeout: 10 * time.Second}
 	fmt.Println("ready", os.Getpid(), server.URL)
-	time.Sleep(3 * time.Second)
+	waitForStart()
 	var wait sync.WaitGroup
 	errors := make(chan error, 64)
 	for worker := 0; worker < 16; worker++ {
@@ -153,7 +154,7 @@ func runStack() {
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, "stack-test-response") }))
 	defer server.Close()
 	fmt.Println("ready", os.Getpid())
-	time.Sleep(3 * time.Second)
+	waitForStart()
 	var wait sync.WaitGroup
 	for i := 0; i < 16; i++ {
 		wait.Add(1)
@@ -195,7 +196,7 @@ func runErrors() {
 		panic(err)
 	}
 	fmt.Println("ready", os.Getpid())
-	time.Sleep(3 * time.Second)
+	waitForStart()
 	if n, err := conn.Write(nil); n != 0 || err != nil {
 		panic("empty Write")
 	}
@@ -223,5 +224,12 @@ func main() {
 		runErrors()
 	} else {
 		runStress()
+	}
+}
+
+// waitForStart는 시험이 trace를 모두 붙였다고 stdin에 go 한 줄을 쓸 때까지 기다린다.
+func waitForStart() {
+	if _, err := bufio.NewReader(os.Stdin).ReadString('\n'); err != nil {
+		os.Exit(3)
 	}
 }

@@ -38,7 +38,7 @@ int main(void) {
  char *pages = mmap(NULL, 2 * page, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
  if (pages == MAP_FAILED || mprotect(pages + page, page, PROT_NONE) != 0) return 1;
  int conn = 0;
- puts("ready"); fflush(stdout); sleep(3);
+ puts("ready"); fflush(stdout); { char start[8]; if (!fgets(start, sizeof(start), stdin)) _exit(3); }
  char request[] = "GET /readable HTTP/1.1\r\nHost: localhost\r\n\r\n";
  SSL_write(&conn, request, sizeof(request) - 1);
  SSL_write(&conn, pages + page, 64);
@@ -59,10 +59,14 @@ int main(void) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	command := exec.CommandContext(ctx, fixture)
 	stdout, err := command.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdin, err := command.StdinPipe()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,6 +78,7 @@ int main(void) {
 		t.Fatalf("TLS plaintext ready: %q, %v", line, err)
 	}
 	var paths []string
+	startTLSFixtureOnAttach(t, stdin)
 	summary, err := collectTraceEventsLive(traceScope{protocol: "http", tls: traceTLSMode(fixture), tlsFinder: finder}, 4*time.Second, func(event captureEvent) error {
 		if event.PID == uint32(command.Process.Pid) && event.TLS && event.Event == "http_request" {
 			paths = append(paths, event.Path)

@@ -51,7 +51,7 @@ int main(int argc, char **argv) {
 	check("verifier", rustls_client_config_builder_dangerous_set_certificate_verifier(builder, verify));
 	const struct rustls_client_config *config = NULL;
 	check("config", rustls_client_config_builder_build(builder, &config));
-	puts("ready"); fflush(stdout); sleep(3);
+	puts("ready"); fflush(stdout); { char start[8]; if (!fgets(start, sizeof(start), stdin)) _exit(3); }
 	for (int i = 0; i < 6; i++) {
 		int fd = socket(AF_INET, SOCK_STREAM, 0);
 		struct sockaddr_in address = {.sin_family=AF_INET, .sin_port=htons(atoi(argv[1])), .sin_addr={.s_addr=htonl(INADDR_LOOPBACK)}};

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"crypto/tls"
 	"fmt"
@@ -62,7 +63,7 @@ func main() {
 	}
 	server.StartTLS()
 	fmt.Println("ready", os.Getpid())
-	time.Sleep(3 * time.Second)
+	waitForStart()
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	dialer := &tls.Dialer{Config: &tls.Config{InsecureSkipVerify: true, NextProtos: []string{"h2"}}}
@@ -105,4 +106,11 @@ func main() {
 	serverConnections.Wait()
 	waitForTLSWrites()
 	fmt.Println("done")
+}
+
+// waitForStart는 시험이 trace를 모두 붙였다고 stdin에 go 한 줄을 쓸 때까지 기다린다.
+func waitForStart() {
+	if _, err := bufio.NewReader(os.Stdin).ReadString('\n'); err != nil {
+		os.Exit(3)
+	}
 }

@@ -913,6 +913,18 @@ edc reads at most 20000 journal entries, 32 MiB of journal output, and 100000 `/
 
 If the target has no scheme, `edc http check` adds `http://`. `edc http check naver.com` requests `http://naver.com` and follows the redirect. The `url` metric holds the address that `edc` requested. Write `https://` to check a TLS endpoint directly.
 
+If the server sends a redirect, `edc http check` lists each request in order: the status, the URL, the timings, and the peer. Add `-v` to see the headers of each response and the start of the last body. `edc` hides the values of `Authorization`, `Cookie`, `Set-Cookie`, and other credential headers. The JSON keeps each request in the `hops` metric. `edc doctor -v` shows the same list.
+
+Use `-H 'Name: value'` to add a request header, as with `curl -H`. Repeat it for more headers. `-H 'Host: name'` sets the Host header. If a redirect goes to another host, that request does not carry `Authorization` and `Cookie`. Use `-v` to see the headers that each request sent.
+
+Use `--body page.html` to save the whole body of the last response. Use `--body -` to write the body to stdout. Then the result goes to stderr. `edc` reads 10 MiB of the body at most, and it tells you when it cuts the body. `--body` overwrites an existing file. Options can come before or after the URL.
+
+```bash
+./bin/edc http check http://example.com
+./bin/edc http check -v -H 'Authorization: Bearer <token>' https://example.com/api
+./bin/edc http check https://example.com/api --body - | jq .
+```
+
 ```bash
 ./bin/edc tls check --min-days 14 example.com:443
 ./bin/edc http check --expect-status 200 https://example.com/health

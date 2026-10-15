@@ -197,7 +197,9 @@ func runDoctor(args []string, version string) int {
 			}
 			return probeTLS(ctx, address, host)
 		}},
-		{name: "http.check", run: func(ctx context.Context) Result { return probeHTTP(ctx, rawURL) }},
+		{name: "http.check", run: func(ctx context.Context) Result {
+			return probeHTTPWithOptions(ctx, rawURL, httpCheckOptions{detail: doctorHTTPDetail(options.verbose)})
+		}},
 		{name: listenProbeID, run: func(ctx context.Context) Result { return probeListen(ctx, defaultListenFamilies()) }},
 	}
 	if *profile == "full" {
@@ -312,9 +314,15 @@ func runHTTP(args []string, version string) int {
 		return 2
 	}
 	expectStatus := configuredInt(activeConfig.Defaults.HTTP.ExpectStatus, 0)
+	var headers httpHeaderFlags
+	var bodyPath string
+	detail := httpDetailHops
 	flags := probeFlags{
 		bind: func(set *flag.FlagSet) {
 			set.IntVar(&expectStatus, "expect-status", expectStatus, T("command.http.option.expect_status"))
+			set.Var(&headers, "header", T("command.http.option.header"))
+			set.Var(&headers, "H", T("command.http.option.header"))
+			set.StringVar(&bodyPath, "body", "", T("command.http.option.body"))
 		},
 		check: func() error {
 			if expectStatus != 0 && (expectStatus < 100 || expectStatus > 599) {
@@ -322,10 +330,20 @@ func runHTTP(args []string, version string) int {
 			}
 			return nil
 		},
-		prompt: T("cli.prompt.url"),
+		parsed: func(options commonOptions) error {
+			if options.verbose {
+				detail = httpDetailFull
+			}
+			if bodyPath == "-" && options.jsonPath == "-" {
+				return errors.New(T("cli.error.body_json_stdout"))
+			}
+			return nil
+		},
+		stdoutTaken: func() bool { return bodyPath == "-" },
+		prompt:      T("cli.prompt.url"),
 	}
 	return runTargetProbeWithFlags(args[1:], version, "http check", "http.check", flags, func(ctx context.Context, target string) Result {
-		return probeHTTPWithOptions(ctx, target, httpCheckOptions{expectStatus: expectStatus})
+		return probeHTTPWithOptions(ctx, target, httpCheckOptions{expectStatus: expectStatus, detail: detail, headers: headers.header(), bodyPath: bodyPath})
 	})
 }
 
@@ -357,6 +375,10 @@ func runNet(args []string, version string) int {
 type probeFlags struct {
 	bind  func(*flag.FlagSet)
 	check func() error
+	// parsed는 공통 flag까지 읽은 뒤 불린다. -v에 따라 probe가 남길 내용이 달라지는 command가 쓴다.
+	parsed func(commonOptions) error
+	// stdoutTaken이 true면 probe가 stdout에 자기 data를 쓴다. 결과는 섞이지 않게 stderr로 보낸다.
+	stdoutTaken func() bool
 	// prompt는 target이 빠졌을 때 terminal에서 물어볼 값의 이름이다. usage의 인자 형태와 같은 말을 쓴다.
 	prompt string
 }
@@ -373,7 +395,8 @@ func runTargetProbeWithFlags(args []string, version, name, probeID string, extra
 	if extra.bind != nil {
 		extra.bind(set)
 	}
-	if err := set.Parse(args); err != nil {
+	positional, err := parseInterspersed(set, args)
+	if err != nil {
 		return 2
 	}
 	if extra.check != nil {
@@ -382,15 +405,24 @@ func runTargetProbeWithFlags(args []string, version, name, probeID string, extra
 			return 2
 		}
 	}
-	input := set.Arg(0)
-	if set.NArg() == 0 && extra.prompt != "" {
+	if extra.parsed != nil {
+		if err := extra.parsed(options); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 2
+		}
+	}
+	input := ""
+	if len(positional) > 0 {
+		input = positional[0]
+	}
+	if len(positional) == 0 && extra.prompt != "" {
 		values, ok := promptMissingArgs("edc "+name, extra.prompt)
 		if !ok {
 			fmt.Fprintln(os.Stderr, T("cli.error.one_target_required", name))
 			return 2
 		}
 		input = values[0]
-	} else if set.NArg() != 1 {
+	} else if len(positional) != 1 {
 		fmt.Fprintln(os.Stderr, T("cli.error.one_target_required", name))
 		return 2
 	}
@@ -400,10 +432,34 @@ func runTargetProbeWithFlags(args []string, version, name, probeID string, extra
 	defer deadline()
 	target := map[string]interface{}{"input": input}
 	run := func(ctx context.Context) Result { return probe(ctx, input) }
-	if options.jsonPath == "" && liveTerminal() {
+	output := os.Stdout
+	if extra.stdoutTaken != nil && extra.stdoutTaken() {
+		output = os.Stderr
+	}
+	if options.jsonPath == "" && output == os.Stdout && liveTerminal() {
 		return runProbeLive(ctx, cancel, probeID, input, options, version, started, target, run)
 	}
-	return emit(options, buildReport(version, started, target, []Result{run(ctx)}, options.redact))
+	return emitTo(output, options, buildReport(version, started, target, []Result{run(ctx)}, options.redact))
+}
+
+// parseInterspersed는 위치 인자 뒤에 온 flag도 읽는다. flag package는 첫 위치 인자에서 멈추므로
+// `edc http check URL -v`의 -v가 두 번째 대상이 되어 실패했다. -- 뒤는 모두 위치 인자로 둔다.
+func parseInterspersed(set *flag.FlagSet, args []string) ([]string, error) {
+	var positional []string
+	for {
+		if err := set.Parse(args); err != nil {
+			return nil, err
+		}
+		rest := set.Args()
+		if consumed := len(args) - len(rest); consumed > 0 && args[consumed-1] == "--" {
+			return append(positional, rest...), nil
+		}
+		if len(rest) == 0 {
+			return positional, nil
+		}
+		positional = append(positional, rest[0])
+		args = rest[1:]
+	}
 }
 
 // probeContext는 사용자 취소용 cancel과 timeout을 분리해 돌려준다.
@@ -456,8 +512,12 @@ func bindCommon(set *flag.FlagSet, options *commonOptions) {
 }
 
 func emit(options commonOptions, report Report) int {
+	return emitTo(os.Stdout, options, report)
+}
+
+func emitTo(output *os.File, options commonOptions, report Report) int {
 	if options.jsonPath == "" {
-		printTerminalWithColor(os.Stdout, report.Results, options.verbose, isTerminal(os.Stdout) && os.Getenv("NO_COLOR") == "")
+		printTerminalWithColor(output, report.Results, options.verbose, isTerminal(output) && os.Getenv("NO_COLOR") == "")
 	} else if err := writeJSONOutput(options.jsonPath, report); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 2
@@ -539,4 +599,13 @@ func runReport(args []string) int {
 		fmt.Fprintln(os.Stderr, usage)
 		return 2
 	}
+}
+
+// doctorHTTPDetail은 doctor의 http probe가 남길 내용이다. 기본 화면은 probe마다 한 줄을 고쳐 쓰므로
+// redirect 경로는 -v에서만 붙인다.
+func doctorHTTPDetail(verbose bool) httpDetail {
+	if verbose {
+		return httpDetailFull
+	}
+	return httpDetailOff
 }

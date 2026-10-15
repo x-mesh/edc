@@ -865,6 +865,18 @@ journal 기록은 20000개, journal 출력은 32 MiB, `/dev/kmsg` 기록은 1000
 
 대상에 scheme이 없으면 `edc http check`는 `http://`를 붙입니다. `edc http check naver.com`은 `http://naver.com`을 요청하고 redirect를 따라갑니다. `url` metric에는 실제로 요청한 주소가 남습니다. TLS endpoint를 바로 확인하려면 `https://`를 씁니다.
 
+서버가 redirect를 보내면 `edc http check`는 요청마다 status, URL, 시간 값, peer를 차례로 보여 줍니다. `-v`를 붙이면 응답마다 header가, 마지막 응답에는 본문 앞부분이 더해집니다. `Authorization`, `Cookie`, `Set-Cookie` 같은 인증 header의 값은 가립니다. JSON에는 요청마다 기록이 `hops` metric에 남습니다. `edc doctor -v`도 같은 목록을 보여 줍니다.
+
+`curl -H`처럼 `-H 'Name: value'`로 요청 header를 넣을 수 있고, 여러 번 줄 수 있습니다. `-H 'Host: name'`은 Host header를 바꿉니다. redirect가 다른 host로 가면 그 요청에는 `Authorization`과 `Cookie`가 실리지 않습니다. 요청마다 보낸 header는 `-v`로 확인합니다.
+
+`--body page.html`은 마지막 응답의 본문 전체를 파일로 저장합니다. `--body -`는 본문을 stdout에 쓰고, 결과는 stderr로 보냅니다. 본문은 10 MiB까지만 읽고, 그보다 길면 잘랐다고 알려 줍니다. 같은 이름의 파일이 있으면 덮어씁니다. option은 URL 앞이나 뒤에 둘 수 있습니다.
+
+```bash
+./bin/edc http check http://example.com
+./bin/edc http check -v -H 'Authorization: Bearer <token>' https://example.com/api
+./bin/edc http check https://example.com/api --body - | jq .
+```
+
 ```bash
 ./bin/edc tls check --min-days 14 example.com:443
 ./bin/edc http check --expect-status 200 https://example.com/health

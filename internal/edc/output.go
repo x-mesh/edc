@@ -98,7 +98,8 @@ func printResultDetail(writer io.Writer, result Result, verbose, color bool) {
 	for _, warning := range result.Warnings {
 		fmt.Fprintf(writer, "      warning: %s\n", warning)
 	}
-	if (verbose || result.Probe == endpointProbeID || result.Probe == "dns.compare") && result.Status != StatusFail && !isRemoteResult(result) {
+	// http.check는 edc http check에서만 기본으로 redirect 경로를 남긴다. doctor는 -v일 때만 남긴다.
+	if (verbose || result.Probe == endpointProbeID || result.Probe == "dns.compare" || result.Probe == "http.check") && result.Status != StatusFail && !isRemoteResult(result) {
 		for _, evidence := range result.Evidence {
 			fmt.Fprintf(writer, "      %s:\n%s\n", evidence.Label, indent(evidence.Value, "        "))
 		}

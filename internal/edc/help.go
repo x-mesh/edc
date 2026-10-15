@@ -72,8 +72,15 @@ var commandDocs = []commandDoc{
 	},
 	{
 		name: "http", group: "diagnose",
-		usage:      []string{"edc http check [--expect-status N] [options] <URL>"},
-		options:    []optionDoc{{"--expect-status N", "command.http.option.expect_status"}},
+		usage: []string{
+			"edc http check [--expect-status N] [-H 'Name: value'] [options] <URL>",
+			"edc http check --body <path|-> [options] <URL>",
+		},
+		options: []optionDoc{
+			{"--expect-status N", "command.http.option.expect_status"},
+			{"-H, --header 'Name: value'", "command.http.option.header"},
+			{"--body <path|->", "command.http.option.body"},
+		},
 		usesCommon: true,
 	},
 	{

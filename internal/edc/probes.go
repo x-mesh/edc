@@ -66,6 +66,9 @@ type httpCheckOptions struct {
 	noRedirect   bool
 	rootCAs      *x509.CertPool
 	headersOnly  bool
+	detail       httpDetail
+	headers      http.Header
+	bodyPath     string // 마지막 응답 본문을 쓸 파일, -는 stdout
 }
 
 func probeTLS(ctx context.Context, address, serverName string) Result {
@@ -166,6 +169,7 @@ func probeHTTPWithOptions(ctx context.Context, rawURL string, options httpCheckO
 	timings := map[string]int64{}
 	var traceMu sync.Mutex
 	var peer string
+	var reused bool
 	var resolvedHost string
 	var resolvedAddresses []string
 	trace := &httptrace.ClientTrace{
@@ -174,6 +178,7 @@ func probeHTTPWithOptions(ctx context.Context, rawURL string, options httpCheckO
 			timings = map[string]int64{}
 			dnsStart, connectStart, tlsStart, wroteRequest = time.Time{}, time.Time{}, time.Time{}, time.Time{}
 			peer = ""
+			reused = false
 			resolvedHost = ""
 			resolvedAddresses = nil
 			traceMu.Unlock()
@@ -223,6 +228,7 @@ func probeHTTPWithOptions(ctx context.Context, rawURL string, options httpCheckO
 		GotConn: func(info httptrace.GotConnInfo) {
 			traceMu.Lock()
 			peer = peerIP(info.Conn.RemoteAddr())
+			reused = info.Reused
 			traceMu.Unlock()
 		},
 		WroteRequest: func(httptrace.WroteRequestInfo) {
@@ -242,7 +248,26 @@ func probeHTTPWithOptions(ctx context.Context, rawURL string, options httpCheckO
 	if err != nil {
 		return resultFromError("http.check", started, "input", err)
 	}
+	for name, values := range options.headers {
+		// Go는 Header의 Host를 보내지 않고 Request.Host를 쓴다. curl -H "Host: ..."와 같게 맞춘다.
+		if strings.EqualFold(name, "Host") {
+			request.Host = values[len(values)-1]
+			continue
+		}
+		request.Header[name] = append([]string(nil), values...)
+	}
 	redirects := 0
+	var hops []httpHop
+	recordHop := func(response *http.Response) {
+		if options.detail == httpDetailOff {
+			return
+		}
+		proxy, _ := http.ProxyFromEnvironment(response.Request)
+		traceMu.Lock()
+		hop := newHTTPHop(response.Request, response, peer, proxy != nil && options.dialAddress == "", reused, timings, options.detail)
+		traceMu.Unlock()
+		hops = append(hops, hop)
+	}
 	transport := &http.Transport{Proxy: http.ProxyFromEnvironment}
 	defer transport.CloseIdleConnections()
 	if options.rootCAs != nil {
@@ -256,9 +281,12 @@ func probeHTTPWithOptions(ctx context.Context, rawURL string, options httpCheckO
 	}
 	client := &http.Client{
 		Transport: transport,
-		CheckRedirect: func(_ *http.Request, via []*http.Request) error {
+		CheckRedirect: func(next *http.Request, via []*http.Request) error {
 			if options.noRedirect {
 				return http.ErrUseLastResponse
+			}
+			if next.Response != nil {
+				recordHop(next.Response)
 			}
 			if len(via) >= 10 {
 				return fmt.Errorf("%s", T("observe.probe.too_many_redirects"))
@@ -269,17 +297,40 @@ func probeHTTPWithOptions(ctx context.Context, rawURL string, options httpCheckO
 	}
 	response, err := client.Do(request)
 	if err != nil {
-		return resultFromError("http.check", started, classifyNetworkError(err), err)
+		return withHTTPHops(resultFromError("http.check", started, classifyNetworkError(err), err), hops, options.detail)
 	}
 	defer response.Body.Close()
-	var bytesRead int64
+	recordHop(response)
+	body := &httpBodyCounter{}
+	if options.detail == httpDetailFull {
+		body.keep = httpBodyPreviewBytes
+	}
+	var saved *httpBodyFile
 	if !options.headersOnly {
-		var readErr error
-		bytesRead, readErr = io.Copy(io.Discard, io.LimitReader(response.Body, 10*1024*1024))
+		var sink io.Writer = body
+		if options.bodyPath != "" {
+			if saved, err = openHTTPBodyFile(options.bodyPath); err != nil {
+				return withHTTPHops(resultFromError("http.check", started, "output", err), hops, options.detail)
+			}
+			sink = io.MultiWriter(body, saved)
+		}
+		_, readErr := io.Copy(sink, io.LimitReader(response.Body, httpBodyLimit))
+		if saved != nil {
+			if readErr == nil {
+				saved.truncated = httpBodyContinues(response.Body)
+			}
+			if closeErr := saved.close(); saved.err == nil && closeErr != nil {
+				saved.err = closeErr
+			}
+			if saved.err != nil {
+				return withHTTPHops(resultFromError("http.check", started, "output", saved.err), hops, options.detail)
+			}
+		}
 		if readErr != nil {
-			return resultFromError("http.check", started, "response", readErr)
+			return withHTTPHops(resultFromError("http.check", started, "response", readErr), hops, options.detail)
 		}
 	}
+	bytesRead := body.size
 	total := time.Since(started)
 	status, diagnostic := httpStatusVerdict(response.StatusCode, options.expectStatus)
 	metrics := map[string]interface{}{"url": rawURL, "final_url": response.Request.URL.String(), "status_code": response.StatusCode, "bytes_read": bytesRead, "total_ms": total.Milliseconds()}
@@ -309,6 +360,29 @@ func probeHTTPWithOptions(ctx context.Context, rawURL string, options httpCheckO
 	if diagnostic != nil {
 		summary = fmt.Sprintf("%s, %s, %d bytes", diagnostic.Message, total.Round(time.Millisecond), bytesRead)
 	}
+	// hop 목록을 그리면 peer와 시간 값은 hop마다 그 아래에 있으므로 요약줄에서 뺀다.
+	if options.detail == httpDetailFull || (options.detail == httpDetailHops && redirects > 0) {
+		if redirects > 0 {
+			summary += ", " + T("observe.probe.redirects", redirects)
+		}
+		result := Result{Probe: "http.check", Status: status, StartedAt: started.UTC(), DurationMS: total.Milliseconds(), Summary: summary, Metrics: metrics, Error: diagnostic}
+		result = withHTTPHops(result, hops, options.detail)
+		if options.detail == httpDetailFull && !options.headersOnly {
+			metrics["content_type"] = response.Header.Get("Content-Type")
+			metrics["body_lines"] = body.lines()
+			if title := httpHTMLTitle(response.Header.Get("Content-Type"), body.preview); title != "" {
+				metrics["title"] = title
+			}
+			if httpTextMedia(response.Header.Get("Content-Type"), response.Header.Get("Content-Encoding"), body.preview) {
+				metrics["body_preview"] = traceEscapeText(body.preview)
+			}
+			result.Evidence = append(result.Evidence, Evidence{Label: T("observe.http.body"), Value: formatHTTPBody(response.Header, body, terminalWidth())})
+		}
+		return withHTTPBodyOutput(result, saved, bytesRead)
+	}
+	if options.detail != httpDetailOff {
+		metrics["hops"] = httpHopMetrics(hops)
+	}
 	if observedPeer != "" {
 		if proxy, _ := http.ProxyFromEnvironment(response.Request); proxy != nil && options.dialAddress == "" {
 			metrics["peer_is_proxy"] = true
@@ -328,7 +402,7 @@ func probeHTTPWithOptions(ctx context.Context, rawURL string, options httpCheckO
 	if redirects > 0 {
 		summary += ", " + T("observe.probe.http_redirect", redirects, response.Request.URL.String())
 	}
-	return Result{Probe: "http.check", Status: status, StartedAt: started.UTC(), DurationMS: total.Milliseconds(), Summary: summary, Metrics: metrics, Error: diagnostic}
+	return withHTTPBodyOutput(Result{Probe: "http.check", Status: status, StartedAt: started.UTC(), DurationMS: total.Milliseconds(), Summary: summary, Metrics: metrics, Error: diagnostic}, saved, bytesRead)
 }
 
 // withHTTPScheme은 스킴이 없는 입력에 http://를 붙인다. http.NewRequest는 스킴 없는 주소를
@@ -407,4 +481,17 @@ func tlsVersion(version uint16) string {
 	default:
 		return fmt.Sprintf("TLS 0x%x", version)
 	}
+}
+
+// withHTTPHops는 지나온 요청을 결과에 붙인다. 실패한 결과에도 붙여서 몇 번째 redirect에서 멈췄는지 보이게 한다.
+func withHTTPHops(result Result, hops []httpHop, detail httpDetail) Result {
+	if detail == httpDetailOff || len(hops) == 0 {
+		return result
+	}
+	if result.Metrics == nil {
+		result.Metrics = map[string]interface{}{}
+	}
+	result.Metrics["hops"] = httpHopMetrics(hops)
+	result.Evidence = append(result.Evidence, Evidence{Label: T("observe.http.requests"), Value: formatHTTPHops(hops, terminalWidth())})
+	return result
 }

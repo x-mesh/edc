@@ -53,8 +53,14 @@ command:
     summary: "HTTP 응답 확인"
     option:
       expect_status: "응답 code가 N과 다르면 fail로 처리합니다"
+      header: "요청 header 추가, 여러 번 줄 수 있음"
+      body: "마지막 응답 본문 저장, -는 stdout에 출력"
     notes:
       - "기본값은 4xx가 warning, 5xx가 fail입니다."
+      - "redirect가 있으면 요청마다 status, URL, 시간 값, peer를 차례로 보여 줍니다."
+      - "-v는 응답마다 header를, 마지막 응답의 본문 앞부분을 더합니다."
+      - "Authorization, Cookie 같은 header의 값은 가립니다."
+      - "--body -는 본문을 stdout에, 결과를 stderr에 씁니다."
   audit:
     summary: "호스트의 노출 상태와 설정 점검, 읽기 전용 (Linux)"
     notes:

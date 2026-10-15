@@ -7,6 +7,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"maps"
 	"net"
 	"os"
@@ -850,38 +851,45 @@ func traceColorLine(process, destination, name string, event captureEvent) strin
 }
 
 func printTCPTraceReport(report tcpTraceReport, detail bool) {
-	fmt.Fprintf(os.Stdout, "TCP trace: %s\n\n", (time.Duration(report.DurationMS) * time.Millisecond).String())
-	fmt.Fprintf(os.Stdout, "Attempts: %d\nEstablished: %d\nIncomplete: %d\nExisting: %d\nRetransmissions: %s\nResets: %s\nTX: %s\nRX: %s\nTotal: %s\nTraffic rate: %s\nLost events: %d\n", report.Attempts, report.Established, report.Incomplete, report.Existing, traceOptional(report.Retransmissions, "%d"), traceOptional(report.Resets, "%d"), traceBytes(report.TXBytes), traceBytes(report.RXBytes), traceBytes(report.TotalBytes), traceTrafficRate(report.traceTraffic), report.LostEvents)
+	out := os.Stdout
+	style := newTraceSummaryStyle(out)
+	style.line(out, style.title("TCP trace", (time.Duration(report.DurationMS)*time.Millisecond).String()))
+	io.WriteString(out, "\n")
+	style.fields(out, "", "Attempts", strconv.Itoa(report.Attempts), "Established", strconv.Itoa(report.Established), "Incomplete", strconv.Itoa(report.Incomplete), "Existing", strconv.Itoa(report.Existing),
+		"Retransmissions", traceOptional(report.Retransmissions, "%d"), "Resets", traceOptional(report.Resets, "%d"), "TX", traceBytes(report.TXBytes), "RX", traceBytes(report.RXBytes), "Total", traceBytes(report.TotalBytes),
+		"Traffic rate", traceTrafficRate(report.traceTraffic), "Lost events", strconv.FormatUint(report.LostEvents, 10))
 	if !detail {
-		printTCPTraceGroups(report.groups)
+		printTCPTraceGroups(style, report.groups)
 		return
 	}
 	if len(report.Connections) == 0 {
 		return
 	}
-	fmt.Fprintln(os.Stdout, "\nPROCESS\tDESTINATION\tRESULT\tCONNECT\tTX\tRX\tRETRANS\tRESET")
+	table := traceTable{titles: []string{"PROCESS", "DESTINATION", "RESULT", "CONNECT", "TX", "RX", "RETRANS", "RESET"}}
 	for _, connection := range report.Connections {
-		fmt.Fprintf(os.Stdout, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", connection.Process, traceDestinationLabel(connection), connection.Result, traceOptional(connection.ConnectMS, "%dms"), traceBytes(connection.TXBytes), traceBytes(connection.RXBytes), traceOptional(connection.Retransmissions, "%d"), traceOptional(connection.Reset, "%t"))
+		table.add(connection.Process, traceDestinationLabel(connection), connection.Result, traceOptional(connection.ConnectMS, "%dms"), traceBytes(connection.TXBytes), traceBytes(connection.RXBytes), traceOptional(connection.Retransmissions, "%d"), traceOptional(connection.Reset, "%t"))
 		if connection.RTTUS != nil || connection.AcceptLatencyMS != nil {
-			fmt.Fprintf(os.Stdout, "  diagnostics: rtt=%s rttvar=%s cwnd=%s ssthresh=%s unacked=%s lost=%s zero-window=%s accept=%s queue=%s/%s\n", traceOptional(connection.RTTUS, "%dus"), traceOptional(connection.RTTVarUS, "%dus"), traceOptional(connection.CWND, "%d"), traceOptional(connection.SSThresh, "%d"), traceOptional(connection.Unacked, "%d"), traceOptional(connection.Lost, "%d"), traceOptional(connection.ZeroWindow, "%t"), traceOptional(connection.AcceptLatencyMS, "%.3fms"), traceOptional(connection.AcceptQueueUsed, "%d"), traceOptional(connection.AcceptQueueMax, "%d"))
+			table.addNote(fmt.Sprintf("  diagnostics: rtt=%s rttvar=%s cwnd=%s ssthresh=%s unacked=%s lost=%s zero-window=%s accept=%s queue=%s/%s", traceOptional(connection.RTTUS, "%dus"), traceOptional(connection.RTTVarUS, "%dus"), traceOptional(connection.CWND, "%d"), traceOptional(connection.SSThresh, "%d"), traceOptional(connection.Unacked, "%d"), traceOptional(connection.Lost, "%d"), traceOptional(connection.ZeroWindow, "%t"), traceOptional(connection.AcceptLatencyMS, "%.3fms"), traceOptional(connection.AcceptQueueUsed, "%d"), traceOptional(connection.AcceptQueueMax, "%d")))
 		}
 	}
+	io.WriteString(out, "\n")
+	style.writeTable(out, table)
 	if report.ConnectionsOmitted > 0 {
-		fmt.Fprintf(os.Stdout, "%d earlier closed connections are not listed. The totals include them.\n", report.ConnectionsOmitted)
+		style.line(out, style.hint(fmt.Sprintf("%d earlier closed connections are not listed. The totals include them.", report.ConnectionsOmitted)))
 	}
 }
 
-func printTCPTraceGroups(rows []tcpTraceGroupRow) {
+func printTCPTraceGroups(style traceSummaryStyle, rows []tcpTraceGroupRow) {
 	if len(rows) == 0 {
 		return
 	}
-	fmt.Fprintln(os.Stdout, "\nPROCESS\tDESTINATION\tCONNS\tEST\tINC\tEXIST\tCONNECT\tTX\tRX\tRETRANS\tRESET")
+	table := traceTable{titles: []string{"PROCESS", "DESTINATION", "CONNS", "EST", "INC", "EXIST", "CONNECT", "TX", "RX", "RETRANS", "RESET"}}
 	for _, row := range rows {
 		connect := "-"
 		if row.connectCount > 0 {
 			connect = traceOptional(traceObserved(row.connectTotalMS/int64(row.connectCount)), "%dms")
 		}
-		fmt.Fprintf(os.Stdout, "%s\t%s\t%d\t%d\t%d\t%d\t%s\t%s\t%s\t%s\t%s\n", row.process, traceSummaryPeerLabel(row.peer, row.hostname, row.server), row.connections, row.established, row.incomplete, row.existing, connect, traceBytes(row.TXBytes), traceBytes(row.RXBytes), traceOptional(traceObserved(row.retransmissions), "%d"), traceOptional(traceObserved(row.resets), "%d"))
+		table.add(row.process, traceSummaryPeerLabel(row.peer, row.hostname, row.server), strconv.Itoa(row.connections), strconv.Itoa(row.established), strconv.Itoa(row.incomplete), strconv.Itoa(row.existing), connect, traceBytes(row.TXBytes), traceBytes(row.RXBytes), traceOptional(traceObserved(row.retransmissions), "%d"), traceOptional(traceObserved(row.resets), "%d"))
 		if row.rttCount > 0 || row.lost != 0 || row.zeroWindow || row.acceptCount > 0 {
 			rtt, accept := "-", "-"
 			if row.rttCount > 0 {
@@ -890,9 +898,11 @@ func printTCPTraceGroups(rows []tcpTraceGroupRow) {
 			if row.acceptCount > 0 {
 				accept = fmt.Sprintf("%.3fms", float64(row.acceptTotalNS/uint64(row.acceptCount))/float64(time.Millisecond))
 			}
-			fmt.Fprintf(os.Stdout, "  diagnostics: rtt=%s lost=%d zero-window=%t accept=%s\n", rtt, row.lost, row.zeroWindow, accept)
+			table.addNote(fmt.Sprintf("  diagnostics: rtt=%s lost=%d zero-window=%t accept=%s", rtt, row.lost, row.zeroWindow, accept))
 		}
 	}
+	io.WriteString(os.Stdout, "\n")
+	style.writeTable(os.Stdout, table)
 }
 
 func traceSummaryPeerLabel(peer, hostname string, server bool) string {
@@ -1068,25 +1078,27 @@ func sortUDPTraceFlows(flows []udpTraceFlow) {
 }
 
 func printUDPTraceReport(report udpTraceReport, detail bool) {
-	fmt.Fprintf(os.Stdout, "UDP trace: %s\n\n", (time.Duration(report.DurationMS) * time.Millisecond).String())
-	fmt.Fprintf(os.Stdout, "Datagrams: %d\nSent: %d\nReceived: %d\nTX: %s\nRX: %s\nTotal: %s\nTraffic rate: %s\nLost events: %d\n", report.Datagrams, report.Sent, report.Received, traceBytes(report.TXBytes), traceBytes(report.RXBytes), traceBytes(report.TotalBytes), traceTrafficRate(report.traceTraffic), report.LostEvents)
+	out := os.Stdout
+	style := newTraceSummaryStyle(out)
+	style.line(out, style.title("UDP trace", (time.Duration(report.DurationMS)*time.Millisecond).String()))
+	io.WriteString(out, "\n")
+	style.fields(out, "", "Datagrams", strconv.Itoa(report.Datagrams), "Sent", strconv.Itoa(report.Sent), "Received", strconv.Itoa(report.Received), "TX", traceBytes(report.TXBytes), "RX", traceBytes(report.RXBytes),
+		"Total", traceBytes(report.TotalBytes), "Traffic rate", traceTrafficRate(report.traceTraffic), "Lost events", strconv.FormatUint(report.LostEvents, 10))
+	table := traceTable{titles: []string{"PROCESS", "DESTINATION", "SENT", "RECEIVED", "TX", "RX"}}
 	if !detail {
-		if len(report.groups) == 0 {
-			return
-		}
-		fmt.Fprintln(os.Stdout, "\nPROCESS\tDESTINATION\tSENT\tRECEIVED\tTX\tRX")
 		for _, row := range report.groups {
-			fmt.Fprintf(os.Stdout, "%s\t%s\t%d\t%d\t%s\t%s\n", row.process, traceSummaryPeerLabel(row.peer, row.hostname, row.server), row.sent, row.received, traceBytes(row.TXBytes), traceBytes(row.RXBytes))
+			table.add(row.process, traceSummaryPeerLabel(row.peer, row.hostname, row.server), strconv.FormatUint(row.sent, 10), strconv.FormatUint(row.received, 10), traceBytes(row.TXBytes), traceBytes(row.RXBytes))
 		}
+	} else {
+		for _, flow := range report.Flows {
+			table.add(flow.Process, traceUDPFlowDestinationLabel(flow), strconv.FormatUint(flow.Sent, 10), strconv.FormatUint(flow.Received, 10), traceBytes(flow.TXBytes), traceBytes(flow.RXBytes))
+		}
+	}
+	if len(table.rows) == 0 {
 		return
 	}
-	if len(report.Flows) == 0 {
-		return
-	}
-	fmt.Fprintln(os.Stdout, "\nPROCESS\tDESTINATION\tSENT\tRECEIVED\tTX\tRX")
-	for _, flow := range report.Flows {
-		fmt.Fprintf(os.Stdout, "%s\t%s\t%d\t%d\t%s\t%s\n", flow.Process, traceUDPFlowDestinationLabel(flow), flow.Sent, flow.Received, traceBytes(flow.TXBytes), traceBytes(flow.RXBytes))
-	}
+	io.WriteString(out, "\n")
+	style.writeTable(out, table)
 }
 
 func traceUDPFlowDestinationLabel(flow udpTraceFlow) string {
@@ -1536,19 +1548,22 @@ func traceGroupLabel(groupBy string) string {
 }
 
 func printTraceGroupReport(report traceGroupReport) {
+	out := os.Stdout
+	style := newTraceSummaryStyle(out)
 	title := strings.ToUpper(report.Protocol)
 	if report.Side == traceServerSide {
 		title += " server"
 	}
-	fmt.Fprintf(os.Stdout, "%s trace grouped by %s: %s\n\n", title, report.GroupBy, (time.Duration(report.DurationMS) * time.Millisecond).String())
-	fmt.Fprintf(os.Stdout, "Events: %d\n%s groups: %d\nEvent rate: %.1f/s\n", report.Events, report.GroupBy, len(report.Groups), report.Rate)
+	style.line(out, style.title(fmt.Sprintf("%s trace grouped by %s", title, report.GroupBy), (time.Duration(report.DurationMS)*time.Millisecond).String()))
+	io.WriteString(out, "\n")
+	style.fields(out, "", "Events", strconv.FormatUint(report.Events, 10), report.GroupBy+" groups", strconv.Itoa(len(report.Groups)), "Event rate", fmt.Sprintf("%.1f/s", report.Rate))
 	if !report.hideTraffic() {
-		fmt.Fprintf(os.Stdout, "TX: %s\nRX: %s\nTotal: %s\nTraffic rate: %s\n", traceBytes(report.TXBytes), traceBytes(report.RXBytes), traceBytes(report.TotalBytes), traceTrafficRate(report.traceTraffic))
+		style.fields(out, "", "TX", traceBytes(report.TXBytes), "RX", traceBytes(report.RXBytes), "Total", traceBytes(report.TotalBytes), "Traffic rate", traceTrafficRate(report.traceTraffic))
 	}
 	if report.Protocol == "arp" || report.Protocol == "ndp" {
-		fmt.Fprintf(os.Stdout, "Lost events: %s\n", traceNeighborLost(report.LostEvents))
+		style.fields(out, "", "Lost events", traceNeighborLost(report.LostEvents))
 	} else {
-		fmt.Fprintf(os.Stdout, "Lost events: %d\n", report.LostEvents)
+		style.fields(out, "", "Lost events", strconv.FormatUint(report.LostEvents, 10))
 	}
 	if len(report.Groups) == 0 {
 		return
@@ -1561,17 +1576,28 @@ func printTraceGroupReport(report traceGroupReport) {
 	for _, column := range columns {
 		titles = append(titles, column.reportTitle)
 	}
-	fmt.Fprintf(os.Stdout, "\n%s\n", strings.Join(append(titles, "LAST"), "\t"))
+	table := traceTable{titles: append(titles, "LAST")}
 	for _, group := range report.Groups {
 		values := []string{traceGroupDisplayValue(report.GroupBy, group), strconv.FormatUint(group.Events, 10), fmt.Sprintf("%.1f", group.Rate)}
 		if !report.hideTraffic() {
 			values = append(values, traceBytes(group.TXBytes), traceBytes(group.RXBytes), traceBytes(group.TotalBytes), traceBytes(uint64(group.BytesPerSecond)), fmt.Sprintf("%.3f", group.MegabitsPerSecond))
 		}
+		// 문제를 세는 열은 live 화면의 group 행과 같은 색이다.
+		colors := make([]string, len(values), len(values)+len(columns)+1)
 		for _, column := range columns {
-			values = append(values, column.value(group))
+			value := column.value(group)
+			values = append(values, value)
+			color := ""
+			if traceSummaryCount(value) > 0 {
+				color = traceGroupColumnSeverity[column.screenTitle]
+			}
+			colors = append(colors, color)
 		}
-		fmt.Fprintf(os.Stdout, "%s\n", strings.Join(append(values, group.LastEvent), "\t"))
+		colors = append(colors, traceEventSeverity(captureEvent{Protocol: report.Protocol, Event: group.LastEvent}))
+		table.addColored(append(values, group.LastEvent), colors)
 	}
+	io.WriteString(out, "\n")
+	style.writeTable(out, table)
 }
 
 // traceObserved는 이 platform이 관측하지 못하는 값을 nil로 바꾼다. 0으로 두면 관측한 0과 구분되지 않는다.

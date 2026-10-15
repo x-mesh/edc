@@ -361,27 +361,28 @@ func lockTopProcess(processes map[string]uint64) string {
 }
 
 func (report lockReport) print(out io.Writer) {
+	style := newTraceSummaryStyle(out)
 	summary := report.Summary
-	fmt.Fprintf(out, "LOCK TRACE  duration %s  waits %d  waited %s\n", syscallTime(float64(summary.DurationMS)*float64(time.Millisecond)), summary.Waits, syscallTime(summary.TotalMS*float64(time.Millisecond)))
+	style.line(out, style.headline("LOCK TRACE", traceStat{"duration", syscallTime(float64(summary.DurationMS) * float64(time.Millisecond))}, traceStat{"waits", fmt.Sprint(summary.Waits)}, traceStat{"waited", syscallTime(summary.TotalMS * float64(time.Millisecond))}))
 	if _, missing := summary.Unavailable[lockKindKernel]; !missing {
-		fmt.Fprintf(out, "%-28s %-10s %-28s %-16s %8s %9s %9s %9s\n", "KERNEL LOCK", "TYPE", "CALLER", "PROCESS", "WAITS", "TOTAL", "AVG", "MAX")
+		style.line(out, style.dim(fmt.Sprintf("%-28s %-10s %-28s %-16s %8s %9s %9s %9s", "KERNEL LOCK", "TYPE", "CALLER", "PROCESS", "WAITS", "TOTAL", "AVG", "MAX")))
 		for index, row := range report.Kernel {
 			if index == lockTraceRows {
-				fmt.Fprintf(out, "... %d more rows in --json\n", len(report.Kernel)-lockTraceRows)
+				style.line(out, style.hint(fmt.Sprintf("... %d more rows in --json", len(report.Kernel)-lockTraceRows)))
 				break
 			}
-			fmt.Fprintf(out, "%-28s %-10s %-28s %-16s %8d %9s %9s %9s\n", cpuShorten(row.Lock, 28), row.Type, cpuShorten(row.Caller, 28), cpuShorten(lockTopProcess(row.Processes), 16), row.Waits, syscallTime(row.TotalMS*float64(time.Millisecond)), syscallTime(row.AverageMS*float64(time.Millisecond)), syscallTime(row.MaxMS*float64(time.Millisecond)))
+			style.printf(out, "%-28s %-10s %-28s %-16s %8d %9s %9s %9s\n", cpuShorten(row.Lock, 28), row.Type, cpuShorten(row.Caller, 28), cpuShorten(lockTopProcess(row.Processes), 16), row.Waits, style.measure(syscallTime(row.TotalMS*float64(time.Millisecond))), style.measure(syscallTime(row.AverageMS*float64(time.Millisecond))), style.measure(syscallTime(row.MaxMS*float64(time.Millisecond))))
 		}
 	}
 	if _, missing := summary.Unavailable[lockKindFutex]; !missing {
-		fmt.Fprintf(out, "%-16s %8s %-28s %-36s %8s %9s %9s %9s\n", "PROCESS", "PID", "FUTEX", "CODE", "WAITS", "TOTAL", "AVG", "MAX")
+		style.line(out, style.dim(fmt.Sprintf("%-16s %8s %-28s %-36s %8s %9s %9s %9s", "PROCESS", "PID", "FUTEX", "CODE", "WAITS", "TOTAL", "AVG", "MAX")))
 		for index, row := range report.Futex {
 			if index == lockTraceRows {
-				fmt.Fprintf(out, "... %d more rows in --json\n", len(report.Futex)-lockTraceRows)
+				style.line(out, style.hint(fmt.Sprintf("... %d more rows in --json", len(report.Futex)-lockTraceRows)))
 				break
 			}
-			fmt.Fprintf(out, "%-16s %8d %-28s %-36s %8d %9s %9s %9s\n", cpuShorten(row.Process, 16), row.PID, cpuShorten(row.Lock, 28), cpuShorten(row.Caller, 36), row.Waits, syscallTime(row.TotalMS*float64(time.Millisecond)), syscallTime(row.AverageMS*float64(time.Millisecond)), syscallTime(row.MaxMS*float64(time.Millisecond)))
+			style.printf(out, "%-16s %8d %-28s %-36s %8d %9s %9s %9s\n", cpuShorten(row.Process, 16), row.PID, cpuShorten(row.Lock, 28), cpuShorten(row.Caller, 36), row.Waits, style.measure(syscallTime(row.TotalMS*float64(time.Millisecond))), style.measure(syscallTime(row.AverageMS*float64(time.Millisecond))), style.measure(syscallTime(row.MaxMS*float64(time.Millisecond))))
 		}
 	}
-	fmt.Fprintf(out, "entries %d  stats_full %d  depth_full %d  unmatched %d  stack_lost %d\n", summary.StatsEntries, summary.StatsFull, summary.DepthFull, summary.Unmatched, summary.StackLost)
+	style.line(out, style.stats(traceStat{"entries", fmt.Sprint(summary.StatsEntries)}, traceStat{"stats_full", fmt.Sprint(summary.StatsFull)}, traceStat{"depth_full", fmt.Sprint(summary.DepthFull)}, traceStat{"unmatched", fmt.Sprint(summary.Unmatched)}, traceStat{"stack_lost", fmt.Sprint(summary.StackLost)}))
 }

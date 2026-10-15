@@ -3,6 +3,7 @@ package edc
 import (
 	"encoding/binary"
 	"fmt"
+	"io"
 	"maps"
 	"net"
 	"net/netip"
@@ -522,14 +523,20 @@ func (report dnsTraceReport) print(bool) {
 	if report.Side == traceServerSide {
 		title = "DNS server trace"
 	}
-	fmt.Fprintf(os.Stdout, "%s: %s\n\n", title, (time.Duration(report.DurationMS) * time.Millisecond).String())
-	fmt.Fprintf(os.Stdout, "Queries: %d\nAnswers: %d\nErrors: %d\nUnanswered: %d\nTCP connections: %d\n", report.Queries, report.Answers, report.Errors, report.Unanswered, report.TCPConnections)
-	fmt.Fprintf(os.Stdout, "Latency avg: %s\nLatency max: %s\nNetwork avg: %s\nNetwork max: %s\nRead delay avg: %s\nRead delay max: %s\nLost events: %d\n", traceLatency(report.LatencyAvgMS, "ms"), traceLatency(report.LatencyMaxMS, "ms"), traceLatency(report.NetworkAvgMS, "ms"), traceLatency(report.NetworkMaxMS, "ms"), traceLatency(report.ReadDelayAvgMS, "ms"), traceLatency(report.ReadDelayMaxMS, "ms"), report.LostEvents)
+	out := os.Stdout
+	style := newTraceSummaryStyle(out)
+	style.line(out, style.title(title, (time.Duration(report.DurationMS)*time.Millisecond).String()))
+	io.WriteString(out, "\n")
+	style.fields(out, "", "Queries", fmt.Sprint(report.Queries), "Answers", fmt.Sprint(report.Answers), "Errors", fmt.Sprint(report.Errors), "Unanswered", fmt.Sprint(report.Unanswered), "TCP connections", fmt.Sprint(report.TCPConnections),
+		"Latency avg", traceLatency(report.LatencyAvgMS, "ms"), "Latency max", traceLatency(report.LatencyMaxMS, "ms"), "Network avg", traceLatency(report.NetworkAvgMS, "ms"), "Network max", traceLatency(report.NetworkMaxMS, "ms"),
+		"Read delay avg", traceLatency(report.ReadDelayAvgMS, "ms"), "Read delay max", traceLatency(report.ReadDelayMaxMS, "ms"), "Lost events", fmt.Sprint(report.LostEvents))
 	if len(report.Names) == 0 {
 		return
 	}
-	fmt.Fprintln(os.Stdout, "\nNAME\tTYPE\tQUERIES\tANSWERS\tRESULTS\tUNANSWERED\tAVG\tMAX\tNET\tREAD\tPROCESS")
+	table := traceTable{titles: []string{"NAME", "TYPE", "QUERIES", "ANSWERS", "RESULTS", "UNANSWERED", "AVG", "MAX", "NET", "READ", "PROCESS"}}
 	for _, name := range report.Names {
-		fmt.Fprintf(os.Stdout, "%s\t%s\t%d\t%d\t%s\t%d\t%s\t%s\t%s\t%s\t%s\n", name.Name, emptyAs(name.Type, "-"), name.Queries, name.Answers, traceResultCounts(name.Results), name.Unanswered, traceLatency(name.LatencyAvgMS, "ms"), traceLatency(name.LatencyMaxMS, "ms"), traceLatency(name.NetworkAvgMS, "ms"), traceLatency(name.ReadDelayAvgMS, "ms"), emptyAs(strings.Join(name.Processes, ","), "-"))
+		table.add(name.Name, emptyAs(name.Type, "-"), fmt.Sprint(name.Queries), fmt.Sprint(name.Answers), traceResultCounts(name.Results), fmt.Sprint(name.Unanswered), traceLatency(name.LatencyAvgMS, "ms"), traceLatency(name.LatencyMaxMS, "ms"), traceLatency(name.NetworkAvgMS, "ms"), traceLatency(name.ReadDelayAvgMS, "ms"), emptyAs(strings.Join(name.Processes, ","), "-"))
 	}
+	io.WriteString(out, "\n")
+	style.writeTable(out, table)
 }

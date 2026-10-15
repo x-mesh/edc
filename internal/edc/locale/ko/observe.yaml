@@ -121,6 +121,8 @@ observe:
     body: "본문"
     body_meta: "%s, %d bytes, %d줄"
     body_size: "%s, %d bytes"
+    body_bytes: "%d bytes"
+    body_lines: "%d줄"
     encoded: "%s로 인코딩되어 표시하지 않음"
     no_content_type: "content-type 없음"
     binary: "binary라 표시하지 않음"

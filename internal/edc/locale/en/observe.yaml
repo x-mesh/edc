@@ -121,6 +121,8 @@ observe:
     body: "body"
     body_meta: "%s, %d bytes, %d line(s)"
     body_size: "%s, %d bytes"
+    body_bytes: "%d bytes"
+    body_lines: "%d line(s)"
     encoded: "%s encoded, not shown"
     no_content_type: "no content-type"
     binary: "binary, not shown"

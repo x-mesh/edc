@@ -121,6 +121,8 @@ observe:
     body: "本文"
     body_meta: "%s、%d bytes、%d 行"
     body_size: "%s、%d bytes"
+    body_bytes: "%d bytes"
+    body_lines: "%d 行"
     encoded: "%s で符号化されているため表示しない"
     no_content_type: "content-type なし"
     binary: "binary のため表示しない"

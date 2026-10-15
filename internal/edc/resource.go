@@ -135,10 +135,14 @@ func (pressure topMemoryPressure) String() string {
 }
 
 type topProcess struct {
-	PID     int
-	CPU     float64
-	RSS     uint64
-	Command string
+	PID int
+	CPU float64
+	RSS uint64
+	// Memory는 process가 책임지는 memory다. macOS는 phys_footprint, Linux는 RSS에 swap으로 나간 양을 더한 값이다.
+	// RSS는 압축되거나 swap으로 나간 page를 세지 않아 누수로 커진 process를 작게 보인다. 읽지 못하면 MemoryValid가 false다.
+	Memory      uint64
+	MemoryValid bool
+	Command     string
 	// Started는 process가 시작한 시각이다. PID가 재사용돼도 (PID, Started)는 process 하나를 가리킨다. 모르면 zero다.
 	Started time.Time
 	// Threads는 thread 수이고 모르면 0이다.
@@ -220,10 +224,13 @@ func processLimitsOf(process topProcess) *topProcessLimits {
 
 // topProcessTotal은 필터에 맞은 process 전체의 합이다. 목록은 CPU 상위만 남기지만 합은 모두 센다.
 type topProcessTotal struct {
-	Count   int
-	CPU     float64
-	RSS     uint64
-	Threads int
+	Count  int
+	CPU    float64
+	RSS    uint64
+	Memory uint64
+	// MemoryEstimated는 Memory를 읽지 못해 RSS로 대신 더한 process가 있는지다.
+	MemoryEstimated bool
+	Threads         int
 	// Probe는 감시하는 모든 process의 -d 값을 더한 것이다.
 	Probe *topProbeStats
 	// Blocked는 필터를 걸기 전 모든 process 중 I/O를 기다리며 멈춘 process 수다. state를 읽은 목록에서만 유효하다.
@@ -241,6 +248,9 @@ type topProcessGroup struct {
 	Blocked int
 	CPU     float64
 	RSS     uint64
+	Memory  uint64
+	// MemoryEstimated는 Memory를 읽지 못해 RSS로 대신 더한 process가 있는지다.
+	MemoryEstimated bool
 	// DiskValid는 I/O를 읽은 process가 하나라도 있는지다. DiskRead와 DiskWrite는 읽은 process만 더한 값이다.
 	DiskValid           bool
 	DiskRead, DiskWrite float64
@@ -255,8 +265,8 @@ const (
 	topProcessGroupMinIO = 1 << 20
 	// topProcessGroupMinCPU는 CPU 합(core 하나가 100%)이다.
 	topProcessGroupMinCPU = 10
-	// topProcessGroupMinRSS는 RSS 합(byte)이다.
-	topProcessGroupMinRSS = 100 << 20
+	// topProcessGroupMinMemory는 memory 합(byte)이다.
+	topProcessGroupMinMemory = 100 << 20
 )
 
 // topProcessGroupName은 묶음 기준인 실행 파일 이름이다. 전체 명령줄이면 인자를 떼고, 경로면 마지막 요소만 남긴다.
@@ -290,6 +300,8 @@ func groupTopProcesses(processes []topProcess) []topProcessGroup {
 		group.Count++
 		group.CPU += process.CPU
 		group.RSS += process.RSS
+		group.Memory += process.memory()
+		group.MemoryEstimated = group.MemoryEstimated || !process.MemoryValid
 		if process.State == topProcessStateBlocked {
 			group.Blocked++
 		}
@@ -300,7 +312,7 @@ func groupTopProcesses(processes []topProcess) []topProcessGroup {
 		}
 	}
 	kept, seen := []topProcessGroup{}, map[string]bool{}
-	for _, ranked := range [][]topProcessGroup{topProcessGroupsByIO(groups), topProcessGroupsByCPU(groups), topProcessGroupsByRSS(groups)} {
+	for _, ranked := range [][]topProcessGroup{topProcessGroupsByIO(groups), topProcessGroupsByCPU(groups), topProcessGroupsByMemory(groups)} {
 		for _, group := range ranked {
 			if !seen[group.Name] {
 				kept = append(kept, group)
@@ -343,9 +355,9 @@ func topProcessGroupsByCPU(groups []topProcessGroup) []topProcessGroup {
 		func(a, b topProcessGroup) bool { return a.CPU > b.CPU })
 }
 
-func topProcessGroupsByRSS(groups []topProcessGroup) []topProcessGroup {
-	return topProcessGroupsBy(groups, func(group topProcessGroup) bool { return group.RSS >= topProcessGroupMinRSS },
-		func(a, b topProcessGroup) bool { return a.RSS > b.RSS })
+func topProcessGroupsByMemory(groups []topProcessGroup) []topProcessGroup {
+	return topProcessGroupsBy(groups, func(group topProcessGroup) bool { return group.Memory >= topProcessGroupMinMemory },
+		func(a, b topProcessGroup) bool { return a.Memory > b.Memory })
 }
 
 func totalTopProcesses(processes []topProcess) topProcessTotal {
@@ -353,9 +365,19 @@ func totalTopProcesses(processes []topProcess) topProcessTotal {
 	for _, process := range processes {
 		total.CPU += process.CPU
 		total.RSS += process.RSS
+		total.Memory += process.memory()
+		total.MemoryEstimated = total.MemoryEstimated || !process.MemoryValid
 		total.Threads += process.Threads
 	}
 	return total
+}
+
+// memory는 순위와 합계에 쓰는 값이다. macOS에서 다른 사용자 소유 process처럼 Memory를 읽지 못하면 RSS로 대신한다.
+func (process topProcess) memory() uint64 {
+	if process.MemoryValid {
+		return process.Memory
+	}
+	return process.RSS
 }
 
 const (
@@ -584,7 +606,7 @@ func sortTopProcessesByCPU(processes []topProcess) []topProcess {
 func topProcessCandidates(processes []topProcess) []topProcess {
 	candidates := append([]topProcess(nil), processes[:min(topProcessLimit, len(processes))]...)
 	byMemory := append([]topProcess(nil), processes...)
-	sort.SliceStable(byMemory, func(i, j int) bool { return byMemory[i].RSS > byMemory[j].RSS })
+	sort.SliceStable(byMemory, func(i, j int) bool { return byMemory[i].memory() > byMemory[j].memory() })
 	seen := make(map[int]bool, len(candidates))
 	for _, process := range candidates {
 		seen[process.PID] = true
@@ -654,6 +676,31 @@ type linuxProcessStat struct {
 	Threads    int
 	StartTicks uint64
 	State      string
+	// Swap은 /proc/<pid>/status의 VmSwap을 byte로 바꾼 값이다. 읽지 못하면 SwapValid가 false다.
+	Swap      uint64
+	SwapValid bool
+}
+
+// parseLinuxProcessSwap은 /proc/<pid>/status의 VmSwap(kB)을 byte로 읽는다. kernel thread는 address space가 없어
+// Vm 줄이 모두 빠지므로 0으로 본다.
+func parseLinuxProcessSwap(data string) (uint64, bool) {
+	hasVM := false
+	for _, line := range strings.Split(data, "\n") {
+		name, value, ok := strings.Cut(line, ":")
+		if !ok {
+			continue
+		}
+		hasVM = hasVM || strings.HasPrefix(name, "Vm")
+		if name != "VmSwap" {
+			continue
+		}
+		kib, err := strconv.ParseUint(strings.TrimSuffix(strings.TrimSpace(value), " kB"), 10, 64)
+		if err != nil {
+			return 0, false
+		}
+		return kib * 1024, true
+	}
+	return 0, !hasVM
 }
 
 // parseLinuxProcessStat은 /proc/<pid>/stat을 읽는다. comm에는 공백과 괄호가 들어갈 수 있어 마지막 ')' 뒤를 나눈다.
@@ -733,7 +780,8 @@ func (tracker *topProcessTracker) update(at time.Time, stats []linuxProcessStat)
 			continue
 		}
 		cpu := float64(stat.Ticks-before) / tracker.clockTicks / seconds * 100
-		process := topProcess{PID: stat.PID, CPU: cpu, RSS: stat.RSSPages * tracker.pageSize, Command: stat.Command, Threads: stat.Threads, State: stat.State}
+		rss := stat.RSSPages * tracker.pageSize
+		process := topProcess{PID: stat.PID, CPU: cpu, RSS: rss, Memory: rss + stat.Swap, MemoryValid: stat.SwapValid, Command: stat.Command, Threads: stat.Threads, State: stat.State}
 		if !tracker.boot.IsZero() {
 			process.Started = tracker.boot.Add(time.Duration(float64(stat.StartTicks) / tracker.clockTicks * float64(time.Second)))
 		}

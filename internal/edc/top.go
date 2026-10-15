@@ -335,7 +335,9 @@ type topProcessTotalSample struct {
 	Count    int     `json:"count"`
 	CPU      float64 `json:"cpu_pct"`
 	RSSBytes uint64  `json:"rss_bytes"`
-	Threads  int     `json:"threads,omitempty"`
+	// MemoryBytes는 맞은 process의 memory_bytes 합이다. 하나라도 읽지 못했으면 빠진다.
+	MemoryBytes *uint64 `json:"memory_bytes,omitempty"`
+	Threads     int     `json:"threads,omitempty"`
 	// EBPF는 --ebpf가 직전 window 동안 센 값이다. 첫 관측 전에는 빠진다.
 	EBPF *topProbeSample `json:"ebpf,omitempty"`
 }
@@ -343,16 +345,18 @@ type topProcessTotalSample struct {
 // topProcessSample은 --process가 sample마다 붙이는 process 한 개의 값이다. CPU는 core 하나가 100%다.
 // Started, Threads, FDs, 디스크 rate는 읽을 수 없으면 빠진다. (pid, started)가 process 하나를 가리킨다.
 type topProcessSample struct {
-	PID       int               `json:"pid"`
-	Started   *time.Time        `json:"started,omitempty"`
-	Command   string            `json:"command"`
-	CPU       float64           `json:"cpu_pct"`
-	RSSBytes  uint64            `json:"rss_bytes"`
-	Threads   int               `json:"threads,omitempty"`
-	FDs       int               `json:"fds,omitempty"`
-	Limits    *topProcessLimits `json:"limits"`
-	DiskRead  *float64          `json:"disk_read_bytes_per_s,omitempty"`
-	DiskWrite *float64          `json:"disk_write_bytes_per_s,omitempty"`
+	PID      int        `json:"pid"`
+	Started  *time.Time `json:"started,omitempty"`
+	Command  string     `json:"command"`
+	CPU      float64    `json:"cpu_pct"`
+	RSSBytes uint64     `json:"rss_bytes"`
+	// MemoryBytes는 macOS phys_footprint 또는 Linux RSS+VmSwap이다. 읽지 못한 process는 빠진다.
+	MemoryBytes *uint64           `json:"memory_bytes,omitempty"`
+	Threads     int               `json:"threads,omitempty"`
+	FDs         int               `json:"fds,omitempty"`
+	Limits      *topProcessLimits `json:"limits"`
+	DiskRead    *float64          `json:"disk_read_bytes_per_s,omitempty"`
+	DiskWrite   *float64          `json:"disk_write_bytes_per_s,omitempty"`
 	// EBPF는 --ebpf가 직전 window 동안 센 값이다. 첫 관측 전에는 빠진다.
 	EBPF *topProbeSample `json:"ebpf,omitempty"`
 }
@@ -362,6 +366,10 @@ func newTopProcessSamples(processes []topProcess) *[]topProcessSample {
 	for _, process := range processes {
 		sample := topProcessSample{PID: process.PID, Command: process.Command, CPU: roundTopValue(process.CPU), RSSBytes: process.RSS, Threads: process.Threads, FDs: process.FDs, EBPF: newTopProbeSample(process.Probe)}
 		sample.Limits = processLimitsOf(process)
+		if process.MemoryValid {
+			memory := process.Memory
+			sample.MemoryBytes = &memory
+		}
 		if !process.Started.IsZero() {
 			started := process.Started.UTC().Truncate(time.Second)
 			sample.Started = &started
@@ -376,7 +384,12 @@ func newTopProcessSamples(processes []topProcess) *[]topProcessSample {
 }
 
 func newTopProcessTotalSample(total topProcessTotal) *topProcessTotalSample {
-	return &topProcessTotalSample{Count: total.Count, CPU: roundTopValue(total.CPU), RSSBytes: total.RSS, Threads: total.Threads, EBPF: newTopProbeSample(total.Probe)}
+	sample := &topProcessTotalSample{Count: total.Count, CPU: roundTopValue(total.CPU), RSSBytes: total.RSS, Threads: total.Threads, EBPF: newTopProbeSample(total.Probe)}
+	if !total.MemoryEstimated {
+		memory := total.Memory
+		sample.MemoryBytes = &memory
+	}
+	return sample
 }
 
 // topProbeSample은 window 동안 센 run-queue 대기와 block I/O 지연이다. 지연은 ms이고, p95는 그 값이 든 구간의 위쪽 경계라 실제 값은 그 아래다.

@@ -42,6 +42,9 @@ func newTopProcessReader() func() ([]topProcess, bool) {
 				continue
 			}
 			if stat, ok := parseLinuxProcessStat(pid, string(data)); ok {
+				if status, err := os.ReadFile("/proc/" + entry.Name() + "/status"); err == nil {
+					stat.Swap, stat.SwapValid = parseLinuxProcessSwap(string(status))
+				}
 				if topFullCommand {
 					if argv, err := os.ReadFile("/proc/" + entry.Name() + "/cmdline"); err == nil {
 						if line := linuxProcessCommandLine(argv); line != "" {

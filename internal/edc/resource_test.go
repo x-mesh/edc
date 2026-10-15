@@ -186,6 +186,79 @@ func TestTopProcessTrackerUsesRecentTicks(t *testing.T) {
 	}
 }
 
+func TestTopProcessTrackerAddsSwapToMemory(t *testing.T) {
+	tracker := &topProcessTracker{clockTicks: 100, pageSize: 4096}
+	stats := []linuxProcessStat{{PID: 1, Command: "leak", RSSPages: 10, Swap: 3 << 30, SwapValid: true}, {PID: 2, Command: "unread", RSSPages: 10}}
+	tracker.update(time.Unix(0, 0), stats)
+	processes, ok := tracker.update(time.Unix(1, 0), stats)
+	if !ok || len(processes) != 2 {
+		t.Fatalf("processes = %#v, %v", processes, ok)
+	}
+	byPID := map[int]topProcess{}
+	for _, process := range processes {
+		byPID[process.PID] = process
+	}
+	if leak := byPID[1]; !leak.MemoryValid || leak.Memory != 40960+3<<30 || leak.RSS != 40960 {
+		t.Fatalf("leak = %#v", leak)
+	}
+	if unread := byPID[2]; unread.MemoryValid || unread.memory() != 40960 {
+		t.Fatalf("unread swap must fall back to RSS: %#v", unread)
+	}
+}
+
+func TestParseLinuxProcessSwap(t *testing.T) {
+	cases := []struct {
+		name, status string
+		want         uint64
+		ok           bool
+	}{
+		{"user process", "Name:\tpython3\nVmRSS:\t   49664 kB\nVmSwap:\t 3106144 kB\nThreads:\t1\n", 3106144 * 1024, true},
+		{"kernel thread", "Name:\tkworker/0:1\nState:\tI (idle)\nThreads:\t1\n", 0, true},
+		{"missing VmSwap", "Name:\tnode\nVmRSS:\t1024 kB\n", 0, false},
+		{"malformed", "VmRSS:\t1 kB\nVmSwap:\tlots kB\n", 0, false},
+	}
+	for _, tc := range cases {
+		if got, ok := parseLinuxProcessSwap(tc.status); got != tc.want || ok != tc.ok {
+			t.Errorf("%s = %d, %v, want %d, %v", tc.name, got, ok, tc.want, tc.ok)
+		}
+	}
+}
+
+// RSS 순위였다면 swap으로 밀려난 leak이 RSS가 큰 process에 밀려 빠진다.
+func TestTopProcessCandidatesRankMemoryBeyondRSS(t *testing.T) {
+	processes := []topProcess{}
+	for pid := 1; pid <= topProcessLimit; pid++ {
+		processes = append(processes, topProcess{PID: pid, CPU: float64(100 - pid), RSS: 1 << 20, Memory: 1 << 20, MemoryValid: true, Command: "busy"})
+	}
+	for pid := 11; pid < 11+topProcessLimit; pid++ {
+		processes = append(processes, topProcess{PID: pid, RSS: 500 << 20, Memory: 100 << 20, MemoryValid: true, Command: "shared"})
+	}
+	processes = append(processes,
+		topProcess{PID: 21, RSS: 49 << 20, Memory: 3 << 30, MemoryValid: true, Command: "leak"},
+		topProcess{PID: 22, RSS: 200 << 20, Command: "root-owned"})
+	picked := map[int]bool{}
+	for _, process := range topProcessCandidates(processes) {
+		picked[process.PID] = true
+	}
+	if !picked[21] || !picked[22] {
+		t.Fatalf("candidates must rank by memory, falling back to RSS: %v", picked)
+	}
+	total := totalTopProcesses(processes)
+	if want := uint64(topProcessLimit*(1<<20) + topProcessLimit*(100<<20) + 3<<30 + 200<<20); total.Memory != want || !total.MemoryEstimated {
+		t.Fatalf("total memory = %d, estimated %v, want %d, true", total.Memory, total.MemoryEstimated, want)
+	}
+}
+
+func TestTopProcessSamplesReportMemoryOnlyWhenMeasured(t *testing.T) {
+	samples := *newTopProcessSamples([]topProcess{{PID: 1, RSS: 49 << 20, Memory: 3 << 30, MemoryValid: true, Command: "leak"}, {PID: 2, RSS: 200 << 20, Command: "root-owned"}})
+	if samples[0].MemoryBytes == nil || *samples[0].MemoryBytes != 3<<30 || samples[1].MemoryBytes != nil {
+		t.Fatalf("memory_bytes = %v, %v", samples[0].MemoryBytes, samples[1].MemoryBytes)
+	}
+	if total := newTopProcessTotalSample(topProcessTotal{Count: 2, RSS: 249 << 20, Memory: 3<<30 + 200<<20, MemoryEstimated: true}); total.MemoryBytes != nil {
+		t.Fatalf("an estimated total must omit memory_bytes: %d", *total.MemoryBytes)
+	}
+}
+
 func TestTopProcessSamplerDropsStaleListOnFailure(t *testing.T) {
 	succeed := true
 	sampler := &topProcessSampler{read: func() ([]topProcess, bool) {
@@ -697,7 +770,7 @@ func TestGroupTopProcessesKeepsCPUAndMemoryLeaders(t *testing.T) {
 	// 합이 기준에 못 미치는 묶음은 남지 않는다.
 	processes = append(processes, topProcess{PID: 300, Command: "sshd", CPU: 1, RSS: 8 << 20}, topProcess{PID: 301, Command: "sshd", CPU: 1, RSS: 8 << 20})
 	groups := groupTopProcesses(processes)
-	byCPU, byRSS := topProcessGroupsByCPU(groups), topProcessGroupsByRSS(groups)
+	byCPU, byRSS := topProcessGroupsByCPU(groups), topProcessGroupsByMemory(groups)
 	if len(byCPU) != 2 || byCPU[0].Name != "gm" || byCPU[0].CPU != 100 || byCPU[1].Name != "php-fpm" {
 		t.Fatalf("CPU groups = %+v", byCPU)
 	}
@@ -790,9 +863,9 @@ func TestTopSampleCarriesProcessesOnlyWhenFiltering(t *testing.T) {
 	}
 	started := time.Date(2026, time.October, 3, 5, 6, 51, 0, time.UTC)
 	sample.Processes = newTopProcessSamples([]topProcess{{PID: 7, CPU: 1, RSS: 2, Command: "node", Started: started, Threads: 4, FDs: 9, DiskValid: true, DiskRead: 10.5, DiskWrite: 0}})
-	sample.ProcessTotal = newTopProcessTotalSample(topProcessTotal{Count: 2, CPU: 3.456, RSS: 5, Threads: 8})
+	sample.ProcessTotal = newTopProcessTotalSample(topProcessTotal{Count: 2, CPU: 3.456, RSS: 5, Memory: 6, Threads: 8})
 	data, _ = json.Marshal(sample)
-	for _, want := range []string{`"started":"2026-10-03T05:06:51Z"`, `"threads":4`, `"fds":9`, `"disk_read_bytes_per_s":10.5`, `"disk_write_bytes_per_s":0`, `"process_total":{"count":2,"cpu_pct":3.46,"rss_bytes":5,"threads":8}`} {
+	for _, want := range []string{`"started":"2026-10-03T05:06:51Z"`, `"threads":4`, `"fds":9`, `"disk_read_bytes_per_s":10.5`, `"disk_write_bytes_per_s":0`, `"process_total":{"count":2,"cpu_pct":3.46,"rss_bytes":5,"memory_bytes":6,"threads":8}`} {
 		if !strings.Contains(string(data), want) {
 			t.Fatalf("sample is missing %s: %s", want, data)
 		}
@@ -828,7 +901,7 @@ func TestTopProcessSamplerTotalsEveryMatchAndEnrichesTheKeptOnes(t *testing.T) {
 	if !valid || len(processes) != topFilteredProcessLimit || enriched != topFilteredProcessLimit {
 		t.Fatalf("kept %d, enriched %d, valid %v", len(processes), enriched, valid)
 	}
-	if want := (topProcessTotal{Count: topFilteredProcessLimit + 10, CPU: 2 * float64(topFilteredProcessLimit+10), RSS: 1000 * uint64(topFilteredProcessLimit+10), Threads: 3 * (topFilteredProcessLimit + 10)}); !reflect.DeepEqual(total, want) {
+	if want := (topProcessTotal{Count: topFilteredProcessLimit + 10, CPU: 2 * float64(topFilteredProcessLimit+10), RSS: 1000 * uint64(topFilteredProcessLimit+10), Memory: 1000 * uint64(topFilteredProcessLimit+10), MemoryEstimated: true, Threads: 3 * (topFilteredProcessLimit + 10)}); !reflect.DeepEqual(total, want) {
 		t.Fatalf("total = %+v, want %+v", total, want)
 	}
 }

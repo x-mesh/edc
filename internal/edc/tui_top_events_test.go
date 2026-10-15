@@ -138,7 +138,7 @@ func TestTopEventCulpritFollowsTheView(t *testing.T) {
 	row := topDashboardRow{processesValid: true, processes: []topProcess{
 		{PID: 1, CPU: 70, RSS: 500 << 20, Command: "node", DiskValid: true, DiskRead: 21 << 20},
 		{PID: 2, CPU: 1, RSS: 2 << 20, Command: "gm", State: "D"},
-	}, processTotal: topProcessTotal{Groups: []topProcessGroup{{Name: "gm", Count: 169, Blocked: 22, CPU: 20, RSS: 370 << 20, DiskValid: true, DiskWrite: 60 << 20}}}}
+	}, processTotal: topProcessTotal{Groups: []topProcessGroup{{Name: "gm", Count: 169, Blocked: 22, CPU: 20, RSS: 370 << 20, Memory: 370 << 20, DiskValid: true, DiskWrite: 60 << 20}}}}
 	for view, want := range map[topView]string{
 		topViewDisk:     "gm (169 procs, 22 iowait) w 60.0M · node r 21.0M",
 		topViewPressure: "gm (169 procs, 22 iowait) w 60.0M · node r 21.0M",

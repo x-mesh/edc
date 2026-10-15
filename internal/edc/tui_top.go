@@ -148,10 +148,14 @@ const (
 	topProcessIOMinWidth = 60
 	// topProcessStateWidth는 STATE 칸의 폭이다. 가장 긴 이름인 iowait와 zombie가 들어간다.
 	topProcessStateWidth = 6
-	// topProcessColumnsWidth는 후보 줄에서 이름 칸을 뺀 표시·PID·STATE·CPU%·RSS 칸과 사이 공백의 폭이다.
+	// topProcessColumnsWidth는 후보 줄에서 이름 칸을 뺀 표시·PID·STATE·CPU%·MEM 칸과 사이 공백의 폭이다.
 	topProcessColumnsWidth = 26 + topProcessStateWidth
 	// topProcessIOColumnsWidth는 READ·WRITE 두 칸과 앞 공백의 폭이다. 63칸 후보 패널에서 이름 칸이 17칸 남는다.
 	topProcessIOColumnsWidth = 14
+	// topProcessRSSColumnWidth는 MEM 뒤에 붙는 RSS 칸과 앞 공백의 폭이다.
+	topProcessRSSColumnWidth = 7
+	// topProcessRSSMinNameWidth는 RSS 칸을 붙인 뒤에도 남겨야 하는 이름 칸 폭이다. 이보다 좁아지면 MEM만 보인다.
+	topProcessRSSMinNameWidth = 16
 	// topBlockedSignalMin은 iowait이 높을 때 blocked가 signal에 오르는 D state 작업 수다. 4 core host의 core 수와 같다.
 	topBlockedSignalMin = 4
 	// topBlockedSignalDanger는 blocked 경고의 순위를 다른 경고와 맞추는 기준 작업 수다.
@@ -880,9 +884,10 @@ func (model topModel) footerPanelLines() []string {
 		}
 		return append(model.panelLines(), model.statusLines()...)
 	}
-	leftWidth := model.displayWidth() - topFooterGap - topFooterProcessWidth
+	processWidth := model.footerProcessWidth()
+	leftWidth := model.displayWidth() - topFooterGap - processWidth
 	left, right := model, model
-	left.width, right.width = leftWidth, topFooterProcessWidth
+	left.width, right.width = leftWidth, processWidth
 	info, status, candidates := left.infoLines(), left.statusLines(), right.candidateLines()
 	if model.height > 0 {
 		available := max(len(status), model.height-2-len(model.processBanner())-len(model.tableHeader()))
@@ -907,9 +912,17 @@ func (model topModel) footerPanelLines() []string {
 		if index < len(candidates) {
 			rightLine = candidates[index]
 		}
-		lines[index] = topDashboardFitWidth(leftLine, leftWidth) + strings.Repeat(" ", topFooterGap) + topDashboardFitWidth(rightLine, topFooterProcessWidth)
+		lines[index] = topDashboardFitWidth(leftLine, leftWidth) + strings.Repeat(" ", topFooterGap) + topDashboardFitWidth(rightLine, processWidth)
 	}
 	return lines
+}
+
+// footerProcessWidth는 오른쪽에 붙인 process 후보 칸의 폭이다. 왼쪽에 80열이 남을 때만 RSS 칸만큼 넓힌다.
+func (model topModel) footerProcessWidth() int {
+	if model.displayWidth() >= topFooterDockWidth+topProcessRSSColumnWidth {
+		return topFooterProcessWidth + topProcessRSSColumnWidth
+	}
+	return topFooterProcessWidth
 }
 
 // padToFooter는 아래 영역이 화면 맨 아래에 오도록 빈 줄을 채운다. 시작 직후 행이 적어도 안내 줄이 움직이지 않는다.
@@ -1205,7 +1218,7 @@ func (model topModel) candidates() []topProcess {
 	processes := append([]topProcess(nil), row.processes...)
 	switch model.view {
 	case topViewMemory:
-		sort.SliceStable(processes, func(i, j int) bool { return processes[i].RSS > processes[j].RSS })
+		sort.SliceStable(processes, func(i, j int) bool { return processes[i].memory() > processes[j].memory() })
 	case topViewDisk:
 		// 디스크 대기는 CPU를 쓰지 않으므로 I/O가 큰 process를 앞에 둔다. I/O를 읽지 못했거나 같으면
 		// I/O를 기다리며 멈춘 process를 CPU 순위보다 앞에 둔다.
@@ -1283,32 +1296,44 @@ func topProcessGroupLabel(group topProcessGroup, width int) string {
 
 // topProcessGroupLine은 묶음 한 줄이다. 고를 수 없는 줄이라 PID 칸과 표시를 비운다.
 // CPU 합이 process 경고 기준을 넘으면 그 칸을 위험 색으로 칠한다.
-func topProcessGroupLine(group topProcessGroup, nameWidth int, showIO, color bool) string {
+func topProcessGroupLine(group topProcessGroup, nameWidth int, showRSS, showIO, color bool) string {
 	name := topProcessGroupLabel(group, nameWidth)
 	cpu := fmt.Sprintf("%6.1f%%", group.CPU)
 	if group.CPU >= topProcessSignalCPU {
 		cpu = topTint(cpu, topLevelDanger, color)
 	}
-	line := fmt.Sprintf("  %7s %s %s %s %6s", "", topFitCell(name, nameWidth, true), strings.Repeat(" ", topProcessStateWidth), cpu, formatProcessGroupRSS(group.RSS))
+	line := fmt.Sprintf("  %7s %s %s %s %s", "", topFitCell(name, nameWidth, true), strings.Repeat(" ", topProcessStateWidth), cpu, topProcessMemoryCell(formatProcessGroupMemory(group.Memory), group.MemoryEstimated, color))
+	if showRSS {
+		line += fmt.Sprintf(" %6s", formatProcessGroupMemory(group.RSS))
+	}
 	if showIO {
 		line += " " + topProcessIOCell(group.DiskValid, group.DiskRead, color) + " " + topProcessIOCell(group.DiskValid, group.DiskWrite, color)
 	}
 	return line
 }
 
-// topViewProcessGroups는 보기의 순위 기준에 맞는 묶음이다. 디스크는 I/O, 메모리는 RSS, 나머지는 CPU 합 순이다.
+// topViewProcessGroups는 보기의 순위 기준에 맞는 묶음이다. 디스크는 I/O, 메모리는 memory, 나머지는 CPU 합 순이다.
 func topViewProcessGroups(groups []topProcessGroup, view topView) []topProcessGroup {
 	switch view {
 	case topViewDisk:
 		return topProcessGroupsByIO(groups)
 	case topViewMemory:
-		return topProcessGroupsByRSS(groups)
+		return topProcessGroupsByMemory(groups)
 	}
 	return topProcessGroupsByCPU(groups)
 }
 
-// formatProcessGroupRSS는 묶음의 RSS 합이다. 공유 page를 process마다 세므로 실제 사용량의 상한이라 ≤를 붙인다.
-func formatProcessGroupRSS(bytes uint64) string {
+// topProcessMemoryCell은 MEM 칸이다. Memory를 읽지 못해 RSS로 대신한 값은 흐리게 보여 측정값과 구분한다.
+func topProcessMemoryCell(text string, estimated, color bool) string {
+	cell := fmt.Sprintf("%6s", text)
+	if estimated {
+		return topDim(cell, color)
+	}
+	return cell
+}
+
+// formatProcessGroupMemory는 묶음의 memory 합이다. 공유 page를 process마다 셀 수 있어 실제 사용량의 상한이라 ≤를 붙인다.
+func formatProcessGroupMemory(bytes uint64) string {
 	const mib = 1024 * 1024
 	switch {
 	case bytes >= 1024*mib:
@@ -1327,7 +1352,7 @@ func (model topModel) candidateLines() []string {
 	}
 	rank := "CPU"
 	if model.view == topViewMemory {
-		rank = "RSS"
+		rank = "MEM"
 	}
 	state := "live"
 	if !model.follow {
@@ -1343,17 +1368,25 @@ func (model topModel) candidateLines() []string {
 		return append(lines, "no match · / edit filter · Esc clear")
 	}
 	showIO := model.showsProcessIO(processes)
-	nameWidth := max(4, min(28, model.displayWidth()-topProcessColumnsWidth-10))
+	nameRoom := model.displayWidth() - topProcessColumnsWidth - 10
 	if showIO {
-		nameWidth = max(4, min(28, model.displayWidth()-topProcessColumnsWidth-topProcessIOColumnsWidth))
+		nameRoom = model.displayWidth() - topProcessColumnsWidth - topProcessIOColumnsWidth
 	}
+	showRSS := model.displayWidth() >= 40 && nameRoom-topProcessRSSColumnWidth >= topProcessRSSMinNameWidth
+	if showRSS {
+		nameRoom -= topProcessRSSColumnWidth
+	}
+	nameWidth := max(4, min(28, nameRoom))
 	if model.displayWidth() < 40 {
 		nameWidth = max(3, model.displayWidth()-18)
 	}
 	room := model.height - 2 - len(model.processBanner()) - len(model.tableHeader()) - len(model.statusLines())
 	if room >= 3 {
 		// PID는 Linux에서 7자리(기본 pid_max 4194304)까지 가므로 일곱 칸을 둔다.
-		header := fmt.Sprintf("  %7s %s %s %7s %6s", "PID", topFitCell("COMMAND", nameWidth, true), topFitCell("STATE", topProcessStateWidth, true), "CPU%", "RSS")
+		header := fmt.Sprintf("  %7s %s %s %7s %6s", "PID", topFitCell("COMMAND", nameWidth, true), topFitCell("STATE", topProcessStateWidth, true), "CPU%", "MEM")
+		if showRSS {
+			header += fmt.Sprintf(" %6s", "RSS")
+		}
 		if showIO {
 			header += fmt.Sprintf(" %6s %6s", "READ", "WRITE")
 		}
@@ -1367,7 +1400,7 @@ func (model topModel) candidateLines() []string {
 		// 묶음이 process 줄을 모두 밀어내지 않도록 process 한 줄은 남긴다.
 		groups = groups[:min(len(groups), max(0, room-len(lines)-1))]
 		for _, group := range groups {
-			lines = append(lines, topProcessGroupLine(group, nameWidth, showIO, model.limits.color))
+			lines = append(lines, topProcessGroupLine(group, nameWidth, showRSS, showIO, model.limits.color))
 		}
 	}
 	count := min(3, len(processes))
@@ -1392,11 +1425,15 @@ func (model topModel) candidateLines() []string {
 		if process.State == topProcessStateBlocked {
 			state = topTint(state, topLevelWarn, color)
 		}
-		line := fmt.Sprintf("%s %7d %s %s %6.1f%% %6s", marker, process.PID, topFitCell(topProcessName(process.Command, nameWidth), nameWidth, true), state, process.CPU, formatProcessRSS(process.RSS))
+		memory := topProcessMemoryCell(formatProcessRSS(process.memory()), !process.MemoryValid, color)
+		line := fmt.Sprintf("%s %7d %s %s %6.1f%% %s", marker, process.PID, topFitCell(topProcessName(process.Command, nameWidth), nameWidth, true), state, process.CPU, memory)
+		if showRSS {
+			line += fmt.Sprintf(" %6s", formatProcessRSS(process.RSS))
+		}
 		if model.displayWidth() < 40 {
-			value := fmt.Sprintf("%.1f%%", process.CPU)
+			value := fmt.Sprintf("%6s", fmt.Sprintf("%.1f%%", process.CPU))
 			if model.view == topViewMemory {
-				value = formatProcessRSS(process.RSS)
+				value = memory
 			}
 			line = fmt.Sprintf("%s %7d %s %6s", marker, process.PID, topFitCell(topProcessName(process.Command, nameWidth), nameWidth, true), value)
 		}
@@ -1624,7 +1661,7 @@ func topViewColumns(view topView) []topColumn {
 		return []topColumn{{title: "cpu psi", width: 7, host: topColumnLinuxOnly}, {title: "mem psi", width: 7, host: topColumnLinuxOnly}, {title: "io psi", width: 7, host: topColumnLinuxOnly}, {title: "mem full", width: 8, host: topColumnLinuxOnly}, {title: "io full", width: 7, host: topColumnLinuxOnly}, {title: "mem lvl", width: 8, host: topColumnDarwinOnly}, {title: "blocked", width: 7}, {title: "load", width: 6}, {title: "mem%", width: 6}, signal}
 	case topViewProcess:
 		// cpu%는 core 하나를 100으로 센다. runq와 io는 --ebpf가 있을 때의 평균 대기와 지연이다. 가장 바쁜 process는 상세 패널에 있다.
-		return []topColumn{{title: "match", width: 5}, {title: "cpu%", width: 6}, {title: "rss", width: 6}, {title: "thr", width: 5}, {title: "fds", width: 5, host: topColumnLinuxOnly}, {title: "read/s", width: 7}, {title: "write/s", width: 7}, {title: "runq ms", width: 7}, {title: "io ms"}}
+		return []topColumn{{title: "match", width: 5}, {title: "cpu%", width: 6}, {title: "mem", width: 6}, {title: "thr", width: 5}, {title: "fds", width: 5, host: topColumnLinuxOnly}, {title: "read/s", width: 7}, {title: "write/s", width: 7}, {title: "runq ms", width: 7}, {title: "io ms"}}
 	}
 	return nil
 }
@@ -2329,7 +2366,7 @@ func topProcessDetail(processes []topProcess, valid bool) string {
 func topProcessItems(processes []topProcess) []string {
 	items := make([]string, 0, min(3, len(processes)))
 	for _, process := range processes[:min(3, len(processes))] {
-		items = append(items, fmt.Sprintf("%s %.0f%% %s", topProcessName(process.Command, topProcessNameWidth), process.CPU, formatProcessRSS(process.RSS)))
+		items = append(items, fmt.Sprintf("%s %.0f%% %s", topProcessName(process.Command, topProcessNameWidth), process.CPU, formatProcessRSS(process.memory())))
 	}
 	return items
 }
@@ -2343,7 +2380,7 @@ func topMatchDetail(processes []topProcess, total topProcessTotal, valid bool) [
 	if total.Count == 0 {
 		return []string{"match none"}
 	}
-	summary := fmt.Sprintf("match %d · cpu %.0f%% · rss %s", total.Count, total.CPU, formatProcessRSS(total.RSS))
+	summary := fmt.Sprintf("match %d · cpu %.0f%% · mem %s", total.Count, total.CPU, formatProcessRSS(total.Memory))
 	if total.Threads > 0 {
 		summary += fmt.Sprintf(" · thr %d", total.Threads)
 	}
@@ -2431,7 +2468,7 @@ func (model topModel) processBanner() []string {
 		parts = []string{"no match"}
 	default:
 		total := row.processTotal
-		parts = []string{fmt.Sprintf("%d matched", total.Count), fmt.Sprintf("cpu %.0f%%", total.CPU), "rss " + formatProcessRSS(total.RSS)}
+		parts = []string{fmt.Sprintf("%d matched", total.Count), fmt.Sprintf("cpu %.0f%%", total.CPU), "mem " + formatProcessRSS(total.Memory)}
 		if probe := total.Probe; probe != nil {
 			if average, ok := topProbeAverageMS(probe.RunqSumNS, probe.RunqCount); ok {
 				parts = append(parts, fmt.Sprintf("runq %.2fms", average))
@@ -2517,7 +2554,7 @@ func topProcessViewCells(row topDashboardRow) []topCell {
 	}
 	fds, read, write, diskKnown := topMatchIO(row.processes)
 	cells := []topCell{
-		topPlainCell(fmt.Sprintf("%d", total.Count)), topPlainCell(fmt.Sprintf("%.1f", total.CPU)), topPlainCell(formatProcessRSS(total.RSS)),
+		topPlainCell(fmt.Sprintf("%d", total.Count)), topPlainCell(fmt.Sprintf("%.1f", total.CPU)), topPlainCell(formatProcessRSS(total.Memory)),
 		topPlainCell(topOptionalValue(total.Threads > 0, "%.0f", float64(total.Threads))), topPlainCell(topOptionalValue(fds > 0, "%.0f", float64(fds))),
 		topPlainCell(topOptionalRate(diskKnown, read)), topPlainCell(topOptionalRate(diskKnown, write)), empty, empty,
 	}

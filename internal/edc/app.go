@@ -51,7 +51,7 @@ func Run(args []string, version string) int {
 		return 0
 	}
 	// `edc <command> [subcommand] ... --help`는 그 명령의 edc help로 보낸다. flag의 기본 usage는 대시 하나짜리 목록이라
-	// edc help와 모양이 다르다. watch는 http와 fs마다 따로 help를 그리므로 runWatch에 맡긴다.
+	// edc help와 모양이 다르다. watch는 http와 fs마다 따로 help를 그리므로 runWatch가 같은 판정으로 처리한다.
 	if len(args) > 1 && args[0] != "watch" && helpRequested(args[1:]) && printCommandHelp(os.Stdout, args[0]) {
 		return 0
 	}

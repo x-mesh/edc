@@ -24,8 +24,6 @@ watchfs:
   overflow: "파일 이벤트 큐가 넘쳐 변경이 빠졌습니다. 관측이 불완전합니다."
   duplicate_rule: "중복 rule 이름: %s"
   command_required: "rule %s에는 비어 있지 않은 command argv 목록이 필요합니다."
-  unknown_option: "알 수 없는 옵션"
-  option_value_required: "옵션에 값이 필요합니다"
   single_document: "rule은 최대 1 MiB인 YAML 문서 하나여야 합니다."
   rules_required: "rule 파일에는 action rule이 하나 이상 필요합니다."
   invalid_event: "지원하지 않는 파일 이벤트 %q; create,modify,remove,rename을 사용합니다. 파일 읽기는 변경 이벤트가 아닙니다."

@@ -172,14 +172,8 @@ func runDuWith(args []string, version string, sources duSources, ok bool, stdout
 	crossMounts := set.Bool("cross-mounts", false, T("command.du.option.cross_mounts"))
 	noBrowse := set.Bool("no-browse", false, T("command.du.option.no_browse"))
 	set.BoolVar(noBrowse, "B", false, T("command.du.option.no_browse"))
-	ordered, err := reorderFSWatchArgs(set, args)
+	err := parseReordered(set, args)
 	if err != nil {
-		// 순서를 정리하다 난 오류는 flag package가 출력하지 않는다. Parse 오류는 이미 출력했다.
-		fmt.Fprintln(os.Stderr, err)
-		set.Usage()
-		return 2
-	}
-	if err := set.Parse(ordered); err != nil {
 		return 2
 	}
 	if set.NArg() > 1 || *workers < 1 || *rows < 0 {

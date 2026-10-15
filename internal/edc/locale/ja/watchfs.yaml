@@ -24,8 +24,6 @@ watchfs:
   overflow: "ファイルイベントのキューがあふれ、変更が失われました。観測は不完全です。"
   duplicate_rule: "重複したrule名: %s"
   command_required: "rule %sには空でないcommand argvリストが必要です。"
-  unknown_option: "不明なオプション"
-  option_value_required: "オプションには値が必要です"
   single_document: "ruleは最大1 MiBのYAML文書1つで指定してください。"
   rules_required: "ruleファイルには1つ以上のaction ruleが必要です。"
   invalid_event: "未対応のファイルイベント%q; create,modify,remove,renameを指定してください。ファイルの読み取りは変更イベントではありません。"

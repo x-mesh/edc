@@ -49,7 +49,7 @@ func parseLogHistoryOptions(args []string, output io.Writer) (logHistoryOptions,
 		if errors.Is(err, flag.ErrHelp) {
 			return options, err
 		}
-		return options, errFlagReported
+		return options, flagReported(err)
 	}
 	if options.Directory != "" && options.File != "" || options.Limit < 1 || options.Limit > 1000 {
 		return options, errors.New(T("cli.log_history.usage"))

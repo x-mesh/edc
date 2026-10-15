@@ -59,7 +59,7 @@ func runWatch(args []string) int {
 		}
 		args = []string{choice}
 	}
-	if len(args) > 1 && (args[1] == "--help" || args[1] == "-h") {
+	if helpRequested(args) {
 		if args[0] == "http" || args[0] == "fs" {
 			printWatchSubcommandHelp(os.Stdout, args[0])
 		} else {
@@ -81,7 +81,6 @@ func runHTTPWatch(args []string) int {
 	options := configuredCommon(15 * time.Second)
 	set := newFlagSet("watch http")
 	set.SetOutput(os.Stderr)
-	set.Usage = func() { printWatchSubcommandHelp(set.Output(), "http") }
 	bindCommon(set, &options)
 	intervalText := "1"
 	set.StringVar(&intervalText, "i", intervalText, T("command.watch.option.interval"))

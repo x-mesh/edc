@@ -204,14 +204,7 @@ func runCtrWith(args []string, version string, sources ctrSources, ok bool) int 
 	set.SetOutput(os.Stderr)
 	bindCommon(set, &options)
 	all := set.Bool("all", false, T("command.ctr.option.all"))
-	ordered, err := reorderFSWatchArgs(set, args)
-	if err != nil {
-		// 순서를 정리하다 난 오류는 flag package가 출력하지 않는다. Parse 오류는 이미 출력했다.
-		fmt.Fprintln(os.Stderr, err)
-		set.Usage()
-		return 2
-	}
-	if err := set.Parse(ordered); err != nil {
+	if err := parseReordered(set, args); err != nil {
 		return 2
 	}
 	usage := T("cli.usage", "edc ctr [options] [--all] | edc ctr [options] <container>")

@@ -76,11 +76,7 @@ func runTraceShow(args []string) int {
 	set.StringVar(&options.jsonPath, "json", "", T("option.json"))
 	set.BoolVar(&options.detail, "detail", false, T("command.trace.option.detail"))
 	set.BoolVar(&options.detail, "d", false, T("command.trace.option.detail"))
-	ordered, err := reorderFSWatchArgs(set, args)
-	if err == nil {
-		err = set.Parse(ordered)
-	}
-	if err != nil {
+	if err := parseReordered(set, args); err != nil {
 		return 2
 	}
 	usage := T("cli.usage", "edc trace show <raw.jsonl> [--group-by view] [--process name] [--destination host:port] [-d] [--json <path>]")

@@ -563,14 +563,7 @@ func runDiskGrow(args []string, version string) int {
 	dryRun := set.Bool("dry-run", false, T("disk.flag.dry_run"))
 	set.BoolVar(dryRun, "n", false, T("disk.flag.dry_run"))
 	// `edc disk grow / -n`처럼 마운트 뒤에 온 flag도 받는다. flag 패키지는 첫 위치 인자에서 멈춘다.
-	ordered, err := reorderFSWatchArgs(set, args)
-	if err != nil {
-		// 순서를 정리하다 난 오류는 flag package가 출력하지 않는다. Parse 오류는 이미 출력했다.
-		fmt.Fprintln(os.Stderr, err)
-		set.Usage()
-		return 2
-	}
-	if err := set.Parse(ordered); err != nil {
+	if err := parseReordered(set, args); err != nil {
 		return 2
 	}
 	if set.NArg() != 1 {

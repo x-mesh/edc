@@ -57,7 +57,9 @@ func runFSWatch(args []string) int {
 			printWatchSubcommandHelp(os.Stdout, "fs")
 			return 0
 		}
-		fmt.Fprintln(os.Stderr, err)
+		if !errors.Is(err, errFlagReported) {
+			fmt.Fprintln(os.Stderr, err)
+		}
 		return 2
 	}
 	writer, closeOutput, err := openObserveStream(options.jsonPath)

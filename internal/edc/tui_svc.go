@@ -64,6 +64,21 @@ type svcDetailMsg struct {
 
 type svcTickMsg struct{ seq int }
 
+// hintOn은 키 안내에서 지금 켜진 묶음이다. 필터를 걸면 안내가 "filter x, failed only · 3 shown"으로 바뀌므로 그 묶음을 칠한다.
+func (model svcBrowser) hintOn() []string {
+	on := []string{}
+	if model.all {
+		on = append(on, "a all")
+	}
+	if model.failed {
+		on = append(on, "failed only")
+	}
+	if model.filter != "" && !model.filtering {
+		on = append(on, "filter "+model.filter)
+	}
+	return on
+}
+
 func runSvcBrowser(sources svcSources, timeout time.Duration, all bool) int {
 	if _, err := tea.NewProgram(newSvcBrowser(sources, timeout, all, os.Getenv("NO_COLOR") == ""), tea.WithInput(os.Stdin), tea.WithOutput(os.Stdout)).Run(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -339,7 +354,7 @@ func (model svcBrowser) listLines() []string {
 		}
 		keys = fmt.Sprintf("%s · %d shown · Esc clear · Enter open · q quit", shown, len(visible))
 	}
-	lines := []string{title, liveKeyHints(keys, model.color)}
+	lines := []string{title, liveKeyHints(keys, model.color, model.hintOn()...)}
 	switch {
 	case !model.loaded:
 		return append(lines, liveMuted("loading…", model.color))

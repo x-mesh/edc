@@ -428,11 +428,11 @@ func (model duBrowser) progressLines() []string {
 			help = T("du.browse.cancel_help")
 		}
 	}
-	return []string{reading, model.paint(help, richGray, false)}
+	return []string{reading, liveKeyHints(help, model.color)}
 }
 
 func (model duBrowser) browseLines() []string {
-	lines := []string{model.title(), model.paint(T("du.browse.help"), richGray, false)}
+	lines := []string{model.title(), liveKeyHints(T("du.browse.help"), model.color)}
 	rows := model.rows()
 	texts := make([]string, len(rows))
 	width := 0

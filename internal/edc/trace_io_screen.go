@@ -167,7 +167,7 @@ func (m ioTraceScreenModel) View() tea.View {
 	if color {
 		spans := append(traceTitleSpans("trace io"), traceSeparator, traceText{text: ioViewName(m.groupBy)}, traceSeparator)
 		spans = append(append(spans, traceField("", fmt.Sprint(len(m.events)), " events")...), traceSeparator)
-		lines[0] = traceTexts(append(spans, traceKeySpans(keys)...), m.width, true)
+		lines[0] = traceTexts(append(spans, traceKeySpans(keys, traceViewOn(keys, m.groupBy))...), m.width, true)
 	}
 	if m.filtering {
 		lines = append(lines, m.input.View())

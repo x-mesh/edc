@@ -488,7 +488,16 @@ func traceScreenDetailView(model traceScreenModel) []string {
 	if model.protocol == "http" {
 		help = "↑↓ scroll  space/b page  g/G top/end  f follow  m secrets  z gzip  esc back  ctrl-c stop"
 	}
-	rows := []string{traceTexts(header, model.width, color), traceKeyHints(help, model.width, color), traceFit(detail.title, model.width)}
+	var on []string
+	for _, state := range []struct {
+		on   bool
+		hint string
+	}{{model.follow, "f follow"}, {model.secrets, "m secrets"}, {model.decode, "z gzip"}} {
+		if state.on {
+			on = append(on, state.hint)
+		}
+	}
+	rows := []string{traceTexts(header, model.width, color), traceKeyHints(help, model.width, color, on...), traceFit(detail.title, model.width)}
 	rows = append(rows, detail.lines[detail.offset:last]...)
 	return traceScreenPadRows(rows, model.height)
 }

@@ -512,9 +512,9 @@ func diskCommandMessage(stderr, stdout string) string {
 }
 
 func runDisk(args []string, version string) int {
-	usage := T("cli.usage", "edc disk <check|grow> ...")
+	usage := T("cli.usage", subcommandUsage("disk")+" ...")
 	if len(args) == 0 {
-		choice, ok := promptMissingChoice("edc disk", []string{"check", "grow"})
+		choice, ok := promptMissingChoice("edc disk", subcommandChoices("disk"))
 		if !ok {
 			fmt.Fprintln(os.Stderr, usage)
 			return 2

@@ -369,3 +369,42 @@ func TestPlainCommandBriefLabelsTheForms(t *testing.T) {
 		t.Errorf("history examples must run history: %q", brief.String())
 	}
 }
+
+// 하위 명령 이름을 commandDocs에서 만들어도 평문 usage는 예전 글자 그대로다. script가 읽는 stderr가 바뀌지 않는다.
+func TestSubcommandUsageKeepsTheOldText(t *testing.T) {
+	for name, want := range map[string]string{
+		"dns":        "edc dns <lookup|compare|config>",
+		"net":        "edc net <interfaces|route|ping|trace>",
+		"route":      "edc route <check|switch|status|rollback>",
+		"disk":       "edc disk <check|grow>",
+		"change":     "edc change <apply|status|confirm|rollback>",
+		"completion": "edc completion <zsh|bash|groups>",
+		"watch":      "edc watch <http|fs>",
+		"history":    "edc history <list|top|process>",
+	} {
+		if got := subcommandUsage(name); got != want {
+			t.Errorf("subcommandUsage(%q) = %q, want %q", name, got, want)
+		}
+	}
+}
+
+// 선택기가 고르게 하는 하위 명령은 모두 설명이 있어야 한다. 설명이 빠지면 그 항목만 이름으로 나와도 눈치채기 어렵다.
+func TestPickerSubcommandsHaveDescriptions(t *testing.T) {
+	restore := currentLanguage()
+	defer setLanguage(restore)
+	for _, name := range []string{"dns", "net", "route", "disk", "change", "completion", "watch", "history"} {
+		choices := subcommandChoices(name)
+		if len(choices) < 2 {
+			t.Errorf("%s needs its subcommands in commandDocs, got %q", name, choices)
+			continue
+		}
+		for _, language := range supportedLanguages {
+			setLanguage(language)
+			for _, item := range subcommandSelectItems(name, choices) {
+				if !strings.Contains(item.label, " — ") {
+					t.Errorf("%s %s %s has no description: %q", language, name, item.value, item.label)
+				}
+			}
+		}
+	}
+}

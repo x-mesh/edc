@@ -45,6 +45,22 @@ func (doc commandDoc) summary() string { return T("command." + doc.name + ".summ
 
 func (doc commandDoc) notes() []string { return TList("command." + doc.name + ".notes") }
 
+// subcommandChoices는 선택기와 usage에 쓰는 하위 명령 이름이다. commandDocs의 subcommands가 유일한 출처라서,
+// 하위 명령을 더할 때 설명을 빠뜨리면 TestPickerSubcommandsHaveDescriptions가 실패한다.
+func subcommandChoices(name string) []string {
+	doc, _ := findCommandDoc(name)
+	names := make([]string, 0, len(doc.subcommands))
+	for _, sub := range doc.subcommands {
+		names = append(names, sub.name)
+	}
+	return names
+}
+
+// subcommandUsage는 "edc dns <lookup|compare|config>"처럼 하위 명령을 나열한 usage 앞부분이다.
+func subcommandUsage(name string) string {
+	return "edc " + name + " <" + strings.Join(subcommandChoices(name), "|") + ">"
+}
+
 func (doc commandDoc) subcommandKey(name string) string {
 	return "command." + doc.name + ".sub." + name
 }

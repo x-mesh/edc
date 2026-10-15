@@ -52,7 +52,7 @@ type watchSummary struct {
 
 func runWatch(args []string) int {
 	if len(args) == 0 {
-		choice, ok := promptMissingChoice("edc watch", []string{"http", "fs"})
+		choice, ok := promptMissingChoice("edc watch", subcommandChoices("watch"))
 		if !ok {
 			printCommandHelp(os.Stderr, "watch")
 			return 2

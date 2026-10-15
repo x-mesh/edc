@@ -32,9 +32,6 @@ const (
 
 // traceProtocolSpec은 trace가 protocol마다 다르게 보여 주는 부분이다. 수집, filter, group 묶기는 protocol과 상관없이 같다.
 type traceProtocolSpec struct {
-	// ansiColor는 스크롤 출력의 ANSI 색 번호이고 screenColor는 전체 화면에서 쓰는 같은 색이다.
-	ansiColor   string
-	screenColor string
 	// groupColumns는 group 행에서 traffic 열 뒤, LAST 앞에 붙는 열이다.
 	groupColumns []traceGroupColumn
 	// hideTraffic은 byte 열과 traffic 줄을 뺀다. DNS는 질의 수와 응답 시간이 byte보다 쓸모 있다.
@@ -86,7 +83,6 @@ type traceReport interface{ print(detail bool) }
 
 var traceProtocolRegistry = []traceProtocolRegistration{
 	{name: "tcp", view: traceProtocolView{selectorLabel: "tcp"}, spec: traceProtocolSpec{
-		ansiColor: "36", screenColor: "#22d3ee",
 		scrollLabels: traceTCPScrollLabels,
 		groupColumns: []traceGroupColumn{
 			{screenTitle: "CON", reportTitle: "CONNECT", width: 3, value: func(group traceGroupSummary) string { return strconv.FormatUint(group.Connect, 10) }},
@@ -95,53 +91,53 @@ var traceProtocolRegistry = []traceProtocolRegistration{
 		},
 		prerequisites: captureEventsPrerequisites, newSummarizer: func() traceSummarizer { return newTCPTraceSummarizer() },
 	}},
-	{name: "udp", view: traceProtocolView{selectorLabel: "udp"}, spec: traceProtocolSpec{ansiColor: "35", screenColor: "#c084fc", prerequisites: captureEventsPrerequisites, newSummarizer: func() traceSummarizer { return newUDPTraceSummarizer() }}},
+	{name: "udp", view: traceProtocolView{selectorLabel: "udp"}, spec: traceProtocolSpec{prerequisites: captureEventsPrerequisites, newSummarizer: func() traceSummarizer { return newUDPTraceSummarizer() }}},
 	{name: "dns", view: traceProtocolView{selectorLabel: "dns"}, spec: traceProtocolSpec{
-		ansiColor: "32", screenColor: "#4ade80", groupColumns: traceDNSGroupColumns, hideTraffic: true, hiddenViews: []string{traceGroupByPort}, linuxOnly: true,
+		groupColumns: traceDNSGroupColumns, hideTraffic: true, hiddenViews: []string{traceGroupByPort}, linuxOnly: true,
 		scrollLabels: traceDNSScrollLabels, serverSide: true, prerequisites: captureEventsPrerequisites, newSummarizer: func() traceSummarizer { return newDNSTraceSummarizer() },
 	}},
 	{name: "arp", view: traceProtocolView{selectorLabel: "arp"}, spec: traceProtocolSpec{
-		ansiColor: "34", screenColor: "#60a5fa", groupColumns: traceNeighborGroupColumns, hideTraffic: true, hiddenViews: []string{traceGroupByPort, traceGroupByProcess},
+		groupColumns: traceNeighborGroupColumns, hideTraffic: true, hiddenViews: []string{traceGroupByPort, traceGroupByProcess},
 		scrollLabels: traceNeighborScrollLabels, newSummarizer: func() traceSummarizer { return newNeighborTraceSummarizer("arp") },
 	}},
 	{name: "ndp", view: traceProtocolView{selectorLabel: "ndp"}, spec: traceProtocolSpec{
-		ansiColor: "34", screenColor: "#60a5fa", groupColumns: traceNeighborGroupColumns, hideTraffic: true, hiddenViews: []string{traceGroupByPort, traceGroupByProcess},
+		groupColumns: traceNeighborGroupColumns, hideTraffic: true, hiddenViews: []string{traceGroupByPort, traceGroupByProcess},
 		scrollLabels: traceNeighborScrollLabels, newSummarizer: func() traceSummarizer { return newNeighborTraceSummarizer("ndp") },
 	}},
 	// 평문 HTTP/1.x만 본다. TLS 안의 HTTP는 kernel에서 암호문이다.
 	{name: "http", view: traceProtocolView{selectorLabel: "http"}, spec: traceProtocolSpec{
-		ansiColor: "95", screenColor: "#f472b6", groupColumns: traceHTTPGroupColumns, hideTraffic: true, extraViews: []string{traceGroupByPath}, linuxOnly: true,
+		groupColumns: traceHTTPGroupColumns, hideTraffic: true, extraViews: []string{traceGroupByPath}, linuxOnly: true,
 		scrollLabels: traceHTTPScrollLabels, serverSide: true, prerequisites: httpTracePrerequisites, newSummarizer: func() traceSummarizer { return newHTTPTraceSummarizer() },
 	}},
-	// 평문 MySQL만 본다. TLS 안의 packet은 kernel에서 암호문이다. 색은 다른 protocol이 쓰지 않는 값이다.
+	// 평문 MySQL만 본다. TLS 안의 packet은 kernel에서 암호문이다.
 	{name: "mysql", view: traceProtocolView{selectorLabel: "mysql"}, spec: traceProtocolSpec{
-		ansiColor: "94", screenColor: "#818cf8", groupColumns: traceMySQLGroupColumns, hideTraffic: true, linuxOnly: true,
+		groupColumns: traceMySQLGroupColumns, hideTraffic: true, linuxOnly: true,
 		scrollLabels: traceMySQLScrollLabels, serverSide: true, prerequisites: httpTracePrerequisites, newSummarizer: func() traceSummarizer { return newMySQLTraceSummarizer() },
 	}},
-	// 평문 ClickHouse native protocol(TCP 9000)만 본다. TLS(9440) 안의 packet은 kernel에서 암호문이다. 색은 다른 protocol이 쓰지 않는 값이다.
+	// 평문 ClickHouse native protocol(TCP 9000)만 본다. TLS(9440) 안의 packet은 kernel에서 암호문이다.
 	{name: "clickhouse", view: traceProtocolView{selectorLabel: "clickhouse"}, spec: traceProtocolSpec{
-		ansiColor: "96", screenColor: "#2dd4bf", groupColumns: traceClickHouseGroupColumns(func(group traceGroupSummary) *traceClickHouseCounts { return group.ClickHouse }), hideTraffic: true, linuxOnly: true,
+		groupColumns: traceClickHouseGroupColumns(func(group traceGroupSummary) *traceClickHouseCounts { return group.ClickHouse }), hideTraffic: true, linuxOnly: true,
 		scrollLabels: traceClickHouseScrollLabels, serverSide: true, prerequisites: httpTracePrerequisites, newSummarizer: func() traceSummarizer { return newClickHouseTraceSummarizer() },
 	}},
-	// 평문 PostgreSQL v3 protocol만 본다. TLS와 GSSAPI 암호화 연결은 postgres_tls 한 줄만 남는다. 색은 다른 protocol이 쓰지 않는 값이다.
+	// 평문 PostgreSQL v3 protocol만 본다. TLS와 GSSAPI 암호화 연결은 postgres_tls 한 줄만 남는다.
 	{name: "postgres", view: traceProtocolView{selectorLabel: "postgres"}, spec: traceProtocolSpec{
-		ansiColor: "92", screenColor: "#a3e635", groupColumns: tracePostgresGroupColumns, hideTraffic: true, linuxOnly: true,
+		groupColumns: tracePostgresGroupColumns, hideTraffic: true, linuxOnly: true,
 		scrollLabels: tracePostgresScrollLabels, serverSide: true, prerequisites: httpTracePrerequisites, newSummarizer: func() traceSummarizer { return newPostgresTraceSummarizer() },
 	}},
-	// 평문 RESP(Redis 6379)만 본다. TLS 연결의 byte는 암호문이라 framing을 찾지 못하고 버린다. 색은 다른 protocol이 쓰지 않는 값이다.
+	// 평문 RESP(Redis 6379)만 본다. TLS 연결의 byte는 암호문이라 framing을 찾지 못하고 버린다.
 	{name: "redis", view: traceProtocolView{selectorLabel: "redis"}, spec: traceProtocolSpec{
-		ansiColor: "31", screenColor: "#e11d48", groupColumns: traceRedisGroupColumns, hideTraffic: true, linuxOnly: true,
+		groupColumns: traceRedisGroupColumns, hideTraffic: true, linuxOnly: true,
 		scrollLabels: traceRedisScrollLabels, serverSide: true, prerequisites: httpTracePrerequisites, newSummarizer: func() traceSummarizer { return newRedisTraceSummarizer() },
 	}},
-	{name: "io", view: traceProtocolView{selectorLabel: "io"}, spec: traceProtocolSpec{ansiColor: "33", screenColor: "#fbbf24", linuxOnly: true, prerequisites: ioTracePrerequisites}, run: runIOTrace},
+	{name: "io", view: traceProtocolView{selectorLabel: "io"}, spec: traceProtocolSpec{linuxOnly: true, prerequisites: ioTracePrerequisites}, run: runIOTrace},
 	// unix socket 파일 하나를 본다. 목적지는 늘 그 경로라서 port와 target 보기는 한 행뿐이다. source는 상대 process다.
 	{name: "socket", view: traceProtocolView{selectorLabel: "socket"}, spec: traceProtocolSpec{
-		ansiColor: "38;5;208", screenColor: "#fb923c", hiddenViews: []string{traceGroupByPort, traceGroupByTarget}, linuxOnly: true,
+		hiddenViews: []string{traceGroupByPort, traceGroupByTarget}, linuxOnly: true,
 		scrollLabels: traceSocketScrollLabels, prerequisites: socketTracePrerequisites, newSummarizer: func() traceSummarizer { return newSocketTraceSummarizer() },
 	}},
 	// kernel이 버린 패킷이다. event 칸은 버린 이유다. process는 패킷에 local socket이 있을 때만 붙는다.
 	{name: "drop", view: traceProtocolView{selectorLabel: "drop"}, spec: traceProtocolSpec{
-		ansiColor: "91", screenColor: "#f87171", hideTraffic: true, linuxOnly: true,
+		hideTraffic: true, linuxOnly: true,
 		scrollLabels: traceDropScrollLabels, prerequisites: dropTracePrerequisites, newSummarizer: func() traceSummarizer { return newDropTraceSummarizer() },
 	}},
 	{name: "sched", view: traceProtocolView{selectorLabel: "sched"}, spec: traceProtocolSpec{hideTraffic: true, hiddenViews: []string{traceGroupBySource, traceGroupByTarget, traceGroupByPort}}, run: runTraceSched},
@@ -799,17 +795,27 @@ func printTraceEvent(event captureEvent, color, full bool) {
 	if process == "" {
 		process = "-"
 	}
-	protocol := traceProtocol(event)
+	color = color && richEnabled(os.Stdout)
 	line := fmt.Sprintf("%-16s %-32s %-20s %s", process, destination, name, event.Source)
-	fmt.Fprintln(os.Stdout, traceColorLine(line, protocol, event.Event, color))
+	if color {
+		line = traceColorLine(process, destination, name, event)
+	}
+	fmt.Fprintln(os.Stdout, line)
+	payload := func(mark, text string) {
+		line := fmt.Sprintf("%-16s %s %s", "", mark, text)
+		if color {
+			line = richDim(line)
+		}
+		fmt.Fprintln(os.Stdout, line)
+	}
 	switch {
 	case event.Payload == "":
 	case full:
 		for _, payloadLine := range traceHTTPPayloadBlock(event) {
-			fmt.Fprintf(os.Stdout, "%-16s │ %s\n", "", payloadLine)
+			payload("│", payloadLine)
 		}
 	default:
-		fmt.Fprintf(os.Stdout, "%-16s ↳ %s\n", "", tracePayloadSummary(event))
+		payload("↳", tracePayloadSummary(event))
 	}
 }
 
@@ -823,22 +829,24 @@ func tracePayloadSummary(event captureEvent) string {
 }
 
 func printTraceEventHeader(protocol string) {
-	fmt.Fprintln(os.Stdout, "PROCESS          DESTINATION                       EVENT                SOURCE")
+	columns := "PROCESS          DESTINATION                       EVENT                SOURCE"
 	// 줄 단위 출력은 키 입력을 받지 않는다. 전체 화면에만 있는 / filter와 q quit은 안내하지 않는다.
-	fmt.Fprintf(os.Stdout, "trace %s  ·  Ctrl-C stop\n", protocol)
+	status := fmt.Sprintf("trace %s  ·  Ctrl-C stop", protocol)
+	if richEnabled(os.Stdout) {
+		columns = richDim(columns)
+		status = richPaint("trace "+protocol, richMagenta, true) + richDim("  ·  ") + richPaint("Ctrl-C", richCyan, true) + richDim(" stop")
+	}
+	fmt.Fprintln(os.Stdout, columns)
+	fmt.Fprintln(os.Stdout, status)
 }
 
-func traceColorLine(line, protocol, event string, color bool) string {
-	if !color || os.Getenv("NO_COLOR") != "" || !isTerminal(os.Stdout) {
-		return line
+// traceColorLine은 색을 쓰는 터미널의 event 줄이다. 칸은 평문 줄과 같은 폭이고, event 칸은 문제의 색, source는 회색이다.
+func traceColorLine(process, destination, name string, event captureEvent) string {
+	label := fmt.Sprintf("%-20s", name)
+	if severity := traceEventSeverity(event); severity != "" {
+		label = richPaint(label, severity, false)
 	}
-	colorValue := traceProtocols[protocol].ansiColor
-	if strings.Contains(event, "reset") || strings.HasSuffix(event, "_"+traceNeighborMACChange) || event == "http_5xx" {
-		colorValue = "31"
-	} else if strings.Contains(event, "retransmit") || strings.Contains(event, "fail") {
-		colorValue = "33"
-	}
-	return "\033[" + colorValue + "m" + line + "\033[0m"
+	return fmt.Sprintf("%-16s %-32s ", process, destination) + label + " " + richDim(event.Source)
 }
 
 func printTCPTraceReport(report tcpTraceReport, detail bool) {

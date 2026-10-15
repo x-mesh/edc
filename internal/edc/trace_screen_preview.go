@@ -3,7 +3,6 @@ package edc
 import (
 	"encoding/json"
 	"fmt"
-	"os"
 	"strings"
 	"unicode/utf8"
 
@@ -166,33 +165,43 @@ func traceWrapLineUpTo(line string, width, limit int) ([]string, bool) {
 
 // traceScreenPreviewRows는 미리 보기 창이다. 첫 줄은 대상 event와 키를 알리는 구분선이다.
 func traceScreenPreviewRows(model traceScreenModel, rows int) []string {
-	color := os.Getenv("NO_COLOR") == ""
+	color := traceScreenColor()
 	if model.preview == nil {
-		return traceScreenPadRows([]string{liveMuted(traceDivider("── preview: no event", model.width), color)}, rows)
+		return traceScreenPadRows([]string{traceDividerTexts([]traceText{traceLabelSpan("── preview: no event")}, model.width, color)}, rows)
 	}
 	window, more := traceWrapWindow(model.preview.lines, model.width, model.previewOffset, rows-1)
 	// 좁은 화면에서는 뒤가 잘리므로 위치를 제목과 키 안내보다 앞에 둔다.
-	title := "── "
+	title := []traceText{traceLabelSpan("── ")}
 	if model.previewOffset > 0 {
-		title += fmt.Sprintf("line %d  ·  ", model.previewOffset+1)
+		title = append(title, traceLabelSpan(fmt.Sprintf("line %d", model.previewOffset+1)), traceSeparator)
 	}
 	if more {
-		title += "more below  ·  "
+		title = append(title, traceLabelSpan("more below"), traceSeparator)
 	}
-	title += model.preview.title + "  ·  J/K scroll  enter full"
+	keys := "J/K scroll  enter full"
 	if model.protocol == "http" {
-		title += "  z gzip"
+		keys += "  z gzip"
 	}
-	return traceScreenPadRows(append([]string{liveMuted(traceDivider(title, model.width), color)}, window...), rows)
+	title = append(append(title, traceText{text: model.preview.title}, traceSeparator), traceKeySpans(keys)...)
+	return traceScreenPadRows(append([]string{traceDividerTexts(title, model.width, color)}, window...), rows)
 }
 
 // traceDivider는 미리 보기 제목 뒤에 남은 폭을 ─로 채운다. 색이 없는 terminal에서도 목록과 미리 보기의 경계가 보인다.
 func traceDivider(title string, width int) string {
-	title = traceFit(title, width)
-	if fill := width - liveWidth(title) - 1; fill > 0 {
-		title += " " + strings.Repeat("─", fill)
+	return traceDividerTexts([]traceText{{text: title}}, width, false)
+}
+
+// traceDividerTexts는 칠한 제목의 traceDivider다. 선과 위치는 회색, 대상 event는 기본 색, 키는 굵은 청록이다.
+func traceDividerTexts(title []traceText, width int, color bool) string {
+	line := traceTexts(title, width, color)
+	if fill := width - liveWidth(line) - 1; fill > 0 {
+		rule := strings.Repeat("─", fill)
+		if color {
+			rule = traceDim(rule)
+		}
+		line += " " + rule
 	}
-	return title
+	return line
 }
 
 // scrollPreview는 미리 보기를 step줄 옮긴다. 아래에 더 보일 줄이 없으면 더 내려가지 않는다.

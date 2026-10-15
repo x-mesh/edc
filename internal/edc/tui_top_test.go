@@ -766,12 +766,12 @@ func TestTopSelectionMarkerKeepsTheTime(t *testing.T) {
 	}
 }
 
-// 안내 줄은 키만 굵게 하고 설명은 회색으로 둔다. 켜진 보기와 o로 고른 정렬은 선택 행과 같은 바탕으로 칠한다.
+// 안내 줄은 키만 굵은 청록색으로 하고 설명은 회색으로 둔다. 다른 화면의 liveKeyHints와 같은 색이다. 켜진 보기와 o로 고른 정렬은 선택 행과 같은 바탕으로 칠한다.
 func TestTopStatusLinesBoldKeysAndMuteLabels(t *testing.T) {
 	model := topFixtureModel(nil)
 	model.view, model.panelSort = topViewMemory, topViewDisk
 	status := strings.Join(model.statusLines(), "\n")
-	for _, want := range []string{richBold("c") + richDim(" cpu"), topBannerStyle() + "m mem" + richReset, topBannerStyle() + "o sort:I/O" + richReset, richBold("q") + richDim(" quit")} {
+	for _, want := range []string{richPaint("c", richCyan, true) + richDim(" cpu"), topBannerStyle() + "m mem" + richReset, topBannerStyle() + "o sort:I/O" + richReset, richPaint("q", richCyan, true) + richDim(" quit")} {
 		if !strings.Contains(status, want) {
 			t.Fatalf("status lacks %q: %q", want, status)
 		}

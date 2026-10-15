@@ -1244,7 +1244,7 @@ type topKeyHint struct {
 
 type topKeyHints []topKeyHint
 
-// render는 키를 굵게, 설명을 회색으로 쓴다. 켜진 항목은 선택 행과 같은 바탕으로 칠해 지금 상태를 보인다.
+// render는 키를 굵은 청록색으로, 설명을 회색으로 쓴다. 다른 화면의 liveKeyHints와 같은 색이다. 켜진 항목은 선택 행과 같은 바탕으로 칠해 지금 상태를 보인다.
 // 색이 없으면 글자만 남으므로 정렬 기준은 label에 적는다.
 func (hints topKeyHints) render(sep string, color bool) string {
 	parts := make([]string, 0, len(hints))
@@ -1255,7 +1255,7 @@ func (hints topKeyHints) render(sep string, color bool) string {
 		case hint.on:
 			text = topBannerStyle() + text + richReset
 		default:
-			text = richBold(hint.key) + richDim(" "+hint.label)
+			text = richPaint(hint.key, richCyan, true) + richDim(" "+hint.label)
 		}
 		parts = append(parts, text)
 	}

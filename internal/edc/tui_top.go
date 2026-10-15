@@ -3,6 +3,7 @@ package edc
 import (
 	"fmt"
 	"os"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -1220,18 +1221,13 @@ func (model topModel) candidates() []topProcess {
 	processes := append([]topProcess(nil), row.processes...)
 	switch model.view {
 	case topViewMemory:
-		// 늘어나는 process는 크기와 상관없이 앞에 둔다. 다섯 줄로 자를 때 signal이 가리키는 줄이 빠지면 안 되고,
-		// 칸 색이 크기 순서와 다른 이유를 보여 준다.
-		sort.SliceStable(processes, func(i, j int) bool {
-			before, after := processes[i].Growth, processes[j].Growth
-			if (before != nil) != (after != nil) {
-				return before != nil
-			}
-			if before != nil && before.Bytes != after.Bytes {
-				return before.Bytes > after.Bytes
-			}
-			return processes[i].memory() > processes[j].memory()
-		})
+		// signal이 가리키는 가장 많이 늘어난 process 하나만 크기와 상관없이 앞에 둔다. 다섯 줄로 자를 때 그 줄이 빠지면
+		// 안 된다. 늘어나는 process를 모두 앞에 두면 같은 일을 하는 worker 여럿이 가장 큰 process를 밀어낸다.
+		sort.SliceStable(processes, func(i, j int) bool { return processes[i].memory() > processes[j].memory() })
+		if growing, ok := topFastestGrowing(processes); ok {
+			index := slices.IndexFunc(processes, func(process topProcess) bool { return process.PID == growing.PID })
+			processes = append([]topProcess{growing}, slices.Delete(processes, index, index+1)...)
+		}
 	case topViewDisk:
 		// 디스크 대기는 CPU를 쓰지 않으므로 I/O가 큰 process를 앞에 둔다. I/O를 읽지 못했거나 같으면
 		// I/O를 기다리며 멈춘 process를 CPU 순위보다 앞에 둔다.
@@ -1441,9 +1437,10 @@ func (model topModel) candidateLines() []string {
 			state = topTint(state, topLevelWarn, color)
 		}
 		memory := topProcessMemoryCell(formatProcessRSS(process.memory()), !process.MemoryValid, color)
-		if growth := process.Growth; growth != nil {
-			// 꾸준히 늘어나는 process는 크기와 상관없이 칸을 칠해 signal이 가리키는 줄을 찾게 한다.
-			memory = topTint(fmt.Sprintf("%6s", formatProcessRSS(process.memory())), topSignalItem{score: topMemoryGrowthScore(*growth, model.limits.memoryTotal, row.rate.MemoryPercent)}.level(), color)
+		// 꾸준히 늘어나는 process는 크기와 상관없이 칸을 칠해 signal이 가리키는 줄을 찾게 한다. RSS로 대신한 값은
+		// 정확한 footprint로 오해하지 않게 흐린 색을 그대로 둔다.
+		if growth := process.Growth; growth != nil && process.MemoryValid {
+			memory = topTint(memory, topSignalItem{score: topMemoryGrowthScore(*growth, model.limits.memoryTotal, row.rate.MemoryPercent)}.level(), color)
 		}
 		line := fmt.Sprintf("%s %7d %s %s %6.1f%% %s", marker, process.PID, topFitCell(topProcessName(process.Command, nameWidth), nameWidth, true), state, process.CPU, memory)
 		if showRSS {
@@ -2051,6 +2048,9 @@ func topDashboardSignalItems(rate resourceRate, processes []topProcess, groups [
 	return signals
 }
 
+// topMemoryGrowthKind는 증가 경고 kind의 앞부분이다. 뒤에 PID가 붙는다.
+const topMemoryGrowthKind = "memory growth "
+
 // topMemoryGrowthSignal은 가장 많이 늘어난 process 하나를 경고한다. 누수는 크기 순위보다 증가에서 먼저 드러난다.
 func topMemoryGrowthSignal(processes []topProcess, memoryTotal uint64, memoryPercent float64) (topSignalItem, bool) {
 	leading, ok := topFastestGrowing(processes)
@@ -2062,7 +2062,7 @@ func topMemoryGrowthSignal(processes []topProcess, memoryTotal uint64, memoryPer
 		text:  fmt.Sprintf("%s +%s/%.0fm", topProcessName(leading.Command, topSignalProcessNameWidth), formatProcessRSS(growth.Bytes), growth.Window.Minutes()),
 		score: topMemoryGrowthScore(growth, memoryTotal, memoryPercent),
 		view:  topViewMemory,
-		kind:  "memory growth " + strconv.Itoa(leading.PID),
+		kind:  topMemoryGrowthKind + strconv.Itoa(leading.PID),
 	}, true
 }
 

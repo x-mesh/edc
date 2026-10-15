@@ -27,8 +27,9 @@ func TestTopMemoryGrowthFindsASteadyLeakThroughGCSpikes(t *testing.T) {
 		t.Fatalf("growth before %d buckets: %+v", topMemoryGrowthBuckets, process.Growth)
 	}
 	process := feedTopMemory(newTopMemoryGrowthTracker(), start, topMemoryGrowthBuckets, leak)
-	if process.Growth == nil || process.Growth.Bytes != 12*(30<<20) || process.Growth.Window != 15*time.Minute {
-		t.Fatalf("growth = %+v, want 360 MiB over 15m", process.Growth)
+	// 처음 세 구간의 최저값은 0분, 마지막 세 구간의 최저값은 12분에 남는다. 증가량과 시간이 같은 12분을 가리켜야 속도가 맞다.
+	if process.Growth == nil || process.Growth.Bytes != 12*(30<<20) || process.Growth.Window != 12*time.Minute {
+		t.Fatalf("growth = %+v, want 360 MiB over 12m", process.Growth)
 	}
 }
 
@@ -131,10 +132,14 @@ func TestTopEventCulpritNamesTheGrowingProcessForMemory(t *testing.T) {
 		{PID: 2, Command: "python3", RSS: 545 << 20, Growth: &topMemoryGrowth{Bytes: 355 << 20, Window: 15 * time.Minute}},
 		{PID: 3, Command: "claude", RSS: 371 << 20},
 	}, processTotal: topProcessTotal{Groups: []topProcessGroup{{Name: "python3", Count: 3, Memory: 1600 << 20}}}}
-	if got := topEventCulprit(row, topViewMemory); got != "python3 +355.0M 545.0M" {
+	if got := topEventCulprit(row, topSignalItem{view: topViewMemory, kind: topMemoryGrowthKind + "2"}); got != "python3 +355.0M 545.0M" {
+		t.Fatalf("growth culprit = %q", got)
+	}
+	// host memory 경고는 크기 순위의 묶음과 process를 그대로 적는다. 늘어나는 작은 process가 큰 process를 가리면 안 된다.
+	if got := topEventCulprit(row, topSignalItem{view: topViewMemory, kind: "mem"}); strings.Contains(got, "+355") || !strings.Contains(got, "python3 (3 procs") {
 		t.Fatalf("memory culprit = %q", got)
 	}
-	if got := topEventCulprit(row, topViewCPU); strings.Contains(got, "+355") {
+	if got := topEventCulprit(row, topSignalItem{view: topViewCPU, kind: "cpu"}); strings.Contains(got, "+355") {
 		t.Fatalf("other views keep their own ranking: %q", got)
 	}
 }
@@ -154,4 +159,42 @@ func TestTopMemoryViewShowsTheGrowingProcessBehindLargerOnes(t *testing.T) {
 	if lines := strings.Join(model.candidateLines(), "\n"); !strings.Contains(lines, "leak") {
 		t.Fatalf("the growing process must have a row in the memory view:\n%s", lines)
 	}
+}
+
+// 같은 일을 하는 worker 여럿이 함께 늘어도 가장 큰 process가 다섯 줄에서 밀려나면 안 된다. 앞에 오는 것은 signal이 가리키는 하나뿐이다.
+func TestTopMemoryViewPutsOnlyTheFastestGrowerFirst(t *testing.T) {
+	model := topFixtureModel(nil)
+	model.limits.color = false
+	processes := []topProcess{{PID: 1, RSS: 10 << 30, Command: "postgres"}}
+	for pid := 2; pid <= 6; pid++ {
+		processes = append(processes, topProcess{PID: pid, RSS: 400 << 20, Command: "worker", Growth: &topMemoryGrowth{Bytes: uint64(300+pid) << 20, Window: 12 * time.Minute}})
+	}
+	model.rows = []topDashboardRow{{at: time.Unix(1, 0), processesValid: true, processes: processes}}
+	model = topAfter(t, model, topKey("m"))
+	candidates := model.candidates()
+	if len(candidates) < 2 || candidates[0].PID != 6 || candidates[1].PID != 1 {
+		t.Fatalf("order = %v, want the fastest grower, then postgres", topCandidatePIDs(candidates))
+	}
+}
+
+// RSS로 대신한 값은 늘어나도 흐린 색으로 남는다. 경고 색으로 칠하면 정확한 footprint로 읽힌다.
+func TestTopGrowingProcessKeepsTheDimEstimatedCell(t *testing.T) {
+	model := topFixtureModel(nil)
+	model.limits.color = true
+	processes := []topProcess{{PID: 9, RSS: 600 << 20, Command: "leak", Growth: &topMemoryGrowth{Bytes: 400 << 20, Window: 12 * time.Minute}}}
+	model.rows = []topDashboardRow{{at: time.Unix(1, 0), processesValid: true, processes: processes}}
+	model = topAfter(t, model, topKey("m"))
+	model.width, model.height = 120, 40
+	dim := topProcessMemoryCell(formatProcessRSS(600<<20), true, true)
+	if lines := strings.Join(model.candidateLines(), "\n"); !strings.Contains(lines, dim) {
+		t.Fatalf("the estimated cell must stay dim %q:\n%q", dim, lines)
+	}
+}
+
+func topCandidatePIDs(processes []topProcess) []int {
+	pids := make([]int, 0, len(processes))
+	for _, process := range processes {
+		pids = append(pids, process.PID)
+	}
+	return pids
 }

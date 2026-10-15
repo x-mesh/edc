@@ -2,6 +2,7 @@ package edc
 
 import (
 	"math"
+	"slices"
 	"time"
 )
 
@@ -17,13 +18,14 @@ const (
 	topMemoryGrowthGrowingPairs = 7
 	// topMemoryGrowthEdge는 처음과 마지막 구간의 최저값을 고를 때 묶는 구간 수다. 한 구간의 튀는 값에 흔들리지 않게 한다.
 	topMemoryGrowthEdge = 3
-	// topMemoryGrowthMin은 15분 동안 늘어야 하는 최소량이다. 작은 cache가 몇 MB씩 느는 것은 누수로 보지 않는다.
+	// topMemoryGrowthMin은 처음과 마지막 최저값 사이에 늘어야 하는 최소량이다. 작은 cache가 몇 MB씩 느는 것은 누수로 보지 않는다.
 	topMemoryGrowthMin = 256 << 20
 	// topMemoryGrowthDangerHorizon은 이 속도로 남은 memory를 다 쓰는 데 걸리는 시간이 이보다 짧으면 위험으로 보는 한도다.
 	topMemoryGrowthDangerHorizon = time.Hour
 )
 
-// topMemoryGrowth는 꾸준히 늘어난 process의 증가량이다. Bytes는 topMemoryGrowthBuckets 구간 동안 늘어난 최저값이다.
+// topMemoryGrowth는 꾸준히 늘어난 process의 증가량이다. Bytes는 처음과 마지막 구간 묶음의 최저값 차이이고,
+// Window는 그 두 최저값을 남긴 구간 사이의 시간이다. 15분 창 전체가 아니라 실제로 비교한 간격이라 속도가 맞다.
 type topMemoryGrowth struct {
 	Bytes  uint64
 	Window time.Duration
@@ -49,6 +51,9 @@ type topMemorySeries struct {
 // 크기 순위만으로는 큰 process에 밀려 누수를 늦게 알아챈다.
 type topMemoryGrowthTracker struct {
 	series map[topProcessKey]*topMemorySeries
+	// start는 처음 기록한 시각이다. 구간 번호를 여기서 지난 시간으로 정해, 시계를 뒤로 돌려도 번호가 거꾸로 가지 않는다.
+	// time.Now()의 monotonic 값으로 빼므로 NTP 보정에 흔들리지 않는다.
+	start time.Time
 }
 
 func newTopMemoryGrowthTracker() *topMemoryGrowthTracker {
@@ -57,7 +62,10 @@ func newTopMemoryGrowthTracker() *topMemoryGrowthTracker {
 
 // observe는 processes의 memory를 기록하고, 꾸준히 늘어난 process에 Growth를 채운다. 목록에 없는 process의 기록은 지운다.
 func (tracker *topMemoryGrowthTracker) observe(at time.Time, processes []topProcess) {
-	bucket := at.Unix() / int64(topMemoryGrowthBucket/time.Second)
+	if tracker.start.IsZero() {
+		tracker.start = at
+	}
+	bucket := int64(at.Sub(tracker.start) / topMemoryGrowthBucket)
 	seen := make(map[topProcessKey]bool, len(processes))
 	for index := range processes {
 		process := &processes[index]
@@ -107,20 +115,16 @@ func (series *topMemorySeries) growth() (topMemoryGrowth, bool) {
 			growing++
 		}
 	}
-	first := minimumOf(series.minimums[:topMemoryGrowthEdge])
-	last := minimumOf(series.minimums[len(series.minimums)-topMemoryGrowthEdge:])
+	head := series.minimums[:topMemoryGrowthEdge]
+	tailStart := len(series.minimums) - topMemoryGrowthEdge
+	tail := series.minimums[tailStart:]
+	first, last := slices.Min(head), slices.Min(tail)
 	if rising < topMemoryGrowthRisingPairs || growing < topMemoryGrowthGrowingPairs || last < first || last-first < topMemoryGrowthMin {
 		return topMemoryGrowth{}, false
 	}
-	return topMemoryGrowth{Bytes: last - first, Window: topMemoryGrowthBuckets * topMemoryGrowthBucket}, true
-}
-
-func minimumOf(values []uint64) uint64 {
-	result := values[0]
-	for _, value := range values[1:] {
-		result = min(result, value)
-	}
-	return result
+	from := series.buckets[slices.Index(head, first)]
+	to := series.buckets[tailStart+slices.Index(tail, last)]
+	return topMemoryGrowth{Bytes: last - first, Window: time.Duration(to-from) * topMemoryGrowthBucket}, true
 }
 
 // topMemoryGrowthScore는 위험 한도를 이 속도로 남은 memory를 다 쓰기까지의 시간으로 나눈 값이다. 1 이상이면 위험이다.

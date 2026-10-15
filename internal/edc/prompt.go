@@ -49,7 +49,7 @@ func promptMissingChoice(command string, choices []string) (string, bool) {
 		promptEcho(os.Stdout, command+" "+choices[0])
 		return choices[0], true
 	}
-	model := newSelectModel("cli.prompt.subcommand_title", "cli.prompt.subcommand_label", selectItemsFromValues(choices))
+	model := newSelectModel("cli.prompt.subcommand_title", "cli.prompt.subcommand_label", subcommandSelectItems(strings.TrimPrefix(command, "edc "), choices))
 	value, err := runSelect(file, os.Stdout, model)
 	if err != nil {
 		return "", false

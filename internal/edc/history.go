@@ -27,7 +27,15 @@ func historyTerminalText(value string) string {
 }
 
 func runHistory(args []string) int {
-	if len(args) == 0 || (args[0] != "list" && args[0] != "top" && args[0] != "process") {
+	if len(args) == 0 {
+		choice, ok := promptMissingChoice("edc history", []string{"list", "top", "process"})
+		if !ok {
+			printCommandBrief(os.Stderr, "history")
+			return 2
+		}
+		args = []string{choice}
+	}
+	if args[0] != "list" && args[0] != "top" && args[0] != "process" {
 		fmt.Fprintln(os.Stderr, T("history.usage"))
 		return 2
 	}

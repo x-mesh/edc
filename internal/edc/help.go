@@ -21,18 +21,39 @@ func (option optionDoc) detail() string {
 	return T(option.key)
 }
 
+// subcommandDoc은 하위 명령 하나다. 설명은 locale의 command.<명령>.sub.<name>에 둔다.
+type subcommandDoc struct {
+	name string
+	form string
+}
+
 // commandDoc은 명령 하나의 뼈대다. 이름과 문법은 코드에, 설명은 locale에 둔다.
+// 예시는 어느 언어에서나 같은 명령이므로 코드에 둔다.
 type commandDoc struct {
-	name       string
-	group      string
-	usage      []string
-	options    []optionDoc
-	usesCommon bool
+	name        string
+	group       string
+	usage       []string
+	options     []optionDoc
+	usesCommon  bool
+	subcommands []subcommandDoc
+	examples    []string
 }
 
 func (doc commandDoc) summary() string { return T("command." + doc.name + ".summary") }
 
 func (doc commandDoc) notes() []string { return TList("command." + doc.name + ".notes") }
+
+func (doc commandDoc) subcommandKey(name string) string {
+	return "command." + doc.name + ".sub." + name
+}
+
+func (doc commandDoc) subcommandLines() []optionDoc {
+	lines := make([]optionDoc, 0, len(doc.subcommands))
+	for _, sub := range doc.subcommands {
+		lines = append(lines, optionDoc{sub.form, doc.subcommandKey(sub.name)})
+	}
+	return lines
+}
 
 // helpGroups는 첫 화면의 그룹 순서다. 값은 locale의 help.group 아래 키다.
 var helpGroups = []string{"diagnose", "observe", "host", "record", "tool"}
@@ -58,6 +79,11 @@ var commandDocs = []commandDoc{
 		usage:      []string{"edc dns lookup [options] <host>", "edc dns compare [--resolver IP] [options] <host>", "edc dns config [options]"},
 		options:    []optionDoc{{"--resolver IP[:port]", "command.dns.option.resolver"}},
 		usesCommon: true,
+		subcommands: []subcommandDoc{
+			{"lookup", "edc dns lookup <host>"},
+			{"compare", "edc dns compare <host>"},
+			{"config", "edc dns config"},
+		},
 	},
 	{
 		name: "tcp", group: "diagnose",
@@ -85,6 +111,12 @@ var commandDocs = []commandDoc{
 			"edc net trace [options] <host>",
 		},
 		usesCommon: true,
+		subcommands: []subcommandDoc{
+			{"interfaces", "edc net interfaces"},
+			{"route", "edc net route <host>"},
+			{"ping", "edc net ping <host>"},
+			{"trace", "edc net trace <host>"},
+		},
 	},
 	{
 		name: "audit", group: "diagnose",
@@ -115,6 +147,12 @@ var commandDocs = []commandDoc{
 			{"-n, --dry-run", "route.flag.dry_run"},
 		},
 		usesCommon: true,
+		subcommands: []subcommandDoc{
+			{"check", "edc route check"},
+			{"switch", "edc route switch --to <name>"},
+			{"status", "edc route status"},
+			{"rollback", "edc route rollback --state <file>"},
+		},
 	},
 	{
 		name: "disk", group: "host",
@@ -127,6 +165,10 @@ var commandDocs = []commandDoc{
 			{"--yes", "disk.flag.yes"},
 		},
 		usesCommon: true,
+		subcommands: []subcommandDoc{
+			{"check", "edc disk check [mount]"},
+			{"grow", "edc disk grow <mount>"},
+		},
 	},
 	{
 		name: "change", group: "host",
@@ -146,6 +188,12 @@ var commandDocs = []commandDoc{
 			{"--yes", "change.flag.yes"},
 		},
 		usesCommon: true,
+		subcommands: []subcommandDoc{
+			{"apply", "edc change apply --kind <kind>"},
+			{"status", "edc change status"},
+			{"confirm", "edc change confirm --state <file>"},
+			{"rollback", "edc change rollback --state <file>"},
+		},
 	},
 	{
 		name: "top", group: "observe",
@@ -178,6 +226,17 @@ var commandDocs = []commandDoc{
 			{"--limit 200", "history.option.limit"},
 			{"--json <path|->", "history.option.json"},
 		},
+		subcommands: []subcommandDoc{
+			{"list", "edc history list [DB]"},
+			{"top", "edc history top [options] [DB]"},
+			{"process", "edc history process [options] [DB]"},
+		},
+		examples: []string{
+			"edc top -w",
+			"edc history list",
+			"edc history top --metric memory_pct --min 90",
+			"edc history process --process nginx",
+		},
 	},
 	{
 		name: "watch", group: "observe",
@@ -199,6 +258,10 @@ var commandDocs = []commandDoc{
 			{"--dry-run", "watchfs.option.dry_run"},
 		},
 		usesCommon: true,
+		subcommands: []subcommandDoc{
+			{"http", "edc watch http <host|URL>"},
+			{"fs", "edc watch fs [directory]"},
+		},
 	},
 	{
 		name: "info", group: "observe",
@@ -390,6 +453,16 @@ var commandDocs = []commandDoc{
 			{"--timeout 0s", "command.log.option.timeout"},
 			{"--kill-after 5s", "command.log.option.kill_after"},
 		},
+		subcommands: []subcommandDoc{
+			{"run", "edc log -- <command> [args...]"},
+			{"history", "edc log history [<command>]"},
+		},
+		examples: []string{
+			"edc log -- ls -l /tmp",
+			"edc log --restart on-failure -- /path/to/job",
+			"edc log history",
+			"edc log history --failed ls -l /tmp",
+		},
 	},
 	{
 		name: "remote", group: "record",
@@ -409,6 +482,11 @@ var commandDocs = []commandDoc{
 	{
 		name: "completion", group: "tool",
 		usage: []string{"edc completion <zsh|bash|groups>"},
+		subcommands: []subcommandDoc{
+			{"zsh", "edc completion zsh"},
+			{"bash", "edc completion bash"},
+			{"groups", "edc completion groups"},
+		},
 	},
 	{
 		name: "setup", group: "tool",
@@ -508,6 +586,7 @@ func printCommandHelp(writer io.Writer, name string) bool {
 	for _, line := range doc.usage {
 		fmt.Fprintf(writer, "  %s\n", line)
 	}
+	printExamples(writer, doc.examples)
 	if len(doc.options) > 0 {
 		fmt.Fprintf(writer, "\n%s\n", T("help.options_label"))
 		printOptionDocs(writer, doc.options)
@@ -523,6 +602,53 @@ func printCommandHelp(writer io.Writer, name string) bool {
 		}
 	}
 	return true
+}
+
+// printCommandBrief는 하위 명령을 빼고 실행했을 때의 짧은 안내다. 하위 명령마다 무엇을 하는지와
+// 바로 칠 수 있는 예시만 보이고, option 설명은 edc help <command>로 미룬다.
+func printCommandBrief(writer io.Writer, name string) bool {
+	doc, ok := findCommandDoc(name)
+	if !ok || len(doc.subcommands) == 0 {
+		return false
+	}
+	fmt.Fprintf(writer, "edc %s — %s\n\n", doc.name, doc.summary())
+	printOptionDocs(writer, doc.subcommandLines())
+	printExamples(writer, doc.examples)
+	fmt.Fprintf(writer, "\n%s  edc help %s\n", T("help.detail_label"), doc.name)
+	return true
+}
+
+func printExamples(writer io.Writer, examples []string) {
+	if len(examples) == 0 {
+		return
+	}
+	fmt.Fprintf(writer, "\n%s\n", T("help.examples_label"))
+	for _, example := range examples {
+		fmt.Fprintf(writer, "  %s\n", example)
+	}
+}
+
+// subcommandSelectItems는 하위 명령을 고르는 화면의 항목이다. 이름만으로는 무엇을 하는지 알 수
+// 없으므로 help와 같은 설명을 옆에 붙인다. 설명이 없는 하위 명령은 이름만 보인다.
+func subcommandSelectItems(name string, choices []string) []selectItem {
+	doc, _ := findCommandDoc(name)
+	described := make(map[string]bool, len(doc.subcommands))
+	for _, sub := range doc.subcommands {
+		described[sub.name] = true
+	}
+	width := 0
+	for _, choice := range choices {
+		width = max(width, liveWidth(choice))
+	}
+	items := make([]selectItem, 0, len(choices))
+	for _, choice := range choices {
+		label := choice
+		if described[choice] {
+			label = padRight(choice, width) + "  — " + T(doc.subcommandKey(choice))
+		}
+		items = append(items, selectItem{label: label, value: choice})
+	}
+	return items
 }
 
 // uncoveredCommonOptions는 명령이 직접 설명한 공용 flag를 공용 목록에서 뺀다. 같은 flag가 뜻이 다른

@@ -9,6 +9,7 @@ help:
   detail_hint: "edc help <command>"
   options_label: "options"
   common_options_label: "共通 options"
+  examples_label: "例"
   group:
     diagnose: "診断"
     observe: "観測"
@@ -34,6 +35,10 @@ command:
       - "Ctrl-C で中断すると exit code 4 を返します。"
   dns:
     summary: "名前解決と resolver 設定"
+    sub:
+      lookup: "システムの resolver が返すアドレス"
+      compare: "システム DNS を 1.1.1.1 か --resolver と比較"
+      config: "このホストの resolver 設定"
     option:
       resolver: "比較する DNS サーバー。複数指定できます"
     notes:
@@ -85,8 +90,18 @@ command:
       - "Linux でのみ動作します。"
   net:
     summary: "interface、route、ping、trace"
+    sub:
+      interfaces: "ネットワーク interface とアドレス"
+      route: "ホストへ向かう interface と gateway"
+      ping: "ホストへ ping"
+      trace: "ホストまでの経路、traceroute か tracepath を使用"
   route:
     summary: "gateway VM の default route を点検・切り替え・ロールバック"
+    sub:
+      check: "現在の状態を点検、変更なし"
+      switch: "ロールバック timer 付きで切り替えて検証"
+      status: "保留中または完了した切り替えを表示"
+      rollback: "state ファイル一つでロールバック"
     notes:
       - "経路を変更する gateway VM 上でローカルに実行するコマンドです。"
       - "switch と rollback には root 権限が必要です。sudo は付けません。"
@@ -94,6 +109,9 @@ command:
       - "status は /run/edc を読み、rollback --state は 1 件を再実行します。"
   disk:
     summary: "ディスク増設後にパーティションとファイルシステムを拡張"
+    sub:
+      check: "拡張できる mount を表示、変更なし"
+      grow: "パーティションとファイルシステムを拡張"
     notes:
       - "check は層を読むだけで何も変更しません。"
       - "root で実行するとすべての層のサイズが見えます。"
@@ -101,6 +119,11 @@ command:
       - "grow は元に戻せません。先にボリュームのスナップショットを作成してください。"
   change:
     summary: "自動ロールバック付きのホスト変更"
+    sub:
+      apply: "変更を適用、確定しないとロールバック"
+      status: "保留中の変更と残り時間"
+      confirm: "変更を確定し、ロールバック timer を停止"
+      rollback: "apply 前の状態に戻す"
   top:
     summary: "リアルタイムの resource ダッシュボード"
     option:
@@ -122,6 +145,9 @@ command:
       - "f で signal を追跡 (表示→最も忙しい process)。/ で絞り込み、Esc で解除。"
   watch:
     summary: "HTTP・ファイル変更の観測と条件付きaction実行"
+    sub:
+      http: "Ctrl-C まで URL を繰り返し要求"
+      fs: "ファイル変更を観測、必要ならコマンド実行"
     option:
       interval: "sample 間隔(秒)、最小 0.1"
       duration: "指定時間で終了。省略時は Ctrl-C まで実行"
@@ -432,6 +458,9 @@ command:
       - "悪化した probe があれば exit code 1 を返します。"
   log:
     summary: "コマンド出力と終了状態を記録"
+    sub:
+      run: "コマンドを実行し、出力と終了状態を保存"
+      history: "コマンドごとに保存した実行を表示"
     option:
       stream: "記録する出力 (既定 both)"
       output: "ログファイル。既定は実行ごとに作成"
@@ -476,6 +505,10 @@ command:
       - "Ctrl-C で中断すると残りの step を SKIP にし、exit code 4 を返します。"
   completion:
     summary: "shell completion の出力"
+    sub:
+      zsh: "zsh completion script を出力"
+      bash: "bash completion script を出力"
+      groups: "inventory group 名を 1 行に 1 つ出力"
     notes:
       - "source <(edc completion zsh) または source <(edc completion bash)。"
       - "groups は inventory の group 名を 1 行ずつ出します。"
@@ -503,3 +536,7 @@ command:
 
   history:
     summary: "保存した resource 観測履歴を検索"
+    sub:
+      list: "edc top -w が記録した実行の一覧"
+      top: "host sample、新しい順"
+      process: "process sample、新しい順"

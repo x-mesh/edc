@@ -1831,7 +1831,9 @@ which interface do you want to capture?
 → edc capture --interface en0
 ```
 
-A command group asks which command to run. `edc dns`, `edc net`, `edc report`, `edc route`, `edc change`, `edc disk`, and `edc completion` show their commands. `edc report show` and `edc report diff` then list the reports in the current directory.
+A command group asks which command to run. `edc dns`, `edc net`, `edc report`, `edc route`, `edc change`, `edc disk`, `edc history`, and `edc completion` show their commands with a short description of each. `edc report show` and `edc report diff` then list the reports in the current directory.
+
+`edc log` does not ask. With no arguments, it prints its forms and examples, and returns exit code `2`.
 
 `edc change confirm`, `edc change rollback`, and `edc route rollback` list the changes that still wait. You pick one instead of copying a run id.
 

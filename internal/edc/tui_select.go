@@ -96,7 +96,7 @@ func (model selectModel) View() tea.View {
 			continue
 		}
 		row := liveSelectedBar + " " + item.label
-		// 고르는 동안에는 줄 전체를 반전해 눈에 띄게 한다.
+		// 고르는 동안에는 줄 전체를 chip 바탕으로 칠해 눈에 띄게 한다.
 		if !model.done {
 			builder.WriteString(liveSelected(liveCell(row, width), model.color) + "\n")
 			continue
@@ -111,7 +111,7 @@ func (model selectModel) frameHeight() int {
 	return 1 + len(model.items)
 }
 
-// rowWidth는 반전 칠이 모든 줄에서 같은 폭이 되도록 가장 긴 항목에 맞춘다.
+// rowWidth는 고른 줄의 바탕이 모든 줄에서 같은 폭이 되도록 가장 긴 항목에 맞춘다.
 func (model selectModel) rowWidth() int {
 	width := 0
 	for _, item := range model.items {
@@ -129,7 +129,7 @@ func (model selectModel) headline() string {
 	case model.done:
 		return model.label
 	default:
-		return model.title
+		return liveTitleHints(model.title, model.color)
 	}
 }
 

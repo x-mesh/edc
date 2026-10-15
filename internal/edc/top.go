@@ -473,7 +473,9 @@ func streamTop(ctx context.Context, writer io.Writer, options topOptions) int {
 		return 1
 	}
 	limits := newTopLimits(details.Cores, options.color)
-	if options.header {
+	if options.header && options.color {
+		fmt.Fprint(writer, richTopHeader(details))
+	} else if options.header {
 		printTopHeader(writer, details)
 	}
 	previous, err := collectResourceSnapshot()
@@ -564,6 +566,16 @@ func printTopHeader(writer io.Writer, details hostDetails) {
 	fmt.Fprint(writer, formatTopHeader(details))
 }
 
+// richTopHeader는 색을 쓰는 터미널의 표 머리다. 글자와 폭은 formatTopHeader와 같고, 테두리와 열 이름은 회색, 제목은 자홍 굵게다.
+func richTopHeader(details hostDetails) string {
+	lines := strings.Split(strings.TrimSuffix(formatTopHeader(details), "\n"), "\n")
+	inside := strings.TrimSuffix(strings.TrimPrefix(lines[1], "│ "), " │")
+	title := strings.TrimRight(inside, " ")
+	lines[0], lines[2], lines[3] = richDim(lines[0]), richDim(lines[2]), richDim(lines[3])
+	lines[1] = richDim("│ ") + richPaint(title, richMagenta, true) + inside[len(title):] + richDim(" │")
+	return strings.Join(lines, "\n") + "\n"
+}
+
 func formatTopHeader(details hostDetails) string {
 	title := fmt.Sprintf("🐰 %s <%s, %d cores, %s> 🐰", details.Hostname, details.Model, details.Cores, formatBytes(details.MemoryTotal))
 	titleWidth := topDisplayWidth(title)
@@ -571,15 +583,6 @@ func formatTopHeader(details hostDetails) string {
 	border := strings.Repeat("─", width-2)
 	return fmt.Sprintf("╭%s╮\n│ %s%s │\n╰%s╯\n%s\n", border, title, strings.Repeat(" ", width-4-titleWidth), border, topColumnHeader)
 }
-
-// 색은 둘뿐이다. 정상값은 terminal 기본색으로 두어야 경고와 위험만 눈에 들어온다.
-const (
-	// 경고는 terminal 팔레트의 yellow다. 고정 색은 밝은 배경에서 묻히고, 주황은 적록색약에서
-	// 위험의 빨강과 명도까지 비슷해져 붙는다. terminalStatus의 WARN과도 같은 색이다.
-	topColorWarn   = "\033[33m"
-	topColorDanger = "\033[91m"
-	topColorReset  = "\033[0m"
-)
 
 type topThreshold struct{ warn, danger float64 }
 
@@ -630,16 +633,30 @@ func (limits topLimits) paint(text string, threshold topThreshold, value float64
 	return topPaint(text, threshold.level(value), limits.color)
 }
 
+// tint는 top 표의 paint다. paint는 info의 디스크 막대도 쓴다.
+func (limits topLimits) tint(text string, threshold topThreshold, value float64) string {
+	return topTint(text, threshold.level(value), limits.color)
+}
+
 // topPaint는 폭을 이미 맞춘 칸에 색을 입힌다.
+// 정상값은 터미널 기본색으로 두어야 경고와 위험만 눈에 들어온다. 색은 topTint와 같은 rich 팔레트다.
 func topPaint(text string, level topLevel, color bool) string {
+	return topTint(text, level, color)
+}
+
+// topTint는 top의 topPaint다. 폭을 이미 맞춘 칸에 경고는 노랑, 위험은 빨강을 rich 팔레트로 입힌다.
+func topTint(text string, level topLevel, color bool) string {
 	if !color || level == topLevelNormal {
 		return text
 	}
-	code := topColorWarn
+	return richPaint(text, topLevelColor(level), false)
+}
+
+func topLevelColor(level topLevel) string {
 	if level == topLevelDanger {
-		code = topColorDanger
+		return richRed
 	}
-	return code + text + topColorReset
+	return richYellow
 }
 
 func printTopRow(writer io.Writer, at time.Time, rate resourceRate, limits topLimits) {
@@ -649,12 +666,12 @@ func printTopRow(writer io.Writer, at time.Time, rate resourceRate, limits topLi
 func formatTopRow(at time.Time, rate resourceRate, limits topLimits) string {
 	return fmt.Sprintf("│%8s│%6s│%7s│%6.0f│%6.0f│%s│%s│%s│%s│%5s│%5s│%s│",
 		at.Format("15:04:05"), formatRate(rate.NetIn), formatRate(rate.NetOut), rate.PacketsIn, rate.PacketsOut,
-		limits.paint(fmt.Sprintf("%4.1f", rate.Load1), limits.load, rate.Load1),
-		limits.paint(fmt.Sprintf("%5.1f", rate.CPUUser), limits.cpu, rate.CPUUser),
-		limits.paint(fmt.Sprintf("%5.1f", rate.CPUSystem), limits.cpu, rate.CPUSystem),
-		limits.paint(fmt.Sprintf("%5.2f", rate.CPUIOWait), limits.io, rate.CPUIOWait),
+		limits.tint(fmt.Sprintf("%4.1f", rate.Load1), limits.load, rate.Load1),
+		limits.tint(fmt.Sprintf("%5.1f", rate.CPUUser), limits.cpu, rate.CPUUser),
+		limits.tint(fmt.Sprintf("%5.1f", rate.CPUSystem), limits.cpu, rate.CPUSystem),
+		limits.tint(fmt.Sprintf("%5.2f", rate.CPUIOWait), limits.io, rate.CPUIOWait),
 		formatRate(rate.DiskRead), formatRate(rate.DiskWrite),
-		limits.paint(fmt.Sprintf("%5.1f", rate.MemoryPercent), limits.memory, rate.MemoryPercent))
+		limits.tint(fmt.Sprintf("%5.1f", rate.MemoryPercent), limits.memory, rate.MemoryPercent))
 }
 
 // topDisplayWidth는 두 칸을 차지하는 🐰를 반영한 터미널 표시 폭이다.

@@ -297,21 +297,28 @@ func (summarizer *dropTraceSummarizer) summarize(summary captureSummary, duratio
 
 // -d는 연결마다 한 행을 쓰는 option이다. drop 요약은 이미 이유와 위치마다 한 행이라 같은 표를 쓴다.
 func (report dropTraceReport) print(bool) {
-	fmt.Fprintf(os.Stdout, "DROP trace: %s\n\n", (time.Duration(report.DurationMS) * time.Millisecond).String())
-	fmt.Fprintf(os.Stdout, "Drops: %d\nEvents: %d\nSampled out: %d\nLost events: %d\n", report.Drops, report.Events, report.Sampled, report.LostEvents)
+	out := os.Stdout
+	style := newTraceSummaryStyle(out)
+	style.line(out, style.title("DROP trace", (time.Duration(report.DurationMS)*time.Millisecond).String()))
+	io.WriteString(out, "\n")
+	style.fields(out, "", "Drops", fmt.Sprint(report.Drops), "Events", fmt.Sprint(report.Events), "Sampled out", fmt.Sprint(report.Sampled), "Lost events", fmt.Sprint(report.LostEvents))
 	if report.ListenOverflows != nil && report.ListenDrops != nil {
-		fmt.Fprintf(os.Stdout, "Listen overflows: %d\nListen drops: %d (TcpExt in /proc/net/netstat, all listen sockets in this network namespace)\n", *report.ListenOverflows, *report.ListenDrops)
+		style.fields(out, "", "Listen overflows", fmt.Sprint(*report.ListenOverflows), "Listen drops", fmt.Sprintf("%d (TcpExt in /proc/net/netstat, all listen sockets in this network namespace)", *report.ListenDrops))
 	}
 	if len(report.Reasons) > 0 {
-		fmt.Fprintln(os.Stdout, "\nREASON\tDROPS")
+		table := traceTable{titles: []string{"REASON", "DROPS"}}
 		for _, reason := range report.Reasons {
-			fmt.Fprintf(os.Stdout, "%s\t%d\n", reason.Reason, reason.Drops)
+			table.add(reason.Reason, fmt.Sprint(reason.Drops))
 		}
+		io.WriteString(out, "\n")
+		style.writeTable(out, table)
 	}
 	if len(report.Rows) > 0 {
-		fmt.Fprintln(os.Stdout, "\nREASON\tWHERE\tEVENTS\tBYTES\tPROCESSES\tEXAMPLE")
+		table := traceTable{titles: []string{"REASON", "WHERE", "EVENTS", "BYTES", "PROCESSES", "EXAMPLE"}}
 		for _, row := range report.Rows {
-			fmt.Fprintf(os.Stdout, "%s\t%s\t%d\t%s\t%s\t%s\n", row.Reason, emptyAs(row.Location, "-"), row.Events, traceBytes(row.Bytes), emptyAs(strings.Join(row.Processes, ","), "-"), emptyAs(row.Example, "-"))
+			table.add(row.Reason, emptyAs(row.Location, "-"), fmt.Sprint(row.Events), traceBytes(row.Bytes), emptyAs(strings.Join(row.Processes, ","), "-"), emptyAs(row.Example, "-"))
 		}
+		io.WriteString(out, "\n")
+		style.writeTable(out, table)
 	}
 }

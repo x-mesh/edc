@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/charmbracelet/x/ansi"
 )
 
 func duTestDir(name string, bytes uint64, children ...*duNode) *duNode {
@@ -91,12 +93,12 @@ func TestFormatDuRowsIndentsMarksDirectoriesAndFits(t *testing.T) {
 		{Path: "lib/firmware-with-a-long-name", Bytes: 600 << 20, Dir: true, Depth: 1},
 		{Path: "lib/core", Bytes: 2 << 20, Depth: 1},
 	}
-	text := formatDuRows(rows, duOther{Bytes: 1 << 10, Entries: 7}, 0, false, 0)
+	text := formatDuRows(rows, duOther{Bytes: 1 << 10, Entries: 7}, 0)
 	want := "     3.0 GB  lib/\n   600.0 MB    firmware-with-a-long-name/\n     2.0 MB    core\n     1.0 KB  (7 other entries)\n"
 	if text != want {
 		t.Fatalf("text =\n%s", text)
 	}
-	for _, line := range strings.Split(strings.TrimRight(formatDuRows(rows, duOther{}, 24, false, 0), "\n"), "\n") {
+	for _, line := range strings.Split(strings.TrimRight(formatDuRows(rows, duOther{}, 24), "\n"), "\n") {
 		if width := liveWidth(line); width > 24 {
 			t.Errorf("line %q is %d columns", line, width)
 		}
@@ -361,24 +363,117 @@ func BenchmarkDuLargestManyDirectories(b *testing.B) {
 	}
 }
 
-func TestFormatDuGraphRowsPreservesLabelsAndFits(t *testing.T) {
-	rows := []duRow{{Path: "lib", Bytes: 75, Dir: true, Label: "container api"}, {Path: "lib/file", Bytes: 25, Depth: 1}}
-	text := formatDuRows(rows, duOther{Bytes: 25, Entries: 2}, 0, true, 100)
-	for _, value := range []string{duBar(75, 100), duBar(25, 100), "lib/  container api", "  file", "(2 other entries)"} {
-		if !strings.Contains(text, value) {
-			t.Fatalf("missing %q in %q", value, text)
+// 색 터미널의 트리는 평문과 같은 글자에 크기 색과, -B일 때 가장 큰 줄에 맞춘 차분한 막대를 더한다.
+func TestRichDuRowsColorSizesAndScaleBarsToTheLargestEntry(t *testing.T) {
+	rows := []duRow{{Path: "lib", Bytes: 75 << 30, Dir: true, Label: "container api"}, {Path: "lib/file", Bytes: 25, Depth: 1}}
+	other := duOther{Bytes: 25 << 20, Entries: 2}
+	text := richDuRows(rows, other, 0, true)
+	for _, want := range []string{
+		richPaint("  75.0 GB", richRed, true) + "  " + richFill(richBar(1, 1, duBarWidth), richRed) + "  lib/  " + richDim("container api"),
+		richPaint("     25 B", richGreen, false) + "  " + richFill(richBar(25, 75<<30, duBarWidth), richGreen) + "    file",
+		richDim("  25.0 MB") + "  " + richFill(richBar(25<<20, 75<<30, duBarWidth), richGray) + "  " + richDim("(2 other entries)"),
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("missing %q in\n%q", want, text)
 		}
 	}
-	for _, line := range strings.Split(strings.TrimRight(formatDuRows(rows, duOther{}, 34, true, 100), "\n"), "\n") {
+	if strings.Contains(text, "░") {
+		t.Fatal("the bar keeps the plain track")
+	}
+	for _, line := range strings.Split(strings.TrimRight(richDuRows(rows, duOther{}, 34, true), "\n"), "\n") {
 		if liveWidth(line) > 34 {
 			t.Fatalf("wide graph row: %q", line)
 		}
 	}
-	if text := formatDuRows(rows, duOther{}, 0, false, 100); strings.Contains(text, "█") || strings.Contains(text, "░") {
-		t.Fatal("static output contains graph bars")
+	// 막대가 없으면 평문과 같은 글자다. 막대를 둘 줄이 하나뿐이면 늘 가득 차므로 뺀다.
+	if got := ansi.Strip(richDuRows(rows, other, 0, false)); got != formatDuRows(rows, other, 0) {
+		t.Fatalf("stripped rows =\n%s", got)
 	}
-	if text := formatDuRows([]duRow{{Path: "empty", Dir: true}}, duOther{}, 0, true, 0); !strings.Contains(text, duBar(0, 0)) {
-		t.Fatal("zero-size graph is missing")
+	if text := richDuRows([]duRow{{Path: "only", Bytes: 10, Dir: true}}, duOther{}, 0, true); strings.Contains(text, "█") {
+		t.Fatalf("a single row keeps its bar: %q", text)
+	}
+}
+
+func TestRichDuMountsAndFilesystemKeepThePlainText(t *testing.T) {
+	var mounts []duMount
+	for range duMountRows + 3 {
+		mounts = append(mounts, duMount{Path: "/data/disk", FSType: "ext4", UsedBytes: 2 << 30, Label: "mounted in db"})
+	}
+	text := richDuMounts(mounts, false, 0)
+	for _, want := range []string{
+		richPanelTop("skipped mounts", "", ""),
+		richPaint("2.0 GB", richYellow, false) + richDim(" used"),
+		richPaint("-v", richCyan, true),
+		richPanelBottom(""),
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("missing %q in\n%q", want, text)
+		}
+	}
+	if stripped := ansi.Strip(text); !strings.Contains(stripped, "│ /data/disk  ext4  2.0 GB used  mounted in db\n") || !strings.Contains(stripped, "│ 3 more, -v shows all\n") {
+		t.Fatalf("stripped mounts =\n%s", stripped)
+	}
+	deleted := duDeletedOpen{Bytes: 3 << 20, Files: 2, Top: []duDeletedFile{{Path: "/var/log/app.log", Bytes: 3 << 20, PID: 42, Comm: "app"}}}
+	filesystem := richDuFilesystem(duFilesystem{Mount: "/var", FSType: "xfs", SizeBytes: 1 << 30, UsedBytes: 10 << 20, Whole: true}, deleted, 6<<20, 1<<20, 0)
+	if !strings.HasPrefix(filesystem, "\n"+richChip("file system")+" "+richBold("/var")+"  "+richDim("xfs")+"  "+richBold("10.0 MB")+richDim(" used of ")+"1.0 GB\n") {
+		t.Fatalf("file system title = %q", filesystem)
+	}
+	stripped := ansi.Strip(filesystem)
+	for _, want := range []string{
+		"  counted        6.0 MB\n",
+		"  deleted, open  3.0 MB in 2 files\n",
+		"  not found      1.0 MB  files under a mount point, or file system metadata\n",
+		"       3.0 MB  pid 42 app  /var/log/app.log\n",
+	} {
+		if !strings.Contains(stripped, want) {
+			t.Fatalf("missing %q in\n%s", want, stripped)
+		}
+	}
+	if richDuFilesystem(duFilesystem{}, deleted, 0, 0, 0) != "" {
+		t.Fatal("unknown file system printed")
+	}
+}
+
+// 색 터미널에서는 PARTIAL 머리를 노란 배지로, 다시 실행할 명령을 굵은 청록으로 칠한다. 줄은 터미널 폭을 넘지 않는다.
+func TestDuPartialNoticeIsAYellowBadgeOnColorTerminals(t *testing.T) {
+	result := Result{Next: "edc du --timeout 4m0s /data", Metrics: map[string]interface{}{"partial": true, "bytes": uint64(10)}}
+	text := formatDuPartial(result, time.Minute, true, 60)
+	if !strings.HasPrefix(text, "\n"+richBadge("PARTIAL", richYellow)+" edc stopped at the 1m0s time limit.") {
+		t.Fatalf("badge line = %q", text)
+	}
+	if !strings.Contains(text, richDim("to count the whole tree: ")+richPaint("edc du --timeout 4m0s /data", richCyan, true)) {
+		t.Fatalf("next line = %q", text)
+	}
+	if strings.Contains(text, "\033[1;33m") {
+		t.Fatalf("raw escape in %q", text)
+	}
+	for _, line := range strings.Split(strings.TrimRight(text, "\n"), "\n") {
+		if liveWidth(line) > 60 {
+			t.Fatalf("wide line %q", line)
+		}
+	}
+	// 줄을 바꾼 본문은 배지 뒤에서 이어진다.
+	if lines := strings.Split(ansi.Strip(text), "\n"); !strings.HasPrefix(lines[2], strings.Repeat(" ", liveWidth(richBadge("PARTIAL", richYellow))+1)) {
+		t.Fatalf("wrapped body = %q", lines)
+	}
+}
+
+// 좁은 터미널에서도 다시 실행할 명령은 한 줄에 그대로 남는다. 복사하면 그대로 실행되어야 한다.
+func TestDuPartialKeepsTheRerunCommandWhole(t *testing.T) {
+	command := "edc du --timeout 4m0s /very/long/path/to/the/data/directory"
+	result := Result{Next: command, Metrics: map[string]interface{}{"partial": true, "bytes": uint64(10)}}
+	text := formatDuPartial(result, time.Minute, true, 40)
+	whole := false
+	for _, line := range strings.Split(ansi.Strip(text), "\n") {
+		if strings.Contains(line, command) {
+			whole = true
+		}
+	}
+	if !whole || !strings.Contains(text, richPaint(command, richCyan, true)) {
+		t.Fatalf("the command is broken in %q", ansi.Strip(text))
+	}
+	if !strings.Contains(text, "  "+richDim("to count the whole tree:")+"\n") {
+		t.Fatalf("the hint lost its label: %q", text)
 	}
 }
 

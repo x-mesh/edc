@@ -19,6 +19,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/charmbracelet/x/ansi"
 )
 
 func cleanTestHome(t *testing.T) string {
@@ -1396,7 +1398,7 @@ func TestCleanTextCapsGroups(t *testing.T) {
 
 func TestCleanTextWrapsInsteadOfCutting(t *testing.T) {
 	squeeze := func(text string) string { return strings.Join(strings.Fields(text), "") }
-	text := formatCleanNotMeasured(false, 40)
+	text := formatCleanNotMeasured(false, 40, false)
 	for _, item := range cleanNotMeasured {
 		if !strings.Contains(squeeze(text), squeeze(T("clean.not_measured."+item.ID))) {
 			t.Errorf("not measured lost %s:\n%s", item.ID, text)
@@ -1405,7 +1407,7 @@ func TestCleanTextWrapsInsteadOfCutting(t *testing.T) {
 	if len(strings.Split(strings.TrimSpace(text), "\n")) < 2 {
 		t.Fatalf("a narrow screen should wrap:\n%s", text)
 	}
-	if !reflect.DeepEqual(strings.Fields(text), strings.Fields(formatCleanNotMeasured(false, 0))) {
+	if !reflect.DeepEqual(strings.Fields(text), strings.Fields(formatCleanNotMeasured(false, 0, false))) {
 		t.Fatalf("wrapping split a word:\n%s", text)
 	}
 	var absent []cleanItem
@@ -1418,7 +1420,7 @@ func TestCleanTextWrapsInsteadOfCutting(t *testing.T) {
 			t.Errorf("the folded line lost %s:\n%s", spec.id, folded)
 		}
 	}
-	if wide := formatCleanNotMeasured(false, 0); strings.Count(wide, "\n") != 2 {
+	if wide := formatCleanNotMeasured(false, 0, false); strings.Count(wide, "\n") != 2 {
 		t.Fatalf("a pipe should get one line:\n%s", wide)
 	}
 }
@@ -1639,4 +1641,196 @@ func contains(list []string, value string) bool {
 		}
 	}
 	return false
+}
+
+// cleanColorResult는 모든 섹션이 보이는 결과다. 색 모드 테스트가 함께 쓴다.
+func cleanColorResult() Result {
+	number := func(value int) *int { return &value }
+	size := func(value uint64) *uint64 { return &value }
+	value := func(number int64) *int64 { return &number }
+	derived := cleanSizedItem(cleanDerivedID, "xcode_support", "P1", 125<<30)
+	derived.Cleanup = "rm -rf ~/Library/Developer/Xcode/DerivedData"
+	for index := 0; index < 6; index++ {
+		derived.Groups = append(derived.Groups, cleanGroup{Name: fmt.Sprintf("Project%02d", index), Folders: 2, UsageBytes: uint64(6-index) << 30})
+	}
+	items := []cleanItem{
+		derived,
+		cleanSizedItem("go-build", "build_cache", "P1", 24<<30),
+		{ID: "zig", Category: "build_cache", Priority: "P1", Status: cleanUnreadable, Reasons: []string{cleanReasonPermission}, ReportedPath: "/h/.cache/zig"},
+		cleanSizedItem("app-caches", "app_cache", "P2", 2<<30),
+		cleanSizedItem("huggingface", "model", "P3", 500<<20),
+		{ID: "playwright", Category: "downloaded_binary", Priority: "P2", Status: cleanAbsent, ReportedPath: "/h/pw"},
+	}
+	measured := func(kind string, total, reclaimable, count, active int64) cleanDockerTypeResult {
+		return cleanDockerTypeResult{Type: kind, Status: cleanMeasured, TotalBytes: value(total), ReclaimableBytes: value(reclaimable),
+			TotalCount: value(count), ActiveCount: value(active)}
+	}
+	images := measured(cleanDockerImages, 80<<30, 40<<30, 288, 12)
+	images.Cleanup = "docker image prune"
+	report := cleanReport{
+		candidates: items,
+		filesystems: []cleanFilesystem{{Mount: "/System/Volumes/Data", FSType: "apfs", UsageBytes: 200 << 30,
+			FreeBytes: 34 << 30, SharedBlocks: true}},
+		projectBuildDirs: cleanProjectBuildDirs{Status: cleanMeasured,
+			Roots: []cleanProjectRoot{{Path: "/h/src", Status: cleanMeasured, DirsVisited: number(120), Unmarked: number(0)}},
+			Items: []cleanBuildDir{{Kind: "node_modules", Path: "/h/src/app/node_modules", Status: cleanMeasured, UsageBytes: size(1 << 30),
+				Marker: "package.json", Git: cleanGitIgnored, Regenerable: true}}},
+		docker: cleanDocker{Status: cleanMeasured, OperatingSystem: "OrbStack", APIVersion: "1.56", Inside: cleanOrbStack,
+			Types: []cleanDockerTypeResult{images, measured(cleanDockerVolumes, 19<<30, 0, 99, 13)}},
+		vmDisks: []cleanVMDisk{{ID: cleanOrbStack, Status: cleanMeasured, Path: "/h/Library/Group Containers/HUAQ24HBR6.dev.orbstack/data",
+			UsageBytes: size(118 << 30)}},
+		worktrees: cleanWorktrees{Status: cleanMeasured, Root: "/h/.gk/worktree", Cleanup: "git-kit worktree cleanup",
+			Items: []cleanWorktree{{Path: "/h/.gk/worktree/repo/feature", Branch: "feature", Verdict: cleanVerdictHasChanges,
+				UsageBytes: size(1 << 30), Changes: number(9), Untracked: number(3)}}},
+	}
+	return cleanResult(Result{Probe: cleanProbeID}, report, time.Minute, nil)
+}
+
+func cleanColorText(t *testing.T, verbose bool, width int) string {
+	t.Helper()
+	var output bytes.Buffer
+	cleanPrint(&output, commonOptions{verbose: verbose}, cleanColorResult(), true, width, false, "/h")
+	return output.String()
+}
+
+func TestCleanColorGroupsCandidatesUnderPriorityBadges(t *testing.T) {
+	text := cleanColorText(t, false, 100)
+	plain := ansi.Strip(text)
+	for _, priority := range []string{"P1", "P2", "P3"} {
+		badge := richBadge(priority, richMagenta) + "  " + richBold(T("clean.priority."+priority))
+		if strings.Count(text, badge) != 1 {
+			t.Fatalf("%s needs one header:\n%s", priority, plain)
+		}
+	}
+	for _, line := range strings.Split(plain, "\n") {
+		if strings.HasPrefix(line, "P1 ") || strings.HasPrefix(line, "P2 ") {
+			t.Fatalf("a row still starts with its priority: %q", line)
+		}
+	}
+	// 10 GB 이상은 굵은 빨강이고, 막대는 같은 빨강을 낮춘 색이다. 가장 큰 후보가 막대를 다 채운다.
+	if !strings.Contains(text, richExpect("\033[1;31m125.0 GB\033[0m")) || !strings.Contains(text, richFill(strings.Repeat("█", 20), richRed)) {
+		t.Fatalf("the largest row lacks a red size and a full bar:\n%q", text)
+	}
+	if !strings.Contains(text, richExpect("\033[1;33m  2.0 GB\033[0m")) {
+		t.Fatalf("a size under 10 GB should be yellow:\n%q", text)
+	}
+	if !strings.Contains(text, richExpect("\033[33m")+T("clean.with_reason", T("clean.status.unreadable"), T("clean.reason.permission_denied"))) {
+		t.Fatalf("an unreadable row should show its state in yellow:\n%q", text)
+	}
+	if !strings.Contains(text, richDim(T("clean.fold.absent", T("clean.candidate.playwright")))) {
+		t.Fatalf("the folded line should be gray:\n%q", text)
+	}
+	collapsed := "▸ Project00 6.0 GB · Project01 5.0 GB · Project02 4.0 GB · 3 more"
+	if !strings.Contains(plain, collapsed) || strings.Contains(plain, "-v shows more") {
+		t.Fatalf("the groups should fold into one line:\n%s", plain)
+	}
+	// 접은 묶음 줄은 이름 칸에서 시작한다.
+	lines := strings.Split(plain, "\n")
+	for index, line := range lines {
+		if strings.Contains(line, collapsed) {
+			column := func(line, text string) int { return liveWidth(line[:strings.Index(line, text)]) }
+			if column(line, "▸") != column(lines[index-1], T("clean.candidate."+cleanDerivedID)) {
+				t.Fatalf("the folded groups do not start at the name column:\n%s\n%s", lines[index-1], line)
+			}
+		}
+	}
+}
+
+func TestCleanColorVerboseListsGroupsAndCommands(t *testing.T) {
+	text := cleanColorText(t, true, 100)
+	plain := ansi.Strip(text)
+	if strings.Contains(plain, "▸") {
+		t.Fatalf("-v should list each group:\n%s", plain)
+	}
+	if !strings.Contains(text, richExpect("\033[33m  6.0 GB\033[0m")) || !strings.Contains(text, richDim(T("clean.group_folders", 2))) {
+		t.Fatalf("-v group lines need a colored size and a gray folder count:\n%q", text)
+	}
+	for _, command := range []string{"rm -rf ~/Library/Developer/Xcode/DerivedData", "docker image prune", "git-kit worktree cleanup"} {
+		if !strings.Contains(text, richExpect("\033[36m")+command+richExpect("\033[0m")) {
+			t.Fatalf("%q should be cyan:\n%q", command, text)
+		}
+	}
+	if !strings.Contains(plain, T("clean.cleanup", "git-kit worktree cleanup")) {
+		t.Fatalf("the cleanup sentence should stay whole:\n%s", plain)
+	}
+}
+
+func TestCleanColorDrawsSectionsAsPanels(t *testing.T) {
+	text := cleanColorText(t, false, 100)
+	plain := ansi.Strip(text)
+	for _, title := range []string{
+		"╭─ Docker engine  OrbStack · API 1.56 · engine totals, not added to any total ───",
+		"╭─ VM disks  user data, not added to any total ───",
+		"╭─ Worktrees  ~/.gk/worktree · not added to any total ───",
+		"╭─ Project build folders  only recreatable ones are added to the file system sum ───",
+	} {
+		if !strings.Contains(plain, title+"\n") {
+			t.Fatalf("missing the panel %q:\n%s", title, plain)
+		}
+	}
+	if strings.Count(plain, "\n╰─\n") != 4 {
+		t.Fatalf("each panel needs a bottom:\n%s", plain)
+	}
+	// 패널 안의 행은 평문처럼 칸을 맞춘다.
+	images, volumes := strings.Index(plain, "│  80.0 GB  images   "), strings.Index(plain, "│  19.0 GB  volumes  ")
+	if images < 0 || volumes < 0 {
+		t.Fatalf("docker rows lost their columns:\n%s", plain)
+	}
+	if !strings.Contains(text, richExpect("\033[1;31m80.0 GB\033[0m")) {
+		t.Fatalf("panel sizes should be colored:\n%q", text)
+	}
+	footer := richChip("file system") + " " + richBold("/System/Volumes/Data") + "  " + richDim("apfs") + "   " + richDim("usage sum") + " " +
+		richBold("200.0 GB") + "   " + richDim("free") + " " + richPaint("34.0 GB", richGreen, true)
+	if !strings.Contains(text, footer+"\n") || !strings.Contains(text, "  "+richDim(T("clean.fs.not_reclaim"))+"\n") {
+		t.Fatalf("the file system footer:\n%q", text)
+	}
+}
+
+func TestCleanColorLinesFitTheTerminal(t *testing.T) {
+	for _, width := range []int{60, 80, 100, 140} {
+		for _, verbose := range []bool{false, true} {
+			// 첫 줄은 모든 command가 함께 쓰는 결과 줄이라 여기서 보지 않는다.
+			for _, line := range strings.Split(cleanColorText(t, verbose, width), "\n")[1:] {
+				if liveWidth(line) > width {
+					t.Fatalf("width %d, -v %v: %d cells: %q", width, verbose, liveWidth(line), ansi.Strip(line))
+				}
+			}
+		}
+	}
+	// 70칸보다 좁으면 막대를 뺀다.
+	if text := cleanColorText(t, false, 60); strings.Contains(text, "█") {
+		t.Fatalf("a narrow screen should drop the bar:\n%s", ansi.Strip(text))
+	}
+}
+
+func TestCleanColorFoldedGroupsKeepTheirCount(t *testing.T) {
+	groups := []cleanGroup{{Name: "alpha", UsageBytes: 3 << 30}, {Name: "beta", UsageBytes: 2 << 30}, {Name: "gamma", UsageBytes: 1 << 30}, {Name: "delta", UsageBytes: 1 << 20}}
+	if text := cleanCollapsedGroups(groups, 3, 0); text != "▸ alpha 3.0 GB · beta 2.0 GB · gamma 1.0 GB · 1 more" {
+		t.Fatalf("unlimited room: %q", text)
+	}
+	// 좁으면 들어가는 묶음만 보이고, 뒤의 개수는 남는다.
+	if text := cleanCollapsedGroups(groups, 3, 30); text != "▸ alpha 3.0 GB · 3 more" {
+		t.Fatalf("narrow room: %q", text)
+	}
+}
+
+func TestCleanColorShowsTheProjectFlagAsAChip(t *testing.T) {
+	text := formatCleanProject(cleanProjectBuildDirs{Status: cleanNoProjectRoot}, false, 0, "", true)
+	if !strings.Contains(text, richChip(cleanProjectFlag)) || ansi.Strip(text) != "\n"+strings.Replace(T("clean.project.fold_none"), cleanProjectFlag, " "+cleanProjectFlag+" ", 1)+"\n" {
+		t.Fatalf("fold_none = %q", text)
+	}
+	// 줄을 바꾼 회색 문장은 줄마다 색을 다시 입힌다.
+	for _, line := range strings.Split(strings.TrimSpace(formatCleanNotMeasured(false, 40, true)), "\n") {
+		if !strings.HasPrefix(line, richExpect("\033[90m")) {
+			t.Fatalf("a wrapped line lost its color: %q", line)
+		}
+	}
+}
+
+func TestCleanPlainOutputHasNoEscapes(t *testing.T) {
+	var output bytes.Buffer
+	cleanPrint(&output, commonOptions{verbose: true}, cleanColorResult(), false, 80, false, "/h")
+	if strings.Contains(output.String(), richExpect("\033[")) || strings.Contains(output.String(), "╭") || strings.Contains(output.String(), "▸") {
+		t.Fatalf("plain output carries color or panels:\n%q", output.String())
+	}
 }

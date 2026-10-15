@@ -94,6 +94,7 @@ observe:
     final_request: "final request"
     days_remaining: "%d days left"
     http_redirect: "%d redirect(s) → %s"
+    redirects: "%d redirect(s)"
     ping_loss: "%s%% packet loss (%d/%d received)"
     ping_target: "target %s"
     ping_average: "avg RTT %sms"
@@ -114,6 +115,23 @@ observe:
     invalid_url: "invalid URL: %s"
     unsupported_scheme: "edc supports http and https URLs only: %s"
     cancelling: "cancelling, edc stops the running command"
+
+  http:
+    requests: "requests"
+    body: "body"
+    body_meta: "%s, %d bytes, %d line(s)"
+    body_size: "%s, %d bytes"
+    body_bytes: "%d bytes"
+    body_lines: "%d line(s)"
+    encoded: "%s encoded, not shown"
+    no_content_type: "no content-type"
+    binary: "binary, not shown"
+    title: "title  %s"
+    reused: "connection reused"
+    decompressed: "gzip decoded"
+    body_saved: "saved to %s, %d bytes"
+    body_stdout: "written to stdout, %d bytes"
+    body_truncated: "cut at %s; edc reads no more of the body"
 
   listen:
     label: "listening sockets"

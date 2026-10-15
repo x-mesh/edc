@@ -211,10 +211,10 @@ func TestPrintTerminalDoesNotRepeatStreamedRemoteEvidence(t *testing.T) {
 }
 
 func TestTerminalStatusColor(t *testing.T) {
-	if got := terminalStatus(StatusPass, true); got != "\033[32mPASS\033[0m" {
+	if got := terminalStatus(StatusPass, true); got != richExpect("\033[32mPASS\033[0m") {
 		t.Fatalf("pass color = %q", got)
 	}
-	if got := terminalStatus(StatusFail, true); got != "\033[31mFAIL\033[0m" {
+	if got := terminalStatus(StatusFail, true); got != richExpect("\033[31mFAIL\033[0m") {
 		t.Fatalf("fail color = %q", got)
 	}
 	if got := terminalStatus(StatusPass, false); got != "PASS" {

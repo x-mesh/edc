@@ -3,7 +3,9 @@ package edc
 import (
 	"fmt"
 	"io"
+	"os"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -98,8 +100,15 @@ var commandDocs = []commandDoc{
 	},
 	{
 		name: "http", group: "diagnose",
-		usage:      []string{"edc http check [--expect-status N] [options] <URL>"},
-		options:    []optionDoc{{"--expect-status N", "command.http.option.expect_status"}},
+		usage: []string{
+			"edc http check [--expect-status N] [-H 'Name: value'] [options] <URL>",
+			"edc http check --body <path|-> [options] <URL>",
+		},
+		options: []optionDoc{
+			{"--expect-status N", "command.http.option.expect_status"},
+			{"-H, --header 'Name: value'", "command.http.option.header"},
+			{"--body <path|->", "command.http.option.body"},
+		},
 		usesCommon: true,
 	},
 	{
@@ -535,30 +544,17 @@ func commandSummaries() []commandDoc {
 
 // printHelp는 첫 화면이다. 명령마다 한 줄만 두고 상세는 edc help <command>로 미룬다.
 func printHelp(writer io.Writer, version string) {
+	if helpColor(writer) {
+		printRichHelp(writer, version)
+		return
+	}
 	fmt.Fprintf(writer, "edc %s — %s\n\n", version, T("help.tagline"))
 
-	// 라벨 폭은 언어마다 다르므로 세 라벨을 재서 맞춘다.
-	labels := []string{T("help.usage_label"), T("help.common_label"), T("help.detail_label")}
-	labelWidth := 0
-	for _, label := range labels {
-		if width := liveWidth(label); width > labelWidth {
-			labelWidth = width
-		}
-	}
+	labels, labelWidth := helpLabels()
 	fmt.Fprintf(writer, "%s  %s\n", padRight(labels[0], labelWidth), T("help.usage"))
 
 	for _, group := range helpGroups {
-		var members []commandDoc
-		width := 0
-		for _, doc := range commandDocs {
-			if doc.group != group {
-				continue
-			}
-			members = append(members, doc)
-			if len(doc.name) > width {
-				width = len(doc.name)
-			}
-		}
+		members, width := helpGroupMembers(group)
 		if len(members) == 0 {
 			continue
 		}
@@ -576,11 +572,70 @@ func printHelp(writer io.Writer, version string) {
 	fmt.Fprintf(writer, "%s  %s\n", padRight(labels[2], labelWidth), T("help.detail_hint"))
 }
 
+// helpLabels는 첫 화면 왼쪽의 세 라벨과 그 폭이다. 라벨 폭은 언어마다 다르므로 세 라벨을 재서 맞춘다.
+func helpLabels() ([]string, int) {
+	labels := []string{T("help.usage_label"), T("help.common_label"), T("help.detail_label")}
+	labelWidth := 0
+	for _, label := range labels {
+		if width := liveWidth(label); width > labelWidth {
+			labelWidth = width
+		}
+	}
+	return labels, labelWidth
+}
+
+func helpGroupMembers(group string) ([]commandDoc, int) {
+	var members []commandDoc
+	width := 0
+	for _, doc := range commandDocs {
+		if doc.group != group {
+			continue
+		}
+		members = append(members, doc)
+		if len(doc.name) > width {
+			width = len(doc.name)
+		}
+	}
+	return members, width
+}
+
+// printRichHelp는 색을 쓰는 터미널의 첫 화면이다. 이름 폭은 평문처럼 그룹마다 잰다.
+// 모든 그룹을 가장 긴 이름(completion)에 맞추면 ko와 ja의 긴 summary가 80칸을 넘는다.
+func printRichHelp(writer io.Writer, version string) {
+	fmt.Fprintf(writer, "%s %s  %s\n\n", richBadge("edc", richMagenta), richDim(version), richBold(T("help.tagline")))
+
+	labels, labelWidth := helpLabels()
+	fmt.Fprintf(writer, "%s  %s\n", richDim(padRight(labels[0], labelWidth)), T("help.usage"))
+
+	for _, group := range helpGroups {
+		members, width := helpGroupMembers(group)
+		if len(members) == 0 {
+			continue
+		}
+		fmt.Fprintf(writer, "\n%s\n", richPanelTop(T("help.group."+group), strconv.Itoa(len(members)), ""))
+		for _, doc := range members {
+			fmt.Fprintln(writer, richPanelLine(richPaint(padRight(doc.name, width), richCyan, true)+"  "+doc.summary(), ""))
+		}
+		fmt.Fprintln(writer, richPanelBottom(""))
+	}
+
+	chips := make([]string, 0, len(commonOptionDocs))
+	for _, option := range commonOptionDocs {
+		chips = append(chips, richChip(option.flag))
+	}
+	fmt.Fprintf(writer, "\n%s  %s\n", richDim(padRight(labels[1], labelWidth)), strings.Join(chips, " "))
+	fmt.Fprintf(writer, "%s  %s\n", richDim(padRight(labels[2], labelWidth)), richPaint(T("help.detail_hint"), richCyan, true))
+}
+
 // printCommandHelp는 명령 하나의 상세다. 그 명령에 관한 설명을 모두 여기 모은다.
 func printCommandHelp(writer io.Writer, name string) bool {
 	doc, ok := findCommandDoc(name)
 	if !ok {
 		return false
+	}
+	if helpColor(writer) {
+		printRichCommandHelp(writer, doc)
+		return true
 	}
 	fmt.Fprintf(writer, "edc %s — %s\n\n%s\n", doc.name, doc.summary(), T("help.usage_label"))
 	for _, line := range doc.usage {
@@ -651,6 +706,33 @@ func subcommandSelectItems(name string, choices []string) []selectItem {
 	return items
 }
 
+// printRichCommandHelp는 평문과 같은 순서로 usage, options, 공용 options를 회색 패널에 담는다.
+// 배지 뒤는 한 칸만 띄운다. 배지가 평문의 "edc name — "과 같은 폭이 되어 긴 summary도 80칸 안에 든다.
+func printRichCommandHelp(writer io.Writer, doc commandDoc) {
+	fmt.Fprintf(writer, "%s %s\n\n", richBadge("edc "+doc.name, richMagenta), richBold(doc.summary()))
+	fmt.Fprintln(writer, richPanelTop(T("help.usage_label"), "", ""))
+	for _, line := range doc.usage {
+		fmt.Fprintln(writer, richPanelLine(line, ""))
+	}
+	fmt.Fprintln(writer, richPanelBottom(""))
+	if len(doc.options) > 0 {
+		fmt.Fprintf(writer, "\n%s\n", richPanelTop(T("help.options_label"), "", ""))
+		printRichOptionDocs(writer, doc.options)
+		fmt.Fprintln(writer, richPanelBottom(""))
+	}
+	if doc.usesCommon {
+		fmt.Fprintf(writer, "\n%s\n", richPanelTop(T("help.common_options_label"), "", ""))
+		printRichOptionDocs(writer, uncoveredCommonOptions(doc.options))
+		fmt.Fprintln(writer, richPanelBottom(""))
+	}
+	if notes := doc.notes(); len(notes) > 0 {
+		fmt.Fprintln(writer)
+		for _, note := range notes {
+			fmt.Fprintf(writer, "%s\n", note)
+		}
+	}
+}
+
 // uncoveredCommonOptions는 명령이 직접 설명한 공용 flag를 공용 목록에서 뺀다. 같은 flag가 뜻이 다른
 // 두 줄로 나오면 어느 쪽이 맞는지 알 수 없다. 명령이 적은 설명이 이긴다.
 func uncoveredCommonOptions(own []optionDoc) []optionDoc {
@@ -668,12 +750,7 @@ func uncoveredCommonOptions(own []optionDoc) []optionDoc {
 }
 
 func printOptionDocs(writer io.Writer, options []optionDoc) {
-	width := 0
-	for _, option := range options {
-		if value := liveWidth(option.flag); value > width {
-			width = value
-		}
-	}
+	width := optionFlagWidth(options)
 	for _, option := range options {
 		detail := option.detail()
 		if detail == "" {
@@ -682,4 +759,32 @@ func printOptionDocs(writer io.Writer, options []optionDoc) {
 		}
 		fmt.Fprintf(writer, "  %s  %s\n", padRight(option.flag, width), detail)
 	}
+}
+
+// printRichOptionDocs는 printOptionDocs와 같은 열을 패널 줄로 그린다. flag만 굵은 청록이다.
+func printRichOptionDocs(writer io.Writer, options []optionDoc) {
+	width := optionFlagWidth(options)
+	for _, option := range options {
+		line := richPaint(option.flag, richCyan, true)
+		if detail := option.detail(); detail != "" {
+			line = richPaint(padRight(option.flag, width), richCyan, true) + "  " + detail
+		}
+		fmt.Fprintln(writer, richPanelLine(line, ""))
+	}
+}
+
+func optionFlagWidth(options []optionDoc) int {
+	width := 0
+	for _, option := range options {
+		if value := liveWidth(option.flag); value > width {
+			width = value
+		}
+	}
+	return width
+}
+
+// helpColor는 help를 받는 writer가 색을 쓰는 터미널인지다. 파이프와 test의 strings.Builder는 평문을 받는다.
+func helpColor(writer io.Writer) bool {
+	file, ok := writer.(*os.File)
+	return ok && richEnabled(file)
 }

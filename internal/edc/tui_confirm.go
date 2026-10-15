@@ -75,11 +75,14 @@ func (model confirmModel) frameHeight() int {
 	return liveLineCount(model.detail) + 1
 }
 
-// confirmPrompt는 질문과 선택지, 키 안내를 한 줄에 담는다. 고른 쪽은 반전으로 칠한다.
+// confirmPrompt는 질문과 선택지, 키 안내를 한 줄에 담는다. 질문은 굵게, 고른 쪽은 chip 바탕으로 칠한다.
 func confirmPrompt(question string, yes, color bool) string {
+	if liveRich(color) {
+		question = richBold(question)
+	}
 	return question + "   " + confirmOption(confirmYesLabel(), yes, color) +
 		"  " + confirmOption(confirmNoLabel(), !yes, color) +
-		"      " + liveMuted(confirmHelp(), color)
+		"      " + liveKeyHints(confirmHelp(), color)
 }
 
 func (model confirmModel) answerLabel() string {
@@ -89,7 +92,7 @@ func (model confirmModel) answerLabel() string {
 	return confirmNoLabel()
 }
 
-// confirmOption은 선택지 하나를 그린다. 고른 쪽은 막대와 반전으로 표시한다.
+// confirmOption은 선택지 하나를 그린다. 고른 쪽은 막대와 chip 바탕으로 표시한다.
 func confirmOption(label string, selected, color bool) string {
 	if selected {
 		return liveSelected(liveSelectedBar+" "+label+" ", color)

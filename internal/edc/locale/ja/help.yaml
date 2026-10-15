@@ -58,8 +58,14 @@ command:
     summary: "HTTP 応答の確認"
     option:
       expect_status: "応答 code が N と違えば fail にします"
+      header: "リクエスト header を追加、繰り返し指定可"
+      body: "最後の応答の本文を保存、- は stdout に出力"
     notes:
       - "既定では 4xx が warning、5xx が fail です。"
+      - "redirect があればリクエストごとに status、URL、時間、peer を順に表示。"
+      - "-v は応答ごとの header と最後の応答の本文の先頭を追加。"
+      - "Authorization、Cookie などの header の値は隠します。"
+      - "--body - は本文を stdout に、結果を stderr に出力。"
   audit:
     summary: "ホストの公開状態と設定を点検、読み取り専用 (Linux)"
     notes:

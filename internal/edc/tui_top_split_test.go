@@ -252,7 +252,7 @@ func TestTopSplitBordersAlignWithColor(t *testing.T) {
 		model := topSplitModelAt(120, 40, 20, true, nil)
 		model.follow, model.selected = follow, 10
 		content := model.View().Content
-		if !follow && !strings.Contains(content, topBannerStyle) {
+		if !follow && !strings.Contains(content, topBannerStyle()) {
 			t.Fatal("the selected row has no highlight")
 		}
 		var group []int

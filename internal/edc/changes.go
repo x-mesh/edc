@@ -81,7 +81,7 @@ func runChanges(args []string, version string) int {
 		fmt.Fprint(output, formatResultLine(result, color))
 		printResultDetail(output, result, false, color)
 	}
-	if table := formatChangesTable(changesEventsOf(results), options.verbose); table != "" {
+	if table := formatChangesTable(changesEventsOf(results), options.verbose, color); table != "" {
 		fmt.Fprint(output, "\n"+table)
 	}
 	if options.redact {
@@ -622,7 +622,8 @@ func collectServiceChanges(ctx context.Context, sources changesSources, cutoff t
 
 // formatChangesTable은 시각, 종류, 이름, 내용을 최근 것부터 그린다. all이 아니면 changesTableLimit 줄에서
 // 자르고 남은 수를 알린다. 마지막 열은 채우지 않아 줄이 필요 이상 넓어지지 않는다.
-func formatChangesTable(events []changeEvent, all bool) string {
+func formatChangesTable(events []changeEvent, all, color bool) string {
+	style := newTextStyle(color)
 	if len(events) == 0 {
 		return ""
 	}
@@ -647,22 +648,29 @@ func formatChangesTable(events []changeEvent, all bool) string {
 		}
 	}
 	var builder strings.Builder
-	writeRow := func(cells []string) {
+	// 머리글은 회색, 본문은 시각 열만 회색이다. 칸을 채운 뒤 칠해야 열이 맞는다.
+	writeRow := func(cells []string, paint func(index int, cell string) string) {
+		var line strings.Builder
 		for index, cell := range cells {
 			if index == len(cells)-1 {
-				builder.WriteString(cell)
+				line.WriteString(paint(index, cell))
 				break
 			}
-			builder.WriteString(liveCell(cell, widths[index]+2))
+			line.WriteString(paint(index, liveCell(cell, widths[index]+2)))
 		}
-		builder.WriteString("\n")
+		builder.WriteString(style.fit(line.String()) + "\n")
 	}
-	writeRow(headers)
+	writeRow(headers, func(_ int, cell string) string { return style.dim(cell) })
 	for _, row := range rows {
-		writeRow(row)
+		writeRow(row, func(index int, cell string) string {
+			if index == 0 {
+				return style.dim(cell)
+			}
+			return cell
+		})
 	}
 	if hidden := len(events) - len(shown); hidden > 0 {
-		builder.WriteString(T("changes.more", hidden))
+		builder.WriteString(style.dim(T("changes.more", hidden)))
 		builder.WriteString("\n")
 	}
 	return builder.String()

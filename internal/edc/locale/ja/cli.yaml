@@ -29,6 +29,8 @@ cli:
     min_days_range: "--min-days は 0 以上です"
     quality_server: "--server は host を含み、ユーザー情報を含まない http または https の絶対 URL です: %s"
     expect_status_range: "--expect-status は 100 から 599 の間です"
+    http_header: "-H には Name: value の形で、正しい header 名と改行のない値を指定します"
+    body_json_stdout: "--body - と --json - はどちらも stdout に書きます。片方にファイルを指定してください"
   doctor:
     tls_skipped_for_http: "HTTP target には TLS を適用しません"
   info:

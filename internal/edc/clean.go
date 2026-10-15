@@ -1212,14 +1212,19 @@ func cleanPrint(stdout io.Writer, options commonOptions, result Result, color bo
 		docker, _ := result.Metrics["docker"].(cleanDocker)
 		disks, _ := result.Metrics["vm_disks"].([]cleanVMDisk)
 		worktrees, _ := result.Metrics["worktrees"].(cleanWorktrees)
-		fmt.Fprint(output, "\n"+formatCleanItems(items, options.verbose, width, home))
-		fmt.Fprint(output, formatCleanProject(projects, options.verbose, width, home))
-		fmt.Fprint(output, formatCleanDocker(docker, options.verbose, width))
-		fmt.Fprint(output, formatCleanVMDisks(disks, docker.Inside, width, home))
-		fmt.Fprint(output, formatCleanWorktrees(worktrees, options.verbose, width, home))
-		fmt.Fprint(output, formatCleanNotMeasured(options.verbose, width))
+		style := cleanStyle(color)
+		if color {
+			fmt.Fprint(output, "\n"+richCleanItems(items, options.verbose, width, home))
+		} else {
+			fmt.Fprint(output, "\n"+formatCleanItems(items, options.verbose, width, home))
+		}
+		fmt.Fprint(output, formatCleanProject(projects, options.verbose, width, home, style))
+		fmt.Fprint(output, formatCleanDocker(docker, options.verbose, width, style))
+		fmt.Fprint(output, formatCleanVMDisks(disks, docker.Inside, width, home, style))
+		fmt.Fprint(output, formatCleanWorktrees(worktrees, options.verbose, width, home, style))
+		fmt.Fprint(output, formatCleanNotMeasured(options.verbose, width, style))
 		// 합계는 맨 끝에 둔다. 출력이 화면보다 길면 명령이 끝난 뒤 남는 것은 마지막 줄이다.
-		fmt.Fprint(output, formatCleanFilesystems(filesystems, width))
+		fmt.Fprint(output, formatCleanFilesystems(filesystems, width, style))
 	}
 	if options.redact {
 		fmt.Fprint(stdout, redactIPAddresses(buffer.String()))
@@ -1242,26 +1247,7 @@ func cleanWrap(text string, width int) string {
 // formatCleanItems는 후보마다 우선순위, 크기, 이름, 위치를 한 줄에 보인다. 분류는 이름과 겹치므로 JSON에만 둔다.
 // 우선순위 안에서는 큰 후보부터 보이고, 크기가 없는 후보는 그 우선순위의 끝에 둔다.
 func formatCleanItems(items []cleanItem, verbose bool, width int, home string) string {
-	sorted := append([]cleanItem(nil), items...)
-	sort.SliceStable(sorted, func(i, j int) bool {
-		left, right := sorted[i], sorted[j]
-		if left.Priority != right.Priority {
-			return left.Priority < right.Priority
-		}
-		if left.counted() != right.counted() {
-			return left.counted()
-		}
-		return left.counted() && *left.UsageBytes > *right.UsageBytes
-	})
-	var shown []cleanItem
-	folded := map[string][]string{}
-	for _, item := range sorted {
-		if !verbose && slices.Contains(cleanQuiet, item.Status) {
-			folded[item.Status] = append(folded[item.Status], cleanFoldedName(item))
-			continue
-		}
-		shown = append(shown, item)
-	}
+	shown, folded := cleanShownItems(items, verbose)
 	limit, _ := cleanGroupLimit(verbose)
 	var sizeWidth, nameWidth int
 	for _, item := range shown {
@@ -1295,15 +1281,168 @@ func formatCleanItems(items []cleanItem, verbose bool, width int, home string) s
 			builder.WriteString(formatCleanGroups(item.Groups, verbose, width, lead, sizeWidth))
 		}
 		if verbose {
-			builder.WriteString(formatCleanDetail(item, width, indent, home))
+			builder.WriteString(formatCleanDetail(item, width, indent, home, false))
 		}
 	}
+	builder.WriteString(formatCleanFolded(folded, width, false))
+	return builder.String()
+}
+
+func formatCleanFolded(folded map[string][]string, width int, style cleanStyle) string {
+	var builder strings.Builder
 	for _, status := range cleanQuiet {
 		if names := folded[status]; len(names) > 0 {
-			builder.WriteString(cleanWrap(T("clean.fold."+status, strings.Join(names, ", ")), width))
+			builder.WriteString(style.wrap(T("clean.fold."+status, strings.Join(names, ", ")), width))
 		}
 	}
 	return builder.String()
+}
+
+// richCleanItems는 색을 쓰는 터미널의 후보 목록이다. 우선순위마다 배지 제목을 두고, 행은 크기, 막대, 이름, 위치 순이다.
+// 기본 출력은 묶음을 이름 칸 아래 한 줄로 접는다.
+func richCleanItems(items []cleanItem, verbose bool, width int, home string) string {
+	style := cleanStyle(true)
+	shown, folded := cleanShownItems(items, verbose)
+	limit, more := cleanGroupLimit(verbose)
+	var sizeWidth, nameWidth int
+	var largest uint64
+	for _, item := range shown {
+		sizeWidth = max(sizeWidth, liveWidth(cleanItemSize(item)))
+		nameWidth = max(nameWidth, liveWidth(T("clean.candidate."+item.ID)))
+		if !item.counted() {
+			continue
+		}
+		if *item.UsageBytes > largest {
+			largest = *item.UsageBytes
+		}
+		if verbose {
+			for _, group := range item.Groups[:min(len(item.Groups), limit)] {
+				sizeWidth = max(sizeWidth, liveWidth(formatSizeShort(group.UsageBytes)))
+			}
+		}
+	}
+	barWidth := cleanBarWidth(width)
+	bar := func(bytes uint64) string {
+		if barWidth == 0 {
+			return ""
+		}
+		return richFill(richBar(float64(bytes), float64(largest), barWidth), richSizeColor(int64(bytes))) + "  "
+	}
+	blank := ""
+	if barWidth > 0 {
+		blank = strings.Repeat(" ", barWidth+2)
+	}
+	nameAt := 1 + sizeWidth + 2 + len(blank)
+	// 묶음, 포함 표시, 자세한 줄의 글자는 평문처럼 이름 칸보다 두 칸 안쪽에서 시작한다. 접은 묶음 줄은 그 두 칸에 ▸를 둔다.
+	indent := strings.Repeat(" ", nameAt+2)
+	line := func(text string) string { return duFit(text, width) + "\n" }
+	var builder strings.Builder
+	priority := ""
+	for _, item := range shown {
+		if item.Priority != priority {
+			priority = item.Priority
+			builder.WriteString(line(richBadge(priority, richMagenta) + "  " + richBold(T("clean.priority."+priority))))
+		}
+		name := cleanPad(T("clean.candidate."+item.ID), nameWidth)
+		size := cleanPadLeft(cleanItemSize(item), sizeWidth)
+		if !item.counted() {
+			place := style.state(cleanItemState(item), item.Status)
+			if item.ReportedPath != "" {
+				place += "  " + richDim(cleanLocation(item, home))
+			}
+			builder.WriteString(line(" " + richDim(size) + "  " + blank + name + "  " + place))
+		} else {
+			bytes := *item.UsageBytes
+			builder.WriteString(line(" " + style.size(size, bytes, true) + "  " + bar(bytes) + name + "  " + richDim(cleanLocation(item, home))))
+		}
+		if item.Inside != "" {
+			builder.WriteString(line(indent + richDim(T("clean.inside", item.Inside))))
+		}
+		if item.counted() && len(item.Groups) > 0 {
+			if verbose {
+				for _, group := range item.Groups[:min(len(item.Groups), limit)] {
+					text := " " + style.size(cleanPadLeft(formatSizeShort(group.UsageBytes), sizeWidth), group.UsageBytes, false) + "  " + blank + "  " + group.Name
+					if group.Folders > 1 {
+						text += "  " + richDim(T("clean.group_folders", group.Folders))
+					}
+					builder.WriteString(line(text))
+				}
+				if len(item.Groups) > limit {
+					builder.WriteString(line(indent + richDim(T(more, len(item.Groups)-limit))))
+				}
+			} else {
+				builder.WriteString(line(strings.Repeat(" ", nameAt) + richDim(cleanCollapsedGroups(item.Groups, limit, width-nameAt))))
+			}
+		}
+		if verbose {
+			builder.WriteString(formatCleanDetail(item, width, indent, home, style))
+		}
+	}
+	builder.WriteString(formatCleanFolded(folded, width, style))
+	return builder.String()
+}
+
+// cleanCollapsedGroups는 묶음을 "▸ 이름 크기 · 이름 크기 · N more" 한 줄로 접는다. room 칸에 들어가는 묶음만 보이고
+// 나머지는 N more에 센다. 줄 끝을 자르면 남은 개수가 사라진다. room이 0 이하이면 폭을 보지 않는다.
+func cleanCollapsedGroups(groups []cleanGroup, limit, room int) string {
+	tail := func(rest int) string {
+		if rest == 0 {
+			return ""
+		}
+		return " · " + T("clean.group_more_short", rest)
+	}
+	text := "▸"
+	shown := 0
+	for _, group := range groups[:min(len(groups), limit)] {
+		separator := " "
+		if shown > 0 {
+			separator = " · "
+		}
+		next := text + separator + group.Name + " " + formatSizeShort(group.UsageBytes)
+		if room > 0 && shown > 0 && liveWidth(next+tail(len(groups)-shown-1)) > room {
+			break
+		}
+		text = next
+		shown++
+	}
+	return text + tail(len(groups)-shown)
+}
+
+// cleanBarWidth는 터미널 폭에 맞춘 막대 칸 수다. 좁은 화면에서는 경로가 남도록 막대를 줄이고, 70칸보다 좁으면 뺀다.
+// 폭을 모르면(0) 가장 넓은 막대를 쓴다.
+func cleanBarWidth(width int) int {
+	switch {
+	case width <= 0 || width >= 100:
+		return 20
+	case width < 70:
+		return 0
+	}
+	return 8 + (width-70)*12/30
+}
+
+// cleanShownItems는 후보를 우선순위, 크기 순으로 정렬하고, 기본 출력에서는 조용한 상태의 후보를 상태별 이름 목록으로 접는다.
+func cleanShownItems(items []cleanItem, verbose bool) ([]cleanItem, map[string][]string) {
+	sorted := append([]cleanItem(nil), items...)
+	sort.SliceStable(sorted, func(i, j int) bool {
+		left, right := sorted[i], sorted[j]
+		if left.Priority != right.Priority {
+			return left.Priority < right.Priority
+		}
+		if left.counted() != right.counted() {
+			return left.counted()
+		}
+		return left.counted() && *left.UsageBytes > *right.UsageBytes
+	})
+	var shown []cleanItem
+	folded := map[string][]string{}
+	for _, item := range sorted {
+		if !verbose && slices.Contains(cleanQuiet, item.Status) {
+			folded[item.Status] = append(folded[item.Status], cleanFoldedName(item))
+			continue
+		}
+		shown = append(shown, item)
+	}
+	return shown, folded
 }
 
 func cleanFoldedName(item cleanItem) string {
@@ -1364,9 +1503,10 @@ func formatCleanGroups(groups []cleanGroup, verbose bool, width, lead, sizeWidth
 	return builder.String()
 }
 
-func formatCleanDetail(item cleanItem, width int, indent, home string) string {
+func formatCleanDetail(item cleanItem, width int, indent, home string, style cleanStyle) string {
 	var builder strings.Builder
-	line := func(text string) { builder.WriteString(duFit(indent+text, width) + "\n") }
+	write := func(text string) { builder.WriteString(duFit(indent+text, width) + "\n") }
+	line := func(text string) { write(style.dim(text)) }
 	if item.Detail != "" {
 		line(item.Detail)
 	}
@@ -1378,7 +1518,7 @@ func formatCleanDetail(item cleanItem, width int, indent, home string) string {
 		line(strings.Join(reasons, ", "))
 	}
 	if item.Unreadable > 0 {
-		line(T("clean.unreadable", item.Unreadable))
+		write(style.warn(T("clean.unreadable", item.Unreadable)))
 		for _, path := range item.UnreadablePaths {
 			line("  " + cleanHomePath(path, home))
 		}
@@ -1397,12 +1537,12 @@ func formatCleanDetail(item cleanItem, width int, indent, home string) string {
 		line(T("clean.skipped_mounts", item.SkippedMounts))
 	}
 	if item.Cleanup != "" {
-		line(T("clean.cleanup", item.Cleanup))
+		write(style.phrase("clean.cleanup", item.Cleanup, richCyan))
 	}
 	return builder.String()
 }
 
-func formatCleanFilesystems(filesystems []cleanFilesystem, width int) string {
+func formatCleanFilesystems(filesystems []cleanFilesystem, width int, style cleanStyle) string {
 	var builder strings.Builder
 	for _, entry := range filesystems {
 		usage := formatSizeShort(entry.UsageBytes)
@@ -1413,27 +1553,129 @@ func formatCleanFilesystems(filesystems []cleanFilesystem, width int) string {
 		if mount == "" {
 			mount = "-"
 		}
-		builder.WriteString("\n" + duFit(T("clean.fs.title", mount, entry.FSType, usage, formatSizeShort(entry.FreeBytes)), width) + "\n")
-		builder.WriteString("  " + duFit(T("clean.fs.not_reclaim"), width) + "\n")
+		title := T("clean.fs.title", mount, entry.FSType, usage, formatSizeShort(entry.FreeBytes))
+		if style {
+			title = richChip(T("clean.fs.label")) + " " + richBold(mount) + "  " + richDim(entry.FSType) + "   " +
+				richDim(T("clean.fs.usage")) + " " + richBold(usage) + "   " + richDim(T("clean.fs.free")) + " " +
+				richPaint(formatSizeShort(entry.FreeBytes), richGreen, true)
+		}
+		builder.WriteString("\n" + duFit(title, width) + "\n")
+		note := func(text string) {
+			if style {
+				builder.WriteString(duFit("  "+richDim(text), width) + "\n")
+				return
+			}
+			builder.WriteString("  " + duFit(text, width) + "\n")
+		}
+		note(T("clean.fs.not_reclaim"))
 		if entry.SharedBlocks {
-			builder.WriteString("  " + duFit(T("clean.fs.apfs"), width) + "\n")
+			note(T("clean.fs.apfs"))
 		}
 	}
 	return builder.String()
 }
 
-func formatCleanNotMeasured(verbose bool, width int) string {
+func formatCleanNotMeasured(verbose bool, width int, style cleanStyle) string {
 	if !verbose {
 		names := make([]string, 0, len(cleanNotMeasured))
 		for _, item := range cleanNotMeasured {
 			names = append(names, T("clean.not_measured."+item.ID))
 		}
-		return "\n" + cleanWrap(T("clean.not_measured_line", strings.Join(names, "; ")), width)
+		return "\n" + style.wrap(T("clean.not_measured_line", strings.Join(names, "; ")), width)
 	}
 	var builder strings.Builder
-	builder.WriteString("\n" + T("clean.not_measured_title") + "\n")
+	builder.WriteString("\n" + style.dim(T("clean.not_measured_title")) + "\n")
 	for _, item := range cleanNotMeasured {
-		builder.WriteString(duFit("  "+T("clean.not_measured_item", T("clean.not_measured."+item.ID), T("clean.not_measured_reason."+item.Reason)), width) + "\n")
+		builder.WriteString(duFit("  "+style.dim(T("clean.not_measured_item", T("clean.not_measured."+item.ID), T("clean.not_measured_reason."+item.Reason))), width) + "\n")
 	}
 	return builder.String()
+}
+
+// cleanStyle은 색을 쓰는 터미널에서만 글자를 칠한다. false면 모든 메서드가 받은 글자를 그대로 돌려줘 평문이 바뀌지 않는다.
+type cleanStyle bool
+
+func (style cleanStyle) dim(text string) string {
+	if style {
+		return richDim(text)
+	}
+	return text
+}
+
+func (style cleanStyle) warn(text string) string {
+	if style {
+		return richPaint(text, richYellow, false)
+	}
+	return text
+}
+
+func (style cleanStyle) size(text string, bytes uint64, bold bool) string {
+	if style {
+		return richPaint(text, richSizeColor(int64(bytes)), bold)
+	}
+	return text
+}
+
+// cleanProblems는 다시 확인해야 하는 상태다. 노랑으로 칠하고, 나머지 크기 없는 상태는 회색으로 칠한다.
+var cleanProblems = []string{cleanUnknownLocation, cleanUnreadable, cleanRejected, cleanNotScanned, cleanUnreachable,
+	cleanUnsupported, cleanFailed, cleanNotReported}
+
+func (style cleanStyle) state(text, status string) string {
+	if slices.Contains(cleanProblems, status) {
+		return style.warn(text)
+	}
+	return style.dim(text)
+}
+
+// phrase는 key의 문장을 회색으로, %s 자리의 value를 color로 칠한다. 문장 전체를 회색으로 감싸면 value의 reset 뒤가
+// 회색을 잃는다.
+func (style cleanStyle) phrase(key, value, color string) string {
+	if !style {
+		return T(key, value)
+	}
+	before, after, _ := strings.Cut(T(key, "\x00"), "\x00")
+	return richDim(before) + richPaint(value, color, false) + richDim(after)
+}
+
+// wrap은 cleanWrap처럼 줄을 바꾼 뒤 줄마다 회색으로 칠한다. 칠한 뒤에 바꾸면 둘째 줄부터 색이 빠진다.
+func (style cleanStyle) wrap(text string, width int) string {
+	wrapped := strings.TrimSuffix(cleanWrap(text, width), "\n")
+	if !style {
+		return wrapped + "\n"
+	}
+	lines := strings.Split(wrapped, "\n")
+	for index := range lines {
+		lines[index] = richDim(lines[index])
+	}
+	return strings.Join(lines, "\n") + "\n"
+}
+
+// open은 섹션 제목이다. 평문은 빈 줄 뒤의 title 한 줄이고, 색을 쓰면 panel 제목과 detail로 회색 패널을 연다.
+// detail은 패널 윗줄이 width를 넘지 않게 자른다.
+func (style cleanStyle) open(title, panel, detail string, width int) string {
+	if !style {
+		return "\n" + duFit(title, width) + "\n"
+	}
+	if width > 0 {
+		room := width - liveWidth("╭─ "+panel+"  "+" ───")
+		if room < 8 {
+			detail = ""
+		}
+		detail = ansi.Truncate(detail, max(room, 0), "…")
+	}
+	return "\n" + duFit(richPanelTop(panel, detail, ""), width) + "\n"
+}
+
+// row는 섹션 안의 한 줄이다. 색을 쓰면 패널 테두리 뒤에 두고, 칸이 맞도록 모든 줄을 평문보다 한 칸씩 안쪽에 둔다.
+func (style cleanStyle) row(indent, text string, width int) string {
+	if !style {
+		return duFit(indent+text, width) + "\n"
+	}
+	return duFit(richPanelLine(indent[1:]+text, ""), width) + "\n"
+}
+
+func (style cleanStyle) close() string {
+	if !style {
+		return ""
+	}
+	return richPanelBottom("") + "\n"
 }

@@ -43,15 +43,15 @@ func TestFormatBannerShape(t *testing.T) {
 
 func TestFormatBannerColorsStemAndBody(t *testing.T) {
 	colored := formatBanner("0.1.0", true)
-	if !strings.Contains(colored, bannerAccent+"█") {
+	if !strings.Contains(colored, richPaint("█", bannerAccent, false)) {
 		t.Fatalf("왼쪽 기둥은 accent 색이어야 한다: %q", colored)
 	}
-	if !strings.Contains(colored, bannerBody+"▀▀") {
+	if !strings.Contains(colored, richPaint("▀▀", bannerBody, false)) {
 		t.Fatalf("몸통은 body 색이어야 한다: %q", colored)
 	}
 	// 마지막 줄은 기둥이 없어 accent가 붙지 않는다.
 	last := strings.Split(strings.TrimRight(colored, "\n"), "\n")[len(bannerRows)-1]
-	if strings.Contains(last, bannerAccent) {
+	if strings.Contains(last, strings.TrimSuffix(richPaint("x", bannerAccent, false), "x"+richReset)) {
 		t.Fatalf("바닥 줄에는 기둥이 없다: %q", last)
 	}
 }

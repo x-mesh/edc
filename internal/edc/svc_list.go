@@ -219,14 +219,22 @@ func svcListHeaders() []string {
 	return []string{T("svc.list.column.unit"), T("svc.list.column.state"), T("svc.list.column.restarts"), T("svc.list.column.uptime"), T("svc.list.column.memory"), T("svc.list.column.pid")}
 }
 
-func formatSvcListTable(items []svcListItem) string {
+func formatSvcListTable(items []svcListItem, style textStyle) string {
 	if len(items) == 0 {
 		return ""
 	}
 	rows := [][]string{svcListHeaders()}
+	colors := [][]string{nil}
 	for _, item := range items {
 		rows = append(rows, svcListCells(item))
+		colors = append(colors, []string{"", item.stateColor()})
 	}
+	return formatListTable(rows, colors, style)
+}
+
+// formatListTable은 svc와 ctr 목록 표다. 첫 줄은 머리글이다. 색을 쓰면 머리글은 회색이고 칸은 colors의 색이다.
+// 칸 폭은 평문으로 정한 뒤 칠해, 색을 써도 열이 맞는다.
+func formatListTable(rows [][]string, colors [][]string, style textStyle) string {
 	widths := make([]int, len(rows[0]))
 	for _, row := range rows {
 		for index, cell := range row {
@@ -234,15 +242,28 @@ func formatSvcListTable(items []svcListItem) string {
 		}
 	}
 	var builder strings.Builder
-	for _, row := range rows {
+	for rowIndex, row := range rows {
+		var line strings.Builder
 		for index, cell := range row {
+			text := cell
+			switch {
+			case !style.color:
+			case rowIndex == 0:
+				text = style.dim(cell)
+			case index < len(colors[rowIndex]):
+				text = style.paint(cell, colors[rowIndex][index])
+			}
 			if index == len(row)-1 {
-				builder.WriteString(cell)
+				line.WriteString(text)
 				break
 			}
-			builder.WriteString(liveCell(cell, widths[index]+2))
+			if style.color {
+				line.WriteString(text + strings.Repeat(" ", widths[index]+2-liveWidth(cell)))
+				continue
+			}
+			line.WriteString(liveCell(cell, widths[index]+2))
 		}
-		builder.WriteString("\n")
+		builder.WriteString(style.fit(line.String()) + "\n")
 	}
 	return builder.String()
 }
@@ -273,7 +294,7 @@ func runSvcList(options commonOptions, version string, sources svcSources, ok, a
 	}
 	fmt.Fprint(output, formatResultLine(result, color))
 	printResultDetail(output, result, false, color)
-	if table := formatSvcListTable(items); table != "" {
+	if table := formatSvcListTable(items, newTextStyle(color)); table != "" {
 		fmt.Fprint(output, "\n"+table)
 	}
 	if options.redact {

@@ -144,12 +144,15 @@ func schedReportValueFor(stats schedStats) schedReportValue {
 	return schedReportValue{n, avg, p95, max}
 }
 func (r schedReport) print() {
-	fmt.Printf("SCHEDULER TRACE  duration %dms  minimum %gms\n", r.DurationMS, r.Summary.MinimumLatencyMS)
-	fmt.Printf("%-20s %8s %8s %8s %8s  %8s %8s %8s %8s  %8s %8s %8s %8s\n", "GROUP", "WAKE N", "AVG", "P95", "MAX", "RUN N", "AVG", "P95", "MAX", "OFF N", "AVG", "P95", "MAX")
+	out := os.Stdout
+	style := newTraceSummaryStyle(out)
+	style.line(out, style.headline("SCHEDULER TRACE", traceStat{"duration", fmt.Sprintf("%dms", r.DurationMS)}, traceStat{"minimum", fmt.Sprintf("%gms", r.Summary.MinimumLatencyMS)}))
+	style.line(out, style.dim(fmt.Sprintf("%-20s %8s %8s %8s %8s  %8s %8s %8s %8s  %8s %8s %8s %8s", "GROUP", "WAKE N", "AVG", "P95", "MAX", "RUN N", "AVG", "P95", "MAX", "OFF N", "AVG", "P95", "MAX")))
 	for _, row := range r.Rows {
-		fmt.Printf("%-20s %8d %8s %8s %8s  %8d %8s %8s %8s  %8d %8s %8s %8s\n", row.Group, row.Wakeup.Samples, schedMS(row.Wakeup.AverageMS), schedMS(row.Wakeup.P95MS), schedMS(row.Wakeup.MaxMS), row.Runqueue.Samples, schedMS(row.Runqueue.AverageMS), schedMS(row.Runqueue.P95MS), schedMS(row.Runqueue.MaxMS), row.OffCPU.Samples, schedMS(row.OffCPU.AverageMS), schedMS(row.OffCPU.P95MS), schedMS(row.OffCPU.MaxMS))
+		style.printf(out, "%-20s %8d %8s %8s %8s  %8d %8s %8s %8s  %8d %8s %8s %8s\n", row.Group, row.Wakeup.Samples, schedMS(row.Wakeup.AverageMS), schedMS(row.Wakeup.P95MS), schedMS(row.Wakeup.MaxMS), row.Runqueue.Samples, schedMS(row.Runqueue.AverageMS), schedMS(row.Runqueue.P95MS), schedMS(row.Runqueue.MaxMS), row.OffCPU.Samples, schedMS(row.OffCPU.AverageMS), schedMS(row.OffCPU.P95MS), schedMS(row.OffCPU.MaxMS))
 	}
-	fmt.Printf("events %d  ring_lost %d  map_full %d  unmatched %d  repeated_wakeup %d  below_threshold %d\n", r.Summary.EventCount, r.Summary.LostEvents, r.Summary.MapFull, r.Summary.Unmatched, r.Summary.RepeatedWakeups, r.Summary.OmittedBelowThreshold)
+	style.line(out, style.stats(traceStat{"events", fmt.Sprint(r.Summary.EventCount)}, traceStat{"ring_lost", fmt.Sprint(r.Summary.LostEvents)}, traceStat{"map_full", fmt.Sprint(r.Summary.MapFull)}, traceStat{"unmatched", fmt.Sprint(r.Summary.Unmatched)},
+		traceStat{"repeated_wakeup", fmt.Sprint(r.Summary.RepeatedWakeups)}, traceStat{"below_threshold", fmt.Sprint(r.Summary.OmittedBelowThreshold)}))
 }
 func schedMS(v *float64) string {
 	if v == nil {

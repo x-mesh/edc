@@ -21,6 +21,8 @@ const (
 	cleanProjectVisitLimit = 300000
 	cleanProjectItemLimit  = 256
 	cleanProjectShown      = 10
+	// cleanProjectFlag는 fold_none 문장 안의 flag다. 세 언어의 문장이 모두 이 글자를 그대로 쓴다.
+	cleanProjectFlag = "--project DIR"
 )
 
 const (
@@ -567,19 +569,20 @@ func cleanLinkWorktrees(projects *cleanProjectBuildDirs, worktrees *cleanWorktre
 	}
 }
 
-func formatCleanProject(section cleanProjectBuildDirs, verbose bool, width int, home string) string {
+func formatCleanProject(section cleanProjectBuildDirs, verbose bool, width int, home string, style cleanStyle) string {
 	var builder strings.Builder
-	line := func(indent, text string) { builder.WriteString(duFit(indent+text, width) + "\n") }
+	line := func(indent, text string) { builder.WriteString(style.row(indent, text, width)) }
 	switch section.Status {
 	case cleanNoProjectRoot:
-		return "\n" + cleanWrap(T("clean.project.fold_none"), width)
+		return "\n" + cleanProjectFoldNone(width, style)
 	case cleanMeasured, cleanPartial:
-		line("\n", T("clean.project.title"))
+		builder.WriteString(style.open(T("clean.project.title"), T("clean.project.panel"), T("clean.project.note"), width))
 		if section.Status == cleanPartial {
-			line("  ", T("clean.project.state", cleanStateText(section.Status, section.Reasons)))
+			line("  ", style.warn(T("clean.project.state", cleanStateText(section.Status, section.Reasons))))
 		}
 	default:
-		line("\n", T("clean.project.state", cleanStateText(section.Status, section.Reasons)))
+		state := cleanStateText(section.Status, section.Reasons)
+		builder.WriteString(style.open(T("clean.project.state", state), T("clean.project.panel"), state, width))
 	}
 	for _, root := range section.Roots {
 		if root.DirsVisited == nil {
@@ -587,29 +590,29 @@ func formatCleanProject(section cleanProjectBuildDirs, verbose bool, width int, 
 			if root.SameAs != "" {
 				state = T("clean.duplicate", T("clean.status."+root.Status), root.SameAs)
 			}
-			line("  ", T("clean.project.root_state", cleanHomePath(root.Path, home), state))
+			line("  ", T("clean.project.root_state", cleanHomePath(root.Path, home), style.state(state, root.Status)))
 			if root.Detail != "" {
-				line("    ", root.Detail)
+				line("    ", style.dim(root.Detail))
 			}
 			continue
 		}
-		line("  ", T("clean.project.root", cleanHomePath(root.Path, home), *root.DirsVisited, *root.Unmarked))
+		line("  ", style.dim(T("clean.project.root", cleanHomePath(root.Path, home), *root.DirsVisited, *root.Unmarked)))
 		if root.Status == cleanPartial {
-			line("    ", cleanStateText(root.Status, root.Reasons))
+			line("    ", style.warn(cleanStateText(root.Status, root.Reasons)))
 		}
 		if root.Unreadable > 0 {
-			line("    ", T("clean.unreadable", root.Unreadable))
+			line("    ", style.warn(T("clean.unreadable", root.Unreadable)))
 		}
 		if root.SkippedMounts > 0 {
-			line("    ", T("clean.skipped_mounts", root.SkippedMounts))
+			line("    ", style.dim(T("clean.skipped_mounts", root.SkippedMounts)))
 		}
 	}
 	if section.Status != cleanMeasured && section.Status != cleanPartial {
-		return builder.String()
+		return builder.String() + style.close()
 	}
 	if len(section.Items) == 0 {
-		line("  ", T("clean.project.none"))
-		return builder.String()
+		line("  ", style.dim(T("clean.project.none")))
+		return builder.String() + style.close()
 	}
 	sorted := append([]cleanBuildDir(nil), section.Items...)
 	sort.SliceStable(sorted, func(i, j int) bool {
@@ -629,12 +632,22 @@ func formatCleanProject(section cleanProjectBuildDirs, verbose bool, width int, 
 		columns.kind = max(columns.kind, liveWidth(T("clean.project.kind."+dir.Kind)))
 	}
 	for _, dir := range shown {
-		builder.WriteString(formatCleanBuildDir(dir, width, columns, home))
+		builder.WriteString(formatCleanBuildDir(dir, width, columns, home, style))
 	}
 	if len(shown) < len(sorted) {
-		line(strings.Repeat(" ", 2+columns.size+2), T("clean.group_more", len(sorted)-len(shown)))
+		line(strings.Repeat(" ", 2+columns.size+2), style.dim(T("clean.group_more", len(sorted)-len(shown))))
 	}
-	return builder.String()
+	return builder.String() + style.close()
+}
+
+// cleanProjectFoldNone은 --project를 주지 않았다는 줄이다. 색을 쓰면 문장 안의 flag를 chip으로 보인다.
+func cleanProjectFoldNone(width int, style cleanStyle) string {
+	text := T("clean.project.fold_none")
+	before, after, found := strings.Cut(text, cleanProjectFlag)
+	if !bool(style) || !found {
+		return style.wrap(text, width)
+	}
+	return cleanWrap(richDim(before)+richChip(cleanProjectFlag)+richDim(after), width)
 }
 
 type cleanBuildDirColumns struct {
@@ -649,18 +662,20 @@ func cleanBuildDirSize(dir cleanBuildDir) string {
 	return cleanNoSize
 }
 
-func formatCleanBuildDir(dir cleanBuildDir, width int, columns cleanBuildDirColumns, home string) string {
+func formatCleanBuildDir(dir cleanBuildDir, width int, columns cleanBuildDirColumns, home string, style cleanStyle) string {
 	var builder strings.Builder
-	line := func(indent, text string) { builder.WriteString(duFit(indent+text, width) + "\n") }
-	place := cleanHomePath(dir.Path, home)
+	line := func(indent, text string) { builder.WriteString(style.row(indent, text, width)) }
+	place := style.dim(cleanHomePath(dir.Path, home))
+	var bytes uint64
 	switch {
 	case dir.counted():
+		bytes = *dir.UsageBytes
 	case dir.Status == cleanDuplicate:
-		place = T("clean.duplicate", T("clean.status.duplicate"), dir.SameAs) + "  " + place
+		place = style.dim(T("clean.duplicate", T("clean.status.duplicate"), dir.SameAs)) + "  " + place
 	default:
-		place = cleanStateText(dir.Status, dir.Reasons) + "  " + place
+		place = style.state(cleanStateText(dir.Status, dir.Reasons), dir.Status) + "  " + place
 	}
-	line("  ", cleanPadLeft(cleanBuildDirSize(dir), columns.size)+"  "+cleanPad(T("clean.project.kind."+dir.Kind), columns.kind)+"  "+place)
+	line("  ", style.size(cleanPadLeft(cleanBuildDirSize(dir), columns.size), bytes, true)+"  "+cleanPad(T("clean.project.kind."+dir.Kind), columns.kind)+"  "+place)
 	if dir.Git == "" {
 		return builder.String()
 	}
@@ -675,12 +690,12 @@ func formatCleanBuildDir(dir cleanBuildDir, width int, columns cleanBuildDirColu
 			}
 		}
 	}
-	line(detail, T("clean.project.detail", dir.Marker, T("clean.project.git."+dir.Git), verdict))
+	line(detail, style.dim(T("clean.project.detail", dir.Marker, T("clean.project.git."+dir.Git), verdict)))
 	if dir.Inside != "" {
-		line(detail, T("clean.inside", dir.Inside))
+		line(detail, style.dim(T("clean.inside", dir.Inside)))
 	}
 	if dir.InsideWorktree != "" {
-		line(detail, T("clean.project.in_worktree", cleanHomePath(dir.InsideWorktree, home)))
+		line(detail, style.dim(T("clean.project.in_worktree", cleanHomePath(dir.InsideWorktree, home))))
 	}
 	return builder.String()
 }

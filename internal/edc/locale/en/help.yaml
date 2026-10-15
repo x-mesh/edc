@@ -58,8 +58,14 @@ command:
     summary: "HTTP response check"
     option:
       expect_status: "a different status code is a failure"
+      header: "add a request header; repeat for more"
+      body: "save the last response body; - writes it to stdout"
     notes:
       - "A 4xx response is a warning. A 5xx response is a failure."
+      - "With redirects, edc lists each request: status, URL, timings, and peer."
+      - "-v adds the headers of each response and the start of the body."
+      - "edc hides the values of Authorization, Cookie, and similar headers."
+      - "--body - writes the body to stdout and the result to stderr."
   audit:
     summary: "Read-only check of host exposure and settings (Linux)"
     notes:

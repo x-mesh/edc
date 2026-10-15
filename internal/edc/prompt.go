@@ -24,8 +24,16 @@ func promptMissingArgs(command string, labels ...string) ([]string, bool) {
 
 // promptArgs는 실제 질문이다. terminal 판정과 떼어 두어 검사할 수 있다.
 func promptArgs(reader *bufio.Reader, output io.Writer, command string, labels []string) ([]string, bool) {
+	return promptArgsWithColor(reader, output, command, labels, promptColor(output))
+}
+
+func promptArgsWithColor(reader *bufio.Reader, output io.Writer, command string, labels []string, color bool) ([]string, bool) {
 	values := make([]string, 0, len(labels))
 	for _, label := range labels {
+		// label은 묻는 줄에만 쓴다. 빈 값의 오류 문장은 여기서 버리므로 색이 섞이지 않는다.
+		if color {
+			label = richBold(label)
+		}
 		value, err := promptRemoteText(reader, output, label, "")
 		// 빈 값과 EOF는 취소다. caller가 usage를 내고 지금과 같은 exit code로 끝낸다.
 		if err != nil {
@@ -33,7 +41,7 @@ func promptArgs(reader *bufio.Reader, output io.Writer, command string, labels [
 		}
 		values = append(values, value)
 	}
-	promptEcho(output, command+" "+strings.Join(values, " "))
+	writePromptEcho(output, command+" "+strings.Join(values, " "), color)
 	return values, true
 }
 
@@ -80,5 +88,20 @@ func promptStatePath(command string, paths []string) (string, bool) {
 // promptEcho는 받은 값을 채운 명령을 되돌려 준다. 다음부터는 묻지 않고 바로 칠 수 있고,
 // 그대로 script에 옮길 수도 있다.
 func promptEcho(output io.Writer, command string) {
+	writePromptEcho(output, command, promptColor(output))
+}
+
+// writePromptEcho는 색을 쓰면 화살표를 회색으로, 그대로 칠 수 있는 명령을 굵은 청록으로 쓴다.
+func writePromptEcho(output io.Writer, command string, color bool) {
+	if color {
+		fmt.Fprintf(output, "%s %s\n\n", richDim("→"), richPaint(command, richCyan, true))
+		return
+	}
 	fmt.Fprintf(output, "→ %s\n\n", command)
+}
+
+// promptColor는 묻는 줄과 echo에 색을 써도 되는지다. 색을 쓰는 터미널 파일일 때만 칠한다.
+func promptColor(output io.Writer) bool {
+	file, ok := output.(*os.File)
+	return ok && richEnabled(file)
 }

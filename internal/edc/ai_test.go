@@ -912,3 +912,81 @@ func TestAICacheHitCountsCacheWritesAsMisses(t *testing.T) {
 		}
 	}
 }
+
+// 한도 사용률은 기준에 따라 글자를 칠하고, 막대는 같은 색의 차분한 채움으로 그린다. 상자는 오른쪽이 열린 패널이다.
+func TestAIDashboardColorsUsageByThreshold(t *testing.T) {
+	t.Setenv("COLORTERM", "truecolor")
+	t.Setenv("NO_COLOR", "")
+	for used, color := range map[float64]string{22: richGreen, 85: richYellow, 97: richRed, 0: richGray} {
+		if got := aiPaintPercent(" 22%", used); got != richPaint(" 22%", color, false) {
+			t.Errorf("%.0f%% painted %q", used, got)
+		}
+	}
+	if got, want := aiUsageBar(97), richFill(strings.Repeat("█", 10), richRed); got != want {
+		t.Errorf("full bar = %q, want %q", got, want)
+	}
+	if got, want := aiUsageBar(22), richFill("██", richGreen)+richDim(strings.Repeat("░", 8)); got != want {
+		t.Errorf("bar = %q, want %q", got, want)
+	}
+	model := aiDashboardFixture(time.Date(2026, 10, 6, 1, 0, 30, 0, time.Local))
+	text := ansi.Strip(model.View().Content)
+	for _, want := range []string{"╭─ Claude · max", "│ 5h", "╰─"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("dashboard misses %q", want)
+		}
+	}
+	if strings.Contains(text, "╮") || strings.Contains(text, "╯") {
+		t.Error("limit panels must stay open on the right")
+	}
+	if !strings.Contains(model.View().Content, richPaint("! codex app-server exited", richRed, false)) {
+		t.Error("provider error must be red")
+	}
+}
+
+// --count 표는 색을 써도 열이 같다. 사용률은 대시보드와 같은 임계치로, 남은 시간과 이름표는 회색으로 칠한다.
+func TestFormatAITableColorsUsageByThreshold(t *testing.T) {
+	now := time.Date(2026, 10, 15, 9, 0, 0, 0, time.UTC)
+	sample := aiSample{
+		At: now,
+		Providers: []aiProvider{
+			{Name: "claude", FetchedAt: now.Add(-2 * time.Minute), Windows: []aiWindow{
+				{Name: "5h", Used: 42, ResetsAt: now.Add(2*time.Hour + 16*time.Minute + 46*time.Second)},
+				{Name: "7d", Used: 85, ResetsAt: now.Add(time.Hour)},
+				{Name: "opus", Used: 97},
+			}},
+			{Name: "codex", Err: "boom", Windows: []aiWindow{{Name: "5h", Used: 0, ResetsAt: now.Add(-time.Minute)}}},
+		},
+		Totals:    []aiTotal{{Window: "5h", Claude: aiUsage{Input: 1000, Cache: 3000}}},
+		ScanError: "unreadable",
+	}
+	plain, colored := formatAITable(sample, textStyle{}), formatAITable(sample, textStyle{color: true})
+	at := now.Local().Format("15:04:05")
+	reset := now.Add(2*time.Hour + 16*time.Minute + 46*time.Second).Local().Format("01-02 15:04:05")
+	for _, want := range []string{
+		at + "  claude  5h        42%  " + reset + "  in 02:16:46\n",
+		at + "  claude  updated  2m00s ago\n",
+		at + "  codex   error    boom\n",
+		at + "  tokens  5h       claude 4.0K hit 75% · codex 0 hit - · this host\n",
+		at + "  scan    error  unreadable\n",
+	} {
+		if !strings.Contains(plain, want) {
+			t.Fatalf("plain lacks %q:\n%s", want, plain)
+		}
+	}
+	if ansi.Strip(colored) != plain {
+		t.Fatalf("plain:\n%s\ncolored:\n%q", plain, colored)
+	}
+	for _, want := range []string{
+		richExpect("\033[90m" + at + "\033[0m"),
+		richExpect("\033[32m 42%\033[0m  \033[90m" + reset + "\033[0m  in 02:16:46"),
+		richExpect("\033[33m 85%\033[0m"),
+		richExpect("\033[31m 97%\033[0m  \033[90mno reset time\033[0m"),
+		richExpect("\033[90m  0%\033[0m"),
+		richExpect("\033[31mboom\033[0m"),
+		richExpect("\033[90mclaude\033[0m 4.0K \033[90mhit\033[0m 75%"),
+	} {
+		if !strings.Contains(colored, want) {
+			t.Fatalf("colored lacks %q:\n%q", want, colored)
+		}
+	}
+}

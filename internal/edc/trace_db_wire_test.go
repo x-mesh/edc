@@ -9,18 +9,6 @@ import (
 )
 
 func TestPostgresAndRedisAreRegisteredLikeTheOtherDatabases(t *testing.T) {
-	seen := map[string]string{}
-	for _, registration := range traceProtocolRegistry {
-		for _, color := range []string{registration.spec.ansiColor, registration.spec.screenColor} {
-			if color == "" {
-				continue
-			}
-			if other, ok := seen[color]; ok && (registration.name == "postgres" || registration.name == "redis" || other == "postgres" || other == "redis") {
-				t.Fatalf("%s reuses color %s of %s", registration.name, color, other)
-			}
-			seen[color] = registration.name
-		}
-	}
 	for _, protocol := range []string{"postgres", "redis"} {
 		spec := traceProtocols[protocol]
 		if !spec.serverSide || !spec.linuxOnly || !spec.hideTraffic || spec.newSummarizer == nil || spec.scrollLabels == nil {

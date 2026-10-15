@@ -108,3 +108,24 @@ func TestCtrBrowserDropsTheImageColumnFirst(t *testing.T) {
 		}
 	}
 }
+
+func TestCtrBrowserColorsStatesAndTheSelection(t *testing.T) {
+	t.Setenv("COLORTERM", "truecolor")
+	t.Setenv("NO_COLOR", "")
+	plain := ctrBrowserFixture(t)
+	colored := plain
+	colored.color = true
+	plainLines, coloredLines := plain.listLines(), colored.listLines()
+	for index, line := range coloredLines {
+		stripped := strings.TrimRight(strings.Replace(ansi.Strip(line), liveSelectedBar+" ", "› ", 1), " ")
+		if stripped != strings.TrimRight(plainLines[index], " ") {
+			t.Fatalf("line %d = %q, want %q", index, stripped, plainLines[index])
+		}
+	}
+	view := strings.Join(coloredLines, "\n")
+	for _, want := range []string{richPaint("edc ctr", richMagenta, true), liveChipBase(), historySGR(richRed, false) + "exited", historySGR(richGreen, false) + "running"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("colored list misses %q:\n%q", want, view)
+		}
+	}
+}

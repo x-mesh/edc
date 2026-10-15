@@ -9,11 +9,27 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
+// historyTint는 색을 쓸 때만 칠한다. code는 richGreen 같은 팔레트 번호다.
 func historyTint(text, code string, color bool) string {
 	if !color {
 		return text
 	}
-	return "\x1b[" + code + "m" + text + "\x1b[0m"
+	return richPaint(text, code, false)
+}
+
+func historyStrong(text, code string, color bool) string {
+	if !color {
+		return text
+	}
+	return richPaint(text, code, true)
+}
+
+// historySelect는 고른 줄이다. 색을 쓰면 막대와 chip 바탕으로, 아니면 "▸ "로 표시한다.
+func historySelect(cells string, color bool) string {
+	if !color {
+		return "▸ " + cells
+	}
+	return liveSelected(liveSelectedBar+" "+cells, true)
 }
 
 func historyCell(text string, width int, right bool) string {
@@ -85,34 +101,26 @@ func historyKeyRow(group logHistoryGroup, width int, groups []logHistoryGroup, s
 }
 
 func historyKeyRowColumns(group logHistoryGroup, columns historyKeyColumns, selected, color bool, now time.Time) string {
-	marker := "  "
-	if selected {
-		marker = "▸ "
-	}
 	command := historyCell(historyCommand(group.Representative), columns.command, false)
-	if selected {
-		command = historyTint(command, "38;5;81;1", color)
-	}
 	cells := []string{command}
 	if columns.last > 0 {
-		cells = append(cells, historyTint(historyCell(historyRelativeTime(group.Rows[0].Started, now), columns.last, false), "38;5;246", color))
+		cells = append(cells, historyTint(historyCell(historyRelativeTime(group.Rows[0].Started, now), columns.last, false), richGray, color))
 	}
-	cells = append(cells, historyTint(historyCell(fmt.Sprint(len(group.Rows)), columns.runs, true), "38;5;246", color))
+	cells = append(cells, historyTint(historyCell(fmt.Sprint(len(group.Rows)), columns.runs, true), richGray, color))
 	failed := historyCell(fmt.Sprint(group.Failed), columns.failed, true)
-	code := "38;5;246"
 	if group.Failed > 0 {
-		code = "31;1"
+		failed = historyStrong(failed, richRed, color)
+	} else {
+		failed = historyTint(failed, richGray, color)
 	}
-	cells = append(cells, historyTint(failed, code, color))
+	cells = append(cells, failed)
 	if columns.unknown > 0 {
-		cells = append(cells, historyTint(historyCell(fmt.Sprint(group.Unknown), columns.unknown, true), "33", color))
+		cells = append(cells, historyTint(historyCell(fmt.Sprint(group.Unknown), columns.unknown, true), richYellow, color))
 	}
-	line := marker + strings.Join(cells, "  ")
-	if selected && color {
-		base := "\x1b[48;5;236m"
-		line = base + strings.ReplaceAll(line, "\x1b[0m", base) + "\x1b[0m"
+	if selected {
+		return historySelect(strings.Join(cells, "  "), color)
 	}
-	return line
+	return "  " + strings.Join(cells, "  ")
 }
 
 func historyRunHeader(width int) string {
@@ -141,21 +149,23 @@ func historyRunRow(row logHistoryAttempt, width int, selected, color bool) strin
 	if row.Exit != nil {
 		exit = fmt.Sprint(*row.Exit)
 	}
-	code := "33"
+	outcome := historyCell(historyOutcome(row), 10, false)
 	switch {
 	case row.Outcome == historyOutcomeSuccess:
-		code = "32"
+		outcome = historyTint(outcome, richGreen, color)
 	case row.failed():
-		code = "31;1"
+		outcome = historyStrong(outcome, richRed, color)
+	default:
+		outcome = historyTint(outcome, richYellow, color)
 	}
-	marker := "  "
-	if selected {
-		marker = historyTint("▸ ", "38;5;81;1", color)
-	}
+	cells := historyTint(historyCell(at, timeWidth, false), richGray, color) + "  " + historyCell(historyDuration(row), durationWidth, true) + "  " + outcome + "  " + historyTint(historyCell(exit, 4, true), richGray, color)
 	if width < 48 {
-		return marker + historyTint(historyCell(at, timeWidth, false), "38;5;246", color) + "  " + historyCell(historyDuration(row), max(1, width-timeWidth-16), true) + "  " + historyTint(historyCell(historyOutcome(row), 10, false), code, color)
+		cells = historyTint(historyCell(at, timeWidth, false), richGray, color) + "  " + historyCell(historyDuration(row), max(1, width-timeWidth-16), true) + "  " + outcome
 	}
-	return marker + historyTint(historyCell(at, timeWidth, false), "38;5;246", color) + "  " + historyCell(historyDuration(row), durationWidth, true) + "  " + historyTint(historyCell(historyOutcome(row), 10, false), code, color) + "  " + historyTint(historyCell(exit, 4, true), "38;5;246", color)
+	if selected {
+		return historySelect(cells, color)
+	}
+	return "  " + cells
 }
 
 func historyCompactSummary(rows []logHistoryAttempt, color bool) []string {
@@ -183,21 +193,25 @@ func historyCompactSummary(rows []logHistoryAttempt, color bool) []string {
 				unknown++
 			}
 		}
-		parts := []string{historyTint(T("cli.log_history.summary_pass", success), "32", color)}
+		parts := []string{historyTint(T("cli.log_history.summary_pass", success), richGreen, color)}
 		if failed > 0 {
-			parts = append(parts, historyTint(T("cli.log_history.summary_fail", failed), "31", color))
+			parts = append(parts, historyTint(T("cli.log_history.summary_fail", failed), richRed, color))
 		}
 		if unknown > 0 {
-			parts = append(parts, historyTint(T("cli.log_history.summary_unknown", unknown), "33", color))
+			parts = append(parts, historyTint(T("cli.log_history.summary_unknown", unknown), richYellow, color))
 		}
 		if success > 0 {
 			mean := time.Duration(new(big.Int).Quo(&total, big.NewInt(int64(success))).Int64())
 			parts = append(parts, T("cli.log_history.summary_avg", mean.String()))
 		}
 		if len(order) > 1 {
-			lines = append(lines, historyTint("cwd "+reportIdentityValue(cwd), "38;5;246", color))
+			lines = append(lines, historyTint("cwd "+reportIdentityValue(cwd), richGray, color))
 		}
-		lines = append(lines, strings.Join(parts, " · "))
+		separator := " · "
+		if color {
+			separator = richDim(separator)
+		}
+		lines = append(lines, strings.Join(parts, separator))
 	}
 	return lines
 }

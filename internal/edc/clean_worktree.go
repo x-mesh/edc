@@ -734,27 +734,28 @@ func (probe *cleanWorktreeProbe) times() {
 	}
 }
 
-func formatCleanWorktrees(section cleanWorktrees, verbose bool, width int, home string) string {
+func formatCleanWorktrees(section cleanWorktrees, verbose bool, width int, home string, style cleanStyle) string {
 	var builder strings.Builder
-	line := func(indent, text string) { builder.WriteString(duFit(indent+text, width) + "\n") }
+	line := func(indent, text string) { builder.WriteString(style.row(indent, text, width)) }
 	switch section.Status {
 	case cleanAbsent:
-		builder.WriteString("\n" + cleanWrap(T("clean.worktree.fold_absent", cleanHomePath(section.Root, home)), width))
+		builder.WriteString("\n" + style.wrap(T("clean.worktree.fold_absent", cleanHomePath(section.Root, home)), width))
 		return builder.String()
 	case cleanMeasured, cleanPartial:
 	default:
-		line("\n", T("clean.worktree.state", cleanStateText(section.Status, section.Reasons)))
+		builder.WriteString(duFit("\n"+style.state(T("clean.worktree.state", cleanStateText(section.Status, section.Reasons)), section.Status), width) + "\n")
 		if section.Detail != "" {
-			line("  ", section.Detail)
+			builder.WriteString(duFit("  "+style.dim(section.Detail), width) + "\n")
 		}
 		return builder.String()
 	}
-	line("\n", T("clean.worktree.title", cleanHomePath(section.Root, home)))
+	root := cleanHomePath(section.Root, home)
+	builder.WriteString(style.open(T("clean.worktree.title", root), T("clean.worktree.panel"), root+" · "+T("clean.worktree.note"), width))
 	if section.Status == cleanPartial {
-		line("  ", T("clean.worktree.state", cleanStateText(section.Status, section.Reasons)))
+		line("  ", style.warn(T("clean.worktree.state", cleanStateText(section.Status, section.Reasons))))
 	}
 	if len(section.Items) == 0 {
-		line("  ", T("clean.worktree.none"))
+		line("  ", style.dim(T("clean.worktree.none")))
 	}
 	counts, sizes, measured, lower := map[string]int{}, map[string]uint64{}, map[string]int{}, map[string]bool{}
 	for _, item := range section.Items {
@@ -767,7 +768,10 @@ func formatCleanWorktrees(section cleanWorktrees, verbose bool, width int, home 
 		measured[item.Verdict]++
 		lower[item.Verdict] = lower[item.Verdict] || item.LowerBound
 	}
-	type summaryRow struct{ size, verdict, count string }
+	type summaryRow struct {
+		size, verdict, count string
+		bytes                uint64
+	}
 	var summary []summaryRow
 	for _, verdict := range cleanWorktreeVerdicts {
 		if counts[verdict] == 0 {
@@ -778,7 +782,7 @@ func formatCleanWorktrees(section cleanWorktrees, verbose bool, width int, home 
 		if measured[verdict] > 0 {
 			size = cleanSize(sizes[verdict], lower[verdict])
 		}
-		summary = append(summary, summaryRow{size, T("clean.worktree.verdict." + verdict), T("clean.worktree.count", counts[verdict])})
+		summary = append(summary, summaryRow{size, T("clean.worktree.verdict." + verdict), T("clean.worktree.count", counts[verdict]), sizes[verdict]})
 	}
 	sorted := append([]cleanWorktree(nil), section.Items...)
 	sort.SliceStable(sorted, func(i, j int) bool {
@@ -806,24 +810,25 @@ func formatCleanWorktrees(section cleanWorktrees, verbose bool, width int, home 
 		columns.verdict = max(columns.verdict, liveWidth(T("clean.worktree.verdict."+item.Verdict)))
 	}
 	for _, row := range summary {
-		line("  ", cleanPadLeft(row.size, columns.size)+"  "+cleanPad(row.verdict, columns.verdict)+"  "+cleanPadLeft(row.count, countWidth))
+		line("  ", style.size(cleanPadLeft(row.size, columns.size), row.bytes, true)+"  "+cleanPad(row.verdict, columns.verdict)+"  "+cleanPadLeft(row.count, countWidth))
 	}
 	for _, item := range shown {
-		builder.WriteString(formatCleanWorktree(item, section.Root, verbose, width, columns, home))
+		builder.WriteString(formatCleanWorktree(item, section.Root, verbose, width, columns, home, style))
 	}
 	if len(shown) < len(sorted) {
-		line(strings.Repeat(" ", 2+columns.size+2), T("clean.group_more", len(sorted)-len(shown)))
+		line(strings.Repeat(" ", 2+columns.size+2), style.dim(T("clean.group_more", len(sorted)-len(shown))))
 	}
 	if section.Leftover != nil {
 		size := formatSizeShort(section.Leftover.UsageBytes)
 		if section.LowerBound {
 			size = T("clean.lower_bound", size)
 		}
-		line("  ", T("clean.worktree.leftover", size))
+		line("  ", style.dim(T("clean.worktree.leftover", size)))
 	}
 	if section.Cleanup != "" {
-		line("  ", T("clean.cleanup", section.Cleanup))
+		line("  ", style.phrase("clean.cleanup", section.Cleanup, richCyan))
 	}
+	builder.WriteString(style.close())
 	return builder.String()
 }
 
@@ -839,9 +844,9 @@ func cleanWorktreeSize(item cleanWorktree) string {
 	return cleanSize(*item.UsageBytes, item.LowerBound)
 }
 
-func formatCleanWorktree(item cleanWorktree, root string, verbose bool, width int, columns cleanWorktreeColumns, home string) string {
+func formatCleanWorktree(item cleanWorktree, root string, verbose bool, width int, columns cleanWorktreeColumns, home string, style cleanStyle) string {
 	var builder strings.Builder
-	line := func(indent, text string) { builder.WriteString(duFit(indent+text, width) + "\n") }
+	line := func(indent, text string) { builder.WriteString(style.row(indent, text, width)) }
 	// 자세한 줄은 판정 칸보다 두 칸 안쪽에 둔다.
 	detail := strings.Repeat(" ", 2+columns.size+4)
 	name, err := filepath.Rel(root, item.Path)
@@ -851,16 +856,20 @@ func formatCleanWorktree(item cleanWorktree, root string, verbose bool, width in
 	if item.Branch != "" {
 		name += " (" + item.Branch + ")"
 	}
-	text := cleanPadLeft(cleanWorktreeSize(item), columns.size) + "  " + cleanPad(T("clean.worktree.verdict."+item.Verdict), columns.verdict) + "  " + name
+	var bytes uint64
+	if item.UsageBytes != nil {
+		bytes = *item.UsageBytes
+	}
+	text := style.size(cleanPadLeft(cleanWorktreeSize(item), columns.size), bytes, true) + "  " + cleanPad(T("clean.worktree.verdict."+item.Verdict), columns.verdict) + "  " + name
 	if item.Changes != nil && item.Untracked != nil && (*item.Changes > 0 || *item.Untracked > 0) {
 		counts := T("clean.worktree.counts", *item.Changes, *item.Untracked)
 		if item.CountsLowerBound {
 			counts = T("clean.lower_bound", counts)
 		}
-		text += "  " + counts
+		text += "  " + style.dim(counts)
 	}
 	if item.BuildDirs != nil && *item.BuildDirs > 0 {
-		text += "  " + T("clean.worktree.build_dirs", *item.BuildDirs)
+		text += "  " + style.dim(T("clean.worktree.build_dirs", *item.BuildDirs))
 	}
 	line("  ", text)
 	if !verbose {
@@ -871,7 +880,7 @@ func formatCleanWorktree(item cleanWorktree, root string, verbose bool, width in
 		if item.Ahead != nil {
 			ahead = strconv.Itoa(*item.Ahead)
 		}
-		line(detail, T("clean.worktree.base", item.Base, T("clean.worktree.base_source."+item.BaseSource), ahead))
+		line(detail, style.dim(T("clean.worktree.base", item.Base, T("clean.worktree.base_source."+item.BaseSource), ahead)))
 	}
 	if item.LastCommitAt != nil || item.HeadMovedAt != nil {
 		date := func(at *time.Time) string {
@@ -880,17 +889,17 @@ func formatCleanWorktree(item cleanWorktree, root string, verbose bool, width in
 			}
 			return at.Format("2006-01-02")
 		}
-		line(detail, T("clean.worktree.activity", date(item.LastCommitAt), date(item.HeadMovedAt)))
+		line(detail, style.dim(T("clean.worktree.activity", date(item.LastCommitAt), date(item.HeadMovedAt))))
 	}
 	if len(item.Reasons) > 0 {
 		reasons := make([]string, 0, len(item.Reasons))
 		for _, reason := range item.Reasons {
 			reasons = append(reasons, T("clean.reason."+reason))
 		}
-		line(detail, strings.Join(reasons, ", "))
+		line(detail, style.dim(strings.Join(reasons, ", ")))
 	}
 	if item.Detail != "" {
-		line(detail, cleanHomePath(item.Detail, home))
+		line(detail, style.dim(cleanHomePath(item.Detail, home)))
 	}
 	return builder.String()
 }

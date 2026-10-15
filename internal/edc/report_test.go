@@ -10,6 +10,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/charmbracelet/x/ansi"
 )
 
 func TestDiffReportsClassifiesEntries(t *testing.T) {
@@ -509,6 +511,44 @@ func TestRunReportDiffComparesDuDirectories(t *testing.T) {
 	for _, want := range []string{"2 directory deltas (e detail)", "+2.0 KB  log/app  500 B → 2.4 KB"} {
 		if !strings.Contains(text.String(), want) {
 			t.Fatalf("missing %q in\n%s", want, text.String())
+		}
+	}
+}
+
+// 색을 쓰는 diff 줄은 상태를 배지로, 나빠짐을 굵은 빨강으로 쓴다. 평문과 같은 글자를 남긴다.
+func TestPrintReportDiffEntryUsesBadgesInColor(t *testing.T) {
+	t.Setenv("COLORTERM", "truecolor")
+	t.Setenv("NO_COLOR", "")
+	entry := reportDiffEntry{Probe: "net.ping", Change: changeChanged, Regressed: true, BeforeStatus: StatusPass, AfterStatus: StatusFail, AfterSummary: "timeout"}
+	var line, detail, plain strings.Builder
+	printReportDiffEntry(&line, &detail, entry, true)
+	printReportDiffEntry(&plain, &detail, entry, false)
+	text := line.String()
+	for _, want := range []string{richPaint("WORSE", richRed, true), richStatusBadge(StatusPass), richDim("→"), richStatusBadge(StatusFail)} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("diff line %q misses %q", text, want)
+		}
+	}
+	if got := strings.Join(strings.Fields(ansi.Strip(text)), " "); got != strings.Join(strings.Fields(plain.String()), " ") {
+		t.Fatalf("stripped = %q, plain = %q", got, plain.String())
+	}
+	added := reportDiffEntry{Probe: "dns.lookup", Change: changeAdded, AfterStatus: StatusPass}
+	line.Reset()
+	printReportDiffEntry(&line, &detail, added, true)
+	if !strings.Contains(line.String(), richPaint("ADDED", richGreen, false)) {
+		t.Fatalf("added = %q", line.String())
+	}
+	for _, test := range []struct {
+		before, after Status
+		want          string
+	}{
+		{StatusFail, StatusPass, richPaint("STATUS CHANGED", richGreen, false)},
+		{StatusPass, StatusSkip, "STATUS CHANGED"},
+	} {
+		line.Reset()
+		printReportDiffEntry(&line, &detail, reportDiffEntry{Probe: "tls.check", Change: changeChanged, BeforeStatus: test.before, AfterStatus: test.after}, true)
+		if !strings.HasPrefix(line.String(), test.want) || test.want == "STATUS CHANGED" && strings.HasPrefix(line.String(), "\033[") {
+			t.Fatalf("%s → %s = %q", test.before, test.after, line.String())
 		}
 	}
 }

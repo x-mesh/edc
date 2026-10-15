@@ -82,11 +82,11 @@ func normalizeChangeKind(value string) (string, bool) {
 }
 
 func runChange(args []string, version string) int {
-	usage := T("cli.usage", "edc change <apply|status|confirm|rollback> ...")
+	usage := T("cli.usage", subcommandUsage("change")+" ...")
 	if len(args) == 0 {
 		// 하위 command만 고르게 한다. apply의 값은 flag로만 받는다. 되돌릴 수 없는 변경은
 		// 다시 칠 수 있는 명령으로 남아야 안전하다.
-		choice, ok := promptMissingChoice("edc change", []string{"apply", "status", "confirm", "rollback"})
+		choice, ok := promptMissingSubcommand("change")
 		if !ok {
 			fmt.Fprintln(os.Stderr, usage)
 			return 2

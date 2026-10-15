@@ -28,7 +28,7 @@ func historyTerminalText(value string) string {
 
 func runHistory(args []string) int {
 	if len(args) == 0 {
-		choice, ok := promptMissingChoice("edc history", []string{"list", "top", "process"})
+		choice, ok := promptMissingSubcommand("history")
 		if !ok {
 			if !printCommandBrief(os.Stderr, "history") {
 				fmt.Fprintln(os.Stderr, T("history.usage"))

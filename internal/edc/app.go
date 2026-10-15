@@ -224,9 +224,9 @@ func runDoctor(args []string, version string) int {
 
 func runDNS(args []string, version string) int {
 	if len(args) == 0 {
-		choice, ok := promptMissingChoice("edc dns", []string{"lookup", "compare", "config"})
+		choice, ok := promptMissingSubcommand("dns")
 		if !ok {
-			fmt.Fprintln(os.Stderr, T("cli.usage", "edc dns <lookup|compare|config> ..."))
+			fmt.Fprintln(os.Stderr, T("cli.usage", subcommandUsage("dns")+" ..."))
 			return 2
 		}
 		args = []string{choice}
@@ -239,7 +239,7 @@ func runDNS(args []string, version string) int {
 	case "compare":
 		return runDNSCompare(args[1:], version)
 	default:
-		fmt.Fprintln(os.Stderr, T("cli.usage", "edc dns <lookup|compare|config> ..."))
+		fmt.Fprintln(os.Stderr, T("cli.usage", subcommandUsage("dns")+" ..."))
 		return 2
 	}
 }
@@ -349,9 +349,9 @@ func runHTTP(args []string, version string) int {
 
 func runNet(args []string, version string) int {
 	if len(args) == 0 {
-		choice, ok := promptMissingChoice("edc net", []string{"interfaces", "route", "ping", "trace"})
+		choice, ok := promptMissingSubcommand("net")
 		if !ok {
-			fmt.Fprintln(os.Stderr, T("cli.usage", "edc net <interfaces|route|ping|trace>"))
+			fmt.Fprintln(os.Stderr, T("cli.usage", subcommandUsage("net")))
 			return 2
 		}
 		args = []string{choice}
@@ -366,7 +366,7 @@ func runNet(args []string, version string) int {
 	case "trace":
 		return runTargetProbe(args[1:], version, "net trace", "net.trace", T("cli.prompt.host"), probeTrace)
 	default:
-		fmt.Fprintln(os.Stderr, T("cli.usage", "edc net <interfaces|route|ping|trace>"))
+		fmt.Fprintln(os.Stderr, T("cli.usage", subcommandUsage("net")))
 		return 2
 	}
 }

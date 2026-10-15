@@ -100,6 +100,10 @@ func resultPendingStatus(spinner string, color bool) string {
 	return liveCell(spinner, resultStatusWidth)
 }
 
+// evidenceShownProbes는 -v가 없어도 evidence를 보이는 probe다. 각 probe 파일이 init에서 자기 이름을 등록한다.
+// 저장한 report를 report show로 다시 그릴 때도 같은 규칙을 써야 하므로, 표시를 JSON에 두지 않고 probe 이름으로 정한다.
+var evidenceShownProbes = map[string]bool{}
+
 func printResultDetail(writer io.Writer, result Result, verbose, color bool) {
 	if result.Status == StatusFail {
 		printFailureBox(writer, resultLabel(result), result, color)
@@ -118,8 +122,7 @@ func printResultDetail(writer io.Writer, result Result, verbose, color bool) {
 			fmt.Fprintf(writer, "      warning: %s\n", warning)
 		}
 	}
-	// http.check는 edc http check에서만 기본으로 redirect 경로를 남긴다. doctor는 -v일 때만 남긴다.
-	if (verbose || result.Probe == endpointProbeID || result.Probe == "dns.compare" || result.Probe == "http.check") && result.Status != StatusFail && !isRemoteResult(result) {
+	if (verbose || evidenceShownProbes[result.Probe]) && result.Status != StatusFail && !isRemoteResult(result) {
 		if lines := richEvidenceLinesWidth(color, result, writerWidth(writer)); lines != nil {
 			for _, line := range lines {
 				fmt.Fprintln(writer, line)

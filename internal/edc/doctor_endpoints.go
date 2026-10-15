@@ -13,6 +13,9 @@ import (
 const endpointProbeID = "endpoints.check"
 const endpointConcurrency = 4
 
+// IP별 결과 표가 이 probe의 본문이라 -v 없이도 보인다.
+func init() { evidenceShownProbes[endpointProbeID] = true }
+
 type endpointCheck struct {
 	IP         string          `json:"ip"`
 	TCP        Status          `json:"tcp"`

@@ -164,3 +164,20 @@ func TestColorSummaryOmitsTheBarForOneResult(t *testing.T) {
 		t.Errorf("stripped = %q", stripped)
 	}
 }
+
+// -v 없이 evidence를 보이는 probe는 각 probe 파일이 등록한다. 공통 출력 함수는 이름을 따로 알지 않는다.
+func TestEvidenceShownProbesAreRegisteredByTheProbes(t *testing.T) {
+	for _, probe := range []string{endpointProbeID, "dns.compare", "http.check"} {
+		if !evidenceShownProbes[probe] {
+			t.Errorf("%s must show its evidence without -v", probe)
+		}
+	}
+	shown := Result{Probe: "dns.compare", Status: StatusPass, Evidence: []Evidence{{Label: "answers", Value: "1.1.1.1"}}}
+	hidden := Result{Probe: "dns.lookup", Status: StatusPass, Evidence: []Evidence{{Label: "answers", Value: "1.1.1.1"}}}
+	var withEvidence, withoutEvidence strings.Builder
+	printResultDetail(&withEvidence, shown, false, false)
+	printResultDetail(&withoutEvidence, hidden, false, false)
+	if !strings.Contains(withEvidence.String(), "1.1.1.1") || withoutEvidence.Len() != 0 {
+		t.Errorf("shown = %q, hidden = %q", withEvidence.String(), withoutEvidence.String())
+	}
+}

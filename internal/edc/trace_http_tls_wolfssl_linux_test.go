@@ -64,6 +64,10 @@ func TestTraceTLSWolfSSLCapturesBothAPIs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	stdin, err := command.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := command.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -72,6 +76,7 @@ func TestTraceTLSWolfSSLCapturesBothAPIs(t *testing.T) {
 		t.Fatalf("wolfSSL ready: %q, %v", line, err)
 	}
 	requests, responses := map[string]int{}, map[string]int{}
+	startTLSFixtureOnAttach(t, stdin)
 	summary, err := collectTraceEventsLive(traceScope{protocol: "http", tls: traceTLSMode(library), tlsFinder: finder, payload: true}, 5*time.Second, func(event captureEvent) error {
 		if event.PID != uint32(command.Process.Pid) || !event.TLS {
 			return nil

@@ -758,3 +758,31 @@ func TestCleanBoundaryDockerStatesAreNotZeroBytes(t *testing.T) {
 		}
 	})
 }
+
+// 개수 칸은 volumes 행을 포함해 모든 행에서 같은 열에 온다. 회수 가능량 문구는 길이가 달라 줄 끝에 둔다.
+func TestFormatCleanDockerAlignsTheItemCounts(t *testing.T) {
+	value := func(number int64) *int64 { return &number }
+	measured := func(kind string, total, reclaimable, count, active int64) cleanDockerTypeResult {
+		return cleanDockerTypeResult{Type: kind, Status: cleanMeasured, TotalBytes: value(total), ReclaimableBytes: value(reclaimable), TotalCount: value(count), ActiveCount: value(active)}
+	}
+	section := cleanDocker{Status: cleanMeasured, Types: []cleanDockerTypeResult{
+		measured(cleanDockerImages, 12_100_000_000, 1_300_000_000, 9, 4),
+		measured(cleanDockerContainers, 216_500_000, 216_200_000, 4, 3),
+		measured(cleanDockerBuildCache, 8_700_000_000, 8_500_000_000, 30, 0),
+		measured(cleanDockerVolumes, 407_000_000, 0, 5, 3),
+	}}
+	var columns []int
+	for _, row := range strings.Split(formatCleanDocker(section, false, 0), "\n") {
+		if index := strings.Index(row, " items, "); index >= 0 {
+			columns = append(columns, liveWidth(row[:strings.LastIndex(row[:index], "  ")]))
+		}
+	}
+	if len(columns) != 4 {
+		t.Fatalf("rows with a count = %d:\n%s", len(columns), formatCleanDocker(section, false, 0))
+	}
+	for _, column := range columns[1:] {
+		if column != columns[0] {
+			t.Fatalf("count columns = %v:\n%s", columns, formatCleanDocker(section, false, 0))
+		}
+	}
+}

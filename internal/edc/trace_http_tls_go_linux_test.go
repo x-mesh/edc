@@ -175,6 +175,10 @@ func TestTraceTLSGoCaptures(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			stdin, err := command.StdinPipe()
+			if err != nil {
+				t.Fatal(err)
+			}
 			if err := command.Start(); err != nil {
 				t.Fatal(err)
 			}
@@ -184,6 +188,7 @@ func TestTraceTLSGoCaptures(t *testing.T) {
 			}
 			requests, responses := map[string]int{}, map[string]int{}
 			var observed []captureEvent
+			startTLSFixtureOnAttach(t, stdin)
 			summary, err := collectTraceEventsLive(traceScope{protocol: "http", tls: traceTLSMode(fixture), tlsFinder: finder, payload: true, port: tc.port}, 6*time.Second, func(event captureEvent) error {
 				if event.PID != uint32(command.Process.Pid) || !event.TLS {
 					return nil
@@ -278,6 +283,10 @@ func TestTraceTLSGoHTTP2CapturesStreamsAndBodies(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			stdin, err := command.StdinPipe()
+			if err != nil {
+				t.Fatal(err)
+			}
 			if err := command.Start(); err != nil {
 				t.Fatal(err)
 			}
@@ -287,6 +296,7 @@ func TestTraceTLSGoHTTP2CapturesStreamsAndBodies(t *testing.T) {
 			}
 			requests, responses := map[string]int{}, map[string]int{}
 			sockets := map[uint64]bool{}
+			startTLSFixtureOnAttach(t, stdin)
 			summary, err := collectTraceEventsLive(traceScope{protocol: "http", tls: traceTLSMode(fixture), tlsFinder: finder, payload: true, payloadAll: true, http2Payload: true}, 8*time.Second, func(event captureEvent) error {
 				if event.PID != uint32(command.Process.Pid) || !event.TLS {
 					return nil

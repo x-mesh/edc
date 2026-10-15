@@ -107,7 +107,7 @@ static void server_test(void) {
 	PK11SlotInfo *slot = PK11_GetInternalKeySlot();
 	SECKEYPrivateKey *key = NULL;
 	if (!certificate || !slot || PK11_ImportDERPrivateKeyInfoAndReturnKey(slot, &key_data, NULL, NULL, PR_FALSE, PR_FALSE, KU_ALL, &key, NULL) != SECSuccess) fail("server certificate");
-	puts("ready"); fflush(stdout); sleep(3);
+	puts("ready"); fflush(stdout); { char start[8]; if (!fgets(start, sizeof(start), stdin)) _exit(3); }
 	PRFileDesc *listener = SSL_ImportFD(NULL, PR_NewTCPSocket());
 	if (!listener || SSL_OptionSet(listener, SSL_SECURITY, PR_TRUE) != SECSuccess ||
 		SSL_OptionSet(listener, SSL_HANDSHAKE_AS_SERVER, PR_TRUE) != SECSuccess ||
@@ -137,7 +137,7 @@ int main(int argc, char **argv) {
 		server_test();
 	} else {
 		if (argc != 3) return 2;
-		puts("ready"); fflush(stdout); sleep(3);
+		puts("ready"); fflush(stdout); { char start[8]; if (!fgets(start, sizeof(start), stdin)) _exit(3); }
 		for (int number = 0; number < 2; number++) {
 			for (enum setup setup = DIRECT_ON; setup <= FAILED_OPTION; setup++) {
 				int secure = setup == DIRECT_ON || setup == DEFAULT_ON || setup == MODEL_ON;

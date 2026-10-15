@@ -1156,58 +1156,135 @@ func (model topModel) statusLines() []string {
 	} else if !model.follow {
 		state = fmt.Sprintf("history · %d new · %s", max(0, len(model.rows)-1-model.selected), state)
 	}
-	keys := "c cpu m mem d disk n net f candidates / filter ? help"
+	var keys topKeyHints
 	if model.processFilter.active() {
-		keys = "1 host f proc / edit Esc back ? help"
+		keys = topKeyHints{{key: "1", label: "host"}, {key: "f", label: "proc"}, model.sortHint(), {key: "/", label: "edit"}, {key: "Esc", label: "back"}, {key: "?", label: "help"}}
+	} else {
+		keys = topKeyHints{
+			{key: "c", label: "cpu", on: model.view == topViewCPU}, {key: "m", label: "mem", on: model.view == topViewMemory},
+			{key: "d", label: "disk", on: model.view == topViewDisk}, {key: "n", label: "net", on: model.view == topViewNetwork},
+			model.sortHint(), {key: "f", label: "candidates"}, {key: "/", label: "filter"}, {key: "?", label: "help"},
+		}
 	}
 	if model.interfaces.active() {
-		// net 표시가 붙으면 80열에서 줄 끝이 잘린다. ? help는 아래 줄에도 있으므로 여기서 뺀다.
-		keys = strings.TrimSuffix(keys, " ? help")
+		// net 표시가 붙으면 80열에서 줄 끝이 잘린다. ? help는 아래 줄에도 있고, o로 고른 정렬은 패널 제목의 (o)로 보이므로 둘을 뺀다.
+		kept := topKeyHints{}
+		for _, hint := range keys[:len(keys)-1] {
+			if hint.key != "o" {
+				kept = append(kept, hint)
+			}
+		}
+		keys = kept
 	}
-	views := fmt.Sprintf("%s · %s", state, keys)
+	color := model.limits.color
+	views := topStatusLine{plain: state + " · " + keys.render(" ", false), styled: topDim(state+" · ", color) + keys.render(" ", color)}
+	// 두 줄을 합칠 때는 ? help를 아래 줄에만 둔다.
+	joinedKeys := keys
+	if last := len(keys) - 1; keys[last].key == "?" {
+		joinedKeys = keys[:last]
+	}
+	joinedViews := topStatusLine{plain: state + " · " + joinedKeys.render(" ", false), styled: topDim(state+" · ", color) + joinedKeys.render(" ", color)}
 	switch {
 	case model.input:
-		views = "process filter: " + model.inputText + "█ · Enter apply · Esc cancel"
+		views = topDimStatusLine("process filter: "+model.inputText+"█ · Enter apply · Esc cancel", color)
+		joinedViews = views
 	case model.notice != "":
-		views = model.notice
+		views = topDimStatusLine(model.notice, color)
+		joinedViews = views
 	}
 	// PgUp/Dn을 넣어도 80열에서 끝의 +/-가 잘리지 않게 구분 공백을 두 칸으로 맞췄다.
-	actions := "↑↓ history  Tab processes  Enter detail  End live  ? help  q quit"
+	actionHints := topKeyHints{{key: "↑↓", label: "history"}, {key: "Tab", label: "processes"}, {key: "Enter", label: "detail"}, {key: "End", label: "live"}}
 	if model.canGoBack() {
-		actions = "↑↓ history  Tab processes  Enter detail  End live  Esc back  ? help  q quit"
+		actionHints = append(actionHints, topKeyHint{key: "Esc", label: "back"})
 	}
+	actionHints = append(actionHints, topKeyHint{key: "?", label: "help"}, topKeyHint{key: "q", label: "quit"})
 	if model.processFocus {
-		actions = "↑↓ select  Enter focus PID  Tab/Esc history  End live  ? help  q quit"
+		actionHints = topKeyHints{{key: "↑↓", label: "select"}, {key: "Enter", label: "focus PID"}, {key: "Tab/Esc", label: "history"}, {key: "End", label: "live"}, {key: "?", label: "help"}, {key: "q", label: "quit"}}
 	}
+	actions := topStatusLine{plain: actionHints.render("  ", false), styled: actionHints.render("  ", color)}
 	if model.displayWidth() < 70 {
-		views = state + " · / filter · ? help · q quit"
-		actions = "Tab processes · ↑↓ history · End live"
+		narrowViews := state + " · / filter · ? help · q quit"
+		narrowActions := "Tab processes · ↑↓ history · End live"
 		if model.canGoBack() {
-			actions += " · Esc back"
+			narrowActions += " · Esc back"
 		}
 		if model.processFocus {
-			actions = "↑↓ select · Enter focus · Esc back"
+			narrowActions = "↑↓ select · Enter focus · Esc back"
 		}
 		if model.input {
-			views = "filter: " + model.inputText + "█"
-			actions = "Enter apply · Esc cancel"
+			narrowViews = "filter: " + model.inputText + "█"
+			narrowActions = "Enter apply · Esc cancel"
 		} else if model.notice != "" {
-			views = model.notice
+			narrowViews = model.notice
 		}
+		views, actions = topDimStatusLine(narrowViews, color), topDimStatusLine(narrowActions, color)
+		joinedViews = topDimStatusLine(strings.TrimSuffix(narrowViews, " ? help"), color)
 	}
 	if model.displayWidth() < 40 && !model.input && model.notice == "" {
-		views = model.interval.String() + " · ? help · q quit"
-		actions = "↑↓ history · Tab procs"
+		views = topDimStatusLine(model.interval.String()+" · ? help · q quit", color)
+		joinedViews = topDimStatusLine(model.interval.String()+" · ? help · q quit", color)
+		tiny := "↑↓ history · Tab procs"
 		if model.processFocus {
-			actions = "↑↓ pick · Enter · Esc"
+			tiny = "↑↓ pick · Enter · Esc"
 		}
+		actions = topDimStatusLine(tiny, color)
 	}
-	// 두 줄이 한 폭에 들어가면 합쳐 표가 한 줄 더 보이게 한다. 양쪽에 있는 ? help는 한 번만 둔다.
-	if joined := strings.TrimSuffix(views, " ? help") + "  ·  " + actions; ansi.StringWidth(joined) <= model.displayWidth() {
-		return []string{topDim(topDashboardFitWidth(joined, model.displayWidth()), model.limits.color)}
+	// 두 줄이 한 폭에 들어가면 합쳐 표가 한 줄 더 보이게 한다. 폭은 색이 없는 문자열로 잰다.
+	if ansi.StringWidth(joinedViews.plain+"  ·  "+actions.plain) <= model.displayWidth() {
+		return []string{topFitStatusLine(joinedViews.styled+topDim("  ·  ", color)+actions.styled, model.displayWidth(), color)}
 	}
-	// 폭을 먼저 맞춘다. escape가 rune 수에 들어가면 잘리는 위치가 어긋난다.
-	return []string{topDim(topDashboardFitWidth(views, model.displayWidth()), model.limits.color), topDim(topDashboardFitWidth(actions, model.displayWidth()), model.limits.color)}
+	return []string{topFitStatusLine(views.styled, model.displayWidth(), color), topFitStatusLine(actions.styled, model.displayWidth(), color)}
+}
+
+// topKeyHint는 안내 줄의 키 하나다. on은 지금 켜진 보기나 정렬이다.
+type topKeyHint struct {
+	key, label string
+	on         bool
+}
+
+type topKeyHints []topKeyHint
+
+// render는 키를 굵게, 설명을 회색으로 쓴다. 켜진 항목은 선택 행과 같은 바탕으로 칠해 지금 상태를 보인다.
+// 색이 없으면 글자만 남으므로 정렬 기준은 label에 적는다.
+func (hints topKeyHints) render(sep string, color bool) string {
+	parts := make([]string, 0, len(hints))
+	for _, hint := range hints {
+		text := hint.key + " " + hint.label
+		switch {
+		case !color:
+		case hint.on:
+			text = topBannerStyle() + text + richReset
+		default:
+			text = richBold(hint.key) + richDim(" "+hint.label)
+		}
+		parts = append(parts, text)
+	}
+	return strings.Join(parts, topDim(sep, color))
+}
+
+// sortHint는 o 안내다. o로 고른 기준이 있으면 sort:MEM처럼 기준을 붙여 켜진 항목으로 보인다.
+func (model topModel) sortHint() topKeyHint {
+	if model.panelSort == "" {
+		return topKeyHint{key: "o", label: "sort"}
+	}
+	name := map[topView]string{topViewCPU: "CPU", topViewMemory: "MEM", topViewDisk: "I/O"}[model.panelSort]
+	return topKeyHint{key: "o", label: "sort:" + name, on: true}
+}
+
+// topStatusLine은 안내 줄의 색 없는 글자와 색을 입힌 글자다. 폭과 합칠지는 plain으로 정한다.
+type topStatusLine struct{ plain, styled string }
+
+func topDimStatusLine(text string, color bool) topStatusLine {
+	return topStatusLine{plain: text, styled: topDim(text, color)}
+}
+
+// topFitStatusLine은 줄을 폭에 맞춘다. 잘린 자리에서 색이 다음 줄로 번지지 않게 끝에서 닫는다.
+func topFitStatusLine(styled string, width int, color bool) string {
+	line := topDashboardFitWidth(styled, width)
+	if color {
+		line += richReset
+	}
+	return line
 }
 
 func (model topModel) displayWidth() int {
@@ -1406,7 +1483,7 @@ func (model topModel) candidateLines() []string {
 	if model.panelSort != "" {
 		chosen = " (o)"
 	}
-	lines := []string{topHeading(fmt.Sprintf("processes · %s rank%s · %s %s · Tab select · o sort", title, chosen, state, row.at.Format("15:04:05")), model.limits.color)}
+	lines := []string{topHeading(fmt.Sprintf("processes · %s rank%s · %s %s · Tab select", title, chosen, state, row.at.Format("15:04:05")), model.limits.color)}
 	processes := model.candidates()
 	if len(processes) == 0 {
 		return append(lines, "no match · / edit filter · Esc clear")

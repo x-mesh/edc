@@ -51,7 +51,7 @@ func TestTopModelAppendsRowsFromSamples(t *testing.T) {
 		t.Fatal("dashboard must use the alt screen")
 	}
 	for _, expected := range []string{"network", "Tab processes", "? help", "q quit", "interval 1s"} {
-		if !strings.Contains(view.Content, expected) {
+		if !strings.Contains(ansi.Strip(view.Content), expected) {
 			t.Fatalf("view %q does not contain %q", view.Content, expected)
 		}
 	}
@@ -766,12 +766,22 @@ func TestTopSelectionMarkerKeepsTheTime(t *testing.T) {
 	}
 }
 
-func TestTopStatusLinesAreMuted(t *testing.T) {
+// 안내 줄은 키만 굵게 하고 설명은 회색으로 둔다. 켜진 보기와 o로 고른 정렬은 선택 행과 같은 바탕으로 칠한다.
+func TestTopStatusLinesBoldKeysAndMuteLabels(t *testing.T) {
 	model := topFixtureModel(nil)
-	for _, line := range model.statusLines() {
-		if line != richDim(ansi.Strip(line)) {
-			t.Fatalf("status line is not muted: %q", line)
+	model.view, model.panelSort = topViewMemory, topViewDisk
+	status := strings.Join(model.statusLines(), "\n")
+	for _, want := range []string{richBold("c") + richDim(" cpu"), topBannerStyle() + "m mem" + richReset, topBannerStyle() + "o sort:I/O" + richReset, richBold("q") + richDim(" quit")} {
+		if !strings.Contains(status, want) {
+			t.Fatalf("status lacks %q: %q", want, status)
 		}
+	}
+	model.limits.color = false
+	if plain := strings.Join(model.statusLines(), "\n"); !strings.Contains(plain, "o sort:I/O") || strings.Contains(plain, "\x1b") {
+		t.Fatalf("plain status = %q", plain)
+	}
+	model.limits.color = true
+	for _, line := range model.statusLines() {
 		if got := liveWidth(line); got != topTableWidth {
 			t.Fatalf("status line is %d wide: %q", got, line)
 		}
@@ -1287,7 +1297,7 @@ func TestTopProcessFilterOpensTheProcessView(t *testing.T) {
 		t.Fatal("no filter must keep the all view")
 	}
 	filtered := model.withProcessFilter(filter)
-	if filtered.view != topViewProcess || !strings.Contains(filtered.statusLines()[0], "f proc") {
+	if filtered.view != topViewProcess || !strings.Contains(ansi.Strip(filtered.statusLines()[0]), "f proc") {
 		t.Fatalf("filtered view = %s, status %q", filtered.view, filtered.statusLines()[0])
 	}
 	host := topAfter(t, filtered, tea.KeyPressMsg{Code: '1', Text: "1"})
@@ -1757,9 +1767,9 @@ func topFooterModelAt(width, height, rows int) topModel {
 }
 
 func TestTopStatusLinesMergeWhenTheyFit(t *testing.T) {
-	wide := topFooterModelAt(200, 40, 3).statusLines()
-	if len(wide) != 1 || !strings.Contains(wide[0], "interval") || !strings.Contains(wide[0], "q quit") || strings.Count(wide[0], "? help") != 1 {
-		t.Errorf("200 columns: status = %q", wide)
+	wide := topFooterModelAt(210, 40, 3).statusLines()
+	if len(wide) != 1 || !strings.Contains(ansi.Strip(wide[0]), "interval") || !strings.Contains(ansi.Strip(wide[0]), "q quit") || strings.Count(ansi.Strip(wide[0]), "? help") != 1 {
+		t.Errorf("210 columns: status = %q", wide)
 	}
 	if narrow := topFooterModelAt(120, 40, 3).statusLines(); len(narrow) != 2 {
 		t.Errorf("120 columns: status = %q", narrow)
@@ -1945,13 +1955,13 @@ func TestTopShowsTheInterfaceSelection(t *testing.T) {
 	if lines := model.detailLines(); lines[1] != "interfaces /s · busiest first · net columns add --interface physical" {
 		t.Fatalf("header = %q", lines[1])
 	}
-	if status := strings.Join(model.statusLines(), "\n"); !strings.Contains(status, "net physical · interval") {
+	if status := ansi.Strip(strings.Join(model.statusLines(), "\n")); !strings.Contains(status, "net physical · interval") {
 		t.Fatalf("status = %q", status)
 	}
 	// 상태 줄은 화면 폭에서 잘린다. 긴 목록을 써도 80열에서 줄 끝의 키 안내가 남아야 한다.
 	model.interfaces, _ = parseTopInterfaceFilter("eno1,eno2,eno3,eno4,tailscale0")
 	model.width = 80
-	if lines := model.statusLines(); !strings.HasSuffix(strings.TrimRight(ansi.Strip(lines[0]), " "), "f candidates / filter") || !strings.Contains(lines[1], "? help") {
+	if lines := model.statusLines(); !strings.HasSuffix(strings.TrimRight(ansi.Strip(lines[0]), " "), "f candidates / filter") || !strings.Contains(ansi.Strip(lines[1]), "? help") {
 		t.Fatalf("status at 80 columns:\n%s", strings.Join(lines, "\n"))
 	}
 }

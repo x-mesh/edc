@@ -126,9 +126,9 @@ command:
   change:
     summary: "Protected host changes with automatic rollback"
     sub:
-      apply: "apply a change, roll back unless confirmed"
+      apply: "apply, then roll back unless confirmed"
       status: "pending changes and their remaining time"
-      confirm: "keep a change and stop its rollback timer"
+      confirm: "keep a change, stop its rollback timer"
       rollback: "restore the state from before apply"
   top:
     summary: "Live resource dashboard"

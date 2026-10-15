@@ -160,7 +160,7 @@ var commandDocs = []commandDoc{
 			{"check", "edc route check"},
 			{"switch", "edc route switch --to <name>"},
 			{"status", "edc route status"},
-			{"rollback", "edc route rollback --state <file>"},
+			{"rollback", "edc route rollback [--state <file>]"},
 		},
 	},
 	{
@@ -200,8 +200,8 @@ var commandDocs = []commandDoc{
 		subcommands: []subcommandDoc{
 			{"apply", "edc change apply --kind <kind>"},
 			{"status", "edc change status"},
-			{"confirm", "edc change confirm --state <file>"},
-			{"rollback", "edc change rollback --state <file>"},
+			{"confirm", "edc change confirm [--state <file>]"},
+			{"rollback", "edc change rollback [--state <file>]"},
 		},
 	},
 	{
@@ -236,12 +236,11 @@ var commandDocs = []commandDoc{
 			{"--json <path|->", "history.option.json"},
 		},
 		subcommands: []subcommandDoc{
-			{"list", "edc history list [DB]"},
+			{"list", "edc history list [options] [DB]"},
 			{"top", "edc history top [options] [DB]"},
 			{"process", "edc history process [options] [DB]"},
 		},
 		examples: []string{
-			"edc top -w",
 			"edc history list",
 			"edc history top --metric memory_pct --min 90",
 			"edc history process --process nginx",
@@ -670,7 +669,7 @@ func printCommandBrief(writer io.Writer, name string) bool {
 		printRichCommandBrief(writer, doc)
 		return true
 	}
-	fmt.Fprintf(writer, "edc %s — %s\n\n", doc.name, doc.summary())
+	fmt.Fprintf(writer, "edc %s — %s\n\n%s\n", doc.name, doc.summary(), T("help.usage_label"))
 	printOptionDocs(writer, doc.subcommandLines())
 	printExamples(writer, doc.examples)
 	fmt.Fprintf(writer, "\n%s  edc help %s\n", T("help.detail_label"), doc.name)

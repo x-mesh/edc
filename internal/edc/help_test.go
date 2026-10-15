@@ -351,3 +351,21 @@ func TestRichCommandBriefKeepsTheFormsAndExamples(t *testing.T) {
 		t.Errorf("examples should be bold cyan: %q", colored.String())
 	}
 }
+
+// 평문 안내 화면도 색 화면처럼 형태 목록 위에 usage 머리줄을 둔다. history 예시는 history 명령만 담는다.
+func TestPlainCommandBriefLabelsTheForms(t *testing.T) {
+	restore := currentLanguage()
+	defer setLanguage(restore)
+	setLanguage("en")
+	var brief strings.Builder
+	if !printCommandBrief(&brief, "history") {
+		t.Fatal("history has a brief")
+	}
+	lines := strings.Split(brief.String(), "\n")
+	if len(lines) < 3 || lines[2] != T("help.usage_label") || !strings.Contains(brief.String(), "edc history list [options] [DB]") {
+		t.Errorf("brief = %q", brief.String())
+	}
+	if strings.Contains(brief.String(), "\n  edc top -w\n") {
+		t.Errorf("history examples must run history: %q", brief.String())
+	}
+}

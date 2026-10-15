@@ -30,7 +30,9 @@ func runHistory(args []string) int {
 	if len(args) == 0 {
 		choice, ok := promptMissingChoice("edc history", []string{"list", "top", "process"})
 		if !ok {
-			printCommandBrief(os.Stderr, "history")
+			if !printCommandBrief(os.Stderr, "history") {
+				fmt.Fprintln(os.Stderr, T("history.usage"))
+			}
 			return 2
 		}
 		args = []string{choice}

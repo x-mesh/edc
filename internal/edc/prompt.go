@@ -49,7 +49,8 @@ func promptArgsWithColor(reader *bufio.Reader, output io.Writer, command string,
 // 명령에 꼭 필요한 값이라, 값을 제대로 준 실행에는 나타나지 않는다.
 func promptMissingChoice(command string, choices []string) (string, bool) {
 	file, ok := terminalInput(os.Stdin)
-	if !ok {
+	// 선택 화면은 stdout에 그린다. stdout이 파이프나 파일이면 화면이 그쪽으로 가고 입력만 기다리게 된다.
+	if !ok || !isTerminal(os.Stdout) {
 		return "", false
 	}
 	// 고를 것이 하나뿐이면 고르는 화면은 의식일 뿐이다. 무엇이 실행되는지는 echo가 알려 준다.

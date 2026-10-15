@@ -17,6 +17,10 @@ du:
   evidence:
     unreadable: "unreadable directories"
   other: "(%d other entries)"
+  partial:
+    timeout: "PARTIAL: edc stopped at the %s time limit. The sizes above and the total %s cover only what it read"
+    stopped: "PARTIAL: you stopped edc. The sizes above and the total %s cover only what it read"
+    next: "to count the whole tree: %s"
   fs:
     title: "file system  %s  %s  %s used of %s"
     counted: "counted"

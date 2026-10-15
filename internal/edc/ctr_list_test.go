@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/charmbracelet/x/ansi"
 )
 
 // ctrListLine은 이름과 ID를 바꾼 docker inspect 한 줄이다. 한 번도 돈 적 없는 container는 FinishedAt이 0이다.
@@ -154,8 +156,22 @@ func TestRunCtrWithoutAContainerListsThem(t *testing.T) {
 	if code := runCtrWith([]string{"--all", "web"}, "test", ctrListFakeSources(&asked), true); code != 2 {
 		t.Fatalf("--all with a container exits with 2, got %d", code)
 	}
-	table := formatCtrListTable([]ctrListItem{{Name: "web", State: "running", Restarts: 1, Image: "nginx:1.27"}})
+	table := formatCtrListTable([]ctrListItem{{Name: "web", State: "running", Restarts: 1, Image: "nginx:1.27"}}, textStyle{})
 	if lines := strings.Split(strings.TrimSpace(table), "\n"); len(lines) != 2 || !strings.HasPrefix(lines[0], "NAME") || !strings.HasSuffix(lines[1], "nginx:1.27") {
 		t.Fatalf("table:\n%s", table)
+	}
+}
+
+// 터미널에 쓰는 표는 머리글과 image가 회색이고 상태 칸은 대화형 화면과 같은 색이다.
+func TestFormatCtrListTableColorsTheState(t *testing.T) {
+	items := []ctrListItem{{Name: "web", State: "running", Status: "running", Image: "nginx:1.27"}, {Name: "job", State: "exited (1)", Status: "exited", ExitCode: 1, Image: "busybox"}}
+	plain, colored := formatCtrListTable(items, textStyle{}), formatCtrListTable(items, textStyle{color: true})
+	if ansi.Strip(colored) != plain {
+		t.Fatalf("plain:\n%s\ncolored:\n%q", plain, colored)
+	}
+	for _, want := range []string{richExpect("\033[90mNAME\033[0m"), richExpect("\033[32mrunning\033[0m"), richExpect("\033[90mnginx:1.27\033[0m"), richPaint("exited (1)", items[1].stateColor(), false)} {
+		if !strings.Contains(colored, want) {
+			t.Fatalf("table lacks %q: %q", want, colored)
+		}
 	}
 }

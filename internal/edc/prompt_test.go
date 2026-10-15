@@ -20,6 +20,23 @@ func TestPromptArgsEchoesTheCommandToRetype(t *testing.T) {
 	}
 }
 
+// 색을 쓰는 터미널에서는 묻는 label이 굵고, echo는 화살표가 회색, 그대로 칠 명령이 굵은 청록이다.
+func TestPromptArgsColorsTheLabelAndTheEcho(t *testing.T) {
+	var output strings.Builder
+	if _, ok := promptArgsWithColor(bufio.NewReader(strings.NewReader("example.com\n")), &output, "edc doctor", []string{"target"}, true); !ok {
+		t.Fatal("prompt failed")
+	}
+	want := richExpect("\033[1mtarget\033[0m: \033[90m→\033[0m \033[1;36medc doctor example.com\033[0m\n\n")
+	if got := output.String(); got != want {
+		t.Fatalf("output = %q, want %q", got, want)
+	}
+	var plain strings.Builder
+	promptEcho(&plain, "edc dns config")
+	if plain.String() != "→ edc dns config\n\n" {
+		t.Fatalf("plain echo = %q", plain.String())
+	}
+}
+
 // 필수 위치 인자가 둘이면 둘 다 묻고, 되돌려 주는 명령에도 둘 다 들어가야 한다.
 func TestPromptArgsAsksForEveryMissingValue(t *testing.T) {
 	var output strings.Builder

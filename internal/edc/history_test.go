@@ -16,6 +16,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 )
 
 func topHistoryFixture(t *testing.T, path string) *topRecorder {
@@ -697,5 +698,66 @@ func TestHistoryListShowsTheInterfaceFilter(t *testing.T) {
 	last := func(line string) string { fields := strings.Fields(line); return fields[len(fields)-1] }
 	if len(lines) != 3 || last(lines[0]) != "INTERFACES" || last(lines[1]) != "physical,wg0" || last(lines[2]) != "all" {
 		t.Fatalf("list:\n%s", text.String())
+	}
+}
+
+// 색 표는 tabwriter 대신 평문 칸으로 폭을 정한다. 색을 벗기면 평문 표와 같은 byte여야 열이 맞는다.
+func TestHistoryColorTableMatchesThePlainTable(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "record.db")
+	recorder := topHistoryFixture(t, path)
+	for index, cpu := range []float64{90, 40} {
+		if err := recorder.Record(historyFixtureSample(index+1, cpu, topProcess{PID: 7, Command: "nginx", CPU: 3, RSS: 1 << 30})); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := recorder.Close("finished"); err != nil {
+		t.Fatal(err)
+	}
+	db, err := openHistoryDB(path, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	render := func(command string, style textStyle) string {
+		var output bytes.Buffer
+		if err := writeHistory(&output, db, command, historyOptions{}, false, style); err != nil {
+			t.Fatal(err)
+		}
+		return output.String()
+	}
+	color := textStyle{color: true}
+	for _, command := range []string{"list", "top", "process"} {
+		plain, colored := render(command, textStyle{}), render(command, color)
+		if ansi.Strip(colored) != plain || colored == plain {
+			t.Fatalf("%s:\nplain:\n%s\ncolored:\n%q", command, plain, colored)
+		}
+		if header := strings.SplitN(colored, "\n", 2)[0]; !strings.HasPrefix(header, richExpect("\033[90mRUN\033[0m")) {
+			t.Fatalf("%s header = %q", command, header)
+		}
+	}
+	list := render("list", color)
+	if !strings.Contains(list, richExpect("\033[32mfinished\033[0m")) || !strings.Contains(list, "1"+richExpect("\033[90ms\033[0m")) {
+		t.Fatalf("list = %q", list)
+	}
+	top := render("top", color)
+	for _, want := range []string{richExpect("\033[31m90.00\033[0m"), richExpect("\033[33m92.00\033[0m"), "  40.00  "} {
+		if !strings.Contains(top, want) {
+			t.Fatalf("top lacks %q: %q", want, top)
+		}
+	}
+	if process := render("process", color); !strings.Contains(process, "1.00"+richExpect("\033[90m GB\033[0m")) {
+		t.Fatalf("process = %q", process)
+	}
+}
+
+func TestHistoryStatusPaint(t *testing.T) {
+	style := textStyle{color: true}
+	for status, want := range map[string]string{"finished": "\033[32m", "unfinished": "\033[33m", "error": "\033[31m"} {
+		if got := historyStatusPaint(style, status)(status); got != richExpect(want+status+"\033[0m") {
+			t.Fatalf("%s = %q", status, got)
+		}
+	}
+	if historyStatusPaint(style, "other") != nil {
+		t.Fatal("an unknown status keeps the default color")
 	}
 }

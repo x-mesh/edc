@@ -942,3 +942,51 @@ func TestAIDashboardColorsUsageByThreshold(t *testing.T) {
 		t.Error("provider error must be red")
 	}
 }
+
+// --count 표는 색을 써도 열이 같다. 사용률은 대시보드와 같은 임계치로, 남은 시간과 이름표는 회색으로 칠한다.
+func TestFormatAITableColorsUsageByThreshold(t *testing.T) {
+	now := time.Date(2026, 10, 15, 9, 0, 0, 0, time.UTC)
+	sample := aiSample{
+		At: now,
+		Providers: []aiProvider{
+			{Name: "claude", FetchedAt: now.Add(-2 * time.Minute), Windows: []aiWindow{
+				{Name: "5h", Used: 42, ResetsAt: now.Add(2*time.Hour + 16*time.Minute + 46*time.Second)},
+				{Name: "7d", Used: 85, ResetsAt: now.Add(time.Hour)},
+				{Name: "opus", Used: 97},
+			}},
+			{Name: "codex", Err: "boom", Windows: []aiWindow{{Name: "5h", Used: 0, ResetsAt: now.Add(-time.Minute)}}},
+		},
+		Totals:    []aiTotal{{Window: "5h", Claude: aiUsage{Input: 1000, Cache: 3000}}},
+		ScanError: "unreadable",
+	}
+	plain, colored := formatAITable(sample, textStyle{}), formatAITable(sample, textStyle{color: true})
+	at := now.Local().Format("15:04:05")
+	reset := now.Add(2*time.Hour + 16*time.Minute + 46*time.Second).Local().Format("01-02 15:04:05")
+	for _, want := range []string{
+		at + "  claude  5h        42%  " + reset + "  in 02:16:46\n",
+		at + "  claude  updated  2m00s ago\n",
+		at + "  codex   error    boom\n",
+		at + "  tokens  5h       claude 4.0K hit 75% · codex 0 hit - · this host\n",
+		at + "  scan    error  unreadable\n",
+	} {
+		if !strings.Contains(plain, want) {
+			t.Fatalf("plain lacks %q:\n%s", want, plain)
+		}
+	}
+	if ansi.Strip(colored) != plain {
+		t.Fatalf("plain:\n%s\ncolored:\n%q", plain, colored)
+	}
+	for _, want := range []string{
+		richExpect("\033[90m" + at + "\033[0m"),
+		richExpect("\033[32m 42%\033[0m  ") + reset + richExpect("  \033[90min 02:16:46\033[0m"),
+		richExpect("\033[33m 85%\033[0m"),
+		richExpect("\033[31m 97%\033[0m  \033[90mno reset time\033[0m"),
+		richExpect("\033[90m  0%\033[0m"),
+		richExpect("\033[31mboom\033[0m"),
+		richExpect("\033[90mclaude\033[0m 4.0K \033[90mhit\033[0m 75%"),
+	} {
+		if !strings.Contains(colored, want) {
+			t.Fatalf("colored lacks %q:\n%q", want, colored)
+		}
+	}
+}

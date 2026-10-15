@@ -286,6 +286,7 @@ func runAIStream(writer io.Writer, collector *aiCollector, poll time.Duration, c
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	encoder := json.NewEncoder(writer)
+	style := newTextStyle(!jsonOutput && writer == io.Writer(os.Stdout) && richEnabled(os.Stdout))
 	for printed := 0; count == 0 || printed < count; printed++ {
 		if printed > 0 {
 			select {
@@ -309,40 +310,57 @@ func runAIStream(writer io.Writer, collector *aiCollector, poll time.Duration, c
 			}
 			continue
 		}
-		fmt.Fprint(writer, formatAITable(sample))
+		fmt.Fprint(writer, formatAITable(sample, style))
 	}
 	return 0
 }
 
-func formatAITable(sample aiSample) string {
+// formatAITable은 --count와 파이프의 표다. 색을 쓰면 사용률은 대시보드와 같은 임계치로, 시각과 이름표는 회색으로 칠한다.
+// 칸은 평문으로 채운 뒤 칠해 열이 맞는다.
+func formatAITable(sample aiSample, style textStyle) string {
 	var builder strings.Builder
-	at := sample.At.Local().Format("15:04:05")
+	at := style.dim(sample.At.Local().Format("15:04:05"))
 	nameWidth := len("updated")
 	for _, provider := range sample.Providers {
 		for _, window := range provider.Windows {
 			nameWidth = max(nameWidth, len(window.Name))
 		}
 	}
+	line := func(format string, values ...any) {
+		builder.WriteString(style.fit(fmt.Sprintf(format, values...)) + "\n")
+	}
+	pad := func(text string, width int) string { return fmt.Sprintf("%-*s", width, text) }
 	for _, provider := range sample.Providers {
+		name := pad(provider.Name, 6)
 		if provider.Err != "" {
-			fmt.Fprintf(&builder, "%s  %-6s  %-*s  %s\n", at, provider.Name, nameWidth, "error", provider.Err)
+			line("%s  %s  %s  %s", at, name, style.dim(pad("error", nameWidth)), style.bad(provider.Err))
 		}
 		// 저장한 값이나 실패 전에 받은 값은 지금 값이 아니다. 언제 받은 값인지 같이 쓴다.
 		if !provider.FetchedAt.IsZero() && sample.At.Sub(provider.FetchedAt) >= time.Minute {
-			fmt.Fprintf(&builder, "%s  %-6s  %-*s  %s ago\n", at, provider.Name, nameWidth, "updated", aiAgo(sample.At.Sub(provider.FetchedAt)))
+			line("%s  %s  %s  %s", at, name, style.dim(pad("updated", nameWidth)), style.dim(aiAgo(sample.At.Sub(provider.FetchedAt))+" ago"))
 		}
 		for _, window := range provider.Windows {
-			fmt.Fprintf(&builder, "%s  %-6s  %-*s  %3.0f%%  %s\n", at, provider.Name, nameWidth, window.Name, window.Used, aiResetText(window.ResetsAt, sample.At))
+			line("%s  %s  %s  %s  %s", at, name, pad(window.Name, nameWidth), style.paint(fmt.Sprintf("%3.0f%%", window.Used), aiPercentColor(window.Used)), aiStyleReset(style, aiResetText(window.ResetsAt, sample.At)))
 		}
 	}
 	for _, total := range sample.Totals {
-		fmt.Fprintf(&builder, "%s  tokens  %-*s  claude %s hit %s · codex %s hit %s · this host\n", at, nameWidth, total.Window,
-			aiCompact(total.Claude.total()), total.Claude.cacheHitText(), aiCompact(total.Codex.total()), total.Codex.cacheHitText())
+		line("%s  %s  %s  %s %s %s %s %s %s %s %s %s %s", at, style.dim("tokens"), style.dim(pad(total.Window, nameWidth)),
+			style.dim("claude"), aiCompact(total.Claude.total()), style.dim("hit"), total.Claude.cacheHitText(), style.dim("·"),
+			style.dim("codex"), aiCompact(total.Codex.total()), style.dim("hit"), total.Codex.cacheHitText(), style.dim("· this host"))
 	}
 	if sample.ScanError != "" {
-		fmt.Fprintf(&builder, "%s  scan    error  %s\n", at, sample.ScanError)
+		line("%s  %s  %s", at, style.dim("scan    error"), style.bad(sample.ScanError))
 	}
 	return builder.String()
+}
+
+// aiStyleReset은 리셋 시각을 기본색으로, 남은 시간과 "reset due"를 회색으로 둔다. 시각이 없으면 모두 회색이다.
+func aiStyleReset(style textStyle, text string) string {
+	at, left, found := strings.Cut(text, "  ")
+	if !found {
+		return style.dim(text)
+	}
+	return at + "  " + style.dim(left)
 }
 
 func aiResetText(at, now time.Time) string {

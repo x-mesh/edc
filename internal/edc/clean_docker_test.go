@@ -742,7 +742,7 @@ func TestCleanBoundaryDockerStatesAreNotZeroBytes(t *testing.T) {
 				}
 			}
 			for _, verbose := range []bool{false, true} {
-				if text := formatCleanDocker(section, verbose, 0); strings.Contains(text, "0 B") || strings.TrimSpace(text) == "" {
+				if text := formatCleanDocker(section, verbose, 0, false); strings.Contains(text, "0 B") || strings.TrimSpace(text) == "" {
 					t.Fatalf("text = %q", text)
 				}
 			}
@@ -772,17 +772,17 @@ func TestFormatCleanDockerAlignsTheItemCounts(t *testing.T) {
 		measured(cleanDockerVolumes, 407_000_000, 0, 5, 3),
 	}}
 	var columns []int
-	for _, row := range strings.Split(formatCleanDocker(section, false, 0), "\n") {
+	for _, row := range strings.Split(formatCleanDocker(section, false, 0, false), "\n") {
 		if index := strings.Index(row, " items, "); index >= 0 {
 			columns = append(columns, liveWidth(row[:strings.LastIndex(row[:index], "  ")]))
 		}
 	}
 	if len(columns) != 4 {
-		t.Fatalf("rows with a count = %d:\n%s", len(columns), formatCleanDocker(section, false, 0))
+		t.Fatalf("rows with a count = %d:\n%s", len(columns), formatCleanDocker(section, false, 0, false))
 	}
 	for _, column := range columns[1:] {
 		if column != columns[0] {
-			t.Fatalf("count columns = %v:\n%s", columns, formatCleanDocker(section, false, 0))
+			t.Fatalf("count columns = %v:\n%s", columns, formatCleanDocker(section, false, 0, false))
 		}
 	}
 }

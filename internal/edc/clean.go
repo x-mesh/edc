@@ -36,10 +36,12 @@ const (
 	cleanOutputLimit = 64 << 10
 	cleanStderrLimit = 4 << 10
 	// cleanDerivedGroups는 기본 출력에 보이는 묶음 수이고, cleanVerboseGroups는 -v에 보이는 묶음 수다.
-	cleanDerivedGroups = 5
+	cleanDerivedGroups = 3
 	cleanVerboseGroups = 30
 	cleanDetailRunes   = 80
 	cleanDerivedID     = "xcode-derived-data"
+	// cleanNoSize는 크기를 모르는 행의 크기 칸이다. 0 B로 쓰면 비어 있다고 읽힌다.
+	cleanNoSize = "-"
 )
 
 const (
@@ -1042,7 +1044,7 @@ func runCleanWith(args []string, version string, deps cleanDeps, ok bool, homeEr
 	if terminal {
 		width = terminalWidth()
 	}
-	return cleanPrint(stdout, options, result, terminal && os.Getenv("NO_COLOR") == "", width, lineShown)
+	return cleanPrint(stdout, options, result, terminal && os.Getenv("NO_COLOR") == "", width, lineShown, deps.home)
 }
 
 // cleanScanLive는 탐색하는 동안 spinner 한 줄을 띄운다. probeLiveDelay 안에 끝나면 화면을 띄우지 않는다.
@@ -1138,15 +1140,47 @@ func cleanPad(text string, width int) string {
 	return text
 }
 
-func cleanValue(item cleanItem) string {
-	size := ""
-	if item.counted() {
-		size = formatSizeShort(*item.UsageBytes)
-		if item.LowerBound {
-			size = T("clean.lower_bound", size)
-		}
-		return size
+// cleanPadLeft는 크기 칸을 du처럼 오른쪽에 맞춰 자릿수를 위아래로 비교하게 한다.
+func cleanPadLeft(text string, width int) string {
+	if gap := width - ansi.StringWidth(text); gap > 0 {
+		return strings.Repeat(" ", gap) + text
 	}
+	return text
+}
+
+// cleanSize는 크기 칸의 값이다. 하한은 du처럼 ≥를 붙여 칸 폭을 문장 길이만큼 늘리지 않는다.
+func cleanSize(bytes uint64, lowerBound bool) string {
+	size := formatSizeShort(bytes)
+	if lowerBound {
+		return "≥" + size
+	}
+	return size
+}
+
+// cleanHomePath는 홈 아래 경로를 ~로 줄인다. 좁은 화면에서 줄 끝이 잘릴 때 폴더 이름이 먼저 사라지지 않게 한다.
+func cleanHomePath(path, home string) string {
+	home = strings.TrimSuffix(home, "/")
+	if home == "" || path == "" {
+		return path
+	}
+	if path == home {
+		return "~"
+	}
+	if rest, ok := strings.CutPrefix(path, home+"/"); ok {
+		return "~/" + rest
+	}
+	return path
+}
+
+func cleanItemSize(item cleanItem) string {
+	if item.counted() {
+		return cleanSize(*item.UsageBytes, item.LowerBound)
+	}
+	return cleanNoSize
+}
+
+// cleanItemState는 크기가 없는 후보의 상태 문구다.
+func cleanItemState(item cleanItem) string {
 	word := T("clean.status." + item.Status)
 	switch item.Status {
 	case cleanToolAbsent:
@@ -1161,7 +1195,7 @@ func cleanValue(item cleanItem) string {
 }
 
 // lineShown은 spinner 화면이 마지막에 결과 줄을 남겼다는 뜻이다. 그때는 결과 줄을 다시 쓰지 않는다.
-func cleanPrint(stdout io.Writer, options commonOptions, result Result, color bool, width int, lineShown bool) int {
+func cleanPrint(stdout io.Writer, options commonOptions, result Result, color bool, width int, lineShown bool, home string) int {
 	var output io.Writer = stdout
 	var buffer strings.Builder
 	if options.redact {
@@ -1178,13 +1212,14 @@ func cleanPrint(stdout io.Writer, options commonOptions, result Result, color bo
 		docker, _ := result.Metrics["docker"].(cleanDocker)
 		disks, _ := result.Metrics["vm_disks"].([]cleanVMDisk)
 		worktrees, _ := result.Metrics["worktrees"].(cleanWorktrees)
-		fmt.Fprint(output, "\n"+formatCleanItems(items, options.verbose, width))
-		fmt.Fprint(output, formatCleanFilesystems(filesystems, width))
-		fmt.Fprint(output, formatCleanProject(projects, options.verbose, width))
+		fmt.Fprint(output, "\n"+formatCleanItems(items, options.verbose, width, home))
+		fmt.Fprint(output, formatCleanProject(projects, options.verbose, width, home))
 		fmt.Fprint(output, formatCleanDocker(docker, options.verbose, width))
-		fmt.Fprint(output, formatCleanVMDisks(disks, docker.Inside, width))
-		fmt.Fprint(output, formatCleanWorktrees(worktrees, options.verbose, width))
+		fmt.Fprint(output, formatCleanVMDisks(disks, docker.Inside, width, home))
+		fmt.Fprint(output, formatCleanWorktrees(worktrees, options.verbose, width, home))
 		fmt.Fprint(output, formatCleanNotMeasured(options.verbose, width))
+		// 합계는 맨 끝에 둔다. 출력이 화면보다 길면 명령이 끝난 뒤 남는 것은 마지막 줄이다.
+		fmt.Fprint(output, formatCleanFilesystems(filesystems, width))
 	}
 	if options.redact {
 		fmt.Fprint(stdout, redactIPAddresses(buffer.String()))
@@ -1195,18 +1230,29 @@ func cleanPrint(stdout io.Writer, options commonOptions, result Result, color bo
 // cleanQuiet는 기본 출력에서 상태별 한 줄로 접는 상태다. 크기가 없고 확인할 것도 없다.
 var cleanQuiet = []string{cleanAbsent, cleanToolAbsent, cleanDuplicate}
 
-// cleanWrap은 width가 0보다 크면 줄바꿈하고, 0이면 한 줄로 낸다. 이름이 잘려 사라지지 않게 한다.
+// cleanWrap은 width가 0보다 크면 단어 사이에서 줄을 바꾸고, 0이면 한 줄로 낸다. 이름이 잘려 사라지지 않게 한다.
+// 한 단어가 width보다 길 때만 단어 안에서 바꾼다.
 func cleanWrap(text string, width int) string {
-	var builder strings.Builder
-	for _, line := range traceWrapLine(text, width) {
-		builder.WriteString(line + "\n")
+	if width > 0 {
+		text = ansi.Wrap(text, width, "")
 	}
-	return builder.String()
+	return text + "\n"
 }
 
-func formatCleanItems(items []cleanItem, verbose bool, width int) string {
+// formatCleanItems는 후보마다 우선순위, 크기, 이름, 위치를 한 줄에 보인다. 분류는 이름과 겹치므로 JSON에만 둔다.
+// 우선순위 안에서는 큰 후보부터 보이고, 크기가 없는 후보는 그 우선순위의 끝에 둔다.
+func formatCleanItems(items []cleanItem, verbose bool, width int, home string) string {
 	sorted := append([]cleanItem(nil), items...)
-	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].Priority < sorted[j].Priority })
+	sort.SliceStable(sorted, func(i, j int) bool {
+		left, right := sorted[i], sorted[j]
+		if left.Priority != right.Priority {
+			return left.Priority < right.Priority
+		}
+		if left.counted() != right.counted() {
+			return left.counted()
+		}
+		return left.counted() && *left.UsageBytes > *right.UsageBytes
+	})
 	var shown []cleanItem
 	folded := map[string][]string{}
 	for _, item := range sorted {
@@ -1216,25 +1262,40 @@ func formatCleanItems(items []cleanItem, verbose bool, width int) string {
 		}
 		shown = append(shown, item)
 	}
-	var categoryWidth, nameWidth, valueWidth int
+	limit, _ := cleanGroupLimit(verbose)
+	var sizeWidth, nameWidth int
 	for _, item := range shown {
-		categoryWidth = max(categoryWidth, ansi.StringWidth(T("clean.category."+item.Category)))
+		sizeWidth = max(sizeWidth, ansi.StringWidth(cleanItemSize(item)))
 		nameWidth = max(nameWidth, ansi.StringWidth(T("clean.candidate."+item.ID)))
-		valueWidth = max(valueWidth, ansi.StringWidth(cleanValue(item)))
+		if item.counted() {
+			for _, group := range item.Groups[:min(len(item.Groups), limit)] {
+				sizeWidth = max(sizeWidth, ansi.StringWidth(formatSizeShort(group.UsageBytes)))
+			}
+		}
 	}
 	var builder strings.Builder
 	for _, item := range shown {
-		line := fmt.Sprintf("%s  %s  %s  %s  %s", item.Priority, cleanPad(T("clean.category."+item.Category), categoryWidth),
-			cleanPad(T("clean.candidate."+item.ID), nameWidth), cleanPad(cleanValue(item), valueWidth), cleanLocation(item))
+		lead := ansi.StringWidth(item.Priority) + 2
+		place := cleanLocation(item, home)
+		if !item.counted() {
+			place = cleanItemState(item)
+			if item.ReportedPath != "" {
+				place += "  " + cleanLocation(item, home)
+			}
+		}
+		line := fmt.Sprintf("%s  %s  %s  %s", item.Priority, cleanPadLeft(cleanItemSize(item), sizeWidth),
+			cleanPad(T("clean.candidate."+item.ID), nameWidth), place)
 		builder.WriteString(duFit(line, width) + "\n")
+		// 묶음 이름, 포함 표시, 자세한 줄은 모두 이름 칸보다 두 칸 안쪽에 둔다.
+		indent := strings.Repeat(" ", lead+sizeWidth+4)
 		if item.Inside != "" {
-			builder.WriteString(duFit("      "+T("clean.inside", item.Inside), width) + "\n")
+			builder.WriteString(duFit(indent+T("clean.inside", item.Inside), width) + "\n")
 		}
 		if item.counted() {
-			builder.WriteString(formatCleanGroups(item.Groups, verbose, width))
+			builder.WriteString(formatCleanGroups(item.Groups, verbose, width, lead, sizeWidth))
 		}
 		if verbose {
-			builder.WriteString(formatCleanDetail(item, width))
+			builder.WriteString(formatCleanDetail(item, width, indent, home))
 		}
 	}
 	for _, status := range cleanQuiet {
@@ -1257,13 +1318,13 @@ func cleanFoldedName(item cleanItem) string {
 }
 
 // cleanLocation은 후보의 위치 칸이다. 묶음 후보는 부모 폴더에 이름 규칙이나 제외 표시를 붙인다.
-func cleanLocation(item cleanItem) string {
+func cleanLocation(item cleanItem, home string) string {
 	if item.ReportedPath == "" {
 		return "-"
 	}
-	location := item.ReportedPath
+	location := cleanHomePath(item.ReportedPath, home)
 	if item.ResolvedPath != "" && item.ResolvedPath != item.ReportedPath {
-		location = T("clean.resolved", item.ReportedPath, item.ResolvedPath)
+		location = T("clean.resolved", location, cleanHomePath(item.ResolvedPath, home))
 	}
 	switch {
 	case item.Match != "":
@@ -1274,28 +1335,38 @@ func cleanLocation(item cleanItem) string {
 	return location
 }
 
-func formatCleanGroups(groups []cleanGroup, verbose bool, width int) string {
-	limit, more := cleanDerivedGroups, "clean.group_more"
+func cleanGroupLimit(verbose bool) (int, string) {
 	if verbose {
-		limit, more = cleanVerboseGroups, "clean.group_more_json"
+		return cleanVerboseGroups, "clean.group_more_json"
 	}
+	return cleanDerivedGroups, "clean.group_more"
+}
+
+// formatCleanGroups는 묶음의 크기를 후보와 같은 크기 칸에 두고 이름만 들여 쓴다. edc du가 하위 항목을 보이는 방식이다.
+// 폴더 수는 한 묶음에 폴더가 둘 이상일 때만 쓴다. 폴더 이름별 묶음은 늘 하나다.
+func formatCleanGroups(groups []cleanGroup, verbose bool, width, lead, sizeWidth int) string {
+	limit, more := cleanGroupLimit(verbose)
 	shown := groups
 	if len(shown) > limit {
 		shown = shown[:limit]
 	}
 	var builder strings.Builder
 	for _, group := range shown {
-		builder.WriteString(duFit("      "+T("clean.group", group.Name, group.Folders, formatSizeShort(group.UsageBytes)), width) + "\n")
+		label := group.Name
+		if group.Folders > 1 {
+			label += "  " + T("clean.group_folders", group.Folders)
+		}
+		builder.WriteString(duFit(strings.Repeat(" ", lead)+cleanPadLeft(formatSizeShort(group.UsageBytes), sizeWidth)+"    "+label, width) + "\n")
 	}
 	if len(shown) < len(groups) {
-		builder.WriteString("      " + T(more, len(groups)-len(shown)) + "\n")
+		builder.WriteString(duFit(strings.Repeat(" ", lead+sizeWidth+4)+T(more, len(groups)-len(shown)), width) + "\n")
 	}
 	return builder.String()
 }
 
-func formatCleanDetail(item cleanItem, width int) string {
+func formatCleanDetail(item cleanItem, width int, indent, home string) string {
 	var builder strings.Builder
-	line := func(text string) { builder.WriteString(duFit("      "+text, width) + "\n") }
+	line := func(text string) { builder.WriteString(duFit(indent+text, width) + "\n") }
 	if item.Detail != "" {
 		line(item.Detail)
 	}
@@ -1309,7 +1380,7 @@ func formatCleanDetail(item cleanItem, width int) string {
 	if item.Unreadable > 0 {
 		line(T("clean.unreadable", item.Unreadable))
 		for _, path := range item.UnreadablePaths {
-			line("  " + path)
+			line("  " + cleanHomePath(path, home))
 		}
 	}
 	if item.counted() {

@@ -696,7 +696,7 @@ edc does not read tool configuration files such as `bunfig.toml`, `.npmrc`, and 
 
 On Linux, edc measures the candidates that the table does not mark as macOS. It does not measure the rest of `~/.cache` on Linux.
 
-Each candidate has a priority. P1 holds the tool caches. P2 holds downloaded browsers, Xcode data, app caches, and logs. P3 holds models and toolchains. The text output lists P1 first.
+Each candidate has a priority. P1 holds the tool caches. P2 holds downloaded browsers, Xcode data, app caches, and logs. P3 holds models and toolchains. The text output lists P1 first. In each priority, the largest candidate comes first.
 
 edc reuses the size code of `edc du`. It measures one candidate at a time. It does not go into a mount below a path. A symlink path shows the reported path and the real path, and edc measures the real path. DerivedData shows its folders grouped by app name. `rustup-toolchains` and `app-logs` show their folders by name.
 
@@ -728,9 +728,9 @@ Each candidate has one status.
 
 Only `measured` and `partial` have `usage_bytes`. No other status shows `0 B`. A candidate inside another candidate is not added twice to the sum.
 
-The text output shows one line for each candidate that has a size or needs a check. It folds `absent`, `tool_absent`, and `duplicate` into one line for each status. A group list shows 5 items. `-v` shows every candidate and 30 items for each group. `--json` shows all items.
+The text output shows one line for each candidate that has a size or needs a check. It folds `absent`, `tool_absent`, and `duplicate` into one line for each status. A group list shows 3 items. `-v` shows every candidate and 30 items for each group. `--json` shows all items. The text output writes a path in the home directory with `~`. The JSON holds the full path.
 
-The sum for each file system is usage. It is not the space that a cleanup frees. APFS clones and snapshots can make the sum larger than the freed space. A hard link counts once in one candidate. A hard link between two candidates counts twice. The pnpm store and the uv cache use hard links. No candidate has a reclaimable value. Only the Docker section shows one, and the engine reports it.
+The sum for each file system is usage. The text output shows it at the end. It is not the space that a cleanup frees. APFS clones and snapshots can make the sum larger than the freed space. A hard link counts once in one candidate. A hard link between two candidates counts twice. The pnpm store and the uv cache use hard links. No candidate has a reclaimable value. Only the Docker section shows one, and the engine reports it.
 
 A candidate shows a cleanup command only if the tool documents one. The candidates `bun`, `pip`, `huggingface`, and `rustup-toolchains` show one. The candidates `cargo-registry`, `zig`, `app-caches`, and a few more show none. edc never runs a command.
 
@@ -1872,7 +1872,7 @@ Use `trace io` on Linux to measure block I/O latency. It records queue latency f
 ./bin/edc trace io --container database --json io.json
 ```
 
-`trace io` reports read and write operations, bytes, and average, p95, and maximum queue, service, and total latency. By default, it emits requests at or above 1ms. Use `--slow <duration>` to change this threshold, for example `--slow 200us` on a fast NVMe device. The summary reports ring loss, pending-map insertion failures, unmatched completions, incomplete requests, and requeues. A request without saved issue state has no invented latency or process owner.
+`trace io` reports read and write operations, bytes, and average, p95, and maximum queue, service, and total latency. By default, it emits requests at or above 1ms. Use `--slow <duration>` to change this threshold, for example `--slow 200us` on a fast NVMe device. The summary reports ring loss, pending-map insertion failures, unmatched completions, incomplete requests, and requeues. `Below threshold` is the number of requests that completed faster than `--slow`, on all devices and before the `--process`, `--device`, and `--container` filters. A device with a write-back cache can complete all writes in less than 1ms. In this case `Writes` is 0, and the writes are in `Below threshold`. A request without saved issue state has no invented latency or process owner.
 
 Use `--group-by device`, `--group-by process`, `--group-by cgroup`, or `--group-by event` for I/O reports. `--raw` writes each completed request and then the summary as JSONL. In each event, `timestamp_ns` is Unix epoch time in nanoseconds, the same clock as the summary line. `boot_time_ns` is the kernel monotonic time since boot. `--json` writes the summary report. `trace io` requires kernel BTF, block request tracepoints, `CAP_BPF`, and `CAP_PERFMON`. It does not require `CAP_NET_ADMIN`. It finds the tracepoints in kernel BTF and does not require tracefs, so it runs in a container without a tracefs mount.
 

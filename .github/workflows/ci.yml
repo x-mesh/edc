@@ -122,6 +122,14 @@ jobs:
           grep -q -- '--- PASS: TestTraceLockCountsFutexAndKernelWaits' lock.log
           grep -q -- '--- PASS: TestTraceLockCountsEachSleepingMutexWaitOnce' lock.log
 
+      # trace io는 --slow보다 빨리 끝난 요청을 버리고 그 수만 남긴다. disk에 있는 work tree에 쓰고 fsync해 그 수를 runner kernel에서 본다.
+      - name: Trace io counts the requests below the threshold
+        shell: bash
+        working-directory: internal/edc
+        run: |
+          sudo ../../edc.test -test.run '^TestTraceIOCountsTheRequestsBelowTheThreshold$' -test.count=1 -test.v 2>&1 | tee io.log
+          grep -q -- '--- PASS: TestTraceIOCountsTheRequestsBelowTheThreshold' io.log
+
       # trace reclaim은 시험용 cgroup의 memory.max와 memory.high로 memcg 회수와 throttle을 일으킨다. 회수할 file은 tmpfs가
       # 아닌 곳에 있어야 하므로 work tree 안에 둔다.
       - name: Trace reclaim counts memcg reclaim and throttle

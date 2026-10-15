@@ -854,12 +854,29 @@ func TestCleanWorktreeTextShowsStatesAndCapsTheList(t *testing.T) {
 	unknown := cleanWorktree{Path: "/h/.gk/worktree/repo/unknown", Kind: cleanWorktreeLinked, Verdict: cleanVerdictStateUnk, Reasons: []string{cleanReasonToolFailed}, Detail: "exit 3"}
 	section.Items = append(section.Items, dirty, unknown)
 
-	text := formatCleanWorktrees(section, false, 0)
-	for _, want := range []string{"Worktrees under /h/.gk/worktree", "not added to any total", "merged, no changes  12", "has changes  1  2.0 MB",
-		"state unknown  1  not reported", "at least 2 changed, 1 untracked", "more, -v shows more", "git-kit worktree cleanup", "other files in the folder: 1.0 MB"} {
+	text := formatCleanWorktrees(section, false, 0, "/h")
+	for _, want := range []string{"Worktrees under ~/.gk/worktree", "not added to any total", "merged, no changes  12",
+		"at least 2 changed, 1 untracked", "more, -v shows more", "git-kit worktree cleanup", "other files in the folder: 1.0 MB"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("text lacks %q:\n%s", want, text)
 		}
+	}
+	// 요약 줄은 크기, 판정, 수 순서이고, 크기를 모르는 판정은 크기 칸이 -다.
+	squeezed := strings.Join(strings.Fields(text), " ")
+	for _, want := range []string{"2.0 MB has changes 1 - state unknown 1", "merged, no changes 12 2.0 MB has changes repo/w20"} {
+		if !strings.Contains(squeezed, want) {
+			t.Errorf("summary lacks %q:\n%s", want, text)
+		}
+	}
+	// 요약 줄과 worktree 줄은 판정 칸을 함께 맞춘다.
+	var columns []int
+	for _, line := range strings.Split(text, "\n") {
+		if index := strings.Index(line, "has changes"); index >= 0 {
+			columns = append(columns, index)
+		}
+	}
+	if len(columns) != 2 || columns[0] != columns[1] {
+		t.Errorf("verdict columns %v:\n%s", columns, text)
 	}
 	if lines := strings.Count(text, "repo/w") + strings.Count(text, "repo/unknown"); lines != cleanWorktreeShown {
 		t.Errorf("listed %d worktrees, want %d:\n%s", lines, cleanWorktreeShown, text)
@@ -868,16 +885,16 @@ func TestCleanWorktreeTextShowsStatesAndCapsTheList(t *testing.T) {
 	if strings.Contains(text, "0 B") {
 		t.Errorf("text shows 0 B:\n%s", text)
 	}
-	verbose := formatCleanWorktrees(section, true, 0)
+	verbose := formatCleanWorktrees(section, true, 0, "")
 	if strings.Count(verbose, "repo/w")+strings.Count(verbose, "repo/unknown") != len(section.Items) || !strings.Contains(verbose, "exit 3") ||
 		!strings.Contains(verbose, "tool failed") || strings.Contains(verbose, "more, -v shows more") {
 		t.Errorf("verbose text:\n%s", verbose)
 	}
-	absent := formatCleanWorktrees(cleanWorktrees{Status: cleanAbsent, Root: "/h/.gk/worktree"}, false, 0)
+	absent := formatCleanWorktrees(cleanWorktrees{Status: cleanAbsent, Root: "/h/.gk/worktree"}, false, 0, "")
 	if !strings.Contains(absent, "worktree folder not found: /h/.gk/worktree") || strings.Contains(absent, "0 B") {
 		t.Errorf("absent text:\n%s", absent)
 	}
-	failed := formatCleanWorktrees(cleanWorktrees{Status: cleanUnreadable, Reasons: []string{cleanReasonPermission}}, false, 0)
+	failed := formatCleanWorktrees(cleanWorktrees{Status: cleanUnreadable, Reasons: []string{cleanReasonPermission}}, false, 0, "")
 	if !strings.Contains(failed, "Worktrees: unreadable (permission denied)") {
 		t.Errorf("failed text:\n%s", failed)
 	}

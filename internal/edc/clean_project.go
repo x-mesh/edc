@@ -567,7 +567,7 @@ func cleanLinkWorktrees(projects *cleanProjectBuildDirs, worktrees *cleanWorktre
 	}
 }
 
-func formatCleanProject(section cleanProjectBuildDirs, verbose bool, width int) string {
+func formatCleanProject(section cleanProjectBuildDirs, verbose bool, width int, home string) string {
 	var builder strings.Builder
 	line := func(indent, text string) { builder.WriteString(duFit(indent+text, width) + "\n") }
 	switch section.Status {
@@ -587,13 +587,13 @@ func formatCleanProject(section cleanProjectBuildDirs, verbose bool, width int) 
 			if root.SameAs != "" {
 				state = T("clean.duplicate", T("clean.status."+root.Status), root.SameAs)
 			}
-			line("  ", T("clean.project.root_state", root.Path, state))
+			line("  ", T("clean.project.root_state", cleanHomePath(root.Path, home), state))
 			if root.Detail != "" {
 				line("    ", root.Detail)
 			}
 			continue
 		}
-		line("  ", T("clean.project.root", root.Path, *root.DirsVisited, *root.Unmarked))
+		line("  ", T("clean.project.root", cleanHomePath(root.Path, home), *root.DirsVisited, *root.Unmarked))
 		if root.Status == cleanPartial {
 			line("    ", cleanStateText(root.Status, root.Reasons))
 		}
@@ -623,34 +623,49 @@ func formatCleanProject(section cleanProjectBuildDirs, verbose bool, width int) 
 	if !verbose && len(shown) > cleanProjectShown {
 		shown = shown[:cleanProjectShown]
 	}
+	var columns cleanBuildDirColumns
 	for _, dir := range shown {
-		builder.WriteString(formatCleanBuildDir(dir, width))
+		columns.size = max(columns.size, liveWidth(cleanBuildDirSize(dir)))
+		columns.kind = max(columns.kind, liveWidth(T("clean.project.kind."+dir.Kind)))
+	}
+	for _, dir := range shown {
+		builder.WriteString(formatCleanBuildDir(dir, width, columns, home))
 	}
 	if len(shown) < len(sorted) {
-		line("  ", T("clean.group_more", len(sorted)-len(shown)))
+		line(strings.Repeat(" ", 2+columns.size+2), T("clean.group_more", len(sorted)-len(shown)))
 	}
 	return builder.String()
 }
 
-func formatCleanBuildDir(dir cleanBuildDir, width int) string {
+type cleanBuildDirColumns struct {
+	size int
+	kind int
+}
+
+func cleanBuildDirSize(dir cleanBuildDir) string {
+	if dir.counted() {
+		return cleanSize(*dir.UsageBytes, dir.LowerBound)
+	}
+	return cleanNoSize
+}
+
+func formatCleanBuildDir(dir cleanBuildDir, width int, columns cleanBuildDirColumns, home string) string {
 	var builder strings.Builder
 	line := func(indent, text string) { builder.WriteString(duFit(indent+text, width) + "\n") }
-	value := ""
+	place := cleanHomePath(dir.Path, home)
 	switch {
 	case dir.counted():
-		value = formatSizeShort(*dir.UsageBytes)
-		if dir.LowerBound {
-			value = T("clean.lower_bound", value)
-		}
 	case dir.Status == cleanDuplicate:
-		value = T("clean.duplicate", T("clean.status.duplicate"), dir.SameAs)
+		place = T("clean.duplicate", T("clean.status.duplicate"), dir.SameAs) + "  " + place
 	default:
-		value = cleanStateText(dir.Status, dir.Reasons)
+		place = cleanStateText(dir.Status, dir.Reasons) + "  " + place
 	}
-	line("  ", T("clean.project.line", value, T("clean.project.kind."+dir.Kind), dir.Path))
+	line("  ", cleanPadLeft(cleanBuildDirSize(dir), columns.size)+"  "+cleanPad(T("clean.project.kind."+dir.Kind), columns.kind)+"  "+place)
 	if dir.Git == "" {
 		return builder.String()
 	}
+	// 자세한 줄은 종류 칸보다 두 칸 안쪽에 둔다.
+	detail := strings.Repeat(" ", 2+columns.size+4)
 	verdict := T("clean.project.recreatable")
 	if !dir.Regenerable {
 		for _, reason := range dir.Reasons {
@@ -660,12 +675,12 @@ func formatCleanBuildDir(dir cleanBuildDir, width int) string {
 			}
 		}
 	}
-	line("      ", T("clean.project.detail", dir.Marker, T("clean.project.git."+dir.Git), verdict))
+	line(detail, T("clean.project.detail", dir.Marker, T("clean.project.git."+dir.Git), verdict))
 	if dir.Inside != "" {
-		line("      ", T("clean.inside", dir.Inside))
+		line(detail, T("clean.inside", dir.Inside))
 	}
 	if dir.InsideWorktree != "" {
-		line("      ", T("clean.project.in_worktree", dir.InsideWorktree))
+		line(detail, T("clean.project.in_worktree", cleanHomePath(dir.InsideWorktree, home)))
 	}
 	return builder.String()
 }

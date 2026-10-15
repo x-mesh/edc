@@ -16,6 +16,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/charmbracelet/x/ansi"
+	"golang.org/x/term"
 )
 
 // httpDetail은 http probe가 redirect 경로와 응답 내용을 얼마나 남기는지다. doctor와 watch는 같은 probe를
@@ -350,12 +351,16 @@ type httpBodyFile struct {
 	file      *os.File
 	err       error
 	truncated bool
+	// escaped는 --body -의 stdout이 터미널인 경우다. 상대가 보낸 escape sequence가 화면이나 클립보드를 조작하지
+	// 못하게, 본문을 모았다가 제어 문자를 \xNN으로 바꿔 쓴다. 파이프와 파일에는 받은 바이트를 그대로 쓴다.
+	escaped bool
+	pending bytes.Buffer
 }
 
 // openHTTPBodyFile은 응답을 받은 뒤에 연다. 요청이 실패하면 빈 파일이 남지 않는다. curl -o처럼 있던 파일은 덮어쓴다.
 func openHTTPBodyFile(path string) (*httpBodyFile, error) {
 	if path == "-" {
-		return &httpBodyFile{path: path, file: os.Stdout}, nil
+		return &httpBodyFile{path: path, file: os.Stdout, escaped: isTerminal(os.Stdout)}, nil
 	}
 	file, err := os.Create(path)
 	if err != nil {
@@ -365,6 +370,9 @@ func openHTTPBodyFile(path string) (*httpBodyFile, error) {
 }
 
 func (saved *httpBodyFile) Write(data []byte) (int, error) {
+	if saved.escaped {
+		return saved.pending.Write(data)
+	}
 	written, err := saved.file.Write(data)
 	if err != nil && saved.err == nil {
 		saved.err = err
@@ -373,6 +381,12 @@ func (saved *httpBodyFile) Write(data []byte) (int, error) {
 }
 
 func (saved *httpBodyFile) close() error {
+	if saved.escaped {
+		if _, err := io.WriteString(saved.file, traceEscapeText(saved.pending.Bytes())); err != nil && saved.err == nil {
+			saved.err = err
+		}
+		return nil
+	}
 	if saved.file == os.Stdout {
 		return nil
 	}
@@ -398,7 +412,7 @@ func withHTTPBodyOutput(result Result, saved *httpBodyFile, size int64) Result {
 	result.Metrics["body_output"] = saved.path
 	if saved.truncated {
 		result.Metrics["body_truncated"] = true
-		line += "\n" + T("observe.http.body_truncated", "10 MiB")
+		line += "\n" + T("observe.http.body_truncated", fmt.Sprintf("%d MiB", httpBodyLimit>>20))
 	}
 	label := T("observe.http.body")
 	for index := range result.Evidence {
@@ -420,7 +434,7 @@ func (flags *httpHeaderFlags) Set(value string) error {
 	name, field, ok := strings.Cut(value, ":")
 	name = strings.TrimSpace(name)
 	// 값에 줄바꿈이 들어가면 header 하나가 두 줄이 되어 다른 header나 본문을 끼워 넣을 수 있다.
-	if !ok || !httpTokenName(name) || strings.ContainsAny(field, "\r\n\x00") {
+	if !ok || !httpTokenName(name) || !httpFieldValue(field) {
 		return fmt.Errorf("%s", T("cli.error.http_header"))
 	}
 	*flags = append(*flags, name+": "+strings.TrimSpace(field))
@@ -434,6 +448,43 @@ func (flags httpHeaderFlags) header() http.Header {
 		header.Add(name, value)
 	}
 	return header
+}
+
+// httpFieldValue는 header 값에 쓸 수 있는 글자인지다. Go는 제어 문자가 든 값을 보내지 않고 요청 전체를 실패시켜,
+// 사용 오류가 네트워크 실패로 보고되었다. tab만 허용한다.
+func httpFieldValue(value string) bool {
+	for index := 0; index < len(value); index++ {
+		if character := value[index]; (character < 0x20 && character != '\t') || character == 0x7f {
+			return false
+		}
+	}
+	return true
+}
+
+// httpTrimPartialRune은 상한에서 자른 미리보기 끝의 덜 끝난 UTF-8 문자를 버린다. 남겨 두면 Content-Type이 없는
+// 텍스트가 binary로 판정되고, 끝에 \xNN이 붙는다.
+func httpTrimPartialRune(preview []byte) []byte {
+	for back := 1; back <= utf8.UTFMax && back <= len(preview); back++ {
+		start := len(preview) - back
+		if utf8.RuneStart(preview[start]) {
+			if !utf8.FullRune(preview[start:]) {
+				return preview[:start]
+			}
+			return preview
+		}
+	}
+	return preview
+}
+
+// httpOutputWidth는 결과를 쓸 터미널의 폭이다. --body -이면 본문이 stdout을 쓰고 결과는 stderr로 간다.
+func httpOutputWidth(options httpCheckOptions) int {
+	if options.bodyPath != "-" {
+		return terminalWidth()
+	}
+	if width, _, err := term.GetSize(int(os.Stderr.Fd())); err == nil && width > 0 {
+		return width
+	}
+	return remoteDefaultWidth
 }
 
 // httpTokenName은 RFC 9110의 token이다. Go는 이름이 잘못된 header를 보내지 않고 요청 전체를 실패시키므로

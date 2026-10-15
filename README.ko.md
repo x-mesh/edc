@@ -869,7 +869,7 @@ journal 기록은 20000개, journal 출력은 32 MiB, `/dev/kmsg` 기록은 1000
 
 `curl -H`처럼 `-H 'Name: value'`로 요청 header를 넣을 수 있고, 여러 번 줄 수 있습니다. `-H 'Host: name'`은 Host header를 바꿉니다. redirect가 다른 host로 가면 그 요청에는 `Authorization`과 `Cookie`가 실리지 않습니다. 요청마다 보낸 header는 `-v`로 확인합니다.
 
-`--body page.html`은 마지막 응답의 본문 전체를 파일로 저장합니다. `--body -`는 본문을 stdout에 쓰고, 결과는 stderr로 보냅니다. 본문은 10 MiB까지만 읽고, 그보다 길면 잘랐다고 알려 줍니다. 같은 이름의 파일이 있으면 덮어씁니다. option은 URL 앞이나 뒤에 둘 수 있습니다.
+`--body page.html`은 마지막 응답의 본문 전체를 파일로 저장합니다. `--body -`는 본문을 stdout에 쓰고, 결과는 stderr로 보냅니다. stdout이 터미널이면 본문의 제어 문자를 escape해서 씁니다. 본문은 10 MiB까지만 읽고, 그보다 길면 잘랐다고 알려 줍니다. 같은 이름의 파일이 있으면 덮어씁니다. option은 URL 앞이나 뒤에 둘 수 있습니다.
 
 ```bash
 ./bin/edc http check http://example.com

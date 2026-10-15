@@ -442,6 +442,23 @@ func runTargetProbeWithFlags(args []string, version, name, probeID string, extra
 	return emitTo(output, options, buildReport(version, started, target, []Result{run(ctx)}, options.redact))
 }
 
+// flagTakesValue는 args[index]가 값을 따로 받는 flag인지다. 그 바로 뒤의 "--"는 끝 표시가 아니라 그 flag의 값이다.
+func flagTakesValue(set *flag.FlagSet, args []string, index int) bool {
+	if index < 0 {
+		return false
+	}
+	arg := args[index]
+	if arg == "-" || arg == "--" || !strings.HasPrefix(arg, "-") || strings.Contains(arg, "=") {
+		return false
+	}
+	found := set.Lookup(strings.TrimLeft(arg, "-"))
+	if found == nil {
+		return false
+	}
+	boolean, ok := found.Value.(interface{ IsBoolFlag() bool })
+	return !ok || !boolean.IsBoolFlag()
+}
+
 // parseInterspersed는 위치 인자 뒤에 온 flag도 읽는다. flag package는 첫 위치 인자에서 멈추므로
 // `edc http check URL -v`의 -v가 두 번째 대상이 되어 실패했다. -- 뒤는 모두 위치 인자로 둔다.
 func parseInterspersed(set *flag.FlagSet, args []string) ([]string, error) {
@@ -451,7 +468,7 @@ func parseInterspersed(set *flag.FlagSet, args []string) ([]string, error) {
 			return nil, err
 		}
 		rest := set.Args()
-		if consumed := len(args) - len(rest); consumed > 0 && args[consumed-1] == "--" {
+		if consumed := len(args) - len(rest); consumed > 0 && args[consumed-1] == "--" && !flagTakesValue(set, args, consumed-2) {
 			return append(positional, rest...), nil
 		}
 		if len(rest) == 0 {

@@ -176,7 +176,7 @@ func TestTopModelChangesViewsAndPanels(t *testing.T) {
 		t.Fatalf("detail view = %q", detail.View().Content)
 	}
 	peaks := topAfter(t, detail, tea.KeyPressMsg{Code: 'h', Text: "h"})
-	if !peaks.peaks || peaks.detail || !strings.Contains(peaks.View().Content, "peaks 60s") {
+	if !peaks.peaks || peaks.detail || !strings.Contains(ansi.Strip(peaks.View().Content), "peaks 60s") {
 		t.Fatalf("peaks view = %q", peaks.View().Content)
 	}
 }
@@ -309,16 +309,16 @@ func TestTopDiskCandidatesColorHeavyIOAndShowGroups(t *testing.T) {
 	}
 	group := lines[2]
 	// 63칸 패널의 이름 칸에는 I/O 대기 수까지 들어가지 않아 process 수만 남는다.
-	if strings.Contains(group, "×") || !strings.Contains(group, "gm (200 procs)") || !strings.Contains(group, topColorDanger+"  400M") {
+	if strings.Contains(group, "×") || !strings.Contains(group, "gm (200 procs)") || !strings.Contains(group, topTintPrefix(topLevelDanger)+"  400M") {
 		t.Fatalf("group line = %q", group)
 	}
-	if !strings.Contains(lines[3], topColorDanger+" 60.0M") || !strings.Contains(lines[4], topColorWarn+" 12.0M") || !strings.Contains(lines[4], topColorWarn+"iowait") {
+	if !strings.Contains(lines[3], topTintPrefix(topLevelDanger)+" 60.0M") || !strings.Contains(lines[4], topTintPrefix(topLevelWarn)+" 12.0M") || !strings.Contains(lines[4], topTintPrefix(topLevelWarn)+"iowait") {
 		t.Fatalf("colors:\n%q\n%q", lines[3], lines[4])
 	}
-	if strings.Contains(lines[5], topColorWarn) || strings.Contains(lines[5], topColorDanger) {
+	if strings.Contains(lines[5], topTintPrefix(topLevelWarn)) || strings.Contains(lines[5], topTintPrefix(topLevelDanger)) {
 		t.Fatalf("a small writer must stay plain: %q", lines[5])
 	}
-	// 고른 줄은 반전 한 번으로 그려야 하고, 칸 색의 reset이 반전을 끊으면 안 된다.
+	// 고른 줄은 바탕 한 번으로 그리고 칸 색을 넣지 않는다.
 	model.processFocus, model.processSelected = true, 0
 	selected := model.candidateLines()[3]
 	if strings.Count(selected, topColorReset) != 1 {
@@ -761,7 +761,7 @@ func TestTopSelectionMarkerKeepsTheTime(t *testing.T) {
 	at := time.Date(2026, 1, 1, 9, 0, 1, 0, time.Local)
 	model := topAfter(t, topFixtureModel(nil), topSampleMsg{snapshot: resourceSnapshot{TakenAt: at}}, topSampleMsg{snapshot: resourceSnapshot{TakenAt: at.Add(time.Second)}})
 	browsing := topAfter(t, model, tea.KeyPressMsg{Code: tea.KeyUp})
-	if !strings.Contains(browsing.View().Content, "09:00:01>│") {
+	if !strings.Contains(ansi.Strip(browsing.View().Content), "09:00:01>│") {
 		t.Fatalf("view = %q", browsing.View().Content)
 	}
 }
@@ -769,7 +769,7 @@ func TestTopSelectionMarkerKeepsTheTime(t *testing.T) {
 func TestTopStatusLinesAreMuted(t *testing.T) {
 	model := topFixtureModel(nil)
 	for _, line := range model.statusLines() {
-		if !strings.HasPrefix(line, liveDim) || !strings.HasSuffix(line, liveReset) {
+		if line != richDim(ansi.Strip(line)) {
 			t.Fatalf("status line is not muted: %q", line)
 		}
 		if got := liveWidth(line); got != topTableWidth {
@@ -927,7 +927,7 @@ func TestTopAllViewShowsPressureSwapAndNetworkLimitsWhenWide(t *testing.T) {
 		}
 	}
 	colored := formatTopDashboardRow(row, topViewAll, newTopLimits(8, true), 167)
-	if !strings.Contains(colored, topPaint(topFitCell("30.1", 5, false), topLevelDanger, true)) || !strings.Contains(colored, topPaint(topFitCell("12.5", 5, false), topLevelWarn, true)) {
+	if !strings.Contains(colored, topTint(topFitCell("30.1", 5, false), topLevelDanger, true)) || !strings.Contains(colored, topTint(topFitCell("12.5", 5, false), topLevelWarn, true)) {
 		t.Fatalf("psi must use the pressure thresholds: %q", colored)
 	}
 }
@@ -1027,7 +1027,7 @@ func TestTopDashboardTitleAddsHostDetailsAsTheTerminalWidens(t *testing.T) {
 	}
 	for _, step := range steps {
 		model.width = step.width
-		title := model.dashboardTitle()
+		title := ansi.Strip(model.dashboardTitle())
 		// 상태는 표 오른쪽 끝에 붙으므로 제목 폭이 표 폭과 같다.
 		if got := topDisplayWidth(title); got != step.width || !strings.HasSuffix(title, "  view all · live 🐰") {
 			t.Fatalf("width %d title is %d wide: %q", step.width, got, title)
@@ -1045,19 +1045,19 @@ func TestTopDashboardTitleAddsHostDetailsAsTheTerminalWidens(t *testing.T) {
 	}
 	// edc 버전은 OS와 memory 다음에 들어가므로, 폭이 모자라면 긴 CPU 모델보다 먼저 남는다.
 	model.version, model.width = "0.9.0", 120
-	if title := model.dashboardTitle(); !strings.HasSuffix(title, "  view all · live · edc 0.9.0 🐰") || strings.Contains(title, "Xeon") {
+	if title := ansi.Strip(model.dashboardTitle()); !strings.HasSuffix(title, "  view all · live · edc 0.9.0 🐰") || strings.Contains(title, "Xeon") {
 		t.Fatalf("title with version = %q", title)
 	}
 	model.version = ""
 	// 다른 보기의 표는 80열이므로 상태도 80열 끝에 둔다.
 	model.view, model.width = topViewCPU, 160
-	if title := model.dashboardTitle(); topDisplayWidth(title) != topTableWidth || !strings.HasSuffix(title, "view cpu · live 🐰") {
+	if title := ansi.Strip(model.dashboardTitle()); topDisplayWidth(title) != topTableWidth || !strings.HasSuffix(title, "view cpu · live 🐰") {
 		t.Fatalf("cpu view title = %q", title)
 	}
 	// host 이름이 길어 양쪽으로 뗄 수 없으면 한 줄로 잇는다.
 	model.view, model.width = topViewAll, topTableWidth
 	model.details.Hostname = strings.Repeat("h", 70)
-	if title := model.dashboardTitle(); !strings.HasSuffix(title, " · 8 cores · view all · live 🐰") {
+	if title := ansi.Strip(model.dashboardTitle()); !strings.HasSuffix(title, " · 8 cores · view all · live 🐰") {
 		t.Fatalf("long host title = %q", title)
 	}
 	if got := topHostOS(hostDetails{System: "darwin", OS: "macOS", Version: "26.0"}); got != "macOS 26.0" {
@@ -1139,13 +1139,13 @@ func TestTopDashboardPaintsValuesOverTheThreshold(t *testing.T) {
 		view topView
 		want string
 	}{
-		{"all load danger", topViewAll, topColorDanger + "12.0" + topColorReset},
-		{"all system warn", topViewAll, topColorWarn + " 75.0" + topColorReset},
-		{"all memory danger", topViewAll, topColorDanger + " 97.0" + topColorReset},
-		{"memory percent danger", topViewMemory, topColorDanger + "  97.0" + topColorReset},
-		{"disk await danger", topViewDisk, topColorDanger + "  80.0" + topColorReset},
-		{"network drop warn", topViewNetwork, topColorWarn + "     5" + topColorReset},
-		{"pressure memory warn", topViewPressure, topColorWarn + "   12.0" + topColorReset},
+		{"all load danger", topViewAll, topTintPrefix(topLevelDanger) + "12.0" + topColorReset},
+		{"all system warn", topViewAll, topTintPrefix(topLevelWarn) + " 75.0" + topColorReset},
+		{"all memory danger", topViewAll, topTintPrefix(topLevelDanger) + " 97.0" + topColorReset},
+		{"memory percent danger", topViewMemory, topTintPrefix(topLevelDanger) + "  97.0" + topColorReset},
+		{"disk await danger", topViewDisk, topTintPrefix(topLevelDanger) + "  80.0" + topColorReset},
+		{"network drop warn", topViewNetwork, topTintPrefix(topLevelWarn) + "     5" + topColorReset},
+		{"pressure memory warn", topViewPressure, topTintPrefix(topLevelWarn) + "   12.0" + topColorReset},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -1161,9 +1161,28 @@ func TestTopDashboardLeavesNormalValuesUncolored(t *testing.T) {
 	rate := resourceRate{Load1: 1, CPUUser: 5, CPUSystem: 2, CPUIOWait: 1, MemoryPercent: 30, CoreCPU: []float64{10, 20},
 		DiskHealthValid: true, DiskIOPS: 12, DiskAwait: 3, NetHealthValid: true, PSIValid: true, PSICPU: 1}
 	for _, view := range topDashboardViews() {
-		if line := topColoredRow(view, rate, topTableWidth); strings.Contains(line, "\033[") {
+		if line := topWithoutCoreMeter(topColoredRow(view, rate, topTableWidth), rate); strings.Contains(line, "\033[") {
 			t.Fatalf("%s row colors a normal value: %q", view, line)
 		}
+	}
+}
+
+// topWithoutCoreMeter는 core 막대의 색을 걷어 낸다. 막대는 정상값도 차분한 초록으로 칠하는 그림이라 값의 색 검사에서 뺀다.
+func topWithoutCoreMeter(line string, rate resourceRate) string {
+	return strings.Replace(line, topCoreMeter(rate.CoreCPU, true), topCoreBar(rate.CoreCPU), 1)
+}
+
+func TestTopCoreMeterTintsEachCoreByThreshold(t *testing.T) {
+	cores := []float64{10, 45, 75, 95}
+	want := richFill(".:", richGreen) + richFill("*", richYellow) + richFill("#", richRed)
+	if got := topCoreMeter(cores, true); got != want || ansi.Strip(got) != topCoreBar(cores) {
+		t.Fatalf("core meter = %q, want %q", got, want)
+	}
+	if got := topCoreMeter(cores, false); got != ".:*#" {
+		t.Fatalf("plain core meter = %q", got)
+	}
+	if got := topCoreMeter(nil, true); got != "—" {
+		t.Fatalf("empty core meter = %q", got)
 	}
 }
 
@@ -1204,17 +1223,17 @@ func TestTopDashboardKeepsTheWidthWithColor(t *testing.T) {
 
 // hot core는 core 하나의 사용률이라 host의 cpu 임계치보다 늦게 켜고 위험 단계를 두지 않는다.
 func TestTopDashboardWarnsOnlyForAFullHotCore(t *testing.T) {
-	tests := map[float64]string{72: "", 89: "", 90: topColorWarn, 100: topColorWarn}
+	tests := map[float64]string{72: "", 89: "", 90: topTintPrefix(topLevelWarn), 100: topTintPrefix(topLevelWarn)}
 	for usage, want := range tests {
 		rate := resourceRate{CoreCPU: []float64{10, usage}}
-		line := topColoredRow(topViewCPU, rate, topTableWidth)
+		line := topWithoutCoreMeter(topColoredRow(topViewCPU, rate, topTableWidth), rate)
 		if want == "" {
 			if strings.Contains(line, "\033[") {
 				t.Fatalf("hot core %.0f%% must stay uncolored: %q", usage, line)
 			}
 			continue
 		}
-		if !strings.Contains(line, want) || strings.Contains(line, topColorDanger) {
+		if !strings.Contains(line, want) || strings.Contains(line, topTintPrefix(topLevelDanger)) {
 			t.Fatalf("hot core %.0f%% must warn only: %q", usage, line)
 		}
 	}
@@ -1291,7 +1310,7 @@ func TestTopProcessBannerLeadsWithTheMatchedGroup(t *testing.T) {
 		t.Fatalf("no filter banner = %q", banner)
 	}
 	colored := plain.withProcessFilter(filter).processBanner()[0]
-	if !strings.HasPrefix(colored, topBannerStyle) || !strings.HasSuffix(colored, topColorReset) {
+	if !strings.HasPrefix(colored, richBadge("PROCESS", richMagenta)+topBannerStyle()) || !strings.HasSuffix(colored, topColorReset) || ansi.StringWidth(colored) != plain.displayWidth() {
 		t.Fatalf("colored banner = %q", colored)
 	}
 	model := plain.withProcessFilter(filter)
@@ -1560,15 +1579,15 @@ func TestTopSelectedRowHighlightsTheActivePane(t *testing.T) {
 		{PID: 1, Command: "first"}, {PID: 2, Command: "second"},
 	}}}
 	model.follow = false
-	if content := model.View().Content; !strings.Contains(content, topBannerStyle+model.rows[0].at.Format("15:04:05")+">") || !strings.Contains(content, topColorDanger) {
+	if content := model.View().Content; !strings.Contains(content, topBannerStyle()+model.rows[0].at.Format("15:04:05")+">") || !strings.Contains(content, topTintPrefix(topLevelDanger)) {
 		t.Fatalf("history selection must keep warning color and highlight its row: %q", content)
 	}
 	model = topAfter(t, model, topKey("tab"), topKey("down"))
 	selected := 0
 	for _, line := range strings.Split(model.View().Content, "\n") {
-		if strings.Contains(line, topBannerStyle) {
+		if strings.Contains(line, topBannerStyle()) {
 			selected++
-			if !strings.HasPrefix(line, topBannerStyle+">       2") || ansi.StringWidth(line) != model.width || !strings.HasSuffix(line, topColorReset) {
+			if !strings.HasPrefix(line, topBannerStyle()+">       2") || ansi.StringWidth(line) != model.width || !strings.HasSuffix(line, topColorReset) {
 				t.Fatalf("selected process must highlight the full row: %q", line)
 			}
 		}
@@ -1577,7 +1596,7 @@ func TestTopSelectedRowHighlightsTheActivePane(t *testing.T) {
 		t.Fatalf("active pane must have one highlighted row, got %d", selected)
 	}
 	model.limits.color = false
-	if content := model.View().Content; strings.Contains(content, topBannerStyle) || !strings.Contains(content, ">       2") {
+	if content := model.View().Content; strings.Contains(content, topBannerStyle()) || !strings.Contains(content, ">       2") {
 		t.Fatalf("plain selection must keep its marker: %q", content)
 	}
 }
@@ -1688,7 +1707,7 @@ func TestTopFooterDocksProcessesOnTheRight(t *testing.T) {
 		t.Fatalf("footer = %d lines:\n%s", len(footer), strings.Join(footer, "\n"))
 	}
 	// 왼쪽 칸에는 이벤트가 들어가고 ·가 여러 바이트라, 오른쪽 칸은 바이트가 아니라 셀 위치로 자른다.
-	if !strings.HasPrefix(ansi.Cut(footer[0], left+topFooterGap, 200), "processes · CPU rank") || !strings.HasPrefix(footer[0], "events · e list") {
+	if !strings.HasPrefix(ansi.Strip(ansi.Cut(footer[0], left+topFooterGap, 200)), "processes · CPU rank") || !strings.HasPrefix(ansi.Strip(footer[0]), "events · e list") {
 		t.Errorf("first footer line = %q", footer[0])
 	}
 	if last := ansi.Strip(footer[len(footer)-1]); !strings.HasPrefix(last, "interval") || !strings.Contains(last, "eps") {
@@ -1703,7 +1722,7 @@ func TestTopFooterDocksProcessesOnTheRight(t *testing.T) {
 	if got := len(detail.footerLines()); got != 7 {
 		t.Errorf("detail footer = %d lines, want 7 beside the processes", got)
 	}
-	if lines := strings.Split(detail.View().Content, "\n"); !strings.HasPrefix(lines[len(lines)-7], "detail ") {
+	if lines := strings.Split(ansi.Strip(detail.View().Content), "\n"); !strings.HasPrefix(lines[len(lines)-7], "detail ") {
 		t.Errorf("detail panel is not at the top left of the footer:\n%s", detail.View().Content)
 	}
 	filter, err := parseTopProcessFilter("alpha")
@@ -1884,4 +1903,54 @@ func TestTopEscGoesBackOneStepAtATime(t *testing.T) {
 	if filtered.processFilter.active() || filtered.view != topViewAll || filtered.canGoBack() {
 		t.Fatalf("the next Esc clears the filter: filter %q, view %s", filtered.processFilter, filtered.view)
 	}
+}
+
+// 색은 글자를 바꾸지 않는다. 색을 걷어 낸 화면은 색 없는 화면과 같고, 줄 폭도 terminal 폭을 넘지 않는다.
+// 고른 줄은 바탕을 폭 끝까지 채우므로 줄 끝 공백만 비교에서 뺀다.
+func TestTopColorViewKeepsThePlainText(t *testing.T) {
+	type step struct {
+		name string
+		keys []string
+	}
+	steps := []step{{"all", nil}, {"cpu", []string{"c"}}, {"history", []string{"up"}}, {"detail", []string{"up", "enter"}},
+		{"processes", []string{"tab", "down"}}, {"split", []string{"v"}}, {"split history", []string{"v", "up"}}, {"help", []string{"?"}}, {"events", []string{"e"}}}
+	for _, width := range []int{80, 100, 160} {
+		for _, step := range steps {
+			colored := topSplitModelAt(width, 45, 8, true, nil)
+			colored.view = topViewAll
+			for _, key := range step.keys {
+				colored = topAfter(t, colored, topKey(key))
+			}
+			plain := colored
+			plain.limits.color = false
+			coloredLines, plainLines := strings.Split(colored.View().Content, "\n"), strings.Split(plain.View().Content, "\n")
+			if len(coloredLines) != len(plainLines) {
+				t.Fatalf("%s at %d: %d colored lines, %d plain", step.name, width, len(coloredLines), len(plainLines))
+			}
+			for index, line := range coloredLines {
+				if got, want := strings.TrimRight(ansi.Strip(line), " "), strings.TrimRight(plainLines[index], " "); got != want {
+					t.Fatalf("%s at %d line %d:\ncolored %q\nplain   %q", step.name, width, index, got, want)
+				}
+				if ansi.StringWidth(line) > width {
+					t.Fatalf("%s at %d line %d is %d wide: %q", step.name, width, index, ansi.StringWidth(line), line)
+				}
+			}
+		}
+	}
+}
+
+func TestRichTopHeaderKeepsTheTableHeader(t *testing.T) {
+	details := hostDetails{Hostname: "host", Model: "model", Cores: 8, MemoryTotal: 16 * 1024 * 1024 * 1024}
+	header := richTopHeader(details)
+	if ansi.Strip(header) != formatTopHeader(details) {
+		t.Fatalf("colored header text = %q, want %q", ansi.Strip(header), formatTopHeader(details))
+	}
+	if !strings.Contains(header, richPaint("🐰 host <model, 8 cores, 16.00 GB> 🐰", richMagenta, true)) || !strings.Contains(header, richDim(topColumnHeader)) {
+		t.Fatalf("colored header = %q", header)
+	}
+}
+
+// topTintPrefix는 topTint가 그 단계에 붙이는 escape다. COLORTERM에 따라 바뀌어 기대값을 부를 때마다 만든다.
+func topTintPrefix(level topLevel) string {
+	return strings.TrimSuffix(topTint("x", level, true), "x"+richReset)
 }

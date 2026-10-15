@@ -265,11 +265,11 @@ func TestTopRowColorsByRiskLevel(t *testing.T) {
 		color string
 	}{
 		{"normal load", resourceRate{Load1: 3}, ""},
-		{"warn load", resourceRate{Load1: 7.5}, topColorWarn},
-		{"danger load", resourceRate{Load1: 12}, topColorDanger},
-		{"danger cpu", resourceRate{CPUUser: 95}, topColorDanger},
-		{"warn iowait", resourceRate{CPUIOWait: 12}, topColorWarn},
-		{"danger memory", resourceRate{MemoryPercent: 99.4}, topColorDanger},
+		{"warn load", resourceRate{Load1: 7.5}, topTintPrefix(topLevelWarn)},
+		{"danger load", resourceRate{Load1: 12}, topTintPrefix(topLevelDanger)},
+		{"danger cpu", resourceRate{CPUUser: 95}, topTintPrefix(topLevelDanger)},
+		{"warn iowait", resourceRate{CPUIOWait: 12}, topTintPrefix(topLevelWarn)},
+		{"danger memory", resourceRate{MemoryPercent: 99.4}, topTintPrefix(topLevelDanger)},
 	}
 	// color가 비면 정상값이라 escape가 하나도 없어야 한다. 색은 경고와 위험 둘뿐이다.
 	for _, test := range tests {

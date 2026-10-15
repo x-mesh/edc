@@ -313,7 +313,7 @@ func topEventLine(cluster topEventCluster, now time.Time, width int, color bool)
 		text += fmt.Sprintf(" +%d", len(cluster)-1)
 	}
 	textWidth := max(1, min(topEventTextWidth, width-11))
-	line := topPaint(marker+topEventStart(cluster[0])+" "+topFitCell(text, textWidth, true), worst.level, color)
+	line := topTint(marker+topEventStart(cluster[0])+" "+topFitCell(text, textWidth, true), worst.level, color)
 	rest := width - 11 - textWidth
 	if rest < 8 {
 		return line
@@ -367,10 +367,10 @@ func (model topModel) eventLines(width, count int) []string {
 	if count <= 0 {
 		return nil
 	}
-	lines := []string{topFitCell("events · e list · [ ] jump", width, true)}
+	lines := []string{topHeading(topFitCell("events · e list · [ ] jump", width, true), model.limits.color)}
 	clusters := topEventClusters(model.eventList())
 	if len(clusters) == 0 {
-		return append(lines, topFitCell("no events yet", width, true))[:min(count, 2)]
+		return append(lines, topDim(topFitCell("no events yet", width, true), model.limits.color))[:min(count, 2)]
 	}
 	now := model.latestAt()
 	for index := len(clusters) - 1; index >= 0 && len(lines) < count; index-- {
@@ -399,7 +399,7 @@ func (model topModel) eventTicker() string {
 			worst = event
 		}
 	}
-	text := topPaint("●"+topEventStart(worst)+" "+worst.text, worst.level, model.limits.color)
+	text := topTint("●"+topEventStart(worst)+" "+worst.text, worst.level, model.limits.color)
 	if worst.culprit != "" {
 		text += " · " + worst.culprit
 	}
@@ -426,7 +426,7 @@ func (model topModel) eventStarts() map[int64]topLevel {
 func (model topModel) eventListLines() []string {
 	clusters := topEventClusters(model.eventList())
 	if len(clusters) == 0 {
-		return []string{"no events yet · warnings that last " + formatTopEventDuration(topEventOpenAfter) + " appear here"}
+		return []string{topDim("no events yet · warnings that last "+formatTopEventDuration(topEventOpenAfter)+" appear here", model.limits.color)}
 	}
 	now := model.latestAt()
 	entries, sinceStart := make([][]string, len(clusters)), false
@@ -471,16 +471,16 @@ func (model topModel) eventListEntry(cluster topEventCluster, now time.Time, sel
 		text += fmt.Sprintf(" +%d", len(cluster)-1)
 	}
 	head := fmt.Sprintf("%s %s%s–%s %7s  ", marker, state, topEventStart(cluster[0]), until, formatTopEventDuration(end.Sub(cluster[0].start)))
-	line := head + topPaint(text, worst.level, model.limits.color && !selected)
+	line := head + topTint(text, worst.level, model.limits.color && !selected)
 	if selected && model.limits.color {
-		line = topBannerStyle + topDashboardFitWidth(line, model.displayWidth()) + topColorReset
+		line = topHighlight(line, model.displayWidth())
 	}
 	lines := []string{line}
 	if len(cluster) > 1 {
 		others := []string{}
 		for _, event := range cluster {
 			if event.kind != worst.kind {
-				others = append(others, topPaint(event.text, event.level, model.limits.color))
+				others = append(others, topTint(event.text, event.level, model.limits.color))
 			}
 		}
 		lines = append(lines, "      also: "+strings.Join(others, " · "))

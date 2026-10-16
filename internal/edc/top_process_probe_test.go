@@ -151,7 +151,7 @@ func TestTopProbeDetailShowsTheWindowAndBothDelays(t *testing.T) {
 	if got != "ebpf 2s · runq 10 avg 2.00ms p95 <4.096ms · io 0 —" {
 		t.Fatalf("detail = %q", got)
 	}
-	lines := topMatchDetail([]topProcess{{PID: 1, CPU: 1, Command: "x"}}, topProcessTotal{Count: 1, CPU: 1, Probe: &stats}, true)
+	lines := topMatchDetail([]topProcess{{PID: 1, CPU: 1, Command: "x"}}, topProcessTotal{Count: 1, CPU: 1, Probe: &stats}, true, false)
 	if len(lines) != 3 || lines[2] != "  "+got {
 		t.Fatalf("match detail = %q", lines)
 	}

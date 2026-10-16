@@ -94,6 +94,7 @@ observe:
     final_request: "최종 요청"
     days_remaining: "%d일 남음"
     http_redirect: "redirect %d회 → %s"
+    redirects: "redirect %d회"
     ping_loss: "패킷 손실 %s%% (수신 %d/%d)"
     ping_target: "대상 %s"
     ping_average: "평균 RTT %sms"
@@ -114,6 +115,23 @@ observe:
     invalid_url: "유효하지 않은 URL: %s"
     unsupported_scheme: "http 또는 https URL만 지원합니다: %s"
     cancelling: "취소 중, 실행 중인 command를 종료합니다"
+
+  http:
+    requests: "요청"
+    body: "본문"
+    body_meta: "%s, %d bytes, %d줄"
+    body_size: "%s, %d bytes"
+    body_bytes: "%d bytes"
+    body_lines: "%d줄"
+    encoded: "%s로 인코딩되어 표시하지 않음"
+    no_content_type: "content-type 없음"
+    binary: "binary라 표시하지 않음"
+    title: "제목  %s"
+    reused: "연결 재사용"
+    decompressed: "gzip 해제"
+    body_saved: "%s에 저장, %d bytes"
+    body_stdout: "stdout에 출력, %d bytes"
+    body_truncated: "%s에서 잘림, 그 뒤 본문은 읽지 않음"
 
   listen:
     label: "연결을 기다리는 소켓"

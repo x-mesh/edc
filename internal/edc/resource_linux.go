@@ -42,6 +42,14 @@ func newTopProcessReader() func() ([]topProcess, bool) {
 				continue
 			}
 			if stat, ok := parseLinuxProcessStat(pid, string(data)); ok {
+				status, err := os.ReadFile("/proc/" + entry.Name() + "/status")
+				// stat을 읽은 뒤 끝난 process다. 남기면 swap을 모르는 process로 세여 묶음의 memory 합이 추정값이 된다.
+				if errors.Is(err, os.ErrNotExist) {
+					continue
+				}
+				if err == nil {
+					stat.Swap, stat.SwapValid = parseLinuxProcessSwap(string(status))
+				}
 				if topFullCommand {
 					if argv, err := os.ReadFile("/proc/" + entry.Name() + "/cmdline"); err == nil {
 						if line := linuxProcessCommandLine(argv); line != "" {

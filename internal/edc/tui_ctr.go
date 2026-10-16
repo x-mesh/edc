@@ -285,14 +285,7 @@ func (model ctrBrowser) View() tea.View {
 }
 
 func (model ctrBrowser) detailLines() []string {
-	detail := model.detail
-	title := "edc ctr · " + detail.unit + " · ↑↓ scroll · r reload · Esc back · q quit"
-	if detail.loading {
-		title = "edc ctr · " + detail.unit + " · loading… · Esc back · q quit"
-	}
-	lines := []string{liveMuted(title, model.color)}
-	end := min(len(detail.lines), detail.offset+max(1, model.height-1))
-	return append(lines, detail.lines[min(detail.offset, end):end]...)
+	return svcBrowserDetailLines("edc ctr", model.detail, model.height, model.color)
 }
 
 func (model ctrBrowser) listLines() []string {
@@ -306,35 +299,24 @@ func (model ctrBrowser) listLines() []string {
 			attention++
 		}
 	}
-	title := fmt.Sprintf("edc ctr · %d containers · %d failed · %d restarting, paused, or unhealthy", len(model.items), failed, attention)
+	parts := []string{fmt.Sprintf("%d containers", len(model.items)),
+		svcBrowserCount(fmt.Sprintf("%d failed", failed), failed, richRed, model.color),
+		svcBrowserCount(fmt.Sprintf("%d restarting, paused, or unhealthy", attention), attention, richYellow, model.color)}
 	if model.all {
-		title += " · all"
+		parts = append(parts, liveMuted("all", model.color))
 	}
 	if !model.updated.IsZero() {
-		title += " · " + model.updated.Format("15:04:05")
+		parts = append(parts, liveMuted(model.updated.Format("15:04:05"), model.color))
 	}
-	keys := "↑↓ select · Enter open · / filter · f failed · a all · r refresh · q quit"
-	switch {
-	case model.filtering:
-		keys = "filter: " + model.filter + "█ · Enter done · Esc clear"
-	case model.filter != "" || model.failed:
-		shown := "failed only"
-		if model.filter != "" {
-			shown = "filter " + model.filter
-			if model.failed {
-				shown += ", failed only"
-			}
-		}
-		keys = fmt.Sprintf("%s · %d shown · Esc clear · Enter open · q quit", shown, len(visible))
-	}
-	lines := []string{title, liveMuted(keys, model.color)}
+	title := svcBrowserHeading("edc ctr", parts, model.color)
+	lines := []string{title, svcBrowserHints(model.filter, model.filtering, model.failed, model.all, len(visible), model.color)}
 	switch {
 	case !model.loaded:
-		return append(lines, "loading…")
+		return append(lines, liveMuted("loading…", model.color))
 	case model.err != nil:
-		return append(lines, evaluateCtrList(nil, model.err).Summary)
+		return append(lines, svcBrowserPaint(evaluateCtrList(nil, model.err).Summary, richRed, false, model.color))
 	case len(visible) == 0:
-		return append(lines, "no container matches")
+		return append(lines, liveMuted("no container matches", model.color))
 	}
 	nameWidth, stateWidth, imageWidth := 4, 5, 5
 	for _, item := range visible {
@@ -356,29 +338,31 @@ func (model ctrBrowser) listLines() []string {
 	if overflow > 0 {
 		stateWidth = max(svcBrowserStateMin, stateWidth-overflow)
 	}
-	row := func(prefix string, cells []string) string {
-		line := prefix + svcBrowserCell(cells[0], nameWidth) + "  " + svcBrowserCell(cells[1], stateWidth) + "  " + fmt.Sprintf("%8s  %8s  %7s", cells[2], cells[3], cells[4])
+	row := func(cells []string, state string) string {
+		line := svcBrowserCell(cells[0], nameWidth) + "  " + svcBrowserPaint(svcBrowserCell(cells[1], stateWidth), state, false, model.color) + "  " + fmt.Sprintf("%8s  %8s  %7s", cells[2], cells[3], cells[4])
 		if showImage {
-			line += "  " + ansi.Truncate(cells[5], imageWidth, "…")
+			line += "  " + svcBrowserPaint(ansi.Truncate(cells[5], imageWidth, "…"), richGray, false, model.color)
 		}
 		return line
 	}
-	lines = append(lines, row("  ", ctrListHeaders()))
+	lines = append(lines, liveMuted("  "+row(ctrListHeaders(), ""), model.color))
 	end := min(len(visible), model.offset+max(1, model.listRows()))
 	for index := model.offset; index < end; index++ {
 		item := visible[index]
-		prefix := "  "
-		if index == model.cursor {
-			prefix = "› "
-		}
-		line := row(prefix, ctrListCells(item))
-		switch {
-		case item.failed():
-			line = topPaint(line, topLevelDanger, model.color)
-		case item.attention():
-			line = topPaint(line, topLevelWarn, model.color)
-		}
-		lines = append(lines, line)
+		lines = append(lines, svcBrowserRow(row(ctrListCells(item), item.stateColor()), index == model.cursor, model.color, model.width))
 	}
 	return lines
+}
+
+// stateColor는 상태 칸의 색이다. 실패는 빨강, 손볼 일이 있으면 노랑, 실행 중은 초록, 나머지는 회색이다.
+func (item ctrListItem) stateColor() string {
+	switch {
+	case item.failed():
+		return richRed
+	case item.attention():
+		return richYellow
+	case item.Status == "running":
+		return richGreen
+	}
+	return richGray
 }

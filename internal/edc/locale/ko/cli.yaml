@@ -22,6 +22,7 @@ cli:
   error:
     unknown_command: "알 수 없는 command: %s"
     help_hint: "edc help로 명령 목록을 봅니다"
+    flag_help: "옵션은 %s로 확인하세요"
     host_port_required: "host:port 형식이 필요합니다: %s"
     one_target_required: "%s에는 target 하나가 필요합니다"
     no_positional: "%s는 positional argument를 받지 않습니다"
@@ -29,6 +30,8 @@ cli:
     min_days_range: "--min-days는 0 이상이어야 합니다"
     quality_server: "--server는 host가 있고 사용자 정보가 없는 http 또는 https 절대 URL이어야 합니다: %s"
     expect_status_range: "--expect-status는 100에서 599 사이여야 합니다"
+    http_header: "-H에는 Name: value 형식으로, 올바른 header 이름과 줄바꿈 없는 값을 줍니다"
+    body_json_stdout: "--body -와 --json -는 둘 다 stdout에 씁니다. 하나는 파일로 지정하세요"
   doctor:
     tls_skipped_for_http: "HTTP target에는 TLS를 적용하지 않습니다"
   info:

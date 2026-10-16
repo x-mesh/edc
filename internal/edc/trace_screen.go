@@ -8,6 +8,7 @@ import (
 	"runtime/debug"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -16,6 +17,7 @@ import (
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 )
 
 const traceScreenEventLimit = 10000
@@ -344,6 +346,7 @@ func (model traceScreenModel) displayRowForSelected(rows []traceScreenRow) int {
 
 func newTraceScreenModel(protocol string, options tcpTraceOptions, eventCh <-chan captureEvent, resultCh <-chan traceFinishedMsg, stop func()) traceScreenModel {
 	input := textinput.New()
+	input.SetStyles(traceInputStyles())
 	input.Prompt = "filter / "
 	input.Placeholder = "process, destination, event"
 	input.CharLimit = 256
@@ -626,6 +629,21 @@ func traceScreenHelp(protocol string) string {
 	return strings.Join(append(keys, "l live", "esc clear", "q quit", "ctrl-c stop"), "  ")
 }
 
+// helpOn은 키 안내에서 지금 켜진 묶음이다. 지금 보기와 i, f, v, m으로 켠 상태다.
+// 미리 보기는 event 목록에서만 그리므로, 다른 보기에서는 split이 켜져 있어도 칠하지 않는다.
+func (model traceScreenModel) helpOn() []string {
+	on := []string{traceViewOn(traceScreenHelp(model.protocol), model.groupBy)}
+	for _, state := range []struct {
+		on   bool
+		hint string
+	}{{model.split && model.groupBy == "", "i split"}, {model.follow, "f follow"}, {model.payloadLines, "v payload"}, {model.secrets, "m secrets"}} {
+		if state.on {
+			on = append(on, state.hint)
+		}
+	}
+	return on
+}
+
 func (model *traceScreenModel) requestStop() {
 	if model.stopping {
 		return
@@ -651,44 +669,60 @@ func (model traceScreenModel) View() tea.View {
 }
 
 func traceScreenHeader(model traceScreenModel) []string {
-	status := "live"
+	status := []traceText{{text: "live", color: richGreen}}
 	if model.selected >= 0 && model.groupBy == "" {
-		status = fmt.Sprintf("paused, %d newer", model.first+len(model.events)-1-model.selected)
+		status = []traceText{{text: fmt.Sprintf("paused, %d newer", model.first+len(model.events)-1-model.selected), color: richYellow}}
 	}
 	if model.secrets && model.protocol == "http" {
-		status += "  ·  secrets shown"
+		status = append(status, traceSeparator, traceText{text: "secrets shown", color: richYellow})
 	}
 	if model.stopping {
-		status = "stopping"
+		status = []traceText{{text: "stopping", color: richYellow}}
 	}
 	filter := "all"
 	if model.filter != "" {
 		filter = model.filter
 	}
-	line := fmt.Sprintf("edc trace %s", traceLabel(model.protocol, model.side))
+	line := traceTitleSpans("edc trace " + traceLabel(model.protocol, model.side))
 	if model.container != "" {
-		line += " in container " + model.container
+		line = append(line, traceLabelSpan(" in container "), traceText{text: model.container})
 	}
 	var report traceGroupReport
 	if model.groupBy != "" {
 		report = model.groupReport()
-		traffic := fmt.Sprintf("  ·  %.1f bps", report.BitsPerSecond)
-		if report.hideTraffic() {
-			traffic = ""
+		line = append(line, traceLabelSpan(" grouped by "), traceText{text: model.groupBy}, traceSeparator)
+		line = append(line, status...)
+		line = append(line, traceSeparator)
+		line = append(line, traceField("events ", fmt.Sprint(report.Events), "")...)
+		line = append(line, traceSeparator)
+		line = append(line, traceField(model.groupBy+" ", fmt.Sprint(len(report.Groups)), "")...)
+		line = append(line, traceSeparator)
+		line = append(line, traceField("event/s ", fmt.Sprintf("%.1f", report.Rate), "")...)
+		if !report.hideTraffic() {
+			line = append(line, traceSeparator)
+			line = append(line, traceField("", fmt.Sprintf("%.1f", report.BitsPerSecond), " bps")...)
 		}
-		line += fmt.Sprintf(" grouped by %s  ·  %s  ·  events %d  ·  %s %d  ·  event/s %.1f%s  ·  filter %s", model.groupBy, status, report.Events, model.groupBy, len(report.Groups), report.Rate, traffic, filter)
 	} else {
+		line = append(line, traceSeparator)
+		line = append(line, status...)
+		line = append(line, traceSeparator)
 		if traceScreenPairs(model.protocol) {
-			line += fmt.Sprintf("  ·  %s  ·  raw events %d  ·  shown pairs %d  ·  slow %s  ·  filter %s", status, model.received, model.shownMySQLPairs(), model.slow, filter)
+			line = append(line, traceField("raw events ", fmt.Sprint(model.received), "")...)
+			line = append(line, traceSeparator)
+			line = append(line, traceField("shown pairs ", fmt.Sprint(model.shownMySQLPairs()), "")...)
+			line = append(line, traceSeparator)
+			line = append(line, traceField("slow ", model.slow.String(), "")...)
 		} else {
-			line += fmt.Sprintf("  ·  %s  ·  events %d  ·  filter %s", status, model.received, filter)
+			line = append(line, traceField("events ", fmt.Sprint(model.received), "")...)
 		}
 	}
-	help := traceScreenHelp(model.protocol)
+	line = append(line, traceSeparator)
+	line = append(line, traceField("filter ", filter, "")...)
+	color := traceScreenColor()
+	help := traceKeyHints(traceScreenHelp(model.protocol), model.width, color, model.helpOn()...)
 	if model.filtering {
-		help = model.input.View() + "  enter apply  esc cancel"
+		help = traceFilterHints(model.input.View(), model.width, color)
 	}
-	color := os.Getenv("NO_COLOR") == ""
 	timeColumn := traceScrollTimeColumn(model.width)
 	destinationWidth, _ := traceScrollColumns(model.width - timeColumn)
 	columns := liveCell("PROCESS", traceScrollProcessWidth) + " " + liveCell("DESTINATION", destinationWidth) + " " + liveCell("EVENT", traceScrollEventWidth) + " SOURCE"
@@ -706,7 +740,7 @@ func traceScreenHeader(model traceScreenModel) []string {
 		}
 		columns = liveCell(traceGroupLabel(model.groupBy), layout.labelWidth) + fmt.Sprintf(traceGroupColumns(model.protocol, layout.byteWidth), append(names, "LAST")...)
 	}
-	return []string{liveSelected(traceFit(line, model.width), color), liveMuted(traceFit(help, model.width), color), traceFit(columns, model.width)}
+	return []string{traceTexts(line, model.width, color), help, traceColumnTitles(columns, model.width, color)}
 }
 
 func (model traceScreenModel) shownMySQLPairs() int {
@@ -755,10 +789,11 @@ func traceScreenListRows(model traceScreenModel, available int) []string {
 			return nil
 		}
 		line := formatTraceScreenEventLabels(event, destination, name, model.width)
-		if row.primary == model.selected || row.response == model.selected {
-			line = traceSelectedEvent(line, model.width, os.Getenv("NO_COLOR") == "")
-		} else if model.width >= 72 {
-			line = traceEventStyle(line, traceProtocol(event), name)
+		// 짝이 없는 행의 response는 -1이라, 고른 event가 없을 때(-1) 모든 행이 고른 행으로 보이지 않게 먼저 확인한다.
+		if model.selected >= 0 && (row.primary == model.selected || row.response == model.selected) {
+			line = traceSelectedEvent(line, model.width, traceScreenColor())
+		} else if model.width >= 72 && traceScreenColor() {
+			line = traceStyledEventLabels(event, destination, name, model.width, model.displayRowSeverity(row, event))
 		}
 		lines := []string{line}
 		if model.payloadLines && event.Payload != "" {
@@ -805,11 +840,25 @@ func traceScreenListRows(model traceScreenModel, available int) []string {
 	return traceScreenPadRows(rows, available)
 }
 
+// traceSelectedEvent는 고른 행을 chip 바탕에 굵게 쓴다. 바탕이 행 끝까지 이어지도록 폭을 채운다. line에 색이 있으면
+// 안의 reset이 바탕을 끊으므로 색을 칠하기 전의 행을 받는다.
 func traceSelectedEvent(line string, width int, color bool) string {
 	if !color {
 		return line
 	}
-	return lipgloss.NewStyle().Foreground(lipgloss.Color("#f8fafc")).Bold(true).Render(line)
+	style := traceStyle().Background(lipgloss.Color(richChipHex())).Foreground(lipgloss.Color(richHex("97"))).Bold(true)
+	if width > liveWidth(line) {
+		style = style.Width(width)
+	}
+	return style.Render(line)
+}
+
+// displayRowSeverity는 행의 event가 알리는 문제의 색이다. 요청과 응답을 짝지은 행은 응답의 event로 판단한다.
+func (model traceScreenModel) displayRowSeverity(row traceScreenRow, event captureEvent) string {
+	if row.response >= model.first && row.response < model.first+len(model.events) && traceScreenPairs(event.Protocol) {
+		event = model.events[row.response-model.first]
+	}
+	return traceEventSeverity(event)
 }
 
 // traceScreenGroupOrder는 화면에 다 들어가지 않을 때 잘릴 group을 정한다. 이름순으로 자르면 같은
@@ -884,14 +933,23 @@ type traceGroupLayout struct {
 
 // traceGroupColumns는 헤더와 행이 같은 폭을 쓰도록 label 뒤 열 형식을 만든다.
 func traceGroupColumns(protocol string, byteWidth int) string {
-	columns := " %5v %6v"
+	return strings.Join(traceGroupColumnFormats(protocol, byteWidth), "")
+}
+
+// traceGroupColumnFormats는 traceGroupColumns를 열마다 나눈 형식이다. 색을 쓰는 화면은 열을 하나씩 채운 뒤 칠한다.
+// 칠한 값을 한 번에 채우면 escape까지 폭으로 세어 뒤 열이 밀린다.
+func traceGroupColumnFormats(protocol string, byteWidth int) []string {
+	columns := []string{" %5v", " %6v"}
 	if !traceProtocols[protocol].hideTraffic {
-		columns += strings.Repeat(fmt.Sprintf(" %%%dv", byteWidth), 4) + " %5v"
+		for range 4 {
+			columns = append(columns, fmt.Sprintf(" %%%dv", byteWidth))
+		}
+		columns = append(columns, " %5v")
 	}
 	for _, column := range traceProtocols[protocol].groupColumns {
-		columns += fmt.Sprintf(" %%%dv", column.width)
+		columns = append(columns, fmt.Sprintf(" %%%dv", column.width))
 	}
-	return columns + " %v"
+	return append(columns, " %v")
 }
 
 // traceGroupColumnsWidth는 label 뒤 열의 폭이다. LAST 앞의 공백까지 센다.
@@ -1001,21 +1059,31 @@ func formatTraceGroupScreenRow(protocol, groupBy string, group traceGroupSummary
 	for _, column := range traceProtocols[protocol].groupColumns {
 		values = append(values, column.value(group))
 	}
-	line := value + fmt.Sprintf(traceGroupColumns(protocol, layout.byteWidth), append(values, group.LastEvent)...)
-	return traceFit(traceGroupColorLine(line, protocol, group), width)
+	values = append(values, group.LastEvent)
+	line := value + fmt.Sprintf(traceGroupColumns(protocol, layout.byteWidth), values...)
+	if !traceScreenColor() {
+		return traceFit(line, width)
+	}
+	// 문제를 세는 열은 0보다 클 때만 칠한다. 다른 값은 기본 색이다.
+	colors := make([]string, len(values))
+	offset := len(values) - 1 - len(traceProtocols[protocol].groupColumns)
+	for index, column := range traceProtocols[protocol].groupColumns {
+		if count, err := strconv.ParseFloat(column.value(group), 64); err == nil && count > 0 {
+			colors[offset+index] = traceGroupColumnSeverity[column.screenTitle]
+		}
+	}
+	colors[len(colors)-1] = traceEventSeverity(captureEvent{Protocol: protocol, Event: group.LastEvent})
+	spans := []traceText{{text: value}}
+	for index, format := range traceGroupColumnFormats(protocol, layout.byteWidth) {
+		spans = append(spans, traceText{text: fmt.Sprintf(format, values[index]), color: colors[index]})
+	}
+	return traceTexts(spans, width, true)
 }
 
-func traceGroupColorLine(line, protocol string, group traceGroupSummary) string {
-	if os.Getenv("NO_COLOR") != "" {
-		return line
-	}
-	color := lipgloss.Color(traceProtocols[protocol].screenColor)
-	if (group.Resets != nil && *group.Resets > 0) || (group.Neighbor != nil && group.Neighbor.MACChanges > 0) || (group.HTTP != nil && group.HTTP.ServerErrors > 0) {
-		color = lipgloss.Color("#fb7185")
-	} else if (group.Retransmissions != nil && *group.Retransmissions > 0) || (group.DNS != nil && group.DNS.Errors > 0) || (group.Neighbor != nil && group.Neighbor.Failures > 0) || (group.HTTP != nil && group.HTTP.ClientErrors > 0) {
-		color = lipgloss.Color("#fbbf24")
-	}
-	return lipgloss.NewStyle().Foreground(color).Render(line)
+// traceGroupColumnSeverity는 문제를 세는 group 열의 색이다. 끊김과 오류는 빨강, 재전송과 실패와 답 없음은 노랑이다.
+var traceGroupColumnSeverity = map[string]string{
+	"RST": richRed, "CHG": richRed, "5XX": richRed, "ERR": richRed,
+	"RET": richYellow, "FAIL": richYellow, "4XX": richYellow, "NOANS": richYellow,
 }
 
 func traceEventMatchesText(event captureEvent, filter string) bool {
@@ -1063,36 +1131,40 @@ func traceScrollColumns(width int) (int, int) {
 	return destination, max(8, width-fixed-destination)
 }
 
-func formatTraceScreenEvent(event captureEvent, width int) string {
-	line := formatTraceScreenEventLine(event, width)
-	if width < 72 {
-		return line
-	}
-	return traceEventStyle(line, traceProtocol(event), event.Event)
-}
-
 func formatTraceScreenEventLabels(event captureEvent, destination, name string, width int) string {
-	process, source := event.Process, event.Source
-	if process == "" {
-		process = "-"
-	}
-	if source == "" {
-		source = "-"
-	}
 	if width < 72 {
+		process, source := emptyAs(event.Process, "-"), emptyAs(event.Source, "-")
 		return traceFit(strings.Join([]string{process, destination, name, source}, "  "), width)
 	}
+	return strings.Join(traceScreenEventCells(event, destination, name, width), " ")
+}
+
+// traceScreenEventCells는 넓은 화면의 event 행을 칸마다 채운 값이다. TIME 칸이 있으면 맨 앞이다.
+func traceScreenEventCells(event captureEvent, destination, name string, width int) []string {
+	process, source := emptyAs(event.Process, "-"), emptyAs(event.Source, "-")
 	timeColumn := traceScrollTimeColumn(width)
 	destinationWidth, sourceWidth := traceScrollColumns(width - timeColumn)
 	cell := func(value string, cellWidth int) string { return liveCell(traceFit(value, cellWidth), cellWidth) }
-	line := cell(process, traceScrollProcessWidth) + " " + cell(destination, destinationWidth) + " " + cell(name, traceScrollEventWidth) + " " + cell(source, sourceWidth)
+	cells := []string{cell(process, traceScrollProcessWidth), cell(destination, destinationWidth), cell(name, traceScrollEventWidth), cell(source, sourceWidth)}
 	if timeColumn > 0 {
-		line = cell(traceEventClock(event), traceScrollTimeWidth) + " " + line
+		cells = append([]string{cell(traceEventClock(event), traceScrollTimeWidth)}, cells...)
 	}
-	return line
+	return cells
 }
 
-// formatTraceScreenEventLine은 색을 칠하기 전의 행이다. 고른 행은 색 대신 글자와 배경을 뒤집어 보인다.
+// traceStyledEventLabels는 넓은 화면의 event 행을 칠한다. 시각과 source는 회색, event 칸은 severity의 색이다.
+func traceStyledEventLabels(event captureEvent, destination, name string, width int, severity string) string {
+	cells := traceScreenEventCells(event, destination, name, width)
+	first := len(cells) - 4
+	if first > 0 {
+		cells[0] = traceDim(cells[0])
+	}
+	cells[first+2] = tracePaint(cells[first+2], severity, false)
+	cells[first+3] = traceDim(cells[first+3])
+	return strings.Join(cells, " ")
+}
+
+// formatTraceScreenEventLine은 색을 칠하기 전의 행이다. 고른 행은 이 행을 chip 바탕에 굵게 쓴다.
 func formatTraceScreenEventLine(event captureEvent, width int) string {
 	destination, name := traceScrollLabels(event)
 	process, source := event.Process, event.Source
@@ -1122,20 +1194,209 @@ func formatTraceScreenPayload(event captureEvent, width int) string {
 	if width >= 72 {
 		line = strings.Repeat(" ", traceScrollTimeColumn(width)+traceScrollProcessWidth+1) + line
 	}
-	return liveMuted(traceFit(line, width), os.Getenv("NO_COLOR") == "")
-}
-
-func traceEventStyle(line, protocol, event string) string {
-	if os.Getenv("NO_COLOR") != "" {
+	line = traceFit(line, width)
+	if !traceScreenColor() {
 		return line
 	}
-	color := lipgloss.Color(traceProtocols[protocol].screenColor)
-	if strings.Contains(event, "reset") || strings.HasSuffix(event, "_"+traceNeighborMACChange) || event == "http_5xx" {
-		color = lipgloss.Color("#fb7185")
-	} else if strings.Contains(event, "retransmit") || strings.Contains(event, "fail") {
-		color = lipgloss.Color("#fbbf24")
+	return traceDim(line)
+}
+
+// traceEventSeverity는 event가 알리는 문제의 색이다. 문제가 없으면 빈 문자열이고 기본 색으로 쓴다. 한 화면은 한
+// protocol만 보이므로 protocol마다 색을 나누지 않고, 끊김과 오류와 버린 패킷은 빨강, 재전송과 실패는 노랑으로 쓴다.
+// HTTP 응답은 status code의 색이다.
+func traceEventSeverity(event captureEvent) string {
+	name := event.Event
+	switch {
+	case traceProtocol(event) == "http" && event.Status >= 200:
+		return richHTTPCodeColor(event.Status)
+	case traceProtocol(event) == "drop", strings.Contains(name, "reset"), strings.HasSuffix(name, "_"+traceNeighborMACChange),
+		name == "http_5xx", strings.HasSuffix(name, "_error"), name == clickHouseEventException:
+		return richRed
+	case strings.Contains(name, "retransmit"), strings.Contains(name, "fail"), name == "http_4xx":
+		return richYellow
 	}
-	return lipgloss.NewStyle().Foreground(color).Render(line)
+	return ""
+}
+
+// traceScreenColor는 전체 화면이 색을 쓸지다. 화면은 NO_COLOR가 없을 때만 뜨지만, model을 직접 그리는 test도 같은 규칙을 따른다.
+func traceScreenColor() bool { return os.Getenv("NO_COLOR") == "" }
+
+// traceStyle은 trace 화면의 lipgloss 기본 style이다. 칠하기 전 행과 칠한 행의 글자가 같도록 tab을 바꾸지 않는다.
+func traceStyle() lipgloss.Style { return lipgloss.NewStyle().TabWidth(lipgloss.NoTabConversion) }
+
+// tracePaint는 color(ANSI 번호)로 글자를 칠한다. color가 비면 bold만 적용하고, 그것도 없으면 그대로 둔다.
+// 색은 rich.go의 고정 팔레트이고, Bubble Tea가 터미널이 받는 색 수로 줄인다.
+func tracePaint(text, color string, bold bool) string {
+	if text == "" || (color == "" && !bold) {
+		return text
+	}
+	style := traceStyle().Bold(bold)
+	if color != "" {
+		style = style.Foreground(lipgloss.Color(richHex(color)))
+	}
+	return style.Render(text)
+}
+
+func traceDim(text string) string { return tracePaint(text, richGray, false) }
+
+// traceFitColored는 칠한 줄을 width칸에 맞춘다. traceFit처럼 넘치면 끝을 …로 바꾸되 escape를 자르지 않는다.
+func traceFitColored(line string, width int) string {
+	if width <= 0 || liveWidth(line) <= width {
+		return line
+	}
+	return ansi.Truncate(line, width, "…")
+}
+
+// traceText는 머리글 한 조각이다. 평문 화면은 text만 잇고, 색을 쓰면 color와 bold로 칠한다.
+type traceText struct {
+	text  string
+	color string
+	bold  bool
+	// on은 지금 켜진 키 안내다. 고른 항목과 같은 chip 바탕에 굵은 글씨로 칠한다.
+	on bool
+}
+
+var traceSeparator = traceText{text: "  ·  ", color: richGray}
+
+func traceTitleSpans(title string) []traceText {
+	return []traceText{{text: title, color: richMagenta, bold: true}}
+}
+
+func traceLabelSpan(text string) traceText { return traceText{text: text, color: richGray} }
+
+// traceField는 "events 3"이나 "1.5 bps" 같은 값 한 칸이다. 이름과 단위는 회색, 값은 기본 색이다.
+func traceField(label, value, unit string) []traceText {
+	spans := []traceText{}
+	if label != "" {
+		spans = append(spans, traceLabelSpan(label))
+	}
+	spans = append(spans, traceText{text: value})
+	if unit != "" {
+		spans = append(spans, traceLabelSpan(unit))
+	}
+	return spans
+}
+
+// traceTexts는 조각을 이은 한 줄을 width칸에 맞춘다. 색을 쓰지 않으면 평문을 traceFit으로 자른 예전 줄과 같다.
+// 색을 쓰면 평문을 자른 자리에서 조각을 끊는다. 그래서 칠한 줄의 글자는 평문 줄과 같고, 잘린 뒤의 escape가 남지 않는다.
+func traceTexts(spans []traceText, width int, color bool) string {
+	var plain strings.Builder
+	for _, span := range spans {
+		plain.WriteString(span.text)
+	}
+	fitted := traceFit(plain.String(), width)
+	if !color {
+		return fitted
+	}
+	cut := fitted != plain.String()
+	keep := fitted
+	if cut {
+		keep = strings.TrimSuffix(fitted, "…")
+	}
+	var line strings.Builder
+	last := traceText{}
+	for _, span := range spans {
+		if keep == "" {
+			break
+		}
+		text := keep[:min(len(span.text), len(keep))]
+		line.WriteString(traceSpanPaint(text, span))
+		keep, last = keep[len(text):], span
+	}
+	if cut {
+		line.WriteString(traceSpanPaint("…", last))
+	}
+	return line.String()
+}
+
+// traceStatusSpans는 exec와 sched 화면의 첫 줄이다. "edc trace exec  ·  live  ·  events 3  ·  filter all"이다.
+func traceStatusSpans(title string, stopping bool, events int, filter string) []traceText {
+	status := traceText{text: "live", color: richGreen}
+	if stopping {
+		status = traceText{text: "stopping", color: richYellow}
+	}
+	spans := append(traceTitleSpans(title), traceSeparator, status, traceSeparator)
+	spans = append(spans, traceField("events ", fmt.Sprint(events), "")...)
+	return append(append(spans, traceSeparator), traceField("filter ", emptyAs(filter, "all"), "")...)
+}
+
+// traceKeySpans는 "/ filter  tab view" 같은 키 안내를 조각으로 나눈다. 키는 굵은 청록, 설명은 회색이다.
+// on에 든 묶음(전체 글자나 그 키)은 켜진 항목으로 칠한다.
+func traceKeySpans(help string, on ...string) []traceText {
+	var spans []traceText
+	for index, entry := range strings.Split(help, "  ") {
+		if index > 0 {
+			spans = append(spans, traceText{text: "  "})
+		}
+		key, action, found := strings.Cut(entry, " ")
+		if liveHintOn(entry, key, on) {
+			spans = append(spans, traceText{text: entry, on: true})
+			continue
+		}
+		spans = append(spans, traceText{text: key, color: richCyan, bold: true})
+		if found {
+			spans = append(spans, traceLabelSpan(" "+action))
+		}
+	}
+	return spans
+}
+
+// traceKeyHints는 화면 둘째 줄의 키 안내다.
+func traceKeyHints(help string, width int, color bool, on ...string) string {
+	return traceTexts(traceKeySpans(help, on...), width, color)
+}
+
+// traceViewOn은 키 안내에서 지금 보기를 가리키는 묶음이다. 보기 이름이 묶음의 설명과 같고, 묶지 않은 event 목록은 "g scroll"이다.
+func traceViewOn(help, groupBy string) string {
+	if groupBy == "" {
+		return "g scroll"
+	}
+	for _, entry := range strings.Split(help, "  ") {
+		if _, label, found := strings.Cut(entry, " "); found && label == groupBy {
+			return entry
+		}
+	}
+	return ""
+}
+
+// traceSpanPaint는 조각 하나를 칠한다. 켜진 키 안내는 고른 항목과 같은 chip 바탕에 굵은 글씨다.
+func traceSpanPaint(text string, span traceText) string {
+	if !span.on || text == "" {
+		return tracePaint(text, span.color, span.bold)
+	}
+	return traceStyle().Bold(true).Background(lipgloss.Color(richChipHex())).Render(text)
+}
+
+// traceFilterHints는 filter를 입력하는 동안의 둘째 줄이다. 입력 칸은 textinput이 그린 그대로 둔다.
+func traceFilterHints(input string, width int, color bool) string {
+	const keys = "  enter apply  esc cancel"
+	if !color {
+		return traceFit(input+keys, width)
+	}
+	return traceFitColored(input+"  "+traceTexts(traceKeySpans(strings.TrimPrefix(keys, "  ")), 0, true), width)
+}
+
+// traceInputStyles는 filter 입력 칸의 색이다. textinput의 기본 색은 터미널 테마가 정하는 ANSI 번호라서 팔레트로 바꾼다.
+// prompt는 키처럼 굵은 청록, placeholder는 회색, 입력한 글자는 기본 색이다.
+func traceInputStyles() textinput.Styles {
+	styles := textinput.DefaultDarkStyles()
+	for _, state := range []*textinput.StyleState{&styles.Focused, &styles.Blurred} {
+		state.Prompt = traceStyle().Foreground(lipgloss.Color(richHex(richCyan))).Bold(true)
+		state.Placeholder = traceStyle().Foreground(lipgloss.Color(richHex(richGray)))
+		state.Suggestion = state.Placeholder
+		state.Text = traceStyle()
+	}
+	styles.Cursor.Color = lipgloss.Color(richHex("97"))
+	return styles
+}
+
+// traceColumnTitles는 열 이름 줄이다. 열 이름은 회색이다.
+func traceColumnTitles(columns string, width int, color bool) string {
+	columns = traceFit(columns, width)
+	if !color {
+		return columns
+	}
+	return traceDim(columns)
 }
 
 func traceFit(value string, width int) string {

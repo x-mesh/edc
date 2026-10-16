@@ -3,7 +3,6 @@ package edc
 import (
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 	"net"
 	"os"
@@ -14,6 +13,9 @@ import (
 
 	"github.com/miekg/dns"
 )
+
+// resolver별 답 표가 이 probe의 본문이라 -v 없이도 보인다.
+func init() { evidenceShownProbes["dns.compare"] = true }
 
 type resolverFlags []string
 
@@ -43,7 +45,7 @@ type dnsCompareRow struct {
 
 func runDNSCompare(args []string, version string) int {
 	options := configuredCommon(15 * time.Second)
-	set := flag.NewFlagSet("dns compare", flag.ContinueOnError)
+	set := newFlagSet("dns compare")
 	set.SetOutput(os.Stderr)
 	bindCommon(set, &options)
 	var resolvers resolverFlags

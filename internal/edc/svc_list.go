@@ -219,13 +219,30 @@ func svcListHeaders() []string {
 	return []string{T("svc.list.column.unit"), T("svc.list.column.state"), T("svc.list.column.restarts"), T("svc.list.column.uptime"), T("svc.list.column.memory"), T("svc.list.column.pid")}
 }
 
-func formatSvcListTable(items []svcListItem) string {
+func formatSvcListTable(items []svcListItem, style textStyle) string {
 	if len(items) == 0 {
 		return ""
 	}
 	rows := [][]string{svcListHeaders()}
+	colors := [][]string{nil}
 	for _, item := range items {
 		rows = append(rows, svcListCells(item))
+		colors = append(colors, []string{"", item.stateColor()})
+	}
+	return formatListTable(rows, colors, style)
+}
+
+// formatListTable은 svc와 ctr 목록 표다. 첫 줄은 머리글이다. 색을 쓰면 머리글은 회색이고 칸은 colors의 색이다.
+// 칸 폭은 평문으로 정한 뒤 칠해, 색을 써도 열이 맞는다.
+func formatListTable(rows [][]string, colors [][]string, style textStyle) string {
+	if style.color {
+		// 첫 열이 unit이나 container 이름이라 줄이지 않는다.
+		return style.colorTableRows(rows, false, func(row, column int, _, shown string) string {
+			if column < len(colors[row+1]) {
+				return style.paint(shown, colors[row+1][column])
+			}
+			return shown
+		})
 	}
 	widths := make([]int, len(rows[0]))
 	for _, row := range rows {
@@ -235,14 +252,15 @@ func formatSvcListTable(items []svcListItem) string {
 	}
 	var builder strings.Builder
 	for _, row := range rows {
+		var line strings.Builder
 		for index, cell := range row {
 			if index == len(row)-1 {
-				builder.WriteString(cell)
+				line.WriteString(cell)
 				break
 			}
-			builder.WriteString(liveCell(cell, widths[index]+2))
+			line.WriteString(liveCell(cell, widths[index]+2))
 		}
-		builder.WriteString("\n")
+		builder.WriteString(line.String() + "\n")
 	}
 	return builder.String()
 }
@@ -273,7 +291,7 @@ func runSvcList(options commonOptions, version string, sources svcSources, ok, a
 	}
 	fmt.Fprint(output, formatResultLine(result, color))
 	printResultDetail(output, result, false, color)
-	if table := formatSvcListTable(items); table != "" {
+	if table := formatSvcListTable(items, newTextStyle(color)); table != "" {
 		fmt.Fprint(output, "\n"+table)
 	}
 	if options.redact {

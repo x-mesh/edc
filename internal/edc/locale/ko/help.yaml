@@ -9,6 +9,7 @@ help:
   detail_hint: "edc help <command>"
   options_label: "options"
   common_options_label: "공통 options"
+  examples_label: "예시"
   group:
     diagnose: "진단"
     observe: "관측"
@@ -34,6 +35,10 @@ command:
       - "Ctrl-C로 취소하면 exit code 4를 돌려줍니다."
   dns:
     summary: "이름 조회와 resolver 설정"
+    sub:
+      lookup: "시스템 resolver가 돌려주는 주소"
+      compare: "시스템 DNS를 1.1.1.1이나 --resolver와 비교"
+      config: "이 host의 resolver 설정"
     option:
       resolver: "비교할 DNS 서버; 여러 번 지정할 수 있습니다"
     notes:
@@ -53,8 +58,14 @@ command:
     summary: "HTTP 응답 확인"
     option:
       expect_status: "응답 code가 N과 다르면 fail로 처리합니다"
+      header: "요청 header 추가, 여러 번 줄 수 있음"
+      body: "마지막 응답 본문 저장, -는 stdout에 출력"
     notes:
       - "기본값은 4xx가 warning, 5xx가 fail입니다."
+      - "redirect가 있으면 요청마다 status, URL, 시간 값, peer를 차례로 보여 줍니다."
+      - "-v는 응답마다 header를, 마지막 응답의 본문 앞부분을 더합니다."
+      - "Authorization, Cookie 같은 header의 값은 가립니다."
+      - "--body -는 본문을 stdout에, 결과를 stderr에 씁니다."
   audit:
     summary: "호스트의 노출 상태와 설정 점검, 읽기 전용 (Linux)"
     notes:
@@ -85,8 +96,18 @@ command:
       - "Linux에서만 동작합니다."
   net:
     summary: "interface, route, ping, trace"
+    sub:
+      interfaces: "네트워크 interface와 주소"
+      route: "host로 가는 interface와 gateway"
+      ping: "host에 ping"
+      trace: "host까지의 경로, traceroute나 tracepath 사용"
   route:
     summary: "gateway VM의 default route를 점검·전환·원복"
+    sub:
+      check: "현재 상태 점검, 변경 없음"
+      switch: "롤백 timer를 걸고 전환한 뒤 검증"
+      status: "대기 중이거나 끝난 전환 보기"
+      rollback: "상태 파일 하나로 원복"
     notes:
       - "경로를 바꾸는 gateway VM에서 로컬로 실행하는 명령입니다."
       - "switch와 rollback은 root 권한이 필요합니다. sudo는 붙이지 않습니다."
@@ -94,6 +115,9 @@ command:
       - "status는 /run/edc를 읽고, rollback --state는 파일 하나를 다시 실행합니다."
   disk:
     summary: "디스크 증설 뒤 파티션과 파일시스템 확장"
+    sub:
+      check: "늘릴 수 있는 mount 보기, 변경 없음"
+      grow: "파티션과 파일시스템 확장"
     notes:
       - "check는 층을 읽기만 하고 아무것도 바꾸지 않습니다."
       - "root로 실행하면 모든 층의 크기가 보입니다."
@@ -101,6 +125,11 @@ command:
       - "grow는 되돌릴 수 없습니다. 먼저 볼륨 스냅샷을 만드세요."
   change:
     summary: "자동 롤백을 제공하는 시스템 변경"
+    sub:
+      apply: "변경 적용, 확정하지 않으면 롤백"
+      status: "대기 중인 변경과 남은 시간"
+      confirm: "변경을 확정하고 롤백 timer 정지"
+      rollback: "apply 전 상태로 원복"
   top:
     summary: "실시간 resource 대시보드"
     option:
@@ -122,6 +151,9 @@ command:
       - "f는 signal을 따라감: 그 보기, 다음은 가장 바쁜 process. / 필터, Esc 해제."
   watch:
     summary: "HTTP·파일 변경 관측과 조건별 action 실행"
+    sub:
+      http: "Ctrl-C까지 URL 반복 요청"
+      fs: "파일 변경 관측, 원하면 명령 실행"
     option:
       interval: "sample 간격(초), 최소 0.1"
       duration: "지정한 시간이 지나면 종료; 생략하면 Ctrl-C까지 실행"
@@ -432,6 +464,9 @@ command:
       - "악화된 probe가 있으면 exit code 1을 돌려줍니다."
   log:
     summary: "명령 출력과 종료 상태 기록"
+    sub:
+      run: "명령을 실행하고 출력과 종료 상태 저장"
+      history: "명령별로 저장된 실행 기록 보기"
     option:
       stream: "기록할 출력 (기본 both)"
       output: "로그 파일; 기본은 실행별 파일 생성"
@@ -476,6 +511,10 @@ command:
       - "Ctrl-C로 취소하면 남은 step을 SKIP으로 표시하고 exit code 4를 돌려줍니다."
   completion:
     summary: "shell completion 출력"
+    sub:
+      zsh: "zsh completion script 출력"
+      bash: "bash completion script 출력"
+      groups: "inventory group 이름을 한 줄에 하나씩 출력"
     notes:
       - "source <(edc completion zsh) 또는 source <(edc completion bash)."
       - "groups는 inventory의 group 이름을 한 줄에 하나씩 출력합니다."
@@ -503,3 +542,7 @@ command:
 
   history:
     summary: "저장한 resource 관측 이력 검색"
+    sub:
+      list: "edc top -w로 기록한 실행 목록"
+      top: "host sample, 최신순"
+      process: "process sample, 최신순"

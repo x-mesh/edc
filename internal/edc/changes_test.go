@@ -400,7 +400,7 @@ func TestFormatChangesTableCapsRows(t *testing.T) {
 	for index := 0; index < 60; index++ {
 		events = append(events, changeEvent{Time: at.Add(-time.Duration(index) * time.Minute), Kind: "file", Name: fmt.Sprintf("/etc/f%02d", index)})
 	}
-	table := formatChangesTable(events, false)
+	table := formatChangesTable(events, false, false)
 	lines := strings.Split(strings.TrimSuffix(table, "\n"), "\n")
 	if len(lines) != 1+50+1 || lines[len(lines)-1] != T("changes.more", 10) {
 		t.Fatalf("lines = %d, last = %q", len(lines), lines[len(lines)-1])
@@ -413,11 +413,11 @@ func TestFormatChangesTableCapsRows(t *testing.T) {
 			t.Fatalf("마지막 열을 채웠다: %q", line)
 		}
 	}
-	all := strings.Split(strings.TrimSuffix(formatChangesTable(events, true), "\n"), "\n")
+	all := strings.Split(strings.TrimSuffix(formatChangesTable(events, true, false), "\n"), "\n")
 	if len(all) != 61 {
 		t.Fatalf("-v rows = %d", len(all))
 	}
-	if formatChangesTable(nil, false) != "" {
+	if formatChangesTable(nil, false, false) != "" {
 		t.Fatal("변화가 없는데 표를 그렸다")
 	}
 }

@@ -17,7 +17,7 @@ func topEventItem(kind string, score float64) []topSignalItem {
 func TestTopEventLogOpensAfterFiveSecondsAndMergesFlaps(t *testing.T) {
 	log := &topEventLog{}
 	culprits := 0
-	culprit := func(topView) string { culprits++; return "gm (200 procs)" }
+	culprit := func(topSignalItem) string { culprits++; return "gm (200 procs)" }
 	at := func(second int) time.Time { return time.Unix(int64(second), 0) }
 	// 3초 만에 꺼진 경고는 남지 않는다.
 	for second := 0; second <= 2; second++ {
@@ -38,7 +38,7 @@ func TestTopEventLogOpensAfterFiveSecondsAndMergesFlaps(t *testing.T) {
 		t.Fatalf("events = %+v", log.events)
 	}
 	// 더 나빠지면 문구와 단계와 원인 후보를 그 순간 것으로 바꾼다.
-	log.observe(at(16), []topSignalItem{{text: "await 3570ms", score: 1.5, view: topViewDisk, kind: "await"}}, func(topView) string { return "node" })
+	log.observe(at(16), []topSignalItem{{text: "await 3570ms", score: 1.5, view: topViewDisk, kind: "await"}}, func(topSignalItem) string { return "node" })
 	if event := log.events[0]; event.text != "await 3570ms" || event.level != topLevelDanger || event.culprit != "node" {
 		t.Fatalf("peak = %+v", event)
 	}
@@ -62,16 +62,16 @@ func TestTopEventFillsAnEmptyCulpritLater(t *testing.T) {
 	log := &topEventLog{}
 	culprit := ""
 	for second := 0; second <= 5; second++ {
-		log.observe(time.Unix(int64(second), 0), topEventItem("load", 0.5), func(topView) string { return culprit })
+		log.observe(time.Unix(int64(second), 0), topEventItem("load", 0.5), func(topSignalItem) string { return culprit })
 	}
 	if len(log.events) != 1 || log.events[0].culprit != "" {
 		t.Fatalf("events = %+v", log.events)
 	}
 	// 값이 그대로여도 process 목록이 생기면 원인 후보를 채우고, 한 번 채운 뒤에는 더 나빠질 때만 바꾼다.
 	culprit = "node 90%"
-	log.observe(time.Unix(6, 0), topEventItem("load", 0.5), func(topView) string { return culprit })
+	log.observe(time.Unix(6, 0), topEventItem("load", 0.5), func(topSignalItem) string { return culprit })
 	culprit = "sshd 1%"
-	log.observe(time.Unix(7, 0), topEventItem("load", 0.5), func(topView) string { return culprit })
+	log.observe(time.Unix(7, 0), topEventItem("load", 0.5), func(topSignalItem) string { return culprit })
 	if log.events[0].culprit != "node 90%" {
 		t.Fatalf("culprit = %q", log.events[0].culprit)
 	}
@@ -79,7 +79,7 @@ func TestTopEventFillsAnEmptyCulpritLater(t *testing.T) {
 
 func TestTopEventMarksWarningsAlreadyOnAtStart(t *testing.T) {
 	log := &topEventLog{}
-	culprit := func(topView) string { return "node 90%" }
+	culprit := func(topSignalItem) string { return "node 90%" }
 	for second := 100; second <= 105; second++ {
 		log.observe(time.Unix(int64(second), 0), topEventItem("load", 0.5), culprit)
 	}
@@ -117,7 +117,7 @@ func TestTopEventListKeepsTheSelectedEntryVisible(t *testing.T) {
 
 func TestTopEventLogKeepsTheLimit(t *testing.T) {
 	log := &topEventLog{}
-	culprit := func(topView) string { return "" }
+	culprit := func(topSignalItem) string { return "" }
 	second := 0
 	for index := 0; index < topEventLimit+5; index++ {
 		for step := 0; step <= 5; step++ {
@@ -138,7 +138,7 @@ func TestTopEventCulpritFollowsTheView(t *testing.T) {
 	row := topDashboardRow{processesValid: true, processes: []topProcess{
 		{PID: 1, CPU: 70, RSS: 500 << 20, Command: "node", DiskValid: true, DiskRead: 21 << 20},
 		{PID: 2, CPU: 1, RSS: 2 << 20, Command: "gm", State: "D"},
-	}, processTotal: topProcessTotal{Groups: []topProcessGroup{{Name: "gm", Count: 169, Blocked: 22, CPU: 20, RSS: 370 << 20, DiskValid: true, DiskWrite: 60 << 20}}}}
+	}, processTotal: topProcessTotal{Groups: []topProcessGroup{{Name: "gm", Count: 169, Blocked: 22, CPU: 20, RSS: 370 << 20, Memory: 370 << 20, DiskValid: true, DiskWrite: 60 << 20}}}}
 	for view, want := range map[topView]string{
 		topViewDisk:     "gm (169 procs, 22 iowait) w 60.0M · node r 21.0M",
 		topViewPressure: "gm (169 procs, 22 iowait) w 60.0M · node r 21.0M",
@@ -146,16 +146,16 @@ func TestTopEventCulpritFollowsTheView(t *testing.T) {
 		topViewCPU:      "gm (169 procs, 22 iowait) 20% · node 70%",
 		topViewNetwork:  "",
 	} {
-		if got := topEventCulprit(row, view); got != want {
+		if got := topEventCulprit(row, topSignalItem{view: view}); got != want {
 			t.Fatalf("view %v culprit = %q, want %q", view, got, want)
 		}
 	}
 	// 묶음과 같은 이름의 process는 건너뛰고 다음 후보를 적는다.
 	row.processes = append([]topProcess{{PID: 3, CPU: 1, Command: "gm", State: "D", DiskValid: true, DiskWrite: 90 << 20}}, row.processes...)
-	if got := topEventCulprit(row, topViewDisk); got != "gm (169 procs, 22 iowait) w 60.0M · node r 21.0M" {
+	if got := topEventCulprit(row, topSignalItem{view: topViewDisk}); got != "gm (169 procs, 22 iowait) w 60.0M · node r 21.0M" {
 		t.Fatalf("a group member was repeated: %q", got)
 	}
-	if got := topEventCulprit(topDashboardRow{}, topViewCPU); got != "" {
+	if got := topEventCulprit(topDashboardRow{}, topSignalItem{view: topViewCPU}); got != "" {
 		t.Fatalf("an invalid sample must not name a process: %q", got)
 	}
 }
@@ -330,7 +330,7 @@ func TestTopModelRecordsEventsFromSamples(t *testing.T) {
 func TestTopEventLogKeepsMemoryPressureWithMemoryCandidates(t *testing.T) {
 	log := &topEventLog{}
 	var views []topView
-	culprit := func(view topView) string { views = append(views, view); return "Google Chr (35 procs)" }
+	culprit := func(item topSignalItem) string { views = append(views, item.view); return "Google Chr (35 procs)" }
 	limits := newTopLimits(4, false)
 	rate := resourceRate{MemoryPressure: topMemoryPressureWarn}
 	log.observe(time.Unix(0, 0), nil, culprit)

@@ -27,7 +27,17 @@ func historyTerminalText(value string) string {
 }
 
 func runHistory(args []string) int {
-	if len(args) == 0 || (args[0] != "list" && args[0] != "top" && args[0] != "process") {
+	if len(args) == 0 {
+		choice, ok := promptMissingSubcommand("history")
+		if !ok {
+			if !printCommandBrief(os.Stderr, "history") {
+				fmt.Fprintln(os.Stderr, T("history.usage"))
+			}
+			return 2
+		}
+		args = []string{choice}
+	}
+	if args[0] != "list" && args[0] != "top" && args[0] != "process" {
 		fmt.Fprintln(os.Stderr, T("history.usage"))
 		return 2
 	}
@@ -36,7 +46,7 @@ func runHistory(args []string) int {
 		printCommandHelp(os.Stdout, "history")
 		return 0
 	}
-	set := flag.NewFlagSet("history "+command, flag.ContinueOnError)
+	set := newFlagSet("history " + command)
 	set.SetOutput(os.Stderr)
 	var options historyOptions
 	set.StringVar(&options.run, "run", "", T("history.option.run"))
@@ -230,6 +240,21 @@ type historyProcessSample struct {
 }
 
 func printHistory(output io.Writer, db *sql.DB, command string, options historyOptions, jsonOutput bool) error {
+	file, isFile := output.(*os.File)
+	return writeHistory(output, db, command, options, jsonOutput, newTextStyle(!jsonOutput && isFile && richEnabled(file)))
+}
+
+// historyPaint는 색 표의 한 칸을 칠한다. nil이면 기본색이다.
+type historyPaint func(string) string
+
+// historyColorTable은 색을 쓸 때 모은 표다. tabwriter는 escape도 칸 폭으로 세므로, 색 표는 평문 칸으로 폭을 정한 뒤 칠한다.
+type historyColorTable struct {
+	style  textStyle
+	rows   [][]string
+	paints [][]historyPaint
+}
+
+func writeHistory(output io.Writer, db *sql.DB, command string, options historyOptions, jsonOutput bool, style textStyle) error {
 	query, values := historyQuery(command, options)
 	rows, err := db.Query(query, values...)
 	if err != nil {
@@ -238,6 +263,15 @@ func printHistory(output io.Writer, db *sql.DB, command string, options historyO
 	defer rows.Close()
 	encoder := json.NewEncoder(output)
 	writer := tabwriter.NewWriter(output, 0, 4, 2, ' ', 0)
+	table := historyColorTable{style: style}
+	writeLine := func(line string, paints []historyPaint) error {
+		if style.color {
+			table.add(line, paints)
+			return nil
+		}
+		_, err := fmt.Fprintln(writer, line)
+		return err
+	}
 	if !jsonOutput {
 		header := "RUN\tTIME\tHOST\tCPU%\tMEM%\tLOAD\tPROCESS FILTER"
 		if command == "list" {
@@ -248,7 +282,7 @@ func printHistory(output io.Writer, db *sql.DB, command string, options historyO
 		if options.metric != "" {
 			header += "\t" + options.metric
 		}
-		if _, err := fmt.Fprintln(writer, header); err != nil {
+		if err := writeLine(header, nil); err != nil {
 			return err
 		}
 	}
@@ -256,6 +290,7 @@ func printHistory(output io.Writer, db *sql.DB, command string, options historyO
 		var payload string
 		var value any
 		var line string
+		var paints []historyPaint
 		switch command {
 		case "list":
 			var run historyRun
@@ -276,6 +311,7 @@ func printHistory(output io.Writer, db *sql.DB, command string, options historyO
 			}
 			value = run
 			line = fmt.Sprintf("%s\t%s\t%s\t%s\t%s\t%d\t%gs\t%s\t%s", run.ID, run.StartedAt.Format(time.RFC3339Nano), end, historyTerminalText(run.Hostname), historyTerminalText(run.Status), count, run.IntervalS, historyTerminalText(run.Process), historyTerminalText(emptyAs(run.Interfaces, "all")))
+			paints = []historyPaint{nil, style.dim, style.dim, nil, historyStatusPaint(style, run.Status), nil, historyUnitPaint(style)}
 		case "top":
 			var sample historyTopSample
 			if err := rows.Scan(&payload); err != nil {
@@ -286,6 +322,8 @@ func printHistory(output io.Writer, db *sql.DB, command string, options historyO
 			}
 			value = sample
 			line = fmt.Sprintf("%s\t%s\t%s\t%.2f\t%.2f\t%.2f\t%s", sample.RunID, sample.Time.Format(time.RFC3339Nano), historyTerminalText(sample.Hostname), sample.CPU, sample.MemoryPct, sample.Load1, historyTerminalText(sample.ProcessFilter))
+			limits := newTopLimits(sample.Cores, style.color)
+			paints = []historyPaint{nil, style.dim, nil, historyLevelPaint(style, limits.cpu, sample.CPU), historyLevelPaint(style, limits.memory, sample.MemoryPct), historyLevelPaint(style, limits.load, sample.Load1)}
 		case "process":
 			var process topProcessSample
 			var sample historyTopSample
@@ -305,6 +343,7 @@ func printHistory(output io.Writer, db *sql.DB, command string, options historyO
 				started = process.Started.Format(time.RFC3339Nano)
 			}
 			line = fmt.Sprintf("%s\t%s\t%d\t%s\t%.2f\t%s\t%s", sample.RunID, sample.Time.Format(time.RFC3339Nano), process.PID, started, process.CPU, formatBytes(process.RSSBytes), historyTerminalText(process.Command))
+			paints = []historyPaint{nil, style.dim, nil, style.dim, nil, historyUnitPaint(style)}
 		}
 		if jsonOutput {
 			if err := encoder.Encode(value); err != nil {
@@ -314,7 +353,7 @@ func printHistory(output io.Writer, db *sql.DB, command string, options historyO
 			if options.metric != "" {
 				line += "\t" + historyDisplayMetric(value, options.metric)
 			}
-			if _, err := fmt.Fprintln(writer, line); err != nil {
+			if err := writeLine(line, paints); err != nil {
 				return err
 			}
 		}
@@ -322,10 +361,56 @@ func printHistory(output io.Writer, db *sql.DB, command string, options historyO
 	if err := rows.Err(); err != nil {
 		return err
 	}
-	if !jsonOutput {
-		return writer.Flush()
+	if jsonOutput {
+		return nil
+	}
+	if style.color {
+		_, err := io.WriteString(output, table.String())
+		return err
+	}
+	return writer.Flush()
+}
+
+func (table *historyColorTable) add(line string, paints []historyPaint) {
+	table.rows = append(table.rows, strings.Split(line, "\t"))
+	table.paints = append(table.paints, paints)
+}
+
+// String은 tabwriter와 같은 배치(가장 긴 칸 + 2칸, 마지막 칸은 채우지 않음)를 공용 색 표로 그린다.
+func (table historyColorTable) String() string {
+	// 첫 열이 다른 history 명령에 넣는 run ID라 줄이지 않는다.
+	return table.style.colorTableRows(table.rows, false, func(row, column int, _, shown string) string {
+		if paints := table.paints[row+1]; column < len(paints) && paints[column] != nil {
+			return paints[column](shown)
+		}
+		return shown
+	})
+}
+
+// historyStatusPaint는 기록의 상태다. 끝난 기록은 초록, 기록 중이거나 끝내지 못한 기록은 노랑, 오류로 끝난 기록은 빨강이다.
+func historyStatusPaint(style textStyle, status string) historyPaint {
+	switch status {
+	case "finished":
+		return style.good
+	case "unfinished":
+		return style.warn
+	case "error":
+		return style.bad
 	}
 	return nil
+}
+
+// historyLevelPaint는 top과 같은 임계치를 넘은 값만 칠한다.
+func historyLevelPaint(style textStyle, threshold topThreshold, value float64) historyPaint {
+	return func(text string) string { return style.level(text, threshold.level(value)) }
+}
+
+// historyUnitPaint는 "2s"와 "1.00 GB"의 단위만 회색으로 칠한다. 숫자가 없는 "-"는 모두 회색이다.
+func historyUnitPaint(style textStyle) historyPaint {
+	return func(text string) string {
+		end := strings.LastIndexAny(text, "0123456789") + 1
+		return text[:end] + style.dim(text[end:])
+	}
 }
 
 func historyDisplayMetric(value any, name string) string {

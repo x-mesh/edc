@@ -5,6 +5,7 @@ import (
 	"cmp"
 	"encoding/binary"
 	"fmt"
+	"io"
 	"maps"
 	"os"
 	"slices"
@@ -1614,63 +1615,64 @@ func (report clickHouseTraceReport) print(bool) {
 	if report.Side == traceServerSide {
 		title = "ClickHouse server trace"
 	}
-	fmt.Fprintf(os.Stdout, "%s: %s\n\n", title, (time.Duration(report.DurationMS) * time.Millisecond).String())
+	out := os.Stdout
+	style := newTraceSummaryStyle(out)
+	style.line(out, style.title(title, (time.Duration(report.DurationMS)*time.Millisecond).String()))
+	io.WriteString(out, "\n")
 	mixed := report.Client != nil && report.Server != nil
 	if mixed {
 		for _, side := range []struct {
 			heading string
 			counts  *traceClickHouseCounts
 		}{{"Client side (queries that this host sent):", report.Client}, {"Server side (queries that local servers received):", report.Server}} {
-			fmt.Fprintln(os.Stdout, side.heading)
-			printClickHouseCounts("  ", *side.counts)
-			fmt.Fprintln(os.Stdout)
+			style.line(out, style.subheading(side.heading))
+			printClickHouseCounts(style, "  ", *side.counts)
+			io.WriteString(out, "\n")
 		}
 	} else {
-		printClickHouseCounts("", report.traceClickHouseCounts)
+		printClickHouseCounts(style, "", report.traceClickHouseCounts)
 	}
-	fmt.Fprintf(os.Stdout, "Lost events: %d\n", report.LostEvents)
+	style.fields(out, "", "Lost events", fmt.Sprint(report.LostEvents))
 	if len(report.Statements) == 0 {
 		return
-	}
-	sideColumn := func(value string) string {
-		if !mixed {
-			return ""
-		}
-		return value + "\t"
 	}
 	interfaces := map[string]struct{}{}
 	for _, row := range report.Statements {
 		interfaces[row.Interface] = struct{}{}
 	}
 	mixedInterfaces := len(interfaces) > 1
-	interfaceColumn := func(value string) string {
-		if !mixedInterfaces {
-			return ""
+	leading := func(side, iface string) []string {
+		var cells []string
+		if mixed {
+			cells = append(cells, side)
 		}
-		return value + "\t"
+		if mixedInterfaces {
+			cells = append(cells, iface)
+		}
+		return cells
 	}
-	fmt.Fprintln(os.Stdout, "\n"+sideColumn("SIDE")+interfaceColumn("INTERFACE")+"COMMAND\tSQL\tCOUNT\tERRORS\tUNANSWERED\tAVG\tMAX\tPROCESS")
+	table := traceTable{titles: append(leading("SIDE", "INTERFACE"), "COMMAND", "SQL", "COUNT", "ERRORS", "UNANSWERED", "AVG", "MAX", "PROCESS")}
 	for _, row := range report.Statements {
 		count := row.Queries
 		if row.Command == clickHouseCommandConnect {
 			count = row.Connections
 		}
-		fmt.Fprintf(os.Stdout, "%s%s%s\t%s\t%d\t%d\t%d\t%s\t%s\t%s\n", sideColumn(emptyAs(row.Side, "-")), interfaceColumn(row.Interface), row.Command, row.Shape, count, row.Errors, row.Unanswered, traceLatency(row.LatencyAvgMS, "ms"), traceLatency(row.LatencyMaxMS, "ms"), emptyAs(strings.Join(row.Processes, ","), "-"))
+		table.add(append(leading(emptyAs(row.Side, "-"), row.Interface), row.Command, row.Shape, fmt.Sprint(count), fmt.Sprint(row.Errors), fmt.Sprint(row.Unanswered), traceLatency(row.LatencyAvgMS, "ms"), traceLatency(row.LatencyMaxMS, "ms"), emptyAs(strings.Join(row.Processes, ","), "-"))...)
 	}
+	io.WriteString(out, "\n")
+	style.writeTable(out, table)
 }
 
-func printClickHouseCounts(indent string, counts traceClickHouseCounts) {
-	for _, line := range []string{
-		fmt.Sprintf("Queries: %d", counts.Queries),
-		fmt.Sprintf("Responses: %d", counts.Responses),
-		fmt.Sprintf("Errors: %d", counts.Errors),
-		fmt.Sprintf("Unanswered: %d", counts.Unanswered),
-		"Latency avg: " + traceLatency(counts.LatencyAvgMS, "ms"),
-		"Latency max: " + traceLatency(counts.LatencyMaxMS, "ms"),
-		fmt.Sprintf("Connections: %d", counts.Connections),
-		fmt.Sprintf("Compressed connections: %d", counts.CompressedConnections),
-		fmt.Sprintf("Chunked connections: %d", counts.ChunkedConnections),
-	} {
-		fmt.Fprintln(os.Stdout, indent+line)
-	}
+func printClickHouseCounts(style traceSummaryStyle, indent string, counts traceClickHouseCounts) {
+	style.fields(os.Stdout, indent,
+		"Queries", fmt.Sprint(counts.Queries),
+		"Responses", fmt.Sprint(counts.Responses),
+		"Errors", fmt.Sprint(counts.Errors),
+		"Unanswered", fmt.Sprint(counts.Unanswered),
+		"Latency avg", traceLatency(counts.LatencyAvgMS, "ms"),
+		"Latency max", traceLatency(counts.LatencyMaxMS, "ms"),
+		"Connections", fmt.Sprint(counts.Connections),
+		"Compressed connections", fmt.Sprint(counts.CompressedConnections),
+		"Chunked connections", fmt.Sprint(counts.ChunkedConnections),
+	)
 }

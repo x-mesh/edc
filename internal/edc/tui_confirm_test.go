@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 )
 
 func confirmAfter(t *testing.T, model confirmModel, keys ...tea.KeyPressMsg) (confirmModel, tea.Cmd) {
@@ -69,17 +70,22 @@ func TestConfirmModelCancels(t *testing.T) {
 }
 
 func TestConfirmModelViewShowsBothOptions(t *testing.T) {
+	t.Setenv("COLORTERM", "truecolor")
+	t.Setenv("NO_COLOR", "")
 	view := newConfirmModel("실행할까요?", false).View().Content
-	// 질문과 선택지, 키 안내가 한 줄에 있고 고른 쪽만 반전된다.
-	for _, expected := range []string{"실행할까요?", confirmYesLabel(), liveReverse + liveSelectedBar + " " + confirmNoLabel(), confirmHelp()} {
+	// 질문과 선택지, 키 안내가 한 줄에 있고 고른 쪽만 chip 바탕으로 칠한다.
+	for _, expected := range []string{richBold("실행할까요?"), confirmYesLabel(), liveSelected(liveSelectedBar+" "+confirmNoLabel()+" ", true), liveKeyHints(confirmHelp(), true)} {
 		if !strings.Contains(view, expected) {
 			t.Fatalf("view %q does not contain %q", view, expected)
 		}
 	}
+	if plain := ansi.Strip(view); !strings.Contains(plain, "실행할까요?   ") || !strings.Contains(plain, liveSelectedBar+" "+confirmNoLabel()) || !strings.Contains(plain, confirmHelp()) {
+		t.Fatalf("plain view = %q", plain)
+	}
 	if liveLineCount(view) != 1 {
 		t.Fatalf("확인은 한 줄이어야 한다: %q", view)
 	}
-	if strings.Count(view, liveReverse) != 1 {
-		t.Fatalf("한 쪽만 반전되어야 한다: %q", view)
+	if strings.Count(view, liveChipBase()) != 1 {
+		t.Fatalf("한 쪽만 칠해야 한다: %q", view)
 	}
 }

@@ -3,7 +3,6 @@ package edc
 import (
 	"context"
 	"encoding/json"
-	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -122,7 +121,7 @@ type reclaimReport struct {
 func runTraceReclaim(args []string) int {
 	options := reclaimTraceOptions{}
 	var process string
-	set := flag.NewFlagSet("trace reclaim", flag.ContinueOnError)
+	set := newFlagSet("trace reclaim")
 	set.SetOutput(os.Stderr)
 	set.DurationVar(&options.duration, "duration", 0, T("command.trace.option.duration"))
 	set.StringVar(&process, "process", "", T("command.trace.option.process"))
@@ -341,8 +340,9 @@ func (row reclaimReportRow) cells(groupBy string) []string {
 }
 
 func (report reclaimReport) print(out io.Writer) {
+	style := newTraceSummaryStyle(out)
 	summary := report.Summary
-	fmt.Fprintf(out, "RECLAIM TRACE  duration %s  stalls %d  stalled %s\n", syscallTime(float64(summary.DurationMS)*float64(time.Millisecond)), summary.Stalls, syscallTime(summary.TotalMS*float64(time.Millisecond)))
+	style.line(out, style.headline("RECLAIM TRACE", traceStat{"duration", syscallTime(float64(summary.DurationMS) * float64(time.Millisecond))}, traceStat{"stalls", fmt.Sprint(summary.Stalls)}, traceStat{"stalled", syscallTime(summary.TotalMS * float64(time.Millisecond))}))
 	var titles []string
 	switch report.GroupBy {
 	case traceGroupByProcess:
@@ -366,7 +366,7 @@ func (report reclaimReport) print(out io.Writer) {
 	for index, title := range titles {
 		header += fmt.Sprintf("%-*s  ", widths[index], title)
 	}
-	fmt.Fprintf(out, "%s%8s %9s %9s %9s %9s %10s\n", header, "STALLS", "TOTAL", "AVG", "P95", "MAX", "RECLAIMED")
+	style.line(out, style.dim(fmt.Sprintf("%s%8s %9s %9s %9s %9s %10s", header, "STALLS", "TOTAL", "AVG", "P95", "MAX", "RECLAIMED")))
 	for _, row := range shown {
 		line := ""
 		for index, cell := range row.cells(report.GroupBy) {
@@ -377,14 +377,14 @@ func (report reclaimReport) print(out io.Writer) {
 		if row.ReclaimedBytes > 0 {
 			reclaimed = traceBytes(row.ReclaimedBytes)
 		}
-		fmt.Fprintf(out, "%s%8d %9s %9s %9s %9s %10s\n", line, row.Stalls, syscallTime(row.TotalMS*float64(time.Millisecond)), syscallMS(&average, ""), syscallMS(row.P95MS, "<"), syscallMS(&maximum, ""), reclaimed)
+		style.printf(out, "%s%8d %9s %9s %9s %9s %10s\n", line, row.Stalls, style.measure(syscallTime(row.TotalMS*float64(time.Millisecond))), style.measure(syscallMS(&average, "")), style.measure(syscallMS(row.P95MS, "<")), style.measure(syscallMS(&maximum, "")), style.measure(reclaimed))
 	}
 	if hidden := len(report.Rows) - len(shown); hidden > 0 {
-		fmt.Fprintf(out, "... %d more rows in --json\n", hidden)
+		style.line(out, style.hint(fmt.Sprintf("... %d more rows in --json", hidden)))
 	}
-	fmt.Fprintf(out, "entries %d  stats_full %d", summary.StatsEntries, summary.StatsFull)
+	stats := []traceStat{{"entries", fmt.Sprint(summary.StatsEntries)}, {"stats_full", fmt.Sprint(summary.StatsFull)}}
 	if summary.SlowMS != nil {
-		fmt.Fprintf(out, "  events %d  sampled_out %d  ring_lost %d", summary.Events, summary.SampledOut, summary.RingLost)
+		stats = append(stats, traceStat{"events", fmt.Sprint(summary.Events)}, traceStat{"sampled_out", fmt.Sprint(summary.SampledOut)}, traceStat{"ring_lost", fmt.Sprint(summary.RingLost)})
 	}
-	fmt.Fprintln(out)
+	style.line(out, style.stats(stats...))
 }

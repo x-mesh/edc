@@ -37,6 +37,7 @@ type ioTraceScreenModel struct {
 
 func newIOTraceScreenModel(options ioTraceOptions, eventCh <-chan ioEvent, resultCh <-chan ioTraceFinishedMsg, stop func()) ioTraceScreenModel {
 	input := textinput.New()
+	input.SetStyles(traceInputStyles())
 	input.Prompt = "filter / "
 	input.Placeholder = "device, process, cgroup, event"
 	input.SetWidth(48)
@@ -159,8 +160,15 @@ func (m ioTraceScreenModel) filtered() []ioEvent {
 	return values
 }
 func (m ioTraceScreenModel) View() tea.View {
-	header := fmt.Sprintf("trace io  ·  %s  ·  %d events  ·  / filter  tab view  d device  p process  c cgroup  e event  g scroll  ↑↓ select  enter detail  q quit", ioViewName(m.groupBy), len(m.events))
+	const keys = "/ filter  tab view  d device  p process  c cgroup  e event  g scroll  ↑↓ select  enter detail  q quit"
+	color := traceScreenColor()
+	header := fmt.Sprintf("trace io  ·  %s  ·  %d events  ·  %s", ioViewName(m.groupBy), len(m.events), keys)
 	lines := []string{truncateLine(header, m.width)}
+	if color {
+		spans := append(traceTitleSpans("trace io"), traceSeparator, traceText{text: ioViewName(m.groupBy)}, traceSeparator)
+		spans = append(append(spans, traceField("", fmt.Sprint(len(m.events)), " events")...), traceSeparator)
+		lines[0] = traceTexts(append(spans, traceKeySpans(keys, traceViewOn(keys, m.groupBy))...), m.width, true)
+	}
 	if m.filtering {
 		lines = append(lines, m.input.View())
 	}
@@ -171,14 +179,14 @@ func (m ioTraceScreenModel) View() tea.View {
 			start = max(0, min(m.selected, max(0, len(values)-1)))
 		}
 		for index, event := range values[start:] {
-			lines = append(lines, ioScreenEventRow(event, m.width, start+index == m.selected))
+			lines = append(lines, ioScreenEventRow(event, m.width, start+index == m.selected, color))
 		}
 		if m.selected >= 0 && m.selected < len(values) {
-			lines = append(lines, truncateLine(ioDetail(values[m.selected]), m.width))
+			lines = append(lines, ioScreenLine(ioDetail(values[m.selected]), m.width, color))
 		}
 	} else {
 		for _, row := range m.groups() {
-			lines = append(lines, truncateLine(row, m.width))
+			lines = append(lines, ioScreenLine(row, m.width, color))
 		}
 	}
 	view := liveFrame(strings.Join(lines, "\n")+"\n", m.height)
@@ -191,13 +199,48 @@ func ioViewName(group string) string {
 	}
 	return group
 }
-func ioScreenEventRow(event ioEvent, width int, selected bool) string {
+func ioScreenEventRow(event ioEvent, width int, selected, color bool) string {
 	prefix := "  "
 	if selected {
 		prefix = "› "
 	}
-	text := fmt.Sprintf("%s%-12s %-12s %-8s %8s q:%s s:%s t:%s", prefix, event.Process, event.Device, event.Operation, traceBytes(event.Bytes), traceLatency(event.QueueMS, "ms"), traceLatency(event.ServiceMS, "ms"), traceLatency(event.TotalMS, "ms"))
-	return truncateLine(text, width)
+	columns := fmt.Sprintf("%s%-12s %-12s %-8s %8s ", prefix, event.Process, event.Device, event.Operation, traceBytes(event.Bytes))
+	latencies := []traceText{
+		traceLabelSpan("q:"), {text: traceLatency(event.QueueMS, "ms") + " "},
+		traceLabelSpan("s:"), {text: traceLatency(event.ServiceMS, "ms") + " "},
+		traceLabelSpan("t:"), {text: traceLatency(event.TotalMS, "ms")},
+	}
+	text := columns
+	for _, span := range latencies {
+		text += span.text
+	}
+	switch {
+	case !color:
+		return truncateLine(text, width)
+	case selected:
+		return traceSelectedEvent(traceFit(text, width), width, true)
+	}
+	return traceTexts(append([]traceText{{text: columns}}, latencies...), width, true)
+}
+
+// ioScreenLine은 io 화면의 group 행과 상세 줄이다. "ops=1"처럼 = 앞의 이름은 회색으로 칠한다.
+func ioScreenLine(text string, width int, color bool) string {
+	if !color {
+		return truncateLine(text, width)
+	}
+	words := strings.Split(text, " ")
+	spans := make([]traceText, 0, 2*len(words))
+	for index, word := range words {
+		if index > 0 {
+			spans = append(spans, traceText{text: " "})
+		}
+		if name, value, found := strings.Cut(word, "="); found && name != "" {
+			spans = append(spans, traceLabelSpan(name+"="), traceText{text: value})
+			continue
+		}
+		spans = append(spans, traceText{text: word})
+	}
+	return traceTexts(spans, width, true)
 }
 func ioDetail(event ioEvent) string {
 	return fmt.Sprintf("%s %s %s bytes=%d pid=%d cgroup=%d attribution=%s queue=%s service=%s total=%s", event.Event, event.Operation, event.Device, event.Bytes, event.PID, event.CgroupID, event.Attribution, traceLatency(event.QueueMS, "ms"), traceLatency(event.ServiceMS, "ms"), traceLatency(event.TotalMS, "ms"))

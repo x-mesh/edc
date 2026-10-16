@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -461,32 +462,34 @@ func (aggregator *execAggregator) report(duration time.Duration, summary execSum
 }
 
 func (report execReport) print() {
-	fmt.Printf("EXEC TRACE  duration %dms  short-lived under %dms\n", report.DurationMS, report.ShortLifetimeMS)
-	fmt.Printf("%-24s %6s %6s %8s %8s %6s %4s %10s %10s\n", "GROUP", "EXEC", "EXIT", "NONZERO", "SIGNALED", "SHORT", "OOM", "AVG LIFE", "MAX LIFE")
+	out := os.Stdout
+	style := newTraceSummaryStyle(out)
+	style.line(out, style.headline("EXEC TRACE", traceStat{"duration", fmt.Sprintf("%dms", report.DurationMS)}, traceStat{"short-lived under", fmt.Sprintf("%dms", report.ShortLifetimeMS)}))
+	style.line(out, style.dim(fmt.Sprintf("%-24s %6s %6s %8s %8s %6s %4s %10s %10s", "GROUP", "EXEC", "EXIT", "NONZERO", "SIGNALED", "SHORT", "OOM", "AVG LIFE", "MAX LIFE")))
 	for _, row := range report.Rows {
-		fmt.Printf("%-24s %6d %6d %8d %8d %6d %4d %10s %10s\n", row.Group, row.Execs, row.Exits, row.NonZeroExits, row.Signaled, row.ShortLived, row.OOMKilled, execOptionalLifetime(row.AvgLifetimeMS), execOptionalLifetime(row.MaxLifetimeMS))
+		style.printf(out, "%-24s %6d %6d %8d %8d %6d %4d %10s %10s\n", row.Group, row.Execs, row.Exits, style.count("NONZERO", row.NonZeroExits), style.count("SIGNALED", row.Signaled), row.ShortLived, style.count("OOM", row.OOMKilled), style.measure(execOptionalLifetime(row.AvgLifetimeMS)), style.measure(execOptionalLifetime(row.MaxLifetimeMS)))
 	}
 	if len(report.Signals) > 0 {
-		fmt.Printf("%-10s %-20s %-20s %-18s %6s\n", "SIGNAL", "SENDER", "TARGET", "RESULT", "COUNT")
+		style.line(out, style.dim(fmt.Sprintf("%-10s %-20s %-20s %-18s %6s", "SIGNAL", "SENDER", "TARGET", "RESULT", "COUNT")))
 		for _, row := range report.Signals {
 			result := row.Result
 			if row.FromKernel {
 				result += " (kernel)"
 			}
-			fmt.Printf("%-10s %-20s %-20s %-18s %6d\n", row.Signal, row.Sender, row.Target, result, row.Count)
+			style.printf(out, "%-10s %-20s %-20s %-18s %6d\n", row.Signal, row.Sender, row.Target, result, row.Count)
 		}
 	}
 	if len(report.OOMs) > 0 {
-		fmt.Printf("%-12s %-8s %-16s %-24s %s\n", "OOM", "PID", "VICTIM", "TRIGGER", "MEMORY")
+		style.line(out, style.dim(fmt.Sprintf("%-12s %-8s %-16s %-24s %s", "OOM", "PID", "VICTIM", "TRIGGER", "MEMORY")))
 		for _, event := range report.OOMs {
 			memory := "-"
 			if event.AnonRSSKB != nil {
 				memory = fmt.Sprintf("anon %s file %s shmem %s adj %d", traceBytes(*event.AnonRSSKB*1024), traceBytes(*event.FileRSSKB*1024), traceBytes(*event.ShmemRSSKB*1024), *event.OOMScoreAdj)
 			}
-			fmt.Printf("%-12s %-8d %-16s %-24s %s\n", time.Unix(0, int64(event.TimestampNS)).Format("15:04:05.000"), event.PID, emptyAs(event.Process, "-"), execOOMTrigger(event), memory)
+			style.printf(out, "%-12s %-8d %-16s %-24s %s\n", style.muted(time.Unix(0, int64(event.TimestampNS)).Format("15:04:05.000")), event.PID, emptyAs(event.Process, "-"), execOOMTrigger(event), memory)
 		}
 	}
-	fmt.Printf("events %d  ring_lost %d  filtered_signals %d  args_truncated %d\n", report.Summary.EventCount, report.Summary.LostEvents, report.Summary.FilteredSignals, report.Summary.ArgsTruncated)
+	style.line(out, style.stats(traceStat{"events", fmt.Sprint(report.Summary.EventCount)}, traceStat{"ring_lost", fmt.Sprint(report.Summary.LostEvents)}, traceStat{"filtered_signals", fmt.Sprint(report.Summary.FilteredSignals)}, traceStat{"args_truncated", fmt.Sprint(report.Summary.ArgsTruncated)}))
 }
 
 func execOptionalLifetime(value *float64) string {

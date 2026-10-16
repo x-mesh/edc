@@ -3,7 +3,6 @@ package edc
 import (
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 	"os"
 	"os/signal"
@@ -44,10 +43,10 @@ func routeStatePath(execID string) string {
 }
 
 func runRoute(args []string, version string) int {
-	usage := T("cli.usage", "edc route <check|switch|status|rollback> ...")
+	usage := T("cli.usage", subcommandUsage("route")+" ...")
 	if len(args) == 0 {
 		// 하위 command만 고르게 한다. switch와 rollback의 값은 flag로만 받아 재현할 수 있게 둔다.
-		choice, ok := promptMissingChoice("edc route", []string{"check", "switch", "status", "rollback"})
+		choice, ok := promptMissingSubcommand("route")
 		if !ok {
 			fmt.Fprintln(os.Stderr, usage)
 			return 2
@@ -71,7 +70,7 @@ func runRoute(args []string, version string) int {
 
 func runRouteCheck(args []string, version string) int {
 	options := configuredCommon(15 * time.Second)
-	set := flag.NewFlagSet("route check", flag.ContinueOnError)
+	set := newFlagSet("route check")
 	set.SetOutput(os.Stderr)
 	bindCommon(set, &options)
 	if err := set.Parse(args); err != nil {
@@ -336,7 +335,7 @@ type routeRollbackOutcome struct {
 
 func runRouteRollback(args []string, version string) int {
 	options := configuredCommon(30 * time.Second)
-	set := flag.NewFlagSet("route rollback", flag.ContinueOnError)
+	set := newFlagSet("route rollback")
 	set.SetOutput(os.Stderr)
 	bindCommon(set, &options)
 	statePath := set.String("state", "", T("route.flag.state"))
@@ -500,7 +499,7 @@ type routeSwitchOutcome struct {
 
 func runRouteSwitch(args []string, version string) int {
 	options := configuredCommon(60 * time.Second)
-	set := flag.NewFlagSet("route switch", flag.ContinueOnError)
+	set := newFlagSet("route switch")
 	set.SetOutput(os.Stderr)
 	bindCommon(set, &options)
 	to := set.String("to", "", T("route.flag.to"))
@@ -790,7 +789,7 @@ func routeSwitchAutoConfirm(_ string, _ string, initial bool) (bool, error) {
 
 func runRouteStatus(args []string, version string) int {
 	options := configuredCommon(15 * time.Second)
-	set := flag.NewFlagSet("route status", flag.ContinueOnError)
+	set := newFlagSet("route status")
 	set.SetOutput(os.Stderr)
 	bindCommon(set, &options)
 	if err := set.Parse(args); err != nil {

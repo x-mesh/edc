@@ -56,6 +56,8 @@ type fsWatchOptions struct {
 	outputPath string
 	outputInfo os.FileInfo
 	status     *fsWatchStatus
+	// color는 기록 줄에 색을 쓰는지다. 상태줄과 같이 사람이 보는 터미널에서만 켠다.
+	color bool
 }
 
 type fsWatchExcludes []string
@@ -65,7 +67,7 @@ func (values *fsWatchExcludes) Set(value string) error { *values = append(*value
 
 func parseFSWatchOptions(args []string, output io.Writer) (fsWatchOptions, error) {
 	options := fsWatchOptions{match: "**"}
-	set := flag.NewFlagSet("watch fs", flag.ContinueOnError)
+	set := newFlagSet("watch fs")
 	set.SetOutput(output)
 	set.BoolVar(&options.recursive, "recursive", false, T("watchfs.option.recursive"))
 	set.StringVar(&options.driver, "driver", fsWatchDriverAuto, T("watchfs.option.driver"))
@@ -81,11 +83,8 @@ func parseFSWatchOptions(args []string, output io.Writer) (fsWatchOptions, error
 	noDefaultExclude := set.Bool("no-default-exclude", false, T("watchfs.option.no_default_exclude"))
 	var excludes fsWatchExcludes
 	set.Var(&excludes, "exclude", T("watchfs.option.exclude"))
-	reordered, err := reorderFSWatchArgs(set, args)
+	err := parseReordered(set, args)
 	if err != nil {
-		return options, err
-	}
-	if err := set.Parse(reordered); err != nil {
 		return options, err
 	}
 	if !*noDefaultExclude {
@@ -231,16 +230,18 @@ func reorderFSWatchArgs(set *flag.FlagSet, args []string) ([]string, error) {
 		if !assigned && (name == "h" || name == "help") {
 			return nil, flag.ErrHelp
 		}
+		flags = append(flags, arg)
+		// 모르는 flag는 그대로 넘긴다. flag package가 다른 명령과 같은 문장으로 알린다.
 		option := set.Lookup(name)
 		if option == nil {
-			return nil, fmt.Errorf("%s: --%s", T("watchfs.unknown_option"), name)
+			continue
 		}
-		flags = append(flags, arg)
 		boolean, ok := option.Value.(interface{ IsBoolFlag() bool })
 		if !assigned && !(ok && boolean.IsBoolFlag()) {
 			index++
+			// 값이 빠진 flag를 넘기면 뒤에 붙이는 --를 값으로 먹는다. 여기서 flag package와 같은 문장으로 멈춘다.
 			if index >= len(args) {
-				return nil, fmt.Errorf("%s: --%s", T("watchfs.option_value_required"), name)
+				return nil, fmt.Errorf("flag needs an argument: -%s", name)
 			}
 			flags = append(flags, args[index])
 		}

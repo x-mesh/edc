@@ -129,7 +129,7 @@ type cpuReport struct {
 func runTraceCPU(args []string) int {
 	options := cpuTraceOptions{}
 	var process string
-	set := flag.NewFlagSet("trace cpu", flag.ContinueOnError)
+	set := newFlagSet("trace cpu")
 	set.SetOutput(os.Stderr)
 	set.DurationVar(&options.duration, "duration", 0, T("command.trace.option.duration"))
 	set.IntVar(&options.frequency, "frequency", cpuDefaultFrequency, T("command.trace.option.frequency"))
@@ -427,51 +427,60 @@ func (report cpuReport) print(out io.Writer) {
 		report.printOffCPU(out)
 		return
 	}
+	style := newTraceSummaryStyle(out)
 	summary := report.Summary
-	fmt.Fprintf(out, "CPU PROFILE  duration %s  %d Hz  %d CPUs  samples %d  busy %.1f%%  profiled %d\n", time.Duration(summary.DurationMS)*time.Millisecond, summary.FrequencyHz, summary.CPUs, summary.Samples, cpuOptional(summary.BusyPercent), summary.Profiled)
-	fmt.Fprintf(out, "%-24s %8s %8s %7s\n", "PROCESS", "PID", "SAMPLES", "SHARE")
+	style.line(out, style.headline("CPU PROFILE", traceStat{"duration", (time.Duration(summary.DurationMS) * time.Millisecond).String()}, traceStat{"", fmt.Sprintf("%d Hz", summary.FrequencyHz)}, traceStat{"", fmt.Sprintf("%d CPUs", summary.CPUs)},
+		traceStat{"samples", fmt.Sprint(summary.Samples)}, traceStat{"busy", fmt.Sprintf("%.1f%%", cpuOptional(summary.BusyPercent))}, traceStat{"profiled", fmt.Sprint(summary.Profiled)}))
+	style.line(out, style.dim(fmt.Sprintf("%-24s %8s %8s %7s", "PROCESS", "PID", "SAMPLES", "SHARE")))
 	for index, row := range report.Processes {
 		if index == cpuProcessRows {
-			fmt.Fprintf(out, "… %d more processes\n", len(report.Processes)-cpuProcessRows)
+			style.line(out, style.hint(fmt.Sprintf("… %d more processes", len(report.Processes)-cpuProcessRows)))
 			break
 		}
-		fmt.Fprintf(out, "%-24s %8d %8d %6.1f%%\n", emptyAs(row.Process, "-"), row.PID, row.Samples, row.Percent)
+		style.printf(out, "%-24s %8d %8d %6.1f%s\n", emptyAs(row.Process, "-"), row.PID, row.Samples, row.Percent, style.dim("%"))
 	}
-	fmt.Fprintf(out, "%-48s %8s %7s %8s %7s\n", "FUNCTION", "SELF", "SELF%", "TOTAL", "TOTAL%")
+	style.line(out, style.dim(fmt.Sprintf("%-48s %8s %7s %8s %7s", "FUNCTION", "SELF", "SELF%", "TOTAL", "TOTAL%")))
 	for index, row := range report.Functions {
 		if index == cpuFunctionRows {
 			break
 		}
-		name := row.Function
+		name := cpuShorten(row.Function, 48)
 		if row.Kernel {
-			name += " [k]"
+			name = cpuShorten(row.Function+" [k]", 48)
 		}
-		fmt.Fprintf(out, "%-48s %8d %6.1f%% %8d %6.1f%%\n", cpuShorten(name, 48), row.Self, row.SelfPercent, row.Total, row.TotalPercent)
+		cell := fmt.Sprintf("%-48s", name)
+		if row.Kernel && style.color && strings.HasSuffix(name, " [k]") {
+			cell = strings.TrimSuffix(name, "[k]") + style.dim("[k]") + cell[len(name):]
+		}
+		style.printf(out, "%s %8d %6.1f%s %8d %6.1f%s\n", cell, row.Self, row.SelfPercent, style.dim("%"), row.Total, row.TotalPercent, style.dim("%"))
 	}
-	fmt.Fprintf(out, "stacks %d  idle %d  self %d  filtered %d  counts_full %d  stacks_full %d  user_missing %d  collisions %d  shallow_user %d\n",
-		summary.Stacks, summary.Idle, summary.Self, summary.Filtered, summary.CountsFull, summary.StacksFull, summary.UserStackMissing, summary.UserStackCollision+summary.KernelStackCollision, summary.ShallowUserSamples)
+	style.line(out, style.stats(traceStat{"stacks", fmt.Sprint(summary.Stacks)}, traceStat{"idle", fmt.Sprint(summary.Idle)}, traceStat{"self", fmt.Sprint(summary.Self)}, traceStat{"filtered", fmt.Sprint(summary.Filtered)},
+		traceStat{"counts_full", fmt.Sprint(summary.CountsFull)}, traceStat{"stacks_full", fmt.Sprint(summary.StacksFull)}, traceStat{"user_missing", fmt.Sprint(summary.UserStackMissing)},
+		traceStat{"collisions", fmt.Sprint(summary.UserStackCollision + summary.KernelStackCollision)}, traceStat{"shallow_user", fmt.Sprint(summary.ShallowUserSamples)}))
 }
 
 func (report cpuReport) printOffCPU(out io.Writer) {
+	style := newTraceSummaryStyle(out)
 	summary := report.Summary
-	fmt.Fprintf(out, "OFF-CPU PROFILE  duration %s  blocks %d  off-cpu %s\n", time.Duration(summary.DurationMS)*time.Millisecond, summary.Profiled, cpuMilliseconds(cpuOptional(summary.OffCPUMS)))
-	fmt.Fprintf(out, "%-24s %8s %8s %10s %7s\n", "PROCESS", "PID", "BLOCKS", "OFF-CPU", "SHARE")
+	style.line(out, style.headline("OFF-CPU PROFILE", traceStat{"duration", (time.Duration(summary.DurationMS) * time.Millisecond).String()}, traceStat{"blocks", fmt.Sprint(summary.Profiled)}, traceStat{"off-cpu", cpuMilliseconds(cpuOptional(summary.OffCPUMS))}))
+	style.line(out, style.dim(fmt.Sprintf("%-24s %8s %8s %10s %7s", "PROCESS", "PID", "BLOCKS", "OFF-CPU", "SHARE")))
 	for index, row := range report.Processes {
 		if index == cpuProcessRows {
-			fmt.Fprintf(out, "… %d more processes\n", len(report.Processes)-cpuProcessRows)
+			style.line(out, style.hint(fmt.Sprintf("… %d more processes", len(report.Processes)-cpuProcessRows)))
 			break
 		}
-		fmt.Fprintf(out, "%-24s %8d %8d %10s %6.1f%%\n", emptyAs(row.Process, "-"), row.PID, row.Samples, cpuMilliseconds(*row.TimeMS), row.Percent)
+		style.printf(out, "%-24s %8d %8d %10s %6.1f%s\n", emptyAs(row.Process, "-"), row.PID, row.Samples, style.measure(cpuMilliseconds(*row.TimeMS)), row.Percent, style.dim("%"))
 	}
-	fmt.Fprintf(out, "%-16s %-40s %-16s %8s %10s %9s %7s\n", "PROCESS", "CODE", "KERNEL", "BLOCKS", "OFF-CPU", "AVG", "SHARE")
+	style.line(out, style.dim(fmt.Sprintf("%-16s %-40s %-16s %8s %10s %9s %7s", "PROCESS", "CODE", "KERNEL", "BLOCKS", "OFF-CPU", "AVG", "SHARE")))
 	for index, row := range report.Waits {
 		if index == cpuWaitRows {
 			break
 		}
-		fmt.Fprintf(out, "%-16s %-40s %-16s %8d %10s %9s %6.1f%%\n", cpuShorten(row.Process, 16), cpuShorten(row.Code, 40), cpuShorten(row.Kernel, 16), row.Blocks, cpuMilliseconds(row.TimeMS), cpuMilliseconds(row.AvgMS), row.Percent)
+		style.printf(out, "%-16s %-40s %-16s %8d %10s %9s %6.1f%s\n", cpuShorten(row.Process, 16), cpuShorten(row.Code, 40), cpuShorten(row.Kernel, 16), row.Blocks, style.measure(cpuMilliseconds(row.TimeMS)), style.measure(cpuMilliseconds(row.AvgMS)), row.Percent, style.dim("%"))
 	}
-	fmt.Fprintf(out, "stacks %d  self %d  filtered %d  counts_full %d  starts_full %d  stacks_full %d  user_missing %d  collisions %d\n",
-		summary.Stacks, summary.Self, summary.Filtered, summary.CountsFull, summary.OffCPUStartsFull, summary.StacksFull, summary.UserStackMissing, summary.UserStackCollision+summary.KernelStackCollision)
+	style.line(out, style.stats(traceStat{"stacks", fmt.Sprint(summary.Stacks)}, traceStat{"self", fmt.Sprint(summary.Self)}, traceStat{"filtered", fmt.Sprint(summary.Filtered)}, traceStat{"counts_full", fmt.Sprint(summary.CountsFull)},
+		traceStat{"starts_full", fmt.Sprint(summary.OffCPUStartsFull)}, traceStat{"stacks_full", fmt.Sprint(summary.StacksFull)}, traceStat{"user_missing", fmt.Sprint(summary.UserStackMissing)},
+		traceStat{"collisions", fmt.Sprint(summary.UserStackCollision + summary.KernelStackCollision)}))
 }
 
 func cpuOptional(value *float64) float64 {

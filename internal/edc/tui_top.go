@@ -3,6 +3,7 @@ package edc
 import (
 	"fmt"
 	"os"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -148,10 +149,14 @@ const (
 	topProcessIOMinWidth = 60
 	// topProcessStateWidth는 STATE 칸의 폭이다. 가장 긴 이름인 iowait와 zombie가 들어간다.
 	topProcessStateWidth = 6
-	// topProcessColumnsWidth는 후보 줄에서 이름 칸을 뺀 표시·PID·STATE·CPU%·RSS 칸과 사이 공백의 폭이다.
+	// topProcessColumnsWidth는 후보 줄에서 이름 칸을 뺀 표시·PID·STATE·CPU%·MEM 칸과 사이 공백의 폭이다.
 	topProcessColumnsWidth = 26 + topProcessStateWidth
 	// topProcessIOColumnsWidth는 READ·WRITE 두 칸과 앞 공백의 폭이다. 63칸 후보 패널에서 이름 칸이 17칸 남는다.
 	topProcessIOColumnsWidth = 14
+	// topProcessRSSColumnWidth는 MEM 뒤에 붙는 RSS 칸과 앞 공백의 폭이다.
+	topProcessRSSColumnWidth = 7
+	// topProcessRSSMinNameWidth는 RSS 칸을 붙인 뒤에도 남겨야 하는 이름 칸 폭이다. 이보다 좁아지면 MEM만 보인다.
+	topProcessRSSMinNameWidth = 16
 	// topBlockedSignalMin은 iowait이 높을 때 blocked가 signal에 오르는 D state 작업 수다. 4 core host의 core 수와 같다.
 	topBlockedSignalMin = 4
 	// topBlockedSignalDanger는 blocked 경고의 순위를 다른 경고와 맞추는 기준 작업 수다.
@@ -231,10 +236,13 @@ type topModel struct {
 	helpOffset      int
 	processFocus    bool
 	processSelected int
-	probeEnabled    bool
-	record          func(historyTopSample) error
-	recordFailure   tea.Cmd
-	recordingErr    error
+	// panelSort는 o로 고른 process 패널 정렬 기준이다. topViewCPU, topViewMemory, topViewDisk 중 하나이고,
+	// 비어 있으면 보기를 따른다. 보기를 바꾸면 비운다.
+	panelSort     topView
+	probeEnabled  bool
+	record        func(historyTopSample) error
+	recordFailure tea.Cmd
+	recordingErr  error
 	// split은 박스로 보일 보기 목록이고, 비어 있으면 전체다. boxed는 박스 안에서 그리는 표임을 나타낸다.
 	split []topView
 	boxed bool
@@ -252,7 +260,9 @@ type topSampleMsg struct {
 }
 
 func newTopModel(details hostDetails, first resourceSnapshot, interval time.Duration, sample func() (resourceSnapshot, error)) topModel {
-	return topModel{details: details, limits: newTopLimits(details.Cores, true), interval: interval, previous: first, view: topViewAll, follow: true, sample: sample, events: &topEventLog{},
+	limits := newTopLimits(details.Cores, true)
+	limits.memoryTotal = details.MemoryTotal
+	return topModel{details: details, limits: limits, interval: interval, previous: first, view: topViewAll, follow: true, sample: sample, events: &topEventLog{},
 		listInterfaces: topListInterfaces, interfacePhysical: topInterfacePhysical, physicalSupported: topPhysicalSupported}
 }
 
@@ -269,9 +279,7 @@ func (model topModel) Init() tea.Cmd { return tea.Batch(model.tick(), model.reco
 
 func (model topModel) tick() tea.Cmd {
 	seq, sample := model.seq, model.sample
-	if model.setScanIO != nil {
-		model.setScanIO(model.view == topViewDisk)
-	}
+	model.syncScanIO()
 	if model.processFilter.active() && model.sampleNow != nil {
 		sample = model.sampleNow
 	}
@@ -416,19 +424,21 @@ func (model topModel) updateKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "-", "_":
 		return model.withInterval(nextTopInterval(model.interval, -1))
 	case "1":
-		model.view = topViewAll
+		model.view, model.panelSort = topViewAll, ""
 	case "c":
-		model.view = topViewCPU
+		model.view, model.panelSort = topViewCPU, ""
 	case "m":
-		model.view = topViewMemory
+		model.view, model.panelSort = topViewMemory, ""
 	case "d":
-		model.view = topViewDisk
+		model.view, model.panelSort = topViewDisk, ""
 	case "n":
-		model.view = topViewNetwork
+		model.view, model.panelSort = topViewNetwork, ""
 	case "v":
 		model = model.enterSplit()
 	case "s":
-		model.view = topViewPressure
+		model.view, model.panelSort = topViewPressure, ""
+	case "o":
+		model.panelSort = nextTopPanelSort(model.panelSort)
 	case "?":
 		model.help = true
 		model.helpOffset = 0
@@ -493,10 +503,18 @@ func (model topModel) updateKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			model.selected, model.follow = len(model.rows)-1, true
 		}
 	}
-	if key.String() == "1" || key.String() == "c" || key.String() == "m" || key.String() == "d" || key.String() == "n" || key.String() == "s" || key.String() == "v" {
+	if key.String() == "1" || key.String() == "c" || key.String() == "m" || key.String() == "d" || key.String() == "n" || key.String() == "s" || key.String() == "v" || key.String() == "o" {
 		model.processSelected = 0
+		// 이미 예약한 표본도 새 순위로 읽게 바로 알린다. tick에서만 알리면 한 interval 동안 앞 순위의 후보가 남는다.
+		model.syncScanIO()
 	}
 	return model, nil
+}
+
+func (model topModel) syncScanIO() {
+	if model.setScanIO != nil {
+		model.setScanIO(model.panelRank() == topViewDisk)
+	}
 }
 
 // homeView는 Esc가 돌아가는 처음 보기다. process 필터가 있으면 그 process 보기, --split으로 시작했으면 박스 화면이다.
@@ -512,10 +530,10 @@ func (model topModel) homeView() topView {
 
 // canGoBack은 Esc로 되돌릴 것이 있는지다. 있으면 상태 줄에 Esc back을 보인다.
 func (model topModel) canGoBack() bool {
-	return model.detail || model.peaks || !model.follow || model.view != model.homeView() || model.processFilter.active()
+	return model.detail || model.peaks || !model.follow || model.panelSort != "" || model.view != model.homeView() || model.processFilter.active()
 }
 
-// back은 Esc 한 번에 한 단계만 되돌린다. 아래 패널, 과거 행 선택, 처음 보기, process 필터 순서라서 Esc를 몇 번 누르면
+// back은 Esc 한 번에 한 단계만 되돌린다. 아래 패널, 과거 행 선택, o로 고른 정렬, 처음 보기, process 필터 순서라서 Esc를 몇 번 누르면
 // 처음 화면으로 돌아온다. 보기 키를 몰라도 돌아올 수 있게 한다.
 func (model topModel) back() (tea.Model, tea.Cmd) {
 	switch {
@@ -526,6 +544,9 @@ func (model topModel) back() (tea.Model, tea.Cmd) {
 			model.selected = len(model.rows) - 1
 		}
 		model.follow = true
+	case model.panelSort != "":
+		model.panelSort, model.processSelected = "", 0
+		model.syncScanIO()
 	case model.view != model.homeView():
 		if home := model.homeView(); home == topViewSplit {
 			model = model.enterSplit()
@@ -533,6 +554,7 @@ func (model topModel) back() (tea.Model, tea.Cmd) {
 			model.view = home
 		}
 		model.processSelected = 0
+		model.syncScanIO()
 	case model.processFilter.active():
 		model.notice = "process filter cleared"
 		return model.applyFilter(topProcessFilter{}, "")
@@ -542,7 +564,8 @@ func (model topModel) back() (tea.Model, tea.Cmd) {
 
 func (model topModel) followSignal() (tea.Model, tea.Cmd) {
 	if model.processFilter.active() {
-		model.view = topViewProcess
+		model.view, model.panelSort = topViewProcess, ""
+		model.syncScanIO()
 		return model, nil
 	}
 	row, ok := model.selectedRow()
@@ -552,7 +575,8 @@ func (model topModel) followSignal() (tea.Model, tea.Cmd) {
 	}
 	items := topDashboardSignalItems(row.rate, row.processes, row.processTotal.Groups, row.processesValid, model.limits)
 	if len(items) > 0 && items[0].view != topViewProcess && model.view != items[0].view {
-		model.view = items[0].view
+		model.view, model.panelSort, model.processSelected = items[0].view, "", 0
+		model.syncScanIO()
 		model.notice = fmt.Sprintf("f: %s → %s view · f again selects a candidate", items[0].text, items[0].view)
 		return model, nil
 	}
@@ -660,7 +684,7 @@ func (model topModel) applyFilter(filter topProcessFilter, name string) (tea.Mod
 	if model.setFilter != nil {
 		model.setFilter(filter)
 	}
-	model.view = topViewAll
+	model.view, model.panelSort = topViewAll, ""
 	if filter.active() {
 		model.view = topViewProcess
 	}
@@ -722,7 +746,7 @@ func (model topModel) bodyLines() int {
 func (model topModel) View() tea.View {
 	view := model.dashboardView()
 	if model.picker != nil && !(model.width > 0 && (model.width < 24 || model.height < 8)) {
-		view.Content = overlayTopBox(view.Content, model.picker.lines(model.interfaceRates, model.displayWidth(), model.height), model.displayWidth(), model.limits.color)
+		view.Content = overlayTopBox(view.Content, model.picker.lines(model.interfaceRates, model.displayWidth(), model.height, model.limits.color), model.displayWidth(), model.limits.color)
 	}
 	return view
 }
@@ -735,7 +759,7 @@ func (model topModel) dashboardView() tea.View {
 	}
 	lines := append([]string{model.dashboardTitle()}, model.processBanner()...)
 	if model.help {
-		lines = []string{topDashboardFitWidth("Help · ↑↓ scroll · ?/Esc back · q quit", model.displayWidth())}
+		lines = []string{topHeading(topDashboardFitWidth("Help · ↑↓ scroll · ?/Esc back · q quit", model.displayWidth()), model.limits.color)}
 		help := model.helpLines()
 		start := min(model.helpOffset, max(0, len(help)-1))
 		end := min(len(help), start+max(1, model.height-2))
@@ -745,7 +769,7 @@ func (model topModel) dashboardView() tea.View {
 		return view
 	}
 	if model.eventsOpen {
-		lines = []string{topDashboardFitWidth("Events · ↑↓ select · Enter jump to its start · e/Esc back · q quit", model.displayWidth())}
+		lines = []string{topHeading(topDashboardFitWidth("Events · ↑↓ select · Enter jump to its start · e/Esc back · q quit", model.displayWidth()), model.limits.color)}
 		lines = append(lines, model.eventListLines()...)
 		for index := range lines {
 			lines[index] = ansi.Truncate(lines[index], model.displayWidth(), "")
@@ -757,7 +781,9 @@ func (model topModel) dashboardView() tea.View {
 	if model.view == topViewSplit {
 		return model.splitView()
 	}
-	lines = append(lines, model.tableHeader()...)
+	for _, header := range model.tableHeader() {
+		lines = append(lines, topDim(header, model.limits.color))
+	}
 	footer := model.footerLines()
 	bodyLines := model.bodyLines()
 	start := max(0, len(model.rows)-bodyLines)
@@ -770,13 +796,14 @@ func (model topModel) dashboardView() tea.View {
 		selected := index == model.selected && !model.follow
 		// 고른 행은 같은 칸에 >를 쓰므로 이벤트 표시를 넣지 않는다.
 		if level, ok := starts[model.rows[index].at.UnixNano()]; ok && !selected {
-			line = line[:topSelectionColumn] + topPaint("!", level, model.limits.color) + line[topSelectionColumn+1:]
+			line = line[:topSelectionColumn] + topTint("!", level, model.limits.color) + line[topSelectionColumn+1:]
 		}
 		if selected {
 			line = line[:topSelectionColumn] + ">" + line[topSelectionColumn+1:]
-			if !model.processFocus && model.limits.color {
-				line = topBannerStyle + strings.ReplaceAll(topDashboardFitWidth(line, model.displayWidth()), topColorReset, topColorReset+topBannerStyle) + topColorReset
-			}
+		}
+		line = topRules(line, model.limits.color)
+		if selected && !model.processFocus && model.limits.color {
+			line = topHighlight(line, model.displayWidth())
 		}
 		lines = append(lines, line)
 	}
@@ -834,6 +861,18 @@ func (model topModel) panelLinesWithEvents() []string {
 }
 
 func (model topModel) infoLines() []string {
+	lines := model.panelInfoLines()
+	if len(lines) > 0 {
+		lines[0] = topLead(lines[0], model.limits.color)
+	}
+	if model.lastErr != nil {
+		lines = append(lines, topTint(fmt.Sprintf("sample failed · last success %s · %s", model.previous.TakenAt.Format("15:04:05"), model.lastErr), topLevelDanger, model.limits.color))
+	}
+	return lines
+}
+
+// panelInfoLines는 detail, peaks, network 패널이다. 첫 줄이 패널 제목이다.
+func (model topModel) panelInfoLines() []string {
 	var lines []string
 	switch {
 	case model.detail:
@@ -844,9 +883,6 @@ func (model topModel) infoLines() []string {
 		if row, ok := model.selectedRow(); ok {
 			lines = append([]string{"network " + row.at.Format("15:04:05") + " · current namespace · Enter interfaces and settings · i select"}, networkHealthLines(row.rate.NetworkHealth)...)
 		}
-	}
-	if model.lastErr != nil {
-		lines = append(lines, fmt.Sprintf("sample failed · last success %s · %s", model.previous.TakenAt.Format("15:04:05"), model.lastErr))
 	}
 	return lines
 }
@@ -868,9 +904,10 @@ func (model topModel) footerPanelLines() []string {
 		}
 		return append(model.panelLines(), model.statusLines()...)
 	}
-	leftWidth := model.displayWidth() - topFooterGap - topFooterProcessWidth
+	processWidth := model.footerProcessWidth()
+	leftWidth := model.displayWidth() - topFooterGap - processWidth
 	left, right := model, model
-	left.width, right.width = leftWidth, topFooterProcessWidth
+	left.width, right.width = leftWidth, processWidth
 	info, status, candidates := left.infoLines(), left.statusLines(), right.candidateLines()
 	if model.height > 0 {
 		available := max(len(status), model.height-2-len(model.processBanner())-len(model.tableHeader()))
@@ -895,9 +932,17 @@ func (model topModel) footerPanelLines() []string {
 		if index < len(candidates) {
 			rightLine = candidates[index]
 		}
-		lines[index] = topDashboardFitWidth(leftLine, leftWidth) + strings.Repeat(" ", topFooterGap) + topDashboardFitWidth(rightLine, topFooterProcessWidth)
+		lines[index] = topDashboardFitWidth(leftLine, leftWidth) + strings.Repeat(" ", topFooterGap) + topDashboardFitWidth(rightLine, processWidth)
 	}
 	return lines
+}
+
+// footerProcessWidth는 오른쪽에 붙인 process 후보 칸의 폭이다. 왼쪽에 80열이 남을 때만 RSS 칸만큼 넓힌다.
+func (model topModel) footerProcessWidth() int {
+	if model.displayWidth() >= topFooterDockWidth+topProcessRSSColumnWidth {
+		return topFooterProcessWidth + topProcessRSSColumnWidth
+	}
+	return topFooterProcessWidth
 }
 
 // padToFooter는 아래 영역이 화면 맨 아래에 오도록 빈 줄을 채운다. 시작 직후 행이 적어도 안내 줄이 움직이지 않는다.
@@ -916,28 +961,37 @@ func (model topModel) dashboardTitle() string {
 	if model.lastErr != nil {
 		state += " · sample error"
 	}
+	color := model.limits.color
 	if model.displayWidth() < topTableWidth {
-		return topDashboardFitWidth("edc top · "+string(model.view)+" · "+state, model.displayWidth())
+		return topDashboardFitWidth(topHeading("edc top · "+string(model.view)+" · "+state, color), model.displayWidth())
 	}
 	// 왼쪽은 host 정보, 오른쪽은 보기와 상태다. priority 0은 항상 보이고, 나머지는 폭이 허락하는 만큼
 	// OS, memory, edc 버전, CPU 모델 순서로 더한다. 자리는 slice 순서를 따르므로 상태가 바뀌어도 host 정보가 움직이지 않는다.
 	type titlePart struct {
 		text     string
 		priority int
+		// paint는 색을 쓸 때 이 조각을 그린다. 비면 회색이다.
+		paint func(string) string
 	}
 	version := ""
 	if model.version != "" {
 		version = "edc " + model.version
 	}
+	host := func(text string) string { return richPaint(text, richMagenta, true) }
+	view := func(text string) string {
+		name, _ := strings.CutPrefix(text, "view ")
+		return richDim("view ") + richBold(name)
+	}
 	leftParts := []titlePart{
-		{model.details.Hostname, 0},
-		{topHostOS(model.details), 1},
-		{model.details.Model, 4},
-		{fmt.Sprintf("%d cores", model.details.Cores), 0},
-		{topMemorySize(model.details.MemoryTotal), 2},
+		{model.details.Hostname, 0, host},
+		{topHostOS(model.details), 1, nil},
+		{model.details.Model, 4, nil},
+		{fmt.Sprintf("%d cores", model.details.Cores), 0, nil},
+		{topMemorySize(model.details.MemoryTotal), 2, nil},
 	}
 	// "all latest"를 버전으로 읽는 일이 없게 보기 이름 앞에 view를 붙인다. 필터는 바로 아래 배너가 보인다.
-	rightParts := []titlePart{{"view " + string(model.view), 0}, {state, 0}, {version, 3}}
+	rightParts := []titlePart{{"view " + string(model.view), 0, view}, {state, 0, model.titleState}, {version, 3, nil}}
+	// join은 폭을 재는 평문을, paintJoin은 같은 조각을 색으로 그린다. 폭은 언제나 평문으로 잰다.
 	join := func(parts []titlePart, priority int) string {
 		texts := []string{}
 		for _, part := range parts {
@@ -946,6 +1000,30 @@ func (model topModel) dashboardTitle() string {
 			}
 		}
 		return strings.Join(texts, " · ")
+	}
+	paintJoin := func(parts []titlePart, priority int) string {
+		if !color {
+			return join(parts, priority)
+		}
+		// 이웃한 회색 조각과 구분점은 한 번에 칠해 escape 수를 줄인다.
+		var painted, gray strings.Builder
+		first := true
+		for _, part := range parts {
+			if part.priority > priority || part.text == "" {
+				continue
+			}
+			if !first {
+				gray.WriteString(" · ")
+			}
+			first = false
+			if part.paint == nil {
+				gray.WriteString(part.text)
+				continue
+			}
+			painted.WriteString(richDim(gray.String()) + part.paint(part.text))
+			gray.Reset()
+		}
+		return painted.String() + richDim(gray.String())
 	}
 	// 상태를 표 오른쪽 끝에 맞춘다. all 보기의 표는 terminal 폭을 쓰고, 다른 보기의 표는 80열이다.
 	width := topTableWidth
@@ -961,13 +1039,31 @@ func (model topModel) dashboardTitle() string {
 		if space < gap {
 			break
 		}
-		title = left + strings.Repeat(" ", space) + right
+		title = "🐰 " + paintJoin(leftParts, priority) + strings.Repeat(" ", space) + paintJoin(rightParts, priority) + " 🐰"
 	}
 	if title == "" {
 		// host 이름이 길어 양쪽으로 뗄 수 없으면 한 줄로 잇는다. 넘치는 부분은 renderer가 자른다.
-		title = "🐰 " + join(leftParts, 0) + " · " + join(rightParts, 0) + " 🐰"
+		separator := " · "
+		if color {
+			separator = richDim(separator)
+		}
+		title = "🐰 " + paintJoin(leftParts, 0) + separator + paintJoin(rightParts, 0) + " 🐰"
 	}
 	return title
+}
+
+// titleState는 제목의 live, history 상태다. live는 초록, history는 노랑, 수집 실패는 빨강이다.
+func (model topModel) titleState(text string) string {
+	state, failure, failed := strings.Cut(text, " · ")
+	color := richGreen
+	if state != "live" {
+		color = richYellow
+	}
+	painted := richPaint(state, color, false)
+	if failed {
+		painted += richDim(" · ") + richPaint(failure, richRed, false)
+	}
+	return painted
 }
 
 // topHostOS는 제목에 쓸 OS 이름이다. Linux의 Version은 os-release의 PRETTY_NAME이라 배포판 이름을 이미 담고 있다.
@@ -1011,9 +1107,9 @@ func (model topModel) detailLines() []string {
 		fmt.Sprintf("  %s · %s · %s", topDiskDetail(rate), topNetworkDetail(rate), topPressureDetail(rate)),
 	}
 	if !model.processFilter.active() {
-		return append(lines, "  "+topProcessDetail(row.processes, row.processesValid))
+		return append(lines, "  "+topProcessDetail(row.processes, row.processesValid, model.limits.color))
 	}
-	for index, line := range topMatchDetail(row.processes, row.processTotal, row.processesValid) {
+	for index, line := range topMatchDetail(row.processes, row.processTotal, row.processesValid, model.limits.color) {
 		if index == 0 {
 			line = "  " + line
 		}
@@ -1072,58 +1168,146 @@ func (model topModel) statusLines() []string {
 	} else if !model.follow {
 		state = fmt.Sprintf("history · %d new · %s", max(0, len(model.rows)-1-model.selected), state)
 	}
-	keys := "c cpu m mem d disk n net f candidates / filter ? help"
+	var keys topKeyHints
 	if model.processFilter.active() {
-		keys = "1 host f proc / edit Esc back ? help"
+		keys = topKeyHints{{key: "1", label: "host"}, {key: "f", label: "proc"}, model.sortHint(), {key: "/", label: "edit"}, {key: "Esc", label: "back"}, {key: "?", label: "help"}}
+	} else {
+		keys = topKeyHints{
+			{key: "c", label: "cpu", on: model.view == topViewCPU}, {key: "m", label: "mem", on: model.view == topViewMemory},
+			{key: "d", label: "disk", on: model.view == topViewDisk}, {key: "n", label: "net", on: model.view == topViewNetwork},
+			model.sortHint(), {key: "f", label: "candidates"}, {key: "/", label: "filter"}, {key: "?", label: "help"},
+		}
 	}
 	if model.interfaces.active() {
-		// net 표시가 붙으면 80열에서 줄 끝이 잘린다. ? help는 아래 줄에도 있으므로 여기서 뺀다.
-		keys = strings.TrimSuffix(keys, " ? help")
+		// net 표시가 붙으면 80열에서 / filter까지 잘린다. ? help는 아래 줄에도 있고, o는 ? 도움말에 있으며 고른 뒤에는
+		// 패널 제목의 (o)로 보이므로 둘을 뺀다.
+		kept := topKeyHints{}
+		for _, hint := range keys {
+			if hint.key != "?" && hint.key != "o" {
+				kept = append(kept, hint)
+			}
+		}
+		keys = kept
 	}
-	views := fmt.Sprintf("%s · %s", state, keys)
+	color := model.limits.color
+	views := topStatusLine{plain: state + " · " + keys.render(" ", false), styled: topDim(state+" · ", color) + keys.render(" ", color)}
+	// 두 줄을 합칠 때는 ? help를 아래 줄에만 둔다.
+	joinedKeys := keys
+	if last := len(keys) - 1; keys[last].key == "?" {
+		joinedKeys = keys[:last]
+	}
+	joinedViews := topStatusLine{plain: state + " · " + joinedKeys.render(" ", false), styled: topDim(state+" · ", color) + joinedKeys.render(" ", color)}
 	switch {
 	case model.input:
-		views = "process filter: " + model.inputText + "█ · Enter apply · Esc cancel"
+		views = topDimStatusLine("process filter: "+model.inputText+"█ · Enter apply · Esc cancel", color)
+		joinedViews = views
 	case model.notice != "":
-		views = model.notice
+		views = topDimStatusLine(model.notice, color)
+		joinedViews = views
 	}
 	// PgUp/Dn을 넣어도 80열에서 끝의 +/-가 잘리지 않게 구분 공백을 두 칸으로 맞췄다.
-	actions := "↑↓ history  Tab processes  Enter detail  End live  ? help  q quit"
+	actionHints := topKeyHints{{key: "↑↓", label: "history"}, {key: "Tab", label: "processes"}, {key: "Enter", label: "detail"}, {key: "End", label: "live"}}
 	if model.canGoBack() {
-		actions = "↑↓ history  Tab processes  Enter detail  End live  Esc back  ? help  q quit"
+		actionHints = append(actionHints, topKeyHint{key: "Esc", label: "back"})
 	}
+	actionHints = append(actionHints, topKeyHint{key: "?", label: "help"}, topKeyHint{key: "q", label: "quit"})
 	if model.processFocus {
-		actions = "↑↓ select  Enter focus PID  Tab/Esc history  End live  ? help  q quit"
+		actionHints = topKeyHints{{key: "↑↓", label: "select"}, {key: "Enter", label: "focus PID"}, {key: "Tab/Esc", label: "history"}, {key: "End", label: "live"}, {key: "?", label: "help"}, {key: "q", label: "quit"}}
 	}
+	actions := topStatusLine{plain: actionHints.render("  ", false), styled: actionHints.render("  ", color)}
 	if model.displayWidth() < 70 {
-		views = state + " · / filter · ? help · q quit"
-		actions = "Tab processes · ↑↓ history · End live"
+		narrowViews := state + " · / filter · ? help · q quit"
+		narrowActions := "Tab processes · ↑↓ history · End live"
 		if model.canGoBack() {
-			actions += " · Esc back"
+			narrowActions += " · Esc back"
 		}
 		if model.processFocus {
-			actions = "↑↓ select · Enter focus · Esc back"
+			narrowActions = "↑↓ select · Enter focus · Esc back"
 		}
 		if model.input {
-			views = "filter: " + model.inputText + "█"
-			actions = "Enter apply · Esc cancel"
+			narrowViews = "filter: " + model.inputText + "█"
+			narrowActions = "Enter apply · Esc cancel"
 		} else if model.notice != "" {
-			views = model.notice
+			narrowViews = model.notice
 		}
+		views, actions = topDimStatusLine(narrowViews, color), topDimStatusLine(narrowActions, color)
+		joinedViews = topDimStatusLine(strings.TrimSuffix(narrowViews, " ? help"), color)
 	}
 	if model.displayWidth() < 40 && !model.input && model.notice == "" {
-		views = model.interval.String() + " · ? help · q quit"
-		actions = "↑↓ history · Tab procs"
+		views = topDimStatusLine(model.interval.String()+" · ? help · q quit", color)
+		joinedViews = topDimStatusLine(model.interval.String()+" · ? help · q quit", color)
+		tiny := "↑↓ history · Tab procs"
 		if model.processFocus {
-			actions = "↑↓ pick · Enter · Esc"
+			tiny = "↑↓ pick · Enter · Esc"
 		}
+		actions = topDimStatusLine(tiny, color)
 	}
-	// 두 줄이 한 폭에 들어가면 합쳐 표가 한 줄 더 보이게 한다. 양쪽에 있는 ? help는 한 번만 둔다.
-	if joined := strings.TrimSuffix(views, " ? help") + "  ·  " + actions; ansi.StringWidth(joined) <= model.displayWidth() {
-		return []string{liveMuted(topDashboardFitWidth(joined, model.displayWidth()), model.limits.color)}
+	// 두 줄이 한 폭에 들어가면 합쳐 표가 한 줄 더 보이게 한다. 폭은 색이 없는 문자열로 잰다.
+	if ansi.StringWidth(joinedViews.plain+"  ·  "+actions.plain) <= model.displayWidth() {
+		return []string{topFitStatusLine(joinedViews.styled+topDim("  ·  ", color)+actions.styled, model.displayWidth(), color)}
 	}
-	// 폭을 먼저 맞춘다. escape가 rune 수에 들어가면 잘리는 위치가 어긋난다.
-	return []string{liveMuted(topDashboardFitWidth(views, model.displayWidth()), model.limits.color), liveMuted(topDashboardFitWidth(actions, model.displayWidth()), model.limits.color)}
+	return []string{topFitStatusLine(views.styled, model.displayWidth(), color), topFitStatusLine(actions.styled, model.displayWidth(), color)}
+}
+
+// topKeyHint는 안내 줄의 키 하나다. on은 지금 켜진 보기나 정렬이다.
+type topKeyHint struct {
+	key, label string
+	on         bool
+}
+
+type topKeyHints []topKeyHint
+
+// render는 키를 굵은 청록색으로, 설명을 회색으로 쓴다. 다른 화면의 liveKeyHints와 같은 색이다. 켜진 항목은 선택 행과 같은 바탕으로 칠해 지금 상태를 보인다.
+// 색이 없으면 글자만 남으므로 정렬 기준은 label에 적는다.
+func (hints topKeyHints) render(sep string, color bool) string {
+	parts := make([]string, 0, len(hints))
+	for _, hint := range hints {
+		text := hint.key + " " + hint.label
+		switch {
+		case !color:
+		case hint.on:
+			text = topBannerStyle() + text + richReset
+		default:
+			text = richPaint(hint.key, richCyan, true) + richDim(" "+hint.label)
+		}
+		parts = append(parts, text)
+	}
+	return strings.Join(parts, topDim(sep, color))
+}
+
+// sortHint는 o 안내다. o로 고른 기준이 있으면 sort:MEM처럼 기준을 붙여 켜진 항목으로 보인다.
+func (model topModel) sortHint() topKeyHint {
+	if model.panelSort == "" {
+		return topKeyHint{key: "o", label: "sort"}
+	}
+	return topKeyHint{key: "o", label: "sort:" + topRankName(model.panelSort), on: true}
+}
+
+// topRankName은 패널 순위의 이름이다. 안내 줄의 sort:MEM과 패널 제목의 MEM rank가 같은 이름을 쓴다.
+func topRankName(rank topView) string {
+	switch rank {
+	case topViewMemory:
+		return "MEM"
+	case topViewDisk:
+		return "I/O"
+	}
+	return "CPU"
+}
+
+// topStatusLine은 안내 줄의 색 없는 글자와 색을 입힌 글자다. 폭과 합칠지는 plain으로 정한다.
+type topStatusLine struct{ plain, styled string }
+
+func topDimStatusLine(text string, color bool) topStatusLine {
+	return topStatusLine{plain: text, styled: topDim(text, color)}
+}
+
+// topFitStatusLine은 줄을 폭에 맞춘다. 잘린 자리에서 색이 다음 줄로 번지지 않게 끝에서 닫는다.
+func topFitStatusLine(styled string, width int, color bool) string {
+	line := topDashboardFitWidth(styled, width)
+	if color {
+		line += richReset
+	}
+	return line
 }
 
 func (model topModel) displayWidth() int {
@@ -1133,6 +1317,32 @@ func (model topModel) displayWidth() int {
 	return model.width
 }
 
+// panelRank은 process 패널의 정렬 기준이다. o로 고른 기준이 없으면 보기를 따르고, 메모리와 디스크 보기 밖에서는 CPU 순이다.
+func (model topModel) panelRank() topView {
+	view := model.view
+	if model.panelSort != "" {
+		view = model.panelSort
+	}
+	switch view {
+	case topViewMemory, topViewDisk:
+		return view
+	}
+	return topViewCPU
+}
+
+// nextTopPanelSort는 o를 누를 때의 다음 정렬 기준이다. 마지막 다음은 다시 보기를 따른다.
+func nextTopPanelSort(current topView) topView {
+	switch current {
+	case "":
+		return topViewCPU
+	case topViewCPU:
+		return topViewMemory
+	case topViewMemory:
+		return topViewDisk
+	}
+	return ""
+}
+
 func (model topModel) candidates() []topProcess {
 	row, ok := model.selectedRow()
 	row = model.currentFilterRow(row)
@@ -1140,9 +1350,15 @@ func (model topModel) candidates() []topProcess {
 		return nil
 	}
 	processes := append([]topProcess(nil), row.processes...)
-	switch model.view {
+	switch model.panelRank() {
 	case topViewMemory:
-		sort.SliceStable(processes, func(i, j int) bool { return processes[i].RSS > processes[j].RSS })
+		// signal이 가리키는 가장 많이 늘어난 process 하나만 크기와 상관없이 앞에 둔다. 다섯 줄로 자를 때 그 줄이 빠지면
+		// 안 된다. 늘어나는 process를 모두 앞에 두면 같은 일을 하는 worker 여럿이 가장 큰 process를 밀어낸다.
+		sort.SliceStable(processes, func(i, j int) bool { return processes[i].memory() > processes[j].memory() })
+		if growing, ok := topFastestGrowing(processes); ok {
+			index := slices.IndexFunc(processes, func(process topProcess) bool { return process.PID == growing.PID })
+			processes = append([]topProcess{growing}, slices.Delete(processes, index, index+1)...)
+		}
 	case topViewDisk:
 		// 디스크 대기는 CPU를 쓰지 않으므로 I/O가 큰 process를 앞에 둔다. I/O를 읽지 못했거나 같으면
 		// I/O를 기다리며 멈춘 process를 CPU 순위보다 앞에 둔다.
@@ -1162,7 +1378,7 @@ func (model topModel) showsProcessIO(processes []topProcess) bool {
 	if model.displayWidth() < topProcessIOMinWidth {
 		return false
 	}
-	if model.processFilter.active() || model.view == topViewDisk {
+	if model.processFilter.active() || model.panelRank() == topViewDisk {
 		return true
 	}
 	for _, process := range processes {
@@ -1193,7 +1409,7 @@ func topProcessIOCell(valid bool, value float64, color bool) string {
 	if !valid {
 		return text
 	}
-	return topPaint(text, topProcessIOThreshold.level(value), color)
+	return topTint(text, topProcessIOThreshold.level(value), color)
 }
 
 // topProcessGroupDetail은 묶음 이름 뒤 괄호에 넣는 process 수와 I/O를 기다리는 수다. 이름에 수를 붙여 쓰면
@@ -1220,32 +1436,44 @@ func topProcessGroupLabel(group topProcessGroup, width int) string {
 
 // topProcessGroupLine은 묶음 한 줄이다. 고를 수 없는 줄이라 PID 칸과 표시를 비운다.
 // CPU 합이 process 경고 기준을 넘으면 그 칸을 위험 색으로 칠한다.
-func topProcessGroupLine(group topProcessGroup, nameWidth int, showIO, color bool) string {
+func topProcessGroupLine(group topProcessGroup, nameWidth int, showRSS, showIO, color bool) string {
 	name := topProcessGroupLabel(group, nameWidth)
 	cpu := fmt.Sprintf("%6.1f%%", group.CPU)
 	if group.CPU >= topProcessSignalCPU {
-		cpu = topPaint(cpu, topLevelDanger, color)
+		cpu = topTint(cpu, topLevelDanger, color)
 	}
-	line := fmt.Sprintf("  %7s %s %s %s %6s", "", topFitCell(name, nameWidth, true), strings.Repeat(" ", topProcessStateWidth), cpu, formatProcessGroupRSS(group.RSS))
+	line := fmt.Sprintf("  %7s %s %s %s %s", "", topFitCell(name, nameWidth, true), strings.Repeat(" ", topProcessStateWidth), cpu, topProcessMemoryCell(formatProcessGroupMemory(group.Memory), group.MemoryEstimated, color))
+	if showRSS {
+		line += fmt.Sprintf(" %6s", formatProcessGroupMemory(group.RSS))
+	}
 	if showIO {
 		line += " " + topProcessIOCell(group.DiskValid, group.DiskRead, color) + " " + topProcessIOCell(group.DiskValid, group.DiskWrite, color)
 	}
 	return line
 }
 
-// topViewProcessGroups는 보기의 순위 기준에 맞는 묶음이다. 디스크는 I/O, 메모리는 RSS, 나머지는 CPU 합 순이다.
+// topViewProcessGroups는 보기의 순위 기준에 맞는 묶음이다. 디스크는 I/O, 메모리는 memory, 나머지는 CPU 합 순이다.
 func topViewProcessGroups(groups []topProcessGroup, view topView) []topProcessGroup {
 	switch view {
 	case topViewDisk:
 		return topProcessGroupsByIO(groups)
 	case topViewMemory:
-		return topProcessGroupsByRSS(groups)
+		return topProcessGroupsByMemory(groups)
 	}
 	return topProcessGroupsByCPU(groups)
 }
 
-// formatProcessGroupRSS는 묶음의 RSS 합이다. 공유 page를 process마다 세므로 실제 사용량의 상한이라 ≤를 붙인다.
-func formatProcessGroupRSS(bytes uint64) string {
+// topProcessMemoryCell은 MEM 칸이다. Memory를 읽지 못해 RSS로 대신한 값은 흐리게 보여 측정값과 구분한다.
+func topProcessMemoryCell(text string, estimated, color bool) string {
+	cell := fmt.Sprintf("%6s", text)
+	if estimated {
+		return topDim(cell, color)
+	}
+	return cell
+}
+
+// formatProcessGroupMemory는 묶음의 memory 합이다. 공유 page를 process마다 셀 수 있어 실제 사용량의 상한이라 ≤를 붙인다.
+func formatProcessGroupMemory(bytes uint64) string {
 	const mib = 1024 * 1024
 	switch {
 	case bytes >= 1024*mib:
@@ -1260,51 +1488,63 @@ func (model topModel) candidateLines() []string {
 	row, ok := model.selectedRow()
 	row = model.currentFilterRow(row)
 	if !ok || !row.processesValid {
-		return []string{"processes · waiting for a sample with this filter"}
-	}
-	rank := "CPU"
-	if model.view == topViewMemory {
-		rank = "RSS"
+		return []string{topHeading("processes · waiting for a sample with this filter", model.limits.color)}
 	}
 	state := "live"
 	if !model.follow {
 		state = "history"
 	}
-	title := rank
-	if model.view == topViewDisk {
-		title = "I/O"
+	title := topRankName(model.panelRank())
+	chosen := ""
+	if model.panelSort != "" {
+		chosen = " (o)"
 	}
-	lines := []string{fmt.Sprintf("processes · %s rank · %s %s · Tab select", title, state, row.at.Format("15:04:05"))}
+	lines := []string{topHeading(fmt.Sprintf("processes · %s rank%s · %s %s · Tab select", title, chosen, state, row.at.Format("15:04:05")), model.limits.color)}
 	processes := model.candidates()
 	if len(processes) == 0 {
 		return append(lines, "no match · / edit filter · Esc clear")
 	}
 	showIO := model.showsProcessIO(processes)
-	nameWidth := max(4, min(28, model.displayWidth()-topProcessColumnsWidth-10))
+	nameRoom := model.displayWidth() - topProcessColumnsWidth - 10
 	if showIO {
-		nameWidth = max(4, min(28, model.displayWidth()-topProcessColumnsWidth-topProcessIOColumnsWidth))
+		nameRoom = model.displayWidth() - topProcessColumnsWidth - topProcessIOColumnsWidth
 	}
+	// RSS 칸은 I/O 칸이 붙어도 들어갈 때만 둔다. I/O 값은 refresh마다 생겼다 없어져서, 그에 따라 정하면 열 구성이 바뀐다.
+	rssRoom := model.displayWidth() - topProcessColumnsWidth - topProcessIOColumnsWidth - topProcessRSSColumnWidth
+	showRSS := model.displayWidth() >= 40 && rssRoom >= topProcessRSSMinNameWidth
+	if showRSS {
+		nameRoom -= topProcessRSSColumnWidth
+	}
+	nameWidth := max(4, min(28, nameRoom))
 	if model.displayWidth() < 40 {
 		nameWidth = max(3, model.displayWidth()-18)
 	}
 	room := model.height - 2 - len(model.processBanner()) - len(model.tableHeader()) - len(model.statusLines())
 	if room >= 3 {
 		// PID는 Linux에서 7자리(기본 pid_max 4194304)까지 가므로 일곱 칸을 둔다.
-		header := fmt.Sprintf("  %7s %s %s %7s %6s", "PID", topFitCell("COMMAND", nameWidth, true), topFitCell("STATE", topProcessStateWidth, true), "CPU%", "RSS")
+		header := fmt.Sprintf("  %7s %s %s %7s %6s", "PID", topFitCell("COMMAND", nameWidth, true), topFitCell("STATE", topProcessStateWidth, true), "CPU%", "MEM")
+		if showRSS {
+			header += fmt.Sprintf(" %6s", "RSS")
+		}
 		if showIO {
 			header += fmt.Sprintf(" %6s %6s", "READ", "WRITE")
 		}
 		if model.displayWidth() < 40 {
-			header = fmt.Sprintf("  %7s %s %6s", "PID", topFitCell("COMMAND", nameWidth, true), rank)
+			// 좁은 화면은 값 하나만 둔다. I/O 순위에도 CPU를 보이므로 MEM 순위만 MEM이다.
+			value := "CPU"
+			if model.panelRank() == topViewMemory {
+				value = "MEM"
+			}
+			header = fmt.Sprintf("  %7s %s %6s", "PID", topFitCell("COMMAND", nameWidth, true), value)
 		}
-		lines = append(lines, header)
+		lines = append(lines, topDim(header, model.limits.color))
 	}
 	if model.displayWidth() >= 40 && !model.processFilter.active() {
-		groups := topViewProcessGroups(row.processTotal.Groups, model.view)
+		groups := topViewProcessGroups(row.processTotal.Groups, model.panelRank())
 		// 묶음이 process 줄을 모두 밀어내지 않도록 process 한 줄은 남긴다.
 		groups = groups[:min(len(groups), max(0, room-len(lines)-1))]
 		for _, group := range groups {
-			lines = append(lines, topProcessGroupLine(group, nameWidth, showIO, model.limits.color))
+			lines = append(lines, topProcessGroupLine(group, nameWidth, showRSS, showIO, model.limits.color))
 		}
 	}
 	count := min(3, len(processes))
@@ -1323,17 +1563,26 @@ func (model topModel) candidateLines() []string {
 		if selected {
 			marker = ">"
 		}
-		// 고른 줄은 줄 전체를 반전하므로 칸마다 색을 넣으면 중간의 reset이 반전을 끊는다.
+		// 고른 줄은 칸 색 없이 바탕 하나로 칠해 한 덩어리로 읽힌다.
 		color := model.limits.color && !selected
 		state := topFitCell(topProcessStateName(process.State), topProcessStateWidth, true)
 		if process.State == topProcessStateBlocked {
-			state = topPaint(state, topLevelWarn, color)
+			state = topTint(state, topLevelWarn, color)
 		}
-		line := fmt.Sprintf("%s %7d %s %s %6.1f%% %6s", marker, process.PID, topFitCell(topProcessName(process.Command, nameWidth), nameWidth, true), state, process.CPU, formatProcessRSS(process.RSS))
+		memory := topProcessMemoryCell(formatProcessRSS(process.memory()), !process.MemoryValid, color)
+		// 꾸준히 늘어나는 process는 크기와 상관없이 칸을 칠해 signal이 가리키는 줄을 찾게 한다. RSS로 대신한 값은
+		// 정확한 footprint로 오해하지 않게 흐린 색을 그대로 둔다.
+		if growth := process.Growth; growth != nil && process.MemoryValid {
+			memory = topTint(memory, topSignalItem{score: topMemoryGrowthScore(*growth, model.limits.memoryTotal, row.rate.MemoryPercent)}.level(), color)
+		}
+		line := fmt.Sprintf("%s %7d %s %s %6.1f%% %s", marker, process.PID, topFitCell(topProcessName(process.Command, nameWidth), nameWidth, true), state, process.CPU, memory)
+		if showRSS {
+			line += fmt.Sprintf(" %6s", formatProcessRSS(process.RSS))
+		}
 		if model.displayWidth() < 40 {
-			value := fmt.Sprintf("%.1f%%", process.CPU)
-			if model.view == topViewMemory {
-				value = formatProcessRSS(process.RSS)
+			value := fmt.Sprintf("%6s", fmt.Sprintf("%.1f%%", process.CPU))
+			if model.panelRank() == topViewMemory {
+				value = memory
 			}
 			line = fmt.Sprintf("%s %7d %s %6s", marker, process.PID, topFitCell(topProcessName(process.Command, nameWidth), nameWidth, true), value)
 		}
@@ -1341,7 +1590,7 @@ func (model topModel) candidateLines() []string {
 			line += " " + topProcessIOCell(process.DiskValid, process.DiskRead, color) + " " + topProcessIOCell(process.DiskValid, process.DiskWrite, color)
 		}
 		if selected && model.limits.color {
-			line = topBannerStyle + topDashboardFitWidth(line, model.displayWidth()) + topColorReset
+			line = topHighlight(line, model.displayWidth())
 		}
 		lines = append(lines, line)
 	}
@@ -1361,15 +1610,16 @@ func (model topModel) helpLines() []string {
 	lines := []string{
 		"Views: 1 all · c CPU · m memory · d disk · n network · s pressure · v boxes",
 		"History: ↑↓ or PgUp/PgDn · End live · p pause · +/- interval",
-		"Processes: Tab select · ↑↓ choose · Enter focus PID · Tab/Esc back",
+		"Processes: Tab select · ↑↓ choose · Enter focus PID · Tab/Esc back · o sort by CPU, MEM, I/O, then the view",
 		"Signals: f opens its view, then selects candidates. A candidate is not a confirmed cause.",
 		"Events: warnings that last 5s are kept with their candidates · e list · Enter jump · [ ] previous/next · ! marks the start row",
 		"Events that start within 5s share one line. ≤ means the warning was already on when edc started.",
 		"Filter: / edit names or PIDs · Enter apply · Esc cancel",
-		"Back: Esc closes the panel, returns to the live row, then to the first view, then clears the process filter",
+		"Back: Esc closes the panel, returns to the live row, drops the o rank, returns to the first view, then clears the process filter",
 		"Interfaces: i opens the list · Space check · a all · p physical · Enter applies from the next sample · off while -w records",
 		"Details: Enter on history · h peaks from the last 60 seconds",
 		"CPU: host % uses all cores. Process 100% uses one core. RSS is resident memory.",
+		"MEM counts the memory a process holds, also when it is compressed or swapped out. A gray MEM value is RSS, used when edc could not read MEM.",
 		"— means unavailable or no baseline. Read the process I/O status for errors.",
 		"no ev means the -d observer is active but collected no events in that interval. n/a means this OS cannot measure it.",
 	}
@@ -1378,9 +1628,11 @@ func (model topModel) helpLines() []string {
 			"macOS: -d gives the average CPU wait per context switch from libproc. It has no p95 and no I/O latency.",
 			"macOS: root in the runq column means macOS refused to read another user's process. Run as root to measure it.",
 			"macOS: mem lvl is the kernel memory pressure level. blocked counts processes in the U state.",
+			"macOS: MEM is phys_footprint, the Memory column of Activity Monitor. Run as root to read it for other users' processes.",
 			"macOS: FDs, PSI, CPU iowait, disk busy and network limits are not collected.")
 	} else {
-		lines = append(lines, "Linux: process CPU uses sample deltas. Runq and I/O latency require -d at startup.")
+		lines = append(lines, "Linux: process CPU uses sample deltas. Runq and I/O latency require -d at startup.",
+			"Linux: MEM is RSS plus VmSwap from /proc/<pid>/status.")
 	}
 	var wrapped []string
 	for _, line := range lines {
@@ -1561,7 +1813,7 @@ func topViewColumns(view topView) []topColumn {
 		return []topColumn{{title: "cpu psi", width: 7, host: topColumnLinuxOnly}, {title: "mem psi", width: 7, host: topColumnLinuxOnly}, {title: "io psi", width: 7, host: topColumnLinuxOnly}, {title: "mem full", width: 8, host: topColumnLinuxOnly}, {title: "io full", width: 7, host: topColumnLinuxOnly}, {title: "mem lvl", width: 8, host: topColumnDarwinOnly}, {title: "blocked", width: 7}, {title: "load", width: 6}, {title: "mem%", width: 6}, signal}
 	case topViewProcess:
 		// cpu%는 core 하나를 100으로 센다. runq와 io는 --ebpf가 있을 때의 평균 대기와 지연이다. 가장 바쁜 process는 상세 패널에 있다.
-		return []topColumn{{title: "match", width: 5}, {title: "cpu%", width: 6}, {title: "rss", width: 6}, {title: "thr", width: 5}, {title: "fds", width: 5, host: topColumnLinuxOnly}, {title: "read/s", width: 7}, {title: "write/s", width: 7}, {title: "runq ms", width: 7}, {title: "io ms"}}
+		return []topColumn{{title: "match", width: 5}, {title: "cpu%", width: 6}, {title: "mem", width: 6}, {title: "thr", width: 5}, {title: "fds", width: 5, host: topColumnLinuxOnly}, {title: "read/s", width: 7}, {title: "write/s", width: 7}, {title: "runq ms", width: 7}, {title: "io ms"}}
 	}
 	return nil
 }
@@ -1570,6 +1822,15 @@ func topViewColumns(view topView) []topColumn {
 type topCell struct {
 	text  string
 	level topLevel
+	// estimated는 RSS로 대신 더한 memory 값이다. 후보 줄처럼 흐리게 둬 측정값과 구분한다.
+	estimated bool
+}
+
+func (cell topCell) paint(text string, color bool) string {
+	if cell.estimated {
+		return topDim(text, color)
+	}
+	return topTint(text, cell.level, color)
 }
 
 // topPlainCell은 임계치가 없어 색을 쓰지 않는 칸이다.
@@ -1599,7 +1860,7 @@ func topValidLevel(valid bool, threshold topThreshold, value float64) topLevel {
 func topViewCells(rate resourceRate, view topView, signal string, limits topLimits) []topCell {
 	switch view {
 	case topViewCPU:
-		return []topCell{topValueCell("%.1f", rate.Load1, limits.load), topValueCell("%.1f", rate.CPUUser, limits.cpu), topValueCell("%.1f", rate.CPUSystem, limits.cpu), topValueCell("%.1f", rate.CPUIOWait, limits.io), {text: topHotCore(rate.CoreCPU), level: topHotCoreLevel(rate.CoreCPU)}, topPlainCell(topCoreBar(rate.CoreCPU)), topPlainCell(topOptionalValue(rate.CPUStealValid, "%.1f", rate.CPUSteal)), topPlainCell(topOptionalValue(rate.ProcsBlockedSource.known(), "%.0f", rate.ProcsBlocked)), topPlainCell(signal)}
+		return []topCell{topValueCell("%.1f", rate.Load1, limits.load), topValueCell("%.1f", rate.CPUUser, limits.cpu), topValueCell("%.1f", rate.CPUSystem, limits.cpu), topValueCell("%.1f", rate.CPUIOWait, limits.io), {text: topHotCore(rate.CoreCPU), level: topHotCoreLevel(rate.CoreCPU)}, topPlainCell(topCoreMeter(rate.CoreCPU, limits.color)), topPlainCell(topOptionalValue(rate.CPUStealValid, "%.1f", rate.CPUSteal)), topPlainCell(topOptionalValue(rate.ProcsBlockedSource.known(), "%.0f", rate.ProcsBlocked)), topPlainCell(signal)}
 	case topViewMemory:
 		return []topCell{topValueCell("%.1f", rate.MemoryPercent, limits.memory), topPlainCell(formatRate(rate.SwapOut)), topOptionalCell(rate.PSIValid, "%.1f", rate.PSIMemory, limits.psi), topMemoryPressureCell(rate), topValueCell("%.1f", rate.Load1, limits.load), topPlainCell(signal)}
 	case topViewDisk:
@@ -1647,7 +1908,7 @@ func formatTopColumnsWidth(at string, columns []topColumn, cells []topCell, colo
 			width = max(0, targetWidth-used)
 		}
 		used += width
-		line.WriteString(topPaint(topFitCell(cells[index].text, width, column.left), cells[index].level, color))
+		line.WriteString(cells[index].paint(topFitCell(cells[index].text, width, column.left), color))
 	}
 	return line.String()
 }
@@ -1797,7 +2058,7 @@ func formatTopAllLine(first string, columns []topAllColumn, cells []topCell, sig
 			line.WriteByte(' ')
 		}
 		line.WriteString(strings.Repeat(" ", column.indent))
-		line.WriteString(topPaint(topFitCell(cells[index].text, column.width-column.indent, column.left), cells[index].level, color))
+		line.WriteString(cells[index].paint(topFitCell(cells[index].text, column.width-column.indent, column.left), color))
 		if index == len(columns)-1 || columns[index+1].group != column.group {
 			line.WriteString("│")
 		}
@@ -1912,9 +2173,30 @@ func topDashboardSignalItems(rate resourceRate, processes []topProcess, groups [
 		signals = append(signals, topSignalItem{text: process, view: topViewProcess, kind: "process " + strconv.Itoa(processes[0].PID)})
 	}
 	if valid {
+		if growth, ok := topMemoryGrowthSignal(processes, limits.memoryTotal, rate.MemoryPercent); ok {
+			signals = append(signals, growth)
+		}
 		signals = append(signals, topProcessGroupSignals(groups)...)
 	}
 	return signals
+}
+
+// topMemoryGrowthKind는 증가 경고 kind의 앞부분이다. 뒤에 PID가 붙는다.
+const topMemoryGrowthKind = "memory growth "
+
+// topMemoryGrowthSignal은 가장 많이 늘어난 process 하나를 경고한다. 누수는 크기 순위보다 증가에서 먼저 드러난다.
+func topMemoryGrowthSignal(processes []topProcess, memoryTotal uint64, memoryPercent float64) (topSignalItem, bool) {
+	leading, ok := topFastestGrowing(processes)
+	if !ok {
+		return topSignalItem{}, false
+	}
+	growth := *leading.Growth
+	return topSignalItem{
+		text:  fmt.Sprintf("%s +%s/%.0fm", topProcessName(leading.Command, topSignalProcessNameWidth), formatProcessRSS(growth.Bytes), growth.Window.Minutes()),
+		score: topMemoryGrowthScore(growth, memoryTotal, memoryPercent),
+		view:  topViewMemory,
+		kind:  topMemoryGrowthKind + strconv.Itoa(leading.PID),
+	}, true
 }
 
 // topProcessGroupSignals는 묶음 합이 process 하나의 경고 기준을 넘을 때 경고한다. 하나하나는 작아 process 경고에
@@ -2107,6 +2389,33 @@ func topCoreBar(cores []float64) string {
 	return result.String()
 }
 
+// topCoreMeter는 색을 쓰면 topCoreBar의 글자마다 차분한 막대 색을 입힌다. 글자와 폭은 그대로다.
+// 90% 이상은 빨강, 70% 이상은 노랑, 그 아래는 초록이다. 글자를 가르는 경계와 같다.
+func topCoreMeter(cores []float64, color bool) string {
+	bar := topCoreBar(cores)
+	if !color || len(cores) == 0 {
+		return bar
+	}
+	var result strings.Builder
+	run, runTone := "", ""
+	for _, glyph := range bar {
+		tone := richGreen
+		switch glyph {
+		case '#':
+			tone = richRed
+		case '*':
+			tone = richYellow
+		}
+		if tone != runTone && run != "" {
+			result.WriteString(richFill(run, runTone))
+			run = ""
+		}
+		run, runTone = run+string(glyph), tone
+	}
+	result.WriteString(richFill(run, runTone))
+	return result.String()
+}
+
 func topDashboardFit(value string) string {
 	return topDashboardFitWidth(value, topTableWidth)
 }
@@ -2229,31 +2538,40 @@ func topPressureDetail(rate resourceRate) string {
 }
 
 // topProcessDetail은 CPU 순으로 process 세 개를 보인다. 필터가 있으면 topMatchDetail로 넘어간다.
-func topProcessDetail(processes []topProcess, valid bool) string {
+func topProcessDetail(processes []topProcess, valid, color bool) string {
 	if !valid {
 		return "processes —"
 	}
-	return "top " + strings.Join(topProcessItems(processes), ", ")
+	return "top " + strings.Join(topProcessItems(processes, color), ", ")
 }
 
-func topProcessItems(processes []topProcess) []string {
+func topProcessItems(processes []topProcess, color bool) []string {
 	items := make([]string, 0, min(3, len(processes)))
 	for _, process := range processes[:min(3, len(processes))] {
-		items = append(items, fmt.Sprintf("%s %.0f%% %s", topProcessName(process.Command, topProcessNameWidth), process.CPU, formatProcessRSS(process.RSS)))
+		items = append(items, fmt.Sprintf("%s %.0f%% %s", topProcessName(process.Command, topProcessNameWidth), process.CPU, topEstimatedMemory(process.memory(), !process.MemoryValid, color)))
 	}
 	return items
 }
 
+// topEstimatedMemory는 memory 값이다. RSS로 대신한 값이면 후보 줄의 MEM 칸처럼 흐리게 둔다.
+func topEstimatedMemory(bytes uint64, estimated, color bool) string {
+	text := formatProcessRSS(bytes)
+	if estimated {
+		return topDim(text, color)
+	}
+	return text
+}
+
 // topMatchDetail은 필터에 맞은 process 전체의 합 한 줄과, CPU 상위 세 개와 남은 개수 한 줄이다. 한 줄에 다 담으면 80열에서 잘린다.
 // 디스크와 fd는 목록에 남은 process만 읽으므로 합도 그 범위다.
-func topMatchDetail(processes []topProcess, total topProcessTotal, valid bool) []string {
+func topMatchDetail(processes []topProcess, total topProcessTotal, valid, color bool) []string {
 	if !valid {
 		return []string{"processes —"}
 	}
 	if total.Count == 0 {
 		return []string{"match none"}
 	}
-	summary := fmt.Sprintf("match %d · cpu %.0f%% · rss %s", total.Count, total.CPU, formatProcessRSS(total.RSS))
+	summary := fmt.Sprintf("match %d · cpu %.0f%% · mem %s", total.Count, total.CPU, topEstimatedMemory(total.Memory, total.MemoryEstimated, color))
 	if total.Threads > 0 {
 		summary += fmt.Sprintf(" · thr %d", total.Threads)
 	}
@@ -2264,7 +2582,7 @@ func topMatchDetail(processes []topProcess, total topProcessTotal, valid bool) [
 	if diskKnown {
 		summary += fmt.Sprintf(" · io r %s/s w %s/s", formatRate(read), formatRate(write))
 	}
-	items := topProcessItems(processes)
+	items := topProcessItems(processes, color)
 	if rest := total.Count - len(items); rest > 0 {
 		items = append(items, fmt.Sprintf("+%d", rest))
 	}
@@ -2275,8 +2593,54 @@ func topMatchDetail(processes []topProcess, total topProcessTotal, valid bool) [
 	return lines
 }
 
-// topBannerStyle은 process 배너의 굵은 반전 표시다. 배너가 terminal 폭을 모두 채워 한 덩어리로 보인다.
-const topBannerStyle = "\033[1;7m"
+// topBannerStyle은 고른 행과 process 배너의 바탕이다. chip과 같은 어두운 회색 바탕에 굵은 글자다.
+// 넓은 면적이라 강조색 대신 chip 바탕을 쓴다. 색 수는 다른 rich 색처럼 COLORTERM을 따른다.
+func topBannerStyle() string {
+	return "\033[1;" + richRGBCode(richChipBackground, true, richTruecolor()) + "m"
+}
+
+// topHighlight는 줄을 width로 채우고 topBannerStyle을 입힌다. 칸의 색이 reset으로 끝나도 바탕이 끊기지 않게 reset 뒤에 다시 연다.
+func topHighlight(line string, width int) string {
+	style := topBannerStyle()
+	return style + strings.ReplaceAll(topDashboardFitWidth(line, width), richReset, richReset+style) + richReset
+}
+
+// topDim은 열 이름, 키 안내, 테두리 같은 보조 정보다.
+func topDim(text string, color bool) string {
+	if !color {
+		return text
+	}
+	return richDim(text)
+}
+
+// topRules는 표 행의 칸 구분선을 회색으로 둔다. 시각과 선택 표시를 넣은 뒤에 불러야 한다. 그 둘은 바이트 위치로 줄을 자른다.
+func topRules(line string, color bool) string {
+	if !color {
+		return line
+	}
+	return strings.ReplaceAll(line, "│", richDim("│"))
+}
+
+// topHeading은 "processes · CPU rank · …" 같은 구역 제목 줄이다. 첫 " · " 앞은 자홍 굵게, 나머지 안내는 회색이다.
+func topHeading(text string, color bool) string {
+	if !color {
+		return text
+	}
+	head, rest, found := strings.Cut(text, " · ")
+	if !found {
+		return richPaint(text, richMagenta, true)
+	}
+	return richPaint(head, richMagenta, true) + richDim(" · "+rest)
+}
+
+// topLead는 detail, peaks처럼 제목 뒤에 값이 이어지는 줄이다. 첫 낱말만 자홍 굵게 하고 값은 기본색으로 둔다.
+func topLead(text string, color bool) string {
+	if !color {
+		return text
+	}
+	head, _, _ := strings.Cut(text, " ")
+	return richPaint(head, richMagenta, true) + text[len(head):]
+}
 
 // processBanner는 --process에 맞은 process 묶음의 값을 제목 바로 아래에 크게 보인다. 선택한 행이 있으면 그 시점의 값이다.
 // 폭이 모자라면 뒤의 항목부터 뺀다. -d로 얻는 대기와 지연을 디스크보다 앞에 둔다.
@@ -2295,7 +2659,7 @@ func (model topModel) processBanner() []string {
 		parts = []string{"no match"}
 	default:
 		total := row.processTotal
-		parts = []string{fmt.Sprintf("%d matched", total.Count), fmt.Sprintf("cpu %.0f%%", total.CPU), "rss " + formatProcessRSS(total.RSS)}
+		parts = []string{fmt.Sprintf("%d matched", total.Count), fmt.Sprintf("cpu %.0f%%", total.CPU), "mem " + topEstimatedMemory(total.Memory, total.MemoryEstimated, model.limits.color)}
 		if probe := total.Probe; probe != nil {
 			if average, ok := topProbeAverageMS(probe.RunqSumNS, probe.RunqCount); ok {
 				parts = append(parts, fmt.Sprintf("runq %.2fms", average))
@@ -2347,7 +2711,11 @@ func (model topModel) processBanner() []string {
 	}
 	line = topDashboardFitWidth(line, width)
 	if model.limits.color {
-		line = topBannerStyle + line + topColorReset
+		// 앞의 " PROCESS "는 배지 모양과 같아 그 자리에 배지를 둔다. 나머지는 chip 바탕으로 폭을 채운다.
+		if rest, ok := strings.CutPrefix(line, " PROCESS "); ok {
+			return []string{richBadge("PROCESS", richMagenta) + topHighlight(rest, width-len(" PROCESS "))}
+		}
+		line = topHighlight(line, width)
 	}
 	return []string{line}
 }
@@ -2377,7 +2745,7 @@ func topProcessViewCells(row topDashboardRow) []topCell {
 	}
 	fds, read, write, diskKnown := topMatchIO(row.processes)
 	cells := []topCell{
-		topPlainCell(fmt.Sprintf("%d", total.Count)), topPlainCell(fmt.Sprintf("%.1f", total.CPU)), topPlainCell(formatProcessRSS(total.RSS)),
+		topPlainCell(fmt.Sprintf("%d", total.Count)), topPlainCell(fmt.Sprintf("%.1f", total.CPU)), {text: formatProcessRSS(total.Memory), estimated: total.MemoryEstimated},
 		topPlainCell(topOptionalValue(total.Threads > 0, "%.0f", float64(total.Threads))), topPlainCell(topOptionalValue(fds > 0, "%.0f", float64(fds))),
 		topPlainCell(topOptionalRate(diskKnown, read)), topPlainCell(topOptionalRate(diskKnown, write)), empty, empty,
 	}

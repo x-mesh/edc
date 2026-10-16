@@ -3,7 +3,9 @@ package edc
 import (
 	"fmt"
 	"io"
+	"os"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -21,18 +23,55 @@ func (option optionDoc) detail() string {
 	return T(option.key)
 }
 
+// subcommandDoc은 하위 명령 하나다. 설명은 locale의 command.<명령>.sub.<name>에 둔다.
+type subcommandDoc struct {
+	name string
+	form string
+}
+
 // commandDoc은 명령 하나의 뼈대다. 이름과 문법은 코드에, 설명은 locale에 둔다.
+// 예시는 어느 언어에서나 같은 명령이므로 코드에 둔다.
 type commandDoc struct {
-	name       string
-	group      string
-	usage      []string
-	options    []optionDoc
-	usesCommon bool
+	name        string
+	group       string
+	usage       []string
+	options     []optionDoc
+	usesCommon  bool
+	subcommands []subcommandDoc
+	examples    []string
 }
 
 func (doc commandDoc) summary() string { return T("command." + doc.name + ".summary") }
 
 func (doc commandDoc) notes() []string { return TList("command." + doc.name + ".notes") }
+
+// subcommandChoices는 선택기와 usage 오류에 쓰는 하위 명령 이름이다. 하위 명령을 실행하는 run* 함수의 분기는
+// 따로 적혀 있고, completion script와의 일치는 TestCompletionScriptsListThePickerSubcommands가 확인한다.
+func subcommandChoices(name string) []string {
+	doc, _ := findCommandDoc(name)
+	names := make([]string, 0, len(doc.subcommands))
+	for _, sub := range doc.subcommands {
+		names = append(names, sub.name)
+	}
+	return names
+}
+
+// subcommandUsage는 "edc dns <lookup|compare|config>"처럼 하위 명령을 나열한 usage 앞부분이다.
+func subcommandUsage(name string) string {
+	return "edc " + name + " <" + strings.Join(subcommandChoices(name), "|") + ">"
+}
+
+func (doc commandDoc) subcommandKey(name string) string {
+	return "command." + doc.name + ".sub." + name
+}
+
+func (doc commandDoc) subcommandLines() []optionDoc {
+	lines := make([]optionDoc, 0, len(doc.subcommands))
+	for _, sub := range doc.subcommands {
+		lines = append(lines, optionDoc{sub.form, doc.subcommandKey(sub.name)})
+	}
+	return lines
+}
 
 // helpGroups는 첫 화면의 그룹 순서다. 값은 locale의 help.group 아래 키다.
 var helpGroups = []string{"diagnose", "observe", "host", "record", "tool"}
@@ -58,6 +97,11 @@ var commandDocs = []commandDoc{
 		usage:      []string{"edc dns lookup [options] <host>", "edc dns compare [--resolver IP] [options] <host>", "edc dns config [options]"},
 		options:    []optionDoc{{"--resolver IP[:port]", "command.dns.option.resolver"}},
 		usesCommon: true,
+		subcommands: []subcommandDoc{
+			{"lookup", "edc dns lookup <host>"},
+			{"compare", "edc dns compare <host>"},
+			{"config", "edc dns config"},
+		},
 	},
 	{
 		name: "tcp", group: "diagnose",
@@ -72,8 +116,15 @@ var commandDocs = []commandDoc{
 	},
 	{
 		name: "http", group: "diagnose",
-		usage:      []string{"edc http check [--expect-status N] [options] <URL>"},
-		options:    []optionDoc{{"--expect-status N", "command.http.option.expect_status"}},
+		usage: []string{
+			"edc http check [--expect-status N] [-H 'Name: value'] [options] <URL>",
+			"edc http check --body <path|-> [options] <URL>",
+		},
+		options: []optionDoc{
+			{"--expect-status N", "command.http.option.expect_status"},
+			{"-H, --header 'Name: value'", "command.http.option.header"},
+			{"--body <path|->", "command.http.option.body"},
+		},
 		usesCommon: true,
 	},
 	{
@@ -85,6 +136,12 @@ var commandDocs = []commandDoc{
 			"edc net trace [options] <host>",
 		},
 		usesCommon: true,
+		subcommands: []subcommandDoc{
+			{"interfaces", "edc net interfaces"},
+			{"route", "edc net route <host>"},
+			{"ping", "edc net ping <host>"},
+			{"trace", "edc net trace <host>"},
+		},
 	},
 	{
 		name: "audit", group: "diagnose",
@@ -115,6 +172,12 @@ var commandDocs = []commandDoc{
 			{"-n, --dry-run", "route.flag.dry_run"},
 		},
 		usesCommon: true,
+		subcommands: []subcommandDoc{
+			{"check", "edc route check"},
+			{"switch", "edc route switch --to <name>"},
+			{"status", "edc route status"},
+			{"rollback", "edc route rollback [--state <file>]"},
+		},
 	},
 	{
 		name: "disk", group: "host",
@@ -127,6 +190,10 @@ var commandDocs = []commandDoc{
 			{"--yes", "disk.flag.yes"},
 		},
 		usesCommon: true,
+		subcommands: []subcommandDoc{
+			{"check", "edc disk check [mount]"},
+			{"grow", "edc disk grow <mount>"},
+		},
 	},
 	{
 		name: "change", group: "host",
@@ -146,6 +213,12 @@ var commandDocs = []commandDoc{
 			{"--yes", "change.flag.yes"},
 		},
 		usesCommon: true,
+		subcommands: []subcommandDoc{
+			{"apply", "edc change apply --kind <kind>"},
+			{"status", "edc change status"},
+			{"confirm", "edc change confirm [--state <file>]"},
+			{"rollback", "edc change rollback [--state <file>]"},
+		},
 	},
 	{
 		name: "top", group: "observe",
@@ -178,6 +251,16 @@ var commandDocs = []commandDoc{
 			{"--limit 200", "history.option.limit"},
 			{"--json <path|->", "history.option.json"},
 		},
+		subcommands: []subcommandDoc{
+			{"list", "edc history list [options] [DB]"},
+			{"top", "edc history top [options] [DB]"},
+			{"process", "edc history process [options] [DB]"},
+		},
+		examples: []string{
+			"edc history list",
+			"edc history top --metric memory_pct --min 90",
+			"edc history process --process nginx",
+		},
 	},
 	{
 		name: "watch", group: "observe",
@@ -199,6 +282,10 @@ var commandDocs = []commandDoc{
 			{"--dry-run", "watchfs.option.dry_run"},
 		},
 		usesCommon: true,
+		subcommands: []subcommandDoc{
+			{"http", "edc watch http <host|URL>"},
+			{"fs", "edc watch fs [directory]"},
+		},
 	},
 	{
 		name: "info", group: "observe",
@@ -390,6 +477,16 @@ var commandDocs = []commandDoc{
 			{"--timeout 0s", "command.log.option.timeout"},
 			{"--kill-after 5s", "command.log.option.kill_after"},
 		},
+		subcommands: []subcommandDoc{
+			{"run", "edc log -- <command> [args...]"},
+			{"history", "edc log history [<command>]"},
+		},
+		examples: []string{
+			"edc log -- ls -l /tmp",
+			"edc log --restart on-failure -- /path/to/job",
+			"edc log history",
+			"edc log history --failed ls -l /tmp",
+		},
 	},
 	{
 		name: "remote", group: "record",
@@ -409,6 +506,11 @@ var commandDocs = []commandDoc{
 	{
 		name: "completion", group: "tool",
 		usage: []string{"edc completion <zsh|bash|groups>"},
+		subcommands: []subcommandDoc{
+			{"zsh", "edc completion zsh"},
+			{"bash", "edc completion bash"},
+			{"groups", "edc completion groups"},
+		},
 	},
 	{
 		name: "setup", group: "tool",
@@ -457,30 +559,17 @@ func commandSummaries() []commandDoc {
 
 // printHelp는 첫 화면이다. 명령마다 한 줄만 두고 상세는 edc help <command>로 미룬다.
 func printHelp(writer io.Writer, version string) {
+	if helpColor(writer) {
+		printRichHelp(writer, version)
+		return
+	}
 	fmt.Fprintf(writer, "edc %s — %s\n\n", version, T("help.tagline"))
 
-	// 라벨 폭은 언어마다 다르므로 세 라벨을 재서 맞춘다.
-	labels := []string{T("help.usage_label"), T("help.common_label"), T("help.detail_label")}
-	labelWidth := 0
-	for _, label := range labels {
-		if width := liveWidth(label); width > labelWidth {
-			labelWidth = width
-		}
-	}
+	labels, labelWidth := helpLabels()
 	fmt.Fprintf(writer, "%s  %s\n", padRight(labels[0], labelWidth), T("help.usage"))
 
 	for _, group := range helpGroups {
-		var members []commandDoc
-		width := 0
-		for _, doc := range commandDocs {
-			if doc.group != group {
-				continue
-			}
-			members = append(members, doc)
-			if len(doc.name) > width {
-				width = len(doc.name)
-			}
-		}
+		members, width := helpGroupMembers(group)
 		if len(members) == 0 {
 			continue
 		}
@@ -498,16 +587,76 @@ func printHelp(writer io.Writer, version string) {
 	fmt.Fprintf(writer, "%s  %s\n", padRight(labels[2], labelWidth), T("help.detail_hint"))
 }
 
+// helpLabels는 첫 화면 왼쪽의 세 라벨과 그 폭이다. 라벨 폭은 언어마다 다르므로 세 라벨을 재서 맞춘다.
+func helpLabels() ([]string, int) {
+	labels := []string{T("help.usage_label"), T("help.common_label"), T("help.detail_label")}
+	labelWidth := 0
+	for _, label := range labels {
+		if width := liveWidth(label); width > labelWidth {
+			labelWidth = width
+		}
+	}
+	return labels, labelWidth
+}
+
+func helpGroupMembers(group string) ([]commandDoc, int) {
+	var members []commandDoc
+	width := 0
+	for _, doc := range commandDocs {
+		if doc.group != group {
+			continue
+		}
+		members = append(members, doc)
+		if len(doc.name) > width {
+			width = len(doc.name)
+		}
+	}
+	return members, width
+}
+
+// printRichHelp는 색을 쓰는 터미널의 첫 화면이다. 이름 폭은 평문처럼 그룹마다 잰다.
+// 모든 그룹을 가장 긴 이름(completion)에 맞추면 ko와 ja의 긴 summary가 80칸을 넘는다.
+func printRichHelp(writer io.Writer, version string) {
+	fmt.Fprintf(writer, "%s %s  %s\n\n", richBadge("edc", richMagenta), richDim(version), richBold(T("help.tagline")))
+
+	labels, labelWidth := helpLabels()
+	fmt.Fprintf(writer, "%s  %s\n", richDim(padRight(labels[0], labelWidth)), T("help.usage"))
+
+	for _, group := range helpGroups {
+		members, width := helpGroupMembers(group)
+		if len(members) == 0 {
+			continue
+		}
+		fmt.Fprintf(writer, "\n%s\n", richPanelTop(T("help.group."+group), strconv.Itoa(len(members)), ""))
+		for _, doc := range members {
+			fmt.Fprintln(writer, richPanelLine(richPaint(padRight(doc.name, width), richCyan, true)+"  "+doc.summary(), ""))
+		}
+		fmt.Fprintln(writer, richPanelBottom(""))
+	}
+
+	chips := make([]string, 0, len(commonOptionDocs))
+	for _, option := range commonOptionDocs {
+		chips = append(chips, richChip(option.flag))
+	}
+	fmt.Fprintf(writer, "\n%s  %s\n", richDim(padRight(labels[1], labelWidth)), strings.Join(chips, " "))
+	fmt.Fprintf(writer, "%s  %s\n", richDim(padRight(labels[2], labelWidth)), richPaint(T("help.detail_hint"), richCyan, true))
+}
+
 // printCommandHelp는 명령 하나의 상세다. 그 명령에 관한 설명을 모두 여기 모은다.
 func printCommandHelp(writer io.Writer, name string) bool {
 	doc, ok := findCommandDoc(name)
 	if !ok {
 		return false
 	}
+	if helpColor(writer) {
+		printRichCommandHelp(writer, doc)
+		return true
+	}
 	fmt.Fprintf(writer, "edc %s — %s\n\n%s\n", doc.name, doc.summary(), T("help.usage_label"))
 	for _, line := range doc.usage {
 		fmt.Fprintf(writer, "  %s\n", line)
 	}
+	printExamples(writer, doc.examples)
 	if len(doc.options) > 0 {
 		fmt.Fprintf(writer, "\n%s\n", T("help.options_label"))
 		printOptionDocs(writer, doc.options)
@@ -523,6 +672,107 @@ func printCommandHelp(writer io.Writer, name string) bool {
 		}
 	}
 	return true
+}
+
+// printCommandBrief는 하위 명령을 빼고 실행했을 때의 짧은 안내다. 하위 명령마다 무엇을 하는지와
+// 바로 칠 수 있는 예시만 보이고, option 설명은 edc help <command>로 미룬다.
+func printCommandBrief(writer io.Writer, name string) bool {
+	doc, ok := findCommandDoc(name)
+	if !ok || len(doc.subcommands) == 0 {
+		return false
+	}
+	if helpColor(writer) {
+		printRichCommandBrief(writer, doc)
+		return true
+	}
+	fmt.Fprintf(writer, "edc %s — %s\n\n%s\n", doc.name, doc.summary(), T("help.usage_label"))
+	printOptionDocs(writer, doc.subcommandLines())
+	printExamples(writer, doc.examples)
+	fmt.Fprintf(writer, "\n%s  edc help %s\n", T("help.detail_label"), doc.name)
+	return true
+}
+
+// printRichCommandBrief는 안내 화면을 색 help와 같은 배지와 패널로 그린다. 형태와 예시는 그대로 칠 수 있는
+// 명령이라 굵은 청록이다.
+func printRichCommandBrief(writer io.Writer, doc commandDoc) {
+	fmt.Fprintf(writer, "%s %s\n\n", richBadge("edc "+doc.name, richMagenta), richBold(doc.summary()))
+	fmt.Fprintln(writer, richPanelTop(T("help.usage_label"), "", ""))
+	printRichOptionDocs(writer, doc.subcommandLines())
+	fmt.Fprintln(writer, richPanelBottom(""))
+	printRichExamples(writer, doc.examples)
+	fmt.Fprintf(writer, "\n%s  %s\n", richDim(T("help.detail_label")), richPaint("edc help "+doc.name, richCyan, true))
+}
+
+func printRichExamples(writer io.Writer, examples []string) {
+	if len(examples) == 0 {
+		return
+	}
+	fmt.Fprintf(writer, "\n%s\n", richPanelTop(T("help.examples_label"), "", ""))
+	for _, example := range examples {
+		fmt.Fprintln(writer, richPanelLine(richPaint(example, richCyan, true), ""))
+	}
+	fmt.Fprintln(writer, richPanelBottom(""))
+}
+
+func printExamples(writer io.Writer, examples []string) {
+	if len(examples) == 0 {
+		return
+	}
+	fmt.Fprintf(writer, "\n%s\n", T("help.examples_label"))
+	for _, example := range examples {
+		fmt.Fprintf(writer, "  %s\n", example)
+	}
+}
+
+// subcommandSelectItems는 하위 명령을 고르는 화면의 항목이다. 이름만으로는 무엇을 하는지 알 수
+// 없으므로 help와 같은 설명을 옆에 붙인다. 설명이 없는 하위 명령은 이름만 보인다.
+func subcommandSelectItems(name string, choices []string) []selectItem {
+	doc, _ := findCommandDoc(name)
+	described := make(map[string]bool, len(doc.subcommands))
+	for _, sub := range doc.subcommands {
+		described[sub.name] = true
+	}
+	width := 0
+	for _, choice := range choices {
+		width = max(width, liveWidth(choice))
+	}
+	items := make([]selectItem, 0, len(choices))
+	for _, choice := range choices {
+		label := choice
+		if described[choice] {
+			label = padRight(choice, width) + "  — " + T(doc.subcommandKey(choice))
+		}
+		items = append(items, selectItem{label: label, value: choice})
+	}
+	return items
+}
+
+// printRichCommandHelp는 평문과 같은 순서로 usage, options, 공용 options를 회색 패널에 담는다.
+// 배지 뒤는 한 칸만 띄운다. 배지가 평문의 "edc name — "과 같은 폭이 되어 긴 summary도 80칸 안에 든다.
+func printRichCommandHelp(writer io.Writer, doc commandDoc) {
+	fmt.Fprintf(writer, "%s %s\n\n", richBadge("edc "+doc.name, richMagenta), richBold(doc.summary()))
+	fmt.Fprintln(writer, richPanelTop(T("help.usage_label"), "", ""))
+	for _, line := range doc.usage {
+		fmt.Fprintln(writer, richPanelLine(line, ""))
+	}
+	fmt.Fprintln(writer, richPanelBottom(""))
+	printRichExamples(writer, doc.examples)
+	if len(doc.options) > 0 {
+		fmt.Fprintf(writer, "\n%s\n", richPanelTop(T("help.options_label"), "", ""))
+		printRichOptionDocs(writer, doc.options)
+		fmt.Fprintln(writer, richPanelBottom(""))
+	}
+	if doc.usesCommon {
+		fmt.Fprintf(writer, "\n%s\n", richPanelTop(T("help.common_options_label"), "", ""))
+		printRichOptionDocs(writer, uncoveredCommonOptions(doc.options))
+		fmt.Fprintln(writer, richPanelBottom(""))
+	}
+	if notes := doc.notes(); len(notes) > 0 {
+		fmt.Fprintln(writer)
+		for _, note := range notes {
+			fmt.Fprintf(writer, "%s\n", note)
+		}
+	}
 }
 
 // uncoveredCommonOptions는 명령이 직접 설명한 공용 flag를 공용 목록에서 뺀다. 같은 flag가 뜻이 다른
@@ -542,12 +792,7 @@ func uncoveredCommonOptions(own []optionDoc) []optionDoc {
 }
 
 func printOptionDocs(writer io.Writer, options []optionDoc) {
-	width := 0
-	for _, option := range options {
-		if value := liveWidth(option.flag); value > width {
-			width = value
-		}
-	}
+	width := optionFlagWidth(options)
 	for _, option := range options {
 		detail := option.detail()
 		if detail == "" {
@@ -556,4 +801,32 @@ func printOptionDocs(writer io.Writer, options []optionDoc) {
 		}
 		fmt.Fprintf(writer, "  %s  %s\n", padRight(option.flag, width), detail)
 	}
+}
+
+// printRichOptionDocs는 printOptionDocs와 같은 열을 패널 줄로 그린다. flag만 굵은 청록이다.
+func printRichOptionDocs(writer io.Writer, options []optionDoc) {
+	width := optionFlagWidth(options)
+	for _, option := range options {
+		line := richPaint(option.flag, richCyan, true)
+		if detail := option.detail(); detail != "" {
+			line = richPaint(padRight(option.flag, width), richCyan, true) + "  " + detail
+		}
+		fmt.Fprintln(writer, richPanelLine(line, ""))
+	}
+}
+
+func optionFlagWidth(options []optionDoc) int {
+	width := 0
+	for _, option := range options {
+		if value := liveWidth(option.flag); value > width {
+			width = value
+		}
+	}
+	return width
+}
+
+// helpColor는 help를 받는 writer가 색을 쓰는 터미널인지다. 파이프와 test의 strings.Builder는 평문을 받는다.
+func helpColor(writer io.Writer) bool {
+	file, ok := writer.(*os.File)
+	return ok && richEnabled(file)
 }

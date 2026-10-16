@@ -28,6 +28,7 @@ type schedTraceEventMsg struct{ events []schedEvent }
 
 func newSchedTraceScreenModel(stop func()) schedTraceScreenModel {
 	input := textinput.New()
+	input.SetStyles(traceInputStyles())
 	input.Prompt = "filter / "
 	input.Placeholder = "process, event, or syscall"
 	input.SetWidth(48)
@@ -146,15 +147,18 @@ func (m schedTraceScreenModel) matching() []schedEvent {
 }
 
 func (m schedTraceScreenModel) View() tea.View {
-	status := "live"
-	if m.stopping {
-		status = "stopping"
+	color := traceScreenColor()
+	// 평문 화면은 예전처럼 자르지 않는다. 색을 쓰면 칠한 줄이 화면 폭을 넘지 않게 자른다.
+	width := 0
+	if color {
+		width = m.width
 	}
-	lines := []string{fmt.Sprintf("edc trace sched  ·  %s  ·  events %d  ·  filter %s", status, len(m.events), emptyAs(m.filter, "all"))}
+	lines := []string{traceTexts(traceStatusSpans("edc trace sched", m.stopping, len(m.events), m.filter), width, color)}
 	if m.filtering {
-		lines = append(lines, m.input.View()+"  enter apply  esc cancel")
+		lines = append(lines, traceFilterHints(m.input.View(), width, color))
 	} else {
-		lines = append(lines, "/ filter  tab view  p process  e event  c cgroup  s syscall  g scroll  ↑↓ select  enter detail  q quit  ctrl-c stop")
+		const keys = "/ filter  tab view  p process  e event  c cgroup  s syscall  g scroll  ↑↓ select  enter detail  q quit  ctrl-c stop"
+		lines = append(lines, traceKeyHints(keys, width, color, traceViewOn(keys, m.groupBy)))
 	}
 	if m.detail && m.selected >= 0 && m.selected < len(m.events) {
 		event := m.events[m.selected]
@@ -169,18 +173,24 @@ func (m schedTraceScreenModel) View() tea.View {
 			keys = append(keys, key)
 		}
 		sort.Strings(keys)
-		lines = append(lines, strings.ToUpper(m.groupBy)+"                 EVENTS")
+		lines = append(lines, traceColumnTitles(strings.ToUpper(m.groupBy)+"                 EVENTS", width, color))
 		for _, key := range keys {
 			lines = append(lines, fmt.Sprintf("%-24s %d", key, counts[key]))
 		}
 	} else {
-		lines = append(lines, "EVENT              PROCESS                  LATENCY  CLASS      SYSCALL")
+		lines = append(lines, traceColumnTitles("EVENT              PROCESS                  LATENCY  CLASS      SYSCALL", width, color))
 		for index, event := range m.matching() {
 			prefix := " "
 			if m.selected == index {
 				prefix = liveSelectedBar
 			}
-			lines = append(lines, fmt.Sprintf("%s%-18s %-24s %7.3f  %-9s  %s", prefix, event.Event, event.Process, event.LatencyMS, emptyAs(event.OffCPUClass, "-"), emptyAs(event.Syscall, schedNoSyscall)))
+			line := fmt.Sprintf("%s%-18s %-24s %7.3f  %-9s  %s", prefix, event.Event, event.Process, event.LatencyMS, emptyAs(event.OffCPUClass, "-"), emptyAs(event.Syscall, schedNoSyscall))
+			if color && m.selected == index {
+				line = traceSelectedEvent(traceFit(line, width), width, true)
+			} else if color {
+				line = traceFit(line, width)
+			}
+			lines = append(lines, line)
 		}
 	}
 	view := liveFrame(strings.Join(lines, "\n")+"\n", m.height)

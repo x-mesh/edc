@@ -9,8 +9,8 @@ import (
 
 const (
 	// bannerBody와 bannerAccent는 글자 몸통과 왼쪽 기둥의 색이다.
-	bannerBody    = "\033[38;5;63m"
-	bannerAccent  = "\033[38;5;87m"
+	bannerBody    = richMagenta
+	bannerAccent  = richCyan
 	bannerGap     = " "
 	bannerSideGap = "   "
 	// bannerWidth는 글자 세 개와 그 사이 여백의 폭이다.
@@ -46,7 +46,11 @@ func formatBanner(version string, color bool) string {
 			builder.WriteString(strings.TrimRight(line, " ") + "\n")
 			continue
 		}
-		builder.WriteString(line + bannerSideGap + side[index] + "\n")
+		text := side[index]
+		if color && index == 1 {
+			text = richDim(text)
+		}
+		builder.WriteString(line + bannerSideGap + text + "\n")
 	}
 	return builder.String()
 }
@@ -58,7 +62,7 @@ func paintBanner(text, code string, color bool) string {
 	if !color {
 		return text
 	}
-	return code + text + liveReset
+	return richPaint(text, code, false)
 }
 
 // printVersion은 terminal에서는 banner를, 그 외에는 기계가 읽는 한 줄만 출력한다.

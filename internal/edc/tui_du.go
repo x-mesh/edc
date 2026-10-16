@@ -3,14 +3,17 @@ package edc
 import (
 	"context"
 	"fmt"
+	"image/color"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -234,36 +237,130 @@ func duNodePath(node *duNode) string {
 	return filepath.Join(duNodePath(node.parent), node.name)
 }
 
-func (model duBrowser) rowText(row duBrowseRow) string {
+// duBrowseCells는 한 줄의 칸이다. 평문과 색 화면이 같은 칸을 같은 폭으로 쓴다. notes는 이름 뒤에 두 칸씩 띄워 붙인다.
+type duBrowseCells struct {
+	size, share, name string
+	notes             []duBrowseNote
+	// secondary는 나머지 파일 줄과 마운트 줄이다. 색 화면에서 크기와 이름을 회색으로 둔다.
+	secondary bool
+}
+
+type duBrowseNote struct{ text, color string }
+
+func (model duBrowser) cells(row duBrowseRow) duBrowseCells {
 	if row.mount != nil {
-		text := fmt.Sprintf("%9s  %s       %s/  %s", "-", strings.Repeat(" ", duBarWidth), row.name(), T("du.browse.mount", row.mount.FSType))
+		cells := duBrowseCells{size: "-", name: row.name() + "/", secondary: true,
+			notes: []duBrowseNote{{T("du.browse.mount", row.mount.FSType), richGray}}}
 		if label := model.scan.labels[row.mount.Path]; label != "" {
-			text += "  " + label
+			cells.notes = append(cells.notes, duBrowseNote{label, richGray})
 		}
-		return text
+		return cells
 	}
-	total, share := model.current.total, 0
-	if total > 0 {
+	share := 0
+	if total := model.current.total; total > 0 {
 		share = int(row.bytes * 100 / total)
 	}
-	var name string
+	cells := duBrowseCells{size: formatSizeShort(row.bytes), share: fmt.Sprintf("%d%%", share)}
 	switch {
 	case row.node == nil:
-		name = T("du.browse.other", row.files)
+		cells.name, cells.secondary = T("du.browse.other", row.files), true
 	case row.node.dir:
-		name = row.node.name + "/"
+		cells.name = row.node.name + "/"
 	default:
-		name = row.node.name
+		cells.name = row.node.name
 	}
 	if row.node != nil && row.node.unreadable {
-		name += "  " + T("du.browse.unreadable")
+		cells.notes = append(cells.notes, duBrowseNote{T("du.browse.unreadable"), richYellow})
 	}
 	if row.node != nil {
 		if label := model.scan.labels[duNodePath(row.node)]; label != "" {
-			name += "  " + label
+			cells.notes = append(cells.notes, duBrowseNote{label, richGray})
 		}
 	}
-	return fmt.Sprintf("%9s  %s %3d%%  %s", formatSizeShort(row.bytes), duBar(row.bytes, total), share, name)
+	return cells
+}
+
+func (model duBrowser) rowText(row duBrowseRow) string {
+	cells := model.cells(row)
+	bar := strings.Repeat(" ", duBarWidth)
+	if row.mount == nil {
+		bar = duBar(row.bytes, model.current.total)
+	}
+	text := fmt.Sprintf("%9s  %s %4s  %s", cells.size, bar, cells.share, cells.name)
+	for _, note := range cells.notes {
+		text += "  " + note.text
+	}
+	return text
+}
+
+// richRowText는 색 화면의 한 줄이다. 막대는 이 디렉터리에서 가장 큰 항목에 맞춘 차분한 색이다. bars가 false면
+// 막대 자리를 비운다. 항목이 하나뿐이면 막대가 늘 가득 차서 아무것도 알려 주지 않는다. 고른 줄은 selectedCell이
+// 한 번에 칠하도록 글자만 돌려준다.
+func (model duBrowser) richRowText(row duBrowseRow, largest uint64, bars, selected bool) string {
+	paint, fill := model.paint, model.fill
+	if selected {
+		paint = func(text, _ string, _ bool) string { return text }
+		fill = func(text, _ string) string { return text }
+	}
+	cells := model.cells(row)
+	color := richSizeColor(int64(row.bytes))
+	if cells.secondary {
+		color = richGray
+	}
+	bar := strings.Repeat(" ", duBarWidth)
+	if bars && row.mount == nil {
+		bar = fill(richBar(float64(row.bytes), float64(largest), duBarWidth), color)
+	}
+	name := cells.name
+	if cells.secondary {
+		name = paint(name, richGray, false)
+	}
+	text := paint(fmt.Sprintf("%9s", cells.size), color, false) + "  " + bar + " " +
+		paint(fmt.Sprintf("%4s", cells.share), richGray, false) + "  " + name
+	for _, note := range cells.notes {
+		text += "  " + paint(note.text, note.color, false)
+	}
+	return text
+}
+
+// paint는 lipgloss로 rich.go의 고정 색을 칠한다. 색 수는 Bubble Tea가 터미널에 맞춰 줄인다. color는 richRed 같은
+// ANSI 번호이고, 빈 문자열이면 기본 색이다.
+func (model duBrowser) paint(text, color string, bold bool) string {
+	if !model.color || text == "" {
+		return text
+	}
+	style := lipgloss.NewStyle().Bold(bold)
+	if hex := richHex(color); hex != "" {
+		style = style.Foreground(duScreenColor(hex))
+	}
+	return style.Render(text)
+}
+
+func (model duBrowser) fill(text, color string) string {
+	if !model.color {
+		return text
+	}
+	return lipgloss.NewStyle().Foreground(duScreenColor(richFillHex(color))).Render(text)
+}
+
+// duScreenColor는 truecolor가 아닌 터미널에서 rich256이 고른 256색 번호를 직접 넘긴다. Bubble Tea가 줄이게 두면
+// chip 바탕 #262b33이 회색(236)이 아니라 남색(17)이 되어, 고른 줄이 파랗게 칠해졌다.
+func duScreenColor(hex string) color.Color {
+	var rgb richRGB
+	if _, err := fmt.Sscanf(hex, "#%02x%02x%02x", &rgb.r, &rgb.g, &rgb.b); err != nil || richTruecolor() {
+		return lipgloss.Color(hex)
+	}
+	return lipgloss.Color(strconv.Itoa(rich256(rgb)))
+}
+
+// selectedCell은 고른 줄을 chip 바탕과 굵은 글씨로 width칸까지 칠한다. 칸마다 칠한 글자를 다시 감싸면 안쪽 reset이
+// 바탕을 지우므로 평문을 칠한다.
+func (model duBrowser) selectedCell(text string, width int) string {
+	if !model.color {
+		return liveCell(text, width)
+	}
+	return lipgloss.NewStyle().Width(width).Bold(true).Background(duScreenColor(richChipHex())).
+		Foreground(duScreenColor(richHex("97"))).Render(text)
 }
 
 // duBar는 지금 디렉터리의 합 가운데 이 항목의 몫이다. 색 없이도 길이로 읽힌다.
@@ -331,36 +428,44 @@ func (model duBrowser) progressLines() []string {
 			help = T("du.browse.cancel_help")
 		}
 	}
-	return []string{reading, liveMuted(help, model.color)}
+	return []string{reading, liveKeyHints(help, model.color)}
 }
 
 func (model duBrowser) browseLines() []string {
-	current := model.current
-	lines := []string{
-		T("du.browse.title", duNodePath(current), formatSizeShort(current.total), current.count),
-		liveMuted(T("du.browse.help"), model.color),
-	}
+	lines := []string{model.title(), liveKeyHints(T("du.browse.help"), model.color)}
 	rows := model.rows()
 	texts := make([]string, len(rows))
 	width := 0
+	var largest uint64
+	sized := 0
 	for index, row := range rows {
 		texts[index] = model.rowText(row)
 		width = max(width, liveWidth(texts[index]))
+		if row.mount == nil {
+			if row.bytes > largest {
+				largest = row.bytes
+			}
+			sized++
+		}
 	}
 	if model.width > 0 {
 		width = min(width, model.width-2)
 	}
 	if len(rows) == 0 {
-		lines = append(lines, liveIdleBar+" "+T("du.browse.empty"))
+		lines = append(lines, liveIdleBar+" "+model.paint(T("du.browse.empty"), richGray, false))
 	}
 	end := min(len(rows), model.offset+max(1, model.listRows()))
 	for index := model.offset; index < end; index++ {
 		text := texts[index]
+		selected := index == model.cursor
+		if model.color {
+			text = model.richRowText(rows[index], largest, sized > 1, selected)
+		}
 		if model.width > 0 {
 			text = ansi.Truncate(text, model.width-2, "…")
 		}
-		if index == model.cursor {
-			lines = append(lines, liveSelectedBar+" "+liveSelected(liveCell(text, width), model.color))
+		if selected {
+			lines = append(lines, liveSelectedBar+" "+model.selectedCell(text, width))
 			continue
 		}
 		lines = append(lines, liveIdleBar+" "+text)
@@ -369,7 +474,19 @@ func (model duBrowser) browseLines() []string {
 	for len(lines) < 2+model.listRows() {
 		lines = append(lines, "")
 	}
-	return append(lines, liveMuted(model.selectedPath(rows), model.color), liveMuted(model.footer(), model.color))
+	return append(lines, model.paint(model.selectedPath(rows), richGray, false), model.richFooter())
+}
+
+// title은 "edc du · 경로 · 크기 · 항목 수"다. 색 화면에서는 edc du를 굵은 자주, 경로를 굵게, 크기를 크기 색으로 칠한다.
+func (model duBrowser) title() string {
+	current := model.current
+	if !model.color {
+		return T("du.browse.title", duNodePath(current), formatSizeShort(current.total), current.count)
+	}
+	text := strings.Replace(T("du.browse.title", "\x00", "\x01", current.count), "edc du", "\x02", 1)
+	gray := func(text string) string { return model.paint(text, richGray, false) }
+	return duPhrase(text, gray, model.paint(duNodePath(current), "", true),
+		model.paint(formatSizeShort(current.total), richSizeColor(int64(current.total)), true), model.paint("edc du", richMagenta, true))
 }
 
 func (model duBrowser) selectedPath(rows []duBrowseRow) string {
@@ -387,22 +504,42 @@ func (model duBrowser) selectedPath(rows []duBrowseRow) string {
 
 // footer는 2단계의 파일 시스템 줄을 한 줄로 줄인 것이다. 일부만 셌으면 함께 알린다.
 func (model duBrowser) footer() string {
-	var parts []string
+	var texts []string
+	for _, part := range model.footerParts() {
+		texts = append(texts, part.text)
+	}
+	return strings.Join(texts, " · ")
+}
+
+// footerParts의 색은 색 화면에서만 쓴다. 다시 확인해야 하는 상태(일부만 셈, 읽지 못함)는 노랑, 나머지는 회색이다.
+func (model duBrowser) footerParts() []duBrowseNote {
+	var parts []duBrowseNote
 	if filesystem := model.scan.filesystem; filesystem.Mount != "" {
-		parts = append(parts, T("du.browse.fs", duMountLabel(filesystem), filesystem.FSType, formatSizeShort(filesystem.UsedBytes), formatSizeShort(filesystem.SizeBytes)))
+		parts = append(parts, duBrowseNote{T("du.browse.fs", duMountLabel(filesystem), filesystem.FSType, formatSizeShort(filesystem.UsedBytes), formatSizeShort(filesystem.SizeBytes)), richGray})
 	}
 	if deleted := model.scan.deleted; deleted.Files > 0 {
 		size := formatSizeShort(deleted.Bytes)
 		if deleted.Partial {
 			size = "≥" + size
 		}
-		parts = append(parts, T("du.browse.deleted", size))
+		parts = append(parts, duBrowseNote{T("du.browse.deleted", size), richGray})
 	}
 	if model.scan.partial {
-		parts = append(parts, T("du.browse.partial"))
+		parts = append(parts, duBrowseNote{T("du.browse.partial"), richYellow})
 	}
 	if model.scan.unreadableCount > 0 {
-		parts = append(parts, T("du.browse.unreadable_count", model.scan.unreadableCount))
+		parts = append(parts, duBrowseNote{T("du.browse.unreadable_count", model.scan.unreadableCount), richYellow})
 	}
-	return strings.Join(parts, " · ")
+	return parts
+}
+
+func (model duBrowser) richFooter() string {
+	if !model.color {
+		return model.footer()
+	}
+	var texts []string
+	for _, part := range model.footerParts() {
+		texts = append(texts, model.paint(part.text, part.color, false))
+	}
+	return strings.Join(texts, model.paint(" · ", richGray, false))
 }

@@ -22,6 +22,7 @@ cli:
   error:
     unknown_command: "unknown command: %s"
     help_hint: "run edc help to see the command list"
+    flag_help: "run %s to see the options"
     host_port_required: "the target needs the host:port form: %s"
     one_target_required: "%s needs one target"
     no_positional: "%s takes no positional argument"
@@ -29,6 +30,8 @@ cli:
     min_days_range: "--min-days must be 0 or more"
     quality_server: "--server must be an absolute http or https URL with a host and no user info: %s"
     expect_status_range: "--expect-status must be between 100 and 599"
+    http_header: "-H takes Name: value, with a valid header name and no line break"
+    body_json_stdout: "--body - and --json - both write to stdout; give one of them a file"
   doctor:
     tls_skipped_for_http: "edc applies no TLS to an HTTP target"
   info:

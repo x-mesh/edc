@@ -135,7 +135,7 @@ func (model topModel) enterSplit() topModel {
 	if len(views) == 0 {
 		return model
 	}
-	model.view = topViewSplit
+	model.view, model.panelSort = topViewSplit, ""
 	return model
 }
 
@@ -286,28 +286,36 @@ func (model topModel) splitView() tea.View {
 
 // splitBoxLines는 박스 하나를 그린다. 선택 표시는 테두리와 강조를 입히기 전의 행에 넣는다.
 func (model topModel) splitBoxLines(box topSplitBox, start, dataRows int) []string {
-	title := "─ " + topSplitName(box.view) + " "
-	lines := []string{"╭" + title + strings.Repeat("─", max(0, box.inner-ansi.StringWidth(title))) + "╮"}
-	body := []string{box.trimTime(box.pane.tableHeader()[0])}
+	color := model.limits.color
+	name := topSplitName(box.view)
+	title := "─ " + name + " "
+	rule := strings.Repeat("─", max(0, box.inner-ansi.StringWidth(title))) + "╮"
+	top := "╭" + title + rule
+	if color {
+		top = richDim("╭─ ") + richPaint(name, richMagenta, true) + richDim(" "+rule)
+	}
+	lines := []string{top}
+	body := []string{topDim(box.trimTime(box.pane.tableHeader()[0]), color)}
 	for index := start; index < len(model.rows) && index < start+dataRows; index++ {
 		line := box.pane.tableRow(model.currentFilterRow(model.rows[index]))
-		if index == model.selected && !model.follow {
-			line = box.trimTime(line[:topSelectionColumn] + ">" + line[topSelectionColumn+1:])
-			if !model.processFocus && model.limits.color {
-				line = topBannerStyle + strings.ReplaceAll(topDashboardFitWidth(line, box.inner), topColorReset, topColorReset+topBannerStyle) + topColorReset
-			}
-		} else {
-			line = box.trimTime(line)
+		selected := index == model.selected && !model.follow
+		if selected {
+			line = line[:topSelectionColumn] + ">" + line[topSelectionColumn+1:]
+		}
+		line = topRules(box.trimTime(line), color)
+		if selected && !model.processFocus && color {
+			line = topHighlight(line, box.inner)
 		}
 		body = append(body, line)
 	}
 	for len(body) < dataRows+1 {
 		body = append(body, "")
 	}
+	side := topDim("│", color)
 	for _, line := range body {
-		lines = append(lines, "│"+topDashboardFitWidth(line, box.inner)+"│")
+		lines = append(lines, side+topDashboardFitWidth(line, box.inner)+side)
 	}
-	return append(lines, "╰"+strings.Repeat("─", box.inner)+"╯")
+	return append(lines, topDim("╰"+strings.Repeat("─", box.inner)+"╯", color))
 }
 
 // trimTime은 시각 열을 뺀다. 행은 색 없는 "15:04:05 │"로 시작하므로 첫 구분선까지 자른다.
@@ -322,10 +330,10 @@ func (box topSplitBox) trimTime(line string) string {
 func (model topModel) splitSignalLine() string {
 	row, ok := model.selectedRow()
 	if !ok {
-		return "signal · waiting for a sample"
+		return topHeading("signal · waiting for a sample", model.limits.color)
 	}
 	row = model.currentFilterRow(row)
 	prefix := "signal " + row.at.Format("15:04:05") + " · "
 	items := topDashboardSignalItems(row.rate, row.processes, row.processTotal.Groups, row.processesValid, model.limits)
-	return prefix + formatTopSignalsWidth(items, model.displayWidth()-ansi.StringWidth(prefix))
+	return topLead(prefix, model.limits.color) + formatTopSignalsWidth(items, model.displayWidth()-ansi.StringWidth(prefix))
 }

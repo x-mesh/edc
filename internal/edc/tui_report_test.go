@@ -6,6 +6,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 )
 
 func viewerFixture(t *testing.T) viewerModel {
@@ -134,5 +135,27 @@ func TestDiffViewerShowsIdentityAndCollapsedDeltas(t *testing.T) {
 	}
 	if !strings.Contains(viewerAfter(t, model, "e").body(), "duration_ms") {
 		t.Fatal("delta detail missing")
+	}
+}
+
+// 색을 쓰는 제목과 키 안내는 평문과 같은 글자다. 0이 아닌 실패 수만 빨강으로 칠한다.
+func TestViewerHeadingMatchesThePlainTitle(t *testing.T) {
+	t.Setenv("COLORTERM", "truecolor")
+	t.Setenv("NO_COLOR", "")
+	summary := "2 pass · 0 warn · 1 fail · 0 skip"
+	heading := reportViewerHeading("report show", "a.json", summary, " · ", reportSummaryColors)
+	if ansi.Strip(heading) != reportViewerTitle("report show", "a.json", summary) {
+		t.Fatalf("heading = %q", ansi.Strip(heading))
+	}
+	for _, want := range []string{richPaint("report show", richMagenta, true), richPaint("1 fail", richRed, true), richDim("0 warn")} {
+		if !strings.Contains(heading, want) {
+			t.Fatalf("heading %q misses %q", heading, want)
+		}
+	}
+	model := viewerFixture(t)
+	colored := model
+	colored.color = true
+	if ansi.Strip(colored.help()) != model.help() || colored.help() == model.help() {
+		t.Fatalf("help = %q, plain %q", colored.help(), model.help())
 	}
 }

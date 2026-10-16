@@ -59,6 +59,8 @@ type fsWatchStatus struct {
 	failed  int
 	shown   bool
 	closed  bool
+	// color가 false면 NO_COLOR다. 상태줄을 회색 대신 흐린 글자로 그린다.
+	color bool
 }
 
 func newFSWatchStatus(out io.Writer, width func() int, now func() time.Time, events []string, rules bool) *fsWatchStatus {
@@ -146,7 +148,12 @@ func (status *fsWatchStatus) draw() {
 	}
 	// 마지막 열에 쓰면 일부 터미널이 줄을 넘기므로 한 칸을 비운다.
 	line := ansi.Truncate(status.line(max(1, status.width()-1)), max(1, status.width()-1), "…")
-	io.WriteString(status.out, "\x1b[2m"+line+"\x1b[0m")
+	if status.color {
+		io.WriteString(status.out, richDim(line))
+	} else {
+		// NO_COLOR에서도 상태줄은 흐리게(SGR 2) 그려 기록 줄과 구분한다. 색이 아니라 글자 속성이다.
+		io.WriteString(status.out, richSGR(line, "2"))
+	}
 	status.shown = true
 }
 

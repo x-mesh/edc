@@ -865,6 +865,18 @@ journal 기록은 20000개, journal 출력은 32 MiB, `/dev/kmsg` 기록은 1000
 
 대상에 scheme이 없으면 `edc http check`는 `http://`를 붙입니다. `edc http check naver.com`은 `http://naver.com`을 요청하고 redirect를 따라갑니다. `url` metric에는 실제로 요청한 주소가 남습니다. TLS endpoint를 바로 확인하려면 `https://`를 씁니다.
 
+서버가 redirect를 보내면 `edc http check`는 요청마다 status, URL, 시간 값, peer를 차례로 보여 줍니다. `-v`를 붙이면 응답마다 header가, 마지막 응답에는 본문 앞부분이 더해집니다. `Authorization`, `Cookie`, `Set-Cookie` 같은 인증 header의 값은 가립니다. JSON에는 요청마다 기록이 `hops` metric에 남습니다. `edc doctor -v`도 같은 목록을 보여 줍니다.
+
+`curl -H`처럼 `-H 'Name: value'`로 요청 header를 넣을 수 있고, 여러 번 줄 수 있습니다. `-H 'Host: name'`은 Host header를 바꿉니다. redirect가 다른 host로 가면 그 요청에는 `Authorization`과 `Cookie`가 실리지 않습니다. 요청마다 보낸 header는 `-v`로 확인합니다.
+
+`--body page.html`은 마지막 응답의 본문 전체를 파일로 저장합니다. `--body -`는 본문을 stdout에 쓰고, 결과는 stderr로 보냅니다. stdout이 터미널이면 본문의 제어 문자를 escape해서 씁니다. 본문은 10 MiB까지만 읽고, 그보다 길면 잘랐다고 알려 줍니다. 같은 이름의 파일이 있으면 덮어씁니다. option은 URL 앞이나 뒤에 둘 수 있습니다.
+
+```bash
+./bin/edc http check http://example.com
+./bin/edc http check -v -H 'Authorization: Bearer <token>' https://example.com/api
+./bin/edc http check https://example.com/api --body - | jq .
+```
+
 ```bash
 ./bin/edc tls check --min-days 14 example.com:443
 ./bin/edc http check --expect-status 200 https://example.com/health
@@ -1022,13 +1034,14 @@ stdin과 stdout이 모두 terminal이면 `edc top`은 전체 화면 대시보드
 | `-` | interval 줄이기 |
 | `1`, `c`, `m`, `d`, `n` | 전체, CPU, memory, disk, network 열로 전환. `1`이 처음 보기 |
 | `s` | pressure 열로 전환 |
+| `o` | process 패널을 CPU, `MEM`, I/O 순으로 정렬. 누를 때마다 기준이 바뀌고, 네 번째로 누르거나 보기를 바꾸면 보기 기준으로 돌아감 |
 | `v` | 박스 화면으로 돌아가기 |
 | `f` | 선택한 행의 signal 보기로 이동하고, 한 번 더 누르면 process 후보 선택. 필터가 있으면 process 보기로 전환 |
 | `Tab` | 이력 탐색과 process 후보 선택 사이 이동 |
 | `?` | 도움말 표시. 화살표로 스크롤하고 `Esc`로 닫기 |
 | `/` | process 필터 입력: command 이름이나 PID, 쉼표로 구분 |
 | `i` | interface 선택 상자: 목록과 traffic을 보고 `Space`로 체크, `a` 전체, `p` physical. `Enter`로 다음 sample부터 적용하며, `-w`로 기록하는 동안에는 쓸 수 없음 |
-| `Esc` | 한 단계 뒤로: 도움말, 목록, 후보 선택을 닫고, 그다음 상세나 최고치 패널 닫기, 최신 행으로 복귀, 처음 보기로 복귀, 마지막으로 process 필터 해제 |
+| `Esc` | 한 단계 뒤로: 도움말, 목록, 후보 선택을 닫고, 그다음 상세나 최고치 패널 닫기, 최신 행으로 복귀, `o`로 고른 순위 해제, 처음 보기로 복귀, 마지막으로 process 필터 해제 |
 | `↑`, `↓`, `PgUp`, `PgDn`, `End` | 과거 행 선택, 한 화면씩 이동, 실시간 행 추적 재개 |
 | `Enter` | 선택한 시점의 상세 표시. 후보 선택 중에는 선택한 PID에 초점 |
 | `h` | 최근 60초의 load, CPU, iowait, memory 최고치를 각각 시각과 함께 표시 |
@@ -1093,13 +1106,17 @@ Linux에서는 일부 보기에 선택 열이 더 있습니다. CPU 보기의 `s
 
 상세 보기에는 CPU 사용률 기준 상위 세 process도 표시합니다. 목록은 관측 주기를 늘리지 않도록 최대 1초마다 백그라운드에서 갱신하며, `--write`가 없으면 대시보드에서만 수집하고 표와 필터 없는 `--json` 출력에서는 수집하지 않습니다. Linux에서는 `/proc/<pid>/stat`의 CPU tick을 직전 갱신과 비교하므로 값은 그 사이 구간의 사용률입니다. macOS에서는 `ps`가 제공하는 최근 감쇠 평균을 씁니다.
 
-process 패널은 `PID`, `COMMAND`, `STATE`, `CPU%`, `RSS`를 보여 줍니다. `STATE`는 `run`, `sleep`, `iowait`, `zombie`, `stop`, `trace`, `idle`, `dead`, `park` 중 하나입니다. `iowait`는 Linux의 `D` 상태로, I/O가 끝나기를 기다리며 signal로도 깨울 수 없는 상태입니다. `iowait`는 disk를 기다린다는 뜻이지, 그 process가 disk를 많이 쓴다는 증거는 아닙니다.
+process 패널은 `PID`, `COMMAND`, `STATE`, `CPU%`, `MEM`을 보여 줍니다. 패널 폭이 넉넉하면 `MEM` 뒤에 `RSS`도 보여 줍니다. `STATE`는 `run`, `sleep`, `iowait`, `zombie`, `stop`, `trace`, `idle`, `dead`, `park` 중 하나입니다. `iowait`는 Linux의 `D` 상태로, I/O가 끝나기를 기다리며 signal로도 깨울 수 없는 상태입니다. `iowait`는 disk를 기다린다는 뜻이지, 그 process가 disk를 많이 쓴다는 증거는 아닙니다.
 
 terminal이 60열 이상이면 `READ`와 `WRITE` 열을 붙입니다. disk 보기와 `--process`에서는 항상 붙이고, 다른 보기에서는 값이 있을 때만 붙입니다. `/proc/<pid>/io`에서 읽은, 저장 장치에 닿은 초당 byte입니다. 값을 읽지 못하면 `—`로 표시합니다. 다른 사용자의 process까지 보려면 `edc top`을 root로 실행합니다.
 
-후보 순위는 기본이 CPU, memory 보기는 RSS, disk 보기는 I/O입니다. disk 보기는 모든 process의 I/O를 읽으므로 CPU는 낮고 I/O가 큰 process도 후보에 오릅니다. 다른 보기는 후보의 I/O만 읽습니다. 목록을 자르기 전에 CPU, RSS, `iowait` 상태 기준 상위 5개를 각각 보존하고, disk 보기는 I/O 상위 5개도 보존합니다. 후보는 3개를 표시하고, terminal이 40행 이상이면 5개를 표시합니다.
+`MEM`은 process가 차지한 메모리입니다. macOS는 압축된 메모리까지 포함하는 physical footprint, Linux는 RSS에 swap으로 나간 양(`VmSwap`)을 더한 값입니다. RSS는 압축되거나 swap으로 나간 page를 세지 않으므로 누수로 커진 process도 RSS는 작게 보일 수 있습니다. `MEM`을 읽지 못하면 그 자리에 RSS를 흐린 색으로 보여 줍니다. macOS에서는 root나 `_windowserver`처럼 다른 사용자 소유인 process의 값을 읽지 못합니다. `sudo`로 실행하면 읽습니다.
 
-후보 위에는 process 묶음을 최대 2줄 표시합니다. 묶음은 실행 파일 이름이 같은 process 2개 이상이며 `gm (200 procs, 150 iowait)`처럼 씁니다. 보기마다 자기 기준의 합(CPU, RSS, I/O)으로 묶음 순위를 정합니다. 묶음은 보기의 기준 합이 최소값(CPU 10%, RSS 100 MB, I/O 1 MB/s)을 넘어야 보이고, disk 보기에서는 `iowait` process가 있는 묶음도 보입니다. RSS 합은 공유 page를 process마다 세므로 상한값이라는 뜻으로 `≤`를 붙입니다. 묶음 줄에는 PID가 없고 고를 수 없습니다.
+분마다 가장 낮은 `MEM` 값이 15분 동안 오르면 `signal` 열에 `node +360.0M/12m`처럼 그 process를 표시합니다. 처음 3분의 최저값과 마지막 3분의 최저값을 비교하고, 시간은 그 두 최저값이 나온 분 사이의 간격입니다. 이 사이에 256 MiB 이상 늘어야 하고, 절반 이상의 분에서 실제로 늘어나야 합니다. 그래서 GC가 만드는 톱니나 한 번에 오른 계단은 누수로 보지 않습니다. memory 보기에서는 가장 많이 늘어난 process 하나가 크기와 상관없이 맨 앞에 오고, 늘어나는 process의 `MEM` 칸에 색이 칠해집니다. RSS로 대신한 흐린 값은 흐린 색 그대로 둡니다. 이 속도로 남은 메모리를 1시간 안에 다 쓰면 경고가 위험으로 바뀝니다. 첫 판정에는 약 15분 동안의 기록이 필요합니다. 일시정지하거나 `--interval`을 1분보다 길게 주면 기록이 비고, `edc`는 빈 구간을 건너 증가를 판정하지 않습니다.
+
+후보 순위는 기본이 CPU, memory 보기는 `MEM`, disk 보기는 I/O입니다. `o`를 누르면 위쪽 host 열은 그대로 두고 패널 순위만 고를 수 있고, 이때 제목에 `MEM rank (o)`처럼 `(o)`가 붙습니다. I/O 순위는 다음 표본부터 모든 process의 I/O를 읽으므로 CPU는 낮고 I/O가 큰 process도 후보에 오릅니다. 다른 순위는 후보의 I/O만 읽습니다. 목록을 자르기 전에 CPU, `MEM`, `iowait` 상태 기준 상위 5개를 각각 보존하고, I/O 순위는 I/O 상위 5개도 보존합니다. 후보는 3개를 표시하고, terminal이 40행 이상이면 5개를 표시합니다.
+
+후보 위에는 process 묶음을 최대 2줄 표시합니다. 묶음은 실행 파일 이름이 같은 process 2개 이상이며 `gm (200 procs, 150 iowait)`처럼 씁니다. 묶음 순위는 패널 순위와 같은 기준의 합(CPU, `MEM`, I/O)을 따릅니다. 묶음은 그 기준의 합이 최소값(CPU 10%, `MEM` 100 MB, I/O 1 MB/s)을 넘어야 보이고, I/O 순위에서는 `iowait` process가 있는 묶음도 보입니다. 메모리 합은 공유 page를 process마다 셀 수 있으므로 상한값이라는 뜻으로 `≤`를 붙입니다. 묶음 줄에는 PID가 없고 고를 수 없습니다.
 
 Linux kernel은 부모가 끝난 자식을 회수할 때 자식의 I/O를 부모의 값에 더합니다. 짧게 사는 자식을 많이 띄우는 부모는 자식의 I/O까지 자기 값으로 보일 수 있으므로, 부모를 원인으로 보기 전에 자식을 확인합니다.
 
@@ -1131,7 +1148,7 @@ Linux에서는 `n` 화면에 conntrack 사용률(`ct%`), listen overflow/s(`list
 
 `edc top`은 `signal` 열의 경고가 5초 이상 이어지면 이벤트로 남깁니다. 꺼졌다가 5초 안에 다시 켜진 경고는 같은 이벤트로 이어집니다. 이벤트는 최근 100개까지 메모리에만 보관하며, 대시보드를 닫으면 사라집니다.
 
-이벤트마다 가장 나빴던 값과 그 시점에 앞선 묶음과 process를 저장합니다. 후보는 경고를 자세히 보이는 보기의 기준을 따릅니다. disk와 pressure 경고는 I/O, memory 경고는 RSS, 나머지는 CPU이고, network 경고에는 후보를 붙이지 않습니다. 후보가 원인이라고 단정하지 않습니다.
+이벤트마다 가장 나빴던 값과 그 시점에 앞선 묶음과 process를 저장합니다. 후보는 경고를 자세히 보이는 보기의 기준을 따릅니다. disk와 pressure 경고는 I/O, memory 경고는 `MEM`, 나머지는 CPU이고, network 경고에는 후보를 붙이지 않습니다. 증가 경고는 늘어나는 process를 후보로 적습니다. 후보가 원인이라고 단정하지 않습니다.
 
 장애 하나가 여러 경고를 동시에 켜는 일이 많습니다. disk가 포화하면 `await`, `blocked`, `load`, `i/o`, `psi io`가 함께 오릅니다. 첫 이벤트에서 5초 안에 시작한 이벤트는 한 줄로 합치고, 가장 심한 경고와 나머지 개수를 `await 2034ms +4`처럼 표시합니다.
 
@@ -1174,7 +1191,7 @@ Linux에서는 `n` 화면에 conntrack 사용률(`ct%`), listen overflow/s(`list
 
 같은 DB를 지정해도 이전 값을 덮어쓰지 않고 별도 실행으로 추가합니다. 실행마다 host 정보, edc version, 수집 조건, 시작·종료 시각, 상태, sample 수를 남깁니다. `unfinished`는 종료 기록이 없는 실행으로, 실행 중이거나 강제 종료된 상태일 수 있습니다. 정상 종료는 대기 중인 기록을 모두 저장하고, 저장 실패는 관측을 중단하며 종료 코드 `1`을 반환합니다. 강제 종료 시 이미 commit된 transaction은 보존됩니다. 새 DB 권한은 `0600`이며 자동 삭제나 회전은 없습니다.
 
-host 지표와 core별 CPU, 지원 여부, 실제 관측 구간, 당시 process 필터를 저장합니다. 필터가 없으면 CPU 상위 5개와 RSS 상위 5개의 합집합(최대 10개), 필터가 있으면 최대 50개와 전체 합계를 저장합니다. 전체 process를 기록하는 기능은 아닙니다. `p`로 일시정지하면 기록도 멈추고, 재개 시 새 기준점 다음부터 rate를 기록합니다. process는 host보다 덜 자주 갱신될 수 있으며 `process_observed_at`으로 수집 시각을 구분합니다. 시작 시각을 읽을 수 있으면 PID와 정밀한 시작 시각으로 PID 재사용을 구분합니다.
+host 지표와 core별 CPU, 지원 여부, 실제 관측 구간, 당시 process 필터를 저장합니다. 필터가 없으면 CPU 상위 5개와 `MEM` 상위 5개의 합집합(최대 10개), 필터가 있으면 최대 50개와 전체 합계를 저장합니다. 전체 process를 기록하는 기능은 아닙니다. `p`로 일시정지하면 기록도 멈추고, 재개 시 새 기준점 다음부터 rate를 기록합니다. process는 host보다 덜 자주 갱신될 수 있으며 `process_observed_at`으로 수집 시각을 구분합니다. 시작 시각을 읽을 수 있으면 PID와 정밀한 시작 시각으로 PID 재사용을 구분합니다.
 
 `history list`는 실행 목록, `history top`과 `history process`는 sample을 최신순으로 보여 줍니다. DB 경로를 생략하면 같은 기본 DB를 읽으며, 없는 DB를 생성하지는 않습니다. `--run`은 실행 ID, `--from`과 `--to`는 RFC3339 시각으로 범위를 좁힙니다. 시작 시각은 포함하고 종료 시각은 제외합니다. `--limit`은 기본 200이며 `0`은 전체입니다. `--json <path|->`는 결과당 JSON 한 줄입니다. Go flag 규칙에 따라 옵션은 DB 경로 앞에 둡니다.
 
@@ -1193,20 +1210,21 @@ WAL을 사용하므로 기록 중에도 조회할 수 있습니다. DB는 로컬
 ./bin/edc top --process 4321,worker --json /tmp/edc-host.jsonl
 ```
 
-`--process`를 주면 대시보드 제목 아래에 강조된 `PROCESS` 막대가 나옵니다. 막대에는 필터와 맞은 process들의 현재 값이 나오고, 터미널이 좁으면 뒤쪽 값부터 뺍니다. 대시보드는 process 보기로 열립니다. 행마다 한 시점에 맞은 process 묶음의 값을 보여 줍니다. 맞은 개수, CPU% 합(core 하나가 100), 메모리(`rss`), thread 수, 열린 파일 수, 초당 디스크 읽기와 쓰기입니다. `--ebpf`를 주면 run-queue 평균 대기와 block I/O 평균 지연(ms)도 보입니다. 읽지 못한 값은 `—`로 나옵니다. `1`을 누르면 host 열로, `f`를 누르면 process 보기로 돌아갑니다. `Enter`는 선택한 행에서 가장 바쁜 process를 보여 줍니다.
+`--process`를 주면 대시보드 제목 아래에 강조된 `PROCESS` 막대가 나옵니다. 막대에는 필터와 맞은 process들의 현재 값이 나오고, 터미널이 좁으면 뒤쪽 값부터 뺍니다. 대시보드는 process 보기로 열립니다. 행마다 한 시점에 맞은 process 묶음의 값을 보여 줍니다. 맞은 개수, CPU% 합(core 하나가 100), 메모리(`mem`), thread 수, 열린 파일 수, 초당 디스크 읽기와 쓰기입니다. `--ebpf`를 주면 run-queue 평균 대기와 block I/O 평균 지연(ms)도 보입니다. 읽지 못한 값은 `—`로 나옵니다. `1`을 누르면 host 열로, `f`를 누르면 process 보기로 돌아갑니다. `Enter`는 선택한 행에서 가장 바쁜 process를 보여 줍니다.
 
 대시보드를 실행하는 중에도 process를 고를 수 있습니다. 행을 고르고 `f`를 누릅니다. 첫 signal이 `await 65ms`처럼 host 값이면 해당 보기를 엽니다. `f`를 한 번 더 누르거나 process signal에서 누르면 후보 선택으로 이동합니다. 화살표로 고르고 `Enter`로 해당 PID에 초점을 맞춥니다. `/`로 필터를 입력합니다. `Esc`는 후보 선택을 닫고, 선택 중이 아닐 때는 필터를 지웁니다. 다른 필터로 수집한 행의 process 값은 `—`로 나옵니다.
 
 filter는 CPU 상위로 자르기 전에 적용하므로 CPU가 낮은 process도 맞으면 목록에 남습니다.
 
-대시보드 상세 보기는 두 줄입니다. 첫 줄은 맞은 process 전체의 합으로, 개수, CPU, RSS, thread, 열린 file descriptor, 디스크 I/O입니다. 둘째 줄은 CPU가 높은 세 개와 나머지 개수 `+N`입니다. 이때 `signal` 열은 맞는 process만 반영합니다.
+대시보드 상세 보기는 두 줄입니다. 첫 줄은 맞은 process 전체의 합으로, 개수, CPU, 메모리, thread, 열린 file descriptor, 디스크 I/O입니다. 둘째 줄은 CPU가 높은 세 개와 나머지 개수 `+N`입니다. 이때 `signal` 열은 맞는 process만 반영합니다.
 
-`--json`에서는 sample에 필드 두 개가 더해집니다. `processes`는 맞는 process를 CPU가 높은 순으로 최대 50개 담습니다. `process_total`은 맞은 process 전체의 합으로 `count`, `cpu_pct`, `rss_bytes`, `threads`입니다. CPU는 core 하나가 100%이고, 맞는 process가 없으면 `processes`는 `[]`입니다. process마다 들어가는 필드는 다음과 같습니다.
+`--json`에서는 sample에 필드 두 개가 더해집니다. `processes`는 맞는 process를 CPU가 높은 순으로 최대 50개 담습니다. `process_total`은 맞은 process 전체의 합으로 `count`, `cpu_pct`, `rss_bytes`, `memory_bytes`, `threads`입니다. CPU는 core 하나가 100%이고, 맞는 process가 없으면 `processes`는 `[]`입니다. process마다 들어가는 필드는 다음과 같습니다.
 
 | 필드 | 뜻 |
 |---|---|
 | `pid`, `started` | `started`는 UTC 시작 시각입니다. PID는 재사용될 수 있어 `(pid, started)`가 process 하나를 가리킵니다. |
 | `command`, `cpu_pct`, `rss_bytes` | 이름, 직전 refresh 이후 CPU, 상주 memory |
+| `memory_bytes` | process가 차지한 메모리. macOS는 physical footprint, Linux는 RSS와 `VmSwap`의 합. `process_total`에서는 하나라도 읽지 못하면 빠짐 |
 | `threads` | thread 수 (Linux·macOS) |
 | `fds` | 열린 file descriptor 수 (Linux) |
 | `disk_read_bytes_per_s`, `disk_write_bytes_per_s` | 초당 disk I/O byte. Linux는 `/proc/<pid>/io`, macOS는 libproc 기준 |
@@ -1722,7 +1740,9 @@ $ edc capture
 → edc capture --interface en0
 ```
 
-command 묶음은 어떤 command를 실행할지 묻습니다. `edc dns`, `edc net`, `edc report`, `edc route`, `edc change`, `edc disk`, `edc completion`이 각자의 command를 보여 줍니다. `edc report show`와 `edc report diff`는 이어서 현재 디렉터리의 report를 나열합니다.
+command 묶음은 어떤 command를 실행할지 묻습니다. `edc dns`, `edc net`, `edc report`, `edc route`, `edc change`, `edc disk`, `edc history`, `edc completion`이 각자의 command를 짧은 설명과 함께 보여 줍니다. `edc report show`와 `edc report diff`는 이어서 현재 디렉터리의 report를 나열합니다.
+
+`edc log`는 묻지 않습니다. 인자 없이 실행하면 사용 형태와 예시를 출력하고 exit code `2`를 돌려줍니다.
 
 `edc change confirm`, `edc change rollback`, `edc route rollback`은 아직 대기 중인 변경을 나열합니다. run id를 옮겨 적는 대신 고릅니다.
 

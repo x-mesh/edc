@@ -84,8 +84,8 @@ func TestProbeModelTruncatesTheResultToWidth(t *testing.T) {
 	if liveWidth(view) > 48 || !strings.HasSuffix(view, "…") || liveLineCount(model.View().Content) != 1 {
 		t.Fatalf("result view = %q (%d wide)", view, liveWidth(view))
 	}
-	// 색은 상태 칸에만 있어서, 자른 뒤에도 색을 끄는 escape가 남는다.
-	if status := terminalStatus(StatusPass, true); !strings.HasPrefix(view, status) {
+	// 색은 배지와 label에만 있어서, 자른 뒤에도 색을 끄는 escape가 남는다.
+	if status := richStatusBadge(StatusPass); !strings.HasPrefix(view, status) {
 		t.Fatalf("result view lost the colored status %q: %q", status, view)
 	}
 }

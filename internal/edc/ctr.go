@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"net"
 	"net/netip"
@@ -201,18 +200,11 @@ func runCtr(args []string, version string) int {
 
 func runCtrWith(args []string, version string, sources ctrSources, ok bool) int {
 	options := configuredCommon(15 * time.Second)
-	set := flag.NewFlagSet("ctr", flag.ContinueOnError)
+	set := newFlagSet("ctr")
 	set.SetOutput(os.Stderr)
 	bindCommon(set, &options)
 	all := set.Bool("all", false, T("command.ctr.option.all"))
-	ordered, err := reorderFSWatchArgs(set, args)
-	if err == nil {
-		err = set.Parse(ordered)
-	}
-	if err != nil {
-		if !errors.Is(err, flag.ErrHelp) {
-			fmt.Fprintln(os.Stderr, err)
-		}
+	if err := parseReordered(set, args); err != nil {
 		return 2
 	}
 	usage := T("cli.usage", "edc ctr [options] [--all] | edc ctr [options] <container>")

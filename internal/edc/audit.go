@@ -3,7 +3,6 @@ package edc
 import (
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 	"io/fs"
 	"os"
@@ -177,7 +176,7 @@ type auditFacts struct {
 
 func runAudit(args []string, version string) int {
 	options := configuredCommon(15 * time.Second)
-	set := flag.NewFlagSet("audit", flag.ContinueOnError)
+	set := newFlagSet("audit")
 	set.SetOutput(os.Stderr)
 	bindCommon(set, &options)
 	if err := set.Parse(args); err != nil {

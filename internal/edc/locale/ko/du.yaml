@@ -29,6 +29,8 @@ du:
     not_found: "찾지 못함"
     not_found_hint: "마운트 아래 가려진 파일이나 파일 시스템 metadata"
     partial_hint: "root로 실행하면 모든 process를 읽습니다"
+    label: "파일 시스템"
+    usage: "%s 사용 / 전체 %s"
   browse:
     title: "edc du · %s · %s · 항목 %d개"
     help: "↑↓ 이동 · Enter 열기 · ← 위로 · q 종료"

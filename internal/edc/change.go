@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -82,11 +81,11 @@ func normalizeChangeKind(value string) (string, bool) {
 }
 
 func runChange(args []string, version string) int {
-	usage := T("cli.usage", "edc change <apply|status|confirm|rollback> ...")
+	usage := T("cli.usage", subcommandUsage("change")+" ...")
 	if len(args) == 0 {
 		// 하위 command만 고르게 한다. apply의 값은 flag로만 받는다. 되돌릴 수 없는 변경은
 		// 다시 칠 수 있는 명령으로 남아야 안전하다.
-		choice, ok := promptMissingChoice("edc change", []string{"apply", "status", "confirm", "rollback"})
+		choice, ok := promptMissingSubcommand("change")
 		if !ok {
 			fmt.Fprintln(os.Stderr, usage)
 			return 2
@@ -110,7 +109,7 @@ func runChange(args []string, version string) int {
 
 func runChangeApply(args []string, version string) int {
 	options := configuredCommon(60 * time.Second)
-	set := flag.NewFlagSet("change apply", flag.ContinueOnError)
+	set := newFlagSet("change apply")
 	set.SetOutput(os.Stderr)
 	bindCommon(set, &options)
 	kind := set.String("kind", "", T("change.flag.kind"))
@@ -494,7 +493,7 @@ func writeChangeFile(path string, data []byte, mode uint32, uid, gid int) error 
 
 func runChangeStateCommand(args []string, version, name string) int {
 	options := configuredCommon(30 * time.Second)
-	set := flag.NewFlagSet("change "+name, flag.ContinueOnError)
+	set := newFlagSet("change " + name)
 	set.SetOutput(os.Stderr)
 	bindCommon(set, &options)
 	statePath := set.String("state", "", T("change.flag.state"))
@@ -625,7 +624,7 @@ func hasPendingChange() (bool, error) {
 
 func runChangeStatus(args []string, version string) int {
 	options := configuredCommon(15 * time.Second)
-	set := flag.NewFlagSet("change status", flag.ContinueOnError)
+	set := newFlagSet("change status")
 	set.SetOutput(os.Stderr)
 	bindCommon(set, &options)
 	if err := set.Parse(args); err != nil {

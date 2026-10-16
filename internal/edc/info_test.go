@@ -96,7 +96,7 @@ func TestInfoListenShowsExposedPortsAndCountsLoopback(t *testing.T) {
 	result := Result{Status: StatusPass, Metrics: map[string]interface{}{"sockets": sockets}}
 
 	var compact strings.Builder
-	printInfoListen(&compact, result, true, false)
+	printInfoListen(&compact, result, true, false, false)
 	text := compact.String()
 	for _, want := range []string{"TCP 8 · UDP 1 · Exposed 8 · Loopback 1", "1001   tcp  *  app (2)", "… 3 more exposed · edc listen", "└── Sockets of other accounts are hidden without root"} {
 		if !strings.Contains(text, want) {
@@ -108,7 +108,7 @@ func TestInfoListenShowsExposedPortsAndCountsLoopback(t *testing.T) {
 	}
 
 	var verbose strings.Builder
-	printInfoListen(&verbose, result, false, true)
+	printInfoListen(&verbose, result, false, false, true)
 	text = verbose.String()
 	// 프로세스를 모르는 소켓도 포트는 보여 준다. 이름 자리는 없음으로 적는다.
 	for _, want := range []string{"local (1)", "53     udp  192.0.2.10  -"} {
@@ -123,7 +123,7 @@ func TestInfoListenShowsExposedPortsAndCountsLoopback(t *testing.T) {
 
 func TestInfoListenReportsUnavailableProbe(t *testing.T) {
 	var output strings.Builder
-	printInfoListen(&output, Result{Status: StatusSkip, Summary: "ss not found\nin PATH"}, false, false)
+	printInfoListen(&output, Result{Status: StatusSkip, Summary: "ss not found\nin PATH"}, false, false, false)
 	if output.String() != "\nListening Ports\n└── Unavailable: ss not found in PATH\n" {
 		t.Fatalf("output = %q", output.String())
 	}

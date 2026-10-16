@@ -32,6 +32,17 @@ type topInterfacePreset struct {
 	filter topInterfaceFilter
 }
 
+// footerOn은 키 안내에서 지금 고른 프리셋이다. a는 첫 프리셋(all)을, p는 physical을 고른다.
+func (picker topInterfacePicker) footerOn() []string {
+	switch {
+	case picker.preset == 0:
+		return []string{"a"}
+	case picker.preset >= 0 && picker.preset == picker.presetIndex("physical"):
+		return []string{"p"}
+	}
+	return nil
+}
+
 type topInterfacePickerRow struct {
 	name     string
 	physical bool
@@ -144,7 +155,8 @@ func (picker *topInterfacePicker) move(delta, visible int) {
 	}
 }
 
-func (picker *topInterfacePicker) lines(rates []netInterfaceRate, width, height int) []string {
+// lines는 상자다. 색을 쓰면 테두리와 키 안내는 회색, 제목은 자홍 굵게, 커서 줄은 chip 바탕이다.
+func (picker *topInterfacePicker) lines(rates []netInterfaceRate, width, height int, color bool) []string {
 	byName := map[string]netInterfaceRate{}
 	for _, rate := range rates {
 		byName[rate.Name] = rate
@@ -152,11 +164,29 @@ func (picker *topInterfacePicker) lines(rates []netInterfaceRate, width, height 
 	inner := max(16, min(topInterfacePickerWidth, width-4))
 	frame := func(left, fill, right, title string) string {
 		title = ansi.Truncate(title, inner, "")
-		return left + title + strings.Repeat(fill, inner-ansi.StringWidth(title)) + right
+		rest := strings.Repeat(fill, inner-ansi.StringWidth(title)) + right
+		if color && title != "" {
+			name, hint, _ := strings.Cut(strings.TrimPrefix(title, " "), " ")
+			return richDim(left+" ") + richPaint(name, richMagenta, true) + richDim(" "+hint+rest)
+		}
+		return topDim(left+title+rest, color)
 	}
-	pad := func(text string) string {
+	side := topDim("│", color)
+	padStyled := func(text string, style func(string) string) string {
 		text = ansi.Truncate(text, inner, "…")
-		return "│" + text + strings.Repeat(" ", inner-ansi.StringWidth(text)) + "│"
+		return side + style(text+strings.Repeat(" ", inner-ansi.StringWidth(text))) + side
+	}
+	plain := func(text string) string { return text }
+	pad := func(text string) string { return padStyled(text, plain) }
+	// row는 고를 수 있는 줄이다. 커서가 있는 줄은 chip 바탕으로 칠한다.
+	row := func(index int, text string) string {
+		if color && index == picker.cursor {
+			return padStyled(text, func(text string) string { return topHighlight(text, inner) })
+		}
+		return pad(text)
+	}
+	dim := func(text string) string {
+		return padStyled(text, func(text string) string { return topDim(text, color) })
 	}
 	marker := func(index int) string {
 		if index == picker.cursor {
@@ -170,27 +200,27 @@ func (picker *topInterfacePicker) lines(rates []netInterfaceRate, width, height 
 		if picker.preset == index {
 			radio = "(•)"
 		}
-		lines = append(lines, pad(fmt.Sprintf("%s%s %-12s %s", marker(index), radio, preset.label, picker.presetDetail(preset))))
+		lines = append(lines, row(index, fmt.Sprintf("%s%s %-12s %s", marker(index), radio, preset.label, picker.presetDetail(preset))))
 	}
 	lines = append(lines, frame("├", "─", "┤", ""))
 	visible := picker.visibleRows(height)
 	if len(picker.rows) == 0 {
-		lines = append(lines, pad("  no interface other than loopback"))
+		lines = append(lines, dim("  no interface other than loopback"))
 	}
 	for index := picker.offset; index < len(picker.rows) && index < picker.offset+visible; index++ {
-		row := picker.rows[index]
+		item := picker.rows[index]
 		box, kind, state := "[ ]", "virt", ""
-		if picker.checked[row.name] {
+		if picker.checked[item.name] {
 			box = "[x]"
 		}
-		if row.physical {
+		if item.physical {
 			kind = "phys"
 		}
-		if !row.up {
+		if !item.up {
 			state = "  down"
 		}
-		rate := byName[row.name]
-		lines = append(lines, pad(fmt.Sprintf("%s%s %-15s %s  in %5s out %5s%s", marker(len(picker.presets)+index), box, row.name, kind, formatRate(rate.In), formatRate(rate.Out), state)))
+		rate := byName[item.name]
+		lines = append(lines, row(len(picker.presets)+index, fmt.Sprintf("%s%s %-15s %s  in %5s out %5s%s", marker(len(picker.presets)+index), box, item.name, kind, formatRate(rate.In), formatRate(rate.Out), state)))
 	}
 	var more []string
 	if picker.offset > 0 {
@@ -199,7 +229,7 @@ func (picker *topInterfacePicker) lines(rates []netInterfaceRate, width, height 
 	if rest := len(picker.rows) - picker.offset - visible; rest > 0 {
 		more = append(more, fmt.Sprintf("↓ %d more", rest))
 	}
-	lines = append(lines, pad("  "+strings.Join(more, " · ")))
+	lines = append(lines, dim("  "+strings.Join(more, " · ")))
 	footer := "Space check · a all · Enter apply · Esc cancel"
 	if picker.presetIndex("physical") >= 0 {
 		footer = "Space check · a all · p physical · Enter apply · Esc cancel"
@@ -207,7 +237,12 @@ func (picker *topInterfacePicker) lines(rates []netInterfaceRate, width, height 
 	if picker.notice != "" {
 		footer = picker.notice
 	}
-	return append(lines, pad(" "+footer), frame("└", "─", "┘", ""))
+	paint := func(text string) string { return liveKeyHints(text, color, picker.footerOn()...) }
+	if picker.notice != "" {
+		paint = func(text string) string { return topTint(text, topLevelWarn, color) }
+	}
+	footerLine := padStyled(" "+footer, paint)
+	return append(lines, footerLine, frame("└", "─", "┘", ""))
 }
 
 func (picker *topInterfacePicker) presetDetail(preset topInterfacePreset) string {
@@ -293,7 +328,7 @@ func overlayTopBox(content string, box []string, width int, color bool) string {
 	}
 	reset := ""
 	if color {
-		reset = topColorReset
+		reset = richReset
 	}
 	for index, row := range box {
 		line := lines[top+index]

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 )
 
 func traceScreenKey(model traceScreenModel, keys ...string) traceScreenModel {
@@ -244,7 +245,7 @@ func TestTraceScreenMySQLHeaderCountsOnlyShownPairs(t *testing.T) {
 	}})
 	model = next.(traceScreenModel)
 	model.filter = "shown"
-	header := strings.Join(traceScreenHeader(model), "\n")
+	header := ansi.Strip(strings.Join(traceScreenHeader(model), "\n"))
 	if !strings.Contains(header, "raw events 5") || !strings.Contains(header, "shown pairs 1") || !strings.Contains(header, "slow 1ms") {
 		t.Fatalf("header = %q", header)
 	}
@@ -634,14 +635,136 @@ func TestTraceScreenEscAndLFollowAgain(t *testing.T) {
 	}
 }
 
-func TestTraceSelectedEventUsesEmphasisWithoutABackground(t *testing.T) {
+func TestTraceSelectedEventUsesTheChipBackground(t *testing.T) {
 	plain := traceSelectedEvent("curl  GET /", 20, false)
 	if plain != "curl  GET /" {
 		t.Fatalf("plain selection = %q", plain)
 	}
 	colored := traceSelectedEvent("curl  GET /", 20, true)
-	if strings.Contains(colored, liveReverse) || !strings.Contains(colored, "curl  GET /") {
+	if strings.Contains(colored, liveReverse) || ansi.Strip(colored) != "curl  GET /         " || !strings.Contains(colored, traceTestSGR(richChipBackground, true)) {
 		t.Fatalf("colored selection = %q", colored)
+	}
+}
+
+// traceTestSGR는 lipgloss가 팔레트 색을 칠할 때 내는 24비트 SGR 인자다. lipgloss는 색 수를 줄이지 않고 Bubble Tea가 줄인다.
+func traceTestSGR(rgb richRGB, background bool) string {
+	lead := "38"
+	if background {
+		lead = "48"
+	}
+	return fmt.Sprintf("%s;2;%d;%d;%d", lead, rgb.r, rgb.g, rgb.b)
+}
+
+func traceTestColor(code string) string { return traceTestSGR(richPalette[code].rgb, false) }
+
+// traceScreenLines는 같은 model을 색 없이 한 번, 색으로 한 번 그린다.
+func traceScreenLines(t *testing.T, model traceScreenModel) (plain, colored []string) {
+	t.Setenv("NO_COLOR", "1")
+	plain = append(traceScreenHeader(model), traceScreenRows(model)...)
+	t.Setenv("NO_COLOR", "")
+	colored = append(traceScreenHeader(model), traceScreenRows(model)...)
+	return plain, colored
+}
+
+func TestTraceScreenColorKeepsThePlainTextAndWidth(t *testing.T) {
+	events := []captureEvent{
+		{Protocol: "tcp", Event: "tcp_connect", Process: "curl", Destination: "203.0.113.10:443", Source: "10.0.0.2:5000", TimestampNS: 1},
+		{Protocol: "tcp", Event: "tcp_send_reset", Process: "curl", Destination: "203.0.113.10:443", Source: "10.0.0.2:5000", TimestampNS: 2},
+		{Protocol: "tcp", Event: "tcp_retransmit", Process: "a-very-long-process-name", Destination: "203.0.113.20:443", Target: "very-long-service-name.internal.example.com", Source: "10.0.0.2:5001", TimestampNS: 3},
+	}
+	for _, groupBy := range []string{"", traceGroupByTarget, traceGroupByEvent} {
+		for _, width := range []int{40, 80, 150, 220} {
+			model := newTraceScreenModel("tcp", tcpTraceOptions{groupBy: groupBy}, make(chan captureEvent), make(chan traceFinishedMsg), nil)
+			model.width, model.height, model.events = width, 8, events
+			// 두 번 그리는 사이에 E/s가 바뀌지 않도록 창을 1초로 고정한다.
+			model.started, model.duration = time.Now().Add(-time.Hour), time.Second
+			plain, colored := traceScreenLines(t, model)
+			for index := range plain {
+				if ansi.Strip(colored[index]) != strings.TrimRight(plain[index], " ") && ansi.Strip(colored[index]) != plain[index] {
+					t.Fatalf("%q width %d line %d:\nplain   %q\ncolored %q", groupBy, width, index, plain[index], ansi.Strip(colored[index]))
+				}
+				if liveWidth(colored[index]) > width {
+					t.Fatalf("%q width %d line %d is %d columns: %q", groupBy, width, index, liveWidth(colored[index]), colored[index])
+				}
+			}
+		}
+	}
+}
+
+func TestTraceScreenColorsOnlyMeaningfulText(t *testing.T) {
+	model := newTraceScreenModel("tcp", tcpTraceOptions{}, make(chan captureEvent), make(chan traceFinishedMsg), nil)
+	model.width, model.height = 150, 6
+	model.events = []captureEvent{
+		{Protocol: "tcp", Event: "tcp_connect", Process: "curl", Destination: "203.0.113.10:443", Source: "10.0.0.2:5000"},
+		{Protocol: "tcp", Event: "tcp_send_reset", Process: "curl", Destination: "203.0.113.10:443", Source: "10.0.0.2:5000"},
+		{Protocol: "tcp", Event: "tcp_retransmit", Process: "curl", Destination: "203.0.113.10:443", Source: "10.0.0.2:5000"},
+	}
+	_, lines := traceScreenLines(t, model)
+	title := tracePaint("edc trace tcp", richMagenta, true)
+	if !strings.HasPrefix(lines[0], title) || !strings.Contains(lines[0], traceTestColor(richMagenta)) {
+		t.Fatalf("title = %q", lines[0])
+	}
+	if !strings.Contains(lines[1], tracePaint("tab", richCyan, true)) || !strings.Contains(lines[1], traceDim(" view")) {
+		t.Fatalf("key hints = %q", lines[1])
+	}
+	if lines[2] != traceDim(ansi.Strip(lines[2])) {
+		t.Fatalf("column titles = %q, want gray", lines[2])
+	}
+	rows := map[string]string{}
+	for _, row := range lines[3:] {
+		for _, name := range []string{"tcp_connect", "tcp_send_reset", "tcp_retransmit"} {
+			if strings.Contains(row, name) {
+				rows[name] = row
+			}
+		}
+	}
+	if strings.Contains(rows["tcp_connect"], traceTestColor(richRed)) || strings.Contains(rows["tcp_connect"], traceTestColor(richYellow)) || !strings.Contains(rows["tcp_connect"], traceTestColor(richGray)+"m10.0.0.2:5000") {
+		t.Fatalf("plain event row = %q", rows["tcp_connect"])
+	}
+	if !strings.Contains(rows["tcp_send_reset"], tracePaint(liveCell("tcp_send_reset", traceScrollEventWidth), richRed, false)) {
+		t.Fatalf("reset row = %q", rows["tcp_send_reset"])
+	}
+	if !strings.Contains(rows["tcp_retransmit"], tracePaint(liveCell("tcp_retransmit", traceScrollEventWidth), richYellow, false)) {
+		t.Fatalf("retransmit row = %q", rows["tcp_retransmit"])
+	}
+	// 줄 단위 출력과 같은 규칙이다. HTTP는 status code의 색이다.
+	for event, want := range map[*captureEvent]string{
+		{Protocol: "http", Event: "http_2xx", Status: 200}: richGreen,
+		{Protocol: "http", Event: "http_4xx", Status: 404}: richYellow,
+		{Protocol: "http", Event: "http_5xx", Status: 503}: richRed,
+		{Protocol: "drop", Event: "NO_SOCKET"}:             richRed,
+		{Protocol: "mysql", Event: mysqlEventError}:        richRed,
+		{Protocol: "udp", Event: "udp_send"}:               "",
+	} {
+		if got := traceEventSeverity(*event); got != want {
+			t.Fatalf("%s %s severity = %q, want %q", event.Protocol, event.Event, got, want)
+		}
+	}
+}
+
+func TestTraceGroupScreenColorsProblemColumns(t *testing.T) {
+	setTraceKernelEvents(t, true)
+	model := newTraceScreenModel("tcp", tcpTraceOptions{groupBy: traceGroupByTarget}, make(chan captureEvent), make(chan traceFinishedMsg), nil)
+	model.width, model.height = 200, 6
+	model.events = []captureEvent{
+		{Protocol: "tcp", Event: "tcp_connect", Target: "ok.example"},
+		{Protocol: "tcp", Event: "tcp_send_reset", Target: "bad.example"},
+	}
+	_, lines := traceScreenLines(t, model)
+	var good, bad string
+	for _, row := range lines[3:] {
+		switch {
+		case strings.Contains(row, "ok.example"):
+			good = row
+		case strings.Contains(row, "bad.example"):
+			bad = row
+		}
+	}
+	if strings.Contains(good, traceTestColor(richRed)) || !strings.Contains(bad, tracePaint("   1", richRed, false)) || !strings.Contains(bad, tracePaint(" tcp_send_reset", richRed, false)) {
+		t.Fatalf("group rows:\n%q\n%q", good, bad)
+	}
+	if strings.Contains(bad, traceTestColor(richRed)+"mbad.example") {
+		t.Fatalf("the group label keeps the default color: %q", bad)
 	}
 }
 
@@ -772,7 +895,7 @@ func TestTraceScreenClickHouseHeaderCountsOnlyShownPairs(t *testing.T) {
 		clickHouseScreenEvent(2, clickHouseEventQuery, traceServerSide, "pending", nil, traceClickHouseEvent{}),
 	}})
 	model = next.(traceScreenModel)
-	header := strings.Join(traceScreenHeader(model), "\n")
+	header := ansi.Strip(strings.Join(traceScreenHeader(model), "\n"))
 	if !strings.Contains(header, "raw events 3") || !strings.Contains(header, "shown pairs 1") || !strings.Contains(header, "slow 1ms") {
 		t.Fatalf("header = %q", header)
 	}

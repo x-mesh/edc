@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -46,7 +45,13 @@ func runLog(args []string) int {
 }
 
 func runLogWithStreams(args []string, streams logStreams) int {
-	if len(args) > 0 && args[0] == "history" {
+	if len(args) == 0 {
+		if !printCommandBrief(streams.stderr, "log") {
+			fmt.Fprintln(streams.stderr, T("cli.log.command_required"))
+		}
+		return 2
+	}
+	if args[0] == "history" {
 		return runLogHistory(args[1:], streams)
 	}
 	options, ok := parseLogOptions(args, streams.stderr)
@@ -175,7 +180,7 @@ func parseLogOptions(args []string, stderr io.Writer) (logOptions, bool) {
 		fmt.Fprintln(stderr, T("cli.log.command_required"))
 		return logOptions{}, false
 	}
-	set := flag.NewFlagSet("log", flag.ContinueOnError)
+	set := newFlagSet("log")
 	set.SetOutput(stderr)
 	set.StringVar(&options.stream, "stream", options.stream, T("command.log.option.stream"))
 	set.StringVar(&options.output, "output", options.output, T("command.log.option.output"))

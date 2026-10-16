@@ -8,7 +8,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"net/http"
@@ -36,7 +35,7 @@ const (
 )
 
 func runUpdate(args []string, version string) int {
-	set := flag.NewFlagSet("update", flag.ContinueOnError)
+	set := newFlagSet("update")
 	set.SetOutput(os.Stderr)
 	check := set.Bool("check", false, T("command.update.option.check"))
 	yes := set.Bool("yes", false, T("command.update.option.yes"))

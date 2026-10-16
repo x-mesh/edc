@@ -1,0 +1,151 @@
+package edc
+
+import (
+	"regexp"
+	"strings"
+	"testing"
+
+	"github.com/charmbracelet/x/ansi"
+)
+
+func TestRichBarKeepsItsWidth(t *testing.T) {
+	for _, test := range []struct {
+		value, largest float64
+		want           string
+	}{
+		{0, 10, "    "},
+		{10, 10, "████"},
+		{5, 10, "██  "},
+		{0.01, 10, "▏   "},
+		{3, 0, "    "},
+	} {
+		if got := richBar(test.value, test.largest, 4); got != test.want {
+			t.Errorf("richBar(%v, %v) = %q, want %q", test.value, test.largest, got, test.want)
+		}
+	}
+}
+
+func TestRichSegmentsGiveEveryNonzeroPartACell(t *testing.T) {
+	got := ansi.Strip(richSegments([]richSegment{{1, richBlue}, {0, richCyan}, {100, richGreen}}, 10))
+	if got != strings.Repeat("█", 10) {
+		t.Errorf("segments = %q", got)
+	}
+	if richSegments(nil, 10) != "" || richSegments([]richSegment{{0, richRed}}, 10) != "" {
+		t.Error("no value draws nothing")
+	}
+	if got := ansi.Strip(richSegments([]richSegment{{1, richBlue}, {1, richCyan}, {1, richGreen}}, 2)); got != "███" {
+		t.Errorf("three parts need three cells: %q", got)
+	}
+}
+
+// 막대 폭은 요청한 칸 수와 같다. 0보다 큰 구간이 더 많을 때만 그 개수로 늘어난다.
+func TestRichSegmentsDrawExactlyTheRequestedCells(t *testing.T) {
+	for _, test := range []struct {
+		values []float64
+		cells  int
+		want   []int
+	}{
+		{[]float64{98, 1, 1}, 36, []int{34, 1, 1}},
+		{[]float64{100, 1, 1}, 3, []int{1, 1, 1}},
+		{[]float64{90, 10}, 10, []int{9, 1}},
+		{[]float64{1, 1, 1}, 10, []int{4, 3, 3}},
+		{[]float64{2, 0, 1}, 1, []int{1, 0, 1}},
+	} {
+		colors := []string{richBlue, richCyan, richGreen}
+		segments := make([]richSegment, len(test.values))
+		for index, value := range test.values {
+			segments[index] = richSegment{value, colors[index]}
+		}
+		got := richSegments(segments, test.cells)
+		want := ""
+		for index, count := range test.want {
+			if count > 0 {
+				want += richFill(strings.Repeat("█", count), colors[index])
+			}
+		}
+		if got != want {
+			t.Errorf("%v in %d cells = %q (%d cells), want %v", test.values, test.cells, ansi.Strip(got), liveWidth(got), test.want)
+		}
+	}
+}
+
+func TestRichStatusBadgesShareOneWidth(t *testing.T) {
+	for _, status := range []Status{StatusPass, StatusWarn, StatusFail, StatusSkip} {
+		if width := liveWidth(richStatusBadge(status)); width != richStatusBadgeWidth {
+			t.Errorf("%s badge is %d cells", status, width)
+		}
+	}
+	if !strings.Contains(richBadge("P1", richMagenta), richExpect("\033[1;30;45m")) {
+		t.Errorf("badge = %q", richBadge("P1", richMagenta))
+	}
+	if !strings.Contains(richBadge("SKIP", richGray), richFixedColor("100", richTruecolor())+"m") {
+		t.Errorf("a gray badge uses the gray background: %q", richBadge("SKIP", richGray))
+	}
+}
+
+func TestRichEvidenceNeedsColorAndARenderer(t *testing.T) {
+	result := Result{Probe: "rich.test", Evidence: []Evidence{{Label: "x", Value: "y"}}}
+	if richEvidenceLines(true, result) != nil {
+		t.Fatal("a probe without a renderer keeps its evidence")
+	}
+	richDetailRenderers["rich.test"] = func(Result, int) []string { return []string{"drawn"} }
+	defer delete(richDetailRenderers, "rich.test")
+	if richEvidenceLines(false, result) != nil {
+		t.Error("plain output never uses the renderer")
+	}
+	if got := richEvidenceLines(true, result); len(got) != 1 || got[0] != "drawn" {
+		t.Errorf("lines = %q", got)
+	}
+}
+
+var richExpectSGR = regexp.MustCompile(`\x1b\[([0-9;]*)m`)
+
+// richExpect는 테스트가 ANSI 16색 번호로 적은 기대값을 실제로 내보내는 고정 색 표기로 바꾼다.
+// 테스트는 색의 역할(빨강, 회색)을 확인하고, 정확한 RGB는 richSGR 한 곳이 정한다.
+func richExpect(text string) string {
+	return richExpectSGR.ReplaceAllStringFunc(text, func(sequence string) string {
+		params := richExpectSGR.FindStringSubmatch(sequence)[1]
+		if params == "" || params == "0" {
+			return sequence
+		}
+		if params == "100;97" {
+			return strings.TrimSuffix(richChip("x"), " x "+richReset)
+		}
+		return strings.TrimSuffix(richSGR("x", strings.Split(params, ";")...), "x"+richReset)
+	})
+}
+
+// 터미널 테마가 아니라 시안의 색을 쓴다. truecolor를 알리지 않는 터미널은 가장 가까운 256색을 받는다.
+func TestRichSGRUsesTheFixedPalette(t *testing.T) {
+	t.Setenv("COLORTERM", "truecolor")
+	if got := richPaint("ok", richGreen, true); got != "\x1b[1;38;2;76;226;125mok\x1b[0m" {
+		t.Errorf("truecolor green = %q", got)
+	}
+	if got := richBadge("FAIL", richRed); got != "\x1b[1;38;2;14;17;22;48;2;255;84;96m FAIL \x1b[0m" {
+		t.Errorf("truecolor badge = %q", got)
+	}
+	t.Setenv("COLORTERM", "")
+	if got := richPaint("ok", richGreen, false); got != "\x1b[38;5;78mok\x1b[0m" {
+		t.Errorf("256 color green = %q", got)
+	}
+	if got := rich256(richRGB{0x7c, 0x85, 0x91}); got < 16 {
+		t.Errorf("gray must not fall back to a theme color: %d", got)
+	}
+}
+
+// 막대는 강조색을 바탕색과 섞은 색이다. 글자와 같은 강조색으로 넓게 칠하지 않는다.
+func TestRichFillMutesTheBarColor(t *testing.T) {
+	t.Setenv("COLORTERM", "truecolor")
+	if got := richFill("██", richGreen); got != "\x1b[38;2;48;132;79m██\x1b[0m" {
+		t.Errorf("fill = %q", got)
+	}
+	if richFill("██", richGreen) == richPaint("██", richGreen, false) {
+		t.Error("a bar must not use the text color")
+	}
+}
+
+func TestRichHexMatchesTheEscapeColors(t *testing.T) {
+	if richHex(richGreen) != "#4ce27d" || richFillHex(richGreen) != "#30844f" || richChipHex() != "#2a2a2e" || richHex("1") != "" {
+		t.Errorf("hex = %s %s %s", richHex(richGreen), richFillHex(richGreen), richChipHex())
+	}
+}

@@ -5,7 +5,6 @@ package edc
 import (
 	"context"
 	"encoding/json"
-	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -170,7 +169,7 @@ type syscallInFlightRow struct {
 func runTraceSyscall(args []string) int {
 	options := syscallTraceOptions{}
 	var process string
-	set := flag.NewFlagSet("trace syscall", flag.ContinueOnError)
+	set := newFlagSet("trace syscall")
 	set.SetOutput(os.Stderr)
 	set.DurationVar(&options.duration, "duration", 0, T("command.trace.option.duration"))
 	set.StringVar(&process, "process", "", T("command.trace.option.process"))
@@ -502,7 +501,8 @@ func (row syscallReportRow) errnoText() string {
 }
 
 func (report syscallReport) print(out io.Writer) {
-	fmt.Fprintf(out, "SYSCALL TRACE  duration %s  calls %d  errors %d\n", syscallTime(float64(report.Summary.DurationMS)*float64(time.Millisecond)), report.Summary.Calls, report.Summary.Errors)
+	style := newTraceSummaryStyle(out)
+	style.line(out, style.headline("SYSCALL TRACE", traceStat{"duration", syscallTime(float64(report.Summary.DurationMS) * float64(time.Millisecond))}, traceStat{"calls", fmt.Sprint(report.Summary.Calls)}, traceStat{"errors", fmt.Sprint(report.Summary.Errors)}))
 	var titles []string
 	switch report.GroupBy {
 	case traceGroupByProcess:
@@ -530,25 +530,26 @@ func (report syscallReport) print(out io.Writer) {
 	for index, title := range titles {
 		header += fmt.Sprintf("%-*s  ", widths[index], title)
 	}
-	fmt.Fprintf(out, "%s%9s  %-*s %9s %9s %9s %9s\n", header, "CALLS", errorWidth, "ERRORS", "TOTAL", "AVG", "P95", "MAX")
+	style.line(out, style.dim(fmt.Sprintf("%s%9s  %-*s %9s %9s %9s %9s", header, "CALLS", errorWidth, "ERRORS", "TOTAL", "AVG", "P95", "MAX")))
 	for _, row := range shown {
 		line := ""
 		for index, cell := range row.cells(report.GroupBy) {
 			line += fmt.Sprintf("%-*s  ", widths[index], cell)
 		}
-		fmt.Fprintf(out, "%s%9d  %-*s %9s %9s %9s %9s\n", line, row.Calls, errorWidth, row.errnoText(), syscallTime(row.TotalMS*float64(time.Millisecond)), syscallMS(row.AverageMS, ""), syscallMS(row.P95MS, "<"), syscallMS(row.MaxMS, ""))
+		style.printf(out, "%s%9d  %-*s %9s %9s %9s %9s\n", line, row.Calls, errorWidth, style.count("ERRORS", row.errnoText()), style.measure(syscallTime(row.TotalMS*float64(time.Millisecond))), style.measure(syscallMS(row.AverageMS, "")), style.measure(syscallMS(row.P95MS, "<")), style.measure(syscallMS(row.MaxMS, "")))
 	}
 	if hidden := len(report.Rows) - len(shown); hidden > 0 {
-		fmt.Fprintf(out, "... %d more rows in --json\n", hidden)
+		style.line(out, style.hint(fmt.Sprintf("... %d more rows in --json", hidden)))
 	}
 	if len(report.InFlight) > 0 {
-		fmt.Fprintf(out, "\nIN FLIGHT AT STOP: calls that started during the trace and had not returned\n")
-		fmt.Fprintf(out, "%-16s  %-22s %8s %9s\n", "PROCESS", "SYSCALL", "THREADS", "LONGEST")
+		io.WriteString(out, "\n")
+		style.line(out, style.subheading("IN FLIGHT AT STOP")+style.dim(": calls that started during the trace and had not returned"))
+		style.line(out, style.dim(fmt.Sprintf("%-16s  %-22s %8s %9s", "PROCESS", "SYSCALL", "THREADS", "LONGEST")))
 		for _, row := range report.InFlight[:min(len(report.InFlight), syscallInFlightRows)] {
-			fmt.Fprintf(out, "%-16s  %-22s %8d %9s\n", row.Process, row.Syscall, row.Threads, syscallTime(row.LongestMS*float64(time.Millisecond)))
+			style.printf(out, "%-16s  %-22s %8d %9s\n", row.Process, row.Syscall, row.Threads, style.measure(syscallTime(row.LongestMS*float64(time.Millisecond))))
 		}
 		if hidden := len(report.InFlight) - syscallInFlightRows; hidden > 0 {
-			fmt.Fprintf(out, "... %d more rows in --json\n", hidden)
+			style.line(out, style.hint(fmt.Sprintf("... %d more rows in --json", hidden)))
 		}
 	}
 	summary := report.Summary
@@ -556,9 +557,10 @@ func (report syscallReport) print(out io.Writer) {
 	if summary.Unmatched != nil {
 		unmatched = strconv.FormatUint(*summary.Unmatched, 10)
 	}
-	fmt.Fprintf(out, "\nin_flight %d  unmatched %s  map_full %d  stats %d/%d\n", summary.InFlight, unmatched, summary.StatsFull+summary.StartsFull+summary.ErrnosFull, summary.StatsEntries, summary.StatsLimit)
+	io.WriteString(out, "\n")
+	style.line(out, style.stats(traceStat{"in_flight", fmt.Sprint(summary.InFlight)}, traceStat{"unmatched", unmatched}, traceStat{"map_full", fmt.Sprint(summary.StatsFull + summary.StartsFull + summary.ErrnosFull)}, traceStat{"stats", fmt.Sprintf("%d/%d", summary.StatsEntries, summary.StatsLimit)}))
 	if summary.SlowMS != nil || summary.ErrorFilter != "" {
-		fmt.Fprintf(out, "events %d  sampled_out %d  ring_lost %d\n", summary.Events, summary.SampledOut, summary.RingLost)
+		style.line(out, style.stats(traceStat{"events", fmt.Sprint(summary.Events)}, traceStat{"sampled_out", fmt.Sprint(summary.SampledOut)}, traceStat{"ring_lost", fmt.Sprint(summary.RingLost)}))
 	}
 }
 

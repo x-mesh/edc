@@ -58,21 +58,21 @@ func (item topSignalItem) level() topLevel {
 }
 
 // raise는 더 심한 값이 오면 이벤트의 경고 문구와 원인 후보를 그 순간 것으로 바꾼다. 가장 나빴던 때를 남긴다.
-func (event *topEvent) raise(item topSignalItem, culprit func(topView) string) {
+func (event *topEvent) raise(item topSignalItem, culprit func(topSignalItem) string) {
 	// 시작 직후에는 process 목록이 아직 없어 원인 후보가 빈다. 값이 더 나빠지지 않아도 목록이 생기면 채운다.
 	if event.text != "" && event.culprit == "" {
-		event.culprit = culprit(event.view)
+		event.culprit = culprit(item)
 	}
 	level := item.level()
 	if event.text != "" && (level < event.level || (level == event.level && item.score <= event.score)) {
 		return
 	}
 	event.level, event.score, event.text, event.view = level, item.score, item.text, item.view
-	event.culprit = culprit(item.view)
+	event.culprit = culprit(item)
 }
 
 // observe는 한 샘플의 경고를 받는다. at은 샘플 시각이라 수집 간격이 바뀌어도 같은 기준으로 지속 시간을 잰다.
-func (log *topEventLog) observe(at time.Time, items []topSignalItem, culprit func(topView) string) {
+func (log *topEventLog) observe(at time.Time, items []topSignalItem, culprit func(topSignalItem) string) {
 	if log.pending == nil {
 		log.pending = map[string]topEvent{}
 	}
@@ -128,10 +128,18 @@ func (log *topEventLog) ongoing(kind string) int {
 
 // topEventCulprit은 경고를 자세히 보이는 보기의 기준으로 그 시점에 앞선 묶음과 process를 적는다.
 // 원인 후보이지 확인된 원인은 아니다. network 경고는 process로 가릴 수 없어 비운다.
-func topEventCulprit(row topDashboardRow, view topView) string {
+func topEventCulprit(row topDashboardRow, item topSignalItem) string {
 	if !row.processesValid {
 		return ""
 	}
+	// 증가 경고의 원인 후보는 늘어나는 process다. 그 process는 아직 작거나 같은 이름의 묶음에 들어 크기 순위로는
+	// 가려진다. 다른 memory 경고는 크기 순위의 묶음과 process를 그대로 적는다.
+	if strings.HasPrefix(item.kind, topMemoryGrowthKind) {
+		if growing, ok := topFastestGrowing(row.processes); ok {
+			return topProcessName(growing.Command, topEventNameWidth) + " +" + formatProcessRSS(growing.Growth.Bytes) + " " + formatProcessRSS(growing.memory())
+		}
+	}
+	view := item.view
 	switch view {
 	case topViewNetwork:
 		return ""
@@ -173,7 +181,7 @@ func topEventGroupValue(group topProcessGroup, view topView) string {
 		}
 		return ""
 	case topViewMemory:
-		return formatProcessGroupRSS(group.RSS)
+		return formatProcessGroupMemory(group.Memory)
 	}
 	return fmt.Sprintf("%.0f%%", group.CPU)
 }
@@ -199,7 +207,7 @@ func topEventLeadingProcess(processes []topProcess, view topView) (topProcess, b
 	case topViewMemory:
 		leading := processes[0]
 		for _, process := range processes[1:] {
-			if process.RSS > leading.RSS {
+			if process.memory() > leading.memory() {
 				leading = process
 			}
 		}
@@ -222,7 +230,7 @@ func topEventProcessValue(process topProcess, view topView) string {
 		}
 		return topProcessStateName(process.State)
 	case topViewMemory:
-		return formatProcessRSS(process.RSS)
+		return formatProcessRSS(process.memory())
 	}
 	return fmt.Sprintf("%.0f%%", process.CPU)
 }
@@ -313,7 +321,7 @@ func topEventLine(cluster topEventCluster, now time.Time, width int, color bool)
 		text += fmt.Sprintf(" +%d", len(cluster)-1)
 	}
 	textWidth := max(1, min(topEventTextWidth, width-11))
-	line := topPaint(marker+topEventStart(cluster[0])+" "+topFitCell(text, textWidth, true), worst.level, color)
+	line := topTint(marker+topEventStart(cluster[0])+" "+topFitCell(text, textWidth, true), worst.level, color)
 	rest := width - 11 - textWidth
 	if rest < 8 {
 		return line
@@ -346,7 +354,7 @@ func (model topModel) recordEvents(row topDashboardRow) topModel {
 		model.events = &topEventLog{}
 	}
 	items := topDashboardSignalItems(row.rate, row.processes, row.processTotal.Groups, row.processesValid, model.limits)
-	model.events.observe(row.at, items, func(view topView) string { return topEventCulprit(row, view) })
+	model.events.observe(row.at, items, func(item topSignalItem) string { return topEventCulprit(row, item) })
 	return model
 }
 
@@ -367,10 +375,10 @@ func (model topModel) eventLines(width, count int) []string {
 	if count <= 0 {
 		return nil
 	}
-	lines := []string{topFitCell("events · e list · [ ] jump", width, true)}
+	lines := []string{topHeading(topFitCell("events · e list · [ ] jump", width, true), model.limits.color)}
 	clusters := topEventClusters(model.eventList())
 	if len(clusters) == 0 {
-		return append(lines, topFitCell("no events yet", width, true))[:min(count, 2)]
+		return append(lines, topDim(topFitCell("no events yet", width, true), model.limits.color))[:min(count, 2)]
 	}
 	now := model.latestAt()
 	for index := len(clusters) - 1; index >= 0 && len(lines) < count; index-- {
@@ -399,7 +407,7 @@ func (model topModel) eventTicker() string {
 			worst = event
 		}
 	}
-	text := topPaint("●"+topEventStart(worst)+" "+worst.text, worst.level, model.limits.color)
+	text := topTint("●"+topEventStart(worst)+" "+worst.text, worst.level, model.limits.color)
 	if worst.culprit != "" {
 		text += " · " + worst.culprit
 	}
@@ -426,7 +434,7 @@ func (model topModel) eventStarts() map[int64]topLevel {
 func (model topModel) eventListLines() []string {
 	clusters := topEventClusters(model.eventList())
 	if len(clusters) == 0 {
-		return []string{"no events yet · warnings that last " + formatTopEventDuration(topEventOpenAfter) + " appear here"}
+		return []string{topDim("no events yet · warnings that last "+formatTopEventDuration(topEventOpenAfter)+" appear here", model.limits.color)}
 	}
 	now := model.latestAt()
 	entries, sinceStart := make([][]string, len(clusters)), false
@@ -471,16 +479,16 @@ func (model topModel) eventListEntry(cluster topEventCluster, now time.Time, sel
 		text += fmt.Sprintf(" +%d", len(cluster)-1)
 	}
 	head := fmt.Sprintf("%s %s%s–%s %7s  ", marker, state, topEventStart(cluster[0]), until, formatTopEventDuration(end.Sub(cluster[0].start)))
-	line := head + topPaint(text, worst.level, model.limits.color && !selected)
+	line := head + topTint(text, worst.level, model.limits.color && !selected)
 	if selected && model.limits.color {
-		line = topBannerStyle + topDashboardFitWidth(line, model.displayWidth()) + topColorReset
+		line = topHighlight(line, model.displayWidth())
 	}
 	lines := []string{line}
 	if len(cluster) > 1 {
 		others := []string{}
 		for _, event := range cluster {
 			if event.kind != worst.kind {
-				others = append(others, topPaint(event.text, event.level, model.limits.color))
+				others = append(others, topTint(event.text, event.level, model.limits.color))
 			}
 		}
 		lines = append(lines, "      also: "+strings.Join(others, " · "))

@@ -8,7 +8,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"os"
 	"os/signal"
@@ -51,7 +50,7 @@ func execEventMatches(options execTraceOptions, event execEvent) bool {
 
 func runTraceExec(args []string) int {
 	options := execTraceOptions{}
-	set := flag.NewFlagSet("trace exec", flag.ContinueOnError)
+	set := newFlagSet("trace exec")
 	set.SetOutput(os.Stderr)
 	set.DurationVar(&options.duration, "duration", 0, T("command.trace.option.duration"))
 	set.StringVar(&options.process, "process", "", T("command.trace.option.process"))

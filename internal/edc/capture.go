@@ -3,7 +3,6 @@ package edc
 import (
 	"bufio"
 	"errors"
-	"flag"
 	"fmt"
 	"net"
 	"os"
@@ -26,7 +25,7 @@ func runCapture(args []string) int {
 		fmt.Fprintln(os.Stderr, T("cli.capture.supported_platforms"))
 		return 2
 	}
-	set := flag.NewFlagSet("capture", flag.ContinueOnError)
+	set := newFlagSet("capture")
 	set.SetOutput(os.Stderr)
 	config := activeConfig.Defaults.Capture
 	mode := set.String("mode", "pcap", T("command.capture.option.mode"))

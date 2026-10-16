@@ -3,7 +3,6 @@ package edc
 import (
 	"context"
 	"encoding/json"
-	"flag"
 	"fmt"
 	"io"
 	"net/http"
@@ -25,7 +24,7 @@ type publicNetworkInfo struct {
 }
 
 func runInfo(args []string, version string) int {
-	set := flag.NewFlagSet("info", flag.ContinueOnError)
+	set := newFlagSet("info")
 	set.SetOutput(os.Stderr)
 	config := activeConfig.Defaults.Info
 	includePublic := set.Bool("public", configuredBool(config.Public, true), T("command.info.option.public"))
@@ -116,11 +115,11 @@ func runInfo(args []string, version string) int {
 	if public == nil && publicIPErr == nil && publicIP != "" {
 		public = &publicNetworkInfo{IP: publicIP}
 	}
-	color := isTerminal(os.Stdout) && os.Getenv("NO_COLOR") == ""
+	color := richEnabled(os.Stdout)
 	printInfo(os.Stdout, version, details, interfaces, disks, public, signals, color, verbose)
 	printInfoResources(os.Stdout, memory, memoryErr, signals, processes, processErr, capabilities, color, verbose)
-	printInfoListen(os.Stdout, listen, runtime.GOOS == "darwin" && os.Geteuid() != 0, verbose)
-	printInfoNetworkHealth(os.Stdout, health, verbose)
+	printInfoListen(os.Stdout, listen, runtime.GOOS == "darwin" && os.Geteuid() != 0, color, verbose)
+	printInfoNetworkHealth(os.Stdout, health, color, verbose)
 	// 포트 요약은 info에 새로 붙은 섹션이다. sock_diag나 libproc을 막는 sandbox에서 읽지 못해도 섹션에 Unavailable만 적고,
 	// 전에 0으로 끝나던 info의 exit code는 바꾸지 않는다.
 	if interfaceErr != nil || diskErr != nil || memoryErr != nil || processErr != nil {
@@ -145,32 +144,39 @@ type infoCapability struct {
 }
 
 func printInfoResources(writer io.Writer, memory infoMemory, memoryErr error, signals infoSignals, processes []topProcess, processErr error, capabilities []infoCapability, color, verbose bool) {
-	fmt.Fprintln(writer, "\nMemory Status")
+	style := newTextStyle(color)
+	fmt.Fprintln(writer)
+	style.line(writer, style.heading("Memory Status"))
 	if memoryErr != nil {
-		fmt.Fprintf(writer, "└── Unavailable: %s\n", infoSingleLine(memoryErr.Error()))
+		style.tree(writer, "└──", infoUnavailable(style, memoryErr.Error()))
 	} else {
-		fmt.Fprintf(writer, "├── Used: %s / %s (%.2f%%) · Available: %s\n", formatBytes(memory.Total-memory.Available), formatBytes(memory.Total), float64(memory.Total-memory.Available)/float64(memory.Total)*100, formatBytes(memory.Available))
+		used := memory.Total - memory.Available
+		percent := float64(used) / float64(memory.Total) * 100
+		usage := formatBytes(used) + " / " + formatBytes(memory.Total) + " " + style.level(fmt.Sprintf("(%.2f%%)", percent), newTopLimits(1, false).memory.level(percent))
+		style.tree(writer, "├──", style.join(" · ", style.kv("Used", usage), style.kv("Available", formatBytes(memory.Available))))
 		if line := infoPressureLine(signals, color); line != "" {
-			fmt.Fprintf(writer, "├── %s\n", line)
+			style.tree(writer, "├──", line)
 		}
 		for index := 0; index < len(memory.Details); index += 2 {
-			parts := []string{memory.Details[index].Name + ": " + formatBytes(memory.Details[index].Bytes)}
+			parts := []string{style.kv(memory.Details[index].Name, formatBytes(memory.Details[index].Bytes))}
 			if index+1 < len(memory.Details) {
-				parts = append(parts, memory.Details[index+1].Name+": "+formatBytes(memory.Details[index+1].Bytes))
+				parts = append(parts, style.kv(memory.Details[index+1].Name, formatBytes(memory.Details[index+1].Bytes)))
 			}
 			branch := "├──"
 			if !verbose && index+2 >= len(memory.Details) {
 				branch = "└──"
 			}
-			fmt.Fprintf(writer, "%s %s\n", branch, strings.Join(parts, " · "))
+			style.tree(writer, branch, style.join(" · ", parts...))
 		}
 		if verbose {
-			fmt.Fprintf(writer, "├── Basis: %s\n└── Detail counters can overlap; they are not parts to add together.\n", memory.Basis)
+			style.tree(writer, "├──", style.kv("Basis", memory.Basis))
+			style.tree(writer, "└──", style.dim("Detail counters can overlap; they are not parts to add together."))
 		}
 	}
-	fmt.Fprintln(writer, "\nProcess Snapshot")
+	fmt.Fprintln(writer)
+	style.line(writer, style.heading("Process Snapshot"))
 	if processErr != nil {
-		fmt.Fprintf(writer, "└── Unavailable: %s\n", infoSingleLine(processErr.Error()))
+		style.tree(writer, "└──", infoUnavailable(style, processErr.Error()))
 	} else {
 		threads, known := 0, 0
 		for _, process := range processes {
@@ -178,29 +184,32 @@ func printInfoResources(writer io.Writer, memory infoMemory, memoryErr error, si
 				threads, known = threads+process.Threads, known+1
 			}
 		}
-		fmt.Fprintf(writer, "├── Processes observed: %d", len(processes))
+		line := style.kv("Processes observed", fmt.Sprint(len(processes))) + style.dim(" · ")
 		if known > 0 {
-			fmt.Fprintf(writer, " · Threads observed: %d (%d/%d processes)\n", threads, known, len(processes))
+			line += style.kv("Threads observed", fmt.Sprint(threads)+" "+style.dim(fmt.Sprintf("(%d/%d processes)", known, len(processes))))
 		} else {
-			fmt.Fprintln(writer, " · Threads: unavailable")
+			line += style.kv("Threads", style.dim("unavailable"))
 		}
-		fmt.Fprintln(writer, "└── Top RSS")
+		style.tree(writer, "├──", line)
+		style.tree(writer, "└──", style.dim("Top RSS"))
 		if verbose {
-			fmt.Fprintln(writer, "    Resident memory; shared pages can appear in multiple processes.")
+			style.line(writer, style.dim("    Resident memory; shared pages can appear in multiple processes."))
 		}
 		ordered := append([]topProcess(nil), processes...)
 		sort.SliceStable(ordered, func(i, j int) bool { return ordered[i].RSS > ordered[j].RSS })
 		for _, process := range ordered[:min(3, len(ordered))] {
-			fmt.Fprintf(writer, "    PID %-7d %-28s %s\n", process.PID, topProcessName(process.Command, 28), formatProcessRSS(process.RSS))
+			rss := style.paint(formatProcessRSS(process.RSS), richSizeColor(int64(process.RSS)))
+			style.line(writer, "    "+style.dim("PID")+" "+fmt.Sprintf("%-7d %-28s ", process.PID, topProcessName(process.Command, 28))+rss)
 		}
 	}
-	fmt.Fprintln(writer, "\nDiagnostic Support")
+	fmt.Fprintln(writer)
+	style.line(writer, style.heading("Diagnostic Support"))
 	for index, capability := range capabilities {
 		branch := "├──"
 		if index == len(capabilities)-1 {
 			branch = "└──"
 		}
-		fmt.Fprintf(writer, "%s %s: %s · %s\n", branch, capability.Name, capability.State, infoSingleLine(capability.Detail))
+		style.tree(writer, branch, style.kv(capability.Name, infoCapabilityState(style, capability.State)+style.dim(" · "+infoSingleLine(capability.Detail))))
 	}
 }
 
@@ -210,11 +219,13 @@ const infoListenRows = 5
 // printInfoListen은 TCP와 UDP의 대기 소켓을 요약한다. 밖에서 닿을 수 있는지가 요약에서 묻는 것이므로
 // loopback은 개수만 세고, 주소를 해석하지 못한 소켓은 노출된 쪽으로 센다. -v는 loopback까지 모두 보여 준다.
 // hidesOtherAccounts는 macOS에서 root가 아니라 다른 계정의 소켓이 목록에서 빠진다는 뜻이다.
-func printInfoListen(writer io.Writer, result Result, hidesOtherAccounts, verbose bool) {
-	fmt.Fprintln(writer, "\nListening Ports")
+func printInfoListen(writer io.Writer, result Result, hidesOtherAccounts, color, verbose bool) {
+	style := newTextStyle(color)
+	fmt.Fprintln(writer)
+	style.line(writer, style.heading("Listening Ports"))
 	sockets, ok := result.Metrics["sockets"].([]listenSocket)
 	if !ok {
-		fmt.Fprintf(writer, "└── Unavailable: %s\n", infoSingleLine(result.Summary))
+		style.tree(writer, "└──", infoUnavailable(style, result.Summary))
 		return
 	}
 	var tcp, udp, loopback int
@@ -234,7 +245,8 @@ func printInfoListen(writer io.Writer, result Result, hidesOtherAccounts, verbos
 			shown = append(shown, socket)
 		}
 	}
-	lines := []string{fmt.Sprintf("TCP %d · UDP %d · Exposed %d · Loopback %d", tcp, udp, len(sockets)-loopback, loopback)}
+	count := func(label string, value int) string { return style.dim(label) + " " + fmt.Sprint(value) }
+	lines := []string{style.join(" · ", count("TCP", tcp), count("UDP", udp), count("Exposed", len(sockets)-loopback), count("Loopback", loopback))}
 	limit := len(shown)
 	if !verbose {
 		limit = min(limit, infoListenRows)
@@ -246,25 +258,25 @@ func printInfoListen(writer io.Writer, result Result, hidesOtherAccounts, verbos
 	for _, socket := range shown[:limit] {
 		process := listenCell(socket.Process)
 		if socket.PID != "" {
-			process += " (" + socket.PID + ")"
+			process += style.dim(" (" + socket.PID + ")")
 		}
-		lines = append(lines, fmt.Sprintf("%-6d %-4s %-*s  %s", socket.Port, socket.Proto, addressWidth, socket.Address, process))
+		lines = append(lines, fmt.Sprintf("%-6d ", socket.Port)+style.dim(fmt.Sprintf("%-4s", socket.Proto))+fmt.Sprintf(" %-*s  ", addressWidth, socket.Address)+process)
 	}
 	if hidden := len(shown) - limit; hidden > 0 {
-		lines = append(lines, fmt.Sprintf("… %d more exposed · edc listen", hidden))
+		lines = append(lines, style.dim(fmt.Sprintf("… %d more exposed · ", hidden))+style.command("edc listen"))
 	}
 	for _, warning := range result.Warnings {
-		lines = append(lines, "Warning: "+infoSingleLine(warning))
+		lines = append(lines, style.warn("Warning: "+infoSingleLine(warning)))
 	}
 	if hidesOtherAccounts {
-		lines = append(lines, "Sockets of other accounts are hidden without root")
+		lines = append(lines, style.dim("Sockets of other accounts are hidden without root"))
 	}
 	for index, line := range lines {
 		branch := "├──"
 		if index == len(lines)-1 {
 			branch = "└──"
 		}
-		fmt.Fprintf(writer, "%s %s\n", branch, line)
+		style.tree(writer, branch, line)
 	}
 }
 
@@ -272,52 +284,83 @@ func infoSingleLine(value string) string {
 	return strings.Join(strings.Fields(value), " ")
 }
 
+// infoUnavailable은 읽지 못한 섹션의 줄이다. 값이 0인 것과 구분되도록 노랑이다.
+func infoUnavailable(style textStyle, reason string) string {
+	return style.warn("Unavailable: " + infoSingleLine(reason))
+}
+
+// infoCapabilityState는 진단 기능의 상태 색이다. 이 OS에서 원래 없는 기능은 문제가 아니라서 회색이다.
+func infoCapabilityState(style textStyle, state string) string {
+	switch state {
+	case "available", "available for current process", "prerequisites met":
+		return style.good(state)
+	case "unavailable", "unknown", "permission required":
+		return style.warn(state)
+	case "unsupported":
+		return style.dim(state)
+	}
+	return state
+}
+
 func printInfo(writer io.Writer, version string, details hostDetails, interfaces []interfaceDetails, disks []diskDetails, public *publicNetworkInfo, signals infoSignals, color, verbose bool) {
+	style := newTextStyle(color)
 	// banner가 이미 버전을 담으므로 Version 줄을 따로 두지 않는다.
 	fmt.Fprintf(writer, "%s\n\n", formatBanner(version, color))
 	if verbose {
-		fmt.Fprintf(writer, "Description : This command displays server resource information.\nAuthor      : %s\n\n", author)
+		style.line(writer, style.dim("Description :")+" This command displays server resource information.")
+		style.line(writer, style.dim("Author      :")+" "+author)
+		fmt.Fprintln(writer)
 	}
-	fmt.Fprintln(writer, "🖥️  System Information")
+	style.line(writer, style.heading("🖥️  System Information"))
 	swapPercent := 0.0
 	if details.SwapTotal > 0 {
 		swapPercent = float64(details.SwapUsed) / float64(details.SwapTotal) * 100
 	}
-	fmt.Fprintf(writer, "├── Hostname: %s · %s · %s\n├── CPU: %s · %d cores · RAM %s\n├── Load: %.2f/%.2f/%.2f (1/5/15m) · Uptime: %s\n", details.Hostname, topHostOS(details), details.Machine, details.Model, details.Cores, formatBytes(details.MemoryTotal), details.Load[0], details.Load[1], details.Load[2], formatDuration(details.Uptime))
+	limits := newTopLimits(details.Cores, false)
+	loads := make([]string, 0, len(details.Load))
+	for _, load := range details.Load {
+		loads = append(loads, style.level(fmt.Sprintf("%.2f", load), limits.load.level(load)))
+	}
+	style.tree(writer, "├──", style.join(" · ", style.kv("Hostname", details.Hostname), topHostOS(details), details.Machine))
+	style.tree(writer, "├──", style.join(" · ", style.kv("CPU", details.Model), fmt.Sprint(details.Cores)+" "+style.dim("cores"), style.dim("RAM")+" "+formatBytes(details.MemoryTotal)))
+	style.tree(writer, "├──", style.join(" · ", style.kv("Load", strings.Join(loads, "/")+" "+style.dim("(1/5/15m)")), style.kv("Uptime", formatDuration(details.Uptime))))
 	if details.PythonVersion != "" {
-		fmt.Fprintf(writer, "├── Runtime: Python %s · Go %s\n", details.PythonVersion, runtime.Version())
+		style.tree(writer, "├──", style.kv("Runtime", style.join(" · ", "Python "+details.PythonVersion, "Go "+runtime.Version())))
 	} else {
-		fmt.Fprintf(writer, "├── Runtime: Go %s\n", runtime.Version())
+		style.tree(writer, "├──", style.kv("Runtime", "Go "+runtime.Version()))
 	}
 	if line := infoPlatformLine(signals); line != "" {
-		fmt.Fprintf(writer, "├── Platform: %s\n", line)
+		style.tree(writer, "├──", style.kv("Platform", line))
 	}
 	if line := infoClockLine(signals.Clock); line != "" {
-		fmt.Fprintf(writer, "├── Clock: %s\n", line)
+		style.tree(writer, "├──", style.kv("Clock", line))
 	}
 	if verbose {
-		fmt.Fprintf(writer, "├── System: %s · Release: %s\n├── Processor: %s\n", details.System, details.Release, details.Processor)
+		style.tree(writer, "├──", style.join(" · ", style.kv("System", details.System), style.kv("Release", details.Release)))
+		style.tree(writer, "├──", style.kv("Processor", details.Processor))
 		if line := infoFileHandlesLine(signals.FileHandles); line != "" {
-			fmt.Fprintf(writer, "├── Open files (system): %s\n", line)
+			style.tree(writer, "├──", style.kv("Open files (system)", line))
 		}
 	}
-	fmt.Fprintf(writer, "└── Files (edc soft/hard): %s/%s · Swap: %s/%s (%.2f%%)\n\n", formatLimit(details.RLimitSoft), formatLimit(details.RLimitHard), formatBytes(details.SwapUsed), formatBytes(details.SwapTotal), swapPercent)
-	fmt.Fprintln(writer, "🛜 Network Interface")
+	swap := formatBytes(details.SwapUsed) + "/" + formatBytes(details.SwapTotal) + " " + style.level(fmt.Sprintf("(%.2f%%)", swapPercent), limits.memory.level(swapPercent))
+	style.tree(writer, "└──", style.join(" · ", style.kv("Files (edc soft/hard)", formatLimit(details.RLimitSoft)+"/"+formatLimit(details.RLimitHard)), style.kv("Swap", swap)))
+	fmt.Fprintln(writer)
+	style.line(writer, style.heading("🛜 Network Interface"))
 	// 조회하지 못하면 줄 자체를 빼서 없는 값을 설명하지 않는다.
 	if public != nil {
 		line := public.IP
 		if public.Org != "" {
-			line += " · " + public.Org
+			line += style.dim(" · ") + public.Org
 		}
-		fmt.Fprintf(writer, "├── Public IP: %s\n", line)
+		style.tree(writer, "├──", style.kv("Public IP", line))
 		// 기관과 지역은 -v에서 ipinfo가 답했을 때만 있다.
 		if public.City != "" || public.Region != "" || public.Country != "" || public.Timezone != "" {
-			fmt.Fprintf(writer, "├── Region: %s, %s, %s · %s\n", public.City, public.Region, public.Country, public.Timezone)
+			style.tree(writer, "├──", style.kv("Region", fmt.Sprintf("%s, %s, %s", public.City, public.Region, public.Country)+style.dim(" · ")+public.Timezone))
 		}
 	}
-	fmt.Fprintf(writer, "├── DNS: %s\n", infoDNSLine(signals.DNS))
+	style.tree(writer, "├──", style.kv("DNS", infoDNSLine(signals.DNS)))
 	if signals.IPv6Default != "" {
-		fmt.Fprintf(writer, "├── IPv6 default route: %s\n", signals.IPv6Default)
+		style.tree(writer, "├──", style.kv("IPv6 default route", signals.IPv6Default))
 	}
 	// -v는 인터페이스 상세를 Local IP 아래에 하나 더 붙이므로 Local IP가 마지막 가지가 아니다.
 	showInterfaces := verbose && len(signals.Interfaces) > 0
@@ -325,7 +368,7 @@ func printInfo(writer io.Writer, version string, details hostDetails, interfaces
 	if showInterfaces {
 		branch, indent = "├──", "│   "
 	}
-	fmt.Fprintf(writer, "%s Local IP\n", branch)
+	style.tree(writer, branch, style.dim("Local IP"))
 	for index, iface := range interfaces {
 		branch := "├──"
 		if index == len(interfaces)-1 {
@@ -333,25 +376,27 @@ func printInfo(writer io.Writer, version string, details hostDetails, interfaces
 		}
 		gateway := ""
 		if iface.Gateway != "" {
-			gateway = ", G/W: " + iface.Gateway
+			gateway = style.dim(",") + " " + style.kv("G/W", iface.Gateway)
 		}
-		fmt.Fprintf(writer, "%s%s %-15s: %s / %s%s\n", indent, branch, iface.Name, iface.Address, iface.Mask, gateway)
+		style.line(writer, style.dim(indent+branch)+" "+style.kv(fmt.Sprintf("%-15s", iface.Name), iface.Address+" "+style.dim("/")+" "+iface.Mask+gateway))
 	}
 	if showInterfaces {
-		fmt.Fprintln(writer, "└── Interfaces")
+		style.tree(writer, "└──", style.dim("Interfaces"))
 		for index, iface := range signals.Interfaces {
 			branch := "├──"
 			if index == len(signals.Interfaces)-1 {
 				branch = "└──"
 			}
-			fmt.Fprintf(writer, "    %s %s\n", branch, infoInterfaceLine(iface))
+			style.line(writer, style.dim("    "+branch)+" "+infoInterfaceLine(iface))
 		}
 	}
 	printDiskUsage(writer, disks, signals.Disks, color, verbose)
 }
 
 func printDiskUsage(writer io.Writer, disks []diskDetails, signals map[string]diskSignal, color, verbose bool) {
-	fmt.Fprintln(writer, "\n💾 Disk Usage")
+	style := newTextStyle(color)
+	fmt.Fprintln(writer)
+	style.line(writer, style.heading("💾 Disk Usage"))
 	visible := visibleDisks(disks)
 	// 열 폭을 값에서 잰다. 고정 폭은 긴 mount 경로나 LVM 장치 이름에서 뒤 열을 모두 밀어낸다.
 	mountWidth, deviceWidth := diskMountWidth, diskDeviceWidth
@@ -364,19 +409,21 @@ func printDiskUsage(writer io.Writer, disks []diskDetails, signals map[string]di
 		if index == len(visible)-1 {
 			branch = "└──"
 		}
-		fmt.Fprintf(writer, "%s %s %s: %9s / %9s %s%s\n", branch, liveCell(disk.Mount, mountWidth), liveCell(disk.Device, deviceWidth), formatBytes(disk.Used), formatBytes(disk.Total), formatUsageBar(disk.Percent, color), diskSignalSuffix(signals[disk.Mount]))
+		row := liveCell(disk.Mount, mountWidth) + " " + style.dim(liveCell(disk.Device, deviceWidth)+":") + " " +
+			fmt.Sprintf("%9s / %9s ", formatBytes(disk.Used), formatBytes(disk.Total)) + formatUsageBar(disk.Percent, color) + style.warn(diskSignalSuffix(signals[disk.Mount]))
+		style.tree(writer, branch, row)
 		indent := "│   "
 		if index == len(visible)-1 {
 			indent = "    "
 		}
 		// 마운트 옵션은 -v에서만 읽으므로 기본 출력에서는 비어 있다.
 		if options := signals[disk.Mount].Options; options != "" {
-			fmt.Fprintf(writer, "%soptions: %s\n", indent, options)
+			style.line(writer, style.dim(indent)+style.kv("options", options))
 		}
 		// 지워진 파일의 목록은 길어서 -v에서만 보인다. 기본 출력은 줄 끝의 합계로 충분하다.
 		if verbose {
 			for _, line := range deletedOpenLines(signals[disk.Mount].DeletedOpen) {
-				fmt.Fprintf(writer, "%sdeleted-open: %s\n", indent, line)
+				style.line(writer, style.dim(indent)+style.kv("deleted-open", line))
 			}
 		}
 	}
@@ -433,9 +480,13 @@ func formatUsageBar(percent float64, color bool) string {
 	if filled > diskBarWidth {
 		filled = diskBarWidth
 	}
-	bar := strings.Repeat(diskBarFull, filled) + strings.Repeat(diskBarEmpty, diskBarWidth-filled)
-	text := fmt.Sprintf("%s %6.2f%%", bar, percent)
-	return topLimits{memory: diskLimits, color: color}.paint(text, diskLimits, percent)
+	full, empty := strings.Repeat(diskBarFull, filled), strings.Repeat(diskBarEmpty, diskBarWidth-filled)
+	text := fmt.Sprintf(" %6.2f%%", percent)
+	if !color {
+		return full + empty + text
+	}
+	level := diskLimits.level(percent)
+	return richFill(full, levelColor(level)) + richDim(empty) + textStyle{color: true}.level(text, level)
 }
 
 // o-o.myaddr.l.google.com의 TXT는 질의를 보낸 주소다. 재귀 resolver를 거치면 resolver의 주소가 오므로 Google의

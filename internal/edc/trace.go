@@ -7,6 +7,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"maps"
 	"net"
 	"os"
@@ -32,9 +33,6 @@ const (
 
 // traceProtocolSpec은 trace가 protocol마다 다르게 보여 주는 부분이다. 수집, filter, group 묶기는 protocol과 상관없이 같다.
 type traceProtocolSpec struct {
-	// ansiColor는 스크롤 출력의 ANSI 색 번호이고 screenColor는 전체 화면에서 쓰는 같은 색이다.
-	ansiColor   string
-	screenColor string
 	// groupColumns는 group 행에서 traffic 열 뒤, LAST 앞에 붙는 열이다.
 	groupColumns []traceGroupColumn
 	// hideTraffic은 byte 열과 traffic 줄을 뺀다. DNS는 질의 수와 응답 시간이 byte보다 쓸모 있다.
@@ -86,7 +84,6 @@ type traceReport interface{ print(detail bool) }
 
 var traceProtocolRegistry = []traceProtocolRegistration{
 	{name: "tcp", view: traceProtocolView{selectorLabel: "tcp"}, spec: traceProtocolSpec{
-		ansiColor: "36", screenColor: "#22d3ee",
 		scrollLabels: traceTCPScrollLabels,
 		groupColumns: []traceGroupColumn{
 			{screenTitle: "CON", reportTitle: "CONNECT", width: 3, value: func(group traceGroupSummary) string { return strconv.FormatUint(group.Connect, 10) }},
@@ -95,53 +92,53 @@ var traceProtocolRegistry = []traceProtocolRegistration{
 		},
 		prerequisites: captureEventsPrerequisites, newSummarizer: func() traceSummarizer { return newTCPTraceSummarizer() },
 	}},
-	{name: "udp", view: traceProtocolView{selectorLabel: "udp"}, spec: traceProtocolSpec{ansiColor: "35", screenColor: "#c084fc", prerequisites: captureEventsPrerequisites, newSummarizer: func() traceSummarizer { return newUDPTraceSummarizer() }}},
+	{name: "udp", view: traceProtocolView{selectorLabel: "udp"}, spec: traceProtocolSpec{prerequisites: captureEventsPrerequisites, newSummarizer: func() traceSummarizer { return newUDPTraceSummarizer() }}},
 	{name: "dns", view: traceProtocolView{selectorLabel: "dns"}, spec: traceProtocolSpec{
-		ansiColor: "32", screenColor: "#4ade80", groupColumns: traceDNSGroupColumns, hideTraffic: true, hiddenViews: []string{traceGroupByPort}, linuxOnly: true,
+		groupColumns: traceDNSGroupColumns, hideTraffic: true, hiddenViews: []string{traceGroupByPort}, linuxOnly: true,
 		scrollLabels: traceDNSScrollLabels, serverSide: true, prerequisites: captureEventsPrerequisites, newSummarizer: func() traceSummarizer { return newDNSTraceSummarizer() },
 	}},
 	{name: "arp", view: traceProtocolView{selectorLabel: "arp"}, spec: traceProtocolSpec{
-		ansiColor: "34", screenColor: "#60a5fa", groupColumns: traceNeighborGroupColumns, hideTraffic: true, hiddenViews: []string{traceGroupByPort, traceGroupByProcess},
+		groupColumns: traceNeighborGroupColumns, hideTraffic: true, hiddenViews: []string{traceGroupByPort, traceGroupByProcess},
 		scrollLabels: traceNeighborScrollLabels, newSummarizer: func() traceSummarizer { return newNeighborTraceSummarizer("arp") },
 	}},
 	{name: "ndp", view: traceProtocolView{selectorLabel: "ndp"}, spec: traceProtocolSpec{
-		ansiColor: "34", screenColor: "#60a5fa", groupColumns: traceNeighborGroupColumns, hideTraffic: true, hiddenViews: []string{traceGroupByPort, traceGroupByProcess},
+		groupColumns: traceNeighborGroupColumns, hideTraffic: true, hiddenViews: []string{traceGroupByPort, traceGroupByProcess},
 		scrollLabels: traceNeighborScrollLabels, newSummarizer: func() traceSummarizer { return newNeighborTraceSummarizer("ndp") },
 	}},
 	// 평문 HTTP/1.x만 본다. TLS 안의 HTTP는 kernel에서 암호문이다.
 	{name: "http", view: traceProtocolView{selectorLabel: "http"}, spec: traceProtocolSpec{
-		ansiColor: "95", screenColor: "#f472b6", groupColumns: traceHTTPGroupColumns, hideTraffic: true, extraViews: []string{traceGroupByPath}, linuxOnly: true,
+		groupColumns: traceHTTPGroupColumns, hideTraffic: true, extraViews: []string{traceGroupByPath}, linuxOnly: true,
 		scrollLabels: traceHTTPScrollLabels, serverSide: true, prerequisites: httpTracePrerequisites, newSummarizer: func() traceSummarizer { return newHTTPTraceSummarizer() },
 	}},
-	// 평문 MySQL만 본다. TLS 안의 packet은 kernel에서 암호문이다. 색은 다른 protocol이 쓰지 않는 값이다.
+	// 평문 MySQL만 본다. TLS 안의 packet은 kernel에서 암호문이다.
 	{name: "mysql", view: traceProtocolView{selectorLabel: "mysql"}, spec: traceProtocolSpec{
-		ansiColor: "94", screenColor: "#818cf8", groupColumns: traceMySQLGroupColumns, hideTraffic: true, linuxOnly: true,
+		groupColumns: traceMySQLGroupColumns, hideTraffic: true, linuxOnly: true,
 		scrollLabels: traceMySQLScrollLabels, serverSide: true, prerequisites: httpTracePrerequisites, newSummarizer: func() traceSummarizer { return newMySQLTraceSummarizer() },
 	}},
-	// 평문 ClickHouse native protocol(TCP 9000)만 본다. TLS(9440) 안의 packet은 kernel에서 암호문이다. 색은 다른 protocol이 쓰지 않는 값이다.
+	// 평문 ClickHouse native protocol(TCP 9000)만 본다. TLS(9440) 안의 packet은 kernel에서 암호문이다.
 	{name: "clickhouse", view: traceProtocolView{selectorLabel: "clickhouse"}, spec: traceProtocolSpec{
-		ansiColor: "96", screenColor: "#2dd4bf", groupColumns: traceClickHouseGroupColumns(func(group traceGroupSummary) *traceClickHouseCounts { return group.ClickHouse }), hideTraffic: true, linuxOnly: true,
+		groupColumns: traceClickHouseGroupColumns(func(group traceGroupSummary) *traceClickHouseCounts { return group.ClickHouse }), hideTraffic: true, linuxOnly: true,
 		scrollLabels: traceClickHouseScrollLabels, serverSide: true, prerequisites: httpTracePrerequisites, newSummarizer: func() traceSummarizer { return newClickHouseTraceSummarizer() },
 	}},
-	// 평문 PostgreSQL v3 protocol만 본다. TLS와 GSSAPI 암호화 연결은 postgres_tls 한 줄만 남는다. 색은 다른 protocol이 쓰지 않는 값이다.
+	// 평문 PostgreSQL v3 protocol만 본다. TLS와 GSSAPI 암호화 연결은 postgres_tls 한 줄만 남는다.
 	{name: "postgres", view: traceProtocolView{selectorLabel: "postgres"}, spec: traceProtocolSpec{
-		ansiColor: "92", screenColor: "#a3e635", groupColumns: tracePostgresGroupColumns, hideTraffic: true, linuxOnly: true,
+		groupColumns: tracePostgresGroupColumns, hideTraffic: true, linuxOnly: true,
 		scrollLabels: tracePostgresScrollLabels, serverSide: true, prerequisites: httpTracePrerequisites, newSummarizer: func() traceSummarizer { return newPostgresTraceSummarizer() },
 	}},
-	// 평문 RESP(Redis 6379)만 본다. TLS 연결의 byte는 암호문이라 framing을 찾지 못하고 버린다. 색은 다른 protocol이 쓰지 않는 값이다.
+	// 평문 RESP(Redis 6379)만 본다. TLS 연결의 byte는 암호문이라 framing을 찾지 못하고 버린다.
 	{name: "redis", view: traceProtocolView{selectorLabel: "redis"}, spec: traceProtocolSpec{
-		ansiColor: "31", screenColor: "#e11d48", groupColumns: traceRedisGroupColumns, hideTraffic: true, linuxOnly: true,
+		groupColumns: traceRedisGroupColumns, hideTraffic: true, linuxOnly: true,
 		scrollLabels: traceRedisScrollLabels, serverSide: true, prerequisites: httpTracePrerequisites, newSummarizer: func() traceSummarizer { return newRedisTraceSummarizer() },
 	}},
-	{name: "io", view: traceProtocolView{selectorLabel: "io"}, spec: traceProtocolSpec{ansiColor: "33", screenColor: "#fbbf24", linuxOnly: true, prerequisites: ioTracePrerequisites}, run: runIOTrace},
+	{name: "io", view: traceProtocolView{selectorLabel: "io"}, spec: traceProtocolSpec{linuxOnly: true, prerequisites: ioTracePrerequisites}, run: runIOTrace},
 	// unix socket 파일 하나를 본다. 목적지는 늘 그 경로라서 port와 target 보기는 한 행뿐이다. source는 상대 process다.
 	{name: "socket", view: traceProtocolView{selectorLabel: "socket"}, spec: traceProtocolSpec{
-		ansiColor: "38;5;208", screenColor: "#fb923c", hiddenViews: []string{traceGroupByPort, traceGroupByTarget}, linuxOnly: true,
+		hiddenViews: []string{traceGroupByPort, traceGroupByTarget}, linuxOnly: true,
 		scrollLabels: traceSocketScrollLabels, prerequisites: socketTracePrerequisites, newSummarizer: func() traceSummarizer { return newSocketTraceSummarizer() },
 	}},
 	// kernel이 버린 패킷이다. event 칸은 버린 이유다. process는 패킷에 local socket이 있을 때만 붙는다.
 	{name: "drop", view: traceProtocolView{selectorLabel: "drop"}, spec: traceProtocolSpec{
-		ansiColor: "91", screenColor: "#f87171", hideTraffic: true, linuxOnly: true,
+		hideTraffic: true, linuxOnly: true,
 		scrollLabels: traceDropScrollLabels, prerequisites: dropTracePrerequisites, newSummarizer: func() traceSummarizer { return newDropTraceSummarizer() },
 	}},
 	{name: "sched", view: traceProtocolView{selectorLabel: "sched"}, spec: traceProtocolSpec{hideTraffic: true, hiddenViews: []string{traceGroupBySource, traceGroupByTarget, traceGroupByPort}}, run: runTraceSched},
@@ -499,7 +496,7 @@ func traceUsage() {
 
 func runTraceProtocol(args []string) int {
 	options := tcpTraceOptions{}
-	set := flag.NewFlagSet("trace "+args[0], flag.ContinueOnError)
+	set := newFlagSet("trace " + args[0])
 	set.SetOutput(os.Stderr)
 	set.DurationVar(&options.duration, "duration", 0, T("command.trace.option.duration"))
 	set.DurationVar(&options.slow, "slow", 0, T("command.trace.option.slow"))
@@ -799,17 +796,27 @@ func printTraceEvent(event captureEvent, color, full bool) {
 	if process == "" {
 		process = "-"
 	}
-	protocol := traceProtocol(event)
+	color = color && richEnabled(os.Stdout)
 	line := fmt.Sprintf("%-16s %-32s %-20s %s", process, destination, name, event.Source)
-	fmt.Fprintln(os.Stdout, traceColorLine(line, protocol, event.Event, color))
+	if color {
+		line = traceColorLine(process, destination, name, event)
+	}
+	fmt.Fprintln(os.Stdout, line)
+	payload := func(mark, text string) {
+		line := fmt.Sprintf("%-16s %s %s", "", mark, text)
+		if color {
+			line = richDim(line)
+		}
+		fmt.Fprintln(os.Stdout, line)
+	}
 	switch {
 	case event.Payload == "":
 	case full:
 		for _, payloadLine := range traceHTTPPayloadBlock(event) {
-			fmt.Fprintf(os.Stdout, "%-16s │ %s\n", "", payloadLine)
+			payload("│", payloadLine)
 		}
 	default:
-		fmt.Fprintf(os.Stdout, "%-16s ↳ %s\n", "", tracePayloadSummary(event))
+		payload("↳", tracePayloadSummary(event))
 	}
 }
 
@@ -823,57 +830,66 @@ func tracePayloadSummary(event captureEvent) string {
 }
 
 func printTraceEventHeader(protocol string) {
-	fmt.Fprintln(os.Stdout, "PROCESS          DESTINATION                       EVENT                SOURCE")
+	columns := "PROCESS          DESTINATION                       EVENT                SOURCE"
 	// 줄 단위 출력은 키 입력을 받지 않는다. 전체 화면에만 있는 / filter와 q quit은 안내하지 않는다.
-	fmt.Fprintf(os.Stdout, "trace %s  ·  Ctrl-C stop\n", protocol)
+	status := fmt.Sprintf("trace %s  ·  Ctrl-C stop", protocol)
+	if richEnabled(os.Stdout) {
+		columns = richDim(columns)
+		status = richPaint("trace "+protocol, richMagenta, true) + richDim("  ·  ") + richPaint("Ctrl-C", richCyan, true) + richDim(" stop")
+	}
+	fmt.Fprintln(os.Stdout, columns)
+	fmt.Fprintln(os.Stdout, status)
 }
 
-func traceColorLine(line, protocol, event string, color bool) string {
-	if !color || os.Getenv("NO_COLOR") != "" || !isTerminal(os.Stdout) {
-		return line
+// traceColorLine은 색을 쓰는 터미널의 event 줄이다. 칸은 평문 줄과 같은 폭이고, event 칸은 문제의 색, source는 회색이다.
+func traceColorLine(process, destination, name string, event captureEvent) string {
+	label := fmt.Sprintf("%-20s", name)
+	if severity := traceEventSeverity(event); severity != "" {
+		label = richPaint(label, severity, false)
 	}
-	colorValue := traceProtocols[protocol].ansiColor
-	if strings.Contains(event, "reset") || strings.HasSuffix(event, "_"+traceNeighborMACChange) || event == "http_5xx" {
-		colorValue = "31"
-	} else if strings.Contains(event, "retransmit") || strings.Contains(event, "fail") {
-		colorValue = "33"
-	}
-	return "\033[" + colorValue + "m" + line + "\033[0m"
+	return fmt.Sprintf("%-16s %-32s ", process, destination) + label + " " + richDim(event.Source)
 }
 
 func printTCPTraceReport(report tcpTraceReport, detail bool) {
-	fmt.Fprintf(os.Stdout, "TCP trace: %s\n\n", (time.Duration(report.DurationMS) * time.Millisecond).String())
-	fmt.Fprintf(os.Stdout, "Attempts: %d\nEstablished: %d\nIncomplete: %d\nExisting: %d\nRetransmissions: %s\nResets: %s\nTX: %s\nRX: %s\nTotal: %s\nTraffic rate: %s\nLost events: %d\n", report.Attempts, report.Established, report.Incomplete, report.Existing, traceOptional(report.Retransmissions, "%d"), traceOptional(report.Resets, "%d"), traceBytes(report.TXBytes), traceBytes(report.RXBytes), traceBytes(report.TotalBytes), traceTrafficRate(report.traceTraffic), report.LostEvents)
+	out := os.Stdout
+	style := newTraceSummaryStyle(out)
+	style.line(out, style.title("TCP trace", (time.Duration(report.DurationMS)*time.Millisecond).String()))
+	io.WriteString(out, "\n")
+	style.fields(out, "", "Attempts", strconv.Itoa(report.Attempts), "Established", strconv.Itoa(report.Established), "Incomplete", strconv.Itoa(report.Incomplete), "Existing", strconv.Itoa(report.Existing),
+		"Retransmissions", traceOptional(report.Retransmissions, "%d"), "Resets", traceOptional(report.Resets, "%d"), "TX", traceBytes(report.TXBytes), "RX", traceBytes(report.RXBytes), "Total", traceBytes(report.TotalBytes),
+		"Traffic rate", traceTrafficRate(report.traceTraffic), "Lost events", strconv.FormatUint(report.LostEvents, 10))
 	if !detail {
-		printTCPTraceGroups(report.groups)
+		printTCPTraceGroups(style, report.groups)
 		return
 	}
 	if len(report.Connections) == 0 {
 		return
 	}
-	fmt.Fprintln(os.Stdout, "\nPROCESS\tDESTINATION\tRESULT\tCONNECT\tTX\tRX\tRETRANS\tRESET")
+	table := traceTable{titles: []string{"PROCESS", "DESTINATION", "RESULT", "CONNECT", "TX", "RX", "RETRANS", "RESET"}}
 	for _, connection := range report.Connections {
-		fmt.Fprintf(os.Stdout, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", connection.Process, traceDestinationLabel(connection), connection.Result, traceOptional(connection.ConnectMS, "%dms"), traceBytes(connection.TXBytes), traceBytes(connection.RXBytes), traceOptional(connection.Retransmissions, "%d"), traceOptional(connection.Reset, "%t"))
+		table.add(connection.Process, traceDestinationLabel(connection), connection.Result, traceOptional(connection.ConnectMS, "%dms"), traceBytes(connection.TXBytes), traceBytes(connection.RXBytes), traceOptional(connection.Retransmissions, "%d"), traceOptional(connection.Reset, "%t"))
 		if connection.RTTUS != nil || connection.AcceptLatencyMS != nil {
-			fmt.Fprintf(os.Stdout, "  diagnostics: rtt=%s rttvar=%s cwnd=%s ssthresh=%s unacked=%s lost=%s zero-window=%s accept=%s queue=%s/%s\n", traceOptional(connection.RTTUS, "%dus"), traceOptional(connection.RTTVarUS, "%dus"), traceOptional(connection.CWND, "%d"), traceOptional(connection.SSThresh, "%d"), traceOptional(connection.Unacked, "%d"), traceOptional(connection.Lost, "%d"), traceOptional(connection.ZeroWindow, "%t"), traceOptional(connection.AcceptLatencyMS, "%.3fms"), traceOptional(connection.AcceptQueueUsed, "%d"), traceOptional(connection.AcceptQueueMax, "%d"))
+			table.addNote(fmt.Sprintf("  diagnostics: rtt=%s rttvar=%s cwnd=%s ssthresh=%s unacked=%s lost=%s zero-window=%s accept=%s queue=%s/%s", traceOptional(connection.RTTUS, "%dus"), traceOptional(connection.RTTVarUS, "%dus"), traceOptional(connection.CWND, "%d"), traceOptional(connection.SSThresh, "%d"), traceOptional(connection.Unacked, "%d"), traceOptional(connection.Lost, "%d"), traceOptional(connection.ZeroWindow, "%t"), traceOptional(connection.AcceptLatencyMS, "%.3fms"), traceOptional(connection.AcceptQueueUsed, "%d"), traceOptional(connection.AcceptQueueMax, "%d")))
 		}
 	}
+	io.WriteString(out, "\n")
+	style.writeTable(out, table)
 	if report.ConnectionsOmitted > 0 {
-		fmt.Fprintf(os.Stdout, "%d earlier closed connections are not listed. The totals include them.\n", report.ConnectionsOmitted)
+		style.line(out, style.hint(fmt.Sprintf("%d earlier closed connections are not listed. The totals include them.", report.ConnectionsOmitted)))
 	}
 }
 
-func printTCPTraceGroups(rows []tcpTraceGroupRow) {
+func printTCPTraceGroups(style traceSummaryStyle, rows []tcpTraceGroupRow) {
 	if len(rows) == 0 {
 		return
 	}
-	fmt.Fprintln(os.Stdout, "\nPROCESS\tDESTINATION\tCONNS\tEST\tINC\tEXIST\tCONNECT\tTX\tRX\tRETRANS\tRESET")
+	table := traceTable{titles: []string{"PROCESS", "DESTINATION", "CONNS", "EST", "INC", "EXIST", "CONNECT", "TX", "RX", "RETRANS", "RESET"}}
 	for _, row := range rows {
 		connect := "-"
 		if row.connectCount > 0 {
 			connect = traceOptional(traceObserved(row.connectTotalMS/int64(row.connectCount)), "%dms")
 		}
-		fmt.Fprintf(os.Stdout, "%s\t%s\t%d\t%d\t%d\t%d\t%s\t%s\t%s\t%s\t%s\n", row.process, traceSummaryPeerLabel(row.peer, row.hostname, row.server), row.connections, row.established, row.incomplete, row.existing, connect, traceBytes(row.TXBytes), traceBytes(row.RXBytes), traceOptional(traceObserved(row.retransmissions), "%d"), traceOptional(traceObserved(row.resets), "%d"))
+		table.add(row.process, traceSummaryPeerLabel(row.peer, row.hostname, row.server), strconv.Itoa(row.connections), strconv.Itoa(row.established), strconv.Itoa(row.incomplete), strconv.Itoa(row.existing), connect, traceBytes(row.TXBytes), traceBytes(row.RXBytes), traceOptional(traceObserved(row.retransmissions), "%d"), traceOptional(traceObserved(row.resets), "%d"))
 		if row.rttCount > 0 || row.lost != 0 || row.zeroWindow || row.acceptCount > 0 {
 			rtt, accept := "-", "-"
 			if row.rttCount > 0 {
@@ -882,9 +898,11 @@ func printTCPTraceGroups(rows []tcpTraceGroupRow) {
 			if row.acceptCount > 0 {
 				accept = fmt.Sprintf("%.3fms", float64(row.acceptTotalNS/uint64(row.acceptCount))/float64(time.Millisecond))
 			}
-			fmt.Fprintf(os.Stdout, "  diagnostics: rtt=%s lost=%d zero-window=%t accept=%s\n", rtt, row.lost, row.zeroWindow, accept)
+			table.addNote(fmt.Sprintf("  diagnostics: rtt=%s lost=%d zero-window=%t accept=%s", rtt, row.lost, row.zeroWindow, accept))
 		}
 	}
+	io.WriteString(os.Stdout, "\n")
+	style.writeTable(os.Stdout, table)
 }
 
 func traceSummaryPeerLabel(peer, hostname string, server bool) string {
@@ -1060,25 +1078,27 @@ func sortUDPTraceFlows(flows []udpTraceFlow) {
 }
 
 func printUDPTraceReport(report udpTraceReport, detail bool) {
-	fmt.Fprintf(os.Stdout, "UDP trace: %s\n\n", (time.Duration(report.DurationMS) * time.Millisecond).String())
-	fmt.Fprintf(os.Stdout, "Datagrams: %d\nSent: %d\nReceived: %d\nTX: %s\nRX: %s\nTotal: %s\nTraffic rate: %s\nLost events: %d\n", report.Datagrams, report.Sent, report.Received, traceBytes(report.TXBytes), traceBytes(report.RXBytes), traceBytes(report.TotalBytes), traceTrafficRate(report.traceTraffic), report.LostEvents)
+	out := os.Stdout
+	style := newTraceSummaryStyle(out)
+	style.line(out, style.title("UDP trace", (time.Duration(report.DurationMS)*time.Millisecond).String()))
+	io.WriteString(out, "\n")
+	style.fields(out, "", "Datagrams", strconv.Itoa(report.Datagrams), "Sent", strconv.Itoa(report.Sent), "Received", strconv.Itoa(report.Received), "TX", traceBytes(report.TXBytes), "RX", traceBytes(report.RXBytes),
+		"Total", traceBytes(report.TotalBytes), "Traffic rate", traceTrafficRate(report.traceTraffic), "Lost events", strconv.FormatUint(report.LostEvents, 10))
+	table := traceTable{titles: []string{"PROCESS", "DESTINATION", "SENT", "RECEIVED", "TX", "RX"}}
 	if !detail {
-		if len(report.groups) == 0 {
-			return
-		}
-		fmt.Fprintln(os.Stdout, "\nPROCESS\tDESTINATION\tSENT\tRECEIVED\tTX\tRX")
 		for _, row := range report.groups {
-			fmt.Fprintf(os.Stdout, "%s\t%s\t%d\t%d\t%s\t%s\n", row.process, traceSummaryPeerLabel(row.peer, row.hostname, row.server), row.sent, row.received, traceBytes(row.TXBytes), traceBytes(row.RXBytes))
+			table.add(row.process, traceSummaryPeerLabel(row.peer, row.hostname, row.server), strconv.FormatUint(row.sent, 10), strconv.FormatUint(row.received, 10), traceBytes(row.TXBytes), traceBytes(row.RXBytes))
 		}
+	} else {
+		for _, flow := range report.Flows {
+			table.add(flow.Process, traceUDPFlowDestinationLabel(flow), strconv.FormatUint(flow.Sent, 10), strconv.FormatUint(flow.Received, 10), traceBytes(flow.TXBytes), traceBytes(flow.RXBytes))
+		}
+	}
+	if len(table.rows) == 0 {
 		return
 	}
-	if len(report.Flows) == 0 {
-		return
-	}
-	fmt.Fprintln(os.Stdout, "\nPROCESS\tDESTINATION\tSENT\tRECEIVED\tTX\tRX")
-	for _, flow := range report.Flows {
-		fmt.Fprintf(os.Stdout, "%s\t%s\t%d\t%d\t%s\t%s\n", flow.Process, traceUDPFlowDestinationLabel(flow), flow.Sent, flow.Received, traceBytes(flow.TXBytes), traceBytes(flow.RXBytes))
-	}
+	io.WriteString(out, "\n")
+	style.writeTable(out, table)
 }
 
 func traceUDPFlowDestinationLabel(flow udpTraceFlow) string {
@@ -1528,19 +1548,22 @@ func traceGroupLabel(groupBy string) string {
 }
 
 func printTraceGroupReport(report traceGroupReport) {
+	out := os.Stdout
+	style := newTraceSummaryStyle(out)
 	title := strings.ToUpper(report.Protocol)
 	if report.Side == traceServerSide {
 		title += " server"
 	}
-	fmt.Fprintf(os.Stdout, "%s trace grouped by %s: %s\n\n", title, report.GroupBy, (time.Duration(report.DurationMS) * time.Millisecond).String())
-	fmt.Fprintf(os.Stdout, "Events: %d\n%s groups: %d\nEvent rate: %.1f/s\n", report.Events, report.GroupBy, len(report.Groups), report.Rate)
+	style.line(out, style.title(fmt.Sprintf("%s trace grouped by %s", title, report.GroupBy), (time.Duration(report.DurationMS)*time.Millisecond).String()))
+	io.WriteString(out, "\n")
+	style.fields(out, "", "Events", strconv.FormatUint(report.Events, 10), report.GroupBy+" groups", strconv.Itoa(len(report.Groups)), "Event rate", fmt.Sprintf("%.1f/s", report.Rate))
 	if !report.hideTraffic() {
-		fmt.Fprintf(os.Stdout, "TX: %s\nRX: %s\nTotal: %s\nTraffic rate: %s\n", traceBytes(report.TXBytes), traceBytes(report.RXBytes), traceBytes(report.TotalBytes), traceTrafficRate(report.traceTraffic))
+		style.fields(out, "", "TX", traceBytes(report.TXBytes), "RX", traceBytes(report.RXBytes), "Total", traceBytes(report.TotalBytes), "Traffic rate", traceTrafficRate(report.traceTraffic))
 	}
 	if report.Protocol == "arp" || report.Protocol == "ndp" {
-		fmt.Fprintf(os.Stdout, "Lost events: %s\n", traceNeighborLost(report.LostEvents))
+		style.fields(out, "", "Lost events", traceNeighborLost(report.LostEvents))
 	} else {
-		fmt.Fprintf(os.Stdout, "Lost events: %d\n", report.LostEvents)
+		style.fields(out, "", "Lost events", strconv.FormatUint(report.LostEvents, 10))
 	}
 	if len(report.Groups) == 0 {
 		return
@@ -1553,17 +1576,28 @@ func printTraceGroupReport(report traceGroupReport) {
 	for _, column := range columns {
 		titles = append(titles, column.reportTitle)
 	}
-	fmt.Fprintf(os.Stdout, "\n%s\n", strings.Join(append(titles, "LAST"), "\t"))
+	table := traceTable{titles: append(titles, "LAST")}
 	for _, group := range report.Groups {
 		values := []string{traceGroupDisplayValue(report.GroupBy, group), strconv.FormatUint(group.Events, 10), fmt.Sprintf("%.1f", group.Rate)}
 		if !report.hideTraffic() {
 			values = append(values, traceBytes(group.TXBytes), traceBytes(group.RXBytes), traceBytes(group.TotalBytes), traceBytes(uint64(group.BytesPerSecond)), fmt.Sprintf("%.3f", group.MegabitsPerSecond))
 		}
+		// 문제를 세는 열은 live 화면의 group 행과 같은 색이다.
+		colors := make([]string, len(values), len(values)+len(columns)+1)
 		for _, column := range columns {
-			values = append(values, column.value(group))
+			value := column.value(group)
+			values = append(values, value)
+			color := ""
+			if traceSummaryCount(value) > 0 {
+				color = traceGroupColumnSeverity[column.screenTitle]
+			}
+			colors = append(colors, color)
 		}
-		fmt.Fprintf(os.Stdout, "%s\n", strings.Join(append(values, group.LastEvent), "\t"))
+		colors = append(colors, traceEventSeverity(captureEvent{Protocol: report.Protocol, Event: group.LastEvent}))
+		table.addColored(append(values, group.LastEvent), colors)
 	}
+	io.WriteString(out, "\n")
+	style.writeTable(out, table)
 }
 
 // traceObserved는 이 platform이 관측하지 못하는 값을 nil로 바꾼다. 0으로 두면 관측한 0과 구분되지 않는다.

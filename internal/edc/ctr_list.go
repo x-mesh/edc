@@ -180,32 +180,17 @@ func ctrListHeaders() []string {
 	return []string{T("ctr.list.column.name"), T("ctr.list.column.state"), T("ctr.list.column.restarts"), T("ctr.list.column.uptime"), T("ctr.list.column.memory"), T("ctr.list.column.image")}
 }
 
-func formatCtrListTable(items []ctrListItem) string {
+func formatCtrListTable(items []ctrListItem, style textStyle) string {
 	if len(items) == 0 {
 		return ""
 	}
 	rows := [][]string{ctrListHeaders()}
+	colors := [][]string{nil}
 	for _, item := range items {
 		rows = append(rows, ctrListCells(item))
+		colors = append(colors, []string{"", item.stateColor(), "", "", "", richGray})
 	}
-	widths := make([]int, len(rows[0]))
-	for _, row := range rows {
-		for index, cell := range row {
-			widths[index] = max(widths[index], liveWidth(cell))
-		}
-	}
-	var builder strings.Builder
-	for _, row := range rows {
-		for index, cell := range row {
-			if index == len(row)-1 {
-				builder.WriteString(cell)
-				break
-			}
-			builder.WriteString(liveCell(cell, widths[index]+2))
-		}
-		builder.WriteString("\n")
-	}
-	return builder.String()
+	return formatListTable(rows, colors, style)
 }
 
 // runCtrList는 container 없이 부른 edc ctr다. 터미널이면 목록에서 골라 상세를 여는 화면을 열고, 아니면 결과 한 줄과 표를 낸다.
@@ -234,7 +219,7 @@ func runCtrList(options commonOptions, version string, sources ctrSources, ok, a
 	}
 	fmt.Fprint(output, formatResultLine(result, color))
 	printResultDetail(output, result, false, color)
-	if table := formatCtrListTable(items); table != "" {
+	if table := formatCtrListTable(items, newTextStyle(color)); table != "" {
 		fmt.Fprint(output, "\n"+table)
 	}
 	if options.redact {

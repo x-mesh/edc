@@ -58,21 +58,21 @@ func (item topSignalItem) level() topLevel {
 }
 
 // raise는 더 심한 값이 오면 이벤트의 경고 문구와 원인 후보를 그 순간 것으로 바꾼다. 가장 나빴던 때를 남긴다.
-func (event *topEvent) raise(item topSignalItem, culprit func(topView) string) {
+func (event *topEvent) raise(item topSignalItem, culprit func(topSignalItem) string) {
 	// 시작 직후에는 process 목록이 아직 없어 원인 후보가 빈다. 값이 더 나빠지지 않아도 목록이 생기면 채운다.
 	if event.text != "" && event.culprit == "" {
-		event.culprit = culprit(event.view)
+		event.culprit = culprit(item)
 	}
 	level := item.level()
 	if event.text != "" && (level < event.level || (level == event.level && item.score <= event.score)) {
 		return
 	}
 	event.level, event.score, event.text, event.view = level, item.score, item.text, item.view
-	event.culprit = culprit(item.view)
+	event.culprit = culprit(item)
 }
 
 // observe는 한 샘플의 경고를 받는다. at은 샘플 시각이라 수집 간격이 바뀌어도 같은 기준으로 지속 시간을 잰다.
-func (log *topEventLog) observe(at time.Time, items []topSignalItem, culprit func(topView) string) {
+func (log *topEventLog) observe(at time.Time, items []topSignalItem, culprit func(topSignalItem) string) {
 	if log.pending == nil {
 		log.pending = map[string]topEvent{}
 	}
@@ -128,10 +128,18 @@ func (log *topEventLog) ongoing(kind string) int {
 
 // topEventCulprit은 경고를 자세히 보이는 보기의 기준으로 그 시점에 앞선 묶음과 process를 적는다.
 // 원인 후보이지 확인된 원인은 아니다. network 경고는 process로 가릴 수 없어 비운다.
-func topEventCulprit(row topDashboardRow, view topView) string {
+func topEventCulprit(row topDashboardRow, item topSignalItem) string {
 	if !row.processesValid {
 		return ""
 	}
+	// 증가 경고의 원인 후보는 늘어나는 process다. 그 process는 아직 작거나 같은 이름의 묶음에 들어 크기 순위로는
+	// 가려진다. 다른 memory 경고는 크기 순위의 묶음과 process를 그대로 적는다.
+	if strings.HasPrefix(item.kind, topMemoryGrowthKind) {
+		if growing, ok := topFastestGrowing(row.processes); ok {
+			return topProcessName(growing.Command, topEventNameWidth) + " +" + formatProcessRSS(growing.Growth.Bytes) + " " + formatProcessRSS(growing.memory())
+		}
+	}
+	view := item.view
 	switch view {
 	case topViewNetwork:
 		return ""
@@ -346,7 +354,7 @@ func (model topModel) recordEvents(row topDashboardRow) topModel {
 		model.events = &topEventLog{}
 	}
 	items := topDashboardSignalItems(row.rate, row.processes, row.processTotal.Groups, row.processesValid, model.limits)
-	model.events.observe(row.at, items, func(view topView) string { return topEventCulprit(row, view) })
+	model.events.observe(row.at, items, func(item topSignalItem) string { return topEventCulprit(row, item) })
 	return model
 }
 

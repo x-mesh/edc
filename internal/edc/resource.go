@@ -142,7 +142,9 @@ type topProcess struct {
 	// RSS는 압축되거나 swap으로 나간 page를 세지 않아 누수로 커진 process를 작게 보인다. 읽지 못하면 MemoryValid가 false다.
 	Memory      uint64
 	MemoryValid bool
-	Command     string
+	// Growth는 Memory가 15분 동안 꾸준히 늘었을 때의 증가량이다. 판정할 만큼 관찰하지 못했거나 늘지 않았으면 nil이다.
+	Growth  *topMemoryGrowth
+	Command string
 	// Started는 process가 시작한 시각이다. PID가 재사용돼도 (PID, Started)는 process 하나를 가리킨다. 모르면 zero다.
 	Started time.Time
 	// Threads는 thread 수이고 모르면 0이다.
@@ -405,7 +407,9 @@ type topProcessSampler struct {
 	// scanIO는 후보를 고르기 전에 모든 process의 I/O를 읽을지다. 디스크 보기에서만 켠다.
 	scanIO bool
 	// observe는 eBPF로 필터에 맞은 process를 감시한다. 없으면 감시하지 않는다.
-	observe   topProbeObserver
+	observe topProbeObserver
+	// growth는 모든 process의 memory 증가를 기록한다. 없으면 증가를 판정하지 않는다.
+	growth    *topMemoryGrowthTracker
 	filter    topProcessFilter
 	filterSeq int
 	total     topProcessTotal
@@ -427,7 +431,7 @@ func linuxProcessCommandLine(data []byte) string {
 	return strings.Join(args, " ")
 }
 
-var processSampler = &topProcessSampler{read: newTopProcessReader(), enrich: newTopProcessEnricher(), fillIO: newTopProcessIOFiller()}
+var processSampler = &topProcessSampler{read: newTopProcessReader(), enrich: newTopProcessEnricher(), fillIO: newTopProcessIOFiller(), growth: newTopMemoryGrowthTracker()}
 
 // topProcessIOTracker는 /proc/<pid>/io를 두 번 읽은 차이로 process의 I/O rate를 구한다.
 // root가 아니면 다른 사용자의 process를 읽지 못해 그 process는 DiskValid가 false로 남는다.
@@ -539,6 +543,10 @@ func (sampler *topProcessSampler) refresh() {
 	filter, observe, filterSeq, scanIO := sampler.filter, sampler.observe, sampler.filterSeq, sampler.scanIO
 	sampler.mutex.Unlock()
 	processes, valid := sampler.read()
+	// 필터와 후보로 자르기 전에 기록한다. 누수는 아직 작아 어느 순위에도 들지 못한 process에서 시작된다.
+	if valid && sampler.growth != nil {
+		sampler.growth.observe(time.Now(), processes)
+	}
 	blocked, blockedValid := countBlockedTopProcesses(processes)
 	// 필터는 CPU 순위를 자르기 전에 건다. 자른 뒤에 걸면 CPU가 낮은 process가 목록에 들지 못해 항상 비어 보인다.
 	processes = filter.apply(processes)
@@ -626,6 +634,15 @@ func topProcessCandidates(processes []topProcess) []topProcess {
 			blocked++
 		}
 	}
+	// 꾸준히 늘어나는 process는 아직 작아 CPU와 memory 순위에 들지 못한다. signal이 가리키는 process가 목록에 있어야 한다.
+	var growing []topProcess
+	for _, process := range processes {
+		if process.Growth != nil && !seen[process.PID] {
+			growing = append(growing, process)
+		}
+	}
+	sort.SliceStable(growing, func(i, j int) bool { return growing[i].Growth.Bytes > growing[j].Growth.Bytes })
+	candidates = append(candidates, growing[:min(topProcessLimit, len(growing))]...)
 	return sortTopProcessesByCPU(candidates)
 }
 

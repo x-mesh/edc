@@ -1618,7 +1618,7 @@ func (model topModel) helpLines() []string {
 		"Back: Esc closes the panel, returns to the live row, drops the o rank, returns to the first view, then clears the process filter",
 		"Interfaces: i opens the list · Space check · a all · p physical · Enter applies from the next sample · off while -w records",
 		"Details: Enter on history · h peaks from the last 60 seconds",
-		"CPU: host % uses all cores. Process 100% uses one core. MEM is the footprint on macOS and RSS plus swap on Linux.",
+		"CPU: host % uses all cores. Process 100% uses one core. RSS is resident memory.",
 		"MEM counts the memory a process holds, also when it is compressed or swapped out. A gray MEM value is RSS, used when edc could not read MEM.",
 		"— means unavailable or no baseline. Read the process I/O status for errors.",
 		"no ev means the -d observer is active but collected no events in that interval. n/a means this OS cannot measure it.",

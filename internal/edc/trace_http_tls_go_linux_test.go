@@ -10,7 +10,6 @@ import (
 	"debug/elf"
 	"encoding/binary"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -189,6 +188,7 @@ func TestTraceTLSGoCaptures(t *testing.T) {
 			requests, responses := map[string]int{}, map[string]int{}
 			var observed []captureEvent
 			startTLSFixtureOnAttach(t, stdin)
+			stop, fixtureOutput := stopWhenTLSFixtureExits(reader)
 			summary, err := collectTraceEventsLive(traceScope{protocol: "http", tls: traceTLSMode(fixture), tlsFinder: finder, payload: true, port: tc.port}, 6*time.Second, func(event captureEvent) error {
 				if event.PID != uint32(command.Process.Pid) || !event.TLS {
 					return nil
@@ -209,13 +209,13 @@ func TestTraceTLSGoCaptures(t *testing.T) {
 					}
 				}
 				return nil
-			}, nil)
+			}, stop)
 			if err != nil {
 				t.Fatal(err)
 			}
-			output, readErr := io.ReadAll(reader)
-			if err := command.Wait(); err != nil || readErr != nil || (!strings.Contains(string(output), "completed 64") && !strings.Contains(string(output), "done")) {
-				t.Fatalf("Go TLS client: %v %v %s %s", err, readErr, output, stderr.String())
+			output := <-fixtureOutput
+			if err := command.Wait(); err != nil || output.err != nil || (!strings.Contains(output.text, "completed 64") && !strings.Contains(output.text, "done")) {
+				t.Fatalf("Go TLS client: %v %v %s %s", err, output.err, output.text, stderr.String())
 			}
 			want := 64
 			if tc.argument == "stack" {
@@ -297,6 +297,7 @@ func TestTraceTLSGoHTTP2CapturesStreamsAndBodies(t *testing.T) {
 			requests, responses := map[string]int{}, map[string]int{}
 			sockets := map[uint64]bool{}
 			startTLSFixtureOnAttach(t, stdin)
+			stop, fixtureOutput := stopWhenTLSFixtureExits(reader)
 			summary, err := collectTraceEventsLive(traceScope{protocol: "http", tls: traceTLSMode(fixture), tlsFinder: finder, payload: true, payloadAll: true, http2Payload: true}, 8*time.Second, func(event captureEvent) error {
 				if event.PID != uint32(command.Process.Pid) || !event.TLS {
 					return nil
@@ -320,13 +321,13 @@ func TestTraceTLSGoHTTP2CapturesStreamsAndBodies(t *testing.T) {
 					t.Errorf("HTTP/2 payload path=%q length=%d truncated=%t", event.Path, len(event.Payload), event.PayloadTruncated)
 				}
 				return nil
-			}, nil)
+			}, stop)
 			if err != nil {
 				t.Fatal(err)
 			}
-			output, readErr := io.ReadAll(reader)
-			if err := command.Wait(); err != nil || readErr != nil || !strings.Contains(string(output), "done") {
-				t.Fatalf("HTTP/2 client: %v %v %s %s", err, readErr, output, stderr.String())
+			output := <-fixtureOutput
+			if err := command.Wait(); err != nil || output.err != nil || !strings.Contains(output.text, "done") {
+				t.Fatalf("HTTP/2 client: %v %v %s %s", err, output.err, output.text, stderr.String())
 			}
 			if len(requests) != 16 || len(responses) != 16 || len(sockets) != 2 || summary.LostEvents != 0 {
 				t.Fatalf("HTTP/2 requests=%v responses=%v sockets=%v lost=%d", requests, responses, sockets, summary.LostEvents)

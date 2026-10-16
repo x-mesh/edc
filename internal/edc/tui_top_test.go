@@ -51,7 +51,7 @@ func TestTopModelAppendsRowsFromSamples(t *testing.T) {
 		t.Fatal("dashboard must use the alt screen")
 	}
 	for _, expected := range []string{"network", "Tab processes", "? help", "q quit", "interval 1s"} {
-		if !strings.Contains(view.Content, expected) {
+		if !strings.Contains(ansi.Strip(view.Content), expected) {
 			t.Fatalf("view %q does not contain %q", view.Content, expected)
 		}
 	}
@@ -766,12 +766,22 @@ func TestTopSelectionMarkerKeepsTheTime(t *testing.T) {
 	}
 }
 
-func TestTopStatusLinesAreMuted(t *testing.T) {
+// 안내 줄은 키만 굵은 청록색으로 하고 설명은 회색으로 둔다. 다른 화면의 liveKeyHints와 같은 색이다. 켜진 보기와 o로 고른 정렬은 선택 행과 같은 바탕으로 칠한다.
+func TestTopStatusLinesBoldKeysAndMuteLabels(t *testing.T) {
 	model := topFixtureModel(nil)
-	for _, line := range model.statusLines() {
-		if line != richDim(ansi.Strip(line)) {
-			t.Fatalf("status line is not muted: %q", line)
+	model.view, model.panelSort = topViewMemory, topViewDisk
+	status := strings.Join(model.statusLines(), "\n")
+	for _, want := range []string{richPaint("c", richCyan, true) + richDim(" cpu"), topBannerStyle() + "m mem" + richReset, topBannerStyle() + "o sort:I/O" + richReset, richPaint("q", richCyan, true) + richDim(" quit")} {
+		if !strings.Contains(status, want) {
+			t.Fatalf("status lacks %q: %q", want, status)
 		}
+	}
+	model.limits.color = false
+	if plain := strings.Join(model.statusLines(), "\n"); !strings.Contains(plain, "o sort:I/O") || strings.Contains(plain, "\x1b") {
+		t.Fatalf("plain status = %q", plain)
+	}
+	model.limits.color = true
+	for _, line := range model.statusLines() {
 		if got := liveWidth(line); got != topTableWidth {
 			t.Fatalf("status line is %d wide: %q", got, line)
 		}
@@ -1287,7 +1297,7 @@ func TestTopProcessFilterOpensTheProcessView(t *testing.T) {
 		t.Fatal("no filter must keep the all view")
 	}
 	filtered := model.withProcessFilter(filter)
-	if filtered.view != topViewProcess || !strings.Contains(filtered.statusLines()[0], "f proc") {
+	if filtered.view != topViewProcess || !strings.Contains(ansi.Strip(filtered.statusLines()[0]), "f proc") {
 		t.Fatalf("filtered view = %s, status %q", filtered.view, filtered.statusLines()[0])
 	}
 	host := topAfter(t, filtered, tea.KeyPressMsg{Code: '1', Text: "1"})
@@ -1757,9 +1767,9 @@ func topFooterModelAt(width, height, rows int) topModel {
 }
 
 func TestTopStatusLinesMergeWhenTheyFit(t *testing.T) {
-	wide := topFooterModelAt(200, 40, 3).statusLines()
-	if len(wide) != 1 || !strings.Contains(wide[0], "interval") || !strings.Contains(wide[0], "q quit") || strings.Count(wide[0], "? help") != 1 {
-		t.Errorf("200 columns: status = %q", wide)
+	wide := topFooterModelAt(210, 40, 3).statusLines()
+	if len(wide) != 1 || !strings.Contains(ansi.Strip(wide[0]), "interval") || !strings.Contains(ansi.Strip(wide[0]), "q quit") || strings.Count(ansi.Strip(wide[0]), "? help") != 1 {
+		t.Errorf("210 columns: status = %q", wide)
 	}
 	if narrow := topFooterModelAt(120, 40, 3).statusLines(); len(narrow) != 2 {
 		t.Errorf("120 columns: status = %q", narrow)
@@ -1945,13 +1955,13 @@ func TestTopShowsTheInterfaceSelection(t *testing.T) {
 	if lines := model.detailLines(); lines[1] != "interfaces /s · busiest first · net columns add --interface physical" {
 		t.Fatalf("header = %q", lines[1])
 	}
-	if status := strings.Join(model.statusLines(), "\n"); !strings.Contains(status, "net physical · interval") {
+	if status := ansi.Strip(strings.Join(model.statusLines(), "\n")); !strings.Contains(status, "net physical · interval") {
 		t.Fatalf("status = %q", status)
 	}
 	// 상태 줄은 화면 폭에서 잘린다. 긴 목록을 써도 80열에서 줄 끝의 키 안내가 남아야 한다.
 	model.interfaces, _ = parseTopInterfaceFilter("eno1,eno2,eno3,eno4,tailscale0")
 	model.width = 80
-	if lines := model.statusLines(); !strings.HasSuffix(strings.TrimRight(ansi.Strip(lines[0]), " "), "f candidates / filter") || !strings.Contains(lines[1], "? help") {
+	if lines := model.statusLines(); !strings.HasSuffix(strings.TrimRight(ansi.Strip(lines[0]), " "), "f candidates / filter") || !strings.Contains(ansi.Strip(lines[1]), "? help") {
 		t.Fatalf("status at 80 columns:\n%s", strings.Join(lines, "\n"))
 	}
 }
@@ -2047,4 +2057,100 @@ func TestRichTopHeaderKeepsTheTableHeader(t *testing.T) {
 // topTintPrefix는 topTint가 그 단계에 붙이는 escape다. COLORTERM에 따라 바뀌어 기대값을 부를 때마다 만든다.
 func topTintPrefix(level topLevel) string {
 	return strings.TrimSuffix(topTint("x", level, true), "x"+richReset)
+}
+
+func TestTopProcessSortKeyCyclesWithoutChangingTheView(t *testing.T) {
+	model := topFixtureModel(nil)
+	model.limits.color = false
+	model.width, model.height = 120, 40
+	model.rows = []topDashboardRow{{at: time.Unix(1, 0), processesValid: true, processes: []topProcess{
+		{PID: 1, CPU: 90, RSS: 1 << 20, Command: "busy"},
+		{PID: 2, CPU: 1, RSS: 4 << 30, Command: "heavy"},
+		{PID: 3, CPU: 2, RSS: 1 << 20, Command: "writer", DiskValid: true, DiskWrite: 50 << 20},
+	}}}
+	var scanIO []bool
+	model.setScanIO = func(on bool) { scanIO = append(scanIO, on) }
+	for _, tc := range []struct {
+		title  string
+		first  int
+		scanIO bool
+	}{{"CPU rank (o)", 1, false}, {"MEM rank (o)", 2, false}, {"I/O rank (o)", 3, true}, {"CPU rank ·", 1, false}} {
+		model = topAfter(t, model, topKey("o"))
+		model.tick()
+		if title := model.candidateLines()[0]; model.view != topViewAll || !strings.Contains(title, "processes · "+tc.title) || model.candidates()[0].PID != tc.first || scanIO[len(scanIO)-1] != tc.scanIO {
+			t.Fatalf("%s: view %s, title %q, first %d, scanIO %v", tc.title, model.view, title, model.candidates()[0].PID, scanIO)
+		}
+	}
+	model = topAfter(t, model, topKey("o"), topKey("o"), topKey("d"))
+	if model.panelSort != "" || model.panelRank() != topViewDisk {
+		t.Fatalf("a view key must drop the chosen sort: sort %q, rank %s", model.panelSort, model.panelRank())
+	}
+}
+
+// o로 고른 정렬은 보기를 바꾸는 모든 경로와 Esc에서 풀린다. 고른 정렬만 남아도 Esc back이 보인다.
+func TestTopChosenSortFollowsEveryViewChange(t *testing.T) {
+	newModel := func() topModel {
+		model := topFixtureModel(nil)
+		model.limits.color = false
+		model.width, model.height = 120, 40
+		model.rows = []topDashboardRow{{at: time.Unix(1, 0), processesValid: true,
+			rate: resourceRate{DiskHealthValid: true, DiskAwait: 1000},
+			processes: []topProcess{
+				{PID: 1, CPU: 90, RSS: 1 << 20, Command: "busy"},
+				{PID: 2, CPU: 1, RSS: 4 << 30, Command: "heavy"},
+			}}}
+		return model
+	}
+	model := topAfter(t, newModel(), topKey("o"))
+	if !model.canGoBack() || !strings.Contains(strings.Join(model.statusLines(), "\n"), "Esc back") {
+		t.Fatalf("a chosen sort alone must show Esc back: %q", model.statusLines())
+	}
+	model = topAfter(t, newModel(), topKey("m"), topKey("o"), topKey("esc"))
+	if model.panelSort != "" || model.view != topViewMemory || model.panelRank() != topViewMemory {
+		t.Fatalf("Esc must drop the chosen sort first: view %s, sort %q", model.view, model.panelSort)
+	}
+	model = topAfter(t, model, topKey("esc"))
+	if model.view != topViewAll || model.canGoBack() {
+		t.Fatalf("the second Esc must return to the first view: view %s", model.view)
+	}
+	model = topAfter(t, newModel(), topKey("o"), topKey("o"), topKey("f"))
+	if model.view != topViewDisk || model.panelSort != "" || model.panelRank() != topViewDisk {
+		t.Fatalf("f must open the signal view with its rank: view %s, sort %q", model.view, model.panelSort)
+	}
+	model = newModel()
+	model.split = []topView{topViewCPU, topViewMemory}
+	model = topAfter(t, model, topKey("o"), topKey("v"))
+	if model.view != topViewSplit || model.panelSort != "" {
+		t.Fatalf("v must drop the chosen sort: view %s, sort %q", model.view, model.panelSort)
+	}
+	model = topAfter(t, newModel(), topKey("o"))
+	next, _ := model.applyFilter(topProcessFilter{}, "")
+	if model = next.(topModel); model.panelSort != "" {
+		t.Fatalf("a filter change must drop the chosen sort: %q", model.panelSort)
+	}
+}
+
+// o는 후보 순서를 바꾸므로 고른 후보를 처음으로 되돌린다. 같은 자리에 다른 PID가 와서 Enter가 다른 process에 걸리지 않게 한다.
+func TestTopSortKeyResetsTheCandidateSelection(t *testing.T) {
+	model := topFixtureModel(nil)
+	model.limits.color = false
+	model.width, model.height = 120, 40
+	model.rows = []topDashboardRow{{at: time.Unix(1, 0), processesValid: true, processes: []topProcess{
+		{PID: 1, CPU: 90, RSS: 1 << 20, Command: "busy"},
+		{PID: 2, CPU: 1, RSS: 4 << 30, Command: "heavy"},
+	}}}
+	var scanIO []bool
+	model.setScanIO = func(on bool) { scanIO = append(scanIO, on) }
+	model = topAfter(t, model, topKey("tab"), topKey("down"))
+	if model.candidates()[model.processSelected].PID != 2 {
+		t.Fatalf("setup: selected PID %d", model.candidates()[model.processSelected].PID)
+	}
+	model = topAfter(t, model, topKey("o"))
+	if model.processSelected != 0 {
+		t.Fatalf("o must reset the selection: %d", model.processSelected)
+	}
+	model = topAfter(t, model, topKey("o"), topKey("o"))
+	if len(scanIO) == 0 || !scanIO[len(scanIO)-1] {
+		t.Fatalf("choosing the I/O rank must turn on the full I/O scan at once: %v", scanIO)
+	}
 }

@@ -1088,13 +1088,14 @@ If stdin and stdout are terminals, `edc top` opens a full-screen dashboard. The 
 | `-` | make the interval shorter |
 | `1`, `c`, `m`, `d`, `n` | switch to all, CPU, memory, disk, or network columns. `1` is the first view. |
 | `s` | switch to pressure columns |
+| `o` | rank the process panel by CPU, `MEM`, or I/O. Press again to change the rank. The fourth press, or a view key, returns to the rank of the view. |
 | `v` | Return to the box screen. |
 | `f` | Open the signal view. Press again to select a process candidate. If a filter is active, open the process view. |
 | `Tab` | Switch between history and process selection. |
 | `?` | Open help. Use arrows to scroll. Press `Esc` to return. |
 | `/` | type a process filter: a command name or a PID, comma-separated |
 | `i` | Open a box with the interfaces and their traffic. Press `Space` to check an interface, `a` for all, or `p` for physical. `Enter` applies the selection from the next sample. While `-w` records, the key is off. |
-| `Esc` | Go back one step. Esc closes help, a list, or process selection. Then it closes the detail or peaks panel, returns to the live row, and returns to the first view. Last, it clears the process filter. |
+| `Esc` | Go back one step. Esc closes help, a list, or process selection. Then it closes the detail or peaks panel, returns to the live row, drops the rank from `o`, and returns to the first view. Last, it clears the process filter. |
 | `↑`, `↓`, `PgUp`, `PgDn`, `End` | select an earlier row, move one screen, or return to the live row |
 | `Enter` | Show time details. If process selection is active, focus the selected PID. |
 | `h` | show the load, CPU, iowait, and memory peaks from the last 60 seconds, each with its time |
@@ -1195,9 +1196,9 @@ If the terminal has 60 or more columns, the panel adds `READ` and `WRITE`. The d
 
 If the lowest `MEM` of each minute rises for 15 minutes, the `signal` column names the process, for example `node +360.0M/12m`. `edc` compares the lowest value of the first three minutes with the lowest value of the last three minutes, and the time is the gap between those two minutes. The rise must be 256 MiB or more, and at least half of the minutes must rise. A GC sawtooth or a single step does not count. In the memory view, the process that grows the most comes first, and the cell of each growing process takes the warning color. A dim RSS value stays dim. The warning becomes a danger if this rate fills the free memory in less than one hour. The first verdict needs about 15 minutes of samples. A pause or an `--interval` longer than one minute leaves a gap, and `edc` does not judge growth across a gap.
 
-The panel ranks candidates by CPU in most views, by `MEM` in the memory view, and by I/O in the disk view. The disk view reads the I/O of every process, so a process with low CPU and high I/O appears. Other views read the I/O of the candidates only. Before the list limit, the panel keeps five leaders by CPU, by `MEM`, and by `iowait` state. The disk view also keeps five leaders by I/O. The panel shows three candidates. If the terminal has 40 or more rows, the panel shows five.
+The panel ranks candidates by CPU in most views, by `MEM` in the memory view, and by I/O in the disk view. Press `o` to choose the rank without a change of the host columns. The title then shows the rank with `(o)`, for example `MEM rank (o)`. The I/O rank reads the I/O of every process from the next sample, so a process with low CPU and high I/O appears. The other ranks read the I/O of the candidates only. Before the list limit, the panel keeps five leaders by CPU, by `MEM`, and by `iowait` state. The I/O rank also keeps five leaders by I/O. The panel shows three candidates. If the terminal has 40 or more rows, the panel shows five.
 
-The panel also shows up to two process groups above the candidates. A group is two or more processes with the same executable name, for example `gm (200 procs, 150 iowait)`. Each view ranks the groups by its own total: CPU, `MEM`, or I/O. A group must reach the minimum total of the view: 10% CPU, 100 MB `MEM`, or 1 MB/s I/O. In the disk view, a group with `iowait` processes also appears. The memory total can count a shared page one time for each process, so `≤` marks it as an upper bound. A group line has no PID, and you cannot select it.
+The panel also shows up to two process groups above the candidates. A group is two or more processes with the same executable name, for example `gm (200 procs, 150 iowait)`. The groups use the rank of the panel: CPU, `MEM`, or I/O. A group must reach the minimum total of that rank: 10% CPU, 100 MB `MEM`, or 1 MB/s I/O. In the I/O rank, a group with `iowait` processes also appears. The memory total can count a shared page one time for each process, so `≤` marks it as an upper bound. A group line has no PID, and you cannot select it.
 
 On Linux, the kernel adds the I/O of a child process to its parent when the parent reaps the child. A parent that starts many short-lived children can show the I/O of those children. Check the children before you blame the parent.
 

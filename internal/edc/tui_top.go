@@ -236,10 +236,13 @@ type topModel struct {
 	helpOffset      int
 	processFocus    bool
 	processSelected int
-	probeEnabled    bool
-	record          func(historyTopSample) error
-	recordFailure   tea.Cmd
-	recordingErr    error
+	// panelSort는 o로 고른 process 패널 정렬 기준이다. topViewCPU, topViewMemory, topViewDisk 중 하나이고,
+	// 비어 있으면 보기를 따른다. 보기를 바꾸면 비운다.
+	panelSort     topView
+	probeEnabled  bool
+	record        func(historyTopSample) error
+	recordFailure tea.Cmd
+	recordingErr  error
 	// split은 박스로 보일 보기 목록이고, 비어 있으면 전체다. boxed는 박스 안에서 그리는 표임을 나타낸다.
 	split []topView
 	boxed bool
@@ -276,9 +279,7 @@ func (model topModel) Init() tea.Cmd { return tea.Batch(model.tick(), model.reco
 
 func (model topModel) tick() tea.Cmd {
 	seq, sample := model.seq, model.sample
-	if model.setScanIO != nil {
-		model.setScanIO(model.view == topViewDisk)
-	}
+	model.syncScanIO()
 	if model.processFilter.active() && model.sampleNow != nil {
 		sample = model.sampleNow
 	}
@@ -423,19 +424,21 @@ func (model topModel) updateKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "-", "_":
 		return model.withInterval(nextTopInterval(model.interval, -1))
 	case "1":
-		model.view = topViewAll
+		model.view, model.panelSort = topViewAll, ""
 	case "c":
-		model.view = topViewCPU
+		model.view, model.panelSort = topViewCPU, ""
 	case "m":
-		model.view = topViewMemory
+		model.view, model.panelSort = topViewMemory, ""
 	case "d":
-		model.view = topViewDisk
+		model.view, model.panelSort = topViewDisk, ""
 	case "n":
-		model.view = topViewNetwork
+		model.view, model.panelSort = topViewNetwork, ""
 	case "v":
 		model = model.enterSplit()
 	case "s":
-		model.view = topViewPressure
+		model.view, model.panelSort = topViewPressure, ""
+	case "o":
+		model.panelSort = nextTopPanelSort(model.panelSort)
 	case "?":
 		model.help = true
 		model.helpOffset = 0
@@ -500,10 +503,18 @@ func (model topModel) updateKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			model.selected, model.follow = len(model.rows)-1, true
 		}
 	}
-	if key.String() == "1" || key.String() == "c" || key.String() == "m" || key.String() == "d" || key.String() == "n" || key.String() == "s" || key.String() == "v" {
+	if key.String() == "1" || key.String() == "c" || key.String() == "m" || key.String() == "d" || key.String() == "n" || key.String() == "s" || key.String() == "v" || key.String() == "o" {
 		model.processSelected = 0
+		// 이미 예약한 표본도 새 순위로 읽게 바로 알린다. tick에서만 알리면 한 interval 동안 앞 순위의 후보가 남는다.
+		model.syncScanIO()
 	}
 	return model, nil
+}
+
+func (model topModel) syncScanIO() {
+	if model.setScanIO != nil {
+		model.setScanIO(model.panelRank() == topViewDisk)
+	}
 }
 
 // homeView는 Esc가 돌아가는 처음 보기다. process 필터가 있으면 그 process 보기, --split으로 시작했으면 박스 화면이다.
@@ -519,10 +530,10 @@ func (model topModel) homeView() topView {
 
 // canGoBack은 Esc로 되돌릴 것이 있는지다. 있으면 상태 줄에 Esc back을 보인다.
 func (model topModel) canGoBack() bool {
-	return model.detail || model.peaks || !model.follow || model.view != model.homeView() || model.processFilter.active()
+	return model.detail || model.peaks || !model.follow || model.panelSort != "" || model.view != model.homeView() || model.processFilter.active()
 }
 
-// back은 Esc 한 번에 한 단계만 되돌린다. 아래 패널, 과거 행 선택, 처음 보기, process 필터 순서라서 Esc를 몇 번 누르면
+// back은 Esc 한 번에 한 단계만 되돌린다. 아래 패널, 과거 행 선택, o로 고른 정렬, 처음 보기, process 필터 순서라서 Esc를 몇 번 누르면
 // 처음 화면으로 돌아온다. 보기 키를 몰라도 돌아올 수 있게 한다.
 func (model topModel) back() (tea.Model, tea.Cmd) {
 	switch {
@@ -533,6 +544,9 @@ func (model topModel) back() (tea.Model, tea.Cmd) {
 			model.selected = len(model.rows) - 1
 		}
 		model.follow = true
+	case model.panelSort != "":
+		model.panelSort, model.processSelected = "", 0
+		model.syncScanIO()
 	case model.view != model.homeView():
 		if home := model.homeView(); home == topViewSplit {
 			model = model.enterSplit()
@@ -540,6 +554,7 @@ func (model topModel) back() (tea.Model, tea.Cmd) {
 			model.view = home
 		}
 		model.processSelected = 0
+		model.syncScanIO()
 	case model.processFilter.active():
 		model.notice = "process filter cleared"
 		return model.applyFilter(topProcessFilter{}, "")
@@ -549,7 +564,8 @@ func (model topModel) back() (tea.Model, tea.Cmd) {
 
 func (model topModel) followSignal() (tea.Model, tea.Cmd) {
 	if model.processFilter.active() {
-		model.view = topViewProcess
+		model.view, model.panelSort = topViewProcess, ""
+		model.syncScanIO()
 		return model, nil
 	}
 	row, ok := model.selectedRow()
@@ -559,7 +575,8 @@ func (model topModel) followSignal() (tea.Model, tea.Cmd) {
 	}
 	items := topDashboardSignalItems(row.rate, row.processes, row.processTotal.Groups, row.processesValid, model.limits)
 	if len(items) > 0 && items[0].view != topViewProcess && model.view != items[0].view {
-		model.view = items[0].view
+		model.view, model.panelSort, model.processSelected = items[0].view, "", 0
+		model.syncScanIO()
 		model.notice = fmt.Sprintf("f: %s → %s view · f again selects a candidate", items[0].text, items[0].view)
 		return model, nil
 	}
@@ -667,7 +684,7 @@ func (model topModel) applyFilter(filter topProcessFilter, name string) (tea.Mod
 	if model.setFilter != nil {
 		model.setFilter(filter)
 	}
-	model.view = topViewAll
+	model.view, model.panelSort = topViewAll, ""
 	if filter.active() {
 		model.view = topViewProcess
 	}
@@ -1151,58 +1168,146 @@ func (model topModel) statusLines() []string {
 	} else if !model.follow {
 		state = fmt.Sprintf("history · %d new · %s", max(0, len(model.rows)-1-model.selected), state)
 	}
-	keys := "c cpu m mem d disk n net f candidates / filter ? help"
+	var keys topKeyHints
 	if model.processFilter.active() {
-		keys = "1 host f proc / edit Esc back ? help"
+		keys = topKeyHints{{key: "1", label: "host"}, {key: "f", label: "proc"}, model.sortHint(), {key: "/", label: "edit"}, {key: "Esc", label: "back"}, {key: "?", label: "help"}}
+	} else {
+		keys = topKeyHints{
+			{key: "c", label: "cpu", on: model.view == topViewCPU}, {key: "m", label: "mem", on: model.view == topViewMemory},
+			{key: "d", label: "disk", on: model.view == topViewDisk}, {key: "n", label: "net", on: model.view == topViewNetwork},
+			model.sortHint(), {key: "f", label: "candidates"}, {key: "/", label: "filter"}, {key: "?", label: "help"},
+		}
 	}
 	if model.interfaces.active() {
-		// net 표시가 붙으면 80열에서 줄 끝이 잘린다. ? help는 아래 줄에도 있으므로 여기서 뺀다.
-		keys = strings.TrimSuffix(keys, " ? help")
+		// net 표시가 붙으면 80열에서 / filter까지 잘린다. ? help는 아래 줄에도 있고, o는 ? 도움말에 있으며 고른 뒤에는
+		// 패널 제목의 (o)로 보이므로 둘을 뺀다.
+		kept := topKeyHints{}
+		for _, hint := range keys {
+			if hint.key != "?" && hint.key != "o" {
+				kept = append(kept, hint)
+			}
+		}
+		keys = kept
 	}
-	views := fmt.Sprintf("%s · %s", state, keys)
+	color := model.limits.color
+	views := topStatusLine{plain: state + " · " + keys.render(" ", false), styled: topDim(state+" · ", color) + keys.render(" ", color)}
+	// 두 줄을 합칠 때는 ? help를 아래 줄에만 둔다.
+	joinedKeys := keys
+	if last := len(keys) - 1; keys[last].key == "?" {
+		joinedKeys = keys[:last]
+	}
+	joinedViews := topStatusLine{plain: state + " · " + joinedKeys.render(" ", false), styled: topDim(state+" · ", color) + joinedKeys.render(" ", color)}
 	switch {
 	case model.input:
-		views = "process filter: " + model.inputText + "█ · Enter apply · Esc cancel"
+		views = topDimStatusLine("process filter: "+model.inputText+"█ · Enter apply · Esc cancel", color)
+		joinedViews = views
 	case model.notice != "":
-		views = model.notice
+		views = topDimStatusLine(model.notice, color)
+		joinedViews = views
 	}
 	// PgUp/Dn을 넣어도 80열에서 끝의 +/-가 잘리지 않게 구분 공백을 두 칸으로 맞췄다.
-	actions := "↑↓ history  Tab processes  Enter detail  End live  ? help  q quit"
+	actionHints := topKeyHints{{key: "↑↓", label: "history"}, {key: "Tab", label: "processes"}, {key: "Enter", label: "detail"}, {key: "End", label: "live"}}
 	if model.canGoBack() {
-		actions = "↑↓ history  Tab processes  Enter detail  End live  Esc back  ? help  q quit"
+		actionHints = append(actionHints, topKeyHint{key: "Esc", label: "back"})
 	}
+	actionHints = append(actionHints, topKeyHint{key: "?", label: "help"}, topKeyHint{key: "q", label: "quit"})
 	if model.processFocus {
-		actions = "↑↓ select  Enter focus PID  Tab/Esc history  End live  ? help  q quit"
+		actionHints = topKeyHints{{key: "↑↓", label: "select"}, {key: "Enter", label: "focus PID"}, {key: "Tab/Esc", label: "history"}, {key: "End", label: "live"}, {key: "?", label: "help"}, {key: "q", label: "quit"}}
 	}
+	actions := topStatusLine{plain: actionHints.render("  ", false), styled: actionHints.render("  ", color)}
 	if model.displayWidth() < 70 {
-		views = state + " · / filter · ? help · q quit"
-		actions = "Tab processes · ↑↓ history · End live"
+		narrowViews := state + " · / filter · ? help · q quit"
+		narrowActions := "Tab processes · ↑↓ history · End live"
 		if model.canGoBack() {
-			actions += " · Esc back"
+			narrowActions += " · Esc back"
 		}
 		if model.processFocus {
-			actions = "↑↓ select · Enter focus · Esc back"
+			narrowActions = "↑↓ select · Enter focus · Esc back"
 		}
 		if model.input {
-			views = "filter: " + model.inputText + "█"
-			actions = "Enter apply · Esc cancel"
+			narrowViews = "filter: " + model.inputText + "█"
+			narrowActions = "Enter apply · Esc cancel"
 		} else if model.notice != "" {
-			views = model.notice
+			narrowViews = model.notice
 		}
+		views, actions = topDimStatusLine(narrowViews, color), topDimStatusLine(narrowActions, color)
+		joinedViews = topDimStatusLine(strings.TrimSuffix(narrowViews, " ? help"), color)
 	}
 	if model.displayWidth() < 40 && !model.input && model.notice == "" {
-		views = model.interval.String() + " · ? help · q quit"
-		actions = "↑↓ history · Tab procs"
+		views = topDimStatusLine(model.interval.String()+" · ? help · q quit", color)
+		joinedViews = topDimStatusLine(model.interval.String()+" · ? help · q quit", color)
+		tiny := "↑↓ history · Tab procs"
 		if model.processFocus {
-			actions = "↑↓ pick · Enter · Esc"
+			tiny = "↑↓ pick · Enter · Esc"
 		}
+		actions = topDimStatusLine(tiny, color)
 	}
-	// 두 줄이 한 폭에 들어가면 합쳐 표가 한 줄 더 보이게 한다. 양쪽에 있는 ? help는 한 번만 둔다.
-	if joined := strings.TrimSuffix(views, " ? help") + "  ·  " + actions; ansi.StringWidth(joined) <= model.displayWidth() {
-		return []string{topDim(topDashboardFitWidth(joined, model.displayWidth()), model.limits.color)}
+	// 두 줄이 한 폭에 들어가면 합쳐 표가 한 줄 더 보이게 한다. 폭은 색이 없는 문자열로 잰다.
+	if ansi.StringWidth(joinedViews.plain+"  ·  "+actions.plain) <= model.displayWidth() {
+		return []string{topFitStatusLine(joinedViews.styled+topDim("  ·  ", color)+actions.styled, model.displayWidth(), color)}
 	}
-	// 폭을 먼저 맞춘다. escape가 rune 수에 들어가면 잘리는 위치가 어긋난다.
-	return []string{topDim(topDashboardFitWidth(views, model.displayWidth()), model.limits.color), topDim(topDashboardFitWidth(actions, model.displayWidth()), model.limits.color)}
+	return []string{topFitStatusLine(views.styled, model.displayWidth(), color), topFitStatusLine(actions.styled, model.displayWidth(), color)}
+}
+
+// topKeyHint는 안내 줄의 키 하나다. on은 지금 켜진 보기나 정렬이다.
+type topKeyHint struct {
+	key, label string
+	on         bool
+}
+
+type topKeyHints []topKeyHint
+
+// render는 키를 굵은 청록색으로, 설명을 회색으로 쓴다. 다른 화면의 liveKeyHints와 같은 색이다. 켜진 항목은 선택 행과 같은 바탕으로 칠해 지금 상태를 보인다.
+// 색이 없으면 글자만 남으므로 정렬 기준은 label에 적는다.
+func (hints topKeyHints) render(sep string, color bool) string {
+	parts := make([]string, 0, len(hints))
+	for _, hint := range hints {
+		text := hint.key + " " + hint.label
+		switch {
+		case !color:
+		case hint.on:
+			text = topBannerStyle() + text + richReset
+		default:
+			text = richPaint(hint.key, richCyan, true) + richDim(" "+hint.label)
+		}
+		parts = append(parts, text)
+	}
+	return strings.Join(parts, topDim(sep, color))
+}
+
+// sortHint는 o 안내다. o로 고른 기준이 있으면 sort:MEM처럼 기준을 붙여 켜진 항목으로 보인다.
+func (model topModel) sortHint() topKeyHint {
+	if model.panelSort == "" {
+		return topKeyHint{key: "o", label: "sort"}
+	}
+	return topKeyHint{key: "o", label: "sort:" + topRankName(model.panelSort), on: true}
+}
+
+// topRankName은 패널 순위의 이름이다. 안내 줄의 sort:MEM과 패널 제목의 MEM rank가 같은 이름을 쓴다.
+func topRankName(rank topView) string {
+	switch rank {
+	case topViewMemory:
+		return "MEM"
+	case topViewDisk:
+		return "I/O"
+	}
+	return "CPU"
+}
+
+// topStatusLine은 안내 줄의 색 없는 글자와 색을 입힌 글자다. 폭과 합칠지는 plain으로 정한다.
+type topStatusLine struct{ plain, styled string }
+
+func topDimStatusLine(text string, color bool) topStatusLine {
+	return topStatusLine{plain: text, styled: topDim(text, color)}
+}
+
+// topFitStatusLine은 줄을 폭에 맞춘다. 잘린 자리에서 색이 다음 줄로 번지지 않게 끝에서 닫는다.
+func topFitStatusLine(styled string, width int, color bool) string {
+	line := topDashboardFitWidth(styled, width)
+	if color {
+		line += richReset
+	}
+	return line
 }
 
 func (model topModel) displayWidth() int {
@@ -1212,6 +1317,32 @@ func (model topModel) displayWidth() int {
 	return model.width
 }
 
+// panelRank은 process 패널의 정렬 기준이다. o로 고른 기준이 없으면 보기를 따르고, 메모리와 디스크 보기 밖에서는 CPU 순이다.
+func (model topModel) panelRank() topView {
+	view := model.view
+	if model.panelSort != "" {
+		view = model.panelSort
+	}
+	switch view {
+	case topViewMemory, topViewDisk:
+		return view
+	}
+	return topViewCPU
+}
+
+// nextTopPanelSort는 o를 누를 때의 다음 정렬 기준이다. 마지막 다음은 다시 보기를 따른다.
+func nextTopPanelSort(current topView) topView {
+	switch current {
+	case "":
+		return topViewCPU
+	case topViewCPU:
+		return topViewMemory
+	case topViewMemory:
+		return topViewDisk
+	}
+	return ""
+}
+
 func (model topModel) candidates() []topProcess {
 	row, ok := model.selectedRow()
 	row = model.currentFilterRow(row)
@@ -1219,7 +1350,7 @@ func (model topModel) candidates() []topProcess {
 		return nil
 	}
 	processes := append([]topProcess(nil), row.processes...)
-	switch model.view {
+	switch model.panelRank() {
 	case topViewMemory:
 		// signal이 가리키는 가장 많이 늘어난 process 하나만 크기와 상관없이 앞에 둔다. 다섯 줄로 자를 때 그 줄이 빠지면
 		// 안 된다. 늘어나는 process를 모두 앞에 두면 같은 일을 하는 worker 여럿이 가장 큰 process를 밀어낸다.
@@ -1247,7 +1378,7 @@ func (model topModel) showsProcessIO(processes []topProcess) bool {
 	if model.displayWidth() < topProcessIOMinWidth {
 		return false
 	}
-	if model.processFilter.active() || model.view == topViewDisk {
+	if model.processFilter.active() || model.panelRank() == topViewDisk {
 		return true
 	}
 	for _, process := range processes {
@@ -1359,19 +1490,16 @@ func (model topModel) candidateLines() []string {
 	if !ok || !row.processesValid {
 		return []string{topHeading("processes · waiting for a sample with this filter", model.limits.color)}
 	}
-	rank := "CPU"
-	if model.view == topViewMemory {
-		rank = "MEM"
-	}
 	state := "live"
 	if !model.follow {
 		state = "history"
 	}
-	title := rank
-	if model.view == topViewDisk {
-		title = "I/O"
+	title := topRankName(model.panelRank())
+	chosen := ""
+	if model.panelSort != "" {
+		chosen = " (o)"
 	}
-	lines := []string{topHeading(fmt.Sprintf("processes · %s rank · %s %s · Tab select", title, state, row.at.Format("15:04:05")), model.limits.color)}
+	lines := []string{topHeading(fmt.Sprintf("processes · %s rank%s · %s %s · Tab select", title, chosen, state, row.at.Format("15:04:05")), model.limits.color)}
 	processes := model.candidates()
 	if len(processes) == 0 {
 		return append(lines, "no match · / edit filter · Esc clear")
@@ -1402,12 +1530,17 @@ func (model topModel) candidateLines() []string {
 			header += fmt.Sprintf(" %6s %6s", "READ", "WRITE")
 		}
 		if model.displayWidth() < 40 {
-			header = fmt.Sprintf("  %7s %s %6s", "PID", topFitCell("COMMAND", nameWidth, true), rank)
+			// 좁은 화면은 값 하나만 둔다. I/O 순위에도 CPU를 보이므로 MEM 순위만 MEM이다.
+			value := "CPU"
+			if model.panelRank() == topViewMemory {
+				value = "MEM"
+			}
+			header = fmt.Sprintf("  %7s %s %6s", "PID", topFitCell("COMMAND", nameWidth, true), value)
 		}
 		lines = append(lines, topDim(header, model.limits.color))
 	}
 	if model.displayWidth() >= 40 && !model.processFilter.active() {
-		groups := topViewProcessGroups(row.processTotal.Groups, model.view)
+		groups := topViewProcessGroups(row.processTotal.Groups, model.panelRank())
 		// 묶음이 process 줄을 모두 밀어내지 않도록 process 한 줄은 남긴다.
 		groups = groups[:min(len(groups), max(0, room-len(lines)-1))]
 		for _, group := range groups {
@@ -1448,7 +1581,7 @@ func (model topModel) candidateLines() []string {
 		}
 		if model.displayWidth() < 40 {
 			value := fmt.Sprintf("%6s", fmt.Sprintf("%.1f%%", process.CPU))
-			if model.view == topViewMemory {
+			if model.panelRank() == topViewMemory {
 				value = memory
 			}
 			line = fmt.Sprintf("%s %7d %s %6s", marker, process.PID, topFitCell(topProcessName(process.Command, nameWidth), nameWidth, true), value)
@@ -1477,12 +1610,12 @@ func (model topModel) helpLines() []string {
 	lines := []string{
 		"Views: 1 all · c CPU · m memory · d disk · n network · s pressure · v boxes",
 		"History: ↑↓ or PgUp/PgDn · End live · p pause · +/- interval",
-		"Processes: Tab select · ↑↓ choose · Enter focus PID · Tab/Esc back",
+		"Processes: Tab select · ↑↓ choose · Enter focus PID · Tab/Esc back · o sort by CPU, MEM, I/O, then the view",
 		"Signals: f opens its view, then selects candidates. A candidate is not a confirmed cause.",
 		"Events: warnings that last 5s are kept with their candidates · e list · Enter jump · [ ] previous/next · ! marks the start row",
 		"Events that start within 5s share one line. ≤ means the warning was already on when edc started.",
 		"Filter: / edit names or PIDs · Enter apply · Esc cancel",
-		"Back: Esc closes the panel, returns to the live row, then to the first view, then clears the process filter",
+		"Back: Esc closes the panel, returns to the live row, drops the o rank, returns to the first view, then clears the process filter",
 		"Interfaces: i opens the list · Space check · a all · p physical · Enter applies from the next sample · off while -w records",
 		"Details: Enter on history · h peaks from the last 60 seconds",
 		"CPU: host % uses all cores. Process 100% uses one core. RSS is resident memory.",

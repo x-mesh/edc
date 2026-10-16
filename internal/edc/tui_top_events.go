@@ -173,7 +173,7 @@ func topEventGroupValue(group topProcessGroup, view topView) string {
 		}
 		return ""
 	case topViewMemory:
-		return formatProcessGroupRSS(group.RSS)
+		return formatProcessGroupMemory(group.Memory)
 	}
 	return fmt.Sprintf("%.0f%%", group.CPU)
 }
@@ -199,7 +199,7 @@ func topEventLeadingProcess(processes []topProcess, view topView) (topProcess, b
 	case topViewMemory:
 		leading := processes[0]
 		for _, process := range processes[1:] {
-			if process.RSS > leading.RSS {
+			if process.memory() > leading.memory() {
 				leading = process
 			}
 		}
@@ -222,7 +222,7 @@ func topEventProcessValue(process topProcess, view topView) string {
 		}
 		return topProcessStateName(process.State)
 	case topViewMemory:
-		return formatProcessRSS(process.RSS)
+		return formatProcessRSS(process.memory())
 	}
 	return fmt.Sprintf("%.0f%%", process.CPU)
 }

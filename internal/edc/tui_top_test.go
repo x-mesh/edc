@@ -338,8 +338,8 @@ func TestTopCPUAndMemoryViewsShowGroups(t *testing.T) {
 	model.width, model.height = topFooterProcessWidth, topTallHeight
 	processes := []topProcess{{PID: 1, CPU: 30, RSS: 500 << 20, Command: "node"}}
 	total := topProcessTotal{Groups: []topProcessGroup{
-		{Name: "gm", Count: 200, CPU: 100, RSS: 400 << 20},
-		{Name: "php-fpm", Count: 10, CPU: 20, RSS: 800 << 20},
+		{Name: "gm", Count: 200, CPU: 100, RSS: 400 << 20, Memory: 400 << 20},
+		{Name: "php-fpm", Count: 10, CPU: 20, RSS: 800 << 20, Memory: 800 << 20},
 	}}
 	model.rows = append(model.rows, topDashboardRow{at: time.Unix(1, 0), processesValid: true, processes: processes, processTotal: total})
 	model.selected = len(model.rows) - 1
@@ -474,11 +474,11 @@ func TestTopCoresColumnFollowsTheCoreCount(t *testing.T) {
 
 func TestTopProcessDetailUsesTheSelectedSnapshot(t *testing.T) {
 	processes := []topProcess{{PID: 4, CPU: 99, RSS: 2 * 1024 * 1024, Command: "java"}, {PID: 7, CPU: 12, RSS: 1024, Command: "node"}}
-	got := topProcessDetail(processes, true)
+	got := topProcessDetail(processes, true, false)
 	if !strings.Contains(got, "java 99% 2.0M") || !strings.Contains(got, "node 12%") {
 		t.Fatalf("process detail = %q", got)
 	}
-	if got := topProcessDetail(nil, false); got != "processes —" {
+	if got := topProcessDetail(nil, false, false); got != "processes —" {
 		t.Fatalf("process fallback = %q", got)
 	}
 }
@@ -488,18 +488,18 @@ func TestTopMatchDetailSumsEveryMatchAndNamesTheRest(t *testing.T) {
 		{PID: 1, CPU: 50, RSS: 3 << 20, Command: "worker-a", FDs: 10, DiskValid: true, DiskRead: 1 << 20, DiskWrite: 2 << 20},
 		{PID: 2, CPU: 40, RSS: 2 << 20, Command: "worker-b", FDs: 5, DiskValid: true, DiskWrite: 1 << 20},
 	}
-	total := topProcessTotal{Count: 5, CPU: 130, RSS: 9 << 20, Threads: 12}
-	lines := topMatchDetail(processes, total, true)
-	if len(lines) != 2 || lines[0] != "match 5 · cpu 130% · rss 9.0M · thr 12 · fds 15 · io r 1.00M/s w 3.00M/s" || lines[1] != "  worker-a 50% 3.0M, worker-b 40% 2.0M, +3" {
+	total := topProcessTotal{Count: 5, CPU: 130, RSS: 9 << 20, Memory: 9 << 20, Threads: 12}
+	lines := topMatchDetail(processes, total, true, false)
+	if len(lines) != 2 || lines[0] != "match 5 · cpu 130% · mem 9.0M · thr 12 · fds 15 · io r 1.00M/s w 3.00M/s" || lines[1] != "  worker-a 50% 3.0M, worker-b 40% 2.0M, +3" {
 		t.Fatalf("match detail = %q", lines)
 	}
-	if got := topMatchDetail(nil, topProcessTotal{}, true); len(got) != 1 || got[0] != "match none" {
+	if got := topMatchDetail(nil, topProcessTotal{}, true, false); len(got) != 1 || got[0] != "match none" {
 		t.Fatalf("no match detail = %q", got)
 	}
-	if got := topMatchDetail(nil, topProcessTotal{}, false); len(got) != 1 || got[0] != "processes —" {
+	if got := topMatchDetail(nil, topProcessTotal{}, false, false); len(got) != 1 || got[0] != "processes —" {
 		t.Fatalf("no sample detail = %q", got)
 	}
-	quiet := topMatchDetail([]topProcess{{PID: 3, CPU: 1, Command: "x"}}, topProcessTotal{Count: 1, CPU: 1}, true)
+	quiet := topMatchDetail([]topProcess{{PID: 3, CPU: 1, Command: "x"}}, topProcessTotal{Count: 1, CPU: 1}, true, false)
 	if strings.Contains(quiet[0], "fds") || strings.Contains(quiet[0], "io r") || strings.Contains(quiet[0], "thr") {
 		t.Fatalf("unknown values must not appear: %q", quiet)
 	}
@@ -791,8 +791,10 @@ func TestTopPanelsFitTheTableWidth(t *testing.T) {
 	lines := model.detailLines()
 	model.detail, model.peaks = false, true
 	lines = append(lines, model.peakLines()...)
-	for _, line := range lines {
-		if got := len([]rune(line)); got > topTableWidth {
+	// fixture process는 MemoryValid가 없어 memory 값이 흐린 색으로 칠해진다. 폭과 글자는 색을 뺀 값으로 본다.
+	for index, line := range lines {
+		lines[index] = ansi.Strip(line)
+		if got := ansi.StringWidth(line); got > topTableWidth {
 			t.Fatalf("panel line is %d wide and would be clipped: %q", got, line)
 		}
 	}
@@ -1257,7 +1259,7 @@ func TestTopProcessViewShowsTheMatchedGroupForEachSample(t *testing.T) {
 			{PID: 1, CPU: 50, Command: "worker-a", FDs: 10, DiskValid: true, DiskRead: 1 << 20, DiskWrite: 2 << 20},
 			{PID: 2, CPU: 40, Command: "worker-b", FDs: 5, DiskValid: true, DiskWrite: 1 << 20},
 		},
-		processTotal: topProcessTotal{Count: 5, CPU: 130, RSS: 9 << 20, Threads: 12, Probe: &topProbeStats{Source: topProbeSourceEBPF, Measured: 1, RunqCount: 4, RunqSumNS: 6_000_000, IO: &topProbeIO{Count: 2, SumNS: 500_000}}},
+		processTotal: topProcessTotal{Count: 5, CPU: 130, RSS: 9 << 20, Memory: 9 << 20, Threads: 12, Probe: &topProbeStats{Source: topProbeSourceEBPF, Measured: 1, RunqCount: 4, RunqSumNS: 6_000_000, IO: &topProbeIO{Count: 2, SumNS: 500_000}}},
 	}
 	if got, want := cells(row), []string{"5", "130.0", "9.0M", "12", "15", "1.00M", "3.00M", "1.50", "0.25"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("process row = %q, want %q", got, want)
@@ -1328,11 +1330,11 @@ func TestTopProcessBannerLeadsWithTheMatchedGroup(t *testing.T) {
 	}
 	model.rows = []topDashboardRow{{at: time.Unix(1, 0), processesValid: true, filter: "worker",
 		processes:    []topProcess{{PID: 1, CPU: 50, Command: "worker-a", FDs: 10, DiskValid: true, DiskWrite: 2 << 20}},
-		processTotal: topProcessTotal{Count: 7, CPU: 600.4, RSS: 9 << 20, Threads: 12, Probe: &topProbeStats{Source: topProbeSourceEBPF, Measured: 1, RunqCount: 4, RunqSumNS: 6_000_000, IO: &topProbeIO{Count: 2, SumNS: 500_000}}},
+		processTotal: topProcessTotal{Count: 7, CPU: 600.4, RSS: 9 << 20, Memory: 9 << 20, Threads: 12, Probe: &topProbeStats{Source: topProbeSourceEBPF, Measured: 1, RunqCount: 4, RunqSumNS: 6_000_000, IO: &topProbeIO{Count: 2, SumNS: 500_000}}},
 	}}
 	model.selected = 0
 	banner := model.processBanner()[0]
-	if !strings.HasPrefix(banner, " PROCESS worker · 7 matched · cpu 600% · rss 9.0M") || !strings.Contains(banner, model.rows[0].at.Format("15:04:05")) || liveWidth(banner) != topTableWidth {
+	if !strings.HasPrefix(banner, " PROCESS worker · 7 matched · cpu 600% · mem 9.0M") || !strings.Contains(banner, model.rows[0].at.Format("15:04:05")) || liveWidth(banner) != topTableWidth {
 		t.Fatalf("80 column banner = %q (%d columns)", banner, liveWidth(banner))
 	}
 	if strings.Contains(banner, "fds") {
@@ -1469,6 +1471,72 @@ func TestTopMemoryCandidatesFocusTheSelectedPIDAndKeepTheSnapshot(t *testing.T) 
 	model = topAfter(t, model, topKey("esc"))
 	if model.currentFilterRow(topDashboardRow{filter: "3", processesValid: true}).processesValid {
 		t.Fatal("clearing the filter must not treat old filtered rows as host process samples")
+	}
+}
+
+func TestTopCandidatesShowRSSBesideMemoryOnlyWhenWide(t *testing.T) {
+	model := topFixtureModel(nil)
+	model.limits.color = false
+	model.rows = []topDashboardRow{{at: time.Unix(1, 0), processesValid: true, processes: []topProcess{
+		{PID: 7, CPU: 1, RSS: 49 << 20, Memory: 3 << 30, MemoryValid: true, Command: "leak"},
+	}}}
+	model = topAfter(t, model, topKey("m"))
+	for _, tc := range []struct {
+		width int
+		rss   bool
+	}{{120, true}, {60, false}} {
+		model.width, model.height = tc.width, 40
+		lines := strings.Join(model.candidateLines(), "\n")
+		if !strings.Contains(lines, "MEM rank") || !strings.Contains(lines, " MEM") || !strings.Contains(lines, "3.0G") {
+			t.Fatalf("%d columns must rank and show memory:\n%s", tc.width, lines)
+		}
+		if strings.Contains(lines, " RSS") != tc.rss || strings.Contains(lines, "49.0M") != tc.rss {
+			t.Fatalf("%d columns RSS shown = %v, want %v:\n%s", tc.width, !tc.rss, tc.rss, lines)
+		}
+	}
+	if measured, estimated := topProcessMemoryCell("1.0M", false, true), topProcessMemoryCell("1.0M", true, true); measured != "  1.0M" || estimated == measured {
+		t.Fatalf("estimated memory must look different: %q, %q", measured, estimated)
+	}
+}
+
+// RSS 칸은 폭으로만 정한다. I/O 값이 생기고 없어질 때마다 RSS 칸이 나타났다 사라지면 같은 자리가 다른 값으로 읽힌다.
+func TestTopCandidatesKeepRSSWhetherIOArrives(t *testing.T) {
+	for width := 40; width <= 140; width++ {
+		var shown []bool
+		for _, diskValid := range []bool{false, true} {
+			model := topFixtureModel(nil)
+			model.limits.color = false
+			model.rows = []topDashboardRow{{at: time.Unix(1, 0), processesValid: true, processes: []topProcess{
+				{PID: 7, CPU: 1, RSS: 49 << 20, Memory: 3 << 30, MemoryValid: true, DiskValid: diskValid, Command: "leak"},
+			}}}
+			model.width, model.height = width, 40
+			shown = append(shown, strings.Contains(strings.Join(model.candidateLines(), "\n"), " RSS"))
+		}
+		if shown[0] != shown[1] {
+			t.Fatalf("%d columns: RSS shown without I/O = %v, with I/O = %v", width, shown[0], shown[1])
+		}
+	}
+}
+
+// 필터 합과 상위 세 개에 RSS로 대신한 값이 섞이면 후보 줄처럼 흐리게 둔다. 색이 없으면 글자는 그대로다.
+func TestTopEstimatedMemoryIsMutedInSummaries(t *testing.T) {
+	processes := []topProcess{{PID: 1, CPU: 5, RSS: 300 << 20, Memory: 300 << 20, Command: "other"}}
+	total := topProcessTotal{Count: 1, CPU: 5, Memory: 300 << 20, MemoryEstimated: true}
+	plain := topMatchDetail(processes, total, true, false)
+	colored := topMatchDetail(processes, total, true, true)
+	muted := richDim("300.0M")
+	for index := range plain {
+		if strings.Contains(plain[index], "\033[") || ansi.Strip(colored[index]) != plain[index] || !strings.Contains(colored[index], muted) {
+			t.Errorf("line %d: plain %q, colored %q", index, plain[index], colored[index])
+		}
+	}
+	measured := []topProcess{{PID: 1, CPU: 5, RSS: 300 << 20, Memory: 300 << 20, MemoryValid: true, Command: "mine"}}
+	if line := topMatchDetail(measured, topProcessTotal{Count: 1, CPU: 5, Memory: 300 << 20}, true, true); strings.Contains(strings.Join(line, "\n"), muted) {
+		t.Errorf("measured memory is muted: %q", line)
+	}
+	cells := topProcessViewCells(topDashboardRow{processesValid: true, processes: processes, processTotal: total})
+	if !cells[2].estimated || cells[2].paint("300.0M", true) != muted || cells[2].paint("300.0M", false) != "300.0M" {
+		t.Errorf("process view MEM cell = %+v", cells[2])
 	}
 }
 
@@ -1698,23 +1766,49 @@ func TestTopStatusLinesMergeWhenTheyFit(t *testing.T) {
 	}
 }
 
+// 오른쪽 후보 칸은 왼쪽에 80열이 남을 때만 RSS 칸만큼 넓어진다.
+func TestTopFooterWidensProcessesForRSS(t *testing.T) {
+	for _, tc := range []struct {
+		width int
+		rss   bool
+	}{{topFooterDockWidth + topProcessRSSColumnWidth, true}, {topFooterDockWidth + topProcessRSSColumnWidth - 1, false}} {
+		model := topFooterModelAt(tc.width, 40, 3)
+		processWidth := model.footerProcessWidth()
+		if left := tc.width - topFooterGap - processWidth; left < topTableWidth {
+			t.Fatalf("%d columns leave %d columns on the left", tc.width, left)
+		}
+		footer := model.footerLines()
+		header := ansi.Strip(ansi.Cut(footer[1], tc.width-processWidth, tc.width))
+		if !strings.Contains(header, "MEM") || strings.Contains(header, "RSS") != tc.rss {
+			t.Errorf("%d columns: process header = %q, want RSS %v", tc.width, header, tc.rss)
+		}
+		for _, line := range footer {
+			if ansi.StringWidth(line) != tc.width {
+				t.Errorf("%d columns: footer line is %d columns: %q", tc.width, ansi.StringWidth(line), line)
+			}
+		}
+	}
+}
+
 func TestTopFooterDocksProcessesOnTheRight(t *testing.T) {
-	model := topFooterModelAt(200, 40, 3)
-	left := 200 - topFooterGap - topFooterProcessWidth
+	// 두 안내 줄을 합친 130열이 왼쪽 칸에 들어가는 폭이다.
+	const width = 210
+	model := topFooterModelAt(width, 40, 3)
+	left := width - topFooterGap - model.footerProcessWidth()
 	footer := model.footerLines()
 	// process 후보는 제목, 열 이름, 다섯 개로 7줄이고 안내 한 줄은 그 왼쪽 마지막 줄에 들어간다.
 	if len(footer) != 7 {
 		t.Fatalf("footer = %d lines:\n%s", len(footer), strings.Join(footer, "\n"))
 	}
 	// 왼쪽 칸에는 이벤트가 들어가고 ·가 여러 바이트라, 오른쪽 칸은 바이트가 아니라 셀 위치로 자른다.
-	if !strings.HasPrefix(ansi.Strip(ansi.Cut(footer[0], left+topFooterGap, 200)), "processes · CPU rank") || !strings.HasPrefix(ansi.Strip(footer[0]), "events · e list") {
+	if !strings.HasPrefix(ansi.Strip(ansi.Cut(footer[0], left+topFooterGap, width)), "processes · CPU rank") || !strings.HasPrefix(ansi.Strip(footer[0]), "events · e list") {
 		t.Errorf("first footer line = %q", footer[0])
 	}
 	if last := ansi.Strip(footer[len(footer)-1]); !strings.HasPrefix(last, "interval") || !strings.Contains(last, "eps") {
 		t.Errorf("last footer line = %q", last)
 	}
 	for _, line := range footer {
-		if ansi.StringWidth(line) != 200 {
+		if ansi.StringWidth(line) != width {
 			t.Errorf("footer line is %d columns: %q", ansi.StringWidth(line), line)
 		}
 	}

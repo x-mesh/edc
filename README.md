@@ -1187,13 +1187,15 @@ Press `s` for pressure. On macOS, it shows `mem lvl`, `blocked`, `load`, and `me
 
 The detail view also lists the top three processes by CPU. The list refreshes in the background at most once a second, so it does not lengthen the observation interval. Without `--write`, only the dashboard collects it; the table and unfiltered `--json` output skip it. On Linux, `edc` compares the CPU ticks in `/proc/<pid>/stat` with the previous refresh, so the value covers the time since that refresh. On macOS, it uses the recent decaying average that `ps` reports.
 
-The process panel shows `PID`, `COMMAND`, `STATE`, `CPU%`, and `RSS`. `STATE` shows `run`, `sleep`, `iowait`, `zombie`, `stop`, `trace`, `idle`, `dead`, or `park`. `iowait` is the Linux `D` state: the process waits for I/O, and a signal cannot wake it. An `iowait` process waits for the disk. It does not prove that the process uses the disk.
+The process panel shows `PID`, `COMMAND`, `STATE`, `CPU%`, and `MEM`. If the panel has room, it also shows `RSS` after `MEM`. `STATE` shows `run`, `sleep`, `iowait`, `zombie`, `stop`, `trace`, `idle`, `dead`, or `park`. `iowait` is the Linux `D` state: the process waits for I/O, and a signal cannot wake it. An `iowait` process waits for the disk. It does not prove that the process uses the disk.
 
 If the terminal has 60 or more columns, the panel adds `READ` and `WRITE`. The disk view and `--process` always add them. Other views add them only when a value is available. These values are the bytes per second that reach the storage device, from `/proc/<pid>/io`. The panel shows `—` if `edc` cannot read the value. To read the processes of other users, run `edc top` as root.
 
-The panel ranks candidates by CPU in most views, by RSS in the memory view, and by I/O in the disk view. The disk view reads the I/O of every process, so a process with low CPU and high I/O appears. Other views read the I/O of the candidates only. Before the list limit, the panel keeps five leaders by CPU, by RSS, and by `iowait` state. The disk view also keeps five leaders by I/O. The panel shows three candidates. If the terminal has 40 or more rows, the panel shows five.
+`MEM` is the memory that the process holds. On macOS, it is the physical footprint, which includes compressed memory. On Linux, it is RSS plus swap (`VmSwap`). RSS does not count compressed or swapped pages, so a process with a memory leak can have a small RSS. If `edc` cannot read `MEM`, the panel shows RSS in a dim color. On macOS, `edc` cannot read this value for processes of other users, such as root or `_windowserver`. If you run `edc` with `sudo`, it reads them.
 
-The panel also shows up to two process groups above the candidates. A group is two or more processes with the same executable name, for example `gm (200 procs, 150 iowait)`. Each view ranks the groups by its own total: CPU, RSS, or I/O. A group must reach the minimum total of the view: 10% CPU, 100 MB RSS, or 1 MB/s I/O. In the disk view, a group with `iowait` processes also appears. The RSS total counts a shared page one time for each process, so `≤` marks it as an upper bound. A group line has no PID, and you cannot select it.
+The panel ranks candidates by CPU in most views, by `MEM` in the memory view, and by I/O in the disk view. The disk view reads the I/O of every process, so a process with low CPU and high I/O appears. Other views read the I/O of the candidates only. Before the list limit, the panel keeps five leaders by CPU, by `MEM`, and by `iowait` state. The disk view also keeps five leaders by I/O. The panel shows three candidates. If the terminal has 40 or more rows, the panel shows five.
+
+The panel also shows up to two process groups above the candidates. A group is two or more processes with the same executable name, for example `gm (200 procs, 150 iowait)`. Each view ranks the groups by its own total: CPU, `MEM`, or I/O. A group must reach the minimum total of the view: 10% CPU, 100 MB `MEM`, or 1 MB/s I/O. In the disk view, a group with `iowait` processes also appears. The memory total can count a shared page one time for each process, so `≤` marks it as an upper bound. A group line has no PID, and you cannot select it.
 
 On Linux, the kernel adds the I/O of a child process to its parent when the parent reaps the child. A parent that starts many short-lived children can show the I/O of those children. Check the children before you blame the parent.
 
@@ -1231,7 +1233,7 @@ JSON samples add `network_limits` with the namespace, `settings`, `gauges`, cumu
 
 `edc top` keeps a warning from the `signal` column as an event when the warning stays on for 5 seconds. A warning that stops and starts again within 5 seconds stays in the same event. The dashboard keeps the last 100 events. Events stay in memory, and they disappear when the dashboard quits.
 
-Each event keeps its worst value and the leading group and process at that sample. The candidates come from the view of the warning: I/O for disk and pressure warnings, RSS for memory warnings, and CPU for other warnings. Network warnings get no candidate. A candidate does not prove the cause.
+Each event keeps its worst value and the leading group and process at that sample. The candidates come from the view of the warning: I/O for disk and pressure warnings, `MEM` for memory warnings, and CPU for other warnings. Network warnings get no candidate. A candidate does not prove the cause.
 
 One fault often starts several warnings at the same time. A full disk raises `await`, `blocked`, `load`, `i/o`, and `psi io` together. Events that start within 5 seconds of the first one share one line. The line shows the worst warning and the number of the other warnings, for example `await 2034ms +4`.
 
@@ -1274,7 +1276,7 @@ Each line has `time`, `hostname`, `cores`, the network and disk rates in bytes p
 
 Each invocation adds a separate run with host information, edc version, collection settings, start/end times, status, and sample count. `unfinished` means the run has no recorded end, which can indicate an active run or a forced termination. Normal exits flush queued samples; recording errors end observation with exit code `1`. Forced termination preserves committed transactions. A new database has mode 0600. There is no automatic deletion or rotation.
 
-Host samples include the existing numeric top metrics, per-core CPU values, support flags, the actual observation interval, and the process filter active at that time. Without a process filter, recording retains the union of the CPU top five and RSS top five (at most ten). With a filter, it retains up to fifty processes and the total of all matches. It does not record every process. Pausing top pauses recording, and resuming establishes a fresh baseline before the next recorded rate. Process refreshes may be less frequent than host samples; `process_observed_at` identifies the refresh time. PID and precise process start time distinguish reused PIDs when start time is available.
+Host samples include the existing numeric top metrics, per-core CPU values, support flags, the actual observation interval, and the process filter active at that time. Without a process filter, recording retains the union of the CPU top five and `MEM` top five (at most ten). With a filter, it retains up to fifty processes and the total of all matches. It does not record every process. Pausing top pauses recording, and resuming establishes a fresh baseline before the next recorded rate. Process refreshes may be less frequent than host samples; `process_observed_at` identifies the refresh time. PID and precise process start time distinguish reused PIDs when start time is available.
 
 `history list`, `top`, and `process` show newest results first. Omitting the database path selects the same default database, without creating it. `--run` selects one run; `--from` includes the start and `--to` excludes the end, using RFC3339 timestamps. `--limit` defaults to 200; `0` means all matching results. `--json <path|->` emits JSON Lines. Options precede the database path, following Go flag parsing.
 
@@ -1299,7 +1301,7 @@ On Linux, the command name is `comm`, which the kernel cuts at 15 characters. On
 ./bin/edc top --process 4321,worker --json /tmp/edc-host.jsonl
 ```
 
-With `--process`, the dashboard shows a highlighted `PROCESS` bar under the title. It names the filter and the current values of the matched processes. When the terminal is narrow, the bar drops the last values first. The dashboard also opens the process view. Each row shows the matched processes at one sample. It shows the number of matches, their CPU%, memory (`rss`), threads, open files, and disk read and write per second. One core is 100 CPU%. With `--ebpf`, the row also shows the average run-queue wait and the average block I/O latency in milliseconds. A value that `edc` cannot read shows `—`. Press `1` for the host columns and `f` to return to the process view. `Enter` shows the busiest matches for the selected row.
+With `--process`, the dashboard shows a highlighted `PROCESS` bar under the title. It names the filter and the current values of the matched processes. When the terminal is narrow, the bar drops the last values first. The dashboard also opens the process view. Each row shows the matched processes at one sample. It shows the number of matches, their CPU%, memory (`mem`), threads, open files, and disk read and write per second. One core is 100 CPU%. With `--ebpf`, the row also shows the average run-queue wait and the average block I/O latency in milliseconds. A value that `edc` cannot read shows `—`. Press `1` for the host columns and `f` to return to the process view. `Enter` shows the busiest matches for the selected row.
 
 Select a row and press `f`. If the first signal is a host value, `f` opens its view.
 
@@ -1311,14 +1313,15 @@ Rows from a different filter show `—` for process values. They do not represen
 
 The filter runs before the list is cut to the busiest processes. A quiet process that matches stays in the list.
 
-The detail view starts with totals over every match: count, CPU, RSS, threads, open file descriptors, and disk I/O. Next, it lists the three busiest matches and `+N` for the rest. The remaining lines show process resource limits. The `signal` column then reflects only the matches.
+The detail view starts with totals over every match: count, CPU, memory, threads, open file descriptors, and disk I/O. Next, it lists the three busiest matches and `+N` for the rest. The remaining lines show process resource limits. The `signal` column then reflects only the matches.
 
-With `--json`, a sample adds two fields. `processes` holds up to 50 matches, busiest first. `process_total` is the sum over every match: `count`, `cpu_pct`, `rss_bytes`, and `threads`. CPU is 100% per core. `processes` is `[]` when nothing matches. Each process has these fields:
+With `--json`, a sample adds two fields. `processes` holds up to 50 matches, busiest first. `process_total` is the sum over every match: `count`, `cpu_pct`, `rss_bytes`, `memory_bytes`, and `threads`. CPU is 100% per core. `processes` is `[]` when nothing matches. Each process has these fields:
 
 | Field | Meaning |
 |---|---|
 | `pid`, `started` | `started` is the start time in UTC. A PID can be reused, so `(pid, started)` names one process. |
 | `command`, `cpu_pct`, `rss_bytes` | name, CPU since the last refresh, resident memory |
+| `memory_bytes` | the memory that the process holds: physical footprint on macOS, RSS plus `VmSwap` on Linux. In `process_total`, it is absent if one match has no value. |
 | `threads` | thread count (Linux and macOS) |
 | `fds` | open file descriptors (Linux) |
 | `disk_read_bytes_per_s`, `disk_write_bytes_per_s` | disk I/O bytes per second from `/proc/<pid>/io` on Linux and libproc on macOS |

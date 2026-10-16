@@ -48,6 +48,10 @@ func newTopProcessReader() func() ([]topProcess, bool) {
 			if err == nil {
 				processes[index].Threads = threads
 			}
+			// 다른 사용자 소유 process는 root로 실행할 때만 읽는다. 그때는 MemoryValid가 false로 남아 RSS로 대신한다.
+			if usage, err := readDarwinProcessRusage(processes[index].PID); err == nil {
+				processes[index].Memory, processes[index].MemoryValid = usage.Footprint, true
+			}
 		}
 		return processes, len(processes) > 0
 	}

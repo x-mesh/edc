@@ -47,23 +47,52 @@ func TestTraceKeySpansMarkTheCurrentView(t *testing.T) {
 
 func TestTraceScreenHelpMarksViewAndToggles(t *testing.T) {
 	model := traceScreenModel{protocol: "http", groupBy: traceGroupByPath, split: true, secrets: true}
-	got := strings.Join(model.helpOn(), ",")
-	if got != "u path,i split,m secrets" {
+	// 미리 보기는 event 목록에서만 그리므로, path 보기에서는 split을 칠하지 않는다.
+	if got := strings.Join(model.helpOn(), ","); got != "u path,m secrets" {
 		t.Fatalf("http help on = %q", got)
+	}
+	model.groupBy = ""
+	if got := strings.Join(model.helpOn(), ","); got != "g scroll,i split,m secrets" {
+		t.Fatalf("event list help on = %q", got)
 	}
 }
 
 func TestBrowserHintsMarkAllFailedAndFilter(t *testing.T) {
-	svc := svcBrowser{all: true, failed: true, filter: "nginx"}
-	if got := strings.Join(svc.hintOn(), ","); got != "a all,failed only,filter nginx" {
-		t.Fatalf("svc on = %q", got)
+	t.Setenv("NO_COLOR", "")
+	if got := svcBrowserHints("", false, false, true, 0, true); !strings.Contains(got, liveSelected("a all", true)) {
+		t.Fatalf("a all is not marked: %q", got)
 	}
-	svc.filtering = true
-	if got := strings.Join(svc.hintOn(), ","); got != "a all,failed only" {
-		t.Fatalf("svc on while typing = %q", got)
+	// 필터 글자에 안내의 구분자나 끝 공백이 있어도 조건 전체를 칠한다.
+	for _, filter := range []string{"nginx", "web, api", "a · b", "nginx "} {
+		got := svcBrowserHints(filter, false, true, false, 3, true)
+		for _, want := range []string{liveSelected("filter "+filter, true), liveSelected("failed only", true)} {
+			if !strings.Contains(got, want) {
+				t.Errorf("filter %q: hints lack %q: %q", filter, want, got)
+			}
+		}
+		if plain := svcBrowserHints(filter, false, true, false, 3, false); plain != "filter "+filter+", failed only · 3 shown · Esc clear · Enter open · q quit" {
+			t.Errorf("filter %q: plain = %q", filter, plain)
+		}
 	}
-	if got := strings.Join((ctrBrowser{all: true}).hintOn(), ","); got != "a all" {
-		t.Fatalf("ctr on = %q", got)
+	if got := svcBrowserHints("nginx", true, false, false, 0, true); strings.Contains(got, liveSelected("filter nginx", true)) {
+		t.Fatalf("the filter is not on while it is typed: %q", got)
+	}
+}
+
+// 한국어 안내는 키에 조사를 붙인다. 조사를 뺀 키만 청록으로 칠한다.
+func TestLiveKeyHintsPaintAKeyBeforeAParticle(t *testing.T) {
+	t.Setenv("NO_COLOR", "")
+	for text, key := range map[string]string{"q를 누르면 멈추고 읽은 만큼 보여 줍니다": "q", "Ctrl-C로 중단하고 읽은 만큼 출력합니다": "Ctrl-C", "q で止めて読んだ分を表示します": "q"} {
+		got := liveKeyHints(text, true)
+		if want := richPaint(key, richCyan, true); !strings.HasPrefix(got, want) {
+			t.Errorf("%q = %q, want the key %q first", text, got, key)
+		}
+		if plain := liveKeyHints(text, false); plain != text {
+			t.Errorf("%q: plain = %q", text, plain)
+		}
+	}
+	if got := liveKeyHints("PID로 고릅니다", true); got != richDim("PID로 고릅니다") {
+		t.Fatalf("a word that is not a key stays gray: %q", got)
 	}
 }
 

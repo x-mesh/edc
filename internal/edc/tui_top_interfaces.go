@@ -27,6 +27,11 @@ type topInterfacePicker struct {
 }
 
 // topInterfacePreset은 이름 목록이 아닌 선택이다. physical과 glob은 interface가 바뀌어도 따라가므로 이름으로 풀지 않는다.
+type topInterfacePreset struct {
+	label  string
+	filter topInterfaceFilter
+}
+
 // footerOn은 키 안내에서 지금 고른 프리셋이다. a는 첫 프리셋(all)을, p는 physical을 고른다.
 func (picker topInterfacePicker) footerOn() []string {
 	switch {
@@ -36,11 +41,6 @@ func (picker topInterfacePicker) footerOn() []string {
 		return []string{"p"}
 	}
 	return nil
-}
-
-type topInterfacePreset struct {
-	label  string
-	filter topInterfaceFilter
 }
 
 type topInterfacePickerRow struct {
@@ -237,10 +237,11 @@ func (picker *topInterfacePicker) lines(rates []netInterfaceRate, width, height 
 	if picker.notice != "" {
 		footer = picker.notice
 	}
-	footerLine := padStyled(" "+footer, func(text string) string { return liveKeyHints(text, color, picker.footerOn()...) })
+	paint := func(text string) string { return liveKeyHints(text, color, picker.footerOn()...) }
 	if picker.notice != "" {
-		footerLine = padStyled(" "+footer, func(text string) string { return topTint(text, topLevelWarn, color) })
+		paint = func(text string) string { return topTint(text, topLevelWarn, color) }
 	}
+	footerLine := padStyled(" "+footer, paint)
 	return append(lines, footerLine, frame("└", "─", "┘", ""))
 }
 

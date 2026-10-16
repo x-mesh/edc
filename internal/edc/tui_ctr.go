@@ -49,21 +49,6 @@ type ctrDetailMsg struct {
 
 type ctrTickMsg struct{ seq int }
 
-// hintOn은 키 안내에서 지금 켜진 묶음이다. 필터를 걸면 안내가 "filter x, failed only · 3 shown"으로 바뀌므로 그 묶음을 칠한다.
-func (model ctrBrowser) hintOn() []string {
-	on := []string{}
-	if model.all {
-		on = append(on, "a all")
-	}
-	if model.failed {
-		on = append(on, "failed only")
-	}
-	if model.filter != "" && !model.filtering {
-		on = append(on, "filter "+model.filter)
-	}
-	return on
-}
-
 func runCtrBrowser(sources ctrSources, timeout time.Duration, all bool) int {
 	if _, err := tea.NewProgram(newCtrBrowser(sources, timeout, all, os.Getenv("NO_COLOR") == ""), tea.WithInput(os.Stdin), tea.WithOutput(os.Stdout)).Run(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -324,21 +309,7 @@ func (model ctrBrowser) listLines() []string {
 		parts = append(parts, liveMuted(model.updated.Format("15:04:05"), model.color))
 	}
 	title := svcBrowserHeading("edc ctr", parts, model.color)
-	keys := "↑↓ select · Enter open · / filter · f failed · a all · r refresh · q quit"
-	switch {
-	case model.filtering:
-		keys = "filter: " + model.filter + "█ · Enter done · Esc clear"
-	case model.filter != "" || model.failed:
-		shown := "failed only"
-		if model.filter != "" {
-			shown = "filter " + model.filter
-			if model.failed {
-				shown += ", failed only"
-			}
-		}
-		keys = fmt.Sprintf("%s · %d shown · Esc clear · Enter open · q quit", shown, len(visible))
-	}
-	lines := []string{title, liveKeyHints(keys, model.color, model.hintOn()...)}
+	lines := []string{title, svcBrowserHints(model.filter, model.filtering, model.failed, model.all, len(visible), model.color)}
 	switch {
 	case !model.loaded:
 		return append(lines, liveMuted("loading…", model.color))

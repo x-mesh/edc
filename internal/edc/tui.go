@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"charm.land/bubbles/v2/spinner"
 	tea "charm.land/bubbletea/v2"
@@ -209,12 +210,30 @@ func liveHintGroup(group string, on []string) string {
 		return lead + liveSelected(body, true) + trimmed[len(body):]
 	}
 	if !liveHintKey(key) {
+		if prefix, ok := liveHintKeyBeforeParticle(key); ok {
+			return lead + richPaint(prefix, richCyan, true) + richDim(trimmed[len(prefix):])
+		}
 		return lead + richDim(trimmed)
 	}
 	if rest != "" {
 		rest = " " + rest
 	}
 	return lead + richPaint(key, richCyan, true) + richDim(rest)
+}
+
+// liveHintKeyBeforeParticle은 "q를", "Ctrl-C로"처럼 키에 조사가 붙은 낱말의 키다. 한국어 안내는 키 뒤에 띄어 쓰지 않고
+// 조사를 붙인다. 번역을 키 형식에 맞춰 고치는 대신, 키 뒤에 한글이나 히라가나만 붙었으면 그 앞을 키로 본다.
+func liveHintKeyBeforeParticle(token string) (string, bool) {
+	for index := range token {
+		if index == 0 || !liveHintKey(token[:index]) {
+			continue
+		}
+		particle := func(character rune) bool { return unicode.In(character, unicode.Hangul, unicode.Hiragana) }
+		if strings.IndexFunc(token[index:], func(character rune) bool { return !particle(character) }) < 0 {
+			return token[:index], true
+		}
+	}
+	return "", false
 }
 
 // liveHintOn은 묶음이 on에 들었는지다. 묶음 전체 글자나 그 키가 같으면 든 것이다.

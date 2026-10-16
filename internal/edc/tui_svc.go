@@ -64,19 +64,34 @@ type svcDetailMsg struct {
 
 type svcTickMsg struct{ seq int }
 
-// hintOn은 키 안내에서 지금 켜진 묶음이다. 필터를 걸면 안내가 "filter x, failed only · 3 shown"으로 바뀌므로 그 묶음을 칠한다.
-func (model svcBrowser) hintOn() []string {
-	on := []string{}
-	if model.all {
-		on = append(on, "a all")
+// svcBrowserHints는 svc와 ctr 목록의 키 안내다. 켠 a all과, 목록을 좁힌 조건을 켜진 항목으로 칠한다.
+// 좁힌 조건은 liveKeyHints로 나누지 않는다. 필터 글자에 ", "나 " · "가 들어가면 묶음이 쪼개져 칠할 묶음을 찾지 못한다.
+func svcBrowserHints(filter string, filtering, failed, all bool, shown int, color bool) string {
+	switch {
+	case filtering:
+		return liveKeyHints("filter: "+filter+"█ · Enter done · Esc clear", color)
+	case filter == "" && !failed:
+		on := []string{}
+		if all {
+			on = append(on, "a all")
+		}
+		return liveKeyHints("↑↓ select · Enter open · / filter · f failed · a all · r refresh · q quit", color, on...)
 	}
-	if model.failed {
-		on = append(on, "failed only")
+	conditions := []string{}
+	if filter != "" {
+		conditions = append(conditions, "filter "+filter)
 	}
-	if model.filter != "" && !model.filtering {
-		on = append(on, "filter "+model.filter)
+	if failed {
+		conditions = append(conditions, "failed only")
 	}
-	return on
+	rest := fmt.Sprintf(" · %d shown · Esc clear · Enter open · q quit", shown)
+	if !liveRich(color) {
+		return liveKeyHints(strings.Join(conditions, ", ")+rest, color)
+	}
+	for index, condition := range conditions {
+		conditions[index] = liveSelected(condition, true)
+	}
+	return strings.Join(conditions, richDim(", ")) + liveKeyHints(rest, true)
 }
 
 func runSvcBrowser(sources svcSources, timeout time.Duration, all bool) int {
@@ -340,21 +355,7 @@ func (model svcBrowser) listLines() []string {
 		parts = append(parts, liveMuted(model.updated.Format("15:04:05"), model.color))
 	}
 	title := svcBrowserHeading("edc svc", parts, model.color)
-	keys := "↑↓ select · Enter open · / filter · f failed · a all · r refresh · q quit"
-	switch {
-	case model.filtering:
-		keys = "filter: " + model.filter + "█ · Enter done · Esc clear"
-	case model.filter != "" || model.failed:
-		shown := "failed only"
-		if model.filter != "" {
-			shown = "filter " + model.filter
-			if model.failed {
-				shown += ", failed only"
-			}
-		}
-		keys = fmt.Sprintf("%s · %d shown · Esc clear · Enter open · q quit", shown, len(visible))
-	}
-	lines := []string{title, liveKeyHints(keys, model.color, model.hintOn()...)}
+	lines := []string{title, svcBrowserHints(model.filter, model.filtering, model.failed, model.all, len(visible), model.color)}
 	switch {
 	case !model.loaded:
 		return append(lines, liveMuted("loading…", model.color))

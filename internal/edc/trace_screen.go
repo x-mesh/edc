@@ -630,12 +630,13 @@ func traceScreenHelp(protocol string) string {
 }
 
 // helpOn은 키 안내에서 지금 켜진 묶음이다. 지금 보기와 i, f, v, m으로 켠 상태다.
+// 미리 보기는 event 목록에서만 그리므로, 다른 보기에서는 split이 켜져 있어도 칠하지 않는다.
 func (model traceScreenModel) helpOn() []string {
 	on := []string{traceViewOn(traceScreenHelp(model.protocol), model.groupBy)}
 	for _, state := range []struct {
 		on   bool
 		hint string
-	}{{model.split, "i split"}, {model.follow, "f follow"}, {model.payloadLines, "v payload"}, {model.secrets, "m secrets"}} {
+	}{{model.split && model.groupBy == "", "i split"}, {model.follow, "f follow"}, {model.payloadLines, "v payload"}, {model.secrets, "m secrets"}} {
 		if state.on {
 			on = append(on, state.hint)
 		}
@@ -1363,8 +1364,7 @@ func traceSpanPaint(text string, span traceText) string {
 	if !span.on || text == "" {
 		return tracePaint(text, span.color, span.bold)
 	}
-	background := richChipBackground
-	return traceStyle().Bold(true).Background(lipgloss.Color(fmt.Sprintf("#%02x%02x%02x", background.r, background.g, background.b))).Render(text)
+	return traceStyle().Bold(true).Background(lipgloss.Color(richChipHex())).Render(text)
 }
 
 // traceFilterHints는 filter를 입력하는 동안의 둘째 줄이다. 입력 칸은 textinput이 그린 그대로 둔다.

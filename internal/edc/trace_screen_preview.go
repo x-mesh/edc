@@ -182,7 +182,11 @@ func traceScreenPreviewRows(model traceScreenModel, rows int) []string {
 	if model.protocol == "http" {
 		keys += "  z gzip"
 	}
-	title = append(append(title, traceText{text: model.preview.title}, traceSeparator), traceKeySpans(keys)...)
+	var on []string
+	if model.decode {
+		on = append(on, "z gzip")
+	}
+	title = append(append(title, traceText{text: model.preview.title}, traceSeparator), traceKeySpans(keys, on...)...)
 	return traceScreenPadRows(append([]string{traceDividerTexts(title, model.width, color)}, window...), rows)
 }
 

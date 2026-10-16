@@ -629,6 +629,21 @@ func traceScreenHelp(protocol string) string {
 	return strings.Join(append(keys, "l live", "esc clear", "q quit", "ctrl-c stop"), "  ")
 }
 
+// helpOn은 키 안내에서 지금 켜진 묶음이다. 지금 보기와 i, f, v, m으로 켠 상태다.
+// 미리 보기는 event 목록에서만 그리므로, 다른 보기에서는 split이 켜져 있어도 칠하지 않는다.
+func (model traceScreenModel) helpOn() []string {
+	on := []string{traceViewOn(traceScreenHelp(model.protocol), model.groupBy)}
+	for _, state := range []struct {
+		on   bool
+		hint string
+	}{{model.split && model.groupBy == "", "i split"}, {model.follow, "f follow"}, {model.payloadLines, "v payload"}, {model.secrets, "m secrets"}} {
+		if state.on {
+			on = append(on, state.hint)
+		}
+	}
+	return on
+}
+
 func (model *traceScreenModel) requestStop() {
 	if model.stopping {
 		return
@@ -704,7 +719,7 @@ func traceScreenHeader(model traceScreenModel) []string {
 	line = append(line, traceSeparator)
 	line = append(line, traceField("filter ", filter, "")...)
 	color := traceScreenColor()
-	help := traceKeyHints(traceScreenHelp(model.protocol), model.width, color)
+	help := traceKeyHints(traceScreenHelp(model.protocol), model.width, color, model.helpOn()...)
 	if model.filtering {
 		help = traceFilterHints(model.input.View(), model.width, color)
 	}
@@ -1237,6 +1252,8 @@ type traceText struct {
 	text  string
 	color string
 	bold  bool
+	// on은 지금 켜진 키 안내다. 고른 항목과 같은 chip 바탕에 굵은 글씨로 칠한다.
+	on bool
 }
 
 var traceSeparator = traceText{text: "  ·  ", color: richGray}
@@ -1283,11 +1300,11 @@ func traceTexts(spans []traceText, width int, color bool) string {
 			break
 		}
 		text := keep[:min(len(span.text), len(keep))]
-		line.WriteString(tracePaint(text, span.color, span.bold))
+		line.WriteString(traceSpanPaint(text, span))
 		keep, last = keep[len(text):], span
 	}
 	if cut {
-		line.WriteString(tracePaint("…", last.color, last.bold))
+		line.WriteString(traceSpanPaint("…", last))
 	}
 	return line.String()
 }
@@ -1304,13 +1321,18 @@ func traceStatusSpans(title string, stopping bool, events int, filter string) []
 }
 
 // traceKeySpans는 "/ filter  tab view" 같은 키 안내를 조각으로 나눈다. 키는 굵은 청록, 설명은 회색이다.
-func traceKeySpans(help string) []traceText {
+// on에 든 묶음(전체 글자나 그 키)은 켜진 항목으로 칠한다.
+func traceKeySpans(help string, on ...string) []traceText {
 	var spans []traceText
 	for index, entry := range strings.Split(help, "  ") {
 		if index > 0 {
 			spans = append(spans, traceText{text: "  "})
 		}
 		key, action, found := strings.Cut(entry, " ")
+		if liveHintOn(entry, key, on) {
+			spans = append(spans, traceText{text: entry, on: true})
+			continue
+		}
 		spans = append(spans, traceText{text: key, color: richCyan, bold: true})
 		if found {
 			spans = append(spans, traceLabelSpan(" "+action))
@@ -1320,8 +1342,29 @@ func traceKeySpans(help string) []traceText {
 }
 
 // traceKeyHints는 화면 둘째 줄의 키 안내다.
-func traceKeyHints(help string, width int, color bool) string {
-	return traceTexts(traceKeySpans(help), width, color)
+func traceKeyHints(help string, width int, color bool, on ...string) string {
+	return traceTexts(traceKeySpans(help, on...), width, color)
+}
+
+// traceViewOn은 키 안내에서 지금 보기를 가리키는 묶음이다. 보기 이름이 묶음의 설명과 같고, 묶지 않은 event 목록은 "g scroll"이다.
+func traceViewOn(help, groupBy string) string {
+	if groupBy == "" {
+		return "g scroll"
+	}
+	for _, entry := range strings.Split(help, "  ") {
+		if _, label, found := strings.Cut(entry, " "); found && label == groupBy {
+			return entry
+		}
+	}
+	return ""
+}
+
+// traceSpanPaint는 조각 하나를 칠한다. 켜진 키 안내는 고른 항목과 같은 chip 바탕에 굵은 글씨다.
+func traceSpanPaint(text string, span traceText) string {
+	if !span.on || text == "" {
+		return tracePaint(text, span.color, span.bold)
+	}
+	return traceStyle().Bold(true).Background(lipgloss.Color(richChipHex())).Render(text)
 }
 
 // traceFilterHints는 filter를 입력하는 동안의 둘째 줄이다. 입력 칸은 textinput이 그린 그대로 둔다.

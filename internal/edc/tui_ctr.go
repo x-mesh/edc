@@ -309,21 +309,7 @@ func (model ctrBrowser) listLines() []string {
 		parts = append(parts, liveMuted(model.updated.Format("15:04:05"), model.color))
 	}
 	title := svcBrowserHeading("edc ctr", parts, model.color)
-	keys := "↑↓ select · Enter open · / filter · f failed · a all · r refresh · q quit"
-	switch {
-	case model.filtering:
-		keys = "filter: " + model.filter + "█ · Enter done · Esc clear"
-	case model.filter != "" || model.failed:
-		shown := "failed only"
-		if model.filter != "" {
-			shown = "filter " + model.filter
-			if model.failed {
-				shown += ", failed only"
-			}
-		}
-		keys = fmt.Sprintf("%s · %d shown · Esc clear · Enter open · q quit", shown, len(visible))
-	}
-	lines := []string{title, liveKeyHints(keys, model.color)}
+	lines := []string{title, svcBrowserHints(model.filter, model.filtering, model.failed, model.all, len(visible), model.color)}
 	switch {
 	case !model.loaded:
 		return append(lines, liveMuted("loading…", model.color))

@@ -157,7 +157,8 @@ func (m schedTraceScreenModel) View() tea.View {
 	if m.filtering {
 		lines = append(lines, traceFilterHints(m.input.View(), width, color))
 	} else {
-		lines = append(lines, traceKeyHints("/ filter  tab view  p process  e event  c cgroup  s syscall  g scroll  ↑↓ select  enter detail  q quit  ctrl-c stop", width, color))
+		const keys = "/ filter  tab view  p process  e event  c cgroup  s syscall  g scroll  ↑↓ select  enter detail  q quit  ctrl-c stop"
+		lines = append(lines, traceKeyHints(keys, width, color, traceViewOn(keys, m.groupBy)))
 	}
 	if m.detail && m.selected >= 0 && m.selected < len(m.events) {
 		event := m.events[m.selected]

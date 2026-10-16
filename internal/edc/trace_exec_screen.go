@@ -169,7 +169,8 @@ func (m execTraceScreenModel) View() tea.View {
 	if m.filtering {
 		lines = append(lines, traceFilterHints(m.input.View(), width, color))
 	} else {
-		lines = append(lines, traceKeyHints("/ filter  tab view  p process  a parent  e event  c cgroup  g scroll  ↑↓ select  enter detail  q quit  ctrl-c stop", width, color))
+		const keys = "/ filter  tab view  p process  a parent  e event  c cgroup  g scroll  ↑↓ select  enter detail  q quit  ctrl-c stop"
+		lines = append(lines, traceKeyHints(keys, width, color, traceViewOn(keys, m.groupBy)))
 	}
 	if matching := m.matching(); m.detail && m.selected >= 0 && m.selected < len(matching) {
 		event := matching[m.selected]

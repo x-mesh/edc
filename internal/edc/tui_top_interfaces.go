@@ -32,6 +32,17 @@ type topInterfacePreset struct {
 	filter topInterfaceFilter
 }
 
+// footerOn은 키 안내에서 지금 고른 프리셋이다. a는 첫 프리셋(all)을, p는 physical을 고른다.
+func (picker topInterfacePicker) footerOn() []string {
+	switch {
+	case picker.preset == 0:
+		return []string{"a"}
+	case picker.preset >= 0 && picker.preset == picker.presetIndex("physical"):
+		return []string{"p"}
+	}
+	return nil
+}
+
 type topInterfacePickerRow struct {
 	name     string
 	physical bool
@@ -226,10 +237,11 @@ func (picker *topInterfacePicker) lines(rates []netInterfaceRate, width, height 
 	if picker.notice != "" {
 		footer = picker.notice
 	}
-	footerLine := dim(" " + footer)
+	paint := func(text string) string { return liveKeyHints(text, color, picker.footerOn()...) }
 	if picker.notice != "" {
-		footerLine = padStyled(" "+footer, func(text string) string { return topTint(text, topLevelWarn, color) })
+		paint = func(text string) string { return topTint(text, topLevelWarn, color) }
 	}
+	footerLine := padStyled(" "+footer, paint)
 	return append(lines, footerLine, frame("└", "─", "┘", ""))
 }
 

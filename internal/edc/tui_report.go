@@ -127,7 +127,11 @@ func (model viewerModel) help() string {
 		if model.expanded {
 			state += richDim(T("cli.report.detail_open"))
 		}
-		return state + liveKeyHints(T("cli.report.viewer_help"), true)
+		var on []string
+		if model.expanded {
+			on = append(on, "e")
+		}
+		return state + liveKeyHints(T("cli.report.viewer_help"), true, on...)
 	}
 	state := T("cli.report.filter_label") + model.filters[model.filter].label
 	if model.expanded {

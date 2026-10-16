@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"charm.land/bubbles/v2/spinner"
 	tea "charm.land/bubbletea/v2"
@@ -169,7 +170,8 @@ var liveHintSeparator = regexp.MustCompile(`\s*·\s*|\s{3,}|,\s+`)
 // liveHintKeys는 키 안내에서 키로 읽는 낱말이다. 한 글자 키는 liveHintKey가 따로 받는다.
 var liveHintKeys = map[string]bool{
 	"↑/↓": true, "↑↓": true, "←/→": true, "Enter": true, "enter": true, "Esc": true, "esc": true, "Tab": true,
-	"Esc/b": true, "End": true, "Home": true, "PgUp/PgDn": true, "space": true, "y/n": true, "Backspace": true, "Ctrl-C": true,
+	"Esc/b": true, "End": true, "Home": true, "PgUp/PgDn": true, "space": true, "Space": true, "y/n": true, "Backspace": true, "Ctrl-C": true,
+	"←": true, "→": true,
 }
 
 func liveHintKey(token string) bool {
@@ -184,31 +186,64 @@ func liveHintKey(token string) bool {
 }
 
 // liveKeyHints는 "키 설명" 묶음의 키를 굵은 청록으로, 설명과 구분자를 회색으로 칠한다. 키로 시작하지 않는 묶음은 모두 회색이다.
-func liveKeyHints(text string, color bool) string {
+// on에 든 묶음은 고른 항목과 같은 바탕으로 칠해 지금 켜진 보기나 상태를 보인다. on은 묶음 전체 글자나 그 키다.
+// 번역된 안내도 키 글자는 같으므로 키로 고르면 언어와 상관없이 맞는다.
+func liveKeyHints(text string, color bool, on ...string) string {
 	if !liveRich(color) || text == "" {
 		return liveMuted(text, color)
 	}
 	var builder strings.Builder
 	last := 0
 	for _, bounds := range append(liveHintSeparator.FindAllStringIndex(text, -1), []int{len(text), len(text)}) {
-		builder.WriteString(liveHintGroup(text[last:bounds[0]]))
+		builder.WriteString(liveHintGroup(text[last:bounds[0]], on))
 		builder.WriteString(richDim(text[bounds[0]:bounds[1]]))
 		last = bounds[1]
 	}
 	return builder.String()
 }
 
-func liveHintGroup(group string) string {
+func liveHintGroup(group string, on []string) string {
 	trimmed := strings.TrimLeft(group, " ")
 	lead := group[:len(group)-len(trimmed)]
 	key, rest, _ := strings.Cut(trimmed, " ")
+	if body := strings.TrimRight(trimmed, " "); liveHintOn(body, key, on) {
+		return lead + liveSelected(body, true) + trimmed[len(body):]
+	}
 	if !liveHintKey(key) {
+		if prefix, ok := liveHintKeyBeforeParticle(key); ok {
+			return lead + richPaint(prefix, richCyan, true) + richDim(trimmed[len(prefix):])
+		}
 		return lead + richDim(trimmed)
 	}
 	if rest != "" {
 		rest = " " + rest
 	}
 	return lead + richPaint(key, richCyan, true) + richDim(rest)
+}
+
+// liveHintKeyBeforeParticle은 "q를", "Ctrl-C로"처럼 키에 조사가 붙은 낱말의 키다. 한국어 안내는 키 뒤에 띄어 쓰지 않고
+// 조사를 붙인다. 번역을 키 형식에 맞춰 고치는 대신, 키 뒤에 한글이나 히라가나만 붙었으면 그 앞을 키로 본다.
+func liveHintKeyBeforeParticle(token string) (string, bool) {
+	for index := range token {
+		if index == 0 || !liveHintKey(token[:index]) {
+			continue
+		}
+		particle := func(character rune) bool { return unicode.In(character, unicode.Hangul, unicode.Hiragana) }
+		if strings.IndexFunc(token[index:], func(character rune) bool { return !particle(character) }) < 0 {
+			return token[:index], true
+		}
+	}
+	return "", false
+}
+
+// liveHintOn은 묶음이 on에 들었는지다. 묶음 전체 글자나 그 키가 같으면 든 것이다.
+func liveHintOn(group, key string, on []string) bool {
+	for _, item := range on {
+		if item != "" && (item == group || item == key) {
+			return true
+		}
+	}
+	return false
 }
 
 // liveTitleHints는 "질문   키 설명   키 설명" 꼴의 제목이다. 질문은 굵게, 뒤의 키 안내는 liveKeyHints로 칠한다.

@@ -139,6 +139,8 @@ command:
       process: "一致する PID か command 名のみ、カンマ区切り"
       full: "コマンドライン全体で照合して表示する"
       split: "cpu, mem, disk, net, psi を 1 画面の枠で表示、省略時は全部"
+      view: "最初の表示、例: network, split"
+      panels: "表の下のパネル、先頭優先: net, ai, events"
       interface: "net に加える interface: 名前、glob、physical、all"
       detail: "CPU 待ち・I/O 遅延 (Linux eBPF, root)、macOS は CPU 待ち"
       ebpf: "--detail と同じ"

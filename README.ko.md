@@ -1098,6 +1098,32 @@ macOS에서는 `psi` 박스를 생략하고 안내를 보입니다. macOS의 mem
 
 `--split`은 대시보드에서만 동작합니다. 표를 출력하는 실행(`--count`, `--json`, 파이프, `NO_COLOR`)이나 `--process`와 함께 직접 주면 exit 2로 끝납니다. 설정 값은 그런 실행을 막지 않고, `--process`와 함께면 process 보기가 유지됩니다.
 
+`--view`로 처음 보기를 고릅니다. `all`, `cpu`, `memory`, `disk`, `network`, `pressure`, `split`을 쓸 수 있고, `Esc`를 누르면 이 보기로 돌아옵니다. 설정 파일의 `defaults.top.view`에 적으면 매번 그 보기로 시작합니다.
+
+`--panels`로 표 아래에 늘 보일 패널을 고릅니다. `net`, `ai`, `events`를 쉼표로 이어 적고, `none`은 패널을 모두 뺍니다.
+
+- `net`은 선택한 행의 network limit입니다. macOS는 이 값을 수집하지 않으므로 한 줄 안내만 보입니다.
+- `ai`는 `edc ai`와 같은 Claude·Codex 사용량 한도입니다. 1분마다 다시 조회합니다.
+- `events`는 최근 이벤트입니다.
+
+목록 앞의 패널이 먼저 자리를 받습니다. 패널이 들어가지 않으면 패널을 자르지 않고 통째로 숨긴 뒤 상태 줄에 `+net hidden`처럼 알립니다. 뒤의 작은 패널은 남은 줄에 들어가면 보입니다. 표는 적어도 5행, 박스는 데이터 행을 적어도 3개 남깁니다.
+
+`a`를 누르면 `ai` 패널을 켜고 끕니다. 패널을 켜기 전에는 Claude와 Codex 정보를 읽지 않습니다. `Enter` 상세나 `h` 최고치를 연 동안에는 그 패널이 패널 자리를 씁니다.
+
+설정 파일의 `defaults.top.panels`에 같은 문법으로 적으면 매번 그 목록으로 시작합니다. 목록을 정하지 않으면 지금 배치를 그대로 씁니다. network 보기에서 `net` 패널이 보이고, 빈자리에 이벤트가 보입니다.
+
+`defaults.top.process_sort`에 `cpu`, `mem`, `io`를 적으면 process 목록의 처음 정렬이 됩니다. `o`로 바꾸는 동작은 그대로입니다.
+
+```toml
+[defaults.top]
+split = "net,disk"
+view = "split"
+panels = "net,ai,events"
+process_sort = "io"
+```
+
+`--view`와 `--panels`도 `--split`처럼 대시보드에서만 동작하고, `--view`를 `--process`와 함께 주면 exit 2로 끝납니다. 설정 값은 표를 출력하는 실행을 막지 않습니다.
+
 disk 보기에는 macOS와 Linux 모두 물리 disk의 IOPS와 평균 `await`가 추가됩니다. Linux에서는 모든 물리 disk의 합산 `busy%`와, memory 보기의 `mem%` 옆 memory pressure도 추가됩니다. 합산 `busy%`는 여러 disk가 동시에 바쁘면 100%를 넘을 수 있습니다. macOS 대시보드는 수집하지 않는 iowait, PSI, disk busy, file descriptor, listen overflow, softnet drop, conntrack, I/O 지연 열을 숨기고 도움말에 제한을 설명합니다. macOS의 memory와 pressure 보기에는 kernel의 memory 압박 단계(`kern.memorystatus_vm_pressure_level`)인 `mem lvl`이 `normal`, `warn`, `critical`로 나옵니다. CPU와 pressure 보기의 `blocked`는 `U` 상태 process 수입니다. Linux는 작업(thread)을 세므로 두 값의 단위가 다릅니다. network 보기의 interface errors·drops는 macOS와 Linux 모두 표시하며, macOS에서는 kernel의 interface 통계(`net.link.generic.ifdata`)에서 읽습니다. memory 보기의 `swap/s`는 kernel이 초당 swap으로 내보낸 byte입니다.
 
 Linux에서는 일부 보기에 선택 열이 더 있습니다. CPU 보기의 `steal%`는 hypervisor가 다른 guest에 CPU를 내준 시간의 비율이고, `blocked`는 지금 I/O를 기다리며 멈춘 작업 수입니다. disk 보기의 `queue`는 진행 중인 I/O 요청의 평균 개수를 물리 disk마다 더한 값입니다. network 보기에는 초당 TCP 재전송 segment(`retr/s`), 보낸 RST(`rst/s`), 실패한 연결 시도(`fail/s`)가 있습니다. 선택 열은 다른 열이 모두 들어가고 `signal`에 13열 이상이 남을 때만 보입니다.

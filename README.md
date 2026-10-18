@@ -1172,6 +1172,32 @@ On macOS, the dashboard omits the `psi` box and shows a notice. The mem box show
 
 `--split` works only in the dashboard. If you add `--split` to a run that prints the table, the command exits with code 2. That includes `--count`, `--json`, a pipe, and `NO_COLOR`. The same applies to `--process`. The config value does not stop those runs. With `--process`, the process view stays.
 
+Use `--view` to choose the first view. The names are `all`, `cpu`, `memory`, `disk`, `network`, `pressure`, and `split`. `Esc` returns to this view. Set `defaults.top.view` to start with the same view every time.
+
+Use `--panels` to keep panels below the table. The list takes `net`, `ai`, and `events`, comma-separated. `none` removes all panels.
+
+- `net` shows the network limits of the selected row. On macOS, edc does not collect these values, so the panel has one line.
+- `ai` shows the Claude and Codex usage limits, as `edc ai` does. edc checks the limits every minute.
+- `events` shows the newest events.
+
+The first panel in the list gets space first. If a panel does not fit, the dashboard hides the full panel and shows `+net hidden` in the status line. A smaller panel later in the list can use the rows that are left. The table keeps at least 5 rows, and each box keeps at least 3 data rows.
+
+Press `a` to show or hide the `ai` panel. edc reads the Claude and Codex data only after you turn on the panel. While `Enter` or `h` is open, that panel uses the panel area.
+
+Set `defaults.top.panels` to start with the same list every time. If you do not set a list, the dashboard keeps its usual layout: the network view shows the `net` panel, and the events use the free space.
+
+Set `defaults.top.process_sort` to `cpu`, `mem`, or `io` to choose the first order of the process list. `o` still changes the order.
+
+```toml
+[defaults.top]
+split = "net,disk"
+view = "split"
+panels = "net,ai,events"
+process_sort = "io"
+```
+
+`--view` and `--panels` work only in the dashboard, as `--split` does. If you use `--view` with `--process`, the command exits with code 2. The config values do not stop runs that print the table.
+
 On macOS and Linux, the disk view shows IOPS and average `await` across physical disks.
 
 On Linux, the disk view shows aggregate `busy%`, and the memory view shows memory pressure. Aggregate `busy%` can exceed 100 across multiple disks.

@@ -231,6 +231,8 @@ var commandDocs = []commandDoc{
 			{"--process <filter>", "command.top.option.process"},
 			{"--full", "command.top.option.full"},
 			{"--split [list]", "command.top.option.split"},
+			{"--view <name>", "command.top.option.view"},
+			{"--panels <list>", "command.top.option.panels"},
 			{"--interface <list>", "command.top.option.interface"},
 			{"-d, --detail", "command.top.option.detail"},
 			{"--ebpf", "command.top.option.ebpf"},

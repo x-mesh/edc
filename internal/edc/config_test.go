@@ -173,6 +173,12 @@ func TestConfigRejectsUnknownTypeAndRange(t *testing.T) {
 		"defaults: {top: {split: \"mem,mem\"}}\n",
 		"defaults: {top: {split: 3}}\n",
 		"defaults: {top: {split: [mem]}}\n",
+		"defaults: {top: {view: mem}}\n",
+		"defaults: {top: {view: process}}\n",
+		"defaults: {top: {panels: \"net,net\"}}\n",
+		"defaults: {top: {panels: cpu}}\n",
+		"defaults: {top: {panels: [ai]}}\n",
+		"defaults: {top: {process_sort: disk}}\n",
 		"defaults: {common: {verbose: yes}}\n",
 		"defaults: {common: {json: report.json}}\n",
 		"defaults: {top: {json: report.json}}\n",
@@ -210,6 +216,20 @@ func TestConfigTopSplitLoadsAndSurvivesSetup(t *testing.T) {
 	}
 	if merged := mergeConfigSection(topConfig{Split: stringPointer("mem")}, recommended); merged.Split == nil || *merged.Split != "mem" {
 		t.Fatalf("merged split = %#v, want mem", merged.Split)
+	}
+}
+
+func TestConfigTopLayoutLoads(t *testing.T) {
+	config, err := loadConfigAt(writeTOMLFixture(t, "[defaults.top]\nview = \"network\"\npanels = \"net,ai\"\nprocess_sort = \"io\"\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	top := config.Defaults.Top
+	if top.View == nil || *top.View != "network" || top.Panels == nil || *top.Panels != "net,ai" || top.ProcessSort == nil || *top.ProcessSort != "io" {
+		t.Fatalf("top = %#v", top)
+	}
+	if _, err := loadConfigAt(writeConfigFixture(t, "defaults: {top: {view: split, panels: none, process_sort: mem}}\n")); err != nil {
+		t.Fatalf("YAML layout: %v", err)
 	}
 }
 

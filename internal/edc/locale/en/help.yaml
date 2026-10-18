@@ -139,6 +139,8 @@ command:
       process: "match PIDs or command names, comma-separated"
       full: "match and show the full command line"
       split: "one box each for cpu, mem, disk, net, psi, default all"
+      view: "first view, such as network or split"
+      panels: "panels below the table in priority order: net, ai, events"
       interface: "net values add only these: names, globs, physical, all"
       detail: "CPU wait, I/O latency (Linux eBPF, root); macOS CPU wait"
       ebpf: "same as --detail"

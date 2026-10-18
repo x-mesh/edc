@@ -16,7 +16,7 @@ import (
 )
 
 // runTopDashboard는 alt screen 대시보드를 실행한다. 종료하면 화면이 원래대로 돌아온다.
-func runTopDashboard(interval time.Duration, version string, filter topProcessFilter, interfaces topInterfaceFilter, recorder *topRecorder, split []topView) int {
+func runTopDashboard(interval time.Duration, version string, filter topProcessFilter, interfaces topInterfaceFilter, recorder *topRecorder, split []topView, layout topLayout) int {
 	details, err := collectHostDetails()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, T("observe.top.error.host", err))
@@ -56,7 +56,8 @@ func runTopDashboard(interval time.Duration, version string, filter topProcessFi
 	processSampler.mutex.Lock()
 	model.probeEnabled = processSampler.observe != nil
 	processSampler.mutex.Unlock()
-	model = model.withProcessFilter(filter).withSplit(split)
+	model = model.withProcessFilter(filter).withSplit(split).withLayout(layout)
+	model.openAI = func() (topAISource, error) { return openAICollector() }
 	if recorder != nil {
 		model.record = recorder.Record
 		model.recordFailure = func() tea.Msg {
@@ -69,6 +70,9 @@ func runTopDashboard(interval time.Duration, version string, filter topProcessFi
 		}
 	}
 	final, err := tea.NewProgram(model, tea.WithInput(os.Stdin), tea.WithOutput(os.Stdout)).Run()
+	if final, ok := final.(topModel); ok {
+		final.closeAI()
+	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
@@ -248,6 +252,22 @@ type topModel struct {
 	boxed bool
 	// compact는 박스가 optional 칸을 빼고 그리는지다.
 	compact bool
+	// startView는 --view나 defaults.top.view로 고른 처음 보기다. 비어 있으면 split 유무를 따른다.
+	startView topView
+	// panels는 아래 왼쪽 칸에 늘 보일 패널이다. panelsSet이 false이면 기존 배치를 쓴다.
+	panels    []topPanel
+	panelsSet bool
+	// hiddenPanels는 높이가 모자라 숨긴 패널이다. 그리는 동안만 채워 안내 줄에 알린다.
+	hiddenPanels []topPanel
+	// processSort는 defaults.top.process_sort로 고른 process 패널 기본 순위다. 비어 있으면 보기를 따른다.
+	processSort topView
+	// aiOn은 AI 패널이 켜졌는지다. openAI는 처음 켤 때 수집기를 연다.
+	aiOn        bool
+	openAI      func() (topAISource, error)
+	aiSource    topAISource
+	aiProviders []aiProvider
+	aiPolled    bool
+	aiPolling   bool
 }
 
 type topRecordingErrorMsg struct{ err error }
@@ -275,7 +295,13 @@ func (model topModel) withProcessFilter(filter topProcessFilter) topModel {
 	return model
 }
 
-func (model topModel) Init() tea.Cmd { return tea.Batch(model.tick(), model.recordFailure) }
+func (model topModel) Init() tea.Cmd {
+	var ai tea.Cmd
+	if model.aiOn {
+		ai = func() tea.Msg { return topAIStartMsg{} }
+	}
+	return tea.Batch(model.tick(), model.recordFailure, ai)
+}
 
 func (model topModel) tick() tea.Cmd {
 	seq, sample := model.seq, model.sample
@@ -336,6 +362,13 @@ func (model topModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return model, nil
 		}
 		return model, model.tick()
+	case topAIStartMsg:
+		if model.aiOn {
+			return model.startAI()
+		}
+		return model, nil
+	case topAIPollMsg:
+		return model.updateAIPoll(aiPollResult(value))
 	case tea.WindowSizeMsg:
 		model.width, model.height = value.Width, value.Height
 		return model, nil
@@ -439,6 +472,8 @@ func (model topModel) updateKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		model.view, model.panelSort = topViewPressure, ""
 	case "o":
 		model.panelSort = nextTopPanelSort(model.panelSort)
+	case "a":
+		return model.toggleAI()
 	case "?":
 		model.help = true
 		model.helpOffset = 0
@@ -522,8 +557,12 @@ func (model topModel) homeView() topView {
 	if model.processFilter.active() {
 		return topViewProcess
 	}
-	if len(model.split) > 0 && len(model.splitViews()) > 0 {
-		return topViewSplit
+	if model.startView == topViewSplit || (model.startView == "" && len(model.split) > 0) {
+		if len(model.splitViews()) > 0 {
+			return topViewSplit
+		}
+	} else if model.startView != "" {
+		return model.startView
 	}
 	return topViewAll
 }
@@ -866,9 +905,13 @@ func (model topModel) infoLines() []string {
 		lines[0] = topLead(lines[0], model.limits.color)
 	}
 	if model.lastErr != nil {
-		lines = append(lines, topTint(fmt.Sprintf("sample failed · last success %s · %s", model.previous.TakenAt.Format("15:04:05"), model.lastErr), topLevelDanger, model.limits.color))
+		lines = append(lines, model.sampleErrorLine())
 	}
 	return lines
+}
+
+func (model topModel) sampleErrorLine() string {
+	return topTint(fmt.Sprintf("sample failed · last success %s · %s", model.previous.TakenAt.Format("15:04:05"), model.lastErr), topLevelDanger, model.limits.color)
 }
 
 // panelInfoLines는 detail, peaks, network 패널이다. 첫 줄이 패널 제목이다.
@@ -898,6 +941,9 @@ func (model topModel) footerLines() []string {
 }
 
 func (model topModel) footerPanelLines() []string {
+	if model.customFooter() {
+		return model.customFooterLines()
+	}
 	if model.displayWidth() < topFooterDockWidth || model.processFilter.active() {
 		if model.eventsInFooter() {
 			return append(model.panelLinesWithEvents(), model.statusLines()...)
@@ -1163,6 +1209,9 @@ func (model topModel) statusLines() []string {
 	if model.record != nil {
 		state = "SQLite · " + state
 	}
+	if hidden := model.hiddenText(); hidden != "" {
+		state = hidden + " · " + state
+	}
 	if model.paused {
 		state = T("observe.top.paused") + " · " + state
 	} else if !model.follow {
@@ -1177,6 +1226,10 @@ func (model topModel) statusLines() []string {
 			{key: "d", label: "disk", on: model.view == topViewDisk}, {key: "n", label: "net", on: model.view == topViewNetwork},
 			model.sortHint(), {key: "f", label: "candidates"}, {key: "/", label: "filter"}, {key: "?", label: "help"},
 		}
+	}
+	// a는 켰을 때만 켜진 항목으로 보인다. 늘 두면 80열에서 / filter와 ? help가 잘린다. 끈 상태의 a는 ? 도움말에 있다.
+	if model.aiOn {
+		keys = append(topKeyHints{{key: "a", label: "ai", on: true}}, keys...)
 	}
 	if model.interfaces.active() {
 		// net 표시가 붙으면 80열에서 / filter까지 잘린다. ? help는 아래 줄에도 있고, o는 ? 도움말에 있으며 고른 뒤에는
@@ -1322,6 +1375,8 @@ func (model topModel) panelRank() topView {
 	view := model.view
 	if model.panelSort != "" {
 		view = model.panelSort
+	} else if model.processSort != "" {
+		view = model.processSort
 	}
 	switch view {
 	case topViewMemory, topViewDisk:
@@ -1617,6 +1672,7 @@ func (model topModel) helpLines() []string {
 		"Filter: / edit names or PIDs · Enter apply · Esc cancel",
 		"Back: Esc closes the panel, returns to the live row, drops the o rank, returns to the first view, then clears the process filter",
 		"Interfaces: i opens the list · Space check · a all · p physical · Enter applies from the next sample · off while -w records",
+		"Panels: a shows or hides Claude and Codex usage limits · --panels net,ai,events keeps panels under the table, the first one first",
 		"Details: Enter on history · h peaks from the last 60 seconds",
 		"CPU: host % uses all cores. Process 100% uses one core. RSS is resident memory.",
 		"MEM counts the memory a process holds, also when it is compressed or swapped out. A gray MEM value is RSS, used when edc could not read MEM.",

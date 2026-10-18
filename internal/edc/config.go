@@ -22,7 +22,8 @@ const legacyRecommendedLogOutput = "/var/log/job.log"
 
 var configScalarTypes = map[string]string{
 	"lang": "!!str", "defaults.common.json": "!!str", "defaults.doctor.profile": "!!str",
-	"defaults.top.json": "!!str", "defaults.top.split": "!!str", "defaults.top.interface": "!!str", "defaults.where.provider": "!!str",
+	"defaults.top.json": "!!str", "defaults.top.split": "!!str", "defaults.top.interface": "!!str",
+	"defaults.top.view": "!!str", "defaults.top.panels": "!!str", "defaults.top.process_sort": "!!str", "defaults.where.provider": "!!str",
 	"defaults.capture.interface": "!!str", "defaults.capture.filter": "!!str", "defaults.capture.output": "!!str",
 	"defaults.remote.inventory": "!!str", "defaults.remote.recipe": "!!str",
 	"defaults.log.stream": "!!str", "defaults.log.output": "!!str", "defaults.log.command_display": "!!str", "defaults.log.restart": "!!str",
@@ -118,6 +119,10 @@ type topConfig struct {
 	Split    *string         `yaml:"split,omitempty" toml:"split,omitempty"`
 	// Interface는 net 값에 더할 interface다. 여러 host가 같은 설정을 쓰므로, macOS에서 physical은 경고만 내고 모두 더한다.
 	Interface *string `yaml:"interface,omitempty" toml:"interface,omitempty"`
+	// View, Panels, ProcessSort는 대시보드의 처음 보기, 아래 패널 목록, process 패널 기본 순위다.
+	View        *string `yaml:"view,omitempty" toml:"view,omitempty"`
+	Panels      *string `yaml:"panels,omitempty" toml:"panels,omitempty"`
+	ProcessSort *string `yaml:"process_sort,omitempty" toml:"process_sort,omitempty"`
 }
 type infoConfig struct {
 	Public  *bool           `yaml:"public,omitempty" toml:"public,omitempty"`
@@ -335,6 +340,21 @@ func validateConfig(config edcConfig) error {
 	if d.Top.Interface != nil {
 		if _, err := parseTopInterfaceFilter(*d.Top.Interface); err != nil {
 			return invalidConfig("defaults.top.interface", "must be all, or interface names, globs, and physical, comma-separated: "+err.Error())
+		}
+	}
+	if d.Top.View != nil && *d.Top.View != "" {
+		if _, err := parseTopView(*d.Top.View); err != nil {
+			return invalidConfig("defaults.top.view", "must be all, cpu, memory, disk, network, pressure, or split")
+		}
+	}
+	if d.Top.Panels != nil && *d.Top.Panels != "" {
+		if _, err := parseTopPanels(*d.Top.Panels); err != nil {
+			return invalidConfig("defaults.top.panels", "must be none, or net, ai, events, comma-separated, each once")
+		}
+	}
+	if d.Top.ProcessSort != nil && *d.Top.ProcessSort != "" {
+		if _, err := parseTopProcessSort(*d.Top.ProcessSort); err != nil {
+			return invalidConfig("defaults.top.process_sort", "must be cpu, mem, or io")
 		}
 	}
 	if d.Info.Timeout != nil && d.Info.Timeout.Duration <= 0 {

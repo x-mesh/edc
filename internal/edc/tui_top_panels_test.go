@@ -475,7 +475,8 @@ func TestTopAIColumnsShowRequestsPerRow(t *testing.T) {
 	if !model.aiTokens || model.aiOn {
 		t.Fatalf("tokens %v, panel %v", model.aiTokens, model.aiOn)
 	}
-	if header := ansi.Strip(strings.Join(model.tableHeader(), "\n")); !strings.Contains(header, "cl req") || !strings.Contains(header, "cx tok") {
+	// 그룹 머리줄이 도구 이름을, 열 이름이 req와 tok을 보인다.
+	if header := ansi.Strip(strings.Join(model.tableHeader(), "\n")); !strings.Contains(header, " claude ") || !strings.Contains(header, " codex ") || !strings.Contains(header, "req") || !strings.Contains(header, "tok") {
 		t.Fatalf("header %q lacks the ai columns", header)
 	}
 	if row := ansi.Strip(model.tableRow(model.rows[2])); !strings.Contains(row, "—") {
@@ -499,7 +500,7 @@ func TestTopAIColumnsShowRequestsPerRow(t *testing.T) {
 	cells := func(row topDashboardRow) []string {
 		line := ansi.Strip(model.tableRow(row))
 		parts := strings.Split(line, "│")
-		return strings.Fields(parts[len(parts)-2])
+		return append(strings.Fields(parts[len(parts)-3]), strings.Fields(parts[len(parts)-2])...)
 	}
 	// tok은 in + out이다. 2300 + 410 = 2710이다.
 	if got := cells(model.rows[2]); !slices.Equal(got, []string{"1", "2.7K", "·", "·"}) {

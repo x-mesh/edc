@@ -238,7 +238,7 @@ func TestTopSetupAIColumnsAreOptIn(t *testing.T) {
 	if got := model.settings.columnsValue(); got != "net,cpu,mem,disk,psi,ai" || !model.preview.aiTokens {
 		t.Fatalf("columns %q, tokens %v", got, model.preview.aiTokens)
 	}
-	if text := ansi.Strip(model.View().Content); !strings.Contains(text, "ai reads Claude, Codex logs") || !strings.Contains(text, "cl req") {
+	if text := ansi.Strip(model.View().Content); !strings.Contains(text, "ai reads Claude, Codex logs") || !strings.Contains(text, " claude ") {
 		t.Fatalf("turning on ai columns must say so and draw them:\n%s", text)
 	}
 }

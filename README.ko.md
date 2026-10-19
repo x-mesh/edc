@@ -1117,7 +1117,7 @@ macOS에서는 `psi` 박스를 생략하고 안내를 보입니다. macOS의 mem
 
 `--columns`로 all 보기의 열 그룹을 고릅니다. `net`, `cpu`, `mem`, `disk`, `psi`를 보이고 싶은 순서대로 쉼표로 이어 적고, `all`은 다섯 그룹을 모두 보입니다. 그룹마다 기본 열은 늘 보이고, 폭이 남으면 열을 더 붙입니다. 그룹을 빼면 그 폭을 남은 그룹이 씁니다. 이름 뒤에 `+`를 붙이면 그 그룹의 열을 다른 그룹보다 먼저 붙입니다. 예를 들어 `--columns net+,cpu,mem`은 `hot core`보다 packet과 network 오류 열을 먼저 보입니다. 설정 파일의 `defaults.top.columns`에 적으면 매번 그 목록으로 시작합니다.
 
-목록에 `ai`를 넣으면 `ai` 그룹에 Claude와 Codex 요청이 보입니다. 행마다 직전 행 뒤부터 그 행 시각까지 들어온 요청을 세므로, 같은 줄의 다른 열과 견줄 수 있습니다. `cl req`와 `cx req`는 요청 수이고, `cl tok`과 `cx tok`은 새 입력과 출력을 더한 token으로 `edc ai`의 `total`과 같은 값입니다. prompt cache에서 읽은 token은 넣지 않고, 0은 `·`로 보입니다. Claude Code는 응답이 끝난 뒤 기록을 쓰고 edc는 2초마다 읽으므로, 가장 최근 행은 2~3초 뒤에 값이 채워집니다. `all`에는 `ai`가 들지 않고, 목록에 `ai`가 있을 때만 Claude와 Codex 대화 기록을 읽습니다.
+목록에 `ai`를 넣으면 `claude` 그룹과 `codex` 그룹에 두 도구의 요청이 보입니다. 행마다 직전 행 뒤부터 그 행 시각까지 들어온 요청을 세므로, 같은 줄의 다른 열과 견줄 수 있습니다. 그룹마다 `req`는 요청 수이고, `tok`은 새 입력과 출력을 더한 token으로 `edc ai`의 `total`과 같은 값입니다. prompt cache에서 읽은 token은 넣지 않고, 0은 `·`로 보입니다. Claude Code는 응답이 끝난 뒤 기록을 쓰고 edc는 2초마다 읽으므로, 가장 최근 행은 2~3초 뒤에 값이 채워집니다. `all`에는 `ai`가 들지 않고, 목록에 `ai`가 있을 때만 Claude와 Codex 대화 기록을 읽습니다.
 
 ```toml
 [defaults.top]

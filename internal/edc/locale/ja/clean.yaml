@@ -178,8 +178,8 @@ clean:
     container_in_engine: "同じ名前のコンテナが実行中のエンジンにあります"
     project_in_engine: "同じプロジェクトが実行中のエンジンで動いています"
   system:
-    title: "大きなログと使われない snap リビジョン  合計に加えません"
-    panel: "大きなログと snap リビジョン"
+    title: "大きなログ、使われない snap リビジョン、ビルドキャッシュ  合計に加えません"
+    panel: "大きなログ、snap、ビルドキャッシュ"
     note: "合計に加えません"
     journald_no_limit: "journald.conf にサイズや保持期間の制限がありません"
     journald_limits: "journald.conf の設定: %s"
@@ -197,6 +197,9 @@ clean:
     snap: "%s リビジョン %s (現在 %s)"
     snaps_omitted: "ほかのリビジョン %d 個"
     snaps_unknown: "現在のリビジョンが不明なため省略した snap %d 個"
+    build_caches: "buildx キャッシュフォルダ (OCI レイアウト): %d 個、%s"
+    build_caches_omitted: "ほかのフォルダ %d 個"
+    build_caches_note: "docker buildx prune はこのフォルダを削除しません"
   vm:
     title: "VM ディスク (ユーザーデータ、合計に含めません)"
     panel: "VM ディスク"

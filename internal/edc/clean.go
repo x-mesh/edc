@@ -1237,7 +1237,7 @@ func cleanPrint(stdout io.Writer, options commonOptions, result Result, color bo
 		fmt.Fprint(output, formatCleanProject(projects, options.verbose, width, home, style))
 		fmt.Fprint(output, formatCleanDocker(docker, options.verbose, width, style))
 		fmt.Fprint(output, formatCleanDockerRoot(dockerRoot, options.verbose, width, style))
-		fmt.Fprint(output, formatCleanSystem(system, options.verbose, width, style))
+		fmt.Fprint(output, formatCleanSystem(system, options.verbose, width, home, style))
 		fmt.Fprint(output, formatCleanVMDisks(disks, docker.Inside, width, home, style))
 		fmt.Fprint(output, formatCleanWorktrees(worktrees, options.verbose, width, home, style))
 		fmt.Fprint(output, formatCleanNotMeasured(options.verbose, width, style))

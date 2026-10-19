@@ -150,7 +150,7 @@ func TestCleanSystemScanOffersNoCommandWhenOpenFilesAreUnknown(t *testing.T) {
 	if log.OpenFiles != nil || log.Cleanup != "" || section.LogrotateKnown {
 		t.Fatalf("log = %+v logrotate known %v", log, section.LogrotateKnown)
 	}
-	text := formatCleanSystem(section, true, 0, cleanStyle(false))
+	text := formatCleanSystem(section, true, 0, "/home", cleanStyle(false))
 	for _, want := range []string{"open files unknown", "no logrotate configuration could be read"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("output lacks %q:\n%s", want, text)
@@ -170,7 +170,7 @@ func TestCleanSystemScanStaysQuietWithNothingToReport(t *testing.T) {
 	if got := cleanSystemScan(context.Background(), cleanDeps{}, "linux", paths); got.Status != cleanAbsent {
 		t.Fatalf("empty = %+v", got)
 	}
-	if text := formatCleanSystem(cleanSystem{Status: cleanAbsent}, true, 0, cleanStyle(false)); text != "" {
+	if text := formatCleanSystem(cleanSystem{Status: cleanAbsent}, true, 0, "/home", cleanStyle(false)); text != "" {
 		t.Fatalf("absent section printed %q", text)
 	}
 }
@@ -204,8 +204,8 @@ func TestFormatCleanSystemShowsTheEvidenceAndOnlyShowsCommandsWithVerbose(t *tes
 	cleanTestWriteFile(t, paths.logrotateConf, "weekly\n", time.Now())
 	cleanTestUseProc(t, t.TempDir())
 	section := cleanSystemScan(context.Background(), cleanDeps{}, "linux", paths)
-	plain := formatCleanSystem(section, false, 0, cleanStyle(false))
-	for _, want := range []string{"Large logs and unused snap revisions", "log files of 100.0 MB or more: 1", big, "no process has it open",
+	plain := formatCleanSystem(section, false, 0, "/home", cleanStyle(false))
+	for _, want := range []string{"Large logs, unused snap revisions, and build caches", "log files of 100.0 MB or more: 1", big, "no process has it open",
 		"no logrotate rule matches", "snap revisions that are not the current one: 1", "lxd revision 1 (current 2)"} {
 		if !strings.Contains(plain, want) {
 			t.Errorf("output lacks %q:\n%s", want, plain)
@@ -214,7 +214,7 @@ func TestFormatCleanSystemShowsTheEvidenceAndOnlyShowsCommandsWithVerbose(t *tes
 	if strings.Contains(plain, "to clean") {
 		t.Errorf("commands shown without -v:\n%s", plain)
 	}
-	verbose := formatCleanSystem(section, true, 0, cleanStyle(false))
+	verbose := formatCleanSystem(section, true, 0, "/home", cleanStyle(false))
 	for _, want := range []string{"to clean, run rm " + cleanShellQuote(big) + " (edc does not run it)", "to clean, run snap remove lxd --revision=1 (edc does not run it)"} {
 		if !strings.Contains(verbose, want) {
 			t.Errorf("verbose output lacks %q:\n%s", want, verbose)
@@ -231,4 +231,74 @@ func cleanTestIsolateSystem(t *testing.T) {
 	cleanSystemDefaults = cleanSystemPaths{logs: filepath.Join(root, "log"), logrotateConf: filepath.Join(root, "logrotate.conf"),
 		logrotateDir: filepath.Join(root, "logrotate.d"), snapFiles: filepath.Join(root, "snaps"), snapMounts: filepath.Join(root, "snap")}
 	t.Cleanup(func() { cleanJournalPath, cleanAptPath, cleanSystemDefaults = oldJournal, oldApt, oldDefaults })
+}
+
+func cleanTestOCILayout(t *testing.T, path string, size int, modified time.Time) {
+	t.Helper()
+	cleanTestWriteFile(t, filepath.Join(path, "oci-layout"), `{"imageLayoutVersion":"1.0.0"}`, modified)
+	cleanTestWriteFile(t, filepath.Join(path, "index.json"), `{"schemaVersion":2}`, modified)
+	cleanTestWriteFile(t, filepath.Join(path, "blobs", "sha256", "layer"), strings.Repeat("b", size), modified)
+}
+
+func TestCleanSystemScanFindsBuildxCachesByStructure(t *testing.T) {
+	home := t.TempDir()
+	old := time.Date(2025, 9, 30, 12, 0, 0, 0, time.UTC)
+	cleanTestOCILayout(t, filepath.Join(home, ".devbox-cache", "buildx-rust"), 80000, old)
+	cleanTestOCILayout(t, filepath.Join(home, ".devbox-cache", "any-name"), 20000, old)
+	cleanTestOCILayout(t, filepath.Join(home, "cache"), 5000, old)
+	cleanTestWriteFile(t, filepath.Join(home, ".devbox-cache", "go-mod", "pkg"), "not a build cache", old)
+	cleanTestWriteFile(t, filepath.Join(home, "partial", "oci-layout"), "{}", old)
+	cleanTestOCILayout(t, filepath.Join(home, "a", "b", "too-deep"), 5000, old)
+	cleanTestOCILayout(t, filepath.Join(home, "node_modules", "skipped"), 5000, old)
+	if err := os.Symlink(filepath.Join(home, ".devbox-cache", "buildx-rust"), filepath.Join(home, "link")); err != nil {
+		t.Fatal(err)
+	}
+	cleanTestUseProc(t, cleanTestProc(t, map[string][]string{"5": {filepath.Join(home, ".devbox-cache", "any-name", "blobs", "sha256", "layer")}}))
+	deps := cleanTestRootDeps(t)
+	deps.home = home
+
+	section := cleanSystemScan(context.Background(), deps, "linux", cleanTestSystemPaths(t))
+	if section.Status != cleanMeasured || section.BuildCachesTotal != 3 || len(section.BuildCaches) != 3 {
+		t.Fatalf("section = %+v", section)
+	}
+	rust, anyName, plain := section.BuildCaches[0], section.BuildCaches[1], section.BuildCaches[2]
+	if filepath.Base(rust.Path) != "buildx-rust" || filepath.Base(anyName.Path) != "any-name" || plain.Path != filepath.Join(home, "cache") {
+		t.Fatalf("caches = %+v", section.BuildCaches)
+	}
+	if rust.Bytes < 80000 || rust.NewestWrite == nil || cleanDockerDate(rust.NewestWrite) != "2025-09-30" {
+		t.Fatalf("rust = %+v", rust)
+	}
+	if rust.OpenFiles == nil || *rust.OpenFiles != 0 || rust.Cleanup != "rm -rf "+cleanShellQuote(rust.Path) {
+		t.Fatalf("rust open %v cleanup %q", rust.OpenFiles, rust.Cleanup)
+	}
+	if anyName.OpenFiles == nil || *anyName.OpenFiles != 1 || anyName.Cleanup != "" {
+		t.Fatalf("a cache with an open file must have no command: %+v", anyName)
+	}
+	if section.BuildCachesBytes < rust.Bytes+anyName.Bytes+plain.Bytes {
+		t.Fatalf("total bytes = %d", section.BuildCachesBytes)
+	}
+
+	text := formatCleanSystem(section, true, 0, home, cleanStyle(false))
+	for _, want := range []string{"buildx cache folders (OCI layout): 3", "~/.devbox-cache/buildx-rust", "modified 2025-09-30", "1 open files",
+		"to clean, run rm -rf " + rust.Path + " (edc does not run it)", "docker buildx prune does not remove these folders"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("output lacks %q:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "to clean, run rm -rf "+anyName.Path) {
+		t.Errorf("a command was shown for a cache that a process holds open:\n%s", text)
+	}
+}
+
+func TestCleanSystemScanLooksForBuildCachesOnlyUnderAHome(t *testing.T) {
+	cleanTestUseProc(t, t.TempDir())
+	deps := cleanTestRootDeps(t)
+	deps.home = ""
+	if got := cleanSystemScan(context.Background(), deps, "linux", cleanTestSystemPaths(t)); got.Status != cleanAbsent || got.BuildCachesTotal != 0 {
+		t.Fatalf("no home = %+v", got)
+	}
+	deps.home = t.TempDir()
+	if got := cleanSystemScan(context.Background(), deps, "linux", cleanTestSystemPaths(t)); got.Status != cleanAbsent {
+		t.Fatalf("empty home = %+v", got)
+	}
 }

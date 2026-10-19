@@ -178,8 +178,8 @@ clean:
     container_in_engine: "같은 이름의 컨테이너가 실행 중인 엔진에 있음"
     project_in_engine: "같은 프로젝트가 실행 중인 엔진에서 돌고 있음"
   system:
-    title: "큰 로그와 쓰지 않는 snap 리비전  합계에 더하지 않음"
-    panel: "큰 로그와 snap 리비전"
+    title: "큰 로그, 쓰지 않는 snap 리비전, 빌드 캐시  합계에 더하지 않음"
+    panel: "큰 로그, snap, 빌드 캐시"
     note: "합계에 더하지 않음"
     journald_no_limit: "journald.conf에 크기나 보관 기간 제한이 없음"
     journald_limits: "journald.conf 설정: %s"
@@ -197,6 +197,9 @@ clean:
     snap: "%s 리비전 %s (현재 %s)"
     snaps_omitted: "리비전 %d개 더"
     snaps_unknown: "현재 리비전을 알 수 없어 건너뛴 snap %d개"
+    build_caches: "buildx 캐시 폴더(OCI 레이아웃): %d개, %s"
+    build_caches_omitted: "폴더 %d개 더"
+    build_caches_note: "docker buildx prune은 이 폴더를 지우지 않음"
   vm:
     title: "VM 디스크 (사용자 데이터, 합계에 넣지 않음)"
     panel: "VM 디스크"

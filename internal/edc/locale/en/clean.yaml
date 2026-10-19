@@ -178,8 +178,8 @@ clean:
     container_in_engine: "a container with this name exists in the running engine"
     project_in_engine: "the project runs in the running engine"
   system:
-    title: "Large logs and unused snap revisions  not added to any total"
-    panel: "Large logs and snap revisions"
+    title: "Large logs, unused snap revisions, and build caches  not added to any total"
+    panel: "Large logs, snaps, and build caches"
     note: "not added to any total"
     journald_no_limit: "journald.conf sets no size or retention limit"
     journald_limits: "journald.conf sets %s"
@@ -197,6 +197,9 @@ clean:
     snap: "%s revision %s (current %s)"
     snaps_omitted: "%d more revisions"
     snaps_unknown: "%d snaps skipped: the current revision is unknown"
+    build_caches: "buildx cache folders (OCI layout): %d, %s"
+    build_caches_omitted: "%d more folders"
+    build_caches_note: "docker buildx prune does not remove these folders"
   vm:
     title: "VM disks (user data, not added to any total)"
     panel: "VM disks"

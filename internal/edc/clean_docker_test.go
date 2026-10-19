@@ -169,7 +169,8 @@ func TestCleanDockerReadsEngineTotalsWithGETOnly(t *testing.T) {
 		section.OperatingSystem != "OrbStack" || section.Inside != cleanOrbStack || section.MeasuredAt == nil || section.ElapsedMS == nil {
 		t.Fatalf("section = %+v", section)
 	}
-	wantRequests := []string{"GET " + cleanDockerPingPath, "GET " + cleanDockerInfoPath, "GET " + cleanDockerImagePath, "GET " + cleanDockerVolumePath}
+	wantRequests := []string{"GET " + cleanDockerPingPath, "GET " + cleanDockerInfoPath, "GET " + cleanDockerImagePath, "GET " + cleanDockerVolumePath,
+		"GET " + cleanDockerAPIPath + "/volumes"}
 	if got := fake.seen(); !reflect.DeepEqual(got, wantRequests) {
 		t.Fatalf("requests = %v", got)
 	}
@@ -358,9 +359,9 @@ func TestCleanDockerRejectsUnusableResponses(t *testing.T) {
 		detail   string
 		requests int
 	}{
-		{"API older than 1.52", func(f *cleanDockerFake) { f.api = "1.51" }, cleanUnsupported, cleanReasonAPIVersion, "1.51", 1},
-		{"API 1.9 is older than 1.52", func(f *cleanDockerFake) { f.api = "1.9" }, cleanUnsupported, cleanReasonAPIVersion, "1.9", 1},
-		{"API 0.99", func(f *cleanDockerFake) { f.api = "0.99" }, cleanUnsupported, cleanReasonAPIVersion, "0.99", 1},
+		{"API older than 1.52", func(f *cleanDockerFake) { f.api = "1.51" }, cleanUnsupported, cleanReasonAPIVersion, "1.51", 3},
+		{"API 1.9 is older than 1.52", func(f *cleanDockerFake) { f.api = "1.9" }, cleanUnsupported, cleanReasonAPIVersion, "1.9", 3},
+		{"API 0.99", func(f *cleanDockerFake) { f.api = "0.99" }, cleanUnsupported, cleanReasonAPIVersion, "0.99", 3},
 		{"no Api-Version header", func(f *cleanDockerFake) { f.api = "" }, cleanFailed, cleanReasonInvalidOutput, "Api-Version: ", 1},
 		{"Api-Version is not a number", func(f *cleanDockerFake) { f.api = "latest" }, cleanFailed, cleanReasonInvalidOutput, "Api-Version: latest", 1},
 		{"ping HTTP 500", func(f *cleanDockerFake) { f.status[cleanDockerPingPath] = 500 }, cleanFailed, cleanReasonHTTPStatus, "HTTP 500", 1},

@@ -694,13 +694,14 @@ Xcode Archives, 시뮬레이터 기기, `Application Support`, `Containers`는 �
 | `filesystems` | 파일 시스템별 사용량 합계 |
 | `project_build_dirs` | `--project`로 지정한 루트의 빌드 폴더 |
 | `docker` | Docker 엔진이 보고한 집계 |
+| `docker_root` | 엔진이 더 이상 쓰지 않는 옛 Docker 데이터 디렉터리(Linux) |
 | `vm_disks` | 가상 머신의 디스크 파일(예: OrbStack) |
 | `worktrees` | `~/.gk/worktree`의 git-kit worktree |
 | `not_measured` | 재지 않는 유형과 이유 |
 
-섹션은 후보, 빌드 폴더, Docker, VM 디스크, worktree 순서로 실행하고 제한 시간 하나를 나눠 씁니다.
+섹션은 후보, 빌드 폴더, Docker, 옛 Docker 데이터, VM 디스크, worktree 순서로 실행하고 제한 시간 하나를 나눠 씁니다.
 
-파일 시스템 합계에는 다시 만들 수 있는 빌드 폴더만 더합니다. 엔진 집계, VM 디스크, worktree는 어떤 합계에도 더하지 않습니다.
+파일 시스템 합계에는 다시 만들 수 있는 빌드 폴더만 더합니다. 엔진 집계, 옛 Docker 데이터, VM 디스크, worktree는 어떤 합계에도 더하지 않습니다.
 
 ### 프로젝트 빌드 폴더
 
@@ -767,6 +768,32 @@ socket 경로는 `docker context inspect`에 물어서 `DOCKER_HOST`와 현재 c
 볼륨은 사용자 데이터입니다. `volumes` 항목은 `user_data`가 `true`이고 `reclaimable_bytes`와 정리 명령이 없습니다.
 
 `docker system df`는 크기를 반올림하고 1000바이트 단위를 씁니다. edc 텍스트 출력은 1024바이트 단위를 써서 두 수치가 다릅니다. JSON에는 정확한 바이트 수가 있습니다.
+
+### 옛 Docker 데이터 디렉터리
+
+Linux에서는 `/var/lib/docker`를 확인합니다. 엔진이 다른 데이터 디렉터리를 쓰면 이 디렉터리가 옛 데이터 후보입니다. 엔진이 쓰는 디렉터리는 `docker.root_dir`에 있고, API 1.52보다 낮은 엔진에서도 읽습니다.
+
+edc는 지워도 되는지 판정하지 않고, 판단에 도움이 되는 사실만 보여 줍니다. 파일을 읽기만 하며 `docker` 명령은 실행하지 않습니다.
+
+`docker_root.roots`의 항목마다 아래 사실이 있습니다.
+
+- `usage_bytes`, `dirs`: 디렉터리 전체와 안의 폴더별 크기
+- `mounted`, `open_files`: 디렉터리 아래에 마운트나 열린 파일이 있는지. `open_files_complete`가 `false`이면 읽지 못한 process가 있습니다.
+- `last_container_stop`, `newest_volume_write`: 마지막으로 활동한 날짜
+- `containers`: 디렉터리에 기록된 컨테이너의 이미지, Compose 프로젝트, 종료 시각. `in_engine`, `project_in_engine`은 엔진에 같은 이름이 있는지 나타냅니다.
+- `volumes`: 볼륨별 크기, 가장 최근 파일의 날짜, 그 볼륨을 마운트한 컨테이너 `used_by`. `in_engine`은 엔진에 같은 이름의 볼륨이 있는지 나타냅니다.
+
+항목에는 디렉터리를 지우는 `rm -rf --one-file-system` 명령이 `cleanup`으로 있고, `-v`에서 텍스트로 보여 줍니다. edc는 이 명령을 실행하지 않습니다. 디렉터리 아래에 마운트나 열린 파일이 있으면 `cleanup`은 비어 있습니다.
+
+이 볼륨에는 `docker volume rm`을 쓰지 마세요. 엔진은 옛 디렉터리를 모르므로, 자기 디렉터리에 있는 같은 이름의 볼륨을 지웁니다.
+
+`used_by`가 빈 볼륨은 이 볼륨을 쓴 컨테이너 기록이 없는 것이고, 사용자 데이터일 수 있습니다. 지우기 전에 내용을 확인하세요.
+
+볼륨은 큰 순서로 20개까지 보이고, 나머지는 `volumes_omitted`와 `omitted_bytes`로 셉니다. `-v`가 없으면 텍스트 출력은 이름 없는 볼륨을 한 줄로 묶고 컨테이너 목록을 내지 않습니다.
+
+컨테이너의 이름, 이미지, 라벨, 마운트, 시각은 `containers/*/config.v2.json`에서 읽습니다. 환경 변수는 담지도 출력하지도 않습니다.
+
+엔진이 데이터 디렉터리를 알려 주지 않으면 상태는 `unknown_location`입니다. `docker`가 없거나 엔진이 꺼져 있으면 이 섹션은 나오지 않습니다.
 
 ### VM 디스크
 

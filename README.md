@@ -742,13 +742,14 @@ Four more sections follow the candidates. Each section has its own key in `metri
 | `filesystems` | The usage sum for each file system |
 | `project_build_dirs` | The build folders in the roots that you give with `--project` |
 | `docker` | The totals that the Docker engine reports |
+| `docker_root` | The old Docker data directory that the engine no longer uses (Linux) |
 | `vm_disks` | The disk file of a virtual machine, for example OrbStack |
 | `worktrees` | The git-kit worktrees in `~/.gk/worktree` |
 | `not_measured` | The types that edc does not measure, and the reason |
 
-edc runs the sections in this order: candidates, build folders, Docker, VM disks, and worktrees. They share one time limit.
+edc runs the sections in this order: candidates, build folders, Docker, old Docker data, VM disks, and worktrees. They share one time limit.
 
-Only the recreatable build folders join the sum of a file system. The engine totals, the VM disks, and the worktrees never join a sum.
+Only the recreatable build folders join the sum of a file system. The engine totals, the old Docker data, the VM disks, and the worktrees never join a sum.
 
 ### Project build folders
 
@@ -815,6 +816,32 @@ If one request fails, only that type has the status `failed`, and the section is
 Volumes hold user data. The `volumes` entry has `user_data` set to `true`. It has no `reclaimable_bytes` and no cleanup command.
 
 `docker system df` rounds the sizes and uses units of 1000 bytes. The text output of edc uses units of 1024 bytes. The two numbers differ for this reason. The JSON holds exact bytes.
+
+### Old Docker data directory
+
+On Linux, edc checks `/var/lib/docker`. If the engine uses another data directory, the old directory is a candidate. The engine reports its directory in `docker.root_dir`. This works for an engine older than API 1.52 too.
+
+edc does not decide if you can delete the data. It shows the facts that help you decide. It reads files only and runs no `docker` command.
+
+Each entry in `docker_root.roots` has these facts:
+
+- `usage_bytes` and `dirs`: the size of the directory and of each folder in it.
+- `mounted` and `open_files`: whether a mount or an open file is under the directory. If `open_files_complete` is `false`, edc cannot read some processes.
+- `last_container_stop` and `newest_volume_write`: the dates of the last activity.
+- `containers`: the containers that the directory records, with image, Compose project, and stop time. `in_engine` and `project_in_engine` show if the engine has the same name.
+- `volumes`: each volume with its size, the date of its newest file, and `used_by`, the containers that mounted it. `in_engine` shows if the engine has a volume with the same name.
+
+The entry has `cleanup`, a `rm -rf --one-file-system` command for the directory. With `-v`, the text output shows it. edc never runs it. The command is empty if a mount or an open file is under the directory.
+
+Do not use `docker volume rm` for these volumes. The engine does not know the old directory. It removes the volume with the same name in its own directory.
+
+A volume with an empty `used_by` has no container record. It can hold user data. Check it before you delete it.
+
+edc shows the 20 largest volumes. `volumes_omitted` and `omitted_bytes` count the others. Without `-v`, the text output shows unnamed volumes as one line and does not list the containers.
+
+edc reads the container name, image, labels, mounts, and times from `containers/*/config.v2.json`. It does not keep or print environment variables.
+
+If the engine does not report its directory, the status is `unknown_location`. If `docker` is absent or the engine is off, the section does not appear.
 
 ### VM disks
 

@@ -831,7 +831,7 @@ Each entry in `docker_root.roots` has these facts:
 - `containers`: the containers that the directory records, with image, Compose project, and stop time. `in_engine` and `project_in_engine` show if the engine has the same name.
 - `volumes`: each volume with its size, the date of its newest file, and `used_by`, the containers that mounted it. `in_engine` shows if the engine has a volume with the same name.
 
-The entry has `cleanup`, a `rm -rf --one-file-system` command for the directory. With `-v`, the text output shows it. edc never runs it. The command is empty if a mount or an open file is under the directory.
+The entry has `cleanup`, a `rm -rf --one-file-system` command for the directory. With `-v`, the text output shows it. edc never runs it. The command is empty if a mount or an open file is under the directory. It is also empty if edc cannot read the mount table or all of `/proc`.
 
 Do not use `docker volume rm` for these volumes. The engine does not know the old directory. It removes the volume with the same name in its own directory.
 
@@ -841,7 +841,7 @@ edc shows the 20 largest volumes. `volumes_omitted` and `omitted_bytes` count th
 
 edc reads the container name, image, labels, mounts, and times from `containers/*/config.v2.json`. It does not keep or print environment variables.
 
-If the engine does not report its directory, the status is `unknown_location`. If `docker` is absent or the engine is off, the section does not appear.
+If the engine does not report its directory, the status is `unknown_location`. If `docker` is absent or the engine is off, the text output does not show the section, and `docker_root.status` is empty.
 
 ### VM disks
 

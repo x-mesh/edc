@@ -193,7 +193,9 @@ func cleanStaleRootEvidence(ctx context.Context, deps cleanDeps, path string, do
 		root.OpenFiles = &count
 	}
 	// 볼륨 하나씩 지우는 명령은 두지 않는다. docker volume rm은 이 디렉터리가 아니라 지금 엔진의 볼륨을 지운다.
-	if (root.Mounted == nil || !*root.Mounted) && count == 0 {
+	// 쓰는 중이 아니라고 확인한 경우에만 명령을 둔다. 마운트 표나 /proc을 읽지 못했거나 읽지 못한 process가 있으면
+	// 열린 파일이 0으로 보여도 쓰는 중일 수 있어 명령을 두지 않는다.
+	if root.Mounted != nil && !*root.Mounted && root.OpenFiles != nil && *root.OpenFiles == 0 && complete {
 		root.Cleanup = "rm -rf --one-file-system " + cleanShellQuote(path)
 	}
 	return root
@@ -330,6 +332,8 @@ func cleanNewestWrite(ctx context.Context, dir string) (newest time.Time, partia
 			return fs.SkipAll
 		}
 		if err != nil {
+			// 읽지 못한 항목에 더 늦은 파일이 있을 수 있어 가장 최근 쓰기를 완전한 값으로 보고하지 않는다.
+			partial = true
 			return nil
 		}
 		if seen++; seen > cleanDockerNewestEntries {

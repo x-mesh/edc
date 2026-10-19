@@ -60,7 +60,14 @@ func cleanTestRootDeps(t *testing.T) cleanDeps {
 		t.Skip("du is not supported on this platform")
 	}
 	deps := cleanTestDeps(cleanTestHome(t), nil)
-	deps.measure, deps.sources = duMeasure, cleanSources(host)
+	// 호스트의 실제 마운트 표 대신 마운트가 없는 표를 쓴다. 호스트마다 결과가 달라지지 않게 한다.
+	measured := cleanSources(host)
+	measured.mountinfo = func() (string, error) { return "", nil }
+	// Linux의 du는 마운트 표가 있어야 잰다. 시험이 deps.sources.mountinfo를 바꿔도 크기 측정은 이 소스를 쓴다.
+	deps.measure = func(ctx context.Context, options duOptions, _ duSources) (duScan, error) {
+		return duMeasure(ctx, options, measured)
+	}
+	deps.sources = measured
 	return deps
 }
 
@@ -351,5 +358,83 @@ func TestCleanDockerReadsTheRootOfAnEngineOlderThanTheTotalsNeed(t *testing.T) {
 		if strings.Contains(request, "system/df") || !strings.HasPrefix(request, "GET ") {
 			t.Fatalf("unexpected request %q", request)
 		}
+	}
+}
+
+func TestCleanDockerRootOffersNoCleanupWhenAStateIsUnknown(t *testing.T) {
+	stale := cleanTestStaleRoot(t)
+	resolved := cleanResolve(stale)
+	docker := cleanDocker{Status: cleanMeasured, RootDir: "/live"}
+	scan := func(t *testing.T, deps cleanDeps) cleanStaleDockerRoot {
+		t.Helper()
+		section := cleanDockerRootScan(context.Background(), deps, "linux", docker, stale)
+		if len(section.Roots) != 1 {
+			t.Fatalf("section = %+v", section)
+		}
+		return section.Roots[0]
+	}
+	cases := []struct {
+		name  string
+		setup func(t *testing.T, deps *cleanDeps)
+	}{
+		{"mount table missing", func(t *testing.T, deps *cleanDeps) { deps.sources.mountinfo = nil }},
+		{"mount table unreadable", func(t *testing.T, deps *cleanDeps) {
+			deps.sources.mountinfo = func() (string, error) { return "", os.ErrPermission }
+		}},
+		{"a mount below the directory", func(t *testing.T, deps *cleanDeps) {
+			deps.sources.mountinfo = func() (string, error) { return "1 1 0:1 / " + resolved + "/overlay2 rw - tmpfs tmpfs rw\n", nil }
+		}},
+		{"/proc unreadable", func(t *testing.T, deps *cleanDeps) { cleanTestUseProc(t, filepath.Join(t.TempDir(), "missing")) }},
+		{"a process whose fd directory is unreadable", func(t *testing.T, deps *cleanDeps) {
+			if os.Geteuid() == 0 {
+				t.Skip("root reads every fd directory")
+			}
+			proc := cleanTestProc(t, map[string][]string{"9": nil})
+			fdDir := filepath.Join(proc, "9", "fd")
+			if err := os.Chmod(fdDir, 0); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = os.Chmod(fdDir, 0o755) })
+			cleanTestUseProc(t, proc)
+		}},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			cleanTestUseProc(t, t.TempDir())
+			deps := cleanTestRootDeps(t)
+			test.setup(t, &deps)
+			root := scan(t, deps)
+			if root.Cleanup != "" {
+				t.Fatalf("a command was offered although a state is unknown: %q", root.Cleanup)
+			}
+			text := formatCleanDockerRoot(cleanDockerRoots{Status: cleanMeasured, Current: "/live", Roots: []cleanStaleDockerRoot{root}}, true, 0, cleanStyle(false))
+			if strings.Contains(text, "rm -rf") {
+				t.Fatalf("output shows a command:\n%s", text)
+			}
+		})
+	}
+	t.Run("every state known", func(t *testing.T) {
+		cleanTestUseProc(t, t.TempDir())
+		if root := scan(t, cleanTestRootDeps(t)); root.Cleanup == "" {
+			t.Fatal("no command although the directory is not in use")
+		}
+	})
+}
+
+func TestCleanNewestWriteMarksAnUnreadableFolderAsPartial(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads every folder")
+	}
+	dir := t.TempDir()
+	cleanTestWriteFile(t, filepath.Join(dir, "readable", "a"), "a", time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC))
+	cleanTestWriteFile(t, filepath.Join(dir, "locked", "b"), "b", time.Now())
+	locked := filepath.Join(dir, "locked")
+	if err := os.Chmod(locked, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
+	newest, partial := cleanNewestWrite(context.Background(), dir)
+	if !partial || cleanDockerDate(&newest) != "2026-01-02" {
+		t.Fatalf("newest %v partial %v", newest, partial)
 	}
 }

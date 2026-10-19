@@ -57,19 +57,12 @@ func runAI(args []string, version string) int {
 		fmt.Fprintln(os.Stderr, T("observe.ai.count_minimum"))
 		return 2
 	}
-	historyPath, err := defaultHistoryPath()
+	collector, err := openAICollector()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 2
 	}
-	home, _ := os.UserHomeDir()
-	collector := newAICollector(aiClaudeDir(home), aiCodexDir(home), filepath.Dir(historyPath), time.Now())
 	defer collector.close()
-	// macOS의 Claude Code는 token을 Keychain에 둔다. Keychain을 열면 다른 프로그램에도 token을 내주는 허용을 묻게 되므로
-	// Claude Code가 statusline에 넘긴 사용량을 읽는다.
-	if runtime.GOOS == "darwin" {
-		collector.claudeSnapshot = filepath.Join(filepath.Dir(historyPath), aiClaudeSnapshotName)
-	}
 
 	var writer io.Writer = os.Stdout
 	if *jsonPath != "" && *jsonPath != "-" {
@@ -86,6 +79,22 @@ func runAI(args []string, version string) int {
 		return runAIDashboard(collector, *poll, version)
 	}
 	return runAIStream(writer, collector, *poll, *count, jsonOutput)
+}
+
+// openAICollector는 edc ai와 edc top의 AI 패널이 함께 쓰는 수집기를 연다. 상태 파일은 기록 DB 옆에 둔다.
+func openAICollector() (*aiCollector, error) {
+	historyPath, err := defaultHistoryPath()
+	if err != nil {
+		return nil, err
+	}
+	home, _ := os.UserHomeDir()
+	collector := newAICollector(aiClaudeDir(home), aiCodexDir(home), filepath.Dir(historyPath), time.Now())
+	// macOS의 Claude Code는 token을 Keychain에 둔다. Keychain을 열면 다른 프로그램에도 token을 내주는 허용을 묻게 되므로
+	// Claude Code가 statusline에 넘긴 사용량을 읽는다.
+	if runtime.GOOS == "darwin" {
+		collector.claudeSnapshot = filepath.Join(filepath.Dir(historyPath), aiClaudeSnapshotName)
+	}
+	return collector, nil
 }
 
 // aiCollector는 한도 조회, 기록 scan, 리셋 기록을 맡는다.

@@ -586,7 +586,7 @@ edc du --json - /var            # 항목을 metrics.rows에 담음
 
 기본으로 한 파일 시스템 안에서만 셉니다. 경로 아래의 마운트에는 들어가지 않고, 건너뛴 마운트마다 파일 시스템 종류와 `statfs`가 알려 준 사용량을 보여 줍니다. bind mount와 overlay mount는 다른 경로와 파일 시스템을 공유하므로 사용량을 `-`로 표시합니다. 디렉터리를 자기 자신 위에 bind mount한 경우에는 그 파일이 다른 곳에 없으므로 건너뛰지 않고 셉니다.
 
-바쁜 호스트에서도 CPU를 적게 쓰도록 기본으로 디렉터리 4개를 동시에 읽습니다. `--workers`로 이 수를 바꿀 수 있습니다. 디렉터리마다 기록 하나와 가장 큰 파일 몇 개만 남기므로, 메모리 사용량은 파일 수가 아니라 디렉터리 수에 따라 늘어납니다.
+바쁜 호스트에서도 CPU를 적게 쓰도록 기본으로 디렉터리 4개를 동시에 읽습니다. `--workers`나 `-w`로 이 수를 바꿀 수 있습니다. 디렉터리마다 기록 하나와 가장 큰 파일 몇 개만 남기므로, 메모리 사용량은 파일 수가 아니라 디렉터리 수에 따라 늘어납니다.
 
 제한 시간(기본 60초)이 지나면 탐색을 멈춥니다. 이때 결과는 `warn`이고 `metrics.partial`은 `true`이며, 크기는 읽은 디렉터리만 센 값입니다. 제한 시간이나 `q`로 멈추면 텍스트 출력의 마지막 줄에도 부분 결과라고 표시하고, 제한 시간에 멈췄을 때는 `--timeout`을 늘린 명령을 함께 보여 줍니다. 읽지 못한 디렉터리가 있으면 결과는 `warn`이고 `-v`로 그 목록을 볼 수 있습니다. 모든 디렉터리를 읽으려면 root로 실행합니다. macOS에서는 결과가 `skip`입니다.
 
@@ -1146,6 +1146,48 @@ macOS에서는 `psi` 박스를 생략하고 안내를 보입니다. macOS의 mem
 
 `--split`은 대시보드에서만 동작합니다. 표를 출력하는 실행(`--count`, `--json`, 파이프, `NO_COLOR`)이나 `--process`와 함께 직접 주면 exit 2로 끝납니다. 설정 값은 그런 실행을 막지 않고, `--process`와 함께면 process 보기가 유지됩니다.
 
+`--view`로 처음 보기를 고릅니다. `all`, `cpu`, `memory`, `disk`, `network`, `pressure`, `split`을 쓸 수 있고, `Esc`를 누르면 이 보기로 돌아옵니다. 설정 파일의 `defaults.top.view`에 적으면 매번 그 보기로 시작합니다.
+
+`--panels`로 표 아래에 늘 보일 패널을 고릅니다. `cpu`, `mem`, `disk`, `net`, `psi`, `ai`, `events`를 쉼표로 이어 적고, `none`은 패널을 모두 뺍니다.
+
+- `cpu`, `mem`, `disk`, `psi`는 선택한 행의 요약, 최근 60초 최고치, 그 자원을 가장 많이 쓴 process 셋을 세 줄로 보입니다. 오른쪽 process 목록은 기준 하나로만 줄 세우므로, 자원마다 상위 process를 이 패널에서 봅니다. `disk` 패널을 켜면 process별 I/O도 읽습니다. `psi` 패널은 I/O를 기다리는 process를 보이고, macOS는 PSI를 수집하지 않으므로 한 줄 안내만 보입니다.
+- `net`은 선택한 행의 network limit입니다. macOS는 이 값을 수집하지 않으므로 한 줄 안내만 보입니다.
+- `ai`는 `edc ai`와 같은 Claude·Codex 사용량 한도입니다. 1분마다 다시 조회합니다.
+- `events`는 최근 이벤트입니다.
+
+목록 앞의 패널이 먼저 자리를 받습니다. 패널이 들어가지 않으면 패널을 자르지 않고 통째로 숨긴 뒤 상태 줄에 `+net hidden`처럼 알립니다. 뒤의 작은 패널은 남은 줄에 들어가면 보입니다. 표는 적어도 5행, 박스는 데이터 행을 적어도 3개 남깁니다.
+
+`a`를 누르면 `ai` 패널을 켜고 끕니다. 패널을 켜기 전에는 Claude와 Codex 정보를 읽지 않습니다. `Enter` 상세나 `h` 최고치를 연 동안에는 그 패널이 패널 자리를 씁니다.
+
+설정 파일의 `defaults.top.panels`에 같은 문법으로 적으면 매번 그 목록으로 시작합니다. 목록을 정하지 않으면 지금 배치를 그대로 씁니다. network 보기에서 `net` 패널이 보이고, 빈자리에 이벤트가 보입니다.
+
+`defaults.top.process_sort`에 `cpu`, `mem`, `io`를 적으면 process 목록의 처음 정렬이 됩니다. `o`로 바꾸는 동작은 그대로입니다.
+
+`--columns`로 all 보기의 열 그룹을 고릅니다. `net`, `cpu`, `mem`, `disk`, `psi`를 보이고 싶은 순서대로 쉼표로 이어 적고, `all`은 다섯 그룹을 모두 보입니다. 그룹마다 기본 열은 늘 보이고, 폭이 남으면 열을 더 붙입니다. 그룹을 빼면 그 폭을 남은 그룹이 씁니다. 이름 뒤에 `+`를 붙이면 그 그룹의 열을 다른 그룹보다 먼저 붙입니다. 예를 들어 `--columns net+,cpu,mem`은 `hot core`보다 packet과 network 오류 열을 먼저 보입니다. 설정 파일의 `defaults.top.columns`에 적으면 매번 그 목록으로 시작합니다.
+
+목록에 `ai`를 넣으면 `claude` 그룹과 `codex` 그룹에 두 도구의 요청이 보입니다. 행마다 직전 행 뒤부터 그 행 시각까지 들어온 요청을 세므로, 같은 줄의 다른 열과 견줄 수 있습니다. 그룹마다 `req`는 요청 수이고, `tok`은 새 입력과 출력을 더한 token으로 `edc ai`의 `total`과 같은 값입니다. prompt cache에서 읽은 token은 넣지 않고, 0은 `·`로 보입니다. Claude Code는 응답이 끝난 뒤 기록을 쓰고 edc는 2초마다 읽으므로, 가장 최근 행은 2~3초 뒤에 값이 채워집니다. `all`에는 `ai`가 들지 않고, 목록에 `ai`가 있을 때만 Claude와 Codex 대화 기록을 읽습니다.
+
+```toml
+[defaults.top]
+split = "net,disk"
+view = "split"
+panels = "net,ai,events"
+process_sort = "io"
+columns = "net+,cpu,mem"
+```
+
+`--view`, `--panels`, `--columns`도 `--split`처럼 대시보드에서만 동작하고, `--view`를 `--process`와 함께 주면 exit 2로 끝납니다. 설정 값은 표를 출력하는 실행을 막지 않습니다.
+
+`edc top setup`을 실행하면 이 값들을 실제 화면을 미리 보며 고를 수 있습니다. 위쪽에는 보기, 열 그룹, 박스, 패널, process 정렬, interval 줄이 있고, 아래쪽에는 실제 sample로 그린 대시보드가 값을 바꿀 때마다 바로 바뀝니다.
+
+- `↑`·`↓`로 줄을 고르고, `←`·`→`로 값을 바꾸거나 박스·패널 항목을 고릅니다.
+- `Space`로 열 그룹, 박스, 패널을 켜고 끄고, `[`·`]`로 순서를 옮깁니다. 열 그룹 줄에서 `+`를 누르면 그 그룹의 열을 먼저 더 보입니다.
+- `Tab`을 누르면 미리보기를 터미널 전체 크기로 그립니다. 배치는 저장한 뒤의 `edc top`과 같고, 상태 줄 첫 줄에만 설정 화면의 키 안내가 보입니다.
+- `z`를 누르면 80×24, 120×30 크기로 바꿔 봅니다. 터미널에 들어가지 않는 크기는 건너뜁니다. 그 크기에서 숨는 패널은 패널 줄 옆에 `+net hidden at 80×24`처럼 보입니다.
+- `Enter`를 누르면 저장할 `[defaults.top]` 내용을 보여 주고, `y`를 누르면 저장합니다.
+
+`edc top setup`은 바꾼 키만 고치고 다른 키와 섹션은 그대로 둡니다. 파일 전체를 다시 쓰므로 파일 안의 주석은 남지 않습니다. 설정 화면을 연 사이에 파일이 바뀌면 저장하지 않고 exit 2로 끝나고, 저장하지 않은 변경이 있는 채로 나가면 exit 4로 끝납니다.
+
 disk 보기에는 macOS와 Linux 모두 물리 disk의 IOPS와 평균 `await`가 추가됩니다. Linux에서는 모든 물리 disk의 합산 `busy%`와, memory 보기의 `mem%` 옆 memory pressure도 추가됩니다. 합산 `busy%`는 여러 disk가 동시에 바쁘면 100%를 넘을 수 있습니다. macOS 대시보드는 수집하지 않는 iowait, PSI, disk busy, file descriptor, listen overflow, softnet drop, conntrack, I/O 지연 열을 숨기고 도움말에 제한을 설명합니다. macOS의 memory와 pressure 보기에는 kernel의 memory 압박 단계(`kern.memorystatus_vm_pressure_level`)인 `mem lvl`이 `normal`, `warn`, `critical`로 나옵니다. CPU와 pressure 보기의 `blocked`는 `U` 상태 process 수입니다. Linux는 작업(thread)을 세므로 두 값의 단위가 다릅니다. network 보기의 interface errors·drops는 macOS와 Linux 모두 표시하며, macOS에서는 kernel의 interface 통계(`net.link.generic.ifdata`)에서 읽습니다. memory 보기의 `swap/s`는 kernel이 초당 swap으로 내보낸 byte입니다.
 
 Linux에서는 일부 보기에 선택 열이 더 있습니다. CPU 보기의 `steal%`는 hypervisor가 다른 guest에 CPU를 내준 시간의 비율이고, `blocked`는 지금 I/O를 기다리며 멈춘 작업 수입니다. disk 보기의 `queue`는 진행 중인 I/O 요청의 평균 개수를 물리 disk마다 더한 값입니다. network 보기에는 초당 TCP 재전송 segment(`retr/s`), 보낸 RST(`rst/s`), 실패한 연결 시도(`fail/s`)가 있습니다. 선택 열은 다른 열이 모두 들어가고 `signal`에 13열 이상이 남을 때만 보입니다.
@@ -1354,7 +1396,7 @@ token은 이 host의 로그에서 셉니다. 2초마다 새로 붙은 줄만 읽
 
 표는 이 host만 셉니다. 다른 기기나 claude.ai에서 쓴 양은 한도 비율에만 나타납니다.
 
-`in`은 새로 보낸 입력이고, `cache`는 prompt cache에서 읽은 입력입니다. `hit`은 `cache / (in + cache)`를 내림한 값입니다. Claude의 `in`에는 cache에 새로 쓴 token도 들어가므로, 이 token은 miss로 셉니다. 입력이 없는 구간의 `hit`은 `-`로 표시합니다. `--json`에는 소수점 한 자리의 `cache_hit_percent`가 들어가고, 입력이 없는 구간에서는 이 필드를 뺍니다. 표는 88열이 필요합니다.
+`in`은 새로 보낸 입력이고, `cache`는 prompt cache에서 읽은 입력입니다. `total`은 `in + out`이고 `cache`는 넣지 않습니다. cache 읽기는 대화가 길수록 커져서 실제로 처리한 양을 가리기 때문입니다. `hit`은 `cache / (in + cache)`를 내림한 값입니다. Claude의 `in`에는 cache에 새로 쓴 token도 들어가므로, 이 token은 miss로 셉니다. 입력이 없는 구간의 `hit`은 `-`로 표시합니다. `--json`에는 소수점 한 자리의 `cache_hit_percent`가 들어가고, 입력이 없는 구간에서는 이 필드를 뺍니다. 표는 88열이 필요합니다.
 
 한도 상자는 한도 구간마다 사용률, reset 시각, 남은 시간을 보여 줍니다.
 

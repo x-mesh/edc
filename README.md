@@ -630,7 +630,7 @@ The output starts with one `du.scan` result. It shows the total size, the number
 
 By default, edc counts one file system only. It does not go into a mount below the path. It lists each skipped mount with its file system type and the used space from `statfs`. A bind mount or an overlay mount shares a file system with another path, so its used space shows as `-`. edc counts a directory that is bind mounted onto itself, because its files have no other location.
 
-Linux uses 4 workers by default. macOS uses 1 worker to limit CPU time. Use `--workers` to change the number. edc keeps one record for each directory and for the largest files only. The memory use grows with the number of directories, not with the number of files.
+edc uses 4 workers by default. Use `--workers` or `-w` to change the number. edc keeps one record for each directory and for the largest files only. The memory use grows with the number of directories, not with the number of files.
 
 edc stops at the time limit, 60 seconds by default. Then the result is `warn`, `metrics.partial` is `true`, and the size includes only the directories that edc read. If the time limit or `q` stops edc, the last lines of the text output also say that the result is partial. After the time limit, these lines show the command with a longer `--timeout`. If edc cannot read a directory, the result is `warn`, and `-v` lists the directories. Run it as root to read all directories. On macOS, privacy permissions can also block access.
 
@@ -1220,6 +1220,48 @@ On macOS, the dashboard omits the `psi` box and shows a notice. The mem box show
 
 `--split` works only in the dashboard. If you add `--split` to a run that prints the table, the command exits with code 2. That includes `--count`, `--json`, a pipe, and `NO_COLOR`. The same applies to `--process`. The config value does not stop those runs. With `--process`, the process view stays.
 
+Use `--view` to choose the first view. The names are `all`, `cpu`, `memory`, `disk`, `network`, `pressure`, and `split`. `Esc` returns to this view. Set `defaults.top.view` to start with the same view every time.
+
+Use `--panels` to keep panels below the table. The list takes `cpu`, `mem`, `disk`, `net`, `psi`, `ai`, and `events`, comma-separated. `none` removes all panels.
+
+- `cpu`, `mem`, `disk`, and `psi` show three lines for the selected row: a summary, the peaks of the last 60 seconds, and the three processes that use the resource most. The process list on the right uses one order only, so these panels show the top processes of each resource. The `disk` panel makes edc read the I/O of each process. The `psi` panel shows the processes that wait for I/O. On macOS, edc does not collect PSI, so the `psi` panel has one line.
+- `net` shows the network limits of the selected row. On macOS, edc does not collect these values, so the panel has one line.
+- `ai` shows the Claude and Codex usage limits, as `edc ai` does. edc checks the limits every minute.
+- `events` shows the newest events.
+
+The first panel in the list gets space first. If a panel does not fit, the dashboard hides the full panel and shows `+net hidden` in the status line. A smaller panel later in the list can use the rows that are left. The table keeps at least 5 rows, and each box keeps at least 3 data rows.
+
+Press `a` to show or hide the `ai` panel. edc reads the Claude and Codex data only after you turn on the panel. While `Enter` or `h` is open, that panel uses the panel area.
+
+Set `defaults.top.panels` to start with the same list every time. If you do not set a list, the dashboard keeps its usual layout: the network view shows the `net` panel, and the events use the free space.
+
+Set `defaults.top.process_sort` to `cpu`, `mem`, or `io` to choose the first order of the process list. `o` still changes the order.
+
+Use `--columns` to choose the column groups of the all view. The list takes `net`, `cpu`, `mem`, `disk`, and `psi`, comma-separated, in the order that you want. `all` shows the five groups. Each group always shows its first columns, and the dashboard adds more columns while the width allows. If you remove a group, the other groups get its width. Add `+` after a name to add the columns of that group before the columns of other groups. For example, `--columns net+,cpu,mem` shows packets and network errors before `hot core`. Set `defaults.top.columns` to start with the same list every time.
+
+Add `ai` to the list to show the Claude and Codex requests in a `claude` group and a `codex` group. Each row counts the requests that arrived after the previous row, up to its own time. Thus you can compare them with the other columns of the same row. In each group, `req` is the requests, and `tok` is the new input and output tokens together, the same value as `total` in `edc ai`. The columns do not include the tokens that the tool read from the prompt cache. `·` means 0. Claude Code writes a response to its log when the response ends, and edc reads the logs every 2 seconds, so the newest rows get their values 2 to 3 seconds later. `all` does not include `ai`. edc reads the Claude and Codex logs only when the list includes `ai`.
+
+```toml
+[defaults.top]
+split = "net,disk"
+view = "split"
+panels = "net,ai,events"
+process_sort = "io"
+columns = "net+,cpu,mem"
+```
+
+`--view`, `--panels`, and `--columns` work only in the dashboard, as `--split` does. If you use `--view` with `--process`, the command exits with code 2. The config values do not stop runs that print the table.
+
+Run `edc top setup` to choose these values with a live preview. The upper part lists the view, the column groups, the boxes, the panels, the process order, and the interval. The lower part shows the dashboard with real samples, and changes when you change a value.
+
+- Use `↑` and `↓` to choose a row, and `←` and `→` to change a value or to choose a box or a panel.
+- Press `Space` to turn a column group, a box, or a panel on or off. Press `[` and `]` to move it. On the columns row, press `+` to show more columns of a group first.
+- Press `Tab` to show the preview at the full terminal size. The layout is the same as `edc top` after you save. Only the first status line shows the setup keys.
+- Press `z` to show the preview at 80×24, then 120×30. edc skips sizes that do not fit the terminal. If a panel hides at the preview size, the panel row shows `+net hidden at 80×24`.
+- Press `Enter` to see the `[defaults.top]` section, then `y` to save it.
+
+`edc top setup` changes only the keys that you change. Other keys and sections keep their values. edc writes the whole file again and does not keep comments in the file. If the file changes while the setup is open, edc does not save and exits with code 2. If you quit with changes that you did not save, the command exits with code 4.
+
 On macOS and Linux, the disk view shows IOPS and average `await` across physical disks.
 
 On Linux, the disk view shows aggregate `busy%`, and the memory view shows memory pressure. Aggregate `busy%` can exceed 100 across multiple disks.
@@ -1474,7 +1516,7 @@ edc counts the tokens from the local logs. Every 2 seconds, it reads only the ne
 
 The table counts this host only. The tokens that other machines or claude.ai use show only in the limit percentages.
 
-`in` is new input, and `cache` is input that the tool read from the prompt cache. `hit` is `cache / (in + cache)`, rounded down. For Claude, `in` includes the tokens that Claude Code wrote to the cache, so these tokens count as misses. If an interval has no input, `hit` shows `-`. The `--json` output has `cache_hit_percent` with one decimal place, and it omits the field for an interval without input. The table needs 88 columns.
+`in` is new input, and `cache` is input that the tool read from the prompt cache. `total` is `in + out`. It does not include `cache`, because the cache reads grow with the length of a conversation and hide the work that the tool did. `hit` is `cache / (in + cache)`, rounded down. For Claude, `in` includes the tokens that Claude Code wrote to the cache, so these tokens count as misses. If an interval has no input, `hit` shows `-`. The `--json` output has `cache_hit_percent` with one decimal place, and it omits the field for an interval without input. The table needs 88 columns.
 
 The limit boxes show each window with its use, its reset time, and the time left.
 

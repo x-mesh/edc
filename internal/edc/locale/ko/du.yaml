@@ -4,7 +4,7 @@ du:
     unsupported: "du는 Linux와 macOS에서만 동작합니다"
   error:
     path: "%s를 읽지 못했습니다"
-  summary: "%s (%s), 항목 %d개, %s, worker %d개"
+  summary: "%s (%s), 항목 %d개, %s, workers %d개"
   summary_partial: "지금까지 %s (%s), 항목 %d개, 제한 시간 %s에서 멈춤"
   summary_stopped: "지금까지 %s (%s), 항목 %d개, 멈춤"
   warning:
@@ -34,7 +34,7 @@ du:
   browse:
     title: "edc du · %s · %s · 항목 %d개"
     help: "↑↓ 이동 · Enter 열기 · ← 위로 · q 종료"
-    reading: "%s 읽는 중 · 디렉터리 %d개 · %s"
+    reading: "%s 읽는 중 · 디렉터리 %d개 · %s · workers %d개"
     stop_help: "q를 누르면 멈추고 읽은 만큼 보여 줍니다"
     cancel_help: "Ctrl-C로 중단하고 읽은 만큼 출력합니다"
     stopping: "멈추는 중…"

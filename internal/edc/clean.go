@@ -88,7 +88,7 @@ var (
 	cleanSpecIDs    = []string{"go-build", "go-mod", "npm", "pnpm", "uv", "homebrew", cleanDerivedID, "swiftpm",
 		"cargo-registry", "cargo-git", "zig", "bun", "pip", "playwright", "puppeteer", "node-gyp", "electron",
 		"xcode-device-support", "coresimulator-caches", "app-updates", "app-logs", "huggingface", "rustup-toolchains", "ollama",
-		"app-caches", "dot-cache"}
+		"app-caches", "dot-cache", "journald", "apt-archives"}
 	cleanNotMeasured = []cleanNotMeasuredItem{
 		{"other_vm_disks_db", "user_data"},
 		{"other_worktrees", "outside_root"},
@@ -120,15 +120,17 @@ type cleanSpec struct {
 	fixed    string
 	envs     []cleanEnv
 	// emptyUnset은 값이 비어 있으면 없는 것처럼 보는 변수다. 도구가 그렇게 읽는다고 확인한 변수만 넣는다.
-	emptyUnset    []string
-	tool          string
-	args          []string
-	env           []string
-	lines         int
-	line          int
-	regenerable   bool
-	cost          string
-	cleanup       string
+	emptyUnset  []string
+	tool        string
+	args        []string
+	env         []string
+	lines       int
+	line        int
+	regenerable bool
+	cost        string
+	cleanup     string
+	// detail은 측정한 뒤 후보 아래에 한 줄로 보일 근거를 돌려준다. 빈 문자열이면 보이지 않는다.
+	detail        func() string
 	groupApps     bool
 	groupChildren bool
 	children      *cleanChildren
@@ -219,6 +221,15 @@ func cleanCatalog(goos, home string) []cleanSpec {
 			envs: []cleanEnv{{"RUSTUP_HOME", "toolchains"}}, regenerable: true, cost: "high", groupChildren: true,
 			cleanup: "rustup toolchain uninstall <toolchain>"},
 	)
+	if goos == "linux" {
+		specs = append(specs,
+			// 로그는 지우면 다시 만들 수 없다. 크기 제한이 설정돼 있는지가 지워도 되는지 보는 근거다.
+			cleanSpec{id: "journald", category: "logs", priority: "P2", fixed: cleanJournalPath, cost: "lost",
+				cleanup: "journalctl --vacuum-size=500M", detail: cleanJournaldDetail(cleanJournaldConfigs...)},
+			cleanSpec{id: "apt-archives", category: "package_cache", priority: "P2", fixed: cleanAptPath,
+				regenerable: true, cost: "low", cleanup: "apt-get clean"},
+		)
+	}
 	if darwin {
 		specs = append(specs, cleanSpec{id: "ollama", category: "model", priority: "P3", fixed: at(".ollama/models"),
 			envs: []cleanEnv{{"OLLAMA_MODELS", ""}}, regenerable: true, cost: "high"})
@@ -464,6 +475,9 @@ func (scanner *cleanScanner) measureOne(ctx context.Context, spec cleanSpec, ite
 	measurement.applyTo(item)
 	if item.UsageBytes == nil {
 		return
+	}
+	if spec.detail != nil {
+		item.Detail = spec.detail()
 	}
 	switch {
 	case spec.groupApps:
@@ -1073,6 +1087,7 @@ type cleanReport struct {
 	projectBuildDirs cleanProjectBuildDirs
 	docker           cleanDocker
 	dockerRoot       cleanDockerRoots
+	system           cleanSystem
 	vmDisks          []cleanVMDisk
 	worktrees        cleanWorktrees
 }
@@ -1087,6 +1102,7 @@ func cleanCollect(ctx context.Context, deps cleanDeps, goos string, projects ...
 	report.filesystems = cleanFilesystemsWith(items, report.projectBuildDirs.Items, deps.sources)
 	report.docker = cleanDockerScan(ctx, deps)
 	report.dockerRoot = cleanDockerRootScan(ctx, deps, goos, report.docker)
+	report.system = cleanSystemScan(ctx, deps, goos, cleanSystemDefaults)
 	report.vmDisks = cleanVMScan(ctx, deps, goos)
 	report.worktrees = cleanWorktreeScan(ctx, deps)
 	cleanLinkWorktrees(&report.projectBuildDirs, &report.worktrees)
@@ -1126,7 +1142,7 @@ func cleanResult(result Result, report cleanReport, timeout time.Duration, ctxEr
 		result.Warnings = append(result.Warnings, T("clean.warning.stopped"))
 	}
 	result.Metrics = map[string]interface{}{"candidates": items, "filesystems": report.filesystems,
-		"project_build_dirs": report.projectBuildDirs, "docker": report.docker, "docker_root": report.dockerRoot, "vm_disks": report.vmDisks,
+		"project_build_dirs": report.projectBuildDirs, "docker": report.docker, "docker_root": report.dockerRoot, "system": report.system, "vm_disks": report.vmDisks,
 		"worktrees": report.worktrees, "not_measured": cleanNotMeasured}
 	return result
 }
@@ -1209,6 +1225,7 @@ func cleanPrint(stdout io.Writer, options commonOptions, result Result, color bo
 		projects, _ := result.Metrics["project_build_dirs"].(cleanProjectBuildDirs)
 		docker, _ := result.Metrics["docker"].(cleanDocker)
 		dockerRoot, _ := result.Metrics["docker_root"].(cleanDockerRoots)
+		system, _ := result.Metrics["system"].(cleanSystem)
 		disks, _ := result.Metrics["vm_disks"].([]cleanVMDisk)
 		worktrees, _ := result.Metrics["worktrees"].(cleanWorktrees)
 		style := cleanStyle(color)
@@ -1220,6 +1237,7 @@ func cleanPrint(stdout io.Writer, options commonOptions, result Result, color bo
 		fmt.Fprint(output, formatCleanProject(projects, options.verbose, width, home, style))
 		fmt.Fprint(output, formatCleanDocker(docker, options.verbose, width, style))
 		fmt.Fprint(output, formatCleanDockerRoot(dockerRoot, options.verbose, width, style))
+		fmt.Fprint(output, formatCleanSystem(system, options.verbose, width, style))
 		fmt.Fprint(output, formatCleanVMDisks(disks, docker.Inside, width, home, style))
 		fmt.Fprint(output, formatCleanWorktrees(worktrees, options.verbose, width, home, style))
 		fmt.Fprint(output, formatCleanNotMeasured(options.verbose, width, style))

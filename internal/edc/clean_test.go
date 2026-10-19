@@ -89,7 +89,7 @@ func TestCleanCatalogSplitsByPlatform(t *testing.T) {
 	}
 	common := []string{"go-build", "go-mod", "npm", "pnpm", "uv", "homebrew"}
 	shared := []string{"cargo-registry", "cargo-git", "zig", "bun", "pip", "playwright", "puppeteer", "node-gyp"}
-	linux := append(append(append([]string{}, common...), shared...), "huggingface", "rustup-toolchains")
+	linux := append(append(append([]string{}, common...), shared...), "huggingface", "rustup-toolchains", "journald", "apt-archives")
 	if got := ids("linux"); !reflect.DeepEqual(got, linux) {
 		t.Fatalf("linux = %v", got)
 	}
@@ -99,7 +99,7 @@ func TestCleanCatalogSplitsByPlatform(t *testing.T) {
 	if got := ids("darwin"); !reflect.DeepEqual(got, darwin) {
 		t.Fatalf("darwin = %v", got)
 	}
-	if !reflect.DeepEqual(darwin, cleanSpecIDs) {
+	if !reflect.DeepEqual(append(append([]string{}, darwin...), "journald", "apt-archives"), cleanSpecIDs) {
 		t.Fatalf("cleanSpecIDs = %v", cleanSpecIDs)
 	}
 	cleanups := map[string]string{}
@@ -110,7 +110,12 @@ func TestCleanCatalogSplitsByPlatform(t *testing.T) {
 			if spec.tool != "" {
 				tools[spec.id] = spec.tool
 			}
-			if spec.fixed != "" {
+			if spec.id == "journald" || spec.id == "apt-archives" {
+				// 시스템 후보는 홈 밖의 고정 경로이고 Linux에만 있다.
+				if goos != "linux" || !strings.HasPrefix(spec.fixed, "/var/") {
+					t.Fatalf("%s on %s default path = %q", spec.id, goos, spec.fixed)
+				}
+			} else if spec.fixed != "" {
 				if !strings.HasPrefix(spec.fixed, "/Users/me/") {
 					t.Fatalf("%s default path = %q", spec.id, spec.fixed)
 				}
@@ -131,6 +136,7 @@ func TestCleanCatalogSplitsByPlatform(t *testing.T) {
 		"playwright": "", "puppeteer": "", "node-gyp": "", "electron": "", "coresimulator-caches": "",
 		"huggingface": "hf cache delete", "rustup-toolchains": "rustup toolchain uninstall <toolchain>", "ollama": "",
 		"xcode-device-support": "", "app-updates": "", "app-logs": "", "app-caches": "", "dot-cache": "",
+		"journald": "journalctl --vacuum-size=500M", "apt-archives": "apt-get clean",
 	}
 	if !reflect.DeepEqual(cleanups, want) {
 		t.Fatalf("cleanups = %v", cleanups)
@@ -1192,6 +1198,7 @@ func cleanRunDeps(t *testing.T, home string) cleanDeps {
 			return cleanToolOutput{Stdout: filepath.Join(home, spec.Name) + "\n"}
 		}
 	}
+	cleanTestIsolateSystem(t)
 	return cleanTestDeps(home, run)
 }
 

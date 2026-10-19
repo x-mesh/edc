@@ -222,16 +222,17 @@ func TestConfigTopSplitLoadsAndSurvivesSetup(t *testing.T) {
 }
 
 func TestConfigTopLayoutLoads(t *testing.T) {
-	config, err := loadConfigAt(writeTOMLFixture(t, "[defaults.top]\nview = \"network\"\npanels = \"net,ai\"\nprocess_sort = \"io\"\n"))
+	config, err := loadConfigAt(writeTOMLFixture(t, "[defaults.top]\nview = \"network\"\npanels = \"net,ai\"\nprocess_sort = \"io\"\ncolumns = \"net+,cpu,ai\"\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	top := config.Defaults.Top
-	if top.View == nil || *top.View != "network" || top.Panels == nil || *top.Panels != "net,ai" || top.ProcessSort == nil || *top.ProcessSort != "io" {
+	if top.View == nil || *top.View != "network" || top.Panels == nil || *top.Panels != "net,ai" || top.ProcessSort == nil || *top.ProcessSort != "io" || top.Columns == nil || *top.Columns != "net+,cpu,ai" {
 		t.Fatalf("top = %#v", top)
 	}
-	if _, err := loadConfigAt(writeConfigFixture(t, "defaults: {top: {view: split, panels: none, process_sort: mem}}\n")); err != nil {
-		t.Fatalf("YAML layout: %v", err)
+	yamlConfig, err := loadConfigAt(writeConfigFixture(t, "defaults: {top: {view: split, panels: none, process_sort: mem, columns: \"disk,ai+\"}}\n"))
+	if err != nil || yamlConfig.Defaults.Top.Columns == nil || *yamlConfig.Defaults.Top.Columns != "disk,ai+" {
+		t.Fatalf("YAML layout: %#v, %v", yamlConfig.Defaults.Top.Columns, err)
 	}
 }
 

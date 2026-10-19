@@ -287,16 +287,16 @@ const topAIColumnGroup = "ai"
 // in + out이고, cache 읽기는 대화가 길수록 요청마다 커져 활동량을 가리므로 넣지 않는다. 한 행에서 궁금한 것은 요청이
 // 있었는지와 그 크기라서 in과 out을 나누지 않는다.
 var topAIColumns = []topAllColumn{
-	{group: "claude", title: "req", width: 5, tokens: func(tokens topAITokens) string { return topAITokenCell(tokens, tokens.claude.Requests) }},
-	{group: "claude", title: "tok", width: 6, tokens: func(tokens topAITokens) string { return topAITokenCell(tokens, tokens.claude.total()) }},
-	{group: "codex", title: "req", width: 5, tokens: func(tokens topAITokens) string { return topAITokenCell(tokens, tokens.codex.Requests) }},
-	{group: "codex", title: "tok", width: 6, tokens: func(tokens topAITokens) string { return topAITokenCell(tokens, tokens.codex.total()) }},
+	{group: "claude", title: "req", width: 5, tokens: func(tokens topAITokens) string { return topAITokenCell(tokens.claudeOK, tokens.claude.Requests) }},
+	{group: "claude", title: "tok", width: 6, tokens: func(tokens topAITokens) string { return topAITokenCell(tokens.claudeOK, tokens.claude.total()) }},
+	{group: "codex", title: "req", width: 5, tokens: func(tokens topAITokens) string { return topAITokenCell(tokens.codexOK, tokens.codex.Requests) }},
+	{group: "codex", title: "tok", width: 6, tokens: func(tokens topAITokens) string { return topAITokenCell(tokens.codexOK, tokens.codex.total()) }},
 }
 
 // topAITokenCell은 0을 ·로 쓴다. 대부분의 행이 0이라 요청이 들어온 행이 눈에 띄어야 한다.
-func topAITokenCell(tokens topAITokens, value int64) string {
+func topAITokenCell(ok bool, value int64) string {
 	switch {
-	case !tokens.valid:
+	case !ok:
 		return "—"
 	case value == 0:
 		return "·"

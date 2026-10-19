@@ -83,6 +83,10 @@ func TestTopSetupBoxesFollowTheList(t *testing.T) {
 	if got := none.settings.splitValue(); got != "none" {
 		t.Fatalf("no boxes = %q, want none", got)
 	}
+	// none은 박스 목록을 비우므로 v처럼 다섯 박스를 모두 그린다. 빈 목록의 첫 박스를 읽지 않는다.
+	if text := ansi.Strip(none.View().Content); !strings.Contains(text, "╭─ cpu") {
+		t.Fatalf("boxes row with no boxes set must draw what v shows:\n%s", text)
+	}
 }
 
 func TestTopSetupPanelsShowInThePreviewAndNoteWhatHides(t *testing.T) {

@@ -61,7 +61,7 @@ func (model topModel) startAI() (topModel, tea.Cmd) {
 }
 
 func (model topModel) updateAIScan(snapshot aiUsageSnapshot) (topModel, tea.Cmd) {
-	model.aiSeconds, model.aiScanning = snapshot.Seconds, false
+	model.aiSeconds, model.aiFailed, model.aiScanning = snapshot.Seconds, snapshot.Failed, false
 	if !model.aiTokens {
 		return model, nil
 	}
@@ -78,23 +78,31 @@ func (model topModel) aiScanCmd(delay time.Duration) tea.Cmd {
 	return tea.Tick(delay, func(time.Time) tea.Msg { return run() })
 }
 
-// topAITokens는 한 행의 ai 열 값이다. valid가 false이면 아직 기록을 읽지 못한 것이다.
+// topAITokens는 한 행의 ai 열 값이다. claudeOK와 codexOK가 false이면 그 도구의 기록을 아직 읽지 못했거나
+// 이번 scan에서 읽지 못한 것이다. 이때 0을 보이면 요청이 없었던 것으로 읽힌다.
 type topAITokens struct {
-	valid         bool
-	claude, codex aiUsage
+	claudeOK, codexOK bool
+	claude, codex     aiUsage
 }
 
-// aiTokensBetween은 from 뒤부터 to까지 초에 기록된 token이다. 행마다 직전 행부터 그 행까지 들어온 요청을 세어
-// 다른 열과 같은 줄에서 비교할 수 있게 한다. 1초보다 짧은 interval에서는 초가 바뀌는 행에 그 초의 값이 한 번만 붙는다.
+// aiTokensBetween은 from 뒤부터 to까지 기록된 token이다. 행마다 직전 행부터 그 행까지 들어온 요청을 세어 다른 열과
+// 같은 줄에서 비교할 수 있게 한다. 행 시각은 초 경계에 맞지 않으므로 두 끝이 든 초까지 읽고 ms 시각으로 거른다.
 func (model topModel) aiTokensBetween(from, to time.Time) topAITokens {
 	if model.aiSeconds == nil {
 		return topAITokens{}
 	}
-	tokens := topAITokens{valid: true}
-	for second := from.Unix() + 1; second <= to.Unix(); second++ {
-		tokens.claude.add(model.aiSeconds["claude"][second])
-		tokens.codex.add(model.aiSeconds["codex"][second])
+	tokens := topAITokens{claudeOK: !model.aiFailed["claude"], codexOK: !model.aiFailed["codex"]}
+	sum := func(provider string, usage *aiUsage) {
+		for second := from.Unix(); second <= to.Unix(); second++ {
+			for _, stamp := range model.aiSeconds[provider][second] {
+				if stamp.At > from.UnixMilli() && stamp.At <= to.UnixMilli() {
+					usage.add(stamp.Usage)
+				}
+			}
+		}
 	}
+	sum("claude", &tokens.claude)
+	sum("codex", &tokens.codex)
 	return tokens
 }
 

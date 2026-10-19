@@ -462,9 +462,12 @@ func TestTopAIColumnsShowRequestsPerRow(t *testing.T) {
 	model := topSplitModelAt(160, 40, 3, false, nil)
 	model.view, model.split = topViewAll, nil
 	previous, at := model.rows[1].at, model.rows[2].at
-	source := &fakeTopAISource{usage: aiUsageSnapshot{Seconds: map[string]map[int64]aiUsage{
-		"claude": {at.Unix(): {Requests: 1, Input: 2300, Output: 410, Cache: 99_000}, previous.Unix(): {Requests: 2, Input: 10, Output: 5}},
-		"codex":  {},
+	source := &fakeTopAISource{usage: aiUsageSnapshot{Seconds: map[string]map[int64][]aiStampedUsage{
+		"claude": {
+			at.Unix():       {{At: at.UnixMilli(), Usage: aiUsage{Requests: 1, Input: 2300, Output: 410, Cache: 99_000}}},
+			previous.Unix(): {{At: previous.UnixMilli(), Usage: aiUsage{Requests: 2, Input: 10, Output: 5}}},
+		},
+		"codex": {},
 	}}}
 	opened := 0
 	model.openAI = func() (topAISource, error) {
@@ -494,7 +497,7 @@ func TestTopAIColumnsShowRequestsPerRow(t *testing.T) {
 	}
 	// 행마다 직전 행 뒤부터 그 행까지의 초만 센다. cache는 열에 없다.
 	tokens := model.aiTokensBetween(previous, at)
-	if tokens.claude != (aiUsage{Requests: 1, Input: 2300, Output: 410, Cache: 99_000}) || tokens.codex != (aiUsage{}) {
+	if tokens.claude != (aiUsage{Requests: 1, Input: 2300, Output: 410, Cache: 99_000}) || tokens.codex != (aiUsage{}) || !tokens.claudeOK || !tokens.codexOK {
 		t.Fatalf("tokens = %+v", tokens)
 	}
 	cells := func(row topDashboardRow) []string {
@@ -508,5 +511,87 @@ func TestTopAIColumnsShowRequestsPerRow(t *testing.T) {
 	}
 	if got := cells(model.rows[1]); !slices.Equal(got, []string{"2", "15", "·", "·"}) {
 		t.Fatalf("row 09:00:01 ai cells = %v", got)
+	}
+}
+
+// 행 시각은 초 경계에 맞지 않는다. 00.800의 요청은 00.200 행이 아니라 01.200 행에, 01.500의 요청은 그다음 행에 붙어야 한다.
+func TestTopAIColumnsUseTheExactRowInterval(t *testing.T) {
+	base := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	stamp := func(offset time.Duration, requests int64) aiStampedUsage {
+		return aiStampedUsage{At: base.Add(offset).UnixMilli(), Usage: aiUsage{Requests: requests, Input: 100 * requests}}
+	}
+	model := topFixtureModel(nil)
+	model.rows = []topDashboardRow{{at: base.Add(200 * time.Millisecond)}, {at: base.Add(1200 * time.Millisecond)}, {at: base.Add(2200 * time.Millisecond)}}
+	model.aiSeconds = map[string]map[int64][]aiStampedUsage{"claude": {
+		base.Unix():     {stamp(100*time.Millisecond, 1), stamp(800*time.Millisecond, 2)},
+		base.Unix() + 1: {stamp(1500*time.Millisecond, 4)},
+	}}
+	for index, want := range []int64{1, 2, 4} {
+		row := model.rows[index]
+		if got := model.aiTokensBetween(model.previousRowAt(row.at), row.at).claude.Requests; got != want {
+			t.Errorf("row %s: %d requests, want %d", row.at.Format("05.000"), got, want)
+		}
+	}
+}
+
+// 기록을 읽지 못한 도구는 0이 아니라 —로 보인다. 읽은 도구는 그대로 0을 ·로 보인다.
+func TestTopAIColumnsMarkAFailedScan(t *testing.T) {
+	model := topSplitModelAt(160, 40, 3, false, nil)
+	model.view, model.split = topViewAll, nil
+	model = model.withLayout(topLayout{columns: []topColumnGroup{{name: topAIColumnGroup}}})
+	model, _ = model.updateAIScan(aiUsageSnapshot{Seconds: map[string]map[int64][]aiStampedUsage{"claude": {}, "codex": {}}, Failed: map[string]bool{"claude": true}})
+	parts := strings.Split(ansi.Strip(model.tableRow(model.rows[2])), "│")
+	claude, codex := strings.Fields(parts[len(parts)-3]), strings.Fields(parts[len(parts)-2])
+	if !slices.Equal(claude, []string{"—", "—"}) || !slices.Equal(codex, []string{"·", "·"}) {
+		t.Fatalf("claude %v, codex %v", claude, codex)
+	}
+}
+
+// AI 패널은 한도 조회만, ai 열은 기록 scan만 부른다. 둘 다 켜면 둘 다 부른다.
+func TestTopAIStartCallsOnlyWhatIsOn(t *testing.T) {
+	for _, test := range []struct {
+		name         string
+		layout       topLayout
+		polls, scans int
+	}{
+		{"panel", topLayout{panels: []topPanel{topPanelAI}, panelsSet: true}, 1, 0},
+		{"columns", topLayout{columns: []topColumnGroup{{name: topAIColumnGroup}}}, 0, 1},
+		{"both", topLayout{panels: []topPanel{topPanelAI}, panelsSet: true, columns: []topColumnGroup{{name: topAIColumnGroup}}}, 1, 1},
+	} {
+		source := &fakeTopAISource{}
+		model := topFixtureModel(nil)
+		model.openAI = func() (topAISource, error) { return source, nil }
+		model = model.withLayout(test.layout)
+		_, cmd := model.Update(topAIStartMsg{})
+		if cmd == nil {
+			t.Fatalf("%s: no command", test.name)
+		}
+		topRunBatch(cmd)
+		if source.polls != test.polls || source.scans != test.scans {
+			t.Errorf("%s: polls %d, scans %d; want %d, %d", test.name, source.polls, source.scans, test.polls, test.scans)
+		}
+	}
+}
+
+// topRunBatch는 명령을 실행한다. tea.Batch는 명령 목록을 담은 메시지를 돌려주므로 그 안의 명령도 실행한다.
+func topRunBatch(cmd tea.Cmd) {
+	if cmd == nil {
+		return
+	}
+	if batch, ok := cmd().(tea.BatchMsg); ok {
+		for _, inner := range batch {
+			topRunBatch(inner)
+		}
+	}
+}
+
+// disk 패널로 시작하면 첫 tick에서 process I/O 수집을 켠다.
+func TestTopDiskPanelTurnsOnProcessIOAtStart(t *testing.T) {
+	var scanIO []bool
+	model := topFixtureModel(nil)
+	model.setScanIO = func(on bool) { scanIO = append(scanIO, on) }
+	_ = model.withLayout(topLayout{panels: []topPanel{topPanelDisk}, panelsSet: true}).Init()
+	if !slices.Equal(scanIO, []bool{true}) {
+		t.Fatalf("scan I/O at start = %v", scanIO)
 	}
 }

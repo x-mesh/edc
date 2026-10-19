@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -500,8 +501,9 @@ type aiTokenScanner struct {
 	claudeDir, codexDir string
 	files               map[string]*aiScanFile
 	buckets             map[string]map[time.Time]aiUsage
-	// seconds는 같은 token을 1초 구간으로 모은 것이다. edc top이 1초 행마다 그 사이에 들어온 요청을 보인다. 빈 초는 두지 않는다.
-	seconds map[string]map[int64]aiUsage
+	// seconds는 같은 token을 기록 시각과 함께 초마다 모은 것이다. edc top이 행마다 직전 행 뒤부터 그 행까지 들어온 요청을
+	// 보인다. 행 시각은 초 경계에 맞지 않으므로 초 합계가 아니라 ms 시각을 남긴다. 빈 초는 두지 않는다.
+	seconds map[string]map[int64][]aiStampedUsage
 	// seen은 Claude 응답 하나가 여러 줄에 기록되는 것을 한 번만 센다.
 	seen map[string]aiSeenMessage
 }
@@ -511,7 +513,7 @@ func newAITokenScanner(claudeDir, codexDir string) *aiTokenScanner {
 		claudeDir: claudeDir, codexDir: codexDir,
 		files:   map[string]*aiScanFile{},
 		buckets: map[string]map[time.Time]aiUsage{"claude": {}, "codex": {}},
-		seconds: map[string]map[int64]aiUsage{"claude": {}, "codex": {}},
+		seconds: map[string]map[int64][]aiStampedUsage{"claude": {}, "codex": {}},
 		seen:    map[string]aiSeenMessage{},
 	}
 }
@@ -520,9 +522,17 @@ func newAITokenScanner(claudeDir, codexDir string) *aiTokenScanner {
 type aiUsageSnapshot struct {
 	At      time.Time
 	Buckets map[string]map[time.Time]aiUsage
-	// Seconds는 Unix 초마다 모은 token이다.
-	Seconds map[string]map[int64]aiUsage
-	Err     string
+	// Seconds는 Unix 초마다 모은 기록이다.
+	Seconds map[string]map[int64][]aiStampedUsage
+	// Failed는 이번 scan에서 기록을 읽지 못한 도구다. 그 도구의 값은 0이 아니라 모르는 값이다.
+	Failed map[string]bool
+	Err    string
+}
+
+// aiStampedUsage는 기록 한 줄의 token과 그 시각(Unix ms)이다.
+type aiStampedUsage struct {
+	At    int64
+	Usage aiUsage
 }
 
 // aiTotalWindows는 Σ 행의 기간이다. 24h는 보관 기간 전체다.
@@ -603,6 +613,7 @@ func (snapshot aiUsageSnapshot) rows(end time.Time, size time.Duration, count in
 func (scanner *aiTokenScanner) scan(now time.Time) aiUsageSnapshot {
 	oldest := now.Add(-aiRetention)
 	var errs []string
+	failed := map[string]bool{}
 	for _, source := range []struct {
 		provider, dir string
 		line          func(*aiScanFile, []byte, time.Time)
@@ -612,17 +623,19 @@ func (scanner *aiTokenScanner) scan(now time.Time) aiUsageSnapshot {
 	} {
 		if err := scanner.walk(source.dir, oldest, source.line); err != nil {
 			errs = append(errs, source.provider+": "+err.Error())
+			failed[source.provider] = true
 		}
 	}
-	snapshot := aiUsageSnapshot{At: now, Buckets: map[string]map[time.Time]aiUsage{}, Seconds: map[string]map[int64]aiUsage{}, Err: strings.Join(errs, " · ")}
+	snapshot := aiUsageSnapshot{At: now, Buckets: map[string]map[time.Time]aiUsage{}, Seconds: map[string]map[int64][]aiStampedUsage{}, Failed: failed, Err: strings.Join(errs, " · ")}
 	for provider, seconds := range scanner.seconds {
-		copied := make(map[int64]aiUsage, len(seconds))
-		for second, usage := range seconds {
+		copied := make(map[int64][]aiStampedUsage, len(seconds))
+		for second, stamps := range seconds {
 			if second < oldest.Unix() {
 				delete(seconds, second)
 				continue
 			}
-			copied[second] = usage
+			// scanner는 다음 scan에서 같은 slice에 덧붙이므로, 화면이 읽는 사본은 따로 둔다.
+			copied[second] = slices.Clone(stamps)
 		}
 		snapshot.Seconds[provider] = copied
 	}
@@ -712,9 +725,7 @@ func (scanner *aiTokenScanner) add(provider string, at, oldest time.Time, usage 
 	value := scanner.buckets[provider][bucket]
 	value.add(usage)
 	scanner.buckets[provider][bucket] = value
-	second := scanner.seconds[provider][at.Unix()]
-	second.add(usage)
-	scanner.seconds[provider][at.Unix()] = second
+	scanner.seconds[provider][at.Unix()] = append(scanner.seconds[provider][at.Unix()], aiStampedUsage{At: at.UnixMilli(), Usage: usage})
 }
 
 // claudeLine은 cache 생성을 새 입력으로, cache 읽기를 cache로 센다.

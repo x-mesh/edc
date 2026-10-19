@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -989,5 +990,29 @@ func TestFormatAITableColorsUsageByThreshold(t *testing.T) {
 		if !strings.Contains(colored, want) {
 			t.Fatalf("colored lacks %q:\n%q", want, colored)
 		}
+	}
+}
+
+// edc top의 ai 열은 Seconds의 ms 시각으로 행 구간을 거른다. cache만 늘어난 응답도 요청이고, 보관 기간이 지난 초는 지운다.
+func TestAIScanKeepsStampedSeconds(t *testing.T) {
+	codexDir, now := t.TempDir(), time.Now().Truncate(time.Second)
+	first, second := now.Add(-time.Minute+200*time.Millisecond), now.Add(-time.Minute+1700*time.Millisecond)
+	event := func(at time.Time, input, cached, output, total string) string {
+		return `{"timestamp":"` + at.UTC().Format(time.RFC3339Nano) + `","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":` + input +
+			`,"cached_input_tokens":` + cached + `,"output_tokens":` + output + `,"total_tokens":` + total + `}}}}` + "\n"
+	}
+	// 두 번째 응답은 cache로 읽은 입력만 늘었다.
+	writeAIFixture(t, filepath.Join(codexDir, "sessions", "rollout.jsonl"), event(first, "80", "0", "20", "100"), event(second, "130", "50", "20", "150"))
+	scanner := newAITokenScanner(t.TempDir(), codexDir)
+	seconds := scanner.scan(now).Seconds["codex"]
+	want := map[int64][]aiStampedUsage{
+		first.Unix():  {{At: first.UnixMilli(), Usage: aiUsage{Requests: 1, Input: 80, Output: 20}}},
+		second.Unix(): {{At: second.UnixMilli(), Usage: aiUsage{Requests: 1, Cache: 50}}},
+	}
+	if !reflect.DeepEqual(seconds, want) {
+		t.Fatalf("codex seconds = %+v, want %+v", seconds, want)
+	}
+	if later := scanner.scan(now.Add(aiRetention + 2*time.Minute)).Seconds["codex"]; len(later) != 0 || len(scanner.seconds["codex"]) != 0 {
+		t.Fatalf("seconds past the retention = %+v, kept %d", later, len(scanner.seconds["codex"]))
 	}
 }

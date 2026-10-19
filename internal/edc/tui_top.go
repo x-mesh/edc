@@ -283,7 +283,8 @@ type topModel struct {
 	// aiTokens는 all 보기에 ai 열 그룹이 있는지다. 있을 때만 Claude와 Codex 대화 기록을 읽는다.
 	aiTokens   bool
 	aiScanning bool
-	aiSeconds  map[string]map[int64]aiUsage
+	aiSeconds  map[string]map[int64][]aiStampedUsage
+	aiFailed   map[string]bool
 }
 
 type topRecordingErrorMsg struct{ err error }

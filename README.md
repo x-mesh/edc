@@ -630,7 +630,7 @@ The output starts with one `du.scan` result. It shows the total size, the number
 
 By default, edc counts one file system only. It does not go into a mount below the path. It lists each skipped mount with its file system type and the used space from `statfs`. A bind mount or an overlay mount shares a file system with another path, so its used space shows as `-`. edc counts a directory that is bind mounted onto itself, because its files have no other location.
 
-Linux uses 4 workers by default. macOS uses 1 worker to limit CPU time. Use `--workers` to change the number. edc keeps one record for each directory and for the largest files only. The memory use grows with the number of directories, not with the number of files.
+edc uses 4 workers by default. Use `--workers` or `-w` to change the number. edc keeps one record for each directory and for the largest files only. The memory use grows with the number of directories, not with the number of files.
 
 edc stops at the time limit, 60 seconds by default. Then the result is `warn`, `metrics.partial` is `true`, and the size includes only the directories that edc read. If the time limit or `q` stops edc, the last lines of the text output also say that the result is partial. After the time limit, these lines show the command with a longer `--timeout`. If edc cannot read a directory, the result is `warn`, and `-v` lists the directories. Run it as root to read all directories. On macOS, privacy permissions can also block access.
 

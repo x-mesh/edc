@@ -691,7 +691,7 @@ edc does not read tool configuration files such as `bunfig.toml`, `.npmrc`, and 
 | `huggingface` | `$HF_HUB_CACHE`, `$HUGGINGFACE_HUB_CACHE`, `$HF_HOME/hub`, `$XDG_CACHE_HOME/huggingface/hub`, then `~/.cache/huggingface/hub` |
 | `rustup-toolchains` | `$RUSTUP_HOME/toolchains`, then `~/.rustup/toolchains` |
 | `ollama` (macOS) | `$OLLAMA_MODELS`, then `~/.ollama/models` |
-| `journald` (Linux) | `/var/log/journal`. The detail line shows the limits in `journald.conf`. |
+| `journald` (Linux) | `/var/log/journal`. The detail line shows the limits in `journald.conf` and its drop-in files, in the order that systemd applies them. |
 | `apt-archives` (Linux) | `/var/cache/apt/archives` |
 | `app-caches` (macOS) | The other folders in `~/Library/Caches` |
 | `dot-cache` (macOS) | The other folders in `~/.cache` |
@@ -834,7 +834,7 @@ Each entry in `docker_root.roots` has these facts:
 - `containers`: the containers that the directory records, with image, Compose project, and stop time. `in_engine` and `project_in_engine` show if the engine has the same name.
 - `volumes`: each volume with its size, the date of its newest file, and `used_by`, the containers that mounted it. `in_engine` shows if the engine has a volume with the same name.
 
-The entry has `cleanup`, a `rm -rf --one-file-system` command for the directory. With `-v`, the text output shows it. edc never runs it. The command is empty if a mount or an open file is under the directory.
+The entry has `cleanup`, a `rm -rf --one-file-system` command for the directory. With `-v`, the text output shows it. edc never runs it. The command is empty if a mount or an open file is under the directory. It is also empty if edc cannot read the mount table or all of `/proc`.
 
 Do not use `docker volume rm` for these volumes. The engine does not know the old directory. It removes the volume with the same name in its own directory.
 
@@ -844,7 +844,7 @@ edc shows the 20 largest volumes. `volumes_omitted` and `omitted_bytes` count th
 
 edc reads the container name, image, labels, mounts, and times from `containers/*/config.v2.json`. It does not keep or print environment variables.
 
-If the engine does not report its directory, the status is `unknown_location`. If `docker` is absent or the engine is off, the section does not appear.
+If the engine does not report its directory, the status is `unknown_location`. If `docker` is absent or the engine is off, the text output does not show the section, and `docker_root.status` is empty.
 
 ### Large logs, snap revisions, and build caches
 
@@ -852,7 +852,7 @@ On Linux, edc lists the files in `/var/log` of 100 MB or more. It skips `/var/lo
 
 edc does not delete a file. It shows the facts that help you decide.
 
-Each entry in `system.large_logs` has the size and the date of the last change. `open_files` is the number of file descriptors that processes hold on the file. `logrotate` is the file with a logrotate rule for the path. If it is empty, no rule matches.
+Each entry in `system.large_logs` has the size and the date of the last change. `open_files` is the number of file descriptors that processes hold on the file. `logrotate` is the file with a logrotate rule for the path. edc follows `include` lines that have an absolute path. An empty value means that edc found no rule in the files it read. It does not prove that logrotate skips the file.
 
 With `-v`, the text output shows a command as text. edc never runs it. For a file that a process holds open, the command is `truncate -s 0`. For a closed file, the command is `rm`. If edc cannot read `/proc`, no command appears.
 

@@ -643,7 +643,7 @@ edc clean --json -              # 후보를 metrics.candidates에 담음
 | `huggingface` | `$HF_HUB_CACHE`, `$HUGGINGFACE_HUB_CACHE`, `$HF_HOME/hub`, `$XDG_CACHE_HOME/huggingface/hub`, 없으면 `~/.cache/huggingface/hub` |
 | `rustup-toolchains` | `$RUSTUP_HOME/toolchains`, 없으면 `~/.rustup/toolchains` |
 | `ollama` (macOS) | `$OLLAMA_MODELS`, 없으면 `~/.ollama/models` |
-| `journald` (Linux) | `/var/log/journal`. 후보 아래 줄에 `journald.conf`의 제한 설정을 보여 줍니다. |
+| `journald` (Linux) | `/var/log/journal`. 후보 아래 줄에 `journald.conf`와 drop-in 파일의 제한 설정을 systemd가 적용하는 순서대로 보여 줍니다. |
 | `apt-archives` (Linux) | `/var/cache/apt/archives` |
 | `app-caches` (macOS) | `~/Library/Caches`의 나머지 폴더 |
 | `dot-cache` (macOS) | `~/.cache`의 나머지 폴더 |
@@ -786,7 +786,7 @@ edc는 지워도 되는지 판정하지 않고, 판단에 도움이 되는 사�
 - `containers`: 디렉터리에 기록된 컨테이너의 이미지, Compose 프로젝트, 종료 시각. `in_engine`, `project_in_engine`은 엔진에 같은 이름이 있는지 나타냅니다.
 - `volumes`: 볼륨별 크기, 가장 최근 파일의 날짜, 그 볼륨을 마운트한 컨테이너 `used_by`. `in_engine`은 엔진에 같은 이름의 볼륨이 있는지 나타냅니다.
 
-항목에는 디렉터리를 지우는 `rm -rf --one-file-system` 명령이 `cleanup`으로 있고, `-v`에서 텍스트로 보여 줍니다. edc는 이 명령을 실행하지 않습니다. 디렉터리 아래에 마운트나 열린 파일이 있으면 `cleanup`은 비어 있습니다.
+항목에는 디렉터리를 지우는 `rm -rf --one-file-system` 명령이 `cleanup`으로 있고, `-v`에서 텍스트로 보여 줍니다. edc는 이 명령을 실행하지 않습니다. 디렉터리 아래에 마운트나 열린 파일이 있거나, 마운트 표나 `/proc` 전체를 읽지 못하면 `cleanup`은 비어 있습니다.
 
 이 볼륨에는 `docker volume rm`을 쓰지 마세요. 엔진은 옛 디렉터리를 모르므로, 자기 디렉터리에 있는 같은 이름의 볼륨을 지웁니다.
 
@@ -796,7 +796,7 @@ edc는 지워도 되는지 판정하지 않고, 판단에 도움이 되는 사�
 
 컨테이너의 이름, 이미지, 라벨, 마운트, 시각은 `containers/*/config.v2.json`에서 읽습니다. 환경 변수는 담지도 출력하지도 않습니다.
 
-엔진이 데이터 디렉터리를 알려 주지 않으면 상태는 `unknown_location`입니다. `docker`가 없거나 엔진이 꺼져 있으면 이 섹션은 나오지 않습니다.
+엔진이 데이터 디렉터리를 알려 주지 않으면 상태는 `unknown_location`입니다. `docker`가 없거나 엔진이 꺼져 있으면 텍스트 출력에는 이 섹션이 나오지 않고 `docker_root.status`는 비어 있습니다.
 
 ### 큰 로그, snap 리비전, 빌드 캐시
 
@@ -804,7 +804,7 @@ Linux에서는 `/var/log`에서 100 MB 이상인 파일을 나열합니다. `/va
 
 edc는 파일을 지우지 않고, 판단에 도움이 되는 사실만 보여 줍니다.
 
-`system.large_logs`의 항목에는 크기와 마지막 수정일이 있습니다. `open_files`는 프로세스가 그 파일에 잡고 있는 파일 기술자 수이고, `logrotate`는 그 경로에 맞는 규칙이 있는 logrotate 설정 파일입니다. 비어 있으면 맞는 규칙이 없다는 뜻입니다.
+`system.large_logs`의 항목에는 크기와 마지막 수정일이 있습니다. `open_files`는 프로세스가 그 파일에 잡고 있는 파일 기술자 수이고, `logrotate`는 그 경로에 맞는 규칙이 있는 logrotate 설정 파일입니다. 절대 경로인 `include` 줄은 따라가며, 비어 있으면 edc가 읽은 파일에서 규칙을 찾지 못했다는 뜻이지 logrotate가 그 파일을 돌리지 않는다는 증거는 아닙니다.
 
 `-v`에서는 명령을 텍스트로 보여 주고 edc는 실행하지 않습니다. 프로세스가 열고 있는 파일에는 `truncate -s 0`, 닫힌 파일에는 `rm`을 보여 줍니다. `/proc`을 읽지 못하면 명령을 보여 주지 않습니다.
 

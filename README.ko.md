@@ -643,6 +643,8 @@ edc clean --json -              # 후보를 metrics.candidates에 담음
 | `huggingface` | `$HF_HUB_CACHE`, `$HUGGINGFACE_HUB_CACHE`, `$HF_HOME/hub`, `$XDG_CACHE_HOME/huggingface/hub`, 없으면 `~/.cache/huggingface/hub` |
 | `rustup-toolchains` | `$RUSTUP_HOME/toolchains`, 없으면 `~/.rustup/toolchains` |
 | `ollama` (macOS) | `$OLLAMA_MODELS`, 없으면 `~/.ollama/models` |
+| `journald` (Linux) | `/var/log/journal`. 후보 아래 줄에 `journald.conf`와 drop-in 파일의 제한 설정을 systemd가 적용하는 순서대로 보여 줍니다. |
+| `apt-archives` (Linux) | `/var/cache/apt/archives` |
 | `app-caches` (macOS) | `~/Library/Caches`의 나머지 폴더 |
 | `dot-cache` (macOS) | `~/.cache`의 나머지 폴더 |
 
@@ -695,13 +697,14 @@ Xcode Archives, 시뮬레이터 기기, `Application Support`, `Containers`는 �
 | `project_build_dirs` | `--project`로 지정한 루트의 빌드 폴더 |
 | `docker` | Docker 엔진이 보고한 집계 |
 | `docker_root` | 엔진이 더 이상 쓰지 않는 옛 Docker 데이터 디렉터리(Linux) |
+| `system` | 큰 로그와 현재 리비전이 아닌 snap 리비전(Linux) |
 | `vm_disks` | 가상 머신의 디스크 파일(예: OrbStack) |
 | `worktrees` | `~/.gk/worktree`의 git-kit worktree |
 | `not_measured` | 재지 않는 유형과 이유 |
 
-섹션은 후보, 빌드 폴더, Docker, 옛 Docker 데이터, VM 디스크, worktree 순서로 실행하고 제한 시간 하나를 나눠 씁니다.
+섹션은 후보, 빌드 폴더, Docker, 옛 Docker 데이터, 큰 로그와 snap, VM 디스크, worktree 순서로 실행하고 제한 시간 하나를 나눠 씁니다.
 
-파일 시스템 합계에는 다시 만들 수 있는 빌드 폴더만 더합니다. 엔진 집계, 옛 Docker 데이터, VM 디스크, worktree는 어떤 합계에도 더하지 않습니다.
+파일 시스템 합계에는 다시 만들 수 있는 빌드 폴더만 더합니다. 엔진 집계, 옛 Docker 데이터, 큰 로그, VM 디스크, worktree는 어떤 합계에도 더하지 않습니다.
 
 ### 프로젝트 빌드 폴더
 
@@ -794,6 +797,20 @@ edc는 지워도 되는지 판정하지 않고, 판단에 도움이 되는 사�
 컨테이너의 이름, 이미지, 라벨, 마운트, 시각은 `containers/*/config.v2.json`에서 읽습니다. 환경 변수는 담지도 출력하지도 않습니다.
 
 엔진이 데이터 디렉터리를 알려 주지 않으면 상태는 `unknown_location`입니다. `docker`가 없거나 엔진이 꺼져 있으면 텍스트 출력에는 이 섹션이 나오지 않고 `docker_root.status`는 비어 있습니다.
+
+### 큰 로그와 snap 리비전
+
+Linux에서는 `/var/log`에서 100 MB 이상인 파일을 나열합니다. `/var/log/journal`은 `journald` 후보가 재므로 건너뜁니다. 현재 리비전이 아닌 snap 리비전도 나열합니다.
+
+edc는 파일을 지우지 않고, 판단에 도움이 되는 사실만 보여 줍니다.
+
+`system.large_logs`의 항목에는 크기와 마지막 수정일이 있습니다. `open_files`는 프로세스가 그 파일에 잡고 있는 파일 기술자 수이고, `logrotate`는 그 경로에 맞는 규칙이 있는 logrotate 설정 파일입니다. 절대 경로인 `include` 줄은 따라가며, 비어 있으면 edc가 읽은 파일에서 규칙을 찾지 못했다는 뜻이지 logrotate가 그 파일을 돌리지 않는다는 증거는 아닙니다.
+
+`-v`에서는 명령을 텍스트로 보여 주고 edc는 실행하지 않습니다. 프로세스가 열고 있는 파일에는 `truncate -s 0`, 닫힌 파일에는 `rm`을 보여 줍니다. `/proc`을 읽지 못하면 명령을 보여 주지 않습니다.
+
+`system.snap_revisions`의 항목에는 이름, 리비전, 현재 리비전이 있습니다. 현재 리비전은 `/snap/<이름>/current` 링크에서 읽습니다. 명령은 `snap remove <이름> --revision=<리비전>`입니다. 링크를 읽지 못한 snap은 건너뛰고 `system.snaps_unknown`으로 셉니다.
+
+각 목록은 큰 순서로 10개까지 보이고, 나머지 로그 파일은 `large_logs_omitted`로 셉니다.
 
 ### VM 디스크
 

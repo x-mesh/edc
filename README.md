@@ -691,6 +691,8 @@ edc does not read tool configuration files such as `bunfig.toml`, `.npmrc`, and 
 | `huggingface` | `$HF_HUB_CACHE`, `$HUGGINGFACE_HUB_CACHE`, `$HF_HOME/hub`, `$XDG_CACHE_HOME/huggingface/hub`, then `~/.cache/huggingface/hub` |
 | `rustup-toolchains` | `$RUSTUP_HOME/toolchains`, then `~/.rustup/toolchains` |
 | `ollama` (macOS) | `$OLLAMA_MODELS`, then `~/.ollama/models` |
+| `journald` (Linux) | `/var/log/journal`. The detail line shows the limits in `journald.conf` and its drop-in files, in the order that systemd applies them. |
+| `apt-archives` (Linux) | `/var/cache/apt/archives` |
 | `app-caches` (macOS) | The other folders in `~/Library/Caches` |
 | `dot-cache` (macOS) | The other folders in `~/.cache` |
 
@@ -743,13 +745,14 @@ Four more sections follow the candidates. Each section has its own key in `metri
 | `project_build_dirs` | The build folders in the roots that you give with `--project` |
 | `docker` | The totals that the Docker engine reports |
 | `docker_root` | The old Docker data directory that the engine no longer uses (Linux) |
+| `system` | The large logs and the snap revisions that are not current (Linux) |
 | `vm_disks` | The disk file of a virtual machine, for example OrbStack |
 | `worktrees` | The git-kit worktrees in `~/.gk/worktree` |
 | `not_measured` | The types that edc does not measure, and the reason |
 
-edc runs the sections in this order: candidates, build folders, Docker, old Docker data, VM disks, and worktrees. They share one time limit.
+edc runs the sections in this order: candidates, build folders, Docker, old Docker data, large logs and snaps, VM disks, and worktrees. They share one time limit.
 
-Only the recreatable build folders join the sum of a file system. The engine totals, the old Docker data, the VM disks, and the worktrees never join a sum.
+Only the recreatable build folders join the sum of a file system. The engine totals, the old Docker data, the large logs, the VM disks, and the worktrees never join a sum.
 
 ### Project build folders
 
@@ -842,6 +845,20 @@ edc shows the 20 largest volumes. `volumes_omitted` and `omitted_bytes` count th
 edc reads the container name, image, labels, mounts, and times from `containers/*/config.v2.json`. It does not keep or print environment variables.
 
 If the engine does not report its directory, the status is `unknown_location`. If `docker` is absent or the engine is off, the text output does not show the section, and `docker_root.status` is empty.
+
+### Large logs and snap revisions
+
+On Linux, edc lists the files in `/var/log` of 100 MB or more. It skips `/var/log/journal`, which the `journald` candidate measures. It also lists the snap revisions that are not the current one.
+
+edc does not delete a file. It shows the facts that help you decide.
+
+Each entry in `system.large_logs` has the size and the date of the last change. `open_files` is the number of file descriptors that processes hold on the file. `logrotate` is the file with a logrotate rule for the path. edc follows `include` lines that have an absolute path. An empty value means that edc found no rule in the files it read. It does not prove that logrotate skips the file.
+
+With `-v`, the text output shows a command as text. edc never runs it. For a file that a process holds open, the command is `truncate -s 0`. For a closed file, the command is `rm`. If edc cannot read `/proc`, no command appears.
+
+Each entry in `system.snap_revisions` has the name, the revision, and the current revision. The current revision comes from the link `/snap/<name>/current`. The command is `snap remove <name> --revision=<revision>`. If edc cannot read the link, it skips the snap and counts it in `system.snaps_unknown`.
+
+edc shows the 10 largest entries of each list. `large_logs_omitted` counts the other files.
 
 ### VM disks
 

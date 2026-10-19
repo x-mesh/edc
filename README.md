@@ -691,7 +691,7 @@ edc does not read tool configuration files such as `bunfig.toml`, `.npmrc`, and 
 | `huggingface` | `$HF_HUB_CACHE`, `$HUGGINGFACE_HUB_CACHE`, `$HF_HOME/hub`, `$XDG_CACHE_HOME/huggingface/hub`, then `~/.cache/huggingface/hub` |
 | `rustup-toolchains` | `$RUSTUP_HOME/toolchains`, then `~/.rustup/toolchains` |
 | `ollama` (macOS) | `$OLLAMA_MODELS`, then `~/.ollama/models` |
-| `journald` (Linux) | `/var/log/journal`. The detail line shows the limits in `journald.conf`. |
+| `journald` (Linux) | `/var/log/journal`. The detail line shows the limits in `journald.conf` and its drop-in files, in the order that systemd applies them. |
 | `apt-archives` (Linux) | `/var/cache/apt/archives` |
 | `app-caches` (macOS) | The other folders in `~/Library/Caches` |
 | `dot-cache` (macOS) | The other folders in `~/.cache` |
@@ -852,7 +852,7 @@ On Linux, edc lists the files in `/var/log` of 100 MB or more. It skips `/var/lo
 
 edc does not delete a file. It shows the facts that help you decide.
 
-Each entry in `system.large_logs` has the size and the date of the last change. `open_files` is the number of file descriptors that processes hold on the file. `logrotate` is the file with a logrotate rule for the path. If it is empty, no rule matches.
+Each entry in `system.large_logs` has the size and the date of the last change. `open_files` is the number of file descriptors that processes hold on the file. `logrotate` is the file with a logrotate rule for the path. edc follows `include` lines that have an absolute path. An empty value means that edc found no rule in the files it read. It does not prove that logrotate skips the file.
 
 With `-v`, the text output shows a command as text. edc never runs it. For a file that a process holds open, the command is `truncate -s 0`. For a closed file, the command is `rm`. If edc cannot read `/proc`, no command appears.
 

@@ -643,7 +643,7 @@ edc clean --json -              # 후보를 metrics.candidates에 담음
 | `huggingface` | `$HF_HUB_CACHE`, `$HUGGINGFACE_HUB_CACHE`, `$HF_HOME/hub`, `$XDG_CACHE_HOME/huggingface/hub`, 없으면 `~/.cache/huggingface/hub` |
 | `rustup-toolchains` | `$RUSTUP_HOME/toolchains`, 없으면 `~/.rustup/toolchains` |
 | `ollama` (macOS) | `$OLLAMA_MODELS`, 없으면 `~/.ollama/models` |
-| `journald` (Linux) | `/var/log/journal`. 후보 아래 줄에 `journald.conf`의 제한 설정을 보여 줍니다. |
+| `journald` (Linux) | `/var/log/journal`. 후보 아래 줄에 `journald.conf`와 drop-in 파일의 제한 설정을 systemd가 적용하는 순서대로 보여 줍니다. |
 | `apt-archives` (Linux) | `/var/cache/apt/archives` |
 | `app-caches` (macOS) | `~/Library/Caches`의 나머지 폴더 |
 | `dot-cache` (macOS) | `~/.cache`의 나머지 폴더 |
@@ -804,7 +804,7 @@ Linux에서는 `/var/log`에서 100 MB 이상인 파일을 나열합니다. `/va
 
 edc는 파일을 지우지 않고, 판단에 도움이 되는 사실만 보여 줍니다.
 
-`system.large_logs`의 항목에는 크기와 마지막 수정일이 있습니다. `open_files`는 프로세스가 그 파일에 잡고 있는 파일 기술자 수이고, `logrotate`는 그 경로에 맞는 규칙이 있는 logrotate 설정 파일입니다. 비어 있으면 맞는 규칙이 없다는 뜻입니다.
+`system.large_logs`의 항목에는 크기와 마지막 수정일이 있습니다. `open_files`는 프로세스가 그 파일에 잡고 있는 파일 기술자 수이고, `logrotate`는 그 경로에 맞는 규칙이 있는 logrotate 설정 파일입니다. 절대 경로인 `include` 줄은 따라가며, 비어 있으면 edc가 읽은 파일에서 규칙을 찾지 못했다는 뜻이지 logrotate가 그 파일을 돌리지 않는다는 증거는 아닙니다.
 
 `-v`에서는 명령을 텍스트로 보여 주고 edc는 실행하지 않습니다. 프로세스가 열고 있는 파일에는 `truncate -s 0`, 닫힌 파일에는 `rm`을 보여 줍니다. `/proc`을 읽지 못하면 명령을 보여 주지 않습니다.
 

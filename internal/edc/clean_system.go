@@ -19,8 +19,13 @@ const (
 	cleanSystemLimit   = 10
 )
 
-// cleanJournaldConfigs는 journald 설정을 읽는 순서다. 디렉터리는 안의 *.conf를 이름 순으로 읽는다.
-var cleanJournaldConfigs = []string{"/usr/lib/systemd/journald.conf.d", "/etc/systemd/journald.conf", "/etc/systemd/journald.conf.d"}
+// journald 설정은 systemd의 규칙을 따른다. 주 설정 파일은 /etc에 있으면 그것을, 없으면 /usr/lib의 것을 읽는다. drop-in은 높은
+// 우선순위 디렉터리부터 /etc, /run, /usr/lib 순이고, 같은 이름은 높은 디렉터리의 파일만 남는다. 남은 파일을 이름 순으로 적용하며
+// 나중 값이 앞의 값과 주 설정을 덮는다. 빈 파일이 아니라 /dev/null로 이어진 링크가 같은 이름의 파일을 가린다.
+var (
+	cleanJournaldMains   = []string{"/etc/systemd/journald.conf", "/usr/lib/systemd/journald.conf"}
+	cleanJournaldDropIns = []string{"/etc/systemd/journald.conf.d", "/run/systemd/journald.conf.d", "/usr/lib/systemd/journald.conf.d"}
+)
 
 // 시험이 호스트의 실제 /var 대신 빈 폴더를 가리키도록 바꾼다.
 var (
@@ -81,28 +86,60 @@ type cleanLogrotatePattern struct {
 }
 
 // cleanJournaldDetail은 journald 설정에서 크기와 보관 기간 제한을 찾아 한 줄로 돌려준다.
-func cleanJournaldDetail(paths ...string) func() string {
+func cleanJournaldDetail(mains, dropIns []string) func() string {
 	return func() string {
 		found := map[string]string{}
-		for _, path := range paths {
-			for _, file := range cleanConfigFiles(path) {
-				text, err := os.ReadFile(file)
-				if err != nil {
-					continue
-				}
-				section := ""
-				for _, line := range strings.Split(string(text), "\n") {
-					line = strings.TrimSpace(line)
-					switch {
-					case line == "" || line[0] == '#' || line[0] == ';':
-					case line[0] == '[':
-						section = line
-					case section == "[Journal]":
-						if key, value, ok := strings.Cut(line, "="); ok {
-							found[strings.TrimSpace(key)] = strings.TrimSpace(value)
-						}
+		apply := func(path string) {
+			text, err := os.ReadFile(path)
+			if err != nil {
+				return
+			}
+			section := ""
+			for _, line := range strings.Split(string(text), "\n") {
+				line = strings.TrimSpace(line)
+				switch {
+				case line == "" || line[0] == '#' || line[0] == ';':
+				case line[0] == '[':
+					section = line
+				case section == "[Journal]":
+					if key, value, ok := strings.Cut(line, "="); ok {
+						found[strings.TrimSpace(key)] = strings.TrimSpace(value)
 					}
 				}
+			}
+		}
+		for _, main := range mains {
+			if info, err := os.Stat(main); err == nil && info.Mode().IsRegular() {
+				apply(main)
+				break
+			}
+		}
+		chosen := map[string]string{}
+		for _, dir := range dropIns {
+			entries, err := os.ReadDir(dir)
+			if err != nil {
+				continue
+			}
+			for _, entry := range entries {
+				name := entry.Name()
+				if _, taken := chosen[name]; taken || entry.IsDir() || !strings.HasSuffix(name, ".conf") {
+					continue
+				}
+				path := filepath.Join(dir, name)
+				if target, err := os.Readlink(path); err == nil && target == "/dev/null" {
+					path = ""
+				}
+				chosen[name] = path
+			}
+		}
+		names := make([]string, 0, len(chosen))
+		for name := range chosen {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			if chosen[name] != "" {
+				apply(chosen[name])
 			}
 		}
 		var limits []string
@@ -118,28 +155,6 @@ func cleanJournaldDetail(paths ...string) func() string {
 	}
 }
 
-// cleanConfigFiles는 파일이면 그 파일을, 디렉터리이면 안의 *.conf를 이름 순으로 돌려준다.
-func cleanConfigFiles(path string) []string {
-	info, err := os.Stat(path)
-	if err != nil {
-		return nil
-	}
-	if !info.IsDir() {
-		return []string{path}
-	}
-	entries, err := os.ReadDir(path)
-	if err != nil {
-		return nil
-	}
-	var files []string
-	for _, entry := range entries {
-		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".conf") {
-			files = append(files, filepath.Join(path, entry.Name()))
-		}
-	}
-	return files
-}
-
 func cleanSystemScan(ctx context.Context, deps cleanDeps, goos string, paths cleanSystemPaths) cleanSystem {
 	if goos != "linux" {
 		return cleanSystem{}
@@ -148,7 +163,7 @@ func cleanSystemScan(ctx context.Context, deps cleanDeps, goos string, paths cle
 		return cleanSystem{Status: cleanNotScanned}
 	}
 	section := cleanSystem{Status: cleanAbsent}
-	patterns, known := cleanLogrotatePatterns(paths)
+	patterns, known := cleanLogrotatePatterns(ctx, paths)
 	section.LogrotateKnown = known
 	logs := cleanFindLargeLogs(ctx, paths.logs)
 	section.LogsTotal = len(logs)
@@ -178,7 +193,7 @@ func cleanSystemScan(ctx context.Context, deps cleanDeps, goos string, paths cle
 		}
 		section.Logs = append(section.Logs, log)
 	}
-	snaps, unknown := cleanFindSnapRevisions(paths)
+	snaps, unknown := cleanFindSnapRevisions(ctx, paths)
 	section.SnapsUnknown = unknown
 	section.SnapsTotal = len(snaps)
 	for index, snap := range snaps {
@@ -233,27 +248,105 @@ func cleanFindLargeLogs(ctx context.Context, dir string) []cleanLargeLog {
 	return logs
 }
 
-// cleanLogrotatePatterns는 logrotate 설정에서 규칙의 로그 경로 패턴을 모은다. 설정을 하나도 읽지 못하면 known이 false다.
-func cleanLogrotatePatterns(paths cleanSystemPaths) (patterns []cleanLogrotatePattern, known bool) {
-	files := cleanConfigFilesAny(paths.logrotateConf)
-	if entries, err := os.ReadDir(paths.logrotateDir); err == nil {
-		for _, entry := range entries {
-			name := entry.Name()
-			if entry.IsDir() || strings.HasPrefix(name, ".") || strings.HasSuffix(name, "~") || strings.Contains(name, ".dpkg-") || strings.Contains(name, ".rpm") {
-				continue
-			}
-			files = append(files, filepath.Join(paths.logrotateDir, name))
-		}
+const (
+	// logrotate 설정 한 파일에서 읽는 크기의 상한과, include를 따라가며 읽는 파일 수와 깊이의 상한이다.
+	cleanLogrotateFileMax  = 1 << 20
+	cleanLogrotateFiles    = 500
+	cleanLogrotateIncluded = 8
+)
+
+// cleanLogrotatePatterns는 logrotate 설정에서 규칙의 로그 경로 패턴을 모은다. 주 설정 파일과 설정 디렉터리에서 시작해
+// include 줄을 절대 경로일 때만 따라간다. 설정을 하나도 읽지 못하면 known이 false다.
+func cleanLogrotatePatterns(ctx context.Context, paths cleanSystemPaths) (patterns []cleanLogrotatePattern, known bool) {
+	type pending struct {
+		path  string
+		depth int
 	}
-	for _, file := range files {
-		text, err := os.ReadFile(file)
-		if err != nil {
+	var queue []pending
+	for _, file := range cleanConfigFilesAny(paths.logrotateConf) {
+		queue = append(queue, pending{file, 0})
+	}
+	for _, file := range cleanLogrotateDirFiles(paths.logrotateDir) {
+		queue = append(queue, pending{file, 0})
+	}
+	visited := map[string]bool{}
+	for len(queue) > 0 && len(visited) < cleanLogrotateFiles && ctx.Err() == nil {
+		current := queue[0]
+		queue = queue[1:]
+		if visited[current.path] {
+			continue
+		}
+		visited[current.path] = true
+		text, ok := cleanReadLimited(current.path, cleanLogrotateFileMax)
+		if !ok {
 			continue
 		}
 		known = true
-		patterns = append(patterns, cleanParseLogrotate(string(text), file)...)
+		patterns = append(patterns, cleanParseLogrotate(text, current.path)...)
+		if current.depth >= cleanLogrotateIncluded {
+			continue
+		}
+		for _, include := range cleanLogrotateIncludes(text) {
+			info, err := os.Stat(include)
+			switch {
+			case err != nil:
+			case info.IsDir():
+				for _, file := range cleanLogrotateDirFiles(include) {
+					queue = append(queue, pending{file, current.depth + 1})
+				}
+			default:
+				queue = append(queue, pending{include, current.depth + 1})
+			}
+		}
 	}
 	return patterns, known
+}
+
+// cleanLogrotateDirFiles는 logrotate가 읽는 설정 디렉터리의 파일을 돌려준다. 백업이나 패키지 관리자가 남긴 파일은 읽지 않는다.
+func cleanLogrotateDirFiles(dir string) []string {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	var files []string
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || strings.HasPrefix(name, ".") || strings.HasSuffix(name, "~") || strings.Contains(name, ".dpkg-") || strings.Contains(name, ".rpm") {
+			continue
+		}
+		files = append(files, filepath.Join(dir, name))
+	}
+	return files
+}
+
+// cleanReadLimited는 max를 넘는 파일을 읽지 않는다. 설정 파일 하나가 메모리를 크게 쓰지 못하게 한다.
+func cleanReadLimited(path string, max int64) (string, bool) {
+	info, err := os.Stat(path)
+	if err != nil || !info.Mode().IsRegular() || info.Size() > max {
+		return "", false
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", false
+	}
+	return string(data), true
+}
+
+// cleanLogrotateIncludes는 중괄호 밖의 include 줄에서 절대 경로를 모은다. logrotate는 상대 경로를 실행 위치 기준으로 읽으므로 따라가지 않는다.
+func cleanLogrotateIncludes(text string) []string {
+	var includes []string
+	depth := 0
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || line[0] == '#' {
+			continue
+		}
+		if fields := strings.Fields(line); depth == 0 && len(fields) == 2 && fields[0] == "include" && strings.HasPrefix(fields[1], "/") {
+			includes = append(includes, fields[1])
+		}
+		depth += strings.Count(line, "{") - strings.Count(line, "}")
+	}
+	return includes
 }
 
 func cleanConfigFilesAny(path string) []string {
@@ -338,25 +431,38 @@ func cleanOpenCounts(ctx context.Context, procDir string, logs []cleanLargeLog) 
 	return counts, complete, true
 }
 
-// cleanFindSnapRevisions는 현재 리비전이 아닌 snap 파일을 큰 순서로 돌려준다. 현재 리비전을 알 수 없는 snap은 세어 두기만 한다.
-func cleanFindSnapRevisions(paths cleanSystemPaths) (revisions []cleanSnapRevision, unknown int) {
+// cleanFindSnapRevisions는 현재 리비전이 아닌 snap 파일을 큰 순서로 돌려준다. 현재 리비전을 알 수 없는 snap은 이름마다 한 번만 세어 둔다.
+func cleanFindSnapRevisions(ctx context.Context, paths cleanSystemPaths) (revisions []cleanSnapRevision, unknown int) {
 	entries, err := os.ReadDir(paths.snapFiles)
 	if err != nil {
 		return nil, 0
 	}
+	currents := map[string]string{}
+	unreadable := map[string]bool{}
 	for _, entry := range entries {
+		if ctx.Err() != nil {
+			break
+		}
 		base, ok := strings.CutSuffix(entry.Name(), ".snap")
 		cut := strings.LastIndex(base, "_")
 		if !ok || entry.IsDir() || cut <= 0 {
 			continue
 		}
 		name, revision := base[:cut], base[cut+1:]
-		link, err := os.Readlink(filepath.Join(paths.snapMounts, name, "current"))
-		if err != nil {
-			unknown++
+		if unreadable[name] {
 			continue
 		}
-		current := filepath.Base(link)
+		current, known := currents[name]
+		if !known {
+			link, err := os.Readlink(filepath.Join(paths.snapMounts, name, "current"))
+			if err != nil {
+				unreadable[name] = true
+				unknown++
+				continue
+			}
+			current = filepath.Base(link)
+			currents[name] = current
+		}
 		if current == revision {
 			continue
 		}

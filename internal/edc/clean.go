@@ -225,7 +225,7 @@ func cleanCatalog(goos, home string) []cleanSpec {
 		specs = append(specs,
 			// 로그는 지우면 다시 만들 수 없다. 크기 제한이 설정돼 있는지가 지워도 되는지 보는 근거다.
 			cleanSpec{id: "journald", category: "logs", priority: "P2", fixed: cleanJournalPath, cost: "lost",
-				cleanup: "journalctl --vacuum-size=500M", detail: cleanJournaldDetail(cleanJournaldConfigs...)},
+				cleanup: "journalctl --vacuum-size=500M", detail: cleanJournaldDetail(cleanJournaldMains, cleanJournaldDropIns)},
 			cleanSpec{id: "apt-archives", category: "package_cache", priority: "P2", fixed: cleanAptPath,
 				regenerable: true, cost: "low", cleanup: "apt-get clean"},
 		)

@@ -1,12 +1,15 @@
 package edc
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/charmbracelet/x/ansi"
+	"gopkg.in/yaml.v3"
 )
 
 func topSetupFixture(width, height int, top topConfig) topSetupModel {
@@ -89,6 +92,20 @@ func TestTopSetupBoxesFollowTheList(t *testing.T) {
 	}
 }
 
+// 시작 보기가 split이고 박스를 하나도 고르지 않았어도 v처럼 모든 박스를 쓴다. 박스가 들어가지 않는 크기에서도 빈 목록을 읽지 않는다.
+func TestTopSetupStartsSplitWithNoBoxesSet(t *testing.T) {
+	for _, size := range [][2]int{{160, 50}, {80, 24}} {
+		model := topSetupFixture(size[0], size[1], topConfig{View: stringPointer("split"), Split: stringPointer("none")})
+		if model.preview.view != topViewSplit || len(model.preview.splitViews()) == 0 {
+			t.Fatalf("%dx%d: view %q, boxes %v", size[0], size[1], model.preview.view, model.preview.splitViews())
+		}
+		for _, row := range []topSetupRow{topSetupView, topSetupBoxes, topSetupPanels} {
+			model.row = row
+			_ = model.View()
+		}
+	}
+}
+
 func TestTopSetupPanelsShowInThePreviewAndNoteWhatHides(t *testing.T) {
 	model := topSetupKeys(t, topSetupFixture(topTableWidth, 24+topSetupChrome, topConfig{}), "down", "down", "down", "right", "right", "right", "space", "right", "right", "space")
 	if got := model.settings.panelsValue(); got != "net,ai" {
@@ -154,6 +171,48 @@ func TestTopSetupSavesOnlyTheTopSection(t *testing.T) {
 		if !strings.Contains(text, want) {
 			t.Fatalf("saved config lacks %q:\n%s", want, text)
 		}
+	}
+}
+
+// 예전 config.yaml을 쓰는 사용자도 [defaults.top]만 바뀌고 다른 섹션은 남는다.
+func TestTopSetupSavesYAMLForALegacyFile(t *testing.T) {
+	model := topSetupKeys(t, topSetupFixture(120, 40, topConfig{Count: intPointer(3)}), "down", "down", "down", "space")
+	model.path = "/tmp/edc/config.yaml"
+	data, err := model.configData()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var saved edcConfig
+	if err := yaml.Unmarshal(data, &saved); err != nil {
+		t.Fatalf("saved YAML does not parse: %v\n%s", err, data)
+	}
+	top := saved.Defaults.Top
+	if top.Panels == nil || *top.Panels != "cpu" || top.Count == nil || *top.Count != 3 || saved.Defaults.Info.Public == nil || !*saved.Defaults.Info.Public {
+		t.Fatalf("saved YAML lost a value:\n%s", data)
+	}
+}
+
+// 편집하는 동안 파일이 바뀌면 쓰지 않는다. 바뀐 파일은 그대로 남고 2를 돌려준다.
+func TestTopSetupKeepsAFileChangedWhileEditing(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, []byte("[defaults.top]\ncount = 3\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := configFileSnapshot(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed := []byte("[defaults.top]\ncount = 5\n")
+	if err := os.WriteFile(path, changed, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	model := topSetupKeys(t, topSetupFixture(120, 40, topConfig{Count: intPointer(3)}), "down", "down", "down", "space")
+	model.path = path
+	if code := model.write(snapshot); code != 2 {
+		t.Fatalf("write over a changed file = %d, want 2", code)
+	}
+	if data, err := os.ReadFile(path); err != nil || string(data) != string(changed) {
+		t.Fatalf("changed file = %q, %v; want it kept", data, err)
 	}
 }
 

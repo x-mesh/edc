@@ -87,18 +87,32 @@ type topAITokens struct {
 
 // aiTokensBetween은 from 뒤부터 to까지 기록된 token이다. 행마다 직전 행부터 그 행까지 들어온 요청을 세어 다른 열과
 // 같은 줄에서 비교할 수 있게 한다. 행 시각은 초 경계에 맞지 않으므로 두 끝이 든 초까지 읽고 ms 시각으로 거른다.
+// 두 끝을 모두 ms로 내리므로 이웃한 행의 구간이 빈틈없이 이어지고, 요청 하나는 한 행에만 들어간다.
 func (model topModel) aiTokensBetween(from, to time.Time) topAITokens {
 	if model.aiSeconds == nil {
 		return topAITokens{}
 	}
 	tokens := topAITokens{claudeOK: !model.aiFailed["claude"], codexOK: !model.aiFailed["codex"]}
 	sum := func(provider string, usage *aiUsage) {
-		for second := from.Unix(); second <= to.Unix(); second++ {
-			for _, stamp := range model.aiSeconds[provider][second] {
+		seconds, first, last := model.aiSeconds[provider], from.Unix(), to.Unix()
+		add := func(stamps []aiStampedUsage) {
+			for _, stamp := range stamps {
 				if stamp.At > from.UnixMilli() && stamp.At <= to.UnixMilli() {
 					usage.add(stamp.Usage)
 				}
 			}
+		}
+		// --interval에는 상한이 없고 잠자기 뒤의 행은 몇 시간 떨어진다. 그 초를 하나씩 세면 그릴 때마다 멈춘다.
+		if last-first >= int64(len(seconds)) {
+			for second, stamps := range seconds {
+				if second >= first && second <= last {
+					add(stamps)
+				}
+			}
+			return
+		}
+		for second := first; second <= last; second++ {
+			add(seconds[second])
 		}
 	}
 	sum("claude", &tokens.claude)

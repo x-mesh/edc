@@ -534,6 +534,36 @@ func TestTopAIColumnsUseTheExactRowInterval(t *testing.T) {
 	}
 }
 
+// 행 시각은 ns이고 요청 시각은 ms다. 행과 같은 ms 안에서 더 늦은 요청도 두 끝을 같이 내린 앞 행에 한 번만 들어간다.
+func TestTopAIColumnsCountARequestOnceAcrossSubMillisecondRows(t *testing.T) {
+	base := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	model := topFixtureModel(nil)
+	model.rows = []topDashboardRow{{at: base.Add(200500 * time.Microsecond)}, {at: base.Add(1200500 * time.Microsecond)}}
+	model.aiSeconds = map[string]map[int64][]aiStampedUsage{"claude": {
+		base.Unix(): {{At: base.Add(200900 * time.Microsecond).UnixMilli(), Usage: aiUsage{Requests: 1}}},
+	}}
+	var counts []int64
+	for _, row := range model.rows {
+		counts = append(counts, model.aiTokensBetween(model.previousRowAt(row.at), row.at).claude.Requests)
+	}
+	if !slices.Equal(counts, []int64{1, 0}) {
+		t.Fatalf("requests per row = %v, want [1 0]", counts)
+	}
+}
+
+// 행 사이가 길어도 저장된 초만 읽는다. 초를 하나씩 세면 이 시험은 100년 치 약 31억 초를 조회한다.
+func TestTopAIColumnsReadOnlyStoredSecondsForALongGap(t *testing.T) {
+	base := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	model := topFixtureModel(nil)
+	model.aiSeconds = map[string]map[int64][]aiStampedUsage{"claude": {
+		base.Unix() - 10: {{At: base.Add(-10 * time.Second).UnixMilli(), Usage: aiUsage{Requests: 2}}},
+		base.Unix() + 10: {{At: base.Add(10 * time.Second).UnixMilli(), Usage: aiUsage{Requests: 4}}},
+	}}
+	if got := model.aiTokensBetween(base.AddDate(-100, 0, 0), base).claude.Requests; got != 2 {
+		t.Fatalf("requests over a long gap = %d, want 2", got)
+	}
+}
+
 // 기록을 읽지 못한 도구는 0이 아니라 —로 보인다. 읽은 도구는 그대로 0을 ·로 보인다.
 func TestTopAIColumnsMarkAFailedScan(t *testing.T) {
 	model := topSplitModelAt(160, 40, 3, false, nil)

@@ -72,7 +72,13 @@ func runTopSetup(args []string, version string) int {
 		}
 		return 0
 	}
-	data, err := setup.configData()
+	return setup.write(snapshot)
+}
+
+// write는 화면을 닫은 뒤의 저장이다. 시작할 때 읽은 파일이 그 사이에 바뀌었으면 쓰지 않고 2를 돌려준다.
+func (model topSetupModel) write(snapshot configSnapshot) int {
+	path := model.path
+	data, err := model.configData()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 2

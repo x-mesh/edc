@@ -135,7 +135,7 @@ _edc() {
     args)
       case $words[1] in
         top)
-          _arguments '--interval[sampling interval]:duration' '--count[출력 row 수]:count' '--no-header[header 생략]' '--process[process filter]:filter' '--split=-[박스 화면, =all은 전체]::views:(all none cpu mem disk net psi)' '--interface[net 값에 더할 interface]:interfaces:(all physical)' '--view[처음 보기]:view:(all cpu memory disk network pressure split)' '--panels[표 아래 패널]:panels:(none net ai events)' '(-d --detail)'{-d,--detail}'[eBPF details]' '(-w --write)'{-w,--write}'[SQLite 기록, 경로 생략 시 기본 DB]::path:_files' '--json[sample당 한 줄 JSON 출력 경로]:path:_files'
+          _arguments '1::subcommand:(setup)' '--interval[sampling interval]:duration' '--count[출력 row 수]:count' '--no-header[header 생략]' '--process[process filter]:filter' '--split=-[박스 화면, =all은 전체]::views:(all none cpu mem disk net psi)' '--interface[net 값에 더할 interface]:interfaces:(all physical)' '--view[처음 보기]:view:(all cpu memory disk network pressure split)' '--panels[표 아래 패널]:panels:(none cpu mem disk net psi ai events)' '--columns[all 보기 열 그룹, +는 자세히]:columns:(all net net+ cpu cpu+ mem mem+ disk disk+ psi psi+ ai ai+)' '(-d --detail)'{-d,--detail}'[eBPF details]' '(-w --write)'{-w,--write}'[SQLite 기록, 경로 생략 시 기본 DB]::path:_files' '--json[sample당 한 줄 JSON 출력 경로]:path:_files'
           ;;
         history)
           _arguments '1:subcommand:(list top process)' '--run[실행 ID]:id' '--from[시작 시각]:RFC3339' '--to[종료 시각]:RFC3339' '--process[process filter]:filter' '--metric[지표 이름]:metric' '--min[최솟값]:number' '--max[최댓값]:number' '--limit[최대 결과 수]:count' '--json[JSONL 출력 경로]:path:_files' '*:database:_files'
@@ -322,9 +322,11 @@ _edc() {
         --split) if [[ $cur != -* ]]; then COMPREPLY=($(compgen -W "all none cpu mem disk net psi" -- "$cur")); return; fi ;;
         --interface) COMPREPLY=($(compgen -W "all physical $(ls /sys/class/net 2>/dev/null)" -- "$cur")); return ;;
         --view) COMPREPLY=($(compgen -W "all cpu memory disk network pressure split" -- "$cur")); return ;;
-        --panels) COMPREPLY=($(compgen -W "none net ai events" -- "$cur")); return ;;
+        --panels) COMPREPLY=($(compgen -W "none cpu mem disk net psi ai events" -- "$cur")); return ;;
+        --columns) COMPREPLY=($(compgen -W "all net net+ cpu cpu+ mem mem+ disk disk+ psi psi+ ai ai+" -- "$cur")); return ;;
       esac
-      COMPREPLY=($(compgen -W "--interval --count --no-header --process --split --view --panels --interface -d --detail --ebpf -w --write --json" -- "$cur")) ;;
+      if [[ $COMP_CWORD -eq 2 && $cur != -* ]]; then COMPREPLY=($(compgen -W "setup" -- "$cur")); return; fi
+      COMPREPLY=($(compgen -W "--interval --count --no-header --process --split --view --panels --columns --interface -d --detail --ebpf -w --write --json" -- "$cur")) ;;
     history)
       if [[ $COMP_CWORD -eq 2 ]]; then COMPREPLY=($(compgen -W "list top process" -- "$cur"))
       elif [[ $prev == --json ]]; then COMPREPLY=($(compgen -f -- "$cur"))

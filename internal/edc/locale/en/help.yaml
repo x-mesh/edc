@@ -140,7 +140,8 @@ command:
       full: "match and show the full command line"
       split: "one box each for cpu, mem, disk, net, psi, default all"
       view: "first view, such as network or split"
-      panels: "panels below the table in priority order: net, ai, events"
+      panels: "panels under the table: cpu,mem,disk,net,psi,ai,events"
+      columns: "all-view column groups, + shows more: net+,cpu,mem"
       interface: "net values add only these: names, globs, physical, all"
       detail: "CPU wait, I/O latency (Linux eBPF, root); macOS CPU wait"
       ebpf: "same as --detail"
@@ -151,6 +152,7 @@ command:
       - "--count, --json, a pipe, or NO_COLOR gives the table instead."
       - "With --process, it opens the process view. 1 shows host columns, f returns."
       - "f follows a signal: its view, then the busiest process. / filters, Esc clears."
+      - "edc top setup picks the view, boxes, and panels with a live preview."
   watch:
     summary: "Observe HTTP or file changes and run explicit file actions"
     sub:

@@ -23,7 +23,7 @@ const legacyRecommendedLogOutput = "/var/log/job.log"
 var configScalarTypes = map[string]string{
 	"lang": "!!str", "defaults.common.json": "!!str", "defaults.doctor.profile": "!!str",
 	"defaults.top.json": "!!str", "defaults.top.split": "!!str", "defaults.top.interface": "!!str",
-	"defaults.top.view": "!!str", "defaults.top.panels": "!!str", "defaults.top.process_sort": "!!str", "defaults.where.provider": "!!str",
+	"defaults.top.view": "!!str", "defaults.top.panels": "!!str", "defaults.top.process_sort": "!!str", "defaults.top.columns": "!!str", "defaults.where.provider": "!!str",
 	"defaults.capture.interface": "!!str", "defaults.capture.filter": "!!str", "defaults.capture.output": "!!str",
 	"defaults.remote.inventory": "!!str", "defaults.remote.recipe": "!!str",
 	"defaults.log.stream": "!!str", "defaults.log.output": "!!str", "defaults.log.command_display": "!!str", "defaults.log.restart": "!!str",
@@ -119,10 +119,11 @@ type topConfig struct {
 	Split    *string         `yaml:"split,omitempty" toml:"split,omitempty"`
 	// Interface는 net 값에 더할 interface다. 여러 host가 같은 설정을 쓰므로, macOS에서 physical은 경고만 내고 모두 더한다.
 	Interface *string `yaml:"interface,omitempty" toml:"interface,omitempty"`
-	// View, Panels, ProcessSort는 대시보드의 처음 보기, 아래 패널 목록, process 패널 기본 순위다.
+	// View, Panels, ProcessSort, Columns는 대시보드의 처음 보기, 아래 패널 목록, process 패널 기본 순위, all 보기 열 그룹이다.
 	View        *string `yaml:"view,omitempty" toml:"view,omitempty"`
 	Panels      *string `yaml:"panels,omitempty" toml:"panels,omitempty"`
 	ProcessSort *string `yaml:"process_sort,omitempty" toml:"process_sort,omitempty"`
+	Columns     *string `yaml:"columns,omitempty" toml:"columns,omitempty"`
 }
 type infoConfig struct {
 	Public  *bool           `yaml:"public,omitempty" toml:"public,omitempty"`
@@ -349,7 +350,12 @@ func validateConfig(config edcConfig) error {
 	}
 	if d.Top.Panels != nil && *d.Top.Panels != "" {
 		if _, err := parseTopPanels(*d.Top.Panels); err != nil {
-			return invalidConfig("defaults.top.panels", "must be none, or net, ai, events, comma-separated, each once")
+			return invalidConfig("defaults.top.panels", "must be none, or cpu, mem, disk, net, psi, ai, events, comma-separated, each once")
+		}
+	}
+	if d.Top.Columns != nil && *d.Top.Columns != "" {
+		if _, err := parseTopColumns(*d.Top.Columns); err != nil {
+			return invalidConfig("defaults.top.columns", "must be all, or net, cpu, mem, disk, psi, ai with an optional +, comma-separated, each once")
 		}
 	}
 	if d.Top.ProcessSort != nil && *d.Top.ProcessSort != "" {

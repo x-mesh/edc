@@ -3,6 +3,7 @@ package edc
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 // topAISource는 AI 패널이 쓰는 한도 조회다. *aiCollector가 맞고, 시험은 정해 둔 값을 준다.
 type topAISource interface {
 	poll(ctx context.Context, poll time.Duration) aiPollResult
+	scan() aiUsageSnapshot
 	close()
 }
 
@@ -19,6 +21,8 @@ type topAISource interface {
 type topAIStartMsg struct{}
 
 type topAIPollMsg aiPollResult
+
+type topAIScanMsg aiUsageSnapshot
 
 // toggleAI는 a 키다. 수집기는 처음 켤 때 열어, 끈 채로 쓰는 실행은 ~/.claude를 읽거나 한도 API를 부르지 않는다.
 func (model topModel) toggleAI() (topModel, tea.Cmd) {
@@ -29,7 +33,8 @@ func (model topModel) toggleAI() (topModel, tea.Cmd) {
 	return model.startAI()
 }
 
-// startAI는 앞선 조회가 끝나지 않았으면 새로 부르지 않는다. 수집기 상태를 두 goroutine이 함께 쓰지 않는다.
+// startAI는 AI 패널의 한도 조회와 ai 열의 기록 scan을 시작한다. 앞선 호출이 끝나지 않았으면 새로 부르지 않는다.
+// 수집기 상태를 같은 일의 두 goroutine이 함께 쓰지 않는다. poll과 scan은 서로 다른 필드를 쓴다.
 func (model topModel) startAI() (topModel, tea.Cmd) {
 	if model.aiSource == nil {
 		if model.openAI == nil {
@@ -43,11 +48,63 @@ func (model topModel) startAI() (topModel, tea.Cmd) {
 		}
 		model.aiSource = source
 	}
-	if model.aiPolling {
+	var cmds []tea.Cmd
+	if model.aiOn && !model.aiPolling {
+		model.aiPolling = true
+		cmds = append(cmds, model.aiPollCmd(0))
+	}
+	if model.aiTokens && !model.aiScanning {
+		model.aiScanning = true
+		cmds = append(cmds, model.aiScanCmd(0))
+	}
+	return model, tea.Batch(cmds...)
+}
+
+func (model topModel) updateAIScan(snapshot aiUsageSnapshot) (topModel, tea.Cmd) {
+	model.aiSeconds, model.aiScanning = snapshot.Seconds, false
+	if !model.aiTokens {
 		return model, nil
 	}
-	model.aiPolling = true
-	return model, model.aiPollCmd(0)
+	model.aiScanning = true
+	return model, model.aiScanCmd(aiScanInterval)
+}
+
+func (model topModel) aiScanCmd(delay time.Duration) tea.Cmd {
+	source := model.aiSource
+	run := func() tea.Msg { return topAIScanMsg(source.scan()) }
+	if delay == 0 {
+		return run
+	}
+	return tea.Tick(delay, func(time.Time) tea.Msg { return run() })
+}
+
+// topAITokens는 한 행의 ai 열 값이다. valid가 false이면 아직 기록을 읽지 못한 것이다.
+type topAITokens struct {
+	valid         bool
+	claude, codex aiUsage
+}
+
+// aiTokensBetween은 from 뒤부터 to까지 초에 기록된 token이다. 행마다 직전 행부터 그 행까지 들어온 요청을 세어
+// 다른 열과 같은 줄에서 비교할 수 있게 한다. 1초보다 짧은 interval에서는 초가 바뀌는 행에 그 초의 값이 한 번만 붙는다.
+func (model topModel) aiTokensBetween(from, to time.Time) topAITokens {
+	if model.aiSeconds == nil {
+		return topAITokens{}
+	}
+	tokens := topAITokens{valid: true}
+	for second := from.Unix() + 1; second <= to.Unix(); second++ {
+		tokens.claude.add(model.aiSeconds["claude"][second])
+		tokens.codex.add(model.aiSeconds["codex"][second])
+	}
+	return tokens
+}
+
+// previousRowAt은 at 바로 앞 행의 시각이다. 첫 행은 interval 하나 앞으로 본다.
+func (model topModel) previousRowAt(at time.Time) time.Time {
+	index := sort.Search(len(model.rows), func(index int) bool { return !model.rows[index].at.Before(at) })
+	if index > 0 {
+		return model.rows[index-1].at
+	}
+	return at.Add(-model.interval)
 }
 
 func (model topModel) updateAIPoll(result aiPollResult) (topModel, tea.Cmd) {

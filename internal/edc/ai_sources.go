@@ -423,7 +423,11 @@ type aiUsage struct {
 	Cache    int64 `json:"cache"`
 }
 
-func (usage aiUsage) total() int64 { return usage.Input + usage.Output + usage.Cache }
+// total은 새로 처리한 token인 in과 out의 합이다. cache 읽기는 대화가 길수록 요청마다 커져 활동량을 가리므로 넣지 않는다.
+func (usage aiUsage) total() int64 { return usage.Input + usage.Output }
+
+// empty는 token이 하나도 없는 기록이다. cache 읽기만 있는 응답도 요청이므로 total이 아니라 세 값을 모두 본다.
+func (usage aiUsage) empty() bool { return usage.Input+usage.Output+usage.Cache <= 0 }
 
 // cacheHit은 입력 가운데 cache에서 읽은 비율이다. Claude는 cache에 새로 쓴 입력을 in에 넣으므로 miss로 센다.
 // 입력이 없는 구간은 비율이 없으므로 false를 돌려준다.
@@ -496,6 +500,8 @@ type aiTokenScanner struct {
 	claudeDir, codexDir string
 	files               map[string]*aiScanFile
 	buckets             map[string]map[time.Time]aiUsage
+	// seconds는 같은 token을 1초 구간으로 모은 것이다. edc top이 1초 행마다 그 사이에 들어온 요청을 보인다. 빈 초는 두지 않는다.
+	seconds map[string]map[int64]aiUsage
 	// seen은 Claude 응답 하나가 여러 줄에 기록되는 것을 한 번만 센다.
 	seen map[string]aiSeenMessage
 }
@@ -505,6 +511,7 @@ func newAITokenScanner(claudeDir, codexDir string) *aiTokenScanner {
 		claudeDir: claudeDir, codexDir: codexDir,
 		files:   map[string]*aiScanFile{},
 		buckets: map[string]map[time.Time]aiUsage{"claude": {}, "codex": {}},
+		seconds: map[string]map[int64]aiUsage{"claude": {}, "codex": {}},
 		seen:    map[string]aiSeenMessage{},
 	}
 }
@@ -513,6 +520,8 @@ func newAITokenScanner(claudeDir, codexDir string) *aiTokenScanner {
 type aiUsageSnapshot struct {
 	At      time.Time
 	Buckets map[string]map[time.Time]aiUsage
+	// Seconds는 Unix 초마다 모은 token이다.
+	Seconds map[string]map[int64]aiUsage
 	Err     string
 }
 
@@ -605,7 +614,18 @@ func (scanner *aiTokenScanner) scan(now time.Time) aiUsageSnapshot {
 			errs = append(errs, source.provider+": "+err.Error())
 		}
 	}
-	snapshot := aiUsageSnapshot{At: now, Buckets: map[string]map[time.Time]aiUsage{}, Err: strings.Join(errs, " · ")}
+	snapshot := aiUsageSnapshot{At: now, Buckets: map[string]map[time.Time]aiUsage{}, Seconds: map[string]map[int64]aiUsage{}, Err: strings.Join(errs, " · ")}
+	for provider, seconds := range scanner.seconds {
+		copied := make(map[int64]aiUsage, len(seconds))
+		for second, usage := range seconds {
+			if second < oldest.Unix() {
+				delete(seconds, second)
+				continue
+			}
+			copied[second] = usage
+		}
+		snapshot.Seconds[provider] = copied
+	}
 	for provider, buckets := range scanner.buckets {
 		copied := make(map[time.Time]aiUsage, len(buckets))
 		for bucket, usage := range buckets {
@@ -685,13 +705,16 @@ func (scanner *aiTokenScanner) readFile(path string, file *aiScanFile, oldest ti
 }
 
 func (scanner *aiTokenScanner) add(provider string, at, oldest time.Time, usage aiUsage) {
-	if usage.total() <= 0 || at.Before(oldest) {
+	if usage.empty() || at.Before(oldest) {
 		return
 	}
 	bucket := at.Truncate(aiBucket)
 	value := scanner.buckets[provider][bucket]
 	value.add(usage)
 	scanner.buckets[provider][bucket] = value
+	second := scanner.seconds[provider][at.Unix()]
+	second.add(usage)
+	scanner.seconds[provider][at.Unix()] = second
 }
 
 // claudeLine은 cache 생성을 새 입력으로, cache 읽기를 cache로 센다.
@@ -734,7 +757,7 @@ func (scanner *aiTokenScanner) claudeLine(_ *aiScanFile, line []byte, oldest tim
 		Output: aiGrowth(seen.usage.Output, usage.Output),
 		Cache:  aiGrowth(seen.usage.Cache, usage.Cache),
 	}
-	if growth.total() > 0 {
+	if !growth.empty() {
 		scanner.add("claude", seen.at, oldest, growth)
 		seen.usage.Input, seen.usage.Output, seen.usage.Cache = seen.usage.Input+growth.Input, seen.usage.Output+growth.Output, seen.usage.Cache+growth.Cache
 		scanner.seen[key] = seen

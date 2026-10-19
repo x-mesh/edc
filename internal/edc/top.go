@@ -16,6 +16,9 @@ import (
 )
 
 func runTop(args []string, version string) (code int) {
+	if len(args) > 0 && args[0] == "setup" {
+		return runTopSetup(args[1:], version)
+	}
 	set := newFlagSet("top")
 	set.SetOutput(os.Stderr)
 	config := activeConfig.Defaults.Top
@@ -27,6 +30,7 @@ func runTop(args []string, version string) (code int) {
 	splitValue := set.String("split", "", T("command.top.option.split"))
 	viewValue := set.String("view", configuredString(config.View, ""), T("command.top.option.view"))
 	panelsValue := set.String("panels", configuredString(config.Panels, ""), T("command.top.option.panels"))
+	columnsValue := set.String("columns", configuredString(config.Columns, ""), T("command.top.option.columns"))
 	interfaceValue := set.String("interface", configuredString(config.Interface, ""), T("command.top.option.interface"))
 	ebpf := set.Bool("ebpf", false, T("command.top.option.ebpf"))
 	// -d와 --detail은 사용자에게 보이는 이름이다. v0.28.0의 --ebpf도 같은 값으로 계속 받는다.
@@ -68,7 +72,7 @@ func runTop(args []string, version string) (code int) {
 		fmt.Fprintln(os.Stderr, T("history.error.path"))
 		return 2
 	}
-	explicitSplit, explicitView, explicitPanels := false, false, false
+	explicitSplit, explicitView, explicitPanels, explicitColumns := false, false, false, false
 	set.Visit(func(option *flag.Flag) {
 		switch option.Name {
 		case "split":
@@ -77,6 +81,8 @@ func runTop(args []string, version string) (code int) {
 			explicitView = true
 		case "panels":
 			explicitPanels = true
+		case "columns":
+			explicitColumns = true
 		}
 		if (option.Name == "write" || option.Name == "w") && option.Value.String() == "" {
 			code = 2
@@ -124,6 +130,12 @@ func runTop(args []string, version string) (code int) {
 		}
 		layout.panelsSet = true
 	}
+	if *columnsValue != "" {
+		if layout.columns, err = parseTopColumns(*columnsValue); err != nil {
+			fmt.Fprintln(os.Stderr, T("observe.top.columns_invalid"))
+			return 2
+		}
+	}
 	if config.ProcessSort != nil && *config.ProcessSort != "" {
 		if layout.processSort, err = parseTopProcessSort(*config.ProcessSort); err != nil {
 			fmt.Fprintln(os.Stderr, T("observe.top.process_sort_invalid"))
@@ -134,7 +146,7 @@ func runTop(args []string, version string) (code int) {
 		fmt.Fprintln(os.Stderr, T("observe.top.view_with_process"))
 		return 2
 	}
-	if (explicitView || explicitPanels) && !dashboard {
+	if (explicitView || explicitPanels || explicitColumns) && !dashboard {
 		fmt.Fprintln(os.Stderr, T("observe.top.layout_needs_view"))
 		return 2
 	}

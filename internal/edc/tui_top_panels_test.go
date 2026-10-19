@@ -24,6 +24,7 @@ func TestTopPanelsParse(t *testing.T) {
 		{"none", []topPanel{}},
 		{"net", []topPanel{topPanelNet}},
 		{"ai, net ,events", []topPanel{topPanelAI, topPanelNet, topPanelEvents}},
+		{"disk,cpu,psi,mem", []topPanel{topPanelDisk, topPanelCPU, topPanelPSI, topPanelMemory}},
 	}
 	for _, test := range valid {
 		got, err := parseTopPanels(test.value)
@@ -31,7 +32,7 @@ func TestTopPanelsParse(t *testing.T) {
 			t.Errorf("parseTopPanels(%q) = %v, %v; want %v", test.value, got, err, test.want)
 		}
 	}
-	for _, value := range []string{"", "net,", "network", "ai,ai", "none,ai", "cpu"} {
+	for _, value := range []string{"", "net,", "network", "ai,ai", "none,ai", "memory"} {
 		if got, err := parseTopPanels(value); err == nil {
 			t.Errorf("parseTopPanels(%q) = %v, want error", value, got)
 		}
@@ -58,13 +59,20 @@ func TestTopPanelsParse(t *testing.T) {
 
 type fakeTopAISource struct {
 	result aiPollResult
+	usage  aiUsageSnapshot
 	polls  int
+	scans  int
 	closed bool
 }
 
 func (source *fakeTopAISource) poll(context.Context, time.Duration) aiPollResult {
 	source.polls++
 	return source.result
+}
+
+func (source *fakeTopAISource) scan() aiUsageSnapshot {
+	source.scans++
+	return source.usage
 }
 
 func (source *fakeTopAISource) close() { source.closed = true }
@@ -285,7 +293,7 @@ func TestTopHiddenNoticeNeverAddsAStatusLine(t *testing.T) {
 	if got := strings.Join(model.statusWithHidden([]topPanel{topPanelAI}, len(model.statusLines())), "\n"); !strings.Contains(ansi.Strip(got), "+ai hidden") {
 		t.Fatalf("status lacks the hidden notice: %q", got)
 	}
-	if !slices.Equal(topPanelNames, []topPanel{topPanelNet, topPanelAI, topPanelEvents}) {
+	if !slices.Equal(topPanelNames, []topPanel{topPanelCPU, topPanelMemory, topPanelDisk, topPanelNet, topPanelPSI, topPanelAI, topPanelEvents}) {
 		t.Fatal("panel names changed; update the config and help text")
 	}
 }
@@ -299,6 +307,8 @@ func TestTopLayoutRejectsNonDashboardUse(t *testing.T) {
 		{"--panels", "net,ai", "--count", "1"},
 		{"--view", "mem"},
 		{"--panels", "net,net"},
+		{"--columns", "net+,cpu", "--count", "1"},
+		{"--columns", "network"},
 		{"--view", "disk", "--process", strconv.Itoa(os.Getpid())},
 	} {
 		if code := runTop(args, "test"); code != 2 {
@@ -337,5 +347,164 @@ func TestTopAIKeyHintShowsOnlyWhenOn(t *testing.T) {
 	model.aiOn = true
 	if !strings.Contains(ansi.Strip(strings.Join(model.statusLines(), "\n")), "a ai") {
 		t.Fatal("the a hint must show while the AI panel is on")
+	}
+}
+
+func TestTopColumnsParse(t *testing.T) {
+	valid := []struct {
+		value string
+		want  []topColumnGroup
+	}{
+		{"all", nil},
+		{"net+, cpu ,mem", []topColumnGroup{{"network", true}, {"cpu", false}, {"mem", false}}},
+		{"disk", []topColumnGroup{{"disk", false}}},
+	}
+	for _, test := range valid {
+		got, err := parseTopColumns(test.value)
+		if err != nil || !reflect.DeepEqual(got, test.want) {
+			t.Errorf("parseTopColumns(%q) = %v, %v; want %v", test.value, got, err, test.want)
+		}
+	}
+	for _, value := range []string{"", "net,", "network", "net,net+", "all,cpu", "cpu++", "+"} {
+		if got, err := parseTopColumns(value); err == nil {
+			t.Errorf("parseTopColumns(%q) = %v, want error", value, got)
+		}
+	}
+}
+
+func topLayoutTitles(columns []topAllColumn) (groups, titles []string) {
+	for _, column := range columns {
+		if len(groups) == 0 || groups[len(groups)-1] != column.group {
+			groups = append(groups, column.group)
+		}
+		titles = append(titles, column.title)
+	}
+	return groups, titles
+}
+
+func TestTopColumnsKeepTheGroupOrderAndShowTheDetailGroupFirst(t *testing.T) {
+	plain, _ := parseTopColumns("cpu,net,mem")
+	groups, titles := topLayoutTitles(must(topAllLayoutOf(100, topAllGroupColumns(plain))))
+	if !slices.Equal(groups, []string{"cpu", "network", "mem"}) || slices.Contains(titles, "read") {
+		t.Fatalf("groups %v, titles %v", groups, titles)
+	}
+	// 같은 폭에서 +가 없으면 hot core가 먼저 들어가고, net+이면 network의 packet 열이 먼저 들어간다.
+	detail, _ := parseTopColumns("cpu,net+,mem")
+	_, detailTitles := topLayoutTitles(must(topAllLayoutOf(topTableWidth, topAllGroupColumns(detail))))
+	_, plainTitles := topLayoutTitles(must(topAllLayoutOf(topTableWidth, topAllGroupColumns(plain))))
+	if !slices.Contains(detailTitles, "pk_in") || slices.Contains(detailTitles, "hot core") || slices.Contains(plainTitles, "pk_in") || !slices.Contains(plainTitles, "hot core") {
+		t.Fatalf("net+ %v, net %v", detailTitles, plainTitles)
+	}
+	// func 칸은 비교할 수 없으므로 제목과 폭으로 비교한다.
+	shape := func(columns []topAllColumn) (shape []string) {
+		for _, column := range columns {
+			shape = append(shape, column.group+"/"+column.title+"/"+strconv.Itoa(column.width))
+		}
+		return shape
+	}
+	if got, want := shape(must(topAllLayoutOf(topTableWidth+40, topAllGroupColumns(nil)))), shape(must(topAllLayout(topTableWidth+40))); !slices.Equal(got, want) {
+		t.Fatalf("no column groups must keep the old layout: %v, want %v", got, want)
+	}
+	model := topFixtureModel(nil).withLayout(topLayout{columns: detail})
+	model.width = 120
+	if header := ansi.Strip(model.tableHeader()[0]); strings.Index(header, "cpu") > strings.Index(header, "network") || strings.Contains(header, "disk") {
+		t.Fatalf("header %q must follow cpu,net+,mem", header)
+	}
+}
+
+func must(columns []topAllColumn, _ int) []topAllColumn { return columns }
+
+func TestTopResourcePanelsShowSummaryPeakAndTopProcesses(t *testing.T) {
+	model := topPanelModelAt(160, 70, []topPanel{topPanelCPU, topPanelMemory, topPanelDisk, topPanelPSI})
+	model.rows[len(model.rows)-1].processes[1].DiskValid, model.rows[len(model.rows)-1].processes[1].DiskRead = true, 5<<20
+	text := topViewText(model)
+	for _, want := range []string{
+		"cpu 09:00:29 · load 1.5 · usr 20.0% sys 5.0%", "cores .#.. · peak 60s usr+sys 25.0% at 09:00:00", "top alpha 90% · beta 80% · gamma 70%",
+		"mem 09:00:29 · 69.0% of 16.00 GB · swap out", "peak 60s 69.0% at 09:00:29", "top alpha 1.0M",
+		"disk 09:00:29 · read 83.0M/s write 3.81M/s · iops 120 · await 174.0ms · busy 30%", "peak 60s await 174.0ms at 09:00:29", "top i/o beta 5.00M/s · alpha —",
+		"psi 09:00:29 · some cpu 1.0 mem 29.0 io 3.0", "no process waits for I/O",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("resource panels lack %q:\n%s", want, text)
+		}
+	}
+	noIO := model.rows[len(model.rows)-1]
+	noIO.processes = []topProcess{{PID: 1, Command: "alpha", DiskStatus: "permission denied"}}
+	if got := topPanelDiskProcesses(noIO); got != "— no process I/O measured · permission denied" {
+		t.Fatalf("disk top line without I/O = %q", got)
+	}
+	// macOS는 PSI를 수집하지 않는다.
+	model.details.System, model.rows[len(model.rows)-1].rate.PSIValid = "darwin", false
+	if lines := model.resourcePanelLines(topPanelPSI); len(lines) != 1 || !strings.Contains(lines[0], "Linux only") {
+		t.Fatalf("macOS psi panel = %v", lines)
+	}
+}
+
+func TestTopDiskPanelReadsProcessIO(t *testing.T) {
+	var scanIO []bool
+	model := topFixtureModel(nil)
+	model.setScanIO = func(on bool) { scanIO = append(scanIO, on) }
+	model.syncScanIO()
+	model.withLayout(topLayout{panels: []topPanel{topPanelDisk}, panelsSet: true}).syncScanIO()
+	if !slices.Equal(scanIO, []bool{false, true}) {
+		t.Fatalf("scan I/O = %v, want the disk panel to turn it on", scanIO)
+	}
+}
+
+func TestTopAIColumnsShowRequestsPerRow(t *testing.T) {
+	groups, err := parseTopColumns("cpu,ai")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if all, _ := parseTopColumns("all"); all != nil || slices.ContainsFunc(topAllColumnGroups(), func(group topColumnGroup) bool { return group.name == topAIColumnGroup }) {
+		t.Fatal("all must not read the AI logs")
+	}
+	model := topSplitModelAt(160, 40, 3, false, nil)
+	model.view, model.split = topViewAll, nil
+	previous, at := model.rows[1].at, model.rows[2].at
+	source := &fakeTopAISource{usage: aiUsageSnapshot{Seconds: map[string]map[int64]aiUsage{
+		"claude": {at.Unix(): {Requests: 1, Input: 2300, Output: 410, Cache: 99_000}, previous.Unix(): {Requests: 2, Input: 10, Output: 5}},
+		"codex":  {},
+	}}}
+	opened := 0
+	model.openAI = func() (topAISource, error) {
+		opened++
+		return source, nil
+	}
+	model = model.withLayout(topLayout{columns: groups})
+	if !model.aiTokens || model.aiOn {
+		t.Fatalf("tokens %v, panel %v", model.aiTokens, model.aiOn)
+	}
+	if header := ansi.Strip(strings.Join(model.tableHeader(), "\n")); !strings.Contains(header, "cl req") || !strings.Contains(header, "cx out") {
+		t.Fatalf("header %q lacks the ai columns", header)
+	}
+	if row := ansi.Strip(model.tableRow(model.rows[2])); !strings.Contains(row, "—") {
+		t.Fatalf("tokens before the first scan must be —: %q", row)
+	}
+	updated, cmd := model.Update(topAIStartMsg{})
+	model = updated.(topModel)
+	if cmd == nil || opened != 1 || !model.aiScanning {
+		t.Fatalf("start: cmd %v, opened %d, scanning %v", cmd != nil, opened, model.aiScanning)
+	}
+	updated, next := model.Update(cmd())
+	model = updated.(topModel)
+	if source.scans != 1 || source.polls != 0 || next == nil {
+		t.Fatalf("scans %d, polls %d, next %v", source.scans, source.polls, next != nil)
+	}
+	// 행마다 직전 행 뒤부터 그 행까지의 초만 센다. cache는 열에 없다.
+	tokens := model.aiTokensBetween(previous, at)
+	if tokens.claude != (aiUsage{Requests: 1, Input: 2300, Output: 410, Cache: 99_000}) || tokens.codex != (aiUsage{}) {
+		t.Fatalf("tokens = %+v", tokens)
+	}
+	cells := func(row topDashboardRow) []string {
+		line := ansi.Strip(model.tableRow(row))
+		parts := strings.Split(line, "│")
+		return strings.Fields(parts[len(parts)-2])
+	}
+	if got := cells(model.rows[2]); !slices.Equal(got, []string{"1", "2.3K", "410", "·", "·", "·"}) {
+		t.Fatalf("row 09:00:02 ai cells = %v", got)
+	}
+	if got := cells(model.rows[1]); !slices.Equal(got, []string{"2", "10", "5", "·", "·", "·"}) {
+		t.Fatalf("row 09:00:01 ai cells = %v", got)
 	}
 }

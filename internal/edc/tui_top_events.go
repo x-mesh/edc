@@ -2,6 +2,7 @@ package edc
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -361,6 +362,9 @@ func (model topModel) recordEvents(row topDashboardRow) topModel {
 // eventsInFooter는 이벤트를 아래 영역에 둘 수 있는지다. 넓은 화면은 왼쪽 빈자리에, 좁은 화면은 process 목록 옆에 둔다.
 // 필터를 걸었거나 상세 패널이 왼쪽을 차지하거나 폭이 모자라면 진행 중인 이벤트만 한 줄로 알린다.
 func (model topModel) eventsInFooter() bool {
+	if model.customFooter() {
+		return slices.Contains(model.footerPanels(), topPanelEvents)
+	}
 	if model.processFilter.active() || model.view == topViewSplit {
 		return false
 	}

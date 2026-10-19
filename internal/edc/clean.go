@@ -1072,6 +1072,7 @@ type cleanReport struct {
 	filesystems      []cleanFilesystem
 	projectBuildDirs cleanProjectBuildDirs
 	docker           cleanDocker
+	dockerRoot       cleanDockerRoots
 	vmDisks          []cleanVMDisk
 	worktrees        cleanWorktrees
 }
@@ -1085,6 +1086,7 @@ func cleanCollect(ctx context.Context, deps cleanDeps, goos string, projects ...
 	report.projectBuildDirs = cleanProjectScan(ctx, deps, projects, items)
 	report.filesystems = cleanFilesystemsWith(items, report.projectBuildDirs.Items, deps.sources)
 	report.docker = cleanDockerScan(ctx, deps)
+	report.dockerRoot = cleanDockerRootScan(ctx, deps, goos, report.docker)
 	report.vmDisks = cleanVMScan(ctx, deps, goos)
 	report.worktrees = cleanWorktreeScan(ctx, deps)
 	cleanLinkWorktrees(&report.projectBuildDirs, &report.worktrees)
@@ -1124,7 +1126,7 @@ func cleanResult(result Result, report cleanReport, timeout time.Duration, ctxEr
 		result.Warnings = append(result.Warnings, T("clean.warning.stopped"))
 	}
 	result.Metrics = map[string]interface{}{"candidates": items, "filesystems": report.filesystems,
-		"project_build_dirs": report.projectBuildDirs, "docker": report.docker, "vm_disks": report.vmDisks,
+		"project_build_dirs": report.projectBuildDirs, "docker": report.docker, "docker_root": report.dockerRoot, "vm_disks": report.vmDisks,
 		"worktrees": report.worktrees, "not_measured": cleanNotMeasured}
 	return result
 }
@@ -1206,6 +1208,7 @@ func cleanPrint(stdout io.Writer, options commonOptions, result Result, color bo
 		filesystems, _ := result.Metrics["filesystems"].([]cleanFilesystem)
 		projects, _ := result.Metrics["project_build_dirs"].(cleanProjectBuildDirs)
 		docker, _ := result.Metrics["docker"].(cleanDocker)
+		dockerRoot, _ := result.Metrics["docker_root"].(cleanDockerRoots)
 		disks, _ := result.Metrics["vm_disks"].([]cleanVMDisk)
 		worktrees, _ := result.Metrics["worktrees"].(cleanWorktrees)
 		style := cleanStyle(color)
@@ -1216,6 +1219,7 @@ func cleanPrint(stdout io.Writer, options commonOptions, result Result, color bo
 		}
 		fmt.Fprint(output, formatCleanProject(projects, options.verbose, width, home, style))
 		fmt.Fprint(output, formatCleanDocker(docker, options.verbose, width, style))
+		fmt.Fprint(output, formatCleanDockerRoot(dockerRoot, options.verbose, width, style))
 		fmt.Fprint(output, formatCleanVMDisks(disks, docker.Inside, width, home, style))
 		fmt.Fprint(output, formatCleanWorktrees(worktrees, options.verbose, width, home, style))
 		fmt.Fprint(output, formatCleanNotMeasured(options.verbose, width, style))

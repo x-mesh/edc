@@ -28,6 +28,7 @@ type duBrowser struct {
 	job          *duScanJob
 	stopping     bool
 	noBrowse     bool
+	workers      int
 	spinnerFrame int
 	// quitAfterScan은 탐색 중에 Ctrl-C를 눌렀다는 뜻이다. 탐색이 멈추면 화면을 열지 않고 닫는다.
 	quitAfterScan bool
@@ -76,6 +77,7 @@ func duBrowse(ctx context.Context, cancel context.CancelFunc, options duOptions,
 	}()
 	model := newDuBrowser(options.root, options.progress, cancel, job, started, time.Now, true)
 	model.noBrowse = noBrowse
+	model.workers = options.workers
 	final, err := tea.NewProgram(model, tea.WithInput(os.Stdin), tea.WithOutput(os.Stdout)).Run()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -421,7 +423,7 @@ func (model duBrowser) progressLines() []string {
 	if model.stopping {
 		help = T("du.browse.stopping")
 	}
-	reading := T("du.browse.reading", model.root, model.progress.Load(), elapsed)
+	reading := T("du.browse.reading", model.root, model.progress.Load(), elapsed, model.workers)
 	if model.noBrowse {
 		reading = liveSpinnerFrames[model.spinnerFrame] + " " + reading
 		if !model.stopping {

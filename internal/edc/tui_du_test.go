@@ -206,7 +206,8 @@ func TestDuBrowserStopsTheScanAndOpensWhatItRead(t *testing.T) {
 	job := &duScanJob{finished: make(chan struct{})}
 	started := time.Date(2026, 10, 14, 9, 0, 0, 0, time.UTC)
 	model := newDuBrowser("/data", progress, func() { cancelled++ }, job, started, func() time.Time { return started.Add(3200 * time.Millisecond) }, false)
-	if view := model.View().Content; !strings.HasPrefix(view, "reading /data · 1234 directories · 3.2s\nq stops") {
+	model.workers = 4
+	if view := model.View().Content; !strings.HasPrefix(view, "reading /data · 1234 directories · 3.2s · workers 4\nq stops") {
 		t.Fatalf("view %q", view)
 	}
 	model = duBrowserPress(t, model, "q", "esc")

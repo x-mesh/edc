@@ -450,3 +450,140 @@ func TestCleanSystemScanLooksForBuildCachesOnlyUnderAHome(t *testing.T) {
 		t.Fatalf("empty home = %+v", got)
 	}
 }
+
+func cleanTestHomeWithCaches(t *testing.T, count int) string {
+	t.Helper()
+	home := t.TempDir()
+	modified := time.Date(2025, 9, 30, 12, 0, 0, 0, time.UTC)
+	for index := 0; index < count; index++ {
+		cleanTestOCILayout(t, filepath.Join(home, ".cache-dir", fmt.Sprintf("buildx-%02d", index)), 1000*(index+1), modified)
+	}
+	return home
+}
+
+func TestCleanSystemScanLimitsTheBuildCachesItLists(t *testing.T) {
+	home := cleanTestHomeWithCaches(t, cleanSystemLimit+2)
+	cleanTestUseProc(t, t.TempDir())
+	deps := cleanTestRootDeps(t)
+	deps.home = home
+	section := cleanSystemScan(context.Background(), deps, "linux", cleanTestSystemPaths(t))
+	if section.BuildCachesTotal != cleanSystemLimit+2 || len(section.BuildCaches) != cleanSystemLimit || section.BuildCachesMore != 2 || section.BuildCachesIncomplete {
+		t.Fatalf("total %d listed %d omitted %d incomplete %v", section.BuildCachesTotal, len(section.BuildCaches), section.BuildCachesMore, section.BuildCachesIncomplete)
+	}
+	var listed uint64
+	for index, cache := range section.BuildCaches {
+		listed += cache.Bytes
+		if index > 0 && cache.Bytes > section.BuildCaches[index-1].Bytes {
+			t.Fatalf("caches are not sorted by size: %+v", section.BuildCaches)
+		}
+	}
+	if section.BuildCachesBytes <= listed {
+		t.Fatalf("total %d does not include the omitted caches (listed %d)", section.BuildCachesBytes, listed)
+	}
+	text := formatCleanSystem(section, false, 0, home, cleanStyle(false))
+	for _, want := range []string{"buildx cache folders (OCI layout): 12", "2 more folders"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("output lacks %q:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "could exist") {
+		t.Errorf("a complete search was reported as incomplete:\n%s", text)
+	}
+}
+
+func TestCleanSystemScanFlagsABuildCacheSearchThatStoppedAtTheLimit(t *testing.T) {
+	home := cleanTestHomeWithCaches(t, 4)
+	for index := 0; index < 20; index++ {
+		if err := os.MkdirAll(filepath.Join(home, fmt.Sprintf("dir%02d", index), "sub"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	old := cleanBuildCacheExamined
+	cleanBuildCacheExamined = 10
+	t.Cleanup(func() { cleanBuildCacheExamined = old })
+	cleanTestUseProc(t, t.TempDir())
+	deps := cleanTestRootDeps(t)
+	deps.home = home
+	section := cleanSystemScan(context.Background(), deps, "linux", cleanTestSystemPaths(t))
+	if !section.BuildCachesIncomplete {
+		t.Fatalf("a search that stopped at the limit was reported as complete: %+v", section)
+	}
+	text := formatCleanSystem(section, false, 0, home, cleanStyle(false))
+	if section.BuildCachesTotal > 0 && !strings.Contains(text, "the search stopped before every folder was checked, so more build caches can exist") {
+		t.Errorf("output lacks the incomplete note:\n%s", text)
+	}
+}
+
+func TestCleanFindBuildCachesReadsAFolderWithManyEntries(t *testing.T) {
+	home := t.TempDir()
+	for index := 0; index < cleanBuildCacheChunk*2+7; index++ {
+		if err := os.Mkdir(filepath.Join(home, fmt.Sprintf("d%05d", index)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cleanTestOCILayout(t, filepath.Join(home, "z-last-cache"), 3000, time.Now())
+	deps := cleanTestRootDeps(t)
+	deps.home = home
+	caches, incomplete := cleanFindBuildCaches(context.Background(), deps)
+	if incomplete || len(caches) != 1 || filepath.Base(caches[0].Path) != "z-last-cache" {
+		t.Fatalf("caches %+v incomplete %v", caches, incomplete)
+	}
+}
+
+func TestCleanFindBuildCachesStopsOnACancelledContext(t *testing.T) {
+	home := cleanTestHomeWithCaches(t, 2)
+	deps := cleanTestRootDeps(t)
+	deps.home = home
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if caches, incomplete := cleanFindBuildCaches(ctx, deps); len(caches) != 0 || !incomplete {
+		t.Fatalf("caches %+v incomplete %v", caches, incomplete)
+	}
+}
+
+func TestCleanSystemScanOffersNoBuildCacheCommandWhenAStateIsUnknown(t *testing.T) {
+	home := cleanTestHomeWithCaches(t, 1)
+	deps := cleanTestRootDeps(t)
+	deps.home = home
+	run := func(t *testing.T) (cleanSystem, string) {
+		t.Helper()
+		section := cleanSystemScan(context.Background(), deps, "linux", cleanTestSystemPaths(t))
+		if len(section.BuildCaches) != 1 {
+			t.Fatalf("section = %+v", section)
+		}
+		return section, formatCleanSystem(section, true, 0, home, cleanStyle(false))
+	}
+	t.Run("/proc unreadable", func(t *testing.T) {
+		cleanTestUseProc(t, filepath.Join(t.TempDir(), "missing"))
+		section, text := run(t)
+		cache := section.BuildCaches[0]
+		if cache.OpenFiles != nil || cache.Cleanup != "" || strings.Contains(text, "rm -rf") || !strings.Contains(text, "open files unknown") {
+			t.Fatalf("cache %+v output:\n%s", cache, text)
+		}
+	})
+	t.Run("a process whose fd directory is unreadable", func(t *testing.T) {
+		if os.Geteuid() == 0 {
+			t.Skip("root reads every fd directory")
+		}
+		proc := cleanTestProc(t, map[string][]string{"9": nil})
+		fdDir := filepath.Join(proc, "9", "fd")
+		if err := os.Chmod(fdDir, 0); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(fdDir, 0o755) })
+		cleanTestUseProc(t, proc)
+		section, text := run(t)
+		cache := section.BuildCaches[0]
+		if cache.OpenFiles == nil || *cache.OpenFiles != 0 || cache.OpenFilesComplete || cache.Cleanup != "" ||
+			strings.Contains(text, "rm -rf") || !strings.Contains(text, "some processes could not be read") {
+			t.Fatalf("cache %+v output:\n%s", cache, text)
+		}
+	})
+	t.Run("every state known", func(t *testing.T) {
+		cleanTestUseProc(t, t.TempDir())
+		section, _ := run(t)
+		if section.BuildCaches[0].Cleanup == "" {
+			t.Fatal("no command although the cache is not in use")
+		}
+	})
+}

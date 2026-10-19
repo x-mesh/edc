@@ -860,7 +860,7 @@ Each entry in `system.snap_revisions` has the name, the revision, and the curren
 
 edc also finds the folders that `docker buildx build --cache-to type=local` writes. Such a folder is an OCI image layout. It has the files `oci-layout` and `index.json` and the folder `blobs`. edc checks the folders one and two levels below the home folder. It uses the structure and not the name, and it does not follow links. It stops after 50,000 folders.
 
-Each entry in `system.build_caches` has the size, the date of the newest file, and `open_files`. `docker buildx prune` does not remove these folders. With `-v`, the text output shows `rm -rf <path>`. The command is empty if a process holds a file open or if edc cannot read `/proc`.
+Each entry in `system.build_caches` has the size, the date of the newest file, and `open_files`. `docker buildx prune` does not remove these folders. With `-v`, the text output shows `rm -rf <path>`. The command is empty if a process holds a file open or if edc cannot read all of `/proc`. `build_caches_incomplete` is `true` if the search stopped at the limit or at the time limit, or if edc could not measure a folder. In this case, more caches can exist.
 
 edc shows the 10 largest entries of each list. `large_logs_omitted` and `build_caches_omitted` count the others.
 

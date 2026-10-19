@@ -812,7 +812,7 @@ edc는 파일을 지우지 않고, 판단에 도움이 되는 사실만 보여 �
 
 `docker buildx build --cache-to type=local`이 쓰는 폴더도 찾습니다. 이 폴더는 OCI 이미지 레이아웃이라 `oci-layout`, `index.json` 파일과 `blobs` 폴더가 있습니다. 홈 폴더 아래 1~2단계 폴더를 이름이 아니라 구조로 확인하고, 링크는 따라가지 않으며, 폴더 50,000개를 확인하면 멈춥니다.
 
-`system.build_caches`의 항목에는 크기, 가장 최근 파일의 날짜, `open_files`가 있습니다. `docker buildx prune`은 이 폴더를 지우지 않습니다. `-v`에서는 `rm -rf <경로>`를 텍스트로 보여 주고, 프로세스가 파일을 열고 있거나 `/proc`을 읽지 못하면 명령을 보여 주지 않습니다.
+`system.build_caches`의 항목에는 크기, 가장 최근 파일의 날짜, `open_files`가 있습니다. `docker buildx prune`은 이 폴더를 지우지 않습니다. `-v`에서는 `rm -rf <경로>`를 텍스트로 보여 주고, 프로세스가 파일을 열고 있거나 `/proc` 전체를 읽지 못하면 명령을 보여 주지 않습니다. 탐색이 상한이나 제한 시간에서 멈췄거나 재지 못한 폴더가 있으면 `build_caches_incomplete`가 `true`이고, 이때는 캐시가 더 있을 수 있습니다.
 
 각 목록은 큰 순서로 10개까지 보이고, 나머지는 `large_logs_omitted`와 `build_caches_omitted`로 셉니다.
 

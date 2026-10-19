@@ -199,6 +199,7 @@ clean:
     snaps_unknown: "%d snaps skipped: the current revision is unknown"
     build_caches: "buildx cache folders (OCI layout): %d, %s"
     build_caches_omitted: "%d more folders"
+    build_caches_incomplete: "the search stopped before every folder was checked, so more build caches can exist"
     build_caches_note: "docker buildx prune does not remove these folders"
   vm:
     title: "VM disks (user data, not added to any total)"

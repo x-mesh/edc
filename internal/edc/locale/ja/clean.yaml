@@ -199,6 +199,7 @@ clean:
     snaps_unknown: "現在のリビジョンが不明なため省略した snap %d 個"
     build_caches: "buildx キャッシュフォルダ (OCI レイアウト): %d 個、%s"
     build_caches_omitted: "ほかのフォルダ %d 個"
+    build_caches_incomplete: "すべてのフォルダを確認する前に探索が止まったため、ビルドキャッシュがほかにもある可能性があります"
     build_caches_note: "docker buildx prune はこのフォルダを削除しません"
   vm:
     title: "VM ディスク (ユーザーデータ、合計に含めません)"

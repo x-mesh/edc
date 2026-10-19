@@ -19,9 +19,12 @@ const (
 	cleanSystemLimit   = 10
 	// buildx 로컬 캐시는 홈 아래 이 깊이까지만 찾는다. ~/.devbox-cache/buildx-rust가 2단계다.
 	cleanBuildCacheDepth = 2
-	// 찾는 동안 열어 보는 폴더 수의 상한이다. 홈이 아주 크면 여기서 멈추고 찾은 만큼만 보인다.
-	cleanBuildCacheExamined = 50000
+	// 폴더 하나의 항목을 이만큼씩 읽는다. 항목이 아주 많은 폴더가 메모리를 한꺼번에 쓰지 않게 한다.
+	cleanBuildCacheChunk = 512
 )
+
+// 찾는 동안 열어 보는 폴더 수의 상한이다. 홈이 아주 크면 여기서 멈추고 찾은 만큼만 보인다. 시험이 줄여 쓴다.
+var cleanBuildCacheExamined = 50000
 
 // journald 설정은 systemd의 규칙을 따른다. 주 설정 파일은 /etc에 있으면 그것을, 없으면 /usr/lib의 것을 읽는다. drop-in은 높은
 // 우선순위 디렉터리부터 /etc, /run, /usr/lib 순이고, 같은 이름은 높은 디렉터리의 파일만 남는다. 남은 파일을 이름 순으로 적용하며
@@ -66,6 +69,8 @@ type cleanSystem struct {
 	BuildCachesTotal int                 `json:"build_caches_total,omitempty"`
 	BuildCachesBytes uint64              `json:"build_caches_bytes,omitempty"`
 	BuildCachesMore  int                 `json:"build_caches_omitted,omitempty"`
+	// BuildCachesIncomplete가 true이면 탐색이 상한이나 취소로 멈췄거나 재지 못한 폴더가 있어 다른 캐시가 더 있을 수 있다.
+	BuildCachesIncomplete bool `json:"build_caches_incomplete,omitempty"`
 }
 
 // cleanBuildCache는 docker buildx build --cache-to type=local이 쓴 OCI 레이아웃 폴더다.
@@ -74,9 +79,10 @@ type cleanBuildCache struct {
 	Bytes         uint64     `json:"bytes"`
 	NewestWrite   *time.Time `json:"newest_write,omitempty"`
 	NewestPartial bool       `json:"newest_partial,omitempty"`
-	// OpenFiles가 nil이면 /proc을 읽지 못한 것이다.
-	OpenFiles *int   `json:"open_files,omitempty"`
-	Cleanup   string `json:"cleanup,omitempty"`
+	// OpenFiles가 nil이면 /proc을 읽지 못한 것이다. OpenFilesComplete가 false이면 읽지 못한 process가 있어 실제 수는 더 많을 수 있다.
+	OpenFiles         *int   `json:"open_files,omitempty"`
+	OpenFilesComplete bool   `json:"open_files_complete"`
+	Cleanup           string `json:"cleanup,omitempty"`
 }
 
 type cleanLargeLog struct {
@@ -222,7 +228,8 @@ func cleanSystemScan(ctx context.Context, deps cleanDeps, goos string, paths cle
 		}
 		section.Snaps = append(section.Snaps, snap)
 	}
-	caches := cleanFindBuildCaches(ctx, deps)
+	caches, incomplete := cleanFindBuildCaches(ctx, deps)
+	section.BuildCachesIncomplete = incomplete
 	section.BuildCachesTotal = len(caches)
 	for index, cache := range caches {
 		section.BuildCachesBytes += cache.Bytes
@@ -463,39 +470,51 @@ func cleanOpenCounts(ctx context.Context, procDir string, logs []cleanLargeLog) 
 
 // cleanFindBuildCaches는 홈 아래에서 OCI 이미지 레이아웃 폴더를 찾아 크기가 큰 순서로 돌려준다. 이름이 아니라 구조로 찾으므로
 // 도구나 폴더 이름과 상관없이 buildx의 로컬 캐시 내보내기를 잡는다. 심볼릭 링크는 따라가지 않는다.
-func cleanFindBuildCaches(ctx context.Context, deps cleanDeps) []cleanBuildCache {
+func cleanFindBuildCaches(ctx context.Context, deps cleanDeps) (caches []cleanBuildCache, incomplete bool) {
 	if deps.home == "" || deps.measure == nil {
-		return nil
+		return nil, false
 	}
 	var paths []string
 	examined := 0
 	var visit func(dir string, depth int)
 	visit = func(dir string, depth int) {
-		entries, err := os.ReadDir(dir)
+		handle, err := os.Open(dir)
 		if err != nil {
 			return
 		}
-		for _, entry := range entries {
-			if ctx.Err() != nil || examined >= cleanBuildCacheExamined {
+		defer handle.Close()
+		for {
+			entries, err := handle.ReadDir(cleanBuildCacheChunk)
+			for _, entry := range entries {
+				if ctx.Err() != nil || examined >= cleanBuildCacheExamined {
+					incomplete = true
+					return
+				}
+				if !entry.IsDir() || entry.Name() == ".git" || entry.Name() == "node_modules" {
+					continue
+				}
+				examined++
+				path := filepath.Join(dir, entry.Name())
+				if cleanIsOCILayout(path) {
+					paths = append(paths, path)
+				} else if depth < cleanBuildCacheDepth {
+					visit(path, depth+1)
+					if incomplete {
+						return
+					}
+				}
+			}
+			if err != nil {
 				return
-			}
-			if !entry.IsDir() || entry.Name() == ".git" || entry.Name() == "node_modules" {
-				continue
-			}
-			examined++
-			path := filepath.Join(dir, entry.Name())
-			if cleanIsOCILayout(path) {
-				paths = append(paths, path)
-			} else if depth < cleanBuildCacheDepth {
-				visit(path, depth+1)
 			}
 		}
 	}
 	visit(deps.home, 1)
-	var caches []cleanBuildCache
 	for _, path := range paths {
 		scan, err := deps.measure(ctx, duOptions{root: path, workers: duDefaultWorkers}, deps.sources)
 		if err != nil {
+			// 재지 못한 캐시는 목록에서 빠지므로 결과가 완전하지 않다.
+			incomplete = true
 			continue
 		}
 		caches = append(caches, cleanBuildCache{Path: path, Bytes: scan.root.total})
@@ -506,7 +525,7 @@ func cleanFindBuildCaches(ctx context.Context, deps cleanDeps) []cleanBuildCache
 		}
 		return caches[i].Path < caches[j].Path
 	})
-	return caches
+	return caches, incomplete
 }
 
 // cleanIsOCILayout은 OCI 이미지 레이아웃의 세 구성 요소가 모두 있는지 본다.
@@ -530,12 +549,13 @@ func cleanDescribeBuildCaches(ctx context.Context, caches []cleanBuildCache) {
 			cache.NewestWrite = &utc
 		}
 		cache.NewestPartial = partial
-		count, _, readable := cleanOpenUnder(ctx, cleanProcDir, cache.Path)
+		count, complete, readable := cleanOpenUnder(ctx, cleanProcDir, cache.Path)
 		if !readable {
 			continue
 		}
-		cache.OpenFiles = &count
-		if count == 0 {
+		cache.OpenFiles, cache.OpenFilesComplete = &count, complete
+		// /proc을 모두 읽어 열린 파일이 없다고 확인한 경우에만 명령을 둔다. 읽지 못한 process가 있으면 쓰는 중일 수 있다.
+		if count == 0 && complete {
 			cache.Cleanup = "rm -rf " + cleanShellQuote(cache.Path)
 		}
 	}
@@ -645,6 +665,9 @@ func formatCleanSystem(section cleanSystem, verbose bool, width int, home string
 		if section.BuildCachesMore > 0 {
 			line("    ", style.dim(T("clean.system.build_caches_omitted", section.BuildCachesMore)))
 		}
+		if section.BuildCachesIncomplete {
+			line("  ", style.warn(T("clean.system.build_caches_incomplete")))
+		}
 		line("  ", style.dim(T("clean.system.build_caches_note")))
 	}
 	builder.WriteString(style.close())
@@ -691,6 +714,8 @@ func cleanBuildCacheDetails(cache cleanBuildCache) []string {
 		details = append(details, T("clean.system.open_unknown"))
 	case *cache.OpenFiles > 0:
 		details = append(details, T("clean.system.open_some", *cache.OpenFiles))
+	case !cache.OpenFilesComplete:
+		details = append(details, T("clean.system.open_unreadable"))
 	default:
 		details = append(details, T("clean.system.open_none"))
 	}

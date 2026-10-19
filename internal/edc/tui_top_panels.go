@@ -282,15 +282,14 @@ var topColumnGroupNames = []struct{ name, group string }{
 // topAIColumnGroup은 ai 열 그룹의 이름이다.
 const topAIColumnGroup = "ai"
 
-// topAIColumns는 직전 행부터 이 행까지 Claude와 Codex에 들어온 요청 수와 새 입력, 출력 token이다. cache 읽기는
-// 대화가 길수록 요청마다 커져 활동량을 가리므로 넣지 않는다. 폭이 모자라면 요청 수만 남는다.
+// topAIColumns는 직전 행부터 이 행까지 Claude와 Codex에 들어온 요청 수와 token이다. token은 edc ai의 total과 같은
+// in + out이고, cache 읽기는 대화가 길수록 요청마다 커져 활동량을 가리므로 넣지 않는다. 한 행에서 궁금한 것은 요청이
+// 있었는지와 그 크기라서 in과 out을 나누지 않는다.
 var topAIColumns = []topAllColumn{
 	{group: topAIColumnGroup, title: "cl req", width: 6, tokens: func(tokens topAITokens) string { return topAITokenCell(tokens, tokens.claude.Requests) }},
-	{group: topAIColumnGroup, title: "cl in", width: 6, tier: 5, tokens: func(tokens topAITokens) string { return topAITokenCell(tokens, tokens.claude.Input) }},
-	{group: topAIColumnGroup, title: "cl out", width: 6, tier: 5, tokens: func(tokens topAITokens) string { return topAITokenCell(tokens, tokens.claude.Output) }},
+	{group: topAIColumnGroup, title: "cl tok", width: 6, tokens: func(tokens topAITokens) string { return topAITokenCell(tokens, tokens.claude.total()) }},
 	{group: topAIColumnGroup, title: "cx req", width: 6, tokens: func(tokens topAITokens) string { return topAITokenCell(tokens, tokens.codex.Requests) }},
-	{group: topAIColumnGroup, title: "cx in", width: 6, tier: 5, tokens: func(tokens topAITokens) string { return topAITokenCell(tokens, tokens.codex.Input) }},
-	{group: topAIColumnGroup, title: "cx out", width: 6, tier: 5, tokens: func(tokens topAITokens) string { return topAITokenCell(tokens, tokens.codex.Output) }},
+	{group: topAIColumnGroup, title: "cx tok", width: 6, tokens: func(tokens topAITokens) string { return topAITokenCell(tokens, tokens.codex.total()) }},
 }
 
 // topAITokenCell은 0을 ·로 쓴다. 대부분의 행이 0이라 요청이 들어온 행이 눈에 띄어야 한다.

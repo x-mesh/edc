@@ -475,7 +475,7 @@ func TestTopAIColumnsShowRequestsPerRow(t *testing.T) {
 	if !model.aiTokens || model.aiOn {
 		t.Fatalf("tokens %v, panel %v", model.aiTokens, model.aiOn)
 	}
-	if header := ansi.Strip(strings.Join(model.tableHeader(), "\n")); !strings.Contains(header, "cl req") || !strings.Contains(header, "cx out") {
+	if header := ansi.Strip(strings.Join(model.tableHeader(), "\n")); !strings.Contains(header, "cl req") || !strings.Contains(header, "cx tok") {
 		t.Fatalf("header %q lacks the ai columns", header)
 	}
 	if row := ansi.Strip(model.tableRow(model.rows[2])); !strings.Contains(row, "—") {
@@ -501,10 +501,11 @@ func TestTopAIColumnsShowRequestsPerRow(t *testing.T) {
 		parts := strings.Split(line, "│")
 		return strings.Fields(parts[len(parts)-2])
 	}
-	if got := cells(model.rows[2]); !slices.Equal(got, []string{"1", "2.3K", "410", "·", "·", "·"}) {
+	// tok은 in + out이다. 2300 + 410 = 2710이다.
+	if got := cells(model.rows[2]); !slices.Equal(got, []string{"1", "2.7K", "·", "·"}) {
 		t.Fatalf("row 09:00:02 ai cells = %v", got)
 	}
-	if got := cells(model.rows[1]); !slices.Equal(got, []string{"2", "10", "5", "·", "·", "·"}) {
+	if got := cells(model.rows[1]); !slices.Equal(got, []string{"2", "15", "·", "·"}) {
 		t.Fatalf("row 09:00:01 ai cells = %v", got)
 	}
 }

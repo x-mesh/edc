@@ -222,7 +222,7 @@ var commandDocs = []commandDoc{
 	},
 	{
 		name: "top", group: "observe",
-		usage: []string{"edc top [--interval 1s] [--count N] [--json <path|->]", "edc top --process <filter> [--full] [-d] [--interval 1s] [--json <path|->]"},
+		usage: []string{"edc top [--interval 1s] [--count N] [--json <path|->]", "edc top --process <filter> [--full] [-d] [--interval 1s] [--json <path|->]", "edc top setup"},
 		options: []optionDoc{
 			{"--interval 1s", "command.top.option.interval"},
 			{"-w, --write [path]", "command.top.option.write"},
@@ -231,6 +231,9 @@ var commandDocs = []commandDoc{
 			{"--process <filter>", "command.top.option.process"},
 			{"--full", "command.top.option.full"},
 			{"--split [list]", "command.top.option.split"},
+			{"--view <name>", "command.top.option.view"},
+			{"--panels <list>", "command.top.option.panels"},
+			{"--columns <list>", "command.top.option.columns"},
 			{"--interface <list>", "command.top.option.interface"},
 			{"-d, --detail", "command.top.option.detail"},
 			{"--ebpf", "command.top.option.ebpf"},

@@ -10,6 +10,19 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
+const logHistoryRefresh = 2 * time.Second
+
+type logHistoryLoader func() ([]logHistoryGroup, []string, error)
+
+type logHistoryTickMsg struct{ seq int }
+
+type logHistoryLoadedMsg struct {
+	seq     int
+	groups  []logHistoryGroup
+	notices []string
+	err     error
+}
+
 type logHistoryBrowser struct {
 	groups                           []logHistoryGroup
 	options                          logHistoryOptions
@@ -18,6 +31,9 @@ type logHistoryBrowser struct {
 	detail, expanded, color          bool
 	now                              time.Time
 	list, history                    viewport.Model
+	load                             logHistoryLoader
+	seq                              int
+	paused                           bool
 }
 
 func newLogHistoryBrowser(groups []logHistoryGroup, options logHistoryOptions, notices []string) logHistoryBrowser {
@@ -28,7 +44,68 @@ func newLogHistoryBrowser(groups []logHistoryGroup, options logHistoryOptions, n
 
 func (model logHistoryBrowser) contentWidth() int { return max(1, min(model.width, 88)) }
 
-func (model logHistoryBrowser) Init() tea.Cmd { return nil }
+func (model logHistoryBrowser) Init() tea.Cmd {
+	if model.load == nil {
+		return nil
+	}
+	return model.tick()
+}
+
+func (model logHistoryBrowser) tick() tea.Cmd {
+	seq := model.seq
+	return tea.Tick(logHistoryRefresh, func(time.Time) tea.Msg { return logHistoryTickMsg{seq: seq} })
+}
+
+func (model logHistoryBrowser) reload() tea.Cmd {
+	seq, load := model.seq, model.load
+	return func() tea.Msg {
+		groups, notices, err := load()
+		return logHistoryLoadedMsg{seq: seq, groups: groups, notices: notices, err: err}
+	}
+}
+
+// apply는 고른 명령과 실행을 순서가 아니라 키와 시작 시각으로 다시 찾는다. 갱신하면 커서 위에 명령이 끼어들고,
+// 회전하면 실행이 든 파일 이름이 바뀐다.
+func (model *logHistoryBrowser) apply(msg logHistoryLoadedMsg) {
+	model.now = time.Now()
+	if msg.err != nil {
+		model.notices = []string{msg.err.Error()}
+		model.resize()
+		return
+	}
+	var key string
+	var run *logHistoryAttempt
+	if len(model.groups) > 0 {
+		key = model.groups[model.cursor].Key
+		if rows := model.rows(); len(rows) > 0 {
+			run = &rows[model.rowCursor]
+		}
+	}
+	model.groups, model.notices = msg.groups, msg.notices
+	model.cursor = min(model.cursor, max(0, len(model.groups)-1))
+	found := false
+	for index, group := range model.groups {
+		if group.Key == key {
+			model.cursor, found = index, true
+			break
+		}
+	}
+	if !found {
+		model.detail, model.expanded, model.rowCursor = false, false, 0
+	} else if run != nil {
+		kept := false
+		for index, row := range model.rows() {
+			if row.Started.Equal(run.Started) && row.Path == run.Path {
+				model.rowCursor, kept = index, true
+				break
+			}
+		}
+		if !kept {
+			model.expanded = false
+		}
+	}
+	model.resize()
+}
 
 func (model *logHistoryBrowser) resize() {
 	model.list.SetWidth(model.contentWidth())
@@ -114,10 +191,33 @@ func (model logHistoryBrowser) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		model.width, model.height = value.Width, value.Height
 		model.resize()
 		return model, nil
+	case logHistoryTickMsg:
+		if value.seq != model.seq || model.paused {
+			return model, nil
+		}
+		return model, model.reload()
+	case logHistoryLoadedMsg:
+		if value.seq != model.seq {
+			return model, nil
+		}
+		model.apply(value)
+		return model, model.tick()
 	case tea.KeyPressMsg:
 		switch value.String() {
 		case "q", "ctrl+c":
 			return model, tea.Quit
+		case "r", "p":
+			if model.load == nil {
+				break
+			}
+			model.seq++
+			if value.String() == "p" {
+				model.paused = !model.paused
+				if model.paused {
+					return model, nil
+				}
+			}
+			return model, model.reload()
 		case "esc", "b":
 			if model.expanded {
 				model.expanded = false
@@ -202,9 +302,9 @@ func (model logHistoryBrowser) View() tea.View {
 		lines = []string{T("cli.log_history.small"), T("cli.log_history.quit_help")}
 	} else if model.detail {
 		group := model.groups[model.cursor]
-		title := historyCommand(group.Representative) + " · " + T("cli.log_history.run_count", len(model.rows()))
+		title := historyCommand(group.Representative) + " · " + T("cli.log_history.run_count", len(model.rows())) + model.liveState()
 		if model.color {
-			title = richPaint(historyCommand(group.Representative), richCyan, true) + richDim(" · "+T("cli.log_history.run_count", len(model.rows())))
+			title = richPaint(historyCommand(group.Representative), richCyan, true) + richDim(" · "+T("cli.log_history.run_count", len(model.rows()))+model.liveState())
 		}
 		lines = []string{title, ""}
 		if !model.expanded {
@@ -215,18 +315,18 @@ func (model logHistoryBrowser) View() tea.View {
 			lines = append(lines, model.summary()...)
 			lines = append(lines, "")
 		}
-		lines = append(lines, liveKeyHints(T("cli.log_history.detail_help"), model.color))
+		lines = append(lines, model.keyHints("cli.log_history.detail_help"))
 		if model.expanded {
-			lines[len(lines)-1] = liveKeyHints(T("cli.log_history.expanded_help"), model.color)
+			lines[len(lines)-1] = model.keyHints("cli.log_history.expanded_help")
 		}
 	} else {
-		lines = []string{historyStrong(T("cli.log_history.browser_title", len(model.groups)), richMagenta, model.color), "", historyTint(historyKeyHeader(model.contentWidth(), model.groups), richGray, model.color)}
+		lines = []string{historyStrong(T("cli.log_history.browser_title", len(model.groups)), richMagenta, model.color) + historyTint(model.liveState(), richGray, model.color), "", historyTint(historyKeyHeader(model.contentWidth(), model.groups), richGray, model.color)}
 		if len(model.groups) > 0 {
 			lines = append(lines, strings.TrimRight(model.list.View(), "\n"))
 		} else {
 			lines = append(lines, T("cli.log_history.no_match"))
 		}
-		lines = append(lines, "", liveKeyHints(T("cli.log_history.list_help"), model.color))
+		lines = append(lines, "", model.keyHints("cli.log_history.list_help"))
 	}
 	if len(model.notices) > 0 {
 		lines = append(lines, historyTint(model.notices[0], richYellow, model.color))
@@ -246,7 +346,32 @@ func (model logHistoryBrowser) View() tea.View {
 	return view
 }
 
-func runLogHistoryBrowser(input, output *os.File, groups []logHistoryGroup, options logHistoryOptions, notices []string) error {
-	_, err := tea.NewProgram(newLogHistoryBrowser(groups, options, notices), tea.WithInput(input), tea.WithOutput(output)).Run()
+func (model logHistoryBrowser) liveState() string {
+	switch {
+	case model.load == nil:
+		return ""
+	case model.paused:
+		return " · " + T("cli.log_history.paused")
+	default:
+		return " · " + T("cli.log_history.live")
+	}
+}
+
+// keyHints는 화면별 키 안내 뒤에 갱신 키를 붙이고, 멈춘 동안 p를 켜진 항목으로 칠한다.
+func (model logHistoryBrowser) keyHints(key string) string {
+	if model.load == nil {
+		return liveKeyHints(T(key), model.color)
+	}
+	var on []string
+	if model.paused {
+		on = append(on, "p")
+	}
+	return liveKeyHints(T(key)+T("cli.log_history.live_help"), model.color, on...)
+}
+
+func runLogHistoryBrowser(input, output *os.File, groups []logHistoryGroup, options logHistoryOptions, notices []string, load logHistoryLoader) error {
+	model := newLogHistoryBrowser(groups, options, notices)
+	model.load = load
+	_, err := tea.NewProgram(model, tea.WithInput(input), tea.WithOutput(output)).Run()
 	return err
 }

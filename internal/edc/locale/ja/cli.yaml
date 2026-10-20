@@ -45,10 +45,15 @@ cli:
     summary_pass: "成功 %d"
     summary_fail: "失敗 %d"
     summary_unknown: "不明 %d"
+    summary_running: "実行中 %d"
     summary_avg: "成功平均 %s"
     contexts_note: "作業ディレクトリ %d個 · Enter 実行詳細"
     expanded_help: "↑↓ スクロール   Esc 戻る   q 終了"
     more_notices: "他に%d件の通知; ターミナル出力参照"
+    running_now: "実行中"
+    live: "ライブ"
+    paused: "一時停止"
+    live_help: " · r 再読み込み · p 一時停止"
     column:
       command: "コマンド"
       last: "最終実行"
@@ -85,6 +90,9 @@ cli:
     detail_help: "↑/↓ スクロール · Esc/b キー一覧 · q 終了"
     list_help: "↑/↓ 選択 · Enter 実行履歴 · q 終了"
     notice_count: "通知 %d件:"
+    follow_start: "▶ 開始"
+    follow_ready: "新しい実行を監視中 · Ctrl-C で終了"
+    follow_summary: "開始 %d · 終了 %d · 失敗 %d · %s"
     snapshot_note: "保存されたログ基準 · 件数は検索範囲全体"
     option:
       command: "コマンド名の引数別キー一覧"
@@ -93,6 +101,8 @@ cli:
       key: "完全なキーまたは一意の先頭 (12桁以上 hex)"
       limit: "キー別の最近の実行数 (1-1000、既定20)"
       failed: "確認済みの失敗のみ"
+      follow: "実行の開始と終了を順に出力"
+      json: "--follow の JSONL 出力先 (- は stdout)"
     outcome:
       success: "成功"
       fail: "失敗"
@@ -100,6 +110,7 @@ cli:
       signal: "シグナル終了"
       error: "エラー"
       unknown: "完了不明"
+      running: "実行中"
   log:
     stream_value: "--stream は stdout、stderr、both のいずれかです"
     output_required: "--output が必要です"

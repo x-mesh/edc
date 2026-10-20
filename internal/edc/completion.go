@@ -250,7 +250,7 @@ _edc() {
           if [[ $words[2] == history ]]; then
             local -a words=("${words[@]:1}")
             local CURRENT=$((CURRENT-1))
-            _arguments -S -A "-*" '--dir[로그 디렉터리]:directory:_directories' '--file[로그 파일]:path:_files' '--key[명령 키]:key' '--command[명령별 키 목록]:command:_command_names -e' '--limit[최근 실행 수]:count' '--failed[실패만 조회]' '*:command:_command_names -e'
+            _arguments -S -A "-*" '--dir[로그 디렉터리]:directory:_directories' '--file[로그 파일]:path:_files' '--key[명령 키]:key' '--command[명령별 키 목록]:command:_command_names -e' '--limit[최근 실행 수]:count' '--failed[실패만 조회]' '--follow[시작·종료 이벤트 출력]' '--json[--follow JSONL 출력 경로]:path:_files' '*:command:_command_names -e'
             return
           fi
           if (( CURRENT == 2 )); then compadd history; fi
@@ -410,18 +410,18 @@ _edc() {
       if [[ ${COMP_WORDS[2]} == history ]]; then
         for ((index=3; index<COMP_CWORD; index++)); do
           case "${COMP_WORDS[index]}" in
-            --dir|--file|--key|--limit|--command|-dir|-file|-key|-limit|-command) ((index++)) ;;
+            --dir|--file|--key|--limit|--command|--json|-dir|-file|-key|-limit|-command|-json) ((index++)) ;;
             --) COMPREPLY=(); if [[ $index -eq $((COMP_CWORD-1)) ]]; then COMPREPLY=($(compgen -c -- "$cur")); fi; return ;;
             -|[!-]*) COMPREPLY=($(compgen -f -- "$cur")); return ;;
           esac
         done
         case "$prev" in
-          --dir|--file) COMPREPLY=($(compgen -f -- "$cur")); return ;;
+          --dir|--file|--json) COMPREPLY=($(compgen -f -- "$cur")); return ;;
           --key|--limit) COMPREPLY=(); return ;;
           --command) COMPREPLY=($(compgen -c -- "$cur")); return ;;
         esac
         if [[ $cur == -* ]]; then
-          COMPREPLY=($(compgen -W "--dir --file --key --command --limit --failed --" -- "$cur"))
+          COMPREPLY=($(compgen -W "--dir --file --key --command --limit --failed --follow --json --" -- "$cur"))
         else
           COMPREPLY=($(compgen -c -- "$cur"))
         fi

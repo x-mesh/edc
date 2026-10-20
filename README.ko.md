@@ -2702,11 +2702,17 @@ edc log history --failed ls -l /tmp
 edc log history --key <key>
 edc log history --file /tmp/job.log
 edc log history --dir /path/to/logs
+edc log history --follow
+edc log history --follow --json - --command make
 ```
 
 `history ls`는 인자 없는 `ls`의 이력을 바로 출력합니다. `history ls -l /tmp`는 정확히 같은 argv의 이력을 조회합니다. `history --command ls`는 `ls`의 인자 조합별 키 목록을 보여 줍니다. 첫 명령 토큰 전까지 history 옵션을 해석하고, 이후 `--failed`나 `--`를 포함한 모든 토큰은 argv로 보존합니다. 명령 앞의 선택적 `--`는 옵션 해석만 끝내며 조회 의미를 바꾸지 않습니다. `--command`, `--key`, 직접 argv 조회는 함께 지정할 수 없습니다. 조회는 명령을 다시 실행하지 않습니다. 인자 순서와 경계를 보존하므로 `echo "a b"`와 `echo a b`는 다른 키입니다. 동일 argv를 다른 디렉터리에서 실행한 경우 키는 같지만 통계는 작업 디렉터리별로 구분합니다.
 
 실행별 시작 시각, 소요 시간, 성공·실패·시간 초과·시그널 종료·오류·완료 불명, exit code와 재시도 번호를 표시합니다. 기본 최근 20건이며 `--limit 1`부터 `--limit 1000`까지 지정할 수 있습니다. 실행 소요 시간에는 출력 배출과 프로세스 정리가 포함됩니다. 요약은 표시한 실행 기준이며 성공한 실행만 평균·최소·최대 시간에 포함합니다. 종료 기록이 없는 항목은 실패로 단정하지 않으며 `--failed`에서도 제외합니다.
+
+이력 화면은 2초마다 로그를 다시 읽습니다. r은 즉시 갱신하고 p는 갱신을 멈추거나 다시 시작합니다. 로그 잠금을 잡고 있는 실행은 실행 중과 경과 시간으로 표시하며 실패로 세지 않습니다.
+
+`--follow`는 실행이 시작할 때와 끝날 때 한 줄씩 출력합니다. 시작하면 지금 실행 중인 항목부터 출력합니다. `--command`, `--key`, argv, `--failed`, `--dir`, `--file` 조건을 그대로 적용하고 `--limit`는 무시합니다. `--json <path|->`는 `start`, `end`, `error`, `summary` 이벤트를 JSONL로 기록합니다. 텍스트 모드의 상태 줄은 stderr로 출력합니다. Ctrl-C로 끝냅니다.
 
 기본 로그 디렉터리와 하위 한 단계의 `.log` 파일, 설정한 `defaults.log.output`을 조회하며 회전 조각도 함께 읽습니다. 임의 위치에 저장한 로그는 `--file` 또는 `--dir`로 지정합니다. 조회는 최대 1,000개 파일 묶음, 10,000개 디렉터리 항목, 128 MiB, 10,000개 실행 시도로 제한합니다. 한도 초과·읽는 동안 변경·손상된 기록은 안내와 함께 부분 결과를 반환하고 exit code `2`를 돌려줍니다. 과거 실패가 있어도 정상적인 조회는 `0`입니다.
 

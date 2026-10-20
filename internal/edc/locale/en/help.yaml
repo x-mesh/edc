@@ -487,6 +487,8 @@ command:
       - "Enter opens runs, then details. Esc goes back; q quits."
       - "history <command> [args...] matches argv; --command lists keys."
       - "Use --failed for failures and --limit for recent attempts."
+      - "The viewer refreshes every 2s. r refreshes now and p pauses."
+      - "--follow prints one line when each run starts and ends."
       - "Piped history prints keys without waiting for input."
       - "No setup is required. stdout and stderr go to a separate file for each run."
       - "An explicit shared output file serializes commands with a stable lock file."

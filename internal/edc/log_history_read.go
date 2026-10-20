@@ -33,6 +33,7 @@ const (
 	historyOutcomeSignal  logHistoryOutcome = "SIGNAL"
 	historyOutcomeError   logHistoryOutcome = "ERROR"
 	historyOutcomeUnknown logHistoryOutcome = "UNKNOWN"
+	historyOutcomeRunning logHistoryOutcome = "RUNNING"
 )
 
 type logHistoryAttempt struct {
@@ -44,10 +45,11 @@ type logHistoryAttempt struct {
 	Exit                                 *int
 	Attempt, Ordinal                     int
 	damaged, processSeen, startErrorSeen bool
+	open                                 bool
 }
 
 func (row logHistoryAttempt) failed() bool {
-	return row.Outcome != historyOutcomeSuccess && row.Outcome != historyOutcomeUnknown
+	return row.Outcome != historyOutcomeSuccess && row.Outcome != historyOutcomeUnknown && row.Outcome != historyOutcomeRunning
 }
 
 type logHistorySnapshot struct {
@@ -486,7 +488,11 @@ func readHistoryFamily(path string, parts []historyPart) ([]logHistoryAttempt, b
 	if parser.tail != "" && !appended {
 		parser.line(parser.tail)
 	}
+	open := parser.current != nil && parser.current.Outcome == "" && !parser.current.damaged
 	parser.finish()
+	if open {
+		parser.rows[len(parser.rows)-1].open = true
+	}
 	return parser.rows, parser.invalid, nil
 }
 
@@ -562,7 +568,18 @@ func historyPaths(root string) ([]string, error) {
 	return paths, err
 }
 
-func collectLogHistory(paths []string) logHistorySnapshot {
+// logHistoryCache keeps parsed families between refreshes. An entry holds the
+// parts as they were before reading, so a family that grew while it was read is
+// read again on the next refresh instead of keeping its dropped tail line.
+type logHistoryCache map[string]logHistoryCacheEntry
+
+type logHistoryCacheEntry struct {
+	parts   []historyPart
+	rows    []logHistoryAttempt
+	invalid bool
+}
+
+func collectLogHistory(paths []string, cache logHistoryCache) logHistorySnapshot {
 	snapshot := logHistorySnapshot{}
 	unique := map[string]bool{}
 	var ordered []string
@@ -579,6 +596,7 @@ func collectLogHistory(paths []string) logHistorySnapshot {
 	}
 	sort.Sort(sort.Reverse(sort.StringSlice(ordered)))
 	budget := int64(historyByteLimit)
+	visited := map[string]bool{}
 	for index, path := range ordered {
 		if index >= historyFamilyLimit {
 			snapshot.issue(path, "limit_error")
@@ -606,22 +624,39 @@ func collectLogHistory(paths []string) logHistorySnapshot {
 			break
 		}
 		budget -= size
-		rows, invalid, err := readHistoryFamily(path, parts)
-		if err != nil {
-			if errors.Is(err, errHistoryScanLimit) {
-				snapshot.issue(path, "limit_error")
-				break
+		entry, cached := cache[path]
+		if appended, ok := compareHistoryFamily(entry.parts, parts); !cached || appended || !ok {
+			rows, invalid, err := readHistoryFamily(path, parts)
+			if err != nil {
+				if errors.Is(err, errHistoryScanLimit) {
+					snapshot.issue(path, "limit_error")
+					break
+				}
+				snapshot.issue(path, "read_error")
+				continue
 			}
-			snapshot.issue(path, "read_error")
-			continue
+			entry = logHistoryCacheEntry{parts: parts, rows: rows, invalid: invalid}
 		}
+		if cache != nil {
+			cache[path] = entry
+			visited[path] = true
+		}
+		rows, invalid := entry.rows, entry.invalid
 		if len(snapshot.Rows)+len(rows) > historyAttemptLimit {
 			snapshot.issue(path, "limit_error")
 			break
 		}
 		snapshot.Rows = append(snapshot.Rows, rows...)
+		if last := len(snapshot.Rows) - 1; len(rows) > 0 && snapshot.Rows[last].open && logFileLocked(path+".lock") {
+			snapshot.Rows[last].Outcome = historyOutcomeRunning
+		}
 		if invalid {
 			snapshot.issue(path, "invalid_log")
+		}
+	}
+	for path := range cache {
+		if !visited[path] {
+			delete(cache, path)
 		}
 	}
 	sort.SliceStable(snapshot.Rows, func(i, j int) bool {
@@ -668,6 +703,9 @@ func historyTime(at time.Time) string {
 }
 
 func historyDuration(row logHistoryAttempt) string {
+	if row.Outcome == historyOutcomeRunning {
+		return fmt.Sprint(time.Since(row.Started).Truncate(time.Second))
+	}
 	if row.Ended.IsZero() || row.damaged {
 		return "—"
 	}

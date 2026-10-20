@@ -242,7 +242,7 @@ var commandDocs = []commandDoc{
 	},
 	{
 		name: "history", group: "record",
-		usage: []string{"edc history list [options] [DB]", "edc history top [options] [DB]", "edc history process [options] [DB]", "edc history export --run <id> [--output <file|->] [DB]", "edc history trend --metric <name> [--probe <id>] [--by day] [DB]", "edc history growth [--root <path>] [--from <RFC3339>] [DB]", "edc history prune --older-than <age> [options] [DB]", "edc history log [edc log history options]"},
+		usage: []string{"edc history list [options] [DB]", "edc history top [options] [DB]", "edc history process [options] [DB]", "edc history export --run <id> [--output <file|->] [DB]", "edc history trend --metric <name> [--probe <id> | --process <filter>] [DB]", "edc history growth [--root <path> | --process <filter>] [DB]", "edc history prune --older-than <age> [options] [DB]", "edc history log [edc log history options]"},
 		options: []optionDoc{
 			{"--run <id>", "history.option.run"},
 			{"--from <RFC3339>", "history.option.from"},
@@ -251,6 +251,7 @@ var commandDocs = []commandDoc{
 			{"--metric <name>", "history.option.metric"},
 			{"--probe <id>", "history.option.probe"},
 			{"--by day", "history.option.by"},
+			{"--each", "history.option.each"},
 			{"--root <path>", "history.option.root"},
 			{"--min <number>", "history.option.min"},
 			{"--max <number>", "history.option.max"},
@@ -278,7 +279,9 @@ var commandDocs = []commandDoc{
 			"edc history top --metric memory_pct --min 90",
 			"edc history process --process nginx",
 			"edc history trend --probe info.disk:/ --metric used_bytes",
+			"edc history trend --process postgres --metric rss_bytes",
 			"edc history growth --root /var",
+			"edc history growth --process postgres",
 			"edc history prune --older-than 90d --dry-run",
 		},
 	},

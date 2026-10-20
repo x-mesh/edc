@@ -70,14 +70,18 @@ func historyDistinct(db *sql.DB, query string, args ...any) ([]string, error) {
 	return names, rows.Err()
 }
 
-// promptHistoryTrend는 빠진 --probe와 --metric을 고르게 한다. --probe를 주었으면 지표만 묻는다.
+// promptHistoryTrend는 빠진 --probe와 --metric을 고르게 한다. --probe를 주었으면 지표만 묻는다. top 기록을 고르면
+// 호스트 전체인지 기록된 프로세스인지 묻고, --process를 주었으면 프로세스 지표만 묻는다.
 func promptHistoryTrend(db *sql.DB, options *historyTrendOptions, args []string) bool {
 	file, ok := historyCanPrompt()
 	if !ok {
 		return false
 	}
+	var chosen []string
 	source := options.probe
-	if source == "" {
+	if options.process.active() {
+		source = historyTopSource
+	} else if source == "" {
 		sources, err := historyTrendSources(db)
 		if err != nil || len(sources) == 0 {
 			return false
@@ -85,9 +89,22 @@ func promptHistoryTrend(db *sql.DB, options *historyTrendOptions, args []string)
 		if source, err = runSelect(file, os.Stdout, newSelectModel("history.prompt.source_title", "history.prompt.source_label", sources)); err != nil {
 			return false
 		}
+		if source == historyTopSource {
+			process, ok := promptHistoryProcess(db, file)
+			if !ok {
+				return false
+			}
+			if process != "" {
+				options.process, _ = parseTopProcessFilter(process)
+				chosen = append(chosen, "--process", process)
+			}
+		}
 	}
-	keys, err := historyTrendKeys(db, source)
-	if err != nil || len(keys) == 0 {
+	var keys []string
+	var err error
+	if options.process.active() {
+		keys = historyProcessMetricNames()
+	} else if keys, err = historyTrendKeys(db, source); err != nil || len(keys) == 0 {
 		return false
 	}
 	items := make([]selectItem, 0, len(keys))
@@ -98,7 +115,6 @@ func promptHistoryTrend(db *sql.DB, options *historyTrendOptions, args []string)
 	if err != nil {
 		return false
 	}
-	var chosen []string
 	if source != historyTopSource {
 		options.probe = source
 		if !historyHasFlag(args, "probe") {
@@ -109,6 +125,23 @@ func promptHistoryTrend(db *sql.DB, options *historyTrendOptions, args []string)
 	chosen = append(chosen, "--metric", metric)
 	promptEcho(os.Stdout, historyEchoCommand("trend", chosen, args))
 	return true
+}
+
+// promptHistoryProcess는 호스트 전체와 기록된 프로세스 가운데 하나를 고르게 한다. 호스트 전체면 빈 문자열이다.
+func promptHistoryProcess(db *sql.DB, file *os.File) (string, bool) {
+	names, err := historyProcessNames(db)
+	if err != nil {
+		return "", false
+	}
+	if len(names) == 0 {
+		return "", true
+	}
+	items := []selectItem{{label: T("history.prompt.host_target"), value: ""}}
+	for _, name := range names {
+		items = append(items, selectItem{label: T("history.prompt.process_item", historyTerminalText(name.Name), name.Samples), value: name.Name})
+	}
+	process, err := runSelect(file, os.Stdout, newSelectModel("history.prompt.target_title", "history.prompt.target_label", items))
+	return process, err == nil
 }
 
 // historyExportRuns는 내보낼 수 있는 스냅샷 실행이다. 최근 것부터 historyExportRunLimit개다.

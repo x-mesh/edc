@@ -1006,18 +1006,18 @@ The demo shows one pass and one threshold failure for each command.
 
 ## Incident snapshot
 
-`edc snapshot` saves the state of this host as one edc report. Take one snapshot before a change or an incident, and one after. Then compare the two with `edc report diff`.
+`edc snapshot` saves the state of this host in the local history database by default. Add `--output <file>` to also save a JSON report. Take one snapshot before a change or an incident, and one after. Then compare the two with `edc report diff`.
 
-The command reads only. It writes its output file and changes nothing else on the host. It sends nothing over the network, so it does not look up the public IP.
+The command collects diagnostic data and writes it to the history database and any requested output file. It sends nothing over the network, so it does not look up the public IP.
 
 ```bash
-edc snapshot                              # ./edc-snapshot-<host>-<UTC time>.json
+edc snapshot                              # default history database, no JSON file
 sudo edc snapshot --output before.json    # root reads all audit and event sources
 sudo edc snapshot --output after.json
 sudo edc snapshot --du /var --output after.json   # also edc du of /var (Linux and macOS)
 sudo edc snapshot -w --du /var --du /home         # record in the history database, no file
 sudo edc report diff before.json after.json
-edc snapshot --since 2h --output -        # only the report JSON to stdout
+edc snapshot --no-write --since 2h --output -  # JSON to stdout without DB recording
 ```
 
 The report holds these results.
@@ -1043,13 +1043,13 @@ On macOS, `audit`, `events`, `changes`, and `info.pressure` show `skip`. Without
 
 The file has mode 0600 because it holds account names, sudo rules, and process names. edc does not replace a file that is already at the output path, and it does not follow a symlink there. This refusal returns exit code `2`. Add `--force` to replace the file. edc then writes a new 0600 file and moves it onto the path.
 
-`--redact` hides the host name, the home path, and IP addresses only. It also removes the host name from the default file name. Account names, sudo rules, and process names stay in the report.
+`--redact` hides the host name, the home path, and IP addresses only. Account names, sudo rules, and process names stay in the report.
 
-After the file write, edc prints the path, the result counts, and a `report diff` hint. The exit code is `1` if a result is `fail`, and `0` otherwise. Usage errors and write errors return `2`.
+After saving, edc prints the database or file path, collected sections and their statuses, and commands to browse the saved data. The exit code is `1` if a result is `fail`, and `0` otherwise. Usage errors and write errors return `2`.
 
 ### Record snapshots in the history database
 
-`--write [path]` (`-w [path]`) records the snapshot in the SQLite database of [Top recordings and history](#top-recordings-and-history). With no path, edc uses the default database. With `--write` alone, edc writes no file. Add `--output` to write a file too.
+Snapshots are recorded by default in the SQLite database of [Top recordings and history](#top-recordings-and-history). `--write [path]` (`-w [path]`) remains supported and selects a different database when a path is supplied. Add `--output` to also create JSON. Use `--no-write --output <file|->` for JSON only; `--no-write` requires `--output` and cannot be combined with `-w` or `--write`. Records stay until deleted; preview retention cleanup with `edc history prune --older-than 90d --dry-run`.
 
 ```bash
 sudo edc snapshot -w --du /var                              # one record in the default database
@@ -1390,7 +1390,7 @@ Each line has `time`, `hostname`, `cores`, the network and disk rates in bytes p
 
 ## Top recordings and history
 
-`--write [path]` (`-w [path]`) appends observations to a local SQLite database. The dashboard stays open; `--count`, pipes, and `--json` retain their output behavior. Recording also allows `--process` in table mode. With no path, `-w` uses `~/.local/state/edc/history.db` on Linux or `~/Library/Application Support/edc/history.db` on macOS. An absolute `XDG_STATE_HOME` overrides the default on both platforms: `$XDG_STATE_HOME/edc/history.db`. The default directory is created with mode 0700. With no `-w` or `--write`, top does not save observations.
+`--write [path]` (`-w [path]`) appends observations to a local SQLite database. The dashboard stays open; `--count`, pipes, and `--json` retain their output behavior. Recording also allows `--process` in table mode. With no path, `-w` uses `~/.local/state/edc/history.db` on Linux or `~/Library/Application Support/edc/history.db` on macOS. An absolute `XDG_STATE_HOME` overrides the default on both platforms: `$XDG_STATE_HOME/edc/history.db`. The default directory is created with mode 0700. Without `-w` or `--write`, top starts without recording. In the dashboard, press `w` to start or stop recording. It records only full sample windows after recording starts. Each restart creates a new run in the same database; `p` pauses recording along with collection. `REC` and the saved sample count show recording status.
 
 ```bash
 ./bin/edc top -w
@@ -1414,6 +1414,8 @@ Each line has `time`, `hostname`, `cores`, the network and disk rates in bytes p
 ./bin/edc history prune --older-than 90d --command snapshot --yes --vacuum
 ```
 
+`edc history top` and `edc history process` open interactive browsers in a terminal. Use ↑↓ to select an observation, Enter for full details, Home to follow the newest observation, and `p` to pause refresh. The host table adds disk, network, swap and other supported metrics as width allows, with a selected observation panel on wide screens. Redirected top output remains a table with disk/network/swap columns; `--json` keeps JSONL output. The process browser shows PID, CPU, RSS and command, adding MEM, disk I/O, threads and FDs when space and recorded data allow. Its details include the process start time and available limits. Existing `--process`, `--run`, time range and metric filters apply to the browser too.
+
 Each invocation adds a separate run with host information, edc version, collection settings, start/end times, status, and sample count. `unfinished` means the run has no recorded end, which can indicate an active run or a forced termination. Normal exits flush queued samples; recording errors end observation with exit code `1`. Forced termination preserves committed transactions. A new database has mode 0600. Nothing is deleted automatically; `history prune` deletes old runs.
 
 Host samples include the existing numeric top metrics, per-core CPU values, support flags, the actual observation interval, and the process filter active at that time. Without a process filter, recording retains the union of the CPU top five and `MEM` top five (at most ten). With a filter, it retains up to fifty processes and the total of all matches. It does not record every process. Pausing top pauses recording, and resuming establishes a fresh baseline before the next recorded rate. Process refreshes may be less frequent than host samples; `process_observed_at` identifies the refresh time. PID and precise process start time distinguish reused PIDs when start time is available.
@@ -1426,11 +1428,15 @@ Host samples include the existing numeric top metrics, per-core CPU values, supp
 
 `trend --process <filter>` uses the process samples of the top records. The filter follows the rules of `top --process`. `--metric` is a process field: `cpu_pct`, `rss_bytes`, `threads`, `fds`, `disk_read_bytes_per_s`, or `disk_write_bytes_per_s`. For each sample, edc adds the values of all matching processes, so a service with many workers shows as one total. `--each` shows one row for each process, identified by PID and start time. `SEEN` is the percentage of samples with process data that contain a match. `PROCS` is the number of different processes in the period. `RESTARTS` counts the new processes that replaced a matching process that stopped, also when the stop and the start are in different samples. A new process without a stopped one is not a restart. A process sampled without a filter can drop out of the top list, so `RESTARTS` shows `-` for a period with such samples. If some samples come from a run without `--process`, edc prints a notice on stderr. Record with `top -w --process <filter>` to get every sample.
 
+In a terminal, `history growth` opens a browser with ↑↓ selection, Enter details, automatic refresh, `r` refresh and `p` pause. It shows disks, recorded du roots and changed directories; `--process` shows process RSS growth. Wider screens add columns and a detail panel. Pipes and `--json` retain their text and JSONL output.
+
 `growth` reads the snapshots of the last 7 days, or of `--from` and `--to`. For each mount, it shows the used and total size of the last snapshot and the change per day, a least-squares slope of `used_bytes`. If the use grows, it estimates the time until the mount is full at that rate. This is an estimate from a straight line, not a forecast. With fewer than 3 snapshots, or with less than 1 hour between the first and the last, edc does not estimate. For each `--du` path, `growth` compares the first and the last complete scan of the range with the rules of `report diff` and shows up to 10 directories with the largest change, with the change per day when the range is 1 day or more. A line above them shows the total size of the path in both scans, which also counts the files directly under the path. `--root <path>` shows only the directories of that path. `--json` writes one line for each mount and each path.
 
 `growth --process <filter>` reads the top records instead of the snapshots. For each matching process, it shows the last RSS and the change per day, a least-squares slope of `rss_bytes`. edc marks a possible leak if all of these are true: the process has at least 12 samples over at least 6 hours, the RSS grows by at least 10% of the first value, and the fit of the line (R²) is at least 0.7. A possible leak is a reason to look, not a diagnosis. A cache that fills slowly can show the same pattern. The table shows up to 20 processes, possible leaks first. `--json` writes one line for each process. `--process` and `--root` cannot be used together.
 
-`prune --older-than <age>` deletes the runs whose last activity is older than the age, with their samples and snapshot rows, in one transaction. The last activity is the latest of the start, the end, and the last sample, so a `top -w` that started long ago and still records stays. The age accepts Go durations and the units `d` and `w`, such as `90d`. `--command top` or `--command snapshot` limits the runs. edc shows the runs and samples first and deletes only after `y` in a terminal; without a terminal it needs `--yes` or `--dry-run`. `--dry-run` only counts and does not change the file. Deleted rows leave free pages in the file, which new records reuse; edc says how much. `--vacuum` rewrites the file to give the space back. It needs free disk space about the size of the database, and other writers wait while it runs. prune does not create a missing database.
+In a terminal, `history prune` previews runs idle for 90 days when no age is given. Use `--older-than` to choose another age. The browser shows the current age filter, last activity, host and observation counts. Press `t` to choose 1h, 1d, 7d, 30d, 90d, 180d, 365d, or enter a custom duration such as `12h` or `2w`. Changing the age reloads the candidate list; deletion rechecks the selected age. Space toggles a run, `a` toggles all, Enter inspects details, and `d` followed by `y` confirms deletion of checked runs. `q` cancels. `--dry-run` opens a preview with deletion disabled; `--yes` keeps command output and requires an explicit age. Immediately before deletion, edc rechecks the chosen runs inside the deletion transaction and skips runs with recent activity.
+
+`prune --older-than <age>` deletes the runs whose last activity is older than the age, with their samples and snapshot rows, in one transaction. The last activity is the latest of the start, the end, and the last sample, so a `top -w` that started long ago and still records stays. The age accepts Go durations and the units `d` and `w`, such as `90d`. `--command top` or `--command snapshot` limits the runs. edc shows the runs and samples first and deletes only after confirmation in a terminal; without a terminal it needs `--yes` or `--dry-run`. `--dry-run` only counts and does not change the file. Deleted rows leave free pages in the file, which new records reuse; edc says how much. `--vacuum` rewrites the file to give the space back. It needs free disk space about the size of the database, and other writers wait while it runs. prune does not create a missing database.
 
 The database uses WAL so you can query while recording. Keep it on a local filesystem. External SQLite tools can inspect `runs`, `top_samples`, and `top_process_samples`; numeric fields are columns and `payload` retains JSON details, including cgroup/eBPF data. Snapshot records use `snapshot_results`, `snapshot_metrics`, and `du_dirs`. `history` opens existing databases for reading and does not create or migrate them; only `prune` without `--dry-run` writes. Unrelated databases and unsupported schema versions are rejected.
 

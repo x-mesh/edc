@@ -222,3 +222,52 @@ func TestLogHistoryDurationBaselineMarksSlowRuns(t *testing.T) {
 		t.Fatal("slow running command not marked in the key list")
 	}
 }
+
+func TestLogHistoryWideResourceColumns(t *testing.T) {
+	restore := currentLanguage()
+	defer setLanguage(restore)
+	row := logHistoryAttempt{
+		Started: time.Now().Add(-time.Second), Ended: time.Now(), Duration: time.Second,
+		Outcome:   historyOutcomeSuccess,
+		Resources: &logHistoryResources{CPU: 2500 * time.Millisecond, MaxRSS: 1024 * 1024, DiskRead: 1024, DiskWrite: 2048, cpu: true, disk: true},
+	}
+	for _, language := range []string{"en", "ko", "ja"} {
+		setLanguage(language)
+		for _, width := range []int{84, 88, 93, 94, 103, 104, 115, 116, 160} {
+			header := historyRunHeader(width)
+			line := historyRunRow(row, width, false, false, historyRatios{duration: 2.5})
+			if liveWidth(header) != liveWidth(line) || liveWidth(line) > width {
+				t.Fatalf("misaligned columns at %s/%d: %q / %q", language, width, header, line)
+			}
+			if strings.Contains(line, "2.5×") != (width >= 94) || strings.Contains(line, "250%") != (width >= 104) {
+				t.Fatalf("unexpected ratio or CPU average at width %d: %q", width, line)
+			}
+			if width >= 116 {
+				if strings.Contains(header, T("cli.log_history.column.disk")) || !strings.Contains(header, T("cli.log_history.column.read")) || !strings.Contains(header, T("cli.log_history.column.write")) {
+					t.Fatalf("disk columns were not split: %q", header)
+				}
+				if !strings.Contains(line, formatSizeShort(1024)) || !strings.Contains(line, formatSizeShort(2048)) {
+					t.Fatalf("read/write values missing: %q", line)
+				}
+			}
+		}
+	}
+	for _, unavailable := range []logHistoryAttempt{
+		{Outcome: historyOutcomeRunning, Resources: row.Resources},
+		{Outcome: historyOutcomeUnknown},
+		{Ended: row.Ended, Duration: 0, Resources: row.Resources},
+		{Ended: row.Ended, Duration: time.Second, Resources: row.Resources, damaged: true},
+	} {
+		if line := historyRunRow(unavailable, 116, false, false, historyRatios{}); strings.Contains(line, "%") || strings.Contains(line, "×") {
+			t.Fatalf("unavailable measurements shown as values: %q", line)
+		}
+	}
+	zero := row
+	zero.Resources = &logHistoryResources{disk: true}
+	measured := historyRunRow(zero, 116, false, false, historyRatios{})
+	zero.Resources = nil
+	missing := historyRunRow(zero, 116, false, false, historyRatios{})
+	if strings.Count(measured, formatSizeShort(0)) != 2 || strings.Contains(missing, formatSizeShort(0)) {
+		t.Fatalf("zero I/O confused with missing measurements: %q / %q", measured, missing)
+	}
+}

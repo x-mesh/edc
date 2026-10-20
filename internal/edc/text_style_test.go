@@ -173,7 +173,7 @@ func TestWatchHelpColorMatchesTheCommandHelp(t *testing.T) {
 		}
 		width := optionFlagWidth(options)
 		for _, option := range options {
-			if !strings.Contains(text, richPanelLine(richPaint(padRight(option.flag, width), richCyan, true), "")) {
+			if !strings.Contains(text, richPanelLine(helpSyntax(padRight(option.flag, width), true), "")) {
 				t.Fatalf("%s help misses the bold cyan %q:\n%s", mode, option.flag, text)
 			}
 		}

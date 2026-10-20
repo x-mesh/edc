@@ -1,5 +1,6 @@
 # 日本語メッセージ。欠けたキーは en.yaml に落ちる。
 help:
+  notes_label: "補足"
   tagline: "everyday carry for SE/SRE"
   usage_label: "使い方"
   usage: "edc <command> [options] [target]"
@@ -148,6 +149,7 @@ command:
       write: "SQLite に追記、path 省略時は既定 DB"
       json: "sample ごとに 1 行の JSON、stdout は -"
     notes:
+      - "wでDB記録を開始・停止します。再開すると新しい実行になり、pで記録も一時停止します。"
       - "terminal ではダッシュボードを開きます。q 終了、p 一時停止、+/- interval。"
       - "--count か --json を渡すか、terminal でないか、NO_COLOR なら表で出力します。"
       - "--process では process 表示で開きます。1 で host、f で戻ります。"
@@ -446,15 +448,19 @@ command:
   snapshot:
     summary: "report diff で比べる host の状態を 1 つの report に保存"
     option:
+      no_write: "DBに記録せずJSONのみ保存。--output必須、--writeとの併用不可"
       output: "report ファイル、- は stdout"
       since: "events と changes が見る期間 (既定 6h)"
       force: "既存の出力ファイルを置き換える"
       du: "このパスの edc du の結果も保存、複数回指定できます"
-      write: "history DB にも記録、値なしは既定の DB"
+      write: "history DBのパス (既定で記録)。パス省略時は既定DB"
     notes:
+      - "snapshotを表示: edc report show <file.json> (端末では対話ビューアー)。"
+      - "snapshotと診断JSONレポートの一覧: edc report list [directory]。"
+      - "既定ではJSONファイルを作らずhistory DBに記録します。--outputはJSONも保存し、--no-write --output <file|->はJSONのみ保存します。"
       - "info、listen、audit、events、changes の結果を 1 つの report に保存します。"
       - "ファイルの権限は 0600 です。アカウント、sudo 規則、process 名を含みます。"
-      - "既定のファイルは ./edc-snapshot-<host>-<UTC 時刻>.json です。"
+      - "JSONファイルは--output指定時のみ作成します。以前のDB snapshotはedc history exportで書き出します。"
       - "既存のファイルは置き換えません。置き換えるには --force を付けます。"
       - "2 つの snapshot の比較: edc report diff before.json after.json"
       - "macOS では info.pressure、audit、events、changes が skip です。"
@@ -558,7 +564,7 @@ command:
   history:
     summary: "保存した resource 観測履歴を検索"
     sub:
-      list: "top -w と snapshot -w の記録"
+      list: "top -w と snapshot の記録"
       export: "記録したスナップショットを報告に"
       trend: "期間ごとの件数・最小・平均・p95・最大"
       growth: "ディスクの日次増加と変化したディレクトリ"

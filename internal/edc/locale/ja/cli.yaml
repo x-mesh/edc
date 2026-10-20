@@ -38,6 +38,7 @@ cli:
     host_failed: "system の情報を読めませんでした: %v"
     public_failed: "public network の取得に失敗しました: %v"
   log_history:
+    selected_run: "選択した実行"
     trend: "最近14日 %s  実行 %d · %s"
     stats_unavailable: "日別の概要を読めません(%s)。"
     index_unavailable: "履歴インデックスを使えないため(%s)、ログファイルを直接読みます。"
@@ -61,6 +62,10 @@ cli:
     paused: "一時停止"
     live_help: " · r 再読み込み · p 一時停止"
     column:
+      usual: "通常比"
+      cpu_average: "CPU平均"
+      read: "読取"
+      write: "書込"
       command: "コマンド"
       last: "最終実行"
       runs: "実行"
@@ -115,7 +120,7 @@ cli:
       dir: "ログディレクトリ (一階層下まで)"
       file: "ログファイルとローテーション履歴"
       key: "完全なキーまたは一意の先頭 (12桁以上 hex)"
-      limit: "キー別の最近の実行数 (1-1000、既定20)"
+      limit: "キー別の最近の実行数 (1-1000、既定20。端末では画面の高さに合わせて増加)"
       failed: "確認済みの失敗のみ"
       follow: "実行の開始と終了を順に出力"
       json: "--follow の JSONL 出力先 (- は stdout)"
@@ -411,7 +416,7 @@ cli:
     lock_unavailable: "trace lock: %s lock の待ちは数えていません: %s"
     lock_map_full: "trace lock: BPF map が一杯になり、待ち %d 件が集計から抜けました。--process か --container で絞ってください"
   report:
-    description: "report は edc 診断コマンドが --json で保存した結果を読みます。\n一般 JSON、report diff の出力、edc log のテキストログは非対応です。"
+    description: "reportはsnapshotのJSONファイルとedc診断コマンドが--jsonで保存したレポートを読みます。\n一般JSON、report diffの結果、edc logテキストログは未対応です。"
     command_show: "show  — 保存した edc 診断結果を表示"
     command_diff: "diff  — 保存した edc 診断結果を二つ比較"
     command_list: "list  — 保存した edc 診断結果の一覧"

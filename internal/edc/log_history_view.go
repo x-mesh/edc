@@ -145,7 +145,7 @@ func historyKeyRowColumns(group logHistoryGroup, columns historyKeyColumns, sele
 // historyRunColumns are the run list widths. Resource columns appear as the
 // width allows: memory first, then CPU time and disk bytes, which need the
 // start time and duration columns trimmed to their content.
-type historyRunColumns struct{ time, duration, memory, cpu, disk int }
+type historyRunColumns struct{ time, duration, usual, memory, cpu, cpuAverage, disk, read, write int }
 
 func historyRunWidths(width int) historyRunColumns {
 	columns := historyRunColumns{time: 24}
@@ -159,6 +159,15 @@ func historyRunWidths(width int) historyRunColumns {
 	case width >= 72:
 		columns.memory = 9
 	}
+	if width >= 94 {
+		columns.usual = 8
+	}
+	if width >= 104 {
+		columns.cpuAverage = 8
+	}
+	if width >= 116 {
+		columns.disk, columns.read, columns.write = 0, 9, 9
+	}
 	return columns
 }
 
@@ -171,7 +180,7 @@ func historyRunHeader(width int) string {
 	for _, column := range []struct {
 		key   string
 		width int
-	}{{"memory", columns.memory}, {"cpu", columns.cpu}, {"disk", columns.disk}} {
+	}{{"usual", columns.usual}, {"memory", columns.memory}, {"cpu", columns.cpu}, {"cpu_average", columns.cpuAverage}, {"disk", columns.disk}, {"read", columns.read}, {"write", columns.write}} {
 		if column.width > 0 {
 			cells = append(cells, historyCell(T("cli.log_history.column."+column.key), column.width, true))
 		}
@@ -236,6 +245,13 @@ func historyRunRow(row logHistoryAttempt, width int, selected, color bool, basel
 		resources = &logHistoryResources{}
 	}
 	cells := []string{historyTint(historyCell(at, columns.time, false), richGray, color), resource(historyDuration(row), columns.duration, baseline.duration)}
+	if columns.usual > 0 {
+		text := ""
+		if baseline.duration > 0 {
+			text = strconv.FormatFloat(baseline.duration, 'f', 1, 64) + "×"
+		}
+		cells = append(cells, resource(text, columns.usual, baseline.duration))
+	}
 	if columns.memory > 0 {
 		text := ""
 		if resources.memory() > 0 {
@@ -250,12 +266,31 @@ func historyRunRow(row logHistoryAttempt, width int, selected, color bool, basel
 		}
 		cells = append(cells, resource(text, columns.cpu, baseline.cpu))
 	}
+	if columns.cpuAverage > 0 {
+		text := ""
+		if resources.cpu && !row.Ended.IsZero() && !row.damaged && row.Duration > 0 {
+			text = strconv.FormatFloat(float64(resources.CPU)/float64(row.Duration)*100, 'f', 0, 64) + "%"
+		}
+		cells = append(cells, resource(text, columns.cpuAverage, 0))
+	}
 	if columns.disk > 0 {
 		text := ""
 		if resources.disk {
 			text = formatSizeShort(resources.DiskRead + resources.DiskWrite)
 		}
 		cells = append(cells, resource(text, columns.disk, 0))
+	}
+	for _, column := range []struct {
+		width int
+		bytes uint64
+	}{{columns.read, resources.DiskRead}, {columns.write, resources.DiskWrite}} {
+		if column.width > 0 {
+			text := ""
+			if resources.disk {
+				text = formatSizeShort(column.bytes)
+			}
+			cells = append(cells, resource(text, column.width, 0))
+		}
 	}
 	cells = append(cells, outcome, historyTint(historyCell(exit, 4, true), richGray, color))
 	if selected {

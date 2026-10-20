@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"flag"
 	"os"
 	"path/filepath"
 	"strings"
@@ -499,5 +500,155 @@ func TestCheckSnapshotPath(t *testing.T) {
 	}
 	if err := checkSnapshotPath(existing, false); !errors.Is(err, errSnapshotExists) {
 		t.Errorf("existing file err = %v, want errSnapshotExists", err)
+	}
+}
+
+func TestSnapshotOutputHintsExplainFilesAndDatabase(t *testing.T) {
+	restore := currentLanguage()
+	defer setLanguage(restore)
+	directory := filepath.Join(t.TempDir(), "saved reports")
+	path := filepath.Join(directory, "snapshot's state.json")
+	database := filepath.Join(directory, "history.db")
+	for _, language := range []string{"en", "ko", "ja"} {
+		setLanguage(language)
+		for _, color := range []bool{false, true} {
+			fileHints := strings.Join(snapshotOutputHints(textStyle{color: color}, path, "", "run-1"), "\n")
+			for _, command := range []string{
+				"edc report show " + quoteLocalShellWord(path),
+				"edc report list " + quoteLocalShellWord(directory),
+				"edc report diff <before> " + quoteLocalShellWord(path),
+			} {
+				if !strings.Contains(fileHints, command) {
+					t.Fatalf("missing usable command %q: %q", command, fileHints)
+				}
+			}
+			if !strings.Contains(fileHints, T("snapshot.file_only_hint")) || strings.Contains(fileHints, "edc history list") {
+				t.Fatalf("file-only snapshot confused with DB recording: %q", fileHints)
+			}
+			dbHints := strings.Join(snapshotOutputHints(textStyle{color: color}, "", database, "run-1"), "\n")
+			if !strings.Contains(dbHints, "edc history list "+quoteLocalShellWord(database)) || !strings.Contains(dbHints, "edc history export --run run-1 --output <file> "+quoteLocalShellWord(database)) || strings.Contains(dbHints, "edc report show") {
+				t.Fatalf("DB commands lost the custom database path: %q", dbHints)
+			}
+			combined := strings.Join(snapshotOutputHints(textStyle{color: color}, path, database, "run-1"), "\n")
+			if !strings.Contains(combined, "edc report show") || !strings.Contains(combined, "edc history list") || strings.Contains(combined, T("snapshot.file_only_hint")) {
+				t.Fatalf("file+DB guidance is incomplete: %q", combined)
+			}
+		}
+	}
+}
+
+func TestSnapshotAndHistoryHelpIncludeDefaultDatabase(t *testing.T) {
+	path, err := defaultHistoryPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"snapshot", "history"} {
+		var help strings.Builder
+		if !printCommandHelp(&help, name) || !strings.Contains(help.String(), path) || !strings.Contains(help.String(), "edc report list") || !strings.Contains(help.String(), "edc report show") {
+			t.Fatalf("%s help does not explain file browsing or database location: %s", name, help.String())
+		}
+	}
+}
+
+func TestSnapshotContentSummaryUsesCollectedResults(t *testing.T) {
+	restore := currentLanguage()
+	defer setLanguage(restore)
+	results := []Result{
+		{Probe: "info.host", Status: StatusPass},
+		{Probe: "info.memory", Status: StatusWarn},
+		{Probe: "info.disk:/", Status: StatusPass},
+		{Probe: "info.disk:/data", Status: StatusWarn},
+		{Probe: "info.pressure", Status: StatusSkip},
+		{Probe: "audit", Status: StatusSkip},
+		{Probe: "changes.packages", Status: StatusFail},
+		{Probe: "changes.etc", Status: StatusSkip},
+	}
+	for _, language := range []string{"en", "ko", "ja"} {
+		setLanguage(language)
+		for _, color := range []bool{false, true} {
+			lines := snapshotContentLines(results, color)
+			if len(lines) != 7 {
+				t.Fatalf("summary should show only the six collected sections: %q", lines)
+			}
+			for _, check := range []struct {
+				line int
+				key  string
+				want []string
+			}{{1, "host", []string{"1 pass"}}, {2, "memory", []string{"1 warn"}}, {3, "disk", []string{"1 pass", "1 warn"}}, {4, "pressure", []string{"1 skip"}}, {5, "audit", []string{"1 skip"}}, {6, "changes", []string{"1 fail", "1 skip"}}} {
+				if !strings.Contains(lines[check.line], T("snapshot.contents."+check.key)) {
+					t.Fatalf("missing section description: %q", lines[check.line])
+				}
+				for _, count := range check.want {
+					if !strings.Contains(lines[check.line], count) {
+						t.Fatalf("wrong collection status: %q", lines[check.line])
+					}
+				}
+				if !color && strings.Contains(lines[check.line], "\x1b[") {
+					t.Fatal("plain output contains ANSI")
+				}
+			}
+			withDu := append(append([]Result{}, results...), Result{Probe: duProbeID + ":/var", Status: StatusPass}, Result{Probe: duProbeID + ":/tmp", Status: StatusSkip})
+			lines = snapshotContentLines(withDu, color)
+			last := lines[len(lines)-1]
+			if len(lines) != 8 || !strings.Contains(last, T("snapshot.contents.du")) || !strings.Contains(last, "1 pass") || !strings.Contains(last, "1 skip") {
+				t.Fatalf("optional du results were not grouped: %q", lines)
+			}
+		}
+	}
+}
+
+func TestSnapshotDefaultsToDatabaseAndSupportsFileOnly(t *testing.T) {
+	state := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", state)
+	defaultPath := filepath.Join(state, "edc", "history.db")
+	customPath, err := filepath.Abs("custom history.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name string
+		args []string
+		want string
+		fail bool
+	}{
+		{name: "default", want: defaultPath},
+		{name: "JSON plus default DB", args: []string{"--output", "state.json"}, want: defaultPath},
+		{name: "stdout plus default DB", args: []string{"--output", "-"}, want: defaultPath},
+		{name: "legacy short write", args: []string{"-w"}, want: defaultPath},
+		{name: "legacy long write", args: []string{"--write"}, want: defaultPath},
+		{name: "custom DB", args: []string{"-w", "custom history.db"}, want: customPath},
+		{name: "custom DB and JSON", args: []string{"--write=custom history.db", "--output", "state.json"}, want: customPath},
+		{name: "JSON only", args: []string{"--no-write", "--output", "state.json"}},
+		{name: "stdout only", args: []string{"--output", "-", "--no-write"}},
+		{name: "no-write false", args: []string{"--no-write=false"}, want: defaultPath},
+		{name: "no destination", args: []string{"--no-write"}, fail: true},
+		{name: "conflicting default write", args: []string{"--no-write", "-w", "--output", "state.json"}, fail: true},
+		{name: "conflicting custom write", args: []string{"-w", "custom.db", "--output", "state.json", "--no-write"}, fail: true},
+		{name: "empty explicit write", args: []string{"--write="}, fail: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			set := newFlagSet("snapshot")
+			output := set.String("output", "", "")
+			path := set.String("write", "", "")
+			set.StringVar(path, "w", "", "")
+			noWrite := set.Bool("no-write", false, "")
+			args, defaultWrite := normalizeTopWriteArgs(test.args, set)
+			if err := set.Parse(args); err != nil {
+				t.Fatal(err)
+			}
+			requested := false
+			set.Visit(func(f *flag.Flag) {
+				if f.Name == "w" || f.Name == "write" {
+					requested = true
+				}
+			})
+			got, err := snapshotDatabasePath(*path, *output, *noWrite, requested, defaultWrite)
+			if (err != nil) != test.fail || !test.fail && got != test.want {
+				t.Fatalf("destination=%q err=%v, want=%q fail=%v", got, err, test.want, test.fail)
+			}
+		})
+	}
+	if _, err := os.Stat(defaultPath); !os.IsNotExist(err) {
+		t.Fatal("resolving snapshot destinations unexpectedly created a database")
 	}
 }

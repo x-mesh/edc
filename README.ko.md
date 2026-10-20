@@ -958,18 +958,18 @@ journal 기록은 20000개, journal 출력은 32 MiB, `/dev/kmsg` 기록은 1000
 
 ## 장애 snapshot
 
-`edc snapshot`은 이 호스트의 상태를 edc report 하나로 저장합니다. 변경이나 장애 전에 한 번, 후에 한 번 찍고 `edc report diff`로 비교합니다.
+`edc snapshot`은 이 호스트의 상태를 기본 history DB에 저장합니다. `--output <file>`을 지정하면 JSON 보고서도 저장합니다. 변경이나 장애 전에 한 번, 후에 한 번 찍고 `edc report diff`로 비교합니다.
 
-읽기만 하는 명령입니다. 출력 파일만 쓰고 호스트의 다른 것은 바꾸지 않습니다. 외부로 아무것도 보내지 않으므로 공인 IP도 조회하지 않습니다.
+진단 데이터를 수집해 history DB와 지정한 출력 파일에 저장합니다. 외부로 아무것도 보내지 않으므로 공인 IP도 조회하지 않습니다.
 
 ```bash
-edc snapshot                              # ./edc-snapshot-<host>-<UTC 시각>.json
+edc snapshot                              # 기본 history DB에 저장, JSON 파일 없음
 sudo edc snapshot --output before.json    # root는 모든 audit와 events 원천을 읽음
 sudo edc snapshot --output after.json
 sudo edc snapshot --du /var --output after.json   # /var의 edc du 결과도 함께 (Linux와 macOS)
 sudo edc snapshot -w --du /var --du /home         # 파일 없이 history DB에 기록
 sudo edc report diff before.json after.json
-edc snapshot --since 2h --output -        # report JSON만 stdout으로
+edc snapshot --no-write --since 2h --output -  # DB 기록 없이 JSON만 stdout으로
 ```
 
 report에는 다음 결과가 들어갑니다.
@@ -995,13 +995,13 @@ macOS에서는 `audit`, `events`, `changes`, `info.pressure`가 `skip`으로 나
 
 파일에 계정 이름, sudo 규칙, process 이름이 들어가므로 권한은 0600입니다. 출력 경로에 이미 파일이 있으면 바꾸지 않고, 그 자리의 symlink도 따라가지 않습니다. 이때 exit code는 `2`입니다. 바꾸려면 `--force`를 붙이세요. 그러면 새 0600 파일을 쓴 뒤 그 경로로 옮깁니다.
 
-`--redact`는 host 이름, 홈 경로, IP 주소만 가립니다. 기본 파일 이름에서도 host 이름을 뺍니다. 계정 이름, sudo 규칙, process 이름은 report에 그대로 남습니다.
+`--redact`는 host 이름, 홈 경로, IP 주소만 가립니다. 계정 이름, sudo 규칙, process 이름은 report에 그대로 남습니다.
 
-파일을 쓰고 나면 경로, 결과 개수, `report diff` 안내를 출력합니다. `fail` 결과가 하나라도 있으면 exit code는 `1`이고, 없으면 `0`입니다. 사용법 오류와 쓰기 오류는 `2`를 돌려줍니다.
+저장 후 DB 또는 파일 경로, 수집 항목별 상태와 저장 데이터를 조회할 명령을 출력합니다. `fail` 결과가 하나라도 있으면 exit code는 `1`이고, 없으면 `0`입니다. 사용법 오류와 쓰기 오류는 `2`를 돌려줍니다.
 
 ### 스냅샷을 history DB에 기록
 
-`--write [path]`(`-w [path]`)는 스냅샷을 [Top 저장과 이력 조회](#top-저장과-이력-조회)의 SQLite DB에 기록합니다. 경로를 생략하면 기본 DB를 씁니다. `--write`만 주면 파일은 쓰지 않습니다. 파일도 남기려면 `--output`을 함께 주세요.
+snapshot은 기본으로 [Top 저장과 이력 조회](#top-저장과-이력-조회)의 SQLite DB에 기록합니다. 기존 `--write [path]`(`-w [path]`)도 지원하며 경로를 주면 다른 DB에 저장합니다. `--output`을 지정하면 JSON도 만듭니다. DB 기록 없이 JSON만 만들려면 `--no-write --output <file|->`을 사용합니다. `--no-write`에는 `--output`이 필요하고 `-w` 또는 `--write`와 함께 쓸 수 없습니다. 기록은 직접 삭제할 때까지 유지합니다. 정리 전 확인은 `edc history prune --older-than 90d --dry-run`으로 합니다.
 
 ```bash
 sudo edc snapshot -w --du /var                              # 기본 DB에 한 번 기록
@@ -1302,7 +1302,10 @@ Linux에서는 `n` 화면에 conntrack 사용률(`ct%`), listen overflow/s(`list
 
 ## Top 저장과 이력 조회
 
-`--write [path]` 또는 `-w [path]`로 관측값을 로컬 SQLite DB에 누적합니다. 대시보드는 유지하며, `--count`, 파이프, `--json`의 출력 방식은 그대로입니다. `--write`와 함께 쓰면 표에서도 `--process`를 사용할 수 있습니다. `-w`만 주면 Linux는 `~/.local/state/edc/history.db`, macOS는 `~/Library/Application Support/edc/history.db`를 사용합니다. 두 플랫폼 모두 절대 경로인 `XDG_STATE_HOME`이 있으면 `$XDG_STATE_HOME/edc/history.db`를 사용합니다. 기본 디렉터리는 권한 `0700`으로 자동 생성합니다. `-w`나 `--write`를 생략하면 저장하지 않습니다.
+`--write [path]` 또는 `-w [path]`로 관측값을 로컬 SQLite DB에 누적합니다. 대시보드는 유지하며, `--count`, 파이프, `--json`의 출력 방식은 그대로입니다. `--write`와 함께 쓰면 표에서도 `--process`를 사용할 수 있습니다. `-w`만 주면 Linux는 `~/.local/state/edc/history.db`, macOS는 `~/Library/Application Support/edc/history.db`를 사용합니다. 두 플랫폼 모두 절대 경로인 `XDG_STATE_HOME`이 있으면 `$XDG_STATE_HOME/edc/history.db`를 사용합니다. 기본 디렉터리는 권한 `0700`으로 자동 생성합니다. `-w`나 `--write`를 생략하면 기록을 끈 상태로 시작합니다. 대시보드에서 `w`로 기록을 시작·중지할 수 있습니다. 시작 시점 이후의 온전한 관측 구간만 저장하며, 다시 시작하면 같은 DB에 새 실행을 만듭니다. `p`로 일시정지하면 기록도 멈춥니다. 기록 중에는 `REC`와 저장한 관측값 개수가 표시됩니다.
+
+
+터미널에서 `edc history top`과 `edc history process`는 인터랙티브 탐색 화면을 엽니다. ↑↓ 선택, Enter 전체 상세, Home 최신 관측 추적, `p` 자동 갱신 일시정지를 지원합니다. top 표는 너비에 따라 디스크·네트워크·swap 등 지원되는 지표의 컬럼을 추가하고, 넓은 화면에서는 선택한 관측값의 상세 패널을 표시합니다. top의 파이프 출력은 디스크·네트워크·swap 컬럼을 포함하는 표이며, `--json`은 기존 JSONL 출력입니다. process 탐색 화면은 PID·CPU·RSS·명령어를 기본으로 표시하고 공간과 기록된 데이터에 따라 MEM·디스크 I/O·thread·FD 컬럼을 추가합니다. 상세에는 process 시작 시각과 수집된 한도도 표시합니다. 기존 `--process`, `--run`, 시간 범위와 지표 필터를 그대로 사용할 수 있습니다.
 
 ```bash
 ./bin/edc top -w
@@ -1338,11 +1341,15 @@ host 지표와 core별 CPU, 지원 여부, 실제 관측 구간, 당시 process 
 
 `trend --process <filter>`는 top 기록의 프로세스 표본을 씁니다. 필터 규칙은 `top --process`와 같습니다. `--metric`에는 프로세스 지표인 `cpu_pct`, `rss_bytes`, `threads`, `fds`, `disk_read_bytes_per_s`, `disk_write_bytes_per_s` 가운데 하나를 지정합니다. 표본마다 일치하는 프로세스의 값을 모두 더하므로, worker가 여럿인 서비스도 합계 하나로 보입니다. `--each`를 주면 PID와 시작 시각으로 구분한 프로세스마다 한 줄씩 보여 줍니다. `SEEN`은 프로세스가 기록된 표본 가운데 일치한 프로세스가 있던 비율입니다. `PROCS`는 구간에 나타난 서로 다른 프로세스 수이고, `RESTARTS`는 일치하던 프로세스가 사라진 자리를 새 프로세스가 대신한 횟수입니다. 종료와 시작이 서로 다른 표본에 잡혀도 셉니다. 사라진 프로세스 없이 새 프로세스만 늘었다면 재시작으로 세지 않습니다. 필터 없이 기록한 표본에서는 프로세스가 상위 목록에서 밀려나기만 해도 사라진 것처럼 보이므로, 그런 표본이 섞인 구간의 `RESTARTS`는 `-`로 표시합니다. `--process` 없이 기록한 실행의 표본이 섞여 있으면 stderr에 안내를 씁니다. 모든 표본을 남기려면 `top -w --process <filter>`로 기록하세요.
 
+터미널에서 `history growth`는 ↑↓ 선택, Enter 상세, 자동 갱신, `r` 새로고침, `p` 일시정지를 제공하는 탐색 화면을 엽니다. 디스크, 저장한 du 루트와 변경된 디렉터리를 표시하며 `--process`는 process RSS 증가량을 표시합니다. 넓은 화면에는 컬럼과 상세 패널을 추가합니다. 파이프와 `--json`의 텍스트·JSONL 출력은 유지합니다.
+
 `growth`는 최근 7일, 또는 `--from`과 `--to` 범위의 스냅샷을 읽습니다. 마운트마다 마지막 스냅샷의 사용량과 전체 크기, 그리고 `used_bytes`의 최소제곱 기울기로 구한 하루 증가량을 보여 줍니다. 사용량이 늘고 있으면 그 속도로 가득 차기까지 걸리는 시간을 추정합니다. 직선으로 구한 추정치이며 예측을 보장하지 않습니다. 스냅샷이 3개보다 적거나 첫 스냅샷과 마지막 스냅샷의 간격이 1시간보다 짧으면 추정하지 않습니다. `--du` 경로마다 범위 안의 첫 번째와 마지막 완전한 스캔을 `report diff`와 같은 규칙으로 비교해, 크게 바뀐 디렉터리를 최대 10개 보여 줍니다. 범위가 1일 이상이면 하루 증가량도 함께 씁니다. 그 위의 줄은 두 스캔에서 경로 전체의 크기를 보여 주므로, 경로 바로 아래 파일의 변화도 여기에 반영됩니다. `--root <path>`는 그 경로의 디렉터리만 보여 주고, `--json`은 마운트와 경로마다 한 줄씩 씁니다.
 
 `growth --process <filter>`는 스냅샷 대신 top 기록을 읽습니다. 일치하는 프로세스마다 마지막 RSS와, `rss_bytes`의 최소제곱 기울기로 구한 하루 변화량을 보여 줍니다. 표본이 6시간 이상에 걸쳐 12개 이상 있고, RSS가 첫 값보다 10% 이상 늘었고, 직선 적합도(R²)가 0.7 이상이면 누수 의심으로 표시합니다. 누수 의심은 살펴볼 이유일 뿐 진단이 아닙니다. 천천히 채워지는 캐시도 같은 모양을 보일 수 있습니다. 표는 누수 의심을 먼저 두고 최대 20개 프로세스를 보여 주며, `--json`은 프로세스마다 한 줄씩 씁니다. `--process`와 `--root`는 함께 쓸 수 없습니다.
 
-`prune --older-than <기간>`은 마지막 활동이 그 기간보다 오래된 실행을 표본·스냅샷 행과 함께 한 transaction으로 지웁니다. 마지막 활동은 시작, 종료, 마지막 표본 중 가장 늦은 시각이라, 오래전에 시작해 아직 기록 중인 `top -w`는 남습니다. 기간에는 Go duration과 `d`, `w` 단위를 씁니다(예: `90d`). `--command top`이나 `--command snapshot`으로 대상을 좁힙니다. 먼저 지울 실행과 표본 수를 보여 주고, 터미널에서는 `y`를 누를 때만 지우며, 터미널이 없으면 `--yes`나 `--dry-run`이 필요합니다. `--dry-run`은 개수만 세고 파일을 바꾸지 않습니다. 지운 행의 자리는 파일 안에 빈 page로 남아 새 기록에 다시 쓰이며, 그 크기를 알려 줍니다. `--vacuum`은 파일을 다시 써서 공간을 돌려받습니다. DB 크기만큼 여유 공간이 필요하고, 그동안 다른 기록은 기다립니다. 없는 DB는 만들지 않습니다.
+터미널에서 `history prune`을 기간 없이 실행하면 마지막 활동이 90일 이전인 실행을 미리 봅니다. 다른 기간은 `--older-than`으로 지정합니다. 현재 기간과 후보의 마지막 활동, 호스트, 관측값 수를 표시합니다. `t`로 1h·1d·7d·30d·90d·180d·365d를 고르거나 `12h`, `2w`처럼 직접 입력할 수 있습니다. 기간을 바꾸면 후보를 다시 조회하고 삭제 시에도 선택한 기간으로 조건을 재확인합니다. Space로 체크, `a`로 전체 전환, Enter로 상세를 봅니다. `d` 다음 `y`로 체크한 실행 삭제를 확인하고, `q`는 취소합니다. `--dry-run`은 삭제가 비활성인 미리보기를 열고, `--yes`는 기간을 명시해 기존 명령 출력으로 실행합니다. 삭제 직전 같은 transaction에서 기간 조건을 다시 확인하며 최근 활동이 생긴 실행은 제외합니다.
+
+`prune --older-than <기간>`은 마지막 활동이 그 기간보다 오래된 실행을 표본·스냅샷 행과 함께 한 transaction으로 지웁니다. 마지막 활동은 시작, 종료, 마지막 표본 중 가장 늦은 시각이라, 오래전에 시작해 아직 기록 중인 `top -w`는 남습니다. 기간에는 Go duration과 `d`, `w` 단위를 씁니다(예: `90d`). `--command top`이나 `--command snapshot`으로 대상을 좁힙니다. 먼저 지울 실행과 표본 수를 보여 주고, 터미널에서는 삭제를 확인한 뒤에만 지우며, 터미널이 없으면 `--yes`나 `--dry-run`이 필요합니다. `--dry-run`은 개수만 세고 파일을 바꾸지 않습니다. 지운 행의 자리는 파일 안에 빈 page로 남아 새 기록에 다시 쓰이며, 그 크기를 알려 줍니다. `--vacuum`은 파일을 다시 써서 공간을 돌려받습니다. DB 크기만큼 여유 공간이 필요하고, 그동안 다른 기록은 기다립니다. 없는 DB는 만들지 않습니다.
 
 WAL을 사용하므로 기록 중에도 조회할 수 있습니다. DB는 로컬 파일시스템에 둡니다. 외부 SQLite 도구로 `runs`, `top_samples`, `top_process_samples`도 조회할 수 있습니다. 숫자 지표는 column, cgroup·eBPF 등 상세 정보는 `payload` JSON에 보존합니다. 스냅샷 기록은 `snapshot_results`, `snapshot_metrics`, `du_dirs`에 들어갑니다. 조회는 기존 DB를 읽으며 생성이나 migration을 하지 않습니다. `--dry-run` 없는 `prune`만 DB에 씁니다. 다른 DB와 지원하지 않는 schema version은 거부합니다.
 

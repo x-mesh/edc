@@ -1,5 +1,23 @@
 # snapshot 명령의 한국어 메시지.
 snapshot:
+  trend_hint: "기록한 지표 추이: edc history trend %s"
+  prune_hint: "보관: 직접 삭제할 때까지 유지합니다. 정리 미리보기: edc history prune --older-than 90d --dry-run %s"
+  contents:
+    title: "수집 항목과 결과"
+    host: "호스트 · OS, CPU 코어 수, load"
+    memory: "메모리 · 전체·사용·가용 용량"
+    disk: "디스크 · 용량·사용률·경고"
+    processes: "프로세스 · 개수, 메모리 상위 5개"
+    listen: "Listen · 수신 포트와 소켓"
+    pressure: "Pressure · CPU·메모리·I/O, OOM"
+    audit: "Audit · 보안 설정 점검"
+    events: "Events · 최근 시스템 이벤트"
+    changes: "Changes · 패키지·설정·서비스 변경"
+    du: "디렉터리 · 경로별 용량 (--du)"
+  view_hint: "열기: edc report show %s"
+  list_hint: "같은 디렉터리의 파일 목록: edc report list %s"
+  file_only_hint: "JSON 보고서만 저장했습니다 (--no-write). 다음 관측부터 trend/growth에 기록하려면 edc snapshot을 실행하세요."
+  history_hint: "trend/growth에 쓸 관측값을 history DB에 기록했습니다. 기록 목록: edc history list %s"
   skip:
     timeout: "%s가 %s 안에 끝나지 않았습니다"
     pressure_unavailable: "이 host에서는 PSI와 OOM kill counter를 읽을 수 없습니다"
@@ -23,7 +41,8 @@ snapshot:
   exists: "%s가 이미 있습니다. 바꾸려면 --force를 붙이세요"
   saved: "저장: %s"
   recorded: "스냅샷 %s를 %s에 기록"
-  export_hint: "비교하려면 꺼내세요: edc history export --run %s --output <file>"
+  export_hint: "비교하려면 꺼내세요: edc history export --run %s --output <file> %s"
   error:
+    no_write: "--no-write는 -w 또는 --write 없이 --output <file|->과 함께 사용하세요"
     du_empty: "--du에는 경로가 필요합니다"
   diff_hint: "비교: edc report diff <before> %s"

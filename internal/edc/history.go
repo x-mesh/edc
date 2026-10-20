@@ -42,7 +42,7 @@ func runHistory(args []string) int {
 	if args[0] == "log" {
 		return runLogWithStreams(append([]string{"history"}, args[1:]...), logStreams{stdin: os.Stdin, stdout: os.Stdout, stderr: os.Stderr})
 	}
-	if args[0] != "list" && args[0] != "top" && args[0] != "process" && args[0] != "export" && args[0] != "trend" && args[0] != "growth" {
+	if args[0] != "list" && args[0] != "top" && args[0] != "process" && args[0] != "export" && args[0] != "trend" && args[0] != "growth" && args[0] != "prune" {
 		fmt.Fprintln(os.Stderr, T("history.usage"))
 		return 2
 	}
@@ -59,6 +59,9 @@ func runHistory(args []string) int {
 	}
 	if command == "growth" {
 		return runHistoryGrowth(args[1:])
+	}
+	if command == "prune" {
+		return runHistoryPrune(args[1:], os.Stdin, os.Stdout, os.Stderr)
 	}
 	set := newFlagSet("history " + command)
 	set.SetOutput(os.Stderr)

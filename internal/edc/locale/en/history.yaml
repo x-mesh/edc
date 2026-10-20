@@ -1,5 +1,5 @@
 history:
-  usage: "Usage: edc history <list|top|process|export|trend|growth> [options] [DB]"
+  usage: "Usage: edc history <list|top|process|export|trend|growth|prune> [options] [DB]"
   option:
     run: "only this run ID"
     from: "inclusive start time (RFC3339)"
@@ -13,6 +13,11 @@ history:
     probe: "trend a snapshot result, such as info.disk:/ or du.scan"
     by: "trend period: hour, day, or week (local time)"
     root: "growth: only the du results of this path"
+    older_than: "prune: delete runs idle for this age (30d, 2w)"
+    prune_command: "prune: only top or snapshot runs"
+    dry_run: "prune: count without deleting"
+    yes: "prune: delete without asking"
+    vacuum: "prune: rewrite the file to give the space back"
   error:
     default_path: "The default database path is unavailable; specify --write <path>"
     path: "Use a database file path; JSON output must not overwrite the database or its journal files"
@@ -56,6 +61,18 @@ history:
     run_title: "which snapshot do you want to export?"
     run_label: "snapshot"
     run_item: "%s  %s  %d results"
+  prune:
+    usage: "Usage: edc history prune --older-than <age> [--command top|snapshot] [--dry-run] [--yes] [--vacuum] [DB]"
+    none: "No run is older than that."
+    plan: "Delete %d runs (top %d, snapshot %d) with %d samples."
+    dry_plan: "Dry run: would delete %d runs (top %d, snapshot %d) with %d samples."
+    dry_note: "Nothing was deleted. Run again without --dry-run to delete."
+    confirm: "Delete them? y/N "
+    yes_required: "Add --yes to delete without a terminal, or --dry-run to only count."
+    done: "Deleted %d runs with %d samples."
+    reusable: "The file keeps its size; %s is free for new records. Add --vacuum to give it back."
+    vacuumed: "File size %s -> %s."
+    vacuum_failed: "VACUUM failed: %v"
 command:
   history:
     notes:

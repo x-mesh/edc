@@ -1318,9 +1318,11 @@ Linux에서는 `n` 화면에 conntrack 사용률(`ct%`), listen overflow/s(`list
 ./bin/edc history trend --metric memory_pct --by hour incident.db
 ./bin/edc history trend --probe info.disk:/ --metric used_bytes --by day
 ./bin/edc history growth --root /var
+./bin/edc history prune --older-than 90d --dry-run
+./bin/edc history prune --older-than 90d --command snapshot --yes --vacuum
 ```
 
-같은 DB를 지정해도 이전 값을 덮어쓰지 않고 별도 실행으로 추가합니다. 실행마다 host 정보, edc version, 수집 조건, 시작·종료 시각, 상태, sample 수를 남깁니다. `unfinished`는 종료 기록이 없는 실행으로, 실행 중이거나 강제 종료된 상태일 수 있습니다. 정상 종료는 대기 중인 기록을 모두 저장하고, 저장 실패는 관측을 중단하며 종료 코드 `1`을 반환합니다. 강제 종료 시 이미 commit된 transaction은 보존됩니다. 새 DB 권한은 `0600`이며 자동 삭제나 회전은 없습니다.
+같은 DB를 지정해도 이전 값을 덮어쓰지 않고 별도 실행으로 추가합니다. 실행마다 host 정보, edc version, 수집 조건, 시작·종료 시각, 상태, sample 수를 남깁니다. `unfinished`는 종료 기록이 없는 실행으로, 실행 중이거나 강제 종료된 상태일 수 있습니다. 정상 종료는 대기 중인 기록을 모두 저장하고, 저장 실패는 관측을 중단하며 종료 코드 `1`을 반환합니다. 강제 종료 시 이미 commit된 transaction은 보존됩니다. 새 DB 권한은 `0600`이며 자동으로 지우지 않습니다. 오래된 실행은 `history prune`으로 지웁니다.
 
 host 지표와 core별 CPU, 지원 여부, 실제 관측 구간, 당시 process 필터를 저장합니다. 필터가 없으면 CPU 상위 5개와 `MEM` 상위 5개의 합집합(최대 10개), 필터가 있으면 최대 50개와 전체 합계를 저장합니다. 전체 process를 기록하는 기능은 아닙니다. `p`로 일시정지하면 기록도 멈추고, 재개 시 새 기준점 다음부터 rate를 기록합니다. process는 host보다 덜 자주 갱신될 수 있으며 `process_observed_at`으로 수집 시각을 구분합니다. 시작 시각을 읽을 수 있으면 PID와 정밀한 시작 시각으로 PID 재사용을 구분합니다.
 
@@ -1332,7 +1334,9 @@ host 지표와 core별 CPU, 지원 여부, 실제 관측 구간, 당시 process 
 
 `growth`는 최근 7일, 또는 `--from`과 `--to` 범위의 스냅샷을 읽습니다. 마운트마다 마지막 스냅샷의 사용량과 전체 크기, 그리고 `used_bytes`의 최소제곱 기울기로 구한 하루 증가량을 보여 줍니다. 사용량이 늘고 있으면 그 속도로 가득 차기까지 걸리는 시간을 추정합니다. 직선으로 구한 추정치이며 예측을 보장하지 않습니다. 스냅샷이 3개보다 적거나 첫 스냅샷과 마지막 스냅샷의 간격이 1시간보다 짧으면 추정하지 않습니다. `--du` 경로마다 범위 안의 첫 번째와 마지막 완전한 스캔을 `report diff`와 같은 규칙으로 비교해, 크게 바뀐 디렉터리를 최대 10개 보여 줍니다. 범위가 1일 이상이면 하루 증가량도 함께 씁니다. 그 위의 줄은 두 스캔에서 경로 전체의 크기를 보여 주므로, 경로 바로 아래 파일의 변화도 여기에 반영됩니다. `--root <path>`는 그 경로의 디렉터리만 보여 주고, `--json`은 마운트와 경로마다 한 줄씩 씁니다.
 
-WAL을 사용하므로 기록 중에도 조회할 수 있습니다. DB는 로컬 파일시스템에 둡니다. 외부 SQLite 도구로 `runs`, `top_samples`, `top_process_samples`도 조회할 수 있습니다. 숫자 지표는 column, cgroup·eBPF 등 상세 정보는 `payload` JSON에 보존합니다. 스냅샷 기록은 `snapshot_results`, `snapshot_metrics`, `du_dirs`에 들어갑니다. 조회는 기존 DB를 읽으며 생성이나 migration을 하지 않습니다. 다른 DB와 지원하지 않는 schema version은 거부합니다.
+`prune --older-than <기간>`은 마지막 활동이 그 기간보다 오래된 실행을 표본·스냅샷 행과 함께 한 transaction으로 지웁니다. 마지막 활동은 시작, 종료, 마지막 표본 중 가장 늦은 시각이라, 오래전에 시작해 아직 기록 중인 `top -w`는 남습니다. 기간에는 Go duration과 `d`, `w` 단위를 씁니다(예: `90d`). `--command top`이나 `--command snapshot`으로 대상을 좁힙니다. 먼저 지울 실행과 표본 수를 보여 주고, 터미널에서는 `y`를 누를 때만 지우며, 터미널이 없으면 `--yes`나 `--dry-run`이 필요합니다. `--dry-run`은 개수만 세고 파일을 바꾸지 않습니다. 지운 행의 자리는 파일 안에 빈 page로 남아 새 기록에 다시 쓰이며, 그 크기를 알려 줍니다. `--vacuum`은 파일을 다시 써서 공간을 돌려받습니다. DB 크기만큼 여유 공간이 필요하고, 그동안 다른 기록은 기다립니다. 없는 DB는 만들지 않습니다.
+
+WAL을 사용하므로 기록 중에도 조회할 수 있습니다. DB는 로컬 파일시스템에 둡니다. 외부 SQLite 도구로 `runs`, `top_samples`, `top_process_samples`도 조회할 수 있습니다. 숫자 지표는 column, cgroup·eBPF 등 상세 정보는 `payload` JSON에 보존합니다. 스냅샷 기록은 `snapshot_results`, `snapshot_metrics`, `du_dirs`에 들어갑니다. 조회는 기존 DB를 읽으며 생성이나 migration을 하지 않습니다. `--dry-run` 없는 `prune`만 DB에 씁니다. 다른 DB와 지원하지 않는 schema version은 거부합니다.
 
 DB schema는 버전 1을 유지합니다. `top -w`나 `snapshot -w`가 스냅샷 표가 없는 DB를 열면 그 표만 추가하고 다른 것은 바꾸지 않습니다. top 기록은 그대로 남고, 이전 edc도 스냅샷 표를 무시한 채 같은 DB를 계속 읽고 씁니다. JSON 출력은 DB나 journal 파일을 덮어쓸 수 없습니다.
 

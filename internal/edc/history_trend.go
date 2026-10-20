@@ -128,6 +128,17 @@ func runHistoryTrend(args []string) int {
 		return 1
 	}
 	defer db.Close()
+	// 색을 쓸 수 있는 터미널이면 고른 결과를 바로 보는 화면을 연다. 표를 파일에 쓸 때와 NO_COLOR에서는 차례로 묻는다.
+	if input, ok := historyCanPrompt(); askMetric && ok && *jsonPath == "" && os.Getenv("NO_COLOR") == "" {
+		opened, err := runHistoryTrendBrowser(input, db, options, args)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		if opened {
+			return 0
+		}
+	}
 	if askMetric && !promptHistoryTrend(db, &options, args) {
 		fmt.Fprintln(os.Stderr, metricError)
 		return 2

@@ -63,6 +63,14 @@ history:
     total: "전체 %s → %s (%s)"
     leak: "누수 의심 (적합도 %.2f)"
     more_processes: "… 프로세스 %d개 더 있음, 전체는 --json"
+  browser:
+    targets: "대상"
+    host: "호스트"
+    loading: "불러오는 중"
+    growth: "RSS %s, 가장 빠른 pid %d"
+    growth_none: "RSS 변화: %s"
+    leak: "누수 의심: 프로세스 %d/%d개 (적합도 %.2f)"
+    help: "↑↓ 대상   m 지표   b 구간   e 프로세스별   PgUp/PgDn 스크롤   q 종료"
   prompt:
     top_source: "top · host sample"
     source_title: "어떤 기록의 추이를 볼까요?"

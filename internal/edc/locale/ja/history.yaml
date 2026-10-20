@@ -63,6 +63,14 @@ history:
     total: "全体 %s → %s (%s)"
     leak: "リークの疑い (適合度 %.2f)"
     more_processes: "… ほかに %d 個のプロセス、すべては --json"
+  browser:
+    targets: "対象"
+    host: "ホスト"
+    loading: "読み込み中"
+    growth: "RSS %s、最も速い pid %d"
+    growth_none: "RSS の変化: %s"
+    leak: "リークの疑い: %d/%d プロセス (適合度 %.2f)"
+    help: "↑↓ 対象   m 指標   b 期間   e プロセス別   PgUp/PgDn スクロール   q 終了"
   prompt:
     top_source: "top · host sample"
     source_title: "どの記録の推移を見ますか?"

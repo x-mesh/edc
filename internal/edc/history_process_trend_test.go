@@ -194,17 +194,24 @@ func TestHistoryGrowthProcessesFlagsSteadyRSSGrowth(t *testing.T) {
 	}
 }
 
-func TestHistoryProcessNamesOrdersBySamples(t *testing.T) {
+func TestHistoryProcessNamesOrdersBySamplesOrRSS(t *testing.T) {
 	fixture, _ := newHistoryProcessFixtureDB(t)
 	at := time.Date(2026, 10, 20, 0, 0, 0, 0, time.UTC)
-	fixture.sample("filtered", at, historyProcessFixture{1, "", "nginx", 1}, historyProcessFixture{2, "", "Postgres", 1}, historyProcessFixture{3, "", "a,b", 1})
+	fixture.sample("filtered", at, historyProcessFixture{1, "", "nginx", 9}, historyProcessFixture{2, "", "Postgres", 1}, historyProcessFixture{3, "", "a,b", 1})
 	fixture.sample("filtered", at.Add(time.Second), historyProcessFixture{2, "", "Postgres", 1}, historyProcessFixture{4, "", "postgres", 1})
-	names, err := historyProcessNames(fixture.db)
+	names, err := historyProcessNames(fixture.db, historyProcessBySamples)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(names) != 2 || names[0].Samples != 3 || !strings.EqualFold(names[0].Name, "postgres") || names[1].Name != "nginx" {
 		t.Fatalf("names = %+v", names)
+	}
+	names, err = historyProcessNames(fixture.db, historyProcessByRSS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(names) != 2 || names[0].Name != "nginx" || names[0].MaxRSS != 9 || names[1].MaxRSS != 1 {
+		t.Fatalf("names by rss = %+v", names)
 	}
 }
 

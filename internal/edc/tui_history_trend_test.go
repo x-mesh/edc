@@ -36,7 +36,7 @@ func TestHistoryTrendBrowserTargetsMetricsAndCommand(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(targets) != 3 || targets[0].kind != historyTrendHost || targets[1].value != "pg" || targets[1].samples != 6 || targets[2].value != "nginx" {
+	if len(targets) != 3 || targets[0].kind != historyTrendHost || targets[1].value != "pg" || targets[1].rss != 130 || targets[2].value != "nginx" {
 		t.Fatalf("targets = %+v", targets)
 	}
 	model := newHistoryTrendBrowser(db, targets, historyTrendOptions{by: "hour"}, historyTrendZone)

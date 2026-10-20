@@ -129,7 +129,7 @@ func promptHistoryTrend(db *sql.DB, options *historyTrendOptions, args []string)
 
 // promptHistoryProcess는 호스트 전체와 기록된 프로세스 가운데 하나를 고르게 한다. 호스트 전체면 빈 문자열이다.
 func promptHistoryProcess(db *sql.DB, file *os.File) (string, bool) {
-	names, err := historyProcessNames(db)
+	names, err := historyProcessNames(db, historyProcessBySamples)
 	if err != nil {
 		return "", false
 	}

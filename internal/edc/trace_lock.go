@@ -38,6 +38,9 @@ var lockPrimitivePrefixes = []string{
 	"__mutex_lock", "mutex_lock", "__mutex_lock_slowpath", "mutex_lock_interruptible", "mutex_lock_killable", "mutex_lock_io",
 	"rwsem_down_", "down_read", "down_write", "__down_read", "__down_write", "rt_mutex", "__rt_mutex", "rt_spin_lock",
 	"percpu_down_", "__percpu_down_", "lock_sock", "__lock_sock", "lock_contended",
+	// tracepoint를 부르는 래퍼다. 7.0 kernel(GitHub runner의 7.0.0-1017-azure)은 이것을 인라인하지 않아 stack에 남는다.
+	// 6.17에서는 보이지 않았다. 건너뛰지 않으면 모든 mutex 대기의 호출자가 이 함수로 잡힌다.
+	"trace_contention_",
 }
 
 type lockTraceOptions struct {

@@ -1,6 +1,7 @@
 package edc
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"slices"
@@ -16,11 +17,44 @@ import (
 )
 
 // runTopDashboard는 alt screen 대시보드를 실행한다. 종료하면 화면이 원래대로 돌아온다.
-func runTopDashboard(interval time.Duration, version string, filter topProcessFilter, interfaces topInterfaceFilter, recorder *topRecorder, split []topView) int {
+func runTopDashboard(interval time.Duration, version string, filter topProcessFilter, interfaces topInterfaceFilter, recorder *topRecorder, split []topView, layout topLayout) int {
+	model, err := newTopDashboardModel(interval, version, filter, interfaces)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	model = model.withProcessFilter(filter).withSplit(split).withLayout(layout)
+	if recorder != nil {
+		model.record = recorder.Record
+		model.recordFailure = func() tea.Msg {
+			select {
+			case <-recorder.failed:
+				return topRecordingErrorMsg{err: recorder.Err()}
+			case <-recorder.done:
+				return nil
+			}
+		}
+	}
+	final, err := tea.NewProgram(model, tea.WithInput(os.Stdin), tea.WithOutput(os.Stdout)).Run()
+	if final, ok := final.(topModel); ok {
+		final.closeAI()
+	}
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	if final.(topModel).recordingErr != nil {
+		return 1
+	}
+	return 0
+}
+
+// newTopDashboardModel은 대시보드와 edc top setup 미리보기가 함께 쓰는 모델이다. host 정보와 첫 표본을 읽고
+// interface 선택과 process 수집기를 연결한다. 보기, 박스, 패널은 부르는 쪽이 정한다.
+func newTopDashboardModel(interval time.Duration, version string, filter topProcessFilter, interfaces topInterfaceFilter) (topModel, error) {
 	details, err := collectHostDetails()
 	if err != nil {
-		fmt.Fprintln(os.Stderr, T("observe.top.error.host", err))
-		return 1
+		return topModel{}, errors.New(T("observe.top.error.host", err))
 	}
 	// interface 선택은 수집 직후에 적용한다. 기록, 표, 상세가 모두 같은 snapshot에서 나오므로 따로 맞추지 않아도 된다.
 	// 수집은 tea.Cmd goroutine에서 돌고 i는 Update에서 바꾸므로 lock으로 건넨다.
@@ -41,8 +75,7 @@ func runTopDashboard(interval time.Duration, version string, filter topProcessFi
 	}
 	first, err := sample()
 	if err != nil {
-		fmt.Fprintln(os.Stderr, T("observe.top.error.resource", err))
-		return 1
+		return topModel{}, errors.New(T("observe.top.error.resource", err))
 	}
 	model := newTopModel(details, first, interval, selected(sampleTopDashboard))
 	model.sampleNow, model.setFilter, model.setScanIO = selected(sampleTopDashboardNow), processSampler.setFilter, processSampler.setScanIO
@@ -56,27 +89,8 @@ func runTopDashboard(interval time.Duration, version string, filter topProcessFi
 	processSampler.mutex.Lock()
 	model.probeEnabled = processSampler.observe != nil
 	processSampler.mutex.Unlock()
-	model = model.withProcessFilter(filter).withSplit(split)
-	if recorder != nil {
-		model.record = recorder.Record
-		model.recordFailure = func() tea.Msg {
-			select {
-			case <-recorder.failed:
-				return topRecordingErrorMsg{err: recorder.Err()}
-			case <-recorder.done:
-				return nil
-			}
-		}
-	}
-	final, err := tea.NewProgram(model, tea.WithInput(os.Stdin), tea.WithOutput(os.Stdout)).Run()
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return 1
-	}
-	if final.(topModel).recordingErr != nil {
-		return 1
-	}
-	return 0
+	model.openAI = func() (topAISource, error) { return openAICollector() }
+	return model, nil
 }
 
 // sampleTopDashboard는 snapshot에 process 목록을 붙인다. 표와 JSON 출력은 process를 쓰지 않으므로
@@ -248,6 +262,29 @@ type topModel struct {
 	boxed bool
 	// compact는 박스가 optional 칸을 빼고 그리는지다.
 	compact bool
+	// startView는 --view나 defaults.top.view로 고른 처음 보기다. 비어 있으면 split 유무를 따른다.
+	startView topView
+	// panels는 아래 왼쪽 칸에 늘 보일 패널이다. panelsSet이 false이면 기존 배치를 쓴다.
+	panels    []topPanel
+	panelsSet bool
+	// hiddenPanels는 높이가 모자라 숨긴 패널이다. 그리는 동안만 채워 안내 줄에 알린다.
+	hiddenPanels []topPanel
+	// processSort는 defaults.top.process_sort로 고른 process 패널 기본 순위다. 비어 있으면 보기를 따른다.
+	processSort topView
+	// columnGroups는 --columns와 defaults.top.columns로 고른 all 보기의 열 그룹이다. 비어 있으면 다섯 그룹 전부다.
+	columnGroups []topColumnGroup
+	// aiOn은 AI 패널이 켜졌는지다. openAI는 처음 켤 때 수집기를 연다.
+	aiOn        bool
+	openAI      func() (topAISource, error)
+	aiSource    topAISource
+	aiProviders []aiProvider
+	aiPolled    bool
+	aiPolling   bool
+	// aiTokens는 all 보기에 ai 열 그룹이 있는지다. 있을 때만 Claude와 Codex 대화 기록을 읽는다.
+	aiTokens   bool
+	aiScanning bool
+	aiSeconds  map[string]map[int64][]aiStampedUsage
+	aiFailed   map[string]bool
 }
 
 type topRecordingErrorMsg struct{ err error }
@@ -275,7 +312,13 @@ func (model topModel) withProcessFilter(filter topProcessFilter) topModel {
 	return model
 }
 
-func (model topModel) Init() tea.Cmd { return tea.Batch(model.tick(), model.recordFailure) }
+func (model topModel) Init() tea.Cmd {
+	var ai tea.Cmd
+	if model.aiOn || model.aiTokens {
+		ai = func() tea.Msg { return topAIStartMsg{} }
+	}
+	return tea.Batch(model.tick(), model.recordFailure, ai)
+}
 
 func (model topModel) tick() tea.Cmd {
 	seq, sample := model.seq, model.sample
@@ -336,6 +379,15 @@ func (model topModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return model, nil
 		}
 		return model, model.tick()
+	case topAIStartMsg:
+		if model.aiOn || model.aiTokens {
+			return model.startAI()
+		}
+		return model, nil
+	case topAIPollMsg:
+		return model.updateAIPoll(aiPollResult(value))
+	case topAIScanMsg:
+		return model.updateAIScan(aiUsageSnapshot(value))
 	case tea.WindowSizeMsg:
 		model.width, model.height = value.Width, value.Height
 		return model, nil
@@ -439,6 +491,8 @@ func (model topModel) updateKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		model.view, model.panelSort = topViewPressure, ""
 	case "o":
 		model.panelSort = nextTopPanelSort(model.panelSort)
+	case "a":
+		return model.toggleAI()
 	case "?":
 		model.help = true
 		model.helpOffset = 0
@@ -513,7 +567,7 @@ func (model topModel) updateKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 func (model topModel) syncScanIO() {
 	if model.setScanIO != nil {
-		model.setScanIO(model.panelRank() == topViewDisk)
+		model.setScanIO(model.panelRank() == topViewDisk || slices.Contains(model.footerPanels(), topPanelDisk))
 	}
 }
 
@@ -522,8 +576,12 @@ func (model topModel) homeView() topView {
 	if model.processFilter.active() {
 		return topViewProcess
 	}
-	if len(model.split) > 0 && len(model.splitViews()) > 0 {
-		return topViewSplit
+	if model.startView == topViewSplit || (model.startView == "" && len(model.split) > 0) {
+		if len(model.splitViews()) > 0 {
+			return topViewSplit
+		}
+	} else if model.startView != "" {
+		return model.startView
 	}
 	return topViewAll
 }
@@ -866,9 +924,13 @@ func (model topModel) infoLines() []string {
 		lines[0] = topLead(lines[0], model.limits.color)
 	}
 	if model.lastErr != nil {
-		lines = append(lines, topTint(fmt.Sprintf("sample failed · last success %s · %s", model.previous.TakenAt.Format("15:04:05"), model.lastErr), topLevelDanger, model.limits.color))
+		lines = append(lines, model.sampleErrorLine())
 	}
 	return lines
+}
+
+func (model topModel) sampleErrorLine() string {
+	return topTint(fmt.Sprintf("sample failed · last success %s · %s", model.previous.TakenAt.Format("15:04:05"), model.lastErr), topLevelDanger, model.limits.color)
 }
 
 // panelInfoLines는 detail, peaks, network 패널이다. 첫 줄이 패널 제목이다.
@@ -898,6 +960,9 @@ func (model topModel) footerLines() []string {
 }
 
 func (model topModel) footerPanelLines() []string {
+	if model.customFooter() {
+		return model.customFooterLines()
+	}
 	if model.displayWidth() < topFooterDockWidth || model.processFilter.active() {
 		if model.eventsInFooter() {
 			return append(model.panelLinesWithEvents(), model.statusLines()...)
@@ -1163,6 +1228,9 @@ func (model topModel) statusLines() []string {
 	if model.record != nil {
 		state = "SQLite · " + state
 	}
+	if hidden := model.hiddenText(); hidden != "" {
+		state = hidden + " · " + state
+	}
 	if model.paused {
 		state = T("observe.top.paused") + " · " + state
 	} else if !model.follow {
@@ -1177,6 +1245,10 @@ func (model topModel) statusLines() []string {
 			{key: "d", label: "disk", on: model.view == topViewDisk}, {key: "n", label: "net", on: model.view == topViewNetwork},
 			model.sortHint(), {key: "f", label: "candidates"}, {key: "/", label: "filter"}, {key: "?", label: "help"},
 		}
+	}
+	// a는 켰을 때만 켜진 항목으로 보인다. 늘 두면 80열에서 / filter와 ? help가 잘린다. 끈 상태의 a는 ? 도움말에 있다.
+	if model.aiOn {
+		keys = append(topKeyHints{{key: "a", label: "ai", on: true}}, keys...)
 	}
 	if model.interfaces.active() {
 		// net 표시가 붙으면 80열에서 / filter까지 잘린다. ? help는 아래 줄에도 있고, o는 ? 도움말에 있으며 고른 뒤에는
@@ -1322,6 +1394,8 @@ func (model topModel) panelRank() topView {
 	view := model.view
 	if model.panelSort != "" {
 		view = model.panelSort
+	} else if model.processSort != "" {
+		view = model.processSort
 	}
 	switch view {
 	case topViewMemory, topViewDisk:
@@ -1349,8 +1423,13 @@ func (model topModel) candidates() []topProcess {
 	if !ok || !row.processesValid {
 		return nil
 	}
-	processes := append([]topProcess(nil), row.processes...)
-	switch model.panelRank() {
+	return topRankedProcesses(row.processes, model.panelRank())[:min(topProcessLimit, len(row.processes))]
+}
+
+// topRankedProcesses는 process를 순위 기준으로 줄 세운 복사본이다. 후보 목록과 자원 패널이 함께 쓴다.
+func topRankedProcesses(source []topProcess, rank topView) []topProcess {
+	processes := append([]topProcess(nil), source...)
+	switch rank {
 	case topViewMemory:
 		// signal이 가리키는 가장 많이 늘어난 process 하나만 크기와 상관없이 앞에 둔다. 다섯 줄로 자를 때 그 줄이 빠지면
 		// 안 된다. 늘어나는 process를 모두 앞에 두면 같은 일을 하는 worker 여럿이 가장 큰 process를 밀어낸다.
@@ -1369,7 +1448,7 @@ func (model topModel) candidates() []topProcess {
 			return processes[i].State == topProcessStateBlocked && processes[j].State != topProcessStateBlocked
 		})
 	}
-	return processes[:min(topProcessLimit, len(processes))]
+	return processes
 }
 
 // showsProcessIO는 후보 줄 끝에 읽기·쓰기 rate를 붙일지다. 필터를 걸었거나 디스크 보기이면 읽지 못한 값도 —로 보이고,
@@ -1617,6 +1696,7 @@ func (model topModel) helpLines() []string {
 		"Filter: / edit names or PIDs · Enter apply · Esc cancel",
 		"Back: Esc closes the panel, returns to the live row, drops the o rank, returns to the first view, then clears the process filter",
 		"Interfaces: i opens the list · Space check · a all · p physical · Enter applies from the next sample · off while -w records",
+		"Panels: a shows or hides Claude and Codex usage limits · --panels cpu,mem,disk,net,psi,ai,events keeps panels under the table, the first one first",
 		"Details: Enter on history · h peaks from the last 60 seconds",
 		"CPU: host % uses all cores. Process 100% uses one core. RSS is resident memory.",
 		"MEM counts the memory a process holds, also when it is compressed or swapped out. A gray MEM value is RSS, used when edc could not read MEM.",
@@ -1708,7 +1788,12 @@ func (model topModel) tableRow(row topDashboardRow) string {
 		}
 		columns, signalWidth := model.hostLayout()
 		cells := make([]topCell, len(columns))
+		tokens := model.aiTokensBetween(model.previousRowAt(row.at), row.at)
 		for index, column := range columns {
+			if column.tokens != nil {
+				cells[index] = topPlainCell(column.tokens(tokens))
+				continue
+			}
 			cells[index] = topPlainCell(column.cell(row.rate))
 			if column.level != nil {
 				cells[index].level = column.level(model.limits, row.rate)
@@ -1731,7 +1816,7 @@ func (model topModel) tableRow(row topDashboardRow) string {
 }
 
 func (model topModel) hostLayout() ([]topAllColumn, int) {
-	columns, signalWidth := topAllLayout(model.displayWidth())
+	columns, signalWidth := topAllLayoutOf(model.displayWidth(), topAllGroupColumns(model.columnGroups))
 	if model.details.System != "darwin" {
 		return columns, signalWidth
 	}
@@ -1938,6 +2023,8 @@ type topAllColumn struct {
 	cell   func(rate resourceRate) string
 	// level은 칸을 칠할 위험도다. nil이면 임계치가 없어 색을 쓰지 않는 칸이다.
 	level func(limits topLimits, rate resourceRate) topLevel
+	// tokens는 ai 열 그룹의 칸이다. 값이 표본이 아니라 대화 기록에서 오므로 cell 대신 쓴다.
+	tokens func(tokens topAITokens) string
 }
 
 var topAllColumns = []topAllColumn{
@@ -1999,9 +2086,14 @@ var topAllColumns = []topAllColumn{
 // 그래서 signal에는 topSignalWideWidth만 남기고 나머지는 칸에 나눈다. 나누고 남은 폭도 칸 사이에 1칸씩 흩어서
 // 칸 폭 차이가 1을 넘지 않으면서 표가 오른쪽 끝까지 찬다.
 func topAllLayout(width int) ([]topAllColumn, int) {
-	chosen := topAllColumnsUpTo(0)
-	for tier := 1; tier <= topAllMaxTier(); tier++ {
-		candidate := topAllColumnsUpTo(tier)
+	return topAllLayoutOf(width, topAllColumns)
+}
+
+// topAllLayoutOf는 all 열 목록에서 폭에 맞는 칸을 tier 순서대로 고른다. topAllGroupColumns가 고른 그룹과 순서를 넘긴다.
+func topAllLayoutOf(width int, all []topAllColumn) ([]topAllColumn, int) {
+	chosen := topAllColumnsOf(all, 0)
+	for tier := 1; tier <= topAllMaxTierOf(all); tier++ {
+		candidate := topAllColumnsOf(all, tier)
 		if topAllLineWidth(candidate)+topSignalMinWidth > width {
 			break
 		}
@@ -2016,17 +2108,21 @@ func topAllLayout(width int) ([]topAllColumn, int) {
 	return chosen, max(topSignalMinWidth, width-topAllLineWidth(chosen))
 }
 
-func topAllMaxTier() int {
+func topAllMaxTier() int { return topAllMaxTierOf(topAllColumns) }
+
+func topAllMaxTierOf(all []topAllColumn) int {
 	tier := 0
-	for _, column := range topAllColumns {
+	for _, column := range all {
 		tier = max(tier, column.tier)
 	}
 	return tier
 }
 
-func topAllColumnsUpTo(tier int) []topAllColumn {
+func topAllColumnsUpTo(tier int) []topAllColumn { return topAllColumnsOf(topAllColumns, tier) }
+
+func topAllColumnsOf(all []topAllColumn, tier int) []topAllColumn {
 	columns := []topAllColumn{}
-	for _, column := range topAllColumns {
+	for _, column := range all {
 		if column.tier <= tier {
 			columns = append(columns, column)
 		}

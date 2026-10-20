@@ -168,6 +168,7 @@ func runDuWith(args []string, version string, sources duSources, ok bool, stdout
 	set.SetOutput(os.Stderr)
 	bindCommon(set, &options)
 	workers := set.Int("workers", duDefaultWorkers, T("command.du.option.workers"))
+	set.IntVar(workers, "w", duDefaultWorkers, T("command.du.option.workers"))
 	rows := set.Int("top", 0, T("command.du.option.top"))
 	crossMounts := set.Bool("cross-mounts", false, T("command.du.option.cross_mounts"))
 	noBrowse := set.Bool("no-browse", false, T("command.du.option.no_browse"))

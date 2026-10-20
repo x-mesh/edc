@@ -86,10 +86,20 @@ type cleanDocker struct {
 	APIVersion      string                  `json:"api_version,omitempty"`
 	ServerVersion   string                  `json:"server_version,omitempty"`
 	OperatingSystem string                  `json:"operating_system,omitempty"`
+	RootDir         string                  `json:"root_dir,omitempty"`
 	Inside          string                  `json:"inside,omitempty"`
 	MeasuredAt      *time.Time              `json:"measured_at,omitempty"`
 	ElapsedMS       *int64                  `json:"elapsed_ms,omitempty"`
 	Types           []cleanDockerTypeResult `json:"types,omitempty"`
+	// live는 지금 도는 엔진의 볼륨과 컨테이너 이름이다. 옛 데이터 디렉터리의 항목이 엔진에 같은 이름으로 있는지 비교할 때만 쓴다.
+	live cleanDockerLive
+}
+
+// cleanDockerLive의 known이 false이면 엔진에 물어보지 못한 것이다. 이름이 없다는 뜻이 아니다.
+type cleanDockerLive struct {
+	known      bool
+	volumes    map[string]bool
+	containers map[string]string
 }
 
 type cleanDockerUsage struct {
@@ -149,6 +159,53 @@ func cleanDockerQuery(ctx context.Context, deps cleanDeps, socket string, sectio
 	volumes := cleanDockerRequestTypes(ctx, client, cleanDockerVolumeTimeout, "/system/df?type=volume", []string{cleanDockerVolumes})
 	section.Types = append(first, volumes...)
 	cleanDockerFinish(section)
+	section.live = cleanDockerLiveNames(ctx, client, cleanDockerAPIPath)
+}
+
+// cleanDockerEngineRoot는 엔진이 쓰는 데이터 디렉터리를 /info에서 읽는다. 읽지 못하면 빈 문자열이다.
+func cleanDockerEngineRoot(ctx context.Context, client *http.Client, prefix string) string {
+	info, err := cleanDockerGet(ctx, client, cleanDockerInfoTimeout, prefix+"/info")
+	if err != nil {
+		return ""
+	}
+	var engine struct{ DockerRootDir string }
+	if json.Unmarshal(info.body, &engine) != nil {
+		return ""
+	}
+	return engine.DockerRootDir
+}
+
+// cleanDockerLiveNames는 엔진의 볼륨과 컨테이너 이름을 읽는다. 둘 중 하나라도 읽지 못하면 known이 false다.
+func cleanDockerLiveNames(ctx context.Context, client *http.Client, prefix string) cleanDockerLive {
+	volumes, err := cleanDockerGet(ctx, client, cleanDockerDFTimeout, prefix+"/volumes")
+	if err != nil {
+		return cleanDockerLive{}
+	}
+	var volumeList struct{ Volumes []struct{ Name string } }
+	if json.Unmarshal(volumes.body, &volumeList) != nil {
+		return cleanDockerLive{}
+	}
+	containers, err := cleanDockerGet(ctx, client, cleanDockerDFTimeout, prefix+"/containers/json?all=1")
+	if err != nil {
+		return cleanDockerLive{}
+	}
+	var containerList []struct {
+		Names  []string
+		Labels map[string]string
+	}
+	if json.Unmarshal(containers.body, &containerList) != nil {
+		return cleanDockerLive{}
+	}
+	live := cleanDockerLive{known: true, volumes: map[string]bool{}, containers: map[string]string{}}
+	for _, volume := range volumeList.Volumes {
+		live.volumes[volume.Name] = true
+	}
+	for _, container := range containerList {
+		for _, name := range container.Names {
+			live.containers[strings.TrimPrefix(name, "/")] = container.Labels["com.docker.compose.project"]
+		}
+	}
+	return live
 }
 
 // cleanDockerLocate는 docker context에서 socket 경로를 읽는다. 기본 경로를 추측하지 않고, unix socket이 아니면 연결하지 않는다.
@@ -237,11 +294,16 @@ func cleanDockerHandshake(ctx context.Context, client *http.Client, section *cle
 	case !supported:
 		section.APIVersion = version
 		section.fail(cleanUnsupported, cleanReasonAPIVersion, version)
+		// 집계는 1.52 이상만 지원하지만 데이터 디렉터리와 이름 목록은 엔진의 자기 버전으로 읽을 수 있다.
+		// 옛 데이터 디렉터리 섹션이 이 값을 쓴다. 실패해도 상태는 그대로 unsupported다.
+		prefix := "/v" + version
+		section.RootDir = cleanDockerEngineRoot(ctx, client, prefix)
+		section.live = cleanDockerLiveNames(ctx, client, prefix)
 		return false
 	}
 	section.APIVersion = version
 	info, err := cleanDockerGet(ctx, client, cleanDockerInfoTimeout, cleanDockerAPIPath+"/info")
-	var engine struct{ OperatingSystem, ServerVersion string }
+	var engine struct{ OperatingSystem, ServerVersion, DockerRootDir string }
 	if err == nil && json.Unmarshal(info.body, &engine) != nil {
 		err = errCleanDockerInvalid
 	}
@@ -254,7 +316,7 @@ func cleanDockerHandshake(ctx context.Context, client *http.Client, section *cle
 		section.fail(cleanFailed, reason, detail)
 		return false
 	}
-	section.OperatingSystem, section.ServerVersion = engine.OperatingSystem, engine.ServerVersion
+	section.OperatingSystem, section.ServerVersion, section.RootDir = engine.OperatingSystem, engine.ServerVersion, engine.DockerRootDir
 	if strings.EqualFold(strings.TrimSpace(engine.OperatingSystem), "OrbStack") {
 		section.Inside = cleanOrbStack
 	}

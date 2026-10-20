@@ -586,7 +586,7 @@ edc du --json - /var            # 항목을 metrics.rows에 담음
 
 기본으로 한 파일 시스템 안에서만 셉니다. 경로 아래의 마운트에는 들어가지 않고, 건너뛴 마운트마다 파일 시스템 종류와 `statfs`가 알려 준 사용량을 보여 줍니다. bind mount와 overlay mount는 다른 경로와 파일 시스템을 공유하므로 사용량을 `-`로 표시합니다. 디렉터리를 자기 자신 위에 bind mount한 경우에는 그 파일이 다른 곳에 없으므로 건너뛰지 않고 셉니다.
 
-바쁜 호스트에서도 CPU를 적게 쓰도록 기본으로 디렉터리 4개를 동시에 읽습니다. `--workers`로 이 수를 바꿀 수 있습니다. 디렉터리마다 기록 하나와 가장 큰 파일 몇 개만 남기므로, 메모리 사용량은 파일 수가 아니라 디렉터리 수에 따라 늘어납니다.
+바쁜 호스트에서도 CPU를 적게 쓰도록 기본으로 디렉터리 4개를 동시에 읽습니다. `--workers`나 `-w`로 이 수를 바꿀 수 있습니다. 디렉터리마다 기록 하나와 가장 큰 파일 몇 개만 남기므로, 메모리 사용량은 파일 수가 아니라 디렉터리 수에 따라 늘어납니다.
 
 제한 시간(기본 60초)이 지나면 탐색을 멈춥니다. 이때 결과는 `warn`이고 `metrics.partial`은 `true`이며, 크기는 읽은 디렉터리만 센 값입니다. 제한 시간이나 `q`로 멈추면 텍스트 출력의 마지막 줄에도 부분 결과라고 표시하고, 제한 시간에 멈췄을 때는 `--timeout`을 늘린 명령을 함께 보여 줍니다. 읽지 못한 디렉터리가 있으면 결과는 `warn`이고 `-v`로 그 목록을 볼 수 있습니다. 모든 디렉터리를 읽으려면 root로 실행합니다. macOS에서는 결과가 `skip`입니다.
 
@@ -643,6 +643,8 @@ edc clean --json -              # 후보를 metrics.candidates에 담음
 | `huggingface` | `$HF_HUB_CACHE`, `$HUGGINGFACE_HUB_CACHE`, `$HF_HOME/hub`, `$XDG_CACHE_HOME/huggingface/hub`, 없으면 `~/.cache/huggingface/hub` |
 | `rustup-toolchains` | `$RUSTUP_HOME/toolchains`, 없으면 `~/.rustup/toolchains` |
 | `ollama` (macOS) | `$OLLAMA_MODELS`, 없으면 `~/.ollama/models` |
+| `journald` (Linux) | `/var/log/journal`. 후보 아래 줄에 `journald.conf`와 drop-in 파일의 제한 설정을 systemd가 적용하는 순서대로 보여 줍니다. |
+| `apt-archives` (Linux) | `/var/cache/apt/archives` |
 | `app-caches` (macOS) | `~/Library/Caches`의 나머지 폴더 |
 | `dot-cache` (macOS) | `~/.cache`의 나머지 폴더 |
 
@@ -694,13 +696,15 @@ Xcode Archives, 시뮬레이터 기기, `Application Support`, `Containers`는 �
 | `filesystems` | 파일 시스템별 사용량 합계 |
 | `project_build_dirs` | `--project`로 지정한 루트의 빌드 폴더 |
 | `docker` | Docker 엔진이 보고한 집계 |
+| `docker_root` | 엔진이 더 이상 쓰지 않는 옛 Docker 데이터 디렉터리(Linux) |
+| `system` | 큰 로그, 현재 리비전이 아닌 snap 리비전, buildx 캐시 폴더(Linux) |
 | `vm_disks` | 가상 머신의 디스크 파일(예: OrbStack) |
 | `worktrees` | `~/.gk/worktree`의 git-kit worktree |
 | `not_measured` | 재지 않는 유형과 이유 |
 
-섹션은 후보, 빌드 폴더, Docker, VM 디스크, worktree 순서로 실행하고 제한 시간 하나를 나눠 씁니다.
+섹션은 후보, 빌드 폴더, Docker, 옛 Docker 데이터, 큰 로그와 snap, VM 디스크, worktree 순서로 실행하고 제한 시간 하나를 나눠 씁니다.
 
-파일 시스템 합계에는 다시 만들 수 있는 빌드 폴더만 더합니다. 엔진 집계, VM 디스크, worktree는 어떤 합계에도 더하지 않습니다.
+파일 시스템 합계에는 다시 만들 수 있는 빌드 폴더만 더합니다. 엔진 집계, 옛 Docker 데이터, 큰 로그, VM 디스크, worktree는 어떤 합계에도 더하지 않습니다.
 
 ### 프로젝트 빌드 폴더
 
@@ -767,6 +771,50 @@ socket 경로는 `docker context inspect`에 물어서 `DOCKER_HOST`와 현재 c
 볼륨은 사용자 데이터입니다. `volumes` 항목은 `user_data`가 `true`이고 `reclaimable_bytes`와 정리 명령이 없습니다.
 
 `docker system df`는 크기를 반올림하고 1000바이트 단위를 씁니다. edc 텍스트 출력은 1024바이트 단위를 써서 두 수치가 다릅니다. JSON에는 정확한 바이트 수가 있습니다.
+
+### 옛 Docker 데이터 디렉터리
+
+Linux에서는 `/var/lib/docker`를 확인합니다. 엔진이 다른 데이터 디렉터리를 쓰면 이 디렉터리가 옛 데이터 후보입니다. 엔진이 쓰는 디렉터리는 `docker.root_dir`에 있고, API 1.52보다 낮은 엔진에서도 읽습니다.
+
+edc는 지워도 되는지 판정하지 않고, 판단에 도움이 되는 사실만 보여 줍니다. 파일을 읽기만 하며 `docker` 명령은 실행하지 않습니다.
+
+`docker_root.roots`의 항목마다 아래 사실이 있습니다.
+
+- `usage_bytes`, `dirs`: 디렉터리 전체와 안의 폴더별 크기
+- `mounted`, `open_files`: 디렉터리 아래에 마운트나 열린 파일이 있는지. `open_files_complete`가 `false`이면 읽지 못한 process가 있습니다.
+- `last_container_stop`, `newest_volume_write`: 마지막으로 활동한 날짜
+- `containers`: 디렉터리에 기록된 컨테이너의 이미지, Compose 프로젝트, 종료 시각. `in_engine`, `project_in_engine`은 엔진에 같은 이름이 있는지 나타냅니다.
+- `volumes`: 볼륨별 크기, 가장 최근 파일의 날짜, 그 볼륨을 마운트한 컨테이너 `used_by`. `in_engine`은 엔진에 같은 이름의 볼륨이 있는지 나타냅니다.
+
+항목에는 디렉터리를 지우는 `rm -rf --one-file-system` 명령이 `cleanup`으로 있고, `-v`에서 텍스트로 보여 줍니다. edc는 이 명령을 실행하지 않습니다. 디렉터리 아래에 마운트나 열린 파일이 있거나, 마운트 표나 `/proc` 전체를 읽지 못하면 `cleanup`은 비어 있습니다.
+
+이 볼륨에는 `docker volume rm`을 쓰지 마세요. 엔진은 옛 디렉터리를 모르므로, 자기 디렉터리에 있는 같은 이름의 볼륨을 지웁니다.
+
+`used_by`가 빈 볼륨은 이 볼륨을 쓴 컨테이너 기록이 없는 것이고, 사용자 데이터일 수 있습니다. 지우기 전에 내용을 확인하세요.
+
+볼륨은 큰 순서로 20개까지 보이고, 나머지는 `volumes_omitted`와 `omitted_bytes`로 셉니다. `-v`가 없으면 텍스트 출력은 이름 없는 볼륨을 한 줄로 묶고 컨테이너 목록을 내지 않습니다.
+
+컨테이너의 이름, 이미지, 라벨, 마운트, 시각은 `containers/*/config.v2.json`에서 읽습니다. 환경 변수는 담지도 출력하지도 않습니다.
+
+엔진이 데이터 디렉터리를 알려 주지 않으면 상태는 `unknown_location`입니다. `docker`가 없거나 엔진이 꺼져 있으면 텍스트 출력에는 이 섹션이 나오지 않고 `docker_root.status`는 비어 있습니다.
+
+### 큰 로그, snap 리비전, 빌드 캐시
+
+Linux에서는 `/var/log`에서 100 MB 이상인 파일을 나열합니다. `/var/log/journal`은 `journald` 후보가 재므로 건너뜁니다. 현재 리비전이 아닌 snap 리비전도 나열합니다.
+
+edc는 파일을 지우지 않고, 판단에 도움이 되는 사실만 보여 줍니다.
+
+`system.large_logs`의 항목에는 크기와 마지막 수정일이 있습니다. `open_files`는 프로세스가 그 파일에 잡고 있는 파일 기술자 수이고, `logrotate`는 그 경로에 맞는 규칙이 있는 logrotate 설정 파일입니다. 절대 경로인 `include` 줄은 따라가며, 비어 있으면 edc가 읽은 파일에서 규칙을 찾지 못했다는 뜻이지 logrotate가 그 파일을 돌리지 않는다는 증거는 아닙니다.
+
+`-v`에서는 명령을 텍스트로 보여 주고 edc는 실행하지 않습니다. 프로세스가 열고 있는 파일에는 `truncate -s 0`, 닫힌 파일에는 `rm`을 보여 줍니다. `/proc`을 읽지 못하면 명령을 보여 주지 않습니다.
+
+`system.snap_revisions`의 항목에는 이름, 리비전, 현재 리비전이 있습니다. 현재 리비전은 `/snap/<이름>/current` 링크에서 읽습니다. 명령은 `snap remove <이름> --revision=<리비전>`입니다. 링크를 읽지 못한 snap은 건너뛰고 `system.snaps_unknown`으로 셉니다.
+
+`docker buildx build --cache-to type=local`이 쓰는 폴더도 찾습니다. 이 폴더는 OCI 이미지 레이아웃이라 `oci-layout`, `index.json` 파일과 `blobs` 폴더가 있습니다. 홈 폴더 아래 1~2단계 폴더를 이름이 아니라 구조로 확인하고, 링크는 따라가지 않으며, 폴더 50,000개를 확인하면 멈춥니다.
+
+`system.build_caches`의 항목에는 크기, 가장 최근 파일의 날짜, `open_files`가 있습니다. `docker buildx prune`은 이 폴더를 지우지 않습니다. `-v`에서는 `rm -rf <경로>`를 텍스트로 보여 주고, 프로세스가 파일을 열고 있거나 `/proc` 전체를 읽지 못하면 명령을 보여 주지 않습니다. 탐색이 상한이나 제한 시간에서 멈췄거나 재지 못한 폴더가 있으면 `build_caches_incomplete`가 `true`이고, 이때는 캐시가 더 있을 수 있습니다.
+
+각 목록은 큰 순서로 10개까지 보이고, 나머지는 `large_logs_omitted`와 `build_caches_omitted`로 셉니다.
 
 ### VM 디스크
 
@@ -1098,6 +1146,48 @@ macOS에서는 `psi` 박스를 생략하고 안내를 보입니다. macOS의 mem
 
 `--split`은 대시보드에서만 동작합니다. 표를 출력하는 실행(`--count`, `--json`, 파이프, `NO_COLOR`)이나 `--process`와 함께 직접 주면 exit 2로 끝납니다. 설정 값은 그런 실행을 막지 않고, `--process`와 함께면 process 보기가 유지됩니다.
 
+`--view`로 처음 보기를 고릅니다. `all`, `cpu`, `memory`, `disk`, `network`, `pressure`, `split`을 쓸 수 있고, `Esc`를 누르면 이 보기로 돌아옵니다. 설정 파일의 `defaults.top.view`에 적으면 매번 그 보기로 시작합니다.
+
+`--panels`로 표 아래에 늘 보일 패널을 고릅니다. `cpu`, `mem`, `disk`, `net`, `psi`, `ai`, `events`를 쉼표로 이어 적고, `none`은 패널을 모두 뺍니다.
+
+- `cpu`, `mem`, `disk`, `psi`는 선택한 행의 요약, 최근 60초 최고치, 그 자원을 가장 많이 쓴 process 셋을 세 줄로 보입니다. 오른쪽 process 목록은 기준 하나로만 줄 세우므로, 자원마다 상위 process를 이 패널에서 봅니다. `disk` 패널을 켜면 process별 I/O도 읽습니다. `psi` 패널은 I/O를 기다리는 process를 보이고, macOS는 PSI를 수집하지 않으므로 한 줄 안내만 보입니다.
+- `net`은 선택한 행의 network limit입니다. macOS는 이 값을 수집하지 않으므로 한 줄 안내만 보입니다.
+- `ai`는 `edc ai`와 같은 Claude·Codex 사용량 한도입니다. 1분마다 다시 조회합니다.
+- `events`는 최근 이벤트입니다.
+
+목록 앞의 패널이 먼저 자리를 받습니다. 패널이 들어가지 않으면 패널을 자르지 않고 통째로 숨긴 뒤 상태 줄에 `+net hidden`처럼 알립니다. 뒤의 작은 패널은 남은 줄에 들어가면 보입니다. 표는 적어도 5행, 박스는 데이터 행을 적어도 3개 남깁니다.
+
+`a`를 누르면 `ai` 패널을 켜고 끕니다. 패널을 켜기 전에는 Claude와 Codex 정보를 읽지 않습니다. `Enter` 상세나 `h` 최고치를 연 동안에는 그 패널이 패널 자리를 씁니다.
+
+설정 파일의 `defaults.top.panels`에 같은 문법으로 적으면 매번 그 목록으로 시작합니다. 목록을 정하지 않으면 지금 배치를 그대로 씁니다. network 보기에서 `net` 패널이 보이고, 빈자리에 이벤트가 보입니다.
+
+`defaults.top.process_sort`에 `cpu`, `mem`, `io`를 적으면 process 목록의 처음 정렬이 됩니다. `o`로 바꾸는 동작은 그대로입니다.
+
+`--columns`로 all 보기의 열 그룹을 고릅니다. `net`, `cpu`, `mem`, `disk`, `psi`를 보이고 싶은 순서대로 쉼표로 이어 적고, `all`은 다섯 그룹을 모두 보입니다. 그룹마다 기본 열은 늘 보이고, 폭이 남으면 열을 더 붙입니다. 그룹을 빼면 그 폭을 남은 그룹이 씁니다. 이름 뒤에 `+`를 붙이면 그 그룹의 열을 다른 그룹보다 먼저 붙입니다. 예를 들어 `--columns net+,cpu,mem`은 `hot core`보다 packet과 network 오류 열을 먼저 보입니다. 설정 파일의 `defaults.top.columns`에 적으면 매번 그 목록으로 시작합니다.
+
+목록에 `ai`를 넣으면 `claude` 그룹과 `codex` 그룹에 두 도구의 요청이 보입니다. 행마다 직전 행 뒤부터 그 행 시각까지 들어온 요청을 세므로, 같은 줄의 다른 열과 견줄 수 있습니다. 그룹마다 `req`는 요청 수이고, `tok`은 새 입력과 출력을 더한 token으로 `edc ai`의 `total`과 같은 값입니다. prompt cache에서 읽은 token은 넣지 않고, 0은 `·`로 보입니다. Claude Code는 응답이 끝난 뒤 기록을 쓰고 edc는 2초마다 읽으므로, 가장 최근 행은 2~3초 뒤에 값이 채워집니다. `all`에는 `ai`가 들지 않고, 목록에 `ai`가 있을 때만 Claude와 Codex 대화 기록을 읽습니다.
+
+```toml
+[defaults.top]
+split = "net,disk"
+view = "split"
+panels = "net,ai,events"
+process_sort = "io"
+columns = "net+,cpu,mem"
+```
+
+`--view`, `--panels`, `--columns`도 `--split`처럼 대시보드에서만 동작하고, `--view`를 `--process`와 함께 주면 exit 2로 끝납니다. 설정 값은 표를 출력하는 실행을 막지 않습니다.
+
+`edc top setup`을 실행하면 이 값들을 실제 화면을 미리 보며 고를 수 있습니다. 위쪽에는 보기, 열 그룹, 박스, 패널, process 정렬, interval 줄이 있고, 아래쪽에는 실제 sample로 그린 대시보드가 값을 바꿀 때마다 바로 바뀝니다.
+
+- `↑`·`↓`로 줄을 고르고, `←`·`→`로 값을 바꾸거나 박스·패널 항목을 고릅니다.
+- `Space`로 열 그룹, 박스, 패널을 켜고 끄고, `[`·`]`로 순서를 옮깁니다. 열 그룹 줄에서 `+`를 누르면 그 그룹의 열을 먼저 더 보입니다.
+- `Tab`을 누르면 미리보기를 터미널 전체 크기로 그립니다. 배치는 저장한 뒤의 `edc top`과 같고, 상태 줄 첫 줄에만 설정 화면의 키 안내가 보입니다.
+- `z`를 누르면 80×24, 120×30 크기로 바꿔 봅니다. 터미널에 들어가지 않는 크기는 건너뜁니다. 그 크기에서 숨는 패널은 패널 줄 옆에 `+net hidden at 80×24`처럼 보입니다.
+- `Enter`를 누르면 저장할 `[defaults.top]` 내용을 보여 주고, `y`를 누르면 저장합니다.
+
+`edc top setup`은 바꾼 키만 고치고 다른 키와 섹션은 그대로 둡니다. 파일 전체를 다시 쓰므로 파일 안의 주석은 남지 않습니다. 설정 화면을 연 사이에 파일이 바뀌면 저장하지 않고 exit 2로 끝나고, 저장하지 않은 변경이 있는 채로 나가면 exit 4로 끝납니다.
+
 disk 보기에는 macOS와 Linux 모두 물리 disk의 IOPS와 평균 `await`가 추가됩니다. Linux에서는 모든 물리 disk의 합산 `busy%`와, memory 보기의 `mem%` 옆 memory pressure도 추가됩니다. 합산 `busy%`는 여러 disk가 동시에 바쁘면 100%를 넘을 수 있습니다. macOS 대시보드는 수집하지 않는 iowait, PSI, disk busy, file descriptor, listen overflow, softnet drop, conntrack, I/O 지연 열을 숨기고 도움말에 제한을 설명합니다. macOS의 memory와 pressure 보기에는 kernel의 memory 압박 단계(`kern.memorystatus_vm_pressure_level`)인 `mem lvl`이 `normal`, `warn`, `critical`로 나옵니다. CPU와 pressure 보기의 `blocked`는 `U` 상태 process 수입니다. Linux는 작업(thread)을 세므로 두 값의 단위가 다릅니다. network 보기의 interface errors·drops는 macOS와 Linux 모두 표시하며, macOS에서는 kernel의 interface 통계(`net.link.generic.ifdata`)에서 읽습니다. memory 보기의 `swap/s`는 kernel이 초당 swap으로 내보낸 byte입니다.
 
 Linux에서는 일부 보기에 선택 열이 더 있습니다. CPU 보기의 `steal%`는 hypervisor가 다른 guest에 CPU를 내준 시간의 비율이고, `blocked`는 지금 I/O를 기다리며 멈춘 작업 수입니다. disk 보기의 `queue`는 진행 중인 I/O 요청의 평균 개수를 물리 disk마다 더한 값입니다. network 보기에는 초당 TCP 재전송 segment(`retr/s`), 보낸 RST(`rst/s`), 실패한 연결 시도(`fail/s`)가 있습니다. 선택 열은 다른 열이 모두 들어가고 `signal`에 13열 이상이 남을 때만 보입니다.
@@ -1306,7 +1396,7 @@ token은 이 host의 로그에서 셉니다. 2초마다 새로 붙은 줄만 읽
 
 표는 이 host만 셉니다. 다른 기기나 claude.ai에서 쓴 양은 한도 비율에만 나타납니다.
 
-`in`은 새로 보낸 입력이고, `cache`는 prompt cache에서 읽은 입력입니다. `hit`은 `cache / (in + cache)`를 내림한 값입니다. Claude의 `in`에는 cache에 새로 쓴 token도 들어가므로, 이 token은 miss로 셉니다. 입력이 없는 구간의 `hit`은 `-`로 표시합니다. `--json`에는 소수점 한 자리의 `cache_hit_percent`가 들어가고, 입력이 없는 구간에서는 이 필드를 뺍니다. 표는 88열이 필요합니다.
+`in`은 새로 보낸 입력이고, `cache`는 prompt cache에서 읽은 입력입니다. `total`은 `in + out`이고 `cache`는 넣지 않습니다. cache 읽기는 대화가 길수록 커져서 실제로 처리한 양을 가리기 때문입니다. `hit`은 `cache / (in + cache)`를 내림한 값입니다. Claude의 `in`에는 cache에 새로 쓴 token도 들어가므로, 이 token은 miss로 셉니다. 입력이 없는 구간의 `hit`은 `-`로 표시합니다. `--json`에는 소수점 한 자리의 `cache_hit_percent`가 들어가고, 입력이 없는 구간에서는 이 필드를 뺍니다. 표는 88열이 필요합니다.
 
 한도 상자는 한도 구간마다 사용률, reset 시각, 남은 시간을 보여 줍니다.
 

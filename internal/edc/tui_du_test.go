@@ -206,7 +206,8 @@ func TestDuBrowserStopsTheScanAndOpensWhatItRead(t *testing.T) {
 	job := &duScanJob{finished: make(chan struct{})}
 	started := time.Date(2026, 10, 14, 9, 0, 0, 0, time.UTC)
 	model := newDuBrowser("/data", progress, func() { cancelled++ }, job, started, func() time.Time { return started.Add(3200 * time.Millisecond) }, false)
-	if view := model.View().Content; !strings.HasPrefix(view, "reading /data · 1234 directories · 3.2s\nq stops") {
+	model.workers = 4
+	if view := model.View().Content; !strings.HasPrefix(view, "reading /data · 1234 directories · 3.2s · workers 4\nq stops") {
 		t.Fatalf("view %q", view)
 	}
 	model = duBrowserPress(t, model, "q", "esc")
@@ -324,5 +325,42 @@ func TestDuNoBrowseCtrlCStopsAndQuits(t *testing.T) {
 	next, command := next.Update(duScanDoneMsg{})
 	if cancelled != 1 || !next.(duBrowser).scan.partial || command == nil {
 		t.Fatal("ctrl-c did not preserve the partial scan and quit")
+	}
+}
+
+func TestDuBrowseModelCarriesTheWorkersAndModeOfTheScan(t *testing.T) {
+	progress := new(atomic.Int64)
+	progress.Store(42)
+	started := time.Date(2026, 10, 14, 9, 0, 0, 0, time.UTC)
+	options := duOptions{root: "/data", workers: 6, progress: progress}
+	for _, noBrowse := range []bool{false, true} {
+		model := newDuBrowseModel(options, func() {}, &duScanJob{finished: make(chan struct{})}, started, noBrowse)
+		model.now = func() time.Time { return started.Add(1500 * time.Millisecond) }
+		if model.workers != 6 || model.noBrowse != noBrowse || model.root != "/data" || model.progress != progress {
+			t.Fatalf("noBrowse %v: model = %+v", noBrowse, model)
+		}
+		if view := model.View().Content; !strings.Contains(view, "reading /data · 42 directories · 1.5s · workers 6") {
+			t.Errorf("noBrowse %v: view %q", noBrowse, view)
+		}
+	}
+}
+
+func TestDuBrowserTitleShowsTheWorkersOfTheScan(t *testing.T) {
+	t.Setenv("COLORTERM", "truecolor")
+	scan := duScan{root: duBrowserTree()}
+	model := duBrowserOn(scan, 120, 12)
+	model.workers = 4
+	plainTitle := model.title()
+	if !strings.HasSuffix(plainTitle, " · workers 4") || !strings.HasPrefix(plainTitle, "edc du · /data · ") {
+		t.Fatalf("plain title %q", plainTitle)
+	}
+	model.color = true
+	coloredTitle := model.title()
+	if coloredTitle == plainTitle || ansi.Strip(coloredTitle) != plainTitle {
+		t.Fatalf("colored title %q does not read like the plain title %q", ansi.Strip(coloredTitle), plainTitle)
+	}
+	model.workers = 1
+	if title := model.title(); !strings.HasSuffix(ansi.Strip(title), " · workers 1") {
+		t.Fatalf("title with one worker %q", ansi.Strip(title))
 	}
 }

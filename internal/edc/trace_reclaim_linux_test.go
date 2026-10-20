@@ -244,3 +244,35 @@ func TestTraceReclaimCountsMemcgReclaimAndThrottle(t *testing.T) {
 		t.Logf("%s %s: %d stalls, total %.3fms, max %.3fms, reclaimed %d bytes", row.Process, row.Kind, row.Stalls, row.TotalMS, row.MaxMS, row.ReclaimedBytes)
 	}
 }
+
+func TestReclaimHookTargetFallsBackToTheRenamedFunction(t *testing.T) {
+	has := func(names ...string) func(string) bool {
+		return func(name string) bool {
+			for _, candidate := range names {
+				if candidate == name {
+					return true
+				}
+			}
+			return false
+		}
+	}
+	tests := []struct {
+		name   string
+		target string
+		btf    []string
+		want   string
+		wantOK bool
+	}{
+		{"the original name exists", "mem_cgroup_handle_over_high", []string{"mem_cgroup_handle_over_high", "__mem_cgroup_handle_over_high"}, "mem_cgroup_handle_over_high", true},
+		{"only the renamed function exists", "mem_cgroup_handle_over_high", []string{"__mem_cgroup_handle_over_high"}, "__mem_cgroup_handle_over_high", true},
+		{"neither exists", "mem_cgroup_handle_over_high", []string{"other"}, "", false},
+		{"a hook without an alternate", "btf_trace_mm_compaction_begin", []string{"__btf_trace_mm_compaction_begin"}, "", false},
+		{"a hook without an alternate that exists", "btf_trace_mm_compaction_begin", []string{"btf_trace_mm_compaction_begin"}, "btf_trace_mm_compaction_begin", true},
+	}
+	for _, test := range tests {
+		got, ok := reclaimHookTarget(test.target, has(test.btf...))
+		if got != test.want || ok != test.wantOK {
+			t.Errorf("%s: got %q, %v; want %q, %v", test.name, got, ok, test.want, test.wantOK)
+		}
+	}
+}

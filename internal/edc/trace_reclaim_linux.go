@@ -81,10 +81,19 @@ func collectReclaimStats(options reclaimTraceOptions, stop <-chan struct{}, onEv
 		{"throttle", [2]string{"mem_cgroup_handle_over_high", "mem_cgroup_handle_over_high"}, [2]string{"reclaim_throttle_begin", "reclaim_throttle_end"}},
 		{"compact", [2]string{"btf_trace_mm_compaction_begin", "btf_trace_mm_compaction_end"}, [2]string{"reclaim_compact_begin", "reclaim_compact_end"}},
 	}
+	hasType := func(name string) bool {
+		_, err := kernel.AnyTypesByName(name)
+		return err == nil
+	}
 	for _, hook := range hooks {
-		for _, target := range hook.targets {
-			if _, err := kernel.AnyTypesByName(target); err != nil {
+		for index, target := range hook.targets {
+			resolved, ok := reclaimHookTarget(target, hasType)
+			if !ok {
 				unavailable[hook.kind] = "kernel BTF has no " + target
+				continue
+			}
+			if resolved != target {
+				spec.Programs[hook.names[index]].AttachTo = resolved
 			}
 		}
 		if unavailable[hook.kind] != "" {
@@ -292,4 +301,19 @@ func parseReclaimEvent(sample []byte, clockOffset int64, pageSize uint64) (recla
 		event.Reclaimed = &reclaimed
 	}
 	return event, true
+}
+
+// reclaimTargetAlternates는 새 kernel에서 이름이 바뀐 hook 함수다. 새 kernel은 mem_cgroup_handle_over_high를 인라인 래퍼로 두고
+// 실제 함수를 __mem_cgroup_handle_over_high로 남긴다. 래퍼가 BTF에 없다고 hook을 빼면 throttle이 늘 0으로 보인다.
+var reclaimTargetAlternates = map[string]string{"mem_cgroup_handle_over_high": "__mem_cgroup_handle_over_high"}
+
+// reclaimHookTarget은 BTF에 있는 hook 대상을 돌려준다. 원래 이름이 없으면 바뀐 이름을 찾고, 둘 다 없으면 false다.
+func reclaimHookTarget(target string, has func(string) bool) (string, bool) {
+	if has(target) {
+		return target, true
+	}
+	if alternate := reclaimTargetAlternates[target]; alternate != "" && has(alternate) {
+		return alternate, true
+	}
+	return "", false
 }

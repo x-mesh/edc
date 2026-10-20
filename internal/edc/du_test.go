@@ -2,6 +2,7 @@ package edc
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"math/rand"
 	"os"
@@ -527,5 +528,91 @@ func TestDuMeasureLeavesHostWideSourcesAlone(t *testing.T) {
 	}
 	if measured.filesystem.Mount != walked.filesystem.Mount {
 		t.Fatalf("duMeasure filesystem %q, duWalk %q", measured.filesystem.Mount, walked.filesystem.Mount)
+	}
+}
+
+func TestDuWorkersShortFlag(t *testing.T) {
+	sources, ok := hostDuSources()
+	if !ok {
+		t.Skip("du is not supported on this platform")
+	}
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "file"), []byte("data"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, flag := range []string{"-w", "--workers"} {
+		jsonPath := filepath.Join(t.TempDir(), "out.json")
+		stdout, err := os.CreateTemp(t.TempDir(), "out")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if code := runDuWith([]string{flag, "3", "--json", jsonPath, root}, "test", sources, ok, stdout); code != 0 {
+			t.Fatalf("%s: exit %d", flag, code)
+		}
+		data, err := os.ReadFile(jsonPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var report interface{}
+		if err := json.Unmarshal(data, &report); err != nil {
+			t.Fatal(err)
+		}
+		if got, found := duFindNumber(report, "workers"); !found || got != 3 {
+			t.Errorf("%s: workers = %v, found %v", flag, got, found)
+		}
+	}
+}
+
+func duFindNumber(value interface{}, key string) (float64, bool) {
+	switch typed := value.(type) {
+	case map[string]interface{}:
+		if number, ok := typed[key].(float64); ok {
+			return number, true
+		}
+		for _, child := range typed {
+			if number, ok := duFindNumber(child, key); ok {
+				return number, true
+			}
+		}
+	case []interface{}:
+		for _, child := range typed {
+			if number, ok := duFindNumber(child, key); ok {
+				return number, true
+			}
+		}
+	}
+	return 0, false
+}
+
+func TestDuUsesFourWorkersByDefault(t *testing.T) {
+	sources, ok := hostDuSources()
+	if !ok {
+		t.Skip("du is not supported on this platform")
+	}
+	if duDefaultWorkers != 4 {
+		t.Fatalf("duDefaultWorkers = %d, want 4 on every platform", duDefaultWorkers)
+	}
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "file"), []byte("data"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	jsonPath := filepath.Join(t.TempDir(), "out.json")
+	stdout, err := os.CreateTemp(t.TempDir(), "out")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code := runDuWith([]string{"--json", jsonPath, root}, "test", sources, ok, stdout); code != 0 {
+		t.Fatalf("exit %d", code)
+	}
+	data, err := os.ReadFile(jsonPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var report interface{}
+	if err := json.Unmarshal(data, &report); err != nil {
+		t.Fatal(err)
+	}
+	if got, found := duFindNumber(report, "workers"); !found || got != 4 {
+		t.Errorf("workers = %v, found %v", got, found)
 	}
 }

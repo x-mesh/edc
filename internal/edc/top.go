@@ -16,6 +16,9 @@ import (
 )
 
 func runTop(args []string, version string) (code int) {
+	if len(args) > 0 && args[0] == "setup" {
+		return runTopSetup(args[1:], version)
+	}
 	set := newFlagSet("top")
 	set.SetOutput(os.Stderr)
 	config := activeConfig.Defaults.Top
@@ -25,6 +28,9 @@ func runTop(args []string, version string) (code int) {
 	processValue := set.String("process", "", T("command.top.option.process"))
 	fullCommand := set.Bool("full", false, T("command.top.option.full"))
 	splitValue := set.String("split", "", T("command.top.option.split"))
+	viewValue := set.String("view", configuredString(config.View, ""), T("command.top.option.view"))
+	panelsValue := set.String("panels", configuredString(config.Panels, ""), T("command.top.option.panels"))
+	columnsValue := set.String("columns", configuredString(config.Columns, ""), T("command.top.option.columns"))
 	interfaceValue := set.String("interface", configuredString(config.Interface, ""), T("command.top.option.interface"))
 	ebpf := set.Bool("ebpf", false, T("command.top.option.ebpf"))
 	// -d와 --detail은 사용자에게 보이는 이름이다. v0.28.0의 --ebpf도 같은 값으로 계속 받는다.
@@ -66,10 +72,17 @@ func runTop(args []string, version string) (code int) {
 		fmt.Fprintln(os.Stderr, T("history.error.path"))
 		return 2
 	}
-	explicitSplit := false
+	explicitSplit, explicitView, explicitPanels, explicitColumns := false, false, false, false
 	set.Visit(func(option *flag.Flag) {
-		if option.Name == "split" {
+		switch option.Name {
+		case "split":
 			explicitSplit = true
+		case "view":
+			explicitView = true
+		case "panels":
+			explicitPanels = true
+		case "columns":
+			explicitColumns = true
 		}
 		if (option.Name == "write" || option.Name == "w") && option.Value.String() == "" {
 			code = 2
@@ -100,6 +113,41 @@ func runTop(args []string, version string) (code int) {
 	}
 	if explicitSplit && !dashboard {
 		fmt.Fprintln(os.Stderr, T("observe.top.split_needs_view"))
+		return 2
+	}
+	// config의 view, panels, process_sort는 대시보드 배치라서 표와 JSON에서는 쓰지 않는다. 플래그로 준 값만 오류로 알린다.
+	var layout topLayout
+	if *viewValue != "" {
+		if layout.view, err = parseTopView(*viewValue); err != nil {
+			fmt.Fprintln(os.Stderr, T("observe.top.view_invalid"))
+			return 2
+		}
+	}
+	if *panelsValue != "" {
+		if layout.panels, err = parseTopPanels(*panelsValue); err != nil {
+			fmt.Fprintln(os.Stderr, T("observe.top.panels_invalid"))
+			return 2
+		}
+		layout.panelsSet = true
+	}
+	if *columnsValue != "" {
+		if layout.columns, err = parseTopColumns(*columnsValue); err != nil {
+			fmt.Fprintln(os.Stderr, T("observe.top.columns_invalid"))
+			return 2
+		}
+	}
+	if config.ProcessSort != nil && *config.ProcessSort != "" {
+		if layout.processSort, err = parseTopProcessSort(*config.ProcessSort); err != nil {
+			fmt.Fprintln(os.Stderr, T("observe.top.process_sort_invalid"))
+			return 2
+		}
+	}
+	if explicitView && filter.active() {
+		fmt.Fprintln(os.Stderr, T("observe.top.view_with_process"))
+		return 2
+	}
+	if (explicitView || explicitPanels || explicitColumns) && !dashboard {
+		fmt.Fprintln(os.Stderr, T("observe.top.layout_needs_view"))
 		return 2
 	}
 	interfaces, err := parseTopInterfaceFilter(*interfaceValue)
@@ -193,7 +241,7 @@ func runTop(args []string, version string) (code int) {
 		}()
 	}
 	if dashboard {
-		return runTopDashboard(*interval, version, filter, interfaces, recorder, split)
+		return runTopDashboard(*interval, version, filter, interfaces, recorder, split, layout)
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()

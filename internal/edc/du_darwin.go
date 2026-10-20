@@ -16,7 +16,7 @@ import (
 
 const (
 	duDarwinFDReserveDivisor = 4
-	duDefaultWorkers         = 1
+	duDefaultWorkers         = 4
 	duDarwinParentFDLimit    = 32
 	duDarwinBufferSize       = 64 << 10
 	duDarwinDirectory        = 2

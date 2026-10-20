@@ -32,9 +32,9 @@ du:
     label: "file system"
     usage: "%s used of %s"
   browse:
-    title: "edc du · %s · %s · %d entries"
+    title: "edc du · %s · %s · %d entries · workers %d"
     help: "↑↓ move · Enter open · ← up · q quit"
-    reading: "reading %s · %d directories · %s"
+    reading: "reading %s · %d directories · %s · workers %d"
     stop_help: "q stops and shows what edc read"
     cancel_help: "Ctrl-C stops and prints what edc read"
     stopping: "stopping…"

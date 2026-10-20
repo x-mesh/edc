@@ -28,6 +28,7 @@ type duBrowser struct {
 	job          *duScanJob
 	stopping     bool
 	noBrowse     bool
+	workers      int
 	spinnerFrame int
 	// quitAfterScan은 탐색 중에 Ctrl-C를 눌렀다는 뜻이다. 탐색이 멈추면 화면을 열지 않고 닫는다.
 	quitAfterScan bool
@@ -74,8 +75,7 @@ func duBrowse(ctx context.Context, cancel context.CancelFunc, options duOptions,
 		job.scan, job.err = duWalk(ctx, options, sources)
 		close(job.finished)
 	}()
-	model := newDuBrowser(options.root, options.progress, cancel, job, started, time.Now, true)
-	model.noBrowse = noBrowse
+	model := newDuBrowseModel(options, cancel, job, started, noBrowse)
 	final, err := tea.NewProgram(model, tea.WithInput(os.Stdin), tea.WithOutput(os.Stdout)).Run()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -87,6 +87,14 @@ func duBrowse(ctx context.Context, cancel context.CancelFunc, options duOptions,
 	cancel()
 	<-job.finished
 	return job.scan, job.err
+}
+
+// newDuBrowseModel은 화면 모델에 실제 탐색의 옵션을 옮긴다. 진행 줄의 worker 수는 여기서 정해진다.
+func newDuBrowseModel(options duOptions, cancel context.CancelFunc, job *duScanJob, started time.Time, noBrowse bool) duBrowser {
+	model := newDuBrowser(options.root, options.progress, cancel, job, started, time.Now, true)
+	model.noBrowse = noBrowse
+	model.workers = options.workers
+	return model
 }
 
 func newDuBrowser(root string, progress *atomic.Int64, cancel context.CancelFunc, job *duScanJob, started time.Time, now func() time.Time, color bool) duBrowser {
@@ -421,7 +429,7 @@ func (model duBrowser) progressLines() []string {
 	if model.stopping {
 		help = T("du.browse.stopping")
 	}
-	reading := T("du.browse.reading", model.root, model.progress.Load(), elapsed)
+	reading := T("du.browse.reading", model.root, model.progress.Load(), elapsed, model.workers)
 	if model.noBrowse {
 		reading = liveSpinnerFrames[model.spinnerFrame] + " " + reading
 		if !model.stopping {
@@ -481,9 +489,9 @@ func (model duBrowser) browseLines() []string {
 func (model duBrowser) title() string {
 	current := model.current
 	if !model.color {
-		return T("du.browse.title", duNodePath(current), formatSizeShort(current.total), current.count)
+		return T("du.browse.title", duNodePath(current), formatSizeShort(current.total), current.count, model.workers)
 	}
-	text := strings.Replace(T("du.browse.title", "\x00", "\x01", current.count), "edc du", "\x02", 1)
+	text := strings.Replace(T("du.browse.title", "\x00", "\x01", current.count, model.workers), "edc du", "\x02", 1)
 	gray := func(text string) string { return model.paint(text, richGray, false) }
 	return duPhrase(text, gray, model.paint(duNodePath(current), "", true),
 		model.paint(formatSizeShort(current.total), richSizeColor(int64(current.total)), true), model.paint("edc du", richMagenta, true))

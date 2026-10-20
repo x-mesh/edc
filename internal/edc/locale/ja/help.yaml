@@ -562,6 +562,7 @@ command:
       export: "記録したスナップショットを報告に"
       trend: "期間ごとの件数・最小・平均・p95・最大"
       growth: "ディスクの日次増加と変化したディレクトリ"
+      prune: "期間より古い実行を削除"
       top: "host sample、新しい順"
       process: "process sample、新しい順"
       log: "edc log が記録したコマンド実行"

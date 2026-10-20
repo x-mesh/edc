@@ -562,6 +562,7 @@ command:
       export: "a recorded snapshot as a report file"
       trend: "count, min, avg, p95, max per period"
       growth: "disk growth per day, changed directories"
+      prune: "delete runs older than an age"
       top: "host samples, newest first"
       process: "process samples, newest first"
       log: "command runs that edc log recorded"

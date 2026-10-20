@@ -242,7 +242,7 @@ var commandDocs = []commandDoc{
 	},
 	{
 		name: "history", group: "record",
-		usage: []string{"edc history list [options] [DB]", "edc history top [options] [DB]", "edc history process [options] [DB]", "edc history export --run <id> [--output <file|->] [DB]", "edc history trend --metric <name> [--probe <id>] [--by day] [DB]", "edc history growth [--root <path>] [--from <RFC3339>] [DB]", "edc history log [edc log history options]"},
+		usage: []string{"edc history list [options] [DB]", "edc history top [options] [DB]", "edc history process [options] [DB]", "edc history export --run <id> [--output <file|->] [DB]", "edc history trend --metric <name> [--probe <id>] [--by day] [DB]", "edc history growth [--root <path>] [--from <RFC3339>] [DB]", "edc history prune --older-than <age> [options] [DB]", "edc history log [edc log history options]"},
 		options: []optionDoc{
 			{"--run <id>", "history.option.run"},
 			{"--from <RFC3339>", "history.option.from"},
@@ -257,6 +257,11 @@ var commandDocs = []commandDoc{
 			{"--limit 200", "history.option.limit"},
 			{"--json <path|->", "history.option.json"},
 			{"--output <file|->", "history.option.output"},
+			{"--older-than 30d", "history.option.older_than"},
+			{"--command <kind>", "history.option.prune_command"},
+			{"--dry-run", "history.option.dry_run"},
+			{"--yes", "history.option.yes"},
+			{"--vacuum", "history.option.vacuum"},
 		},
 		subcommands: []subcommandDoc{
 			{"list", "edc history list [options] [DB]"},
@@ -265,6 +270,7 @@ var commandDocs = []commandDoc{
 			{"export", "edc history export --run <id> [DB]"},
 			{"trend", "edc history trend [options] [DB]"},
 			{"growth", "edc history growth [options] [DB]"},
+			{"prune", "edc history prune [options] [DB]"},
 			{"log", "edc history log [<command>]"},
 		},
 		examples: []string{
@@ -273,6 +279,7 @@ var commandDocs = []commandDoc{
 			"edc history process --process nginx",
 			"edc history trend --probe info.disk:/ --metric used_bytes",
 			"edc history growth --root /var",
+			"edc history prune --older-than 90d --dry-run",
 		},
 	},
 	{

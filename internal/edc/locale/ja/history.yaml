@@ -1,5 +1,5 @@
 history:
-  usage: "使い方: edc history <list|top|process|export|trend|growth> [options] [DB]"
+  usage: "使い方: edc history <list|top|process|export|trend|growth|prune> [options] [DB]"
   option:
     run: "この実行 ID のみ"
     from: "開始時刻を含む (RFC3339)"
@@ -13,6 +13,11 @@ history:
     probe: "trend で見るスナップショット結果、例: info.disk:/、du.scan"
     by: "trend の期間: hour、day、week (ローカル時間)"
     root: "growth: このパスの du 結果のみ"
+    older_than: "prune: この期間活動のない実行を削除(30d, 2w)"
+    prune_command: "prune: top か snapshot の実行のみ"
+    dry_run: "prune: 削除せず件数のみ"
+    yes: "prune: 確認せずに削除"
+    vacuum: "prune: ファイルを書き直して領域を返す"
   error:
     default_path: "既定の DB path を取得できません。--write <path> を指定してください"
     path: "DB の file path を指定してください。JSON は DB や journal を上書きできません"
@@ -56,6 +61,18 @@ history:
     run_title: "どのスナップショットを書き出しますか?"
     run_label: "スナップショット"
     run_item: "%s  %s  結果 %d 件"
+  prune:
+    usage: "使い方: edc history prune --older-than <age> [--command top|snapshot] [--dry-run] [--yes] [--vacuum] [DB]"
+    none: "それより古い実行はありません。"
+    plan: "実行 %d 件(top %d、snapshot %d)とサンプル %d 件を削除します。"
+    dry_plan: "[dry-run] 実行 %d 件(top %d、snapshot %d)とサンプル %d 件を削除する予定です。"
+    dry_note: "何も削除していません。削除するには --dry-run なしで再実行してください。"
+    confirm: "削除しますか? y/N "
+    yes_required: "端末なしで削除するには --yes、件数だけなら --dry-run を付けてください。"
+    done: "実行 %d 件とサンプル %d 件を削除しました。"
+    reusable: "ファイルサイズは変わらず、%s は新しい記録に再利用されます。領域を返すには --vacuum を付けてください。"
+    vacuumed: "ファイルサイズ %s -> %s。"
+    vacuum_failed: "VACUUM に失敗: %v"
 command:
   history:
     notes:

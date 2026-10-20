@@ -99,6 +99,22 @@ func loadLogHistory(options logHistoryOptions, cache logHistoryCache) (logHistor
 	if root == "" {
 		return logHistorySnapshot{}, errors.New(T("cli.log_history.directory_unavailable"))
 	}
+	var notices []string
+	if options.Directory == "" {
+		var extra []string
+		if output := activeConfig.Defaults.Log.Output; output != nil && *output != "" {
+			if absolute, err := filepath.Abs(*output); err == nil {
+				extra = append(extra, absolute)
+			}
+		}
+		snapshot, notice, ok := loadIndexedHistory(root, extra, cache.indexState())
+		if ok {
+			return snapshot, nil
+		}
+		if notice != "" {
+			notices = append(notices, notice)
+		}
+	}
 	paths, families, err := historyPaths(root)
 	limited := errors.Is(err, errHistoryScanLimit)
 	if err != nil && !limited && !(options.Directory == "" && os.IsNotExist(err)) {
@@ -118,6 +134,7 @@ func loadLogHistory(options logHistoryOptions, cache logHistoryCache) (logHistor
 	if limited {
 		snapshot.issue(root, "limit_error")
 	}
+	snapshot.Notices = notices
 	return snapshot, nil
 }
 
@@ -298,7 +315,7 @@ func logHistoryLoaderFor(options logHistoryOptions, cache logHistoryCache) logHi
 			return nil, nil, errors.New(reportIdentityValue(err.Error()))
 		}
 		groups, unknown := logHistoryGroups(snapshot, options)
-		notices := append([]string{}, snapshot.Issues...)
+		notices := append(append([]string{}, snapshot.Issues...), snapshot.Notices...)
 		if unknown > 0 {
 			notices = append(notices, T("cli.log_history.unknown_keys", unknown))
 		}
@@ -326,6 +343,9 @@ func runLogHistory(args []string, streams logStreams) int {
 	if err != nil {
 		fmt.Fprintln(streams.stderr, reportIdentityValue(err.Error()))
 		return 2
+	}
+	for _, notice := range snapshot.Notices {
+		fmt.Fprintln(streams.stderr, notice)
 	}
 	code := 0
 	if len(snapshot.Issues) > 0 {
@@ -370,7 +390,7 @@ func runLogHistory(args []string, streams logStreams) int {
 	input, inputOK := streams.stdin.(*os.File)
 	output, outputOK := streams.stdout.(*os.File)
 	if inputOK && outputOK && isTerminal(input) && isTerminal(output) && os.Getenv("NO_COLOR") == "" {
-		notices := append([]string{}, snapshot.Issues...)
+		notices := append(append([]string{}, snapshot.Issues...), snapshot.Notices...)
 		if notice != "" {
 			notices = append(notices, notice)
 		}

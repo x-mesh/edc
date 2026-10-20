@@ -257,6 +257,9 @@ func runLogPrune(args []string, streams logStreams) int {
 		fmt.Fprintln(streams.stderr, reportIdentityValue(err.Error()))
 		return 2
 	}
+	for _, notice := range snapshot.Notices {
+		fmt.Fprintln(streams.stderr, notice)
+	}
 	code := 0
 	for _, issue := range snapshot.Issues {
 		fmt.Fprintln(streams.stderr, issue)

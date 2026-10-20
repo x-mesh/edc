@@ -38,6 +38,9 @@ cli:
     host_failed: "edc did not read the system information: %v"
     public_failed: "the public network lookup failed: %v"
   log_history:
+    index_unavailable: "History index unavailable (%s); reading the log files directly."
+    index_building: "Building the history index (%d of %d logs); reading the log files directly."
+    index_corrupt: "The history index was damaged and was moved to %s; it is built again on the next run."
     browser_title: "Command history · %d commands"
     run_count: "%d recent runs"
     today: "Today %s"

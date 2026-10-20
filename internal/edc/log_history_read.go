@@ -127,6 +127,10 @@ func (row logHistoryAttempt) failed() bool {
 type logHistorySnapshot struct {
 	Rows   []logHistoryAttempt
 	Issues []string
+	// Notices are about how the history was read, such as an index that could
+	// not be used. Unlike Issues they leave the results whole and the exit code
+	// alone.
+	Notices []string
 }
 
 func (snapshot *logHistorySnapshot) issue(path, kind string) {
@@ -546,7 +550,7 @@ func readHistoryFamily(path string, parts []historyPart) ([]logHistoryAttempt, b
 			return nil, false, err
 		}
 		if !info.Mode().IsRegular() || !os.SameFile(info, part.info) {
-			return nil, false, errors.New("changed file")
+			return nil, false, errHistoryChanged
 		}
 		readers = append(readers, io.LimitReader(file, part.info.Size()))
 	}
@@ -556,11 +560,11 @@ func readHistoryFamily(path string, parts []historyPart) ([]logHistoryAttempt, b
 	}
 	after, err := restatHistoryParts(parts)
 	if err != nil {
-		return nil, false, errors.New("changed file")
+		return nil, false, errHistoryChanged
 	}
 	appended, ok := compareHistoryFamily(parts, after)
 	if !ok {
-		return nil, false, errors.New("changed file")
+		return nil, false, errHistoryChanged
 	}
 	if parser.tail != "" && !appended {
 		parser.line(parser.tail)
@@ -574,6 +578,10 @@ func readHistoryFamily(path string, parts []historyPart) ([]logHistoryAttempt, b
 }
 
 var errHistoryScanLimit = errors.New("history scan limit")
+
+// errHistoryChanged means that a log changed while it was read; reading it
+// again later gives a consistent result.
+var errHistoryChanged = errors.New("changed file")
 
 // restatHistoryParts looks at the parts that were read again, one lstat each.
 // edc only appends to the active file and rotates by renaming it, so a new
@@ -764,6 +772,23 @@ type logHistoryCacheEntry struct {
 	parts   []historyPart
 	rows    []logHistoryAttempt
 	invalid bool
+	index   *logIndexState
+}
+
+// logIndexCacheKey holds the index state in the same cache; no log path can
+// start with a NUL byte.
+const logIndexCacheKey = "\x00index"
+
+func (cache logHistoryCache) indexState() *logIndexState {
+	if cache == nil {
+		return nil
+	}
+	entry := cache[logIndexCacheKey]
+	if entry.index == nil {
+		entry.index = &logIndexState{}
+		cache[logIndexCacheKey] = entry
+	}
+	return entry.index
 }
 
 // collectLogHistory reads the families of paths. families holds the parts
@@ -859,7 +884,7 @@ func collectLogHistory(paths []string, cache logHistoryCache, families ...histor
 		}
 	}
 	for path := range cache {
-		if !visited[path] {
+		if !visited[path] && path != logIndexCacheKey {
 			delete(cache, path)
 		}
 	}

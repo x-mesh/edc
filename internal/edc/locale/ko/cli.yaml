@@ -38,6 +38,9 @@ cli:
     host_failed: "system 정보를 읽지 못했습니다: %v"
     public_failed: "public network 조회 실패: %v"
   log_history:
+    index_unavailable: "이력 인덱스를 쓸 수 없어(%s) 로그 파일을 직접 읽습니다."
+    index_building: "이력 인덱스를 만드는 중이라(로그 %d/%d개) 로그 파일을 직접 읽습니다."
+    index_corrupt: "이력 인덱스가 손상되어 %s로 옮겼습니다. 다음 실행에서 다시 만듭니다."
     browser_title: "명령 실행 이력 · 명령 %d개"
     run_count: "최근 실행 %d건"
     today: "오늘 %s"

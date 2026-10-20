@@ -38,6 +38,9 @@ cli:
     host_failed: "system の情報を読めませんでした: %v"
     public_failed: "public network の取得に失敗しました: %v"
   log_history:
+    index_unavailable: "履歴インデックスを使えないため(%s)、ログファイルを直接読みます。"
+    index_building: "履歴インデックスを作成中のため(ログ %d/%d 個)、ログファイルを直接読みます。"
+    index_corrupt: "履歴インデックスが壊れていたため %s に移しました。次回の実行で作り直します。"
     browser_title: "コマンド履歴 · %dコマンド"
     run_count: "最近の実行 %d件"
     today: "今日 %s"

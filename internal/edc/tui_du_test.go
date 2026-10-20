@@ -327,3 +327,20 @@ func TestDuNoBrowseCtrlCStopsAndQuits(t *testing.T) {
 		t.Fatal("ctrl-c did not preserve the partial scan and quit")
 	}
 }
+
+func TestDuBrowseModelCarriesTheWorkersAndModeOfTheScan(t *testing.T) {
+	progress := new(atomic.Int64)
+	progress.Store(42)
+	started := time.Date(2026, 10, 14, 9, 0, 0, 0, time.UTC)
+	options := duOptions{root: "/data", workers: 6, progress: progress}
+	for _, noBrowse := range []bool{false, true} {
+		model := newDuBrowseModel(options, func() {}, &duScanJob{finished: make(chan struct{})}, started, noBrowse)
+		model.now = func() time.Time { return started.Add(1500 * time.Millisecond) }
+		if model.workers != 6 || model.noBrowse != noBrowse || model.root != "/data" || model.progress != progress {
+			t.Fatalf("noBrowse %v: model = %+v", noBrowse, model)
+		}
+		if view := model.View().Content; !strings.Contains(view, "reading /data · 42 directories · 1.5s · workers 6") {
+			t.Errorf("noBrowse %v: view %q", noBrowse, view)
+		}
+	}
+}

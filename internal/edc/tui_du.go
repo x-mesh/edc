@@ -75,9 +75,7 @@ func duBrowse(ctx context.Context, cancel context.CancelFunc, options duOptions,
 		job.scan, job.err = duWalk(ctx, options, sources)
 		close(job.finished)
 	}()
-	model := newDuBrowser(options.root, options.progress, cancel, job, started, time.Now, true)
-	model.noBrowse = noBrowse
-	model.workers = options.workers
+	model := newDuBrowseModel(options, cancel, job, started, noBrowse)
 	final, err := tea.NewProgram(model, tea.WithInput(os.Stdin), tea.WithOutput(os.Stdout)).Run()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -89,6 +87,14 @@ func duBrowse(ctx context.Context, cancel context.CancelFunc, options duOptions,
 	cancel()
 	<-job.finished
 	return job.scan, job.err
+}
+
+// newDuBrowseModel은 화면 모델에 실제 탐색의 옵션을 옮긴다. 진행 줄의 worker 수는 여기서 정해진다.
+func newDuBrowseModel(options duOptions, cancel context.CancelFunc, job *duScanJob, started time.Time, noBrowse bool) duBrowser {
+	model := newDuBrowser(options.root, options.progress, cancel, job, started, time.Now, true)
+	model.noBrowse = noBrowse
+	model.workers = options.workers
+	return model
 }
 
 func newDuBrowser(root string, progress *atomic.Int64, cancel context.CancelFunc, job *duScanJob, started time.Time, now func() time.Time, color bool) duBrowser {

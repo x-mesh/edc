@@ -176,6 +176,50 @@ func TestLogHistoryRelativeDateAndColumnAlignment(t *testing.T) {
 	}
 }
 
+func TestLogHistoryKeyAverageColumnsAndValues(t *testing.T) {
+	if historyKeyWidths(87, nil).avgMemory != 0 || historyKeyWidths(103, nil).avgCPU != 0 || historyKeyWidths(119, nil).avgIO != 0 {
+		t.Fatal("average columns appear before their width thresholds")
+	}
+	if historyKeyWidths(88, nil).avgMemory != 9 || historyKeyWidths(104, nil).avgCPU != 8 || historyKeyWidths(120, nil).avgIO != 9 {
+		t.Fatal("average columns do not appear at their width thresholds")
+	}
+	ended := time.Date(2026, 10, 5, 10, 0, 2, 0, time.Local)
+	group := logHistoryGroup{Rows: []logHistoryAttempt{
+		{Duration: 2 * time.Second, Ended: ended, Resources: &logHistoryResources{MaxRSS: 100, CPU: time.Second, cpu: true, DiskRead: 100, DiskWrite: 300, disk: true}},
+		{Duration: 4 * time.Second, Ended: ended, Resources: &logHistoryResources{MaxRSS: 300, CPU: time.Second, cpu: true, DiskRead: 300, DiskWrite: 100, disk: true}},
+		{Duration: 0, Resources: &logHistoryResources{MaxRSS: 900, CPU: time.Second, cpu: true, DiskRead: 900, disk: true}},
+		{Duration: 2 * time.Second, Ended: ended, Resources: &logHistoryResources{MaxRSS: 0, CPU: time.Second, cpu: true}},
+		{Duration: 2 * time.Second},
+	}}
+	averages := historyGroupAverages(group)
+	if averages.memory != formatSizeShort(433) || averages.cpu != "42%" || averages.io != formatSizeShort(566) {
+		t.Fatalf("unexpected averages: %#v", averages)
+	}
+	empty := historyGroupAverages(logHistoryGroup{Rows: []logHistoryAttempt{{Duration: 0, Resources: &logHistoryResources{}}}})
+	if empty != (historyGroupAverageValues{}) {
+		t.Fatalf("missing metrics are not empty: %#v", empty)
+	}
+}
+
+func TestLogHistoryKeyAverageColumnWidths(t *testing.T) {
+	group := logHistoryGroup{Rows: []logHistoryAttempt{{Started: time.Now()}}}
+	for _, width := range []int{88, 104, 120, 220} {
+		groups := []logHistoryGroup{group}
+		header := historyKeyHeader(width, groups)
+		row := historyKeyRow(group, width, groups, false, false, time.Now())
+		if liveWidth(header) != width || liveWidth(row) != width {
+			t.Fatalf("width %d mismatch: header=%d row=%d", width, liveWidth(header), liveWidth(row))
+		}
+		group.Unknown = 1
+		header = historyKeyHeader(width, []logHistoryGroup{group})
+		row = historyKeyRow(group, width, []logHistoryGroup{group}, false, false, time.Now())
+		if liveWidth(header) != width || liveWidth(row) != width {
+			t.Fatalf("unknown width %d mismatch: header=%d row=%d", width, liveWidth(header), liveWidth(row))
+		}
+		group.Unknown = 0
+	}
+}
+
 func TestLogHistoryBrowserFailureAndUnknownVisibility(t *testing.T) {
 	t.Setenv("NO_COLOR", "")
 	restore := currentLanguage()

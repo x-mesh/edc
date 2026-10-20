@@ -47,7 +47,7 @@ du:
     partial: "partial"
     unreadable_count: "%d unreadable"
   diff:
-    count: "%d directory deltas (e detail)"
+    count: "changed directories: %d"
     path_differs: "directories not compared, the paths differ: %s → %s"
     partial: "directories not compared, one scan stopped before the end"
   label:

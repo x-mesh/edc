@@ -47,7 +47,7 @@ du:
     partial: "일부만 셈"
     unreadable_count: "읽지 못함 %d개"
   diff:
-    count: "디렉터리 차이 %d개 (e 상세)"
+    count: "디렉터리 변화 %d개"
     path_differs: "경로가 달라 디렉터리를 비교하지 않았습니다: %s → %s"
     partial: "한쪽 탐색이 끝까지 가지 않아 디렉터리를 비교하지 않았습니다"
   label:

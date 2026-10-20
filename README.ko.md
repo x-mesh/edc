@@ -697,7 +697,7 @@ Xcode Archives, 시뮬레이터 기기, `Application Support`, `Containers`는 �
 | `project_build_dirs` | `--project`로 지정한 루트의 빌드 폴더 |
 | `docker` | Docker 엔진이 보고한 집계 |
 | `docker_root` | 엔진이 더 이상 쓰지 않는 옛 Docker 데이터 디렉터리(Linux) |
-| `system` | 큰 로그와 현재 리비전이 아닌 snap 리비전(Linux) |
+| `system` | 큰 로그, 현재 리비전이 아닌 snap 리비전, buildx 캐시 폴더(Linux) |
 | `vm_disks` | 가상 머신의 디스크 파일(예: OrbStack) |
 | `worktrees` | `~/.gk/worktree`의 git-kit worktree |
 | `not_measured` | 재지 않는 유형과 이유 |
@@ -798,7 +798,7 @@ edc는 지워도 되는지 판정하지 않고, 판단에 도움이 되는 사�
 
 엔진이 데이터 디렉터리를 알려 주지 않으면 상태는 `unknown_location`입니다. `docker`가 없거나 엔진이 꺼져 있으면 텍스트 출력에는 이 섹션이 나오지 않고 `docker_root.status`는 비어 있습니다.
 
-### 큰 로그와 snap 리비전
+### 큰 로그, snap 리비전, 빌드 캐시
 
 Linux에서는 `/var/log`에서 100 MB 이상인 파일을 나열합니다. `/var/log/journal`은 `journald` 후보가 재므로 건너뜁니다. 현재 리비전이 아닌 snap 리비전도 나열합니다.
 
@@ -810,7 +810,11 @@ edc는 파일을 지우지 않고, 판단에 도움이 되는 사실만 보여 �
 
 `system.snap_revisions`의 항목에는 이름, 리비전, 현재 리비전이 있습니다. 현재 리비전은 `/snap/<이름>/current` 링크에서 읽습니다. 명령은 `snap remove <이름> --revision=<리비전>`입니다. 링크를 읽지 못한 snap은 건너뛰고 `system.snaps_unknown`으로 셉니다.
 
-각 목록은 큰 순서로 10개까지 보이고, 나머지 로그 파일은 `large_logs_omitted`로 셉니다.
+`docker buildx build --cache-to type=local`이 쓰는 폴더도 찾습니다. 이 폴더는 OCI 이미지 레이아웃이라 `oci-layout`, `index.json` 파일과 `blobs` 폴더가 있습니다. 홈 폴더 아래 1~2단계 폴더를 이름이 아니라 구조로 확인하고, 링크는 따라가지 않으며, 폴더 50,000개를 확인하면 멈춥니다.
+
+`system.build_caches`의 항목에는 크기, 가장 최근 파일의 날짜, `open_files`가 있습니다. `docker buildx prune`은 이 폴더를 지우지 않습니다. `-v`에서는 `rm -rf <경로>`를 텍스트로 보여 주고, 프로세스가 파일을 열고 있거나 `/proc` 전체를 읽지 못하면 명령을 보여 주지 않습니다. 탐색이 상한이나 제한 시간에서 멈췄거나 재지 못한 폴더가 있으면 `build_caches_incomplete`가 `true`이고, 이때는 캐시가 더 있을 수 있습니다.
+
+각 목록은 큰 순서로 10개까지 보이고, 나머지는 `large_logs_omitted`와 `build_caches_omitted`로 셉니다.
 
 ### VM 디스크
 

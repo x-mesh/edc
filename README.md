@@ -745,7 +745,7 @@ Four more sections follow the candidates. Each section has its own key in `metri
 | `project_build_dirs` | The build folders in the roots that you give with `--project` |
 | `docker` | The totals that the Docker engine reports |
 | `docker_root` | The old Docker data directory that the engine no longer uses (Linux) |
-| `system` | The large logs and the snap revisions that are not current (Linux) |
+| `system` | The large logs, the snap revisions that are not current, and the buildx cache folders (Linux) |
 | `vm_disks` | The disk file of a virtual machine, for example OrbStack |
 | `worktrees` | The git-kit worktrees in `~/.gk/worktree` |
 | `not_measured` | The types that edc does not measure, and the reason |
@@ -846,7 +846,7 @@ edc reads the container name, image, labels, mounts, and times from `containers/
 
 If the engine does not report its directory, the status is `unknown_location`. If `docker` is absent or the engine is off, the text output does not show the section, and `docker_root.status` is empty.
 
-### Large logs and snap revisions
+### Large logs, snap revisions, and build caches
 
 On Linux, edc lists the files in `/var/log` of 100 MB or more. It skips `/var/log/journal`, which the `journald` candidate measures. It also lists the snap revisions that are not the current one.
 
@@ -858,7 +858,11 @@ With `-v`, the text output shows a command as text. edc never runs it. For a fil
 
 Each entry in `system.snap_revisions` has the name, the revision, and the current revision. The current revision comes from the link `/snap/<name>/current`. The command is `snap remove <name> --revision=<revision>`. If edc cannot read the link, it skips the snap and counts it in `system.snaps_unknown`.
 
-edc shows the 10 largest entries of each list. `large_logs_omitted` counts the other files.
+edc also finds the folders that `docker buildx build --cache-to type=local` writes. Such a folder is an OCI image layout. It has the files `oci-layout` and `index.json` and the folder `blobs`. edc checks the folders one and two levels below the home folder. It uses the structure and not the name, and it does not follow links. It stops after 50,000 folders.
+
+Each entry in `system.build_caches` has the size, the date of the newest file, and `open_files`. `docker buildx prune` does not remove these folders. With `-v`, the text output shows `rm -rf <path>`. The command is empty if a process holds a file open or if edc cannot read all of `/proc`. `build_caches_incomplete` is `true` if the search stopped at the limit or at the time limit, or if edc could not measure a folder. In this case, more caches can exist.
+
+edc shows the 10 largest entries of each list. `large_logs_omitted` and `build_caches_omitted` count the others.
 
 ### VM disks
 

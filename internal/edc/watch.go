@@ -335,13 +335,7 @@ func printWatchSubcommandHelp(writer io.Writer, mode string) {
 		printRichWatchSubcommandHelp(writer, mode, doc, usage, options)
 		return
 	}
-	fmt.Fprintf(writer, "edc watch %s — %s\n\n%s\n", mode, doc.summary(), T("help.usage_label"))
-	fmt.Fprintf(writer, "  %s\n\n%s\n", usage, T("help.options_label"))
-	printOptionDocs(writer, options)
-	if mode == "http" {
-		fmt.Fprintf(writer, "\n%s\n", T("help.common_options_label"))
-		printOptionDocs(writer, commonOptionDocs)
-	}
+	renderWatchSubcommandHelp(writer, mode, doc, usage, options, 80, false)
 }
 
 // watchSubcommandHelp는 하위 명령 help의 usage와 그 하위 명령이 받는 option이다.
@@ -369,16 +363,15 @@ func watchSubcommandHelp(mode string) (commandDoc, string, []optionDoc) {
 
 // printRichWatchSubcommandHelp는 help.go의 printRichCommandHelp와 같은 모양으로 하위 명령의 help를 그린다.
 func printRichWatchSubcommandHelp(writer io.Writer, mode string, doc commandDoc, usage string, options []optionDoc) {
-	fmt.Fprintf(writer, "%s %s\n\n", richBadge("edc watch "+mode, richMagenta), richBold(doc.summary()))
-	fmt.Fprintln(writer, richPanelTop(T("help.usage_label"), "", ""))
-	fmt.Fprintln(writer, richPanelLine(usage, ""))
-	fmt.Fprintln(writer, richPanelBottom(""))
-	fmt.Fprintf(writer, "\n%s\n", richPanelTop(T("help.options_label"), "", ""))
-	printRichOptionDocs(writer, options)
-	fmt.Fprintln(writer, richPanelBottom(""))
+	renderWatchSubcommandHelp(writer, mode, doc, usage, options, commandHelpWidth(), true)
+}
+
+func renderWatchSubcommandHelp(writer io.Writer, mode string, doc commandDoc, usage string, options []optionDoc, width int, color bool) {
+	render := helpRenderer{output: writer, width: width, color: color}
+	renderHelpHeader(writer, "watch "+mode, doc.summary(), width, color)
+	render.panel(T("help.usage_label"), func() { render.syntax(usage) })
+	render.panel(T("help.options_label"), func() { render.options(options) })
 	if mode == "http" {
-		fmt.Fprintf(writer, "\n%s\n", richPanelTop(T("help.common_options_label"), "", ""))
-		printRichOptionDocs(writer, commonOptionDocs)
-		fmt.Fprintln(writer, richPanelBottom(""))
+		render.panel(T("help.common_options_label"), func() { render.options(commonOptionDocs) })
 	}
 }

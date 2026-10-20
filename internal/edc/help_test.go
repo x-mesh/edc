@@ -141,7 +141,7 @@ func TestRichCommandHelpKeepsThePlainSections(t *testing.T) {
 		richExpect("\x1b[1;35m") + T("help.usage_label") + richExpect("\x1b[0m"),
 		richExpect("\x1b[1;35m") + T("help.options_label") + richExpect("\x1b[0m"),
 		richExpect("\x1b[1;35m") + T("help.common_options_label") + richExpect("\x1b[0m"),
-		richExpect("\x1b[1;36m--expect-status N         \x1b[0m  ") + T("command.http.option.expect_status"),
+		helpSyntax(padRight("--expect-status N", optionFlagWidth(doc.options)), true) + "  " + T("command.http.option.expect_status"),
 	} {
 		if !strings.Contains(text, code) {
 			t.Errorf("colored http help misses %q", code)
@@ -154,9 +154,12 @@ func TestRichCommandHelpKeepsThePlainSections(t *testing.T) {
 			t.Errorf("colored http help misses the plain line %q", line)
 		}
 	}
+	prose := strings.ReplaceAll(stripped, "│ • ", "")
+	prose = strings.ReplaceAll(prose, "│   ", "")
+	prose = strings.Join(strings.Fields(prose), " ")
 	for _, note := range doc.notes() {
-		if !strings.Contains(text, "\n"+note+"\n") {
-			t.Errorf("a note must stay in the default color: %q", note)
+		if !strings.Contains(prose, strings.Join(strings.Fields(helpInline(note, false)), " ")) {
+			t.Errorf("help lost a note: %q", note)
 		}
 	}
 }

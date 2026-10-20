@@ -1,5 +1,6 @@
 # 한국어 메시지. 빠진 키는 en.yaml로 내려간다.
 help:
+  notes_label: "안내"
   tagline: "everyday carry for SE/SRE"
   usage_label: "사용법"
   usage: "edc <command> [options] [target]"
@@ -148,6 +149,7 @@ command:
       write: "SQLite에 누적, 경로 생략 시 기본 DB 사용"
       json: "sample당 한 줄 JSON, stdout은 -"
     notes:
+      - "w로 DB 기록을 시작·중지합니다. 다시 시작하면 새 실행으로 기록하며 p 일시정지 시 기록도 멈춥니다."
       - "terminal에서는 대시보드로 엽니다. q 종료, p 일시정지, +/- interval."
       - "--count나 --json을 주거나, 비 terminal이거나, NO_COLOR면 표로 출력합니다."
       - "--process를 주면 process 보기로 엽니다. 1은 host 열, f는 다시 process."
@@ -446,15 +448,19 @@ command:
   snapshot:
     summary: "report diff로 비교할 host 상태를 report 하나로 저장"
     option:
+      no_write: "DB 기록 없이 JSON만 저장, --output 필수이며 --write와 함께 쓸 수 없음"
       output: "report 파일, -는 stdout"
       since: "events와 changes가 볼 기간 (기본 6h)"
       force: "이미 있는 출력 파일을 바꿈"
       du: "이 경로의 edc du 결과도 저장, 여러 번 지정 가능"
-      write: "history DB에도 기록, 값이 없으면 기본 DB"
+      write: "history DB 경로 (기본으로 기록); 경로를 생략하면 기본 DB"
     notes:
+      - "snapshot 열기: edc report show <file.json> (터미널에서는 인터랙티브 뷰어)."
+      - "snapshot과 진단 JSON 보고서 목록: edc report list [directory]."
+      - "기본으로 JSON 파일 없이 history DB에 기록합니다. --output은 JSON도 저장하며, --no-write --output <file|->은 JSON만 저장합니다."
       - "info, listen, audit, events, changes 결과를 report 하나에 저장합니다."
       - "파일 권한은 0600입니다. 계정, sudo 규칙, process 이름이 들어갑니다."
-      - "기본 파일은 ./edc-snapshot-<host>-<UTC 시각>.json입니다."
+      - "JSON 파일은 --output을 지정할 때만 만듭니다. 이전 DB snapshot은 edc history export로 내보냅니다."
       - "이미 있는 파일은 바꾸지 않습니다. 바꾸려면 --force를 붙입니다."
       - "두 snapshot 비교: edc report diff before.json after.json"
       - "macOS에서는 info.pressure, audit, events, changes가 skip입니다."
@@ -558,7 +564,7 @@ command:
   history:
     summary: "저장한 resource 관측 이력 검색"
     sub:
-      list: "top -w와 snapshot -w로 기록한 실행"
+      list: "top -w와 snapshot으로 기록한 실행"
       export: "기록한 스냅샷을 보고서 파일로"
       trend: "구간별 개수·최소·평균·p95·최대"
       growth: "디스크의 하루 증가량과 크게 바뀐 디렉터리"

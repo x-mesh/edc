@@ -376,6 +376,10 @@ func TestReportListAndCandidatesOrderByRunTime(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := output.String()
+	absolute, err := filepath.Abs("report-00.json")
+	if err != nil || !strings.Contains(text, absolute) {
+		t.Fatalf("report list does not show absolute paths: %s", text)
+	}
 	last := -1
 	for index := reportCandidateLimit + 1; index >= 0; index-- {
 		position := strings.Index(text, fmt.Sprintf("report-%02d.json", index))

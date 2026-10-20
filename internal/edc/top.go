@@ -241,7 +241,7 @@ func runTop(args []string, version string) (code int) {
 		}()
 	}
 	if dashboard {
-		return runTopDashboard(*interval, version, filter, interfaces, recorder, split, layout)
+		return runTopDashboard(*interval, version, filter, interfaces, *writePath, recorder, split, layout)
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()

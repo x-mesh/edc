@@ -1,4 +1,80 @@
 history:
+  help_sections:
+    storage:
+      title: "DBとファイル"
+      notes:
+        - "ローカルhistory DBは`snapshot`と`top`の観測値を保存します。任意の引数`<DB>`で別のDBを指定します。"
+        - "JSON snapshotは`edc report list`で一覧を表示し、`edc report show <file.json>`で開きます。"
+    recording:
+      title: "記録"
+      notes:
+        - "`edc snapshot`は既定で記録します。`--output <file>`でJSONも保存し、`edc history export --run <id>`で以前のsnapshotを書き出します。"
+        - "`edc top -w`またはtopの`w`で記録を開始・停止します。`p`で収集と記録を一時停止します。"
+    browsing:
+      title: "閲覧"
+      notes:
+        - "`edc history list`は実行一覧を、`edc history top`と`edc history process`は対話画面を開きます。"
+        - "`↑↓`で選択、`Enter`で詳細、`Home`で最新を追跡します。広い画面では列と詳細パネルを追加します。"
+    analysis:
+      title: "推移と増加量"
+      notes:
+        - "`edc history trend`はDB指標をローカルの時間・日・週で集計します。`edc history growth`はディスク・ディレクトリかprocess RSSの増加量を表示します (既定7日)。"
+        - "processは`--process <filter>`で絞ります。未指定で保存したprocessは観測候補であり、host CPU%は全コア基準、processの100%は1コアです。"
+    cleanup:
+      title: "整理"
+      notes:
+        - "`edc history prune`は最終活動から`90d`経過した実行を表示します。`t`で期間変更、`d`の後`y`でチェックした実行の削除を確認します。"
+        - "自動削除はしません。`--dry-run`、`--yes`、`--vacuum`は`edc history prune --help`を参照してください。"
+  prune_help:
+    interactive_title: "対話ブラウザー"
+    retention: "`--older-than`省略時は最終活動から`90d`経過した実行をプレビューします。スクリプトでは`<age>`を指定してください。"
+    keys: "`↑↓` 選択 · `Space` チェック · `a` 全件 · `Enter` 詳細 · `q` 終了。"
+    period: "`t`で期間を選びます。既定の期間か`12h`、`14d`、`2w`などを直接入力できます。"
+    deletion_title: "削除とディスク容量"
+    confirm: "`d`の後`y`でチェックした実行と観測値を削除します。`--dry-run`はプレビューのみ、`--yes`は対話・確認なしで実行します。"
+    recheck: "最終活動は開始・終了・最新の観測時刻の最大値です。削除直前に活動の更新を再確認します。"
+    vacuum: "削除した領域はDB内で再利用します。`--vacuum`はディスクに領域を返し、その間は他の書き込みが待つ場合があります。"
+    storage_title: "データベース"
+    storage: "任意の引数`<DB>`で別のhistory DBを指定できます。Snapshot JSONは`edc report list`と`edc report show <file.json>`で確認します。"
+  review:
+    age_current: "期間条件: 最終活動から%s超"
+    age_title: "削除候補の期間を選択"
+    age_option: "最終活動から%sを超えた記録"
+    age_custom: "直接入力 (例: 12h, 14d, 2w)"
+    age_loading: "最終活動から%sを超えた実行を取得中…"
+    age_invalid: "12h、14d、2wのように正の期間を入力してください。"
+    age_help: "↑↓ 選択   Enter 適用   Esc 戻る   q 終了"
+    age_input_help: "Enter 適用   Esc 取消   Ctrl+U 消去"
+    growth_title: "履歴の増加量"
+    prune_title: "履歴の削除候補"
+    help: "↑↓ 選択   Enter 詳細   Home 先頭   r 更新   p 一時停止   q 終了"
+    detail_help: "↑↓ スクロール   Esc 戻る   r 更新   p 一時停止   q 終了"
+    prune_help: "↑↓ 選択   Space チェック   a 全件   Enter 詳細   d 削除   t 期間   r 更新   q 終了"
+    prune_dry_help: "↑↓ 選択   Enter 詳細   t 期間   r 更新   q 終了"
+    prune_detail_help: "↑↓ スクロール   Esc 戻る   t 期間   r 更新   q 終了"
+    confirm: "チェックした%d件の実行と観測値を削除しますか？ y 確認 / 他のキーで取消"
+    checked: "%d件チェック"
+    dry_run: "プレビューのみ・削除不可"
+    prune_range: "最終活動%s以前 · 実行%d件 · 観測値/結果%d件"
+    prune_details: "この実行のホスト・process観測値、またはsnapshot結果・指標・ディレクトリ記録も削除します。JSONレポートファイルは残します。"
+    prune_changed: "活動が更新されたか期間条件から外れた%d件を除外しました。"
+  process_browser:
+    title: "Process観測履歴"
+    empty: "条件に一致するprocess記録がありません。edc top -w --process <名前>で記録してから、edc history processで確認してください。"
+  recording:
+    started: "記録開始: %s"
+    stopped: "記録停止 · %d件の観測値を保存"
+    help: "記録: wでDB記録の開始/停止 · 次の完全な観測区間から保存 · pで記録も一時停止"
+  top_browser:
+    title: "Top観測履歴"
+    details: "選択した観測値"
+    help: "↑↓ 選択   Enter 詳細   Home 最新   r 更新   p 一時停止   q 終了"
+    detail_help: "↑↓ スクロール   Esc 戻る   r 更新   p 一時停止   q 終了"
+    following: "最新を追跡"
+    selected: "選択した観測を維持"
+    paused: "更新を一時停止"
+    empty: "topの記録がありません。edc topでwを押すか、edc top -wで記録してください。snapshotはedc history listで確認できます。"
+  database_path: "既定のhistory DB: %s"
   usage: "使い方: edc history <list|top|process|export|trend|growth|prune> [options] [DB]"
   option:
     run: "この実行 ID のみ"
@@ -99,9 +175,18 @@ history:
 command:
   history:
     notes:
+      - "prune画面ではtで期間を選択します。候補の選択か直接入力で再取得し、選んだ期間で削除条件を再確認します。"
+      - "端末でhistory pruneの--older-thanを省略すると、最終活動から90日経過した実行をプレビューします。対話画面以外では--older-thanが必要です。"
+      - "growthは選択・詳細画面を開きます。pruneはSpaceでチェック、aで全件選択、dの後yで削除を確定します。--dry-runはプレビューのみ、--yesは従来のコマンド出力を使います。"
+      - "history processも対話画面です。↑↓で選択し、EnterでPID・CPU・メモリ・I/Oと取得した制限を表示します。広い画面では列と詳細を追加します。"
+      - "端末のhistory topは対話画面です。↑↓で選択、Enterで詳細、Homeで最新を追跡します。"
+      - "画面幅に合わせてディスク・ネットワーク・swap列を追加し、広い画面では選択した観測の詳細を表示します。"
+      - "history DBは既定で保存するsnapshotとtop -wの繰り返しの観測値を保存するローカルSQLiteファイルです。"
+      - "trendとgrowthはこのDBを読み、snapshotが作るJSONファイルは読みません。"
+      - "JSON snapshotの一覧はedc report list、内容はedc report show <file.json>で表示します。"
       - "growth は期間 (既定 7 日) の速度でディスクが満杯になる時期を推定します。"
       - "trend は 1 つの指標をローカル時間の hour、day、week で古い順にまとめます。"
-      - "snapshot -w [DB] で記録し、export --run <id> で報告に書き出す。"
+      - "snapshotは既定で記録します。snapshot -w <DB>でDBを選び、export --run <id>でJSONを書き出します。"
       - "top -w [DB] は dashboard を維持して記録します。"
       - "実行ごとに追記。top の一時停止中は記録も停止します。"
       - "list は実行一覧、top と process は新しい sample から表示。"

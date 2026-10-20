@@ -1,5 +1,6 @@
 # English messages. This file is the base: a key that another language misses falls back to here.
 help:
+  notes_label: "notes"
   tagline: "everyday carry for SE/SRE"
   usage_label: "usage"
   usage: "edc <command> [options] [target]"
@@ -148,6 +149,7 @@ command:
       write: "append to SQLite; omit path for the default DB"
       json: "one JSON line for each sample, - for stdout"
     notes:
+      - "Press w to start/stop DB recording. Each restart creates a new run; p pauses recording too."
       - "In a terminal, edc opens a dashboard. q quits, p pauses, +/- moves the interval."
       - "--count, --json, a pipe, or NO_COLOR gives the table instead."
       - "With --process, it opens the process view. 1 shows host columns, f returns."
@@ -446,15 +448,19 @@ command:
   snapshot:
     summary: "Save host state as one report for report diff"
     option:
+      no_write: "save JSON only; requires --output and cannot be combined with --write"
       output: "report file, - for stdout"
       since: "how far back events and changes look (default 6h)"
       force: "replace an existing output file"
       du: "also save edc du of this path; repeat for more paths"
-      write: "also record in the history DB; alone uses the default DB"
+      write: "history DB path (recording is enabled by default); omit the path for the default DB"
     notes:
+      - "View a snapshot: edc report show <file.json> (interactive in a terminal)."
+      - "List snapshot and diagnostic JSON reports: edc report list [directory]."
+      - "By default, snapshot records in the history DB without creating a JSON file. --output also saves JSON; --no-write --output <file|-> saves JSON only."
       - "It saves info, listen, audit, events, and changes results in one report."
       - "The file has mode 0600. It holds accounts, sudo rules, and process names."
-      - "The default file is ./edc-snapshot-<host>-<UTC time>.json."
+      - "JSON files are created only with --output. Use edc history export to export an earlier DB snapshot."
       - "It does not replace an existing file. Add --force to replace it."
       - "Compare two snapshots: edc report diff before.json after.json"
       - "On macOS, info.pressure, audit, events, and changes show skip."
@@ -558,7 +564,7 @@ command:
   history:
     summary: "Search recorded resource observations"
     sub:
-      list: "runs that top -w and snapshot -w recorded"
+      list: "runs recorded by top -w and snapshot"
       export: "a recorded snapshot as a report file"
       trend: "count, min, avg, p95, max per period"
       growth: "disk growth per day, changed directories"

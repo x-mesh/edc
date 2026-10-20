@@ -43,7 +43,15 @@ type commandDoc struct {
 
 func (doc commandDoc) summary() string { return T("command." + doc.name + ".summary") }
 
-func (doc commandDoc) notes() []string { return TList("command." + doc.name + ".notes") }
+func (doc commandDoc) notes() []string {
+	notes := TList("command." + doc.name + ".notes")
+	if doc.name == "history" || doc.name == "snapshot" {
+		if path, err := defaultHistoryPath(); err == nil {
+			notes = append(notes, T("history.database_path", "`"+reportIdentityValue(path)+"`"))
+		}
+	}
+	return notes
+}
 
 // subcommandChoices는 선택기와 usage 오류에 쓰는 하위 명령 이름이다. 하위 명령을 실행하는 run* 함수의 분기는
 // 따로 적혀 있고, completion script와의 일치는 TestCompletionScriptsListThePickerSubcommands가 확인한다.
@@ -242,7 +250,7 @@ var commandDocs = []commandDoc{
 	},
 	{
 		name: "history", group: "record",
-		usage: []string{"edc history list [options] [DB]", "edc history top [options] [DB]", "edc history process [options] [DB]", "edc history export --run <id> [--output <file|->] [DB]", "edc history trend --metric <name> [--probe <id> | --process <filter>] [DB]", "edc history growth [--root <path> | --process <filter>] [DB]", "edc history prune --older-than <age> [options] [DB]", "edc history log [edc log history options]"},
+		usage: []string{"edc history list [options] [DB]", "edc history top [options] [DB]", "edc history process [options] [DB]", "edc history export --run <id> [--output <file|->] [DB]", "edc history trend --metric <name> [--probe <id> | --process <filter>] [DB]", "edc history growth [--root <path> | --process <filter>] [DB]", "edc history prune [--older-than <age>] [options] [DB]", "edc history log [edc log history options]"},
 		options: []optionDoc{
 			{"--run <id>", "history.option.run"},
 			{"--from <RFC3339>", "history.option.from"},
@@ -456,13 +464,14 @@ var commandDocs = []commandDoc{
 	},
 	{
 		name: "snapshot", group: "record",
-		usage: []string{"edc snapshot [--output <file|->] [--write [db]] [--since 6h]", "             [--force] [--du <path>]... [--timeout 15s] [--redact]"},
+		usage: []string{"edc snapshot [--output <file|->] [--write [db] | --no-write] [--since 6h]", "             [--force] [--du <path>]... [--timeout 15s] [--redact]"},
 		options: []optionDoc{
 			{"--output <file|->", "command.snapshot.option.output"},
 			{"--since 6h", "command.snapshot.option.since"},
 			{"--force", "command.snapshot.option.force"},
 			{"--du <path>", "command.snapshot.option.du"},
 			{"-w, --write [db]", "command.snapshot.option.write"},
+			{"--no-write", "command.snapshot.option.no_write"},
 			{"--timeout 15s", "option.timeout"},
 			{"--redact", "option.redact"},
 		},
@@ -688,25 +697,7 @@ func printCommandHelp(writer io.Writer, name string) bool {
 		printRichCommandHelp(writer, doc)
 		return true
 	}
-	fmt.Fprintf(writer, "edc %s — %s\n\n%s\n", doc.name, doc.summary(), T("help.usage_label"))
-	for _, line := range doc.usage {
-		fmt.Fprintf(writer, "  %s\n", line)
-	}
-	printExamples(writer, doc.examples)
-	if len(doc.options) > 0 {
-		fmt.Fprintf(writer, "\n%s\n", T("help.options_label"))
-		printOptionDocs(writer, doc.options)
-	}
-	if doc.usesCommon {
-		fmt.Fprintf(writer, "\n%s\n", T("help.common_options_label"))
-		printOptionDocs(writer, uncoveredCommonOptions(doc.options))
-	}
-	if notes := doc.notes(); len(notes) > 0 {
-		fmt.Fprintln(writer)
-		for _, note := range notes {
-			fmt.Fprintf(writer, "%s\n", note)
-		}
-	}
+	renderCommandHelp(writer, doc, 80, false)
 	return true
 }
 
@@ -743,11 +734,12 @@ func printRichExamples(writer io.Writer, examples []string) {
 	if len(examples) == 0 {
 		return
 	}
-	fmt.Fprintf(writer, "\n%s\n", richPanelTop(T("help.examples_label"), "", ""))
-	for _, example := range examples {
-		fmt.Fprintln(writer, richPanelLine(richPaint(example, richCyan, true), ""))
-	}
-	fmt.Fprintln(writer, richPanelBottom(""))
+	render := helpRenderer{output: writer, width: commandHelpWidth(), color: true}
+	render.panel(T("help.examples_label"), func() {
+		for _, example := range examples {
+			render.syntax(example)
+		}
+	})
 }
 
 func printExamples(writer io.Writer, examples []string) {
@@ -786,29 +778,7 @@ func subcommandSelectItems(name string, choices []string) []selectItem {
 // printRichCommandHelp는 평문과 같은 순서로 usage, options, 공용 options를 회색 패널에 담는다.
 // 배지 뒤는 한 칸만 띄운다. 배지가 평문의 "edc name — "과 같은 폭이 되어 긴 summary도 80칸 안에 든다.
 func printRichCommandHelp(writer io.Writer, doc commandDoc) {
-	fmt.Fprintf(writer, "%s %s\n\n", richBadge("edc "+doc.name, richMagenta), richBold(doc.summary()))
-	fmt.Fprintln(writer, richPanelTop(T("help.usage_label"), "", ""))
-	for _, line := range doc.usage {
-		fmt.Fprintln(writer, richPanelLine(line, ""))
-	}
-	fmt.Fprintln(writer, richPanelBottom(""))
-	printRichExamples(writer, doc.examples)
-	if len(doc.options) > 0 {
-		fmt.Fprintf(writer, "\n%s\n", richPanelTop(T("help.options_label"), "", ""))
-		printRichOptionDocs(writer, doc.options)
-		fmt.Fprintln(writer, richPanelBottom(""))
-	}
-	if doc.usesCommon {
-		fmt.Fprintf(writer, "\n%s\n", richPanelTop(T("help.common_options_label"), "", ""))
-		printRichOptionDocs(writer, uncoveredCommonOptions(doc.options))
-		fmt.Fprintln(writer, richPanelBottom(""))
-	}
-	if notes := doc.notes(); len(notes) > 0 {
-		fmt.Fprintln(writer)
-		for _, note := range notes {
-			fmt.Fprintf(writer, "%s\n", note)
-		}
-	}
+	renderCommandHelp(writer, doc, commandHelpWidth(), true)
 }
 
 // uncoveredCommonOptions는 명령이 직접 설명한 공용 flag를 공용 목록에서 뺀다. 같은 flag가 뜻이 다른
@@ -841,14 +811,7 @@ func printOptionDocs(writer io.Writer, options []optionDoc) {
 
 // printRichOptionDocs는 printOptionDocs와 같은 열을 패널 줄로 그린다. flag만 굵은 청록이다.
 func printRichOptionDocs(writer io.Writer, options []optionDoc) {
-	width := optionFlagWidth(options)
-	for _, option := range options {
-		line := richPaint(option.flag, richCyan, true)
-		if detail := option.detail(); detail != "" {
-			line = richPaint(padRight(option.flag, width), richCyan, true) + "  " + detail
-		}
-		fmt.Fprintln(writer, richPanelLine(line, ""))
-	}
+	(helpRenderer{output: writer, width: commandHelpWidth(), color: true}).options(options)
 }
 
 func optionFlagWidth(options []optionDoc) int {

@@ -1,5 +1,23 @@
 # English messages for the snapshot command.
 snapshot:
+  trend_hint: "View recorded trends: edc history trend %s"
+  prune_hint: "Retention: records remain until deleted. Preview cleanup: edc history prune --older-than 90d --dry-run %s"
+  contents:
+    title: "Collected data"
+    host: "Host · OS, CPU cores, load"
+    memory: "Memory · total, used, available"
+    disk: "Disks · capacity, usage, warnings"
+    processes: "Processes · counts, top 5 by memory"
+    listen: "Listen · listening ports and sockets"
+    pressure: "Pressure · CPU, memory, I/O, OOM"
+    audit: "Audit · security checks"
+    events: "Events · recent system events"
+    changes: "Changes · packages, settings, services"
+    du: "Directories · size by path (--du)"
+  view_hint: "view: edc report show %s"
+  list_hint: "list files in this directory: edc report list %s"
+  file_only_hint: "Saved as a JSON report only (--no-write). Run edc snapshot to record future observations for trend/growth."
+  history_hint: "Recorded in the history DB for trend/growth. List recorded runs: edc history list %s"
   skip:
     timeout: "%s did not finish within %s"
     pressure_unavailable: "PSI and the OOM kill counter are not readable on this host"
@@ -23,7 +41,8 @@ snapshot:
   exists: "%s already exists, add --force to replace it"
   saved: "saved %s"
   recorded: "recorded snapshot %s in %s"
-  export_hint: "to compare it, export it: edc history export --run %s --output <file>"
+  export_hint: "to compare it, export it: edc history export --run %s --output <file> %s"
   error:
+    no_write: "Use --no-write with --output <file|->, without -w or --write"
     du_empty: "--du needs a path"
   diff_hint: "compare with: edc report diff <before> %s"

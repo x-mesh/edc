@@ -38,6 +38,7 @@ cli:
     host_failed: "edc did not read the system information: %v"
     public_failed: "the public network lookup failed: %v"
   log_history:
+    selected_run: "Selected run"
     trend: "Last 14 days %s  %d runs · %s"
     stats_unavailable: "Daily summary unavailable (%s)."
     index_unavailable: "History index unavailable (%s); reading the log files directly."
@@ -61,6 +62,10 @@ cli:
     paused: "paused"
     live_help: "   r Refresh   p Pause"
     column:
+      usual: "vs usual"
+      cpu_average: "CPU avg"
+      read: "Read"
+      write: "Write"
       command: "Command"
       last: "Last run"
       runs: "Runs"
@@ -115,7 +120,7 @@ cli:
       dir: "log directory (one subdirectory level)"
       file: "log file and its rotation archives"
       key: "full command key or unique prefix (12+ hex)"
-      limit: "attempts per key (1-1000, default 20)"
+      limit: "attempts per key (1-1000, default 20; terminal view grows with screen height)"
       failed: "known failures only"
       follow: "print runs as they start and end"
       json: "--follow JSONL path (- for stdout)"
@@ -411,7 +416,7 @@ cli:
     lock_unavailable: "trace lock: no %s lock waits: %s"
     lock_map_full: "trace lock: the BPF map was full, so %d waits are not in the counts. Use --process or --container"
   report:
-    description: "report reads results saved with --json by edc diagnostic commands.\nGeneral JSON, report diff output, and edc log text logs are unsupported."
+    description: "report reads snapshot JSON files and reports saved with --json by edc diagnostic commands.\nGeneral JSON, report diff output, and edc log text logs are unsupported."
     command_show: "show  — view a saved edc diagnostic result"
     command_diff: "diff  — compare two saved edc diagnostic results"
     command_list: "list  — list saved edc diagnostic results"

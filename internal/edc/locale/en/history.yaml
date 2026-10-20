@@ -1,4 +1,80 @@
 history:
+  help_sections:
+    storage:
+      title: "Database and files"
+      notes:
+        - "The local history DB stores `snapshot` and `top` observations. Optional `<DB>` selects another database."
+        - "JSON snapshots: `edc report list` lists files; `edc report show <file.json>` opens one."
+    recording:
+      title: "Record"
+      notes:
+        - "`edc snapshot` records by default. Add `--output <file>` for JSON; `edc history export --run <id>` exports an earlier snapshot."
+        - "Use `edc top -w` or press `w` in top to start/stop recording. `p` pauses recording with collection."
+    browsing:
+      title: "Browse"
+      notes:
+        - "`edc history list` lists runs. `edc history top` and `edc history process` open interactive browsers."
+        - "`↑↓` selects, `Enter` opens details, `Home` follows latest; wide screens add columns and a detail panel."
+    analysis:
+      title: "Trends and growth"
+      notes:
+        - "`edc history trend` reads DB metrics by local hour, day or week. `edc history growth` shows disk/directory growth or process RSS growth (7 days by default)."
+        - "Use `--process <filter>` for processes. Unfiltered samples cover observed candidates; host CPU% uses all cores and process 100% uses one core."
+    cleanup:
+      title: "Cleanup"
+      notes:
+        - "`edc history prune` previews runs idle for `90d`; `t` changes the age, `d` then `y` confirms checked runs."
+        - "No automatic deletion. See `edc history prune --help` for `--dry-run`, `--yes` and `--vacuum`."
+  prune_help:
+    interactive_title: "Interactive browser"
+    retention: "Without `--older-than`, preview runs idle for `90d`. Scripts need an explicit `<age>`."
+    keys: "`↑↓` select · `Space` check · `a` all · `Enter` details · `q` quit."
+    period: "`t` chooses the age; presets or custom values such as `12h`, `14d`, `2w`."
+    deletion_title: "Deletion and disk space"
+    confirm: "`d` then `y` deletes checked runs and their observations. `--dry-run` only previews; `--yes` skips the browser and confirmation."
+    recheck: "Last activity includes start, end and the latest observation. Runs with newer activity are checked again before deletion."
+    vacuum: "Deleted space is reused inside the DB. `--vacuum` returns it to disk and can make other writers wait."
+    storage_title: "Database"
+    storage: "Optional `<DB>` selects another history database. Snapshot JSON files are managed with `edc report list` and `edc report show <file.json>`."
+  review:
+    age_current: "Age filter: older than %s"
+    age_title: "Choose the age of cleanup candidates"
+    age_option: "Idle for more than %s"
+    age_custom: "Custom duration (e.g. 12h, 14d, 2w)"
+    age_loading: "Loading runs idle for more than %s…"
+    age_invalid: "Enter a positive duration, such as 12h, 14d, or 2w."
+    age_help: "↑↓ Select   Enter Apply   Esc Back   q Quit"
+    age_input_help: "Enter Apply   Esc Cancel   Ctrl+U Clear"
+    growth_title: "History growth"
+    prune_title: "History cleanup candidates"
+    help: "↑↓ Select   Enter Details   Home First   r Refresh   p Pause   q Quit"
+    detail_help: "↑↓ Scroll   Esc Back   r Refresh   p Pause   q Quit"
+    prune_help: "↑↓ Select   Space Toggle   a All   Enter Details   d Delete   t Period   r Refresh   q Quit"
+    prune_dry_help: "↑↓ Select   Enter Details   t Period   r Refresh   q Quit"
+    prune_detail_help: "↑↓ Scroll   Esc Back   t Period   r Refresh   q Quit"
+    confirm: "Delete the %d checked runs and their observations? y confirm / any other key cancel"
+    checked: "%d checked"
+    dry_run: "preview only; deletion disabled"
+    prune_range: "Last active before %s · %d runs · %d observations/results"
+    prune_details: "Deleting this run also deletes its host/process observations or snapshot results, metrics and directory records. JSON report files are kept."
+    prune_changed: "Skipped %d runs that changed or no longer meet the age filter."
+  process_browser:
+    title: "Process history"
+    empty: "No recorded process observations match this query. Record with edc top -w --process <name>, then open edc history process."
+  recording:
+    started: "Recording started: %s"
+    stopped: "Recording stopped · %d samples saved"
+    help: "Recording: w starts/stops DB recording · starts from the next full sample · p pauses recording too"
+  top_browser:
+    title: "Top history"
+    details: "Selected observation"
+    help: "↑↓ Select   Enter Details   Home Latest   r Refresh   p Pause   q Quit"
+    detail_help: "↑↓ Scroll   Esc Back   r Refresh   p Pause   q Quit"
+    following: "following latest"
+    selected: "selected observation"
+    paused: "refresh paused"
+    empty: "No top recordings. Run edc top and press w, or use edc top -w. Snapshots are listed by edc history list."
+  database_path: "Default history DB: %s"
   usage: "Usage: edc history <list|top|process|export|trend|growth|prune> [options] [DB]"
   option:
     run: "only this run ID"
@@ -99,9 +175,18 @@ history:
 command:
   history:
     notes:
+      - "In the prune browser, t opens the age picker. Choose a preset or enter a duration; candidates reload and deletion uses the chosen age."
+      - "In a terminal, history prune without --older-than previews runs idle for 90 days. Outside the browser, --older-than is required."
+      - "growth opens a selection/details browser. prune shows candidates: Space toggles, a selects all, d then y confirms deletion. --dry-run only previews; --yes uses the existing command output."
+      - "history process also opens a browser: ↑↓ selects, Enter shows PID, CPU, memory, I/O and available limits; wide screens add columns and details."
+      - "In a terminal, history top opens a browser: ↑↓ selects, Enter opens details, Home follows the newest sample."
+      - "Top history adds disk/network/swap columns as space allows; a wide screen shows selected sample details."
+      - "The history DB is a local SQLite file holding snapshots (saved by default) and observations from top -w."
+      - "trend and growth read this DB; they do not read JSON files made by snapshot."
+      - "List JSON snapshots with edc report list; open one with edc report show <file.json>."
       - "growth estimates when a disk fills at the rate of the range (7d default)."
       - "trend groups one metric by local hour, day, or week, oldest first."
-      - "snapshot -w [DB] records a snapshot; export --run <id> writes a report."
+      - "snapshot records by default; snapshot -w <DB> selects a DB; export --run <id> writes JSON."
       - "top -w [DB] records while the dashboard stays open."
       - "Records append by run. Pausing top also pauses recording."
       - "list shows runs; top and process show newest samples first."

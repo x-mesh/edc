@@ -460,3 +460,77 @@ func historyCompactSummary(rows []logHistoryAttempt, color bool) []string {
 	}
 	return lines
 }
+
+// historyTrendDays is the window of the trend line: two weeks shows a weekly
+// job twice and fits one line of sparkline.
+const historyTrendDays = 14
+
+func historyTrendStart(now time.Time) time.Time {
+	year, month, day := now.Local().Date()
+	return time.Date(year, month, day, 0, 0, 0, 0, time.Local).AddDate(0, 0, -(historyTrendDays - 1))
+}
+
+// historyTrend sums the runs of a command per local day over the window, from
+// the runs still in the logs plus the daily summaries of runs that prune
+// deleted. The two never hold the same run, so they add up.
+func historyTrend(group logHistoryGroup, now time.Time, color bool) string {
+	start := historyTrendStart(now)
+	days := make([]logHistoryDay, historyTrendDays)
+	slot := func(day string) int {
+		at, err := time.ParseInLocation("2006-01-02", day, time.Local)
+		if err != nil || at.Before(start) {
+			return -1
+		}
+		index := int(at.Sub(start).Hours()+12) / 24
+		if index >= historyTrendDays {
+			return -1
+		}
+		return index
+	}
+	for _, row := range group.Rows {
+		if row.Started.IsZero() || row.Outcome == historyOutcomeRunning {
+			continue
+		}
+		if index := slot(row.Started.Local().Format("2006-01-02")); index >= 0 {
+			days[index].add(row)
+		}
+	}
+	for _, archived := range group.Archive {
+		if index := slot(archived.Day); index >= 0 {
+			day := &days[index]
+			day.Runs += archived.Runs
+			day.Failed += archived.Failed
+			day.Successes += archived.Successes
+			day.DurationSum += archived.DurationSum
+		}
+	}
+	runs, failed, successes, sum, peak := 0, 0, 0, time.Duration(0), 0
+	for _, day := range days {
+		runs, failed, successes, sum = runs+day.Runs, failed+day.Failed, successes+day.Successes, sum+day.DurationSum
+		if day.Runs > peak {
+			peak = day.Runs
+		}
+	}
+	if runs == 0 {
+		return ""
+	}
+	levels := []rune("▁▂▃▄▅▆▇█")
+	spark := make([]rune, historyTrendDays)
+	for index, day := range days {
+		switch {
+		case day.Runs == 0:
+			spark[index] = ' '
+		default:
+			spark[index] = levels[min(len(levels)-1, (day.Runs*len(levels)-1)/peak)]
+		}
+	}
+	failedText := T("cli.log_history.summary_fail", failed)
+	if failed > 0 {
+		failedText = historyTint(failedText, richRed, color)
+	}
+	text := T("cli.log_history.trend", historyTint(string(spark), richCyan, color), runs, failedText)
+	if successes > 0 {
+		text += " · " + T("cli.log_history.summary_avg", (sum/time.Duration(successes)).Round(time.Millisecond).String())
+	}
+	return text
+}

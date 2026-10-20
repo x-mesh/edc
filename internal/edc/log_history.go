@@ -20,6 +20,9 @@ type logHistoryOptions struct {
 	Failed, Follow             bool
 	JSON                       string
 	Limit                      int
+	// oldestFirst makes a direct read keep the oldest families at its limits.
+	// prune needs the old runs; the history needs the new ones.
+	oldestFirst bool
 }
 
 func parseLogHistoryOptions(args []string, output io.Writer) (logHistoryOptions, error) {
@@ -99,7 +102,24 @@ func loadLogHistory(options logHistoryOptions, cache logHistoryCache) (logHistor
 	if root == "" {
 		return logHistorySnapshot{}, errors.New(T("cli.log_history.directory_unavailable"))
 	}
-	paths, families, err := historyPaths(root)
+	var notices []string
+	if options.Directory == "" {
+		var extra []string
+		if output := activeConfig.Defaults.Log.Output; output != nil && *output != "" {
+			if absolute, err := filepath.Abs(*output); err == nil {
+				extra = append(extra, absolute)
+			}
+		}
+		snapshot, notice, ok := loadIndexedHistory(root, extra, cache.indexState())
+		if ok {
+			attachLogHistoryArchive(&snapshot, root)
+			return snapshot, nil
+		}
+		if notice != "" {
+			notices = append(notices, notice)
+		}
+	}
+	paths, families, err := historyPathsOrdered(root, options.oldestFirst)
 	limited := errors.Is(err, errHistoryScanLimit)
 	if err != nil && !limited && !(options.Directory == "" && os.IsNotExist(err)) {
 		return logHistorySnapshot{}, err
@@ -114,11 +134,26 @@ func loadLogHistory(options logHistoryOptions, cache logHistoryCache) (logHistor
 			paths = append(paths, path)
 		}
 	}
-	snapshot := collectLogHistory(paths, cache, families)
+	snapshot := collectLogHistoryOrdered(paths, cache, families, options.oldestFirst)
 	if limited {
 		snapshot.issue(root, "limit_error")
 	}
+	snapshot.Notices = notices
+	if options.Directory == "" {
+		attachLogHistoryArchive(&snapshot, root)
+	}
 	return snapshot, nil
+}
+
+// attachLogHistoryArchive adds the summaries of the trend window. A stats file
+// that cannot be read only hides the archived days, with one notice.
+func attachLogHistoryArchive(snapshot *logHistorySnapshot, root string) {
+	archive, err := loadLogHistoryArchive(root, historyTrendStart(time.Now()))
+	if err != nil {
+		snapshot.Notices = append(snapshot.Notices, T("cli.log_history.stats_unavailable", reportIdentityValue(firstLine(err.Error()))))
+		return
+	}
+	snapshot.Archive = archive
 }
 
 type logHistoryGroup struct {
@@ -127,6 +162,7 @@ type logHistoryGroup struct {
 	Rows            []logHistoryAttempt
 	Failed, Unknown int
 	Running         int
+	Archive         []logHistoryDay
 }
 
 func logHistoryGroups(snapshot logHistorySnapshot, options logHistoryOptions) ([]logHistoryGroup, int) {
@@ -142,7 +178,7 @@ func logHistoryGroups(snapshot logHistorySnapshot, options logHistoryOptions) ([
 		}
 		group := indexed[row.Key]
 		if group == nil {
-			group = &logHistoryGroup{Key: row.Key, Representative: row}
+			group = &logHistoryGroup{Key: row.Key, Representative: row, Archive: snapshot.Archive[row.Key]}
 			indexed[row.Key] = group
 		}
 		if (group.Representative.Display == "name" || group.Representative.Display == "unknown") && row.Display != "name" && row.Display != "unknown" {
@@ -220,7 +256,11 @@ func historyRows(group logHistoryGroup, options logHistoryOptions) []logHistoryA
 }
 
 func printHistoryGroup(output io.Writer, group logHistoryGroup, options logHistoryOptions) {
-	fmt.Fprintf(output, "%s\nkey %s\n%s\n\n", historyCommand(group.Representative), group.Key, T("cli.log_history.time_note"))
+	fmt.Fprintf(output, "%s\nkey %s\n%s\n", historyCommand(group.Representative), group.Key, T("cli.log_history.time_note"))
+	if trend := historyTrend(group, time.Now(), false); trend != "" {
+		fmt.Fprintln(output, trend)
+	}
+	fmt.Fprintln(output)
 	rows := historyRows(group, options)
 	for _, row := range rows {
 		exit := "—"
@@ -298,7 +338,7 @@ func logHistoryLoaderFor(options logHistoryOptions, cache logHistoryCache) logHi
 			return nil, nil, errors.New(reportIdentityValue(err.Error()))
 		}
 		groups, unknown := logHistoryGroups(snapshot, options)
-		notices := append([]string{}, snapshot.Issues...)
+		notices := append(append([]string{}, snapshot.Issues...), snapshot.Notices...)
 		if unknown > 0 {
 			notices = append(notices, T("cli.log_history.unknown_keys", unknown))
 		}
@@ -326,6 +366,9 @@ func runLogHistory(args []string, streams logStreams) int {
 	if err != nil {
 		fmt.Fprintln(streams.stderr, reportIdentityValue(err.Error()))
 		return 2
+	}
+	for _, notice := range snapshot.Notices {
+		fmt.Fprintln(streams.stderr, notice)
 	}
 	code := 0
 	if len(snapshot.Issues) > 0 {
@@ -370,7 +413,7 @@ func runLogHistory(args []string, streams logStreams) int {
 	input, inputOK := streams.stdin.(*os.File)
 	output, outputOK := streams.stdout.(*os.File)
 	if inputOK && outputOK && isTerminal(input) && isTerminal(output) && os.Getenv("NO_COLOR") == "" {
-		notices := append([]string{}, snapshot.Issues...)
+		notices := append(append([]string{}, snapshot.Issues...), snapshot.Notices...)
 		if notice != "" {
 			notices = append(notices, notice)
 		}

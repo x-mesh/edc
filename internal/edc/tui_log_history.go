@@ -186,6 +186,16 @@ func (model *logHistoryBrowser) refreshHistory() {
 }
 
 func (model *logHistoryBrowser) summary() []string {
+	var trend []string
+	if len(model.groups) > 0 {
+		if line := historyTrend(model.groups[model.cursor], model.now, model.color); line != "" {
+			trend = append(trend, line)
+		}
+	}
+	return append(trend, model.summaryLines()...)
+}
+
+func (model *logHistoryBrowser) summaryLines() []string {
 	rows := model.rows()
 	contexts := map[string]bool{}
 	for _, row := range rows {

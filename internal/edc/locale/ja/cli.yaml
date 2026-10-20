@@ -38,6 +38,11 @@ cli:
     host_failed: "system の情報を読めませんでした: %v"
     public_failed: "public network の取得に失敗しました: %v"
   log_history:
+    trend: "最近14日 %s  実行 %d · %s"
+    stats_unavailable: "日別の概要を読めません(%s)。"
+    index_unavailable: "履歴インデックスを使えないため(%s)、ログファイルを直接読みます。"
+    index_building: "履歴インデックスを作成中のため(ログ %d/%d 個)、ログファイルを直接読みます。"
+    index_corrupt: "履歴インデックスが壊れていたため %s に移しました。次回の実行で作り直します。"
     browser_title: "コマンド履歴 · %dコマンド"
     run_count: "最近の実行 %d件"
     today: "今日 %s"
@@ -139,6 +144,7 @@ cli:
       scope_container: "コンテナ %s · %d サンプル"
       scope_exec: "コンテナ %s の docker exec · %d サンプル"
   log_prune:
+    stats_failed: "日別の概要を保存できませんでした(%s)。ログは削除しました。"
     dry_plan: "[dry-run] %[4]s 以下の実行 %[1]d件、ファイル %[2]d個(%[3]s)を削除する予定です"
     dry_plan_total: "[dry-run] 実行 %d件、ファイル %d個(%s)を削除する予定です"
     dry_note: "何も削除していません。削除するには --dry-run なしで再実行してください。"

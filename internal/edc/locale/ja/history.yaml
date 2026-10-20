@@ -1,5 +1,5 @@
 history:
-  usage: "使い方: edc history <list|top|process|export> [options] [DB]"
+  usage: "使い方: edc history <list|top|process|export|trend> [options] [DB]"
   option:
     run: "この実行 ID のみ"
     from: "開始時刻を含む (RFC3339)"
@@ -10,6 +10,8 @@ history:
     min: "最小値を含む。--metric が必要"
     max: "最大値を含む。--metric が必要"
     output: "export の報告ファイル、- は stdout"
+    probe: "trend で見るスナップショット結果、例: info.disk:/、du.scan"
+    by: "trend の期間: hour、day、week (ローカル時間)"
   error:
     default_path: "既定の DB path を取得できません。--write <path> を指定してください"
     path: "DB の file path を指定してください。JSON は DB や journal を上書きできません"
@@ -24,9 +26,17 @@ history:
     no_snapshots: "この DB にスナップショットはありません。edc snapshot --write で記録してください"
     no_run: "この DB に実行 %s はありません"
     not_snapshot: "実行 %s はスナップショットではなく %s の実行です"
+    trend_by: "--by には次のいずれかを指定してください: %s"
+    trend_metric: "--metric に top の field を指定するか、--probe とスナップショットの指標を指定してください。top field: %s"
+    trend_probe: "スナップショット指標 %s はありません。記録済み: %s"
+    trend_key: "%s に %s の値はありません。記録済み: %s"
+  trend:
+    title: "%s、%s 単位、ローカル時間 %s"
+    empty: "この範囲に値はありません"
 command:
   history:
     notes:
+      - "trend は 1 つの指標をローカル時間の hour、day、week で古い順にまとめます。"
       - "snapshot -w [DB] で記録し、export --run <id> で報告に書き出す。"
       - "top -w [DB] は dashboard を維持して記録します。"
       - "実行ごとに追記。top の一時停止中は記録も停止します。"

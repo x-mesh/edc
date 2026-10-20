@@ -139,7 +139,7 @@ _edc() {
           ;;
         history)
           if [[ $words[2] == log ]]; then _arguments '*:command:_command_names -e'; return; fi
-          _arguments '1:subcommand:(list top process export log)' '--run[실행 ID]:id' '--from[시작 시각]:RFC3339' '--to[종료 시각]:RFC3339' '--process[process filter]:filter' '--metric[지표 이름]:metric' '--min[최솟값]:number' '--max[최댓값]:number' '--limit[최대 결과 수]:count' '--json[JSONL 출력 경로]:path:_files' '--output[보고서 파일]:path:_files' '*:database:_files'
+          _arguments '1:subcommand:(list top process export trend log)' '--run[실행 ID]:id' '--from[시작 시각]:RFC3339' '--to[종료 시각]:RFC3339' '--process[process filter]:filter' '--metric[지표 이름]:metric' '--min[최솟값]:number' '--max[최댓값]:number' '--limit[최대 결과 수]:count' '--json[JSONL 출력 경로]:path:_files' '--output[보고서 파일]:path:_files' '--probe[스냅샷 결과]:probe' '--by[구간]:period:(hour day week)' '*:database:_files'
           ;;
         watch)
           if [[ $words[2] == fs ]]; then
@@ -335,11 +335,12 @@ _edc() {
       if [[ $COMP_CWORD -eq 2 && $cur != -* ]]; then COMPREPLY=($(compgen -W "setup" -- "$cur")); return; fi
       COMPREPLY=($(compgen -W "--interval --count --no-header --process --split --view --panels --columns --interface -d --detail --ebpf -w --write --json" -- "$cur")) ;;
     history)
-      if [[ $COMP_CWORD -eq 2 ]]; then COMPREPLY=($(compgen -W "list top process export log" -- "$cur"))
+      if [[ $COMP_CWORD -eq 2 ]]; then COMPREPLY=($(compgen -W "list top process export trend log" -- "$cur"))
       elif [[ ${COMP_WORDS[2]} == log ]]; then COMPREPLY=($(compgen -c -- "$cur"))
       elif [[ $prev == --json || $prev == --output ]]; then COMPREPLY=($(compgen -f -- "$cur"))
-      elif [[ $prev == --run || $prev == --from || $prev == --to || $prev == --process || $prev == --metric || $prev == --min || $prev == --max || $prev == --limit ]]; then COMPREPLY=()
-      elif [[ $cur == -* ]]; then COMPREPLY=($(compgen -W "--run --from --to --process --metric --min --max --limit --json --output" -- "$cur"))
+      elif [[ $prev == --run || $prev == --from || $prev == --to || $prev == --process || $prev == --metric || $prev == --min || $prev == --max || $prev == --limit || $prev == --probe ]]; then COMPREPLY=()
+      elif [[ $prev == --by ]]; then COMPREPLY=($(compgen -W "hour day week" -- "$cur"))
+      elif [[ $cur == -* ]]; then COMPREPLY=($(compgen -W "--run --from --to --process --metric --probe --by --min --max --limit --json --output" -- "$cur"))
       else COMPREPLY=($(compgen -f -- "$cur")); fi ;;
     watch)
       if [[ $COMP_CWORD -eq 2 ]]; then COMPREPLY=($(compgen -W "http fs" -- "$cur")); return; fi

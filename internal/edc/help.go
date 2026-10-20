@@ -242,13 +242,15 @@ var commandDocs = []commandDoc{
 	},
 	{
 		name: "history", group: "record",
-		usage: []string{"edc history list [options] [DB]", "edc history top [options] [DB]", "edc history process [options] [DB]", "edc history export --run <id> [--output <file|->] [DB]", "edc history log [edc log history options]"},
+		usage: []string{"edc history list [options] [DB]", "edc history top [options] [DB]", "edc history process [options] [DB]", "edc history export --run <id> [--output <file|->] [DB]", "edc history trend --metric <name> [--probe <id>] [--by day] [DB]", "edc history log [edc log history options]"},
 		options: []optionDoc{
 			{"--run <id>", "history.option.run"},
 			{"--from <RFC3339>", "history.option.from"},
 			{"--to <RFC3339>", "history.option.to"},
 			{"--process <filter>", "command.top.option.process"},
 			{"--metric <name>", "history.option.metric"},
+			{"--probe <id>", "history.option.probe"},
+			{"--by day", "history.option.by"},
 			{"--min <number>", "history.option.min"},
 			{"--max <number>", "history.option.max"},
 			{"--limit 200", "history.option.limit"},
@@ -260,12 +262,14 @@ var commandDocs = []commandDoc{
 			{"top", "edc history top [options] [DB]"},
 			{"process", "edc history process [options] [DB]"},
 			{"export", "edc history export --run <id> [DB]"},
+			{"trend", "edc history trend [options] [DB]"},
 			{"log", "edc history log [<command>]"},
 		},
 		examples: []string{
 			"edc history list",
 			"edc history top --metric memory_pct --min 90",
 			"edc history process --process nginx",
+			"edc history trend --probe info.disk:/ --metric used_bytes",
 		},
 	},
 	{

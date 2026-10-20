@@ -150,6 +150,13 @@ func runHistoryGrowth(args []string) int {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
+	if *jsonPath == "" && liveTerminal() {
+		if err := runHistoryGrowthBrowser(db, path, options, growth); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		return 0
+	}
 	if *jsonPath == "" {
 		writeHistoryGrowth(os.Stdout, growth, time.Local)
 		return 0

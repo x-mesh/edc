@@ -194,6 +194,10 @@ func printReportEmpty(output io.Writer, directory string) {
 }
 
 func listReports(output io.Writer, directory string) error {
+	directory, err := filepath.Abs(directory)
+	if err != nil {
+		return err
+	}
 	reports, err := discoverReports(directory)
 	if err != nil {
 		return err

@@ -1,4 +1,80 @@
 history:
+  help_sections:
+    storage:
+      title: "DB와 파일"
+      notes:
+        - "로컬 history DB에는 `snapshot`과 `top` 관측값을 저장합니다. 선택 인자 `<DB>`로 다른 DB를 지정합니다."
+        - "JSON snapshot은 `edc report list`로 목록을 보고 `edc report show <file.json>`으로 엽니다."
+    recording:
+      title: "기록"
+      notes:
+        - "`edc snapshot`은 기본으로 기록합니다. `--output <file>`로 JSON도 저장하고 `edc history export --run <id>`로 이전 snapshot을 꺼냅니다."
+        - "`edc top -w` 또는 top의 `w`로 기록을 시작·중지합니다. `p`로 일시정지하면 수집과 기록이 함께 멈춥니다."
+    browsing:
+      title: "탐색"
+      notes:
+        - "`edc history list`는 실행 목록을, `edc history top`과 `edc history process`는 인터랙티브 탐색 화면을 엽니다."
+        - "`↑↓` 선택, `Enter` 상세, `Home` 최신 추적을 지원합니다. 넓은 화면에는 컬럼과 상세 패널을 추가합니다."
+    analysis:
+      title: "추이와 증가량"
+      notes:
+        - "`edc history trend`는 DB 지표를 로컬 시간·일·주 단위로 묶습니다. `edc history growth`는 디스크·디렉터리 또는 process RSS 증가량을 봅니다 (기본 7일)."
+        - "process는 `--process <filter>`로 좁힙니다. 필터 없이 저장한 process는 관측된 후보이며, host CPU%는 전체 코어 기준이고 process 100%는 한 코어입니다."
+    cleanup:
+      title: "정리"
+      notes:
+        - "`edc history prune`은 마지막 활동이 `90d` 이전인 실행을 미리 봅니다. `t`로 기간 변경, `d` 다음 `y`로 체크한 실행 삭제를 확인합니다."
+        - "자동 삭제하지 않습니다. `--dry-run`, `--yes`, `--vacuum`은 `edc history prune --help`를 참고하세요."
+  prune_help:
+    interactive_title: "인터랙티브 탐색"
+    retention: "`--older-than`을 생략하면 마지막 활동이 `90d` 이전인 실행을 미리 봅니다. 스크립트에서는 `<age>`를 지정하세요."
+    keys: "`↑↓` 선택 · `Space` 체크 · `a` 전체 · `Enter` 상세 · `q` 종료."
+    period: "`t`로 기간을 고릅니다. 기본 기간 또는 `12h`, `14d`, `2w`처럼 직접 입력할 수 있습니다."
+    deletion_title: "삭제와 디스크 공간"
+    confirm: "`d` 다음 `y`로 체크한 실행과 관측값을 삭제합니다. `--dry-run`은 미리보기만, `--yes`는 탐색·확인 없이 실행합니다."
+    recheck: "마지막 활동은 시작·종료·최근 관측 시각 중 가장 늦은 값입니다. 삭제 직전에 활동이 갱신되었는지 다시 확인합니다."
+    vacuum: "삭제한 공간은 DB 안에서 재사용됩니다. `--vacuum`은 공간을 디스크에 반환하며 그동안 다른 기록이 기다릴 수 있습니다."
+    storage_title: "데이터베이스"
+    storage: "선택 인자 `<DB>`로 다른 history DB를 지정합니다. Snapshot JSON 파일은 `edc report list`와 `edc report show <file.json>`으로 조회합니다."
+  review:
+    age_current: "기간 조건: %s보다 오래된 활동"
+    age_title: "정리 후보의 기간 선택"
+    age_option: "마지막 활동이 %s보다 오래된 기록"
+    age_custom: "직접 입력 (예: 12h, 14d, 2w)"
+    age_loading: "마지막 활동이 %s보다 오래된 실행 조회 중…"
+    age_invalid: "12h, 14d, 2w처럼 0보다 큰 기간을 입력하세요."
+    age_help: "↑↓ 선택   Enter 적용   Esc 뒤로   q 종료"
+    age_input_help: "Enter 적용   Esc 취소   Ctrl+U 지우기"
+    growth_title: "이력 증가량"
+    prune_title: "이력 정리 후보"
+    help: "↑↓ 선택   Enter 상세   Home 처음   r 새로고침   p 일시정지   q 종료"
+    detail_help: "↑↓ 스크롤   Esc 뒤로   r 새로고침   p 일시정지   q 종료"
+    prune_help: "↑↓ 선택   Space 체크   a 전체   Enter 상세   d 삭제   t 기간   r 새로고침   q 종료"
+    prune_dry_help: "↑↓ 선택   Enter 상세   t 기간   r 새로고침   q 종료"
+    prune_detail_help: "↑↓ 스크롤   Esc 뒤로   t 기간   r 새로고침   q 종료"
+    confirm: "체크한 실행 %d개와 그 관측값을 삭제할까요? y 확인 / 다른 키 취소"
+    checked: "%d개 체크"
+    dry_run: "미리보기 · 삭제 비활성"
+    prune_range: "마지막 활동 %s 이전 · 실행 %d개 · 관측값/결과 %d개"
+    prune_details: "이 실행의 호스트·process 관측값 또는 snapshot 결과·지표·디렉터리 기록도 함께 삭제합니다. JSON 보고서 파일은 유지합니다."
+    prune_changed: "활동이 갱신되었거나 기간 조건에서 벗어난 실행 %d개를 제외했습니다."
+  process_browser:
+    title: "Process 관측 이력"
+    empty: "조건에 맞는 process 기록이 없습니다. edc top -w --process <이름>으로 기록한 뒤 edc history process에서 확인하세요."
+  recording:
+    started: "기록 시작: %s"
+    stopped: "기록 중지 · %d개 관측값 저장"
+    help: "기록: w로 DB 기록 시작/중지 · 다음 온전한 관측 구간부터 저장 · p 일시정지 시 기록도 멈춤"
+  top_browser:
+    title: "Top 관측 이력"
+    details: "선택한 관측값"
+    help: "↑↓ 선택   Enter 상세   Home 최신   r 새로고침   p 일시정지   q 종료"
+    detail_help: "↑↓ 스크롤   Esc 뒤로   r 새로고침   p 일시정지   q 종료"
+    following: "최신 관측 추적"
+    selected: "선택한 관측 유지"
+    paused: "갱신 일시정지"
+    empty: "top 기록이 없습니다. edc top에서 w를 누르거나 edc top -w로 기록하세요. snapshot은 edc history list에서 확인합니다."
+  database_path: "기본 history DB: %s"
   usage: "사용법: edc history <list|top|process|export|trend|growth|prune> [options] [DB]"
   option:
     run: "이 실행 ID만 조회"
@@ -99,9 +175,18 @@ history:
 command:
   history:
     notes:
+      - "prune 탐색 화면에서 t로 기간 선택을 엽니다. 기본 기간을 고르거나 직접 입력하면 후보를 다시 조회하고 선택한 기간으로 삭제 조건을 재확인합니다."
+      - "터미널에서 history prune을 옵션 없이 실행하면 마지막 활동이 90일 이전인 실행을 미리 봅니다. 탐색 화면 밖에서는 --older-than이 필요합니다."
+      - "growth는 선택·상세 탐색 화면을 엽니다. prune은 후보를 표시하며 Space 체크, a 전체 선택, d 다음 y로 삭제를 확인합니다. --dry-run은 미리보기만, --yes는 기존 명령 출력으로 실행합니다."
+      - "history process도 탐색 화면을 엽니다. ↑↓ 선택, Enter로 PID·CPU·메모리·I/O와 수집된 한도를 확인하며 넓은 화면에는 컬럼과 상세를 추가합니다."
+      - "터미널에서 history top은 탐색 화면을 엽니다. ↑↓ 선택, Enter 상세, Home 최신 관측 추적."
+      - "화면 너비에 따라 디스크·네트워크·swap 컬럼을 추가하며, 넓은 화면에는 선택한 관측의 상세를 표시합니다."
+      - "history DB는 기본 저장되는 snapshot과 top -w의 반복 관측값을 모으는 로컬 SQLite 파일입니다."
+      - "trend와 growth는 이 DB를 읽으며, snapshot이 만든 JSON 파일은 읽지 않습니다."
+      - "JSON snapshot 목록은 edc report list, 내용은 edc report show <file.json>으로 봅니다."
       - "growth는 기간(기본 7일)의 속도로 디스크가 가득 차는 시점을 추정합니다."
       - "trend는 지표 하나를 로컬 시간의 hour, day, week로 묶어 오래된 순으로 보입니다."
-      - "snapshot -w [DB]는 스냅샷을 기록, export --run <id>는 보고서로 꺼냄."
+      - "snapshot은 기본으로 기록하며, snapshot -w <DB>로 DB를 지정하고 export --run <id>로 JSON을 꺼냅니다."
       - "top -w [DB]는 대시보드를 유지하며 기록합니다."
       - "실행별로 누적합니다. top 일시정지는 기록도 멈춥니다."
       - "list는 실행 목록, top과 process는 최신 sample부터 조회합니다."

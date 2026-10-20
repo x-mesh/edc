@@ -155,6 +155,7 @@ func historyMetricValues(value any, metrics []historyMetric, supported func(stri
 type historyTopSample struct {
 	topSample
 	RunID             string     `json:"run_id"`
+	System            string     `json:"system,omitempty"`
 	WindowS           float64    `json:"window_s"`
 	ProcessFilter     string     `json:"process_filter"`
 	ProcessesValid    bool       `json:"processes_valid"`
@@ -169,6 +170,7 @@ type historyTopSample struct {
 func newHistoryTopSample(details hostDetails, previous resourceSnapshot, snapshot resourceSnapshot, rate resourceRate, filter string) historyTopSample {
 	sample := historyTopSample{
 		topSample: newTopSample(details, snapshot.TakenAt, rate),
+		System:    details.System,
 		WindowS:   snapshot.TakenAt.Sub(previous.TakenAt).Seconds(), ProcessFilter: filter,
 		ProcessesValid: snapshot.ProcessesValid, CoreCPU: append([]float64(nil), rate.CoreCPU...),
 		NetworkValid: !previous.NetMissing && !snapshot.NetMissing,
@@ -512,6 +514,8 @@ func historyFinite(value float64) bool { return !math.IsNaN(value) && !math.IsIn
 
 func (sample historyTopSample) metricSupported(name string) bool {
 	switch name {
+	case "cpu_iowait_pct":
+		return sample.System != "darwin" && !sample.MemoryPressureSupported
 	case "net_in_bytes_per_s", "net_out_bytes_per_s", "packets_in_per_s", "packets_out_per_s":
 		return sample.NetworkValid
 	case "disk_read_bytes_per_s", "disk_write_bytes_per_s":

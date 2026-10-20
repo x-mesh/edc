@@ -28,12 +28,14 @@ type logHistoryBrowser struct {
 	options                          logHistoryOptions
 	notices                          []string
 	cursor, rowCursor, width, height int
+	rowLimit                         int
 	detail, expanded, color          bool
 	now                              time.Time
 	list, history                    viewport.Model
 	load                             logHistoryLoader
 	seq                              int
 	paused                           bool
+	rowPinned                        bool
 	// confirm is the deletion waiting for y; status is the last deletion result.
 	confirm *logHistoryDeletion
 	status  string
@@ -45,7 +47,7 @@ func newLogHistoryBrowser(groups []logHistoryGroup, options logHistoryOptions, n
 	return model
 }
 
-func (model logHistoryBrowser) contentWidth() int { return max(1, min(model.width, 88)) }
+func (model logHistoryBrowser) contentWidth() int { return max(1, model.width) }
 
 func (model logHistoryBrowser) Init() tea.Cmd {
 	if model.load == nil {
@@ -80,8 +82,10 @@ func (model *logHistoryBrowser) apply(msg logHistoryLoadedMsg) {
 	var run *logHistoryAttempt
 	if len(model.groups) > 0 {
 		key = model.groups[model.cursor].Key
-		if rows := model.rows(); len(rows) > 0 {
-			run = &rows[model.rowCursor]
+		if model.detail && model.rowPinned {
+			if rows := model.rows(); model.rowCursor >= 0 && model.rowCursor < len(rows) {
+				run = &rows[model.rowCursor]
+			}
 		}
 	}
 	model.groups, model.notices = msg.groups, msg.notices
@@ -94,7 +98,7 @@ func (model *logHistoryBrowser) apply(msg logHistoryLoadedMsg) {
 		}
 	}
 	if !found {
-		model.detail, model.expanded, model.rowCursor = false, false, 0
+		model.detail, model.expanded, model.rowCursor, model.rowPinned = false, false, 0, false
 	} else if run != nil {
 		kept := false
 		for index, row := range model.rows() {
@@ -104,15 +108,20 @@ func (model *logHistoryBrowser) apply(msg logHistoryLoadedMsg) {
 			}
 		}
 		if !kept {
-			model.expanded = false
+			model.expanded, model.rowPinned, model.rowCursor = false, false, 0
 		}
+	} else {
+		model.rowCursor = 0
 	}
 	model.resize()
 }
 
 func (model *logHistoryBrowser) resize() {
+	if !model.options.limitExplicit {
+		model.rowLimit = max(model.rowLimit, max(model.options.Limit, model.height-len(model.headerLines())-len(model.footerLines())))
+	}
 	model.list.SetWidth(model.contentWidth())
-	model.list.SetHeight(max(1, min(len(model.groups), model.height-7)))
+	model.list.SetHeight(max(1, model.height-3-len(model.footerLines())))
 	model.history.SetWidth(model.contentWidth())
 	model.refreshList()
 	if len(model.groups) > 0 {
@@ -143,7 +152,11 @@ func (model *logHistoryBrowser) rows() []logHistoryAttempt {
 	if len(model.groups) == 0 {
 		return nil
 	}
-	return historyRows(model.groups[model.cursor], model.options)
+	options := model.options
+	if !options.limitExplicit {
+		options.Limit = max(options.Limit, model.rowLimit)
+	}
+	return historyRows(model.groups[model.cursor], options)
 }
 
 func (model *logHistoryBrowser) refreshHistory() {
@@ -151,34 +164,18 @@ func (model *logHistoryBrowser) refreshHistory() {
 	model.rowCursor = min(model.rowCursor, max(0, len(rows)-1))
 	var lines []string
 	if model.expanded && len(rows) > 0 {
-		row := rows[model.rowCursor]
-		ratios := historyBaseline(model.groups[model.cursor].Rows, row)
-		timing := historyTime(row.Started) + "  ·  " + historyDuration(row) + "  ·  " + historyOutcome(row)
-		if text := historyRatioText(ratios.duration); text != "" {
-			timing += "  ·  " + text
-		}
-		lines = []string{historyCommand(row), "", timing, T("cli.log_history.attempt", row.Attempt)}
-		if resources := historyResourceLines(row, ratios); len(resources) > 0 {
-			lines = append(append(lines, ""), resources...)
-		}
-		lines = append(lines, "", "cwd "+reportIdentityValue(row.CWD), "key "+row.Key, "file "+reportIdentityValue(row.Path))
-		for i, line := range lines {
-			lines[i] = ansi.Wrap(line, model.contentWidth(), "")
-		}
+		lines = model.attemptLines(rows[model.rowCursor], model.contentWidth())
 	} else {
 		for index, row := range rows {
-			lines = append(lines, historyRunRow(row, model.contentWidth(), index == model.rowCursor, model.color, historyBaseline(model.groups[model.cursor].Rows, row)))
+			lines = append(lines, historyRunRow(row, model.tableWidth(), index == model.rowCursor, model.color, historyBaseline(model.groups[model.cursor].Rows, row)))
 		}
 		if len(rows) == 0 {
 			lines = append(lines, T("cli.log_history.no_match"))
 		}
 	}
 	content := strings.Join(lines, "\n")
-	footer := 8
-	if !model.expanded {
-		footer += len(model.summary())
-	}
-	model.history.SetHeight(max(1, min(strings.Count(content, "\n")+1, model.height-footer)))
+	model.history.SetWidth(model.tableWidth())
+	model.history.SetHeight(max(1, model.height-len(model.headerLines())-len(model.footerLines())))
 	model.history.SetContent(content)
 	if !model.expanded {
 		keepHistorySelection(&model.history, model.rowCursor)
@@ -230,6 +227,7 @@ func (model logHistoryBrowser) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if value.String() == "d" {
 			model.planDeletion()
+			model.resize()
 			return model, nil
 		}
 		switch value.String() {
@@ -255,6 +253,7 @@ func (model logHistoryBrowser) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			if model.detail {
 				model.detail = false
+				model.resize()
 				return model, nil
 			}
 			if value.String() == "esc" {
@@ -285,8 +284,13 @@ func (model logHistoryBrowser) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "enter", "e":
 				if len(rows) > 0 {
 					model.expanded = true
+					model.rowPinned = true
 					model.history.GotoTop()
 				}
+			}
+			switch value.String() {
+			case "up", "k", "down", "j", "pgup", "pgdown", "home", "end":
+				model.rowPinned = model.rowCursor != 0
 			}
 			model.refreshHistory()
 			return model, nil
@@ -308,6 +312,7 @@ func (model logHistoryBrowser) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if len(model.groups) > 0 {
 					model.detail = true
 					model.rowCursor = 0
+					model.rowPinned = false
 					model.expanded = false
 					model.refreshHistory()
 					model.history.GotoTop()
@@ -329,54 +334,28 @@ func (model logHistoryBrowser) View() tea.View {
 	var lines []string
 	if model.height < 7 || model.width < 40 || model.detail && model.height < 9 {
 		lines = []string{T("cli.log_history.small"), T("cli.log_history.quit_help")}
-	} else if model.detail {
-		group := model.groups[model.cursor]
-		title := historyCommand(group.Representative) + " · " + T("cli.log_history.run_count", len(model.rows())) + model.liveState()
-		if model.color {
-			title = richPaint(historyCommand(group.Representative), richCyan, true) + richDim(" · "+T("cli.log_history.run_count", len(model.rows()))+model.liveState())
-		}
-		lines = []string{title, ""}
-		if !model.expanded {
-			lines = append(lines, historyTint(historyRunHeader(model.contentWidth()), richGray, model.color))
-		}
-		lines = append(lines, strings.TrimRight(model.history.View(), "\n"), "")
-		if !model.expanded {
-			lines = append(lines, model.summary()...)
-			lines = append(lines, "")
-		}
-		lines = append(lines, model.keyHints("cli.log_history.detail_help"))
-		if model.expanded {
-			lines[len(lines)-1] = model.keyHints("cli.log_history.expanded_help")
-		}
 	} else {
-		lines = []string{historyStrong(T("cli.log_history.browser_title", len(model.groups)), richMagenta, model.color) + historyTint(model.liveState(), richGray, model.color), "", historyTint(historyKeyHeader(model.contentWidth(), model.groups), richGray, model.color)}
-		if len(model.groups) > 0 {
-			lines = append(lines, strings.TrimRight(model.list.View(), "\n"))
+		lines = model.headerLines()
+		if model.detail {
+			lines = append(lines, model.historyLines()...)
+		} else if len(model.groups) > 0 {
+			lines = append(lines, strings.Split(model.list.View(), "\n")...)
 		} else {
 			lines = append(lines, T("cli.log_history.no_match"))
 		}
-		lines = append(lines, "", model.keyHints("cli.log_history.list_help"))
-	}
-	if model.confirm != nil {
-		lines[len(lines)-1] = model.deletionPrompt()
-	}
-	if model.status != "" {
-		lines = append(lines, historyTint(model.status, richYellow, model.color))
-	}
-	if len(model.notices) > 0 {
-		lines = append(lines, historyTint(model.notices[0], richYellow, model.color))
-		if len(model.notices) > 1 {
-			lines = append(lines, historyTint(T("cli.log_history.more_notices", len(model.notices)-1), richYellow, model.color))
+		footer := model.footerLines()
+		for len(lines)+len(footer) < model.height {
+			lines = append(lines, "")
 		}
+		lines = append(lines, footer...)
 	}
-	body := strings.Split(strings.Join(lines, "\n"), "\n")
-	for i, line := range body {
-		body[i] = ansi.Truncate(line, model.contentWidth(), "…")
+	for i, line := range lines {
+		lines[i] = ansi.Truncate(line, model.contentWidth(), "…")
 	}
-	if len(body) > model.height {
-		body = body[:max(1, model.height)]
+	if len(lines) > model.height {
+		lines = lines[:max(1, model.height)]
 	}
-	view := tea.NewView(strings.Join(body, "\n"))
+	view := tea.NewView(strings.Join(lines, "\n"))
 	view.AltScreen = true
 	return view
 }
@@ -407,6 +386,7 @@ func (model logHistoryBrowser) answerDeletion(yes bool) (tea.Model, tea.Cmd) {
 	plan := *model.confirm
 	model.confirm = nil
 	if !yes {
+		model.resize()
 		return model, nil
 	}
 	deleted, err := plan.execute()
@@ -417,6 +397,7 @@ func (model logHistoryBrowser) answerDeletion(yes bool) (tea.Model, tea.Cmd) {
 	if err != nil {
 		model.status += " · " + T("cli.log_history.delete_failed", reportIdentityValue(err.Error()))
 	}
+	model.resize()
 	if model.load == nil {
 		return model, nil
 	}

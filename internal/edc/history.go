@@ -48,6 +48,10 @@ func runHistory(args []string) int {
 	}
 	command := args[0]
 	if len(args) > 1 && (args[1] == "--help" || args[1] == "-h") {
+		if command == "prune" {
+			printHistoryPruneHelp(os.Stdout)
+			return 0
+		}
 		printCommandHelp(os.Stdout, "history")
 		return 0
 	}
@@ -144,6 +148,19 @@ func runHistory(args []string) int {
 		return 1
 	}
 	defer db.Close()
+	if (command == "top" || command == "process") && *jsonPath == "" && liveTerminal() {
+		var err error
+		if command == "process" {
+			err = runHistoryProcessBrowser(db, path, options)
+		} else {
+			err = runHistoryTopBrowser(db, path, options)
+		}
+		if err != nil {
+			fmt.Fprintln(os.Stderr, T("history.error.read", err))
+			return 1
+		}
+		return 0
+	}
 	output := io.Writer(os.Stdout)
 	var file *os.File
 	if *jsonPath != "" && *jsonPath != "-" {
@@ -290,7 +307,7 @@ func writeHistory(output io.Writer, db *sql.DB, command string, options historyO
 		return err
 	}
 	if !jsonOutput {
-		header := "RUN\tTIME\tHOST\tCPU%\tMEM%\tLOAD\tPROCESS FILTER"
+		header := "RUN\tTIME\tHOST\tCPU%\tMEM%\tLOAD\tDISK READ/s\tDISK WRITE/s\tNET IN/s\tNET OUT/s\tSWAP OUT/s\tPROCESS FILTER"
 		if command == "list" {
 			header = "RUN\tCOMMAND\tSTART\tEND\tHOST\tSTATUS\tSAMPLES\tINTERVAL\tPROCESS FILTER\tINTERFACES"
 		} else if command == "process" {
@@ -346,6 +363,12 @@ func writeHistory(output io.Writer, db *sql.DB, command string, options historyO
 			}
 			value = sample
 			line = fmt.Sprintf("%s\t%s\t%s\t%.2f\t%.2f\t%.2f\t%s", sample.RunID, sample.Time.Format(time.RFC3339Nano), historyTerminalText(sample.Hostname), sample.CPU, sample.MemoryPct, sample.Load1, historyTerminalText(sample.ProcessFilter))
+			cells := strings.Split(line, "\t")
+			line = strings.Join(cells[:6], "\t")
+			for _, name := range []string{"disk_read_bytes_per_s", "disk_write_bytes_per_s", "net_in_bytes_per_s", "net_out_bytes_per_s", "swap_out_bytes_per_s"} {
+				line += "\t" + historyTopMetricText(sample, name)
+			}
+			line += "\t" + cells[6]
 			limits := newTopLimits(sample.Cores, style.color)
 			paints = []historyPaint{nil, style.dim, nil, historyLevelPaint(style, limits.cpu, sample.CPU), historyLevelPaint(style, limits.memory, sample.MemoryPct), historyLevelPaint(style, limits.load, sample.Load1)}
 		case "process":

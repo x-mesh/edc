@@ -1,5 +1,23 @@
 # snapshot コマンドの日本語メッセージ。
 snapshot:
+  trend_hint: "記録した指標の推移: edc history trend %s"
+  prune_hint: "保存期間: 手動で削除するまで残ります。削除のプレビュー: edc history prune --older-than 90d --dry-run %s"
+  contents:
+    title: "収集項目と結果"
+    host: "ホスト · OS、CPUコア数、load"
+    memory: "メモリ · 全体・使用・空き容量"
+    disk: "ディスク · 容量・使用率・警告"
+    processes: "プロセス · 件数、メモリ上位5件"
+    listen: "Listen · 待受ポートとソケット"
+    pressure: "Pressure · CPU・メモリ・I/O、OOM"
+    audit: "Audit · セキュリティ設定の検査"
+    events: "Events · 最近のシステムイベント"
+    changes: "Changes · パッケージ・設定・サービス変更"
+    du: "ディレクトリ · パス別容量 (--du)"
+  view_hint: "表示: edc report show %s"
+  list_hint: "同じディレクトリのファイル一覧: edc report list %s"
+  file_only_hint: "JSONレポートのみ保存しました (--no-write)。次回からtrend/growth用に記録するにはedc snapshotを実行してください。"
+  history_hint: "trend/growth用の観測値をhistory DBに記録しました。記録一覧: edc history list %s"
   skip:
     timeout: "%s が %s 以内に終わりませんでした"
     pressure_unavailable: "この host では PSI と OOM kill カウンタを読めません"
@@ -23,7 +41,8 @@ snapshot:
   exists: "%s は既にあります。置き換えるには --force を付けてください"
   saved: "保存: %s"
   recorded: "スナップショット %s を %s に記録"
-  export_hint: "比較するには書き出してください: edc history export --run %s --output <file>"
+  export_hint: "比較するには書き出してください: edc history export --run %s --output <file> %s"
   error:
+    no_write: "--no-writeは-wまたは--writeなしで、--output <file|->と併用してください"
     du_empty: "--du にはパスが必要です"
   diff_hint: "比較: edc report diff <before> %s"

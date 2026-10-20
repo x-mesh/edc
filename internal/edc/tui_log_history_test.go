@@ -21,7 +21,12 @@ func browserGroups(count int) []logHistoryGroup {
 func historyBrowserAfter(t *testing.T, model logHistoryBrowser, keys ...string) logHistoryBrowser {
 	t.Helper()
 	for _, key := range keys {
-		updated, _ := pressKey(model, key)
+		var updated tea.Model
+		if code, ok := map[string]rune{"home": tea.KeyHome, "end": tea.KeyEnd, "pgup": tea.KeyPgUp, "pgdown": tea.KeyPgDown}[key]; ok {
+			updated, _ = model.Update(tea.KeyPressMsg{Code: code})
+		} else {
+			updated, _ = pressKey(model, key)
+		}
 		model = updated.(logHistoryBrowser)
 	}
 	return model
@@ -91,7 +96,7 @@ func TestLogHistoryBrowserResizeEmptyAndSafeOutput(t *testing.T) {
 	}
 }
 
-func TestLogHistoryBrowserCompactEnglishAndColor(t *testing.T) {
+func TestLogHistoryBrowserResponsiveEnglishAndColor(t *testing.T) {
 	t.Setenv("NO_COLOR", "")
 	restore := currentLanguage()
 	defer setLanguage(restore)
@@ -103,20 +108,20 @@ func TestLogHistoryBrowserCompactEnglishAndColor(t *testing.T) {
 	resized, _ := model.Update(tea.WindowSizeMsg{Width: 200, Height: 80})
 	model = resized.(logHistoryBrowser)
 	view := model.View().Content
-	if len(strings.Split(view, "\n")) > 8 || strings.Contains(view, groups[0].Key) || strings.Contains(view, "0 unknown") || !strings.Contains(view, "Command") || !strings.Contains(view, "Last run") {
+	if len(strings.Split(view, "\n")) != 80 || strings.Contains(view, groups[0].Key) || strings.Contains(view, "0 unknown") || !strings.Contains(view, "Command") || !strings.Contains(view, "Last run") {
 		t.Fatalf("not compact: %q", view)
 	}
 	if !strings.Contains(view, liveChipBase()) || !strings.Contains(view, historySGR(richMagenta, false)+liveSelectedBar) || !strings.Contains(view, historySGR(richYellow, false)) {
 		t.Fatal("selection and notice colors missing")
 	}
 	for _, line := range strings.Split(view, "\n") {
-		if liveWidth(line) > 96 {
-			t.Fatal("content stretched across wide terminal")
+		if liveWidth(line) > 200 {
+			t.Fatal("content exceeds terminal width")
 		}
 	}
 	model = historyBrowserAfter(t, model, "enter")
 	view = model.View().Content
-	if !strings.Contains(view, "✓ PASS") || !strings.Contains(view, historySGR(richGreen, false)) || strings.Contains(view, "fixture.log") || strings.Contains(view, "key ") {
+	if !strings.Contains(view, "✓ PASS") || !strings.Contains(view, historySGR(richGreen, false)) || !strings.Contains(view, "Selected run") || !strings.Contains(view, "fixture.log") {
 		t.Fatalf("run overview cluttered or uncolored: %q", view)
 	}
 	if !strings.Contains(view, "1 passed") || !strings.Contains(view, "success avg") {
@@ -250,5 +255,147 @@ func TestLogHistoryBrowserPauseIgnoresTicks(t *testing.T) {
 	model = updated.(logHistoryBrowser)
 	if len(model.groups) != 2 || model.notices[0] != "boom" || !model.paused {
 		t.Fatal("failed refresh replaced the list or resumed")
+	}
+}
+
+func TestLogHistoryBrowserFillsTerminalAndAdaptsDetails(t *testing.T) {
+	groups := browserGroups(1)
+	row := groups[0].Rows[0]
+	row.Command = []string{"curl", "https://example.com/" + strings.Repeat("long-path/", 40)}
+	groups[0].Representative = row
+	groups[0].Rows = make([]logHistoryAttempt, 100)
+	for i := range groups[0].Rows {
+		groups[0].Rows[i] = row
+		groups[0].Rows[i].Started = row.Started.Add(-time.Duration(i) * time.Minute)
+	}
+	model := newLogHistoryBrowser(groups, logHistoryOptions{Limit: 20}, nil)
+	model = historyBrowserAfter(t, model, "enter")
+	for _, color := range []bool{false, true} {
+		model.color = color
+		for _, size := range []tea.WindowSizeMsg{{Width: 160, Height: 50}, {Width: 80, Height: 24}, {Width: 40, Height: 9}, {Width: 132, Height: 16}, {Width: 200, Height: 60}} {
+			selected := model.rows()[model.rowCursor].Started
+			next, _ := model.Update(size)
+			model = next.(logHistoryBrowser)
+			if !model.rows()[model.rowCursor].Started.Equal(selected) {
+				t.Fatalf("resize lost selected run at %+v", size)
+			}
+			lines := strings.Split(model.View().Content, "\n")
+			if len(lines) != size.Height {
+				t.Fatalf("layout height %d, want %d at %+v", len(lines), size.Height, size)
+			}
+			for _, line := range lines {
+				if liveWidth(line) > size.Width {
+					t.Fatalf("line exceeds %+v: %q", size, line)
+				}
+			}
+			if !strings.Contains(lines[len(lines)-1], "q") {
+				t.Fatalf("quit hint lost at %+v: %q", size, lines[len(lines)-1])
+			}
+			if model.splitDetail() != strings.Contains(model.View().Content, T("cli.log_history.selected_run")) {
+				t.Fatalf("detail panel breakpoint wrong at %+v", size)
+			}
+			if size.Height >= 50 && model.history.Height() <= 20 {
+				t.Fatalf("tall terminal still limited to 20 rows: %d", model.history.Height())
+			}
+			model = historyBrowserAfter(t, model, "end")
+			if model.rowCursor < model.history.YOffset() || model.rowCursor >= model.history.YOffset()+model.history.Height() {
+				t.Fatal("selected run is outside the viewport")
+			}
+		}
+	}
+	model = historyBrowserAfter(t, model, "enter")
+	if strings.Contains(model.View().Content, T("cli.log_history.selected_run")) || model.history.Width() != model.width {
+		t.Fatal("expanded details did not use the full terminal width")
+	}
+}
+
+func TestLogHistoryBrowserPreservesExplicitLimit(t *testing.T) {
+	options, err := parseLogHistoryOptions([]string{"--limit", "3"}, &strings.Builder{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	groups := browserGroups(1)
+	row := groups[0].Rows[0]
+	groups[0].Rows = make([]logHistoryAttempt, 100)
+	for i := range groups[0].Rows {
+		groups[0].Rows[i] = row
+	}
+	model := newLogHistoryBrowser(groups, options, nil)
+	next, _ := model.Update(tea.WindowSizeMsg{Width: 160, Height: 60})
+	model = next.(logHistoryBrowser)
+	if len(model.rows()) != 3 {
+		t.Fatalf("explicit limit changed to %d", len(model.rows()))
+	}
+	model = historyBrowserAfter(t, model, "enter")
+	model.confirm = &logHistoryDeletion{Runs: 1, Files: 1, Bytes: 1024}
+	model.resize()
+	if !strings.Contains(model.View().Content, T("cli.log_history.delete_confirm", 1, 1, formatSizeShort(model.confirm.Bytes))) {
+		t.Fatal("deletion prompt is missing")
+	}
+	model = historyBrowserAfter(t, model, "n")
+	if model.confirm != nil || len(strings.Split(model.View().Content, "\n")) != 60 {
+		t.Fatal("canceling deletion did not restore the layout")
+	}
+}
+
+func TestLogHistoryBrowserRefreshAfterChangingCommand(t *testing.T) {
+	groups := browserGroups(2)
+	row := groups[0].Rows[0]
+	for i := 1; i < 5; i++ {
+		older := row
+		older.Started = row.Started.Add(-time.Duration(i) * time.Minute)
+		groups[0].Rows = append(groups[0].Rows, older)
+	}
+	model := newLogHistoryBrowser(groups, logHistoryOptions{Limit: 20}, nil)
+	model = historyBrowserAfter(t, model, "enter", "down", "down", "down", "esc", "down")
+	if model.detail || model.rowCursor != 3 || model.cursor != 1 {
+		t.Fatal("did not reproduce a stale run cursor after changing commands")
+	}
+	model.apply(logHistoryLoadedMsg{groups: groups})
+	if model.detail || model.cursor != 1 || model.rowCursor != 0 {
+		t.Fatal("refresh did not preserve the selected command and normalize its run cursor")
+	}
+	model = historyBrowserAfter(t, model, "enter")
+	if model.rows()[model.rowCursor].Key != groups[1].Key {
+		t.Fatal("opening history selected a run from the previous command")
+	}
+}
+
+func TestLogHistoryBrowserFollowsLatestUntilSelectionMoves(t *testing.T) {
+	groups := browserGroups(1)
+	model := newLogHistoryBrowser(groups, logHistoryOptions{Limit: 20}, nil)
+	model = historyBrowserAfter(t, model, "enter")
+	prepend := func() {
+		group := model.groups[0]
+		row := group.Rows[0]
+		row.Started = row.Started.Add(time.Minute)
+		group.Rows = append([]logHistoryAttempt{row}, group.Rows...)
+		model.apply(logHistoryLoadedMsg{groups: []logHistoryGroup{group}})
+	}
+	prepend()
+	if model.rowCursor != 0 || model.rowPinned {
+		t.Fatal("untouched selection did not follow the latest run")
+	}
+	model = historyBrowserAfter(t, model, "down")
+	selected := model.rows()[model.rowCursor].Started
+	prepend()
+	if model.rowCursor != 2 || !model.rows()[model.rowCursor].Started.Equal(selected) {
+		t.Fatal("refresh moved a manually selected run")
+	}
+	model = historyBrowserAfter(t, model, "home")
+	prepend()
+	if model.rowCursor != 0 || model.rowPinned || model.history.YOffset() != 0 {
+		t.Fatal("Home did not resume following the latest run")
+	}
+	model = historyBrowserAfter(t, model, "enter")
+	selected = model.rows()[model.rowCursor].Started
+	prepend()
+	if !model.expanded || !model.rows()[model.rowCursor].Started.Equal(selected) {
+		t.Fatal("refresh changed the run while inspecting expanded details")
+	}
+	model = historyBrowserAfter(t, model, "esc", "esc", "enter")
+	prepend()
+	if model.rowPinned || model.rowCursor != 0 {
+		t.Fatal("reopening command history did not resume following")
 	}
 }

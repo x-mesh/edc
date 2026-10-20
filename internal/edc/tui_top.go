@@ -17,33 +17,37 @@ import (
 )
 
 // runTopDashboard는 alt screen 대시보드를 실행한다. 종료하면 화면이 원래대로 돌아온다.
-func runTopDashboard(interval time.Duration, version string, filter topProcessFilter, interfaces topInterfaceFilter, recorder *topRecorder, split []topView, layout topLayout) int {
+func runTopDashboard(interval time.Duration, version string, filter topProcessFilter, interfaces topInterfaceFilter, recordPath string, recorder *topRecorder, split []topView, layout topLayout) int {
 	model, err := newTopDashboardModel(interval, version, filter, interfaces)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
 	model = model.withProcessFilter(filter).withSplit(split).withLayout(layout)
+	model.recordPath = recordPath
 	if recorder != nil {
-		model.record = recorder.Record
-		model.recordFailure = func() tea.Msg {
-			select {
-			case <-recorder.failed:
-				return topRecordingErrorMsg{err: recorder.Err()}
-			case <-recorder.done:
-				return nil
-			}
-		}
+		model.attachRecorder(recorder)
 	}
 	final, err := tea.NewProgram(model, tea.WithInput(os.Stdin), tea.WithOutput(os.Stdout)).Run()
 	if final, ok := final.(topModel); ok {
 		final.closeAI()
+		if final.recorder != nil {
+			status := "finished"
+			if err != nil || final.recordingErr != nil {
+				status = "error"
+			}
+			if closeErr := final.recorder.Close(status); closeErr != nil {
+				fmt.Fprintln(os.Stderr, T("history.error.write", closeErr))
+				return 1
+			}
+		}
 	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
 	if final.(topModel).recordingErr != nil {
+		fmt.Fprintln(os.Stderr, T("history.error.write", final.(topModel).recordingErr))
 		return 1
 	}
 	return 0
@@ -257,6 +261,11 @@ type topModel struct {
 	record        func(historyTopSample) error
 	recordFailure tea.Cmd
 	recordingErr  error
+	recorder      *topRecorder
+	recordPath    string
+	recordFrom    time.Time
+	recordCount   int
+	recordNotice  bool
 	// split은 박스로 보일 보기 목록이고, 비어 있으면 전체다. boxed는 박스 안에서 그리는 표임을 나타낸다.
 	split []topView
 	boxed bool
@@ -287,7 +296,10 @@ type topModel struct {
 	aiFailed   map[string]bool
 }
 
-type topRecordingErrorMsg struct{ err error }
+type topRecordingErrorMsg struct {
+	err    error
+	source *topRecorder
+}
 
 // topSampleMsg는 tick마다 수집한 snapshot이다. seq가 다르면 interval이 바뀐 뒤의 낡은 tick이다.
 type topSampleMsg struct {
@@ -335,6 +347,9 @@ func (model topModel) tick() tea.Cmd {
 func (model topModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch value := msg.(type) {
 	case topRecordingErrorMsg:
+		if value.source != nil && value.source != model.recorder {
+			return model, nil
+		}
 		model.recordingErr = value.err
 		return model, tea.Quit
 	case topSampleMsg:
@@ -359,10 +374,14 @@ func (model topModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if seconds := value.snapshot.TakenAt.Sub(model.previous.TakenAt).Seconds(); seconds > 0 {
 			model.interfaceRates = calculateNetInterfaceRates(model.previous.allNetInterfaces(), value.snapshot.allNetInterfaces(), seconds)
 		}
-		if model.record != nil {
+		if model.record != nil && !model.previous.TakenAt.Before(model.recordFrom) {
 			if err := model.record(newHistoryTopSample(model.details, model.previous, value.snapshot, rate, model.processFilter.String())); err != nil {
 				model.recordingErr = err
 				return model, tea.Quit
+			}
+			model.recordCount++
+			if model.recordNotice {
+				model.notice, model.recordNotice = "", false
 			}
 		}
 		before := len(model.rows) + 1
@@ -404,7 +423,7 @@ func (model topModel) updateKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if model.picker != nil {
 		return model.updatePicker(key)
 	}
-	model.notice = ""
+	model.notice, model.recordNotice = "", false
 	if model.help {
 		switch key.String() {
 		case "?", "esc":
@@ -464,6 +483,8 @@ func (model topModel) updateKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch key.String() {
 	case "q", "ctrl+c":
 		return model, tea.Quit
+	case "w":
+		return model.toggleRecording()
 	case "p":
 		model.paused, model.seq = !model.paused, model.seq+1
 		if model.paused {
@@ -1226,7 +1247,7 @@ func (model topModel) statusLines() []string {
 		state = "net " + ansi.Truncate(model.interfaces.String(), topStatusInterfaceWidth, "…") + " · " + state
 	}
 	if model.record != nil {
-		state = "SQLite · " + state
+		state = fmt.Sprintf("REC · %d samples · %s", model.recordCount, state)
 	}
 	if hidden := model.hiddenText(); hidden != "" {
 		state = hidden + " · " + state
@@ -1286,10 +1307,11 @@ func (model topModel) statusLines() []string {
 	if model.processFocus {
 		actionHints = topKeyHints{{key: "↑↓", label: "select"}, {key: "Enter", label: "focus PID"}, {key: "Tab/Esc", label: "history"}, {key: "End", label: "live"}, {key: "?", label: "help"}, {key: "q", label: "quit"}}
 	}
-	actions := topStatusLine{plain: actionHints.render("  ", false), styled: actionHints.render("  ", color)}
+	actionHints = append(topKeyHints{{key: "w", label: "rec", on: model.record != nil}}, actionHints...)
+	actions := topStatusLine{plain: actionHints.render(" ", false), styled: actionHints.render(" ", color)}
 	if model.displayWidth() < 70 {
 		narrowViews := state + " · / filter · ? help · q quit"
-		narrowActions := "Tab processes · ↑↓ history · End live"
+		narrowActions := "w rec · Tab processes · ↑↓ history · End live"
 		if model.canGoBack() {
 			narrowActions += " · Esc back"
 		}
@@ -1689,6 +1711,7 @@ func (model topModel) helpLines() []string {
 	lines := []string{
 		"Views: 1 all · c CPU · m memory · d disk · n network · s pressure · v boxes",
 		"History: ↑↓ or PgUp/PgDn · End live · p pause · +/- interval",
+		T("history.recording.help"),
 		"Processes: Tab select · ↑↓ choose · Enter focus PID · Tab/Esc back · o sort by CPU, MEM, I/O, then the view",
 		"Signals: f opens its view, then selects candidates. A candidate is not a confirmed cause.",
 		"Events: warnings that last 5s are kept with their candidates · e list · Enter jump · [ ] previous/next · ! marks the start row",

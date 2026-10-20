@@ -23,7 +23,7 @@ const (
 	snapshotPressureWarn = 10
 )
 
-const snapshotUsage = "edc snapshot [--output <file|->] [--write [db]] [--since 6h] [--force] [--du <path>]... [--timeout 15s] [--redact]"
+const snapshotUsage = "edc snapshot [--output <file|->] [--write [db] | --no-write] [--since 6h] [--force] [--du <path>]... [--timeout 15s] [--redact]"
 
 // runSnapshot은 host 상태를 report 하나로 저장한다. 장애 전후에 한 번씩 찍어 edc report diff로 비교하려는 것이다.
 // 공인 IP 조회처럼 host 밖으로 나가는 요청은 하지 않는다.
@@ -38,6 +38,7 @@ func runSnapshot(args []string, version string) int {
 	set.Var(&duPaths, "du", T("command.snapshot.option.du"))
 	writePath := set.String("write", "", T("command.snapshot.option.write"))
 	set.StringVar(writePath, "w", "", T("command.snapshot.option.write"))
+	noWrite := set.Bool("no-write", false, T("command.snapshot.option.no_write"))
 	set.DurationVar(&options.timeout, "timeout", options.timeout, T("option.timeout"))
 	set.BoolVar(&options.redact, "redact", options.redact, T("option.redact"))
 	args, defaultWrite := normalizeTopWriteArgs(args, set)
@@ -48,35 +49,35 @@ func runSnapshot(args []string, version string) int {
 		fmt.Fprintln(os.Stderr, T("cli.usage", snapshotUsage))
 		return 2
 	}
-	emptyWrite := false
+	writeRequested := false
 	set.Visit(func(option *flag.Flag) {
-		if (option.Name == "write" || option.Name == "w") && option.Value.String() == "" && !defaultWrite {
-			emptyWrite = true
+		if option.Name == "write" || option.Name == "w" {
+			writeRequested = true
 		}
 	})
-	if emptyWrite {
-		fmt.Fprintln(os.Stderr, T("history.error.path"))
+	useDefault := !*noWrite && *writePath == ""
+	database, err := snapshotDatabasePath(*writePath, *output, *noWrite, writeRequested, defaultWrite)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
 		return 2
 	}
-	if defaultWrite {
-		path, err := defaultHistoryPath()
+	if useDefault {
+		if err := os.MkdirAll(filepath.Dir(database), 0o700); err != nil {
+			fmt.Fprintln(os.Stderr, T("history.error.write", err))
+			return 1
+		}
+	}
+	*writePath = database
+	record := database != ""
+	started := time.Now()
+	path := *output
+	if path != "" && path != "-" {
+		absolute, err := filepath.Abs(path)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			return 2
 		}
-		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-			fmt.Fprintln(os.Stderr, T("history.error.write", err))
-			return 1
-		}
-		*writePath = path
-	}
-	record := *writePath != ""
-	started := time.Now()
-	path := *output
-	// --write만 주면 DB에만 기록한다. 파일도 남기려면 --output을 함께 준다.
-	if path == "" && !record {
-		hostname, _ := os.Hostname()
-		path = snapshotDefaultPath(hostname, started, options.redact)
+		path = absolute
 	}
 	if record && sameHistoryPath(*writePath, path) {
 		fmt.Fprintln(os.Stderr, T("history.error.path"))
@@ -127,17 +128,110 @@ func runSnapshot(args []string, version string) int {
 	} else {
 		fmt.Fprintln(os.Stdout, summaryLine(report.Results))
 	}
-	if path != "" {
-		fmt.Fprintln(os.Stdout, snapshotDiffHint(style, path))
-	} else {
-		fmt.Fprintln(os.Stdout, T("snapshot.export_hint", report.Run.ID))
+	fmt.Fprintln(os.Stdout)
+	for _, line := range snapshotContentLines(report.Results, style.color) {
+		fmt.Fprintln(os.Stdout, line)
+	}
+	fmt.Fprintln(os.Stdout)
+	for _, hint := range snapshotOutputHints(style, path, *writePath, report.Run.ID) {
+		fmt.Fprintln(os.Stdout, hint)
 	}
 	return exitCode(report.Results)
 }
 
+func snapshotDatabasePath(path, output string, noWrite, writeRequested, defaultWrite bool) (string, error) {
+	if noWrite {
+		if writeRequested || output == "" {
+			return "", errors.New(T("snapshot.error.no_write"))
+		}
+		return "", nil
+	}
+	if writeRequested && path == "" && !defaultWrite {
+		return "", errors.New(T("history.error.path"))
+	}
+	if path == "" {
+		var err error
+		path, err = defaultHistoryPath()
+		if err != nil {
+			return "", err
+		}
+	}
+	return filepath.Abs(path)
+}
+
+func snapshotContentLines(results []Result, color bool) []string {
+	type section struct {
+		probe, label string
+		results      []Result
+	}
+	sections := []section{
+		{probe: "info.host", label: "host"},
+		{probe: "info.memory", label: "memory"},
+		{probe: "info.disk", label: "disk"},
+		{probe: "info.processes", label: "processes"},
+		{probe: listenProbeID, label: "listen"},
+		{probe: "info.pressure", label: "pressure"},
+		{probe: "audit", label: "audit"},
+		{probe: "events", label: "events"},
+		{probe: "changes", label: "changes"},
+		{probe: duProbeID, label: "du"},
+	}
+	width := 0
+	for i := range sections {
+		for _, result := range results {
+			probe := sections[i].probe
+			if result.Probe == probe || strings.HasPrefix(result.Probe, probe+".") || strings.HasPrefix(result.Probe, probe+":") {
+				sections[i].results = append(sections[i].results, result)
+			}
+		}
+		if len(sections[i].results) > 0 {
+			sections[i].label = T("snapshot.contents." + sections[i].label)
+			width = max(width, liveWidth(sections[i].label))
+		}
+	}
+	lines := []string{historyStrong(T("snapshot.contents.title"), richCyan, color)}
+	for _, section := range sections {
+		if len(section.results) == 0 {
+			continue
+		}
+		summary := summarize(section.results)
+		var counts []string
+		for _, entry := range []struct {
+			count  int
+			status Status
+		}{{summary.Pass, StatusPass}, {summary.Warn, StatusWarn}, {summary.Fail, StatusFail}, {summary.Skip, StatusSkip}} {
+			if entry.count > 0 {
+				counts = append(counts, historyTint(fmt.Sprintf("%d %s", entry.count, entry.status), richStatusColor(entry.status), color))
+			}
+		}
+		lines = append(lines, "  "+liveCell(section.label, width)+"  "+strings.Join(counts, " · "))
+	}
+	return lines
+}
+
+func snapshotOutputHints(style textStyle, path, database, runID string) []string {
+	var hints []string
+	if path != "" && path != "-" {
+		hints = append(hints,
+			reportHint(T("snapshot.view_hint", quoteLocalShellWord(path)), style.color),
+			reportHint(T("snapshot.list_hint", quoteLocalShellWord(filepath.Dir(path))), style.color),
+			snapshotDiffHint(style, path))
+	}
+	if database == "" {
+		hints = append(hints, reportHint(T("snapshot.file_only_hint"), style.color))
+	} else {
+		db := quoteLocalShellWord(database)
+		hints = append(hints, reportHint(T("snapshot.history_hint", db)+"\n"+T("snapshot.trend_hint", db)+"\n"+T("snapshot.prune_hint", db), style.color))
+		if path == "" {
+			hints = append(hints, reportHint(T("snapshot.export_hint", quoteLocalShellWord(runID), db), style.color))
+		}
+	}
+	return hints
+}
+
 // snapshotDiffHint는 비교 안내다. 색을 쓰면 그대로 복사할 명령 부분만 굵은 청록이다.
 func snapshotDiffHint(style textStyle, path string) string {
-	hint := T("snapshot.diff_hint", path)
+	hint := T("snapshot.diff_hint", quoteLocalShellWord(path))
 	index := strings.Index(hint, "edc ")
 	if !style.color || index < 0 {
 		return hint

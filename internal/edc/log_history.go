@@ -22,7 +22,8 @@ type logHistoryOptions struct {
 	Limit                      int
 	// oldestFirst makes a direct read keep the oldest families at its limits.
 	// prune needs the old runs; the history needs the new ones.
-	oldestFirst bool
+	oldestFirst   bool
+	limitExplicit bool
 }
 
 func parseLogHistoryOptions(args []string, output io.Writer) (logHistoryOptions, error) {
@@ -58,6 +59,11 @@ func parseLogHistoryOptions(args []string, output io.Writer) (logHistoryOptions,
 		}
 		return options, flagReported(err)
 	}
+	set.Visit(func(f *flag.Flag) {
+		if f.Name == "limit" {
+			options.limitExplicit = true
+		}
+	})
 	if options.Directory != "" && options.File != "" || options.Limit < 1 || options.Limit > 1000 || options.JSON != "" && !options.Follow {
 		return options, errors.New(T("cli.log_history.usage"))
 	}

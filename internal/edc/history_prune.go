@@ -22,8 +22,20 @@ type historyPruneOptions struct {
 
 type historyPrunePlan struct {
 	runs          []string
+	entries       []historyPruneEntry
 	top, snapshot int
 	samples       int
+}
+
+type historyPruneEntry struct {
+	run          historyRun
+	lastActivity time.Time
+	samples      int
+}
+
+type historyPruneReader interface {
+	Query(string, ...any) (*sql.Rows, error)
+	QueryRow(string, ...any) *sql.Row
 }
 
 // historyRunTables는 runs에 딸린 표다. 외래 키가 켜져 있어 이 표의 행을 runs보다 먼저 지운다. 스냅샷 표가 없는 DB는
@@ -31,6 +43,10 @@ type historyPrunePlan struct {
 var historyRunTables = []string{"top_process_samples", "top_samples", "snapshot_results", "snapshot_metrics", "du_dirs"}
 
 func runHistoryPrune(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	if helpRequested(args) {
+		printHistoryPruneHelp(stdout)
+		return 0
+	}
 	set := newFlagSet("history prune")
 	set.SetOutput(stderr)
 	var options historyPruneOptions
@@ -41,6 +57,12 @@ func runHistoryPrune(args []string, stdin io.Reader, stdout, stderr io.Writer) i
 	set.BoolVar(&options.vacuum, "vacuum", false, T("history.option.vacuum"))
 	if err := set.Parse(args); err != nil {
 		return 2
+	}
+	input, inputOK := stdin.(*os.File)
+	output, outputOK := stdout.(*os.File)
+	interactive := !options.yes && inputOK && outputOK && isTerminal(input) && isTerminal(output) && os.Getenv("NO_COLOR") == ""
+	if *age == "" && interactive {
+		*age = "90d"
 	}
 	var err error
 	options.olderThan, err = parseLogAge(*age)
@@ -71,6 +93,18 @@ func runHistoryPrune(args []string, stdin io.Reader, stdout, stderr io.Writer) i
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
+	if interactive {
+		selected, selectedOptions, confirmed, err := runHistoryPruneBrowser(input, output, db, path, options, plan)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		if !confirmed {
+			return 0
+		}
+		plan, options = selected, selectedOptions
+		options.yes = true
+	}
 	if len(plan.runs) == 0 {
 		fmt.Fprintln(stdout, T("history.prune.none"))
 		return 0
@@ -97,10 +131,15 @@ func runHistoryPrune(args []string, stdin io.Reader, stdout, stderr io.Writer) i
 			return 0
 		}
 	}
-	if err := deleteHistoryRuns(db, plan.runs); err != nil {
+	deleted, err := deleteEligibleHistoryRuns(db, options, plan.runs, time.Now())
+	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
+	if skipped := len(plan.runs) - len(deleted.runs); skipped > 0 {
+		fmt.Fprintln(stdout, T("history.review.prune_changed", skipped))
+	}
+	plan = deleted
 	fmt.Fprintln(stdout, T("history.prune.done", len(plan.runs), plan.samples))
 	free, err := historyFreeBytes(db)
 	if err == nil && !options.vacuum && free > 0 {
@@ -121,7 +160,7 @@ func runHistoryPrune(args []string, stdin io.Reader, stdout, stderr io.Writer) i
 }
 
 // planHistoryPrune은 마지막 활동 시각이 기준보다 이른 실행을 고른다.
-func planHistoryPrune(db *sql.DB, options historyPruneOptions, now time.Time) (historyPrunePlan, error) {
+func planHistoryPrune(db historyPruneReader, options historyPruneOptions, now time.Time) (historyPrunePlan, error) {
 	tables, err := historyPresentTables(db)
 	if err != nil {
 		return historyPrunePlan{}, err
@@ -131,7 +170,13 @@ func planHistoryPrune(db *sql.DB, options historyPruneOptions, now time.Time) (h
 		activity += ", coalesce((SELECT max(time_ns) FROM snapshot_results WHERE run_id = r.id), 0)"
 	}
 	activity += ")"
-	query := "SELECT r.id, r.command FROM runs r WHERE " + activity + " < ?"
+	count := "0"
+	for _, table := range []string{"top_samples", "top_process_samples", "snapshot_results"} {
+		if tables[table] {
+			count += " + (SELECT count(*) FROM " + table + " WHERE run_id = r.id)"
+		}
+	}
+	query := "SELECT r.id, r.command, r.hostname, r.started_ns, r.ended_ns, r.status, " + activity + ", " + count + " FROM runs r WHERE " + activity + " < ?"
 	values := []any{now.Add(-options.olderThan).UnixNano()}
 	if options.command != "" {
 		query += " AND r.command = ?"
@@ -144,41 +189,79 @@ func planHistoryPrune(db *sql.DB, options historyPruneOptions, now time.Time) (h
 	defer rows.Close()
 	var plan historyPrunePlan
 	for rows.Next() {
-		var id, command string
-		if err := rows.Scan(&id, &command); err != nil {
+		var entry historyPruneEntry
+		var started, activity int64
+		var ended sql.NullInt64
+		if err := rows.Scan(&entry.run.ID, &entry.run.Command, &entry.run.Hostname, &started, &ended, &entry.run.Status, &activity, &entry.samples); err != nil {
 			return historyPrunePlan{}, err
 		}
-		plan.runs = append(plan.runs, id)
-		if command == historySnapshotCommand {
-			plan.snapshot++
-		} else {
-			plan.top++
+		entry.run.StartedAt, entry.lastActivity = time.Unix(0, started), time.Unix(0, activity)
+		if ended.Valid {
+			at := time.Unix(0, ended.Int64)
+			entry.run.EndedAt = &at
 		}
+		plan.add(entry)
 	}
 	if err := rows.Err(); err != nil {
 		return historyPrunePlan{}, err
 	}
-	for _, table := range []string{"top_samples", "top_process_samples", "snapshot_results"} {
-		if !tables[table] || len(plan.runs) == 0 {
-			continue
-		}
-		count := 0
-		if err := db.QueryRow("SELECT count(*) FROM "+table+" WHERE run_id IN (SELECT r.id FROM runs r WHERE "+activity+" < ?"+historyPruneCommandFilter(options)+")", values...).Scan(&count); err != nil {
-			return historyPrunePlan{}, err
-		}
-		plan.samples += count
-	}
 	return plan, nil
 }
 
-func historyPruneCommandFilter(options historyPruneOptions) string {
-	if options.command == "" {
-		return ""
+func (plan *historyPrunePlan) add(entry historyPruneEntry) {
+	plan.runs = append(plan.runs, entry.run.ID)
+	plan.entries = append(plan.entries, entry)
+	plan.samples += entry.samples
+	if entry.run.Command == historySnapshotCommand {
+		plan.snapshot++
+	} else {
+		plan.top++
 	}
-	return " AND r.command = ?"
 }
 
-func historyPresentTables(db *sql.DB) (map[string]bool, error) {
+func deleteEligibleHistoryRuns(db *sql.DB, options historyPruneOptions, requested []string, now time.Time) (historyPrunePlan, error) {
+	tx, err := db.Begin()
+	if err != nil {
+		return historyPrunePlan{}, err
+	}
+	defer tx.Rollback()
+	eligible, err := planHistoryPrune(tx, options, now)
+	if err != nil {
+		return historyPrunePlan{}, err
+	}
+	selected := map[string]bool{}
+	for _, id := range requested {
+		selected[id] = true
+	}
+	var deleted historyPrunePlan
+	for _, entry := range eligible.entries {
+		if selected[entry.run.ID] {
+			deleted.add(entry)
+		}
+	}
+	tables, err := historyPresentTables(tx)
+	if err != nil {
+		return historyPrunePlan{}, err
+	}
+	for _, id := range deleted.runs {
+		for _, table := range historyRunTables {
+			if tables[table] {
+				if _, err := tx.Exec("DELETE FROM "+table+" WHERE run_id = ?", id); err != nil {
+					return historyPrunePlan{}, err
+				}
+			}
+		}
+		if _, err := tx.Exec("DELETE FROM runs WHERE id = ?", id); err != nil {
+			return historyPrunePlan{}, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return historyPrunePlan{}, err
+	}
+	return deleted, nil
+}
+
+func historyPresentTables(db historyPruneReader) (map[string]bool, error) {
 	rows, err := db.Query("SELECT name FROM sqlite_schema WHERE type = 'table'")
 	if err != nil {
 		return nil, err
@@ -193,33 +276,6 @@ func historyPresentTables(db *sql.DB) (map[string]bool, error) {
 		tables[name] = true
 	}
 	return tables, rows.Err()
-}
-
-// deleteHistoryRuns는 실행과 딸린 행을 한 transaction으로 지운다. 중간에 실패하면 아무것도 지워지지 않는다.
-func deleteHistoryRuns(db *sql.DB, runs []string) error {
-	tables, err := historyPresentTables(db)
-	if err != nil {
-		return err
-	}
-	tx, err := db.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	for _, id := range runs {
-		for _, table := range historyRunTables {
-			if !tables[table] {
-				continue
-			}
-			if _, err := tx.Exec("DELETE FROM "+table+" WHERE run_id = ?", id); err != nil {
-				return err
-			}
-		}
-		if _, err := tx.Exec("DELETE FROM runs WHERE id = ?", id); err != nil {
-			return err
-		}
-	}
-	return tx.Commit()
 }
 
 func historyFreeBytes(db *sql.DB) (uint64, error) {

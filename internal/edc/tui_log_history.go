@@ -149,13 +149,22 @@ func (model *logHistoryBrowser) refreshHistory() {
 	var lines []string
 	if model.expanded && len(rows) > 0 {
 		row := rows[model.rowCursor]
-		lines = []string{historyCommand(row), "", historyTime(row.Started) + "  ·  " + historyDuration(row) + "  ·  " + historyOutcome(row), T("cli.log_history.attempt", row.Attempt), "", "cwd " + reportIdentityValue(row.CWD), "key " + row.Key, "file " + reportIdentityValue(row.Path)}
+		ratios := historyBaseline(model.groups[model.cursor].Rows, row)
+		timing := historyTime(row.Started) + "  ·  " + historyDuration(row) + "  ·  " + historyOutcome(row)
+		if text := historyRatioText(ratios.duration); text != "" {
+			timing += "  ·  " + text
+		}
+		lines = []string{historyCommand(row), "", timing, T("cli.log_history.attempt", row.Attempt)}
+		if resources := historyResourceLines(row, ratios); len(resources) > 0 {
+			lines = append(append(lines, ""), resources...)
+		}
+		lines = append(lines, "", "cwd "+reportIdentityValue(row.CWD), "key "+row.Key, "file "+reportIdentityValue(row.Path))
 		for i, line := range lines {
 			lines[i] = ansi.Wrap(line, model.contentWidth(), "")
 		}
 	} else {
 		for index, row := range rows {
-			lines = append(lines, historyRunRow(row, model.contentWidth(), index == model.rowCursor, model.color))
+			lines = append(lines, historyRunRow(row, model.contentWidth(), index == model.rowCursor, model.color, historyBaseline(model.groups[model.cursor].Rows, row)))
 		}
 		if len(rows) == 0 {
 			lines = append(lines, T("cli.log_history.no_match"))

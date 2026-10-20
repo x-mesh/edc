@@ -491,6 +491,8 @@ command:
       - "--follow prints one line when each run starts and ends."
       - "Piped history prints keys without waiting for input."
       - "No setup is required. stdout and stderr go to a separate file for each run."
+      - "Each run records its CPU time, peak and average memory, and disk bytes."
+      - "Twice the usual duration, memory, or CPU time is yellow."
       - "An explicit shared output file serializes commands with a stable lock file."
       - "Restart and timeout are disabled by default."
       - "External stop signals prevent restarts."

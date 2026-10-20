@@ -226,8 +226,15 @@ func printHistoryGroup(output io.Writer, group logHistoryGroup, options logHisto
 		if row.Exit != nil {
 			exit = fmt.Sprint(*row.Exit)
 		}
+		ratios := historyBaseline(group.Rows, row)
 		fmt.Fprintf(output, "%s  %10s  %-10s  exit %-3s  %s\n", historyTime(row.Started), historyDuration(row), historyOutcome(row), exit, T("cli.log_history.attempt", row.Attempt))
 		fmt.Fprintf(output, "  cwd %s\n  %s\n", reportIdentityValue(row.CWD), reportIdentityValue(row.Path))
+		if text := historyRatioText(ratios.duration); text != "" {
+			fmt.Fprintf(output, "  %s %s\n", T("cli.log_history.alert.duration"), text)
+		}
+		for _, line := range historyResourceLines(row, ratios) {
+			fmt.Fprintf(output, "  %s\n", line)
+		}
 	}
 	if len(rows) == 0 {
 		fmt.Fprintln(output, T("cli.log_history.no_match"))

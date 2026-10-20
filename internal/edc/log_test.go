@@ -46,6 +46,14 @@ func TestLogHelperProcess(t *testing.T) {
 		_ = syscall.Kill(os.Getpid(), syscall.SIGTERM)
 		time.Sleep(time.Second)
 		os.Exit(99)
+	case "work":
+		memory := make([]byte, 64<<20)
+		for index := range memory {
+			memory[index] = byte(index)
+		}
+		for deadline := time.Now().Add(600 * time.Millisecond); time.Now().Before(deadline); {
+		}
+		fmt.Fprintln(os.Stdout, len(memory))
 	case "sleep":
 		label := arguments[1]
 		fmt.Fprintf(os.Stdout, "%s-begin\n", label)

@@ -114,3 +114,44 @@ func TestLogHistoryJSONRequiresFollow(t *testing.T) {
 		t.Fatalf("options=%+v err=%v", options, err)
 	}
 }
+
+func TestLogHistoryFollowReportsSlowRunsAndAlerts(t *testing.T) {
+	key := strings.Repeat("f", 64)
+	now := time.Now()
+	var earlier []logHistoryAttempt
+	for index := 1; index <= 3; index++ {
+		earlier = append(earlier, followFixture(key, now.Add(-time.Duration(index)*time.Hour), historyOutcomeSuccess))
+	}
+	running := followFixture(key, now.Add(-5*time.Second), historyOutcomeRunning)
+	finished := followFixture(key, running.Started, historyOutcomeSuccess)
+	finished.Duration, finished.Ended = 6*time.Second, running.Started.Add(6*time.Second)
+	snapshot := func(row logHistoryAttempt) []logHistoryAttempt { return append([]logHistoryAttempt{row}, earlier...) }
+	output, _, code := runFollowFixture(t, logHistoryOptions{JSON: "-"}, [][]logHistoryAttempt{snapshot(running), snapshot(running), snapshot(running), snapshot(finished), snapshot(finished)})
+	if code != 0 {
+		t.Fatalf("code %d", code)
+	}
+	var types []string
+	var slow, end logHistoryFollowEvent
+	for _, line := range strings.Split(strings.TrimSpace(output), "\n") {
+		var event logHistoryFollowEvent
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			t.Fatal(err)
+		}
+		types = append(types, event.Type)
+		switch event.Type {
+		case "slow":
+			slow = event
+		case "end":
+			end = event
+		}
+	}
+	if strings.Join(types, " ") != "start slow end summary" {
+		t.Fatalf("events: %s", output)
+	}
+	if slow.DurationRatio == nil || *slow.DurationRatio < 2 || slow.ElapsedMS == nil || strings.Join(slow.Alerts, ",") != "duration" {
+		t.Fatalf("slow event: %s", output)
+	}
+	if end.DurationRatio == nil || *end.DurationRatio != 6 || strings.Join(end.Alerts, ",") != "duration" || !strings.Contains(output, `"slow":1`) {
+		t.Fatalf("end event: %s", output)
+	}
+}

@@ -252,6 +252,7 @@ func runLogPrune(args []string, streams logStreams) int {
 		fmt.Fprintln(streams.stderr, err)
 		return 2
 	}
+	options.history.oldestFirst = true
 	snapshot, err := loadLogHistory(options.history, nil)
 	if err != nil {
 		fmt.Fprintln(streams.stderr, reportIdentityValue(err.Error()))

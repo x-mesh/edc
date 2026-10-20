@@ -269,6 +269,28 @@ func TestHistoryLogOpensTheLogHistory(t *testing.T) {
 	}
 }
 
+func TestLogPruneReachesTheOldestRunsOfALargeFolder(t *testing.T) {
+	dir := t.TempDir()
+	base := time.Now().Add(-48 * time.Hour)
+	var oldest string
+	for index := 0; index < historyFamilyLimit+5; index++ {
+		path := filepath.Join(dir, "curl", fmt.Sprintf("%05d.log", index))
+		at := base.Add(time.Duration(index) * time.Minute)
+		writeHistoryFixture(t, path, historyFixture([]string{"curl"}, "/tmp", at, "exit", "1s", 0, 1))
+		if err := os.Chtimes(path, at, at); err != nil {
+			t.Fatal(err)
+		}
+		if index == 0 {
+			oldest = path
+		}
+	}
+	var stdout, stderr strings.Builder
+	code := runLogWithStreams([]string{"prune", "--dir", dir, "--older-than", "47h", "--dry-run", "-v"}, logStreams{stdin: strings.NewReader(""), stdout: &stdout, stderr: &stderr})
+	if code != 2 || !strings.Contains(stdout.String(), oldest) {
+		t.Fatalf("prune did not reach the oldest run: code=%d %q", code, stdout.String()[:min(len(stdout.String()), 300)])
+	}
+}
+
 func TestLogHistoryReadsAFolderWithMoreThanTenThousandEntries(t *testing.T) {
 	if testing.Short() {
 		t.Skip("writes 10,002 files")

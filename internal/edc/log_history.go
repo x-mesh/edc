@@ -20,6 +20,9 @@ type logHistoryOptions struct {
 	Failed, Follow             bool
 	JSON                       string
 	Limit                      int
+	// oldestFirst makes a direct read keep the oldest families at its limits.
+	// prune needs the old runs; the history needs the new ones.
+	oldestFirst bool
 }
 
 func parseLogHistoryOptions(args []string, output io.Writer) (logHistoryOptions, error) {
@@ -116,7 +119,7 @@ func loadLogHistory(options logHistoryOptions, cache logHistoryCache) (logHistor
 			notices = append(notices, notice)
 		}
 	}
-	paths, families, err := historyPaths(root)
+	paths, families, err := historyPathsOrdered(root, options.oldestFirst)
 	limited := errors.Is(err, errHistoryScanLimit)
 	if err != nil && !limited && !(options.Directory == "" && os.IsNotExist(err)) {
 		return logHistorySnapshot{}, err
@@ -131,7 +134,7 @@ func loadLogHistory(options logHistoryOptions, cache logHistoryCache) (logHistor
 			paths = append(paths, path)
 		}
 	}
-	snapshot := collectLogHistory(paths, cache, families)
+	snapshot := collectLogHistoryOrdered(paths, cache, families, options.oldestFirst)
 	if limited {
 		snapshot.issue(root, "limit_error")
 	}

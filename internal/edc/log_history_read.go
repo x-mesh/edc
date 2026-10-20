@@ -738,6 +738,10 @@ const historyEntryLimit = 200000
 // entry first, because directory order is not time order and a cut made while
 // walking could drop the newest runs. Each entry costs one lstat.
 func historyPaths(root string) ([]string, historyFamilies, error) {
+	return historyPathsOrdered(root, false)
+}
+
+func historyPathsOrdered(root string, oldestFirst bool) ([]string, historyFamilies, error) {
 	families := historyFamilies{}
 	examined := 0
 	err := scanHistoryDirectory(root, true, families, &examined, func(directory string) error {
@@ -750,6 +754,9 @@ func historyPaths(root string) ([]string, historyFamilies, error) {
 		modified[path] = families.modified(path)
 	}
 	sortHistoryNewestFirst(paths, modified)
+	if oldestFirst {
+		slices.Reverse(paths)
+	}
 	if len(paths) > historyFamilyLimit {
 		paths, err = paths[:historyFamilyLimit], errHistoryScanLimit
 	}
@@ -797,6 +804,15 @@ func (cache logHistoryCache) indexState() *logIndexState {
 // that a directory scan already found; without it each path is looked up on
 // its own, which suits --file and a few named logs.
 func collectLogHistory(paths []string, cache logHistoryCache, families ...historyFamilies) logHistorySnapshot {
+	var scanned historyFamilies
+	if len(families) > 0 {
+		scanned = families[0]
+	}
+	return collectLogHistoryOrdered(paths, cache, scanned, false)
+}
+
+func collectLogHistoryOrdered(paths []string, cache logHistoryCache, scanned historyFamilies, oldestFirst bool) logHistorySnapshot {
+	families := []historyFamilies{scanned}
 	snapshot := logHistorySnapshot{}
 	unique := map[string]bool{}
 	var ordered []string
@@ -820,6 +836,9 @@ func collectLogHistory(paths []string, cache logHistoryCache, families ...histor
 		}
 	}
 	sortHistoryNewestFirst(ordered, modified)
+	if oldestFirst {
+		slices.Reverse(ordered)
+	}
 	budget := int64(historyByteLimit)
 	visited := map[string]bool{}
 	for index, path := range ordered {

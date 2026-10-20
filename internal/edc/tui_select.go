@@ -1,6 +1,7 @@
 package edc
 
 import (
+	"fmt"
 	"io"
 	"os"
 	"strings"
@@ -85,12 +86,27 @@ func (model selectModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return model, nil
 }
 
+// selectVisibleRows는 한 번에 그리는 항목 수다. 항목이 더 많으면 커서 주변만 그린다. 24줄 터미널에서 질문 줄과 위치 줄을
+// 더해도 넘치지 않는다. 넘치면 renderer가 화면을 지우지 못해 목록이 겹쳐 쌓인다.
+const selectVisibleRows = 15
+
+// window는 그릴 항목의 범위다. 커서가 가운데 오도록 하되 목록 끝을 넘지 않는다.
+func (model selectModel) window() (int, int) {
+	if len(model.items) <= selectVisibleRows {
+		return 0, len(model.items)
+	}
+	start := min(max(model.cursor-selectVisibleRows/2, 0), len(model.items)-selectVisibleRows)
+	return start, start + selectVisibleRows
+}
+
 // View는 목록을 그 자리에 그린다. 줄 수는 처음부터 끝까지 같아야 renderer가 이전 화면을 남기지 않는다.
 func (model selectModel) View() tea.View {
 	var builder strings.Builder
 	builder.WriteString(model.headline() + "\n")
 	width := model.rowWidth()
-	for index, item := range model.items {
+	start, end := model.window()
+	for index := start; index < end; index++ {
+		item := model.items[index]
 		if index != model.cursor || model.cancelled {
 			builder.WriteString(liveIdleBar + " " + item.label + "\n")
 			continue
@@ -104,10 +120,20 @@ func (model selectModel) View() tea.View {
 		// 고른 뒤에는 막대만 남겨 기록으로 조용히 둔다.
 		builder.WriteString(row + "\n")
 	}
+	if len(model.items) > selectVisibleRows {
+		position := fmt.Sprintf("  %d/%d", model.cursor+1, len(model.items))
+		if model.color {
+			position = richDim(position)
+		}
+		builder.WriteString(position + "\n")
+	}
 	return liveFrame(builder.String(), model.frameHeight())
 }
 
 func (model selectModel) frameHeight() int {
+	if len(model.items) > selectVisibleRows {
+		return 2 + selectVisibleRows
+	}
 	return 1 + len(model.items)
 }
 

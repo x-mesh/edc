@@ -1016,7 +1016,7 @@ edc report diff before.json after.json
 0 * * * * /usr/local/bin/edc snapshot -w --du /var --timeout 2m >/dev/null
 ```
 
-결과는 `snapshot_results`에 그대로 남으므로 `history export`가 같은 report를 다시 씁니다. 기간별 조회를 위해 표 두 개를 더 둡니다. `snapshot_metrics`는 결과의 숫자 지표를 `probe`, `key`, `value`로 펼친 표이고, `du_dirs`는 `--du` 경로마다 큰 디렉터리를 `root`, `path`, `bytes`로 남긴 표입니다. 스냅샷마다 계정 이름, sudo 규칙, process 이름이 DB에 쌓입니다. `--redact`는 파일과 같이 기록에도 적용됩니다.
+결과는 `snapshot_results`에 그대로 남으므로 `history export`가 같은 report를 다시 씁니다. 터미널에서 `--run` 없이 `history export`를 실행하면 최근 스냅샷 50개 중에서 고릅니다. 기간별 조회를 위해 표 두 개를 더 둡니다. `snapshot_metrics`는 결과의 숫자 지표를 `probe`, `key`, `value`로 펼친 표이고, `du_dirs`는 `--du` 경로마다 큰 디렉터리를 `root`, `path`, `bytes`로 남긴 표입니다. 스냅샷마다 계정 이름, sudo 규칙, process 이름이 DB에 쌓입니다. `--redact`는 파일과 같이 기록에도 적용됩니다.
 
 ## Report 비교
 
@@ -1317,6 +1317,7 @@ Linux에서는 `n` 화면에 conntrack 사용률(`ct%`), listen overflow/s(`list
 ./bin/edc history top --run <run-id> --limit 0 --json - incident.db
 ./bin/edc history trend --metric memory_pct --by hour incident.db
 ./bin/edc history trend --probe info.disk:/ --metric used_bytes --by day
+./bin/edc history growth --root /var
 ```
 
 같은 DB를 지정해도 이전 값을 덮어쓰지 않고 별도 실행으로 추가합니다. 실행마다 host 정보, edc version, 수집 조건, 시작·종료 시각, 상태, sample 수를 남깁니다. `unfinished`는 종료 기록이 없는 실행으로, 실행 중이거나 강제 종료된 상태일 수 있습니다. 정상 종료는 대기 중인 기록을 모두 저장하고, 저장 실패는 관측을 중단하며 종료 코드 `1`을 반환합니다. 강제 종료 시 이미 commit된 transaction은 보존됩니다. 새 DB 권한은 `0600`이며 자동 삭제나 회전은 없습니다.
@@ -1327,7 +1328,9 @@ host 지표와 core별 CPU, 지원 여부, 실제 관측 구간, 당시 process 
 
 `top`과 `process` 조회는 `--metric <field>`와 `--min`, `--max`를 지원하며 경계값을 포함합니다. `memory_pct`, `disk_await_ms`, `rss_bytes`, `disk_read_bytes_per_s`처럼 JSON 최상위 숫자 필드 이름을 씁니다. `cpu_pct`는 host에서는 user+system 합, process에서는 기존의 core 하나가 100%인 값입니다. 미지원·미측정 SQL 값은 NULL로 저장하여 숫자 조건에 맞지 않게 하고, JSON에는 지원 상태를 보존합니다. 이름·PID 검색은 기존 `top --process` 규칙을 따릅니다.
 
-`trend`는 지표 하나의 값을 `--by hour`, `day`(기본값), `week` 구간으로 묶습니다. 구간은 로컬 시간의 정시, 자정, 월요일 자정에서 시작합니다. 행마다 개수, 최솟값, 평균, 95번째 백분위수(nearest rank), 최댓값을 보이고, 오래된 구간부터 나열합니다. 값이 없는 구간은 보이지 않습니다. `--probe`가 없으면 `--metric`은 top의 host 지표이고, `--probe`를 주면 그 스냅샷 결과의 숫자 지표입니다. 예를 들어 `info.disk:/`의 `used_bytes`, `info.memory`의 `used_percent`, `du.scan`의 `bytes`를 볼 수 있습니다. 없는 결과나 지표를 주면 기록된 이름을 보여 줍니다. `--run`, `--from`, `--to`, `--json`은 `top`과 같게 동작합니다.
+`trend`는 지표 하나의 값을 `--by hour`, `day`(기본값), `week` 구간으로 묶습니다. 구간은 로컬 시간의 정시, 자정, 월요일 자정에서 시작합니다. 행마다 개수, 최솟값, 평균, 95번째 백분위수(nearest rank), 최댓값을 보이고, 오래된 구간부터 나열합니다. 값이 없는 구간은 보이지 않습니다. `--probe`가 없으면 `--metric`은 top의 host 지표이고, `--probe`를 주면 그 스냅샷 결과의 숫자 지표입니다. 예를 들어 `info.disk:/`의 `used_bytes`, `info.memory`의 `used_percent`, `du.scan`의 `bytes`를 볼 수 있습니다. 없는 결과나 지표를 주면 기록된 이름을 보여 줍니다. 터미널에서 `--metric` 없이 `trend`를 실행하면 기록과 지표를 차례로 고르고, 완성된 명령을 보여 줍니다. `--run`, `--from`, `--to`, `--json`은 `top`과 같게 동작합니다.
+
+`growth`는 최근 7일, 또는 `--from`과 `--to` 범위의 스냅샷을 읽습니다. 마운트마다 마지막 스냅샷의 사용량과 전체 크기, 그리고 `used_bytes`의 최소제곱 기울기로 구한 하루 증가량을 보여 줍니다. 사용량이 늘고 있으면 그 속도로 가득 차기까지 걸리는 시간을 추정합니다. 직선으로 구한 추정치이며 예측을 보장하지 않습니다. 스냅샷이 3개보다 적거나 첫 스냅샷과 마지막 스냅샷의 간격이 1시간보다 짧으면 추정하지 않습니다. `--du` 경로마다 범위 안의 첫 번째와 마지막 완전한 스캔을 `report diff`와 같은 규칙으로 비교해, 크게 바뀐 디렉터리를 최대 10개 보여 줍니다. 범위가 1일 이상이면 하루 증가량도 함께 씁니다. 그 위의 줄은 두 스캔에서 경로 전체의 크기를 보여 주므로, 경로 바로 아래 파일의 변화도 여기에 반영됩니다. `--root <path>`는 그 경로의 디렉터리만 보여 주고, `--json`은 마운트와 경로마다 한 줄씩 씁니다.
 
 WAL을 사용하므로 기록 중에도 조회할 수 있습니다. DB는 로컬 파일시스템에 둡니다. 외부 SQLite 도구로 `runs`, `top_samples`, `top_process_samples`도 조회할 수 있습니다. 숫자 지표는 column, cgroup·eBPF 등 상세 정보는 `payload` JSON에 보존합니다. 스냅샷 기록은 `snapshot_results`, `snapshot_metrics`, `du_dirs`에 들어갑니다. 조회는 기존 DB를 읽으며 생성이나 migration을 하지 않습니다. 다른 DB와 지원하지 않는 schema version은 거부합니다.
 

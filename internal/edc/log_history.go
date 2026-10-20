@@ -16,7 +16,8 @@ import (
 type logHistoryOptions struct {
 	Directory, File, Key, Name string
 	Exact                      []string
-	Failed                     bool
+	Failed, Follow             bool
+	JSON                       string
 	Limit                      int
 }
 
@@ -45,13 +46,15 @@ func parseLogHistoryOptions(args []string, output io.Writer) (logHistoryOptions,
 	})
 	set.IntVar(&options.Limit, "limit", 20, T("cli.log_history.option.limit"))
 	set.BoolVar(&options.Failed, "failed", false, T("cli.log_history.option.failed"))
+	set.BoolVar(&options.Follow, "follow", false, T("cli.log_history.option.follow"))
+	set.StringVar(&options.JSON, "json", "", T("cli.log_history.option.json"))
 	if err := set.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return options, err
 		}
 		return options, flagReported(err)
 	}
-	if options.Directory != "" && options.File != "" || options.Limit < 1 || options.Limit > 1000 {
+	if options.Directory != "" && options.File != "" || options.Limit < 1 || options.Limit > 1000 || options.JSON != "" && !options.Follow {
 		return options, errors.New(T("cli.log_history.usage"))
 	}
 	if set.NArg() > 0 {
@@ -81,12 +84,12 @@ func parseLogHistoryOptions(args []string, output io.Writer) (logHistoryOptions,
 	return options, nil
 }
 
-func loadLogHistory(options logHistoryOptions) (logHistorySnapshot, error) {
+func loadLogHistory(options logHistoryOptions, cache logHistoryCache) (logHistorySnapshot, error) {
 	if options.File != "" {
 		if _, err := os.Lstat(options.File); err != nil {
 			return logHistorySnapshot{}, err
 		}
-		return collectLogHistory([]string{options.File}), nil
+		return collectLogHistory([]string{options.File}, cache), nil
 	}
 	root := options.Directory
 	if root == "" {
@@ -110,7 +113,7 @@ func loadLogHistory(options logHistoryOptions) (logHistorySnapshot, error) {
 			paths = append(paths, path)
 		}
 	}
-	snapshot := collectLogHistory(paths)
+	snapshot := collectLogHistory(paths, cache)
 	if limited {
 		snapshot.issue(root, "limit_error")
 	}
@@ -122,6 +125,7 @@ type logHistoryGroup struct {
 	Representative  logHistoryAttempt
 	Rows            []logHistoryAttempt
 	Failed, Unknown int
+	Running         int
 }
 
 func logHistoryGroups(snapshot logHistorySnapshot, options logHistoryOptions) ([]logHistoryGroup, int) {
@@ -150,6 +154,9 @@ func logHistoryGroups(snapshot logHistorySnapshot, options logHistoryOptions) ([
 		}
 		if row.Outcome == historyOutcomeUnknown {
 			group.Unknown++
+		}
+		if row.Outcome == historyOutcomeRunning {
+			group.Running++
 		}
 	}
 	groups := make([]logHistoryGroup, 0, len(indexed))
@@ -219,8 +226,15 @@ func printHistoryGroup(output io.Writer, group logHistoryGroup, options logHisto
 		if row.Exit != nil {
 			exit = fmt.Sprint(*row.Exit)
 		}
+		ratios := historyBaseline(group.Rows, row)
 		fmt.Fprintf(output, "%s  %10s  %-10s  exit %-3s  %s\n", historyTime(row.Started), historyDuration(row), historyOutcome(row), exit, T("cli.log_history.attempt", row.Attempt))
 		fmt.Fprintf(output, "  cwd %s\n  %s\n", reportIdentityValue(row.CWD), reportIdentityValue(row.Path))
+		if text := historyRatioText(ratios.duration); text != "" {
+			fmt.Fprintf(output, "  %s %s\n", T("cli.log_history.alert.duration"), text)
+		}
+		for _, line := range historyResourceLines(row, ratios) {
+			fmt.Fprintf(output, "  %s\n", line)
+		}
 	}
 	if len(rows) == 0 {
 		fmt.Fprintln(output, T("cli.log_history.no_match"))
@@ -271,6 +285,21 @@ func printHistoryGroup(output io.Writer, group logHistoryGroup, options logHisto
 	}
 }
 
+func logHistoryLoaderFor(options logHistoryOptions, cache logHistoryCache) logHistoryLoader {
+	return func() ([]logHistoryGroup, []string, error) {
+		snapshot, err := loadLogHistory(options, cache)
+		if err != nil {
+			return nil, nil, errors.New(reportIdentityValue(err.Error()))
+		}
+		groups, unknown := logHistoryGroups(snapshot, options)
+		notices := append([]string{}, snapshot.Issues...)
+		if unknown > 0 {
+			notices = append(notices, T("cli.log_history.unknown_keys", unknown))
+		}
+		return groups, notices, nil
+	}
+}
+
 func runLogHistory(args []string, streams logStreams) int {
 	options, err := parseLogHistoryOptions(args, streams.stderr)
 	if errors.Is(err, flag.ErrHelp) {
@@ -283,7 +312,11 @@ func runLogHistory(args []string, streams logStreams) int {
 		fmt.Fprintln(streams.stderr, err)
 		return 2
 	}
-	snapshot, err := loadLogHistory(options)
+	if options.Follow {
+		return runLogHistoryFollow(options, streams)
+	}
+	cache := logHistoryCache{}
+	snapshot, err := loadLogHistory(options, cache)
 	if err != nil {
 		fmt.Fprintln(streams.stderr, reportIdentityValue(err.Error()))
 		return 2
@@ -335,7 +368,7 @@ func runLogHistory(args []string, streams logStreams) int {
 		if notice != "" {
 			notices = append(notices, notice)
 		}
-		if err := runLogHistoryBrowser(input, output, groups, options, notices); err != nil {
+		if err := runLogHistoryBrowser(input, output, groups, options, notices, logHistoryLoaderFor(options, cache)); err != nil {
 			fmt.Fprintln(streams.stderr, err)
 			return 2
 		}

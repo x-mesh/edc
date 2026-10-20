@@ -68,6 +68,7 @@ func runLogAttempt(options logOptions, streams logStreams, file *rotatingLogFile
 		_ = process.Wait()
 		return writeFailure(err)
 	}
+	sampler := startLogResourceSampler(newLogResourceProbe(options.command, process.Process.Pid, started), logResourceFirstSample, logResourceInterval)
 	copyDone := make(chan logCopyResult, 1)
 	go func() { copied := copyLogStream(file, readPipe); readPipe.Close(); copyDone <- copied }()
 	waitDone := make(chan error, 1)
@@ -172,6 +173,7 @@ func runLogAttempt(options logOptions, streams logStreams, file *rotatingLogFile
 	if forcedKill {
 		status += " forced_kill=true"
 	}
+	status += sampler.finish(process.ProcessState).fields()
 	result.code = code
 	if err := writeLogEnd(file, started, status, copied); err != nil {
 		result.code = 2

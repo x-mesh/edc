@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -170,7 +171,7 @@ func TestLogHistoryRotationAndLongOutput(t *testing.T) {
 	if err := os.WriteFile(path, []byte(data[split:]), 0600); err != nil {
 		t.Fatal(err)
 	}
-	snapshot := collectLogHistory([]string{path, path})
+	snapshot := collectLogHistory([]string{path, path}, nil)
 	if len(snapshot.Issues) != 0 || len(snapshot.Rows) != 1 || snapshot.Rows[0].Outcome != "SUCCESS" {
 		t.Fatalf("rotation: %+v", snapshot)
 	}
@@ -280,7 +281,7 @@ func TestLogHistoryDiscoveryAndScanLimits(t *testing.T) {
 	if err != nil || len(paths) != 2 {
 		t.Fatalf("paths=%v err=%v", paths, err)
 	}
-	snapshot := collectLogHistory([]string{filepath.Join(dir, "link.log")})
+	snapshot := collectLogHistory([]string{filepath.Join(dir, "link.log")}, nil)
 	if len(snapshot.Issues) == 0 {
 		t.Fatal("explicit symlink accepted")
 	}
@@ -291,7 +292,7 @@ func TestLogHistoryDiscoveryAndScanLimits(t *testing.T) {
 	if err := os.Truncate(huge, historyByteLimit+1); err != nil {
 		t.Fatal(err)
 	}
-	snapshot = collectLogHistory([]string{huge})
+	snapshot = collectLogHistory([]string{huge}, nil)
 	if len(snapshot.Issues) != 1 || len(snapshot.Rows) != 0 {
 		t.Fatal("byte limit ignored")
 	}
@@ -313,7 +314,7 @@ func TestLogHistoryFollowsNamedSymlinkDirectory(t *testing.T) {
 	if err := os.Symlink(target, link); err != nil {
 		t.Fatal(err)
 	}
-	snapshot := collectLogHistory([]string{filepath.Join(link, "job.log")})
+	snapshot := collectLogHistory([]string{filepath.Join(link, "job.log")}, nil)
 	if len(snapshot.Issues) != 0 || len(snapshot.Rows) != 1 || snapshot.Rows[0].Outcome != "SUCCESS" {
 		t.Fatalf("file under symlinked directory: %+v", snapshot)
 	}
@@ -337,15 +338,15 @@ func historySGR(code string, bold bool) string {
 
 func TestLogHistoryRunRowColorsEveryFailureRed(t *testing.T) {
 	for _, outcome := range []logHistoryOutcome{historyOutcomeFail, historyOutcomeTimeout, historyOutcomeSignal, historyOutcomeError} {
-		row := historyRunRow(logHistoryAttempt{Outcome: outcome}, 80, false, true)
+		row := historyRunRow(logHistoryAttempt{Outcome: outcome}, 80, false, true, historyRatios{})
 		if !strings.Contains(row, historySGR(richRed, true)) {
 			t.Fatalf("%s not red: %q", outcome, row)
 		}
 	}
-	if row := historyRunRow(logHistoryAttempt{Outcome: "UNKNOWN"}, 80, false, true); !strings.Contains(row, historySGR(richYellow, false)) {
+	if row := historyRunRow(logHistoryAttempt{Outcome: "UNKNOWN"}, 80, false, true, historyRatios{}); !strings.Contains(row, historySGR(richYellow, false)) {
 		t.Fatalf("UNKNOWN not yellow: %q", row)
 	}
-	if row := historyRunRow(logHistoryAttempt{Outcome: historyOutcomeSuccess}, 80, false, true); !strings.Contains(row, historySGR(richGreen, false)) {
+	if row := historyRunRow(logHistoryAttempt{Outcome: historyOutcomeSuccess}, 80, false, true, historyRatios{}); !strings.Contains(row, historySGR(richGreen, false)) {
 		t.Fatalf("success not green: %q", row)
 	}
 }
@@ -448,7 +449,7 @@ func TestLogHistoryAttemptAndDiscoveryBounds(t *testing.T) {
 	if err != errHistoryScanLimit || len(paths) != historyFamilyLimit {
 		t.Fatalf("discovery bound: %d %v", len(paths), err)
 	}
-	snapshot, err := loadLogHistory(logHistoryOptions{Directory: dir})
+	snapshot, err := loadLogHistory(logHistoryOptions{Directory: dir}, nil)
 	if err != nil || len(snapshot.Issues) == 0 {
 		t.Fatal("partial scan not surfaced")
 	}
@@ -550,5 +551,84 @@ func TestLogHistoryDirectArgvMatchesExplicitSeparator(t *testing.T) {
 	_, names := run("--command", "ls")
 	if strings.Count(names, "  key ") != 2 {
 		t.Fatalf("name list missing argument variants: %s", names)
+	}
+}
+
+func lockHistoryFixture(t *testing.T, path string) *os.File {
+	t.Helper()
+	lock, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { lock.Close() })
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		t.Fatal(err)
+	}
+	return lock
+}
+
+func TestLogFileLockedFollowsWriterLock(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "job.log.lock")
+	if logFileLocked(path) {
+		t.Fatal("missing lock file reported as held")
+	}
+	lock := lockHistoryFixture(t, path)
+	if !logFileLocked(path) {
+		t.Fatal("held lock not detected")
+	}
+	unlockLogFile(lock)
+	if logFileLocked(path) {
+		t.Fatal("released lock reported as held")
+	}
+}
+
+func TestLogHistoryRunningUsesLockAndCacheRereadsGrowth(t *testing.T) {
+	started := time.Now().UTC()
+	argv := []string{"make", "test"}
+	full := historyFixture(argv, "/tmp", started, "exit", "1s", 0, 1)
+	open := full[:strings.Index(full, "=== edc log end")]
+	path := filepath.Join(t.TempDir(), "job.log")
+	if err := os.WriteFile(path, []byte(open), 0600); err != nil {
+		t.Fatal(err)
+	}
+	lock := lockHistoryFixture(t, path+".lock")
+	cache := logHistoryCache{}
+	snapshot := collectLogHistory([]string{path}, cache)
+	if len(snapshot.Rows) != 1 || snapshot.Rows[0].Outcome != historyOutcomeRunning || snapshot.Rows[0].failed() {
+		t.Fatalf("running attempt: %+v", snapshot.Rows)
+	}
+	groups, _ := logHistoryGroups(snapshot, logHistoryOptions{})
+	if len(groups) != 1 || groups[0].Running != 1 || groups[0].Unknown != 0 || groups[0].Failed != 0 {
+		t.Fatalf("running group counts: %+v", groups)
+	}
+	if historyDuration(snapshot.Rows[0]) == "—" {
+		t.Fatal("running attempt has no elapsed time")
+	}
+	unlockLogFile(lock)
+	snapshot = collectLogHistory([]string{path}, cache)
+	if len(snapshot.Rows) != 1 || snapshot.Rows[0].Outcome != historyOutcomeUnknown {
+		t.Fatalf("cached attempt kept running after the lock was released: %+v", snapshot.Rows)
+	}
+	if err := os.WriteFile(path, []byte(full), 0600); err != nil {
+		t.Fatal(err)
+	}
+	snapshot = collectLogHistory([]string{path}, cache)
+	if len(snapshot.Rows) != 1 || snapshot.Rows[0].Outcome != historyOutcomeSuccess {
+		t.Fatalf("cache missed appended end marker: %+v", snapshot.Rows)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	collectLogHistory(nil, cache)
+	if len(cache) != 0 {
+		t.Fatal("cache kept a family that is no longer scanned")
+	}
+}
+
+func TestLogHistoryCompactSummaryCountsRunning(t *testing.T) {
+	rows := []logHistoryAttempt{{CWD: "/tmp", Outcome: historyOutcomeRunning}, {CWD: "/tmp", Outcome: historyOutcomeSuccess, Duration: time.Second}}
+	summary := strings.Join(historyCompactSummary(rows, false), "\n")
+	if !strings.Contains(summary, T("cli.log_history.summary_running", 1)) || strings.Contains(summary, T("cli.log_history.summary_unknown", 1)) {
+		t.Fatalf("summary: %q", summary)
 	}
 }

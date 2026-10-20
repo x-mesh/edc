@@ -438,3 +438,34 @@ func TestCleanNewestWriteMarksAnUnreadableFolderAsPartial(t *testing.T) {
 		t.Fatalf("newest %v partial %v", newest, partial)
 	}
 }
+
+func TestCleanDockerReadsTheImageTagsOfTheRunningEngine(t *testing.T) {
+	fake := newCleanDockerFake()
+	fake.body[cleanDockerAPIPath+"/volumes"] = `{"Volumes":[]}`
+	fake.body[cleanDockerAPIPath+"/containers/json?all=1"] = `[]`
+	fake.body[cleanDockerAPIPath+"/images/json"] = `[{"RepoTags":["app:v1","app:latest"]},{"RepoTags":null},{"RepoTags":["base:1"]}]`
+	socket := cleanDockerServe(t, fake)
+	var dials atomic.Int32
+	section := cleanDockerScan(context.Background(), cleanDockerDeps(t, socket, &dials))
+	if !section.live.known || !section.live.imagesKnown || len(section.live.images) != 3 || !section.live.images["app:v1"] || !section.live.images["base:1"] {
+		t.Fatalf("live = %+v", section.live)
+	}
+	for _, request := range fake.seen() {
+		if !strings.HasPrefix(request, "GET ") {
+			t.Fatalf("non-GET request %q", request)
+		}
+	}
+}
+
+func TestCleanDockerKeepsTheNamesWhenOnlyTheImageListFails(t *testing.T) {
+	fake := newCleanDockerFake()
+	fake.body[cleanDockerAPIPath+"/volumes"] = `{"Volumes":[{"Name":"data"}]}`
+	fake.body[cleanDockerAPIPath+"/containers/json?all=1"] = `[]`
+	fake.status[cleanDockerAPIPath+"/images/json"] = 500
+	socket := cleanDockerServe(t, fake)
+	var dials atomic.Int32
+	section := cleanDockerScan(context.Background(), cleanDockerDeps(t, socket, &dials))
+	if !section.live.known || !section.live.volumes["data"] || section.live.imagesKnown || section.live.images != nil {
+		t.Fatalf("live = %+v", section.live)
+	}
+}

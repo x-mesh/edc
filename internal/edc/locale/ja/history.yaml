@@ -1,5 +1,5 @@
 history:
-  usage: "使い方: edc history <list|top|process|export|trend> [options] [DB]"
+  usage: "使い方: edc history <list|top|process|export|trend|growth> [options] [DB]"
   option:
     run: "この実行 ID のみ"
     from: "開始時刻を含む (RFC3339)"
@@ -12,6 +12,7 @@ history:
     output: "export の報告ファイル、- は stdout"
     probe: "trend で見るスナップショット結果、例: info.disk:/、du.scan"
     by: "trend の期間: hour、day、week (ローカル時間)"
+    root: "growth: このパスの du 結果のみ"
   error:
     default_path: "既定の DB path を取得できません。--write <path> を指定してください"
     path: "DB の file path を指定してください。JSON は DB や journal を上書きできません"
@@ -33,9 +34,23 @@ history:
   trend:
     title: "%s、%s 単位、ローカル時間 %s"
     empty: "この範囲に値はありません"
+  growth:
+    window: "範囲: %s から %s まで (ローカル時間)"
+    empty: "この範囲にディスクや du のスナップショットはありません。edc snapshot -w --du <path> で記録してください"
+    few_samples: "記録不足 (%d 件)"
+    short_span: "記録期間が 1 時間未満"
+    full_in: "約 %s"
+    days: "%.0f 日"
+    hours: "%.0f 時間"
+    per_day: "%s/日"
+    dirs_title: "du %s: %s → %s (%.1f 日、スナップショット %d 件)"
+    one_snapshot: "この範囲のスナップショットは 1 件のみです。もう 1 件記録すると比較します"
+    no_change: "変化したディレクトリはありません"
+    total: "全体 %s → %s (%s)"
 command:
   history:
     notes:
+      - "growth は期間 (既定 7 日) の速度でディスクが満杯になる時期を推定します。"
       - "trend は 1 つの指標をローカル時間の hour、day、week で古い順にまとめます。"
       - "snapshot -w [DB] で記録し、export --run <id> で報告に書き出す。"
       - "top -w [DB] は dashboard を維持して記録します。"

@@ -561,6 +561,7 @@ command:
       list: "runs that top -w and snapshot -w recorded"
       export: "a recorded snapshot as a report file"
       trend: "count, min, avg, p95, max per period"
+      growth: "disk growth per day, changed directories"
       top: "host samples, newest first"
       process: "process samples, newest first"
       log: "command runs that edc log recorded"

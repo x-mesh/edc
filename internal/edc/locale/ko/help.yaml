@@ -561,6 +561,7 @@ command:
       list: "top -w와 snapshot -w로 기록한 실행"
       export: "기록한 스냅샷을 보고서 파일로"
       trend: "구간별 개수·최소·평균·p95·최대"
+      growth: "디스크의 하루 증가량과 크게 바뀐 디렉터리"
       top: "host sample, 최신순"
       process: "process sample, 최신순"
       log: "edc log가 기록한 명령 실행"

@@ -1,5 +1,5 @@
 history:
-  usage: "Usage: edc history <list|top|process|export|trend> [options] [DB]"
+  usage: "Usage: edc history <list|top|process|export|trend|growth> [options] [DB]"
   option:
     run: "only this run ID"
     from: "inclusive start time (RFC3339)"
@@ -12,6 +12,7 @@ history:
     output: "report file for export, - for stdout"
     probe: "trend a snapshot result, such as info.disk:/ or du.scan"
     by: "trend period: hour, day, or week (local time)"
+    root: "growth: only the du results of this path"
   error:
     default_path: "The default database path is unavailable; specify --write <path>"
     path: "Use a database file path; JSON output must not overwrite the database or its journal files"
@@ -33,9 +34,23 @@ history:
   trend:
     title: "%s by %s, local time %s"
     empty: "No values in this range"
+  growth:
+    window: "Range: %s to %s (local time)"
+    empty: "No disk or du snapshots in this range. Record them with edc snapshot -w --du <path>"
+    few_samples: "too few samples (%d)"
+    short_span: "under 1 hour of records"
+    full_in: "about %s"
+    days: "%.0f days"
+    hours: "%.0f hours"
+    per_day: "%s/day"
+    dirs_title: "du %s: %s → %s (%.1f days, %d snapshots)"
+    one_snapshot: "one snapshot in this range; record another to compare"
+    no_change: "no directory changed"
+    total: "total %s → %s (%s)"
 command:
   history:
     notes:
+      - "growth estimates when a disk fills at the rate of the range (7d default)."
       - "trend groups one metric by local hour, day, or week, oldest first."
       - "snapshot -w [DB] records a snapshot; export --run <id> writes a report."
       - "top -w [DB] records while the dashboard stays open."

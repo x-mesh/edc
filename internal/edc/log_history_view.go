@@ -103,7 +103,9 @@ func historyKeyRow(group logHistoryGroup, width int, groups []logHistoryGroup, s
 func historyKeyRowColumns(group logHistoryGroup, columns historyKeyColumns, selected, color bool, now time.Time) string {
 	command := historyCell(historyCommand(group.Representative), columns.command, false)
 	cells := []string{command}
-	if columns.last > 0 {
+	if columns.last > 0 && group.Running > 0 {
+		cells = append(cells, historyStrong(historyCell(T("cli.log_history.running_now"), columns.last, false), richCyan, color))
+	} else if columns.last > 0 {
 		cells = append(cells, historyTint(historyCell(historyRelativeTime(group.Rows[0].Started, now), columns.last, false), richGray, color))
 	}
 	cells = append(cells, historyTint(historyCell(fmt.Sprint(len(group.Rows)), columns.runs, true), richGray, color))
@@ -153,6 +155,8 @@ func historyRunRow(row logHistoryAttempt, width int, selected, color bool) strin
 	switch {
 	case row.Outcome == historyOutcomeSuccess:
 		outcome = historyTint(outcome, richGreen, color)
+	case row.Outcome == historyOutcomeRunning:
+		outcome = historyStrong(outcome, richCyan, color)
 	case row.failed():
 		outcome = historyStrong(outcome, richRed, color)
 	default:
@@ -182,11 +186,13 @@ func historyCompactSummary(rows []logHistoryAttempt, color bool) []string {
 	var lines []string
 	for _, cwd := range order {
 		var total big.Int
-		success, failed, unknown := 0, 0, 0
+		success, failed, unknown, running := 0, 0, 0, 0
 		for _, row := range contexts[cwd].rows {
 			if row.Outcome == historyOutcomeSuccess {
 				success++
 				total.Add(&total, big.NewInt(int64(row.Duration)))
+			} else if row.Outcome == historyOutcomeRunning {
+				running++
 			} else if row.failed() {
 				failed++
 			} else {
@@ -194,6 +200,9 @@ func historyCompactSummary(rows []logHistoryAttempt, color bool) []string {
 			}
 		}
 		parts := []string{historyTint(T("cli.log_history.summary_pass", success), richGreen, color)}
+		if running > 0 {
+			parts = append(parts, historyTint(T("cli.log_history.summary_running", running), richCyan, color))
+		}
 		if failed > 0 {
 			parts = append(parts, historyTint(T("cli.log_history.summary_fail", failed), richRed, color))
 		}

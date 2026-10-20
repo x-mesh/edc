@@ -80,3 +80,23 @@ func unixSignalName(received syscall.Signal) string {
 		return fmt.Sprintf("SIG%d", received)
 	}
 }
+
+// logFileLocked reports whether an edc log process holds the lock beside a log.
+// The writer keeps an exclusive flock for the whole run, so a shared request
+// fails only while that run is alive; a stale lock file left by a crash does not.
+func logFileLocked(path string) bool {
+	file, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return false
+	}
+	defer file.Close()
+	if info, err := file.Stat(); err != nil || !info.Mode().IsRegular() {
+		return false
+	}
+	err = syscall.Flock(int(file.Fd()), syscall.LOCK_SH|syscall.LOCK_NB)
+	if err == nil {
+		_ = syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
+		return false
+	}
+	return errors.Is(err, syscall.EWOULDBLOCK) || errors.Is(err, syscall.EAGAIN)
+}

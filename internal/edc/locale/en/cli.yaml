@@ -45,10 +45,15 @@ cli:
     summary_pass: "%d passed"
     summary_fail: "%d failed"
     summary_unknown: "%d unknown"
+    summary_running: "%d running"
     summary_avg: "success avg %s"
     contexts_note: "%d working directories · Enter to inspect a run"
     expanded_help: "↑↓ Scroll   Esc Back   q Quit"
     more_notices: "%d more notices; see terminal output"
+    running_now: "running"
+    live: "live"
+    paused: "paused"
+    live_help: "   r Refresh   p Pause"
     column:
       command: "Command"
       last: "Last run"
@@ -85,6 +90,9 @@ cli:
     detail_help: "↑↓ Select   Enter Details   Esc Commands   q Quit"
     list_help: "↑↓ Select   Enter History   q Quit"
     notice_count: "%d notices:"
+    follow_start: "▶ START"
+    follow_ready: "Following new runs · Ctrl-C stops"
+    follow_summary: "%d started · %d ended · %d failed · %s"
     snapshot_note: "Saved log snapshot · counts cover scanned runs"
     option:
       command: "list argument keys for this command name"
@@ -93,6 +101,8 @@ cli:
       key: "full command key or unique prefix (12+ hex)"
       limit: "attempts per key (1-1000, default 20)"
       failed: "known failures only"
+      follow: "print runs as they start and end"
+      json: "--follow JSONL path (- for stdout)"
     outcome:
       success: "✓ PASS"
       fail: "✗ FAIL"
@@ -100,6 +110,7 @@ cli:
       signal: "SIGNAL"
       error: "ERROR"
       unknown: "UNKNOWN"
+      running: "RUNNING"
   log:
     stream_value: "--stream must be stdout, stderr, or both"
     output_required: "--output is required"

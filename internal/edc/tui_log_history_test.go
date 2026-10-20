@@ -203,3 +203,52 @@ func TestLogHistoryBrowserFailureAndUnknownVisibility(t *testing.T) {
 		t.Fatal("unknown record appears successful")
 	}
 }
+
+func TestLogHistoryBrowserRefreshKeepsSelectionByKey(t *testing.T) {
+	groups := browserGroups(3)
+	model := newLogHistoryBrowser(groups, logHistoryOptions{Limit: 20}, nil)
+	fresh := append(browserGroups(5)[3:4], groups...)
+	model.load = func() ([]logHistoryGroup, []string, error) { return fresh, []string{"partial"}, nil }
+	if model.Init() == nil {
+		t.Fatal("live browser did not schedule a refresh")
+	}
+	model = historyBrowserAfter(t, model, "down", "enter")
+	updated, cmd := model.Update(logHistoryTickMsg{seq: model.seq})
+	if cmd == nil {
+		t.Fatal("tick did not reload")
+	}
+	updated, next := updated.Update(cmd())
+	model = updated.(logHistoryBrowser)
+	if next == nil || model.cursor != 2 || model.groups[model.cursor].Key != groups[1].Key || !model.detail || model.notices[0] != "partial" {
+		t.Fatalf("refresh lost selection: cursor=%d detail=%v", model.cursor, model.detail)
+	}
+	model.load = func() ([]logHistoryGroup, []string, error) { return groups[2:], nil, nil }
+	updated, _ = model.Update(model.reload()())
+	model = updated.(logHistoryBrowser)
+	if model.detail || model.cursor != 0 {
+		t.Fatal("detail stayed open for a command that disappeared")
+	}
+}
+
+func TestLogHistoryBrowserPauseIgnoresTicks(t *testing.T) {
+	model := newLogHistoryBrowser(browserGroups(2), logHistoryOptions{Limit: 20}, nil)
+	model.load = func() ([]logHistoryGroup, []string, error) { return nil, nil, fmt.Errorf("boom") }
+	stale := model.seq
+	model = historyBrowserAfter(t, model, "p")
+	if !model.paused || !strings.Contains(model.View().Content, T("cli.log_history.paused")) {
+		t.Fatal("pause not shown")
+	}
+	if _, cmd := model.Update(logHistoryTickMsg{seq: model.seq}); cmd != nil {
+		t.Fatal("paused browser reloaded on tick")
+	}
+	if _, cmd := model.Update(logHistoryLoadedMsg{seq: stale}); cmd != nil {
+		t.Fatal("stale load was applied")
+	}
+	updated, cmd := pressKey(model, "r")
+	model = updated.(logHistoryBrowser)
+	updated, _ = model.Update(cmd())
+	model = updated.(logHistoryBrowser)
+	if len(model.groups) != 2 || model.notices[0] != "boom" || !model.paused {
+		t.Fatal("failed refresh replaced the list or resumed")
+	}
+}

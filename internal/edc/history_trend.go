@@ -25,6 +25,13 @@ type historyTrendOptions struct {
 	probe    string
 	metric   string
 	by       string
+	process  topProcessFilter
+	each     bool
+}
+
+// historyTrendSummary는 구간 밖에서 알릴 사실이다. Unfiltered는 일치한 표본 가운데 --process 없이 기록한 것이 있었는지다.
+type historyTrendSummary struct {
+	Unfiltered bool
 }
 
 type historyTrendBucket struct {
@@ -37,6 +44,14 @@ type historyTrendBucket struct {
 	Avg    float64   `json:"avg"`
 	P95    float64   `json:"p95"`
 	Max    float64   `json:"max"`
+	// 아래는 --process의 값이다. Samples는 구간에서 프로세스가 기록된 표본 수이고 Count는 그 가운데 일치한 표본 수다.
+	// Restarts는 필터 없이 기록한 표본이 섞인 구간에서는 셀 수 없어 nil이다.
+	Process  string     `json:"process,omitempty"`
+	PID      int        `json:"pid,omitempty"`
+	Started  *time.Time `json:"started,omitempty"`
+	Samples  int        `json:"samples,omitempty"`
+	Procs    int        `json:"procs,omitempty"`
+	Restarts *int       `json:"restarts,omitempty"`
 }
 
 func runHistoryTrend(args []string) int {
@@ -49,6 +64,8 @@ func runHistoryTrend(args []string) int {
 	set.StringVar(&options.metric, "metric", "", T("history.option.metric"))
 	set.StringVar(&options.probe, "probe", "", T("history.option.probe"))
 	set.StringVar(&options.by, "by", "day", T("history.option.by"))
+	process := set.String("process", "", T("command.top.option.process"))
+	set.BoolVar(&options.each, "each", false, T("history.option.each"))
 	jsonPath := set.String("json", "", T("history.option.json"))
 	if err := set.Parse(args); err != nil {
 		return 2
@@ -66,15 +83,31 @@ func runHistoryTrend(args []string) int {
 		fmt.Fprintln(os.Stderr, T("history.error.time"))
 		return 2
 	}
+	if options.process, err = parseTopProcessFilter(*process); err != nil {
+		fmt.Fprintln(os.Stderr, T("observe.top.process_invalid"))
+		return 2
+	}
+	if options.process.active() && options.probe != "" {
+		fmt.Fprintln(os.Stderr, T("history.error.trend_process_probe"))
+		return 2
+	}
+	if options.each && !options.process.active() {
+		fmt.Fprintln(os.Stderr, T("history.error.trend_each"))
+		return 2
+	}
 	if !historyTrendPeriod(options.by) {
 		fmt.Fprintln(os.Stderr, T("history.error.trend_by", strings.Join(historyTrendPeriods, ", ")))
 		return 2
 	}
 	metricError := T("history.error.trend_metric", strings.Join(historyMetricNames(historyHostMetrics), ", "))
+	validMetric := historyHostMetric
+	if options.process.active() {
+		metricError, validMetric = T("history.error.trend_process_metric", strings.Join(historyProcessMetricNames(), ", ")), historyProcessMetric
+	}
 	// --metric이 없으면 터미널에서 기록된 지표를 고르게 한다. JSON을 stdout에 쓸 때는 선택 화면과 섞이므로 묻지 않는다.
 	_, canPrompt := historyCanPrompt()
 	askMetric := options.metric == "" && canPrompt && *jsonPath != "-"
-	if (options.metric == "" && !askMetric) || (options.metric != "" && options.probe == "" && !historyHostMetric(options.metric)) {
+	if (options.metric == "" && !askMetric) || (options.metric != "" && options.probe == "" && !validMetric(options.metric)) {
 		fmt.Fprintln(os.Stderr, metricError)
 		return 2
 	}
@@ -95,6 +128,17 @@ func runHistoryTrend(args []string) int {
 		return 1
 	}
 	defer db.Close()
+	// 색을 쓸 수 있는 터미널이면 고른 결과를 바로 보는 화면을 연다. 표를 파일에 쓸 때와 NO_COLOR에서는 차례로 묻는다.
+	if input, ok := historyCanPrompt(); askMetric && ok && *jsonPath == "" && os.Getenv("NO_COLOR") == "" {
+		opened, err := runHistoryTrendBrowser(input, db, options, args)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		if opened {
+			return 0
+		}
+	}
 	if askMetric && !promptHistoryTrend(db, &options, args) {
 		fmt.Fprintln(os.Stderr, metricError)
 		return 2
@@ -109,7 +153,7 @@ func runHistoryTrend(args []string) int {
 		}
 		output = file
 	}
-	err = writeHistoryTrend(output, db, options, *jsonPath != "", time.Local)
+	err = writeHistoryTrend(output, os.Stderr, db, options, *jsonPath != "", time.Local)
 	if file != nil {
 		if closeErr := file.Close(); err == nil {
 			err = closeErr
@@ -224,8 +268,27 @@ func historyBucketStart(at time.Time, by string, location *time.Location) time.T
 	}
 }
 
+// historyTrendStats는 값의 최소, 평균, p95, 최대다. values를 정렬한다.
+func historyTrendStats(values []float64) (float64, float64, float64, float64) {
+	sort.Float64s(values)
+	sum := 0.0
+	for _, value := range values {
+		sum += value
+	}
+	// p95는 nearest-rank다. 값이 20개 미만이면 최대와 같다.
+	rank := int(math.Ceil(0.95*float64(len(values)))) - 1
+	return values[0], sum / float64(len(values)), values[rank], values[len(values)-1]
+}
+
 // historyTrendBuckets는 시각순으로 읽은 값을 구간마다 묶는다. 한 구간의 값만 메모리에 둔다.
-func historyTrendBuckets(db *sql.DB, options historyTrendOptions, location *time.Location, emit func(historyTrendBucket) error) error {
+func historyTrendBuckets(db *sql.DB, options historyTrendOptions, location *time.Location, emit func(historyTrendBucket) error) (historyTrendSummary, error) {
+	if options.process.active() {
+		return historyProcessTrendBuckets(db, options, location, emit)
+	}
+	return historyTrendSummary{}, historyHostTrendBuckets(db, options, location, emit)
+}
+
+func historyHostTrendBuckets(db *sql.DB, options historyTrendOptions, location *time.Location, emit func(historyTrendBucket) error) error {
 	if options.probe != "" {
 		if err := historyTrendCheckProbe(db, options.probe, options.metric); err != nil {
 			return err
@@ -243,15 +306,8 @@ func historyTrendBuckets(db *sql.DB, options historyTrendOptions, location *time
 		if len(bucket) == 0 {
 			return nil
 		}
-		sort.Float64s(bucket)
-		sum := 0.0
-		for _, value := range bucket {
-			sum += value
-		}
-		// p95는 nearest-rank다. 값이 20개 미만이면 최대와 같다.
-		rank := int(math.Ceil(0.95*float64(len(bucket)))) - 1
-		result := historyTrendBucket{Start: start, By: options.by, Probe: options.probe, Metric: options.metric, Count: len(bucket),
-			Min: bucket[0], Avg: sum / float64(len(bucket)), P95: bucket[rank], Max: bucket[len(bucket)-1]}
+		result := historyTrendBucket{Start: start, By: options.by, Probe: options.probe, Metric: options.metric, Count: len(bucket)}
+		result.Min, result.Avg, result.P95, result.Max = historyTrendStats(bucket)
 		bucket = bucket[:0]
 		return emit(result)
 	}
@@ -279,45 +335,91 @@ func historyTrendBuckets(db *sql.DB, options historyTrendOptions, location *time
 	return flush()
 }
 
-func writeHistoryTrend(output io.Writer, db *sql.DB, options historyTrendOptions, jsonOutput bool, location *time.Location) error {
+func writeHistoryTrend(output, notices io.Writer, db *sql.DB, options historyTrendOptions, jsonOutput bool, location *time.Location) error {
+	var summary historyTrendSummary
+	var err error
 	if jsonOutput {
 		encoder := json.NewEncoder(output)
-		return historyTrendBuckets(db, options, location, func(bucket historyTrendBucket) error { return encoder.Encode(bucket) })
+		summary, err = historyTrendBuckets(db, options, location, func(bucket historyTrendBucket) error { return encoder.Encode(bucket) })
+	} else {
+		summary, err = writeHistoryTrendTable(output, db, options, location)
 	}
+	if err == nil && summary.Unfiltered {
+		filter := historyTerminalText(options.process.String())
+		_, err = fmt.Fprintln(notices, T("history.trend.unfiltered", filter, quoteLocalShellWord(options.process.String())))
+	}
+	return err
+}
+
+func writeHistoryTrendTable(output io.Writer, db *sql.DB, options historyTrendOptions, location *time.Location) (historyTrendSummary, error) {
 	layout := "2006-01-02"
 	if options.by == "hour" {
 		layout = "2006-01-02 15:00"
 	}
-	name := options.metric
-	if options.probe != "" {
-		name = historyTerminalText(options.probe) + " " + historyTerminalText(options.metric)
-	}
 	_, offset := time.Now().In(location).Zone()
 	zone := fmt.Sprintf("%+03d:%02d", offset/3600, abs(offset%3600)/60)
+	title := T("history.trend.title", options.metric, options.by, zone)
+	header := "START\tCOUNT\tMIN\tAVG\tP95\tMAX\t"
+	switch {
+	case options.probe != "":
+		title = T("history.trend.title", historyTerminalText(options.probe)+" "+historyTerminalText(options.metric), options.by, zone)
+	case options.each:
+		title = T("history.trend.process_title", options.metric, historyTerminalText(options.process.String()), options.by, zone)
+		header = "START\tPID\tSTARTED\tCOUNT\tSEEN\tMIN\tAVG\tP95\tMAX\t"
+	case options.process.active():
+		title = T("history.trend.process_title", options.metric, historyTerminalText(options.process.String()), options.by, zone)
+		header = "START\tCOUNT\tSEEN\tPROCS\tRESTARTS\tMIN\tAVG\tP95\tMAX\t"
+	}
 	writer := tabwriter.NewWriter(output, 0, 4, 2, ' ', tabwriter.AlignRight)
 	count := 0
-	err := historyTrendBuckets(db, options, location, func(bucket historyTrendBucket) error {
+	summary, err := historyTrendBuckets(db, options, location, func(bucket historyTrendBucket) error {
 		if count == 0 {
-			if _, err := fmt.Fprintln(output, T("history.trend.title", name, options.by, zone)); err != nil {
+			if _, err := fmt.Fprintln(output, title); err != nil {
 				return err
 			}
-			if _, err := fmt.Fprintln(writer, "START\tCOUNT\tMIN\tAVG\tP95\tMAX\t"); err != nil {
+			if _, err := fmt.Fprintln(writer, header); err != nil {
 				return err
 			}
 		}
 		count++
-		value := func(number float64) string { return historyTrendValue(options.metric, number) }
-		_, err := fmt.Fprintf(writer, "%s\t%d\t%s\t%s\t%s\t%s\t\n", bucket.Start.Format(layout), bucket.Count, value(bucket.Min), value(bucket.Avg), value(bucket.P95), value(bucket.Max))
+		_, err := fmt.Fprintln(writer, strings.Join(historyTrendRow(bucket, options, layout, location), "\t")+"\t")
 		return err
 	})
 	if err != nil {
-		return err
+		return summary, err
 	}
 	if count == 0 {
-		_, err = fmt.Fprintln(output, T("history.trend.empty"))
-		return err
+		empty := T("history.trend.empty")
+		if options.process.active() {
+			empty = T("history.trend.process_empty", historyTerminalText(options.process.String()), quoteLocalShellWord(options.process.String()))
+		}
+		_, err = fmt.Fprintln(output, empty)
+		return summary, err
 	}
-	return writer.Flush()
+	return summary, writer.Flush()
+}
+
+// historyTrendRow는 표 한 줄의 칸이다. TUI도 같은 칸을 쓴다.
+func historyTrendRow(bucket historyTrendBucket, options historyTrendOptions, layout string, location *time.Location) []string {
+	value := func(number float64) string { return historyTrendValue(options.metric, number) }
+	stats := []string{value(bucket.Min), value(bucket.Avg), value(bucket.P95), value(bucket.Max)}
+	start := bucket.Start.In(location).Format(layout)
+	if !options.process.active() {
+		return append([]string{start, fmt.Sprint(bucket.Count)}, stats...)
+	}
+	seen := fmt.Sprintf("%.0f%%", 100*float64(bucket.Count)/float64(max(bucket.Samples, 1)))
+	if options.each {
+		started := "-"
+		if bucket.Started != nil {
+			started = bucket.Started.In(location).Format("01-02 15:04")
+		}
+		return append([]string{start, fmt.Sprint(bucket.PID), started, fmt.Sprint(bucket.Count), seen}, stats...)
+	}
+	restarts := "-"
+	if bucket.Restarts != nil {
+		restarts = fmt.Sprint(*bucket.Restarts)
+	}
+	return append([]string{start, fmt.Sprint(bucket.Count), seen, fmt.Sprint(bucket.Procs), restarts}, stats...)
 }
 
 // historyTrendValue는 이름의 단위를 따라 값을 읽기 쉽게 쓴다. top의 _pct와 스냅샷의 _percent는 이미 백분율이다.

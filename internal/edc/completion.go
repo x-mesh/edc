@@ -139,7 +139,7 @@ _edc() {
           ;;
         history)
           if [[ $words[2] == log ]]; then _arguments '*:command:_command_names -e'; return; fi
-          _arguments '1:subcommand:(list top process export trend growth prune log)' '--run[실행 ID]:id' '--from[시작 시각]:RFC3339' '--to[종료 시각]:RFC3339' '--process[process filter]:filter' '--metric[지표 이름]:metric' '--min[최솟값]:number' '--max[최댓값]:number' '--limit[최대 결과 수]:count' '--json[JSONL 출력 경로]:path:_files' '--output[보고서 파일]:path:_files' '--probe[스냅샷 결과]:probe' '--by[구간]:period:(hour day week)' '--root[du 경로]:path:_files' '--older-than[보관 기간]:age' '--command[기록 종류]:command:(top snapshot)' '--dry-run[삭제 없이 개수만]' '--yes[묻지 않고 삭제]' '--vacuum[파일 크기 줄이기]' '*:database:_files'
+          _arguments '1:subcommand:(list top process export trend growth prune log)' '--run[실행 ID]:id' '--from[시작 시각]:RFC3339' '--to[종료 시각]:RFC3339' '--process[process filter]:filter' '--metric[지표 이름]:metric' '--min[최솟값]:number' '--max[최댓값]:number' '--limit[최대 결과 수]:count' '--json[JSONL 출력 경로]:path:_files' '--output[보고서 파일]:path:_files' '--probe[스냅샷 결과]:probe' '--by[구간]:period:(hour day week)' '--each[프로세스마다 한 줄]' '--root[du 경로]:path:_files' '--older-than[보관 기간]:age' '--command[기록 종류]:command:(top snapshot)' '--dry-run[삭제 없이 개수만]' '--yes[묻지 않고 삭제]' '--vacuum[파일 크기 줄이기]' '*:database:_files'
           ;;
         watch)
           if [[ $words[2] == fs ]]; then
@@ -341,7 +341,7 @@ _edc() {
       elif [[ $prev == --run || $prev == --from || $prev == --to || $prev == --process || $prev == --metric || $prev == --min || $prev == --max || $prev == --limit || $prev == --probe || $prev == --older-than ]]; then COMPREPLY=()
       elif [[ $prev == --command ]]; then COMPREPLY=($(compgen -W "top snapshot" -- "$cur"))
       elif [[ $prev == --by ]]; then COMPREPLY=($(compgen -W "hour day week" -- "$cur"))
-      elif [[ $cur == -* ]]; then COMPREPLY=($(compgen -W "--run --from --to --process --metric --probe --by --root --min --max --limit --json --output --older-than --command --dry-run --yes --vacuum" -- "$cur"))
+      elif [[ $cur == -* ]]; then COMPREPLY=($(compgen -W "--run --from --to --process --metric --probe --by --each --root --min --max --limit --json --output --older-than --command --dry-run --yes --vacuum" -- "$cur"))
       else COMPREPLY=($(compgen -f -- "$cur")); fi ;;
     watch)
       if [[ $COMP_CWORD -eq 2 ]]; then COMPREPLY=($(compgen -W "http fs" -- "$cur")); return; fi

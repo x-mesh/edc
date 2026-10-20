@@ -242,7 +242,7 @@ var commandDocs = []commandDoc{
 	},
 	{
 		name: "history", group: "record",
-		usage: []string{"edc history list [options] [DB]", "edc history top [options] [DB]", "edc history process [options] [DB]"},
+		usage: []string{"edc history list [options] [DB]", "edc history top [options] [DB]", "edc history process [options] [DB]", "edc history log [edc log history options]"},
 		options: []optionDoc{
 			{"--run <id>", "history.option.run"},
 			{"--from <RFC3339>", "history.option.from"},
@@ -258,6 +258,7 @@ var commandDocs = []commandDoc{
 			{"list", "edc history list [options] [DB]"},
 			{"top", "edc history top [options] [DB]"},
 			{"process", "edc history process [options] [DB]"},
+			{"log", "edc history log [<command>]"},
 		},
 		examples: []string{
 			"edc history list",
@@ -460,6 +461,7 @@ var commandDocs = []commandDoc{
 			"edc log history [options] -- <command> [args...]",
 			"edc log history --key <key>",
 			"edc log history --follow [--json <path|->] [options]",
+			"edc log prune --older-than <age> [--dry-run] [--yes] [-v] [options]",
 			"edc log [--stream stdout|stderr|both] [--output <file>]",
 			"        [--command-display full|name|none] -- <command> [args...]",
 		},
@@ -472,6 +474,10 @@ var commandDocs = []commandDoc{
 			{"--failed", "cli.log_history.option.failed"},
 			{"--follow", "cli.log_history.option.follow"},
 			{"--json <path|->", "cli.log_history.option.json"},
+			{"--older-than 30d", "cli.log_prune.option.older_than"},
+			{"--dry-run", "cli.log_prune.option.dry_run"},
+			{"--yes", "cli.log_prune.option.yes"},
+			{"-v", "cli.log_prune.option.verbose"},
 			{"--stream stdout|stderr|both", "command.log.option.stream"},
 			{"--output <file>", "command.log.option.output"},
 			{"--command-display full|name|none", "command.log.option.command_display"},
@@ -486,12 +492,14 @@ var commandDocs = []commandDoc{
 		subcommands: []subcommandDoc{
 			{"run", "edc log -- <command> [args...]"},
 			{"history", "edc log history [<command>]"},
+			{"prune", "edc log prune --older-than 30d"},
 		},
 		examples: []string{
 			"edc log -- ls -l /tmp",
 			"edc log --restart on-failure -- /path/to/job",
 			"edc log history",
 			"edc log history --failed ls -l /tmp",
+			"edc log prune --older-than 30d --dry-run",
 		},
 	},
 	{

@@ -277,7 +277,7 @@ func TestLogHistoryDiscoveryAndScanLimits(t *testing.T) {
 	if err := os.Symlink(filepath.Join(dir, "one.log"), filepath.Join(dir, "link.log")); err != nil {
 		t.Fatal(err)
 	}
-	paths, err := historyPaths(dir)
+	paths, _, err := historyPaths(dir)
 	if err != nil || len(paths) != 2 {
 		t.Fatalf("paths=%v err=%v", paths, err)
 	}
@@ -318,14 +318,14 @@ func TestLogHistoryFollowsNamedSymlinkDirectory(t *testing.T) {
 	if len(snapshot.Issues) != 0 || len(snapshot.Rows) != 1 || snapshot.Rows[0].Outcome != "SUCCESS" {
 		t.Fatalf("file under symlinked directory: %+v", snapshot)
 	}
-	paths, err := historyPaths(link)
+	paths, _, err := historyPaths(link)
 	if err != nil || len(paths) != 2 {
 		t.Fatalf("symlinked root paths=%v err=%v", paths, err)
 	}
 	if err := os.Symlink(filepath.Join(target, "ls"), filepath.Join(target, "nested")); err != nil {
 		t.Fatal(err)
 	}
-	paths, err = historyPaths(link)
+	paths, _, err = historyPaths(link)
 	if err != nil || len(paths) != 2 {
 		t.Fatalf("symlinked subdirectory followed: paths=%v err=%v", paths, err)
 	}
@@ -445,7 +445,7 @@ func TestLogHistoryAttemptAndDiscoveryBounds(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	paths, err := historyPaths(dir)
+	paths, _, err := historyPaths(dir)
 	if err != errHistoryScanLimit || len(paths) != historyFamilyLimit {
 		t.Fatalf("discovery bound: %d %v", len(paths), err)
 	}

@@ -37,6 +37,11 @@ func runHistory(args []string) int {
 		}
 		args = []string{choice}
 	}
+	// log is the same viewer as edc log history; it reads the command logs, not
+	// this database, so none of the options below apply to it.
+	if args[0] == "log" {
+		return runLogWithStreams(append([]string{"history"}, args[1:]...), logStreams{stdin: os.Stdin, stdout: os.Stdout, stderr: os.Stderr})
+	}
 	if args[0] != "list" && args[0] != "top" && args[0] != "process" {
 		fmt.Fprintln(os.Stderr, T("history.usage"))
 		return 2

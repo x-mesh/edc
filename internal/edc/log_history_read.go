@@ -554,7 +554,7 @@ func readHistoryFamily(path string, parts []historyPart) ([]logHistoryAttempt, b
 	if err := readHistoryLines(io.MultiReader(readers...), parser); err != nil {
 		return nil, false, err
 	}
-	after, err := historyFamily(path)
+	after, err := restatHistoryParts(parts)
 	if err != nil {
 		return nil, false, errors.New("changed file")
 	}
@@ -574,6 +574,121 @@ func readHistoryFamily(path string, parts []historyPart) ([]logHistoryAttempt, b
 }
 
 var errHistoryScanLimit = errors.New("history scan limit")
+
+// restatHistoryParts looks at the parts that were read again, one lstat each.
+// edc only appends to the active file and rotates by renaming it, so a new
+// archive always comes with a new inode at the base path, which this catches
+// without walking the directory again.
+func restatHistoryParts(parts []historyPart) ([]historyPart, error) {
+	after := make([]historyPart, 0, len(parts))
+	for _, part := range parts {
+		info, err := os.Lstat(part.path)
+		if err != nil {
+			return nil, err
+		}
+		if !info.Mode().IsRegular() {
+			return nil, errors.New("nonregular log")
+		}
+		after = append(after, historyPart{path: part.path, info: info, index: part.index})
+	}
+	return after, nil
+}
+
+// historyFamilies maps a log path to its parts, newest archive last; a family
+// whose parts cannot be read safely maps to nil.
+type historyFamilies map[string][]historyPart
+
+// scanHistoryDirectory adds the families of one directory in a single pass.
+// Reading every family with its own walk made a refresh quadratic in the
+// number of files of a folder, and its per-walk limit emptied the history of
+// a folder with more than 10,000 entries.
+func scanHistoryDirectory(directory string, followLink bool, families historyFamilies, examined *int, descend func(string) error) error {
+	return walkHistoryDirectory(directory, followLink, func(entry os.DirEntry) error {
+		*examined++
+		if *examined > historyEntryLimit {
+			return errHistoryScanLimit
+		}
+		if entry.IsDir() {
+			if descend != nil {
+				return descend(filepath.Join(directory, entry.Name()))
+			}
+			return nil
+		}
+		name, index := entry.Name(), 0
+		if offset := strings.LastIndex(name, ".log.edc."); offset >= 0 {
+			suffix := name[offset+len(".log.edc."):]
+			if n, err := strconv.Atoi(suffix); err == nil && n > 0 && strconv.Itoa(n) == suffix {
+				name, index = name[:offset+4], n
+			}
+		}
+		if !strings.HasSuffix(name, ".log") {
+			return nil
+		}
+		path := filepath.Join(directory, name)
+		parts, known := families[path]
+		// Discovery never follows a log symlink; an archive that is one makes
+		// the family unreadable, as a direct lookup of that log would.
+		if known && parts == nil || entry.Type()&os.ModeSymlink != 0 && index == 0 {
+			return nil
+		}
+		info, err := entry.Info()
+		if entry.Type()&os.ModeSymlink != 0 || err != nil || !info.Mode().IsRegular() || len(parts) > logMaxKeepFiles {
+			families[path] = nil
+			return nil
+		}
+		families[path] = append(parts, historyPart{path: filepath.Join(directory, entry.Name()), info: info, index: index})
+		return nil
+	})
+}
+
+func (families historyFamilies) parts(path string) ([]historyPart, error) {
+	parts, ok := families[path]
+	if !ok {
+		return nil, os.ErrNotExist
+	}
+	if parts == nil {
+		return nil, errors.New("unreadable log family")
+	}
+	sorted := slices.Clone(parts)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].index > sorted[j].index })
+	return sorted, nil
+}
+
+// familyOf reports whether a scan covered path. A log outside the scanned
+// directories, such as defaults.log.output, is looked up on its own.
+func familyOf(families []historyFamilies, path string) ([]historyPart, bool) {
+	if len(families) == 0 || families[0] == nil {
+		return nil, false
+	}
+	parts, known := families[0][path]
+	return parts, known
+}
+
+func (families historyFamilies) modified(path string) time.Time {
+	var newest time.Time
+	for _, part := range families[path] {
+		if part.info.ModTime().After(newest) {
+			newest = part.info.ModTime()
+		}
+	}
+	return newest
+}
+
+// historyFamiliesIn scans each directory that holds one of the paths once.
+func historyFamiliesIn(paths []string) historyFamilies {
+	families := historyFamilies{}
+	scanned := map[string]bool{}
+	examined := 0
+	for _, path := range paths {
+		directory := filepath.Dir(path)
+		if scanned[directory] {
+			continue
+		}
+		scanned[directory] = true
+		_ = scanHistoryDirectory(directory, true, families, &examined, nil)
+	}
+	return families
+}
 
 // A directory the user named may itself be a symlink, such as /tmp on macOS.
 // Directories reached while walking are opened without following links so a
@@ -604,45 +719,40 @@ func walkHistoryDirectory(directory string, followLink bool, visit func(os.DirEn
 	}
 }
 
-func historyPaths(root string) ([]string, error) {
-	var paths []string
-	seen := map[string]bool{}
+// historyEntryLimit bounds the directory walk. A cron job that runs every
+// minute leaves one file per run in the default mode, about 43,000 a month.
+const historyEntryLimit = 200000
+
+// historyPaths returns the newest historyFamilyLimit families of root and one
+// level below it, with the parts that the scan found. The walk lists every
+// entry first, because directory order is not time order and a cut made while
+// walking could drop the newest runs. Each entry costs one lstat.
+func historyPaths(root string) ([]string, historyFamilies, error) {
+	families := historyFamilies{}
 	examined := 0
-	var visit func(string, bool) error
-	visit = func(directory string, descend bool) error {
-		return walkHistoryDirectory(directory, descend, func(entry os.DirEntry) error {
-			examined++
-			if examined > 10000 {
-				return errHistoryScanLimit
-			}
-			if entry.Type()&os.ModeSymlink != 0 {
-				return nil
-			}
-			if entry.IsDir() {
-				if descend {
-					return visit(filepath.Join(directory, entry.Name()), false)
-				}
-				return nil
-			}
-			name := entry.Name()
-			if offset := strings.LastIndex(name, ".log.edc."); offset >= 0 {
-				if n, err := strconv.Atoi(name[offset+len(".log.edc."):]); err == nil && n > 0 {
-					name = name[:offset+4]
-				}
-			}
-			path := filepath.Join(directory, name)
-			if strings.HasSuffix(name, ".log") && !seen[path] {
-				if len(paths) >= historyFamilyLimit {
-					return errHistoryScanLimit
-				}
-				seen[path] = true
-				paths = append(paths, path)
-			}
-			return nil
-		})
+	err := scanHistoryDirectory(root, true, families, &examined, func(directory string) error {
+		return scanHistoryDirectory(directory, false, families, &examined, nil)
+	})
+	paths := make([]string, 0, len(families))
+	modified := map[string]time.Time{}
+	for path := range families {
+		paths = append(paths, path)
+		modified[path] = families.modified(path)
 	}
-	err := visit(root, true)
-	return paths, err
+	sortHistoryNewestFirst(paths, modified)
+	if len(paths) > historyFamilyLimit {
+		paths, err = paths[:historyFamilyLimit], errHistoryScanLimit
+	}
+	return paths, families, err
+}
+
+func sortHistoryNewestFirst(paths []string, modified map[string]time.Time) {
+	sort.Slice(paths, func(i, j int) bool {
+		if a, b := modified[paths[i]], modified[paths[j]]; !a.Equal(b) {
+			return a.After(b)
+		}
+		return paths[i] > paths[j]
+	})
 }
 
 // logHistoryCache keeps parsed families between refreshes. An entry holds the
@@ -656,7 +766,10 @@ type logHistoryCacheEntry struct {
 	invalid bool
 }
 
-func collectLogHistory(paths []string, cache logHistoryCache) logHistorySnapshot {
+// collectLogHistory reads the families of paths. families holds the parts
+// that a directory scan already found; without it each path is looked up on
+// its own, which suits --file and a few named logs.
+func collectLogHistory(paths []string, cache logHistoryCache, families ...historyFamilies) logHistorySnapshot {
 	snapshot := logHistorySnapshot{}
 	unique := map[string]bool{}
 	var ordered []string
@@ -671,7 +784,15 @@ func collectLogHistory(paths []string, cache logHistoryCache) logHistorySnapshot
 			ordered = append(ordered, absolute)
 		}
 	}
-	sort.Sort(sort.Reverse(sort.StringSlice(ordered)))
+	// The byte, family, and attempt limits below stop the scan, so the newest
+	// files go first and a cut drops the oldest runs.
+	modified := map[string]time.Time{}
+	for _, path := range ordered {
+		if info, err := os.Lstat(path); err == nil {
+			modified[path] = info.ModTime()
+		}
+	}
+	sortHistoryNewestFirst(ordered, modified)
 	budget := int64(historyByteLimit)
 	visited := map[string]bool{}
 	for index, path := range ordered {
@@ -679,7 +800,13 @@ func collectLogHistory(paths []string, cache logHistoryCache) logHistorySnapshot
 			snapshot.issue(path, "limit_error")
 			break
 		}
-		parts, err := historyFamily(path)
+		var parts []historyPart
+		var err error
+		if _, known := familyOf(families, path); known {
+			parts, err = families[0].parts(path)
+		} else {
+			parts, err = historyFamily(path)
+		}
 		if err != nil {
 			if errors.Is(err, errHistoryScanLimit) {
 				snapshot.issue(path, "limit_error")

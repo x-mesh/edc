@@ -489,9 +489,9 @@ func (model duBrowser) browseLines() []string {
 func (model duBrowser) title() string {
 	current := model.current
 	if !model.color {
-		return T("du.browse.title", duNodePath(current), formatSizeShort(current.total), current.count)
+		return T("du.browse.title", duNodePath(current), formatSizeShort(current.total), current.count, model.workers)
 	}
-	text := strings.Replace(T("du.browse.title", "\x00", "\x01", current.count), "edc du", "\x02", 1)
+	text := strings.Replace(T("du.browse.title", "\x00", "\x01", current.count, model.workers), "edc du", "\x02", 1)
 	gray := func(text string) string { return model.paint(text, richGray, false) }
 	return duPhrase(text, gray, model.paint(duNodePath(current), "", true),
 		model.paint(formatSizeShort(current.total), richSizeColor(int64(current.total)), true), model.paint("edc du", richMagenta, true))

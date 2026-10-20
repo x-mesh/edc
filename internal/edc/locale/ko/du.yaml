@@ -32,7 +32,7 @@ du:
     label: "파일 시스템"
     usage: "%s 사용 / 전체 %s"
   browse:
-    title: "edc du · %s · %s · 항목 %d개"
+    title: "edc du · %s · %s · 항목 %d개 · workers %d개"
     help: "↑↓ 이동 · Enter 열기 · ← 위로 · q 종료"
     reading: "%s 읽는 중 · 디렉터리 %d개 · %s · workers %d개"
     stop_help: "q를 누르면 멈추고 읽은 만큼 보여 줍니다"

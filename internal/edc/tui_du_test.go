@@ -344,3 +344,23 @@ func TestDuBrowseModelCarriesTheWorkersAndModeOfTheScan(t *testing.T) {
 		}
 	}
 }
+
+func TestDuBrowserTitleShowsTheWorkersOfTheScan(t *testing.T) {
+	t.Setenv("COLORTERM", "truecolor")
+	scan := duScan{root: duBrowserTree()}
+	model := duBrowserOn(scan, 120, 12)
+	model.workers = 4
+	plainTitle := model.title()
+	if !strings.HasSuffix(plainTitle, " · workers 4") || !strings.HasPrefix(plainTitle, "edc du · /data · ") {
+		t.Fatalf("plain title %q", plainTitle)
+	}
+	model.color = true
+	coloredTitle := model.title()
+	if coloredTitle == plainTitle || ansi.Strip(coloredTitle) != plainTitle {
+		t.Fatalf("colored title %q does not read like the plain title %q", ansi.Strip(coloredTitle), plainTitle)
+	}
+	model.workers = 1
+	if title := model.title(); !strings.HasSuffix(ansi.Strip(title), " · workers 1") {
+		t.Fatalf("title with one worker %q", ansi.Strip(title))
+	}
+}

@@ -26,7 +26,16 @@ type historyProcessIdentity struct {
 type historyProcessName struct {
 	Name    string
 	Samples int
+	MaxRSS  float64
 }
+
+// historyProcessOrder는 프로세스 이름 목록의 정렬 기준이다. SQL에 그대로 들어가므로 아래 두 값만 쓴다.
+type historyProcessOrder string
+
+const (
+	historyProcessBySamples historyProcessOrder = "samples"
+	historyProcessByRSS     historyProcessOrder = "rss"
+)
 
 // historyProcessMetricNames는 trend로 볼 수 있는 프로세스 지표다. pid는 숫자지만 지표가 아니다.
 func historyProcessMetricNames() []string {
@@ -81,11 +90,11 @@ func historyUnfilteredRuns(db *sql.DB) (map[string]bool, error) {
 	return runs, rows.Err()
 }
 
-// historyProcessNames는 기록된 프로세스 이름을 표본이 많은 순서로 낸다. 쉼표가 든 이름은 --process에서 둘로 나뉘므로 뺀다.
-func historyProcessNames(db *sql.DB) ([]historyProcessName, error) {
-	rows, err := db.Query(`SELECT MIN(command), COUNT(*) AS samples FROM
-		(SELECT command, command_folded FROM top_process_samples ORDER BY time_ns DESC LIMIT ?)
-		WHERE instr(command, ',')=0 AND trim(command)<>'' GROUP BY command_folded ORDER BY samples DESC, command_folded LIMIT ?`,
+// historyProcessNames는 기록된 프로세스 이름을 order가 큰 순서로 낸다. 쉼표가 든 이름은 --process에서 둘로 나뉘므로 뺀다.
+func historyProcessNames(db *sql.DB, order historyProcessOrder) ([]historyProcessName, error) {
+	rows, err := db.Query(`SELECT MIN(command), COUNT(*) AS samples, COALESCE(MAX(rss_bytes), 0) AS rss FROM
+		(SELECT command, command_folded, rss_bytes FROM top_process_samples ORDER BY time_ns DESC LIMIT ?)
+		WHERE instr(command, ',')=0 AND trim(command)<>'' GROUP BY command_folded ORDER BY `+string(order)+` DESC, command_folded LIMIT ?`,
 		historyProcessNameRows, historyProcessNameLimit)
 	if err != nil {
 		return nil, err
@@ -94,7 +103,7 @@ func historyProcessNames(db *sql.DB) ([]historyProcessName, error) {
 	var names []historyProcessName
 	for rows.Next() {
 		var name historyProcessName
-		if err := rows.Scan(&name.Name, &name.Samples); err != nil {
+		if err := rows.Scan(&name.Name, &name.Samples, &name.MaxRSS); err != nil {
 			return nil, err
 		}
 		names = append(names, name)

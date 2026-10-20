@@ -30,9 +30,10 @@ const (
 )
 
 type historyTrendTarget struct {
-	kind    historyTrendTargetKind
-	value   string
-	samples int
+	kind  historyTrendTargetKind
+	value string
+	// rss는 프로세스 대상의 최대 RSS다. 목록을 이 순서로 두고 이름 옆에 보인다.
+	rss float64
 }
 
 type historyTrendLoadedMsg struct {
@@ -62,7 +63,7 @@ type historyTrendBrowser struct {
 	probeKeys map[string][]string
 }
 
-// historyTrendTargets는 고를 수 있는 대상이다. top 기록이 있으면 호스트를 맨 앞에, 그다음 표본이 많은 프로세스, 그다음
+// historyTrendTargets는 고를 수 있는 대상이다. top 기록이 있으면 호스트를 맨 앞에, 그다음 최대 RSS가 큰 프로세스, 그다음
 // 스냅샷 결과를 이름순으로 둔다.
 func historyTrendTargets(db *sql.DB) ([]historyTrendTarget, error) {
 	var targets []historyTrendTarget
@@ -72,12 +73,12 @@ func historyTrendTargets(db *sql.DB) ([]historyTrendTarget, error) {
 	}
 	if top == 1 {
 		targets = append(targets, historyTrendTarget{kind: historyTrendHost})
-		names, err := historyProcessNames(db)
+		names, err := historyProcessNames(db, historyProcessByRSS)
 		if err != nil {
 			return nil, err
 		}
 		for _, name := range names {
-			targets = append(targets, historyTrendTarget{kind: historyTrendProcess, value: name.Name, samples: name.Samples})
+			targets = append(targets, historyTrendTarget{kind: historyTrendProcess, value: name.Name, rss: name.MaxRSS})
 		}
 	}
 	has, err := historyHasSnapshots(db)
@@ -360,8 +361,8 @@ func (model historyTrendBrowser) targetLines(height int) []string {
 		target := model.targets[index]
 		label := model.targetLabel(target)
 		count := ""
-		if target.samples > 0 {
-			count = fmt.Sprint(target.samples)
+		if target.rss > 0 {
+			count = formatSizeShort(uint64(target.rss))
 		}
 		space := historyTrendTargetWidth - 1 - ansi.StringWidth(count)
 		label = ansi.Truncate(label, max(1, space-1), "…")

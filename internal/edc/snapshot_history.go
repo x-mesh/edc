@@ -183,7 +183,9 @@ func runHistoryExport(args []string) int {
 	if err := set.Parse(args); err != nil {
 		return 2
 	}
-	if set.NArg() > 1 || *runIDValue == "" || *output == "" {
+	// --run이 없으면 터미널에서 기록된 스냅샷을 고르게 한다. 보고서를 stdout에 쓰는 경우도 화면이 끝난 뒤에 쓴다.
+	_, canPrompt := historyCanPrompt()
+	if set.NArg() > 1 || (*runIDValue == "" && !canPrompt) || *output == "" {
 		fmt.Fprintln(os.Stderr, T("history.usage"))
 		return 2
 	}
@@ -205,6 +207,14 @@ func runHistoryExport(args []string) int {
 		return 1
 	}
 	defer db.Close()
+	if *runIDValue == "" {
+		id, ok := promptHistoryExport(db, args)
+		if !ok {
+			fmt.Fprintln(os.Stderr, T("history.usage"))
+			return 2
+		}
+		*runIDValue = id
+	}
 	report, err := exportSnapshot(db, *runIDValue)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)

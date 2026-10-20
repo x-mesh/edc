@@ -47,6 +47,15 @@ history:
     one_snapshot: "この範囲のスナップショットは 1 件のみです。もう 1 件記録すると比較します"
     no_change: "変化したディレクトリはありません"
     total: "全体 %s → %s (%s)"
+  prompt:
+    top_source: "top · host sample"
+    source_title: "どの記録の推移を見ますか?"
+    source_label: "記録"
+    metric_title: "どの指標を見ますか?"
+    metric_label: "指標"
+    run_title: "どのスナップショットを書き出しますか?"
+    run_label: "スナップショット"
+    run_item: "%s  %s  結果 %d 件"
 command:
   history:
     notes:

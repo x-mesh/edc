@@ -47,6 +47,15 @@ history:
     one_snapshot: "이 범위의 스냅샷이 하나뿐입니다. 하나 더 기록하면 비교합니다"
     no_change: "바뀐 디렉터리가 없습니다"
     total: "전체 %s → %s (%s)"
+  prompt:
+    top_source: "top · host sample"
+    source_title: "어떤 기록의 추이를 볼까요?"
+    source_label: "기록"
+    metric_title: "어떤 지표를 볼까요?"
+    metric_label: "지표"
+    run_title: "어떤 스냅샷을 꺼낼까요?"
+    run_label: "스냅샷"
+    run_item: "%s  %s  결과 %d개"
 command:
   history:
     notes:

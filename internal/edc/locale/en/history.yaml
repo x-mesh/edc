@@ -47,6 +47,15 @@ history:
     one_snapshot: "one snapshot in this range; record another to compare"
     no_change: "no directory changed"
     total: "total %s → %s (%s)"
+  prompt:
+    top_source: "top · host samples"
+    source_title: "which records do you want to trend?"
+    source_label: "records"
+    metric_title: "which metric?"
+    metric_label: "metric"
+    run_title: "which snapshot do you want to export?"
+    run_label: "snapshot"
+    run_item: "%s  %s  %d results"
 command:
   history:
     notes:

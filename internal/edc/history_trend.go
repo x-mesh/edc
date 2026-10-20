@@ -70,8 +70,12 @@ func runHistoryTrend(args []string) int {
 		fmt.Fprintln(os.Stderr, T("history.error.trend_by", strings.Join(historyTrendPeriods, ", ")))
 		return 2
 	}
-	if options.metric == "" || (options.probe == "" && !historyHostMetric(options.metric)) {
-		fmt.Fprintln(os.Stderr, T("history.error.trend_metric", strings.Join(historyMetricNames(historyHostMetrics), ", ")))
+	metricError := T("history.error.trend_metric", strings.Join(historyMetricNames(historyHostMetrics), ", "))
+	// --metric이 없으면 터미널에서 기록된 지표를 고르게 한다. JSON을 stdout에 쓸 때는 선택 화면과 섞이므로 묻지 않는다.
+	_, canPrompt := historyCanPrompt()
+	askMetric := options.metric == "" && canPrompt && *jsonPath != "-"
+	if (options.metric == "" && !askMetric) || (options.metric != "" && options.probe == "" && !historyHostMetric(options.metric)) {
+		fmt.Fprintln(os.Stderr, metricError)
 		return 2
 	}
 	path := set.Arg(0)
@@ -91,6 +95,10 @@ func runHistoryTrend(args []string) int {
 		return 1
 	}
 	defer db.Close()
+	if askMetric && !promptHistoryTrend(db, &options, args) {
+		fmt.Fprintln(os.Stderr, metricError)
+		return 2
+	}
 	output := io.Writer(os.Stdout)
 	var file *os.File
 	if *jsonPath != "" && *jsonPath != "-" {

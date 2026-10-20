@@ -213,8 +213,8 @@ func TestHistoryWritersOpenTogetherWhileAddingTables(t *testing.T) {
 		}
 	}
 	db.Close()
-	errs := make(chan error, 4)
-	for range 4 {
+	errs := make(chan error, 16)
+	for range 16 {
 		go func() {
 			db, err := openHistoryDB(path, true)
 			if err == nil {
@@ -223,7 +223,7 @@ func TestHistoryWritersOpenTogetherWhileAddingTables(t *testing.T) {
 			errs <- err
 		}()
 	}
-	for range 4 {
+	for range 16 {
 		if err := <-errs; err != nil {
 			t.Fatalf("a writer failed while another added the tables: %v", err)
 		}

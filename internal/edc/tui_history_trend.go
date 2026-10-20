@@ -58,6 +58,8 @@ type historyTrendBrowser struct {
 	table          viewport.Model
 	// now는 RSS 변화의 기본 범위(최근 7일)의 끝이다.
 	now time.Time
+	// probeKeys는 스냅샷 결과마다 기록된 지표다. 화면을 그릴 때마다 DB를 읽지 않게 처음 읽은 값을 둔다.
+	probeKeys map[string][]string
 }
 
 // historyTrendTargets는 고를 수 있는 대상이다. top 기록이 있으면 호스트를 맨 앞에, 그다음 표본이 많은 프로세스, 그다음
@@ -91,7 +93,7 @@ func historyTrendTargets(db *sql.DB) ([]historyTrendTarget, error) {
 
 func newHistoryTrendBrowser(db *sql.DB, targets []historyTrendTarget, options historyTrendOptions, location *time.Location) historyTrendBrowser {
 	model := historyTrendBrowser{db: db, location: location, options: options, targets: targets, width: 80, height: 24,
-		color: os.Getenv("NO_COLOR") == "", table: viewport.New(), now: time.Now(), metrics: map[string]string{"host": "cpu_pct", "process": "rss_bytes"}}
+		color: os.Getenv("NO_COLOR") == "", table: viewport.New(), now: time.Now(), probeKeys: map[string][]string{}, metrics: map[string]string{"host": "cpu_pct", "process": "rss_bytes"}}
 	// 명령에 준 --process나 --probe가 목록에 없으면 맨 앞에 넣어 그 대상에서 시작한다.
 	if options.process.active() || options.probe != "" {
 		want := historyTrendTarget{kind: historyTrendProcess, value: options.process.String()}
@@ -137,7 +139,11 @@ func (model historyTrendBrowser) metricNames() []string {
 	case historyTrendProcess:
 		return historyProcessMetricNames()
 	default:
+		if keys, ok := model.probeKeys[target.value]; ok {
+			return keys
+		}
 		keys, _ := historyTrendKeys(model.db, target.value)
+		model.probeKeys[target.value] = keys
 		return keys
 	}
 }

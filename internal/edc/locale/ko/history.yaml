@@ -14,7 +14,7 @@ history:
     default_path: "기본 DB 경로를 찾을 수 없습니다. --write <path>를 지정하세요"
     path: "DB 파일 경로를 지정하세요. JSON 출력은 DB나 journal 파일을 덮어쓸 수 없습니다"
     regular: "DB 경로는 일반 파일이어야 합니다"
-    schema: "지원하는 edc history DB가 아닙니다(schema version 1 또는 2)"
+    schema: "지원하는 edc history DB가 아닙니다(schema version 1)"
     wal: "이 DB에서 SQLite WAL 모드를 사용할 수 없습니다"
     queue: "기록 큐가 가득 차 관측을 중단합니다"
     write: "기록 실패: %v"

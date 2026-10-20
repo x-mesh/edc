@@ -1327,7 +1327,7 @@ host 지표와 core별 CPU, 지원 여부, 실제 관측 구간, 당시 process 
 
 WAL을 사용하므로 기록 중에도 조회할 수 있습니다. DB는 로컬 파일시스템에 둡니다. 외부 SQLite 도구로 `runs`, `top_samples`, `top_process_samples`도 조회할 수 있습니다. 숫자 지표는 column, cgroup·eBPF 등 상세 정보는 `payload` JSON에 보존합니다. 스냅샷 기록은 `snapshot_results`, `snapshot_metrics`, `du_dirs`에 들어갑니다. 조회는 기존 DB를 읽으며 생성이나 migration을 하지 않습니다. 다른 DB와 지원하지 않는 schema version은 거부합니다.
 
-DB schema는 버전 2입니다. `top -w`나 `snapshot -w`가 버전 1 DB를 열면 스냅샷 표를 추가하고 버전을 2로 올립니다. top 기록은 그대로 남습니다. 이 변경 이전의 edc는 버전 2 DB를 열지 못하므로, 같은 DB에 기록하는 모든 호스트와 cron의 edc를 함께 업데이트하세요. JSON 출력은 DB나 journal 파일을 덮어쓸 수 없습니다.
+DB schema는 버전 1을 유지합니다. `top -w`나 `snapshot -w`가 스냅샷 표가 없는 DB를 열면 그 표만 추가하고 다른 것은 바꾸지 않습니다. top 기록은 그대로 남고, 이전 edc도 스냅샷 표를 무시한 채 같은 DB를 계속 읽고 씁니다. JSON 출력은 DB나 journal 파일을 덮어쓸 수 없습니다.
 
 ## Top process 필터
 

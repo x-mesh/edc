@@ -14,7 +14,7 @@ history:
     default_path: "The default database path is unavailable; specify --write <path>"
     path: "Use a database file path; JSON output must not overwrite the database or its journal files"
     regular: "The database path must be a regular file"
-    schema: "Not a supported edc history database (schema version 1 or 2)"
+    schema: "Not a supported edc history database (schema version 1)"
     wal: "Cannot enable SQLite WAL mode on this database"
     queue: "The recording queue is full; stopping observation"
     write: "Recording failed: %v"

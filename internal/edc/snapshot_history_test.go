@@ -121,7 +121,7 @@ func TestSnapshotExportNamesTheWrongRun(t *testing.T) {
 	}
 }
 
-// 이전 버전 edc가 만든 DB는 쓰기로 열 때 v2로 오르고 top 기록은 그대로다. 읽기로 열면 파일을 바꾸지 않는다.
+// 이전 edc가 만든 DB는 쓰기로 열 때 스냅샷 표만 더하고 버전 1을 유지한다. 읽기로 열면 파일을 바꾸지 않는다.
 func TestHistoryMigratesAVersion1Database(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "old.db")
 	db, err := sql.Open("sqlite", path)
@@ -162,8 +162,12 @@ func TestHistoryMigratesAVersion1Database(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer migrated.Close()
-	if version := snapshotHistoryCount(t, migrated, "PRAGMA user_version"); version != historySchemaVersion {
-		t.Fatalf("user_version = %d", version)
+	// 이전 edc는 application_id와 user_version 1만 확인한다. 둘이 그대로여야 이전 top -w가 이 DB를 계속 연다.
+	if version := snapshotHistoryCount(t, migrated, "PRAGMA user_version"); version != 1 {
+		t.Fatalf("user_version = %d; an earlier edc opens only version 1", version)
+	}
+	if application := snapshotHistoryCount(t, migrated, "PRAGMA application_id"); application != historyApplicationID {
+		t.Fatalf("application_id = %d", application)
 	}
 	if runs := snapshotHistoryCount(t, migrated, "SELECT count(*) FROM runs"); runs != 2 {
 		t.Fatalf("runs = %d, the old top run must stay", runs)
@@ -192,5 +196,36 @@ func TestSnapshotNamesEachDuPathWhenThereAreSeveral(t *testing.T) {
 	var paths snapshotPaths
 	if err := paths.Set(" "); err == nil {
 		t.Error("an empty --du was accepted")
+	}
+}
+
+// 두 writer가 스냅샷 표가 없는 DB를 동시에 처음 열어도 둘 다 열려야 한다. 늦은 쪽이 표를 다시 만들려다 실패하면 cron의 top -w나
+// snapshot -w가 그 회차를 잃는다.
+func TestHistoryWritersOpenTogetherWhileAddingTables(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "old.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, statement := range append(historyV1Statements(), fmt.Sprintf("PRAGMA application_id=%d", historyApplicationID), "PRAGMA user_version=1") {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	db.Close()
+	errs := make(chan error, 4)
+	for range 4 {
+		go func() {
+			db, err := openHistoryDB(path, true)
+			if err == nil {
+				db.Close()
+			}
+			errs <- err
+		}()
+	}
+	for range 4 {
+		if err := <-errs; err != nil {
+			t.Fatalf("a writer failed while another added the tables: %v", err)
+		}
 	}
 }

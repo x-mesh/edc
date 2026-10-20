@@ -1415,7 +1415,7 @@ Host samples include the existing numeric top metrics, per-core CPU values, supp
 
 The database uses WAL so you can query while recording. Keep it on a local filesystem. External SQLite tools can inspect `runs`, `top_samples`, and `top_process_samples`; numeric fields are columns and `payload` retains JSON details, including cgroup/eBPF data. Snapshot records use `snapshot_results`, `snapshot_metrics`, and `du_dirs`. `history` opens existing databases for reading and does not create or migrate them. Unrelated databases and unsupported schema versions are rejected.
 
-The database schema is version 2. When `top -w` or `snapshot -w` opens a version 1 database, edc adds the snapshot tables and sets version 2. The top records stay. An edc release before this change cannot open a version 2 database. Update edc on every host or cron job that writes the same database. JSON output cannot overwrite the database or its journal files.
+The database schema stays version 1. When `top -w` or `snapshot -w` opens a database without the snapshot tables, edc adds them and changes nothing else. The top records stay, and an earlier edc still reads and writes the same database; it ignores the snapshot tables. JSON output cannot overwrite the database or its journal files.
 
 ## Filter processes in top
 

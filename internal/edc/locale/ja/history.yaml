@@ -14,7 +14,7 @@ history:
     default_path: "既定の DB path を取得できません。--write <path> を指定してください"
     path: "DB の file path を指定してください。JSON は DB や journal を上書きできません"
     regular: "DB path は通常の file である必要があります"
-    schema: "対応する edc history DB ではありません (schema version 1 または 2)"
+    schema: "対応する edc history DB ではありません (schema version 1)"
     wal: "この DB で SQLite WAL mode を使用できません"
     queue: "記録 queue が満杯のため観測を停止します"
     write: "記録に失敗: %v"

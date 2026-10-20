@@ -22,6 +22,8 @@ type logHistoryDeletion struct {
 	// Shared counts selected runs kept because their file also holds a run that
 	// is not selected; Running counts selected runs whose log is still locked.
 	Shared, Running int
+	// deleted holds the runs that execute removed, for the daily summary.
+	deleted []logHistoryAttempt
 }
 
 type logHistoryDeleteFamily struct {
@@ -125,6 +127,7 @@ func (plan logHistoryDeletion) execute() (deleted logHistoryDeletion, err error)
 			continue
 		}
 		deleted.Runs += family.runs
+		deleted.deleted = append(deleted.deleted, rows...)
 		if removeErr := os.Remove(family.path + ".lock"); removeErr != nil && !os.IsNotExist(removeErr) {
 			err = errors.Join(err, removeErr)
 		}

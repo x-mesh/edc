@@ -38,6 +38,8 @@ cli:
     host_failed: "edc did not read the system information: %v"
     public_failed: "the public network lookup failed: %v"
   log_history:
+    trend: "Last 14 days %s  %d runs · %s"
+    stats_unavailable: "Daily summary unavailable (%s)."
     index_unavailable: "History index unavailable (%s); reading the log files directly."
     index_building: "Building the history index (%d of %d logs); reading the log files directly."
     index_corrupt: "The history index was damaged and was moved to %s; it is built again on the next run."
@@ -142,6 +144,7 @@ cli:
       scope_container: "container %s · %d samples"
       scope_exec: "docker exec in %s · %d samples"
   log_prune:
+    stats_failed: "Could not save the daily summary (%s); the logs were deleted anyway."
     dry_plan: "Dry run: would delete %d runs in %d files (%s) under %s"
     dry_plan_total: "Dry run: would delete %d runs in %d files (%s)"
     dry_note: "Nothing was deleted. Run again without --dry-run to delete."

@@ -109,6 +109,7 @@ func loadLogHistory(options logHistoryOptions, cache logHistoryCache) (logHistor
 		}
 		snapshot, notice, ok := loadIndexedHistory(root, extra, cache.indexState())
 		if ok {
+			attachLogHistoryArchive(&snapshot, root)
 			return snapshot, nil
 		}
 		if notice != "" {
@@ -135,7 +136,21 @@ func loadLogHistory(options logHistoryOptions, cache logHistoryCache) (logHistor
 		snapshot.issue(root, "limit_error")
 	}
 	snapshot.Notices = notices
+	if options.Directory == "" {
+		attachLogHistoryArchive(&snapshot, root)
+	}
 	return snapshot, nil
+}
+
+// attachLogHistoryArchive adds the summaries of the trend window. A stats file
+// that cannot be read only hides the archived days, with one notice.
+func attachLogHistoryArchive(snapshot *logHistorySnapshot, root string) {
+	archive, err := loadLogHistoryArchive(root, historyTrendStart(time.Now()))
+	if err != nil {
+		snapshot.Notices = append(snapshot.Notices, T("cli.log_history.stats_unavailable", reportIdentityValue(firstLine(err.Error()))))
+		return
+	}
+	snapshot.Archive = archive
 }
 
 type logHistoryGroup struct {
@@ -144,6 +159,7 @@ type logHistoryGroup struct {
 	Rows            []logHistoryAttempt
 	Failed, Unknown int
 	Running         int
+	Archive         []logHistoryDay
 }
 
 func logHistoryGroups(snapshot logHistorySnapshot, options logHistoryOptions) ([]logHistoryGroup, int) {
@@ -159,7 +175,7 @@ func logHistoryGroups(snapshot logHistorySnapshot, options logHistoryOptions) ([
 		}
 		group := indexed[row.Key]
 		if group == nil {
-			group = &logHistoryGroup{Key: row.Key, Representative: row}
+			group = &logHistoryGroup{Key: row.Key, Representative: row, Archive: snapshot.Archive[row.Key]}
 			indexed[row.Key] = group
 		}
 		if (group.Representative.Display == "name" || group.Representative.Display == "unknown") && row.Display != "name" && row.Display != "unknown" {
@@ -237,7 +253,11 @@ func historyRows(group logHistoryGroup, options logHistoryOptions) []logHistoryA
 }
 
 func printHistoryGroup(output io.Writer, group logHistoryGroup, options logHistoryOptions) {
-	fmt.Fprintf(output, "%s\nkey %s\n%s\n\n", historyCommand(group.Representative), group.Key, T("cli.log_history.time_note"))
+	fmt.Fprintf(output, "%s\nkey %s\n%s\n", historyCommand(group.Representative), group.Key, T("cli.log_history.time_note"))
+	if trend := historyTrend(group, time.Now(), false); trend != "" {
+		fmt.Fprintln(output, trend)
+	}
+	fmt.Fprintln(output)
 	rows := historyRows(group, options)
 	for _, row := range rows {
 		exit := "—"

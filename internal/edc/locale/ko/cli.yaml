@@ -38,6 +38,8 @@ cli:
     host_failed: "system 정보를 읽지 못했습니다: %v"
     public_failed: "public network 조회 실패: %v"
   log_history:
+    trend: "최근 14일 %s  실행 %d · %s"
+    stats_unavailable: "일 단위 요약을 읽을 수 없습니다(%s)."
     index_unavailable: "이력 인덱스를 쓸 수 없어(%s) 로그 파일을 직접 읽습니다."
     index_building: "이력 인덱스를 만드는 중이라(로그 %d/%d개) 로그 파일을 직접 읽습니다."
     index_corrupt: "이력 인덱스가 손상되어 %s로 옮겼습니다. 다음 실행에서 다시 만듭니다."
@@ -142,6 +144,7 @@ cli:
       scope_container: "컨테이너 %s · 표본 %d개"
       scope_exec: "컨테이너 %s의 docker exec · 표본 %d개"
   log_prune:
+    stats_failed: "일 단위 요약을 저장하지 못했습니다(%s). 로그는 지웠습니다."
     dry_plan: "[dry-run] %[4]s 아래 실행 %[1]d건, 파일 %[2]d개(%[3]s)를 지울 예정입니다"
     dry_plan_total: "[dry-run] 실행 %d건, 파일 %d개(%s)를 지울 예정입니다"
     dry_note: "아무것도 지우지 않았습니다. 지우려면 --dry-run 없이 다시 실행하세요."

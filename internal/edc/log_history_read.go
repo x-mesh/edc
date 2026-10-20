@@ -131,6 +131,8 @@ type logHistorySnapshot struct {
 	// not be used. Unlike Issues they leave the results whole and the exit code
 	// alone.
 	Notices []string
+	// Archive holds the daily summaries of runs that prune deleted, by key.
+	Archive map[string][]logHistoryDay
 }
 
 func (snapshot *logHistorySnapshot) issue(path, kind string) {

@@ -294,6 +294,13 @@ func runLogPrune(args []string, streams logStreams) int {
 		}
 	}
 	deleted, err := plan.execute()
+	// The summary is written for the runs that were really removed, so a log
+	// that changed and was kept is not counted twice later.
+	if options.history.Directory == "" && options.history.File == "" {
+		if statsErr := saveLogHistoryRollup(defaultLogDirectory(), deleted.deleted); statsErr != nil {
+			fmt.Fprintln(streams.stderr, T("cli.log_prune.stats_failed", reportIdentityValue(firstLine(statsErr.Error()))))
+		}
+	}
 	fmt.Fprintln(streams.stdout, T("cli.log_history.delete_done", deleted.Runs, deleted.Files, formatSizeShort(deleted.Bytes)))
 	if skipped := deleted.Shared + deleted.Running; skipped > 0 {
 		fmt.Fprintln(streams.stdout, T("cli.log_history.delete_skipped", skipped))

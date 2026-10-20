@@ -3,6 +3,7 @@ package edc
 import (
 	"context"
 	"errors"
+	"flag"
 	"fmt"
 	"io/fs"
 	"os"
@@ -22,7 +23,7 @@ const (
 	snapshotPressureWarn = 10
 )
 
-const snapshotUsage = "edc snapshot [--output <file|->] [--since 6h] [--force] [--du <path>] [--timeout 15s] [--redact]"
+const snapshotUsage = "edc snapshot [--output <file|->] [--write [db]] [--since 6h] [--force] [--du <path>]... [--timeout 15s] [--redact]"
 
 // runSnapshot은 host 상태를 report 하나로 저장한다. 장애 전후에 한 번씩 찍어 edc report diff로 비교하려는 것이다.
 // 공인 IP 조회처럼 host 밖으로 나가는 요청은 하지 않는다.
@@ -33,9 +34,13 @@ func runSnapshot(args []string, version string) int {
 	output := set.String("output", "", T("command.snapshot.option.output"))
 	since := set.Duration("since", 6*time.Hour, T("command.snapshot.option.since"))
 	force := set.Bool("force", false, T("command.snapshot.option.force"))
-	duPath := set.String("du", "", T("command.snapshot.option.du"))
+	var duPaths snapshotPaths
+	set.Var(&duPaths, "du", T("command.snapshot.option.du"))
+	writePath := set.String("write", "", T("command.snapshot.option.write"))
+	set.StringVar(writePath, "w", "", T("command.snapshot.option.write"))
 	set.DurationVar(&options.timeout, "timeout", options.timeout, T("option.timeout"))
 	set.BoolVar(&options.redact, "redact", options.redact, T("option.redact"))
+	args, defaultWrite := normalizeTopWriteArgs(args, set)
 	if err := set.Parse(args); err != nil {
 		return 2
 	}
@@ -43,14 +48,42 @@ func runSnapshot(args []string, version string) int {
 		fmt.Fprintln(os.Stderr, T("cli.usage", snapshotUsage))
 		return 2
 	}
+	emptyWrite := false
+	set.Visit(func(option *flag.Flag) {
+		if (option.Name == "write" || option.Name == "w") && option.Value.String() == "" && !defaultWrite {
+			emptyWrite = true
+		}
+	})
+	if emptyWrite {
+		fmt.Fprintln(os.Stderr, T("history.error.path"))
+		return 2
+	}
+	if defaultWrite {
+		path, err := defaultHistoryPath()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 2
+		}
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			fmt.Fprintln(os.Stderr, T("history.error.write", err))
+			return 1
+		}
+		*writePath = path
+	}
+	record := *writePath != ""
 	started := time.Now()
 	path := *output
-	if path == "" {
+	// --write만 주면 DB에만 기록한다. 파일도 남기려면 --output을 함께 준다.
+	if path == "" && !record {
 		hostname, _ := os.Hostname()
 		path = snapshotDefaultPath(hostname, started, options.redact)
 	}
+	if record && sameHistoryPath(*writePath, path) {
+		fmt.Fprintln(os.Stderr, T("history.error.path"))
+		return 2
+	}
 	// 수집은 timeout까지 걸릴 수 있으므로 쓰지 못할 경로는 먼저 거른다. 쓸 때 O_EXCL로 다시 막는다.
-	if path != "-" {
+	if path != "" && path != "-" {
 		if err := checkSnapshotPath(path, *force); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			return 2
@@ -59,28 +92,46 @@ func runSnapshot(args []string, version string) int {
 	ctx, cancel, deadline := probeContext(options.timeout)
 	defer cancel()
 	defer deadline()
-	results := collectSnapshot(ctx, snapshotSections(*since, *duPath, options.timeout), snapshotGrace)
+	results := collectSnapshot(ctx, snapshotSections(*since, duPaths, options.timeout), snapshotGrace)
 	sortResults(results)
 	report := buildReport(version, started, map[string]interface{}{"since": since.String()}, results, options.redact)
+	if record {
+		if err := recordSnapshot(*writePath, report, *since, duPaths); err != nil {
+			fmt.Fprintln(os.Stderr, T("history.error.write", err))
+			return 1
+		}
+	}
 	if path == "-" {
 		if err := writeJSON(os.Stdout, report); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			return 2
 		}
+		if record {
+			fmt.Fprintln(os.Stderr, T("snapshot.recorded", report.Run.ID, *writePath))
+		}
 		return exitCode(report.Results)
 	}
-	if err := writeSnapshotFile(path, report, *force); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return 2
-	}
 	style := newTextStyle(richEnabled(os.Stdout))
-	fmt.Fprintln(os.Stdout, style.phrase("snapshot.saved", path, ""))
+	if path != "" {
+		if err := writeSnapshotFile(path, report, *force); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 2
+		}
+		fmt.Fprintln(os.Stdout, style.phrase("snapshot.saved", path, ""))
+	}
+	if record {
+		fmt.Fprintln(os.Stdout, T("snapshot.recorded", report.Run.ID, *writePath))
+	}
 	if style.color {
 		fmt.Fprintln(os.Stdout, richResultCounts(report.Results, style.width))
 	} else {
 		fmt.Fprintln(os.Stdout, summaryLine(report.Results))
 	}
-	fmt.Fprintln(os.Stdout, snapshotDiffHint(style, path))
+	if path != "" {
+		fmt.Fprintln(os.Stdout, snapshotDiffHint(style, path))
+	} else {
+		fmt.Fprintln(os.Stdout, T("snapshot.export_hint", report.Run.ID))
+	}
 	return exitCode(report.Results)
 }
 
@@ -96,7 +147,7 @@ func snapshotDiffHint(style textStyle, path string) string {
 
 // snapshotSections는 각 명령이 쓰는 수집기와 판정을 그대로 부른다. 판정 기준이 명령과 snapshot에서 갈라지지 않게 한다.
 // du는 경로 아래를 모두 읽어 오래 걸리므로 --du로 경로를 줄 때만 넣는다.
-func snapshotSections(since time.Duration, duPath string, timeout time.Duration) []snapshotSection {
+func snapshotSections(since time.Duration, duPaths []string, timeout time.Duration) []snapshotSection {
 	sections := []snapshotSection{
 		{name: "info.host", run: func(context.Context) []Result {
 			started := time.Now()
@@ -151,9 +202,13 @@ func snapshotSections(since time.Duration, duPath string, timeout time.Duration)
 			return evaluateChanges(ctx, sources, since)
 		}, ids: func() []string { return []string{"changes.packages", "changes.etc", "changes.services"} }},
 	}
-	if duPath != "" {
-		sections = append(sections, snapshotSection{name: duProbeID, run: func(ctx context.Context) []Result {
-			return []Result{duSnapshotResult(ctx, duPath, timeout)}
+	// 경로가 둘 이상이면 결과 이름에 경로를 붙여 report diff가 경로끼리 맞추게 한다. 시간 제한의 skip도 이 이름으로 남는다.
+	for _, duPath := range duPaths {
+		probe := snapshotDuProbe(duPaths, duPath)
+		sections = append(sections, snapshotSection{name: probe, run: func(ctx context.Context) []Result {
+			result := duSnapshotResult(ctx, duPath, timeout)
+			result.Probe = probe
+			return []Result{result}
 		}})
 	}
 	return sections

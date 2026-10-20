@@ -449,7 +449,8 @@ command:
       output: "report 파일, -는 stdout"
       since: "events와 changes가 볼 기간 (기본 6h)"
       force: "이미 있는 출력 파일을 바꿈"
-      du: "이 경로의 edc du 결과도 저장 (Linux와 macOS)"
+      du: "이 경로의 edc du 결과도 저장, 여러 번 지정 가능"
+      write: "history DB에도 기록, 값이 없으면 기본 DB"
     notes:
       - "info, listen, audit, events, changes 결과를 report 하나에 저장합니다."
       - "파일 권한은 0600입니다. 계정, sudo 규칙, process 이름이 들어갑니다."
@@ -557,7 +558,8 @@ command:
   history:
     summary: "저장한 resource 관측 이력 검색"
     sub:
-      list: "edc top -w로 기록한 실행 목록"
+      list: "top -w와 snapshot -w로 기록한 실행"
+      export: "기록한 스냅샷을 보고서 파일로"
       top: "host sample, 최신순"
       process: "process sample, 최신순"
       log: "edc log가 기록한 명령 실행"

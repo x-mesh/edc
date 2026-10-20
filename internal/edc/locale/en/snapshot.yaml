@@ -22,4 +22,8 @@ snapshot:
   not_dir: "%s is not a directory"
   exists: "%s already exists, add --force to replace it"
   saved: "saved %s"
+  recorded: "recorded snapshot %s in %s"
+  export_hint: "to compare it, export it: edc history export --run %s --output <file>"
+  error:
+    du_empty: "--du needs a path"
   diff_hint: "compare with: edc report diff <before> %s"

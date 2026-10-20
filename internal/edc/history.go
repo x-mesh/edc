@@ -42,7 +42,7 @@ func runHistory(args []string) int {
 	if args[0] == "log" {
 		return runLogWithStreams(append([]string{"history"}, args[1:]...), logStreams{stdin: os.Stdin, stdout: os.Stdout, stderr: os.Stderr})
 	}
-	if args[0] != "list" && args[0] != "top" && args[0] != "process" {
+	if args[0] != "list" && args[0] != "top" && args[0] != "process" && args[0] != "export" {
 		fmt.Fprintln(os.Stderr, T("history.usage"))
 		return 2
 	}
@@ -50,6 +50,9 @@ func runHistory(args []string) int {
 	if len(args) > 1 && (args[1] == "--help" || args[1] == "-h") {
 		printCommandHelp(os.Stdout, "history")
 		return 0
+	}
+	if command == "export" {
+		return runHistoryExport(args[1:])
 	}
 	set := newFlagSet("history " + command)
 	set.SetOutput(os.Stderr)
@@ -280,7 +283,7 @@ func writeHistory(output io.Writer, db *sql.DB, command string, options historyO
 	if !jsonOutput {
 		header := "RUN\tTIME\tHOST\tCPU%\tMEM%\tLOAD\tPROCESS FILTER"
 		if command == "list" {
-			header = "RUN\tSTART\tEND\tHOST\tSTATUS\tSAMPLES\tINTERVAL\tPROCESS FILTER\tINTERFACES"
+			header = "RUN\tCOMMAND\tSTART\tEND\tHOST\tSTATUS\tSAMPLES\tINTERVAL\tPROCESS FILTER\tINTERFACES"
 		} else if command == "process" {
 			header = "RUN\tTIME\tPID\tSTARTED\tCPU%\tRSS\tCOMMAND"
 		}
@@ -309,14 +312,21 @@ func writeHistory(output io.Writer, db *sql.DB, command string, options historyO
 				return err
 			}
 			run.Status, run.SampleCount = status, count
+			// 스냅샷 보고서는 history export로 꺼낸다. 목록에는 실행 정보만 둔다.
+			run.Report = nil
 			end := "-"
 			if ended.Valid {
 				at := time.Unix(0, ended.Int64).UTC()
 				run.EndedAt, end = &at, at.Format(time.RFC3339Nano)
 			}
 			value = run
-			line = fmt.Sprintf("%s\t%s\t%s\t%s\t%s\t%d\t%gs\t%s\t%s", run.ID, run.StartedAt.Format(time.RFC3339Nano), end, historyTerminalText(run.Hostname), historyTerminalText(run.Status), count, run.IntervalS, historyTerminalText(run.Process), historyTerminalText(emptyAs(run.Interfaces, "all")))
-			paints = []historyPaint{nil, style.dim, style.dim, nil, historyStatusPaint(style, run.Status), nil, historyUnitPaint(style)}
+			interval, process, interfaces := fmt.Sprintf("%gs", run.IntervalS), historyTerminalText(run.Process), historyTerminalText(emptyAs(run.Interfaces, "all"))
+			// 스냅샷에는 관측 간격과 필터가 없다. 결과 수가 SAMPLES 칸에 들어간다.
+			if run.Command == historySnapshotCommand {
+				interval, process, interfaces = "-", "-", "-"
+			}
+			line = fmt.Sprintf("%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\t%s", run.ID, historyTerminalText(run.Command), run.StartedAt.Format(time.RFC3339Nano), end, historyTerminalText(run.Hostname), historyTerminalText(run.Status), count, interval, process, interfaces)
+			paints = []historyPaint{nil, nil, style.dim, style.dim, nil, historyStatusPaint(style, run.Status), nil, historyUnitPaint(style)}
 		case "top":
 			var sample historyTopSample
 			if err := rows.Scan(&payload); err != nil {

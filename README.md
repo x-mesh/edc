@@ -1015,6 +1015,7 @@ edc snapshot                              # ./edc-snapshot-<host>-<UTC time>.jso
 sudo edc snapshot --output before.json    # root reads all audit and event sources
 sudo edc snapshot --output after.json
 sudo edc snapshot --du /var --output after.json   # also edc du of /var (Linux and macOS)
+sudo edc snapshot -w --du /var --du /home         # record in the history database, no file
 sudo edc report diff before.json after.json
 edc snapshot --since 2h --output -        # only the report JSON to stdout
 ```
@@ -1032,7 +1033,7 @@ The report holds these results.
 | `audit.*` | the `edc audit` checks |
 | `events.*` | the `edc events` signals in the `--since` window (default 6h) |
 | `changes.*` | the `edc changes` sources in the `--since` window |
-| `du.scan` | only with `--du <path>`: `edc du` of that path, with the largest directories for `report diff` |
+| `du.scan` | only with `--du <path>`: `edc du` of that path, with the largest directories for `report diff`. With two or more paths, each result is `du.scan:<path>`. |
 
 A large tree can need a longer `--timeout` for `--du`. At the limit, the `du.scan` result is partial, and `report diff` does not compare its directories.
 
@@ -1045,6 +1046,25 @@ The file has mode 0600 because it holds account names, sudo rules, and process n
 `--redact` hides the host name, the home path, and IP addresses only. It also removes the host name from the default file name. Account names, sudo rules, and process names stay in the report.
 
 After the file write, edc prints the path, the result counts, and a `report diff` hint. The exit code is `1` if a result is `fail`, and `0` otherwise. Usage errors and write errors return `2`.
+
+### Record snapshots in the history database
+
+`--write [path]` (`-w [path]`) records the snapshot in the SQLite database of [Top recordings and history](#top-recordings-and-history). With no path, edc uses the default database. With `--write` alone, edc writes no file. Add `--output` to write a file too.
+
+```bash
+sudo edc snapshot -w --du /var                              # one record in the default database
+edc history list                                            # COMMAND shows snapshot or top
+edc history export --run <run-id> --output before.json      # the same report as a snapshot file
+edc report diff before.json after.json
+```
+
+To record a snapshot every hour, add a cron line for root:
+
+```
+0 * * * * /usr/local/bin/edc snapshot -w --du /var --timeout 2m >/dev/null
+```
+
+edc keeps each result in `snapshot_results`, so `history export` writes the same report again. It also keeps two tables for queries over time. `snapshot_metrics` holds each numeric metric of a result as `probe`, `key`, and `value`. `du_dirs` holds the largest directories of each `--du` path as `root`, `path`, and `bytes`. The database collects the account names, sudo rules, and process names of each snapshot. `--redact` applies to the record as it does to the file.
 
 ## Report diff
 
@@ -1393,7 +1413,9 @@ Host samples include the existing numeric top metrics, per-core CPU values, supp
 
 `top` and `process` support `--metric <field>` with an inclusive `--min`, `--max`, or both. Use top-level numeric JSON field names, such as `memory_pct`, `disk_await_ms`, `rss_bytes`, or `disk_read_bytes_per_s`. `cpu_pct` means user+system for host samples and the existing per-core percentage for processes. Unsupported or unmeasured SQL values are NULL and do not match numeric thresholds; JSON preserves availability information. The process name/PID filter follows the same rules as `top --process`.
 
-The database uses WAL so you can query while recording. Keep it on a local filesystem. External SQLite tools can inspect `runs`, `top_samples`, and `top_process_samples`; numeric fields are columns and `payload` retains JSON details, including cgroup/eBPF data. `history` opens existing databases for reading and does not create or migrate them. Unrelated databases and unsupported schema versions are rejected. JSON output cannot overwrite the database or its journal files.
+The database uses WAL so you can query while recording. Keep it on a local filesystem. External SQLite tools can inspect `runs`, `top_samples`, and `top_process_samples`; numeric fields are columns and `payload` retains JSON details, including cgroup/eBPF data. Snapshot records use `snapshot_results`, `snapshot_metrics`, and `du_dirs`. `history` opens existing databases for reading and does not create or migrate them. Unrelated databases and unsupported schema versions are rejected.
+
+The database schema is version 2. When `top -w` or `snapshot -w` opens a version 1 database, edc adds the snapshot tables and sets version 2. The top records stay. An edc release before this change cannot open a version 2 database. Update edc on every host or cron job that writes the same database. JSON output cannot overwrite the database or its journal files.
 
 ## Filter processes in top
 

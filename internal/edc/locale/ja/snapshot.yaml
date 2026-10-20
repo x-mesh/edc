@@ -22,4 +22,8 @@ snapshot:
   not_dir: "%s はディレクトリではありません"
   exists: "%s は既にあります。置き換えるには --force を付けてください"
   saved: "保存: %s"
+  recorded: "スナップショット %s を %s に記録"
+  export_hint: "比較するには書き出してください: edc history export --run %s --output <file>"
+  error:
+    du_empty: "--du にはパスが必要です"
   diff_hint: "比較: edc report diff <before> %s"

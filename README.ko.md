@@ -966,7 +966,8 @@ journal 기록은 20000개, journal 출력은 32 MiB, `/dev/kmsg` 기록은 1000
 edc snapshot                              # ./edc-snapshot-<host>-<UTC 시각>.json
 sudo edc snapshot --output before.json    # root는 모든 audit와 events 원천을 읽음
 sudo edc snapshot --output after.json
-sudo edc snapshot --du /var --output after.json   # /var의 edc du 결과도 함께 (Linux)
+sudo edc snapshot --du /var --output after.json   # /var의 edc du 결과도 함께 (Linux와 macOS)
+sudo edc snapshot -w --du /var --du /home         # 파일 없이 history DB에 기록
 sudo edc report diff before.json after.json
 edc snapshot --since 2h --output -        # report JSON만 stdout으로
 ```
@@ -984,7 +985,7 @@ report에는 다음 결과가 들어갑니다.
 | `audit.*` | `edc audit`의 점검 |
 | `events.*` | `--since` 기간(기본 6h)의 `edc events` 신호 |
 | `changes.*` | `--since` 기간의 `edc changes` 원천 |
-| `du.scan` | `--du <path>`를 줄 때만: 그 경로의 `edc du` 결과와 `report diff`용 큰 디렉터리 목록 |
+| `du.scan` | `--du <path>`를 줄 때만: 그 경로의 `edc du` 결과와 `report diff`용 큰 디렉터리 목록. 경로를 둘 이상 주면 결과 이름은 `du.scan:<path>`입니다. |
 
 큰 트리에 `--du`를 쓰면 `--timeout`을 늘려야 할 수 있습니다. 제한 시간에 걸리면 `du.scan` 결과는 일부만 센 값이 되고, `report diff`는 그 디렉터리를 비교하지 않습니다.
 
@@ -997,6 +998,25 @@ macOS에서는 `audit`, `events`, `changes`, `info.pressure`가 `skip`으로 나
 `--redact`는 host 이름, 홈 경로, IP 주소만 가립니다. 기본 파일 이름에서도 host 이름을 뺍니다. 계정 이름, sudo 규칙, process 이름은 report에 그대로 남습니다.
 
 파일을 쓰고 나면 경로, 결과 개수, `report diff` 안내를 출력합니다. `fail` 결과가 하나라도 있으면 exit code는 `1`이고, 없으면 `0`입니다. 사용법 오류와 쓰기 오류는 `2`를 돌려줍니다.
+
+### 스냅샷을 history DB에 기록
+
+`--write [path]`(`-w [path]`)는 스냅샷을 [Top 저장과 이력 조회](#top-저장과-이력-조회)의 SQLite DB에 기록합니다. 경로를 생략하면 기본 DB를 씁니다. `--write`만 주면 파일은 쓰지 않습니다. 파일도 남기려면 `--output`을 함께 주세요.
+
+```bash
+sudo edc snapshot -w --du /var                              # 기본 DB에 한 번 기록
+edc history list                                            # COMMAND 열에 snapshot 또는 top
+edc history export --run <run-id> --output before.json      # 스냅샷 파일과 같은 report로 꺼냄
+edc report diff before.json after.json
+```
+
+매시간 기록하려면 root의 cron에 한 줄을 추가합니다.
+
+```
+0 * * * * /usr/local/bin/edc snapshot -w --du /var --timeout 2m >/dev/null
+```
+
+결과는 `snapshot_results`에 그대로 남으므로 `history export`가 같은 report를 다시 씁니다. 기간별 조회를 위해 표 두 개를 더 둡니다. `snapshot_metrics`는 결과의 숫자 지표를 `probe`, `key`, `value`로 펼친 표이고, `du_dirs`는 `--du` 경로마다 큰 디렉터리를 `root`, `path`, `bytes`로 남긴 표입니다. 스냅샷마다 계정 이름, sudo 규칙, process 이름이 DB에 쌓입니다. `--redact`는 파일과 같이 기록에도 적용됩니다.
 
 ## Report 비교
 
@@ -1305,7 +1325,9 @@ host 지표와 core별 CPU, 지원 여부, 실제 관측 구간, 당시 process 
 
 `top`과 `process` 조회는 `--metric <field>`와 `--min`, `--max`를 지원하며 경계값을 포함합니다. `memory_pct`, `disk_await_ms`, `rss_bytes`, `disk_read_bytes_per_s`처럼 JSON 최상위 숫자 필드 이름을 씁니다. `cpu_pct`는 host에서는 user+system 합, process에서는 기존의 core 하나가 100%인 값입니다. 미지원·미측정 SQL 값은 NULL로 저장하여 숫자 조건에 맞지 않게 하고, JSON에는 지원 상태를 보존합니다. 이름·PID 검색은 기존 `top --process` 규칙을 따릅니다.
 
-WAL을 사용하므로 기록 중에도 조회할 수 있습니다. DB는 로컬 파일시스템에 둡니다. 외부 SQLite 도구로 `runs`, `top_samples`, `top_process_samples`도 조회할 수 있습니다. 숫자 지표는 column, cgroup·eBPF 등 상세 정보는 `payload` JSON에 보존합니다. 조회는 기존 DB를 읽으며 생성이나 migration을 하지 않습니다. 다른 DB와 지원하지 않는 schema version은 거부합니다. JSON 출력은 DB나 journal 파일을 덮어쓸 수 없습니다.
+WAL을 사용하므로 기록 중에도 조회할 수 있습니다. DB는 로컬 파일시스템에 둡니다. 외부 SQLite 도구로 `runs`, `top_samples`, `top_process_samples`도 조회할 수 있습니다. 숫자 지표는 column, cgroup·eBPF 등 상세 정보는 `payload` JSON에 보존합니다. 스냅샷 기록은 `snapshot_results`, `snapshot_metrics`, `du_dirs`에 들어갑니다. 조회는 기존 DB를 읽으며 생성이나 migration을 하지 않습니다. 다른 DB와 지원하지 않는 schema version은 거부합니다.
+
+DB schema는 버전 2입니다. `top -w`나 `snapshot -w`가 버전 1 DB를 열면 스냅샷 표를 추가하고 버전을 2로 올립니다. top 기록은 그대로 남습니다. 이 변경 이전의 edc는 버전 2 DB를 열지 못하므로, 같은 DB에 기록하는 모든 호스트와 cron의 edc를 함께 업데이트하세요. JSON 출력은 DB나 journal 파일을 덮어쓸 수 없습니다.
 
 ## Top process 필터
 

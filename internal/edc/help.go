@@ -242,7 +242,7 @@ var commandDocs = []commandDoc{
 	},
 	{
 		name: "history", group: "record",
-		usage: []string{"edc history list [options] [DB]", "edc history top [options] [DB]", "edc history process [options] [DB]", "edc history log [edc log history options]"},
+		usage: []string{"edc history list [options] [DB]", "edc history top [options] [DB]", "edc history process [options] [DB]", "edc history export --run <id> [--output <file|->] [DB]", "edc history log [edc log history options]"},
 		options: []optionDoc{
 			{"--run <id>", "history.option.run"},
 			{"--from <RFC3339>", "history.option.from"},
@@ -253,11 +253,13 @@ var commandDocs = []commandDoc{
 			{"--max <number>", "history.option.max"},
 			{"--limit 200", "history.option.limit"},
 			{"--json <path|->", "history.option.json"},
+			{"--output <file|->", "history.option.output"},
 		},
 		subcommands: []subcommandDoc{
 			{"list", "edc history list [options] [DB]"},
 			{"top", "edc history top [options] [DB]"},
 			{"process", "edc history process [options] [DB]"},
+			{"export", "edc history export --run <id> [DB]"},
 			{"log", "edc history log [<command>]"},
 		},
 		examples: []string{
@@ -437,12 +439,13 @@ var commandDocs = []commandDoc{
 	},
 	{
 		name: "snapshot", group: "record",
-		usage: []string{"edc snapshot [--output <file|->] [--since 6h] [--force]", "             [--du <path>] [--timeout 15s] [--redact]"},
+		usage: []string{"edc snapshot [--output <file|->] [--write [db]] [--since 6h]", "             [--force] [--du <path>]... [--timeout 15s] [--redact]"},
 		options: []optionDoc{
 			{"--output <file|->", "command.snapshot.option.output"},
 			{"--since 6h", "command.snapshot.option.since"},
 			{"--force", "command.snapshot.option.force"},
 			{"--du <path>", "command.snapshot.option.du"},
+			{"-w, --write [db]", "command.snapshot.option.write"},
 			{"--timeout 15s", "option.timeout"},
 			{"--redact", "option.redact"},
 		},

@@ -22,4 +22,8 @@ snapshot:
   not_dir: "%s는 디렉터리가 아닙니다"
   exists: "%s가 이미 있습니다. 바꾸려면 --force를 붙이세요"
   saved: "저장: %s"
+  recorded: "스냅샷 %s를 %s에 기록"
+  export_hint: "비교하려면 꺼내세요: edc history export --run %s --output <file>"
+  error:
+    du_empty: "--du에는 경로가 필요합니다"
   diff_hint: "비교: edc report diff <before> %s"

@@ -525,7 +525,7 @@ func diffReports(beforePath string, before Report, afterPath string, after Repor
 			entry.BeforeStatus, entry.AfterStatus = old.Status, current.Status
 			entry.BeforeSummary, entry.AfterSummary = old.Summary, current.Summary
 			entry.Metrics = diffMetrics(old.Metrics, current.Metrics)
-			if probe == duProbeID {
+			if isDuProbe(probe) {
 				entry.Directories, entry.DirectoriesNote = duCompareDirs(old.Metrics, current.Metrics)
 			}
 			// probe 실행 시간은 metrics 밖에 있으므로 따로 앞에 붙인다.

@@ -223,7 +223,7 @@ func TestHistoryQueueOverflowFails(t *testing.T) {
 }
 
 func TestHistoryRejectsUnrelatedAndFutureDatabase(t *testing.T) {
-	for _, statement := range []string{"CREATE TABLE unrelated (value TEXT)", "PRAGMA application_id=1162101576; PRAGMA user_version=2"} {
+	for _, statement := range []string{"CREATE TABLE unrelated (value TEXT)", "PRAGMA application_id=1162101576; PRAGMA user_version=3"} {
 		path := filepath.Join(t.TempDir(), "foreign.db")
 		db, err := sql.Open("sqlite", path)
 		if err != nil {

@@ -449,7 +449,8 @@ command:
       output: "report ファイル、- は stdout"
       since: "events と changes が見る期間 (既定 6h)"
       force: "既存の出力ファイルを置き換える"
-      du: "このパスの edc du の結果も保存 (Linux と macOS)"
+      du: "このパスの edc du の結果も保存、複数回指定できます"
+      write: "history DB にも記録、値なしは既定の DB"
     notes:
       - "info、listen、audit、events、changes の結果を 1 つの report に保存します。"
       - "ファイルの権限は 0600 です。アカウント、sudo 規則、process 名を含みます。"
@@ -557,7 +558,8 @@ command:
   history:
     summary: "保存した resource 観測履歴を検索"
     sub:
-      list: "edc top -w が記録した実行の一覧"
+      list: "top -w と snapshot -w の記録"
+      export: "記録したスナップショットを報告に"
       top: "host sample、新しい順"
       process: "process sample、新しい順"
       log: "edc log が記録したコマンド実行"

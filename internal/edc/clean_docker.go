@@ -100,6 +100,9 @@ type cleanDockerLive struct {
 	known      bool
 	volumes    map[string]bool
 	containers map[string]string
+	// imagesKnown이 false이면 이미지 목록만 읽지 못한 것이다. 볼륨과 컨테이너 이름은 known이 따로 말한다.
+	imagesKnown bool
+	images      map[string]bool
 }
 
 type cleanDockerUsage struct {
@@ -197,6 +200,17 @@ func cleanDockerLiveNames(ctx context.Context, client *http.Client, prefix strin
 		return cleanDockerLive{}
 	}
 	live := cleanDockerLive{known: true, volumes: map[string]bool{}, containers: map[string]string{}}
+	if images, err := cleanDockerGet(ctx, client, cleanDockerDFTimeout, prefix+"/images/json"); err == nil {
+		var imageList []struct{ RepoTags []string }
+		if json.Unmarshal(images.body, &imageList) == nil {
+			live.imagesKnown, live.images = true, map[string]bool{}
+			for _, image := range imageList {
+				for _, tag := range image.RepoTags {
+					live.images[tag] = true
+				}
+			}
+		}
+	}
 	for _, volume := range volumeList.Volumes {
 		live.volumes[volume.Name] = true
 	}

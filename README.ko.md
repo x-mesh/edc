@@ -786,6 +786,7 @@ edc는 지워도 되는지 판정하지 않고, 판단에 도움이 되는 사�
 - `mounted`, `open_files`: 디렉터리 아래에 마운트나 열린 파일이 있는지. `open_files_complete`가 `false`이면 읽지 못한 process가 있습니다.
 - `last_container_stop`, `newest_volume_write`: 마지막으로 활동한 날짜
 - `containers`: 디렉터리에 기록된 컨테이너의 이미지, Compose 프로젝트, 종료 시각. `in_engine`, `project_in_engine`은 엔진에 같은 이름이 있는지 나타냅니다.
+- `overlay`: `overlay2` 폴더를 주인별로 나눈 내역. `image_bytes`, `container_bytes`, `unused_layer_bytes`, `unknown_bytes`를 더하면 `total_bytes`입니다. 레이어 파일에는 있지만 어느 이미지도 쓰지 않는 레이어는 쓰지 않는 레이어이고, 어떤 메타데이터에도 이름이 없는 폴더는 알 수 없는 폴더입니다. `images`는 큰 이미지부터 태그와 함께 보여 줍니다. `shared_bytes`는 다른 이미지도 쓰는 부분이라 이 이미지만 지워서는 비워지지 않습니다. `containers`는 쓰기 레이어이고, `in_engine`은 엔진에 같은 태그의 이미지가 있는지 나타냅니다. 기존 overlay2 저장소의 레이어 메타데이터를 읽으며, 없으면 `overlay`도 나오지 않습니다.
 - `volumes`: 볼륨별 크기, 가장 최근 파일의 날짜, 그 볼륨을 마운트한 컨테이너 `used_by`. `in_engine`은 엔진에 같은 이름의 볼륨이 있는지 나타냅니다.
 
 항목에는 디렉터리를 지우는 `rm -rf --one-file-system` 명령이 `cleanup`으로 있고, `-v`에서 텍스트로 보여 줍니다. edc는 이 명령을 실행하지 않습니다. 디렉터리 아래에 마운트나 열린 파일이 있거나, 마운트 표나 `/proc` 전체를 읽지 못하면 `cleanup`은 비어 있습니다.

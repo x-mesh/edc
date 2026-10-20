@@ -198,6 +198,8 @@ command:
     option:
       timeout: "제한 시간, 지나면 남은 후보는 측정 안 함으로 표시"
       project: "빌드 폴더를 찾을 루트, 여러 번 지정 가능"
+      group: "edc remote 그룹의 호스트마다 clean을 실행"
+      inventory: "--group의 인벤토리 파일"
       verbose: "모든 후보, 더 많은 묶음, 이유, 정리 명령을 표시"
     notes:
       - "읽기만 합니다. 아무것도 바꾸거나 지우지 않습니다."

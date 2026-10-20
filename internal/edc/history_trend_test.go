@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"database/sql"
 	"encoding/json"
+	"io"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -39,7 +40,7 @@ func historyTrendTopDB(t *testing.T, samples map[time.Time]any) (*sql.DB, string
 func historyTrendCollect(t *testing.T, db *sql.DB, options historyTrendOptions) []historyTrendBucket {
 	t.Helper()
 	var buckets []historyTrendBucket
-	if err := historyTrendBuckets(db, options, historyTrendZone, func(bucket historyTrendBucket) error {
+	if _, err := historyTrendBuckets(db, options, historyTrendZone, func(bucket historyTrendBucket) error {
 		buckets = append(buckets, bucket)
 		return nil
 	}); err != nil {
@@ -76,7 +77,7 @@ func TestHistoryTrendGroupsTopSamplesByLocalHour(t *testing.T) {
 	}
 
 	var text bytes.Buffer
-	if err := writeHistoryTrend(&text, db, historyTrendOptions{metric: "memory_pct", by: "hour"}, false, historyTrendZone); err != nil {
+	if err := writeHistoryTrend(&text, io.Discard, db, historyTrendOptions{metric: "memory_pct", by: "hour"}, false, historyTrendZone); err != nil {
 		t.Fatal(err)
 	}
 	for _, want := range []string{"memory_pct by hour, local time +09:00", "START", "2026-10-20 09:00", "10.5%", "19.0%", "2026-10-20 10:00"} {
@@ -85,7 +86,7 @@ func TestHistoryTrendGroupsTopSamplesByLocalHour(t *testing.T) {
 		}
 	}
 	var lines bytes.Buffer
-	if err := writeHistoryTrend(&lines, db, historyTrendOptions{metric: "memory_pct", by: "hour"}, true, historyTrendZone); err != nil {
+	if err := writeHistoryTrend(&lines, io.Discard, db, historyTrendOptions{metric: "memory_pct", by: "hour"}, true, historyTrendZone); err != nil {
 		t.Fatal(err)
 	}
 	var decoded historyTrendBucket
@@ -93,7 +94,7 @@ func TestHistoryTrendGroupsTopSamplesByLocalHour(t *testing.T) {
 		t.Fatalf("JSON line = %s, err %v", lines.String(), err)
 	}
 	var empty bytes.Buffer
-	if err := writeHistoryTrend(&empty, db, historyTrendOptions{metric: "memory_pct", by: "day", run: "other"}, false, historyTrendZone); err != nil || strings.TrimSpace(empty.String()) != "No values in this range" {
+	if err := writeHistoryTrend(&empty, io.Discard, db, historyTrendOptions{metric: "memory_pct", by: "day", run: "other"}, false, historyTrendZone); err != nil || strings.TrimSpace(empty.String()) != "No values in this range" {
 		t.Fatalf("empty = %q, err %v", empty.String(), err)
 	}
 }
@@ -134,17 +135,17 @@ func TestHistoryTrendReadsSnapshotMetricsAndNamesWhatExists(t *testing.T) {
 		t.Fatalf("buckets = %+v", buckets)
 	}
 	var text bytes.Buffer
-	if err := writeHistoryTrend(&text, db, historyTrendOptions{probe: "du.scan", metric: "bytes", by: "week"}, false, historyTrendZone); err != nil {
+	if err := writeHistoryTrend(&text, io.Discard, db, historyTrendOptions{probe: "du.scan", metric: "bytes", by: "week"}, false, historyTrendZone); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(text.String(), "du.scan bytes by week") || !strings.Contains(text.String(), "1010 B") {
 		t.Errorf("du trend:\n%s", text.String())
 	}
-	err = historyTrendBuckets(db, historyTrendOptions{probe: "info.disk:/", metric: "free_bytes", by: "day"}, historyTrendZone, func(historyTrendBucket) error { return nil })
+	_, err = historyTrendBuckets(db, historyTrendOptions{probe: "info.disk:/", metric: "free_bytes", by: "day"}, historyTrendZone, func(historyTrendBucket) error { return nil })
 	if err == nil || !strings.Contains(err.Error(), "used_bytes") || !strings.Contains(err.Error(), "total_bytes") {
 		t.Errorf("unknown key: %v", err)
 	}
-	err = historyTrendBuckets(db, historyTrendOptions{probe: "info.disk:/data", metric: "used_bytes", by: "day"}, historyTrendZone, func(historyTrendBucket) error { return nil })
+	_, err = historyTrendBuckets(db, historyTrendOptions{probe: "info.disk:/data", metric: "used_bytes", by: "day"}, historyTrendZone, func(historyTrendBucket) error { return nil })
 	if err == nil || !strings.Contains(err.Error(), "info.disk:/,") {
 		t.Errorf("unknown probe: %v", err)
 	}
@@ -152,7 +153,7 @@ func TestHistoryTrendReadsSnapshotMetricsAndNamesWhatExists(t *testing.T) {
 
 func TestHistoryTrendSaysWhenNoSnapshotIsRecorded(t *testing.T) {
 	db, _ := historyTrendTopDB(t, nil)
-	err := historyTrendBuckets(db, historyTrendOptions{probe: "info.memory", metric: "used_bytes", by: "day"}, historyTrendZone, func(historyTrendBucket) error { return nil })
+	_, err := historyTrendBuckets(db, historyTrendOptions{probe: "info.memory", metric: "used_bytes", by: "day"}, historyTrendZone, func(historyTrendBucket) error { return nil })
 	if err == nil || !strings.Contains(err.Error(), "snapshot --write") {
 		t.Fatalf("a database with top runs only: %v", err)
 	}
@@ -166,6 +167,10 @@ func TestHistoryTrendCLIRejectsWrongOptionsBeforeOpening(t *testing.T) {
 		{"--metric", "used_bytes", missing},
 		{"--metric", "memory_pct", "--from", "yesterday", missing},
 		{"--metric", "memory_pct", missing, "extra"},
+		{"--each", "--metric", "memory_pct", missing},
+		{"--process", "pg", "--probe", "du.scan", "--metric", "bytes", missing},
+		{"--process", "pg", "--metric", "memory_pct", missing},
+		{"--process", "pg,", "--metric", "rss_bytes", missing},
 	} {
 		if code := runHistoryTrend(args); code != 2 {
 			t.Errorf("%q: exit code %d, want 2", args, code)
@@ -173,5 +178,8 @@ func TestHistoryTrendCLIRejectsWrongOptionsBeforeOpening(t *testing.T) {
 	}
 	if code := runHistoryTrend([]string{"--metric", "memory_pct", missing}); code != 1 {
 		t.Errorf("a missing database: exit code %d, want 1", code)
+	}
+	if code := runHistoryTrend([]string{"--process", "pg", "--each", "--metric", "rss_bytes", missing}); code != 1 {
+		t.Errorf("a process trend on a missing database: exit code %d, want 1", code)
 	}
 }

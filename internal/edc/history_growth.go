@@ -26,11 +26,38 @@ const (
 	historyDiskProbePrefix  = "info.disk:"
 	// 컨테이너나 임시 볼륨의 긴 마운트 경로 하나가 표 전체를 넓히지 않게 자른다. JSON에는 전체 경로가 남는다.
 	historyGrowthMountWidth = 40
+	// 프로세스 RSS가 이만큼 오래, 이만큼 많이, 직선에 가깝게 늘면 누수를 의심한다. 캐시를 채우는 동안의 증가나 짧은 부하
+	// 처럼 처음 몇 시간만 오르는 경우를 걸러내려고 기간과 직선 적합도를 함께 본다.
+	historyLeakMinSpan       = 6 * time.Hour
+	historyLeakMinSamples    = 12
+	historyLeakMinRise       = 0.10
+	historyLeakMinFit        = 0.7
+	historyGrowthProcessRows = 20
 )
 
 type historyGrowthOptions struct {
 	from, to time.Time
 	root     string
+	process  topProcessFilter
+}
+
+// historyGrowthProcess는 프로세스 하나(pid와 시작 시각)의 RSS 변화다.
+type historyGrowthProcess struct {
+	Kind          string     `json:"kind"`
+	Command       string     `json:"command"`
+	PID           int        `json:"pid"`
+	Started       *time.Time `json:"started,omitempty"`
+	Samples       int        `json:"samples"`
+	First         time.Time  `json:"first"`
+	Last          time.Time  `json:"last"`
+	FirstRSSBytes float64    `json:"first_rss_bytes"`
+	RSSBytes      float64    `json:"rss_bytes"`
+	// BytesPerDay는 rss_bytes의 최소제곱 기울기이고 Fit은 그 직선의 결정계수(R²)다. 점이 모자라면 nil이다.
+	BytesPerDay *float64 `json:"rss_bytes_per_day,omitempty"`
+	Fit         *float64 `json:"fit,omitempty"`
+	LeakSuspect bool     `json:"leak_suspect"`
+	// Unfiltered는 --process 없이 기록한 표본이 섞였는지다. 그 표본은 상위권에 든 순간뿐이다.
+	Unfiltered bool `json:"unfiltered,omitempty"`
 }
 
 type historyGrowthDisk struct {
@@ -61,9 +88,11 @@ type historyGrowthDirs struct {
 }
 
 type historyGrowth struct {
-	From, To time.Time
-	Disks    []historyGrowthDisk
-	Dirs     []historyGrowthDirs
+	From, To  time.Time
+	Process   string
+	Disks     []historyGrowthDisk
+	Dirs      []historyGrowthDirs
+	Processes []historyGrowthProcess
 }
 
 func runHistoryGrowth(args []string) int {
@@ -73,6 +102,7 @@ func runHistoryGrowth(args []string) int {
 	from := set.String("from", "", T("history.option.from"))
 	to := set.String("to", "", T("history.option.to"))
 	set.StringVar(&options.root, "root", "", T("history.option.root"))
+	process := set.String("process", "", T("history.option.growth_process"))
 	jsonPath := set.String("json", "", T("history.option.json"))
 	if err := set.Parse(args); err != nil {
 		return 2
@@ -88,6 +118,14 @@ func runHistoryGrowth(args []string) int {
 	}
 	if err != nil || (!options.from.IsZero() && !options.to.IsZero() && !options.from.Before(options.to)) {
 		fmt.Fprintln(os.Stderr, T("history.error.time"))
+		return 2
+	}
+	if options.process, err = parseTopProcessFilter(*process); err != nil {
+		fmt.Fprintln(os.Stderr, T("observe.top.process_invalid"))
+		return 2
+	}
+	if options.process.active() && options.root != "" {
+		fmt.Fprintln(os.Stderr, T("history.error.growth_process_root"))
 		return 2
 	}
 	path := set.Arg(0)
@@ -152,6 +190,12 @@ func historyGrowthWindowOf(options historyGrowthOptions, now time.Time) (time.Ti
 }
 
 func collectHistoryGrowth(db *sql.DB, options historyGrowthOptions, now time.Time) (historyGrowth, error) {
+	// --process는 top 기록만 읽으므로 스냅샷이 없어도 된다.
+	if options.process.active() {
+		from, to := historyGrowthWindowOf(options, now)
+		processes, err := historyGrowthProcesses(db, from, to, options.process)
+		return historyGrowth{From: from, To: to, Process: options.process.String(), Processes: processes}, err
+	}
 	has, err := historyHasSnapshots(db)
 	if err != nil {
 		return historyGrowth{}, err
@@ -235,6 +279,12 @@ func historyGrowthDisks(db *sql.DB, from, to time.Time) ([]historyGrowthDisk, er
 }
 
 func historyLeastSquaresSlope(x, y []float64) float64 {
+	slope, _ := historyLeastSquaresFit(x, y)
+	return slope
+}
+
+// historyLeastSquaresFit은 기울기와 결정계수(R²)다. y가 변하지 않으면 직선이 완전히 맞으므로 R²은 1이다.
+func historyLeastSquaresFit(x, y []float64) (float64, float64) {
 	var meanX, meanY float64
 	for index := range x {
 		meanX += x[index]
@@ -242,15 +292,106 @@ func historyLeastSquaresSlope(x, y []float64) float64 {
 	}
 	meanX /= float64(len(x))
 	meanY /= float64(len(y))
-	var covariance, variance float64
+	var covariance, varianceX, varianceY float64
 	for index := range x {
 		covariance += (x[index] - meanX) * (y[index] - meanY)
-		variance += (x[index] - meanX) * (x[index] - meanX)
+		varianceX += (x[index] - meanX) * (x[index] - meanX)
+		varianceY += (y[index] - meanY) * (y[index] - meanY)
 	}
-	if variance == 0 {
-		return 0
+	if varianceX == 0 {
+		return 0, 0
 	}
-	return covariance / variance
+	if varianceY == 0 {
+		return 0, 1
+	}
+	return covariance / varianceX, covariance * covariance / (varianceX * varianceY)
+}
+
+// historyGrowthProcesses는 일치한 프로세스마다 RSS의 하루 변화를 낸다. 한 프로세스의 점만 메모리에 둔다. 누수 의심을
+// 먼저, 그다음 하루 증가량이 큰 순서다.
+func historyGrowthProcesses(db *sql.DB, from, to time.Time, filter topProcessFilter) ([]historyGrowthProcess, error) {
+	unfiltered, err := historyUnfilteredRuns(db)
+	if err != nil {
+		return nil, err
+	}
+	match, values := historyProcessMatch(filter, "p")
+	values = append(values, from.UnixNano(), to.UnixNano())
+	rows, err := db.Query(`SELECT p.pid, COALESCE(p.started, ''), p.command, p.run_id, p.time_ns, p.rss_bytes FROM top_process_samples p
+		WHERE `+match+` AND p.rss_bytes IS NOT NULL AND p.time_ns>=? AND p.time_ns<? ORDER BY p.pid, p.started, p.time_ns`, values...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var processes []historyGrowthProcess
+	var current *historyGrowthProcess
+	var days, rss []float64
+	finish := func() {
+		if current == nil {
+			return
+		}
+		process := *current
+		process.Samples, process.FirstRSSBytes, process.RSSBytes = len(rss), rss[0], rss[len(rss)-1]
+		span := process.Last.Sub(process.First)
+		if len(rss) >= historyGrowthMinSamples && span >= historyGrowthMinSpan {
+			slope, fit := historyLeastSquaresFit(days, rss)
+			process.BytesPerDay, process.Fit = &slope, &fit
+			rise := slope * span.Hours() / 24
+			process.LeakSuspect = span >= historyLeakMinSpan && len(rss) >= historyLeakMinSamples && slope > 0 &&
+				rise >= historyLeakMinRise*process.FirstRSSBytes && fit >= historyLeakMinFit
+		}
+		processes = append(processes, process)
+		current, days, rss = nil, days[:0], rss[:0]
+	}
+	for rows.Next() {
+		var pid int
+		var started, command, run string
+		var at int64
+		var value float64
+		if err := rows.Scan(&pid, &started, &command, &run, &at, &value); err != nil {
+			return nil, err
+		}
+		if !historyFinite(value) {
+			continue
+		}
+		if current != nil && (current.PID != pid || historyGrowthStarted(current.Started) != started) {
+			finish()
+		}
+		if current == nil {
+			current = &historyGrowthProcess{Kind: "process", Command: command, PID: pid, First: time.Unix(0, at).UTC()}
+			if parsed, err := time.Parse(time.RFC3339Nano, started); err == nil {
+				current.Started = &parsed
+			}
+		}
+		current.Last = time.Unix(0, at).UTC()
+		current.Unfiltered = current.Unfiltered || unfiltered[run]
+		days = append(days, float64(at-current.First.UnixNano())/float64(24*time.Hour))
+		rss = append(rss, value)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	finish()
+	sort.SliceStable(processes, func(i, j int) bool {
+		if processes[i].LeakSuspect != processes[j].LeakSuspect {
+			return processes[i].LeakSuspect
+		}
+		return historyGrowthSlope(processes[i]) > historyGrowthSlope(processes[j])
+	})
+	return processes, nil
+}
+
+func historyGrowthStarted(started *time.Time) string {
+	if started == nil {
+		return ""
+	}
+	return started.Format(time.RFC3339Nano)
+}
+
+func historyGrowthSlope(process historyGrowthProcess) float64 {
+	if process.BytesPerDay == nil {
+		return math.Inf(-1)
+	}
+	return *process.BytesPerDay
 }
 
 // historyGrowthDirectories는 du 결과를 경로마다 모아 기간의 첫 결과와 마지막 결과를 report diff와 같은 규칙으로 비교한다.
@@ -324,12 +465,21 @@ func writeHistoryGrowthJSON(output io.Writer, growth historyGrowth) error {
 			return err
 		}
 	}
+	for _, process := range growth.Processes {
+		if err := encoder.Encode(process); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
 func writeHistoryGrowth(output io.Writer, growth historyGrowth, location *time.Location) {
 	layout := "2006-01-02 15:04"
 	fmt.Fprintln(output, T("history.growth.window", growth.From.In(location).Format(layout), growth.To.In(location).Format(layout)))
+	if growth.Process != "" {
+		writeHistoryGrowthProcesses(output, growth, location)
+		return
+	}
 	if len(growth.Disks) == 0 && len(growth.Dirs) == 0 {
 		fmt.Fprintln(output, T("history.growth.empty"))
 		return
@@ -392,6 +542,55 @@ func writeHistoryGrowth(output io.Writer, growth historyGrowth, location *time.L
 			}
 			fmt.Fprintf(output, "  %s\n", historyTerminalText(line))
 		}
+	}
+}
+
+func writeHistoryGrowthProcesses(output io.Writer, growth historyGrowth, location *time.Location) {
+	filter := historyTerminalText(growth.Process)
+	if len(growth.Processes) == 0 {
+		fmt.Fprintln(output, T("history.trend.process_empty", filter, quoteLocalShellWord(growth.Process)))
+		return
+	}
+	fmt.Fprintln(output)
+	writer := tabwriter.NewWriter(output, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(writer, "PROCESS\tPID\tSTARTED\tSAMPLES\tRSS\tCHANGE/DAY\tNOTE")
+	unfiltered := false
+	for index, process := range growth.Processes {
+		if index == historyGrowthProcessRows {
+			break
+		}
+		unfiltered = unfiltered || process.Unfiltered
+		started, rate := "-", "—"
+		if process.Started != nil {
+			started = process.Started.In(location).Format("01-02 15:04")
+		}
+		note := historyGrowthProcessNote(process)
+		if process.BytesPerDay != nil {
+			rate = historyGrowthRate(*process.BytesPerDay)
+		}
+		fmt.Fprintf(writer, "%s\t%d\t%s\t%d\t%s\t%s\t%s\n", ansi.Truncate(historyTerminalText(process.Command), historyGrowthMountWidth, "…"), process.PID, started,
+			process.Samples, formatSizeShort(uint64(math.Max(process.RSSBytes, 0))), rate, note)
+	}
+	writer.Flush()
+	if more := len(growth.Processes) - historyGrowthProcessRows; more > 0 {
+		fmt.Fprintln(output, T("history.growth.more_processes", more))
+	}
+	if unfiltered {
+		fmt.Fprintln(output, T("history.trend.unfiltered", filter, quoteLocalShellWord(growth.Process)))
+	}
+}
+
+// historyGrowthProcessNote는 표의 NOTE 칸이다. TUI도 같은 문구를 쓴다.
+func historyGrowthProcessNote(process historyGrowthProcess) string {
+	switch {
+	case process.LeakSuspect:
+		return T("history.growth.leak", *process.Fit)
+	case process.BytesPerDay != nil:
+		return ""
+	case process.Samples < historyGrowthMinSamples:
+		return T("history.growth.few_samples", process.Samples)
+	default:
+		return T("history.growth.short_span")
 	}
 }
 

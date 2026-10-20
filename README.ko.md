@@ -1318,6 +1318,10 @@ Linux에서는 `n` 화면에 conntrack 사용률(`ct%`), listen overflow/s(`list
 ./bin/edc history trend --metric memory_pct --by hour incident.db
 ./bin/edc history trend --probe info.disk:/ --metric used_bytes --by day
 ./bin/edc history growth --root /var
+./bin/edc top --process postgres -w
+./bin/edc history trend --process postgres --metric rss_bytes --by day
+./bin/edc history trend --process postgres --metric cpu_pct --each
+./bin/edc history growth --process postgres
 ./bin/edc history prune --older-than 90d --dry-run
 ./bin/edc history prune --older-than 90d --command snapshot --yes --vacuum
 ```
@@ -1330,9 +1334,13 @@ host 지표와 core별 CPU, 지원 여부, 실제 관측 구간, 당시 process 
 
 `top`과 `process` 조회는 `--metric <field>`와 `--min`, `--max`를 지원하며 경계값을 포함합니다. `memory_pct`, `disk_await_ms`, `rss_bytes`, `disk_read_bytes_per_s`처럼 JSON 최상위 숫자 필드 이름을 씁니다. `cpu_pct`는 host에서는 user+system 합, process에서는 기존의 core 하나가 100%인 값입니다. 미지원·미측정 SQL 값은 NULL로 저장하여 숫자 조건에 맞지 않게 하고, JSON에는 지원 상태를 보존합니다. 이름·PID 검색은 기존 `top --process` 규칙을 따릅니다.
 
-`trend`는 지표 하나의 값을 `--by hour`, `day`(기본값), `week` 구간으로 묶습니다. 구간은 로컬 시간의 정시, 자정, 월요일 자정에서 시작합니다. 행마다 개수, 최솟값, 평균, 95번째 백분위수(nearest rank), 최댓값을 보이고, 오래된 구간부터 나열합니다. 값이 없는 구간은 보이지 않습니다. `--probe`가 없으면 `--metric`은 top의 host 지표이고, `--probe`를 주면 그 스냅샷 결과의 숫자 지표입니다. 예를 들어 `info.disk:/`의 `used_bytes`, `info.memory`의 `used_percent`, `du.scan`의 `bytes`를 볼 수 있습니다. 없는 결과나 지표를 주면 기록된 이름을 보여 줍니다. 터미널에서 `--metric` 없이 `trend`를 실행하면 기록과 지표를 차례로 고르고, 완성된 명령을 보여 줍니다. `--run`, `--from`, `--to`, `--json`은 `top`과 같게 동작합니다.
+`trend`는 지표 하나의 값을 `--by hour`, `day`(기본값), `week` 구간으로 묶습니다. 구간은 로컬 시간의 정시, 자정, 월요일 자정에서 시작합니다. 행마다 개수, 최솟값, 평균, 95번째 백분위수(nearest rank), 최댓값을 보이고, 오래된 구간부터 나열합니다. 값이 없는 구간은 보이지 않습니다. `--probe`가 없으면 `--metric`은 top의 host 지표이고, `--probe`를 주면 그 스냅샷 결과의 숫자 지표입니다. 예를 들어 `info.disk:/`의 `used_bytes`, `info.memory`의 `used_percent`, `du.scan`의 `bytes`를 볼 수 있습니다. 없는 결과나 지표를 주면 기록된 이름을 보여 줍니다. 터미널에서 `--metric` 없이 `trend`를 실행하면 기록, 호스트와 기록된 프로세스 가운데 대상, 지표를 차례로 고르고, 완성된 명령을 보여 줍니다. `--run`, `--from`, `--to`, `--json`은 `top`과 같게 동작합니다.
+
+`trend --process <filter>`는 top 기록의 프로세스 표본을 씁니다. 필터 규칙은 `top --process`와 같습니다. `--metric`에는 프로세스 지표인 `cpu_pct`, `rss_bytes`, `threads`, `fds`, `disk_read_bytes_per_s`, `disk_write_bytes_per_s` 가운데 하나를 지정합니다. 표본마다 일치하는 프로세스의 값을 모두 더하므로, worker가 여럿인 서비스도 합계 하나로 보입니다. `--each`를 주면 PID와 시작 시각으로 구분한 프로세스마다 한 줄씩 보여 줍니다. `SEEN`은 프로세스가 기록된 표본 가운데 일치한 프로세스가 있던 비율입니다. `PROCS`는 구간에 나타난 서로 다른 프로세스 수이고, `RESTARTS`는 일치하던 프로세스가 사라진 자리를 새 프로세스가 대신한 횟수입니다. 종료와 시작이 서로 다른 표본에 잡혀도 셉니다. 사라진 프로세스 없이 새 프로세스만 늘었다면 재시작으로 세지 않습니다. 필터 없이 기록한 표본에서는 프로세스가 상위 목록에서 밀려나기만 해도 사라진 것처럼 보이므로, 그런 표본이 섞인 구간의 `RESTARTS`는 `-`로 표시합니다. `--process` 없이 기록한 실행의 표본이 섞여 있으면 stderr에 안내를 씁니다. 모든 표본을 남기려면 `top -w --process <filter>`로 기록하세요.
 
 `growth`는 최근 7일, 또는 `--from`과 `--to` 범위의 스냅샷을 읽습니다. 마운트마다 마지막 스냅샷의 사용량과 전체 크기, 그리고 `used_bytes`의 최소제곱 기울기로 구한 하루 증가량을 보여 줍니다. 사용량이 늘고 있으면 그 속도로 가득 차기까지 걸리는 시간을 추정합니다. 직선으로 구한 추정치이며 예측을 보장하지 않습니다. 스냅샷이 3개보다 적거나 첫 스냅샷과 마지막 스냅샷의 간격이 1시간보다 짧으면 추정하지 않습니다. `--du` 경로마다 범위 안의 첫 번째와 마지막 완전한 스캔을 `report diff`와 같은 규칙으로 비교해, 크게 바뀐 디렉터리를 최대 10개 보여 줍니다. 범위가 1일 이상이면 하루 증가량도 함께 씁니다. 그 위의 줄은 두 스캔에서 경로 전체의 크기를 보여 주므로, 경로 바로 아래 파일의 변화도 여기에 반영됩니다. `--root <path>`는 그 경로의 디렉터리만 보여 주고, `--json`은 마운트와 경로마다 한 줄씩 씁니다.
+
+`growth --process <filter>`는 스냅샷 대신 top 기록을 읽습니다. 일치하는 프로세스마다 마지막 RSS와, `rss_bytes`의 최소제곱 기울기로 구한 하루 변화량을 보여 줍니다. 표본이 6시간 이상에 걸쳐 12개 이상 있고, RSS가 첫 값보다 10% 이상 늘었고, 직선 적합도(R²)가 0.7 이상이면 누수 의심으로 표시합니다. 누수 의심은 살펴볼 이유일 뿐 진단이 아닙니다. 천천히 채워지는 캐시도 같은 모양을 보일 수 있습니다. 표는 누수 의심을 먼저 두고 최대 20개 프로세스를 보여 주며, `--json`은 프로세스마다 한 줄씩 씁니다. `--process`와 `--root`는 함께 쓸 수 없습니다.
 
 `prune --older-than <기간>`은 마지막 활동이 그 기간보다 오래된 실행을 표본·스냅샷 행과 함께 한 transaction으로 지웁니다. 마지막 활동은 시작, 종료, 마지막 표본 중 가장 늦은 시각이라, 오래전에 시작해 아직 기록 중인 `top -w`는 남습니다. 기간에는 Go duration과 `d`, `w` 단위를 씁니다(예: `90d`). `--command top`이나 `--command snapshot`으로 대상을 좁힙니다. 먼저 지울 실행과 표본 수를 보여 주고, 터미널에서는 `y`를 누를 때만 지우며, 터미널이 없으면 `--yes`나 `--dry-run`이 필요합니다. `--dry-run`은 개수만 세고 파일을 바꾸지 않습니다. 지운 행의 자리는 파일 안에 빈 page로 남아 새 기록에 다시 쓰이며, 그 크기를 알려 줍니다. `--vacuum`은 파일을 다시 써서 공간을 돌려받습니다. DB 크기만큼 여유 공간이 필요하고, 그동안 다른 기록은 기다립니다. 없는 DB는 만들지 않습니다.
 

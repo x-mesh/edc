@@ -23,6 +23,14 @@ func TestLockCallersSkipLockAndTraceFrames(t *testing.T) {
 	if got := lockKernelCaller(kernel); got != "lock_mm_and_find_vma" {
 		t.Errorf("kernel caller = %q", got)
 	}
+	// tracepoint 래퍼가 stack에 남는 kernel(7.0.0-1017-azure)에서 mutex 대기의 호출자가 pipe_write여야 한다.
+	wrapped := []string{"bpf_prog_9a70_lock_contention_begin", "bpf_trace_run2", "__traceiter_contention_begin", "trace_contention_begin", "__mutex_lock", "mutex_lock", "pipe_write", "vfs_write"}
+	if got := lockKernelCaller(wrapped); got != "pipe_write" {
+		t.Errorf("caller with the tracepoint wrapper on the stack = %q", got)
+	}
+	if got := lockKernelCaller([]string{"trace_contention_begin", "trace_contention_end"}); got != "-" {
+		t.Errorf("only tracepoint wrappers = %q", got)
+	}
 	if got := lockKernelCaller([]string{"__raw_spin_lock_irqsave", "queued_spin_lock_slowpath"}); got != "-" {
 		t.Errorf("all primitives = %q", got)
 	}

@@ -63,6 +63,14 @@ history:
     total: "total %s → %s (%s)"
     leak: "possible leak (fit %.2f)"
     more_processes: "… %d more processes; use --json for all"
+  browser:
+    targets: "TARGET"
+    host: "host"
+    loading: "loading"
+    growth: "RSS %s, fastest pid %d"
+    growth_none: "RSS change: %s"
+    leak: "possible leak: %d of %d processes (fit %.2f)"
+    help: "↑↓ Target   m Metric   b Period   e Each   PgUp/PgDn Scroll   q Quit"
   prompt:
     top_source: "top · host samples"
     source_title: "which records do you want to trend?"

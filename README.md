@@ -736,7 +736,7 @@ The sum for each file system is usage. The text output shows it at the end. It i
 
 A candidate shows a cleanup command only if the tool documents one. The candidates `bun`, `pip`, `huggingface`, and `rustup-toolchains` show one. The candidates `cargo-registry`, `zig`, `app-caches`, and a few more show none. edc never runs a command.
 
-With `-v`, edc also reads the date of the newest file in each candidate and in each folder group, for example `newest file 2026-10-19`. A cache that no tool has written to for months is a safer candidate than one that changed today. The date is the change time of a regular file, not the access time. A `≥` before the date means that edc could not read some folders or stopped at a limit, so a newer file can exist. The JSON has `newest_write` and `newest_partial`. edc reads every file once more, so `edc clean -v` takes about as long as the measurement again.
+With `-v`, edc also reads the date of the newest file in each candidate and in each folder group, for example `newest file 2026-10-19`. A cache that no tool has written to for months is a safer candidate than one that changed today. The date is the modification time of a regular file, not the access time. A `≥` before the date means that edc could not read some folders or stopped at a limit, so a newer file can exist. The JSON has `newest_write` and `newest_partial`. edc reads every file once more, so `edc clean -v` takes about as long as the measurement again.
 
 Four more sections follow the candidates. Each section has its own key in `metrics`. A section is not a candidate.
 

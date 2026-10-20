@@ -531,7 +531,15 @@ func TestCleanGroupsDerivedDataByApp(t *testing.T) {
 		{name: "loose", total: 999},
 	}}
 	got := cleanGroupDerivedData(root)
-	want := []cleanGroup{{"Mail", 1, 100}, {"Shop", 3, 75}, {"CompilationCache.noindex", 1, 20}, {"Weird-abc", 1, 1}}
+	// 묶음은 잰 폴더의 경로를 들고 있다. 가장 최근 파일을 찾는 데 쓰므로 폴더 수와 같아야 한다.
+	for index := range got {
+		if len(got[index].paths) != got[index].Folders {
+			t.Errorf("group %s has %d paths for %d folders", got[index].Name, len(got[index].paths), got[index].Folders)
+		}
+		got[index].paths = nil
+	}
+	want := []cleanGroup{{Name: "Mail", Folders: 1, UsageBytes: 100}, {Name: "Shop", Folders: 3, UsageBytes: 75},
+		{Name: "CompilationCache.noindex", Folders: 1, UsageBytes: 20}, {Name: "Weird-abc", Folders: 1, UsageBytes: 1}}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("groups = %+v", got)
 	}

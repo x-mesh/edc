@@ -337,6 +337,11 @@ type cleanGroup struct {
 	Name       string `json:"name"`
 	Folders    int    `json:"folders"`
 	UsageBytes uint64 `json:"usage_bytes"`
+	// NewestWrite는 묶음 안 일반 파일의 가장 늦은 수정 날짜다. NewestPartial이면 그보다 늦은 파일이 있을 수 있다.
+	NewestWrite   *time.Time `json:"newest_write,omitempty"`
+	NewestPartial bool       `json:"newest_partial,omitempty"`
+	// paths는 이 묶음이 잰 폴더다. 가장 최근 파일을 찾는 데만 쓴다.
+	paths []string
 }
 
 // cleanItem은 후보 하나의 결과다. usage_bytes는 measured와 partial에만 있다. 회수 가능량 필드는 없다.
@@ -361,12 +366,15 @@ type cleanItem struct {
 	Unreadable      int64               `json:"unreadable,omitempty"`
 	UnreadablePaths []string            `json:"unreadable_paths,omitempty"`
 	SkippedMounts   int                 `json:"skipped_mounts,omitempty"`
-	Regenerable     bool                `json:"regenerable"`
-	RegenCost       string              `json:"regen_cost"`
-	Cleanup         string              `json:"cleanup,omitempty"`
-	Groups          []cleanGroup        `json:"groups,omitempty"`
-	Match           string              `json:"match,omitempty"`
-	Excludes        []string            `json:"excludes,omitempty"`
+	// NewestWrite는 잰 폴더 안 일반 파일의 가장 늦은 수정 날짜다. 오래 쓰지 않은 캐시인지 보는 근거이고, 접근 시각은 쓰지 않는다.
+	NewestWrite   *time.Time   `json:"newest_write,omitempty"`
+	NewestPartial bool         `json:"newest_partial,omitempty"`
+	Regenerable   bool         `json:"regenerable"`
+	RegenCost     string       `json:"regen_cost"`
+	Cleanup       string       `json:"cleanup,omitempty"`
+	Groups        []cleanGroup `json:"groups,omitempty"`
+	Match         string       `json:"match,omitempty"`
+	Excludes      []string     `json:"excludes,omitempty"`
 	// roots는 실제로 잰 경로다. 단일 경로 후보는 하나이고 묶음 후보는 잰 항목마다 하나다. 포함 판정이 이것을 쓴다.
 	roots   []string
 	grouped bool
@@ -722,6 +730,7 @@ func (walk *cleanChildWalk) measure(ctx context.Context, path, name string) {
 	}
 	walk.roots = append(walk.roots, path)
 	walk.add(name, scan.root.total, scan.root.count)
+	walk.groups[name].paths = append(walk.groups[name].paths, path)
 	walk.unreadable += scan.unreadableCount
 	for _, unreadable := range scan.unreadable {
 		walk.keep(unreadable)
@@ -926,6 +935,7 @@ func cleanGroupFolders(root *duNode, appName *regexp.Regexp) []cleanGroup {
 		}
 		group.Folders++
 		group.UsageBytes += child.total
+		group.paths = append(group.paths, filepath.Join(root.name, child.name))
 	}
 	groups := make([]cleanGroup, 0, len(byName))
 	for _, group := range byName {
@@ -1037,7 +1047,12 @@ func runCleanWith(args []string, version string, deps cleanDeps, ok bool, homeEr
 		ctx, deadline := context.WithTimeout(base, options.timeout)
 		defer deadline()
 		scan := func() Result {
-			return cleanResult(result, cleanCollect(ctx, deps, runtime.GOOS, projects...), options.timeout, ctx.Err())
+			report := cleanCollect(ctx, deps, runtime.GOOS, projects...)
+			// 가장 최근 파일을 찾으려면 잰 폴더를 파일마다 한 번 더 읽어야 해서 측정과 비슷한 시간이 더 든다. -v일 때만 한다.
+			if options.verbose {
+				cleanAddNewestWrite(ctx, report.candidates)
+			}
+			return cleanResult(result, report, options.timeout, ctx.Err())
 		}
 		if live {
 			// 화면에서 Ctrl-C는 신호가 아니라 키로 들어오므로 stop으로 탐색을 멈춘다.
@@ -1383,6 +1398,9 @@ func richCleanItems(items []cleanItem, verbose bool, width int, home string) str
 					if group.Folders > 1 {
 						text += "  " + richDim(T("clean.group_folders", group.Folders))
 					}
+					if date := cleanGroupDate(group); date != "" {
+						text += "  " + richDim(date)
+					}
 					builder.WriteString(line(text))
 				}
 				if len(item.Groups) > limit {
@@ -1513,6 +1531,9 @@ func formatCleanGroups(groups []cleanGroup, verbose bool, width, lead, sizeWidth
 		if group.Folders > 1 {
 			label += "  " + T("clean.group_folders", group.Folders)
 		}
+		if date := cleanGroupDate(group); date != "" {
+			label += "  " + date
+		}
 		builder.WriteString(duFit(strings.Repeat(" ", lead)+cleanPadLeft(formatSizeShort(group.UsageBytes), sizeWidth)+"    "+label, width) + "\n")
 	}
 	if len(shown) < len(groups) {
@@ -1543,6 +1564,9 @@ func formatCleanDetail(item cleanItem, width int, indent, home string, style cle
 	}
 	if item.counted() {
 		line(T("clean.regen", T("clean.cost."+item.RegenCost)))
+	}
+	if item.counted() && item.NewestWrite != nil {
+		line(cleanNewestText(item.NewestWrite, item.NewestPartial))
 	}
 	if len(item.Excludes) > 0 {
 		names := make([]string, 0, len(item.Excludes))

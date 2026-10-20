@@ -124,6 +124,7 @@ clean:
     P3: "models and toolchains"
   unreadable: "%d unreadable directories are not counted"
   regen: "cost to recreate: %s"
+  newest: "newest file %s"
   cleanup: "to clean, run %s (edc does not run it)"
   fs:
     title: "file system %s (%s)  usage sum %s, %s free"

@@ -834,6 +834,7 @@ Each entry in `docker_root.roots` has these facts:
 - `mounted` and `open_files`: whether a mount or an open file is under the directory. If `open_files_complete` is `false`, edc cannot read some processes.
 - `last_container_stop` and `newest_volume_write`: the dates of the last activity.
 - `containers`: the containers that the directory records, with image, Compose project, and stop time. `in_engine` and `project_in_engine` show if the engine has the same name.
+- `overlay`: how the folder `overlay2` splits among owners. `image_bytes`, `container_bytes`, `unused_layer_bytes`, and `unknown_bytes` add up to `total_bytes`. A layer that a layer file names but no image uses is unused. A folder that no metadata names is unknown. `images` lists the largest images with their tags. `shared_bytes` is the part that another image also uses, so deleting this image alone does not free it. `containers` lists the writable layers. `in_engine` shows if the engine has an image with the same tag. edc reads the layer metadata of the classic overlay2 storage. If the metadata is absent, `overlay` is absent too.
 - `volumes`: each volume with its size, the date of its newest file, and `used_by`, the containers that mounted it. `in_engine` shows if the engine has a volume with the same name.
 
 The entry has `cleanup`, a `rm -rf --one-file-system` command for the directory. With `-v`, the text output shows it. edc never runs it. The command is empty if a mount or an open file is under the directory. It is also empty if edc cannot read the mount table or all of `/proc`.

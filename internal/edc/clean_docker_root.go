@@ -58,6 +58,7 @@ type cleanStaleDockerRoot struct {
 	Dirs                 []cleanDockerRootDir `json:"dirs,omitempty"`
 	Containers           []cleanOldContainer  `json:"containers,omitempty"`
 	ContainersUnreadable int                  `json:"containers_unreadable,omitempty"`
+	Overlay              *cleanOverlay        `json:"overlay,omitempty"`
 	Volumes              []cleanOldVolume     `json:"volumes,omitempty"`
 	VolumesTotal         int                  `json:"volumes_total"`
 	VolumesOmitted       int                  `json:"volumes_omitted,omitempty"`
@@ -172,8 +173,14 @@ func cleanStaleRootEvidence(ctx context.Context, deps cleanDeps, path string, do
 		root.Status = cleanPartial
 	}
 	volumeBytes := map[string]uint64{}
+	overlayBytes := map[string]uint64{}
 	for _, child := range scan.root.children {
 		root.Dirs = append(root.Dirs, cleanDockerRootDir{Name: child.name, Bytes: child.total})
+		if child.name == "overlay2" {
+			for _, layer := range child.children {
+				overlayBytes[layer.name] = layer.total
+			}
+		}
 		if child.name == "volumes" {
 			for _, volume := range child.children {
 				volumeBytes[volume.name] = volume.total
@@ -185,6 +192,7 @@ func cleanStaleRootEvidence(ctx context.Context, deps cleanDeps, path string, do
 		root.Dirs = root.Dirs[:cleanDockerRootDirLimit]
 	}
 	usedBy := cleanReadOldContainers(path, docker, &root)
+	root.Overlay = cleanAttributeOverlay(path, overlayBytes, root.Containers, docker.live)
 	cleanReadOldVolumes(ctx, path, docker, volumeBytes, usedBy, &root)
 	root.Mounted = cleanMountedUnder(deps, path)
 	count, complete, readable := cleanOpenUnder(ctx, cleanProcDir, path)
@@ -520,6 +528,9 @@ func formatCleanStaleRoot(root cleanStaleDockerRoot, current string, verbose boo
 	for _, dir := range root.Dirs {
 		line("    ", style.size(cleanPadLeft(formatSizeShort(dir.Bytes), 9), dir.Bytes, false)+"  "+dir.Name)
 	}
+	if root.Overlay != nil {
+		builder.WriteString(formatCleanOverlay(root.Overlay, verbose, width, style))
+	}
 	if root.VolumesTotal > 0 {
 		line(indent, T("clean.docker_root.volumes", root.VolumesTotal))
 	}
@@ -609,4 +620,46 @@ func cleanContainerDetails(container cleanOldContainer) []string {
 		details = append(details, T("clean.docker_root.project_in_engine"))
 	}
 	return details
+}
+
+// formatCleanOverlay는 overlay2의 크기를 이미지와 컨테이너로 나눈 내역이다. -v가 아니면 큰 이미지 5개까지만 보인다.
+func formatCleanOverlay(overlay *cleanOverlay, verbose bool, width int, style cleanStyle) string {
+	var builder strings.Builder
+	line := func(indent, text string) { builder.WriteString(style.row(indent, text, width)) }
+	line("  ", T("clean.docker_root.overlay", formatSizeShort(overlay.ImageBytes), formatSizeShort(overlay.ContainerBytes),
+		formatSizeShort(overlay.UnusedLayerBytes), formatSizeShort(overlay.UnknownBytes)))
+	limit := 5
+	if verbose {
+		limit = len(overlay.Images)
+	}
+	shown := min(limit, len(overlay.Images))
+	for _, image := range overlay.Images[:shown] {
+		label := strings.Join(image.Tags, ", ")
+		if label == "" {
+			label = T("clean.docker_root.overlay_no_tag", image.ID)
+		}
+		line("    ", style.size(cleanPadLeft(formatSizeShort(image.Bytes), 9), image.Bytes, false)+"  "+label)
+		if image.SharedBytes > 0 {
+			line("               ", style.dim(T("clean.docker_root.overlay_shared", formatSizeShort(image.SharedBytes))))
+		}
+		if image.InEngine != nil && *image.InEngine {
+			line("               ", style.dim(T("clean.docker_root.overlay_in_engine")))
+		}
+	}
+	if hidden := overlay.ImagesTotal - shown; hidden > 0 {
+		line("    ", style.dim(T("clean.docker_root.overlay_more", hidden)))
+	}
+	if verbose {
+		for _, container := range overlay.Containers {
+			name := container.Name
+			if name == "" {
+				name = container.ID
+			}
+			line("    ", style.size(cleanPadLeft(formatSizeShort(container.Bytes), 9), container.Bytes, false)+"  "+name)
+		}
+	}
+	if overlay.MissingLayers > 0 {
+		line("  ", style.warn(T("clean.docker_root.overlay_missing", overlay.MissingLayers)))
+	}
+	return builder.String()
 }

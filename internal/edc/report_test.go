@@ -508,7 +508,7 @@ func TestRunReportDiffComparesDuDirectories(t *testing.T) {
 	}
 	var text strings.Builder
 	printReportDiff(&text, diff, false)
-	for _, want := range []string{"2 directory deltas (e detail)", "+2.0 KB  log/app  500 B → 2.4 KB"} {
+	for _, want := range []string{T("du.diff.count", 2), "+2.0 KB  log/app  500 B → 2.4 KB"} {
 		if !strings.Contains(text.String(), want) {
 			t.Fatalf("missing %q in\n%s", want, text.String())
 		}
@@ -549,6 +549,60 @@ func TestPrintReportDiffEntryUsesBadgesInColor(t *testing.T) {
 		printReportDiffEntry(&line, &detail, reportDiffEntry{Probe: "tls.check", Change: changeChanged, BeforeStatus: test.before, AfterStatus: test.after}, true)
 		if !strings.HasPrefix(line.String(), test.want) || test.want == "STATUS CHANGED" && strings.HasPrefix(line.String(), "\033[") {
 			t.Fatalf("%s → %s = %q", test.before, test.after, line.String())
+		}
+	}
+}
+
+// 바이트와 퍼센트 지표는 사람이 읽는 꼴로, 큰 수는 지수 없이 쓴다. 2.002944e+06 같은 표기가 나오면 안 된다.
+func TestReportDiffFormatsMetricValues(t *testing.T) {
+	entry := reportDiffEntry{Probe: "info.disk:/", Change: changeSame, AfterStatus: StatusPass, Metrics: []metricDelta{
+		metricDeltaOf("used_bytes", 2002944.0, 4194304.0),
+		metricDeltaOf("used_percent", 41.25, 43.75),
+		metricDeltaOf("inodes", 1234567.0, 1300000.0),
+		{Key: "fs", Before: "ext4", After: "xfs"},
+	}}
+	var line, detail strings.Builder
+	printReportDiffEntry(&line, &detail, entry, false)
+	text := detail.String()
+	for _, want := range []string{"1.9 MB → 4.0 MB (+2.1 MB)", "41.25% → 43.75% (+2.50%p)", "1234567 → 1300000 (+65433)", "ext4 → xfs"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("missing %q in\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "e+0") || strings.Contains(line.String(), "(e ") {
+		t.Fatalf("exponent or viewer hint in plain output:\n%s%s", line.String(), text)
+	}
+}
+
+func metricDeltaOf(key string, before, after float64) metricDelta {
+	delta := after - before
+	return metricDelta{Key: key, Before: before, After: after, Delta: &delta}
+}
+
+// listen의 socket 목록은 배열이라 지표 비교에서 빠졌다. 열린 port와 닫힌 port를 보여 주되, PID만 바뀐 socket은 같은 것으로 본다.
+func TestReportDiffListsOpenedAndClosedSockets(t *testing.T) {
+	result := func(sockets []map[string]interface{}) Result {
+		list := make([]interface{}, len(sockets))
+		for index, socket := range sockets {
+			list[index] = socket
+		}
+		return Result{Probe: listenProbeID, Status: StatusPass, Metrics: map[string]interface{}{"sockets": list}}
+	}
+	ssh := map[string]interface{}{"proto": "tcp", "address": "0.0.0.0:22", "port": 22.0, "process": "sshd", "pid": "100"}
+	sshRestarted := map[string]interface{}{"proto": "tcp", "address": "0.0.0.0:22", "port": 22.0, "process": "sshd", "pid": "200"}
+	web := map[string]interface{}{"proto": "tcp", "address": "0.0.0.0:8080", "port": 8080.0, "process": "nginx", "pid": "300"}
+	dns := map[string]interface{}{"proto": "udp", "address": "127.0.0.1:53", "port": 53.0, "process": "resolved", "pid": "400"}
+	before := Report{Results: []Result{result([]map[string]interface{}{ssh, dns})}}
+	after := Report{Results: []Result{result([]map[string]interface{}{sshRestarted, web})}}
+	diff := diffReports("a.json", before, "b.json", after)
+	if len(diff.Entries) != 1 || len(diff.Entries[0].Opened) != 1 || len(diff.Entries[0].Closed) != 1 || diff.Entries[0].Opened[0].Port != 8080 || diff.Entries[0].Closed[0].Port != 53 {
+		t.Fatalf("socket diff: %+v", diff.Entries)
+	}
+	var text strings.Builder
+	printReportDiff(&text, diff, false)
+	for _, want := range []string{T("cli.report.socket_count", 1, 1), "+ tcp 0.0.0.0:8080  nginx", "- udp 127.0.0.1:53  resolved"} {
+		if !strings.Contains(text.String(), want) {
+			t.Fatalf("missing %q in\n%s", want, text.String())
 		}
 	}
 }

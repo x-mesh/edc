@@ -355,13 +355,13 @@ func TestDuProcPartialReadsALinkNotOnlyTheList(t *testing.T) {
 }
 
 func TestSnapshotAddsDuOnlyWithAPath(t *testing.T) {
-	for _, section := range snapshotSections(time.Hour, "", time.Minute) {
+	for _, section := range snapshotSections(time.Hour, nil, time.Minute) {
 		if section.name == duProbeID {
 			t.Fatal("du runs without --du")
 		}
 	}
 	root := duTestTree(t)
-	sections := snapshotSections(time.Hour, root, time.Minute)
+	sections := snapshotSections(time.Hour, []string{root}, time.Minute)
 	last := sections[len(sections)-1]
 	if last.name != duProbeID {
 		t.Fatalf("last section %q", last.name)

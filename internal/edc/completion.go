@@ -138,7 +138,8 @@ _edc() {
           _arguments '1::subcommand:(setup)' '--interval[sampling interval]:duration' '--count[출력 row 수]:count' '--no-header[header 생략]' '--process[process filter]:filter' '--split=-[박스 화면, =all은 전체]::views:(all none cpu mem disk net psi)' '--interface[net 값에 더할 interface]:interfaces:(all physical)' '--view[처음 보기]:view:(all cpu memory disk network pressure split)' '--panels[표 아래 패널]:panels:(none cpu mem disk net psi ai events)' '--columns[all 보기 열 그룹, +는 자세히]:columns:(all net net+ cpu cpu+ mem mem+ disk disk+ psi psi+ ai ai+)' '(-d --detail)'{-d,--detail}'[eBPF details]' '(-w --write)'{-w,--write}'[SQLite 기록, 경로 생략 시 기본 DB]::path:_files' '--json[sample당 한 줄 JSON 출력 경로]:path:_files'
           ;;
         history)
-          _arguments '1:subcommand:(list top process)' '--run[실행 ID]:id' '--from[시작 시각]:RFC3339' '--to[종료 시각]:RFC3339' '--process[process filter]:filter' '--metric[지표 이름]:metric' '--min[최솟값]:number' '--max[최댓값]:number' '--limit[최대 결과 수]:count' '--json[JSONL 출력 경로]:path:_files' '*:database:_files'
+          if [[ $words[2] == log ]]; then _arguments '*:command:_command_names -e'; return; fi
+          _arguments '1:subcommand:(list top process export trend growth prune log)' '--run[실행 ID]:id' '--from[시작 시각]:RFC3339' '--to[종료 시각]:RFC3339' '--process[process filter]:filter' '--metric[지표 이름]:metric' '--min[최솟값]:number' '--max[최댓값]:number' '--limit[최대 결과 수]:count' '--json[JSONL 출력 경로]:path:_files' '--output[보고서 파일]:path:_files' '--probe[스냅샷 결과]:probe' '--by[구간]:period:(hour day week)' '--root[du 경로]:path:_files' '--older-than[보관 기간]:age' '--command[기록 종류]:command:(top snapshot)' '--dry-run[삭제 없이 개수만]' '--yes[묻지 않고 삭제]' '--vacuum[파일 크기 줄이기]' '*:database:_files'
           ;;
         watch)
           if [[ $words[2] == fs ]]; then
@@ -253,7 +254,13 @@ _edc() {
             _arguments -S -A "-*" '--dir[로그 디렉터리]:directory:_directories' '--file[로그 파일]:path:_files' '--key[명령 키]:key' '--command[명령별 키 목록]:command:_command_names -e' '--limit[최근 실행 수]:count' '--failed[실패만 조회]' '--follow[시작·종료 이벤트 출력]' '--json[--follow JSONL 출력 경로]:path:_files' '*:command:_command_names -e'
             return
           fi
-          if (( CURRENT == 2 )); then compadd history; fi
+          if [[ $words[2] == prune ]]; then
+            local -a words=("${words[@]:1}")
+            local CURRENT=$((CURRENT-1))
+            _arguments '--older-than[이 기간보다 오래된 실행 삭제]:age' '--dir[로그 디렉터리]:directory:_directories' '--file[로그 파일]:path:_files' '--command[명령 이름]:command:_command_names -e' '--key[명령 키]:key' '--dry-run[삭제 없이 목록만]' '--yes[묻지 않고 삭제]' '-v[파일 모두 나열]'
+            return
+          fi
+          if (( CURRENT == 2 )); then compadd history prune; fi
           _arguments -S '--stream[capture할 stream]:stream:(stdout stderr)' '--output[append log 경로]:path:_files' '--command-display[marker에 기록할 command 범위]:mode:(full name none)' '1:separator:(--)' '2:command:_command_names -e' '*::command argument'
           ;;
         report)
@@ -328,10 +335,13 @@ _edc() {
       if [[ $COMP_CWORD -eq 2 && $cur != -* ]]; then COMPREPLY=($(compgen -W "setup" -- "$cur")); return; fi
       COMPREPLY=($(compgen -W "--interval --count --no-header --process --split --view --panels --columns --interface -d --detail --ebpf -w --write --json" -- "$cur")) ;;
     history)
-      if [[ $COMP_CWORD -eq 2 ]]; then COMPREPLY=($(compgen -W "list top process" -- "$cur"))
-      elif [[ $prev == --json ]]; then COMPREPLY=($(compgen -f -- "$cur"))
-      elif [[ $prev == --run || $prev == --from || $prev == --to || $prev == --process || $prev == --metric || $prev == --min || $prev == --max || $prev == --limit ]]; then COMPREPLY=()
-      elif [[ $cur == -* ]]; then COMPREPLY=($(compgen -W "--run --from --to --process --metric --min --max --limit --json" -- "$cur"))
+      if [[ $COMP_CWORD -eq 2 ]]; then COMPREPLY=($(compgen -W "list top process export trend growth prune log" -- "$cur"))
+      elif [[ ${COMP_WORDS[2]} == log ]]; then COMPREPLY=($(compgen -c -- "$cur"))
+      elif [[ $prev == --json || $prev == --output || $prev == --root ]]; then COMPREPLY=($(compgen -f -- "$cur"))
+      elif [[ $prev == --run || $prev == --from || $prev == --to || $prev == --process || $prev == --metric || $prev == --min || $prev == --max || $prev == --limit || $prev == --probe || $prev == --older-than ]]; then COMPREPLY=()
+      elif [[ $prev == --command ]]; then COMPREPLY=($(compgen -W "top snapshot" -- "$cur"))
+      elif [[ $prev == --by ]]; then COMPREPLY=($(compgen -W "hour day week" -- "$cur"))
+      elif [[ $cur == -* ]]; then COMPREPLY=($(compgen -W "--run --from --to --process --metric --probe --by --root --min --max --limit --json --output --older-than --command --dry-run --yes --vacuum" -- "$cur"))
       else COMPREPLY=($(compgen -f -- "$cur")); fi ;;
     watch)
       if [[ $COMP_CWORD -eq 2 ]]; then COMPREPLY=($(compgen -W "http fs" -- "$cur")); return; fi
@@ -406,7 +416,16 @@ _edc() {
     trace)
       if [[ $COMP_CWORD -eq 2 ]]; then COMPREPLY=($(compgen -W "tcp udp dns arp ndp http mysql clickhouse postgres redis" -- "$cur")); else COMPREPLY=($(compgen -W "--duration --json --raw --live --group-by --process --destination -d --detail --side --payload --payload=all --show-secrets --tls --port --http-port --yes" -- "$cur")); fi ;;
     log)
-      if [[ $COMP_CWORD -eq 2 && $cur != -* ]]; then COMPREPLY=($(compgen -W "history" -- "$cur")); return; fi
+      if [[ $COMP_CWORD -eq 2 && $cur != -* ]]; then COMPREPLY=($(compgen -W "history prune" -- "$cur")); return; fi
+      if [[ ${COMP_WORDS[2]} == prune ]]; then
+        case "$prev" in
+          --dir|--file) COMPREPLY=($(compgen -f -- "$cur")); return ;;
+          --older-than|--key) COMPREPLY=(); return ;;
+          --command) COMPREPLY=($(compgen -c -- "$cur")); return ;;
+        esac
+        COMPREPLY=($(compgen -W "--older-than --dir --file --command --key --dry-run --yes -v" -- "$cur"))
+        return
+      fi
       if [[ ${COMP_WORDS[2]} == history ]]; then
         for ((index=3; index<COMP_CWORD; index++)); do
           case "${COMP_WORDS[index]}" in

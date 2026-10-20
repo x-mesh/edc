@@ -306,6 +306,13 @@ func streamLogHistoryFollow(ctx context.Context, writer, stderr io.Writer, inter
 			ratios := historyBaseline(byKey[row.Key], row)
 			id := followedHistoryID(row)
 			state := states[id]
+			// A finished run that started before --follow and shows up only now
+			// is history that a scan limit hid, for example until the index
+			// finished building; it is recorded, not reported as new.
+			if state == nil && row.Started.Before(started) && row.Outcome != historyOutcomeRunning {
+				states[id] = &logHistoryFollowState{outcome: row.Outcome}
+				continue
+			}
 			if state == nil {
 				state = &logHistoryFollowState{outcome: historyOutcomeRunning}
 				states[id] = state

@@ -754,6 +754,21 @@ worktree 안의 빌드 폴더에는 `inside_worktree`가 있고, worktree 항목
 
 텍스트 출력은 큰 빌드 폴더 10개와 나머지 수를 보여 주고 `-v`는 모두 보여 줍니다. 루트마다 읽은 폴더 수와 `unmarked` 폴더 수가 나옵니다.
 
+### 여러 호스트의 clean
+
+`edc clean --group <그룹>`은 `edc remote` 인벤토리 그룹의 호스트마다 `edc clean --json -`을 실행하고 표 하나로 보여 줍니다. `edc remote`의 인벤토리 파일과 OpenSSH 설정을 그대로 쓰고, `--inventory`로 파일을 지정할 수 있습니다. 동시에 실행할 호스트 수는 인벤토리의 `parallel` 값을 따릅니다.
+
+```bash
+./bin/edc clean --group servers
+./bin/edc clean --group servers --inventory ./.edc/inventory.yaml --json -
+```
+
+각 호스트의 셸 `PATH`에 edc가 있어야 하며, edc가 설치해 주지는 않습니다. edc가 없는 호스트는 `edc not found`로, SSH로 연결하지 못한 호스트는 `SSH failed`와 첫 오류 줄로 표시합니다.
+
+표에는 루트 파일 시스템의 디스크 사용량, 후보 합계, 옛 Docker 데이터, 큰 로그, 가장 큰 항목이 나옵니다. 이전 버전 edc라서 보고하지 않는 값은 `—`로 표시하고, `--json`에는 호스트마다 한 행이 남습니다.
+
+각 호스트의 `clean`은 읽기만 합니다. 호스트마다 자신의 폴더를 재므로 `--project`는 `--group`과 함께 쓸 수 없습니다.
+
 ### Docker 엔진
 
 엔진에는 API socket으로 `GET`만 보냅니다. 다른 메서드는 보내지 않고 `prune` 명령도 실행하지 않습니다.
@@ -951,7 +966,8 @@ journal 기록은 20000개, journal 출력은 32 MiB, `/dev/kmsg` 기록은 1000
 edc snapshot                              # ./edc-snapshot-<host>-<UTC 시각>.json
 sudo edc snapshot --output before.json    # root는 모든 audit와 events 원천을 읽음
 sudo edc snapshot --output after.json
-sudo edc snapshot --du /var --output after.json   # /var의 edc du 결과도 함께 (Linux)
+sudo edc snapshot --du /var --output after.json   # /var의 edc du 결과도 함께 (Linux와 macOS)
+sudo edc snapshot -w --du /var --du /home         # 파일 없이 history DB에 기록
 sudo edc report diff before.json after.json
 edc snapshot --since 2h --output -        # report JSON만 stdout으로
 ```
@@ -969,7 +985,7 @@ report에는 다음 결과가 들어갑니다.
 | `audit.*` | `edc audit`의 점검 |
 | `events.*` | `--since` 기간(기본 6h)의 `edc events` 신호 |
 | `changes.*` | `--since` 기간의 `edc changes` 원천 |
-| `du.scan` | `--du <path>`를 줄 때만: 그 경로의 `edc du` 결과와 `report diff`용 큰 디렉터리 목록 |
+| `du.scan` | `--du <path>`를 줄 때만: 그 경로의 `edc du` 결과와 `report diff`용 큰 디렉터리 목록. 경로를 둘 이상 주면 결과 이름은 `du.scan:<path>`입니다. |
 
 큰 트리에 `--du`를 쓰면 `--timeout`을 늘려야 할 수 있습니다. 제한 시간에 걸리면 `du.scan` 결과는 일부만 센 값이 되고, `report diff`는 그 디렉터리를 비교하지 않습니다.
 
@@ -982,6 +998,25 @@ macOS에서는 `audit`, `events`, `changes`, `info.pressure`가 `skip`으로 나
 `--redact`는 host 이름, 홈 경로, IP 주소만 가립니다. 기본 파일 이름에서도 host 이름을 뺍니다. 계정 이름, sudo 규칙, process 이름은 report에 그대로 남습니다.
 
 파일을 쓰고 나면 경로, 결과 개수, `report diff` 안내를 출력합니다. `fail` 결과가 하나라도 있으면 exit code는 `1`이고, 없으면 `0`입니다. 사용법 오류와 쓰기 오류는 `2`를 돌려줍니다.
+
+### 스냅샷을 history DB에 기록
+
+`--write [path]`(`-w [path]`)는 스냅샷을 [Top 저장과 이력 조회](#top-저장과-이력-조회)의 SQLite DB에 기록합니다. 경로를 생략하면 기본 DB를 씁니다. `--write`만 주면 파일은 쓰지 않습니다. 파일도 남기려면 `--output`을 함께 주세요.
+
+```bash
+sudo edc snapshot -w --du /var                              # 기본 DB에 한 번 기록
+edc history list                                            # COMMAND 열에 snapshot 또는 top
+edc history export --run <run-id> --output before.json      # 스냅샷 파일과 같은 report로 꺼냄
+edc report diff before.json after.json
+```
+
+매시간 기록하려면 root의 cron에 한 줄을 추가합니다.
+
+```
+0 * * * * /usr/local/bin/edc snapshot -w --du /var --timeout 2m >/dev/null
+```
+
+결과는 `snapshot_results`에 그대로 남으므로 `history export`가 같은 report를 다시 씁니다. 터미널에서 `--run` 없이 `history export`를 실행하면 최근 스냅샷 50개 중에서 고릅니다. 기간별 조회를 위해 표 두 개를 더 둡니다. `snapshot_metrics`는 결과의 숫자 지표를 `probe`, `key`, `value`로 펼친 표이고, `du_dirs`는 `--du` 경로마다 큰 디렉터리를 `root`, `path`, `bytes`로 남긴 표입니다. 스냅샷마다 계정 이름, sudo 규칙, process 이름이 DB에 쌓입니다. `--redact`는 파일과 같이 기록에도 적용됩니다.
 
 ## Report 비교
 
@@ -1280,9 +1315,14 @@ Linux에서는 `n` 화면에 conntrack 사용률(`ct%`), listen overflow/s(`list
 ./bin/edc history top --from 2026-10-05T09:00:00+09:00 --to 2026-10-05T10:00:00+09:00 incident.db
 ./bin/edc history process --process nginx --metric cpu_pct --min 100 incident.db
 ./bin/edc history top --run <run-id> --limit 0 --json - incident.db
+./bin/edc history trend --metric memory_pct --by hour incident.db
+./bin/edc history trend --probe info.disk:/ --metric used_bytes --by day
+./bin/edc history growth --root /var
+./bin/edc history prune --older-than 90d --dry-run
+./bin/edc history prune --older-than 90d --command snapshot --yes --vacuum
 ```
 
-같은 DB를 지정해도 이전 값을 덮어쓰지 않고 별도 실행으로 추가합니다. 실행마다 host 정보, edc version, 수집 조건, 시작·종료 시각, 상태, sample 수를 남깁니다. `unfinished`는 종료 기록이 없는 실행으로, 실행 중이거나 강제 종료된 상태일 수 있습니다. 정상 종료는 대기 중인 기록을 모두 저장하고, 저장 실패는 관측을 중단하며 종료 코드 `1`을 반환합니다. 강제 종료 시 이미 commit된 transaction은 보존됩니다. 새 DB 권한은 `0600`이며 자동 삭제나 회전은 없습니다.
+같은 DB를 지정해도 이전 값을 덮어쓰지 않고 별도 실행으로 추가합니다. 실행마다 host 정보, edc version, 수집 조건, 시작·종료 시각, 상태, sample 수를 남깁니다. `unfinished`는 종료 기록이 없는 실행으로, 실행 중이거나 강제 종료된 상태일 수 있습니다. 정상 종료는 대기 중인 기록을 모두 저장하고, 저장 실패는 관측을 중단하며 종료 코드 `1`을 반환합니다. 강제 종료 시 이미 commit된 transaction은 보존됩니다. 새 DB 권한은 `0600`이며 자동으로 지우지 않습니다. 오래된 실행은 `history prune`으로 지웁니다.
 
 host 지표와 core별 CPU, 지원 여부, 실제 관측 구간, 당시 process 필터를 저장합니다. 필터가 없으면 CPU 상위 5개와 `MEM` 상위 5개의 합집합(최대 10개), 필터가 있으면 최대 50개와 전체 합계를 저장합니다. 전체 process를 기록하는 기능은 아닙니다. `p`로 일시정지하면 기록도 멈추고, 재개 시 새 기준점 다음부터 rate를 기록합니다. process는 host보다 덜 자주 갱신될 수 있으며 `process_observed_at`으로 수집 시각을 구분합니다. 시작 시각을 읽을 수 있으면 PID와 정밀한 시작 시각으로 PID 재사용을 구분합니다.
 
@@ -1290,7 +1330,15 @@ host 지표와 core별 CPU, 지원 여부, 실제 관측 구간, 당시 process 
 
 `top`과 `process` 조회는 `--metric <field>`와 `--min`, `--max`를 지원하며 경계값을 포함합니다. `memory_pct`, `disk_await_ms`, `rss_bytes`, `disk_read_bytes_per_s`처럼 JSON 최상위 숫자 필드 이름을 씁니다. `cpu_pct`는 host에서는 user+system 합, process에서는 기존의 core 하나가 100%인 값입니다. 미지원·미측정 SQL 값은 NULL로 저장하여 숫자 조건에 맞지 않게 하고, JSON에는 지원 상태를 보존합니다. 이름·PID 검색은 기존 `top --process` 규칙을 따릅니다.
 
-WAL을 사용하므로 기록 중에도 조회할 수 있습니다. DB는 로컬 파일시스템에 둡니다. 외부 SQLite 도구로 `runs`, `top_samples`, `top_process_samples`도 조회할 수 있습니다. 숫자 지표는 column, cgroup·eBPF 등 상세 정보는 `payload` JSON에 보존합니다. 조회는 기존 DB를 읽으며 생성이나 migration을 하지 않습니다. 다른 DB와 지원하지 않는 schema version은 거부합니다. JSON 출력은 DB나 journal 파일을 덮어쓸 수 없습니다.
+`trend`는 지표 하나의 값을 `--by hour`, `day`(기본값), `week` 구간으로 묶습니다. 구간은 로컬 시간의 정시, 자정, 월요일 자정에서 시작합니다. 행마다 개수, 최솟값, 평균, 95번째 백분위수(nearest rank), 최댓값을 보이고, 오래된 구간부터 나열합니다. 값이 없는 구간은 보이지 않습니다. `--probe`가 없으면 `--metric`은 top의 host 지표이고, `--probe`를 주면 그 스냅샷 결과의 숫자 지표입니다. 예를 들어 `info.disk:/`의 `used_bytes`, `info.memory`의 `used_percent`, `du.scan`의 `bytes`를 볼 수 있습니다. 없는 결과나 지표를 주면 기록된 이름을 보여 줍니다. 터미널에서 `--metric` 없이 `trend`를 실행하면 기록과 지표를 차례로 고르고, 완성된 명령을 보여 줍니다. `--run`, `--from`, `--to`, `--json`은 `top`과 같게 동작합니다.
+
+`growth`는 최근 7일, 또는 `--from`과 `--to` 범위의 스냅샷을 읽습니다. 마운트마다 마지막 스냅샷의 사용량과 전체 크기, 그리고 `used_bytes`의 최소제곱 기울기로 구한 하루 증가량을 보여 줍니다. 사용량이 늘고 있으면 그 속도로 가득 차기까지 걸리는 시간을 추정합니다. 직선으로 구한 추정치이며 예측을 보장하지 않습니다. 스냅샷이 3개보다 적거나 첫 스냅샷과 마지막 스냅샷의 간격이 1시간보다 짧으면 추정하지 않습니다. `--du` 경로마다 범위 안의 첫 번째와 마지막 완전한 스캔을 `report diff`와 같은 규칙으로 비교해, 크게 바뀐 디렉터리를 최대 10개 보여 줍니다. 범위가 1일 이상이면 하루 증가량도 함께 씁니다. 그 위의 줄은 두 스캔에서 경로 전체의 크기를 보여 주므로, 경로 바로 아래 파일의 변화도 여기에 반영됩니다. `--root <path>`는 그 경로의 디렉터리만 보여 주고, `--json`은 마운트와 경로마다 한 줄씩 씁니다.
+
+`prune --older-than <기간>`은 마지막 활동이 그 기간보다 오래된 실행을 표본·스냅샷 행과 함께 한 transaction으로 지웁니다. 마지막 활동은 시작, 종료, 마지막 표본 중 가장 늦은 시각이라, 오래전에 시작해 아직 기록 중인 `top -w`는 남습니다. 기간에는 Go duration과 `d`, `w` 단위를 씁니다(예: `90d`). `--command top`이나 `--command snapshot`으로 대상을 좁힙니다. 먼저 지울 실행과 표본 수를 보여 주고, 터미널에서는 `y`를 누를 때만 지우며, 터미널이 없으면 `--yes`나 `--dry-run`이 필요합니다. `--dry-run`은 개수만 세고 파일을 바꾸지 않습니다. 지운 행의 자리는 파일 안에 빈 page로 남아 새 기록에 다시 쓰이며, 그 크기를 알려 줍니다. `--vacuum`은 파일을 다시 써서 공간을 돌려받습니다. DB 크기만큼 여유 공간이 필요하고, 그동안 다른 기록은 기다립니다. 없는 DB는 만들지 않습니다.
+
+WAL을 사용하므로 기록 중에도 조회할 수 있습니다. DB는 로컬 파일시스템에 둡니다. 외부 SQLite 도구로 `runs`, `top_samples`, `top_process_samples`도 조회할 수 있습니다. 숫자 지표는 column, cgroup·eBPF 등 상세 정보는 `payload` JSON에 보존합니다. 스냅샷 기록은 `snapshot_results`, `snapshot_metrics`, `du_dirs`에 들어갑니다. 조회는 기존 DB를 읽으며 생성이나 migration을 하지 않습니다. `--dry-run` 없는 `prune`만 DB에 씁니다. 다른 DB와 지원하지 않는 schema version은 거부합니다.
+
+DB schema는 버전 1을 유지합니다. `top -w`나 `snapshot -w`가 스냅샷 표가 없는 DB를 열면 그 표만 추가하고 다른 것은 바꾸지 않습니다. top 기록은 그대로 남고, 이전 edc도 스냅샷 표를 무시한 채 같은 DB를 계속 읽고 씁니다. JSON 출력은 DB나 journal 파일을 덮어쓸 수 없습니다.
 
 ## Top process 필터
 
@@ -2719,9 +2767,24 @@ edc log history --follow --json - --command make
 
 이력 화면은 2초마다 로그를 다시 읽습니다. r은 즉시 갱신하고 p는 갱신을 멈추거나 다시 시작합니다. 로그 잠금을 잡고 있는 실행은 실행 중과 경과 시간으로 표시하며 실패로 세지 않습니다.
 
+`edc history log`도 같은 화면을 열고 같은 옵션을 받으므로, `top -w` 기록과 같은 자리에서도 실행 이력을 볼 수 있습니다.
+
+d로 지울 수 있습니다. 명령 목록에서는 고른 명령의 실행을 모두, 실행 목록에서는 고른 실행 하나를 지웁니다. 지울 실행 수, 파일 수, 크기를 보여 주고 y를 누를 때만 지웁니다. edc는 로그 파일을 `.edc.N` 순환 파일과 잠금 파일까지 통째로 지우며, 실행 하나를 빼려고 파일을 고쳐 쓰지 않습니다. 그래서 고르지 않은 실행이 같은 파일에 있으면(예: `--output`으로 같이 쓴 파일) 그 파일은 남고, 실행 중인 항목도 남습니다. 지우기 직전에 파일을 다시 읽어, 화면이 읽은 뒤 바뀐 파일은 지우지 않습니다. 기본 로그 디렉터리 아래의 명령 폴더가 비면 함께 지웁니다.
+
+`edc log prune --older-than <기간>`은 그 기간보다 먼저 시작한 종료된 실행을 같은 규칙으로 지웁니다. 기간에는 Go duration과 `d`, `w` 단위를 쓸 수 있습니다(예: `30d`, `2w`). `--command`와 `--key`로 대상을 좁히고, `--dir`나 `--file`로 로그 위치를 정합니다. `--dir`이나 `--file`을 쓰면 prune은 오래된 로그부터 읽으므로, 파일 한도를 넘는 폴더에서도 오래된 실행까지 닿습니다. `--dry-run`은 지우지 않고 지울 대상만 보여 줍니다. 명령마다 한 줄로 실행 수, 처음과 마지막 시작 날짜, 크기, 폴더를 적고, 로그 디렉터리는 첫 줄에 한 번만 적습니다. `-v`를 붙이면 파일을 모두 나열합니다. 터미널이 없으면 `--yes`가 있을 때만 지웁니다.
+
+```bash
+edc log prune --older-than 30d --dry-run
+edc log prune --older-than 2w --command make --yes
+```
+
 `--follow`는 실행이 시작할 때와 끝날 때 한 줄씩 출력합니다. 시작하면 지금 실행 중인 항목부터 출력합니다. `--command`, `--key`, argv, `--failed`, `--dir`, `--file` 조건을 그대로 적용하고 `--limit`는 무시합니다. `--json <path|->`는 `start`, `end`, `slow`, `error`, `summary` 이벤트를 JSONL로 기록합니다. `end` 이벤트에는 중앙값 대비 `duration_ratio`, `memory_ratio`, `cpu_ratio`가 있고, 2배 이상인 항목을 `alerts`에 적습니다. 실행 중인 항목이 평소 소요 시간의 2배를 넘으면 `slow` 이벤트를 한 번 냅니다. 텍스트 모드의 상태 줄은 stderr로 출력합니다. Ctrl-C로 끝냅니다.
 
-기본 로그 디렉터리와 하위 한 단계의 `.log` 파일, 설정한 `defaults.log.output`을 조회하며 회전 조각도 함께 읽습니다. 임의 위치에 저장한 로그는 `--file` 또는 `--dir`로 지정합니다. 조회는 최대 1,000개 파일 묶음, 10,000개 디렉터리 항목, 128 MiB, 10,000개 실행 시도로 제한합니다. 한도 초과·읽는 동안 변경·손상된 기록은 안내와 함께 부분 결과를 반환하고 exit code `2`를 돌려줍니다. 과거 실패가 있어도 정상적인 조회는 `0`입니다.
+기본 로그 디렉터리와 하위 한 단계의 `.log` 파일, 설정한 `defaults.log.output`을 조회하며 회전 조각도 함께 읽습니다. 임의 위치에 저장한 로그는 `--file` 또는 `--dir`로 지정합니다. 조회는 최대 1,000개 파일 묶음, 200,000개 디렉터리 항목, 128 MiB, 10,000개 실행 시도로 제한하며, 한도에 걸리면 수정 시각이 최신인 파일부터 남기고 오래된 것을 뺍니다.
+
+기본 로그 디렉터리에는 실행 메타데이터 인덱스 `.edc-index.db`(권한 `0600`)를 둡니다. 이력 화면, `--follow`, prune은 이 인덱스를 읽으므로 위의 파일 한도에 묶이지 않고 최대 100,000건까지 보여 주며, 읽을 때마다 바뀐 로그만 다시 파싱합니다. `edc log` 자체는 인덱스를 열지 않습니다. 원본은 로그 파일이고 인덱스는 캐시입니다. 인덱스를 쓸 수 없으면 안내를 한 번 출력하고 로그 파일을 직접 읽습니다. 잠금이 0.2초 넘게 풀리지 않을 때, 손상되었을 때, 다른 버전의 형식일 때, 디렉터리가 읽기 전용일 때, 처음 만드는 데 1.5초가 넘게 걸릴 때가 여기에 해당하며, 종료 코드는 바뀌지 않습니다. 손상된 인덱스는 `.edc-index.db.corrupt-<시각>`으로 옮기고 다시 만듭니다. `--dir`과 `--file`은 항상 파일을 직접 읽습니다.
+
+실행 목록과 `--key` 출력에는 그 명령의 추세 줄이 있습니다. 최근 14일을 하루 한 칸의 막대로 보여 주고, 실행 수, 실패 수, 성공한 실행의 평균 소요 시간을 함께 적습니다. 기본 로그 디렉터리에서 prune이 실행을 지우면, 실제로 지운 실행을 `.edc-stats.db`(권한 `0600`)의 일 단위 요약에 더합니다(실행 수, 실패 수, 소요 시간 합과 최대, 최대 메모리, CPU 시간). 요약은 지운 뒤에 쓰므로, 바뀌어서 남긴 로그가 두 번 세어지지 않습니다. 대신 두 단계 사이에 edc가 멈추면 그 prune의 요약은 남지 않습니다. 추세는 이 요약과 아직 로그에 남은 실행을 합쳐서 계산하므로 prune 뒤에도 빠짐없이 보입니다. `d`는 요약을 남기지 않고 지웁니다. 요약은 인덱스와 달리 로그로 다시 만들 수 없으므로 edc가 지우거나 바꾸지 않습니다. 요약을 쓰지 못하면 prune은 경고만 하고 그대로 지우고, 다른 버전의 형식이거나 손상되었으면 안내를 한 번 출력하고 추세에서 보관된 날짜만 뺍니다. 한도 초과·읽는 동안 변경·손상된 기록은 안내와 함께 부분 결과를 반환하고 exit code `2`를 돌려줍니다. 과거 실패가 있어도 정상적인 조회는 `0`입니다.
 
 새 로그는 전체 argv의 SHA-256 키와 표시 방식을 기록합니다. `command-display=name`은 인자를 숨기지만 키로 구분할 수 있으며, `none`은 키도 기록하지 않습니다. 기존 로그는 전체 argv가 확실한 경우 키를 재구성합니다. 기존 단일 basename 기록은 인자 없는 실행인지 name 모드인지 구별할 수 없어 키 목록에서 제외하고 건수를 안내합니다. 숨겨진 인자는 복원하지 않습니다.
 

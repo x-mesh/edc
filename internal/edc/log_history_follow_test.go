@@ -44,7 +44,7 @@ func TestLogHistoryFollowEmitsStartAndEndOnce(t *testing.T) {
 	old := followFixture(other, base.Add(-time.Hour), historyOutcomeSuccess)
 	running := followFixture(key, base, historyOutcomeRunning)
 	finished := followFixture(key, base, historyOutcomeFail)
-	fresh := followFixture(other, base.Add(time.Second), historyOutcomeSuccess)
+	fresh := followFixture(other, time.Now().Add(time.Minute), historyOutcomeSuccess)
 	output, stderr, code := runFollowFixture(t, logHistoryOptions{JSON: "-"}, [][]logHistoryAttempt{
 		{running, old},
 		{running, old},
@@ -93,7 +93,7 @@ func TestLogHistoryFollowWaitsBeforeReportingACrash(t *testing.T) {
 
 func TestLogHistoryFollowFiltersFailuresAndKeys(t *testing.T) {
 	key, other := strings.Repeat("d", 64), strings.Repeat("e", 64)
-	started := time.Now()
+	started := time.Now().Add(time.Minute)
 	output, _, _ := runFollowFixture(t, logHistoryOptions{Failed: true, Key: key[:12]}, [][]logHistoryAttempt{
 		{},
 		{followFixture(key, started, historyOutcomeSuccess), followFixture(key, started.Add(time.Second), historyOutcomeFail), followFixture(other, started, historyOutcomeFail)},
@@ -153,5 +153,19 @@ func TestLogHistoryFollowReportsSlowRunsAndAlerts(t *testing.T) {
 	}
 	if end.DurationRatio == nil || *end.DurationRatio != 6 || strings.Join(end.Alerts, ",") != "duration" || !strings.Contains(output, `"slow":1`) {
 		t.Fatalf("end event: %s", output)
+	}
+}
+
+func TestLogHistoryFollowStaysQuietWhenOlderRunsAppear(t *testing.T) {
+	key := strings.Repeat("9", 64)
+	now := time.Now()
+	visible := followFixture(key, now.Add(-time.Hour), historyOutcomeSuccess)
+	var older []logHistoryAttempt
+	for index := 2; index <= 4; index++ {
+		older = append(older, followFixture(key, now.Add(-time.Duration(index)*time.Hour), historyOutcomeSuccess))
+	}
+	output, _, _ := runFollowFixture(t, logHistoryOptions{JSON: "-"}, [][]logHistoryAttempt{{visible}, append([]logHistoryAttempt{visible}, older...), append([]logHistoryAttempt{visible}, older...)})
+	if lines := strings.Split(strings.TrimSpace(output), "\n"); len(lines) != 1 || !strings.Contains(lines[0], `"type":"summary"`) {
+		t.Fatalf("older runs were reported as events:\n%s", output)
 	}
 }

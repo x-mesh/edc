@@ -802,6 +802,21 @@ A build folder inside a worktree has `inside_worktree`. The worktree item shows 
 
 The text output shows the 10 largest build folders and the number of the rest. `-v` shows all of them. Each root shows the number of folders that edc read and the number of `unmarked` folders.
 
+### Clean on more hosts
+
+`edc clean --group <group>` runs `edc clean --json -` on each host of an `edc remote` inventory group and shows one table. It uses the inventory files and the OpenSSH settings of `edc remote`. `--inventory` sets the file. The `parallel` value of the inventory sets how many hosts run at the same time.
+
+```bash
+./bin/edc clean --group servers
+./bin/edc clean --group servers --inventory ./.edc/inventory.yaml --json -
+```
+
+Each host must have edc on the PATH of its shell. edc does not install it. A host without edc shows `edc not found`. A host that SSH cannot reach shows `SSH failed` and the first error line.
+
+The table shows the disk use of the root file system, the sum of the candidates, the old Docker data, the large logs, and the largest item. If a host has an older edc that does not report a value, the cell shows `—`. `--json` keeps one row for each host.
+
+`clean` only reads, on each host. `--project` does not combine with `--group`, because each host measures its own folders.
+
 ### Docker engine
 
 edc reads the engine with `GET` requests to the API socket. It sends no other method and runs no `prune` command.
@@ -1000,6 +1015,7 @@ edc snapshot                              # ./edc-snapshot-<host>-<UTC time>.jso
 sudo edc snapshot --output before.json    # root reads all audit and event sources
 sudo edc snapshot --output after.json
 sudo edc snapshot --du /var --output after.json   # also edc du of /var (Linux and macOS)
+sudo edc snapshot -w --du /var --du /home         # record in the history database, no file
 sudo edc report diff before.json after.json
 edc snapshot --since 2h --output -        # only the report JSON to stdout
 ```
@@ -1017,7 +1033,7 @@ The report holds these results.
 | `audit.*` | the `edc audit` checks |
 | `events.*` | the `edc events` signals in the `--since` window (default 6h) |
 | `changes.*` | the `edc changes` sources in the `--since` window |
-| `du.scan` | only with `--du <path>`: `edc du` of that path, with the largest directories for `report diff` |
+| `du.scan` | only with `--du <path>`: `edc du` of that path, with the largest directories for `report diff`. With two or more paths, each result is `du.scan:<path>`. |
 
 A large tree can need a longer `--timeout` for `--du`. At the limit, the `du.scan` result is partial, and `report diff` does not compare its directories.
 
@@ -1030,6 +1046,25 @@ The file has mode 0600 because it holds account names, sudo rules, and process n
 `--redact` hides the host name, the home path, and IP addresses only. It also removes the host name from the default file name. Account names, sudo rules, and process names stay in the report.
 
 After the file write, edc prints the path, the result counts, and a `report diff` hint. The exit code is `1` if a result is `fail`, and `0` otherwise. Usage errors and write errors return `2`.
+
+### Record snapshots in the history database
+
+`--write [path]` (`-w [path]`) records the snapshot in the SQLite database of [Top recordings and history](#top-recordings-and-history). With no path, edc uses the default database. With `--write` alone, edc writes no file. Add `--output` to write a file too.
+
+```bash
+sudo edc snapshot -w --du /var                              # one record in the default database
+edc history list                                            # COMMAND shows snapshot or top
+edc history export --run <run-id> --output before.json      # the same report as a snapshot file
+edc report diff before.json after.json
+```
+
+To record a snapshot every hour, add a cron line for root:
+
+```
+0 * * * * /usr/local/bin/edc snapshot -w --du /var --timeout 2m >/dev/null
+```
+
+edc keeps each result in `snapshot_results`, so `history export` writes the same report again. In a terminal, `history export` without `--run` lets you pick one of the last 50 snapshots. It also keeps two tables for queries over time. `snapshot_metrics` holds each numeric metric of a result as `probe`, `key`, and `value`. `du_dirs` holds the largest directories of each `--du` path as `root`, `path`, and `bytes`. The database collects the account names, sudo rules, and process names of each snapshot. `--redact` applies to the record as it does to the file.
 
 ## Report diff
 
@@ -1368,9 +1403,14 @@ Each line has `time`, `hostname`, `cores`, the network and disk rates in bytes p
 ./bin/edc history top --from 2026-10-05T09:00:00+09:00 --to 2026-10-05T10:00:00+09:00 incident.db
 ./bin/edc history process --process nginx --metric cpu_pct --min 100 incident.db
 ./bin/edc history top --run <run-id> --limit 0 --json - incident.db
+./bin/edc history trend --metric memory_pct --by hour incident.db
+./bin/edc history trend --probe info.disk:/ --metric used_bytes --by day
+./bin/edc history growth --root /var
+./bin/edc history prune --older-than 90d --dry-run
+./bin/edc history prune --older-than 90d --command snapshot --yes --vacuum
 ```
 
-Each invocation adds a separate run with host information, edc version, collection settings, start/end times, status, and sample count. `unfinished` means the run has no recorded end, which can indicate an active run or a forced termination. Normal exits flush queued samples; recording errors end observation with exit code `1`. Forced termination preserves committed transactions. A new database has mode 0600. There is no automatic deletion or rotation.
+Each invocation adds a separate run with host information, edc version, collection settings, start/end times, status, and sample count. `unfinished` means the run has no recorded end, which can indicate an active run or a forced termination. Normal exits flush queued samples; recording errors end observation with exit code `1`. Forced termination preserves committed transactions. A new database has mode 0600. Nothing is deleted automatically; `history prune` deletes old runs.
 
 Host samples include the existing numeric top metrics, per-core CPU values, support flags, the actual observation interval, and the process filter active at that time. Without a process filter, recording retains the union of the CPU top five and `MEM` top five (at most ten). With a filter, it retains up to fifty processes and the total of all matches. It does not record every process. Pausing top pauses recording, and resuming establishes a fresh baseline before the next recorded rate. Process refreshes may be less frequent than host samples; `process_observed_at` identifies the refresh time. PID and precise process start time distinguish reused PIDs when start time is available.
 
@@ -1378,7 +1418,15 @@ Host samples include the existing numeric top metrics, per-core CPU values, supp
 
 `top` and `process` support `--metric <field>` with an inclusive `--min`, `--max`, or both. Use top-level numeric JSON field names, such as `memory_pct`, `disk_await_ms`, `rss_bytes`, or `disk_read_bytes_per_s`. `cpu_pct` means user+system for host samples and the existing per-core percentage for processes. Unsupported or unmeasured SQL values are NULL and do not match numeric thresholds; JSON preserves availability information. The process name/PID filter follows the same rules as `top --process`.
 
-The database uses WAL so you can query while recording. Keep it on a local filesystem. External SQLite tools can inspect `runs`, `top_samples`, and `top_process_samples`; numeric fields are columns and `payload` retains JSON details, including cgroup/eBPF data. `history` opens existing databases for reading and does not create or migrate them. Unrelated databases and unsupported schema versions are rejected. JSON output cannot overwrite the database or its journal files.
+`trend` groups the values of one metric by `--by hour`, `day` (the default), or `week`. A period starts at the local hour, at local midnight, or at local midnight on Monday. Each row shows the count, the minimum, the average, the 95th percentile (nearest rank), and the maximum, oldest period first. Periods without a value do not show. Without `--probe`, `--metric` is a top host field. With `--probe`, `--metric` is a numeric metric of that snapshot result, such as `info.disk:/` with `used_bytes`, `info.memory` with `used_percent`, or `du.scan` with `bytes`. An unknown result or metric shows the recorded names. In a terminal, `trend` without `--metric` lets you pick the records and then the metric, and prints the full command. `--run`, `--from`, `--to`, and `--json` work as for `top`.
+
+`growth` reads the snapshots of the last 7 days, or of `--from` and `--to`. For each mount, it shows the used and total size of the last snapshot and the change per day, a least-squares slope of `used_bytes`. If the use grows, it estimates the time until the mount is full at that rate. This is an estimate from a straight line, not a forecast. With fewer than 3 snapshots, or with less than 1 hour between the first and the last, edc does not estimate. For each `--du` path, `growth` compares the first and the last complete scan of the range with the rules of `report diff` and shows up to 10 directories with the largest change, with the change per day when the range is 1 day or more. A line above them shows the total size of the path in both scans, which also counts the files directly under the path. `--root <path>` shows only the directories of that path. `--json` writes one line for each mount and each path.
+
+`prune --older-than <age>` deletes the runs whose last activity is older than the age, with their samples and snapshot rows, in one transaction. The last activity is the latest of the start, the end, and the last sample, so a `top -w` that started long ago and still records stays. The age accepts Go durations and the units `d` and `w`, such as `90d`. `--command top` or `--command snapshot` limits the runs. edc shows the runs and samples first and deletes only after `y` in a terminal; without a terminal it needs `--yes` or `--dry-run`. `--dry-run` only counts and does not change the file. Deleted rows leave free pages in the file, which new records reuse; edc says how much. `--vacuum` rewrites the file to give the space back. It needs free disk space about the size of the database, and other writers wait while it runs. prune does not create a missing database.
+
+The database uses WAL so you can query while recording. Keep it on a local filesystem. External SQLite tools can inspect `runs`, `top_samples`, and `top_process_samples`; numeric fields are columns and `payload` retains JSON details, including cgroup/eBPF data. Snapshot records use `snapshot_results`, `snapshot_metrics`, and `du_dirs`. `history` opens existing databases for reading and does not create or migrate them; only `prune` without `--dry-run` writes. Unrelated databases and unsupported schema versions are rejected.
+
+The database schema stays version 1. When `top -w` or `snapshot -w` opens a database without the snapshot tables, edc adds them and changes nothing else. The top records stay, and an earlier edc still reads and writes the same database; it ignores the snapshot tables. JSON output cannot overwrite the database or its journal files.
 
 ## Filter processes in top
 
@@ -2887,9 +2935,24 @@ The run list shows the peak memory. In a terminal of 84 columns or more, it also
 
 The browser reads the logs again every 2 seconds. Press r to refresh now and p to pause or resume. An attempt that holds its log lock shows RUNNING with its elapsed time. RUNNING is not a failure.
 
+`edc history log` opens the same browser and takes the same options, so the run history is also next to the `top -w` history.
+
+Press d to delete. In the command list, d deletes all runs of the selected command. In the run list, it deletes the selected run. edc shows the number of runs, files, and bytes, and deletes only after you press y. edc deletes a whole log file with its `.edc.N` archives and its lock file. It never rewrites a file to remove one run. So a run stays if its file also holds a run that you did not select, for example a file that you shared with `--output`. A running attempt also stays. edc reads each file again just before it deletes it, and keeps a file that changed after the browser read it. An empty command folder under the default log directory is removed.
+
+`edc log prune --older-than <age>` deletes finished runs that started before that age, with the same rules. The age accepts Go durations and the units `d` and `w`, for example `30d` or `2w`. `--command` and `--key` limit the runs, and `--dir` or `--file` choose the logs. With `--dir` or `--file`, prune reads the oldest logs first, so it still reaches old runs in a folder over the file limits. `--dry-run` shows what it would delete without deleting it: one line for each command with the number of runs, the first and last start date, the size, and the folder. The first line names the log directory once. `-v` also lists every file. Without a terminal, prune deletes only with `--yes`.
+
+```bash
+edc log prune --older-than 30d --dry-run
+edc log prune --older-than 2w --command make --yes
+```
+
 `--follow` prints one line when an attempt starts and one line when it ends. It first prints the attempts that run now. The filters `--command`, `--key`, argv, `--failed`, `--dir`, and `--file` apply. `--limit` has no effect. `--json <path|->` writes JSONL `start`, `end`, `slow`, `error`, and `summary` events. An `end` event has `duration_ratio`, `memory_ratio`, and `cpu_ratio` against the median, and `alerts` lists the values at twice the median or more. A `slow` event comes once when a running attempt takes twice the usual duration. In text mode, status lines go to stderr. Press Ctrl-C to stop.
 
-Discovery reads `.log` files in the default directory and one subdirectory level, plus `defaults.log.output`. Rotation archives are read together. Use `--file` or `--dir` for other locations. Scans are limited to 1,000 file families, 10,000 directory entries, 128 MiB, and 10,000 attempts. Limits, changes during reading, and malformed records produce notices, partial results, and exit code `2`. A successful query returns `0` even if historical commands failed.
+Discovery reads `.log` files in the default directory and one subdirectory level, plus `defaults.log.output`. Rotation archives are read together. Use `--file` or `--dir` for other locations. Scans are limited to 1,000 file families, 200,000 directory entries, 128 MiB, and 10,000 attempts. At a limit, edc keeps the newest files by modification time and drops the oldest.
+
+For the default log directory, edc keeps an index of the run metadata in `.edc-index.db` in that directory, with mode `0600`. The history, `--follow`, and prune read the index, so the file limits do not cap them; up to 100,000 runs are shown. Each read parses only the logs that changed since the last read. `edc log` itself never opens the index. The logs stay the source, and the index is only a cache. If edc cannot use the index, it reads the log files directly and prints one notice. This happens when the index is locked for more than 0.2 seconds, damaged, from another version, or in a read-only directory, and while a first build takes more than 1.5 seconds. The exit code does not change. A damaged index is moved to `.edc-index.db.corrupt-<time>` and built again. `--dir` and `--file` always read the files directly.
+
+The run list and `--key` output show a trend line for the command: one bar per day for the last 14 days, the number of runs, the failures, and the average duration of successful runs. When prune deletes runs of the default log directory, it adds the runs that it really deleted to a daily summary in `.edc-stats.db` (mode `0600`): runs, failures, total and longest duration, peak memory, and CPU time. edc writes the summary after the deletion, so a log that changed and was kept is not counted twice. If edc stops between the two steps, the summary of that prune is lost. The trend adds these summaries to the runs that are still in the logs, so it stays complete after a prune. `d` deletes without a summary. Unlike the index, the summary cannot be built again from the logs, so edc never deletes or replaces it. If edc cannot write it, prune prints a warning and still deletes. If it is from another version or damaged, the archived days are left out of the trend with one notice. Limits, changes during reading, and malformed records produce notices, partial results, and exit code `2`. A successful query returns `0` even if historical commands failed.
 
 New start markers record the SHA-256 argv key and command display mode. `name` hides arguments but retains the key; `none` omits the key as well. Legacy records can reconstruct keys when the complete argv is known. A legacy singleton basename cannot distinguish a no-argument invocation from name mode, so it is excluded with a notice. Hidden arguments are not reconstructed.
 

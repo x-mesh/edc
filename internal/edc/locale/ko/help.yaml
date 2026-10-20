@@ -198,6 +198,8 @@ command:
     option:
       timeout: "제한 시간, 지나면 남은 후보는 측정 안 함으로 표시"
       project: "빌드 폴더를 찾을 루트, 여러 번 지정 가능"
+      group: "edc remote 그룹의 호스트마다 clean을 실행"
+      inventory: "--group의 인벤토리 파일"
       verbose: "모든 후보, 더 많은 묶음, 이유, 정리 명령을 표시"
     notes:
       - "읽기만 합니다. 아무것도 바꾸거나 지우지 않습니다."
@@ -447,7 +449,8 @@ command:
       output: "report 파일, -는 stdout"
       since: "events와 changes가 볼 기간 (기본 6h)"
       force: "이미 있는 출력 파일을 바꿈"
-      du: "이 경로의 edc du 결과도 저장 (Linux와 macOS)"
+      du: "이 경로의 edc du 결과도 저장, 여러 번 지정 가능"
+      write: "history DB에도 기록, 값이 없으면 기본 DB"
     notes:
       - "info, listen, audit, events, changes 결과를 report 하나에 저장합니다."
       - "파일 권한은 0600입니다. 계정, sudo 규칙, process 이름이 들어갑니다."
@@ -471,6 +474,7 @@ command:
     sub:
       run: "명령을 실행하고 출력과 종료 상태 저장"
       history: "명령별로 저장된 실행 기록 보기"
+      prune: "오래된 실행 삭제"
     option:
       stream: "기록할 출력 (기본 both)"
       output: "로그 파일; 기본은 실행별 파일 생성"
@@ -483,10 +487,13 @@ command:
       timeout: "시도별 시간 제한; 0은 제한 없음 (기본 0s)"
       kill_after: "종료 신호 뒤 SIGKILL 전 대기 시간 (기본 5s)"
     notes:
+      - "edc history log도 같은 화면을 엽니다."
       - "history는 인자별 키 목록을 보여주며 선택하면 실행 이력을 엽니다."
       - "Enter로 이력과 실행 상세를 엽니다. Esc는 복귀, q는 종료입니다."
       - "history <command> [args...]는 argv 조회, --command는 이름별 목록입니다."
       - "--failed는 실패만, --limit는 최근 실행 수를 지정합니다."
+      - "d는 고른 명령이나 실행을 y로 확인한 뒤 지웁니다. 공유 로그 파일은 남깁니다."
+      - "prune은 오래된 실행을 지웁니다: edc log prune --older-than 30d"
       - "이력 화면은 2초마다 갱신합니다. r은 즉시 갱신, p는 일시 정지입니다."
       - "--follow는 실행이 시작하고 끝날 때마다 한 줄씩 출력합니다."
       - "파이프에서는 키 목록을 출력하고 입력을 기다리지 않습니다."
@@ -551,6 +558,11 @@ command:
   history:
     summary: "저장한 resource 관측 이력 검색"
     sub:
-      list: "edc top -w로 기록한 실행 목록"
+      list: "top -w와 snapshot -w로 기록한 실행"
+      export: "기록한 스냅샷을 보고서 파일로"
+      trend: "구간별 개수·최소·평균·p95·최대"
+      growth: "디스크의 하루 증가량과 크게 바뀐 디렉터리"
+      prune: "기간보다 오래된 실행 삭제"
       top: "host sample, 최신순"
       process: "process sample, 최신순"
+      log: "edc log가 기록한 명령 실행"

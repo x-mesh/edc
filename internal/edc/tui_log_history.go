@@ -34,6 +34,9 @@ type logHistoryBrowser struct {
 	load                             logHistoryLoader
 	seq                              int
 	paused                           bool
+	// confirm is the deletion waiting for y; status is the last deletion result.
+	confirm *logHistoryDeletion
+	status  string
 }
 
 func newLogHistoryBrowser(groups []logHistoryGroup, options logHistoryOptions, notices []string) logHistoryBrowser {
@@ -183,6 +186,16 @@ func (model *logHistoryBrowser) refreshHistory() {
 }
 
 func (model *logHistoryBrowser) summary() []string {
+	var trend []string
+	if len(model.groups) > 0 {
+		if line := historyTrend(model.groups[model.cursor], model.now, model.color); line != "" {
+			trend = append(trend, line)
+		}
+	}
+	return append(trend, model.summaryLines()...)
+}
+
+func (model *logHistoryBrowser) summaryLines() []string {
 	rows := model.rows()
 	contexts := map[string]bool{}
 	for _, row := range rows {
@@ -212,6 +225,13 @@ func (model logHistoryBrowser) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		model.apply(value)
 		return model, model.tick()
 	case tea.KeyPressMsg:
+		if model.confirm != nil {
+			return model.answerDeletion(value.String() == "y")
+		}
+		if value.String() == "d" {
+			model.planDeletion()
+			return model, nil
+		}
 		switch value.String() {
 		case "q", "ctrl+c":
 			return model, tea.Quit
@@ -337,6 +357,12 @@ func (model logHistoryBrowser) View() tea.View {
 		}
 		lines = append(lines, "", model.keyHints("cli.log_history.list_help"))
 	}
+	if model.confirm != nil {
+		lines[len(lines)-1] = model.deletionPrompt()
+	}
+	if model.status != "" {
+		lines = append(lines, historyTint(model.status, richYellow, model.color))
+	}
 	if len(model.notices) > 0 {
 		lines = append(lines, historyTint(model.notices[0], richYellow, model.color))
 		if len(model.notices) > 1 {
@@ -353,6 +379,58 @@ func (model logHistoryBrowser) View() tea.View {
 	view := tea.NewView(strings.Join(body, "\n"))
 	view.AltScreen = true
 	return view
+}
+
+// planDeletion selects the runs of the command in the list, or the run in the
+// run list, and asks before it deletes anything.
+func (model *logHistoryBrowser) planDeletion() {
+	if len(model.groups) == 0 {
+		return
+	}
+	targets := model.groups[model.cursor].Rows
+	if model.detail {
+		rows := model.rows()
+		if len(rows) == 0 {
+			return
+		}
+		targets = rows[model.rowCursor : model.rowCursor+1]
+	}
+	plan := planLogHistoryDeletion(targets)
+	if plan.Runs == 0 {
+		model.status = T("cli.log_history.delete_none", plan.Shared, plan.Running)
+		return
+	}
+	model.confirm, model.status = &plan, ""
+}
+
+func (model logHistoryBrowser) answerDeletion(yes bool) (tea.Model, tea.Cmd) {
+	plan := *model.confirm
+	model.confirm = nil
+	if !yes {
+		return model, nil
+	}
+	deleted, err := plan.execute()
+	model.status = T("cli.log_history.delete_done", deleted.Runs, deleted.Files, formatSizeShort(deleted.Bytes))
+	if skipped := deleted.Shared + deleted.Running; skipped > 0 {
+		model.status += " · " + T("cli.log_history.delete_skipped", skipped)
+	}
+	if err != nil {
+		model.status += " · " + T("cli.log_history.delete_failed", reportIdentityValue(err.Error()))
+	}
+	if model.load == nil {
+		return model, nil
+	}
+	model.seq++
+	return model, model.reload()
+}
+
+func (model logHistoryBrowser) deletionPrompt() string {
+	plan := model.confirm
+	text := T("cli.log_history.delete_confirm", plan.Runs, plan.Files, formatSizeShort(plan.Bytes))
+	if plan.Shared+plan.Running > 0 {
+		text += "  " + T("cli.log_history.delete_kept", plan.Shared, plan.Running)
+	}
+	return historyStrong(text, richYellow, model.color)
 }
 
 func (model logHistoryBrowser) liveState() string {

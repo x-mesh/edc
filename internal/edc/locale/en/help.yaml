@@ -198,6 +198,8 @@ command:
     option:
       timeout: "time limit, after it edc marks the rest not scanned"
       project: "root to search for marked build folders, repeat for more"
+      group: "run clean on each host of an edc remote group"
+      inventory: "inventory file for --group"
       verbose: "show every candidate, more groups, reasons, cleanup commands"
     notes:
       - "It reads only. It changes and deletes nothing."
@@ -447,7 +449,8 @@ command:
       output: "report file, - for stdout"
       since: "how far back events and changes look (default 6h)"
       force: "replace an existing output file"
-      du: "also save edc du of this path (Linux and macOS)"
+      du: "also save edc du of this path; repeat for more paths"
+      write: "also record in the history DB; alone uses the default DB"
     notes:
       - "It saves info, listen, audit, events, and changes results in one report."
       - "The file has mode 0600. It holds accounts, sudo rules, and process names."
@@ -471,6 +474,7 @@ command:
     sub:
       run: "run a command, save its output and exit status"
       history: "browse the saved runs of each command"
+      prune: "delete old runs"
     option:
       stream: "stream to record (default both)"
       output: "log file; default creates one file per run"
@@ -483,10 +487,13 @@ command:
       timeout: "limit per attempt; 0 disables (default 0s)"
       kill_after: "SIGKILL grace period (default 5s)"
     notes:
+      - "edc history log opens the same viewer."
       - "history lists argument keys; select one to view its runs."
       - "Enter opens runs, then details. Esc goes back; q quits."
       - "history <command> [args...] matches argv; --command lists keys."
       - "Use --failed for failures and --limit for recent attempts."
+      - "d deletes the selected command or run after y. A shared log file stays."
+      - "prune deletes old runs: edc log prune --older-than 30d."
       - "The viewer refreshes every 2s. r refreshes now and p pauses."
       - "--follow prints one line when each run starts and ends."
       - "Piped history prints keys without waiting for input."
@@ -551,6 +558,11 @@ command:
   history:
     summary: "Search recorded resource observations"
     sub:
-      list: "runs that edc top -w recorded"
+      list: "runs that top -w and snapshot -w recorded"
+      export: "a recorded snapshot as a report file"
+      trend: "count, min, avg, p95, max per period"
+      growth: "disk growth per day, changed directories"
+      prune: "delete runs older than an age"
       top: "host samples, newest first"
       process: "process samples, newest first"
+      log: "command runs that edc log recorded"

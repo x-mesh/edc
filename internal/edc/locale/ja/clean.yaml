@@ -208,6 +208,26 @@ clean:
     build_caches_omitted: "ほかのフォルダ %d 個"
     build_caches_incomplete: "すべてのフォルダを確認する前に探索が止まったため、ビルドキャッシュがほかにもある可能性があります"
     build_caches_note: "docker buildx prune はこのフォルダを削除しません"
+  group:
+    summary: "ホスト %d 台、結果 %d 台、結果なし %d 台"
+    truncated: "出力が %s を超えました"
+    versions: "ホストごとに edc のバージョンが異なります: %s"
+    col:
+      host: "ホスト"
+      disk: "ディスク使用"
+      candidates: "候補"
+      old_docker: "古い Docker"
+      logs: "大きなログ"
+      largest: "最大の項目"
+    status:
+      edc_missing: "edc がありません。install.sh でインストールしてください"
+      unreachable: "SSH 失敗"
+      timeout: "制限時間に達しました"
+      invalid_output: "clean の結果ではない出力"
+      failed: "edc clean 失敗"
+    error:
+      inventory_without_group: "--inventory には --group が必要です"
+      project: "--project は --group と一緒に使えません。各ホストが自分のフォルダーを測ります"
   vm:
     title: "VM ディスク (ユーザーデータ、合計に含めません)"
     panel: "VM ディスク"

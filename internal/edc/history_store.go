@@ -22,6 +22,9 @@ import (
 )
 
 const historyApplicationID = 0x45444348
+
+// historySchemaVersion은 기존 표의 형식이다. 스냅샷 표는 표를 더하기만 하고 기존 표를 바꾸지 않으므로 버전을 올리지 않는다.
+// 올리면 버전 1만 여는 이전 edc가 같은 DB를 열지 못해, cron의 이전 top -w가 새 snapshot -w 뒤로 계속 실패한다.
 const historySchemaVersion = 1
 const historyQueueSize = 16
 
@@ -249,10 +252,20 @@ func initializeHistoryDB(db *sql.DB, write bool) error {
 		return err
 	}
 	if application == historyApplicationID && version == historySchemaVersion {
-		if write {
-			return historyEnableWAL(db)
+		// 읽기는 스냅샷 표가 없는 DB도 그대로 읽는다. 쓰기로 열 때만 없는 표를 더한다.
+		if !write {
+			return nil
 		}
-		return nil
+		has, err := historyHasSnapshots(db)
+		if err != nil {
+			return err
+		}
+		if !has {
+			if err := historyMigrate(db, historySnapshotStatements()); err != nil {
+				return err
+			}
+		}
+		return historyEnableWAL(db)
 	}
 	if application != 0 || version != 0 || !write {
 		return fmt.Errorf("%s", T("history.error.schema"))
@@ -263,12 +276,33 @@ func initializeHistoryDB(db *sql.DB, write bool) error {
 	if tables != 0 {
 		return fmt.Errorf("%s", T("history.error.schema"))
 	}
+	statements := append(historyV1Statements(), historySnapshotStatements()...)
+	statements = append(statements, fmt.Sprintf("PRAGMA application_id=%d", historyApplicationID))
+	if err := historyMigrate(db, statements); err != nil {
+		return err
+	}
+	return historyEnableWAL(db)
+}
+
+// historyMigrate는 statements를 한 transaction으로 실행하고 user_version을 현재 버전으로 둔다. 중간에 실패하면 아무것도 남지 않는다.
+// 두 writer가 처음 여는 순간이 겹쳐도 늦은 쪽의 IF NOT EXISTS가 아무것도 하지 않아, 둘 다 DB를 연다.
+func historyMigrate(db *sql.DB, statements []string) error {
 	tx, err := db.Begin()
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	statements := []string{
+	for _, statement := range append(statements, fmt.Sprintf("PRAGMA user_version=%d", historySchemaVersion)) {
+		if _, err := tx.Exec(statement); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// historyV1Statements는 버전 1의 표다. 이미 기록된 DB와 같아야 하므로 바꾸지 않는다.
+func historyV1Statements() []string {
+	return []string{
 		`CREATE TABLE runs (id TEXT PRIMARY KEY, command TEXT NOT NULL, hostname TEXT NOT NULL, started_ns INTEGER NOT NULL, ended_ns INTEGER, status TEXT NOT NULL, sample_count INTEGER NOT NULL DEFAULT 0, payload TEXT NOT NULL)`,
 		`CREATE TABLE top_samples (id INTEGER PRIMARY KEY, run_id TEXT NOT NULL REFERENCES runs(id), time_ns INTEGER NOT NULL, payload TEXT NOT NULL, ` + historyMetricColumns(historyHostMetrics) + `)`,
 		`CREATE TABLE top_process_samples (id INTEGER PRIMARY KEY, sample_id INTEGER NOT NULL REFERENCES top_samples(id), run_id TEXT NOT NULL REFERENCES runs(id), time_ns INTEGER NOT NULL, started TEXT, command TEXT NOT NULL, command_folded TEXT NOT NULL, payload TEXT NOT NULL, ` + historyMetricColumns(historyProcessMetrics) + `)`,
@@ -278,18 +312,20 @@ func initializeHistoryDB(db *sql.DB, write bool) error {
 		`CREATE INDEX process_time ON top_process_samples(time_ns DESC, id DESC)`,
 		`CREATE INDEX process_run_time ON top_process_samples(run_id, time_ns DESC, id DESC)`,
 		`CREATE INDEX process_identity ON top_process_samples(pid, started, time_ns DESC)`,
-		fmt.Sprintf("PRAGMA application_id=%d", historyApplicationID),
-		fmt.Sprintf("PRAGMA user_version=%d", historySchemaVersion),
 	}
-	for _, statement := range statements {
-		if _, err := tx.Exec(statement); err != nil {
-			return err
-		}
+}
+
+// historySnapshotStatements는 스냅샷 표다. snapshot_results는 결과 원본이라 보고서를 다시 만들 수 있고, snapshot_metrics는
+// 결과의 숫자 지표를 probe와 키로 펼친 값, du_dirs는 du.scan이 남긴 큰 디렉터리다.
+func historySnapshotStatements() []string {
+	return []string{
+		`CREATE TABLE IF NOT EXISTS snapshot_results (id INTEGER PRIMARY KEY, run_id TEXT NOT NULL REFERENCES runs(id), time_ns INTEGER NOT NULL, probe TEXT NOT NULL, status TEXT NOT NULL, payload TEXT NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS snapshot_metrics (id INTEGER PRIMARY KEY, run_id TEXT NOT NULL REFERENCES runs(id), time_ns INTEGER NOT NULL, probe TEXT NOT NULL, key TEXT NOT NULL, value REAL NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS du_dirs (id INTEGER PRIMARY KEY, run_id TEXT NOT NULL REFERENCES runs(id), time_ns INTEGER NOT NULL, root TEXT NOT NULL, path TEXT NOT NULL, bytes INTEGER NOT NULL)`,
+		`CREATE INDEX IF NOT EXISTS snapshot_results_run ON snapshot_results(run_id, id)`,
+		`CREATE INDEX IF NOT EXISTS snapshot_metrics_series ON snapshot_metrics(probe, key, time_ns)`,
+		`CREATE INDEX IF NOT EXISTS du_dirs_series ON du_dirs(root, path, time_ns)`,
 	}
-	if err := tx.Commit(); err != nil {
-		return err
-	}
-	return historyEnableWAL(db)
 }
 
 func historyEnableWAL(db *sql.DB) error {
@@ -322,6 +358,10 @@ type historyRun struct {
 	// Interfaces는 net 값에 더한 interface다. 비었으면 loopback을 뺀 모든 interface다.
 	Interfaces string `json:"interface_filter,omitempty"`
 	Detail     bool   `json:"detail"`
+	// Since, DuPaths, Report는 스냅샷 실행에만 있다. Report는 결과를 뺀 보고서이고 결과는 snapshot_results에 있다.
+	Since   string          `json:"since,omitempty"`
+	DuPaths []string        `json:"du_paths,omitempty"`
+	Report  json.RawMessage `json:"report,omitempty"`
 }
 
 type topRecorder struct {

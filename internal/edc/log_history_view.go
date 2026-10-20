@@ -530,7 +530,7 @@ func historyTrend(group logHistoryGroup, now time.Time, color bool) string {
 	}
 	text := T("cli.log_history.trend", historyTint(string(spark), richCyan, color), runs, failedText)
 	if successes > 0 {
-		text += " · " + T("cli.log_history.summary_avg", (sum / time.Duration(successes)).Round(time.Millisecond).String())
+		text += " · " + T("cli.log_history.summary_avg", (sum/time.Duration(successes)).Round(time.Millisecond).String())
 	}
 	return text
 }

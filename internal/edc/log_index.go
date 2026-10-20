@@ -29,6 +29,7 @@ const (
 	logIndexSchema    = 1
 	logIndexRowLimit  = 100000
 	logIndexBusyMS    = 200
+	sqliteBusy        = 5
 	sqliteCorrupt     = 11
 	sqliteNotDatabase = 26
 )

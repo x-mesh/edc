@@ -354,7 +354,8 @@ func TestLogHistoryRunRowColorsEveryFailureRed(t *testing.T) {
 func TestLogHistoryCLIExactArgumentsAndSummary(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "job.log")
-	started := time.Now().UTC()
+	// 추세 줄은 오늘까지의 실행만 센다. 이후 실행이 내일로 넘어가면 성공 평균이 2ms가 되어 --failed 검사가 시각에 따라 깨진다.
+	started := time.Now().UTC().Add(-4 * time.Hour)
 	text := historyFixture([]string{"ls", "-l"}, "/a", started, "exit", "2ms", 0, 1) + historyFixture([]string{"ls", "-l"}, "/a", started.Add(time.Hour), "exit", "4ms", 0, 1) + historyFixture([]string{"ls", "-l"}, "/b", started.Add(2*time.Hour), "exit", "99ms", 2, 1) + historyFixture([]string{"ls", "/tmp"}, "/a", started.Add(3*time.Hour), "exit", "8ms", 0, 1)
 	if err := os.WriteFile(path, []byte(text), 0600); err != nil {
 		t.Fatal(err)

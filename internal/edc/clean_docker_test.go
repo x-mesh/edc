@@ -103,6 +103,8 @@ func cleanDockerServe(t *testing.T, handler http.Handler) string {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Serve가 Close보다 늦게 시작하면 리스너를 닫으며 상대 경로를 unlink해, 다음 시험이 Chdir한 곳의 docker.sock을 지운다.
+	listener.(*net.UnixListener).SetUnlinkOnClose(false)
 	server := &http.Server{Handler: handler}
 	go func() { _ = server.Serve(listener) }()
 	t.Cleanup(func() { _ = server.Close() })

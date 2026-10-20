@@ -472,6 +472,9 @@ type reportDiffEntry struct {
 	// 목록을 경로로 맞춘 결과를 따로 둔다. Note는 비교하지 않은 이유다.
 	Directories     []duDirDelta `json:"directories,omitempty"`
 	DirectoriesNote string       `json:"directories_note,omitempty"`
+	// Opened와 Closed는 listen에만 있다. 열린 socket 목록도 배열이라 diffMetrics가 건너뛰므로 따로 맞춘다.
+	Opened []listenSocket `json:"opened,omitempty"`
+	Closed []listenSocket `json:"closed,omitempty"`
 }
 
 type reportDiffSide struct {
@@ -527,6 +530,9 @@ func diffReports(beforePath string, before Report, afterPath string, after Repor
 			entry.Metrics = diffMetrics(old.Metrics, current.Metrics)
 			if isDuProbe(probe) {
 				entry.Directories, entry.DirectoriesNote = duCompareDirs(old.Metrics, current.Metrics)
+			}
+			if probe == listenProbeID {
+				entry.Opened, entry.Closed = diffReportSockets(old.Metrics, current.Metrics)
 			}
 			// probe 실행 시간은 metrics 밖에 있으므로 따로 앞에 붙인다.
 			if old.DurationMS != current.DurationMS {
@@ -619,6 +625,102 @@ func diffMetrics(before, after map[string]interface{}) []metricDelta {
 		}
 	}
 	return deltas
+}
+
+// reportSockets는 listen 결과의 socket 목록이다. 파일에서 읽은 보고서는 map 배열이고, 같은 process에서 만든 결과는
+// []listenSocket이라 JSON으로 한 번 맞춘다.
+func reportSockets(metrics map[string]interface{}) ([]listenSocket, bool) {
+	value, ok := metrics["sockets"]
+	if !ok {
+		return nil, false
+	}
+	data, err := json.Marshal(value)
+	if err != nil {
+		return nil, false
+	}
+	var sockets []listenSocket
+	return sockets, json.Unmarshal(data, &sockets) == nil
+}
+
+// diffReportSockets는 두 보고서의 열린 socket을 비교한다. 서비스를 다시 시작하면 PID만 바뀌므로 PID는 비교하지 않는다.
+func diffReportSockets(before, after map[string]interface{}) (opened, closed []listenSocket) {
+	old, okBefore := reportSockets(before)
+	current, okAfter := reportSockets(after)
+	if !okBefore || !okAfter {
+		return nil, nil
+	}
+	key := func(socket listenSocket) listenSocketKey {
+		return listenSocketKey{Proto: socket.Proto, Address: socket.Address, Port: socket.Port, Process: socket.Process}
+	}
+	seen := map[listenSocketKey]bool{}
+	for _, socket := range old {
+		seen[key(socket)] = true
+	}
+	now := map[listenSocketKey]bool{}
+	for _, socket := range current {
+		now[key(socket)] = true
+		if !seen[key(socket)] {
+			opened = append(opened, socket)
+		}
+	}
+	for _, socket := range old {
+		if !now[key(socket)] {
+			closed = append(closed, socket)
+		}
+	}
+	return opened, closed
+}
+
+// formatMetricValue는 metric 값을 사람이 읽는 꼴로 쓴다. 바이트는 크기, 퍼센트는 소수 둘째 자리까지 %로 쓰고(첫째
+// 자리까지면 작은 변화가 41.3% → 41.3%로 보인다), 나머지 수는 지수 없이 쓴다.
+// JSON 출력은 원래 값을 그대로 담는다.
+func formatMetricValue(key string, value interface{}) string {
+	number, ok := metricNumber(value)
+	if !ok {
+		return fmt.Sprint(value)
+	}
+	switch {
+	case reportBytesMetric(key) && number >= 0:
+		return formatSizeShort(uint64(number))
+	case reportPercentMetric(key):
+		return strconv.FormatFloat(math.Round(number*100)/100, 'f', -1, 64) + "%"
+	default:
+		return strconv.FormatFloat(math.Round(number*1000)/1000, 'f', -1, 64)
+	}
+}
+
+func formatMetricDelta(key string, delta float64) string {
+	switch {
+	case reportBytesMetric(key):
+		sign := "+"
+		if delta < 0 {
+			sign = "-"
+		}
+		return sign + formatSizeShort(uint64(math.Abs(delta)))
+	case reportPercentMetric(key):
+		return fmt.Sprintf("%+.2f%%p", delta)
+	default:
+		return formatDelta(delta)
+	}
+}
+
+func reportBytesMetric(key string) bool {
+	return key == "bytes" || strings.HasSuffix(key, "_bytes")
+}
+
+func reportPercentMetric(key string) bool {
+	return strings.HasSuffix(key, "_pct") || strings.HasSuffix(key, "_percent") || key == "percent"
+}
+
+func formatReportSocket(socket listenSocket) string {
+	text := socket.Proto + " " + socket.Address
+	if socket.Port != 0 && !strings.HasSuffix(socket.Address, ":"+strconv.Itoa(socket.Port)) {
+		text += ":" + strconv.Itoa(socket.Port)
+	}
+	if socket.Process != "" {
+		text += "  " + socket.Process
+	}
+	return reportIdentityValue(text)
 }
 
 func metricNumber(value interface{}) (float64, bool) {
@@ -726,12 +828,26 @@ func printReportDiffEntry(line, detail io.Writer, entry reportDiffEntry, color b
 	if len(entry.Directories) > 0 {
 		fmt.Fprintf(line, "         %s\n", directories)
 	}
-	for _, metric := range entry.Metrics {
-		if metric.Delta != nil {
-			fmt.Fprintf(detail, "         %-24s  %v → %v (%s)\n", metric.Key, metric.Before, metric.After, formatDelta(*metric.Delta))
-		} else {
-			fmt.Fprintf(detail, "         %-24s  %v → %v\n", metric.Key, metric.Before, metric.After)
+	if len(entry.Opened)+len(entry.Closed) > 0 {
+		sockets := T("cli.report.socket_count", len(entry.Opened), len(entry.Closed))
+		if color {
+			sockets = richDim(sockets)
 		}
+		fmt.Fprintf(line, "         %s\n", sockets)
+	}
+	for _, metric := range entry.Metrics {
+		before, after := formatMetricValue(metric.Key, metric.Before), formatMetricValue(metric.Key, metric.After)
+		if metric.Delta != nil {
+			fmt.Fprintf(detail, "         %-24s  %s → %s (%s)\n", metric.Key, before, after, formatMetricDelta(metric.Key, *metric.Delta))
+		} else {
+			fmt.Fprintf(detail, "         %-24s  %s → %s\n", metric.Key, before, after)
+		}
+	}
+	for _, socket := range entry.Opened {
+		fmt.Fprintf(detail, "         + %s\n", formatReportSocket(socket))
+	}
+	for _, socket := range entry.Closed {
+		fmt.Fprintf(detail, "         - %s\n", formatReportSocket(socket))
 	}
 	for _, text := range formatDuDirDeltas(entry.Directories) {
 		fmt.Fprintf(detail, "       %s\n", text)

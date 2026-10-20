@@ -185,3 +185,48 @@ func (buffer *remoteLimitedBuffer) Truncated() bool {
 	defer buffer.mu.Unlock()
 	return buffer.truncated
 }
+
+// remoteCapture는 원격 명령의 표준 출력과 표준 오류를 따로 받은 결과다. 표준 출력을 데이터로 읽는 명령이 쓴다.
+type remoteCapture struct {
+	Stdout    string
+	Stderr    string
+	Truncated bool
+	ExitCode  int
+	TimedOut  bool
+	Duration  time.Duration
+	Err       error
+}
+
+// Capture는 Run과 같은 셸 준비를 거치되 표준 출력과 표준 오류를 섞지 않는다. 표준 출력은 stdoutLimit까지 받고,
+// 표준 오류는 원인을 보여 줄 만큼만 받는다.
+func (runner sshRemoteRunner) Capture(parent context.Context, target, command string, timeout time.Duration, stdoutLimit int) remoteCapture {
+	started := time.Now()
+	executable := runner.executable
+	if executable == "" {
+		executable = "ssh"
+	}
+	path, err := exec.LookPath(executable)
+	if err != nil {
+		return remoteCapture{ExitCode: -1, Duration: time.Since(started), Err: fmt.Errorf("%s: %w", T("remote.error.ssh_not_found"), err)}
+	}
+	connectSeconds := int((runner.connectTimeout + time.Second - 1) / time.Second)
+	args := []string{"-o", "BatchMode=yes", "-o", fmt.Sprintf("ConnectTimeout=%d", connectSeconds), target, remoteShellCommand(command)}
+	ctx, cancel := context.WithTimeout(parent, timeout)
+	defer cancel()
+	stdout := &remoteLimitedBuffer{limit: stdoutLimit}
+	stderr := &remoteLimitedBuffer{limit: remoteOutputLimit}
+	process := exec.CommandContext(ctx, path, args...)
+	process.Stdout, process.Stderr = stdout, stderr
+	err = process.Run()
+	result := remoteCapture{Stdout: stdout.String(), Stderr: stderr.String(), Truncated: stdout.Truncated(), Duration: time.Since(started), Err: err}
+	if err == nil {
+		return result
+	}
+	result.ExitCode = -1
+	var exitError *exec.ExitError
+	if errors.As(err, &exitError) {
+		result.ExitCode = exitError.ExitCode()
+	}
+	result.TimedOut = ctx.Err() == context.DeadlineExceeded
+	return result
+}

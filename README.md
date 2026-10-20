@@ -802,6 +802,21 @@ A build folder inside a worktree has `inside_worktree`. The worktree item shows 
 
 The text output shows the 10 largest build folders and the number of the rest. `-v` shows all of them. Each root shows the number of folders that edc read and the number of `unmarked` folders.
 
+### Clean on more hosts
+
+`edc clean --group <group>` runs `edc clean --json -` on each host of an `edc remote` inventory group and shows one table. It uses the inventory files and the OpenSSH settings of `edc remote`. `--inventory` sets the file. The `parallel` value of the inventory sets how many hosts run at the same time.
+
+```bash
+./bin/edc clean --group servers
+./bin/edc clean --group servers --inventory ./.edc/inventory.yaml --json -
+```
+
+Each host must have edc on the PATH of its shell. edc does not install it. A host without edc shows `edc not found`. A host that SSH cannot reach shows `SSH failed` and the first error line.
+
+The table shows the disk use of the root file system, the sum of the candidates, the old Docker data, the large logs, and the largest item. If a host has an older edc that does not report a value, the cell shows `—`. `--json` keeps one row for each host.
+
+`clean` only reads, on each host. `--project` does not combine with `--group`, because each host measures its own folders.
+
 ### Docker engine
 
 edc reads the engine with `GET` requests to the API socket. It sends no other method and runs no `prune` command.

@@ -275,11 +275,13 @@ type cleanDeps struct {
 	dockerDial func(ctx context.Context, path string) (net.Conn, error)
 	measure    func(ctx context.Context, options duOptions, sources duSources) (duScan, error)
 	sources    duSources
+	// remote는 --group에서 원격 호스트의 clean을 실행한다. 시험이 SSH 대신 가짜 실행기를 넣는다.
+	remote cleanRemoteRunner
 }
 
 func hostCleanDeps(home string, host duSources) cleanDeps {
 	return cleanDeps{home: home, lookPath: exec.LookPath, run: runCleanTool, lookupEnv: os.LookupEnv, deviceOf: cleanDeviceOf,
-		dockerDial: cleanDockerDial, measure: duMeasure, sources: cleanSources(host)}
+		dockerDial: cleanDockerDial, measure: duMeasure, sources: cleanSources(host), remote: cleanSSHRunner}
 }
 
 func cleanDockerDial(ctx context.Context, path string) (net.Conn, error) {
@@ -1020,12 +1022,26 @@ func runCleanWith(args []string, version string, deps cleanDeps, ok bool, homeEr
 	bindCommon(set, &options)
 	var projects cleanProjects
 	set.Var(&projects, "project", T("command.clean.option.project"))
+	group := set.String("group", "", T("command.clean.option.group"))
+	inventory := set.String("inventory", "", T("command.clean.option.inventory"))
 	if err := set.Parse(args); err != nil {
 		return 2
 	}
 	if set.NArg() > 0 {
 		fmt.Fprintln(os.Stderr, T("cli.usage", "edc clean [options]"))
 		return 2
+	}
+	if *group == "" && *inventory != "" {
+		fmt.Fprintln(os.Stderr, T("clean.group.error.inventory_without_group"))
+		return 2
+	}
+	if *group != "" {
+		// 원격 호스트의 clean은 그 호스트의 홈과 프로젝트를 잰다. 이 컴퓨터의 --project는 넘기지 않는다.
+		if len(projects) > 0 {
+			fmt.Fprintln(os.Stderr, T("clean.group.error.project"))
+			return 2
+		}
+		return runCleanGroup(options, *group, *inventory, version, deps.remote, stdout)
 	}
 	started := time.Now()
 	target := map[string]interface{}{"goos": runtime.GOOS}
@@ -1707,4 +1723,10 @@ func (style cleanStyle) close() string {
 		return ""
 	}
 	return richPanelBottom("") + "\n"
+}
+
+// cleanSSHRunner는 edc remote와 같은 OpenSSH 설정으로 원격 명령을 실행하고 표준 출력을 따로 받는다.
+func cleanSSHRunner(ctx context.Context, target, command string, timeout time.Duration) remoteCapture {
+	runner := sshRemoteRunner{connectTimeout: configuredDuration(activeConfig.Defaults.Remote.ConnectTimeout, 10*time.Second)}
+	return runner.Capture(ctx, target, command, timeout, cleanGroupOutputLimit)
 }

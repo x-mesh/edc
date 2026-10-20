@@ -198,6 +198,8 @@ command:
     option:
       timeout: "制限時間、過ぎると残りは未測定と表示"
       project: "ビルドフォルダを探すルート、複数指定可"
+      group: "edc remote グループの各ホストで clean を実行"
+      inventory: "--group のインベントリファイル"
       verbose: "すべての候補、より多くのグループ、理由、整理コマンドを表示"
     notes:
       - "読むだけです。何も変更・削除しません。"

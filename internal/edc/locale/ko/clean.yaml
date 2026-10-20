@@ -208,6 +208,26 @@ clean:
     build_caches_omitted: "폴더 %d개 더"
     build_caches_incomplete: "모든 폴더를 확인하기 전에 탐색이 멈춰서 빌드 캐시가 더 있을 수 있음"
     build_caches_note: "docker buildx prune은 이 폴더를 지우지 않음"
+  group:
+    summary: "호스트 %d개, 결과 %d개, 결과 없음 %d개"
+    truncated: "출력이 %s를 넘음"
+    versions: "호스트마다 edc 버전이 다름: %s"
+    col:
+      host: "호스트"
+      disk: "디스크 사용"
+      candidates: "후보"
+      old_docker: "옛 Docker"
+      logs: "큰 로그"
+      largest: "가장 큰 항목"
+    status:
+      edc_missing: "edc가 없음, install.sh로 설치"
+      unreachable: "SSH 실패"
+      timeout: "제한 시간 도달"
+      invalid_output: "clean 결과가 아닌 출력"
+      failed: "edc clean 실패"
+    error:
+      inventory_without_group: "--inventory는 --group과 함께 써야 합니다"
+      project: "--project는 --group과 함께 쓸 수 없습니다. 각 호스트가 자신의 폴더를 잽니다"
   vm:
     title: "VM 디스크 (사용자 데이터, 합계에 넣지 않음)"
     panel: "VM 디스크"

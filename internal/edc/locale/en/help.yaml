@@ -198,6 +198,8 @@ command:
     option:
       timeout: "time limit, after it edc marks the rest not scanned"
       project: "root to search for marked build folders, repeat for more"
+      group: "run clean on each host of an edc remote group"
+      inventory: "inventory file for --group"
       verbose: "show every candidate, more groups, reasons, cleanup commands"
     notes:
       - "It reads only. It changes and deletes nothing."

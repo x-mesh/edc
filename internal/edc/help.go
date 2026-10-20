@@ -319,6 +319,8 @@ var commandDocs = []commandDoc{
 		options: []optionDoc{
 			{"--timeout 60s", "command.clean.option.timeout"},
 			{"--project DIR", "command.clean.option.project"},
+			{"--group NAME", "command.clean.option.group"},
+			{"--inventory FILE", "command.clean.option.inventory"},
 			{"-v, --verbose", "command.clean.option.verbose"},
 		},
 		usesCommon: true,

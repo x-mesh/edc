@@ -754,6 +754,21 @@ worktree 안의 빌드 폴더에는 `inside_worktree`가 있고, worktree 항목
 
 텍스트 출력은 큰 빌드 폴더 10개와 나머지 수를 보여 주고 `-v`는 모두 보여 줍니다. 루트마다 읽은 폴더 수와 `unmarked` 폴더 수가 나옵니다.
 
+### 여러 호스트의 clean
+
+`edc clean --group <그룹>`은 `edc remote` 인벤토리 그룹의 호스트마다 `edc clean --json -`을 실행하고 표 하나로 보여 줍니다. `edc remote`의 인벤토리 파일과 OpenSSH 설정을 그대로 쓰고, `--inventory`로 파일을 지정할 수 있습니다. 동시에 실행할 호스트 수는 인벤토리의 `parallel` 값을 따릅니다.
+
+```bash
+./bin/edc clean --group servers
+./bin/edc clean --group servers --inventory ./.edc/inventory.yaml --json -
+```
+
+각 호스트의 셸 `PATH`에 edc가 있어야 하며, edc가 설치해 주지는 않습니다. edc가 없는 호스트는 `edc not found`로, SSH로 연결하지 못한 호스트는 `SSH failed`와 첫 오류 줄로 표시합니다.
+
+표에는 루트 파일 시스템의 디스크 사용량, 후보 합계, 옛 Docker 데이터, 큰 로그, 가장 큰 항목이 나옵니다. 이전 버전 edc라서 보고하지 않는 값은 `—`로 표시하고, `--json`에는 호스트마다 한 행이 남습니다.
+
+각 호스트의 `clean`은 읽기만 합니다. 호스트마다 자신의 폴더를 재므로 `--project`는 `--group`과 함께 쓸 수 없습니다.
+
 ### Docker 엔진
 
 엔진에는 API socket으로 `GET`만 보냅니다. 다른 메서드는 보내지 않고 `prune` 명령도 실행하지 않습니다.

@@ -208,6 +208,26 @@ clean:
     build_caches_omitted: "%d more folders"
     build_caches_incomplete: "the search stopped before every folder was checked, so more build caches can exist"
     build_caches_note: "docker buildx prune does not remove these folders"
+  group:
+    summary: "%d hosts, %d measured, %d without a result"
+    truncated: "output over %s"
+    versions: "edc versions differ between hosts: %s"
+    col:
+      host: "host"
+      disk: "disk used"
+      candidates: "candidates"
+      old_docker: "old Docker"
+      logs: "large logs"
+      largest: "largest item"
+    status:
+      edc_missing: "edc not found, install it with install.sh"
+      unreachable: "SSH failed"
+      timeout: "time limit reached"
+      invalid_output: "output is not a clean report"
+      failed: "edc clean failed"
+    error:
+      inventory_without_group: "--inventory needs --group"
+      project: "--project does not combine with --group. Each host measures its own folders"
   vm:
     title: "VM disks (user data, not added to any total)"
     panel: "VM disks"

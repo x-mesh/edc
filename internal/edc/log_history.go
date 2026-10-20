@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"math/big"
 	"os"
 	"path/filepath"
@@ -98,7 +99,7 @@ func loadLogHistory(options logHistoryOptions, cache logHistoryCache) (logHistor
 	if root == "" {
 		return logHistorySnapshot{}, errors.New(T("cli.log_history.directory_unavailable"))
 	}
-	paths, err := historyPaths(root)
+	paths, families, err := historyPaths(root)
 	limited := errors.Is(err, errHistoryScanLimit)
 	if err != nil && !limited && !(options.Directory == "" && os.IsNotExist(err)) {
 		return logHistorySnapshot{}, err
@@ -113,7 +114,7 @@ func loadLogHistory(options logHistoryOptions, cache logHistoryCache) (logHistor
 			paths = append(paths, path)
 		}
 	}
-	snapshot := collectLogHistory(paths, cache)
+	snapshot := collectLogHistory(paths, cache, families)
 	if limited {
 		snapshot.issue(root, "limit_error")
 	}
@@ -288,6 +289,11 @@ func printHistoryGroup(output io.Writer, group logHistoryGroup, options logHisto
 func logHistoryLoaderFor(options logHistoryOptions, cache logHistoryCache) logHistoryLoader {
 	return func() ([]logHistoryGroup, []string, error) {
 		snapshot, err := loadLogHistory(options, cache)
+		// The browser can delete the one file that --file named; that leaves an
+		// empty history rather than an error.
+		if options.File != "" && errors.Is(err, fs.ErrNotExist) {
+			return nil, nil, nil
+		}
 		if err != nil {
 			return nil, nil, errors.New(reportIdentityValue(err.Error()))
 		}

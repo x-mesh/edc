@@ -471,6 +471,7 @@ command:
     sub:
       run: "コマンドを実行し、出力と終了状態を保存"
       history: "コマンドごとに保存した実行を表示"
+      prune: "古い実行を削除"
     option:
       stream: "記録する出力 (既定 both)"
       output: "ログファイル。既定は実行ごとに作成"
@@ -483,10 +484,13 @@ command:
       timeout: "試行ごとの時間制限。0 は無制限 (既定 0s)"
       kill_after: "SIGKILL までの猶予時間 (既定 5s)"
     notes:
+      - "edc history log も同じ画面を開きます。"
       - "history は引数別のキーを表示し、選択すると実行履歴を開きます。"
       - "Enter で履歴と実行詳細、Esc で戻る、q で終了します。"
       - "history <command> [args...] は argv 検索、--command はキー一覧です。"
       - "--failed は失敗のみ、--limit は最近の実行数を指定します。"
+      - "d は選んだコマンドか実行を y の確認後に削除します。共有ログは残します。"
+      - "prune は古い実行を削除します: edc log prune --older-than 30d"
       - "履歴画面は2秒ごとに更新します。r で即時更新、p で一時停止します。"
       - "--follow は実行の開始と終了を1行ずつ出力します。"
       - "パイプではキー一覧を出力し、入力を待ちません。"
@@ -554,3 +558,4 @@ command:
       list: "edc top -w が記録した実行の一覧"
       top: "host sample、新しい順"
       process: "process sample、新しい順"
+      log: "edc log が記録したコマンド実行"

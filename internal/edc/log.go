@@ -54,6 +54,9 @@ func runLogWithStreams(args []string, streams logStreams) int {
 	if args[0] == "history" {
 		return runLogHistory(args[1:], streams)
 	}
+	if args[0] == "prune" {
+		return runLogPrune(args[1:], streams)
+	}
 	options, ok := parseLogOptions(args, streams.stderr)
 	if !ok {
 		return 2

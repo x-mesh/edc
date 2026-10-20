@@ -471,6 +471,7 @@ command:
     sub:
       run: "run a command, save its output and exit status"
       history: "browse the saved runs of each command"
+      prune: "delete old runs"
     option:
       stream: "stream to record (default both)"
       output: "log file; default creates one file per run"
@@ -483,10 +484,13 @@ command:
       timeout: "limit per attempt; 0 disables (default 0s)"
       kill_after: "SIGKILL grace period (default 5s)"
     notes:
+      - "edc history log opens the same viewer."
       - "history lists argument keys; select one to view its runs."
       - "Enter opens runs, then details. Esc goes back; q quits."
       - "history <command> [args...] matches argv; --command lists keys."
       - "Use --failed for failures and --limit for recent attempts."
+      - "d deletes the selected command or run after y. A shared log file stays."
+      - "prune deletes old runs: edc log prune --older-than 30d."
       - "The viewer refreshes every 2s. r refreshes now and p pauses."
       - "--follow prints one line when each run starts and ends."
       - "Piped history prints keys without waiting for input."
@@ -554,3 +558,4 @@ command:
       list: "runs that edc top -w recorded"
       top: "host samples, newest first"
       process: "process samples, newest first"
+      log: "command runs that edc log recorded"

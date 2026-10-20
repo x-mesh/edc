@@ -124,6 +124,7 @@ clean:
     P3: "모델과 툴체인"
   unreadable: "읽지 못한 디렉터리 %d개는 세지 않았습니다"
   regen: "다시 만드는 비용: %s"
+  newest: "가장 최근 파일 %s"
   cleanup: "정리하려면 %s 실행 (edc는 실행하지 않음)"
   fs:
     title: "파일 시스템 %s (%s)  사용량 합 %s, 여유 %s"

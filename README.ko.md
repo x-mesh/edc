@@ -688,6 +688,8 @@ Xcode Archives, 시뮬레이터 기기, `Application Support`, `Containers`는 �
 
 정리 명령은 도구가 문서로 제공할 때만 보여 줍니다. `bun`, `pip`, `huggingface`, `rustup-toolchains`는 명령을 보여 주고, `cargo-registry`, `zig`, `app-caches` 등은 보여 주지 않습니다. edc는 명령을 실행하지 않습니다.
 
+`-v`에서는 후보와 폴더 묶음마다 가장 최근 파일의 날짜도 읽어 `newest file 2026-10-19`처럼 보여 줍니다. 몇 달 동안 아무 도구도 쓰지 않은 캐시가 오늘 바뀐 캐시보다 안전한 후보입니다. 날짜는 일반 파일의 수정 시각이고 접근 시각이 아닙니다. 날짜 앞의 `≥`는 읽지 못한 폴더가 있거나 상한에서 멈춰서 더 늦은 파일이 있을 수 있다는 뜻입니다. JSON에는 `newest_write`와 `newest_partial`이 있습니다. 모든 파일을 한 번 더 읽으므로 `edc clean -v`는 측정만큼의 시간이 더 걸립니다.
+
 후보 뒤에 섹션 네 개가 더 있습니다. 섹션마다 `metrics`에 따로 키가 있고, 섹션은 후보가 아닙니다.
 
 | `metrics` 키 | 내용 |

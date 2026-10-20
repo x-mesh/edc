@@ -80,7 +80,7 @@ func historyKeyWidths(width int, groups []logHistoryGroup) historyKeyColumns {
 		columns.last = 17
 	}
 	if width >= 88 {
-		columns.avgMemory = 9
+		columns.avgMemory = 11
 	}
 	if width >= 104 {
 		columns.avgCPU = 8

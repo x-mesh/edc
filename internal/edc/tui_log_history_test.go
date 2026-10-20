@@ -180,7 +180,7 @@ func TestLogHistoryKeyAverageColumnsAndValues(t *testing.T) {
 	if historyKeyWidths(87, nil).avgMemory != 0 || historyKeyWidths(103, nil).avgCPU != 0 || historyKeyWidths(119, nil).avgIO != 0 {
 		t.Fatal("average columns appear before their width thresholds")
 	}
-	if historyKeyWidths(88, nil).avgMemory != 9 || historyKeyWidths(104, nil).avgCPU != 8 || historyKeyWidths(120, nil).avgIO != 9 {
+	if historyKeyWidths(88, nil).avgMemory != 11 || historyKeyWidths(104, nil).avgCPU != 8 || historyKeyWidths(120, nil).avgIO != 9 {
 		t.Fatal("average columns do not appear at their width thresholds")
 	}
 	ended := time.Date(2026, 10, 5, 10, 0, 2, 0, time.Local)
@@ -198,6 +198,20 @@ func TestLogHistoryKeyAverageColumnsAndValues(t *testing.T) {
 	empty := historyGroupAverages(logHistoryGroup{Rows: []logHistoryAttempt{{Duration: 0, Resources: &logHistoryResources{}}}})
 	if empty != (historyGroupAverageValues{}) {
 		t.Fatalf("missing metrics are not empty: %#v", empty)
+	}
+}
+
+func TestLogHistoryKeyAverageHeadersFitInEveryLanguage(t *testing.T) {
+	restore := currentLanguage()
+	defer setLanguage(restore)
+	for _, language := range []string{"en", "ko", "ja"} {
+		setLanguage(language)
+		header := historyKeyHeader(220, nil)
+		for _, key := range []string{"avg_memory", "avg_cpu", "avg_io"} {
+			if label := T("cli.log_history.column." + key); !strings.Contains(header, label) {
+				t.Fatalf("%s header clips %q: %q", language, label, header)
+			}
+		}
 	}
 }
 

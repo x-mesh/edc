@@ -1,5 +1,5 @@
 history:
-  usage: "Usage: edc history <list|top|process|export> [options] [DB]"
+  usage: "Usage: edc history <list|top|process|export|trend> [options] [DB]"
   option:
     run: "only this run ID"
     from: "inclusive start time (RFC3339)"
@@ -10,6 +10,8 @@ history:
     min: "inclusive minimum; requires --metric"
     max: "inclusive maximum; requires --metric"
     output: "report file for export, - for stdout"
+    probe: "trend a snapshot result, such as info.disk:/ or du.scan"
+    by: "trend period: hour, day, or week (local time)"
   error:
     default_path: "The default database path is unavailable; specify --write <path>"
     path: "Use a database file path; JSON output must not overwrite the database or its journal files"
@@ -24,9 +26,17 @@ history:
     no_snapshots: "This database has no snapshots. Record one with edc snapshot --write"
     no_run: "No run %s in this database"
     not_snapshot: "Run %s is a %s run, not a snapshot"
+    trend_by: "Use --by with one of: %s"
+    trend_metric: "Use --metric with a top field, or --probe with a snapshot metric. Top fields: %s"
+    trend_probe: "No snapshot metrics named %s. Recorded: %s"
+    trend_key: "No %s value named %s. Recorded: %s"
+  trend:
+    title: "%s by %s, local time %s"
+    empty: "No values in this range"
 command:
   history:
     notes:
+      - "trend groups one metric by local hour, day, or week, oldest first."
       - "snapshot -w [DB] records a snapshot; export --run <id> writes a report."
       - "top -w [DB] records while the dashboard stays open."
       - "Records append by run. Pausing top also pauses recording."

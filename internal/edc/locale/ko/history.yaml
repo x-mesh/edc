@@ -1,5 +1,5 @@
 history:
-  usage: "사용법: edc history <list|top|process|export> [options] [DB]"
+  usage: "사용법: edc history <list|top|process|export|trend> [options] [DB]"
   option:
     run: "이 실행 ID만 조회"
     from: "시작 시각 포함(RFC3339)"
@@ -10,6 +10,8 @@ history:
     min: "최솟값 포함; --metric 필요"
     max: "최댓값 포함; --metric 필요"
     output: "export의 보고서 파일, -는 stdout"
+    probe: "trend로 볼 스냅샷 결과, 예: info.disk:/, du.scan"
+    by: "trend 구간: hour, day, week (로컬 시간)"
   error:
     default_path: "기본 DB 경로를 찾을 수 없습니다. --write <path>를 지정하세요"
     path: "DB 파일 경로를 지정하세요. JSON 출력은 DB나 journal 파일을 덮어쓸 수 없습니다"
@@ -24,9 +26,17 @@ history:
     no_snapshots: "이 DB에는 스냅샷이 없습니다. edc snapshot --write로 기록하세요"
     no_run: "이 DB에 실행 %s가 없습니다"
     not_snapshot: "실행 %s는 스냅샷이 아니라 %s 실행입니다"
+    trend_by: "--by에는 다음 중 하나를 쓰세요: %s"
+    trend_metric: "--metric에 top 지표를 쓰거나, --probe와 스냅샷 지표를 함께 쓰세요. top 지표: %s"
+    trend_probe: "스냅샷 지표 %s가 없습니다. 기록된 결과: %s"
+    trend_key: "%s에 %s 값이 없습니다. 기록된 지표: %s"
+  trend:
+    title: "%s, %s 단위, 로컬 시간 %s"
+    empty: "이 범위에 값이 없습니다"
 command:
   history:
     notes:
+      - "trend는 지표 하나를 로컬 시간의 hour, day, week로 묶어 오래된 순으로 보입니다."
       - "snapshot -w [DB]는 스냅샷을 기록, export --run <id>는 보고서로 꺼냄."
       - "top -w [DB]는 대시보드를 유지하며 기록합니다."
       - "실행별로 누적합니다. top 일시정지는 기록도 멈춥니다."

@@ -583,3 +583,36 @@ func duFindNumber(value interface{}, key string) (float64, bool) {
 	}
 	return 0, false
 }
+
+func TestDuUsesFourWorkersByDefault(t *testing.T) {
+	sources, ok := hostDuSources()
+	if !ok {
+		t.Skip("du is not supported on this platform")
+	}
+	if duDefaultWorkers != 4 {
+		t.Fatalf("duDefaultWorkers = %d, want 4 on every platform", duDefaultWorkers)
+	}
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "file"), []byte("data"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	jsonPath := filepath.Join(t.TempDir(), "out.json")
+	stdout, err := os.CreateTemp(t.TempDir(), "out")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code := runDuWith([]string{"--json", jsonPath, root}, "test", sources, ok, stdout); code != 0 {
+		t.Fatalf("exit %d", code)
+	}
+	data, err := os.ReadFile(jsonPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var report interface{}
+	if err := json.Unmarshal(data, &report); err != nil {
+		t.Fatal(err)
+	}
+	if got, found := duFindNumber(report, "workers"); !found || got != 4 {
+		t.Errorf("workers = %v, found %v", got, found)
+	}
+}

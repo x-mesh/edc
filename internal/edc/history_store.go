@@ -18,7 +18,7 @@ import (
 	"syscall"
 	"time"
 
-	_ "modernc.org/sqlite"
+	"modernc.org/sqlite"
 )
 
 const historyApplicationID = 0x45444348
@@ -27,6 +27,7 @@ const historyApplicationID = 0x45444348
 // 올리면 버전 1만 여는 이전 edc가 같은 DB를 열지 못해, cron의 이전 top -w가 새 snapshot -w 뒤로 계속 실패한다.
 const historySchemaVersion = 1
 const historyQueueSize = 16
+const historyBusyTimeout = 2 * time.Second
 
 func defaultHistoryPath() (string, error) {
 	home, _ := os.UserHomeDir()
@@ -228,7 +229,7 @@ func openHistoryDB(path string, write bool) (*sql.DB, error) {
 		mode = "rw"
 	}
 	uri := url.URL{Scheme: "file", Path: absolute}
-	query := url.Values{"mode": {mode}, "_pragma": {"busy_timeout(2000)", "foreign_keys(1)"}}
+	query := url.Values{"mode": {mode}, "_pragma": {fmt.Sprintf("busy_timeout(%d)", historyBusyTimeout.Milliseconds()), "foreign_keys(1)"}}
 	if !write {
 		query.Add("_pragma", "query_only(1)")
 	}
@@ -332,8 +333,19 @@ func historySnapshotStatements() []string {
 
 func historyEnableWAL(db *sql.DB) error {
 	var mode string
-	if err := db.QueryRow("PRAGMA journal_mode=WAL").Scan(&mode); err != nil {
-		return err
+	// WAL로 바꾸는 pragma는 읽기 transaction을 쓰기로 올리므로, 다른 writer가 동시에 바꾸고 있으면 SQLite가 busy_timeout을 기다리지
+	// 않고 바로 SQLITE_BUSY를 낸다. 한쪽이 바꾸고 나면 pragma는 아무것도 쓰지 않으므로 busy_timeout 동안 다시 시도한다.
+	deadline := time.Now().Add(historyBusyTimeout)
+	for {
+		err := db.QueryRow("PRAGMA journal_mode=WAL").Scan(&mode)
+		var sqliteErr *sqlite.Error
+		if err == nil {
+			break
+		}
+		if !errors.As(err, &sqliteErr) || sqliteErr.Code()&0xff != sqliteBusy || time.Now().After(deadline) {
+			return err
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 	if mode != "wal" {
 		return fmt.Errorf("%s", T("history.error.wal"))

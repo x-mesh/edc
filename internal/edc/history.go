@@ -20,6 +20,7 @@ type historyOptions struct {
 	metric   string
 	min, max *float64
 	limit    int
+	sampleID int64
 }
 
 var historyLiveTerminal = liveTerminal
@@ -223,6 +224,10 @@ func historyQuery(command string, options historyOptions) (string, []any) {
 	if options.run != "" {
 		conditions = append(conditions, runColumn+"=?")
 		values = append(values, options.run)
+	}
+	if command == "process" && options.sampleID > 0 {
+		conditions = append(conditions, "p.sample_id=?")
+		values = append(values, options.sampleID)
 	}
 	if !options.from.IsZero() {
 		conditions = append(conditions, timeColumn+">=?")

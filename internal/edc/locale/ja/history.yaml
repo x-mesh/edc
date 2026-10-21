@@ -61,11 +61,12 @@ history:
   process_browser:
     title: "Process観測履歴"
     empty: "条件に一致するprocess記録がありません。edc top -w --process <名前>で記録してから、edc history processで確認してください。"
+    navigator_help: "t 推移"
   list_browser:
     title: "実行履歴"
     summary: "記録済みのtopとsnapshot実行"
     details: "選択した実行"
-    navigator_help: "t Top観測   o Process"
+    navigator_help: "t Top観測   o Process   g 増加量"
     snapshot_navigation: "Topとprocessの観測はtop実行でのみ表示できます。"
     empty: "条件に一致する実行記録がありません。"
     run: "実行 ID  %s"
@@ -99,6 +100,7 @@ history:
     selected: "選択した観測を維持"
     paused: "更新を一時停止"
     empty: "topの記録がありません。edc topでwを押すか、edc top -wで記録してください。snapshotはedc history listで確認できます。"
+    navigator_help: "o Process"
   database_path: "既定のhistory DB: %s"
   usage: "使い方: edc history <list|top|process|export|trend|growth|prune> [options] [DB]"
   option:
@@ -144,12 +146,14 @@ history:
     trend_each: "--each には --process が必要です"
     growth_process_root: "--process と --root は同時に使えません"
   trend:
+    instance_empty: "このprocessインスタンスには、この範囲の観測値がありません。"
     title: "%s、%s 単位、ローカル時間 %s"
     empty: "この範囲に値はありません"
     process_title: "%s、%s、%s 単位、ローカル時間 %s"
     process_empty: "この範囲に %s のサンプルはありません。edc top -w --process %s で記録してください"
     unfiltered: "%s のサンプルの一部は --process なしで記録した実行のものです。CPU かメモリの使用量が上位に入った瞬間だけを数えています。edc top -w --process %s で記録してください"
   growth:
+    navigator_help: "t 推移"
     window: "範囲: %s から %s まで (ローカル時間)"
     empty: "この範囲にディスクや du のスナップショットはありません。edc snapshot -w --du <path> で記録してください"
     few_samples: "記録不足 (%d 件)"

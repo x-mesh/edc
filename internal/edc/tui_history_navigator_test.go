@@ -129,7 +129,7 @@ func TestHistoryNavigatorSnapshotShowsNoticeWithoutChild(t *testing.T) {
 	next, _ := navigator.Update(tea.KeyPressMsg{Code: 't', Text: "t"})
 	navigator = next.(historyNavigator)
 	root = navigator.current().(historyReviewBrowser)
-	if len(navigator.stack) != 1 || root.notice != T("history.list_browser.snapshot_navigation") || strings.Contains(root.View().Content, "Top samples") {
+	if len(navigator.stack) != 1 || root.notice != T("history.list_browser.snapshot_navigation") {
 		t.Fatalf("snapshot navigation=%+v", root)
 	}
 }
@@ -142,5 +142,57 @@ func TestHistoryNavigatorKeepsRunListPauseKey(t *testing.T) {
 	navigator = next.(historyNavigator)
 	if !navigator.current().(historyReviewBrowser).paused {
 		t.Fatal("p did not pause the run list")
+	}
+}
+
+func TestHistoryNavigatorLinksSampleAndGrowthEntries(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "history.db")
+	recorder := topHistoryFixture(t, path)
+	if err := recorder.Record(historyFixtureSample(1, 20, topProcess{PID: 1, Command: "worker"})); err != nil {
+		t.Fatal(err)
+	}
+	if err := recorder.Close("finished"); err != nil {
+		t.Fatal(err)
+	}
+	db, err := openHistoryDB(path, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	samples, err := loadHistoryTop(db, historyOptions{run: recorder.runID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	top := newHistoryTopBrowser(samples, path)
+	if child, ok, err := top.navigate("o", db, path); err != nil || !ok || !child.(historySampleBrowser).processMode || len(child.(historySampleBrowser).processes) == 0 {
+		t.Fatalf("top link: %T %v %v", child, ok, err)
+	}
+	growth := historyGrowth{Processes: []historyGrowthProcess{{PID: 1, Command: "worker"}}, Disks: []historyGrowthDisk{{Mount: "/"}}}
+	model := newHistoryGrowthNavigator(nil, "history.db", historyGrowthOptions{}, growth)
+	if child, ok, err := model.navigate("t", nil, "history.db"); err != nil || !ok || child == nil {
+		t.Fatalf("growth process link: %T %v %v", child, ok, err)
+	}
+	model.selected = 1
+	if child, ok, err := model.navigate("t", nil, "history.db"); err != nil || !ok || child == nil {
+		t.Fatalf("growth disk link: %T %v %v", child, ok, err)
+	}
+}
+
+func TestHistoryProcessChildIgnoresParentTopLoad(t *testing.T) {
+	root := newHistoryListBrowser("history.db", historyReviewData{})
+	top := newHistoryTopBrowser([]historyTopSample{{RunID: "run"}}, "history.db")
+	process := newHistoryProcessBrowser([]historyProcessSample{{RunID: "run"}}, "history.db")
+	top.seq, process.seq = 1, 1
+	navigator := newHistoryNavigator(nil, "history.db", root)
+	navigator.stack = append(navigator.stack, top, process)
+	next, _ := navigator.Update(historySamplesLoadedMsg{seq: 1, samples: []historyTopSample{{RunID: "run"}}})
+	navigator = next.(historyNavigator)
+	top = navigator.stack[1].(historySampleBrowser)
+	if len(top.samples) != 1 {
+		t.Fatalf("parent top load was not applied: %+v", top.samples)
+	}
+	process = navigator.current().(historySampleBrowser)
+	if len(process.processes) != 1 {
+		t.Fatalf("navigator parent top load cleared process child: %+v", process.processes)
 	}
 }

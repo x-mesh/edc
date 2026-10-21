@@ -43,6 +43,10 @@ func (model historyNavigator) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					root.notice, root.noticeSticky = err.Error(), true
 					root.resize()
 					model.stack[len(model.stack)-1] = root
+				} else if sample, ok := model.current().(historySampleBrowser); ok {
+					sample.notice = err.Error()
+					sample.resize()
+					model.stack[len(model.stack)-1] = sample
 				}
 				return model, nil
 			}

@@ -129,7 +129,7 @@ func TestHistoryNavigatorSnapshotShowsNoticeWithoutChild(t *testing.T) {
 	next, _ := navigator.Update(tea.KeyPressMsg{Code: 't', Text: "t"})
 	navigator = next.(historyNavigator)
 	root = navigator.current().(historyReviewBrowser)
-	if len(navigator.stack) != 1 || root.notice == "" {
+	if len(navigator.stack) != 1 || root.notice != T("history.list_browser.snapshot_navigation") {
 		t.Fatalf("snapshot navigation=%+v", root)
 	}
 }
@@ -187,6 +187,10 @@ func TestHistoryProcessChildIgnoresParentTopLoad(t *testing.T) {
 	navigator.stack = append(navigator.stack, top, process)
 	next, _ := navigator.Update(historySamplesLoadedMsg{seq: 1, samples: []historyTopSample{{RunID: "run"}}})
 	navigator = next.(historyNavigator)
+	top = navigator.stack[1].(historySampleBrowser)
+	if len(top.samples) != 1 {
+		t.Fatalf("parent top load was not applied: %+v", top.samples)
+	}
 	process = navigator.current().(historySampleBrowser)
 	if len(process.processes) != 1 {
 		t.Fatalf("navigator parent top load cleared process child: %+v", process.processes)

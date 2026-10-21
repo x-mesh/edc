@@ -76,7 +76,11 @@ func historyGrowthReviewData(growth historyGrowth) historyReviewData {
 		if process.Unfiltered {
 			details = append(details, T("history.trend.unfiltered", historyTerminalText(growth.Process), quoteLocalShellWord(growth.Process)))
 		}
-		data.entries = append(data.entries, historyReviewEntry{id: fmt.Sprintf("process:%d:%s:%s", process.PID, started, process.Command), command: "process", navigate: process.Command, cells: []string{fmt.Sprintf("%d %s", process.PID, name), rate, historyGrowthSize(process.RSSBytes), fmt.Sprint(process.Samples), historyGrowthProcessNote(process)}, details: details})
+		var identity *historyProcessIdentity
+		if process.Started != nil {
+			identity = &historyProcessIdentity{pid: process.PID, started: process.Started.Format(time.RFC3339Nano)}
+		}
+		data.entries = append(data.entries, historyReviewEntry{id: fmt.Sprintf("process:%d:%s:%s", process.PID, started, process.Command), command: "process", navigate: process.Command, identity: identity, cells: []string{fmt.Sprintf("%d %s", process.PID, name), rate, historyGrowthSize(process.RSSBytes), fmt.Sprint(process.Samples), historyGrowthProcessNote(process)}, details: details})
 	}
 	if growth.Process != "" {
 		data.empty = T("history.trend.process_empty", historyTerminalText(growth.Process), quoteLocalShellWord(growth.Process))
@@ -116,6 +120,7 @@ func historyGrowthNavigate(model historyReviewBrowser, key string, db *sql.DB, p
 	case "process":
 		filter, _ := parseTopProcessFilter(entry.navigate)
 		options.process, target = filter, historyTrendTarget{kind: historyTrendProcess, value: entry.navigate}
+		options.identity = entry.identity
 	case "disk":
 		options.probe, options.metric, target = entry.navigate, "used_bytes", historyTrendTarget{kind: historyTrendProbe, value: entry.navigate}
 	default:

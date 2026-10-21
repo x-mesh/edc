@@ -146,6 +146,7 @@ history:
     trend_each: "--each needs --process"
     growth_process_root: "Use --process or --root, not both"
   trend:
+    instance_empty: "This process instance has no samples in this range."
     title: "%s by %s, local time %s"
     empty: "No values in this range"
     process_title: "%s of %s by %s, local time %s"

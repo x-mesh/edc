@@ -37,11 +37,12 @@ type historyTrendTarget struct {
 }
 
 type historyTrendLoadedMsg struct {
-	seq     int
-	buckets []historyTrendBucket
-	summary historyTrendSummary
-	growth  []historyGrowthProcess
-	err     error
+	seq           int
+	buckets       []historyTrendBucket
+	summary       historyTrendSummary
+	growth        []historyGrowthProcess
+	err           error
+	identityEmpty bool
 }
 
 type historyTrendBrowser struct {
@@ -194,11 +195,7 @@ func historyTrendLoad(db *sql.DB, options historyTrendOptions, location *time.Lo
 		return nil
 	})
 	if msg.err == nil && len(msg.buckets) == 0 && options.identity != nil {
-		options.identity = nil
-		msg.summary, msg.err = historyTrendBuckets(db, options, location, func(bucket historyTrendBucket) error {
-			msg.buckets = append(msg.buckets, bucket)
-			return nil
-		})
+		msg.identityEmpty = true
 	}
 	if msg.err == nil && options.process.active() {
 		from, to := historyGrowthWindowOf(historyGrowthOptions{from: options.from, to: options.to}, now)
@@ -481,6 +478,8 @@ func (model historyTrendBrowser) View() tea.View {
 		switch {
 		case model.loaded.err != nil:
 			right = append(right, historyTint(model.loaded.err.Error(), richRed, model.color))
+		case model.loaded.identityEmpty:
+			right = append(right, T("history.trend.instance_empty"))
 		case len(rows) == 0 && model.target().kind == historyTrendProcess:
 			right = append(right, T("history.trend.process_empty", historyTerminalText(model.target().value), quoteLocalShellWord(model.target().value)))
 		case len(rows) == 0:

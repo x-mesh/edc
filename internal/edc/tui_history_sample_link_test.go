@@ -1,7 +1,6 @@
 package edc
 
 import (
-	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -9,39 +8,17 @@ import (
 	tea "charm.land/bubbletea/v2"
 )
 
-func TestHistoryTopProcessLinkUsesSelectedSampleID(t *testing.T) {
-	source := "/private/tmp/claude-501/-Users-jinwoo-work-project-agentic-edc/7ff0ceb5-9043-4d96-84e6-dddf5193bda1/scratchpad/h.db"
-	data, err := os.ReadFile(source)
-	if err != nil {
-		t.Skipf("provided history DB unavailable: %v", err)
-	}
+func TestHistoryNavigatorLinksUseFixtureData(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "history.db")
-	if err := os.WriteFile(path, data, 0o600); err != nil {
+	process := topProcess{PID: 7, Command: "worker", Started: time.Date(2026, 10, 20, 1, 2, 3, 0, time.UTC)}
+	recorder := topHistoryFixture(t, path)
+	if err := recorder.Record(historyFixtureSample(1, 20, process)); err != nil {
 		t.Fatal(err)
 	}
-	db, err := openHistoryDB(path, false)
-	if err != nil {
+	if err := recorder.Close("finished"); err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
-	samples, err := loadHistoryTop(db, historyOptions{run: "e07790782a1cca08"})
-	if err != nil || len(samples) == 0 {
-		t.Fatalf("top samples=%d err=%v", len(samples), err)
-	}
-	processes, err := loadHistoryProcessSample(db, samples[0].RunID, samples[0].sampleID)
-	if err != nil || len(processes) == 0 {
-		t.Fatalf("sample id=%d run=%q processes=%d err=%v", samples[0].sampleID, samples[0].RunID, len(processes), err)
-	}
-}
-
-func TestHistoryNavigatorTopProcessLinkUsesDisplayedSample(t *testing.T) {
-	source := "/private/tmp/claude-501/-Users-jinwoo-work-project-agentic-edc/7ff0ceb5-9043-4d96-84e6-dddf5193bda1/scratchpad/h.db"
-	data, err := os.ReadFile(source)
-	if err != nil {
-		t.Skipf("provided history DB unavailable: %v", err)
-	}
-	path := filepath.Join(t.TempDir(), "history.db")
-	if err := os.WriteFile(path, data, 0o600); err != nil {
+	if err := recordSnapshot(path, snapshotHistoryReport(time.Now(), 100, 1000), time.Hour, nil); err != nil {
 		t.Fatal(err)
 	}
 	db, err := openHistoryDB(path, false)
@@ -54,13 +31,24 @@ func TestHistoryNavigatorTopProcessLinkUsesDisplayedSample(t *testing.T) {
 		t.Fatal(err)
 	}
 	root := newHistoryListBrowser(path, list)
+	for i, entry := range root.data.entries {
+		if entry.id == recorder.runID {
+			root.selected = i
+		}
+	}
 	navigator := newHistoryNavigator(db, path, root)
-	for _, key := range []tea.KeyPressMsg{{Code: tea.KeyDown}, {Code: 't', Text: "t"}, {Code: 'o', Text: "o"}} {
+	for _, key := range []tea.KeyPressMsg{{Code: 't', Text: "t"}, {Code: 'o', Text: "o"}} {
 		next, _ := navigator.Update(key)
 		navigator = next.(historyNavigator)
 	}
 	child, ok := navigator.current().(historySampleBrowser)
-	if !ok || !child.processMode || len(child.processes) == 0 {
-		t.Fatalf("navigator process child=%+v", navigator.current())
+	if !ok || !child.processMode || len(child.processes) == 0 || child.processes[0].RunID != recorder.runID {
+		t.Fatalf("process child=%+v", navigator.current())
+	}
+	next, _ := navigator.Update(tea.KeyPressMsg{Code: 't', Text: "t"})
+	navigator = next.(historyNavigator)
+	trend, ok := navigator.current().(historyTrendBrowser)
+	if !ok || trend.options.identity == nil || trend.options.identity.pid != process.PID {
+		t.Fatalf("trend child=%+v", navigator.current())
 	}
 }

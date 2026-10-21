@@ -146,6 +146,7 @@ history:
     trend_each: "--each는 --process와 함께 써야 합니다"
     growth_process_root: "--process와 --root는 함께 쓸 수 없습니다"
   trend:
+    instance_empty: "이 process 인스턴스에는 이 범위의 관측값이 없습니다."
     title: "%s, %s 단위, 로컬 시간 %s"
     empty: "이 범위에 값이 없습니다"
     process_title: "%s, %s, %s 단위, 로컬 시간 %s"

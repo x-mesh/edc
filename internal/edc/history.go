@@ -24,6 +24,7 @@ type historyOptions struct {
 
 var historyLiveTerminal = liveTerminal
 var historyListBrowserRunner = runHistoryListBrowser
+var historyNavigatorRunner = runHistoryNavigator
 
 func historyTerminalText(value string) string {
 	return strings.NewReplacer("\r", `\r`, "\n", `\n`, "\t", `\t`).Replace(traceEscapeText([]byte(value)))
@@ -31,6 +32,13 @@ func historyTerminalText(value string) string {
 
 func runHistory(args []string) int {
 	if len(args) == 0 {
+		if historyLiveTerminal() {
+			if err := historyNavigatorRunner(); err != nil {
+				fmt.Fprintln(os.Stderr, T("history.error.read", err))
+				return 1
+			}
+			return 0
+		}
 		choice, ok := promptMissingSubcommand("history")
 		if !ok {
 			if !printCommandBrief(os.Stderr, "history") {

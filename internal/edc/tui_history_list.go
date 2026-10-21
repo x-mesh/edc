@@ -58,7 +58,7 @@ func historyListReviewData(db *sql.DB, options historyOptions, now time.Time) (h
 			T("history.list_browser.process", process),
 			T("history.list_browser.interfaces", interfaces),
 		}
-		data.entries = append(data.entries, historyReviewEntry{id: run.ID, cells: []string{historyRunDescription(run), historyRelativeTime(run.StartedAt, now), duration, fmt.Sprint(samples), run.Status, run.Hostname}, details: details})
+		data.entries = append(data.entries, historyReviewEntry{id: run.ID, command: run.Command, cells: []string{historyRunDescription(run), historyRelativeTime(run.StartedAt, now), duration, fmt.Sprint(samples), run.Status, run.Hostname}, details: details})
 	}
 	if err := rows.Err(); err != nil {
 		return historyReviewData{}, err
@@ -81,6 +81,7 @@ func newHistoryListBrowser(path string, data historyReviewData) historyReviewBro
 	columns := []historyReviewColumn{{T("history.list_browser.column.command"), 0, 0}, {T("history.list_browser.column.start"), 17, 0}, {T("history.list_browser.column.duration"), 10, 80}, {T("history.list_browser.column.samples"), 8, 100}, {T("history.list_browser.column.status"), 12, 120}, {T("history.list_browser.column.host"), 22, 160}}
 	model := newHistoryReviewBrowser(T("history.list_browser.title"), path, columns, data)
 	model.detailsTitle = T("history.list_browser.details")
+	model.extraHelp = "history.list_browser.navigator_help"
 	return model
 }
 

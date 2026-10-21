@@ -30,7 +30,16 @@ func newHistoryOverviewBrowser(db *sql.DB, path string, options historyOverviewO
 }
 
 func (model historyOverviewBrowser) atTop() bool { return true }
-func (model historyOverviewBrowser) navigate(string, *sql.DB, string) (tea.Model, bool, error) {
+func (model historyOverviewBrowser) navigate(key string, _ *sql.DB, _ string) (tea.Model, bool, error) {
+	if key == "l" && model.hosted {
+		if len(model.overview.Logs) > 0 {
+			return newHistoryOverviewLogList(model.overview.Logs, model.color), true, nil
+		}
+		if len(model.overview.Warnings) > 0 {
+			model.err = fmt.Errorf("%s", model.overview.Warnings[0])
+			return model, true, nil
+		}
+	}
 	return nil, false, nil
 }
 func (model historyOverviewBrowser) Init() tea.Cmd { return nil }

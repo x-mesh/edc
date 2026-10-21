@@ -44,6 +44,8 @@ type historyOverviewLog struct {
 	Started  time.Time     `json:"started"`
 	Outcome  string        `json:"outcome"`
 	Duration time.Duration `json:"duration"`
+	Key      string
+	Path     string
 }
 type historyOverview struct {
 	Run          *historyRun              `json:"run,omitempty"`
@@ -347,7 +349,7 @@ func loadHistoryOverview(db *sql.DB, options historyOverviewOptions) (historyOve
 			if row.Started.Before(out.From) || !row.Started.Before(out.To) {
 				continue
 			}
-			out.Logs = append(out.Logs, historyOverviewLog{Command: strings.Join(row.Command, " "), Started: row.Started, Outcome: historyOutcome(row), Duration: row.Duration})
+			out.Logs = append(out.Logs, historyOverviewLog{Command: strings.Join(row.Command, " "), Started: row.Started, Outcome: historyOutcome(row), Duration: row.Duration, Key: row.Key, Path: row.Path})
 		}
 	} else {
 		out.Warnings = append(out.Warnings, err.Error())

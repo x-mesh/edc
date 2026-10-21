@@ -205,6 +205,7 @@ history:
       metric: "指標"
       process: "プロセス"
       help: "↑↓ スクロール   PgUp/PgDn ページ   r 更新   q 終了"
+      log_help: "l ログ実行"
     metric:
       cpu: "CPU"
       memory: "メモリ"

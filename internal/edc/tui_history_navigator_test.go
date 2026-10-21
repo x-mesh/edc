@@ -479,3 +479,49 @@ func TestHistoryNavigatorKeepsFilterInputKeysInGrowthBrowser(t *testing.T) {
 		t.Fatal("second Esc did not pop growth browser")
 	}
 }
+
+func TestHistoryOverviewNavigatorLogLink(t *testing.T) {
+	started := time.Unix(1, 0)
+	previous := historyOverviewLogBrowserFor
+	t.Cleanup(func() { historyOverviewLogBrowserFor = previous })
+	historyOverviewLogBrowserFor = func() (logHistoryBrowser, error) {
+		row := logHistoryAttempt{Key: "key", Path: "run.log", Command: []string{"make", "test"}, Started: started, Outcome: historyOutcomeSuccess, Duration: time.Second}
+		browser := newLogHistoryBrowser([]logHistoryGroup{{Key: "key", Representative: row, Rows: []logHistoryAttempt{row}}}, logHistoryOptions{}, nil)
+		browser.load = nil
+		return browser, nil
+	}
+	overview := historyOverviewBrowser{hosted: true, width: 80, height: 24, color: false, overview: historyOverview{Logs: []historyOverviewLog{{Key: "key", Path: "run.log", Command: "make test", Started: started, Outcome: historyOutcome(logHistoryAttempt{Outcome: historyOutcomeSuccess}), Duration: time.Second}}}}
+	navigator := newHistoryNavigator(nil, "history.db", newHistoryListBrowser("history.db", historyReviewData{}))
+	navigator.stack = append(navigator.stack, overview)
+	next, _ := navigator.Update(tea.KeyPressMsg{Code: 'l', Text: "l"})
+	navigator = next.(historyNavigator)
+	if _, ok := navigator.current().(historyOverviewLogList); !ok {
+		t.Fatalf("log list=%T", navigator.current())
+	}
+	list := navigator.current().(historyOverviewLogList)
+	logModel, handled, err := list.navigate("enter", nil, "history.db")
+	if err != nil || !handled {
+		t.Fatalf("navigate err=%v handled=%v", err, handled)
+	}
+	log, ok := logModel.(logHistoryBrowser)
+	if !ok || !log.detail || !log.rowPinned || log.rows()[log.rowCursor].Command[0] != "make" {
+		t.Fatalf("log=%+v", logModel)
+	}
+}
+
+func TestHistoryOverviewNavigatorLogWarningAndStandalone(t *testing.T) {
+	overview := historyOverviewBrowser{hosted: true, width: 80, height: 24, overview: historyOverview{Warnings: []string{"log unavailable"}}}
+	next, handled, _ := overview.navigate("l", nil, "history.db")
+	updated, ok := next.(historyOverviewBrowser)
+	if !ok || handled || updated.err != nil || updated.notice != "log unavailable" {
+		t.Fatalf("warning=%+v handled=%v", next, handled)
+	}
+	if view := updated.View().Content; !strings.Contains(view, T("history.overview.browser.title")) || !strings.Contains(view, "log unavailable") {
+		t.Fatalf("warning replaced the overview:\n%s", view)
+	}
+	standalone := overview
+	standalone.hosted = false
+	if next, handled, _ := standalone.navigate("l", nil, "history.db"); next != nil || handled {
+		t.Fatalf("standalone l=%T handled=%v", next, handled)
+	}
+}

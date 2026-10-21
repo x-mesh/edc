@@ -542,10 +542,17 @@ command:
       - "groups는 inventory의 group 이름을 한 줄에 하나씩 출력합니다."
   setup:
     summary: "command 기본값 설정"
+    option:
+      inventory: "편집할 인벤토리 파일, 기본은 edc remote가 찾는 파일"
+      recipe: "편집할 레시피 파일, 기본은 edc remote가 찾는 파일"
     notes:
       - "wizard는 기존 값을 유지하며 선택한 section만 수정합니다."
       - "config 전체를 보여 준 뒤 atomic하게 저장합니다."
       - "terminal이 필요하며 취소하면 exit code 4입니다."
+      - "edc setup remote는 edc remote의 인벤토리를 터미널 화면에서 편집합니다."
+      - "파일의 주석을 보존하고 원자적으로 교체하며, 새 파일은 권한 0600으로 만듭니다."
+      - "비밀번호나 키는 저장하지 않습니다. 대상에는 SSH alias를 쓰십시오."
+      - "같은 명령의 Step 화면에서 레시피도 편집합니다. 레시피가 없으면 처음 저장할 때 ./.edc/recipe.yaml을 만듭니다."
   update:
     summary: "최신 release 설치"
     option:

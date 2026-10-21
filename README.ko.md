@@ -1626,6 +1626,25 @@ step에 `--yes`를 넣으면 `edc disk grow`와 `edc change apply`는 group의 �
 
 `--dry-run`과 `--list`는 `-f`와 함께 쓰지 못합니다. `--redact`를 주면 출력에서 IP 주소를 가립니다.
 
+### 인벤토리와 레시피 편집
+
+터미널에서 `edc setup remote`를 실행하면 한 화면에서 인벤토리와 레시피를 편집할 수 있습니다.
+
+```bash
+./bin/edc setup remote
+./bin/edc setup remote --inventory ./.edc/inventory.yaml --recipe ./.edc/recipe.yaml
+```
+
+명령은 `edc remote`가 찾는 파일을 엽니다. 파일이 없으면 처음 저장할 때 `./.edc/inventory.yaml`이나 `./.edc/recipe.yaml`을 만듭니다. 다른 파일은 `--inventory`와 `--recipe`로 지정합니다. `defaults.remote.inventory`와 `defaults.remote.recipe` 설정으로도 파일을 지정할 수 있고, 둘 다 있으면 flag가 우선합니다.
+
+화면에는 host 목록과 그룹 목록이 있습니다. `a`로 추가, `e`로 수정, `d`로 삭제하고, `g`나 `h`로 목록을 바꾸며, `s`로 저장하고 `q`로 종료합니다. 그룹 목록에서 `e`를 누르면 스페이스바로 그룹의 host를 고릅니다. `p`는 `parallel`을, `o`는 선택한 그룹의 `parallel`을 설정합니다.
+
+`r`을 누르면 step 목록이 열립니다. `a`로 추가, `e`로 수정, `d`로 삭제하고, `K`와 `J`로 순서를 위아래로 옮깁니다. `n`은 레시피 이름을 지정합니다. step에는 명령이나 업로드 중 하나만 지정합니다.
+
+저장하기 전에 `edc remote`와 같은 규칙으로 결과를 검사합니다. 저장은 바뀐 파일만 씁니다. 저장해도 파일의 주석은 남지만, 이름을 바꾼 host나 step의 주석은 사라집니다. 새 파일의 권한은 `0600`입니다. `edc`가 읽은 뒤에 파일이 바뀌었다면 저장을 멈추고 아무것도 쓰지 않습니다. 저장하지 않은 변경을 버리고 종료하면 종료 코드 `4`를 반환합니다.
+
+비밀번호와 키는 저장하지 않습니다. `target`에는 SSH alias를 쓰십시오.
+
 ### Host tag
 
 host와 step에 `tags`를 답니다. `tags`가 없는 step은 group의 모든 host에서 돕니다. `tags`가 있는 step은 같은 tag를 가진 host에서만 돕니다. 이렇게 하면 recipe 하나로 macOS와 Linux host에 다른 작업을 보냅니다.

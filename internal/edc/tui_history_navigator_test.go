@@ -453,6 +453,28 @@ func TestHistoryNavigatorReloadsRootAfterPrunePop(t *testing.T) {
 	}
 }
 
+func TestHistoryNavigatorClosesPruneAgePickerBeforePopping(t *testing.T) {
+	root := newHistoryListBrowser("history.db", historyReviewData{})
+	prune := newHistoryPruneBrowser("history.db", historyPruneOptions{}, historyPrunePlan{}, time.Now())
+	navigator := newHistoryNavigator(nil, "history.db", root)
+	navigator.stack = append(navigator.stack, prune)
+	next, _ := navigator.Update(tea.KeyPressMsg{Code: 't', Text: "t"})
+	navigator = next.(historyNavigator)
+	if navigator.current().(historyReviewBrowser).agePicker == nil {
+		t.Fatal("t did not open the prune age picker")
+	}
+	next, _ = navigator.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	navigator = next.(historyNavigator)
+	if len(navigator.stack) != 2 || navigator.current().(historyReviewBrowser).agePicker != nil {
+		t.Fatal("Esc did not close only the prune age picker")
+	}
+	next, _ = navigator.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	navigator = next.(historyNavigator)
+	if len(navigator.stack) != 1 {
+		t.Fatal("second Esc did not pop the prune browser")
+	}
+}
+
 func TestHistoryNavigatorKeepsFilterInputKeysInGrowthBrowser(t *testing.T) {
 	root := newHistoryListBrowser("history.db", historyReviewData{})
 	growth := newHistoryGrowthNavigator(nil, "history.db", historyGrowthOptions{}, historyGrowth{})

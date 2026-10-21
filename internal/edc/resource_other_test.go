@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 	"unsafe"
 )
 
@@ -48,6 +49,55 @@ func TestDarwinProcessEnricherNeedsTwoSamplesAndReportsErrors(t *testing.T) {
 	enrich(processes)
 	if processes[0].DiskValid || !strings.Contains(processes[0].DiskStatus, "proc_pid_rusage") {
 		t.Fatalf("failed read must not retain rates: %+v", processes[0])
+	}
+}
+
+func TestDarwinRusageReadCountReusesReaderSample(t *testing.T) {
+	if got := darwinRusageReads(true); got != 0 {
+		t.Fatalf("enricher reads after reader = %d, want 0", got)
+	}
+	if got := darwinRusageReads(false); got != 1 {
+		t.Fatalf("enricher reads without reader sample = %d, want 1", got)
+	}
+}
+
+func TestDarwinReaderAndEnricherReuseRusageSample(t *testing.T) {
+	previousReader, previousNow := darwinProcessRusageReader, darwinProcessNow
+	t.Cleanup(func() { darwinProcessRusageReader, darwinProcessNow = previousReader, previousNow })
+	var calls int
+	readAt := time.Unix(100, 0)
+	darwinProcessRusageReader = func(int) (darwinProcessRusage, error) {
+		calls++
+		return darwinProcessRusage{Started: 7, DiskRead: uint64(calls) * 100, DiskWrite: uint64(calls) * 50, Footprint: 1 << 20}, nil
+	}
+	darwinProcessNow = func() time.Time { return readAt }
+	processes, valid := newTopProcessReaderWithRusage(true)()
+	if !valid || len(processes) == 0 {
+		t.Fatal("reader produced no processes")
+	}
+	readerCalls := calls
+	enrich := newTopProcessEnricher()
+	enrich(processes)
+	if calls != readerCalls {
+		t.Fatalf("rusage calls after first enrich = %d, want %d", calls, readerCalls)
+	}
+	readAt = readAt.Add(time.Second)
+	for index := range processes {
+		processes[index].diskReadBytes += 100
+		processes[index].diskWriteBytes += 50
+		processes[index].diskSampledAt = readAt
+	}
+	enrich(processes)
+	if calls != readerCalls || !processes[0].DiskValid || processes[0].DiskRead != 100 || processes[0].DiskWrite != 50 {
+		t.Fatalf("calls %d, process %+v", calls, processes[0])
+	}
+}
+
+func TestDarwinProcessSampleTimeUsesRusageReadTime(t *testing.T) {
+	readAt, enrichedAt := time.Unix(100, 0), time.Unix(101, 0)
+	process := topProcess{diskSampled: true, diskSampledAt: readAt}
+	if got := darwinProcessSampleTime(process, enrichedAt); !got.Equal(readAt) {
+		t.Fatalf("sample time = %v, want %v", got, readAt)
 	}
 }
 

@@ -21,6 +21,8 @@ import (
 	"modernc.org/sqlite"
 )
 
+var historyProcessMemoryColumns sync.Map
+
 const historyApplicationID = 0x45444348
 
 // historySchemaVersion은 기존 표의 형식이다. 스냅샷 표는 표를 더하기만 하고 기존 표를 바꾸지 않으므로 버전을 올리지 않는다.
@@ -353,9 +355,27 @@ func historyOverviewIndexStatements() []string {
 }
 
 func historyAddProcessMemoryColumn(db *sql.DB) error {
+	if historyHasProcessMemoryColumn(db) {
+		return nil
+	}
+	_, err := db.Exec("ALTER TABLE top_process_samples ADD COLUMN memory_bytes INTEGER")
+	if err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+		return err
+	}
+	historyProcessMemoryColumns.Delete(db)
+	if !historyHasProcessMemoryColumn(db) {
+		return err
+	}
+	return nil
+}
+
+func historyHasProcessMemoryColumn(db *sql.DB) bool {
+	if value, ok := historyProcessMemoryColumns.Load(db); ok {
+		return value.(bool)
+	}
 	rows, err := db.Query("PRAGMA table_info(top_process_samples)")
 	if err != nil {
-		return err
+		return false
 	}
 	defer rows.Close()
 	for rows.Next() {
@@ -363,18 +383,13 @@ func historyAddProcessMemoryColumn(db *sql.DB) error {
 		var name, kind string
 		var notNull, primary int
 		var value any
-		if err := rows.Scan(&cid, &name, &kind, &notNull, &value, &primary); err != nil {
-			return err
-		}
-		if name == "memory_bytes" {
-			return nil
+		if rows.Scan(&cid, &name, &kind, &notNull, &value, &primary) == nil && name == "memory_bytes" {
+			historyProcessMemoryColumns.Store(db, true)
+			return true
 		}
 	}
-	if err := rows.Err(); err != nil {
-		return err
-	}
-	_, err = db.Exec("ALTER TABLE top_process_samples ADD COLUMN memory_bytes INTEGER")
-	return err
+	historyProcessMemoryColumns.Store(db, false)
+	return false
 }
 
 func historyHasOverviewIndexes(db *sql.DB) (bool, error) {

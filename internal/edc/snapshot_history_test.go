@@ -314,7 +314,7 @@ func TestHistoryWritersOpenTogetherWhileAddingTables(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, statement := range append(historyV1Statements(), fmt.Sprintf("PRAGMA application_id=%d", historyApplicationID), "PRAGMA user_version=1") {
+	for _, statement := range append(oldHistoryV1Statements(), fmt.Sprintf("PRAGMA application_id=%d", historyApplicationID), "PRAGMA user_version=1") {
 		if _, err := db.Exec(statement); err != nil {
 			t.Fatal(err)
 		}

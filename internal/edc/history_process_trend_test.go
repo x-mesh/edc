@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"math"
 	"path/filepath"
 	"strings"
@@ -226,6 +227,47 @@ func TestHistoryProcessNamesPreferRecordedMemory(t *testing.T) {
 	if err != nil || len(names) < 2 || names[0].Name != "memory" || names[0].MaxMemory != 200 {
 		t.Fatalf("names=%+v err=%v", names, err)
 	}
+}
+
+func TestHistoryProcessTrendReadsOldSchemaWithoutMemoryColumn(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "old.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, statement := range append(oldHistoryV1Statements(), fmt.Sprintf("PRAGMA application_id=%d", historyApplicationID), "PRAGMA user_version=1") {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := db.Exec(`INSERT INTO runs(id, command, hostname, started_ns, status, payload) VALUES ('run', 'top', 'fixture', 0, 'finished', '{}')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO top_samples(id, run_id, time_ns, payload) VALUES (1, 'run', 1, '{}')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO top_process_samples(sample_id, run_id, time_ns, command, command_folded, payload, pid, rss_bytes) VALUES (1, 'run', 1, 'old', 'old', '{}', 1, 10)`); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	read, err := openHistoryDB(path, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer read.Close()
+	if names, err := historyProcessNames(read, historyProcessByRSS); err != nil || len(names) != 1 || names[0].MaxMemory != 10 {
+		t.Fatalf("old-schema names=%+v err=%v", names, err)
+	}
+	filter, _ := parseTopProcessFilter("old")
+	if summary, err := historyProcessTrendBuckets(read, historyTrendOptions{metric: "memory_bytes", process: filter, by: "day"}, time.UTC, func(historyTrendBucket) error { return nil }); err != nil || summary != (historyTrendSummary{}) {
+		t.Fatalf("old-schema memory trend=%+v err=%v", summary, err)
+	}
+}
+
+func oldHistoryV1Statements() []string {
+	statements := append([]string(nil), historyV1Statements()...)
+	statements[2] = strings.Replace(statements[2], "memory_bytes INTEGER, ", "", 1)
+	return statements
 }
 
 func TestHistoryProcessTrendCountsRestartsAcrossSamples(t *testing.T) {

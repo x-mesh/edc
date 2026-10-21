@@ -1851,6 +1851,79 @@ Each host runs in inventory order. Each step runs its command and verify command
 
 If a step fails, `edc` skips later steps on that host. The next host still runs. Any failure returns exit code `1`.
 
+## SSH tunnels
+
+`edc tunnel` starts, stops, and lists SSH tunnels. It runs the local OpenSSH `ssh` command in the background. It uses your OpenSSH configuration, agent, and known host checks.
+
+Run `edc tunnel` in a terminal to open the tunnel screen. The screen lists each tunnel with its state. It refreshes every 2 seconds.
+
+| Key | Action |
+|---|---|
+| `enter` | Start the selected tunnel. If it runs, stop it. |
+| `n` | Open the form for a new tunnel. |
+| `r` | Restart the selected tunnel. Only a saved tunnel has this key. |
+| `x` | Remove the definition of the selected tunnel after a question. Only a saved tunnel has this key. |
+| `q` | Quit. Running tunnels keep running. |
+
+In the form, `tab` moves to the next field. `←` and `→` choose the host and the kind. `ctrl+t` tests the connection. `enter` starts the tunnel. The form shows the `ssh` command and a help text for the active field.
+
+The `save` field decides if `edc` keeps the tunnel. `yes` is the default. `edc` writes the definition to `tunnels.yaml` and shows the path below the field. If no file exists, `edc` creates `./.edc/tunnels.yaml`. `no` starts the tunnel once. The tunnel leaves the list when it stops. A name that already exists in the file is not replaced.
+
+Define the tunnels that you use often in `tunnels.yaml`. `edc` looks in `./.edc`, in the current directory, and in the config directory. `--file` sets the file.
+
+```yaml
+tunnels:
+  db:
+    host: jump1                  # an inventory host name or a ~/.ssh/config alias
+    local: 5432                  # a port, or auto
+    remote: db.internal:5432     # ssh -L
+  api-dev:
+    host: dev
+    reverse: 8080:localhost:3000 # ssh -R, port:host:port
+  proxy:
+    host: jump1
+    socks: 1080                  # ssh -D, a port, or auto
+```
+
+Each tunnel needs exactly one of `remote`, `reverse`, or `socks`. Local ports bind to `127.0.0.1`. `auto` picks a free port.
+
+```bash
+edc tunnel                                      # tunnel screen, or the list if no terminal
+edc tunnel list --json -                        # the list as JSON
+edc tunnel up db                                # start a defined tunnel
+edc tunnel up -L auto:db.internal:5432 jump1    # start a tunnel that has no definition
+edc tunnel up -L 5432:db.internal:5432 --name db jump1 --save   # start it and save the definition
+edc tunnel test db                              # test the connection, start nothing
+edc tunnel down db
+edc tunnel down --all
+```
+
+## Connection test
+
+`ctrl+t` in the form and `edc tunnel test <name>` run the same checks. They start no tunnel. The checks run in this order:
+
+| Check | How |
+|---|---|
+| Local port | `edc` binds the port at `127.0.0.1` and looks for a running tunnel that uses it. |
+| SSH login | `ssh host true` with `BatchMode`. |
+| Destination (`remote`) | `ssh -W destination host`. The host connects to the destination, so the result shows what the host sees. |
+| Remote port (`reverse`) | `ssh -R` with `ExitOnForwardFailure`. The host opens the port and closes it at once. |
+| Local target (`reverse`) | `edc` opens a TCP connection to the target on this machine. A failure is a warning only. |
+
+If the SSH login fails, `edc` skips the checks that need the host. `edc tunnel test` returns exit code `1` if a check fails. The form still lets you start a tunnel after a failed check, because a service can start later.
+
+The list shows the state of each tunnel. The `saved` column shows `●` for a tunnel with a definition and `–` for a tunnel that runs once.
+
+| State | Meaning |
+|---|---|
+| `up` | The SSH master process runs. |
+| `down` | The tunnel has a definition and does not run. |
+| `stale` | The state file exists, but the SSH process is gone. Press `enter` or run `edc tunnel down` to clear it. |
+
+The `reach` column opens a TCP connection to the tunnel entrance. It shows `ok` if the destination keeps the connection open. It shows `refused` if the connection closes at once. Reverse tunnels show `-`.
+
+`edc` keeps one state file for each tunnel in the `tunnels` directory next to the history database. `edc` does not store passwords or keys. The tunnel uses `BatchMode`, so use an SSH agent or a key without a passphrase.
+
 ## Route switching
 
 `edc route` changes the default route of a gateway VM and rolls the change back when it fails. Linux only. `switch` and `rollback` need root. `edc` does not add `sudo` itself.

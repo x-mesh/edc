@@ -137,6 +137,8 @@ func Run(args []string, version string) int {
 		return runLog(args[1:])
 	case "remote":
 		return runRemote(args[1:], version)
+	case "tunnel":
+		return runTunnel(args[1:], version)
 	case "completion":
 		return runCompletion(args[1:])
 	case "update":

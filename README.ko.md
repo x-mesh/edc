@@ -1743,6 +1743,79 @@ host는 inventory 순서로 돕니다. step은 recipe 순서로 command와 verif
 
 step이 실패하면 `edc`는 그 host의 나머지 step을 건너뜁니다. 다음 host는 그대로 진행합니다. 실패가 하나라도 있으면 exit code `1`을 돌려줍니다.
 
+## SSH 터널
+
+`edc tunnel`은 SSH 터널을 시작, 종료하고 목록으로 보여 줍니다. 로컬 OpenSSH `ssh`를 백그라운드로 실행하므로 OpenSSH 설정, agent, known host 확인을 그대로 사용합니다.
+
+터미널에서 `edc tunnel`을 실행하면 터널 화면이 열립니다. 화면은 터널마다 상태를 보여 주고 2초마다 갱신합니다.
+
+| 키 | 동작 |
+|---|---|
+| `enter` | 고른 터널을 시작합니다. 실행 중이면 종료합니다. |
+| `n` | 새 터널 입력 폼을 엽니다. |
+| `r` | 고른 터널을 다시 시작합니다. 저장된 터널에서만 쓸 수 있습니다. |
+| `x` | 확인한 뒤 고른 터널의 정의를 삭제합니다. 저장된 터널에서만 쓸 수 있습니다. |
+| `q` | 화면을 닫습니다. 실행 중인 터널은 계속 실행됩니다. |
+
+폼에서는 `tab`으로 다음 항목에 이동하고 `←`, `→`로 호스트와 종류를 고릅니다. `ctrl+t`는 연결을 시험하고 `enter`는 터널을 시작합니다. 폼에는 실행될 `ssh` 명령과 지금 선택한 항목의 도움말이 함께 보입니다.
+
+`저장` 항목은 터널을 보관할지 정합니다. 기본값은 `예`이며, `tunnels.yaml`에 정의를 쓰고 저장 경로를 항목 아래에 보여 줍니다. 파일이 없으면 `./.edc/tunnels.yaml`을 새로 만듭니다. `아니오`를 고르면 한 번만 시작하고, 터널을 종료하면 목록에서 사라집니다. 파일에 같은 이름이 있으면 덮어쓰지 않고 막습니다.
+
+자주 쓰는 터널은 `tunnels.yaml`에 정의합니다. `edc`는 `./.edc`, 현재 디렉터리, 설정 디렉터리 순으로 찾고 `--file`로 경로를 지정할 수 있습니다.
+
+```yaml
+tunnels:
+  db:
+    host: jump1                  # inventory의 호스트 이름 또는 ~/.ssh/config 별칭
+    local: 5432                  # 포트 또는 auto
+    remote: db.internal:5432     # ssh -L
+  api-dev:
+    host: dev
+    reverse: 8080:localhost:3000 # ssh -R, port:host:port
+  proxy:
+    host: jump1
+    socks: 1080                  # ssh -D, 포트 또는 auto
+```
+
+터널마다 `remote`, `reverse`, `socks` 중 정확히 하나를 지정해야 합니다. 로컬 포트는 `127.0.0.1`에만 바인딩하고, `auto`는 비어 있는 포트를 고릅니다.
+
+```bash
+edc tunnel                                      # 터널 화면, 터미널이 아니면 목록
+edc tunnel list --json -                        # 목록을 JSON으로 출력
+edc tunnel up db                                # 정의된 터널 시작
+edc tunnel up -L auto:db.internal:5432 jump1    # 정의 없이 즉석으로 시작
+edc tunnel up -L 5432:db.internal:5432 --name db jump1 --save   # 시작하고 정의도 저장
+edc tunnel test db                              # 터널은 시작하지 않고 연결만 시험
+edc tunnel down db
+edc tunnel down --all
+```
+
+### 연결 시험
+
+폼의 `ctrl+t`와 `edc tunnel test <name>`은 같은 항목을 확인하며 터널은 시작하지 않습니다. 확인 순서는 다음과 같습니다.
+
+| 항목 | 방법 |
+|---|---|
+| 로컬 포트 | `127.0.0.1`에 바인딩해 보고, 같은 포트를 쓰는 실행 중인 터널이 있는지 찾습니다. |
+| SSH 로그인 | `BatchMode`로 `ssh host true`를 실행합니다. |
+| 목적지 (`remote`) | `ssh -W 목적지 host`를 실행합니다. 호스트가 목적지에 연결하므로 호스트에서 본 결과입니다. |
+| 원격 포트 (`reverse`) | `ExitOnForwardFailure`를 켠 `ssh -R`로 호스트가 포트를 열었다가 바로 닫습니다. |
+| 로컬 대상 (`reverse`) | 이 컴퓨터의 대상으로 TCP 연결을 열어 봅니다. 실패해도 경고로만 표시합니다. |
+
+SSH 로그인에 실패하면 호스트가 필요한 항목은 건너뜁니다. 항목이 실패하면 `edc tunnel test`는 종료 코드 `1`을 반환합니다. 서비스를 나중에 띄울 수 있으므로, 폼에서는 시험이 실패해도 터널을 시작할 수 있습니다.
+
+목록의 `saved` 열은 정의가 있는 터널을 `●`, 한 번만 실행 중인 터널을 `–`로 표시합니다. 상태는 다음과 같습니다.
+
+| 상태 | 의미 |
+|---|---|
+| `up` | SSH master 프로세스가 실행 중입니다. |
+| `down` | 정의는 있지만 실행 중이 아닙니다. |
+| `stale` | 상태 파일은 남아 있지만 SSH 프로세스가 없습니다. 화면에서 `enter`를 누르거나 `edc tunnel down`을 실행하면 정리됩니다. |
+
+`reach` 열은 터널 입구로 TCP 연결을 열어 확인합니다. 목적지가 연결을 유지하면 `ok`, 곧바로 끊으면 `refused`입니다. 역방향 터널은 `-`로 표시합니다.
+
+터널마다 상태 파일 하나를 history 데이터베이스와 같은 위치의 `tunnels` 디렉터리에 둡니다. 비밀번호와 키는 저장하지 않습니다. 터널은 `BatchMode`로 연결하므로 SSH agent나 암호 없는 키를 사용해야 합니다.
+
 ## Route 전환
 
 `edc route`는 gateway VM의 기본 경로를 바꾸고, 실패하면 되돌립니다. Linux에서만 동작합니다. `switch`와 `rollback`은 root 권한이 필요하고 `edc`가 `sudo`를 붙이지 않습니다.

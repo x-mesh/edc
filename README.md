@@ -145,6 +145,18 @@ parallel = 0
 [defaults.du]
 workers = 4
 
+[defaults.history]
+limit = 200
+
+[defaults.changes]
+since = "24h"
+
+[defaults.snapshot]
+since = "6h"
+
+[defaults.events]
+since = "6h"
+
 [defaults.update]
 timeout = "60s"
 
@@ -163,6 +175,7 @@ max_restarts = 3
 restart_delay = "5s"
 timeout = "0s"
 kill_after = "5s"
+history_limit = 20
 ```
 
 Command-specific values override `defaults.common`. Positional targets, URLs, hosts, and remote groups are never stored, nor are action options such as `yes`, `force`, `dry-run`, `list`, and `check`. Persisted remote inventory and recipe paths must be absolute. Empty path values disable that default.

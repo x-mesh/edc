@@ -82,19 +82,23 @@ type auditConfig struct {
 }
 
 type configDefaults struct {
-	Common  commonConfig  `yaml:"common,omitempty" toml:"common,omitempty"`
-	Doctor  doctorConfig  `yaml:"doctor,omitempty" toml:"doctor,omitempty"`
-	TLS     tlsConfig     `yaml:"tls,omitempty" toml:"tls,omitempty"`
-	HTTP    httpConfig    `yaml:"http,omitempty" toml:"http,omitempty"`
-	Top     topConfig     `yaml:"top,omitempty" toml:"top,omitempty"`
-	Info    infoConfig    `yaml:"info,omitempty" toml:"info,omitempty"`
-	Where   whereConfig   `yaml:"where,omitempty" toml:"where,omitempty"`
-	Capture captureConfig `yaml:"capture,omitempty" toml:"capture,omitempty"`
-	Remote  remoteConfig  `yaml:"remote,omitempty" toml:"remote,omitempty"`
-	Update  updateConfig  `yaml:"update,omitempty" toml:"update,omitempty"`
-	Quality qualityConfig `yaml:"quality,omitempty" toml:"quality,omitempty"`
-	Log     logConfig     `yaml:"log,omitempty" toml:"log,omitempty"`
-	Du      duConfig      `yaml:"du,omitempty" toml:"du,omitempty"`
+	Common   commonConfig   `yaml:"common,omitempty" toml:"common,omitempty"`
+	Doctor   doctorConfig   `yaml:"doctor,omitempty" toml:"doctor,omitempty"`
+	TLS      tlsConfig      `yaml:"tls,omitempty" toml:"tls,omitempty"`
+	HTTP     httpConfig     `yaml:"http,omitempty" toml:"http,omitempty"`
+	Top      topConfig      `yaml:"top,omitempty" toml:"top,omitempty"`
+	Info     infoConfig     `yaml:"info,omitempty" toml:"info,omitempty"`
+	Where    whereConfig    `yaml:"where,omitempty" toml:"where,omitempty"`
+	Capture  captureConfig  `yaml:"capture,omitempty" toml:"capture,omitempty"`
+	Remote   remoteConfig   `yaml:"remote,omitempty" toml:"remote,omitempty"`
+	Update   updateConfig   `yaml:"update,omitempty" toml:"update,omitempty"`
+	Quality  qualityConfig  `yaml:"quality,omitempty" toml:"quality,omitempty"`
+	Log      logConfig      `yaml:"log,omitempty" toml:"log,omitempty"`
+	Du       duConfig       `yaml:"du,omitempty" toml:"du,omitempty"`
+	History  historyConfig  `yaml:"history,omitempty" toml:"history,omitempty"`
+	Changes  changesConfig  `yaml:"changes,omitempty" toml:"changes,omitempty"`
+	Snapshot snapshotConfig `yaml:"snapshot,omitempty" toml:"snapshot,omitempty"`
+	Events   eventsConfig   `yaml:"events,omitempty" toml:"events,omitempty"`
 }
 
 type commonConfig struct {
@@ -157,6 +161,18 @@ type updateConfig struct {
 type duConfig struct {
 	Workers *int `yaml:"workers,omitempty" toml:"workers,omitempty"`
 }
+type historyConfig struct {
+	Limit *int `yaml:"limit,omitempty" toml:"limit,omitempty"`
+}
+type changesConfig struct {
+	Since *configDuration `yaml:"since,omitempty" toml:"since,omitempty"`
+}
+type snapshotConfig struct {
+	Since *configDuration `yaml:"since,omitempty" toml:"since,omitempty"`
+}
+type eventsConfig struct {
+	Since *configDuration `yaml:"since,omitempty" toml:"since,omitempty"`
+}
 type qualityConfig struct {
 	Timeout *configDuration `yaml:"timeout,omitempty" toml:"timeout,omitempty"`
 	Server  *string         `yaml:"server,omitempty" toml:"server,omitempty"`
@@ -172,6 +188,7 @@ type logConfig struct {
 	RestartDelay   *configDuration `yaml:"restart_delay,omitempty" toml:"restart_delay,omitempty"`
 	Timeout        *configDuration `yaml:"timeout,omitempty" toml:"timeout,omitempty"`
 	KillAfter      *configDuration `yaml:"kill_after,omitempty" toml:"kill_after,omitempty"`
+	HistoryLimit   *int            `yaml:"history_limit,omitempty" toml:"history_limit,omitempty"`
 }
 
 var activeConfig edcConfig
@@ -407,6 +424,21 @@ func validateConfig(config edcConfig) error {
 	if d.Du.Workers != nil && *d.Du.Workers < 1 {
 		return invalidConfig("defaults.du.workers", "must be at least 1")
 	}
+	if d.History.Limit != nil && *d.History.Limit < 0 {
+		return invalidConfig("defaults.history.limit", "must be at least 0")
+	}
+	if d.Log.HistoryLimit != nil && (*d.Log.HistoryLimit < 1 || *d.Log.HistoryLimit > logHistoryMaxLimit) {
+		return invalidConfig("defaults.log.history_limit", fmt.Sprintf("must be between 1 and %d", logHistoryMaxLimit))
+	}
+	for field, value := range map[string]*configDuration{
+		"defaults.changes.since":  d.Changes.Since,
+		"defaults.snapshot.since": d.Snapshot.Since,
+		"defaults.events.since":   d.Events.Since,
+	} {
+		if value != nil && value.Duration <= 0 {
+			return invalidConfig(field, "must be greater than 0")
+		}
+	}
 	if d.Quality.Timeout != nil && d.Quality.Timeout.Duration <= 0 {
 		return invalidConfig("defaults.quality.timeout", "must be greater than 0")
 	}
@@ -503,17 +535,21 @@ func recommendedConfig() edcConfig {
 	return edcConfig{Lang: lang, Defaults: configDefaults{
 		Common: commonConfig{Timeout: durationPointer(15 * time.Second), JSON: stringPointer(""), Verbose: boolPointer(false), Redact: boolPointer(false)},
 		Doctor: doctorConfig{Profile: stringPointer("default")}, TLS: tlsConfig{MinDays: intPointer(14)}, HTTP: httpConfig{ExpectStatus: intPointer(200)},
-		Top:     topConfig{Interval: durationPointer(2 * time.Second), Count: intPointer(10), NoHeader: boolPointer(false), JSON: stringPointer("")},
-		Info:    infoConfig{Public: boolPointer(false), Timeout: durationPointer(3 * time.Second), Verbose: boolPointer(false)},
-		Where:   whereConfig{Provider: stringPointer("all"), Count: intPointer(3)},
-		Capture: captureConfig{Interface: stringPointer(""), Duration: durationPointer(15 * time.Second), Count: intPointer(500), Filter: stringPointer(""), Output: stringPointer("")},
-		Remote:  remoteConfig{Inventory: stringPointer(""), Recipe: stringPointer(""), ConnectTimeout: durationPointer(10 * time.Second), OutputLimit: intPointer(remoteOutputLimit), Parallel: intPointer(0)},
-		Update:  updateConfig{Timeout: durationPointer(60 * time.Second)},
-		Quality: qualityConfig{Timeout: durationPointer(defaultQualityTimeout), Server: stringPointer("")},
-		Du:      duConfig{Workers: intPointer(duDefaultWorkers)},
+		Top:      topConfig{Interval: durationPointer(2 * time.Second), Count: intPointer(10), NoHeader: boolPointer(false), JSON: stringPointer("")},
+		Info:     infoConfig{Public: boolPointer(false), Timeout: durationPointer(3 * time.Second), Verbose: boolPointer(false)},
+		Where:    whereConfig{Provider: stringPointer("all"), Count: intPointer(3)},
+		Capture:  captureConfig{Interface: stringPointer(""), Duration: durationPointer(15 * time.Second), Count: intPointer(500), Filter: stringPointer(""), Output: stringPointer("")},
+		Remote:   remoteConfig{Inventory: stringPointer(""), Recipe: stringPointer(""), ConnectTimeout: durationPointer(10 * time.Second), OutputLimit: intPointer(remoteOutputLimit), Parallel: intPointer(0)},
+		Update:   updateConfig{Timeout: durationPointer(60 * time.Second)},
+		Quality:  qualityConfig{Timeout: durationPointer(defaultQualityTimeout), Server: stringPointer("")},
+		Du:       duConfig{Workers: intPointer(duDefaultWorkers)},
+		History:  historyConfig{Limit: intPointer(historyDefaultLimit)},
+		Changes:  changesConfig{Since: durationPointer(changesDefaultSince)},
+		Snapshot: snapshotConfig{Since: durationPointer(snapshotDefaultSince)},
+		Events:   eventsConfig{Since: durationPointer(eventsDefaultSince)},
 		Log: logConfig{Stream: stringPointer("both"), Output: stringPointer(""), CommandDisplay: stringPointer("full"),
 			MaxSizeMB: intPointer(defaultLogMaxSizeMB), KeepFiles: intPointer(defaultLogKeepFiles), Restart: stringPointer("never"),
-			MaxRestarts: intPointer(defaultLogMaxRestarts), RestartDelay: durationPointer(defaultLogRestartDelay), Timeout: durationPointer(0), KillAfter: durationPointer(defaultLogKillAfter)},
+			MaxRestarts: intPointer(defaultLogMaxRestarts), RestartDelay: durationPointer(defaultLogRestartDelay), Timeout: durationPointer(0), KillAfter: durationPointer(defaultLogKillAfter), HistoryLimit: intPointer(logHistoryDefaultLimit)},
 	}}
 }
 

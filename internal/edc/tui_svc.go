@@ -71,11 +71,7 @@ func svcBrowserHints(filter string, filtering, failed, all bool, shown int, colo
 	case filtering:
 		return liveKeyHints("filter: "+filter+"█ · Enter done · Esc clear", color)
 	case filter == "" && !failed:
-		on := []string{}
-		if all {
-			on = append(on, "a all")
-		}
-		return liveKeyHints("↑↓ select · Enter open · / filter · f failed · a all · r refresh · q quit", color, on...)
+		return liveKeyHints("↑↓ select · Enter open · / filter · f failed · a all · r refresh · q quit", color, liveHintItem{key: "a", on: all})
 	}
 	conditions := []string{}
 	if filter != "" {

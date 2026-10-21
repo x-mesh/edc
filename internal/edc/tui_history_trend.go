@@ -496,11 +496,7 @@ func (model historyTrendBrowser) View() tea.View {
 			notice = historyTint(T("history.trend.unfiltered", historyTerminalText(value), quoteLocalShellWord(value)), richYellow, model.color)
 		}
 		lines = append(lines, notice)
-		var on []string
-		if model.trendOptions().each {
-			on = append(on, "e")
-		}
-		lines = append(lines, liveKeyHints(T("history.browser.help"), model.color, on...))
+		lines = append(lines, liveKeyHints(T("history.browser.help"), model.color, liveHintItem{key: "e", on: model.trendOptions().each}))
 	}
 	for index, line := range lines {
 		lines[index] = ansi.Truncate(line, max(1, model.width), "…")

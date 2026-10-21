@@ -186,27 +186,31 @@ func liveHintKey(token string) bool {
 }
 
 // liveKeyHints는 "키 설명" 묶음의 키를 굵은 청록으로, 설명과 구분자를 회색으로 칠한다. 키로 시작하지 않는 묶음은 모두 회색이다.
-// on에 든 묶음은 고른 항목과 같은 바탕으로 칠해 지금 켜진 보기나 상태를 보인다. on은 묶음 전체 글자나 그 키다.
-// 번역된 안내도 키 글자는 같으므로 키로 고르면 언어와 상관없이 맞는다.
-func liveKeyHints(text string, color bool, on ...string) string {
+// items에서 켜진 키는 고른 항목과 같은 바탕으로 칠해 지금 켜진 보기나 상태를 보인다.
+type liveHintItem struct {
+	key string
+	on  bool
+}
+
+func liveKeyHints(text string, color bool, items ...liveHintItem) string {
 	if !liveRich(color) || text == "" {
 		return liveMuted(text, color)
 	}
 	var builder strings.Builder
 	last := 0
 	for _, bounds := range append(liveHintSeparator.FindAllStringIndex(text, -1), []int{len(text), len(text)}) {
-		builder.WriteString(liveHintGroup(text[last:bounds[0]], on))
+		builder.WriteString(liveHintGroup(text[last:bounds[0]], items))
 		builder.WriteString(richDim(text[bounds[0]:bounds[1]]))
 		last = bounds[1]
 	}
 	return builder.String()
 }
 
-func liveHintGroup(group string, on []string) string {
+func liveHintGroup(group string, items []liveHintItem) string {
 	trimmed := strings.TrimLeft(group, " ")
 	lead := group[:len(group)-len(trimmed)]
 	key, rest, _ := strings.Cut(trimmed, " ")
-	if body := strings.TrimRight(trimmed, " "); liveHintOn(body, key, on) {
+	if body := strings.TrimRight(trimmed, " "); liveHintOn(key, items) {
 		return lead + liveSelected(body, true) + trimmed[len(body):]
 	}
 	if !liveHintKey(key) {
@@ -236,10 +240,9 @@ func liveHintKeyBeforeParticle(token string) (string, bool) {
 	return "", false
 }
 
-// liveHintOn은 묶음이 on에 들었는지다. 묶음 전체 글자나 그 키가 같으면 든 것이다.
-func liveHintOn(group, key string, on []string) bool {
-	for _, item := range on {
-		if item != "" && (item == group || item == key) {
+func liveHintOn(key string, items []liveHintItem) bool {
+	for _, item := range items {
+		if item.on && item.key == key {
 			return true
 		}
 	}

@@ -256,14 +256,11 @@ func (model historySampleBrowser) footer() []string {
 	if model.expanded {
 		key = "history.top_browser.detail_help"
 	}
-	var on []string
-	if model.paused {
-		on = append(on, "p")
-	}
+	items := []liveHintItem{{key: "p", on: model.paused}}
 	var lines []string
 	line := ""
 	for _, hint := range strings.Split(T(key), "   ") {
-		hint = liveKeyHints(strings.TrimSpace(hint), model.color, on...)
+		hint = liveKeyHints(strings.TrimSpace(hint), model.color, items...)
 		if line != "" && liveWidth(line)+3+liveWidth(hint) > max(1, model.width) {
 			lines = append(lines, line)
 			line = ""

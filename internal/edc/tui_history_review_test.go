@@ -8,6 +8,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 )
 
 func reviewAfter(t *testing.T, model historyReviewBrowser, messages ...tea.Msg) historyReviewBrowser {
@@ -17,6 +18,40 @@ func reviewAfter(t *testing.T, model historyReviewBrowser, messages ...tea.Msg) 
 		model = next.(historyReviewBrowser)
 	}
 	return model
+}
+
+func TestHistoryGrowthBrowserProcessFilterReloadsAndClears(t *testing.T) {
+	model := newHistoryGrowthNavigator(nil, "/Users/jinwoo/Library/Application Support/edc/history.db", historyGrowthOptions{}, historyGrowth{})
+	var got []historyGrowthOptions
+	model.growthLoad = func(options historyGrowthOptions) (historyReviewData, error) {
+		got = append(got, options)
+		return historyReviewData{}, nil
+	}
+	model = reviewAfter(t, model, tea.WindowSizeMsg{Width: 80, Height: 24}, tea.KeyPressMsg{Code: '/'}, tea.KeyPressMsg{Code: 'n', Text: "n"}, tea.KeyPressMsg{Code: 'g', Text: "g"}, tea.KeyPressMsg{Code: 'i', Text: "i"}, tea.KeyPressMsg{Code: 'n', Text: "n"}, tea.KeyPressMsg{Code: 'x', Text: "x"})
+	if view := ansi.Strip(model.View().Content); !strings.Contains(view, "filter: nginx█") || !strings.Contains(view, "Ctrl+U Clear") {
+		t.Fatalf("filter input help = %q", view)
+	}
+	next, command := model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	model = next.(historyReviewBrowser)
+	if command != nil {
+		model = reviewAfter(t, model, command())
+	}
+	if model.growthOptions.process.String() != "nginx" || len(got) != 1 || got[0].process.String() != "nginx" {
+		t.Fatalf("filter reload = options:%q loads:%+v", model.growthOptions.process, got)
+	}
+	model = reviewAfter(t, model, tea.KeyPressMsg{Code: '/'}, tea.KeyPressMsg{Code: tea.KeyBackspace}, tea.KeyPressMsg{Code: tea.KeyBackspace}, tea.KeyPressMsg{Code: tea.KeyBackspace}, tea.KeyPressMsg{Code: tea.KeyBackspace}, tea.KeyPressMsg{Code: tea.KeyBackspace})
+	next, command = model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	model = next.(historyReviewBrowser)
+	if command != nil {
+		model = reviewAfter(t, model, command())
+	}
+	if model.growthOptions.process.active() || len(got) != 2 || got[1].process.active() {
+		t.Fatalf("filter clear = options:%q loads:%+v", model.growthOptions.process, got)
+	}
+	model.growthOptions.process, _ = parseTopProcessFilter("term-mesh")
+	if line := ansi.Strip(strings.Split(model.View().Content, "\n")[1]); !strings.HasPrefix(line, "filter term-mesh") {
+		t.Fatalf("filter was truncated after path: %q", line)
+	}
 }
 
 func reviewFixture() historyReviewData {

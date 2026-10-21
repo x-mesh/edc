@@ -8,6 +8,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 )
 
 func historyTopSamples(count int) []historyTopSample {
@@ -99,6 +100,15 @@ func TestHistorySampleBrowserProcessFilterReloadsAndClears(t *testing.T) {
 	}
 	if model.options.process.String() != "nginx" || len(got) != 2 || got[1].process.String() != "nginx" {
 		t.Fatalf("filter reload = options:%q reloads:%+v", model.options.process, got)
+	}
+}
+
+func TestHistorySampleBrowserShowsFilterBeforeLongPath(t *testing.T) {
+	model := newHistoryTopBrowser(historyTopSamples(1), "/Users/jinwoo/Library/Application Support/edc/history.db")
+	model.options.process, _ = parseTopProcessFilter("term-mesh")
+	model = historyTopAfter(t, model, tea.WindowSizeMsg{Width: 80, Height: 24})
+	if line := ansi.Strip(strings.Split(model.View().Content, "\n")[1]); !strings.HasPrefix(line, "filter term-mesh") {
+		t.Fatalf("filter was truncated after path: %q", line)
 	}
 }
 

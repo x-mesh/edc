@@ -554,7 +554,7 @@ func (model historySampleBrowser) View() tea.View {
 	} else {
 		path := historyTerminalText(model.path)
 		if filter := model.options.process.String(); filter != "" {
-			path += " · " + T("history.filter.active", historyTerminalText(filter))
+			path = T("history.filter.active", historyTerminalText(filter)) + " · " + path
 		}
 		lines = []string{historyStrong(T(model.messageKey("title")), richCyan, model.color), historyTint(path, richGray, model.color), ""}
 		header := ""

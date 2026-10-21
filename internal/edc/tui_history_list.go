@@ -114,6 +114,9 @@ func historyListNavigate(model historyReviewBrowser, key string, db *sql.DB, pat
 		return nil, false, nil
 	}
 	entry := model.data.entries[model.selected]
+	if key == "m" {
+		return newHistoryMenuBrowser(db, path, entry.id), true, nil
+	}
 	if key == "enter" {
 		child := newHistoryOverviewBrowser(db, path, historyOverviewOptions{run: entry.id})
 		child.hosted = true

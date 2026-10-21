@@ -32,6 +32,7 @@ const (
 type historyTrendTarget struct {
 	kind  historyTrendTargetKind
 	value string
+	pid   int
 	// rss는 프로세스 대상의 최대 RSS다. 목록을 이 순서로 두고 이름 옆에 보인다.
 	rss float64
 }
@@ -78,7 +79,7 @@ func historyTrendTargets(db *sql.DB) ([]historyTrendTarget, error) {
 			return nil, err
 		}
 		for _, name := range names {
-			targets = append(targets, historyTrendTarget{kind: historyTrendProcess, value: name.Name, rss: name.MaxRSS})
+			targets = append(targets, historyTrendTarget{kind: historyTrendProcess, value: name.Name, pid: name.PID, rss: name.MaxRSS})
 		}
 	}
 	has, err := historyHasSnapshots(db)
@@ -348,10 +349,18 @@ func (model historyTrendBrowser) targetLabel(target historyTrendTarget) string {
 	case historyTrendHost:
 		return T("history.browser.host")
 	case historyTrendProcess:
-		return historyTerminalText(target.value)
+		return historyTrendProcessLabel(target, historyTrendTargetWidth)
 	default:
 		return "◆ " + historyTerminalText(target.value)
 	}
+}
+
+func historyTrendProcessLabel(target historyTrendTarget, width int) string {
+	if target.pid == 0 {
+		return topProcessName(target.value, width)
+	}
+	pid := fmt.Sprintf(" %d", target.pid)
+	return topProcessName(target.value, max(1, width-ansi.StringWidth(pid))) + pid
 }
 
 func (model historyTrendBrowser) targetLines(height int) []string {
@@ -365,7 +374,11 @@ func (model historyTrendBrowser) targetLines(height int) []string {
 			count = formatSizeShort(uint64(target.rss))
 		}
 		space := historyTrendTargetWidth - 1 - ansi.StringWidth(count)
-		label = ansi.Truncate(label, max(1, space-1), "…")
+		if target.kind == historyTrendProcess {
+			label = historyTrendProcessLabel(target, max(1, space-1))
+		} else {
+			label = ansi.Truncate(label, max(1, space-1), "…")
+		}
 		line := " " + label + strings.Repeat(" ", max(1, space-ansi.StringWidth(label))) + historyTint(count, richGray, model.color)
 		if index == model.cursor {
 			plain := " " + label + strings.Repeat(" ", max(1, space-ansi.StringWidth(label))) + count
@@ -438,7 +451,7 @@ func (model historyTrendBrowser) View() tea.View {
 			right = append(right, strings.Split(strings.TrimRight(model.table.View(), "\n"), "\n")...)
 		}
 		height := model.table.Height() + 1
-		left := append([]string{historyTint(T("history.browser.targets"), richGray, model.color)}, model.targetLines(height-1)...)
+		left := append([]string{historyTint("TARGET         PEAK RSS", richGray, model.color)}, model.targetLines(height-1)...)
 		for index := 0; index < height; index++ {
 			l, r := "", ""
 			if index < len(left) {

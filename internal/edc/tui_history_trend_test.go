@@ -36,7 +36,7 @@ func TestHistoryTrendBrowserTargetsMetricsAndCommand(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(targets) != 3 || targets[0].kind != historyTrendHost || targets[1].value != "pg" || targets[1].rss != 130 || targets[2].value != "nginx" {
+	if len(targets) != 3 || targets[0].kind != historyTrendHost || targets[1].value != "pg" || targets[1].pid != 10 || targets[1].rss != 130 || targets[2].value != "nginx" {
 		t.Fatalf("targets = %+v", targets)
 	}
 	model := newHistoryTrendBrowser(db, targets, historyTrendOptions{by: "hour"}, historyTrendZone)
@@ -45,13 +45,13 @@ func TestHistoryTrendBrowserTargetsMetricsAndCommand(t *testing.T) {
 	model = updated.(historyTrendBrowser)
 	loaded, _ := model.Update(model.Init()())
 	model = loaded.(historyTrendBrowser)
-	if view := historyTrendBrowserView(model); !strings.Contains(view, "cpu_pct by hour") || !strings.Contains(view, "No values in this range") || !strings.Contains(view, "›host") {
+	if view := historyTrendBrowserView(model); !strings.Contains(view, "cpu_pct by hour") || !strings.Contains(view, "No values in this range") || !strings.Contains(view, "›host") || !strings.Contains(view, "TARGET") || !strings.Contains(view, "PEAK RSS") {
 		t.Fatalf("host view:\n%s", view)
 	}
 
 	model = historyTrendBrowserAfter(t, model, "down")
 	view := historyTrendBrowserView(model)
-	for _, want := range []string{"rss_bytes of pg by hour", "RESTARTS", "75%", "█", "without --process", "RSS change: too few samples (2)", "›pg"} {
+	for _, want := range []string{"rss_bytes of pg by hour", "RESTARTS", "75%", "█", "without --process", "RSS change: too few samples (2)", "›pg 10"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("process view lacks %q:\n%s", want, view)
 		}
@@ -74,6 +74,24 @@ func TestHistoryTrendBrowserTargetsMetricsAndCommand(t *testing.T) {
 	}
 	if command := historyTrendBrowserCommand(model.trendOptions(), nil); strings.Contains(command, "--each") || strings.Contains(command, "--process") {
 		t.Fatalf("host command = %q", command)
+	}
+}
+
+func TestHistoryTrendBrowserShowsExecutablePIDAndFullCommand(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	target := historyTrendTarget{kind: historyTrendProcess, value: "/Applications/OrbStack Helper", pid: 42, rss: 1 << 30}
+	model := newHistoryTrendBrowser(nil, []historyTrendTarget{target}, historyTrendOptions{by: "day"}, historyTrendZone)
+	for _, width := range []int{80, 120, 180} {
+		updated, _ := model.Update(tea.WindowSizeMsg{Width: width, Height: 20})
+		view := historyTrendBrowserView(updated.(historyTrendBrowser))
+		if !strings.Contains(view, "42") || !strings.Contains(view, "1.0 GB") || !strings.Contains(view, "rss_bytes of /Applications/OrbStack Helper by day") {
+			t.Fatalf("width %d view:\n%s", width, view)
+		}
+		for _, line := range strings.Split(view, "\n") {
+			if ansi.StringWidth(line) > width {
+				t.Fatalf("width %d line %d: %q", width, ansi.StringWidth(line), line)
+			}
+		}
 	}
 }
 

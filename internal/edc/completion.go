@@ -283,7 +283,7 @@ _edc() {
           _arguments '1:shell:(zsh bash groups)'
           ;;
         setup)
-          _arguments
+          _arguments '1::subcommand:(remote)' '--inventory[인벤토리 파일]:path:_files'
           ;;
       esac
       ;;
@@ -475,7 +475,10 @@ _edc() {
         COMPREPLY=($(compgen -W "$(edc completion groups 2>/dev/null)" -- "$cur"))
       fi ;;
     completion) COMPREPLY=($(compgen -W "zsh bash groups" -- "$cur")) ;;
-    setup) COMPREPLY=() ;;
+    setup)
+      if [[ $prev == --inventory ]]; then COMPREPLY=($(compgen -f -- "$cur"))
+      elif [[ $COMP_CWORD -eq 2 && $cur != -* ]]; then COMPREPLY=($(compgen -W "remote" -- "$cur"))
+      else COMPREPLY=($(compgen -W "--inventory" -- "$cur")); fi ;;
   esac
 }
 complete -F _edc edc

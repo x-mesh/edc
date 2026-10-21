@@ -19,6 +19,9 @@ import (
 var errSetupCancelled = errors.New("setup cancelled")
 
 func runSetup(args []string) int {
+	if len(args) > 0 && args[0] == "remote" {
+		return runRemoteSetup(args[1:])
+	}
 	return runSetupWithIO(args, os.Stdin, os.Stdout, os.Stderr, isTerminal(os.Stdin) && isTerminal(os.Stdout), configPath())
 }
 

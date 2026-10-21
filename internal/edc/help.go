@@ -563,7 +563,10 @@ var commandDocs = []commandDoc{
 	},
 	{
 		name: "setup", group: "tool",
-		usage: []string{"edc setup"},
+		usage: []string{"edc setup", "edc setup remote [--inventory FILE]"},
+		options: []optionDoc{
+			{"--inventory FILE", "command.setup.option.inventory"},
+		},
 	},
 	{
 		name: "update", group: "tool",

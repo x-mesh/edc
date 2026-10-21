@@ -129,19 +129,6 @@ func navigatorAtTop(model tea.Model) bool {
 
 func (model historyNavigator) View() tea.View { return model.current().View() }
 
-func runHistoryNavigator(options historyOptions) error {
-	path, err := defaultHistoryPath()
-	if err != nil {
-		return err
-	}
-	db, err := openHistoryDB(path, false)
-	if err != nil {
-		return err
-	}
-	defer db.Close()
-	return runHistoryNavigatorWith(db, path, options)
-}
-
 func runHistoryNavigatorWith(db *sql.DB, path string, options historyOptions) error {
 	data, err := historyListReviewData(db, options, time.Now())
 	if err != nil {

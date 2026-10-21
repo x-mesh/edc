@@ -25,6 +25,9 @@ type darwinMemory struct {
 // darwinProcessTimeout은 ps 한 번을 기다리는 한도다. refresh 간격보다 짧아 다음 갱신과 겹치지 않는다.
 const darwinProcessTimeout = 800 * time.Millisecond
 
+var darwinProcessRusageReader = readDarwinProcessRusage
+var darwinProcessNow = time.Now
+
 // newTopProcessReader는 macOS ps를 쓴다. macOS의 %cpu는 최근 사용률의 감쇠 평균이라 그대로 쓸 수 있다.
 func newTopProcessReaderWithRusage(readRusage bool) func() ([]topProcess, bool) {
 	return func() ([]topProcess, bool) {
@@ -50,11 +53,11 @@ func newTopProcessReaderWithRusage(readRusage bool) func() ([]topProcess, bool) 
 			}
 			// 다른 사용자 소유 process는 root로 실행할 때만 읽는다. 그때는 MemoryValid가 false로 남아 RSS로 대신한다.
 			if readRusage {
-				if usage, err := readDarwinProcessRusage(processes[index].PID); err == nil {
+				if usage, err := darwinProcessRusageReader(processes[index].PID); err == nil {
 					processes[index].Memory, processes[index].MemoryValid = usage.Footprint, true
 					processes[index].diskSampled, processes[index].diskStarted = true, usage.Started
 					processes[index].diskReadBytes, processes[index].diskWriteBytes = usage.DiskRead, usage.DiskWrite
-					processes[index].diskSampledAt = time.Now()
+					processes[index].diskSampledAt = darwinProcessNow()
 				}
 			}
 		}
@@ -93,13 +96,13 @@ func newTopProcessEnricher() func([]topProcess) {
 			stats := darwinProcessRusage{Started: process.diskStarted, DiskRead: process.diskReadBytes, DiskWrite: process.diskWriteBytes}
 			if darwinRusageReads(process.diskSampled) > 0 {
 				var err error
-				stats, err = readDarwinProcessRusage(process.PID)
+				stats, err = darwinProcessRusageReader(process.PID)
 				if err != nil {
 					process.DiskStatus = err.Error()
 					continue
 				}
 			}
-			now := darwinProcessSampleTime(*process, time.Now())
+			now := darwinProcessSampleTime(*process, darwinProcessNow())
 			current[process.PID] = darwinProcessIOSample{stats: stats, at: now}
 			before, seen := previous[process.PID]
 			seconds := now.Sub(before.at).Seconds()

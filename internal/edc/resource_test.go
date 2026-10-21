@@ -238,6 +238,9 @@ func TestLinuxProcessSwapReadCount(t *testing.T) {
 	if !linuxProcessSwapRead(map[string]uint64{"SwapTotal": 1, "SwapFree": 0}, nil) {
 		t.Fatal("used host swap must read process status files")
 	}
+	if !linuxProcessSwapRead(nil, errors.New("meminfo")) {
+		t.Fatal("unreadable meminfo must read process status files")
+	}
 }
 
 // RSS 순위였다면 swap으로 밀려난 leak이 RSS가 큰 process에 밀려 빠진다.

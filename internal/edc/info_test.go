@@ -71,6 +71,18 @@ func TestInfoCompactMemoryKeepsValuesAndMovesExplanationToVerbose(t *testing.T) 
 	}
 }
 
+func TestInfoProcessSnapshotUsesRSSNotFootprint(t *testing.T) {
+	base := []topProcess{{PID: 1, Command: "alpha", RSS: 2 << 20, Threads: 1}, {PID: 2, Command: "beta", RSS: 1 << 20, Threads: 2}}
+	withFootprint := append([]topProcess(nil), base...)
+	withFootprint[0].Memory, withFootprint[0].MemoryValid = 9<<30, true
+	var plain, footprint strings.Builder
+	printInfoResources(&plain, infoMemory{Total: 1, Available: 1}, nil, infoSignals{}, base, nil, nil, false, false)
+	printInfoResources(&footprint, infoMemory{Total: 1, Available: 1}, nil, infoSignals{}, withFootprint, nil, nil, false, false)
+	if plain.String() != footprint.String() {
+		t.Fatalf("process output changed with footprint:\n%s\n%s", plain.String(), footprint.String())
+	}
+}
+
 func TestInfoCompactSystemKeepsHostIdentityAndVerboseKernel(t *testing.T) {
 	details := hostDetails{Hostname: "host", System: "darwin", OS: "macOS", Version: "27", Machine: "arm64", Processor: "long kernel build string", Release: "27.0", Model: "M4", Cores: 16, MemoryTotal: 64 << 30}
 	public := &publicNetworkInfo{IP: "192.0.2.1", City: "city", Region: "region", Country: "country", Timezone: "zone", Org: "provider"}

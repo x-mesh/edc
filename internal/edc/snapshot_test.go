@@ -7,6 +7,7 @@ import (
 	"flag"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -241,6 +242,15 @@ func TestSnapshotProcessResultKeepsTheTopFive(t *testing.T) {
 	lines := strings.Split(result.Evidence[0].Value, "\n")
 	if len(lines) != 5 || !strings.HasPrefix(lines[0], "PID 8 ") {
 		t.Fatalf("evidence lines = %q, want five, largest RSS first", lines)
+	}
+}
+
+func TestSnapshotProcessResultUsesRSSNotFootprint(t *testing.T) {
+	base := []topProcess{{PID: 1, Command: "alpha", RSS: 2 << 20, Threads: 1}, {PID: 2, Command: "beta", RSS: 1 << 20, Threads: 2}}
+	withFootprint := append([]topProcess(nil), base...)
+	withFootprint[0].Memory, withFootprint[0].MemoryValid = 9<<30, true
+	if plain, footprint := snapshotProcessResult(time.Unix(1, 0), base, nil), snapshotProcessResult(time.Unix(1, 0), withFootprint, nil); !reflect.DeepEqual(plain, footprint) {
+		t.Fatalf("snapshot output changed with footprint: %+v %+v", plain, footprint)
 	}
 }
 

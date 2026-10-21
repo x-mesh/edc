@@ -792,3 +792,57 @@ func TestHistoryStatusPaint(t *testing.T) {
 		t.Fatal("an unknown status keeps the default color")
 	}
 }
+
+func TestHistoryFlagsOpenScopedNavigator(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "history.db")
+	recorder := topHistoryFixture(t, path)
+	if err := recorder.Close("finished"); err != nil {
+		t.Fatal(err)
+	}
+	previousTerminal, previousRunner := historyLiveTerminal, historyScopedNavigatorRunner
+	t.Cleanup(func() { historyLiveTerminal, historyScopedNavigatorRunner = previousTerminal, previousRunner })
+	historyLiveTerminal = func() bool { return true }
+	called := false
+	historyScopedNavigatorRunner = func(_ *sql.DB, gotPath string, options historyOptions) error {
+		called = gotPath == path && options.limit == 3 && options.run == "run" && options.from.Equal(time.Date(2026, 10, 5, 0, 0, 0, 0, time.UTC)) && options.to.Equal(time.Date(2026, 10, 6, 0, 0, 0, 0, time.UTC))
+		return nil
+	}
+	if code := runHistory([]string{"--run", "run", "--from", "2026-10-05T00:00:00Z", "--to", "2026-10-06T00:00:00Z", "--limit", "3", path}); code != 0 || !called {
+		t.Fatalf("code=%d called=%v", code, called)
+	}
+	if code := runHistory([]string{"--from", "bad", path}); code != 2 {
+		t.Fatalf("bad from code=%d", code)
+	}
+}
+
+func TestHistoryDBArgumentUsesScopedNavigatorAndListFallback(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "history.db")
+	recorder := topHistoryFixture(t, path)
+	if err := recorder.Close("finished"); err != nil {
+		t.Fatal(err)
+	}
+	previousTerminal, previousRunner := historyLiveTerminal, historyScopedNavigatorRunner
+	t.Cleanup(func() { historyLiveTerminal, historyScopedNavigatorRunner = previousTerminal, previousRunner })
+	historyLiveTerminal = func() bool { return true }
+	called := false
+	historyScopedNavigatorRunner = func(_ *sql.DB, gotPath string, options historyOptions) error {
+		called = gotPath == path && options.limit == historyDefaultLimit
+		return nil
+	}
+	if code := runHistory([]string{path}); code != 0 || !called {
+		t.Fatalf("db code=%d called=%v", code, called)
+	}
+	if code := runHistory([]string{"lst"}); code != 2 {
+		t.Fatalf("typo code=%d", code)
+	}
+
+	historyLiveTerminal = func() bool { return false }
+	var direct, implicit strings.Builder
+	output := traceCaptureOutput(t, &os.Stdout, func() { runHistory([]string{"list", "--limit", "1", path}) })
+	direct.WriteString(output)
+	output = traceCaptureOutput(t, &os.Stdout, func() { runHistory([]string{"--limit", "1", path}) })
+	implicit.WriteString(output)
+	if direct.String() != implicit.String() {
+		t.Fatalf("list=%q implicit=%q", direct.String(), implicit.String())
+	}
+}

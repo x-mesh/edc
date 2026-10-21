@@ -252,7 +252,7 @@ var commandDocs = []commandDoc{
 	},
 	{
 		name: "history", group: "record",
-		usage: []string{"edc history list [options] [DB]", "edc history top [options] [DB]", "edc history process [options] [DB]", "edc history overview [--run <id>] [--from <time> --to <time>] [DB]", "edc history export --run <id> [--output <file|->] [DB]", "edc history trend --metric <name> [--probe <id> | --process <filter>] [DB]", "edc history growth [--root <path> | --process <filter>] [DB]", "edc history prune [--older-than <age>] [options] [DB]", "edc history log [edc log history options]"},
+		usage: []string{"edc history [--from <time>] [--to <time>] [--run <id>] [--limit <n>] [DB]", "edc history list [options] [DB]", "edc history top [options] [DB]", "edc history process [options] [DB]", "edc history overview [--run <id>] [--from <time> --to <time>] [DB]", "edc history export --run <id> [--output <file|->] [DB]", "edc history trend --metric <name> [--probe <id> | --process <filter>] [DB]", "edc history growth [--root <path> | --process <filter>] [DB]", "edc history prune [--older-than <age>] [options] [DB]", "edc history log [edc log history options]"},
 		options: []optionDoc{
 			{"--run <id>", "history.option.run"},
 			{"--from <RFC3339>", "history.option.from"},

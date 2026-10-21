@@ -225,7 +225,8 @@ func runHistoryProcessBrowser(db *sql.DB, path string, options historyOptions) e
 		return err
 	}
 	model := newHistoryProcessBrowser(samples, path)
-	model.loadProcesses = func() ([]historyProcessSample, error) { return loadHistoryProcess(db, options) }
+	model.options = options
+	model.loadProcessesWith = func(options historyOptions) ([]historyProcessSample, error) { return loadHistoryProcess(db, options) }
 	_, err = tea.NewProgram(model, tea.WithInput(os.Stdin), tea.WithOutput(os.Stdout)).Run()
 	return err
 }

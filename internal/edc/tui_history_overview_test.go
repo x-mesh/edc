@@ -58,6 +58,32 @@ func TestHistoryOverviewBrowserUsesRunDuration(t *testing.T) {
 	}
 }
 
+func TestHistoryOverviewBrowserShowsDisksAndLogs(t *testing.T) {
+	for _, width := range []int{80, 130} {
+		model := overviewBrowserFixture()
+		model.width, model.height = width, 8
+		growth := 1024.0
+		model.overview.Disks = []historyOverviewDisk{{Mount: "/very/long/path/that/must/truncate", UsedBytes: 10 << 20, TotalBytes: 20 << 20, BytesPerDay: &growth}}
+		model.overview.Logs = []historyOverviewLog{{Command: "make a very long command", Started: time.Unix(0, 0), Outcome: "SUCCESS", Duration: 1500 * time.Millisecond}}
+		lines := strings.Join(model.lines(), "\n")
+		if !strings.Contains(lines, T("history.overview.disks")) || !strings.Contains(lines, T("history.overview.logs")) || !strings.Contains(lines, T("history.overview.logs_time_only")) {
+			t.Fatalf("width %d sections = %q", width, lines)
+		}
+		for _, line := range model.lines() {
+			if ansi.StringWidth(line) > width {
+				t.Fatalf("width %d: %q", width, line)
+			}
+		}
+		for range len(model.lines()) {
+			updated, _ := model.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+			model = updated.(historyOverviewBrowser)
+		}
+		if !strings.Contains(model.View().Content, T("history.overview.logs")) {
+			t.Fatalf("width %d did not scroll to logs", width)
+		}
+	}
+}
+
 func TestHistoryOverviewBrowserAlignsTranslatedColumns(t *testing.T) {
 	previous := currentLanguage()
 	defer setLanguage(previous)

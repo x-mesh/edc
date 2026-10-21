@@ -93,6 +93,22 @@ func (model historyOverviewBrowser) tableLines(lines []string) []string {
 	for _, process := range model.overview.Processes {
 		lines = append(lines, historyOverviewProcessRow(topProcessName(process.Command, nameWidth), formatSizeShort(uint64(process.Peak)), fmt.Sprintf("%.1f%%", process.CPU), fmt.Sprint(process.Restarts), nameWidth))
 	}
+	if len(model.overview.Disks) > 0 {
+		lines = append(lines, "", T("history.overview.disks"), model.diskHeader())
+		for _, disk := range model.overview.Disks {
+			growth := "—"
+			if disk.BytesPerDay != nil {
+				growth = historyGrowthRate(*disk.BytesPerDay)
+			}
+			lines = append(lines, model.diskRow(disk.Mount, formatSizeShort(uint64(disk.UsedBytes)), formatSizeShort(uint64(disk.TotalBytes)), growth))
+		}
+	}
+	if len(model.overview.Logs) > 0 {
+		lines = append(lines, "", T("history.overview.logs"), T("history.overview.logs_time_only"), model.logHeader())
+		for _, log := range model.overview.Logs {
+			lines = append(lines, model.logRow(log.Command, log.Started.Local().Format(time.DateTime), log.Outcome, historyShortDuration(log.Duration)))
+		}
+	}
 	return lines
 }
 
@@ -102,6 +118,26 @@ func historyOverviewMetricRow(name, average, p95, maximum, spark string, nameWid
 
 func historyOverviewProcessRow(name, peak, cpu, restarts string, nameWidth int) string {
 	return historyCell(name, nameWidth, false) + " " + historyCell(peak, 10, true) + " " + historyCell(cpu, 10, true) + " " + historyCell(restarts, 8, true)
+}
+
+func (model historyOverviewBrowser) diskHeader() string {
+	pathWidth := max(16, model.width-48)
+	return historyCell(T("history.overview.column.path"), pathWidth, false) + " " + historyCell(T("history.overview.column.used"), 10, true) + " " + historyCell(T("history.overview.column.total"), 10, true) + " " + historyCell(T("history.overview.column.growth_per_day"), 14, true)
+}
+
+func (model historyOverviewBrowser) diskRow(path, used, total, growth string) string {
+	pathWidth := max(16, model.width-48)
+	return historyCell(path, pathWidth, false) + " " + historyCell(used, 10, true) + " " + historyCell(total, 10, true) + " " + historyCell(growth, 14, true)
+}
+
+func (model historyOverviewBrowser) logHeader() string {
+	commandWidth := max(16, model.width-55)
+	return historyCell(T("history.overview.column.command"), commandWidth, false) + " " + historyCell(T("history.overview.column.started"), 19, false) + " " + historyCell(T("history.overview.column.result"), 12, false) + " " + historyCell(T("history.overview.column.duration"), 10, true)
+}
+
+func (model historyOverviewBrowser) logRow(command, started, result, duration string) string {
+	commandWidth := max(16, model.width-55)
+	return historyCell(command, commandWidth, false) + " " + historyCell(started, 19, false) + " " + historyCell(result, 12, false) + " " + historyCell(duration, 10, true)
 }
 
 func historyOverviewSparkline(values []float64, width int) string {

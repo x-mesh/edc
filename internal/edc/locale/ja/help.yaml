@@ -565,6 +565,7 @@ command:
     summary: "保存した resource 観測履歴を検索"
     sub:
       list: "top -w と snapshot の記録"
+      overview: "実行または時間範囲の要約"
       export: "記録したスナップショットを報告に"
       trend: "期間ごとの件数・最小・平均・p95・最大"
       growth: "ディスクの日次増加と変化したディレクトリ"

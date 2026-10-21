@@ -291,3 +291,22 @@ func TestHistoryNavigatorReviewLoadUsesOwner(t *testing.T) {
 		t.Fatal("growth did not accept its own load")
 	}
 }
+
+func TestHistoryNavigatorSampleTickUsesOwner(t *testing.T) {
+	root := newHistoryListBrowser("history.db", historyReviewData{})
+	hidden := newHistoryTopBrowser([]historyTopSample{{RunID: "hidden"}}, "history.db")
+	visible := newHistoryProcessBrowser([]historyProcessSample{{RunID: "visible"}}, "history.db")
+	hidden.seq, visible.seq = 1, 1
+	hidden.load = func() ([]historyTopSample, error) { return []historyTopSample{{RunID: "changed"}}, nil }
+	visible.loadProcesses = func() ([]historyProcessSample, error) { return []historyProcessSample{{RunID: "fresh"}}, nil }
+	if _, command := hidden.Update(historySamplesTickMsg{owner: visible.owner, seq: visible.seq}); command != nil {
+		t.Fatal("hidden sample browser accepted visible tick")
+	}
+	navigator := newHistoryNavigator(nil, "history.db", root)
+	navigator.stack = append(navigator.stack, hidden, visible)
+	next, command := navigator.Update(historySamplesTickMsg{owner: visible.owner, seq: visible.seq})
+	navigator = next.(historyNavigator)
+	if command == nil || navigator.stack[1].(historySampleBrowser).samples[0].RunID != "hidden" {
+		t.Fatal("visible tick changed hidden sample browser")
+	}
+}

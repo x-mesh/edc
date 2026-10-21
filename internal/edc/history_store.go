@@ -84,7 +84,7 @@ disk_read_bytes_per_s disk_write_bytes_per_s disk_iops disk_await_ms disk_busy_p
 psi_cpu_some_avg10_pct psi_memory_some_avg10_pct psi_io_some_avg10_pct memory_pct swap_out_bytes_per_s
 `)), historyMetric{name: "cpu_pct", field: -1, kind: reflect.Float64})
 var historyProcessMetrics = historyMetrics(topProcessSample{}, strings.Fields(`
-pid cpu_pct rss_bytes threads fds disk_read_bytes_per_s disk_write_bytes_per_s
+pid cpu_pct rss_bytes memory_bytes threads fds disk_read_bytes_per_s disk_write_bytes_per_s
 `))
 
 func historyMetricColumns(metrics []historyMetric) string {
@@ -278,6 +278,9 @@ func initializeHistoryDB(db *sql.DB, write bool) error {
 				}
 			}
 		}
+		if err := historyAddProcessMemoryColumn(db); err != nil {
+			return err
+		}
 		return historyEnableWAL(db)
 	}
 	if application != 0 || version != 0 || !write {
@@ -347,6 +350,31 @@ func historyOverviewIndexStatements() []string {
 		`CREATE INDEX IF NOT EXISTS du_dirs_run_time ON du_dirs(run_id, time_ns)`,
 		`CREATE INDEX IF NOT EXISTS process_sample ON top_process_samples(sample_id)`,
 	}
+}
+
+func historyAddProcessMemoryColumn(db *sql.DB) error {
+	rows, err := db.Query("PRAGMA table_info(top_process_samples)")
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var name, kind string
+		var notNull, primary int
+		var value any
+		if err := rows.Scan(&cid, &name, &kind, &notNull, &value, &primary); err != nil {
+			return err
+		}
+		if name == "memory_bytes" {
+			return nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	_, err = db.Exec("ALTER TABLE top_process_samples ADD COLUMN memory_bytes INTEGER")
+	return err
 }
 
 func historyHasOverviewIndexes(db *sql.DB) (bool, error) {

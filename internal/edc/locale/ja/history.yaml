@@ -164,7 +164,7 @@ history:
     more_processes: "… ほかに %d 個のプロセス、すべては --json"
   browser:
     targets: "対象"
-    peak_rss: "最大RSS"
+    peak_memory: "最大メモリ"
     host: "ホスト"
     loading: "読み込み中"
     growth: "RSS %s、最も速い pid %d"

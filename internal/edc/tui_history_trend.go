@@ -63,7 +63,7 @@ type historyTrendBrowser struct {
 	probeKeys map[string][]string
 }
 
-// historyTrendTargets는 고를 수 있는 대상이다. top 기록이 있으면 호스트를 맨 앞에, 그다음 최대 RSS가 큰 프로세스, 그다음
+// historyTrendTargets는 고를 수 있는 대상이다. top 기록이 있으면 호스트를 맨 앞에, 그다음 최대 메모리가 큰 프로세스, 그다음
 // 스냅샷 결과를 이름순으로 둔다.
 func historyTrendTargets(db *sql.DB) ([]historyTrendTarget, error) {
 	var targets []historyTrendTarget
@@ -78,7 +78,7 @@ func historyTrendTargets(db *sql.DB) ([]historyTrendTarget, error) {
 			return nil, err
 		}
 		for _, name := range names {
-			targets = append(targets, historyTrendTarget{kind: historyTrendProcess, value: name.Name, rss: name.MaxRSS})
+			targets = append(targets, historyTrendTarget{kind: historyTrendProcess, value: name.Name, rss: name.MaxMemory})
 		}
 	}
 	has, err := historyHasSnapshots(db)
@@ -412,7 +412,7 @@ func (model historyTrendBrowser) targetLines(height int) []string {
 }
 
 func (model historyTrendBrowser) targetHeader() string {
-	value := T("history.browser.peak_rss")
+	value := T("history.browser.peak_memory")
 	space := historyTrendTargetWidth - 1 - ansi.StringWidth(value)
 	label := ansi.Truncate(T("history.browser.targets"), max(1, space-1), "…")
 	return " " + label + strings.Repeat(" ", max(1, space-ansi.StringWidth(label))) + value

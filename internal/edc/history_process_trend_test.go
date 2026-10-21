@@ -210,8 +210,21 @@ func TestHistoryProcessNamesOrdersBySamplesOrRSS(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(names) != 2 || names[0].Name != "nginx" || names[0].MaxRSS != 9 || names[1].MaxRSS != 1 {
+	if len(names) != 2 || names[0].Name != "nginx" || names[0].MaxMemory != 9 || names[1].MaxMemory != 1 {
 		t.Fatalf("names by rss = %+v", names)
+	}
+}
+
+func TestHistoryProcessNamesPreferRecordedMemory(t *testing.T) {
+	fixture, _ := newHistoryProcessFixtureDB(t)
+	at := time.Now()
+	fixture.sample("filtered", at, historyProcessFixture{1, "", "rss", 100}, historyProcessFixture{2, "", "memory", 1})
+	if _, err := fixture.db.Exec("UPDATE top_process_samples SET memory_bytes=200 WHERE command='memory'"); err != nil {
+		t.Fatal(err)
+	}
+	names, err := historyProcessNames(fixture.db, historyProcessByRSS)
+	if err != nil || len(names) < 2 || names[0].Name != "memory" || names[0].MaxMemory != 200 {
+		t.Fatalf("names=%+v err=%v", names, err)
 	}
 }
 

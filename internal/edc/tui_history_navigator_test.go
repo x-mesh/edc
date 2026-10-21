@@ -38,7 +38,7 @@ func TestHistoryNavigatorPushesRunChildrenAndRestoresRoot(t *testing.T) {
 			}
 		}
 	}
-	for _, key := range []string{"t", "esc", "p", "esc"} {
+	for _, key := range []string{"t", "esc", "o", "esc"} {
 		next, _ := navigator.Update(tea.KeyPressMsg{Code: rune(key[0]), Text: key})
 		navigator = next.(historyNavigator)
 	}
@@ -123,7 +123,7 @@ func TestHistoryNavigatorKeepsRootStateWhenChildHandlesKeys(t *testing.T) {
 }
 
 func TestHistoryNavigatorSnapshotShowsNoticeWithoutChild(t *testing.T) {
-	data := historyReviewData{entries: []historyReviewEntry{{id: "snapshot", cells: []string{historySnapshotCommand, "", "", "", "", ""}}}}
+	data := historyReviewData{entries: []historyReviewEntry{{id: "snapshot", command: historySnapshotCommand, cells: []string{"translated snapshot", "", "", "", "", ""}}}}
 	root := newHistoryListBrowser("history.db", data)
 	navigator := newHistoryNavigator(nil, "history.db", root)
 	next, _ := navigator.Update(tea.KeyPressMsg{Code: 't', Text: "t"})
@@ -131,5 +131,16 @@ func TestHistoryNavigatorSnapshotShowsNoticeWithoutChild(t *testing.T) {
 	root = navigator.current().(historyReviewBrowser)
 	if len(navigator.stack) != 1 || root.notice != T("history.list_browser.snapshot_navigation") || strings.Contains(root.View().Content, "Top samples") {
 		t.Fatalf("snapshot navigation=%+v", root)
+	}
+}
+
+func TestHistoryNavigatorKeepsRunListPauseKey(t *testing.T) {
+	root := newHistoryListBrowser("history.db", historyReviewData{entries: []historyReviewEntry{{id: "run", command: "top", cells: make([]string, 6)}}})
+	root.load = func() (historyReviewData, error) { return historyReviewData{}, nil }
+	navigator := newHistoryNavigator(nil, "history.db", root)
+	next, _ := navigator.Update(tea.KeyPressMsg{Code: 'p', Text: "p"})
+	navigator = next.(historyNavigator)
+	if !navigator.current().(historyReviewBrowser).paused {
+		t.Fatal("p did not pause the run list")
 	}
 }

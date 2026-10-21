@@ -18,6 +18,7 @@ type historyReviewColumn struct {
 
 type historyReviewEntry struct {
 	id      string
+	command string
 	cells   []string
 	details []string
 }
@@ -108,7 +109,7 @@ func (model historyReviewBrowser) helpLines() []string {
 		return lines
 	}
 	lines := historyReviewKeyHints(T(key), model.width, model.color, liveHintItem{key: "p", on: model.paused})
-	if model.extraHelp != "" && !model.expanded && !(model.title == T("history.list_browser.title") && len(model.data.entries) > 0 && strings.HasPrefix(model.data.entries[model.selected].cells[0], historySnapshotCommand)) {
+	if model.extraHelp != "" && !model.expanded && !(len(model.data.entries) > 0 && model.data.entries[model.selected].command == historySnapshotCommand) {
 		lines = append(lines, historyReviewKeyHints(T(model.extraHelp), model.width, model.color)...)
 	}
 	return lines

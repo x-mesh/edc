@@ -58,7 +58,7 @@ func historyListReviewData(db *sql.DB, options historyOptions, now time.Time) (h
 			T("history.list_browser.process", process),
 			T("history.list_browser.interfaces", interfaces),
 		}
-		data.entries = append(data.entries, historyReviewEntry{id: run.ID, cells: []string{historyRunDescription(run), historyRelativeTime(run.StartedAt, now), duration, fmt.Sprint(samples), run.Status, run.Hostname}, details: details})
+		data.entries = append(data.entries, historyReviewEntry{id: run.ID, command: run.Command, cells: []string{historyRunDescription(run), historyRelativeTime(run.StartedAt, now), duration, fmt.Sprint(samples), run.Status, run.Hostname}, details: details})
 	}
 	if err := rows.Err(); err != nil {
 		return historyReviewData{}, err

@@ -3,7 +3,6 @@ package edc
 import (
 	"database/sql"
 	"os"
-	"strings"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -59,7 +58,7 @@ func (model historyNavigator) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				model.stack = append(model.stack, child)
 				return model, child.Init()
-			case "p":
+			case "o":
 				if historyNavigatorSnapshot(root) {
 					root.notice = T("history.list_browser.snapshot_navigation")
 					root.noticeSticky = true
@@ -113,7 +112,7 @@ func navigatorAtTop(model tea.Model) bool {
 }
 
 func historyNavigatorSnapshot(root historyReviewBrowser) bool {
-	return strings.HasPrefix(root.data.entries[root.selected].cells[0], historySnapshotCommand)
+	return root.data.entries[root.selected].command == historySnapshotCommand
 }
 
 func (model historyNavigator) View() tea.View { return model.current().View() }

@@ -5,8 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"os"
-	"slices"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -41,17 +42,18 @@ type historyOverviewLog struct {
 	Duration time.Duration `json:"duration"`
 }
 type historyOverview struct {
-	Run       *historyRun              `json:"run,omitempty"`
-	From      time.Time                `json:"from"`
-	To        time.Time                `json:"to"`
-	Runs      int                      `json:"runs"`
-	Samples   int                      `json:"samples"`
-	Memory    string                   `json:"memory_source"`
-	Metrics   []historyOverviewStat    `json:"metrics"`
-	Processes []historyOverviewProcess `json:"processes"`
-	Series    map[string][]float64     `json:"series,omitempty"`
-	Disks     []historyOverviewDisk    `json:"disks"`
-	Logs      []historyOverviewLog     `json:"logs"`
+	Run          *historyRun              `json:"run,omitempty"`
+	From         time.Time                `json:"from"`
+	To           time.Time                `json:"to"`
+	Runs         int                      `json:"runs"`
+	SnapshotRuns int                      `json:"snapshot_runs"`
+	Samples      int                      `json:"samples"`
+	Memory       string                   `json:"memory_source"`
+	Metrics      []historyOverviewStat    `json:"metrics"`
+	Processes    []historyOverviewProcess `json:"processes"`
+	Series       map[string][]float64     `json:"series,omitempty"`
+	Disks        []historyOverviewDisk    `json:"disks"`
+	Logs         []historyOverviewLog     `json:"logs"`
 }
 
 var historyOverviewLogLoader = func() (logHistorySnapshot, error) {
@@ -127,17 +129,33 @@ func runHistoryOverview(args []string) int {
 		return 1
 	}
 	if *jsonPath != "" {
-		var out io.Writer = os.Stdout
-		if *jsonPath != "-" {
-			file, e := os.OpenFile(*jsonPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0600)
-			if e != nil {
-				fmt.Fprintln(os.Stderr, e)
+		if *jsonPath == "-" {
+			if err := json.NewEncoder(os.Stdout).Encode(view); err != nil {
+				fmt.Fprintln(os.Stderr, err)
 				return 1
 			}
-			defer file.Close()
-			out = file
+			return 0
 		}
-		json.NewEncoder(out).Encode(view)
+		file, err := os.CreateTemp(filepath.Dir(*jsonPath), ".edc-overview-*")
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		temp := file.Name()
+		defer os.Remove(temp)
+		if err := file.Chmod(0600); err == nil {
+			err = json.NewEncoder(file).Encode(view)
+		}
+		if closeErr := file.Close(); err == nil {
+			err = closeErr
+		}
+		if err == nil {
+			err = os.Rename(temp, *jsonPath)
+		}
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
 		return 0
 	}
 	if liveTerminal() && os.Getenv("NO_COLOR") == "" {
@@ -153,10 +171,24 @@ func runHistoryOverview(args []string) int {
 
 func loadHistoryOverview(db *sql.DB, options historyOverviewOptions) (historyOverview, error) {
 	out := historyOverview{Disks: []historyOverviewDisk{}, Logs: []historyOverviewLog{}}
+	if options.run == "" && options.from.IsZero() && options.to.IsZero() {
+		options.to = time.Now().UTC()
+		options.from = options.to.Add(-24 * time.Hour)
+	}
 	where, args := "", []any{}
 	if options.run != "" {
-		where = " WHERE id=?"
-		args = append(args, options.run)
+		where, args = " WHERE id=?", []any{options.run}
+	} else {
+		var conditions []string
+		if !options.from.IsZero() {
+			conditions, args = append(conditions, "time_ns>=?"), append(args, options.from.UnixNano())
+		}
+		if !options.to.IsZero() {
+			conditions, args = append(conditions, "time_ns<?"), append(args, options.to.UnixNano())
+		}
+		if len(conditions) > 0 {
+			where = " WHERE id IN (SELECT DISTINCT run_id FROM top_samples WHERE " + strings.Join(conditions, " AND ") + ")"
+		}
 	}
 	rows, err := db.Query("SELECT payload,started_ns,ended_ns,sample_count FROM runs"+where+" ORDER BY started_ns", args...)
 	if err != nil {
@@ -222,30 +254,45 @@ func loadHistoryOverview(db *sql.DB, options historyOverviewOptions) (historyOve
 		condition = "run_id=? AND " + condition
 		vals = append([]any{options.run}, vals...)
 	}
+	if err := db.QueryRow("SELECT COUNT(DISTINCT run_id), COUNT(*) FROM top_samples WHERE "+condition, vals...).Scan(&out.Runs, &out.Samples); err != nil {
+		return out, err
+	}
+	if err := db.QueryRow("SELECT COUNT(*) FROM runs WHERE command='snapshot' AND started_ns>=? AND started_ns<?", out.From.UnixNano(), out.To.UnixNano()).Scan(&out.SnapshotRuns); err != nil {
+		return out, err
+	}
 	for _, m := range []string{"cpu_pct", "memory_pct", "load1", "disk_read_bytes_per_s", "disk_write_bytes_per_s", "net_in_bytes_per_s", "net_out_bytes_per_s", "swap_out_bytes_per_s"} {
-		r, e := db.Query("SELECT "+m+" FROM top_samples WHERE "+condition+" AND "+m+" IS NOT NULL ORDER BY time_ns", vals...)
-		if e != nil {
-			return out, e
+		var count int
+		var average, maximum sql.NullFloat64
+		if err := db.QueryRow("SELECT COUNT("+m+"), AVG("+m+"), MAX("+m+") FROM top_samples WHERE "+condition+" AND "+m+" IS NOT NULL", vals...).Scan(&count, &average, &maximum); err != nil {
+			return out, err
 		}
-		var values []float64
-		for r.Next() {
-			var v float64
-			r.Scan(&v)
-			values = append(values, v)
+		if count == 0 {
+			continue
 		}
-		r.Close()
-		if len(values) > 0 {
-			if out.Series == nil {
-				out.Series = map[string][]float64{}
+		rank := int(math.Ceil(.95*float64(count))) - 1
+		var p95 float64
+		p95Args := append(append([]any{}, vals...), rank)
+		if err := db.QueryRow("SELECT "+m+" FROM top_samples WHERE "+condition+" AND "+m+" IS NOT NULL ORDER BY "+m+" LIMIT 1 OFFSET ?", p95Args...).Scan(&p95); err != nil {
+			return out, err
+		}
+		out.Metrics = append(out.Metrics, historyOverviewStat{m, average.Float64, p95, maximum.Float64})
+		if out.Series == nil {
+			out.Series = map[string][]float64{}
+		}
+		if options.run != "" || !options.from.IsZero() || !options.to.IsZero() {
+			seriesRows, err := db.Query("SELECT "+m+" FROM top_samples WHERE "+condition+" AND "+m+" IS NOT NULL ORDER BY time_ns LIMIT 120", vals...)
+			if err != nil {
+				return out, err
 			}
-			out.Series[m] = values
-			sorted := slices.Clone(values)
-			sort.Float64s(sorted)
-			sum := 0.0
-			for _, v := range values {
-				sum += v
+			for seriesRows.Next() {
+				var value float64
+				if err := seriesRows.Scan(&value); err != nil {
+					seriesRows.Close()
+					return out, err
+				}
+				out.Series[m] = append(out.Series[m], value)
 			}
-			out.Metrics = append(out.Metrics, historyOverviewStat{m, sum / float64(len(values)), sorted[int(float64(len(sorted)-1)*.95)], sorted[len(sorted)-1]})
+			seriesRows.Close()
 		}
 	}
 	memory := "rss_bytes"
@@ -283,9 +330,12 @@ func loadHistoryOverview(db *sql.DB, options historyOverviewOptions) (historyOve
 }
 func writeHistoryOverview(out io.Writer, v historyOverview, loc *time.Location) {
 	if v.Run != nil {
-		fmt.Fprintf(out, "%s: %s  %s  %s  %s %s  %s %.0fs  %s %s\n", T("history.overview.run"), v.Run.ID, v.Run.Command, v.Run.Hostname, T("history.overview.duration"), v.To.Sub(v.From).Round(time.Second), T("history.overview.interval"), v.Run.IntervalS, T("history.overview.filter"), v.Run.Process)
+		if v.Run.EndedAt != nil {
+			v.From, v.To = v.Run.StartedAt, *v.Run.EndedAt
+		}
+		fmt.Fprintf(out, "%s: %s  %s  %s  %s %s  %s %.0fs  %s %s\n", T("history.overview.run"), v.Run.ID, v.Run.Command, v.Run.Hostname, T("history.overview.duration"), historyShortDuration(v.To.Sub(v.From)), T("history.overview.interval"), v.Run.IntervalS, T("history.overview.filter"), emptyAs(v.Run.Process, "—"))
 	}
-	fmt.Fprintf(out, "%s: %s → %s  %s %d  %s %d\n", T("history.overview.range"), v.From.In(loc).Format(time.DateTime), v.To.In(loc).Format(time.DateTime), T("history.overview.runs"), v.Runs, T("history.overview.samples"), v.Samples)
+	fmt.Fprintf(out, "%s: %s → %s  %s %d  %s %d  %s %d\n", T("history.overview.range"), v.From.In(loc).Format(time.DateTime), v.To.In(loc).Format(time.DateTime), T("history.overview.top_runs"), v.Runs, T("history.overview.samples"), v.Samples, T("history.overview.snapshot_runs"), v.SnapshotRuns)
 	fmt.Fprintln(out, T("history.overview.metrics"))
 	fmt.Fprintf(out, "%-14s %12s %12s %12s\n", T("history.overview.column.metric"), T("history.overview.column.avg"), T("history.overview.column.p95"), T("history.overview.column.max"))
 	for _, m := range v.Metrics {

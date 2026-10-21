@@ -58,10 +58,15 @@ func (model historyOverviewBrowser) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "home":
 			model.offset = 0
 		case "end":
-			model.offset = 1 << 30
+			model.offset = model.maxOffset()
 		}
 	}
 	return model, nil
+}
+
+func (model historyOverviewBrowser) maxOffset() int {
+	footer := historyReviewKeyHints(T("history.overview.browser.help"), max(1, model.width), model.color)
+	return max(0, len(model.lines())-max(1, model.height-len(footer)))
 }
 
 func (model historyOverviewBrowser) lines() []string {
@@ -167,7 +172,7 @@ func (model historyOverviewBrowser) View() tea.View {
 	lines := model.lines()
 	footer := historyReviewKeyHints(T("history.overview.browser.help"), width, model.color)
 	room := max(1, model.height-len(footer))
-	model.offset = min(model.offset, max(0, len(lines)-room))
+	model.offset = min(model.offset, model.maxOffset())
 	body := lines[model.offset:min(len(lines), model.offset+room)]
 	body = append(body, footer...)
 	for index := range body {

@@ -98,7 +98,7 @@ func TestHistoryListBrowserRowsDetailsAndWidths(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(data.entries) != 2 || data.entries[0].id != second.runID || !strings.Contains(data.entries[0].cells[0], "Today") {
+	if len(data.entries) != 2 || data.entries[0].id != second.runID || data.entries[0].cells[0] != "top" || !strings.Contains(data.entries[0].cells[1], "Today") {
 		t.Fatalf("list entries = %+v", data.entries)
 	}
 	model := newHistoryListBrowser(path, data)
@@ -109,11 +109,40 @@ func TestHistoryListBrowserRowsDetailsAndWidths(t *testing.T) {
 				t.Fatalf("width %d overflow: %q", width, line)
 			}
 		}
+		if width == 180 && !strings.Contains(model.View().Content, T("history.list_browser.details")) {
+			t.Fatalf("run panel title missing: %q", model.View().Content)
+		}
 	}
 	model = reviewAfter(t, model, tea.KeyPressMsg{Code: tea.KeyEnter})
 	view := model.View().Content
 	if !model.expanded || !strings.Contains(view, second.runID) || !strings.Contains(view, T("history.list_browser.process", "—")) || !strings.Contains(view, "started  ") || strings.Contains(view, ", ") {
 		t.Fatalf("details = %q", view)
+	}
+}
+
+func TestHistoryListRunDescriptionAndReviewPanelTitles(t *testing.T) {
+	for _, test := range []struct {
+		run  historyRun
+		want string
+	}{
+		{historyRun{Command: "top"}, "top"},
+		{historyRun{Command: "top", Process: "nginx"}, "top · process nginx"},
+		{historyRun{Command: "top", Interfaces: "en0,en1"}, "top · en0,en1"},
+		{historyRun{Command: "snapshot", Interfaces: "all"}, "snapshot"},
+	} {
+		if got := historyRunDescription(test.run); got != test.want {
+			t.Fatalf("description %q, want %q", got, test.want)
+		}
+	}
+	data := reviewFixture()
+	for _, model := range []historyReviewBrowser{
+		newHistoryReviewBrowser("Growth", "history.db", []historyReviewColumn{{"TARGET", 0, 0}}, data),
+		newHistoryPruneBrowser("history.db", historyPruneOptions{olderThan: time.Hour}, historyPrunePlan{}, time.Now()),
+	} {
+		model = reviewAfter(t, model, tea.WindowSizeMsg{Width: 180, Height: 24})
+		if !strings.Contains(model.View().Content, T("history.top_browser.details")) {
+			t.Fatalf("default panel title changed: %q", model.View().Content)
+		}
 	}
 }
 

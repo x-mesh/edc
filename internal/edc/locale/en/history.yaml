@@ -64,6 +64,7 @@ history:
   list_browser:
     title: "Run history"
     summary: "Recorded top and snapshot runs"
+    details: "Selected run"
     empty: "No recorded runs match this query."
     run: "run  %s"
     command: "command  %s"

@@ -91,6 +91,13 @@ func runHistoryOverview(args []string) int {
 		json.NewEncoder(out).Encode(view)
 		return 0
 	}
+	if liveTerminal() && os.Getenv("NO_COLOR") == "" {
+		if err := runHistoryOverviewBrowser(db, path, options); err != nil {
+			fmt.Fprintln(os.Stderr, T("history.error.read", err))
+			return 1
+		}
+		return 0
+	}
 	writeHistoryOverview(os.Stdout, view, time.Local)
 	return 0
 }

@@ -267,6 +267,16 @@ func initializeHistoryDB(db *sql.DB, write bool) error {
 			if err := historyMigrate(db, historySnapshotStatements()); err != nil {
 				return err
 			}
+		} else {
+			has, err := historyHasOverviewIndexes(db)
+			if err != nil {
+				return err
+			}
+			if !has {
+				if err := historyMigrate(db, historyOverviewIndexStatements()); err != nil {
+					return err
+				}
+			}
 		}
 		return historyEnableWAL(db)
 	}
@@ -321,14 +331,28 @@ func historyV1Statements() []string {
 // historySnapshotStatements는 스냅샷 표다. snapshot_results는 결과 원본이라 보고서를 다시 만들 수 있고, snapshot_metrics는
 // 결과의 숫자 지표를 probe와 키로 펼친 값, du_dirs는 du.scan이 남긴 큰 디렉터리다.
 func historySnapshotStatements() []string {
-	return []string{
+	return append([]string{
 		`CREATE TABLE IF NOT EXISTS snapshot_results (id INTEGER PRIMARY KEY, run_id TEXT NOT NULL REFERENCES runs(id), time_ns INTEGER NOT NULL, probe TEXT NOT NULL, status TEXT NOT NULL, payload TEXT NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS snapshot_metrics (id INTEGER PRIMARY KEY, run_id TEXT NOT NULL REFERENCES runs(id), time_ns INTEGER NOT NULL, probe TEXT NOT NULL, key TEXT NOT NULL, value REAL NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS du_dirs (id INTEGER PRIMARY KEY, run_id TEXT NOT NULL REFERENCES runs(id), time_ns INTEGER NOT NULL, root TEXT NOT NULL, path TEXT NOT NULL, bytes INTEGER NOT NULL)`,
 		`CREATE INDEX IF NOT EXISTS snapshot_results_run ON snapshot_results(run_id, id)`,
 		`CREATE INDEX IF NOT EXISTS snapshot_metrics_series ON snapshot_metrics(probe, key, time_ns)`,
 		`CREATE INDEX IF NOT EXISTS du_dirs_series ON du_dirs(root, path, time_ns)`,
+	}, historyOverviewIndexStatements()...)
+}
+
+func historyOverviewIndexStatements() []string {
+	return []string{
+		`CREATE INDEX IF NOT EXISTS snapshot_metrics_run_time ON snapshot_metrics(run_id, time_ns)`,
+		`CREATE INDEX IF NOT EXISTS du_dirs_run_time ON du_dirs(run_id, time_ns)`,
+		`CREATE INDEX IF NOT EXISTS process_sample ON top_process_samples(sample_id)`,
 	}
+}
+
+func historyHasOverviewIndexes(db *sql.DB) (bool, error) {
+	var count int
+	err := db.QueryRow(`SELECT count(*) FROM sqlite_schema WHERE type='index' AND name IN ('snapshot_metrics_run_time', 'du_dirs_run_time', 'process_sample')`).Scan(&count)
+	return count == 3, err
 }
 
 func historyEnableWAL(db *sql.DB) error {

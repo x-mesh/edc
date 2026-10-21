@@ -65,6 +65,7 @@ history:
   list_browser:
     title: "Run history"
     summary: "Recorded top and snapshot runs"
+    active_range: "range %s"
     details: "Selected run"
     navigator_help: "Enter Overview   i Details   t Top samples   o Processes   g Growth"
     snapshot_navigator_help: "Enter Overview   i Details   g Growth"
@@ -103,7 +104,7 @@ history:
     empty: "No top recordings. Run edc top and press w, or use edc top -w. Snapshots are listed by edc history list."
     navigator_help: "o Processes"
   database_path: "Default history DB: %s"
-  usage: "Usage: edc history <list|top|process|overview|export|trend|growth|prune> [options] [DB]"
+  usage: "Usage: edc history [--from <time>] [--to <time>] [--run <id>] [--limit <n>] [DB]"
   option:
     run: "only this run ID"
     from: "inclusive start time (RFC3339)"

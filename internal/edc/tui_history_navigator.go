@@ -105,7 +105,7 @@ func navigatorAtTop(model tea.Model) bool {
 
 func (model historyNavigator) View() tea.View { return model.current().View() }
 
-func runHistoryNavigator() error {
+func runHistoryNavigator(options historyOptions) error {
 	path, err := defaultHistoryPath()
 	if err != nil {
 		return err
@@ -115,12 +115,16 @@ func runHistoryNavigator() error {
 		return err
 	}
 	defer db.Close()
-	data, err := historyListReviewData(db, historyOptions{}, time.Now())
+	return runHistoryNavigatorWith(db, path, options)
+}
+
+func runHistoryNavigatorWith(db *sql.DB, path string, options historyOptions) error {
+	data, err := historyListReviewData(db, options, time.Now())
 	if err != nil {
 		return err
 	}
 	root := newHistoryListBrowser(path, data)
-	root.load = func() (historyReviewData, error) { return historyListReviewData(db, historyOptions{}, time.Now()) }
+	root.load = func() (historyReviewData, error) { return historyListReviewData(db, options, time.Now()) }
 	_, err = tea.NewProgram(newHistoryNavigator(db, path, root), tea.WithInput(os.Stdin), tea.WithOutput(os.Stdout)).Run()
 	return err
 }

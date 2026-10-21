@@ -65,6 +65,7 @@ history:
   list_browser:
     title: "실행 기록"
     summary: "기록한 top 및 snapshot 실행"
+    active_range: "범위 %s"
     details: "선택한 실행"
     navigator_help: "Enter 개요   i 상세   t Top 관측값   o Process   g 증가량"
     snapshot_navigator_help: "Enter 개요   i 상세   g 증가량"
@@ -103,7 +104,7 @@ history:
     empty: "top 기록이 없습니다. edc top에서 w를 누르거나 edc top -w로 기록하세요. snapshot은 edc history list에서 확인합니다."
     navigator_help: "o Process"
   database_path: "기본 history DB: %s"
-  usage: "사용법: edc history <list|top|process|overview|export|trend|growth|prune> [options] [DB]"
+  usage: "사용법: edc history [--from <time>] [--to <time>] [--run <id>] [--limit <n>] [DB]"
   option:
     run: "이 실행 ID만 조회"
     from: "시작 시각 포함(RFC3339)"

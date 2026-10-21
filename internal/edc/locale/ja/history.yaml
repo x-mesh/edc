@@ -65,6 +65,7 @@ history:
   list_browser:
     title: "実行履歴"
     summary: "記録済みのtopとsnapshot実行"
+    active_range: "範囲 %s"
     details: "選択した実行"
     navigator_help: "Enter 概要   i 詳細   t Top観測   o Process   g 増加量"
     snapshot_navigator_help: "Enter 概要   i 詳細   g 増加量"
@@ -103,7 +104,7 @@ history:
     empty: "topの記録がありません。edc topでwを押すか、edc top -wで記録してください。snapshotはedc history listで確認できます。"
     navigator_help: "o Process"
   database_path: "既定のhistory DB: %s"
-  usage: "使い方: edc history <list|top|process|overview|export|trend|growth|prune> [options] [DB]"
+  usage: "使い方: edc history [--from <time>] [--to <time>] [--run <id>] [--limit <n>] [DB]"
   option:
     run: "この実行 ID のみ"
     from: "開始時刻を含む (RFC3339)"

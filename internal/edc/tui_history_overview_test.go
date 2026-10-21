@@ -10,7 +10,7 @@ import (
 )
 
 func overviewBrowserFixture() historyOverviewBrowser {
-	return historyOverviewBrowser{width: 80, height: 10, overview: historyOverview{Runs: 1, Samples: 4, Memory: "RSS", Metrics: []historyOverviewStat{{Metric: "cpu_pct", Avg: 10, P95: 20, Max: 30}, {Metric: "memory_pct", Avg: 20, P95: 30, Max: 40}, {Metric: "load1", Avg: 1, P95: 2, Max: 3}}, Processes: []historyOverviewProcess{{Command: "/usr/bin/worker", Peak: 1 << 20, CPU: 12.5, Restarts: 1}}}}
+	return historyOverviewBrowser{width: 80, height: 10, overview: historyOverview{Runs: 1, Samples: 4, Memory: "RSS", Series: map[string][]float64{"cpu_pct": {1, 2, 3}}, Metrics: []historyOverviewStat{{Metric: "cpu_pct", Avg: 10, P95: 20, Max: 30}, {Metric: "memory_pct", Avg: 20, P95: 30, Max: 40}, {Metric: "load1", Avg: 1, P95: 2, Max: 3}}, Processes: []historyOverviewProcess{{Command: "/usr/bin/worker", Peak: 1 << 20, CPU: 12.5, Restarts: 1}}}}
 }
 
 func TestHistoryOverviewBrowserFitsAndScrolls(t *testing.T) {
@@ -27,6 +27,9 @@ func TestHistoryOverviewBrowserFitsAndScrolls(t *testing.T) {
 		model = updated.(historyOverviewBrowser)
 		if model.atTop() {
 			t.Fatalf("width %d did not scroll", width)
+		}
+		if !strings.Contains(strings.Join(model.lines(), "\n"), "▁▅█") {
+			t.Fatal("sparkline missing")
 		}
 	}
 }

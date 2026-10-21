@@ -13,7 +13,7 @@ history:
     browsing:
       title: "Browse"
       notes:
-        - "`edc history list` lists runs. `edc history top` and `edc history process` open interactive browsers."
+        - "`edc history list`, `edc history top`, and `edc history process` open interactive browsers in a terminal."
         - "`↑↓` selects, `Enter` opens details, `Home` follows latest; wide screens add columns and a detail panel."
     analysis:
       title: "Trends and growth"
@@ -61,6 +61,28 @@ history:
   process_browser:
     title: "Process history"
     empty: "No recorded process observations match this query. Record with edc top -w --process <name>, then open edc history process."
+  list_browser:
+    title: "Run history"
+    summary: "Recorded top and snapshot runs"
+    empty: "No recorded runs match this query."
+    run: "run  %s"
+    command: "command  %s"
+    host: "host  %s"
+    started: "started  %s"
+    ended: "ended  %s"
+    duration: "duration  %s"
+    status: "status  %s"
+    samples: "samples  %d"
+    interval: "interval  %s"
+    process: "process filter  %s"
+    interfaces: "interfaces  %s"
+    column:
+      start: "Start"
+      command: "Command"
+      duration: "Duration"
+      samples: "Samples"
+      status: "Status"
+      host: "Host"
   recording:
     started: "Recording started: %s"
     stopped: "Recording stopped · %d samples saved"

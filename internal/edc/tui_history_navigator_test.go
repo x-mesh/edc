@@ -97,8 +97,7 @@ func TestHistoryRunListHostedFooterOmitsGenericEnter(t *testing.T) {
 		direct := newHistoryListBrowser("history.db", data)
 		direct.color = false
 		directHelp := strings.Join(direct.helpLines(), "\n")
-		hosted := direct
-		hosted.hosted = true
+		hosted := newHistoryNavigator(nil, "history.db", direct).current().(historyReviewBrowser)
 		help := strings.Join(hosted.helpLines(), "\n")
 		lines := strings.Split(help, "\n")
 		if directHelp == help || strings.Contains(lines[0], "Enter ") || !strings.Contains(help, T("history.list_browser.navigator_help")) {

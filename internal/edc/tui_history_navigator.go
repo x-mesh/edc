@@ -21,6 +21,8 @@ type historyNavigable interface {
 
 func newHistoryNavigator(db *sql.DB, path string, root historyReviewBrowser) historyNavigator {
 	root.hosted = true
+	root.extraHelp = "history.list_browser.navigator_help"
+	root.snapshotHelp = "history.list_browser.snapshot_navigator_help"
 	return historyNavigator{db: db, path: path, stack: []tea.Model{root}}
 }
 
@@ -118,7 +120,6 @@ func runHistoryNavigator() error {
 		return err
 	}
 	root := newHistoryListBrowser(path, data)
-	root.hosted = true
 	root.load = func() (historyReviewData, error) { return historyListReviewData(db, historyOptions{}, time.Now()) }
 	_, err = tea.NewProgram(newHistoryNavigator(db, path, root), tea.WithInput(os.Stdin), tea.WithOutput(os.Stdout)).Run()
 	return err

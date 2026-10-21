@@ -37,6 +37,7 @@ type historyTrendTarget struct {
 }
 
 type historyTrendLoadedMsg struct {
+	owner         uint64
 	seq           int
 	buckets       []historyTrendBucket
 	summary       historyTrendSummary
@@ -56,6 +57,7 @@ type historyTrendBrowser struct {
 	width, height  int
 	color, loading bool
 	seq            int
+	owner          uint64
 	loaded         historyTrendLoadedMsg
 	table          viewport.Model
 	// now는 RSS 변화의 기본 범위(최근 7일)의 끝이다.
@@ -95,7 +97,7 @@ func historyTrendTargets(db *sql.DB) ([]historyTrendTarget, error) {
 }
 
 func newHistoryTrendBrowser(db *sql.DB, targets []historyTrendTarget, options historyTrendOptions, location *time.Location) historyTrendBrowser {
-	model := historyTrendBrowser{db: db, location: location, options: options, targets: targets, width: 80, height: 24,
+	model := historyTrendBrowser{db: db, location: location, options: options, targets: targets, width: 80, height: 24, owner: historyBrowserOwner.Add(1),
 		color: os.Getenv("NO_COLOR") == "", table: viewport.New(), now: time.Now(), probeKeys: map[string][]string{}, metrics: map[string]string{"host": "cpu_pct", "process": "rss_bytes"}}
 	model.processMemory = db != nil && historyHasProcessMemoryColumn(db)
 	// 명령에 준 --process나 --probe가 목록에 없으면 맨 앞에 넣어 그 대상에서 시작한다.
@@ -181,8 +183,12 @@ func (model historyTrendBrowser) trendOptions() historyTrendOptions {
 func (model historyTrendBrowser) Init() tea.Cmd { return model.load() }
 
 func (model historyTrendBrowser) load() tea.Cmd {
-	db, options, location, now, seq := model.db, model.trendOptions(), model.location, model.now, model.seq
-	return func() tea.Msg { return historyTrendLoad(db, options, location, now, seq) }
+	db, options, location, now, seq, owner := model.db, model.trendOptions(), model.location, model.now, model.seq, model.owner
+	return func() tea.Msg {
+		msg := historyTrendLoad(db, options, location, now, seq)
+		msg.owner = owner
+		return msg
+	}
 }
 
 func historyTrendLoad(db *sql.DB, options historyTrendOptions, location *time.Location, now time.Time, seq int) historyTrendLoadedMsg {
@@ -290,7 +296,7 @@ func (model historyTrendBrowser) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		model.resize()
 		return model, nil
 	case historyTrendLoadedMsg:
-		if value.seq != model.seq {
+		if value.owner != 0 && value.owner != model.owner || value.seq != model.seq {
 			return model, nil
 		}
 		model.loaded, model.loading = value, false

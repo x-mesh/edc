@@ -131,6 +131,7 @@ func loadHistoryTop(db *sql.DB, options historyOptions) ([]historyTopSample, err
 }
 
 type historySamplesLoadedMsg struct {
+	owner     uint64
 	seq       int
 	samples   []historyTopSample
 	processes []historyProcessSample
@@ -148,6 +149,7 @@ type historySampleBrowser struct {
 	pinned, expanded, paused bool
 	color                    bool
 	seq                      int
+	owner                    uint64
 	notice                   string
 	view                     viewport.Model
 	load                     func() ([]historyTopSample, error)
@@ -156,7 +158,7 @@ type historySampleBrowser struct {
 }
 
 func newHistoryTopBrowser(samples []historyTopSample, path string) historySampleBrowser {
-	model := historySampleBrowser{samples: samples, path: path, width: 80, height: 24, color: os.Getenv("NO_COLOR") == "", view: viewport.New()}
+	model := historySampleBrowser{samples: samples, path: path, width: 80, height: 24, color: os.Getenv("NO_COLOR") == "", view: viewport.New(), owner: historyBrowserOwner.Add(1)}
 	model.resize()
 	return model
 }
@@ -370,14 +372,14 @@ func (model historySampleBrowser) tick() tea.Cmd {
 }
 
 func (model historySampleBrowser) reload() tea.Cmd {
-	seq, load, loadProcesses := model.seq, model.load, model.loadProcesses
+	seq, owner, load, loadProcesses := model.seq, model.owner, model.load, model.loadProcesses
 	return func() tea.Msg {
 		if loadProcesses != nil {
 			processes, err := loadProcesses()
-			return historySamplesLoadedMsg{seq: seq, processes: processes, err: err}
+			return historySamplesLoadedMsg{owner: owner, seq: seq, processes: processes, err: err}
 		}
 		samples, err := load()
-		return historySamplesLoadedMsg{seq: seq, samples: samples, err: err}
+		return historySamplesLoadedMsg{owner: owner, seq: seq, samples: samples, err: err}
 	}
 }
 
@@ -391,7 +393,7 @@ func (model historySampleBrowser) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return model, model.reload()
 		}
 	case historySamplesLoadedMsg:
-		if value.seq != model.seq {
+		if value.owner != 0 && value.owner != model.owner || value.seq != model.seq {
 			return model, nil
 		}
 		if model.processMode && value.samples != nil || !model.processMode && value.processes != nil {

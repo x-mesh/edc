@@ -4,8 +4,8 @@ import (
 	"bytes"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -53,15 +53,45 @@ func TestHistoryOverviewAggregatesRunAndPlainOutput(t *testing.T) {
 }
 
 func TestHistoryOverviewNearestRankP95(t *testing.T) {
-	for _, count := range []int{1, 2, 20, 21} {
-		values := make([]float64, count)
-		for index := range values {
-			values[index] = float64(index + 1)
-		}
-		rank := int(math.Ceil(.95*float64(count))) - 1
-		if got := values[rank]; got != float64(int(math.Ceil(.95*float64(count)))) {
-			t.Fatalf("n=%d p95=%v", count, got)
-		}
+	for count, want := range map[int]float64{1: 1, 2: 2, 20: 19, 21: 20} {
+		t.Run(fmt.Sprintf("n=%d", count), func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "history.db")
+			recorder := topHistoryFixture(t, path)
+			for index := count - 1; index >= 0; index-- {
+				cpu := float64(index + 1)
+				sample := historyFixtureSample(count-index, cpu, topProcess{PID: 1, Command: "worker", CPU: cpu, RSS: 1})
+				sample.RunID = recorder.runID
+				payload, err := json.Marshal(sample)
+				if err != nil {
+					t.Fatal(err)
+				}
+				// Record queues only historyQueueSize samples; write directly so a slow CI writer cannot overflow it.
+				if err := recorder.writeSample(payload); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := recorder.Close("finished"); err != nil {
+				t.Fatal(err)
+			}
+			db, err := openHistoryDB(path, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			view, err := loadHistoryOverview(db, historyOverviewOptions{run: recorder.runID})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, metric := range view.Metrics {
+				if metric.Metric == "cpu_pct" {
+					if metric.P95 != want {
+						t.Fatalf("p95 = %v, want %v", metric.P95, want)
+					}
+					return
+				}
+			}
+			t.Fatal("cpu_pct metric missing")
+		})
 	}
 }
 
@@ -257,5 +287,78 @@ func TestHistoryOverviewFallsBackToRSSOnOldSchema(t *testing.T) {
 	view, err := loadHistoryOverview(reader, historyOverviewOptions{run: run.ID})
 	if err != nil || view.Memory != "RSS" || len(view.Processes) != 1 || view.Processes[0].Peak != 42 {
 		t.Fatalf("overview %+v err %v", view, err)
+	}
+}
+
+func TestHistoryOverviewJSONStdoutIsOneObject(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "history.db")
+	recorder := topHistoryFixture(t, path)
+	if err := recorder.Record(historyFixtureSample(1, 10, topProcess{PID: 1, Command: "one", RSS: 1})); err != nil {
+		t.Fatal(err)
+	}
+	if err := recorder.Close("finished"); err != nil {
+		t.Fatal(err)
+	}
+	var code int
+	text := traceCaptureOutput(t, &os.Stdout, func() { code = runHistory([]string{"overview", "--run", recorder.runID, "--json", "-", path}) })
+	var decoded historyOverview
+	if code != 0 || json.Unmarshal([]byte(text), &decoded) != nil || decoded.Run == nil || strings.Count(text, "\n") != 1 {
+		t.Fatalf("code %d json %q", code, text)
+	}
+}
+
+func TestHistoryOverviewJSONChmodFailureKeepsTarget(t *testing.T) {
+	previous := historyOverviewTempChmod
+	t.Cleanup(func() { historyOverviewTempChmod = previous })
+	historyOverviewTempChmod = func(*os.File, os.FileMode) error { return errors.New("chmod failed") }
+	path := filepath.Join(t.TempDir(), "history.db")
+	recorder := topHistoryFixture(t, path)
+	if err := recorder.Close("finished"); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(t.TempDir(), "overview.json")
+	if err := os.WriteFile(target, []byte("existing"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if code := runHistory([]string{"overview", "--run", recorder.runID, "--json", target, path}); code == 0 {
+		t.Fatal("chmod failure succeeded")
+	}
+	if got, err := os.ReadFile(target); err != nil || string(got) != "existing" {
+		t.Fatalf("target %q err %v", got, err)
+	}
+	if files, err := filepath.Glob(filepath.Join(filepath.Dir(target), ".edc-overview-*")); err != nil || len(files) != 0 {
+		t.Fatalf("temp files %v err %v", files, err)
+	}
+}
+
+func TestHistoryOverviewWarningsKeepCoreData(t *testing.T) {
+	previous := historyOverviewLogLoader
+	t.Cleanup(func() { historyOverviewLogLoader = previous })
+	historyOverviewLogLoader = func() (logHistorySnapshot, error) { return logHistorySnapshot{}, errors.New("log unavailable") }
+	path := filepath.Join(t.TempDir(), "history.db")
+	recorder := topHistoryFixture(t, path)
+	if err := recorder.Record(historyFixtureSample(1, 10, topProcess{PID: 1, Command: "one", RSS: 1})); err != nil {
+		t.Fatal(err)
+	}
+	if err := recorder.Close("finished"); err != nil {
+		t.Fatal(err)
+	}
+	db, err := openHistoryDB(path, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	view, err := loadHistoryOverview(db, historyOverviewOptions{run: recorder.runID})
+	if err != nil || len(view.Metrics) == 0 || len(view.Processes) == 0 || !strings.Contains(strings.Join(view.Warnings, " "), "log unavailable") {
+		t.Fatalf("view %+v err %v", view, err)
+	}
+	encoded, err := json.Marshal(view)
+	if err != nil || !strings.Contains(string(encoded), `"warnings":["`) || strings.Contains(string(encoded), `"Warnings"`) {
+		t.Fatalf("json warnings key: %s", encoded)
+	}
+	var plain bytes.Buffer
+	writeHistoryOverview(&plain, view, time.UTC)
+	if !strings.Contains(plain.String(), "log unavailable") {
+		t.Fatalf("plain %q", plain.String())
 	}
 }

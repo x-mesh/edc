@@ -54,11 +54,13 @@ type historyOverview struct {
 	Series       map[string][]float64     `json:"series,omitempty"`
 	Disks        []historyOverviewDisk    `json:"disks"`
 	Logs         []historyOverviewLog     `json:"logs"`
+	Warnings     []string                 `json:"warnings,omitempty"`
 }
 
 var historyOverviewLogLoader = func() (logHistorySnapshot, error) {
 	return loadLogHistory(logHistoryOptions{}, nil)
 }
+var historyOverviewTempChmod = func(file *os.File, mode os.FileMode) error { return file.Chmod(mode) }
 
 func historyOverviewMetricLabel(name string) string {
 	key := map[string]string{
@@ -143,7 +145,8 @@ func runHistoryOverview(args []string) int {
 		}
 		temp := file.Name()
 		defer os.Remove(temp)
-		if err := file.Chmod(0600); err == nil {
+		err = historyOverviewTempChmod(file, 0600)
+		if err == nil {
 			err = json.NewEncoder(file).Encode(view)
 		}
 		if closeErr := file.Close(); err == nil {
@@ -317,6 +320,8 @@ func loadHistoryOverview(db *sql.DB, options historyOverviewOptions) (historyOve
 		for _, disk := range disks {
 			out.Disks = append(out.Disks, historyOverviewDisk{Mount: disk.Mount, UsedBytes: disk.UsedBytes, TotalBytes: disk.TotalBytes, BytesPerDay: disk.BytesPerDay})
 		}
+	} else {
+		out.Warnings = append(out.Warnings, err.Error())
 	}
 	if logs, err := historyOverviewLogLoader(); err == nil {
 		for _, row := range logs.Rows {
@@ -325,6 +330,8 @@ func loadHistoryOverview(db *sql.DB, options historyOverviewOptions) (historyOve
 			}
 			out.Logs = append(out.Logs, historyOverviewLog{Command: strings.Join(row.Command, " "), Started: row.Started, Outcome: historyOutcome(row), Duration: row.Duration})
 		}
+	} else {
+		out.Warnings = append(out.Warnings, err.Error())
 	}
 	return out, r.Err()
 }
@@ -336,6 +343,9 @@ func writeHistoryOverview(out io.Writer, v historyOverview, loc *time.Location) 
 		fmt.Fprintf(out, "%s: %s  %s  %s  %s %s  %s %.0fs  %s %s\n", T("history.overview.run"), v.Run.ID, v.Run.Command, v.Run.Hostname, T("history.overview.duration"), historyShortDuration(v.To.Sub(v.From)), T("history.overview.interval"), v.Run.IntervalS, T("history.overview.filter"), emptyAs(v.Run.Process, "—"))
 	}
 	fmt.Fprintf(out, "%s: %s → %s  %s %d  %s %d  %s %d\n", T("history.overview.range"), v.From.In(loc).Format(time.DateTime), v.To.In(loc).Format(time.DateTime), T("history.overview.top_runs"), v.Runs, T("history.overview.samples"), v.Samples, T("history.overview.snapshot_runs"), v.SnapshotRuns)
+	for _, warning := range v.Warnings {
+		fmt.Fprintln(out, warning)
+	}
 	fmt.Fprintln(out, T("history.overview.metrics"))
 	fmt.Fprintf(out, "%-14s %12s %12s %12s\n", T("history.overview.column.metric"), T("history.overview.column.avg"), T("history.overview.column.p95"), T("history.overview.column.max"))
 	for _, m := range v.Metrics {

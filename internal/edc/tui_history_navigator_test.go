@@ -257,3 +257,19 @@ func TestHistoryProcessChildIgnoresParentTopLoad(t *testing.T) {
 		t.Fatalf("navigator parent top load cleared process child: %+v", process.processes)
 	}
 }
+
+func TestHistoryNavigatorReviewLoadUsesOwner(t *testing.T) {
+	root := newHistoryListBrowser("history.db", historyReviewData{summary: "root"})
+	growth := newHistoryGrowthNavigator(nil, "history.db", historyGrowthOptions{}, historyGrowth{})
+	root.seq, growth.seq = 1, 1
+	navigator := newHistoryNavigator(nil, "history.db", root)
+	navigator.stack = append(navigator.stack, growth)
+	next, _ := navigator.Update(historyReviewLoadedMsg{owner: growth.owner, seq: 1, data: historyReviewData{summary: "growth"}})
+	navigator = next.(historyNavigator)
+	if navigator.stack[0].(historyReviewBrowser).data.summary != "root" {
+		t.Fatal("growth load replaced run list data")
+	}
+	if navigator.current().(historyReviewBrowser).data.summary != "growth" {
+		t.Fatal("growth did not accept its own load")
+	}
+}

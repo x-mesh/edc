@@ -103,7 +103,7 @@ history:
     empty: "No top recordings. Run edc top and press w, or use edc top -w. Snapshots are listed by edc history list."
     navigator_help: "o Processes"
   database_path: "Default history DB: %s"
-  usage: "Usage: edc history <list|top|process|export|trend|growth|prune> [options] [DB]"
+  usage: "Usage: edc history <list|top|process|overview|export|trend|growth|prune> [options] [DB]"
   option:
     run: "only this run ID"
     from: "inclusive start time (RFC3339)"

@@ -53,14 +53,17 @@ func TestLogHistoryRollupAddsUpAcrossPrunes(t *testing.T) {
 		name           string
 		hour           int
 		minute, second int
+		zone           *time.Location
 	}{
-		{name: "before midnight", hour: 23, minute: 58, second: 30},
-		{name: "after midnight", hour: 0, minute: 0, second: 30},
+		{name: "before midnight UTC", hour: 23, minute: 58, second: 30, zone: time.FixedZone("rollup-utc", 0)},
+		{name: "after midnight UTC", hour: 0, minute: 0, second: 30, zone: time.FixedZone("rollup-utc", 0)},
+		{name: "before midnight UTC minus eight", hour: 23, minute: 58, second: 30, zone: time.FixedZone("rollup-minus-eight", -8*60*60)},
+		{name: "after midnight UTC minus eight", hour: 0, minute: 0, second: 30, zone: time.FixedZone("rollup-minus-eight", -8*60*60)},
 	} {
 		t.Run(at.name, func(t *testing.T) {
 			previous := time.Local
 			t.Cleanup(func() { time.Local = previous })
-			time.Local = time.FixedZone("rollup-test", 0)
+			time.Local = at.zone
 			now := time.Date(2026, 10, 21, at.hour, at.minute, at.second, 0, time.Local)
 			testRollup(t, now)
 		})

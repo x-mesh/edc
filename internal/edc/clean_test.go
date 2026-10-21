@@ -1221,6 +1221,49 @@ func TestRunCleanRejectsPositionalArguments(t *testing.T) {
 	}
 }
 
+func TestRunCleanRejectsWorkersBelowOne(t *testing.T) {
+	for _, flag := range []string{"--workers=0", "-w=-1"} {
+		home := cleanTestHome(t)
+		var output bytes.Buffer
+		if code := runCleanWith([]string{flag}, "test", cleanRunDeps(t, home), true, nil, &output); code != 2 {
+			t.Fatalf("%s: exit code = %d", flag, code)
+		}
+		if output.Len() != 0 {
+			t.Fatalf("%s: output = %q", flag, output.String())
+		}
+	}
+}
+
+func TestRunCleanPassesWorkersToMeasure(t *testing.T) {
+	for _, tc := range []struct {
+		args []string
+		want int
+	}{
+		{nil, duDefaultWorkers},
+		{[]string{"--workers", "2"}, 2},
+		{[]string{"-w", "7"}, 7},
+	} {
+		home := cleanTestHome(t)
+		cleanTestTree(t, filepath.Join(home, "npm"), 8<<10)
+		deps := cleanRunDeps(t, home)
+		deps.workers = 0
+		var seen atomic.Int64
+		seen.Store(-1)
+		inner := deps.measure
+		deps.measure = func(ctx context.Context, options duOptions, sources duSources) (duScan, error) {
+			seen.Store(int64(options.workers))
+			return inner(ctx, options, sources)
+		}
+		var output bytes.Buffer
+		if code := runCleanWith(append(tc.args, "--json", filepath.Join(t.TempDir(), "out.json")), "test", deps, true, nil, &output); code != 0 {
+			t.Fatalf("%v: exit code = %d", tc.args, code)
+		}
+		if got := int(seen.Load()); got != tc.want {
+			t.Fatalf("%v: measure workers = %d, want %d", tc.args, got, tc.want)
+		}
+	}
+}
+
 func TestRunCleanJSONHasTheThreeMetricsAndNoReclaimableKey(t *testing.T) {
 	home := cleanTestHome(t)
 	cleanTestTree(t, filepath.Join(home, "npm"), 8<<10)

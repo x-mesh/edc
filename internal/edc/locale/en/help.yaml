@@ -198,6 +198,7 @@ command:
   clean:
     summary: "Disk usage of known dev caches, read only (Linux and macOS)"
     option:
+      workers: "directories to read at the same time"
       timeout: "time limit, after it edc marks the rest not scanned"
       project: "root to search for marked build folders, repeat for more"
       group: "run clean on each host of an edc remote group"

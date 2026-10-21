@@ -198,6 +198,7 @@ command:
   clean:
     summary: "알려진 개발 캐시의 디스크 사용량, 읽기 전용 (Linux와 macOS)"
     option:
+      workers: "동시에 읽는 디렉터리 수"
       timeout: "제한 시간, 지나면 남은 후보는 측정 안 함으로 표시"
       project: "빌드 폴더를 찾을 루트, 여러 번 지정 가능"
       group: "edc remote 그룹의 호스트마다 clean을 실행"

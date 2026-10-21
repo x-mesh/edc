@@ -135,6 +135,18 @@ parallel = 0
 [defaults.du]
 workers = 4
 
+[defaults.history]
+limit = 200
+
+[defaults.changes]
+since = "24h"
+
+[defaults.snapshot]
+since = "6h"
+
+[defaults.events]
+since = "6h"
+
 [defaults.update]
 timeout = "60s"
 
@@ -153,6 +165,7 @@ max_restarts = 3
 restart_delay = "5s"
 timeout = "0s"
 kill_after = "5s"
+history_limit = 20
 ```
 
 command별 값은 `defaults.common`을 덮습니다. positional target, URL, host, remote group과 `yes`, `force`, `dry-run`, `list`, `check` 같은 action option은 저장하지 않습니다. 저장하는 remote inventory와 recipe는 absolute path여야 합니다. 빈 path 값은 해당 기본값을 사용하지 않는다는 뜻입니다.

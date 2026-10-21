@@ -218,7 +218,7 @@ func parseEventsFlags(args []string, options commonOptions, stderr io.Writer) (c
 	set := newFlagSet("events")
 	set.SetOutput(stderr)
 	bindCommon(set, &options)
-	since := set.Duration("since", eventsDefaultSince, T("events.option.since"))
+	since := set.Duration("since", configuredDuration(activeConfig.Defaults.Events.Since, eventsDefaultSince), T("events.option.since"))
 	if err := set.Parse(args); err != nil {
 		return options, 0, false
 	}

@@ -23,6 +23,8 @@ type historyOptions struct {
 	sampleID int64
 }
 
+const historyDefaultLimit = 200
+
 var historyLiveTerminal = liveTerminal
 var historyListBrowserRunner = runHistoryListBrowser
 var historyNavigatorRunner = runHistoryNavigator
@@ -88,7 +90,7 @@ func runHistory(args []string) int {
 	set.StringVar(&options.run, "run", "", T("history.option.run"))
 	from := set.String("from", "", T("history.option.from"))
 	to := set.String("to", "", T("history.option.to"))
-	set.IntVar(&options.limit, "limit", 200, T("history.option.limit"))
+	set.IntVar(&options.limit, "limit", configuredInt(activeConfig.Defaults.History.Limit, historyDefaultLimit), T("history.option.limit"))
 	jsonPath := set.String("json", "", T("history.option.json"))
 	var process, metric string
 	var min, max float64

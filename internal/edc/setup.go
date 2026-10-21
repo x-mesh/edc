@@ -123,6 +123,22 @@ func runSetupWithIO(args []string, input io.Reader, output, stderr io.Writer, te
 			config.Defaults.Quality = mergeConfigSection(config.Defaults.Quality, recommended.Defaults.Quality)
 			return editQualitySetup(reader, output, &config.Defaults.Quality)
 		}},
+		{"history", func() error {
+			config.Defaults.History = mergeConfigSection(config.Defaults.History, recommended.Defaults.History)
+			return editHistorySetup(reader, output, &config.Defaults.History)
+		}},
+		{"changes", func() error {
+			config.Defaults.Changes = mergeConfigSection(config.Defaults.Changes, recommended.Defaults.Changes)
+			return setupDurationValue(reader, output, T("cli.setup.field.changes_since"), &config.Defaults.Changes.Since, positiveDuration)
+		}},
+		{"snapshot", func() error {
+			config.Defaults.Snapshot = mergeConfigSection(config.Defaults.Snapshot, recommended.Defaults.Snapshot)
+			return setupDurationValue(reader, output, T("cli.setup.field.snapshot_since"), &config.Defaults.Snapshot.Since, positiveDuration)
+		}},
+		{"events", func() error {
+			config.Defaults.Events = mergeConfigSection(config.Defaults.Events, recommended.Defaults.Events)
+			return setupDurationValue(reader, output, T("cli.setup.field.events_since"), &config.Defaults.Events.Since, positiveDuration)
+		}},
 		{"du", func() error {
 			config.Defaults.Du = mergeConfigSection(config.Defaults.Du, recommended.Defaults.Du)
 			return editDuSetup(reader, output, &config.Defaults.Du)
@@ -456,7 +472,15 @@ func editLogSetup(reader *bufio.Reader, output io.Writer, config *logConfig) err
 	}); err != nil {
 		return err
 	}
-	return setupDurationValue(reader, output, T("cli.setup.field.log_kill_after"), &config.KillAfter, positiveDuration)
+	if err := setupDurationValue(reader, output, T("cli.setup.field.log_kill_after"), &config.KillAfter, positiveDuration); err != nil {
+		return err
+	}
+	return setupIntValue(reader, output, T("cli.setup.field.log_history_limit"), &config.HistoryLimit, func(value int) error {
+		if value < 1 || value > logHistoryMaxLimit {
+			return errors.New(T("cli.setup.validation.log_history_limit"))
+		}
+		return nil
+	})
 }
 func editTopSetup(reader *bufio.Reader, output io.Writer, config *topConfig) error {
 	if err := setupDurationValue(reader, output, T("cli.setup.field.top_interval"), &config.Interval, func(value time.Duration) error {
@@ -596,6 +620,10 @@ func editQualitySetup(reader *bufio.Reader, output io.Writer, config *qualityCon
 		}
 		return nil
 	})
+}
+
+func editHistorySetup(reader *bufio.Reader, output io.Writer, config *historyConfig) error {
+	return setupIntValue(reader, output, T("cli.setup.field.history_limit"), &config.Limit, nonNegative)
 }
 
 func editDuSetup(reader *bufio.Reader, output io.Writer, config *duConfig) error {

@@ -14,6 +14,7 @@ import (
 )
 
 const (
+	snapshotDefaultSince = 6 * time.Hour
 	// snapshotGrace는 budget이 끝난 뒤 ctx를 보는 section이 모은 결과를 돌려줄 여유다. 이보다 늦은 section은
 	// hung NFS 위의 df처럼 ctx를 보지 않는 것으로 보고 더 기다리지 않는다.
 	snapshotGrace = 2 * time.Second
@@ -32,7 +33,7 @@ func runSnapshot(args []string, version string) int {
 	set := newFlagSet("snapshot")
 	set.SetOutput(os.Stderr)
 	output := set.String("output", "", T("command.snapshot.option.output"))
-	since := set.Duration("since", 6*time.Hour, T("command.snapshot.option.since"))
+	since := set.Duration("since", configuredDuration(activeConfig.Defaults.Snapshot.Since, snapshotDefaultSince), T("command.snapshot.option.since"))
 	force := set.Bool("force", false, T("command.snapshot.option.force"))
 	var duPaths snapshotPaths
 	set.Var(&duPaths, "du", T("command.snapshot.option.du"))

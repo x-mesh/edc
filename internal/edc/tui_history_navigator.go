@@ -36,6 +36,16 @@ func (model historyNavigator) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return model, tea.Quit
 		}
 		if key.String() == "esc" && len(model.stack) > 1 && navigatorAtTop(model.current()) {
+			if _, ok := model.current().(historyReviewBrowser); ok {
+				root := model.stack[0].(historyReviewBrowser)
+				if root.load != nil {
+					if data, err := root.load(); err == nil {
+						root.data = data
+						root.resize()
+						model.stack[0] = root
+					}
+				}
+			}
 			model.stack = model.stack[:len(model.stack)-1]
 			return model, nil
 		}
@@ -98,6 +108,8 @@ func navigatorAtTop(model tea.Model) bool {
 	case historySampleBrowser:
 		return child.atTop()
 	case historyOverviewBrowser:
+		return child.atTop()
+	case historyMenuBrowser:
 		return child.atTop()
 	}
 	return true

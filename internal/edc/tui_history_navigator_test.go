@@ -18,6 +18,14 @@ func TestHistoryNavigatorPushesRunChildrenAndRestoresRoot(t *testing.T) {
 	if err := recorder.Close("finished"); err != nil {
 		t.Fatal(err)
 	}
+	writer, err := openHistoryDB(path, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := writer.Exec("INSERT INTO runs(id,command,hostname,started_ns,status,payload) VALUES ('snapshot','snapshot','host',0,'finished','{}')"); err != nil {
+		t.Fatal(err)
+	}
+	writer.Close()
 	db, err := openHistoryDB(path, false)
 	if err != nil {
 		t.Fatal(err)
@@ -85,6 +93,93 @@ func TestHistoryNavigatorRunListOverviewAndInlineDetail(t *testing.T) {
 	navigator = next.(historyNavigator)
 	if !navigator.current().(historyReviewBrowser).expanded {
 		t.Fatal("i did not open inline detail")
+	}
+}
+
+func TestHistoryNavigatorMenuPushesScreensAndReturns(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "history.db")
+	recorder := topHistoryFixture(t, path)
+	if err := recorder.Record(historyFixtureSample(1, 20, topProcess{PID: 1})); err != nil {
+		t.Fatal(err)
+	}
+	if err := recorder.Close("finished"); err != nil {
+		t.Fatal(err)
+	}
+	db, err := openHistoryDB(path, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	data, err := historyListReviewData(db, historyOptions{}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	navigator := newHistoryNavigator(db, path, newHistoryListBrowser(path, data))
+	next, _ := navigator.Update(tea.KeyPressMsg{Code: 'm', Text: "m"})
+	navigator = next.(historyNavigator)
+	menu, ok := navigator.current().(historyMenuBrowser)
+	if !ok {
+		t.Fatalf("menu=%T", navigator.current())
+	}
+	menu.selected = 1
+	navigator.stack[len(navigator.stack)-1] = menu
+	next, _ = navigator.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	navigator = next.(historyNavigator)
+	if _, ok := navigator.current().(historyOverviewBrowser); !ok {
+		t.Fatalf("overview=%T", navigator.current())
+	}
+	next, _ = navigator.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	navigator = next.(historyNavigator)
+	if _, ok := navigator.current().(historyMenuBrowser); !ok {
+		t.Fatal("Esc did not return to menu")
+	}
+	menu = navigator.current().(historyMenuBrowser)
+	menu.selected = 4
+	navigator.stack[len(navigator.stack)-1] = menu
+	next, _ = navigator.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	navigator = next.(historyNavigator)
+	if _, ok := navigator.current().(logHistoryBrowser); !ok {
+		t.Fatalf("log=%T", navigator.current())
+	}
+	next, _ = navigator.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	navigator = next.(historyNavigator)
+	if _, ok := navigator.current().(historyMenuBrowser); !ok {
+		t.Fatal("Esc did not return from log")
+	}
+	menu = navigator.current().(historyMenuBrowser)
+	menu.selected = 5
+	navigator.stack[len(navigator.stack)-1] = menu
+	next, _ = navigator.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	navigator = next.(historyNavigator)
+	if notice := navigator.current().(historyMenuBrowser).notice; notice != T("history.menu.export_snapshot_only") {
+		t.Fatalf("export notice=%q", notice)
+	}
+	snapshotDBPath := filepath.Join(t.TempDir(), "snapshot.db")
+	snapshotDB, err := openHistoryDB(snapshotDBPath, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := snapshotDB.Exec("INSERT INTO runs(id,command,hostname,started_ns,status,payload) VALUES ('snapshot','snapshot','host',0,'finished','{}')"); err != nil {
+		t.Fatal(err)
+	}
+	snapshotMenu := newHistoryMenuBrowser(snapshotDB, snapshotDBPath, "snapshot")
+	snapshotMenu.selected = 5
+	next, _, err = snapshotMenu.navigate("enter", snapshotDB, snapshotDBPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshotDB.Close()
+	menu = next.(historyMenuBrowser)
+	if !strings.Contains(menu.notice, "snapshot") {
+		t.Fatalf("snapshot export=%q", menu.notice)
+	}
+}
+
+func TestHistoryListStandaloneIgnoresMenuKey(t *testing.T) {
+	model := newHistoryListBrowser("history.db", historyReviewData{entries: []historyReviewEntry{{id: "run", command: "top", cells: make([]string, 6)}}})
+	next, _ := model.Update(tea.KeyPressMsg{Code: 'm', Text: "m"})
+	if _, ok := next.(historyReviewBrowser); !ok {
+		t.Fatalf("m opened %T", next)
 	}
 }
 
@@ -308,5 +403,23 @@ func TestHistoryNavigatorSampleTickUsesOwner(t *testing.T) {
 	navigator = next.(historyNavigator)
 	if command == nil || navigator.stack[1].(historySampleBrowser).samples[0].RunID != "hidden" {
 		t.Fatal("visible tick changed hidden sample browser")
+	}
+}
+
+func TestHistoryNavigatorReloadsRootAfterPrunePop(t *testing.T) {
+	root := newHistoryListBrowser("history.db", historyReviewData{entries: []historyReviewEntry{{id: "old", command: "top", cells: make([]string, 6)}}})
+	loaded := false
+	root.load = func() (historyReviewData, error) {
+		loaded = true
+		return historyReviewData{entries: []historyReviewEntry{}}, nil
+	}
+	navigator := newHistoryNavigator(nil, "history.db", root)
+	prune := newHistoryPruneBrowser("history.db", historyPruneOptions{}, historyPrunePlan{}, time.Now())
+	navigator.stack = append(navigator.stack, prune)
+	next, _ := navigator.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	navigator = next.(historyNavigator)
+	root = navigator.current().(historyReviewBrowser)
+	if !loaded || len(navigator.stack) != 1 || len(root.data.entries) != 0 {
+		t.Fatalf("loaded=%v stack=%d entries=%d", loaded, len(navigator.stack), len(root.data.entries))
 	}
 }

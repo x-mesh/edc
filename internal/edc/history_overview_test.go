@@ -60,6 +60,62 @@ func TestHistoryOverviewLabelsDoNotExposeTranslationKeys(t *testing.T) {
 	}
 }
 
+func TestHistoryOverviewMatchesLogsByStartTimeOnly(t *testing.T) {
+	previous := historyOverviewLogLoader
+	t.Cleanup(func() { historyOverviewLogLoader = previous })
+	from := time.Date(2026, 10, 5, 0, 0, 0, 0, time.UTC)
+	historyOverviewLogLoader = func() (logHistorySnapshot, error) {
+		return logHistorySnapshot{Rows: []logHistoryAttempt{
+			{Command: []string{"make", "test"}, Started: from.Add(time.Second), Outcome: historyOutcomeSuccess, Duration: time.Second},
+			{Command: []string{"outside"}, Started: from.Add(time.Minute), Outcome: historyOutcomeFail, Duration: time.Second},
+		}}, nil
+	}
+	path := filepath.Join(t.TempDir(), "history.db")
+	recorder := topHistoryFixture(t, path)
+	if err := recorder.Record(historyFixtureSample(1, 10, topProcess{PID: 1, Command: "one", RSS: 1})); err != nil {
+		t.Fatal(err)
+	}
+	if err := recorder.Close("finished"); err != nil {
+		t.Fatal(err)
+	}
+	db, err := openHistoryDB(path, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	view, err := loadHistoryOverview(db, historyOverviewOptions{run: recorder.runID, from: from, to: from.Add(10 * time.Second)})
+	if err != nil || len(view.Logs) != 1 || view.Logs[0].Command != "make test" || view.Logs[0].Outcome != string(historyOutcomeSuccess) {
+		t.Fatalf("logs %+v err %v", view.Logs, err)
+	}
+}
+
+func TestHistoryOverviewLoadsSnapshotDisks(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "history.db")
+	recorder := topHistoryFixture(t, path)
+	if err := recorder.Record(historyFixtureSample(1, 10, topProcess{PID: 1, Command: "one", RSS: 1})); err != nil {
+		t.Fatal(err)
+	}
+	if err := recorder.Close("finished"); err != nil {
+		t.Fatal(err)
+	}
+	db, err := openHistoryDB(path, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	from := time.Date(2026, 10, 5, 0, 0, 0, 0, time.UTC)
+	if _, err := db.Exec("INSERT INTO runs(id,command,hostname,started_ns,status,payload) VALUES ('snapshot','snapshot','host',?,'finished','{}')", from.UnixNano()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("INSERT INTO snapshot_metrics(run_id,time_ns,probe,key,value) VALUES ('snapshot',?,?,?,?),( 'snapshot',?,?,?,?)", from.UnixNano(), "info.disk:/", "used_bytes", 10.0, from.UnixNano(), "info.disk:/", "total_bytes", 100.0); err != nil {
+		t.Fatal(err)
+	}
+	view, err := loadHistoryOverview(db, historyOverviewOptions{from: from, to: from.Add(time.Minute)})
+	if err != nil || len(view.Disks) != 1 || view.Disks[0].Mount != "/" || view.Disks[0].UsedBytes != 10 {
+		t.Fatalf("disks %+v err %v", view.Disks, err)
+	}
+}
+
 func TestHistoryOverviewWindowAndMissingRun(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "history.db")
 	recorder := topHistoryFixture(t, path)

@@ -27,6 +27,18 @@ type historyOverviewProcess struct {
 	CPU      float64 `json:"avg_cpu_pct"`
 	Restarts int     `json:"restarts"`
 }
+type historyOverviewDisk struct {
+	Mount       string   `json:"mount"`
+	UsedBytes   float64  `json:"used_bytes"`
+	TotalBytes  float64  `json:"total_bytes"`
+	BytesPerDay *float64 `json:"bytes_per_day,omitempty"`
+}
+type historyOverviewLog struct {
+	Command  string        `json:"command"`
+	Started  time.Time     `json:"started"`
+	Outcome  string        `json:"outcome"`
+	Duration time.Duration `json:"duration"`
+}
 type historyOverview struct {
 	Run       *historyRun              `json:"run,omitempty"`
 	From      time.Time                `json:"from"`
@@ -38,6 +50,10 @@ type historyOverview struct {
 	Processes []historyOverviewProcess `json:"processes"`
 	Disks     []historyOverviewDisk    `json:"disks"`
 	Logs      []historyOverviewLog     `json:"logs"`
+}
+
+var historyOverviewLogLoader = func() (logHistorySnapshot, error) {
+	return loadLogHistory(logHistoryOptions{}, nil)
 }
 
 func historyOverviewMetricLabel(name string) string {
@@ -127,7 +143,7 @@ func runHistoryOverview(args []string) int {
 }
 
 func loadHistoryOverview(db *sql.DB, options historyOverviewOptions) (historyOverview, error) {
-	var out historyOverview
+	out := historyOverview{Disks: []historyOverviewDisk{}, Logs: []historyOverviewLog{}}
 	where, args := "", []any{}
 	if options.run != "" {
 		where = " WHERE id=?"
@@ -230,20 +246,35 @@ func loadHistoryOverview(db *sql.DB, options historyOverviewOptions) (historyOve
 		}
 		out.Processes = append(out.Processes, p)
 	}
+	if disks, err := historyGrowthDisks(db, out.From, out.To); err == nil {
+		for _, disk := range disks {
+			out.Disks = append(out.Disks, historyOverviewDisk{Mount: disk.Mount, UsedBytes: disk.UsedBytes, TotalBytes: disk.TotalBytes, BytesPerDay: disk.BytesPerDay})
+		}
+	}
+	if logs, err := historyOverviewLogLoader(); err == nil {
+		for _, row := range logs.Rows {
+			if row.Started.Before(out.From) || !row.Started.Before(out.To) {
+				continue
+			}
+			out.Logs = append(out.Logs, historyOverviewLog{Command: strings.Join(row.Command, " "), Started: row.Started, Outcome: string(row.Outcome), Duration: row.Duration})
+		}
+	}
 	return out, r.Err()
 }
 func writeHistoryOverview(out io.Writer, v historyOverview, loc *time.Location) {
 	if v.Run != nil {
-		fmt.Fprintf(out, "%s: %s  %s  %s\n", T("history.overview.run"), v.Run.ID, v.Run.Command, v.Run.Hostname)
+		fmt.Fprintf(out, "%s: %s  %s  %s  duration %s  interval %.0fs  filter %s\n", T("history.overview.run"), v.Run.ID, v.Run.Command, v.Run.Hostname, v.To.Sub(v.From).Round(time.Second), v.Run.IntervalS, v.Run.Process)
 	}
 	fmt.Fprintf(out, "%s: %s → %s  %s %d  %s %d\n", T("history.overview.range"), v.From.In(loc).Format(time.DateTime), v.To.In(loc).Format(time.DateTime), T("history.overview.runs"), v.Runs, T("history.overview.samples"), v.Samples)
 	fmt.Fprintln(out, T("history.overview.metrics"))
+	fmt.Fprintf(out, "%-14s %12s %12s %12s\n", T("history.overview.column.metric"), T("history.overview.column.avg"), T("history.overview.column.p95"), T("history.overview.column.max"))
 	for _, m := range v.Metrics {
-		fmt.Fprintf(out, "  %s  %s %s  p95 %s  %s %s\n", historyOverviewMetricLabel(m.Metric), T("history.overview.avg"), historyTrendValue(m.Metric, m.Avg), historyTrendValue(m.Metric, m.P95), T("history.overview.max"), historyTrendValue(m.Metric, m.Max))
+		fmt.Fprintf(out, "%-14s %12s %12s %12s\n", historyOverviewMetricLabel(m.Metric), historyTrendValue(m.Metric, m.Avg), historyTrendValue(m.Metric, m.P95), historyTrendValue(m.Metric, m.Max))
 	}
 	fmt.Fprintf(out, "%s:\n", T("history.overview.processes", historyOverviewMemoryLabel(v.Memory)))
+	fmt.Fprintf(out, "%-32s %12s %12s %12s\n", T("history.overview.column.name"), T("history.overview.column.peak"), T("history.overview.column.avg_cpu"), T("history.overview.column.restarts"))
 	for _, p := range v.Processes {
-		fmt.Fprintf(out, "  %s  %s %s  %s %.1f%%  %s %d\n", historyTerminalText(p.Command), T("history.overview.peak"), formatSizeShort(uint64(p.Peak)), T("history.overview.cpu"), p.CPU, T("history.overview.restarts"), p.Restarts)
+		fmt.Fprintf(out, "%-32s %12s %12.1f%% %12d\n", topProcessName(p.Command, 32), formatSizeShort(uint64(p.Peak)), p.CPU, p.Restarts)
 	}
 	if len(v.Disks) > 0 {
 		fmt.Fprintln(out, T("history.overview.disks"))

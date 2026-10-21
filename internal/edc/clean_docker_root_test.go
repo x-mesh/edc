@@ -426,7 +426,7 @@ func TestCleanNewestWriteMarksAnUnreadableFolderAsPartial(t *testing.T) {
 		t.Skip("root reads every folder")
 	}
 	dir := t.TempDir()
-	cleanTestWriteFile(t, filepath.Join(dir, "readable", "a"), "a", time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC))
+	cleanTestWriteFile(t, filepath.Join(dir, "readable", "a"), "a", time.Date(2026, 1, 2, 12, 0, 0, 0, time.Local))
 	cleanTestWriteFile(t, filepath.Join(dir, "locked", "b"), "b", time.Now())
 	locked := filepath.Join(dir, "locked")
 	if err := os.Chmod(locked, 0); err != nil {

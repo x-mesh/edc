@@ -215,6 +215,7 @@ cli:
       remote: "Configure remote defaults?"
       update: "Configure update defaults?"
       quality: "Configure quality defaults?"
+      du: "Configure du and clean defaults?"
     field:
       common_timeout: "common timeout"
       common_json: "common JSON path (empty disables)"
@@ -255,6 +256,7 @@ cli:
       update_timeout: "update timeout"
       quality_timeout: "quality timeout"
       quality_server: "quality config URL (empty uses the Apple server)"
+      du_workers: "du and clean workers (directories to read at the same time)"
     validation:
       language: "use en, ko, or ja"
       yes_no: "answer y or n"

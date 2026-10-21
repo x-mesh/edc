@@ -94,6 +94,7 @@ type configDefaults struct {
 	Update  updateConfig  `yaml:"update,omitempty" toml:"update,omitempty"`
 	Quality qualityConfig `yaml:"quality,omitempty" toml:"quality,omitempty"`
 	Log     logConfig     `yaml:"log,omitempty" toml:"log,omitempty"`
+	Du      duConfig      `yaml:"du,omitempty" toml:"du,omitempty"`
 }
 
 type commonConfig struct {
@@ -150,6 +151,11 @@ type remoteConfig struct {
 }
 type updateConfig struct {
 	Timeout *configDuration `yaml:"timeout,omitempty" toml:"timeout,omitempty"`
+}
+
+// duConfig의 workers는 du와 clean이 함께 읽는다. 둘 다 같은 스캐너로 크기를 잰다.
+type duConfig struct {
+	Workers *int `yaml:"workers,omitempty" toml:"workers,omitempty"`
 }
 type qualityConfig struct {
 	Timeout *configDuration `yaml:"timeout,omitempty" toml:"timeout,omitempty"`
@@ -398,6 +404,9 @@ func validateConfig(config edcConfig) error {
 	if d.Update.Timeout != nil && d.Update.Timeout.Duration <= 0 {
 		return invalidConfig("defaults.update.timeout", "must be greater than 0")
 	}
+	if d.Du.Workers != nil && *d.Du.Workers < 1 {
+		return invalidConfig("defaults.du.workers", "must be at least 1")
+	}
 	if d.Quality.Timeout != nil && d.Quality.Timeout.Duration <= 0 {
 		return invalidConfig("defaults.quality.timeout", "must be greater than 0")
 	}
@@ -501,6 +510,7 @@ func recommendedConfig() edcConfig {
 		Remote:  remoteConfig{Inventory: stringPointer(""), Recipe: stringPointer(""), ConnectTimeout: durationPointer(10 * time.Second), OutputLimit: intPointer(remoteOutputLimit), Parallel: intPointer(0)},
 		Update:  updateConfig{Timeout: durationPointer(60 * time.Second)},
 		Quality: qualityConfig{Timeout: durationPointer(defaultQualityTimeout), Server: stringPointer("")},
+		Du:      duConfig{Workers: intPointer(duDefaultWorkers)},
 		Log: logConfig{Stream: stringPointer("both"), Output: stringPointer(""), CommandDisplay: stringPointer("full"),
 			MaxSizeMB: intPointer(defaultLogMaxSizeMB), KeepFiles: intPointer(defaultLogKeepFiles), Restart: stringPointer("never"),
 			MaxRestarts: intPointer(defaultLogMaxRestarts), RestartDelay: durationPointer(defaultLogRestartDelay), Timeout: durationPointer(0), KillAfter: durationPointer(defaultLogKillAfter)},

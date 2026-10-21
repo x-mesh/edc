@@ -132,6 +132,9 @@ connect_timeout = "10s"
 output_limit = 65536
 parallel = 0
 
+[defaults.du]
+workers = 4
+
 [defaults.update]
 timeout = "60s"
 

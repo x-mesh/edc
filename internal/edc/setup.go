@@ -123,6 +123,10 @@ func runSetupWithIO(args []string, input io.Reader, output, stderr io.Writer, te
 			config.Defaults.Quality = mergeConfigSection(config.Defaults.Quality, recommended.Defaults.Quality)
 			return editQualitySetup(reader, output, &config.Defaults.Quality)
 		}},
+		{"du", func() error {
+			config.Defaults.Du = mergeConfigSection(config.Defaults.Du, recommended.Defaults.Du)
+			return editDuSetup(reader, output, &config.Defaults.Du)
+		}},
 	}
 	for _, section := range sections {
 		configure, err := setupYesNo(reader, output, T("cli.setup.section."+section.key), false)
@@ -589,6 +593,15 @@ func editQualitySetup(reader *bufio.Reader, output io.Writer, config *qualityCon
 	return setupOptionalString(reader, output, T("cli.setup.field.quality_server"), &config.Server, func(value string) error {
 		if validateQualityServer(value) != nil {
 			return errors.New(T("cli.setup.validation.url"))
+		}
+		return nil
+	})
+}
+
+func editDuSetup(reader *bufio.Reader, output io.Writer, config *duConfig) error {
+	return setupIntValue(reader, output, T("cli.setup.field.du_workers"), &config.Workers, func(value int) error {
+		if value < 1 {
+			return errors.New(T("cli.setup.validation.positive"))
 		}
 		return nil
 	})

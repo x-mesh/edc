@@ -1025,8 +1025,9 @@ func runCleanWith(args []string, version string, deps cleanDeps, ok bool, homeEr
 	set.Var(&projects, "project", T("command.clean.option.project"))
 	group := set.String("group", "", T("command.clean.option.group"))
 	inventory := set.String("inventory", "", T("command.clean.option.inventory"))
-	workers := set.Int("workers", duDefaultWorkers, T("command.clean.option.workers"))
-	set.IntVar(workers, "w", duDefaultWorkers, T("command.clean.option.workers"))
+	defaultWorkers := configuredInt(activeConfig.Defaults.Du.Workers, duDefaultWorkers)
+	workers := set.Int("workers", defaultWorkers, T("command.clean.option.workers"))
+	set.IntVar(workers, "w", defaultWorkers, T("command.clean.option.workers"))
 	if err := set.Parse(args); err != nil {
 		return 2
 	}

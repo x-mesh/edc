@@ -189,6 +189,7 @@ func TestLogHistoryKeyAverageColumnsAndValues(t *testing.T) {
 		{Duration: 4 * time.Second, Ended: ended, Resources: &logHistoryResources{MaxRSS: 300, CPU: time.Second, cpu: true, DiskRead: 300, DiskWrite: 100, disk: true}},
 		{Duration: 0, Resources: &logHistoryResources{MaxRSS: 900, CPU: time.Second, cpu: true, DiskRead: 900, disk: true}},
 		{Duration: 2 * time.Second, Ended: ended, Resources: &logHistoryResources{MaxRSS: 0, CPU: time.Second, cpu: true}},
+		{Duration: 2 * time.Second, Ended: ended, damaged: true, Resources: &logHistoryResources{CPU: 10 * time.Second, cpu: true}},
 		{Duration: 2 * time.Second},
 	}}
 	averages := historyGroupAverages(group)

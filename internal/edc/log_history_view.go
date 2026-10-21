@@ -158,11 +158,10 @@ func historyKeyRowColumns(group logHistoryGroup, columns historyKeyColumns, sele
 	if columns.unknown > 0 {
 		cells = append(cells, historyTint(historyCell(fmt.Sprint(group.Unknown), columns.unknown, true), richYellow, color))
 	}
-	averages := historyGroupAverages(group)
 	for _, column := range []struct {
 		width int
 		text  string
-	}{{columns.avgMemory, averages.memory}, {columns.avgCPU, averages.cpu}, {columns.avgIO, averages.io}} {
+	}{{columns.avgMemory, group.averages.memory}, {columns.avgCPU, group.averages.cpu}, {columns.avgIO, group.averages.io}} {
 		if column.width > 0 {
 			cells = append(cells, historyTint(historyCell(column.text, column.width, true), richGray, color))
 		}

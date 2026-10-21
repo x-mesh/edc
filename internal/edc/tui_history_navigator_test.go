@@ -179,11 +179,16 @@ func TestHistoryNavigatorLinksSampleAndGrowthEntries(t *testing.T) {
 }
 
 func TestHistoryProcessChildIgnoresParentTopLoad(t *testing.T) {
-	child := newHistoryProcessBrowser([]historyProcessSample{{RunID: "run"}}, "history.db")
-	child.seq = 1
-	updated, _ := child.Update(historySamplesLoadedMsg{seq: 1, samples: []historyTopSample{{RunID: "run"}}})
-	child = updated.(historySampleBrowser)
-	if len(child.processes) != 1 {
-		t.Fatalf("parent top load cleared process child: %+v", child.processes)
+	root := newHistoryListBrowser("history.db", historyReviewData{})
+	top := newHistoryTopBrowser([]historyTopSample{{RunID: "run"}}, "history.db")
+	process := newHistoryProcessBrowser([]historyProcessSample{{RunID: "run"}}, "history.db")
+	top.seq, process.seq = 1, 1
+	navigator := newHistoryNavigator(nil, "history.db", root)
+	navigator.stack = append(navigator.stack, top, process)
+	next, _ := navigator.Update(historySamplesLoadedMsg{seq: 1, samples: []historyTopSample{{RunID: "run"}}})
+	navigator = next.(historyNavigator)
+	process = navigator.current().(historySampleBrowser)
+	if len(process.processes) != 1 {
+		t.Fatalf("navigator parent top load cleared process child: %+v", process.processes)
 	}
 }

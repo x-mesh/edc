@@ -1,0 +1,73 @@
+# English messages for edc setup remote. This file is the base: a key that another language misses falls back to here.
+remotesetup:
+  saved: "saved %s"
+  error:
+    read: "edc cannot read the inventory %s: %v"
+    not_regular: "%s is not a regular file"
+    not_mapping: "the inventory must be a YAML mapping with hosts and groups"
+    encode_mismatch: "edc could not write the inventory without changing its meaning, so it left the file as it was"
+  issue:
+    message: "%s"
+    host_name_empty: "the host name cannot be empty"
+    host_duplicate: "host %s already exists"
+    host_unknown: "host %s does not exist"
+    group_name_empty: "the group name cannot be empty"
+    group_duplicate: "group %s already exists"
+    group_unknown: "group %s does not exist"
+    group_no_members: "pick at least one host for the group"
+    member_duplicate: "host %s is in the group twice"
+    parallel_negative: "parallel must be 0 or more"
+    no_store: "no inventory file is set"
+  tui:
+    title: "edc setup remote  ·  %s"
+    screen:
+      hosts: "Hosts"
+      groups: "Groups"
+    hosts_empty: "no host yet, press a to add one"
+    groups_empty: "no group yet, press a to add one"
+    parallel: "parallel %d (0 uses the default)"
+    group_parallel: "parallel %d"
+    prompt:
+      group_name: "New group name"
+      parallel: "Hosts that run at the same time (0 uses the default)"
+      group_parallel: "Hosts of group %s that run at the same time (0 removes the override)"
+    pick:
+      title: "Hosts of group %s"
+    form:
+      add: "Add a host"
+      edit: "Edit the host"
+    field:
+      name: "name"
+      target: "target (SSH alias, empty uses the name)"
+      tags: "tags (comma separated)"
+    confirm:
+      delete_host: "Delete host %s? (y/n)"
+      delete_group: "Delete group %s? (y/n)"
+      discard: "Discard the unsaved changes? (y/n)"
+    status:
+      add_host_first: "add a host first"
+      not_a_number: "enter a whole number"
+      groups_removed: "removed the groups that lost their last host: %s"
+      no_changes: "no changes to save"
+      stale: "the file changed after edc read it, so nothing was saved. Quit and run the command again"
+      save_failed: "could not save: %s"
+      blocked: "cannot save, %d problem(s): %s"
+      saved: "saved"
+    key:
+      move: "move"
+      add: "add"
+      edit: "edit"
+      delete: "delete"
+      groups: "groups"
+      hosts: "hosts"
+      members: "members"
+      parallel: "parallel"
+      group_parallel: "group parallel"
+      save: "save"
+      quit: "quit"
+      next: "next"
+      confirm: "confirm"
+      cancel: "cancel"
+      toggle: "toggle"
+      "yes": "yes"
+      "no": "no"

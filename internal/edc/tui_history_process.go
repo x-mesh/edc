@@ -174,7 +174,7 @@ func loadHistoryProcessSample(db *sql.DB, run string, sampleID int64) ([]history
 }
 
 func newHistoryProcessBrowser(samples []historyProcessSample, path string) historySampleBrowser {
-	model := historySampleBrowser{processes: samples, processMode: true, path: path, width: 80, height: 24, color: os.Getenv("NO_COLOR") == "", view: viewport.New()}
+	model := historySampleBrowser{processes: samples, processMode: true, path: path, width: 80, height: 24, color: os.Getenv("NO_COLOR") == "", view: viewport.New(), owner: historyBrowserOwner.Add(1)}
 	model.resize()
 	return model
 }

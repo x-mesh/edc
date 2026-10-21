@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -35,6 +36,36 @@ type historyOverview struct {
 	Memory    string                   `json:"memory_source"`
 	Metrics   []historyOverviewStat    `json:"metrics"`
 	Processes []historyOverviewProcess `json:"processes"`
+	Disks     []historyOverviewDisk    `json:"disks"`
+	Logs      []historyOverviewLog     `json:"logs"`
+}
+
+func historyOverviewMetricLabel(name string) string {
+	key := map[string]string{
+		"cpu_pct":                "cpu",
+		"memory_pct":             "memory",
+		"load1":                  "load",
+		"disk_read_bytes_per_s":  "disk_read",
+		"disk_write_bytes_per_s": "disk_write",
+		"net_in_bytes_per_s":     "net_in",
+		"net_out_bytes_per_s":    "net_out",
+		"swap_out_bytes_per_s":   "swap_out",
+	}[name]
+	if key == "" {
+		return name
+	}
+	return T("history.overview.metric." + key)
+}
+
+func historyOverviewMemoryLabel(source string) string {
+	switch strings.ToLower(source) {
+	case "memory":
+		return T("history.overview.memory")
+	case "rss":
+		return T("history.overview.rss")
+	default:
+		return source
+	}
 }
 
 func runHistoryOverview(args []string) int {
@@ -208,11 +239,28 @@ func writeHistoryOverview(out io.Writer, v historyOverview, loc *time.Location) 
 	fmt.Fprintf(out, "%s: %s → %s  %s %d  %s %d\n", T("history.overview.range"), v.From.In(loc).Format(time.DateTime), v.To.In(loc).Format(time.DateTime), T("history.overview.runs"), v.Runs, T("history.overview.samples"), v.Samples)
 	fmt.Fprintln(out, T("history.overview.metrics"))
 	for _, m := range v.Metrics {
-		fmt.Fprintf(out, "  %s  %s %s  p95 %s  %s %s\n", m.Metric, T("history.overview.avg"), historyTrendValue(m.Metric, m.Avg), historyTrendValue(m.Metric, m.P95), T("history.overview.max"), historyTrendValue(m.Metric, m.Max))
+		fmt.Fprintf(out, "  %s  %s %s  p95 %s  %s %s\n", historyOverviewMetricLabel(m.Metric), T("history.overview.avg"), historyTrendValue(m.Metric, m.Avg), historyTrendValue(m.Metric, m.P95), T("history.overview.max"), historyTrendValue(m.Metric, m.Max))
 	}
-	fmt.Fprintf(out, "%s:\n", T("history.overview.processes", T("history.overview."+v.Memory)))
+	fmt.Fprintf(out, "%s:\n", T("history.overview.processes", historyOverviewMemoryLabel(v.Memory)))
 	for _, p := range v.Processes {
 		fmt.Fprintf(out, "  %s  %s %s  %s %.1f%%  %s %d\n", historyTerminalText(p.Command), T("history.overview.peak"), formatSizeShort(uint64(p.Peak)), T("history.overview.cpu"), p.CPU, T("history.overview.restarts"), p.Restarts)
+	}
+	if len(v.Disks) > 0 {
+		fmt.Fprintln(out, T("history.overview.disks"))
+		for _, disk := range v.Disks {
+			growth := "—"
+			if disk.BytesPerDay != nil {
+				growth = historyGrowthRate(*disk.BytesPerDay)
+			}
+			fmt.Fprintf(out, "  %s  %s/%s  %s %s\n", disk.Mount, formatSizeShort(uint64(disk.UsedBytes)), formatSizeShort(uint64(disk.TotalBytes)), T("history.overview.growth"), growth)
+		}
+	}
+	if len(v.Logs) > 0 {
+		fmt.Fprintln(out, T("history.overview.logs"))
+		fmt.Fprintln(out, T("history.overview.logs_time_only"))
+		for _, log := range v.Logs {
+			fmt.Fprintf(out, "  %s  %s  %s  %s\n", historyTerminalText(log.Command), log.Started.In(loc).Format(time.DateTime), log.Outcome, log.Duration)
+		}
 	}
 }
 

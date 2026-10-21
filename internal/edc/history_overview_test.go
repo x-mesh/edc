@@ -46,6 +46,20 @@ func TestHistoryOverviewAggregatesRunAndPlainOutput(t *testing.T) {
 	}
 }
 
+func TestHistoryOverviewLabelsDoNotExposeTranslationKeys(t *testing.T) {
+	for _, language := range []string{"en", "ko", "ja"} {
+		previous := currentLanguage()
+		setLanguage(language)
+		if got := historyOverviewMemoryLabel("RSS"); strings.Contains(got, "history.") {
+			t.Fatalf("%s memory label = %q", language, got)
+		}
+		if got := historyOverviewMetricLabel("cpu_pct"); strings.Contains(got, "history.") {
+			t.Fatalf("%s metric label = %q", language, got)
+		}
+		setLanguage(previous)
+	}
+}
+
 func TestHistoryOverviewWindowAndMissingRun(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "history.db")
 	recorder := topHistoryFixture(t, path)

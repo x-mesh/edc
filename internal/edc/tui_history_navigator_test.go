@@ -144,3 +144,36 @@ func TestHistoryNavigatorKeepsRunListPauseKey(t *testing.T) {
 		t.Fatal("p did not pause the run list")
 	}
 }
+
+func TestHistoryNavigatorLinksSampleAndGrowthEntries(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "history.db")
+	recorder := topHistoryFixture(t, path)
+	if err := recorder.Record(historyFixtureSample(1, 20, topProcess{PID: 1, Command: "worker"})); err != nil {
+		t.Fatal(err)
+	}
+	if err := recorder.Close("finished"); err != nil {
+		t.Fatal(err)
+	}
+	db, err := openHistoryDB(path, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	samples, err := loadHistoryTop(db, historyOptions{run: recorder.runID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	top := newHistoryTopBrowser(samples, path)
+	if child, ok, err := top.navigate("o", db, path); err != nil || !ok || !child.(historySampleBrowser).processMode {
+		t.Fatalf("top link: %T %v %v", child, ok, err)
+	}
+	growth := historyGrowth{Processes: []historyGrowthProcess{{PID: 1, Command: "worker"}}, Disks: []historyGrowthDisk{{Mount: "/"}}}
+	model := newHistoryGrowthNavigator(nil, "history.db", historyGrowthOptions{}, growth)
+	if child, ok, err := model.navigate("t", nil, "history.db"); err != nil || !ok || child == nil {
+		t.Fatalf("growth process link: %T %v %v", child, ok, err)
+	}
+	model.selected = 1
+	if child, ok, err := model.navigate("t", nil, "history.db"); err != nil || !ok || child == nil {
+		t.Fatalf("growth disk link: %T %v %v", child, ok, err)
+	}
+}

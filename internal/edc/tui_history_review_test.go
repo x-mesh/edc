@@ -72,6 +72,51 @@ func TestHistoryReviewBrowserLayoutSelectionAndRefresh(t *testing.T) {
 	}
 }
 
+func TestHistoryListBrowserRowsDetailsAndWidths(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "history.db")
+	first := topHistoryFixture(t, path)
+	if err := first.Record(historyFixtureSample(1, 20, topProcess{PID: 1})); err != nil {
+		t.Fatal(err)
+	}
+	if err := first.Close("finished"); err != nil {
+		t.Fatal(err)
+	}
+	second := topHistoryFixture(t, path)
+	if err := second.Record(historyFixtureSample(2, 30, topProcess{PID: 2})); err != nil {
+		t.Fatal(err)
+	}
+	if err := second.Close("finished"); err != nil {
+		t.Fatal(err)
+	}
+	db, err := openHistoryDB(path, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	now := time.Now()
+	data, err := historyListReviewData(db, historyOptions{}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(data.entries) != 2 || data.entries[0].id != second.runID || !strings.Contains(data.entries[0].cells[0], "Today") {
+		t.Fatalf("list entries = %+v", data.entries)
+	}
+	model := newHistoryListBrowser(path, data)
+	for _, width := range []int{80, 120, 180} {
+		model = reviewAfter(t, model, tea.WindowSizeMsg{Width: width, Height: 24})
+		for _, line := range strings.Split(model.View().Content, "\n") {
+			if liveWidth(line) > width {
+				t.Fatalf("width %d overflow: %q", width, line)
+			}
+		}
+	}
+	model = reviewAfter(t, model, tea.KeyPressMsg{Code: tea.KeyEnter})
+	view := model.View().Content
+	if !model.expanded || !strings.Contains(view, second.runID) || !strings.Contains(view, T("history.list_browser.process", "—")) {
+		t.Fatalf("details = %q", view)
+	}
+}
+
 func TestHistoryPruneBrowserRequiresConfirmationAndDryRunNeverDeletes(t *testing.T) {
 	var plan historyPrunePlan
 	for i := 0; i < 40; i++ {

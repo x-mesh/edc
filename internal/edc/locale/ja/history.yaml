@@ -13,7 +13,7 @@ history:
     browsing:
       title: "閲覧"
       notes:
-        - "`edc history list`は実行一覧を、`edc history top`と`edc history process`は対話画面を開きます。"
+        - "端末では`edc history list`、`edc history top`、`edc history process`が対話画面を開きます。"
         - "`↑↓`で選択、`Enter`で詳細、`Home`で最新を追跡します。広い画面では列と詳細パネルを追加します。"
     analysis:
       title: "推移と増加量"
@@ -61,6 +61,28 @@ history:
   process_browser:
     title: "Process観測履歴"
     empty: "条件に一致するprocess記録がありません。edc top -w --process <名前>で記録してから、edc history processで確認してください。"
+  list_browser:
+    title: "実行履歴"
+    summary: "記録済みのtopとsnapshot実行"
+    empty: "条件に一致する実行記録がありません。"
+    run: "実行 ID  %s"
+    command: "コマンド  %s"
+    host: "ホスト  %s"
+    started: "開始  %s"
+    ended: "終了  %s"
+    duration: "所要時間  %s"
+    status: "状態  %s"
+    samples: "観測値  %d"
+    interval: "間隔  %s"
+    process: "processフィルター  %s"
+    interfaces: "インターフェース  %s"
+    column:
+      start: "開始"
+      command: "コマンド"
+      duration: "所要時間"
+      samples: "観測値"
+      status: "状態"
+      host: "ホスト"
   recording:
     started: "記録開始: %s"
     stopped: "記録停止 · %d件の観測値を保存"

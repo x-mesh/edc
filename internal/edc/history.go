@@ -148,11 +148,14 @@ func runHistory(args []string) int {
 		return 1
 	}
 	defer db.Close()
-	if (command == "top" || command == "process") && *jsonPath == "" && liveTerminal() {
+	if (command == "list" || command == "top" || command == "process") && *jsonPath == "" && liveTerminal() {
 		var err error
-		if command == "process" {
+		switch command {
+		case "list":
+			err = runHistoryListBrowser(db, path, options)
+		case "process":
 			err = runHistoryProcessBrowser(db, path, options)
-		} else {
+		default:
 			err = runHistoryTopBrowser(db, path, options)
 		}
 		if err != nil {

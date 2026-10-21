@@ -21,6 +21,7 @@ type historyReviewEntry struct {
 	id       string
 	command  string
 	navigate string
+	identity *historyProcessIdentity
 	cells    []string
 	details  []string
 }

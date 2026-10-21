@@ -75,7 +75,7 @@ type historyReviewBrowser struct {
 }
 
 func (model historyReviewBrowser) capturesInput() bool {
-	return model.filterEditing || model.agePicker != nil && model.agePicker.input
+	return model.filterEditing || model.agePicker != nil
 }
 
 var historyBrowserOwner atomic.Uint64

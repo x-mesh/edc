@@ -28,6 +28,17 @@ type historyOverviewProcess struct {
 	CPU      float64 `json:"avg_cpu_pct"`
 	Restarts int     `json:"restarts"`
 }
+type historyOverviewDisk struct {
+	Mount       string
+	UsedBytes   uint64
+	TotalBytes  uint64
+	BytesPerDay *float64
+}
+type historyOverviewLog struct {
+	Command, Outcome string
+	Started          time.Time
+	Duration         time.Duration
+}
 type historyOverview struct {
 	Run       *historyRun              `json:"run,omitempty"`
 	From      time.Time                `json:"from"`

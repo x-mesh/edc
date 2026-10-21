@@ -61,7 +61,7 @@ func (model historyOverviewLogList) View() tea.View {
 		lines = append(lines, line)
 	}
 	lines = append(lines, "")
-	lines = append(lines, historyReviewKeyHints(T("history.overview.browser.log_help"), model.width, model.color)...)
+	lines = append(lines, historyReviewKeyHints(T("history.overview.browser.log_list_help"), model.width, model.color)...)
 	for index := range lines {
 		lines[index] = ansi.Truncate(lines[index], max(1, model.width), "…")
 	}

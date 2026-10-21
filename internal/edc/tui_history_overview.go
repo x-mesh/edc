@@ -20,6 +20,7 @@ type historyOverviewBrowser struct {
 	width, height, offset int
 	color                 bool
 	err                   error
+	notice                string
 	hosted                bool
 }
 
@@ -36,8 +37,8 @@ func (model historyOverviewBrowser) navigate(key string, _ *sql.DB, _ string) (t
 			return newHistoryOverviewLogList(model.overview.Logs, model.color), true, nil
 		}
 		if len(model.overview.Warnings) > 0 {
-			model.err = fmt.Errorf("%s", model.overview.Warnings[0])
-			return model, true, nil
+			model.notice = model.overview.Warnings[0]
+			return model, false, nil
 		}
 	}
 	return nil, false, nil
@@ -78,8 +79,7 @@ func (model historyOverviewBrowser) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (model historyOverviewBrowser) maxOffset() int {
-	footer := historyReviewKeyHints(T("history.overview.browser.help"), max(1, model.width), model.color)
-	return max(0, len(model.lines())-max(1, model.height-len(footer)))
+	return max(0, len(model.lines())-max(1, model.height-len(model.footer(max(1, model.width)))))
 }
 
 func (model historyOverviewBrowser) lines() []string {
@@ -181,10 +181,22 @@ func historyOverviewSparkline(values []float64, width int) string {
 	return line.String()
 }
 
+func (model historyOverviewBrowser) footer(width int) []string {
+	help := T("history.overview.browser.help")
+	if model.hosted && len(model.overview.Logs) > 0 {
+		help = T("history.overview.browser.log_help") + "   " + help
+	}
+	lines := historyReviewKeyHints(help, width, model.color)
+	if model.notice != "" {
+		lines = append([]string{historyTint(model.notice, richYellow, model.color)}, lines...)
+	}
+	return lines
+}
+
 func (model historyOverviewBrowser) View() tea.View {
 	width := max(1, model.width)
 	lines := model.lines()
-	footer := historyReviewKeyHints(T("history.overview.browser.help"), width, model.color)
+	footer := model.footer(width)
 	room := max(1, model.height-len(footer))
 	model.offset = min(model.offset, model.maxOffset())
 	body := lines[model.offset:min(len(lines), model.offset+room)]

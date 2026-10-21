@@ -206,6 +206,7 @@ history:
       process: "プロセス"
       help: "↑↓ スクロール   PgUp/PgDn ページ   r 更新   q 終了"
       log_help: "l ログ実行"
+      log_list_help: "↑↓ 選択   Enter 開く   Esc 戻る   q 終了"
     metric:
       cpu: "CPU"
       memory: "メモリ"

@@ -206,6 +206,7 @@ history:
       process: "PROCESS"
       help: "↑↓ scroll   PgUp/PgDn page   r refresh   q quit"
       log_help: "l log runs"
+      log_list_help: "↑↓ Select   Enter Open   Esc Back   q Quit"
     metric:
       cpu: "CPU"
       memory: "Memory"

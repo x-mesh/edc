@@ -215,6 +215,7 @@ cli:
       remote: "remote 기본값을 설정할까요?"
       update: "update 기본값을 설정할까요?"
       quality: "quality 기본값을 설정할까요?"
+      du: "du와 clean 기본값을 설정할까요?"
     field:
       common_timeout: "공통 timeout"
       common_json: "공통 JSON 경로 (빈 값은 끔)"
@@ -255,6 +256,7 @@ cli:
       update_timeout: "update timeout"
       quality_timeout: "quality timeout"
       quality_server: "quality config URL (비우면 Apple 서버)"
+      du_workers: "du와 clean의 workers (동시에 읽는 디렉터리 수)"
     validation:
       language: "en, ko, ja 중 하나를 입력하세요"
       yes_no: "y 또는 n으로 답하세요"

@@ -83,16 +83,25 @@ func (model historyOverviewBrowser) lines() []string {
 }
 
 func (model historyOverviewBrowser) tableLines(lines []string) []string {
-	lines = append(lines, "", T("history.overview.metrics"), fmt.Sprintf("%-24s %10s %10s %10s", T("history.overview.browser.metric"), strings.ToUpper(T("history.overview.avg")), "P95", strings.ToUpper(T("history.overview.max"))))
+	metricWidth := 24
+	lines = append(lines, "", T("history.overview.metrics"), historyOverviewMetricRow(T("history.overview.browser.metric"), strings.ToUpper(T("history.overview.avg")), "P95", strings.ToUpper(T("history.overview.max")), "", metricWidth))
 	for _, metric := range model.overview.Metrics {
-		lines = append(lines, fmt.Sprintf("%-24s %10s %10s %10s %s", historyOverviewMetricLabel(metric.Metric), historyTrendValue(metric.Metric, metric.Avg), historyTrendValue(metric.Metric, metric.P95), historyTrendValue(metric.Metric, metric.Max), historyOverviewSparkline(model.overview.Series[metric.Metric], 12)))
+		lines = append(lines, historyOverviewMetricRow(historyOverviewMetricLabel(metric.Metric), historyTrendValue(metric.Metric, metric.Avg), historyTrendValue(metric.Metric, metric.P95), historyTrendValue(metric.Metric, metric.Max), historyOverviewSparkline(model.overview.Series[metric.Metric], 12), metricWidth))
 	}
 	nameWidth := max(16, model.width-45)
-	lines = append(lines, "", T("history.overview.processes", historyOverviewMemoryLabel(model.overview.Memory)), fmt.Sprintf("%-*s %10s %10s %8s", nameWidth, T("history.overview.browser.process"), strings.ToUpper(T("history.overview.peak")), strings.ToUpper(T("history.overview.cpu")), strings.ToUpper(T("history.overview.restarts"))))
+	lines = append(lines, "", T("history.overview.processes", historyOverviewMemoryLabel(model.overview.Memory)), historyOverviewProcessRow(T("history.overview.browser.process"), strings.ToUpper(T("history.overview.peak")), strings.ToUpper(T("history.overview.cpu")), strings.ToUpper(T("history.overview.restarts")), nameWidth))
 	for _, process := range model.overview.Processes {
-		lines = append(lines, fmt.Sprintf("%-*s %10s %9.1f%% %8d", nameWidth, topProcessName(process.Command, nameWidth), formatSizeShort(uint64(process.Peak)), process.CPU, process.Restarts))
+		lines = append(lines, historyOverviewProcessRow(topProcessName(process.Command, nameWidth), formatSizeShort(uint64(process.Peak)), fmt.Sprintf("%.1f%%", process.CPU), fmt.Sprint(process.Restarts), nameWidth))
 	}
 	return lines
+}
+
+func historyOverviewMetricRow(name, average, p95, maximum, spark string, nameWidth int) string {
+	return historyCell(name, nameWidth, false) + " " + historyCell(average, 10, true) + " " + historyCell(p95, 10, true) + " " + historyCell(maximum, 10, true) + " " + spark
+}
+
+func historyOverviewProcessRow(name, peak, cpu, restarts string, nameWidth int) string {
+	return historyCell(name, nameWidth, false) + " " + historyCell(peak, 10, true) + " " + historyCell(cpu, 10, true) + " " + historyCell(restarts, 8, true)
 }
 
 func historyOverviewSparkline(values []float64, width int) string {

@@ -57,3 +57,25 @@ func TestHistoryOverviewBrowserUsesRunDuration(t *testing.T) {
 		t.Fatalf("run duration = %q", model.lines()[2])
 	}
 }
+
+func TestHistoryOverviewBrowserAlignsTranslatedColumns(t *testing.T) {
+	previous := currentLanguage()
+	defer setLanguage(previous)
+	for _, language := range []string{"ko", "ja"} {
+		setLanguage(language)
+		lines := overviewBrowserFixture().lines()
+		var offsets []int
+		for _, metric := range []historyOverviewStat{{Metric: "cpu_pct", Avg: 10}, {Metric: "memory_pct", Avg: 20}} {
+			value := historyTrendValue(metric.Metric, metric.Avg)
+			for _, line := range lines {
+				if strings.HasPrefix(line, historyCell(historyOverviewMetricLabel(metric.Metric), 24, false)) {
+					offsets = append(offsets, ansi.StringWidth(line[:strings.Index(line, value)]))
+					break
+				}
+			}
+		}
+		if len(offsets) != 2 || offsets[0] != offsets[1] {
+			t.Fatalf("%s metric columns = %v", language, offsets)
+		}
+	}
+}

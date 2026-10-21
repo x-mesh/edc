@@ -204,6 +204,11 @@ func loadRemoteRecipe(path string, defaultTimeout time.Duration) (remoteRecipe, 
 	if err := decodeRemoteYAML(path, &file); err != nil {
 		return remoteRecipe{}, fmt.Errorf("recipe %q: %w", path, err)
 	}
+	return buildRemoteRecipe(file, defaultTimeout)
+}
+
+// buildRemoteRecipe checks a decoded recipe and turns it into the form that edc remote runs.
+func buildRemoteRecipe(file remoteRecipeFile, defaultTimeout time.Duration) (remoteRecipe, error) {
 	if strings.TrimSpace(file.Name) == "" {
 		return remoteRecipe{}, errors.New(T("remote.error.recipe_name_empty"))
 	}

@@ -59,3 +59,48 @@ func (inventory Inventory) GroupIndex(name string) int {
 	}
 	return -1
 }
+
+// Upload copies a local file to the host instead of running a command.
+type Upload struct {
+	Source      string
+	Destination string
+	Mode        string
+}
+
+// Step runs on the hosts of a group. A step has a command or an upload. Timeout stays text,
+// because the consumer decides the units and the range.
+type Step struct {
+	Name    string
+	Command string
+	Upload  *Upload
+	Verify  string
+	Timeout string
+	Tags    []string
+}
+
+type Recipe struct {
+	Name  string
+	Steps []Step
+}
+
+func (recipe Recipe) Clone() Recipe {
+	clone := Recipe{Name: recipe.Name, Steps: make([]Step, len(recipe.Steps))}
+	for index, step := range recipe.Steps {
+		step.Tags = append([]string(nil), step.Tags...)
+		if step.Upload != nil {
+			upload := *step.Upload
+			step.Upload = &upload
+		}
+		clone.Steps[index] = step
+	}
+	return clone
+}
+
+func (recipe Recipe) StepIndex(name string) int {
+	for index, step := range recipe.Steps {
+		if step.Name == name {
+			return index
+		}
+	}
+	return -1
+}

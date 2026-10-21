@@ -1,17 +1,15 @@
-// Package tui draws the remotesetup editor with Bubble Tea. It reaches the host application
+// Package tui draws the remotesetup editors with Bubble Tea. It reaches the host application
 // only through remotesetup.Messages and Styler, so another program can supply its own.
 package tui
 
 import (
 	"errors"
-	"fmt"
 	"io"
 	"strconv"
 	"strings"
 
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
-	"github.com/charmbracelet/x/ansi"
 
 	"github.com/x-mesh/edc/internal/remotesetup"
 )
@@ -35,8 +33,11 @@ func (PlainStyler) Error(text string) string    { return text }
 type Options struct {
 	Messages remotesetup.Messages
 	Styler   Styler
-	// Location is shown in the title, for example the path of the file.
+	// Location is shown in the title, for example the path of the inventory file.
 	Location string
+	// Recipe adds the steps screen. It stays nil for a program that edits no recipe.
+	Recipe         *remotesetup.RecipeEditor
+	RecipeLocation string
 }
 
 type mode int
@@ -44,8 +45,10 @@ type mode int
 const (
 	modeHosts mode = iota
 	modeGroups
+	modeSteps
 	modeForm
 	modeGroupName
+	modeRecipeName
 	modePick
 	modeNumber
 	modeConfirm
@@ -56,34 +59,72 @@ type confirmKind int
 const (
 	confirmDeleteHost confirmKind = iota
 	confirmDeleteGroup
+	confirmDeleteStep
 	confirmDiscard
 )
 
+type formKind int
+
 const (
-	fieldName = iota
-	fieldTarget
-	fieldTags
-	fieldCount
+	formHost formKind = iota
+	formStep
 )
 
+// The fields of the host form and of the step form, in screen order.
+const (
+	hostName = iota
+	hostTarget
+	hostTags
+)
+
+const (
+	stepName = iota
+	stepCommand
+	stepSource
+	stepDestination
+	stepMode
+	stepVerify
+	stepTimeout
+	stepTags
+)
+
+var (
+	hostLabels = []string{"remotesetup.tui.field.name", "remotesetup.tui.field.target", "remotesetup.tui.field.tags"}
+	stepLabels = []string{
+		"remotesetup.tui.field.step_name", "remotesetup.tui.field.step_command", "remotesetup.tui.field.step_source",
+		"remotesetup.tui.field.step_destination", "remotesetup.tui.field.step_mode", "remotesetup.tui.field.step_verify",
+		"remotesetup.tui.field.step_timeout", "remotesetup.tui.field.step_tags",
+	}
+)
+
+type formState struct {
+	kind    formKind
+	labels  []string
+	inputs  []textinput.Model
+	focus   int
+	editing int
+}
+
 type Model struct {
-	editor   *remotesetup.Editor
-	messages remotesetup.Messages
-	style    Styler
-	location string
+	editor         *remotesetup.Editor
+	recipe         *remotesetup.RecipeEditor
+	messages       remotesetup.Messages
+	style          Styler
+	location       string
+	recipeLocation string
 
 	mode          mode
 	width, height int
 	hostCursor    int
 	groupCursor   int
+	stepCursor    int
 
 	status      string
 	statusError bool
 	saved       bool
+	result      Result
 
-	fields      [fieldCount]textinput.Model
-	fieldFocus  int
-	editingHost int
+	form formState
 
 	input        textinput.Model
 	numberGroup  string
@@ -98,12 +139,12 @@ type Model struct {
 }
 
 func New(editor *remotesetup.Editor, options Options) Model {
-	model := Model{editor: editor, messages: options.Messages, style: options.Styler, location: options.Location, width: 80, height: 24, editingHost: -1}
+	model := Model{
+		editor: editor, recipe: options.Recipe, messages: options.Messages, style: options.Styler,
+		location: options.Location, recipeLocation: options.RecipeLocation, width: 80, height: 24,
+	}
 	if model.style == nil {
 		model.style = PlainStyler{}
-	}
-	for index := range model.fields {
-		model.fields[index] = newInput()
 	}
 	model.input = newInput()
 	return model
@@ -116,8 +157,14 @@ func newInput() textinput.Model {
 	return input
 }
 
-// Saved reports whether the inventory was saved at least once during the session.
-func (model Model) Saved() bool { return model.saved }
+// Result tells which files were saved at least once during the session.
+type Result struct{ Inventory, Recipe bool }
+
+func (model Model) Result() Result { return model.result }
+
+func (model Model) dirty() bool {
+	return model.editor.Dirty() || model.recipe != nil && model.recipe.Dirty()
+}
 
 func (model Model) text(code string, args ...any) string { return model.messages.Text(code, args...) }
 
@@ -137,10 +184,14 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			return model.updateHosts(value)
 		case modeGroups:
 			return model.updateGroups(value)
+		case modeSteps:
+			return model.updateSteps(value)
 		case modeForm:
 			return model.updateForm(value)
 		case modeGroupName:
 			return model.updateGroupName(value)
+		case modeRecipeName:
+			return model.updateRecipeName(value)
 		case modePick:
 			return model.updatePick(value)
 		case modeNumber:
@@ -157,15 +208,15 @@ func (model Model) forward(message tea.Msg) (tea.Model, tea.Cmd) {
 	var command tea.Cmd
 	switch model.mode {
 	case modeForm:
-		model.fields[model.fieldFocus], command = model.fields[model.fieldFocus].Update(message)
-	case modeGroupName, modeNumber:
+		model.form.inputs[model.form.focus], command = model.form.inputs[model.form.focus].Update(message)
+	case modeGroupName, modeRecipeName, modeNumber:
 		model.input, command = model.input.Update(message)
 	}
 	return model, command
 }
 
 func (model Model) requestQuit() (tea.Model, tea.Cmd) {
-	if !model.editor.Dirty() {
+	if !model.dirty() {
 		return model, tea.Quit
 	}
 	model.returnMode = model.mode
@@ -194,7 +245,43 @@ func move(cursor, delta, length int) int {
 	return (cursor + delta + length) % length
 }
 
+// switchScreen handles the keys that change the list. It reports false for any other key.
+func (model Model) switchScreen(key string) (Model, bool) {
+	screens := []mode{modeHosts, modeGroups}
+	if model.recipe != nil {
+		screens = append(screens, modeSteps)
+	}
+	current := model.screen()
+	target := mode(-1)
+	switch key {
+	case "tab":
+		for index, screen := range screens {
+			if screen == current {
+				target = screens[(index+1)%len(screens)]
+			}
+		}
+	case "h":
+		target = modeHosts
+	case "g":
+		target = modeGroups
+	case "r":
+		target = modeSteps
+	default:
+		return model, false
+	}
+	for _, screen := range screens {
+		if screen == target && target != current {
+			model.mode, model.status = target, ""
+			return model, true
+		}
+	}
+	return model, false
+}
+
 func (model Model) updateHosts(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	if next, ok := model.switchScreen(key.String()); ok {
+		return next, nil
+	}
 	inventory := model.editor.Inventory()
 	switch key.String() {
 	case "up", "k":
@@ -202,19 +289,16 @@ func (model Model) updateHosts(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "down", "j":
 		model.hostCursor = move(model.hostCursor, 1, len(inventory.Hosts))
 	case "a":
-		return model.startForm(-1)
+		return model.startHostForm(-1)
 	case "e", "enter":
 		if len(inventory.Hosts) > 0 {
-			return model.startForm(model.hostCursor)
+			return model.startHostForm(model.hostCursor)
 		}
 	case "d":
 		if len(inventory.Hosts) > 0 {
 			model.mode, model.returnMode, model.confirm = modeConfirm, modeHosts, confirmDeleteHost
 			model.confirmTarget = inventory.Hosts[model.hostCursor].Name
 		}
-	case "g", "tab":
-		model.mode = modeGroups
-		model.status = ""
 	case "s":
 		return model.save()
 	case "q", "esc":
@@ -224,6 +308,9 @@ func (model Model) updateHosts(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 }
 
 func (model Model) updateGroups(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	if next, ok := model.switchScreen(key.String()); ok {
+		return next, nil
+	}
 	inventory := model.editor.Inventory()
 	switch key.String() {
 	case "up", "k":
@@ -236,7 +323,6 @@ func (model Model) updateGroups(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		model.mode = modeGroupName
 		model.input.SetValue("")
-		model.input.Placeholder = ""
 		model.status = ""
 		return model, model.input.Focus()
 	case "e", "enter":
@@ -255,9 +341,6 @@ func (model Model) updateGroups(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			name := inventory.Groups[model.groupCursor].Name
 			return model.startNumber(name, inventory.GroupParallel[name])
 		}
-	case "h", "tab":
-		model.mode = modeHosts
-		model.status = ""
 	case "s":
 		return model.save()
 	case "q", "esc":
@@ -266,47 +349,107 @@ func (model Model) updateGroups(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	return model, nil
 }
 
-func (model Model) startForm(index int) (tea.Model, tea.Cmd) {
-	model.mode, model.editingHost, model.fieldFocus, model.status = modeForm, index, 0, ""
+func (model Model) updateSteps(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	if next, ok := model.switchScreen(key.String()); ok {
+		return next, nil
+	}
+	steps := model.recipe.Recipe().Steps
+	switch key.String() {
+	case "up", "k":
+		model.stepCursor = move(model.stepCursor, -1, len(steps))
+	case "down", "j":
+		model.stepCursor = move(model.stepCursor, 1, len(steps))
+	case "K":
+		model.stepCursor = model.recipe.MoveStep(model.stepCursor, -1)
+	case "J":
+		model.stepCursor = model.recipe.MoveStep(model.stepCursor, 1)
+	case "a":
+		return model.startStepForm(-1)
+	case "e", "enter":
+		if len(steps) > 0 {
+			return model.startStepForm(model.stepCursor)
+		}
+	case "d":
+		if len(steps) > 0 {
+			model.mode, model.returnMode, model.confirm = modeConfirm, modeSteps, confirmDeleteStep
+			model.confirmTarget = steps[model.stepCursor].Name
+		}
+	case "n":
+		model.mode = modeRecipeName
+		model.input.SetValue(model.recipe.Recipe().Name)
+		model.status = ""
+		return model, model.input.Focus()
+	case "s":
+		return model.save()
+	case "q", "esc":
+		return model.requestQuit()
+	}
+	return model, nil
+}
+
+func (model Model) startForm(kind formKind, labels []string, values []string, editing int) (tea.Model, tea.Cmd) {
+	model.mode, model.status = modeForm, ""
+	model.form = formState{kind: kind, labels: labels, inputs: make([]textinput.Model, len(labels)), editing: editing}
+	for index := range model.form.inputs {
+		model.form.inputs[index] = newInput()
+		model.form.inputs[index].SetValue(values[index])
+	}
+	return model, model.form.inputs[0].Focus()
+}
+
+func (model Model) startHostForm(index int) (tea.Model, tea.Cmd) {
 	var host remotesetup.Host
 	if index >= 0 {
 		host = model.editor.Inventory().Hosts[index]
 	}
-	model.fields[fieldName].SetValue(host.Name)
-	model.fields[fieldTarget].SetValue(host.Target)
-	model.fields[fieldTags].SetValue(strings.Join(host.Tags, ", "))
-	for position := range model.fields {
-		model.fields[position].Blur()
+	return model.startForm(formHost, hostLabels, []string{host.Name, host.Target, strings.Join(host.Tags, ", ")}, index)
+}
+
+func (model Model) startStepForm(index int) (tea.Model, tea.Cmd) {
+	var step remotesetup.Step
+	if index >= 0 {
+		step = model.recipe.Recipe().Steps[index]
 	}
-	return model, model.fields[fieldName].Focus()
+	var upload remotesetup.Upload
+	if step.Upload != nil {
+		upload = *step.Upload
+	}
+	values := []string{step.Name, step.Command, upload.Source, upload.Destination, upload.Mode, step.Verify, step.Timeout, strings.Join(step.Tags, ", ")}
+	return model.startForm(formStep, stepLabels, values, index)
 }
 
 func (model Model) focusField(position int) (Model, tea.Cmd) {
-	model.fields[model.fieldFocus].Blur()
-	model.fieldFocus = position
-	return model, model.fields[position].Focus()
+	model.form.inputs[model.form.focus].Blur()
+	model.form.focus = position
+	return model, model.form.inputs[position].Focus()
 }
 
 func (model Model) updateForm(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	count := len(model.form.inputs)
 	switch key.String() {
 	case "esc":
-		model.mode = modeHosts
+		model.mode = model.screen()
 		model.status = ""
 		return model, nil
 	case "tab", "down":
-		return model.focusField((model.fieldFocus + 1) % fieldCount)
+		return model.focusField((model.form.focus + 1) % count)
 	case "shift+tab", "up":
-		return model.focusField((model.fieldFocus + fieldCount - 1) % fieldCount)
+		return model.focusField((model.form.focus + count - 1) % count)
 	case "enter":
-		if model.fieldFocus < fieldCount-1 {
-			return model.focusField(model.fieldFocus + 1)
+		if model.form.focus < count-1 {
+			return model.focusField(model.form.focus + 1)
+		}
+		if model.form.kind == formStep {
+			return model.submitStep()
 		}
 		return model.submitHost()
 	}
 	var command tea.Cmd
-	model.fields[model.fieldFocus], command = model.fields[model.fieldFocus].Update(key)
+	model.form.inputs[model.form.focus], command = model.form.inputs[model.form.focus].Update(key)
 	return model, command
 }
+
+func (model Model) value(field int) string { return model.form.inputs[field].Value() }
 
 func splitTags(value string) []string {
 	var tags []string
@@ -319,24 +462,49 @@ func splitTags(value string) []string {
 }
 
 func (model Model) submitHost() (tea.Model, tea.Cmd) {
-	host := remotesetup.Host{
-		Name:   model.fields[fieldName].Value(),
-		Target: model.fields[fieldTarget].Value(),
-		Tags:   splitTags(model.fields[fieldTags].Value()),
-	}
+	host := remotesetup.Host{Name: model.value(hostName), Target: model.value(hostTarget), Tags: splitTags(model.value(hostTags))}
 	var err error
-	if model.editingHost >= 0 {
-		err = model.editor.UpdateHost(model.editingHost, host)
+	if model.form.editing >= 0 {
+		err = model.editor.UpdateHost(model.form.editing, host)
 	} else {
 		err = model.editor.AddHost(host)
 	}
 	if err != nil {
 		return model.setStatus(model.issueText(err), true), nil
 	}
-	if model.editingHost < 0 {
+	if model.form.editing < 0 {
 		model.hostCursor = len(model.editor.Inventory().Hosts) - 1
 	}
 	model.mode = modeHosts
+	return model.setStatus("", false), nil
+}
+
+func (model Model) submitStep() (tea.Model, tea.Cmd) {
+	step := remotesetup.Step{
+		Name: model.value(stepName), Command: model.value(stepCommand), Verify: model.value(stepVerify),
+		Timeout: strings.TrimSpace(model.value(stepTimeout)), Tags: splitTags(model.value(stepTags)),
+	}
+	upload := remotesetup.Upload{
+		Source: strings.TrimSpace(model.value(stepSource)), Destination: strings.TrimSpace(model.value(stepDestination)), Mode: strings.TrimSpace(model.value(stepMode)),
+	}
+	if upload != (remotesetup.Upload{}) {
+		step.Upload = &upload
+	}
+	step.Command = strings.TrimSpace(step.Command)
+	step.Verify = strings.TrimSpace(step.Verify)
+	var err error
+	if model.form.editing >= 0 {
+		err = model.recipe.UpdateStep(model.form.editing, step)
+	} else {
+		err = model.recipe.AddStep(step)
+	}
+	if err != nil {
+		return model.setStatus(model.issueText(err), true), nil
+	}
+	if model.form.editing < 0 {
+		model.stepCursor = len(model.recipe.Recipe().Steps) - 1
+	}
+	model.mode = modeSteps
 	return model.setStatus("", false), nil
 }
 
@@ -356,6 +524,22 @@ func (model Model) updateGroupName(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		model.pendingGroup = name
 		return model.startPick("", nil), nil
+	}
+	var command tea.Cmd
+	model.input, command = model.input.Update(key)
+	return model, command
+}
+
+func (model Model) updateRecipeName(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	switch key.String() {
+	case "esc":
+		model.mode = modeSteps
+		model.status = ""
+		return model, nil
+	case "enter":
+		model.recipe.SetName(model.input.Value())
+		model.mode = modeSteps
+		return model.setStatus("", false), nil
 	}
 	var command tea.Cmd
 	model.input, command = model.input.Update(key)
@@ -473,238 +657,58 @@ func (model Model) applyConfirm() (tea.Model, tea.Cmd) {
 	case confirmDeleteGroup:
 		model.editor.RemoveGroup(model.confirmTarget)
 		model.groupCursor = min(model.groupCursor, max(len(model.editor.Inventory().Groups)-1, 0))
+	case confirmDeleteStep:
+		if index := model.recipe.Recipe().StepIndex(model.confirmTarget); index >= 0 {
+			model.recipe.RemoveStep(index)
+			model.stepCursor = min(model.stepCursor, max(len(model.recipe.Recipe().Steps)-1, 0))
+		}
 	}
 	return model.setStatus("", false), nil
 }
 
-func (model Model) save() (tea.Model, tea.Cmd) {
-	if !model.editor.Dirty() {
-		return model.setStatus(model.text("remotesetup.tui.status.no_changes"), false), nil
-	}
-	problems, err := model.editor.Save()
+// saveFailure turns the result of one save into a status. It reports false when the save succeeded.
+func (model Model) saveFailure(problems []remotesetup.Issue, err error, blocked string) (string, bool) {
 	switch {
 	case errors.Is(err, remotesetup.ErrStale):
-		return model.setStatus(model.text("remotesetup.tui.status.stale"), true), nil
+		return model.text("remotesetup.tui.status.stale"), true
 	case err != nil:
-		return model.setStatus(model.text("remotesetup.tui.status.save_failed", model.issueText(err)), true), nil
+		return model.text("remotesetup.tui.status.save_failed", model.issueText(err)), true
 	case len(problems) > 0:
-		first := model.text(problems[0].Code, problems[0].Args...)
-		return model.setStatus(model.text("remotesetup.tui.status.blocked", len(problems), first), true), nil
+		return model.text(blocked, len(problems), model.text(problems[0].Code, problems[0].Args...)), true
 	}
-	model.saved = true
+	return "", false
+}
+
+// save writes the inventory and then the recipe, and stops at the first one that fails.
+func (model Model) save() (tea.Model, tea.Cmd) {
+	if !model.dirty() {
+		return model.setStatus(model.text("remotesetup.tui.status.no_changes"), false), nil
+	}
+	if model.editor.Dirty() {
+		problems, err := model.editor.Save()
+		if status, failed := model.saveFailure(problems, err, "remotesetup.tui.status.blocked"); failed {
+			return model.setStatus(status, true), nil
+		}
+		model.saved, model.result.Inventory = true, true
+	}
+	if model.recipe != nil && model.recipe.Dirty() {
+		problems, err := model.recipe.Save()
+		if status, failed := model.saveFailure(problems, err, "remotesetup.tui.status.recipe_blocked"); failed {
+			return model.setStatus(status, true), nil
+		}
+		model.saved, model.result.Recipe = true, true
+	}
 	return model.setStatus(model.text("remotesetup.tui.status.saved"), false), nil
 }
 
-// Run shows the editor until the user quits. It reports whether anything was saved.
-func Run(editor *remotesetup.Editor, options Options, input io.Reader, output io.Writer) (bool, error) {
+// Run shows the editors until the user quits and reports which files were saved.
+func Run(editor *remotesetup.Editor, options Options, input io.Reader, output io.Writer) (Result, error) {
 	final, err := tea.NewProgram(New(editor, options), tea.WithInput(input), tea.WithOutput(output)).Run()
 	if err != nil {
-		return false, err
+		return Result{}, err
 	}
-	model, ok := final.(Model)
-	return ok && model.saved, nil
-}
-
-func (model Model) hint(pairs ...string) string {
-	parts := make([]string, 0, len(pairs)/2)
-	for index := 0; index+1 < len(pairs); index += 2 {
-		parts = append(parts, model.style.Key(pairs[index])+" "+model.style.Dim(model.text("remotesetup.tui.key."+pairs[index+1])))
+	if model, ok := final.(Model); ok {
+		return model.result, nil
 	}
-	return strings.Join(parts, model.style.Dim(" · "))
-}
-
-func (model Model) hints() string {
-	switch model.mode {
-	case modeHosts:
-		return model.hint("↑↓", "move", "a", "add", "e", "edit", "d", "delete", "g", "groups", "s", "save", "q", "quit")
-	case modeGroups:
-		return model.hint("↑↓", "move", "a", "add", "e", "members", "d", "delete", "p", "parallel", "o", "group_parallel", "h", "hosts", "s", "save", "q", "quit")
-	case modeForm:
-		return model.hint("tab", "next", "enter", "confirm", "esc", "cancel")
-	case modePick:
-		return model.hint("↑↓", "move", "space", "toggle", "enter", "confirm", "esc", "cancel")
-	case modeConfirm:
-		return model.hint("y", "yes", "n", "no")
-	default:
-		return model.hint("enter", "confirm", "esc", "cancel")
-	}
-}
-
-func (model Model) View() tea.View {
-	var builder strings.Builder
-	title := model.text("remotesetup.tui.title", model.location)
-	if model.editor.Dirty() {
-		title += " *"
-	}
-	builder.WriteString(ansi.Truncate(title, max(model.width, 20), "…") + "\n")
-	builder.WriteString(model.tabs() + "\n\n")
-	builder.WriteString(model.body())
-	builder.WriteString("\n")
-	builder.WriteString(model.statusLine() + "\n")
-	builder.WriteString(model.hints() + "\n")
-	view := tea.NewView(builder.String())
-	view.AltScreen = true
-	return view
-}
-
-func (model Model) tabs() string {
-	hosts, groups := model.text("remotesetup.tui.screen.hosts"), model.text("remotesetup.tui.screen.groups")
-	switch model.mode {
-	case modeGroups, modeGroupName, modePick, modeNumber:
-		return model.style.Dim(hosts) + "  " + model.style.Selected(groups)
-	}
-	return model.style.Selected(hosts) + "  " + model.style.Dim(groups)
-}
-
-func (model Model) statusLine() string {
-	if model.mode == modeConfirm {
-		switch model.confirm {
-		case confirmDeleteHost:
-			return model.text("remotesetup.tui.confirm.delete_host", model.confirmTarget)
-		case confirmDeleteGroup:
-			return model.text("remotesetup.tui.confirm.delete_group", model.confirmTarget)
-		default:
-			return model.text("remotesetup.tui.confirm.discard")
-		}
-	}
-	if model.statusError {
-		return model.style.Error(model.status)
-	}
-	return model.style.Dim(model.status)
-}
-
-func (model Model) rows() int { return max(model.height-8, 3) }
-
-func window(cursor, total, rows int) (int, int) {
-	if total <= rows {
-		return 0, total
-	}
-	start := min(max(cursor-rows/2, 0), total-rows)
-	return start, start + rows
-}
-
-func (model Model) cell(text string, width int) string {
-	if gap := width - ansi.StringWidth(text); gap > 0 {
-		return text + strings.Repeat(" ", gap)
-	}
-	return text
-}
-
-func (model Model) listRows(lines []string, cursor int, empty string) string {
-	if len(lines) == 0 {
-		return model.style.Dim(empty) + "\n"
-	}
-	var builder strings.Builder
-	start, end := window(cursor, len(lines), model.rows())
-	for index := start; index < end; index++ {
-		line := ansi.Truncate(lines[index], max(model.width-4, 20), "…")
-		if index == cursor {
-			builder.WriteString(model.style.Selected(line) + "\n")
-		} else {
-			builder.WriteString("  " + line + "\n")
-		}
-	}
-	return builder.String()
-}
-
-func (model Model) body() string {
-	inventory := model.editor.Inventory()
-	switch model.mode {
-	case modeForm:
-		return model.formBody()
-	case modeGroupName:
-		return model.text("remotesetup.tui.prompt.group_name") + "\n" + model.input.View() + "\n"
-	case modeNumber:
-		if model.numberGroup == "" {
-			return model.text("remotesetup.tui.prompt.parallel") + "\n" + model.input.View() + "\n"
-		}
-		return model.text("remotesetup.tui.prompt.group_parallel", model.numberGroup) + "\n" + model.input.View() + "\n"
-	case modePick:
-		return model.pickBody(inventory)
-	case modeGroups:
-		return model.groupsBody(inventory)
-	case modeConfirm:
-		if model.returnMode == modeGroups || model.confirm == confirmDeleteGroup {
-			return model.groupsBody(inventory)
-		}
-	}
-	return model.hostsBody(inventory)
-}
-
-func (model Model) hostsBody(inventory remotesetup.Inventory) string {
-	nameWidth, targetWidth := 0, 0
-	for _, host := range inventory.Hosts {
-		nameWidth = max(nameWidth, ansi.StringWidth(host.Name))
-		targetWidth = max(targetWidth, ansi.StringWidth(host.Target))
-	}
-	lines := make([]string, len(inventory.Hosts))
-	for index, host := range inventory.Hosts {
-		tags := ""
-		if len(host.Tags) > 0 {
-			tags = "[" + strings.Join(host.Tags, ",") + "]"
-		}
-		lines[index] = strings.TrimRight(model.cell(host.Name, nameWidth)+"  "+model.cell(host.Target, targetWidth)+"  "+tags, " ")
-	}
-	return model.listRows(lines, model.hostCursor, model.text("remotesetup.tui.hosts_empty"))
-}
-
-func (model Model) groupsBody(inventory remotesetup.Inventory) string {
-	var builder strings.Builder
-	builder.WriteString(model.style.Dim(model.text("remotesetup.tui.parallel", inventory.Parallel)) + "\n")
-	nameWidth := 0
-	for _, group := range inventory.Groups {
-		nameWidth = max(nameWidth, ansi.StringWidth(group.Name))
-	}
-	lines := make([]string, len(inventory.Groups))
-	for index, group := range inventory.Groups {
-		line := model.cell(group.Name, nameWidth) + "  " + strings.Join(group.Members, ", ")
-		if value := inventory.GroupParallel[group.Name]; value > 0 {
-			line += "  " + model.text("remotesetup.tui.group_parallel", value)
-		}
-		lines[index] = line
-	}
-	builder.WriteString(model.listRows(lines, model.groupCursor, model.text("remotesetup.tui.groups_empty")))
-	return builder.String()
-}
-
-func (model Model) pickBody(inventory remotesetup.Inventory) string {
-	name := model.pickGroup
-	if name == "" {
-		name = model.pendingGroup
-	}
-	lines := make([]string, len(inventory.Hosts))
-	for index, host := range inventory.Hosts {
-		box := "[ ]"
-		if model.pickChecked[host.Name] {
-			box = "[x]"
-		}
-		lines[index] = box + " " + host.Name
-	}
-	return model.text("remotesetup.tui.pick.title", name) + "\n" + model.listRows(lines, model.pickCursor, model.text("remotesetup.tui.hosts_empty"))
-}
-
-func (model Model) formBody() string {
-	title := "remotesetup.tui.form.add"
-	if model.editingHost >= 0 {
-		title = "remotesetup.tui.form.edit"
-	}
-	labels := [fieldCount]string{
-		model.text("remotesetup.tui.field.name"),
-		model.text("remotesetup.tui.field.target"),
-		model.text("remotesetup.tui.field.tags"),
-	}
-	width := 0
-	for _, label := range labels {
-		width = max(width, ansi.StringWidth(label))
-	}
-	var builder strings.Builder
-	builder.WriteString(model.text(title) + "\n\n")
-	for index, label := range labels {
-		marker := "  "
-		if index == model.fieldFocus {
-			marker = model.style.Key("> ")
-		}
-		builder.WriteString(fmt.Sprintf("%s%s  %s\n", marker, model.cell(label, width), model.fields[index].View()))
-	}
-	return builder.String()
+	return Result{}, nil
 }

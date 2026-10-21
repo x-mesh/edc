@@ -544,6 +544,7 @@ command:
     summary: "Configure command defaults"
     option:
       inventory: "inventory file to edit, default is the one edc remote finds"
+      recipe: "recipe file to edit, default is the one edc remote finds"
     notes:
       - "The wizard keeps existing values and edits selected sections."
       - "It previews the config before an atomic save."
@@ -551,6 +552,7 @@ command:
       - "edc setup remote edits the inventory of edc remote in a terminal screen."
       - "It keeps the comments of the file and replaces it atomically, with mode 0600 for a new file."
       - "It does not store passwords or keys. Use an SSH alias as the target."
+      - "The Steps screen of the same command edits the recipe. It creates ./.edc/recipe.yaml on the first save if no recipe exists."
   update:
     summary: "Install the latest release"
     option:

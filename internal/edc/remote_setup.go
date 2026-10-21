@@ -105,15 +105,31 @@ func remoteSetupPath(flagValue string, config edcConfig, cwd, configDir string) 
 	return filepath.Join(cwd, ".edc", "inventory.yaml")
 }
 
+// remoteSetupRecipePath picks the recipe file the same way: the flag, the configured path,
+// the file that edc remote would find, and last a new file under ./.edc/.
+func remoteSetupRecipePath(flagValue string, config edcConfig, cwd, configDir string) string {
+	if flagValue != "" {
+		return flagValue
+	}
+	if configured := configuredString(config.Defaults.Remote.Recipe, ""); configured != "" {
+		return configured
+	}
+	if found, ok := discoverRemoteRecipe(cwd, configDir); ok {
+		return found
+	}
+	return filepath.Join(cwd, ".edc", "recipe.yaml")
+}
+
 func runRemoteSetup(args []string) int {
 	set := newFlagSet("setup remote")
 	set.SetOutput(os.Stderr)
 	inventoryPath := set.String("inventory", "", T("command.setup.option.inventory"))
+	recipePath := set.String("recipe", "", T("command.setup.option.recipe"))
 	if err := set.Parse(args); err != nil {
 		return 2
 	}
 	if set.NArg() > 0 {
-		fmt.Fprintln(os.Stderr, T("cli.usage", "edc setup remote [--inventory FILE]"))
+		fmt.Fprintln(os.Stderr, T("cli.usage", "edc setup remote [--inventory FILE] [--recipe FILE]"))
 		return 2
 	}
 	if !isTerminal(os.Stdin) || !isTerminal(os.Stdout) {
@@ -139,26 +155,41 @@ func runRemoteSetup(args []string) int {
 		fmt.Fprintln(os.Stderr, err)
 		return 2
 	}
+	recipeFile, err := filepath.Abs(remoteSetupRecipePath(*recipePath, config, cwd, configDir))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 2
+	}
 	editor, err := remotesetup.New(&remoteInventoryStore{path: path}, remoteSetupValidator{})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, T("remotesetup.error.read", path, err))
 		return 2
 	}
-	saved, err := tui.Run(editor, tui.Options{
-		Messages: remoteSetupMessages{},
-		Styler:   remoteSetupStyler{color: liveRich(true)},
-		Location: path,
+	recipe, err := remotesetup.NewRecipe(&remoteRecipeStore{path: recipeFile}, remoteSetupRecipeValidator{})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, T("remotesetup.error.read", recipeFile, err))
+		return 2
+	}
+	result, err := tui.Run(editor, tui.Options{
+		Messages:       remoteSetupMessages{},
+		Styler:         remoteSetupStyler{color: liveRich(true)},
+		Location:       path,
+		Recipe:         recipe,
+		RecipeLocation: recipeFile,
 	}, os.Stdin, os.Stdout)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
-	if editor.Dirty() {
+	if editor.Dirty() || recipe.Dirty() {
 		fmt.Fprintln(os.Stderr, T("cli.setup.cancelled"))
 		return 4
 	}
-	if saved {
+	if result.Inventory {
 		fmt.Fprintln(os.Stdout, T("remotesetup.saved", path))
+	}
+	if result.Recipe {
+		fmt.Fprintln(os.Stdout, T("remotesetup.saved", recipeFile))
 	}
 	return 0
 }

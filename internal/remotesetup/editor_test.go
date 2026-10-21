@@ -256,3 +256,168 @@ func TestEditorInventoryReturnsACopy(t *testing.T) {
 		t.Fatal("mutating the returned inventory changed the editor")
 	}
 }
+
+type memoryRecipeStore struct {
+	recipe   Recipe
+	revision int
+	saves    int
+}
+
+func (store *memoryRecipeStore) Load() (Recipe, Revision, error) {
+	return store.recipe.Clone(), store.revision, nil
+}
+
+func (store *memoryRecipeStore) Save(recipe Recipe, revision Revision) error {
+	if revision != store.revision {
+		return ErrStale
+	}
+	store.recipe = recipe.Clone()
+	store.revision++
+	store.saves++
+	return nil
+}
+
+type recipeRules struct{}
+
+func (recipeRules) ValidateStep(step Step) *Issue {
+	if step.Command == "" && step.Upload == nil {
+		return &Issue{Code: "test.no_action", Args: []any{step.Name}}
+	}
+	return nil
+}
+
+func (recipeRules) ValidateRecipe(recipe Recipe) []Issue {
+	var issues []Issue
+	if recipe.Name == "" {
+		issues = append(issues, Issue{Code: "test.no_name"})
+	}
+	if len(recipe.Steps) == 0 {
+		issues = append(issues, Issue{Code: "test.no_step"})
+	}
+	return issues
+}
+
+func newTestRecipeEditor(t *testing.T, recipe Recipe) (*RecipeEditor, *memoryRecipeStore) {
+	t.Helper()
+	store := &memoryRecipeStore{recipe: recipe}
+	editor, err := NewRecipe(store, recipeRules{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return editor, store
+}
+
+func sampleRecipe() Recipe {
+	return Recipe{Name: "daily", Steps: []Step{
+		{Name: "update", Command: "apt-get update", Tags: []string{"linux"}},
+		{Name: "copy", Upload: &Upload{Source: "a.conf", Destination: "/etc/a.conf", Mode: "0644"}},
+		{Name: "check", Command: "uptime", Verify: "true", Timeout: "30s"},
+	}}
+}
+
+func TestRecipeEditorAddAndUpdateStep(t *testing.T) {
+	editor, _ := newTestRecipeEditor(t, sampleRecipe())
+	for _, tc := range []struct {
+		step Step
+		code string
+	}{
+		{Step{Name: " ", Command: "x"}, IssueStepNameEmpty},
+		{Step{Name: "update", Command: "x"}, IssueStepDuplicate},
+		{Step{Name: "new"}, "test.no_action"},
+		{Step{Name: "new", Upload: &Upload{}}, "test.no_action"},
+	} {
+		if got := issueCode(editor.AddStep(tc.step)); got != tc.code {
+			t.Errorf("AddStep(%+v) = %q, want %q", tc.step, got, tc.code)
+		}
+	}
+	if err := editor.AddStep(Step{Name: " clean ", Command: "apt-get clean"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := editor.Recipe().Steps[3].Name; got != "clean" {
+		t.Fatalf("name = %q", got)
+	}
+	if err := editor.UpdateStep(0, Step{Name: "update", Command: "apt-get -y update"}); err != nil {
+		t.Fatalf("keeping the same name must not count as a duplicate: %v", err)
+	}
+	if got := issueCode(editor.UpdateStep(0, Step{Name: "copy", Command: "x"})); got != IssueStepDuplicate {
+		t.Fatalf("renaming onto another step = %q", got)
+	}
+	if got := issueCode(editor.UpdateStep(9, Step{Name: "x", Command: "x"})); got != IssueStepUnknown {
+		t.Fatalf("update out of range = %q", got)
+	}
+}
+
+func TestRecipeEditorMoveAndRemoveStep(t *testing.T) {
+	editor, _ := newTestRecipeEditor(t, sampleRecipe())
+	names := func() string {
+		var names []string
+		for _, step := range editor.Recipe().Steps {
+			names = append(names, step.Name)
+		}
+		return strings.Join(names, ",")
+	}
+	if got := editor.MoveStep(0, -1); got != 0 || names() != "update,copy,check" {
+		t.Fatalf("a move past the top changed things: %d %s", got, names())
+	}
+	if got := editor.MoveStep(2, 1); got != 2 || names() != "update,copy,check" {
+		t.Fatalf("a move past the end changed things: %d %s", got, names())
+	}
+	if got := editor.MoveStep(0, 1); got != 1 || names() != "copy,update,check" {
+		t.Fatalf("move down: %d %s", got, names())
+	}
+	if got := editor.MoveStep(1, -1); got != 0 || names() != "update,copy,check" {
+		t.Fatalf("move up: %d %s", got, names())
+	}
+	if got := editor.MoveStep(2, -2); got != 0 || names() != "check,update,copy" {
+		t.Fatalf("a long move must insert, not swap: %d %s", got, names())
+	}
+	if got := editor.MoveStep(0, 2); got != 2 || names() != "update,copy,check" {
+		t.Fatalf("a long move down: %d %s", got, names())
+	}
+	editor.RemoveStep(1)
+	if names() != "update,check" {
+		t.Fatalf("after remove: %s", names())
+	}
+	editor.RemoveStep(7)
+	if names() != "update,check" {
+		t.Fatalf("remove out of range changed things: %s", names())
+	}
+}
+
+func TestRecipeEditorSaveValidatesThenStores(t *testing.T) {
+	editor, store := newTestRecipeEditor(t, Recipe{})
+	if editor.Dirty() {
+		t.Fatal("a freshly loaded recipe is not dirty")
+	}
+	problems, err := editor.Save()
+	if err != nil || len(problems) != 2 || store.saves != 0 {
+		t.Fatalf("problems = %v, err = %v, saves = %d", problems, err, store.saves)
+	}
+	editor.SetName(" daily ")
+	if err := editor.AddStep(Step{Name: "update", Command: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	if problems, err := editor.Save(); err != nil || len(problems) != 0 {
+		t.Fatalf("problems = %v, err = %v", problems, err)
+	}
+	if editor.Dirty() || store.saves != 1 || store.recipe.Name != "daily" {
+		t.Fatalf("dirty = %v, saves = %d, stored = %+v", editor.Dirty(), store.saves, store.recipe)
+	}
+	if err := editor.AddStep(Step{Name: "again", Command: "y"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := editor.Save(); err != nil || store.saves != 2 {
+		t.Fatalf("second save: err = %v, saves = %d", err, store.saves)
+	}
+}
+
+func TestRecipeEditorRecipeReturnsACopy(t *testing.T) {
+	editor, _ := newTestRecipeEditor(t, sampleRecipe())
+	copy := editor.Recipe()
+	copy.Steps[0].Name = "changed"
+	copy.Steps[1].Upload.Source = "changed"
+	copy.Steps[0].Tags[0] = "changed"
+	if editor.Dirty() {
+		t.Fatal("mutating the returned recipe changed the editor")
+	}
+}

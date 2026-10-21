@@ -116,7 +116,7 @@ func TestFormKeepsTheInputWhenTheHostIsRejected(t *testing.T) {
 	if model.mode != modeForm || !model.statusError || !strings.Contains(model.status, remotesetup.IssueHostDuplicate) {
 		t.Fatalf("mode = %v, status = %q", model.mode, model.status)
 	}
-	if got := model.fields[fieldName].Value(); got != "web" {
+	if got := model.form.inputs[hostName].Value(); got != "web" {
 		t.Fatalf("the typed name was lost: %q", got)
 	}
 	model = press(model, "esc")
@@ -128,7 +128,7 @@ func TestFormKeepsTheInputWhenTheHostIsRejected(t *testing.T) {
 func TestEditHostRenamesIt(t *testing.T) {
 	model, _ := newModel(t, twoHosts())
 	model = press(model, "e")
-	if got := model.fields[fieldName].Value(); got != "web" {
+	if got := model.form.inputs[hostName].Value(); got != "web" {
 		t.Fatalf("the form did not load the host: %q", got)
 	}
 	model = press(model, "-new", "enter", "enter", "enter")
@@ -309,5 +309,219 @@ func TestIssueTextFallsBackToTheErrorMessage(t *testing.T) {
 	model, _ := newModel(t, twoHosts())
 	if got := model.issueText(errors.New("disk full")); got != "disk full" {
 		t.Fatalf("text = %q", got)
+	}
+}
+
+type recipeStore struct {
+	recipe   remotesetup.Recipe
+	revision int
+}
+
+func (store *recipeStore) Load() (remotesetup.Recipe, remotesetup.Revision, error) {
+	return store.recipe.Clone(), store.revision, nil
+}
+
+func (store *recipeStore) Save(recipe remotesetup.Recipe, revision remotesetup.Revision) error {
+	if revision != store.revision {
+		return remotesetup.ErrStale
+	}
+	store.recipe = recipe.Clone()
+	store.revision++
+	return nil
+}
+
+type recipeRules struct{}
+
+func (recipeRules) ValidateStep(step remotesetup.Step) *remotesetup.Issue {
+	if step.Command == "" && step.Upload == nil {
+		return &remotesetup.Issue{Code: "test.no_action"}
+	}
+	return nil
+}
+
+func (recipeRules) ValidateRecipe(recipe remotesetup.Recipe) []remotesetup.Issue {
+	if recipe.Name == "" {
+		return []remotesetup.Issue{{Code: "test.no_name"}}
+	}
+	return nil
+}
+
+func newRecipeModel(t *testing.T, recipe remotesetup.Recipe) (Model, *memoryStore, *recipeStore) {
+	t.Helper()
+	store := &memoryStore{inventory: twoHosts()}
+	editor, err := remotesetup.New(store, rules{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	steps := &recipeStore{recipe: recipe}
+	recipeEditor, err := remotesetup.NewRecipe(steps, recipeRules{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return New(editor, Options{Messages: echo{}, Location: "inventory.yaml", Recipe: recipeEditor, RecipeLocation: "recipe.yaml"}), store, steps
+}
+
+func sampleRecipe() remotesetup.Recipe {
+	return remotesetup.Recipe{Name: "daily", Steps: []remotesetup.Step{
+		{Name: "update", Command: "apt-get update", Tags: []string{"linux"}},
+		{Name: "copy", Upload: &remotesetup.Upload{Source: "a.conf", Destination: "/etc/a.conf", Mode: "0644"}},
+		{Name: "check", Command: "uptime"},
+	}}
+}
+
+func stepNames(model Model) []string {
+	var names []string
+	for _, step := range model.recipe.Recipe().Steps {
+		names = append(names, step.Name)
+	}
+	return names
+}
+
+func TestStepsScreenExistsOnlyWithARecipe(t *testing.T) {
+	plain, _ := newModel(t, twoHosts())
+	if got := press(plain, "r"); got.mode != modeHosts {
+		t.Fatalf("r without a recipe must do nothing, mode = %v", got.mode)
+	}
+	if strings.Contains(plain.View().Content, "screen.steps") {
+		t.Fatal("the steps tab shows without a recipe")
+	}
+	model, _, _ := newRecipeModel(t, sampleRecipe())
+	if got := press(model, "r"); got.mode != modeSteps {
+		t.Fatalf("mode = %v", got.mode)
+	}
+	model = press(model, "tab")
+	if model.screen() != modeGroups {
+		t.Fatalf("tab from hosts = %v", model.screen())
+	}
+	model = press(model, "tab")
+	if model.screen() != modeSteps {
+		t.Fatalf("tab from groups = %v", model.screen())
+	}
+	model = press(model, "tab")
+	if model.screen() != modeHosts {
+		t.Fatalf("tab must wrap to hosts, got %v", model.screen())
+	}
+}
+
+func TestAddCommandAndUploadSteps(t *testing.T) {
+	model, _, _ := newRecipeModel(t, remotesetup.Recipe{Name: "daily"})
+	model = press(model, "r", "a", "update", "enter", "apt-get update", "enter", "enter", "enter", "enter", "enter", "enter", "linux, prod", "enter")
+	if model.mode != modeSteps || model.status != "" {
+		t.Fatalf("mode = %v, status = %q", model.mode, model.status)
+	}
+	model = press(model, "a", "copy", "enter", "enter", "a.conf", "enter", "/etc/a.conf", "enter", "0644", "enter", "enter", "enter", "enter", "enter")
+	steps := model.recipe.Recipe().Steps
+	want := []remotesetup.Step{
+		{Name: "update", Command: "apt-get update", Tags: []string{"linux", "prod"}},
+		{Name: "copy", Upload: &remotesetup.Upload{Source: "a.conf", Destination: "/etc/a.conf", Mode: "0644"}},
+	}
+	if !reflect.DeepEqual(steps, want) {
+		t.Fatalf("steps = %+v", steps)
+	}
+	if model.stepCursor != 1 {
+		t.Fatalf("cursor = %d", model.stepCursor)
+	}
+}
+
+func TestStepWithoutAnActionStaysInTheForm(t *testing.T) {
+	model, _, _ := newRecipeModel(t, remotesetup.Recipe{Name: "daily"})
+	model = press(model, "r", "a", "noop", "enter", "enter", "enter", "enter", "enter", "enter", "enter", "enter")
+	if model.mode != modeForm || !model.statusError || !strings.Contains(model.status, "test.no_action") {
+		t.Fatalf("mode = %v, status = %q", model.mode, model.status)
+	}
+	if got := model.form.inputs[stepName].Value(); got != "noop" {
+		t.Fatalf("the typed name was lost: %q", got)
+	}
+}
+
+func TestEditStepLoadsAndKeepsTheUpload(t *testing.T) {
+	model, _, _ := newRecipeModel(t, sampleRecipe())
+	model = press(model, "r", "down", "e")
+	if got := model.form.inputs[stepSource].Value(); got != "a.conf" {
+		t.Fatalf("the form did not load the upload: %q", got)
+	}
+	model = press(model, "-v2", "enter", "enter", "enter", "enter", "enter", "enter", "enter", "enter")
+	if got := model.recipe.Recipe().Steps[1]; got.Name != "copy-v2" || got.Upload == nil || got.Upload.Destination != "/etc/a.conf" {
+		t.Fatalf("step = %+v", got)
+	}
+}
+
+func TestReorderAndDeleteSteps(t *testing.T) {
+	model, _, _ := newRecipeModel(t, sampleRecipe())
+	model = press(model, "r", "J")
+	if got := strings.Join(stepNames(model), ","); got != "copy,update,check" || model.stepCursor != 1 {
+		t.Fatalf("after J: %s, cursor %d", got, model.stepCursor)
+	}
+	model = press(model, "K", "K")
+	if got := strings.Join(stepNames(model), ","); got != "update,copy,check" || model.stepCursor != 0 {
+		t.Fatalf("after K K: %s, cursor %d", got, model.stepCursor)
+	}
+	model = press(model, "d")
+	if model.mode != modeConfirm || !strings.Contains(model.statusLine(), "delete_step") {
+		t.Fatalf("mode = %v, status line = %q", model.mode, model.statusLine())
+	}
+	model = press(model, "n")
+	if len(stepNames(model)) != 3 {
+		t.Fatal("n must keep the step")
+	}
+	model = press(model, "d", "y")
+	if got := strings.Join(stepNames(model), ","); got != "copy,check" || model.mode != modeSteps {
+		t.Fatalf("after delete: %s, mode %v", got, model.mode)
+	}
+}
+
+func TestRecipeNamePrompt(t *testing.T) {
+	model, _, _ := newRecipeModel(t, sampleRecipe())
+	model = press(model, "r", "n")
+	if model.mode != modeRecipeName || model.input.Value() != "daily" {
+		t.Fatalf("mode = %v, value = %q", model.mode, model.input.Value())
+	}
+	model.input.SetValue(" weekly ")
+	model = press(model, "enter")
+	if model.recipe.Recipe().Name != "weekly" || model.mode != modeSteps {
+		t.Fatalf("name = %q, mode = %v", model.recipe.Recipe().Name, model.mode)
+	}
+}
+
+func TestSaveWritesBothFilesAndStopsAtTheFirstProblem(t *testing.T) {
+	model, inventory, steps := newRecipeModel(t, remotesetup.Recipe{})
+	model = press(model, "a", "cache", "enter", "enter", "enter")
+	model = press(model, "r", "a", "update", "enter", "uptime", "enter", "enter", "enter", "enter", "enter", "enter", "enter")
+	model = press(model, "s")
+	if !model.saved || !model.statusError || !strings.Contains(model.status, "recipe_blocked") || !strings.Contains(model.status, "test.no_name") {
+		t.Fatalf("saved = %v, status = %q", model.saved, model.status)
+	}
+	if len(inventory.inventory.Hosts) != 3 || model.editor.Dirty() {
+		t.Fatalf("the inventory must be saved before the recipe fails: %+v", inventory.inventory)
+	}
+	if steps.revision != 0 {
+		t.Fatal("a blocked recipe was written")
+	}
+	model = press(model, "n")
+	model.input.SetValue("daily")
+	model = press(model, "enter", "s")
+	if model.statusError || steps.recipe.Name != "daily" || len(steps.recipe.Steps) != 1 || model.dirty() {
+		t.Fatalf("status = %q, stored = %+v", model.status, steps.recipe)
+	}
+}
+
+func TestQuitAsksWhenOnlyTheRecipeChanged(t *testing.T) {
+	model, _, _ := newRecipeModel(t, sampleRecipe())
+	model = press(model, "r", "d", "y", "q")
+	if model.mode != modeConfirm || model.confirm != confirmDiscard {
+		t.Fatalf("mode = %v", model.mode)
+	}
+	if !strings.Contains(model.View().Content, " *") {
+		t.Fatal("the title must mark the unsaved recipe")
+	}
+}
+
+func TestStepsViewShowsCommandsUploadsAndTags(t *testing.T) {
+	model, _, _ := newRecipeModel(t, sampleRecipe())
+	content := press(model, "r").View().Content
+	for _, want := range []string{"remotesetup.tui.recipe_line", "daily", "recipe.yaml", "update", "apt-get update", "[linux]", "remotesetup.tui.upload_line", "uptime"} {
+		if !strings.Contains(content, want) {
+			t.Errorf("steps view misses %q:\n%s", want, content)
+		}
 	}
 }

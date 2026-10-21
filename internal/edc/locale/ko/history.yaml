@@ -65,7 +65,7 @@ history:
     title: "실행 기록"
     summary: "기록한 top 및 snapshot 실행"
     details: "선택한 실행"
-    navigator_help: "t Top 관측값   o Process"
+    navigator_help: "t Top 관측값   o Process   g 증가량"
     snapshot_navigation: "Top 및 process 관측값은 top 실행에서만 볼 수 있습니다."
     empty: "조건에 맞는 실행 기록이 없습니다."
     run: "실행 ID  %s"
@@ -150,6 +150,7 @@ history:
     process_empty: "이 범위에 %s 표본이 없습니다. edc top -w --process %s로 기록하세요"
     unfiltered: "%s 표본 일부는 --process 없이 기록한 실행에서 나왔습니다. 이 표본은 CPU나 메모리 사용량이 상위권에 든 순간만 셉니다. edc top -w --process %s로 기록하세요"
   growth:
+    navigator_help: "t 추이"
     window: "범위: %s부터 %s까지 (로컬 시간)"
     empty: "이 범위에 디스크나 du 스냅샷이 없습니다. edc snapshot -w --du <path>로 기록하세요"
     few_samples: "기록 부족(%d개)"

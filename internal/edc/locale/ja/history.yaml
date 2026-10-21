@@ -65,7 +65,7 @@ history:
     title: "実行履歴"
     summary: "記録済みのtopとsnapshot実行"
     details: "選択した実行"
-    navigator_help: "t Top観測   o Process"
+    navigator_help: "t Top観測   o Process   g 増加量"
     snapshot_navigation: "Topとprocessの観測はtop実行でのみ表示できます。"
     empty: "条件に一致する実行記録がありません。"
     run: "実行 ID  %s"
@@ -150,6 +150,7 @@ history:
     process_empty: "この範囲に %s のサンプルはありません。edc top -w --process %s で記録してください"
     unfiltered: "%s のサンプルの一部は --process なしで記録した実行のものです。CPU かメモリの使用量が上位に入った瞬間だけを数えています。edc top -w --process %s で記録してください"
   growth:
+    navigator_help: "t 推移"
     window: "範囲: %s から %s まで (ローカル時間)"
     empty: "この範囲にディスクや du のスナップショットはありません。edc snapshot -w --du <path> で記録してください"
     few_samples: "記録不足 (%d 件)"

@@ -166,6 +166,34 @@ func (model historySampleBrowser) count() int {
 
 func (model historySampleBrowser) atTop() bool { return !model.expanded }
 
+func (model historySampleBrowser) navigate(key string, db *sql.DB, path string) (tea.Model, bool, error) {
+	if !model.atTop() || model.count() == 0 {
+		return nil, false, nil
+	}
+	if !model.processMode && key == "o" {
+		sample := model.samples[model.selected]
+		options := historyOptions{run: sample.RunID, from: sample.Time, to: sample.Time.Add(time.Nanosecond)}
+		processes, err := loadHistoryProcess(db, options)
+		if err != nil {
+			return nil, true, err
+		}
+		child := newHistoryProcessBrowser(processes, path)
+		child.loadProcesses = func() ([]historyProcessSample, error) { return loadHistoryProcess(db, options) }
+		return child, true, nil
+	}
+	if model.processMode && key == "t" {
+		sample := model.processes[model.selected]
+		filter, _ := parseTopProcessFilter(sample.Command)
+		options := historyTrendOptions{by: "day", process: filter, metric: "rss_bytes"}
+		if sample.MemoryBytes != nil {
+			options.metric = "memory_bytes"
+		}
+		targets := []historyTrendTarget{{kind: historyTrendProcess, value: sample.Command}}
+		return newHistoryTrendBrowser(db, targets, options, time.Local), true, nil
+	}
+	return nil, false, nil
+}
+
 func (model historySampleBrowser) canReload() bool {
 	return model.load != nil || model.loadProcesses != nil
 }

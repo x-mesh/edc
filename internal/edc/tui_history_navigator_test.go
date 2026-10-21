@@ -164,7 +164,7 @@ func TestHistoryNavigatorLinksSampleAndGrowthEntries(t *testing.T) {
 		t.Fatal(err)
 	}
 	top := newHistoryTopBrowser(samples, path)
-	if child, ok, err := top.navigate("o", db, path); err != nil || !ok || !child.(historySampleBrowser).processMode {
+	if child, ok, err := top.navigate("o", db, path); err != nil || !ok || !child.(historySampleBrowser).processMode || len(child.(historySampleBrowser).processes) == 0 {
 		t.Fatalf("top link: %T %v %v", child, ok, err)
 	}
 	growth := historyGrowth{Processes: []historyGrowthProcess{{PID: 1, Command: "worker"}}, Disks: []historyGrowthDisk{{Mount: "/"}}}
@@ -175,5 +175,15 @@ func TestHistoryNavigatorLinksSampleAndGrowthEntries(t *testing.T) {
 	model.selected = 1
 	if child, ok, err := model.navigate("t", nil, "history.db"); err != nil || !ok || child == nil {
 		t.Fatalf("growth disk link: %T %v %v", child, ok, err)
+	}
+}
+
+func TestHistoryProcessChildIgnoresParentTopLoad(t *testing.T) {
+	child := newHistoryProcessBrowser([]historyProcessSample{{RunID: "run"}}, "history.db")
+	child.seq = 1
+	updated, _ := child.Update(historySamplesLoadedMsg{seq: 1, samples: []historyTopSample{{RunID: "run"}}})
+	child = updated.(historySampleBrowser)
+	if len(child.processes) != 1 {
+		t.Fatalf("parent top load cleared process child: %+v", child.processes)
 	}
 }

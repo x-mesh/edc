@@ -61,6 +61,7 @@ history:
   process_browser:
     title: "Process観測履歴"
     empty: "条件に一致するprocess記録がありません。edc top -w --process <名前>で記録してから、edc history processで確認してください。"
+    navigator_help: "t 推移"
   list_browser:
     title: "実行履歴"
     summary: "記録済みのtopとsnapshot実行"
@@ -99,6 +100,7 @@ history:
     selected: "選択した観測を維持"
     paused: "更新を一時停止"
     empty: "topの記録がありません。edc topでwを押すか、edc top -wで記録してください。snapshotはedc history listで確認できます。"
+    navigator_help: "o Process"
   database_path: "既定のhistory DB: %s"
   usage: "使い方: edc history <list|top|process|export|trend|growth|prune> [options] [DB]"
   option:

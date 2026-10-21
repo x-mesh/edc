@@ -107,6 +107,7 @@ func historyTopTableLine(columns []historyTopColumn, sample *historyTopSample, s
 
 func loadHistoryTop(db *sql.DB, options historyOptions) ([]historyTopSample, error) {
 	query, args := historyQuery("top", options)
+	query = strings.Replace(query, "SELECT payload", "SELECT id, payload", 1)
 	rows, err := db.Query(query, args...)
 	if err != nil {
 		return nil, err
@@ -115,13 +116,15 @@ func loadHistoryTop(db *sql.DB, options historyOptions) ([]historyTopSample, err
 	var samples []historyTopSample
 	for rows.Next() {
 		var payload string
-		if err := rows.Scan(&payload); err != nil {
+		var id int64
+		if err := rows.Scan(&id, &payload); err != nil {
 			return nil, err
 		}
 		var sample historyTopSample
 		if err := json.Unmarshal([]byte(payload), &sample); err != nil {
 			return nil, err
 		}
+		sample.sampleID = id
 		samples = append(samples, sample)
 	}
 	return samples, rows.Err()
@@ -149,6 +152,7 @@ type historySampleBrowser struct {
 	view                     viewport.Model
 	load                     func() ([]historyTopSample, error)
 	loadProcesses            func() ([]historyProcessSample, error)
+	hosted                   bool
 }
 
 func newHistoryTopBrowser(samples []historyTopSample, path string) historySampleBrowser {
@@ -172,13 +176,23 @@ func (model historySampleBrowser) navigate(key string, db *sql.DB, path string) 
 	}
 	if !model.processMode && key == "o" {
 		sample := model.samples[model.selected]
-		options := historyOptions{run: sample.RunID, from: sample.Time, to: sample.Time.Add(time.Nanosecond)}
-		processes, err := loadHistoryProcess(db, options)
+		processes, err := loadHistoryProcessSample(db, sample.RunID, sample.sampleID)
 		if err != nil {
 			return nil, true, err
 		}
 		child := newHistoryProcessBrowser(processes, path)
-		child.loadProcesses = func() ([]historyProcessSample, error) { return loadHistoryProcess(db, options) }
+		child.pinned = true
+		child.loadProcesses = func() ([]historyProcessSample, error) {
+			return loadHistoryProcessSample(db, sample.RunID, sample.sampleID)
+		}
+		if len(processes) == 0 {
+			processes, err = child.loadProcesses()
+			if err != nil {
+				return nil, true, err
+			}
+			child.processes = processes
+			child.resize()
+		}
 		return child, true, nil
 	}
 	if model.processMode && key == "t" {
@@ -187,9 +201,6 @@ func (model historySampleBrowser) navigate(key string, db *sql.DB, path string) 
 		options := historyTrendOptions{by: "day", process: filter, metric: "rss_bytes"}
 		if sample.Started != nil {
 			options.identity = &historyProcessIdentity{pid: sample.PID, started: sample.Started.Format(time.RFC3339Nano)}
-		}
-		if sample.MemoryBytes != nil {
-			options.metric = "memory_bytes"
 		}
 		targets := []historyTrendTarget{{kind: historyTrendProcess, value: sample.Command}}
 		return newHistoryTrendBrowser(db, targets, options, time.Local), true, nil
@@ -303,6 +314,13 @@ func (model historySampleBrowser) footer() []string {
 		}
 		line += hint
 	}
+	if model.hosted && !model.expanded {
+		link := "history.top_browser.navigator_help"
+		if model.processMode {
+			link = "history.process_browser.navigator_help"
+		}
+		lines = append(lines, historyReviewKeyHints(T(link), model.width, model.color)...)
+	}
 	lines = append(lines, line)
 	if !model.expanded {
 		first := min(model.count(), model.view.YOffset()+1)
@@ -382,6 +400,9 @@ func (model historySampleBrowser) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case historySamplesLoadedMsg:
 		if value.seq != model.seq {
+			return model, nil
+		}
+		if model.processMode && value.samples != nil || !model.processMode && value.processes != nil {
 			return model, nil
 		}
 		if value.err != nil {

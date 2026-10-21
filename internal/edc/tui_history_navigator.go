@@ -54,6 +54,7 @@ func (model historyNavigator) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if model.size != nil {
 					next, _ = next.Update(*model.size)
 				}
+				if sample, ok := next.(historySampleBrowser); ok { sample.hosted = true; next = sample }
 				model.stack = append(model.stack, next)
 				return model, next.Init()
 			}

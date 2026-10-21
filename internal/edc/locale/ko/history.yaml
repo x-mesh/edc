@@ -61,6 +61,7 @@ history:
   process_browser:
     title: "Process 관측 이력"
     empty: "조건에 맞는 process 기록이 없습니다. edc top -w --process <이름>으로 기록한 뒤 edc history process에서 확인하세요."
+    navigator_help: "t 추이"
   list_browser:
     title: "실행 기록"
     summary: "기록한 top 및 snapshot 실행"
@@ -99,6 +100,7 @@ history:
     selected: "선택한 관측 유지"
     paused: "갱신 일시정지"
     empty: "top 기록이 없습니다. edc top에서 w를 누르거나 edc top -w로 기록하세요. snapshot은 edc history list에서 확인합니다."
+    navigator_help: "o Process"
   database_path: "기본 history DB: %s"
   usage: "사용법: edc history <list|top|process|export|trend|growth|prune> [options] [DB]"
   option:

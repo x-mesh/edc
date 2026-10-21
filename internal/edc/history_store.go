@@ -166,6 +166,7 @@ type historyTopSample struct {
 	NetworkValid      bool       `json:"network_valid"`
 	DiskValid         bool       `json:"disk_valid"`
 	SwapValid         bool       `json:"swap_valid"`
+	sampleID          int64
 }
 
 func newHistoryTopSample(details hostDetails, previous resourceSnapshot, snapshot resourceSnapshot, rate resourceRate, filter string) historyTopSample {

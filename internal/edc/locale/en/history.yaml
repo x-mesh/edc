@@ -61,6 +61,7 @@ history:
   process_browser:
     title: "Process history"
     empty: "No recorded process observations match this query. Record with edc top -w --process <name>, then open edc history process."
+    navigator_help: "t Trend"
   list_browser:
     title: "Run history"
     summary: "Recorded top and snapshot runs"
@@ -99,6 +100,7 @@ history:
     selected: "selected observation"
     paused: "refresh paused"
     empty: "No top recordings. Run edc top and press w, or use edc top -w. Snapshots are listed by edc history list."
+    navigator_help: "o Processes"
   database_path: "Default history DB: %s"
   usage: "Usage: edc history <list|top|process|export|trend|growth|prune> [options] [DB]"
   option:

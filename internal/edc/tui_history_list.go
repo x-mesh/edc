@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -57,7 +58,7 @@ func historyListReviewData(db *sql.DB, options historyOptions, now time.Time) (h
 			T("history.list_browser.process", process),
 			T("history.list_browser.interfaces", interfaces),
 		}
-		data.entries = append(data.entries, historyReviewEntry{id: run.ID, cells: []string{historyRelativeTime(run.StartedAt, now), run.Command, duration, fmt.Sprint(samples), run.Status, run.Hostname}, details: details})
+		data.entries = append(data.entries, historyReviewEntry{id: run.ID, cells: []string{historyRunDescription(run), historyRelativeTime(run.StartedAt, now), duration, fmt.Sprint(samples), run.Status, run.Hostname}, details: details})
 	}
 	if err := rows.Err(); err != nil {
 		return historyReviewData{}, err
@@ -65,9 +66,22 @@ func historyListReviewData(db *sql.DB, options historyOptions, now time.Time) (h
 	return data, nil
 }
 
+func historyRunDescription(run historyRun) string {
+	parts := []string{run.Command}
+	if run.Process != "" {
+		parts = append(parts, "process "+run.Process)
+	}
+	if run.Interfaces != "" && run.Interfaces != "all" {
+		parts = append(parts, run.Interfaces)
+	}
+	return strings.Join(parts, " · ")
+}
+
 func newHistoryListBrowser(path string, data historyReviewData) historyReviewBrowser {
-	columns := []historyReviewColumn{{T("history.list_browser.column.start"), 0, 0}, {T("history.list_browser.column.command"), 12, 0}, {T("history.list_browser.column.duration"), 10, 80}, {T("history.list_browser.column.samples"), 8, 100}, {T("history.list_browser.column.status"), 12, 120}, {T("history.list_browser.column.host"), 22, 160}}
-	return newHistoryReviewBrowser(T("history.list_browser.title"), path, columns, data)
+	columns := []historyReviewColumn{{T("history.list_browser.column.command"), 0, 0}, {T("history.list_browser.column.start"), 17, 0}, {T("history.list_browser.column.duration"), 10, 80}, {T("history.list_browser.column.samples"), 8, 100}, {T("history.list_browser.column.status"), 12, 120}, {T("history.list_browser.column.host"), 22, 160}}
+	model := newHistoryReviewBrowser(T("history.list_browser.title"), path, columns, data)
+	model.detailsTitle = T("history.list_browser.details")
+	return model
 }
 
 func runHistoryListBrowser(db *sql.DB, path string, options historyOptions) error {

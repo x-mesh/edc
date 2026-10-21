@@ -64,6 +64,7 @@ history:
   list_browser:
     title: "実行履歴"
     summary: "記録済みのtopとsnapshot実行"
+    details: "選択した実行"
     empty: "条件に一致する実行記録がありません。"
     run: "実行 ID  %s"
     command: "コマンド  %s"

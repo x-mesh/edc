@@ -39,6 +39,7 @@ type historyReviewTickMsg struct{ seq int }
 
 type historyReviewBrowser struct {
 	title, path                       string
+	detailsTitle                      string
 	columns                           []historyReviewColumn
 	data                              historyReviewData
 	view                              viewport.Model
@@ -412,7 +413,11 @@ func (model historyReviewBrowser) View() tea.View {
 		indexes, widths := model.columnWidths()
 		header = model.tableLine(-1, indexes, widths)
 		if model.split() {
-			header = historyCell(header, model.tableWidth(), false) + " │ " + T("history.top_browser.details")
+			detailsTitle := model.detailsTitle
+			if detailsTitle == "" {
+				detailsTitle = T("history.top_browser.details")
+			}
+			header = historyCell(header, model.tableWidth(), false) + " │ " + detailsTitle
 		}
 	}
 	lines = append(lines, historyTint(header, richGray, model.color))

@@ -131,7 +131,7 @@ func TestRemoteInventoryStoreKeepsCommentsAndUntouchedEntries(t *testing.T) {
 	}
 }
 
-func TestRemoteInventoryStorePreservesOwnerAndAbortsOnChownError(t *testing.T) {
+func TestRemoteInventoryStoreRestoresOwnerOnlyAsRoot(t *testing.T) {
 	path := writeInventoryFixture(t, commentedInventory)
 	info, err := os.Stat(path)
 	if err != nil {
@@ -144,9 +144,21 @@ func TestRemoteInventoryStorePreservesOwnerAndAbortsOnChownError(t *testing.T) {
 	oldChown, oldEUID := remoteSetupChown, remoteSetupEUID
 	t.Cleanup(func() { remoteSetupChown, remoteSetupEUID = oldChown, oldEUID })
 	remoteSetupEUID = func() int { return owner.uid + 1 }
+	remoteSetupChown = func(string, int, int) error { t.Fatal("non-root save called chown"); return nil }
+	editor := newSetupEditor(t, path)
+	if err := editor.AddHost(remotesetup.Host{Name: "worker"}); err != nil {
+		t.Fatal(err)
+	}
+	if problems, err := editor.Save(); err != nil || len(problems) != 0 {
+		t.Fatalf("non-root problems = %v, err = %v", problems, err)
+	}
+	if owner.uid == 0 {
+		t.Skip("the fixture is owned by root")
+	}
+	remoteSetupEUID = func() int { return 0 }
 	var gotUID, gotGID int
 	remoteSetupChown = func(_ string, uid, gid int) error { gotUID, gotGID = uid, gid; return nil }
-	editor := newSetupEditor(t, path)
+	editor = newSetupEditor(t, path)
 	if err := editor.AddHost(remotesetup.Host{Name: "cache"}); err != nil {
 		t.Fatal(err)
 	}

@@ -202,7 +202,9 @@ func writeRemoteFileIfUnchanged(path string, data []byte, original configSnapsho
 		file.Close()
 		return err
 	}
-	if owner.ok && (remoteSetupEUID() == 0 || remoteSetupEUID() != owner.uid) {
+	// Only root can hand a file back to another owner; a non-root save keeps the
+	// usual rename semantics so a group-shared file stays editable.
+	if owner.ok && remoteSetupEUID() == 0 && owner.uid != 0 {
 		if err := remoteSetupChown(temporary, owner.uid, owner.gid); err != nil {
 			file.Close()
 			return err

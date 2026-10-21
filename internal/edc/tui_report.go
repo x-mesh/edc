@@ -124,9 +124,15 @@ func (model viewerModel) fit(text string) string {
 func (model viewerModel) help() string {
 	if model.color {
 		state := richDim(T("cli.report.filter_label")) + richBold(model.filters[model.filter].label)
+		if model.expanded {
+			state += richDim(T("cli.report.detail_open"))
+		}
 		return state + liveKeyHints(T("cli.report.viewer_help"), true, liveHintItem{key: "e", on: model.expanded})
 	}
 	state := T("cli.report.filter_label") + model.filters[model.filter].label
+	if model.expanded {
+		state += T("cli.report.detail_open")
+	}
 	return state + T("cli.report.viewer_help")
 }
 

@@ -65,7 +65,7 @@ func TestViewerExpandShowsDetail(t *testing.T) {
 			t.Fatalf("expanded body %q does not contain %q", expanded.body(), expected)
 		}
 	}
-	if !strings.Contains(expanded.help(), liveSelected("e detail", true)) {
+	if !strings.Contains(expanded.help(), T("cli.report.detail_open")) || !strings.Contains(expanded.help(), liveSelected("e detail", true)) {
 		t.Fatalf("help = %q", expanded.help())
 	}
 }

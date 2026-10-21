@@ -474,15 +474,6 @@ func traceScreenDetailView(model traceScreenModel) []string {
 	color := traceScreenColor()
 	header := append(traceTitleSpans("edc trace "+traceLabel(model.protocol, model.side)), traceSeparator, traceText{text: "detail"}, traceSeparator, traceLabelSpan("lines "),
 		traceText{text: fmt.Sprintf("%d-%d", min(detail.offset+1, last), last)}, traceLabelSpan(" of "), traceText{text: fmt.Sprint(len(detail.lines))})
-	for _, state := range []struct {
-		on    bool
-		name  string
-		color string
-	}{{model.follow, "follow", richGreen}, {model.decode, "gzip decoded", ""}, {model.secrets && model.protocol == "http", "secrets shown", richYellow}} {
-		if state.on {
-			header = append(header, traceSeparator, traceText{text: state.name, color: state.color})
-		}
-	}
 	// Mac 자판에는 PgUp, PgDn, Home, End가 없는 경우가 많아, 어디서나 쓸 수 있는 키를 안내한다. 원래 키도 그대로 된다.
 	help := "↑↓ scroll  space/b page  g/G top/end  f follow  esc back  ctrl-c stop"
 	if model.protocol == "http" {

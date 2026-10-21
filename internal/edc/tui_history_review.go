@@ -103,21 +103,17 @@ func (model historyReviewBrowser) helpLines() []string {
 		}
 		return lines
 	}
-	var on []string
-	if model.paused {
-		on = append(on, "p")
-	}
-	return historyReviewKeyHints(T(key), model.width, model.color, on...)
+	return historyReviewKeyHints(T(key), model.width, model.color, liveHintItem{key: "p", on: model.paused})
 }
 
-func historyReviewKeyHints(text string, width int, color bool, on ...string) []string {
+func historyReviewKeyHints(text string, width int, color bool, items ...liveHintItem) []string {
 	var lines []string
 	line, separator := "", "   "
 	if width < 60 {
 		separator = " "
 	}
 	for _, hint := range strings.Split(text, "   ") {
-		hint = liveKeyHints(strings.TrimSpace(hint), color, on...)
+		hint = liveKeyHints(strings.TrimSpace(hint), color, items...)
 		if line != "" && liveWidth(line)+len(separator)+liveWidth(hint) > max(1, width) {
 			lines = append(lines, line)
 			line = ""

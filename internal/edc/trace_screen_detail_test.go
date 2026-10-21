@@ -454,7 +454,7 @@ func TestTraceScreenKeysShowPayloadsAndSecrets(t *testing.T) {
 		t.Fatalf("the detail view shows the secret: %q", text)
 	}
 	model = traceScreenKey(model, "m")
-	if text := strings.Join(model.detail.lines, "\n"); !strings.Contains(text, "Bearer t0ken") || !strings.Contains(traceScreenDetailView(model)[0], "secrets shown") {
+	if text := strings.Join(model.detail.lines, "\n"); !strings.Contains(text, "Bearer t0ken") || !strings.Contains(traceScreenDetailView(model)[1], "m secrets") {
 		t.Fatalf("m in the detail view did not show the secret: %q", text)
 	}
 }
@@ -475,8 +475,8 @@ func TestTraceScreenFollowShowsTheNewestEvent(t *testing.T) {
 	if model.detail.number != 1 || !strings.Contains(strings.Join(model.detail.lines, "\n"), `"/two"`) {
 		t.Fatalf("follow did not move to the new event: %d", model.detail.number)
 	}
-	if !strings.Contains(traceScreenDetailView(model)[0], "follow") {
-		t.Fatal("the detail header does not say follow")
+	if !strings.Contains(traceScreenDetailView(model)[1], "f follow") {
+		t.Fatal("the detail hint does not say follow")
 	}
 	// f를 다시 누르면 보던 event에서 멈추고, 새 event가 와도 그대로 둔다.
 	model = traceScreenKey(model, "f")

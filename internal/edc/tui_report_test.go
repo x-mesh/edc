@@ -53,7 +53,9 @@ func TestViewerFilterCyclesThroughStatuses(t *testing.T) {
 }
 
 func TestViewerExpandShowsDetail(t *testing.T) {
+	t.Setenv("NO_COLOR", "")
 	model := viewerFixture(t)
+	model.color = true
 	if strings.Contains(model.body(), "인증서 만료까지") {
 		t.Fatalf("collapsed body must hide the detail: %q", model.body())
 	}
@@ -63,7 +65,7 @@ func TestViewerExpandShowsDetail(t *testing.T) {
 			t.Fatalf("expanded body %q does not contain %q", expanded.body(), expected)
 		}
 	}
-	if !strings.Contains(expanded.help(), T("cli.report.detail_open")) {
+	if !strings.Contains(expanded.help(), liveSelected("e detail", true)) {
 		t.Fatalf("help = %q", expanded.help())
 	}
 }

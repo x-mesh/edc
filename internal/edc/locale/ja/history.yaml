@@ -146,6 +146,7 @@ history:
     trend_each: "--each には --process が必要です"
     growth_process_root: "--process と --root は同時に使えません"
   trend:
+    instance_empty: "このprocessインスタンスには、この範囲の観測値がありません。"
     title: "%s、%s 単位、ローカル時間 %s"
     empty: "この範囲に値はありません"
     process_title: "%s、%s、%s 単位、ローカル時間 %s"

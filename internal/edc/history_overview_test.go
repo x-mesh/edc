@@ -59,10 +59,16 @@ func TestHistoryOverviewNearestRankP95(t *testing.T) {
 			recorder := topHistoryFixture(t, path)
 			for index := count - 1; index >= 0; index-- {
 				cpu := float64(index + 1)
-				if err := recorder.Record(historyFixtureSample(count-index, cpu, topProcess{PID: 1, Command: "worker", CPU: cpu, RSS: 1})); err != nil {
+				sample := historyFixtureSample(count-index, cpu, topProcess{PID: 1, Command: "worker", CPU: cpu, RSS: 1})
+				sample.RunID = recorder.runID
+				payload, err := json.Marshal(sample)
+				if err != nil {
 					t.Fatal(err)
 				}
-				time.Sleep(time.Millisecond)
+				// Record queues only historyQueueSize samples; write directly so a slow CI writer cannot overflow it.
+				if err := recorder.writeSample(payload); err != nil {
+					t.Fatal(err)
+				}
 			}
 			if err := recorder.Close("finished"); err != nil {
 				t.Fatal(err)
@@ -345,6 +351,10 @@ func TestHistoryOverviewWarningsKeepCoreData(t *testing.T) {
 	view, err := loadHistoryOverview(db, historyOverviewOptions{run: recorder.runID})
 	if err != nil || len(view.Metrics) == 0 || len(view.Processes) == 0 || !strings.Contains(strings.Join(view.Warnings, " "), "log unavailable") {
 		t.Fatalf("view %+v err %v", view, err)
+	}
+	encoded, err := json.Marshal(view)
+	if err != nil || !strings.Contains(string(encoded), `"warnings":["`) || strings.Contains(string(encoded), `"Warnings"`) {
+		t.Fatalf("json warnings key: %s", encoded)
 	}
 	var plain bytes.Buffer
 	writeHistoryOverview(&plain, view, time.UTC)

@@ -278,7 +278,7 @@ var commandDocs = []commandDoc{
 			{"list", "edc history list [options] [DB]"},
 			{"top", "edc history top [options] [DB]"},
 			{"process", "edc history process [options] [DB]"},
-			{"overview", "edc history overview [--run <id>] [DB]"},
+			{"overview", "edc history overview [--run <id>] [--from <time> --to <time>] [DB]"},
 			{"export", "edc history export --run <id> [DB]"},
 			{"trend", "edc history trend [options] [DB]"},
 			{"growth", "edc history growth [options] [DB]"},

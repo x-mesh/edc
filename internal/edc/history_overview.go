@@ -54,7 +54,7 @@ type historyOverview struct {
 	Series       map[string][]float64     `json:"series,omitempty"`
 	Disks        []historyOverviewDisk    `json:"disks"`
 	Logs         []historyOverviewLog     `json:"logs"`
-	Warnings     []string
+	Warnings     []string                 `json:"warnings,omitempty"`
 }
 
 var historyOverviewLogLoader = func() (logHistorySnapshot, error) {

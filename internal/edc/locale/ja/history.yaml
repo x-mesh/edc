@@ -155,6 +155,7 @@ history:
     unfiltered: "%s のサンプルの一部は --process なしで記録した実行のものです。CPU かメモリの使用量が上位に入った瞬間だけを数えています。edc top -w --process %s で記録してください"
   overview:
     empty: "一致する history 実行はありません"
+    disjoint: "実行サンプル範囲 %s から %s は要求範囲 %s から %s と重なりません"
     run: "実行"
     range: "範囲"
     runs: "実行数"

@@ -3,6 +3,7 @@ package edc
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -17,6 +18,9 @@ type historyOverviewOptions struct {
 	run      string
 	from, to time.Time
 }
+
+var errHistoryOverviewDisjoint = errors.New("history overview range does not overlap run samples")
+
 type historyOverviewStat struct {
 	Metric string  `json:"metric"`
 	Avg    float64 `json:"avg"`
@@ -127,7 +131,10 @@ func runHistoryOverview(args []string) int {
 	defer db.Close()
 	view, err := loadHistoryOverview(db, options)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, T("history.error.read", err))
+		fmt.Fprintln(os.Stderr, err)
+		if errors.Is(err, errHistoryOverviewDisjoint) {
+			return 2
+		}
 		return 1
 	}
 	if *jsonPath != "" {
@@ -260,6 +267,9 @@ func loadHistoryOverview(db *sql.DB, options historyOverviewOptions) (historyOve
 	}
 	if !requestedTo.IsZero() && requestedTo.Before(out.To) {
 		out.To = requestedTo
+	}
+	if !out.From.Before(out.To) {
+		return out, fmt.Errorf("%w: %s", errHistoryOverviewDisjoint, T("history.overview.disjoint", time.Unix(0, first.Int64).UTC().Format(time.RFC3339), time.Unix(0, last.Int64).UTC().Add(time.Nanosecond).Format(time.RFC3339), requestedFrom.Format(time.RFC3339), requestedTo.Format(time.RFC3339)))
 	}
 	condition, vals := "time_ns>=? AND time_ns<?", []any{out.From.UnixNano(), out.To.UnixNano()}
 	if options.run != "" {

@@ -246,7 +246,8 @@ type topModel struct {
 	// setScanIO는 디스크 보기에서 모든 process의 I/O를 읽게 수집기에 알린다.
 	setScanIO func(bool)
 	// notice는 다음 키까지 상태 줄에 보이는 안내다.
-	notice string
+	notice      string
+	statusCache map[string][]string
 	// input은 /로 연 필터 입력 중인지다. inputText는 입력한 글자다.
 	input           bool
 	inputText       string
@@ -857,6 +858,7 @@ func (model topModel) dashboardView() tea.View {
 		view.AltScreen = true
 		return view
 	}
+	model.statusCache = map[string][]string{}
 	if model.view == topViewSplit {
 		return model.splitView()
 	}
@@ -1241,6 +1243,20 @@ func (model topModel) peakLines() []string {
 }
 
 func (model topModel) statusLines() []string {
+	key := fmt.Sprintf("%d:%s", model.displayWidth(), model.hiddenText())
+	if model.statusCache != nil {
+		if lines, ok := model.statusCache[key]; ok {
+			return lines
+		}
+	}
+	lines := model.renderStatusLines()
+	if model.statusCache != nil {
+		model.statusCache[key] = lines
+	}
+	return lines
+}
+
+func (model topModel) renderStatusLines() []string {
 	state := "interval " + model.interval.String()
 	if model.interfaces.active() {
 		// 긴 목록이 80열에서 키 안내를 밀어내지 않게 줄인다. 전체 값은 n 보기 상세 머리줄에 있다.

@@ -165,6 +165,7 @@ history:
   browser:
     targets: "対象"
     peak_memory: "最大メモリ"
+    peak_rss: "最大RSS"
     host: "ホスト"
     loading: "読み込み中"
     growth: "RSS %s、最も速い pid %d"

@@ -60,7 +60,8 @@ type historyTrendBrowser struct {
 	// now는 RSS 변화의 기본 범위(최근 7일)의 끝이다.
 	now time.Time
 	// probeKeys는 스냅샷 결과마다 기록된 지표다. 화면을 그릴 때마다 DB를 읽지 않게 처음 읽은 값을 둔다.
-	probeKeys map[string][]string
+	probeKeys     map[string][]string
+	processMemory bool
 }
 
 // historyTrendTargets는 고를 수 있는 대상이다. top 기록이 있으면 호스트를 맨 앞에, 그다음 최대 메모리가 큰 프로세스, 그다음
@@ -95,6 +96,7 @@ func historyTrendTargets(db *sql.DB) ([]historyTrendTarget, error) {
 func newHistoryTrendBrowser(db *sql.DB, targets []historyTrendTarget, options historyTrendOptions, location *time.Location) historyTrendBrowser {
 	model := historyTrendBrowser{db: db, location: location, options: options, targets: targets, width: 80, height: 24,
 		color: os.Getenv("NO_COLOR") == "", table: viewport.New(), now: time.Now(), probeKeys: map[string][]string{}, metrics: map[string]string{"host": "cpu_pct", "process": "rss_bytes"}}
+	model.processMemory = db != nil && historyHasProcessMemoryColumn(db)
 	// 명령에 준 --process나 --probe가 목록에 없으면 맨 앞에 넣어 그 대상에서 시작한다.
 	if options.process.active() || options.probe != "" {
 		want := historyTrendTarget{kind: historyTrendProcess, value: options.process.String()}
@@ -412,7 +414,10 @@ func (model historyTrendBrowser) targetLines(height int) []string {
 }
 
 func (model historyTrendBrowser) targetHeader() string {
-	value := T("history.browser.peak_memory")
+	value := T("history.browser.peak_rss")
+	if model.processMemory {
+		value = T("history.browser.peak_memory")
+	}
 	space := historyTrendTargetWidth - 1 - ansi.StringWidth(value)
 	label := ansi.Truncate(T("history.browser.targets"), max(1, space-1), "…")
 	return " " + label + strings.Repeat(" ", max(1, space-ansi.StringWidth(label))) + value

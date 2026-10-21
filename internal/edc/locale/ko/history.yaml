@@ -165,6 +165,7 @@ history:
   browser:
     targets: "대상"
     peak_memory: "최대 메모리"
+    peak_rss: "최대 RSS"
     host: "호스트"
     loading: "불러오는 중"
     growth: "RSS %s, 가장 빠른 pid %d"

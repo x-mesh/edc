@@ -1,6 +1,7 @@
 package edc
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -83,7 +84,7 @@ func TestHistoryTrendBrowserLocalizesPeakRSSAndShowsFullCommand(t *testing.T) {
 	defer setLanguage(restore)
 	target := historyTrendTarget{kind: historyTrendProcess, value: "/Applications/OrbStack Helper", rss: 1 << 30}
 	model := newHistoryTrendBrowser(nil, []historyTrendTarget{target}, historyTrendOptions{by: "day"}, historyTrendZone)
-	for language, peak := range map[string]string{"en": "PEAK MEMORY", "ko": "최대 메모리", "ja": "最大メモリ"} {
+	for language, peak := range map[string]string{"en": "PEAK RSS", "ko": "최대 RSS", "ja": "最大RSS"} {
 		setLanguage(language)
 		for _, width := range []int{80, 120, 180} {
 			updated, _ := model.Update(tea.WindowSizeMsg{Width: width, Height: 20})
@@ -97,6 +98,24 @@ func TestHistoryTrendBrowserLocalizesPeakRSSAndShowsFullCommand(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+func TestHistoryTrendBrowserUsesRSSHeaderForOldSchema(t *testing.T) {
+	targets := []historyTrendTarget{{kind: historyTrendHost}}
+	old := newHistoryTrendBrowser(nil, targets, historyTrendOptions{}, historyTrendZone)
+	if header := old.targetHeader(); !strings.Contains(header, T("history.browser.peak_rss")) {
+		t.Fatalf("old header=%q", header)
+	}
+	path := filepath.Join(t.TempDir(), "history.db")
+	db, err := openHistoryDB(path, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	current := newHistoryTrendBrowser(db, targets, historyTrendOptions{}, historyTrendZone)
+	if header := current.targetHeader(); !strings.Contains(header, T("history.browser.peak_memory")) {
+		t.Fatalf("current header=%q", header)
 	}
 }
 

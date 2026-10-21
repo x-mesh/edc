@@ -165,6 +165,7 @@ history:
   browser:
     targets: "TARGET"
     peak_memory: "PEAK MEMORY"
+    peak_rss: "PEAK RSS"
     host: "host"
     loading: "loading"
     growth: "RSS %s, fastest pid %d"

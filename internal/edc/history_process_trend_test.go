@@ -264,6 +264,33 @@ func TestHistoryProcessTrendReadsOldSchemaWithoutMemoryColumn(t *testing.T) {
 	}
 }
 
+func TestHistoryProcessReaderSeesMemoryColumnAddedLater(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "old.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, statement := range append(oldHistoryV1Statements(), fmt.Sprintf("PRAGMA application_id=%d", historyApplicationID), "PRAGMA user_version=1") {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	db.Close()
+	reader, err := openHistoryDB(path, false)
+	if err != nil || historyHasProcessMemoryColumn(reader) {
+		t.Fatalf("old reader: %v", err)
+	}
+	defer reader.Close()
+	writer, err := openHistoryDB(path, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer.Close()
+	if !historyHasProcessMemoryColumn(reader) {
+		t.Fatal("reader did not observe added memory_bytes column")
+	}
+}
+
 func oldHistoryV1Statements() []string {
 	statements := append([]string(nil), historyV1Statements()...)
 	statements[2] = strings.Replace(statements[2], "memory_bytes INTEGER, ", "", 1)

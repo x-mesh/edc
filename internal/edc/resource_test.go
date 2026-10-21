@@ -267,6 +267,26 @@ func TestTopProcessCandidatesIncludeUnreadableMemoryByRSS(t *testing.T) {
 	}
 }
 
+func TestTopProcessCandidatesLimitUnreadableMemoryByRSS(t *testing.T) {
+	processes := make([]topProcess, 0, 2*topProcessLimit+3)
+	for pid := 1; pid <= topProcessLimit; pid++ {
+		processes = append(processes, topProcess{PID: pid, CPU: float64(100 - pid), RSS: 1, Memory: 1 << 30, MemoryValid: true})
+	}
+	for pid := topProcessLimit + 1; pid <= 2*topProcessLimit+3; pid++ {
+		processes = append(processes, topProcess{PID: pid, RSS: uint64(pid) << 20})
+	}
+	var unreadable []int
+	for _, process := range topProcessCandidates(processes) {
+		if !process.MemoryValid {
+			unreadable = append(unreadable, process.PID)
+		}
+	}
+	want := []int{2*topProcessLimit + 3, 2*topProcessLimit + 2, 2*topProcessLimit + 1, 2 * topProcessLimit, 2*topProcessLimit - 1}
+	if !reflect.DeepEqual(unreadable, want) {
+		t.Fatalf("unreadable candidates=%v, want %v", unreadable, want)
+	}
+}
+
 func TestTopProcessSamplesReportMemoryOnlyWhenMeasured(t *testing.T) {
 	samples := *newTopProcessSamples([]topProcess{{PID: 1, RSS: 49 << 20, Memory: 3 << 30, MemoryValid: true, Command: "leak"}, {PID: 2, RSS: 200 << 20, Command: "root-owned"}})
 	if samples[0].MemoryBytes == nil || *samples[0].MemoryBytes != 3<<30 || samples[1].MemoryBytes != nil {

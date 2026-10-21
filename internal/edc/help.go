@@ -7,6 +7,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/charmbracelet/x/ansi"
 )
 
 // optionDoc은 상세 화면에 그리는 option 한 줄이다.
@@ -250,7 +252,7 @@ var commandDocs = []commandDoc{
 	},
 	{
 		name: "history", group: "record",
-		usage: []string{"edc history list [options] [DB]", "edc history top [options] [DB]", "edc history process [options] [DB]", "edc history export --run <id> [--output <file|->] [DB]", "edc history trend --metric <name> [--probe <id> | --process <filter>] [DB]", "edc history growth [--root <path> | --process <filter>] [DB]", "edc history prune [--older-than <age>] [options] [DB]", "edc history log [edc log history options]"},
+		usage: []string{"edc history list [options] [DB]", "edc history top [options] [DB]", "edc history process [options] [DB]", "edc history overview [--run <id>] [--from <time> --to <time>] [DB]", "edc history export --run <id> [--output <file|->] [DB]", "edc history trend --metric <name> [--probe <id> | --process <filter>] [DB]", "edc history growth [--root <path> | --process <filter>] [DB]", "edc history prune [--older-than <age>] [options] [DB]", "edc history log [edc log history options]"},
 		options: []optionDoc{
 			{"--run <id>", "history.option.run"},
 			{"--from <RFC3339>", "history.option.from"},
@@ -276,6 +278,7 @@ var commandDocs = []commandDoc{
 			{"list", "edc history list [options] [DB]"},
 			{"top", "edc history top [options] [DB]"},
 			{"process", "edc history process [options] [DB]"},
+			{"overview", "edc history overview [--run <id>] [DB]"},
 			{"export", "edc history export --run <id> [DB]"},
 			{"trend", "edc history trend [options] [DB]"},
 			{"growth", "edc history growth [options] [DB]"},
@@ -805,7 +808,8 @@ func printOptionDocs(writer io.Writer, options []optionDoc) {
 			fmt.Fprintf(writer, "  %s\n", option.flag)
 			continue
 		}
-		fmt.Fprintf(writer, "  %s  %s\n", padRight(option.flag, width), detail)
+		available := max(1, commandHelpWidth()-width-4)
+		fmt.Fprintf(writer, "  %s  %s\n", padRight(option.flag, width), ansi.Truncate(detail, available, "…"))
 	}
 }
 

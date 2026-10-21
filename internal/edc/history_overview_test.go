@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -54,15 +53,39 @@ func TestHistoryOverviewAggregatesRunAndPlainOutput(t *testing.T) {
 }
 
 func TestHistoryOverviewNearestRankP95(t *testing.T) {
-	for _, count := range []int{1, 2, 20, 21} {
-		values := make([]float64, count)
-		for index := range values {
-			values[index] = float64(index + 1)
-		}
-		rank := int(math.Ceil(.95*float64(count))) - 1
-		if got := values[rank]; got != float64(int(math.Ceil(.95*float64(count)))) {
-			t.Fatalf("n=%d p95=%v", count, got)
-		}
+	for count, want := range map[int]float64{1: 1, 2: 2, 20: 19, 21: 20} {
+		t.Run(fmt.Sprintf("n=%d", count), func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "history.db")
+			recorder := topHistoryFixture(t, path)
+			for index := count - 1; index >= 0; index-- {
+				cpu := float64(index + 1)
+				if err := recorder.Record(historyFixtureSample(count-index, cpu, topProcess{PID: 1, Command: "worker", CPU: cpu, RSS: 1})); err != nil {
+					t.Fatal(err)
+				}
+				time.Sleep(time.Millisecond)
+			}
+			if err := recorder.Close("finished"); err != nil {
+				t.Fatal(err)
+			}
+			db, err := openHistoryDB(path, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			view, err := loadHistoryOverview(db, historyOverviewOptions{run: recorder.runID})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, metric := range view.Metrics {
+				if metric.Metric == "cpu_pct" {
+					if metric.P95 != want {
+						t.Fatalf("p95 = %v, want %v", metric.P95, want)
+					}
+					return
+				}
+			}
+			t.Fatal("cpu_pct metric missing")
+		})
 	}
 }
 

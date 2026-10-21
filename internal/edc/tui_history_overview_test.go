@@ -29,7 +29,7 @@ func TestHistoryOverviewBrowserFitsAndScrolls(t *testing.T) {
 		}
 		updated, _ = model.Update(tea.KeyPressMsg{Code: tea.KeyDown})
 		model = updated.(historyOverviewBrowser)
-		if model.atTop() {
+		if model.offset == 0 {
 			t.Fatalf("width %d did not scroll", width)
 		}
 		if !strings.Contains(strings.Join(model.lines(), "\n"), "▁▅█") {
@@ -127,5 +127,20 @@ func TestHistoryOverviewBrowserAlignsTranslatedColumns(t *testing.T) {
 		if len(offsets) != 2 || offsets[0] != offsets[1] {
 			t.Fatalf("%s metric columns = %v", language, offsets)
 		}
+	}
+}
+
+func TestHistoryNavigatorLeavesScrolledOverviewWithEsc(t *testing.T) {
+	navigator := newHistoryNavigator(nil, "history.db", newHistoryListBrowser("history.db", historyReviewData{}))
+	navigator.stack = append(navigator.stack, overviewBrowserFixture())
+	next, _ := navigator.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	navigator = next.(historyNavigator)
+	if overview := navigator.current().(historyOverviewBrowser); overview.offset == 0 {
+		t.Fatal("setup must scroll the overview")
+	}
+	next, _ = navigator.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	navigator = next.(historyNavigator)
+	if len(navigator.stack) != 1 {
+		t.Fatalf("Esc on a scrolled overview kept %d screens", len(navigator.stack))
 	}
 }

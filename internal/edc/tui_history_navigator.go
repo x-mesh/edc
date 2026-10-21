@@ -20,6 +20,9 @@ type historyNavigable interface {
 }
 
 func newHistoryNavigator(db *sql.DB, path string, root historyReviewBrowser) historyNavigator {
+	root.hosted = true
+	root.extraHelp = "history.list_browser.navigator_help"
+	root.snapshotHelp = "history.list_browser.snapshot_navigator_help"
 	return historyNavigator{db: db, path: path, stack: []tea.Model{root}}
 }
 
@@ -62,6 +65,10 @@ func (model historyNavigator) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					sample.hosted = true
 					next = sample
 				}
+				if review, ok := next.(historyReviewBrowser); ok {
+					review.hosted = true
+					next = review
+				}
 				model.stack = append(model.stack, next)
 				return model, next.Init()
 			}
@@ -89,6 +96,8 @@ func navigatorAtTop(model tea.Model) bool {
 	case historyReviewBrowser:
 		return child.atTop()
 	case historySampleBrowser:
+		return child.atTop()
+	case historyOverviewBrowser:
 		return child.atTop()
 	}
 	return true

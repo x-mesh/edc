@@ -81,7 +81,6 @@ func newHistoryListBrowser(path string, data historyReviewData) historyReviewBro
 	columns := []historyReviewColumn{{T("history.list_browser.column.command"), 0, 0}, {T("history.list_browser.column.start"), 17, 0}, {T("history.list_browser.column.duration"), 10, 80}, {T("history.list_browser.column.samples"), 8, 100}, {T("history.list_browser.column.status"), 12, 120}, {T("history.list_browser.column.host"), 22, 160}}
 	model := newHistoryReviewBrowser(T("history.list_browser.title"), path, columns, data)
 	model.detailsTitle = T("history.list_browser.details")
-	model.extraHelp = "history.list_browser.navigator_help"
 	model.navigateFn = historyListNavigate
 	return model
 }
@@ -98,6 +97,17 @@ func historyListNavigate(model historyReviewBrowser, key string, db *sql.DB, pat
 		return nil, false, nil
 	}
 	entry := model.data.entries[model.selected]
+	if key == "enter" {
+		child := newHistoryOverviewBrowser(db, path, historyOverviewOptions{run: entry.id})
+		child.hosted = true
+		return child, true, nil
+	}
+	if key == "i" {
+		model.expanded = true
+		model.view.GotoTop()
+		model.resize()
+		return model, false, nil
+	}
 	if key == "g" {
 		growth, err := collectHistoryGrowth(db, historyGrowthOptions{}, time.Now())
 		if err != nil {

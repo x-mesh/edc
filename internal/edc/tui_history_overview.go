@@ -29,7 +29,10 @@ func newHistoryOverviewBrowser(db *sql.DB, path string, options historyOverviewO
 	return model
 }
 
-func (model historyOverviewBrowser) atTop() bool   { return model.offset == 0 }
+func (model historyOverviewBrowser) atTop() bool { return true }
+func (model historyOverviewBrowser) navigate(string, *sql.DB, string) (tea.Model, bool, error) {
+	return nil, false, nil
+}
 func (model historyOverviewBrowser) Init() tea.Cmd { return nil }
 
 func (model historyOverviewBrowser) Update(msg tea.Msg) (tea.Model, tea.Cmd) {

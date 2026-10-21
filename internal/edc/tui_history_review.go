@@ -18,6 +18,7 @@ type historyReviewColumn struct {
 
 type historyReviewEntry struct {
 	id      string
+	command string
 	cells   []string
 	details []string
 }
@@ -40,6 +41,7 @@ type historyReviewTickMsg struct{ seq int }
 type historyReviewBrowser struct {
 	title, path                       string
 	detailsTitle                      string
+	extraHelp                         string
 	columns                           []historyReviewColumn
 	data                              historyReviewData
 	view                              viewport.Model
@@ -49,6 +51,7 @@ type historyReviewBrowser struct {
 	checked                           map[string]bool
 	seq                               int
 	notice                            string
+	noticeSticky                      bool
 	load                              func() (historyReviewData, error)
 	loadPrune                         func(historyPruneOptions) (historyReviewData, error)
 	pruneOptions                      historyPruneOptions
@@ -64,6 +67,8 @@ func newHistoryReviewBrowser(title, path string, columns []historyReviewColumn, 
 func (model historyReviewBrowser) split() bool {
 	return !model.expanded && model.width >= 132 && model.height >= 16
 }
+
+func (model historyReviewBrowser) atTop() bool { return !model.expanded }
 
 func (model historyReviewBrowser) tableWidth() int {
 	if model.split() {
@@ -103,7 +108,11 @@ func (model historyReviewBrowser) helpLines() []string {
 		}
 		return lines
 	}
-	return historyReviewKeyHints(T(key), model.width, model.color, liveHintItem{key: "p", on: model.paused})
+	lines := historyReviewKeyHints(T(key), model.width, model.color, liveHintItem{key: "p", on: model.paused})
+	if model.extraHelp != "" && !model.expanded && !(len(model.data.entries) > 0 && model.data.entries[model.selected].command == historySnapshotCommand) {
+		lines = append(lines, historyReviewKeyHints(T(model.extraHelp), model.width, model.color)...)
+	}
+	return lines
 }
 
 func historyReviewKeyHints(text string, width int, color bool, items ...liveHintItem) []string {
@@ -277,7 +286,10 @@ func (model historyReviewBrowser) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			for _, entry := range model.data.entries {
 				checked[entry.id] = true
 			}
-			model.data, model.notice = value.data, ""
+			model.data = value.data
+			if !model.noticeSticky {
+				model.notice = ""
+			}
 			model.selected, model.expanded = 0, model.expanded && id != ""
 			found := false
 			for i, entry := range model.data.entries {
@@ -317,7 +329,7 @@ func (model historyReviewBrowser) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			model.resize()
 			return model, nil
 		}
-		model.notice = ""
+		model.notice, model.noticeSticky = "", false
 		switch value.String() {
 		case "t":
 			if model.prune {

@@ -164,6 +164,8 @@ func (model historySampleBrowser) count() int {
 	return len(model.samples)
 }
 
+func (model historySampleBrowser) atTop() bool { return !model.expanded }
+
 func (model historySampleBrowser) canReload() bool {
 	return model.load != nil || model.loadProcesses != nil
 }

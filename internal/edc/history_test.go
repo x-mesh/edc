@@ -815,6 +815,34 @@ func TestHistoryFlagsOpenScopedNavigator(t *testing.T) {
 	}
 }
 
+func TestHistoryBareNavigatorUsesConfiguredLimit(t *testing.T) {
+	state := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", state)
+	path := filepath.Join(state, "edc", "history.db")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	recorder := topHistoryFixture(t, path)
+	if err := recorder.Close("finished"); err != nil {
+		t.Fatal(err)
+	}
+	restore := activeConfig
+	t.Cleanup(func() { activeConfig = restore })
+	activeConfig.Defaults.History.Limit = intPointer(7)
+	previousTerminal, previousRunner := historyLiveTerminal, historyScopedNavigatorRunner
+	t.Cleanup(func() { historyLiveTerminal, historyScopedNavigatorRunner = previousTerminal, previousRunner })
+	historyLiveTerminal = func() bool { return true }
+	var got historyOptions
+	var gotPath string
+	historyScopedNavigatorRunner = func(_ *sql.DB, runnerPath string, options historyOptions) error {
+		gotPath, got = runnerPath, options
+		return nil
+	}
+	if code := runHistory(nil); code != 0 || gotPath != path || got.limit != 7 {
+		t.Fatalf("code=%d path=%q limit=%d", code, gotPath, got.limit)
+	}
+}
+
 func TestHistoryDBArgumentUsesScopedNavigatorAndListFallback(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "history.db")
 	recorder := topHistoryFixture(t, path)

@@ -27,7 +27,6 @@ const historyDefaultLimit = 200
 
 var historyLiveTerminal = liveTerminal
 var historyListBrowserRunner = runHistoryListBrowser
-var historyNavigatorRunner = func() error { return runHistoryNavigator(historyOptions{}) }
 var historyScopedNavigatorRunner = runHistoryNavigatorWith
 
 func historyTerminalText(value string) string {
@@ -35,14 +34,8 @@ func historyTerminalText(value string) string {
 }
 
 func runHistory(args []string) int {
-	if len(args) == 0 {
-		if historyLiveTerminal() {
-			if err := historyNavigatorRunner(); err != nil {
-				fmt.Fprintln(os.Stderr, T("history.error.read", err))
-				return 1
-			}
-			return 0
-		}
+	bare := len(args) == 0 && historyLiveTerminal()
+	if len(args) == 0 && !bare {
 		choice, ok := promptMissingSubcommand("history")
 		if !ok {
 			if !printCommandBrief(os.Stderr, "history") {
@@ -52,7 +45,7 @@ func runHistory(args []string) int {
 		}
 		args = []string{choice}
 	}
-	noSubcommand := len(args) > 0 && (strings.HasPrefix(args[0], "-") || historyDBArgument(args[0]))
+	noSubcommand := bare || strings.HasPrefix(args[0], "-") || historyDBArgument(args[0])
 	if noSubcommand {
 		args = append([]string{"list"}, args...)
 	}

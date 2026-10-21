@@ -70,6 +70,10 @@ type historyReviewBrowser struct {
 	agePicker                         *historyPruneAgePicker
 }
 
+func (model historyReviewBrowser) capturesInput() bool {
+	return model.agePicker != nil && model.agePicker.input
+}
+
 var historyBrowserOwner atomic.Uint64
 
 func newHistoryReviewBrowser(title, path string, columns []historyReviewColumn, data historyReviewData) historyReviewBrowser {

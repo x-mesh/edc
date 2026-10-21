@@ -62,6 +62,11 @@ history:
     title: "Process観測履歴"
     empty: "条件に一致するprocess記録がありません。edc top -w --process <名前>で記録してから、edc history processで確認してください。"
     navigator_help: "t 推移"
+  filter:
+    help: "/ フィルター"
+    active: "フィルター %s"
+    input: "フィルター: %s█"
+    input_help: "Enter 適用   Esc 取消   Ctrl+U 消去"
   list_browser:
     title: "実行履歴"
     summary: "記録済みのtopとsnapshot実行"

@@ -154,9 +154,14 @@ type historySampleBrowser struct {
 	seq                      int
 	owner                    uint64
 	notice                   string
+	options                  historyOptions
+	filterEditing            bool
+	filterText               string
 	view                     viewport.Model
 	load                     func() ([]historyTopSample, error)
+	loadWith                 func(historyOptions) ([]historyTopSample, error)
 	loadProcesses            func() ([]historyProcessSample, error)
+	loadProcessesWith        func(historyOptions) ([]historyProcessSample, error)
 	hosted                   bool
 }
 
@@ -206,8 +211,14 @@ func (model historySampleBrowser) navigate(key string, db *sql.DB, path string) 
 }
 
 func (model historySampleBrowser) canReload() bool {
-	return model.load != nil || model.loadProcesses != nil
+	return model.load != nil || model.loadWith != nil || model.loadProcesses != nil || model.loadProcessesWith != nil
 }
+
+func (model historySampleBrowser) canFilter() bool {
+	return model.loadWith != nil || model.loadProcessesWith != nil
+}
+
+func (model historySampleBrowser) capturesInput() bool { return model.filterEditing }
 
 func (model historySampleBrowser) messageKey(name string) string {
 	if model.processMode {
@@ -293,6 +304,9 @@ func historyDetailWrappedLines(lines []string, width int, color bool) []string {
 }
 
 func (model historySampleBrowser) footer() []string {
+	if model.filterEditing {
+		return []string{historyTint(T("history.filter.input", model.filterText), richYellow, model.color), historyTint(T("history.filter.input_help"), richGray, model.color)}
+	}
 	key := "history.top_browser.help"
 	if model.expanded {
 		key = "history.top_browser.detail_help"
@@ -300,7 +314,11 @@ func (model historySampleBrowser) footer() []string {
 	items := []liveHintItem{{key: "p", on: model.paused}}
 	var lines []string
 	line := ""
-	for _, hint := range strings.Split(T(key), "   ") {
+	hints := T(key)
+	if model.canFilter() && !model.expanded {
+		hints = T("history.filter.help") + "   " + hints
+	}
+	for _, hint := range strings.Split(hints, "   ") {
 		hint = liveKeyHints(strings.TrimSpace(hint), model.color, items...)
 		if line != "" && liveWidth(line)+3+liveWidth(hint) > max(1, model.width) {
 			lines = append(lines, line)
@@ -375,11 +393,19 @@ func (model historySampleBrowser) tick() tea.Cmd {
 }
 
 func (model historySampleBrowser) reload() tea.Cmd {
-	seq, owner, load, loadProcesses := model.seq, model.owner, model.load, model.loadProcesses
+	seq, owner, options, load, loadWith, loadProcesses, loadProcessesWith := model.seq, model.owner, model.options, model.load, model.loadWith, model.loadProcesses, model.loadProcessesWith
 	return func() tea.Msg {
+		if loadProcessesWith != nil {
+			processes, err := loadProcessesWith(options)
+			return historySamplesLoadedMsg{owner: owner, seq: seq, processes: processes, err: err}
+		}
 		if loadProcesses != nil {
 			processes, err := loadProcesses()
 			return historySamplesLoadedMsg{owner: owner, seq: seq, processes: processes, err: err}
+		}
+		if loadWith != nil {
+			samples, err := loadWith(options)
+			return historySamplesLoadedMsg{owner: owner, seq: seq, samples: samples, err: err}
 		}
 		samples, err := load()
 		return historySamplesLoadedMsg{owner: owner, seq: seq, samples: samples, err: err}
@@ -430,7 +456,42 @@ func (model historySampleBrowser) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return model, model.tick()
 		}
 	case tea.KeyPressMsg:
+		if model.filterEditing {
+			switch value.String() {
+			case "esc":
+				model.filterEditing = false
+				model.resize()
+				return model, nil
+			case "ctrl+u":
+				model.filterText = ""
+			case "backspace":
+				if text := []rune(model.filterText); len(text) > 0 {
+					model.filterText = string(text[:len(text)-1])
+				}
+			case "enter":
+				filter, err := parseTopProcessFilter(strings.TrimSpace(model.filterText))
+				if err != nil {
+					model.notice = err.Error()
+					return model, nil
+				}
+				model.options.process, model.filterEditing, model.seq = filter, false, model.seq+1
+				model.resize()
+				return model, model.reload()
+			default:
+				if value.Text != "" {
+					model.filterText += value.Text
+				}
+			}
+			model.resize()
+			return model, nil
+		}
 		switch value.String() {
+		case "/":
+			if model.canFilter() && !model.expanded {
+				model.filterEditing, model.filterText = true, model.options.process.String()
+				model.resize()
+				return model, nil
+			}
 		case "q", "ctrl+c":
 			return model, tea.Quit
 		case "esc":
@@ -491,7 +552,11 @@ func (model historySampleBrowser) View() tea.View {
 	if model.width < 40 || model.height < 10 {
 		lines = []string{T("cli.log_history.small"), T("cli.log_history.quit_help")}
 	} else {
-		lines = []string{historyStrong(T(model.messageKey("title")), richCyan, model.color), historyTint(historyTerminalText(model.path), richGray, model.color), ""}
+		path := historyTerminalText(model.path)
+		if filter := model.options.process.String(); filter != "" {
+			path += " · " + T("history.filter.active", historyTerminalText(filter))
+		}
+		lines = []string{historyStrong(T(model.messageKey("title")), richCyan, model.color), historyTint(path, richGray, model.color), ""}
 		header := ""
 		if !model.expanded {
 			header = model.tableLine(-1)
@@ -536,7 +601,8 @@ func runHistoryTopBrowser(db *sql.DB, path string, options historyOptions) error
 		return err
 	}
 	model := newHistoryTopBrowser(samples, path)
-	model.load = func() ([]historyTopSample, error) { return loadHistoryTop(db, options) }
+	model.options = options
+	model.loadWith = func(options historyOptions) ([]historyTopSample, error) { return loadHistoryTop(db, options) }
 	_, err = tea.NewProgram(model, tea.WithInput(os.Stdin), tea.WithOutput(os.Stdout)).Run()
 	return err
 }

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"charm.land/bubbles/v2/viewport"
@@ -34,9 +35,10 @@ type historyReviewData struct {
 }
 
 type historyReviewLoadedMsg struct {
-	seq  int
-	data historyReviewData
-	err  error
+	owner uint64
+	seq   int
+	data  historyReviewData
+	err   error
 }
 
 type historyReviewTickMsg struct{ seq int }
@@ -55,6 +57,7 @@ type historyReviewBrowser struct {
 	prune, dryRun, confirm, confirmed bool
 	checked                           map[string]bool
 	seq                               int
+	owner                             uint64
 	notice                            string
 	noticeSticky                      bool
 	load                              func() (historyReviewData, error)
@@ -64,8 +67,10 @@ type historyReviewBrowser struct {
 	agePicker                         *historyPruneAgePicker
 }
 
+var historyBrowserOwner atomic.Uint64
+
 func newHistoryReviewBrowser(title, path string, columns []historyReviewColumn, data historyReviewData) historyReviewBrowser {
-	model := historyReviewBrowser{title: title, path: path, columns: columns, data: data, view: viewport.New(), width: 80, height: 24, color: os.Getenv("NO_COLOR") == "", checked: map[string]bool{}}
+	model := historyReviewBrowser{title: title, path: path, columns: columns, data: data, view: viewport.New(), width: 80, height: 24, color: os.Getenv("NO_COLOR") == "", checked: map[string]bool{}, owner: historyBrowserOwner.Add(1)}
 	model.resize()
 	return model
 }
@@ -269,14 +274,14 @@ func (model historyReviewBrowser) tick() tea.Cmd {
 }
 
 func (model historyReviewBrowser) reload() tea.Cmd {
-	seq, load, loadPrune, options := model.seq, model.load, model.loadPrune, model.pruneOptions
+	seq, owner, load, loadPrune, options := model.seq, model.owner, model.load, model.loadPrune, model.pruneOptions
 	return func() tea.Msg {
 		if loadPrune != nil {
 			data, err := loadPrune(options)
-			return historyReviewLoadedMsg{seq: seq, data: data, err: err}
+			return historyReviewLoadedMsg{owner: owner, seq: seq, data: data, err: err}
 		}
 		data, err := load()
-		return historyReviewLoadedMsg{seq: seq, data: data, err: err}
+		return historyReviewLoadedMsg{owner: owner, seq: seq, data: data, err: err}
 	}
 }
 
@@ -290,7 +295,7 @@ func (model historyReviewBrowser) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return model, model.reload()
 		}
 	case historyReviewLoadedMsg:
-		if value.seq != model.seq || model.confirm {
+		if value.owner != 0 && value.owner != model.owner || value.seq != model.seq || model.confirm {
 			return model, nil
 		}
 		if value.err != nil {

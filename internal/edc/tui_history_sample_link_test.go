@@ -10,9 +10,12 @@ import (
 
 func TestHistoryNavigatorLinksUseFixtureData(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "history.db")
-	process := topProcess{PID: 7, Command: "worker", Started: time.Date(2026, 10, 20, 1, 2, 3, 0, time.UTC)}
 	recorder := topHistoryFixture(t, path)
-	if err := recorder.Record(historyFixtureSample(1, 20, process)); err != nil {
+	if err := recorder.Record(historyFixtureSample(1, 20, topProcess{PID: 7, Command: "first", Started: time.Date(2026, 10, 20, 1, 2, 3, 0, time.UTC)})); err != nil {
+		t.Fatal(err)
+	}
+	process := topProcess{PID: 8, Command: "second", Started: time.Date(2026, 10, 20, 2, 3, 4, 0, time.UTC)}
+	if err := recorder.Record(historyFixtureSample(2, 20, process)); err != nil {
 		t.Fatal(err)
 	}
 	if err := recorder.Close("finished"); err != nil {
@@ -42,7 +45,7 @@ func TestHistoryNavigatorLinksUseFixtureData(t *testing.T) {
 		navigator = next.(historyNavigator)
 	}
 	child, ok := navigator.current().(historySampleBrowser)
-	if !ok || !child.processMode || len(child.processes) == 0 || child.processes[0].RunID != recorder.runID {
+	if !ok || !child.processMode || len(child.processes) != 1 || child.processes[0].RunID != recorder.runID || child.processes[0].PID != process.PID {
 		t.Fatalf("process child=%+v", navigator.current())
 	}
 	next, _ := navigator.Update(tea.KeyPressMsg{Code: 't', Text: "t"})

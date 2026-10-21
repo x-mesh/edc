@@ -36,7 +36,7 @@ func TestHistoryTrendBrowserTargetsMetricsAndCommand(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(targets) != 3 || targets[0].kind != historyTrendHost || targets[1].value != "pg" || targets[1].pid != 10 || targets[1].rss != 130 || targets[2].value != "nginx" {
+	if len(targets) != 3 || targets[0].kind != historyTrendHost || targets[1].value != "pg" || targets[1].rss != 130 || targets[2].value != "nginx" {
 		t.Fatalf("targets = %+v", targets)
 	}
 	model := newHistoryTrendBrowser(db, targets, historyTrendOptions{by: "hour"}, historyTrendZone)
@@ -51,7 +51,7 @@ func TestHistoryTrendBrowserTargetsMetricsAndCommand(t *testing.T) {
 
 	model = historyTrendBrowserAfter(t, model, "down")
 	view := historyTrendBrowserView(model)
-	for _, want := range []string{"rss_bytes of pg by hour", "RESTARTS", "75%", "█", "without --process", "RSS change: too few samples (2)", "›pg 10"} {
+	for _, want := range []string{"rss_bytes of pg by hour", "RESTARTS", "75%", "█", "without --process", "RSS change: too few samples (2)", "›pg"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("process view lacks %q:\n%s", want, view)
 		}
@@ -77,24 +77,39 @@ func TestHistoryTrendBrowserTargetsMetricsAndCommand(t *testing.T) {
 	}
 }
 
-func TestHistoryTrendBrowserShowsExecutablePIDAndFullCommand(t *testing.T) {
+func TestHistoryTrendBrowserLocalizesPeakRSSAndShowsFullCommand(t *testing.T) {
 	t.Setenv("NO_COLOR", "1")
-	target := historyTrendTarget{kind: historyTrendProcess, value: "/Applications/OrbStack Helper", pid: 42, rss: 1 << 30}
+	restore := currentLanguage()
+	defer setLanguage(restore)
+	target := historyTrendTarget{kind: historyTrendProcess, value: "/Applications/OrbStack Helper", rss: 1 << 30}
 	model := newHistoryTrendBrowser(nil, []historyTrendTarget{target}, historyTrendOptions{by: "day"}, historyTrendZone)
-	for _, width := range []int{80, 120, 180} {
-		updated, _ := model.Update(tea.WindowSizeMsg{Width: width, Height: 20})
-		view := historyTrendBrowserView(updated.(historyTrendBrowser))
-		if !strings.Contains(view, "42") || !strings.Contains(view, "1.0 GB") || !strings.Contains(view, "rss_bytes of /Applications/OrbStack Helper by day") {
-			t.Fatalf("width %d view:\n%s", width, view)
-		}
-		for _, line := range strings.Split(view, "\n") {
-			if ansi.StringWidth(line) > width {
-				t.Fatalf("width %d line %d: %q", width, ansi.StringWidth(line), line)
+	for language, peak := range map[string]string{"en": "PEAK RSS", "ko": "최대 RSS", "ja": "最大RSS"} {
+		setLanguage(language)
+		for _, width := range []int{80, 120, 180} {
+			updated, _ := model.Update(tea.WindowSizeMsg{Width: width, Height: 20})
+			view := historyTrendBrowserView(updated.(historyTrendBrowser))
+			if !strings.Contains(view, T("history.browser.targets")) || !strings.Contains(view, peak) || !strings.Contains(view, "OrbStack Helper") || !strings.Contains(view, "1.0 GB") || !strings.Contains(view, "/Applications/OrbStack Helper") {
+				t.Fatalf("%s width %d view:\n%s", language, width, view)
+			}
+			for _, line := range strings.Split(view, "\n") {
+				if ansi.StringWidth(line) > width {
+					t.Fatalf("%s width %d line %d: %q", language, width, ansi.StringWidth(line), line)
+				}
 			}
 		}
 	}
 }
 
+func TestHistoryTrendBrowserDisambiguatesDuplicateExecutableNames(t *testing.T) {
+	model := newHistoryTrendBrowser(nil, []historyTrendTarget{
+		{kind: historyTrendProcess, value: "/Applications/Claude.app/Contents/Helpers/Helper"},
+		{kind: historyTrendProcess, value: "/Applications/Claude.app/Contents/Renderer/Helper"},
+	}, historyTrendOptions{}, historyTrendZone)
+	first, second := model.targetLabel(0, historyTrendTargetWidth), model.targetLabel(1, historyTrendTargetWidth)
+	if first == second || strings.Contains(first, "PID") || strings.Contains(second, "PID") || !strings.Contains(first, "Helpers") || !strings.Contains(second, "Renderer") {
+		t.Fatalf("duplicate labels = %q, %q", first, second)
+	}
+}
 func TestHistoryTrendBrowserStartsAtNamedProcessAndFitsSmallScreens(t *testing.T) {
 	db, _ := historyProcessTrendFixture(t)
 	targets, _ := historyTrendTargets(db)

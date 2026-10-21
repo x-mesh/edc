@@ -141,6 +141,7 @@ history:
     more_processes: "… 프로세스 %d개 더 있음, 전체는 --json"
   browser:
     targets: "대상"
+    peak_rss: "최대 RSS"
     host: "호스트"
     loading: "불러오는 중"
     growth: "RSS %s, 가장 빠른 pid %d"

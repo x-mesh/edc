@@ -22,6 +22,9 @@ const (
 	IssueMemberDuplicate  = "remotesetup.issue.member_duplicate"
 	IssueParallelNegative = "remotesetup.issue.parallel_negative"
 	IssueNoStore          = "remotesetup.issue.no_store"
+	IssueStepNameEmpty    = "remotesetup.issue.step_name_empty"
+	IssueStepDuplicate    = "remotesetup.issue.step_duplicate"
+	IssueStepUnknown      = "remotesetup.issue.step_unknown"
 )
 
 // ErrStale is what Store.Save returns when the stored inventory changed after Load.
@@ -49,4 +52,18 @@ type Validator interface {
 // Messages renders an Issue code or a screen text code. Unknown codes may render as the code.
 type Messages interface {
 	Text(code string, args ...any) string
+}
+
+// RecipeStore reads and writes one recipe. A missing recipe loads as an empty one.
+type RecipeStore interface {
+	Load() (Recipe, Revision, error)
+	Save(recipe Recipe, revision Revision) error
+}
+
+// RecipeValidator holds the recipe rules of the consumer.
+type RecipeValidator interface {
+	// ValidateStep checks one step as the user types it.
+	ValidateStep(step Step) *Issue
+	// ValidateRecipe checks the whole recipe before it is saved.
+	ValidateRecipe(recipe Recipe) []Issue
 }

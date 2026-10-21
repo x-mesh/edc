@@ -5,6 +5,7 @@ remotesetup:
     read: "edc cannot read the inventory %s: %v"
     not_regular: "%s is not a regular file"
     not_mapping: "the inventory must be a YAML mapping with hosts and groups"
+    recipe_not_mapping: "the recipe must be a YAML mapping with a name and steps"
     encode_mismatch: "edc could not write the inventory without changing its meaning, so it left the file as it was"
   issue:
     message: "%s"
@@ -18,17 +19,26 @@ remotesetup:
     member_duplicate: "host %s is in the group twice"
     parallel_negative: "parallel must be 0 or more"
     no_store: "no inventory file is set"
+    step_name_empty: "the step name cannot be empty"
+    step_duplicate: "step %s already exists"
+    step_unknown: "the step does not exist"
   tui:
     title: "edc setup remote  ·  %s"
     screen:
       hosts: "Hosts"
       groups: "Groups"
+      steps: "Steps"
     hosts_empty: "no host yet, press a to add one"
     groups_empty: "no group yet, press a to add one"
+    steps_empty: "no step yet, press a to add one"
+    recipe_line: "recipe %s"
+    recipe_unnamed: "(no name, press n to name it)"
+    upload_line: "upload %s → %s"
     parallel: "parallel %d (0 uses the default)"
     group_parallel: "parallel %d"
     prompt:
       group_name: "New group name"
+      recipe_name: "Recipe name"
       parallel: "Hosts that run at the same time (0 uses the default)"
       group_parallel: "Hosts of group %s that run at the same time (0 removes the override)"
     pick:
@@ -36,14 +46,25 @@ remotesetup:
     form:
       add: "Add a host"
       edit: "Edit the host"
+      step_add: "Add a step"
+      step_edit: "Edit the step"
     field:
       name: "name"
       target: "target (SSH alias, empty uses the name)"
       tags: "tags (comma separated)"
+      step_name: "name"
+      step_command: "command (empty for an upload)"
+      step_source: "upload source (local file)"
+      step_destination: "upload destination (remote path)"
+      step_mode: "upload mode (for example 0644)"
+      step_verify: "verify command (optional)"
+      step_timeout: "timeout (for example 30s, optional)"
+      step_tags: "tags (comma separated, empty runs on every host)"
     confirm:
       delete_host: "Delete host %s? (y/n)"
       delete_group: "Delete group %s? (y/n)"
       discard: "Discard the unsaved changes? (y/n)"
+      delete_step: "Delete step %s? (y/n)"
     status:
       add_host_first: "add a host first"
       not_a_number: "enter a whole number"
@@ -53,6 +74,7 @@ remotesetup:
       save_failed: "could not save: %s"
       blocked: "cannot save, %d problem(s): %s"
       saved: "saved"
+      recipe_blocked: "cannot save the recipe, %d problem(s): %s"
     key:
       move: "move"
       add: "add"
@@ -71,3 +93,6 @@ remotesetup:
       toggle: "toggle"
       "yes": "yes"
       "no": "no"
+      steps: "steps"
+      name: "name"
+      reorder: "reorder"

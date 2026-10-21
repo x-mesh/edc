@@ -283,7 +283,7 @@ _edc() {
           _arguments '1:shell:(zsh bash groups)'
           ;;
         setup)
-          _arguments '1::subcommand:(remote)' '--inventory[인벤토리 파일]:path:_files'
+          _arguments '1::subcommand:(remote)' '--inventory[인벤토리 파일]:path:_files' '--recipe[레시피 파일]:path:_files'
           ;;
       esac
       ;;
@@ -476,9 +476,9 @@ _edc() {
       fi ;;
     completion) COMPREPLY=($(compgen -W "zsh bash groups" -- "$cur")) ;;
     setup)
-      if [[ $prev == --inventory ]]; then COMPREPLY=($(compgen -f -- "$cur"))
+      if [[ $prev == --inventory || $prev == --recipe ]]; then COMPREPLY=($(compgen -f -- "$cur"))
       elif [[ $COMP_CWORD -eq 2 && $cur != -* ]]; then COMPREPLY=($(compgen -W "remote" -- "$cur"))
-      else COMPREPLY=($(compgen -W "--inventory" -- "$cur")); fi ;;
+      else COMPREPLY=($(compgen -W "--inventory --recipe" -- "$cur")); fi ;;
   esac
 }
 complete -F _edc edc

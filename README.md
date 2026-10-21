@@ -1734,20 +1734,22 @@ Use `-l` or `--list` to print the groups and hosts of the inventory. Name a grou
 
 The `--dry-run` and `--list` options do not combine with `-f`. Add `--redact` to hide IP addresses in the output.
 
-### Edit the inventory
+### Edit the inventory and the recipe
 
-Run `edc setup remote` in a terminal to edit the inventory on one screen.
+Run `edc setup remote` in a terminal to edit the inventory and the recipe on one screen.
 
 ```bash
 ./bin/edc setup remote
-./bin/edc setup remote --inventory ./.edc/inventory.yaml
+./bin/edc setup remote --inventory ./.edc/inventory.yaml --recipe ./.edc/recipe.yaml
 ```
 
-The command opens the file that `edc remote` finds. If no file exists, it creates `./.edc/inventory.yaml` on the first save. Use `--inventory` to name another file. The `defaults.remote.inventory` setting also names a file, and the flag wins.
+The command opens the files that `edc remote` finds. If a file does not exist, the command creates `./.edc/inventory.yaml` or `./.edc/recipe.yaml` on the first save. Use `--inventory` and `--recipe` to name other files. The `defaults.remote.inventory` and `defaults.remote.recipe` settings also name files, and the flags win.
 
 The screen has a list of hosts and a list of groups. Press `a` to add, `e` to edit, `d` to delete, `g` or `h` to change the list, `s` to save, and `q` to quit. In the group list, press `e` and use the space bar to pick the hosts of a group. Press `p` to set `parallel`, and `o` to set `parallel` for the selected group.
 
-Before a save, `edc` checks the result with the rules of `edc remote`. The save keeps the comments of the file, but a renamed host loses its comments. A new file has mode `0600`. If the file changed after `edc` read it, the save stops and `edc` writes nothing. If you discard unsaved changes, the command returns exit code `4`.
+Press `r` to open the list of steps. Press `a` to add a step, `e` to edit it, `d` to delete it, and `K` or `J` to move it up or down. Press `n` to name the recipe. A step has a command or an upload. Give one of them, not both.
+
+Before a save, `edc` checks the result with the rules of `edc remote`. A save writes only the files that you changed. The save keeps the comments of the file, but a renamed host or step loses its comments. A new file has mode `0600`. If the file changed after `edc` read it, the save stops and `edc` writes nothing. If you discard unsaved changes, the command returns exit code `4`.
 
 The screen stores no passwords or keys. Use an SSH alias as the `target`.
 

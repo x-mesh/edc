@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/x-mesh/edc/internal/remotesetup"
 )
@@ -251,6 +252,197 @@ func TestRemoteSetupPathPrecedence(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got := remoteSetupPath("", edcConfig{}, cwd, configDir); got != found {
+		t.Errorf("discovered = %q", got)
+	}
+}
+
+func newRecipeSetupEditor(t *testing.T, path string) *remotesetup.RecipeEditor {
+	t.Helper()
+	editor, err := remotesetup.NewRecipe(&remoteRecipeStore{path: path}, remoteSetupRecipeValidator{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return editor
+}
+
+func TestRemoteRecipeStoreCreatesAPrivateFileThatEdcRemoteLoads(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".edc", "recipe.yaml")
+	editor := newRecipeSetupEditor(t, path)
+	editor.SetName("daily")
+	for _, step := range []remotesetup.Step{
+		{Name: "update", Command: "apt-get update && apt-get -y upgrade", Verify: "apt-get --version", Timeout: "30s", Tags: []string{"linux"}},
+		{Name: "copy", Upload: &remotesetup.Upload{Source: "a.conf", Destination: "/etc/a.conf", Mode: "0644"}},
+	} {
+		if err := editor.AddStep(step); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if problems, err := editor.Save(); err != nil || len(problems) != 0 {
+		t.Fatalf("problems = %v, err = %v", problems, err)
+	}
+	want := `name: daily
+steps:
+  - name: update
+    command: apt-get update && apt-get -y upgrade
+    verify: apt-get --version
+    timeout: 30s
+    tags: [linux]
+  - name: copy
+    upload:
+      source: a.conf
+      destination: /etc/a.conf
+      mode: "0644"
+`
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != want {
+		t.Fatalf("file =\n%s\nwant\n%s", data, want)
+	}
+	if info, _ := os.Stat(path); info.Mode().Perm() != 0o600 {
+		t.Fatalf("file mode = %v", info.Mode().Perm())
+	}
+	loaded, err := loadRemoteRecipe(path, time.Minute)
+	if err != nil || len(loaded.Steps) != 2 || loaded.Steps[1].Upload == nil || loaded.Steps[1].Upload.Mode != "0644" || loaded.Steps[0].Timeout != 30*time.Second {
+		t.Fatalf("edc remote cannot load the file: %+v, %v", loaded, err)
+	}
+}
+
+const commentedRecipe = `# nightly maintenance
+name: daily
+steps:
+  - name: update   # refresh the index
+    command: apt-get update
+    tags: [linux]
+  - name: check
+    command: uptime
+    verify: "true"
+`
+
+func TestRemoteRecipeStoreKeepsCommentsThroughEditsAndReorder(t *testing.T) {
+	path := writeInventoryFixture(t, commentedRecipe)
+	editor := newRecipeSetupEditor(t, path)
+	if err := editor.AddStep(remotesetup.Step{Name: "clean", Command: "apt-get clean"}); err != nil {
+		t.Fatal(err)
+	}
+	editor.MoveStep(2, -2)
+	if err := editor.UpdateStep(1, remotesetup.Step{Name: "update", Command: "apt-get -y update", Tags: []string{"linux", "prod"}}); err != nil {
+		t.Fatal(err)
+	}
+	if problems, err := editor.Save(); err != nil || len(problems) != 0 {
+		t.Fatalf("problems = %v, err = %v", problems, err)
+	}
+	data, _ := os.ReadFile(path)
+	text := string(data)
+	for _, want := range []string{"# nightly maintenance", "# refresh the index", "command: apt-get -y update", "tags: [linux, prod]", "verify: \"true\""} {
+		if !strings.Contains(text, want) {
+			t.Errorf("the file lost %q:\n%s", want, text)
+		}
+	}
+	if clean, update := strings.Index(text, "name: clean"), strings.Index(text, "name: update"); clean < 0 || clean > update {
+		t.Errorf("the moved step is not first:\n%s", text)
+	}
+	if _, err := loadRemoteRecipe(path, time.Minute); err != nil {
+		t.Fatalf("edc remote cannot load the edited file: %v\n%s", err, text)
+	}
+}
+
+func TestRemoteRecipeStoreSwitchesAStepBetweenCommandAndUpload(t *testing.T) {
+	path := writeInventoryFixture(t, commentedRecipe)
+	editor := newRecipeSetupEditor(t, path)
+	if err := editor.UpdateStep(1, remotesetup.Step{Name: "check", Upload: &remotesetup.Upload{Source: "check.sh", Destination: "/usr/local/bin/check.sh"}}); err != nil {
+		t.Fatal(err)
+	}
+	if problems, err := editor.Save(); err != nil || len(problems) != 0 {
+		t.Fatalf("problems = %v, err = %v", problems, err)
+	}
+	data, _ := os.ReadFile(path)
+	text := string(data)
+	if strings.Contains(text, "command: uptime") || strings.Contains(text, "verify") || !strings.Contains(text, "source: check.sh") {
+		t.Fatalf("the step did not switch:\n%s", text)
+	}
+	if _, err := loadRemoteRecipe(path, time.Minute); err != nil {
+		t.Fatalf("edc remote cannot load the edited file: %v\n%s", err, text)
+	}
+}
+
+func TestRemoteRecipeStoreRefusesAChangedFileAndBadFiles(t *testing.T) {
+	path := writeInventoryFixture(t, commentedRecipe)
+	editor := newRecipeSetupEditor(t, path)
+	editor.SetName("weekly")
+	changed := commentedRecipe + "# someone else edited this\n"
+	if err := os.WriteFile(path, []byte(changed), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := editor.Save(); !errors.Is(err, remotesetup.ErrStale) {
+		t.Fatalf("err = %v, want ErrStale", err)
+	}
+	if data, _ := os.ReadFile(path); string(data) != changed {
+		t.Fatalf("a stale save overwrote the file:\n%s", data)
+	}
+	if recipe, _, err := (&remoteRecipeStore{path: writeInventoryFixture(t, "")}).Load(); err != nil || len(recipe.Steps) != 0 {
+		t.Fatalf("empty file: %+v, %v", recipe, err)
+	}
+	for name, content := range map[string]string{
+		"unknown key":   "name: a\nextra: 1\n",
+		"not a mapping": "- a\n",
+		"unknown step":  "name: a\nsteps:\n  - name: s\n    command: x\n    speed: 1\n",
+		"two documents": "name: a\n---\nname: b\n",
+	} {
+		if _, _, err := (&remoteRecipeStore{path: writeInventoryFixture(t, content)}).Load(); err == nil {
+			t.Errorf("%s: the file was accepted", name)
+		}
+	}
+}
+
+func TestRemoteSetupRecipeValidatorAppliesTheRulesOfEdcRemote(t *testing.T) {
+	validator := remoteSetupRecipeValidator{}
+	for name, step := range map[string]remotesetup.Step{
+		"no action":      {Name: "s"},
+		"both actions":   {Name: "s", Command: "x", Upload: &remotesetup.Upload{Source: "a", Destination: "/b"}},
+		"upload no dest": {Name: "s", Upload: &remotesetup.Upload{Source: "a"}},
+		"dash source":    {Name: "s", Upload: &remotesetup.Upload{Source: "-a", Destination: "/b"}},
+		"bad mode":       {Name: "s", Upload: &remotesetup.Upload{Source: "a", Destination: "/b", Mode: "999"}},
+		"bad timeout":    {Name: "s", Command: "x", Timeout: "soon"},
+		"duplicate tag":  {Name: "s", Command: "x", Tags: []string{"a", "a"}},
+	} {
+		if issue := validator.ValidateStep(step); issue == nil || issue.Code != remoteSetupIssueMessage {
+			t.Errorf("%s: accepted (%v)", name, issue)
+		}
+	}
+	if issue := validator.ValidateStep(remotesetup.Step{Name: "s", Command: "x", Timeout: "30s", Tags: []string{"linux"}}); issue != nil {
+		t.Errorf("a valid step was rejected: %v", issue)
+	}
+	if issues := validator.ValidateRecipe(remotesetup.Recipe{Steps: []remotesetup.Step{{Name: "s", Command: "x"}}}); len(issues) != 1 {
+		t.Errorf("a recipe without a name = %v", issues)
+	}
+	if issues := validator.ValidateRecipe(remotesetup.Recipe{Name: "daily"}); len(issues) != 1 {
+		t.Errorf("a recipe without a step = %v", issues)
+	}
+	if issues := validator.ValidateRecipe(remotesetup.Recipe{Name: "daily", Steps: []remotesetup.Step{{Name: "s", Command: "x"}}}); len(issues) != 0 {
+		t.Errorf("a valid recipe = %v", issues)
+	}
+}
+
+func TestRemoteSetupRecipePathPrecedence(t *testing.T) {
+	cwd := t.TempDir()
+	configDir := t.TempDir()
+	configured := edcConfig{Defaults: configDefaults{Remote: remoteConfig{Recipe: stringPointer("/etc/edc/daily.yaml")}}}
+	if got := remoteSetupRecipePath("/tmp/flag.yaml", configured, cwd, configDir); got != "/tmp/flag.yaml" {
+		t.Errorf("flag = %q", got)
+	}
+	if got := remoteSetupRecipePath("", configured, cwd, configDir); got != "/etc/edc/daily.yaml" {
+		t.Errorf("config = %q", got)
+	}
+	if got := remoteSetupRecipePath("", edcConfig{}, cwd, configDir); got != filepath.Join(cwd, ".edc", "recipe.yaml") {
+		t.Errorf("default = %q", got)
+	}
+	found := filepath.Join(cwd, "recipe.yaml")
+	if err := os.WriteFile(found, []byte("name: a\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := remoteSetupRecipePath("", edcConfig{}, cwd, configDir); got != found {
 		t.Errorf("discovered = %q", got)
 	}
 }

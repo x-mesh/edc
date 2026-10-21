@@ -24,39 +24,30 @@ type remoteInventoryStore struct {
 
 type remoteInventoryRevision struct{ snapshot configSnapshot }
 
-func (store *remoteInventoryStore) Load() (remotesetup.Inventory, remotesetup.Revision, error) {
-	store.root = nil
-	snapshot, err := configFileSnapshot(store.path)
-	if err != nil {
-		return remotesetup.Inventory{}, nil, err
+// openRemoteFile reads an inventory or recipe for editing. data is nil when the file is missing or blank.
+func openRemoteFile(path string) (data []byte, snapshot configSnapshot, err error) {
+	snapshot, err = configFileSnapshot(path)
+	if err != nil || !snapshot.exists {
+		return nil, snapshot, err
 	}
-	revision := remoteInventoryRevision{snapshot: snapshot}
-	if !snapshot.exists {
-		return remotesetup.Inventory{}, revision, nil
-	}
-	info, err := os.Stat(store.path)
+	info, err := os.Stat(path)
 	if err != nil {
-		return remotesetup.Inventory{}, nil, err
+		return nil, snapshot, err
 	}
 	if !info.Mode().IsRegular() {
-		return remotesetup.Inventory{}, nil, errors.New(T("remotesetup.error.not_regular", store.path))
+		return nil, snapshot, errors.New(T("remotesetup.error.not_regular", path))
 	}
-	data, err := readRemoteInventoryFile(store.path)
+	data, err = readRemoteFile(path)
 	if err != nil {
-		return remotesetup.Inventory{}, nil, err
+		return nil, snapshot, err
 	}
 	if len(bytes.TrimSpace(data)) == 0 {
-		return remotesetup.Inventory{}, revision, nil
+		data = nil
 	}
-	inventory, root, err := parseRemoteInventory(data)
-	if err != nil {
-		return remotesetup.Inventory{}, nil, fmt.Errorf("inventory %q: %w", store.path, err)
-	}
-	store.root = root
-	return inventory, revision, nil
+	return data, snapshot, nil
 }
 
-func readRemoteInventoryFile(path string) ([]byte, error) {
+func readRemoteFile(path string) ([]byte, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -70,6 +61,37 @@ func readRemoteInventoryFile(path string) ([]byte, error) {
 		return nil, errors.New(T("remote.error.file_too_large", remoteConfigLimit))
 	}
 	return data, nil
+}
+
+func encodeRemoteDocument(document *yaml.Node) ([]byte, error) {
+	var buffer bytes.Buffer
+	encoder := yaml.NewEncoder(&buffer)
+	encoder.SetIndent(2)
+	if err := encoder.Encode(document); err != nil {
+		return nil, err
+	}
+	if err := encoder.Close(); err != nil {
+		return nil, err
+	}
+	return buffer.Bytes(), nil
+}
+
+func (store *remoteInventoryStore) Load() (remotesetup.Inventory, remotesetup.Revision, error) {
+	store.root = nil
+	data, snapshot, err := openRemoteFile(store.path)
+	if err != nil {
+		return remotesetup.Inventory{}, nil, err
+	}
+	revision := remoteInventoryRevision{snapshot: snapshot}
+	if data == nil {
+		return remotesetup.Inventory{}, revision, nil
+	}
+	inventory, root, err := parseRemoteInventory(data)
+	if err != nil {
+		return remotesetup.Inventory{}, nil, fmt.Errorf("inventory %q: %w", store.path, err)
+	}
+	store.root = root
+	return inventory, revision, nil
 }
 
 // parseRemoteInventory reads the file strictly, as edc remote does, and keeps the node tree and the group order.
@@ -123,21 +145,16 @@ func (store *remoteInventoryStore) Save(inventory remotesetup.Inventory, revisio
 		document = &yaml.Node{Kind: yaml.DocumentNode, Content: []*yaml.Node{{Kind: yaml.MappingNode}}}
 	}
 	updateRemoteInventoryNode(document.Content[0], inventory)
-	var buffer bytes.Buffer
-	encoder := yaml.NewEncoder(&buffer)
-	encoder.SetIndent(2)
-	if err := encoder.Encode(document); err != nil {
-		return err
-	}
-	if err := encoder.Close(); err != nil {
+	data, err := encodeRemoteDocument(document)
+	if err != nil {
 		return err
 	}
 	// The edited tree must read back as exactly the inventory that was asked for, or nothing is written.
-	written, _, err := parseRemoteInventory(buffer.Bytes())
+	written, _, err := parseRemoteInventory(data)
 	if err != nil || !reflect.DeepEqual(canonicalRemoteInventory(written), canonicalRemoteInventory(inventory)) {
 		return errors.New(T("remotesetup.error.encode_mismatch"))
 	}
-	return writeRemoteInventoryIfUnchanged(store.path, buffer.Bytes(), loaded.snapshot)
+	return writeRemoteFileIfUnchanged(store.path, data, loaded.snapshot)
 }
 
 // canonicalRemoteInventory makes nil and empty collections compare equal.
@@ -154,10 +171,10 @@ func canonicalRemoteInventory(inventory remotesetup.Inventory) remotesetup.Inven
 	return canonical
 }
 
-// writeRemoteInventoryIfUnchanged replaces the file atomically with mode 0600 for a new file and the
-// existing mode for an existing one. Unlike the config writer it never changes the directory mode,
-// because the inventory often sits in a project directory.
-func writeRemoteInventoryIfUnchanged(path string, data []byte, original configSnapshot) error {
+// writeRemoteFileIfUnchanged replaces an inventory or recipe file atomically with mode 0600 for a new file and
+// the existing mode for an existing one. Unlike the config writer it never changes the directory mode,
+// because these files often sit in a project directory.
+func writeRemoteFileIfUnchanged(path string, data []byte, original configSnapshot) error {
 	directory := filepath.Dir(path)
 	if err := os.MkdirAll(directory, 0o700); err != nil {
 		return err
@@ -166,7 +183,7 @@ func writeRemoteInventoryIfUnchanged(path string, data []byte, original configSn
 	if original.exists {
 		mode = original.mode.Perm()
 	}
-	file, err := os.CreateTemp(directory, ".inventory-*.yaml")
+	file, err := os.CreateTemp(directory, ".remote-*.yaml")
 	if err != nil {
 		return err
 	}
@@ -300,6 +317,19 @@ func setIntKey(mapping *yaml.Node, key string, value int) {
 	setMappingValue(mapping, key, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!int", Value: strconv.Itoa(value)})
 }
 
+// setTagsKey keeps an explicit empty list and a list that already says the same thing.
+func setTagsKey(item *yaml.Node, tags []string) {
+	current := mappingValue(item, "tags")
+	switch {
+	case len(tags) == 0:
+		if current != nil && len(current.Content) > 0 {
+			deleteMappingKey(item, "tags")
+		}
+	case current == nil || !sameStrings(stringList(current), tags):
+		setMappingValue(item, "tags", stringListNode(tags, current, yaml.FlowStyle))
+	}
+}
+
 func updateHostsNode(root *yaml.Node, hosts []remotesetup.Host) {
 	previous := mappingValue(root, "hosts")
 	existing := map[string]*yaml.Node{}
@@ -323,15 +353,7 @@ func updateHostsNode(root *yaml.Node, hosts []remotesetup.Host) {
 			setMappingValue(item, "name", stringNode(host.Name))
 		}
 		setStringKey(item, "target", host.Target)
-		current := mappingValue(item, "tags")
-		switch {
-		case len(host.Tags) == 0:
-			if current != nil && len(current.Content) > 0 {
-				deleteMappingKey(item, "tags")
-			}
-		case current == nil || !sameStrings(stringList(current), host.Tags):
-			setMappingValue(item, "tags", stringListNode(host.Tags, current, yaml.FlowStyle))
-		}
+		setTagsKey(item, host.Tags)
 		list.Content = append(list.Content, item)
 	}
 	setMappingValue(root, "hosts", list)

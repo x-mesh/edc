@@ -66,6 +66,8 @@ func (model historyReviewBrowser) split() bool {
 	return !model.expanded && model.width >= 132 && model.height >= 16
 }
 
+func (model historyReviewBrowser) atTop() bool { return !model.expanded }
+
 func (model historyReviewBrowser) tableWidth() int {
 	if model.split() {
 		return max(model.width*3/5, model.width-48)

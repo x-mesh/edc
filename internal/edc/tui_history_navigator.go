@@ -12,6 +12,7 @@ type historyNavigator struct {
 	db    *sql.DB
 	path  string
 	stack []tea.Model
+	size  *tea.WindowSizeMsg
 }
 
 func newHistoryNavigator(db *sql.DB, path string, root historyReviewBrowser) historyNavigator {
@@ -27,7 +28,7 @@ func (model historyNavigator) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if key.String() == "q" || key.String() == "ctrl+c" {
 			return model, tea.Quit
 		}
-		if key.String() == "esc" && len(model.stack) > 1 {
+		if key.String() == "esc" && len(model.stack) > 1 && navigatorAtTop(model.current()) {
 			model.stack = model.stack[:len(model.stack)-1]
 			return model, nil
 		}
@@ -37,27 +38,60 @@ func (model historyNavigator) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "t":
 				samples, err := loadHistoryTop(model.db, options)
 				if err != nil {
+					root.notice = err.Error()
+					root.resize()
+					model.stack[len(model.stack)-1] = root
 					return model, nil
 				}
 				child := newHistoryTopBrowser(samples, model.path)
 				child.load = func() ([]historyTopSample, error) { return loadHistoryTop(model.db, options) }
+				if model.size != nil {
+					updated, _ := child.Update(*model.size)
+					child = updated.(historySampleBrowser)
+				}
 				model.stack = append(model.stack, child)
 				return model, child.Init()
 			case "p":
 				samples, err := loadHistoryProcess(model.db, options)
 				if err != nil {
+					root.notice = err.Error()
+					root.resize()
+					model.stack[len(model.stack)-1] = root
 					return model, nil
 				}
 				child := newHistoryProcessBrowser(samples, model.path)
 				child.loadProcesses = func() ([]historyProcessSample, error) { return loadHistoryProcess(model.db, options) }
+				if model.size != nil {
+					updated, _ := child.Update(*model.size)
+					child = updated.(historySampleBrowser)
+				}
 				model.stack = append(model.stack, child)
 				return model, child.Init()
 			}
 		}
 	}
-	updated, command := model.current().Update(msg)
-	model.stack[len(model.stack)-1] = updated
-	return model, command
+	if size, ok := msg.(tea.WindowSizeMsg); ok {
+		model.size = &size
+	}
+	var commands []tea.Cmd
+	for index, child := range model.stack {
+		updated, command := child.Update(msg)
+		model.stack[index] = updated
+		if command != nil {
+			commands = append(commands, command)
+		}
+	}
+	return model, tea.Batch(commands...)
+}
+
+func navigatorAtTop(model tea.Model) bool {
+	switch child := model.(type) {
+	case historyReviewBrowser:
+		return child.atTop()
+	case historySampleBrowser:
+		return child.atTop()
+	}
+	return true
 }
 
 func (model historyNavigator) View() tea.View { return model.current().View() }

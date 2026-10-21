@@ -27,7 +27,8 @@ const historyDefaultLimit = 200
 
 var historyLiveTerminal = liveTerminal
 var historyListBrowserRunner = runHistoryListBrowser
-var historyNavigatorRunner = runHistoryNavigator
+var historyNavigatorRunner = func() error { return runHistoryNavigator(historyOptions{}) }
+var historyScopedNavigatorRunner = runHistoryNavigatorWith
 
 func historyTerminalText(value string) string {
 	return strings.NewReplacer("\r", `\r`, "\n", `\n`, "\t", `\t`).Replace(traceEscapeText([]byte(value)))
@@ -50,6 +51,10 @@ func runHistory(args []string) int {
 			return 2
 		}
 		args = []string{choice}
+	}
+	noSubcommand := len(args) > 0 && strings.HasPrefix(args[0], "-")
+	if noSubcommand {
+		args = append([]string{"list"}, args...)
 	}
 	// log is the same viewer as edc log history; it reads the command logs, not
 	// this database, so none of the options below apply to it.
@@ -169,7 +174,11 @@ func runHistory(args []string) int {
 		var err error
 		switch command {
 		case "list":
-			err = historyListBrowserRunner(db, path, options)
+			if noSubcommand {
+				err = historyScopedNavigatorRunner(db, path, options)
+			} else {
+				err = historyListBrowserRunner(db, path, options)
+			}
 		case "process":
 			err = runHistoryProcessBrowser(db, path, options)
 		default:

@@ -65,6 +65,7 @@ history:
   list_browser:
     title: "실행 기록"
     summary: "기록한 top 및 snapshot 실행"
+    active_range: "범위 %s"
     details: "선택한 실행"
     navigator_help: "Enter 개요   i 상세   t Top 관측값   o Process   g 증가량"
     snapshot_navigator_help: "Enter 개요   i 상세   g 증가량"

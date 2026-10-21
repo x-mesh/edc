@@ -19,6 +19,9 @@ func historyListReviewData(db *sql.DB, options historyOptions, now time.Time) (h
 	}
 	defer rows.Close()
 	data := historyReviewData{summary: T("history.list_browser.summary"), empty: T("history.list_browser.empty")}
+	if !options.from.IsZero() || !options.to.IsZero() || options.run != "" {
+		data.summary += " · " + T("history.list_browser.active_range", historyHistoryRangeLabel(options))
+	}
 	for rows.Next() {
 		var payload, status string
 		var ended sql.NullInt64
@@ -64,6 +67,20 @@ func historyListReviewData(db *sql.DB, options historyOptions, now time.Time) (h
 		return historyReviewData{}, err
 	}
 	return data, nil
+}
+
+func historyHistoryRangeLabel(options historyOptions) string {
+	parts := []string{}
+	if options.run != "" {
+		parts = append(parts, options.run)
+	}
+	if !options.from.IsZero() {
+		parts = append(parts, options.from.Local().Format(time.DateTime)+" →")
+	}
+	if !options.to.IsZero() {
+		parts = append(parts, options.to.Local().Format(time.DateTime))
+	}
+	return strings.Join(parts, " ")
 }
 
 func historyRunDescription(run historyRun) string {

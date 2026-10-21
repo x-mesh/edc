@@ -65,6 +65,7 @@ history:
   list_browser:
     title: "Run history"
     summary: "Recorded top and snapshot runs"
+    active_range: "range %s"
     details: "Selected run"
     navigator_help: "Enter Overview   i Details   t Top samples   o Processes   g Growth"
     snapshot_navigator_help: "Enter Overview   i Details   g Growth"

@@ -46,11 +46,13 @@ func TestHistoryOverviewBrowserShowsEmptyError(t *testing.T) {
 	}
 }
 
-func TestHistoryOverviewBrowserUsesRangeForRunDuration(t *testing.T) {
+func TestHistoryOverviewBrowserUsesRunDuration(t *testing.T) {
 	model := overviewBrowserFixture()
-	model.overview.Run = &historyRun{ID: "run", Command: "top", Hostname: "host"}
+	model.overview.Run = &historyRun{ID: "run", Command: "top", Hostname: "host", StartedAt: time.Unix(0, 0)}
 	model.overview.From = time.Unix(0, 0)
 	model.overview.To = model.overview.From.Add(15100 * time.Millisecond)
+	ended := model.overview.Run.StartedAt.Add(15100 * time.Millisecond)
+	model.overview.Run.EndedAt = &ended
 	if !strings.Contains(strings.Join(model.lines(), "\n"), "15.1s") {
 		t.Fatalf("run duration = %q", model.lines()[2])
 	}

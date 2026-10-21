@@ -128,6 +128,11 @@ func loadHistoryOverview(db *sql.DB, options historyOverviewOptions) (historyOve
 		if err := json.Unmarshal([]byte(p), &run); err != nil {
 			return out, err
 		}
+		run.StartedAt = time.Unix(0, s).UTC()
+		if e.Valid {
+			ended := time.Unix(0, e.Int64).UTC()
+			run.EndedAt = &ended
+		}
 		if out.Run == nil {
 			if options.run != "" {
 				out.Run = &run

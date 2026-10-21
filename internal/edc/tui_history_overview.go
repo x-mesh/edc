@@ -73,9 +73,7 @@ func (model historyOverviewBrowser) lines() []string {
 		run := model.overview.Run
 		duration := "—"
 		if run.EndedAt != nil {
-			duration = run.EndedAt.Sub(run.StartedAt).Truncate(time.Millisecond).String()
-		} else if model.overview.To.After(model.overview.From) {
-			duration = model.overview.To.Sub(model.overview.From).Truncate(time.Millisecond).String()
+			duration = historyShortDuration(run.EndedAt.Sub(run.StartedAt))
 		}
 		lines := []string{title, fmt.Sprintf(T("history.overview.browser.run"), run.ID, historyTerminalText(run.Command), historyTerminalText(run.Hostname)), fmt.Sprintf(T("history.overview.browser.run_detail"), duration, run.IntervalS, historyTerminalText(emptyAs(run.Process, "—")))}
 		return model.tableLines(lines)

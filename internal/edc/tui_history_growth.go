@@ -98,7 +98,8 @@ func runHistoryGrowthBrowser(db *sql.DB, path string, options historyGrowthOptio
 	model := newHistoryReviewBrowser(T("history.review.growth_title"), path, columns, historyGrowthReviewData(growth))
 	model.navigateFn = historyGrowthNavigate
 	model.extraHelp = "history.growth.navigator_help"
-	model.load = func() (historyReviewData, error) {
+	model.growthOptions = &options
+	model.growthLoad = func(options historyGrowthOptions) (historyReviewData, error) {
 		growth, err := collectHistoryGrowth(db, options, time.Now())
 		if err != nil {
 			return historyReviewData{}, err
@@ -134,7 +135,8 @@ func newHistoryGrowthNavigator(db *sql.DB, path string, options historyGrowthOpt
 	model := newHistoryReviewBrowser(T("history.review.growth_title"), path, columns, historyGrowthReviewData(growth))
 	model.navigateFn = historyGrowthNavigate
 	model.extraHelp = "history.growth.navigator_help"
-	model.load = func() (historyReviewData, error) {
+	model.growthOptions = &options
+	model.growthLoad = func(options historyGrowthOptions) (historyReviewData, error) {
 		growth, err := collectHistoryGrowth(db, options, time.Now())
 		if err != nil {
 			return historyReviewData{}, err

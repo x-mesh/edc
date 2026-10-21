@@ -162,7 +162,7 @@ func cleanLooksLikeDockerRoot(path string) bool {
 
 func cleanStaleRootEvidence(ctx context.Context, deps cleanDeps, path string, docker cleanDocker) cleanStaleDockerRoot {
 	root := cleanStaleDockerRoot{Path: path, Status: cleanMeasured}
-	scan, err := deps.measure(ctx, duOptions{root: path, workers: duDefaultWorkers}, deps.sources)
+	scan, err := deps.measure(ctx, duOptions{root: path, workers: deps.workers}, deps.sources)
 	if err != nil {
 		root.Status, root.Detail = cleanFailed, err.Error()
 		return root

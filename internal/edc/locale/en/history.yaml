@@ -15,6 +15,8 @@ history:
       notes:
         - "`edc history list`, `edc history top`, and `edc history process` open interactive browsers in a terminal."
         - "`↑↓` selects, `Enter` opens details, `Home` follows latest; wide screens add columns and a detail panel."
+        - "`edc history` with no subcommand in a terminal opens a navigator on the run list. `Enter` opens the overview, `i` the details, `t` top samples, `o` processes, `g` growth, and `m` a menu with trend, prune, the command log and export. `Esc` goes back one screen."
+        - "In every screen, `Enter` opens the next level of the selected row, `i` shows the row itself where the footer lists it, `Esc` goes back, and `q` quits. `/` filters top, process and growth by process."
     analysis:
       title: "Trends and growth"
       notes:
@@ -62,12 +64,18 @@ history:
     title: "Process history"
     empty: "No recorded process observations match this query. Record with edc top -w --process <name>, then open edc history process."
     navigator_help: "t Trend"
+  filter:
+    help: "/ Filter"
+    active: "filter %s"
+    input: "filter: %s█"
+    input_help: "Enter Apply   Esc Cancel   Ctrl+U Clear"
   list_browser:
     title: "Run history"
     summary: "Recorded top and snapshot runs"
+    active_range: "range %s"
     details: "Selected run"
-    navigator_help: "Enter Overview   i Details   t Top samples   o Processes   g Growth"
-    snapshot_navigator_help: "Enter Overview   i Details   g Growth"
+    navigator_help: "Enter Overview   i Details   t Top samples   o Processes   g Growth   m Menu"
+    snapshot_navigator_help: "Enter Overview   i Details   g Growth   m Menu"
     snapshot_navigation: "Top and process samples are available only for top runs."
     empty: "No recorded runs match this query."
     run: "run  %s"
@@ -82,12 +90,23 @@ history:
     process: "process filter  %s"
     interfaces: "interfaces  %s"
     column:
-      start: "Start"
       command: "Command"
+      start: "Start"
       duration: "Duration"
       samples: "Samples"
       status: "Status"
       host: "Host"
+  menu:
+    title: "History menu"
+    trend: "Trend"
+    overview: "Overview: last 24 hours"
+    growth: "Growth"
+    prune: "Prune"
+    log: "Command log history"
+    export: "Export selected run"
+    help: "↑↓ Select   Enter Open   Esc Back   q Quit"
+    export_notice: "Run: edc history export --run %s %s"
+    export_snapshot_only: "Export takes a snapshot run."
   recording:
     started: "Recording started: %s"
     stopped: "Recording stopped · %d samples saved"
@@ -103,7 +122,7 @@ history:
     empty: "No top recordings. Run edc top and press w, or use edc top -w. Snapshots are listed by edc history list."
     navigator_help: "o Processes"
   database_path: "Default history DB: %s"
-  usage: "Usage: edc history <list|top|process|overview|export|trend|growth|prune> [options] [DB]"
+  usage: "Usage: edc history [--from <time>] [--to <time>] [--run <id>] [--limit <n>] [DB]"
   option:
     run: "only this run ID"
     from: "inclusive start time (RFC3339)"
@@ -186,6 +205,8 @@ history:
       metric: "METRIC"
       process: "PROCESS"
       help: "↑↓ scroll   PgUp/PgDn page   r refresh   q quit"
+      log_help: "l log runs"
+      log_list_help: "↑↓ Select   Enter Open   Esc Back   q Quit"
     metric:
       cpu: "CPU"
       memory: "Memory"

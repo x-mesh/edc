@@ -1,6 +1,8 @@
 package edc
 
 import (
+	"bytes"
+	"context"
 	"flag"
 	"io"
 	"os"
@@ -165,6 +167,14 @@ func TestConfigRejectsUnknownTypeAndRange(t *testing.T) {
 		"defaults: {http: {expect_status: 99}}\n",
 		"defaults: {top: {interval: 10ms}}\n",
 		"defaults: {remote: {parallel: -1}}\n",
+		"defaults: {du: {workers: 0}}\n",
+		"defaults: {du: {workers: many}}\n",
+		"defaults: {history: {limit: -1}}\n",
+		"defaults: {log: {history_limit: 0}}\n",
+		"defaults: {log: {history_limit: 1001}}\n",
+		"defaults: {changes: {since: 0s}}\n",
+		"defaults: {snapshot: {since: -1h}}\n",
+		"defaults: {events: {since: soon}}\n",
 		"defaults: {common: {json: false}}\n",
 		"defaults: {remote: {inventory: false}}\n",
 		"defaults: {log: {output: false}}\n",
@@ -432,5 +442,81 @@ func TestConfigAuditTableLoadsValidatesAndSurvivesSetup(t *testing.T) {
 	saved, err := loadConfigAt(path)
 	if err != nil || !reflect.DeepEqual(saved.Audit, config.Audit) {
 		t.Fatalf("setup dropped [audit]: %#v, error = %v", saved.Audit, err)
+	}
+}
+
+func TestDuWorkersFlagConfigAndBuiltInPrecedence(t *testing.T) {
+	restore := activeConfig
+	defer func() { activeConfig = restore }()
+	workersOf := func(args []string) int {
+		t.Helper()
+		var seen int
+		home := cleanTestHome(t)
+		cleanTestTree(t, filepath.Join(home, "npm"), 8<<10)
+		deps := cleanRunDeps(t, home)
+		inner := deps.measure
+		deps.measure = func(ctx context.Context, options duOptions, sources duSources) (duScan, error) {
+			seen = options.workers
+			return inner(ctx, options, sources)
+		}
+		var output bytes.Buffer
+		args = append(args, "--json", filepath.Join(t.TempDir(), "out.json"))
+		if code := runCleanWith(args, "test", deps, true, nil, &output); code != 0 {
+			t.Fatalf("%v: exit code = %d", args, code)
+		}
+		return seen
+	}
+	activeConfig = edcConfig{}
+	if got := workersOf(nil); got != duDefaultWorkers {
+		t.Fatalf("no config: workers = %d, want %d", got, duDefaultWorkers)
+	}
+	activeConfig.Defaults.Du.Workers = intPointer(6)
+	if got := workersOf(nil); got != 6 {
+		t.Fatalf("config: workers = %d, want 6", got)
+	}
+	if got := workersOf([]string{"--workers", "2"}); got != 2 {
+		t.Fatalf("config and flag: workers = %d, want 2", got)
+	}
+}
+
+func TestLookbackAndLimitFlagsFollowConfigThenFlag(t *testing.T) {
+	restore := activeConfig
+	defer func() { activeConfig = restore }()
+	eventsSince := func(args []string) time.Duration {
+		t.Helper()
+		_, since, ok := parseEventsFlags(args, commonOptions{}, io.Discard)
+		if !ok {
+			t.Fatalf("events %v rejected", args)
+		}
+		return since
+	}
+	logLimit := func(args []string) int {
+		t.Helper()
+		options, err := parseLogHistoryOptions(args, io.Discard)
+		if err != nil {
+			t.Fatalf("log history %v: %v", args, err)
+		}
+		return options.Limit
+	}
+	activeConfig = edcConfig{}
+	if got := eventsSince(nil); got != eventsDefaultSince {
+		t.Fatalf("events built-in = %s", got)
+	}
+	if got := logLimit(nil); got != logHistoryDefaultLimit {
+		t.Fatalf("log history built-in = %d", got)
+	}
+	activeConfig.Defaults.Events.Since = durationPointer(2 * time.Hour)
+	activeConfig.Defaults.Log.HistoryLimit = intPointer(7)
+	if got := eventsSince(nil); got != 2*time.Hour {
+		t.Fatalf("events config = %s", got)
+	}
+	if got := logLimit(nil); got != 7 {
+		t.Fatalf("log history config = %d", got)
+	}
+	if got := eventsSince([]string{"--since", "30m"}); got != 30*time.Minute {
+		t.Fatalf("events flag = %s", got)
+	}
+	if got := logLimit([]string{"--limit", "3"}); got != 3 {
+		t.Fatalf("log history flag = %d", got)
 	}
 }

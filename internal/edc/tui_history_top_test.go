@@ -8,6 +8,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 )
 
 func historyTopSamples(count int) []historyTopSample {
@@ -71,6 +72,43 @@ func TestHistoryTopBrowserFollowsAndPreservesSelection(t *testing.T) {
 	model = historyTopAfter(t, model, historySamplesLoadedMsg{seq: model.seq})
 	if !strings.Contains(model.View().Content, "edc top") {
 		t.Fatal("empty history does not explain how to record")
+	}
+}
+
+func TestHistorySampleBrowserProcessFilterReloadsAndClears(t *testing.T) {
+	model := newHistoryTopBrowser(historyTopSamples(1), "history.db")
+	var got []historyOptions
+	model.loadWith = func(options historyOptions) ([]historyTopSample, error) {
+		got = append(got, options)
+		return historyTopSamples(1), nil
+	}
+	model.options.process, _ = parseTopProcessFilter("old")
+	model = historyTopAfter(t, model, tea.KeyPressMsg{Code: '/'}, tea.KeyPressMsg{Code: tea.KeyBackspace}, tea.KeyPressMsg{Code: tea.KeyBackspace}, tea.KeyPressMsg{Code: tea.KeyBackspace})
+	next, command := model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	model = next.(historySampleBrowser)
+	if command != nil {
+		model = historyTopAfter(t, model, command())
+	}
+	if model.filterEditing || model.options.process.active() || len(got) != 1 || got[0].process.active() {
+		t.Fatalf("filter clear = editing:%t options:%q reloads:%+v", model.filterEditing, model.options.process, got)
+	}
+	model = historyTopAfter(t, model, tea.KeyPressMsg{Code: '/'}, tea.KeyPressMsg{Code: 'n', Text: "n"}, tea.KeyPressMsg{Code: 'g', Text: "g"}, tea.KeyPressMsg{Code: 'i', Text: "i"}, tea.KeyPressMsg{Code: 'n', Text: "n"}, tea.KeyPressMsg{Code: 'x', Text: "x"})
+	next, command = model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	model = next.(historySampleBrowser)
+	if command != nil {
+		model = historyTopAfter(t, model, command())
+	}
+	if model.options.process.String() != "nginx" || len(got) != 2 || got[1].process.String() != "nginx" {
+		t.Fatalf("filter reload = options:%q reloads:%+v", model.options.process, got)
+	}
+}
+
+func TestHistorySampleBrowserShowsFilterBeforeLongPath(t *testing.T) {
+	model := newHistoryTopBrowser(historyTopSamples(1), "/Users/jinwoo/Library/Application Support/edc/history.db")
+	model.options.process, _ = parseTopProcessFilter("term-mesh")
+	model = historyTopAfter(t, model, tea.WindowSizeMsg{Width: 80, Height: 24})
+	if line := ansi.Strip(strings.Split(model.View().Content, "\n")[1]); !strings.HasPrefix(line, "filter term-mesh") {
+		t.Fatalf("filter was truncated after path: %q", line)
 	}
 }
 

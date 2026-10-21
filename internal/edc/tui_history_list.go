@@ -19,6 +19,9 @@ func historyListReviewData(db *sql.DB, options historyOptions, now time.Time) (h
 	}
 	defer rows.Close()
 	data := historyReviewData{summary: T("history.list_browser.summary"), empty: T("history.list_browser.empty")}
+	if !options.from.IsZero() || !options.to.IsZero() || options.run != "" {
+		data.summary += " · " + T("history.list_browser.active_range", historyHistoryRangeLabel(options))
+	}
 	for rows.Next() {
 		var payload, status string
 		var ended sql.NullInt64
@@ -66,6 +69,20 @@ func historyListReviewData(db *sql.DB, options historyOptions, now time.Time) (h
 	return data, nil
 }
 
+func historyHistoryRangeLabel(options historyOptions) string {
+	parts := []string{}
+	if options.run != "" {
+		parts = append(parts, options.run)
+	}
+	if !options.from.IsZero() {
+		parts = append(parts, options.from.Local().Format(time.DateTime)+" →")
+	}
+	if !options.to.IsZero() {
+		parts = append(parts, options.to.Local().Format(time.DateTime))
+	}
+	return strings.Join(parts, " ")
+}
+
 func historyRunDescription(run historyRun) string {
 	parts := []string{run.Command}
 	if run.Process != "" {
@@ -97,6 +114,9 @@ func historyListNavigate(model historyReviewBrowser, key string, db *sql.DB, pat
 		return nil, false, nil
 	}
 	entry := model.data.entries[model.selected]
+	if key == "m" {
+		return newHistoryMenuBrowser(db, path, entry.id), true, nil
+	}
 	if key == "enter" {
 		child := newHistoryOverviewBrowser(db, path, historyOverviewOptions{run: entry.id})
 		child.hosted = true
@@ -131,7 +151,8 @@ func historyListNavigate(model historyReviewBrowser, key string, db *sql.DB, pat
 		}
 		child := newHistoryTopBrowser(samples, path)
 		child.pinned = true
-		child.load = func() ([]historyTopSample, error) { return loadHistoryTop(db, options) }
+		child.options = options
+		child.loadWith = func(options historyOptions) ([]historyTopSample, error) { return loadHistoryTop(db, options) }
 		return child, true, nil
 	}
 	samples, err := loadHistoryProcess(db, options)
@@ -140,7 +161,8 @@ func historyListNavigate(model historyReviewBrowser, key string, db *sql.DB, pat
 	}
 	child := newHistoryProcessBrowser(samples, path)
 	child.pinned = true
-	child.loadProcesses = func() ([]historyProcessSample, error) { return loadHistoryProcess(db, options) }
+	child.options = options
+	child.loadProcessesWith = func(options historyOptions) ([]historyProcessSample, error) { return loadHistoryProcess(db, options) }
 	return child, true, nil
 }
 

@@ -198,6 +198,7 @@ command:
   clean:
     summary: "Disk usage of known dev caches, read only (Linux and macOS)"
     option:
+      workers: "directories to read at the same time"
       timeout: "time limit, after it edc marks the rest not scanned"
       project: "root to search for marked build folders, repeat for more"
       group: "run clean on each host of an edc remote group"
@@ -541,10 +542,17 @@ command:
       - "groups prints the group names of the inventory, one per line."
   setup:
     summary: "Configure command defaults"
+    option:
+      inventory: "inventory file to edit, default is the one edc remote finds"
+      recipe: "recipe file to edit, default is the one edc remote finds"
     notes:
       - "The wizard keeps existing values and edits selected sections."
       - "It previews the config before an atomic save."
       - "Setup needs a terminal; cancel returns exit code 4."
+      - "edc setup remote edits the inventory of edc remote in a terminal screen."
+      - "It keeps the comments of the file and replaces it atomically, with mode 0600 for a new file."
+      - "It does not store passwords or keys. Use an SSH alias as the target."
+      - "The Steps screen of the same command edits the recipe. It creates ./.edc/recipe.yaml on the first save if no recipe exists."
   update:
     summary: "Install the latest release"
     option:

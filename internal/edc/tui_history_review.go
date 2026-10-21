@@ -68,6 +68,14 @@ type historyReviewBrowser struct {
 	loadPrune                         func(historyPruneOptions) (historyReviewData, error)
 	pruneOptions                      historyPruneOptions
 	agePicker                         *historyPruneAgePicker
+	growthOptions                     *historyGrowthOptions
+	growthLoad                        func(historyGrowthOptions) (historyReviewData, error)
+	filterEditing                     bool
+	filterText                        string
+}
+
+func (model historyReviewBrowser) capturesInput() bool {
+	return model.filterEditing || model.agePicker != nil
 }
 
 var historyBrowserOwner atomic.Uint64
@@ -102,6 +110,9 @@ func (model historyReviewBrowser) selectedIDs() []string {
 }
 
 func (model historyReviewBrowser) helpLines() []string {
+	if model.filterEditing {
+		return []string{historyTint(T("history.filter.input", model.filterText), richYellow, model.color), historyTint(T("history.filter.input_help"), richGray, model.color)}
+	}
 	key := "history.review.help"
 	if model.expanded {
 		key = "history.review.detail_help"
@@ -131,6 +142,9 @@ func (model historyReviewBrowser) helpLines() []string {
 			}
 		}
 		help = strings.Join(hints, "   ")
+	}
+	if model.growthOptions != nil && !model.expanded {
+		help = T("history.filter.help") + "   " + help
 	}
 	lines := historyReviewKeyHints(help, model.width, model.color, liveHintItem{key: "p", on: model.paused})
 	if model.extraHelp != "" && !model.expanded {
@@ -166,7 +180,7 @@ func historyReviewKeyHints(text string, width int, color bool, items ...liveHint
 }
 
 func (model historyReviewBrowser) canReload() bool {
-	return model.load != nil || model.loadPrune != nil
+	return model.load != nil || model.loadPrune != nil || model.growthLoad != nil
 }
 
 func (model historyReviewBrowser) footer() []string {
@@ -277,10 +291,14 @@ func (model historyReviewBrowser) tick() tea.Cmd {
 }
 
 func (model historyReviewBrowser) reload() tea.Cmd {
-	seq, owner, load, loadPrune, options := model.seq, model.owner, model.load, model.loadPrune, model.pruneOptions
+	seq, owner, load, loadPrune, options, growthOptions, growthLoad := model.seq, model.owner, model.load, model.loadPrune, model.pruneOptions, model.growthOptions, model.growthLoad
 	return func() tea.Msg {
 		if loadPrune != nil {
 			data, err := loadPrune(options)
+			return historyReviewLoadedMsg{owner: owner, seq: seq, data: data, err: err}
+		}
+		if growthLoad != nil && growthOptions != nil {
+			data, err := growthLoad(*growthOptions)
 			return historyReviewLoadedMsg{owner: owner, seq: seq, data: data, err: err}
 		}
 		data, err := load()
@@ -347,6 +365,33 @@ func (model historyReviewBrowser) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if model.agePicker != nil {
 			return model.updatePruneAge(value)
 		}
+		if model.filterEditing {
+			switch value.String() {
+			case "esc":
+				model.filterEditing = false
+			case "ctrl+u":
+				model.filterText = ""
+			case "backspace":
+				if text := []rune(model.filterText); len(text) > 0 {
+					model.filterText = string(text[:len(text)-1])
+				}
+			case "enter":
+				filter, err := parseTopProcessFilter(strings.TrimSpace(model.filterText))
+				if err != nil {
+					model.notice = err.Error()
+					return model, nil
+				}
+				model.growthOptions.process, model.filterEditing, model.seq = filter, false, model.seq+1
+				model.resize()
+				return model, model.reload()
+			default:
+				if value.Text != "" {
+					model.filterText += value.Text
+				}
+			}
+			model.resize()
+			return model, nil
+		}
 		if value.String() == "ctrl+c" || value.String() == "q" {
 			return model, tea.Quit
 		}
@@ -361,6 +406,12 @@ func (model historyReviewBrowser) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		model.notice, model.noticeSticky = "", false
 		switch value.String() {
+		case "/":
+			if model.growthOptions != nil && !model.expanded {
+				model.filterEditing, model.filterText = true, model.growthOptions.process.String()
+				model.resize()
+				return model, nil
+			}
 		case "t":
 			if model.prune {
 				model.openPruneAgePicker()
@@ -445,7 +496,11 @@ func (model historyReviewBrowser) View() tea.View {
 		view.AltScreen = true
 		return view
 	}
-	lines := []string{historyStrong(model.title, richCyan, model.color), historyTint(historyTerminalText(model.path), richGray, model.color), historyTint(historyTerminalText(model.data.summary), richGray, model.color), ""}
+	path := historyTerminalText(model.path)
+	if model.growthOptions != nil && model.growthOptions.process.String() != "" {
+		path = T("history.filter.active", historyTerminalText(model.growthOptions.process.String())) + " · " + path
+	}
+	lines := []string{historyStrong(model.title, richCyan, model.color), historyTint(path, richGray, model.color), historyTint(historyTerminalText(model.data.summary), richGray, model.color), ""}
 	header := ""
 	if !model.expanded {
 		indexes, widths := model.columnWidths()

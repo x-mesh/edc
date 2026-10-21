@@ -511,7 +511,7 @@ func cleanFindBuildCaches(ctx context.Context, deps cleanDeps) (caches []cleanBu
 	}
 	visit(deps.home, 1)
 	for _, path := range paths {
-		scan, err := deps.measure(ctx, duOptions{root: path, workers: duDefaultWorkers}, deps.sources)
+		scan, err := deps.measure(ctx, duOptions{root: path, workers: deps.workers}, deps.sources)
 		if err != nil {
 			// 재지 못한 캐시는 목록에서 빠지므로 결과가 완전하지 않다.
 			incomplete = true

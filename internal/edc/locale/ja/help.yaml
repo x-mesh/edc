@@ -198,6 +198,7 @@ command:
   clean:
     summary: "既知の開発キャッシュのディスク使用量、読み取り専用 (Linux と macOS)"
     option:
+      workers: "同時に読むディレクトリ数"
       timeout: "制限時間、過ぎると残りは未測定と表示"
       project: "ビルドフォルダを探すルート、複数指定可"
       group: "edc remote グループの各ホストで clean を実行"
@@ -541,10 +542,17 @@ command:
       - "groups は inventory の group 名を 1 行ずつ出します。"
   setup:
     summary: "command デフォルトの設定"
+    option:
+      inventory: "編集するインベントリファイル、既定は edc remote が見つけるファイル"
+      recipe: "編集するレシピファイル、既定は edc remote が見つけるファイル"
     notes:
       - "wizard は既存値を保ち、選択した section だけを変更します。"
       - "設定全体を表示してから atomic に保存します。"
       - "terminal が必要で、取消は exit code 4 です。"
+      - "edc setup remote は edc remote のインベントリを端末画面で編集します。"
+      - "ファイルのコメントを保ち、原子的に置き換えます。新しいファイルの権限は 0600 です。"
+      - "パスワードや鍵は保存しません。接続先には SSH alias を使います。"
+      - "同じコマンドの Step 画面でレシピも編集します。レシピがなければ初回の保存時に ./.edc/recipe.yaml を作ります。"
   update:
     summary: "最新 release の導入"
     option:

@@ -14,6 +14,11 @@ import (
 	"time"
 )
 
+const (
+	logHistoryDefaultLimit = 20
+	logHistoryMaxLimit     = 1000
+)
+
 type logHistoryOptions struct {
 	Directory, File, Key, Name string
 	Exact                      []string
@@ -49,7 +54,7 @@ func parseLogHistoryOptions(args []string, output io.Writer) (logHistoryOptions,
 		options.Name = value
 		return nil
 	})
-	set.IntVar(&options.Limit, "limit", 20, T("cli.log_history.option.limit"))
+	set.IntVar(&options.Limit, "limit", configuredInt(activeConfig.Defaults.Log.HistoryLimit, logHistoryDefaultLimit), T("cli.log_history.option.limit"))
 	set.BoolVar(&options.Failed, "failed", false, T("cli.log_history.option.failed"))
 	set.BoolVar(&options.Follow, "follow", false, T("cli.log_history.option.follow"))
 	set.StringVar(&options.JSON, "json", "", T("cli.log_history.option.json"))
@@ -64,7 +69,7 @@ func parseLogHistoryOptions(args []string, output io.Writer) (logHistoryOptions,
 			options.limitExplicit = true
 		}
 	})
-	if options.Directory != "" && options.File != "" || options.Limit < 1 || options.Limit > 1000 || options.JSON != "" && !options.Follow {
+	if options.Directory != "" && options.File != "" || options.Limit < 1 || options.Limit > logHistoryMaxLimit || options.JSON != "" && !options.Follow {
 		return options, errors.New(T("cli.log_history.usage"))
 	}
 	if set.NArg() > 0 {

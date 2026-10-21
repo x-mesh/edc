@@ -94,72 +94,84 @@ func loadRemoteInventory(path string) (remoteInventory, error) {
 	if err := decodeRemoteYAML(path, &inventory); err != nil {
 		return inventory, fmt.Errorf("inventory %q: %w", path, err)
 	}
+	return inventory, validateRemoteInventory(&inventory)
+}
+
+// validateRemoteHost trims and checks one host. index is zero-based and only names the host in an empty-name message.
+func validateRemoteHost(host *remoteHost, index int) error {
+	host.Name = strings.TrimSpace(host.Name)
+	host.Target = strings.TrimSpace(host.Target)
+	if host.Name == "" {
+		return errors.New(T("remote.error.host_name_empty", index+1))
+	}
+	if host.Target == "" {
+		host.Target = host.Name
+	}
+	if strings.HasPrefix(host.Target, "-") {
+		return errors.New(T("remote.error.host_target_dash", host.Name))
+	}
+	tags, err := normalizeRemoteTags(host.Tags, fmt.Sprintf("host %q", host.Name))
+	if err != nil {
+		return err
+	}
+	host.Tags = tags
+	return nil
+}
+
+func validateRemoteInventory(inventory *remoteInventory) error {
 	if len(inventory.Hosts) == 0 {
-		return inventory, errors.New(T("remote.error.inventory_no_host"))
+		return errors.New(T("remote.error.inventory_no_host"))
 	}
 	if len(inventory.Hosts) > remoteHostLimit {
-		return inventory, errors.New(T("remote.error.inventory_host_limit", remoteHostLimit))
+		return errors.New(T("remote.error.inventory_host_limit", remoteHostLimit))
 	}
 	if len(inventory.Groups) == 0 {
-		return inventory, errors.New(T("remote.error.inventory_no_group"))
+		return errors.New(T("remote.error.inventory_no_group"))
 	}
 	if len(inventory.Groups) > remoteGroupLimit {
-		return inventory, errors.New(T("remote.error.inventory_group_limit", remoteGroupLimit))
+		return errors.New(T("remote.error.inventory_group_limit", remoteGroupLimit))
 	}
 	if inventory.Parallel < 0 || inventory.Parallel > remoteHostLimit {
-		return inventory, errors.New(T("remote.error.inventory_parallel_range", remoteHostLimit))
+		return errors.New(T("remote.error.inventory_parallel_range", remoteHostLimit))
 	}
 	hosts := make(map[string]struct{}, len(inventory.Hosts))
 	for index := range inventory.Hosts {
 		host := &inventory.Hosts[index]
-		host.Name = strings.TrimSpace(host.Name)
-		host.Target = strings.TrimSpace(host.Target)
-		if host.Name == "" {
-			return inventory, errors.New(T("remote.error.host_name_empty", index+1))
-		}
-		if host.Target == "" {
-			host.Target = host.Name
-		}
-		if strings.HasPrefix(host.Target, "-") {
-			return inventory, errors.New(T("remote.error.host_target_dash", host.Name))
+		if err := validateRemoteHost(host, index); err != nil {
+			return err
 		}
 		if _, exists := hosts[host.Name]; exists {
-			return inventory, errors.New(T("remote.error.duplicate_host", host.Name))
+			return errors.New(T("remote.error.duplicate_host", host.Name))
 		}
-		tags, err := normalizeRemoteTags(host.Tags, fmt.Sprintf("host %q", host.Name))
-		if err != nil {
-			return inventory, err
-		}
-		host.Tags = tags
 		hosts[host.Name] = struct{}{}
 	}
 	for group, members := range inventory.Groups {
 		if strings.TrimSpace(group) == "" || len(members) == 0 {
-			return inventory, errors.New(T("remote.error.group_empty"))
+			return errors.New(T("remote.error.group_empty"))
 		}
 		if remoteReservedGroup(group) {
-			return inventory, errors.New(T("remote.error.group_reserved", group))
+			return errors.New(T("remote.error.group_reserved", group))
 		}
 		seen := make(map[string]struct{}, len(members))
 		for _, member := range members {
 			if _, exists := hosts[member]; !exists {
-				return inventory, errors.New(T("remote.error.group_unknown_host", group, member))
+				return errors.New(T("remote.error.group_unknown_host", group, member))
 			}
 			if _, exists := seen[member]; exists {
-				return inventory, errors.New(T("remote.error.group_duplicate_host", group, member))
+				return errors.New(T("remote.error.group_duplicate_host", group, member))
 			}
 			seen[member] = struct{}{}
 		}
 	}
 	for group, options := range inventory.Options {
 		if _, exists := inventory.Groups[group]; !exists {
-			return inventory, errors.New(T("remote.error.options_unknown_group", group))
+			return errors.New(T("remote.error.options_unknown_group", group))
 		}
 		if options.Parallel < 1 || options.Parallel > remoteHostLimit {
-			return inventory, errors.New(T("remote.error.group_parallel_range", group, remoteHostLimit))
+			return errors.New(T("remote.error.group_parallel_range", group, remoteHostLimit))
 		}
 	}
-	return inventory, nil
+	return nil
 }
 
 func remoteGroupNames(inventory remoteInventory) []string {
@@ -192,6 +204,11 @@ func loadRemoteRecipe(path string, defaultTimeout time.Duration) (remoteRecipe, 
 	if err := decodeRemoteYAML(path, &file); err != nil {
 		return remoteRecipe{}, fmt.Errorf("recipe %q: %w", path, err)
 	}
+	return buildRemoteRecipe(file, defaultTimeout)
+}
+
+// buildRemoteRecipe checks a decoded recipe and turns it into the form that edc remote runs.
+func buildRemoteRecipe(file remoteRecipeFile, defaultTimeout time.Duration) (remoteRecipe, error) {
 	if strings.TrimSpace(file.Name) == "" {
 		return remoteRecipe{}, errors.New(T("remote.error.recipe_name_empty"))
 	}

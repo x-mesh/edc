@@ -23,23 +23,19 @@ type historyOptions struct {
 	sampleID int64
 }
 
+const historyDefaultLimit = 200
+
 var historyLiveTerminal = liveTerminal
 var historyListBrowserRunner = runHistoryListBrowser
-var historyNavigatorRunner = runHistoryNavigator
+var historyScopedNavigatorRunner = runHistoryNavigatorWith
 
 func historyTerminalText(value string) string {
 	return strings.NewReplacer("\r", `\r`, "\n", `\n`, "\t", `\t`).Replace(traceEscapeText([]byte(value)))
 }
 
 func runHistory(args []string) int {
-	if len(args) == 0 {
-		if historyLiveTerminal() {
-			if err := historyNavigatorRunner(); err != nil {
-				fmt.Fprintln(os.Stderr, T("history.error.read", err))
-				return 1
-			}
-			return 0
-		}
+	bare := len(args) == 0 && historyLiveTerminal()
+	if len(args) == 0 && !bare {
 		choice, ok := promptMissingSubcommand("history")
 		if !ok {
 			if !printCommandBrief(os.Stderr, "history") {
@@ -48,6 +44,10 @@ func runHistory(args []string) int {
 			return 2
 		}
 		args = []string{choice}
+	}
+	noSubcommand := bare || strings.HasPrefix(args[0], "-") || historyDBArgument(args[0])
+	if noSubcommand {
+		args = append([]string{"list"}, args...)
 	}
 	// log is the same viewer as edc log history; it reads the command logs, not
 	// this database, so none of the options below apply to it.
@@ -88,7 +88,7 @@ func runHistory(args []string) int {
 	set.StringVar(&options.run, "run", "", T("history.option.run"))
 	from := set.String("from", "", T("history.option.from"))
 	to := set.String("to", "", T("history.option.to"))
-	set.IntVar(&options.limit, "limit", 200, T("history.option.limit"))
+	set.IntVar(&options.limit, "limit", configuredInt(activeConfig.Defaults.History.Limit, historyDefaultLimit), T("history.option.limit"))
 	jsonPath := set.String("json", "", T("history.option.json"))
 	var process, metric string
 	var min, max float64
@@ -167,7 +167,11 @@ func runHistory(args []string) int {
 		var err error
 		switch command {
 		case "list":
-			err = historyListBrowserRunner(db, path, options)
+			if noSubcommand {
+				err = historyScopedNavigatorRunner(db, path, options)
+			} else {
+				err = historyListBrowserRunner(db, path, options)
+			}
 		case "process":
 			err = runHistoryProcessBrowser(db, path, options)
 		default:
@@ -200,6 +204,14 @@ func runHistory(args []string) int {
 		return 1
 	}
 	return 0
+}
+
+func historyDBArgument(value string) bool {
+	if strings.HasSuffix(value, ".db") {
+		return true
+	}
+	info, err := os.Stat(value)
+	return err == nil && !info.IsDir()
 }
 
 func parseHistoryTime(value string) (time.Time, error) {

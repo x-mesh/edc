@@ -252,7 +252,7 @@ var commandDocs = []commandDoc{
 	},
 	{
 		name: "history", group: "record",
-		usage: []string{"edc history list [options] [DB]", "edc history top [options] [DB]", "edc history process [options] [DB]", "edc history overview [--run <id>] [--from <time> --to <time>] [DB]", "edc history export --run <id> [--output <file|->] [DB]", "edc history trend --metric <name> [--probe <id> | --process <filter>] [DB]", "edc history growth [--root <path> | --process <filter>] [DB]", "edc history prune [--older-than <age>] [options] [DB]", "edc history log [edc log history options]"},
+		usage: []string{"edc history [--from <time>] [--to <time>] [--run <id>] [--limit <n>] [DB]", "edc history list [options] [DB]", "edc history top [options] [DB]", "edc history process [options] [DB]", "edc history overview [--run <id>] [--from <time> --to <time>] [DB]", "edc history export --run <id> [--output <file|->] [DB]", "edc history trend --metric <name> [--probe <id> | --process <filter>] [DB]", "edc history growth [--root <path> | --process <filter>] [DB]", "edc history prune [--older-than <age>] [options] [DB]", "edc history log [edc log history options]"},
 		options: []optionDoc{
 			{"--run <id>", "history.option.run"},
 			{"--from <RFC3339>", "history.option.from"},
@@ -347,6 +347,7 @@ var commandDocs = []commandDoc{
 		name: "clean", group: "observe",
 		usage: []string{"edc clean [options]"},
 		options: []optionDoc{
+			{"-w, --workers 4", "command.clean.option.workers"},
 			{"--timeout 60s", "command.clean.option.timeout"},
 			{"--project DIR", "command.clean.option.project"},
 			{"--group NAME", "command.clean.option.group"},
@@ -562,7 +563,11 @@ var commandDocs = []commandDoc{
 	},
 	{
 		name: "setup", group: "tool",
-		usage: []string{"edc setup"},
+		usage: []string{"edc setup", "edc setup remote [--inventory FILE] [--recipe FILE]"},
+		options: []optionDoc{
+			{"--inventory FILE", "command.setup.option.inventory"},
+			{"--recipe FILE", "command.setup.option.recipe"},
+		},
 	},
 	{
 		name: "update", group: "tool",

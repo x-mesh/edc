@@ -19,6 +19,7 @@ import (
 // systemd unit 상태만 본다. dnf history나 journalctl처럼 느린 명령은 쓰지 않는다.
 
 const (
+	changesDefaultSince = 24 * time.Hour
 	// changesEtcEntryBudget은 /etc를 도는 항목 수의 상한이다. 보통 /etc는 수천 개라 이 안에 끝난다.
 	// 설정 관리 도구가 큰 트리를 만들어 둔 호스트에서도 1초 안에 끝내려고 멈추고 잘렸다고 알린다.
 	changesEtcEntryBudget = 20000
@@ -50,7 +51,7 @@ func runChanges(args []string, version string) int {
 	set := newFlagSet("changes")
 	set.SetOutput(os.Stderr)
 	bindCommon(set, &options)
-	since := set.Duration("since", 24*time.Hour, T("command.changes.option.since"))
+	since := set.Duration("since", configuredDuration(activeConfig.Defaults.Changes.Since, changesDefaultSince), T("command.changes.option.since"))
 	if err := set.Parse(args); err != nil {
 		return 2
 	}

@@ -260,7 +260,7 @@ func historyRunHeader(width int) string {
 func historyShortDuration(value time.Duration) string {
 	switch {
 	case value < time.Second:
-		return fmt.Sprintf("%dms", value.Milliseconds())
+		return fmt.Sprintf("%dms", value.Round(time.Millisecond).Milliseconds())
 	case value < time.Minute:
 		return strconv.FormatFloat(value.Seconds(), 'f', 1, 64) + "s"
 	case value < time.Hour:

@@ -54,6 +54,7 @@ func newTopProcessReaderWithRusage(readRusage bool) func() ([]topProcess, bool) 
 					processes[index].Memory, processes[index].MemoryValid = usage.Footprint, true
 					processes[index].diskSampled, processes[index].diskStarted = true, usage.Started
 					processes[index].diskReadBytes, processes[index].diskWriteBytes = usage.DiskRead, usage.DiskWrite
+					processes[index].diskSampledAt = time.Now()
 				}
 			}
 		}
@@ -68,6 +69,13 @@ func darwinRusageReads(hasSample bool) int {
 		return 0
 	}
 	return 1
+}
+
+func darwinProcessSampleTime(process topProcess, fallback time.Time) time.Time {
+	if process.diskSampled && !process.diskSampledAt.IsZero() {
+		return process.diskSampledAt
+	}
+	return fallback
 }
 
 type darwinProcessIOSample struct {
@@ -91,7 +99,7 @@ func newTopProcessEnricher() func([]topProcess) {
 					continue
 				}
 			}
-			now := time.Now()
+			now := darwinProcessSampleTime(*process, time.Now())
 			current[process.PID] = darwinProcessIOSample{stats: stats, at: now}
 			before, seen := previous[process.PID]
 			seconds := now.Sub(before.at).Seconds()

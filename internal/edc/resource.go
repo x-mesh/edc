@@ -163,6 +163,7 @@ type topProcess struct {
 	diskStarted         uint64
 	diskReadBytes       uint64
 	diskWriteBytes      uint64
+	diskSampledAt       time.Time
 	// Probe는 -d observer가 직전 window 동안 센 값이다. Linux는 eBPF, macOS는 libproc이다. -d가 아니거나 아직 기준이 없으면 nil이다.
 	Probe *topProbeStats
 }

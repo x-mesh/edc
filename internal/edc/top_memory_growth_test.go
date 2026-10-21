@@ -96,6 +96,22 @@ func TestTopMemoryGrowthSkipsSameMinuteRecalculation(t *testing.T) {
 	}
 }
 
+func TestTopMemoryGrowthRecomputesWhenSameMinuteMinimumDrops(t *testing.T) {
+	start := time.Unix(1_800_000_000, 0)
+	tracker := newTopMemoryGrowthTracker()
+	process := feedTopMemory(tracker, start, topMemoryGrowthBuckets, func(minute int) uint64 { return 1<<30 + uint64(minute)*(30<<20) })
+	if process.Growth == nil {
+		t.Fatal("setup must produce growth")
+	}
+	series := tracker.series[topProcessKey{pid: 7, started: start}]
+	checks := series.checks
+	processes := []topProcess{{PID: 7, Started: start, Memory: 1 << 30, MemoryValid: true}}
+	tracker.observe(start.Add(14*time.Minute+30*time.Second), processes)
+	if series.checks != checks+1 || processes[0].Growth != nil {
+		t.Fatalf("checks %d, growth %+v", series.checks, processes[0].Growth)
+	}
+}
+
 func TestTopProcessCandidatesKeepGrowingProcesses(t *testing.T) {
 	processes := []topProcess{}
 	for pid := 1; pid <= 2*topProcessLimit; pid++ {

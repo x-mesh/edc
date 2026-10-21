@@ -101,8 +101,11 @@ func (tracker *topMemoryGrowthTracker) observe(at time.Time, processes []topProc
 
 func (series *topMemorySeries) add(bucket int64, memory uint64) bool {
 	if last := len(series.buckets) - 1; last >= 0 && series.buckets[last] == bucket {
-		series.minimums[last] = min(series.minimums[last], memory)
-		return false
+		if memory >= series.minimums[last] {
+			return false
+		}
+		series.minimums[last] = memory
+		return true
 	}
 	series.buckets = append(series.buckets, bucket)
 	series.minimums = append(series.minimums, memory)

@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 	"unsafe"
 )
 
@@ -57,6 +58,14 @@ func TestDarwinRusageReadCountReusesReaderSample(t *testing.T) {
 	}
 	if got := darwinRusageReads(false); got != 1 {
 		t.Fatalf("enricher reads without reader sample = %d, want 1", got)
+	}
+}
+
+func TestDarwinProcessSampleTimeUsesRusageReadTime(t *testing.T) {
+	readAt, enrichedAt := time.Unix(100, 0), time.Unix(101, 0)
+	process := topProcess{diskSampled: true, diskSampledAt: readAt}
+	if got := darwinProcessSampleTime(process, enrichedAt); !got.Equal(readAt) {
+		t.Fatalf("sample time = %v, want %v", got, readAt)
 	}
 }
 

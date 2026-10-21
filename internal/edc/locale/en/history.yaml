@@ -205,6 +205,7 @@ history:
       metric: "METRIC"
       process: "PROCESS"
       help: "↑↓ scroll   PgUp/PgDn page   r refresh   q quit"
+      log_help: "l log runs"
     metric:
       cpu: "CPU"
       memory: "Memory"

@@ -205,6 +205,7 @@ history:
       metric: "지표"
       process: "프로세스"
       help: "↑↓ 스크롤   PgUp/PgDn 페이지   r 새로고침   q 종료"
+      log_help: "l 로그 실행"
     metric:
       cpu: "CPU"
       memory: "메모리"

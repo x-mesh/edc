@@ -50,6 +50,7 @@ type historyReviewBrowser struct {
 	checked                           map[string]bool
 	seq                               int
 	notice                            string
+	noticeSticky                      bool
 	load                              func() (historyReviewData, error)
 	loadPrune                         func(historyPruneOptions) (historyReviewData, error)
 	pruneOptions                      historyPruneOptions
@@ -107,7 +108,7 @@ func (model historyReviewBrowser) helpLines() []string {
 		return lines
 	}
 	lines := historyReviewKeyHints(T(key), model.width, model.color, liveHintItem{key: "p", on: model.paused})
-	if model.extraHelp != "" && !model.expanded {
+	if model.extraHelp != "" && !model.expanded && !(model.title == T("history.list_browser.title") && len(model.data.entries) > 0 && strings.HasPrefix(model.data.entries[model.selected].cells[0], historySnapshotCommand)) {
 		lines = append(lines, historyReviewKeyHints(T(model.extraHelp), model.width, model.color)...)
 	}
 	return lines
@@ -284,7 +285,10 @@ func (model historyReviewBrowser) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			for _, entry := range model.data.entries {
 				checked[entry.id] = true
 			}
-			model.data, model.notice = value.data, ""
+			model.data = value.data
+			if !model.noticeSticky {
+				model.notice = ""
+			}
 			model.selected, model.expanded = 0, model.expanded && id != ""
 			found := false
 			for i, entry := range model.data.entries {
@@ -324,7 +328,7 @@ func (model historyReviewBrowser) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			model.resize()
 			return model, nil
 		}
-		model.notice = ""
+		model.notice, model.noticeSticky = "", false
 		switch value.String() {
 		case "t":
 			if model.prune {

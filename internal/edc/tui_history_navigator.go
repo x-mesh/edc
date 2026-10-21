@@ -3,6 +3,7 @@ package edc
 import (
 	"database/sql"
 	"os"
+	"strings"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -36,6 +37,13 @@ func (model historyNavigator) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			options := historyOptions{run: root.data.entries[root.selected].id}
 			switch key.String() {
 			case "t":
+				if historyNavigatorSnapshot(root) {
+					root.notice = T("history.list_browser.snapshot_navigation")
+					root.noticeSticky = true
+					root.resize()
+					model.stack[len(model.stack)-1] = root
+					return model, nil
+				}
 				samples, err := loadHistoryTop(model.db, options)
 				if err != nil {
 					root.notice = err.Error()
@@ -52,6 +60,13 @@ func (model historyNavigator) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				model.stack = append(model.stack, child)
 				return model, child.Init()
 			case "p":
+				if historyNavigatorSnapshot(root) {
+					root.notice = T("history.list_browser.snapshot_navigation")
+					root.noticeSticky = true
+					root.resize()
+					model.stack[len(model.stack)-1] = root
+					return model, nil
+				}
 				samples, err := loadHistoryProcess(model.db, options)
 				if err != nil {
 					root.notice = err.Error()
@@ -69,6 +84,9 @@ func (model historyNavigator) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return model, child.Init()
 			}
 		}
+		updated, command := model.current().Update(msg)
+		model.stack[len(model.stack)-1] = updated
+		return model, command
 	}
 	if size, ok := msg.(tea.WindowSizeMsg); ok {
 		model.size = &size
@@ -92,6 +110,10 @@ func navigatorAtTop(model tea.Model) bool {
 		return child.atTop()
 	}
 	return true
+}
+
+func historyNavigatorSnapshot(root historyReviewBrowser) bool {
+	return strings.HasPrefix(root.data.entries[root.selected].cells[0], historySnapshotCommand)
 }
 
 func (model historyNavigator) View() tea.View { return model.current().View() }

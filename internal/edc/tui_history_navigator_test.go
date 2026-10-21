@@ -87,3 +87,49 @@ func TestHistoryNavigatorDeliversRootTickWhileChildOpen(t *testing.T) {
 		t.Fatal("root was not retained")
 	}
 }
+
+func TestHistoryNavigatorKeepsRootStateWhenChildHandlesKeys(t *testing.T) {
+	root := newHistoryListBrowser("history.db", historyReviewData{entries: []historyReviewEntry{{id: "run", cells: make([]string, 6)}, {id: "other", cells: make([]string, 6)}}})
+	child := newHistoryTopBrowser([]historyTopSample{{RunID: "run"}}, "history.db")
+	navigator := newHistoryNavigator(nil, "history.db", root)
+	navigator.stack = append(navigator.stack, child)
+	for _, key := range []tea.KeyPressMsg{{Code: tea.KeyDown}, {Code: tea.KeyEnter}} {
+		next, command := navigator.Update(key)
+		if command != nil {
+			if _, ok := command().(tea.QuitMsg); ok {
+				t.Fatal("child key quit navigator")
+			}
+		}
+		navigator = next.(historyNavigator)
+	}
+	root = navigator.stack[0].(historyReviewBrowser)
+	if root.selected != 0 || root.expanded {
+		t.Fatalf("hidden root changed: selected=%d expanded=%v", root.selected, root.expanded)
+	}
+	child = navigator.current().(historySampleBrowser)
+	if !child.expanded {
+		t.Fatal("Enter did not open child detail")
+	}
+	next, command := navigator.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	if command != nil {
+		if _, ok := command().(tea.QuitMsg); ok {
+			t.Fatal("Esc in child detail quit navigator")
+		}
+	}
+	navigator = next.(historyNavigator)
+	if len(navigator.stack) != 2 || navigator.current().(historySampleBrowser).expanded {
+		t.Fatal("Esc did not close child detail")
+	}
+}
+
+func TestHistoryNavigatorSnapshotShowsNoticeWithoutChild(t *testing.T) {
+	data := historyReviewData{entries: []historyReviewEntry{{id: "snapshot", cells: []string{historySnapshotCommand, "", "", "", "", ""}}}}
+	root := newHistoryListBrowser("history.db", data)
+	navigator := newHistoryNavigator(nil, "history.db", root)
+	next, _ := navigator.Update(tea.KeyPressMsg{Code: 't', Text: "t"})
+	navigator = next.(historyNavigator)
+	root = navigator.current().(historyReviewBrowser)
+	if len(navigator.stack) != 1 || root.notice != T("history.list_browser.snapshot_navigation") || strings.Contains(root.View().Content, "Top samples") {
+		t.Fatalf("snapshot navigation=%+v", root)
+	}
+}

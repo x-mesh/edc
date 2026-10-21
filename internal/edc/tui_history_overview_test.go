@@ -62,6 +62,27 @@ func TestHistoryOverviewBrowserEndClampsBeforeMovingUp(t *testing.T) {
 	}
 }
 
+func TestHistoryOverviewBrowserDownClampsBeforeMovingUp(t *testing.T) {
+	model := overviewBrowserFixture()
+	model.width, model.height = 80, 20
+	for range 30 {
+		model.overview.Processes = append(model.overview.Processes, historyOverviewProcess{Command: "worker"})
+	}
+	for range 100 {
+		updated, _ := model.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+		model = updated.(historyOverviewBrowser)
+	}
+	last := model.maxOffset()
+	if model.offset != last {
+		t.Fatalf("down offset = %d, want %d", model.offset, last)
+	}
+	updated, _ := model.Update(tea.KeyPressMsg{Code: tea.KeyUp})
+	model = updated.(historyOverviewBrowser)
+	if model.offset != last-1 {
+		t.Fatalf("up offset = %d, want %d", model.offset, last-1)
+	}
+}
+
 func TestHistoryOverviewBrowserShowsEmptyError(t *testing.T) {
 	model := overviewBrowserFixture()
 	model.err = errors.New(T("history.overview.empty"))

@@ -63,6 +63,7 @@ func (model historyOverviewBrowser) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "end":
 			model.offset = model.maxOffset()
 		}
+		model.offset = min(model.offset, model.maxOffset())
 	}
 	return model, nil
 }

@@ -20,6 +20,7 @@ type historyNavigable interface {
 }
 
 func newHistoryNavigator(db *sql.DB, path string, root historyReviewBrowser) historyNavigator {
+	root.hosted = true
 	return historyNavigator{db: db, path: path, stack: []tea.Model{root}}
 }
 
@@ -61,6 +62,10 @@ func (model historyNavigator) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if sample, ok := next.(historySampleBrowser); ok {
 					sample.hosted = true
 					next = sample
+				}
+				if review, ok := next.(historyReviewBrowser); ok {
+					review.hosted = true
+					next = review
 				}
 				model.stack = append(model.stack, next)
 				return model, next.Init()
@@ -113,6 +118,7 @@ func runHistoryNavigator() error {
 		return err
 	}
 	root := newHistoryListBrowser(path, data)
+	root.hosted = true
 	root.load = func() (historyReviewData, error) { return historyListReviewData(db, historyOptions{}, time.Now()) }
 	_, err = tea.NewProgram(newHistoryNavigator(db, path, root), tea.WithInput(os.Stdin), tea.WithOutput(os.Stdout)).Run()
 	return err

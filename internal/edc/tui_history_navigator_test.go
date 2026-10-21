@@ -88,6 +88,22 @@ func TestHistoryNavigatorRunListOverviewAndInlineDetail(t *testing.T) {
 	}
 }
 
+func TestHistoryRunListHostedFooterOmitsGenericEnter(t *testing.T) {
+	restore := currentLanguage()
+	defer setLanguage(restore)
+	setLanguage("en")
+	data := historyReviewData{entries: []historyReviewEntry{{id: "run", command: "top", cells: make([]string, 6)}}}
+	direct := newHistoryListBrowser("history.db", data)
+	direct.color = false
+	directHelp := strings.Join(direct.helpLines(), "\n")
+	hosted := direct
+	hosted.hosted = true
+	help := strings.Join(hosted.helpLines(), "\n")
+	if directHelp == help || !strings.Contains(help, T("history.list_browser.navigator_help")) {
+		t.Fatalf("direct=%q hosted=%q", directHelp, help)
+	}
+}
+
 func TestHistoryNavigatorPropagatesSizeAndClosesChildDetailBeforePop(t *testing.T) {
 	root := newHistoryListBrowser("history.db", historyReviewData{entries: []historyReviewEntry{{id: "run", cells: make([]string, 6)}}})
 	navigator := newHistoryNavigator(nil, "history.db", root)

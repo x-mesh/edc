@@ -50,6 +50,7 @@ type historyReviewBrowser struct {
 	view                              viewport.Model
 	width, height, selected           int
 	color, expanded, paused           bool
+	hosted                            bool
 	prune, dryRun, confirm, confirmed bool
 	checked                           map[string]bool
 	seq                               int
@@ -112,7 +113,11 @@ func (model historyReviewBrowser) helpLines() []string {
 		}
 		return lines
 	}
-	lines := historyReviewKeyHints(T(key), model.width, model.color, liveHintItem{key: "p", on: model.paused})
+	help := T(key)
+	if model.hosted && !model.expanded && model.navigateFn != nil {
+		help = strings.Replace(help, "   Enter Details", "", 1)
+	}
+	lines := historyReviewKeyHints(help, model.width, model.color, liveHintItem{key: "p", on: model.paused})
 	if model.extraHelp != "" && !model.expanded && !(len(model.data.entries) > 0 && model.data.entries[model.selected].command == historySnapshotCommand) {
 		lines = append(lines, historyReviewKeyHints(T(model.extraHelp), model.width, model.color)...)
 	}

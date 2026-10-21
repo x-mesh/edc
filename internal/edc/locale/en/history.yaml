@@ -65,6 +65,7 @@ history:
     title: "Run history"
     summary: "Recorded top and snapshot runs"
     details: "Selected run"
+    navigator_help: "t Top samples   p Processes"
     empty: "No recorded runs match this query."
     run: "run  %s"
     command: "command  %s"

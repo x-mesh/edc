@@ -40,6 +40,7 @@ type historyReviewTickMsg struct{ seq int }
 type historyReviewBrowser struct {
 	title, path                       string
 	detailsTitle                      string
+	extraHelp                         string
 	columns                           []historyReviewColumn
 	data                              historyReviewData
 	view                              viewport.Model
@@ -103,7 +104,11 @@ func (model historyReviewBrowser) helpLines() []string {
 		}
 		return lines
 	}
-	return historyReviewKeyHints(T(key), model.width, model.color, liveHintItem{key: "p", on: model.paused})
+	lines := historyReviewKeyHints(T(key), model.width, model.color, liveHintItem{key: "p", on: model.paused})
+	if model.extraHelp != "" && !model.expanded {
+		lines = append(lines, historyReviewKeyHints(T(model.extraHelp), model.width, model.color)...)
+	}
+	return lines
 }
 
 func historyReviewKeyHints(text string, width int, color bool, items ...liveHintItem) []string {

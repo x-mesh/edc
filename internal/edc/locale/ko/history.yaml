@@ -65,6 +65,7 @@ history:
     title: "실행 기록"
     summary: "기록한 top 및 snapshot 실행"
     details: "선택한 실행"
+    navigator_help: "t Top 관측값   p Process"
     empty: "조건에 맞는 실행 기록이 없습니다."
     run: "실행 ID  %s"
     command: "명령  %s"

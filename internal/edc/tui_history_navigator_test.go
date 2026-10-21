@@ -339,3 +339,30 @@ func TestHistoryNavigatorKeepsFilterInputKeysInSampleBrowser(t *testing.T) {
 		t.Fatal("second Esc did not pop the sample browser")
 	}
 }
+
+func TestHistoryNavigatorKeepsFilterInputKeysInGrowthBrowser(t *testing.T) {
+	root := newHistoryListBrowser("history.db", historyReviewData{})
+	growth := newHistoryGrowthNavigator(nil, "history.db", historyGrowthOptions{}, historyGrowth{})
+	navigator := newHistoryNavigator(nil, "history.db", root)
+	navigator.stack = append(navigator.stack, growth)
+	next, _ := navigator.Update(tea.KeyPressMsg{Code: '/'})
+	navigator = next.(historyNavigator)
+	next, command := navigator.Update(tea.KeyPressMsg{Code: 'q', Text: "q"})
+	if command != nil {
+		t.Fatal("q quit while growth filter input was active")
+	}
+	navigator = next.(historyNavigator)
+	if current := navigator.current().(historyReviewBrowser); !current.filterEditing || current.filterText != "q" {
+		t.Fatalf("filter input = %+v", current)
+	}
+	next, _ = navigator.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	navigator = next.(historyNavigator)
+	if len(navigator.stack) != 2 || navigator.current().(historyReviewBrowser).filterEditing {
+		t.Fatal("first Esc did not close growth filter input")
+	}
+	next, _ = navigator.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	navigator = next.(historyNavigator)
+	if len(navigator.stack) != 1 {
+		t.Fatal("second Esc did not pop growth browser")
+	}
+}

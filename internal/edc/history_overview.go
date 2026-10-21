@@ -256,14 +256,14 @@ func loadHistoryOverview(db *sql.DB, options historyOverviewOptions) (historyOve
 			if row.Started.Before(out.From) || !row.Started.Before(out.To) {
 				continue
 			}
-			out.Logs = append(out.Logs, historyOverviewLog{Command: strings.Join(row.Command, " "), Started: row.Started, Outcome: string(row.Outcome), Duration: row.Duration})
+			out.Logs = append(out.Logs, historyOverviewLog{Command: strings.Join(row.Command, " "), Started: row.Started, Outcome: historyOutcome(row), Duration: row.Duration})
 		}
 	}
 	return out, r.Err()
 }
 func writeHistoryOverview(out io.Writer, v historyOverview, loc *time.Location) {
 	if v.Run != nil {
-		fmt.Fprintf(out, "%s: %s  %s  %s  duration %s  interval %.0fs  filter %s\n", T("history.overview.run"), v.Run.ID, v.Run.Command, v.Run.Hostname, v.To.Sub(v.From).Round(time.Second), v.Run.IntervalS, v.Run.Process)
+		fmt.Fprintf(out, "%s: %s  %s  %s  %s %s  %s %.0fs  %s %s\n", T("history.overview.run"), v.Run.ID, v.Run.Command, v.Run.Hostname, T("history.overview.duration"), v.To.Sub(v.From).Round(time.Second), T("history.overview.interval"), v.Run.IntervalS, T("history.overview.filter"), v.Run.Process)
 	}
 	fmt.Fprintf(out, "%s: %s → %s  %s %d  %s %d\n", T("history.overview.range"), v.From.In(loc).Format(time.DateTime), v.To.In(loc).Format(time.DateTime), T("history.overview.runs"), v.Runs, T("history.overview.samples"), v.Samples)
 	fmt.Fprintln(out, T("history.overview.metrics"))
@@ -278,21 +278,41 @@ func writeHistoryOverview(out io.Writer, v historyOverview, loc *time.Location) 
 	}
 	if len(v.Disks) > 0 {
 		fmt.Fprintln(out, T("history.overview.disks"))
+		fmt.Fprintln(out, historyOverviewDiskTableHeader())
 		for _, disk := range v.Disks {
 			growth := "—"
 			if disk.BytesPerDay != nil {
 				growth = historyGrowthRate(*disk.BytesPerDay)
 			}
-			fmt.Fprintf(out, "  %s  %s/%s  %s %s\n", disk.Mount, formatSizeShort(uint64(disk.UsedBytes)), formatSizeShort(uint64(disk.TotalBytes)), T("history.overview.growth"), growth)
+			fmt.Fprintln(out, historyOverviewDiskRow(disk.Mount, formatSizeShort(uint64(disk.UsedBytes)), formatSizeShort(uint64(disk.TotalBytes)), growth))
 		}
 	}
 	if len(v.Logs) > 0 {
 		fmt.Fprintln(out, T("history.overview.logs"))
 		fmt.Fprintln(out, T("history.overview.logs_time_only"))
+		fmt.Fprintln(out, historyOverviewLogTableHeader())
 		for _, log := range v.Logs {
-			fmt.Fprintf(out, "  %s  %s  %s  %s\n", historyTerminalText(log.Command), log.Started.In(loc).Format(time.DateTime), log.Outcome, log.Duration)
+			fmt.Fprintln(out, historyOverviewLogRow(log.Command, log.Started.In(loc).Format(time.DateTime), log.Outcome, historyShortDuration(log.Duration)))
 		}
 	}
+}
+
+const historyOverviewPlainWidth = 120
+
+func historyOverviewDiskTableHeader() string {
+	return historyCell(T("history.overview.column.path"), 66, false) + "  " + historyCell(T("history.overview.column.used"), 12, true) + "  " + historyCell(T("history.overview.column.total"), 12, true) + "  " + historyCell(T("history.overview.column.growth_per_day"), 22, true)
+}
+
+func historyOverviewDiskRow(path, used, total, growth string) string {
+	return historyCell(path, 66, false) + "  " + historyCell(used, 12, true) + "  " + historyCell(total, 12, true) + "  " + historyCell(growth, 22, true)
+}
+
+func historyOverviewLogTableHeader() string {
+	return historyCell(T("history.overview.column.command"), 58, false) + "  " + historyCell(T("history.overview.column.started"), 19, false) + "  " + historyCell(T("history.overview.column.result"), 14, false) + "  " + historyCell(T("history.overview.column.duration"), 12, true)
+}
+
+func historyOverviewLogRow(command, started, result, duration string) string {
+	return historyCell(command, 58, false) + "  " + historyCell(started, 19, false) + "  " + historyCell(result, 14, false) + "  " + historyCell(duration, 12, true)
 }
 
 var _ = sort.Float64s

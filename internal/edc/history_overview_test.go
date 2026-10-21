@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/charmbracelet/x/ansi"
 )
 
 func TestHistoryOverviewAggregatesRunAndPlainOutput(t *testing.T) {
@@ -84,8 +86,26 @@ func TestHistoryOverviewMatchesLogsByStartTimeOnly(t *testing.T) {
 	}
 	defer db.Close()
 	view, err := loadHistoryOverview(db, historyOverviewOptions{run: recorder.runID, from: from, to: from.Add(10 * time.Second)})
-	if err != nil || len(view.Logs) != 1 || view.Logs[0].Command != "make test" || view.Logs[0].Outcome != string(historyOutcomeSuccess) {
+	if err != nil || len(view.Logs) != 1 || view.Logs[0].Command != "make test" || view.Logs[0].Outcome != historyOutcome(logHistoryAttempt{Outcome: historyOutcomeSuccess}) {
 		t.Fatalf("logs %+v err %v", view.Logs, err)
+	}
+}
+
+func TestHistoryOverviewRelatedTablesFitPlainWidth(t *testing.T) {
+	var output bytes.Buffer
+	view := historyOverview{
+		From: time.Unix(0, 0), To: time.Unix(1, 0),
+		Disks: []historyOverviewDisk{{Mount: strings.Repeat("/long/path", 20), UsedBytes: 1, TotalBytes: 2}},
+		Logs:  []historyOverviewLog{{Command: strings.Repeat("very long command ", 20), Started: time.Unix(0, 0), Outcome: historyOutcome(logHistoryAttempt{Outcome: historyOutcomeSuccess}), Duration: 11997 * time.Microsecond}},
+	}
+	writeHistoryOverview(&output, view, time.UTC)
+	for _, line := range strings.Split(strings.TrimSuffix(output.String(), "\n"), "\n") {
+		if width := ansi.StringWidth(line); width > historyOverviewPlainWidth {
+			t.Fatalf("width %d: %q", width, line)
+		}
+	}
+	if !strings.Contains(output.String(), "12ms") {
+		t.Fatalf("duration output: %s", output.String())
 	}
 }
 

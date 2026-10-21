@@ -45,7 +45,7 @@ func TestHistoryTrendBrowserTargetsMetricsAndCommand(t *testing.T) {
 	model = updated.(historyTrendBrowser)
 	loaded, _ := model.Update(model.Init()())
 	model = loaded.(historyTrendBrowser)
-	if view := historyTrendBrowserView(model); !strings.Contains(view, "cpu_pct by hour") || !strings.Contains(view, "No values in this range") || !strings.Contains(view, "›host") {
+	if view := historyTrendBrowserView(model); !strings.Contains(view, "cpu_pct by hour") || !strings.Contains(view, "No values in this range") || !strings.Contains(view, "›host") || !strings.Contains(view, "TARGET") || !strings.Contains(view, "PEAK RSS") {
 		t.Fatalf("host view:\n%s", view)
 	}
 
@@ -77,6 +77,39 @@ func TestHistoryTrendBrowserTargetsMetricsAndCommand(t *testing.T) {
 	}
 }
 
+func TestHistoryTrendBrowserLocalizesPeakRSSAndShowsFullCommand(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	restore := currentLanguage()
+	defer setLanguage(restore)
+	target := historyTrendTarget{kind: historyTrendProcess, value: "/Applications/OrbStack Helper", rss: 1 << 30}
+	model := newHistoryTrendBrowser(nil, []historyTrendTarget{target}, historyTrendOptions{by: "day"}, historyTrendZone)
+	for language, peak := range map[string]string{"en": "PEAK RSS", "ko": "최대 RSS", "ja": "最大RSS"} {
+		setLanguage(language)
+		for _, width := range []int{80, 120, 180} {
+			updated, _ := model.Update(tea.WindowSizeMsg{Width: width, Height: 20})
+			view := historyTrendBrowserView(updated.(historyTrendBrowser))
+			if !strings.Contains(view, T("history.browser.targets")) || !strings.Contains(view, peak) || !strings.Contains(view, "OrbStack Helper") || !strings.Contains(view, "1.0 GB") || !strings.Contains(view, "/Applications/OrbStack Helper") {
+				t.Fatalf("%s width %d view:\n%s", language, width, view)
+			}
+			for _, line := range strings.Split(view, "\n") {
+				if ansi.StringWidth(line) > width {
+					t.Fatalf("%s width %d line %d: %q", language, width, ansi.StringWidth(line), line)
+				}
+			}
+		}
+	}
+}
+
+func TestHistoryTrendBrowserDisambiguatesDuplicateExecutableNames(t *testing.T) {
+	model := newHistoryTrendBrowser(nil, []historyTrendTarget{
+		{kind: historyTrendProcess, value: "/Applications/Claude.app/Contents/Helpers/Helper"},
+		{kind: historyTrendProcess, value: "/Applications/Claude.app/Contents/Renderer/Helper"},
+	}, historyTrendOptions{}, historyTrendZone)
+	first, second := model.targetLabel(0, historyTrendTargetWidth), model.targetLabel(1, historyTrendTargetWidth)
+	if first == second || strings.Contains(first, "PID") || strings.Contains(second, "PID") || !strings.Contains(first, "Helpers") || !strings.Contains(second, "Renderer") {
+		t.Fatalf("duplicate labels = %q, %q", first, second)
+	}
+}
 func TestHistoryTrendBrowserStartsAtNamedProcessAndFitsSmallScreens(t *testing.T) {
 	db, _ := historyProcessTrendFixture(t)
 	targets, _ := historyTrendTargets(db)

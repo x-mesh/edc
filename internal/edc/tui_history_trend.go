@@ -343,15 +343,40 @@ func (model historyTrendBrowser) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return model, nil
 }
 
-func (model historyTrendBrowser) targetLabel(target historyTrendTarget) string {
+func (model historyTrendBrowser) targetLabel(index, width int) string {
+	target := model.targets[index]
 	switch target.kind {
 	case historyTrendHost:
 		return T("history.browser.host")
 	case historyTrendProcess:
-		return historyTerminalText(target.value)
+		name := topProcessName(target.value, width)
+		for other, candidate := range model.targets {
+			if other == index || candidate.kind != historyTrendProcess || topProcessName(candidate.value, width) != name {
+				continue
+			}
+			return ansi.Truncate(name+" · "+historyTrendProcessParent(target.value, candidate.value), width, "…")
+		}
+		return name
 	default:
 		return "◆ " + historyTerminalText(target.value)
 	}
+}
+
+func historyTrendProcessParent(command, other string) string {
+	path := strings.Fields(command)
+	otherPath := strings.Fields(other)
+	if len(path) == 0 || len(otherPath) == 0 {
+		return historyTerminalText(command)
+	}
+	parts := strings.Split(strings.Trim(path[0], "/"), "/")
+	otherParts := strings.Split(strings.Trim(otherPath[0], "/"), "/")
+	for offset := 2; offset <= min(len(parts), len(otherParts)); offset++ {
+		part, otherPart := parts[len(parts)-offset], otherParts[len(otherParts)-offset]
+		if part != otherPart {
+			return part
+		}
+	}
+	return historyTerminalText(command)
 }
 
 func (model historyTrendBrowser) targetLines(height int) []string {
@@ -359,13 +384,12 @@ func (model historyTrendBrowser) targetLines(height int) []string {
 	var lines []string
 	for index := start; index < min(len(model.targets), start+height); index++ {
 		target := model.targets[index]
-		label := model.targetLabel(target)
 		count := ""
 		if target.rss > 0 {
 			count = formatSizeShort(uint64(target.rss))
 		}
 		space := historyTrendTargetWidth - 1 - ansi.StringWidth(count)
-		label = ansi.Truncate(label, max(1, space-1), "…")
+		label := ansi.Truncate(model.targetLabel(index, max(1, space-1)), max(1, space-1), "…")
 		line := " " + label + strings.Repeat(" ", max(1, space-ansi.StringWidth(label))) + historyTint(count, richGray, model.color)
 		if index == model.cursor {
 			plain := " " + label + strings.Repeat(" ", max(1, space-ansi.StringWidth(label))) + count
@@ -377,6 +401,13 @@ func (model historyTrendBrowser) targetLines(height int) []string {
 		lines = append(lines, line)
 	}
 	return lines
+}
+
+func (model historyTrendBrowser) targetHeader() string {
+	value := T("history.browser.peak_rss")
+	space := historyTrendTargetWidth - 1 - ansi.StringWidth(value)
+	label := ansi.Truncate(T("history.browser.targets"), max(1, space-1), "…")
+	return " " + label + strings.Repeat(" ", max(1, space-ansi.StringWidth(label))) + value
 }
 
 func (model historyTrendBrowser) title() string {
@@ -438,7 +469,7 @@ func (model historyTrendBrowser) View() tea.View {
 			right = append(right, strings.Split(strings.TrimRight(model.table.View(), "\n"), "\n")...)
 		}
 		height := model.table.Height() + 1
-		left := append([]string{historyTint(T("history.browser.targets"), richGray, model.color)}, model.targetLines(height-1)...)
+		left := append([]string{historyTint(model.targetHeader(), richGray, model.color)}, model.targetLines(height-1)...)
 		for index := 0; index < height; index++ {
 			l, r := "", ""
 			if index < len(left) {

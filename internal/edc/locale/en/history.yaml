@@ -272,7 +272,6 @@ command:
       - "growth estimates when a disk fills at the rate of the range (7d default)."
       - "trend groups one metric by local hour, day, or week, oldest first."
       - "overview summarizes a run or time window with host metrics and recorded top processes."
-      - "overview summarizes a run or time window with host metrics and recorded top processes."
       - "snapshot records by default; snapshot -w <DB> selects a DB; export --run <id> writes JSON."
       - "top -w [DB] records while the dashboard stays open."
       - "Records append by run. Pausing top also pauses recording."

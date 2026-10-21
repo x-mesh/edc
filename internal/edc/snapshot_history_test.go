@@ -196,6 +196,9 @@ func TestHistoryAddsOverviewIndexesToAnExistingSnapshotDatabase(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer migrated.Close()
+	if snapshotHistoryCount(t, migrated, "SELECT count(*) FROM pragma_table_info('top_process_samples') WHERE name='memory_bytes'") != 1 {
+		t.Fatal("memory_bytes column was not added")
+	}
 	for _, name := range []string{"snapshot_metrics_run_time", "du_dirs_run_time", "process_sample"} {
 		if snapshotHistoryCount(t, migrated, "SELECT count(*) FROM sqlite_schema WHERE type='index' AND name=?", name) != 1 {
 			t.Fatalf("missing index %s", name)
@@ -311,7 +314,7 @@ func TestHistoryWritersOpenTogetherWhileAddingTables(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, statement := range append(historyV1Statements(), fmt.Sprintf("PRAGMA application_id=%d", historyApplicationID), "PRAGMA user_version=1") {
+	for _, statement := range append(oldHistoryV1Statements(), fmt.Sprintf("PRAGMA application_id=%d", historyApplicationID), "PRAGMA user_version=1") {
 		if _, err := db.Exec(statement); err != nil {
 			t.Fatal(err)
 		}

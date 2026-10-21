@@ -164,6 +164,7 @@ history:
     more_processes: "… %d more processes; use --json for all"
   browser:
     targets: "TARGET"
+    peak_memory: "PEAK MEMORY"
     peak_rss: "PEAK RSS"
     host: "host"
     loading: "loading"

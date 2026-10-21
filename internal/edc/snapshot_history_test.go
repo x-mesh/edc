@@ -255,6 +255,29 @@ func TestHistoryWriteOpenDoesNotMigrateWhenOverviewIndexesExist(t *testing.T) {
 	opened.Close()
 }
 
+func TestHistoryWriteOpenRestoresOnlyMissingOverviewIndex(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "history.db")
+	db, err := openHistoryDB(path, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("DROP INDEX du_dirs_run_time"); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	restored, err := openHistoryDB(path, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer restored.Close()
+	for _, name := range []string{"snapshot_metrics_run_time", "du_dirs_run_time", "process_sample"} {
+		var count int
+		if err := restored.QueryRow("SELECT count(*) FROM sqlite_schema WHERE type='index' AND name=?", name).Scan(&count); err != nil || count != 1 {
+			t.Fatalf("index %s: count=%d err=%v", name, count, err)
+		}
+	}
+}
+
 func TestSnapshotNamesEachDuPathWhenThereAreSeveral(t *testing.T) {
 	var names []string
 	for _, section := range snapshotSections(time.Hour, []string{"/var", "/home"}, time.Minute) {

@@ -117,6 +117,24 @@ func TestHistoryTrendBrowserDisambiguatesDuplicateExecutableNames(t *testing.T) 
 	if first == second || !strings.Contains(first, "· Google") || !strings.Contains(second, "· Claude") {
 		t.Fatalf("labels for paths with spaces = %q, %q", first, second)
 	}
+	for _, commands := range [][]string{
+		{"/a/x/bin/worker", "/b/x/bin/worker", "/c/y/bin/worker"},
+		{"/a/x/bin/worker", "/b/x/bin/worker", "/c/y/bin/worker", "/d/y/bin/worker"},
+	} {
+		targets := make([]historyTrendTarget, len(commands))
+		for index, command := range commands {
+			targets[index] = historyTrendTarget{kind: historyTrendProcess, value: command}
+		}
+		model := newHistoryTrendBrowser(nil, targets, historyTrendOptions{}, historyTrendZone)
+		labels := map[string]bool{}
+		for index := range targets {
+			label := model.targetLabel(index, historyTrendTargetWidth)
+			if labels[label] {
+				t.Fatalf("duplicate labels for %v: %q", commands, label)
+			}
+			labels[label] = true
+		}
+	}
 }
 func TestHistoryTrendBrowserStartsAtNamedProcessAndFitsSmallScreens(t *testing.T) {
 	db, _ := historyProcessTrendFixture(t)

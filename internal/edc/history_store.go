@@ -350,9 +350,16 @@ func historyOverviewIndexStatements() []string {
 }
 
 func historyHasOverviewIndexes(db *sql.DB) (bool, error) {
-	var count int
-	err := db.QueryRow(`SELECT count(*) FROM sqlite_schema WHERE type='index' AND name IN ('snapshot_metrics_run_time', 'du_dirs_run_time', 'process_sample')`).Scan(&count)
-	return count == 3, err
+	for _, name := range []string{"snapshot_metrics_run_time", "du_dirs_run_time", "process_sample"} {
+		var found int
+		if err := db.QueryRow(`SELECT count(*) FROM sqlite_schema WHERE type='index' AND name=?`, name).Scan(&found); err != nil {
+			return false, err
+		}
+		if found == 0 {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 func historyEnableWAL(db *sql.DB) error {

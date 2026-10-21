@@ -350,11 +350,14 @@ func (model historyTrendBrowser) targetLabel(index, width int) string {
 		return T("history.browser.host")
 	case historyTrendProcess:
 		name := topProcessName(target.value, width)
-		for other, candidate := range model.targets {
-			if other == index || candidate.kind != historyTrendProcess || topProcessName(candidate.value, width) != name {
-				continue
+		var duplicates []string
+		for _, candidate := range model.targets {
+			if candidate.kind == historyTrendProcess && topProcessName(candidate.value, width) == name {
+				duplicates = append(duplicates, candidate.value)
 			}
-			return ansi.Truncate(name+" · "+historyTrendProcessParent(target.value, candidate.value), width, "…")
+		}
+		if len(duplicates) > 1 {
+			return ansi.Truncate(name+" · "+historyTrendProcessParent(target.value, duplicates), width, "…")
 		}
 		return name
 	default:
@@ -362,13 +365,23 @@ func (model historyTrendBrowser) targetLabel(index, width int) string {
 	}
 }
 
-func historyTrendProcessParent(command, other string) string {
+func historyTrendProcessParent(command string, commands []string) string {
 	parts := strings.Split(strings.Trim(strings.TrimSpace(command), "/"), "/")
-	otherParts := strings.Split(strings.Trim(strings.TrimSpace(other), "/"), "/")
-	for offset := 2; offset <= min(len(parts), len(otherParts)); offset++ {
-		part, otherPart := parts[len(parts)-offset], otherParts[len(otherParts)-offset]
-		if part != otherPart {
-			return historyTerminalText(part)
+	for depth := 1; depth < len(parts); depth++ {
+		suffix := strings.Join(parts[max(0, len(parts)-depth-1):len(parts)-1], "/")
+		unique := true
+		for _, other := range commands {
+			if other == command {
+				continue
+			}
+			otherParts := strings.Split(strings.Trim(strings.TrimSpace(other), "/"), "/")
+			if depth >= len(otherParts) || strings.Join(otherParts[max(0, len(otherParts)-depth-1):len(otherParts)-1], "/") == suffix {
+				unique = false
+				break
+			}
+		}
+		if unique {
+			return historyTerminalText(suffix)
 		}
 	}
 	return historyTerminalText(command)

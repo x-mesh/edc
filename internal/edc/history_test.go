@@ -670,6 +670,37 @@ func TestTopBareWriteUsesDefaultAndHistoryReadsIt(t *testing.T) {
 	}
 }
 
+func TestHistoryListUsesBrowserOnlyInTerminal(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "history.db")
+	recorder := topHistoryFixture(t, path)
+	if err := recorder.Close("finished"); err != nil {
+		t.Fatal(err)
+	}
+	previousTerminal, previousRunner := historyLiveTerminal, historyListBrowserRunner
+	t.Cleanup(func() { historyLiveTerminal, historyListBrowserRunner = previousTerminal, previousRunner })
+	called := false
+	historyLiveTerminal = func() bool { return true }
+	historyListBrowserRunner = func(_ *sql.DB, gotPath string, _ historyOptions) error {
+		called = gotPath == path
+		return nil
+	}
+	if code := runHistory([]string{"list", path}); code != 0 || !called {
+		t.Fatalf("terminal list: code=%d called=%v", code, called)
+	}
+	called = false
+	output := filepath.Join(t.TempDir(), "history.jsonl")
+	if code := runHistory([]string{"list", "--json", output, path}); code != 0 || called {
+		t.Fatalf("JSON list: code=%d called=%v", code, called)
+	}
+	if data, err := os.ReadFile(output); err != nil || !bytes.Contains(data, []byte("run_id")) {
+		t.Fatalf("JSON output: %q %v", data, err)
+	}
+	historyLiveTerminal = func() bool { return false }
+	if code := runHistory([]string{"list", path}); code != 0 || called {
+		t.Fatalf("pipe list: code=%d called=%v", code, called)
+	}
+}
+
 func TestHistoryListShowsTheInterfaceFilter(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "record.db")
 	for _, interfaces := range []string{"", "physical,wg0"} {

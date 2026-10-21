@@ -146,6 +146,29 @@ func TestHistoryListRunDescriptionAndReviewPanelTitles(t *testing.T) {
 	}
 }
 
+func TestHistoryListSnapshotDetailsHideTopOnlyFields(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "history.db")
+	started := time.Now().Add(-time.Minute)
+	if err := recordSnapshot(path, snapshotHistoryReport(started, 100, 1000), time.Hour, []string{"/var"}); err != nil {
+		t.Fatal(err)
+	}
+	db, err := openHistoryDB(path, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	data, err := historyListReviewData(db, historyOptions{}, time.Now())
+	if err != nil || len(data.entries) != 1 {
+		t.Fatalf("snapshot data: %+v %v", data, err)
+	}
+	details := strings.Join(data.entries[0].details, "\n")
+	for _, value := range []string{T("history.list_browser.interval", "—"), T("history.list_browser.process", "—"), T("history.list_browser.interfaces", "—")} {
+		if !strings.Contains(details, value) {
+			t.Fatalf("snapshot detail missing %q: %s", value, details)
+		}
+	}
+}
+
 func TestHistoryPruneBrowserRequiresConfirmationAndDryRunNeverDeletes(t *testing.T) {
 	var plan historyPrunePlan
 	for i := 0; i < 40; i++ {

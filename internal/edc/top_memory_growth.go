@@ -45,19 +45,22 @@ type topProcessKey struct {
 type topMemorySeries struct {
 	buckets  []int64
 	minimums []uint64
+	cached   *topMemoryGrowth
+	checks   int
 }
 
 // topMemoryGrowthTracker는 모든 process의 memory를 구간마다 기록해 지금은 작아도 계속 늘어나는 process를 찾는다.
 // 크기 순위만으로는 큰 process에 밀려 누수를 늦게 알아챈다.
 type topMemoryGrowthTracker struct {
 	series map[topProcessKey]*topMemorySeries
+	seen   map[topProcessKey]bool
 	// start는 처음 기록한 시각이다. 구간 번호를 여기서 지난 시간으로 정해, 시계를 뒤로 돌려도 번호가 거꾸로 가지 않는다.
 	// time.Now()의 monotonic 값으로 빼므로 NTP 보정에 흔들리지 않는다.
 	start time.Time
 }
 
 func newTopMemoryGrowthTracker() *topMemoryGrowthTracker {
-	return &topMemoryGrowthTracker{series: map[topProcessKey]*topMemorySeries{}}
+	return &topMemoryGrowthTracker{series: map[topProcessKey]*topMemorySeries{}, seen: map[topProcessKey]bool{}}
 }
 
 // observe는 processes의 memory를 기록하고, 꾸준히 늘어난 process에 Growth를 채운다. 목록에 없는 process의 기록은 지운다.
@@ -66,38 +69,50 @@ func (tracker *topMemoryGrowthTracker) observe(at time.Time, processes []topProc
 		tracker.start = at
 	}
 	bucket := int64(at.Sub(tracker.start) / topMemoryGrowthBucket)
-	seen := make(map[topProcessKey]bool, len(processes))
+	clear(tracker.seen)
 	for index := range processes {
 		process := &processes[index]
 		key := topProcessKey{pid: process.PID, started: process.Started}
-		seen[key] = true
+		tracker.seen[key] = true
 		series := tracker.series[key]
 		if series == nil {
 			series = &topMemorySeries{}
 			tracker.series[key] = series
 		}
-		series.add(bucket, process.memory())
-		if growth, ok := series.growth(); ok {
-			process.Growth = &growth
+		if !series.add(bucket, process.memory()) {
+			process.Growth = series.cached
+			continue
 		}
+		series.checks++
+		growth, ok := series.growth()
+		if ok {
+			series.cached = &growth
+		} else {
+			series.cached = nil
+		}
+		process.Growth = series.cached
 	}
 	for key := range tracker.series {
-		if !seen[key] {
+		if !tracker.seen[key] {
 			delete(tracker.series, key)
 		}
 	}
 }
 
-func (series *topMemorySeries) add(bucket int64, memory uint64) {
+func (series *topMemorySeries) add(bucket int64, memory uint64) bool {
 	if last := len(series.buckets) - 1; last >= 0 && series.buckets[last] == bucket {
-		series.minimums[last] = min(series.minimums[last], memory)
-		return
+		if memory >= series.minimums[last] {
+			return false
+		}
+		series.minimums[last] = memory
+		return true
 	}
 	series.buckets = append(series.buckets, bucket)
 	series.minimums = append(series.minimums, memory)
 	if extra := len(series.buckets) - topMemoryGrowthBuckets; extra > 0 {
 		series.buckets, series.minimums = series.buckets[extra:], series.minimums[extra:]
 	}
+	return true
 }
 
 // growth는 최근 구간이 연속으로 다 찼고 최저값이 꾸준히 올랐을 때만 증가량을 돌려준다. 일시정지나 긴 --interval로

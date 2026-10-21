@@ -237,7 +237,11 @@ func (picker *topInterfacePicker) lines(rates []netInterfaceRate, width, height 
 	if picker.notice != "" {
 		footer = picker.notice
 	}
-	paint := func(text string) string { return liveKeyHints(text, color, picker.footerOn()...) }
+	items := make([]liveHintItem, 0, len(picker.footerOn()))
+	for _, key := range picker.footerOn() {
+		items = append(items, liveHintItem{key: key, on: true})
+	}
+	paint := func(text string) string { return liveKeyHints(text, color, items...) }
 	if picker.notice != "" {
 		paint = func(text string) string { return topTint(text, topLevelWarn, color) }
 	}

@@ -26,6 +26,8 @@ const linuxClockTicks = 100
 func newTopProcessReader() func() ([]topProcess, bool) {
 	tracker := &topProcessTracker{clockTicks: linuxClockTicks, pageSize: uint64(os.Getpagesize()), boot: readLinuxBootTime()}
 	return func() ([]topProcess, bool) {
+		memory, memoryErr := readMemInfo()
+		readSwap := linuxProcessSwapRead(memory, memoryErr)
 		entries, err := os.ReadDir("/proc")
 		if err != nil {
 			return nil, false
@@ -42,13 +44,15 @@ func newTopProcessReader() func() ([]topProcess, bool) {
 				continue
 			}
 			if stat, ok := parseLinuxProcessStat(pid, string(data)); ok {
-				status, err := os.ReadFile("/proc/" + entry.Name() + "/status")
-				// stat을 읽은 뒤 끝난 process다. 남기면 swap을 모르는 process로 세여 묶음의 memory 합이 추정값이 된다.
-				if errors.Is(err, os.ErrNotExist) {
-					continue
-				}
-				if err == nil {
-					stat.Swap, stat.SwapValid = parseLinuxProcessSwap(string(status))
+				if readSwap {
+					status, err := os.ReadFile("/proc/" + entry.Name() + "/status")
+					// stat을 읽은 뒤 끝난 process다. 남기면 swap을 모르는 process로 세여 묶음의 memory 합이 추정값이 된다.
+					if errors.Is(err, os.ErrNotExist) {
+						continue
+					}
+					if err == nil {
+						stat.Swap, stat.SwapValid = parseLinuxProcessSwap(string(status))
+					}
 				}
 				if topFullCommand {
 					if argv, err := os.ReadFile("/proc/" + entry.Name() + "/cmdline"); err == nil {

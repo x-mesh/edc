@@ -37,11 +37,13 @@ type historyTrendTarget struct {
 }
 
 type historyTrendLoadedMsg struct {
-	seq     int
-	buckets []historyTrendBucket
-	summary historyTrendSummary
-	growth  []historyGrowthProcess
-	err     error
+	owner         uint64
+	seq           int
+	buckets       []historyTrendBucket
+	summary       historyTrendSummary
+	growth        []historyGrowthProcess
+	err           error
+	identityEmpty bool
 }
 
 type historyTrendBrowser struct {
@@ -55,15 +57,17 @@ type historyTrendBrowser struct {
 	width, height  int
 	color, loading bool
 	seq            int
+	owner          uint64
 	loaded         historyTrendLoadedMsg
 	table          viewport.Model
 	// now는 RSS 변화의 기본 범위(최근 7일)의 끝이다.
 	now time.Time
 	// probeKeys는 스냅샷 결과마다 기록된 지표다. 화면을 그릴 때마다 DB를 읽지 않게 처음 읽은 값을 둔다.
-	probeKeys map[string][]string
+	probeKeys     map[string][]string
+	processMemory bool
 }
 
-// historyTrendTargets는 고를 수 있는 대상이다. top 기록이 있으면 호스트를 맨 앞에, 그다음 최대 RSS가 큰 프로세스, 그다음
+// historyTrendTargets는 고를 수 있는 대상이다. top 기록이 있으면 호스트를 맨 앞에, 그다음 최대 메모리가 큰 프로세스, 그다음
 // 스냅샷 결과를 이름순으로 둔다.
 func historyTrendTargets(db *sql.DB) ([]historyTrendTarget, error) {
 	var targets []historyTrendTarget
@@ -78,7 +82,7 @@ func historyTrendTargets(db *sql.DB) ([]historyTrendTarget, error) {
 			return nil, err
 		}
 		for _, name := range names {
-			targets = append(targets, historyTrendTarget{kind: historyTrendProcess, value: name.Name, rss: name.MaxRSS})
+			targets = append(targets, historyTrendTarget{kind: historyTrendProcess, value: name.Name, rss: name.MaxMemory})
 		}
 	}
 	has, err := historyHasSnapshots(db)
@@ -93,8 +97,9 @@ func historyTrendTargets(db *sql.DB) ([]historyTrendTarget, error) {
 }
 
 func newHistoryTrendBrowser(db *sql.DB, targets []historyTrendTarget, options historyTrendOptions, location *time.Location) historyTrendBrowser {
-	model := historyTrendBrowser{db: db, location: location, options: options, targets: targets, width: 80, height: 24,
+	model := historyTrendBrowser{db: db, location: location, options: options, targets: targets, width: 80, height: 24, owner: historyBrowserOwner.Add(1),
 		color: os.Getenv("NO_COLOR") == "", table: viewport.New(), now: time.Now(), probeKeys: map[string][]string{}, metrics: map[string]string{"host": "cpu_pct", "process": "rss_bytes"}}
+	model.processMemory = db != nil && historyHasProcessMemoryColumn(db)
 	// 명령에 준 --process나 --probe가 목록에 없으면 맨 앞에 넣어 그 대상에서 시작한다.
 	if options.process.active() || options.probe != "" {
 		want := historyTrendTarget{kind: historyTrendProcess, value: options.process.String()}
@@ -178,8 +183,12 @@ func (model historyTrendBrowser) trendOptions() historyTrendOptions {
 func (model historyTrendBrowser) Init() tea.Cmd { return model.load() }
 
 func (model historyTrendBrowser) load() tea.Cmd {
-	db, options, location, now, seq := model.db, model.trendOptions(), model.location, model.now, model.seq
-	return func() tea.Msg { return historyTrendLoad(db, options, location, now, seq) }
+	db, options, location, now, seq, owner := model.db, model.trendOptions(), model.location, model.now, model.seq, model.owner
+	return func() tea.Msg {
+		msg := historyTrendLoad(db, options, location, now, seq)
+		msg.owner = owner
+		return msg
+	}
 }
 
 func historyTrendLoad(db *sql.DB, options historyTrendOptions, location *time.Location, now time.Time, seq int) historyTrendLoadedMsg {
@@ -191,6 +200,9 @@ func historyTrendLoad(db *sql.DB, options historyTrendOptions, location *time.Lo
 		msg.buckets = append(msg.buckets, bucket)
 		return nil
 	})
+	if msg.err == nil && len(msg.buckets) == 0 && options.identity != nil {
+		msg.identityEmpty = true
+	}
 	if msg.err == nil && options.process.active() {
 		from, to := historyGrowthWindowOf(historyGrowthOptions{from: options.from, to: options.to}, now)
 		msg.growth, msg.err = historyGrowthProcesses(db, from, to, options.process)
@@ -284,7 +296,7 @@ func (model historyTrendBrowser) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		model.resize()
 		return model, nil
 	case historyTrendLoadedMsg:
-		if value.seq != model.seq {
+		if value.owner != 0 && value.owner != model.owner || value.seq != model.seq {
 			return model, nil
 		}
 		model.loaded, model.loading = value, false
@@ -343,15 +355,48 @@ func (model historyTrendBrowser) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return model, nil
 }
 
-func (model historyTrendBrowser) targetLabel(target historyTrendTarget) string {
+func (model historyTrendBrowser) targetLabel(index, width int) string {
+	target := model.targets[index]
 	switch target.kind {
 	case historyTrendHost:
 		return T("history.browser.host")
 	case historyTrendProcess:
-		return historyTerminalText(target.value)
+		name := topProcessName(target.value, width)
+		var duplicates []string
+		for _, candidate := range model.targets {
+			if candidate.kind == historyTrendProcess && topProcessName(candidate.value, width) == name {
+				duplicates = append(duplicates, candidate.value)
+			}
+		}
+		if len(duplicates) > 1 {
+			return ansi.Truncate(name+" · "+historyTrendProcessParent(target.value, duplicates), width, "…")
+		}
+		return name
 	default:
 		return "◆ " + historyTerminalText(target.value)
 	}
+}
+
+func historyTrendProcessParent(command string, commands []string) string {
+	parts := strings.Split(strings.Trim(strings.TrimSpace(command), "/"), "/")
+	for depth := 1; depth < len(parts); depth++ {
+		suffix := strings.Join(parts[max(0, len(parts)-depth-1):len(parts)-1], "/")
+		unique := true
+		for _, other := range commands {
+			if other == command {
+				continue
+			}
+			otherParts := strings.Split(strings.Trim(strings.TrimSpace(other), "/"), "/")
+			if depth >= len(otherParts) || strings.Join(otherParts[max(0, len(otherParts)-depth-1):len(otherParts)-1], "/") == suffix {
+				unique = false
+				break
+			}
+		}
+		if unique {
+			return historyTerminalText(suffix)
+		}
+	}
+	return historyTerminalText(command)
 }
 
 func (model historyTrendBrowser) targetLines(height int) []string {
@@ -359,13 +404,12 @@ func (model historyTrendBrowser) targetLines(height int) []string {
 	var lines []string
 	for index := start; index < min(len(model.targets), start+height); index++ {
 		target := model.targets[index]
-		label := model.targetLabel(target)
 		count := ""
 		if target.rss > 0 {
 			count = formatSizeShort(uint64(target.rss))
 		}
 		space := historyTrendTargetWidth - 1 - ansi.StringWidth(count)
-		label = ansi.Truncate(label, max(1, space-1), "…")
+		label := ansi.Truncate(model.targetLabel(index, max(1, space-1)), max(1, space-1), "…")
 		line := " " + label + strings.Repeat(" ", max(1, space-ansi.StringWidth(label))) + historyTint(count, richGray, model.color)
 		if index == model.cursor {
 			plain := " " + label + strings.Repeat(" ", max(1, space-ansi.StringWidth(label))) + count
@@ -377,6 +421,16 @@ func (model historyTrendBrowser) targetLines(height int) []string {
 		lines = append(lines, line)
 	}
 	return lines
+}
+
+func (model historyTrendBrowser) targetHeader() string {
+	value := T("history.browser.peak_rss")
+	if model.processMemory {
+		value = T("history.browser.peak_memory")
+	}
+	space := historyTrendTargetWidth - 1 - ansi.StringWidth(value)
+	label := ansi.Truncate(T("history.browser.targets"), max(1, space-1), "…")
+	return " " + label + strings.Repeat(" ", max(1, space-ansi.StringWidth(label))) + value
 }
 
 func (model historyTrendBrowser) title() string {
@@ -430,6 +484,8 @@ func (model historyTrendBrowser) View() tea.View {
 		switch {
 		case model.loaded.err != nil:
 			right = append(right, historyTint(model.loaded.err.Error(), richRed, model.color))
+		case model.loaded.identityEmpty:
+			right = append(right, T("history.trend.instance_empty"))
 		case len(rows) == 0 && model.target().kind == historyTrendProcess:
 			right = append(right, T("history.trend.process_empty", historyTerminalText(model.target().value), quoteLocalShellWord(model.target().value)))
 		case len(rows) == 0:
@@ -438,7 +494,7 @@ func (model historyTrendBrowser) View() tea.View {
 			right = append(right, strings.Split(strings.TrimRight(model.table.View(), "\n"), "\n")...)
 		}
 		height := model.table.Height() + 1
-		left := append([]string{historyTint(T("history.browser.targets"), richGray, model.color)}, model.targetLines(height-1)...)
+		left := append([]string{historyTint(model.targetHeader(), richGray, model.color)}, model.targetLines(height-1)...)
 		for index := 0; index < height; index++ {
 			l, r := "", ""
 			if index < len(left) {
@@ -457,11 +513,7 @@ func (model historyTrendBrowser) View() tea.View {
 			notice = historyTint(T("history.trend.unfiltered", historyTerminalText(value), quoteLocalShellWord(value)), richYellow, model.color)
 		}
 		lines = append(lines, notice)
-		var on []string
-		if model.trendOptions().each {
-			on = append(on, "e")
-		}
-		lines = append(lines, liveKeyHints(T("history.browser.help"), model.color, on...))
+		lines = append(lines, liveKeyHints(T("history.browser.help"), model.color, liveHintItem{key: "e", on: model.trendOptions().each}))
 	}
 	for index, line := range lines {
 		lines[index] = ansi.Truncate(line, max(1, model.width), "…")

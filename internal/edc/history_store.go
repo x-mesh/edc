@@ -84,7 +84,7 @@ disk_read_bytes_per_s disk_write_bytes_per_s disk_iops disk_await_ms disk_busy_p
 psi_cpu_some_avg10_pct psi_memory_some_avg10_pct psi_io_some_avg10_pct memory_pct swap_out_bytes_per_s
 `)), historyMetric{name: "cpu_pct", field: -1, kind: reflect.Float64})
 var historyProcessMetrics = historyMetrics(topProcessSample{}, strings.Fields(`
-pid cpu_pct rss_bytes threads fds disk_read_bytes_per_s disk_write_bytes_per_s
+pid cpu_pct rss_bytes memory_bytes threads fds disk_read_bytes_per_s disk_write_bytes_per_s
 `))
 
 func historyMetricColumns(metrics []historyMetric) string {
@@ -166,6 +166,7 @@ type historyTopSample struct {
 	NetworkValid      bool       `json:"network_valid"`
 	DiskValid         bool       `json:"disk_valid"`
 	SwapValid         bool       `json:"swap_valid"`
+	sampleID          int64
 }
 
 func newHistoryTopSample(details hostDetails, previous resourceSnapshot, snapshot resourceSnapshot, rate resourceRate, filter string) historyTopSample {
@@ -267,6 +268,19 @@ func initializeHistoryDB(db *sql.DB, write bool) error {
 			if err := historyMigrate(db, historySnapshotStatements()); err != nil {
 				return err
 			}
+		} else {
+			has, err := historyHasOverviewIndexes(db)
+			if err != nil {
+				return err
+			}
+			if !has {
+				if err := historyMigrate(db, historyOverviewIndexStatements()); err != nil {
+					return err
+				}
+			}
+		}
+		if err := historyAddProcessMemoryColumn(db); err != nil {
+			return err
 		}
 		return historyEnableWAL(db)
 	}
@@ -321,14 +335,67 @@ func historyV1Statements() []string {
 // historySnapshotStatements는 스냅샷 표다. snapshot_results는 결과 원본이라 보고서를 다시 만들 수 있고, snapshot_metrics는
 // 결과의 숫자 지표를 probe와 키로 펼친 값, du_dirs는 du.scan이 남긴 큰 디렉터리다.
 func historySnapshotStatements() []string {
-	return []string{
+	return append([]string{
 		`CREATE TABLE IF NOT EXISTS snapshot_results (id INTEGER PRIMARY KEY, run_id TEXT NOT NULL REFERENCES runs(id), time_ns INTEGER NOT NULL, probe TEXT NOT NULL, status TEXT NOT NULL, payload TEXT NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS snapshot_metrics (id INTEGER PRIMARY KEY, run_id TEXT NOT NULL REFERENCES runs(id), time_ns INTEGER NOT NULL, probe TEXT NOT NULL, key TEXT NOT NULL, value REAL NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS du_dirs (id INTEGER PRIMARY KEY, run_id TEXT NOT NULL REFERENCES runs(id), time_ns INTEGER NOT NULL, root TEXT NOT NULL, path TEXT NOT NULL, bytes INTEGER NOT NULL)`,
 		`CREATE INDEX IF NOT EXISTS snapshot_results_run ON snapshot_results(run_id, id)`,
 		`CREATE INDEX IF NOT EXISTS snapshot_metrics_series ON snapshot_metrics(probe, key, time_ns)`,
 		`CREATE INDEX IF NOT EXISTS du_dirs_series ON du_dirs(root, path, time_ns)`,
+	}, historyOverviewIndexStatements()...)
+}
+
+func historyOverviewIndexStatements() []string {
+	return []string{
+		`CREATE INDEX IF NOT EXISTS snapshot_metrics_run_time ON snapshot_metrics(run_id, time_ns)`,
+		`CREATE INDEX IF NOT EXISTS du_dirs_run_time ON du_dirs(run_id, time_ns)`,
+		`CREATE INDEX IF NOT EXISTS process_sample ON top_process_samples(sample_id)`,
 	}
+}
+
+func historyAddProcessMemoryColumn(db *sql.DB) error {
+	if historyHasProcessMemoryColumn(db) {
+		return nil
+	}
+	_, err := db.Exec("ALTER TABLE top_process_samples ADD COLUMN memory_bytes INTEGER")
+	if err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+		return err
+	}
+	if !historyHasProcessMemoryColumn(db) {
+		return err
+	}
+	return nil
+}
+
+func historyHasProcessMemoryColumn(db *sql.DB) bool {
+	rows, err := db.Query("PRAGMA table_info(top_process_samples)")
+	if err != nil {
+		return false
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var name, kind string
+		var notNull, primary int
+		var value any
+		if rows.Scan(&cid, &name, &kind, &notNull, &value, &primary) == nil && name == "memory_bytes" {
+			return true
+		}
+	}
+	return false
+}
+
+func historyHasOverviewIndexes(db *sql.DB) (bool, error) {
+	for _, name := range []string{"snapshot_metrics_run_time", "du_dirs_run_time", "process_sample"} {
+		var found int
+		if err := db.QueryRow(`SELECT count(*) FROM sqlite_schema WHERE type='index' AND name=?`, name).Scan(&found); err != nil {
+			return false, err
+		}
+		if found == 0 {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 func historyEnableWAL(db *sql.DB) error {

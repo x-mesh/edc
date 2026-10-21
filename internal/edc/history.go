@@ -20,7 +20,12 @@ type historyOptions struct {
 	metric   string
 	min, max *float64
 	limit    int
+	sampleID int64
 }
+
+var historyLiveTerminal = liveTerminal
+var historyListBrowserRunner = runHistoryListBrowser
+var historyNavigatorRunner = runHistoryNavigator
 
 func historyTerminalText(value string) string {
 	return strings.NewReplacer("\r", `\r`, "\n", `\n`, "\t", `\t`).Replace(traceEscapeText([]byte(value)))
@@ -28,6 +33,13 @@ func historyTerminalText(value string) string {
 
 func runHistory(args []string) int {
 	if len(args) == 0 {
+		if historyLiveTerminal() {
+			if err := historyNavigatorRunner(); err != nil {
+				fmt.Fprintln(os.Stderr, T("history.error.read", err))
+				return 1
+			}
+			return 0
+		}
 		choice, ok := promptMissingSubcommand("history")
 		if !ok {
 			if !printCommandBrief(os.Stderr, "history") {
@@ -42,7 +54,7 @@ func runHistory(args []string) int {
 	if args[0] == "log" {
 		return runLogWithStreams(append([]string{"history"}, args[1:]...), logStreams{stdin: os.Stdin, stdout: os.Stdout, stderr: os.Stderr})
 	}
-	if args[0] != "list" && args[0] != "top" && args[0] != "process" && args[0] != "export" && args[0] != "trend" && args[0] != "growth" && args[0] != "prune" {
+	if args[0] != "list" && args[0] != "top" && args[0] != "process" && args[0] != "export" && args[0] != "trend" && args[0] != "growth" && args[0] != "overview" && args[0] != "prune" {
 		fmt.Fprintln(os.Stderr, T("history.usage"))
 		return 2
 	}
@@ -63,6 +75,9 @@ func runHistory(args []string) int {
 	}
 	if command == "growth" {
 		return runHistoryGrowth(args[1:])
+	}
+	if command == "overview" {
+		return runHistoryOverview(args[1:])
 	}
 	if command == "prune" {
 		return runHistoryPrune(args[1:], os.Stdin, os.Stdout, os.Stderr)
@@ -148,11 +163,14 @@ func runHistory(args []string) int {
 		return 1
 	}
 	defer db.Close()
-	if (command == "top" || command == "process") && *jsonPath == "" && liveTerminal() {
+	if (command == "list" || command == "top" || command == "process") && *jsonPath == "" && historyLiveTerminal() {
 		var err error
-		if command == "process" {
+		switch command {
+		case "list":
+			err = historyListBrowserRunner(db, path, options)
+		case "process":
 			err = runHistoryProcessBrowser(db, path, options)
-		} else {
+		default:
 			err = runHistoryTopBrowser(db, path, options)
 		}
 		if err != nil {
@@ -209,6 +227,10 @@ func historyQuery(command string, options historyOptions) (string, []any) {
 	if options.run != "" {
 		conditions = append(conditions, runColumn+"=?")
 		values = append(values, options.run)
+	}
+	if command == "process" && options.sampleID > 0 {
+		conditions = append(conditions, "p.sample_id=?")
+		values = append(values, options.sampleID)
 	}
 	if !options.from.IsZero() {
 		conditions = append(conditions, timeColumn+">=?")

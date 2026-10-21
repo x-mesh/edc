@@ -27,6 +27,7 @@ type historyTrendOptions struct {
 	by       string
 	process  topProcessFilter
 	each     bool
+	identity *historyProcessIdentity
 }
 
 // historyTrendSummary는 구간 밖에서 알릴 사실이다. Unfiltered는 일치한 표본 가운데 --process 없이 기록한 것이 있었는지다.

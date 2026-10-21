@@ -1,9 +1,11 @@
 package edc
 
 import (
+	"database/sql"
 	"fmt"
 	"os"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"charm.land/bubbles/v2/viewport"
@@ -17,9 +19,12 @@ type historyReviewColumn struct {
 }
 
 type historyReviewEntry struct {
-	id      string
-	cells   []string
-	details []string
+	id       string
+	command  string
+	navigate string
+	identity *historyProcessIdentity
+	cells    []string
+	details  []string
 }
 
 type historyReviewData struct {
@@ -30,32 +35,45 @@ type historyReviewData struct {
 }
 
 type historyReviewLoadedMsg struct {
-	seq  int
-	data historyReviewData
-	err  error
+	owner uint64
+	seq   int
+	data  historyReviewData
+	err   error
 }
 
-type historyReviewTickMsg struct{ seq int }
+type historyReviewTickMsg struct {
+	owner uint64
+	seq   int
+}
 
 type historyReviewBrowser struct {
 	title, path                       string
+	detailsTitle                      string
+	extraHelp                         string
+	snapshotHelp                      string
 	columns                           []historyReviewColumn
 	data                              historyReviewData
 	view                              viewport.Model
 	width, height, selected           int
 	color, expanded, paused           bool
+	hosted                            bool
 	prune, dryRun, confirm, confirmed bool
 	checked                           map[string]bool
 	seq                               int
+	owner                             uint64
 	notice                            string
+	noticeSticky                      bool
 	load                              func() (historyReviewData, error)
+	navigateFn                        func(historyReviewBrowser, string, *sql.DB, string) (tea.Model, bool, error)
 	loadPrune                         func(historyPruneOptions) (historyReviewData, error)
 	pruneOptions                      historyPruneOptions
 	agePicker                         *historyPruneAgePicker
 }
 
+var historyBrowserOwner atomic.Uint64
+
 func newHistoryReviewBrowser(title, path string, columns []historyReviewColumn, data historyReviewData) historyReviewBrowser {
-	model := historyReviewBrowser{title: title, path: path, columns: columns, data: data, view: viewport.New(), width: 80, height: 24, color: os.Getenv("NO_COLOR") == "", checked: map[string]bool{}}
+	model := historyReviewBrowser{title: title, path: path, columns: columns, data: data, view: viewport.New(), width: 80, height: 24, color: os.Getenv("NO_COLOR") == "", checked: map[string]bool{}, owner: historyBrowserOwner.Add(1)}
 	model.resize()
 	return model
 }
@@ -63,6 +81,8 @@ func newHistoryReviewBrowser(title, path string, columns []historyReviewColumn, 
 func (model historyReviewBrowser) split() bool {
 	return !model.expanded && model.width >= 132 && model.height >= 16
 }
+
+func (model historyReviewBrowser) atTop() bool { return !model.expanded }
 
 func (model historyReviewBrowser) tableWidth() int {
 	if model.split() {
@@ -102,21 +122,37 @@ func (model historyReviewBrowser) helpLines() []string {
 		}
 		return lines
 	}
-	var on []string
-	if model.paused {
-		on = append(on, "p")
+	help := T(key)
+	if model.hosted && !model.expanded && model.navigateFn != nil {
+		var hints []string
+		for _, hint := range strings.Split(help, "   ") {
+			if !strings.HasPrefix(strings.TrimSpace(hint), "Enter ") {
+				hints = append(hints, hint)
+			}
+		}
+		help = strings.Join(hints, "   ")
 	}
-	return historyReviewKeyHints(T(key), model.width, model.color, on...)
+	lines := historyReviewKeyHints(help, model.width, model.color, liveHintItem{key: "p", on: model.paused})
+	if model.extraHelp != "" && !model.expanded {
+		extra := model.extraHelp
+		if len(model.data.entries) > 0 && model.data.entries[model.selected].command == historySnapshotCommand {
+			extra = model.snapshotHelp
+		}
+		if extra != "" {
+			lines = append(lines, historyReviewKeyHints(T(extra), model.width, model.color)...)
+		}
+	}
+	return lines
 }
 
-func historyReviewKeyHints(text string, width int, color bool, on ...string) []string {
+func historyReviewKeyHints(text string, width int, color bool, items ...liveHintItem) []string {
 	var lines []string
 	line, separator := "", "   "
 	if width < 60 {
 		separator = " "
 	}
 	for _, hint := range strings.Split(text, "   ") {
-		hint = liveKeyHints(strings.TrimSpace(hint), color, on...)
+		hint = liveKeyHints(strings.TrimSpace(hint), color, items...)
 		if line != "" && liveWidth(line)+len(separator)+liveWidth(hint) > max(1, width) {
 			lines = append(lines, line)
 			line = ""
@@ -236,19 +272,19 @@ func (model historyReviewBrowser) Init() tea.Cmd {
 }
 
 func (model historyReviewBrowser) tick() tea.Cmd {
-	seq := model.seq
-	return tea.Tick(logHistoryRefresh, func(time.Time) tea.Msg { return historyReviewTickMsg{seq: seq} })
+	seq, owner := model.seq, model.owner
+	return tea.Tick(logHistoryRefresh, func(time.Time) tea.Msg { return historyReviewTickMsg{owner: owner, seq: seq} })
 }
 
 func (model historyReviewBrowser) reload() tea.Cmd {
-	seq, load, loadPrune, options := model.seq, model.load, model.loadPrune, model.pruneOptions
+	seq, owner, load, loadPrune, options := model.seq, model.owner, model.load, model.loadPrune, model.pruneOptions
 	return func() tea.Msg {
 		if loadPrune != nil {
 			data, err := loadPrune(options)
-			return historyReviewLoadedMsg{seq: seq, data: data, err: err}
+			return historyReviewLoadedMsg{owner: owner, seq: seq, data: data, err: err}
 		}
 		data, err := load()
-		return historyReviewLoadedMsg{seq: seq, data: data, err: err}
+		return historyReviewLoadedMsg{owner: owner, seq: seq, data: data, err: err}
 	}
 }
 
@@ -258,11 +294,11 @@ func (model historyReviewBrowser) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		model.width, model.height = value.Width, value.Height
 		model.resize()
 	case historyReviewTickMsg:
-		if value.seq == model.seq && !model.paused && !model.confirm && model.canReload() {
+		if (value.owner == 0 || value.owner == model.owner) && value.seq == model.seq && !model.paused && !model.confirm && model.canReload() {
 			return model, model.reload()
 		}
 	case historyReviewLoadedMsg:
-		if value.seq != model.seq || model.confirm {
+		if value.owner != 0 && value.owner != model.owner || value.seq != model.seq || model.confirm {
 			return model, nil
 		}
 		if value.err != nil {
@@ -280,7 +316,10 @@ func (model historyReviewBrowser) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			for _, entry := range model.data.entries {
 				checked[entry.id] = true
 			}
-			model.data, model.notice = value.data, ""
+			model.data = value.data
+			if !model.noticeSticky {
+				model.notice = ""
+			}
 			model.selected, model.expanded = 0, model.expanded && id != ""
 			found := false
 			for i, entry := range model.data.entries {
@@ -320,7 +359,7 @@ func (model historyReviewBrowser) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			model.resize()
 			return model, nil
 		}
-		model.notice = ""
+		model.notice, model.noticeSticky = "", false
 		switch value.String() {
 		case "t":
 			if model.prune {
@@ -412,7 +451,11 @@ func (model historyReviewBrowser) View() tea.View {
 		indexes, widths := model.columnWidths()
 		header = model.tableLine(-1, indexes, widths)
 		if model.split() {
-			header = historyCell(header, model.tableWidth(), false) + " │ " + T("history.top_browser.details")
+			detailsTitle := model.detailsTitle
+			if detailsTitle == "" {
+				detailsTitle = T("history.top_browser.details")
+			}
+			header = historyCell(header, model.tableWidth(), false) + " │ " + detailsTitle
 		}
 	}
 	lines = append(lines, historyTint(header, richGray, model.color))

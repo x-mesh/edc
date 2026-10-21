@@ -10,42 +10,65 @@ import (
 )
 
 func TestLogHistoryRollupAddsUpAcrossPrunes(t *testing.T) {
-	root := indexTestRoot(t)
-	if err := os.MkdirAll(root, 0700); err != nil {
-		t.Fatal(err)
+	testRollup := func(t *testing.T, now time.Time) {
+		t.Helper()
+		root := indexTestRoot(t)
+		if err := os.MkdirAll(root, 0700); err != nil {
+			t.Fatal(err)
+		}
+		day := time.Date(now.Year(), now.Month(), now.Day(), 12, 0, 0, 0, time.Local).AddDate(0, 0, -2)
+		exit := 0
+		row := func(minute int, outcome logHistoryOutcome, duration time.Duration) logHistoryAttempt {
+			started := day.Add(time.Duration(minute) * time.Minute)
+			return logHistoryAttempt{Key: "k", CWD: "/a", Started: started, Ended: started.Add(duration), Duration: duration, Outcome: outcome, Exit: &exit, Resources: &logHistoryResources{MaxRSS: uint64(minute) << 20, CPU: duration, cpu: true}}
+		}
+		if err := saveLogHistoryRollup(root, []logHistoryAttempt{row(1, historyOutcomeSuccess, time.Second), row(2, historyOutcomeFail, 5*time.Second)}); err != nil {
+			t.Fatal(err)
+		}
+		if err := saveLogHistoryRollup(root, []logHistoryAttempt{row(3, historyOutcomeSuccess, 3*time.Second)}); err != nil {
+			t.Fatal(err)
+		}
+		info, err := os.Stat(filepath.Join(root, logStatsName))
+		if err != nil || info.Mode().Perm() != 0600 {
+			t.Fatalf("stats file: %v %v", info, err)
+		}
+		archive, err := loadLogHistoryArchive(root, historyTrendStart(now))
+		if err != nil || len(archive["k"]) != 1 {
+			t.Fatalf("archive %v err %v", archive, err)
+		}
+		got := archive["k"][0]
+		if got.Runs != 3 || got.Failed != 1 || got.Successes != 2 || got.DurationSum != 4*time.Second || got.DurationMax != 3*time.Second || got.MemoryMax != 3<<20 || got.CPUSum != 9*time.Second {
+			t.Fatalf("merged day: %+v", got)
+		}
+		group := logHistoryGroup{Key: "k", Archive: archive["k"], Rows: []logHistoryAttempt{row(10, historyOutcomeSuccess, 2*time.Second)}}
+		trend := historyTrend(group, now, false)
+		if !strings.Contains(trend, T("cli.log_history.summary_fail", 1)) || !strings.Contains(trend, "2s") || strings.Count(trend, "█") != 1 {
+			t.Fatalf("trend %q", trend)
+		}
+		if historyTrend(logHistoryGroup{Rows: []logHistoryAttempt{row(0, historyOutcomeSuccess, time.Second)}}, now.AddDate(0, 0, 30), false) != "" {
+			t.Fatal("runs outside the window produced a trend")
+		}
 	}
-	day := time.Now().Add(-48 * time.Hour)
-	exit := 0
-	row := func(minute int, outcome logHistoryOutcome, duration time.Duration) logHistoryAttempt {
-		started := day.Add(time.Duration(minute) * time.Minute)
-		return logHistoryAttempt{Key: "k", CWD: "/a", Started: started, Ended: started.Add(duration), Duration: duration, Outcome: outcome, Exit: &exit, Resources: &logHistoryResources{MaxRSS: uint64(minute) << 20, CPU: duration, cpu: true}}
+	for _, at := range []struct {
+		name           string
+		hour           int
+		minute, second int
+		zone           *time.Location
+	}{
+		{name: "before midnight UTC", hour: 23, minute: 58, second: 30, zone: time.FixedZone("rollup-utc", 0)},
+		{name: "after midnight UTC", hour: 0, minute: 0, second: 30, zone: time.FixedZone("rollup-utc", 0)},
+		{name: "before midnight UTC minus eight", hour: 23, minute: 58, second: 30, zone: time.FixedZone("rollup-minus-eight", -8*60*60)},
+		{name: "after midnight UTC minus eight", hour: 0, minute: 0, second: 30, zone: time.FixedZone("rollup-minus-eight", -8*60*60)},
+	} {
+		t.Run(at.name, func(t *testing.T) {
+			previous := time.Local
+			t.Cleanup(func() { time.Local = previous })
+			time.Local = at.zone
+			now := time.Date(2026, 10, 21, at.hour, at.minute, at.second, 0, time.Local)
+			testRollup(t, now)
+		})
 	}
-	if err := saveLogHistoryRollup(root, []logHistoryAttempt{row(1, historyOutcomeSuccess, time.Second), row(2, historyOutcomeFail, 5*time.Second)}); err != nil {
-		t.Fatal(err)
-	}
-	if err := saveLogHistoryRollup(root, []logHistoryAttempt{row(3, historyOutcomeSuccess, 3*time.Second)}); err != nil {
-		t.Fatal(err)
-	}
-	info, err := os.Stat(filepath.Join(root, logStatsName))
-	if err != nil || info.Mode().Perm() != 0600 {
-		t.Fatalf("stats file: %v %v", info, err)
-	}
-	archive, err := loadLogHistoryArchive(root, historyTrendStart(time.Now()))
-	if err != nil || len(archive["k"]) != 1 {
-		t.Fatalf("archive %v err %v", archive, err)
-	}
-	got := archive["k"][0]
-	if got.Runs != 3 || got.Failed != 1 || got.Successes != 2 || got.DurationSum != 4*time.Second || got.DurationMax != 3*time.Second || got.MemoryMax != 3<<20 || got.CPUSum != 9*time.Second {
-		t.Fatalf("merged day: %+v", got)
-	}
-	group := logHistoryGroup{Key: "k", Archive: archive["k"], Rows: []logHistoryAttempt{row(10, historyOutcomeSuccess, 2*time.Second)}}
-	trend := historyTrend(group, time.Now(), false)
-	if !strings.Contains(trend, T("cli.log_history.summary_fail", 1)) || !strings.Contains(trend, "2s") || strings.Count(trend, "█") != 1 {
-		t.Fatalf("trend %q", trend)
-	}
-	if historyTrend(logHistoryGroup{Rows: []logHistoryAttempt{row(0, historyOutcomeSuccess, time.Second)}}, time.Now().AddDate(0, 0, 30), false) != "" {
-		t.Fatal("runs outside the window produced a trend")
-	}
+	testRollup(t, time.Now())
 }
 
 func TestLogPruneKeepsADailySummaryOfDeletedRuns(t *testing.T) {

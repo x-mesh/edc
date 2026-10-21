@@ -430,11 +430,7 @@ func (model logHistoryBrowser) keyHints(key string) string {
 	if model.load == nil {
 		return liveKeyHints(T(key), model.color)
 	}
-	var on []string
-	if model.paused {
-		on = append(on, "p")
-	}
-	return liveKeyHints(T(key)+T("cli.log_history.live_help"), model.color, on...)
+	return liveKeyHints(T(key)+T("cli.log_history.live_help"), model.color, liveHintItem{key: "p", on: model.paused})
 }
 
 func runLogHistoryBrowser(input, output *os.File, groups []logHistoryGroup, options logHistoryOptions, notices []string, load logHistoryLoader) error {

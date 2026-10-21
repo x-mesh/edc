@@ -159,6 +159,11 @@ type topProcess struct {
 	DiskValid           bool
 	DiskRead, DiskWrite float64
 	DiskStatus          string
+	diskSampled         bool
+	diskStarted         uint64
+	diskReadBytes       uint64
+	diskWriteBytes      uint64
+	diskSampledAt       time.Time
 	// Probe는 -d observer가 직전 window 동안 센 값이다. Linux는 eBPF, macOS는 libproc이다. -d가 아니거나 아직 기준이 없으면 nil이다.
 	Probe *topProbeStats
 }
@@ -573,7 +578,20 @@ func (sampler *topProcessSampler) refresh() {
 	}
 	if filter.active() {
 		if limit := filter.limit(); len(processes) > limit {
-			processes = processes[:limit]
+			shown := append([]topProcess(nil), processes[:limit]...)
+			seen := map[int]bool{}
+			for _, process := range shown {
+				seen[process.PID] = true
+			}
+			var growing []topProcess
+			for _, process := range processes[limit:] {
+				if process.Growth != nil && !seen[process.PID] {
+					growing = append(growing, process)
+					seen[process.PID] = true
+				}
+			}
+			sort.SliceStable(growing, func(i, j int) bool { return growing[i].Growth.Bytes > growing[j].Growth.Bytes })
+			processes = append(shown, growing[:min(topProcessLimit, len(growing))]...)
 		}
 	} else if scanIO && sampler.fillIO != nil {
 		// 디스크 대기는 CPU와 메모리에 드러나지 않으므로 I/O가 큰 process를 후보에 넣으려면 전부 읽어야 한다.
@@ -623,6 +641,19 @@ func topProcessCandidates(processes []topProcess) []topProcess {
 		if !seen[process.PID] {
 			candidates = append(candidates, process)
 			seen[process.PID] = true
+		}
+	}
+	byRSS := append([]topProcess(nil), processes...)
+	sort.SliceStable(byRSS, func(i, j int) bool { return byRSS[i].RSS > byRSS[j].RSS })
+	unreadable := 0
+	for _, process := range byRSS {
+		if unreadable == topProcessLimit {
+			break
+		}
+		if !process.MemoryValid && !seen[process.PID] {
+			candidates = append(candidates, process)
+			seen[process.PID] = true
+			unreadable++
 		}
 	}
 	// D state process는 CPU를 거의 쓰지 않아 두 목록에서 빠진다. 디스크 대기 원인을 찾으려면 남겨야 한다.
@@ -698,11 +729,21 @@ type linuxProcessStat struct {
 	SwapValid bool
 }
 
+func linuxProcessSwapRead(memory map[string]uint64, err error) bool {
+	return err != nil || memory["SwapTotal"] > memory["SwapFree"]
+}
+
 // parseLinuxProcessSwap은 /proc/<pid>/status의 VmSwap(kB)을 byte로 읽는다. kernel thread는 address space가 없어
 // Vm 줄이 모두 빠지므로 0으로 본다.
 func parseLinuxProcessSwap(data string) (uint64, bool) {
 	hasVM := false
-	for _, line := range strings.Split(data, "\n") {
+	for data != "" {
+		line := data
+		if index := strings.IndexByte(data, '\n'); index >= 0 {
+			line, data = data[:index], data[index+1:]
+		} else {
+			data = ""
+		}
 		name, value, ok := strings.Cut(line, ":")
 		if !ok {
 			continue

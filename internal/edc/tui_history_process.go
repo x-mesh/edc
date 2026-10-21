@@ -148,8 +148,33 @@ func loadHistoryProcess(db *sql.DB, options historyOptions) ([]historyProcessSam
 	return samples, rows.Err()
 }
 
+func loadHistoryProcessSample(db *sql.DB, run string, sampleID int64) ([]historyProcessSample, error) {
+	rows, err := db.Query(`SELECT p.payload, s.payload FROM top_process_samples p JOIN top_samples s ON s.id=p.sample_id WHERE p.run_id=? AND p.sample_id=? ORDER BY p.id`, run, sampleID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var samples []historyProcessSample
+	for rows.Next() {
+		var payload, hostPayload string
+		if err := rows.Scan(&payload, &hostPayload); err != nil {
+			return nil, err
+		}
+		var process topProcessSample
+		var host historyTopSample
+		if err := json.Unmarshal([]byte(payload), &process); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal([]byte(hostPayload), &host); err != nil {
+			return nil, err
+		}
+		samples = append(samples, historyProcessSample{topProcessSample: process, RunID: host.RunID, Time: host.Time, Hostname: host.Hostname, WindowS: host.WindowS, ProcessFilter: host.ProcessFilter, ProcessObservedAt: host.ProcessObservedAt})
+	}
+	return samples, rows.Err()
+}
+
 func newHistoryProcessBrowser(samples []historyProcessSample, path string) historySampleBrowser {
-	model := historySampleBrowser{processes: samples, processMode: true, path: path, width: 80, height: 24, color: os.Getenv("NO_COLOR") == "", view: viewport.New()}
+	model := historySampleBrowser{processes: samples, processMode: true, path: path, width: 80, height: 24, color: os.Getenv("NO_COLOR") == "", view: viewport.New(), owner: historyBrowserOwner.Add(1)}
 	model.resize()
 	return model
 }

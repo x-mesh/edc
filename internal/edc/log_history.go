@@ -169,6 +169,7 @@ type logHistoryGroup struct {
 	Failed, Unknown int
 	Running         int
 	Archive         []logHistoryDay
+	averages        historyGroupAverageValues
 }
 
 func logHistoryGroups(snapshot logHistorySnapshot, options logHistoryOptions) ([]logHistoryGroup, int) {
@@ -204,6 +205,7 @@ func logHistoryGroups(snapshot logHistorySnapshot, options logHistoryOptions) ([
 	}
 	groups := make([]logHistoryGroup, 0, len(indexed))
 	for _, group := range indexed {
+		group.averages = historyGroupAverages(*group)
 		if options.Failed && group.Failed == 0 {
 			continue
 		}

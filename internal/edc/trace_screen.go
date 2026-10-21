@@ -1323,13 +1323,18 @@ func traceStatusSpans(title string, stopping bool, events int, filter string) []
 // traceKeySpans는 "/ filter  tab view" 같은 키 안내를 조각으로 나눈다. 키는 굵은 청록, 설명은 회색이다.
 // on에 든 묶음(전체 글자나 그 키)은 켜진 항목으로 칠한다.
 func traceKeySpans(help string, on ...string) []traceText {
+	items := make([]liveHintItem, 0, len(on))
+	for _, entry := range on {
+		key, _, _ := strings.Cut(entry, " ")
+		items = append(items, liveHintItem{key: key, on: key != ""})
+	}
 	var spans []traceText
 	for index, entry := range strings.Split(help, "  ") {
 		if index > 0 {
 			spans = append(spans, traceText{text: "  "})
 		}
 		key, action, found := strings.Cut(entry, " ")
-		if liveHintOn(entry, key, on) {
+		if liveHintOn(key, items) {
 			spans = append(spans, traceText{text: entry, on: true})
 			continue
 		}

@@ -224,6 +224,25 @@ func TestParseLinuxProcessSwap(t *testing.T) {
 	}
 }
 
+func TestParseLinuxProcessSwapReadsVmSwapBeforeTrailingStatus(t *testing.T) {
+	status := "Name:\tworker\nVmRSS:\t1024 kB\nVmSwap:\t2048 kB\nVmPeak:\tlater value\n"
+	if got, ok := parseLinuxProcessSwap(status); !ok || got != 2048*1024 {
+		t.Fatalf("swap = %d, %v", got, ok)
+	}
+}
+
+func TestLinuxProcessSwapReadCount(t *testing.T) {
+	if linuxProcessSwapRead(map[string]uint64{"SwapTotal": 0, "SwapFree": 0}, nil) {
+		t.Fatal("no host swap must read zero process status files")
+	}
+	if !linuxProcessSwapRead(map[string]uint64{"SwapTotal": 1, "SwapFree": 0}, nil) {
+		t.Fatal("used host swap must read process status files")
+	}
+	if !linuxProcessSwapRead(nil, errors.New("meminfo")) {
+		t.Fatal("unreadable meminfo must read process status files")
+	}
+}
+
 // RSS 순위였다면 swap으로 밀려난 leak이 RSS가 큰 process에 밀려 빠진다.
 func TestTopProcessCandidatesRankMemoryBeyondRSS(t *testing.T) {
 	processes := []topProcess{}
@@ -246,6 +265,44 @@ func TestTopProcessCandidatesRankMemoryBeyondRSS(t *testing.T) {
 	total := totalTopProcesses(processes)
 	if want := uint64(topProcessLimit*(1<<20) + topProcessLimit*(100<<20) + 3<<30 + 200<<20); total.Memory != want || !total.MemoryEstimated {
 		t.Fatalf("total memory = %d, estimated %v, want %d, true", total.Memory, total.MemoryEstimated, want)
+	}
+}
+
+func TestTopProcessCandidatesIncludeUnreadableMemoryByRSS(t *testing.T) {
+	processes := make([]topProcess, 0, topProcessLimit*2+1)
+	for pid := 1; pid <= topProcessLimit; pid++ {
+		processes = append(processes, topProcess{PID: pid, CPU: float64(topProcessLimit - pid), RSS: 1 << 20, Memory: 1 << 30, MemoryValid: true})
+	}
+	for pid := topProcessLimit + 1; pid <= 2*topProcessLimit; pid++ {
+		processes = append(processes, topProcess{PID: pid, RSS: 2 << 20, Memory: 2 << 20, MemoryValid: true})
+	}
+	processes = append(processes, topProcess{PID: 99, RSS: 3 << 30, MemoryValid: false})
+	found := false
+	for _, process := range topProcessCandidates(processes) {
+		found = found || process.PID == 99
+	}
+	if !found {
+		t.Fatal("largest unreadable RSS process was omitted")
+	}
+}
+
+func TestTopProcessCandidatesLimitUnreadableMemoryByRSS(t *testing.T) {
+	processes := make([]topProcess, 0, 2*topProcessLimit+3)
+	for pid := 1; pid <= topProcessLimit; pid++ {
+		processes = append(processes, topProcess{PID: pid, CPU: float64(100 - pid), RSS: 1, Memory: 1 << 30, MemoryValid: true})
+	}
+	for pid := topProcessLimit + 1; pid <= 2*topProcessLimit+3; pid++ {
+		processes = append(processes, topProcess{PID: pid, RSS: uint64(pid) << 20})
+	}
+	var unreadable []int
+	for _, process := range topProcessCandidates(processes) {
+		if !process.MemoryValid {
+			unreadable = append(unreadable, process.PID)
+		}
+	}
+	want := []int{2*topProcessLimit + 3, 2*topProcessLimit + 2, 2*topProcessLimit + 1, 2 * topProcessLimit, 2*topProcessLimit - 1}
+	if !reflect.DeepEqual(unreadable, want) {
+		t.Fatalf("unreadable candidates=%v, want %v", unreadable, want)
 	}
 }
 
@@ -636,8 +693,8 @@ func TestTopProcessSamplerFiltersBeforeKeepingTheBusiestOnes(t *testing.T) {
 		return append(append([]topProcess(nil), busy...), quiet), true
 	}}
 	sampler.refresh()
-	if processes, _ := sampler.latest(); len(processes) != topProcessLimit {
-		t.Fatalf("unfiltered list has %d processes, want %d", len(processes), topProcessLimit)
+	if processes, _ := sampler.latest(); len(processes) != 2*topProcessLimit {
+		t.Fatalf("unfiltered list has %d processes, want %d", len(processes), 2*topProcessLimit)
 	}
 	filter, err := parseTopProcessFilter("quiet,busy")
 	if err != nil {
@@ -712,7 +769,7 @@ func TestTopProcessSamplerReadsIOOnlyForCandidatesUnlessScanning(t *testing.T) {
 	sampler := &topProcessSampler{read: func() ([]topProcess, bool) { return append([]topProcess(nil), all...), true }, fillIO: fill}
 	sampler.refresh()
 	processes, _, _ := sampler.latestWithTotal()
-	if filled != len(processes) || filled != 2*topProcessLimit {
+	if filled != len(processes) || filled != 3*topProcessLimit {
 		t.Fatalf("I/O read for %d processes, candidates %d", filled, len(processes))
 	}
 	for _, process := range processes {
@@ -730,7 +787,7 @@ func TestTopProcessSamplerReadsIOOnlyForCandidatesUnlessScanning(t *testing.T) {
 	for _, process := range processes {
 		found = found || (process.PID == 40 && process.DiskValid)
 	}
-	if !found || len(processes) != 2*topProcessLimit+1 {
+	if !found || len(processes) != 3*topProcessLimit+1 {
 		t.Fatalf("the top I/O process must join the candidates: %+v", processes)
 	}
 }
@@ -903,6 +960,37 @@ func TestTopProcessSamplerTotalsEveryMatchAndEnrichesTheKeptOnes(t *testing.T) {
 	}
 	if want := (topProcessTotal{Count: topFilteredProcessLimit + 10, CPU: 2 * float64(topFilteredProcessLimit+10), RSS: 1000 * uint64(topFilteredProcessLimit+10), Memory: 1000 * uint64(topFilteredProcessLimit+10), MemoryEstimated: true, Threads: 3 * (topFilteredProcessLimit + 10)}); !reflect.DeepEqual(total, want) {
 		t.Fatalf("total = %+v, want %+v", total, want)
+	}
+}
+
+func TestTopProcessSamplerKeepsGrowingFilteredProcessPastLimit(t *testing.T) {
+	all := make([]topProcess, 0, topFilteredProcessLimit+1)
+	for pid := 1; pid <= topFilteredProcessLimit; pid++ {
+		all = append(all, topProcess{PID: pid, CPU: float64(topFilteredProcessLimit - pid + 1), Command: "worker"})
+	}
+	all = append(all, topProcess{PID: 999, CPU: 0, Command: "worker", Growth: &topMemoryGrowth{Bytes: 1 << 20}})
+	sampler := &topProcessSampler{read: func() ([]topProcess, bool) { return append([]topProcess(nil), all...), true }}
+	filter, _ := parseTopProcessFilter("worker")
+	sampler.setFilter(filter)
+	processes, _, valid := sampler.refreshNow()
+	if !valid || len(processes) != topFilteredProcessLimit+1 {
+		t.Fatalf("processes=%d valid=%v", len(processes), valid)
+	}
+	if processes[len(processes)-1].PID != 999 {
+		t.Fatalf("growing process omitted: %+v", processes)
+	}
+	for pid := 1000; pid < 1000+topProcessLimit+3; pid++ {
+		all = append(all, topProcess{PID: pid, Command: "worker", Growth: &topMemoryGrowth{Bytes: uint64(pid) << 20}})
+	}
+	processes, _, _ = sampler.refreshNow()
+	if len(processes) != topFilteredProcessLimit+topProcessLimit {
+		t.Fatalf("growing processes are not capped: %d", len(processes))
+	}
+	extra := processes[topFilteredProcessLimit:]
+	for index := range extra {
+		if want := 1000 + topProcessLimit + 2 - index; extra[index].PID != want {
+			t.Fatalf("growing process %d = PID %d, want %d by growth", index, extra[index].PID, want)
+		}
 	}
 }
 

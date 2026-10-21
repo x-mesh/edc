@@ -107,6 +107,7 @@ func historyTopTableLine(columns []historyTopColumn, sample *historyTopSample, s
 
 func loadHistoryTop(db *sql.DB, options historyOptions) ([]historyTopSample, error) {
 	query, args := historyQuery("top", options)
+	query = strings.Replace(query, "SELECT payload", "SELECT id, payload", 1)
 	rows, err := db.Query(query, args...)
 	if err != nil {
 		return nil, err
@@ -115,26 +116,32 @@ func loadHistoryTop(db *sql.DB, options historyOptions) ([]historyTopSample, err
 	var samples []historyTopSample
 	for rows.Next() {
 		var payload string
-		if err := rows.Scan(&payload); err != nil {
+		var id int64
+		if err := rows.Scan(&id, &payload); err != nil {
 			return nil, err
 		}
 		var sample historyTopSample
 		if err := json.Unmarshal([]byte(payload), &sample); err != nil {
 			return nil, err
 		}
+		sample.sampleID = id
 		samples = append(samples, sample)
 	}
 	return samples, rows.Err()
 }
 
 type historySamplesLoadedMsg struct {
+	owner     uint64
 	seq       int
 	samples   []historyTopSample
 	processes []historyProcessSample
 	err       error
 }
 
-type historySamplesTickMsg struct{ seq int }
+type historySamplesTickMsg struct {
+	owner uint64
+	seq   int
+}
 
 type historySampleBrowser struct {
 	samples                  []historyTopSample
@@ -145,14 +152,16 @@ type historySampleBrowser struct {
 	pinned, expanded, paused bool
 	color                    bool
 	seq                      int
+	owner                    uint64
 	notice                   string
 	view                     viewport.Model
 	load                     func() ([]historyTopSample, error)
 	loadProcesses            func() ([]historyProcessSample, error)
+	hosted                   bool
 }
 
 func newHistoryTopBrowser(samples []historyTopSample, path string) historySampleBrowser {
-	model := historySampleBrowser{samples: samples, path: path, width: 80, height: 24, color: os.Getenv("NO_COLOR") == "", view: viewport.New()}
+	model := historySampleBrowser{samples: samples, path: path, width: 80, height: 24, color: os.Getenv("NO_COLOR") == "", view: viewport.New(), owner: historyBrowserOwner.Add(1)}
 	model.resize()
 	return model
 }
@@ -162,6 +171,38 @@ func (model historySampleBrowser) count() int {
 		return len(model.processes)
 	}
 	return len(model.samples)
+}
+
+func (model historySampleBrowser) atTop() bool { return !model.expanded }
+
+func (model historySampleBrowser) navigate(key string, db *sql.DB, path string) (tea.Model, bool, error) {
+	if !model.atTop() || model.count() == 0 {
+		return nil, false, nil
+	}
+	if !model.processMode && key == "o" {
+		sample := model.samples[model.selected]
+		processes, err := loadHistoryProcessSample(db, sample.RunID, sample.sampleID)
+		if err != nil {
+			return nil, true, err
+		}
+		child := newHistoryProcessBrowser(processes, path)
+		child.pinned = true
+		child.loadProcesses = func() ([]historyProcessSample, error) {
+			return loadHistoryProcessSample(db, sample.RunID, sample.sampleID)
+		}
+		return child, true, nil
+	}
+	if model.processMode && key == "t" {
+		sample := model.processes[model.selected]
+		filter, _ := parseTopProcessFilter(sample.Command)
+		options := historyTrendOptions{by: "day", process: filter, metric: "rss_bytes"}
+		if sample.Started != nil {
+			options.identity = &historyProcessIdentity{pid: sample.PID, started: sample.Started.Format(time.RFC3339Nano)}
+		}
+		targets := []historyTrendTarget{{kind: historyTrendProcess, value: sample.Command}}
+		return newHistoryTrendBrowser(db, targets, options, time.Local), true, nil
+	}
+	return nil, false, nil
 }
 
 func (model historySampleBrowser) canReload() bool {
@@ -256,14 +297,11 @@ func (model historySampleBrowser) footer() []string {
 	if model.expanded {
 		key = "history.top_browser.detail_help"
 	}
-	var on []string
-	if model.paused {
-		on = append(on, "p")
-	}
+	items := []liveHintItem{{key: "p", on: model.paused}}
 	var lines []string
 	line := ""
 	for _, hint := range strings.Split(T(key), "   ") {
-		hint = liveKeyHints(strings.TrimSpace(hint), model.color, on...)
+		hint = liveKeyHints(strings.TrimSpace(hint), model.color, items...)
 		if line != "" && liveWidth(line)+3+liveWidth(hint) > max(1, model.width) {
 			lines = append(lines, line)
 			line = ""
@@ -272,6 +310,13 @@ func (model historySampleBrowser) footer() []string {
 			line += "   "
 		}
 		line += hint
+	}
+	if model.hosted && !model.expanded {
+		link := "history.top_browser.navigator_help"
+		if model.processMode {
+			link = "history.process_browser.navigator_help"
+		}
+		lines = append(lines, historyReviewKeyHints(T(link), model.width, model.color)...)
 	}
 	lines = append(lines, line)
 	if !model.expanded {
@@ -325,19 +370,19 @@ func (model historySampleBrowser) Init() tea.Cmd {
 }
 
 func (model historySampleBrowser) tick() tea.Cmd {
-	seq := model.seq
-	return tea.Tick(logHistoryRefresh, func(time.Time) tea.Msg { return historySamplesTickMsg{seq: seq} })
+	seq, owner := model.seq, model.owner
+	return tea.Tick(logHistoryRefresh, func(time.Time) tea.Msg { return historySamplesTickMsg{owner: owner, seq: seq} })
 }
 
 func (model historySampleBrowser) reload() tea.Cmd {
-	seq, load, loadProcesses := model.seq, model.load, model.loadProcesses
+	seq, owner, load, loadProcesses := model.seq, model.owner, model.load, model.loadProcesses
 	return func() tea.Msg {
 		if loadProcesses != nil {
 			processes, err := loadProcesses()
-			return historySamplesLoadedMsg{seq: seq, processes: processes, err: err}
+			return historySamplesLoadedMsg{owner: owner, seq: seq, processes: processes, err: err}
 		}
 		samples, err := load()
-		return historySamplesLoadedMsg{seq: seq, samples: samples, err: err}
+		return historySamplesLoadedMsg{owner: owner, seq: seq, samples: samples, err: err}
 	}
 }
 
@@ -347,11 +392,14 @@ func (model historySampleBrowser) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		model.width, model.height = value.Width, value.Height
 		model.resize()
 	case historySamplesTickMsg:
-		if value.seq == model.seq && !model.paused && model.canReload() {
+		if (value.owner == 0 || value.owner == model.owner) && value.seq == model.seq && !model.paused && model.canReload() {
 			return model, model.reload()
 		}
 	case historySamplesLoadedMsg:
-		if value.seq != model.seq {
+		if value.owner != 0 && value.owner != model.owner || value.seq != model.seq {
+			return model, nil
+		}
+		if model.processMode && value.samples != nil || !model.processMode && value.processes != nil {
 			return model, nil
 		}
 		if value.err != nil {

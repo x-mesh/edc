@@ -5,21 +5,24 @@ import (
 	"testing"
 )
 
-// 켜진 묶음은 전체 글자나 키로 고르고, 고른 항목과 같은 바탕으로 칠한다. 나머지 묶음은 키가 청록, 설명이 회색이다.
+// 켜진 묶음은 키로 고르고, 고른 항목과 같은 바탕으로 칠한다. 나머지 묶음은 키가 청록, 설명이 회색이다.
 func TestLiveKeyHintsMarkTheGroupsThatAreOn(t *testing.T) {
 	t.Setenv("NO_COLOR", "")
-	got := liveKeyHints("↑↓ select · a all · f failed · q quit", true, "a all", "f")
+	got := liveKeyHints("↑↓ select · a all · f failed · q quit", true, liveHintItem{key: "a", on: true}, liveHintItem{key: "f", on: true})
 	for _, want := range []string{liveSelected("a all", true), liveSelected("f failed", true), richPaint("q", richCyan, true) + richDim(" quit")} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("hints lack %q: %q", want, got)
 		}
 	}
-	if plain := liveKeyHints("a all · q quit", false, "a"); plain != "a all · q quit" {
+	if plain := liveKeyHints("a all · q quit", false, liveHintItem{key: "a", on: true}); plain != "a all · q quit" {
 		t.Fatalf("without color the text stays: %q", plain)
 	}
 	// 번역된 안내도 키로 고른다.
-	if got := liveKeyHints("  ·  f 필터, e 상세, q 종료", true, "e"); !strings.Contains(got, liveSelected("e 상세", true)) {
+	if got := liveKeyHints("  ·  f 필터, e 상세, q 종료", true, liveHintItem{key: "e", on: true}); !strings.Contains(got, liveSelected("e 상세", true)) {
 		t.Fatalf("translated hints = %q", got)
+	}
+	if got := liveKeyHints("e renamed · q quit", true, liveHintItem{key: "e", on: true}); !strings.Contains(got, liveSelected("e renamed", true)) {
+		t.Fatalf("renamed hint = %q", got)
 	}
 }
 

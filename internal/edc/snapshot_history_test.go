@@ -174,6 +174,113 @@ func TestHistoryMigratesAVersion1Database(t *testing.T) {
 	}
 }
 
+func TestHistoryAddsOverviewIndexesToAnExistingSnapshotDatabase(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "old.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	statements := append(historyV1Statements(),
+		`CREATE TABLE snapshot_metrics (id INTEGER PRIMARY KEY, run_id TEXT NOT NULL REFERENCES runs(id), time_ns INTEGER NOT NULL, probe TEXT NOT NULL, key TEXT NOT NULL, value REAL NOT NULL)`,
+		`CREATE TABLE du_dirs (id INTEGER PRIMARY KEY, run_id TEXT NOT NULL REFERENCES runs(id), time_ns INTEGER NOT NULL, root TEXT NOT NULL, path TEXT NOT NULL, bytes INTEGER NOT NULL)`,
+		fmt.Sprintf("PRAGMA application_id=%d", historyApplicationID), "PRAGMA user_version=1")
+	for _, statement := range statements {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	db.Close()
+
+	migrated, err := openHistoryDB(path, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer migrated.Close()
+	if snapshotHistoryCount(t, migrated, "SELECT count(*) FROM pragma_table_info('top_process_samples') WHERE name='memory_bytes'") != 1 {
+		t.Fatal("memory_bytes column was not added")
+	}
+	for _, name := range []string{"snapshot_metrics_run_time", "du_dirs_run_time", "process_sample"} {
+		if snapshotHistoryCount(t, migrated, "SELECT count(*) FROM sqlite_schema WHERE type='index' AND name=?", name) != 1 {
+			t.Fatalf("missing index %s", name)
+		}
+	}
+	for _, test := range []struct {
+		query, index string
+	}{
+		{"SELECT * FROM snapshot_metrics WHERE run_id=? ORDER BY time_ns", "snapshot_metrics_run_time"},
+		{"SELECT * FROM du_dirs WHERE run_id=? ORDER BY time_ns", "du_dirs_run_time"},
+		{"SELECT s.id FROM top_samples s LEFT JOIN top_process_samples p ON p.sample_id=s.id WHERE s.run_id=?", "process_sample"},
+	} {
+		rows, err := migrated.Query("EXPLAIN QUERY PLAN "+test.query, "run")
+		if err != nil {
+			t.Fatal(err)
+		}
+		used := false
+		for rows.Next() {
+			var id, parent, unused int
+			var detail string
+			if err := rows.Scan(&id, &parent, &unused, &detail); err != nil {
+				t.Fatal(err)
+			}
+			used = used || strings.Contains(detail, test.index)
+		}
+		if err := rows.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if !used {
+			t.Fatalf("query did not use %s", test.index)
+		}
+	}
+}
+
+func TestHistoryWriteOpenDoesNotMigrateWhenOverviewIndexesExist(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "history.db")
+	db, err := openHistoryDB(path, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+
+	lock, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Close()
+	if _, err := lock.Exec("BEGIN IMMEDIATE"); err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Exec("ROLLBACK")
+
+	opened, err := openHistoryDB(path, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opened.Close()
+}
+
+func TestHistoryWriteOpenRestoresOnlyMissingOverviewIndex(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "history.db")
+	db, err := openHistoryDB(path, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("DROP INDEX du_dirs_run_time"); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	restored, err := openHistoryDB(path, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer restored.Close()
+	for _, name := range []string{"snapshot_metrics_run_time", "du_dirs_run_time", "process_sample"} {
+		var count int
+		if err := restored.QueryRow("SELECT count(*) FROM sqlite_schema WHERE type='index' AND name=?", name).Scan(&count); err != nil || count != 1 {
+			t.Fatalf("index %s: count=%d err=%v", name, count, err)
+		}
+	}
+}
+
 func TestSnapshotNamesEachDuPathWhenThereAreSeveral(t *testing.T) {
 	var names []string
 	for _, section := range snapshotSections(time.Hour, []string{"/var", "/home"}, time.Minute) {
@@ -207,7 +314,7 @@ func TestHistoryWritersOpenTogetherWhileAddingTables(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, statement := range append(historyV1Statements(), fmt.Sprintf("PRAGMA application_id=%d", historyApplicationID), "PRAGMA user_version=1") {
+	for _, statement := range append(oldHistoryV1Statements(), fmt.Sprintf("PRAGMA application_id=%d", historyApplicationID), "PRAGMA user_version=1") {
 		if _, err := db.Exec(statement); err != nil {
 			t.Fatal(err)
 		}

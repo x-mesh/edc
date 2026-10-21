@@ -37,6 +37,18 @@ func topAfter(t *testing.T, model topModel, messages ...tea.Msg) topModel {
 	return updated
 }
 
+func BenchmarkTopViewFrame(b *testing.B) {
+	model := topFixtureModel(nil)
+	updated, _ := model.Update(topSampleMsg{snapshot: topSampleAt(1)})
+	model = updated.(topModel)
+	updated, _ = model.Update(topSampleMsg{snapshot: topSampleAt(2)})
+	model = updated.(topModel)
+	b.ResetTimer()
+	for range b.N {
+		_ = model.View()
+	}
+}
+
 func TestTopModelAppendsRowsFromSamples(t *testing.T) {
 	model := topAfter(t, topFixtureModel(nil), topSampleMsg{snapshot: topSampleAt(1)}, topSampleMsg{snapshot: topSampleAt(2)})
 	if len(model.rows) != 2 {

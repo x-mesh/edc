@@ -565,6 +565,7 @@ command:
     summary: "Search recorded resource observations"
     sub:
       list: "runs recorded by top -w and snapshot"
+      overview: "a run or time window summary"
       export: "a recorded snapshot as a report file"
       trend: "count, min, avg, p95, max per period"
       growth: "disk growth per day, changed directories"

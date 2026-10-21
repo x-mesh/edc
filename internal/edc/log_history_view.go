@@ -72,12 +72,21 @@ func historyGroupSlow(group logHistoryGroup) bool {
 	return false
 }
 
-type historyKeyColumns struct{ command, last, runs, failed, unknown int }
+type historyKeyColumns struct{ command, last, runs, failed, unknown, avgMemory, avgCPU, avgIO int }
 
 func historyKeyWidths(width int, groups []logHistoryGroup) historyKeyColumns {
 	columns := historyKeyColumns{runs: 6, failed: 7}
 	if width >= 64 {
 		columns.last = 17
+	}
+	if width >= 88 {
+		columns.avgMemory = 11
+	}
+	if width >= 104 {
+		columns.avgCPU = 8
+	}
+	if width >= 120 {
+		columns.avgIO = 9
 	}
 	for _, group := range groups {
 		if group.Unknown > 0 {
@@ -92,6 +101,11 @@ func historyKeyWidths(width int, groups []logHistoryGroup) historyKeyColumns {
 	if columns.unknown > 0 {
 		reserved += columns.unknown + 2
 	}
+	for _, column := range []int{columns.avgMemory, columns.avgCPU, columns.avgIO} {
+		if column > 0 {
+			reserved += column + 2
+		}
+	}
 	columns.command = max(1, width-reserved)
 	return columns
 }
@@ -105,6 +119,14 @@ func historyKeyHeader(width int, groups []logHistoryGroup) string {
 	cells = append(cells, historyCell(T("cli.log_history.column.runs"), columns.runs, true), historyCell(T("cli.log_history.column.failed"), columns.failed, true))
 	if columns.unknown > 0 {
 		cells = append(cells, historyCell(T("cli.log_history.column.unknown"), columns.unknown, true))
+	}
+	for _, column := range []struct {
+		key   string
+		width int
+	}{{"avg_memory", columns.avgMemory}, {"avg_cpu", columns.avgCPU}, {"avg_io", columns.avgIO}} {
+		if column.width > 0 {
+			cells = append(cells, historyCell(T("cli.log_history.column."+column.key), column.width, true))
+		}
 	}
 	return "  " + strings.Join(cells, "  ")
 }
@@ -136,10 +158,55 @@ func historyKeyRowColumns(group logHistoryGroup, columns historyKeyColumns, sele
 	if columns.unknown > 0 {
 		cells = append(cells, historyTint(historyCell(fmt.Sprint(group.Unknown), columns.unknown, true), richYellow, color))
 	}
+	for _, column := range []struct {
+		width int
+		text  string
+	}{{columns.avgMemory, group.averages.memory}, {columns.avgCPU, group.averages.cpu}, {columns.avgIO, group.averages.io}} {
+		if column.width > 0 {
+			cells = append(cells, historyTint(historyCell(column.text, column.width, true), richGray, color))
+		}
+	}
 	if selected {
 		return historySelect(strings.Join(cells, "  "), color)
 	}
 	return "  " + strings.Join(cells, "  ")
+}
+
+type historyGroupAverageValues struct{ memory, cpu, io string }
+
+func historyGroupAverages(group logHistoryGroup) historyGroupAverageValues {
+	var memorySum, ioSum uint64
+	var memoryCount, cpuCount, ioCount int
+	var cpuSum float64
+	for _, row := range group.Rows {
+		resources := row.Resources
+		if resources == nil {
+			continue
+		}
+		if memory := resources.memory(); memory > 0 {
+			memorySum += memory
+			memoryCount++
+		}
+		if resources.cpu && !row.Ended.IsZero() && !row.damaged && row.Duration > 0 {
+			cpuSum += float64(resources.CPU) / float64(row.Duration) * 100
+			cpuCount++
+		}
+		if resources.disk {
+			ioSum += resources.DiskRead + resources.DiskWrite
+			ioCount++
+		}
+	}
+	averages := historyGroupAverageValues{}
+	if memoryCount > 0 {
+		averages.memory = formatSizeShort(memorySum / uint64(memoryCount))
+	}
+	if cpuCount > 0 {
+		averages.cpu = strconv.FormatFloat(cpuSum/float64(cpuCount), 'f', 0, 64) + "%"
+	}
+	if ioCount > 0 {
+		averages.io = formatSizeShort(ioSum / uint64(ioCount))
+	}
+	return averages
 }
 
 // historyRunColumns are the run list widths. Resource columns appear as the
@@ -193,7 +260,7 @@ func historyRunHeader(width int) string {
 func historyShortDuration(value time.Duration) string {
 	switch {
 	case value < time.Second:
-		return fmt.Sprintf("%dms", value.Milliseconds())
+		return fmt.Sprintf("%dms", value.Round(time.Millisecond).Milliseconds())
 	case value < time.Minute:
 		return strconv.FormatFloat(value.Seconds(), 'f', 1, 64) + "s"
 	case value < time.Hour:

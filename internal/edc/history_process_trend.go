@@ -115,6 +115,9 @@ func historyProcessNames(db *sql.DB, order historyProcessOrder) ([]historyProces
 // NULL 한 줄로 남겨 seen의 분모가 된다. top_process_samples에는 sample_id index가 없어서 (run_id, time_ns)로 잇는다.
 func historyProcessTrendQuery(options historyTrendOptions) (string, []any) {
 	match, values := historyProcessMatch(options.process, "p")
+	if options.identity != nil {
+		match, values = "(p.pid=? AND p.started=?)", []any{options.identity.pid, options.identity.started}
+	}
 	query := `SELECT s.id, s.time_ns, s.run_id, p.pid, p.started, p.` + options.metric + `
 		FROM top_samples s LEFT JOIN top_process_samples p
 		ON p.run_id=s.run_id AND p.time_ns=s.time_ns AND p.sample_id=s.id AND p.` + options.metric + ` IS NOT NULL AND ` + match + `

@@ -185,6 +185,9 @@ func (model historySampleBrowser) navigate(key string, db *sql.DB, path string) 
 		sample := model.processes[model.selected]
 		filter, _ := parseTopProcessFilter(sample.Command)
 		options := historyTrendOptions{by: "day", process: filter, metric: "rss_bytes"}
+		if sample.Started != nil {
+			options.identity = &historyProcessIdentity{pid: sample.PID, started: sample.Started.Format(time.RFC3339Nano)}
+		}
 		if sample.MemoryBytes != nil {
 			options.metric = "memory_bytes"
 		}

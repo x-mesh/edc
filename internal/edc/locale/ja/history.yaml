@@ -169,7 +169,7 @@ history:
       window: "%s → %s · 実行 %d件 · サンプル %d件"
       metric: "指標"
       process: "プロセス"
-      help: "↑↓ スクロール · PgUp/PgDn ページ · r 更新 · q 終了"
+      help: "↑↓ スクロール   PgUp/PgDn ページ   r 更新   q 終了"
   growth:
     window: "範囲: %s から %s まで (ローカル時間)"
     empty: "この範囲にディスクや du のスナップショットはありません。edc snapshot -w --du <path> で記録してください"

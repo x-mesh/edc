@@ -169,7 +169,7 @@ history:
       window: "%s → %s · %d runs · %d samples"
       metric: "METRIC"
       process: "PROCESS"
-      help: "↑↓ scroll · PgUp/PgDn page · r refresh · q quit"
+      help: "↑↓ scroll   PgUp/PgDn page   r refresh   q quit"
   growth:
     window: "Range: %s to %s (local time)"
     empty: "No disk or du snapshots in this range. Record them with edc snapshot -w --du <path>"

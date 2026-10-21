@@ -4,6 +4,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
@@ -42,5 +43,15 @@ func TestHistoryOverviewBrowserShowsEmptyError(t *testing.T) {
 	model.err = errors.New(T("history.overview.empty"))
 	if !strings.Contains(model.View().Content, T("history.overview.empty")) {
 		t.Fatal("empty error missing")
+	}
+}
+
+func TestHistoryOverviewBrowserUsesRangeForRunDuration(t *testing.T) {
+	model := overviewBrowserFixture()
+	model.overview.Run = &historyRun{ID: "run", Command: "top", Hostname: "host"}
+	model.overview.From = time.Unix(0, 0)
+	model.overview.To = model.overview.From.Add(15100 * time.Millisecond)
+	if !strings.Contains(strings.Join(model.lines(), "\n"), "15.1s") {
+		t.Fatalf("run duration = %q", model.lines()[2])
 	}
 }

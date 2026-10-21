@@ -169,7 +169,7 @@ history:
       window: "%s → %s · 실행 %d개 · 표본 %d개"
       metric: "지표"
       process: "프로세스"
-      help: "↑↓ 스크롤 · PgUp/PgDn 페이지 · r 새로고침 · q 종료"
+      help: "↑↓ 스크롤   PgUp/PgDn 페이지   r 새로고침   q 종료"
   growth:
     window: "범위: %s부터 %s까지 (로컬 시간)"
     empty: "이 범위에 디스크나 du 스냅샷이 없습니다. edc snapshot -w --du <path>로 기록하세요"

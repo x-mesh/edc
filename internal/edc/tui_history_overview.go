@@ -74,6 +74,8 @@ func (model historyOverviewBrowser) lines() []string {
 		duration := "—"
 		if run.EndedAt != nil {
 			duration = run.EndedAt.Sub(run.StartedAt).Truncate(time.Millisecond).String()
+		} else if model.overview.To.After(model.overview.From) {
+			duration = model.overview.To.Sub(model.overview.From).Truncate(time.Millisecond).String()
 		}
 		lines := []string{title, fmt.Sprintf(T("history.overview.browser.run"), run.ID, historyTerminalText(run.Command), historyTerminalText(run.Hostname)), fmt.Sprintf(T("history.overview.browser.run_detail"), duration, run.IntervalS, historyTerminalText(emptyAs(run.Process, "—")))}
 		return model.tableLines(lines)
@@ -120,11 +122,11 @@ func historyOverviewSparkline(values []float64, width int) string {
 func (model historyOverviewBrowser) View() tea.View {
 	width := max(1, model.width)
 	lines := model.lines()
-	footer := liveKeyHints(T("history.overview.browser.help"), model.color)
-	room := max(1, model.height-1)
+	footer := historyReviewKeyHints(T("history.overview.browser.help"), width, model.color)
+	room := max(1, model.height-len(footer))
 	model.offset = min(model.offset, max(0, len(lines)-room))
 	body := lines[model.offset:min(len(lines), model.offset+room)]
-	body = append(body, footer)
+	body = append(body, footer...)
 	for index := range body {
 		body[index] = ansi.Truncate(body[index], width, "…")
 	}

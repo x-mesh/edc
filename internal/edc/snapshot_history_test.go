@@ -230,6 +230,31 @@ func TestHistoryAddsOverviewIndexesToAnExistingSnapshotDatabase(t *testing.T) {
 	}
 }
 
+func TestHistoryWriteOpenDoesNotMigrateWhenOverviewIndexesExist(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "history.db")
+	db, err := openHistoryDB(path, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+
+	lock, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Close()
+	if _, err := lock.Exec("BEGIN IMMEDIATE"); err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Exec("ROLLBACK")
+
+	opened, err := openHistoryDB(path, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opened.Close()
+}
+
 func TestSnapshotNamesEachDuPathWhenThereAreSeveral(t *testing.T) {
 	var names []string
 	for _, section := range snapshotSections(time.Hour, []string{"/var", "/home"}, time.Minute) {

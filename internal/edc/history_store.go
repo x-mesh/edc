@@ -267,8 +267,16 @@ func initializeHistoryDB(db *sql.DB, write bool) error {
 			if err := historyMigrate(db, historySnapshotStatements()); err != nil {
 				return err
 			}
-		} else if err := historyMigrate(db, historyOverviewIndexStatements()); err != nil {
-			return err
+		} else {
+			has, err := historyHasOverviewIndexes(db)
+			if err != nil {
+				return err
+			}
+			if !has {
+				if err := historyMigrate(db, historyOverviewIndexStatements()); err != nil {
+					return err
+				}
+			}
 		}
 		return historyEnableWAL(db)
 	}
@@ -339,6 +347,12 @@ func historyOverviewIndexStatements() []string {
 		`CREATE INDEX IF NOT EXISTS du_dirs_run_time ON du_dirs(run_id, time_ns)`,
 		`CREATE INDEX IF NOT EXISTS process_sample ON top_process_samples(sample_id)`,
 	}
+}
+
+func historyHasOverviewIndexes(db *sql.DB) (bool, error) {
+	var count int
+	err := db.QueryRow(`SELECT count(*) FROM sqlite_schema WHERE type='index' AND name IN ('snapshot_metrics_run_time', 'du_dirs_run_time', 'process_sample')`).Scan(&count)
+	return count == 3, err
 }
 
 func historyEnableWAL(db *sql.DB) error {

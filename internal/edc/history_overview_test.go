@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -39,12 +40,38 @@ func TestHistoryOverviewAggregatesRunAndPlainOutput(t *testing.T) {
 	if view.Runs != 1 || view.Samples != 3 || len(view.Metrics) == 0 || len(view.Processes) != 1 || view.Processes[0].Peak != 3<<20 || view.Processes[0].Restarts != 0 {
 		t.Fatalf("overview = %+v", view)
 	}
+	if metric := view.Metrics[0]; metric.Metric != "cpu_pct" || metric.Avg != 20 || metric.P95 != 30 || metric.Max != 30 {
+		t.Fatalf("cpu metric = %+v", metric)
+	}
 	var plain bytes.Buffer
 	writeHistoryOverview(&plain, view, time.UTC)
 	for _, want := range []string{T("history.overview.run"), T("history.overview.metrics"), T("history.overview.processes", T("history.overview.memory")), "worker"} {
 		if !strings.Contains(plain.String(), want) {
 			t.Fatalf("missing %q: %s", want, plain.String())
 		}
+	}
+}
+
+func TestHistoryOverviewNearestRankP95(t *testing.T) {
+	for _, count := range []int{1, 2, 20, 21} {
+		values := make([]float64, count)
+		for index := range values {
+			values[index] = float64(index + 1)
+		}
+		rank := int(math.Ceil(.95*float64(count))) - 1
+		if got := values[rank]; got != float64(int(math.Ceil(.95*float64(count)))) {
+			t.Fatalf("n=%d p95=%v", count, got)
+		}
+	}
+}
+
+func TestHistoryOverviewUsesStoredRunDuration(t *testing.T) {
+	started := time.Unix(10, 0).UTC()
+	ended := started.Add(2 * time.Hour)
+	var output bytes.Buffer
+	writeHistoryOverview(&output, historyOverview{Run: &historyRun{ID: "run", Command: "top", Hostname: "host", StartedAt: started, EndedAt: &ended, IntervalS: 1}, From: started, To: started.Add(time.Minute)}, time.UTC)
+	if !strings.Contains(output.String(), "2h0m") {
+		t.Fatalf("duration output: %s", output.String())
 	}
 }
 
@@ -153,8 +180,9 @@ func TestHistoryOverviewWindowAndMissingRun(t *testing.T) {
 	if _, err := loadHistoryOverview(db, historyOverviewOptions{run: "missing"}); err == nil || !strings.Contains(err.Error(), "No matching") {
 		t.Fatalf("missing = %v", err)
 	}
-	view, err := loadHistoryOverview(db, historyOverviewOptions{})
-	if err != nil || view.Runs != 1 {
+	from := time.Date(2026, 10, 5, 0, 0, 0, 0, time.UTC)
+	view, err := loadHistoryOverview(db, historyOverviewOptions{from: from, to: from.Add(time.Minute)})
+	if err != nil || view.Runs != 1 || view.Samples != 1 {
 		t.Fatalf("window = %+v, %v", view, err)
 	}
 }
@@ -173,8 +201,27 @@ func TestHistoryOverviewWritesOneJSONObject(t *testing.T) {
 		t.Fatalf("overview code = %d", code)
 	}
 	data, err := os.ReadFile(output)
-	if err != nil || !bytes.Contains(data, []byte("\"metrics\"")) || bytes.Count(data, []byte("\n")) != 1 {
+	var decoded historyOverview
+	if err != nil || json.Unmarshal(data, &decoded) != nil || decoded.Run == nil || decoded.Runs != 1 || decoded.Samples != 1 || decoded.Metrics == nil || decoded.Processes == nil || decoded.Disks == nil || decoded.Logs == nil {
 		t.Fatalf("json = %q err %v", data, err)
+	}
+}
+
+func TestHistoryOverviewRejectsBadCLIInput(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "history.db")
+	recorder := topHistoryFixture(t, path)
+	if err := recorder.Close("finished"); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"overview", "--unknown", path},
+		{"overview", path, path},
+		{"overview", "--from", "bad", path},
+		{"overview", "--from", "2026-10-06T00:00:00Z", "--to", "2026-10-05T00:00:00Z", path},
+	} {
+		if code := runHistory(args); code != 2 {
+			t.Fatalf("%v code=%d", args, code)
+		}
 	}
 }
 

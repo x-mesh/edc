@@ -159,6 +159,10 @@ type topProcess struct {
 	DiskValid           bool
 	DiskRead, DiskWrite float64
 	DiskStatus          string
+	diskSampled         bool
+	diskStarted         uint64
+	diskReadBytes       uint64
+	diskWriteBytes      uint64
 	// Probe는 -d observer가 직전 window 동안 센 값이다. Linux는 eBPF, macOS는 libproc이다. -d가 아니거나 아직 기준이 없으면 nil이다.
 	Probe *topProbeStats
 }
@@ -698,11 +702,21 @@ type linuxProcessStat struct {
 	SwapValid bool
 }
 
+func linuxProcessSwapRead(memory map[string]uint64, err error) bool {
+	return err != nil || memory["SwapTotal"] > memory["SwapFree"]
+}
+
 // parseLinuxProcessSwap은 /proc/<pid>/status의 VmSwap(kB)을 byte로 읽는다. kernel thread는 address space가 없어
 // Vm 줄이 모두 빠지므로 0으로 본다.
 func parseLinuxProcessSwap(data string) (uint64, bool) {
 	hasVM := false
-	for _, line := range strings.Split(data, "\n") {
+	for data != "" {
+		line := data
+		if index := strings.IndexByte(data, '\n'); index >= 0 {
+			line, data = data[:index], data[index+1:]
+		} else {
+			data = ""
+		}
 		name, value, ok := strings.Cut(line, ":")
 		if !ok {
 			continue

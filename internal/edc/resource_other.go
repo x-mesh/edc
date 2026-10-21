@@ -26,7 +26,7 @@ type darwinMemory struct {
 const darwinProcessTimeout = 800 * time.Millisecond
 
 // newTopProcessReader는 macOS ps를 쓴다. macOS의 %cpu는 최근 사용률의 감쇠 평균이라 그대로 쓸 수 있다.
-func newTopProcessReader() func() ([]topProcess, bool) {
+func newTopProcessReaderWithRusage(readRusage bool) func() ([]topProcess, bool) {
 	return func() ([]topProcess, bool) {
 		ctx, cancel := context.WithTimeout(context.Background(), darwinProcessTimeout)
 		defer cancel()
@@ -49,12 +49,25 @@ func newTopProcessReader() func() ([]topProcess, bool) {
 				processes[index].Threads = threads
 			}
 			// 다른 사용자 소유 process는 root로 실행할 때만 읽는다. 그때는 MemoryValid가 false로 남아 RSS로 대신한다.
-			if usage, err := readDarwinProcessRusage(processes[index].PID); err == nil {
-				processes[index].Memory, processes[index].MemoryValid = usage.Footprint, true
+			if readRusage {
+				if usage, err := readDarwinProcessRusage(processes[index].PID); err == nil {
+					processes[index].Memory, processes[index].MemoryValid = usage.Footprint, true
+					processes[index].diskSampled, processes[index].diskStarted = true, usage.Started
+					processes[index].diskReadBytes, processes[index].diskWriteBytes = usage.DiskRead, usage.DiskWrite
+				}
 			}
 		}
 		return processes, len(processes) > 0
 	}
+}
+
+func newTopProcessReader() func() ([]topProcess, bool) { return newTopProcessReaderWithRusage(true) }
+
+func darwinRusageReads(hasSample bool) int {
+	if hasSample {
+		return 0
+	}
+	return 1
 }
 
 type darwinProcessIOSample struct {
@@ -69,10 +82,14 @@ func newTopProcessEnricher() func([]topProcess) {
 		for index := range processes {
 			process := &processes[index]
 			process.DiskValid, process.DiskStatus = false, ""
-			stats, err := readDarwinProcessRusage(process.PID)
-			if err != nil {
-				process.DiskStatus = err.Error()
-				continue
+			stats := darwinProcessRusage{Started: process.diskStarted, DiskRead: process.diskReadBytes, DiskWrite: process.diskWriteBytes}
+			if darwinRusageReads(process.diskSampled) > 0 {
+				var err error
+				stats, err = readDarwinProcessRusage(process.PID)
+				if err != nil {
+					process.DiskStatus = err.Error()
+					continue
+				}
 			}
 			now := time.Now()
 			current[process.PID] = darwinProcessIOSample{stats: stats, at: now}
@@ -295,7 +312,7 @@ func infoMemoryFromDarwin(stats darwinVMStatistics64, pageSize, total uint64) (i
 }
 
 func collectInfoProcesses() ([]topProcess, error) {
-	processes, valid := newTopProcessReader()()
+	processes, valid := newTopProcessReaderWithRusage(false)()
 	if !valid {
 		return nil, fmt.Errorf("process list collection failed")
 	}

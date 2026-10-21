@@ -51,6 +51,15 @@ func TestDarwinProcessEnricherNeedsTwoSamplesAndReportsErrors(t *testing.T) {
 	}
 }
 
+func TestDarwinRusageReadCountReusesReaderSample(t *testing.T) {
+	if got := darwinRusageReads(true); got != 0 {
+		t.Fatalf("enricher reads after reader = %d, want 0", got)
+	}
+	if got := darwinRusageReads(false); got != 1 {
+		t.Fatalf("enricher reads without reader sample = %d, want 1", got)
+	}
+}
+
 func TestDarwinMemoryFromStatistics(t *testing.T) {
 	// FreeCount 100에는 speculative 50이 들어 있다. 회수 가능한 page는 free 100과 inactive 250이다.
 	stats := darwinVMStatistics64{FreeCount: 100, SpeculativeCount: 50, InactiveCount: 250, ActiveCount: 1000, Swapouts: 7}

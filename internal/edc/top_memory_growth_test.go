@@ -83,6 +83,19 @@ func TestTopMemoryGrowthNeedsContinuousBucketsAndForgetsGoneProcesses(t *testing
 	}
 }
 
+func TestTopMemoryGrowthSkipsSameMinuteRecalculation(t *testing.T) {
+	start := time.Unix(1_800_000_000, 0)
+	tracker := newTopMemoryGrowthTracker()
+	processes := []topProcess{{PID: 7, Started: start, Memory: 1 << 30, MemoryValid: true}}
+	tracker.observe(start, processes)
+	series := tracker.series[topProcessKey{pid: 7, started: start}]
+	checks := series.checks
+	tracker.observe(start.Add(10*time.Second), processes)
+	if series.checks != checks {
+		t.Fatalf("growth checks = %d, want %d", series.checks, checks)
+	}
+}
+
 func TestTopProcessCandidatesKeepGrowingProcesses(t *testing.T) {
 	processes := []topProcess{}
 	for pid := 1; pid <= 2*topProcessLimit; pid++ {

@@ -224,6 +224,22 @@ func TestParseLinuxProcessSwap(t *testing.T) {
 	}
 }
 
+func TestParseLinuxProcessSwapReadsVmSwapBeforeTrailingStatus(t *testing.T) {
+	status := "Name:\tworker\nVmRSS:\t1024 kB\nVmSwap:\t2048 kB\nVmPeak:\tlater value\n"
+	if got, ok := parseLinuxProcessSwap(status); !ok || got != 2048*1024 {
+		t.Fatalf("swap = %d, %v", got, ok)
+	}
+}
+
+func TestLinuxProcessSwapReadCount(t *testing.T) {
+	if linuxProcessSwapRead(map[string]uint64{"SwapTotal": 0, "SwapFree": 0}, nil) {
+		t.Fatal("no host swap must read zero process status files")
+	}
+	if !linuxProcessSwapRead(map[string]uint64{"SwapTotal": 1, "SwapFree": 0}, nil) {
+		t.Fatal("used host swap must read process status files")
+	}
+}
+
 // RSS 순위였다면 swap으로 밀려난 leak이 RSS가 큰 process에 밀려 빠진다.
 func TestTopProcessCandidatesRankMemoryBeyondRSS(t *testing.T) {
 	processes := []topProcess{}

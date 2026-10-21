@@ -185,14 +185,6 @@ func (model historySampleBrowser) navigate(key string, db *sql.DB, path string) 
 		child.loadProcesses = func() ([]historyProcessSample, error) {
 			return loadHistoryProcessSample(db, sample.RunID, sample.sampleID)
 		}
-		if len(processes) == 0 {
-			processes, err = child.loadProcesses()
-			if err != nil {
-				return nil, true, err
-			}
-			child.processes = processes
-			child.resize()
-		}
 		return child, true, nil
 	}
 	if model.processMode && key == "t" {

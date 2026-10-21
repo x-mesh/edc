@@ -36,7 +36,7 @@ func historyListReviewData(db *sql.DB, options historyOptions, now time.Time) (h
 		}
 		endedText, duration := "—", "—"
 		if run.EndedAt != nil {
-			endedText = run.EndedAt.Local().Format(time.RFC1123Z)
+			endedText = run.EndedAt.Local().Format("2006-01-02 15:04:05 MST")
 			duration = historyShortDuration(run.EndedAt.Sub(run.StartedAt))
 		}
 		interval, process, interfaces := fmt.Sprintf("%gs", run.IntervalS), emptyAs(run.Process, "—"), emptyAs(run.Interfaces, "all")
@@ -48,7 +48,7 @@ func historyListReviewData(db *sql.DB, options historyOptions, now time.Time) (h
 			T("history.list_browser.command", run.Command),
 			T("history.list_browser.host", run.Hostname),
 			"",
-			T("history.list_browser.started", run.StartedAt.Local().Format(time.RFC1123Z)),
+			T("history.list_browser.started", run.StartedAt.Local().Format("2006-01-02 15:04:05 MST")),
 			T("history.list_browser.ended", endedText),
 			T("history.list_browser.duration", duration),
 			T("history.list_browser.status", run.Status),

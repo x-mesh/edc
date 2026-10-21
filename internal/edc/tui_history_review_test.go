@@ -112,7 +112,7 @@ func TestHistoryListBrowserRowsDetailsAndWidths(t *testing.T) {
 	}
 	model = reviewAfter(t, model, tea.KeyPressMsg{Code: tea.KeyEnter})
 	view := model.View().Content
-	if !model.expanded || !strings.Contains(view, second.runID) || !strings.Contains(view, T("history.list_browser.process", "—")) {
+	if !model.expanded || !strings.Contains(view, second.runID) || !strings.Contains(view, T("history.list_browser.process", "—")) || !strings.Contains(view, "started  ") || strings.Contains(view, ", ") {
 		t.Fatalf("details = %q", view)
 	}
 }

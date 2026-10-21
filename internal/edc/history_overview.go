@@ -3,6 +3,7 @@ package edc
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -17,6 +18,9 @@ type historyOverviewOptions struct {
 	run      string
 	from, to time.Time
 }
+
+var errHistoryOverviewDisjoint = errors.New("history overview range does not overlap run samples")
+
 type historyOverviewStat struct {
 	Metric string  `json:"metric"`
 	Avg    float64 `json:"avg"`
@@ -127,7 +131,10 @@ func runHistoryOverview(args []string) int {
 	defer db.Close()
 	view, err := loadHistoryOverview(db, options)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, T("history.error.read", err))
+		fmt.Fprintln(os.Stderr, err)
+		if errors.Is(err, errHistoryOverviewDisjoint) {
+			return 2
+		}
 		return 1
 	}
 	if *jsonPath != "" {
@@ -231,12 +238,7 @@ func loadHistoryOverview(db *sql.DB, options historyOverviewOptions) (historyOve
 	if out.Runs == 0 {
 		return out, fmt.Errorf("%s", T("history.overview.empty"))
 	}
-	if !options.from.IsZero() {
-		out.From = options.from
-	}
-	if !options.to.IsZero() {
-		out.To = options.to
-	}
+	requestedFrom, requestedTo := options.from, options.to
 	boundCondition, boundValues := "", []any{}
 	if options.run != "" {
 		boundCondition = " WHERE run_id=?"
@@ -246,11 +248,28 @@ func loadHistoryOverview(db *sql.DB, options historyOverviewOptions) (historyOve
 	if err := db.QueryRow("SELECT MIN(time_ns), MAX(time_ns) FROM top_samples"+boundCondition, boundValues...).Scan(&first, &last); err != nil {
 		return out, err
 	}
-	if options.from.IsZero() && first.Valid {
+	if options.run == "" && !requestedFrom.IsZero() {
+		out.From = requestedFrom
+	} else if first.Valid {
 		out.From = time.Unix(0, first.Int64).UTC()
+	} else if !requestedFrom.IsZero() {
+		out.From = requestedFrom
 	}
-	if options.to.IsZero() && last.Valid {
+	if options.run == "" && !requestedTo.IsZero() {
+		out.To = requestedTo
+	} else if last.Valid {
 		out.To = time.Unix(0, last.Int64).UTC().Add(time.Nanosecond)
+	} else if !requestedTo.IsZero() {
+		out.To = requestedTo
+	}
+	if !requestedFrom.IsZero() && requestedFrom.After(out.From) {
+		out.From = requestedFrom
+	}
+	if !requestedTo.IsZero() && requestedTo.Before(out.To) {
+		out.To = requestedTo
+	}
+	if !out.From.Before(out.To) {
+		return out, fmt.Errorf("%w: %s", errHistoryOverviewDisjoint, T("history.overview.disjoint", time.Unix(0, first.Int64).UTC().Format(time.RFC3339), time.Unix(0, last.Int64).UTC().Add(time.Nanosecond).Format(time.RFC3339), requestedFrom.Format(time.RFC3339), requestedTo.Format(time.RFC3339)))
 	}
 	condition, vals := "time_ns>=? AND time_ns<?", []any{out.From.UnixNano(), out.To.UnixNano()}
 	if options.run != "" {
@@ -337,10 +356,11 @@ func loadHistoryOverview(db *sql.DB, options historyOverviewOptions) (historyOve
 }
 func writeHistoryOverview(out io.Writer, v historyOverview, loc *time.Location) {
 	if v.Run != nil {
+		duration := v.To.Sub(v.From)
 		if v.Run.EndedAt != nil {
-			v.From, v.To = v.Run.StartedAt, *v.Run.EndedAt
+			duration = v.Run.EndedAt.Sub(v.Run.StartedAt)
 		}
-		fmt.Fprintf(out, "%s: %s  %s  %s  %s %s  %s %.0fs  %s %s\n", T("history.overview.run"), v.Run.ID, v.Run.Command, v.Run.Hostname, T("history.overview.duration"), historyShortDuration(v.To.Sub(v.From)), T("history.overview.interval"), v.Run.IntervalS, T("history.overview.filter"), emptyAs(v.Run.Process, "—"))
+		fmt.Fprintf(out, "%s: %s  %s  %s  %s %s  %s %.0fs  %s %s\n", T("history.overview.run"), v.Run.ID, v.Run.Command, v.Run.Hostname, T("history.overview.duration"), historyShortDuration(duration), T("history.overview.interval"), v.Run.IntervalS, T("history.overview.filter"), emptyAs(v.Run.Process, "—"))
 	}
 	fmt.Fprintf(out, "%s: %s → %s  %s %d  %s %d  %s %d\n", T("history.overview.range"), v.From.In(loc).Format(time.DateTime), v.To.In(loc).Format(time.DateTime), T("history.overview.top_runs"), v.Runs, T("history.overview.samples"), v.Samples, T("history.overview.snapshot_runs"), v.SnapshotRuns)
 	for _, warning := range v.Warnings {

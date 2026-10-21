@@ -258,6 +258,24 @@ func TestHistoryProcessChildIgnoresParentTopLoad(t *testing.T) {
 	}
 }
 
+func TestHistoryNavigatorReviewTickUsesOwner(t *testing.T) {
+	hidden := newHistoryListBrowser("history.db", historyReviewData{summary: "hidden"})
+	visible := newHistoryGrowthNavigator(nil, "history.db", historyGrowthOptions{}, historyGrowth{})
+	hidden.seq, visible.seq = 1, 1
+	hidden.load = func() (historyReviewData, error) { return historyReviewData{}, nil }
+	visible.load = func() (historyReviewData, error) { return historyReviewData{}, nil }
+	if _, command := hidden.Update(historyReviewTickMsg{owner: visible.owner, seq: visible.seq}); command != nil {
+		t.Fatal("hidden review accepted visible tick")
+	}
+	navigator := newHistoryNavigator(nil, "history.db", hidden)
+	navigator.stack = append(navigator.stack, visible)
+	next, cmd := navigator.Update(historyReviewTickMsg{owner: visible.owner, seq: visible.seq})
+	navigator = next.(historyNavigator)
+	if cmd == nil || navigator.stack[0].(historyReviewBrowser).data.summary != "hidden" {
+		t.Fatal("visible tick changed hidden review browser")
+	}
+}
+
 func TestHistoryNavigatorReviewLoadUsesOwner(t *testing.T) {
 	root := newHistoryListBrowser("history.db", historyReviewData{summary: "root"})
 	growth := newHistoryGrowthNavigator(nil, "history.db", historyGrowthOptions{}, historyGrowth{})
@@ -271,5 +289,24 @@ func TestHistoryNavigatorReviewLoadUsesOwner(t *testing.T) {
 	}
 	if navigator.current().(historyReviewBrowser).data.summary != "growth" {
 		t.Fatal("growth did not accept its own load")
+	}
+}
+
+func TestHistoryNavigatorSampleTickUsesOwner(t *testing.T) {
+	root := newHistoryListBrowser("history.db", historyReviewData{})
+	hidden := newHistoryTopBrowser([]historyTopSample{{RunID: "hidden"}}, "history.db")
+	visible := newHistoryProcessBrowser([]historyProcessSample{{RunID: "visible"}}, "history.db")
+	hidden.seq, visible.seq = 1, 1
+	hidden.load = func() ([]historyTopSample, error) { return []historyTopSample{{RunID: "changed"}}, nil }
+	visible.loadProcesses = func() ([]historyProcessSample, error) { return []historyProcessSample{{RunID: "fresh"}}, nil }
+	if _, command := hidden.Update(historySamplesTickMsg{owner: visible.owner, seq: visible.seq}); command != nil {
+		t.Fatal("hidden sample browser accepted visible tick")
+	}
+	navigator := newHistoryNavigator(nil, "history.db", root)
+	navigator.stack = append(navigator.stack, hidden, visible)
+	next, command := navigator.Update(historySamplesTickMsg{owner: visible.owner, seq: visible.seq})
+	navigator = next.(historyNavigator)
+	if command == nil || navigator.stack[1].(historySampleBrowser).samples[0].RunID != "hidden" {
+		t.Fatal("visible tick changed hidden sample browser")
 	}
 }

@@ -362,3 +362,68 @@ func TestHistoryOverviewWarningsKeepCoreData(t *testing.T) {
 		t.Fatalf("plain %q", plain.String())
 	}
 }
+
+func TestHistoryOverviewRunWindowIntersection(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "history.db")
+	db, err := openHistoryDB(path, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	from := time.Date(2026, 10, 5, 0, 0, 0, 0, time.UTC)
+	run := historyRun{ID: "run", Command: "top", Hostname: "host", StartedAt: from}
+	payload, _ := json.Marshal(run)
+	if _, err := db.Exec("INSERT INTO runs(id,command,hostname,started_ns,ended_ns,status,payload) VALUES (?,?,?,?,?,?,?)", run.ID, run.Command, run.Hostname, from.UnixNano(), from.Add(10*time.Minute).UnixNano(), "finished", payload); err != nil {
+		t.Fatal(err)
+	}
+	for index := 0; index < 3; index++ {
+		at := from.Add(time.Duration(index*5) * time.Minute)
+		if _, err := db.Exec("INSERT INTO top_samples(run_id,time_ns,payload,cpu_pct) VALUES (?,?,?,?)", run.ID, at.UnixNano(), "{}", index+1); err != nil {
+			t.Fatal(err)
+		}
+	}
+	windowFrom, windowTo := from.Add(4*time.Minute), from.Add(6*time.Minute)
+	view, err := loadHistoryOverview(db, historyOverviewOptions{run: run.ID, from: windowFrom, to: windowTo})
+	if err != nil || !view.From.Equal(windowFrom) || !view.To.Equal(windowTo) || view.Runs != 1 || view.Samples != 1 {
+		t.Fatalf("view %+v err %v", view, err)
+	}
+	var plain bytes.Buffer
+	writeHistoryOverview(&plain, view, time.UTC)
+	if !strings.Contains(plain.String(), windowFrom.Format(time.DateTime)) || !strings.Contains(plain.String(), "samples 1") {
+		t.Fatalf("plain %q", plain.String())
+	}
+	encoded, err := json.Marshal(view)
+	var decoded historyOverview
+	if err != nil || json.Unmarshal(encoded, &decoded) != nil || !decoded.From.Equal(windowFrom) || !decoded.To.Equal(windowTo) || decoded.Runs != 1 || decoded.Samples != 1 {
+		t.Fatalf("json %s err %v", encoded, err)
+	}
+}
+
+func TestHistoryOverviewRejectsDisjointRunWindow(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "history.db")
+	db, err := openHistoryDB(path, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	from := time.Date(2026, 10, 5, 0, 0, 0, 0, time.UTC)
+	run := historyRun{ID: "run", Command: "top", Hostname: "host", StartedAt: from}
+	payload, _ := json.Marshal(run)
+	if _, err := db.Exec("INSERT INTO runs(id,command,hostname,started_ns,status,payload) VALUES (?,?,?,?,?,?)", run.ID, run.Command, run.Hostname, from.UnixNano(), "finished", payload); err != nil {
+		t.Fatal(err)
+	}
+	for _, minute := range []int{0, 5} {
+		if _, err := db.Exec("INSERT INTO top_samples(run_id,time_ns,payload,cpu_pct) VALUES (?,?,?,?)", run.ID, from.Add(time.Duration(minute)*time.Minute).UnixNano(), "{}", 1); err != nil {
+			t.Fatal(err)
+		}
+	}
+	spanEnd := from.Add(5*time.Minute + time.Nanosecond)
+	for _, window := range []historyOverviewOptions{
+		{run: run.ID, from: from.Add(-time.Minute), to: from},
+		{run: run.ID, from: spanEnd, to: spanEnd.Add(time.Minute)},
+	} {
+		if _, err := loadHistoryOverview(db, window); !errors.Is(err, errHistoryOverviewDisjoint) || !strings.Contains(err.Error(), "Run samples") {
+			t.Fatalf("window %+v err %v", window, err)
+		}
+	}
+}

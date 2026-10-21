@@ -155,6 +155,7 @@ history:
     unfiltered: "Some samples of %s come from runs without --process; they count only the moments it was among the top CPU or memory users. Record it with edc top -w --process %s"
   overview:
     empty: "No matching history runs"
+    disjoint: "Run samples %s to %s do not overlap requested window %s to %s"
     run: "Run"
     range: "Range"
     runs: "runs"

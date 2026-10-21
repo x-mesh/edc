@@ -41,7 +41,10 @@ type historyReviewLoadedMsg struct {
 	err   error
 }
 
-type historyReviewTickMsg struct{ seq int }
+type historyReviewTickMsg struct {
+	owner uint64
+	seq   int
+}
 
 type historyReviewBrowser struct {
 	title, path                       string
@@ -269,8 +272,8 @@ func (model historyReviewBrowser) Init() tea.Cmd {
 }
 
 func (model historyReviewBrowser) tick() tea.Cmd {
-	seq := model.seq
-	return tea.Tick(logHistoryRefresh, func(time.Time) tea.Msg { return historyReviewTickMsg{seq: seq} })
+	seq, owner := model.seq, model.owner
+	return tea.Tick(logHistoryRefresh, func(time.Time) tea.Msg { return historyReviewTickMsg{owner: owner, seq: seq} })
 }
 
 func (model historyReviewBrowser) reload() tea.Cmd {
@@ -291,7 +294,7 @@ func (model historyReviewBrowser) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		model.width, model.height = value.Width, value.Height
 		model.resize()
 	case historyReviewTickMsg:
-		if value.seq == model.seq && !model.paused && !model.confirm && model.canReload() {
+		if (value.owner == 0 || value.owner == model.owner) && value.seq == model.seq && !model.paused && !model.confirm && model.canReload() {
 			return model, model.reload()
 		}
 	case historyReviewLoadedMsg:

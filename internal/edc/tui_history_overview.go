@@ -78,7 +78,8 @@ func (model historyOverviewBrowser) lines() []string {
 		lines := []string{title, fmt.Sprintf(T("history.overview.browser.run"), run.ID, historyTerminalText(run.Command), historyTerminalText(run.Hostname)), fmt.Sprintf(T("history.overview.browser.run_detail"), duration, run.IntervalS, historyTerminalText(emptyAs(run.Process, "—")))}
 		return model.tableLines(lines)
 	}
-	lines := []string{title, fmt.Sprintf(T("history.overview.browser.window"), model.overview.From.Local().Format(time.DateTime), model.overview.To.Local().Format(time.DateTime), model.overview.Runs, model.overview.Samples)}
+	window := fmt.Sprintf(T("history.overview.browser.window"), model.overview.From.Local().Format(time.DateTime), model.overview.To.Local().Format(time.DateTime), model.overview.Runs, model.overview.Samples, model.overview.SnapshotRuns)
+	lines := []string{title, ansi.Truncate(window, max(1, model.width), "…")}
 	return model.tableLines(lines)
 }
 

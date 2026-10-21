@@ -70,7 +70,7 @@ func TestHistoryOverviewUsesStoredRunDuration(t *testing.T) {
 	ended := started.Add(2 * time.Hour)
 	var output bytes.Buffer
 	writeHistoryOverview(&output, historyOverview{Run: &historyRun{ID: "run", Command: "top", Hostname: "host", StartedAt: started, EndedAt: &ended, IntervalS: 1}, From: started, To: started.Add(time.Minute)}, time.UTC)
-	if !strings.Contains(output.String(), "2h0m") {
+	if !strings.Contains(output.String(), "2h00m") {
 		t.Fatalf("duration output: %s", output.String())
 	}
 }

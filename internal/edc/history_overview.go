@@ -42,17 +42,18 @@ type historyOverviewLog struct {
 	Duration time.Duration `json:"duration"`
 }
 type historyOverview struct {
-	Run       *historyRun              `json:"run,omitempty"`
-	From      time.Time                `json:"from"`
-	To        time.Time                `json:"to"`
-	Runs      int                      `json:"runs"`
-	Samples   int                      `json:"samples"`
-	Memory    string                   `json:"memory_source"`
-	Metrics   []historyOverviewStat    `json:"metrics"`
-	Processes []historyOverviewProcess `json:"processes"`
-	Series    map[string][]float64     `json:"series,omitempty"`
-	Disks     []historyOverviewDisk    `json:"disks"`
-	Logs      []historyOverviewLog     `json:"logs"`
+	Run          *historyRun              `json:"run,omitempty"`
+	From         time.Time                `json:"from"`
+	To           time.Time                `json:"to"`
+	Runs         int                      `json:"runs"`
+	SnapshotRuns int                      `json:"snapshot_runs"`
+	Samples      int                      `json:"samples"`
+	Memory       string                   `json:"memory_source"`
+	Metrics      []historyOverviewStat    `json:"metrics"`
+	Processes    []historyOverviewProcess `json:"processes"`
+	Series       map[string][]float64     `json:"series,omitempty"`
+	Disks        []historyOverviewDisk    `json:"disks"`
+	Logs         []historyOverviewLog     `json:"logs"`
 }
 
 var historyOverviewLogLoader = func() (logHistorySnapshot, error) {
@@ -256,6 +257,9 @@ func loadHistoryOverview(db *sql.DB, options historyOverviewOptions) (historyOve
 	if err := db.QueryRow("SELECT COUNT(DISTINCT run_id), COUNT(*) FROM top_samples WHERE "+condition, vals...).Scan(&out.Runs, &out.Samples); err != nil {
 		return out, err
 	}
+	if err := db.QueryRow("SELECT COUNT(*) FROM runs WHERE command='snapshot' AND started_ns>=? AND started_ns<?", out.From.UnixNano(), out.To.UnixNano()).Scan(&out.SnapshotRuns); err != nil {
+		return out, err
+	}
 	for _, m := range []string{"cpu_pct", "memory_pct", "load1", "disk_read_bytes_per_s", "disk_write_bytes_per_s", "net_in_bytes_per_s", "net_out_bytes_per_s", "swap_out_bytes_per_s"} {
 		var count int
 		var average, maximum sql.NullFloat64
@@ -329,9 +333,9 @@ func writeHistoryOverview(out io.Writer, v historyOverview, loc *time.Location) 
 		if v.Run.EndedAt != nil {
 			v.From, v.To = v.Run.StartedAt, *v.Run.EndedAt
 		}
-		fmt.Fprintf(out, "%s: %s  %s  %s  %s %s  %s %.0fs  %s %s\n", T("history.overview.run"), v.Run.ID, v.Run.Command, v.Run.Hostname, T("history.overview.duration"), v.To.Sub(v.From).Round(time.Second), T("history.overview.interval"), v.Run.IntervalS, T("history.overview.filter"), v.Run.Process)
+		fmt.Fprintf(out, "%s: %s  %s  %s  %s %s  %s %.0fs  %s %s\n", T("history.overview.run"), v.Run.ID, v.Run.Command, v.Run.Hostname, T("history.overview.duration"), historyShortDuration(v.To.Sub(v.From)), T("history.overview.interval"), v.Run.IntervalS, T("history.overview.filter"), emptyAs(v.Run.Process, "—"))
 	}
-	fmt.Fprintf(out, "%s: %s → %s  %s %d  %s %d\n", T("history.overview.range"), v.From.In(loc).Format(time.DateTime), v.To.In(loc).Format(time.DateTime), T("history.overview.runs"), v.Runs, T("history.overview.samples"), v.Samples)
+	fmt.Fprintf(out, "%s: %s → %s  %s %d  %s %d  %s %d\n", T("history.overview.range"), v.From.In(loc).Format(time.DateTime), v.To.In(loc).Format(time.DateTime), T("history.overview.top_runs"), v.Runs, T("history.overview.samples"), v.Samples, T("history.overview.snapshot_runs"), v.SnapshotRuns)
 	fmt.Fprintln(out, T("history.overview.metrics"))
 	fmt.Fprintf(out, "%-14s %12s %12s %12s\n", T("history.overview.column.metric"), T("history.overview.column.avg"), T("history.overview.column.p95"), T("history.overview.column.max"))
 	for _, m := range v.Metrics {

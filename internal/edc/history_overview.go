@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -48,6 +49,7 @@ type historyOverview struct {
 	Memory    string                   `json:"memory_source"`
 	Metrics   []historyOverviewStat    `json:"metrics"`
 	Processes []historyOverviewProcess `json:"processes"`
+	Series    map[string][]float64     `json:"series,omitempty"`
 	Disks     []historyOverviewDisk    `json:"disks"`
 	Logs      []historyOverviewLog     `json:"logs"`
 }
@@ -138,6 +140,13 @@ func runHistoryOverview(args []string) int {
 		json.NewEncoder(out).Encode(view)
 		return 0
 	}
+	if liveTerminal() && os.Getenv("NO_COLOR") == "" {
+		if err := runHistoryOverviewBrowser(db, path, options); err != nil {
+			fmt.Fprintln(os.Stderr, T("history.error.read", err))
+			return 1
+		}
+		return 0
+	}
 	writeHistoryOverview(os.Stdout, view, time.Local)
 	return 0
 }
@@ -165,6 +174,11 @@ func loadHistoryOverview(db *sql.DB, options historyOverviewOptions) (historyOve
 		var run historyRun
 		if err := json.Unmarshal([]byte(p), &run); err != nil {
 			return out, err
+		}
+		run.StartedAt = time.Unix(0, s).UTC()
+		if e.Valid {
+			ended := time.Unix(0, e.Int64).UTC()
+			run.EndedAt = &ended
 		}
 		if out.Run == nil {
 			if options.run != "" {
@@ -209,7 +223,7 @@ func loadHistoryOverview(db *sql.DB, options historyOverviewOptions) (historyOve
 		vals = append([]any{options.run}, vals...)
 	}
 	for _, m := range []string{"cpu_pct", "memory_pct", "load1", "disk_read_bytes_per_s", "disk_write_bytes_per_s", "net_in_bytes_per_s", "net_out_bytes_per_s", "swap_out_bytes_per_s"} {
-		r, e := db.Query("SELECT "+m+" FROM top_samples WHERE "+condition+" AND "+m+" IS NOT NULL ORDER BY "+m, vals...)
+		r, e := db.Query("SELECT "+m+" FROM top_samples WHERE "+condition+" AND "+m+" IS NOT NULL ORDER BY time_ns", vals...)
 		if e != nil {
 			return out, e
 		}
@@ -221,11 +235,17 @@ func loadHistoryOverview(db *sql.DB, options historyOverviewOptions) (historyOve
 		}
 		r.Close()
 		if len(values) > 0 {
+			if out.Series == nil {
+				out.Series = map[string][]float64{}
+			}
+			out.Series[m] = values
+			sorted := slices.Clone(values)
+			sort.Float64s(sorted)
 			sum := 0.0
 			for _, v := range values {
 				sum += v
 			}
-			out.Metrics = append(out.Metrics, historyOverviewStat{m, sum / float64(len(values)), values[int(float64(len(values)-1)*.95)], values[len(values)-1]})
+			out.Metrics = append(out.Metrics, historyOverviewStat{m, sum / float64(len(values)), sorted[int(float64(len(sorted)-1)*.95)], sorted[len(sorted)-1]})
 		}
 	}
 	memory := "rss_bytes"

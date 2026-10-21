@@ -171,6 +171,14 @@ history:
     duration: "期間"
     interval: "間隔"
     filter: "フィルター"
+    browser:
+      title: "履歴の概要"
+      run: "実行 %s · %s · %s"
+      run_detail: "期間 %s · 間隔 %.1f秒 · フィルター %s"
+      window: "%s → %s · 実行 %d件 · サンプル %d件"
+      metric: "指標"
+      process: "プロセス"
+      help: "↑↓ スクロール   PgUp/PgDn ページ   r 更新   q 終了"
     metric:
       cpu: "CPU"
       memory: "メモリ"

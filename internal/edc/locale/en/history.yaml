@@ -171,6 +171,14 @@ history:
     duration: "duration"
     interval: "interval"
     filter: "filter"
+    browser:
+      title: "History overview"
+      run: "run %s · %s · %s"
+      run_detail: "duration %s · interval %.1fs · filter %s"
+      window: "%s → %s · %d runs · %d samples"
+      metric: "METRIC"
+      process: "PROCESS"
+      help: "↑↓ scroll   PgUp/PgDn page   r refresh   q quit"
     metric:
       cpu: "CPU"
       memory: "Memory"

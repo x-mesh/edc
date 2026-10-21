@@ -104,7 +104,7 @@ history:
     empty: "topの記録がありません。edc topでwを押すか、edc top -wで記録してください。snapshotはedc history listで確認できます。"
     navigator_help: "o Process"
   database_path: "既定のhistory DB: %s"
-  usage: "使い方: edc history <list|top|process|overview|export|trend|growth|prune> [options] [DB]"
+  usage: "使い方: edc history [--from <time>] [--to <time>] [--run <id>] [--limit <n>] [DB]"
   option:
     run: "この実行 ID のみ"
     from: "開始時刻を含む (RFC3339)"

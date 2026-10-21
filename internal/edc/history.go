@@ -52,7 +52,7 @@ func runHistory(args []string) int {
 		}
 		args = []string{choice}
 	}
-	noSubcommand := len(args) > 0 && strings.HasPrefix(args[0], "-")
+	noSubcommand := len(args) > 0 && (strings.HasPrefix(args[0], "-") || historyDBArgument(args[0]))
 	if noSubcommand {
 		args = append([]string{"list"}, args...)
 	}
@@ -211,6 +211,14 @@ func runHistory(args []string) int {
 		return 1
 	}
 	return 0
+}
+
+func historyDBArgument(value string) bool {
+	if strings.HasSuffix(value, ".db") {
+		return true
+	}
+	info, err := os.Stat(value)
+	return err == nil && !info.IsDir()
 }
 
 func parseHistoryTime(value string) (time.Time, error) {

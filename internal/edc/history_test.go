@@ -814,3 +814,35 @@ func TestHistoryFlagsOpenScopedNavigator(t *testing.T) {
 		t.Fatalf("bad from code=%d", code)
 	}
 }
+
+func TestHistoryDBArgumentUsesScopedNavigatorAndListFallback(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "history.db")
+	recorder := topHistoryFixture(t, path)
+	if err := recorder.Close("finished"); err != nil {
+		t.Fatal(err)
+	}
+	previousTerminal, previousRunner := historyLiveTerminal, historyScopedNavigatorRunner
+	t.Cleanup(func() { historyLiveTerminal, historyScopedNavigatorRunner = previousTerminal, previousRunner })
+	historyLiveTerminal = func() bool { return true }
+	called := false
+	historyScopedNavigatorRunner = func(_ *sql.DB, gotPath string, options historyOptions) error {
+		called = gotPath == path && options.limit == historyDefaultLimit
+		return nil
+	}
+	if code := runHistory([]string{path}); code != 0 || !called {
+		t.Fatalf("db code=%d called=%v", code, called)
+	}
+	if code := runHistory([]string{"lst"}); code != 2 {
+		t.Fatalf("typo code=%d", code)
+	}
+
+	historyLiveTerminal = func() bool { return false }
+	var direct, implicit strings.Builder
+	output := traceCaptureOutput(t, &os.Stdout, func() { runHistory([]string{"list", "--limit", "1", path}) })
+	direct.WriteString(output)
+	output = traceCaptureOutput(t, &os.Stdout, func() { runHistory([]string{"--limit", "1", path}) })
+	implicit.WriteString(output)
+	if direct.String() != implicit.String() {
+		t.Fatalf("list=%q implicit=%q", direct.String(), implicit.String())
+	}
+}

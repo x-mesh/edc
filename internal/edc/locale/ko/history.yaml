@@ -13,7 +13,7 @@ history:
     browsing:
       title: "탐색"
       notes:
-        - "`edc history list`는 실행 목록을, `edc history top`과 `edc history process`는 인터랙티브 탐색 화면을 엽니다."
+        - "터미널에서 `edc history list`, `edc history top`, `edc history process`는 인터랙티브 탐색 화면을 엽니다."
         - "`↑↓` 선택, `Enter` 상세, `Home` 최신 추적을 지원합니다. 넓은 화면에는 컬럼과 상세 패널을 추가합니다."
     analysis:
       title: "추이와 증가량"
@@ -61,6 +61,29 @@ history:
   process_browser:
     title: "Process 관측 이력"
     empty: "조건에 맞는 process 기록이 없습니다. edc top -w --process <이름>으로 기록한 뒤 edc history process에서 확인하세요."
+  list_browser:
+    title: "실행 기록"
+    summary: "기록한 top 및 snapshot 실행"
+    details: "선택한 실행"
+    empty: "조건에 맞는 실행 기록이 없습니다."
+    run: "실행 ID  %s"
+    command: "명령  %s"
+    host: "호스트  %s"
+    started: "시작  %s"
+    ended: "종료  %s"
+    duration: "소요 시간  %s"
+    status: "상태  %s"
+    samples: "관측값  %d"
+    interval: "간격  %s"
+    process: "process 필터  %s"
+    interfaces: "인터페이스  %s"
+    column:
+      start: "시작"
+      command: "명령"
+      duration: "소요 시간"
+      samples: "관측값"
+      status: "상태"
+      host: "호스트"
   recording:
     started: "기록 시작: %s"
     stopped: "기록 중지 · %d개 관측값 저장"
@@ -141,6 +164,7 @@ history:
     more_processes: "… 프로세스 %d개 더 있음, 전체는 --json"
   browser:
     targets: "대상"
+    peak_rss: "최대 RSS"
     host: "호스트"
     loading: "불러오는 중"
     growth: "RSS %s, 가장 빠른 pid %d"

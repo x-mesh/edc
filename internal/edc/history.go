@@ -22,6 +22,9 @@ type historyOptions struct {
 	limit    int
 }
 
+var historyLiveTerminal = liveTerminal
+var historyListBrowserRunner = runHistoryListBrowser
+
 func historyTerminalText(value string) string {
 	return strings.NewReplacer("\r", `\r`, "\n", `\n`, "\t", `\t`).Replace(traceEscapeText([]byte(value)))
 }
@@ -148,11 +151,14 @@ func runHistory(args []string) int {
 		return 1
 	}
 	defer db.Close()
-	if (command == "top" || command == "process") && *jsonPath == "" && liveTerminal() {
+	if (command == "list" || command == "top" || command == "process") && *jsonPath == "" && historyLiveTerminal() {
 		var err error
-		if command == "process" {
+		switch command {
+		case "list":
+			err = historyListBrowserRunner(db, path, options)
+		case "process":
 			err = runHistoryProcessBrowser(db, path, options)
-		} else {
+		default:
 			err = runHistoryTopBrowser(db, path, options)
 		}
 		if err != nil {

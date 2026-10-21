@@ -72,6 +72,103 @@ func TestHistoryReviewBrowserLayoutSelectionAndRefresh(t *testing.T) {
 	}
 }
 
+func TestHistoryListBrowserRowsDetailsAndWidths(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "history.db")
+	first := topHistoryFixture(t, path)
+	if err := first.Record(historyFixtureSample(1, 20, topProcess{PID: 1})); err != nil {
+		t.Fatal(err)
+	}
+	if err := first.Close("finished"); err != nil {
+		t.Fatal(err)
+	}
+	second := topHistoryFixture(t, path)
+	if err := second.Record(historyFixtureSample(2, 30, topProcess{PID: 2})); err != nil {
+		t.Fatal(err)
+	}
+	if err := second.Close("finished"); err != nil {
+		t.Fatal(err)
+	}
+	db, err := openHistoryDB(path, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	now := time.Now()
+	data, err := historyListReviewData(db, historyOptions{}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(data.entries) != 2 || data.entries[0].id != second.runID || data.entries[0].cells[0] != "top" || !strings.Contains(data.entries[0].cells[1], "Today") {
+		t.Fatalf("list entries = %+v", data.entries)
+	}
+	model := newHistoryListBrowser(path, data)
+	for _, width := range []int{80, 120, 180} {
+		model = reviewAfter(t, model, tea.WindowSizeMsg{Width: width, Height: 24})
+		for _, line := range strings.Split(model.View().Content, "\n") {
+			if liveWidth(line) > width {
+				t.Fatalf("width %d overflow: %q", width, line)
+			}
+		}
+		if width == 180 && !strings.Contains(model.View().Content, T("history.list_browser.details")) {
+			t.Fatalf("run panel title missing: %q", model.View().Content)
+		}
+	}
+	model = reviewAfter(t, model, tea.KeyPressMsg{Code: tea.KeyEnter})
+	view := model.View().Content
+	if !model.expanded || !strings.Contains(view, second.runID) || !strings.Contains(view, T("history.list_browser.process", "—")) || !strings.Contains(view, "started  ") || strings.Contains(view, ", ") {
+		t.Fatalf("details = %q", view)
+	}
+}
+
+func TestHistoryListRunDescriptionAndReviewPanelTitles(t *testing.T) {
+	for _, test := range []struct {
+		run  historyRun
+		want string
+	}{
+		{historyRun{Command: "top"}, "top"},
+		{historyRun{Command: "top", Process: "nginx"}, "top · process nginx"},
+		{historyRun{Command: "top", Interfaces: "en0,en1"}, "top · en0,en1"},
+		{historyRun{Command: "snapshot", Interfaces: "all"}, "snapshot"},
+	} {
+		if got := historyRunDescription(test.run); got != test.want {
+			t.Fatalf("description %q, want %q", got, test.want)
+		}
+	}
+	data := reviewFixture()
+	for _, model := range []historyReviewBrowser{
+		newHistoryReviewBrowser("Growth", "history.db", []historyReviewColumn{{"TARGET", 0, 0}}, data),
+		newHistoryPruneBrowser("history.db", historyPruneOptions{olderThan: time.Hour}, historyPrunePlan{}, time.Now()),
+	} {
+		model = reviewAfter(t, model, tea.WindowSizeMsg{Width: 180, Height: 24})
+		if !strings.Contains(model.View().Content, T("history.top_browser.details")) {
+			t.Fatalf("default panel title changed: %q", model.View().Content)
+		}
+	}
+}
+
+func TestHistoryListSnapshotDetailsHideTopOnlyFields(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "history.db")
+	started := time.Now().Add(-time.Minute)
+	if err := recordSnapshot(path, snapshotHistoryReport(started, 100, 1000), time.Hour, []string{"/var"}); err != nil {
+		t.Fatal(err)
+	}
+	db, err := openHistoryDB(path, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	data, err := historyListReviewData(db, historyOptions{}, time.Now())
+	if err != nil || len(data.entries) != 1 {
+		t.Fatalf("snapshot data: %+v %v", data, err)
+	}
+	details := strings.Join(data.entries[0].details, "\n")
+	for _, value := range []string{T("history.list_browser.interval", "—"), T("history.list_browser.process", "—"), T("history.list_browser.interfaces", "—")} {
+		if !strings.Contains(details, value) {
+			t.Fatalf("snapshot detail missing %q: %s", value, details)
+		}
+	}
+}
+
 func TestHistoryPruneBrowserRequiresConfirmationAndDryRunNeverDeletes(t *testing.T) {
 	var plan historyPrunePlan
 	for i := 0; i < 40; i++ {

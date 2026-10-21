@@ -1,6 +1,7 @@
 package edc
 
 import (
+	"database/sql"
 	"fmt"
 	"os"
 	"strings"
@@ -17,10 +18,11 @@ type historyReviewColumn struct {
 }
 
 type historyReviewEntry struct {
-	id      string
-	command string
-	cells   []string
-	details []string
+	id       string
+	command  string
+	navigate string
+	cells    []string
+	details  []string
 }
 
 type historyReviewData struct {
@@ -53,6 +55,7 @@ type historyReviewBrowser struct {
 	notice                            string
 	noticeSticky                      bool
 	load                              func() (historyReviewData, error)
+	navigateFn                        func(historyReviewBrowser, string, *sql.DB, string) (tea.Model, bool, error)
 	loadPrune                         func(historyPruneOptions) (historyReviewData, error)
 	pruneOptions                      historyPruneOptions
 	agePicker                         *historyPruneAgePicker

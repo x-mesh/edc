@@ -15,6 +15,10 @@ type historyNavigator struct {
 	size  *tea.WindowSizeMsg
 }
 
+type historyNavigable interface {
+	navigate(string, *sql.DB, string) (tea.Model, bool, error)
+}
+
 func newHistoryNavigator(db *sql.DB, path string, root historyReviewBrowser) historyNavigator {
 	return historyNavigator{db: db, path: path, stack: []tea.Model{root}}
 }
@@ -32,55 +36,30 @@ func (model historyNavigator) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			model.stack = model.stack[:len(model.stack)-1]
 			return model, nil
 		}
-		if root, ok := model.current().(historyReviewBrowser); ok && !root.expanded && len(root.data.entries) > 0 {
-			options := historyOptions{run: root.data.entries[root.selected].id}
-			switch key.String() {
-			case "t":
-				if historyNavigatorSnapshot(root) {
-					root.notice = T("history.list_browser.snapshot_navigation")
-					root.noticeSticky = true
+		if child, ok := model.current().(historyNavigable); ok {
+			next, handled, err := child.navigate(key.String(), model.db, model.path)
+			if err != nil {
+				if root, ok := model.current().(historyReviewBrowser); ok {
+					root.notice, root.noticeSticky = err.Error(), true
 					root.resize()
 					model.stack[len(model.stack)-1] = root
-					return model, nil
 				}
-				samples, err := loadHistoryTop(model.db, options)
-				if err != nil {
-					root.notice = err.Error()
-					root.resize()
-					model.stack[len(model.stack)-1] = root
-					return model, nil
-				}
-				child := newHistoryTopBrowser(samples, model.path)
-				child.load = func() ([]historyTopSample, error) { return loadHistoryTop(model.db, options) }
+				return model, nil
+			}
+			if next != nil && !handled {
+				model.stack[len(model.stack)-1] = next
+				return model, nil
+			}
+			if handled {
 				if model.size != nil {
-					updated, _ := child.Update(*model.size)
-					child = updated.(historySampleBrowser)
+					next, _ = next.Update(*model.size)
 				}
-				model.stack = append(model.stack, child)
-				return model, child.Init()
-			case "o":
-				if historyNavigatorSnapshot(root) {
-					root.notice = T("history.list_browser.snapshot_navigation")
-					root.noticeSticky = true
-					root.resize()
-					model.stack[len(model.stack)-1] = root
-					return model, nil
+				if sample, ok := next.(historySampleBrowser); ok {
+					sample.hosted = true
+					next = sample
 				}
-				samples, err := loadHistoryProcess(model.db, options)
-				if err != nil {
-					root.notice = err.Error()
-					root.resize()
-					model.stack[len(model.stack)-1] = root
-					return model, nil
-				}
-				child := newHistoryProcessBrowser(samples, model.path)
-				child.loadProcesses = func() ([]historyProcessSample, error) { return loadHistoryProcess(model.db, options) }
-				if model.size != nil {
-					updated, _ := child.Update(*model.size)
-					child = updated.(historySampleBrowser)
-				}
-				model.stack = append(model.stack, child)
-				return model, child.Init()
+				model.stack = append(model.stack, next)
+				return model, next.Init()
 			}
 		}
 		updated, command := model.current().Update(msg)
@@ -109,10 +88,6 @@ func navigatorAtTop(model tea.Model) bool {
 		return child.atTop()
 	}
 	return true
-}
-
-func historyNavigatorSnapshot(root historyReviewBrowser) bool {
-	return root.data.entries[root.selected].command == historySnapshotCommand
 }
 
 func (model historyNavigator) View() tea.View { return model.current().View() }

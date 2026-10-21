@@ -61,11 +61,12 @@ history:
   process_browser:
     title: "Process history"
     empty: "No recorded process observations match this query. Record with edc top -w --process <name>, then open edc history process."
+    navigator_help: "t Trend"
   list_browser:
     title: "Run history"
     summary: "Recorded top and snapshot runs"
     details: "Selected run"
-    navigator_help: "t Top samples   o Processes"
+    navigator_help: "t Top samples   o Processes   g Growth"
     snapshot_navigation: "Top and process samples are available only for top runs."
     empty: "No recorded runs match this query."
     run: "run  %s"
@@ -99,6 +100,7 @@ history:
     selected: "selected observation"
     paused: "refresh paused"
     empty: "No top recordings. Run edc top and press w, or use edc top -w. Snapshots are listed by edc history list."
+    navigator_help: "o Processes"
   database_path: "Default history DB: %s"
   usage: "Usage: edc history <list|top|process|export|trend|growth|prune> [options] [DB]"
   option:
@@ -150,6 +152,7 @@ history:
     process_empty: "No samples of %s in this range. Record them with edc top -w --process %s"
     unfiltered: "Some samples of %s come from runs without --process; they count only the moments it was among the top CPU or memory users. Record it with edc top -w --process %s"
   growth:
+    navigator_help: "t Trend"
     window: "Range: %s to %s (local time)"
     empty: "No disk or du snapshots in this range. Record them with edc snapshot -w --du <path>"
     few_samples: "too few samples (%d)"

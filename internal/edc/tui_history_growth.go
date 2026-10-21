@@ -32,7 +32,7 @@ func historyGrowthReviewData(growth historyGrowth) historyReviewData {
 				full = T("history.growth.short_span")
 			}
 		}
-		data.entries = append(data.entries, historyReviewEntry{id: "disk:" + disk.Mount, cells: []string{"disk " + disk.Mount, rate, historyGrowthSize(disk.UsedBytes), fmt.Sprint(disk.Samples), full},
+		data.entries = append(data.entries, historyReviewEntry{id: "disk:" + disk.Mount, command: "disk", navigate: historyDiskProbePrefix + disk.Mount, cells: []string{"disk " + disk.Mount, rate, historyGrowthSize(disk.UsedBytes), fmt.Sprint(disk.Samples), full},
 			details: []string{historyTerminalText(disk.Mount), "", "used  " + historyGrowthSize(disk.UsedBytes), "total  " + historyGrowthSize(disk.TotalBytes), "change  " + rate, "full in  " + full, fmt.Sprintf("samples  %d", disk.Samples), "first  " + disk.First.Local().Format(time.DateTime), "last  " + disk.Last.Local().Format(time.DateTime)}})
 	}
 	for _, dirs := range growth.Dirs {
@@ -76,7 +76,7 @@ func historyGrowthReviewData(growth historyGrowth) historyReviewData {
 		if process.Unfiltered {
 			details = append(details, T("history.trend.unfiltered", historyTerminalText(growth.Process), quoteLocalShellWord(growth.Process)))
 		}
-		data.entries = append(data.entries, historyReviewEntry{id: fmt.Sprintf("process:%d:%s:%s", process.PID, started, process.Command), cells: []string{fmt.Sprintf("%d %s", process.PID, name), rate, historyGrowthSize(process.RSSBytes), fmt.Sprint(process.Samples), historyGrowthProcessNote(process)}, details: details})
+		data.entries = append(data.entries, historyReviewEntry{id: fmt.Sprintf("process:%d:%s:%s", process.PID, started, process.Command), command: "process", navigate: process.Command, cells: []string{fmt.Sprintf("%d %s", process.PID, name), rate, historyGrowthSize(process.RSSBytes), fmt.Sprint(process.Samples), historyGrowthProcessNote(process)}, details: details})
 	}
 	if growth.Process != "" {
 		data.empty = T("history.trend.process_empty", historyTerminalText(growth.Process), quoteLocalShellWord(growth.Process))
@@ -92,6 +92,8 @@ func historyGrowthReviewData(growth historyGrowth) historyReviewData {
 func runHistoryGrowthBrowser(db *sql.DB, path string, options historyGrowthOptions, growth historyGrowth) error {
 	columns := []historyReviewColumn{{"TARGET", 0, 0}, {"CHANGE/DAY", 13, 0}, {"LATEST", 11, 64}, {"SAMPLES", 7, 84}, {"NOTE", 24, 120}}
 	model := newHistoryReviewBrowser(T("history.review.growth_title"), path, columns, historyGrowthReviewData(growth))
+	model.navigateFn = historyGrowthNavigate
+	model.extraHelp = "history.growth.navigator_help"
 	model.load = func() (historyReviewData, error) {
 		growth, err := collectHistoryGrowth(db, options, time.Now())
 		if err != nil {
@@ -101,4 +103,38 @@ func runHistoryGrowthBrowser(db *sql.DB, path string, options historyGrowthOptio
 	}
 	_, err := tea.NewProgram(model, tea.WithInput(os.Stdin), tea.WithOutput(os.Stdout)).Run()
 	return err
+}
+
+func historyGrowthNavigate(model historyReviewBrowser, key string, db *sql.DB, path string) (tea.Model, bool, error) {
+	if key != "t" || model.expanded || len(model.data.entries) == 0 {
+		return nil, false, nil
+	}
+	entry := model.data.entries[model.selected]
+	options := historyTrendOptions{by: "day", metric: "rss_bytes"}
+	target := historyTrendTarget{}
+	switch entry.command {
+	case "process":
+		filter, _ := parseTopProcessFilter(entry.navigate)
+		options.process, target = filter, historyTrendTarget{kind: historyTrendProcess, value: entry.navigate}
+	case "disk":
+		options.probe, options.metric, target = entry.navigate, "used_bytes", historyTrendTarget{kind: historyTrendProbe, value: entry.navigate}
+	default:
+		return nil, false, nil
+	}
+	return newHistoryTrendBrowser(db, []historyTrendTarget{target}, options, time.Local), true, nil
+}
+
+func newHistoryGrowthNavigator(db *sql.DB, path string, options historyGrowthOptions, growth historyGrowth) historyReviewBrowser {
+	columns := []historyReviewColumn{{"TARGET", 0, 0}, {"CHANGE/DAY", 13, 0}, {"LATEST", 11, 64}, {"SAMPLES", 7, 84}, {"NOTE", 24, 120}}
+	model := newHistoryReviewBrowser(T("history.review.growth_title"), path, columns, historyGrowthReviewData(growth))
+	model.navigateFn = historyGrowthNavigate
+	model.extraHelp = "history.growth.navigator_help"
+	model.load = func() (historyReviewData, error) {
+		growth, err := collectHistoryGrowth(db, options, time.Now())
+		if err != nil {
+			return historyReviewData{}, err
+		}
+		return historyGrowthReviewData(growth), nil
+	}
+	return model
 }

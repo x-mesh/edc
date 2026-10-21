@@ -82,7 +82,56 @@ func newHistoryListBrowser(path string, data historyReviewData) historyReviewBro
 	model := newHistoryReviewBrowser(T("history.list_browser.title"), path, columns, data)
 	model.detailsTitle = T("history.list_browser.details")
 	model.extraHelp = "history.list_browser.navigator_help"
+	model.navigateFn = historyListNavigate
 	return model
+}
+
+func (model historyReviewBrowser) navigate(key string, db *sql.DB, path string) (tea.Model, bool, error) {
+	if model.navigateFn == nil {
+		return nil, false, nil
+	}
+	return model.navigateFn(model, key, db, path)
+}
+
+func historyListNavigate(model historyReviewBrowser, key string, db *sql.DB, path string) (tea.Model, bool, error) {
+	if model.expanded || len(model.data.entries) == 0 {
+		return nil, false, nil
+	}
+	entry := model.data.entries[model.selected]
+	if key == "g" {
+		growth, err := collectHistoryGrowth(db, historyGrowthOptions{}, time.Now())
+		if err != nil {
+			return nil, true, err
+		}
+		return newHistoryGrowthNavigator(db, path, historyGrowthOptions{}, growth), true, nil
+	}
+	if key != "t" && key != "o" {
+		return nil, false, nil
+	}
+	if entry.command == historySnapshotCommand {
+		model.notice, model.noticeSticky = T("history.list_browser.snapshot_navigation"), true
+		model.resize()
+		return model, false, nil
+	}
+	options := historyOptions{run: entry.id}
+	if key == "t" {
+		samples, err := loadHistoryTop(db, options)
+		if err != nil {
+			return nil, true, err
+		}
+		child := newHistoryTopBrowser(samples, path)
+		child.pinned = true
+		child.load = func() ([]historyTopSample, error) { return loadHistoryTop(db, options) }
+		return child, true, nil
+	}
+	samples, err := loadHistoryProcess(db, options)
+	if err != nil {
+		return nil, true, err
+	}
+	child := newHistoryProcessBrowser(samples, path)
+	child.pinned = true
+	child.loadProcesses = func() ([]historyProcessSample, error) { return loadHistoryProcess(db, options) }
+	return child, true, nil
 }
 
 func runHistoryListBrowser(db *sql.DB, path string, options historyOptions) error {

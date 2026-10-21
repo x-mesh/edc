@@ -155,6 +155,7 @@ history:
     unfiltered: "%s 표본 일부는 --process 없이 기록한 실행에서 나왔습니다. 이 표본은 CPU나 메모리 사용량이 상위권에 든 순간만 셉니다. edc top -w --process %s로 기록하세요"
   overview:
     empty: "일치하는 history 실행이 없습니다"
+    disjoint: "실행 표본 범위 %s부터 %s까지가 요청 범위 %s부터 %s까지와 겹치지 않습니다"
     run: "실행"
     range: "범위"
     runs: "실행 수"

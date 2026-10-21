@@ -67,6 +67,7 @@ history:
     summary: "Recorded top and snapshot runs"
     details: "Selected run"
     navigator_help: "Enter Overview   i Details   t Top samples   o Processes   g Growth"
+    snapshot_navigator_help: "Enter Overview   i Details   g Growth"
     snapshot_navigation: "Top and process samples are available only for top runs."
     empty: "No recorded runs match this query."
     run: "run  %s"

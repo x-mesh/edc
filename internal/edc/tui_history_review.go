@@ -45,6 +45,7 @@ type historyReviewBrowser struct {
 	title, path                       string
 	detailsTitle                      string
 	extraHelp                         string
+	snapshotHelp                      string
 	columns                           []historyReviewColumn
 	data                              historyReviewData
 	view                              viewport.Model
@@ -115,11 +116,23 @@ func (model historyReviewBrowser) helpLines() []string {
 	}
 	help := T(key)
 	if model.hosted && !model.expanded && model.navigateFn != nil {
-		help = strings.Replace(help, "   Enter Details", "", 1)
+		var hints []string
+		for _, hint := range strings.Split(help, "   ") {
+			if !strings.HasPrefix(strings.TrimSpace(hint), "Enter ") {
+				hints = append(hints, hint)
+			}
+		}
+		help = strings.Join(hints, "   ")
 	}
 	lines := historyReviewKeyHints(help, model.width, model.color, liveHintItem{key: "p", on: model.paused})
-	if model.extraHelp != "" && !model.expanded && !(len(model.data.entries) > 0 && model.data.entries[model.selected].command == historySnapshotCommand) {
-		lines = append(lines, historyReviewKeyHints(T(model.extraHelp), model.width, model.color)...)
+	if model.extraHelp != "" && !model.expanded {
+		extra := model.extraHelp
+		if len(model.data.entries) > 0 && model.data.entries[model.selected].command == historySnapshotCommand {
+			extra = model.snapshotHelp
+		}
+		if extra != "" {
+			lines = append(lines, historyReviewKeyHints(T(extra), model.width, model.color)...)
+		}
 	}
 	return lines
 }

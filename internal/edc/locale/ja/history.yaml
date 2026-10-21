@@ -67,6 +67,7 @@ history:
     summary: "記録済みのtopとsnapshot実行"
     details: "選択した実行"
     navigator_help: "Enter 概要   i 詳細   t Top観測   o Process   g 増加量"
+    snapshot_navigator_help: "Enter 概要   i 詳細   g 増加量"
     snapshot_navigation: "Topとprocessの観測はtop実行でのみ表示できます。"
     empty: "条件に一致する実行記録がありません。"
     run: "実行 ID  %s"

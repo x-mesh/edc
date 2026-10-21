@@ -82,6 +82,7 @@ func newHistoryListBrowser(path string, data historyReviewData) historyReviewBro
 	model := newHistoryReviewBrowser(T("history.list_browser.title"), path, columns, data)
 	model.detailsTitle = T("history.list_browser.details")
 	model.extraHelp = "history.list_browser.navigator_help"
+	model.snapshotHelp = "history.list_browser.snapshot_navigator_help"
 	model.navigateFn = historyListNavigate
 	return model
 }

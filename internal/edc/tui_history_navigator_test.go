@@ -91,16 +91,24 @@ func TestHistoryNavigatorRunListOverviewAndInlineDetail(t *testing.T) {
 func TestHistoryRunListHostedFooterOmitsGenericEnter(t *testing.T) {
 	restore := currentLanguage()
 	defer setLanguage(restore)
-	setLanguage("en")
-	data := historyReviewData{entries: []historyReviewEntry{{id: "run", command: "top", cells: make([]string, 6)}}}
-	direct := newHistoryListBrowser("history.db", data)
-	direct.color = false
-	directHelp := strings.Join(direct.helpLines(), "\n")
-	hosted := direct
-	hosted.hosted = true
-	help := strings.Join(hosted.helpLines(), "\n")
-	if directHelp == help || !strings.Contains(help, T("history.list_browser.navigator_help")) {
-		t.Fatalf("direct=%q hosted=%q", directHelp, help)
+	for _, language := range []string{"en", "ko", "ja"} {
+		setLanguage(language)
+		data := historyReviewData{entries: []historyReviewEntry{{id: "run", command: "top", cells: make([]string, 6)}}}
+		direct := newHistoryListBrowser("history.db", data)
+		direct.color = false
+		directHelp := strings.Join(direct.helpLines(), "\n")
+		hosted := direct
+		hosted.hosted = true
+		help := strings.Join(hosted.helpLines(), "\n")
+		lines := strings.Split(help, "\n")
+		if directHelp == help || strings.Contains(lines[0], "Enter ") || !strings.Contains(help, T("history.list_browser.navigator_help")) {
+			t.Fatalf("%s direct=%q hosted=%q", language, directHelp, help)
+		}
+		hosted.data.entries[0].command = historySnapshotCommand
+		snapshotHelp := strings.Join(hosted.helpLines(), "\n")
+		if strings.Contains(snapshotHelp, "Enter Details") || !strings.Contains(snapshotHelp, T("history.list_browser.snapshot_navigator_help")) {
+			t.Fatalf("%s snapshot=%q", language, snapshotHelp)
+		}
 	}
 }
 

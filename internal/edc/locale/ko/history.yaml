@@ -66,7 +66,7 @@ history:
     title: "실행 기록"
     summary: "기록한 top 및 snapshot 실행"
     details: "선택한 실행"
-    navigator_help: "t Top 관측값   o Process   g 증가량"
+    navigator_help: "Enter 개요   i 상세   t Top 관측값   o Process   g 증가량"
     snapshot_navigation: "Top 및 process 관측값은 top 실행에서만 볼 수 있습니다."
     empty: "조건에 맞는 실행 기록이 없습니다."
     run: "실행 ID  %s"

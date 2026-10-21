@@ -50,6 +50,44 @@ func TestHistoryNavigatorPushesRunChildrenAndRestoresRoot(t *testing.T) {
 	}
 }
 
+func TestHistoryNavigatorRunListOverviewAndInlineDetail(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "history.db")
+	recorder := topHistoryFixture(t, path)
+	if err := recorder.Record(historyFixtureSample(1, 20, topProcess{PID: 1})); err != nil {
+		t.Fatal(err)
+	}
+	if err := recorder.Close("finished"); err != nil {
+		t.Fatal(err)
+	}
+	db, err := openHistoryDB(path, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	data, err := historyListReviewData(db, historyOptions{}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := newHistoryListBrowser(path, data)
+	navigator := newHistoryNavigator(db, path, root)
+	next, _ := navigator.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	navigator = next.(historyNavigator)
+	overview, ok := navigator.current().(historyOverviewBrowser)
+	if !ok || !overview.hosted || overview.options.run != recorder.runID {
+		t.Fatalf("overview=%+v", navigator.current())
+	}
+	next, _ = navigator.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	navigator = next.(historyNavigator)
+	if len(navigator.stack) != 1 || navigator.current().(historyReviewBrowser).selected != 0 {
+		t.Fatal("Esc did not restore run list")
+	}
+	next, _ = navigator.Update(tea.KeyPressMsg{Code: 'i', Text: "i"})
+	navigator = next.(historyNavigator)
+	if !navigator.current().(historyReviewBrowser).expanded {
+		t.Fatal("i did not open inline detail")
+	}
+}
+
 func TestHistoryNavigatorPropagatesSizeAndClosesChildDetailBeforePop(t *testing.T) {
 	root := newHistoryListBrowser("history.db", historyReviewData{entries: []historyReviewEntry{{id: "run", cells: make([]string, 6)}}})
 	navigator := newHistoryNavigator(nil, "history.db", root)

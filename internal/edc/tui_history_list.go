@@ -98,6 +98,17 @@ func historyListNavigate(model historyReviewBrowser, key string, db *sql.DB, pat
 		return nil, false, nil
 	}
 	entry := model.data.entries[model.selected]
+	if key == "enter" {
+		child := newHistoryOverviewBrowser(db, path, historyOverviewOptions{run: entry.id})
+		child.hosted = true
+		return child, true, nil
+	}
+	if key == "i" {
+		model.expanded = true
+		model.view.GotoTop()
+		model.resize()
+		return model, false, nil
+	}
 	if key == "g" {
 		growth, err := collectHistoryGrowth(db, historyGrowthOptions{}, time.Now())
 		if err != nil {

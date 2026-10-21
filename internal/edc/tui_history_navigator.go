@@ -90,6 +90,8 @@ func navigatorAtTop(model tea.Model) bool {
 		return child.atTop()
 	case historySampleBrowser:
 		return child.atTop()
+	case historyOverviewBrowser:
+		return child.atTop()
 	}
 	return true
 }

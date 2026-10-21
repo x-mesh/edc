@@ -109,6 +109,14 @@ func TestHistoryTrendBrowserDisambiguatesDuplicateExecutableNames(t *testing.T) 
 	if first == second || strings.Contains(first, "PID") || strings.Contains(second, "PID") || !strings.Contains(first, "Helpers") || !strings.Contains(second, "Renderer") {
 		t.Fatalf("duplicate labels = %q, %q", first, second)
 	}
+	spaced := newHistoryTrendBrowser(nil, []historyTrendTarget{
+		{kind: historyTrendProcess, value: "/Applications/Google Chrome.app/Contents/Helpers/Chrome Helper"},
+		{kind: historyTrendProcess, value: "/Applications/Claude Desktop.app/Contents/Helpers/Chrome Helper"},
+	}, historyTrendOptions{}, historyTrendZone)
+	first, second = spaced.targetLabel(0, historyTrendTargetWidth), spaced.targetLabel(1, historyTrendTargetWidth)
+	if first == second || !strings.Contains(first, "· Google") || !strings.Contains(second, "· Claude") {
+		t.Fatalf("labels for paths with spaces = %q, %q", first, second)
+	}
 }
 func TestHistoryTrendBrowserStartsAtNamedProcessAndFitsSmallScreens(t *testing.T) {
 	db, _ := historyProcessTrendFixture(t)

@@ -363,17 +363,12 @@ func (model historyTrendBrowser) targetLabel(index, width int) string {
 }
 
 func historyTrendProcessParent(command, other string) string {
-	path := strings.Fields(command)
-	otherPath := strings.Fields(other)
-	if len(path) == 0 || len(otherPath) == 0 {
-		return historyTerminalText(command)
-	}
-	parts := strings.Split(strings.Trim(path[0], "/"), "/")
-	otherParts := strings.Split(strings.Trim(otherPath[0], "/"), "/")
+	parts := strings.Split(strings.Trim(strings.TrimSpace(command), "/"), "/")
+	otherParts := strings.Split(strings.Trim(strings.TrimSpace(other), "/"), "/")
 	for offset := 2; offset <= min(len(parts), len(otherParts)); offset++ {
 		part, otherPart := parts[len(parts)-offset], otherParts[len(otherParts)-offset]
 		if part != otherPart {
-			return part
+			return historyTerminalText(part)
 		}
 	}
 	return historyTerminalText(command)

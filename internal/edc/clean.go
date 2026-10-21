@@ -275,13 +275,14 @@ type cleanDeps struct {
 	dockerDial func(ctx context.Context, path string) (net.Conn, error)
 	measure    func(ctx context.Context, options duOptions, sources duSources) (duScan, error)
 	sources    duSources
+	workers    int
 	// remote는 --group에서 원격 호스트의 clean을 실행한다. 시험이 SSH 대신 가짜 실행기를 넣는다.
 	remote cleanRemoteRunner
 }
 
 func hostCleanDeps(home string, host duSources) cleanDeps {
 	return cleanDeps{home: home, lookPath: exec.LookPath, run: runCleanTool, lookupEnv: os.LookupEnv, deviceOf: cleanDeviceOf,
-		dockerDial: cleanDockerDial, measure: duMeasure, sources: cleanSources(host), remote: cleanSSHRunner}
+		dockerDial: cleanDockerDial, measure: duMeasure, sources: cleanSources(host), workers: duDefaultWorkers, remote: cleanSSHRunner}
 }
 
 func cleanDockerDial(ctx context.Context, path string) (net.Conn, error) {
@@ -518,7 +519,7 @@ type cleanMeasurement struct {
 // partial과 하한으로 남긴다.
 func cleanMeasurePath(ctx context.Context, deps cleanDeps, resolved string) (cleanMeasurement, error) {
 	started := time.Now()
-	scan, err := deps.measure(ctx, duOptions{root: resolved, workers: duDefaultWorkers}, deps.sources)
+	scan, err := deps.measure(ctx, duOptions{root: resolved, workers: deps.workers}, deps.sources)
 	if err != nil {
 		return cleanMeasurement{}, err
 	}
@@ -717,7 +718,7 @@ func (walk *cleanChildWalk) holdsExcluded(dir string) bool {
 
 func (walk *cleanChildWalk) measure(ctx context.Context, path, name string) {
 	scanner := walk.scanner
-	scan, err := scanner.deps.measure(ctx, duOptions{root: path, workers: duDefaultWorkers}, scanner.deps.sources)
+	scan, err := scanner.deps.measure(ctx, duOptions{root: path, workers: scanner.deps.workers}, scanner.deps.sources)
 	if err != nil {
 		walk.fail(path, err)
 		return
@@ -1024,10 +1025,12 @@ func runCleanWith(args []string, version string, deps cleanDeps, ok bool, homeEr
 	set.Var(&projects, "project", T("command.clean.option.project"))
 	group := set.String("group", "", T("command.clean.option.group"))
 	inventory := set.String("inventory", "", T("command.clean.option.inventory"))
+	workers := set.Int("workers", duDefaultWorkers, T("command.clean.option.workers"))
+	set.IntVar(workers, "w", duDefaultWorkers, T("command.clean.option.workers"))
 	if err := set.Parse(args); err != nil {
 		return 2
 	}
-	if set.NArg() > 0 {
+	if set.NArg() > 0 || *workers < 1 {
 		fmt.Fprintln(os.Stderr, T("cli.usage", "edc clean [options]"))
 		return 2
 	}
@@ -1043,6 +1046,7 @@ func runCleanWith(args []string, version string, deps cleanDeps, ok bool, homeEr
 		}
 		return runCleanGroup(options, *group, *inventory, version, deps.remote, stdout)
 	}
+	deps.workers = *workers
 	started := time.Now()
 	target := map[string]interface{}{"goos": runtime.GOOS}
 	if !ok {

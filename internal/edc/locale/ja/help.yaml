@@ -198,6 +198,7 @@ command:
   clean:
     summary: "既知の開発キャッシュのディスク使用量、読み取り専用 (Linux と macOS)"
     option:
+      workers: "同時に読むディレクトリ数"
       timeout: "制限時間、過ぎると残りは未測定と表示"
       project: "ビルドフォルダを探すルート、複数指定可"
       group: "edc remote グループの各ホストで clean を実行"

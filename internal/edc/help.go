@@ -347,6 +347,7 @@ var commandDocs = []commandDoc{
 		name: "clean", group: "observe",
 		usage: []string{"edc clean [options]"},
 		options: []optionDoc{
+			{"-w, --workers 4", "command.clean.option.workers"},
 			{"--timeout 60s", "command.clean.option.timeout"},
 			{"--project DIR", "command.clean.option.project"},
 			{"--group NAME", "command.clean.option.group"},

@@ -62,6 +62,11 @@ history:
     title: "Process history"
     empty: "No recorded process observations match this query. Record with edc top -w --process <name>, then open edc history process."
     navigator_help: "t Trend"
+  filter:
+    help: "/ Filter"
+    active: "filter %s"
+    input: "filter: %s█"
+    input_help: "Enter Apply   Esc Cancel   Ctrl+U Clear"
   list_browser:
     title: "Run history"
     summary: "Recorded top and snapshot runs"

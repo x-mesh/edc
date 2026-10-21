@@ -74,6 +74,34 @@ func TestHistoryTopBrowserFollowsAndPreservesSelection(t *testing.T) {
 	}
 }
 
+func TestHistorySampleBrowserProcessFilterReloadsAndClears(t *testing.T) {
+	model := newHistoryTopBrowser(historyTopSamples(1), "history.db")
+	var got []historyOptions
+	model.loadWith = func(options historyOptions) ([]historyTopSample, error) {
+		got = append(got, options)
+		return historyTopSamples(1), nil
+	}
+	model.options.process, _ = parseTopProcessFilter("old")
+	model = historyTopAfter(t, model, tea.KeyPressMsg{Code: '/'}, tea.KeyPressMsg{Code: tea.KeyBackspace}, tea.KeyPressMsg{Code: tea.KeyBackspace}, tea.KeyPressMsg{Code: tea.KeyBackspace})
+	next, command := model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	model = next.(historySampleBrowser)
+	if command != nil {
+		model = historyTopAfter(t, model, command())
+	}
+	if model.filterEditing || model.options.process.active() || len(got) != 1 || got[0].process.active() {
+		t.Fatalf("filter clear = editing:%t options:%q reloads:%+v", model.filterEditing, model.options.process, got)
+	}
+	model = historyTopAfter(t, model, tea.KeyPressMsg{Code: '/'}, tea.KeyPressMsg{Code: 'n', Text: "n"}, tea.KeyPressMsg{Code: 'g', Text: "g"}, tea.KeyPressMsg{Code: 'i', Text: "i"}, tea.KeyPressMsg{Code: 'n', Text: "n"}, tea.KeyPressMsg{Code: 'x', Text: "x"})
+	next, command = model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	model = next.(historySampleBrowser)
+	if command != nil {
+		model = historyTopAfter(t, model, command())
+	}
+	if model.options.process.String() != "nginx" || len(got) != 2 || got[1].process.String() != "nginx" {
+		t.Fatalf("filter reload = options:%q reloads:%+v", model.options.process, got)
+	}
+}
+
 func TestHistoryTopBrowserLayoutAndAvailability(t *testing.T) {
 	restore := currentLanguage()
 	defer setLanguage(restore)

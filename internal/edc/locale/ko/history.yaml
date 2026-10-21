@@ -62,6 +62,11 @@ history:
     title: "Process 관측 이력"
     empty: "조건에 맞는 process 기록이 없습니다. edc top -w --process <이름>으로 기록한 뒤 edc history process에서 확인하세요."
     navigator_help: "t 추이"
+  filter:
+    help: "/ 필터"
+    active: "필터 %s"
+    input: "필터: %s█"
+    input_help: "Enter 적용   Esc 취소   Ctrl+U 지우기"
   list_browser:
     title: "실행 기록"
     summary: "기록한 top 및 snapshot 실행"

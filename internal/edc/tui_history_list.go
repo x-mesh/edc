@@ -131,7 +131,8 @@ func historyListNavigate(model historyReviewBrowser, key string, db *sql.DB, pat
 		}
 		child := newHistoryTopBrowser(samples, path)
 		child.pinned = true
-		child.load = func() ([]historyTopSample, error) { return loadHistoryTop(db, options) }
+		child.options = options
+		child.loadWith = func(options historyOptions) ([]historyTopSample, error) { return loadHistoryTop(db, options) }
 		return child, true, nil
 	}
 	samples, err := loadHistoryProcess(db, options)
@@ -140,7 +141,8 @@ func historyListNavigate(model historyReviewBrowser, key string, db *sql.DB, pat
 	}
 	child := newHistoryProcessBrowser(samples, path)
 	child.pinned = true
-	child.loadProcesses = func() ([]historyProcessSample, error) { return loadHistoryProcess(db, options) }
+	child.options = options
+	child.loadProcessesWith = func(options historyOptions) ([]historyProcessSample, error) { return loadHistoryProcess(db, options) }
 	return child, true, nil
 }
 

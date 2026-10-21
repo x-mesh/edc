@@ -310,3 +310,32 @@ func TestHistoryNavigatorSampleTickUsesOwner(t *testing.T) {
 		t.Fatal("visible tick changed hidden sample browser")
 	}
 }
+
+func TestHistoryNavigatorKeepsFilterInputKeysInSampleBrowser(t *testing.T) {
+	root := newHistoryListBrowser("history.db", historyReviewData{})
+	child := newHistoryTopBrowser(historyTopSamples(1), "history.db")
+	child.loadWith = func(historyOptions) ([]historyTopSample, error) { return historyTopSamples(1), nil }
+	navigator := newHistoryNavigator(nil, "history.db", root)
+	navigator.stack = append(navigator.stack, child)
+	next, _ := navigator.Update(tea.KeyPressMsg{Code: '/'})
+	navigator = next.(historyNavigator)
+	next, command := navigator.Update(tea.KeyPressMsg{Code: 'q', Text: "q"})
+	if command != nil {
+		t.Fatal("q quit while filter input was active")
+	}
+	navigator = next.(historyNavigator)
+	current := navigator.current().(historySampleBrowser)
+	if !current.filterEditing || current.filterText != "q" {
+		t.Fatalf("filter input = editing:%t text:%q", current.filterEditing, current.filterText)
+	}
+	next, _ = navigator.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	navigator = next.(historyNavigator)
+	if len(navigator.stack) != 2 || navigator.current().(historySampleBrowser).filterEditing {
+		t.Fatal("first Esc did not close only the filter input")
+	}
+	next, _ = navigator.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	navigator = next.(historyNavigator)
+	if len(navigator.stack) != 1 {
+		t.Fatal("second Esc did not pop the sample browser")
+	}
+}

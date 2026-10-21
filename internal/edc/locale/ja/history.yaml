@@ -170,6 +170,20 @@ history:
       metric: "指標"
       process: "プロセス"
       help: "↑↓ スクロール   PgUp/PgDn ページ   r 更新   q 終了"
+    metric:
+      cpu: "CPU"
+      memory: "メモリ"
+      load: "ロード"
+      disk_read: "ディスク読込"
+      disk_write: "ディスク書込"
+      net_in: "ネット受信"
+      net_out: "ネット送信"
+      swap_out: "スワップ出力"
+    column:
+      name: "名前"
+      peak: "最大"
+      avg_cpu: "平均 CPU"
+      restarts: "再起動"
   growth:
     window: "範囲: %s から %s まで (ローカル時間)"
     empty: "この範囲にディスクや du のスナップショットはありません。edc snapshot -w --du <path> で記録してください"

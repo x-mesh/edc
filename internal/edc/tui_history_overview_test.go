@@ -23,6 +23,9 @@ func TestHistoryOverviewBrowserFitsAndScrolls(t *testing.T) {
 				t.Fatalf("width %d: %q", width, line)
 			}
 		}
+		if !strings.Contains(strings.Join(model.lines(), "\n"), strings.ToUpper(T("history.overview.restarts"))) {
+			t.Fatalf("width %d hides the restart heading", width)
+		}
 		updated, _ = model.Update(tea.KeyPressMsg{Code: tea.KeyDown})
 		model = updated.(historyOverviewBrowser)
 		if model.atTop() {

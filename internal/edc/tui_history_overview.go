@@ -87,7 +87,7 @@ func (model historyOverviewBrowser) tableLines(lines []string) []string {
 	for _, metric := range model.overview.Metrics {
 		lines = append(lines, fmt.Sprintf("%-24s %10s %10s %10s %s", metric.Metric, historyTrendValue(metric.Metric, metric.Avg), historyTrendValue(metric.Metric, metric.P95), historyTrendValue(metric.Metric, metric.Max), historyOverviewSparkline(model.overview.Series[metric.Metric], 12)))
 	}
-	nameWidth := max(16, model.width-34)
+	nameWidth := max(16, model.width-45)
 	lines = append(lines, "", T("history.overview.processes", T("history.overview."+strings.ToLower(model.overview.Memory))), fmt.Sprintf("%-*s %10s %10s %8s", nameWidth, T("history.overview.browser.process"), strings.ToUpper(T("history.overview.peak")), strings.ToUpper(T("history.overview.cpu")), strings.ToUpper(T("history.overview.restarts"))))
 	for _, process := range model.overview.Processes {
 		lines = append(lines, fmt.Sprintf("%-*s %10s %9.1f%% %8d", nameWidth, topProcessName(process.Command, nameWidth), formatSizeShort(uint64(process.Peak)), process.CPU, process.Restarts))

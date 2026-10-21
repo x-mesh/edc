@@ -37,7 +37,7 @@ func (model historyOverviewBrowser) navigate(key string, _ *sql.DB, _ string) (t
 		}
 		if len(model.overview.Warnings) > 0 {
 			model.err = fmt.Errorf("%s", model.overview.Warnings[0])
-			return model, false, nil
+			return model, true, nil
 		}
 	}
 	return nil, false, nil

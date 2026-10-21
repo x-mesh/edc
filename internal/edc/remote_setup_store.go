@@ -24,6 +24,9 @@ type remoteInventoryStore struct {
 
 type remoteInventoryRevision struct{ snapshot configSnapshot }
 
+var remoteSetupChown = os.Chown
+var remoteSetupEUID = os.Geteuid
+
 // openRemoteFile reads an inventory or recipe for editing. data is nil when the file is missing or blank.
 func openRemoteFile(path string) (data []byte, snapshot configSnapshot, err error) {
 	snapshot, err = configFileSnapshot(path)
@@ -180,8 +183,14 @@ func writeRemoteFileIfUnchanged(path string, data []byte, original configSnapsho
 		return err
 	}
 	mode := os.FileMode(0o600)
+	var owner remoteFileOwner
 	if original.exists {
 		mode = original.mode.Perm()
+		info, err := os.Stat(path)
+		if err != nil {
+			return err
+		}
+		owner = remoteOwnerOf(info)
 	}
 	file, err := os.CreateTemp(directory, ".remote-*.yaml")
 	if err != nil {
@@ -192,6 +201,12 @@ func writeRemoteFileIfUnchanged(path string, data []byte, original configSnapsho
 	if err := file.Chmod(mode); err != nil {
 		file.Close()
 		return err
+	}
+	if owner.ok && (remoteSetupEUID() == 0 || remoteSetupEUID() != owner.uid) {
+		if err := remoteSetupChown(temporary, owner.uid, owner.gid); err != nil {
+			file.Close()
+			return err
+		}
 	}
 	if _, err := file.Write(data); err != nil {
 		file.Close()

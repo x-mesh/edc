@@ -131,6 +131,51 @@ func TestRemoteInventoryStoreKeepsCommentsAndUntouchedEntries(t *testing.T) {
 	}
 }
 
+func TestRemoteInventoryStorePreservesOwnerAndAbortsOnChownError(t *testing.T) {
+	path := writeInventoryFixture(t, commentedInventory)
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner := remoteOwnerOf(info)
+	if !owner.ok {
+		t.Skip("file ownership is unavailable")
+	}
+	oldChown, oldEUID := remoteSetupChown, remoteSetupEUID
+	t.Cleanup(func() { remoteSetupChown, remoteSetupEUID = oldChown, oldEUID })
+	remoteSetupEUID = func() int { return owner.uid + 1 }
+	var gotUID, gotGID int
+	remoteSetupChown = func(_ string, uid, gid int) error { gotUID, gotGID = uid, gid; return nil }
+	editor := newSetupEditor(t, path)
+	if err := editor.AddHost(remotesetup.Host{Name: "cache"}); err != nil {
+		t.Fatal(err)
+	}
+	if problems, err := editor.Save(); err != nil || len(problems) != 0 {
+		t.Fatalf("problems = %v, err = %v", problems, err)
+	}
+	if gotUID != owner.uid || gotGID != owner.gid {
+		t.Fatalf("chown = %d:%d, want %d:%d", gotUID, gotGID, owner.uid, owner.gid)
+	}
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	remoteSetupChown = func(string, int, int) error { return errors.New("chown rejected") }
+	if err := editor.AddHost(remotesetup.Host{Name: "queue"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := editor.Save(); err == nil {
+		t.Fatal("save succeeded after chown failed")
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) {
+		t.Fatal("chown failure changed the original inventory")
+	}
+}
+
 func TestRemoteInventoryStoreRemovesWhatWasDeleted(t *testing.T) {
 	path := writeInventoryFixture(t, commentedInventory+"group_options:\n  servers:\n    parallel: 2\n")
 	editor := newSetupEditor(t, path)

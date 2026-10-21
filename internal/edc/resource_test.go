@@ -960,6 +960,19 @@ func TestTopProcessSamplerKeepsGrowingFilteredProcessPastLimit(t *testing.T) {
 	if processes[len(processes)-1].PID != 999 {
 		t.Fatalf("growing process omitted: %+v", processes)
 	}
+	for pid := 1000; pid < 1000+topProcessLimit+3; pid++ {
+		all = append(all, topProcess{PID: pid, Command: "worker", Growth: &topMemoryGrowth{Bytes: uint64(pid) << 20}})
+	}
+	processes, _, _ = sampler.refreshNow()
+	if len(processes) != topFilteredProcessLimit+topProcessLimit {
+		t.Fatalf("growing processes are not capped: %d", len(processes))
+	}
+	extra := processes[topFilteredProcessLimit:]
+	for index := range extra {
+		if want := 1000 + topProcessLimit + 2 - index; extra[index].PID != want {
+			t.Fatalf("growing process %d = PID %d, want %d by growth", index, extra[index].PID, want)
+		}
+	}
 }
 
 // 멈춘 process 수는 host 값이라 필터와 상관없이 모든 process에서 센다.

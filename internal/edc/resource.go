@@ -578,13 +578,15 @@ func (sampler *topProcessSampler) refresh() {
 			for _, process := range shown {
 				seen[process.PID] = true
 			}
+			var growing []topProcess
 			for _, process := range processes[limit:] {
 				if process.Growth != nil && !seen[process.PID] {
-					shown = append(shown, process)
+					growing = append(growing, process)
 					seen[process.PID] = true
 				}
 			}
-			processes = shown
+			sort.SliceStable(growing, func(i, j int) bool { return growing[i].Growth.Bytes > growing[j].Growth.Bytes })
+			processes = append(shown, growing[:min(topProcessLimit, len(growing))]...)
 		}
 	} else if scanIO && sampler.fillIO != nil {
 		// 디스크 대기는 CPU와 메모리에 드러나지 않으므로 I/O가 큰 process를 후보에 넣으려면 전부 읽어야 한다.

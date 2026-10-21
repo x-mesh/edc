@@ -60,6 +60,7 @@ type historyOverview struct {
 var historyOverviewLogLoader = func() (logHistorySnapshot, error) {
 	return loadLogHistory(logHistoryOptions{}, nil)
 }
+var historyOverviewTempChmod = func(file *os.File, mode os.FileMode) error { return file.Chmod(mode) }
 
 func historyOverviewMetricLabel(name string) string {
 	key := map[string]string{
@@ -144,7 +145,7 @@ func runHistoryOverview(args []string) int {
 		}
 		temp := file.Name()
 		defer os.Remove(temp)
-		err = file.Chmod(0600)
+		err = historyOverviewTempChmod(file, 0600)
 		if err == nil {
 			err = json.NewEncoder(file).Encode(view)
 		}

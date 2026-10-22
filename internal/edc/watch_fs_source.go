@@ -31,7 +31,15 @@ type fsWatchSource struct {
 	close  func()
 	// driver는 ready 기록에 나가는 실제 감시 방식이다.
 	driver string
+	// driverReason은 auto가 inotify를 고른 이유다. 직접 고른 방식과 fanotify는 비어 있다.
+	driverReason string
 }
+
+// auto가 inotify를 고른 이유다. ready 기록의 driver_reason에 그대로 나간다.
+const (
+	fsWatchReasonNotRecursive = "not_recursive"
+	fsWatchReasonFanotifyDown = "fanotify_unavailable"
+)
 
 // fsWatchIgnored는 감시 루트 밖의 경로, JSON 출력 파일과 exclude glob에 맞는 경로를 거른다. entry는 walk에서
 // 얻은 항목이고, 이벤트처럼 없으면 nil이다.

@@ -43,6 +43,10 @@ watchfs:
     dropped: "パスを特定できなかったイベント%d件を破棄しました。監視ディレクトリ内の変更が抜けている可能性があります。"
   walking: "%s 配下の各ディレクトリを監視に登録中… ツリーが大きいと時間がかかります。準備ができると出力を開始します。"
   ready: "WATCH %s · recursive=%t · driver=%s"
+  ready_reason: "WATCH %s · recursive=%t · driver=%s (%s)"
+  driver_reason:
+    not_recursive: "再帰監視ではない"
+    fanotify_unavailable: "fanotify 使用不可"
   status:
     actions: "action %d"
     failed: "失敗 %d"

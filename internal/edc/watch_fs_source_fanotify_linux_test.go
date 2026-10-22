@@ -440,3 +440,49 @@ func TestFSWatchUnescapeMount(t *testing.T) {
 		}
 	}
 }
+
+// auto가 inotify를 고르면 이유가 source에 남는다. 재귀 감시가 아니면 not_recursive, 직접 고르거나 fanotify면 비어 있다.
+func TestFSWatchSourceRecordsWhyAutoChoseInotify(t *testing.T) {
+	root := t.TempDir()
+	for _, test := range []struct {
+		name       string
+		options    fsWatchOptions
+		wantDriver string
+		wantReason string
+	}{
+		{"not recursive", fsWatchOptions{root: root, driver: fsWatchDriverAuto}, fsWatchDriverInotify, fsWatchReasonNotRecursive},
+		{"chosen by the user", fsWatchOptions{root: root, recursive: true, driver: fsWatchDriverInotify}, fsWatchDriverInotify, ""},
+	} {
+		source, err := newFSWatchSource(test.options)
+		if err != nil {
+			t.Fatalf("%s: %v", test.name, err)
+		}
+		if source.driver != test.wantDriver || source.driverReason != test.wantReason {
+			t.Errorf("%s: driver %q reason %q, want %q and %q", test.name, source.driver, source.driverReason, test.wantDriver, test.wantReason)
+		}
+		source.close()
+	}
+}
+
+// fanotify를 시작하지 못하면 auto는 inotify로 넘어가고 이유를 fanotify_unavailable로 남긴다. /proc은 fanotify가 쓰는
+// file handle을 지원하지 않고, root가 아니면 fanotify_init 자체가 거부되므로 어느 쪽으로 실행해도 이 분기를 탄다.
+func TestFSWatchSourceRecordsWhenAutoFellBackToInotify(t *testing.T) {
+	root := "/proc/self/attr"
+	if _, err := os.Stat(root); err != nil {
+		t.Skip(err)
+	}
+	// 건너뛰는 것은 이 환경의 inotify가 그 경로를 아예 못 보는 경우뿐이다. 그 밖의 오류는 폴백이 깨진 것이므로 실패다.
+	direct, err := newFSNotifyWatchSource(fsWatchOptions{root: root, recursive: true})
+	if err != nil {
+		t.Skipf("inotify cannot watch %s here: %v", root, err)
+	}
+	direct.close()
+	source, err := newFSWatchSource(fsWatchOptions{root: root, recursive: true, driver: fsWatchDriverAuto})
+	if err != nil {
+		t.Fatalf("auto did not fall back to inotify for %s: %v", root, err)
+	}
+	defer source.close()
+	if source.driver != fsWatchDriverInotify || source.driverReason != fsWatchReasonFanotifyDown {
+		t.Fatalf("driver %q reason %q, want %q and %q", source.driver, source.driverReason, fsWatchDriverInotify, fsWatchReasonFanotifyDown)
+	}
+}

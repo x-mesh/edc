@@ -43,6 +43,10 @@ watchfs:
     dropped: "경로를 확인하지 못한 이벤트 %d개를 버렸습니다. 감시 디렉터리 안의 변경이 빠졌을 수 있습니다."
   walking: "%s 아래 디렉터리마다 감시 등록 중… 트리가 크면 시간이 걸립니다. 준비되면 출력을 시작합니다."
   ready: "WATCH %s · recursive=%t · driver=%s"
+  ready_reason: "WATCH %s · recursive=%t · driver=%s (%s)"
+  driver_reason:
+    not_recursive: "재귀 감시 아님"
+    fanotify_unavailable: "fanotify 사용 불가"
   status:
     actions: "action %d"
     failed: "실패 %d"

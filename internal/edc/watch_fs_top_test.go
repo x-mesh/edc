@@ -24,7 +24,7 @@ func TestFSWatchTopRanksDirectoriesAndSkipsAShortRun(t *testing.T) {
 		top.add("top.txt")
 	}
 	rows := top.rows()
-	want := []fsWatchTopRow{{"logs", 6, 40}, {"etc", 6, 40}, {".", 3, 20}}
+	want := []fsWatchTopRow{{"logs", 6, 40, false}, {"etc", 6, 40, false}, {".", 3, 20, false}}
 	// 같은 횟수는 이름 순서이므로 etc가 logs보다 앞이다.
 	want[0], want[1] = want[1], want[0]
 	if len(rows) != len(want) {
@@ -55,17 +55,72 @@ func TestFSWatchTopMemoryStaysBounded(t *testing.T) {
 	for index := range fsWatchTopMaxDirectories + 500 {
 		top.add(fmt.Sprintf("d%d/f", index))
 	}
-	// 이미 센 디렉터리는 한도 뒤에도 계속 센다.
-	top.add("d0/another")
-	if len(top.counts) != fsWatchTopMaxDirectories || top.other != 500 || top.counts["d0"] != 2 || top.total != fsWatchTopMaxDirectories+501 {
-		t.Errorf("directories %d, other %d, d0 %d, total %d", len(top.counts), top.other, top.counts["d0"], top.total)
+	if len(top.items) != fsWatchTopMaxDirectories || len(top.heap) != fsWatchTopMaxDirectories || top.total != fsWatchTopMaxDirectories+500 {
+		t.Errorf("directories %d, heap %d, total %d", len(top.items), len(top.heap), top.total)
+	}
+}
+
+// 한도에 닿은 뒤에 시끄러워진 디렉터리도 표에 나온다. 한도를 넘기 전에 센 디렉터리의 수는 정확하다.
+func TestFSWatchTopShowsADirectoryThatBecomesBusyAfterTheLimit(t *testing.T) {
+	top := newFSWatchTop()
+	for index := range fsWatchTopMaxDirectories {
+		top.add(fmt.Sprintf("d%d/f", index))
+	}
+	for range 50 {
+		top.add("hot/file")
+	}
+	rows := top.rows()
+	if len(rows) == 0 || rows[0].Directory != "hot" || !rows[0].Approximate || rows[0].Events < 50 || rows[0].Events > 52 {
+		t.Fatalf("rows = %+v", rows)
+	}
+	exact := newFSWatchTop()
+	for range 12 {
+		exact.add("a/f")
+	}
+	if rows := exact.rows(); len(rows) != 1 || rows[0].Approximate || rows[0].Events != 12 {
+		t.Errorf("a count below the limit must be exact: %+v", rows)
+	}
+}
+
+// 한도 뒤에 처음 나온 디렉터리 여럿이 계속 시끄러워도, 한 번만 나온 디렉터리가 쌓이는 가운데 상위 다섯 개를 놓치지 않는다.
+func TestFSWatchTopKeepsTheBusiestDirectoriesAmongOneOffs(t *testing.T) {
+	top := newFSWatchTop()
+	for index := range fsWatchTopMaxDirectories {
+		top.add(fmt.Sprintf("early%d/f", index))
+	}
+	const hotEvents = 400
+	oneOff := 0
+	for range hotEvents {
+		for hot := range 5 {
+			top.add(fmt.Sprintf("hot%d/f", hot))
+		}
+		for range 40 {
+			top.add(fmt.Sprintf("late%d/f", oneOff))
+			oneOff++
+		}
+	}
+	rows := top.rows()
+	if len(rows) != fsWatchTopShown {
+		t.Fatalf("rows = %+v", rows)
+	}
+	for _, row := range rows {
+		if !strings.HasPrefix(row.Directory, "hot") || row.Events < hotEvents || row.Events > hotEvents+20 {
+			t.Errorf("row %+v: want a hot directory with %d..%d events", row, hotEvents, hotEvents+20)
+		}
+	}
+}
+
+func TestFSWatchTopTextMarksAnApproximateCount(t *testing.T) {
+	text := fsWatchTopText([]fsWatchTopRow{{"hot", 150, 77, true}, {"etc", 12, 6, false}})
+	if !strings.Contains(text, `    ~150   77%  "hot"`) || !strings.Contains(text, `      12    6%  "etc"`) {
+		t.Errorf("text = %q", text)
 	}
 }
 
 func TestFSWatchTopTextIsTranslated(t *testing.T) {
 	previous := currentLanguage()
 	defer setLanguage(previous)
-	rows := []fsWatchTopRow{{"root/.aic/log-checkpoints", 150, 77}, {"etc", 12, 6}}
+	rows := []fsWatchTopRow{{"root/.aic/log-checkpoints", 150, 77, false}, {"etc", 12, 6, false}}
 	for language, heading := range map[string]string{"en": "most active directories:", "ko": "이벤트가 많은 디렉터리:", "ja": "イベントが多いディレクトリ:"} {
 		setLanguage(language)
 		text := fsWatchTopText(rows)

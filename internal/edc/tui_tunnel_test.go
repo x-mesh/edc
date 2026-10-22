@@ -2,6 +2,7 @@ package edc
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -324,5 +325,67 @@ func TestTunnelScreenListShowsSavedMarkAndHintsForTheSelectedRow(t *testing.T) {
 	first = strings.SplitN(ansi.Strip(screen.View().Content), "\n", 2)[0]
 	if strings.Contains(first, "remove definition") || strings.Contains(first, "restart") || !strings.Contains(first, "enter") {
 		t.Errorf("a one-time row offers only start/stop, new, and quit: %q", first)
+	}
+}
+
+func TestTunnelScreenDoesNotSaveWhenTheStartFails(t *testing.T) {
+	screen, runner := newTestTunnelScreen(t)
+	runner.failure = errors.New("Permission denied (publickey)")
+	var model tea.Model = screen
+	model, _ = tunnelKey(model, tea.KeyPressMsg{Code: 'n', Text: "n"})
+	form := model.(tunnelScreen).form
+	form.host, form.kind, form.port, form.name = "jump1", tunnelSocks, "1080", "proxy"
+	screen = model.(tunnelScreen)
+	screen.form = form
+	model, command := tunnelKey(screen, tea.KeyPressMsg{Code: tea.KeyEnter})
+	model = runTunnelCmd(t, model, command)
+	final := model.(tunnelScreen)
+	if !final.failed || !strings.Contains(final.notice, "Permission denied") {
+		t.Fatalf("notice = %q, failed %v", final.notice, final.failed)
+	}
+	if _, err := os.Stat(final.environment.file); err == nil {
+		t.Error("a failed start must not leave a saved definition")
+	}
+	if _, saved := final.environment.specs["proxy"]; saved {
+		t.Errorf("specs = %+v", final.environment.specs)
+	}
+}
+
+func TestTunnelScreenReportsASaveFailureAfterAStartedTunnel(t *testing.T) {
+	screen, runner := newTestTunnelScreen(t)
+	dir := screen.environment.file
+	if err := os.MkdirAll(dir, 0o755); err != nil { // 파일 자리에 디렉터리를 두어 저장이 실패하게 한다
+		t.Fatal(err)
+	}
+	var model tea.Model = screen
+	model, _ = tunnelKey(model, tea.KeyPressMsg{Code: 'n', Text: "n"})
+	form := model.(tunnelScreen).form
+	form.host, form.kind, form.port, form.name = "jump1", tunnelSocks, "1080", "proxy"
+	screen = model.(tunnelScreen)
+	screen.form = form
+	model, command := tunnelKey(screen, tea.KeyPressMsg{Code: tea.KeyEnter})
+	model = runTunnelCmd(t, model, command)
+	final := model.(tunnelScreen)
+	if len(runner.started) != 1 || !final.failed || !strings.Contains(final.notice, "proxy") {
+		t.Fatalf("started %d, failed %v, notice %q", len(runner.started), final.failed, final.notice)
+	}
+	if records := final.environment.manager.store.load(); len(records) != 1 {
+		t.Fatalf("the running tunnel must stay recorded: %+v", records)
+	}
+}
+
+func TestTunnelHostChoicesReadSSHConfigAliases(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := os.MkdirAll(filepath.Join(home, ".ssh"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	config := "Host *\n  ServerAliveInterval 30\nHost bastion jump1\n  HostName 10.0.0.9\nhost  web-*  !skip  db\nMatch all\n  User x\n"
+	if err := os.WriteFile(filepath.Join(home, ".ssh", "config"), []byte(config), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got := strings.Join(tunnelHostChoices(map[string]string{"jump1": "ops@10.0.0.5", "alpha": "a@h"}), ",")
+	if got != "alpha,jump1,bastion,db" {
+		t.Errorf("choices = %s", got)
 	}
 }

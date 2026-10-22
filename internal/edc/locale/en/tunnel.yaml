@@ -27,7 +27,9 @@ tunnel:
     file_shape: "%s is not a tunnels file: the top level must be a mapping"
     destination_required: "fill in the destination as host:port"
     port_taken: "port %d is already used by the running tunnel %s"
-    remote_port_taken: "%s, remote port %d is already used by the running tunnel %s"
+    remote_port_taken: "remote port %d on %s is already used by the running tunnel %s"
+    all_with_names: "--all cannot be used with tunnel names"
+    save_after_start: "%s is running, but edc could not save its definition: %s"
     save_needs_adhoc: "--save needs -L, -R, or -D"
     timeout_range: "--timeout and --connect-timeout must be more than 0"
 

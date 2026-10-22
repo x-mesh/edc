@@ -28,6 +28,8 @@ tunnel:
     destination_required: "宛先を host:port 形式で入力してください"
     port_taken: "ポート %d は実行中のトンネル %s がすでに使用しています"
     remote_port_taken: "リモートポート %d (%s) は実行中のトンネル %s がすでに使用しています"
+    all_with_names: "--all はトンネル名と一緒に使えません"
+    save_after_start: "%s は実行中ですが、定義を保存できませんでした: %s"
     save_needs_adhoc: "--save は -L、-R、-D と一緒に使います"
     timeout_range: "--timeout と --connect-timeout は 0 より大きくしてください"
 

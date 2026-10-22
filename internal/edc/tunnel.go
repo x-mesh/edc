@@ -819,7 +819,8 @@ type tunnelEnvironment struct {
 	file    string
 }
 
-func newTunnelEnvironment(filePath string, connectTimeout time.Duration) (tunnelEnvironment, error) {
+// allowMissing은 --save가 아직 없는 --file 경로에 첫 정의를 만들 수 있게 한다.
+func newTunnelEnvironment(filePath string, connectTimeout time.Duration, allowMissing bool) (tunnelEnvironment, error) {
 	store, err := defaultTunnelStore()
 	if err != nil {
 		return tunnelEnvironment{}, err
@@ -838,9 +839,12 @@ func newTunnelEnvironment(filePath string, connectTimeout time.Duration) (tunnel
 	}
 	if environment.file != "" {
 		if environment.specs, err = loadTunnelDefinitions(environment.file, targets); err != nil {
-			if filePath == "" && errors.Is(err, os.ErrNotExist) {
+			switch {
+			case errors.Is(err, os.ErrNotExist) && filePath == "":
 				environment.file = ""
-			} else {
+			case errors.Is(err, os.ErrNotExist) && allowMissing:
+				environment.specs = nil
+			default:
 				return tunnelEnvironment{}, err
 			}
 		}
@@ -878,7 +882,7 @@ func runTunnel(args []string, version string) int {
 		fmt.Fprintln(os.Stderr, tunnelError("tunnel.error.timeout_range"))
 		return 2
 	}
-	environment, err := newTunnelEnvironment(filePath, connectTimeout)
+	environment, err := newTunnelEnvironment(filePath, connectTimeout, save && subcommand == "up")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 2
@@ -989,7 +993,7 @@ func runTunnelUp(ctx context.Context, environment tunnelEnvironment, positional 
 	}
 	if save {
 		if err := saveTunnelDefinition(savePath, name, spec); err != nil {
-			fmt.Fprintln(os.Stderr, err)
+			fmt.Fprintln(os.Stderr, tunnelError("tunnel.error.save_after_start", name, err.Error()))
 			return 1
 		}
 		fmt.Println(T("tunnel.up.saved", name, savePath))
@@ -1034,7 +1038,10 @@ func tunnelDestinationText(row tunnelRow) string {
 
 func runTunnelDown(ctx context.Context, environment tunnelEnvironment, names []string, all bool) int {
 	if all {
-		names = names[:0]
+		if len(names) > 0 {
+			fmt.Fprintln(os.Stderr, tunnelError("tunnel.error.all_with_names"))
+			return 2
+		}
 		for _, record := range environment.manager.store.load() {
 			names = append(names, record.Name)
 		}

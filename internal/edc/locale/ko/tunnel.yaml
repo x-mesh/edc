@@ -28,6 +28,8 @@ tunnel:
     destination_required: "목적지를 host:port 형식으로 입력하십시오"
     port_taken: "포트 %d은(는) 실행 중인 터널 %s이(가) 이미 사용 중입니다"
     remote_port_taken: "원격 포트 %d(%s)은(는) 실행 중인 터널 %s이(가) 이미 사용 중입니다"
+    all_with_names: "--all은 터널 이름과 함께 쓸 수 없습니다"
+    save_after_start: "%s은(는) 실행 중이지만 정의를 저장하지 못했습니다: %s"
     save_needs_adhoc: "--save는 -L, -R, -D와 함께 써야 합니다"
     timeout_range: "--timeout과 --connect-timeout은 0보다 커야 합니다"
 

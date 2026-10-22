@@ -75,6 +75,8 @@ type tunnelForm struct {
 }
 
 type tunnelScreen struct {
+	// ctx는 화면이 끝나면 취소되어, 아직 도는 ssh 명령도 함께 멈춘다. 비어 있으면 취소 없이 쓴다.
+	ctx         context.Context
 	environment tunnelEnvironment
 	timeout     time.Duration
 	color       bool
@@ -90,7 +92,10 @@ type tunnelScreen struct {
 }
 
 func runTunnelScreen(environment tunnelEnvironment, timeout time.Duration) int {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	screen := newTunnelScreen(environment, timeout, os.Getenv("NO_COLOR") == "")
+	screen.ctx = ctx
 	if _, err := tea.NewProgram(screen, tea.WithInput(os.Stdin), tea.WithOutput(os.Stdout)).Run(); err != nil {
 		if errors.Is(err, tea.ErrInterrupted) || errors.Is(err, tea.ErrProgramKilled) {
 			return 0
@@ -99,6 +104,13 @@ func runTunnelScreen(environment tunnelEnvironment, timeout time.Duration) int {
 		return 1
 	}
 	return 0
+}
+
+func (screen tunnelScreen) baseContext() context.Context {
+	if screen.ctx != nil {
+		return screen.ctx
+	}
+	return context.Background()
 }
 
 func newTunnelScreen(environment tunnelEnvironment, timeout time.Duration, color bool) tunnelScreen {
@@ -114,9 +126,9 @@ func (screen tunnelScreen) tick() tea.Cmd {
 }
 
 func (screen tunnelScreen) refresh() tea.Cmd {
-	environment, timeout := screen.environment, screen.timeout
+	environment, timeout, base := screen.environment, screen.timeout, screen.baseContext()
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		ctx, cancel := context.WithTimeout(base, timeout)
 		defer cancel()
 		return tunnelRowsMsg(environment.manager.rows(ctx, environment.specs))
 	}
@@ -239,37 +251,37 @@ func (screen tunnelScreen) updateConfirm(key tea.KeyPressMsg) (tea.Model, tea.Cm
 }
 
 func (screen tunnelScreen) startCmd(name string, spec tunnelSpec, savePath string, save bool) tea.Cmd {
-	environment, timeout := screen.environment, screen.timeout
+	environment, timeout, base := screen.environment, screen.timeout, screen.baseContext()
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		ctx, cancel := context.WithTimeout(base, timeout)
 		defer cancel()
-		done := tunnelDoneMsg{}
-		if save {
-			if err := saveTunnelDefinition(savePath, name, spec); err != nil {
-				return tunnelDoneMsg{err: err}
-			}
-			specs, err := loadTunnelDefinitions(savePath, environment.manager.targets)
-			if err != nil {
-				return tunnelDoneMsg{err: err}
-			}
-			done.specs, done.file = specs, savePath
-		}
 		row, err := environment.manager.up(ctx, name, spec)
 		if err != nil {
-			done.err = err
-			return done
+			return tunnelDoneMsg{err: err}
 		}
-		done.notice = T("tunnel.up.done", row.Name, tunnelListen(row), tunnelDestinationText(row))
-		done.warning = tunnelJoinWarnings(row, name, tunnelSpecsAfter(environment.specs, done.specs), environment.manager.targets)
+		done := tunnelDoneMsg{notice: T("tunnel.up.done", row.Name, tunnelListen(row), tunnelDestinationText(row))}
+		specs := environment.specs
+		// 시작에 성공한 뒤에만 저장한다. 시작이 실패했는데 정의만 남는 일을 막는다.
+		if save {
+			if err := saveTunnelDefinition(savePath, name, spec); err != nil {
+				return tunnelDoneMsg{err: tunnelError("tunnel.error.save_after_start", name, err.Error())}
+			}
+			reloaded, err := loadTunnelDefinitions(savePath, environment.manager.targets)
+			if err != nil {
+				return tunnelDoneMsg{err: tunnelError("tunnel.error.save_after_start", name, err.Error())}
+			}
+			done.specs, done.file, specs = reloaded, savePath, reloaded
+		}
+		done.warning = tunnelJoinWarnings(row, name, specs, environment.manager.targets)
 		return done
 	}
 }
 
 // stopCmd는 터널을 끝낸다. restart면 같은 정의로 다시 시작한다.
 func (screen tunnelScreen) stopCmd(name string, restart bool) tea.Cmd {
-	environment, timeout := screen.environment, screen.timeout
+	environment, timeout, base := screen.environment, screen.timeout, screen.baseContext()
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		ctx, cancel := context.WithTimeout(base, timeout)
 		defer cancel()
 		if _, err := environment.manager.down(ctx, name); err != nil {
 			return tunnelDoneMsg{err: err}
@@ -511,9 +523,11 @@ func (screen tunnelScreen) startCheck(form tunnelForm) (tea.Model, tea.Cmd) {
 	}
 	form.checking, form.checks, form.problem = true, nil, ""
 	screen.form = form
-	manager, signature := screen.environment.manager, form.signature()
+	manager, signature, base, timeout := screen.environment.manager, form.signature(), screen.baseContext(), screen.timeout
 	return screen, func() tea.Msg {
-		checks, err := manager.check(context.Background(), name, spec)
+		ctx, cancel := context.WithTimeout(base, timeout)
+		defer cancel()
+		checks, err := manager.check(ctx, name, spec)
 		return tunnelCheckMsg{signature: signature, checks: checks, err: err}
 	}
 }

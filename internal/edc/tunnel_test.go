@@ -19,6 +19,8 @@ type fakeTunnelRunner struct {
 	// failures는 Start가 차례로 돌려줄 오류다. 비면 failure를 따른다.
 	failures []error
 	attempts int
+	// stopFailure는 Stop이 돌려줄 오류다. 오류일 때는 master를 끝내지 않는다.
+	stopFailure error
 	// probe는 Probe가 받은 ssh 인자마다 출력과 오류를 정한다. 비면 모두 성공한다.
 	probe  func(args []string) (string, error)
 	probes [][]string
@@ -56,6 +58,9 @@ func (runner *fakeTunnelRunner) Check(_ context.Context, _, socket string) (int,
 }
 
 func (runner *fakeTunnelRunner) Stop(_ context.Context, _, socket string) error {
+	if runner.stopFailure != nil {
+		return runner.stopFailure
+	}
 	runner.stopped = append(runner.stopped, socket)
 	delete(runner.alive, socket)
 	return nil
@@ -623,5 +628,89 @@ func TestRunTunnelUpSaveRefusesNamedTunnelsAndDuplicates(t *testing.T) {
 	}
 	if len(runner.started) != 0 {
 		t.Error("nothing may start when the save is refused")
+	}
+}
+
+func TestRemotePortTakenMessageFormatsInEveryLanguage(t *testing.T) {
+	previous := currentLanguage()
+	defer setLanguage(previous)
+	for _, language := range supportedLanguages {
+		setLanguage(language)
+		message := T("tunnel.error.remote_port_taken", 18081, "root@jw-server", "rev-a")
+		for _, want := range []string{"18081", "root@jw-server", "rev-a"} {
+			if !strings.Contains(message, want) {
+				t.Errorf("%s: %q misses %q", language, message, want)
+			}
+		}
+		if strings.Contains(message, "%!") {
+			t.Errorf("%s: the verbs do not match the arguments: %q", language, message)
+		}
+	}
+}
+
+func TestRunTunnelDownRejectsAllWithNames(t *testing.T) {
+	manager, runner := newTestTunnelManager(t)
+	if _, err := manager.up(context.Background(), "proxy", tunnelSpec{Host: "jump1", Socks: "1080"}); err != nil {
+		t.Fatal(err)
+	}
+	environment := tunnelEnvironment{manager: manager, specs: map[string]tunnelSpec{}}
+	if status := runTunnelDown(context.Background(), environment, []string{"proxy"}, true); status != 2 {
+		t.Fatalf("status = %d", status)
+	}
+	if len(runner.stopped) != 0 {
+		t.Fatal("a rejected command must stop nothing")
+	}
+	if _, status := captureTunnelStdout(t, func() int {
+		return runTunnelDown(context.Background(), environment, nil, true)
+	}); status != 0 || len(runner.stopped) != 1 {
+		t.Fatalf("--all alone must stop every tunnel: status %d, stopped %v", status, runner.stopped)
+	}
+}
+
+func TestTunnelManagerStopsTheSSHMasterWhenItCannotSaveTheRecord(t *testing.T) {
+	manager, runner := newTestTunnelManager(t)
+	if err := os.MkdirAll(manager.store.recordPath("db"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.up(context.Background(), "db", tunnelSpec{Host: "jump1", Local: "5432", Remote: "db:5432"}); err == nil {
+		t.Fatal("a record that cannot be saved must fail the start")
+	}
+	if len(runner.started) != 1 || len(runner.stopped) != 1 {
+		t.Fatalf("the master that started must be stopped: started %d, stopped %v", len(runner.started), runner.stopped)
+	}
+}
+
+func TestTunnelManagerKeepsTheRecordWhenStopFails(t *testing.T) {
+	manager, runner := newTestTunnelManager(t)
+	if _, err := manager.up(context.Background(), "db", tunnelSpec{Host: "jump1", Local: "5432", Remote: "db:5432"}); err != nil {
+		t.Fatal(err)
+	}
+	runner.stopFailure = errors.New("control socket busy")
+	stopped, err := manager.down(context.Background(), "db")
+	if err == nil || stopped {
+		t.Fatalf("down = %v, %v", stopped, err)
+	}
+	if records := manager.store.load(); len(records) != 1 {
+		t.Fatalf("a running master must stay discoverable: %+v", records)
+	}
+	runner.stopFailure = nil
+	if stopped, err := manager.down(context.Background(), "db"); err != nil || !stopped {
+		t.Fatalf("a retry must clean up: %v, %v", stopped, err)
+	}
+}
+
+func TestNewTunnelEnvironmentAllowsAMissingFileOnlyForSave(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	missing := filepath.Join(t.TempDir(), "new", "tunnels.yaml")
+	if _, err := newTunnelEnvironment(missing, time.Second, false); err == nil {
+		t.Error("a missing --file must stay an error without --save")
+	}
+	environment, err := newTunnelEnvironment(missing, time.Second, true)
+	if err != nil || environment.file != missing || len(environment.specs) != 0 {
+		t.Fatalf("environment %+v, err %v", environment, err)
+	}
+	if err := saveTunnelDefinition(environment.file, "db", tunnelSpec{Host: "jump1", Local: "auto", Remote: "db:5432"}); err != nil {
+		t.Fatalf("the first save must create the file and its directory: %v", err)
 	}
 }

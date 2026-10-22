@@ -174,8 +174,10 @@ func streamFSWatch(ctx context.Context, writer io.Writer, source fsWatchSource, 
 	}
 	defer smartTimer.Stop()
 	var noisy *fsWatchNoisy
+	var top *fsWatchTop
 	if options.smart {
 		smart = newFSWatchSmart(fsWatchSmartWindow)
+		top = newFSWatchTop()
 		if options.notice != nil {
 			noisy = newFSWatchNoisy()
 		}
@@ -289,6 +291,9 @@ func streamFSWatch(ctx context.Context, writer io.Writer, source fsWatchSource, 
 			if options.status != nil {
 				options.status.event(event.Event, event.Time)
 			}
+			if top != nil {
+				top.add(event.Path)
+			}
 			if noisy != nil {
 				if hint := noisy.add(event.Path, time.Now()); hint != nil {
 					// 안내가 맨 아래 줄을 차지하므로, 앞의 이벤트 줄을 고쳐 쓰면 안내가 지워진다.
@@ -358,6 +363,14 @@ func streamFSWatch(ctx context.Context, writer io.Writer, source fsWatchSource, 
 	}
 	if err := emit(summary); err != nil {
 		return 2, err
+	}
+	// 요약 아래에 어느 디렉터리가 가장 시끄러웠는지 보인다. 묶어서 보일 때만 낸다.
+	if top != nil {
+		if text := fsWatchTopText(top.rows()); text != "" {
+			if _, err := io.WriteString(writer, text); err != nil {
+				return 2, err
+			}
+		}
 	}
 	if failure != nil {
 		return 1, failure

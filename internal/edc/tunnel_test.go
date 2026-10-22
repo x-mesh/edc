@@ -714,3 +714,49 @@ func TestNewTunnelEnvironmentAllowsAMissingFileOnlyForSave(t *testing.T) {
 		t.Fatalf("the first save must create the file and its directory: %v", err)
 	}
 }
+
+func TestBuildTunnelPlanAcceptsABracketedIPv6ReverseTarget(t *testing.T) {
+	pick := func() (int, error) { return 0, nil }
+	plan, err := buildTunnelPlan("v6", tunnelSpec{Host: "jump1", Reverse: "8080:[::1]:3000"}, nil, pick)
+	if err != nil || plan.Destination != "[::1]:3000" || strings.Join(plan.Forward, " ") != "-R 8080:[::1]:3000" || plan.Port != 8080 {
+		t.Fatalf("plan %+v, err %v", plan, err)
+	}
+	if got := plan.Command(); got != "ssh -N -R 8080:[::1]:3000 jump1" {
+		t.Errorf("command = %q", got)
+	}
+	for _, invalid := range []string{"8080:::1:3000", "8080:[::1]", "8080:[::1]:0", "8080:-x:1", "x:[::1]:3000"} {
+		if _, err := buildTunnelPlan("v6", tunnelSpec{Host: "jump1", Reverse: invalid}, nil, pick); err == nil {
+			t.Errorf("%q must be rejected", invalid)
+		}
+	}
+	record := tunnelRecord{Name: "v6", Host: "jump1", Kind: tunnelReverse, Port: 8080, Destination: "[::1]:3000"}
+	if again, err := buildTunnelPlan("v6", record.spec(), nil, pick); err != nil || again.Destination != "[::1]:3000" {
+		t.Errorf("a record must rebuild its IPv6 spec: %+v, %v", again, err)
+	}
+}
+
+// 가짜 ssh를 PATH에 두고 runTunnel을 끝까지 실행한다. 인자 해석, 환경 구성, 시작, 저장이 이어진 CLI 경로를 시험한다.
+func TestRunTunnelUpSaveCreatesTheFirstDefinitionFileFromTheCLI(t *testing.T) {
+	bin := shortTunnelDir(t)
+	script := "#!/bin/sh\nfor argument in \"$@\"; do\n  if [ \"$argument\" = check ]; then echo 'Master running (pid=4242)' >&2; fi\ndone\nexit 0\n"
+	if err := os.WriteFile(filepath.Join(bin, "ssh"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_STATE_HOME", shortTunnelDir(t))
+	file := filepath.Join(t.TempDir(), "new", "tunnels.yaml")
+	args := []string{"up", "--file", file, "-L", "auto:db.internal:5432", "--name", "first", "--save", "jump1"}
+	output, status := captureTunnelStdout(t, func() int { return runTunnel(args, "test") })
+	if status != 0 || !strings.Contains(output, "saved: first") {
+		t.Fatalf("status %d, output %q", status, output)
+	}
+	specs, err := loadTunnelDefinitions(file, nil)
+	if err != nil || specs["first"].Remote != "db.internal:5432" || specs["first"].Local != "auto" {
+		t.Fatalf("specs = %+v, err %v", specs, err)
+	}
+	args = []string{"up", "--file", filepath.Join(t.TempDir(), "absent.yaml"), "-L", "auto:db:1", "--name", "second", "jump1"}
+	if _, status := captureTunnelStdout(t, func() int { return runTunnel(args, "test") }); status != 2 {
+		t.Fatalf("a missing --file must stay an error without --save: %d", status)
+	}
+}

@@ -168,18 +168,16 @@ func buildTunnelPlan(name string, spec tunnelSpec, targets map[string]string, pi
 		if spec.Local != "" {
 			return tunnelPlan{}, tunnelError("tunnel.error.local_unexpected", name)
 		}
-		parts := strings.Split(spec.Reverse, ":")
-		if len(parts) != 3 || parts[1] == "" || strings.HasPrefix(parts[1], "-") {
+		// 대상은 host:port이고 IPv6 주소는 [::1]:3000처럼 대괄호로 감싸므로, 앞의 원격 포트만 첫 ':'에서 떼어 낸다.
+		remotePort, destination, found := strings.Cut(spec.Reverse, ":")
+		if _, valid := validTunnelHostPort(destination); !found || !valid {
 			return tunnelPlan{}, tunnelError("tunnel.error.reverse_invalid", name, spec.Reverse)
 		}
-		port, err := parseTunnelPort(name, parts[0], false, nil)
+		port, err := parseTunnelPort(name, remotePort, false, nil)
 		if err != nil {
 			return tunnelPlan{}, err
 		}
-		if _, err := parseTunnelPort(name, parts[2], false, nil); err != nil {
-			return tunnelPlan{}, err
-		}
-		plan.Kind, plan.Port, plan.Destination = tunnelReverse, port, parts[1]+":"+parts[2]
+		plan.Kind, plan.Port, plan.Destination = tunnelReverse, port, destination
 		plan.Forward = tunnelForward(tunnelReverse, port, plan.Destination)
 	default:
 		if spec.Local != "" {

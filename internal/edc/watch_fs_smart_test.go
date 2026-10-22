@@ -356,6 +356,25 @@ func TestFSWatchSmartAddsTheProcessThatRenamed(t *testing.T) {
 	}
 }
 
+// 옛 줄이 이미 상한만큼 이름을 기억하면, 이름을 바꾼 도착점의 새 process 이름은 더하지 않는다.
+func TestFSWatchSmartKeepsTheCapWhenARenameAddsAName(t *testing.T) {
+	clock := newFSSmartClock()
+	at := func(ms int) time.Time { return clock.start.Add(time.Duration(ms) * time.Millisecond) }
+	add := func(kind, path string, ms, pid int, process string) {
+		clock.smart.add(fsWatchEvent{Time: at(ms), Event: kind, Path: path, PID: pid, Process: process}, at(ms))
+	}
+	add("create", "d/f.tmp", 0, 100, "p00")
+	for index := 1; index < fsWatchSmartProcessKept; index++ {
+		add("modify", "d/f.tmp", index, 100+index, fmt.Sprintf("p%02d", index))
+	}
+	add("rename", "d/f.tmp", 20, 0, "")
+	add("create", "d/f", 21, 200, "late")
+	records := clock.flush()
+	if len(records) != 1 || records[0].Origin != "f.tmp" || records[0].Process != "p00, p01, p02 +5" {
+		t.Fatalf("records = %+v", records)
+	}
+}
+
 // 한 줄이 기억하는 이름의 수에는 상한이 있다. 상한을 넘는 이름은 세지 않고, 이미 기억한 이름은 계속 알아본다.
 func TestFSWatchSmartKeepsAtMostEightProcessNames(t *testing.T) {
 	clock := newFSSmartClock()

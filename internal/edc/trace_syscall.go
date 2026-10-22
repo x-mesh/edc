@@ -51,7 +51,7 @@ type syscallTraceOptions struct {
 	errorsAll      bool
 	errnos         []uint32
 	raw            bool
-	// onSnapshot은 liveInterval마다 지금까지의 값을 받는다. event를 내지 않을 때만 쓰며, nil이면 끝날 때 한 번만 읽는다.
+	// onSnapshot은 liveInterval마다(0이면 syscallLiveInterval마다) 지금까지의 값을 받는다. event를 내지 않을 때만 쓰며, nil이면 끝날 때 한 번만 읽는다.
 	onSnapshot   func(syscallCollection)
 	liveInterval time.Duration
 	// onAttached는 eBPF program을 붙인 직후에 한 번 불린다. 명령을 여기서 시작하므로 첫 호출부터 센다. allowPID로
@@ -70,6 +70,15 @@ type syscallTraceOptions struct {
 // 같게 두려고 끈다. --files는 그때도 켜고, --no-files는 늘 끈다.
 func syscallFilesEnabled(files, noFiles bool, options syscallTraceOptions) bool {
 	return files || (!noFiles && !options.linesEnabled())
+}
+
+// snapshotInterval은 onSnapshot을 부르는 간격이다. 정하지 않았거나 0 이하이면 기본 간격이다. time.NewTicker는 0 이하의 간격에
+// 패닉하므로, 간격을 정하지 않고 onSnapshot만 설정한 호출도 안전해야 한다.
+func (options syscallTraceOptions) snapshotInterval() time.Duration {
+	if options.liveInterval <= 0 {
+		return syscallLiveInterval
+	}
+	return options.liveInterval
 }
 
 func (options syscallTraceOptions) processFiltered() bool {

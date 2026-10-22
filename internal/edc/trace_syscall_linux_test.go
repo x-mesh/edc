@@ -750,3 +750,23 @@ func TestTraceSyscallRedrawsWhileFileEventsArrive(t *testing.T) {
 		t.Error("no file events arrived")
 	}
 }
+
+// onSnapshot만 설정하고 간격을 정하지 않아도 패닉하지 않고 기본 간격으로 읽어야 한다. 파일 event를 읽는 경로와 읽지 않는 경로를 모두 본다.
+func TestTraceSyscallSnapshotWithoutAnIntervalUsesTheDefault(t *testing.T) {
+	requireSyscallTrace(t)
+	for _, files := range []bool{false, true} {
+		var snapshots int
+		options := syscallTraceOptions{
+			duration:   syscallLiveInterval + 400*time.Millisecond,
+			files:      files,
+			onSnapshot: func(syscallCollection) { snapshots++ },
+		}
+		if _, err := collectSyscallStats(options, make(chan struct{}), nil); err != nil {
+			t.Fatalf("files=%t: %v", files, err)
+		}
+		// 시작할 때 한 번, 기본 간격(1초)이 지난 뒤 한 번이다.
+		if snapshots < 2 {
+			t.Errorf("files=%t: snapshots = %d, want at least 2", files, snapshots)
+		}
+	}
+}

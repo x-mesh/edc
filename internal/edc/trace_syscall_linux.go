@@ -202,7 +202,7 @@ func collectSyscallStats(options syscallTraceOptions, stop <-chan struct{}, onEv
 		}
 		var ticks <-chan time.Time
 		if options.onSnapshot != nil {
-			ticker := time.NewTicker(options.liveInterval)
+			ticker := time.NewTicker(options.snapshotInterval())
 			defer ticker.Stop()
 			ticks = ticker.C
 		}
@@ -221,7 +221,7 @@ func collectSyscallStats(options syscallTraceOptions, stop <-chan struct{}, onEv
 		}
 	} else {
 		end := started.Add(options.duration)
-		nextDraw := started.Add(options.liveInterval)
+		nextDraw := started.Add(options.snapshotInterval())
 		drawDue := func() bool { return options.onSnapshot != nil && !time.Now().Before(nextDraw) }
 		finished := func() bool {
 			return traceStopRequested(stop) || (options.duration > 0 && !time.Now().Before(end))
@@ -240,7 +240,7 @@ func collectSyscallStats(options syscallTraceOptions, stop <-chan struct{}, onEv
 				if err := draw(); err != nil {
 					return syscallCollection{}, err
 				}
-				nextDraw = time.Now().Add(options.liveInterval)
+				nextDraw = time.Now().Add(options.snapshotInterval())
 			}
 		}
 	}

@@ -303,7 +303,7 @@ var commandDocs = []commandDoc{
 			{"-i, --interval 0.1", "command.watch.option.interval"},
 			{"--duration 1m", "command.watch.option.duration"},
 			{"--expect-status N", "command.http.option.expect_status"},
-			{"--recursive", "watchfs.option.recursive"},
+			{"-r, --recursive", "watchfs.option.recursive"},
 			{"--driver auto", "watchfs.option.driver"},
 			{"--event <events>", "watchfs.option.event"},
 			{"--match <glob>", "watchfs.option.match"},
@@ -314,6 +314,8 @@ var commandDocs = []commandDoc{
 			{"--debounce 200ms", "watchfs.option.debounce"},
 			{"--timeout 30s (fs)", "watchfs.option.timeout"},
 			{"--dry-run", "watchfs.option.dry_run"},
+			{"--smart", "watchfs.option.smart"},
+			{"--no-smart", "watchfs.option.no_smart"},
 		},
 		usesCommon: true,
 		subcommands: []subcommandDoc{

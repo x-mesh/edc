@@ -338,11 +338,11 @@ For wildcard addresses, all interfaces refers to the observed address family. Th
 
 ### File watching and actions (Linux and macOS)
 
-`edc watch fs` observes changes directly below the current directory by default. Use `--recursive` for subdirectories, including newly created or moved-in directories. Existing files do not produce startup create events. Directory symlinks are not followed.
+`edc watch fs` observes changes directly below the current directory by default. Use `-r` or `--recursive` for subdirectories, including newly created or moved-in directories. Existing files do not produce startup create events. Directory symlinks are not followed.
 
 ```bash
 edc watch fs
-edc watch fs ./src --recursive
+edc watch fs ./src -r
 edc watch fs --event create --match text.txt --exec 'git-kit pull'
 edc watch fs ./src --recursive --event modify --match '**/*.go' --exec 'go test ./...'
 edc watch fs --rules docs/examples/watch.yaml --dry-run
@@ -351,6 +351,16 @@ edc watch fs --duration 1m --json events.jsonl
 
 Events are `create`, `modify`, `remove`, and `rename`. A rename reports the old path; the new name can produce a create event inside the watched scope. Reads/access and metadata-only changes are excluded. `--event` accepts a comma-separated list. Globs are relative to the watch root: `*.go` matches direct children, and `**/*.go` matches any depth. Watching those deeper paths also requires `--recursive`.
 
+In a terminal, `edc watch fs` merges the events of one change into one line. This is `--smart`. It collects the events for 200 ms and prints the result. A save that writes a temporary file and renames it shows as one line, for example `CREATE "dir/final"  ← "final.tmp"`. A file that is created and removed in the same 200 ms shows as `TEMP`. Many `MODIFY` events of one file show as `×N`. A rename and the create after it make one line only if no other event is between them. A change that crosses the end of the 200 ms can show as two lines. A pipe, `--json`, and `--no-smart` print every event as it comes. `--smart` turns the merge on for a pipe, but you cannot use it with `--json`. Rules and the summary use the original events, so the summary can count more events than the screen shows.
+
+If the same line comes again within 5 seconds, `edc` does not print a new line. It rewrites the line above the status line and adds `×N`. This works only in a terminal that shows the status line. Any other output between the two lines, such as a hint or an action, starts a new line.
+
+The same mode watches for a noisy directory. If one directory gives at least 30 events in 10 seconds, and at least half of all events in that time, `edc` prints one line on stderr that starts with `hint:`. The line shows the `--exclude` option that leaves the directory out, for example `--exclude 'logs/**'`. `edc` names a directory once, and names at most 3 directories in one run. It does not name the watch root or a directory with a glob character in its name. Stderr must be a terminal, and `--no-smart` turns the hint off.
+
+When the watch stops, `edc` prints a table under the summary line. The table lists the 5 directories with the most events, with the count and the share of all events. This helps you choose what to exclude. `edc` prints the table only if at least 10 events came. It does not print the table with `--json`, and `--no-smart` turns it off.
+
+With the `fanotify` driver, a line ends with `by <name>`, the process that changed the file, for example `by syslog-ng`. The kernel tells `edc` the process, and `edc` reads its name when the event arrives. A process that has already ended has no name, and a short command such as `mv` often ends first, so the line shows no name. If the events of one merged line come from different processes, the line lists each name once, for example `by editor, formatter`, and it shows `+N` after 3 names. The `inotify` driver does not tell the process, and `--no-smart` leaves the name out. The JSON records have `pid` when the driver knows it, also when the name is not known, and `process` when the name is known. If the kernel merges events of one path, the process is the one of the first event.
+
 By default, `edc` excludes `.git`, `node_modules`, `.venv`, `venv`, `__pycache__`, `.mypy_cache`, `.pytest_cache`, `.ruff_cache`, `.tox`, `.next`, and `.gradle` at any depth. It does not exclude `build` or `dist`, because you can watch build output. Repeat `--exclude 'build/**'` to add exclusions. To watch the default directories too, use `--no-default-exclude`. Your `--exclude` patterns still apply.
 
 On Linux, `--driver` selects how `edc` watches the tree. The default is `auto`.
@@ -358,7 +368,7 @@ On Linux, `--driver` selects how `edc` watches the tree. The default is `auto`.
 - `fanotify` puts one mark on the whole filesystem. `edc` does not read the tree at startup, and the inotify watch limit does not apply. This driver needs root (`CAP_SYS_ADMIN`) and Linux 5.17 or later.
 - `inotify` adds a watch to each directory before the first output. A large tree takes time. If stderr is a terminal, `edc` shows a notice during this step. If the tree has more directories than `fs.inotify.max_user_watches` allows, the watch stops with an error.
 
-With `--recursive`, `auto` tries `fanotify` first. If `fanotify` cannot start, `edc` uses `inotify`. If stderr is a terminal, a line on stderr gives the reason. Without `--recursive`, `auto` uses `inotify`, because one watch is sufficient. The `driver` field of the `ready` record shows the driver in use. If you set `--driver fanotify` and `fanotify` cannot start, `edc` stops and shows the reason.
+With `--recursive`, `auto` tries `fanotify` first. If `fanotify` cannot start, `edc` uses `inotify`. If stderr is a terminal, a line on stderr gives the reason. Without `--recursive`, `auto` uses `inotify`, because one watch is sufficient. The `driver` field of the `ready` record shows the driver in use. When `auto` chooses `inotify`, the start line and the `driver_reason` field of the `ready` record give the reason: `not_recursive` or `fanotify_unavailable`. A driver that you choose with `--driver`, and `fanotify`, have no reason. If you set `--driver fanotify` and `fanotify` cannot start, `edc` stops and shows the reason.
 
 `fanotify` cannot start in these conditions:
 

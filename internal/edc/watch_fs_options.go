@@ -43,16 +43,20 @@ type fsWatchConfig struct {
 }
 
 type fsWatchOptions struct {
-	root       string
-	recursive  bool
-	driver     string
-	exclude    []string
-	events     []string
-	match      string
-	rules      []fsWatchRule
-	duration   time.Duration
-	jsonPath   string
-	dryRun     bool
+	root      string
+	recursive bool
+	driver    string
+	exclude   []string
+	events    []string
+	match     string
+	rules     []fsWatchRule
+	duration  time.Duration
+	jsonPath  string
+	dryRun    bool
+	// smartOn과 smartOff는 --smart와 --no-smart이고, smart는 그 둘과 출력 대상으로 정한 값이다.
+	smartOn, smartOff, smart bool
+	// notice는 시끄러운 디렉터리를 알리는 곳이다. nil이면 알리지 않는다.
+	notice     func(string)
 	outputPath string
 	outputInfo os.FileInfo
 	status     *fsWatchStatus
@@ -70,6 +74,7 @@ func parseFSWatchOptions(args []string, output io.Writer) (fsWatchOptions, error
 	set := newFlagSet("watch fs")
 	set.SetOutput(output)
 	set.BoolVar(&options.recursive, "recursive", false, T("watchfs.option.recursive"))
+	set.BoolVar(&options.recursive, "r", false, T("watchfs.option.recursive"))
 	set.StringVar(&options.driver, "driver", fsWatchDriverAuto, T("watchfs.option.driver"))
 	eventText := set.String("event", "create,modify,remove,rename", T("watchfs.option.event"))
 	set.StringVar(&options.match, "match", "**", T("watchfs.option.match"))
@@ -80,6 +85,8 @@ func parseFSWatchOptions(args []string, output io.Writer) (fsWatchOptions, error
 	set.DurationVar(&options.duration, "duration", 0, T("command.watch.option.duration"))
 	set.StringVar(&options.jsonPath, "json", "", T("watchfs.option.json"))
 	set.BoolVar(&options.dryRun, "dry-run", false, T("watchfs.option.dry_run"))
+	set.BoolVar(&options.smartOn, "smart", false, T("watchfs.option.smart"))
+	set.BoolVar(&options.smartOff, "no-smart", false, T("watchfs.option.no_smart"))
 	noDefaultExclude := set.Bool("no-default-exclude", false, T("watchfs.option.no_default_exclude"))
 	var excludes fsWatchExcludes
 	set.Var(&excludes, "exclude", T("watchfs.option.exclude"))
@@ -95,6 +102,12 @@ func parseFSWatchOptions(args []string, output io.Writer) (fsWatchOptions, error
 	}
 	if *rulesPath != "" && *command != "" {
 		return options, errors.New(T("watchfs.rules_exec_conflict"))
+	}
+	if options.smartOn && options.smartOff {
+		return options, errors.New(T("watchfs.smart_conflict"))
+	}
+	if options.smartOn && options.jsonPath != "" {
+		return options, errors.New(T("watchfs.smart_json_conflict"))
 	}
 	switch options.driver {
 	case fsWatchDriverAuto, fsWatchDriverFanotify, fsWatchDriverInotify:
@@ -127,7 +140,8 @@ func parseFSWatchOptions(args []string, output io.Writer) (fsWatchOptions, error
 		options.exclude = append(options.exclude, config.Exclude...)
 	}
 	set.Visit(func(value *flag.Flag) {
-		if value.Name == "recursive" {
+		// 규칙 파일의 recursive보다 명령줄이 먼저다. -r도 --recursive와 같은 flag다.
+		if value.Name == "recursive" || value.Name == "r" {
 			options.recursive = flagRecursive
 		}
 	})

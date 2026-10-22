@@ -300,11 +300,11 @@ wildcard의 모든 인터페이스는 관측한 주소 계열의 바인딩을 �
 
 ### 파일 감시와 action (Linux·macOS)
 
-`edc watch fs`는 기본으로 현재 디렉터리 바로 아래의 변경을 감시하고 출력합니다. `--recursive`로 하위 디렉터리까지 감시하며, 새로 생성되거나 들어온 디렉터리도 등록합니다. 시작할 때 이미 있던 파일은 create 이벤트로 출력하지 않습니다. 디렉터리 symlink는 따라가지 않습니다.
+`edc watch fs`는 기본으로 현재 디렉터리 바로 아래의 변경을 감시하고 출력합니다. `-r`이나 `--recursive`로 하위 디렉터리까지 감시하며, 새로 생성되거나 들어온 디렉터리도 등록합니다. 시작할 때 이미 있던 파일은 create 이벤트로 출력하지 않습니다. 디렉터리 symlink는 따라가지 않습니다.
 
 ```bash
 edc watch fs
-edc watch fs ./src --recursive
+edc watch fs ./src -r
 edc watch fs --event create --match text.txt --exec 'git-kit pull'
 edc watch fs ./src --recursive --event modify --match '**/*.go' --exec 'go test ./...'
 edc watch fs --rules docs/examples/watch.yaml --dry-run
@@ -313,6 +313,16 @@ edc watch fs --duration 1m --json events.jsonl
 
 이벤트는 `create`, `modify`, `remove`, `rename`입니다. `rename`의 path는 원래 이름이며 감시 범위 안의 새 이름은 create로 나타날 수 있습니다. 파일 읽기(access)와 metadata-only 변경은 감지 대상이 아닙니다. `--event`는 쉼표로 여러 이벤트를 받으며 `--match`는 감시 루트 기준 glob입니다. `*.go`는 바로 아래 파일, `**/*.go`는 모든 깊이의 파일에 일치합니다. 하위 경로를 실제로 감시하려면 `--recursive`도 지정합니다.
 
+터미널에서 `edc watch fs`는 한 변경의 이벤트를 한 줄로 합쳐 보여 줍니다. 이것이 `--smart`입니다. 이벤트를 200ms 동안 모았다가 결과만 출력합니다. 임시 파일에 쓰고 이름을 바꿔 교체하는 저장은 `CREATE "dir/final"  ← "final.tmp"`처럼 한 줄이 됩니다. 같은 200ms 안에 만들었다가 지운 파일은 `TEMP`로, 한 파일의 `MODIFY`가 여러 번이면 `×N`으로 보입니다. 이름 바꿈과 그 뒤의 create는 둘 사이에 다른 이벤트가 없을 때만 한 줄이 됩니다. 200ms의 끝에 걸친 변경은 두 줄로 보일 수 있습니다. pipe로 보낼 때, `--json`, `--no-smart`는 이벤트를 오는 대로 모두 출력합니다. `--smart`는 pipe에서도 합치기를 켜지만 `--json`과 함께 쓸 수 없습니다. 규칙과 요약은 원본 이벤트를 쓰므로, 요약의 이벤트 수가 화면에 보이는 줄보다 많을 수 있습니다.
+
+같은 줄이 5초 안에 다시 나오면 새 줄을 쓰지 않고, 상태줄 바로 위의 줄을 고쳐 써서 `×N`을 붙입니다. 상태줄을 그리는 터미널에서만 동작합니다. 두 줄 사이에 안내나 action 같은 다른 출력이 끼면 새 줄로 시작합니다.
+
+같은 모드에서 시끄러운 디렉터리도 알립니다. 한 디렉터리가 10초 동안 이벤트를 30건 이상 내고 그 시간 전체 이벤트의 절반 이상이면, stderr에 `힌트:`로 시작하는 한 줄을 출력합니다. 이 줄은 그 디렉터리를 빼는 `--exclude` 옵션을 보여 줍니다(예: `--exclude 'logs/**'`). 같은 디렉터리는 한 번만 알리고, 한 번 실행에서 최대 3개 디렉터리까지 알립니다. 감시 루트와 이름에 glob 문자가 든 디렉터리는 알리지 않습니다. stderr가 터미널이어야 하고, `--no-smart`로 끌 수 있습니다.
+
+감시를 멈추면 요약 줄 아래에 표를 출력합니다. 이벤트가 가장 많은 디렉터리 5개를 횟수와 전체에서 차지하는 비율과 함께 보여 주므로, 무엇을 제외할지 고르는 데 쓸 수 있습니다. 이벤트가 10건 이상일 때만 출력합니다. `--json`에서는 출력하지 않고, `--no-smart`로 끌 수 있습니다.
+
+`fanotify` 드라이버에서는 줄 끝에 파일을 바꾼 process의 이름이 `주체 syslog-ng`처럼 붙습니다. 커널이 process를 알려 주고, edc는 이벤트가 도착할 때 그 이름을 읽습니다. 이미 끝난 process는 이름이 없고, `mv` 같은 짧은 명령은 이벤트를 읽기 전에 끝나는 일이 많아 이름이 나오지 않습니다. 한 줄에 합친 이벤트가 서로 다른 process에서 왔으면 이름을 한 번씩 모두 보이고(예: `주체 editor, formatter`), 3개를 넘으면 `+N`을 붙입니다. `inotify`는 process를 알려 주지 않고, `--no-smart`는 이름을 붙이지 않습니다. JSON 기록에는 드라이버가 알면 `pid`가 들어가고(이름을 몰라도), 이름을 알 때 `process`가 들어갑니다. 커널이 한 경로의 이벤트를 합치면 process는 첫 이벤트의 것입니다.
+
 기본으로 `.git`, `node_modules`, `.venv`, `venv`, `__pycache__`, `.mypy_cache`, `.pytest_cache`, `.ruff_cache`, `.tox`, `.next`, `.gradle`을 모든 깊이에서 제외합니다. 빌드 결과물을 감시할 수 있도록 `build`와 `dist`는 제외하지 않습니다. `--exclude 'build/**'`처럼 제외 glob을 반복해서 추가할 수 있습니다. 기본 제외 디렉터리도 감시하려면 `--no-default-exclude`를 쓰며, 이때도 `--exclude`로 준 패턴은 적용됩니다.
 
 Linux에서는 `--driver`로 감시 방식을 고릅니다. 기본값은 `auto`입니다.
@@ -320,7 +330,7 @@ Linux에서는 `--driver`로 감시 방식을 고릅니다. 기본값은 `auto`�
 - `fanotify`: 파일시스템 전체에 mark 하나를 겁니다. 시작할 때 트리를 훑지 않고, inotify watch 한도도 받지 않습니다. root(`CAP_SYS_ADMIN`)와 Linux 5.17 이상이 필요합니다.
 - `inotify`: 디렉터리마다 감시를 등록한 뒤에 출력을 시작합니다. 트리가 크면 시간이 걸리며, stderr가 터미널이면 이 동안 안내를 출력합니다. 디렉터리 수가 `fs.inotify.max_user_watches`를 넘으면 오류로 멈춥니다.
 
-`--recursive`이면 `auto`는 `fanotify`를 먼저 시도하고, 시작할 수 없으면 `inotify`를 씁니다. stderr가 터미널이면 그 이유를 한 줄로 알립니다. `--recursive`가 없으면 감시가 하나뿐이므로 `inotify`를 씁니다. 실제로 쓴 방식은 `ready` 기록의 `driver`에 나옵니다. `--driver fanotify`를 지정했는데 `fanotify`를 시작할 수 없으면 이유를 출력하고 멈춥니다.
+`--recursive`이면 `auto`는 `fanotify`를 먼저 시도하고, 시작할 수 없으면 `inotify`를 씁니다. stderr가 터미널이면 그 이유를 한 줄로 알립니다. `--recursive`가 없으면 감시가 하나뿐이므로 `inotify`를 씁니다. 실제로 쓴 방식은 `ready` 기록의 `driver`에 나옵니다. `auto`가 `inotify`를 고르면 시작 줄과 `ready` 기록의 `driver_reason`에 이유(`not_recursive` 또는 `fanotify_unavailable`)가 나옵니다. `--driver`로 직접 고른 방식과 `fanotify`에는 이유가 없습니다. `--driver fanotify`를 지정했는데 `fanotify`를 시작할 수 없으면 이유를 출력하고 멈춥니다.
 
 `fanotify`는 다음 경우에 시작할 수 없습니다.
 

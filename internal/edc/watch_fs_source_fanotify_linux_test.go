@@ -440,3 +440,129 @@ func TestFSWatchUnescapeMount(t *testing.T) {
 		}
 	}
 }
+
+// auto가 inotify를 고르면 이유가 source에 남는다. 재귀 감시가 아니면 not_recursive, 직접 고르거나 fanotify면 비어 있다.
+func TestFSWatchSourceRecordsWhyAutoChoseInotify(t *testing.T) {
+	root := t.TempDir()
+	for _, test := range []struct {
+		name       string
+		options    fsWatchOptions
+		wantDriver string
+		wantReason string
+	}{
+		{"not recursive", fsWatchOptions{root: root, driver: fsWatchDriverAuto}, fsWatchDriverInotify, fsWatchReasonNotRecursive},
+		{"chosen by the user", fsWatchOptions{root: root, recursive: true, driver: fsWatchDriverInotify}, fsWatchDriverInotify, ""},
+	} {
+		source, err := newFSWatchSource(test.options)
+		if err != nil {
+			t.Fatalf("%s: %v", test.name, err)
+		}
+		if source.driver != test.wantDriver || source.driverReason != test.wantReason {
+			t.Errorf("%s: driver %q reason %q, want %q and %q", test.name, source.driver, source.driverReason, test.wantDriver, test.wantReason)
+		}
+		source.close()
+	}
+}
+
+// fanotify를 시작하지 못하면 auto는 inotify로 넘어가고 이유를 fanotify_unavailable로 남긴다. /proc은 fanotify가 쓰는
+// file handle을 지원하지 않고, root가 아니면 fanotify_init 자체가 거부되므로 어느 쪽으로 실행해도 이 분기를 탄다.
+func TestFSWatchSourceRecordsWhenAutoFellBackToInotify(t *testing.T) {
+	root := "/proc/self/attr"
+	if _, err := os.Stat(root); err != nil {
+		t.Skip(err)
+	}
+	// 건너뛰는 것은 이 환경의 inotify가 그 경로를 아예 못 보는 경우뿐이다. 그 밖의 오류는 폴백이 깨진 것이므로 실패다.
+	direct, err := newFSNotifyWatchSource(fsWatchOptions{root: root, recursive: true})
+	if err != nil {
+		t.Skipf("inotify cannot watch %s here: %v", root, err)
+	}
+	direct.close()
+	source, err := newFSWatchSource(fsWatchOptions{root: root, recursive: true, driver: fsWatchDriverAuto})
+	if err != nil {
+		t.Fatalf("auto did not fall back to inotify for %s: %v", root, err)
+	}
+	defer source.close()
+	if source.driver != fsWatchDriverInotify || source.driverReason != fsWatchReasonFanotifyDown {
+		t.Fatalf("driver %q reason %q, want %q and %q", source.driver, source.driverReason, fsWatchDriverInotify, fsWatchReasonFanotifyDown)
+	}
+}
+
+// pid는 metadata의 20번째 byte부터 4 byte다(event_len, vers, reserved, metadata_len, mask, fd, pid 순서).
+func TestFSWatchFanotifyParsesThePIDOfTheProcessThatCausedTheEvent(t *testing.T) {
+	parent := fsWatchFanotifyTestKey("parent")
+	event := fsWatchFanotifyTestEvent(unix.FAN_MODIFY, parent, "file.txt", "")
+	binary.NativeEndian.PutUint32(event[20:24], 4242)
+	events, err := parseFSWatchFanotify(event)
+	if err != nil || len(events) != 1 || events[0].pid != 4242 || events[0].name != "file.txt" {
+		t.Fatalf("events = %+v, err %v", events, err)
+	}
+}
+
+func TestFSWatchFanotifyProcessNamesAreCachedWithinABatch(t *testing.T) {
+	watch := newFSWatchFanotify(fsWatchOptions{root: "/"}, nil, nil)
+	calls := map[int32]int{}
+	names := map[int32]string{10: "proc10", 77: ""}
+	watch.processName = func(pid int32) string {
+		calls[pid]++
+		return names[pid]
+	}
+	for _, pid := range []int32{0, -1} {
+		if name := watch.process(pid); name != "" || len(calls) != 0 {
+			t.Fatalf("pid %d: name %q, lookups %v", pid, name, calls)
+		}
+	}
+	for range 5 {
+		if name := watch.process(10); name != "proc10" {
+			t.Fatalf("name = %q", name)
+		}
+		watch.process(77)
+	}
+	if calls[10] != 1 || calls[77] != 1 {
+		t.Errorf("lookups = %v, want one for each pid in a batch, also for the process that is gone", calls)
+	}
+	// 새 묶음에서는 다시 찾는다. 그 사이에 pid가 다른 process로 재사용되었을 수 있다.
+	names[10] = "reused"
+	watch.nextBatch()
+	if name := watch.process(10); name != "reused" || calls[10] != 2 {
+		t.Errorf("after a new batch: name %q, lookups %v", name, calls)
+	}
+	// 항목이 한도를 넘으면 비우고 계속 동작한다.
+	for pid := int32(1000); pid < 1000+fsWatchProcessEntries+10; pid++ {
+		watch.process(pid)
+	}
+	if len(watch.processes) > fsWatchProcessEntries {
+		t.Errorf("cache holds %d entries, limit %d", len(watch.processes), fsWatchProcessEntries)
+	}
+}
+
+// 실제 fanotify에서 이 test를 돌리는 process가 파일을 쓰면, 이벤트가 그 pid와 이름을 담아야 한다.
+func TestFSWatchFanotifyReportsTheProcessThatChangedAFile(t *testing.T) {
+	fsWatchSkipUnavailableDriver(t, fsWatchDriverFanotify)
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := fsWatchTestSource(t, root, true, fsWatchDriverFanotify)
+	if err := os.WriteFile(filepath.Join(root, "who.txt"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	want := strings.TrimSpace(func() string { data, _ := os.ReadFile("/proc/self/comm"); return string(data) }())
+	timer := time.NewTimer(5 * time.Second)
+	defer timer.Stop()
+	for {
+		select {
+		case event := <-source.events:
+			if event.Path != "who.txt" {
+				continue
+			}
+			if event.PID != os.Getpid() || event.Process != want || want == "" {
+				t.Fatalf("event = %+v, want pid %d and process %q", event, os.Getpid(), want)
+			}
+			return
+		case err := <-source.errors:
+			t.Fatalf("watch error: %v", err)
+		case <-timer.C:
+			t.Fatal("no event for who.txt")
+		}
+	}
+}

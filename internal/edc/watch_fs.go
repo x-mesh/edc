@@ -18,27 +18,34 @@ import (
 )
 
 type fsWatchRecord struct {
-	Type            string    `json:"type"`
-	Time            time.Time `json:"time"`
-	Root            string    `json:"root,omitempty"`
-	Recursive       bool      `json:"recursive,omitempty"`
-	Driver          string    `json:"driver,omitempty"`
-	Event           string    `json:"event,omitempty"`
-	Path            string    `json:"path,omitempty"`
-	IsDir           bool      `json:"is_directory,omitempty"`
-	Rule            string    `json:"rule,omitempty"`
-	Command         []string  `json:"command,omitempty"`
-	CWD             string    `json:"cwd,omitempty"`
-	Status          string    `json:"status,omitempty"`
-	ExitCode        *int      `json:"exit_code,omitempty"`
-	DurationMS      int64     `json:"duration_ms,omitempty"`
-	Output          string    `json:"output,omitempty"`
-	OutputTruncated bool      `json:"output_truncated,omitempty"`
-	Error           string    `json:"error,omitempty"`
-	Events          int       `json:"events,omitempty"`
-	Actions         int       `json:"actions,omitempty"`
-	Failed          int       `json:"failed,omitempty"`
-	StopReason      string    `json:"stop_reason,omitempty"`
+	Type         string    `json:"type"`
+	Time         time.Time `json:"time"`
+	Root         string    `json:"root,omitempty"`
+	Recursive    bool      `json:"recursive,omitempty"`
+	Driver       string    `json:"driver,omitempty"`
+	DriverReason string    `json:"driver_reason,omitempty"`
+	Event        string    `json:"event,omitempty"`
+	Path         string    `json:"path,omitempty"`
+	IsDir        bool      `json:"is_directory,omitempty"`
+	// Origin과 Count는 묶어서 보일 때만 채운다. Origin은 이름을 바꿔 이 경로가 된 옛 이름이고, Count는 합친 modify의 수다.
+	Origin string `json:"origin,omitempty"`
+	Count  int    `json:"count,omitempty"`
+	// PID와 Process는 이벤트를 일으킨 process다. fanotify일 때만 있다.
+	PID             int      `json:"pid,omitempty"`
+	Process         string   `json:"process,omitempty"`
+	Rule            string   `json:"rule,omitempty"`
+	Command         []string `json:"command,omitempty"`
+	CWD             string   `json:"cwd,omitempty"`
+	Status          string   `json:"status,omitempty"`
+	ExitCode        *int     `json:"exit_code,omitempty"`
+	DurationMS      int64    `json:"duration_ms,omitempty"`
+	Output          string   `json:"output,omitempty"`
+	OutputTruncated bool     `json:"output_truncated,omitempty"`
+	Error           string   `json:"error,omitempty"`
+	Events          int      `json:"events,omitempty"`
+	Actions         int      `json:"actions,omitempty"`
+	Failed          int      `json:"failed,omitempty"`
+	StopReason      string   `json:"stop_reason,omitempty"`
 }
 
 type fsWatchRuleState struct {
@@ -92,6 +99,12 @@ func runFSWatch(args []string) int {
 		previous := fsWatchNotice.swap(options.status.through(os.Stderr))
 		defer fsWatchNotice.swap(previous)
 	}
+	options.smart = fsWatchSmartEnabled(options.smartOn, options.smartOff, options.jsonPath, isTerminal(os.Stdout))
+	// 알림은 stderr가 터미널일 때만 낸다. 묶어서 보이는 출력의 일부라서 --no-smart면 낸다고 하지 않는다.
+	if options.smart && isTerminal(os.Stderr) {
+		hintStyle := textStyle{color: richEnabled(os.Stderr)}
+		options.notice = func(text string) { fmt.Fprintln(fsWatchNotice, fsWatchHintLine(hintStyle, text)) }
+	}
 	code, err := streamFSWatch(ctx, writer, source, options, executeFSWatchAction)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -113,7 +126,7 @@ func streamFSWatch(ctx context.Context, writer io.Writer, source fsWatchSource, 
 	}
 	// 기록 줄은 자르지 않으므로 폭이 필요 없다. 기록마다 터미널 폭을 묻지 않게 한 번만 만든다.
 	style := textStyle{color: options.color}
-	emit := func(record fsWatchRecord) error {
+	write := func(record fsWatchRecord) error {
 		if options.status == nil {
 			return writeFSWatchRecord(writer, record, options.jsonPath != "", style)
 		}
@@ -127,7 +140,18 @@ func streamFSWatch(ctx context.Context, writer io.Writer, source fsWatchSource, 
 		_, err := options.status.through(writer).Write(buffer.Bytes())
 		return err
 	}
-	if err := emit(fsWatchRecord{Type: "ready", Time: time.Now().UTC(), Root: options.root, Recursive: options.recursive, Driver: source.driver}); err != nil {
+	// 같은 줄이 이어서 오면 앞의 줄을 ×N으로 고쳐 쓴다. 상태줄이 있는 터미널에서 묶어 보일 때만 쓰고, 다른 것을 쓰면 잊는다.
+	var repeater *fsWatchRepeater
+	if options.smart && options.status != nil {
+		repeater = newFSWatchRepeater(options.status.width, style)
+	}
+	emit := func(record fsWatchRecord) error {
+		if repeater != nil {
+			repeater.reset()
+		}
+		return write(record)
+	}
+	if err := emit(fsWatchRecord{Type: "ready", Time: time.Now().UTC(), Root: options.root, Recursive: options.recursive, Driver: source.driver, DriverReason: source.driverReason}); err != nil {
 		return 2, err
 	}
 	states := make([]fsWatchRuleState, len(options.rules))
@@ -145,6 +169,47 @@ func streamFSWatch(ctx context.Context, writer io.Writer, source fsWatchSource, 
 		<-timer.C
 	}
 	defer timer.Stop()
+	// 묶어서 보일 때는 이벤트를 창 동안 모았다가 낸다. 규칙, 상태줄과 요약은 원본 이벤트를 그대로 쓴다.
+	var smart *fsWatchSmart
+	smartTimer := time.NewTimer(time.Hour)
+	if !smartTimer.Stop() {
+		<-smartTimer.C
+	}
+	defer smartTimer.Stop()
+	var noisy *fsWatchNoisy
+	var top *fsWatchTop
+	if options.smart {
+		smart = newFSWatchSmart(fsWatchSmartWindow)
+		top = newFSWatchTop()
+		if options.notice != nil {
+			noisy = newFSWatchNoisy()
+		}
+	}
+	emitSmart := func(records []fsWatchRecord) error {
+		for _, record := range records {
+			if repeater == nil {
+				if err := write(record); err != nil {
+					return err
+				}
+				continue
+			}
+			merged, rows := repeater.next(record)
+			if rows == 0 {
+				if err := write(merged); err != nil {
+					return err
+				}
+				continue
+			}
+			var buffer bytes.Buffer
+			if err := writeFSWatchRecord(&buffer, merged, false, style); err != nil {
+				return err
+			}
+			if err := options.status.replaceLast(rows, buffer.Bytes()); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
 	for {
 		if ctx.Err() != nil && !stopping {
 			stopping = true
@@ -189,6 +254,19 @@ func streamFSWatch(ctx context.Context, writer io.Writer, source fsWatchSource, 
 				}
 			}
 		}
+		var smartC <-chan time.Time
+		if smart != nil {
+			if due, ok := smart.deadline(); ok {
+				if !smartTimer.Stop() {
+					select {
+					case <-smartTimer.C:
+					default:
+					}
+				}
+				smartTimer.Reset(time.Until(due))
+				smartC = smartTimer.C
+			}
+		}
 		select {
 		case <-contextDone:
 			stopping = true
@@ -216,7 +294,21 @@ func streamFSWatch(ctx context.Context, writer io.Writer, source fsWatchSource, 
 			if options.status != nil {
 				options.status.event(event.Event, event.Time)
 			}
-			if err := emit(fsWatchRecord{Type: "event", Time: event.Time, Event: event.Event, Path: event.Path, IsDir: event.IsDir}); err != nil {
+			if top != nil {
+				top.add(event.Path)
+			}
+			if noisy != nil {
+				if hint := noisy.add(event.Path, time.Now()); hint != nil {
+					// 안내가 맨 아래 줄을 차지하므로, 앞의 이벤트 줄을 고쳐 쓰면 안내가 지워진다.
+					if repeater != nil {
+						repeater.reset()
+					}
+					options.notice(T("watchfs.noisy", terminalJSON(hint.Directory), hint.Events, fsWatchNoisyWindow, fsWatchShellQuote(hint.Pattern)))
+				}
+			}
+			if smart != nil {
+				smart.add(event, time.Now())
+			} else if err := emit(fsWatchEventRecord(event, options.jsonPath != "")); err != nil {
 				cancelActions()
 				return 2, err
 			}
@@ -249,8 +341,19 @@ func streamFSWatch(ctx context.Context, writer io.Writer, source fsWatchSource, 
 				return 2, err
 			}
 		case <-timerC:
+		case <-smartC:
+			if err := emitSmart(smart.flush(time.Now())); err != nil {
+				cancelActions()
+				return 2, err
+			}
 		case <-tick:
 			options.status.tick()
+		}
+	}
+	// 멈출 때 창에 남은 이벤트를 요약 앞에 낸다.
+	if smart != nil {
+		if err := emitSmart(smart.flushAll()); err != nil {
+			return 2, err
 		}
 	}
 	summary.Time, summary.DurationMS = time.Now().UTC(), time.Since(started).Milliseconds()
@@ -263,6 +366,14 @@ func streamFSWatch(ctx context.Context, writer io.Writer, source fsWatchSource, 
 	}
 	if err := emit(summary); err != nil {
 		return 2, err
+	}
+	// 요약 아래에 어느 디렉터리가 가장 시끄러웠는지 보인다. 묶어서 보일 때만 낸다.
+	if top != nil {
+		if text := fsWatchTopText(top.rows()); text != "" {
+			if _, err := io.WriteString(writer, text); err != nil {
+				return 2, err
+			}
+		}
 	}
 	if failure != nil {
 		return 1, failure
@@ -370,11 +481,25 @@ func writeFSWatchRecord(writer io.Writer, record fsWatchRecord, jsonOutput bool,
 	stamp := style.dim(record.Time.Local().Format("15:04:05.000"))
 	switch record.Type {
 	case "ready":
-		_, err := fmt.Fprintln(writer, stamp+"  "+T("watchfs.ready", terminalJSON(record.Root), record.Recursive, record.Driver))
+		line := T("watchfs.ready", terminalJSON(record.Root), record.Recursive, record.Driver)
+		if record.DriverReason != "" {
+			line = T("watchfs.ready_reason", terminalJSON(record.Root), record.Recursive, record.Driver, T("watchfs.driver_reason."+record.DriverReason))
+		}
+		_, err := fmt.Fprintln(writer, stamp+"  "+line)
 		return err
 	case "event":
 		kind := style.paint(fmt.Sprintf("%-7s", strings.ToUpper(record.Event)), fsWatchEventColor(record.Event))
-		_, err := fmt.Fprintln(writer, stamp+"  "+kind+"  "+terminalJSON(record.Path))
+		line := stamp + "  " + kind + "  " + terminalJSON(record.Path)
+		if record.Count > 1 {
+			line += "  " + style.dim(fmt.Sprintf("×%d", record.Count))
+		}
+		if record.Origin != "" {
+			line += "  " + style.dim("← "+terminalJSON(record.Origin))
+		}
+		if record.Process != "" {
+			line += "  " + style.dim(T("watchfs.by", execPrintable([]byte(record.Process))))
+		}
+		_, err := fmt.Fprintln(writer, line)
 		return err
 	case "action_start":
 		line := stamp + "  " + style.paint("START", richBlue) + "    " + style.join(" · ", terminalJSON(record.Rule), terminalJSON(record.Path), style.command(terminalJSON(strings.Join(record.Command, " "))))
@@ -453,4 +578,13 @@ func fsWatchStopLabel(reason string) string {
 	default:
 		return reason
 	}
+}
+
+// fsWatchEventRecord는 원본 이벤트를 기록으로 바꾼다. 일으킨 process는 JSON에만 싣는다. 묶지 않은 텍스트 출력은 이전과 같게 둔다.
+func fsWatchEventRecord(event fsWatchEvent, withProcess bool) fsWatchRecord {
+	record := fsWatchRecord{Type: "event", Time: event.Time, Event: event.Event, Path: event.Path, IsDir: event.IsDir}
+	if withProcess {
+		record.PID, record.Process = event.PID, event.Process
+	}
+	return record
 }

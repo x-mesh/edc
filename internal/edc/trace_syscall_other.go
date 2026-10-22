@@ -26,3 +26,5 @@ func createTraceCommandCgroup() (*traceCommandCgroup, error) {
 func setTraceCommandCgroup(*exec.Cmd, *traceCommandCgroup) {}
 
 func probeTraceCommandCgroup(*traceCommandCgroup) error { return syscallTracePrerequisites() }
+
+func processStartTicks(int) string { return "0" }

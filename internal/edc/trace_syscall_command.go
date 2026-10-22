@@ -173,5 +173,5 @@ func (command *traceCommand) close() {
 const traceCommandCgroupPrefix = "edc-trace-"
 
 func traceCommandCgroupName() string {
-	return traceCommandCgroupPrefix + strconv.Itoa(os.Getpid()) + "-" + strconv.FormatInt(time.Now().UnixNano(), 36)
+	return traceCommandCgroupPrefix + strconv.Itoa(os.Getpid()) + "-" + processStartTicks(os.Getpid()) + "-" + strconv.FormatInt(time.Now().UnixNano(), 36)
 }

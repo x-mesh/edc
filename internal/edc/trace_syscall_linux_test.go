@@ -686,15 +686,18 @@ func TestTraceSyscallCommandSweepsStaleCgroups(t *testing.T) {
 	}
 	root := filepath.Dir(probe.dir)
 	probe.remove()
-	stale := filepath.Join(root, traceCommandCgroupPrefix+"4194300-stale")
-	alive := filepath.Join(root, traceCommandCgroupPrefix+strconv.Itoa(os.Getpid())+"-alive")
-	for _, dir := range []string{stale, alive} {
+	stale := filepath.Join(root, traceCommandCgroupPrefix+"4194300-1-stale")
+	alive := filepath.Join(root, traceCommandCgroupPrefix+strconv.Itoa(os.Getpid())+"-"+processStartTicks(os.Getpid())+"-alive")
+	// pid는 살아 있지만 다른 process가 그 번호를 다시 쓴 경우다.
+	reused := filepath.Join(root, traceCommandCgroupPrefix+strconv.Itoa(os.Getpid())+"-1-reused")
+	for _, dir := range []string{stale, alive, reused} {
 		if err := os.Mkdir(dir, 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
 	defer os.Remove(alive)
 	defer os.Remove(stale)
+	defer os.Remove(reused)
 	cgroup, err := createTraceCommandCgroup()
 	if err != nil {
 		t.Fatal(err)
@@ -705,6 +708,9 @@ func TestTraceSyscallCommandSweepsStaleCgroups(t *testing.T) {
 	}
 	if _, err := os.Stat(alive); err != nil {
 		t.Errorf("the cgroup of a live edc was removed: %v", err)
+	}
+	if _, err := os.Stat(reused); !os.IsNotExist(err) {
+		t.Errorf("the cgroup of a reused pid remains: %v", err)
 	}
 }
 

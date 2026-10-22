@@ -25,6 +25,11 @@ func newSyscallEventClock() *syscallEventClock {
 // step은 1초가 지난 snapshot을 넣는다. calls는 "process syscall"별 증가분, errnos는 "process syscall errno"별 증가분,
 // paths는 "path errno"별 증가분이다.
 func (clock *syscallEventClock) step(calls, errnos, paths map[string]uint64) {
+	clock.stepOver(1, calls, errnos, paths)
+}
+
+// stepOver는 gap초가 지난 snapshot을 넣는다. 증가분은 그 gap초 동안의 값이다.
+func (clock *syscallEventClock) stepOver(gap int, calls, errnos, paths map[string]uint64) {
 	for key, value := range calls {
 		clock.calls[key] += value
 	}
@@ -66,7 +71,7 @@ func (clock *syscallEventClock) step(calls, errnos, paths map[string]uint64) {
 	for _, row := range rows {
 		files = append(files, *row)
 	}
-	clock.tick++
+	clock.tick += gap
 	collection.summary.DurationMS = int64(clock.tick) * 1000
 	clock.detector.observe(clock.start.Add(time.Duration(clock.tick)*time.Second), collection, files)
 }
@@ -275,5 +280,22 @@ func TestSyscallSnapshotHandlerDrawsTheEventsPanel(t *testing.T) {
 	last := string(all[strings.LastIndex(string(all), syscallLiveHome):])
 	if !strings.Contains(last, "error loop") || !strings.Contains(last, "api connect ECONNREFUSED") || !strings.Contains(last, "●") || strings.Contains(last, "none so far") {
 		t.Fatalf("the last frame lacks the event:\n%s", last)
+	}
+}
+
+// snapshot 간격이 1초가 아니면 증가분과 초당 횟수가 다르다. COUNT는 증가분의 합이다.
+func TestSyscallEventSpikeCountsTheIncreaseOfCallsOverLongerIntervals(t *testing.T) {
+	clock := newSyscallEventClock()
+	clock.steps(10, map[string]uint64{"api openat": 100}, nil, nil)
+	// 2초마다 snapshot을 읽고, 매번 1만 번(초당 5,000번) 늘어난다. 4번째 snapshot에서 6초가 지나 event가 된다.
+	for range 4 {
+		clock.stepOver(2, map[string]uint64{"api openat": 10000}, nil, nil)
+	}
+	events := clock.detector.report()
+	if len(events) != 1 || events[0].Kind != syscallKindCallSpike {
+		t.Fatalf("events = %+v", events)
+	}
+	if events[0].Count != 40000 || events[0].PeakPerSec < 4999 || events[0].PeakPerSec > 5001 {
+		t.Errorf("count = %d, peak = %.0f, want 40000 calls and 5000/s", events[0].Count, events[0].PeakPerSec)
 	}
 }

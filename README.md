@@ -357,6 +357,10 @@ If the same line comes again within 5 seconds, `edc` does not print a new line. 
 
 The same mode watches for a noisy directory. If one directory gives at least 30 events in 10 seconds, and at least half of all events in that time, `edc` prints one line on stderr that starts with `hint:`. The line shows the `--exclude` option that leaves the directory out, for example `--exclude 'logs/**'`. `edc` names a directory once, and names at most 3 directories in one run. It does not name the watch root or a directory with a glob character in its name. Stderr must be a terminal, and `--no-smart` turns the hint off.
 
+When the watch stops, `edc` prints a table under the summary line. The table lists the 5 directories with the most events, with the count and the share of all events. This helps you choose what to exclude. `edc` prints the table only if at least 10 events came, and `--no-smart` turns it off.
+
+With the `fanotify` driver, a line ends with `by <name>`, the process that changed the file, for example `by syslog-ng`. The kernel tells `edc` the process, and `edc` reads its name when the event arrives. A process that has already ended has no name, and a short command such as `mv` often ends first, so the line shows no name. The `inotify` driver does not tell the process, and `--no-smart` leaves the name out. The JSON records have `pid` and `process` when the driver knows them. If the kernel merges events of one path, the process is the one of the first event.
+
 By default, `edc` excludes `.git`, `node_modules`, `.venv`, `venv`, `__pycache__`, `.mypy_cache`, `.pytest_cache`, `.ruff_cache`, `.tox`, `.next`, and `.gradle` at any depth. It does not exclude `build` or `dist`, because you can watch build output. Repeat `--exclude 'build/**'` to add exclusions. To watch the default directories too, use `--no-default-exclude`. Your `--exclude` patterns still apply.
 
 On Linux, `--driver` selects how `edc` watches the tree. The default is `auto`.

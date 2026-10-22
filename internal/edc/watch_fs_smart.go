@@ -29,6 +29,9 @@ type fsWatchSmartEntry struct {
 	count  int
 	time   time.Time
 	hidden bool
+	// pid와 process는 이 줄의 마지막 이벤트를 일으킨 process다. 이름을 모르는 이벤트는 앞의 것을 덮지 않는다.
+	pid     int
+	process string
 }
 
 func newFSWatchSmart(window time.Duration) *fsWatchSmart {
@@ -51,8 +54,15 @@ func (smart *fsWatchSmart) deadline() (time.Time, bool) {
 	return smart.opened.Add(smart.window), true
 }
 
+func (entry *fsWatchSmartEntry) setProcess(event fsWatchEvent) {
+	if event.Process != "" {
+		entry.pid, entry.process = event.PID, event.Process
+	}
+}
+
 func (smart *fsWatchSmart) entry(event fsWatchEvent, kind string) *fsWatchSmartEntry {
 	entry := &fsWatchSmartEntry{kind: kind, path: event.Path, isDir: event.IsDir, count: 1, time: event.Time}
+	entry.setProcess(event)
 	smart.entries = append(smart.entries, entry)
 	smart.byPath[event.Path] = entry
 	return entry
@@ -74,20 +84,27 @@ func (smart *fsWatchSmart) add(event fsWatchEvent, now time.Time) {
 			delete(smart.byPath, renamed.path)
 			created := smart.entry(event, "create")
 			created.origin = renamed.path
+			// 도착점의 이벤트에서 이름을 못 읽었으면, 같은 동작인 옛 이름 줄의 것을 이어받는다.
+			if created.process == "" {
+				created.pid, created.process = renamed.pid, renamed.process
+			}
 			return
 		}
 		switch {
 		case entry != nil && entry.kind == "remove":
 			// 지웠다가 같은 이름으로 다시 만들었으면 내용이 바뀐 것이다.
 			entry.kind, entry.time = "modify", event.Time
+			entry.setProcess(event)
 		case entry != nil && (entry.kind == "create" || entry.kind == "modify"):
 			entry.count, entry.time = entry.count+1, event.Time
+			entry.setProcess(event)
 		default:
 			smart.entry(event, "create")
 		}
 	case "modify":
 		if entry != nil && (entry.kind == "create" || entry.kind == "modify") {
 			entry.count, entry.time = entry.count+1, event.Time
+			entry.setProcess(event)
 			return
 		}
 		smart.entry(event, "modify")
@@ -96,8 +113,10 @@ func (smart *fsWatchSmart) add(event fsWatchEvent, now time.Time) {
 		case entry != nil && entry.kind == "create" && entry.origin == "":
 			// 이 창 안에서 만들었다 지운 파일이다.
 			entry.kind, entry.time = "temp", event.Time
+			entry.setProcess(event)
 		case entry != nil && (entry.kind == "create" || entry.kind == "modify"):
 			entry.kind, entry.time = "remove", event.Time
+			entry.setProcess(event)
 		default:
 			smart.entry(event, "remove")
 		}
@@ -105,6 +124,7 @@ func (smart *fsWatchSmart) add(event fsWatchEvent, now time.Time) {
 		// 이 창 안에서 만든 파일의 이름을 바꾸면 그 줄을 이어 쓰고, 아니면 새 줄이다.
 		if entry != nil && (entry.kind == "create" || entry.kind == "modify") {
 			entry.kind, entry.time = "rename", event.Time
+			entry.setProcess(event)
 			smart.renamed = entry
 			return
 		}
@@ -129,7 +149,7 @@ func (smart *fsWatchSmart) flushAll() []fsWatchRecord {
 		if entry.hidden {
 			continue
 		}
-		record := fsWatchRecord{Type: "event", Time: entry.time, Event: entry.kind, Path: entry.path, IsDir: entry.isDir}
+		record := fsWatchRecord{Type: "event", Time: entry.time, Event: entry.kind, Path: entry.path, IsDir: entry.isDir, PID: entry.pid, Process: entry.process}
 		if entry.kind == "modify" && entry.count > 1 {
 			record.Count = entry.count
 		}

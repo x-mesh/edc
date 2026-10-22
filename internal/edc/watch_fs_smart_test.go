@@ -298,3 +298,76 @@ func TestFSWatchSmartStreamPrintsOneLineAndCountsEveryEvent(t *testing.T) {
 		}
 	}
 }
+
+// 줄을 일으킨 process는 마지막으로 이름을 아는 이벤트의 것이다. 이름을 모르는 이벤트(inotify, 끝난 process)는 앞의 이름을 지우지 않는다.
+func TestFSWatchSmartKeepsTheLastKnownProcess(t *testing.T) {
+	clock := newFSSmartClock()
+	at := func(ms int) time.Time { return clock.start.Add(time.Duration(ms) * time.Millisecond) }
+	clock.smart.add(fsWatchEvent{Time: at(0), Event: "create", Path: "d/f.tmp", PID: 11, Process: "editor"}, at(0))
+	clock.smart.add(fsWatchEvent{Time: at(1), Event: "modify", Path: "d/f.tmp", PID: 12, Process: "formatter"}, at(1))
+	clock.smart.add(fsWatchEvent{Time: at(2), Event: "rename", Path: "d/f.tmp"}, at(2))
+	clock.smart.add(fsWatchEvent{Time: at(3), Event: "create", Path: "d/f"}, at(3))
+	records := clock.flush()
+	if len(records) != 1 || records[0].Process != "formatter" || records[0].PID != 12 || records[0].Origin != "f.tmp" {
+		// 도착점의 create에는 이름이 없어서, 같은 동작인 옛 이름 줄의 마지막 이름을 이어받는다.
+		t.Fatalf("records = %+v", records)
+	}
+	other := newFSSmartClock()
+	other.smart.add(fsWatchEvent{Time: at(0), Event: "create", Path: "a.txt", PID: 11, Process: "editor"}, at(0))
+	other.smart.add(fsWatchEvent{Time: at(1), Event: "modify", Path: "a.txt"}, at(1))
+	other.smart.add(fsWatchEvent{Time: at(2), Event: "modify", Path: "a.txt", PID: 12, Process: "formatter"}, at(2))
+	other.smart.add(fsWatchEvent{Time: at(3), Event: "modify", Path: "a.txt"}, at(3))
+	records = other.flush()
+	if len(records) != 1 || records[0].Process != "formatter" || records[0].PID != 12 {
+		t.Fatalf("records = %+v", records)
+	}
+}
+
+func TestFSWatchRecordPrintsWhoChangedTheFile(t *testing.T) {
+	previous := currentLanguage()
+	defer setLanguage(previous)
+	stamp := time.Date(2026, 10, 22, 17, 27, 19, 0, time.UTC)
+	for language, want := range map[string]string{"en": `MODIFY   "app.log"  ×3  by syslog-ng`, "ko": `MODIFY   "app.log"  ×3  주체 syslog-ng`, "ja": `MODIFY   "app.log"  ×3  実行元 syslog-ng`} {
+		setLanguage(language)
+		var output bytes.Buffer
+		record := fsWatchRecord{Type: "event", Time: stamp, Event: "modify", Path: "app.log", Count: 3, PID: 321, Process: "syslog-ng"}
+		if err := writeFSWatchRecord(&output, record, false, textStyle{}); err != nil || !strings.Contains(output.String(), want) {
+			t.Errorf("%s: %q, %v, want %q", language, output.String(), err, want)
+		}
+	}
+	// 제어 문자가 든 이름은 터미널을 바꾸지 못한다.
+	setLanguage("en")
+	var output bytes.Buffer
+	writeFSWatchRecord(&output, fsWatchRecord{Type: "event", Time: stamp, Event: "modify", Path: "x", Process: "bad\x1b[2Jname"}, false, textStyle{})
+	if strings.Contains(output.String(), "\x1b") {
+		t.Errorf("a control character reached the terminal: %q", output.String())
+	}
+}
+
+// JSON에는 일으킨 process가 pid와 이름으로 들어간다. 모르면 필드가 없어 이전 출력과 같고, 묶지 않은 텍스트 출력에는 싣지 않는다.
+func TestFSWatchEventRecordCarriesTheProcessOnlyInJSON(t *testing.T) {
+	event := fsWatchEvent{Time: time.Now(), Event: "modify", Path: "a", PID: 7, Process: "writer"}
+	withProcess := fsWatchEventRecord(event, true)
+	if withProcess.PID != 7 || withProcess.Process != "writer" {
+		t.Errorf("json record = %+v", withProcess)
+	}
+	if plain := fsWatchEventRecord(event, false); plain.PID != 0 || plain.Process != "" {
+		t.Errorf("text record = %+v", plain)
+	}
+	line := fsWatchReadyLineForTest(t, fsWatchRecord{Type: "event", Time: time.Now(), Event: "modify", Path: "a"})
+	if strings.Contains(line, "pid") || strings.Contains(line, "process") {
+		t.Errorf("an unknown process appears in the JSON: %s", line)
+	}
+	if line := fsWatchReadyLineForTest(t, withProcess); !strings.Contains(line, `"pid":7`) || !strings.Contains(line, `"process":"writer"`) {
+		t.Errorf("json = %s", line)
+	}
+}
+
+func fsWatchReadyLineForTest(t *testing.T, record fsWatchRecord) string {
+	t.Helper()
+	var output bytes.Buffer
+	if err := writeFSWatchRecord(&output, record, true, textStyle{}); err != nil {
+		t.Fatal(err)
+	}
+	return strings.TrimSpace(output.String())
+}

@@ -5,6 +5,7 @@ package edc
 import (
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"maps"
 	"os"
 	"path/filepath"
@@ -484,5 +485,89 @@ func TestFSWatchSourceRecordsWhenAutoFellBackToInotify(t *testing.T) {
 	defer source.close()
 	if source.driver != fsWatchDriverInotify || source.driverReason != fsWatchReasonFanotifyDown {
 		t.Fatalf("driver %q reason %q, want %q and %q", source.driver, source.driverReason, fsWatchDriverInotify, fsWatchReasonFanotifyDown)
+	}
+}
+
+// pid는 metadata의 20번째 byte부터 4 byte다(event_len, vers, reserved, metadata_len, mask, fd, pid 순서).
+func TestFSWatchFanotifyParsesThePIDOfTheProcessThatCausedTheEvent(t *testing.T) {
+	parent := fsWatchFanotifyTestKey("parent")
+	event := fsWatchFanotifyTestEvent(unix.FAN_MODIFY, parent, "file.txt", "")
+	binary.NativeEndian.PutUint32(event[20:24], 4242)
+	events, err := parseFSWatchFanotify(event)
+	if err != nil || len(events) != 1 || events[0].pid != 4242 || events[0].name != "file.txt" {
+		t.Fatalf("events = %+v, err %v", events, err)
+	}
+}
+
+func TestFSWatchFanotifyProcessNamesAreCached(t *testing.T) {
+	watch := newFSWatchFanotify(fsWatchOptions{root: "/"}, nil, nil)
+	calls := map[int32]int{}
+	watch.processName = func(pid int32) string {
+		calls[pid]++
+		if pid == 77 {
+			return "" // 이미 끝난 process
+		}
+		return fmt.Sprintf("proc%d", pid)
+	}
+	for _, pid := range []int32{0, -1} {
+		if name := watch.process(pid); name != "" || len(calls) != 0 {
+			t.Fatalf("pid %d: name %q, lookups %v", pid, name, calls)
+		}
+	}
+	for range 5 {
+		if name := watch.process(10); name != "proc10" {
+			t.Fatalf("name = %q", name)
+		}
+		watch.process(77)
+	}
+	if calls[10] != 1 || calls[77] != 1 {
+		t.Errorf("lookups = %v, want one for each pid, also for the process that is gone", calls)
+	}
+	// 기억한 지 fsWatchProcessTTL이 지나면 다시 찾는다. pid가 다른 process로 바뀌었을 수 있다.
+	entry := watch.processes[10]
+	entry.at = entry.at.Add(-fsWatchProcessTTL - time.Second)
+	watch.processes[10] = entry
+	watch.process(10)
+	if calls[10] != 2 {
+		t.Errorf("an expired entry was not looked up again: %v", calls)
+	}
+	// 항목이 한도를 넘으면 비우고 계속 동작한다.
+	for pid := int32(1000); pid < 1000+fsWatchProcessEntries+10; pid++ {
+		watch.process(pid)
+	}
+	if len(watch.processes) > fsWatchProcessEntries {
+		t.Errorf("cache holds %d entries, limit %d", len(watch.processes), fsWatchProcessEntries)
+	}
+}
+
+// 실제 fanotify에서 이 test를 돌리는 process가 파일을 쓰면, 이벤트가 그 pid와 이름을 담아야 한다.
+func TestFSWatchFanotifyReportsTheProcessThatChangedAFile(t *testing.T) {
+	fsWatchSkipUnavailableDriver(t, fsWatchDriverFanotify)
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := fsWatchTestSource(t, root, true, fsWatchDriverFanotify)
+	if err := os.WriteFile(filepath.Join(root, "who.txt"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	want := strings.TrimSpace(func() string { data, _ := os.ReadFile("/proc/self/comm"); return string(data) }())
+	timer := time.NewTimer(5 * time.Second)
+	defer timer.Stop()
+	for {
+		select {
+		case event := <-source.events:
+			if event.Path != "who.txt" {
+				continue
+			}
+			if event.PID != os.Getpid() || event.Process != want || want == "" {
+				t.Fatalf("event = %+v, want pid %d and process %q", event, os.Getpid(), want)
+			}
+			return
+		case err := <-source.errors:
+			t.Fatalf("watch error: %v", err)
+		case <-timer.C:
+			t.Fatal("no event for who.txt")
+		}
 	}
 }

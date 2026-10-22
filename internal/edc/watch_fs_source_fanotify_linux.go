@@ -86,6 +86,8 @@ type fsWatchFanotifyEvent struct {
 	parent string
 	name   string
 	target string
+	// pid는 이벤트를 일으킨 process의 번호다. 감시하는 쪽의 pid namespace 밖이면 0이다. 커널이 같은 경로의 이벤트를 합치면 처음 것이다.
+	pid int32
 }
 
 // fsWatchFanotifyWaiting은 부모 디렉터리가 이미 지워져 경로를 아직 모르는 이벤트다. seq는 읽은 순서다.
@@ -114,6 +116,46 @@ type fsWatchFanotify struct {
 	waitingCount        int
 	seq                 uint64
 	excludedDirectories map[string]bool
+	// processName은 pid의 이름을 찾는다. processes는 찾은 이름을 fsWatchProcessTTL 동안 기억해 이벤트마다 /proc을 읽지 않게 한다.
+	processName func(int32) string
+	processes   map[int32]fsWatchProcessEntry
+}
+
+const (
+	fsWatchProcessTTL     = 10 * time.Second
+	fsWatchProcessEntries = 4096
+)
+
+type fsWatchProcessEntry struct {
+	name string
+	at   time.Time
+}
+
+// fsWatchProcessName은 process의 이름이다. 이미 끝난 process는 찾지 못해 빈 문자열이다.
+func fsWatchProcessName(pid int32) string {
+	data, err := os.ReadFile("/proc/" + strconv.Itoa(int(pid)) + "/comm")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
+}
+
+// process는 이벤트를 일으킨 process의 이름이다. 짧게 사는 process는 이벤트를 읽을 때 이미 없을 수 있어, 못 찾은 결과도 기억해 같은
+// pid를 다시 찾지 않는다.
+func (watch *fsWatchFanotify) process(pid int32) string {
+	if pid <= 0 {
+		return ""
+	}
+	now := time.Now()
+	if entry, ok := watch.processes[pid]; ok && now.Sub(entry.at) < fsWatchProcessTTL {
+		return entry.name
+	}
+	if len(watch.processes) >= fsWatchProcessEntries {
+		clear(watch.processes)
+	}
+	name := watch.processName(pid)
+	watch.processes[pid] = fsWatchProcessEntry{name: name, at: now}
+	return name
 }
 
 func newFSWatchFanotify(options fsWatchOptions, lookup func(string) (string, error), emit func(fsWatchEvent) bool) *fsWatchFanotify {
@@ -126,6 +168,8 @@ func newFSWatchFanotify(options fsWatchOptions, lookup func(string) (string, err
 		ignored: fsWatchIgnored(options), lookup: lookup, emit: emit,
 		paths: map[string]string{}, stale: map[string]bool{}, waiting: map[string][]fsWatchFanotifyWaiting{},
 		excludedDirectories: map[string]bool{},
+		processName:         fsWatchProcessName,
+		processes:           map[int32]fsWatchProcessEntry{},
 	}
 }
 
@@ -471,7 +515,7 @@ func parseFSWatchFanotify(buffer []byte) ([]fsWatchFanotifyEvent, error) {
 		if buffer[4] != unix.FANOTIFY_METADATA_VERSION || metadataLength < fsWatchFanotifyMetadataSize || length < metadataLength || length > len(buffer) {
 			return nil, errFSWatchFanotifyMalformed
 		}
-		event := fsWatchFanotifyEvent{mask: binary.NativeEndian.Uint64(buffer[8:16])}
+		event := fsWatchFanotifyEvent{mask: binary.NativeEndian.Uint64(buffer[8:16]), pid: int32(binary.NativeEndian.Uint32(buffer[20:24]))}
 		for info := buffer[metadataLength:length]; len(info) > 0; {
 			if len(info) < 4 {
 				return nil, errFSWatchFanotifyMalformed
@@ -647,11 +691,12 @@ func (watch *fsWatchFanotify) report(directory string, event fsWatchFanotifyEven
 	if info, err := os.Lstat(filename); err == nil {
 		exists, symlink = true, info.Mode()&os.ModeSymlink != 0
 	}
+	process := watch.process(event.pid)
 	for _, name := range fsWatchFanotifyOperations(event.mask, exists, isDir) {
 		if symlink && name != "create" {
 			continue
 		}
-		if !watch.emit(fsWatchEvent{Time: time.Now().UTC(), Event: name, Path: filepath.ToSlash(relative), IsDir: isDir}) {
+		if !watch.emit(fsWatchEvent{Time: time.Now().UTC(), Event: name, Path: filepath.ToSlash(relative), IsDir: isDir, PID: int(event.pid), Process: process}) {
 			return fs.ErrClosed
 		}
 	}

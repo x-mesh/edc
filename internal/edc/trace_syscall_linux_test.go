@@ -377,9 +377,19 @@ func TestParseSyscallEventReadsTheResultAndThePath(t *testing.T) {
 		return data
 	}
 	event, ok := parseSyscallEvent(record(-2, 1, "/etc/app.conf"), 500)
-	want := syscallEvent{TimestampNS: 1500, Event: "syscall", PID: 7, TID: 9, Process: "api", Syscall: "openat", Return: -2, Errno: "ENOENT", LatencyMS: 0.0025, Path: "/etc/app.conf"}
+	want := syscallEvent{TimestampNS: 1500, Event: "syscall", PID: 7, TID: 9, Process: "api", Syscall: "openat", Return: -2, Errno: "ENOENT", LatencyMS: 0.0025, Path: "/etc/app.conf", Action: "read"}
 	if !ok || event != want {
 		t.Fatalf("event = %+v, want %+v", event, want)
+	}
+	// open flags와 event 이유는 37번째와 38번째 byte에 있다. 쓰기와 생성으로 열면 write이고, O_EXCL이 더해지면 create다.
+	flagged := record(3, 1, "/var/log/app.log")
+	flagged[37], flagged[38] = syscallOpenWrite|syscallOpenCreate, syscallReasonFile|syscallReasonLine
+	if event, _ := parseSyscallEvent(flagged, 0); event.Action != "write" || event.Reason != syscallReasonFile|syscallReasonLine || event.OpenKind != syscallOpenWrite|syscallOpenCreate {
+		t.Fatalf("flagged = %+v", event)
+	}
+	flagged[37] |= syscallOpenExcl
+	if event, _ := parseSyscallEvent(flagged, 0); event.Action != "create" {
+		t.Fatalf("exclusive = %+v", event)
 	}
 	if event, _ := parseSyscallEvent(record(3, 3, "/very/long"), 0); event.Errno != "" || event.Return != 3 || !event.PathTruncated || event.Path != "/very/long" {
 		t.Fatalf("truncated = %+v", event)

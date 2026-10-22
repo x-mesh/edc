@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"reflect"
+	"sort"
 	"strings"
 	"syscall"
 	"testing"
@@ -186,6 +187,38 @@ func TestTraceCPUSamplesUserAndKernelStacks(t *testing.T) {
 			profiled := report.Summary.Profiled
 			switch mode {
 			case "spin":
+				type other struct {
+					top     string
+					samples uint64
+				}
+				var others []other
+				var otherTotal uint64
+				for _, stack := range stacks {
+					if len(stack.User) > 0 && strings.HasSuffix(stack.User[0], ".cpuTestSpin") {
+						continue
+					}
+					frames := stack.User
+					if len(frames) > 3 {
+						frames = frames[:3]
+					}
+					top := strings.Join(frames, " < ")
+					if top == "" {
+						top = "(no user frame)"
+					}
+					if len(stack.Kernel) > 0 {
+						top += " [kernel " + stack.Kernel[0] + "]"
+					}
+					others = append(others, other{top, stack.Samples})
+					otherTotal += stack.Samples
+				}
+				sort.Slice(others, func(i, j int) bool { return others[i].samples > others[j].samples })
+				t.Logf("DIAG hot=%d profiled=%d nonhot=%d ratio=%.1f%%", hot, profiled, otherTotal, float64(hot)*100/float64(profiled))
+				for index, entry := range others {
+					if index >= 6 {
+						break
+					}
+					t.Logf("DIAG other: %d %s", entry.samples, entry.top)
+				}
 				if hot*10 < profiled*9 {
 					t.Errorf("cpuTestSpin is the innermost frame in %d of %d samples", hot, profiled)
 				}

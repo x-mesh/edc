@@ -3,6 +3,7 @@ package edc
 import (
 	"errors"
 	"os"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -244,6 +245,59 @@ func TestInfoDiskCollapsesMountsThatShareAVolume(t *testing.T) {
 	}
 	if strings.Count(verbose.String(), "/dev/disk") != 3 || strings.Contains(verbose.String(), "mounts") {
 		t.Fatalf("-v must list every mount:\n%s", verbose.String())
+	}
+}
+
+// 장치가 다르면 용량과 사용량이 바이트까지 같아도 다른 디스크이므로 접지 않는다. 같은 장치를 여러 경로에 붙인 경우는 접는다.
+func TestInfoDiskKeepsDifferentDevicesWithTheSameBytes(t *testing.T) {
+	parent := t.TempDir()
+	var disks []diskDetails
+	for name, device := range map[string]string{"a": "/dev/sda1", "b": "/dev/sdb1", "c": "/dev/sdb1", "d": "/dev/disk3s1", "e": "/dev/disk4s1"} {
+		dir := parent + "/" + name
+		if err := os.Mkdir(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		disks = append(disks, diskDetails{Mount: dir, Device: device, Used: 50, Total: 100, Percent: 50})
+	}
+	sort.Slice(disks, func(i, j int) bool { return disks[i].Mount < disks[j].Mount })
+	shown, shared := collapseSharedDisks(disks)
+	devices := map[string]int{}
+	for _, disk := range shown {
+		devices[disk.Device]++
+	}
+	// sda1, sdb1(마운트 둘을 하나로), disk3s1, disk4s1 네 줄이 남는다.
+	if len(shown) != 4 || devices["/dev/sdb1"] != 1 || len(shared) != 1 || shared[parent+"/b"] != 2 {
+		t.Fatalf("shown = %+v, shared = %+v", shown, shared)
+	}
+}
+
+func TestInfoDiskFamilyGroupsOnlyTheVolumesOfOneAPFSContainer(t *testing.T) {
+	for device, want := range map[string]string{
+		"/dev/disk3s1s1": "disk3", "/dev/disk3s3": "disk3", "/dev/disk10s2": "disk10",
+		"/dev/disk3": "/dev/disk3", "/dev/sda1": "/dev/sda1", "OrbStack:/OrbStack": "OrbStack:/OrbStack",
+	} {
+		if got := diskFamily(device); got != want {
+			t.Errorf("diskFamily(%q) = %q, want %q", device, got, want)
+		}
+	}
+}
+
+// 모든 프로세스의 스레드 수를 읽었으면 일부만 읽었다는 설명을 붙이지 않는다.
+func TestInfoProcessSnapshotOmitsTheCoverageNoteWhenEveryThreadCountIsKnown(t *testing.T) {
+	processes := []topProcess{{PID: 1, RSS: 1 << 20, Threads: 2, Command: "a"}, {PID: 2, RSS: 2 << 20, Threads: 3, Command: "b"}}
+	var output strings.Builder
+	printInfoResources(&output, infoMemory{Total: 1, Available: 1}, nil, infoSignals{}, processes, nil, nil, false, false)
+	if !strings.Contains(output.String(), "Threads observed: 5") || strings.Contains(output.String(), "counted for") {
+		t.Fatalf("output:\n%s", output.String())
+	}
+}
+
+// 메모리를 읽지 못해도 swap이 없는 호스트는 none으로 적는다.
+func TestInfoMemoryStatusShowsNoSwapWhenMemoryCannotBeRead(t *testing.T) {
+	var output strings.Builder
+	printInfoResources(&output, infoMemory{}, errors.New("Mach read failed"), infoSignals{}, nil, nil, nil, false, false)
+	if !strings.Contains(output.String(), "Swap: none") {
+		t.Fatalf("output:\n%s", output.String())
 	}
 }
 

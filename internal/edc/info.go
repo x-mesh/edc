@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/netip"
 	"os"
+	"regexp"
 	"runtime"
 	"sort"
 	"strings"
@@ -488,15 +489,29 @@ func infoProcessSize(bytes uint64) string {
 	}
 }
 
-// collapseSharedDisks는 용량과 사용량이 바이트까지 같은 마운트를 한 줄로 접는다. APFS는 한 컨테이너의 볼륨이 용량을 나눠 쓰고,
-// bind mount와 btrfs subvolume도 같은 수치를 내므로 같은 디스크를 여러 줄로 세어 보이게 한다. 대표는 경로가 가장 짧은 마운트다.
-// 두 번째 값은 대표 마운트가 대신한 마운트의 수이며, 접은 것이 없으면 비어 있다. 서로 다른 디스크의 수치가 바이트까지 같을 가능성은 낮다.
+// apfsVolumeDevice는 APFS 볼륨의 장치 이름이다. 한 컨테이너의 볼륨은 disk3s1, disk3s3, disk3s1s1처럼 같은 diskN을 앞에 둔다.
+var apfsVolumeDevice = regexp.MustCompile(`^/dev/(disk\d+)s\d+(s\d+)*$`)
+
+// diskFamily는 용량을 나눠 쓰는 장치의 묶음이다. APFS 볼륨은 컨테이너 단위로 묶고, 그 밖의 장치는 이름이 같을 때만 같은 묶음이다.
+func diskFamily(device string) string {
+	if match := apfsVolumeDevice.FindStringSubmatch(device); match != nil {
+		return match[1]
+	}
+	return device
+}
+
+// collapseSharedDisks는 같은 장치 묶음에서 용량과 사용량이 바이트까지 같은 마운트를 한 줄로 접는다. APFS는 한 컨테이너의 볼륨이 용량을 나눠 쓰고,
+// bind mount와 btrfs subvolume은 한 장치를 여러 경로에 붙이므로 같은 디스크가 여러 줄로 보인다. 장치가 다르면 수치가 같아도 접지 않는다.
+// 대표는 경로가 가장 짧은 마운트이고, 두 번째 값은 대표 마운트가 대신한 마운트의 수이며 접은 것이 없으면 비어 있다.
 func collapseSharedDisks(disks []diskDetails) ([]diskDetails, map[string]int) {
-	type volume struct{ used, total uint64 }
+	type volume struct {
+		family      string
+		used, total uint64
+	}
 	representative := map[volume]string{}
 	counts := map[volume]int{}
 	for _, disk := range disks {
-		key := volume{disk.Used, disk.Total}
+		key := volume{diskFamily(disk.Device), disk.Used, disk.Total}
 		counts[key]++
 		if current, ok := representative[key]; !ok || len(disk.Mount) < len(current) {
 			representative[key] = disk.Mount
@@ -505,7 +520,7 @@ func collapseSharedDisks(disks []diskDetails) ([]diskDetails, map[string]int) {
 	shown := make([]diskDetails, 0, len(disks))
 	shared := map[string]int{}
 	for _, disk := range disks {
-		key := volume{disk.Used, disk.Total}
+		key := volume{diskFamily(disk.Device), disk.Used, disk.Total}
 		if representative[key] != disk.Mount {
 			continue
 		}

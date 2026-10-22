@@ -18,6 +18,7 @@ watchfs:
   rules_exec_conflict: "--rulesと--execは併用できません。"
   smart_conflict: "--smart と --no-smart は併用できません"
   smart_json_conflict: "--smart は --json と併用できません。JSON はすべてのイベントをそのまま出力します"
+  hint_prefix: "ヒント"
   noisy: "%s で %d 件のイベントが %s 以内にありました。除外するには --exclude %s を追加してください"
   output_conflict: "JSON出力でruleファイルを上書きできません。"
   directory_required: "監視/actionディレクトリを使用できません: %s"

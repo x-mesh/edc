@@ -99,7 +99,8 @@ func runFSWatch(args []string) int {
 	options.smart = fsWatchSmartEnabled(options.smartOn, options.smartOff, options.jsonPath, isTerminal(os.Stdout))
 	// 알림은 stderr가 터미널일 때만 낸다. 묶어서 보이는 출력의 일부라서 --no-smart면 낸다고 하지 않는다.
 	if options.smart && isTerminal(os.Stderr) {
-		options.notice = func(text string) { fmt.Fprintln(fsWatchNotice, text) }
+		hintStyle := textStyle{color: richEnabled(os.Stderr)}
+		options.notice = func(text string) { fmt.Fprintln(fsWatchNotice, fsWatchHintLine(hintStyle, text)) }
 	}
 	code, err := streamFSWatch(ctx, writer, source, options, executeFSWatchAction)
 	if err != nil {
@@ -122,7 +123,7 @@ func streamFSWatch(ctx context.Context, writer io.Writer, source fsWatchSource, 
 	}
 	// 기록 줄은 자르지 않으므로 폭이 필요 없다. 기록마다 터미널 폭을 묻지 않게 한 번만 만든다.
 	style := textStyle{color: options.color}
-	emit := func(record fsWatchRecord) error {
+	write := func(record fsWatchRecord) error {
 		if options.status == nil {
 			return writeFSWatchRecord(writer, record, options.jsonPath != "", style)
 		}
@@ -135,6 +136,17 @@ func streamFSWatch(ctx context.Context, writer io.Writer, source fsWatchSource, 
 		}
 		_, err := options.status.through(writer).Write(buffer.Bytes())
 		return err
+	}
+	// 같은 줄이 이어서 오면 앞의 줄을 ×N으로 고쳐 쓴다. 상태줄이 있는 터미널에서 묶어 보일 때만 쓰고, 다른 것을 쓰면 잊는다.
+	var repeater *fsWatchRepeater
+	if options.smart && options.status != nil {
+		repeater = newFSWatchRepeater(options.status.width, style)
+	}
+	emit := func(record fsWatchRecord) error {
+		if repeater != nil {
+			repeater.reset()
+		}
+		return write(record)
 	}
 	if err := emit(fsWatchRecord{Type: "ready", Time: time.Now().UTC(), Root: options.root, Recursive: options.recursive, Driver: source.driver, DriverReason: source.driverReason}); err != nil {
 		return 2, err
@@ -170,7 +182,24 @@ func streamFSWatch(ctx context.Context, writer io.Writer, source fsWatchSource, 
 	}
 	emitSmart := func(records []fsWatchRecord) error {
 		for _, record := range records {
-			if err := emit(record); err != nil {
+			if repeater == nil {
+				if err := write(record); err != nil {
+					return err
+				}
+				continue
+			}
+			merged, rows := repeater.next(record)
+			if rows == 0 {
+				if err := write(merged); err != nil {
+					return err
+				}
+				continue
+			}
+			var buffer bytes.Buffer
+			if err := writeFSWatchRecord(&buffer, merged, false, style); err != nil {
+				return err
+			}
+			if err := options.status.replaceLast(rows, buffer.Bytes()); err != nil {
 				return err
 			}
 		}
@@ -262,6 +291,10 @@ func streamFSWatch(ctx context.Context, writer io.Writer, source fsWatchSource, 
 			}
 			if noisy != nil {
 				if hint := noisy.add(event.Path, time.Now()); hint != nil {
+					// 안내가 맨 아래 줄을 차지하므로, 앞의 이벤트 줄을 고쳐 쓰면 안내가 지워진다.
+					if repeater != nil {
+						repeater.reset()
+					}
 					options.notice(T("watchfs.noisy", terminalJSON(hint.Directory), hint.Events, fsWatchNoisyWindow, fsWatchShellQuote(hint.Pattern)))
 				}
 			}

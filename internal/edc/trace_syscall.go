@@ -66,6 +66,12 @@ type syscallTraceOptions struct {
 	snapshotInFlight bool
 }
 
+// syscallFilesEnabled는 파일 표를 켤지 정한다. 기본은 켜짐이지만, --slow나 --errors로 조건에 맞는 호출만 받던 사용은 이전과
+// 같게 두려고 끈다. --files는 그때도 켜고, --no-files는 늘 끈다.
+func syscallFilesEnabled(files, noFiles bool, options syscallTraceOptions) bool {
+	return files || (!noFiles && !options.linesEnabled())
+}
+
 func (options syscallTraceOptions) processFiltered() bool {
 	return len(options.pids)+len(options.comms) > 0 || options.waitForPID
 }
@@ -263,8 +269,6 @@ func runTraceSyscall(args []string) int {
 		fmt.Fprintln(os.Stderr, T("cli.trace.syscall_files_conflict"))
 		return 2
 	}
-	// --files는 기본값을 적어 두는 옵션이다. 끄려면 --no-files를 쓴다.
-	options.files = !noFiles
 	if len(argv) > 0 && options.jsonPath == "-" {
 		fmt.Fprintln(os.Stderr, T("cli.trace.syscall_command_json_stdout"))
 		return 2
@@ -287,6 +291,8 @@ func runTraceSyscall(args []string) int {
 		fmt.Fprintln(os.Stderr, T("cli.trace.syscall_errors", err))
 		return 2
 	}
+	// 파일 표는 기본으로 켜지만, --slow나 --errors로 조건에 맞는 호출만 받던 사용은 그대로 둔다. 그때는 --files를 직접 준다.
+	options.files = syscallFilesEnabled(files, noFiles, options)
 	switch {
 	case options.raw && options.jsonPath != "":
 		fmt.Fprintln(os.Stderr, T("cli.trace.raw_json_conflict"))

@@ -559,3 +559,74 @@ func TestSyscallFileTableStopsAddingPathsAtTheLimit(t *testing.T) {
 		t.Errorf("no notice about the path limit:\n%s", output.String())
 	}
 }
+
+func TestSyscallFilesAreOnByDefaultExceptWhenCallsAreFiltered(t *testing.T) {
+	slow := syscallTraceOptions{slow: time.Millisecond}
+	errors := syscallTraceOptions{errorsAll: true}
+	for _, test := range []struct {
+		name           string
+		files, noFiles bool
+		options        syscallTraceOptions
+		want           bool
+	}{
+		{"default", false, false, syscallTraceOptions{}, true},
+		{"--no-files", false, true, syscallTraceOptions{}, false},
+		{"--slow keeps the old output", false, false, slow, false},
+		{"--errors keeps the old output", false, false, errors, false},
+		{"--slow --files", true, false, slow, true},
+		{"--errors --no-files", false, true, errors, false},
+	} {
+		if got := syscallFilesEnabled(test.files, test.noFiles, test.options); got != test.want {
+			t.Errorf("%s: files = %t, want %t", test.name, got, test.want)
+		}
+	}
+}
+
+// 명령이 시작된 뒤의 신호: SIGINT는 터미널이 명령에도 보내므로 첫 번째는 넘기지 않고, SIGTERM은 전달하고, 두 번째는 죽인다.
+func TestTraceCommandForwardsSignalsOnceItIsRunning(t *testing.T) {
+	start := func(t *testing.T) *traceCommand {
+		t.Helper()
+		path, err := exec.LookPath("sleep")
+		if err != nil {
+			t.Skip(err)
+		}
+		command := &traceCommand{argv: []string{"sleep", "30"}, path: path, done: make(chan struct{})}
+		if err := command.start(func(uint32) error { return nil }); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			command.interrupt(syscall.SIGINT)
+			command.interrupt(syscall.SIGINT)
+			<-command.done
+		})
+		return command
+	}
+	waitDone := func(command *traceCommand) bool {
+		select {
+		case <-command.done:
+			return true
+		case <-time.After(3 * time.Second):
+			return false
+		}
+	}
+	t.Run("SIGTERM is forwarded", func(t *testing.T) {
+		command := start(t)
+		command.interrupt(syscall.SIGTERM)
+		if !waitDone(command) || command.exitCode() != 128+int(syscall.SIGTERM) {
+			t.Fatalf("exit code = %d after SIGTERM", command.exitCode())
+		}
+	})
+	t.Run("the first SIGINT is left to the terminal and the second kills", func(t *testing.T) {
+		command := start(t)
+		command.interrupt(syscall.SIGINT)
+		select {
+		case <-command.done:
+			t.Fatal("the first SIGINT stopped the command")
+		case <-time.After(300 * time.Millisecond):
+		}
+		command.interrupt(syscall.SIGINT)
+		if !waitDone(command) || command.exitCode() != 128+int(syscall.SIGKILL) {
+			t.Fatalf("exit code = %d after the second signal", command.exitCode())
+		}
+	})
+}

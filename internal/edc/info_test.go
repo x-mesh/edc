@@ -115,7 +115,7 @@ func TestInfoListenShowsExposedPortsAndCountsLoopback(t *testing.T) {
 	var compact strings.Builder
 	printInfoListen(&compact, result, true, false, false)
 	text := compact.String()
-	for _, want := range []string{"TCP 8 · UDP 1 · Exposed 8 · Loopback 1", "1001   tcp  *  app (2)", "… 3 more exposed · edc listen", "└── Sockets of other accounts are hidden without root"} {
+	for _, want := range []string{"TCP 8 · UDP 1 · Exposed 8 (all 7 · specific 1) · Loopback 1", "1001   tcp  *  all interfaces  app (2)", "… 3 more exposed · edc listen", "└── Sockets of other accounts are hidden without root"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("%q가 없다:\n%s", want, text)
 		}
@@ -128,13 +128,35 @@ func TestInfoListenShowsExposedPortsAndCountsLoopback(t *testing.T) {
 	printInfoListen(&verbose, result, false, false, true)
 	text = verbose.String()
 	// 프로세스를 모르는 소켓도 포트는 보여 준다. 이름 자리는 없음으로 적는다.
-	for _, want := range []string{"local (1)", "53     udp  192.0.2.10  -"} {
+	for _, want := range []string{"local (1)", "80     tcp  127.0.0.1   loopback", "53     udp  192.0.2.10  specific address  -"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("-v에 %q가 없다:\n%s", want, text)
 		}
 	}
 	if strings.Contains(text, "more exposed") || strings.Contains(text, "without root") {
 		t.Fatalf("-v가 목록을 자르거나 쓰지 않을 안내를 붙였다:\n%s", text)
+	}
+}
+
+// 주소를 해석하지 못한 소켓은 노출된 쪽으로 세고 unknown으로 적는다. 노출된 소켓이 없으면 내역을 붙이지 않는다.
+func TestInfoListenBreaksExposedDownByScope(t *testing.T) {
+	render := func(sockets ...listenSocket) string {
+		var output strings.Builder
+		printInfoListen(&output, Result{Status: StatusPass, Metrics: map[string]interface{}{"sockets": sockets}}, false, false, false)
+		return output.String()
+	}
+	mixed := render(
+		listenSocket{Proto: "tcp", Address: "*", Port: 80, Process: "a", PID: "1"},
+		listenSocket{Proto: "tcp", Address: "::", Port: 81, Process: "b", PID: "2"},
+		listenSocket{Proto: "tcp", Address: "192.0.2.10", Port: 82, Process: "c", PID: "3"},
+		listenSocket{Proto: "tcp", Address: "not-an-address", Port: 83, Process: "d", PID: "4"},
+	)
+	if !strings.Contains(mixed, "Exposed 4 (all 2 · specific 1 · unknown 1)") || !strings.Contains(mixed, "83     tcp  not-an-address  unknown") {
+		t.Fatalf("output:\n%s", mixed)
+	}
+	local := render(listenSocket{Proto: "tcp", Address: "127.0.0.1", Port: 80, Process: "a", PID: "1"})
+	if !strings.Contains(local, "Exposed 0 · ") || strings.Contains(local, "Exposed 0 (") {
+		t.Fatalf("output:\n%s", local)
 	}
 }
 

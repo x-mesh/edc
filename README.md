@@ -351,6 +351,8 @@ edc watch fs --duration 1m --json events.jsonl
 
 Events are `create`, `modify`, `remove`, and `rename`. A rename reports the old path; the new name can produce a create event inside the watched scope. Reads/access and metadata-only changes are excluded. `--event` accepts a comma-separated list. Globs are relative to the watch root: `*.go` matches direct children, and `**/*.go` matches any depth. Watching those deeper paths also requires `--recursive`.
 
+In a terminal, `edc watch fs` merges the events of one change into one line. This is `--smart`. It collects the events for 200 ms and prints the result. A save that writes a temporary file and renames it shows as one line, for example `CREATE "dir/final"  ← "final.tmp"`. A file that is created and removed in the same 200 ms shows as `TEMP`. Many `MODIFY` events of one file show as `×N`. A rename and the create after it make one line only if no other event is between them. A change that crosses the end of the 200 ms can show as two lines. A pipe, `--json`, and `--no-smart` print every event as it comes. `--smart` turns the merge on for a pipe, but you cannot use it with `--json`. Rules and the summary use the original events, so the summary can count more events than the screen shows.
+
 By default, `edc` excludes `.git`, `node_modules`, `.venv`, `venv`, `__pycache__`, `.mypy_cache`, `.pytest_cache`, `.ruff_cache`, `.tox`, `.next`, and `.gradle` at any depth. It does not exclude `build` or `dist`, because you can watch build output. Repeat `--exclude 'build/**'` to add exclusions. To watch the default directories too, use `--no-default-exclude`. Your `--exclude` patterns still apply.
 
 On Linux, `--driver` selects how `edc` watches the tree. The default is `auto`.

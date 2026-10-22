@@ -314,6 +314,8 @@ var commandDocs = []commandDoc{
 			{"--debounce 200ms", "watchfs.option.debounce"},
 			{"--timeout 30s (fs)", "watchfs.option.timeout"},
 			{"--dry-run", "watchfs.option.dry_run"},
+			{"--smart", "watchfs.option.smart"},
+			{"--no-smart", "watchfs.option.no_smart"},
 		},
 		usesCommon: true,
 		subcommands: []subcommandDoc{

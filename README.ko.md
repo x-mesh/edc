@@ -313,6 +313,8 @@ edc watch fs --duration 1m --json events.jsonl
 
 이벤트는 `create`, `modify`, `remove`, `rename`입니다. `rename`의 path는 원래 이름이며 감시 범위 안의 새 이름은 create로 나타날 수 있습니다. 파일 읽기(access)와 metadata-only 변경은 감지 대상이 아닙니다. `--event`는 쉼표로 여러 이벤트를 받으며 `--match`는 감시 루트 기준 glob입니다. `*.go`는 바로 아래 파일, `**/*.go`는 모든 깊이의 파일에 일치합니다. 하위 경로를 실제로 감시하려면 `--recursive`도 지정합니다.
 
+터미널에서 `edc watch fs`는 한 변경의 이벤트를 한 줄로 합쳐 보여 줍니다. 이것이 `--smart`입니다. 이벤트를 200ms 동안 모았다가 결과만 출력합니다. 임시 파일에 쓰고 이름을 바꿔 교체하는 저장은 `CREATE "dir/final"  ← "final.tmp"`처럼 한 줄이 됩니다. 같은 200ms 안에 만들었다가 지운 파일은 `TEMP`로, 한 파일의 `MODIFY`가 여러 번이면 `×N`으로 보입니다. 이름 바꿈과 그 뒤의 create는 둘 사이에 다른 이벤트가 없을 때만 한 줄이 됩니다. 200ms의 끝에 걸친 변경은 두 줄로 보일 수 있습니다. pipe로 보낼 때, `--json`, `--no-smart`는 이벤트를 오는 대로 모두 출력합니다. `--smart`는 pipe에서도 합치기를 켜지만 `--json`과 함께 쓸 수 없습니다. 규칙과 요약은 원본 이벤트를 쓰므로, 요약의 이벤트 수가 화면에 보이는 줄보다 많을 수 있습니다.
+
 기본으로 `.git`, `node_modules`, `.venv`, `venv`, `__pycache__`, `.mypy_cache`, `.pytest_cache`, `.ruff_cache`, `.tox`, `.next`, `.gradle`을 모든 깊이에서 제외합니다. 빌드 결과물을 감시할 수 있도록 `build`와 `dist`는 제외하지 않습니다. `--exclude 'build/**'`처럼 제외 glob을 반복해서 추가할 수 있습니다. 기본 제외 디렉터리도 감시하려면 `--no-default-exclude`를 쓰며, 이때도 `--exclude`로 준 패턴은 적용됩니다.
 
 Linux에서는 `--driver`로 감시 방식을 고릅니다. 기본값은 `auto`입니다.

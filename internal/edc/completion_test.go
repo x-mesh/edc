@@ -150,3 +150,13 @@ func TestCompletionOffersShortRecursiveForWatchFS(t *testing.T) {
 		t.Fatal("bash watch fs completion must offer -r")
 	}
 }
+
+func TestCompletionOffersSmartForWatchFS(t *testing.T) {
+	for name, script := range map[string]string{"zsh": zshCompletion, "bash": bashCompletion} {
+		for _, option := range []string{"--smart", "--no-smart"} {
+			if !strings.Contains(script, option) {
+				t.Errorf("%s watch fs completion misses %s", name, option)
+			}
+		}
+	}
+}

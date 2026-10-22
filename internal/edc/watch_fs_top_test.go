@@ -2,6 +2,7 @@ package edc
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -138,9 +139,17 @@ func TestFSWatchStreamNeverPrintsTheTopDirectoriesInJSON(t *testing.T) {
 	if strings.Contains(text, "most active directories") {
 		t.Errorf("the table is in the JSON output:\n%s", text)
 	}
+	records := 0
 	for _, line := range strings.Split(strings.TrimSpace(text), "\n") {
-		if !strings.HasPrefix(line, "{") || !strings.HasSuffix(line, "}") {
-			t.Errorf("a line is not a JSON record: %q", line)
+		var record map[string]interface{}
+		if err := json.Unmarshal([]byte(line), &record); err != nil || record["type"] == nil {
+			t.Errorf("a line is not a JSON record: %q (%v)", line, err)
+			continue
 		}
+		records++
+	}
+	// ready, 이벤트 14건과 summary가 모두 JSON 기록이어야 한다.
+	if records != 16 {
+		t.Errorf("%d JSON records, want 16", records)
 	}
 }

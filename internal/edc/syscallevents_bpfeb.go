@@ -39,7 +39,9 @@ type syscallEventsSyscallEvent struct {
 	Tid         uint32
 	Nr          uint32
 	PathState   uint8
-	Pad         [3]uint8
+	OpenKind    uint8
+	Reason      uint8
+	Pad         uint8
 	Comm        [16]int8
 	Path        [256]int8
 }
@@ -61,11 +63,14 @@ type syscallEventsSyscallKey struct {
 }
 
 type syscallEventsSyscallRule struct {
-	_        structs.HostLayout
-	Allowed  uint8
-	PathArg  uint8
-	PathGone uint8
-	Pad      uint8
+	_         structs.HostLayout
+	Allowed   uint8
+	PathArg   uint8
+	PathGone  uint8
+	File      uint8
+	FlagsArg  uint8
+	FlagsMode uint8
+	Pad       [2]uint8
 }
 
 type syscallEventsSyscallStart struct {
@@ -113,6 +118,7 @@ const (
 	syscallEventsVarCompatExitGroupNr     = "compat_exit_group_nr"
 	syscallEventsVarCompatExitNr          = "compat_exit_nr"
 	syscallEventsVarEventErrors           = "event_errors"
+	syscallEventsVarEventFiles            = "event_files"
 	syscallEventsVarEventLimit            = "event_limit"
 	syscallEventsVarExitGroupNr           = "exit_group_nr"
 	syscallEventsVarExitNr                = "exit_nr"
@@ -205,6 +211,7 @@ type syscallEventsVariableSpecs struct {
 	CompatExitGroupNr     *ebpf.VariableSpec `ebpf:"compat_exit_group_nr"`
 	CompatExitNr          *ebpf.VariableSpec `ebpf:"compat_exit_nr"`
 	EventErrors           *ebpf.VariableSpec `ebpf:"event_errors"`
+	EventFiles            *ebpf.VariableSpec `ebpf:"event_files"`
 	EventLimit            *ebpf.VariableSpec `ebpf:"event_limit"`
 	ExitGroupNr           *ebpf.VariableSpec `ebpf:"exit_group_nr"`
 	ExitNr                *ebpf.VariableSpec `ebpf:"exit_nr"`
@@ -282,6 +289,7 @@ type syscallEventsVariables struct {
 	CompatExitGroupNr     *ebpf.Variable `ebpf:"compat_exit_group_nr"`
 	CompatExitNr          *ebpf.Variable `ebpf:"compat_exit_nr"`
 	EventErrors           *ebpf.Variable `ebpf:"event_errors"`
+	EventFiles            *ebpf.Variable `ebpf:"event_files"`
 	EventLimit            *ebpf.Variable `ebpf:"event_limit"`
 	ExitGroupNr           *ebpf.Variable `ebpf:"exit_group_nr"`
 	ExitNr                *ebpf.Variable `ebpf:"exit_nr"`

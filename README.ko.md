@@ -2691,10 +2691,11 @@ trace가 도는 동안 host의 모든 kernel lock 경합과 futex 기다림이 B
 
 Linux 5.15에는 contention tracepoint가 없습니다. 그러면 알림을 출력하고 futex 기다림만 보여 줍니다. BTF와 task local storage가 필요합니다.
 
-Linux에서 `trace syscall`을 사용하면 process별 system call 수와 시간을 볼 수 있습니다. edc는 kernel 안에서 세고, 끝날 때 요약을 한 번 출력합니다. `--slow`나 `--errors`를 주면 조건에 맞는 호출도 하나씩 출력합니다.
+Linux에서 `trace syscall`을 사용하면 process별 system call 수와 시간을 볼 수 있습니다. edc는 kernel 안에서 셉니다. terminal에서는 표를 1초마다 다시 그리고, Ctrl-C를 누르면 최종 표를 출력합니다. 출력을 파이프로 넘기거나 `--json`을 쓰면 끝날 때 요약을 한 번 출력합니다. `--slow`나 `--errors`를 주면 조건에 맞는 호출도 하나씩 출력합니다.
 
 ```bash
 ./bin/edc trace syscall --duration 10s
+./bin/edc trace syscall -- curl -s https://example.com
 ./bin/edc trace syscall --process nginx,1234 --duration 30s
 ./bin/edc trace syscall --group-by syscall --json syscall.json
 ./bin/edc trace syscall --container web --group-by cgroup
@@ -2702,9 +2703,23 @@ Linux에서 `trace syscall`을 사용하면 process별 system call 수와 시간
 ./bin/edc trace syscall --syscall openat,statx --slow 10ms --raw
 ```
 
-행 하나는 process 이름 하나와 system call 하나입니다. 행마다 호출 수, 오류 수와 가장 많은 errno, 호출 안에 머문 시간의 합계, 평균, p95, 최댓값을 보여 줍니다. 시간은 CPU 시간이 아니라 호출 안에 머문 실제 시간입니다. 그래서 `epoll_wait`나 `futex`처럼 기다리는 호출이 위에 옵니다. 합계는 모든 스레드의 시간을 더하므로 trace 시간보다 길 수 있습니다. 행은 합계 시간 순서입니다. 표에는 20행이 나오고, `--json`에는 모든 행이 들어갑니다. p95는 `top -d`와 같은 histogram bucket의 위쪽 경계라서 `<1.05s`처럼 보입니다.
+행 하나는 process 이름 하나와 system call 하나입니다. 행마다 호출 수, 오류 수와 가장 많은 errno, 호출 안에 머문 시간의 합계, 평균, p95, 최댓값을 보여 줍니다. 시간은 CPU 시간이 아니라 호출 안에 머문 실제 시간입니다. 그래서 `epoll_wait`나 `futex`처럼 기다리는 호출이 위에 옵니다. 합계는 모든 스레드의 시간을 더하므로 trace 시간보다 길 수 있습니다. 행은 합계 시간 순서입니다. 표에는 20행이 나오고, `--all`을 주면 모든 행이 나옵니다. `--json`에는 늘 모든 행이 들어갑니다. p95는 `top -d`와 같은 histogram bucket의 위쪽 경계라서 `<1.05s`처럼 보입니다.
 
 `--group-by syscall`, `--group-by process`, `--group-by cgroup`은 한 열로 묶어 더합니다. `--process`는 쉼표로 나눈 PID와 command 이름을 받습니다. kernel 안에서 비교하므로 이름은 process의 command 이름과 정확히 같아야 하고, 15 byte까지만 봅니다. PID는 그 process의 모든 스레드에 맞습니다. `--container`는 container 하나의 호출만 셉니다.
+
+빨리 끝나는 명령은 `--` 뒤에 적어 trace할 수 있습니다. edc는 trace를 켠 뒤에 새 cgroup 안에서 명령을 시작하므로 첫 호출부터 셉니다. 명령이 시작한 process의 호출도 함께 셉니다. 명령이 끝나면 trace도 끝나고, edc는 명령의 종료 코드를 돌려줍니다. root로 실행해야 하며, `--process`, `--container`, `--duration`은 명령과 함께 쓸 수 없습니다. cgroup v2를 쓸 수 없으면 명령 자신의 호출만 세고 경고를 출력합니다.
+
+`FILES` 표도 함께 출력하며, 실시간 화면에도 보입니다. 행은 경로 하나이고, 열은 읽기로 연 횟수(`READ`), 쓰기로 연 횟수(`WRITE`), `mkdir`, `link`, `symlink` 호출과 `O_EXCL`로 연 횟수(`CREATE`), 삭제(`DELETE`), 이름 변경(`RENAME`), 그 밖의 변경(`OTHER`)입니다. 이름 변경 행에는 원래 경로가 나옵니다. kernel은 `O_CREAT`로 연 호출이 파일을 새로 만들었는지 알려 주지 않으므로, 파일을 만드는 open도 `WRITE`에 들어갑니다. 실패한 `stat`과 `access` 호출도 `OTHER`에 세므로, process가 찾았지만 없었던 파일을 표에서 볼 수 있습니다. `openat2`는 flags를 읽지 않으므로 `OTHER`에 들어갑니다. `ERRORS` 열은 실패한 호출 수와 가장 많은 errno입니다. 실패한 open도 해당 열에 세어 넣습니다.
+
+파일을 바꾼 행이 먼저 나오고, 실패한 호출이 있는 행, 읽기만 한 행 순서입니다. 표에는 20행이 보이고, `--all`을 주면 모든 행을 보여 줍니다. `--json`의 `files`에도 모든 행이 들어 있습니다. 표를 빼려면 `--no-files`를 쓰십시오. edc는 파일 event를 CPU마다 1초에 최대 10,000건, 경로를 최대 10,000개까지 기록합니다. 놓친 event가 있으면 표 아래에 알립니다.
+
+`trace syscall`도 `edc top`처럼 event를 남깁니다. 조건이 5초 이상 이어지면 event가 되고, 꺼졌다가 5초 안에 다시 켜지면 같은 event입니다. 실시간 화면에는 최근 event 3개가 보이고, 끝난 뒤의 출력에는 모든 event가 시작 시각, 지속 시간, 초당 최댓값, 횟수와 함께 나옵니다. `●`는 조건이 지금 켜져 있다는 뜻입니다. `--json`의 `events`에도 들어갑니다. 종류는 세 가지입니다.
+
+- `error loop`: 한 process가 같은 system call을 같은 errno로 초당 100번 이상 실패합니다. 바쁜 프로그램에서 정상인 오류는 세지 않습니다: `EAGAIN`, `EINTR`, `EINPROGRESS`, 재시작 errno, `futex`의 `ETIMEDOUT`, `wait4`의 `ECHILD`.
+- `missing path`: 한 경로에 대한 호출이 초당 50번 이상 실패합니다. 예를 들어 없는 파일을 계속 `stat`하는 경우입니다. 이 종류는 파일 event를 쓰므로 파일 표가 켜져 있어야 하고, 파일 event의 상한이 적용됩니다. 그래서 최댓값이 실제보다 낮을 수 있습니다.
+- `call spike`: 한 process가 한 system call을 초당 1,000번 이상, 그리고 최근 30초 평균의 10배 이상 부릅니다. 늘 많이 부르는 process는 event가 아닙니다. 처음 5초는 평균이 없어 event를 만들지 않습니다.
+
+기준값은 고정입니다. `--slow`, `--errors`, `--raw`를 쓰면 호출을 하나씩 출력하므로 event를 만들지 않습니다.
 
 `--syscall`에 쉼표로 나눈 이름을 주면 그 system call만 셉니다. kernel 안에서 번호를 확인하므로 다른 호출은 map에 들어가지 않습니다. 이름은 CPU 아키텍처의 system call 표에서 찾습니다. amd64에서는 같은 이름의 32비트 호출도 함께 고릅니다.
 

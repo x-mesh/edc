@@ -2,8 +2,13 @@ package edc
 
 import (
 	"bytes"
+	"errors"
+	"os"
+	"os/exec"
 	"reflect"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -157,7 +162,7 @@ func TestSyscallReportPrintsAlignedRows(t *testing.T) {
 	if !strings.HasPrefix(header, "PROCESS  SYSCALL") || strings.Index(header, "CALLS")+len("CALLS") != strings.Index(first, "2")+1 {
 		t.Fatalf("columns do not line up:\n%s", text)
 	}
-	for _, want := range []string{"cron     read", "3 ERESTART_RESTARTBLOCK", "10.00ms", "<16.38ms", "... 4 more rows in --json", "IN FLIGHT AT STOP", "epoll_wait                    2  900.00ms", "unmatched -", "stats 25/4096"} {
+	for _, want := range []string{"cron     read", "3 ERESTART_RESTARTBLOCK", "10.00ms", "<16.38ms", "... 4 more rows. Add --all to show every row, or use --json", "IN FLIGHT AT STOP", "epoll_wait                    2  900.00ms", "unmatched -", "stats 25/4096"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("output has no %q:\n%s", want, text)
 		}
@@ -178,7 +183,13 @@ func TestRunTraceSyscallRejectsBadOptionsBeforeTracing(t *testing.T) {
 		{"--duration", "2m"},
 		{"--process", "api,,cron"},
 		{"extra"},
-		{"--raw"},
+		{"--raw", "--no-files"},
+		{"--"},
+		{"--process", "api", "--", "ls"},
+		{"--container", "web", "--", "ls"},
+		{"--duration", "5s", "--", "ls"},
+		{"--files", "--no-files"},
+		{"--json", "-", "--", "ls"},
 	} {
 		captureTraceStderr(t, func() {
 			if code := runTraceSyscall(args); code != 2 {
@@ -250,5 +261,301 @@ func TestRunTraceSyscallRejectsBadEventOptions(t *testing.T) {
 				t.Errorf("runTraceSyscall(%q) = %d, want 2", args, code)
 			}
 		})
+	}
+}
+
+func TestSyscallLiveViewFitsTheScreenHeight(t *testing.T) {
+	// 표가 가득 차는 수집 결과: 행 40개, 진행 중인 호출 서로 다른 15가지, 파일 30개.
+	var collection syscallCollection
+	for index := range 40 {
+		collection.samples = append(collection.samples, syscallSample{Process: "api", Syscall: "call_" + strconv.Itoa(index), Calls: 1, Timed: 1, SumNS: uint64(index + 1)})
+	}
+	for index := range 15 {
+		collection.inFlight = append(collection.inFlight, syscallInFlightSample{Process: "api", Syscall: "wait_" + strconv.Itoa(index), ElapsedNS: uint64(index + 1)})
+	}
+	var table syscallFileTable
+	for index := range 30 {
+		table.add(syscallEvent{Syscall: "openat", Path: "/f/" + strconv.Itoa(index), Action: "write"})
+	}
+	for _, test := range []struct {
+		height                int
+		files                 bool
+		rows, inFlight, shown int
+	}{
+		{24, false, 11, 2, 0},
+		{60, false, syscallTraceRows, 8, 0},
+		{8, false, 1, 0, 0},
+		{24, true, 8, 0, 4},
+		{40, true, 12, 4, 8},
+		{60, true, syscallTraceRows, 8, 14},
+	} {
+		view := syscallLiveView(test.height, test.files, 0)
+		if view.rows != test.rows || view.inFlight != test.inFlight || view.files != test.shown || !view.live {
+			t.Errorf("height %d files %t: view = %+v, want rows %d, in-flight %d, files %d", test.height, test.files, view, test.rows, test.inFlight, test.shown)
+		}
+		report := syscallReportFor(collection, "")
+		if test.files {
+			report.Files, report.Summary.Files = table.report(), true
+		}
+		var output bytes.Buffer
+		report.render(&output, view)
+		// 마지막 줄은 비워 둬야 표를 다시 그릴 때 화면이 스크롤하지 않는다.
+		if lines := strings.Count(output.String(), "\n"); lines > test.height-1 && test.height >= 24 {
+			t.Errorf("height %d files %t: %d lines overflow the screen:\n%s", test.height, test.files, lines, output.String())
+		}
+	}
+}
+
+func TestSyscallLiveRenderShowsRateAndCtrlC(t *testing.T) {
+	var output bytes.Buffer
+	syscallReportFor(syscallTestCollection(), "").render(&output, syscallView{rows: 5, inFlight: 5, live: true, rate: 1234.4})
+	for _, want := range []string{"rate 1234/s", "IN FLIGHT", "Ctrl-C stops and prints the final table"} {
+		if !strings.Contains(output.String(), want) {
+			t.Errorf("live output lacks %q:\n%s", want, output.String())
+		}
+	}
+	if strings.Contains(output.String(), "AT STOP") || strings.Contains(output.String(), "--json") {
+		t.Errorf("live output uses the final-table wording:\n%s", output.String())
+	}
+	var final bytes.Buffer
+	syscallReportFor(syscallTestCollection(), "").print(&final)
+	if strings.Contains(final.String(), "Ctrl-C") || strings.Contains(final.String(), "rate") {
+		t.Errorf("final output carries live wording:\n%s", final.String())
+	}
+}
+
+func TestSyscallLiveWriterRedrawsWithTheCallRate(t *testing.T) {
+	file, err := os.CreateTemp(t.TempDir(), "live")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	write := newSyscallSnapshotHandler(file, "", nil, nil, true)
+	first := syscallTestCollection()
+	first.summary.DurationMS = 1000
+	write(first)
+	second := syscallTestCollection()
+	second.summary.DurationMS = 3000
+	second.samples[0].Calls += 2000
+	write(second)
+	data, err := os.ReadFile(file.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	if got := strings.Count(text, syscallLiveHome); got != 2 || strings.Count(text, syscallLiveEraseBelow) != 2 {
+		t.Errorf("frames = %d, want 2 that start at Home and erase below:\n%s", got, text)
+	}
+	// 화면을 먼저 지우면 깜빡인다. 프레임은 지우지 않고 덮어쓴다.
+	if strings.Contains(text, syscallLiveClear) {
+		t.Errorf("a frame clears the screen before it draws:\n%q", text)
+	}
+	if !strings.Contains(text, syscallLiveEraseLine+"\n") {
+		t.Errorf("the lines do not erase their old tail:\n%q", text)
+	}
+	if !strings.Contains(text, "1000/s") {
+		t.Errorf("second frame lacks a rate of 1000/s (2000 calls over 2s):\n%s", text)
+	}
+}
+
+func TestTraceCommandExitCodeFollowsTheShell(t *testing.T) {
+	for _, test := range []struct {
+		script string
+		want   int
+	}{{"exit 0", 0}, {"exit 3", 3}, {"kill -9 $$", 137}} {
+		command := &traceCommand{waitErr: exec.Command("sh", "-c", test.script).Run()}
+		if got := command.exitCode(); got != test.want {
+			t.Errorf("%q: exit code = %d, want %d", test.script, got, test.want)
+		}
+	}
+	if got := (&traceCommand{waitErr: errors.New("wait failed")}).exitCode(); got != 1 {
+		t.Errorf("a wait error gave %d, want 1", got)
+	}
+}
+
+func TestTraceCommandDoesNotStartAfterAnInterrupt(t *testing.T) {
+	command := &traceCommand{argv: []string{"true"}, path: "/bin/true", done: make(chan struct{})}
+	command.interrupt(syscall.SIGINT)
+	if err := command.start(nil); !errors.Is(err, errTraceCommandInterrupted) {
+		t.Fatalf("start after an interrupt = %v", err)
+	}
+}
+
+func TestPrepareTraceCommandRejectsAMissingCommand(t *testing.T) {
+	if _, err := prepareTraceCommand([]string{"edc-no-such-command"}); err == nil {
+		t.Fatal("a missing command was accepted")
+	}
+}
+
+func TestSyscallFileActionFollowsTheOpenFlags(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		kind uint8
+		want string
+	}{
+		{"openat", 0, "read"},
+		{"openat", syscallOpenWrite, "write"},
+		{"openat", syscallOpenWrite | syscallOpenCreate, "write"},
+		{"openat", syscallOpenWrite | syscallOpenCreate | syscallOpenExcl, "create"},
+		{"open", syscallOpenCreate, "create"},
+		{"creat", syscallOpenWrite | syscallOpenCreate | syscallOpenTrunc, "write"},
+		{"openat2", syscallOpenUnknown, "other"},
+		{"truncate", 0, "write"},
+		{"unlinkat", 0, "delete"},
+		{"rmdir", 0, "delete"},
+		{"renameat2", 0, "rename"},
+		{"mkdir", 0, "create"},
+		{"symlinkat", 0, "create"},
+		{"fchmodat", 0, "other"},
+		{"statx", 0, "other"},
+		{"faccessat2", 0, "other"},
+		{"read", 0, ""},
+		{"getdents64", 0, ""},
+	} {
+		if got := syscallFileAction(test.name, test.kind); got != test.want {
+			t.Errorf("syscallFileAction(%q, %d) = %q, want %q", test.name, test.kind, got, test.want)
+		}
+	}
+}
+
+// 파일 표에 넣는 호출은 모두 경로를 읽어야 한다. 경로 표에 빠지면 BPF가 경로 없는 event를 내서 표가 비어 보인다.
+func TestSyscallFileCallsAllReadAPath(t *testing.T) {
+	for name := range syscallFileCalls {
+		if _, ok := syscallPathArgs[name]; !ok {
+			t.Errorf("%s is a file call without a path argument", name)
+		}
+	}
+}
+
+func TestSyscallFileTableCountsAttemptsAndErrors(t *testing.T) {
+	var table syscallFileTable
+	for _, event := range []syscallEvent{
+		{Syscall: "openat", Path: "/etc/app.conf", Action: "read", Errno: "ENOENT"},
+		{Syscall: "openat", Path: "/etc/app.conf", Action: "read", Errno: "ENOENT"},
+		{Syscall: "openat", Path: "/tmp/out", Action: "create"},
+		{Syscall: "write", Path: "/ignored", Action: ""},
+		{Syscall: "unlinkat", Path: "/tmp/out", Action: "delete"},
+		{Syscall: "openat", PathUnreadable: true, Action: "read"},
+		{Syscall: "openat", Path: "/very/long", PathTruncated: true, Action: "write"},
+	} {
+		table.add(event)
+	}
+	rows := table.report()
+	if len(rows) != 4 {
+		t.Fatalf("rows = %+v", rows)
+	}
+	byPath := map[string]syscallFileRow{}
+	for _, row := range rows {
+		byPath[row.Path] = row
+	}
+	conf := byPath["/etc/app.conf"]
+	if conf.Read != 2 || conf.Errors != 2 || conf.errnoText() != "2 ENOENT" {
+		t.Errorf("conf row = %+v", conf)
+	}
+	if out := byPath["/tmp/out"]; out.Create != 1 || out.Delete != 1 {
+		t.Errorf("out row = %+v", out)
+	}
+	paths := map[string]bool{}
+	for _, row := range rows {
+		paths[row.Path] = true
+	}
+	if !paths[syscallUnreadablePath] || !paths["/very/long…"] || paths["/ignored"] {
+		t.Errorf("paths = %v", paths)
+	}
+}
+
+func TestSyscallFilesTablePrintsAfterTheCallTable(t *testing.T) {
+	report := syscallReportFor(syscallTestCollection(), "")
+	var table syscallFileTable
+	table.add(syscallEvent{Syscall: "openat", Path: "/etc/app.conf", Action: "read", Errno: "ENOENT"})
+	report.Files = table.report()
+	report.Summary.Files = true
+	var output bytes.Buffer
+	report.print(&output)
+	text := output.String()
+	if !strings.Contains(text, "FILES: WRITE includes opens that create the file") || !strings.Contains(text, "1 ENOENT /etc/app.conf") {
+		t.Errorf("no file table:\n%s", text)
+	}
+	if strings.Index(text, "FILES") < strings.Index(text, "IN FLIGHT") || !strings.Contains(text, "events") {
+		t.Errorf("the file table is out of order or the event counters are missing:\n%s", text)
+	}
+	report.Summary.RingLost = 3
+	output.Reset()
+	report.print(&output)
+	if !strings.Contains(output.String(), "the table is incomplete: edc did not record 3 file events") {
+		t.Errorf("lost events are not reported:\n%s", output.String())
+	}
+	var without bytes.Buffer
+	syscallReportFor(syscallTestCollection(), "").print(&without)
+	if strings.Contains(without.String(), "FILES") {
+		t.Errorf("a trace without --files prints a file table:\n%s", without.String())
+	}
+}
+
+func TestSyscallAllShowsEveryRow(t *testing.T) {
+	var collection syscallCollection
+	for index := range 30 {
+		collection.samples = append(collection.samples, syscallSample{Process: "api", Syscall: "call_" + strconv.Itoa(index), Calls: 1, Timed: 1, SumNS: uint64(index + 1)})
+	}
+	var table syscallFileTable
+	for index := range 30 {
+		table.add(syscallEvent{Syscall: "openat", Path: "/f/" + strconv.Itoa(index), Action: "read"})
+	}
+	report := syscallReportFor(collection, "")
+	report.Files = table.report()
+	var limited, all bytes.Buffer
+	report.render(&limited, syscallFinalView(false))
+	report.render(&all, syscallFinalView(true))
+	if !strings.Contains(limited.String(), "... 10 more rows. Add --all to show every row, or use --json") || strings.Count(limited.String(), "more rows") != 2 {
+		t.Errorf("limited output lacks the hint for both tables:\n%s", limited.String())
+	}
+	if strings.Contains(all.String(), "more rows") || !strings.Contains(all.String(), "call_0 ") || !strings.Contains(all.String(), "/f/29") {
+		t.Errorf("--all output still hides rows:\n%s", all.String())
+	}
+}
+
+func TestSyscallFileTableSortsChangedPathsFirst(t *testing.T) {
+	var table syscallFileTable
+	for range 50 {
+		table.add(syscallEvent{Syscall: "openat", Path: "/lib/libc.so.6", Action: "read"})
+	}
+	table.add(syscallEvent{Syscall: "statx", Path: "/etc/missing.conf", Action: "other", Errno: "ENOENT"})
+	table.add(syscallEvent{Syscall: "openat", Path: "/var/log/app.log", Action: "write"})
+	table.add(syscallEvent{Syscall: "unlinkat", Path: "/tmp/x", Action: "delete"})
+	table.add(syscallEvent{Syscall: "unlinkat", Path: "/tmp/x", Action: "delete"})
+	var paths []string
+	for _, row := range table.report() {
+		paths = append(paths, row.Path)
+	}
+	if want := []string{"/tmp/x", "/var/log/app.log", "/etc/missing.conf", "/lib/libc.so.6"}; !reflect.DeepEqual(paths, want) {
+		t.Errorf("order = %v, want %v", paths, want)
+	}
+}
+
+func TestSyscallFileTableStopsAddingPathsAtTheLimit(t *testing.T) {
+	var table syscallFileTable
+	for index := range syscallFilePathMax + 5 {
+		table.add(syscallEvent{Syscall: "openat", Path: "/f/" + strconv.Itoa(index), Action: "read"})
+	}
+	table.add(syscallEvent{Syscall: "openat", Path: "/f/0", Action: "read"})
+	rows := table.report()
+	if len(rows) != syscallFilePathMax || table.dropped != 5 {
+		t.Fatalf("rows = %d, dropped = %d", len(rows), table.dropped)
+	}
+	var counted uint64
+	for _, row := range rows {
+		if row.Path == "/f/0" {
+			counted = row.Read
+		}
+	}
+	if counted != 2 {
+		t.Errorf("a path that is already in the table stopped counting: %d", counted)
+	}
+	report := syscallReportFor(syscallTestCollection(), "")
+	report.Files, report.FilesDropped, report.Summary.Files = rows, table.dropped, true
+	var output bytes.Buffer
+	report.print(&output)
+	if !strings.Contains(output.String(), "the table holds the first 10000 paths: 5 file events of other paths are not in it") {
+		t.Errorf("no notice about the path limit:\n%s", output.String())
 	}
 }

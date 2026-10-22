@@ -2,6 +2,7 @@ package edc
 
 import (
 	"errors"
+	"os"
 	"strings"
 	"testing"
 )
@@ -11,7 +12,7 @@ func TestInfoResourcesRanksRSSWithoutChangingTheProcessList(t *testing.T) {
 	var output strings.Builder
 	printInfoResources(&output, infoMemory{Total: 8 << 30, Available: 3 << 30, Basis: "test estimate", Details: []infoMemoryDetail{{"Cache", 1 << 30}}}, nil, infoSignals{}, processes, nil, []infoCapability{{"CPU wait / I/O latency", "permission required", "missing CAP_BPF\nCAP_PERFMON"}}, false, true)
 	text := output.String()
-	for _, want := range []string{"Memory Status", "Available: 3.00 GB", "Basis: test estimate", "Cache: 1.00 GB", "Processes observed: 4", "Threads observed: 5 (2/4 processes)", "memory-heavy", "permission required", "missing CAP_BPF CAP_PERFMON"} {
+	for _, want := range []string{"📊 Memory Status", "Available: 3.00 GB", "Basis: test estimate", "Cache: 1.00 GB", "Processes observed: 4", "Threads observed: 5 (2/4 processes)", "memory-heavy", "permission required", "missing CAP_BPF CAP_PERFMON"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("missing %q: %s", want, text)
 		}
@@ -58,10 +59,10 @@ func TestInfoCompactMemoryKeepsValuesAndMovesExplanationToVerbose(t *testing.T) 
 	printInfoResources(&compact, memory, nil, infoSignals{}, nil, nil, nil, false, false)
 	printInfoResources(&verbose, memory, nil, infoSignals{}, nil, nil, nil, false, true)
 	section := strings.Split(strings.Split(compact.String(), "Memory Status\n")[1], "\n\n")[0]
-	if len(strings.Split(section, "\n")) != 3 {
-		t.Fatalf("compact memory must use three value rows: %q", section)
+	if len(strings.Split(section, "\n")) != 4 {
+		t.Fatalf("compact memory must use four value rows: %q", section)
 	}
-	for _, want := range []string{"Used: 5.00 GB / 8.00 GB", "Available: 3.00 GB", "File-backed: 1.00 GB", "Wired: 2.00 GB", "Compressed physical: 0.00 GB", "Compressed original: 0.00 GB"} {
+	for _, want := range []string{"Used: 5.00 GB / 8.00 GB", "Available: 3.00 GB", "Swap: none", "File-backed: 1.00 GB", "Wired: 2.00 GB", "Compressed physical: 0.00 GB", "Compressed original: 0.00 GB"} {
 		if !strings.Contains(section, want) {
 			t.Fatalf("compact output lost %q: %q", want, section)
 		}
@@ -94,7 +95,7 @@ func TestInfoCompactSystemKeepsHostIdentityAndVerboseKernel(t *testing.T) {
 	var compact, verbose strings.Builder
 	printInfo(&compact, "test", details, nil, nil, public, infoSignals{}, false, false)
 	printInfo(&verbose, "test", details, nil, nil, public, infoSignals{}, false, true)
-	for _, want := range []string{"host", "macOS 27", "arm64", "M4", "16 cores", "64.00 GB", "Files (edc soft/hard)", "Swap:", "192.0.2.1", "city", "region", "country", "zone", "provider"} {
+	for _, want := range []string{"host", "macOS 27", "arm64", "M4", "16 cores", "64.00 GB", "Files (edc soft/hard)", "192.0.2.1", "city", "region", "country", "zone", "provider"} {
 		if !strings.Contains(compact.String(), want) {
 			t.Fatalf("compact system lost %q", want)
 		}
@@ -157,6 +158,49 @@ func TestInfoListenBreaksExposedDownByScope(t *testing.T) {
 	local := render(listenSocket{Proto: "tcp", Address: "127.0.0.1", Port: 80, Process: "a", PID: "1"})
 	if !strings.Contains(local, "Exposed 0 · ") || strings.Contains(local, "Exposed 0 (") {
 		t.Fatalf("output:\n%s", local)
+	}
+}
+
+// 메모리를 읽지 못해도 호스트 정보에서 읽은 swap은 보여 준다.
+func TestInfoMemoryStatusKeepsSwapWhenMemoryCannotBeRead(t *testing.T) {
+	var output strings.Builder
+	printInfoResources(&output, infoMemory{SwapUsed: 1 << 30, SwapTotal: 4 << 30}, errors.New("Mach read failed"), infoSignals{}, nil, nil, nil, false, false)
+	if !strings.Contains(output.String(), "Unavailable: Mach read failed") || !strings.Contains(output.String(), "Swap: 1.00 GB / 4.00 GB (25.00%)") {
+		t.Fatalf("swap must stay when memory is unavailable:\n%s", output.String())
+	}
+}
+
+func TestInfoMemoryStatusShowsSwapAndSystemSectionDoesNot(t *testing.T) {
+	var memory, system strings.Builder
+	printInfoResources(&memory, infoMemory{Total: 8 << 30, Available: 3 << 30, SwapUsed: 1 << 30, SwapTotal: 4 << 30}, nil, infoSignals{}, nil, nil, nil, false, false)
+	printInfo(&system, "test", hostDetails{Hostname: "host", SwapUsed: 1 << 30, SwapTotal: 4 << 30}, nil, nil, nil, infoSignals{}, false, false)
+	if !strings.Contains(memory.String(), "Swap: 1.00 GB / 4.00 GB (25.00%)") || strings.Contains(system.String(), "Swap") {
+		t.Fatalf("swap must be in Memory Status only:\n%s\n%s", memory.String(), system.String())
+	}
+}
+
+// 용량과 사용량이 바이트까지 같은 마운트는 같은 디스크이므로 경로가 가장 짧은 마운트 한 줄로 접는다. -v는 접지 않는다.
+func TestInfoDiskCollapsesMountsThatShareAVolume(t *testing.T) {
+	parent := t.TempDir()
+	short, long, other := parent+"/a", parent+"/recovery-volume", parent+"/other"
+	for _, dir := range []string{short, long, other} {
+		if err := os.Mkdir(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	disks := []diskDetails{
+		{Mount: long, Device: "/dev/disk3s3", Used: 90, Total: 100, Percent: 90},
+		{Mount: short, Device: "/dev/disk3s1", Used: 90, Total: 100, Percent: 90},
+		{Mount: other, Device: "/dev/disk4", Used: 10, Total: 200, Percent: 5},
+	}
+	var compact, verbose strings.Builder
+	printDiskUsage(&compact, disks, nil, false, false)
+	printDiskUsage(&verbose, disks, nil, false, true)
+	if !strings.Contains(compact.String(), "/dev/disk3s1") || strings.Contains(compact.String(), "/dev/disk3s3") || !strings.Contains(compact.String(), "/dev/disk4") || !strings.Contains(compact.String(), " · 2 mounts") {
+		t.Fatalf("shared mounts must collapse into the shortest one:\n%s", compact.String())
+	}
+	if strings.Count(verbose.String(), "/dev/disk") != 3 || strings.Contains(verbose.String(), "mounts") {
+		t.Fatalf("-v must list every mount:\n%s", verbose.String())
 	}
 }
 

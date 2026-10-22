@@ -140,3 +140,13 @@ func TestCompletionOffersTracePostgresAndRedis(t *testing.T) {
 		}
 	}
 }
+
+// -r은 watch fs의 --recursive 짧은 이름이다. 두 셸 모두 -r과 --recursive를 함께 제안해야 한다.
+func TestCompletionOffersShortRecursiveForWatchFS(t *testing.T) {
+	if !strings.Contains(zshCompletion, "'(-r --recursive)'{-r,--recursive}'[") {
+		t.Fatal("zsh watch fs completion must offer -r and --recursive together")
+	}
+	if !strings.Contains(bashCompletion, `compgen -W "-r --recursive --event`) {
+		t.Fatal("bash watch fs completion must offer -r")
+	}
+}

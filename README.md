@@ -338,11 +338,11 @@ For wildcard addresses, all interfaces refers to the observed address family. Th
 
 ### File watching and actions (Linux and macOS)
 
-`edc watch fs` observes changes directly below the current directory by default. Use `--recursive` for subdirectories, including newly created or moved-in directories. Existing files do not produce startup create events. Directory symlinks are not followed.
+`edc watch fs` observes changes directly below the current directory by default. Use `-r` or `--recursive` for subdirectories, including newly created or moved-in directories. Existing files do not produce startup create events. Directory symlinks are not followed.
 
 ```bash
 edc watch fs
-edc watch fs ./src --recursive
+edc watch fs ./src -r
 edc watch fs --event create --match text.txt --exec 'git-kit pull'
 edc watch fs ./src --recursive --event modify --match '**/*.go' --exec 'go test ./...'
 edc watch fs --rules docs/examples/watch.yaml --dry-run

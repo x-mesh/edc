@@ -135,6 +135,22 @@ func (status *fsWatchStatus) close() {
 	status.closed = true
 }
 
+// replaceLast는 바로 앞에 쓴 기록 줄을 지우고 그 자리에 data를 쓴다. rows는 그 줄이 차지한 화면 줄 수다. 상태줄을 지운 뒤 커서를
+// 그만큼 올려 지우고 쓰며, 쓴 뒤에 상태줄을 다시 그린다.
+func (status *fsWatchStatus) replaceLast(rows int, data []byte) error {
+	status.mutex.Lock()
+	defer status.mutex.Unlock()
+	status.clear()
+	if _, err := fmt.Fprintf(status.out, "\x1b[%dA\r\x1b[J", rows); err != nil {
+		return err
+	}
+	if _, err := status.out.Write(data); err != nil {
+		return err
+	}
+	status.draw()
+	return nil
+}
+
 func (status *fsWatchStatus) clear() {
 	if status.shown {
 		io.WriteString(status.out, "\r\x1b[2K")

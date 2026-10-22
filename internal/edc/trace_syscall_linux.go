@@ -115,7 +115,7 @@ func collectSyscallStats(options syscallTraceOptions, stop <-chan struct{}, onEv
 	}
 	if err := errors.Join(
 		variables.SelfTgid.Set(self),
-		variables.FilterProcess.Set(boolByte(len(options.pids)+len(options.comms) > 0)),
+		variables.FilterProcess.Set(boolByte(options.processFiltered())),
 		variables.FilterCgroup.Set(boolByte(options.container != nil)),
 		variables.KeyCgroup.Set(boolByte(options.groupBy == traceGroupByCgroup)),
 		variables.ExitNr.Set(exit),
@@ -125,8 +125,14 @@ func collectSyscallStats(options syscallTraceOptions, stop <-chan struct{}, onEv
 		variables.FilterSyscall.Set(boolByte(len(options.syscalls)+len(options.compatSyscalls) > 0)),
 		variables.SlowNs.Set(uint64(options.slow)),
 		variables.EventErrors.Set(syscallEventErrors(options)),
+		variables.EventFiles.Set(boolByte(options.files)),
 	); err != nil {
 		return syscallCollection{}, fmt.Errorf("set eBPF variable: %w", err)
+	}
+	if options.files {
+		if err := variables.EventLimit.Set(uint32(syscallFileEventLimit)); err != nil {
+			return syscallCollection{}, fmt.Errorf("set eBPF variable: %w", err)
+		}
 	}
 	objects := syscallEventsObjects{}
 	if err := spec.LoadAndAssign(&objects, nil); err != nil {
@@ -165,8 +171,28 @@ func collectSyscallStats(options syscallTraceOptions, stop <-chan struct{}, onEv
 		}
 		links = append(links, attached)
 	}
+	if options.onAttached != nil {
+		allowPID := func(pid uint32) error { return objects.AllowedPids.Put(pid, uint8(1)) }
+		if err := options.onAttached(allowPID); err != nil {
+			return syscallCollection{}, err
+		}
+	}
 	started := time.Now()
 	var events uint64
+	// 첫 표는 부착 직후에 그린다. 1초 동안 화면이 비면 시작되지 않은 것으로 보인다.
+	draw := func() error {
+		snapshot, err := readSyscallSnapshot(objects, statsLimit, selfExcluded, options, time.Since(started), events, options.snapshotInFlight)
+		if err != nil {
+			return err
+		}
+		options.onSnapshot(snapshot)
+		return nil
+	}
+	if options.onSnapshot != nil {
+		if err := draw(); err != nil {
+			return syscallCollection{}, err
+		}
+	}
 	if reader == nil {
 		var deadline <-chan time.Time
 		if options.duration > 0 {
@@ -174,12 +200,29 @@ func collectSyscallStats(options syscallTraceOptions, stop <-chan struct{}, onEv
 			defer timer.Stop()
 			deadline = timer.C
 		}
-		select {
-		case <-stop:
-		case <-deadline:
+		var ticks <-chan time.Time
+		if options.onSnapshot != nil {
+			ticker := time.NewTicker(options.liveInterval)
+			defer ticker.Stop()
+			ticks = ticker.C
+		}
+	wait:
+		for {
+			select {
+			case <-stop:
+				break wait
+			case <-deadline:
+				break wait
+			case <-ticks:
+				if err := draw(); err != nil {
+					return syscallCollection{}, err
+				}
+			}
 		}
 	} else {
 		end := started.Add(options.duration)
+		nextDraw := started.Add(options.liveInterval)
+		drawDue := func() bool { return options.onSnapshot != nil && !time.Now().Before(nextDraw) }
 		finished := func() bool {
 			return traceStopRequested(stop) || (options.duration > 0 && !time.Now().Before(end))
 		}
@@ -189,8 +232,15 @@ func collectSyscallStats(options syscallTraceOptions, stop <-chan struct{}, onEv
 				wake = end
 			}
 			reader.SetDeadline(wake)
-			if err := readSyscallEvents(reader, clockOffset, onEvent, &events, finished); err != nil {
+			// event가 끊이지 않아도 표를 다시 그리도록, 그릴 때가 되면 읽기를 멈춘다.
+			if err := readSyscallEvents(reader, clockOffset, onEvent, &events, func() bool { return finished() || drawDue() }); err != nil {
 				return syscallCollection{}, err
+			}
+			if drawDue() {
+				if err := draw(); err != nil {
+					return syscallCollection{}, err
+				}
+				nextDraw = time.Now().Add(options.liveInterval)
 			}
 		}
 	}
@@ -207,6 +257,12 @@ func collectSyscallStats(options syscallTraceOptions, stop <-chan struct{}, onEv
 			return syscallCollection{}, err
 		}
 	}
+	return readSyscallSnapshot(objects, statsLimit, selfExcluded, options, elapsed, events, true)
+}
+
+// readSyscallSnapshot은 map과 task iterator에서 지금까지의 값을 읽는다. trace를 떼기 전에도 부를 수 있고, 읽어도 값은
+// 지워지지 않는다. events는 ring에서 읽은 event 수다.
+func readSyscallSnapshot(objects syscallEventsObjects, statsLimit uint32, selfExcluded bool, options syscallTraceOptions, elapsed time.Duration, events uint64, withInFlight bool) (syscallCollection, error) {
 	var now unix.Timespec
 	if err := unix.ClockGettime(unix.CLOCK_MONOTONIC, &now); err != nil {
 		return syscallCollection{}, fmt.Errorf("read monotonic clock: %w", err)
@@ -238,11 +294,13 @@ func collectSyscallStats(options syscallTraceOptions, stop <-chan struct{}, onEv
 	if err := iterator.Err(); err != nil {
 		return syscallCollection{}, fmt.Errorf("read syscall stats: %w", err)
 	}
-	inFlight, err := readSyscallInFlight(objects.SyscallIterInFlight, uint64(now.Nano()))
-	if err != nil {
-		return syscallCollection{}, err
+	if withInFlight {
+		inFlight, err := readSyscallInFlight(objects.SyscallIterInFlight, uint64(now.Nano()))
+		if err != nil {
+			return syscallCollection{}, err
+		}
+		collection.inFlight = inFlight
 	}
-	collection.inFlight = inFlight
 	var counters syscallEventsSyscallCounters
 	if err := objects.Counters.Lookup(uint32(0), &counters); err != nil {
 		return syscallCollection{}, fmt.Errorf("read syscall counters: %w", err)
@@ -257,7 +315,7 @@ func collectSyscallStats(options syscallTraceOptions, stop <-chan struct{}, onEv
 	for _, window := range windows {
 		summary.SampledOut += window.Suppressed
 	}
-	if len(options.pids)+len(options.comms)+len(options.syscalls)+len(options.compatSyscalls) == 0 && options.container == nil {
+	if !options.processFiltered() && len(options.syscalls)+len(options.compatSyscalls) == 0 && options.container == nil {
 		unmatched := counters.Values[3]
 		summary.Unmatched = &unmatched
 	}
@@ -310,6 +368,21 @@ func fillSyscallRules(objects syscallEventsObjects, options syscallTraceOptions)
 			rule.PathArg = arg + 1
 			rule.PathGone = boolByte(syscallPathGone[name])
 			rules[nr] = rule
+		}
+	}
+	if options.files {
+		for name, call := range syscallFileCalls {
+			if nr, ok := syscallNumber(runtime.GOARCH, name); ok && nr < syscallNrMax {
+				rule := rules[nr]
+				rule.File, rule.FlagsMode = 1, call.flagsMode
+				if call.failedOnly {
+					rule.File = 2
+				}
+				if call.flagsMode == syscallFlagsArg {
+					rule.FlagsArg = call.flagsArg + 1
+				}
+				rules[nr] = rule
+			}
 		}
 	}
 	allow := func(index uint32) {
@@ -405,6 +478,8 @@ func parseSyscallEvent(sample []byte, clockOffset int64) (syscallEvent, bool) {
 	ret := int64(binary.NativeEndian.Uint64(sample[16:24]))
 	nr := binary.NativeEndian.Uint32(sample[32:36])
 	event := syscallEvent{
+		OpenKind:    sample[37],
+		Reason:      sample[38],
 		TimestampNS: uint64(int64(boot) + clockOffset),
 		Event:       "syscall",
 		PID:         binary.NativeEndian.Uint32(sample[24:28]),
@@ -416,6 +491,9 @@ func parseSyscallEvent(sample []byte, clockOffset int64) (syscallEvent, bool) {
 	}
 	if ret < 0 && ret >= -syscallMaxErrno {
 		event.Errno = syscallErrnoName(uint32(-ret))
+	}
+	if nr&syscallCompatBit == 0 {
+		event.Action = syscallFileAction(event.Syscall, event.OpenKind)
 	}
 	switch sample[36] {
 	case 1:

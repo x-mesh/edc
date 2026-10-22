@@ -3,28 +3,36 @@ package edc
 //go:generate go run trace_syscall_names_gen.go
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"os/signal"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
 	"syscall"
 	"time"
+
+	"golang.org/x/term"
 )
 
 const (
-	traceSyscallUsage   = "edc trace syscall [options]"
+	traceSyscallUsage   = "edc trace syscall [options] [-- <command> [args...]]"
 	traceGroupBySyscall = "syscall"
-	// syscallTraceRows와 syscallInFlightRows는 표에 보이는 행 수다. --json에는 모든 행이 들어간다.
+	// syscallTraceRows와 syscallInFlightRows는 표에 보이는 행 수다. --all은 모든 행을 보이고, --json에는 늘 모든 행이 들어간다.
 	syscallTraceRows    = 20
 	syscallInFlightRows = 10
 	// syscallCommMax는 kernel comm의 길이다. 16 byte 중 마지막은 NUL이라 이름은 15 byte까지 남는다.
 	syscallCommMax = 15
+	// syscallLiveInterval은 실행 중인 표를 다시 그리는 간격이다. 읽는 값은 map의 항목 수만큼이라 짧아도 부담이 작다.
+	syscallLiveInterval = time.Second
+	syscallLiveHeight   = 24
 )
 
 type syscallTraceOptions struct {
@@ -43,9 +51,31 @@ type syscallTraceOptions struct {
 	errorsAll      bool
 	errnos         []uint32
 	raw            bool
+	// onSnapshot은 liveInterval마다 지금까지의 값을 받는다. event를 내지 않을 때만 쓰며, nil이면 끝날 때 한 번만 읽는다.
+	onSnapshot   func(syscallCollection)
+	liveInterval time.Duration
+	// onAttached는 eBPF program을 붙인 직후에 한 번 불린다. 명령을 여기서 시작하므로 첫 호출부터 센다. allowPID로
+	// PID 필터에 번호를 넣는다. waitForPID는 그 번호를 기다리는 동안에도 process 필터를 켠다.
+	onAttached func(allowPID func(uint32) error) error
+	waitForPID bool
+	// files는 파일을 열거나 바꾼 호출을 event로 받아 경로별 표로 모은다. 명령을 실행할 때는 기본으로 켠다.
+	files bool
+	// all은 최종 표에서 행 수 제한을 푼다.
+	all bool
+	// snapshotInFlight는 snapshot마다 진행 중인 호출을 읽는다. task iterator를 돌려서 비싸므로, 화면에 그릴 때만 켠다.
+	snapshotInFlight bool
+}
+
+func (options syscallTraceOptions) processFiltered() bool {
+	return len(options.pids)+len(options.comms) > 0 || options.waitForPID
 }
 
 func (options syscallTraceOptions) eventsEnabled() bool {
+	return options.linesEnabled() || options.files
+}
+
+// linesEnabled는 --slow나 --errors로 호출을 한 줄씩 출력하는지다.
+func (options syscallTraceOptions) linesEnabled() bool {
 	return options.slow > 0 || options.errorsAll || len(options.errnos) > 0
 }
 
@@ -63,6 +93,11 @@ type syscallEvent struct {
 	Path           string  `json:"path,omitempty"`
 	PathTruncated  bool    `json:"path_truncated,omitempty"`
 	PathUnreadable bool    `json:"path_unreadable,omitempty"`
+	// Action은 파일 표에 넣는 호출이 파일에 한 일이다. read, write, create, delete, rename, other 중 하나다.
+	Action string `json:"action,omitempty"`
+	// OpenKind와 Reason은 BPF가 채운다. Reason은 event를 낸 이유로, 줄 출력(EVENT_LINE)과 파일 표(EVENT_FILE)를 나눈다.
+	OpenKind uint8 `json:"-"`
+	Reason   uint8 `json:"-"`
 }
 
 // line은 event 하나를 한 줄로 쓴다. 경로의 제어 문자는 터미널을 바꾸지 못하게 \xNN으로 쓴다.
@@ -123,9 +158,11 @@ type syscallSummary struct {
 	// SlowMS와 ErrorFilter는 event를 낸 조건이다. 둘 다 없으면 event를 내지 않았다.
 	SlowMS      *float64 `json:"slow_ms,omitempty"`
 	ErrorFilter string   `json:"error_filter,omitempty"`
-	Events      uint64   `json:"events,omitempty"`
-	SampledOut  uint64   `json:"sampled_out,omitempty"`
-	RingLost    uint64   `json:"ring_lost,omitempty"`
+	// Files는 파일 표를 모았다는 뜻이다. 모은 때만 events 줄을 낸다.
+	Files      bool   `json:"files,omitempty"`
+	Events     uint64 `json:"events,omitempty"`
+	SampledOut uint64 `json:"sampled_out,omitempty"`
+	RingLost   uint64 `json:"ring_lost,omitempty"`
 }
 
 type syscallCollection struct {
@@ -138,7 +175,12 @@ type syscallReport struct {
 	GroupBy  string               `json:"group_by,omitempty"`
 	Rows     []syscallReportRow   `json:"rows"`
 	InFlight []syscallInFlightRow `json:"in_flight"`
-	Summary  syscallSummary       `json:"summary"`
+	Files    []syscallFileRow     `json:"files,omitempty"`
+	// Events는 조건이 5초 이상 이어진 이상 징후다. 감지하지 않은 trace에서는 없다.
+	Events []syscallAnomaly `json:"events,omitempty"`
+	// FilesDropped는 경로가 syscallFilePathMax개를 넘어 기록하지 못한 파일 event의 수다.
+	FilesDropped uint64         `json:"files_dropped,omitempty"`
+	Summary      syscallSummary `json:"summary"`
 }
 
 // syscallReportRow의 P95MS는 histogram bucket의 위쪽 경계다. 실제 p95는 그 값보다 작다.
@@ -181,6 +223,19 @@ func runTraceSyscall(args []string) int {
 	set.DurationVar(&options.slow, "slow", 0, T("command.trace.option.slow"))
 	set.StringVar(&options.errors, "errors", "", T("command.trace.option.errors"))
 	set.BoolVar(&options.raw, "raw", false, T("command.trace.option.raw"))
+	set.BoolVar(&options.all, "all", false, T("command.trace.option.all"))
+	var files, noFiles bool
+	set.BoolVar(&files, "files", false, T("command.trace.option.files"))
+	set.BoolVar(&noFiles, "no-files", false, T("command.trace.option.no_files"))
+	// "--" 뒤는 실행할 명령이다. flag 패키지는 "--"를 지우므로, 명령 없는 위치 인자와 구분하려고 먼저 자른다.
+	var argv []string
+	if index := slices.Index(args, "--"); index >= 0 {
+		args, argv = args[:index], args[index+1:]
+		if len(argv) == 0 {
+			fmt.Fprintln(os.Stderr, T("cli.trace.syscall_command_empty"))
+			return 2
+		}
+	}
 	if err := set.Parse(args); err != nil {
 		return 2
 	}
@@ -204,6 +259,20 @@ func runTraceSyscall(args []string) int {
 		return 2
 	}
 	options.pids, options.comms = pids, comms
+	if files && noFiles {
+		fmt.Fprintln(os.Stderr, T("cli.trace.syscall_files_conflict"))
+		return 2
+	}
+	// --files는 기본값을 적어 두는 옵션이다. 끄려면 --no-files를 쓴다.
+	options.files = !noFiles
+	if len(argv) > 0 && options.jsonPath == "-" {
+		fmt.Fprintln(os.Stderr, T("cli.trace.syscall_command_json_stdout"))
+		return 2
+	}
+	if len(argv) > 0 && (len(pids)+len(comms) > 0 || options.containerRef != "" || options.duration > 0) {
+		fmt.Fprintln(os.Stderr, T("cli.trace.syscall_command_conflict"))
+		return 2
+	}
 	if strings.TrimSpace(syscalls) != "" {
 		if options.syscalls, options.compatSyscalls, err = parseSyscallNames(runtime.GOARCH, syscalls); err != nil {
 			fmt.Fprintln(os.Stderr, T("cli.trace.syscall_names", err))
@@ -233,6 +302,21 @@ func runTraceSyscall(args []string) int {
 		fmt.Fprintln(os.Stderr, err)
 		return 3
 	}
+	var command *traceCommand
+	if len(argv) > 0 {
+		var err error
+		if command, err = prepareTraceCommand(argv); err != nil {
+			fmt.Fprintln(os.Stderr, T("cli.trace.syscall_command_failed", argv[0], err))
+			return 127
+		}
+		defer command.close()
+		if container := command.container(); container != nil {
+			options.container = container
+		} else {
+			options.waitForPID = true
+			fmt.Fprintln(os.Stderr, T("cli.trace.syscall_command_pid_only", command.fallback))
+		}
+	}
 	if options.containerRef != "" {
 		container, code, err := resolveTraceContainer(options.containerRef)
 		if err != nil {
@@ -241,8 +325,10 @@ func runTraceSyscall(args []string) int {
 		}
 		options.container = container
 	}
+	// event를 내거나 파일로 쓰지 않고 터미널에 그릴 때만 실행 중에 표를 다시 그린다. 그 밖에는 끝날 때 한 번 출력한다.
+	live := !options.raw && options.jsonPath == "" && !options.linesEnabled() && traceIsTerminal(os.Stdout) && command == nil
 	// 화면 없이 끝날 때 한 번 출력하므로, 터미널에서는 무엇을 기다리는지 알린다.
-	if traceIsTerminal(os.Stderr) {
+	if traceIsTerminal(os.Stderr) && !live && command == nil {
 		if options.duration > 0 {
 			fmt.Fprintln(os.Stderr, T("cli.trace.syscall_running_for", options.duration))
 		} else {
@@ -254,21 +340,73 @@ func runTraceSyscall(args []string) int {
 	// event는 도착하는 대로 쓴다. --json은 요약만 쓰므로 event 수만 센다.
 	var onEvent func(syscallEvent) error
 	encoder := json.NewEncoder(os.Stdout)
+	var fileTable syscallFileTable
 	switch {
 	case options.raw:
-		onEvent = func(event syscallEvent) error { return encoder.Encode(event) }
-	case options.jsonPath == "" && options.eventsEnabled():
+		// 줄 출력을 고른 때는 그 조건에 맞는 event만 쓴다. 파일 event만 있으면 모두 쓴다.
 		onEvent = func(event syscallEvent) error {
-			_, err := fmt.Fprintln(os.Stdout, event.line())
-			return err
+			if options.linesEnabled() && event.Reason&syscallReasonLine == 0 {
+				return nil
+			}
+			return encoder.Encode(event)
+		}
+	case options.eventsEnabled():
+		onEvent = func(event syscallEvent) error {
+			if options.files && event.Reason&syscallReasonFile != 0 {
+				fileTable.add(event)
+			}
+			if options.jsonPath == "" && event.Reason&syscallReasonLine != 0 {
+				_, err := fmt.Fprintln(os.Stdout, event.line())
+				return err
+			}
+			return nil
 		}
 	}
-	collection, err := collectSyscallStats(options, ctx.Done(), onEvent)
+	stopTrace := ctx.Done()
+	exitCode := func() int {
+		if command != nil {
+			return command.exitCode()
+		}
+		return 0
+	}
+	if command != nil {
+		// 터미널의 Ctrl-C는 명령에도 가므로 edc는 명령이 끝날 때까지 trace를 이어 간다.
+		stopTrace = command.done
+		options.onAttached = func(allowPID func(uint32) error) error { return command.start(allowPID) }
+		signals := make(chan os.Signal, 4)
+		// SIGPIPE를 받아 두면 출력 파이프가 닫혀도 edc가 죽지 않고(쓰기는 EPIPE로 실패한다) cgroup을 지울 수 있다.
+		signal.Notify(signals, os.Interrupt, syscall.SIGTERM, syscall.SIGPIPE)
+		defer signal.Stop(signals)
+		go func() {
+			for received := range signals {
+				if received != syscall.SIGPIPE {
+					command.interrupt(received)
+				}
+			}
+		}()
+	}
+	// 줄 출력이나 --raw가 아니면 event 조건을 본다. 조건은 1초마다 읽은 snapshot의 증가분으로 계산한다.
+	var detector *syscallEventDetector
+	if !options.raw && !options.linesEnabled() {
+		detector = newSyscallEventDetector()
+		var snapshotFiles *syscallFileTable
+		if options.files {
+			snapshotFiles = &fileTable
+		}
+		options.liveInterval = syscallLiveInterval
+		options.snapshotInFlight = live
+		options.onSnapshot = newSyscallSnapshotHandler(os.Stdout, options.groupBy, snapshotFiles, detector, live)
+	}
+	collection, err := collectSyscallStats(options, stopTrace, onEvent)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, T("cli.trace.syscall_failed", err))
 		return 1
 	}
 	report := syscallReportFor(collection, options.groupBy)
+	if options.files {
+		report.Files, report.FilesDropped, report.Summary.Files = fileTable.report(), fileTable.dropped, true
+	}
+	report.Events = detector.report()
 	if options.slow > 0 {
 		slow := float64(options.slow) / float64(time.Millisecond)
 		report.Summary.SlowMS = &slow
@@ -293,7 +431,7 @@ func runTraceSyscall(args []string) int {
 			fmt.Fprintln(os.Stderr, err)
 			return 1
 		}
-		return 0
+		return exitCode()
 	}
 	if options.jsonPath != "" {
 		notices()
@@ -301,14 +439,103 @@ func runTraceSyscall(args []string) int {
 			fmt.Fprintln(os.Stderr, err)
 			return 2
 		}
-		return 0
+		return exitCode()
 	}
 	if report.Summary.Events > 0 {
 		fmt.Fprintln(os.Stdout)
 	}
-	report.print(os.Stdout)
+	if live {
+		io.WriteString(os.Stdout, syscallLiveClear)
+	}
+	report.render(os.Stdout, syscallFinalView(options.all))
 	notices()
-	return 0
+	return exitCode()
+}
+
+// 표를 다시 그리는 제어 문자다. 대체 화면은 쓰지 않으므로, 끝난 뒤의 최종 표가 스크롤백에 남는다. 프레임은 화면을 지우지
+// 않고 왼쪽 위(Home)부터 덮어쓴다. 줄마다 남은 칸을 지우고(EraseLine), 프레임 아래는 한 번에 지운다(EraseBelow).
+// 화면을 먼저 지우면 지운 화면이 잠깐 보여서 깜빡인다.
+const (
+	syscallLiveHome       = "\x1b[H"
+	syscallLiveEraseLine  = "\x1b[K"
+	syscallLiveEraseBelow = "\x1b[J"
+	syscallLiveClear      = syscallLiveHome + syscallLiveEraseBelow
+)
+
+// syscallLiveFrame은 표 한 장을 터미널에 쓸 바이트로 만든다. 한 번의 Write로 내보내면 터미널이 프레임을 중간까지만 그리지 않는다.
+func syscallLiveFrame(report syscallReport, view syscallView) []byte {
+	var table bytes.Buffer
+	report.render(&table, view)
+	frame := syscallLiveHome + strings.ReplaceAll(table.String(), "\n", syscallLiveEraseLine+"\n") + syscallLiveEraseBelow
+	return []byte(frame)
+}
+
+// newSyscallSnapshotHandler는 snapshot마다 event 조건을 보고, live이면 표를 다시 그리는 함수다. 호출 수의 증가분을 지난
+// snapshot과 비교해 초당 호출 수를 낸다. files와 detector는 nil일 수 있다.
+func newSyscallSnapshotHandler(out *os.File, groupBy string, files *syscallFileTable, detector *syscallEventDetector, live bool) func(syscallCollection) {
+	var previous uint64
+	var previousMS int64
+	return func(collection syscallCollection) {
+		var fileRows []syscallFileRow
+		if files != nil {
+			fileRows = files.report()
+		}
+		if detector != nil {
+			detector.observe(detector.now(), collection, fileRows)
+		}
+		if !live {
+			return
+		}
+		report := syscallReportFor(collection, groupBy)
+		if files != nil {
+			report.Files, report.FilesDropped, report.Summary.Files = fileRows, files.dropped, true
+		}
+		report.Events = detector.report()
+		eventRows := 0
+		if detector != nil {
+			eventRows = max(1, len(report.Events))
+		}
+		view := syscallLiveView(terminalHeight(out), files != nil, eventRows)
+		if elapsed := report.Summary.DurationMS - previousMS; elapsed > 0 && report.Summary.Calls >= previous {
+			view.rate = float64(report.Summary.Calls-previous) * 1000 / float64(elapsed)
+		}
+		previous, previousMS = report.Summary.Calls, report.Summary.DurationMS
+		view.styleOut = out
+		_, _ = out.Write(syscallLiveFrame(report, view))
+	}
+}
+
+// syscallLiveView는 화면 높이에 맞게 표의 행 수를 정한다. 위 두 줄과 아래 세 줄(파일 표가 있으면 네 줄)은 고정이고, 마지막
+// 줄은 비워 스크롤을 막는다. 통계 표는 숨긴 행 안내로 한 줄을, 진행 중인 호출 표와 파일 표는 빈 줄과 제목과 머리글과 안내로
+// 네 줄을 더 쓴다. 남는 행이 16줄 아래이면 진행 중인 호출 표를 빼고, 파일 표는 남는 행의 5분의 2를 받는다.
+func syscallLiveView(height int, files bool, events int) syscallView {
+	free := height - 1 - 2 - 3 - 1
+	view := syscallView{live: true}
+	if events > 0 {
+		view.events = min(events, syscallLiveEventRows)
+		free -= view.events + 2
+	}
+	if files {
+		free -= 1 + 4
+	}
+	if free >= 16 {
+		view.inFlight = min(syscallInFlightRows, max(2, free/6))
+		free -= view.inFlight + 4
+	}
+	if files {
+		view.files = min(syscallFileRows, max(3, free*2/5))
+		free -= view.files
+	}
+	view.rows = min(syscallTraceRows, max(1, free))
+	return view
+}
+
+func terminalHeight(file *os.File) int {
+	_, height, err := term.GetSize(int(file.Fd()))
+	if err != nil || height <= 0 {
+		return syscallLiveHeight
+	}
+	return height
 }
 
 // parseSyscallProcessFilter는 쉼표로 나눈 PID와 command 이름이다. kernel 안에서 비교하므로 이름은 대표 thread의 comm과
@@ -500,9 +727,41 @@ func (row syscallReportRow) errnoText() string {
 	return fmt.Sprintf("%d %s", row.Errors, top)
 }
 
+// syscallView는 표가 보이는 방식이다. live는 실행 중에 다시 그리는 표이고, rate는 지난 갱신 뒤 초당 호출 수다.
+type syscallView struct {
+	events int
+	// styleOut은 색과 폭을 정하는 출력이다. 표를 buffer에 그릴 때 실제 터미널을 알려 준다.
+	styleOut io.Writer
+	rows     int
+	inFlight int
+	files    int
+	live     bool
+	rate     float64
+}
+
 func (report syscallReport) print(out io.Writer) {
-	style := newTraceSummaryStyle(out)
-	style.line(out, style.headline("SYSCALL TRACE", traceStat{"duration", syscallTime(float64(report.Summary.DurationMS) * float64(time.Millisecond))}, traceStat{"calls", fmt.Sprint(report.Summary.Calls)}, traceStat{"errors", fmt.Sprint(report.Summary.Errors)}))
+	report.render(out, syscallFinalView(false))
+}
+
+// syscallFinalView는 끝난 뒤의 표다. all이면 행 수를 제한하지 않는다.
+func syscallFinalView(all bool) syscallView {
+	if all {
+		return syscallView{rows: math.MaxInt, inFlight: math.MaxInt, files: math.MaxInt, events: math.MaxInt}
+	}
+	return syscallView{rows: syscallTraceRows, inFlight: syscallInFlightRows, files: syscallFileRows, events: syscallEventRows}
+}
+
+func (report syscallReport) render(out io.Writer, view syscallView) {
+	styleOut := out
+	if view.styleOut != nil {
+		styleOut = view.styleOut
+	}
+	style := newTraceSummaryStyle(styleOut)
+	stats := []traceStat{{"duration", syscallTime(float64(report.Summary.DurationMS) * float64(time.Millisecond))}, {"calls", fmt.Sprint(report.Summary.Calls)}, {"errors", fmt.Sprint(report.Summary.Errors)}}
+	if view.live {
+		stats = append(stats, traceStat{"rate", fmt.Sprintf("%.0f/s", view.rate)})
+	}
+	style.line(out, style.headline("SYSCALL TRACE", stats...))
 	var titles []string
 	switch report.GroupBy {
 	case traceGroupByProcess:
@@ -514,7 +773,7 @@ func (report syscallReport) print(out io.Writer) {
 	default:
 		titles = []string{"PROCESS", "SYSCALL"}
 	}
-	shown := report.Rows[:min(len(report.Rows), syscallTraceRows)]
+	shown := report.Rows[:min(len(report.Rows), view.rows)]
 	widths := make([]int, len(titles))
 	for index, title := range titles {
 		widths[index] = len(title)
@@ -539,18 +798,29 @@ func (report syscallReport) print(out io.Writer) {
 		style.printf(out, "%s%9d  %-*s %9s %9s %9s %9s\n", line, row.Calls, errorWidth, style.count("ERRORS", row.errnoText()), style.measure(syscallTime(row.TotalMS*float64(time.Millisecond))), style.measure(syscallMS(row.AverageMS, "")), style.measure(syscallMS(row.P95MS, "<")), style.measure(syscallMS(row.MaxMS, "")))
 	}
 	if hidden := len(report.Rows) - len(shown); hidden > 0 {
-		style.line(out, style.hint(fmt.Sprintf("... %d more rows in --json", hidden)))
+		style.line(out, style.hint(syscallHiddenRows(hidden, view.live)))
 	}
-	if len(report.InFlight) > 0 {
+	// 실시간 화면은 event가 없어도 패널을 그린다. 감지가 켜져 있는지 알 수 있어야 한다.
+	if view.events > 0 && (len(report.Events) > 0 || view.live) {
+		report.printEvents(out, style, view.events, view.live)
+	}
+	if len(report.InFlight) > 0 && view.inFlight > 0 {
 		io.WriteString(out, "\n")
-		style.line(out, style.subheading("IN FLIGHT AT STOP")+style.dim(": calls that started during the trace and had not returned"))
+		if view.live {
+			style.line(out, style.subheading("IN FLIGHT")+style.dim(": calls that started during the trace and have not returned yet"))
+		} else {
+			style.line(out, style.subheading("IN FLIGHT AT STOP")+style.dim(": calls that started during the trace and had not returned"))
+		}
 		style.line(out, style.dim(fmt.Sprintf("%-16s  %-22s %8s %9s", "PROCESS", "SYSCALL", "THREADS", "LONGEST")))
-		for _, row := range report.InFlight[:min(len(report.InFlight), syscallInFlightRows)] {
+		for _, row := range report.InFlight[:min(len(report.InFlight), view.inFlight)] {
 			style.printf(out, "%-16s  %-22s %8d %9s\n", row.Process, row.Syscall, row.Threads, style.measure(syscallTime(row.LongestMS*float64(time.Millisecond))))
 		}
-		if hidden := len(report.InFlight) - syscallInFlightRows; hidden > 0 {
-			style.line(out, style.hint(fmt.Sprintf("... %d more rows in --json", hidden)))
+		if hidden := len(report.InFlight) - view.inFlight; hidden > 0 {
+			style.line(out, style.hint(syscallHiddenRows(hidden, view.live)))
 		}
+	}
+	if len(report.Files) > 0 && view.files > 0 {
+		report.printFiles(out, style, view.files)
 	}
 	summary := report.Summary
 	unmatched := "-"
@@ -559,9 +829,21 @@ func (report syscallReport) print(out io.Writer) {
 	}
 	io.WriteString(out, "\n")
 	style.line(out, style.stats(traceStat{"in_flight", fmt.Sprint(summary.InFlight)}, traceStat{"unmatched", unmatched}, traceStat{"map_full", fmt.Sprint(summary.StatsFull + summary.StartsFull + summary.ErrnosFull)}, traceStat{"stats", fmt.Sprintf("%d/%d", summary.StatsEntries, summary.StatsLimit)}))
-	if summary.SlowMS != nil || summary.ErrorFilter != "" {
+	if summary.SlowMS != nil || summary.ErrorFilter != "" || summary.Files {
 		style.line(out, style.stats(traceStat{"events", fmt.Sprint(summary.Events)}, traceStat{"sampled_out", fmt.Sprint(summary.SampledOut)}, traceStat{"ring_lost", fmt.Sprint(summary.RingLost)}))
 	}
+	if view.live {
+		style.line(out, style.hint("Ctrl-C stops and prints the final table"))
+	}
+}
+
+// syscallHiddenRows는 표에 다 들지 않은 행과 모두 보는 방법을 알린다. 실행 중의 표는 화면 높이에 맞춰 줄이므로
+// 끝난 뒤의 표에서 --all을 쓰라고 알린다.
+func syscallHiddenRows(hidden int, live bool) string {
+	if live {
+		return fmt.Sprintf("... %d more rows. After Ctrl-C, --all shows every row", hidden)
+	}
+	return fmt.Sprintf("... %d more rows. Add --all to show every row, or use --json", hidden)
 }
 
 func (row syscallReportRow) cells(groupBy string) []string {

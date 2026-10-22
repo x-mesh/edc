@@ -2254,10 +2254,11 @@ When the trace runs, each kernel lock contention and each futex wait on the host
 
 On Linux 5.15, the kernel has no contention tracepoints. edc prints a note and shows only the futex waits. The trace needs BTF and task local storage.
 
-Use `trace syscall` on Linux to count the system calls of each process. edc counts in the kernel and prints one summary at the end. With `--slow` or `--errors`, it also prints each call that matches.
+Use `trace syscall` on Linux to count the system calls of each process. edc counts in the kernel. On a terminal, the table updates every second, and Ctrl-C prints the final table. If you pipe the output or use `--json`, edc prints one summary at the end. With `--slow` or `--errors`, it also prints each call that matches.
 
 ```bash
 ./bin/edc trace syscall --duration 10s
+./bin/edc trace syscall -- curl -s https://example.com
 ./bin/edc trace syscall --process nginx,1234 --duration 30s
 ./bin/edc trace syscall --group-by syscall --json syscall.json
 ./bin/edc trace syscall --container web --group-by cgroup
@@ -2265,9 +2266,23 @@ Use `trace syscall` on Linux to count the system calls of each process. edc coun
 ./bin/edc trace syscall --syscall openat,statx --slow 10ms --raw
 ```
 
-Each row is one process name and one system call. The row shows the calls, the errors with the most frequent errno, and the time in the call: total, average, p95, and maximum. The time is wall time inside the call, not CPU time. Calls that wait, such as `epoll_wait` and `futex`, are therefore at the top. The total adds the time of all threads, so it can be longer than the trace. The rows are in order of total time. The table shows 20 rows, and `--json` holds all rows. P95 is the upper bound of a histogram bucket, the same as in `top -d`. The table shows it as `<1.05s`.
+Each row is one process name and one system call. The row shows the calls, the errors with the most frequent errno, and the time in the call: total, average, p95, and maximum. The time is wall time inside the call, not CPU time. Calls that wait, such as `epoll_wait` and `futex`, are therefore at the top. The total adds the time of all threads, so it can be longer than the trace. The rows are in order of total time. The table shows 20 rows. Use `--all` to show every row, or use `--json` to get all rows in a file. P95 is the upper bound of a histogram bucket, the same as in `top -d`. The table shows it as `<1.05s`.
 
 Use `--group-by syscall`, `--group-by process`, or `--group-by cgroup` to add the rows over one column. `--process` takes PIDs and command names, separated by commas. edc compares them in the kernel, so a name must be the exact command name of the process, up to 15 bytes. A PID matches all threads of the process. `--container` keeps the calls of one container.
+
+To trace a command that ends quickly, put it after `--`. edc starts the command in a new cgroup after the trace is on, so the first call is counted. The calls of the processes that the command starts are counted too. The trace ends when the command ends, and edc returns the exit code of the command. Run it as root. You cannot use `--process`, `--container`, or `--duration` with a command. If cgroup v2 is not available, edc counts only the command itself and prints a warning.
+
+edc also prints a `FILES` table, and the live screen shows it too. Each row is one path. The columns count the opens for reading (`READ`) and writing (`WRITE`), the `mkdir`, `link`, and `symlink` calls and the opens with `O_EXCL` (`CREATE`), the deletes (`DELETE`), the renames (`RENAME`), and the other changes (`OTHER`). A rename row shows the source path. `WRITE` includes the opens that create the file, because the kernel does not tell if an open with `O_CREAT` made the file. `OTHER` also counts the `stat` and `access` calls that failed, so the table shows the files that the process looked for and did not find. The `openat2` calls are in `OTHER`, because edc does not read their flags. The `ERRORS` column shows the number of failed calls and the most frequent errno. A failed open still counts in its column.
+
+The rows with changes are first. The rows with failed calls are next, and the rows that were only read are last. The table has 20 rows. `--all` shows every row, and `--json` holds all rows in `files`. Use `--no-files` to leave the table out. edc records at most 10,000 file events for each CPU in each second, and it records at most 10,000 paths. If edc misses events, the table says so.
+
+`trace syscall` also keeps events, as `edc top` does. A condition that holds for 5 seconds becomes an event, and a condition that stops and starts again within 5 seconds stays in the same event. The live screen shows the latest 3 events, and the final output lists all of them with the start time, the duration, the peak per second, and the count. A `●` mark means the condition is still on. `--json` holds them in `events`. There are three kinds:
+
+- `error loop`: one process fails the same system call with the same errno at least 100 times each second. Errors that are normal in busy programs do not count: `EAGAIN`, `EINTR`, `EINPROGRESS`, the restart errors, `ETIMEDOUT` of `futex`, and `ECHILD` of `wait4`.
+- `missing path`: calls on one path fail at least 50 times each second, for example a `stat` on a file that does not exist. This kind uses the file events, so it needs the file table, and the limit of file events applies. The peak can be lower than the real rate.
+- `call spike`: one process calls one system call at least 1,000 times each second, and at least 10 times the average of the last 30 seconds. A process that always calls a lot has no event. The first 5 seconds have no average, so they have no event.
+
+The limits are fixed. A trace with `--slow`, `--errors`, or `--raw` prints each call, and it has no events.
 
 Use `--syscall` with names separated by commas to count only these system calls. edc checks the number in the kernel, so the other calls do not reach the map. The names come from the system call table of the CPU architecture. On amd64, a name also selects the 32-bit call with that name.
 

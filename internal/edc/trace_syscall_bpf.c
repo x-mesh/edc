@@ -33,6 +33,14 @@ typedef __u32 __wsum;
 // x86 thread_info.status의 TS_COMPAT이다. 32비트 진입점이 syscall마다 켜고 사용자 공간으로 돌아가기 전에 끈다.
 #define TS_COMPAT 0x0002
 #define SYSCALL_COMPAT 0x80000000U
+// open flags는 x86과 arm64가 같은 값을 쓴다.
+#define O_ACCMODE 0x3
+#define O_CREAT 0x40
+#define O_EXCL 0x80
+#define O_TRUNC 0x200
+enum open_kind { OPEN_WRITE = 1, OPEN_CREATE = 2, OPEN_TRUNC = 4, OPEN_UNKNOWN = 8, OPEN_EXCL = 16 };
+enum event_reason { EVENT_FILE = 1, EVENT_LINE = 2 };
+enum syscall_flags_mode { FLAGS_NONE, FLAGS_ARG, FLAGS_CREAT, FLAGS_HOW };
 
 enum syscall_counter { SYSCALL_STARTS_FULL, SYSCALL_STATS_FULL, SYSCALL_ERRNOS_FULL, SYSCALL_UNMATCHED, SYSCALL_RING_LOST, SYSCALL_COUNTERS };
 enum syscall_events { SYSCALL_EVENTS_OFF, SYSCALL_EVENTS_ALL_ERRORS, SYSCALL_EVENTS_LISTED_ERRORS };
@@ -63,10 +71,16 @@ struct syscall_comm { char comm[TASK_COMM_LEN]; };
 struct syscall_counters { __u64 values[SYSCALL_COUNTERS]; };
 // path_arg는 경로 인자의 위치에 1을 더한 값이고, 0이면 경로가 없다. path_gone은 성공하면 경로를 읽을 수 없는 호출이다.
 // execve가 성공하면 register와 memory가 새 program의 것으로 바뀐다.
-struct syscall_rule { __u8 allowed; __u8 path_arg; __u8 path_gone; __u8 pad; };
+// file이 1이면 event_files일 때 호출마다 event를 내고, 2이면 실패한 호출만 낸다. stat과 access는 성공이 너무 많아 후자다. flags_arg는 open flags 인자의 위치에 1을 더한 값이고, flags_mode는
+// 그 값을 읽는 방식이다(FLAGS_ARG: 인자 자체, FLAGS_CREAT: creat이라 쓰기와 생성과 비우기, FLAGS_HOW: open_how 구조체라 읽지
+// 않고 OPEN_UNKNOWN만 표시한다). open_how를 읽으려고 stack 변수를 두면 5.15 verifier가 flags를 읽는 두 경로를 한 명령으로
+// 합친 것을 거부한다.
+struct syscall_rule { __u8 allowed; __u8 path_arg; __u8 path_gone; __u8 file; __u8 flags_arg; __u8 flags_mode; __u8 pad[2]; };
 struct syscall_window { __u64 start_ns; __u64 sent; __u64 suppressed; };
 // path_state는 0이면 경로가 없는 호출, 1이면 읽은 경로, 2이면 읽지 못한 경로, 3이면 잘린 경로다.
-struct syscall_event { __u64 timestamp_ns; __u64 latency_ns; __s64 ret; __u32 tgid; __u32 tid; __u32 nr; __u8 path_state; __u8 pad[3]; char comm[TASK_COMM_LEN]; char path[SYSCALL_PATH_MAX]; };
+// open_kind는 open flags에서 뽑은 OPEN_* bit이고, flags를 읽지 않는 호출은 0이다.
+// reason은 event를 낸 이유의 EVENT_* bit다. 한 호출이 둘 다에 해당할 수 있어 사용자 공간이 줄 출력과 파일 표를 나눈다.
+struct syscall_event { __u64 timestamp_ns; __u64 latency_ns; __s64 ret; __u32 tgid; __u32 tid; __u32 nr; __u8 path_state; __u8 open_kind; __u8 reason; __u8 pad; char comm[TASK_COMM_LEN]; char path[SYSCALL_PATH_MAX]; };
 const struct syscall_key *unused_syscall_key __attribute__((unused));
 const struct syscall_stats *unused_syscall_stats __attribute__((unused));
 const struct syscall_start *unused_syscall_start __attribute__((unused));
@@ -109,6 +123,8 @@ volatile const __u8 filter_syscall = 0;
 // slow_ns가 0이 아니면 그 시간 이상 걸린 호출을, event_errors가 켜져 있으면 실패한 호출을 event로 낸다.
 volatile const __u64 slow_ns = 0;
 volatile const __u8 event_errors = SYSCALL_EVENTS_OFF;
+// event_files가 켜져 있으면 rules의 file이 있는 호출은 성공해도 실패해도 event로 낸다.
+volatile const __u8 event_files = 0;
 volatile const __u32 event_limit = 1000;
 
 static __always_inline void count(__u32 index) {
@@ -235,17 +251,27 @@ static __always_inline __u64 syscall_arg(void *regs, __u8 index) {
 	return 0;
 }
 
-static __always_inline int event_wanted(__u64 latency, long ret) {
-	if (slow_ns && latency >= slow_ns) return 1;
-	if (event_errors == SYSCALL_EVENTS_OFF || ret >= 0 || ret < -MAX_ERRNO) return 0;
-	if (event_errors == SYSCALL_EVENTS_ALL_ERRORS) return 1;
-	__u32 err = (__u32)-ret;
-	__u8 *allowed = bpf_map_lookup_elem(&event_errnos, &err);
-	return allowed && *allowed;
+// event_wanted는 event를 낼 이유의 EVENT_* bit를 돌려준다. 0이면 내지 않는다.
+static __always_inline __u8 event_wanted(__u32 nr, __u64 latency, long ret) {
+	__u8 reason = 0;
+	if (event_files && !(nr & SYSCALL_COMPAT)) {
+		struct syscall_rule *rule = rule_for(nr);
+		if (rule && (rule->file == 1 || (rule->file == 2 && ret < 0))) reason |= EVENT_FILE;
+	}
+	if (slow_ns && latency >= slow_ns) reason |= EVENT_LINE;
+	else if (event_errors != SYSCALL_EVENTS_OFF && ret < 0 && ret >= -MAX_ERRNO) {
+		if (event_errors == SYSCALL_EVENTS_ALL_ERRORS) reason |= EVENT_LINE;
+		else {
+			__u32 err = (__u32)-ret;
+			__u8 *allowed = bpf_map_lookup_elem(&event_errnos, &err);
+			if (allowed && *allowed) reason |= EVENT_LINE;
+		}
+	}
+	return reason;
 }
 
 // emit은 호출 하나를 event로 낸다. 경로는 낼 때만 사용자 memory에서 읽는다. 복귀 시점에는 kernel이 방금 그 page를 읽었다.
-static __always_inline void emit(__u64 *ctx, struct task_struct *task, __u32 tgid, __u32 nr, __u64 latency, long ret) {
+static __always_inline void emit(__u64 *ctx, struct task_struct *task, __u32 tgid, __u32 nr, __u64 latency, long ret, __u8 reason) {
 	__u32 zero = 0;
 	__u64 now = bpf_ktime_get_ns();
 	struct syscall_window *window = bpf_map_lookup_elem(&event_windows, &zero);
@@ -271,6 +297,8 @@ static __always_inline void emit(__u64 *ctx, struct task_struct *task, __u32 tgi
 	record->tid = (__u32)bpf_get_current_pid_tgid();
 	record->nr = nr;
 	record->path_state = 0;
+	record->open_kind = 0;
+	record->reason = reason;
 	leader_comm(task, record->comm);
 	record->path[0] = 0;
 	struct syscall_rule *rule = rule_for(nr);
@@ -286,6 +314,17 @@ static __always_inline void emit(__u64 *ctx, struct task_struct *task, __u32 tgi
 			bpf_probe_read_user(&next, 1, path + sizeof(record->path) - 1);
 			record->path_state = next ? 3 : 1;
 		} else record->path_state = 1;
+	}
+	if (rule && rule->flags_mode && !(nr & SYSCALL_COMPAT)) {
+		if (rule->flags_mode == FLAGS_HOW) record->open_kind = OPEN_UNKNOWN;
+		else {
+			__u64 flags = O_CREAT | O_TRUNC | 1;
+			if (rule->flags_mode == FLAGS_ARG) flags = rule->flags_arg ? syscall_arg((void *)ctx[0], rule->flags_arg - 1) : 0;
+			if (flags & O_ACCMODE) record->open_kind |= OPEN_WRITE;
+			if (flags & O_CREAT) record->open_kind |= OPEN_CREATE;
+			if (flags & O_TRUNC) record->open_kind |= OPEN_TRUNC;
+			if (flags & O_EXCL) record->open_kind |= OPEN_EXCL;
+		}
 	}
 	bpf_ringbuf_submit(record, 0);
 }
@@ -343,7 +382,8 @@ SEC("tp_btf/sys_exit") int syscall_exit(__u64 *ctx) {
 		value->errors++;
 		count_errno(&key, (__u32)-ret);
 	}
-	if (event_wanted(latency, ret)) emit(ctx, task, tgid, nr, latency, ret);
+	__u8 reason = event_wanted(nr, latency, ret);
+	if (reason) emit(ctx, task, tgid, nr, latency, ret, reason);
 	return 0;
 }
 

@@ -16,6 +16,7 @@ const (
 	// fsWatchNoisyLimit은 한 번 실행에서 알리는 디렉터리의 수다. 같은 디렉터리는 한 번만 알린다.
 	fsWatchNoisyLimit = 3
 	// fsWatchNoisyQueueMax는 창 안에서 기억하는 이벤트의 수다. 초당 수만 건이 쏟아져도 메모리가 늘지 않게 오래된 것부터 버린다.
+	// 이 수를 넘는 속도에서는 점유율이 10초가 아니라 가장 최근 이만큼의 이벤트 중 비율이 된다. 몰리는 곳을 찾는 데는 그 편이 맞다.
 	fsWatchNoisyQueueMax = 100000
 )
 

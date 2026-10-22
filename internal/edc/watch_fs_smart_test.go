@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -30,7 +31,7 @@ func (clock *fsSmartClock) flush() []fsWatchRecord { return clock.smart.flushAll
 func smartLine(record fsWatchRecord) string {
 	line := record.Event + " " + record.Path
 	if record.Count > 0 {
-		line += " x" + string(rune('0'+record.Count))
+		line += " x" + strconv.Itoa(record.Count)
 	}
 	if record.Origin != "" {
 		line += " <- " + record.Origin
@@ -87,6 +88,11 @@ func TestFSWatchSmartMergesOneFilesEvents(t *testing.T) {
 				c.add("modify", "a.log", i)
 			}
 		}, []string{"modify a.log x5"}},
+		{"modify twelve times shows both digits", func(c *fsSmartClock) {
+			for i := range 12 {
+				c.add("modify", "a.log", i)
+			}
+		}, []string{"modify a.log x12"}},
 		{"modify once has no count", func(c *fsSmartClock) { c.add("modify", "a.log", 0) }, []string{"modify a.log"}},
 		{"created and removed", func(c *fsSmartClock) {
 			c.add("create", "t.tmp", 0)

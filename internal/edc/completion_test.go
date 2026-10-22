@@ -152,10 +152,26 @@ func TestCompletionOffersShortRecursiveForWatchFS(t *testing.T) {
 }
 
 func TestCompletionOffersSmartForWatchFS(t *testing.T) {
-	for name, script := range map[string]string{"zsh": zshCompletion, "bash": bashCompletion} {
+	// 옵션이 다른 하위 명령 줄에만 있으면 안 되므로, watch fs를 고르는 줄 안에서 찾는다.
+	lineWith := func(script, marker string) string {
+		for _, line := range strings.Split(script, "\n") {
+			if strings.Contains(line, marker) {
+				return line
+			}
+		}
+		return ""
+	}
+	for name, line := range map[string]string{
+		"zsh":  lineWith(zshCompletion, "'1:subcommand:(http fs)'"),
+		"bash": lineWith(bashCompletion, `compgen -W "-r --recursive --event`),
+	} {
+		if line == "" {
+			t.Errorf("%s: no watch fs completion line", name)
+			continue
+		}
 		for _, option := range []string{"--smart", "--no-smart"} {
-			if !strings.Contains(script, option) {
-				t.Errorf("%s watch fs completion misses %s", name, option)
+			if !strings.Contains(line, option) {
+				t.Errorf("%s watch fs completion line misses %s", name, option)
 			}
 		}
 	}

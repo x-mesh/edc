@@ -1,7 +1,10 @@
 package edc
 
 import (
+	"fmt"
 	"path/filepath"
+	"slices"
+	"strings"
 	"time"
 )
 
@@ -29,9 +32,10 @@ type fsWatchSmartEntry struct {
 	count  int
 	time   time.Time
 	hidden bool
-	// pid와 process는 이 줄의 마지막 이벤트를 일으킨 process다. 이름을 모르는 이벤트는 앞의 것을 덮지 않는다.
-	pid     int
-	process string
+	// pid는 이름을 아는 마지막 이벤트를 일으킨 process의 번호이고, processes는 이 줄에 든 이벤트를 일으킨 서로 다른 process의 이름을
+	// 처음 나온 순서로 모은 것이다. 이름을 모르는 이벤트는 아무것도 바꾸지 않는다.
+	pid       int
+	processes []string
 }
 
 func newFSWatchSmart(window time.Duration) *fsWatchSmart {
@@ -55,9 +59,24 @@ func (smart *fsWatchSmart) deadline() (time.Time, bool) {
 }
 
 func (entry *fsWatchSmartEntry) setProcess(event fsWatchEvent) {
-	if event.Process != "" {
-		entry.pid, entry.process = event.PID, event.Process
+	if event.Process == "" {
+		return
 	}
+	entry.pid = event.PID
+	if !slices.Contains(entry.processes, event.Process) {
+		entry.processes = append(entry.processes, event.Process)
+	}
+}
+
+// fsWatchSmartProcessShown은 한 줄에 이름으로 보이는 process의 수다. 넘으면 나머지는 수만 붙인다.
+const fsWatchSmartProcessShown = 3
+
+// fsWatchProcessNames는 줄에 보일 process 이름이다. 예: "editor, formatter" 또는 "a, b, c +2".
+func fsWatchProcessNames(names []string) string {
+	if len(names) <= fsWatchSmartProcessShown {
+		return strings.Join(names, ", ")
+	}
+	return fmt.Sprintf("%s +%d", strings.Join(names[:fsWatchSmartProcessShown], ", "), len(names)-fsWatchSmartProcessShown)
 }
 
 func (smart *fsWatchSmart) entry(event fsWatchEvent, kind string) *fsWatchSmartEntry {
@@ -84,9 +103,16 @@ func (smart *fsWatchSmart) add(event fsWatchEvent, now time.Time) {
 			delete(smart.byPath, renamed.path)
 			created := smart.entry(event, "create")
 			created.origin = renamed.path
-			// 도착점의 이벤트에서 이름을 못 읽었으면, 같은 동작인 옛 이름 줄의 것을 이어받는다.
-			if created.process == "" {
-				created.pid, created.process = renamed.pid, renamed.process
+			// 이름이 바뀐 줄은 옛 이름 줄의 동작이 이어진 것이므로, 거기에 든 process도 함께 보인다. 도착점 이벤트의 process가 뒤에 온다.
+			inherited := created.processes
+			created.processes = slices.Clone(renamed.processes)
+			for _, name := range inherited {
+				if !slices.Contains(created.processes, name) {
+					created.processes = append(created.processes, name)
+				}
+			}
+			if created.pid == 0 {
+				created.pid = renamed.pid
 			}
 			return
 		}
@@ -149,7 +175,7 @@ func (smart *fsWatchSmart) flushAll() []fsWatchRecord {
 		if entry.hidden {
 			continue
 		}
-		record := fsWatchRecord{Type: "event", Time: entry.time, Event: entry.kind, Path: entry.path, IsDir: entry.isDir, PID: entry.pid, Process: entry.process}
+		record := fsWatchRecord{Type: "event", Time: entry.time, Event: entry.kind, Path: entry.path, IsDir: entry.isDir, PID: entry.pid, Process: fsWatchProcessNames(entry.processes)}
 		if entry.kind == "modify" && entry.count > 1 {
 			record.Count = entry.count
 		}

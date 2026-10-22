@@ -5,7 +5,6 @@ package edc
 import (
 	"encoding/binary"
 	"errors"
-	"fmt"
 	"maps"
 	"os"
 	"path/filepath"
@@ -499,15 +498,13 @@ func TestFSWatchFanotifyParsesThePIDOfTheProcessThatCausedTheEvent(t *testing.T)
 	}
 }
 
-func TestFSWatchFanotifyProcessNamesAreCached(t *testing.T) {
+func TestFSWatchFanotifyProcessNamesAreCachedWithinABatch(t *testing.T) {
 	watch := newFSWatchFanotify(fsWatchOptions{root: "/"}, nil, nil)
 	calls := map[int32]int{}
+	names := map[int32]string{10: "proc10", 77: ""}
 	watch.processName = func(pid int32) string {
 		calls[pid]++
-		if pid == 77 {
-			return "" // 이미 끝난 process
-		}
-		return fmt.Sprintf("proc%d", pid)
+		return names[pid]
 	}
 	for _, pid := range []int32{0, -1} {
 		if name := watch.process(pid); name != "" || len(calls) != 0 {
@@ -521,15 +518,13 @@ func TestFSWatchFanotifyProcessNamesAreCached(t *testing.T) {
 		watch.process(77)
 	}
 	if calls[10] != 1 || calls[77] != 1 {
-		t.Errorf("lookups = %v, want one for each pid, also for the process that is gone", calls)
+		t.Errorf("lookups = %v, want one for each pid in a batch, also for the process that is gone", calls)
 	}
-	// 기억한 지 fsWatchProcessTTL이 지나면 다시 찾는다. pid가 다른 process로 바뀌었을 수 있다.
-	entry := watch.processes[10]
-	entry.at = entry.at.Add(-fsWatchProcessTTL - time.Second)
-	watch.processes[10] = entry
-	watch.process(10)
-	if calls[10] != 2 {
-		t.Errorf("an expired entry was not looked up again: %v", calls)
+	// 새 묶음에서는 다시 찾는다. 그 사이에 pid가 다른 process로 재사용되었을 수 있다.
+	names[10] = "reused"
+	watch.nextBatch()
+	if name := watch.process(10); name != "reused" || calls[10] != 2 {
+		t.Errorf("after a new batch: name %q, lookups %v", name, calls)
 	}
 	// 항목이 한도를 넘으면 비우고 계속 동작한다.
 	for pid := int32(1000); pid < 1000+fsWatchProcessEntries+10; pid++ {

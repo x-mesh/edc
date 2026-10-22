@@ -299,27 +299,58 @@ func TestFSWatchSmartStreamPrintsOneLineAndCountsEveryEvent(t *testing.T) {
 	}
 }
 
-// 줄을 일으킨 process는 마지막으로 이름을 아는 이벤트의 것이다. 이름을 모르는 이벤트(inotify, 끝난 process)는 앞의 이름을 지우지 않는다.
-func TestFSWatchSmartKeepsTheLastKnownProcess(t *testing.T) {
+// 한 줄에 든 이벤트를 일으킨 process는 서로 다른 이름을 모두 보인다. 이름을 모르는 이벤트(inotify, 끝난 process)는 아무것도 지우지 않는다.
+func TestFSWatchSmartListsEveryProcessOfAMergedLine(t *testing.T) {
 	clock := newFSSmartClock()
 	at := func(ms int) time.Time { return clock.start.Add(time.Duration(ms) * time.Millisecond) }
-	clock.smart.add(fsWatchEvent{Time: at(0), Event: "create", Path: "d/f.tmp", PID: 11, Process: "editor"}, at(0))
-	clock.smart.add(fsWatchEvent{Time: at(1), Event: "modify", Path: "d/f.tmp", PID: 12, Process: "formatter"}, at(1))
-	clock.smart.add(fsWatchEvent{Time: at(2), Event: "rename", Path: "d/f.tmp"}, at(2))
-	clock.smart.add(fsWatchEvent{Time: at(3), Event: "create", Path: "d/f"}, at(3))
+	add := func(c *fsSmartClock, kind, path string, ms, pid int, process string) {
+		c.smart.add(fsWatchEvent{Time: at(ms), Event: kind, Path: path, PID: pid, Process: process}, at(ms))
+	}
+	// 임시 파일을 편집기가 만들고 포매터가 고친 뒤 이름이 바뀌었다. 도착점 이벤트는 이름을 모른다.
+	add(clock, "create", "d/f.tmp", 0, 11, "editor")
+	add(clock, "modify", "d/f.tmp", 1, 12, "formatter")
+	add(clock, "rename", "d/f.tmp", 2, 0, "")
+	add(clock, "create", "d/f", 3, 0, "")
 	records := clock.flush()
-	if len(records) != 1 || records[0].Process != "formatter" || records[0].PID != 12 || records[0].Origin != "f.tmp" {
-		// 도착점의 create에는 이름이 없어서, 같은 동작인 옛 이름 줄의 마지막 이름을 이어받는다.
+	if len(records) != 1 || records[0].Process != "editor, formatter" || records[0].PID != 12 || records[0].Origin != "f.tmp" {
 		t.Fatalf("records = %+v", records)
 	}
+	// 같은 이름은 한 번만, 이름을 모르는 이벤트는 건너뛴다.
 	other := newFSSmartClock()
-	other.smart.add(fsWatchEvent{Time: at(0), Event: "create", Path: "a.txt", PID: 11, Process: "editor"}, at(0))
-	other.smart.add(fsWatchEvent{Time: at(1), Event: "modify", Path: "a.txt"}, at(1))
-	other.smart.add(fsWatchEvent{Time: at(2), Event: "modify", Path: "a.txt", PID: 12, Process: "formatter"}, at(2))
-	other.smart.add(fsWatchEvent{Time: at(3), Event: "modify", Path: "a.txt"}, at(3))
+	add(other, "create", "a.txt", 0, 11, "editor")
+	add(other, "modify", "a.txt", 1, 0, "")
+	add(other, "modify", "a.txt", 2, 11, "editor")
+	add(other, "modify", "a.txt", 3, 12, "formatter")
+	add(other, "modify", "a.txt", 4, 0, "")
 	records = other.flush()
-	if len(records) != 1 || records[0].Process != "formatter" || records[0].PID != 12 {
+	if len(records) != 1 || records[0].Process != "editor, formatter" || records[0].PID != 12 {
 		t.Fatalf("records = %+v", records)
+	}
+	// 도착점 이벤트의 process가 옛 줄에도 있으면 이름이 겹치지 않는다.
+	paired := newFSSmartClock()
+	add(paired, "create", "d/f.tmp", 0, 11, "editor")
+	add(paired, "modify", "d/f.tmp", 1, 12, "formatter")
+	add(paired, "rename", "d/f.tmp", 2, 11, "editor")
+	add(paired, "create", "d/f", 3, 11, "editor")
+	records = paired.flush()
+	if len(records) != 1 || records[0].Process != "editor, formatter" {
+		t.Fatalf("overlapping names: %+v", records)
+	}
+}
+
+func TestFSWatchProcessNamesShowsAtMostThree(t *testing.T) {
+	for _, test := range []struct {
+		names []string
+		want  string
+	}{
+		{nil, ""},
+		{[]string{"a"}, "a"},
+		{[]string{"a", "b", "c"}, "a, b, c"},
+		{[]string{"a", "b", "c", "d", "e"}, "a, b, c +2"},
+	} {
+		if got := fsWatchProcessNames(test.names); got != test.want {
+			t.Errorf("names %v: %q, want %q", test.names, got, test.want)
+		}
 	}
 }
 

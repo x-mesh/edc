@@ -116,3 +116,31 @@ func TestFSWatchStreamPrintsTheTopDirectoriesAfterTheSummary(t *testing.T) {
 		t.Errorf("a short run printed the table:\n%s", text)
 	}
 }
+
+// JSON 출력에는 사람이 읽는 표를 섞지 않는다. 모든 줄이 JSON 기록이어야 한다.
+func TestFSWatchStreamNeverPrintsTheTopDirectoriesInJSON(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	events := make(chan fsWatchEvent, 64)
+	output := &fsSmartSyncBuffer{}
+	options := fsWatchOptions{root: ".", events: []string{"modify"}, match: "**", jsonPath: "-"}
+	done := make(chan struct{})
+	go func() {
+		streamFSWatch(ctx, output, fsWatchSource{events: events, errors: make(chan error)}, options, nil)
+		close(done)
+	}()
+	for index := range 14 {
+		events <- fsWatchEvent{Time: time.Now(), Event: "modify", Path: fmt.Sprintf("busy/f%d", index)}
+	}
+	time.Sleep(60 * time.Millisecond)
+	cancel()
+	<-done
+	text := output.String()
+	if strings.Contains(text, "most active directories") {
+		t.Errorf("the table is in the JSON output:\n%s", text)
+	}
+	for _, line := range strings.Split(strings.TrimSpace(text), "\n") {
+		if !strings.HasPrefix(line, "{") || !strings.HasSuffix(line, "}") {
+			t.Errorf("a line is not a JSON record: %q", line)
+		}
+	}
+}

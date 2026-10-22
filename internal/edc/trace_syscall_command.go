@@ -57,7 +57,14 @@ func prepareTraceCommand(argv []string) (*traceCommand, error) {
 		return nil, err
 	}
 	command := &traceCommand{argv: argv, path: path, done: make(chan struct{})}
-	if command.cgroup, err = createTraceCommandCgroup(); err != nil {
+	if command.cgroup, err = createTraceCommandCgroup(); err == nil {
+		// cgroup을 만들 수 있어도 kernel이 5.7 아래이거나 seccomp가 clone3를 막으면 그 안에서 시작할 수 없다. 명령을 시작하기
+		// 전에 알아야 PID 필터로 대신할 수 있으므로, 빈 명령으로 한 번 시험한다.
+		if err = probeTraceCommandCgroup(command.cgroup); err != nil {
+			command.cgroup.remove()
+		}
+	}
+	if err != nil {
 		command.cgroup, command.fallback = nil, err.Error()
 	}
 	return command, nil

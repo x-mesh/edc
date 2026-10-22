@@ -215,7 +215,7 @@ func (report syscallReport) printFiles(out io.Writer, style traceSummaryStyle, l
 		style.line(out, style.hint(syscallHiddenRows(hidden, false)))
 	}
 	if lost := report.Summary.SampledOut + report.Summary.RingLost; lost > 0 {
-		style.line(out, style.hint("the table is incomplete: edc did not record "+strconv.FormatUint(lost, 10)+" file events"))
+		style.line(out, style.hint("the table can be incomplete: edc did not record "+strconv.FormatUint(lost, 10)+" events"))
 	}
 	if report.FilesDropped > 0 {
 		style.line(out, style.hint(fmt.Sprintf("the table holds the first %d paths: %d file events of other paths are not in it", syscallFilePathMax, report.FilesDropped)))

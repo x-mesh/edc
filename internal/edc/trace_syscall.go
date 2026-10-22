@@ -374,11 +374,14 @@ func runTraceSyscall(args []string) int {
 		stopTrace = command.done
 		options.onAttached = func(allowPID func(uint32) error) error { return command.start(allowPID) }
 		signals := make(chan os.Signal, 4)
-		signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
+		// SIGPIPE를 받아 두면 출력 파이프가 닫혀도 edc가 죽지 않고(쓰기는 EPIPE로 실패한다) cgroup을 지울 수 있다.
+		signal.Notify(signals, os.Interrupt, syscall.SIGTERM, syscall.SIGPIPE)
 		defer signal.Stop(signals)
 		go func() {
 			for received := range signals {
-				command.interrupt(received)
+				if received != syscall.SIGPIPE {
+					command.interrupt(received)
+				}
 			}
 		}()
 	}
@@ -478,7 +481,7 @@ func newSyscallSnapshotHandler(out *os.File, groupBy string, files *syscallFileT
 			fileRows = files.report()
 		}
 		if detector != nil {
-			detector.observe(time.Now(), collection, fileRows)
+			detector.observe(detector.now(), collection, fileRows)
 		}
 		if !live {
 			return

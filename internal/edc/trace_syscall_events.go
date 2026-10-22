@@ -103,10 +103,12 @@ type syscallEventDetector struct {
 	history      map[string][]float64
 	conditions   map[string]*syscallCondition
 	events       []*syscallAnomaly
+	// now는 snapshot을 읽은 시각이다. test가 바꾼다.
+	now func() time.Time
 }
 
 func newSyscallEventDetector() *syscallEventDetector {
-	return &syscallEventDetector{calls: map[string]uint64{}, errnos: map[string]uint64{}, pathFailures: map[string]uint64{}, history: map[string][]float64{}, conditions: map[string]*syscallCondition{}}
+	return &syscallEventDetector{calls: map[string]uint64{}, errnos: map[string]uint64{}, pathFailures: map[string]uint64{}, history: map[string][]float64{}, conditions: map[string]*syscallCondition{}, now: time.Now}
 }
 
 func syscallBenignErrno(syscall, errno string) bool {
@@ -142,7 +144,7 @@ func (detector *syscallEventDetector) observe(at time.Time, collection syscallCo
 		for key, calls := range currentCalls {
 			rate := float64(calls-min(calls, detector.calls[key])) / seconds
 			owner := owners[key]
-			spiking := detector.spike(key, rate, hits, owner)
+			spiking := detector.spike(key, rate, calls-min(calls, detector.calls[key]), hits, owner)
 			if !spiking {
 				history := append(detector.history[key], rate)
 				detector.history[key] = history[max(0, len(history)-syscallBaselineSamples):]
@@ -171,7 +173,7 @@ func (detector *syscallEventDetector) observe(at time.Time, collection syscallCo
 }
 
 // spike는 호출 급증 조건을 본다. 급증이 이어지는 동안은 평소 평균에 넣지 않아야 평균이 오르며 조건이 꺼지지 않는다.
-func (detector *syscallEventDetector) spike(key string, rate float64, hits map[string]syscallHit, owner [2]string) bool {
+func (detector *syscallEventDetector) spike(key string, rate float64, delta uint64, hits map[string]syscallHit, owner [2]string) bool {
 	history := detector.history[key]
 	_, tracked := detector.conditions["spike\x00"+key]
 	if len(history) < syscallBaselineMin {
@@ -183,7 +185,7 @@ func (detector *syscallEventDetector) spike(key string, rate float64, hits map[s
 	}
 	baseline := sum / float64(len(history))
 	if rate >= syscallSpikeRate && rate >= syscallSpikeFactor*math.Max(baseline, 1) {
-		hits["spike\x00"+key] = syscallHit{proto: syscallAnomaly{Kind: syscallKindCallSpike, Process: owner[0], Syscall: owner[1]}, rate: rate, count: uint64(rate), baseline: &baseline}
+		hits["spike\x00"+key] = syscallHit{proto: syscallAnomaly{Kind: syscallKindCallSpike, Process: owner[0], Syscall: owner[1]}, rate: rate, count: delta, baseline: &baseline}
 		return true
 	}
 	return tracked

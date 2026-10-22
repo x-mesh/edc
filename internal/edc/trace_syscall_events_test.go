@@ -2,6 +2,7 @@ package edc
 
 import (
 	"bytes"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -151,11 +152,16 @@ func TestSyscallEventCallSpikeNeedsABaselineAndAJump(t *testing.T) {
 	}
 	// 급증이 길어져도 평소 평균이 오르지 않아 조건이 꺼지지 않는다.
 	spike.steps(20, map[string]uint64{"api openat": 5000}, nil, nil)
-	if events := spike.detector.report(); len(events) != 1 || !events[0].Active {
+	events = spike.detector.report()
+	if len(events) != 1 || !events[0].Active {
 		t.Fatalf("a long spike ended early: %+v", events)
 	}
 	if got := events[0].target(); got != "api openat (usually 100/s)" {
 		t.Errorf("target = %q", got)
+	}
+	// COUNT는 초당 횟수가 아니라 호출 수의 증가분을 더한 값이다. 5,000번씩 30초 동안이다.
+	if events[0].Count != 5000*30 {
+		t.Errorf("count = %d, want %d", events[0].Count, 5000*30)
 	}
 }
 
@@ -201,5 +207,73 @@ func TestSyscallEventsPrintInTheLiveAndFinalTables(t *testing.T) {
 	syscallReportFor(syscallTestCollection(), "").render(&without, syscallFinalView(false))
 	if strings.Contains(without.String(), "EVENTS") {
 		t.Errorf("a trace without events prints the table:\n%s", without.String())
+	}
+}
+
+// event가 되기 전에 조건이 꺼지면 그 시간은 이어진 시간에 넣지 않는다. 3초 켜지고 1초 꺼진 뒤 다시 3초 켜져도 event가 아니다.
+func TestSyscallEventConditionThatBreaksBeforeFiveSecondsIsNotAnEvent(t *testing.T) {
+	clock := newSyscallEventClock()
+	loop := map[string]uint64{"api connect ECONNREFUSED": 200}
+	clock.step(nil, nil, nil)
+	clock.steps(3, nil, loop, nil)
+	clock.step(nil, nil, nil)
+	clock.steps(3, nil, loop, nil)
+	if events := clock.detector.report(); len(events) != 0 {
+		t.Fatalf("a broken streak made an event: %+v", events)
+	}
+	clock.steps(3, nil, loop, nil)
+	if events := clock.detector.report(); len(events) != 1 {
+		t.Fatalf("a streak that reached 5 seconds is not an event: %+v", events)
+	}
+}
+
+// detector가 nil이어도(--raw, --slow, --errors) report와 snapshot 처리가 멈추지 않아야 한다.
+func TestSyscallEventDetectorMayBeNil(t *testing.T) {
+	var detector *syscallEventDetector
+	if events := detector.report(); events != nil {
+		t.Fatalf("events = %+v", events)
+	}
+	file, err := os.CreateTemp(t.TempDir(), "live")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	newSyscallSnapshotHandler(file, "", nil, nil, true)(syscallTestCollection())
+	newSyscallSnapshotHandler(file, "", nil, nil, false)(syscallTestCollection())
+}
+
+// 실시간 snapshot 처리가 event를 표에 넣는다. 처음에는 빈 패널이고, 조건이 5초 이어지면 event 행이 생긴다.
+func TestSyscallSnapshotHandlerDrawsTheEventsPanel(t *testing.T) {
+	file, err := os.CreateTemp(t.TempDir(), "live")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	clock := newSyscallEventClock()
+	// 처리기는 snapshot마다 detector의 시계를 읽는다. 호출마다 1초씩 가는 시계를 넣는다.
+	seconds := 0
+	clock.detector.now = func() time.Time {
+		seconds++
+		return clock.start.Add(time.Duration(seconds) * time.Second)
+	}
+	handler := newSyscallSnapshotHandler(file, "", nil, clock.detector, true)
+	collection := func(errors uint64, seconds int64) syscallCollection {
+		return syscallCollection{
+			samples: []syscallSample{{Process: "api", Syscall: "connect", Calls: errors, Errors: errors, Errnos: map[string]uint64{"ECONNREFUSED": errors}}},
+			summary: syscallSummary{DurationMS: seconds * 1000},
+		}
+	}
+	handler(collection(0, 0))
+	first, _ := os.ReadFile(file.Name())
+	if !strings.Contains(string(first), "EVENTS") || !strings.Contains(string(first), "none so far") {
+		t.Fatalf("the first frame has no empty panel:\n%s", first)
+	}
+	for second := int64(1); second <= 8; second++ {
+		handler(collection(uint64(second)*300, second))
+	}
+	all, _ := os.ReadFile(file.Name())
+	last := string(all[strings.LastIndex(string(all), syscallLiveHome):])
+	if !strings.Contains(last, "error loop") || !strings.Contains(last, "api connect ECONNREFUSED") || !strings.Contains(last, "●") || strings.Contains(last, "none so far") {
+		t.Fatalf("the last frame lacks the event:\n%s", last)
 	}
 }

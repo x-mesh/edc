@@ -482,7 +482,7 @@ func TestSyscallFilesTablePrintsAfterTheCallTable(t *testing.T) {
 	report.Summary.RingLost = 3
 	output.Reset()
 	report.print(&output)
-	if !strings.Contains(output.String(), "the table is incomplete: edc did not record 3 file events") {
+	if !strings.Contains(output.String(), "the table can be incomplete: edc did not record 3 events") {
 		t.Errorf("lost events are not reported:\n%s", output.String())
 	}
 	var without bytes.Buffer

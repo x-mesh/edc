@@ -55,6 +55,16 @@ func removeStaleTraceCommandCgroups(root string) {
 	}
 }
 
+// probeTraceCommandCgroup은 cgroup 안에서 process를 시작할 수 있는지 본다.
+func probeTraceCommandCgroup(cgroup *traceCommandCgroup) error {
+	cmd := exec.Command("/bin/sh", "-c", ":")
+	setTraceCommandCgroup(cmd, cgroup)
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("start a process in the cgroup: %w", err)
+	}
+	return nil
+}
+
 // setTraceCommandCgroup은 명령이 cgroup 안에서 바로 시작되게 한다(clone3의 CLONE_INTO_CGROUP). 그러면 명령이 첫 번째
 // 호출부터 필터에 걸린다.
 func setTraceCommandCgroup(cmd *exec.Cmd, cgroup *traceCommandCgroup) {

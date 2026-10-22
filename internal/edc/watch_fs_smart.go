@@ -63,13 +63,17 @@ func (entry *fsWatchSmartEntry) setProcess(event fsWatchEvent) {
 		return
 	}
 	entry.pid = event.PID
-	if !slices.Contains(entry.processes, event.Process) {
+	if len(entry.processes) < fsWatchSmartProcessKept && !slices.Contains(entry.processes, event.Process) {
 		entry.processes = append(entry.processes, event.Process)
 	}
 }
 
-// fsWatchSmartProcessShown은 한 줄에 이름으로 보이는 process의 수다. 넘으면 나머지는 수만 붙인다.
-const fsWatchSmartProcessShown = 3
+// fsWatchSmartProcessShown은 한 줄에 이름으로 보이는 process의 수다. 넘으면 나머지는 수만 붙인다. fsWatchSmartProcessKept는 한 줄이
+// 기억하는 서로 다른 이름의 수다. 창 안에서 이름이 끝없이 늘고 이벤트마다 훑는 비용이 커지지 않게 막으며, 넘는 이름은 세지 않는다.
+const (
+	fsWatchSmartProcessShown = 3
+	fsWatchSmartProcessKept  = 8
+)
 
 // fsWatchProcessNames는 줄에 보일 process 이름이다. 예: "editor, formatter" 또는 "a, b, c +2".
 func fsWatchProcessNames(names []string) string {
@@ -107,7 +111,7 @@ func (smart *fsWatchSmart) add(event fsWatchEvent, now time.Time) {
 			inherited := created.processes
 			created.processes = slices.Clone(renamed.processes)
 			for _, name := range inherited {
-				if !slices.Contains(created.processes, name) {
+				if len(created.processes) < fsWatchSmartProcessKept && !slices.Contains(created.processes, name) {
 					created.processes = append(created.processes, name)
 				}
 			}

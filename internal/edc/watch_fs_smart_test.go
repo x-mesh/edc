@@ -3,6 +3,7 @@ package edc
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"strconv"
 	"strings"
@@ -335,6 +336,46 @@ func TestFSWatchSmartListsEveryProcessOfAMergedLine(t *testing.T) {
 	records = paired.flush()
 	if len(records) != 1 || records[0].Process != "editor, formatter" {
 		t.Fatalf("overlapping names: %+v", records)
+	}
+}
+
+// 도착점 이벤트의 process가 옛 줄의 이름들과 다르면 그 뒤에 덧붙는다. 이름을 바꾼 process가 따로 있다는 뜻이다.
+func TestFSWatchSmartAddsTheProcessThatRenamed(t *testing.T) {
+	clock := newFSSmartClock()
+	at := func(ms int) time.Time { return clock.start.Add(time.Duration(ms) * time.Millisecond) }
+	add := func(kind, path string, ms, pid int, process string) {
+		clock.smart.add(fsWatchEvent{Time: at(ms), Event: kind, Path: path, PID: pid, Process: process}, at(ms))
+	}
+	add("create", "d/f.tmp", 0, 11, "editor")
+	add("modify", "d/f.tmp", 1, 12, "formatter")
+	add("rename", "d/f.tmp", 2, 0, "")
+	add("create", "d/f", 3, 13, "mv")
+	records := clock.flush()
+	if len(records) != 1 || records[0].Process != "editor, formatter, mv" || records[0].PID != 13 || records[0].Origin != "f.tmp" {
+		t.Fatalf("records = %+v", records)
+	}
+}
+
+// 한 줄이 기억하는 이름의 수에는 상한이 있다. 상한을 넘는 이름은 세지 않고, 이미 기억한 이름은 계속 알아본다.
+func TestFSWatchSmartKeepsAtMostEightProcessNames(t *testing.T) {
+	clock := newFSSmartClock()
+	at := func(ms int) time.Time { return clock.start.Add(time.Duration(ms) * time.Millisecond) }
+	for index := range 30 {
+		name := fmt.Sprintf("p%02d", index)
+		clock.smart.add(fsWatchEvent{Time: at(index), Event: "modify", Path: "busy.log", PID: 100 + index, Process: name}, at(index))
+	}
+	// 기억한 이름이 다시 오면 새 이름으로 세지 않는다.
+	clock.smart.add(fsWatchEvent{Time: at(31), Event: "modify", Path: "busy.log", PID: 100, Process: "p00"}, at(31))
+	records := clock.flush()
+	if len(records) != 1 || records[0].Process != "p00, p01, p02 +5" {
+		t.Fatalf("records = %+v", records)
+	}
+	entry := newFSWatchSmart(fsWatchSmartWindow)
+	for index := range 30 {
+		entry.add(fsWatchEvent{Time: at(index), Event: "modify", Path: "x", Process: fmt.Sprintf("q%d", index)}, at(index))
+	}
+	if kept := len(entry.byPath["x"].processes); kept != fsWatchSmartProcessKept {
+		t.Errorf("kept %d names, want %d", kept, fsWatchSmartProcessKept)
 	}
 }
 

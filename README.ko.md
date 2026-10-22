@@ -320,7 +320,7 @@ Linux에서는 `--driver`로 감시 방식을 고릅니다. 기본값은 `auto`�
 - `fanotify`: 파일시스템 전체에 mark 하나를 겁니다. 시작할 때 트리를 훑지 않고, inotify watch 한도도 받지 않습니다. root(`CAP_SYS_ADMIN`)와 Linux 5.17 이상이 필요합니다.
 - `inotify`: 디렉터리마다 감시를 등록한 뒤에 출력을 시작합니다. 트리가 크면 시간이 걸리며, stderr가 터미널이면 이 동안 안내를 출력합니다. 디렉터리 수가 `fs.inotify.max_user_watches`를 넘으면 오류로 멈춥니다.
 
-`--recursive`이면 `auto`는 `fanotify`를 먼저 시도하고, 시작할 수 없으면 `inotify`를 씁니다. stderr가 터미널이면 그 이유를 한 줄로 알립니다. `--recursive`가 없으면 감시가 하나뿐이므로 `inotify`를 씁니다. 실제로 쓴 방식은 `ready` 기록의 `driver`에 나옵니다. `--driver fanotify`를 지정했는데 `fanotify`를 시작할 수 없으면 이유를 출력하고 멈춥니다.
+`--recursive`이면 `auto`는 `fanotify`를 먼저 시도하고, 시작할 수 없으면 `inotify`를 씁니다. stderr가 터미널이면 그 이유를 한 줄로 알립니다. `--recursive`가 없으면 감시가 하나뿐이므로 `inotify`를 씁니다. 실제로 쓴 방식은 `ready` 기록의 `driver`에 나옵니다. `auto`가 `inotify`를 고르면 시작 줄과 `ready` 기록의 `driver_reason`에 이유(`not_recursive` 또는 `fanotify_unavailable`)가 나옵니다. `--driver`로 직접 고른 방식과 `fanotify`에는 이유가 없습니다. `--driver fanotify`를 지정했는데 `fanotify`를 시작할 수 없으면 이유를 출력하고 멈춥니다.
 
 `fanotify`는 다음 경우에 시작할 수 없습니다.
 

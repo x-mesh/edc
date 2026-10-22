@@ -440,3 +440,26 @@ func TestFSWatchUnescapeMount(t *testing.T) {
 		}
 	}
 }
+
+// auto가 inotify를 고르면 이유가 source에 남는다. 재귀 감시가 아니면 not_recursive, 직접 고르거나 fanotify면 비어 있다.
+func TestFSWatchSourceRecordsWhyAutoChoseInotify(t *testing.T) {
+	root := t.TempDir()
+	for _, test := range []struct {
+		name       string
+		options    fsWatchOptions
+		wantDriver string
+		wantReason string
+	}{
+		{"not recursive", fsWatchOptions{root: root, driver: fsWatchDriverAuto}, fsWatchDriverInotify, fsWatchReasonNotRecursive},
+		{"chosen by the user", fsWatchOptions{root: root, recursive: true, driver: fsWatchDriverInotify}, fsWatchDriverInotify, ""},
+	} {
+		source, err := newFSWatchSource(test.options)
+		if err != nil {
+			t.Fatalf("%s: %v", test.name, err)
+		}
+		if source.driver != test.wantDriver || source.driverReason != test.wantReason {
+			t.Errorf("%s: driver %q reason %q, want %q and %q", test.name, source.driver, source.driverReason, test.wantDriver, test.wantReason)
+		}
+		source.close()
+	}
+}

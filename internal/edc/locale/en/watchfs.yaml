@@ -48,6 +48,10 @@ watchfs:
     dropped: "Dropped %d events whose path could not be found; changes in the watched directory can be missing."
   walking: "Adding a watch to each directory under %s… A large tree takes time. Output starts when edc is ready."
   ready: "WATCH %s · recursive=%t · driver=%s"
+  ready_reason: "WATCH %s · recursive=%t · driver=%s (%s)"
+  driver_reason:
+    not_recursive: "not recursive"
+    fanotify_unavailable: "fanotify unavailable"
   status:
     actions: "action %d"
     failed: "failed %d"

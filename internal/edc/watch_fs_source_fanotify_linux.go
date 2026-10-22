@@ -57,7 +57,7 @@ func newFSWatchSource(options fsWatchOptions) (fsWatchSource, error) {
 		return source, nil
 	}
 	if !options.recursive {
-		return newFSNotifyWatchSource(options)
+		return withFSWatchReason(newFSNotifyWatchSource(options))(fsWatchReasonNotRecursive)
 	}
 	source, err := newFanotifyWatchSource(options)
 	if err == nil {
@@ -66,7 +66,17 @@ func newFSWatchSource(options fsWatchOptions) (fsWatchSource, error) {
 	if isTerminal(os.Stderr) {
 		fmt.Fprintln(fsWatchNotice, T("watchfs.fanotify.fallback", err))
 	}
-	return newFSNotifyWatchSource(options)
+	return withFSWatchReason(newFSNotifyWatchSource(options))(fsWatchReasonFanotifyDown)
+}
+
+// withFSWatchReason은 auto가 만든 inotify 감시에 고른 이유를 붙인다. 만들지 못했으면 오류를 그대로 돌려준다.
+func withFSWatchReason(source fsWatchSource, err error) func(string) (fsWatchSource, error) {
+	return func(reason string) (fsWatchSource, error) {
+		if err == nil {
+			source.driverReason = reason
+		}
+		return source, err
+	}
 }
 
 // fsWatchFanotifyEvent는 FAN_REPORT_DFID_NAME_TARGET 이벤트 하나다. parent는 name 항목이 든 디렉터리, target은 그

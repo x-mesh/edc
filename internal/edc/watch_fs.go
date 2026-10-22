@@ -23,6 +23,7 @@ type fsWatchRecord struct {
 	Root            string    `json:"root,omitempty"`
 	Recursive       bool      `json:"recursive,omitempty"`
 	Driver          string    `json:"driver,omitempty"`
+	DriverReason    string    `json:"driver_reason,omitempty"`
 	Event           string    `json:"event,omitempty"`
 	Path            string    `json:"path,omitempty"`
 	IsDir           bool      `json:"is_directory,omitempty"`
@@ -127,7 +128,7 @@ func streamFSWatch(ctx context.Context, writer io.Writer, source fsWatchSource, 
 		_, err := options.status.through(writer).Write(buffer.Bytes())
 		return err
 	}
-	if err := emit(fsWatchRecord{Type: "ready", Time: time.Now().UTC(), Root: options.root, Recursive: options.recursive, Driver: source.driver}); err != nil {
+	if err := emit(fsWatchRecord{Type: "ready", Time: time.Now().UTC(), Root: options.root, Recursive: options.recursive, Driver: source.driver, DriverReason: source.driverReason}); err != nil {
 		return 2, err
 	}
 	states := make([]fsWatchRuleState, len(options.rules))
@@ -370,7 +371,11 @@ func writeFSWatchRecord(writer io.Writer, record fsWatchRecord, jsonOutput bool,
 	stamp := style.dim(record.Time.Local().Format("15:04:05.000"))
 	switch record.Type {
 	case "ready":
-		_, err := fmt.Fprintln(writer, stamp+"  "+T("watchfs.ready", terminalJSON(record.Root), record.Recursive, record.Driver))
+		line := T("watchfs.ready", terminalJSON(record.Root), record.Recursive, record.Driver)
+		if record.DriverReason != "" {
+			line = T("watchfs.ready_reason", terminalJSON(record.Root), record.Recursive, record.Driver, T("watchfs.driver_reason."+record.DriverReason))
+		}
+		_, err := fmt.Fprintln(writer, stamp+"  "+line)
 		return err
 	case "event":
 		kind := style.paint(fmt.Sprintf("%-7s", strings.ToUpper(record.Event)), fsWatchEventColor(record.Event))

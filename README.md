@@ -358,7 +358,7 @@ On Linux, `--driver` selects how `edc` watches the tree. The default is `auto`.
 - `fanotify` puts one mark on the whole filesystem. `edc` does not read the tree at startup, and the inotify watch limit does not apply. This driver needs root (`CAP_SYS_ADMIN`) and Linux 5.17 or later.
 - `inotify` adds a watch to each directory before the first output. A large tree takes time. If stderr is a terminal, `edc` shows a notice during this step. If the tree has more directories than `fs.inotify.max_user_watches` allows, the watch stops with an error.
 
-With `--recursive`, `auto` tries `fanotify` first. If `fanotify` cannot start, `edc` uses `inotify`. If stderr is a terminal, a line on stderr gives the reason. Without `--recursive`, `auto` uses `inotify`, because one watch is sufficient. The `driver` field of the `ready` record shows the driver in use. If you set `--driver fanotify` and `fanotify` cannot start, `edc` stops and shows the reason.
+With `--recursive`, `auto` tries `fanotify` first. If `fanotify` cannot start, `edc` uses `inotify`. If stderr is a terminal, a line on stderr gives the reason. Without `--recursive`, `auto` uses `inotify`, because one watch is sufficient. The `driver` field of the `ready` record shows the driver in use. When `auto` chooses `inotify`, the start line and the `driver_reason` field of the `ready` record give the reason: `not_recursive` or `fanotify_unavailable`. A driver that you choose with `--driver`, and `fanotify`, have no reason. If you set `--driver fanotify` and `fanotify` cannot start, `edc` stops and shows the reason.
 
 `fanotify` cannot start in these conditions:
 

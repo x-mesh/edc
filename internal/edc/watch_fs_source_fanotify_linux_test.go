@@ -471,9 +471,15 @@ func TestFSWatchSourceRecordsWhenAutoFellBackToInotify(t *testing.T) {
 	if _, err := os.Stat(root); err != nil {
 		t.Skip(err)
 	}
-	source, err := newFSWatchSource(fsWatchOptions{root: root, recursive: true, driver: fsWatchDriverAuto})
+	// 건너뛰는 것은 이 환경의 inotify가 그 경로를 아예 못 보는 경우뿐이다. 그 밖의 오류는 폴백이 깨진 것이므로 실패다.
+	direct, err := newFSNotifyWatchSource(fsWatchOptions{root: root, recursive: true})
 	if err != nil {
 		t.Skipf("inotify cannot watch %s here: %v", root, err)
+	}
+	direct.close()
+	source, err := newFSWatchSource(fsWatchOptions{root: root, recursive: true, driver: fsWatchDriverAuto})
+	if err != nil {
+		t.Fatalf("auto did not fall back to inotify for %s: %v", root, err)
 	}
 	defer source.close()
 	if source.driver != fsWatchDriverInotify || source.driverReason != fsWatchReasonFanotifyDown {

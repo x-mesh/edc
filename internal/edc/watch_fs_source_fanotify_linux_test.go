@@ -463,3 +463,20 @@ func TestFSWatchSourceRecordsWhyAutoChoseInotify(t *testing.T) {
 		source.close()
 	}
 }
+
+// fanotify를 시작하지 못하면 auto는 inotify로 넘어가고 이유를 fanotify_unavailable로 남긴다. /proc은 fanotify가 쓰는
+// file handle을 지원하지 않고, root가 아니면 fanotify_init 자체가 거부되므로 어느 쪽으로 실행해도 이 분기를 탄다.
+func TestFSWatchSourceRecordsWhenAutoFellBackToInotify(t *testing.T) {
+	root := "/proc/self/attr"
+	if _, err := os.Stat(root); err != nil {
+		t.Skip(err)
+	}
+	source, err := newFSWatchSource(fsWatchOptions{root: root, recursive: true, driver: fsWatchDriverAuto})
+	if err != nil {
+		t.Skipf("inotify cannot watch %s here: %v", root, err)
+	}
+	defer source.close()
+	if source.driver != fsWatchDriverInotify || source.driverReason != fsWatchReasonFanotifyDown {
+		t.Fatalf("driver %q reason %q, want %q and %q", source.driver, source.driverReason, fsWatchDriverInotify, fsWatchReasonFanotifyDown)
+	}
+}

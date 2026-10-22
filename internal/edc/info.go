@@ -159,7 +159,9 @@ func printInfoResources(writer io.Writer, memory infoMemory, memoryErr error, si
 	fmt.Fprintln(writer)
 	style.line(writer, style.heading("📊 Memory Status"))
 	if memoryErr != nil {
-		style.tree(writer, "└──", infoUnavailable(style, memoryErr.Error()))
+		// swap은 호스트 정보에서 따로 읽으므로 메모리를 읽지 못해도 보여 준다.
+		style.tree(writer, "├──", infoUnavailable(style, memoryErr.Error()))
+		style.tree(writer, "└──", style.kv("Swap", infoSwapText(style, memory.SwapUsed, memory.SwapTotal)))
 	} else {
 		used := memory.Total - memory.Available
 		percent := float64(used) / float64(memory.Total) * 100
@@ -241,6 +243,7 @@ func printInfoListen(writer io.Writer, result Result, hidesOtherAccounts, color,
 		return
 	}
 	var tcp, udp, loopback int
+	scopes := map[string]int{}
 	var shown []listenSocket
 	for _, socket := range sockets {
 		switch socket.Proto {
@@ -249,7 +252,9 @@ func printInfoListen(writer io.Writer, result Result, hidesOtherAccounts, color,
 		case "udp":
 			udp++
 		}
-		local := listenBindingScope(socket.Proto, socket.Address) == "loopback"
+		scope := listenBindingScope(socket.Proto, socket.Address)
+		scopes[scope]++
+		local := scope == "loopback"
 		if local {
 			loopback++
 		}
@@ -258,21 +263,23 @@ func printInfoListen(writer io.Writer, result Result, hidesOtherAccounts, color,
 		}
 	}
 	count := func(label string, value int) string { return style.dim(label) + " " + fmt.Sprint(value) }
-	lines := []string{style.join(" · ", count("TCP", tcp), count("UDP", udp), count("Exposed", len(sockets)-loopback), count("Loopback", loopback))}
+	lines := []string{style.join(" · ", count("TCP", tcp), count("UDP", udp), infoListenExposed(style, len(sockets)-loopback, scopes), count("Loopback", loopback))}
 	limit := len(shown)
 	if !verbose {
 		limit = min(limit, infoListenRows)
 	}
-	addressWidth := 0
+	addressWidth, scopeWidth := 0, 0
 	for _, socket := range shown[:limit] {
 		addressWidth = max(addressWidth, len(socket.Address))
+		scopeWidth = max(scopeWidth, len(infoListenScopeLabels[listenBindingScope(socket.Proto, socket.Address)]))
 	}
 	for _, socket := range shown[:limit] {
 		process := listenCell(socket.Process)
 		if socket.PID != "" {
 			process += style.dim(" (" + socket.PID + ")")
 		}
-		lines = append(lines, fmt.Sprintf("%-6d ", socket.Port)+style.dim(fmt.Sprintf("%-4s", socket.Proto))+fmt.Sprintf(" %-*s  ", addressWidth, socket.Address)+process)
+		scope := style.dim(fmt.Sprintf("%-*s", scopeWidth, infoListenScopeLabels[listenBindingScope(socket.Proto, socket.Address)]))
+		lines = append(lines, fmt.Sprintf("%-6d ", socket.Port)+style.dim(fmt.Sprintf("%-4s", socket.Proto))+fmt.Sprintf(" %-*s  ", addressWidth, socket.Address)+scope+"  "+process)
 	}
 	if hidden := len(shown) - limit; hidden > 0 {
 		lines = append(lines, style.dim(fmt.Sprintf("… %d more exposed · ", hidden))+style.command("edc listen"))
@@ -290,6 +297,29 @@ func printInfoListen(writer io.Writer, result Result, hidesOtherAccounts, color,
 		}
 		style.tree(writer, branch, line)
 	}
+}
+
+// infoListenScopeLabels는 바인딩 범위를 info에 적는 말이다. info는 영어로 적으므로 edc listen의 번역 키를 쓰지 않는다.
+var infoListenScopeLabels = map[string]string{
+	"all":      "all interfaces",
+	"specific": "specific address",
+	"loopback": "loopback",
+	"unknown":  "unknown",
+}
+
+// infoListenExposed는 노출된 소켓의 수와 범위별 내역이다. 0인 범위는 적지 않는다.
+func infoListenExposed(style textStyle, exposed int, scopes map[string]int) string {
+	var parts []string
+	for _, scope := range []string{"all", "specific", "unknown"} {
+		if scopes[scope] > 0 {
+			parts = append(parts, fmt.Sprintf("%s %d", scope, scopes[scope]))
+		}
+	}
+	text := style.dim("Exposed") + " " + fmt.Sprint(exposed)
+	if len(parts) > 0 {
+		text += style.dim(" (" + strings.Join(parts, " · ") + ")")
+	}
+	return text
 }
 
 func infoSingleLine(value string) string {

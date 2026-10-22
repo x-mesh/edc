@@ -131,7 +131,7 @@ func TestSyscallEventErrorLoopIgnoresNormalErrnos(t *testing.T) {
 
 func TestSyscallEventMissingPathLoop(t *testing.T) {
 	clock := newSyscallEventClock()
-	clock.steps(9, nil, nil, map[string]uint64{"/etc/app.conf ENOENT": 80, "/dev/shm/x EAGAIN": 900, "/etc/rare ENOENT": 3})
+	clock.steps(9, nil, nil, map[string]uint64{"/etc/app.conf ENOENT": 80, "/dev/shm/x EAGAIN": 900, "/etc/rare ENOENT": 3, "/root/secret EACCES": 400, "/proc/1/mem EPERM": 400})
 	events := clock.detector.report()
 	if len(events) != 1 || events[0].Kind != syscallKindMissingPath || events[0].Path != "/etc/app.conf" || events[0].Errno != "ENOENT" {
 		t.Fatalf("events = %+v", events)

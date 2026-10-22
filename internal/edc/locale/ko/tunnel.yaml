@@ -31,6 +31,8 @@ tunnel:
     all_with_names: "--all은 터널 이름과 함께 쓸 수 없습니다"
     save_after_start: "%s은(는) 실행 중이지만 정의를 저장하지 못했습니다: %s"
     save_needs_adhoc: "--save는 -L, -R, -D와 함께 써야 합니다"
+    state_save_unstopped: "터널 %s이(가) 실행 중이지만 상태를 저장하지 못했고(%s) 종료하지도 못했습니다(%s). 다음 명령으로 직접 종료하십시오: ssh -S %s -O exit %s"
+    save_up_only: "--save는 edc tunnel up에서만 쓸 수 있습니다"
     timeout_range: "--timeout과 --connect-timeout은 0보다 커야 합니다"
 
   list:

@@ -38,6 +38,9 @@ const (
 // syscallBenignErrnos는 오류 반복으로 보지 않는 errno다. 비동기 I/O와 신호는 정상 동작에서도 초당 수만 번 실패한다.
 var syscallBenignErrnos = map[string]bool{"EAGAIN": true, "EINTR": true, "EINPROGRESS": true, "ERESTARTSYS": true, "ERESTARTNOINTR": true, "ERESTARTNOHAND": true, "ERESTART_RESTARTBLOCK": true}
 
+// syscallMissingPathErrnos는 경로가 없어서 실패한 errno다. 있는 경로에 대한 권한 거부(EACCES)나 EPERM은 없는 경로가 아니다.
+var syscallMissingPathErrnos = map[string]bool{"ENOENT": true, "ENOTDIR": true}
+
 // syscallBenignPairs는 그 호출에서만 정상인 errno다. 시간 제한이 있는 futex 기다림은 ETIMEDOUT로 끝나고, 자식이 없을 때의 wait는 ECHILD다.
 var syscallBenignPairs = map[string]bool{"futex ETIMEDOUT": true, "wait4 ECHILD": true, "waitid ECHILD": true}
 
@@ -132,7 +135,7 @@ func (detector *syscallEventDetector) observe(at time.Time, collection syscallCo
 	currentFailures := map[string]uint64{}
 	for _, row := range files {
 		for errno, count := range row.Errnos {
-			if !syscallBenignErrnos[errno] {
+			if syscallMissingPathErrnos[errno] {
 				currentFailures[row.Path+"\x00"+errno] += count
 			}
 		}

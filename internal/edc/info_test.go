@@ -11,7 +11,7 @@ func TestInfoResourcesRanksRSSWithoutChangingTheProcessList(t *testing.T) {
 	var output strings.Builder
 	printInfoResources(&output, infoMemory{Total: 8 << 30, Available: 3 << 30, Basis: "test estimate", Details: []infoMemoryDetail{{"Cache", 1 << 30}}}, nil, infoSignals{}, processes, nil, []infoCapability{{"CPU wait / I/O latency", "permission required", "missing CAP_BPF\nCAP_PERFMON"}}, false, true)
 	text := output.String()
-	for _, want := range []string{"Memory Status", "Available: 3.00 GB", "Basis: test estimate", "Cache: 1.00 GB", "Processes observed: 4", "Threads observed: 5 (2/4 processes)", "memory-heavy", "permission required", "missing CAP_BPF CAP_PERFMON"} {
+	for _, want := range []string{"Memory Status", "Available: 3.00 GB", "Basis: test estimate", "Cache: 1.00 GB", "Processes observed: 4", "Threads observed: 5 (counted for 2 of 4 processes)", "memory-heavy", "permission required", "missing CAP_BPF CAP_PERFMON"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("missing %q: %s", want, text)
 		}
@@ -83,7 +83,7 @@ func TestInfoProcessSnapshotUsesRSSNotFootprint(t *testing.T) {
 		t.Fatalf("process output changed with footprint:\n%s\n%s", plain.String(), footprint.String())
 	}
 	alpha, beta := strings.Index(plain.String(), "PID 1       alpha"), strings.Index(plain.String(), "PID 2       beta")
-	if alpha < 0 || beta < 0 || alpha > beta || !strings.Contains(plain.String(), "alpha                        2.0M") || !strings.Contains(plain.String(), "beta                         1.0M") {
+	if alpha < 0 || beta < 0 || alpha > beta || !strings.Contains(plain.String(), "2.0 MB") || !strings.Contains(plain.String(), "1.0 MB") {
 		t.Fatalf("processes are not in RSS order: %q", plain.String())
 	}
 }
@@ -135,6 +135,49 @@ func TestInfoListenShowsExposedPortsAndCountsLoopback(t *testing.T) {
 	}
 	if strings.Contains(text, "more exposed") || strings.Contains(text, "without root") {
 		t.Fatalf("-v가 목록을 자르거나 쓰지 않을 안내를 붙였다:\n%s", text)
+	}
+}
+
+func TestInfoInterfaceTagsNameWhatTheAddressDoesNotSay(t *testing.T) {
+	cases := []struct {
+		iface interfaceDetails
+		want  string
+	}{
+		{interfaceDetails{Name: "en0", Address: "192.168.1.92", Mask: "255.255.255.0"}, ""},
+		{interfaceDetails{Name: "en9", Address: "169.254.5.180", Mask: "255.255.0.0"}, "link-local"},
+		{interfaceDetails{Name: "bridge101", Address: "192.168.156.0", Mask: "255.255.255.0"}, "network address"},
+		{interfaceDetails{Name: "utun9", Address: "100.65.168.177", Mask: "255.255.255.255"}, "tunnel"},
+		{interfaceDetails{Name: "wg0", Address: "10.8.0.0", Mask: "255.255.255.254"}, "tunnel"},
+		{interfaceDetails{Name: "eth1", Address: "10.0.0.0", Mask: "255.255.255.255"}, ""},
+	}
+	for _, test := range cases {
+		if got := strings.Join(infoInterfaceTags(test.iface), ", "); got != test.want {
+			t.Errorf("%s %s/%s: tags = %q, want %q", test.iface.Name, test.iface.Address, test.iface.Mask, got, test.want)
+		}
+	}
+}
+
+// 기본 경로를 가진 인터페이스가 맨 위에 오고, 나머지는 이름 순서를 지킨다.
+func TestInfoLocalIPListsTheDefaultRouteFirst(t *testing.T) {
+	interfaces := []interfaceDetails{
+		{Name: "bridge0", Address: "10.0.0.3", Mask: "255.255.255.0"},
+		{Name: "en0", Address: "192.168.1.92", Mask: "255.255.255.0", Gateway: "192.168.1.1"},
+		{Name: "en9", Address: "169.254.5.180", Mask: "255.255.0.0"},
+	}
+	var output strings.Builder
+	printInfo(&output, "test", hostDetails{Hostname: "host"}, interfaces, nil, nil, infoSignals{}, false, false)
+	text := output.String()
+	en0, bridge, en9 := strings.Index(text, "en0 "), strings.Index(text, "bridge0 "), strings.Index(text, "en9 ")
+	if en0 < 0 || en0 > bridge || bridge > en9 || !strings.Contains(text, "G/W: 192.168.1.1") || !strings.Contains(text, "255.255.0.0 · link-local") {
+		t.Fatalf("local IP order or tags are wrong:\n%s", text)
+	}
+}
+
+func TestInfoProcessSizeUsesTheUnitsOfTheOtherSections(t *testing.T) {
+	for bytes, want := range map[uint64]string{5 << 30: "5.00 GB", 995 << 20: "995.0 MB", 30 << 20: "30.0 MB", 512 << 10: "512 KB"} {
+		if got := infoProcessSize(bytes); got != want {
+			t.Errorf("infoProcessSize(%d) = %q, want %q", bytes, got, want)
+		}
 	}
 }
 

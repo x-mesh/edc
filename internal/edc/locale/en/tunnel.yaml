@@ -1,0 +1,155 @@
+# English messages for edc tunnel. This file is the base: a key that another language misses falls back to here.
+tunnel:
+
+  error:
+    name_invalid: "invalid tunnel name %q: use letters, digits, '.', '_' or '-', start with a letter or digit, at most 32 characters"
+    host_empty: "tunnel %q needs a host"
+    host_invalid: "the host of tunnel %q cannot start with '-' or contain spaces"
+    kind_count: "tunnel %q needs exactly one of remote, reverse, or socks"
+    local_required: "tunnel %q needs local: a port or auto"
+    local_unexpected: "tunnel %q cannot use local with reverse or socks"
+    port_invalid: "tunnel %q: invalid port %q"
+    remote_invalid: "tunnel %q: remote must be host:port, got %q"
+    reverse_invalid: "tunnel %q: reverse must be port:host:port, got %q"
+    unknown: "unknown tunnel: %s"
+    ssh_not_found: "ssh is not installed or not in PATH"
+    already_up: "tunnel %s is already up on port %d"
+    port_busy: "port %d is already in use on 127.0.0.1"
+    socket_path: "the control socket path is too long: %s"
+    start_failed: "tunnel %s did not start: %s"
+    stop_failed: "tunnel %s did not stop: %s"
+    name_required: "give a tunnel name: edc tunnel up <name>"
+    name_required_down: "give a tunnel name or --all: edc tunnel down <name>"
+    not_running: "tunnel %s is not running"
+    adhoc_conflict: "use exactly one of -L, -R, or -D"
+    adhoc_host: "give the host: edc tunnel up -L auto:db.internal:5432 <host>"
+    duplicate: "tunnel %s already exists in %s"
+    file_shape: "%s is not a tunnels file: the top level must be a mapping"
+    destination_required: "fill in the destination as host:port"
+    port_taken: "port %d is already used by the running tunnel %s"
+    remote_port_taken: "remote port %d on %s is already used by the running tunnel %s"
+    all_with_names: "--all cannot be used with tunnel names"
+    save_after_start: "%s is running, but edc could not save its definition: %s"
+    save_needs_adhoc: "--save needs -L, -R, or -D"
+    timeout_range: "--timeout and --connect-timeout must be more than 0"
+
+  list:
+    empty: "no tunnels. Define them in tunnels.yaml, or start one with edc tunnel up -L"
+
+  column:
+    name: "name"
+    kind: "kind"
+    listen: "listen"
+    destination: "destination"
+    host: "host"
+    state: "state"
+    reach: "reach"
+    saved: "saved"
+    command: "command"
+    uptime: "uptime"
+
+  up:
+    saved: "saved: %s -> %s"
+    done: "up: %s  %s -> %s"
+
+  down:
+    done: "down: %s"
+
+  notice:
+    not_defined: "%s has no definition in tunnels.yaml, so edc cannot start it again"
+    removed: "removed the definition of %s"
+
+  screen:
+    name: "edc tunnel"
+    form_title: "new tunnel   tab next field   ←/→ choose   ctrl+t test connection   enter start   esc cancel"
+    confirm_remove: "remove the definition of %s?   y yes   n no"
+
+  form:
+    save: "save"
+    yes: "yes"
+    no: "no"
+    save_to: "saved to %s"
+    save_none: "nothing is saved. The tunnel disappears from the list when it stops"
+    host: "host"
+    kind: "kind"
+    local_port: "local port"
+    remote_port: "remote port"
+    destination: "destination"
+    hint_destination: "db.internal:5432 (host:port the jump host connects to)"
+    hint_local_target: "localhost:3000 (host:port on this machine)"
+    local_target: "local target"
+    name: "name"
+
+  help:
+    host:
+      - "Where ssh connects. ←/→ cycles the inventory hosts and the ~/.ssh/config aliases."
+      - "You can also type user@host or any other name that ssh accepts."
+    kind:
+      local: "local    listen on this machine, reach a service that the host can see (ssh -L)"
+      reverse: "reverse  listen on the host, send its traffic back to this machine (ssh -R)"
+      socks: "socks    run a SOCKS5 proxy on this machine, send any traffic through the host (ssh -D)"
+    port:
+      local:
+        - "The port to listen on at 127.0.0.1, from 1 to 65535. auto picks a free port."
+        - "A port below 1024 usually needs root."
+      reverse:
+        - "The port to open on the host, from 1 to 65535."
+        - "It binds to the loopback of the host unless sshd allows GatewayPorts."
+      socks:
+        - "The port of the SOCKS5 proxy at 127.0.0.1, from 1 to 65535. auto picks a free port."
+        - "Set the proxy of an app or browser to socks5://127.0.0.1:<port>."
+    destination:
+      local:
+        - "The host:port that the host connects to. Example: db.internal:5432"
+        - "Use localhost:5432 for a service that runs on the host itself."
+      reverse:
+        - "The host:port on this machine that receives the traffic. Example: localhost:3000"
+        - "A name of another machine in your network also works."
+    save:
+      - "Yes keeps the tunnel in tunnels.yaml. You can start it again by its name."
+      - "No starts it once. It disappears from the list when it stops."
+    name:
+      - "edc tunnel up and down use this name. If it is empty, edc builds a name from the host and port."
+      - "Use up to 32 letters, digits, '.', '_' or '-'."
+
+  diagram:
+    local: "this machine 127.0.0.1:%s ──ssh──▶ %s ──▶ %s"
+    reverse: "%s :%s ──ssh──▶ this machine ──▶ %s"
+    socks: "apps ──▶ this machine 127.0.0.1:%s ──ssh──▶ %s ──▶ any destination"
+
+  hint:
+    toggle: "enter start/stop"
+    new: "n new"
+    restart: "r restart"
+    remove: "x remove definition"
+    quit: "q quit"
+    remote_port: "the port %d may already be in use on the host. Choose another port"
+
+  warning:
+    target_down: "warning: nothing listens on %s on this machine yet, so connections through the tunnel fail until it starts"
+    shared_local: "warning: tunnel %s also uses local port %d, so the two cannot run together"
+    shared_remote: "warning: tunnel %s also uses remote port %d on the same host, so the two cannot run together"
+
+  check:
+    title: "connection test: %s"
+    running: "testing the connection…"
+    stale: "the input changed after this test"
+    summary_ok: "all checks passed"
+    summary_warn: "passed with warnings"
+    summary_fail: "%d check failed"
+    label:
+      login: "SSH login: %s"
+      local_port: "local port %d"
+      local_port_auto: "local port"
+      destination: "destination %s, seen from %s"
+      remote_port: "%s, remote port %d"
+      target: "local target %s"
+    detail:
+      free: "free"
+      auto: "a free port is chosen at start"
+      running: "the tunnel is running"
+      reachable: "reachable"
+      bindable: "can be opened"
+      listening: "listening"
+      not_listening: "nothing listens yet"
+      skipped: "skipped because the login failed"

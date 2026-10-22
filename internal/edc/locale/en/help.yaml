@@ -531,6 +531,31 @@ command:
       - "It looks here first, then in the config directory."
       - "The plan and the results share one host by step table."
       - "Ctrl-C marks the remaining steps as SKIP and returns exit code 4."
+  tunnel:
+    summary: "Manage SSH tunnels and see which ones are running"
+    option:
+      file: "tunnels YAML path"
+      name: "name of an ad hoc tunnel, default is built from the host and port"
+      local: "local forward, [port|auto]:host:port"
+      reverse: "remote forward, port:host:port"
+      socks: "SOCKS proxy port, or auto"
+      save: "save an ad hoc tunnel in tunnels.yaml after it starts"
+      all: "apply to every running tunnel"
+      connect_timeout: "SSH connection time limit"
+    sub:
+      list: "print the defined and running tunnels"
+      up: "start a tunnel by name, or an ad hoc tunnel with -L, -R, or -D"
+      test: "test the connection of a tunnel without starting it"
+      down: "stop tunnels by name"
+    notes:
+      - "Without a subcommand, edc opens a terminal screen to start, stop, create, and remove tunnels."
+      - "Without a terminal or with --json, edc prints the list."
+      - "Tunnels live in tunnels.yaml. edc looks in ./.edc, the current directory, and the config directory."
+      - "host is an inventory host name or an alias of ~/.ssh/config."
+      - "edc runs OpenSSH in the background and keeps one state file for each tunnel."
+      - "Ports bind to 127.0.0.1. auto picks a free port."
+      - "reach is ok if the destination keeps the connection open, and refused if it closes at once. Reverse tunnels show -."
+      - "test checks the local port, the SSH login, and the destination as the host sees it. For a reverse tunnel, it checks the remote port and the local target. It starts no tunnel."
   completion:
     summary: "Print the shell completion script"
     sub:

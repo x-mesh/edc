@@ -31,6 +31,8 @@ tunnel:
     all_with_names: "--all cannot be used with tunnel names"
     save_after_start: "%s is running, but edc could not save its definition: %s"
     save_needs_adhoc: "--save needs -L, -R, or -D"
+    state_save_unstopped: "tunnel %s runs, but edc could not save its state (%s) and could not stop it (%s). Stop it with: ssh -S %s -O exit %s"
+    save_up_only: "--save works only with edc tunnel up"
     timeout_range: "--timeout and --connect-timeout must be more than 0"
 
   list:

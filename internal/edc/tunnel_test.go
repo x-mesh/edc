@@ -760,3 +760,65 @@ func TestRunTunnelUpSaveCreatesTheFirstDefinitionFileFromTheCLI(t *testing.T) {
 		t.Fatalf("a missing --file must stay an error without --save: %d", status)
 	}
 }
+
+// 상태 파일을 저장하지 못하면 터널을 끝낸다. 끝내지도 못하면 사용자가 직접 끝낼 명령을 알려야 한다.
+func TestTunnelUpWhenTheStateFileCannotBeSaved(t *testing.T) {
+	spec := tunnelSpec{Host: "jump1", Local: "auto", Remote: "db:5432"}
+	block := func(t *testing.T, manager tunnelManager) {
+		t.Helper()
+		// 기록이 들어갈 자리를 비어 있지 않은 디렉터리로 막아 저장을 실패시킨다.
+		if err := os.MkdirAll(filepath.Join(manager.store.recordPath("db"), "keep"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Run("the master stops", func(t *testing.T) {
+		manager, runner := newTestTunnelManager(t)
+		block(t, manager)
+		_, err := manager.up(context.Background(), "db", spec)
+		if err == nil || strings.Contains(err.Error(), "ssh -S") || len(runner.stopped) != 1 {
+			t.Fatalf("err = %v, stopped = %v", err, runner.stopped)
+		}
+	})
+	t.Run("the master does not stop", func(t *testing.T) {
+		manager, runner := newTestTunnelManager(t)
+		runner.stopFailure = errors.New("control socket is gone")
+		block(t, manager)
+		_, err := manager.up(context.Background(), "db", spec)
+		if err == nil || !strings.Contains(err.Error(), "ssh -S") || !strings.Contains(err.Error(), "ops@10.0.0.5") || !strings.Contains(err.Error(), "control socket is gone") {
+			t.Fatalf("err = %v", err)
+		}
+	})
+}
+
+func TestRunTunnelRejectsSaveOutsideUp(t *testing.T) {
+	for _, subcommand := range []string{"test", "list", "down"} {
+		args := []string{subcommand, "--save", "-L", "6000:db:5432", "jump1"}
+		stderr := captureTraceStderr(t, func() {
+			if status := runTunnel(args, "test"); status != 2 {
+				t.Errorf("%s --save: status = %d, want 2", subcommand, status)
+			}
+		})
+		if !strings.Contains(stderr, "--save works only with edc tunnel up") {
+			t.Errorf("%s --save: stderr = %q", subcommand, stderr)
+		}
+	}
+}
+
+// 가짜 ssh로 `edc tunnel test`를 CLI 경로로 끝까지 실행한다. 대상 해석, 점검 순서, 종료 코드를 본다.
+func TestRunTunnelTestRunsThroughTheCLI(t *testing.T) {
+	bin := shortTunnelDir(t)
+	if err := os.WriteFile(filepath.Join(bin, "ssh"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_STATE_HOME", shortTunnelDir(t))
+	args := []string{"test", "--json", "-", "-L", "auto:db.internal:5432", "--name", "probe", "jump1"}
+	output, status := captureTunnelStdout(t, func() int { return runTunnel(args, "test") })
+	if status != 0 || !strings.Contains(output, `"ok": true`) || !strings.Contains(output, `"name": "probe"`) {
+		t.Fatalf("status %d, output %q", status, output)
+	}
+	if _, status := captureTunnelStdout(t, func() int { return runTunnel([]string{"test", "nobody"}, "test") }); status != 2 {
+		t.Fatalf("an unknown tunnel name must be an error: %d", status)
+	}
+}

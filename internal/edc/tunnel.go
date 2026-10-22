@@ -596,7 +596,10 @@ func (manager tunnelManager) up(ctx context.Context, name string, spec tunnelSpe
 	record := tunnelRecord{Name: name, Host: plan.Host, Target: plan.Target, Kind: plan.Kind, Port: plan.Port,
 		Destination: plan.Destination, Socket: socket, PID: pid, Started: manager.now()}
 	if err := manager.store.save(record); err != nil {
-		_ = manager.runner.Stop(ctx, plan.Target, socket)
+		// 기록을 못 남긴 터널은 edc가 다시 찾을 수 없으므로 끝내야 한다. 끝내지도 못하면 사용자가 직접 끝낼 수 있게 알린다.
+		if stopErr := manager.runner.Stop(ctx, plan.Target, socket); stopErr != nil {
+			return tunnelRow{}, tunnelError("tunnel.error.state_save_unstopped", name, err.Error(), stopErr.Error(), socket, plan.Target)
+		}
 		return tunnelRow{}, err
 	}
 	started := record.Started
@@ -878,6 +881,10 @@ func runTunnel(args []string, version string) int {
 	}
 	if options.timeout <= 0 || connectTimeout <= 0 {
 		fmt.Fprintln(os.Stderr, tunnelError("tunnel.error.timeout_range"))
+		return 2
+	}
+	if save && subcommand != "up" {
+		fmt.Fprintln(os.Stderr, tunnelError("tunnel.error.save_up_only"))
 		return 2
 	}
 	environment, err := newTunnelEnvironment(filePath, connectTimeout, save && subcommand == "up")

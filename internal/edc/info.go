@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/netip"
 	"os"
@@ -200,7 +201,12 @@ func printInfoResources(writer io.Writer, memory infoMemory, memoryErr error, si
 		}
 		line := style.kv("Processes observed", fmt.Sprint(len(processes))) + style.dim(" · ")
 		if known > 0 {
-			line += style.kv("Threads observed", fmt.Sprint(threads)+" "+style.dim(fmt.Sprintf("(%d/%d processes)", known, len(processes))))
+			value := fmt.Sprint(threads)
+			// 읽지 못한 프로세스가 있으면 합계가 그 프로세스를 빼고 센 값이라는 것을 밝힌다.
+			if known < len(processes) {
+				value += " " + style.dim(fmt.Sprintf("(counted for %d of %d processes)", known, len(processes)))
+			}
+			line += style.kv("Threads observed", value)
 		} else {
 			line += style.kv("Threads", style.dim("unavailable"))
 		}
@@ -212,7 +218,7 @@ func printInfoResources(writer io.Writer, memory infoMemory, memoryErr error, si
 		ordered := append([]topProcess(nil), processes...)
 		sort.SliceStable(ordered, func(i, j int) bool { return ordered[i].RSS > ordered[j].RSS })
 		for _, process := range ordered[:min(3, len(ordered))] {
-			rss := style.paint(formatProcessRSS(process.RSS), richSizeColor(int64(process.RSS)))
+			rss := style.paint(fmt.Sprintf("%9s", infoProcessSize(process.RSS)), richSizeColor(int64(process.RSS)))
 			style.line(writer, "    "+style.dim("PID")+" "+fmt.Sprintf("%-7d %-28s ", process.PID, topProcessName(process.Command, 28))+rss)
 		}
 	}
@@ -406,7 +412,7 @@ func printInfo(writer io.Writer, version string, details hostDetails, interfaces
 		branch, indent = "├──", "│   "
 	}
 	style.tree(writer, branch, style.dim("Local IP"))
-	for index, iface := range interfaces {
+	for index, iface := range infoInterfacesByRoute(interfaces) {
 		branch := "├──"
 		if index == len(interfaces)-1 {
 			branch = "└──"
@@ -415,7 +421,11 @@ func printInfo(writer io.Writer, version string, details hostDetails, interfaces
 		if iface.Gateway != "" {
 			gateway = style.dim(",") + " " + style.kv("G/W", iface.Gateway)
 		}
-		style.line(writer, style.dim(indent+branch)+" "+style.kv(fmt.Sprintf("%-15s", iface.Name), iface.Address+" "+style.dim("/")+" "+iface.Mask+gateway))
+		tags := ""
+		if kinds := infoInterfaceTags(iface); len(kinds) > 0 {
+			tags = style.dim(" · " + strings.Join(kinds, ", "))
+		}
+		style.line(writer, style.dim(indent+branch)+" "+style.kv(fmt.Sprintf("%-15s", iface.Name), iface.Address+" "+style.dim("/")+" "+iface.Mask+gateway+tags))
 	}
 	if showInterfaces {
 		style.tree(writer, "└──", style.dim("Interfaces"))
@@ -428,6 +438,54 @@ func printInfo(writer io.Writer, version string, details hostDetails, interfaces
 		}
 	}
 	printDiskUsage(writer, disks, signals.Disks, color, verbose)
+}
+
+// infoInterfacesByRoute는 기본 경로를 가진 인터페이스를 맨 위로 올린다. 나머지의 순서는 그대로다.
+func infoInterfacesByRoute(interfaces []interfaceDetails) []interfaceDetails {
+	ordered := append([]interfaceDetails(nil), interfaces...)
+	sort.SliceStable(ordered, func(i, j int) bool { return ordered[i].Gateway != "" && ordered[j].Gateway == "" })
+	return ordered
+}
+
+// infoTunnelPrefixes는 터널 인터페이스의 이름 규칙이다. 주소만으로는 터널을 알 수 없어 이름으로 판단한다.
+var infoTunnelPrefixes = []string{"utun", "tun", "tap", "wg", "tailscale", "ppp"}
+
+// infoInterfaceTags는 주소만 보고 헷갈리는 인터페이스에 붙이는 말이다. 링크 로컬은 DHCP를 받지 못해 자동으로 정한 주소이고,
+// 네트워크 주소는 호스트 비트가 모두 0이라 보통 호스트 주소가 아니다. /31과 /32는 호스트 주소로 쓰므로 뺀다.
+func infoInterfaceTags(iface interfaceDetails) []string {
+	var tags []string
+	for _, prefix := range infoTunnelPrefixes {
+		if strings.HasPrefix(iface.Name, prefix) {
+			tags = append(tags, "tunnel")
+			break
+		}
+	}
+	address, err := netip.ParseAddr(iface.Address)
+	if err != nil {
+		return tags
+	}
+	if address.IsLinkLocalUnicast() {
+		tags = append(tags, "link-local")
+	}
+	if mask := net.ParseIP(iface.Mask).To4(); mask != nil {
+		if ones, _ := net.IPMask(mask).Size(); ones > 0 && ones <= 30 && net.IP(address.AsSlice()).Equal(net.IP(address.AsSlice()).Mask(net.IPMask(mask))) {
+			tags = append(tags, "network address")
+		}
+	}
+	return tags
+}
+
+// infoProcessSize는 프로세스의 상주 메모리다. 다른 섹션이 GB로 적으므로 단위를 맞추고, 작은 값은 MB와 KB로 내려 0.00 GB가 되지 않게 한다.
+func infoProcessSize(bytes uint64) string {
+	const mib = 1024 * 1024
+	switch {
+	case bytes >= 1024*mib:
+		return formatBytes(bytes)
+	case bytes >= mib:
+		return fmt.Sprintf("%.1f MB", float64(bytes)/mib)
+	default:
+		return fmt.Sprintf("%.0f KB", float64(bytes)/1024)
+	}
 }
 
 // collapseSharedDisks는 용량과 사용량이 바이트까지 같은 마운트를 한 줄로 접는다. APFS는 한 컨테이너의 볼륨이 용량을 나눠 쓰고,

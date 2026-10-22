@@ -117,6 +117,7 @@ func runInfo(args []string, version string) int {
 		public = &publicNetworkInfo{IP: publicIP}
 	}
 	color := richEnabled(os.Stdout)
+	memory.SwapUsed, memory.SwapTotal = details.SwapUsed, details.SwapTotal
 	printInfo(os.Stdout, version, details, interfaces, disks, public, signals, color, verbose)
 	printInfoResources(os.Stdout, memory, memoryErr, signals, processes, processErr, capabilities, color, verbose)
 	printInfoListen(os.Stdout, listen, runtime.GOOS == "darwin" && os.Geteuid() != 0, color, verbose)
@@ -130,9 +131,10 @@ func runInfo(args []string, version string) int {
 }
 
 type infoMemory struct {
-	Total, Available uint64
-	Basis            string
-	Details          []infoMemoryDetail
+	Total, Available    uint64
+	SwapUsed, SwapTotal uint64
+	Basis               string
+	Details             []infoMemoryDetail
 }
 
 type infoMemoryDetail struct {
@@ -144,17 +146,29 @@ type infoCapability struct {
 	Name, State, Detail string
 }
 
+// infoSwapText는 swap 사용량이다. swap이 없는 호스트는 0 B가 아니라 none으로 적어 값이 0인 것과 구분한다.
+func infoSwapText(style textStyle, used, total uint64) string {
+	if total == 0 {
+		return style.dim("none")
+	}
+	percent := float64(used) / float64(total) * 100
+	return formatBytes(used) + " / " + formatBytes(total) + " " + style.level(fmt.Sprintf("(%.2f%%)", percent), newTopLimits(1, false).memory.level(percent))
+}
+
 func printInfoResources(writer io.Writer, memory infoMemory, memoryErr error, signals infoSignals, processes []topProcess, processErr error, capabilities []infoCapability, color, verbose bool) {
 	style := newTextStyle(color)
 	fmt.Fprintln(writer)
-	style.line(writer, style.heading("Memory Status"))
+	style.line(writer, style.heading("📊 Memory Status"))
 	if memoryErr != nil {
-		style.tree(writer, "└──", infoUnavailable(style, memoryErr.Error()))
+		// swap은 호스트 정보에서 따로 읽으므로 메모리를 읽지 못해도 보여 준다.
+		style.tree(writer, "├──", infoUnavailable(style, memoryErr.Error()))
+		style.tree(writer, "└──", style.kv("Swap", infoSwapText(style, memory.SwapUsed, memory.SwapTotal)))
 	} else {
 		used := memory.Total - memory.Available
 		percent := float64(used) / float64(memory.Total) * 100
 		usage := formatBytes(used) + " / " + formatBytes(memory.Total) + " " + style.level(fmt.Sprintf("(%.2f%%)", percent), newTopLimits(1, false).memory.level(percent))
 		style.tree(writer, "├──", style.join(" · ", style.kv("Used", usage), style.kv("Available", formatBytes(memory.Available))))
+		style.tree(writer, "├──", style.kv("Swap", infoSwapText(style, memory.SwapUsed, memory.SwapTotal)))
 		if line := infoPressureLine(signals, color); line != "" {
 			style.tree(writer, "├──", line)
 		}
@@ -235,6 +249,7 @@ func printInfoListen(writer io.Writer, result Result, hidesOtherAccounts, color,
 		return
 	}
 	var tcp, udp, loopback int
+	scopes := map[string]int{}
 	var shown []listenSocket
 	for _, socket := range sockets {
 		switch socket.Proto {
@@ -243,7 +258,9 @@ func printInfoListen(writer io.Writer, result Result, hidesOtherAccounts, color,
 		case "udp":
 			udp++
 		}
-		local := listenBindingScope(socket.Proto, socket.Address) == "loopback"
+		scope := listenBindingScope(socket.Proto, socket.Address)
+		scopes[scope]++
+		local := scope == "loopback"
 		if local {
 			loopback++
 		}
@@ -252,21 +269,23 @@ func printInfoListen(writer io.Writer, result Result, hidesOtherAccounts, color,
 		}
 	}
 	count := func(label string, value int) string { return style.dim(label) + " " + fmt.Sprint(value) }
-	lines := []string{style.join(" · ", count("TCP", tcp), count("UDP", udp), count("Exposed", len(sockets)-loopback), count("Loopback", loopback))}
+	lines := []string{style.join(" · ", count("TCP", tcp), count("UDP", udp), infoListenExposed(style, len(sockets)-loopback, scopes), count("Loopback", loopback))}
 	limit := len(shown)
 	if !verbose {
 		limit = min(limit, infoListenRows)
 	}
-	addressWidth := 0
+	addressWidth, scopeWidth := 0, 0
 	for _, socket := range shown[:limit] {
 		addressWidth = max(addressWidth, len(socket.Address))
+		scopeWidth = max(scopeWidth, len(infoListenScopeLabels[listenBindingScope(socket.Proto, socket.Address)]))
 	}
 	for _, socket := range shown[:limit] {
 		process := listenCell(socket.Process)
 		if socket.PID != "" {
 			process += style.dim(" (" + socket.PID + ")")
 		}
-		lines = append(lines, fmt.Sprintf("%-6d ", socket.Port)+style.dim(fmt.Sprintf("%-4s", socket.Proto))+fmt.Sprintf(" %-*s  ", addressWidth, socket.Address)+process)
+		scope := style.dim(fmt.Sprintf("%-*s", scopeWidth, infoListenScopeLabels[listenBindingScope(socket.Proto, socket.Address)]))
+		lines = append(lines, fmt.Sprintf("%-6d ", socket.Port)+style.dim(fmt.Sprintf("%-4s", socket.Proto))+fmt.Sprintf(" %-*s  ", addressWidth, socket.Address)+scope+"  "+process)
 	}
 	if hidden := len(shown) - limit; hidden > 0 {
 		lines = append(lines, style.dim(fmt.Sprintf("… %d more exposed · ", hidden))+style.command("edc listen"))
@@ -284,6 +303,29 @@ func printInfoListen(writer io.Writer, result Result, hidesOtherAccounts, color,
 		}
 		style.tree(writer, branch, line)
 	}
+}
+
+// infoListenScopeLabels는 바인딩 범위를 info에 적는 말이다. info는 영어로 적으므로 edc listen의 번역 키를 쓰지 않는다.
+var infoListenScopeLabels = map[string]string{
+	"all":      "all interfaces",
+	"specific": "specific address",
+	"loopback": "loopback",
+	"unknown":  "unknown",
+}
+
+// infoListenExposed는 노출된 소켓의 수와 범위별 내역이다. 0인 범위는 적지 않는다.
+func infoListenExposed(style textStyle, exposed int, scopes map[string]int) string {
+	var parts []string
+	for _, scope := range []string{"all", "specific", "unknown"} {
+		if scopes[scope] > 0 {
+			parts = append(parts, fmt.Sprintf("%s %d", scope, scopes[scope]))
+		}
+	}
+	text := style.dim("Exposed") + " " + fmt.Sprint(exposed)
+	if len(parts) > 0 {
+		text += style.dim(" (" + strings.Join(parts, " · ") + ")")
+	}
+	return text
 }
 
 func infoSingleLine(value string) string {
@@ -318,10 +360,6 @@ func printInfo(writer io.Writer, version string, details hostDetails, interfaces
 		fmt.Fprintln(writer)
 	}
 	style.line(writer, style.heading("🖥️  System Information"))
-	swapPercent := 0.0
-	if details.SwapTotal > 0 {
-		swapPercent = float64(details.SwapUsed) / float64(details.SwapTotal) * 100
-	}
 	limits := newTopLimits(details.Cores, false)
 	loads := make([]string, 0, len(details.Load))
 	for _, load := range details.Load {
@@ -348,8 +386,7 @@ func printInfo(writer io.Writer, version string, details hostDetails, interfaces
 			style.tree(writer, "├──", style.kv("Open files (system)", line))
 		}
 	}
-	swap := formatBytes(details.SwapUsed) + "/" + formatBytes(details.SwapTotal) + " " + style.level(fmt.Sprintf("(%.2f%%)", swapPercent), limits.memory.level(swapPercent))
-	style.tree(writer, "└──", style.join(" · ", style.kv("Files (edc soft/hard)", formatLimit(details.RLimitSoft)+"/"+formatLimit(details.RLimitHard)), style.kv("Swap", swap)))
+	style.tree(writer, "└──", style.kv("Files (edc soft/hard)", formatLimit(details.RLimitSoft)+"/"+formatLimit(details.RLimitHard)))
 	fmt.Fprintln(writer)
 	style.line(writer, style.heading("🛜 Network Interface"))
 	// 조회하지 못하면 줄 자체를 빼서 없는 값을 설명하지 않는다.
@@ -451,11 +488,44 @@ func infoProcessSize(bytes uint64) string {
 	}
 }
 
+// collapseSharedDisks는 용량과 사용량이 바이트까지 같은 마운트를 한 줄로 접는다. APFS는 한 컨테이너의 볼륨이 용량을 나눠 쓰고,
+// bind mount와 btrfs subvolume도 같은 수치를 내므로 같은 디스크를 여러 줄로 세어 보이게 한다. 대표는 경로가 가장 짧은 마운트다.
+// 두 번째 값은 대표 마운트가 대신한 마운트의 수이며, 접은 것이 없으면 비어 있다. 서로 다른 디스크의 수치가 바이트까지 같을 가능성은 낮다.
+func collapseSharedDisks(disks []diskDetails) ([]diskDetails, map[string]int) {
+	type volume struct{ used, total uint64 }
+	representative := map[volume]string{}
+	counts := map[volume]int{}
+	for _, disk := range disks {
+		key := volume{disk.Used, disk.Total}
+		counts[key]++
+		if current, ok := representative[key]; !ok || len(disk.Mount) < len(current) {
+			representative[key] = disk.Mount
+		}
+	}
+	shown := make([]diskDetails, 0, len(disks))
+	shared := map[string]int{}
+	for _, disk := range disks {
+		key := volume{disk.Used, disk.Total}
+		if representative[key] != disk.Mount {
+			continue
+		}
+		shown = append(shown, disk)
+		if counts[key] > 1 {
+			shared[disk.Mount] = counts[key]
+		}
+	}
+	return shown, shared
+}
+
 func printDiskUsage(writer io.Writer, disks []diskDetails, signals map[string]diskSignal, color, verbose bool) {
 	style := newTextStyle(color)
 	fmt.Fprintln(writer)
 	style.line(writer, style.heading("💾 Disk Usage"))
 	visible := visibleDisks(disks)
+	shared := map[string]int{}
+	if !verbose {
+		visible, shared = collapseSharedDisks(visible)
+	}
 	// 열 폭을 값에서 잰다. 고정 폭은 긴 mount 경로나 LVM 장치 이름에서 뒤 열을 모두 밀어낸다.
 	mountWidth, deviceWidth := diskMountWidth, diskDeviceWidth
 	for _, disk := range visible {
@@ -469,6 +539,9 @@ func printDiskUsage(writer io.Writer, disks []diskDetails, signals map[string]di
 		}
 		row := liveCell(disk.Mount, mountWidth) + " " + style.dim(liveCell(disk.Device, deviceWidth)+":") + " " +
 			fmt.Sprintf("%9s / %9s ", formatBytes(disk.Used), formatBytes(disk.Total)) + formatUsageBar(disk.Percent, color) + style.warn(diskSignalSuffix(signals[disk.Mount]))
+		if count := shared[disk.Mount]; count > 1 {
+			row += style.dim(fmt.Sprintf(" · %d mounts", count))
+		}
 		style.tree(writer, branch, row)
 		indent := "│   "
 		if index == len(visible)-1 {

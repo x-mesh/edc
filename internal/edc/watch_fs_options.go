@@ -55,9 +55,11 @@ type fsWatchOptions struct {
 	dryRun    bool
 	// smartOn과 smartOff는 --smart와 --no-smart이고, smart는 그 둘과 출력 대상으로 정한 값이다.
 	smartOn, smartOff, smart bool
-	outputPath               string
-	outputInfo               os.FileInfo
-	status                   *fsWatchStatus
+	// notice는 시끄러운 디렉터리를 알리는 곳이다. nil이면 알리지 않는다.
+	notice     func(string)
+	outputPath string
+	outputInfo os.FileInfo
+	status     *fsWatchStatus
 	// color는 기록 줄에 색을 쓰는지다. 상태줄과 같이 사람이 보는 터미널에서만 켠다.
 	color bool
 }

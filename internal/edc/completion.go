@@ -143,7 +143,7 @@ _edc() {
           ;;
         watch)
           if [[ $words[2] == fs ]]; then
-            _arguments '1:subcommand:(http fs)' '(-r --recursive)'{-r,--recursive}'[하위 디렉터리 감시]' '--event[파일 이벤트]:events:(create modify remove rename)' '--match[감시 루트 기준 glob]:glob' '--exec[실행할 shell command]:command' '--rules[YAML rule 파일]:path:_files' '--exclude[제외 glob]:glob' '--debounce[이벤트 묶음 시간]:duration' '--timeout[action 제한 시간]:duration' '--duration[감시 시간]:duration' '--json[JSONL 출력 경로]:path:_files' '--dry-run[action 미실행]' '--smart[한 변경의 이벤트를 한 줄로 합침]' '--no-smart[이벤트를 모두 출력]' '2:directory:_files -/'
+            _arguments '1:subcommand:(http fs)' '(-r --recursive)'{-r,--recursive}'[하위 디렉터리 감시]' '--event[파일 이벤트]:events:(create modify remove rename)' '--match[감시 루트 기준 glob]:glob' '--exec[실행할 shell command]:command' '--rules[YAML rule 파일]:path:_files' '--exclude[제외 glob]:glob' '--debounce[이벤트 묶음 시간]:duration' '--timeout[action 제한 시간]:duration' '--duration[감시 시간]:duration' '--json[JSONL 출력 경로]:path:_files' '--dry-run[action 미실행]' '--smart[한 변경을 한 줄로 합치고 시끄러운 디렉터리를 알림]' '--no-smart[이벤트를 모두 출력]' '2:directory:_files -/'
           else
             _arguments $common '(-i --interval)'{-i,--interval}'[sample 간격(초)]:seconds' '--duration[관측 시간]:duration' '--expect-status[기대 HTTP status]:code' '1:subcommand:(http fs)' '2:host or URL:_hosts'
           fi

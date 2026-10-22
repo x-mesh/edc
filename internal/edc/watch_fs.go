@@ -97,6 +97,10 @@ func runFSWatch(args []string) int {
 		defer fsWatchNotice.swap(previous)
 	}
 	options.smart = fsWatchSmartEnabled(options.smartOn, options.smartOff, options.jsonPath, isTerminal(os.Stdout))
+	// 알림은 stderr가 터미널일 때만 낸다. 묶어서 보이는 출력의 일부라서 --no-smart면 낸다고 하지 않는다.
+	if options.smart && isTerminal(os.Stderr) {
+		options.notice = func(text string) { fmt.Fprintln(fsWatchNotice, text) }
+	}
 	code, err := streamFSWatch(ctx, writer, source, options, executeFSWatchAction)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -157,8 +161,12 @@ func streamFSWatch(ctx context.Context, writer io.Writer, source fsWatchSource, 
 		<-smartTimer.C
 	}
 	defer smartTimer.Stop()
+	var noisy *fsWatchNoisy
 	if options.smart {
 		smart = newFSWatchSmart(fsWatchSmartWindow)
+		if options.notice != nil {
+			noisy = newFSWatchNoisy()
+		}
 	}
 	emitSmart := func(records []fsWatchRecord) error {
 		for _, record := range records {
@@ -251,6 +259,11 @@ func streamFSWatch(ctx context.Context, writer io.Writer, source fsWatchSource, 
 			summary.Events++
 			if options.status != nil {
 				options.status.event(event.Event, event.Time)
+			}
+			if noisy != nil {
+				if hint := noisy.add(event.Path, time.Now()); hint != nil {
+					options.notice(T("watchfs.noisy", terminalJSON(hint.Directory), hint.Events, fsWatchNoisyWindow, fsWatchShellQuote(hint.Pattern)))
+				}
 			}
 			if smart != nil {
 				smart.add(event, time.Now())

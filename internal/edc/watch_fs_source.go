@@ -13,6 +13,9 @@ type fsWatchEvent struct {
 	Event string    `json:"event"`
 	Path  string    `json:"path"`
 	IsDir bool      `json:"is_directory"`
+	// PID와 Process는 이벤트를 일으킨 process다. fanotify만 알려 주고, 이미 끝난 process의 이름은 비어 있다.
+	PID     int    `json:"pid,omitempty"`
+	Process string `json:"process,omitempty"`
 }
 
 // --driver 값이다. auto는 OS가 고르고, fanotify와 inotify는 Linux에서만 쓴다.

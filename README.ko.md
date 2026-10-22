@@ -321,6 +321,8 @@ edc watch fs --duration 1m --json events.jsonl
 
 감시를 멈추면 요약 줄 아래에 표를 출력합니다. 이벤트가 가장 많은 디렉터리 5개를 횟수와 전체에서 차지하는 비율과 함께 보여 주므로, 무엇을 제외할지 고르는 데 쓸 수 있습니다. 이벤트가 10건 이상일 때만 출력하고, `--no-smart`로 끌 수 있습니다.
 
+`fanotify` 드라이버에서는 줄 끝에 파일을 바꾼 process의 이름이 `주체 syslog-ng`처럼 붙습니다. 커널이 process를 알려 주고, edc는 이벤트가 도착할 때 그 이름을 읽습니다. 이미 끝난 process는 이름이 없고, `mv` 같은 짧은 명령은 이벤트를 읽기 전에 끝나는 일이 많아 이름이 나오지 않습니다. `inotify`는 process를 알려 주지 않고, `--no-smart`는 이름을 붙이지 않습니다. JSON 기록에는 드라이버가 알 때 `pid`와 `process`가 들어갑니다. 커널이 한 경로의 이벤트를 합치면 process는 첫 이벤트의 것입니다.
+
 기본으로 `.git`, `node_modules`, `.venv`, `venv`, `__pycache__`, `.mypy_cache`, `.pytest_cache`, `.ruff_cache`, `.tox`, `.next`, `.gradle`을 모든 깊이에서 제외합니다. 빌드 결과물을 감시할 수 있도록 `build`와 `dist`는 제외하지 않습니다. `--exclude 'build/**'`처럼 제외 glob을 반복해서 추가할 수 있습니다. 기본 제외 디렉터리도 감시하려면 `--no-default-exclude`를 쓰며, 이때도 `--exclude`로 준 패턴은 적용됩니다.
 
 Linux에서는 `--driver`로 감시 방식을 고릅니다. 기본값은 `auto`입니다.

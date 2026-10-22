@@ -23,6 +23,7 @@ watchfs:
   rules_exec_conflict: "--rules and --exec cannot be combined."
   smart_conflict: "--smart and --no-smart cannot be used together"
   smart_json_conflict: "--smart cannot be used with --json, because JSON keeps every event"
+  by: "by %s"
   top_heading: "most active directories:"
   hint_prefix: "hint"
   noisy: "%s had %d events in the last %s. To leave it out, add --exclude %s"

@@ -28,8 +28,11 @@ type fsWatchRecord struct {
 	Path         string    `json:"path,omitempty"`
 	IsDir        bool      `json:"is_directory,omitempty"`
 	// Origin과 Count는 묶어서 보일 때만 채운다. Origin은 이름을 바꿔 이 경로가 된 옛 이름이고, Count는 합친 modify의 수다.
-	Origin          string   `json:"origin,omitempty"`
-	Count           int      `json:"count,omitempty"`
+	Origin string `json:"origin,omitempty"`
+	Count  int    `json:"count,omitempty"`
+	// PID와 Process는 이벤트를 일으킨 process다. fanotify일 때만 있다.
+	PID             int      `json:"pid,omitempty"`
+	Process         string   `json:"process,omitempty"`
 	Rule            string   `json:"rule,omitempty"`
 	Command         []string `json:"command,omitempty"`
 	CWD             string   `json:"cwd,omitempty"`
@@ -305,7 +308,7 @@ func streamFSWatch(ctx context.Context, writer io.Writer, source fsWatchSource, 
 			}
 			if smart != nil {
 				smart.add(event, time.Now())
-			} else if err := emit(fsWatchRecord{Type: "event", Time: event.Time, Event: event.Event, Path: event.Path, IsDir: event.IsDir}); err != nil {
+			} else if err := emit(fsWatchEventRecord(event, options.jsonPath != "")); err != nil {
 				cancelActions()
 				return 2, err
 			}
@@ -493,6 +496,9 @@ func writeFSWatchRecord(writer io.Writer, record fsWatchRecord, jsonOutput bool,
 		if record.Origin != "" {
 			line += "  " + style.dim("← "+terminalJSON(record.Origin))
 		}
+		if record.Process != "" {
+			line += "  " + style.dim(T("watchfs.by", execPrintable([]byte(record.Process))))
+		}
 		_, err := fmt.Fprintln(writer, line)
 		return err
 	case "action_start":
@@ -572,4 +578,13 @@ func fsWatchStopLabel(reason string) string {
 	default:
 		return reason
 	}
+}
+
+// fsWatchEventRecord는 원본 이벤트를 기록으로 바꾼다. 일으킨 process는 JSON에만 싣는다. 묶지 않은 텍스트 출력은 이전과 같게 둔다.
+func fsWatchEventRecord(event fsWatchEvent, withProcess bool) fsWatchRecord {
+	record := fsWatchRecord{Type: "event", Time: event.Time, Event: event.Event, Path: event.Path, IsDir: event.IsDir}
+	if withProcess {
+		record.PID, record.Process = event.PID, event.Process
+	}
+	return record
 }

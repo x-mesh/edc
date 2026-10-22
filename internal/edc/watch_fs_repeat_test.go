@@ -227,3 +227,22 @@ func TestFSWatchStreamFoldsRepeatsOnAScreenAndKeepsTheHint(t *testing.T) {
 		t.Fatalf("screen lines:\n%s\nwant:\n%s\nfull screen: %q", strings.Join(want, "\n"), strings.Join(expected, "\n"), screen)
 	}
 }
+
+// 같은 줄이라도 일으킨 process가 다르면 이어서 합치지 않는다.
+func TestFSWatchRepeaterKeepsDifferentProcessesApart(t *testing.T) {
+	start := time.Date(2026, 10, 22, 17, 27, 0, 0, time.UTC)
+	repeater := newFSWatchRepeater(func() int { return 200 }, textStyle{})
+	first := repeatRecord("modify", "a.log", "", start, 0)
+	first.Process = "writer-a"
+	repeater.next(first)
+	same := repeatRecord("modify", "a.log", "", start.Add(time.Second), 0)
+	same.Process = "writer-a"
+	if _, rows := repeater.next(same); rows != 1 {
+		t.Fatal("the same process did not fold")
+	}
+	other := repeatRecord("modify", "a.log", "", start.Add(2*time.Second), 0)
+	other.Process = "writer-b"
+	if _, rows := repeater.next(other); rows != 0 {
+		t.Error("another process folded into the line")
+	}
+}

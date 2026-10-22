@@ -18,6 +18,7 @@ watchfs:
   rules_exec_conflict: "--rules와 --exec는 함께 사용할 수 없습니다."
   smart_conflict: "--smart와 --no-smart는 함께 쓸 수 없습니다"
   smart_json_conflict: "--smart는 --json과 함께 쓸 수 없습니다. JSON은 모든 이벤트를 그대로 냅니다"
+  by: "주체 %s"
   top_heading: "이벤트가 많은 디렉터리:"
   hint_prefix: "힌트"
   noisy: "%s에서 이벤트 %d건이 %s 안에 나왔습니다. 제외하려면 --exclude %s를 추가하십시오"

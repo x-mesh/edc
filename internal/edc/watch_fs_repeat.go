@@ -31,7 +31,7 @@ func newFSWatchRepeater(width func() int, style textStyle) *fsWatchRepeater {
 func (repeater *fsWatchRepeater) reset() { repeater.have = false }
 
 func fsWatchRepeatSignature(record fsWatchRecord) string {
-	return record.Event + "\x00" + record.Path + "\x00" + record.Origin + "\x00" + strconv.FormatBool(record.IsDir)
+	return record.Event + "\x00" + record.Path + "\x00" + record.Origin + "\x00" + record.Process + "\x00" + strconv.FormatBool(record.IsDir)
 }
 
 // fsWatchRecordCount는 기록이 합친 이벤트 수다. 합치지 않은 기록은 1이다.

@@ -141,6 +141,19 @@ func TestSyscallEventMissingPathLoop(t *testing.T) {
 	}
 }
 
+// ENOTDIR도 없는 경로의 실패다. 파일을 디렉터리처럼 열 때 난다.
+func TestSyscallEventMissingPathCountsENOTDIR(t *testing.T) {
+	clock := newSyscallEventClock()
+	clock.steps(9, nil, nil, map[string]uint64{"/etc/passwd/x ENOTDIR": 90})
+	events := clock.detector.report()
+	if len(events) != 1 || events[0].Kind != syscallKindMissingPath || events[0].Path != "/etc/passwd/x" || events[0].Errno != "ENOTDIR" {
+		t.Fatalf("events = %+v", events)
+	}
+	if got := events[0].target(); got != "ENOTDIR /etc/passwd/x" {
+		t.Errorf("target = %q", got)
+	}
+}
+
 func TestSyscallEventCallSpikeNeedsABaselineAndAJump(t *testing.T) {
 	clock := newSyscallEventClock()
 	// 처음부터 초당 4만 번 부르는 process는 평소 값이므로 event가 아니다.

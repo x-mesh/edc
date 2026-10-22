@@ -563,6 +563,8 @@ func TestSyscallFileTableStopsAddingPathsAtTheLimit(t *testing.T) {
 func TestSyscallFilesAreOnByDefaultExceptWhenCallsAreFiltered(t *testing.T) {
 	slow := syscallTraceOptions{slow: time.Millisecond}
 	errors := syscallTraceOptions{errorsAll: true}
+	// --errors ENOENT처럼 errno를 지정한 경우도 호출을 하나씩 받는 사용이다.
+	listed := syscallTraceOptions{errnos: []uint32{2}}
 	for _, test := range []struct {
 		name           string
 		files, noFiles bool
@@ -575,6 +577,8 @@ func TestSyscallFilesAreOnByDefaultExceptWhenCallsAreFiltered(t *testing.T) {
 		{"--errors keeps the old output", false, false, errors, false},
 		{"--slow --files", true, false, slow, true},
 		{"--errors --no-files", false, true, errors, false},
+		{"--errors ENOENT keeps the old output", false, false, listed, false},
+		{"--errors ENOENT --files", true, false, listed, true},
 	} {
 		if got := syscallFilesEnabled(test.files, test.noFiles, test.options); got != test.want {
 			t.Errorf("%s: files = %t, want %t", test.name, got, test.want)
@@ -629,4 +633,20 @@ func TestTraceCommandForwardsSignalsOnceItIsRunning(t *testing.T) {
 			t.Fatalf("exit code = %d after the second signal", command.exitCode())
 		}
 	})
+}
+
+func TestSnapshotIntervalFallsBackToTheDefault(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		given time.Duration
+		want  time.Duration
+	}{
+		{"not set", 0, syscallLiveInterval},
+		{"negative", -time.Second, syscallLiveInterval},
+		{"set", 250 * time.Millisecond, 250 * time.Millisecond},
+	} {
+		if got := (syscallTraceOptions{liveInterval: test.given}).snapshotInterval(); got != test.want {
+			t.Errorf("%s: interval = %s, want %s", test.name, got, test.want)
+		}
+	}
 }

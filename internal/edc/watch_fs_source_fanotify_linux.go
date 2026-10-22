@@ -116,20 +116,16 @@ type fsWatchFanotify struct {
 	waitingCount        int
 	seq                 uint64
 	excludedDirectories map[string]bool
-	// processName은 pid의 이름을 찾는다. processes는 찾은 이름을 fsWatchProcessTTL 동안 기억해 이벤트마다 /proc을 읽지 않게 한다.
+	// processName은 pid의 이름을 찾는다. processes는 한 번 읽은 이벤트 묶음 안에서만 찾은 이름을 기억해, 같은 pid의 이벤트가 쏟아져도
+	// /proc을 한 번만 읽게 한다. 묶음이 바뀌면 비우므로 pid가 다른 process로 재사용되어도 몇 ms 뒤에는 새로 찾는다.
 	processName func(int32) string
-	processes   map[int32]fsWatchProcessEntry
+	processes   map[int32]string
 }
 
-const (
-	fsWatchProcessTTL     = 10 * time.Second
-	fsWatchProcessEntries = 4096
-)
+const fsWatchProcessEntries = 4096
 
-type fsWatchProcessEntry struct {
-	name string
-	at   time.Time
-}
+// nextBatch는 새 이벤트 묶음을 처리하기 전에 부른다. 앞 묶음에서 찾은 이름을 잊는다.
+func (watch *fsWatchFanotify) nextBatch() { clear(watch.processes) }
 
 // fsWatchProcessName은 process의 이름이다. 이미 끝난 process는 찾지 못해 빈 문자열이다.
 func fsWatchProcessName(pid int32) string {
@@ -140,21 +136,20 @@ func fsWatchProcessName(pid int32) string {
 	return strings.TrimSpace(string(data))
 }
 
-// process는 이벤트를 일으킨 process의 이름이다. 짧게 사는 process는 이벤트를 읽을 때 이미 없을 수 있어, 못 찾은 결과도 기억해 같은
-// pid를 다시 찾지 않는다.
+// process는 이벤트를 일으킨 process의 이름이다. 짧게 사는 process는 이벤트를 읽을 때 이미 없을 수 있어, 못 찾은 결과도 그 묶음 안에서는
+// 기억해 같은 pid를 다시 찾지 않는다.
 func (watch *fsWatchFanotify) process(pid int32) string {
 	if pid <= 0 {
 		return ""
 	}
-	now := time.Now()
-	if entry, ok := watch.processes[pid]; ok && now.Sub(entry.at) < fsWatchProcessTTL {
-		return entry.name
+	if name, ok := watch.processes[pid]; ok {
+		return name
 	}
 	if len(watch.processes) >= fsWatchProcessEntries {
 		clear(watch.processes)
 	}
 	name := watch.processName(pid)
-	watch.processes[pid] = fsWatchProcessEntry{name: name, at: now}
+	watch.processes[pid] = name
 	return name
 }
 
@@ -169,7 +164,7 @@ func newFSWatchFanotify(options fsWatchOptions, lookup func(string) (string, err
 		paths: map[string]string{}, stale: map[string]bool{}, waiting: map[string][]fsWatchFanotifyWaiting{},
 		excludedDirectories: map[string]bool{},
 		processName:         fsWatchProcessName,
-		processes:           map[int32]fsWatchProcessEntry{},
+		processes:           map[int32]string{},
 	}
 }
 
@@ -262,6 +257,7 @@ func newFanotifyWatchSource(options fsWatchOptions) (fsWatchSource, error) {
 				fail(err)
 				return
 			}
+			watch.nextBatch()
 			for _, event := range batch {
 				if err := watch.handle(event); err != nil {
 					if !errors.Is(err, fs.ErrClosed) {

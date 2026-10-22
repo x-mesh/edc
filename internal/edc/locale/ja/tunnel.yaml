@@ -1,0 +1,157 @@
+# edc tunnel の日本語メッセージです。
+tunnel:
+
+  error:
+    name_invalid: "トンネル名 %q は無効です。英字、数字、'.'、'_'、'-' のみ使用し、英字か数字で始め、32文字以内にしてください"
+    host_empty: "トンネル %q には host が必要です"
+    host_invalid: "トンネル %q の host は '-' で始まったり空白を含んだりできません"
+    kind_count: "トンネル %q には remote、reverse、socks のいずれか1つだけを指定してください"
+    local_required: "トンネル %q には local（ポートまたは auto）が必要です"
+    local_unexpected: "トンネル %q は reverse や socks と local を併用できません"
+    port_invalid: "トンネル %q: ポート %q が無効です"
+    remote_invalid: "トンネル %q: remote は host:port 形式にしてください。受け取った値: %q"
+    reverse_invalid: "トンネル %q: reverse は port:host:port 形式にしてください。受け取った値: %q"
+    unknown: "不明なトンネル: %s"
+    ssh_not_found: "ssh がインストールされていないか、PATH にありません"
+    already_up: "トンネル %s はすでにポート %d で動作中です"
+    port_busy: "127.0.0.1 のポート %d はすでに使用中です"
+    socket_path: "制御ソケットのパスが長すぎます: %s"
+    start_failed: "トンネル %s を開始できませんでした: %s"
+    stop_failed: "トンネル %s を停止できませんでした: %s"
+    name_required: "トンネル名を指定してください: edc tunnel up <name>"
+    name_required_down: "トンネル名か --all を指定してください: edc tunnel down <name>"
+    not_running: "トンネル %s は動作していません"
+    adhoc_conflict: "-L、-R、-D のいずれか1つだけを使用してください"
+    adhoc_host: "host を指定してください: edc tunnel up -L auto:db.internal:5432 <host>"
+    duplicate: "トンネル %s はすでに %s にあります"
+    file_shape: "%s は tunnels ファイルではありません。最上位はマッピングにしてください"
+    destination_required: "宛先を host:port 形式で入力してください"
+    port_taken: "ポート %d は実行中のトンネル %s がすでに使用しています"
+    remote_port_taken: "リモートポート %d (%s) は実行中のトンネル %s がすでに使用しています"
+    all_with_names: "--all はトンネル名と一緒に使えません"
+    save_after_start: "%s は実行中ですが、定義を保存できませんでした: %s"
+    save_needs_adhoc: "--save は -L、-R、-D と一緒に使います"
+    state_save_unstopped: "トンネル %s は動作中ですが、状態を保存できず (%s)、停止もできませんでした (%s)。次のコマンドで手動停止してください: ssh -S %s -O exit %s"
+    save_up_only: "--save は edc tunnel up でのみ使えます"
+    timeout_range: "--timeout と --connect-timeout は 0 より大きくしてください"
+
+  list:
+    empty: "トンネルがありません。tunnels.yaml に定義するか、edc tunnel up -L で開始してください"
+
+  column:
+    name: "名前"
+    kind: "種類"
+    listen: "入口"
+    destination: "宛先"
+    host: "ホスト"
+    state: "状態"
+    reach: "到達"
+    saved: "保存"
+    command: "コマンド"
+    uptime: "稼働"
+
+  up:
+    saved: "保存: %s -> %s"
+    done: "開始: %s  %s -> %s"
+
+  down:
+    done: "停止: %s"
+
+  notice:
+    not_defined: "%s は tunnels.yaml に定義がないため、再開始できません"
+    removed: "%s の定義を削除しました"
+
+  screen:
+    name: "edc tunnel"
+    form_title: "新しいトンネル   tab 次の項目   ←/→ 選択   ctrl+t 接続テスト   enter 開始   esc キャンセル"
+    confirm_remove: "%s の定義を削除しますか?   y 削除   n キャンセル"
+
+  form:
+    save: "保存"
+    yes: "はい"
+    no: "いいえ"
+    save_to: "%s に保存します"
+    save_none: "保存しません。トンネルが停止すると一覧から消えます"
+    host: "ホスト"
+    kind: "種類"
+    local_port: "ローカルポート"
+    remote_port: "リモートポート"
+    destination: "宛先"
+    hint_destination: "db.internal:5432 (踏み台から接続する host:port)"
+    hint_local_target: "localhost:3000 (このマシンの host:port)"
+    local_target: "ローカル対象"
+    name: "名前"
+
+  help:
+    host:
+      - "ssh の接続先です。←/→ でインベントリのホストと ~/.ssh/config のエイリアスを選びます。"
+      - "user@host など ssh が受け付ける名前も直接入力できます。"
+    kind:
+      local: "local    このマシンでポートを開き、ホストから見えるサービスに接続 (ssh -L)"
+      reverse: "reverse  ホストでポートを開き、届いた通信をこのマシンへ転送 (ssh -R)"
+      socks: "socks    このマシンに SOCKS5 プロキシを開き、すべての通信をホスト経由にする (ssh -D)"
+    port:
+      local:
+        - "127.0.0.1 で待ち受けるポートです。1 から 65535 まで。auto は空きポートを選びます。"
+        - "1024 未満のポートは通常 root 権限が必要です。"
+      reverse:
+        - "ホストで開くポートです。1 から 65535 まで。"
+        - "sshd が GatewayPorts を許可しない場合、ホストのループバックにのみバインドします。"
+      socks:
+        - "127.0.0.1 の SOCKS5 プロキシのポートです。1 から 65535 まで。auto は空きポートを選びます。"
+        - "アプリやブラウザのプロキシを socks5://127.0.0.1:<ポート> に設定してください。"
+    destination:
+      local:
+        - "ホストが接続する host:port です。例: db.internal:5432"
+        - "ホスト自身で動くサービスは localhost:5432 のように指定します。"
+      reverse:
+        - "通信を受け取るこのマシンの host:port です。例: localhost:3000"
+        - "同じネットワークの別のマシン名も使えます。"
+    save:
+      - "「はい」を選ぶと tunnels.yaml に保存し、名前で再開始できます。"
+      - "「いいえ」を選ぶと一度だけ開始し、停止すると一覧から消えます。"
+    name:
+      - "edc tunnel up と down で使う名前です。空の場合はホストとポートから作ります。"
+      - "英字、数字、'.'、'_'、'-' を 32 文字まで使えます。"
+
+  diagram:
+    local: "このマシン 127.0.0.1:%s ──ssh──▶ %s ──▶ %s"
+    reverse: "%s :%s ──ssh──▶ このマシン ──▶ %s"
+    socks: "アプリ ──▶ このマシン 127.0.0.1:%s ──ssh──▶ %s ──▶ 任意の宛先"
+
+  hint:
+    toggle: "enter 開始・停止"
+    new: "n 新規"
+    restart: "r 再起動"
+    remove: "x 定義削除"
+    quit: "q 終了"
+    remote_port: "ホストでポート %d がすでに使用されている可能性があります。別のポートを指定してください"
+
+  warning:
+    target_down: "警告: このマシンで %s を待ち受けるプロセスがまだないため、起動するまでトンネル経由の接続は失敗します"
+    shared_local: "警告: トンネル %s もローカルポート %d を使用するため、2つは同時に実行できません"
+    shared_remote: "警告: トンネル %s も同じホストのリモートポート %d を使用するため、2つは同時に実行できません"
+
+  check:
+    title: "接続テスト: %s"
+    running: "接続をテスト中…"
+    stale: "このテストの後に入力が変わりました"
+    summary_ok: "すべての項目に合格しました"
+    summary_warn: "警告付きで合格しました"
+    summary_fail: "%d 件の項目が失敗しました"
+    label:
+      login: "SSH ログイン: %s"
+      local_port: "ローカルポート %d"
+      local_port_auto: "ローカルポート"
+      destination: "宛先 %s (%s から見た結果)"
+      remote_port: "%s のリモートポート %d"
+      target: "ローカル対象 %s"
+    detail:
+      free: "使用可能"
+      auto: "開始時に空きポートを選びます"
+      running: "トンネルは実行中です"
+      reachable: "到達可能"
+      bindable: "開けます"
+      listening: "待ち受け中"
+      not_listening: "まだ待ち受けていません"
+      skipped: "ログインに失敗したためスキップ"

@@ -1,0 +1,157 @@
+# edc tunnel의 한국어 메시지다.
+tunnel:
+
+  error:
+    name_invalid: "터널 이름 %q이(가) 올바르지 않습니다. 영문자, 숫자, '.', '_', '-'만 쓰고 영문자나 숫자로 시작하며 32자 이하여야 합니다"
+    host_empty: "터널 %q에 host가 필요합니다"
+    host_invalid: "터널 %q의 host는 '-'로 시작하거나 공백을 포함할 수 없습니다"
+    kind_count: "터널 %q에는 remote, reverse, socks 중 하나만 지정해야 합니다"
+    local_required: "터널 %q에는 local(포트 또는 auto)이 필요합니다"
+    local_unexpected: "터널 %q는 reverse나 socks와 local을 함께 쓸 수 없습니다"
+    port_invalid: "터널 %q: 포트 %q이(가) 올바르지 않습니다"
+    remote_invalid: "터널 %q: remote는 host:port 형식이어야 합니다. 받은 값: %q"
+    reverse_invalid: "터널 %q: reverse는 port:host:port 형식이어야 합니다. 받은 값: %q"
+    unknown: "알 수 없는 터널: %s"
+    ssh_not_found: "ssh가 설치되어 있지 않거나 PATH에 없습니다"
+    already_up: "터널 %s은(는) 이미 포트 %d에서 실행 중입니다"
+    port_busy: "127.0.0.1의 포트 %d을(를) 이미 사용 중입니다"
+    socket_path: "제어 소켓 경로가 너무 깁니다: %s"
+    start_failed: "터널 %s을(를) 시작하지 못했습니다: %s"
+    stop_failed: "터널 %s을(를) 종료하지 못했습니다: %s"
+    name_required: "터널 이름을 지정하십시오: edc tunnel up <name>"
+    name_required_down: "터널 이름이나 --all을 지정하십시오: edc tunnel down <name>"
+    not_running: "터널 %s은(는) 실행 중이 아닙니다"
+    adhoc_conflict: "-L, -R, -D 중 하나만 사용하십시오"
+    adhoc_host: "host를 지정하십시오: edc tunnel up -L auto:db.internal:5432 <host>"
+    duplicate: "터널 %s은(는) 이미 %s에 있습니다"
+    file_shape: "%s은(는) tunnels 파일이 아닙니다. 최상위가 매핑이어야 합니다"
+    destination_required: "목적지를 host:port 형식으로 입력하십시오"
+    port_taken: "포트 %d은(는) 실행 중인 터널 %s이(가) 이미 사용 중입니다"
+    remote_port_taken: "원격 포트 %d(%s)은(는) 실행 중인 터널 %s이(가) 이미 사용 중입니다"
+    all_with_names: "--all은 터널 이름과 함께 쓸 수 없습니다"
+    save_after_start: "%s은(는) 실행 중이지만 정의를 저장하지 못했습니다: %s"
+    save_needs_adhoc: "--save는 -L, -R, -D와 함께 써야 합니다"
+    state_save_unstopped: "터널 %s이(가) 실행 중이지만 상태를 저장하지 못했고(%s) 종료하지도 못했습니다(%s). 다음 명령으로 직접 종료하십시오: ssh -S %s -O exit %s"
+    save_up_only: "--save는 edc tunnel up에서만 쓸 수 있습니다"
+    timeout_range: "--timeout과 --connect-timeout은 0보다 커야 합니다"
+
+  list:
+    empty: "터널이 없습니다. tunnels.yaml에 정의하거나 edc tunnel up -L로 시작하십시오"
+
+  column:
+    name: "이름"
+    kind: "종류"
+    listen: "입구"
+    destination: "목적지"
+    host: "호스트"
+    state: "상태"
+    reach: "도달"
+    saved: "저장"
+    command: "명령"
+    uptime: "가동"
+
+  up:
+    saved: "저장: %s -> %s"
+    done: "시작: %s  %s -> %s"
+
+  down:
+    done: "종료: %s"
+
+  notice:
+    not_defined: "%s은(는) tunnels.yaml에 정의가 없어 다시 시작할 수 없습니다"
+    removed: "%s의 정의를 삭제했습니다"
+
+  screen:
+    name: "edc tunnel"
+    form_title: "새 터널   tab 다음 항목   ←/→ 선택   ctrl+t 연결 시험   enter 시작   esc 취소"
+    confirm_remove: "%s의 정의를 삭제할까요?   y 삭제   n 취소"
+
+  form:
+    save: "저장"
+    yes: "예"
+    no: "아니오"
+    save_to: "%s에 저장합니다"
+    save_none: "저장하지 않습니다. 터널을 종료하면 목록에서 사라집니다"
+    host: "호스트"
+    kind: "종류"
+    local_port: "로컬 포트"
+    remote_port: "원격 포트"
+    destination: "목적지"
+    hint_destination: "db.internal:5432 (접속 호스트에서 연결할 host:port)"
+    hint_local_target: "localhost:3000 (이 컴퓨터의 host:port)"
+    local_target: "로컬 대상"
+    name: "이름"
+
+  help:
+    host:
+      - "ssh가 접속할 곳입니다. ←/→로 인벤토리 호스트와 ~/.ssh/config 별칭을 고릅니다."
+      - "user@host나 ssh가 받는 다른 이름도 직접 입력할 수 있습니다."
+    kind:
+      local: "local    이 컴퓨터에서 포트를 열고, 호스트에서 보이는 서비스에 접속 (ssh -L)"
+      reverse: "reverse  호스트에서 포트를 열고, 들어온 트래픽을 이 컴퓨터로 전달 (ssh -R)"
+      socks: "socks    이 컴퓨터에 SOCKS5 프록시를 열고, 모든 트래픽을 호스트를 거쳐 전달 (ssh -D)"
+    port:
+      local:
+        - "127.0.0.1에서 열 포트이며 1부터 65535까지입니다. auto는 빈 포트를 고릅니다."
+        - "1024 미만 포트는 보통 root 권한이 필요합니다."
+      reverse:
+        - "호스트에서 열 포트이며 1부터 65535까지입니다."
+        - "sshd가 GatewayPorts를 허용하지 않으면 호스트의 루프백에만 바인딩합니다."
+      socks:
+        - "127.0.0.1에서 열 SOCKS5 프록시 포트이며 1부터 65535까지입니다. auto는 빈 포트를 고릅니다."
+        - "앱이나 브라우저의 프록시를 socks5://127.0.0.1:<포트>로 지정하십시오."
+    destination:
+      local:
+        - "호스트가 연결할 host:port입니다. 예: db.internal:5432"
+        - "호스트 자신에서 실행 중인 서비스는 localhost:5432처럼 적습니다."
+      reverse:
+        - "트래픽을 받을 이 컴퓨터의 host:port입니다. 예: localhost:3000"
+        - "같은 네트워크의 다른 컴퓨터 이름도 쓸 수 있습니다."
+    save:
+      - "예를 고르면 tunnels.yaml에 저장해 이름으로 다시 시작할 수 있습니다."
+      - "아니오를 고르면 한 번만 시작하고, 종료하면 목록에서 사라집니다."
+    name:
+      - "edc tunnel up과 down에서 쓰는 이름입니다. 비우면 호스트와 포트로 만듭니다."
+      - "영문자, 숫자, '.', '_', '-'를 32자까지 쓸 수 있습니다."
+
+  diagram:
+    local: "이 컴퓨터 127.0.0.1:%s ──ssh──▶ %s ──▶ %s"
+    reverse: "%s :%s ──ssh──▶ 이 컴퓨터 ──▶ %s"
+    socks: "앱 ──▶ 이 컴퓨터 127.0.0.1:%s ──ssh──▶ %s ──▶ 모든 목적지"
+
+  hint:
+    toggle: "enter 시작·종료"
+    new: "n 새 터널"
+    restart: "r 재시작"
+    remove: "x 정의 삭제"
+    quit: "q 종료"
+    remote_port: "호스트에서 포트 %d을(를) 이미 사용 중일 수 있습니다. 다른 포트를 지정하십시오"
+
+  warning:
+    target_down: "경고: 이 컴퓨터에서 %s을(를) 듣는 프로세스가 아직 없어 시작하기 전까지 터널로 들어온 연결은 실패합니다"
+    shared_local: "경고: 터널 %s도 로컬 포트 %d을(를) 사용하므로 둘을 함께 실행할 수 없습니다"
+    shared_remote: "경고: 터널 %s도 같은 호스트의 원격 포트 %d을(를) 사용하므로 둘을 함께 실행할 수 없습니다"
+
+  check:
+    title: "연결 시험: %s"
+    running: "연결을 시험하는 중…"
+    stale: "이 시험 뒤에 입력이 바뀌었습니다"
+    summary_ok: "모든 항목이 통과했습니다"
+    summary_warn: "경고와 함께 통과했습니다"
+    summary_fail: "%d개 항목이 실패했습니다"
+    label:
+      login: "SSH 로그인: %s"
+      local_port: "로컬 포트 %d"
+      local_port_auto: "로컬 포트"
+      destination: "목적지 %s (%s에서 본 결과)"
+      remote_port: "%s의 원격 포트 %d"
+      target: "로컬 대상 %s"
+    detail:
+      free: "사용 가능"
+      auto: "시작할 때 빈 포트를 고릅니다"
+      running: "터널이 실행 중입니다"
+      reachable: "도달 가능"
+      bindable: "열 수 있음"
+      listening: "듣는 중"
+      not_listening: "아직 듣는 프로세스가 없음"
+      skipped: "로그인에 실패해 건너뜀"

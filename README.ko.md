@@ -1743,6 +1743,79 @@ host는 inventory 순서로 돕니다. step은 recipe 순서로 command와 verif
 
 step이 실패하면 `edc`는 그 host의 나머지 step을 건너뜁니다. 다음 host는 그대로 진행합니다. 실패가 하나라도 있으면 exit code `1`을 돌려줍니다.
 
+## SSH 터널
+
+`edc tunnel`은 SSH 터널을 시작, 종료하고 목록으로 보여 줍니다. 로컬 OpenSSH `ssh`를 백그라운드로 실행하므로 OpenSSH 설정, agent, known host 확인을 그대로 사용합니다.
+
+터미널에서 `edc tunnel`을 실행하면 터널 화면이 열립니다. 화면은 터널마다 상태를 보여 주고 2초마다 갱신합니다.
+
+| 키 | 동작 |
+|---|---|
+| `enter` | 고른 터널을 시작합니다. 실행 중이면 종료합니다. |
+| `n` | 새 터널 입력 폼을 엽니다. |
+| `r` | 고른 터널을 다시 시작합니다. 저장된 터널에서만 쓸 수 있습니다. |
+| `x` | 확인한 뒤 고른 터널의 정의를 삭제합니다. 저장된 터널에서만 쓸 수 있습니다. |
+| `q` | 화면을 닫습니다. 실행 중인 터널은 계속 실행됩니다. |
+
+폼에서는 `tab`으로 다음 항목에 이동하고 `←`, `→`로 호스트와 종류를 고릅니다. `ctrl+t`는 연결을 시험하고 `enter`는 터널을 시작합니다. 폼에는 실행될 `ssh` 명령과 지금 선택한 항목의 도움말이 함께 보입니다.
+
+`저장` 항목은 터널을 보관할지 정합니다. 기본값은 `예`이며, `tunnels.yaml`에 정의를 쓰고 저장 경로를 항목 아래에 보여 줍니다. 파일이 없으면 `./.edc/tunnels.yaml`을 새로 만듭니다. `아니오`를 고르면 한 번만 시작하고, 터널을 종료하면 목록에서 사라집니다. 파일에 같은 이름이 있으면 덮어쓰지 않고 막습니다.
+
+자주 쓰는 터널은 `tunnels.yaml`에 정의합니다. `edc`는 `./.edc`, 현재 디렉터리, 설정 디렉터리 순으로 찾고 `--file`로 경로를 지정할 수 있습니다.
+
+```yaml
+tunnels:
+  db:
+    host: jump1                  # inventory의 호스트 이름 또는 ~/.ssh/config 별칭
+    local: 5432                  # 포트 또는 auto
+    remote: db.internal:5432     # ssh -L
+  api-dev:
+    host: dev
+    reverse: 8080:localhost:3000 # ssh -R, port:host:port
+  proxy:
+    host: jump1
+    socks: 1080                  # ssh -D, 포트 또는 auto
+```
+
+터널마다 `remote`, `reverse`, `socks` 중 정확히 하나를 지정해야 합니다. 로컬 포트는 `127.0.0.1`에만 바인딩하고, `auto`는 비어 있는 포트를 고릅니다.
+
+```bash
+edc tunnel                                      # 터널 화면, 터미널이 아니면 목록
+edc tunnel list --json -                        # 목록을 JSON으로 출력
+edc tunnel up db                                # 정의된 터널 시작
+edc tunnel up -L auto:db.internal:5432 jump1    # 정의 없이 즉석으로 시작
+edc tunnel up -L 5432:db.internal:5432 --name db jump1 --save   # 시작하고 정의도 저장
+edc tunnel test db                              # 터널은 시작하지 않고 연결만 시험
+edc tunnel down db
+edc tunnel down --all
+```
+
+### 연결 시험
+
+폼의 `ctrl+t`와 `edc tunnel test <name>`은 같은 항목을 확인하며 터널은 시작하지 않습니다. 확인 순서는 다음과 같습니다.
+
+| 항목 | 방법 |
+|---|---|
+| 로컬 포트 | `127.0.0.1`에 바인딩해 보고, 같은 포트를 쓰는 실행 중인 터널이 있는지 찾습니다. |
+| SSH 로그인 | `BatchMode`로 `ssh host true`를 실행합니다. |
+| 목적지 (`remote`) | `ssh -W 목적지 host`를 실행합니다. 호스트가 목적지에 연결하므로 호스트에서 본 결과입니다. |
+| 원격 포트 (`reverse`) | `ExitOnForwardFailure`를 켠 `ssh -R`로 호스트가 포트를 열었다가 바로 닫습니다. |
+| 로컬 대상 (`reverse`) | 이 컴퓨터의 대상으로 TCP 연결을 열어 봅니다. 실패해도 경고로만 표시합니다. |
+
+SSH 로그인에 실패하면 호스트가 필요한 항목은 건너뜁니다. 항목이 실패하면 `edc tunnel test`는 종료 코드 `1`을 반환합니다. 서비스를 나중에 띄울 수 있으므로, 폼에서는 시험이 실패해도 터널을 시작할 수 있습니다.
+
+목록의 `saved` 열은 정의가 있는 터널을 `●`, 한 번만 실행 중인 터널을 `–`로 표시합니다. 상태는 다음과 같습니다.
+
+| 상태 | 의미 |
+|---|---|
+| `up` | SSH master 프로세스가 실행 중입니다. |
+| `down` | 정의는 있지만 실행 중이 아닙니다. |
+| `stale` | 상태 파일은 남아 있지만 SSH 프로세스가 없습니다. 화면에서 `enter`를 누르거나 `edc tunnel down`을 실행하면 정리됩니다. |
+
+`reach` 열은 터널 입구로 TCP 연결을 열어 확인합니다. 목적지가 연결을 유지하면 `ok`, 곧바로 끊으면 `refused`입니다. 역방향 터널은 `-`로 표시합니다.
+
+터널마다 상태 파일 하나를 history 데이터베이스와 같은 위치의 `tunnels` 디렉터리에 둡니다. 비밀번호와 키는 저장하지 않습니다. 터널은 `BatchMode`로 연결하므로 SSH agent나 암호 없는 키를 사용해야 합니다.
+
 ## Route 전환
 
 `edc route`는 gateway VM의 기본 경로를 바꾸고, 실패하면 되돌립니다. Linux에서만 동작합니다. `switch`와 `rollback`은 root 권한이 필요하고 `edc`가 `sudo`를 붙이지 않습니다.
@@ -2618,10 +2691,11 @@ trace가 도는 동안 host의 모든 kernel lock 경합과 futex 기다림이 B
 
 Linux 5.15에는 contention tracepoint가 없습니다. 그러면 알림을 출력하고 futex 기다림만 보여 줍니다. BTF와 task local storage가 필요합니다.
 
-Linux에서 `trace syscall`을 사용하면 process별 system call 수와 시간을 볼 수 있습니다. edc는 kernel 안에서 세고, 끝날 때 요약을 한 번 출력합니다. `--slow`나 `--errors`를 주면 조건에 맞는 호출도 하나씩 출력합니다.
+Linux에서 `trace syscall`을 사용하면 process별 system call 수와 시간을 볼 수 있습니다. edc는 kernel 안에서 셉니다. terminal에서는 표를 1초마다 다시 그리고, Ctrl-C를 누르면 최종 표를 출력합니다. 출력을 파이프로 넘기거나 `--json`을 쓰면 끝날 때 요약을 한 번 출력합니다. `--slow`나 `--errors`를 주면 조건에 맞는 호출도 하나씩 출력합니다.
 
 ```bash
 ./bin/edc trace syscall --duration 10s
+./bin/edc trace syscall -- curl -s https://example.com
 ./bin/edc trace syscall --process nginx,1234 --duration 30s
 ./bin/edc trace syscall --group-by syscall --json syscall.json
 ./bin/edc trace syscall --container web --group-by cgroup
@@ -2629,9 +2703,23 @@ Linux에서 `trace syscall`을 사용하면 process별 system call 수와 시간
 ./bin/edc trace syscall --syscall openat,statx --slow 10ms --raw
 ```
 
-행 하나는 process 이름 하나와 system call 하나입니다. 행마다 호출 수, 오류 수와 가장 많은 errno, 호출 안에 머문 시간의 합계, 평균, p95, 최댓값을 보여 줍니다. 시간은 CPU 시간이 아니라 호출 안에 머문 실제 시간입니다. 그래서 `epoll_wait`나 `futex`처럼 기다리는 호출이 위에 옵니다. 합계는 모든 스레드의 시간을 더하므로 trace 시간보다 길 수 있습니다. 행은 합계 시간 순서입니다. 표에는 20행이 나오고, `--json`에는 모든 행이 들어갑니다. p95는 `top -d`와 같은 histogram bucket의 위쪽 경계라서 `<1.05s`처럼 보입니다.
+행 하나는 process 이름 하나와 system call 하나입니다. 행마다 호출 수, 오류 수와 가장 많은 errno, 호출 안에 머문 시간의 합계, 평균, p95, 최댓값을 보여 줍니다. 시간은 CPU 시간이 아니라 호출 안에 머문 실제 시간입니다. 그래서 `epoll_wait`나 `futex`처럼 기다리는 호출이 위에 옵니다. 합계는 모든 스레드의 시간을 더하므로 trace 시간보다 길 수 있습니다. 행은 합계 시간 순서입니다. 표에는 20행이 나오고, `--all`을 주면 모든 행이 나옵니다. `--json`에는 늘 모든 행이 들어갑니다. p95는 `top -d`와 같은 histogram bucket의 위쪽 경계라서 `<1.05s`처럼 보입니다.
 
 `--group-by syscall`, `--group-by process`, `--group-by cgroup`은 한 열로 묶어 더합니다. `--process`는 쉼표로 나눈 PID와 command 이름을 받습니다. kernel 안에서 비교하므로 이름은 process의 command 이름과 정확히 같아야 하고, 15 byte까지만 봅니다. PID는 그 process의 모든 스레드에 맞습니다. `--container`는 container 하나의 호출만 셉니다.
+
+빨리 끝나는 명령은 `--` 뒤에 적어 trace할 수 있습니다. edc는 trace를 켠 뒤에 새 cgroup 안에서 명령을 시작하므로 첫 호출부터 셉니다. 명령이 시작한 process의 호출도 함께 셉니다. 명령이 끝나면 trace도 끝나고, edc는 명령의 종료 코드를 돌려줍니다. root로 실행해야 하며, `--process`, `--container`, `--duration`은 명령과 함께 쓸 수 없습니다. cgroup v2를 쓸 수 없으면 명령 자신의 호출만 세고 경고를 출력합니다.
+
+`FILES` 표도 함께 출력하며, 실시간 화면에도 보입니다. 행은 경로 하나이고, 열은 읽기로 연 횟수(`READ`), 쓰기로 연 횟수(`WRITE`), `mkdir`, `link`, `symlink` 호출과 `O_EXCL`로 연 횟수(`CREATE`), 삭제(`DELETE`), 이름 변경(`RENAME`), 그 밖의 변경(`OTHER`)입니다. 이름 변경 행에는 원래 경로가 나옵니다. kernel은 `O_CREAT`로 연 호출이 파일을 새로 만들었는지 알려 주지 않으므로, 파일을 만드는 open도 `WRITE`에 들어갑니다. 실패한 `stat`과 `access` 호출도 `OTHER`에 세므로, process가 찾았지만 없었던 파일을 표에서 볼 수 있습니다. `openat2`는 flags를 읽지 않으므로 `OTHER`에 들어갑니다. `ERRORS` 열은 실패한 호출 수와 가장 많은 errno입니다. 실패한 open도 해당 열에 세어 넣습니다.
+
+파일을 바꾼 행이 먼저 나오고, 실패한 호출이 있는 행, 읽기만 한 행 순서입니다. 표에는 20행이 보이고, `--all`을 주면 모든 행을 보여 줍니다. `--json`의 `files`에도 모든 행이 들어 있습니다. 표를 빼려면 `--no-files`를 쓰십시오. `--slow`나 `--errors`를 주면 `--files`를 함께 줄 때만 파일 표가 나옵니다. edc는 파일 event를 CPU마다 1초에 최대 10,000건, 경로를 최대 10,000개까지 기록합니다. 놓친 event가 있으면 표 아래에 알립니다.
+
+`trace syscall`도 `edc top`처럼 event를 남깁니다. 조건이 5초 이상 이어지면 event가 되고, 꺼졌다가 5초 안에 다시 켜지면 같은 event입니다. 실시간 화면에는 최근 event 3개가 보이고, 끝난 뒤의 출력에는 모든 event가 시작 시각, 지속 시간, 초당 최댓값, 횟수와 함께 나옵니다. `●`는 조건이 지금 켜져 있다는 뜻입니다. `--json`의 `events`에도 들어갑니다. 종류는 세 가지입니다.
+
+- `error loop`: 한 process가 같은 system call을 같은 errno로 초당 100번 이상 실패합니다. 바쁜 프로그램에서 정상인 오류는 세지 않습니다: `EAGAIN`, `EINTR`, `EINPROGRESS`, 재시작 errno, `futex`의 `ETIMEDOUT`, `wait4`의 `ECHILD`.
+- `missing path`: 한 경로에 대한 호출이 `ENOENT`나 `ENOTDIR`로 초당 50번 이상 실패합니다. 예를 들어 없는 파일을 계속 `stat`하는 경우입니다. 있는 경로의 권한 오류는 없는 경로가 아닙니다. 이 종류는 파일 event를 쓰므로 파일 표가 켜져 있어야 하고, 파일 event의 상한이 적용됩니다. 그래서 최댓값이 실제보다 낮을 수 있습니다.
+- `call spike`: 한 process가 한 system call을 초당 1,000번 이상, 그리고 최근 30초 평균의 10배 이상 부릅니다. 늘 많이 부르는 process는 event가 아닙니다. 처음 5초는 평균이 없어 event를 만들지 않습니다.
+
+기준값은 고정입니다. `--slow`, `--errors`, `--raw`를 쓰면 호출을 하나씩 출력하므로 event를 만들지 않습니다.
 
 `--syscall`에 쉼표로 나눈 이름을 주면 그 system call만 셉니다. kernel 안에서 번호를 확인하므로 다른 호출은 map에 들어가지 않습니다. 이름은 CPU 아키텍처의 system call 표에서 찾습니다. amd64에서는 같은 이름의 32비트 호출도 함께 고릅니다.
 

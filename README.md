@@ -1851,6 +1851,79 @@ Each host runs in inventory order. Each step runs its command and verify command
 
 If a step fails, `edc` skips later steps on that host. The next host still runs. Any failure returns exit code `1`.
 
+## SSH tunnels
+
+`edc tunnel` starts, stops, and lists SSH tunnels. It runs the local OpenSSH `ssh` command in the background. It uses your OpenSSH configuration, agent, and known host checks.
+
+Run `edc tunnel` in a terminal to open the tunnel screen. The screen lists each tunnel with its state. It refreshes every 2 seconds.
+
+| Key | Action |
+|---|---|
+| `enter` | Start the selected tunnel. If it runs, stop it. |
+| `n` | Open the form for a new tunnel. |
+| `r` | Restart the selected tunnel. Only a saved tunnel has this key. |
+| `x` | Remove the definition of the selected tunnel after a question. Only a saved tunnel has this key. |
+| `q` | Quit. Running tunnels keep running. |
+
+In the form, `tab` moves to the next field. `←` and `→` choose the host and the kind. `ctrl+t` tests the connection. `enter` starts the tunnel. The form shows the `ssh` command and a help text for the active field.
+
+The `save` field decides if `edc` keeps the tunnel. `yes` is the default. `edc` writes the definition to `tunnels.yaml` and shows the path below the field. If no file exists, `edc` creates `./.edc/tunnels.yaml`. `no` starts the tunnel once. The tunnel leaves the list when it stops. A name that already exists in the file is not replaced.
+
+Define the tunnels that you use often in `tunnels.yaml`. `edc` looks in `./.edc`, in the current directory, and in the config directory. `--file` sets the file.
+
+```yaml
+tunnels:
+  db:
+    host: jump1                  # an inventory host name or a ~/.ssh/config alias
+    local: 5432                  # a port, or auto
+    remote: db.internal:5432     # ssh -L
+  api-dev:
+    host: dev
+    reverse: 8080:localhost:3000 # ssh -R, port:host:port
+  proxy:
+    host: jump1
+    socks: 1080                  # ssh -D, a port, or auto
+```
+
+Each tunnel needs exactly one of `remote`, `reverse`, or `socks`. Local ports bind to `127.0.0.1`. `auto` picks a free port.
+
+```bash
+edc tunnel                                      # tunnel screen, or the list if no terminal
+edc tunnel list --json -                        # the list as JSON
+edc tunnel up db                                # start a defined tunnel
+edc tunnel up -L auto:db.internal:5432 jump1    # start a tunnel that has no definition
+edc tunnel up -L 5432:db.internal:5432 --name db jump1 --save   # start it and save the definition
+edc tunnel test db                              # test the connection, start nothing
+edc tunnel down db
+edc tunnel down --all
+```
+
+## Connection test
+
+`ctrl+t` in the form and `edc tunnel test <name>` run the same checks. They start no tunnel. The checks run in this order:
+
+| Check | How |
+|---|---|
+| Local port | `edc` binds the port at `127.0.0.1` and looks for a running tunnel that uses it. |
+| SSH login | `ssh host true` with `BatchMode`. |
+| Destination (`remote`) | `ssh -W destination host`. The host connects to the destination, so the result shows what the host sees. |
+| Remote port (`reverse`) | `ssh -R` with `ExitOnForwardFailure`. The host opens the port and closes it at once. |
+| Local target (`reverse`) | `edc` opens a TCP connection to the target on this machine. A failure is a warning only. |
+
+If the SSH login fails, `edc` skips the checks that need the host. `edc tunnel test` returns exit code `1` if a check fails. The form still lets you start a tunnel after a failed check, because a service can start later.
+
+The list shows the state of each tunnel. The `saved` column shows `●` for a tunnel with a definition and `–` for a tunnel that runs once.
+
+| State | Meaning |
+|---|---|
+| `up` | The SSH master process runs. |
+| `down` | The tunnel has a definition and does not run. |
+| `stale` | The state file exists, but the SSH process is gone. Press `enter` or run `edc tunnel down` to clear it. |
+
+The `reach` column opens a TCP connection to the tunnel entrance. It shows `ok` if the destination keeps the connection open. It shows `refused` if the connection closes at once. Reverse tunnels show `-`.
+
+`edc` keeps one state file for each tunnel in the `tunnels` directory next to the history database. `edc` does not store passwords or keys. The tunnel uses `BatchMode`, so use an SSH agent or a key without a passphrase.
+
 ## Route switching
 
 `edc route` changes the default route of a gateway VM and rolls the change back when it fails. Linux only. `switch` and `rollback` need root. `edc` does not add `sudo` itself.
@@ -2181,10 +2254,11 @@ When the trace runs, each kernel lock contention and each futex wait on the host
 
 On Linux 5.15, the kernel has no contention tracepoints. edc prints a note and shows only the futex waits. The trace needs BTF and task local storage.
 
-Use `trace syscall` on Linux to count the system calls of each process. edc counts in the kernel and prints one summary at the end. With `--slow` or `--errors`, it also prints each call that matches.
+Use `trace syscall` on Linux to count the system calls of each process. edc counts in the kernel. On a terminal, the table updates every second, and Ctrl-C prints the final table. If you pipe the output or use `--json`, edc prints one summary at the end. With `--slow` or `--errors`, it also prints each call that matches.
 
 ```bash
 ./bin/edc trace syscall --duration 10s
+./bin/edc trace syscall -- curl -s https://example.com
 ./bin/edc trace syscall --process nginx,1234 --duration 30s
 ./bin/edc trace syscall --group-by syscall --json syscall.json
 ./bin/edc trace syscall --container web --group-by cgroup
@@ -2192,9 +2266,23 @@ Use `trace syscall` on Linux to count the system calls of each process. edc coun
 ./bin/edc trace syscall --syscall openat,statx --slow 10ms --raw
 ```
 
-Each row is one process name and one system call. The row shows the calls, the errors with the most frequent errno, and the time in the call: total, average, p95, and maximum. The time is wall time inside the call, not CPU time. Calls that wait, such as `epoll_wait` and `futex`, are therefore at the top. The total adds the time of all threads, so it can be longer than the trace. The rows are in order of total time. The table shows 20 rows, and `--json` holds all rows. P95 is the upper bound of a histogram bucket, the same as in `top -d`. The table shows it as `<1.05s`.
+Each row is one process name and one system call. The row shows the calls, the errors with the most frequent errno, and the time in the call: total, average, p95, and maximum. The time is wall time inside the call, not CPU time. Calls that wait, such as `epoll_wait` and `futex`, are therefore at the top. The total adds the time of all threads, so it can be longer than the trace. The rows are in order of total time. The table shows 20 rows. Use `--all` to show every row, or use `--json` to get all rows in a file. P95 is the upper bound of a histogram bucket, the same as in `top -d`. The table shows it as `<1.05s`.
 
 Use `--group-by syscall`, `--group-by process`, or `--group-by cgroup` to add the rows over one column. `--process` takes PIDs and command names, separated by commas. edc compares them in the kernel, so a name must be the exact command name of the process, up to 15 bytes. A PID matches all threads of the process. `--container` keeps the calls of one container.
+
+To trace a command that ends quickly, put it after `--`. edc starts the command in a new cgroup after the trace is on, so the first call is counted. The calls of the processes that the command starts are counted too. The trace ends when the command ends, and edc returns the exit code of the command. Run it as root. You cannot use `--process`, `--container`, or `--duration` with a command. If cgroup v2 is not available, edc counts only the command itself and prints a warning.
+
+edc also prints a `FILES` table, and the live screen shows it too. Each row is one path. The columns count the opens for reading (`READ`) and writing (`WRITE`), the `mkdir`, `link`, and `symlink` calls and the opens with `O_EXCL` (`CREATE`), the deletes (`DELETE`), the renames (`RENAME`), and the other changes (`OTHER`). A rename row shows the source path. `WRITE` includes the opens that create the file, because the kernel does not tell if an open with `O_CREAT` made the file. `OTHER` also counts the `stat` and `access` calls that failed, so the table shows the files that the process looked for and did not find. The `openat2` calls are in `OTHER`, because edc does not read their flags. The `ERRORS` column shows the number of failed calls and the most frequent errno. A failed open still counts in its column.
+
+The rows with changes are first. The rows with failed calls are next, and the rows that were only read are last. The table has 20 rows. `--all` shows every row, and `--json` holds all rows in `files`. Use `--no-files` to leave the table out. A trace with `--slow` or `--errors` has no file table unless you add `--files`. edc records at most 10,000 file events for each CPU in each second, and it records at most 10,000 paths. If edc misses events, the table says so.
+
+`trace syscall` also keeps events, as `edc top` does. A condition that holds for 5 seconds becomes an event, and a condition that stops and starts again within 5 seconds stays in the same event. The live screen shows the latest 3 events, and the final output lists all of them with the start time, the duration, the peak per second, and the count. A `●` mark means the condition is still on. `--json` holds them in `events`. There are three kinds:
+
+- `error loop`: one process fails the same system call with the same errno at least 100 times each second. Errors that are normal in busy programs do not count: `EAGAIN`, `EINTR`, `EINPROGRESS`, the restart errors, `ETIMEDOUT` of `futex`, and `ECHILD` of `wait4`.
+- `missing path`: calls on one path fail with `ENOENT` or `ENOTDIR` at least 50 times each second, for example a `stat` on a file that does not exist. A permission error on a path that exists is not a missing path. This kind uses the file events, so it needs the file table, and the limit of file events applies. The peak can be lower than the real rate.
+- `call spike`: one process calls one system call at least 1,000 times each second, and at least 10 times the average of the last 30 seconds. A process that always calls a lot has no event. The first 5 seconds have no average, so they have no event.
+
+The limits are fixed. A trace with `--slow`, `--errors`, or `--raw` prints each call, and it has no events.
 
 Use `--syscall` with names separated by commas to count only these system calls. edc checks the number in the kernel, so the other calls do not reach the map. The names come from the system call table of the CPU architecture. On amd64, a name also selects the 32-bit call with that name.
 

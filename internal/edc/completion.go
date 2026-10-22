@@ -279,6 +279,18 @@ _edc() {
             '(-l --list)'{-l,--list}'[inventory group과 host 출력]' \
             '1:group:_edc_remote_groups'
           ;;
+        tunnel)
+          _arguments $common \
+            '--file[tunnels YAML 경로]:path:_files' \
+            '--name[즉석 터널 이름]:name' \
+            '-L[로컬 포워딩 port:host:port]:spec' \
+            '-R[원격 포워딩 port:host:port]:spec' \
+            '-D[SOCKS 포트]:port' \
+            '--save[즉석 터널의 정의를 저장]' \
+            '--all[모든 터널]' \
+            '--connect-timeout[SSH 연결 제한 시간]:duration' \
+            '1::subcommand:(list up test down)'
+          ;;
         completion)
           _arguments '1:shell:(zsh bash groups)'
           ;;
@@ -474,6 +486,12 @@ _edc() {
       else
         COMPREPLY=($(compgen -W "$(edc completion groups 2>/dev/null)" -- "$cur"))
       fi ;;
+    tunnel)
+      case "$prev" in
+        --file|--json) COMPREPLY=($(compgen -f -- "$cur")); return ;;
+      esac
+      if [[ $cur == -* ]]; then COMPREPLY=($(compgen -W "$common --file --name -L -R -D --save --all --connect-timeout" -- "$cur"))
+      elif [[ $COMP_CWORD -eq 2 ]]; then COMPREPLY=($(compgen -W "list up test down" -- "$cur")); fi ;;
     completion) COMPREPLY=($(compgen -W "zsh bash groups" -- "$cur")) ;;
     setup)
       if [[ $prev == --inventory || $prev == --recipe ]]; then COMPREPLY=($(compgen -f -- "$cur"))

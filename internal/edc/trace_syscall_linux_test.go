@@ -5,6 +5,7 @@ package edc
 import (
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -376,9 +377,19 @@ func TestParseSyscallEventReadsTheResultAndThePath(t *testing.T) {
 		return data
 	}
 	event, ok := parseSyscallEvent(record(-2, 1, "/etc/app.conf"), 500)
-	want := syscallEvent{TimestampNS: 1500, Event: "syscall", PID: 7, TID: 9, Process: "api", Syscall: "openat", Return: -2, Errno: "ENOENT", LatencyMS: 0.0025, Path: "/etc/app.conf"}
+	want := syscallEvent{TimestampNS: 1500, Event: "syscall", PID: 7, TID: 9, Process: "api", Syscall: "openat", Return: -2, Errno: "ENOENT", LatencyMS: 0.0025, Path: "/etc/app.conf", Action: "read"}
 	if !ok || event != want {
 		t.Fatalf("event = %+v, want %+v", event, want)
+	}
+	// open flags와 event 이유는 37번째와 38번째 byte에 있다. 쓰기와 생성으로 열면 write이고, O_EXCL이 더해지면 create다.
+	flagged := record(3, 1, "/var/log/app.log")
+	flagged[37], flagged[38] = syscallOpenWrite|syscallOpenCreate, syscallReasonFile|syscallReasonLine
+	if event, _ := parseSyscallEvent(flagged, 0); event.Action != "write" || event.Reason != syscallReasonFile|syscallReasonLine || event.OpenKind != syscallOpenWrite|syscallOpenCreate {
+		t.Fatalf("flagged = %+v", event)
+	}
+	flagged[37] |= syscallOpenExcl
+	if event, _ := parseSyscallEvent(flagged, 0); event.Action != "create" {
+		t.Fatalf("exclusive = %+v", event)
 	}
 	if event, _ := parseSyscallEvent(record(3, 3, "/very/long"), 0); event.Errno != "" || event.Return != 3 || !event.PathTruncated || event.Path != "/very/long" {
 		t.Fatalf("truncated = %+v", event)
@@ -505,5 +516,237 @@ func TestTraceSyscallPrintsFailedAndSlowCalls(t *testing.T) {
 	}
 	if collection.summary.Events != uint64(len(events)) || collection.summary.RingLost != 0 {
 		t.Errorf("summary = %+v, events %d", collection.summary, len(events))
+	}
+}
+
+// onSnapshot은 trace를 떼지 않고 liveInterval마다 지금까지의 값을 받아야 한다. 값은 줄지 않고, 마지막 수집 결과가 이어받는다.
+func TestTraceSyscallSendsSnapshotsWhileRunning(t *testing.T) {
+	requireSyscallTrace(t)
+	var snapshots []syscallCollection
+	options := syscallTraceOptions{
+		duration:     1300 * time.Millisecond,
+		liveInterval: 250 * time.Millisecond,
+		onSnapshot:   func(collection syscallCollection) { snapshots = append(snapshots, collection) },
+	}
+	stop := make(chan struct{})
+	collection, err := collectSyscallStats(options, stop, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshots) < 4 {
+		t.Fatalf("snapshots = %d, want one at the start and at least 3 more in 1.3s at 250ms", len(snapshots))
+	}
+	if first := snapshots[0].summary.DurationMS; first > 100 {
+		t.Errorf("the first snapshot came after %dms, want it right after the programs attach", first)
+	}
+	total := func(collection syscallCollection) (calls uint64) {
+		for _, sample := range collection.samples {
+			calls += sample.Calls
+		}
+		return calls
+	}
+	previous := uint64(0)
+	for index, snapshot := range snapshots {
+		if calls := total(snapshot); calls < previous {
+			t.Errorf("snapshot %d went back from %d to %d calls", index, previous, calls)
+		} else {
+			previous = calls
+		}
+		if index > 0 && snapshot.summary.DurationMS <= 0 {
+			t.Errorf("snapshot %d has no duration: %+v", index, snapshot.summary)
+		}
+	}
+	if final := total(collection); final < previous {
+		t.Errorf("final calls %d are below the last snapshot %d", final, previous)
+	}
+}
+
+// 명령은 trace가 붙은 뒤에 시작하므로, 몇 ms에 끝나는 명령과 그 자식의 호출도 첫 번째부터 세어야 한다.
+func traceSyscallCommand(t *testing.T, argv []string, force bool, onEvent func(syscallEvent) error) (syscallCollection, int) {
+	t.Helper()
+	requireSyscallTrace(t)
+	command, err := prepareTraceCommand(argv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer command.close()
+	options := syscallTraceOptions{files: onEvent != nil}
+	if force || command.cgroup == nil {
+		// PID 필터로 대신하는 경로를 시험한다.
+		if command.cgroup != nil {
+			command.cgroup.remove()
+			command.cgroup = nil
+		}
+		options.waitForPID = true
+	} else {
+		options.container = command.container()
+	}
+	options.onAttached = func(allowPID func(uint32) error) error { return command.start(allowPID) }
+	collection, err := collectSyscallStats(options, command.done, onEvent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return collection, command.exitCode()
+}
+
+func syscallCallsOf(collection syscallCollection, name string) (calls uint64) {
+	for _, sample := range collection.samples {
+		if sample.Syscall == name {
+			calls += sample.Calls
+		}
+	}
+	return calls
+}
+
+func TestTraceSyscallCommandCountsChildrenInTheCgroup(t *testing.T) {
+	// sh가 /bin/true를 3번 자식으로 띄운다. execve는 sh와 자식 3개를 합쳐 4번 이상이어야 한다.
+	collection, code := traceSyscallCommand(t, []string{"sh", "-c", "/bin/true; /bin/true; /bin/true; exit 5"}, false, nil)
+	if code != 5 {
+		t.Errorf("exit code = %d, want 5", code)
+	}
+	if got := syscallCallsOf(collection, "execve"); got < 4 {
+		t.Errorf("execve calls = %d, want at least 4 (the shell and three children)", got)
+	}
+	if collection.summary.Unmatched != nil {
+		t.Errorf("a cgroup-filtered trace counted unmatched calls: %+v", collection.summary)
+	}
+}
+
+func TestTraceSyscallCommandFallsBackToThePIDFilter(t *testing.T) {
+	collection, code := traceSyscallCommand(t, []string{"sh", "-c", "exit 7"}, true, nil)
+	if code != 7 {
+		t.Errorf("exit code = %d, want 7", code)
+	}
+	if got := syscallCallsOf(collection, "exit_group"); got == 0 {
+		t.Errorf("the command was not counted: %+v", collection.samples)
+	}
+	if collection.summary.Unmatched != nil {
+		t.Errorf("a PID-filtered trace counted unmatched calls: %+v", collection.summary)
+	}
+}
+
+func TestTraceSyscallCommandRemovesItsCgroup(t *testing.T) {
+	requireSyscallTrace(t)
+	command, err := prepareTraceCommand([]string{"true"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if command.cgroup == nil {
+		t.Skip("cgroup v2 is not available: " + command.fallback)
+	}
+	dir := command.cgroup.dir
+	command.close()
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Errorf("cgroup %s remains: %v", dir, err)
+	}
+}
+
+func TestTraceSyscallCommandListsTheFilesItTouched(t *testing.T) {
+	dir := t.TempDir()
+	script := fmt.Sprintf("cat /nonexistent-edc-file 2>/dev/null; echo data > %[1]s/out; mv %[1]s/out %[1]s/moved; rm %[1]s/moved; mkdir %[1]s/d", dir)
+	var table syscallFileTable
+	collection, code := traceSyscallCommand(t, []string{"sh", "-c", script}, false, func(event syscallEvent) error {
+		if event.Reason&syscallReasonFile != 0 {
+			table.add(event)
+		}
+		return nil
+	})
+	if code != 0 {
+		t.Errorf("exit code = %d", code)
+	}
+	rows := map[string]syscallFileRow{}
+	for _, row := range table.report() {
+		rows[row.Path] = row
+	}
+	// cat이 open으로 찾든 stat으로 먼저 확인하든 실패한 시도가 한 번 보여야 한다.
+	if row := rows["/nonexistent-edc-file"]; row.total() != 1 || row.errnoText() != "1 ENOENT" {
+		t.Errorf("missing file row = %+v", row)
+	}
+	// echo >는 O_CREAT로 열지만 O_EXCL이 없어 새로 만들었는지 알 수 없으므로 write다.
+	if row := rows[dir+"/out"]; row.Write != 1 || row.Rename != 1 {
+		t.Errorf("out row = %+v (want one write and one rename)", row)
+	}
+	if row := rows[dir+"/moved"]; row.Delete != 1 {
+		t.Errorf("moved row = %+v (want one delete)", row)
+	}
+	if row := rows[dir+"/d"]; row.Create != 1 {
+		t.Errorf("d row = %+v (want one create)", row)
+	}
+	if collection.summary.RingLost != 0 || collection.summary.SampledOut != 0 {
+		t.Errorf("file events were lost: %+v", collection.summary)
+	}
+}
+
+// SIGPIPE나 SIGKILL로 죽은 edc는 cgroup을 지우지 못한다. 다음 실행이 주인이 없는 빈 cgroup만 지워야 한다.
+func TestTraceSyscallCommandSweepsStaleCgroups(t *testing.T) {
+	requireSyscallTrace(t)
+	probe, err := createTraceCommandCgroup()
+	if err != nil {
+		t.Skip(err)
+	}
+	root := filepath.Dir(probe.dir)
+	probe.remove()
+	stale := filepath.Join(root, traceCommandCgroupPrefix+"4194300-1-stale")
+	alive := filepath.Join(root, traceCommandCgroupPrefix+strconv.Itoa(os.Getpid())+"-"+processStartTicks(os.Getpid())+"-alive")
+	// pid는 살아 있지만 다른 process가 그 번호를 다시 쓴 경우다.
+	reused := filepath.Join(root, traceCommandCgroupPrefix+strconv.Itoa(os.Getpid())+"-1-reused")
+	for _, dir := range []string{stale, alive, reused} {
+		if err := os.Mkdir(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	defer os.Remove(alive)
+	defer os.Remove(stale)
+	defer os.Remove(reused)
+	cgroup, err := createTraceCommandCgroup()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cgroup.remove()
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		t.Errorf("the cgroup of a dead edc remains: %v", err)
+	}
+	if _, err := os.Stat(alive); err != nil {
+		t.Errorf("the cgroup of a live edc was removed: %v", err)
+	}
+	if _, err := os.Stat(reused); !os.IsNotExist(err) {
+		t.Errorf("the cgroup of a reused pid remains: %v", err)
+	}
+}
+
+// event 모드에서도 표를 다시 그려야 한다. 파일 event가 끊이지 않는 동안에도 마찬가지다.
+func TestTraceSyscallRedrawsWhileFileEventsArrive(t *testing.T) {
+	requireSyscallTrace(t)
+	var snapshots int
+	var events uint64
+	options := syscallTraceOptions{
+		duration:     1300 * time.Millisecond,
+		liveInterval: 250 * time.Millisecond,
+		files:        true,
+		onSnapshot:   func(syscallCollection) { snapshots++ },
+	}
+	stop := make(chan struct{})
+	finished := make(chan error, 1)
+	go func() {
+		_, err := collectSyscallStats(options, stop, func(event syscallEvent) error {
+			events++
+			return nil
+		})
+		finished <- err
+	}()
+	// 이 test 자신의 openat은 edc가 빼지만, 자식이 계속 여는 파일은 센다.
+	opener := exec.Command("sh", "-c", "while :; do : < /etc/hostname; done")
+	if err := opener.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = opener.Process.Kill(); _ = opener.Wait() }()
+	if err := <-finished; err != nil {
+		t.Fatal(err)
+	}
+	if snapshots < 4 {
+		t.Errorf("snapshots = %d, want one at the start and at least 3 more in 1.3s at 250ms", snapshots)
+	}
+	if events == 0 {
+		t.Error("no file events arrived")
 	}
 }

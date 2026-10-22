@@ -300,11 +300,11 @@ wildcard의 모든 인터페이스는 관측한 주소 계열의 바인딩을 �
 
 ### 파일 감시와 action (Linux·macOS)
 
-`edc watch fs`는 기본으로 현재 디렉터리 바로 아래의 변경을 감시하고 출력합니다. `--recursive`로 하위 디렉터리까지 감시하며, 새로 생성되거나 들어온 디렉터리도 등록합니다. 시작할 때 이미 있던 파일은 create 이벤트로 출력하지 않습니다. 디렉터리 symlink는 따라가지 않습니다.
+`edc watch fs`는 기본으로 현재 디렉터리 바로 아래의 변경을 감시하고 출력합니다. `-r`이나 `--recursive`로 하위 디렉터리까지 감시하며, 새로 생성되거나 들어온 디렉터리도 등록합니다. 시작할 때 이미 있던 파일은 create 이벤트로 출력하지 않습니다. 디렉터리 symlink는 따라가지 않습니다.
 
 ```bash
 edc watch fs
-edc watch fs ./src --recursive
+edc watch fs ./src -r
 edc watch fs --event create --match text.txt --exec 'git-kit pull'
 edc watch fs ./src --recursive --event modify --match '**/*.go' --exec 'go test ./...'
 edc watch fs --rules docs/examples/watch.yaml --dry-run

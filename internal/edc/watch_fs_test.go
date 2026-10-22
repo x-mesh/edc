@@ -44,6 +44,69 @@ func TestFSWatchGlob(t *testing.T) {
 	}
 }
 
+// -r은 --recursive의 짧은 이름이다. 위치와 값 형태가 달라도 같게 동작하고, 규칙 파일의 recursive보다 우선한다.
+func TestFSWatchShortRecursiveFlagIsTheSameAsLong(t *testing.T) {
+	root := t.TempDir()
+	for _, test := range []struct {
+		name string
+		args []string
+		want bool
+	}{
+		{"none", []string{root}, false},
+		{"-r before the directory", []string{"-r", root}, true},
+		{"-r after the directory", []string{root, "-r"}, true},
+		{"--recursive", []string{root, "--recursive"}, true},
+		{"-r with other flags", []string{"-r", "--event", "modify", root}, true},
+		{"-r=false", []string{"-r=false", root}, false},
+		{"-r=true", []string{"-r=true", root}, true},
+	} {
+		options, err := parseFSWatchOptions(test.args, io.Discard)
+		if err != nil {
+			t.Errorf("%s: %v", test.name, err)
+			continue
+		}
+		if options.recursive != test.want {
+			t.Errorf("%s: recursive = %t, want %t", test.name, options.recursive, test.want)
+		}
+	}
+	// 규칙 파일이 recursive: false여도 명령줄의 -r이 이긴다. 반대로 -r=false는 recursive: true를 끈다.
+	for _, test := range []struct {
+		name, contents string
+		args           []string
+		want           bool
+	}{
+		{"-r over false", "directory: .\nrecursive: false\nrules:\n  - name: pull\n    events: [create]\n    match: text.txt\n    command: [git-kit, pull]\n    debounce: 0s\n    timeout: 2s\n", []string{"-r"}, true},
+		{"-r=false over true", "directory: .\nrecursive: true\nrules:\n  - name: pull\n    events: [create]\n    match: text.txt\n    command: [git-kit, pull]\n    debounce: 0s\n    timeout: 2s\n", []string{"-r=false"}, false},
+		{"file only", "directory: .\nrecursive: true\nrules:\n  - name: pull\n    events: [create]\n    match: text.txt\n    command: [git-kit, pull]\n    debounce: 0s\n    timeout: 2s\n", nil, true},
+	} {
+		config := filepath.Join(root, "watch.yaml")
+		if err := os.WriteFile(config, []byte(test.contents), 0600); err != nil {
+			t.Fatal(err)
+		}
+		options, err := parseFSWatchOptions(append([]string{root, "--rules", config}, test.args...), io.Discard)
+		if err != nil {
+			t.Errorf("%s: %v", test.name, err)
+			continue
+		}
+		if options.recursive != test.want {
+			t.Errorf("%s: recursive = %t, want %t", test.name, options.recursive, test.want)
+		}
+	}
+}
+
+func TestWatchFSHelpShowsTheShortRecursiveFlag(t *testing.T) {
+	previous := currentLanguage()
+	defer setLanguage(previous)
+	for _, language := range []string{"en", "ko", "ja"} {
+		setLanguage(language)
+		var output bytes.Buffer
+		printWatchSubcommandHelp(&output, "fs")
+		if !strings.Contains(output.String(), "-r, --recursive") {
+			t.Errorf("%s fs help lacks -r, --recursive:\n%s", language, output.String())
+		}
+	}
+}
+
 func TestFSWatchOptionsAndStrictRules(t *testing.T) {
 	root := t.TempDir()
 	config := filepath.Join(root, "watch.yaml")

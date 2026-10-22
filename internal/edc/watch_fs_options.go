@@ -70,6 +70,7 @@ func parseFSWatchOptions(args []string, output io.Writer) (fsWatchOptions, error
 	set := newFlagSet("watch fs")
 	set.SetOutput(output)
 	set.BoolVar(&options.recursive, "recursive", false, T("watchfs.option.recursive"))
+	set.BoolVar(&options.recursive, "r", false, T("watchfs.option.recursive"))
 	set.StringVar(&options.driver, "driver", fsWatchDriverAuto, T("watchfs.option.driver"))
 	eventText := set.String("event", "create,modify,remove,rename", T("watchfs.option.event"))
 	set.StringVar(&options.match, "match", "**", T("watchfs.option.match"))
@@ -127,7 +128,8 @@ func parseFSWatchOptions(args []string, output io.Writer) (fsWatchOptions, error
 		options.exclude = append(options.exclude, config.Exclude...)
 	}
 	set.Visit(func(value *flag.Flag) {
-		if value.Name == "recursive" {
+		// 규칙 파일의 recursive보다 명령줄이 먼저다. -r도 --recursive와 같은 flag다.
+		if value.Name == "recursive" || value.Name == "r" {
 			options.recursive = flagRecursive
 		}
 	})

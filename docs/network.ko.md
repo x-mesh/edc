@@ -78,6 +78,8 @@ edc watch fs --duration 1m --json events.jsonl
 
 `fanotify` 드라이버에서는 줄 끝에 파일을 바꾼 process의 이름이 `주체 syslog-ng`처럼 붙습니다. 커널이 process를 알려 주고, edc는 이벤트가 도착할 때 그 이름을 읽습니다. 이미 끝난 process는 이름이 없고, `mv` 같은 짧은 명령은 이벤트를 읽기 전에 끝나는 일이 많아 이름이 나오지 않습니다. 한 줄에 합친 이벤트가 서로 다른 process에서 왔으면 이름을 한 번씩 모두 보이고(예: `주체 editor, formatter`), 3개를 넘으면 `+N`을 붙입니다. `inotify`는 process를 알려 주지 않고, `--no-smart`는 이름을 붙이지 않습니다. JSON 기록에는 드라이버가 알면 `pid`가 들어가고(이름을 몰라도), 이름을 알 때 `process`가 들어갑니다. 커널이 한 경로의 이벤트를 합치면 process는 첫 이벤트의 것입니다.
 
+이름에는 두 가지 한계가 있습니다. 첫째, `edc`는 이벤트를 읽은 뒤에 `/proc/<pid>/comm`에서 이름을 읽습니다. 그 사이에 커널이 같은 PID를 새 process에 배정하면 줄에 새 process의 이름이 나옵니다. PID 번호 범위가 몇 ms 안에 한 바퀴 돌아야 해서 드물지만, 빈도는 알 수 없습니다. 정확히 고치려면 이벤트에 `pidfd`가 필요한데, 현재 이벤트 형식에서 커널이 `pidfd`를 지원하는지는 확인하지 못했습니다. 둘째, 합쳐진 줄은 200ms 창 안의 서로 다른 process 이름을 모두 기억하고, 비용은 이름 수에 비례합니다. 측정에서 이름 10만 개는 6.7 MiB, 100만 개는 85.5 MiB였습니다.
+
 기본으로 `.git`, `node_modules`, `.venv`, `venv`, `__pycache__`, `.mypy_cache`, `.pytest_cache`, `.ruff_cache`, `.tox`, `.next`, `.gradle`을 모든 깊이에서 제외합니다. 빌드 결과물을 감시할 수 있도록 `build`와 `dist`는 제외하지 않습니다. `--exclude 'build/**'`처럼 제외 glob을 반복해서 추가할 수 있습니다. 기본 제외 디렉터리도 감시하려면 `--no-default-exclude`를 쓰며, 이때도 `--exclude`로 준 패턴은 적용됩니다.
 
 Linux에서는 `--driver`로 감시 방식을 고릅니다. 기본값은 `auto`입니다.

@@ -23,7 +23,9 @@ type cleanProgressModel struct {
 	cancel                        context.CancelFunc
 	workers, width, height        int
 	color, help, cancelling, done bool
-	result                        Result
+	// abandoned는 중지 후 끝나지 않는 확인을 기다리지 않고 나가기로 했다는 뜻이다. 커널 안에서 막힌 open은 취소로 풀리지 않는다.
+	abandoned bool
+	result    Result
 }
 
 func newCleanProgressModel(progress *cleanProgress, workers int, cancel context.CancelFunc) cleanProgressModel {
@@ -51,7 +53,12 @@ func (model cleanProgressModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyPressMsg:
 		switch msg.String() {
 		case "q", "esc", "ctrl+c":
-			if !model.cancelling && !model.done {
+			switch {
+			case model.done:
+			case model.cancelling:
+				model.abandoned = true
+				return model, tea.Quit
+			default:
 				model.cancelling = true
 				if model.cancel != nil {
 					model.cancel()
@@ -220,9 +227,26 @@ func runCleanProgressUI(scan func() Result, progress *cleanProgress, workers int
 		fmt.Fprintln(os.Stderr, T("observe.live.start_failed", err))
 		return <-finished
 	}
-	result := <-finished
+	var result Result
+	select {
+	case result = <-finished:
+	case <-live.done:
+		if model, _ := live.model.(cleanProgressModel); model.abandoned {
+			return cleanAbandonedResult(progress.snapshot())
+		}
+		result = <-finished
+	}
 	if _, err := live.finish(cleanProgressDone{snapshot: progress.snapshot(), result: result}); err != nil {
 		fmt.Fprintln(os.Stderr, T("observe.live.exit_error", err))
+	}
+	return result
+}
+
+// cleanAbandonedResult는 끝나지 않은 확인을 남긴다. 어느 경로에서 막혔는지 알아야 다음 실행에서 피할 수 있다.
+func cleanAbandonedResult(snapshot cleanProgressSnapshot) Result {
+	result := Result{Probe: cleanProbeID, Status: StatusWarn, StartedAt: snapshot.started.UTC(), Summary: T("clean.ui.abandoned")}
+	for _, task := range snapshot.active {
+		result.Warnings = append(result.Warnings, T("clean.ui.abandoned_task", T("clean.progress.stage."+task.stage), task.target))
 	}
 	return result
 }

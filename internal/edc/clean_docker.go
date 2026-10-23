@@ -540,7 +540,7 @@ func cleanVMScan(ctx context.Context, deps cleanDeps, goos string) []cleanVMDisk
 			last.Status, last.Reasons = cleanNotScanned, []string{cleanContextReason(err)}
 			continue
 		}
-		resolved, err := duResolveRoot(spec.path)
+		resolved, err := deps.resolvePath(spec.path)
 		if err != nil {
 			last.Status, last.Reasons, last.Detail = cleanFailure(err)
 			continue

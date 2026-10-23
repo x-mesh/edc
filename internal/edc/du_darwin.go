@@ -66,6 +66,9 @@ func duDarwinMounts() ([]diskMount, error) {
 	return mounts, nil
 }
 
+// duHostMounts는 MNT_NOWAIT로 읽으므로 응답하지 않는 파일 시스템을 기다리지 않는다.
+func duHostMounts() ([]diskMount, error) { return duDarwinMounts() }
+
 // duMeasure는 duWalk에 맡긴다. darwin의 duWalk는 stat, getfsstat, statfs만 읽고 호스트 전체 원천이 없다.
 func duMeasure(ctx context.Context, options duOptions, sources duSources) (duScan, error) {
 	return duWalk(ctx, options, sources)
@@ -89,9 +92,12 @@ func duWalk(ctx context.Context, options duOptions, sources duSources) (duScan, 
 	}
 	walker := &duWalker{ctx: ctx, options: options, sources: sources, rootDev: uint64(stat.Dev), mounts: mounts,
 		mountPoints: map[string]diskMount{}, files: duFiles{limit: max(options.rows, options.keepFiles)},
-		seen: map[duInode]struct{}{}, directories: options.progress}
+		seen: map[duInode]struct{}{}, directories: options.progress, activity: options.activity}
 	if walker.directories == nil {
 		walker.directories = new(atomic.Int64)
+	}
+	if walker.activity == nil {
+		walker.activity = new(atomic.Int64)
 	}
 	for _, mount := range mounts {
 		if mount.Point != options.root && pathUnder(mount.Point, options.root) {
@@ -218,6 +224,7 @@ func (walker *duWalker) sequentialDarwin(start duDir, parentFDLimit int) {
 		} else {
 			fd, err = unix.Open(dir.path, flags, 0)
 		}
+		walker.advance()
 		if err != nil {
 			dir.node.unreadable = walker.unreadableDir(dir.path, err)
 			continue
@@ -246,6 +253,7 @@ func (walker *duWalker) sequentialDarwin(start duDir, parentFDLimit int) {
 
 func (walker *duWalker) scan(dir duDir, buffer []byte) []duDir {
 	fd, err := unix.Open(dir.path, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	walker.advance()
 	if err != nil {
 		dir.node.unreadable = walker.unreadableDir(dir.path, err)
 		return nil
@@ -263,6 +271,7 @@ func (walker *duWalker) scanDarwinFD(dir duDir, buffer []byte, fd int) []duDir {
 			break
 		}
 		n, err := duDarwinRead(fd, buffer)
+		walker.advance()
 		if err != nil {
 			if !dir.node.unreadable {
 				dir.node.unreadable = walker.unreadableDir(dir.path, err)
@@ -294,7 +303,9 @@ func (walker *duWalker) scanDarwinFD(dir duDir, buffer []byte, fd int) []duDir {
 			if entry.stat {
 				// bulk 조회는 firmlink 원본과 일부 파일의 불완전한 속성을 준다. fd 기준 stat으로 대상 값을 읽는다.
 				var stat unix.Stat_t
-				if err := unix.Fstatat(fd, string(entry.name), &stat, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+				err := unix.Fstatat(fd, string(entry.name), &stat, unix.AT_SYMLINK_NOFOLLOW)
+				walker.advance()
+				if err != nil {
 					if !dir.node.unreadable {
 						dir.node.unreadable = walker.unreadableDir(dir.path, err)
 					}

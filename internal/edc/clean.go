@@ -69,6 +69,7 @@ const (
 	cleanReasonUnreadableDirs = "unreadable_dirs"
 	cleanReasonSkippedMounts  = "skipped_mounts"
 	cleanReasonInvalidEnv     = "invalid_env"
+	cleanReasonNoResponse     = "no_response"
 )
 
 // 번역 키를 조합하는 값의 전체 목록이다. 시험이 세 언어에서 모두 번역이 있는지 확인한다.
@@ -82,7 +83,7 @@ var (
 		cleanReasonInvalidEnv, cleanReasonEndpointScheme, cleanReasonSocketMissing, cleanReasonConnectionRefused,
 		cleanReasonEngineTimeout, cleanReasonAPIVersion, cleanReasonHTTPStatus, cleanReasonRequestFailed,
 		cleanReasonGitOutputTruncated, cleanReasonBaseMissing, cleanReasonGitdirMissing, cleanReasonWorktreeLimit,
-		cleanReasonNotDirectory, cleanReasonProjectLimit, cleanReasonTrackedFiles, cleanReasonGitUnknown}
+		cleanReasonNotDirectory, cleanReasonProjectLimit, cleanReasonTrackedFiles, cleanReasonGitUnknown, cleanReasonNoResponse}
 	cleanCategories = []string{"build_cache", "package_cache", "downloaded_binary", "xcode_support", "app_cache", "logs", "model", "toolchain"}
 	cleanCosts      = []string{"low", "medium", "high", "unknown", "lost"}
 	cleanSpecIDs    = []string{"go-build", "go-mod", "npm", "pnpm", "uv", "homebrew", cleanDerivedID, "swiftpm",
@@ -875,6 +876,8 @@ func cleanFailure(err error) (status string, reasons []string, detail string) {
 		return cleanAbsent, nil, ""
 	case errors.Is(err, fs.ErrPermission):
 		return cleanUnreadable, []string{cleanReasonPermission}, ""
+	case errors.Is(err, errCleanStalled):
+		return cleanUnreadable, []string{cleanReasonNoResponse}, ""
 	default:
 		return cleanUnreadable, []string{cleanReasonStatError}, err.Error()
 	}
@@ -1073,6 +1076,7 @@ func runCleanWith(args []string, version string, deps cleanDeps, ok bool, homeEr
 		defer stop()
 		ctx, deadline := context.WithTimeout(base, options.timeout)
 		defer deadline()
+		stalls := &cleanStalls{}
 		scan := func() Result {
 			done := deps.begin("total", "")
 			defer done()
@@ -1083,7 +1087,14 @@ func runCleanWith(args []string, version string, deps cleanDeps, ok bool, homeEr
 				cleanAddNewestWrite(ctx, report.candidates)
 				done()
 			}
-			return cleanResult(result, report, options.timeout, ctx.Err())
+			scanned := cleanResult(result, report, options.timeout, ctx.Err())
+			if warnings := stalls.warnings(cleanStallLimit); len(warnings) > 0 {
+				scanned.Warnings = append(scanned.Warnings, warnings...)
+				if scanned.Status == StatusPass {
+					scanned.Status = StatusWarn
+				}
+			}
+			return scanned
 		}
 		if showProgress {
 			interactive := cleanProgressTerminal(terminal, options.jsonPath)
@@ -1093,6 +1104,8 @@ func runCleanWith(args []string, version string, deps cleanDeps, ok bool, homeEr
 			}
 			progress := newCleanProgress(writer, deps.home, options.redact)
 			progress.cancelled = func() bool { return ctx.Err() != nil }
+			// 감시를 진행 기록 안쪽에 두어야 건너뛴 측정도 진행 화면에서 끝난 것으로 지워진다.
+			deps.measure = cleanStallGuard(deps.measure, progress.begin, stalls, cleanStallHint, cleanStallLimit)
 			deps = cleanProgressDeps(deps, progress)
 			if interactive {
 				result = runCleanProgressUI(scan, progress, deps.workers, stop)
@@ -1107,6 +1120,7 @@ func runCleanWith(args []string, version string, deps cleanDeps, ok bool, homeEr
 				<-progressDone
 			}
 		} else {
+			deps.measure = cleanStallGuard(deps.measure, nil, stalls, cleanStallHint, cleanStallLimit)
 			result = scan()
 		}
 	}
@@ -1260,7 +1274,8 @@ func cleanPrint(stdout io.Writer, options commonOptions, result Result, color bo
 		fmt.Fprint(output, formatResultLine(result, color))
 	}
 	printResultDetail(output, result, options.verbose, color)
-	if result.Status != StatusFail {
+	// 기다리지 않고 나간 결과에는 섹션 값이 없다. 빈 섹션을 그리면 조사한 결과처럼 보인다.
+	if result.Status != StatusFail && result.Metrics != nil {
 		items, _ := result.Metrics["candidates"].([]cleanItem)
 		filesystems, _ := result.Metrics["filesystems"].([]cleanFilesystem)
 		projects, _ := result.Metrics["project_build_dirs"].(cleanProjectBuildDirs)

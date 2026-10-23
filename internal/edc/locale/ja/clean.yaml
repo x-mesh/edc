@@ -16,7 +16,9 @@ clean:
     workers: "サイズ測定: worker %d  ·  git確認: 最大%d"
     keys: "q / Esc 停止  ·  ? ヘルプ"
     help: "q / Esc / Ctrl-C: 停止して部分結果を表示。ファイルは削除しません。"
-    stopping_hint: "実行中の確認を終了し、部分結果を表示します。"
+    stopping_hint: "実行中の確認を終了し、部分結果を表示します。待たずに終了するには、もう一度 q を押してください。"
+    abandoned: "実行中の確認が終わる前に終了したため、結果を表示しません"
+    abandoned_task: "未完了: %s %s"
     finished_hint: "上に段階別の所要時間、下に調査結果を表示します。"
     more: "  他に%d件の作業を実行中"
     small: "端末を40桁・5行以上に広げてください。"
@@ -35,6 +37,7 @@ clean:
       discover: "ビルドフォルダー探索"
       tool: "ツール照会"
       measure: "サイズ測定"
+      stalled: "応答なし: 権限の確認ダイアログか停止したマウントを確認してください"
     workers: "サイズ測定ごとに worker %d個"
   skip:
     unsupported: "clean は Linux と macOS でのみ動作します"
@@ -45,6 +48,7 @@ clean:
   warning:
     timeout: "制限時間で止まったため、それ以降の候補は未測定と表示しました"
     stopped: "停止したため、それ以降の候補は未測定と表示しました"
+    stalled: "%s が %s 応答しなかったため、スキップしました。macOS の権限確認ダイアログに応答するかマウントを確認してから、edc clean を再実行してください"
   category:
     build_cache: "ビルドキャッシュ"
     package_cache: "パッケージキャッシュ"
@@ -129,6 +133,7 @@ clean:
     project_limit: "探索の上限 (フォルダ 300,000 個またはビルドフォルダ 256 個) で停止"
     tracked_files: "git が追跡するファイルがあります"
     git_unknown: "git の状態が不明"
+    no_response: "ファイルシステムが応答しません"
   cost:
     low: "低"
     medium: "中"

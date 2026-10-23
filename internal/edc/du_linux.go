@@ -5,6 +5,7 @@ package edc
 import (
 	"context"
 	"errors"
+	"io"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -149,14 +150,19 @@ func duMeasure(ctx context.Context, options duOptions, sources duSources) (duSca
 }
 
 // duWalkTree는 디렉터리 root 아래를 세어 duScan을 만든다. 파일 시스템 정보와 지워졌지만 열린 파일은 채우지 않는다.
+const duActivityBatch = 256
+
 func duWalkTree(ctx context.Context, options duOptions, sources duSources, root *duNode, dev uint64) (duScan, []diskMount) {
 	walker := &duWalker{
 		ctx: ctx, options: options, sources: sources, rootDev: dev,
 		mountPoints: map[string]diskMount{}, files: duFiles{limit: max(options.rows, options.keepFiles)}, seen: map[duInode]struct{}{},
-		directories: options.progress,
+		directories: options.progress, activity: options.activity,
 	}
 	if walker.directories == nil {
 		walker.directories = new(atomic.Int64)
+	}
+	if walker.activity == nil {
+		walker.activity = new(atomic.Int64)
 	}
 	var warnings []string
 	text, err := sources.mountinfo()
@@ -233,6 +239,7 @@ func duReadFilesystem(scan *duScan, options duOptions, sources duSources, mounts
 // 항목마다 전체 경로를 다시 해석하면 CPU 시간이 약 25% 늘었다.
 func (walker *duWalker) scan(dir duDir, _ []byte) []duDir {
 	fd, err := unix.Open(dir.path, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	walker.advance()
 	if err != nil {
 		dir.node.unreadable = walker.unreadableDir(dir.path, err)
 		return nil
@@ -240,10 +247,26 @@ func (walker *duWalker) scan(dir duDir, _ []byte) []duDir {
 	file := os.NewFile(uintptr(fd), dir.path)
 	defer file.Close()
 	// 목록을 끝까지 읽지 못해도 읽은 이름은 센다. 디렉터리 하나는 한 번만 읽지 못한 것으로 센다.
-	names, readErr := file.Readdirnames(-1)
+	var names []string
+	var readErr error
+	for {
+		batch, err := file.Readdirnames(duActivityBatch * 16)
+		walker.advance()
+		names = append(names, batch...)
+		if err != nil {
+			if !errors.Is(err, io.EOF) {
+				readErr = err
+			}
+			break
+		}
+	}
 	walker.directories.Add(1)
 	var subdirs []duDir
-	for _, name := range names {
+	for index, name := range names {
+		// 항목마다 세면 worker들이 같은 counter를 두고 다툰다. 멈춤을 알아보는 데는 묶음 단위로 충분하다.
+		if index%duActivityBatch == duActivityBatch-1 {
+			walker.advance()
+		}
 		var stat unix.Stat_t
 		if err := unix.Fstatat(fd, name, &stat, unix.AT_SYMLINK_NOFOLLOW); err != nil {
 			// 읽는 사이에 지워진 항목은 세지 않는다.

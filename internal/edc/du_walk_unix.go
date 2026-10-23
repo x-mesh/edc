@@ -27,6 +27,7 @@ type duWalker struct {
 	mountPoints map[string]diskMount
 	files       duFiles
 	directories *atomic.Int64
+	activity    *atomic.Int64
 	stopped     atomic.Bool
 
 	mu              sync.Mutex
@@ -77,6 +78,8 @@ func (walker *duWalker) parallel(start duDir, workers int) {
 	}
 	group.Wait()
 }
+
+func (walker *duWalker) advance() { walker.activity.Add(1) }
 
 func duJoin(dir, name string) string {
 	if dir == "/" {

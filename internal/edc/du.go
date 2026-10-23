@@ -50,6 +50,8 @@ type duOptions struct {
 	keepFiles int
 	// progress는 읽은 디렉터리 수를 탐색 중에 바깥에서 읽게 한다. nil이면 탐색기가 따로 센다.
 	progress *atomic.Int64
+	// activity는 끝난 시스템 호출 수다. 값이 오래 그대로면 호출 하나가 커널 안에서 돌아오지 않는 것이다.
+	activity *atomic.Int64
 }
 
 // duNode는 디렉터리 하나, 또는 화면에 오를 수 있는 큰 파일 하나다. bytes와 entries는 자기 자신과

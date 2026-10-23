@@ -2,11 +2,13 @@ package edc
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -198,4 +200,89 @@ func (progress *cleanProgress) snapshot() cleanProgressSnapshot {
 		snapshot.active = append(snapshot.active, task)
 	}
 	return snapshot
+}
+
+// 응답 없음 기준은 끝난 시스템 호출이 없는 시간이다. 큰 디렉터리는 오래 걸려도 호출이 계속 끝나므로 기준에 걸리지 않는다.
+const (
+	cleanStallHint  = 3 * time.Second
+	cleanStallLimit = 10 * time.Second
+)
+
+var errCleanStalled = errors.New("no response from the file system")
+
+// cleanStalls는 응답이 없어 건너뛴 경로다. 측정은 여러 goroutine에서 끝나므로 잠근다.
+type cleanStalls struct {
+	mutex sync.Mutex
+	paths []string
+}
+
+func (stalls *cleanStalls) add(path string) {
+	stalls.mutex.Lock()
+	defer stalls.mutex.Unlock()
+	stalls.paths = append(stalls.paths, path)
+}
+
+func (stalls *cleanStalls) warnings(limit time.Duration) []string {
+	stalls.mutex.Lock()
+	defer stalls.mutex.Unlock()
+	warnings := make([]string, 0, len(stalls.paths))
+	for _, path := range stalls.paths {
+		warnings = append(warnings, T("clean.warning.stalled", path, limit))
+	}
+	return warnings
+}
+
+// cleanStallGuard는 측정 하나가 커널 안에서 돌아오지 않아도 clean 전체가 기다리지 않게 한다. macOS는 권한 창에
+// 답할 때까지 open을 돌려주지 않고, 멈춘 네트워크 마운트도 그렇다. 취소는 커널 안의 호출을 풀지 못하므로 그 goroutine은
+// 남겨 두고 경로를 건너뛴다. begin은 hint가 지나면 기다리는 경로를 진행 화면에 띄운다.
+func cleanStallGuard(measure func(context.Context, duOptions, duSources) (duScan, error), begin func(stage, target string) func(),
+	stalls *cleanStalls, hint, limit time.Duration) func(context.Context, duOptions, duSources) (duScan, error) {
+	return func(ctx context.Context, options duOptions, sources duSources) (duScan, error) {
+		if options.activity == nil {
+			options.activity = new(atomic.Int64)
+		}
+		inner, abandon := context.WithCancel(ctx)
+		defer abandon()
+		type outcome struct {
+			scan duScan
+			err  error
+		}
+		finished := make(chan outcome, 1)
+		go func() {
+			scan, err := measure(inner, options, sources)
+			finished <- outcome{scan: scan, err: err}
+		}()
+		ticker := time.NewTicker(min(hint, limit) / 10)
+		defer ticker.Stop()
+		seen, changed := options.activity.Load(), time.Now()
+		var waiting func()
+		defer func() {
+			if waiting != nil {
+				waiting()
+			}
+		}()
+		for {
+			select {
+			case got := <-finished:
+				return got.scan, got.err
+			case now := <-ticker.C:
+				if current := options.activity.Load(); current != seen {
+					seen, changed = current, now
+					if waiting != nil {
+						waiting()
+						waiting = nil
+					}
+					continue
+				}
+				idle := now.Sub(changed)
+				if idle >= limit {
+					stalls.add(options.root)
+					return duScan{}, errCleanStalled
+				}
+				if idle >= hint && waiting == nil && begin != nil {
+					waiting = begin("stalled", options.root)
+				}
+			}
+		}
+	}
 }

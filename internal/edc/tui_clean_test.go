@@ -99,17 +99,19 @@ func TestCleanProgressBoardCancelsOnceAndIgnoresPaste(t *testing.T) {
 	if !model.help {
 		t.Fatal("help did not open")
 	}
-	for _, key := range []tea.KeyPressMsg{{Code: 'q', Text: "q"}, {Code: tea.KeyEscape}} {
-		next, cmd := model.Update(key)
-		model = next.(cleanProgressModel)
-		if cmd != nil {
-			t.Fatal("cancel must wait for partial results")
-		}
+	next, cmd := model.Update(tea.KeyPressMsg{Code: 'q', Text: "q"})
+	model = next.(cleanProgressModel)
+	if cmd != nil {
+		t.Fatal("cancel must wait for partial results")
 	}
 	if cancelled != 1 || !model.cancelling {
 		t.Fatalf("cancelled %d times", cancelled)
 	}
-	next, cmd := model.Update(cleanProgressDone{snapshot: model.snapshot, result: Result{Status: StatusWarn}})
+	next, cmd = model.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	if quit := next.(cleanProgressModel); cancelled != 1 || !quit.abandoned || cmd == nil {
+		t.Fatalf("second stop key did not quit without waiting: cancelled=%d abandoned=%v", cancelled, quit.abandoned)
+	}
+	next, cmd = model.Update(cleanProgressDone{snapshot: model.snapshot, result: Result{Status: StatusWarn}})
 	model = next.(cleanProgressModel)
 	if !model.done || cmd == nil {
 		t.Fatal("completed scan did not close")
@@ -174,5 +176,21 @@ func TestCleanProgressBoardDoesNotCallCancelledStagesFinished(t *testing.T) {
 	model = next.(cleanProgressModel)
 	if !model.snapshot.stages["worktrees"].skipped || !strings.Contains(model.View().Content, T("clean.ui.skipped")) {
 		t.Fatal("cancelled stage shown as finished")
+	}
+}
+
+func TestCleanAbandonedResultNamesUnfinishedChecks(t *testing.T) {
+	progress := newCleanProgress(io.Discard, "/home/demo", false)
+	progress.begin("caches", "")
+	progress.begin("measure", "/home/demo/Library/Caches/com.apple.Music")
+	result := cleanAbandonedResult(progress.snapshot())
+	want := T("clean.ui.abandoned_task", T("clean.progress.stage.measure"), "~/Library/Caches/com.apple.Music")
+	if result.Status != StatusWarn || result.Probe != cleanProbeID || len(result.Warnings) != 1 || result.Warnings[0] != want {
+		t.Fatalf("result = %+v", result)
+	}
+	var output strings.Builder
+	cleanPrint(&output, commonOptions{}, result, false, 100, false, "/home/demo")
+	if text := output.String(); strings.Contains(text, "clean.status") || strings.Contains(text, T("clean.project.panel")) {
+		t.Fatalf("abandoned output drew empty sections:\n%s", text)
 	}
 }

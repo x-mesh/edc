@@ -276,15 +276,28 @@ type cleanDeps struct {
 	// dockerDial은 Docker API socket에 연결한다. 시험이 서버에 연결하도록 바꾼다.
 	dockerDial func(ctx context.Context, path string) (net.Conn, error)
 	measure    func(ctx context.Context, options duOptions, sources duSources) (duScan, error)
-	sources    duSources
-	workers    int
+	// resolve는 보고된 경로의 symlink를 푼다. 멈춘 마운트에서는 이 호출도 돌아오지 않아 측정처럼 감시한다.
+	resolve func(path string) (string, error)
+	// mounts는 응답 없는 경로가 어느 파일 시스템인지 알려 준다. 그 파일 시스템을 건드리지 않는 원천만 쓴다.
+	mounts  func() ([]diskMount, error)
+	sources duSources
+	workers int
 	// remote는 --group에서 원격 호스트의 clean을 실행한다. 시험이 SSH 대신 가짜 실행기를 넣는다.
 	remote cleanRemoteRunner
 }
 
 func hostCleanDeps(home string, host duSources) cleanDeps {
 	return cleanDeps{home: home, lookPath: exec.LookPath, run: runCleanTool, lookupEnv: os.LookupEnv, deviceOf: cleanDeviceOf,
-		dockerDial: cleanDockerDial, measure: duMeasure, sources: cleanSources(host), workers: duDefaultWorkers, remote: cleanSSHRunner}
+		dockerDial: cleanDockerDial, measure: duMeasure, resolve: duResolveRoot, mounts: duHostMounts, sources: cleanSources(host),
+		workers: duDefaultWorkers, remote: cleanSSHRunner}
+}
+
+// resolvePath는 resolve가 비어 있으면 duResolveRoot를 쓴다. 시험은 cleanDeps를 필요한 필드만 채워 만든다.
+func (deps cleanDeps) resolvePath(path string) (string, error) {
+	if deps.resolve == nil {
+		return duResolveRoot(path)
+	}
+	return deps.resolve(path)
 }
 
 func cleanDockerDial(ctx context.Context, path string) (net.Conn, error) {
@@ -457,7 +470,7 @@ func (scanner *cleanScanner) measureOne(ctx context.Context, spec cleanSpec, ite
 		return
 	}
 	item.ReportedPath = reported
-	resolved, err := duResolveRoot(reported)
+	resolved, err := scanner.deps.resolvePath(reported)
 	if err != nil {
 		cleanPathFailure(item, err)
 		return
@@ -1076,7 +1089,7 @@ func runCleanWith(args []string, version string, deps cleanDeps, ok bool, homeEr
 		defer stop()
 		ctx, deadline := context.WithTimeout(base, options.timeout)
 		defer deadline()
-		stalls := &cleanStalls{}
+		stalls := &cleanStalls{listMounts: deps.mounts}
 		scan := func() Result {
 			done := deps.begin("total", "")
 			defer done()
@@ -1105,6 +1118,7 @@ func runCleanWith(args []string, version string, deps cleanDeps, ok bool, homeEr
 			progress := newCleanProgress(writer, deps.home, options.redact)
 			progress.cancelled = func() bool { return ctx.Err() != nil }
 			// 감시를 진행 기록 안쪽에 두어야 건너뛴 측정도 진행 화면에서 끝난 것으로 지워진다.
+			deps.resolve = cleanResolveGuard(deps.resolvePath, progress.begin, stalls, cleanStallHint, cleanStallLimit)
 			deps.measure = cleanStallGuard(deps.measure, progress.begin, stalls, cleanStallHint, cleanStallLimit)
 			deps = cleanProgressDeps(deps, progress)
 			if interactive {
@@ -1120,6 +1134,7 @@ func runCleanWith(args []string, version string, deps cleanDeps, ok bool, homeEr
 				<-progressDone
 			}
 		} else {
+			deps.resolve = cleanResolveGuard(deps.resolvePath, nil, stalls, cleanStallHint, cleanStallLimit)
 			deps.measure = cleanStallGuard(deps.measure, nil, stalls, cleanStallHint, cleanStallLimit)
 			result = scan()
 		}

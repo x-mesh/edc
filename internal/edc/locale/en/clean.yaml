@@ -49,6 +49,7 @@ clean:
     timeout: "edc stopped at the time limit, so the candidates after that point are marked not scanned"
     stopped: "you stopped edc, so the candidates after that point are marked not scanned"
     stalled: "%s gave no response for %s, so edc skipped it. Answer a macOS permission dialog or check the mount, then run edc clean again"
+    stalled_mount: "%s (%s) gave no response for %s, so edc skipped %d path(s) on it. If edc does not exit after the report, unmount it or stop the program that serves it"
   category:
     build_cache: "build cache"
     package_cache: "package cache"

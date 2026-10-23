@@ -201,7 +201,7 @@ func (scanner *cleanProjectScanner) resolve(projects []string) []cleanProjectRoo
 		if absolute, err := filepath.Abs(given); err == nil {
 			root.Path = absolute
 		}
-		resolved, err := duResolveRoot(given)
+		resolved, err := scanner.deps.resolvePath(given)
 		if err != nil {
 			root.Status, root.Reasons, root.Detail = cleanFailure(err)
 			continue

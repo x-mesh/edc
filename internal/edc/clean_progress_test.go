@@ -161,3 +161,75 @@ func TestDuMeasureCountsFinishedCalls(t *testing.T) {
 		}
 	}
 }
+
+func TestCleanResolveGuardSkipsPathThatNeverResolves(t *testing.T) {
+	release := make(chan struct{})
+	defer close(release)
+	stuck := func(string) (string, error) {
+		<-release
+		return "", nil
+	}
+	var begun []string
+	begin := func(stage, target string) func() {
+		begun = append(begun, stage+" "+target)
+		return func() {}
+	}
+	stalls := &cleanStalls{}
+	_, err := cleanResolveGuard(stuck, begin, stalls, 20*time.Millisecond, 80*time.Millisecond)("/mnt/hang/cache")
+	if !errors.Is(err, errCleanStalled) || len(begun) != 1 || begun[0] != "stalled /mnt/hang/cache" {
+		t.Fatalf("err = %v begun = %v", err, begun)
+	}
+	resolved, err := cleanResolveGuard(func(path string) (string, error) { return path + "/real", nil }, nil, stalls,
+		20*time.Millisecond, 80*time.Millisecond)("/ok")
+	if err != nil || resolved != "/ok/real" {
+		t.Fatalf("resolved = %q err = %v", resolved, err)
+	}
+}
+
+func TestCleanStallsGroupNetworkMountsAndSkipTheirOtherPaths(t *testing.T) {
+	listed := 0
+	stalls := &cleanStalls{listMounts: func() ([]diskMount, error) {
+		listed++
+		return []diskMount{{Point: "/", FSType: "ext4"}, {Point: "/mnt/hang", FSType: "fuse.sshfs"}}, nil
+	}}
+	stalls.add("/mnt/hang/pip")
+	stalls.add("/home/demo/Library/Caches/com.apple.Music")
+	if !stalls.skip("/mnt/hang/zig") || stalls.skip("/home/demo/.cache/zig") {
+		t.Fatal("only paths on the stalled network mount must be skipped")
+	}
+	resolve := cleanResolveGuard(func(string) (string, error) {
+		t.Fatal("a path on a stalled mount was resolved again")
+		return "", nil
+	}, nil, stalls, time.Hour, time.Hour)
+	if _, err := resolve("/mnt/hang/bun"); !errors.Is(err, errCleanStalled) {
+		t.Fatalf("resolve err = %v", err)
+	}
+	measure := cleanStallGuard(func(context.Context, duOptions, duSources) (duScan, error) {
+		t.Fatal("a path on a stalled mount was measured again")
+		return duScan{}, nil
+	}, nil, stalls, time.Hour, time.Hour)
+	if _, err := measure(context.Background(), duOptions{root: "/mnt/hang/hf"}, duSources{}); !errors.Is(err, errCleanStalled) {
+		t.Fatalf("measure err = %v", err)
+	}
+	warnings := stalls.warnings(10 * time.Second)
+	want := []string{
+		T("clean.warning.stalled", "/home/demo/Library/Caches/com.apple.Music", 10*time.Second),
+		T("clean.warning.stalled_mount", "/mnt/hang", "fuse.sshfs", 10*time.Second, 4),
+	}
+	if strings.Join(warnings, "\n") != strings.Join(want, "\n") || listed != 1 {
+		t.Fatalf("warnings = %q listed = %d, want %q", warnings, listed, want)
+	}
+}
+
+func TestCleanRemoteFSType(t *testing.T) {
+	for _, fstype := range []string{"fuse", "fuseblk", "fuse.sshfs", "nfs4", "cifs", "smbfs", "macfuse"} {
+		if !cleanRemoteFSType(fstype) {
+			t.Errorf("%s is not treated as remote", fstype)
+		}
+	}
+	for _, fstype := range []string{"ext4", "apfs", "xfs", "btrfs", "overlay", "tmpfs"} {
+		if cleanRemoteFSType(fstype) {
+			t.Errorf("%s is treated as remote", fstype)
+		}
+	}
+}

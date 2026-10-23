@@ -66,6 +66,9 @@ func duDarwinMounts() ([]diskMount, error) {
 	return mounts, nil
 }
 
+// duHostMounts는 MNT_NOWAIT로 읽으므로 응답하지 않는 파일 시스템을 기다리지 않는다.
+func duHostMounts() ([]diskMount, error) { return duDarwinMounts() }
+
 // duMeasure는 duWalk에 맡긴다. darwin의 duWalk는 stat, getfsstat, statfs만 읽고 호스트 전체 원천이 없다.
 func duMeasure(ctx context.Context, options duOptions, sources duSources) (duScan, error) {
 	return duWalk(ctx, options, sources)

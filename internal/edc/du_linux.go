@@ -38,6 +38,12 @@ func hostDuSources() (duSources, bool) {
 	}, true
 }
 
+// duHostMounts는 /proc에서 마운트 표만 읽으므로 응답하지 않는 파일 시스템을 건드리지 않는다.
+func duHostMounts() ([]diskMount, error) {
+	data, err := os.ReadFile("/proc/self/mountinfo")
+	return parseMountInfo(string(data)), err
+}
+
 // duHostContainerLabels는 docker에 container를 묻는다. docker가 없거나 답하지 않으면 이름표 없이 둔다.
 func duHostContainerLabels(ctx context.Context) map[string]string {
 	if _, err := exec.LookPath("docker"); err != nil {

@@ -280,6 +280,8 @@ type cleanDeps struct {
 	resolve func(path string) (string, error)
 	// readDir는 빌드 폴더를 찾으며 디렉터리를 읽는다. macOS 권한 창이나 멈춘 마운트에서 돌아오지 않아 감시한다.
 	readDir func(path string) ([]os.DirEntry, error)
+	// wait는 path를 건드리는 다른 짧은 호출을 감시한다. 비어 있으면 호출을 바로 부른다.
+	wait func(path string, call func() error) error
 	// mounts는 응답 없는 경로가 어느 파일 시스템인지 알려 준다. 그 파일 시스템을 건드리지 않는 원천만 쓴다.
 	mounts  func() ([]diskMount, error)
 	sources duSources
@@ -300,6 +302,13 @@ func (deps cleanDeps) resolvePath(path string) (string, error) {
 		return duResolveRoot(path)
 	}
 	return deps.resolve(path)
+}
+
+func (deps cleanDeps) waitPath(path string, call func() error) error {
+	if deps.wait == nil {
+		return call()
+	}
+	return deps.wait(path, call)
 }
 
 func (deps cleanDeps) readDirPath(path string) ([]os.DirEntry, error) {
@@ -1129,6 +1138,7 @@ func runCleanWith(args []string, version string, deps cleanDeps, ok bool, homeEr
 			// 감시를 진행 기록 안쪽에 두어야 건너뛴 측정도 진행 화면에서 끝난 것으로 지워진다.
 			deps.resolve = cleanResolveGuard(deps.resolvePath, progress.begin, stalls, cleanStallHint, cleanStallLimit)
 			deps.readDir = cleanReadDirGuard(deps.readDirPath, progress.begin, stalls, cleanStallHint, cleanStallLimit)
+			deps.wait = cleanCallGuard(progress.begin, stalls, cleanStallHint, cleanStallLimit)
 			deps.measure = cleanStallGuard(deps.measure, progress.begin, stalls, cleanStallHint, cleanStallLimit)
 			deps = cleanProgressDeps(deps, progress)
 			if interactive {
@@ -1146,6 +1156,7 @@ func runCleanWith(args []string, version string, deps cleanDeps, ok bool, homeEr
 		} else {
 			deps.resolve = cleanResolveGuard(deps.resolvePath, nil, stalls, cleanStallHint, cleanStallLimit)
 			deps.readDir = cleanReadDirGuard(deps.readDirPath, nil, stalls, cleanStallHint, cleanStallLimit)
+			deps.wait = cleanCallGuard(nil, stalls, cleanStallHint, cleanStallLimit)
 			deps.measure = cleanStallGuard(deps.measure, nil, stalls, cleanStallHint, cleanStallLimit)
 			result = scan()
 		}

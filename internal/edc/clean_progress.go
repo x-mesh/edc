@@ -306,6 +306,14 @@ func cleanReadDirGuard(readDir func(string) ([]os.DirEntry, error), begin func(s
 	}
 }
 
+// cleanCallGuard는 값을 돌려주지 않는 짧은 호출을 limit까지만 기다린다.
+func cleanCallGuard(begin func(stage, target string) func(), stalls *cleanStalls, hint, limit time.Duration) func(string, func() error) error {
+	return func(path string, call func() error) error {
+		_, err := cleanWaitFor(path, begin, stalls, hint, limit, func() (struct{}, error) { return struct{}{}, call() })
+		return err
+	}
+}
+
 // cleanWaitFor는 path를 건드리는 짧은 호출 하나를 limit까지만 기다린다. 시스템 호출 몇 번뿐이라 진행 카운터 없이
 // 시간으로 본다. 돌아오지 않은 호출의 goroutine은 남겨 둔다.
 func cleanWaitFor[T any](path string, begin func(stage, target string) func(), stalls *cleanStalls, hint, limit time.Duration,

@@ -218,18 +218,26 @@ func (scanner *cleanProjectScanner) resolve(projects []string) []cleanProjectRoo
 			continue
 		}
 		root.ResolvedPath = resolved
-		info, err := os.Stat(resolved)
+		// 사용자가 고른 루트는 네트워크 마운트여도 걷는다. 대신 그 루트가 응답하지 않으면 기다리지 않는다.
+		var directory bool
+		var device uint64
+		err = scanner.deps.waitPath(resolved, func() error {
+			info, err := os.Stat(resolved)
+			if err != nil {
+				return err
+			}
+			if directory = info.IsDir(); !directory {
+				return nil
+			}
+			device, err = scanner.deps.deviceOf(resolved)
+			return err
+		})
 		if err != nil {
 			root.Status, root.Reasons, root.Detail = cleanFailure(err)
 			continue
 		}
-		if !info.IsDir() {
+		if !directory {
 			root.Status, root.Reasons = cleanRejected, []string{cleanReasonNotDirectory}
-			continue
-		}
-		device, err := scanner.deps.deviceOf(resolved)
-		if err != nil {
-			root.Status, root.Reasons, root.Detail = cleanFailure(err)
 			continue
 		}
 		root.device, walkable[index] = device, true

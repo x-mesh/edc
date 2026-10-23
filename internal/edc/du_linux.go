@@ -156,7 +156,8 @@ func duMeasure(ctx context.Context, options duOptions, sources duSources) (duSca
 }
 
 // duWalkTree는 디렉터리 root 아래를 세어 duScan을 만든다. 파일 시스템 정보와 지워졌지만 열린 파일은 채우지 않는다.
-const duActivityBatch = 256
+// duNamesBatch는 한 번에 읽는 이름 수다. 큰 디렉터리도 묶음마다 진행을 남긴다.
+const duNamesBatch = 4096
 
 func duWalkTree(ctx context.Context, options duOptions, sources duSources, root *duNode, dev uint64) (duScan, []diskMount) {
 	walker := &duWalker{
@@ -256,7 +257,7 @@ func (walker *duWalker) scan(dir duDir, _ []byte) []duDir {
 	var names []string
 	var readErr error
 	for {
-		batch, err := file.Readdirnames(duActivityBatch * 16)
+		batch, err := file.Readdirnames(duNamesBatch)
 		walker.advance()
 		names = append(names, batch...)
 		if err != nil {
@@ -268,13 +269,12 @@ func (walker *duWalker) scan(dir duDir, _ []byte) []duDir {
 	}
 	walker.directories.Add(1)
 	var subdirs []duDir
-	for index, name := range names {
-		// 항목마다 세면 worker들이 같은 counter를 두고 다툰다. 멈춤을 알아보는 데는 묶음 단위로 충분하다.
-		if index%duActivityBatch == duActivityBatch-1 {
-			walker.advance()
-		}
+	for _, name := range names {
 		var stat unix.Stat_t
-		if err := unix.Fstatat(fd, name, &stat, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+		// 항목마다 센다. 지연이 큰 네트워크 파일 시스템에서는 호출 수백 개가 10초를 넘길 수 있다.
+		err := unix.Fstatat(fd, name, &stat, unix.AT_SYMLINK_NOFOLLOW)
+		walker.advance()
+		if err != nil {
 			// 읽는 사이에 지워진 항목은 세지 않는다.
 			if readErr == nil && !errors.Is(err, unix.ENOENT) {
 				readErr = err

@@ -849,3 +849,22 @@ func TestCleanProjectSkipsADirectoryThatStopsAnswering(t *testing.T) {
 		t.Fatalf("warnings = %v", warnings)
 	}
 }
+
+func TestCleanProjectSkipsARootThatStopsAnswering(t *testing.T) {
+	home := cleanTestHome(t)
+	root := filepath.Join(home, "nfs")
+	cleanProjectTouch(t, filepath.Join(root, "proj", "package.json"))
+	release := make(chan struct{})
+	defer close(release)
+	deps := cleanProjectDeps(t, home, nil)
+	deps.deviceOf = func(string) (uint64, error) {
+		<-release // 응답하지 않는 네트워크 마운트의 루트처럼 돌아오지 않는다.
+		return 1, nil
+	}
+	deps.wait = cleanCallGuard(nil, &cleanStalls{}, 20*time.Millisecond, 80*time.Millisecond)
+	section := cleanProjectScan(context.Background(), deps, []string{root}, nil)
+	got := section.Roots[0]
+	if got.Status != cleanUnreadable || !reflect.DeepEqual(got.Reasons, []string{cleanReasonNoResponse}) || len(section.Items) != 0 {
+		t.Fatalf("root = %+v items = %v", got, section.Items)
+	}
+}

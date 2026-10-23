@@ -283,3 +283,20 @@ func TestReadDarwinMemoryPressure(t *testing.T) {
 		t.Fatalf("level = %d, %v", level, err)
 	}
 }
+
+// df는 파일시스템 종류를 주지 않으므로 getfsstat에서 채운다. 루트 마운트는 종류를 가져야 한다.
+func TestCollectDisksFillsTheFilesystemTypeOnDarwin(t *testing.T) {
+	disks, err := collectDisks()
+	if err != nil {
+		t.Skip(err)
+	}
+	for _, disk := range disks {
+		if disk.Mount == "/" {
+			if disk.FSType == "" {
+				t.Fatalf("the root mount has no filesystem type: %+v", disk)
+			}
+			return
+		}
+	}
+	t.Skip("no root mount in the df output")
+}

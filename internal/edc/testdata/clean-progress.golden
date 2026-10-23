@@ -1,0 +1,18 @@
+edc clean  READ ONLY  ·  running  23.5s
+No files are deleted. Cleanup actions are recommendations only.
+Size scan: 10 workers  ·  Git checks: up to 4
+
+  ─ Cache survey                                                 13.4s  finished
+  ─ Project build folders                                         7.9s  finished
+  › Docker engine                                                  2.2s  running
+  · Old Docker data                                                   —  waiting
+  · System caches and logs                                            —  waiting
+  · VM disks                                                          —  waiting
+  · Worktrees                                                         —  waiting
+
+CURRENT WORK
+  Docker API query  2.2s  /v1.41/system/df?type=volume
+
+
+
+q / Esc stop  ·  ? help

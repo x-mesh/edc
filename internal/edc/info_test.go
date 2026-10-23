@@ -2,8 +2,8 @@ package edc
 
 import (
 	"errors"
+	"fmt"
 	"os"
-	"sort"
 	"strings"
 	"testing"
 )
@@ -233,8 +233,8 @@ func TestInfoDiskCollapsesMountsThatShareAVolume(t *testing.T) {
 		}
 	}
 	disks := []diskDetails{
-		{Mount: long, Device: "/dev/disk3s3", Used: 90, Total: 100, Percent: 90},
-		{Mount: short, Device: "/dev/disk3s1", Used: 90, Total: 100, Percent: 90},
+		{Mount: long, Device: "/dev/disk3s3", FSType: "apfs", Used: 90, Total: 100, Percent: 90},
+		{Mount: short, Device: "/dev/disk3s1", FSType: "apfs", Used: 90, Total: 100, Percent: 90},
 		{Mount: other, Device: "/dev/disk4", Used: 10, Total: 200, Percent: 5},
 	}
 	var compact, verbose strings.Builder
@@ -248,36 +248,50 @@ func TestInfoDiskCollapsesMountsThatShareAVolume(t *testing.T) {
 	}
 }
 
-// 장치가 다르면 용량과 사용량이 바이트까지 같아도 다른 디스크이므로 접지 않는다. 같은 장치를 여러 경로에 붙인 경우는 접는다.
-func TestInfoDiskKeepsDifferentDevicesWithTheSameBytes(t *testing.T) {
-	parent := t.TempDir()
-	var disks []diskDetails
-	for name, device := range map[string]string{"a": "/dev/sda1", "b": "/dev/sdb1", "c": "/dev/sdb1", "d": "/dev/disk3s1", "e": "/dev/disk4s1"} {
-		dir := parent + "/" + name
-		if err := os.Mkdir(dir, 0o755); err != nil {
-			t.Fatal(err)
-		}
-		disks = append(disks, diskDetails{Mount: dir, Device: device, Used: 50, Total: 100, Percent: 50})
+// 같은 장치를 여러 경로에 붙인 경우와 같은 APFS 컨테이너의 볼륨은 접고, 그 밖에는 용량과 사용량이 바이트까지 같아도 접지 않는다.
+// 이름이 diskNsM이어도 APFS로 확인되지 않으면 같은 디스크의 다른 파티션일 수 있으므로 접지 않는다.
+func TestInfoDiskFoldsOnlyWhatShareACapacity(t *testing.T) {
+	cases := []struct {
+		name    string
+		disks   []diskDetails
+		visible int
+	}{
+		{"different devices", []diskDetails{{Device: "/dev/sda1"}, {Device: "/dev/sdb1"}}, 2},
+		{"one device on two paths", []diskDetails{{Device: "/dev/sdb1"}, {Device: "/dev/sdb1"}}, 1},
+		{"volumes of one APFS container", []diskDetails{{Device: "/dev/disk3s1s1", FSType: "apfs"}, {Device: "/dev/disk3s3", FSType: "apfs"}}, 1},
+		{"APFS volumes of two containers", []diskDetails{{Device: "/dev/disk3s1", FSType: "apfs"}, {Device: "/dev/disk4s1", FSType: "apfs"}}, 2},
+		{"partitions of one disk that are not APFS", []diskDetails{{Device: "/dev/disk5s1", FSType: "exfat"}, {Device: "/dev/disk5s2", FSType: "exfat"}}, 2},
+		{"partitions of one disk of an unknown type", []diskDetails{{Device: "/dev/disk6s1"}, {Device: "/dev/disk6s2"}}, 2},
+		{"an APFS volume and a partition of the same disk", []diskDetails{{Device: "/dev/disk7s1", FSType: "apfs"}, {Device: "/dev/disk7s2", FSType: "hfs"}}, 2},
 	}
-	sort.Slice(disks, func(i, j int) bool { return disks[i].Mount < disks[j].Mount })
-	shown, shared := collapseSharedDisks(disks)
-	devices := map[string]int{}
-	for _, disk := range shown {
-		devices[disk.Device]++
-	}
-	// sda1, sdb1(마운트 둘을 하나로), disk3s1, disk4s1 네 줄이 남는다.
-	if len(shown) != 4 || devices["/dev/sdb1"] != 1 || len(shared) != 1 || shared[parent+"/b"] != 2 {
-		t.Fatalf("shown = %+v, shared = %+v", shown, shared)
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			parent := t.TempDir()
+			disks := make([]diskDetails, len(test.disks))
+			for index, disk := range test.disks {
+				disk.Mount = fmt.Sprintf("%s/m%d", parent, index)
+				if err := os.Mkdir(disk.Mount, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				disk.Used, disk.Total, disk.Percent = 50, 100, 50
+				disks[index] = disk
+			}
+			shown, shared := collapseSharedDisks(disks)
+			if len(shown) != test.visible || (test.visible < len(disks)) != (len(shared) == 1) {
+				t.Fatalf("shown = %+v, shared = %+v", shown, shared)
+			}
+		})
 	}
 }
 
 func TestInfoDiskFamilyGroupsOnlyTheVolumesOfOneAPFSContainer(t *testing.T) {
-	for device, want := range map[string]string{
-		"/dev/disk3s1s1": "disk3", "/dev/disk3s3": "disk3", "/dev/disk10s2": "disk10",
-		"/dev/disk3": "/dev/disk3", "/dev/sda1": "/dev/sda1", "OrbStack:/OrbStack": "OrbStack:/OrbStack",
+	for _, test := range []struct{ device, fsType, want string }{
+		{"/dev/disk3s1s1", "apfs", "disk3"}, {"/dev/disk3s3", "apfs", "disk3"}, {"/dev/disk10s2", "apfs", "disk10"},
+		{"/dev/disk3", "apfs", "/dev/disk3"}, {"/dev/disk5s1", "exfat", "/dev/disk5s1"}, {"/dev/disk5s1", "", "/dev/disk5s1"},
+		{"/dev/sda1", "apfs", "/dev/sda1"}, {"OrbStack:/OrbStack", "", "OrbStack:/OrbStack"},
 	} {
-		if got := diskFamily(device); got != want {
-			t.Errorf("diskFamily(%q) = %q, want %q", device, got, want)
+		if got := diskFamily(test.device, test.fsType); got != test.want {
+			t.Errorf("diskFamily(%q, %q) = %q, want %q", test.device, test.fsType, got, test.want)
 		}
 	}
 }

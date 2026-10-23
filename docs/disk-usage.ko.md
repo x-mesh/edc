@@ -52,6 +52,9 @@ terminal에서 `--no-browse` 또는 `-B`를 주면 scan 중 spinner를 표시하
 
 `edc clean`은 알려진 개발 캐시의 디스크 사용량을 보여 줍니다. 읽기만 하며 파일을 지우거나 바꾸지 않습니다.
 
+
+`-w N` / `--workers N`은 각 폴더의 크기 측정에서 병렬로 읽는 디렉터리 수입니다. `--project`로 찾은 빌드 폴더에도 적용합니다. 기본은 4개이며, `defaults.du.workers` 설정보다 명시한 CLI 값이 우선합니다. 후보 검색과 섹션은 순차 실행합니다. worktree의 독립적인 git 확인은 worker 수 이내에서 최대 4개씩 병렬 실행하고, 같은 저장소의 worktree 목록은 한 번만 조회합니다. worker를 늘려도 전체 실행 시간이 같은 비율로 줄지는 않습니다. 진행 로그에 선택한 worker 수를 표시합니다.
+
 ```bash
 edc clean                       # 알려진 캐시를 잼
 edc clean -v                    # 모든 후보, 더 많은 묶음, 이유, 정리 명령 추가
@@ -157,6 +160,38 @@ Xcode Archives, 시뮬레이터 기기, `Application Support`, `Containers`는 �
 섹션은 후보, 빌드 폴더, Docker, 옛 Docker 데이터, 큰 로그와 snap, VM 디스크, worktree 순서로 실행하고 제한 시간 하나를 나눠 씁니다.
 
 파일 시스템 합계에는 다시 만들 수 있는 빌드 폴더만 더합니다. 엔진 집계, 옛 Docker 데이터, 큰 로그, VM 디스크, worktree는 어떤 합계에도 더하지 않습니다.
+
+### 진행 상황과 소요 시간
+
+대화형 terminal에서는 stderr에 진행 상황 보드를 표시합니다. 읽기 전용 표시와 전체 경과 시간, 정렬한 단계별 소요 시간, 현재 폴더·도구 조회를 최대 3개까지 보여 줍니다. 완료된 단계는 남기며, 단계 종료가 모든 항목의 성공을 뜻하지는 않습니다. 부분 결과와 실패는 마지막 report에서 구분합니다. 별도 전체 화면을 열지 않고 shell scrollback에 요약을 남깁니다.
+
+![데모 데이터로 표시한 clean 진행 상황 보드](media/clean.png)
+
+`q`, Esc, Ctrl-C로 수집을 멈추면 부분 결과를 표시하고, `?`로 키 안내를 전환합니다. 붙여넣은 텍스트는 무시합니다. Ctrl-Z로 일시 중단하고 shell의 `fg`로 재개할 수 있습니다. UTF-8과 stdin·stdout·stderr의 TTY 연결이 필요합니다. 80×24를 기준으로 설계했으며, 가로 60칸 또는 세로 15줄 미만에서는 현재 단계 중심으로 줄입니다. 40×5 미만에서는 확장 안내를 표시합니다. 한글·결합 문자·이모지의 표시 폭을 기준으로 줄이며, 아랍어와 혼합 방향 문자열은 원래 순서를 유지합니다. BiDi shaping은 terminal에 따라 달라집니다. 마우스 탐색은 사용하지 않습니다.
+
+`NO_COLOR`, `TERM=dumb`, stream 리디렉션 또는 명시적인 JSON 진행 출력에서는 terminal 제어 없이 시간 로그를 표시합니다. START·END로 단계별 시간을 남기고 RUN으로 현재 작업을 2초마다 보여 줍니다. 화면 읽기 도구를 사용할 때도 이 평문 모드를 권장합니다. spinner animation은 사용하지 않습니다.
+
+```bash
+edc clean --project ~/work -w 10
+edc clean --progress --project ~/work --json report.json 2>clean-progress.log
+edc clean --progress=false
+NO_COLOR=1 edc clean --project ~/work
+```
+
+pipe나 JSON에서는 명시적으로 `--progress`를 주었을 때만 로그를 출력합니다. `--redact`는 진행 로그의 대상에도 적용합니다. `-v`는 최근 파일 수정 시각을 추가 탐색하므로 해당 작업도 별도 단계로 표시합니다. 진행 로그는 로컬 조사에 적용하며, `--group`은 원격 실행 출력을 사용합니다.
+
+#### 로컬 실측 (2026-10-23)
+
+macOS 호스트 한 대에서 `clean --project ~/work -w 10 --progress --json report.json`을 실행했습니다. 프로젝트 빌드 폴더 66개와 worktree 53개를 조사했습니다. 비교 기준 버전에도 진행 출력을 넣었으며, 개선 버전은 worktree의 독립적인 git 확인만 병렬화했습니다. 버전마다 두 번 실행한 CLI 전체 시간입니다.
+
+| 버전 | 1회 | 2회 |
+| --- | ---: | ---: |
+| worktree 순차 확인 | 29.72초 | 28.85초 |
+| worktree 제한 병렬 확인 | 26.97초 | 26.34초 |
+| worktree 단계, 순차 | 7.16초 | 7.07초 |
+| worktree 단계, 병렬 | 3.79초 | 3.66초 |
+
+캐시 조사는 여전히 약 13–14초, 프로젝트 단계는 약 8초였습니다. 별도로 실행한 `du ~/work -w 10`은 약 201만 항목을 7.52초에 끝까지 읽었습니다. clean은 프로젝트 루트 밖의 캐시와 git-kit worktree도 조사하므로 같은 범위를 비교한 속도 수치는 아닙니다. 파일시스템 cache와 백그라운드 부하의 영향이 있는 로컬 관측값이며 속도를 보장하지 않습니다. 진행 출력 추가 전 한 번의 clean 실행은 30.94초였고, 실행 간 편차가 있어 로그 출력 비용을 정밀하게 산출한 값은 아닙니다.
 
 ### 프로젝트 빌드 폴더
 

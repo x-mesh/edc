@@ -57,6 +57,9 @@ On Linux, if `docker` is on the `PATH`, edc also asks docker for its containers 
 
 `edc clean` shows the disk usage of known development caches. It reads only. It does not delete or change a file.
 
+
+`-w N` / `--workers N` sets the parallel directories within each size scan, including build folders found with `--project`. The default is 4; `defaults.du.workers` overrides it, and an explicit CLI value wins. Candidate discovery and sections remain sequential. Independent worktree git inspections run concurrently, capped at min(workers, 4); shared repository lists are queried once. More workers therefore do not multiply the speed of the entire command. Progress output shows the selected worker count.
+
 ```bash
 edc clean                       # measure the known caches
 edc clean -v                    # show every candidate, more groups, reasons, and cleanup commands
@@ -162,6 +165,38 @@ Four more sections follow the candidates. Each section has its own key in `metri
 edc runs the sections in this order: candidates, build folders, Docker, old Docker data, large logs and snaps, VM disks, and worktrees. They share one time limit.
 
 Only the recreatable build folders join the sum of a file system. The engine totals, the old Docker data, the large logs, the VM disks, and the worktrees never join a sum.
+
+### Progress and timings
+
+In an interactive terminal, clean shows an inline progress board on stderr: a read-only label, total elapsed time, aligned stage timings, and up to three current directory or tool queries. Completed stages stay visible; finishing a stage does not imply every item succeeded. Partial results and failures are identified by the final report. The screen stays in shell scrollback instead of opening an alternate screen.
+
+![Clean progress board rendered with demo data](media/clean.png)
+
+Press `q`, Esc or Ctrl-C to stop collection and keep partial results; `?` toggles the key help. Pasted text is ignored. Ctrl-Z suspends the process; use the shell’s `fg` to resume. The board requires UTF-8 and TTY input/output/stderr. It is designed for 80×24, switches to a compact view below 60 columns or 15 rows, and shows an expansion hint below 40×5. Width calculations preserve CJK, combining characters and emoji clusters. Arabic and mixed-direction text stays in logical order; BiDi shaping depends on the terminal. Mouse navigation is not used.
+
+With `NO_COLOR`, `TERM=dumb`, redirected streams or explicit JSON progress, clean uses plain timestamped logs without terminal controls. START/END retain stage timings, and RUN shows active work every 2 seconds. This plain mode is also the practical choice for screen readers. No spinner animation is used.
+
+```bash
+edc clean --project ~/work -w 10
+edc clean --progress --project ~/work --json report.json 2>clean-progress.log
+edc clean --progress=false
+NO_COLOR=1 edc clean --project ~/work
+```
+
+Piped output and JSON remain quiet unless `--progress` is explicit. `--redact` also applies to progress targets. `-v` additionally scans for the latest file modification time; that work appears as its own stage. Progress is for the local survey; `--group` uses remote execution output.
+
+#### Local measurement (2026-10-23)
+
+On one macOS host, `clean --project ~/work -w 10 --progress --json report.json` inspected 66 project build folders and 53 worktrees. The sequential baseline already included progress output; the optimized version parallelized only independent worktree git inspections. Each version ran twice. Times include the whole CLI process:
+
+| Version | Run 1 | Run 2 |
+| --- | ---: | ---: |
+| Sequential worktree inspections | 29.72 s | 28.85 s |
+| Bounded parallel worktree inspections | 26.97 s | 26.34 s |
+| Worktree stage, sequential | 7.16 s | 7.07 s |
+| Worktree stage, parallel | 3.79 s | 3.66 s |
+
+The cache stage still took roughly 13–14 seconds and the project stage roughly 8 seconds. Separately, `du ~/work -w 10` completed approximately 2.01 million entries in 7.52 seconds. This is not an equal-scope speed comparison: clean also surveys caches outside the project root and git-kit worktrees. These are local observations with filesystem-cache and background-load effects, not a speed guarantee. Before adding progress, one clean run took 30.94 seconds; the run-to-run variation does not establish a precise logging overhead.
 
 ### Project build folders
 

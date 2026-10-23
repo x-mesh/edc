@@ -1,5 +1,41 @@
 # clean 명령의 한국어 메시지.
 clean:
+  advisory: "파일을 삭제하지 않습니다. 정리 방법만 권고합니다."
+  ui:
+    advisory_short: "삭제 없음 · 정리 방법만 권고"
+    skipped: "미조사"
+    current: "현재 작업"
+    readonly: "읽기 전용"
+    running: "조사 중"
+    stopping: "중단 중"
+    finished: "종료"
+    partial: "부분 결과"
+    failed: "실패"
+    stopped: "중단됨"
+    waiting: "대기"
+    workers: "크기 측정: worker %d개  ·  git 확인: 최대 %d개"
+    keys: "q / Esc 중단  ·  ? 도움말"
+    help: "q / Esc / Ctrl-C: 중단 후 부분 결과 표시. 파일을 삭제하지 않습니다."
+    stopping_hint: "진행 중인 확인을 마무리하고 부분 결과를 표시합니다."
+    finished_hint: "위에는 단계별 소요 시간, 아래에는 조사 결과를 표시합니다."
+    more: "  다른 작업 %d개 진행 중"
+    small: "터미널을 가로 40칸·세로 5줄 이상으로 넓혀 주세요."
+  progress:
+    stage:
+      docker_request: "Docker API 조회"
+      total: "전체 조사"
+      newest: "최근 수정 시각 조사"
+      caches: "캐시 조사"
+      projects: "프로젝트 빌드 폴더"
+      docker: "Docker 엔진"
+      docker_root: "옛 Docker 데이터"
+      system: "시스템 캐시·로그"
+      vm: "VM 디스크"
+      worktrees: "worktree"
+      discover: "빌드 폴더 검색"
+      tool: "도구 조회"
+      measure: "폴더 크기 측정"
+    workers: "크기 측정 worker %d개"
   skip:
     unsupported: "clean은 Linux와 macOS에서만 동작합니다"
   error:

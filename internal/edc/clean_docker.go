@@ -149,6 +149,9 @@ func cleanDockerScan(ctx context.Context, deps cleanDeps) cleanDocker {
 }
 
 func cleanDockerQuery(ctx context.Context, deps cleanDeps, socket string, section *cleanDocker) {
+	if deps.progress != nil {
+		ctx = context.WithValue(ctx, cleanProgressContextKey{}, deps.progress)
+	}
 	client := &http.Client{Transport: &http.Transport{
 		DialContext:       func(ctx context.Context, _, _ string) (net.Conn, error) { return deps.dockerDial(ctx, socket) },
 		DisableKeepAlives: true,
@@ -361,6 +364,10 @@ func (err cleanDockerStatusError) Error() string { return "HTTP " + strconv.Itoa
 
 // cleanDockerGet은 GET 하나를 보낸다. 200이 아니면 오류이고, 본문은 상한까지만 읽고 넘으면 오류다.
 func cleanDockerGet(ctx context.Context, client *http.Client, timeout time.Duration, path string) (cleanDockerResponse, error) {
+	if progress, ok := ctx.Value(cleanProgressContextKey{}).(func(string, string) func()); ok {
+		done := progress("docker_request", path)
+		defer done()
+	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://docker"+path, nil)

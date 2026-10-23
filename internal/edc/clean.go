@@ -3,6 +3,7 @@ package edc
 import (
 	"context"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"io/fs"
@@ -19,7 +20,6 @@ import (
 	"syscall"
 	"time"
 
-	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -266,6 +266,7 @@ type cleanToolOutput struct {
 var errCleanToolTimeout = errors.New("tool lookup timed out")
 
 type cleanDeps struct {
+	progress  func(stage, target string) func()
 	home      string
 	lookPath  func(string) (string, error)
 	run       func(ctx context.Context, spec cleanToolSpec) cleanToolOutput
@@ -1021,6 +1022,7 @@ func runCleanWith(args []string, version string, deps cleanDeps, ok bool, homeEr
 	set := newFlagSet("clean")
 	set.SetOutput(os.Stderr)
 	bindCommon(set, &options)
+	progressFlag := set.Bool("progress", false, T("command.clean.option.progress"))
 	var projects cleanProjects
 	set.Var(&projects, "project", T("command.clean.option.project"))
 	group := set.String("group", "", T("command.clean.option.group"))
@@ -1055,9 +1057,13 @@ func runCleanWith(args []string, version string, deps cleanDeps, ok bool, homeEr
 	}
 	file, _ := stdout.(*os.File)
 	terminal := file != nil && isTerminal(file)
-	// du와 같이 사람이 보는 터미널에서만 spinner를 띄운다. pipe, --json, NO_COLOR는 그대로 출력한다.
-	live := options.jsonPath == "" && terminal && liveTerminal()
-	lineShown := false
+	progressExplicit := false
+	set.Visit(func(value *flag.Flag) {
+		if value.Name == "progress" {
+			progressExplicit = true
+		}
+	})
+	showProgress := *progressFlag || (!progressExplicit && terminal && options.jsonPath == "")
 	result := Result{Probe: cleanProbeID, StartedAt: started.UTC()}
 	if homeErr != nil {
 		result.Status, result.Summary = StatusFail, T("clean.error.home")
@@ -1068,16 +1074,38 @@ func runCleanWith(args []string, version string, deps cleanDeps, ok bool, homeEr
 		ctx, deadline := context.WithTimeout(base, options.timeout)
 		defer deadline()
 		scan := func() Result {
+			done := deps.begin("total", "")
+			defer done()
 			report := cleanCollect(ctx, deps, runtime.GOOS, projects...)
 			// 가장 최근 파일을 찾으려면 잰 폴더를 파일마다 한 번 더 읽어야 해서 측정과 비슷한 시간이 더 든다. -v일 때만 한다.
 			if options.verbose {
+				done := deps.begin("newest", "")
 				cleanAddNewestWrite(ctx, report.candidates)
+				done()
 			}
 			return cleanResult(result, report, options.timeout, ctx.Err())
 		}
-		if live {
-			// 화면에서 Ctrl-C는 신호가 아니라 키로 들어오므로 stop으로 탐색을 멈춘다.
-			result, lineShown = cleanScanLive(scan, options.redact, stop)
+		if showProgress {
+			interactive := cleanProgressTerminal(terminal, options.jsonPath)
+			var writer io.Writer = os.Stderr
+			if interactive {
+				writer = io.Discard
+			}
+			progress := newCleanProgress(writer, deps.home, options.redact)
+			progress.cancelled = func() bool { return ctx.Err() != nil }
+			deps = cleanProgressDeps(deps, progress)
+			if interactive {
+				result = runCleanProgressUI(scan, progress, deps.workers, stop)
+			} else {
+				fmt.Fprintln(os.Stderr, T("clean.advisory"))
+				fmt.Fprintln(os.Stderr, T("clean.progress.workers", deps.workers))
+				progressContext, finishProgress := context.WithCancel(ctx)
+				progressDone := make(chan struct{})
+				go func() { defer close(progressDone); progress.run(progressContext) }()
+				result = scan()
+				finishProgress()
+				<-progressDone
+			}
 		} else {
 			result = scan()
 		}
@@ -1090,30 +1118,7 @@ func runCleanWith(args []string, version string, deps cleanDeps, ok bool, homeEr
 	if terminal {
 		width = terminalWidth()
 	}
-	return cleanPrint(stdout, options, result, terminal && os.Getenv("NO_COLOR") == "", width, lineShown, deps.home)
-}
-
-// cleanScanLive는 탐색하는 동안 spinner 한 줄을 띄운다. probeLiveDelay 안에 끝나면 화면을 띄우지 않는다.
-// 화면을 띄웠으면 마지막 화면에 결과 줄이 남으므로 두 번째 값이 true다.
-func cleanScanLive(scan func() Result, redact bool, cancel context.CancelFunc) (Result, bool) {
-	finished := make(chan Result, 1)
-	go func() { finished <- scan() }()
-	select {
-	case result := <-finished:
-		return result, false
-	case <-time.After(probeLiveDelay):
-	}
-	model := newProbeModel(cleanProbeID, "", "", true, redact, cancel)
-	live, err := startLiveProgram(model, cancel, tea.WithInput(os.Stdin), tea.WithOutput(os.Stdout))
-	if err != nil {
-		fmt.Fprintln(os.Stderr, T("observe.live.start_failed", err))
-		return <-finished, false
-	}
-	result := <-finished
-	if _, err := live.finish(probeResultMsg{result: result}); err != nil {
-		fmt.Fprintln(os.Stderr, T("observe.live.exit_error", err))
-	}
-	return result, true
+	return cleanPrint(stdout, options, result, terminal && os.Getenv("NO_COLOR") == "" && os.Getenv("TERM") != "dumb", width, false, deps.home)
 }
 
 // cleanReport는 한 번의 탐색이 만든 결과 전체다. 섹션은 후보 밖에 따로 붙인다.
@@ -1132,15 +1137,15 @@ type cleanReport struct {
 // 하나의 ctx를 순차로 나눠 쓴다. 파일 시스템 합계는 후보와 재생성 가능한 빌드 폴더만 더한다. 엔진 수치와 VM 디스크는
 // 같은 데이터를 다른 방법으로 본 값이고, worktree는 안의 빌드 폴더와 겹칠 수 있어 더하지 않는다.
 func cleanCollect(ctx context.Context, deps cleanDeps, goos string, projects ...string) cleanReport {
-	items := cleanScan(ctx, deps, cleanCatalog(goos, deps.home))
+	items := cleanStep(deps, "caches", "", func() []cleanItem { return cleanScan(ctx, deps, cleanCatalog(goos, deps.home)) })
 	report := cleanReport{candidates: items}
-	report.projectBuildDirs = cleanProjectScan(ctx, deps, projects, items)
+	report.projectBuildDirs = cleanStep(deps, "projects", "", func() cleanProjectBuildDirs { return cleanProjectScan(ctx, deps, projects, items) })
 	report.filesystems = cleanFilesystemsWith(items, report.projectBuildDirs.Items, deps.sources)
-	report.docker = cleanDockerScan(ctx, deps)
-	report.dockerRoot = cleanDockerRootScan(ctx, deps, goos, report.docker)
-	report.system = cleanSystemScan(ctx, deps, goos, cleanSystemDefaults)
-	report.vmDisks = cleanVMScan(ctx, deps, goos)
-	report.worktrees = cleanWorktreeScan(ctx, deps)
+	report.docker = cleanStep(deps, "docker", "", func() cleanDocker { return cleanDockerScan(ctx, deps) })
+	report.dockerRoot = cleanStep(deps, "docker_root", "", func() cleanDockerRoots { return cleanDockerRootScan(ctx, deps, goos, report.docker) })
+	report.system = cleanStep(deps, "system", "", func() cleanSystem { return cleanSystemScan(ctx, deps, goos, cleanSystemDefaults) })
+	report.vmDisks = cleanStep(deps, "vm", "", func() []cleanVMDisk { return cleanVMScan(ctx, deps, goos) })
+	report.worktrees = cleanStep(deps, "worktrees", "", func() cleanWorktrees { return cleanWorktreeScan(ctx, deps) })
 	cleanLinkWorktrees(&report.projectBuildDirs, &report.worktrees)
 	return report
 }
@@ -1280,6 +1285,7 @@ func cleanPrint(stdout io.Writer, options commonOptions, result Result, color bo
 		// 합계는 맨 끝에 둔다. 출력이 화면보다 길면 명령이 끝난 뒤 남는 것은 마지막 줄이다.
 		fmt.Fprint(output, formatCleanFilesystems(filesystems, width, style))
 	}
+	fmt.Fprintln(output, "\n"+T("clean.advisory"))
 	if options.redact {
 		fmt.Fprint(stdout, redactIPAddresses(buffer.String()))
 	}

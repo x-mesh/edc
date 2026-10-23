@@ -201,7 +201,7 @@ func TestRunCleanGroupReportsEveryHostAsJSONAndText(t *testing.T) {
 	if code := runCleanWith([]string{"--group", "servers", "--inventory", inventory}, "test", deps, true, nil, &output); code != 0 {
 		t.Fatalf("exit code = %d", code)
 	}
-	for _, want := range []string{"clean.group", "2 hosts, 1 measured, 1 without a result", "alpha", "beta", "edc not found, install it with install.sh"} {
+	for _, want := range []string{T("clean.advisory"), "clean.group", "2 hosts, 1 measured, 1 without a result", "alpha", "beta", "edc not found, install it with install.sh"} {
 		if !strings.Contains(output.String(), want) {
 			t.Errorf("text lacks %q:\n%s", want, output.String())
 		}

@@ -198,7 +198,8 @@ command:
   clean:
     summary: "既知の開発キャッシュのディスク使用量、読み取り専用 (Linux と macOS)"
     option:
-      workers: "同時に読むディレクトリ数"
+      progress: "段階・対象・経過時間をstderrへ表示、--progress=falseで無効"
+      workers: "サイズ測定ごとに並列で読むディレクトリ数"
       timeout: "制限時間、過ぎると残りは未測定と表示"
       project: "ビルドフォルダを探すルート、複数指定可"
       group: "edc remote グループの各ホストで clean を実行"
@@ -206,6 +207,9 @@ command:
       verbose: "すべての候補、より多くのグループ、理由、整理コマンドを表示"
     notes:
       - "読むだけです。何も変更・削除しません。"
+      - "対話端末では進捗ボードを表示します。q/Escで停止、?でヘルプ。NO_COLOR・TERM=dumbでは平文ログ、--progressでJSONのstderrログ、--progress=falseで進捗を無効にします。"
+      - "--project のビルドフォルダーを含む各サイズ測定に適用します。既定は4で、defaults.du.workers を共有します。"
+      - "候補探索と各セクションは順に実行します。worktreeのgit確認はworker数以内で最大4件を並列実行します。"
       - "ツールとアプリのキャッシュ、ブラウザ、Xcode データ、ログ、モデルを測ります。"
       - "使用量を表示します。整理で空く量を示すのは Docker エンジンだけです。"
       - "APFS の clone、snapshot、hard link により合計が大きくなることがあります。"

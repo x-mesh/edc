@@ -90,5 +90,8 @@ func TestDocumentationFrames(t *testing.T) {
 	disk.color = true
 	disk.workers = 4
 	write("disk-usage.ansi", disk.View().Content)
+	clean := cleanProgressFixture()
+	clean.color = true
+	write("clean.ansi", clean.View().Content)
 	fmt.Fprintln(os.Stdout, "documentation frames rendered from synthetic data")
 }

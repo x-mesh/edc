@@ -1,5 +1,41 @@
 # English messages for the clean command.
 clean:
+  advisory: "No files are deleted. Cleanup actions are recommendations only."
+  ui:
+    advisory_short: "No deletion · recommendations only"
+    skipped: "not scanned"
+    current: "CURRENT WORK"
+    readonly: "READ ONLY"
+    running: "running"
+    stopping: "stopping"
+    finished: "finished"
+    partial: "partial results"
+    failed: "failed"
+    stopped: "stopped"
+    waiting: "waiting"
+    workers: "Size scan: %d workers  ·  Git checks: up to %d"
+    keys: "q / Esc stop  ·  ? help"
+    help: "q / Esc / Ctrl-C: stop and keep partial results. No files are deleted."
+    stopping_hint: "Finishing active checks; partial results will follow."
+    finished_hint: "Stage timings retained above. See the report below for results."
+    more: "  + %d other active tasks"
+    small: "Expand terminal to at least 40 columns × 5 rows."
+  progress:
+    stage:
+      docker_request: "Docker API query"
+      total: "Full survey"
+      newest: "Latest-write scan"
+      caches: "Cache survey"
+      projects: "Project build folders"
+      docker: "Docker engine"
+      docker_root: "Old Docker data"
+      system: "System caches and logs"
+      vm: "VM disks"
+      worktrees: "Worktrees"
+      discover: "Find build folders"
+      tool: "Tool query"
+      measure: "Measure directory"
+    workers: "%d workers per size scan"
   skip:
     unsupported: "edc clean reads cache locations on Linux and macOS only"
   error:

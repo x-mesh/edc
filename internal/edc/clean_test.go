@@ -1235,31 +1235,62 @@ func TestRunCleanRejectsWorkersBelowOne(t *testing.T) {
 }
 
 func TestRunCleanPassesWorkersToMeasure(t *testing.T) {
+	restore := activeConfig
+	defer func() { activeConfig = restore }()
 	for _, tc := range []struct {
-		args []string
-		want int
+		args       []string
+		configured int
+		want       int
 	}{
-		{nil, duDefaultWorkers},
-		{[]string{"--workers", "2"}, 2},
-		{[]string{"-w", "7"}, 7},
+		{nil, 0, duDefaultWorkers},
+		{[]string{"--workers", "2"}, 0, 2},
+		{[]string{"-w", "10"}, 0, 10},
+		{nil, 6, 6},
+		{[]string{"-w", "10"}, 6, 10},
 	} {
+		activeConfig = edcConfig{}
+		if tc.configured != 0 {
+			activeConfig.Defaults.Du.Workers = intPointer(tc.configured)
+		}
 		home := cleanTestHome(t)
 		cleanTestTree(t, filepath.Join(home, "npm"), 8<<10)
+		project := t.TempDir()
+		cleanProjectTouch(t, filepath.Join(project, "Cargo.toml"))
+		target := filepath.Join(project, "target")
+		cleanTestTree(t, target, 8<<10)
+		target, err := filepath.EvalSymlinks(target)
+		if err != nil {
+			t.Fatal(err)
+		}
+		npm, err := filepath.EvalSymlinks(filepath.Join(home, "npm"))
+		if err != nil {
+			t.Fatal(err)
+		}
 		deps := cleanRunDeps(t, home)
 		deps.workers = 0
-		var seen atomic.Int64
+		var seen, projectSeen atomic.Int64
 		seen.Store(-1)
+		projectSeen.Store(-1)
 		inner := deps.measure
 		deps.measure = func(ctx context.Context, options duOptions, sources duSources) (duScan, error) {
-			seen.Store(int64(options.workers))
+			if options.root == target {
+				projectSeen.Store(int64(options.workers))
+			}
+			if options.root == npm {
+				seen.Store(int64(options.workers))
+			}
 			return inner(ctx, options, sources)
 		}
 		var output bytes.Buffer
-		if code := runCleanWith(append(tc.args, "--json", filepath.Join(t.TempDir(), "out.json")), "test", deps, true, nil, &output); code != 0 {
-			t.Fatalf("%v: exit code = %d", tc.args, code)
+		args := append(append([]string{}, tc.args...), "--project", project, "--json", filepath.Join(t.TempDir(), "out.json"))
+		if code := runCleanWith(args, "test", deps, true, nil, &output); code != 0 {
+			t.Fatalf("%v: exit code = %d", args, code)
 		}
 		if got := int(seen.Load()); got != tc.want {
-			t.Fatalf("%v: measure workers = %d, want %d", tc.args, got, tc.want)
+			t.Fatalf("%v: cache workers = %d, want %d", args, got, tc.want)
+		}
+		if got := int(projectSeen.Load()); got != tc.want {
+			t.Fatalf("%v: project workers = %d, want %d", args, got, tc.want)
 		}
 	}
 }
@@ -1626,6 +1657,17 @@ func TestCleanHelpSaysItOnlyReads(t *testing.T) {
 		if len(notes) == 0 || !strings.Contains(output.String(), notes[0]) {
 			t.Fatalf("%s help lacks the read-only note: %q", language, output.String())
 		}
+		var report strings.Builder
+		cleanPrint(&report, commonOptions{}, Result{Probe: cleanProbeID, Status: StatusFail}, false, 80, false, "")
+		advisory := T("clean.advisory")
+		if !strings.HasSuffix(strings.TrimSpace(report.String()), advisory) {
+			t.Fatalf("%s report lacks the final advisory: %s", language, report.String())
+		}
+		model := cleanProgressFixture()
+		if !strings.Contains(model.View().Content, advisory) {
+			t.Fatalf("%s progress lacks the advisory", language)
+		}
+
 		setLanguage(defaultLanguage)
 		if first := TList("command.clean.notes")[0]; first != "It reads only. It changes and deletes nothing." {
 			t.Fatalf("first note = %q", first)

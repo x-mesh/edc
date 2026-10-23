@@ -166,7 +166,9 @@ func cleanProjectScan(ctx context.Context, deps cleanDeps, projects []string, ca
 	}
 	section.Roots = scanner.resolve(projects)
 	for index := range section.Roots {
+		done := deps.begin("discover", section.Roots[index].Path)
 		scanner.walkRoot(&section.Roots[index])
+		done()
 	}
 	section.Items = scanner.measure()
 	cleanProjectSummarize(&section)

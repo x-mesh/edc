@@ -10,9 +10,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -205,7 +207,9 @@ func TestCleanBoundaryWorktreeScanLeavesGitFilesUntouched(t *testing.T) {
 	}
 
 	beforeA, beforeB := fingerprint("a"), fingerprint("b")
-	section := lab.scan(nil)
+	deps := lab.deps(nil)
+	deps.workers = 4
+	section := cleanWorktreeScan(context.Background(), deps)
 	if len(section.Items) != 2 {
 		t.Fatalf("items = %+v", section.Items)
 	}
@@ -968,5 +972,40 @@ func TestCleanWorktreeCountsChangesWithoutCleanFilters(t *testing.T) {
 	}
 	if item.Changes == nil || *item.Changes != 1 || item.Untracked == nil || *item.Untracked != 0 || item.Verdict != cleanVerdictHasChanges {
 		t.Fatalf("item = %+v", item)
+	}
+}
+
+func TestCleanWorktreeParallelInspectionsPreserveResultsAndShareLists(t *testing.T) {
+	lab := newCleanWorktreeLab(t)
+	repo := lab.repo("parallel")
+	for i := range 6 {
+		lab.add(repo, fmt.Sprintf("tree-%d", i), fmt.Sprintf("branch-%d", i))
+	}
+	serial := lab.scan(nil)
+	var active, peak, lists atomic.Int64
+	run := func(ctx context.Context, spec cleanToolSpec) cleanToolOutput {
+		current := active.Add(1)
+		defer active.Add(-1)
+		for old := peak.Load(); current > old; old = peak.Load() {
+			if peak.CompareAndSwap(old, current) {
+				break
+			}
+		}
+		if cleanGitSub(spec) == "worktree" {
+			lists.Add(1)
+		}
+		return runCleanTool(ctx, spec)
+	}
+	deps := lab.deps(run)
+	deps.workers = 10
+	parallel := cleanWorktreeScan(context.Background(), deps)
+	if !reflect.DeepEqual(serial.Items, parallel.Items) {
+		t.Fatalf("parallel inspection changed results:\nserial=%+v\nparallel=%+v", serial.Items, parallel.Items)
+	}
+	if got := peak.Load(); got < 2 || got > 4 {
+		t.Fatalf("concurrent git commands=%d, want 2..4", got)
+	}
+	if got := lists.Load(); got != 1 {
+		t.Fatalf("worktree list called %d times for one repository", got)
 	}
 }

@@ -198,7 +198,8 @@ command:
   clean:
     summary: "Disk usage of known dev caches, read only (Linux and macOS)"
     option:
-      workers: "directories to read at the same time"
+      progress: "show timed progress on stderr; --progress=false disables it"
+      workers: "parallel directories per size scan"
       timeout: "time limit, after it edc marks the rest not scanned"
       project: "root to search for marked build folders, repeat for more"
       group: "run clean on each host of an edc remote group"
@@ -206,6 +207,9 @@ command:
       verbose: "show every candidate, more groups, reasons, cleanup commands"
     notes:
       - "It reads only. It changes and deletes nothing."
+      - "Interactive terminals show an inline progress board; q/Esc stops, ? shows help. NO_COLOR or TERM=dumb uses plain logs. --progress enables JSON stderr logs; --progress=false disables progress."
+      - "Workers apply to each directory size scan, including --project build folders; default 4, configurable with defaults.du.workers."
+      - "Candidate discovery and scan sections stay sequential. Worktree git checks run up to min(workers, 4) at a time."
       - "It measures tool caches, browsers, Xcode data, app caches, logs, and models."
       - "It shows usage. Only the Docker engine reports what a cleanup can free."
       - "APFS clones, snapshots, and hard links can make a sum larger."

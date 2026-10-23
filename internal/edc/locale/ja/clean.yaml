@@ -1,5 +1,41 @@
 # clean コマンドの日本語メッセージ。
 clean:
+  advisory: "ファイルは削除しません。整理方法の提案のみです。"
+  ui:
+    advisory_short: "削除なし・整理方法の提案のみ"
+    skipped: "未調査"
+    current: "現在の作業"
+    readonly: "読み取り専用"
+    running: "調査中"
+    stopping: "停止中"
+    finished: "終了"
+    partial: "部分結果"
+    failed: "失敗"
+    stopped: "停止済み"
+    waiting: "待機"
+    workers: "サイズ測定: worker %d  ·  git確認: 最大%d"
+    keys: "q / Esc 停止  ·  ? ヘルプ"
+    help: "q / Esc / Ctrl-C: 停止して部分結果を表示。ファイルは削除しません。"
+    stopping_hint: "実行中の確認を終了し、部分結果を表示します。"
+    finished_hint: "上に段階別の所要時間、下に調査結果を表示します。"
+    more: "  他に%d件の作業を実行中"
+    small: "端末を40桁・5行以上に広げてください。"
+  progress:
+    stage:
+      docker_request: "Docker API照会"
+      total: "全体調査"
+      newest: "最終更新日時の調査"
+      caches: "キャッシュ調査"
+      projects: "プロジェクトのビルド"
+      docker: "Dockerエンジン"
+      docker_root: "旧Dockerデータ"
+      system: "システムキャッシュ・ログ"
+      vm: "VMディスク"
+      worktrees: "worktree"
+      discover: "ビルドフォルダー探索"
+      tool: "ツール照会"
+      measure: "サイズ測定"
+    workers: "サイズ測定ごとに worker %d個"
   skip:
     unsupported: "clean は Linux と macOS でのみ動作します"
   error:

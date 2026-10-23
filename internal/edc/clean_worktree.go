@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -198,19 +199,32 @@ func cleanWorktreeScan(ctx context.Context, deps cleanDeps) cleanWorktrees {
 		cleanWorktreeUsage(&section, measurement.scan.root)
 	}
 
-	lists := map[string]*cleanWorktreeList{}
-	for index := range section.Items {
-		item := &section.Items[index]
-		if item.Kind != cleanWorktreeUnlinked {
-			if err := ctx.Err(); err != nil {
-				item.failed, item.Reasons = true, cleanAddReason(item.Reasons, cleanContextReason(err))
-				reasons = cleanAddReason(reasons, cleanContextReason(err))
-			} else {
-				cleanWorktreeInspect(ctx, deps, item, lists)
+	lists := &cleanWorktreeLists{entries: map[string]*cleanWorktreeListLoad{}}
+	workers := min(4, max(1, deps.workers))
+	jobs := make(chan int)
+	var pending sync.WaitGroup
+	for range workers {
+		pending.Add(1)
+		go func() {
+			defer pending.Done()
+			for index := range jobs {
+				item := &section.Items[index]
+				if item.Kind != cleanWorktreeUnlinked {
+					if err := ctx.Err(); err != nil {
+						item.failed, item.Reasons = true, cleanAddReason(item.Reasons, cleanContextReason(err))
+					} else {
+						cleanWorktreeInspect(ctx, deps, item, lists)
+					}
+				}
+				item.Verdict = cleanWorktreeVerdict(*item)
 			}
-		}
-		item.Verdict = cleanWorktreeVerdict(*item)
+		}()
 	}
+	for index := range section.Items {
+		jobs <- index
+	}
+	close(jobs)
+	pending.Wait()
 	if err := ctx.Err(); err != nil {
 		reasons = cleanAddReason(reasons, cleanContextReason(err))
 	}
@@ -403,6 +417,16 @@ func cleanGit(ctx context.Context, deps cleanDeps, dir string, args ...string) c
 }
 
 // cleanWorktreeList는 저장소 하나의 worktree list 결과다. 공통 디렉터리마다 한 번만 부른다.
+type cleanWorktreeLists struct {
+	mutex   sync.Mutex
+	entries map[string]*cleanWorktreeListLoad
+}
+
+type cleanWorktreeListLoad struct {
+	once sync.Once
+	list *cleanWorktreeList
+}
+
 type cleanWorktreeList struct {
 	entries map[string]cleanWorktreeEntry
 	reason  string
@@ -472,7 +496,7 @@ func (probe *cleanWorktreeProbe) succeed(args ...string) (string, bool) {
 }
 
 // cleanWorktreeInspect는 worktree 하나의 상태를 읽는다. 명령 하나가 실패해도 나머지는 계속 읽어 변경 여부를 놓치지 않는다.
-func cleanWorktreeInspect(ctx context.Context, deps cleanDeps, item *cleanWorktree, lists map[string]*cleanWorktreeList) {
+func cleanWorktreeInspect(ctx context.Context, deps cleanDeps, item *cleanWorktree, lists *cleanWorktreeLists) {
 	probe := &cleanWorktreeProbe{ctx: ctx, deps: deps, item: item}
 	detached := false
 	if text, ok := probe.succeed("rev-parse", "--git-common-dir", "--abbrev-ref", "HEAD"); ok {
@@ -567,13 +591,17 @@ func (probe *cleanWorktreeProbe) status() {
 	}
 }
 
-func (probe *cleanWorktreeProbe) register(lists map[string]*cleanWorktreeList) {
+func (probe *cleanWorktreeProbe) register(lists *cleanWorktreeLists) {
 	item := probe.item
-	list, cached := lists[item.Repository]
-	if !cached {
-		list = probe.list()
-		lists[item.Repository] = list
+	lists.mutex.Lock()
+	load := lists.entries[item.Repository]
+	if load == nil {
+		load = &cleanWorktreeListLoad{}
+		lists.entries[item.Repository] = load
 	}
+	lists.mutex.Unlock()
+	load.once.Do(func() { load.list = probe.list() })
+	list := load.list
 	if list.reason != "" {
 		probe.fail(list.reason, list.detail)
 		return

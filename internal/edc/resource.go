@@ -945,8 +945,10 @@ type interfaceDetails struct {
 
 type diskDetails struct {
 	Mount, Device string
-	Used, Total   uint64
-	Percent       float64
+	// FSType은 파일시스템 종류다. df는 알려 주지 않으므로 macOS에서만 getfsstat으로 채우고, 모르면 비어 있다.
+	FSType      string
+	Used, Total uint64
+	Percent     float64
 }
 
 func calculateRate(previous, current resourceSnapshot) resourceRate {

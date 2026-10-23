@@ -492,10 +492,13 @@ func infoProcessSize(bytes uint64) string {
 // apfsVolumeDevice는 APFS 볼륨의 장치 이름이다. 한 컨테이너의 볼륨은 disk3s1, disk3s3, disk3s1s1처럼 같은 diskN을 앞에 둔다.
 var apfsVolumeDevice = regexp.MustCompile(`^/dev/(disk\d+)s\d+(s\d+)*$`)
 
-// diskFamily는 용량을 나눠 쓰는 장치의 묶음이다. APFS 볼륨은 컨테이너 단위로 묶고, 그 밖의 장치는 이름이 같을 때만 같은 묶음이다.
-func diskFamily(device string) string {
-	if match := apfsVolumeDevice.FindStringSubmatch(device); match != nil {
-		return match[1]
+// diskFamily는 용량을 나눠 쓰는 장치의 묶음이다. 파일시스템이 APFS로 확인된 볼륨은 컨테이너 단위로 묶는다. 그 밖의 장치와 종류를 모르는
+// 경우는 이름이 같을 때만 같은 묶음이다. diskNsM이라는 이름만으로는 APFS인지 알 수 없어, 한 디스크의 다른 파티션을 잘못 묶을 수 있다.
+func diskFamily(device, fsType string) string {
+	if fsType == "apfs" {
+		if match := apfsVolumeDevice.FindStringSubmatch(device); match != nil {
+			return match[1]
+		}
 	}
 	return device
 }
@@ -511,7 +514,7 @@ func collapseSharedDisks(disks []diskDetails) ([]diskDetails, map[string]int) {
 	representative := map[volume]string{}
 	counts := map[volume]int{}
 	for _, disk := range disks {
-		key := volume{diskFamily(disk.Device), disk.Used, disk.Total}
+		key := volume{diskFamily(disk.Device, disk.FSType), disk.Used, disk.Total}
 		counts[key]++
 		if current, ok := representative[key]; !ok || len(disk.Mount) < len(current) {
 			representative[key] = disk.Mount
@@ -520,7 +523,7 @@ func collapseSharedDisks(disks []diskDetails) ([]diskDetails, map[string]int) {
 	shown := make([]diskDetails, 0, len(disks))
 	shared := map[string]int{}
 	for _, disk := range disks {
-		key := volume{diskFamily(disk.Device), disk.Used, disk.Total}
+		key := volume{diskFamily(disk.Device, disk.FSType), disk.Used, disk.Total}
 		if representative[key] != disk.Mount {
 			continue
 		}

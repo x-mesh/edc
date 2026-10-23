@@ -363,7 +363,23 @@ func collectDefaultRoute() (string, string) {
 	}
 	return iface, gateway
 }
-func collectDisks() ([]diskDetails, error) { return collectDisksFromDF() }
+func collectDisks() ([]diskDetails, error) {
+	disks, err := collectDisksFromDF()
+	if err != nil {
+		return nil, err
+	}
+	// getfsstat가 실패하면 종류 없이 둔다. info는 종류를 모르면 장치 이름이 같은 마운트만 한 줄로 접는다.
+	if mounts, err := duDarwinMounts(); err == nil {
+		types := make(map[string]string, len(mounts))
+		for _, mount := range mounts {
+			types[mount.Point] = mount.FSType
+		}
+		for index := range disks {
+			disks[index].FSType = types[disks[index].Mount]
+		}
+	}
+	return disks, nil
+}
 func commandValue(path string, args ...string) string {
 	output, _ := exec.Command(path, args...).Output()
 	return strings.TrimSpace(string(output))

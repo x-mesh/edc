@@ -1,0 +1,94 @@
+package edc
+
+import (
+	"bytes"
+	"fmt"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+
+	tea "charm.land/bubbletea/v2"
+)
+
+func TestDocumentationFrames(t *testing.T) {
+	dir := os.Getenv("EDC_CAPTURE_DIR")
+	if dir == "" {
+		t.Fatal("EDC_CAPTURE_DIR is required")
+	}
+	details := hostDetails{Hostname: "demo-host", System: "linux", OS: "Ubuntu", Version: "24.04", Machine: "amd64", Model: "Demo CPU", Cores: 8, MemoryTotal: 16 << 30, Load: [3]float64{1.25, 1.10, 0.95}, Uptime: 72 * time.Hour, RLimitSoft: 1024, RLimitHard: 1048576}
+	processes := []topProcess{
+		{PID: 1200, Command: "api-server", CPU: 34.2, RSS: 512 << 20, Memory: 512 << 20, MemoryValid: true, Threads: 12, State: "R"},
+		{PID: 1300, Command: "postgres", CPU: 12.4, RSS: 768 << 20, Memory: 768 << 20, MemoryValid: true, Threads: 8, State: "S"},
+		{PID: 1400, Command: "worker", CPU: 8.1, RSS: 256 << 20, Memory: 256 << 20, MemoryValid: true, Threads: 4, State: "S"},
+	}
+	base := time.Date(2026, 10, 23, 9, 0, 0, 0, time.UTC)
+	first := resourceSnapshot{TakenAt: base, MemoryTotal: 16 << 30}
+	model := newTopModel(details, first, time.Second, nil)
+	model.version = "demo"
+	resized, _ := model.Update(tea.WindowSizeMsg{Width: 112, Height: 25})
+	model = resized.(topModel)
+	for i := 1; i <= 12; i++ {
+		sample := resourceSnapshot{TakenAt: base.Add(time.Duration(i) * time.Second), CPUTotal: uint64(i * 1000), CPUUser: uint64(i * 180), CPUSystem: uint64(i * 60), CPUIdle: uint64(i * 760), MemoryUsed: 6 << 30, MemoryTotal: 16 << 30, Load1: 1.25, DiskRead: uint64(i) * 2 << 20, DiskWrite: uint64(i) * 512 << 10, DiskOps: uint64(i * 120), Processes: processes, ProcessesValid: true, ProcessesAt: base.Add(time.Duration(i) * time.Second)}
+		sample.NetInterfaces = []netInterfaceCounters{{Name: "eth0", BytesIn: uint64(i) * 3 << 20, BytesOut: uint64(i) * 1 << 20, PacketsIn: uint64(i * 2100), PacketsOut: uint64(i * 850)}}
+		sample.DiskHealthValid = true
+		next, _ := model.Update(topSampleMsg{snapshot: sample})
+		model = next.(topModel)
+	}
+	write := func(name, content string) {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("top.ansi", model.View().Content)
+	var info bytes.Buffer
+	signals := infoSignals{DNS: infoDNS{Config: resolvConfig{Nameservers: []string{"192.0.2.53"}}}}
+	printInfo(&info, "demo", details, []interfaceDetails{{Name: "eth0", Address: "192.0.2.10", Mask: "255.255.255.0", Gateway: "192.0.2.1"}}, []diskDetails{{Mount: "/", Device: "/dev/vda1", Used: 32 << 30, Total: 100 << 30, Percent: 32}}, nil, signals, true, false)
+	printInfoResources(&info, infoMemory{Total: 16 << 30, Available: 10 << 30}, nil, infoSignals{}, processes, nil, []infoCapability{{"PSI", "available", ""}, {"cgroup", "available", ""}, {"CPU wait / I/O latency", "permission required", "root"}}, true, false)
+	write("info.ansi", info.String())
+
+	trace := newTraceScreenModel("http", tcpTraceOptions{payload: tracePayloadAll}, make(chan captureEvent), make(chan traceFinishedMsg), nil)
+	trace.width, trace.height = 112, 25
+	trace.started = time.Now().Add(-12 * time.Second)
+	var events []captureEvent
+	for i, path := range []string{"/health", "/api/orders", "/api/catalog", "/api/orders", "/health"} {
+		latency := []float64{1.2, 42.8, 8.4, 650.3, 1.1}[i]
+		status, event, reason := 200, "http_2xx", "OK"
+		if i == 3 {
+			status, event, reason = 503, "http_5xx", "Service Unavailable"
+		}
+		at := uint64(base.Add(time.Duration(i) * time.Second).UnixNano())
+		events = append(events,
+			captureEvent{TimestampNS: at, SocketID: uint64(i + 1), Protocol: "http", Event: traceHTTPRequestEvent, Side: traceServerSide, PID: 1200, Process: "api-server", Target: "api.example.com", Method: "GET", Path: path, Source: "192.0.2.10:8080", Destination: "192.0.2.20:45000", Payload: "GET " + path + " HTTP/1.1\r\nHost: api.example.com\r\n\r\n"},
+			captureEvent{TimestampNS: at + uint64(latency*1e6), SocketID: uint64(i + 1), Protocol: "http", Event: event, Side: traceServerSide, PID: 1200, Process: "api-server", Target: "api.example.com", Method: "GET", Path: path, Status: status, LatencyMS: &latency, Source: "192.0.2.10:8080", Destination: "192.0.2.20:45000", Payload: fmt.Sprintf("HTTP/1.1 %d %s\r\nContent-Type: application/json\r\n\r\n{\"status\":\"demo\"}", status, reason)},
+		)
+	}
+	updated, _ := trace.Update(traceEventMsg{events: events})
+	trace = updated.(traceScreenModel)
+	updated, _ = trace.Update(tea.KeyPressMsg{Code: 'i', Text: "i"})
+	trace = updated.(traceScreenModel)
+	trace.selected = 7
+	trace.refreshPreview()
+	write("trace-http.ansi", trace.View().Content)
+
+	trend := newHistoryTrendBrowser(nil, []historyTrendTarget{{kind: historyTrendHost}, {kind: historyTrendProcess, value: "api-server", rss: 512 << 20}, {kind: historyTrendProcess, value: "postgres", rss: 768 << 20}}, historyTrendOptions{by: "day"}, time.UTC)
+	nextTrend, _ := trend.Update(tea.WindowSizeMsg{Width: 112, Height: 20})
+	trend = nextTrend.(historyTrendBrowser)
+	trend.processMemory = true
+	var buckets []historyTrendBucket
+	for i, avg := range []float64{12.4, 18.6, 16.2, 24.8, 35.1, 28.5, 20.3} {
+		buckets = append(buckets, historyTrendBucket{Start: base.AddDate(0, 0, i-6), By: "day", Metric: "cpu_pct", Count: 3600, Min: avg / 3, Avg: avg, P95: avg * 1.6, Max: avg * 2})
+	}
+	nextTrend, _ = trend.Update(historyTrendLoadedMsg{buckets: buckets})
+	trend = nextTrend.(historyTrendBrowser)
+	write("history.ansi", trend.View().Content)
+	root := duTestDir("/var", 0,
+		duTestDir("lib", 0, duTestDir("docker", 18<<30), duTestDir("postgresql", 8<<30)),
+		duTestDir("log", 0, duTestFile("application.log", 3<<30), duTestFile("journal", 2<<30)),
+		duTestDir("cache", 2<<30), duTestDir("tmp", 512<<20), duTestDir("spool", 128<<20))
+	disk := duBrowserOn(duScan{root: root}, 112, 10)
+	disk.color = true
+	disk.workers = 4
+	write("disk-usage.ansi", disk.View().Content)
+	fmt.Fprintln(os.Stdout, "documentation frames rendered from synthetic data")
+}

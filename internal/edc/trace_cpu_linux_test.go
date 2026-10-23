@@ -127,6 +127,10 @@ func TestCPUProfileHelper(t *testing.T) {
 	}
 }
 
+// cpuHelperDominantPercent는 helper의 표본 가운데 이름이 붙은 사용자 stack이 차지해야 하는 비율의 하한이다. 정상일 때는 99% 안팎이고
+// 이름을 붙이지 못하면 0에 가깝다. 공유 runner가 잠깐 다른 일을 하면 몇 %p가 다른 thread로 새므로 그 둘 사이에 넉넉한 여유를 둔다.
+const cpuHelperDominantPercent = 75
+
 // CI의 tls-smoke job이 root로 이 시험을 돌린다. runner kernel의 verifier가 cpuEvents를 받는지, 샘플 수가 frequency와
 // 맞는지, 사용자 stack과 kernel stack에 이름이 붙는지를 본다.
 func TestTraceCPUSamplesUserAndKernelStacks(t *testing.T) {
@@ -186,7 +190,7 @@ func TestTraceCPUSamplesUserAndKernelStacks(t *testing.T) {
 			profiled := report.Summary.Profiled
 			switch mode {
 			case "spin":
-				if hot*10 < profiled*9 {
+				if hot*100 < profiled*cpuHelperDominantPercent {
 					t.Errorf("cpuTestSpin is the innermost frame in %d of %d samples", hot, profiled)
 				}
 			case "syscall":
@@ -197,7 +201,7 @@ func TestTraceCPUSamplesUserAndKernelStacks(t *testing.T) {
 				}
 			}
 			// frame pointer로 Go stack 전체를 따라가면 test를 부른 testing.tRunner까지 보인다.
-			if tRunner*10 < profiled*9 {
+			if tRunner*100 < profiled*cpuHelperDominantPercent {
 				t.Errorf("testing.tRunner is in %d of %d samples", tRunner, profiled)
 			}
 			if len(report.Functions) > 0 {

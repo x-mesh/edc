@@ -1285,7 +1285,7 @@ func cleanPrint(stdout io.Writer, options commonOptions, result Result, color bo
 		// 합계는 맨 끝에 둔다. 출력이 화면보다 길면 명령이 끝난 뒤 남는 것은 마지막 줄이다.
 		fmt.Fprint(output, formatCleanFilesystems(filesystems, width, style))
 	}
-	fmt.Fprintln(output, "\n"+T("clean.advisory"))
+	fmt.Fprint(output, "\n"+cleanWrap(T("clean.advisory"), width))
 	if options.redact {
 		fmt.Fprint(stdout, redactIPAddresses(buffer.String()))
 	}

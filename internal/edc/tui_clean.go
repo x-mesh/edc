@@ -119,7 +119,7 @@ func (model cleanProgressModel) View() tea.View {
 		footer = T("clean.ui.finished_hint")
 	}
 	advisory := T("clean.advisory")
-	if width < 60 {
+	if ansi.StringWidth(advisory) > width {
 		advisory = T("clean.ui.advisory_short")
 	}
 	if width < 40 || height < 5 {

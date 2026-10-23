@@ -135,7 +135,7 @@ func runCleanGroup(options commonOptions, group, inventoryPath, version string, 
 	var output strings.Builder
 	output.WriteString(formatResultLine(result, false))
 	output.WriteString(formatCleanGroup(rows, width))
-	output.WriteString("\n" + T("clean.advisory") + "\n")
+	output.WriteString("\n" + cleanWrap(T("clean.advisory"), width))
 	text := output.String()
 	if options.redact {
 		text = redactIPAddresses(text)

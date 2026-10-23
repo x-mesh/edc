@@ -253,20 +253,124 @@ func (model ctrBrowser) visible() []ctrListItem {
 	return items
 }
 
-// listRows는 표 머리줄 아래에 들어가는 container 수다. 제목, 키 안내, 머리줄이 세 줄이다.
-func (model ctrBrowser) listRows() int { return model.height - 3 }
+// listRows는 표 머리줄 아래에 들어가는 container 수다.
+func (model ctrBrowser) listRows() int {
+	visible := model.visible()
+	if len(visible) == 0 {
+		return 0
+	}
+	budget := model.listBudget()
+	rows, used := 0, 0
+	for index := model.offset; index < len(visible); index++ {
+		height := model.rowHeightFor(visible[index])
+		if rows > 0 && used+height > budget {
+			break
+		}
+		used += height
+		rows++
+	}
+	return max(1, rows)
+}
+
+func (model ctrBrowser) listBudget() int {
+	used := 2
+	if model.width >= 80 {
+		used++
+	}
+	if model.err != nil && len(model.items) > 0 {
+		used++
+	}
+	used += len(model.selectedUnavailableLines())
+	return max(1, model.height-used)
+}
+
+func (model ctrBrowser) rowHeightFor(item ctrListItem) int {
+	if model.width < 80 {
+		return len(model.compactRow(item, false))
+	}
+	return 1
+}
+
+func (model ctrBrowser) selectedMemoryUnavailable() string {
+	visible := model.visible()
+	if model.cursor < 0 || model.cursor >= len(visible) {
+		return ""
+	}
+	return visible[model.cursor].MemoryUnavailable
+}
+
+func (model ctrBrowser) selectedUnavailableLines() []string {
+	visible := model.visible()
+	if model.cursor < 0 || model.cursor >= len(visible) {
+		return nil
+	}
+	item := visible[model.cursor]
+	var reasons []string
+	for _, metric := range []struct {
+		label   string
+		reasons []string
+	}{{ctrListHeaders()[2], []string{item.CPUUnavailable}}, {ctrListHeaders()[3], []string{item.MemoryUnavailable}}, {ctrListHeaders()[5], []string{item.PIDsUnavailable}}, {ctrListHeaders()[6], []string{item.NetworkRXUnavailable, item.NetworkTXUnavailable}}, {ctrListHeaders()[7], []string{item.BlockReadUnavailable, item.BlockWriteUnavailable}}} {
+		for _, reason := range metric.reasons {
+			if reason != "" {
+				reasons = append(reasons, metric.label+": "+reason)
+			}
+		}
+	}
+	if len(reasons) == 0 {
+		return nil
+	}
+	text := strings.Join(reasons, " · ")
+	wrapped := strings.Split(ansi.Wrap(text, max(1, model.width), ""), "\n")
+	available := model.height - 2
+	if model.width >= 80 {
+		available--
+	}
+	if model.err != nil && len(model.items) > 0 {
+		available--
+	}
+	available -= model.rowHeightFor(item)
+	if available <= 0 {
+		return nil
+	}
+	if len(wrapped) > available {
+		wrapped = wrapped[:available]
+		wrapped[len(wrapped)-1] = strings.TrimRight(ansi.Truncate(wrapped[len(wrapped)-1], max(1, model.width-1), ""), " ") + "…"
+	}
+	return wrapped
+}
+
+func (model ctrBrowser) memoryUnavailableLines() []string {
+	return model.selectedUnavailableLines()
+}
 
 func (model *ctrBrowser) keepCursor() {
-	count := len(model.visible())
+	visible := model.visible()
+	count := len(visible)
 	model.cursor = max(0, min(model.cursor, count-1))
-	rows := max(1, model.listRows())
+	if count == 0 {
+		model.offset = 0
+		return
+	}
+	budget := model.listBudget()
 	if model.cursor < model.offset {
 		model.offset = model.cursor
 	}
-	if model.cursor >= model.offset+rows {
-		model.offset = model.cursor - rows + 1
+	for model.offset < model.cursor && model.visibleHeight(model.offset, model.cursor+1) > budget {
+		model.offset++
 	}
-	model.offset = max(0, min(model.offset, max(0, count-rows)))
+	for model.offset > 0 && model.visibleHeight(model.offset-1, model.cursor+1) <= budget {
+		model.offset--
+	}
+	model.offset = max(0, min(model.offset, count-1))
+}
+
+func (model ctrBrowser) visibleHeight(start, end int) int {
+	visible := model.visible()
+	height := 0
+	for index := max(0, start); index < min(len(visible), end); index++ {
+		height += model.rowHeightFor(visible[index])
+	}
+	return height
 }
 
 func (model ctrBrowser) View() tea.View {
@@ -313,45 +417,145 @@ func (model ctrBrowser) listLines() []string {
 	switch {
 	case !model.loaded:
 		return append(lines, liveMuted("loading…", model.color))
-	case model.err != nil:
+	case model.err != nil && len(model.items) == 0:
 		return append(lines, svcBrowserPaint(evaluateCtrList(nil, model.err).Summary, richRed, false, model.color))
-	case len(visible) == 0:
+	}
+	if model.err != nil {
+		lines = append(lines, svcBrowserPaint(evaluateCtrList(nil, model.err).Summary, richRed, false, model.color))
+	}
+	if len(visible) == 0 {
 		return append(lines, liveMuted("no container matches", model.color))
 	}
-	nameWidth, stateWidth, imageWidth := 4, 5, 5
+	nameWidth, stateWidth := 4, 5
 	for _, item := range visible {
 		nameWidth = max(nameWidth, min(40, liveWidth(item.Name)))
 		stateWidth = max(stateWidth, min(30, liveWidth(item.State)))
-		imageWidth = max(imageWidth, min(30, liveWidth(item.Image)))
 	}
-	// 좁은 터미널에서는 IMAGE를 먼저 빼고, 그래도 넘치면 이름, 그다음 상태 칸을 줄인다.
-	const numbers = 29
-	showImage := 2+nameWidth+2+stateWidth+2+numbers+2+imageWidth <= model.width
-	overflow := 2 + nameWidth + 2 + stateWidth + 2 + numbers - model.width
-	if showImage {
-		overflow = 0
-	}
-	if overflow > 0 && nameWidth > svcBrowserUnitMin {
-		shrink := min(overflow, nameWidth-svcBrowserUnitMin)
-		nameWidth, overflow = nameWidth-shrink, overflow-shrink
-	}
-	if overflow > 0 {
-		stateWidth = max(svcBrowserStateMin, stateWidth-overflow)
-	}
-	row := func(cells []string, state string) string {
-		line := svcBrowserCell(cells[0], nameWidth) + "  " + svcBrowserPaint(svcBrowserCell(cells[1], stateWidth), state, false, model.color) + "  " + fmt.Sprintf("%8s  %8s  %7s", cells[2], cells[3], cells[4])
-		if showImage {
-			line += "  " + svcBrowserPaint(ansi.Truncate(cells[5], imageWidth, "…"), richGray, false, model.color)
+	if model.width < 80 {
+		for index := model.offset; index < min(len(visible), model.offset+model.listRows()); index++ {
+			lines = append(lines, model.compactRow(visible[index], index == model.cursor)...)
 		}
-		return line
+	} else {
+		headers := ctrListHeaders()
+		columns := []int{2, 3, 4, 5}
+		columnWidths := make([]int, len(columns))
+		for position, column := range columns {
+			columnWidths[position] = ansi.StringWidth(headers[column])
+			for _, item := range visible {
+				value := ctrListCells(item)[column]
+				if column == 10 {
+					value = ansi.Truncate(value, 20, "…")
+				}
+				columnWidths[position] = max(columnWidths[position], ansi.StringWidth(value))
+			}
+		}
+		bodyBudget := model.width - 2
+		bodyWidth := func(nameWidth, stateWidth int, widths []int) int {
+			used := nameWidth + 2 + stateWidth + len(widths)
+			for _, width := range widths {
+				used += width
+			}
+			return used
+		}
+		if bodyWidth(nameWidth, stateWidth, columnWidths) > bodyBudget {
+			excess := bodyWidth(nameWidth, stateWidth, columnWidths) - bodyBudget
+			nameMinimum := min(nameWidth, svcBrowserUnitMin)
+			stateMinimum := min(stateWidth, svcBrowserStateMin)
+			shrink := min(excess, max(0, nameWidth-nameMinimum))
+			nameWidth -= shrink
+			excess -= shrink
+			if excess > 0 {
+				shrink = min(excess, max(0, stateWidth-stateMinimum))
+				stateWidth -= shrink
+				excess -= shrink
+			}
+			if excess > 0 {
+				shrink = min(excess, max(0, nameWidth-4))
+				nameWidth -= shrink
+				excess -= shrink
+			}
+			if excess > 0 {
+				stateWidth = max(7, stateWidth-excess)
+			}
+		}
+		for _, column := range []int{6, 7, 8, 9, 10} {
+			width := ansi.StringWidth(headers[column])
+			for _, item := range visible {
+				value := ctrListCells(item)[column]
+				if column == 10 {
+					value = ansi.Truncate(value, 30, "…")
+				}
+				width = max(width, ansi.StringWidth(value))
+			}
+			if column == 10 {
+				width = min(width, 30)
+				remaining := bodyBudget - bodyWidth(nameWidth, stateWidth, columnWidths) - 1
+				minimum := min(width, max(ansi.StringWidth(headers[column]), 8))
+				if remaining < minimum {
+					continue
+				}
+				width = min(width, remaining)
+			}
+			if bodyWidth(nameWidth, stateWidth, columnWidths)+1+width <= bodyBudget {
+				columns = append(columns, column)
+				columnWidths = append(columnWidths, width)
+			}
+		}
+		rowCells := func(values []string, name, state string) string {
+			line := svcBrowserCell(name, nameWidth) + "  " + svcBrowserCell(state, stateWidth)
+			for position, column := range columns {
+				value := values[column]
+				if column == 10 {
+					value = svcBrowserPaint(svcBrowserCell(ansi.Truncate(value, columnWidths[position], "…"), columnWidths[position]), richGray, false, model.color)
+					line += " " + value
+					continue
+				}
+				line += " " + fmt.Sprintf("%*s", columnWidths[position], value)
+			}
+			return line
+		}
+		header := rowCells(headers, ansi.Truncate(headers[0], nameWidth, "…"), ansi.Truncate(headers[1], stateWidth, "…"))
+		lines = append(lines, liveMuted("  "+header, model.color))
+		for index := model.offset; index < min(len(visible), model.offset+model.listRows()); index++ {
+			item := visible[index]
+			c := ctrListCells(item)
+			state := svcBrowserPaint(ansi.Truncate(c[1], stateWidth, "…"), item.stateColor(), false, model.color)
+			line := rowCells(c, ansi.Truncate(c[0], nameWidth, "…"), state)
+			lines = append(lines, svcBrowserRow(line, index == model.cursor, model.color, model.width))
+		}
 	}
-	lines = append(lines, liveMuted("  "+row(ctrListHeaders(), ""), model.color))
-	end := min(len(visible), model.offset+max(1, model.listRows()))
-	for index := model.offset; index < end; index++ {
-		item := visible[index]
-		lines = append(lines, svcBrowserRow(row(ctrListCells(item), item.stateColor()), index == model.cursor, model.color, model.width))
+	for _, hint := range model.selectedUnavailableLines() {
+		lines = append(lines, svcBrowserPaint(hint, richYellow, false, model.color))
 	}
 	return lines
+}
+
+func (model ctrBrowser) compactRow(item ctrListItem, selected bool) []string {
+	c := ctrListCells(item)
+	stateWidth := min(12, max(7, liveWidth(c[1])))
+	nameWidth := max(4, model.width-3-stateWidth)
+	first := svcBrowserCell(c[0], nameWidth) + " " + svcBrowserPaint(svcBrowserCell(c[1], stateWidth), item.stateColor(), false, model.color)
+	values := []string{"CPU " + c[2], "MEM " + c[3], "MEM% " + c[4], "PIDs " + c[5]}
+	var result []string
+	bodyWidth := max(1, model.width-2)
+	result = append(result, svcBrowserRow(ansi.Truncate(first, bodyWidth, ""), selected, model.color, model.width))
+	line := ""
+	for _, value := range values {
+		candidate := value
+		if line != "" {
+			candidate = line + "  " + value
+		}
+		if line != "" && ansi.StringWidth(candidate) > bodyWidth {
+			result = append(result, svcBrowserRow(line, false, model.color, model.width))
+			line = value
+		} else {
+			line = candidate
+		}
+	}
+	if line != "" {
+		result = append(result, svcBrowserRow(line, false, model.color, model.width))
+	}
+	return result
 }
 
 // stateColor는 상태 칸의 색이다. 실패는 빨강, 손볼 일이 있으면 노랑, 실행 중은 초록, 나머지는 회색이다.

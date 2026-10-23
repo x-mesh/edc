@@ -2,7 +2,7 @@
 
 # Host inspection
 
-[Host information](#host-information) · [Host audit (Linux)](#host-audit-linux) · [Service view (Linux)](#service-view-linux) · [Container view (Linux)](#container-view-linux) · [Recent host changes (Linux)](#recent-host-changes-linux) · [Kernel and systemd events (Linux)](#kernel-and-systemd-events-linux) · [Current scope](#current-scope) · [Listening ports](#listening-ports)
+[Host information](#host-information) · [Host audit (Linux)](#host-audit-linux) · [Service view (Linux)](#service-view-linux) · [Container view (Linux and macOS)](#container-view-linux-and-macos) · [Recent host changes (Linux)](#recent-host-changes-linux) · [Kernel and systemd events (Linux)](#kernel-and-systemd-events-linux) · [Current scope](#current-scope) · [Listening ports](#listening-ports)
 
 ## Host information
 
@@ -142,54 +142,79 @@ In a terminal, the list refreshes every 2 seconds. Use `↑`/`↓` to select a s
 
 In a pipe or with `--json`, edc prints one `svc.list` result and a table. A failed service makes the result `fail` and the exit code 1. A service that starts or waits to restart makes it `warn`. edc reads the list without root, but an open service needs root as above.
 
-## Container view (Linux)
+<a id="container-view-linux"></a>
+<a id="container-view-linux-and-macos"></a>
 
-`edc ctr <container>` shows one docker container on one screen, as `edc svc` shows a unit. It asks `docker inspect` for the state, reads the processes, the fds, the sockets, and the cgroup limits of the container, and reads the last lines of `docker logs`. It does not start, stop, or restart the container.
+## Container view (Linux and macOS)
 
-```bash
-sudo edc ctr web
-sudo edc ctr -v 0123456789ab      # add the process rows, the fd rows, the sockets, and the log lines
-sudo edc ctr --json - web         # one result for each view
-```
-
-The name or the ID accepts letters, digits, and `_.-/`. Options can come before or after the name.
-
-| Result | Pass | Warn | Fail |
-|---|---|---|---|
-| `ctr.state` | the container runs, with no restart and no OOM kill | it runs but restarted, was OOM killed, or is unhealthy, or it is paused, created, or restarting. For an unhealthy container, a warning shows the output of the last failed health check | the container exited or is dead. The summary shows the exit code. A warning tells when the `on-failure` limit stops the restarts |
-| `ctr.image` | the image reference points to the image that the container runs, or the reference is not on the host | the image reference points to a different image. Recreate the container to use it | |
-| `ctr.processes` | edc lists the processes in the container cgroup, with CPU% and RSS | | |
-| `ctr.limits` | memory, OOM kills, CPU throttling, and pids stay below the limits | memory use is 90% of the limit or more, the kernel killed a process in the container for memory, the CPU limit throttled 25% of the periods or more, or pids use 90% of the limit or more | |
-| `ctr.fd` | each process uses less than 80% of its soft fd limit | a process uses 80% or more of its limit | |
-| `ctr.listen` | edc lists the TCP and UDP sockets that the container processes own, and a process listens on each published port | no process in the container listens on a published port, or a process listens on it only on a loopback address | |
-| `ctr.log` | the last 50 log lines have no error line | the log has error lines, and edc shows the last 5 | |
-| `ctr.disk` | edc shows the size of the log file and of the writable layer | the json-file log has no `max-size` and is 1 GiB or more, or the writable layer is 10 GiB or more | |
-
-The summary of `ctr.state` shows the restart policy, for example `1 restarts (on-failure:5)`. With `-v`, it shows the health checks that docker keeps, with the exit code and the first line of the output. edc reads them only for a container with a health check.
-
-`ctr.image` asks `docker image inspect` for the image that the image reference of the container points to now. A `docker pull` or a build can move a tag to a new image. A running container keeps its old image until you recreate it.
-
-`ctr.limits` reads the cgroup v2 of the container: `memory.current` and `memory.max`, `memory.events.local` for the OOM kills, `cpu.stat` for the throttled periods since the container started, and `pids.current` and `pids.max`. An error line is a line with `error`, `fatal`, `panic`, `exception`, `traceback`, or `oom`. edc reads the log with `docker logs --tail 50`, so a container that writes somewhere else shows no error line.
-
-`ctr.listen` reads the sockets in the network namespace of the container. Docker sends a connection on a published port to the address of the container, so a listener on `127.0.0.1` or `::1` in the container does not get it. A container that starts can show this warn before it listens.
-
-`ctr.disk` asks `docker inspect --size` for the writable layer and the log options, and reads the size of the log file. A json-file log without `max-size` does not rotate. A new container does not keep the data in the writable layer. Without root, edc cannot read the log file, and the log size shows `-`.
-
-Run it as root, or as a member of the `docker` group with root for the fds. Without access to the docker daemon, the command shows one `skip`. Without root, edc cannot read the fds of other users or the socket owners, and these results show `skip`. A stopped container shows `skip` for the process views and still shows the log. The command needs the `docker` command and cgroup v2. On macOS, it shows one `skip` and exits with 0. If the container does not exist, edc writes an error and exits with 1.
-
-### Container list
-
-Run `edc ctr` without a container to list the containers. The failed containers come first: an exit with a code other than 0, an OOM kill, or the `dead` state. Then come the containers that restart, pause, are unhealthy, or were only created. Then come the containers with restarts. The containers that exited with code 0 stay out unless you add `--all`.
+`edc ctr <container>` reads one container through the Docker Engine API over a Unix socket. It runs no Docker CLI command. It does not change target state.
 
 ```bash
-sudo edc ctr          # the list; a terminal opens it as a screen
-sudo edc ctr --all    # also the containers that exited with code 0
-sudo edc ctr --json - # the list in metrics.containers
+edc ctr web
+edc ctr -v 0123456789ab
+edc ctr --json - web
+edc ctr --collector-image edc-collector:local web
 ```
 
-The list makes two docker calls for any number of containers, and reads the memory of each running container from its cgroup. The terminal screen has the same keys as `edc svc`. `Enter` opens the same results as `edc ctr -v <container>`, and `Esc` goes back. At 80 columns, the `IMAGE` column drops first.
+Set `DOCKER_HOST` to an absolute Unix socket URL to select a socket. Set `DOCKER_CONTEXT=default` to ignore `DOCKER_HOST`. edc reads no Docker context or credential files. It rejects nondefault contexts and TCP, SSH, or TLS endpoints. Linux uses `/var/run/docker.sock`. macOS uses `~/.docker/run/docker.sock` when that socket exists. Otherwise, it uses `/var/run/docker.sock`.
 
-In a pipe or with `--json`, edc prints one `ctr.list` result and a table. A failed container makes the result `fail` and the exit code 1. A container that restarts, pauses, is unhealthy, or was only created makes it `warn`. Without access to the docker daemon, the list shows one `skip`.
+The command sends read-only GET requests for normal inspection. It supports Docker API versions 1.41 through 1.51. Each request has a five-second limit. The default command deadline is 15 seconds.
+
+By default, edc uses Docker Engine API data only. Add `--collector-image <local-image>` to a detail request for extra Linux metrics. The image must exist on the selected daemon. edc checks its immutable image ID, Linux platform, daemon architecture, and protocol label. edc does not pull, build, or publish the image. List refreshes never create a helper. Press `Enter` to open a detail. Press `r` to read that detail again.
+
+The helper runs on the daemon host. A macOS client can read a Linux daemon VM through its Unix socket. The daemon must use rootful Linux and cgroup v2. The helper runs as UID 0. It drops all capabilities, then adds only `SYS_PTRACE` and `DAC_READ_SEARCH`. It uses the host PID and cgroup namespaces. It uses network mode `none`, a read-only root file system, and Docker log driver `none`. It never uses `SYS_ADMIN`, privileged mode, a Docker socket mount, or a host root mount.
+
+The helper mounts `/sys/fs/cgroup` read-only. It mounts one validated container log file read-only for `json-file` or `local` drivers. It reads file metadata only. It does not read log contents. The collector rejects rootless daemons, user namespace modes, and cgroup v1. LSM or Enhanced Container Isolation policies can deny the requested access. edc does not widen permissions or retry with extra capabilities.
+
+The collector sends JSON through the attach stream. It writes no metric history to a database, file, or Docker log. The Docker Engine retains the local image and temporary helper metadata or events. Successful cleanup removes the helper container. If cleanup fails, the report shows the helper name and ID. Inspect that ID before manual removal.
+
+Each collector metric has a status and a reason when collection is incomplete or unavailable. API results remain visible if the helper fails. FD metrics show counts and soft limits for target cgroup processes. Listener metrics show TCP and UDP sockets that match target process FD inodes. The helper does not infer IPv6 wildcard coverage or accept queue limits. OOM counters cover the container cgroup lifetime. The helper uses `fstat` for an eligible log file and does not read its contents. If the container has no process, FD, listener, and OOM metrics are unavailable. The helper can still report an eligible log file size.
+
+Build one helper binary per target architecture. Run these commands from the repository root:
+
+```bash
+make collector-build COLLECTOR_ARCH=amd64
+make collector-build COLLECTOR_ARCH=arm64
+```
+
+The target builds only a local binary. It does not build, pull, or publish an image. `collector.Dockerfile` uses `scratch` and the selected binary. Set `arch` to match the daemon. This command creates a temporary context with only the Dockerfile and binary:
+
+```bash
+set -eu
+arch=amd64
+collector_context="$(mktemp -d)"
+trap 'rm -rf "$collector_context"' EXIT
+mkdir -p "$collector_context/bin"
+cp collector.Dockerfile "$collector_context/"
+cp "bin/edc-collector-linux-$arch" "$collector_context/bin/"
+docker build --platform "linux/$arch" --build-arg "TARGETARCH=$arch" \
+  -f "$collector_context/collector.Dockerfile" -t "edc-collector:$arch" "$collector_context"
+```
+
+For an arm64 daemon, set `arch=arm64`. Use the tag that matches the daemon. Run the helper only for a detail request:
+
+```bash
+edc ctr --collector-image edc-collector:amd64 web
+edc ctr --collector-image edc-collector:amd64 --json - web
+```
+
+Live daemon validation of the required capabilities and mounts is unverified. Get user confirmation before a live test. Show the Unix socket, local image ID and protocol label, target container ID, capabilities, exact mount sources, helper name, and cleanup target.
+
+Missing API fields show an unavailable reason. A missing value does not become zero. Partial limit data stays visible. If every resource limit field is unavailable, `ctr.limits` shows `skip`. Any collector OOM values remain visible.
+
+The list puts failed containers first, then containers that need attention, then containers with restart history. It omits containers that exited with code 0 unless you add `--all`.
+
+```bash
+edc ctr
+edc ctr --all
+edc ctr --json -
+```
+
+The list sends one version request and one list request. It sends one inspect request per listed container and two stats requests per container whose status is `running`. Each stats phase uses up to four concurrent requests. The list waits one second between phases to calculate CPU use. It does not request logs, process rows, or writable layer size. It never creates a helper, even when you set `--collector-image`.
+
+The list shows CPU percent, raw memory use and configured limit, memory percent, and current PIDs. An unknown value shows `n/a`. A stopped container shows `—`. A configured unlimited memory limit shows `∞`. Memory use keeps Docker's raw `memory_stats.usage` value. It does not subtract cache. At wider widths, the list adds network I/O, block I/O, restart count, uptime, and image when each column fits. The terminal screen uses the same keys as `edc svc`. Press `Enter` to open a container. Press `Esc` to return.
+
+In a pipe or with `--json`, edc prints one `ctr.list` result and a table. A failed container makes the result `fail` and the exit code 1. A container that restarts, pauses, is unhealthy, or was only created makes it `warn`. Socket permission errors show `skip`.
 
 ## Recent host changes (Linux)
 

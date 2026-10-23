@@ -259,17 +259,19 @@ command:
     option:
       all: "also list the services that are not running"
   ctr:
-    summary: "docker containers, or one container on one screen (Linux)"
+    summary: "Docker containers over a Unix socket (Linux, macOS)"
     notes:
-      - "Without a container, it lists the containers. Failed ones come first."
-      - "In a terminal, Enter opens one container and Esc goes back."
-      - "State, uptime, restarts, processes, limits, fds, sockets, and log errors."
-      - "It reads only. It does not start, stop, or restart the container."
-      - "It needs the docker command and cgroup v2. On other hosts it shows skip."
-      - "Run it as root. Without root, fds and socket owners show skip."
-      - "A socket that only systemd holds (socket activation) is not in the list."
+      - "Without a container, it lists containers. Failed containers come first."
+      - "In a terminal, Enter opens one container and Esc returns to the list."
+      - "It reads container state, health, image, process, limits, and logs."
+      - "It uses the Docker Engine API. It does not call Docker CLI."
+      - "Set DOCKER_HOST to an absolute Unix socket URL to select a socket."
+      - "Set DOCKER_CONTEXT=default to ignore DOCKER_HOST. Other contexts are unsupported."
+      - "The API does not expose file descriptors, actual listeners, log size, or cumulative OOM kills."
+      - "Missing API data shows an unavailable reason."
     option:
       all: "also list the containers that exited with code 0"
+      collector_image: "run a local Linux collector image for extra metrics on detail requests"
   quality:
     summary: "Network responsiveness (RPM) and throughput"
     option:

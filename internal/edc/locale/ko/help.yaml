@@ -259,17 +259,19 @@ command:
     option:
       all: "실행 중이 아닌 service도 목록에 포함"
   ctr:
-    summary: "docker container 목록, 또는 container 하나를 한 화면에 (Linux)"
+    summary: "Unix socket으로 Docker container 조회 (Linux, macOS)"
     notes:
-      - "container 없이 실행하면 container 목록을 보여 줍니다. 실패한 것이 먼저 옵니다."
-      - "터미널에서는 Enter로 container 하나를 열고 Esc로 돌아옵니다."
-      - "상태, 가동 시간, 재시작, process, 한도, fd, 소켓, 로그 오류를 보여 줍니다."
-      - "읽기만 합니다. container를 시작·중지·재시작하지 않습니다."
-      - "docker 명령과 cgroup v2가 필요하고, 다른 호스트에서는 skip입니다."
-      - "root로 실행하세요. root가 아니면 fd와 소켓 주인이 skip입니다."
-      - "systemd만 쥔 소켓(socket activation)은 목록에 나오지 않습니다."
+      - "container 없이 실행하면 목록을 보여 줍니다. 실패한 container가 먼저 옵니다."
+      - "터미널에서는 Enter로 container를 열고 Esc로 목록에 돌아옵니다."
+      - "상태, health, image, process, 한도, 로그를 조회합니다."
+      - "Docker Engine API를 사용하며 Docker CLI를 실행하지 않습니다."
+      - "socket을 직접 고르려면 절대 경로의 Unix socket URL을 DOCKER_HOST에 지정합니다."
+      - "DOCKER_CONTEXT=default는 DOCKER_HOST를 무시합니다. 다른 context는 지원하지 않습니다."
+      - "API는 fd, 실제 listener, log 크기, 누적 OOM kill 횟수를 제공하지 않습니다."
+      - "API 정보가 없으면 이유를 표시합니다."
     option:
       all: "코드 0으로 끝난 container도 목록에 포함"
+      collector_image: "상세 조회에서만 로컬 Linux collector image를 실행해 추가 지표를 수집"
   quality:
     summary: "네트워크 응답성(RPM)과 처리량 측정"
     option:

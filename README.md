@@ -14,7 +14,7 @@ The screen uses synthetic demo data with the current UI renderer. [Reproduce the
 | --- | --- | --- |
 | Inspect a host and its resource use | `edc info`, `edc top` | [Host information](docs/host.md#host-information), [dashboard](docs/monitoring.md#top-dashboard) |
 | Find where disk space goes | `edc du /var`, `edc clean` | [Directory usage](docs/disk-usage.md#disk-usage-of-a-directory-linux-and-macos), [known caches](docs/disk-usage.md#known-cache-sizes-linux-and-macos) |
-| Investigate a service or container | `edc svc`, `edc ctr` | [Services](docs/host.md#service-view-linux), [containers](docs/host.md#container-view-linux) — Linux |
+| Investigate a service or container | `edc svc`, `edc ctr` | [Services](docs/host.md#service-view-linux), [containers](docs/host.md#container-view-linux-and-macos) |
 | Check a connection | `edc dns lookup example.com`, `edc tcp check example.com:443` | [Network checks](docs/network.md#network-checks), [combined diagnosis](docs/network.md#doctor-live-screen) |
 | Trace application and kernel activity | `edc trace` | [Tracing and packet capture](#tracing-and-packet-capture) — support varies by trace |
 | Record and compare runs | `edc top -w`, `edc history`, `edc log -- <command>` | [Resource history](docs/history.md#top-recordings-and-history), [command logs](docs/history.md#cron-and-application-logs) |
@@ -81,7 +81,7 @@ Use the task table above to choose the next command. `edc help` lists commands, 
 
 ## Host inspection
 
-Inspect configuration, memory, disks, and listening ports with `info`. On Linux, inspect systemd services, containers, recent changes, and kernel events to narrow an incident.
+Inspect configuration, memory, disks, and listening ports with `info`. On Linux, inspect systemd services, recent changes, and kernel events. On Linux and macOS, inspect Docker containers through a Unix socket.
 
 ```bash
 edc info --public=false
@@ -91,6 +91,8 @@ edc changes --since 2h
 ```
 
 [Host information, service and container views, audit, and events →](docs/host.md)
+
+By default, `edc ctr` uses Docker Engine API data only. See the [container guide](docs/host.md#container-view-linux-and-macos) for the optional local Linux collector.
 
 <a id="top-thresholds"></a>
 <a id="top-dashboard"></a>

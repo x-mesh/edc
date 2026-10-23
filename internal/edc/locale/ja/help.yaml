@@ -259,17 +259,19 @@ command:
     option:
       all: "動いていない service も一覧に含める"
   ctr:
-    summary: "docker container の一覧、または container 一つを一画面に (Linux)"
+    summary: "Unix socket で Docker container を確認 (Linux、macOS)"
     notes:
-      - "container なしで実行すると container の一覧を表示します。失敗したものが先です。"
-      - "端末では Enter で container を一つ開き、Esc で戻ります。"
-      - "状態、稼働時間、再起動、process、上限、fd、ソケット、ログのエラーを表示します。"
-      - "読むだけです。container の起動・停止・再起動はしません。"
-      - "docker コマンドと cgroup v2 が必要で、他のホストでは skip です。"
-      - "root で実行してください。root 以外は fd とソケット所有者が skip。"
-      - "systemd だけが持つソケット (socket activation) は一覧に出ません。"
+      - "container を指定しないと一覧を表示します。失敗した container が先です。"
+      - "端末では Enter で container を開き、Esc で一覧に戻ります。"
+      - "状態、health、image、process、上限、log を確認します。"
+      - "Docker Engine API を使います。Docker CLI は実行しません。"
+      - "socket を選ぶには絶対パスの Unix socket URL を DOCKER_HOST に設定します。"
+      - "DOCKER_CONTEXT=default は DOCKER_HOST を無視します。他の context は未対応です。"
+      - "API は fd、実際の listener、log サイズ、累積 OOM kill 数を返しません。"
+      - "API の情報がない場合は理由を表示します。"
     option:
-      all: "コード 0 で終了した container も一覧に含める"
+      all: "終了コード 0 の container も一覧に含める"
+      collector_image: "詳細表示時のみローカル Linux collector image を実行して追加指標を収集"
   quality:
     summary: "ネットワークの応答性 (RPM) とスループット"
     option:

@@ -2,7 +2,7 @@
 
 # 호스트 상태와 점검
 
-[호스트 정보](#호스트-정보) · [호스트 점검 (Linux)](#호스트-점검-linux) · [서비스 보기 (Linux)](#서비스-보기-linux) · [Container 보기 (Linux)](#container-보기-linux) · [최근 호스트 변경 (Linux)](#최근-호스트-변경-linux) · [커널과 systemd 이벤트 (Linux)](#커널과-systemd-이벤트-linux) · [현재 범위](#현재-범위) · [Listening port](#listening-port)
+[호스트 정보](#호스트-정보) · [호스트 점검 (Linux)](#호스트-점검-linux) · [서비스 보기 (Linux)](#서비스-보기-linux) · [Container 보기 (Linux와 macOS)](#container-보기-linux와-macos) · [최근 호스트 변경 (Linux)](#최근-호스트-변경-linux) · [커널과 systemd 이벤트 (Linux)](#커널과-systemd-이벤트-linux) · [현재 범위](#현재-범위) · [Listening port](#listening-port)
 
 ## 호스트 정보
 
@@ -132,54 +132,90 @@ edc svc --json -      # 목록이 metrics.services에 들어감
 
 pipe나 `--json`에서는 `svc.list` 결과 하나와 표를 출력합니다. 실패한 service가 있으면 결과는 `fail`, exit code는 1입니다. 시작 중이거나 재시작을 기다리는 service가 있으면 `warn`입니다. 목록은 root 없이 읽지만, 연 service는 위와 같이 root가 필요합니다.
 
-## Container 보기 (Linux)
+<a id="container-보기-linux"></a>
+<a id="container-보기-linux와-macos"></a>
 
-`edc ctr <container>`는 docker container 하나를 한 화면에 보여 줍니다. `edc svc`가 unit을 보여 주는 것과 같습니다. 상태는 `docker inspect`에 묻고, container의 process, fd, 소켓, cgroup 한도를 읽고, `docker logs`의 마지막 줄을 읽습니다. container를 시작·중지·재시작하지 않습니다.
+## Container 보기 (Linux와 macOS)
 
-```bash
-sudo edc ctr web
-sudo edc ctr -v 0123456789ab      # process 행, fd 행, 소켓, 로그 줄 추가
-sudo edc ctr --json - web         # 보기마다 결과 하나
-```
-
-이름이나 ID에는 영문자, 숫자, `_.-/`만 쓸 수 있습니다. option은 이름 앞이나 뒤에 둡니다.
-
-| 결과 | pass | warn | fail |
-|---|---|---|---|
-| `ctr.state` | container가 실행 중이고 재시작과 OOM kill이 없음 | 실행 중이지만 재시작했거나, OOM kill됐거나, unhealthy이거나, paused·created·restarting 상태임. unhealthy이면 마지막으로 실패한 health check의 출력을 warning으로 보여 줌 | container가 exited이거나 dead임. 요약에 종료 코드를 보여 줌. `on-failure` 한도에 닿아 더 재시작하지 않으면 warning으로 알림 |
-| `ctr.image` | 이미지 참조가 container가 실행 중인 이미지를 가리키거나, 그 참조가 이 호스트에 없음 | 이미지 참조가 다른 이미지를 가리킴. 반영하려면 container를 다시 만들어야 함 | |
-| `ctr.processes` | container cgroup의 process를 CPU%, RSS와 함께 보여 줌 | | |
-| `ctr.limits` | memory, OOM kill, CPU throttle, pids가 한도 아래임 | memory 사용량이 한도의 90% 이상, 커널이 container의 process를 메모리 부족으로 죽임, CPU 한도가 period의 25% 이상을 throttle함, pids가 한도의 90% 이상 | |
-| `ctr.fd` | 모든 process가 soft fd 한계의 80% 미만을 씀 | 한계의 80% 이상을 쓰는 process가 있음 | |
-| `ctr.listen` | container process가 가진 TCP·UDP 소켓을 보여 주고, publish한 port마다 listen하는 process가 있음 | publish한 port를 container 안에서 listen하는 process가 없거나, loopback 주소에서만 listen함 | |
-| `ctr.log` | 마지막 로그 50줄에 오류 줄이 없음 | 오류 줄이 있고, 마지막 5줄을 보여 줌 | |
-| `ctr.disk` | log 파일과 writable layer의 크기를 보여 줌 | json-file log에 `max-size`가 없고 1 GiB 이상이거나, writable layer가 10 GiB 이상임 | |
-
-`ctr.state` 요약에는 재시작 정책이 함께 나옵니다(예: `재시작 1번(on-failure:5)`). `-v`를 주면 docker가 남긴 health check를 exit code, 출력 첫 줄과 함께 보여 줍니다. health check 기록은 healthcheck가 있는 container에서만 읽습니다.
-
-`ctr.image`는 container의 이미지 참조가 지금 가리키는 이미지를 `docker image inspect`로 읽습니다. `docker pull`이나 build는 tag를 새 이미지로 옮길 수 있지만, 실행 중인 container는 다시 만들기 전까지 예전 이미지로 돕니다.
-
-`ctr.limits`는 container의 cgroup v2를 읽습니다. `memory.current`와 `memory.max`, OOM kill은 `memory.events.local`, throttle된 period는 container가 시작된 뒤의 `cpu.stat`, 그리고 `pids.current`와 `pids.max`입니다. 오류 줄은 `error`, `fatal`, `panic`, `exception`, `traceback`, `oom`이 든 줄입니다. 로그는 `docker logs --tail 50`으로 읽으므로, 다른 곳에 쓰는 container는 오류 줄이 보이지 않습니다.
-
-`ctr.listen`은 container의 network namespace에서 소켓을 읽습니다. docker는 publish한 port로 들어온 연결을 container 주소로 넘기므로, container 안에서 `127.0.0.1`이나 `::1`에서만 listen하는 process에는 연결이 닿지 않습니다. 막 시작해 아직 listen하지 않은 container도 이 warn을 낼 수 있습니다.
-
-`ctr.disk`는 writable layer 크기와 log option을 `docker inspect --size`에 묻고, log 파일 크기를 읽습니다. `max-size`가 없는 json-file log는 rotation하지 않습니다. writable layer의 데이터는 container를 다시 만들면 사라집니다. root가 아니면 log 파일을 읽지 못해 log 크기가 `-`로 나옵니다.
-
-root로 실행하거나, docker 그룹으로 실행하고 fd는 root로 읽으세요. docker daemon에 접근하지 못하면 `skip` 하나를 냅니다. root가 아니면 다른 사용자의 fd와 소켓 주인을 읽지 못해 그 결과가 `skip`으로 나옵니다. 멈춘 container는 process 관련 결과가 `skip`이고 로그는 그대로 보여 줍니다. `docker` 명령과 cgroup v2가 필요합니다. macOS에서는 `skip` 하나를 내고 0으로 끝납니다. container가 없으면 오류를 쓰고 1로 끝납니다.
-
-### Container 목록
-
-container 없이 `edc ctr`를 실행하면 container 목록을 보여 줍니다. 실패한 container가 먼저 옵니다. 0이 아닌 코드로 끝났거나, OOM으로 죽었거나, `dead` 상태인 container입니다. 그다음 재시작 중, 일시 중지, unhealthy, 생성만 된 container가 오고, 그다음 재시작 기록이 있는 container가 옵니다. 코드 0으로 끝난 container는 `--all`을 줄 때만 보입니다.
+`edc ctr <container>`는 Unix socket으로 Docker Engine API를 읽어 container 하나를 보여 줍니다. Docker CLI를 실행하거나 container 상태를 바꾸지 않습니다.
 
 ```bash
-sudo edc ctr          # 목록. 터미널에서는 화면으로 열림
-sudo edc ctr --all    # 코드 0으로 끝난 container도 포함
-sudo edc ctr --json - # 목록이 metrics.containers에 들어감
+edc ctr web
+edc ctr -v 0123456789ab
+edc ctr --json - web
+edc ctr --collector-image edc-collector:amd64 web
 ```
 
-container가 몇 개든 docker를 두 번만 부르고, 실행 중인 container의 메모리는 cgroup에서 읽습니다. 터미널 화면의 키는 `edc svc`와 같습니다. `Enter`를 누르면 `edc ctr -v <container>`와 같은 결과가 나오고, `Esc`로 돌아옵니다. 80열에서는 `IMAGE` 열이 먼저 빠집니다.
+다른 socket을 쓰려면 `DOCKER_HOST`에 절대 경로의 Unix socket URL을 지정합니다. `DOCKER_CONTEXT=default`는 `DOCKER_HOST`를 무시합니다. edc는 Docker context나 credential 파일을 읽지 않습니다. default가 아닌 context와 TCP·SSH·TLS endpoint는 오류를 냅니다. Linux는 `/var/run/docker.sock`을 씁니다. macOS는 `~/.docker/run/docker.sock`이 있으면 그 경로를 쓰고, 없으면 `/var/run/docker.sock`을 씁니다.
 
-pipe나 `--json`에서는 `ctr.list` 결과 하나와 표를 출력합니다. 실패한 container가 있으면 결과는 `fail`, exit code는 1입니다. 재시작 중, 일시 중지, unhealthy, 생성만 된 container가 있으면 `warn`입니다. docker daemon에 접근하지 못하면 목록은 `skip` 하나를 냅니다.
+기본 상세 조회는 읽기 전용 GET 요청만 보냅니다. Docker API 1.41부터 1.51까지 협상합니다. 개별 요청은 5초로 제한하고, 기본 전체 제한은 15초입니다.
+
+| 결과 | 기본 API 조회 | collector opt-in |
+|---|---|---|
+| `ctr.state` | 상태, 재시작, health, 종료 코드 | 기존 결과를 유지합니다. |
+| `ctr.image` | 현재 이미지 참조와 image ID | 기존 결과를 유지합니다. |
+| `ctr.processes` | Docker top API의 process, CPU, RSS | 기존 결과를 유지합니다. daemon이 요청한 열을 거부하면 오류를 표시합니다. |
+| `ctr.limits` | API 필드가 있으면 memory, 한도, CPU throttle, pids | container cgroup 수명 동안의 OOM·oom_kill 누적 횟수 |
+| `ctr.fd` | 제공하지 않음 | 대상 cgroup process별 FD 수와 soft limit |
+| `ctr.listen` | publish한 port 설정 | 대상 process FD가 소유한 TCP·UDP listener의 주소와 port |
+| `ctr.log` | 마지막 50줄과 그중 마지막 오류 5줄 | 기존 결과를 유지합니다. |
+| `ctr.disk` | writable layer 크기와 log rotation 설정 | 허용된 log 파일의 크기 |
+
+기본 조회는 Docker Engine API 정보만 사용합니다. `--collector-image <local-image>`를 상세 요청에 주면 추가 Linux 지표를 수집합니다. 선택한 Docker daemon에 이미지가 있어야 합니다. edc는 immutable image ID, Linux platform, daemon architecture, protocol label을 확인합니다. 이미지를 자동으로 pull·build·publish하지 않습니다. TUI 목록 갱신은 helper를 만들지 않습니다. `Enter`로 상세를 열거나 상세에서 `r`로 다시 읽을 때 실행합니다.
+
+collector는 daemon의 Linux host에서 실행됩니다. macOS client도 Unix socket을 통해 Linux daemon VM을 조회할 수 있습니다. daemon은 rootful Linux와 cgroup v2를 사용해야 합니다. helper는 UID 0으로 실행하고 모든 capability를 제거한 뒤 `SYS_PTRACE`, `DAC_READ_SEARCH`만 추가합니다. host PID·cgroup namespace, `network none`, read-only root filesystem을 사용하고 Docker log driver를 `none`으로 설정합니다. `SYS_ADMIN`, privileged mode, Docker socket mount, host root mount는 사용하지 않습니다.
+
+helper는 `/sys/fs/cgroup`을 read-only로 mount합니다. log driver가 `json-file` 또는 `local`이고 경로 검사를 통과하면 해당 container의 log 파일 하나만 read-only로 mount합니다. helper는 `fstat`으로 파일 metadata만 읽고 log 내용은 읽지 않습니다. rootless daemon, user namespace mode, cgroup v1은 지원하지 않습니다. LSM이나 Enhanced Container Isolation 정책은 권한을 거부할 수 있습니다. edc는 권한을 넓혀 재시도하지 않습니다.
+
+측정 JSON은 attach stream으로만 전달합니다. metric을 DB, 파일, Docker log에 저장하지 않습니다. Docker Engine에는 helper image와 임시 container metadata·event가 남을 수 있습니다. 정리가 성공하면 helper container를 제거합니다. 정리에 실패하면 report에 helper 이름과 ID를 표시합니다. 직접 제거하기 전에 그 ID를 확인하세요.
+
+각 collector metric은 상태를 담고, 수집이 불완전하거나 불가능하면 사유도 담습니다. collector가 실패해도 기존 API 결과는 유지합니다. PID가 0인 container는 FD·listener·OOM을 읽을 수 없지만, 경로가 허용된 log 파일 크기는 읽을 수 있습니다. IPv6 wildcard의 coverage나 accept queue 한도는 추정하지 않습니다.
+
+repository root에서 daemon architecture에 맞는 helper binary를 만듭니다.
+
+```bash
+make collector-build COLLECTOR_ARCH=amd64
+make collector-build COLLECTOR_ARCH=arm64
+```
+
+이 target은 local binary만 만듭니다. image는 자동으로 build·pull·publish하지 않습니다. `collector.Dockerfile`은 `scratch`와 선택한 binary만 사용합니다. 아래 명령은 Docker build context에 Dockerfile과 binary만 넣습니다. `.env`와 credential 파일은 context에 들어가지 않습니다.
+
+```bash
+set -eu
+arch=amd64
+collector_context="$(mktemp -d)"
+trap 'rm -rf "$collector_context"' EXIT
+mkdir -p "$collector_context/bin"
+cp collector.Dockerfile "$collector_context/"
+cp "bin/edc-collector-linux-$arch" "$collector_context/bin/"
+docker build --platform "linux/$arch" --build-arg "TARGETARCH=$arch" \
+  -f "$collector_context/collector.Dockerfile" -t "edc-collector:$arch" "$collector_context"
+```
+
+arm64 daemon이면 `arch=arm64`로 바꾸세요. daemon과 architecture가 같은 image tag를 상세 요청에 지정하세요.
+
+```bash
+edc ctr --collector-image edc-collector:amd64 web
+edc ctr --collector-image edc-collector:amd64 --json - web
+```
+
+최소 capability와 mount의 실제 동작은 Docker daemon에서 검증하지 않았습니다. live 검증 전 사용자 확인을 받으세요. Unix socket, local image ID와 protocol label, 대상 container ID, capability, 정확한 mount source, 고유 helper 이름과 cleanup 대상을 먼저 제시하세요.
+
+누락된 API 필드의 이유를 표시하고 값을 0으로 바꾸지 않습니다. 일부 한도 정보만 있어도 그 값을 표시합니다. 자원 한도 필드가 모두 없으면 `ctr.limits`는 `skip`이고, 수집한 OOM 값은 계속 표시합니다.
+
+목록은 실패한 container, 주의가 필요한 container, 재시작 기록이 있는 container 순서로 표시합니다. 코드 0으로 끝난 container는 `--all`을 줄 때만 나옵니다.
+
+```bash
+edc ctr
+edc ctr --all
+edc ctr --json -
+```
+
+목록은 version 요청 1회와 목록 요청 1회를 보냅니다. 표시 대상마다 inspect를 1회, 실행 중 container마다 stats를 2회 요청합니다. 각 stats 단계는 최대 4개 요청을 병렬 처리합니다. CPU를 계산하려고 두 단계 사이에 전체에서 한 번 1초 기다립니다. 로그, process, writable layer 크기는 조회하지 않습니다. `--collector-image`가 있어도 목록이나 refresh는 helper를 만들지 않습니다.
+
+목록에는 CPU%, raw 메모리 사용량과 설정 한도, 메모리 비율, 현재 PIDs가 표시됩니다. 알 수 없는 값은 `n/a`, 중지된 container는 `—`, 설정상 한도가 없는 메모리는 `∞`로 표시됩니다. 메모리 사용량은 Docker의 `memory_stats.usage` 원본이며 cache를 빼지 않습니다. 터미널 폭이 넓어지면 남은 공간에 따라 NET I/O, BLOCK I/O, 재시작 횟수, 가동 시간, image 열을 개별 추가합니다. 터미널 화면의 키는 `edc svc`와 같습니다. `Enter`로 container를 열고 `Esc`로 돌아옵니다.
+
+pipe나 `--json`에서는 `ctr.list` 결과 하나와 표를 출력합니다. 실패한 container가 있으면 결과는 `fail`, exit code는 1입니다. 재시작 중, 일시 중지, unhealthy, 생성만 된 container가 있으면 `warn`입니다. socket 권한 오류는 `skip`입니다.
 
 ## 최근 호스트 변경 (Linux)
 

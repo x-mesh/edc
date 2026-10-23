@@ -34,12 +34,38 @@ var ctrListLines = []string{
 
 func ctrListFakeSources(asked *[]string) ctrSources {
 	sources := ctrTestSources("", nil)
-	sources.listIDs = func(context.Context) (string, error) {
-		return "aaaaaaaaaaaaaaaa\nbbbbbbbbbbbbbbbb\ncccccccccccccccc\ndddddddddddddddd\neeeeeeeeeeeeeeee\nffffffffffffffff\n1111111111111111", nil
+	sources.listIDs = func(context.Context) ([]string, error) {
+		return []string{"aaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbb", "cccccccccccccccc", "dddddddddddddddd", "eeeeeeeeeeeeeeee", "ffffffffffffffff", "1111111111111111"}, nil
 	}
-	sources.inspectMany = func(_ context.Context, ids []string) (string, error) {
+	sources.inspectMany = func(_ context.Context, ids []string) ([]ctrInspect, error) {
 		*asked = append(*asked, ids...)
-		return strings.Join(ctrListLines, "\n"), nil
+		items := make([]ctrInspect, 0, len(ctrListLines))
+		for _, line := range ctrListLines {
+			item, err := parseCtrInspect(line)
+			if err != nil {
+				return nil, err
+			}
+			items = append(items, item)
+		}
+		return items, nil
+	}
+	sources.stats = func(context.Context, string, ctrInspect, bool) ctrLimits {
+		used := uint64(512 << 20)
+		return ctrLimits{Memory: topCgroupMemory{topLimitStatus: topLimitStatus{Status: "available"}, Used: &used}}
+	}
+	sources.listStats = func(_ context.Context, inspects []ctrInspect) map[string]ctrListStats {
+		result := make(map[string]ctrListStats, len(inspects))
+		for _, inspect := range inspects {
+			used := uint64(512 << 20)
+			limit := uint64(1 << 30)
+			pids := uint64(3)
+			cpu := 0.0
+			zero := uint64(0)
+			entry := ctrListStats{Limits: ctrLimits{Memory: topCgroupMemory{topLimitStatus: topLimitStatus{Status: "available"}, Used: &used, Max: &limit}, Pids: ctrPidsLimits{topLimitStatus: topLimitStatus{Status: "available"}, Current: pids}}, CPUReason: "", NetworkRX: &zero, NetworkTX: &zero, BlockRead: &zero, BlockWrite: &zero}
+			entry.Limits.CPUUsagePercent = &cpu
+			result[inspect.ID] = entry
+		}
+		return result
 	}
 	return sources
 }
@@ -86,25 +112,59 @@ func TestCollectCtrListPutsProblemsFirst(t *testing.T) {
 	}
 }
 
+func TestCollectCtrListUsesOneShotStats(t *testing.T) {
+	var asked []string
+	sources := ctrListFakeSources(&asked)
+	calls := 0
+	sources.listStats = func(_ context.Context, inspects []ctrInspect) map[string]ctrListStats {
+		calls++
+		if len(inspects) != 3 {
+			t.Fatalf("running stats targets=%d", len(inspects))
+		}
+		return map[string]ctrListStats{}
+	}
+	if _, err := collectCtrList(context.Background(), sources, false); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 {
+		t.Fatalf("list stats batch calls=%d, want 1", calls)
+	}
+}
+
 func TestCollectCtrListKeepsTheLinesThatInspectReturned(t *testing.T) {
 	var asked []string
 	sources := ctrListFakeSources(&asked)
 	// 목록을 읽은 뒤 사라진 container가 있으면 docker inspect는 실패하지만 나머지 줄은 낸다.
-	sources.inspectMany = func(context.Context, []string) (string, error) {
-		return ctrListLines[0] + "\nError: No such container: gone", errors.New("exit status 1")
+	sources.inspectMany = func(context.Context, []string) ([]ctrInspect, error) {
+		item, _ := parseCtrInspect(ctrListLines[0])
+		return []ctrInspect{item}, nil
 	}
 	if items, err := collectCtrList(context.Background(), sources, false); err != nil || ctrListNames(items) != "web" {
 		t.Fatalf("items %v, err %v", ctrListNames(items), err)
 	}
-	sources.inspectMany = func(context.Context, []string) (string, error) {
-		return "permission denied while trying to connect to the Docker daemon socket", errors.New("exit status 1")
+	sources.inspectMany = func(context.Context, []string) ([]ctrInspect, error) {
+		return nil, errors.New("permission denied while trying to connect to the Docker daemon socket")
 	}
-	sources.listIDs = func(context.Context) (string, error) {
-		return "permission denied while trying to connect to the Docker daemon socket", errors.New("exit status 1")
+	sources.listIDs = func(context.Context) ([]string, error) {
+		return nil, errors.New("permission denied while trying to connect to the Docker daemon socket")
 	}
 	_, err := collectCtrList(context.Background(), sources, false)
 	if result := evaluateCtrList(nil, err); result.Status != StatusSkip || result.Summary != T("ctr.skip.needs_docker_access") {
 		t.Fatalf("docker access = %+v", result)
+	}
+}
+
+func TestEvaluateCtrListKeepsPartialItemsOnPermissionError(t *testing.T) {
+	var asked []string
+	items, err := collectCtrList(context.Background(), ctrListFakeSources(&asked), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	partial := items[:1]
+	result := evaluateCtrList(partial, errors.New("permission denied while reading Docker Engine socket"))
+	containers, ok := result.Metrics["containers"].([]ctrListItem)
+	if result.Status != StatusSkip || !ok || len(containers) != 1 || containers[0].Name != partial[0].Name {
+		t.Fatalf("partial permission result=%+v", result)
 	}
 }
 

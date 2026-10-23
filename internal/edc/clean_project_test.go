@@ -792,3 +792,60 @@ func TestCleanBoundaryBuildDirNeedsMarkerAndGitEvidence(t *testing.T) {
 		t.Fatalf("usage = %d, want %d", usage, want)
 	}
 }
+
+func TestCleanProjectDoesNotStatNetworkMounts(t *testing.T) {
+	home := cleanTestHome(t)
+	root := filepath.Join(home, "root")
+	for _, name := range []string{"mnt", "ok"} {
+		cleanProjectTouch(t, filepath.Join(root, name, "proj", "package.json"))
+		cleanWriteFile(t, filepath.Join(root, name, "proj", "node_modules", "f"), 4<<10)
+	}
+	mnt := filepath.Join(root, "mnt")
+	deps := cleanProjectDeps(t, home, nil)
+	deps.mounts = func() ([]diskMount, error) { return []diskMount{{Point: mnt, FSType: "fuse.sshfs"}}, nil }
+	deviceOf := deps.deviceOf
+	deps.deviceOf = func(path string) (uint64, error) {
+		if pathUnder(path, mnt) {
+			t.Fatalf("stat on the network mount %s", path)
+		}
+		return deviceOf(path)
+	}
+	section := cleanProjectScan(context.Background(), deps, []string{root}, nil)
+	if want := []string{filepath.Join(root, "ok", "proj", "node_modules")}; !reflect.DeepEqual(cleanProjectPaths(section), want) {
+		t.Fatalf("items = %v", cleanProjectPaths(section))
+	}
+	if got := section.Roots[0]; got.SkippedMounts != 1 || got.Status != cleanPartial {
+		t.Fatalf("root = %+v", got)
+	}
+}
+
+func TestCleanProjectSkipsADirectoryThatStopsAnswering(t *testing.T) {
+	home := cleanTestHome(t)
+	root := filepath.Join(home, "root")
+	cleanProjectTouch(t, filepath.Join(root, "ok", "package.json"))
+	cleanWriteFile(t, filepath.Join(root, "ok", "node_modules", "f"), 1<<10)
+	stuck := filepath.Join(root, "stuck")
+	if err := os.MkdirAll(stuck, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	release := make(chan struct{})
+	defer close(release)
+	stalls := &cleanStalls{}
+	deps := cleanProjectDeps(t, home, nil)
+	deps.readDir = cleanReadDirGuard(func(path string) ([]os.DirEntry, error) {
+		if path == stuck {
+			<-release // macOS 권한 창처럼 응답할 때까지 돌아오지 않는다.
+		}
+		return os.ReadDir(path)
+	}, nil, stalls, 20*time.Millisecond, 80*time.Millisecond)
+	section := cleanProjectScan(context.Background(), deps, []string{root}, nil)
+	if got := section.Roots[0]; got.Unreadable != 1 || got.Status != cleanPartial {
+		t.Fatalf("root = %+v", got)
+	}
+	if want := []string{filepath.Join(root, "ok", "node_modules")}; !reflect.DeepEqual(cleanProjectPaths(section), want) {
+		t.Fatalf("items = %v", cleanProjectPaths(section))
+	}
+	if warnings := stalls.warnings(10 * time.Second); len(warnings) != 1 || !strings.Contains(warnings[0], stuck) {
+		t.Fatalf("warnings = %v", warnings)
+	}
+}

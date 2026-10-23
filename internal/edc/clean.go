@@ -278,6 +278,8 @@ type cleanDeps struct {
 	measure    func(ctx context.Context, options duOptions, sources duSources) (duScan, error)
 	// resolve는 보고된 경로의 symlink를 푼다. 멈춘 마운트에서는 이 호출도 돌아오지 않아 측정처럼 감시한다.
 	resolve func(path string) (string, error)
+	// readDir는 빌드 폴더를 찾으며 디렉터리를 읽는다. macOS 권한 창이나 멈춘 마운트에서 돌아오지 않아 감시한다.
+	readDir func(path string) ([]os.DirEntry, error)
 	// mounts는 응답 없는 경로가 어느 파일 시스템인지 알려 준다. 그 파일 시스템을 건드리지 않는 원천만 쓴다.
 	mounts  func() ([]diskMount, error)
 	sources duSources
@@ -288,7 +290,7 @@ type cleanDeps struct {
 
 func hostCleanDeps(home string, host duSources) cleanDeps {
 	return cleanDeps{home: home, lookPath: exec.LookPath, run: runCleanTool, lookupEnv: os.LookupEnv, deviceOf: cleanDeviceOf,
-		dockerDial: cleanDockerDial, measure: duMeasure, resolve: duResolveRoot, mounts: duHostMounts, sources: cleanSources(host),
+		dockerDial: cleanDockerDial, measure: duMeasure, resolve: duResolveRoot, readDir: os.ReadDir, mounts: duHostMounts, sources: cleanSources(host),
 		workers: duDefaultWorkers, remote: cleanSSHRunner}
 }
 
@@ -298,6 +300,13 @@ func (deps cleanDeps) resolvePath(path string) (string, error) {
 		return duResolveRoot(path)
 	}
 	return deps.resolve(path)
+}
+
+func (deps cleanDeps) readDirPath(path string) ([]os.DirEntry, error) {
+	if deps.readDir == nil {
+		return os.ReadDir(path)
+	}
+	return deps.readDir(path)
 }
 
 func cleanDockerDial(ctx context.Context, path string) (net.Conn, error) {
@@ -1119,6 +1128,7 @@ func runCleanWith(args []string, version string, deps cleanDeps, ok bool, homeEr
 			progress.cancelled = func() bool { return ctx.Err() != nil }
 			// 감시를 진행 기록 안쪽에 두어야 건너뛴 측정도 진행 화면에서 끝난 것으로 지워진다.
 			deps.resolve = cleanResolveGuard(deps.resolvePath, progress.begin, stalls, cleanStallHint, cleanStallLimit)
+			deps.readDir = cleanReadDirGuard(deps.readDirPath, progress.begin, stalls, cleanStallHint, cleanStallLimit)
 			deps.measure = cleanStallGuard(deps.measure, progress.begin, stalls, cleanStallHint, cleanStallLimit)
 			deps = cleanProgressDeps(deps, progress)
 			if interactive {
@@ -1135,6 +1145,7 @@ func runCleanWith(args []string, version string, deps cleanDeps, ok bool, homeEr
 			}
 		} else {
 			deps.resolve = cleanResolveGuard(deps.resolvePath, nil, stalls, cleanStallHint, cleanStallLimit)
+			deps.readDir = cleanReadDirGuard(deps.readDirPath, nil, stalls, cleanStallHint, cleanStallLimit)
 			deps.measure = cleanStallGuard(deps.measure, nil, stalls, cleanStallHint, cleanStallLimit)
 			result = scan()
 		}

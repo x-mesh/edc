@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -289,44 +290,59 @@ func cleanRemoteFSType(fstype string) bool {
 	return false
 }
 
-// cleanResolveGuard는 측정 전에 경로를 확인하는 호출을 limit까지만 기다린다. 이 호출은 시스템 호출 몇 번뿐이라
-// 진행 카운터 없이 시간으로 본다.
+// cleanResolveGuard는 측정 전에 경로를 확인하는 호출을 limit까지만 기다린다.
 func cleanResolveGuard(resolve func(string) (string, error), begin func(stage, target string) func(), stalls *cleanStalls,
 	hint, limit time.Duration) func(string) (string, error) {
 	return func(path string) (string, error) {
-		if stalls.skip(path) {
-			return "", errCleanStalled
+		return cleanWaitFor(path, begin, stalls, hint, limit, func() (string, error) { return resolve(path) })
+	}
+}
+
+// cleanReadDirGuard는 빌드 폴더를 찾으며 디렉터리 하나를 읽는 호출을 limit까지만 기다린다.
+func cleanReadDirGuard(readDir func(string) ([]os.DirEntry, error), begin func(stage, target string) func(), stalls *cleanStalls,
+	hint, limit time.Duration) func(string) ([]os.DirEntry, error) {
+	return func(path string) ([]os.DirEntry, error) {
+		return cleanWaitFor(path, begin, stalls, hint, limit, func() ([]os.DirEntry, error) { return readDir(path) })
+	}
+}
+
+// cleanWaitFor는 path를 건드리는 짧은 호출 하나를 limit까지만 기다린다. 시스템 호출 몇 번뿐이라 진행 카운터 없이
+// 시간으로 본다. 돌아오지 않은 호출의 goroutine은 남겨 둔다.
+func cleanWaitFor[T any](path string, begin func(stage, target string) func(), stalls *cleanStalls, hint, limit time.Duration,
+	call func() (T, error)) (T, error) {
+	var zero T
+	if stalls.skip(path) {
+		return zero, errCleanStalled
+	}
+	type outcome struct {
+		value T
+		err   error
+	}
+	finished := make(chan outcome, 1)
+	go func() {
+		value, err := call()
+		finished <- outcome{value: value, err: err}
+	}()
+	hinted, stalled := time.NewTimer(hint), time.NewTimer(limit)
+	defer hinted.Stop()
+	defer stalled.Stop()
+	var waiting func()
+	defer func() {
+		if waiting != nil {
+			waiting()
 		}
-		type outcome struct {
-			resolved string
-			err      error
-		}
-		finished := make(chan outcome, 1)
-		go func() {
-			resolved, err := resolve(path)
-			finished <- outcome{resolved: resolved, err: err}
-		}()
-		hinted, stalled := time.NewTimer(hint), time.NewTimer(limit)
-		defer hinted.Stop()
-		defer stalled.Stop()
-		var waiting func()
-		defer func() {
-			if waiting != nil {
-				waiting()
+	}()
+	for {
+		select {
+		case got := <-finished:
+			return got.value, got.err
+		case <-hinted.C:
+			if begin != nil {
+				waiting = begin("stalled", path)
 			}
-		}()
-		for {
-			select {
-			case got := <-finished:
-				return got.resolved, got.err
-			case <-hinted.C:
-				if begin != nil {
-					waiting = begin("stalled", path)
-				}
-			case <-stalled.C:
-				stalls.add(path)
-				return "", errCleanStalled
-			}
+		case <-stalled.C:
+			stalls.add(path)
+			return zero, errCleanStalled
 		}
 	}
 }

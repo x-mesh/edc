@@ -36,6 +36,8 @@ type fsWatchSmartEntry struct {
 	// 처음 나온 순서로 모은 것이다. 이름을 모르는 이벤트는 아무것도 바꾸지 않는다.
 	pid       int
 	processes []string
+	// known은 이름이 fsWatchSmartScanNames개를 넘은 뒤에만 쓰는 조회용 집합이다. 적을 때는 슬라이스를 훑는 쪽이 싸다.
+	known map[string]struct{}
 }
 
 func newFSWatchSmart(window time.Duration) *fsWatchSmart {
@@ -63,16 +65,37 @@ func (entry *fsWatchSmartEntry) setProcess(event fsWatchEvent) {
 		return
 	}
 	entry.pid = event.PID
-	if len(entry.processes) < fsWatchSmartProcessKept && !slices.Contains(entry.processes, event.Process) {
-		entry.processes = append(entry.processes, event.Process)
-	}
+	entry.addProcess(event.Process)
 }
 
-// fsWatchSmartProcessShown은 한 줄에 이름으로 보이는 process의 수다. 넘으면 나머지는 수만 붙인다. fsWatchSmartProcessKept는 한 줄이
-// 기억하는 서로 다른 이름의 수다. 창 안에서 이름이 끝없이 늘고 이벤트마다 훑는 비용이 커지지 않게 막으며, 넘는 이름은 세지 않는다.
+// addProcess는 이 줄에 든 서로 다른 process의 이름을 처음 나온 순서로 모은다. 이름 수에는 상한이 없다. 한 줄이 가질 수 있는 이름은
+// 창 안의 이벤트 수를 넘지 못하므로 메모리가 끝없이 늘지 않고, 많아지면 집합으로 조회해 이벤트마다 훑는 비용도 늘지 않는다.
+func (entry *fsWatchSmartEntry) addProcess(name string) {
+	if entry.known == nil {
+		if slices.Contains(entry.processes, name) {
+			return
+		}
+		entry.processes = append(entry.processes, name)
+		if len(entry.processes) > fsWatchSmartScanNames {
+			entry.known = make(map[string]struct{}, 2*len(entry.processes))
+			for _, known := range entry.processes {
+				entry.known[known] = struct{}{}
+			}
+		}
+		return
+	}
+	if _, ok := entry.known[name]; ok {
+		return
+	}
+	entry.known[name] = struct{}{}
+	entry.processes = append(entry.processes, name)
+}
+
+// fsWatchSmartProcessShown은 한 줄에 이름으로 보이는 process의 수다. 넘으면 나머지는 수만 붙인다. fsWatchSmartScanNames는 슬라이스를
+// 훑어 이름을 찾는 한도다.
 const (
 	fsWatchSmartProcessShown = 3
-	fsWatchSmartProcessKept  = 8
+	fsWatchSmartScanNames    = 8
 )
 
 // fsWatchProcessNames는 줄에 보일 process 이름이다. 예: "editor, formatter" 또는 "a, b, c +2".
@@ -109,11 +132,12 @@ func (smart *fsWatchSmart) add(event fsWatchEvent, now time.Time) {
 			created.origin = renamed.path
 			// 이름이 바뀐 줄은 옛 이름 줄의 동작이 이어진 것이므로, 거기에 든 process도 함께 보인다. 도착점 이벤트의 process가 뒤에 온다.
 			inherited := created.processes
-			created.processes = slices.Clone(renamed.processes)
+			created.processes, created.known = nil, nil
+			for _, name := range renamed.processes {
+				created.addProcess(name)
+			}
 			for _, name := range inherited {
-				if len(created.processes) < fsWatchSmartProcessKept && !slices.Contains(created.processes, name) {
-					created.processes = append(created.processes, name)
-				}
+				created.addProcess(name)
 			}
 			if created.pid == 0 {
 				created.pid = renamed.pid

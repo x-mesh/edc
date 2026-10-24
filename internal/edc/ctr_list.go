@@ -18,18 +18,35 @@ var errCtrNoDocker = errors.New("docker is not installed")
 const ctrListFailedShown = 5
 
 type ctrListItem struct {
-	Name        string  `json:"name"`
-	ID          string  `json:"id"`
-	Image       string  `json:"image"`
-	Status      string  `json:"status"`
-	Health      string  `json:"health,omitempty"`
-	State       string  `json:"state"`
-	ExitCode    int     `json:"exit_code"`
-	OOMKilled   bool    `json:"oom_killed,omitempty"`
-	Restarts    int     `json:"restart_count"`
-	PID         int     `json:"pid,omitempty"`
-	UptimeS     *int64  `json:"uptime_s,omitempty"`
-	MemoryBytes *uint64 `json:"memory_bytes,omitempty"`
+	Name                  string   `json:"name"`
+	ID                    string   `json:"id"`
+	Image                 string   `json:"image"`
+	Status                string   `json:"status"`
+	Health                string   `json:"health,omitempty"`
+	State                 string   `json:"state"`
+	ExitCode              int      `json:"exit_code"`
+	OOMKilled             bool     `json:"oom_killed,omitempty"`
+	Restarts              int      `json:"restart_count"`
+	PID                   int      `json:"pid,omitempty"`
+	UptimeS               *int64   `json:"uptime_s,omitempty"`
+	MemoryBytes           *uint64  `json:"memory_bytes,omitempty"`
+	MemoryUnavailable     string   `json:"memory_unavailable,omitempty"`
+	CPUPercent            *float64 `json:"cpu_usage_percent,omitempty"`
+	CPUUnavailable        string   `json:"cpu_unavailable,omitempty"`
+	MemoryLimitBytes      *uint64  `json:"memory_limit_bytes,omitempty"`
+	MemoryUnlimited       bool     `json:"memory_unlimited,omitempty"`
+	MemoryLimitKnown      bool     `json:"memory_limit_known"`
+	MemoryPercent         *float64 `json:"memory_percent,omitempty"`
+	PIDs                  *uint64  `json:"pids,omitempty"`
+	PIDsUnavailable       string   `json:"pids_unavailable,omitempty"`
+	NetworkRXBytes        *uint64  `json:"network_rx_bytes,omitempty"`
+	NetworkTXBytes        *uint64  `json:"network_tx_bytes,omitempty"`
+	NetworkRXUnavailable  string   `json:"network_rx_unavailable,omitempty"`
+	NetworkTXUnavailable  string   `json:"network_tx_unavailable,omitempty"`
+	BlockReadBytes        *uint64  `json:"block_read_bytes,omitempty"`
+	BlockWriteBytes       *uint64  `json:"block_write_bytes,omitempty"`
+	BlockReadUnavailable  string   `json:"block_read_unavailable,omitempty"`
+	BlockWriteUnavailable string   `json:"block_write_unavailable,omitempty"`
 }
 
 // failed는 0이 아닌 코드로 끝났거나 메모리 때문에 죽은 container다. 코드 0으로 끝난 container는 일을 마친 것이다.
@@ -71,23 +88,17 @@ func collectCtrList(ctx context.Context, sources ctrSources, all bool) ([]ctrLis
 	if !sources.docker() {
 		return nil, errCtrNoDocker
 	}
-	output, err := sources.listIDs(ctx)
+	ids, err := sources.listIDs(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %s", err, infoSingleLine(firstLine(output)))
+		return nil, err
 	}
-	ids := strings.Fields(output)
 	if len(ids) == 0 {
 		return nil, nil
 	}
-	// 목록을 읽은 뒤 사라진 container가 있으면 docker inspect는 실패하지만 나머지 줄은 낸다. 읽은 줄은 쓴다.
-	output, err = sources.inspectMany(ctx, ids)
+	inspects, err := sources.inspectMany(ctx, ids)
 	now := sources.now()
 	var items []ctrListItem
-	for _, line := range strings.Split(output, "\n") {
-		inspect, parseErr := parseCtrInspect(line)
-		if parseErr != nil {
-			continue
-		}
+	for _, inspect := range inspects {
 		id := inspect.ID
 		if len(id) > ctrShortIDLength {
 			id = id[:ctrShortIDLength]
@@ -103,15 +114,46 @@ func collectCtrList(ctx context.Context, sources ctrSources, all bool) ([]ctrLis
 				item.UptimeS = &seconds
 			}
 		}
-		if inspect.PID > 0 {
-			if path, err := sources.cgroupPath(inspect.PID); err == nil {
-				item.MemoryBytes = sources.limits(path).Memory.Used
-			}
-		}
 		items = append(items, item)
 	}
-	if len(items) == 0 && err != nil {
-		return nil, fmt.Errorf("%w: %s", err, infoSingleLine(firstLine(output)))
+	if sources.listStats != nil {
+		running := make([]ctrInspect, 0, len(items))
+		for _, inspect := range inspects {
+			if inspect.Status == "running" {
+				for _, item := range items {
+					if item.ID == inspect.ID[:min(len(inspect.ID), ctrShortIDLength)] {
+						running = append(running, inspect)
+						break
+					}
+				}
+			}
+		}
+		stats := sources.listStats(ctx, running)
+		for index := range items {
+			if sample, ok := stats[inspectsID(inspects, items[index].ID)]; ok {
+				applyCtrListStats(&items[index], sample)
+			} else if items[index].Status == "running" {
+				items[index].CPUUnavailable = "resource sampling is unavailable"
+				items[index].MemoryUnavailable = "resource sampling is unavailable"
+				items[index].PIDsUnavailable = "resource sampling is unavailable"
+				items[index].NetworkRXUnavailable = "resource sampling is unavailable"
+				items[index].NetworkTXUnavailable = "resource sampling is unavailable"
+				items[index].BlockReadUnavailable = "resource sampling is unavailable"
+				items[index].BlockWriteUnavailable = "resource sampling is unavailable"
+			}
+		}
+	} else {
+		for index := range items {
+			if items[index].Status == "running" {
+				items[index].CPUUnavailable = "list stats callback is unavailable"
+				items[index].MemoryUnavailable = "list stats callback is unavailable"
+				items[index].PIDsUnavailable = "list stats callback is unavailable"
+				items[index].NetworkRXUnavailable = "list stats callback is unavailable"
+				items[index].NetworkTXUnavailable = "list stats callback is unavailable"
+				items[index].BlockReadUnavailable = "list stats callback is unavailable"
+				items[index].BlockWriteUnavailable = "list stats callback is unavailable"
+			}
+		}
 	}
 	sort.SliceStable(items, func(i, j int) bool {
 		if items[i].rank() != items[j].rank() {
@@ -119,7 +161,54 @@ func collectCtrList(ctx context.Context, sources ctrSources, all bool) ([]ctrLis
 		}
 		return strings.ToLower(items[i].Name) < strings.ToLower(items[j].Name)
 	})
-	return items, nil
+	return items, err
+}
+
+func inspectsID(inspects []ctrInspect, short string) string {
+	for _, inspect := range inspects {
+		id := inspect.ID
+		if len(id) > ctrShortIDLength {
+			id = id[:ctrShortIDLength]
+		}
+		if id == short {
+			return inspect.ID
+		}
+	}
+	return short
+}
+
+func applyCtrListStats(item *ctrListItem, sample ctrListStats) {
+	limits := sample.Limits
+	item.CPUPercent = limits.CPUUsagePercent
+	item.CPUUnavailable = sample.CPUReason
+	item.MemoryBytes = limits.Memory.Used
+	item.MemoryLimitBytes = limits.Memory.Max
+	item.MemoryUnlimited = limits.Memory.Unlimited
+	item.MemoryLimitKnown = limits.Memory.Max != nil || limits.Memory.Unlimited
+	item.MemoryUnavailable = limits.Memory.Reason
+	if item.MemoryBytes != nil && limits.Memory.Max != nil && *limits.Memory.Max > 0 {
+		percent := float64(*item.MemoryBytes) / float64(*limits.Memory.Max) * 100
+		item.MemoryPercent = &percent
+	}
+	if item.MemoryBytes == nil || !item.MemoryLimitKnown {
+		if item.MemoryUnavailable == "" {
+			item.MemoryUnavailable = "memory usage or configured limit is unavailable"
+		}
+	}
+	if limits.Pids.Status == "available" {
+		value := limits.Pids.Current
+		item.PIDs = &value
+		item.PIDsUnavailable = limits.Pids.Reason
+	} else {
+		item.PIDsUnavailable = limits.Pids.Reason
+		if item.PIDsUnavailable == "" {
+			item.PIDsUnavailable = "pids current is unavailable"
+		}
+	}
+	item.NetworkRXBytes, item.NetworkTXBytes = sample.NetworkRX, sample.NetworkTX
+	item.NetworkRXUnavailable, item.NetworkTXUnavailable = sample.NetworkRXReason, sample.NetworkTXReason
+	item.BlockReadBytes, item.BlockWriteBytes = sample.BlockRead, sample.BlockWrite
+	item.BlockReadUnavailable, item.BlockWriteUnavailable = sample.BlockReadReason, sample.BlockWriteReason
 }
 
 // evaluateCtrList는 목록 전체를 결과 하나로 낸다. 실패한 container가 있으면 fail이고, 손볼 일이 있을 수 있는 container가 있으면
@@ -131,9 +220,17 @@ func evaluateCtrList(items []ctrListItem, err error) Result {
 	if err != nil {
 		// docker socket을 열지 못한 것은 container의 문제가 아니다. 상세와 같이 skip으로 알린다.
 		if strings.Contains(err.Error(), "permission denied") {
-			return svcResultFor(ctrProbeID, "list", StatusSkip, T("ctr.skip.needs_docker_access"))
+			result := svcResultFor(ctrProbeID, "list", StatusSkip, T("ctr.skip.needs_docker_access"))
+			if items != nil {
+				result.Metrics = map[string]interface{}{"containers": items}
+			}
+			return result
 		}
-		return svcFailed(svcResultFor(ctrProbeID, "list", StatusFail, T("ctr.list.failed", infoSingleLine(err.Error()))))
+		result := svcFailed(svcResultFor(ctrProbeID, "list", StatusFail, T("ctr.list.failed", infoSingleLine(err.Error()))))
+		if items != nil {
+			result.Metrics = map[string]interface{}{"containers": items}
+		}
+		return result
 	}
 	var failed []string
 	attention := 0
@@ -161,6 +258,17 @@ func evaluateCtrList(items []ctrListItem, err error) Result {
 		items = []ctrListItem{}
 	}
 	result.Metrics = map[string]interface{}{"containers": items, "failed": len(failed), "attention": attention}
+	var unavailable []string
+	for _, item := range items {
+		for _, reason := range []string{item.MemoryUnavailable, item.CPUUnavailable, item.PIDsUnavailable, item.NetworkRXUnavailable, item.NetworkTXUnavailable, item.BlockReadUnavailable, item.BlockWriteUnavailable} {
+			if reason != "" {
+				unavailable = append(unavailable, item.Name+": "+reason)
+			}
+		}
+	}
+	if len(unavailable) > 0 {
+		result.Evidence = append(result.Evidence, Evidence{Label: T("ctr.evidence.unavailable"), Value: strings.Join(unavailable, "\n")})
+	}
 	return result
 }
 
@@ -171,13 +279,68 @@ func ctrListCells(item ctrListItem) []string {
 		uptime = svcFormatUptime(time.Duration(*item.UptimeS) * time.Second)
 	}
 	if item.MemoryBytes != nil {
-		memory = formatProcessRSS(*item.MemoryBytes)
+		limit := "?"
+		if item.MemoryUnlimited {
+			limit = "∞"
+		} else if item.MemoryLimitBytes != nil {
+			limit = formatCtrBytes(*item.MemoryLimitBytes)
+		}
+		memory = formatCtrBytes(*item.MemoryBytes) + "/" + limit
+	} else if item.MemoryUnavailable != "" {
+		memory = "n/a"
 	}
-	return []string{item.Name, item.State, strconv.Itoa(item.Restarts), uptime, memory, item.Image}
+	cpu := "—"
+	if item.CPUPercent != nil {
+		cpu = fmt.Sprintf("%.1f%%", *item.CPUPercent)
+	} else if item.CPUUnavailable != "" {
+		cpu = "n/a"
+	}
+	memPercent := "—"
+	if item.MemoryPercent != nil {
+		memPercent = fmt.Sprintf("%.1f%%", *item.MemoryPercent)
+	} else if item.MemoryUnavailable != "" {
+		memPercent = "n/a"
+	}
+	pids := "—"
+	if item.PIDs != nil {
+		pids = strconv.FormatUint(*item.PIDs, 10)
+	} else if item.PIDsUnavailable != "" {
+		pids = "n/a"
+	}
+	return []string{item.Name, item.State, cpu, memory, memPercent, pids, formatIO(item.NetworkRXBytes, item.NetworkTXBytes, item.NetworkRXUnavailable, item.NetworkTXUnavailable), formatIO(item.BlockReadBytes, item.BlockWriteBytes, item.BlockReadUnavailable, item.BlockWriteUnavailable), strconv.Itoa(item.Restarts), uptime, item.Image}
+}
+
+func formatIO(first, second *uint64, firstErr, secondErr string) string {
+	a, b := "—", "—"
+	if first != nil {
+		a = formatCtrBytes(*first)
+	} else if firstErr != "" {
+		a = "n/a"
+	}
+	if second != nil {
+		b = formatCtrBytes(*second)
+	} else if secondErr != "" {
+		b = "n/a"
+	}
+	return "↓" + a + " ↑" + b
+}
+
+func formatCtrBytes(value uint64) string {
+	units := []string{"B", "KiB", "MiB", "GiB", "TiB", "PiB", "EiB"}
+	amount := float64(value)
+	unit := 0
+	for amount >= 1024 && unit < len(units)-1 {
+		amount /= 1024
+		unit++
+	}
+	if unit == 0 {
+		return fmt.Sprintf("%dB", value)
+	}
+	return fmt.Sprintf("%.1f%s", amount, units[unit])
 }
 
 func ctrListHeaders() []string {
-	return []string{T("ctr.list.column.name"), T("ctr.list.column.state"), T("ctr.list.column.restarts"), T("ctr.list.column.uptime"), T("ctr.list.column.memory"), T("ctr.list.column.image")}
+	return []string{T("ctr.list.column.name"), T("ctr.list.column.state"), T("ctr.list.column.cpu"), T("ctr.list.column.memory"), T("ctr.list.column.memory_percent"), T("ctr.list.column.pids"), T("ctr.list.column.network"), T("ctr.list.column.block"), T("ctr.list.column.restarts"), T("ctr.list.column.uptime"), T("ctr.list.column.image")}
 }
 
 func formatCtrListTable(items []ctrListItem, style textStyle) string {
@@ -188,13 +351,16 @@ func formatCtrListTable(items []ctrListItem, style textStyle) string {
 	colors := [][]string{nil}
 	for _, item := range items {
 		rows = append(rows, ctrListCells(item))
-		colors = append(colors, []string{"", item.stateColor(), "", "", "", richGray})
+		colors = append(colors, []string{"", item.stateColor(), "", "", "", "", "", "", "", "", richGray})
 	}
 	return formatListTable(rows, colors, style)
 }
 
 // runCtrList는 container 없이 부른 edc ctr다. 터미널이면 목록에서 골라 상세를 여는 화면을 열고, 아니면 결과 한 줄과 표를 낸다.
 func runCtrList(options commonOptions, version string, sources ctrSources, ok, all bool) int {
+	if sources.close != nil {
+		defer sources.close()
+	}
 	started := time.Now()
 	target := map[string]interface{}{"all": all}
 	if !ok {

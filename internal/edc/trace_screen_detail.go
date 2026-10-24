@@ -10,6 +10,8 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+
+	tea "charm.land/bubbletea/v2"
 )
 
 // traceScreenPayloadBytes는 상세 보기를 위해 payload 전체를 두는 합계 상한이다. 목록은 event마다 앞 4KiB만 두므로,
@@ -30,6 +32,7 @@ type traceFullPayloads struct {
 }
 
 func (payloads *traceFullPayloads) keep(number int, payload string) {
+	payloads.forget(number)
 	if len(payload) <= payloads.minimum {
 		return
 	}
@@ -39,8 +42,17 @@ func (payloads *traceFullPayloads) keep(number int, payload string) {
 	payloads.byNumber[number] = payload
 	payloads.order = append(payloads.order, number)
 	payloads.bytes += len(payload)
-	for payloads.bytes > traceScreenPayloadBytes && len(payloads.order) > 0 {
-		payloads.forgetOldest()
+}
+
+func (payloads *traceFullPayloads) forget(number int) {
+	value, ok := payloads.byNumber[number]
+	if !ok {
+		return
+	}
+	delete(payloads.byNumber, number)
+	payloads.bytes -= len(value)
+	if index := slices.Index(payloads.order, number); index >= 0 {
+		payloads.order = append(payloads.order[:index], payloads.order[index+1:]...)
 	}
 }
 
@@ -65,12 +77,97 @@ func (payloads traceFullPayloads) get(number int) (string, bool) {
 
 // traceDetail은 event 하나를 보는 화면이다. raw는 줄 바꿈 전의 줄이고, lines는 width에 맞춰 나눈 줄이다.
 type traceDetail struct {
-	title  string
-	number int
-	raw    []string
-	width  int
-	lines  []string
-	offset int
+	title            string
+	number           int
+	raw              []string
+	width            int
+	lines            []string
+	offset           int
+	payloadRawStart  int
+	payloadStart     int
+	preserveOffset   bool
+	restoreOffset    int
+	revision         uint64
+	responseRevision uint64
+	responseNumber   int
+	updating         bool
+}
+
+type traceDetailSnapshot struct {
+	kind             string
+	generation       uint64
+	revision         uint64
+	responseRevision uint64
+	responseNumber   int
+	number           int
+	width            int
+	protocol         string
+	filter           string
+	secrets          bool
+	decode           bool
+	event            captureEvent
+	response         *captureEvent
+	payload          string
+	gzipRaw          string
+	notes            []string
+	payloadEvicted   bool
+}
+
+func cloneTraceEvent(event captureEvent) captureEvent {
+	clone := event
+	clone.Answers = slices.Clone(event.Answers)
+	clone.ALPN = slices.Clone(event.ALPN)
+	clone.gzipped = nil
+	clone.LatencyMS = cloneFloat64(event.LatencyMS)
+	clone.NetworkMS = cloneFloat64(event.NetworkMS)
+	clone.ReadDelayMS = cloneFloat64(event.ReadDelayMS)
+	if event.MySQL != nil {
+		value := *event.MySQL
+		value.AffectedRows = cloneUint64(value.AffectedRows)
+		clone.MySQL = &value
+	}
+	if event.ClickHouse != nil {
+		value := *event.ClickHouse
+		value.Rows = cloneUint64(value.Rows)
+		clone.ClickHouse = &value
+	}
+	if event.Postgres != nil {
+		value := *event.Postgres
+		value.Rows = cloneUint64(value.Rows)
+		clone.Postgres = &value
+	}
+	if event.Redis != nil {
+		value := *event.Redis
+		value.ArgPreview = slices.Clone(value.ArgPreview)
+		value.Elements = cloneInt64(value.Elements)
+		value.BulkLength = cloneInt64(value.BulkLength)
+		clone.Redis = &value
+	}
+	return clone
+}
+
+func cloneFloat64(value *float64) *float64 {
+	if value == nil {
+		return nil
+	}
+	copy := *value
+	return &copy
+}
+
+func cloneUint64(value *uint64) *uint64 {
+	if value == nil {
+		return nil
+	}
+	copy := *value
+	return &copy
+}
+
+func cloneInt64(value *int64) *int64 {
+	if value == nil {
+		return nil
+	}
+	copy := *value
+	return &copy
 }
 
 // traceEventTitle은 상세 보기와 미리 보기의 제목이다. 시각을 앞에 두어 서버 log와 맞춰 볼 수 있게 한다.
@@ -81,7 +178,7 @@ func traceEventTitle(event captureEvent) string {
 
 // newTraceDetail은 event의 필드와 payload를 줄로 만든다. payload는 부르는 쪽이 가리기와 gzip 풀기를 마친 글자다.
 func newTraceDetail(event captureEvent, payload string, notes []string, number, width int) *traceDetail {
-	detail := &traceDetail{title: traceEventTitle(event), number: number}
+	detail := &traceDetail{title: traceEventTitle(event), number: number, payloadRawStart: -1, payloadStart: -1}
 	if event.Protocol == "mysql" && event.MySQL != nil {
 		detail.raw = traceMySQLDetailLines(event)
 	} else if event.Protocol == "clickhouse" && event.ClickHouse != nil {
@@ -100,6 +197,7 @@ func newTraceDetail(event captureEvent, payload string, notes []string, number, 
 		detail.raw = strings.Split(string(encoded), "\n")
 	}
 	if payload != "" {
+		detail.payloadRawStart = len(detail.raw)
 		detail.raw = append(append(detail.raw, "", "payload:"), notes...)
 		event.Payload = payload
 		detail.raw = append(detail.raw, traceHTTPPayloadBlock(event)...)
@@ -215,42 +313,169 @@ func (model traceScreenModel) buildDetail(number int) *traceDetail {
 	if number < model.first || number >= model.first+len(model.events) {
 		return nil
 	}
-	event, payload, notes := model.detailPayload(number)
-	detail := newTraceDetail(event, payload, notes, number, model.width)
-	if traceScreenPairs(model.protocol) {
-		for _, row := range model.displayRows() {
-			if row.primary != number || row.response < model.first || row.response >= model.first+len(model.events) {
-				continue
-			}
-			response := model.events[row.response-model.first]
-			result, ok := tracePairResult(response)
-			if !ok {
-				break
-			}
-			detail.raw = append(detail.raw, "", "response:", "event: "+response.Event, "result: "+result)
-			if response.LatencyMS != nil {
-				detail.raw = append(detail.raw, "latency: "+traceLatency(response.LatencyMS, "ms"))
-			}
-			if response.MySQL != nil && (response.MySQL.ErrorCode != 0 || response.MySQL.SQLState != "" || response.MySQL.Message != "") {
-				detail.raw = append(detail.raw, "error: "+fmt.Sprintf("%d (%s) %s", response.MySQL.ErrorCode, emptyAs(response.MySQL.SQLState, "-"), response.MySQL.Message))
-			}
-			if info := response.ClickHouse; info != nil && info.HTTPStatus != 0 {
-				detail.raw = append(detail.raw, "http_status: "+strconv.Itoa(info.HTTPStatus))
-			}
-			if info := response.ClickHouse; info != nil && (info.ErrorCode != 0 || info.ErrorName != "" || info.Message != "") {
-				detail.raw = append(detail.raw, "error: "+fmt.Sprintf("%d (%s) %s", info.ErrorCode, emptyAs(info.ErrorName, "-"), info.Message))
-			}
-			if info := response.Postgres; info != nil && info.Rows != nil {
-				detail.raw = append(detail.raw, "rows: "+strconv.FormatUint(*info.Rows, 10))
-			}
-			if info := response.Postgres; info != nil && info.Detail != "" {
-				detail.raw = append(detail.raw, "detail: "+info.Detail)
-			}
-			detail.wrap(model.width)
-			break
+	return traceBuildDetail(model.detailSnapshot(number, 0))
+}
+
+func (model traceScreenModel) detailSnapshot(number int, generation uint64) traceDetailSnapshot {
+	event := cloneTraceEvent(model.events[number-model.first])
+	payload, kept := model.payloads.get(number)
+	var notes []string
+	if !kept {
+		payload = event.Payload
+		if model.payloadEvicted[number] {
+			notes = append(notes, "full payload evicted to keep screen memory within 64 MiB")
+		} else if len(payload) >= httpPayloadHead {
+			notes = append(notes, fmt.Sprintf("(only the first %d bytes: older payloads are not kept)", httpPayloadHead))
 		}
 	}
+	gzipRaw, _ := model.gzipped.get(number)
+	var response *captureEvent
+	var responseRevision uint64
+	responseNumber := -1
+	if traceScreenPairs(model.protocol) {
+		for _, row := range model.displayRows() {
+			if row.primary == number && row.response >= model.first && row.response < model.first+len(model.events) {
+				value := cloneTraceEvent(model.events[row.response-model.first])
+				response = &value
+				responseNumber = row.response
+				responseRevision = model.payloadRevisions[row.response]
+				break
+			}
+		}
+	}
+	return traceDetailSnapshot{generation: generation, revision: model.payloadRevisions[number], responseRevision: responseRevision, responseNumber: responseNumber, number: number, width: model.width, protocol: model.protocol, filter: model.filter, secrets: model.secrets, decode: model.decode, event: event, response: response, payload: payload, gzipRaw: gzipRaw, notes: slices.Clone(notes), payloadEvicted: model.payloadEvicted[number]}
+}
+
+func (model traceScreenModel) detailShell(number int, status string) *traceDetail {
+	if number < model.first || number >= model.first+len(model.events) {
+		return nil
+	}
+	event := model.events[number-model.first]
+	return &traceDetail{title: traceEventTitle(event), number: number, width: model.width, raw: []string{status}, lines: []string{status}, payloadRawStart: -1, payloadStart: -1, revision: model.payloadRevisions[number], updating: status == "updating detail…"}
+}
+
+func (model *traceScreenModel) requestDetailBuild() tea.Cmd {
+	if model.detail == nil || model.detail.number < model.first || model.detail.number >= model.first+len(model.events) || model.stopping || model.finished != nil {
+		return nil
+	}
+	snapshot := model.detailSnapshot(model.detail.number, model.detailGeneration)
+	snapshot.kind = "detail"
+	if model.detailJobActive {
+		if model.detailJobCurrent != nil && sameTraceDetailSnapshot(*model.detailJobCurrent, snapshot) {
+			return nil
+		}
+		if model.detailJobPending != nil && sameTraceDetailSnapshot(*model.detailJobPending, snapshot) {
+			return nil
+		}
+		model.detailJobPending = &snapshot
+		return nil
+	}
+	return model.startDetailBuild(snapshot)
+}
+
+func (model *traceScreenModel) startDetailBuild(snapshot traceDetailSnapshot) tea.Cmd {
+	if model.stopping || model.finished != nil {
+		return nil
+	}
+	model.detailJobActive = true
+	model.detailJobCurrent = &snapshot
+	return func() tea.Msg {
+		return buildTracePayload(snapshot)
+	}
+}
+
+func sameTraceDetailSnapshot(left, right traceDetailSnapshot) bool {
+	return left.kind == right.kind && left.generation == right.generation && left.revision == right.revision && left.responseRevision == right.responseRevision && left.responseNumber == right.responseNumber && left.number == right.number && left.width == right.width && left.protocol == right.protocol && left.filter == right.filter && left.secrets == right.secrets && left.decode == right.decode && left.payloadEvicted == right.payloadEvicted
+}
+
+func traceBuildDetail(snapshot traceDetailSnapshot) *traceDetail {
+	result := tracePreparePayload(snapshot)
+	detail := newTraceDetail(result.event, result.payload, result.notes, snapshot.number, snapshot.width)
+	detail.revision = snapshot.revision
+	detail.responseRevision = snapshot.responseRevision
+	if snapshot.response != nil {
+		detail.raw = append(detail.raw, tracePairResponseDetailLines(*snapshot.response)...)
+		detail.wrap(snapshot.width)
+	}
 	return detail
+}
+
+type tracePreparedPayload struct {
+	event   captureEvent
+	payload string
+	notes   []string
+}
+
+func tracePreparePayload(snapshot traceDetailSnapshot) tracePreparedPayload {
+	event, payload, notes := snapshot.event, snapshot.payload, slices.Clone(snapshot.notes)
+	if snapshot.decode && payload != "" {
+		if snapshot.gzipRaw == "" {
+			notes = append(notes, "(gzip: this message is not gzip, or its raw bytes are no longer kept)")
+		} else if decoded, note := traceGunzipMessage([]byte(snapshot.gzipRaw)); decoded != "" {
+			payload, notes = decoded, append(notes, note, "z raw")
+		} else {
+			notes = append(notes, note, "z raw")
+		}
+	} else if snapshot.gzipRaw != "" {
+		notes = append(notes, "gzip compressed · z decompress")
+	}
+	if !snapshot.secrets && snapshot.protocol == "http" {
+		payload = string(traceMaskHTTPHeaders([]byte(payload)))
+	}
+	return tracePreparedPayload{event: event, payload: payload, notes: notes}
+}
+
+func buildTracePayload(snapshot traceDetailSnapshot) traceDetailBuiltMsg {
+	result := traceDetailBuiltMsg{generation: snapshot.generation, number: snapshot.number, revision: snapshot.revision, responseRevision: snapshot.responseRevision, responseNumber: snapshot.responseNumber, kind: snapshot.kind, protocol: snapshot.protocol, filter: snapshot.filter, width: snapshot.width, secrets: snapshot.secrets, decode: snapshot.decode, payloadEvicted: snapshot.payloadEvicted}
+	if snapshot.kind == "preview" {
+		prepared := tracePreparePayload(snapshot)
+		preview := &tracePreview{number: snapshot.number, secrets: snapshot.secrets, decode: snapshot.decode, width: snapshot.width, revision: snapshot.revision, payloadEvicted: snapshot.payloadEvicted, title: tracePreviewTitle(prepared.event)}
+		if prepared.payload != "" {
+			prepared.event.Payload = prepared.payload
+			preview.lines = append(preview.lines, prepared.notes...)
+			preview.lines = append(preview.lines, traceHTTPPayloadBlock(prepared.event)...)
+		} else {
+			prepared.event.Payload = ""
+			encoded, err := json.MarshalIndent(prepared.event, "", "  ")
+			if err != nil {
+				encoded = []byte(err.Error())
+			}
+			preview.lines = strings.Split(string(encoded), "\n")
+		}
+		preview.wrapped = traceWrapAll(preview.lines, snapshot.width)
+		preview.wrappedRows = len(preview.wrapped)
+		result.preview = preview
+		return result
+	}
+	result.detail = traceBuildDetail(snapshot)
+	return result
+}
+
+func tracePairResponseDetailLines(response captureEvent) []string {
+	result, ok := tracePairResult(response)
+	if !ok {
+		return nil
+	}
+	lines := []string{"", "response:", "event: " + response.Event, "result: " + result}
+	if response.LatencyMS != nil {
+		lines = append(lines, "latency: "+traceLatency(response.LatencyMS, "ms"))
+	}
+	if response.MySQL != nil && (response.MySQL.ErrorCode != 0 || response.MySQL.SQLState != "" || response.MySQL.Message != "") {
+		lines = append(lines, "error: "+fmt.Sprintf("%d (%s) %s", response.MySQL.ErrorCode, emptyAs(response.MySQL.SQLState, "-"), response.MySQL.Message))
+	}
+	if info := response.ClickHouse; info != nil && info.HTTPStatus != 0 {
+		lines = append(lines, "http_status: "+strconv.Itoa(info.HTTPStatus))
+	}
+	if info := response.ClickHouse; info != nil && (info.ErrorCode != 0 || info.ErrorName != "" || info.Message != "") {
+		lines = append(lines, "error: "+fmt.Sprintf("%d (%s) %s", info.ErrorCode, emptyAs(info.ErrorName, "-"), info.Message))
+	}
+	if info := response.Postgres; info != nil && info.Rows != nil {
+		lines = append(lines, "rows: "+strconv.FormatUint(*info.Rows, 10))
+	}
+	if info := response.Postgres; info != nil && info.Detail != "" {
+		lines = append(lines, "detail: "+info.Detail)
+	}
+	return lines
 }
 
 // detailPayload는 상세 보기와 미리 보기가 보일 payload다. 보관한 전체 payload를 쓰고, z면 gzip 본문을 풀고, m이 꺼져
@@ -261,7 +486,9 @@ func (model traceScreenModel) detailPayload(number int) (captureEvent, string, [
 	var notes []string
 	if !kept {
 		payload = event.Payload
-		if len(payload) >= httpPayloadHead {
+		if model.payloadEvicted[number] {
+			notes = append(notes, "full payload evicted to keep screen memory within 64 MiB")
+		} else if len(payload) >= httpPayloadHead {
 			notes = append(notes, fmt.Sprintf("(only the first %d bytes: older payloads are not kept)", httpPayloadHead))
 		}
 	}
@@ -274,6 +501,11 @@ func (model traceScreenModel) detailPayload(number int) (captureEvent, string, [
 		} else {
 			notes = append(notes, note)
 		}
+		if ok {
+			notes = append(notes, "z raw")
+		}
+	} else if _, ok := model.gzipped.get(number); ok {
+		notes = append(notes, "gzip compressed · z decompress")
 	}
 	if !model.secrets && model.protocol == "http" {
 		payload = string(traceMaskHTTPHeaders([]byte(payload)))
@@ -281,23 +513,20 @@ func (model traceScreenModel) detailPayload(number int) (captureEvent, string, [
 	return event, payload, notes
 }
 
+func traceScreenDetailPage(model traceScreenModel) int {
+	page := model.height - 3
+	if len(model.tlsNotices) != 0 || model.tlsNoticeOverflow != 0 {
+		page--
+	}
+	return max(1, page)
+}
+
 // rebuildDetail은 가리기나 gzip을 바꾼 뒤 같은 event를 다시 그린다. 보던 위치는 그대로 둔다.
 func (model *traceScreenModel) rebuildDetail() {
 	if detail := model.buildDetail(model.detail.number); detail != nil {
 		detail.offset = model.detail.offset
 		model.detail = detail
-		model.detail.scroll(0, max(1, model.height-3))
-	}
-}
-
-// followNewest는 상세 보기를 filter에 맞는 가장 최근 event로 바꾼다. 같은 event면 그대로 둔다.
-func (model *traceScreenModel) followNewest() {
-	newest := model.moveSelection(-1, 1)
-	if newest < 0 || (model.detail != nil && model.detail.number == newest) {
-		return
-	}
-	if detail := model.buildDetail(newest); detail != nil {
-		model.detail = detail
+		model.detail.scroll(0, traceScreenDetailPage(*model))
 	}
 }
 
@@ -364,7 +593,11 @@ func httpDechunk(body []byte) []byte {
 func (detail *traceDetail) wrap(width int) {
 	detail.width = width
 	detail.lines = detail.lines[:0]
-	for _, line := range detail.raw {
+	detail.payloadStart = -1
+	for index, line := range detail.raw {
+		if index == detail.payloadRawStart {
+			detail.payloadStart = len(detail.lines)
+		}
 		detail.lines = append(detail.lines, traceWrapLine(strings.ReplaceAll(line, "\t", "    "), width)...)
 	}
 }
@@ -417,40 +650,61 @@ func (model traceScreenModel) moveSelection(step, count int) int {
 }
 
 // openDetail은 고른 event의 상세 보기를 연다. 고른 event가 없으면 가장 최근 event를 고른다.
-func (model *traceScreenModel) openDetail() {
+func (model *traceScreenModel) openDetail() tea.Cmd {
 	if model.selected < 0 {
 		model.selected = model.moveSelection(-1, 1)
 	}
 	if model.selected < 0 {
-		return
+		return nil
 	}
-	model.detail = model.buildDetail(model.selected)
+	model.detailGeneration++
+	model.detail = model.detailShell(model.selected, "preparing detail…")
+	return model.requestDetailBuild()
 }
 
 // openFollow는 가장 최근 event를 보는 상세 보기를 열고, 새 event가 오면 그 event로 바꾼다.
-func (model *traceScreenModel) openFollow() {
+func (model *traceScreenModel) openFollow() tea.Cmd {
 	model.follow, model.selected = true, -1
-	model.followNewest()
+	model.detailGeneration++
+	model.detailJobPending = nil
+	return model.followNewest()
 }
 
-func (model traceScreenModel) updateDetailKey(key string) traceScreenModel {
-	page := max(1, model.height-3)
+func (model traceScreenModel) updateDetailKey(key string) (traceScreenModel, tea.Cmd) {
+	page := traceScreenDetailPage(model)
+	var cmd tea.Cmd
 	switch key {
 	case "esc", "enter", "q", "backspace":
 		model.detail, model.follow = nil, false
+		model.detailGeneration++
+		model.detailJobPending = nil
 	case "f":
 		// 따라가기를 끄면 보던 event에서 멈추고, 목록으로 돌아가도 그 event를 고른 채로 둔다.
 		if model.follow {
 			model.follow, model.selected = false, model.detail.number
+			model.detailGeneration++
+			model.detailJobPending = nil
 		} else {
-			model.openFollow()
+			cmd = model.openFollow()
 		}
 	case "m":
 		model.secrets = !model.secrets
-		model.rebuildDetail()
+		model.detailGeneration++
+		offset := model.detail.offset
+		preserveOffset := len(model.detail.raw) > 1 && !model.detail.updating
+		model.detail = model.detailShell(model.detail.number, "preparing detail…")
+		model.detail.preserveOffset = preserveOffset
+		model.detail.restoreOffset = offset
+		cmd = model.requestDetailBuild()
 	case "z":
 		model.decode = !model.decode
-		model.rebuildDetail()
+		model.detailGeneration++
+		offset := model.detail.offset
+		preserveOffset := len(model.detail.raw) > 1 && !model.detail.updating
+		model.detail = model.detailShell(model.detail.number, "preparing detail…")
+		model.detail.preserveOffset = preserveOffset
+		model.detail.restoreOffset = offset
+		cmd = model.requestDetailBuild()
 	case "up", "k":
 		model.detail.scroll(-1, page)
 	case "down", "j":
@@ -464,15 +718,35 @@ func (model traceScreenModel) updateDetailKey(key string) traceScreenModel {
 	case "end", "G":
 		model.detail.scroll(len(model.detail.lines), page)
 	}
-	return model
+	return model, cmd
+}
+
+func (model *traceScreenModel) followNewest() tea.Cmd {
+	newest := model.moveSelection(-1, 1)
+	if newest < 0 || (model.detail != nil && model.detail.number == newest) {
+		return nil
+	}
+	if model.detailJobActive && model.detail != nil {
+		model.detail.updating = true
+		snapshot := model.detailSnapshot(newest, model.detailGeneration)
+		snapshot.kind = "detail"
+		model.detailJobPending = &snapshot
+		return nil
+	}
+	model.detail = model.detailShell(newest, "preparing detail…")
+	return model.requestDetailBuild()
 }
 
 func traceScreenDetailView(model traceScreenModel) []string {
 	detail := model.detail
-	page := max(0, model.height-3)
+	page := max(0, traceScreenDetailPage(model))
 	last := min(len(detail.lines), detail.offset+page)
 	color := traceScreenColor()
-	header := append(traceTitleSpans("edc trace "+traceLabel(model.protocol, model.side)), traceSeparator, traceText{text: "detail"}, traceSeparator, traceLabelSpan("lines "),
+	captureState, captureColor := "live", richGreen
+	if model.stopping {
+		captureState, captureColor = "stopping", richYellow
+	}
+	header := append(traceTitleSpans("edc trace "+traceLabel(model.protocol, model.side)), traceSeparator, traceText{text: "capture " + captureState, color: captureColor}, traceSeparator, traceText{text: "detail"}, traceSeparator, traceLabelSpan("target "), traceText{text: fmt.Sprintf("#%d", detail.number+1)}, traceSeparator, traceLabelSpan("lines "),
 		traceText{text: fmt.Sprintf("%d-%d", min(detail.offset+1, last), last)}, traceLabelSpan(" of "), traceText{text: fmt.Sprint(len(detail.lines))})
 	for _, state := range []struct {
 		on    bool
@@ -482,6 +756,9 @@ func traceScreenDetailView(model traceScreenModel) []string {
 		if state.on {
 			header = append(header, traceSeparator, traceText{text: state.name, color: state.color})
 		}
+	}
+	if detail.updating {
+		header = append(header, traceSeparator, traceText{text: "updating", color: richYellow})
 	}
 	// Mac 자판에는 PgUp, PgDn, Home, End가 없는 경우가 많아, 어디서나 쓸 수 있는 키를 안내한다. 원래 키도 그대로 된다.
 	help := "↑↓ scroll  space/b page  g/G top/end  f follow  esc back  ctrl-c stop"
@@ -498,6 +775,13 @@ func traceScreenDetailView(model traceScreenModel) []string {
 		}
 	}
 	rows := []string{traceTexts(header, model.width, color), traceKeyHints(help, model.width, color, on...), traceFit(detail.title, model.width)}
+	if len(model.tlsNotices) != 0 || model.tlsNoticeOverflow != 0 {
+		notice := strings.Join(model.tlsNotices, " · ")
+		if model.tlsNoticeOverflow != 0 {
+			notice += fmt.Sprintf(" · %d TLS notices omitted", model.tlsNoticeOverflow)
+		}
+		rows = append(rows, traceTexts([]traceText{{text: "TLS: " + notice, color: richYellow}}, model.width, color))
+	}
 	rows = append(rows, detail.lines[detail.offset:last]...)
 	return traceScreenPadRows(rows, model.height)
 }

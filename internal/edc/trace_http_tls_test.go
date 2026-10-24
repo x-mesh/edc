@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"debug/elf"
 	"encoding/binary"
+	"encoding/json"
+	"fmt"
 	"io"
 	"io/fs"
 	"os"
@@ -36,6 +38,60 @@ func TestTraceTLSMappedLibrariesReadsTLSLibraryPaths(t *testing.T) {
 	}
 	if got := traceTLSMappedLibraries(maps); !slices.Equal(got, want) {
 		t.Fatalf("libraries = %q, want %q", got, want)
+	}
+}
+
+func TestTraceTLSNoticeTextEscapesTerminalControlsAndStaysInternal(t *testing.T) {
+	unsafe := "library\x1b[31m\nnext"
+	notice := traceTLSNoticeText(unsafe)
+	if strings.ContainsAny(notice, "\x1b\r\n") || !strings.Contains(notice, `\x1b[31m\nnext`) {
+		t.Fatalf("notice = %q", notice)
+	}
+	eventJSON, err := json.Marshal(captureEvent{TLSNotice: unsafe})
+	if err != nil || strings.Contains(string(eventJSON), "TLSNotice") || strings.Contains(string(eventJSON), "tls_notice") {
+		t.Fatalf("notice event JSON = %s, %v", eventJSON, err)
+	}
+	summaryJSON, err := json.Marshal(captureSummary{TLSNotices: []string{unsafe}})
+	if err != nil || strings.Contains(string(summaryJSON), "TLSNotices") || strings.Contains(string(summaryJSON), "tls_notices") {
+		t.Fatalf("notice summary JSON = %s, %v", summaryJSON, err)
+	}
+}
+
+func TestTraceTLSNoticeBufferBoundsDeduplicationAndOverflow(t *testing.T) {
+	buffer := newTraceTLSNoticeBuffer()
+	for index := range traceTLSNoticeLimit {
+		buffer.offer(fmt.Sprintf("notice-%d", index))
+	}
+	buffer.offer("notice-0")
+	drained := buffer.drain()
+	if len(drained) != traceTLSNoticeLimit || drained[0] != "notice-0" || drained[len(drained)-1] != "notice-63" {
+		t.Fatalf("drained %d notices: %q", len(drained), drained)
+	}
+	buffer.offer("notice-overflow")
+	notices, overflow := buffer.summary()
+	if len(notices) != traceTLSNoticeLimit || overflow != 1 || len(buffer.drain()) != 0 {
+		t.Fatalf("summary has %d notices and overflow %d", len(notices), overflow)
+	}
+}
+
+func TestTraceTLSImplicitAutoContinuesWithoutAnInitialLibrary(t *testing.T) {
+	oldRoot, oldLibraries, oldRelease, oldProblem := traceProcRoot, traceTLSHostLibraries, traceKernelRelease, traceTLSExecProblem
+	traceProcRoot = t.TempDir()
+	traceTLSHostLibraries = nil
+	traceKernelRelease = filepath.Join(t.TempDir(), "release")
+	if err := os.WriteFile(traceKernelRelease, []byte("6.14.0"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	traceTLSExecProblem = func() string { return "" }
+	t.Cleanup(func() {
+		traceProcRoot, traceTLSHostLibraries, traceKernelRelease, traceTLSExecProblem = oldRoot, oldLibraries, oldRelease, oldProblem
+	})
+	finder, notices, code, err := resolveTraceTLSTargetsFor(traceTLSAuto, true)
+	if err != nil || code != 0 || finder == nil || !finder.rescan || len(finder.targets) != 0 || !slices.Contains(notices, T("cli.trace.tls_auto_unavailable", T("cli.trace.tls_none"))) {
+		t.Fatalf("finder=%+v notices=%q code=%d error=%v", finder, notices, code, err)
+	}
+	if _, _, code, err := resolveTraceTLSTargets(traceTLSAuto); err == nil || code != 3 {
+		t.Fatalf("explicit auto result: code=%d error=%v", code, err)
 	}
 }
 

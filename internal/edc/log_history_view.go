@@ -11,6 +11,8 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
+var historySelectedBackground = richRGB{0x2d, 0x1c, 0x3e}
+
 // historyTint는 색을 쓸 때만 칠한다. code는 richGreen 같은 팔레트 번호다.
 func historyTint(text, code string, color bool) string {
 	if !color {
@@ -31,7 +33,15 @@ func historySelect(cells string, color bool) string {
 	if !color {
 		return "▸ " + cells
 	}
-	return liveSelected(liveSelectedBar+" "+cells, true)
+	if !liveRich(color) {
+		return "▸ " + cells
+	}
+	truecolor := richTruecolor()
+	base := "\033[1;97;" + richRGBCode(historySelectedBackground, true, truecolor) + "m"
+	bar := "\033[" + richFixedColor(richMagenta, truecolor) + "m" + liveSelectedBar + "\033[39m\033[97m"
+	gray := "\033[" + richFixedColor(richGray, truecolor) + "m"
+	cells = strings.ReplaceAll(cells, gray, "\033[97m")
+	return base + bar + " " + strings.ReplaceAll(cells, richReset, richReset+base) + richReset
 }
 
 func historyCell(text string, width int, right bool) string {

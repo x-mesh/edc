@@ -1,7 +1,6 @@
 package edc
 
 import (
-	"debug/buildinfo"
 	"debug/elf"
 	"debug/gosym"
 	"encoding/binary"
@@ -19,12 +18,19 @@ const (
 	traceTLSGoMaxCode    = 1 << 20
 	traceTLSGoMaxTable   = 64 << 20
 	traceTLSGoMaxReturns = 128
+	traceTLSGoBuildMagic = "\xff Go buildinf:"
 )
 
 var traceTLSGoVersions = map[string]bool{
-	"go1.25.0": true,
-	"go1.26.8": true,
-	"go1.27.1": true,
+	"go1.21.5":  true,
+	"go1.23.7":  true,
+	"go1.23.8":  true,
+	"go1.23.12": true,
+	"go1.25.0":  true,
+	"go1.26.5":  true,
+	"go1.26.8":  true,
+	"go1.27.3":  true,
+	"go1.27.1":  true,
 }
 
 func traceTLSGo(file *elf.File, target *traceTLSTarget) (err error) {
@@ -35,12 +41,19 @@ func traceTLSGo(file *elf.File, target *traceTLSTarget) (err error) {
 	if section == nil {
 		return nil
 	}
-	info, err := buildinfo.ReadFile(target.path)
-	if err != nil {
-		return fmt.Errorf("Go build info: %w", err)
+	if section.Size < 4 || section.ReaderAt == nil {
+		return fmt.Errorf("invalid Go TLS function table size")
 	}
-	if !traceTLSGoVersions[info.GoVersion] || (file.Machine != elf.EM_X86_64 && file.Machine != elf.EM_AARCH64) || file.Data != elf.ELFDATA2LSB || (file.Type != elf.ET_EXEC && file.Type != elf.ET_DYN) {
-		return fmt.Errorf("unsupported Go TLS ABI: %s %s %s", info.GoVersion, file.Machine, file.Type)
+	var tableMagic [4]byte
+	if _, err := section.ReaderAt.ReadAt(tableMagic[:], 0); err != nil {
+		return fmt.Errorf("Go TLS function table: %w", err)
+	}
+	magic := binary.LittleEndian.Uint32(tableMagic[:])
+	if magic == 0xfffffffb || magic == 0xfffffffa || magic == 0xfffffff0 {
+		return fmt.Errorf("unsupported Go TLS ABI: legacy Go function table (pclntab %#x)", magic)
+	}
+	if file.Class != elf.ELFCLASS64 || file.Data != elf.ELFDATA2LSB {
+		return fmt.Errorf("unsupported Go TLS ELF format: %s %s", file.Class, file.Data)
 	}
 	text := file.Section(".text")
 	if text == nil || section.Size > traceTLSGoMaxTable || section.Size < 72 {
@@ -79,8 +92,10 @@ func traceTLSGo(file *elf.File, target *traceTLSTarget) (err error) {
 	if err != nil {
 		return fmt.Errorf("Go TLS function table: %w", err)
 	}
-	entries := map[string]uint64{}
-	returns := map[string][]uint64{}
+	if uint64(len(table.Funcs)) != nfunc {
+		return fmt.Errorf("invalid Go TLS function count: header=%d parsed=%d", nfunc, len(table.Funcs))
+	}
+	functions := make(map[string]*gosym.Func, 3)
 	for _, name := range []string{traceTLSGoRead, traceTLSGoWrite, traceTLSGoClose} {
 		var found *gosym.Func
 		for i := range table.Funcs {
@@ -92,8 +107,31 @@ func traceTLSGo(file *elf.File, target *traceTLSTarget) (err error) {
 			}
 		}
 		if found == nil {
-			return fmt.Errorf("missing Go TLS function %s", name)
+			continue
 		}
+		functions[name] = found
+	}
+	if len(functions) == 0 {
+		return nil
+	}
+	if len(functions) != 3 {
+		for _, name := range []string{traceTLSGoRead, traceTLSGoWrite, traceTLSGoClose} {
+			if _, ok := functions[name]; !ok {
+				return fmt.Errorf("missing Go TLS function %s", name)
+			}
+		}
+	}
+	version, err := traceTLSGoBuildVersion(file)
+	if err != nil {
+		return fmt.Errorf("Go build info: %w", err)
+	}
+	if !traceTLSGoVersions[version] || (file.Machine != elf.EM_X86_64 && file.Machine != elf.EM_AARCH64) || (file.Type != elf.ET_EXEC && file.Type != elf.ET_DYN) {
+		return fmt.Errorf("unsupported Go TLS ABI: %s %s %s", version, file.Machine, file.Type)
+	}
+	entries := map[string]uint64{}
+	returns := map[string][]uint64{}
+	for _, name := range []string{traceTLSGoRead, traceTLSGoWrite, traceTLSGoClose} {
+		found := functions[name]
 		if found.End <= found.Entry || found.End-found.Entry > traceTLSGoMaxCode {
 			return fmt.Errorf("invalid Go TLS function span: %s", name)
 		}
@@ -119,6 +157,73 @@ func traceTLSGo(file *elf.File, target *traceTLSTarget) (err error) {
 	return nil
 }
 
+func traceTLSGoBuildVersion(file *elf.File) (string, error) {
+	if file.Class != elf.ELFCLASS64 || file.Data != elf.ELFDATA2LSB {
+		return "", fmt.Errorf("unsupported Go build info ELF format: %s %s", file.Class, file.Data)
+	}
+	section := file.Section(".go.buildinfo")
+	if section == nil || section.Size < 33 || section.Addralign < 16 || section.Addr%16 != 0 || section.Offset%16 != 0 || section.ReaderAt == nil {
+		return "", fmt.Errorf("invalid .go.buildinfo section")
+	}
+	if section.Offset > math.MaxInt64 || section.Size > uint64(math.MaxInt64)-section.Offset || section.Size > math.MaxUint64-section.Offset || section.Addr > math.MaxUint64-section.Size {
+		return "", fmt.Errorf("invalid .go.buildinfo range")
+	}
+	var mapped bool
+	for _, program := range file.Progs {
+		if program.Type != elf.PT_LOAD || program.Filesz == 0 || program.Filesz > math.MaxUint64-program.Vaddr || program.Filesz > math.MaxUint64-program.Off {
+			continue
+		}
+		if section.Addr < program.Vaddr || section.Addr+section.Size > program.Vaddr+program.Filesz || section.Offset < program.Off || section.Offset+section.Size > program.Off+program.Filesz {
+			continue
+		}
+		if section.Addr-program.Vaddr != section.Offset-program.Off {
+			continue
+		}
+		mapped = true
+		break
+	}
+	if !mapped {
+		return "", fmt.Errorf(".go.buildinfo is outside file-backed PT_LOAD data")
+	}
+	const headerSize = 32
+	if section.Size < headerSize+1 {
+		return "", fmt.Errorf("invalid .go.buildinfo size")
+	}
+	header := make([]byte, headerSize)
+	n, err := section.ReaderAt.ReadAt(header, 0)
+	if err != nil && err != io.EOF {
+		return "", fmt.Errorf("read .go.buildinfo header: %w", err)
+	}
+	if n != len(header) {
+		return "", fmt.Errorf("short .go.buildinfo header read")
+	}
+	if string(header[:14]) != traceTLSGoBuildMagic || header[14] != 8 || header[15] != 2 {
+		return "", fmt.Errorf("unsupported .go.buildinfo header")
+	}
+	var encodedLength [1]byte
+	n, err = section.ReaderAt.ReadAt(encodedLength[:], headerSize)
+	if err != nil && err != io.EOF {
+		return "", fmt.Errorf("read Go build version length: %w", err)
+	}
+	length, width := binary.Uvarint(encodedLength[:n])
+	if width != 1 || length == 0 || length > 64 || uint64(headerSize+width)+length > section.Size {
+		return "", fmt.Errorf("invalid Go build version length")
+	}
+	version := make([]byte, int(length))
+	n, err = section.ReaderAt.ReadAt(version, headerSize+int64(width))
+	if err != nil && err != io.EOF {
+		return "", fmt.Errorf("read Go build version: %w", err)
+	}
+	if n != len(version) {
+		return "", fmt.Errorf("short Go build version read")
+	}
+	for _, character := range version {
+		if !(character >= 'a' && character <= 'z') && !(character >= 'A' && character <= 'Z') && !(character >= '0' && character <= '9') && character != '.' && character != '+' && character != '-' {
+			return "", fmt.Errorf("invalid Go build version characters")
+		}
+	}
+	return string(version), nil
+}
 func traceTLSGoCode(file *elf.File, start, end uint64) ([]byte, uint64, error) {
 	for _, program := range file.Progs {
 		if program.Type != elf.PT_LOAD || program.Flags&elf.PF_X == 0 || start < program.Vaddr || end <= start || program.Filesz > math.MaxUint64-program.Vaddr {

@@ -50,6 +50,29 @@ func runTraceTLSWatch(t *testing.T, execs <-chan uint32) <-chan string {
 	return attached
 }
 
+func TestTraceTLSWatchSendsDiscoveryNoticesToTheCollector(t *testing.T) {
+	traceTLSWatchProc(t, nil, 5*time.Millisecond)
+	stop := make(chan struct{})
+	notices := make(chan string, 1)
+	finder := &traceTLSFinder{seen: map[[2]uint64]bool{}, rescan: true, notices: []string{"TLS library scan notice"}}
+	finder.noticeSink = func(notice string) { notices <- notice }
+	done := make(chan struct{})
+	go func() {
+		watchTraceTLS(finder, nil, func(traceTLSTarget) bool { return false }, stop)
+		close(done)
+	}()
+	select {
+	case notice := <-notices:
+		if notice != "TLS library scan notice" {
+			t.Fatalf("notice = %q", notice)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("watcher did not send its discovery notice")
+	}
+	close(stop)
+	<-done
+}
+
 // exec 직후에는 동적 linker가 아직 libssl을 적재하지 않았을 수 있다. 다시 볼 때 적재한 libssl을 한 번만 붙이고, 같은
 // 파일을 적재한 다른 process와 이미 끝난 process는 붙이지 않는다.
 func TestWatchTraceTLSAttachesALibraryLoadedAfterExec(t *testing.T) {

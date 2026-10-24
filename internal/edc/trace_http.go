@@ -74,9 +74,11 @@ type httpPendingRequest struct {
 // h2Pending은 socket마다 stream별로 응답을 기다리는 HTTP/2 요청이고, h2Size가 HTTP/1과 같은 상한을 지킨다.
 // h2Payload는 --payload에서 본문이 끝날 때까지 붙잡아 둔 HTTP/2 event다. h2PayloadLimit이 0이면 붙잡지 않는다.
 type httpTracker struct {
-	side        string
-	payload     bool
-	showSecrets bool
+	side          string
+	payload       bool
+	showSecrets   bool
+	progressive   bool
+	nextMessageID uint64
 	// keepGzip이면 gzip message의 원본 byte를 event에 붙인다. 전체 화면만 켠다.
 	keepGzip  bool
 	pending   map[uint64][]httpPendingRequest
@@ -90,6 +92,7 @@ type httpTracker struct {
 	h2PayloadBytes int
 	// h2PayloadOpen은 socket마다 붙잡은 본문 수다. 연결이 끝날 때마다 h2Payload 전체를 훑지 않게 한다.
 	h2PayloadOpen map[uint64]int
+	http1Messages *httpMessages
 	// tls는 socket마다 본 ClientHello다. ServerHello와 alert가 handshake 시간과 쪽을 여기서 가져간다.
 	tls map[uint64]tlsConnection
 }
@@ -102,25 +105,34 @@ type http2PayloadKey struct {
 }
 
 type http2Payload struct {
-	event     captureEvent
-	body      []byte
-	truncated bool
+	event        captureEvent
+	header       []byte
+	body         []byte
+	trailer      []byte
+	truncated    bool
+	started      bool
+	dirty        bool
+	lastSnapshot time.Time
+	reported     int
 }
 
 // http2PayloadOpenLimit은 본문을 기다리는 stream 수의 상한이다. END_STREAM을 잃은 stream이 쌓여도 메모리가 늘지 않는다.
 const http2PayloadOpenLimit = 4096
+const http2HeaderLimit = 64 << 10
 
 // http2Direction은 h2c 연결의 한 방향이다. next는 다음 레코드가 시작해야 하는 위치이고, started 전에는 첫 레코드의 위치를
 // 기준으로 삼는다. 송신 위치는 TCP 순번이라 0에서 시작하지 않는다.
 type http2Direction struct {
-	buffer       []byte
-	next         uint32
-	started      bool
-	preface      bool
-	decoder      *hpack.Decoder
-	fields       []hpack.HeaderField
-	headerStream uint32
-	headerBlock  []byte
+	buffer          []byte
+	next            uint32
+	started         bool
+	preface         bool
+	decoder         *hpack.Decoder
+	fields          []hpack.HeaderField
+	headerBytes     int
+	headerTruncated bool
+	headerStream    uint32
+	headerBlock     []byte
 	// headerEnd는 header block을 연 HEADERS frame의 END_STREAM이다. 마지막 CONTINUATION에는 이 flag가 없다.
 	headerEnd bool
 	packet    httpPacket
@@ -134,7 +146,14 @@ var http2Preface = []byte("PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n")
 
 func (tracker *httpTracker) newHTTP2Direction() *http2Direction {
 	direction := &http2Direction{}
-	direction.decoder = hpack.NewDecoder(4096, func(field hpack.HeaderField) { direction.fields = append(direction.fields, field) })
+	direction.decoder = hpack.NewDecoder(4096, func(field hpack.HeaderField) {
+		direction.headerBytes += len(field.Name) + len(field.Value)
+		if direction.headerBytes > http2HeaderLimit {
+			direction.headerTruncated = true
+			return
+		}
+		direction.fields = append(direction.fields, field)
+	})
 	return direction
 }
 
@@ -235,10 +254,16 @@ func (tracker *httpTracker) http2Events(packet httpPacket, clockOffset int64) ([
 				}
 				payload = payload[5:]
 			}
+			if len(payload) > http2HeaderLimit {
+				return append(events, tracker.stopHTTP2Direction(key)...), true
+			}
 			direction.headerStream, direction.headerBlock = stream, append(direction.headerBlock[:0], payload...)
 		case 9:
 			if stream != direction.headerStream {
 				continue
+			}
+			if len(payload) > http2HeaderLimit-len(direction.headerBlock) {
+				return append(events, tracker.stopHTTP2Direction(key)...), true
 			}
 			direction.headerBlock = append(direction.headerBlock, payload...)
 		default:
@@ -248,6 +273,7 @@ func (tracker *httpTracker) http2Events(packet httpPacket, clockOffset int64) ([
 			continue
 		}
 		direction.fields = direction.fields[:0]
+		direction.headerBytes, direction.headerTruncated = 0, false
 		// HPACK 오류 뒤에는 동적 표가 상대와 어긋나 이후 header를 틀리게 읽으므로 이 방향은 더 읽지 않는다.
 		if _, err := direction.decoder.Write(direction.headerBlock); err != nil {
 			return append(events, tracker.stopHTTP2Direction(key)...), true
@@ -260,13 +286,40 @@ func (tracker *httpTracker) http2Events(packet httpPacket, clockOffset int64) ([
 		switch {
 		case !ok:
 			// method와 status가 없는 header block은 trailer이고, END_STREAM이 있으면 본문을 끝낸다.
+			if open := tracker.h2Payload[body]; open != nil {
+				var trailer strings.Builder
+				trailer.WriteString("\r\n[trailers]\r\n")
+				for _, field := range direction.fields {
+					trailer.WriteString(traceEscapeHTTPHeader(field.Name))
+					trailer.WriteString(": ")
+					trailer.WriteString(traceEscapeHTTPHeader(field.Value))
+					trailer.WriteString("\r\n")
+				}
+				trailerBytes := []byte(trailer.String())
+				remaining := max(0, tracker.h2PayloadLimit-len(open.header)-len(open.body)-len(open.trailer))
+				added := min(len(trailerBytes), remaining)
+				open.trailer = append(open.trailer, trailerBytes[:added]...)
+				tracker.h2PayloadBytes += added
+				open.truncated = open.truncated || added < len(trailerBytes)
+				open.truncated = open.truncated || direction.headerTruncated
+				open.dirty = open.dirty || added != 0
+				events = append(events, tracker.trimHTTP2Payloads(false)...)
+				if tracker.progressive && !direction.headerEnd && open.dirty && time.Since(open.lastSnapshot) >= 250*time.Millisecond {
+					if tracker.h2Payload[body] == open {
+						events = append(events, tracker.snapshotHTTP2Payload(body, open, time.Now())...)
+					}
+				}
+			}
 			if direction.headerEnd {
 				events = append(events, tracker.finishHTTP2Payload(body, false)...)
 			}
 		case tracker.h2PayloadLimit == 0:
 			events = append(events, event)
 		default:
-			events = append(events, tracker.openHTTP2Payload(body, event, direction.headerEnd)...)
+			if direction.headerTruncated {
+				event.PayloadTruncated = true
+			}
+			events = append(events, tracker.openHTTP2Payload(body, event, direction.fields, direction.headerEnd)...)
 		}
 	}
 	return events, true
@@ -280,15 +333,76 @@ func (tracker *httpTracker) stopHTTP2Direction(key httpStreamKey) []captureEvent
 
 // openHTTP2Payload는 --payload에서 header event를 본문이 끝날 때까지 붙잡는다. 1xx 응답은 본문 없이 최종 응답이 같은
 // stream으로 이어 오므로 바로 낸다.
-func (tracker *httpTracker) openHTTP2Payload(body http2PayloadKey, event captureEvent, end bool) []captureEvent {
+func (tracker *httpTracker) openHTTP2Payload(body http2PayloadKey, event captureEvent, fields []hpack.HeaderField, end bool) []captureEvent {
 	events := tracker.finishHTTP2Payload(body, true)
 	events = append(events, tracker.trimHTTP2Payloads(true)...)
-	tracker.h2Payload[body] = &http2Payload{event: event}
+	header := http2PayloadHeader(event, fields)
+	open := &http2Payload{event: event, header: header, truncated: event.PayloadTruncated, lastSnapshot: time.Now()}
+	if len(open.header) > tracker.h2PayloadLimit {
+		open.header = open.header[:tracker.h2PayloadLimit]
+		open.truncated = true
+	}
+	if tracker.progressive {
+		tracker.nextMessageID++
+		open.event.MessageID = tracker.nextMessageID
+	}
+	tracker.h2Payload[body] = open
 	tracker.h2PayloadOpen[body.socket]++
+	tracker.h2PayloadBytes += len(open.header)
 	if end || event.Status != 0 && event.Status < 200 {
 		events = append(events, tracker.finishHTTP2Payload(body, false)...)
+		return append(events, tracker.trimHTTP2Payloads(false)...)
+	}
+	events = append(events, tracker.trimHTTP2Payloads(false)...)
+	if tracker.h2Payload[body] != open {
+		return events
+	}
+	if tracker.progressive && !end && !(event.Status != 0 && event.Status < 200) {
+		events = append(events, tracker.snapshotHTTP2Payload(body, open, time.Now())...)
 	}
 	return events
+}
+
+func http2PayloadHeader(event captureEvent, fields []hpack.HeaderField) []byte {
+	path := event.Path
+	for _, field := range fields {
+		if field.Name == ":path" {
+			path = field.Value
+			break
+		}
+	}
+	line := traceEscapeHTTPHeader(event.Method) + " " + traceEscapeHTTPHeader(path) + " HTTP/2\r\n"
+	if event.Status != 0 {
+		line = "HTTP/2 " + strconv.Itoa(event.Status) + "\r\n"
+	}
+	var header strings.Builder
+	header.WriteString(line)
+	for _, field := range fields {
+		name := traceEscapeHTTPHeader(field.Name)
+		if name == ":authority" {
+			name = "Host"
+		} else if strings.HasPrefix(name, ":") {
+			continue
+		}
+		header.WriteString(name)
+		header.WriteString(": ")
+		header.WriteString(traceEscapeHTTPHeader(field.Value))
+		header.WriteString("\r\n")
+	}
+	header.WriteString("\r\n")
+	return []byte(header.String())
+}
+
+func traceEscapeHTTPHeader(value string) string {
+	var escaped strings.Builder
+	for _, character := range []byte(value) {
+		if character < 0x20 || character == 0x7f {
+			fmt.Fprintf(&escaped, "\\x%02x", character)
+		} else {
+			escaped.WriteByte(character)
+		}
+	}
+	return escaped.String()
 }
 
 // addHTTP2Payload는 DATA frame을 그 stream의 본문에 h2PayloadLimit까지 담고, END_STREAM이면 event를 낸다.
@@ -303,14 +417,53 @@ func (tracker *httpTracker) addHTTP2Payload(body http2PayloadKey, flags byte, pa
 		}
 		payload = payload[1 : len(payload)-int(payload[0])]
 	}
-	chunk := payload[:min(len(payload), max(0, tracker.h2PayloadLimit-len(open.body)))]
+	chunk := payload[:min(len(payload), max(0, tracker.h2PayloadLimit-len(open.header)-len(open.body)-len(open.trailer)))]
 	open.body = append(open.body, chunk...)
+	open.dirty = open.dirty || len(chunk) != 0
 	open.truncated = open.truncated || len(chunk) < len(payload)
 	tracker.h2PayloadBytes += len(chunk)
 	if flags&0x1 != 0 {
 		return tracker.finishHTTP2Payload(body, false)
 	}
-	return tracker.trimHTTP2Payloads(false)
+	events := tracker.trimHTTP2Payloads(false)
+	if tracker.h2Payload[body] == open && tracker.progressive && open.dirty && time.Since(open.lastSnapshot) >= 250*time.Millisecond {
+		events = append(events, tracker.snapshotHTTP2Payload(body, open, time.Now())...)
+	}
+	return events
+}
+
+func (tracker *httpTracker) snapshotHTTP2Payload(_ http2PayloadKey, open *http2Payload, now time.Time) []captureEvent {
+	event := open.event
+	event.Payload = traceHTTPPayload(http2PayloadBytes(open), tracker.showSecrets)
+	event.Bytes = uint64(len(open.header) + len(open.body) + len(open.trailer))
+	event.Update = open.started
+	event.ByteDelta = event.Bytes - uint64(open.reported)
+	open.reported = int(event.Bytes)
+	open.started = true
+	open.lastSnapshot = now
+	open.dirty = false
+	if tracker.keepGzip {
+		gzipSource := append(slices.Clone(open.header), open.body...)
+		if httpGzipped(gzipSource) {
+			event.gzipped = gzipSource
+		}
+	}
+	return []captureEvent{event}
+}
+
+func (tracker *httpTracker) expireHTTP2Payloads(now time.Time) []captureEvent {
+	var events []captureEvent
+	for body, open := range tracker.h2Payload {
+		if tracker.progressive && open.dirty && now.Sub(open.lastSnapshot) >= 250*time.Millisecond {
+			events = append(events, tracker.snapshotHTTP2Payload(body, open, now)...)
+		}
+	}
+	return events
+}
+
+func http2PayloadBytes(open *http2Payload) []byte {
+	payload := append(slices.Clone(open.header), open.body...)
+	return append(payload, open.trailer...)
 }
 
 // finishHTTP2Payload는 붙잡은 event에 시작 줄과 본문을 붙여 낸다. HTTP/2에는 HTTP/1 같은 시작 줄이 없어 pseudo-header로
@@ -321,25 +474,65 @@ func (tracker *httpTracker) finishHTTP2Payload(body http2PayloadKey, truncated b
 		return nil
 	}
 	delete(tracker.h2Payload, body)
-	tracker.h2PayloadBytes -= len(open.body)
+	tracker.h2PayloadBytes -= len(open.header) + len(open.body) + len(open.trailer)
 	if tracker.h2PayloadOpen[body.socket]--; tracker.h2PayloadOpen[body.socket] <= 0 {
 		delete(tracker.h2PayloadOpen, body.socket)
 	}
-	line := open.event.Method + " " + open.event.Path + " HTTP/2"
-	if open.event.Status != 0 {
-		line = "HTTP/2 " + strconv.Itoa(open.event.Status)
-	}
-	open.event.Payload = traceHTTPPayload(append([]byte(line+"\r\n\r\n"), open.body...), tracker.showSecrets)
+	open.event.Payload = traceHTTPPayload(http2PayloadBytes(open), tracker.showSecrets)
 	open.event.PayloadTruncated = open.truncated || truncated
+	open.event.Bytes = uint64(len(open.header) + len(open.body) + len(open.trailer))
+	open.event.Final = true
+	if tracker.keepGzip {
+		gzipSource := append(slices.Clone(open.header), open.body...)
+		if httpGzipped(gzipSource) {
+			open.event.gzipped = gzipSource
+		}
+	}
+	if open.started {
+		open.event.Update = true
+		open.event.ByteDelta = open.event.Bytes - uint64(open.reported)
+	} else if tracker.progressive {
+		open.event.ByteDelta = open.event.Bytes
+	}
 	return []captureEvent{open.event}
 }
 
 // trimHTTP2Payloads는 붙잡은 본문이 상한을 넘으면 가장 오래된 것부터 잘린 채로 낸다. room이면 새 stream을 넣을 자리도 만든다.
 func (tracker *httpTracker) trimHTTP2Payloads(room bool) []captureEvent {
 	var events []captureEvent
-	for len(tracker.h2Payload) > 0 && (room && len(tracker.h2Payload) >= http2PayloadOpenLimit || tracker.h2PayloadBytes > httpMessageOpenBytes) {
-		oldest := slices.MinFunc(slices.Collect(maps.Keys(tracker.h2Payload)), tracker.compareHTTP2Payloads)
-		events = append(events, tracker.finishHTTP2Payload(oldest, true)...)
+	for {
+		messageCount, messageBytes := 0, 0
+		if tracker.http1Messages != nil {
+			messageCount, messageBytes = len(tracker.http1Messages.open), tracker.http1Messages.bytes
+		}
+		tooMany := len(tracker.h2Payload)+messageCount > httpMessageOpenLimit || room && len(tracker.h2Payload) >= http2PayloadOpenLimit
+		tooLarge := tracker.h2PayloadBytes+messageBytes > httpMessageOpenBytes
+		if !tooMany && !tooLarge {
+			break
+		}
+		oldestH1, h1At := httpStreamKey{}, ^uint64(0)
+		if tracker.http1Messages != nil {
+			for key, message := range tracker.http1Messages.open {
+				if message.event.BootTimeNS < h1At {
+					oldestH1, h1At = key, message.event.BootTimeNS
+				}
+			}
+		}
+		var oldestH2 http2PayloadKey
+		h2At := ^uint64(0)
+		for key, message := range tracker.h2Payload {
+			if message.event.BootTimeNS < h2At {
+				oldestH2, h2At = key, message.event.BootTimeNS
+			}
+		}
+		if h1At == ^uint64(0) && h2At == ^uint64(0) {
+			break
+		}
+		if h1At <= h2At && tracker.http1Messages != nil {
+			events = append(events, tracker.http1Messages.finish(oldestH1, true)...)
+		} else {
+			events = append(events, tracker.finishHTTP2Payload(oldestH2, true)...)
+		}
 	}
 	return events
 }
@@ -567,6 +760,10 @@ func tlsRecordStart(payload []byte) bool {
 	return len(payload) >= 3 && payload[0] == tlsHandshakeRecord && tlsKnownVersion(payload[1], payload[2])
 }
 
+func tlsRecordHeaderStart(payload []byte) bool {
+	return len(payload) >= 3 && payload[0] >= 0x14 && payload[0] <= 0x17 && tlsKnownVersion(payload[1], payload[2])
+}
+
 // tlsKnownVersion은 SSL 3.0부터 TLS 1.3까지의 version이다.
 func tlsKnownVersion(major, minor byte) bool {
 	return major == 3 && minor <= 4
@@ -731,6 +928,11 @@ func traceHTTPPayload(payload []byte, showSecrets bool) string {
 // traceMaskHTTPHeaders는 traceHTTPSecretHeaders의 값을 ***로 바꾼다. escape한 글자에도 쓸 수 있다. escape는 header
 // 이름과 CRLF를 바꾸지 않으므로, 전체 화면은 원문을 두었다가 그릴 때 가린다.
 func traceMaskHTTPHeaders(payload []byte) []byte {
+	if before, after, ok := bytes.Cut(payload, []byte("\r\n[trailers]\r\n")); ok {
+		masked := traceMaskHTTPHeaders(before)
+		masked = append(masked, "\r\n[trailers]\r\n"...)
+		return append(masked, traceMaskHTTPTrailer(after)...)
+	}
 	head, body, complete := bytes.Cut(payload, []byte("\r\n\r\n"))
 	lines := bytes.Split(head, []byte("\r\n"))
 	for index := 1; index < len(lines); index++ {
@@ -744,6 +946,17 @@ func traceMaskHTTPHeaders(payload []byte) []byte {
 		text = append(append(text, "\r\n\r\n"...), body...)
 	}
 	return text
+}
+
+func traceMaskHTTPTrailer(payload []byte) []byte {
+	lines := bytes.Split(payload, []byte("\r\n"))
+	for index, line := range lines {
+		name, _, ok := bytes.Cut(line, []byte(":"))
+		if ok && slices.ContainsFunc(traceHTTPSecretHeaders, func(secret string) bool { return strings.EqualFold(string(bytes.TrimSpace(name)), secret) }) {
+			lines[index] = append(slices.Clip(name), ": ***"...)
+		}
+	}
+	return bytes.Join(lines, []byte("\r\n"))
 }
 
 // httpGzipped는 header에 Content-Encoding: gzip이 있는 message다. 전체 화면은 이런 message만 원본 byte를 두었다가
@@ -771,15 +984,35 @@ func traceEscapeText(text []byte) string {
 	if clean == len(text) {
 		return string(text)
 	}
+	escapedSize := len(text)
+	for rest := text[clean:]; len(rest) > 0; {
+		if value := rest[0]; value < utf8.RuneSelf {
+			if !traceTextByteKept(value) {
+				escapedSize += 3
+			}
+			rest = rest[1:]
+			continue
+		}
+		r, size := utf8.DecodeRune(rest)
+		if (r == utf8.RuneError && size == 1) || (r >= 0x80 && r < 0xa0) {
+			escapedSize += 3 * size
+		}
+		rest = rest[size:]
+	}
+	if escapedSize == len(text) {
+		return string(text)
+	}
 	var out strings.Builder
-	out.Grow(len(text) + 16)
+	out.Grow(escapedSize)
 	out.Write(text[:clean])
 	for text = text[clean:]; len(text) > 0; {
 		if value := text[0]; value < utf8.RuneSelf {
 			if traceTextByteKept(value) {
 				out.WriteByte(value)
 			} else {
-				fmt.Fprintf(&out, `\x%02x`, value)
+				out.WriteString(`\x`)
+				out.WriteByte("0123456789abcdef"[value>>4])
+				out.WriteByte("0123456789abcdef"[value&15])
 			}
 			text = text[1:]
 			continue
@@ -787,7 +1020,9 @@ func traceEscapeText(text []byte) string {
 		r, size := utf8.DecodeRune(text)
 		if (r == utf8.RuneError && size == 1) || (r >= 0x80 && r < 0xa0) {
 			for _, value := range text[:size] {
-				fmt.Fprintf(&out, `\x%02x`, value)
+				out.WriteString(`\x`)
+				out.WriteByte("0123456789abcdef"[value>>4])
+				out.WriteByte("0123456789abcdef"[value&15])
 			}
 		} else {
 			out.Write(text[:size])
@@ -991,6 +1226,7 @@ type httpTraceReport struct {
 	LostEvents uint64         `json:"lost_events"`
 	Paths      []httpTraceRow `json:"paths"`
 	traceHTTPCounts
+	traceTraffic
 	// Client와 Server는 두 쪽이 섞인 trace의 쪽별 합계다. 한 구간의 client 응답 시간에는 network와 대기가 들어가고
 	// 서버 응답 시간에는 처리만 들어가서, 합친 평균은 뜻이 없다.
 	Client *traceHTTPCounts `json:"client,omitempty"`
@@ -1037,8 +1273,9 @@ type httpTraceRowStats struct {
 
 // httpTraceSummarizer는 --group-by 없이 끝난 HTTP trace를 쪽, method, host, path마다 한 행으로 묶는다.
 type httpTraceSummarizer struct {
-	rows   map[httpTraceKey]*httpTraceRowStats
-	counts traceHTTPCounts
+	rows    map[httpTraceKey]*httpTraceRowStats
+	counts  traceHTTPCounts
+	traffic traceTraffic
 	// sides는 쪽마다 모은 합계다. 한 쪽만 있으면 보고서의 쪽이 되고, 두 쪽이 있으면 쪽별 합계로 낸다.
 	sides map[string]*traceHTTPCounts
 	// tls는 ClientHello를 쪽, SNI, ALPN마다 센다. HTTP 행과 합계에는 넣지 않는다. tlsSockets는 socket마다 그 행이고,
@@ -1055,6 +1292,13 @@ func newHTTPTraceSummarizer() *httpTraceSummarizer {
 }
 
 func (summarizer *httpTraceSummarizer) observe(event captureEvent) {
+	if event.TLSNotice != "" {
+		return
+	}
+	if event.Update {
+		summarizer.traffic.observeHTTP(event)
+		return
+	}
 	if event.Event == traceTLSHelloEvent {
 		key := httpTLSKey{side: event.Side, host: event.Target, alpn: strings.Join(event.ALPN, ",")}
 		stats := summarizer.tls[key]
@@ -1097,6 +1341,7 @@ func (summarizer *httpTraceSummarizer) observe(event captureEvent) {
 	if event.TLS && event.Source == "" && event.Destination == "" {
 		summarizer.unmapped++
 	}
+	summarizer.traffic.observeHTTP(event)
 	key := httpTraceKey{side: event.Side, method: event.Method, host: event.Target, path: event.Path}
 	stats := summarizer.rows[key]
 	if stats == nil {
@@ -1122,7 +1367,7 @@ func (summarizer *httpTraceSummarizer) observe(event captureEvent) {
 }
 
 func (summarizer *httpTraceSummarizer) summarize(summary captureSummary, duration time.Duration) traceReport {
-	report := httpTraceReport{DurationMS: duration.Milliseconds(), LostEvents: summary.LostEvents, traceHTTPCounts: summarizer.counts.finished(),
+	report := httpTraceReport{DurationMS: duration.Milliseconds(), LostEvents: summary.LostEvents, traceHTTPCounts: summarizer.counts.finished(), traceTraffic: summarizer.traffic,
 		TLSUnmapped: summarizer.unmapped + summary.TLSUnmapped}
 	if len(summarizer.sides) == 1 {
 		for side := range summarizer.sides {

@@ -48,6 +48,11 @@ func watchTraceTLS(finder *traceTLSFinder, execs <-chan uint32, attach func(trac
 	scan := func(find func()) {
 		known := len(finder.targets)
 		find()
+		if finder.noticeSink != nil {
+			for _, notice := range finder.notices {
+				finder.noticeSink(notice)
+			}
+		}
 		finder.notices = nil
 		for _, target := range finder.targets[known:] {
 			if attach(target) {

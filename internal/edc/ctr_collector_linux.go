@@ -630,10 +630,10 @@ func parseCtrProcAddress(value string) (string, int, error) {
 		return "", 0, fmt.Errorf("malformed proc net port")
 	}
 	decoded, err := hex.DecodeString(parts[0])
-	if err != nil || len(decoded) != 8 && len(decoded) != 32 {
+	if err != nil || len(decoded) != 4 && len(decoded) != 16 {
 		return "", 0, fmt.Errorf("malformed proc net IP address")
 	}
-	if len(decoded) == 8 {
+	if len(decoded) == 4 {
 		for i, j := 0, len(decoded)-1; i < j; i, j = i+1, j-1 {
 			decoded[i], decoded[j] = decoded[j], decoded[i]
 		}

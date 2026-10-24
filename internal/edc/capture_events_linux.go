@@ -322,13 +322,18 @@ func captureEventsRun(duration time.Duration, output string) error {
 	return encoder.Encode(summary)
 }
 
-// closeCaptureLinks는 link를 동시에 닫는다. 떼어 낼 때마다 kernel 안에서 기다림이 있어, 순서대로 닫으면
-// trace를 끝낼 때마다 1초 넘게 걸렸다. 동시에 닫으면 tracepoint link의 기다림은 겹친다. fentry와 fexit link는
-// 동시에 닫아도 kernel이 하나씩 떼어 낸다.
+// closeCaptureLinks는 uprobe 해제 대기 OS thread와 load 증가가 link 수에 비례하지 않도록 동시 Close 수를 제한한다.
 func closeCaptureLinks(links []link.Link) {
+	const maxWorkers = 4
+	workerCount := min(len(links), maxWorkers)
 	var wait sync.WaitGroup
-	for _, current := range links {
-		wait.Go(func() { _ = current.Close() })
+	for worker := 0; worker < workerCount; worker++ {
+		start := worker
+		wait.Go(func() {
+			for index := start; index < len(links); index += maxWorkers {
+				_ = links[index].Close()
+			}
+		})
 	}
 	wait.Wait()
 }
@@ -785,6 +790,13 @@ var captureAttachedHook func()
 
 func collectCaptureEventsFor(scope traceScope, duration time.Duration, onEvent func(captureEvent) error, stop <-chan struct{}) (captureSummary, error) {
 	protocol := scope.protocol
+	tlsNotices := newTraceTLSNoticeBuffer()
+	queueTLSNotice := tlsNotices.offer
+	if scope.tlsFinder != nil {
+		for _, notice := range scope.tlsFinder.notices {
+			tlsNotices.record(notice)
+		}
+	}
 	if err := rlimit.RemoveMemlock(); err != nil {
 		return captureSummary{}, fmt.Errorf("remove memlock limit: %w", err)
 	}
@@ -799,6 +811,7 @@ func collectCaptureEventsFor(scope traceScope, duration time.Duration, onEvent f
 
 	attachments, tracing := captureAttachmentsFor(&objects, scope)
 	links := make([]link.Link, 0, len(attachments)+len(tracing))
+	tlsExecProblem := ""
 	closeLinks := func() { closeCaptureLinks(links) }
 	for _, attachment := range attachments {
 		attached, err := link.Tracepoint(attachment.group, attachment.name, attachment.prog, nil)
@@ -821,8 +834,16 @@ func collectCaptureEventsFor(scope traceScope, duration time.Duration, onEvent f
 	if scope.tlsFinder != nil {
 		for _, target := range scope.tlsFinder.targets {
 			attached, err := attachTraceTLS(&objects, target)
-			links = append(links, attached...)
 			gone := traceTLSAttachGone(attached, err)
+			if err != nil && scope.implicitTLS {
+				closeCaptureLinks(attached)
+				if gone {
+					scope.tlsFinder.retry(target)
+				}
+				queueTLSNotice(T("cli.trace.tls_attach_failed", traceEscapeText([]byte(target.path)), err))
+				continue
+			}
+			links = append(links, attached...)
 			if err != nil && !gone {
 				closeLinks()
 				return captureSummary{}, err
@@ -834,8 +855,10 @@ func collectCaptureEventsFor(scope traceScope, duration time.Duration, onEvent f
 	}
 	defer closeLinks()
 	// stopTLSWatch는 trace 중의 TLS 탐색을 멈추고 끝나기를 기다린다. 그 뒤에 tlsExecProblem을 읽는다.
-	stopTLSWatch, tlsExecProblem := func() {}, ""
+	stopTLSWatch := func() {}
 	if finder := scope.tlsFinder; finder != nil && finder.rescan {
+		finder.noticeSink = queueTLSNotice
+		finder.notices = nil
 		// 감시는 links에 붙인 link를 더하므로, closeLinks보다 먼저 멈춘다. defer는 나중에 건 것이 먼저 돈다.
 		stopWatch, watched := make(chan struct{}), make(chan struct{})
 		go func() {
@@ -844,14 +867,21 @@ func collectCaptureEventsFor(scope traceScope, duration time.Duration, onEvent f
 			execs, failed, err := traceTLSExecEvents(stopWatch)
 			if err != nil {
 				tlsExecProblem = err.Error()
+				queueTLSNotice(T("cli.trace.tls_exec_events", err))
 			}
 			if watchTraceTLS(finder, execs, func(target traceTLSTarget) bool {
-				// 붙이지 못한 파일은 화면에 알리지 않는다. 일부만 붙었으면 그 link는 닫을 때 쓴다.
 				attached, err := attachTraceTLS(&objects, target)
+				gone := traceTLSAttachGone(attached, err)
+				if err != nil {
+					closeCaptureLinks(attached)
+					queueTLSNotice(T("cli.trace.tls_attach_failed", traceEscapeText([]byte(target.path)), err))
+					return gone
+				}
 				links = append(links, attached...)
-				return traceTLSAttachGone(attached, err)
+				return false
 			}, stopWatch) {
 				tlsExecProblem = "process events stopped"
+				queueTLSNotice(T("cli.trace.tls_exec_events", tlsExecProblem))
 				select {
 				case err := <-failed:
 					tlsExecProblem = err.Error()
@@ -908,12 +938,15 @@ func collectCaptureEventsFor(scope traceScope, duration time.Duration, onEvent f
 	queries := newDNSQueryTracker(scope.server)
 	// --payload=all은 message가 끝날 때 payload를 붙이므로 tracker는 첫 조각에 payload를 붙이지 않는다.
 	requests := newHTTPTracker(scope.side, scope.payload && !scope.payloadAll, scope.showSecrets)
+	requests.progressive = scope.progressive
 	requests.keepGzip = scope.keepGzip
 	requests.h2PayloadLimit = traceHTTP2PayloadLimit(scope)
 	splits := httpSplitStarts{}
 	var messages *httpMessages
 	if scope.payloadAll {
 		messages = newHTTPMessages(requests, httpMessageMax, scope.showSecrets)
+		messages.progressive = scope.progressive
+		requests.http1Messages = messages
 	}
 	streams := newDNSTCPStreams()
 	mysql := newMySQLTracker(scope.side, scope.showSecrets)
@@ -921,36 +954,61 @@ func collectCaptureEventsFor(scope traceScope, duration time.Duration, onEvent f
 	redis := newRedisTracker(scope.side, scope.showSecrets)
 	clickhouse := newClickHouseTracker(scope.side, scope.showSecrets, captureEventFilterFor(scope).clickHouseHTTPPort)
 	var goOrder *goTLSOrder
-	if scope.tlsFinder != nil && slices.ContainsFunc(scope.tlsFinder.targets, func(target traceTLSTarget) bool { return target.goReturns != nil }) {
+	if scope.tlsFinder != nil && (scope.tlsFinder.rescan || slices.ContainsFunc(scope.tlsFinder.targets, func(target traceTLSTarget) bool { return target.goReturns != nil })) {
 		goOrder = newGoTLSOrder()
 	}
 	var ready [][]byte
 	var eventCount uint64
 	emit := func(events []captureEvent) error {
 		for _, event := range events {
+			if event.TLSNotice != "" {
+				if onEvent != nil {
+					if err := onEvent(event); err != nil {
+						return err
+					}
+				}
+				continue
+			}
 			if onEvent != nil {
 				if err := onEvent(event); err != nil {
 					return err
 				}
 			}
-			eventCount++
+			if !event.Update {
+				eventCount++
+			}
 		}
 		return nil
+	}
+	drainTLSNotices := func() error {
+		var notices []captureEvent
+		for _, notice := range tlsNotices.drain() {
+			notices = append(notices, captureEvent{TLSNotice: notice})
+		}
+		return emit(notices)
 	}
 	// 끝나기를 기다리는 HTTP message가 있으면 reader가 오래 막히지 않게 deadline을 짧게 둔다. ring buffer reader는 버퍼가
 	// 빌 때만 deadline을 보므로, event가 계속 올 때는 레코드를 읽을 때마다 시각을 확인한다.
 	swept := time.Now()
+	tlsWatchActive := scope.tlsFinder != nil && scope.tlsFinder.rescan
 	sweepDeadline := func() {
-		if messages == nil {
+		if messages == nil && requests.h2PayloadLimit == 0 && !tlsWatchActive {
 			return
 		}
-		next := time.Now().Add(httpMessageIdle / 4)
+		interval := httpMessageIdle / 4
+		if tlsWatchActive || requests.h2PayloadLimit != 0 {
+			interval = 250 * time.Millisecond
+		}
+		next := time.Now().Add(interval)
 		if duration > 0 && deadline.Before(next) {
 			next = deadline
 		}
 		reader.SetDeadline(next)
 	}
 	sweepDeadline()
+	if err := drainTLSNotices(); err != nil {
+		return captureSummary{}, err
+	}
 	finish := func() (captureSummary, error) {
 		if err := emit(requests.finishHTTP2Payloads(func(http2PayloadKey) bool { return true })); err != nil {
 			return captureSummary{}, err
@@ -972,9 +1030,23 @@ func collectCaptureEventsFor(scope traceScope, duration time.Duration, onEvent f
 		}
 		// 감시를 기다리는 동안에도 hook은 붙어 있고 남은 레코드는 읽지 않으므로, 잃은 수를 읽은 뒤에 멈춘다.
 		stopTLSWatch()
-		return captureSummary{TimestampNS: uint64(time.Now().UnixNano()), Event: "capture_summary", EventCount: eventCount, LostEvents: lost, TLSUnmapped: unmapped, TLSExecProblem: tlsExecProblem}, nil
+		if err := drainTLSNotices(); err != nil {
+			return captureSummary{}, err
+		}
+		notices, overflow := tlsNotices.summary()
+		if overflow != 0 {
+			notice := T("cli.trace.tls_notice_overflow", overflow)
+			notices = append(notices, notice)
+			if err := emit([]captureEvent{{TLSNotice: notice}}); err != nil {
+				return captureSummary{}, err
+			}
+		}
+		return captureSummary{TimestampNS: uint64(time.Now().UnixNano()), Event: "capture_summary", EventCount: eventCount, LostEvents: lost, TLSUnmapped: unmapped, TLSExecProblem: tlsExecProblem, TLSNotices: notices}, nil
 	}
 	for {
+		if err := drainTLSNotices(); err != nil {
+			return captureSummary{}, err
+		}
 		// ring buffer reader는 버퍼가 비었을 때만 deadline을 본다. event가 계속 쌓이면 버퍼가 비지 않아
 		// --duration이 지나도 끝나지 않으므로 여기서 직접 확인한다.
 		if duration > 0 && !time.Now().Before(deadline) {
@@ -988,10 +1060,24 @@ func collectCaptureEventsFor(scope traceScope, duration time.Duration, onEvent f
 		} else {
 			record, err = reader.Read()
 			if errors.Is(err, os.ErrDeadlineExceeded) {
-				if messages != nil && (duration == 0 || time.Now().Before(deadline)) {
-					if err := emit(messages.expire(time.Now())); err != nil {
+				if err := drainTLSNotices(); err != nil {
+					return captureSummary{}, err
+				}
+				if (messages != nil || requests.h2PayloadLimit != 0) && (duration == 0 || time.Now().Before(deadline)) {
+					now := time.Now()
+					var events []captureEvent
+					if messages != nil {
+						events = append(events, messages.expire(now)...)
+					}
+					events = append(events, requests.expireHTTP2Payloads(now)...)
+					if err := emit(events); err != nil {
 						return captureSummary{}, err
 					}
+					swept = now
+					sweepDeadline()
+					continue
+				}
+				if tlsWatchActive && (duration == 0 || time.Now().Before(deadline)) {
 					swept = time.Now()
 					sweepDeadline()
 					continue
@@ -1055,6 +1141,14 @@ func collectCaptureEventsFor(scope traceScope, duration time.Duration, onEvent f
 			// h2c와 --tls 평문의 HTTP/2는 frame을 이어 읽어야 해서 조각 결합보다 먼저 받는다. 새 연결이 이전 연결의
 			// 상태를 비우면 HTTP/2로 읽지 않은 레코드에서도 본문을 기다리던 event가 나온다.
 			events, claimed := requests.http2Events(packet, clockOffset)
+			now := time.Now()
+			if now.Sub(swept) >= httpMessageIdle/4 {
+				if messages != nil {
+					events = append(events, messages.expire(now)...)
+				}
+				events = append(events, requests.expireHTTP2Payloads(now)...)
+				swept = now
+			}
 			if err := emit(events); err != nil {
 				return captureSummary{}, err
 			}
@@ -1065,12 +1159,7 @@ func collectCaptureEventsFor(scope traceScope, duration time.Duration, onEvent f
 				continue
 			}
 			if messages != nil {
-				now := time.Now()
 				events := messages.add(packet, clockOffset, now)
-				if now.Sub(swept) >= httpMessageIdle/4 {
-					events = append(events, messages.expire(now)...)
-					swept = now
-				}
 				if err := emit(events); err != nil {
 					return captureSummary{}, err
 				}
@@ -1124,7 +1213,11 @@ func collectCaptureEventsFor(scope traceScope, duration time.Duration, onEvent f
 		}
 		if socket, ok := parseTCPDestroyRecord(record.RawSample); ok {
 			if protocol == "http" {
-				if err := emit(requests.forget(socket)); err != nil {
+				events := requests.forget(socket)
+				if messages != nil {
+					events = append(events, messages.forget(socket)...)
+				}
+				if err := emit(events); err != nil {
 					return captureSummary{}, err
 				}
 				splits.forget(socket)

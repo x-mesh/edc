@@ -18,10 +18,15 @@ type httpStreamKey struct {
 
 // httpOpenMessage는 끝나기를 기다리는 message다. next는 다음 조각이 message 안에서 시작해야 하는 위치다.
 type httpOpenMessage struct {
-	event   captureEvent
-	data    []byte
-	next    uint32
-	updated time.Time
+	event        captureEvent
+	data         []byte
+	next         uint32
+	updated      time.Time
+	lastSnapshot time.Time
+	reported     int
+	started      bool
+	dirty        bool
+	packet       httpPacket
 	// interim은 이 요청이 끝나기 전에 온 1xx 응답이다. 요청 event 뒤에 낸다.
 	interim []captureEvent
 }
@@ -32,16 +37,20 @@ type httpMessages struct {
 	tracker     *httpTracker
 	limit       int
 	showSecrets bool
+	progressive bool
 	open        map[httpStreamKey]*httpOpenMessage
 	bytes       int
 }
 
 func newHTTPMessages(tracker *httpTracker, limit int, showSecrets bool) *httpMessages {
-	return &httpMessages{tracker: tracker, limit: limit, showSecrets: showSecrets, open: map[httpStreamKey]*httpOpenMessage{}}
+	messages := &httpMessages{tracker: tracker, limit: limit, showSecrets: showSecrets, open: map[httpStreamKey]*httpOpenMessage{}}
+	tracker.http1Messages = messages
+	return messages
 }
 
 // httpSplitLimit는 다음 조각을 기다리는 첫 조각 수의 상한이다. 다음 조각이 오지 않는 socket의 첫 조각이 쌓이지 않게 한다.
 const httpSplitLimit = 1024
+const httpProgressiveHeaderLimit = 64 << 10
 
 // httpSplitStarts는 첫 줄이 끝나기 전에 끊긴 첫 조각을 다음 조각과 잇는다. caddy는 요청의 첫 14 byte를 먼저 읽고 나머지를
 // 다시 읽어서, 첫 조각만으로는 요청을 알아볼 수 없다.
@@ -83,7 +92,7 @@ func (starts httpSplitStarts) join(packet httpPacket) (httpPacket, bool) {
 			starts[key] = packet
 			return httpPacket{}, false
 		}
-		if !packet.decrypted && (packet.tlsHandshake || tlsRecordStart(packet.payload)) {
+		if !packet.decrypted && (packet.tlsHandshake || tlsRecordHeaderStart(packet.payload)) {
 			return packet, true
 		}
 	}
@@ -138,10 +147,58 @@ func (messages *httpMessages) add(packet httpPacket, clockOffset int64, now time
 		messages.append(message, packet.payload)
 		message.next += uint32(len(packet.payload))
 		message.updated = now
-		return messages.finishIfDone(key)
+		if messages.progressive && message.event.Protocol == "" {
+			headerEnd := bytes.Index(message.data, []byte("\r\n\r\n"))
+			if headerEnd < 0 {
+				if len(message.data) > httpProgressiveHeaderLimit {
+					return messages.finish(key, true)
+				}
+				return nil
+			}
+			if headerEnd+4 > httpProgressiveHeaderLimit {
+				return messages.finish(key, true)
+			}
+			first := message.packet
+			first.payload = message.data
+			event, ok := messages.tracker.event(first, clockOffset)
+			if !ok {
+				return messages.finish(key, true)
+			}
+			message.event = event
+			messages.tracker.nextMessageID++
+			message.event.MessageID = messages.tracker.nextMessageID
+			if finished := messages.finishIfDone(key); len(finished) != 0 {
+				return finished
+			}
+			return messages.snapshot(message, now)
+		}
+		if finished := messages.finishIfDone(key); len(finished) != 0 {
+			return finished
+		}
+		if messages.progressive && message.dirty && now.Sub(message.lastSnapshot) >= 250*time.Millisecond {
+			return messages.snapshot(message, now)
+		}
+		return nil
 	}
 	// 같은 쪽에서 새 message가 시작되면 앞 message는 끝났다.
 	done := messages.finish(key, false)
+	if !packet.decrypted && (packet.tlsHandshake || tlsRecordHeaderStart(packet.payload)) {
+		event, ok := messages.tracker.event(packet, clockOffset)
+		if ok && tlsHandshakeEvent(event.Event) {
+			return append(done, event)
+		}
+		return done
+	}
+	if messages.progressive && bytes.Index(packet.payload, []byte("\r\n\r\n"))+4 > httpProgressiveHeaderLimit {
+		return done
+	}
+	if messages.progressive && !bytes.Contains(packet.payload, []byte("\r\n\r\n")) {
+		data := slices.Clip(packet.payload[:min(len(packet.payload), messages.limit)])
+		message := &httpOpenMessage{data: data, next: uint32(len(packet.payload)), updated: now, packet: packet}
+		messages.open[key] = message
+		messages.bytes += len(data)
+		return append(done, messages.trim()...)
+	}
 	event, ok := messages.tracker.event(packet, clockOffset)
 	if !ok {
 		return done
@@ -158,9 +215,16 @@ func (messages *httpMessages) add(packet httpPacket, clockOffset int64, now time
 	// 첫 조각은 복사하지 않고 레코드를 그대로 쓴다. 이어지는 조각이 오면 append가 새 배열로 옮긴다.
 	data := slices.Clip(packet.payload[:min(len(packet.payload), messages.limit)])
 	message := &httpOpenMessage{event: event, data: data, next: uint32(len(packet.payload)), updated: now}
+	if messages.progressive {
+		messages.tracker.nextMessageID++
+		message.event.MessageID = messages.tracker.nextMessageID
+	}
 	messages.open[key] = message
 	messages.bytes += len(data)
 	finished := messages.finishIfDone(key)
+	if messages.progressive && messages.open[key] == message {
+		finished = append(finished, messages.snapshot(message, now)...)
+	}
 	// 요청 본문이 아직 오는 중에 온 1xx는 요청 event 뒤로 미뤄서, 요청이 응답보다 먼저 나오게 한다.
 	if request := messages.open[httpStreamKey{socket: packet.socket, sent: !packet.sent, decrypted: packet.decrypted}]; request != nil && event.Status >= 100 && event.Status < 200 {
 		request.interim = append(request.interim, finished...)
@@ -174,41 +238,69 @@ func (messages *httpMessages) append(message *httpOpenMessage, chunk []byte) {
 	chunk = chunk[:min(len(chunk), max(0, messages.limit-len(message.data)))]
 	message.data = append(message.data, chunk...)
 	messages.bytes += len(chunk)
+	message.dirty = message.dirty || len(chunk) != 0
 }
 
 // expire는 httpMessageIdle 동안 조각이 오지 않은 message를 낸다.
 func (messages *httpMessages) expire(now time.Time) []captureEvent {
 	var done []captureEvent
 	for _, key := range messages.oldest() {
-		if now.Sub(messages.open[key].updated) >= httpMessageIdle {
-			done = append(done, messages.finish(key, false)...)
+		message := messages.open[key]
+		if now.Sub(message.updated) >= httpMessageIdle {
+			if !messages.progressive {
+				done = append(done, messages.finish(key, true)...)
+			} else if message.dirty && now.Sub(message.lastSnapshot) >= 250*time.Millisecond {
+				done = append(done, messages.snapshot(message, now)...)
+			}
+		} else if messages.progressive && message.dirty && now.Sub(message.lastSnapshot) >= 250*time.Millisecond {
+			done = append(done, messages.snapshot(message, now)...)
 		}
 	}
 	return done
+}
+
+func (messages *httpMessages) forget(socket uint64) []captureEvent {
+	var done []captureEvent
+	for _, key := range messages.oldest() {
+		if key.socket == socket {
+			done = append(done, messages.finish(key, true)...)
+		}
+	}
+	return done
+}
+
+func (messages *httpMessages) snapshot(message *httpOpenMessage, now time.Time) []captureEvent {
+	event := message.event
+	data := message.data
+	if end, known := httpMessageEnd(data, event); known && end <= len(data) {
+		data = data[:end]
+	}
+	event.Payload = traceHTTPPayload(data, messages.showSecrets)
+	event.Bytes = uint64(len(data))
+	event.Update = message.started
+	event.ByteDelta = uint64(len(data) - message.reported)
+	if messages.tracker.keepGzip && httpGzipped(data) {
+		event.gzipped = slices.Clone(data)
+	}
+	message.reported = len(data)
+	message.lastSnapshot = now
+	message.started = true
+	message.dirty = false
+	return []captureEvent{event}
 }
 
 // flush는 trace를 끝낼 때 남은 message를 모두 낸다.
 func (messages *httpMessages) flush() []captureEvent {
 	var done []captureEvent
 	for _, key := range messages.oldest() {
-		done = append(done, messages.finish(key, false)...)
+		done = append(done, messages.finish(key, true)...)
 	}
 	return done
 }
 
 // trim은 기다리는 message가 합계 상한을 넘으면 오래된 것부터 낸다.
 func (messages *httpMessages) trim() []captureEvent {
-	if len(messages.open) <= httpMessageOpenLimit && messages.bytes <= httpMessageOpenBytes {
-		return nil
-	}
-	var done []captureEvent
-	for _, key := range messages.oldest() {
-		if len(messages.open) <= httpMessageOpenLimit && messages.bytes <= httpMessageOpenBytes {
-			break
-		}
-		done = append(done, messages.finish(key, false)...)
-	}
-	return done
+	return messages.tracker.trimHTTP2Payloads(false)
 }
 
 func (messages *httpMessages) oldest() []httpStreamKey {
@@ -251,12 +343,22 @@ func (messages *httpMessages) finishAt(key httpStreamKey, lost bool, end int, kn
 		data = data[:end]
 	}
 	event := message.event
+	if event.Protocol == "" {
+		return nil
+	}
 	event.Payload = traceHTTPPayload(data, messages.showSecrets)
 	if messages.tracker.keepGzip && httpGzipped(data) {
 		event.gzipped = slices.Clone(data)
 	}
 	event.PayloadTruncated = truncated
 	event.Bytes = uint64(len(data))
+	event.Final = true
+	if message.started {
+		event.Update = true
+		event.ByteDelta = uint64(len(data) - message.reported)
+	} else if messages.progressive {
+		event.ByteDelta = event.Bytes
+	}
 	return append([]captureEvent{event}, message.interim...)
 }
 

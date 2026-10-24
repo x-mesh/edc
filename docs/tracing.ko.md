@@ -71,7 +71,9 @@ bridge network에서는 주소와 port가 container 안의 값입니다. 예를 
 
 event 목록에서 Up이나 Down(또는 `k`, `j`)을 누르면 event를 고릅니다. event를 고른 동안에는 목록이 멈추고 새 event를 따라가지 않으며, 머리글에 더 새로운 event 수가 표시됩니다. Enter를 누르면 event의 모든 필드와 payload 전체를 보여 주는 상세 보기가 열립니다. 상세 보기는 긴 줄을 화면 폭에 맞춰 나눕니다. Up, Down, PgUp(또는 `b`), PgDn(또는 Space), `g`, `G`로 스크롤하고, Esc나 `q`로 돌아갑니다. 목록에서 `l`, Esc, End 중 하나를 누르면 다시 새 event를 따라갑니다. Mac 자판에는 End 키가 없는 경우가 많습니다. 목록에서도 `b`와 Space는 한 화면씩 고른 위치를 옮깁니다. 고른 event가 목록에서 가장 오래된 event가 되면, 그 아래에 더 새 event를 보여 줍니다. 목록은 payload마다 앞 4KiB만 보관하고, 상세 보기는 최근 event의 payload 전체를 합계 64MiB까지 보여 줍니다.
 
-`f`를 누르면 가장 최근 event의 상세 보기를 열고 새 event를 따라갑니다. `f`를 다시 누르면 화면의 event에서 멈춥니다. `trace http`의 전체 화면은 `--payload`가 없어도 각 message의 앞 4KiB를 모읍니다. 목록의 payload 줄은 `v`를 누를 때까지 숨기고, `--payload`로 시작하면 처음부터 보여 줍니다. `m`은 `--payload`가 가리는 header 값을 보이거나 가리고, 보이는 동안 머리글에 `secrets shown`이 표시됩니다. 상세 보기에서 `z`를 누르면 gzip 본문을 풉니다. 최대 1MiB까지 풀고, 푼 크기를 함께 보여 줍니다.
+`f`를 누르면 가장 최근 event의 상세 보기를 열고 새 event를 따라갑니다. `f`를 다시 누르면 현재 event에서 멈춥니다. `trace http` 전체 화면은 기본으로 message마다 최대 1MiB를 수집하고, 목록에는 4KiB snippet을 둡니다.
+
+목록의 payload 행은 처음에 숨깁니다. `v`를 누르면 표시합니다. `--payload`나 `--payload=all`을 명시하면 시작할 때부터 행을 표시합니다. `m`은 알려진 secret header 값을 보이거나 가립니다. 값을 보일 때는 머리글에 `secrets shown`이 표시됩니다. 상세 보기에서 `z`를 누르면 gzip data를 최대 1MiB까지 풀고, 푼 크기를 표시합니다.
 
 `i`를 누르면 화면을 나눕니다. 위쪽 절반은 목록이고, 아래쪽 절반은 message 하나의 미리 보기입니다. 미리 보기는 고른 event를 보여 주고, 고른 event가 없으면 가장 최근 event를 보여 주며 새 event가 오면 바뀝니다. event에 payload가 있으면 payload를, 없으면 event의 필드를 보여 줍니다. `J`와 `K`로 미리 보기를 스크롤하고, Enter로 전체 상세 보기를 엽니다. `trace http`에서는 `m`과 `z`도 미리 보기에 적용됩니다. terminal이 9줄보다 작으면 목록만 보입니다.
 
@@ -171,7 +173,7 @@ macOS kernel은 table의 link-local 주소에 interface 번호를 넣어 둡니�
 
 ## trace http
 
-Linux 5.15 이상에서 `trace http`를 사용하면 평문 HTTP/1.x 요청과 응답을 발생 즉시 출력합니다. edc는 kernel에서 TCP로 읽고 쓰는 data마다 앞 512 byte(`--payload`를 쓰면 앞 4KiB)를 읽고, method, `Host` header, path, 상태 코드만 남깁니다. path의 query에는 token이 들어 있을 수 있어 뺍니다. `--payload`를 쓰지 않으면 다른 header와 body도 버립니다.
+Linux 5.15 이상에서 `edc trace http`를 실행하면 HTTP/1.x와 HTTP/2를 client·server 양쪽에서 봅니다. 기본 TLS 자동 탐지도 시작하며, TLS 탐색이나 attach가 실패해도 HTTP 수집을 계속합니다. HTTP/1 행은 header가 완성되면 출력하고, HTTP/2 행은 header block을 해석한 뒤 출력합니다.
 
 ```bash
 edc trace http
@@ -182,6 +184,14 @@ edc trace http --payload
 edc trace http --side server --port 8080
 edc trace http --port 8080 --payload=all
 ```
+
+일반 text와 `--raw`는 기본으로 message마다 최대 1MiB를 수집합니다. JSON 요약과 `--group-by`는 payload를 기본 수집하지 않습니다. 값 없는 `--payload`는 기존대로 앞 4KiB를, `--payload=all`은 최대 1MiB를 수집합니다. `--payload=false`는 수집하지 않습니다.
+
+전체 화면은 full message를 수집하지만 payload 행은 처음에 숨깁니다. Enter로 상세 보기를 열고 `i`로 미리 보기를 엽니다. `v`는 payload 행을 표시합니다. `z`는 gzip body를 풉니다. 목록은 event마다 4KiB snippet을 두고 최대 10,000개 event를 보관합니다. 전체 payload와 gzip 원본은 합계 64MiB까지 보관합니다. 이 한도에서 message를 내보내면 상세 보기에 전체 payload가 eviction됐다고 표시합니다.
+
+열린 HTTP/1·HTTP/2 message는 합계 4096개와 64MiB까지 보관합니다. message 하나의 상한은 1MiB입니다. 불완전하거나 eviction된 message에는 `payload_truncated`가 표시됩니다.
+
+HTTP/1은 나뉜 header를 합친 뒤 body가 끝나기 전에 metadata를 출력합니다. data가 바뀌어도 250ms보다 자주 같은 행을 갱신하지 않습니다. `Content-Length`와 chunked framing의 끝을 따릅니다. 끝을 알 수 없는 stream은 연결 종료나 trace 종료까지 유지합니다. 강제로 닫은 마지막 snapshot은 truncated로 표시합니다.
 
 요청은 `http_request` event입니다. 응답은 `http_1xx`부터 `http_5xx`까지이고 `status`에 코드가 나옵니다. HTTP/1.x는 한 연결에서 요청 순서대로 응답하므로, 응답은 같은 연결에서 아직 응답이 없는 가장 오래된 요청과 짝짓습니다. `latency_ms`는 client가 요청을 보낸 때부터 응답을 읽은 때까지입니다. `1xx` 응답은 요청을 끝내지 않습니다.
 
@@ -207,17 +217,19 @@ proxy를 거치는 요청은 구간마다 한 번씩 보입니다. 예를 들어
 | port 9900의 proxy가 받은 요청만 | `edc trace http --side server --port 9900` |
 | 쪽마다 process별 응답 시간 | `edc trace http --port 9000 --group-by process` |
 | path별 요청, 오류, 응답 시간 | `edc trace http --group-by path` |
-| HTTPS 안의 HTTP/1.1과 HTTP/2 요청 | `edc trace http --tls` |
+| HTTPS 안의 HTTP/1.1과 HTTP/2 요청 | `edc trace http` |
 
 한 구간의 client 응답 시간과 서버 응답 시간은 서로 다른 시간을 잽니다. client 응답 시간에는 network와, 서버가 요청을 읽기 전까지 기다린 시간이 들어갑니다. 서버 응답 시간에는 서버가 처리한 시간만 들어갑니다. client 응답 시간이 서버 응답 시간보다 훨씬 길면 network와 서버의 대기열을 확인합니다.
 
 edc는 port가 아니라 data의 앞부분으로 HTTP를 찾으므로, 어느 port의 HTTP든 봅니다. `source`는 항상 이 host 쪽 주소이고 `destination`은 상대 주소입니다. `--port`를 사용하면 이 host나 상대가 그 port를 쓰는 연결만 봅니다. `--side server`와 함께 쓰면 로컬 서버 하나를, `--side client`와 함께 쓰면 이 host가 그 port의 서버로 보낸 요청을 봅니다. port는 kernel에서 확인하므로 다른 연결의 data는 읽지 않습니다.
 
-`--payload`를 사용하면 각 message의 data를 볼 수 있습니다. edc는 event마다 그 아래 줄에 body를 출력하고, body가 없으면 header를 출력합니다. `--raw`에서는 `payload` 필드에 data 전체가 들어 있습니다. data는 한 번의 읽기나 쓰기에서 앞 4KiB(4,096 byte)라서 더 긴 body는 잘립니다. program이 header와 body를 두 번에 나눠 쓰면 body는 보이지 않습니다. `--payload`를 쓰면 레코드가 커져서, 요청이 많은 서버에서는 event가 유실될 수 있습니다. 유실된 event 수는 요약에 표시됩니다. `--payload`는 query를 그대로 두지만 `Authorization`, `Proxy-Authorization`, `Cookie`, `Set-Cookie`, `X-Api-Key`, `X-Goog-Api-Key`, `Api-Key`, `X-Amz-Security-Token` header 값은 가립니다. 다른 header, query, body는 그대로 출력하므로 token이나 비밀번호가 보일 수 있습니다. 출력을 공유하기 전에 token이나 비밀번호가 없는지 확인합니다. 제어 문자는 `\xNN`으로 바꾸므로 data가 terminal을 조작하지 못합니다. `--json`은 요약만 기록하므로 `--payload`와 함께 사용할 수 없습니다.
+text, `--raw`, 전체 화면은 알려진 secret header 값을 기본으로 가립니다. 전체 화면은 원문을 보관하고 상세 보기와 미리 보기를 그릴 때 가립니다. `--show-secrets`나 `m`을 명시하면 값을 볼 수 있습니다. query와 body는 redaction하지 않습니다. 출력에 token이나 비밀번호가 있는지 확인한 뒤 공유합니다. 제어 문자는 `\xNN` 문자로 바꿉니다.
 
-`--payload=all`을 사용하면 message 하나를 1MiB까지 전부 볼 수 있습니다. edc는 message의 다음 읽기와 쓰기, `writev`의 다른 버퍼까지 따라갑니다. event는 message가 끝날 때 출력합니다. `Content-Length`만큼 body를 받았거나, chunked body의 마지막 조각을 받았거나, 1초 동안 data가 없으면 끝난 것으로 봅니다. 그래서 `--payload`보다 event가 늦게 나올 수 있지만 응답 시간은 같습니다. 줄 단위 출력에서는 event 아래에 message 전체를 출력하고, 전체 화면은 여전히 한 줄로 보여 줍니다. 1MiB에서 잘렸거나, 조각을 잃었거나, 끝나기 전에 trace가 끝나면 event에 `"payload_truncated": true`가 붙습니다. `--payload=all`은 띄우지 않고 붙여 씁니다. `--payload all`은 오류입니다. `--payload=all`은 `--payload`보다 CPU를 더 쓰므로, 요청이 많은 서버에서는 event가 더 일찍 유실될 수 있습니다.
+가리는 header는 `Authorization`, `Proxy-Authorization`, `Cookie`, `Set-Cookie`, `X-Api-Key`, `X-Goog-Api-Key`, `Api-Key`, `X-Amz-Security-Token`입니다. `--payload`는 query를 유지합니다. `--json`은 요약만 쓰므로 `--payload`와 함께 사용할 수 없습니다.
 
-`--payload`와 함께 `--show-secrets`를 사용하면 `--payload`가 가리는 header 값도 그대로 보여 줍니다. 이 값이 있으면 다른 사람이 그 계정을 쓸 수 있으므로, 이 출력은 공유하지 않습니다. 전체 화면에서는 대신 `m`을 누릅니다.
+`--payload=all`은 다음 read/write와 `writev`의 다른 buffer도 따라갑니다. Header가 완성되면 metadata 행을 만들고, body가 바뀔 때마다 같은 message 행을 갱신합니다. 일반 text는 누적 snapshot을 update로 표시합니다. body가 끝났다고 확인하지 못한 stream은 idle 시간만으로 닫지 않습니다. 종료, 상한, trace 중단에서 끝까지 받지 못한 body는 `"payload_truncated": true`로 표시합니다. `--raw`는 update를 쓰지 않고 message마다 최종 event 한 개를 씁니다. 기존 JSON schema는 유지합니다.
+
+TLS를 포함한 HTTP/2 event에는 시작 줄, 일반 header, body, trailer가 들어갑니다. `:authority`는 `Host`로 표시하고 payload의 원래 path와 query는 유지합니다. 구조화된 `path`에서는 query를 뺍니다. Header가 도착하면 metadata를 출력하고 `END_STREAM` 전에도 body snapshot을 갱신합니다. 1MiB 상한은 header·body·trailer 합계입니다. Decoded header와 compressed header block은 각각 64KiB로 제한합니다. 열린 HTTP/1·HTTP/2 message는 앞서 설명한 4096개·64MiB 한도를 함께 씁니다.
 
 `Ctrl-C` 후 summary는 쪽, method, host, path마다 한 행을 표시합니다. 두 쪽이 모두 있으면 쪽별 합계를 따로 보여 주고 `SIDE` 칸을 더합니다. JSON에는 쪽별 합계를 담은 `client`와 `server` 객체가 붙습니다. group 행은 요청, 응답, 4xx·5xx 응답, 응답 없음, 평균·최대 응답 시간을 표시합니다.
 
@@ -227,9 +239,11 @@ HTTPS는 암호문이라 method, path, 상태 코드를 읽을 수 없습니다.
 
 TLS 1.3은 ServerHello 뒤의 alert를 암호화할 수 있습니다. OpenSSL은 client가 서버 인증서를 거절하는 alert를 자기 암호화를 켜기 전에 보내므로, `curl`은 TLS 1.3에서도 TLS 1.2에서도 `fatal unknown_ca from client`를 보입니다. alert를 암호화하는 client는 `tls_server_hello` 뒤에 끝나는 연결만 보입니다. edc는 handshake 머리 뒤 방향마다 처음 8번의 읽기와 쓰기에서만 alert를 찾고, program이 5 byte record 머리와 2 byte alert를 두 번에 나눠 읽어도 찾으며, trace 전에 시작한 연결은 보지 못합니다.
 
-trace를 시작하기 전에 맺은 TLS 연결은 보이지 않습니다. client가 Encrypted Client Hello(ECH)를 쓰면 SNI는 서비스 제공자의 공개 이름입니다. HTTPS의 요청을 보려면 `--tls`를 씁니다. TLS를 푸는 곳 뒤의 평문 HTTP를 trace해도 됩니다. 예를 들어 backend로 평문 HTTP를 보내는 proxy가 있으면 그 구간을 봅니다.
+trace를 시작하기 전에 맺은 TLS 연결은 보이지 않습니다. client가 Encrypted Client Hello(ECH)를 쓰면 SNI는 서비스 제공자의 공개 이름입니다. 기본 명령이 TLS를 자동 탐지합니다. TLS를 푸는 곳 뒤의 평문 HTTP도 trace할 수 있습니다. 예를 들어 backend로 평문 HTTP를 보내는 proxy를 봅니다.
 
-`--tls`를 사용하면 HTTPS 안의 HTTP/1.1과 HTTP/2 요청을 볼 수 있습니다. edc는 OpenSSL, GnuTLS, NSS, wolfSSL, Mbed TLS, rustls-ffi, Go TLS 또는 지원하는 BoringSSL 빌드에서 암호화하기 전과 복호화한 뒤의 평문을 읽으므로, 인증서나 key가 필요 없습니다.
+TLS 자동 탐지는 암호화 전과 복호화 후의 평문을 읽습니다. OpenSSL, GnuTLS, NSS, wolfSSL, Mbed TLS, rustls-ffi, 지원 Go TLS 바이너리와 등록된 BoringSSL build를 지원합니다. 인증서와 key 파일은 필요하지 않습니다.
+
+TLS probe는 Linux amd64와 arm64에서만 지원합니다. 지원하지 않는 architecture나 ABI, 권한 부족, attach 실패는 이유를 표시하고 HTTP 수집을 계속합니다.
 
 ```bash
 edc trace http --tls
@@ -237,16 +251,19 @@ edc trace http --tls --side server --port 443
 edc trace http --tls=/usr/local/bin/node
 ```
 
-값 없이 쓰면 trace를 시작할 때 다음 파일을 찾습니다.
+bare 명령과 `--tls`는 TLS를 자동 탐지합니다. `--tls=false`는 TLS 관측을 끕니다. `--tls=<경로>`는 지정한 파일만 봅니다. 위험 kernel에서 bare 명령은 TLS probe를 건너뛰고 이유를 표시하지만, 명시한 `--tls`는 기존 경고와 확인 절차를 유지합니다.
+
+bare 명령과 값 없는 `--tls`는 시작할 때와 trace 중에 다음 대상을 찾습니다.
 
 - 표준 library 디렉터리에 있는 이 host의 `libssl`, `libgnutls`, `libssl3`, `libnspr4`, `libwolfssl`, `libmbedtls`, `librustls`
 - 실행 중인 process가 적재한 이 library들(container 안의 것도 포함)
 - OpenSSL을 실행 파일 안에 넣고 `SSL_read`를 내보내는 process의 실행 파일(예: `node`)
+- TLS library를 적재한 경우에도 `.gopclntab` section이 있는 지원 Go 바이너리
 - 지원하는 GNU build ID를 가진 심볼 없는 BoringSSL 실행 파일
 
-edc는 process가 실제로 적재한 파일을 열므로, 패키지를 업데이트한 뒤에도 예전 `libssl`을 쓰고 있는 process가 보입니다. 이 파일을 열려면 `CAP_SYS_ADMIN`이나 `CAP_CHECKPOINT_RESTORE`가 필요하고, probe를 붙일 때도 `CAP_SYS_ADMIN`이 필요할 수 있습니다. root는 이 권한이 있고, container에서는 `--cap-add`로 `SYS_ADMIN`을 더하거나 `--privileged`를 씁니다. 이 파일을 열 수 없으면 안내를 표시합니다.
+edc는 process가 실제로 적재한 파일을 열므로, 패키지를 업데이트한 뒤에도 예전 `libssl`을 쓰는 process를 봅니다. 파일을 열 때 `CAP_SYS_ADMIN`이나 `CAP_CHECKPOINT_RESTORE`가 필요할 수 있습니다. probe를 붙일 때도 `CAP_SYS_ADMIN`이 필요할 수 있습니다. 접근할 수 없으면 이유를 표시하고 HTTP 수집을 계속합니다.
 
-trace가 도는 동안에도 계속 찾습니다. process가 program을 실행하면 그 뒤 3초 동안 그 process를 몇 번 다시 확인하고, 모든 process도 2초 이상의 간격으로 다시 확인합니다. process가 많은 host에서는 이 간격이 길어집니다. 새 파일을 쓰는 process를 찾으면 그 파일에 probe를 붙이며, 그 전에 보낸 요청은 보이지 않습니다. kernel은 program 실행 알림을 처음 network namespace에만 보냅니다. host network나 `--pid=host`를 쓰지 않는 container처럼 다른 network namespace나 PID namespace에서 edc를 실행하면 안내를 표시하고, 모든 process를 다시 확인하는 방법만 씁니다. trace 도중에 kernel이 실행 알림을 멈추면 trace가 끝난 뒤 알려 줍니다.
+trace 중에도 계속 탐색합니다. 새 process는 시작 후 3초 동안 몇 번 다시 확인합니다. edc는 전체 process도 2초 이상 간격으로 확인합니다. host에 process가 많으면 간격이 길어집니다. 새 파일을 발견하면 probe를 붙입니다. 그 전에 보낸 요청은 놓칠 수 있습니다. 다른 network namespace나 PID namespace에서는 kernel 알림을 받지 못할 수 있습니다. 이때는 주기적인 전체 탐색만 하고 이유를 표시합니다.
 
 파일 하나만 보려면 `--tls=<경로>`로 지정합니다. 이때는 다른 파일을 찾지 않습니다. 경로는 `--payload=all`처럼 띄우지 않고 붙여 씁니다.
 
@@ -262,15 +279,15 @@ NSS 프로그램을 시작하기 전에 trace를 시작합니다. TLS와 일반 
 
 NSS 평문은 `PR_Read`, `PR_Recv`, `PR_Write`, `PR_Send`에서 읽습니다. NSPR은 이 함수로 일반 파일과 socket도 읽고 쓰므로, TLS를 쓰지 않는 program에서도 NSPR의 읽기와 쓰기마다 probe가 실행됩니다. `SSL_SECURITY`와 기본값 변경, model 복사, accept한 연결, `PR_Close`도 추적합니다. `SSL_SECURITY`를 끈 연결과 `PR_MSG_PEEK`로 읽은 내용은 TLS event로 표시하지 않습니다.
 
-Go TLS는 Go 함수 표와 반환 위치의 probe로 평문을 읽습니다. 검증한 범위는 Linux amd64와 arm64의 Go 1.26.8과 1.27.1입니다.
+Go TLS는 Go 함수 표를 읽고 함수 반환 지점에 probe를 붙여 평문을 읽습니다. edc는 Go 1.21.5, 1.23.7, 1.23.8, 1.23.12, 1.25.0, 1.26.5, 1.26.8, 1.27.1, 1.27.3을 지원합니다. 이 버전의 실시간 캡처를 Linux amd64에서 검증했습니다. Linux amd64와 arm64의 normal, stripped, PIE ELF metadata도 확인했습니다. arm64 실시간 캡처는 검증하지 않았습니다. 현재 형식의 유효한 Go 함수 표에서 TLS Read, Write, Close 메서드가 모두 없으면 자동 탐지에서 제외하고 오류를 내지 않습니다. 메서드가 일부만 있거나 함수 표가 손상되면 자동 탐지 안내를 표시합니다. `--tls`로 TLS 메서드가 없는 Go 바이너리를 지정하면 오류를 반환합니다. 이전 형식의 Go 함수 표는 지원하지 않습니다.
 
 ```bash
 edc trace http --tls=my-go-program
 ```
 
-바이너리 경로나 command 이름을 지정합니다. 일반·stripped·PIE 바이너리를 지원하며, 자동 library 탐색으로 Go 바이너리를 고르지는 않습니다.
+bare 명령은 `.gopclntab` section을 확인해 지원 Go 바이너리를 자동 탐지합니다. 바이너리 경로나 command 이름도 지정할 수 있습니다. 일반·stripped·PIE 바이너리를 지원합니다.
 
-이 event에는 socket 주소가 없어 `--port` 필터를 사용하면 제외됩니다. 다른 Go 버전과 아키텍처는 지원하지 않습니다.
+이 event에는 socket 주소가 없어 `--port` 필터를 사용하면 제외됩니다. 다른 Go 버전은 지원하지 않습니다.
 
 Go client의 응답 시간은 `Write` 진입부터 `Read` 반환까지입니다. 서버에서는 응답의 `Write` 진입까지 잽니다.
 
@@ -316,7 +333,7 @@ sudo edc trace http --tls="$(command -v claude)"
 
 OpenSSL, GnuTLS, NSS, wolfSSL, Mbed TLS, rustls-ffi, Go TLS, BoringSSL에서 읽은 요청과 응답 event에는 `"tls": true`가 붙고, event 행에는 event 이름 뒤에 `tls`가 표시됩니다. 목적지는 `https://`로 시작하고, 평문 HTTP의 목적지는 `http://`로 시작합니다. path, 상태 코드, 응답 시간, group 보기, `--payload`, 요약은 평문 HTTP와 같게 동작하고, `--payload`는 같은 header 값을 가립니다. HTTPS의 body에는 token이 들어 있는 경우가 많으므로, 출력을 공유하기 전에 확인합니다.
 
-TLS 위의 HTTP/2는 h2c처럼 해석해서 stream마다 method, path, 상태 코드, 응답 시간을 표시합니다. frame과 header 표를 따라가야 하므로 HTTP/2 연결의 평문은 모두 읽고, 그래서 바쁜 HTTP/2 연결은 HTTP/1보다 비용이 크고 다른 연결의 event를 잃게 할 수 있습니다. 비용을 줄이려면 `--port`를 씁니다. HTTP/2 연결의 평문을 잃으면 그 방향은 더 읽지 않고 잃은 event로 셉니다. trace를 시작하기 전에 맺은 HTTP/2 연결은 해석하지 않습니다. HTTP/2에서는 `--payload`가 시작 줄과 body를 표시합니다. 시작 줄은 method와 path, 또는 상태 코드로 만들고, header는 표시하지 않습니다. HTTP/2 event는 body가 끝날 때 출력합니다. `--payload`는 body의 앞 4KiB를, `--payload=all`은 1MiB까지 담습니다. 상한에서 body를 잘랐거나, stream이나 trace가 끝나기 전에 body가 끝나지 않으면 event에 `"payload_truncated": true`가 붙습니다. 기다리는 body가 4096개나 64MiB를 넘으면 가장 오래된 event를 먼저 이 표시와 함께 출력하고, 어느 방향을 더 읽지 않을 때도 그렇게 합니다. `--payload` 없이 연 전체 화면은 HTTP/2 body를 보여 주지 않고, header가 오면 바로 event를 보여 줍니다.
+TLS 위의 HTTP/2도 h2c처럼 stream마다 method, path, 상태 코드, 응답 시간을 표시합니다. frame과 HPACK table을 따라가므로 연결의 평문을 모두 읽습니다. 바쁜 연결은 다른 HTTP event를 유실시킬 수 있으니 비용을 줄이려면 `--port`를 씁니다. byte를 잃으면 그 방향 해석을 멈추고 유실을 셉니다. trace 전에 맺은 HTTP/2 연결은 해석하지 않습니다. HTTP/2 metadata는 header가 도착하면 출력합니다. `END_STREAM` 전에도 같은 행에 body snapshot을 갱신합니다. payload에는 시작 줄, 일반 header, body, trailer가 들어갑니다. `:authority`는 `Host`로 표시합니다. 1MiB message 한도에는 header, body, trailer가 모두 포함됩니다. Decoded header와 compressed header block은 각각 64KiB로 제한합니다. 열린 HTTP/1·HTTP/2 message는 합계 4096개와 64MiB 한도를 함께 씁니다. `--payload`는 최대 4KiB, `--payload=all`은 최대 1MiB를 담습니다. 잘렸거나 eviction된 message에는 `"payload_truncated": true`가 붙습니다.
 
 Bun, `node`, Python `asyncio`처럼 TLS 함수 안에서 socket을 쓰지 않는 program은 어느 연결인지 알 수 없습니다. 이런 event에는 process는 있지만 `source`와 `destination`이 없고, `target`은 `Host` header입니다. 요약은 이 event 수를 `TLS plaintext without an address`로 표시하고, JSON에는 `tls_unmapped`가 붙습니다. `--port`를 쓰면 이런 평문은 port를 확인할 수 없어 표시하지 않고 같은 수에 더합니다.
 
@@ -326,7 +343,7 @@ edc는 page fault 없이 평문을 읽습니다. 그 순간 kernel이 그 page�
 
 이 파일을 쓰는 모든 process에서 함수가 불릴 때마다 probe가 실행되며, `--process`로 가린 process도 마찬가지입니다. 끝날 때 kernel이 probe를 하나씩 지우므로, Ctrl-C를 누른 뒤 몇 초 지나서 끝날 수 있습니다. `--tls`가 요구하는 kernel 버전은 `trace http`와 같습니다.
 
-amd64의 Linux 6.11, 6.12.14 전의 6.12, 6.13.3 전의 6.13에서는 Docker container처럼 seccomp filter 아래에서 도는 process가 TLS 호출에서 돌아올 때 종료될 수 있습니다. 이런 kernel에서는 probe를 붙이기 전에 경고를 표시하고, 전체 화면을 열기 전에 Enter를 기다립니다. 멈추려면 Ctrl-C를 누릅니다. 배포판 kernel에는 수정이 따로 들어 있을 수 있습니다.
+amd64의 Linux 6.11, 6.12.14 전의 6.12, 6.13.3 전의 6.13에서는 seccomp filter 아래의 process가 TLS 호출에서 돌아올 때 종료될 수 있습니다. Bare 명령은 TLS probe를 건너뛰고 이유를 표시하며 HTTP 수집을 계속합니다. 명시한 `--tls`는 경고와 전체 화면 확인 절차를 유지합니다. 배포판 kernel에는 수정이 따로 들어 있을 수 있습니다.
 
 `--tls`가 없으면 HTTPS의 요청은 kernel에서 암호문으로만 보이므로 표시하지 않습니다. TLS 없는 HTTP/2(h2c, 예: cluster 안의 gRPC)는 해석해서 stream마다 method, path, 상태 코드, 응답 시간을 표시합니다. frame과 header 표를 따라가야 하므로 h2c 연결은 모든 byte를 읽고, 그래서 바쁜 h2c 연결은 HTTP/1보다 비용이 큽니다. 이 byte는 다른 HTTP 레코드와 같은 buffer를 쓰므로, 바쁜 h2c 연결이 있으면 다른 연결의 event도 잃을 수 있습니다. 비용을 줄이려면 `--port`를 씁니다. h2c 연결의 byte를 잃으면 그 방향은 더 읽지 않고 잃은 event로 셉니다. HTTP/3의 요청은 binary frame이라 표시하지 않습니다. HTTP/3은 UDP를 쓰므로 `tls_hello` event도 없습니다. edc는 한 번의 읽기나 쓰기가 시작되는 곳에서만 message를 찾습니다. 그래서 한 번의 읽기에 앞 응답의 끝과 다음 응답의 시작이 함께 들어 있으면 다음 응답을 놓칩니다. 프로그램이 message 하나를 여러 버퍼로 나눠 쓰면 첫 버퍼만 읽으므로, `Host` header는 첫 버퍼의 앞 512 byte 안에 있어야 합니다. 없으면 target은 서버 주소입니다. edc는 Linux 5.15 이상에서 이 field를 지원합니다.
 

@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -416,5 +417,21 @@ func TestDuResultLabelsRowsMountsAndLargestDirs(t *testing.T) {
 	}
 	if text := formatDuRows(rows, duOther{}, 0) + formatDuMounts(mounts, false, 0); !strings.Contains(text, "  a/  container api-1\n") || !strings.Contains(text, "used  mounted in db\n") {
 		t.Fatalf("text =\n%s", text)
+	}
+}
+
+func TestDuWalkCountsEveryStatCall(t *testing.T) {
+	root := t.TempDir()
+	for index := range 300 {
+		if err := os.WriteFile(filepath.Join(root, fmt.Sprintf("f%03d", index)), nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	activity := new(atomic.Int64)
+	if _, err := duMeasure(context.Background(), duOptions{root: root, workers: 1, activity: activity}, mustHostSources(t)); err != nil {
+		t.Fatal(err)
+	}
+	if activity.Load() < 300 {
+		t.Fatalf("activity = %d, want at least one per file", activity.Load())
 	}
 }

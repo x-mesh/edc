@@ -348,7 +348,9 @@ Grouped rows in the full-screen view show the groups with the most traffic first
 
 In the event list, press Up or Down (or `k` and `j`) to select an event. While an event is selected, the list stops and does not follow new events. The header shows the number of newer events. Press Enter to see all the fields of the event and the whole payload. The detail view wraps long lines. Press Up, Down, PgUp (or `b`), PgDn (or Space), `g`, or `G` to scroll, and press Esc or `q` to go back. Press `l`, Esc, or End in the list to follow new events again. Many Mac keyboards have no End key. In the list, `b` and Space also move the selection by a page. If the selected event becomes the oldest one in the list, the list shows newer events below it. The list keeps the first 4 KiB of each payload. The detail view shows the whole payload of recent events, up to 64 MiB in total.
 
-Press `f` to open the detail view on the newest event and follow new events. Press `f` again to stop at the event on the screen. In `trace http`, the full screen collects the first 4 KiB of each message also without `--payload`. The list hides the payload lines until you press `v`. With `--payload`, the list shows them from the start. Press `m` to show or hide the values of the headers that `--payload` hides. While they are visible, the header shows `secrets shown`. In the detail view, press `z` to decode a gzip body. edc decodes up to 1 MiB and shows how many bytes it decoded.
+Press `f` to open the newest event and follow new events. Press `f` again to stop at the current event. In `trace http`, the full screen collects up to 1 MiB per message by default. The list keeps a 4 KiB snippet.
+
+The list hides payload rows at first. Press `v` to show them. `--payload` or `--payload=all` shows rows at startup. Press `m` to reveal or mask known secret headers. The header shows `secrets shown` while values appear. Press `z` in the detail view to decode gzip data. edc decodes up to 1 MiB and shows the decoded size.
 
 Press `i` to split the screen. The list uses the top half, and a preview of one message uses the bottom half. The preview shows the selected event. If no event is selected, the preview shows the newest event and changes when a new event arrives. If the event has a payload, the preview shows the payload. Otherwise, the preview shows the fields of the event. Press `J` and `K` to scroll the preview, and press Enter to open the full detail view. In `trace http`, `m` and `z` also change the preview. If the terminal has fewer than 9 lines, edc shows only the list.
 
@@ -450,7 +452,11 @@ On macOS, the kernel puts the interface number into the link-local addresses of 
 
 ## trace http
 
-Use `trace http` on Linux 5.15 or later to print plain HTTP/1.x requests and responses as they arrive. edc reads the first 512 bytes of each TCP read and write in the kernel, or the first 4 KiB with `--payload`. It keeps the method, the `Host` header, the path, and the status code. It removes the query from the path, because the query can contain tokens. Without `--payload`, it also drops the other headers and the body.
+Use `edc trace http` on Linux 5.15 or later to inspect HTTP/1.x and HTTP/2 traffic on both sides.
+
+The bare command enables TLS auto discovery. It continues HTTP capture if TLS discovery or attach fails.
+
+HTTP/1 rows appear after the headers complete. HTTP/2 rows appear after each header block.
 
 ```bash
 edc trace http
@@ -462,20 +468,60 @@ edc trace http --side server --port 8080
 edc trace http --port 8080 --payload=all
 ```
 
-A request is an `http_request` event. A response is one of `http_1xx` to `http_5xx`, and `status` has the code. HTTP/1.x answers the requests on one connection in order. So a response matches the oldest request on the same connection that has no answer. `latency_ms` starts when the client sends the request and stops when the client reads the response. A `1xx` response does not end the request.
+Text output and `--raw` collect up to 1 MiB per message by default. JSON summaries and `--group-by` default to no payload.
 
-The `target` of an HTTP event is the `Host` header. If there is no `Host` header, the target is the server address. On the server side, `latency_ms` starts when the server reads the request and stops when the server writes the response.
+`--payload` keeps the first 4 KiB. `--payload=all` keeps up to 1 MiB. `--payload=false` disables payload. A bare `--payload` keeps its existing 4 KiB limit.
+
+The full screen collects complete messages by default. It hides payload rows at first.
+
+Press Enter for details, `i` for a preview, and `v` to show payload rows.
+
+Press `z` to decode gzip data. The list keeps 4 KiB per event and 10,000 events.
+
+Full payload and gzip data share a 64 MiB budget. The detail view says when this budget evicts a message.
+
+HTTP/1 and HTTP/2 share limits of 4096 open messages and 64 MiB. Each message has a 1 MiB limit.
+
+edc marks an incomplete or evicted message with `payload_truncated`.
+
+HTTP/1 combines split headers, then emits metadata before the body ends.
+
+It updates the same row no more than once every 250 ms when data changes.
+
+HTTP/1 follows `Content-Length` and chunked framing. Unknown-length streams stay open until close or trace stop. A forced final snapshot is truncated.
+
+A request has the event name `http_request`. A response has a name from `http_1xx` to `http_5xx`. The status code is in `status`.
+
+HTTP/1.x answers requests in order. A response matches the oldest unanswered request on its connection.
+
+On the client, `latency_ms` starts at request send and ends at response read. A `1xx` response does not end the request.
+
+The `target` is the `Host` header. If no `Host` header exists, the target is the server address.
+
+On the server, `latency_ms` starts when the server reads the request and ends when it writes the response.
 
 `trace http` shows two sides of HTTP on this host. Each event row starts with the side:
 
 - `client:` is a request that this host sent. For example, a proxy sends requests to its backend, or a program calls an API.
 - `server:` is a request that a local server received.
 
-JSON events have `"side": "client"` or `"side": "server"`. Use `--side client` or `--side server` to keep one side. In the full-screen view, press `/` and type `server` to keep the server rows. `trace dns` shows only the client side by default.
+JSON events have `"side": "client"` or `"side": "server"`. Use `--side client` or `--side server` to keep one side.
 
-A proxy shows one request on each hop. For example, nginx receives requests on port 9900 and sends them to a backend on port 9000 on the same host. Then one user request gives three request rows: `server:` for nginx on port 9900, `client:` for nginx to port 9000, and `server:` for the backend on port 9000. The grouped views keep the server side in separate rows, for example `nginx (server)`.
+In the full-screen view, press `/` and type `server` to keep server rows. `trace dns` shows the client side by default.
 
-Use `--group-by path` to group the events by the request path. In the full-screen view, press `u`. Only `trace http` has the path view. The path has no query, and one path row includes all hosts and methods. A response goes into the row of its request. A `tls_hello` event and a response without a request go into the `-` row. If the path contains an ID, for example `/users/123`, each ID gets a different row.
+A proxy shows one request on each hop. For example, nginx receives requests on port 9900 and sends them to a backend on port 9000.
+
+One user request then gives three rows: `server:` for nginx on port 9900, `client:` for nginx to port 9000, and `server:` for the backend.
+
+Grouped views keep server rows separate, for example `nginx (server)`.
+
+Use `--group-by path` to group events by request path. In the full-screen view, press `u`. Only `trace http` has this view.
+
+The path has no query. One row includes all hosts and methods. A response goes into its request row.
+
+A `tls_hello` event and an unmatched response go into the `-` row.
+
+If the path contains an ID, for example `/users/123`, each ID gets a different row.
 
 | To see | Command |
 | --- | --- |
@@ -486,29 +532,113 @@ Use `--group-by path` to group the events by the request path. In the full-scree
 | Only the requests that the proxy on port 9900 received | `edc trace http --side server --port 9900` |
 | The latency of each process on each side | `edc trace http --port 9000 --group-by process` |
 | The requests, errors, and latency of each path | `edc trace http --group-by path` |
-| The HTTP/1.1 and HTTP/2 requests in HTTPS | `edc trace http --tls` |
+| The HTTP/1.1 and HTTP/2 requests in HTTPS | `edc trace http` |
 
-The client latency and the server latency of one hop measure different times. The client latency includes the network and the wait before the server reads the request. The server latency includes only the work of the server. If the client latency is much larger than the server latency, examine the network and the server queue.
+Client and server latency measure different times. Client latency includes the network and the wait before the server reads the request.
 
-edc finds HTTP by the start of the data, not by the port, so it sees HTTP on any port. The `source` column is always this host, and `destination` is the peer. Use `--port` to keep the connections that use one port on this host or on the peer. With `--side server`, it shows one local server. With `--side client`, it shows the requests from this host to the servers on that port. edc checks the port in the kernel, so it does not read the data of other connections.
+Server latency includes only server work. If client latency is much larger, check the network and the server queue.
 
-Use `--payload` to see the data of each message. Under each event, edc prints the body. If there is no body, it prints the headers. With `--raw`, the `payload` field has all the data. The data is the first 4 KiB (4,096 bytes) of the read or the write, so edc cuts a longer body. If a program writes the headers and the body in two writes, edc does not see the body. Each record is larger with `--payload`, so a busy server can cause lost events. The summary shows the number of lost events. `--payload` keeps the query, but it hides the values of the `Authorization`, `Proxy-Authorization`, `Cookie`, `Set-Cookie`, `X-Api-Key`, `X-Goog-Api-Key`, `Api-Key`, and `X-Amz-Security-Token` headers. edc shows the other headers, the query, and the body as they are, and they can contain tokens and passwords. Before you share the output, check it for tokens and passwords. edc changes control characters to `\xNN`, so the data cannot change the terminal. `--payload` does not work with `--json`, because `--json` writes only the summary.
+edc finds HTTP by the start of the data, not by the port. It can see HTTP on any port.
 
-Use `--payload=all` to see each whole message, up to 1 MiB. edc follows the message into the next reads and writes, and into the other buffers of a `writev`. edc prints the event when the message ends. The end is the last byte of `Content-Length`, the last chunk of a chunked body, or one second without data. So the event can come out later than with `--payload`, but the latency does not change. The plain output prints the whole message under the event. The full screen still shows one line. If edc cuts the message at 1 MiB, loses a part, or stops before the end, the event has `"payload_truncated": true`. Write `--payload=all` without a space. `--payload all` is an error. `--payload=all` uses more CPU than `--payload`, so a busy server causes lost events sooner.
+`source` is this host, and `destination` is the peer.
 
-Use `--show-secrets` with `--payload` to show the values of the headers that `--payload` hides. Other people can use an account with these values. Do not share output that has them. In the full screen, press `m` instead.
+Use `--port` to keep connections that use one port on this host or its peer.
 
-The summary after Ctrl-C shows one row for each side, method, host, and path. If the trace has both sides, the summary shows the totals of each side and adds a `SIDE` column. JSON adds the `client` and `server` objects with the totals of each side. Grouped rows show the requests, the responses, the 4xx and 5xx responses, the unanswered requests, and the average and maximum latency.
+With `--side server`, it shows one local server. With `--side client`, it shows requests from this host to servers on that port.
 
-HTTPS is encrypted, so edc cannot read the method, the path, or the status. The TLS ClientHello at the start of each connection is plain text. edc reads it and shows a `tls_hello` event. The `target` is the server name (SNI). The `alpn` field lists the protocols that the client offers, for example `h2` and `http/1.1`, and the event row shows the first one. A client that sends a ClientHello makes a `client:` row. A local server that receives one makes a `server:` row. The summary counts these connections in a separate `TLS connections` table, and JSON adds `tls_connections` and `tls`. Use `--port 443` to see only the HTTPS connections on port 443.
+edc checks the port in the kernel, so it does not read data from other connections.
 
-The answer of the server is plain text too, up to the point where the keys are set. edc shows the ServerHello as a `tls_server_hello` event with `tls_version` and `cipher`, for example `TLS1.3 TLS_AES_128_GCM_SHA256`, and `latency_ms` is the time from the ClientHello on the same connection. On the client it holds the network and the server, and on a local server it holds only the server. A TLS 1.2 server also names the protocol it chose in `alpn`. TLS 1.3 encrypts that choice. If a side refuses the handshake, it sends an alert record. edc shows a plain-text alert as a `tls_alert` event, for example `fatal handshake_failure from server`, `fatal protocol_version from server`, `fatal unrecognized_name from server`, or `fatal unknown_ca from client`. `alert_from` names the side that sent it. The summary adds `VERSION` and `ALERTS` to the TLS table, a `TLS alerts` line with the count of each alert, and JSON adds `versions`, `alerts`, and `tls_alerts`.
+Known secret headers stay masked in text, `--raw`, and the full screen. The full screen masks the source value in details and previews.
 
-TLS 1.3 can encrypt an alert after the ServerHello. A client that rejects the certificate of the server sends the alert before it turns on its own encryption in OpenSSL, so `curl` shows `fatal unknown_ca from client` in TLS 1.3 and in TLS 1.2. A client that encrypts the alert shows only a connection that ends after the `tls_server_hello`. edc looks for an alert in the first 8 reads and writes of each direction after the handshake header, also when a program reads the 5-byte record header and the 2-byte alert in two reads, and it does not see a connection that started before the trace.
+Use `--show-secrets` or press `m` to reveal these values. These are explicit options. They do not redact queries or bodies.
 
-edc does not see a TLS connection that started before the trace. If a client uses Encrypted Client Hello (ECH), the SNI is the public name of the provider. To see the requests of HTTPS, use `--tls`. You can also trace the plain HTTP behind the TLS end point, for example a proxy that sends plain HTTP to its backend.
+Check output before you share it. Control characters become `\xNN` text.
 
-Use `--tls` to see the HTTP/1.1 and HTTP/2 requests in HTTPS. edc reads plaintext before encryption and after decryption. It supports OpenSSL, GnuTLS, NSS, wolfSSL, Mbed TLS, rustls-ffi, Go TLS, and registered BoringSSL builds. It does not need a certificate or a key.
+Secret headers include `Authorization`, `Proxy-Authorization`, `Cookie`, `Set-Cookie`, `X-Api-Key`, `X-Goog-Api-Key`, `Api-Key`, and `X-Amz-Security-Token`.
+
+`--payload` keeps query data. It cannot be used with `--json`, because JSON writes only the summary.
+
+`--payload=all` follows message bytes across reads, writes, and `writev` buffers. It emits metadata after the headers complete.
+
+Text and the full screen update the same message every 250 ms when bytes change.
+
+Final, limit, gap, close, and trace-stop updates take effect at once.
+
+A stream stays open until its framing ends or edc stops or loses it. An unfinished body has `"payload_truncated": true`.
+
+Raw output keeps one final event per message and its existing JSON schema.
+
+HTTP/2 payload includes the start line, regular headers, and trailers. edc maps `:authority` to `Host`.
+
+The payload keeps the original path and query. The structured `path` field omits the query.
+
+HTTP/2 metadata appears when headers arrive. Body snapshots update the same row before `END_STREAM`.
+
+The 1 MiB message cap includes headers, body, and trailers. Decoded and compressed headers have separate 64 KiB limits.
+
+Use `--show-secrets` to reveal values in text or raw output. HTTP captures payload by default, so this option needs no `--payload`.
+
+In the full screen, press `m` to reveal the values.
+
+After Ctrl-C, the summary shows one row for each side, method, host, and path.
+
+If both sides appear, it shows each side's totals and adds a `SIDE` column.
+
+JSON adds `client` and `server` objects with the side totals.
+
+Grouped rows show requests, responses, 4xx and 5xx responses, unanswered requests, and average and maximum latency.
+
+HTTPS is encrypted, so edc cannot read the method, path, or status without TLS probes.
+
+The ClientHello at each connection start is plain text. edc shows it as a `tls_hello` event.
+
+The `target` is the server name (SNI). `alpn` lists protocols offered by the client, for example `h2` and `http/1.1`. The row shows the first protocol.
+
+A client that sends ClientHello makes a `client:` row. A local server that receives it makes a `server:` row.
+
+The summary has a separate `TLS connections` table. JSON adds `tls_connections` and `tls`. Use `--port 443` to keep HTTPS connections on port 443.
+
+The server's ServerHello is plain text before it sets the keys. edc shows it as a `tls_server_hello` event with `tls_version` and `cipher`.
+
+For example, it can show `TLS1.3 TLS_AES_128_GCM_SHA256`.
+
+`latency_ms` starts at ClientHello on the same connection. On the client, it includes network and server time.
+
+On a local server, it includes server time only.
+
+A TLS 1.2 server names its chosen protocol in `alpn`. TLS 1.3 encrypts that choice. A side can refuse the handshake with an alert record.
+
+edc shows a plain-text alert as `tls_alert`, for example `fatal handshake_failure from server` or `fatal unknown_ca from client`. `alert_from` names the sender.
+
+The summary adds `VERSION` and `ALERTS` to the TLS table. It adds a `TLS alerts` line and JSON fields `versions`, `alerts`, and `tls_alerts`.
+
+TLS 1.3 can encrypt alerts after the ServerHello. In OpenSSL, a client that rejects a certificate sends its alert before encryption starts.
+
+So `curl` can show `fatal unknown_ca from client` in TLS 1.2 and TLS 1.3.
+
+Other clients can encrypt the alert. edc then shows only a connection that ends after `tls_server_hello`.
+
+edc checks the first 8 reads and writes in each direction after the handshake header.
+
+edc also joins a split 5-byte record header and 2-byte alert. It cannot see a connection that started before the trace.
+
+edc does not see a TLS connection that started before the trace.
+
+If a client uses Encrypted Client Hello (ECH), the SNI is the provider's public name.
+
+Bare `edc trace http` also finds TLS by default.
+
+You can trace plain HTTP behind a TLS end point, for example a proxy that sends plain HTTP to its backend.
+
+TLS auto discovery reads plaintext before encryption and after decryption.
+
+It supports OpenSSL, GnuTLS, NSS, wolfSSL, Mbed TLS, rustls-ffi, supported Go TLS binaries, and registered BoringSSL builds.
+
+It needs no certificate or key file.
+
+TLS probes support only Linux amd64 and arm64. Unsupported architecture or ABI, missing access, and attach failures show a reason. HTTP capture continues.
+
+Use `--tls=false` to disable TLS observation. Use `--tls=<path>` to probe only one file. An explicit `--tls` keeps its existing warning and confirmation on risky kernels.
 
 ```bash
 edc trace http --tls
@@ -516,22 +646,39 @@ edc trace http --tls --side server --port 443
 edc trace http --tls=/usr/local/bin/node
 ```
 
-Without a value, `--tls` finds these files when the trace starts:
+The bare command and `--tls` find these targets at trace start and during the trace:
 
 - the `libssl`, `libgnutls`, `libssl3`, `libnspr4`, `libwolfssl`, `libmbedtls`, and `librustls` of this host in the standard library directories
 - each of these libraries that a process loads, also in a container
 - the program file of a process, if the file contains OpenSSL and exports `SSL_read`, for example `node`
+- supported Go binaries with a `.gopclntab` section, also when they load a TLS library
 - a stripped BoringSSL program with a supported GNU build ID
 
-edc opens the file that each process loaded. So edc also sees a process that still uses an old `libssl` after a package update. To open these files, edc needs `CAP_SYS_ADMIN` or `CAP_CHECKPOINT_RESTORE`. The probes can also need `CAP_SYS_ADMIN`. Root has it. In a container, add `SYS_ADMIN` with `--cap-add` or use `--privileged`. If edc cannot open these files, it shows a notice.
+edc opens the file that each process loaded. This also shows a process that still uses an old `libssl` after a package update.
 
-edc continues the search while the trace runs. When a process starts a program, edc checks that process several times in the next 3 seconds. It also checks all the processes again at an interval of 2 seconds or more. On a host with many processes, the interval is longer. If a process uses a new file, edc adds the probes to that file. edc does not see the requests that the process sends before that. The kernel sends the start of a program only to the first network namespace. If edc runs in another network namespace or PID namespace, for example in a container without the host network or `--pid=host`, edc shows a notice and uses only the check of all the processes. If the kernel stops sending the start of programs during the trace, edc tells you after the trace.
+Opening these files can need `CAP_SYS_ADMIN` or `CAP_CHECKPOINT_RESTORE`. Probes can also need `CAP_SYS_ADMIN`. If access fails, edc shows the reason and continues HTTP capture.
+
+edc continues the search during the trace. After a process starts, edc checks it several times for 3 seconds.
+
+It also checks all processes every 2 seconds or more.
+
+On a busy host, the interval grows. edc probes a new target after it finds the file. Earlier requests can be missed.
+
+Library, ABI, or attach failures show a reason and do not stop HTTP capture.
+
+The full screen keeps watcher and namespace notices. Other outputs write notices to standard error.
+
+The kernel sends process-start events only in the first network namespace. Other namespaces use periodic checks and can miss early requests.
 
 To watch only one file, use `--tls=<path>`. Then edc does not search for other files. Write the path without a space, as with `--payload=all`.
 
-edc attaches the probes to this file. If a program loads a copy of the library from another file, edc does not see that program. To find the file that a process loads, read `/proc/<pid>/maps`.
+edc attaches probes to this file. If a program loads a library copy from another file, edc does not see that program.
 
-NSS needs two libraries: `libssl3` for the TLS state and `libnspr4` for the plaintext I/O. If you specify either library, edc also selects its companion from the same directory or a standard library directory.
+Read `/proc/<pid>/maps` to find the file that a process loads.
+
+NSS needs `libssl3` for TLS state and `libnspr4` for plaintext I/O.
+
+If you specify either library, edc selects its companion from the same directory or a standard library directory.
 
 ```bash
 edc trace http --tls=/usr/lib/x86_64-linux-gnu/libssl3.so
@@ -545,15 +692,23 @@ NSPR also uses these functions for plain files and sockets. So each NSPR read an
 
 An NSS connection with `SSL_SECURITY` off produces no TLS event. `PR_Recv` with `PR_MSG_PEEK` also produces no TLS event.
 
-Go TLS uses the Go function table and probes at function returns. The verified scope is Go 1.26.8 and 1.27.1 on Linux amd64 and arm64.
+Go TLS uses the Go function table and probes at function returns.
+
+edc supports Go 1.21.5, 1.23.7, 1.23.8, 1.23.12, 1.25.0, 1.26.5, 1.26.8, 1.27.1, and 1.27.3.
+
+Live capture tests pass on Linux amd64 for these versions. Metadata tests cover Linux amd64 and arm64. Native arm64 capture remains unverified.
+
+A valid modern Go function table with no TLS Read, Write, or Close method produces no TLS target. A partial or corrupt table produces a notice in automatic mode. The `--tls` option reports an error when a Go binary has no TLS methods. edc rejects legacy Go function tables with an unsupported ABI error.
 
 ```bash
 edc trace http --tls=my-go-program
 ```
 
-Specify the binary path or command name. edc supports normal, stripped, and PIE binaries. Automatic library discovery does not select Go binaries.
+The bare command discovers supported Go binaries by their Go function table.
 
-These events have no socket addresses. A `--port` filter excludes them. For Go TLS, edc supports no other version or architecture.
+You can also specify a binary path or command name. edc supports normal, stripped, and PIE binaries.
+
+These events have no socket addresses. A `--port` filter excludes them. Other Go versions have no Go TLS support.
 
 For Go clients, latency starts at `Write` entry and ends at `Read` return. For servers, latency ends at `Write` entry.
 
@@ -567,7 +722,11 @@ edc trace http --tls=/usr/local/lib/librustls.so
 
 These events have no socket addresses. A `--port` filter excludes them. `--tls` does not see programs that use the native Rust API of rustls.
 
-Mbed TLS uses `mbedtls_ssl_read`, `mbedtls_ssl_write`, `mbedtls_ssl_read_early_data`, and `mbedtls_ssl_write_early_data`. edc clears the connection state at `mbedtls_ssl_session_reset` and `mbedtls_ssl_free`. On a server, `mbedtls_ssl_read_early_data` returns data that the handshake already read. So its events have no socket address, and a `--port` filter excludes them.
+Mbed TLS uses `mbedtls_ssl_read`, `mbedtls_ssl_write`, `mbedtls_ssl_read_early_data`, and `mbedtls_ssl_write_early_data`.
+
+edc clears the connection state at `mbedtls_ssl_session_reset` and `mbedtls_ssl_free`.
+
+On a server, `mbedtls_ssl_read_early_data` returns data that the handshake already read. Its events have no socket address, so `--port` excludes them.
 
 ```bash
 edc trace http --tls=/usr/local/lib/libmbedtls.so
@@ -597,27 +756,87 @@ With `sudo`, `PATH` often does not include `~/.local/bin`. If edc does not find 
 sudo edc trace http --tls="$(command -v claude)"
 ```
 
-An HTTPS request or response from OpenSSL, GnuTLS, NSS, wolfSSL, Mbed TLS, rustls-ffi, Go TLS, or BoringSSL has `"tls": true`. The event row shows `tls` after the event name. The destination starts with `https://`. A plain HTTP destination starts with `http://`. The path, the status, the latency, the grouped views, `--payload`, and the summary work as with plain HTTP. `--payload` hides the same header values. The body of HTTPS often contains tokens. Before you share the output, check it for tokens.
+An HTTPS request or response from a supported TLS library has `"tls": true`. The event row shows `tls` after the event name.
 
-edc reads HTTP/2 over TLS as it reads h2c. It shows the method, the path, the status, and the latency of each stream. To follow the frames and the header tables, edc reads all the plaintext of an HTTP/2 connection. So a busy HTTP/2 connection costs more than HTTP/1, and it can make edc lose events of other connections. To reduce the cost, use `--port`. If edc loses plaintext of an HTTP/2 connection, it stops reading that direction and counts lost events. edc does not read an HTTP/2 connection that started before the trace. With HTTP/2, `--payload` shows a start line and the body. edc makes the start line from the method and the path, or from the status. It does not show the headers. edc prints an HTTP/2 event when its body ends. `--payload` keeps the first 4 KiB of each body, and `--payload=all` keeps up to 1 MiB. If edc cuts the body at the limit, or the body does not end before the stream or the trace ends, the event has `"payload_truncated": true`. If more than 4096 bodies or 64 MiB of bodies wait, edc prints the oldest event early with this field. edc does the same when it stops reading a direction. Without `--payload`, the full screen shows no HTTP/2 body, and it shows each HTTP/2 event when its headers arrive.
+The destination starts with `https://`. A plain HTTP destination starts with `http://`. Path, status, latency, grouped views, and payload work as with plain HTTP.
 
-Some programs do not use the socket inside the TLS call, for example Bun, `node`, and Python `asyncio`. Then edc does not know the connection. The event has the process, but it has no `source` and no `destination`. The `target` is the `Host` header. The summary shows the number of these events as `TLS plaintext without an address`, and JSON adds `tls_unmapped`. With `--port`, edc cannot check the port of this plaintext. So edc does not show it and adds it to the same number.
+`--payload` masks the same header values. HTTPS bodies can contain tokens. Check output before you share it.
 
-`--tls` sees programs that call the OpenSSL functions `SSL_read` and `SSL_write`, or `SSL_read_ex` and `SSL_write_ex`. It also sees programs that call the GnuTLS functions `gnutls_record_recv` and `gnutls_record_send`, for example `wget` and `git` on Debian and Ubuntu. NSS, wolfSSL, Mbed TLS, and rustls-ffi programs also work, as described above.
+edc reads HTTP/2 over TLS as it reads h2c. It shows the method, path, status, and latency of each stream.
 
-`--tls` does not see Java programs. Go support has the limits above. It also does not see a program without the exported functions of these libraries, except supported Go binaries and the supported BoringSSL build.
+edc reads each connection's plaintext. Busy HTTP/2 traffic can cause lost events. Use `--port` to reduce this cost.
+
+If edc loses bytes, it stops reading that direction. It does not read a connection that started before the trace.
+
+HTTP/2 metadata appears when headers arrive. Each snapshot updates the same message before `END_STREAM`.
+
+Long streams stay open until `END_STREAM`, reset, connection close, limit, or trace stop.
+
+Payload includes a start line, regular headers, body, and trailers. edc maps `:authority` to `Host`.
+
+The 1 MiB message limit includes headers, body, and trailers. Decoded and compressed headers have separate 64 KiB limits.
+
+HTTP/1 and HTTP/2 share limits of 4096 open messages and 64 MiB. `--payload` keeps up to 4 KiB. `--payload=all` keeps up to 1 MiB.
+
+Truncated and evicted messages carry `"payload_truncated": true`.
+
+Some programs do not use the socket inside the TLS call, for example Bun, `node`, and Python `asyncio`. edc then cannot identify the connection.
+
+The event has the process but no `source` or `destination`. The `target` is the `Host` header.
+
+The summary labels these events `TLS plaintext without an address`. JSON adds `tls_unmapped`.
+
+With `--port`, edc cannot check this plaintext's port. It hides these events and adds them to the same count.
+
+`--tls` sees OpenSSL calls to `SSL_read`, `SSL_write`, `SSL_read_ex`, and `SSL_write_ex`.
+
+It sees GnuTLS calls to `gnutls_record_recv` and `gnutls_record_send`, for example in Debian and Ubuntu `wget` and `git`.
+
+NSS, wolfSSL, Mbed TLS, and rustls-ffi programs also work, as described above.
+
+`--tls` does not see Java programs. Go support has the limits above.
+
+edc also misses programs without the exported functions of these libraries, except supported Go binaries and the supported BoringSSL build.
 
 With `--tls=<path>`, edc also reads the symbol table, so a static program with symbols can work.
 
 `--tls` does not see a program that reads through the SSL BIO of OpenSSL, for example `openssl s_server -www`.
 
-edc reads the plaintext without a page fault. If the kernel changes the page at that moment, for example when it splits or merges a transparent huge page, edc cannot read the plaintext of that call. This is rare, and edc counts it as a lost event.
+edc reads plaintext without a page fault. If the kernel changes the page at that moment, edc cannot read that call's plaintext.
 
-Each call of these functions runs a probe in each process that uses the files. This cost also applies to the processes that `--process` hides. At the end, the kernel removes each probe, so the trace can stop a few seconds after Ctrl-C. `--tls` needs no newer kernel than `trace http`.
+For example, the kernel can split or merge a transparent huge page. This is rare, and edc counts it as a lost event.
 
-On amd64 with Linux 6.11, 6.12 before 6.12.14, or 6.13 before 6.13.3, a process under a seccomp filter can stop when a TLS call returns. A Docker container uses such a filter. On these kernels, edc shows a warning before it attaches the probes. Before the full screen opens, edc waits for Enter. To stop, press Ctrl-C. A distribution kernel can include the fix.
+Each call runs a probe in each process that uses these files, including processes that `--process` hides.
 
-Without `--tls`, `trace http` does not show the requests in HTTPS, because the kernel sees only encrypted data. It reads HTTP/2 without TLS (h2c), for example gRPC inside a cluster. It shows the method, the path, the status, and the latency of each stream. To follow the frames and the header tables, edc reads all the bytes of an h2c connection, so a busy h2c connection costs more than HTTP/1. These bytes share one buffer with the other HTTP records, so a busy h2c connection can also make edc lose events of other connections. To reduce the cost, use `--port`. If edc loses bytes of an h2c connection, it stops reading that direction and counts lost events. It does not show the requests in HTTP/3, because they use binary frames. HTTP/3 uses UDP, so it also has no `tls_hello` event. edc finds a message only at the start of a read or a write. If one read has the end of a response and the start of the next response, edc misses the next response. If a program writes one message from several buffers, edc reads only the first buffer. So the `Host` header must be in the first buffer and in the first 512 bytes. If it is not, the target is the server address. edc supports this field on Linux 5.15 or later.
+At the end, the kernel removes each probe. The trace can stop a few seconds after Ctrl-C. `--tls` needs no newer kernel than `trace http`.
+
+On amd64, seccomp can stop a process when a TLS call returns. This affects Linux 6.11, 6.12 before 6.12.14, and 6.13 before 6.13.3.
+
+Bare-command auto discovery skips TLS probes on these kernels. It shows the reason and continues HTTP capture.
+
+Explicit `--tls` keeps its warning and full-screen confirmation. A distribution kernel can include the fix.
+
+Without TLS probes, edc sees HTTPS as encrypted data. It still parses HTTP/2 without TLS (h2c), for example gRPC inside a cluster.
+
+h2c rows show the method, path, status, and latency of each stream.
+
+edc reads all bytes of an h2c connection to follow its frames and header tables.
+
+Busy h2c traffic can cause lost events. Use `--port` to reduce this cost.
+
+If edc loses h2c bytes, it stops reading that direction and counts lost events.
+
+edc does not parse HTTP/3 requests. HTTP/3 uses binary frames over UDP, so it has no `tls_hello` event.
+
+edc finds messages only at read or write start.
+
+If one read has the end of a response and the start of the next, edc misses the next response.
+
+edc reads only the first buffer of a multi-buffer write.
+
+Keep `Host` in the first 512 bytes of that buffer. Otherwise, the target is the server address.
+
+edc supports this field on Linux 5.15 or later.
 
 ## trace mysql
 

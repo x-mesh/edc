@@ -14,7 +14,7 @@
 | --- | --- | --- |
 | 호스트 상태와 자원 사용 확인 | `edc info`, `edc top` | [호스트 정보](docs/host.ko.md#호스트-정보), [대시보드](docs/monitoring.ko.md#top-대시보드) |
 | 디스크를 차지하는 항목 찾기 | `edc du /var`, `edc clean` | [디렉터리 사용량](docs/disk-usage.ko.md#디렉터리-디스크-사용량-linux와-macos), [알려진 캐시](docs/disk-usage.ko.md#알려진-개발-캐시-사용량-linux와-macos) |
-| 서비스·컨테이너 조사 | `edc svc`, `edc ctr` | [서비스](docs/host.ko.md#서비스-보기-linux), [컨테이너](docs/host.ko.md#container-보기-linux) — Linux |
+| 서비스·컨테이너 조사 | `edc svc`, `edc ctr` | [서비스](docs/host.ko.md#서비스-보기-linux), [컨테이너](docs/host.ko.md#container-보기-linux와-macos) |
 | 연결 문제 확인 | `edc dns lookup example.com`, `edc tcp check example.com:443` | [네트워크 점검](docs/network.ko.md#네트워크-점검), [종합 진단](docs/network.ko.md#doctor-실시간-화면) |
 | 애플리케이션과 커널 동작 추적 | `edc trace` | [추적과 패킷 캡처](#동작-추적과-패킷-캡처) — trace별 지원 조건 참고 |
 | 실행 기록과 비교 | `edc top -w`, `edc history`, `edc log -- <command>` | [자원 사용 이력](docs/history.ko.md#top-저장과-이력-조회), [명령 로그](docs/history.ko.md#cron과-애플리케이션-로그) |
@@ -81,7 +81,7 @@ edc top --count 5 --json -
 
 ## 호스트 점검
 
-`info`로 구성, 메모리, 디스크와 listening port를 확인합니다. Linux에서는 systemd 서비스, 컨테이너, 최근 변경과 커널 event로 장애 조사 범위를 좁힙니다.
+`info`로 구성, 메모리, 디스크와 listening port를 확인합니다. Linux에서는 systemd 서비스, 최근 변경과 커널 event를 확인합니다. Linux와 macOS에서는 Unix socket으로 Docker container를 조회합니다.
 
 ```bash
 edc info --public=false
@@ -91,6 +91,8 @@ edc changes --since 2h
 ```
 
 [호스트 정보·서비스·컨테이너·audit·event 자세히 보기 →](docs/host.ko.md)
+
+기본 `edc ctr`은 Docker Engine API 정보만 사용합니다. 선택형 로컬 Linux collector는 [container 안내](docs/host.ko.md#container-보기-linux와-macos)를 참고하세요.
 
 <a id="top-임계값"></a>
 <a id="top-대시보드"></a>

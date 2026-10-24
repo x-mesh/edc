@@ -69,6 +69,7 @@ const (
 	cleanReasonUnreadableDirs = "unreadable_dirs"
 	cleanReasonSkippedMounts  = "skipped_mounts"
 	cleanReasonInvalidEnv     = "invalid_env"
+	cleanReasonNoResponse     = "no_response"
 )
 
 // 번역 키를 조합하는 값의 전체 목록이다. 시험이 세 언어에서 모두 번역이 있는지 확인한다.
@@ -82,7 +83,7 @@ var (
 		cleanReasonInvalidEnv, cleanReasonEndpointScheme, cleanReasonSocketMissing, cleanReasonConnectionRefused,
 		cleanReasonEngineTimeout, cleanReasonAPIVersion, cleanReasonHTTPStatus, cleanReasonRequestFailed,
 		cleanReasonGitOutputTruncated, cleanReasonBaseMissing, cleanReasonGitdirMissing, cleanReasonWorktreeLimit,
-		cleanReasonNotDirectory, cleanReasonProjectLimit, cleanReasonTrackedFiles, cleanReasonGitUnknown}
+		cleanReasonNotDirectory, cleanReasonProjectLimit, cleanReasonTrackedFiles, cleanReasonGitUnknown, cleanReasonNoResponse}
 	cleanCategories = []string{"build_cache", "package_cache", "downloaded_binary", "xcode_support", "app_cache", "logs", "model", "toolchain"}
 	cleanCosts      = []string{"low", "medium", "high", "unknown", "lost"}
 	cleanSpecIDs    = []string{"go-build", "go-mod", "npm", "pnpm", "uv", "homebrew", cleanDerivedID, "swiftpm",
@@ -275,15 +276,46 @@ type cleanDeps struct {
 	// dockerDial은 Docker API socket에 연결한다. 시험이 서버에 연결하도록 바꾼다.
 	dockerDial func(ctx context.Context, path string) (net.Conn, error)
 	measure    func(ctx context.Context, options duOptions, sources duSources) (duScan, error)
-	sources    duSources
-	workers    int
+	// resolve는 보고된 경로의 symlink를 푼다. 멈춘 마운트에서는 이 호출도 돌아오지 않아 측정처럼 감시한다.
+	resolve func(path string) (string, error)
+	// readDir는 빌드 폴더를 찾으며 디렉터리를 읽는다. macOS 권한 창이나 멈춘 마운트에서 돌아오지 않아 감시한다.
+	readDir func(path string) ([]os.DirEntry, error)
+	// wait는 path를 건드리는 다른 짧은 호출을 감시한다. 비어 있으면 호출을 바로 부른다.
+	wait func(path string, call func() error) error
+	// mounts는 응답 없는 경로가 어느 파일 시스템인지 알려 준다. 그 파일 시스템을 건드리지 않는 원천만 쓴다.
+	mounts  func() ([]diskMount, error)
+	sources duSources
+	workers int
 	// remote는 --group에서 원격 호스트의 clean을 실행한다. 시험이 SSH 대신 가짜 실행기를 넣는다.
 	remote cleanRemoteRunner
 }
 
 func hostCleanDeps(home string, host duSources) cleanDeps {
 	return cleanDeps{home: home, lookPath: exec.LookPath, run: runCleanTool, lookupEnv: os.LookupEnv, deviceOf: cleanDeviceOf,
-		dockerDial: cleanDockerDial, measure: duMeasure, sources: cleanSources(host), workers: duDefaultWorkers, remote: cleanSSHRunner}
+		dockerDial: cleanDockerDial, measure: duMeasure, resolve: duResolveRoot, readDir: os.ReadDir, mounts: duHostMounts, sources: cleanSources(host),
+		workers: duDefaultWorkers, remote: cleanSSHRunner}
+}
+
+// resolvePath는 resolve가 비어 있으면 duResolveRoot를 쓴다. 시험은 cleanDeps를 필요한 필드만 채워 만든다.
+func (deps cleanDeps) resolvePath(path string) (string, error) {
+	if deps.resolve == nil {
+		return duResolveRoot(path)
+	}
+	return deps.resolve(path)
+}
+
+func (deps cleanDeps) waitPath(path string, call func() error) error {
+	if deps.wait == nil {
+		return call()
+	}
+	return deps.wait(path, call)
+}
+
+func (deps cleanDeps) readDirPath(path string) ([]os.DirEntry, error) {
+	if deps.readDir == nil {
+		return os.ReadDir(path)
+	}
+	return deps.readDir(path)
 }
 
 func cleanDockerDial(ctx context.Context, path string) (net.Conn, error) {
@@ -456,7 +488,7 @@ func (scanner *cleanScanner) measureOne(ctx context.Context, spec cleanSpec, ite
 		return
 	}
 	item.ReportedPath = reported
-	resolved, err := duResolveRoot(reported)
+	resolved, err := scanner.deps.resolvePath(reported)
 	if err != nil {
 		cleanPathFailure(item, err)
 		return
@@ -875,6 +907,8 @@ func cleanFailure(err error) (status string, reasons []string, detail string) {
 		return cleanAbsent, nil, ""
 	case errors.Is(err, fs.ErrPermission):
 		return cleanUnreadable, []string{cleanReasonPermission}, ""
+	case errors.Is(err, errCleanStalled):
+		return cleanUnreadable, []string{cleanReasonNoResponse}, ""
 	default:
 		return cleanUnreadable, []string{cleanReasonStatError}, err.Error()
 	}
@@ -1073,6 +1107,7 @@ func runCleanWith(args []string, version string, deps cleanDeps, ok bool, homeEr
 		defer stop()
 		ctx, deadline := context.WithTimeout(base, options.timeout)
 		defer deadline()
+		stalls := &cleanStalls{listMounts: deps.mounts}
 		scan := func() Result {
 			done := deps.begin("total", "")
 			defer done()
@@ -1083,7 +1118,14 @@ func runCleanWith(args []string, version string, deps cleanDeps, ok bool, homeEr
 				cleanAddNewestWrite(ctx, report.candidates)
 				done()
 			}
-			return cleanResult(result, report, options.timeout, ctx.Err())
+			scanned := cleanResult(result, report, options.timeout, ctx.Err())
+			if warnings := stalls.warnings(cleanStallLimit); len(warnings) > 0 {
+				scanned.Warnings = append(scanned.Warnings, warnings...)
+				if scanned.Status == StatusPass {
+					scanned.Status = StatusWarn
+				}
+			}
+			return scanned
 		}
 		if showProgress {
 			interactive := cleanProgressTerminal(terminal, options.jsonPath)
@@ -1093,6 +1135,11 @@ func runCleanWith(args []string, version string, deps cleanDeps, ok bool, homeEr
 			}
 			progress := newCleanProgress(writer, deps.home, options.redact)
 			progress.cancelled = func() bool { return ctx.Err() != nil }
+			// 감시를 진행 기록 안쪽에 두어야 건너뛴 측정도 진행 화면에서 끝난 것으로 지워진다.
+			deps.resolve = cleanResolveGuard(deps.resolvePath, progress.begin, stalls, cleanStallHint, cleanStallLimit)
+			deps.readDir = cleanReadDirGuard(deps.readDirPath, progress.begin, stalls, cleanStallHint, cleanStallLimit)
+			deps.wait = cleanCallGuard(progress.begin, stalls, cleanStallHint, cleanStallLimit)
+			deps.measure = cleanStallGuard(deps.measure, progress.begin, stalls, cleanStallHint, cleanStallLimit)
 			deps = cleanProgressDeps(deps, progress)
 			if interactive {
 				result = runCleanProgressUI(scan, progress, deps.workers, stop)
@@ -1107,6 +1154,10 @@ func runCleanWith(args []string, version string, deps cleanDeps, ok bool, homeEr
 				<-progressDone
 			}
 		} else {
+			deps.resolve = cleanResolveGuard(deps.resolvePath, nil, stalls, cleanStallHint, cleanStallLimit)
+			deps.readDir = cleanReadDirGuard(deps.readDirPath, nil, stalls, cleanStallHint, cleanStallLimit)
+			deps.wait = cleanCallGuard(nil, stalls, cleanStallHint, cleanStallLimit)
+			deps.measure = cleanStallGuard(deps.measure, nil, stalls, cleanStallHint, cleanStallLimit)
 			result = scan()
 		}
 	}
@@ -1260,7 +1311,8 @@ func cleanPrint(stdout io.Writer, options commonOptions, result Result, color bo
 		fmt.Fprint(output, formatResultLine(result, color))
 	}
 	printResultDetail(output, result, options.verbose, color)
-	if result.Status != StatusFail {
+	// 기다리지 않고 나간 결과에는 섹션 값이 없다. 빈 섹션을 그리면 조사한 결과처럼 보인다.
+	if result.Status != StatusFail && result.Metrics != nil {
 		items, _ := result.Metrics["candidates"].([]cleanItem)
 		filesystems, _ := result.Metrics["filesystems"].([]cleanFilesystem)
 		projects, _ := result.Metrics["project_build_dirs"].(cleanProjectBuildDirs)

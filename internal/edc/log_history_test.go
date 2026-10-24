@@ -336,6 +336,20 @@ func historySGR(code string, bold bool) string {
 	return strings.TrimSuffix(richPaint("x", code, bold), "x"+richReset)
 }
 
+func TestHistorySelectKeepsDarkPurpleAndStatusColors(t *testing.T) {
+	t.Setenv("NO_COLOR", "")
+	t.Setenv("COLORTERM", "truecolor")
+	cells := richPaint("Today", richGray, false) + "  " + richPaint("PASS", richGreen, false) + "  " + richPaint("FAIL", richRed, false)
+	selected := historySelect(cells, true)
+	background := "\033[1;97;" + richRGBCode(historySelectedBackground, true, true) + "m"
+	if !strings.Contains(selected, background) || !strings.Contains(selected, liveSelectedBar+"\033[39m\033[97m") || !strings.Contains(selected, historySGR(richGreen, false)+"PASS") || !strings.Contains(selected, historySGR(richRed, false)+"FAIL") {
+		t.Fatalf("selected history colors = %q", selected)
+	}
+	if row := historySelect("PASS", true); liveWidth(row) != liveWidth("▌ PASS") {
+		t.Fatalf("selected history marker width = %d", liveWidth(row))
+	}
+}
+
 func TestLogHistoryRunRowColorsEveryFailureRed(t *testing.T) {
 	for _, outcome := range []logHistoryOutcome{historyOutcomeFail, historyOutcomeTimeout, historyOutcomeSignal, historyOutcomeError} {
 		row := historyRunRow(logHistoryAttempt{Outcome: outcome}, 80, false, true, historyRatios{})

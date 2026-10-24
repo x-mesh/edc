@@ -155,7 +155,16 @@ func cleanProjectScan(ctx context.Context, deps cleanDeps, projects []string, ca
 		section.Status = cleanNoProjectRoot
 		return section
 	}
-	scanner := &cleanProjectScanner{ctx: ctx, deps: deps}
+	scanner := &cleanProjectScanner{ctx: ctx, deps: deps, remoteMounts: map[string]bool{}}
+	if deps.mounts != nil {
+		// 응답하지 않는 마운트의 루트는 stat에서도 멈춘다. 다른 장치인지 보기 전에 마운트 표로 거른다.
+		mounts, _ := deps.mounts()
+		for _, mount := range mounts {
+			if cleanRemoteFSType(mount.FSType) {
+				scanner.remoteMounts[mount.Point] = true
+			}
+		}
+	}
 	// 측정하지 못한 후보의 폴더는 합계에 들어가지 않았으므로 기준으로 쓰지 않는다.
 	for _, item := range catalog {
 		if item.counted() {
@@ -183,6 +192,8 @@ type cleanProjectScanner struct {
 	visits  int
 	limited bool
 	stopped bool
+	// remoteMounts는 네트워크·FUSE 마운트 지점이다. 걷는 루트와 다른 장치라 어차피 건너뛰므로 건드리지 않는다.
+	remoteMounts map[string]bool
 	// 아래는 걷는 중인 루트의 값이다.
 	device     uint64
 	visited    int
@@ -201,24 +212,32 @@ func (scanner *cleanProjectScanner) resolve(projects []string) []cleanProjectRoo
 		if absolute, err := filepath.Abs(given); err == nil {
 			root.Path = absolute
 		}
-		resolved, err := duResolveRoot(given)
+		resolved, err := scanner.deps.resolvePath(given)
 		if err != nil {
 			root.Status, root.Reasons, root.Detail = cleanFailure(err)
 			continue
 		}
 		root.ResolvedPath = resolved
-		info, err := os.Stat(resolved)
+		// 사용자가 고른 루트는 네트워크 마운트여도 걷는다. 대신 그 루트가 응답하지 않으면 기다리지 않는다.
+		var directory bool
+		var device uint64
+		err = scanner.deps.waitPath(resolved, func() error {
+			info, err := os.Stat(resolved)
+			if err != nil {
+				return err
+			}
+			if directory = info.IsDir(); !directory {
+				return nil
+			}
+			device, err = scanner.deps.deviceOf(resolved)
+			return err
+		})
 		if err != nil {
 			root.Status, root.Reasons, root.Detail = cleanFailure(err)
 			continue
 		}
-		if !info.IsDir() {
+		if !directory {
 			root.Status, root.Reasons = cleanRejected, []string{cleanReasonNotDirectory}
-			continue
-		}
-		device, err := scanner.deps.deviceOf(resolved)
-		if err != nil {
-			root.Status, root.Reasons, root.Detail = cleanFailure(err)
 			continue
 		}
 		root.device, walkable[index] = device, true
@@ -293,7 +312,7 @@ func (scanner *cleanProjectScanner) visit(root *cleanProjectRoot, dir string, de
 	}
 	scanner.visits++
 	scanner.visited++
-	entries, err := os.ReadDir(dir)
+	entries, err := scanner.deps.readDirPath(dir)
 	if err != nil {
 		return err
 	}
@@ -311,6 +330,10 @@ func (scanner *cleanProjectScanner) visit(root *cleanProjectRoot, dir string, de
 			continue
 		}
 		path := filepath.Join(dir, entry.Name())
+		if scanner.remoteMounts[path] {
+			scanner.mounts++
+			continue
+		}
 		device, err := scanner.deps.deviceOf(path)
 		if err != nil {
 			scanner.skip(err)

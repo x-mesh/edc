@@ -15,6 +15,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 )
 
@@ -30,6 +31,73 @@ type traceTLSTarget struct {
 	goMachine elf.Machine
 	// id는 탐색이 고른 파일의 (device, inode)다. --tls=<경로>로 준 파일은 0이다.
 	id [2]uint64
+}
+
+func traceTLSNoticeText(notice string) string {
+	return strings.NewReplacer("\n", `\n`, "\t", `\t`).Replace(traceEscapeText([]byte(notice)))
+}
+
+const traceTLSNoticeLimit = 64
+
+type traceTLSNoticeBuffer struct {
+	queue    chan string
+	mu       sync.Mutex
+	seen     map[string]struct{}
+	notices  []string
+	overflow uint64
+}
+
+func newTraceTLSNoticeBuffer() *traceTLSNoticeBuffer {
+	return &traceTLSNoticeBuffer{queue: make(chan string, traceTLSNoticeLimit), seen: map[string]struct{}{}}
+}
+
+func (buffer *traceTLSNoticeBuffer) record(notice string) bool {
+	if notice == "" {
+		return false
+	}
+	buffer.mu.Lock()
+	defer buffer.mu.Unlock()
+	if _, ok := buffer.seen[notice]; ok {
+		return false
+	}
+	if len(buffer.seen) >= traceTLSNoticeLimit {
+		buffer.overflow++
+		return false
+	}
+	buffer.seen[notice] = struct{}{}
+	buffer.notices = append(buffer.notices, notice)
+	return true
+}
+
+func (buffer *traceTLSNoticeBuffer) offer(notice string) {
+	if !buffer.record(notice) {
+		return
+	}
+	buffer.mu.Lock()
+	defer buffer.mu.Unlock()
+	select {
+	case buffer.queue <- notice:
+	default:
+		buffer.overflow++
+	}
+}
+
+func (buffer *traceTLSNoticeBuffer) drain() []string {
+	var notices []string
+	for {
+		select {
+		case notice := <-buffer.queue:
+			notices = append(notices, notice)
+		default:
+			return notices
+		}
+	}
+}
+
+func (buffer *traceTLSNoticeBuffer) summary() ([]string, uint64) {
+	buffer.mu.Lock()
+	defer buffer.mu.Unlock()
+	return slices.Clone(buffer.notices), buffer.overflow
 }
 
 // traceTLSFunctions는 평문을 읽는 OpenSSL과 GnuTLS 함수, 그리고 연결 상태가 끝날 때 짝짓기 상태를 지우는
@@ -75,11 +143,21 @@ var traceTLSStat = os.Stat
 // resolveTraceTLSTargets는 --tls 값으로 붙일 파일을 고른다. trace 화면을 열기 전에 불러서 안내를 stderr에 쓴다.
 // 돌려주는 finder의 targets가 붙일 파일이고, 자동 탐색이면 trace 중에도 이 finder로 새 파일을 찾는다. notices는 TLS
 // library처럼 보였지만 붙일 수 없는 파일이다. 실패하면 exit code를 함께 돌려준다.
-func resolveTraceTLSTargets(mode traceTLSMode) (finder *traceTLSFinder, notices []string, code int, err error) {
+func resolveTraceTLSTargets(mode traceTLSMode) (*traceTLSFinder, []string, int, error) {
+	return resolveTraceTLSTargetsFor(mode, false)
+}
+
+func resolveTraceTLSTargetsFor(mode traceTLSMode, implicit bool) (finder *traceTLSFinder, notices []string, code int, err error) {
 	if runtime.GOARCH != "amd64" && runtime.GOARCH != "arm64" {
+		if implicit {
+			return &traceTLSFinder{}, []string{T("cli.trace.tls_auto_unavailable", T("cli.trace.tls_arch", runtime.GOARCH))}, 0, nil
+		}
 		return nil, nil, 3, errors.New(T("cli.trace.tls_arch", runtime.GOARCH))
 	}
 	if release, risky := traceTLSSeccompKernel(); risky {
+		if implicit {
+			return &traceTLSFinder{}, []string{T("cli.trace.tls_auto_unavailable", T("cli.trace.tls_seccomp", release))}, 0, nil
+		}
 		notices = append(notices, T("cli.trace.tls_seccomp", release))
 	}
 	if mode != traceTLSAuto {
@@ -129,6 +207,9 @@ func resolveTraceTLSTargets(mode traceTLSMode) (finder *traceTLSFinder, notices 
 		finder.notices = append(finder.notices, T("cli.trace.tls_permission"))
 	}
 	if !slices.ContainsFunc(finder.targets, func(target traceTLSTarget) bool { return traceTLSReadsPlaintext(target.symbols) }) {
+		if implicit {
+			return finder, append(finder.notices, T("cli.trace.tls_auto_unavailable", T("cli.trace.tls_none"))), 0, nil
+		}
 		return nil, finder.notices, 3, errors.New(T("cli.trace.tls_none"))
 	}
 	if problem := traceTLSExecProblem(); problem != "" {
@@ -176,23 +257,26 @@ func traceTLSSeccompRisk(release string) bool {
 // seen은 붙인 파일뿐 아니라 확인한 실행 파일도 담아서, trace 중 다시 탐색할 때 같은 ELF를 다시 읽지 않는다. denied는
 // 다른 process가 적재한 library를 권한 때문에 열지 못한 것이다. rescan은 자동 탐색이라 trace 중에도 찾는다는 뜻이다.
 type traceTLSFinder struct {
-	seen    map[[2]uint64]bool
-	targets []traceTLSTarget
-	notices []string
-	denied  bool
-	rescan  bool
+	seen       map[[2]uint64]bool
+	goScanned  map[[2]uint64]bool
+	targets    []traceTLSTarget
+	notices    []string
+	denied     bool
+	rescan     bool
+	noticeSink func(string)
 }
 
 // retry는 붙이기 전에 경로가 사라진 파일을 다음 탐색에서 다시 고르게 한다. 고른 process가 그 사이에 끝나도, 같은 파일을
 // 적재한 다른 process가 살아 있는 경로를 준다.
 func (finder *traceTLSFinder) retry(target traceTLSTarget) {
 	delete(finder.seen, target.id)
+	delete(finder.goScanned, target.id)
 }
 
 // printTraceTLSExecProblem은 trace 중에 exec 알림을 받지 못했으면 trace가 끝난 뒤 알린다. 화면을 연 동안에는 stderr에 쓸
 // 수 없다.
 func printTraceTLSExecProblem(summary captureSummary) {
-	if summary.TLSExecProblem != "" {
+	if summary.TLSExecProblem != "" && len(summary.TLSNotices) == 0 {
 		fmt.Fprintln(os.Stderr, T("cli.trace.tls_exec_events", summary.TLSExecProblem))
 	}
 }
@@ -218,6 +302,9 @@ func (finder *traceTLSFinder) scanProcess(pid string) bool {
 	process := filepath.Join(traceProcRoot, pid)
 	maps, err := os.ReadFile(filepath.Join(process, "maps"))
 	if err != nil {
+		if errors.Is(err, fs.ErrPermission) {
+			finder.denied = true
+		}
 		return false
 	}
 	mappings := traceTLSMappedLibraries(maps)
@@ -237,11 +324,65 @@ func (finder *traceTLSFinder) scanProcess(pid string) bool {
 	for _, mapping := range mappings {
 		finder.add(filepath.Join(process, "map_files", mapping.addresses), filepath.Join(process, "root", mapping.path), true)
 	}
+	exe := filepath.Join(process, "exe")
+	finder.addGoExecutable(exe)
 	if len(mappings) == 0 {
-		exe := filepath.Join(process, "exe")
 		finder.add(exe, exe, false)
 	}
 	return true
+}
+
+func traceTLSGoSentinel(path string) bool {
+	file, err := elf.Open(path)
+	if err != nil {
+		return false
+	}
+	defer file.Close()
+	for _, section := range file.Sections {
+		if section.Name == ".gopclntab" || section.Name == ".data.rel.ro.gopclntab" {
+			return true
+		}
+	}
+	return false
+}
+
+func (finder *traceTLSFinder) addGoExecutable(path string) {
+	info, err := traceTLSStat(path)
+	if errors.Is(err, fs.ErrPermission) {
+		finder.denied = true
+		return
+	}
+	if err != nil || !info.Mode().IsRegular() {
+		return
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return
+	}
+	id := [2]uint64{uint64(stat.Dev), uint64(stat.Ino)}
+	if finder.goScanned == nil {
+		finder.goScanned = map[[2]uint64]bool{}
+	}
+	if finder.seen == nil {
+		finder.seen = map[[2]uint64]bool{}
+	}
+	if finder.goScanned[id] || finder.seen[id] {
+		return
+	}
+	finder.goScanned[id] = true
+	if !traceTLSGoSentinel(path) {
+		return
+	}
+	target, err := traceTLSReadFile(path, true)
+	if err != nil {
+		finder.notices = append(finder.notices, T("cli.trace.tls_skipped", traceEscapeText([]byte(path)), err))
+		return
+	}
+	if len(target.goReturns) != 0 {
+		target.id = id
+		finder.seen[id] = true
+		finder.targets = append(finder.targets, target)
+	}
 }
 
 // traceTLSMapping은 maps에서 TLS library를 적재한 줄이다. addresses는 /proc/<pid>/map_files 안의 이름이고, path는 안내에 쓴다.

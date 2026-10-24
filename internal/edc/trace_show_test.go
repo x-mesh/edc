@@ -1,6 +1,7 @@
 package edc
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -24,6 +25,24 @@ func traceShowWrite(t *testing.T, name string, records ...interface{}) string {
 		t.Fatal(err)
 	}
 	return path
+}
+
+func TestTraceShowReadsWorstCaseEscapedHTTPPayload(t *testing.T) {
+	event := captureEvent{Event: traceHTTPRequestEvent, Protocol: "http", Payload: strings.Repeat("\x01<&", httpMessageMax/3)}
+	var raw bytes.Buffer
+	if err := json.NewEncoder(&raw).Encode(event); err != nil {
+		t.Fatal(err)
+	}
+	if raw.Len() <= 4<<20 || raw.Len() >= traceShowLineLimit {
+		t.Fatalf("encoded line size = %d, limit %d", raw.Len(), traceShowLineLimit)
+	}
+	file, err := readTraceShowFile(&raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(file.events) != 1 || file.events[0].Payload != event.Payload {
+		t.Fatalf("round trip payload length = %d", len(file.events[0].Payload))
+	}
 }
 
 func TestTraceRawSocketsNumberConnectionsFromOne(t *testing.T) {

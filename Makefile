@@ -1,10 +1,11 @@
-.PHONY: build install test check dist clean
+.PHONY: build install test check dist clean collector-build
 
 VERSION ?= dev
 PREFIX ?= $(HOME)/.local
 BINDIR ?= $(PREFIX)/bin
 DIST ?= dist
 PLATFORMS ?= linux/amd64 linux/arm64 darwin/amd64 darwin/arm64
+COLLECTOR_ARCH ?=
 
 build:
 	mkdir -p bin
@@ -23,6 +24,11 @@ check:
 # release 빌드는 test 파일을 컴파일하지 않는다. 공용 test가 다른 OS의 분기 파일을 참조하면 그 OS의 job에서만 깨진다.
 	GOOS=linux go vet ./...
 	GOOS=darwin go vet ./...
+
+collector-build:
+	@test "$(COLLECTOR_ARCH)" = amd64 -o "$(COLLECTOR_ARCH)" = arm64 || { echo "COLLECTOR_ARCH must be amd64 or arm64" >&2; exit 2; }
+	mkdir -p bin
+	GOOS=linux GOARCH=$(COLLECTOR_ARCH) CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o bin/edc-collector-linux-$(COLLECTOR_ARCH) ./cmd/edc-collector
 
 # dist는 release가 올리는 asset을 만든다. 이름 규칙은 install.sh와 edc update가 함께 쓴다.
 dist:

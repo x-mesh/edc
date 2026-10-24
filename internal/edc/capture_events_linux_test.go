@@ -15,15 +15,118 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
 	"unsafe"
 
 	"github.com/cilium/ebpf/btf"
+	"github.com/cilium/ebpf/link"
 	"github.com/miekg/dns"
 	"golang.org/x/sys/unix"
 )
+
+type captureCloseTestLink struct {
+	link.Link
+	index    int
+	calls    []atomic.Int32
+	active   *atomic.Int32
+	peak     *atomic.Int32
+	entered  chan<- int
+	release  <-chan struct{}
+	closeErr error
+}
+
+func (l captureCloseTestLink) Close() error {
+	l.calls[l.index].Add(1)
+	active := l.active.Add(1)
+	for peak := l.peak.Load(); active > peak; peak = l.peak.Load() {
+		if l.peak.CompareAndSwap(peak, active) {
+			break
+		}
+	}
+	l.entered <- l.index
+	<-l.release
+	l.active.Add(-1)
+	return l.closeErr
+}
+
+func TestCloseCaptureLinks(t *testing.T) {
+	for _, count := range []int{0, 1, 3, 4, 5, 15, 64, 4096} {
+		t.Run(fmt.Sprint(count), func(t *testing.T) {
+			var active, peak atomic.Int32
+			calls := make([]atomic.Int32, count)
+			entered := make(chan int, count)
+			release := make(chan struct{})
+			var releaseOnce sync.Once
+			releaseAll := func() { releaseOnce.Do(func() { close(release) }) }
+			defer releaseAll()
+			links := make([]link.Link, count)
+			for i := range links {
+				var closeErr error
+				if i == 0 {
+					closeErr = errors.New("close failed")
+				}
+				links[i] = captureCloseTestLink{
+					index: i, calls: calls, active: &active, peak: &peak,
+					entered: entered, release: release, closeErr: closeErr,
+				}
+			}
+			done := make(chan struct{})
+			go func() {
+				closeCaptureLinks(links)
+				close(done)
+			}()
+
+			wantStarted := min(count, 4)
+			if wantStarted == 0 {
+				select {
+				case <-done:
+				case <-time.After(2 * time.Second):
+					t.Fatal("did not return for an empty link set")
+				}
+				return
+			}
+			for started := 0; started < wantStarted; started++ {
+				select {
+				case <-entered:
+				case <-time.After(2 * time.Second):
+					releaseAll()
+					<-done
+					t.Fatalf("only %d of %d expected Close calls started", started, wantStarted)
+				}
+			}
+			select {
+			case <-entered:
+				releaseAll()
+				<-done
+				t.Fatalf("more than four Close calls started before release")
+			default:
+			}
+			select {
+			case <-done:
+				t.Fatal("returned before blocked Close calls completed")
+			default:
+			}
+			releaseAll()
+			select {
+			case <-done:
+			case <-time.After(2 * time.Second):
+				t.Fatal("did not return after all Close calls completed")
+			}
+			if got := peak.Load(); got != int32(wantStarted) {
+				t.Fatalf("peak concurrent Close calls = %d, want %d", got, wantStarted)
+			}
+			for i := range calls {
+				if got := calls[i].Load(); got != 1 {
+					t.Errorf("Close call count at index %d = %d, want 1", i, got)
+				}
+			}
+		})
+	}
+}
 
 func TestCaptureEventAddressFormatting(t *testing.T) {
 	var address [16]byte
@@ -184,6 +287,17 @@ func TestCaptureEventFiltersFollowTheProtocol(t *testing.T) {
 		if got := captureEventFilterFor(test.scope); got != test.want {
 			t.Fatalf("scope %+v filter = %+v, want %+v", test.scope, got, test.want)
 		}
+	}
+	defaultHTTP := tcpTraceOptions{}
+	applyTraceHTTPDefaults(&defaultHTTP)
+	defaultFilter := captureEventFilterFor(defaultHTTP.scope("http"))
+	if !defaultFilter.tlsPlaintext || !defaultFilter.httpPayload || defaultFilter.httpMessageLimit != httpMessageMax {
+		t.Fatalf("bare HTTP defaults filter = %+v", defaultFilter)
+	}
+	explicitOff := tcpTraceOptions{tlsExplicit: true, payloadExplicit: true}
+	applyTraceHTTPDefaults(&explicitOff)
+	if filter := captureEventFilterFor(explicitOff.scope("http")); filter.tlsPlaintext || filter.httpPayload {
+		t.Fatalf("explicit false filter = %+v", filter)
 	}
 	// 변수 이름과 기본값은 BPF C 코드에 있다. 이름이 어긋나면 kernel에 불러오기 전에 여기서 실패한다.
 	spec, err := loadCaptureEvents()

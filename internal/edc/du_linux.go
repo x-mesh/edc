@@ -5,6 +5,7 @@ package edc
 import (
 	"context"
 	"errors"
+	"io"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -35,6 +36,12 @@ func hostDuSources() (duSources, bool) {
 		},
 		containerLabels: duHostContainerLabels,
 	}, true
+}
+
+// duHostMounts는 /proc에서 마운트 표만 읽으므로 응답하지 않는 파일 시스템을 건드리지 않는다.
+func duHostMounts() ([]diskMount, error) {
+	data, err := os.ReadFile("/proc/self/mountinfo")
+	return parseMountInfo(string(data)), err
 }
 
 // duHostContainerLabels는 docker에 container를 묻는다. docker가 없거나 답하지 않으면 이름표 없이 둔다.
@@ -149,14 +156,20 @@ func duMeasure(ctx context.Context, options duOptions, sources duSources) (duSca
 }
 
 // duWalkTree는 디렉터리 root 아래를 세어 duScan을 만든다. 파일 시스템 정보와 지워졌지만 열린 파일은 채우지 않는다.
+// duNamesBatch는 한 번에 읽는 이름 수다. 큰 디렉터리도 묶음마다 진행을 남긴다.
+const duNamesBatch = 4096
+
 func duWalkTree(ctx context.Context, options duOptions, sources duSources, root *duNode, dev uint64) (duScan, []diskMount) {
 	walker := &duWalker{
 		ctx: ctx, options: options, sources: sources, rootDev: dev,
 		mountPoints: map[string]diskMount{}, files: duFiles{limit: max(options.rows, options.keepFiles)}, seen: map[duInode]struct{}{},
-		directories: options.progress,
+		directories: options.progress, activity: options.activity,
 	}
 	if walker.directories == nil {
 		walker.directories = new(atomic.Int64)
+	}
+	if walker.activity == nil {
+		walker.activity = new(atomic.Int64)
 	}
 	var warnings []string
 	text, err := sources.mountinfo()
@@ -233,6 +246,7 @@ func duReadFilesystem(scan *duScan, options duOptions, sources duSources, mounts
 // 항목마다 전체 경로를 다시 해석하면 CPU 시간이 약 25% 늘었다.
 func (walker *duWalker) scan(dir duDir, _ []byte) []duDir {
 	fd, err := unix.Open(dir.path, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	walker.advance()
 	if err != nil {
 		dir.node.unreadable = walker.unreadableDir(dir.path, err)
 		return nil
@@ -240,12 +254,27 @@ func (walker *duWalker) scan(dir duDir, _ []byte) []duDir {
 	file := os.NewFile(uintptr(fd), dir.path)
 	defer file.Close()
 	// 목록을 끝까지 읽지 못해도 읽은 이름은 센다. 디렉터리 하나는 한 번만 읽지 못한 것으로 센다.
-	names, readErr := file.Readdirnames(-1)
+	var names []string
+	var readErr error
+	for {
+		batch, err := file.Readdirnames(duNamesBatch)
+		walker.advance()
+		names = append(names, batch...)
+		if err != nil {
+			if !errors.Is(err, io.EOF) {
+				readErr = err
+			}
+			break
+		}
+	}
 	walker.directories.Add(1)
 	var subdirs []duDir
 	for _, name := range names {
 		var stat unix.Stat_t
-		if err := unix.Fstatat(fd, name, &stat, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+		// 항목마다 센다. 지연이 큰 네트워크 파일 시스템에서는 호출 수백 개가 10초를 넘길 수 있다.
+		err := unix.Fstatat(fd, name, &stat, unix.AT_SYMLINK_NOFOLLOW)
+		walker.advance()
+		if err != nil {
 			// 읽는 사이에 지워진 항목은 세지 않는다.
 			if readErr == nil && !errors.Is(err, unix.ENOENT) {
 				readErr = err

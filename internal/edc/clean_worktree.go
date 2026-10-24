@@ -143,7 +143,7 @@ func cleanWorktreeScan(ctx context.Context, deps cleanDeps) cleanWorktrees {
 		section.Status, section.Reasons = cleanNotScanned, []string{cleanContextReason(err)}
 		return section
 	}
-	resolved, err := duResolveRoot(section.Root)
+	resolved, err := deps.resolvePath(section.Root)
 	if err != nil {
 		section.Status, section.Reasons, section.Detail = cleanFailure(err)
 		return section

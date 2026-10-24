@@ -105,6 +105,11 @@ type captureEvent struct {
 	// Socket은 --raw 출력에만 붙는 연결 번호다. 같은 socket의 event는 같은 번호를 받고, trace show가 이 번호로 다시 묶는다.
 	// kernel 주소인 SocketID는 밖에 내지 않는다.
 	Socket     uint64 `json:"socket,omitempty"`
+	MessageID  uint64 `json:"-"`
+	Update     bool   `json:"-"`
+	Final      bool   `json:"-"`
+	ByteDelta  uint64 `json:"-"`
+	TLSNotice  string `json:"-"`
 	LostEvents uint64 `json:"lost_events,omitempty"`
 	// answered는 응답이 답한 요청 수다. DNS는 응답 전에 같은 질의를 다시 보냈으면 1보다 크다.
 	answered uint64
@@ -120,7 +125,8 @@ type captureSummary struct {
 	// TLSUnmapped는 trace http --tls --port에서 socket을 몰라 port를 확인하지 못하고 버린 평문 레코드 수다.
 	TLSUnmapped uint64 `json:"tls_unmapped,omitempty"`
 	// TLSExecProblem은 --tls 자동 탐색이 trace 중에 exec 알림을 받지 못한 이유다. trace가 끝난 뒤 stderr로 알린다.
-	TLSExecProblem string `json:"-"`
+	TLSExecProblem string   `json:"-"`
+	TLSNotices     []string `json:"-"`
 	// DropCounts는 trace drop의 이유별 정확한 합계다. DropSampled는 초당 상한 때문에 event로 보내지 않은 수다.
 	DropCounts  map[string]uint64 `json:"drop_counts,omitempty"`
 	DropSampled uint64            `json:"drop_sampled,omitempty"`
@@ -353,6 +359,22 @@ func (traffic *traceTraffic) observe(event captureEvent) {
 	}
 }
 
+func (traffic *traceTraffic) observeHTTP(event captureEvent) {
+	if event.Protocol != "http" || tlsHandshakeEvent(event.Event) {
+		return
+	}
+	bytes := event.Bytes
+	if event.MessageID != 0 {
+		bytes = event.ByteDelta
+	}
+	transmit := (event.Event == traceHTTPRequestEvent) == (event.Side == traceClientSide)
+	if transmit {
+		traffic.TXBytes += bytes
+	} else {
+		traffic.RXBytes += bytes
+	}
+}
+
 func (traffic *traceTraffic) finalize(duration time.Duration) {
 	traffic.TotalBytes = traffic.TXBytes + traffic.RXBytes
 	seconds := duration.Seconds()
@@ -376,10 +398,14 @@ type tcpTraceOptions struct {
 	detail      bool
 	yes         bool
 	// side는 trace dns가 볼 쪽이다. client는 이 host의 조회, server는 로컬 DNS 서버가 받은 질의다.
-	side        string
-	payload     tracePayloadMode
-	showSecrets bool
-	tls         traceTLSMode
+	side            string
+	payload         tracePayloadMode
+	payloadExplicit bool
+	showSecrets     bool
+	tls             traceTLSMode
+	tlsExplicit     bool
+	implicitTLS     bool
+	progressive     bool
 	// tlsFinder는 trace를 시작하기 전에 tls 값으로 고른 파일과, 자동 탐색이면 trace 중에 이어서 찾을 상태다.
 	tlsFinder *traceTLSFinder
 	// port는 trace http가 볼 HTTP 서버의 port다. client 쪽은 상대 port, 서버 쪽은 로컬 port다. 0이면 모든 port를 본다.

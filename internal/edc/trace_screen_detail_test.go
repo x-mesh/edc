@@ -518,6 +518,28 @@ func TestTraceScreenCountsPayloadAndGzipBytesTogether(t *testing.T) {
 	}
 }
 
+func TestTraceScreenKeepsFullPayloadsWithinTheLimitAsEventsArrive(t *testing.T) {
+	const size = 10 << 20
+	payload := strings.Repeat("p", size)
+	model := traceScreenModel{payloads: traceFullPayloads{minimum: httpPayloadHead}, gzipped: traceFullPayloads{minimum: httpPayloadHead}}
+	const events = 40
+	for number := 0; number < events; number++ {
+		model.keepEventPayload(number, captureEvent{Payload: payload})
+		if total := model.payloads.bytes + model.gzipped.bytes; total > traceScreenPayloadBytes {
+			t.Fatalf("after event %d stored %d full bytes, limit %d", number, total, traceScreenPayloadBytes)
+		}
+	}
+	if total := model.payloads.bytes; total <= traceScreenPayloadBytes-size {
+		t.Fatalf("stored only %d full bytes, the limit %d leaves room for more", total, traceScreenPayloadBytes)
+	}
+	if _, ok := model.payloads.get(events - 1); !ok || model.payloadEvicted[events-1] {
+		t.Fatal("the newest full payload was evicted")
+	}
+	if _, ok := model.payloads.get(0); ok || !model.payloadEvicted[0] {
+		t.Fatal("the oldest full payload was not evicted")
+	}
+}
+
 func TestTraceWrapLine(t *testing.T) {
 	if got := traceWrapLine("abcdefg", 3); strings.Join(got, "|") != "abc|def|g" {
 		t.Fatalf("ascii = %q", got)

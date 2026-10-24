@@ -78,12 +78,8 @@ func TestTraceTLSWatchSendsDiscoveryNoticesToTheCollector(t *testing.T) {
 func TestWatchTraceTLSAttachesALibraryLoadedAfterExec(t *testing.T) {
 	libssl := traceTLSHostLibssl(t)
 	proc := traceTLSWatchProc(t, []time.Duration{0, 40 * time.Millisecond, 80 * time.Millisecond}, time.Hour)
-	executable, err := os.Executable()
-	if err != nil {
-		t.Fatal(err)
-	}
 	writeTraceTLSProcFile(t, filepath.Join(proc, "200", "maps"), "7f00-7f01 r-xp 00000000 08:03 1  /usr/bin/curl\n")
-	copyTraceTLSFile(t, executable, filepath.Join(proc, "200", "exe"))
+	copyTraceTLSFile(t, traceTLSPlainExecutable(t), filepath.Join(proc, "200", "exe"))
 	execs := make(chan uint32, 4)
 	attached := runTraceTLSWatch(t, execs)
 	execs <- 201

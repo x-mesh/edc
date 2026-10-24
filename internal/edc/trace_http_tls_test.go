@@ -378,6 +378,23 @@ func TestTraceTLSFileOffsetFollowsTheSegment(t *testing.T) {
 	}
 }
 
+// traceTLSPlainExecutable은 SSL 함수도 Go runtime도 없는 ELF 실행 파일이다. Go test binary는 crypto/tls를 담아 Go TLS
+// 대상으로 잡히므로 "SSL 함수가 없는 실행 파일"로 쓸 수 없다.
+func traceTLSPlainExecutable(t *testing.T) string {
+	t.Helper()
+	header := make([]byte, 64)
+	copy(header, "\x7fELF\x02\x01\x01")
+	binary.LittleEndian.PutUint16(header[16:], uint16(elf.ET_EXEC))
+	binary.LittleEndian.PutUint16(header[18:], uint16(traceTLSMachines[runtime.GOARCH]))
+	binary.LittleEndian.PutUint32(header[20:], 1)
+	binary.LittleEndian.PutUint16(header[52:], 64)
+	path := filepath.Join(t.TempDir(), "plain")
+	if err := os.WriteFile(path, header, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
 func copyTraceTLSFile(t *testing.T, from, to string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(to), 0o755); err != nil {
@@ -437,11 +454,7 @@ func TestResolveTraceTLSTargetsFindsEachLibraryOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	write("103", "maps", "7f00-7f01 r-xp 00000000 08:03 1  /usr/bin/sleep\n")
-	executable, err := os.Executable()
-	if err != nil {
-		t.Fatal(err)
-	}
-	copyTraceTLSFile(t, executable, filepath.Join(proc, "103", "exe"))
+	copyTraceTLSFile(t, traceTLSPlainExecutable(t), filepath.Join(proc, "103", "exe"))
 	// 104는 libssl 이름의 다른 파일이다. 경로는 그 process가 정하므로 안내에 넣을 때 제어 문자를 escape한다.
 	write("104", "maps", "7f00-7f01 r-xp 00000000 08:03 1  /usr/lib/\x1b[31m/libssl.so.3\n")
 	write("104", "map_files/7f00-7f01", "not an ELF file")

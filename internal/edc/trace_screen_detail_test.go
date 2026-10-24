@@ -816,11 +816,11 @@ func TestTraceScreenEscAndLFollowAgain(t *testing.T) {
 }
 
 func TestTraceSelectedEventUsesTheChipBackground(t *testing.T) {
-	plain := traceSelectedEvent("curl  GET /", 20, false)
+	plain := traceSelectedEventStatus("curl  GET /", 20, false, "", "")
 	if !strings.HasPrefix(plain, "▸ ") || strings.Contains(plain, liveReverse) {
 		t.Fatalf("plain selection = %q", plain)
 	}
-	colored := traceSelectedEvent("curl  GET /", 20, true)
+	colored := traceSelectedEventStatus("curl  GET /", 20, true, "", "")
 	if strings.Contains(colored, liveReverse) || liveWidth(colored) != 20 || !strings.HasPrefix(ansi.Strip(colored), "▌ curl  GET /") || !strings.Contains(colored, "48;2;45;28;62") {
 		t.Fatalf("colored selection = %q", colored)
 	}

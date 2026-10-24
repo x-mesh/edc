@@ -1137,7 +1137,14 @@ func traceScreenListRows(model traceScreenModel, available int) []string {
 // traceSelectedEvent는 고른 행을 chip 바탕에 굵게 쓴다. 바탕이 행 끝까지 이어지도록 폭을 채운다. line에 색이 있으면
 // 안의 reset이 바탕을 끊으므로 색을 칠하기 전의 행을 받는다.
 func traceSelectedEvent(line string, width int, color bool) string {
-	return traceSelectedEventStatus(line, width, color, "", "")
+	if !color {
+		return line
+	}
+	style := traceStyle().Background(lipgloss.Color(richChipHex())).Foreground(lipgloss.Color(richHex("97"))).Bold(true)
+	if width > liveWidth(line) {
+		style = style.Width(width)
+	}
+	return style.Render(line)
 }
 
 func traceSelectedEventStatus(line string, width int, color bool, severity, name string) string {

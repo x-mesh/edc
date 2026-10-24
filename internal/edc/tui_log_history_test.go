@@ -98,6 +98,7 @@ func TestLogHistoryBrowserResizeEmptyAndSafeOutput(t *testing.T) {
 
 func TestLogHistoryBrowserResponsiveEnglishAndColor(t *testing.T) {
 	t.Setenv("NO_COLOR", "")
+	t.Setenv("COLORTERM", "truecolor")
 	restore := currentLanguage()
 	defer setLanguage(restore)
 	setLanguage("en")

@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"debug/elf"
 	"encoding/binary"
+	"encoding/json"
+	"fmt"
 	"io"
 	"io/fs"
 	"os"
@@ -36,6 +38,60 @@ func TestTraceTLSMappedLibrariesReadsTLSLibraryPaths(t *testing.T) {
 	}
 	if got := traceTLSMappedLibraries(maps); !slices.Equal(got, want) {
 		t.Fatalf("libraries = %q, want %q", got, want)
+	}
+}
+
+func TestTraceTLSNoticeTextEscapesTerminalControlsAndStaysInternal(t *testing.T) {
+	unsafe := "library\x1b[31m\nnext"
+	notice := traceTLSNoticeText(unsafe)
+	if strings.ContainsAny(notice, "\x1b\r\n") || !strings.Contains(notice, `\x1b[31m\nnext`) {
+		t.Fatalf("notice = %q", notice)
+	}
+	eventJSON, err := json.Marshal(captureEvent{TLSNotice: unsafe})
+	if err != nil || strings.Contains(string(eventJSON), "TLSNotice") || strings.Contains(string(eventJSON), "tls_notice") {
+		t.Fatalf("notice event JSON = %s, %v", eventJSON, err)
+	}
+	summaryJSON, err := json.Marshal(captureSummary{TLSNotices: []string{unsafe}})
+	if err != nil || strings.Contains(string(summaryJSON), "TLSNotices") || strings.Contains(string(summaryJSON), "tls_notices") {
+		t.Fatalf("notice summary JSON = %s, %v", summaryJSON, err)
+	}
+}
+
+func TestTraceTLSNoticeBufferBoundsDeduplicationAndOverflow(t *testing.T) {
+	buffer := newTraceTLSNoticeBuffer()
+	for index := range traceTLSNoticeLimit {
+		buffer.offer(fmt.Sprintf("notice-%d", index))
+	}
+	buffer.offer("notice-0")
+	drained := buffer.drain()
+	if len(drained) != traceTLSNoticeLimit || drained[0] != "notice-0" || drained[len(drained)-1] != "notice-63" {
+		t.Fatalf("drained %d notices: %q", len(drained), drained)
+	}
+	buffer.offer("notice-overflow")
+	notices, overflow := buffer.summary()
+	if len(notices) != traceTLSNoticeLimit || overflow != 1 || len(buffer.drain()) != 0 {
+		t.Fatalf("summary has %d notices and overflow %d", len(notices), overflow)
+	}
+}
+
+func TestTraceTLSImplicitAutoContinuesWithoutAnInitialLibrary(t *testing.T) {
+	oldRoot, oldLibraries, oldRelease, oldProblem := traceProcRoot, traceTLSHostLibraries, traceKernelRelease, traceTLSExecProblem
+	traceProcRoot = t.TempDir()
+	traceTLSHostLibraries = nil
+	traceKernelRelease = filepath.Join(t.TempDir(), "release")
+	if err := os.WriteFile(traceKernelRelease, []byte("6.14.0"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	traceTLSExecProblem = func() string { return "" }
+	t.Cleanup(func() {
+		traceProcRoot, traceTLSHostLibraries, traceKernelRelease, traceTLSExecProblem = oldRoot, oldLibraries, oldRelease, oldProblem
+	})
+	finder, notices, code, err := resolveTraceTLSTargetsFor(traceTLSAuto, true)
+	if err != nil || code != 0 || finder == nil || !finder.rescan || len(finder.targets) != 0 || !slices.Contains(notices, T("cli.trace.tls_auto_unavailable", T("cli.trace.tls_none"))) {
+		t.Fatalf("finder=%+v notices=%q code=%d error=%v", finder, notices, code, err)
+	}
+	if _, _, code, err := resolveTraceTLSTargets(traceTLSAuto); err == nil || code != 3 {
+		t.Fatalf("explicit auto result: code=%d error=%v", code, err)
 	}
 }
 
@@ -322,6 +378,23 @@ func TestTraceTLSFileOffsetFollowsTheSegment(t *testing.T) {
 	}
 }
 
+// traceTLSPlainExecutable은 SSL 함수도 Go runtime도 없는 ELF 실행 파일이다. Go test binary는 crypto/tls를 담아 Go TLS
+// 대상으로 잡히므로 "SSL 함수가 없는 실행 파일"로 쓸 수 없다.
+func traceTLSPlainExecutable(t *testing.T) string {
+	t.Helper()
+	header := make([]byte, 64)
+	copy(header, "\x7fELF\x02\x01\x01")
+	binary.LittleEndian.PutUint16(header[16:], uint16(elf.ET_EXEC))
+	binary.LittleEndian.PutUint16(header[18:], uint16(traceTLSMachines[runtime.GOARCH]))
+	binary.LittleEndian.PutUint32(header[20:], 1)
+	binary.LittleEndian.PutUint16(header[52:], 64)
+	path := filepath.Join(t.TempDir(), "plain")
+	if err := os.WriteFile(path, header, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
 func copyTraceTLSFile(t *testing.T, from, to string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(to), 0o755); err != nil {
@@ -381,11 +454,7 @@ func TestResolveTraceTLSTargetsFindsEachLibraryOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	write("103", "maps", "7f00-7f01 r-xp 00000000 08:03 1  /usr/bin/sleep\n")
-	executable, err := os.Executable()
-	if err != nil {
-		t.Fatal(err)
-	}
-	copyTraceTLSFile(t, executable, filepath.Join(proc, "103", "exe"))
+	copyTraceTLSFile(t, traceTLSPlainExecutable(t), filepath.Join(proc, "103", "exe"))
 	// 104는 libssl 이름의 다른 파일이다. 경로는 그 process가 정하므로 안내에 넣을 때 제어 문자를 escape한다.
 	write("104", "maps", "7f00-7f01 r-xp 00000000 08:03 1  /usr/lib/\x1b[31m/libssl.so.3\n")
 	write("104", "map_files/7f00-7f01", "not an ELF file")

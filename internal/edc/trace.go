@@ -267,6 +267,8 @@ type traceScope struct {
 	// streaming 응답의 행이 끝날 때까지 나오지 않으므로 사용자가 고른 경우에만 붙잡는다.
 	http2Payload bool
 	showSecrets  bool
+	implicitTLS  bool
+	progressive  bool
 	// keepGzip이면 gzip message의 원본 byte를 event에 붙인다. 전체 화면의 상세 보기가 본문을 풀 때 쓴다.
 	keepGzip bool
 	// tls는 --tls 값이다. 비어 있지 않으면 OpenSSL과 GnuTLS uprobe로 HTTPS 평문을 본다. tlsFinder의 targets가 붙일
@@ -284,7 +286,16 @@ type traceScope struct {
 
 func (options tcpTraceOptions) scope(protocol string) traceScope {
 	return traceScope{protocol: protocol, server: options.side == traceServerSide, side: options.side, payload: options.payload != "", payloadAll: options.payload == tracePayloadAll, http2Payload: options.payload != "",
-		showSecrets: options.showSecrets, tls: options.tls, tlsFinder: options.tlsFinder, port: uint16(options.port), httpPort: uint16(options.httpPort), socketPath: options.socketPath, dropReasons: splitDropReasons(options.dropReasons)}
+		showSecrets: options.showSecrets, tls: options.tls, implicitTLS: options.implicitTLS, progressive: options.progressive, tlsFinder: options.tlsFinder, port: uint16(options.port), httpPort: uint16(options.httpPort), socketPath: options.socketPath, dropReasons: splitDropReasons(options.dropReasons)}
+}
+
+func applyTraceHTTPDefaults(options *tcpTraceOptions) {
+	if !options.tlsExplicit {
+		options.tls, options.implicitTLS = traceTLSAuto, true
+	}
+	if !options.payloadExplicit && options.jsonPath == "" && options.groupBy == "" {
+		options.payload = tracePayloadAll
+	}
 }
 
 // tracePayloadMode는 --payload 값이다. 값 없이 쓰면 message마다 앞 4KiB를, all이면 message 전체를 본다.
@@ -521,6 +532,14 @@ func runTraceProtocol(args []string) int {
 	if err := set.Parse(args[1:]); err != nil {
 		return 2
 	}
+	set.Visit(func(option *flag.Flag) {
+		switch option.Name {
+		case "payload":
+			options.payloadExplicit = true
+		case "tls":
+			options.tlsExplicit = true
+		}
+	})
 	if args[0] == "socket" {
 		// flag package는 첫 위치 인자에서 멈춘다. 경로 뒤의 option도 받도록 경로를 꺼내고 나머지를 다시 읽는다.
 		if set.NArg() == 0 {
@@ -538,6 +557,9 @@ func runTraceProtocol(args []string) int {
 	} else if set.NArg() != 0 {
 		fmt.Fprintln(os.Stderr, T("cli.error.no_positional", "trace "+args[0]))
 		return 2
+	}
+	if args[0] == "http" {
+		applyTraceHTTPDefaults(&options)
 	}
 	if options.duration < 0 || options.duration > maxCaptureDuration {
 		fmt.Fprintln(os.Stderr, T("cli.trace.duration_range"))
@@ -672,23 +694,24 @@ func runTraceProtocol(args []string) int {
 		options.container = container
 	}
 	screen := !options.raw && options.jsonPath == "" && traceIsTerminal(os.Stdin) && traceIsTerminal(os.Stdout)
+	options.progressive = screen || (!options.raw && options.jsonPath == "" && options.groupBy == "")
 	// 전체 화면이 열리면 stderr 안내가 화면에 섞이므로, 붙일 파일은 화면을 열기 전에 고르고 알린다.
 	if options.tls != "" {
-		finder, notices, code, err := resolveTraceTLSTargets(options.tls)
+		finder, notices, code, err := resolveTraceTLSTargetsFor(options.tls, options.implicitTLS)
 		for _, notice := range notices {
-			fmt.Fprintln(os.Stderr, notice)
+			fmt.Fprintln(os.Stderr, traceTLSNoticeText(notice))
 		}
 		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
+			fmt.Fprintln(os.Stderr, traceTLSNoticeText(err.Error()))
 			return code
 		}
 		options.tlsFinder = finder
 		if finder.rescan {
 			fmt.Fprintln(os.Stderr, T("cli.trace.tls_attached", len(finder.targets)))
-		} else {
+		} else if len(finder.targets) != 0 {
 			paths := make([]string, 0, len(finder.targets))
 			for _, target := range finder.targets {
-				paths = append(paths, traceEscapeText([]byte(target.path)))
+				paths = append(paths, traceTLSNoticeText(target.path))
 			}
 			fmt.Fprintln(os.Stderr, T("cli.trace.tls_attached_path", strings.Join(paths, ", ")))
 		}
@@ -714,6 +737,10 @@ func runTraceProtocol(args []string) int {
 		printTraceEventHeader(traceLabel(args[0], options.side))
 	}
 	summary, err = collectTraceEventsLive(options.scope(args[0]), options.duration, func(event captureEvent) error {
+		if event.TLSNotice != "" {
+			fmt.Fprintln(os.Stderr, traceTLSNoticeText(event.TLSNotice))
+			return nil
+		}
 		if traceProtocol(event) != args[0] {
 			return nil
 		}
@@ -791,6 +818,17 @@ func traceEventDestinationLabel(event captureEvent) string {
 
 // full이면 --payload=all이라 message 전체를 event 아래 여러 줄로 쓴다. 한 줄 요약은 긴 message를 읽기 어렵다.
 func printTraceEvent(event captureEvent, color, full bool) {
+	if event.Update {
+		mark := fmt.Sprintf("↻ message %d", event.MessageID)
+		if event.Final {
+			mark += " final"
+		}
+		for _, line := range traceHTTPPayloadBlock(event) {
+			fmt.Fprintf(os.Stdout, "%-16s %s %s\n", "", mark, line)
+			mark = ""
+		}
+		return
+	}
 	destination, name := traceScrollLabels(event)
 	process := event.Process
 	if process == "" {
@@ -1198,6 +1236,18 @@ func newTraceAggregate(protocol string, views ...string) *traceAggregate {
 }
 
 func (aggregate *traceAggregate) observe(event captureEvent) {
+	if event.TLSNotice != "" {
+		return
+	}
+	if event.Update {
+		if event.Protocol == "http" && aggregate.summary != nil {
+			aggregate.summary.observe(event)
+		}
+		for _, groups := range aggregate.groups {
+			groups.observe(event)
+		}
+		return
+	}
 	if aggregate.summary != nil {
 		aggregate.summary.observe(event)
 	}
@@ -1233,6 +1283,20 @@ func newTraceGroupSummarizer(protocol, groupBy string) *traceGroupSummarizer {
 }
 
 func (summarizer *traceGroupSummarizer) observe(event captureEvent) {
+	if event.TLSNotice != "" {
+		return
+	}
+	if event.Update {
+		if event.Protocol != "http" {
+			return
+		}
+		_, mapKey, _ := traceGroupIdentity(event, summarizer.groupBy)
+		if group := summarizer.groups[mapKey]; group != nil {
+			group.traceTraffic.observeHTTP(event)
+			summarizer.traffic.observeHTTP(event)
+		}
+		return
+	}
 	// socket event는 한 trace에 두 쪽이 섞인다. 보고서의 쪽은 dns와 http에만 있고, 두 쪽이 섞인 http trace에는 없다.
 	if event.Side != "" && traceProtocol(event) != "socket" {
 		if summarizer.side == "" && !summarizer.mixedSides {
@@ -1241,17 +1305,7 @@ func (summarizer *traceGroupSummarizer) observe(event captureEvent) {
 			summarizer.side, summarizer.mixedSides = "", true
 		}
 	}
-	key, server := traceGroupKey(event, summarizer.groupBy)
-	// 로컬 서버가 받은 HTTP 요청은 같은 process나 target이 보낸 요청과 다른 행에 둔다. 서버의 응답 시간은 처리 시간만
-	// 재므로, 섞으면 평균이 뜻을 잃는다.
-	if traceBothSides(event.Protocol) && event.Side == traceServerSide {
-		server = true
-	}
-	// 서버 행과 target 없는 client 행이 같은 주소일 수 있다. 섞이지 않도록 map key만 구분한다.
-	mapKey := key
-	if server {
-		mapKey += "\x00server"
-	}
+	key, mapKey, server := traceGroupIdentity(event, summarizer.groupBy)
 	group := summarizer.groups[mapKey]
 	if group == nil {
 		group = &traceGroup{Group: key, Server: server, Destinations: map[string]struct{}{}, Processes: map[string]struct{}{}}
@@ -1302,6 +1356,19 @@ func (summarizer *traceGroupSummarizer) observe(event captureEvent) {
 	}
 	summarizer.events++
 	summarizer.traffic.observe(event)
+	summarizer.traffic.observeHTTP(event)
+}
+
+func traceGroupIdentity(event captureEvent, groupBy string) (key, mapKey string, server bool) {
+	key, server = traceGroupKey(event, groupBy)
+	if traceBothSides(event.Protocol) && event.Side == traceServerSide {
+		server = true
+	}
+	mapKey = key
+	if server {
+		mapKey += "\x00server"
+	}
+	return key, mapKey, server
 }
 
 func (summarizer *traceGroupSummarizer) report(summary captureSummary, duration time.Duration) traceGroupReport {
@@ -1508,6 +1575,7 @@ func observeTraceGroup(group *traceGroup, event captureEvent) {
 		group.Redis.observe(event)
 	}
 	group.traceTraffic.observe(event)
+	group.traceTraffic.observeHTTP(event)
 	group.LastEvent = event.Event
 }
 

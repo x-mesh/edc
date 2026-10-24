@@ -98,6 +98,7 @@ func TestLogHistoryBrowserResizeEmptyAndSafeOutput(t *testing.T) {
 
 func TestLogHistoryBrowserResponsiveEnglishAndColor(t *testing.T) {
 	t.Setenv("NO_COLOR", "")
+	t.Setenv("COLORTERM", "truecolor")
 	restore := currentLanguage()
 	defer setLanguage(restore)
 	setLanguage("en")
@@ -111,8 +112,9 @@ func TestLogHistoryBrowserResponsiveEnglishAndColor(t *testing.T) {
 	if len(strings.Split(view, "\n")) != 80 || strings.Contains(view, groups[0].Key) || strings.Contains(view, "0 unknown") || !strings.Contains(view, "Command") || !strings.Contains(view, "Last run") {
 		t.Fatalf("not compact: %q", view)
 	}
-	if !strings.Contains(view, liveChipBase()) || !strings.Contains(view, historySGR(richMagenta, false)+liveSelectedBar) || !strings.Contains(view, historySGR(richYellow, false)) {
-		t.Fatal("selection and notice colors missing")
+	background := "\033[1;97;" + richRGBCode(historySelectedBackground, true, true) + "m"
+	if !strings.Contains(view, liveSelectedBar) || !strings.Contains(view, background) || !strings.Contains(view, "\033[38;2;255;187;58m2 runs excluded") {
+		t.Fatalf("selection and notice colors missing: %q", view)
 	}
 	for _, line := range strings.Split(view, "\n") {
 		if liveWidth(line) > 200 {

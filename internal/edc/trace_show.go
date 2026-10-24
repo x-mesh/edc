@@ -15,7 +15,7 @@ import (
 
 const (
 	// traceShowLineLimit은 한 줄의 상한이다. --payload=all의 event는 1 MiB까지 payload를 담는다.
-	traceShowLineLimit = 4 << 20
+	traceShowLineLimit = 8 << 20
 	// traceRawSocketLimit은 --raw가 socket 번호를 기억하는 수다. 넘으면 비우고 다시 1부터 센다.
 	traceRawSocketLimit = 1 << 20
 )

@@ -1,9 +1,14 @@
 package edc
 
 import (
+	"maps"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"golang.org/x/net/http2/hpack"
 )
 
 func httpChunk(payload string, at uint64, sent bool, offset uint32) httpPacket {
@@ -41,6 +46,209 @@ func TestHTTPMessagesJoinABodyFromLaterWrites(t *testing.T) {
 	response := messages.add(httpTestPacket("HTTP/1.1 201 Created\r\nContent-Length: 2\r\n\r\nok", 3_000_000, false), 0, now)
 	if len(response) != 1 || response[0].Status != 201 || response[0].LatencyMS == nil || *response[0].LatencyMS != 2 || !strings.HasSuffix(response[0].Payload, "\r\n\r\nok") {
 		t.Fatalf("response = %#v", response)
+	}
+}
+
+func TestHTTPMessagesProgressAfterHeadersWithStableIDs(t *testing.T) {
+	messages := newTestHTTPMessages(false, httpMessageMax)
+	messages.progressive = true
+	now := time.Unix(100, 0)
+	first := "POST /stream HTTP/1.1\r\nHost: api."
+	if events := messages.add(httpTestPacket(first, 1_000_000, true), 0, now); len(events) != 0 {
+		t.Fatalf("partial headers escaped: %#v", events)
+	}
+	head := "example\r\nContent-Length: 10\r\n\r\nabc"
+	initial := messages.add(httpChunk(head, 1_100_000, true, uint32(len(first))), 0, now.Add(10*time.Millisecond))
+	if len(initial) != 1 || initial[0].Update || initial[0].MessageID == 0 || initial[0].Target != "api.example" || initial[0].Path != "/stream" || !strings.HasSuffix(initial[0].Payload, "\r\n\r\nabc") {
+		t.Fatalf("initial snapshot = %#v", initial)
+	}
+	id := initial[0].MessageID
+	if repeated := messages.expire(now.Add(400 * time.Millisecond)); len(repeated) != 0 {
+		t.Fatalf("unchanged snapshot repeated: %#v", repeated)
+	}
+	update := messages.add(httpChunk("d", 1_200_000, true, uint32(len(first)+len(head))), 0, now.Add(300*time.Millisecond))
+	if len(update) != 1 || !update[0].Update || update[0].Final || update[0].MessageID != id || update[0].Bytes != uint64(len(first)+len(head)+1) || update[0].ByteDelta != 1 {
+		t.Fatalf("update snapshot = %#v", update)
+	}
+	final := messages.add(httpTestPacket("GET /next HTTP/1.1\r\nHost: api.example\r\n\r\n", 2_000_000, true), 0, now.Add(400*time.Millisecond))
+	if len(final) != 2 || !final[0].Update || !final[0].Final || final[0].MessageID != id || !final[0].PayloadTruncated || !strings.HasSuffix(final[0].Payload, "\r\n\r\nabcd") {
+		t.Fatalf("final snapshot = %#v", final)
+	}
+}
+
+func TestHTTPMessagesKeepLongStreamsOpenAcrossIdleSweeps(t *testing.T) {
+	messages := newTestHTTPMessages(false, httpMessageMax)
+	messages.progressive = true
+	start := time.Unix(100, 0)
+	first := "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\npart"
+	initial := messages.add(httpTestPacket(first, 1_000_000, false), 0, start)
+	if len(initial) != 1 || initial[0].MessageID == 0 || initial[0].Final {
+		t.Fatalf("initial SSE snapshot = %#v", initial)
+	}
+	if events := messages.expire(start.Add(2 * time.Second)); len(events) != 0 || len(messages.open) != 1 {
+		t.Fatalf("idle sweep closed SSE: events %#v, open %d", events, len(messages.open))
+	}
+	update := messages.add(httpChunk("\nevent: next\n\n", 2_000_000, false, uint32(len(first))), 0, start.Add(3*time.Second))
+	if len(update) != 1 || !update[0].Update || update[0].MessageID != initial[0].MessageID || !strings.HasSuffix(update[0].Payload, "event: next\n\n") {
+		t.Fatalf("SSE body update = %#v", update)
+	}
+	final := messages.flush()
+	if len(final) != 1 || !final[0].Final || !final[0].PayloadTruncated || final[0].MessageID != initial[0].MessageID {
+		t.Fatalf("unfinished SSE final = %#v", final)
+	}
+}
+
+func TestHTTP1AndHTTP2OpenPayloadsShareThe64MiBBudget(t *testing.T) {
+	tracker := newHTTPTracker("", false, false)
+	messages := newHTTPMessages(tracker, httpMessageMax, false)
+	tracker.http1Messages = messages
+	var evicted []captureEvent
+	for socket := uint64(1); socket <= httpMessageOpenLimit+1; socket++ {
+		head := "POST /large HTTP/1.1\r\nHost: api.example\r\nContent-Length: " + strconv.Itoa(httpMessageMax) + "\r\n\r\n"
+		body := strings.Repeat("a", httpMessageMax-len(head)-1)
+		packet := httpTestPacket(head+body, socket*1_000_000, true)
+		packet.socket = socket
+		evicted = append(evicted, messages.add(packet, 0, time.Unix(int64(socket), 0))...)
+	}
+	fields := http2TestHeaders(hpack.HeaderField{Name: ":method", Value: "GET"}, hpack.HeaderField{Name: ":authority", Value: "api.example"}, hpack.HeaderField{Name: ":path", Value: "/stream"})
+	start := append(append(append([]byte{}, http2Preface...), http2TestFrame(4, 0, 0, nil)...), http2TestFrame(1, 4, 1, fields)...)
+	packet := tlsTestPacket(string(start), 100_000_000, true)
+	packet.socket = 1000
+	tracker.h2PayloadLimit = httpMessageMax
+	tracker.http2Events(packet, 0)
+	data := http2TestFrame(0, 0, 1, []byte(strings.Repeat("b", 1024)))
+	packet = http2TLSTestPacket(data, 101_000_000, true, len(start))
+	packet.socket = 1000
+	tracker.http2Events(packet, 0)
+	if len(messages.open)+len(tracker.h2Payload) > httpMessageOpenLimit || messages.bytes+tracker.h2PayloadBytes > httpMessageOpenBytes {
+		t.Fatalf("combined open state: HTTP/1 %d messages/%d bytes, HTTP/2 %d streams/%d bytes", len(messages.open), messages.bytes, len(tracker.h2Payload), tracker.h2PayloadBytes)
+	}
+	if _, stillOpen := messages.open[httpStreamKey{socket: 1, sent: true}]; stillOpen || len(evicted) == 0 || !evicted[0].PayloadTruncated {
+		t.Fatalf("oldest HTTP/1 message was not evicted as partial: %d prior final events", len(evicted))
+	}
+}
+
+func TestHTTPProgressiveTrafficMatchesFinalEventsWithoutDuplicateCounts(t *testing.T) {
+	messageLength := 10_001
+	head := "POST /upload HTTP/1.1\r\nHost: api.example\r\nContent-Length: " + strconv.Itoa(messageLength) + "\r\n\r\n"
+	start := time.Unix(100, 0)
+	tracker := newHTTPTracker("", false, false)
+	messages := newHTTPMessages(tracker, httpMessageMax, false)
+	messages.progressive = true
+	packet := httpTestPacket(head+"a", 1_000_000, true)
+	progressive := messages.add(packet, 0, start)
+	for index := 0; index < 100; index++ {
+		chunk := strings.Repeat(string(rune('b'+index%20)), 100)
+		progressive = append(progressive, messages.add(httpChunk(chunk, uint64(1_100_000+index), true, uint32(len(head)+1+index*100)), 0, start.Add(time.Duration(index+1)*300*time.Millisecond))...)
+	}
+	response := httpTestPacket("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok", 2_000_000, false)
+	progressive = append(progressive, messages.add(response, 0, start.Add(31*time.Second))...)
+	if len(progressive) != 102 || !progressive[0].Update && progressive[0].ByteDelta != progressive[0].Bytes || !progressive[len(progressive)-2].Update || !progressive[len(progressive)-2].Final {
+		t.Fatalf("progressive event count or markers = %d, last %#v", len(progressive), progressive[len(progressive)-2:])
+	}
+	progressiveHTTP := newHTTPTraceSummarizer()
+	progressiveGroups := newTraceGroupSummarizer("http", traceGroupByPath)
+	var progressiveTraffic traceTraffic
+	for _, event := range progressive {
+		progressiveHTTP.observe(event)
+		progressiveGroups.observe(event)
+		progressiveTraffic.observeHTTP(event)
+	}
+	progressiveReport := progressiveHTTP.summarize(captureSummary{}, time.Second).(httpTraceReport)
+	requestBytes := progressive[0].ByteDelta + sumHTTPByteDeltas(progressive[1:len(progressive)-1])
+	responseBytes := progressive[len(progressive)-1].ByteDelta
+	if progressiveReport.Requests != 1 || progressiveReport.Responses != 1 || progressiveReport.LatencyAvgMS == nil || progressiveReport.TXBytes != requestBytes || progressiveReport.RXBytes != responseBytes {
+		t.Fatalf("progressive report = %+v", progressiveReport)
+	}
+	group := slices.Collect(maps.Values(progressiveGroups.groups))[0]
+	if group.HTTP == nil || group.HTTP.Requests != 1 || group.HTTP.Responses != 1 || group.TXBytes != requestBytes || group.RXBytes != responseBytes {
+		t.Fatalf("progressive group = %+v", group)
+	}
+
+	rawTracker := newHTTPTracker("", false, false)
+	rawMessages := newHTTPMessages(rawTracker, httpMessageMax, false)
+	rawMessages.add(packet, 0, start)
+	rawFinal := rawMessages.add(httpChunk(strings.Repeat("x", messageLength-1), 1_100_000, true, uint32(len(head)+1)), 0, start)
+	rawFinal = append(rawFinal, rawMessages.add(response, 0, start.Add(31*time.Second))...)
+	if len(rawFinal) != 2 {
+		t.Fatalf("raw final events = %#v", rawFinal)
+	}
+	var rawTraffic traceTraffic
+	for _, event := range rawFinal {
+		rawTraffic.observeHTTP(event)
+	}
+	if rawTraffic.TXBytes != progressiveTraffic.TXBytes || rawTraffic.RXBytes != progressiveTraffic.RXBytes || rawFinal[0].Bytes != progressive[0].Bytes+sumHTTPByteDeltas(progressive[1:len(progressive)-1]) {
+		t.Fatalf("raw traffic %+v, progressive traffic %+v", rawTraffic, progressiveTraffic)
+	}
+}
+
+func TestHTTPMessagesStopFlushPreservesAggregateCountsAndBytes(t *testing.T) {
+	const contentLength = 4
+	head := "POST /stop HTTP/1.1\r\nHost: api.example\r\nAuthorization: Bearer stop-secret\r\nContent-Length: " + strconv.Itoa(contentLength) + "\r\n\r\n"
+	start := time.Unix(100, 0)
+	tracker := newHTTPTracker(traceClientSide, false, false)
+	messages := newHTTPMessages(tracker, httpMessageMax, false)
+	messages.progressive = true
+	aggregate := newTraceAggregate("http", traceGroupByPath)
+	var sumBytes uint64
+	observe := func(events []captureEvent) {
+		for _, event := range events {
+			aggregate.observe(event)
+			sumBytes += event.ByteDelta
+		}
+	}
+
+	initial := messages.add(httpTestPacket(head+"a", 1_000_000, true), 0, start)
+	if len(initial) != 1 || initial[0].Update || initial[0].Final || initial[0].ByteDelta != uint64(len(head)+1) {
+		t.Fatalf("initial snapshot = %#v", initial)
+	}
+	if strings.Contains(initial[0].Payload, "stop-secret") {
+		t.Fatalf("secret leaked from initial snapshot: %q", initial[0].Payload)
+	}
+	observe(initial)
+
+	if events := messages.add(httpChunk("b", 1_100_000, true, uint32(len(head)+1)), 0, start.Add(10*time.Millisecond)); len(events) != 0 {
+		t.Fatalf("partial update escaped before stop: %#v", events)
+	}
+	final := messages.flush()
+	if len(final) != 1 || !final[0].Final || !final[0].Update || !final[0].PayloadTruncated || final[0].ByteDelta != 1 || final[0].Bytes != uint64(len(head)+2) {
+		t.Fatalf("stop flush = %#v", final)
+	}
+	if strings.Contains(final[0].Payload, "stop-secret") {
+		t.Fatalf("secret leaked from final snapshot: %q", final[0].Payload)
+	}
+	observe(final)
+	if len(messages.open) != 0 || messages.bytes != 0 {
+		t.Fatalf("open messages after flush = %d, retained bytes = %d", len(messages.open), messages.bytes)
+	}
+
+	group := aggregate.groups[traceGroupByPath].report(captureSummary{}, time.Second)
+	expectedBytes := uint64(len(head) + 2)
+	if group.Events != 1 || sumBytes != expectedBytes || group.TXBytes != expectedBytes || group.RXBytes != 0 {
+		t.Fatalf("aggregate events=%d sumBytes=%d tx=%d rx=%d, want 1/%d/%d/0", group.Events, sumBytes, group.TXBytes, group.RXBytes, expectedBytes, expectedBytes)
+	}
+}
+
+func sumHTTPByteDeltas(events []captureEvent) uint64 {
+	var total uint64
+	for _, event := range events {
+		total += event.ByteDelta
+	}
+	return total
+}
+
+func TestHTTPMessagesSplitHeaderDoesNotSnapshotPipelinedRequest(t *testing.T) {
+	messages := newTestHTTPMessages(false, httpMessageMax)
+	messages.progressive = true
+	now := time.Unix(100, 0)
+	first := "POST /first HTTP/1.1\r\nHost: api."
+	if events := messages.add(httpTestPacket(first, 1_000_000, true), 0, now); len(events) != 0 {
+		t.Fatalf("partial header emitted: %#v", events)
+	}
+	rest := "example\r\nContent-Length: 1\r\n\r\nxGET /next HTTP/1.1\r\nAuthorization: Bearer secret\r\n\r\n"
+	events := messages.add(httpChunk(rest, 1_100_000, true, uint32(len(first))), 0, now.Add(10*time.Millisecond))
+	if len(events) != 1 || events[0].Event != traceHTTPRequestEvent || events[0].Target != "api.example" || !events[0].Final || events[0].Update || !strings.HasSuffix(events[0].Payload, "\r\n\r\nx") || strings.Contains(events[0].Payload, "Bearer secret") || strings.Contains(events[0].Payload, "/next") {
+		t.Fatalf("pipelined payload escaped message boundary: %#v", events)
 	}
 }
 
@@ -111,7 +319,7 @@ func TestHTTPMessagesWaitForResponsesWithoutALength(t *testing.T) {
 		t.Fatalf("expired while data still arrived: %#v", events)
 	}
 	events := messages.expire(now.Add(2 * time.Second))
-	if len(events) != 1 || events[0].PayloadTruncated || !strings.HasSuffix(events[0].Payload, "hello world") {
+	if len(events) != 1 || !events[0].PayloadTruncated || !strings.HasSuffix(events[0].Payload, "hello world") {
 		t.Fatalf("expired response = %#v", events)
 	}
 }
@@ -158,7 +366,7 @@ func TestTraceHTTPPayloadBlockAndTrim(t *testing.T) {
 }
 
 func TestTracePayloadAllOptions(t *testing.T) {
-	for _, args := range [][]string{{"http", "--payload=bogus"}, {"http", "--show-secrets"}, {"http", "--payload", "all"}, {"http", "--payload=all", "--json", "-"}} {
+	for _, args := range [][]string{{"http", "--payload=bogus"}, {"http", "--payload=false", "--show-secrets"}, {"http", "--payload", "all"}, {"http", "--payload=all", "--json", "-"}} {
 		if code := runTrace(args); code != 2 {
 			t.Fatalf("trace %q exit = %d, want 2", args, code)
 		}

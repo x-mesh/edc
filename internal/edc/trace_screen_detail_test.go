@@ -23,15 +23,72 @@ func traceScreenKey(model traceScreenModel, keys ...string) traceScreenModel {
 		if code == 0 {
 			press = tea.KeyPressMsg{Code: rune(key[0]), Text: key}
 		}
-		next, _ := model.Update(press)
-		model = next.(traceScreenModel)
+		model = traceScreenApply(model, press)
+	}
+	return model
+}
+
+func traceScreenApply(model traceScreenModel, msg tea.Msg) traceScreenModel {
+	next, cmd := model.Update(msg)
+	model = next.(traceScreenModel)
+	if model.detail == nil && !model.split {
+		return model
+	}
+	return traceScreenRunDetailCmd(model, cmd)
+}
+
+func traceScreenEventWithDetail(model traceScreenModel, msg tea.Msg) traceScreenModel {
+	next, cmd := model.Update(msg)
+	model = next.(traceScreenModel)
+	if cmd == nil {
+		return model
+	}
+	result := cmd()
+	if batch, ok := result.(tea.BatchMsg); ok {
+		for _, child := range batch[1:] {
+			if built, ok := child().(traceDetailBuiltMsg); ok {
+				next, pending := model.Update(built)
+				model = traceScreenRunDetailCmd(next.(traceScreenModel), pending)
+			}
+		}
+	}
+	return model
+}
+
+func traceScreenRunDetailCmd(model traceScreenModel, cmd tea.Cmd) traceScreenModel {
+	for range 8 {
+		if cmd == nil {
+			return model
+		}
+		result := cmd()
+		switch value := result.(type) {
+		case traceDetailBuiltMsg:
+			next, nextCmd := model.Update(value)
+			model, cmd = next.(traceScreenModel), nextCmd
+		case tea.BatchMsg:
+			cmd = nil
+			children := value
+			if len(children) > 1 {
+				children = children[1:]
+			}
+			for _, child := range children {
+				if built := child(); built != nil {
+					if detail, ok := built.(traceDetailBuiltMsg); ok {
+						next, nextCmd := model.Update(detail)
+						model, cmd = next.(traceScreenModel), nextCmd
+					}
+				}
+			}
+		default:
+			return model
+		}
 	}
 	return model
 }
 
 func TestTraceScreenSelectsAnEventAndShowsAllOfIt(t *testing.T) {
 	t.Setenv("NO_COLOR", "1")
-	model := newTraceScreenModel("http", tcpTraceOptions{payload: tracePayloadAll}, make(chan captureEvent), make(chan traceFinishedMsg), nil)
+	model := newTraceScreenModel("http", tcpTraceOptions{payload: tracePayloadAll, payloadExplicit: true}, make(chan captureEvent), make(chan traceFinishedMsg), nil)
 	model.width, model.height = 100, 12
 	body := strings.Repeat("Z", 6000)
 	events := []captureEvent{
@@ -49,7 +106,7 @@ func TestTraceScreenSelectsAnEventAndShowsAllOfIt(t *testing.T) {
 	if model.selected != 1 {
 		t.Fatalf("selected = %d, want the POST request", model.selected)
 	}
-	if header := traceScreenHeader(model)[0]; !strings.Contains(header, "paused, 1 newer") {
+	if header := traceScreenHeader(model)[0]; !strings.Contains(header, "live · pinned #2 · 1 new") {
 		t.Fatalf("header = %q", header)
 	}
 	// 화면에 자리가 남으면 고른 event 아래에 더 새 event가 온다.
@@ -92,6 +149,94 @@ func TestTraceScreenSelectsAnEventAndShowsAllOfIt(t *testing.T) {
 	model = traceScreenKey(model, "down", "down", "end")
 	if model.selected != -1 || !strings.Contains(traceScreenHeader(model)[0], "live") {
 		t.Fatalf("end: selected %d", model.selected)
+	}
+}
+
+func TestTraceScreenStoppingViewShowsCleanupFeedbackImmediately(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	stopCalls := 0
+	model := newTraceScreenModel("http", tcpTraceOptions{}, make(chan captureEvent), make(chan traceFinishedMsg), func() { stopCalls++ })
+	model.width, model.height = 80, 24
+	next, _ := model.Update(tea.KeyPressMsg{Code: 'q', Text: "q"})
+	model = next.(traceScreenModel)
+	view := model.View().Content
+	if !model.stopping || stopCalls != 1 || !strings.Contains(view, "Stopping safely") || !strings.Contains(view, "Waiting for capture cleanup and final results") {
+		t.Fatalf("stopping view = %q, stop calls %d, stopping %t", view, stopCalls, model.stopping)
+	}
+}
+
+func TestTraceScreenPayloadStartsVisibleAndKeepsScrollAcrossSettings(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	model := newTraceScreenModel("http", tcpTraceOptions{payload: tracePayloadAll, payloadExplicit: true, showSecrets: true}, make(chan captureEvent), make(chan traceFinishedMsg), nil)
+	model.width, model.height = 80, 12
+	event := captureEvent{Protocol: "http", Event: traceHTTPRequestEvent, Method: "POST", Target: "api.example", Path: "/long", Payload: "POST /long HTTP/1.1\r\nAuthorization: Bearer fixture-token\r\n\r\n" + strings.Repeat("body ", 900)}
+	next, _ := model.Update(traceEventMsg{events: []captureEvent{event}})
+	model = traceScreenKey(next.(traceScreenModel), "enter")
+	if model.detail.payloadStart < 0 || model.detail.offset != model.detail.payloadStart || !strings.Contains(strings.Join(traceScreenDetailView(model), "\n"), "POST /long HTTP/1.1") {
+		t.Fatalf("first detail page did not start at its visible payload: %#v", model.detail)
+	}
+	model = traceScreenKey(model, "j", "j")
+	if model.detail.offset != model.detail.payloadStart+2 {
+		t.Fatalf("detail scroll did not move: offset %d payload %d", model.detail.offset, model.detail.payloadStart)
+	}
+	scrollOffset := model.detail.offset
+	next, cmd := model.Update(tea.KeyPressMsg{Code: 'm', Text: "m"})
+	model = next.(traceScreenModel)
+	if !model.detail.preserveOffset || model.detail.restoreOffset != scrollOffset || model.detail.offset != 0 || !strings.Contains(strings.Join(traceScreenDetailView(model), "\n"), "preparing detail…") {
+		t.Fatalf("m shell did not preserve scroll: %#v", model.detail)
+	}
+	model = traceScreenRunDetailCmd(model, cmd)
+	expectedOffset := min(scrollOffset, max(0, len(model.detail.lines)-traceScreenDetailPage(model)))
+	if model.detail.offset != expectedOffset || strings.Contains(strings.Join(model.detail.lines, "\n"), "fixture-token") {
+		t.Fatalf("m did not keep the masked scroll position: offset %d payload %d", model.detail.offset, model.detail.payloadStart)
+	}
+	scrollOffset = expectedOffset
+	model = traceScreenKey(model, "z")
+	expectedOffset = min(scrollOffset, max(0, len(model.detail.lines)-traceScreenDetailPage(model)))
+	if model.detail.offset != expectedOffset {
+		t.Fatalf("z changed the scroll position: offset %d payload %d", model.detail.offset, model.detail.payloadStart)
+	}
+	scrollOffset = expectedOffset
+	next, cmd = model.Update(tea.WindowSizeMsg{Width: 100, Height: 12})
+	model = traceScreenRunDetailCmd(next.(traceScreenModel), cmd)
+	expectedOffset = min(scrollOffset, max(0, len(model.detail.lines)-traceScreenDetailPage(model)))
+	if model.detail.offset != expectedOffset {
+		t.Fatalf("resize changed the scroll position: offset %d payload %d", model.detail.offset, model.detail.payloadStart)
+	}
+	model = traceScreenKey(model, "esc")
+	if model.detail != nil || model.selected != 0 {
+		t.Fatalf("Esc lost the selected target: detail %#v selected %d", model.detail, model.selected)
+	}
+}
+
+func TestTraceScreenUpsertsProgressivePayloadByMessageID(t *testing.T) {
+	model := newTraceScreenModel("http", tcpTraceOptions{payload: tracePayloadAll, payloadExplicit: true}, make(chan captureEvent), make(chan traceFinishedMsg), nil)
+	model.width, model.height = 100, 12
+	initialPayload := "POST /stream HTTP/1.1\r\nHost: api.example\r\n\r\n" + strings.Repeat("a", httpPayloadHead+10)
+	initial := captureEvent{Protocol: "http", Event: traceHTTPRequestEvent, Method: "POST", Path: "/stream", Target: "api.example", Payload: initialPayload, MessageID: 7}
+	next, _ := model.Update(traceEventMsg{events: []captureEvent{initial}})
+	model = next.(traceScreenModel)
+	model = traceScreenKey(model, "enter")
+	firstNumber := model.detail.number
+	updatedPayload := initialPayload + strings.Repeat("b", 100)
+	update := initial
+	update.Payload, update.Update, update.Bytes, update.ByteDelta = updatedPayload, true, uint64(len(updatedPayload)), 100
+	model = traceScreenEventWithDetail(model, traceEventMsg{events: []captureEvent{update}})
+	if len(model.events) != 1 || model.received != 1 || model.detail == nil || model.detail.number != firstNumber || !strings.Contains(strings.Join(model.detail.lines, ""), strings.Repeat("b", 100)) {
+		t.Fatalf("upsert state = events %d, received %d, detail %#v", len(model.events), model.received, model.detail)
+	}
+	if len(model.payloads.order) != 1 || model.payloads.bytes != len(updatedPayload) || model.payloads.order[0] != firstNumber {
+		t.Fatalf("payload index = %#v, bytes %d", model.payloads.order, model.payloads.bytes)
+	}
+	model.first++
+	model.events = model.events[1:]
+	model.arrivals = model.arrivals[1:]
+	model.payloads.drop(model.first)
+	model.messageNumbers = map[uint64]int{}
+	next, _ = model.Update(traceEventMsg{events: []captureEvent{update}})
+	model = next.(traceScreenModel)
+	if len(model.events) != 0 {
+		t.Fatalf("evicted message was restored: %#v", model.events)
 	}
 }
 
@@ -333,17 +478,17 @@ func TestTraceFullPayloadsKeepOnlyRecentLongPayloads(t *testing.T) {
 	}
 	// 같은 문자열을 여러 번 넣어도 메모리는 한 벌이라 시험이 가볍다.
 	big := strings.Repeat("y", 5<<20)
-	for number := 10; number < 24; number++ {
+	for number := 10; number < 14; number++ {
 		payloads.keep(number, big)
 	}
-	if _, ok := payloads.get(10); ok || payloads.bytes > traceScreenPayloadBytes {
-		t.Fatalf("the oldest payload is still there, bytes %d", payloads.bytes)
+	if _, ok := payloads.get(10); !ok || payloads.bytes != 20<<20 {
+		t.Fatalf("payload index lost its oldest value, bytes %d", payloads.bytes)
 	}
-	if _, ok := payloads.get(23); !ok {
-		t.Fatal("the newest payload is gone")
+	if _, ok := payloads.get(13); !ok {
+		t.Fatal("the newest payload is missing")
 	}
-	payloads.drop(20)
-	if _, ok := payloads.get(19); ok || len(payloads.order) != 4 {
+	payloads.drop(12)
+	if _, ok := payloads.get(11); ok || len(payloads.order) != 2 {
 		t.Fatalf("drop kept older payloads: %v", payloads.order)
 	}
 
@@ -353,6 +498,62 @@ func TestTraceFullPayloadsKeepOnlyRecentLongPayloads(t *testing.T) {
 	detail := model.buildDetail(0)
 	if !strings.Contains(strings.Join(detail.lines, "\n"), "only the first 4096 bytes") {
 		t.Fatal("the detail view does not say that the payload is cut")
+	}
+}
+
+func TestTraceScreenCountsPayloadAndGzipBytesTogether(t *testing.T) {
+	model := traceScreenModel{payloads: traceFullPayloads{minimum: httpPayloadHead}, gzipped: traceFullPayloads{minimum: httpPayloadHead}}
+	model.keepEventPayload(0, captureEvent{Payload: strings.Repeat("p", 40<<20), gzipped: []byte(strings.Repeat("g", 30<<20))})
+	if total := model.payloads.bytes + model.gzipped.bytes; total > traceScreenPayloadBytes {
+		t.Fatalf("stored %d full bytes, limit %d", total, traceScreenPayloadBytes)
+	}
+	if _, ok := model.payloads.get(0); ok {
+		t.Fatal("oldest full payload survived the shared byte limit")
+	}
+	if _, ok := model.gzipped.get(0); ok {
+		t.Fatal("gzip source was not evicted with the same message payload")
+	}
+	if !model.payloadEvicted[0] {
+		t.Fatal("full payload eviction was not recorded")
+	}
+}
+
+func TestTraceScreenKeepsFullPayloadsWithinTheLimitAsEventsArrive(t *testing.T) {
+	const size = 10 << 20
+	payload := strings.Repeat("p", size)
+	model := traceScreenModel{payloads: traceFullPayloads{minimum: httpPayloadHead}, gzipped: traceFullPayloads{minimum: httpPayloadHead}}
+	const events = 40
+	for number := 0; number < events; number++ {
+		model.keepEventPayload(number, captureEvent{Payload: payload})
+		if total := model.payloads.bytes + model.gzipped.bytes; total > traceScreenPayloadBytes {
+			t.Fatalf("after event %d stored %d full bytes, limit %d", number, total, traceScreenPayloadBytes)
+		}
+	}
+	if total := model.payloads.bytes; total <= traceScreenPayloadBytes-size {
+		t.Fatalf("stored only %d full bytes, the limit %d leaves room for more", total, traceScreenPayloadBytes)
+	}
+	first := -1
+	for number := 0; number < events; number++ {
+		_, kept := model.payloads.get(number)
+		if kept && first < 0 {
+			first = number
+		}
+		if kept != (first >= 0) || model.payloadEvicted[number] == kept {
+			t.Fatalf("event %d: kept=%t evicted=%t, want only the oldest events evicted", number, kept, model.payloadEvicted[number])
+		}
+	}
+	if first <= 0 || first >= events {
+		t.Fatalf("first kept event = %d of %d", first, events)
+	}
+}
+
+func TestTraceSelectedEventPaintsOnlyTheBackground(t *testing.T) {
+	if got := traceSelectedEvent("▌abc", 8, false); got != "▌abc" {
+		t.Fatalf("plain selection = %q", got)
+	}
+	colored := traceSelectedEvent("▌abc", 8, true)
+	if ansi.Strip(colored) != "▌abc    " || !strings.Contains(colored, traceTestSGR(richChipBackground, true)) {
+		t.Fatalf("colored selection = %q", colored)
 	}
 }
 
@@ -418,14 +619,28 @@ func traceGzipBytes(t *testing.T, data []byte) []byte {
 
 func TestTraceScreenScopeCollectsHTTPPayloads(t *testing.T) {
 	scope := traceScreenScope("http", tcpTraceOptions{})
-	if !scope.payload || scope.payloadAll || !scope.showSecrets || !scope.keepGzip {
+	if !scope.payload || !scope.payloadAll || !scope.showSecrets || !scope.keepGzip {
 		t.Fatalf("http screen scope = %+v", scope)
 	}
 	if scope := traceScreenScope("http", tcpTraceOptions{payload: tracePayloadAll}); !scope.payloadAll {
 		t.Fatalf("--payload=all was lost: %+v", scope)
 	}
+	if scope := traceScreenScope("http", tcpTraceOptions{payloadExplicit: true}); scope.payload || scope.payloadAll || scope.keepGzip {
+		t.Fatalf("--payload=false was lost: %+v", scope)
+	}
 	if scope := traceScreenScope("tcp", tcpTraceOptions{}); scope.payload || scope.showSecrets || scope.keepGzip {
 		t.Fatalf("tcp screen scope = %+v", scope)
+	}
+}
+
+func TestTraceScreenHidesDefaultPayloadRowsButKeepsExplicitRows(t *testing.T) {
+	defaultModel := newTraceScreenModel("http", tcpTraceOptions{}, make(chan captureEvent), make(chan traceFinishedMsg), nil)
+	if defaultModel.payloadLines {
+		t.Fatal("default HTTP payload rows are visible")
+	}
+	explicitModel := newTraceScreenModel("http", tcpTraceOptions{payload: tracePayloadAll, payloadExplicit: true}, make(chan captureEvent), make(chan traceFinishedMsg), nil)
+	if !explicitModel.payloadLines {
+		t.Fatal("explicit --payload=all rows are hidden")
 	}
 }
 
@@ -462,16 +677,20 @@ func TestTraceScreenKeysShowPayloadsAndSecrets(t *testing.T) {
 func TestTraceScreenFollowShowsTheNewestEvent(t *testing.T) {
 	model := newTraceScreenModel("http", tcpTraceOptions{}, make(chan captureEvent), make(chan traceFinishedMsg), nil)
 	model.width, model.height = 100, 12
-	send := func(path string) {
-		next, _ := model.Update(traceEventMsg{events: []captureEvent{{Protocol: "http", Event: traceHTTPRequestEvent, Method: "GET", Target: "x", Path: path}}})
-		model = next.(traceScreenModel)
+	send := func(path string, complete bool) {
+		if complete {
+			model = traceScreenEventWithDetail(model, traceEventMsg{events: []captureEvent{{Protocol: "http", Event: traceHTTPRequestEvent, Method: "GET", Target: "x", Path: path}}})
+		} else {
+			next, _ := model.Update(traceEventMsg{events: []captureEvent{{Protocol: "http", Event: traceHTTPRequestEvent, Method: "GET", Target: "x", Path: path}}})
+			model = next.(traceScreenModel)
+		}
 	}
-	send("/one")
+	send("/one", false)
 	model = traceScreenKey(model, "f")
 	if model.detail == nil || !model.follow || model.detail.number != 0 {
 		t.Fatalf("f did not open the newest event: %+v", model.detail)
 	}
-	send("/two")
+	send("/two", true)
 	if model.detail.number != 1 || !strings.Contains(strings.Join(model.detail.lines, "\n"), `"/two"`) {
 		t.Fatalf("follow did not move to the new event: %d", model.detail.number)
 	}
@@ -480,7 +699,7 @@ func TestTraceScreenFollowShowsTheNewestEvent(t *testing.T) {
 	}
 	// f를 다시 누르면 보던 event에서 멈추고, 새 event가 와도 그대로 둔다.
 	model = traceScreenKey(model, "f")
-	send("/three")
+	send("/three", false)
 	if model.follow || model.detail.number != 1 || model.selected != 1 {
 		t.Fatalf("stopped follow: follow %t, number %d, selected %d", model.follow, model.detail.number, model.selected)
 	}
@@ -598,7 +817,7 @@ func TestTraceScreenKeepsAFullListWhileItWaits(t *testing.T) {
 			filled++
 		}
 	}
-	if filled != model.height-3 || !strings.HasPrefix(rows[0], fmt.Sprintf("p%d ", model.first)) {
+	if filled != model.height-3 || !strings.Contains(rows[0], fmt.Sprintf("p%d ", model.first)) {
 		t.Fatalf("%d of %d rows are filled, first row %q", filled, model.height-3, rows[0])
 	}
 }
@@ -636,12 +855,12 @@ func TestTraceScreenEscAndLFollowAgain(t *testing.T) {
 }
 
 func TestTraceSelectedEventUsesTheChipBackground(t *testing.T) {
-	plain := traceSelectedEvent("curl  GET /", 20, false)
-	if plain != "curl  GET /" {
+	plain := traceSelectedEventStatus("curl  GET /", 20, false, "", "")
+	if !strings.HasPrefix(plain, "▸ ") || strings.Contains(plain, liveReverse) {
 		t.Fatalf("plain selection = %q", plain)
 	}
-	colored := traceSelectedEvent("curl  GET /", 20, true)
-	if strings.Contains(colored, liveReverse) || ansi.Strip(colored) != "curl  GET /         " || !strings.Contains(colored, traceTestSGR(richChipBackground, true)) {
+	colored := traceSelectedEventStatus("curl  GET /", 20, true, "", "")
+	if strings.Contains(colored, liveReverse) || liveWidth(colored) != 20 || !strings.HasPrefix(ansi.Strip(colored), "▌ curl  GET /") || !strings.Contains(colored, "48;2;45;28;62") {
 		t.Fatalf("colored selection = %q", colored)
 	}
 }

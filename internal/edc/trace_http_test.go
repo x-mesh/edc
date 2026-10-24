@@ -247,7 +247,7 @@ func TestHTTP2TraceCapsPendingRequests(t *testing.T) {
 // --payload에서 HTTP/2 event는 stream의 본문이 끝날 때 나오고, 본문은 방향마다 h2PayloadLimit까지 담는다.
 func TestHTTP2TraceCollectsDataPayloadByStream(t *testing.T) {
 	tracker := newHTTPTracker("", false, false)
-	tracker.h2PayloadLimit = 5
+	tracker.h2PayloadLimit = len("POST /upload?token=secret HTTP/2\r\nHost: api.example\r\n\r\n") + 5
 	request := http2TestHeaders(hpack.HeaderField{Name: ":method", Value: "POST"}, hpack.HeaderField{Name: ":authority", Value: "api.example"}, hpack.HeaderField{Name: ":path", Value: "/upload?token=secret"})
 	start := append(append(append([]byte{}, http2Preface...), http2TestFrame(4, 0, 0, nil)...), http2TestFrame(1, 4, 1, request)...)
 	if events, claimed := tracker.http2Events(tlsTestPacket(string(start), 1_000_000, true), 0); !claimed || len(events) != 0 {
@@ -255,7 +255,7 @@ func TestHTTP2TraceCollectsDataPayloadByStream(t *testing.T) {
 	}
 	data := append(http2TestFrame(0, 0, 1, []byte("abc")), http2TestFrame(0, 0x8|0x1, 1, append([]byte{2}, "def\x00\x00"...))...)
 	events, _ := tracker.http2Events(http2TLSTestPacket(data, 2_000_000, true, len(start)), 0)
-	if len(events) != 1 || events[0].Payload != "POST /upload HTTP/2\r\n\r\nabcde" || !events[0].PayloadTruncated || !events[0].TLS {
+	if len(events) != 1 || events[0].Payload != "POST /upload?token=secret HTTP/2\r\nHost: api.example\r\n\r\nabcde" || !events[0].PayloadTruncated || !events[0].TLS {
 		t.Fatalf("request payload = %#v", events)
 	}
 	response := append(append(http2TestFrame(4, 0, 0, nil), http2TestFrame(1, 4, 1, http2TestHeaders(hpack.HeaderField{Name: ":status", Value: "200"}))...), http2TestFrame(0, 1, 1, []byte("ok"))...)
@@ -275,7 +275,7 @@ func TestHTTP2PayloadEndsOnContinuationAndTrailers(t *testing.T) {
 	request := http2TestHeaders(hpack.HeaderField{Name: ":method", Value: "GET"}, hpack.HeaderField{Name: ":authority", Value: "api.example"}, hpack.HeaderField{Name: ":path", Value: "/a"})
 	start := append(append(append([]byte{}, http2Preface...), http2TestFrame(1, 0x1, 1, request[:2])...), http2TestFrame(9, 4, 1, request[2:])...)
 	events, _ := tracker.http2Events(tlsTestPacket(string(start), 1_000_000, true), 0)
-	if len(events) != 1 || events[0].Payload != "GET /a HTTP/2\r\n\r\n" || events[0].PayloadTruncated {
+	if len(events) != 1 || events[0].Payload != "GET /a HTTP/2\r\nHost: api.example\r\n\r\n" || events[0].PayloadTruncated {
 		t.Fatalf("request = %#v", events)
 	}
 	early := http2TestFrame(1, 4, 1, http2TestHeaders(hpack.HeaderField{Name: ":status", Value: "103"}))
@@ -283,8 +283,99 @@ func TestHTTP2PayloadEndsOnContinuationAndTrailers(t *testing.T) {
 	trailer := http2TestFrame(1, 0x1|0x4, 1, http2TestHeaders(hpack.HeaderField{Name: "grpc-status", Value: "0"}))
 	response := append(append(append(append([]byte{}, early...), final...), http2TestFrame(0, 0, 1, []byte("x"))...), trailer...)
 	events, _ = tracker.http2Events(http2TLSTestPacket(response, 2_000_000, false, 0), 0)
-	if len(events) != 2 || events[0].Status != 103 || events[0].Payload != "HTTP/2 103\r\n\r\n" || events[0].PayloadTruncated || events[1].Status != 200 || events[1].Payload != "HTTP/2 200\r\n\r\nx" || events[1].PayloadTruncated {
+	if len(events) != 2 || events[0].Status != 103 || events[0].Payload != "HTTP/2 103\r\n\r\n" || events[0].PayloadTruncated || events[1].Status != 200 || events[1].Payload != "HTTP/2 200\r\n\r\nx\r\n[trailers]\r\ngrpc-status: 0\r\n" || events[1].PayloadTruncated {
 		t.Fatalf("responses = %#v", events)
+	}
+}
+
+func TestHTTP2ProgressiveSnapshotsKeepHeadersBodyAndTrailers(t *testing.T) {
+	tracker := newHTTPTracker("", false, true)
+	tracker.progressive = true
+	tracker.h2PayloadLimit = httpMessageMax
+	headers := http2TestHeaders(
+		hpack.HeaderField{Name: ":method", Value: "GET"},
+		hpack.HeaderField{Name: ":authority", Value: "api.example"},
+		hpack.HeaderField{Name: ":path", Value: "/events?token=secret"},
+		hpack.HeaderField{Name: "authorization", Value: "Bearer secret"},
+	)
+	start := append(append(append([]byte{}, http2Preface...), http2TestFrame(4, 0, 0, nil)...), http2TestFrame(1, 4, 1, headers)...)
+	initial, _ := tracker.http2Events(tlsTestPacket(string(start), 1_000_000, true), 0)
+	if len(initial) != 1 || initial[0].MessageID == 0 || initial[0].Update || !strings.Contains(initial[0].Payload, "authorization: Bearer secret") || !strings.Contains(initial[0].Payload, "Host: api.example") || !strings.Contains(initial[0].Payload, "/events?token=secret") {
+		t.Fatalf("initial HTTP/2 headers = %#v", initial)
+	}
+	open := tracker.h2Payload[http2PayloadKey{socket: 1, stream: 1, sent: true}]
+	open.lastSnapshot = time.Now().Add(-300 * time.Millisecond)
+	update, _ := tracker.http2Events(http2TLSTestPacket(http2TestFrame(0, 0, 1, []byte("event: update\n\n")), 2_000_000, true, len(start)), 0)
+	if len(update) != 1 || !update[0].Update || update[0].MessageID != initial[0].MessageID || !strings.HasSuffix(update[0].Payload, "event: update\n\n") {
+		t.Fatalf("stream snapshot = %#v", update)
+	}
+	trailer := http2TestFrame(1, 0x1|0x4, 1, http2TestHeaders(hpack.HeaderField{Name: "set-cookie", Value: "id=secret"}))
+	final, _ := tracker.http2Events(http2TLSTestPacket(trailer, 3_000_000, true, len(start)+len(http2TestFrame(0, 0, 1, []byte("event: update\n\n")))), 0)
+	if len(final) != 1 || !final[0].Update || !final[0].Final || final[0].MessageID != initial[0].MessageID || !strings.Contains(final[0].Payload, "[trailers]\r\nset-cookie: id=secret") {
+		t.Fatalf("final HTTP/2 snapshot = %#v", final)
+	}
+	masked := traceMaskHTTPHeaders([]byte(final[0].Payload))
+	if strings.Contains(string(masked), "Bearer secret") || strings.Contains(string(masked), "id=secret") {
+		t.Fatalf("HTTP/2 secret leaked after masking: %q", masked)
+	}
+}
+
+func TestHTTP2GzipWithTrailersDecodesAndMasksSecrets(t *testing.T) {
+	tracker := newHTTPTracker("", false, true)
+	tracker.progressive, tracker.keepGzip, tracker.h2PayloadLimit = true, true, httpMessageMax
+	encodedBody := traceGzipBytes(t, []byte("stream body"))
+	headers := http2TestHeaders(
+		hpack.HeaderField{Name: ":method", Value: "GET"},
+		hpack.HeaderField{Name: ":authority", Value: "api.example"},
+		hpack.HeaderField{Name: ":path", Value: "/gzip"},
+		hpack.HeaderField{Name: "content-encoding", Value: "gzip"},
+		hpack.HeaderField{Name: "authorization", Value: "Bearer secret"},
+	)
+	start := append(append(append([]byte{}, http2Preface...), http2TestFrame(4, 0, 0, nil)...), http2TestFrame(1, 4, 1, headers)...)
+	initial, _ := tracker.http2Events(tlsTestPacket(string(start), 1_000_000, true), 0)
+	if len(initial) != 1 || !strings.Contains(string(traceMaskHTTPHeaders([]byte(initial[0].Payload))), "authorization: ***") {
+		t.Fatalf("HTTP/2 initial headers = %#v", initial)
+	}
+	key := http2PayloadKey{socket: 1, stream: 1, sent: true}
+	tracker.h2Payload[key].lastSnapshot = time.Now().Add(-300 * time.Millisecond)
+	bodyFrame := http2TestFrame(0, 0, 1, encodedBody)
+	tracker.http2Events(http2TLSTestPacket(bodyFrame, 2_000_000, true, len(start)), 0)
+	trailer := http2TestFrame(1, 0x1|0x4, 1, http2TestHeaders(hpack.HeaderField{Name: "set-cookie", Value: "id=secret"}))
+	final, _ := tracker.http2Events(http2TLSTestPacket(trailer, 3_000_000, true, len(start)+len(bodyFrame)), 0)
+	if len(final) != 1 || !final[0].Update || !final[0].Final || len(final[0].gzipped) != len(http2PayloadHeader(final[0], []hpack.HeaderField{
+		{Name: ":method", Value: "GET"}, {Name: ":authority", Value: "api.example"}, {Name: ":path", Value: "/gzip"}, {Name: "content-encoding", Value: "gzip"}, {Name: "authorization", Value: "Bearer secret"},
+	}))+len(encodedBody) {
+		t.Fatalf("HTTP/2 final gzip snapshot = %#v", final)
+	}
+	masked := traceMaskHTTPHeaders([]byte(final[0].Payload))
+	if strings.Contains(string(masked), "Bearer secret") || strings.Contains(string(masked), "id=secret") {
+		t.Fatalf("HTTP/2 headers or trailers leaked: %q", masked)
+	}
+	model := newTraceScreenModel("http", tcpTraceOptions{payload: tracePayloadAll, payloadExplicit: true}, make(chan captureEvent), make(chan traceFinishedMsg), nil)
+	model.events = []captureEvent{final[0]}
+	model.payloads.keep(0, final[0].Payload)
+	model.gzipped.keep(0, string(final[0].gzipped))
+	model.decode = true
+	_, decoded, _ := model.detailPayload(0)
+	if !strings.Contains(decoded, "stream body") || strings.Contains(decoded, "Bearer secret") {
+		t.Fatalf("decoded HTTP/2 detail = %q", decoded)
+	}
+}
+
+func TestHTTP2HeaderFieldControlsCannotCreateHeaders(t *testing.T) {
+	event := captureEvent{Method: "GET", Path: "/safe"}
+	fields := []hpack.HeaderField{
+		{Name: ":method", Value: "GET"},
+		{Name: ":path", Value: "/safe"},
+		{Name: "authorization", Value: "secret\r\nx-other: leaked"},
+	}
+	plain := traceHTTPPayload(http2PayloadHeader(event, fields), false)
+	if strings.Contains(plain, "leaked") || strings.Contains(plain, "\r\nx-other") || !strings.Contains(plain, "authorization: ***") {
+		t.Fatalf("default header payload = %q", plain)
+	}
+	shown := traceHTTPPayload(http2PayloadHeader(event, fields), true)
+	if !strings.Contains(shown, `secret\x0d\x0ax-other: leaked`) || strings.Contains(shown, "\r\nx-other") {
+		t.Fatalf("opt-in header payload = %q", shown)
 	}
 }
 
@@ -298,7 +389,7 @@ func TestHTTP2PayloadClosesUnfinishedBodies(t *testing.T) {
 	start := append(append(append([]byte{}, http2Preface...), post(1)...), http2TestFrame(0, 0, 1, []byte("part"))...)
 	tracker.http2Events(tlsTestPacket(string(start), 1_000_000, true), 0)
 	events, _ := tracker.http2Events(http2TLSTestPacket(http2TestFrame(3, 0, 1, []byte{0, 0, 0, 8}), 2_000_000, false, 0), 0)
-	if len(events) != 1 || events[0].Payload != "POST /up HTTP/2\r\n\r\npart" || !events[0].PayloadTruncated {
+	if len(events) != 1 || events[0].Payload != "POST /up HTTP/2\r\nHost: api.example\r\n\r\npart" || !events[0].PayloadTruncated {
 		t.Fatalf("reset = %#v", events)
 	}
 	tracker.http2Events(http2TLSTestPacket(post(3), 3_000_000, true, len(start)), 0)
@@ -336,8 +427,9 @@ func TestHTTP2PayloadTrimsTheOldestOpenStream(t *testing.T) {
 	if events := tracker.trimHTTP2Payloads(false); len(events) != 0 {
 		t.Fatalf("trimmed below the limits: %#v", events)
 	}
-	tracker.h2Payload[http2PayloadKey{socket: 1, stream: 2, sent: true}].body = make([]byte, httpMessageOpenBytes+1)
-	tracker.h2PayloadBytes = httpMessageOpenBytes + 1
+	open := tracker.h2Payload[http2PayloadKey{socket: 1, stream: 2, sent: true}]
+	open.body = make([]byte, httpMessageOpenBytes+1)
+	tracker.h2PayloadBytes = len(open.header) + len(open.body) + len(open.trailer)
 	if events := tracker.trimHTTP2Payloads(false); len(events) != 1 || events[0].Path != "/2" || tracker.h2PayloadBytes != 0 {
 		t.Fatalf("trimmed by bytes = %#v, bytes %d", events, tracker.h2PayloadBytes)
 	}
@@ -350,11 +442,13 @@ func TestHTTP2PayloadCutsAReopenedStream(t *testing.T) {
 	post := http2TestFrame(1, 4, 1, http2TestHeaders(hpack.HeaderField{Name: ":method", Value: "POST"}, hpack.HeaderField{Name: ":authority", Value: "api.example"}, hpack.HeaderField{Name: ":path", Value: "/up"}))
 	start := append(append(append(append([]byte{}, http2Preface...), post...), http2TestFrame(0, 0, 1, []byte("abc"))...), post...)
 	events, _ := tracker.http2Events(tlsTestPacket(string(start), 1_000_000, true), 0)
-	if len(events) != 1 || events[0].Payload != "POST /up HTTP/2\r\n\r\nabc" || !events[0].PayloadTruncated {
+	if len(events) != 1 || events[0].Payload != "POST /up HTTP/2\r\nHost: api.example\r\n\r\nabc" || !events[0].PayloadTruncated {
 		t.Fatalf("first = %#v", events)
 	}
-	if len(tracker.h2Payload) != 1 || tracker.h2PayloadBytes != 0 || tracker.h2PayloadOpen[1] != 1 {
-		t.Fatalf("open = %d streams, %d bytes, %v", len(tracker.h2Payload), tracker.h2PayloadBytes, tracker.h2PayloadOpen)
+	open := tracker.h2Payload[http2PayloadKey{socket: 1, stream: 1, sent: true}]
+	wantBytes := len(open.header) + len(open.body) + len(open.trailer)
+	if len(tracker.h2Payload) != 1 || tracker.h2PayloadBytes != wantBytes || tracker.h2PayloadOpen[1] != 1 {
+		t.Fatalf("open = %d streams, %d bytes, want %d, per-socket %v", len(tracker.h2Payload), tracker.h2PayloadBytes, wantBytes, tracker.h2PayloadOpen)
 	}
 }
 
@@ -387,13 +481,37 @@ func TestTraceHTTP2PayloadLimitFollowsTheUserOption(t *testing.T) {
 		payload tracePayloadMode
 		want    int
 	}{{"", 0}, {tracePayloadHead, httpPayloadHead}, {tracePayloadAll, httpMessageMax}} {
-		options := tcpTraceOptions{payload: test.payload}
+		options := tcpTraceOptions{payload: test.payload, payloadExplicit: true}
 		if got := traceHTTP2PayloadLimit(traceScreenScope("http", options)); got != test.want {
 			t.Fatalf("screen with --payload=%q = %d, want %d", test.payload, got, test.want)
 		}
 		if got := traceHTTP2PayloadLimit(options.scope("http")); got != test.want {
 			t.Fatalf("lines with --payload=%q = %d, want %d", test.payload, got, test.want)
 		}
+	}
+}
+
+func TestTraceHTTPDefaultsFollowOutputAndExplicitOptions(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		options  tcpTraceOptions
+		payload  tracePayloadMode
+		implicit bool
+	}{
+		{name: "text defaults to full payload", payload: tracePayloadAll, implicit: true},
+		{name: "raw defaults to full payload", options: tcpTraceOptions{raw: true}, payload: tracePayloadAll, implicit: true},
+		{name: "summary JSON omits payload", options: tcpTraceOptions{jsonPath: "-"}, implicit: true},
+		{name: "grouped summary omits payload", options: tcpTraceOptions{groupBy: traceGroupByPath}, implicit: true},
+		{name: "explicit false omits payload", options: tcpTraceOptions{payloadExplicit: true}, implicit: true},
+		{name: "explicit TLS false stays disabled", options: tcpTraceOptions{tlsExplicit: true}, payload: tracePayloadAll},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			options := test.options
+			applyTraceHTTPDefaults(&options)
+			if options.payload != test.payload || options.implicitTLS != test.implicit || (options.tls == traceTLSAuto) != test.implicit {
+				t.Fatalf("options = %+v", options)
+			}
+		})
 	}
 }
 
@@ -588,7 +706,7 @@ func TestHTTPTrackerAddsThePayloadOnlyWhenAsked(t *testing.T) {
 
 func TestHTTPTraceScreenPutsThePayloadUnderItsEvent(t *testing.T) {
 	t.Setenv("NO_COLOR", "1")
-	model := newTraceScreenModel("http", tcpTraceOptions{payload: tracePayloadHead}, make(chan captureEvent), make(chan traceFinishedMsg), nil)
+	model := newTraceScreenModel("http", tcpTraceOptions{payload: tracePayloadHead, payloadExplicit: true}, make(chan captureEvent), make(chan traceFinishedMsg), nil)
 	request := captureEvent{Protocol: "http", Event: traceHTTPRequestEvent, Process: "curl", Method: "POST", Target: "api.example", Path: "/a", Payload: "POST /a HTTP/1.1\r\nHost: api.example\r\n\r\n{\"k\":1}"}
 	plain := captureEvent{Protocol: "http", Event: "http_2xx", Process: "curl", Target: "api.example", Path: "/a", Status: 200}
 	model.events, model.width = []captureEvent{request, request, plain}, 120
@@ -1023,6 +1141,55 @@ func TestHTTPMessagesPassTLSClientHellosThrough(t *testing.T) {
 	events := messages.add(httpTestPacket(string(record), 1_000_000, true), 0, time.Unix(100, 0))
 	if len(events) != 1 || events[0].Event != traceTLSHelloEvent || len(messages.open) != 0 {
 		t.Fatalf("events = %#v, open %d", events, len(messages.open))
+	}
+}
+
+func TestHTTPMessagesProgressiveModeEmitsTLSHandshakeEvents(t *testing.T) {
+	tracker := newHTTPTracker("", false, false)
+	messages := newHTTPMessages(tracker, httpMessageMax, false)
+	messages.progressive = true
+	now := time.Unix(100, 0)
+	fixtures := []struct {
+		name string
+		data []byte
+		sent bool
+		want string
+	}{
+		{name: "client hello", data: tlsHandBuiltClientHello("api.example", "h2"), sent: true, want: traceTLSHelloEvent},
+		{name: "server hello", data: tlsHandBuiltServerHello(0x1301, 0x0304, ""), want: traceTLSServerHelloEvent},
+		{name: "alert", data: tlsHandBuiltAlert(2, 40), want: traceTLSAlertEvent},
+	}
+	for _, fixture := range fixtures {
+		t.Run(fixture.name, func(t *testing.T) {
+			events := messages.add(httpTestPacket(string(fixture.data), 1_000_000, fixture.sent), 0, now)
+			if len(events) != 1 || events[0].Event != fixture.want || len(messages.open) != 0 || messages.bytes != 0 {
+				t.Fatalf("events = %#v, open %d, bytes %d", events, len(messages.open), messages.bytes)
+			}
+		})
+	}
+	clientHello := tlsHandBuiltClientHello("split.example", "h2")
+	starts := httpSplitStarts{}
+	var joined httpPacket
+	var offset uint32
+	for index, payload := range [][]byte{clientHello[tlsRecordHeaderSize : tlsRecordHeaderSize+1], clientHello[tlsRecordHeaderSize+1 : tlsRecordHeaderSize+12], clientHello[tlsRecordHeaderSize+12:]} {
+		packet := httpTestPacket(string(payload), uint64(index+1), true)
+		packet.tlsHandshake = index == 0
+		if index > 0 {
+			packet.continued = true
+			packet.offset = offset
+		}
+		offset += uint32(len(payload))
+		var ok bool
+		joined, ok = starts.join(packet)
+		if index < 2 && ok {
+			t.Fatalf("split handshake piece %d was emitted early", index)
+		}
+		if index == 2 && !ok {
+			t.Fatal("complete split handshake did not leave the splitter")
+		}
+	}
+	if events := messages.add(joined, 0, now); len(events) != 1 || events[0].Event != traceTLSHelloEvent || events[0].Target != "split.example" || len(messages.open) != 0 {
+		t.Fatalf("split progressive hello = %#v, open %d", events, len(messages.open))
 	}
 }
 

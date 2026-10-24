@@ -3,19 +3,28 @@ package edc
 import (
 	"encoding/json"
 	"fmt"
+	"math"
+	"slices"
 	"strings"
 	"unicode/utf8"
 
+	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 )
 
 // tracePreview는 화면 나누기에서 아래 창에 보이는 event다. 대상 event나 가리기, gzip 설정이 바뀔 때만 다시 만든다.
 // payload를 가리고 푸는 일을 화면을 그릴 때마다 하면 --payload=all의 1MiB payload에서 event를 따라가지 못한다.
 type tracePreview struct {
-	number  int
-	secrets bool
-	decode  bool
-	title   string
+	number         int
+	secrets        bool
+	decode         bool
+	width          int
+	revision       uint64
+	wrappedRows    int
+	wrapped        []string
+	updating       bool
+	payloadEvicted bool
+	title          string
 	// lines는 화면 폭으로 나누기 전의 줄이다. 그릴 때 창에 보일 만큼만 나눈다.
 	lines []string
 }
@@ -23,10 +32,23 @@ type tracePreview struct {
 // traceSplitMinimum은 화면 나누기에 필요한 목록과 미리 보기의 줄 수다. 더 좁으면 목록만 보인다.
 const traceSplitMinimum = 6
 
-// traceSplitHeights는 머리글 아래를 목록과 미리 보기로 나눈다. 미리 보기의 첫 줄은 구분선이다.
+// traceSplitHeights는 머리글 아래를 목록과 미리 보기로 나눈다. 미리 보기에는 rule과 header가 각각 한 줄씩 있다.
 func traceSplitHeights(height int) (int, int, bool) {
 	remaining := max(0, height-3)
-	if remaining < traceSplitMinimum {
+	if remaining < traceSplitMinimum+1 {
+		return remaining, 0, false
+	}
+	list := remaining / 2
+	return list, remaining - list, true
+}
+
+func traceSplitHeightsFor(model traceScreenModel) (int, int, bool) {
+	header := 3
+	if len(model.tlsNotices) != 0 || model.tlsNoticeOverflow != 0 {
+		header++
+	}
+	remaining := max(0, model.height-header)
+	if remaining < traceSplitMinimum+1 {
 		return remaining, 0, false
 	}
 	list := remaining / 2
@@ -51,15 +73,15 @@ func (model *traceScreenModel) refreshPreview() {
 		model.preview = nil
 		return
 	}
-	if preview := model.preview; preview != nil && preview.number == number && preview.secrets == model.secrets && preview.decode == model.decode {
+	if preview := model.preview; preview != nil && preview.number == number && preview.secrets == model.secrets && preview.decode == model.decode && preview.width == model.width && preview.revision == model.payloadRevisions[number] {
 		model.clampPreviewOffset()
 		return
 	}
-	if model.preview == nil || model.preview.number != number {
+	if model.preview != nil && model.preview.number != number {
 		model.previewOffset = 0
 	}
 	event, payload, notes := model.detailPayload(number)
-	preview := &tracePreview{number: number, secrets: model.secrets, decode: model.decode, title: traceEventTitle(event)}
+	preview := &tracePreview{number: number, secrets: model.secrets, decode: model.decode, width: model.width, revision: model.payloadRevisions[number], payloadEvicted: model.payloadEvicted[number], title: tracePreviewTitle(event)}
 	if payload != "" {
 		// 창이 작아서 payload가 있으면 payload를 먼저 보인다. event 필드는 Enter의 상세 보기에 있다.
 		event.Payload = payload
@@ -72,8 +94,87 @@ func (model *traceScreenModel) refreshPreview() {
 		}
 		preview.lines = strings.Split(string(encoded), "\n")
 	}
+	preview.wrapped = traceWrapAll(preview.lines, model.width)
+	preview.wrappedRows = len(preview.wrapped)
 	model.preview = preview
 	model.clampPreviewOffset()
+}
+
+func (model *traceScreenModel) requestPreviewBuild() tea.Cmd {
+	if model.detail != nil || !model.split || model.groupBy != "" || model.stopping || model.finished != nil {
+		return nil
+	}
+	if _, _, ok := traceSplitHeightsFor(*model); !ok {
+		model.preview = nil
+		model.previewOffset = 0
+		if model.detailJobPending != nil && model.detailJobPending.kind == "preview" {
+			model.detailJobPending = nil
+		}
+		return nil
+	}
+	number := model.previewTarget()
+	if number < model.first || number >= model.first+len(model.events) {
+		model.preview = nil
+		return nil
+	}
+	if preview := model.preview; preview != nil && preview.wrapped != nil && !preview.updating && preview.number == number && preview.secrets == model.secrets && preview.decode == model.decode && preview.width == model.width && preview.revision == model.payloadRevisions[number] && preview.payloadEvicted == model.payloadEvicted[number] {
+		return nil
+	}
+	settingsChanged := model.preview != nil && (model.preview.secrets != model.secrets || model.preview.decode != model.decode || model.preview.width != model.width)
+	widthChanged := model.preview != nil && model.preview.width != model.width
+	pendingCurrent := model.detailJobActive && model.detailJobPending != nil && model.detailJobPending.kind == "preview" && model.detailJobPending.number == number && model.detailJobPending.secrets == model.secrets && model.detailJobPending.decode == model.decode && model.detailJobPending.width == model.width
+	if model.preview != nil && model.preview.number != number {
+		model.previewOffset = 0
+	}
+	targetChanged := model.preview != nil && model.preview.number != number
+	if ((targetChanged && model.selected >= 0) || settingsChanged) && !pendingCurrent {
+		model.detailGeneration++
+	}
+	if widthChanged {
+		model.previewOffset = 0
+	}
+	event := model.events[number-model.first]
+	snapshot := model.detailSnapshot(number, model.detailGeneration)
+	snapshot.kind = "preview"
+	if model.detailJobActive {
+		if model.detailJobCurrent != nil && sameTraceDetailSnapshot(*model.detailJobCurrent, snapshot) {
+			return nil
+		}
+		if model.detailJobPending != nil && sameTraceDetailSnapshot(*model.detailJobPending, snapshot) {
+			return nil
+		}
+		if settingsChanged || model.preview == nil || (targetChanged && model.selected >= 0) {
+			model.preview = &tracePreview{number: number, secrets: model.secrets, decode: model.decode, width: model.width, revision: model.payloadRevisions[number], title: tracePreviewTitle(event), lines: []string{"preparing preview…"}, updating: true, payloadEvicted: model.payloadEvicted[number]}
+		} else {
+			model.preview.updating = true
+		}
+		model.detailJobPending = &snapshot
+		return nil
+	}
+	model.preview = &tracePreview{number: number, secrets: model.secrets, decode: model.decode, width: model.width, revision: model.payloadRevisions[number], title: tracePreviewTitle(event), lines: []string{"preparing preview…"}, updating: true, payloadEvicted: model.payloadEvicted[number]}
+	return model.startDetailBuild(snapshot)
+}
+
+func tracePreviewTitle(event captureEvent) string {
+	if event.Protocol == "http" {
+		label := event.Event
+		if event.Method != "" {
+			label = event.Method
+		} else if event.Status != 0 {
+			label = fmt.Sprintf("HTTP %d", event.Status)
+		}
+		target := event.Target
+		if target == "" {
+			target = event.Destination
+		}
+		if target != "" {
+			if !strings.HasPrefix(target, "http://") && !strings.HasPrefix(target, "https://") {
+				target = traceHTTPScheme(event) + target
+			}
+			return strings.TrimSpace(label + " " + target + event.Path)
+		}
+	}
+	return traceEventTitle(event)
 }
 
 func (model *traceScreenModel) clampPreviewOffset() {
@@ -81,16 +182,29 @@ func (model *traceScreenModel) clampPreviewOffset() {
 		model.previewOffset = 0
 		return
 	}
-	_, rows, ok := traceSplitHeights(model.height)
+	_, rows, ok := traceSplitHeightsFor(*model)
 	if !ok || rows <= 1 {
 		model.previewOffset = 0
 		return
 	}
+	model.previewOffset = min(max(0, model.previewOffset), max(0, model.preview.wrappedRows-(rows-2)))
+}
+
+func traceWrappedLinesCount(lines []string, width int) int {
 	wrapped := 0
-	for _, line := range model.preview.lines {
-		wrapped += traceWrappedLineCount(strings.ReplaceAll(line, "\t", "    "), model.width)
+	for _, line := range lines {
+		wrapped += traceWrappedLineCount(strings.ReplaceAll(line, "\t", "    "), width)
 	}
-	model.previewOffset = min(max(0, model.previewOffset), max(0, wrapped-(rows-1)))
+	return wrapped
+}
+
+func traceWrapAll(lines []string, width int) []string {
+	var wrapped []string
+	for _, line := range lines {
+		parts, _ := traceWrapLineUpTo(strings.ReplaceAll(line, "\t", "    "), width, math.MaxInt)
+		wrapped = append(wrapped, parts...)
+	}
+	return wrapped
 }
 
 func traceWrappedLineCount(line string, width int) int {
@@ -98,10 +212,14 @@ func traceWrappedLineCount(line string, width int) int {
 		return 1
 	}
 	count, used := 1, 0
-	for _, r := range line {
+	for index, r := range line {
 		cell := 1
 		if r >= utf8.RuneSelf {
-			cell = lipgloss.Width(string(r))
+			if r == utf8.RuneError {
+				cell = lipgloss.Width(string(r))
+			} else {
+				cell = lipgloss.Width(line[index : index+utf8.RuneLen(r)])
+			}
 		}
 		if used+cell > width && used > 0 {
 			count++
@@ -144,10 +262,14 @@ func traceWrapLineUpTo(line string, width, limit int) ([]string, bool) {
 	var parts []string
 	var current strings.Builder
 	used := 0
-	for _, r := range line {
+	for index, r := range line {
 		cell := 1
 		if r >= utf8.RuneSelf {
-			cell = lipgloss.Width(string(r))
+			if r == utf8.RuneError {
+				cell = lipgloss.Width(string(r))
+			} else {
+				cell = lipgloss.Width(line[index : index+utf8.RuneLen(r)])
+			}
 		}
 		if used+cell > width && used > 0 {
 			parts = append(parts, current.String())
@@ -166,28 +288,49 @@ func traceWrapLineUpTo(line string, width, limit int) ([]string, bool) {
 // traceScreenPreviewRows는 미리 보기 창이다. 첫 줄은 대상 event와 키를 알리는 구분선이다.
 func traceScreenPreviewRows(model traceScreenModel, rows int) []string {
 	color := traceScreenColor()
+	rule := traceScreenPadRows([]string{traceRule(model.width, color)}, 1)[0]
 	if model.preview == nil {
-		return traceScreenPadRows([]string{traceDividerTexts([]traceText{traceLabelSpan("── preview: no event")}, model.width, color)}, rows)
+		header := traceTexts([]traceText{traceLabelSpan("preview: no event")}, model.width, color)
+		return traceScreenPadRows([]string{rule, header}, rows)
 	}
-	window, more := traceWrapWindow(model.preview.lines, model.width, model.previewOffset, rows-1)
-	// 좁은 화면에서는 뒤가 잘리므로 위치를 제목과 키 안내보다 앞에 둔다.
-	title := []traceText{traceLabelSpan("── ")}
+	var window []string
+	var more bool
+	if model.preview.wrapped != nil {
+		end := min(len(model.preview.wrapped), model.previewOffset+rows-2)
+		window = slices.Clone(model.preview.wrapped[min(model.previewOffset, end):end])
+		more = end < len(model.preview.wrapped)
+	} else {
+		window, more = traceWrapWindow(model.preview.lines, model.width, model.previewOffset, rows-2)
+	}
+	title := []traceText{{text: model.preview.title}}
 	if model.previewOffset > 0 {
-		title = append(title, traceLabelSpan(fmt.Sprintf("line %d", model.previewOffset+1)), traceSeparator)
+		title = append(title, traceSeparator, traceLabelSpan(fmt.Sprintf("line %d", model.previewOffset+1)))
 	}
 	if more {
-		title = append(title, traceLabelSpan("more below"), traceSeparator)
+		title = append(title, traceSeparator, traceLabelSpan("more below"))
 	}
-	keys := "J/K scroll  enter full"
-	if model.protocol == "http" {
-		keys += "  z gzip"
-	}
+	keys := "J/K  enter"
 	var on []string
 	if model.decode {
-		on = append(on, "z gzip")
+		on = append(on, "z raw")
 	}
-	title = append(append(title, traceText{text: model.preview.title}, traceSeparator), traceKeySpans(keys, on...)...)
-	return traceScreenPadRows(append([]string{traceDividerTexts(title, model.width, color)}, window...), rows)
+	title = append(title, traceSeparator)
+	if model.preview.updating {
+		title = append(title, traceLabelSpan("updating"), traceSeparator)
+	}
+	title = append(title, traceKeySpans(keys, on...)...)
+	return traceScreenPadRows(append([]string{rule, traceTexts(title, model.width, color)}, window...), rows)
+}
+
+func traceRule(width int, color bool) string {
+	if width <= 0 {
+		return ""
+	}
+	rule := strings.Repeat("─", width)
+	if color {
+		return traceDim(rule)
+	}
+	return rule
 }
 
 // traceDivider는 미리 보기 제목 뒤에 남은 폭을 ─로 채운다. 색이 없는 terminal에서도 목록과 미리 보기의 경계가 보인다.
@@ -213,12 +356,12 @@ func (model *traceScreenModel) scrollPreview(step int) {
 	if model.preview == nil {
 		return
 	}
-	_, rows, ok := traceSplitHeights(model.height)
+	_, rows, ok := traceSplitHeightsFor(*model)
 	if !ok {
 		return
 	}
 	if step > 0 {
-		if _, more := traceWrapWindow(model.preview.lines, model.width, model.previewOffset, rows-1); !more {
+		if model.previewOffset+rows-2 >= model.preview.wrappedRows {
 			return
 		}
 	}

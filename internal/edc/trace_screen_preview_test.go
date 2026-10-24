@@ -1,6 +1,7 @@
 package edc
 
 import (
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -10,7 +11,7 @@ import (
 
 func TestTraceScreenSplitShowsTheSelectedMessage(t *testing.T) {
 	t.Setenv("NO_COLOR", "1")
-	model := newTraceScreenModel("http", tcpTraceOptions{payload: tracePayloadAll}, make(chan captureEvent), make(chan traceFinishedMsg), nil)
+	model := newTraceScreenModel("http", tcpTraceOptions{payload: tracePayloadAll, payloadExplicit: true}, make(chan captureEvent), make(chan traceFinishedMsg), nil)
 	model.width, model.height = 60, 20
 	body := strings.Repeat("Z", 3000)
 	at := uint64(time.Date(2026, 9, 30, 12, 0, 0, 0, time.Local).UnixNano())
@@ -23,7 +24,7 @@ func TestTraceScreenSplitShowsTheSelectedMessage(t *testing.T) {
 
 	rows := traceScreenRows(model)
 	list, _, _ := traceSplitHeights(model.height)
-	if len(rows) != model.height-3 || !strings.HasPrefix(rows[list], "── 12:00:00.100  curl  http://api.example/b  http_2xx") || !strings.Contains(strings.Join(rows[list:], "\n"), "HTTP/1.1 200 OK") {
+	if len(rows) != model.height-3 || liveWidth(rows[list]) != model.width || strings.Trim(rows[list], "─") != "" || !strings.Contains(rows[list+1], "HTTP 200 http://api.example/b") || !strings.Contains(rows[list+1], "J/K  enter") || !strings.Contains(strings.Join(rows[list+2:], "\n"), "HTTP/1.1 200 OK") {
 		t.Fatalf("with nothing selected the preview must show the newest event: %q", rows)
 	}
 	for _, row := range rows {
@@ -34,11 +35,11 @@ func TestTraceScreenSplitShowsTheSelectedMessage(t *testing.T) {
 
 	model = traceScreenKey(model, "up", "up")
 	preview := strings.Join(traceScreenRows(model)[list:], "\n")
-	if !strings.Contains(preview, "POST /b HTTP/1.1") || strings.Contains(preview, "t0ken") || !strings.HasPrefix(preview, "── more below  ·  12:00:00.000  curl") {
+	if !strings.Contains(preview, "POST http://api.example/b") || strings.Contains(preview, "t0ken") || !strings.Contains(preview, "POST /b HTTP/1.1") {
 		t.Fatalf("preview of the selected request = %q", preview)
 	}
 	model = traceScreenKey(model, "J", "J")
-	if preview := strings.Join(traceScreenRows(model)[list:], "\n"); model.previewOffset != 2 || !strings.HasPrefix(preview, "── line 3  ·  more below") || strings.Contains(preview, "POST /b") {
+	if preview := strings.Join(traceScreenRows(model)[list+1:], "\n"); model.previewOffset != 2 || !strings.Contains(preview, "line 3") || !strings.Contains(preview, "more below") || strings.Contains(strings.Join(traceScreenRows(model)[list+2:], "\n"), "POST /b") {
 		t.Fatalf("J did not scroll the preview: offset %d", model.previewOffset)
 	}
 	// 가리기를 바꾸면 보던 위치를 두고, 다른 event를 고르면 맨 위부터 보인다.
@@ -54,6 +55,24 @@ func TestTraceScreenSplitShowsTheSelectedMessage(t *testing.T) {
 	model = traceScreenKey(model, "i")
 	if rows := traceScreenRows(model); model.preview != nil || strings.Contains(strings.Join(rows, "\n"), "── ") {
 		t.Fatalf("i did not close the preview: %q", rows)
+	}
+}
+
+func TestTraceScreenProgressiveUpdateRefreshesThePreviewInPlace(t *testing.T) {
+	model := newTraceScreenModel("http", tcpTraceOptions{payload: tracePayloadAll, payloadExplicit: true}, make(chan captureEvent), make(chan traceFinishedMsg), nil)
+	model.width, model.height = 80, 18
+	model.split = true
+	initial := captureEvent{Protocol: "http", Event: traceHTTPRequestEvent, Method: "GET", Target: "api.example", Path: "/stream", Payload: "GET /stream HTTP/1.1\r\nHost: api.example\r\n\r\n" + strings.Repeat("first ", 100), MessageID: 11}
+	model = traceScreenEventWithDetail(model, traceEventMsg{events: []captureEvent{initial}})
+	if model.preview == nil || !strings.Contains(strings.Join(model.preview.lines, "\n"), "first") {
+		t.Fatalf("initial preview = %#v", model.preview)
+	}
+	model.previewOffset = 1
+	update := initial
+	update.Payload, update.Update, update.Bytes, update.ByteDelta = strings.Replace(initial.Payload, "first", "second", 1), true, uint64(len(initial.Payload)+1), 1
+	model = traceScreenEventWithDetail(model, traceEventMsg{events: []captureEvent{update}})
+	if model.preview == nil || model.preview.number != 0 || !strings.Contains(strings.Join(model.preview.lines, "\n"), "second") || model.previewOffset != 1 || model.events[0].MessageID != 11 {
+		t.Fatalf("updated preview = %#v offset %d", model.preview, model.previewOffset)
 	}
 }
 
@@ -81,7 +100,7 @@ func TestTraceScreenSplitScrollAndSmallScreens(t *testing.T) {
 }
 
 func TestTraceScreenClampsPreviewOffsetAfterResize(t *testing.T) {
-	model := newTraceScreenModel("http", tcpTraceOptions{payload: tracePayloadAll}, make(chan captureEvent), make(chan traceFinishedMsg), nil)
+	model := newTraceScreenModel("http", tcpTraceOptions{payload: tracePayloadAll, payloadExplicit: true}, make(chan captureEvent), make(chan traceFinishedMsg), nil)
 	model.width, model.height = 12, 20
 	next, _ := model.Update(traceEventMsg{events: []captureEvent{{Protocol: "http", Event: traceHTTPRequestEvent, Payload: strings.Repeat("x", 400)}}})
 	model = traceScreenKey(next.(traceScreenModel), "i")
@@ -119,6 +138,14 @@ func TestTraceWrapWindow(t *testing.T) {
 	}
 }
 
+func TestTraceWrapAllPreservesUnicodeAndInvalidUTF8(t *testing.T) {
+	lines := []string{"界a", "x\tz", string([]byte{0xff})}
+	want := []string{"界", "a", "x ", "  ", " z", "�"}
+	if got := traceWrapAll(lines, 2); !slices.Equal(got, want) {
+		t.Fatalf("traceWrapAll() = %q, want %q", got, want)
+	}
+}
+
 func TestTraceScreenShowsEventTimes(t *testing.T) {
 	t.Setenv("NO_COLOR", "1")
 	at := time.Date(2026, 9, 30, 9, 5, 7, 123_000_000, time.Local)
@@ -135,12 +162,12 @@ func TestTraceScreenShowsEventTimes(t *testing.T) {
 
 	// TIME 칸은 넓은 화면에만 있고, 머리글과 행의 칸이 같은 곳에서 시작한다.
 	for _, width := range []int{traceScrollTimeMinWidth - 1, traceScrollTimeMinWidth, 200} {
-		model := newTraceScreenModel("http", tcpTraceOptions{payload: tracePayloadHead}, make(chan captureEvent), make(chan traceFinishedMsg), nil)
+		model := newTraceScreenModel("http", tcpTraceOptions{payload: tracePayloadHead, payloadExplicit: true}, make(chan captureEvent), make(chan traceFinishedMsg), nil)
 		model.width, model.height = width, 8
 		next, _ := model.Update(traceEventMsg{events: []captureEvent{event}})
 		model = next.(traceScreenModel)
 		header, rows := traceScreenHeader(model)[2], traceScreenRows(model)
-		if wide := width >= traceScrollTimeMinWidth; strings.HasPrefix(header, "TIME") != wide || strings.HasPrefix(rows[0], "09:05:07.123") != wide {
+		if wide := width >= traceScrollTimeMinWidth; strings.HasPrefix(strings.TrimLeft(header, " "), "TIME") != wide || strings.HasPrefix(strings.TrimLeft(rows[0], " "), "09:05:07.123") != wide {
 			t.Fatalf("width %d: header %q, row %q", width, header, rows[0])
 		}
 		for _, column := range []string{"DESTINATION", "EVENT", "SOURCE"} {

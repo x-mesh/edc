@@ -532,11 +532,28 @@ func TestTraceScreenKeepsFullPayloadsWithinTheLimitAsEventsArrive(t *testing.T) 
 	if total := model.payloads.bytes; total <= traceScreenPayloadBytes-size {
 		t.Fatalf("stored only %d full bytes, the limit %d leaves room for more", total, traceScreenPayloadBytes)
 	}
-	if _, ok := model.payloads.get(events - 1); !ok || model.payloadEvicted[events-1] {
-		t.Fatal("the newest full payload was evicted")
+	first := -1
+	for number := 0; number < events; number++ {
+		_, kept := model.payloads.get(number)
+		if kept && first < 0 {
+			first = number
+		}
+		if kept != (first >= 0) || model.payloadEvicted[number] == kept {
+			t.Fatalf("event %d: kept=%t evicted=%t, want only the oldest events evicted", number, kept, model.payloadEvicted[number])
+		}
 	}
-	if _, ok := model.payloads.get(0); ok || !model.payloadEvicted[0] {
-		t.Fatal("the oldest full payload was not evicted")
+	if first <= 0 || first >= events {
+		t.Fatalf("first kept event = %d of %d", first, events)
+	}
+}
+
+func TestTraceSelectedEventPaintsOnlyTheBackground(t *testing.T) {
+	if got := traceSelectedEvent("▌abc", 8, false); got != "▌abc" {
+		t.Fatalf("plain selection = %q", got)
+	}
+	colored := traceSelectedEvent("▌abc", 8, true)
+	if ansi.Strip(colored) != "▌abc    " || !strings.Contains(colored, traceTestSGR(richChipBackground, true)) {
+		t.Fatalf("colored selection = %q", colored)
 	}
 }
 

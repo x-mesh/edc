@@ -23,7 +23,8 @@ const traceScreenPayloadBytes = 64 << 20
 const traceGunzipLimit = httpMessageMax
 
 // traceFullPayloads는 event 번호로 찾는 payload다. 목록에서 앞부분만 남긴 payload의 전체와 gzip message의 원본 byte를
-// 둔다. minimum보다 긴 것만 둔다.
+// 둔다. minimum보다 긴 것만 둔다. 합계 상한 traceScreenPayloadBytes는 payload와 gzip 원본이 나눠 쓰므로 여기서 적용하지
+// 않고, traceScreenModel.keepEventPayload가 두 값의 합계로 적용한다.
 type traceFullPayloads struct {
 	minimum  int
 	byNumber map[int]string

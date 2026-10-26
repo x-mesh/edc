@@ -13,7 +13,7 @@
 | 할 일 | 시작할 명령 | 자세한 안내 |
 | --- | --- | --- |
 | 호스트 상태와 자원 사용 확인 | `edc info`, `edc top` | [호스트 정보](docs/host.ko.md#호스트-정보), [대시보드](docs/monitoring.ko.md#top-대시보드) |
-| 지금 고장 난 곳 찾기 | `edc check`, `edc check --group <group>` | [상태 점검](docs/host.ko.md#상태-점검-linux), [점검 루틴](docs/host.ko.md#점검-루틴) |
+| 지금 고장 난 곳 찾기 | `edc check`, `edc check --group <group>` | [상태 점검](docs/host.ko.md#상태-점검-linux와-macos), [점검 루틴](docs/host.ko.md#점검-루틴) |
 | 디스크를 차지하는 항목 찾기 | `edc du /var`, `edc clean` | [디렉터리 사용량](docs/disk-usage.ko.md#디렉터리-디스크-사용량-linux와-macos), [알려진 캐시](docs/disk-usage.ko.md#알려진-개발-캐시-사용량-linux와-macos) |
 | 서비스·컨테이너 조사 | `edc svc`, `edc ctr` | [서비스](docs/host.ko.md#서비스-보기-linux), [컨테이너](docs/host.ko.md#container-보기-linux와-macos) |
 | 연결 문제 확인 | `edc dns lookup example.com`, `edc tcp check example.com:443` | [네트워크 점검](docs/network.ko.md#네트워크-점검), [종합 진단](docs/network.ko.md#doctor-실시간-화면) |
@@ -82,7 +82,7 @@ edc top --count 5 --json -
 
 ## 호스트 점검
 
-`info`로 구성, 메모리, 디스크와 listening port를 확인합니다. Linux에서는 `check` 한 번으로 실패한 서비스, defunct process, 가득 찬 디스크, OOM kill 같은 지금의 문제를 찾습니다. 또 Linux에서는 systemd 서비스, 최근 변경과 커널 event를 확인합니다. Linux와 macOS에서는 Unix socket으로 Docker container를 조회합니다.
+`info`로 구성, 메모리, 디스크와 listening port를 확인합니다. Linux와 macOS에서는 `check` 한 번으로 실패한 서비스, defunct process, 가득 찬 디스크, 메모리 부족 종료 같은 지금의 문제를 찾습니다. Linux에서는 systemd 서비스, 최근 변경과 커널 event를 확인합니다. Linux와 macOS에서는 Unix socket으로 Docker container를 조회합니다.
 
 ```bash
 edc info --public=false

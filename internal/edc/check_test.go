@@ -199,7 +199,7 @@ func TestCheckContainers(t *testing.T) {
 	}
 	facts := checkFacts{Containers: []ctrListItem{
 		{Name: "web", Status: "running", Health: "unhealthy", State: "running (unhealthy)"},
-		{Name: "job", Status: "exited", ExitCode: 1, State: "exited (1)"},
+		{Name: "job", Status: "exited", ExitCode: 1, State: "exited (1)", RestartPolicy: "always"},
 	}}
 	if result := checkContainers(facts, checkTestPolicy); result.Status != StatusFail || result.Next != "edc ctr job" || !strings.Contains(result.Summary, "web") {
 		t.Fatalf("failed container = %+v", result)
@@ -294,8 +294,8 @@ func TestCheckPolicyAcceptsNamedItemsAndKeepsThem(t *testing.T) {
 		t.Fatalf("accepted metrics = %#v", result.Metrics)
 	}
 	containers := checkFacts{Containers: []ctrListItem{
-		{Name: "job-nightly", Status: "exited", ExitCode: 1, State: "exited (1)"},
-		{Name: "web", Status: "exited", ExitCode: 1, State: "exited (1)"},
+		{Name: "job-nightly", Status: "exited", ExitCode: 1, State: "exited (1)", RestartPolicy: "unless-stopped"},
+		{Name: "web", Status: "exited", ExitCode: 1, State: "exited (1)", RestartPolicy: "unless-stopped"},
 	}}
 	if result := checkContainers(containers, policy); result.Status != StatusFail || strings.Contains(result.Summary, "job-nightly") || !strings.Contains(result.Summary, "(accepted 1)") {
 		t.Fatalf("accepted container = %+v", result)
@@ -333,7 +333,12 @@ func TestCheckPolicyLimitsAndWholeCheckAccept(t *testing.T) {
 	}
 
 	accepted := evaluateCheck(checkFacts{Reboot: checkReboot{Flag: true}, ProcessesErr: fs.ErrPermission}, newCheckPolicy(checkConfig{Accept: []string{"reboot"}}, ""))
-	reboot := accepted[len(accepted)-1]
+	var reboot Result
+	for _, result := range accepted {
+		if result.Probe == "check.reboot" {
+			reboot = result
+		}
+	}
 	if reboot.Probe != "check.reboot" || reboot.Status != StatusSkip || reboot.Metrics["accepted_status"] != StatusWarn || exitCode([]Result{reboot}) != 0 {
 		t.Fatalf("accepted reboot = %+v", reboot)
 	}
@@ -417,5 +422,23 @@ func TestCollectCheckFactsKeepsResultsThatArriveWithTheDeadline(t *testing.T) {
 		if facts.Memory.Total == 0 && !slices.Contains(facts.TimedOut, "memory") {
 			t.Fatalf("memory is neither collected nor timed out")
 		}
+	}
+}
+
+func TestCheckContainersUseTheRestartPolicy(t *testing.T) {
+	now := time.Date(2026, 10, 26, 12, 0, 0, 0, time.UTC)
+	facts := checkFacts{Now: now, Containers: []ctrListItem{
+		{Name: "agent", Status: "exited", ExitCode: 139, State: "exited (139)", RestartPolicy: "unless-stopped", FinishedAt: now.AddDate(0, -1, 0)},
+		{Name: "old-test", Status: "exited", ExitCode: 137, State: "exited (137)", RestartPolicy: "no", FinishedAt: now.AddDate(0, 0, -13)},
+		{Name: "fresh-crash", Status: "exited", ExitCode: 1, State: "exited (1)", RestartPolicy: "no", FinishedAt: now.Add(-time.Hour)},
+	}}
+	result := checkContainers(facts, checkTestPolicy)
+	// 돌아야 하는 container가 멈춘 것은 오래전이어도 fail이다. policy가 없는 것은 최근에 멈춘 것만 경고한다.
+	if result.Status != StatusFail || !strings.Contains(result.Summary, "agent") || !strings.Contains(result.Summary, "fresh-crash") || strings.Contains(result.Summary, "old-test") {
+		t.Fatalf("result = %+v", result)
+	}
+	facts.Containers = facts.Containers[1:2]
+	if result := checkContainers(facts, checkTestPolicy); result.Status != StatusPass {
+		t.Fatalf("an old stop without a restart policy = %+v", result)
 	}
 }

@@ -31,7 +31,10 @@ const (
 )
 
 // checkIDs는 evaluateCheck가 내는 점검의 순서다. 표의 열이 이 순서를 따른다.
-var checkIDs = []string{"service", "process", "memory", "disk", "kernel", "time", "network", "container", "filehandles", "reboot"}
+var checkIDs = []string{"service", "process", "memory", "disk", "kernel", "time", "network", "container", "filehandles", "reboot", "thermal", "backup"}
+
+// checkPlatformIDs는 한 OS에만 원천이 있는 점검이다. 원천이 없는 OS에서는 skip 줄을 남기지 않고 결과에서 뺀다.
+var checkPlatformIDs = []string{"thermal", "backup"}
 
 type checkRemoteResult struct {
 	Probe   string `json:"probe"`

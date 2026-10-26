@@ -45,7 +45,7 @@ On Linux, `edc info` adds `Network Limits`: conntrack occupancy, TCP memory page
 
 ## Health check (Linux)
 
-`edc check` looks for what is broken on a Linux host now. It reads services, processes, memory, disks, the kernel log, time, network, containers, file handles, and the reboot state. It changes nothing, and it sends nothing over the network. Each finding names the edc command that shows more.
+`edc check` looks for what is broken on a Linux host now. It reads services, processes, memory, disks, the kernel log, time, network, containers, file handles, and the reboot state. The built-in checks change nothing, and they send nothing over the network. A [routine](#check-routines) can also run shell commands from the config file. Each finding names the edc command that shows more.
 
 ```bash
 edc check

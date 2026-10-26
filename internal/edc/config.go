@@ -76,6 +76,8 @@ type edcConfig struct {
 	Defaults configDefaults `yaml:"defaults,omitempty" toml:"defaults,omitempty"`
 	Audit    auditConfig    `yaml:"audit,omitempty" toml:"audit,omitempty"`
 	Check    checkConfig    `yaml:"check,omitempty" toml:"check,omitempty"`
+	// commandSafety는 읽은 설정 파일로 check 루틴의 셸 명령을 실행해도 되는지다. 파일을 열 때 정하고 파일에는 쓰지 않는다.
+	commandSafety error
 }
 
 // checkConfig는 check가 받아들일 결과와 반드시 확인할 unit, 판정 기준이다. 받아들인 항목도 숨기지 않고 개수와 이름을 남긴다.
@@ -288,6 +290,10 @@ func loadConfigAt(path string) (edcConfig, error) {
 		return config, err
 	}
 	defer file.Close()
+	opened, err := file.Stat()
+	if err != nil {
+		return config, err
+	}
 	data, err := io.ReadAll(io.LimitReader(file, maxConfigBytes+1))
 	if err != nil {
 		return config, err
@@ -319,6 +325,7 @@ func loadConfigAt(path string) (edcConfig, error) {
 	if err := validateConfig(config); err != nil {
 		return edcConfig{}, err
 	}
+	config.commandSafety = checkConfigSafe(path, opened)
 	return config, nil
 }
 
@@ -404,7 +411,8 @@ func validateCheckConfig(config checkConfig) error {
 // validateCheckRules는 전역 [check]와 루틴이 함께 쓰는 값을 검사한다. commands는 accept에 쓸 수 있는 cmd.<이름>이다.
 func validateCheckRules(prefix string, accept, units, containers, mounts, require []string, limits checkLimitsConfig, commands map[string]bool) error {
 	for _, id := range accept {
-		if !slices.Contains(checkIDs, id) && !commands[strings.TrimPrefix(id, "cmd.")] {
+		command, isCommand := strings.CutPrefix(id, "cmd.")
+		if !slices.Contains(checkIDs, id) && !(isCommand && commands[command]) {
 			return invalidConfig(prefix+".accept", fmt.Sprintf("%q is not a check name", id))
 		}
 	}

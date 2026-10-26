@@ -573,15 +573,16 @@ func TestConfigCheckRoutinesLoadAndValidate(t *testing.T) {
 	}
 	command := "[[check.routines.web.commands]]\nname = \"%s\"\nrun = \"%s\"\n"
 	for content, field := range map[string]string{
-		"[check.routines.Web]\n":                                               "check.routines.Web",
-		"[check.routines.web]\nchecks = [\"cpu\"]\n":                           "check.routines.web.checks",
-		"[check.routines.web]\naccept = [\"cmd.x\"]\n":                         "check.routines.web.accept",
-		fmt.Sprintf(command, "a b", "true"):                                    "commands[0].name",
-		fmt.Sprintf(command, "a", " "):                                         "commands[0].run",
-		fmt.Sprintf(command, "a", "true") + fmt.Sprintf(command, "a", "false"): "commands[1].name",
-		fmt.Sprintf(command, "a", "true") + "timeout = \"0s\"\n":               "commands[0].timeout",
-		fmt.Sprintf(command, "a", "true") + "level = \"info\"\n":               "commands[0].level",
-		"[check.routines.web.limits]\ndisk = [99, 90]\n":                       "check.routines.web.limits.disk",
+		"[check.routines.Web]\n":                     "check.routines.Web",
+		"[check.routines.web]\nchecks = [\"cpu\"]\n": "check.routines.web.checks",
+		fmt.Sprintf(command, "health", "true") + "[check.routines.web]\naccept = [\"health\"]\n": "check.routines.web.accept",
+		"[check.routines.web]\naccept = [\"cmd.x\"]\n":                                           "check.routines.web.accept",
+		fmt.Sprintf(command, "a b", "true"):                                                      "commands[0].name",
+		fmt.Sprintf(command, "a", " "):                                                           "commands[0].run",
+		fmt.Sprintf(command, "a", "true") + fmt.Sprintf(command, "a", "false"):                   "commands[1].name",
+		fmt.Sprintf(command, "a", "true") + "timeout = \"0s\"\n":                                 "commands[0].timeout",
+		fmt.Sprintf(command, "a", "true") + "level = \"info\"\n":                                 "commands[0].level",
+		"[check.routines.web.limits]\ndisk = [99, 90]\n":                                         "check.routines.web.limits.disk",
 	} {
 		if _, err := loadConfigAt(writeTOMLFixture(t, content)); err == nil || !strings.Contains(err.Error(), field) {
 			t.Errorf("config %q error = %v, want %s", content, err, field)

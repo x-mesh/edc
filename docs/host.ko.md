@@ -35,7 +35,7 @@ Linux에서는 `edc info`의 `Network Limits`에 conntrack 사용량과 한도, 
 
 ## 상태 점검 (Linux)
 
-`edc check`는 Linux 호스트에서 지금 고장 난 곳을 찾습니다. service, process, 메모리, 디스크, 커널 로그, 시간, 네트워크, container, 파일 핸들, 재부팅 필요 여부를 읽습니다. 아무것도 바꾸지 않고 외부로 보내지 않습니다. 문제마다 이어서 볼 edc 명령을 알려 줍니다.
+`edc check`는 Linux 호스트에서 지금 고장 난 곳을 찾습니다. service, process, 메모리, 디스크, 커널 로그, 시간, 네트워크, container, 파일 핸들, 재부팅 필요 여부를 읽습니다. 기본 점검은 아무것도 바꾸지 않고 외부로 보내지 않습니다. [루틴](#점검-루틴)은 설정 파일에 적은 셸 명령도 실행합니다. 문제마다 이어서 볼 edc 명령을 알려 줍니다.
 
 ```bash
 edc check

@@ -58,26 +58,104 @@ func TestRunCheckCommandStopsTheWholeProcessGroupOnTimeout(t *testing.T) {
 	}
 }
 
-func TestRunCheckCommandKeepsOnlyTheOutputLimit(t *testing.T) {
-	outcome := runCheckCommand(context.Background(), checkTestCommand("loud", "i=0; while [ $i -lt 2000 ]; do echo line-$i; i=$((i+1)); done", 5*time.Second, ""))
-	if outcome.Err != nil || len(outcome.Output) > checkCommandOutputLimit {
-		t.Fatalf("output %d bytes, err %v", len(outcome.Output), outcome.Err)
+func TestRunCheckCommandKeepsTheEndOfTheOutput(t *testing.T) {
+	outcome := runCheckCommand(context.Background(), checkTestCommand("loud", "i=0; while [ $i -lt 2000 ]; do echo line-$i; i=$((i+1)); done; echo 'final error' >&2; exit 4", 5*time.Second, ""))
+	if len(outcome.Output) > checkCommandOutputLimit || !strings.HasSuffix(outcome.Output, "line-1999\nfinal error\n") || !strings.HasPrefix(outcome.Output, "line-") {
+		t.Fatalf("output %d bytes: ...%q", len(outcome.Output), outcome.Output[max(0, len(outcome.Output)-40):])
+	}
+	result := checkCommandResult(outcome)
+	if result.Summary != "exit 4: final error" || strings.Count(result.Evidence[0].Value, "\n") != checkEvidenceLines-1 {
+		t.Fatalf("result = %q, evidence lines = %d", result.Summary, strings.Count(result.Evidence[0].Value, "\n")+1)
 	}
 }
 
-func TestCheckConfigSafeRefusesAFileOthersCanWrite(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "config.toml")
+func TestRunCheckCommandStopsChildrenLeftAfterSuccess(t *testing.T) {
+	pidFile := filepath.Join(t.TempDir(), "child.pid")
+	outcome := runCheckCommand(context.Background(), checkTestCommand("bg", "sleep 30 >/dev/null 2>&1 & echo $! > "+pidFile, 5*time.Second, ""))
+	if outcome.Err != nil {
+		t.Fatalf("outcome = %+v", outcome)
+	}
+	data, err := os.ReadFile(pidFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid, _ := strconv.Atoi(strings.TrimSpace(string(data)))
+	deadline := time.Now().Add(2 * time.Second)
+	for syscall.Kill(pid, 0) == nil && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if err := syscall.Kill(pid, 0); !errors.Is(err, syscall.ESRCH) {
+		t.Fatalf("child %d still runs: %v", pid, err)
+	}
+}
+
+func TestCheckConfigSafeChecksTheOpenedFileAndItsDirectories(t *testing.T) {
+	directory := t.TempDir()
+	path := filepath.Join(directory, "config.toml")
 	if err := os.WriteFile(path, []byte("lang = \"en\"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := checkConfigSafe(path); err != nil {
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := checkConfigSafe(path, info); err != nil {
 		t.Fatalf("0600 config = %v", err)
 	}
 	if err := os.Chmod(path, 0o666); err != nil {
 		t.Fatal(err)
 	}
-	if err := checkConfigSafe(path); err == nil || !strings.Contains(err.Error(), path) {
+	// 읽을 때의 fstat이 안전하면 그 뒤에 경로가 바뀌어도 판정은 읽은 파일을 따른다.
+	if err := checkConfigSafe(path, info); err != nil {
+		t.Fatalf("the check must use the opened file: %v", err)
+	}
+	loose, _ := os.Stat(path)
+	if err := checkConfigSafe(path, loose); err == nil || !strings.Contains(err.Error(), path) {
 		t.Fatalf("0666 config = %v", err)
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(directory, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(directory, 0o700)
+	if err := checkConfigSafe(path, info); err == nil || !strings.Contains(err.Error(), filepath.Base(directory)) {
+		t.Fatalf("writable directory = %v", err)
+	}
+}
+
+func TestLoadConfigRecordsTheCommandSafety(t *testing.T) {
+	path := writeTOMLFixture(t, "[check.routines.web]\n")
+	if err := os.Chmod(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	config, err := loadConfigAt(path)
+	if err != nil || config.commandSafety != nil {
+		t.Fatalf("safe config = %v, %v", config.commandSafety, err)
+	}
+	if err := os.Chmod(path, 0o664); err != nil {
+		t.Fatal(err)
+	}
+	if config, err := loadConfigAt(path); err != nil || config.commandSafety == nil {
+		t.Fatalf("group-writable config = %v, %v", config.commandSafety, err)
+	}
+}
+
+func TestFormatCheckGroupShowsTheWorstCommand(t *testing.T) {
+	rows := []checkHostRow{
+		{Host: "alpha", Status: checkHostChecked, Results: []checkRemoteResult{
+			{Probe: "check.service", Status: "pass"}, {Probe: "check.cmd.a", Status: "pass"}, {Probe: "check.cmd.b", Status: "warn", Summary: "exit 1"},
+		}},
+		{Host: "beta", Status: checkHostChecked, Results: []checkRemoteResult{{Probe: "check.service", Status: "pass"}}},
+	}
+	lines := strings.Split(formatCheckGroup(rows, 0), "\n")
+	header, alpha, beta := lines[1], lines[2], lines[3]
+	if !strings.HasSuffix(header, "cmd") || !strings.HasSuffix(alpha, "WARN") || !strings.HasSuffix(beta, "—") {
+		t.Fatalf("table:\n%s", strings.Join(lines, "\n"))
+	}
+	if !strings.Contains(strings.Join(lines, "\n"), "cmd.b") {
+		t.Fatalf("the warning command is not in the findings")
 	}
 }
 

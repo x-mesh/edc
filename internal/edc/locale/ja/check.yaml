@@ -1,0 +1,57 @@
+# check コマンドの日本語メッセージ。
+check:
+  skip:
+    linux_only: "check は Linux でのみ動作します"
+    needs_root: "%s を読むには root が必要です"
+    unreadable: "%s を読めませんでした: %s"
+    timed_out: "--timeout 以内にソースが応答しませんでした"
+  evidence:
+    issues: "見つかった問題"
+    events: "カーネルシグナル"
+  service:
+    failed: "failed unit %d 個: %s"
+    changing: "状態が変わっている unit %d 個: %s"
+    ok: "実行中の unit %d 個、失敗なし"
+  process:
+    unreadable: "process %d 個を読めず (hidepid か権限)、その状態は点検していません"
+    zombie: "defunct process %d 個、親ごと: %s"
+    blocked: "I/O 待ちで止まった (D) process %d 個: %s"
+    ok: "process %d 個、defunct と D 状態なし"
+  memory:
+    available: "利用可能メモリ %s / %s (%.0f%%)"
+  disk:
+    usage: "%s 使用率 %.0f%%"
+    inodes: "%s inode 使用率 %.0f%%"
+    readonly: "%s が読み取り専用で mount されています"
+    ok: "mount %d 個、最も高い %s %.0f%%"
+    none: "点検するディスク mount がありません"
+  kernel:
+    none: "直近 %s にカーネル障害シグナルなし"
+    found: "直近 %s のカーネル障害シグナル: %s"
+  time:
+    unknown: "カーネルの時計状態を読めませんでした"
+    unsynced: "時計が同期していません"
+    synced: "時計は同期済み"
+  network:
+    no_route: "default route がありません"
+    no_resolv: "/etc/resolv.conf がありません"
+    no_nameserver: "/etc/resolv.conf に nameserver がありません"
+    resolv_unreadable: "/etc/resolv.conf を読めませんでした: %s"
+    conntrack: "conntrack table %.0f%% 使用"
+    tcp_memory: "TCP メモリが tcp_mem の %.0f%%"
+    route_unknown: "route 不明"
+    ok: "default route %s、nameserver %d 個"
+  container:
+    unreachable: "Docker に接続できませんでした: %s"
+    failed: "失敗した container %d 個: %s"
+    attention: "対応が必要な container %d 個: %s"
+    ok: "container %d 個、失敗なし"
+  filehandles:
+    unlimited: "ファイルハンドル %d 個使用中、システム上限なし"
+    unknown: "ファイルハンドルの上限を読めませんでした"
+    usage: "ファイルハンドル %d / %d (%.0f%%)"
+  reboot:
+    flag: "再起動が必要: %s"
+    none: "比較するインストール済みカーネルがありません"
+    kernel: "カーネル %s がインストール済みで、%s で実行中です"
+    ok: "最新のカーネル %s で実行中"

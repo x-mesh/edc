@@ -1,0 +1,57 @@
+# English messages for the check command.
+check:
+  skip:
+    linux_only: "edc check runs on Linux hosts only"
+    needs_root: "needs root to read %s"
+    unreadable: "could not read %s: %s"
+    timed_out: "the source did not answer within --timeout"
+  evidence:
+    issues: "findings"
+    events: "kernel signals"
+  service:
+    failed: "%d failed units: %s"
+    changing: "%d units changing state: %s"
+    ok: "%d running units, none failed"
+  process:
+    unreadable: "%d processes could not be read (hidepid or permissions), so their state is not checked"
+    zombie: "%d defunct processes, by parent: %s"
+    blocked: "%d processes in uninterruptible I/O wait (D): %s"
+    ok: "%d processes, no defunct or D state"
+  memory:
+    available: "available %s of %s (%.0f%%)"
+  disk:
+    usage: "%s %.0f%% used"
+    inodes: "%s inodes %.0f%% used"
+    readonly: "%s is mounted read-only"
+    ok: "%d mounts, highest %s %.0f%%"
+    none: "no disk mounts to check"
+  kernel:
+    none: "no kernel failure signals in the last %s"
+    found: "kernel failure signals in the last %s: %s"
+  time:
+    unknown: "could not read the kernel clock state"
+    unsynced: "the clock is not synchronized"
+    synced: "the clock is synchronized"
+  network:
+    no_route: "no default route"
+    no_resolv: "/etc/resolv.conf does not exist"
+    no_nameserver: "/etc/resolv.conf has no nameserver"
+    resolv_unreadable: "could not read /etc/resolv.conf: %s"
+    conntrack: "conntrack table %.0f%% full"
+    tcp_memory: "TCP memory %.0f%% of tcp_mem"
+    route_unknown: "route unknown"
+    ok: "default route %s, %d nameservers"
+  container:
+    unreachable: "could not reach Docker: %s"
+    failed: "%d failed containers: %s"
+    attention: "%d containers need attention: %s"
+    ok: "%d containers, none failed"
+  filehandles:
+    unlimited: "file handles %d in use, no system limit"
+    unknown: "could not read the file handle limit"
+    usage: "file handles %d of %d (%.0f%%)"
+  reboot:
+    flag: "reboot required by %s"
+    none: "no installed kernel to compare"
+    kernel: "kernel %s is installed, %s is running"
+    ok: "running the newest kernel %s"

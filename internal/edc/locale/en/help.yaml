@@ -86,6 +86,14 @@ command:
     option:
       since: "how far back to look, a Go duration such as 24h or 90m"
       verbose: "show every change, not only the newest 50"
+  check:
+    summary: "Read-only scan for what is broken now (Linux)"
+    notes:
+      - "It checks services, processes, memory, disks, the kernel log, time, network, containers, file handles, and reboot."
+      - "It changes nothing and sends nothing over the network."
+      - "Each finding names the edc command that shows more."
+      - "Without root, some checks show skip, not pass."
+      - "It works on Linux only."
   events:
     summary: "Kernel and systemd failure signals in time order (Linux)"
     option:

@@ -32,6 +32,8 @@ func hostCheckSources() (checkSources, bool) {
 		containers:  readCheckContainers,
 		fileHandles: readCheckFileHandles,
 		reboot:      readCheckReboot,
+		configSafe:  func() error { return checkConfigSafe(configReadPath(configPath())) },
+		runCommand:  runCheckCommand,
 	}, true
 }
 

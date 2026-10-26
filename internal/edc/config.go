@@ -8,6 +8,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"slices"
 	"strings"
@@ -87,6 +88,29 @@ type checkConfig struct {
 	AcceptMounts     []string          `yaml:"accept_mounts,omitempty" toml:"accept_mounts,omitempty"`
 	RequireUnits     []string          `yaml:"require_units,omitempty" toml:"require_units,omitempty"`
 	Limits           checkLimitsConfig `yaml:"limits,omitempty" toml:"limits,omitempty"`
+	// Routines는 edc check <이름>으로 고르는 묶음이다. 위의 값에 더해지고, limits는 루틴에 적은 값만 바꾼다.
+	Routines map[string]checkRoutineConfig `yaml:"routines,omitempty" toml:"routines,omitempty"`
+}
+
+type checkRoutineConfig struct {
+	// Checks가 비어 있으면 모든 점검을 한다.
+	Checks           []string             `yaml:"checks,omitempty" toml:"checks,omitempty"`
+	Accept           []string             `yaml:"accept,omitempty" toml:"accept,omitempty"`
+	AcceptUnits      []string             `yaml:"accept_units,omitempty" toml:"accept_units,omitempty"`
+	AcceptContainers []string             `yaml:"accept_containers,omitempty" toml:"accept_containers,omitempty"`
+	AcceptMounts     []string             `yaml:"accept_mounts,omitempty" toml:"accept_mounts,omitempty"`
+	RequireUnits     []string             `yaml:"require_units,omitempty" toml:"require_units,omitempty"`
+	Limits           checkLimitsConfig    `yaml:"limits,omitempty" toml:"limits,omitempty"`
+	Commands         []checkCommandConfig `yaml:"commands,omitempty" toml:"commands,omitempty"`
+}
+
+// checkCommandConfig는 루틴이 sh -c로 실행하는 사용자 명령이다. 종료 코드 0이 통과다.
+type checkCommandConfig struct {
+	Name    string          `yaml:"name" toml:"name"`
+	Run     string          `yaml:"run" toml:"run"`
+	Timeout *configDuration `yaml:"timeout,omitempty" toml:"timeout,omitempty"`
+	// Level은 0이 아닌 종료 코드의 판정이다. 비어 있으면 fail이다.
+	Level string `yaml:"level,omitempty" toml:"level,omitempty"`
 }
 
 // checkLimitsConfig는 [warn, fail] 백분율이다. memory_available은 남은 비율이라 warn이 fail보다 크다.
@@ -336,40 +360,78 @@ func invalidConfig(field, rule string) error {
 	return fmt.Errorf("%s: %s", field, rule)
 }
 
+// checkNamePattern은 루틴과 사용자 명령의 이름이다. 결과 id(check.cmd.<이름>)와 명령행 인자에 그대로 쓴다.
+var checkNamePattern = regexp.MustCompile(`^[a-z0-9_-]+$`)
+
 func validateCheckConfig(config checkConfig) error {
-	for _, id := range config.Accept {
-		if !slices.Contains(checkIDs, id) {
-			return invalidConfig("check.accept", fmt.Sprintf("%q is not a check name", id))
+	if err := validateCheckRules("check", config.Accept, config.AcceptUnits, config.AcceptContainers, config.AcceptMounts, config.RequireUnits, config.Limits, nil); err != nil {
+		return err
+	}
+	for name, routine := range config.Routines {
+		prefix := "check.routines." + name
+		if !checkNamePattern.MatchString(name) {
+			return invalidConfig(prefix, "a routine name must use only a-z, 0-9, _ and -")
+		}
+		for _, id := range routine.Checks {
+			if !slices.Contains(checkIDs, id) {
+				return invalidConfig(prefix+".checks", fmt.Sprintf("%q is not a check name", id))
+			}
+		}
+		commands := map[string]bool{}
+		for index, command := range routine.Commands {
+			field := fmt.Sprintf("%s.commands[%d]", prefix, index)
+			switch {
+			case !checkNamePattern.MatchString(command.Name):
+				return invalidConfig(field+".name", "must use only a-z, 0-9, _ and -")
+			case commands[command.Name]:
+				return invalidConfig(field+".name", fmt.Sprintf("%q is used twice", command.Name))
+			case strings.TrimSpace(command.Run) == "":
+				return invalidConfig(field+".run", "must not be empty")
+			case command.Timeout != nil && command.Timeout.Duration <= 0:
+				return invalidConfig(field+".timeout", "must be greater than 0")
+			case command.Level != "" && command.Level != "fail" && command.Level != "warn":
+				return invalidConfig(field+".level", "must be fail or warn")
+			}
+			commands[command.Name] = true
+		}
+		if err := validateCheckRules(prefix, routine.Accept, routine.AcceptUnits, routine.AcceptContainers, routine.AcceptMounts, routine.RequireUnits, routine.Limits, commands); err != nil {
+			return err
 		}
 	}
-	for field, patterns := range map[string][]string{
-		"check.accept_units": config.AcceptUnits, "check.accept_containers": config.AcceptContainers, "check.accept_mounts": config.AcceptMounts,
-	} {
+	return nil
+}
+
+// validateCheckRules는 전역 [check]와 루틴이 함께 쓰는 값을 검사한다. commands는 accept에 쓸 수 있는 cmd.<이름>이다.
+func validateCheckRules(prefix string, accept, units, containers, mounts, require []string, limits checkLimitsConfig, commands map[string]bool) error {
+	for _, id := range accept {
+		if !slices.Contains(checkIDs, id) && !commands[strings.TrimPrefix(id, "cmd.")] {
+			return invalidConfig(prefix+".accept", fmt.Sprintf("%q is not a check name", id))
+		}
+	}
+	for field, patterns := range map[string][]string{".accept_units": units, ".accept_containers": containers, ".accept_mounts": mounts} {
 		for _, pattern := range patterns {
 			if _, err := path.Match(pattern, ""); err != nil || pattern == "" {
-				return invalidConfig(field, fmt.Sprintf("%q is not a valid glob", pattern))
+				return invalidConfig(prefix+field, fmt.Sprintf("%q is not a valid glob", pattern))
 			}
 		}
 	}
-	for _, unit := range config.RequireUnits {
+	for _, unit := range require {
 		if unit == "" {
-			return invalidConfig("check.require_units", "a unit name must not be empty")
+			return invalidConfig(prefix+".require_units", "a unit name must not be empty")
 		}
 	}
-	for field, limits := range map[string][]float64{
-		"check.limits.disk": config.Limits.Disk, "check.limits.memory_available": config.Limits.MemoryAvailable, "check.limits.usage": config.Limits.Usage,
-	} {
-		if limits == nil {
+	for field, values := range map[string][]float64{".limits.disk": limits.Disk, ".limits.memory_available": limits.MemoryAvailable, ".limits.usage": limits.Usage} {
+		if values == nil {
 			continue
 		}
-		if len(limits) != 2 || limits[0] < 0 || limits[0] > 100 || limits[1] < 0 || limits[1] > 100 {
-			return invalidConfig(field, "must be [warn, fail] with two percentages from 0 to 100")
+		if len(values) != 2 || values[0] < 0 || values[0] > 100 || values[1] < 0 || values[1] > 100 {
+			return invalidConfig(prefix+field, "must be [warn, fail] with two percentages from 0 to 100")
 		}
-		if field == "check.limits.memory_available" && limits[0] < limits[1] {
-			return invalidConfig(field, "warn must be at least fail, because it is the share left")
+		if field == ".limits.memory_available" && values[0] < values[1] {
+			return invalidConfig(prefix+field, "warn must be at least fail, because it is the share left")
 		}
-		if field != "check.limits.memory_available" && limits[0] > limits[1] {
-			return invalidConfig(field, "warn must be at most fail")
+		if field != ".limits.memory_available" && values[0] > values[1] {
+			return invalidConfig(prefix+field, "warn must be at most fail")
 		}
 	}
 	return nil

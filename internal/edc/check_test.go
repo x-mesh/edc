@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-var checkTestPolicy = newCheckPolicy(checkConfig{})
+var checkTestPolicy = newCheckPolicy(checkConfig{}, "")
 
 func TestCheckServicesFailsOnFailedUnitsAndWarnsOnChangingOnes(t *testing.T) {
 	facts := checkFacts{Services: []svcListItem{
@@ -265,7 +265,7 @@ func TestCollectCheckFactsReadsEverySourceInOrder(t *testing.T) {
 		fileHandles: func() (*infoFileHandles, error) { return &infoFileHandles{Used: 1, Max: 100}, nil },
 		reboot:      func() checkReboot { return checkReboot{} },
 	}
-	results := evaluateCheck(collectCheckFacts(context.Background(), sources), checkTestPolicy)
+	results := evaluateCheck(collectCheckFacts(context.Background(), sources, nil), checkTestPolicy)
 	want := []string{"service", "process", "memory", "disk", "kernel", "time", "network", "container", "filehandles", "reboot"}
 	if len(results) != len(want) {
 		t.Fatalf("results = %d", len(results))
@@ -283,7 +283,7 @@ func TestCollectCheckFactsReadsEverySourceInOrder(t *testing.T) {
 func TestCheckPolicyAcceptsNamedItemsAndKeepsThem(t *testing.T) {
 	policy := newCheckPolicy(checkConfig{
 		AcceptUnits: []string{"systemd-networkd-wait-online.service"}, AcceptContainers: []string{"job-*"}, AcceptMounts: []string{"/media/*"},
-	})
+	}, "")
 	services := checkFacts{Services: []svcListItem{{Unit: "systemd-networkd-wait-online.service", LoadState: "loaded", ActiveState: "failed"}}}
 	result := checkServices(services, policy)
 	if result.Status != StatusPass || !strings.Contains(result.Summary, "(accepted 1)") {
@@ -306,7 +306,7 @@ func TestCheckPolicyAcceptsNamedItemsAndKeepsThem(t *testing.T) {
 }
 
 func TestCheckPolicyRequiresUnits(t *testing.T) {
-	policy := newCheckPolicy(checkConfig{RequireUnits: []string{"nginx.service", "sshd.service"}})
+	policy := newCheckPolicy(checkConfig{RequireUnits: []string{"nginx.service", "sshd.service"}}, "")
 	facts := checkFacts{Services: []svcListItem{{Unit: "sshd.service", LoadState: "loaded", ActiveState: "active", SubState: "running"}}}
 	result := checkServices(facts, policy)
 	if result.Status != StatusFail || !strings.Contains(result.Summary, "nginx.service") || strings.Contains(result.Summary, "sshd.service") || result.Next != "edc svc nginx.service" {
@@ -320,7 +320,7 @@ func TestCheckPolicyRequiresUnits(t *testing.T) {
 }
 
 func TestCheckPolicyLimitsAndWholeCheckAccept(t *testing.T) {
-	policy := newCheckPolicy(checkConfig{Limits: checkLimitsConfig{Disk: []float64{80, 90}, MemoryAvailable: []float64{20, 10}, Usage: []float64{50, 60}}})
+	policy := newCheckPolicy(checkConfig{Limits: checkLimitsConfig{Disk: []float64{80, 90}, MemoryAvailable: []float64{20, 10}, Usage: []float64{50, 60}}}, "")
 	if result := checkDisks(checkFacts{Disks: []checkDisk{{Mount: "/", FSType: "ext4", Percent: 85}}}, policy); result.Status != StatusWarn {
 		t.Fatalf("disk limit = %+v", result)
 	}
@@ -331,7 +331,7 @@ func TestCheckPolicyLimitsAndWholeCheckAccept(t *testing.T) {
 		t.Fatalf("usage limit = %+v", result)
 	}
 
-	accepted := evaluateCheck(checkFacts{Reboot: checkReboot{Flag: true}, ProcessesErr: fs.ErrPermission}, newCheckPolicy(checkConfig{Accept: []string{"reboot"}}))
+	accepted := evaluateCheck(checkFacts{Reboot: checkReboot{Flag: true}, ProcessesErr: fs.ErrPermission}, newCheckPolicy(checkConfig{Accept: []string{"reboot"}}, ""))
 	reboot := accepted[len(accepted)-1]
 	if reboot.Probe != "check.reboot" || reboot.Status != StatusSkip || reboot.Metrics["accepted_status"] != StatusWarn || exitCode([]Result{reboot}) != 0 {
 		t.Fatalf("accepted reboot = %+v", reboot)

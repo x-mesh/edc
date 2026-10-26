@@ -160,8 +160,9 @@ var commandDocs = []commandDoc{
 	},
 	{
 		name: "check", group: "diagnose",
-		usage: []string{"edc check [options]", "edc check --group <name> [--inventory FILE] [options]"},
+		usage: []string{"edc check [options] [routine]", "edc check --group <name> [--routine NAME] [--inventory FILE] [options]"},
 		options: []optionDoc{
+			{"--routine NAME", "command.check.option.routine"},
 			{"--group NAME", "command.check.option.group"},
 			{"--inventory FILE", "command.check.option.inventory"},
 		},

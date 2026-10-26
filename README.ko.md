@@ -13,6 +13,7 @@
 | 할 일 | 시작할 명령 | 자세한 안내 |
 | --- | --- | --- |
 | 호스트 상태와 자원 사용 확인 | `edc info`, `edc top` | [호스트 정보](docs/host.ko.md#호스트-정보), [대시보드](docs/monitoring.ko.md#top-대시보드) |
+| 지금 고장 난 곳 찾기 | `edc check`, `edc check --group <group>` | [상태 점검](docs/host.ko.md#상태-점검-linux), [점검 루틴](docs/host.ko.md#점검-루틴) |
 | 디스크를 차지하는 항목 찾기 | `edc du /var`, `edc clean` | [디렉터리 사용량](docs/disk-usage.ko.md#디렉터리-디스크-사용량-linux와-macos), [알려진 캐시](docs/disk-usage.ko.md#알려진-개발-캐시-사용량-linux와-macos) |
 | 서비스·컨테이너 조사 | `edc svc`, `edc ctr` | [서비스](docs/host.ko.md#서비스-보기-linux), [컨테이너](docs/host.ko.md#container-보기-linux와-macos) |
 | 연결 문제 확인 | `edc dns lookup example.com`, `edc tcp check example.com:443` | [네트워크 점검](docs/network.ko.md#네트워크-점검), [종합 진단](docs/network.ko.md#doctor-실시간-화면) |
@@ -20,7 +21,7 @@
 | 실행 기록과 비교 | `edc top -w`, `edc history`, `edc log -- <command>` | [자원 사용 이력](docs/history.ko.md#top-저장과-이력-조회), [명령 로그](docs/history.ko.md#cron과-애플리케이션-로그) |
 | 여러 호스트에서 작업 | `edc remote`, `edc clean --group <group>` | [원격 recipe](docs/remote.ko.md#remote-recipe), [원격 디스크 조사](docs/disk-usage.ko.md#여러-호스트의-clean) |
 
-관측 명령은 호스트를 자동으로 복구하지 않습니다. 명시한 작업은 상태를 바꿀 수 있습니다. `remote`는 recipe의 명령을, `watch fs --exec`와 `--rules`는 설정한 action을 실행하며, `route`, `disk`, `change`는 호스트 설정을 변경합니다. 기록, 로그 회전, 이력 삭제, 설정 저장, 업데이트도 파일을 쓰거나 삭제합니다. 자동화할 때는 각 명령의 실행 조건을 확인하세요.
+관측 명령은 호스트를 자동으로 복구하지 않습니다. 명시한 작업은 상태를 바꿀 수 있습니다. `remote`는 recipe의 명령을, `check <루틴>`은 설정한 루틴의 명령을, `watch fs --exec`와 `--rules`는 설정한 action을 실행하며, `route`, `disk`, `change`는 호스트 설정을 변경합니다. 기록, 로그 회전, 이력 삭제, 설정 저장, 업데이트도 파일을 쓰거나 삭제합니다. 자동화할 때는 각 명령의 실행 조건을 확인하세요.
 
 [설치](#설치) · [빠른 시작](#빠른-시작) · [설정](docs/configuration.ko.md#command-기본값) · [소스 빌드](docs/configuration.ko.md#빌드) · [Exit code](#exit-code)
 
@@ -81,16 +82,17 @@ edc top --count 5 --json -
 
 ## 호스트 점검
 
-`info`로 구성, 메모리, 디스크와 listening port를 확인합니다. Linux에서는 systemd 서비스, 최근 변경과 커널 event를 확인합니다. Linux와 macOS에서는 Unix socket으로 Docker container를 조회합니다.
+`info`로 구성, 메모리, 디스크와 listening port를 확인합니다. Linux에서는 `check` 한 번으로 실패한 서비스, defunct process, 가득 찬 디스크, OOM kill 같은 지금의 문제를 찾습니다. 또 Linux에서는 systemd 서비스, 최근 변경과 커널 event를 확인합니다. Linux와 macOS에서는 Unix socket으로 Docker container를 조회합니다.
 
 ```bash
 edc info --public=false
+edc check
 edc svc
 edc ctr
 edc changes --since 2h
 ```
 
-[호스트 정보·서비스·컨테이너·audit·event 자세히 보기 →](docs/host.ko.md)
+[호스트 정보·상태 점검·서비스·컨테이너·audit·event 자세히 보기 →](docs/host.ko.md)
 
 기본 `edc ctr`은 Docker Engine API 정보만 사용합니다. 선택형 로컬 Linux collector는 [container 안내](docs/host.ko.md#container-보기-linux와-macos)를 참고하세요.
 
@@ -260,7 +262,7 @@ flowchart LR
 | 문서 | 내용 |
 | --- | --- |
 | [설치와 설정](docs/configuration.ko.md) | 설치·업데이트·빌드·언어·기본값·completion |
-| [호스트 상태와 점검](docs/host.ko.md) | 호스트 정보·서비스·컨테이너·audit·변경·event |
+| [호스트 상태와 점검](docs/host.ko.md) | 호스트 정보·상태 점검·서비스·컨테이너·audit·변경·event |
 | [실시간 자원 관측](docs/monitoring.ko.md) | top 조작·임계값·프로세스·AI 사용량 |
 | [네트워크 점검](docs/network.ko.md) | DNS·TCP·TLS·HTTP·doctor·위치·파일 감시 |
 | [디스크 사용량과 알려진 캐시](docs/disk-usage.ko.md) | 디렉터리 탐색·캐시·Docker·worktree·원격 조사 |

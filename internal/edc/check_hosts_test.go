@@ -132,7 +132,7 @@ func TestRunCheckGroupReportsEveryHostAsJSONAndText(t *testing.T) {
 	options := configuredCommon(15 * time.Second)
 	options.jsonPath = filepath.Join(t.TempDir(), "out.json")
 	var output bytes.Buffer
-	if code := runCheckGroup(options, "servers", inventory, "test", run, &output); code != 1 {
+	if code := runCheckGroup(options, "servers", inventory, "", "test", run, &output); code != 1 {
 		t.Fatalf("exit code = %d, want 1 for a failing host", code)
 	}
 	if len(commands) != 2 || commands[0] != "edc check --json - --timeout 15s" {
@@ -162,7 +162,7 @@ func TestRunCheckGroupReportsEveryHostAsJSONAndText(t *testing.T) {
 
 	options.jsonPath = ""
 	output.Reset()
-	runCheckGroup(options, "servers", inventory, "test", run, &output)
+	runCheckGroup(options, "servers", inventory, "", "test", run, &output)
 	for _, want := range []string{"check.group", "2 hosts, 1 checked, 1 without a result; FAIL on 1, WARN on 0", "beta   edc not found"} {
 		if !strings.Contains(output.String(), want) {
 			t.Errorf("text lacks %q:\n%s", want, output.String())
@@ -181,7 +181,7 @@ func TestRunCheckGroupRejectsWrongUse(t *testing.T) {
 		{"nobody", inventory},
 		{"servers", filepath.Join(t.TempDir(), "missing.yaml")},
 	} {
-		if code := runCheckGroup(options, test.group, test.inventory, "test", run, &bytes.Buffer{}); code != 2 {
+		if code := runCheckGroup(options, test.group, test.inventory, "", "test", run, &bytes.Buffer{}); code != 2 {
 			t.Errorf("%+v: exit code %d, want 2", test, code)
 		}
 	}

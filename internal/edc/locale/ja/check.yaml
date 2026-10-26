@@ -6,6 +6,7 @@ check:
     needs_root: "%s を読むには root が必要です"
     unreadable: "%s を読めませんでした: %s"
   evidence:
+    output: "出力"
     issues: "見つかった問題"
     events: "カーネルシグナル"
   service:
@@ -67,3 +68,13 @@ check:
       failed: "edc check 失敗"
     error:
       inventory_without_group: "--inventory は --group と一緒に使います"
+  error:
+    routine_name: "%q はルーチン名ではありません。a-z、0-9、_、- だけを使ってください"
+    unknown_routine: "[check.routines] に %q がありません。あるルーチン: %s"
+  cmd:
+    ok: "%s で exit 0"
+    failed: "exit %d"
+    timeout: "%s 以内に終わらず、コマンドと子 process を止めました"
+    not_run: "コマンドを実行しませんでした: %s"
+    config_writable: "%s をグループか他のユーザーが書けます (%s)"
+    config_owner: "%s の所有者が別のユーザーです (uid %d)"

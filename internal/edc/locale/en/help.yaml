@@ -89,6 +89,7 @@ command:
   check:
     summary: "Read-only scan for what is broken now (Linux)"
     option:
+      routine: "run a routine from [check.routines] in config.toml"
       group: "run check on each host of an edc remote group"
       inventory: "inventory file for --group"
     notes:
@@ -98,6 +99,7 @@ command:
       - "Without root, some checks show skip, not pass."
       - "The checks run on Linux only. --group also runs from macOS."
       - "--group runs edc check on each host over SSH. Each host needs an edc that has check."
+      - "A routine adds unit rules, limits, and shell commands from config.toml. A command passes when it exits with 0."
   events:
     summary: "Kernel and systemd failure signals in time order (Linux)"
     option:

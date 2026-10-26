@@ -89,6 +89,7 @@ command:
   check:
     summary: "いま壊れている箇所を一度に洗い出す読み取り専用の点検 (Linux)"
     option:
+      routine: "config.toml の [check.routines] にあるルーチンを実行"
       group: "edc remote グループのホストごとに check を実行"
       inventory: "--group で使う inventory ファイル"
     notes:
@@ -98,6 +99,7 @@ command:
       - "root でなければ一部の点検は pass ではなく skip です。"
       - "点検は Linux でのみ行います。--group は macOS からも実行できます。"
       - "--group は SSH でホストごとに edc check を実行します。各ホストに check を含む edc が必要です。"
+      - "ルーチンは config.toml の unit ルール、基準値、シェルコマンドを加えます。コマンドは 0 で終われば pass です。"
   events:
     summary: "カーネルと systemd の障害シグナルを時系列で整理 (Linux)"
     option:

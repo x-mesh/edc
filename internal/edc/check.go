@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"os"
 	"path"
 	"slices"
@@ -42,21 +43,33 @@ var checkImageFileSystems = map[string]bool{"squashfs": true, "iso9660": true, "
 type checkPolicy struct {
 	accept, acceptUnits, acceptContainers, acceptMounts, requireUnits []string
 	disk, memory, usage                                               topThreshold
+	// checks가 비어 있으면 모든 점검을 낸다. commands는 루틴의 사용자 명령이다.
+	checks   []string
+	commands []checkCommandConfig
 }
 
-func newCheckPolicy(config checkConfig) checkPolicy {
-	limits := func(values []float64, fallback topThreshold) topThreshold {
+// newCheckPolicy는 전역 [check]에 루틴을 얹는다. 목록은 더하고, limits는 루틴에 적은 값만 바꾼다. routine이 비면 전역 값만 쓴다.
+func newCheckPolicy(config checkConfig, routine string) checkPolicy {
+	selected := config.Routines[routine]
+	limits := func(values, global []float64, fallback topThreshold) topThreshold {
+		if len(values) != 2 {
+			values = global
+		}
 		if len(values) != 2 {
 			return fallback
 		}
 		return topThreshold{warn: values[0], danger: values[1]}
 	}
+	join := func(global, own []string) []string { return append(slices.Clone(global), own...) }
 	return checkPolicy{
-		accept: config.Accept, acceptUnits: config.AcceptUnits, acceptContainers: config.AcceptContainers, acceptMounts: config.AcceptMounts,
-		requireUnits: config.RequireUnits,
-		disk:         limits(config.Limits.Disk, diskLimits),
-		memory:       limits(config.Limits.MemoryAvailable, checkMemoryLimits),
-		usage:        limits(config.Limits.Usage, checkUsageLimits),
+		accept: join(config.Accept, selected.Accept), acceptUnits: join(config.AcceptUnits, selected.AcceptUnits),
+		acceptContainers: join(config.AcceptContainers, selected.AcceptContainers), acceptMounts: join(config.AcceptMounts, selected.AcceptMounts),
+		requireUnits: join(config.RequireUnits, selected.RequireUnits),
+		disk:         limits(selected.Limits.Disk, config.Limits.Disk, diskLimits),
+		memory:       limits(selected.Limits.MemoryAvailable, config.Limits.MemoryAvailable, checkMemoryLimits),
+		usage:        limits(selected.Limits.Usage, config.Limits.Usage, checkUsageLimits),
+		checks:       selected.Checks,
+		commands:     selected.Commands,
 	}
 }
 
@@ -112,6 +125,9 @@ type checkSources struct {
 	containers  func(ctx context.Context) ([]ctrListItem, error)
 	fileHandles func() (*infoFileHandles, error)
 	reboot      func() checkReboot
+	// configSafe는 사용자 명령을 실행해도 되는 설정 파일인지 본다. runCommand는 명령 하나를 실행한다.
+	configSafe func() error
+	runCommand func(ctx context.Context, command checkCommandConfig) checkCommandOutcome
 }
 
 type checkFacts struct {
@@ -131,6 +147,9 @@ type checkFacts struct {
 	FileHandles    *infoFileHandles
 	FileHandlesErr error
 	Reboot         checkReboot
+	// Commands는 policy.commands와 같은 순서다. CommandsErr가 있으면 명령을 실행하지 않은 이유다.
+	Commands    []checkCommandOutcome
+	CommandsErr error
 }
 
 func runCheck(args []string, version string) int {
@@ -140,11 +159,20 @@ func runCheck(args []string, version string) int {
 	bindCommon(set, &options)
 	group := set.String("group", "", T("command.check.option.group"))
 	inventory := set.String("inventory", "", T("command.check.option.inventory"))
+	routine := set.String("routine", "", T("command.check.option.routine"))
 	if err := set.Parse(args); err != nil {
 		return 2
 	}
-	if set.NArg() != 0 {
-		fmt.Fprintln(os.Stderr, T("cli.usage", "edc check [options]"))
+	if set.NArg() > 1 || (set.NArg() == 1 && *routine != "") {
+		fmt.Fprintln(os.Stderr, T("cli.usage", "edc check [options] [routine]"))
+		return 2
+	}
+	if set.NArg() == 1 {
+		*routine = set.Arg(0)
+	}
+	// 루틴 이름은 --group에서 원격 셸 명령에 그대로 들어간다.
+	if *routine != "" && !checkNamePattern.MatchString(*routine) {
+		fmt.Fprintln(os.Stderr, T("check.error.routine_name", *routine))
 		return 2
 	}
 	if *group == "" && *inventory != "" {
@@ -153,7 +181,13 @@ func runCheck(args []string, version string) int {
 	}
 	// 원격 호스트를 점검하는 것이라 이 컴퓨터가 Linux가 아니어도 된다.
 	if *group != "" {
-		return runCheckGroup(options, *group, *inventory, version, cleanSSHRunner, os.Stdout)
+		return runCheckGroup(options, *group, *inventory, *routine, version, cleanSSHRunner, os.Stdout)
+	}
+	// 원격 호스트의 루틴은 그 호스트의 설정에 있으므로, 이 컴퓨터의 설정에서는 로컬 실행일 때만 찾는다.
+	if _, found := activeConfig.Check.Routines[*routine]; *routine != "" && !found {
+		names := slices.Sorted(maps.Keys(activeConfig.Check.Routines))
+		fmt.Fprintln(os.Stderr, T("check.error.unknown_routine", *routine, strings.Join(names, ", ")))
+		return 2
 	}
 	started := time.Now()
 	sources, ok := hostCheckSources()
@@ -163,14 +197,28 @@ func runCheck(args []string, version string) int {
 	ctx, cancel, deadline := probeContext(options.timeout)
 	defer cancel()
 	defer deadline()
-	return emit(options, buildReport(version, started, nil, evaluateCheck(collectCheckFacts(ctx, sources), newCheckPolicy(activeConfig.Check)), options.redact))
+	policy := newCheckPolicy(activeConfig.Check, *routine)
+	var target map[string]interface{}
+	if *routine != "" {
+		target = map[string]interface{}{"routine": *routine}
+	}
+	return emit(options, buildReport(version, started, target, evaluateCheck(collectCheckFacts(ctx, sources, policy.commands), policy), options.redact))
 }
 
 // collectCheckFacts는 원천을 함께 읽는다. systemctl, journalctl, docker socket이 각각 외부 호출이라 차례로 읽으면 느리다.
 // goroutine마다 facts의 다른 필드만 쓴다.
-func collectCheckFacts(ctx context.Context, sources checkSources) checkFacts {
+func collectCheckFacts(ctx context.Context, sources checkSources, commands []checkCommandConfig) checkFacts {
 	var facts checkFacts
 	var group sync.WaitGroup
+	if len(commands) > 0 {
+		facts.CommandsErr = sources.configSafe()
+	}
+	if len(commands) > 0 && facts.CommandsErr == nil {
+		facts.Commands = make([]checkCommandOutcome, len(commands))
+		for index, command := range commands {
+			group.Go(func() { facts.Commands[index] = sources.runCommand(ctx, command) })
+		}
+	}
 	group.Go(func() { facts.Services, facts.ServicesErr = sources.services(ctx) })
 	group.Go(func() { facts.Processes, facts.ProcessesErr = sources.processes() })
 	group.Go(func() { facts.Memory, facts.MemoryErr = sources.memory() })
@@ -186,7 +234,7 @@ func collectCheckFacts(ctx context.Context, sources checkSources) checkFacts {
 }
 
 func evaluateCheck(facts checkFacts, policy checkPolicy) []Result {
-	return applyCheckAccept([]Result{
+	results := []Result{
 		checkServices(facts, policy),
 		checkProcesses(facts),
 		checkMemory(facts, policy),
@@ -197,7 +245,21 @@ func evaluateCheck(facts checkFacts, policy checkPolicy) []Result {
 		checkContainers(facts, policy),
 		checkFileHandles(facts, policy),
 		checkRebootResult(facts),
-	}, policy.accept)
+	}
+	if len(policy.checks) > 0 {
+		results = slices.DeleteFunc(results, func(result Result) bool {
+			return !slices.Contains(policy.checks, strings.TrimPrefix(result.Probe, "check."))
+		})
+	}
+	for index, command := range policy.commands {
+		switch {
+		case facts.CommandsErr != nil:
+			results = append(results, checkResult("cmd."+command.Name, StatusSkip, T("check.cmd.not_run", infoSingleLine(facts.CommandsErr.Error()))))
+		case index < len(facts.Commands):
+			results = append(results, checkCommandResult(facts.Commands[index]))
+		}
+	}
+	return applyCheckAccept(results, policy.accept)
 }
 
 // applyCheckAccept는 받아들인 점검의 warn·fail을 skip으로 바꾼다. audit의 accept와 같은 표시와 metrics를 쓴다.

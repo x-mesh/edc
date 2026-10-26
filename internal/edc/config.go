@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -73,6 +74,26 @@ type edcConfig struct {
 	Lang     string         `yaml:"lang,omitempty" toml:"lang,omitempty"`
 	Defaults configDefaults `yaml:"defaults,omitempty" toml:"defaults,omitempty"`
 	Audit    auditConfig    `yaml:"audit,omitempty" toml:"audit,omitempty"`
+	Check    checkConfig    `yaml:"check,omitempty" toml:"check,omitempty"`
+}
+
+// checkConfig는 check가 받아들일 결과와 반드시 확인할 unit, 판정 기준이다. 받아들인 항목도 숨기지 않고 개수와 이름을 남긴다.
+type checkConfig struct {
+	// Accept는 점검 하나를 통째로 받아들인다. 이름은 check. 뒤의 점검 이름이다.
+	Accept []string `yaml:"accept,omitempty" toml:"accept,omitempty"`
+	// AcceptUnits, AcceptContainers, AcceptMounts는 그 점검 안에서 판정하지 않을 이름이다. path.Match의 glob을 쓴다.
+	AcceptUnits      []string          `yaml:"accept_units,omitempty" toml:"accept_units,omitempty"`
+	AcceptContainers []string          `yaml:"accept_containers,omitempty" toml:"accept_containers,omitempty"`
+	AcceptMounts     []string          `yaml:"accept_mounts,omitempty" toml:"accept_mounts,omitempty"`
+	RequireUnits     []string          `yaml:"require_units,omitempty" toml:"require_units,omitempty"`
+	Limits           checkLimitsConfig `yaml:"limits,omitempty" toml:"limits,omitempty"`
+}
+
+// checkLimitsConfig는 [warn, fail] 백분율이다. memory_available은 남은 비율이라 warn이 fail보다 크다.
+type checkLimitsConfig struct {
+	Disk            []float64 `yaml:"disk,omitempty" toml:"disk,omitempty"`
+	MemoryAvailable []float64 `yaml:"memory_available,omitempty" toml:"memory_available,omitempty"`
+	Usage           []float64 `yaml:"usage,omitempty" toml:"usage,omitempty"`
 }
 
 // auditConfig는 사용자가 확인하고 받아들인 audit 결과다. 받아들인 결과도 숨기지 않고 accepted로 보인다.
@@ -315,6 +336,45 @@ func invalidConfig(field, rule string) error {
 	return fmt.Errorf("%s: %s", field, rule)
 }
 
+func validateCheckConfig(config checkConfig) error {
+	for _, id := range config.Accept {
+		if !slices.Contains(checkIDs, id) {
+			return invalidConfig("check.accept", fmt.Sprintf("%q is not a check name", id))
+		}
+	}
+	for field, patterns := range map[string][]string{
+		"check.accept_units": config.AcceptUnits, "check.accept_containers": config.AcceptContainers, "check.accept_mounts": config.AcceptMounts,
+	} {
+		for _, pattern := range patterns {
+			if _, err := path.Match(pattern, ""); err != nil || pattern == "" {
+				return invalidConfig(field, fmt.Sprintf("%q is not a valid glob", pattern))
+			}
+		}
+	}
+	for _, unit := range config.RequireUnits {
+		if unit == "" {
+			return invalidConfig("check.require_units", "a unit name must not be empty")
+		}
+	}
+	for field, limits := range map[string][]float64{
+		"check.limits.disk": config.Limits.Disk, "check.limits.memory_available": config.Limits.MemoryAvailable, "check.limits.usage": config.Limits.Usage,
+	} {
+		if limits == nil {
+			continue
+		}
+		if len(limits) != 2 || limits[0] < 0 || limits[0] > 100 || limits[1] < 0 || limits[1] > 100 {
+			return invalidConfig(field, "must be [warn, fail] with two percentages from 0 to 100")
+		}
+		if field == "check.limits.memory_available" && limits[0] < limits[1] {
+			return invalidConfig(field, "warn must be at least fail, because it is the share left")
+		}
+		if field != "check.limits.memory_available" && limits[0] > limits[1] {
+			return invalidConfig(field, "warn must be at most fail")
+		}
+	}
+	return nil
+}
+
 func validateConfig(config edcConfig) error {
 	if config.Lang != "" {
 		if _, ok := normalizeLanguage(config.Lang); !ok {
@@ -463,6 +523,9 @@ func validateConfig(config edcConfig) error {
 		if port < 1 || port > 65535 {
 			return invalidConfig("audit.allow_ports", fmt.Sprintf("%d must be between 1 and 65535", port))
 		}
+	}
+	if err := validateCheckConfig(config.Check); err != nil {
+		return err
 	}
 
 	if err := validateLogPolicy(logOptions{

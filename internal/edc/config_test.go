@@ -520,3 +520,41 @@ func TestLookbackAndLimitFlagsFollowConfigThenFlag(t *testing.T) {
 		t.Fatalf("log history flag = %d", got)
 	}
 }
+
+func TestConfigCheckTableLoadsAndValidates(t *testing.T) {
+	const table = "[check]\naccept = [\"reboot\"]\naccept_units = [\"systemd-networkd-wait-online.service\"]\nrequire_units = [\"nginx.service\"]\n\n[check.limits]\ndisk = [85, 95]\nmemory_available = [15, 5]\n"
+	config, err := loadConfigAt(writeTOMLFixture(t, table))
+	want := checkConfig{Accept: []string{"reboot"}, AcceptUnits: []string{"systemd-networkd-wait-online.service"}, RequireUnits: []string{"nginx.service"},
+		Limits: checkLimitsConfig{Disk: []float64{85, 95}, MemoryAvailable: []float64{15, 5}}}
+	if err != nil || !reflect.DeepEqual(config.Check, want) {
+		t.Fatalf("TOML check = %#v, error = %v", config.Check, err)
+	}
+	for content, field := range map[string]string{
+		"[check]\naccept = [\"check.reboot\"]\n":                    "check.accept",
+		"[check]\naccept_units = [\"[bad\"]\n":                      "check.accept_units",
+		"[check]\nrequire_units = [\"\"]\n":                         "check.require_units",
+		"[check.limits]\ndisk = [95]\n":                             "check.limits.disk",
+		"[check.limits]\ndisk = [95, 90]\n":                         "check.limits.disk",
+		"[check.limits]\nusage = [80, 101]\n":                       "check.limits.usage",
+		"[check.limits]\nmemory_available = [5, 10]\n":              "check.limits.memory_available",
+		"[check]\naccept_mounts = [\"/media/*\"]\nunknown = true\n": "strict mode",
+	} {
+		if _, err := loadConfigAt(writeTOMLFixture(t, content)); err == nil || !strings.Contains(err.Error(), field) {
+			t.Errorf("config %q error = %v, want %s", content, err, field)
+		}
+	}
+	legacy, err := loadConfigAt(writeConfigFixture(t, "check:\n  accept_mounts: [/media/*]\n  limits:\n    usage: [70, 85]\n"))
+	if err != nil || !reflect.DeepEqual(legacy.Check, checkConfig{AcceptMounts: []string{"/media/*"}, Limits: checkLimitsConfig{Usage: []float64{70, 85}}}) {
+		t.Fatalf("YAML check = %#v, error = %v", legacy.Check, err)
+	}
+
+	path := writeTOMLFixture(t, "lang = \"en\"\n"+table)
+	var output, stderr strings.Builder
+	if code := runSetupWithIO(nil, strings.NewReader(setupMinimalInput("y")), &output, &stderr, true, path); code != 0 {
+		t.Fatalf("setup exit=%d stderr=%q", code, stderr.String())
+	}
+	saved, err := loadConfigAt(path)
+	if err != nil || !reflect.DeepEqual(saved.Check, config.Check) {
+		t.Fatalf("setup dropped [check]: %#v, error = %v", saved.Check, err)
+	}
+}

@@ -43,6 +43,57 @@ If memory or process collection fails, the command shows the error and returns e
 
 On Linux, `edc info` adds `Network Limits`: conntrack occupancy, TCP memory pages against the `tcp_mem` ceiling with the orphan socket count, the local port range and reserved ports, accept/SYN backlog limits, socket buffer ceilings, receive backlog/budgets, neighbor limits, forwarding, and `rp_filter`. Use `-v` for TCP buffer settings, sysctl names, and reasons for unavailable values. Missing or inaccessible values are `unavailable`; these Linux limits are `unsupported` on macOS. Configuration alone does not establish a connection failure.
 
+## Health check (Linux)
+
+`edc check` looks for what is broken on a Linux host now. It reads services, processes, memory, disks, the kernel log, time, network, containers, file handles, and the reboot state. It changes nothing, and it sends nothing over the network. Each finding names the edc command that shows more.
+
+```bash
+edc check
+edc check --json -                  # one result for each check
+edc check --group daily             # run edc check on each host of an edc remote group
+```
+
+| Check | Fail | Warn |
+|---|---|---|
+| `service` | a unit failed, or a unit in `require_units` is inactive or does not exist | a unit is in a state change or in `auto-restart` |
+| `process` | | a defunct process, or a process in D state |
+| `memory` | less than 5% of memory is available | less than 10% of memory is available |
+| `disk` | a mount has 95% or more use, or 95% or more inode use | the same at 90%, or a mount is read-only |
+| `kernel` | an OOM kill, a disk I/O error, a read-only remount, a lockup, or an oops in the last hour | a segfault, a hung task, or a kernel warning in the last hour |
+| `time` | | the clock is not synchronized |
+| `network` | no default route, or 90% or more use of conntrack or TCP memory | no `/etc/resolv.conf`, no nameserver, or the same use at 80% |
+| `container` | a container stopped with a nonzero code or for memory | a container restarts, pauses, or is unhealthy |
+| `filehandles` | 90% or more of `fs.file-max` is in use | 80% or more of `fs.file-max` is in use |
+| `reboot` | | a package asks for a reboot, or `/boot` has a newer kernel than the running kernel |
+
+A `fail` makes the exit code 1. edc does not judge counters that only grow after boot, such as NIC drops. One reading cannot show when they changed.
+
+`--group` uses the inventory and the OpenSSH setup of `edc remote`. Each host must have an edc with `check`. The table shows one row for each host. If a host gives no result, the row shows the reason, for example an SSH failure or an edc without `check`.
+
+To accept a known finding, add a `[check]` table to `config.toml`:
+
+```toml
+[check]
+accept = ["reboot"]
+accept_units = ["systemd-networkd-wait-online.service"]
+accept_containers = ["job-*"]
+accept_mounts = ["/media/*"]
+require_units = ["nginx.service"]
+
+[check.limits]
+disk = [90, 95]
+memory_available = [10, 5]
+usage = [80, 90]
+```
+
+`accept` holds check names from the table above. An accepted check shows as `skip`, and its summary starts with `accepted (warn)` or `accepted (fail)`. In JSON, `metrics.accepted_status` holds the original status.
+
+`accept_units`, `accept_containers`, and `accept_mounts` hold glob patterns. The check does not judge a name that matches a pattern. The summary ends with the number of accepted names, and `metrics.accepted` holds the names.
+
+Each value in `[check.limits]` is `[warn, fail]` in percent. `usage` applies to conntrack, TCP memory, and file handles. `memory_available` is the share that is left, so its warn value must be at least its fail value.
+
+With `--group`, each host reads its own config file. Put the `[check]` table on the host that the finding comes from.
+
 ## Host audit (Linux)
 
 `edc audit` reads the exposure and the settings of a Linux host. It reads files, sysctl values, and the listening sockets. It changes nothing, and it sends nothing over the network. It ends in less than one second.

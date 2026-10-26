@@ -1,5 +1,6 @@
 # check コマンドの日本語メッセージ。
 check:
+  accepted_items: " (受け入れ済み %d 個)"
   skip:
     linux_only: "check は Linux でのみ動作します"
     needs_root: "%s を読むには root が必要です"
@@ -8,6 +9,7 @@ check:
     issues: "見つかった問題"
     events: "カーネルシグナル"
   service:
+    required: "実行中でない必須 unit %d 個: %s"
     failed: "failed unit %d 個: %s"
     changing: "状態が変わっている unit %d 個: %s"
     ok: "実行中の unit %d 個、失敗なし"

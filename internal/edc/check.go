@@ -321,11 +321,28 @@ func checkServices(facts checkFacts) Result {
 	return issues.result(id, T("check.service.ok", len(facts.Services)), next)
 }
 
+// checkPartialError는 원천을 일부만 읽은 경우다. 읽은 만큼은 판정하고, 읽지 못한 수를 경고로 남긴다.
+type checkPartialError struct{ Unreadable int }
+
+func (err checkPartialError) Error() string {
+	return fmt.Sprintf("%d entries could not be read", err.Unreadable)
+}
+
 func checkProcesses(facts checkFacts) Result {
 	const id = "process"
-	if facts.ProcessesErr != nil {
+	var partial checkPartialError
+	if facts.ProcessesErr != nil && !errors.As(facts.ProcessesErr, &partial) {
 		return checkSkip(id, "/proc", facts.ProcessesErr)
 	}
+	result := checkProcessStates(facts)
+	if partial.Unreadable > 0 {
+		result.Warnings = append(result.Warnings, T("check.process.unreadable", partial.Unreadable))
+	}
+	return result
+}
+
+func checkProcessStates(facts checkFacts) Result {
+	const id = "process"
 	commands := map[int]string{}
 	for _, process := range facts.Processes {
 		commands[process.PID] = process.Command

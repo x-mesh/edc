@@ -13,6 +13,7 @@ check:
     changing: "状態が変わっている unit %d 個: %s"
     ok: "実行中の unit %d 個、失敗なし"
   process:
+    unreadable: "process %d 個を読めず (hidepid か権限)、その状態は点検していません"
     zombie: "defunct process %d 個、親ごと: %s"
     blocked: "I/O 待ちで止まった (D) process %d 個: %s"
     ok: "process %d 個、defunct と D 状態なし"

@@ -320,3 +320,14 @@ func TestCheckDoesNotHideUnreadableSources(t *testing.T) {
 		t.Fatalf("unreadable reboot marker = %+v", result)
 	}
 }
+
+func TestCheckProcessesWarnsAboutUnreadableProcesses(t *testing.T) {
+	facts := checkFacts{Processes: []checkProcess{{PID: 1, Command: "systemd", State: "S"}}, ProcessesErr: checkPartialError{Unreadable: 12}}
+	result := checkProcesses(facts)
+	if result.Status != StatusPass || len(result.Warnings) != 1 || !strings.Contains(result.Warnings[0], "12") {
+		t.Fatalf("partial scan = %+v", result)
+	}
+	if result := checkProcesses(checkFacts{ProcessesErr: fs.ErrPermission}); result.Status != StatusSkip {
+		t.Fatalf("unreadable /proc = %+v", result)
+	}
+}

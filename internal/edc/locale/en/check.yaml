@@ -13,6 +13,7 @@ check:
     changing: "%d units changing state: %s"
     ok: "%d running units, none failed"
   process:
+    unreadable: "%d processes could not be read (hidepid or permissions), so their state is not checked"
     zombie: "%d defunct processes, by parent: %s"
     blocked: "%d processes in uninterruptible I/O wait (D): %s"
     ok: "%d processes, no defunct or D state"

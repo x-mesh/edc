@@ -26,7 +26,7 @@ const checkTestRemoteReport = `{
 const checkTestMacReport = `{"tool": {"name": "edc", "version": "0.68.0"}, "results": [{"probe": "check", "status": "skip", "summary": "edc check runs on Linux hosts only"}]}`
 
 func TestCheckIDsFollowTheEvaluateOrder(t *testing.T) {
-	results := evaluateCheck(checkFacts{})
+	results := evaluateCheck(checkFacts{}, checkTestPolicy)
 	if len(results) != len(checkIDs) {
 		t.Fatalf("evaluateCheck gives %d results, checkIDs has %d", len(results), len(checkIDs))
 	}

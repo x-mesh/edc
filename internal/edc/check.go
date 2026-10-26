@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"maps"
 	"os"
+	"path"
 	"slices"
 	"sort"
 	"strings"
@@ -36,6 +37,38 @@ var checkMemoryLimits = topThreshold{warn: 10, danger: 5}
 
 // checkImageFileSystems는 원래 읽기 전용인 파일 시스템이다. read-only라도 문제가 아니다.
 var checkImageFileSystems = map[string]bool{"squashfs": true, "iso9660": true, "erofs": true, "cramfs": true, "udf": true}
+
+// checkPolicy는 설정의 [check] 표를 판정에 쓰는 모양으로 바꾼 것이다. 설정에 없는 기준은 기본값을 쓴다.
+type checkPolicy struct {
+	accept, acceptUnits, acceptContainers, acceptMounts, requireUnits []string
+	disk, memory, usage                                               topThreshold
+}
+
+func newCheckPolicy(config checkConfig) checkPolicy {
+	limits := func(values []float64, fallback topThreshold) topThreshold {
+		if len(values) != 2 {
+			return fallback
+		}
+		return topThreshold{warn: values[0], danger: values[1]}
+	}
+	return checkPolicy{
+		accept: config.Accept, acceptUnits: config.AcceptUnits, acceptContainers: config.AcceptContainers, acceptMounts: config.AcceptMounts,
+		requireUnits: config.RequireUnits,
+		disk:         limits(config.Limits.Disk, diskLimits),
+		memory:       limits(config.Limits.MemoryAvailable, checkMemoryLimits),
+		usage:        limits(config.Limits.Usage, checkUsageLimits),
+	}
+}
+
+// checkMatches는 name이 glob 하나에라도 맞는지다. 설정을 읽을 때 glob을 검사하므로 여기서 오류는 나지 않는다.
+func checkMatches(patterns []string, name string) bool {
+	for _, pattern := range patterns {
+		if matched, _ := path.Match(pattern, name); matched {
+			return true
+		}
+	}
+	return false
+}
 
 type checkProcess struct {
 	PID, PPID      int
@@ -134,7 +167,7 @@ func runCheck(args []string, version string) int {
 	ctx, cancel, deadline := probeContext(options.timeout)
 	defer cancel()
 	defer deadline()
-	return emit(options, buildReport(version, started, nil, evaluateCheck(collectCheckFacts(ctx, sources)), options.redact))
+	return emit(options, buildReport(version, started, nil, evaluateCheck(collectCheckFacts(ctx, sources), newCheckPolicy(activeConfig.Check)), options.redact))
 }
 
 // collectCheckFacts는 원천을 함께 읽는다. systemctl, journalctl, docker socket이 각각 외부 호출이라 차례로 읽으면 느리다.
@@ -207,22 +240,32 @@ func collectCheckFacts(ctx context.Context, sources checkSources) checkFacts {
 	return facts
 }
 
-func evaluateCheck(facts checkFacts) []Result {
+func evaluateCheck(facts checkFacts, policy checkPolicy) []Result {
 	results := []Result{
-		checkServices(facts),
+		checkServices(facts, policy),
 		checkProcesses(facts),
-		checkMemory(facts),
-		checkDisks(facts),
+		checkMemory(facts, policy),
+		checkDisks(facts, policy),
 		checkKernel(facts),
 		checkTime(facts),
-		checkNetworkResult(facts),
-		checkContainers(facts),
-		checkFileHandles(facts),
+		checkNetworkResult(facts, policy),
+		checkContainers(facts, policy),
+		checkFileHandles(facts, policy),
 		checkRebootResult(facts),
 	}
 	for index, result := range results {
 		if id := strings.TrimPrefix(result.Probe, "check."); slices.Contains(facts.TimedOut, id) {
 			results[index] = checkResult(id, StatusSkip, T("check.skip.timed_out"))
+		}
+	}
+	return applyCheckAccept(results, policy.accept)
+}
+
+// applyCheckAccept는 받아들인 점검의 warn·fail을 skip으로 바꾼다. audit의 accept와 같은 표시와 metrics를 쓴다.
+func applyCheckAccept(results []Result, accept []string) []Result {
+	for index, result := range results {
+		if (result.Status == StatusWarn || result.Status == StatusFail) && slices.Contains(accept, strings.TrimPrefix(result.Probe, "check.")) {
+			results[index] = acceptAuditResult(result)
 		}
 	}
 	return results
@@ -243,6 +286,8 @@ func checkSkip(id, source string, err error) Result {
 type checkIssues struct {
 	status Status
 	lines  []string
+	// accepted는 설정이 받아들여 판정하지 않은 이름이다. 판정에서 빠져도 개수와 이름은 남긴다.
+	accepted []string
 }
 
 func (issues *checkIssues) add(status Status, line string) {
@@ -264,6 +309,15 @@ func checkSeverity(status Status) int {
 
 // result는 문제가 없으면 pass 요약을, 있으면 문제 줄을 이은 요약을 낸다. fail이면 실패 상자에 같은 줄을 적는다.
 func (issues checkIssues) result(id, pass, next string) Result {
+	result := issues.judged(id, pass, next)
+	if len(issues.accepted) > 0 {
+		result.Summary += T("check.accepted_items", len(issues.accepted))
+		result.Metrics = map[string]interface{}{"accepted": issues.accepted}
+	}
+	return result
+}
+
+func (issues checkIssues) judged(id, pass, next string) Result {
 	if len(issues.lines) == 0 {
 		return checkResult(id, StatusPass, pass)
 	}
@@ -299,7 +353,7 @@ func checkUsageStatus(percent float64, limits topThreshold) Status {
 	return StatusPass
 }
 
-func checkServices(facts checkFacts) Result {
+func checkServices(facts checkFacts, policy checkPolicy) Result {
 	const id = "service"
 	if errors.Is(facts.ServicesErr, errSvcNoSystemd) {
 		return checkResult(id, StatusSkip, T("svc.skip.no_systemd"))
@@ -307,8 +361,15 @@ func checkServices(facts checkFacts) Result {
 	if facts.ServicesErr != nil {
 		return checkSkip(id, "systemctl", facts.ServicesErr)
 	}
+	var issues checkIssues
 	var failed, changing []string
+	listed := map[string]bool{}
 	for _, item := range facts.Services {
+		listed[item.Unit] = true
+		if (item.failed() || item.changing()) && checkMatches(policy.acceptUnits, item.Unit) {
+			issues.accepted = append(issues.accepted, item.Unit)
+			continue
+		}
 		switch {
 		case item.failed():
 			failed = append(failed, item.Unit)
@@ -316,11 +377,23 @@ func checkServices(facts checkFacts) Result {
 			changing = append(changing, item.Unit+" ("+item.state()+")")
 		}
 	}
-	var issues checkIssues
+	// 목록은 inactive unit을 빼므로, 목록에 없는 필수 unit은 실행 중이 아니다.
+	var missing []string
+	for _, unit := range policy.requireUnits {
+		if !listed[unit] {
+			missing = append(missing, unit)
+		}
+	}
 	next := ""
 	if len(failed) > 0 {
 		issues.add(StatusFail, T("check.service.failed", len(failed), checkNames(failed)))
 		next = "edc svc " + failed[0]
+	}
+	if len(missing) > 0 {
+		issues.add(StatusFail, T("check.service.required", len(missing), checkNames(missing)))
+		if next == "" {
+			next = "edc svc " + missing[0]
+		}
 	}
 	if len(changing) > 0 {
 		issues.add(StatusWarn, T("check.service.changing", len(changing), checkNames(changing)))
@@ -394,7 +467,7 @@ func checkProcessStates(facts checkFacts) Result {
 	return issues.result(id, T("check.process.ok", len(facts.Processes)), "edc top")
 }
 
-func checkMemory(facts checkFacts) Result {
+func checkMemory(facts checkFacts, policy checkPolicy) Result {
 	const id = "memory"
 	if facts.MemoryErr != nil {
 		return checkSkip(id, "/proc/meminfo", facts.MemoryErr)
@@ -404,15 +477,15 @@ func checkMemory(facts checkFacts) Result {
 	text := T("check.memory.available", formatSizeShort(memory.Available), formatSizeShort(memory.Total), percent)
 	var issues checkIssues
 	switch {
-	case percent < checkMemoryLimits.danger:
+	case percent < policy.memory.danger:
 		issues.add(StatusFail, text)
-	case percent < checkMemoryLimits.warn:
+	case percent < policy.memory.warn:
 		issues.add(StatusWarn, text)
 	}
 	return issues.result(id, text, "edc top")
 }
 
-func checkDisks(facts checkFacts) Result {
+func checkDisks(facts checkFacts, policy checkPolicy) Result {
 	const id = "disk"
 	if facts.DisksErr != nil {
 		return checkSkip(id, "df", facts.DisksErr)
@@ -425,10 +498,14 @@ func checkDisks(facts checkFacts) Result {
 		if checkImageFileSystems[disk.FSType] {
 			continue
 		}
+		if checkMatches(policy.acceptMounts, disk.Mount) {
+			issues.accepted = append(issues.accepted, disk.Mount)
+			continue
+		}
 		if disk.Percent > highest.Percent {
 			highest = disk
 		}
-		if status := checkUsageStatus(disk.Percent, diskLimits); status != StatusPass {
+		if status := checkUsageStatus(disk.Percent, policy.disk); status != StatusPass {
 			issues.add(status, T("check.disk.usage", disk.Mount, disk.Percent))
 			if disk.Percent > worst {
 				next, worst = "edc du "+disk.Mount, disk.Percent
@@ -436,7 +513,7 @@ func checkDisks(facts checkFacts) Result {
 		}
 		if disk.InodesTotal > 0 {
 			percent := float64(disk.InodesUsed) / float64(disk.InodesTotal) * 100
-			if status := checkUsageStatus(percent, diskLimits); status != StatusPass {
+			if status := checkUsageStatus(percent, policy.disk); status != StatusPass {
 				issues.add(status, T("check.disk.inodes", disk.Mount, percent))
 				if next == "" {
 					next = "edc du " + disk.Mount
@@ -526,7 +603,7 @@ func checkTime(facts checkFacts) Result {
 	return issues.result(id, T("check.time.synced"), "timedatectl status")
 }
 
-func checkNetworkResult(facts checkFacts) Result {
+func checkNetworkResult(facts checkFacts, policy checkPolicy) Result {
 	const id = "network"
 	network := facts.Network
 	var issues checkIssues
@@ -544,12 +621,12 @@ func checkNetworkResult(facts checkFacts) Result {
 		issues.add(StatusWarn, T("check.network.no_nameserver"))
 	}
 	if network.ConntrackOK {
-		if status := checkUsageStatus(network.Conntrack, checkUsageLimits); status != StatusPass {
+		if status := checkUsageStatus(network.Conntrack, policy.usage); status != StatusPass {
 			issues.add(status, T("check.network.conntrack", network.Conntrack))
 		}
 	}
 	if network.TCPMemoryOK {
-		if status := checkUsageStatus(network.TCPMemory, checkUsageLimits); status != StatusPass {
+		if status := checkUsageStatus(network.TCPMemory, policy.usage); status != StatusPass {
 			issues.add(status, T("check.network.tcp_memory", network.TCPMemory))
 		}
 	}
@@ -560,7 +637,7 @@ func checkNetworkResult(facts checkFacts) Result {
 	return issues.result(id, T("check.network.ok", route, len(network.DNS.Config.Nameservers)), next)
 }
 
-func checkContainers(facts checkFacts) Result {
+func checkContainers(facts checkFacts, policy checkPolicy) Result {
 	const id = "container"
 	err := facts.ContainersErr
 	switch {
@@ -574,8 +651,13 @@ func checkContainers(facts checkFacts) Result {
 		result.Next = "edc svc docker"
 		return result
 	}
+	var issues checkIssues
 	var failed, attention []string
 	for _, item := range facts.Containers {
+		if (item.failed() || item.attention()) && checkMatches(policy.acceptContainers, item.Name) {
+			issues.accepted = append(issues.accepted, item.Name)
+			continue
+		}
 		switch {
 		case item.failed():
 			failed = append(failed, item.Name+" ("+item.State+")")
@@ -583,7 +665,6 @@ func checkContainers(facts checkFacts) Result {
 			attention = append(attention, item.Name+" ("+item.State+")")
 		}
 	}
-	var issues checkIssues
 	next := ""
 	if len(failed) > 0 {
 		issues.add(StatusFail, T("check.container.failed", len(failed), checkNames(failed)))
@@ -598,7 +679,7 @@ func checkContainers(facts checkFacts) Result {
 	return issues.result(id, T("check.container.ok", len(facts.Containers)), next)
 }
 
-func checkFileHandles(facts checkFacts) Result {
+func checkFileHandles(facts checkFacts, policy checkPolicy) Result {
 	const id = "filehandles"
 	if facts.FileHandlesErr != nil {
 		return checkSkip(id, "/proc/sys/fs/file-nr", facts.FileHandlesErr)
@@ -613,7 +694,7 @@ func checkFileHandles(facts checkFacts) Result {
 	percent := float64(handles.Used) / float64(handles.Max) * 100
 	text := T("check.filehandles.usage", handles.Used, handles.Max, percent)
 	var issues checkIssues
-	if status := checkUsageStatus(percent, checkUsageLimits); status != StatusPass {
+	if status := checkUsageStatus(percent, policy.usage); status != StatusPass {
 		issues.add(status, text)
 	}
 	return issues.result(id, text, "edc info -v")

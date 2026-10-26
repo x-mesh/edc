@@ -33,6 +33,57 @@
 
 Linux에서는 `edc info`의 `Network Limits`에 conntrack 사용량과 한도, `tcp_mem` 상한 대비 TCP memory page와 orphan socket 수, 임시 port 범위와 예약 port, accept/SYN 대기열 한도, socket buffer 상한, 패킷 처리 backlog/budget, neighbor 한도, forwarding과 `rp_filter`를 요약합니다. `-v`는 TCP buffer 설정과 개별 sysctl 이름, 읽지 못한 이유도 표시합니다. 값이 없거나 권한이 부족하면 `unavailable`로 표시하며, macOS에서는 이 항목을 `unsupported`로 표시합니다. 설정값만으로 연결 실패를 판정하지 않습니다.
 
+## 상태 점검 (Linux)
+
+`edc check`는 Linux 호스트에서 지금 고장 난 곳을 찾습니다. service, process, 메모리, 디스크, 커널 로그, 시간, 네트워크, container, 파일 핸들, 재부팅 필요 여부를 읽습니다. 아무것도 바꾸지 않고 외부로 보내지 않습니다. 문제마다 이어서 볼 edc 명령을 알려 줍니다.
+
+```bash
+edc check
+edc check --json -                  # 점검마다 결과 하나
+edc check --group daily             # edc remote 그룹의 호스트마다 edc check 실행
+```
+
+| 점검 | fail | warn |
+|---|---|---|
+| `service` | unit이 실패했거나 `require_units`의 unit이 inactive이거나 없음 | unit의 상태가 바뀌는 중이거나 `auto-restart`에 머묾 |
+| `process` | | defunct process나 D 상태 process가 있음 |
+| `memory` | 가용 메모리가 5% 미만 | 가용 메모리가 10% 미만 |
+| `disk` | mount의 사용률이나 inode 사용률이 95% 이상 | 같은 값이 90% 이상이거나 mount가 읽기 전용 |
+| `kernel` | 최근 1시간에 OOM kill, 디스크 I/O 오류, 읽기 전용 전환, lockup, oops가 있음 | 최근 1시간에 segfault, hung task, 커널 WARNING이 있음 |
+| `time` | | 시계가 동기화되지 않음 |
+| `network` | default route가 없거나 conntrack·TCP 메모리 사용률이 90% 이상 | `/etc/resolv.conf`나 nameserver가 없거나 같은 사용률이 80% 이상 |
+| `container` | container가 0이 아닌 코드나 메모리 부족으로 멈춤 | container가 재시작·일시 정지 중이거나 unhealthy |
+| `filehandles` | `fs.file-max`의 90% 이상을 사용 | `fs.file-max`의 80% 이상을 사용 |
+| `reboot` | | 패키지가 재부팅을 요구하거나 `/boot`에 실행 중인 커널보다 새 커널이 있음 |
+
+fail이 하나라도 있으면 종료 코드가 1입니다. NIC drop처럼 부팅 뒤 늘어나기만 하는 카운터는 판정하지 않습니다. 한 번 읽어서는 언제 늘었는지 알 수 없기 때문입니다.
+
+`--group`은 `edc remote`의 inventory와 OpenSSH 설정을 씁니다. 각 호스트에 `check`가 있는 edc가 있어야 합니다. 표에는 호스트마다 한 줄이 나옵니다. 결과를 받지 못한 호스트는 SSH 실패나 `check`가 없는 edc처럼 그 이유를 보여 줍니다.
+
+이미 확인한 결과를 받아들이려면 `config.toml`에 `[check]` 표를 넣으세요.
+
+```toml
+[check]
+accept = ["reboot"]
+accept_units = ["systemd-networkd-wait-online.service"]
+accept_containers = ["job-*"]
+accept_mounts = ["/media/*"]
+require_units = ["nginx.service"]
+
+[check.limits]
+disk = [90, 95]
+memory_available = [10, 5]
+usage = [80, 90]
+```
+
+`accept`에는 위 표의 점검 이름을 씁니다. 받아들인 점검은 `skip`으로 나오고 요약 앞에 `받아들임 (warn)` 같은 표시가 붙습니다. JSON의 `metrics.accepted_status`에는 원래 상태가 남습니다.
+
+`accept_units`, `accept_containers`, `accept_mounts`에는 glob 패턴을 씁니다. 패턴에 맞는 이름은 판정하지 않습니다. 대신 요약 끝에 받아들인 개수가 붙고, `metrics.accepted`에 이름이 남습니다.
+
+`[check.limits]`의 값은 모두 `[warn, fail]` 백분율입니다. `usage`는 conntrack, TCP 메모리, 파일 핸들에 적용됩니다. `memory_available`은 남은 비율이므로 warn 값이 fail 값보다 크거나 같아야 합니다.
+
+`--group`으로 실행하면 각 호스트가 자기 설정 파일을 읽습니다. `[check]` 표는 결과가 나온 호스트에 넣으세요.
+
 ## 호스트 점검 (Linux)
 
 `edc audit`는 Linux 호스트의 노출 상태와 설정을 읽습니다. 파일, sysctl 값, listen 소켓만 읽고, 아무것도 바꾸지 않으며 외부로 보내지 않습니다. 1초 안에 끝납니다.

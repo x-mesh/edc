@@ -1,5 +1,6 @@
 # English messages for the check command.
 check:
+  accepted_items: " (accepted %d)"
   skip:
     linux_only: "edc check runs on Linux hosts only"
     needs_root: "needs root to read %s"
@@ -9,6 +10,7 @@ check:
     issues: "findings"
     events: "kernel signals"
   service:
+    required: "%d required units not running: %s"
     failed: "%d failed units: %s"
     changing: "%d units changing state: %s"
     ok: "%d running units, none failed"

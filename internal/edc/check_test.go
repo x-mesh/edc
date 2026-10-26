@@ -391,3 +391,12 @@ func TestCheckProcessesWarnsAboutUnreadableProcesses(t *testing.T) {
 		t.Fatalf("unreadable /proc = %+v", result)
 	}
 }
+
+func TestCheckAcceptTurnsAFailIntoSkip(t *testing.T) {
+	facts := checkFacts{Services: []svcListItem{{Unit: "nginx.service", LoadState: "loaded", ActiveState: "failed"}}}
+	results := evaluateCheck(facts, newCheckPolicy(checkConfig{Accept: []string{"service"}}))
+	service := results[0]
+	if service.Probe != "check.service" || service.Status != StatusSkip || service.Metrics["accepted_status"] != StatusFail || service.Error != nil || exitCode(results[:1]) != 0 {
+		t.Fatalf("accepted fail = %+v", service)
+	}
+}

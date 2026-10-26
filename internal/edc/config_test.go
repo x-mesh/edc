@@ -535,6 +535,7 @@ func TestConfigCheckTableLoadsAndValidates(t *testing.T) {
 		"[check]\nrequire_units = [\"\"]\n":                         "check.require_units",
 		"[check.limits]\ndisk = [95]\n":                             "check.limits.disk",
 		"[check.limits]\ndisk = [95, 90]\n":                         "check.limits.disk",
+		"[check.limits]\nusage = [nan, 90]\n":                       "check.limits.usage",
 		"[check.limits]\nusage = [80, 101]\n":                       "check.limits.usage",
 		"[check.limits]\nmemory_available = [5, 10]\n":              "check.limits.memory_available",
 		"[check]\naccept_mounts = [\"/media/*\"]\nunknown = true\n": "strict mode",

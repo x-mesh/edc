@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io/fs"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -358,7 +359,7 @@ func TestCollectCheckFactsDoesNotWaitPastTheTimeout(t *testing.T) {
 	defer cancel()
 	started := time.Now()
 	facts := collectCheckFacts(ctx, sources, nil)
-	if time.Since(started) > 2*time.Second || len(facts.TimedOut) != 1 || facts.TimedOut[0] != "disk" {
+	if time.Since(started) > time.Second || len(facts.TimedOut) != 1 || facts.TimedOut[0] != "disk" {
 		t.Fatalf("timed out = %v after %s", facts.TimedOut, time.Since(started))
 	}
 	for _, result := range evaluateCheck(facts, checkTestPolicy) {
@@ -398,5 +399,23 @@ func TestCheckAcceptTurnsAFailIntoSkip(t *testing.T) {
 	service := results[0]
 	if service.Probe != "check.service" || service.Status != StatusSkip || service.Metrics["accepted_status"] != StatusFail || service.Error != nil || exitCode(results[:1]) != 0 {
 		t.Fatalf("accepted fail = %+v", service)
+	}
+}
+
+func TestCollectCheckFactsKeepsResultsThatArriveWithTheDeadline(t *testing.T) {
+	// ctx가 이미 끝났어도 원천이 바로 답하면 그 결과를 써야 한다. select가 deadline을 먼저 고르는 경우를 여러 번 만든다.
+	sources := checkTestSources()
+	for range 50 {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		facts := collectCheckFacts(ctx, sources, nil)
+		for _, id := range facts.TimedOut {
+			if id == "memory" && facts.Memory.Total != 0 {
+				t.Fatalf("memory arrived but was marked timed out")
+			}
+		}
+		if facts.Memory.Total == 0 && !slices.Contains(facts.TimedOut, "memory") {
+			t.Fatalf("memory is neither collected nor timed out")
+		}
 	}
 }

@@ -284,6 +284,16 @@ func collectCheckFacts(ctx context.Context, sources checkSources, commands []che
 			result.apply(&facts)
 			delete(pending, result.id)
 		case <-ctx.Done():
+			// 끝난 원천과 deadline이 함께 준비되면 select는 아무 쪽이나 고른다. 이미 온 결과는 버리지 않는다.
+			for drained := false; !drained; {
+				select {
+				case result := <-done:
+					result.apply(&facts)
+					delete(pending, result.id)
+				default:
+					drained = true
+				}
+			}
 			facts.TimedOut = slices.Sorted(maps.Keys(pending))
 			return facts
 		}

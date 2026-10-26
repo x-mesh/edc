@@ -105,12 +105,22 @@ func runCheck(args []string, version string) int {
 	set := newFlagSet("check")
 	set.SetOutput(os.Stderr)
 	bindCommon(set, &options)
+	group := set.String("group", "", T("command.check.option.group"))
+	inventory := set.String("inventory", "", T("command.check.option.inventory"))
 	if err := set.Parse(args); err != nil {
 		return 2
 	}
 	if set.NArg() != 0 {
 		fmt.Fprintln(os.Stderr, T("cli.usage", "edc check [options]"))
 		return 2
+	}
+	if *group == "" && *inventory != "" {
+		fmt.Fprintln(os.Stderr, T("check.group.error.inventory_without_group"))
+		return 2
+	}
+	// 원격 호스트를 점검하는 것이라 이 컴퓨터가 Linux가 아니어도 된다.
+	if *group != "" {
+		return runCheckGroup(options, *group, *inventory, version, cleanSSHRunner, os.Stdout)
 	}
 	started := time.Now()
 	sources, ok := hostCheckSources()

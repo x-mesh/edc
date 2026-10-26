@@ -52,3 +52,16 @@ check:
     none: "比較するインストール済みカーネルがありません"
     kernel: "カーネル %s がインストール済みで、%s で実行中です"
     ok: "最新のカーネル %s で実行中"
+  group:
+    summary: "ホスト %d 台、点検 %d 台、結果なし %d 台 · FAIL ホスト %d 台、WARN ホスト %d 台"
+    col:
+      host: "ホスト"
+    status:
+      edc_missing: "edc がありません。install.sh でインストール"
+      no_check: "この edc には check がありません。edc update で更新"
+      unreachable: "SSH 失敗"
+      timeout: "制限時間に到達"
+      invalid_output: "check の結果ではない出力"
+      failed: "edc check 失敗"
+    error:
+      inventory_without_group: "--inventory は --group と一緒に使います"

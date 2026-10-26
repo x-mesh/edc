@@ -88,12 +88,16 @@ command:
       verbose: "最新の 50 件で切らずにすべて表示"
   check:
     summary: "いま壊れている箇所を一度に洗い出す読み取り専用の点検 (Linux)"
+    option:
+      group: "edc remote グループのホストごとに check を実行"
+      inventory: "--group で使う inventory ファイル"
     notes:
       - "service、process、メモリ、ディスク、カーネルログ、時刻、ネットワーク、container、ファイルハンドル、再起動の要否を見ます。"
       - "何も変更せず、外部に何も送りません。"
       - "問題ごとに続けて見る edc コマンドを next で示します。"
       - "root でなければ一部の点検は pass ではなく skip です。"
-      - "Linux でのみ動作します。"
+      - "点検は Linux でのみ行います。--group は macOS からも実行できます。"
+      - "--group は SSH でホストごとに edc check を実行します。各ホストに check を含む edc が必要です。"
   events:
     summary: "カーネルと systemd の障害シグナルを時系列で整理 (Linux)"
     option:

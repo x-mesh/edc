@@ -88,12 +88,16 @@ command:
       verbose: "show every change, not only the newest 50"
   check:
     summary: "Read-only scan for what is broken now (Linux)"
+    option:
+      group: "run check on each host of an edc remote group"
+      inventory: "inventory file for --group"
     notes:
       - "It checks services, processes, memory, disks, the kernel log, time, network, containers, file handles, and reboot."
       - "It changes nothing and sends nothing over the network."
       - "Each finding names the edc command that shows more."
       - "Without root, some checks show skip, not pass."
-      - "It works on Linux only."
+      - "The checks run on Linux only. --group also runs from macOS."
+      - "--group runs edc check on each host over SSH. Each host needs an edc that has check."
   events:
     summary: "Kernel and systemd failure signals in time order (Linux)"
     option:

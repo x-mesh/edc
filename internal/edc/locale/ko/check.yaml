@@ -52,3 +52,16 @@ check:
     none: "비교할 설치 커널이 없습니다"
     kernel: "커널 %s가 설치되어 있고 %s로 실행 중입니다"
     ok: "가장 새 커널 %s로 실행 중"
+  group:
+    summary: "호스트 %d개, 점검 %d개, 결과 없음 %d개 · FAIL 호스트 %d개, WARN 호스트 %d개"
+    col:
+      host: "호스트"
+    status:
+      edc_missing: "edc가 없음, install.sh로 설치"
+      no_check: "이 edc에는 check가 없음, edc update로 업데이트"
+      unreachable: "SSH 실패"
+      timeout: "제한 시간 도달"
+      invalid_output: "check 결과가 아닌 출력"
+      failed: "edc check 실패"
+    error:
+      inventory_without_group: "--inventory는 --group과 함께 써야 합니다"

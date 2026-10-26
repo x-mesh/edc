@@ -5,6 +5,7 @@ check:
     linux_only: "check は Linux でのみ動作します"
     needs_root: "%s を読むには root が必要です"
     unreadable: "%s を読めませんでした: %s"
+    timed_out: "--timeout 以内にソースが応答しませんでした"
   evidence:
     output: "出力"
     issues: "見つかった問題"
@@ -15,6 +16,7 @@ check:
     changing: "状態が変わっている unit %d 個: %s"
     ok: "実行中の unit %d 個、失敗なし"
   process:
+    unreadable: "process %d 個を読めず (hidepid か権限)、その状態は点検していません"
     zombie: "defunct process %d 個、親ごと: %s"
     blocked: "I/O 待ちで止まった (D) process %d 個: %s"
     ok: "process %d 個、defunct と D 状態なし"
@@ -37,6 +39,7 @@ check:
     no_route: "default route がありません"
     no_resolv: "/etc/resolv.conf がありません"
     no_nameserver: "/etc/resolv.conf に nameserver がありません"
+    resolv_unreadable: "/etc/resolv.conf を読めませんでした: %s"
     conntrack: "conntrack table %.0f%% 使用"
     tcp_memory: "TCP メモリが tcp_mem の %.0f%%"
     route_unknown: "route 不明"

@@ -424,7 +424,8 @@ func validateCheckRules(prefix string, accept, units, containers, mounts, requir
 		if values == nil {
 			continue
 		}
-		if len(values) != 2 || values[0] < 0 || values[0] > 100 || values[1] < 0 || values[1] > 100 {
+		// TOML은 nan을 숫자로 읽는다. NaN은 어떤 비교도 거짓이라 범위 검사를 지나고, 판정도 늘 통과가 된다.
+		if len(values) != 2 || !(values[0] >= 0 && values[0] <= 100) || !(values[1] >= 0 && values[1] <= 100) {
 			return invalidConfig(prefix+field, "must be [warn, fail] with two percentages from 0 to 100")
 		}
 		if field == ".limits.memory_available" && values[0] < values[1] {

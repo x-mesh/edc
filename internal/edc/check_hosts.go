@@ -42,9 +42,23 @@ type checkRemoteResult struct {
 
 type checkRemoteReport struct {
 	Tool struct {
+		Name    string `json:"name"`
 		Version string `json:"version"`
 	} `json:"tool"`
 	Results []checkRemoteResult `json:"results"`
+}
+
+// isCheckReport는 JSON이 edc check의 보고서인지다. results가 있는 다른 JSON이나 다른 edc 명령의 출력을 점검 결과로 읽지 않는다.
+func (report checkRemoteReport) isCheckReport() bool {
+	if report.Tool.Name != "edc" || len(report.Results) == 0 {
+		return false
+	}
+	for _, result := range report.Results {
+		if result.Probe != "check" && !strings.HasPrefix(result.Probe, "check.") {
+			return false
+		}
+	}
+	return true
 }
 
 type checkHostRow struct {
@@ -159,7 +173,7 @@ func checkCollectHosts(ctx context.Context, hosts []remoteHost, parallel int, ti
 func checkHostFromCapture(capture remoteCapture) checkHostRow {
 	row := checkHostRow{DurationMS: capture.Duration.Milliseconds()}
 	var report checkRemoteReport
-	if !capture.Truncated && json.Unmarshal([]byte(capture.Stdout), &report) == nil && len(report.Results) > 0 {
+	if !capture.Truncated && json.Unmarshal([]byte(capture.Stdout), &report) == nil && report.isCheckReport() {
 		row.Status, row.Version, row.Results = checkHostChecked, report.Tool.Version, report.Results
 		return row
 	}

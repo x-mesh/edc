@@ -337,3 +337,66 @@ func TestCheckPolicyLimitsAndWholeCheckAccept(t *testing.T) {
 		t.Fatalf("accepted reboot = %+v", reboot)
 	}
 }
+
+func TestCollectCheckFactsDoesNotWaitPastTheTimeout(t *testing.T) {
+	block := make(chan struct{})
+	defer close(block)
+	sources := checkSources{
+		services:  func(context.Context) ([]svcListItem, error) { return nil, errSvcNoSystemd },
+		processes: func() ([]checkProcess, error) { return nil, nil },
+		memory:    func() (infoMemory, error) { return infoMemory{Total: 100, Available: 50}, nil },
+		// df는 ctx를 받지 않는다. 멈춘 NFS mount에서 돌아오지 않는 경우다.
+		disks:       func() ([]checkDisk, error) { <-block; return nil, nil },
+		kernel:      func(context.Context, time.Duration) eventsFacts { return eventsFacts{} },
+		clock:       func() *infoClock { return &infoClock{Synced: true} },
+		network:     func() checkNetwork { return checkNetwork{} },
+		containers:  func(context.Context) ([]ctrListItem, error) { return nil, errCtrNoDocker },
+		fileHandles: func() (*infoFileHandles, error) { return nil, nil },
+		reboot:      func() checkReboot { return checkReboot{} },
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	facts := collectCheckFacts(ctx, sources, nil)
+	if time.Since(started) > 2*time.Second || len(facts.TimedOut) != 1 || facts.TimedOut[0] != "disk" {
+		t.Fatalf("timed out = %v after %s", facts.TimedOut, time.Since(started))
+	}
+	for _, result := range evaluateCheck(facts, checkTestPolicy) {
+		if result.Probe == "check.disk" && result.Status != StatusSkip {
+			t.Fatalf("disk = %+v", result)
+		}
+		if result.Probe == "check.memory" && result.Status != StatusPass {
+			t.Fatalf("a finished source lost its result: %+v", result)
+		}
+	}
+}
+
+func TestCheckDoesNotHideUnreadableSources(t *testing.T) {
+	dns := infoDNS{Err: fs.ErrPermission}
+	if result := checkNetworkResult(checkFacts{Network: checkNetwork{Route: "10.0.0.1 dev eth0", DNS: dns}}, checkTestPolicy); result.Status != StatusWarn {
+		t.Fatalf("unreadable resolv.conf = %+v", result)
+	}
+	if result := checkRebootResult(checkFacts{Reboot: checkReboot{Err: fs.ErrPermission}}); result.Status != StatusSkip {
+		t.Fatalf("unreadable reboot marker = %+v", result)
+	}
+}
+
+func TestCheckProcessesWarnsAboutUnreadableProcesses(t *testing.T) {
+	facts := checkFacts{Processes: []checkProcess{{PID: 1, Command: "systemd", State: "S"}}, ProcessesErr: checkPartialError{Unreadable: 12}}
+	result := checkProcesses(facts)
+	if result.Status != StatusPass || len(result.Warnings) != 1 || !strings.Contains(result.Warnings[0], "12") {
+		t.Fatalf("partial scan = %+v", result)
+	}
+	if result := checkProcesses(checkFacts{ProcessesErr: fs.ErrPermission}); result.Status != StatusSkip {
+		t.Fatalf("unreadable /proc = %+v", result)
+	}
+}
+
+func TestCheckAcceptTurnsAFailIntoSkip(t *testing.T) {
+	facts := checkFacts{Services: []svcListItem{{Unit: "nginx.service", LoadState: "loaded", ActiveState: "failed"}}}
+	results := evaluateCheck(facts, newCheckPolicy(checkConfig{Accept: []string{"service"}}, ""))
+	service := results[0]
+	if service.Probe != "check.service" || service.Status != StatusSkip || service.Metrics["accepted_status"] != StatusFail || service.Error != nil || exitCode(results[:1]) != 0 {
+		t.Fatalf("accepted fail = %+v", service)
+	}
+}

@@ -13,6 +13,7 @@ The screen uses synthetic demo data with the current UI renderer. [Reproduce the
 | Task | Start here | Details |
 | --- | --- | --- |
 | Inspect a host and its resource use | `edc info`, `edc top` | [Host information](docs/host.md#host-information), [dashboard](docs/monitoring.md#top-dashboard) |
+| Find what is broken now | `edc check`, `edc check --group <group>` | [Health check](docs/host.md#health-check-linux), [check routines](docs/host.md#check-routines) |
 | Find where disk space goes | `edc du /var`, `edc clean` | [Directory usage](docs/disk-usage.md#disk-usage-of-a-directory-linux-and-macos), [known caches](docs/disk-usage.md#known-cache-sizes-linux-and-macos) |
 | Investigate a service or container | `edc svc`, `edc ctr` | [Services](docs/host.md#service-view-linux), [containers](docs/host.md#container-view-linux-and-macos) |
 | Check a connection | `edc dns lookup example.com`, `edc tcp check example.com:443` | [Network checks](docs/network.md#network-checks), [combined diagnosis](docs/network.md#doctor-live-screen) |
@@ -20,7 +21,7 @@ The screen uses synthetic demo data with the current UI renderer. [Reproduce the
 | Record and compare runs | `edc top -w`, `edc history`, `edc log -- <command>` | [Resource history](docs/history.md#top-recordings-and-history), [command logs](docs/history.md#cron-and-application-logs) |
 | Work across hosts | `edc remote`, `edc clean --group <group>` | [Remote recipes](docs/remote.md#remote-recipes), [remote disk survey](docs/disk-usage.md#clean-on-more-hosts) |
 
-Inspection commands do not automatically repair the host. Explicit actions have effects: `remote` runs recipe commands, `watch fs --exec` and `--rules` run configured actions, and `route`, `disk`, and `change` modify host settings. Recording, log rotation, pruning, setup, and updates also write or delete data. See each command's requirements before using it in automation.
+Inspection commands do not automatically repair the host. Explicit actions have effects: `remote` runs recipe commands, `check <routine>` runs the commands of a configured routine, `watch fs --exec` and `--rules` run configured actions, and `route`, `disk`, and `change` modify host settings. Recording, log rotation, pruning, setup, and updates also write or delete data. See each command's requirements before using it in automation.
 
 [Install](#install) · [Quick start](#quick-start) · [Configuration](docs/configuration.md#command-defaults) · [Build from source](docs/configuration.md#build) · [Exit codes](#exit-code)
 
@@ -81,16 +82,17 @@ Use the task table above to choose the next command. `edc help` lists commands, 
 
 ## Host inspection
 
-Inspect configuration, memory, disks, and listening ports with `info`. On Linux, inspect systemd services, recent changes, and kernel events. On Linux and macOS, inspect Docker containers through a Unix socket.
+Inspect configuration, memory, disks, and listening ports with `info`. On Linux, `check` looks for failed services, defunct processes, full disks, OOM kills, and other current problems in one run. Also on Linux, inspect systemd services, recent changes, and kernel events. On Linux and macOS, inspect Docker containers through a Unix socket.
 
 ```bash
 edc info --public=false
+edc check
 edc svc
 edc ctr
 edc changes --since 2h
 ```
 
-[Host information, service and container views, audit, and events →](docs/host.md)
+[Host information, health check, service and container views, audit, and events →](docs/host.md)
 
 By default, `edc ctr` uses Docker Engine API data only. See the [container guide](docs/host.md#container-view-linux-and-macos) for the optional local Linux collector.
 
@@ -260,7 +262,7 @@ flowchart LR
 | Guide | Contents |
 | --- | --- |
 | [Installation and configuration](docs/configuration.md) | Installation, updates, build, language, defaults, completion |
-| [Host inspection](docs/host.md) | Host information, services, containers, audit, changes, events |
+| [Host inspection](docs/host.md) | Host information, health check, services, containers, audit, changes, events |
 | [Live resource monitoring](docs/monitoring.md) | Top controls, thresholds, processes, AI usage |
 | [Network checks](docs/network.md) | DNS, TCP, TLS, HTTP, doctor, location, file watching |
 | [Disk usage and known caches](docs/disk-usage.md) | Directory browser, caches, Docker, worktrees, remote surveys |

@@ -35,7 +35,7 @@ Linux에서는 `edc info`의 `Network Limits`에 conntrack 사용량과 한도, 
 
 ## 상태 점검 (Linux)
 
-`edc check`는 Linux 호스트에서 지금 고장 난 곳을 찾습니다. service, process, 메모리, 디스크, 커널 로그, 시간, 네트워크, container, 파일 핸들, 재부팅 필요 여부를 읽습니다. 아무것도 바꾸지 않고 외부로 보내지 않습니다. 문제마다 이어서 볼 edc 명령을 알려 줍니다.
+`edc check`는 Linux 호스트에서 지금 고장 난 곳을 찾습니다. service, process, 메모리, 디스크, 커널 로그, 시간, 네트워크, container, 파일 핸들, 재부팅 필요 여부를 읽습니다. 기본 점검은 아무것도 바꾸지 않고 외부로 보내지 않습니다. [루틴](#점검-루틴)은 설정 파일에 적은 셸 명령도 실행합니다. 문제마다 이어서 볼 edc 명령을 알려 줍니다.
 
 ```bash
 edc check
@@ -83,6 +83,30 @@ usage = [80, 90]
 `[check.limits]`의 값은 모두 `[warn, fail]` 백분율입니다. `usage`는 conntrack, TCP 메모리, 파일 핸들에 적용됩니다. `memory_available`은 남은 비율이므로 warn 값이 fail 값보다 크거나 같아야 합니다.
 
 `--group`으로 실행하면 각 호스트가 자기 설정 파일을 읽습니다. `[check]` 표는 결과가 나온 호스트에 넣으세요.
+
+### 점검 루틴
+
+루틴은 `config.toml`에 이름을 붙여 둔 규칙 묶음입니다. `edc check <루틴>`으로 실행하고, 그룹의 호스트마다 실행하려면 `edc check --group <이름> --routine <루틴>`을 씁니다.
+
+```toml
+[check.routines.web]
+checks = ["service", "disk", "kernel", "network"]
+require_units = ["nginx.service", "app-api.service"]
+
+[[check.routines.web.commands]]
+name = "app-health"
+run = "curl -fsS http://localhost:8080/health"
+timeout = "5s"
+level = "fail"
+```
+
+`checks`에 적은 점검만 결과에 나옵니다. 비워 두면 모든 점검이 나옵니다. accept 목록과 `require_units`는 `[check]`의 값에 더해집니다. 루틴의 `limits` 표에 적은 값은 `[check.limits]`의 같은 값을 대신합니다.
+
+명령은 `sh -c`로 실행하고, 결과 이름은 `check.cmd.<name>`입니다. 종료 코드가 0이면 `pass`이고, 다른 코드면 `fail`입니다. `level = "warn"`이면 `warn`이 됩니다. `timeout`(기본 10s) 안에 끝나지 않으면 `fail`이고, edc가 명령과 그 자식 process를 멈춥니다. 결과에는 출력의 마지막 10줄이 4 KiB까지 남습니다. 명령의 결과를 받아들이려면 `accept`에 `cmd.<name>`을 넣으세요.
+
+다른 사용자가 설정 파일을 바꿀 수 없을 때만 명령을 실행합니다. 그룹이나 다른 사용자가 파일을 쓸 수 있거나 파일의 주인이 다른 사용자이면, 명령마다 `skip`으로 나옵니다. `sudo edc check`는 root의 설정 파일을 읽으므로, 이 규칙이 다른 사용자가 root 권한으로 명령을 실행하는 것을 막습니다.
+
+루틴과 명령의 이름에는 `a-z`, `0-9`, `_`, `-`만 씁니다.
 
 ## 호스트 점검 (Linux)
 

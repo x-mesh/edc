@@ -4,12 +4,13 @@ import (
 	"context"
 	"errors"
 	"io/fs"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 )
 
-var checkTestPolicy = newCheckPolicy(checkConfig{})
+var checkTestPolicy = newCheckPolicy(checkConfig{}, "")
 
 func TestCheckServicesFailsOnFailedUnitsAndWarnsOnChangingOnes(t *testing.T) {
 	facts := checkFacts{Services: []svcListItem{
@@ -265,7 +266,7 @@ func TestCollectCheckFactsReadsEverySourceInOrder(t *testing.T) {
 		fileHandles: func() (*infoFileHandles, error) { return &infoFileHandles{Used: 1, Max: 100}, nil },
 		reboot:      func() checkReboot { return checkReboot{} },
 	}
-	results := evaluateCheck(collectCheckFacts(context.Background(), sources), checkTestPolicy)
+	results := evaluateCheck(collectCheckFacts(context.Background(), sources, nil), checkTestPolicy)
 	want := []string{"service", "process", "memory", "disk", "kernel", "time", "network", "container", "filehandles", "reboot"}
 	if len(results) != len(want) {
 		t.Fatalf("results = %d", len(results))
@@ -283,7 +284,7 @@ func TestCollectCheckFactsReadsEverySourceInOrder(t *testing.T) {
 func TestCheckPolicyAcceptsNamedItemsAndKeepsThem(t *testing.T) {
 	policy := newCheckPolicy(checkConfig{
 		AcceptUnits: []string{"systemd-networkd-wait-online.service"}, AcceptContainers: []string{"job-*"}, AcceptMounts: []string{"/media/*"},
-	})
+	}, "")
 	services := checkFacts{Services: []svcListItem{{Unit: "systemd-networkd-wait-online.service", LoadState: "loaded", ActiveState: "failed"}}}
 	result := checkServices(services, policy)
 	if result.Status != StatusPass || !strings.Contains(result.Summary, "(accepted 1)") {
@@ -306,7 +307,7 @@ func TestCheckPolicyAcceptsNamedItemsAndKeepsThem(t *testing.T) {
 }
 
 func TestCheckPolicyRequiresUnits(t *testing.T) {
-	policy := newCheckPolicy(checkConfig{RequireUnits: []string{"nginx.service", "sshd.service"}})
+	policy := newCheckPolicy(checkConfig{RequireUnits: []string{"nginx.service", "sshd.service"}}, "")
 	facts := checkFacts{Services: []svcListItem{{Unit: "sshd.service", LoadState: "loaded", ActiveState: "active", SubState: "running"}}}
 	result := checkServices(facts, policy)
 	if result.Status != StatusFail || !strings.Contains(result.Summary, "nginx.service") || strings.Contains(result.Summary, "sshd.service") || result.Next != "edc svc nginx.service" {
@@ -320,7 +321,7 @@ func TestCheckPolicyRequiresUnits(t *testing.T) {
 }
 
 func TestCheckPolicyLimitsAndWholeCheckAccept(t *testing.T) {
-	policy := newCheckPolicy(checkConfig{Limits: checkLimitsConfig{Disk: []float64{80, 90}, MemoryAvailable: []float64{20, 10}, Usage: []float64{50, 60}}})
+	policy := newCheckPolicy(checkConfig{Limits: checkLimitsConfig{Disk: []float64{80, 90}, MemoryAvailable: []float64{20, 10}, Usage: []float64{50, 60}}}, "")
 	if result := checkDisks(checkFacts{Disks: []checkDisk{{Mount: "/", FSType: "ext4", Percent: 85}}}, policy); result.Status != StatusWarn {
 		t.Fatalf("disk limit = %+v", result)
 	}
@@ -331,7 +332,7 @@ func TestCheckPolicyLimitsAndWholeCheckAccept(t *testing.T) {
 		t.Fatalf("usage limit = %+v", result)
 	}
 
-	accepted := evaluateCheck(checkFacts{Reboot: checkReboot{Flag: true}, ProcessesErr: fs.ErrPermission}, newCheckPolicy(checkConfig{Accept: []string{"reboot"}}))
+	accepted := evaluateCheck(checkFacts{Reboot: checkReboot{Flag: true}, ProcessesErr: fs.ErrPermission}, newCheckPolicy(checkConfig{Accept: []string{"reboot"}}, ""))
 	reboot := accepted[len(accepted)-1]
 	if reboot.Probe != "check.reboot" || reboot.Status != StatusSkip || reboot.Metrics["accepted_status"] != StatusWarn || exitCode([]Result{reboot}) != 0 {
 		t.Fatalf("accepted reboot = %+v", reboot)
@@ -357,8 +358,8 @@ func TestCollectCheckFactsDoesNotWaitPastTheTimeout(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 	started := time.Now()
-	facts := collectCheckFacts(ctx, sources)
-	if time.Since(started) > 2*time.Second || len(facts.TimedOut) != 1 || facts.TimedOut[0] != "disk" {
+	facts := collectCheckFacts(ctx, sources, nil)
+	if time.Since(started) > time.Second || len(facts.TimedOut) != 1 || facts.TimedOut[0] != "disk" {
 		t.Fatalf("timed out = %v after %s", facts.TimedOut, time.Since(started))
 	}
 	for _, result := range evaluateCheck(facts, checkTestPolicy) {
@@ -394,9 +395,27 @@ func TestCheckProcessesWarnsAboutUnreadableProcesses(t *testing.T) {
 
 func TestCheckAcceptTurnsAFailIntoSkip(t *testing.T) {
 	facts := checkFacts{Services: []svcListItem{{Unit: "nginx.service", LoadState: "loaded", ActiveState: "failed"}}}
-	results := evaluateCheck(facts, newCheckPolicy(checkConfig{Accept: []string{"service"}}))
+	results := evaluateCheck(facts, newCheckPolicy(checkConfig{Accept: []string{"service"}}, ""))
 	service := results[0]
 	if service.Probe != "check.service" || service.Status != StatusSkip || service.Metrics["accepted_status"] != StatusFail || service.Error != nil || exitCode(results[:1]) != 0 {
 		t.Fatalf("accepted fail = %+v", service)
+	}
+}
+
+func TestCollectCheckFactsKeepsResultsThatArriveWithTheDeadline(t *testing.T) {
+	// ctx가 이미 끝났어도 원천이 바로 답하면 그 결과를 써야 한다. select가 deadline을 먼저 고르는 경우를 여러 번 만든다.
+	sources := checkTestSources()
+	for range 50 {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		facts := collectCheckFacts(ctx, sources, nil)
+		for _, id := range facts.TimedOut {
+			if id == "memory" && facts.Memory.Total != 0 {
+				t.Fatalf("memory arrived but was marked timed out")
+			}
+		}
+		if facts.Memory.Total == 0 && !slices.Contains(facts.TimedOut, "memory") {
+			t.Fatalf("memory is neither collected nor timed out")
+		}
 	}
 }

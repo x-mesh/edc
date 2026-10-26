@@ -87,17 +87,19 @@ command:
       since: "どこまでさかのぼるか、24h や 90m のような Go の duration"
       verbose: "最新の 50 件で切らずにすべて表示"
   check:
-    summary: "いま壊れている箇所を一度に洗い出す読み取り専用の点検 (Linux)"
+    summary: "いま壊れている箇所を一度に洗い出す点検 (Linux)"
     option:
+      routine: "config.toml の [check.routines] にあるルーチンを実行"
       group: "edc remote グループのホストごとに check を実行"
       inventory: "--group で使う inventory ファイル"
     notes:
       - "service、process、メモリ、ディスク、カーネルログ、時刻、ネットワーク、container、ファイルハンドル、再起動の要否を見ます。"
-      - "何も変更せず、外部に何も送りません。"
+      - "標準の点検は何も変更せず、外部に何も送りません。"
       - "問題ごとに続けて見る edc コマンドを next で示します。"
       - "root でなければ一部の点検は pass ではなく skip です。"
       - "点検は Linux でのみ行います。--group は macOS からも実行できます。"
       - "--group は SSH でホストごとに edc check を実行します。各ホストに check を含む edc が必要です。"
+      - "ルーチンは config.toml の unit ルール、基準値、シェルコマンドを加えます。コマンドは 0 で終われば pass です。"
   events:
     summary: "カーネルと systemd の障害シグナルを時系列で整理 (Linux)"
     option:

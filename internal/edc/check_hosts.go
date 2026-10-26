@@ -84,7 +84,7 @@ func (row checkHostRow) worst() Status {
 }
 
 // runCheckGroup은 그룹의 호스트에서 check를 실행하고 표나 JSON으로 낸다.
-func runCheckGroup(options commonOptions, group, inventoryPath, version string, run cleanRemoteRunner, stdout io.Writer) int {
+func runCheckGroup(options commonOptions, group, inventoryPath, routine, version string, run cleanRemoteRunner, stdout io.Writer) int {
 	if inventoryPath == "" {
 		cwd, err := os.Getwd()
 		if err != nil {
@@ -112,9 +112,12 @@ func runCheckGroup(options commonOptions, group, inventoryPath, version string, 
 	started := time.Now()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	rows := checkCollectHosts(ctx, hosts, remoteParallelForGroup(inventory, group, 0), options.timeout, run)
+	rows := checkCollectHosts(ctx, hosts, remoteParallelForGroup(inventory, group, 0), options.timeout, routine, run)
 	result := checkGroupResult(rows, started)
 	target := map[string]interface{}{"group": group, "inventory": inventoryPath}
+	if routine != "" {
+		target["routine"] = routine
+	}
 	if options.jsonPath != "" {
 		return emit(options, buildReport(version, started, target, []Result{result}, options.redact))
 	}
@@ -132,7 +135,7 @@ func runCheckGroup(options commonOptions, group, inventoryPath, version string, 
 }
 
 // checkCollectHosts는 호스트를 parallel개씩 동시에 처리하고 인벤토리 순서대로 돌려준다.
-func checkCollectHosts(ctx context.Context, hosts []remoteHost, parallel int, timeout time.Duration, run cleanRemoteRunner) []checkHostRow {
+func checkCollectHosts(ctx context.Context, hosts []remoteHost, parallel int, timeout time.Duration, routine string, run cleanRemoteRunner) []checkHostRow {
 	if parallel < 1 {
 		parallel = 1
 	}
@@ -140,6 +143,10 @@ func checkCollectHosts(ctx context.Context, hosts []remoteHost, parallel int, ti
 	slots := make(chan struct{}, parallel)
 	var running sync.WaitGroup
 	command := fmt.Sprintf("edc check --json - --timeout %s", timeout)
+	// 이름은 runCheck가 checkNamePattern으로 검사했다. 셸에 그대로 넣어도 된다.
+	if routine != "" {
+		command += " " + routine
+	}
 	for index, host := range hosts {
 		running.Add(1)
 		slots <- struct{}{}
@@ -220,7 +227,8 @@ func checkGroupResult(rows []checkHostRow, started time.Time) Result {
 }
 
 func formatCheckGroup(rows []checkHostRow, width int) string {
-	header := append([]string{T("check.group.col.host")}, checkIDs...)
+	// 사용자 명령은 루틴마다 다르므로 열 하나에 가장 나쁜 판정만 적고, 문제는 아래 상세에 이름과 함께 적는다.
+	header := append(append([]string{T("check.group.col.host")}, checkIDs...), "cmd")
 	table := [][]string{header}
 	for _, row := range rows {
 		if row.Status != checkHostChecked {
@@ -232,8 +240,13 @@ func formatCheckGroup(rows []checkHostRow, width int) string {
 			continue
 		}
 		statuses := map[string]string{}
+		commands := Status("")
 		for _, result := range row.Results {
-			statuses[strings.TrimPrefix(result.Probe, "check.")] = strings.ToUpper(result.Status)
+			id := strings.TrimPrefix(result.Probe, "check.")
+			statuses[id] = strings.ToUpper(result.Status)
+			if strings.HasPrefix(id, "cmd.") && (commands == "" || checkSeverity(Status(result.Status)) > checkSeverity(commands)) {
+				commands = Status(result.Status)
+			}
 		}
 		// macOS처럼 점검을 하지 않은 호스트는 결과가 skip 하나다. 열마다 —를 채우지 않고 그 이유를 적는다.
 		if len(row.Results) == 1 && row.Results[0].Probe == "check" {
@@ -247,6 +260,11 @@ func formatCheckGroup(rows []checkHostRow, width int) string {
 				cell = "—"
 			}
 			cells = append(cells, cell)
+		}
+		if commands == "" {
+			cells = append(cells, "—")
+		} else {
+			cells = append(cells, strings.ToUpper(string(commands)))
 		}
 		table = append(table, cells)
 	}

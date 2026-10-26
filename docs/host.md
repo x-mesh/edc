@@ -45,7 +45,7 @@ On Linux, `edc info` adds `Network Limits`: conntrack occupancy, TCP memory page
 
 ## Health check (Linux)
 
-`edc check` looks for what is broken on a Linux host now. It reads services, processes, memory, disks, the kernel log, time, network, containers, file handles, and the reboot state. It changes nothing, and it sends nothing over the network. Each finding names the edc command that shows more.
+`edc check` looks for what is broken on a Linux host now. It reads services, processes, memory, disks, the kernel log, time, network, containers, file handles, and the reboot state. The built-in checks change nothing, and they send nothing over the network. A [routine](#check-routines) can also run shell commands from the config file. Each finding names the edc command that shows more.
 
 ```bash
 edc check
@@ -93,6 +93,30 @@ usage = [80, 90]
 Each value in `[check.limits]` is `[warn, fail]` in percent. `usage` applies to conntrack, TCP memory, and file handles. `memory_available` is the share that is left, so its warn value must be at least its fail value.
 
 With `--group`, each host reads its own config file. Put the `[check]` table on the host that the finding comes from.
+
+### Check routines
+
+A routine is a named set of rules in `config.toml`. Run it with `edc check <routine>`, or with `edc check --group <name> --routine <routine>` on each host of a group.
+
+```toml
+[check.routines.web]
+checks = ["service", "disk", "kernel", "network"]
+require_units = ["nginx.service", "app-api.service"]
+
+[[check.routines.web.commands]]
+name = "app-health"
+run = "curl -fsS http://localhost:8080/health"
+timeout = "5s"
+level = "fail"
+```
+
+`checks` selects the checks to show. If `checks` is empty, the routine shows all checks. The accept lists and `require_units` add to the values in `[check]`. A value in the `limits` table of the routine replaces the same value in `[check.limits]`.
+
+Each command runs with `sh -c`, and its result is `check.cmd.<name>`. Exit code 0 is `pass`. Another exit code is `fail`, or `warn` if `level = "warn"`. A command that does not end in `timeout` (default 10s) is `fail`, and edc stops the command and its child processes. The result keeps the last ten lines of output, up to 4 KiB. Add `cmd.<name>` to `accept` to accept the result of a command.
+
+edc runs the commands only if other users cannot change the config file. If the group or others can write the file, or another user owns it, each command shows `skip`. `sudo edc check` reads the config file of root, so this rule stops other users from running commands as root.
+
+Routine and command names use only `a-z`, `0-9`, `_`, and `-`.
 
 ## Host audit (Linux)
 

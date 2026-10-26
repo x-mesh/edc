@@ -7,6 +7,7 @@ check:
     unreadable: "%s를 읽지 못했습니다: %s"
     timed_out: "--timeout 안에 원천이 응답하지 않았습니다"
   evidence:
+    output: "출력"
     issues: "찾은 문제"
     events: "커널 신호"
   service:
@@ -70,3 +71,13 @@ check:
       failed: "edc check 실패"
     error:
       inventory_without_group: "--inventory는 --group과 함께 써야 합니다"
+  error:
+    routine_name: "%q는 루틴 이름이 아닙니다. a-z, 0-9, _, -만 쓰세요"
+    unknown_routine: "[check.routines]에 %q가 없습니다. 있는 루틴: %s"
+  cmd:
+    ok: "%s 만에 exit 0"
+    failed: "exit %d"
+    timeout: "%s 안에 끝나지 않아 명령과 자식 process를 멈췄습니다"
+    not_run: "명령을 실행하지 않았습니다: %s"
+    config_writable: "%s를 그룹이나 다른 사용자가 쓸 수 있습니다 (%s)"
+    config_owner: "%s의 주인이 다른 사용자입니다 (uid %d)"

@@ -7,6 +7,7 @@ check:
     unreadable: "could not read %s: %s"
     timed_out: "the source did not answer within --timeout"
   evidence:
+    output: "output"
     issues: "findings"
     events: "kernel signals"
   service:
@@ -70,3 +71,13 @@ check:
       failed: "edc check failed"
     error:
       inventory_without_group: "--inventory needs --group"
+  error:
+    routine_name: "%q is not a routine name: use only a-z, 0-9, _ and -"
+    unknown_routine: "no routine %q in [check.routines]; routines: %s"
+  cmd:
+    ok: "exit 0 in %s"
+    failed: "exit %d"
+    timeout: "no result in %s, the command and its children were stopped"
+    not_run: "commands not run: %s"
+    config_writable: "%s can be written by group or others (%s)"
+    config_owner: "%s belongs to another user (uid %d)"

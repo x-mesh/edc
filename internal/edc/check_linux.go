@@ -5,6 +5,7 @@ package edc
 import (
 	"context"
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -41,12 +42,18 @@ func readCheckProcesses() ([]checkProcess, error) {
 		return nil, err
 	}
 	var processes []checkProcess
+	unreadable := 0
 	for _, entry := range entries {
 		pid, err := strconv.Atoi(entry.Name())
 		if err != nil {
 			continue
 		}
 		data, err := os.ReadFile("/proc/" + entry.Name() + "/stat")
+		// 목록을 읽은 뒤 끝난 process는 ENOENT나 ESRCH다. hidepid=1처럼 막힌 process만 세어 놓친 상태가 있음을 알린다.
+		if errors.Is(err, fs.ErrPermission) {
+			unreadable++
+			continue
+		}
 		if err != nil {
 			continue
 		}
@@ -58,6 +65,9 @@ func readCheckProcesses() ([]checkProcess, error) {
 	}
 	if len(processes) == 0 {
 		return nil, errors.New("no readable process statistics")
+	}
+	if unreadable > 0 {
+		return processes, checkPartialError{Unreadable: unreadable}
 	}
 	return processes, nil
 }
@@ -135,7 +145,11 @@ func readCheckFileHandles() (*infoFileHandles, error) {
 
 func readCheckReboot() checkReboot {
 	var reboot checkReboot
-	if _, err := os.Stat("/var/run/reboot-required"); err == nil {
+	_, err := os.Stat("/var/run/reboot-required")
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		reboot.Err = err
+	}
+	if err == nil {
 		reboot.Flag = true
 		if data, err := os.ReadFile("/var/run/reboot-required.pkgs"); err == nil {
 			reboot.Packages = uniqueFields(string(data))

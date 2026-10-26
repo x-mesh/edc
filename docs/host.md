@@ -43,9 +43,9 @@ If memory or process collection fails, the command shows the error and returns e
 
 On Linux, `edc info` adds `Network Limits`: conntrack occupancy, TCP memory pages against the `tcp_mem` ceiling with the orphan socket count, the local port range and reserved ports, accept/SYN backlog limits, socket buffer ceilings, receive backlog/budgets, neighbor limits, forwarding, and `rp_filter`. Use `-v` for TCP buffer settings, sysctl names, and reasons for unavailable values. Missing or inaccessible values are `unavailable`; these Linux limits are `unsupported` on macOS. Configuration alone does not establish a connection failure.
 
-## Health check (Linux)
+## Health check (Linux and macOS)
 
-`edc check` looks for what is broken on a Linux host now. It reads services, processes, memory, disks, the kernel log, time, network, containers, file handles, and the reboot state. The built-in checks change nothing, and they send nothing over the network. A [routine](#check-routines) can also run shell commands from the config file. Each finding names the edc command that shows more.
+`edc check` looks for what is broken on a Linux or macOS host now. It reads services, processes, memory, disks, the kernel log, time, network, containers, file handles, and the reboot state. The built-in checks change nothing, and they send nothing over the network. A [routine](#check-routines) can also run shell commands from the config file. Each finding names the edc command that shows more.
 
 ```bash
 edc check
@@ -62,11 +62,27 @@ edc check --group daily             # run edc check on each host of an edc remot
 | `kernel` | an OOM kill, a disk I/O error, a read-only remount, a lockup, or an oops in the last hour | a segfault, a hung task, or a kernel warning in the last hour |
 | `time` | | the clock is not synchronized |
 | `network` | no default route, or 90% or more use of conntrack or TCP memory | no `/etc/resolv.conf`, no nameserver, or the same use at 80% |
-| `container` | a container stopped with a nonzero code or for memory | a container restarts, pauses, or is unhealthy |
+| `container` | a container with a restart policy stopped with a nonzero code or for memory | a container without a restart policy stopped with an error in the last 24 hours, or a container restarts, pauses, or is unhealthy |
 | `filehandles` | 90% or more of `fs.file-max` is in use | 80% or more of `fs.file-max` is in use |
 | `reboot` | | a package asks for a reboot, or `/boot` has a newer kernel than the running kernel |
 
 A `fail` makes the exit code 1. edc does not judge counters that only grow after boot, such as NIC drops. One reading cannot show when they changed.
+
+On macOS, the checks read other sources:
+
+| Check | macOS source | Difference from Linux |
+|---|---|---|
+| `service` | `launchctl list` | A job that is not running and ended with a positive exit code is failed. A job that ended by a signal, such as `-9` for an idle agent, is not. As a user, edc sees the agents of your session. With `sudo`, it sees the system daemons. `next` is `launchctl list <label>`. |
+| `process` | `ps` | Only defunct processes count. macOS has no D state with the Linux meaning. |
+| `memory` | `kern.memorystatus_vm_pressure_level` | The pressure level decides: `warn` warns and `critical` fails. Free memory is low on macOS by design. |
+| `disk` | `df` and `statfs` | Read-only mounts are not judged. They are the sealed system volume or a disk image, such as a mounted installer, that is full by design. |
+| `network` | `route -n get default`, `/etc/resolv.conf` | conntrack and TCP memory are not checked. |
+| `kernel` | `/Library/Logs/DiagnosticReports`, `~/Library/Logs/DiagnosticReports` | A report written in the last hour counts. A kernel panic and a `JetsamEvent`, which means that the kernel ended processes for memory, fail. An app crash report or a hang report warns. CPU and wakeup reports do not count. |
+| `container`, `filehandles` | Docker socket, `kern.num_files` and `kern.maxfiles` | Same as Linux. |
+| `thermal` | `notifyutil -g com.apple.system.thermalpressurelevel` | macOS only. `heavy` warns, and `trapping` or `sleeping` fails. `moderate` is common under load and does not warn. |
+| `backup` | `tmutil destinationinfo`, `tmutil latestbackup` | macOS only. A latest Time Machine backup older than seven days warns. Without a destination, it shows `skip`. |
+
+`time` and `reboot` show `skip` on macOS. Linux results do not include `thermal` and `backup`.
 
 `--group` uses the inventory and the OpenSSH setup of `edc remote`. Each host must have an edc with `check`. The table shows one row for each host. If a host gives no result, the row shows the reason, for example an SSH failure or an edc without `check`.
 

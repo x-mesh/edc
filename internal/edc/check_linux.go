@@ -119,24 +119,6 @@ func readCheckNetwork() checkNetwork {
 	return network
 }
 
-func readCheckContainers(ctx context.Context) ([]ctrListItem, error) {
-	path, err := ctrSocketEndpoint()
-	if err != nil {
-		return nil, err
-	}
-	// docker가 없는 host가 흔하다. socket이 없으면 연결 오류가 아니라 docker가 없는 것이다.
-	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
-		return nil, errCtrNoDocker
-	}
-	sources, _ := hostCtrSources()
-	if sources.close != nil {
-		defer sources.close()
-	}
-	// 자원 표본은 container마다 stats를 한 번 더 읽는다. 상태 판정에는 쓰지 않는다.
-	sources.listStats = nil
-	return collectCtrList(ctx, sources, false)
-}
-
 func readCheckFileHandles() (*infoFileHandles, error) {
 	data, err := os.ReadFile("/proc/sys/fs/file-nr")
 	if err != nil {

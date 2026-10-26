@@ -1,6 +1,6 @@
-//go:build !linux
+//go:build !linux && !darwin
 
 package edc
 
-// check는 systemd, /proc, 커널 기록을 읽는다. macOS에는 같은 원천이 없다.
+// check의 원천은 Linux와 macOS에만 있다.
 func hostCheckSources() (checkSources, bool) { return checkSources{}, false }

@@ -6,6 +6,7 @@ check:
     needs_root: "%s를 읽으려면 root가 필요합니다"
     unreadable: "%s를 읽지 못했습니다: %s"
     timed_out: "--timeout 안에 원천이 응답하지 않았습니다"
+    unsupported_os: "이 OS에서는 점검하지 않습니다"
   evidence:
     output: "출력"
     issues: "찾은 문제"
@@ -21,6 +22,7 @@ check:
     blocked: "I/O를 기다리며 멈춘(D) process %d개: %s"
     ok: "process %d개, defunct와 D 상태 없음"
   memory:
+    pressure: "memory pressure %s, %s"
     available: "가용 메모리 %s / %s (%.0f%%)"
   disk:
     usage: "%s 사용률 %.0f%%"
@@ -46,13 +48,20 @@ check:
     ok: "default route %s, nameserver %d개"
   container:
     unreachable: "Docker에 연결하지 못했습니다: %s"
-    failed: "실패한 container %d개: %s"
+    failed: "돌아야 하는데 멈춘 container %d개: %s"
+    recent: "최근 24시간 안에 오류로 멈춘 container %d개: %s"
     attention: "손볼 일이 있는 container %d개: %s"
     ok: "container %d개, 실패 없음"
   filehandles:
     unlimited: "파일 핸들 %d개 사용 중, 시스템 한도 없음"
     unknown: "파일 핸들 한도를 읽지 못했습니다"
     usage: "파일 핸들 %d / %d (%.0f%%)"
+  thermal:
+    level: "thermal pressure %s"
+  backup:
+    none: "Time Machine 백업 대상이 없습니다"
+    unknown: "마지막 백업 시각을 읽지 못했습니다"
+    latest: "마지막 백업 %s, %s 전"
   reboot:
     flag: "재부팅 필요: %s"
     none: "비교할 설치 커널이 없습니다"

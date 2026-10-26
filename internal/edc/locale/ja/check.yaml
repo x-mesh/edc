@@ -6,6 +6,7 @@ check:
     needs_root: "%s を読むには root が必要です"
     unreadable: "%s を読めませんでした: %s"
     timed_out: "--timeout 以内にソースが応答しませんでした"
+    unsupported_os: "この OS では点検しません"
   evidence:
     output: "出力"
     issues: "見つかった問題"
@@ -21,6 +22,7 @@ check:
     blocked: "I/O 待ちで止まった (D) process %d 個: %s"
     ok: "process %d 個、defunct と D 状態なし"
   memory:
+    pressure: "memory pressure %s、%s"
     available: "利用可能メモリ %s / %s (%.0f%%)"
   disk:
     usage: "%s 使用率 %.0f%%"
@@ -46,13 +48,20 @@ check:
     ok: "default route %s、nameserver %d 個"
   container:
     unreachable: "Docker に接続できませんでした: %s"
-    failed: "失敗した container %d 個: %s"
+    failed: "動いているべきなのに止まった container %d 個: %s"
+    recent: "直近 24 時間にエラーで止まった container %d 個: %s"
     attention: "対応が必要な container %d 個: %s"
     ok: "container %d 個、失敗なし"
   filehandles:
     unlimited: "ファイルハンドル %d 個使用中、システム上限なし"
     unknown: "ファイルハンドルの上限を読めませんでした"
     usage: "ファイルハンドル %d / %d (%.0f%%)"
+  thermal:
+    level: "thermal pressure %s"
+  backup:
+    none: "Time Machine のバックアップ先がありません"
+    unknown: "最新バックアップの時刻を読めませんでした"
+    latest: "最新バックアップ %s、%s 前"
   reboot:
     flag: "再起動が必要: %s"
     none: "比較するインストール済みカーネルがありません"

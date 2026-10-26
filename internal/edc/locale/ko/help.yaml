@@ -86,6 +86,14 @@ command:
     option:
       since: "얼마나 이전까지 볼지, 24h나 90m 같은 Go duration"
       verbose: "최근 50건에서 자르지 않고 모두 보기"
+  check:
+    summary: "지금 고장 난 곳을 한 번에 훑는 읽기 전용 점검 (Linux)"
+    notes:
+      - "service, process, 메모리, 디스크, 커널 로그, 시간, 네트워크, container, 파일 핸들, 재부팅 필요 여부를 봅니다."
+      - "아무것도 바꾸지 않고 외부로 보내지 않습니다."
+      - "문제마다 이어서 볼 edc 명령을 next로 알려 줍니다."
+      - "root가 아니면 일부 점검은 통과가 아니라 skip입니다."
+      - "Linux에서만 동작합니다."
   events:
     summary: "커널과 systemd의 장애 신호를 시간 순서로 정리 (Linux)"
     option:

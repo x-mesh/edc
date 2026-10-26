@@ -121,6 +121,8 @@ func Run(args []string, version string) int {
 		return runCtr(args[1:], version)
 	case "changes":
 		return runChanges(args[1:], version)
+	case "check":
+		return runCheck(args[1:], version)
 	case "events":
 		return runEvents(args[1:], version)
 	case "quality":

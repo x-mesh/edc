@@ -186,3 +186,27 @@ func TestViewScreenForgetsEvictedLastError(t *testing.T) {
 		t.Fatalf("evicted error stays: failures %d last %q", model.stats.failures, model.stats.lastError.text)
 	}
 }
+
+// 목록이 화면을 다 채운 뒤 줄바꿈 없는 줄이 오면 목록에 한 줄이 더 붙는다. 넓은 화면에서도 목록은 화면 높이에 맞춰
+// 잘리고, 오른쪽 패널과 줄 수가 같아야 한다.
+func TestViewScreenSidePanelWithFullListAndPartialLine(t *testing.T) {
+	for _, height := range []int{1, 2, 3, 10, 40} {
+		model := newViewScreenModel("app", viewKeepLines)
+		model.width, model.height = 140, height
+		var raw []string
+		for index := range 50 {
+			raw = append(raw, fmt.Sprintf("2026-10-26 10:00:%02d ERROR failure %d", index%60, index))
+		}
+		model.ingest(raw, time.Now(), false)
+		model.receive(viewDataMsg{event: viewFollowEvent{data: []byte("2026-10-26 10:01:00 ERROR partial")}}, time.Now())
+		if len(model.pending) == 0 {
+			t.Fatal("the last line must stay pending")
+		}
+		for _, filter := range []string{"", "partial"} {
+			model.filter = filter
+			if rows := model.screen(false); len(rows) != max(height, len(model.header(false))) {
+				t.Fatalf("height %d filter %q: %d rows", height, filter, len(rows))
+			}
+		}
+	}
+}

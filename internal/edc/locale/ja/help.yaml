@@ -97,7 +97,7 @@ command:
       - "標準の点検は何も変更せず、外部に何も送りません。"
       - "問題ごとに続けて見る edc コマンドを next で示します。"
       - "root でなければ一部の点検は pass ではなく skip です。"
-      - "macOS では launchd、memory pressure、ディスク、ネットワーク、container、ファイルハンドルを見て、残りは skip です。"
+      - "macOS では launchd、memory pressure、ディスク、ネットワーク、container、ファイルハンドル、診断レポートを見て、time と reboot は skip です。"
       - "--group は SSH でホストごとに edc check を実行します。各ホストに check を含む edc が必要です。"
       - "ルーチンは config.toml の unit ルール、基準値、シェルコマンドを加えます。コマンドは 0 で終われば pass です。"
   events:

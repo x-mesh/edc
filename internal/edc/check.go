@@ -132,8 +132,8 @@ type checkSources struct {
 	reboot      func() checkReboot
 	// memoryPressure는 macOS의 memory pressure 단계다. nil이면 MemAvailable의 비율로 판정한다.
 	memoryPressure func() (topMemoryPressure, error)
-	// serviceNext는 unit 하나를 더 볼 명령의 형식이다. 비어 있으면 edc svc를 쓴다.
-	serviceNext string
+	// serviceNext는 unit 하나를 더 볼 명령의 형식이다. 비어 있으면 edc svc를 쓴다. kernelNext는 커널 신호를 더 볼 명령이다.
+	serviceNext, kernelNext string
 	// configSafe는 사용자 명령을 실행해도 되는 설정 파일인지 본다. runCommand는 명령 하나를 실행한다.
 	configSafe func() error
 	runCommand func(ctx context.Context, command checkCommandConfig) checkCommandOutcome
@@ -162,9 +162,9 @@ type checkFacts struct {
 	// TimedOut은 --timeout 안에 끝나지 않은 원천의 점검 이름이다. 그 점검은 skip이다.
 	TimedOut []string
 	// Unsupported는 이 OS에 원천이 없는 점검 이름이다. 그 점검은 skip이다.
-	Unsupported    []string
-	MemoryPressure topMemoryPressure
-	ServiceNext    string
+	Unsupported             []string
+	MemoryPressure          topMemoryPressure
+	ServiceNext, KernelNext string
 	// Now는 판정 시각이다. 비어 있으면 지금이다.
 	Now time.Time
 }
@@ -277,7 +277,7 @@ func collectCheckFacts(ctx context.Context, sources checkSources, commands []che
 			return func(facts *checkFacts) { facts.Reboot = reboot }
 		},
 	}
-	facts.ServiceNext = sources.serviceNext
+	facts.ServiceNext, facts.KernelNext = sources.serviceNext, sources.kernelNext
 	for id, available := range map[string]bool{
 		"service": sources.services != nil, "process": sources.processes != nil, "memory": sources.memory != nil,
 		"disk": sources.disks != nil, "kernel": sources.kernel != nil, "time": sources.clock != nil, "network": sources.network != nil,
@@ -714,6 +714,9 @@ func checkKernel(facts checkFacts) Result {
 	}
 	result.Evidence = []Evidence{{Label: T("check.evidence.events"), Value: strings.Join(lines, "\n")}}
 	result.Next = "edc events --since " + window
+	if facts.KernelNext != "" {
+		result.Next = facts.KernelNext
+	}
 	if issues.status == StatusFail {
 		result.Error = &DiagnosticError{Kind: "check", Message: result.Summary}
 	}

@@ -82,3 +82,32 @@ func TestCollectCheckFactsSkipsChecksWithoutASource(t *testing.T) {
 		}
 	}
 }
+
+func TestClassifyDiagnosticReport(t *testing.T) {
+	for _, test := range []struct {
+		name, header, kind, subject string
+	}{
+		{"zsh-2026-10-20-211538.ips", `{"app_name":"zsh","bug_type":"309"}`, eventsSegfault, "zsh"},
+		{"ExcUserFault_ego lite-2026-10-21-092054.ips", `{"bug_type":"309"}`, eventsSegfault, "ego lite"},
+		{"JetsamEvent-2026-10-20-203241.ips", `{"bug_type":"298"}`, eventsOOM, "JetsamEvent"},
+		{"JetsamEvent-2026-10-20-203241.ips", "", eventsOOM, "JetsamEvent"},
+		{"panic-full-2026-10-26-101010.0002.panic", "", eventsOops, "kernel panic"},
+		{"Kernel-2026-10-26-101010.ips", `{"bug_type":"210"}`, eventsOops, "kernel panic"},
+		{"Safari_2026-10-26-101010_host.hang", "", eventsHungTask, "Safari"},
+		// CPU와 wakeup 자원 보고서, 이름만 보고 종류를 모르는 .ips는 장애가 아니다.
+		{"mds_stores_2026-10-25-090918_host.cpu_resource.diag", "", "", ""},
+		{"stacks-2026-10-26-101010.ips", `{"bug_type":"288"}`, "", ""},
+	} {
+		kind, subject := classifyDiagnosticReport(test.name, test.header)
+		if kind != test.kind || subject != test.subject {
+			t.Errorf("%s = (%q, %q), want (%q, %q)", test.name, kind, subject, test.kind, test.subject)
+		}
+	}
+}
+
+func TestCheckKernelUsesThePlatformNextCommand(t *testing.T) {
+	facts := checkFacts{KernelNext: "ls -lt /Library/Logs/DiagnosticReports", Kernel: eventsFacts{KernelSource: "DiagnosticReports", Signals: []eventsSignal{{Kind: eventsOops, Failed: true, Brief: "kernel panic"}}}}
+	if result := checkKernel(facts); result.Status != StatusFail || result.Next != "ls -lt /Library/Logs/DiagnosticReports" {
+		t.Fatalf("result = %+v", result)
+	}
+}

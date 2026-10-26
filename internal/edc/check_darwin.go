@@ -3,10 +3,14 @@
 package edc
 
 import (
+	"bufio"
 	"bytes"
 	"context"
+	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"sort"
 	"syscall"
 	"time"
 )
@@ -14,7 +18,8 @@ import (
 // checkDarwinCommandTimeout은 launchctl, ps, route 하나의 제한이다. 전체 --timeout과 따로 둔다.
 const checkDarwinCommandTimeout = 5 * time.Second
 
-// macOS에는 커널 기록, 시계 동기화, 재부팅 필요 표시를 읽을 원천이 없어 kernel, clock, reboot을 두지 않는다. 그 점검은 skip이다.
+// macOS에는 시계 동기화와 재부팅 필요 표시를 읽을 원천이 없어 clock과 reboot을 두지 않는다. 그 점검은 skip이다.
+// kernel은 커널 log 대신 진단 보고서를 읽는다.
 func hostCheckSources() (checkSources, bool) {
 	return checkSources{
 		services:       readDarwinLaunchd,
@@ -25,6 +30,8 @@ func hostCheckSources() (checkSources, bool) {
 		network:        readDarwinCheckNetwork,
 		containers:     readCheckContainers,
 		fileHandles:    readDarwinFileHandles,
+		kernel:         readDarwinDiagnosticReports,
+		kernelNext:     "ls -lt /Library/Logs/DiagnosticReports ~/Library/Logs/DiagnosticReports",
 		// 사용자로 실행하면 gui domain의 agent를, sudo로 실행하면 system domain의 daemon을 본다.
 		serviceNext: "launchctl list %s",
 		configSafe:  func() error { return activeConfig.commandSafety },
@@ -105,4 +112,53 @@ func readDarwinFileHandles() (*infoFileHandles, error) {
 		return nil, err
 	}
 	return &infoFileHandles{Used: uint64(used), Max: uint64(limit)}, nil
+}
+
+// checkDiagnosticHeaderBytes는 .ips의 첫 줄 header를 읽는 상한이다. 본문은 수 MB가 될 수 있다.
+const checkDiagnosticHeaderBytes = 4 << 10
+
+// readDarwinDiagnosticReports는 since 안에 쓰인 진단 보고서를 커널 신호로 옮긴다. 두 폴더를 모두 읽지 못하면 KernelErr다.
+func readDarwinDiagnosticReports(_ context.Context, since time.Duration) eventsFacts {
+	now := time.Now()
+	facts := eventsFacts{Now: now, Start: now.Add(-since), Since: since, KernelSource: "DiagnosticReports"}
+	directories := []string{"/Library/Logs/DiagnosticReports"}
+	if home, err := os.UserHomeDir(); err == nil {
+		directories = append(directories, filepath.Join(home, "Library/Logs/DiagnosticReports"))
+	}
+	var readErr error
+	readable := 0
+	for _, directory := range directories {
+		entries, err := os.ReadDir(directory)
+		if err != nil {
+			readErr = err
+			continue
+		}
+		readable++
+		for _, entry := range entries {
+			info, err := entry.Info()
+			if err != nil || entry.IsDir() || info.ModTime().Before(facts.Start) {
+				continue
+			}
+			kind, subject := classifyDiagnosticReport(entry.Name(), readDiagnosticHeader(filepath.Join(directory, entry.Name())))
+			if kind == "" {
+				continue
+			}
+			facts.Signals = append(facts.Signals, eventsSignal{Kind: kind, Time: info.ModTime(), Subject: subject, Brief: subject + " (" + entry.Name() + ")", Failed: kind == eventsOops})
+		}
+	}
+	if readable == 0 {
+		facts.KernelErr = readErr
+	}
+	sort.Slice(facts.Signals, func(i, j int) bool { return facts.Signals[i].Time.Before(facts.Signals[j].Time) })
+	return facts
+}
+
+func readDiagnosticHeader(path string) string {
+	file, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer file.Close()
+	line, _ := bufio.NewReader(io.LimitReader(file, checkDiagnosticHeaderBytes)).ReadString('\n')
+	return line
 }

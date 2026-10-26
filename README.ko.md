@@ -82,7 +82,7 @@ edc top --count 5 --json -
 
 ## 호스트 점검
 
-`info`로 구성, 메모리, 디스크와 listening port를 확인합니다. Linux와 macOS에서는 `check` 한 번으로 실패한 서비스, defunct process, 가득 찬 디스크 같은 지금의 문제를 찾고, Linux에서는 OOM kill도 찾습니다. Linux에서는 systemd 서비스, 최근 변경과 커널 event를 확인합니다. Linux와 macOS에서는 Unix socket으로 Docker container를 조회합니다.
+`info`로 구성, 메모리, 디스크와 listening port를 확인합니다. Linux와 macOS에서는 `check` 한 번으로 실패한 서비스, defunct process, 가득 찬 디스크, 메모리 부족 종료 같은 지금의 문제를 찾습니다. Linux에서는 systemd 서비스, 최근 변경과 커널 event를 확인합니다. Linux와 macOS에서는 Unix socket으로 Docker container를 조회합니다.
 
 ```bash
 edc info --public=false

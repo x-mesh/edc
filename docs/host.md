@@ -77,9 +77,10 @@ On macOS, the checks read other sources:
 | `memory` | `kern.memorystatus_vm_pressure_level` | The pressure level decides: `warn` warns and `critical` fails. Free memory is low on macOS by design. |
 | `disk` | `df` and `statfs` | Read-only mounts are not judged. They are the sealed system volume or a disk image, such as a mounted installer, that is full by design. |
 | `network` | `route -n get default`, `/etc/resolv.conf` | conntrack and TCP memory are not checked. |
+| `kernel` | `/Library/Logs/DiagnosticReports`, `~/Library/Logs/DiagnosticReports` | A report written in the last hour counts. A kernel panic and a `JetsamEvent`, which means that the kernel ended processes for memory, fail. An app crash report or a hang report warns. CPU and wakeup reports do not count. |
 | `container`, `filehandles` | Docker socket, `kern.num_files` and `kern.maxfiles` | Same as Linux. |
 
-`kernel`, `time`, and `reboot` show `skip` on macOS.
+`time` and `reboot` show `skip` on macOS.
 
 `--group` uses the inventory and the OpenSSH setup of `edc remote`. Each host must have an edc with `check`. The table shows one row for each host. If a host gives no result, the row shows the reason, for example an SSH failure or an edc without `check`.
 

@@ -82,7 +82,7 @@ Use the task table above to choose the next command. `edc help` lists commands, 
 
 ## Host inspection
 
-Inspect configuration, memory, disks, and listening ports with `info`. On Linux and macOS, `check` looks for failed services, defunct processes, full disks, and other current problems in one run, and on Linux also for OOM kills. On Linux, inspect systemd services, recent changes, and kernel events. On Linux and macOS, inspect Docker containers through a Unix socket.
+Inspect configuration, memory, disks, and listening ports with `info`. On Linux and macOS, `check` looks for failed services, defunct processes, full disks, memory kills, and other current problems in one run. On Linux, inspect systemd services, recent changes, and kernel events. On Linux and macOS, inspect Docker containers through a Unix socket.
 
 ```bash
 edc info --public=false

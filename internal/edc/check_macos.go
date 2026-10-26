@@ -2,8 +2,11 @@ package edc
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
+	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -103,4 +106,45 @@ func readCheckContainers(ctx context.Context) ([]ctrListItem, error) {
 	// 자원 표본은 container마다 stats를 한 번 더 읽는다. 상태 판정에는 쓰지 않는다.
 	sources.listStats = nil
 	return collectCtrList(ctx, sources, false)
+}
+
+// macOS의 진단 보고서는 /Library/Logs/DiagnosticReports와 ~/Library/Logs/DiagnosticReports에 쌓인다. .ips의 첫 줄은
+// bug_type이 든 JSON header다. 210은 kernel panic, 298은 JetsamEvent(memory가 모자라 커널이 process를 끝냄), 109와 309는
+// app crash다. CPU나 wakeup 같은 자원 보고서(.diag)는 장애가 아니라서 세지 않는다.
+const (
+	diagnosticPanic  = "210"
+	diagnosticJetsam = "298"
+)
+
+var diagnosticCrashTypes = map[string]bool{"109": true, "309": true}
+
+// diagnosticDate는 보고서 이름에 붙는 날짜다. 앞부분이 process 이름이다.
+var diagnosticDate = regexp.MustCompile(`[-_]\d{4}-\d{2}-\d{2}-\d{6}`)
+
+// classifyDiagnosticReport는 보고서 하나를 커널 신호의 종류로 옮긴다. header를 읽지 못하면 이름으로만 고른다.
+func classifyDiagnosticReport(name, header string) (kind, subject string) {
+	var fields struct {
+		BugType string `json:"bug_type"`
+		AppName string `json:"app_name"`
+	}
+	_ = json.Unmarshal([]byte(header), &fields)
+	subject = fields.AppName
+	if subject == "" {
+		subject = strings.TrimSuffix(name, filepath.Ext(name))
+		if location := diagnosticDate.FindStringIndex(subject); location != nil {
+			subject = subject[:location[0]]
+		}
+		subject = strings.TrimPrefix(subject, "ExcUserFault_")
+	}
+	switch {
+	case strings.HasSuffix(name, ".panic") || fields.BugType == diagnosticPanic:
+		return eventsOops, "kernel panic"
+	case strings.HasPrefix(name, "JetsamEvent") || fields.BugType == diagnosticJetsam:
+		return eventsOOM, "JetsamEvent"
+	case strings.HasSuffix(name, ".hang"):
+		return eventsHungTask, subject
+	case strings.HasSuffix(name, ".ips") && diagnosticCrashTypes[fields.BugType]:
+		return eventsSegfault, subject
+	}
+	return "", ""
 }

@@ -6,6 +6,7 @@ check:
     needs_root: "needs root to read %s"
     unreadable: "could not read %s: %s"
     timed_out: "the source did not answer within --timeout"
+    unsupported_os: "not checked on this OS"
   evidence:
     output: "output"
     issues: "findings"
@@ -21,6 +22,7 @@ check:
     blocked: "%d processes in uninterruptible I/O wait (D): %s"
     ok: "%d processes, no defunct or D state"
   memory:
+    pressure: "memory pressure %s, %s"
     available: "available %s of %s (%.0f%%)"
   disk:
     usage: "%s %.0f%% used"
@@ -46,7 +48,8 @@ check:
     ok: "default route %s, %d nameservers"
   container:
     unreachable: "could not reach Docker: %s"
-    failed: "%d failed containers: %s"
+    failed: "%d containers that should run have stopped: %s"
+    recent: "%d containers stopped with an error in the last 24h: %s"
     attention: "%d containers need attention: %s"
     ok: "%d containers, none failed"
   filehandles:

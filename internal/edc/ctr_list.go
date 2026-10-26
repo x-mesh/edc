@@ -47,6 +47,9 @@ type ctrListItem struct {
 	BlockWriteBytes       *uint64  `json:"block_write_bytes,omitempty"`
 	BlockReadUnavailable  string   `json:"block_read_unavailable,omitempty"`
 	BlockWriteUnavailable string   `json:"block_write_unavailable,omitempty"`
+	// RestartPolicy와 FinishedAt은 edc check가 멈춘 container를 판정할 때만 쓴다. edc ctr의 JSON은 바꾸지 않는다.
+	RestartPolicy string    `json:"-"`
+	FinishedAt    time.Time `json:"-"`
 }
 
 // failed는 0이 아닌 코드로 끝났거나 메모리 때문에 죽은 container다. 코드 0으로 끝난 container는 일을 마친 것이다.
@@ -104,6 +107,7 @@ func collectCtrList(ctx context.Context, sources ctrSources, all bool) ([]ctrLis
 			id = id[:ctrShortIDLength]
 		}
 		item := ctrListItem{Name: inspect.Name, ID: id, Image: inspect.Image, Status: inspect.Status, Health: inspect.Health, State: ctrStateText(inspect),
+			RestartPolicy: inspect.RestartPolicy, FinishedAt: inspect.FinishedAt,
 			ExitCode: inspect.ExitCode, OOMKilled: inspect.OOMKilled, Restarts: inspect.RestartCount, PID: inspect.PID}
 		if !all && item.stopped() {
 			continue

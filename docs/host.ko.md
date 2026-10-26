@@ -33,9 +33,9 @@
 
 Linux에서는 `edc info`의 `Network Limits`에 conntrack 사용량과 한도, `tcp_mem` 상한 대비 TCP memory page와 orphan socket 수, 임시 port 범위와 예약 port, accept/SYN 대기열 한도, socket buffer 상한, 패킷 처리 backlog/budget, neighbor 한도, forwarding과 `rp_filter`를 요약합니다. `-v`는 TCP buffer 설정과 개별 sysctl 이름, 읽지 못한 이유도 표시합니다. 값이 없거나 권한이 부족하면 `unavailable`로 표시하며, macOS에서는 이 항목을 `unsupported`로 표시합니다. 설정값만으로 연결 실패를 판정하지 않습니다.
 
-## 상태 점검 (Linux)
+## 상태 점검 (Linux와 macOS)
 
-`edc check`는 Linux 호스트에서 지금 고장 난 곳을 찾습니다. service, process, 메모리, 디스크, 커널 로그, 시간, 네트워크, container, 파일 핸들, 재부팅 필요 여부를 읽습니다. 기본 점검은 아무것도 바꾸지 않고 외부로 보내지 않습니다. [루틴](#점검-루틴)은 설정 파일에 적은 셸 명령도 실행합니다. 문제마다 이어서 볼 edc 명령을 알려 줍니다.
+`edc check`는 Linux나 macOS 호스트에서 지금 고장 난 곳을 찾습니다. service, process, 메모리, 디스크, 커널 로그, 시간, 네트워크, container, 파일 핸들, 재부팅 필요 여부를 읽습니다. 기본 점검은 아무것도 바꾸지 않고 외부로 보내지 않습니다. [루틴](#점검-루틴)은 설정 파일에 적은 셸 명령도 실행합니다. 문제마다 이어서 볼 edc 명령을 알려 줍니다.
 
 ```bash
 edc check
@@ -52,11 +52,24 @@ edc check --group daily             # edc remote 그룹의 호스트마다 edc c
 | `kernel` | 최근 1시간에 OOM kill, 디스크 I/O 오류, 읽기 전용 전환, lockup, oops가 있음 | 최근 1시간에 segfault, hung task, 커널 WARNING이 있음 |
 | `time` | | 시계가 동기화되지 않음 |
 | `network` | default route가 없거나 conntrack·TCP 메모리 사용률이 90% 이상 | `/etc/resolv.conf`나 nameserver가 없거나 같은 사용률이 80% 이상 |
-| `container` | container가 0이 아닌 코드나 메모리 부족으로 멈춤 | container가 재시작·일시 정지 중이거나 unhealthy |
+| `container` | restart policy가 있는 container가 0이 아닌 코드나 메모리 부족으로 멈춤 | restart policy가 없는 container가 최근 24시간 안에 오류로 멈췄거나, container가 재시작·일시 정지 중이거나 unhealthy |
 | `filehandles` | `fs.file-max`의 90% 이상을 사용 | `fs.file-max`의 80% 이상을 사용 |
 | `reboot` | | 패키지가 재부팅을 요구하거나 `/boot`에 실행 중인 커널보다 새 커널이 있음 |
 
 fail이 하나라도 있으면 종료 코드가 1입니다. NIC drop처럼 부팅 뒤 늘어나기만 하는 카운터는 판정하지 않습니다. 한 번 읽어서는 언제 늘었는지 알 수 없기 때문입니다.
+
+macOS에서는 다음 원천을 읽습니다.
+
+| 점검 | macOS 원천 | Linux와 다른 점 |
+|---|---|---|
+| `service` | `launchctl list` | 실행 중이 아니고 양수 종료 코드로 끝난 job을 실패로 봅니다. 쉬고 있는 agent의 `-9`처럼 signal로 끝난 job은 실패가 아닙니다. 사용자로 실행하면 자기 세션의 agent를, `sudo`로 실행하면 system daemon을 봅니다. `next`는 `launchctl list <label>`입니다. |
+| `process` | `ps` | defunct process만 셉니다. macOS에는 Linux와 같은 뜻의 D 상태가 없습니다. |
+| `memory` | `kern.memorystatus_vm_pressure_level` | pressure 단계로 판정합니다. `warn`이면 warn, `critical`이면 fail입니다. macOS는 원래 가용 메모리가 적게 보입니다. |
+| `disk` | `df`와 `statfs` | 읽기 전용 mount는 판정하지 않습니다. 서명된 system volume이나, mount한 설치 파일처럼 원래 가득 찬 disk image이기 때문입니다. |
+| `network` | `route -n get default`, `/etc/resolv.conf` | conntrack과 TCP 메모리는 보지 않습니다. |
+| `container`, `filehandles` | Docker socket, `kern.num_files`와 `kern.maxfiles` | Linux와 같습니다. |
+
+macOS에서 `kernel`, `time`, `reboot`은 `skip`입니다.
 
 `--group`은 `edc remote`의 inventory와 OpenSSH 설정을 씁니다. 각 호스트에 `check`가 있는 edc가 있어야 합니다. 표에는 호스트마다 한 줄이 나옵니다. 결과를 받지 못한 호스트는 SSH 실패나 `check`가 없는 edc처럼 그 이유를 보여 줍니다.
 

@@ -35,6 +35,10 @@ const checkUnlimitedFileHandles = uint64(1) << 62
 // checkMemoryLimits는 MemAvailable이 전체에서 차지하는 비율의 하한이다. 이보다 낮으면 경고와 실패다.
 var checkMemoryLimits = topThreshold{warn: 10, danger: 5}
 
+// checkRecentStop은 restart policy가 없는 container가 오류로 멈춘 것을 경고하는 기간이다. 그보다 오래된 것은 일부러 둔
+// container로 본다. 개발 host에는 오래전에 멈춘 시험용 container가 많다.
+const checkRecentStop = 24 * time.Hour
+
 // checkImageFileSystems는 원래 읽기 전용인 파일 시스템이다. read-only라도 문제가 아니다.
 var checkImageFileSystems = map[string]bool{"squashfs": true, "iso9660": true, "erofs": true, "cramfs": true, "udf": true}
 
@@ -126,6 +130,10 @@ type checkSources struct {
 	containers  func(ctx context.Context) ([]ctrListItem, error)
 	fileHandles func() (*infoFileHandles, error)
 	reboot      func() checkReboot
+	// memoryPressure는 macOS의 memory pressure 단계다. nil이면 MemAvailable의 비율로 판정한다.
+	memoryPressure func() (topMemoryPressure, error)
+	// serviceNext는 unit 하나를 더 볼 명령의 형식이다. 비어 있으면 edc svc를 쓴다.
+	serviceNext string
 	// configSafe는 사용자 명령을 실행해도 되는 설정 파일인지 본다. runCommand는 명령 하나를 실행한다.
 	configSafe func() error
 	runCommand func(ctx context.Context, command checkCommandConfig) checkCommandOutcome
@@ -153,6 +161,12 @@ type checkFacts struct {
 	CommandsErr error
 	// TimedOut은 --timeout 안에 끝나지 않은 원천의 점검 이름이다. 그 점검은 skip이다.
 	TimedOut []string
+	// Unsupported는 이 OS에 원천이 없는 점검 이름이다. 그 점검은 skip이다.
+	Unsupported    []string
+	MemoryPressure topMemoryPressure
+	ServiceNext    string
+	// Now는 판정 시각이다. 비어 있으면 지금이다.
+	Now time.Time
 }
 
 func runCheck(args []string, version string) int {
@@ -228,7 +242,11 @@ func collectCheckFacts(ctx context.Context, sources checkSources, commands []che
 		},
 		"memory": func() func(*checkFacts) {
 			memory, err := sources.memory()
-			return func(facts *checkFacts) { facts.Memory, facts.MemoryErr = memory, err }
+			var pressure topMemoryPressure
+			if sources.memoryPressure != nil {
+				pressure, _ = sources.memoryPressure()
+			}
+			return func(facts *checkFacts) { facts.Memory, facts.MemoryErr, facts.MemoryPressure = memory, err, pressure }
 		},
 		"disk": func() func(*checkFacts) {
 			disks, err := sources.disks()
@@ -258,6 +276,17 @@ func collectCheckFacts(ctx context.Context, sources checkSources, commands []che
 			reboot := sources.reboot()
 			return func(facts *checkFacts) { facts.Reboot = reboot }
 		},
+	}
+	facts.ServiceNext = sources.serviceNext
+	for id, available := range map[string]bool{
+		"service": sources.services != nil, "process": sources.processes != nil, "memory": sources.memory != nil,
+		"disk": sources.disks != nil, "kernel": sources.kernel != nil, "time": sources.clock != nil, "network": sources.network != nil,
+		"container": sources.containers != nil, "filehandles": sources.fileHandles != nil, "reboot": sources.reboot != nil,
+	} {
+		if !available {
+			delete(jobs, id)
+			facts.Unsupported = append(facts.Unsupported, id)
+		}
 	}
 	// 사용자 명령도 같은 방식으로 기다린다. 설정 파일이 안전하지 않으면 실행하지 않는다.
 	if len(commands) > 0 {
@@ -315,7 +344,11 @@ func evaluateCheck(facts checkFacts, policy checkPolicy) []Result {
 		checkRebootResult(facts),
 	}
 	for index, result := range results {
-		if id := strings.TrimPrefix(result.Probe, "check."); slices.Contains(facts.TimedOut, id) {
+		id := strings.TrimPrefix(result.Probe, "check.")
+		switch {
+		case slices.Contains(facts.Unsupported, id):
+			results[index] = checkResult(id, StatusSkip, T("check.skip.unsupported_os"))
+		case slices.Contains(facts.TimedOut, id):
 			results[index] = checkResult(id, StatusSkip, T("check.skip.timed_out"))
 		}
 	}
@@ -430,6 +463,14 @@ func checkUsageStatus(percent float64, limits topThreshold) Status {
 	return StatusPass
 }
 
+// serviceCommand는 unit 하나를 더 볼 명령이다. macOS에는 edc svc가 없어 launchctl을 쓴다.
+func (facts checkFacts) serviceCommand(unit string) string {
+	if facts.ServiceNext == "" {
+		return "edc svc " + unit
+	}
+	return fmt.Sprintf(facts.ServiceNext, unit)
+}
+
 func checkServices(facts checkFacts, policy checkPolicy) Result {
 	const id = "service"
 	if errors.Is(facts.ServicesErr, errSvcNoSystemd) {
@@ -464,18 +505,18 @@ func checkServices(facts checkFacts, policy checkPolicy) Result {
 	next := ""
 	if len(failed) > 0 {
 		issues.add(StatusFail, T("check.service.failed", len(failed), checkNames(failed)))
-		next = "edc svc " + failed[0]
+		next = facts.serviceCommand(failed[0])
 	}
 	if len(missing) > 0 {
 		issues.add(StatusFail, T("check.service.required", len(missing), checkNames(missing)))
 		if next == "" {
-			next = "edc svc " + missing[0]
+			next = facts.serviceCommand(missing[0])
 		}
 	}
 	if len(changing) > 0 {
 		issues.add(StatusWarn, T("check.service.changing", len(changing), checkNames(changing)))
 		if next == "" {
-			next = "edc svc " + strings.Fields(changing[0])[0]
+			next = facts.serviceCommand(strings.Fields(changing[0])[0])
 		}
 	}
 	return issues.result(id, T("check.service.ok", len(facts.Services)), next)
@@ -553,6 +594,17 @@ func checkMemory(facts checkFacts, policy checkPolicy) Result {
 	percent := float64(memory.Available) / float64(memory.Total) * 100
 	text := T("check.memory.available", formatSizeShort(memory.Available), formatSizeShort(memory.Total), percent)
 	var issues checkIssues
+	// macOS는 page cache와 압축 memory 때문에 가용 비율이 늘 낮게 보인다. 커널이 알려 주는 pressure 단계로만 판정한다.
+	if facts.MemoryPressure.known() {
+		text = T("check.memory.pressure", facts.MemoryPressure, text)
+		switch facts.MemoryPressure.level() {
+		case topLevelDanger:
+			issues.add(StatusFail, text)
+		case topLevelWarn:
+			issues.add(StatusWarn, text)
+		}
+		return issues.result(id, text, "edc top")
+	}
 	switch {
 	case percent < policy.memory.danger:
 		issues.add(StatusFail, text)
@@ -729,15 +781,23 @@ func checkContainers(facts checkFacts, policy checkPolicy) Result {
 		return result
 	}
 	var issues checkIssues
-	var failed, attention []string
+	var failed, recent, attention []string
+	now := facts.Now
+	if now.IsZero() {
+		now = time.Now()
+	}
 	for _, item := range facts.Containers {
 		if (item.failed() || item.attention()) && checkMatches(policy.acceptContainers, item.Name) {
 			issues.accepted = append(issues.accepted, item.Name)
 			continue
 		}
+		// restart policy가 있는 container는 돌고 있어야 한다. 없는 container는 사람이 멈췄을 수 있어 최근에 멈춘 것만 경고한다.
 		switch {
-		case item.failed():
+		case item.failed() && item.RestartPolicy != "" && item.RestartPolicy != "no":
 			failed = append(failed, item.Name+" ("+item.State+")")
+		case item.failed() && !item.FinishedAt.IsZero() && now.Sub(item.FinishedAt) < checkRecentStop:
+			recent = append(recent, item.Name+" ("+item.State+")")
+		case item.failed():
 		case item.attention():
 			attention = append(attention, item.Name+" ("+item.State+")")
 		}
@@ -746,6 +806,12 @@ func checkContainers(facts checkFacts, policy checkPolicy) Result {
 	if len(failed) > 0 {
 		issues.add(StatusFail, T("check.container.failed", len(failed), checkNames(failed)))
 		next = "edc ctr " + strings.Fields(failed[0])[0]
+	}
+	if len(recent) > 0 {
+		issues.add(StatusWarn, T("check.container.recent", len(recent), checkNames(recent)))
+		if next == "" {
+			next = "edc ctr " + strings.Fields(recent[0])[0]
+		}
 	}
 	if len(attention) > 0 {
 		issues.add(StatusWarn, T("check.container.attention", len(attention), checkNames(attention)))

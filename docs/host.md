@@ -114,7 +114,7 @@ level = "fail"
 
 Each command runs with `sh -c`, and its result is `check.cmd.<name>`. Exit code 0 is `pass`. Another exit code is `fail`, or `warn` if `level = "warn"`. A command that does not end in `timeout` (default 10s) is `fail`, and edc stops the command and its child processes. The result keeps the last ten lines of output, up to 4 KiB. Add `cmd.<name>` to `accept` to accept the result of a command.
 
-edc runs the commands only if other users cannot change the config file. If the group or others can write the file, or another user owns it, each command shows `skip`. `sudo edc check` reads the config file of root, so this rule stops other users from running commands as root.
+edc runs the commands only if other users cannot change the config file. edc checks the file that it read and each parent directory. If the group or others can write one of them, or another user owns one of them, each command shows `skip`. A directory with the sticky bit, such as `/tmp`, can be writable by others. `sudo edc check` reads the config file of root, so this rule stops other users from running commands as root.
 
 Routine and command names use only `a-z`, `0-9`, `_`, and `-`.
 

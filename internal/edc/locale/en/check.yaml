@@ -56,6 +56,12 @@ check:
     unlimited: "file handles %d in use, no system limit"
     unknown: "could not read the file handle limit"
     usage: "file handles %d of %d (%.0f%%)"
+  thermal:
+    level: "thermal pressure %s"
+  backup:
+    none: "no Time Machine destination"
+    unknown: "could not read the time of the latest backup"
+    latest: "latest backup %s, %s ago"
   reboot:
     flag: "reboot required by %s"
     none: "no installed kernel to compare"

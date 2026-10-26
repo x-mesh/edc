@@ -79,8 +79,10 @@ On macOS, the checks read other sources:
 | `network` | `route -n get default`, `/etc/resolv.conf` | conntrack and TCP memory are not checked. |
 | `kernel` | `/Library/Logs/DiagnosticReports`, `~/Library/Logs/DiagnosticReports` | A report written in the last hour counts. A kernel panic and a `JetsamEvent`, which means that the kernel ended processes for memory, fail. An app crash report or a hang report warns. CPU and wakeup reports do not count. |
 | `container`, `filehandles` | Docker socket, `kern.num_files` and `kern.maxfiles` | Same as Linux. |
+| `thermal` | `notifyutil -g com.apple.system.thermalpressurelevel` | macOS only. `heavy` warns, and `trapping` or `sleeping` fails. `moderate` is common under load and does not warn. |
+| `backup` | `tmutil destinationinfo`, `tmutil latestbackup` | macOS only. A latest Time Machine backup older than seven days warns. Without a destination, it shows `skip`. |
 
-`time` and `reboot` show `skip` on macOS.
+`time` and `reboot` show `skip` on macOS. Linux results do not include `thermal` and `backup`.
 
 `--group` uses the inventory and the OpenSSH setup of `edc remote`. Each host must have an edc with `check`. The table shows one row for each host. If a host gives no result, the row shows the reason, for example an SSH failure or an edc without `check`.
 

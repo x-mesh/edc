@@ -69,8 +69,10 @@ macOS에서는 다음 원천을 읽습니다.
 | `network` | `route -n get default`, `/etc/resolv.conf` | conntrack과 TCP 메모리는 보지 않습니다. |
 | `kernel` | `/Library/Logs/DiagnosticReports`, `~/Library/Logs/DiagnosticReports` | 최근 1시간에 쓰인 보고서를 셉니다. kernel panic과 `JetsamEvent`(메모리가 모자라 커널이 process를 끝냄)는 fail, 앱 crash와 hang 보고서는 warn입니다. CPU·wakeup 보고서는 세지 않습니다. |
 | `container`, `filehandles` | Docker socket, `kern.num_files`와 `kern.maxfiles` | Linux와 같습니다. |
+| `thermal` | `notifyutil -g com.apple.system.thermalpressurelevel` | macOS에만 있습니다. `heavy`는 warn, `trapping`과 `sleeping`은 fail입니다. `moderate`는 부하가 걸리면 흔히 나오는 단계라 경고하지 않습니다. |
+| `backup` | `tmutil destinationinfo`, `tmutil latestbackup` | macOS에만 있습니다. 마지막 Time Machine 백업이 7일보다 오래되면 warn입니다. 백업 대상이 없으면 `skip`입니다. |
 
-macOS에서 `time`과 `reboot`은 `skip`입니다.
+macOS에서 `time`과 `reboot`은 `skip`입니다. Linux 결과에는 `thermal`과 `backup`이 없습니다.
 
 `--group`은 `edc remote`의 inventory와 OpenSSH 설정을 씁니다. 각 호스트에 `check`가 있는 edc가 있어야 합니다. 표에는 호스트마다 한 줄이 나옵니다. 결과를 받지 못한 호스트는 SSH 실패나 `check`가 없는 edc처럼 그 이유를 보여 줍니다.
 

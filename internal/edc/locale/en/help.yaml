@@ -97,7 +97,7 @@ command:
       - "The built-in checks change nothing and send nothing over the network."
       - "Each finding names the edc command that shows more."
       - "Without root, some checks show skip, not pass."
-      - "macOS reads launchd, memory pressure, disks, network, containers, file handles, and diagnostic reports. time and reboot show skip."
+      - "macOS reads launchd, memory pressure, disks, network, containers, file handles, diagnostic reports, thermal pressure, and Time Machine. time and reboot show skip."
       - "--group runs edc check on each host over SSH. Each host needs an edc that has check."
       - "A routine adds unit rules, limits, and shell commands from config.toml. A command passes when it exits with 0."
   events:

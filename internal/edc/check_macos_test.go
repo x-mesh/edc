@@ -4,6 +4,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestParseLaunchctlListKeepsRunningAndFailedJobs(t *testing.T) {
@@ -109,5 +110,61 @@ func TestCheckKernelUsesThePlatformNextCommand(t *testing.T) {
 	facts := checkFacts{KernelNext: "ls -lt /Library/Logs/DiagnosticReports", Kernel: eventsFacts{KernelSource: "DiagnosticReports", Signals: []eventsSignal{{Kind: eventsOops, Failed: true, Brief: "kernel panic"}}}}
 	if result := checkKernel(facts); result.Status != StatusFail || result.Next != "ls -lt /Library/Logs/DiagnosticReports" {
 		t.Fatalf("result = %+v", result)
+	}
+}
+
+func TestCheckThermalLevels(t *testing.T) {
+	for level, want := range map[int]Status{0: StatusPass, 1: StatusPass, 2: StatusWarn, 3: StatusFail, 4: StatusFail} {
+		if result := checkThermal(checkFacts{Thermal: level}); result.Status != want {
+			t.Errorf("level %d = %s, want %s", level, result.Status, want)
+		}
+	}
+	if level, err := parseThermalLevel("com.apple.system.thermalpressurelevel 2\n"); err != nil || level != 2 {
+		t.Fatalf("parse = %d, %v", level, err)
+	}
+	if _, err := parseThermalLevel("notifyutil: unknown key\n"); err == nil {
+		t.Fatalf("an unexpected output must be an error")
+	}
+}
+
+func TestCheckBackupAge(t *testing.T) {
+	if backup := parseBackup("tmutil: No destinations configured.\n", ""); backup.Configured {
+		t.Fatalf("no destination = %+v", backup)
+	}
+	if result := checkBackupResult(checkFacts{}); result.Status != StatusSkip {
+		t.Fatalf("no destination result = %+v", result)
+	}
+	backup := parseBackup("Name : Backup\nKind : Local\n", "/Volumes/.timemachine/ABC/2026-10-20-101500.backup/2026-10-20-101500.backup\n")
+	if !backup.Configured || backup.Latest.Day() != 20 || backup.Latest.Hour() != 10 {
+		t.Fatalf("backup = %+v", backup)
+	}
+	now := backup.Latest.Add(36 * time.Hour)
+	if result := checkBackupResult(checkFacts{Now: now, Backup: backup}); result.Status != StatusPass {
+		t.Fatalf("a recent backup = %+v", result)
+	}
+	if result := checkBackupResult(checkFacts{Now: backup.Latest.Add(8 * 24 * time.Hour), Backup: backup}); result.Status != StatusWarn {
+		t.Fatalf("an old backup = %+v", result)
+	}
+	if result := checkBackupResult(checkFacts{Backup: checkBackup{Configured: true}}); result.Status != StatusSkip {
+		t.Fatalf("an unknown backup time = %+v", result)
+	}
+}
+
+func TestPlatformChecksLeaveTheResultsWhereTheyHaveNoSource(t *testing.T) {
+	sources := checkTestSources()
+	facts := collectCheckFacts(t.Context(), sources, nil)
+	for _, result := range evaluateCheck(facts, checkTestPolicy) {
+		if result.Probe == "check.thermal" || result.Probe == "check.backup" {
+			t.Fatalf("%s must not appear without a source: %+v", result.Probe, result)
+		}
+	}
+	sources.thermal = func() (int, error) { return 0, nil }
+	facts = collectCheckFacts(t.Context(), sources, nil)
+	found := false
+	for _, result := range evaluateCheck(facts, checkTestPolicy) {
+		found = found || result.Probe == "check.thermal"
+	}
+	if !found {
+		t.Fatalf("check.thermal is missing with a source")
 	}
 }

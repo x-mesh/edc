@@ -333,7 +333,12 @@ func TestCheckPolicyLimitsAndWholeCheckAccept(t *testing.T) {
 	}
 
 	accepted := evaluateCheck(checkFacts{Reboot: checkReboot{Flag: true}, ProcessesErr: fs.ErrPermission}, newCheckPolicy(checkConfig{Accept: []string{"reboot"}}, ""))
-	reboot := accepted[len(accepted)-1]
+	var reboot Result
+	for _, result := range accepted {
+		if result.Probe == "check.reboot" {
+			reboot = result
+		}
+	}
 	if reboot.Probe != "check.reboot" || reboot.Status != StatusSkip || reboot.Metrics["accepted_status"] != StatusWarn || exitCode([]Result{reboot}) != 0 {
 		t.Fatalf("accepted reboot = %+v", reboot)
 	}

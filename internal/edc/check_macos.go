@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // macOS 원천의 출력을 읽는 함수다. build tag를 두지 않아 Linux에서도 테스트한다.
@@ -147,4 +148,32 @@ func classifyDiagnosticReport(name, header string) (kind, subject string) {
 		return eventsSegfault, subject
 	}
 	return "", ""
+}
+
+// parseThermalLevel은 notifyutil -g com.apple.system.thermalpressurelevel의 값이다. 출력은 "<key> <값>" 한 줄이다.
+func parseThermalLevel(output string) (int, error) {
+	fields := strings.Fields(output)
+	if len(fields) != 2 {
+		return 0, errors.New("unexpected notifyutil output: " + strings.TrimSpace(output))
+	}
+	return strconv.Atoi(fields[1])
+}
+
+// backupStamp는 Time Machine 백업 이름의 시각이다. latestbackup은 이 이름으로 끝나는 경로를 준다.
+var backupStamp = regexp.MustCompile(`(\d{4}-\d{2}-\d{2}-\d{6})`)
+
+// parseBackup은 tmutil destinationinfo와 latestbackup의 출력이다. 대상이 없으면 Configured가 false다.
+func parseBackup(destinations, latest string) checkBackup {
+	if strings.Contains(destinations, "No destinations configured") {
+		return checkBackup{}
+	}
+	backup := checkBackup{Configured: true}
+	matches := backupStamp.FindAllString(latest, -1)
+	if len(matches) == 0 {
+		return backup
+	}
+	if at, err := time.ParseInLocation("2006-01-02-150405", matches[len(matches)-1], time.Local); err == nil {
+		backup.Latest = at
+	}
+	return backup
 }

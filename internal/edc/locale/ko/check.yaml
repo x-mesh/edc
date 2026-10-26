@@ -56,6 +56,12 @@ check:
     unlimited: "파일 핸들 %d개 사용 중, 시스템 한도 없음"
     unknown: "파일 핸들 한도를 읽지 못했습니다"
     usage: "파일 핸들 %d / %d (%.0f%%)"
+  thermal:
+    level: "thermal pressure %s"
+  backup:
+    none: "Time Machine 백업 대상이 없습니다"
+    unknown: "마지막 백업 시각을 읽지 못했습니다"
+    latest: "마지막 백업 %s, %s 전"
   reboot:
     flag: "재부팅 필요: %s"
     none: "비교할 설치 커널이 없습니다"

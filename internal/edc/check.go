@@ -109,6 +109,16 @@ type checkNetwork struct {
 	ConntrackOK, TCPMemoryOK bool
 }
 
+// checkBackup은 마지막 Time Machine 백업이다. Configured가 false면 백업 대상이 없다.
+type checkBackup struct {
+	Configured bool
+	Latest     time.Time
+	Err        error
+}
+
+// checkBackupAge보다 오래된 백업은 경고한다. Time Machine은 한 시간마다 백업하므로 일주일은 여러 번 실패한 것이다.
+const checkBackupAge = 7 * 24 * time.Hour
+
 type checkReboot struct {
 	// Err는 재부팅 표시 파일을 확인하지 못한 이유다. 없는 파일은 오류가 아니다.
 	Err      error
@@ -130,6 +140,9 @@ type checkSources struct {
 	containers  func(ctx context.Context) ([]ctrListItem, error)
 	fileHandles func() (*infoFileHandles, error)
 	reboot      func() checkReboot
+	// thermal은 macOS의 thermal pressure 단계(0~4)이고 backup은 마지막 Time Machine 백업이다. Linux에는 없다.
+	thermal func() (int, error)
+	backup  func() checkBackup
 	// memoryPressure는 macOS의 memory pressure 단계다. nil이면 MemAvailable의 비율로 판정한다.
 	memoryPressure func() (topMemoryPressure, error)
 	// serviceNext는 unit 하나를 더 볼 명령의 형식이다. 비어 있으면 edc svc를 쓴다. kernelNext는 커널 신호를 더 볼 명령이다.
@@ -166,7 +179,10 @@ type checkFacts struct {
 	MemoryPressure          topMemoryPressure
 	ServiceNext, KernelNext string
 	// Now는 판정 시각이다. 비어 있으면 지금이다.
-	Now time.Time
+	Now        time.Time
+	Thermal    int
+	ThermalErr error
+	Backup     checkBackup
 }
 
 func runCheck(args []string, version string) int {
@@ -276,12 +292,21 @@ func collectCheckFacts(ctx context.Context, sources checkSources, commands []che
 			reboot := sources.reboot()
 			return func(facts *checkFacts) { facts.Reboot = reboot }
 		},
+		"thermal": func() func(*checkFacts) {
+			level, err := sources.thermal()
+			return func(facts *checkFacts) { facts.Thermal, facts.ThermalErr = level, err }
+		},
+		"backup": func() func(*checkFacts) {
+			backup := sources.backup()
+			return func(facts *checkFacts) { facts.Backup = backup }
+		},
 	}
 	facts.ServiceNext, facts.KernelNext = sources.serviceNext, sources.kernelNext
 	for id, available := range map[string]bool{
 		"service": sources.services != nil, "process": sources.processes != nil, "memory": sources.memory != nil,
 		"disk": sources.disks != nil, "kernel": sources.kernel != nil, "time": sources.clock != nil, "network": sources.network != nil,
 		"container": sources.containers != nil, "filehandles": sources.fileHandles != nil, "reboot": sources.reboot != nil,
+		"thermal": sources.thermal != nil, "backup": sources.backup != nil,
 	} {
 		if !available {
 			delete(jobs, id)
@@ -342,7 +367,13 @@ func evaluateCheck(facts checkFacts, policy checkPolicy) []Result {
 		checkContainers(facts, policy),
 		checkFileHandles(facts, policy),
 		checkRebootResult(facts),
+		checkThermal(facts),
+		checkBackupResult(facts),
 	}
+	results = slices.DeleteFunc(results, func(result Result) bool {
+		id := strings.TrimPrefix(result.Probe, "check.")
+		return slices.Contains(checkPlatformIDs, id) && slices.Contains(facts.Unsupported, id)
+	})
 	for index, result := range results {
 		id := strings.TrimPrefix(result.Probe, "check.")
 		switch {
@@ -874,4 +905,51 @@ func checkRebootResult(facts checkFacts) Result {
 		return checkResult(id, StatusWarn, T("check.reboot.kernel", newest, reboot.Running))
 	}
 	return checkResult(id, StatusPass, T("check.reboot.ok", reboot.Running))
+}
+
+// checkThermal은 macOS의 thermal pressure다. heavy부터 CPU 속도를 크게 낮추고, trapping부터는 장치를 보호하려고 일을 멈춘다.
+// moderate는 부하가 걸리면 흔히 오는 단계라 판정하지 않고 요약에만 적는다.
+func checkThermal(facts checkFacts) Result {
+	const id = "thermal"
+	if facts.ThermalErr != nil {
+		return checkSkip(id, "notifyutil", facts.ThermalErr)
+	}
+	names := []string{"nominal", "moderate", "heavy", "trapping", "sleeping"}
+	name := fmt.Sprint(facts.Thermal)
+	if facts.Thermal >= 0 && facts.Thermal < len(names) {
+		name = names[facts.Thermal]
+	}
+	text := T("check.thermal.level", name)
+	var issues checkIssues
+	switch {
+	case facts.Thermal >= 3:
+		issues.add(StatusFail, text)
+	case facts.Thermal == 2:
+		issues.add(StatusWarn, text)
+	}
+	return issues.result(id, text, "pmset -g therm")
+}
+
+func checkBackupResult(facts checkFacts) Result {
+	const id = "backup"
+	backup := facts.Backup
+	switch {
+	case backup.Err != nil:
+		return checkSkip(id, "tmutil", backup.Err)
+	case !backup.Configured:
+		return checkResult(id, StatusSkip, T("check.backup.none"))
+	case backup.Latest.IsZero():
+		return checkResult(id, StatusSkip, T("check.backup.unknown"))
+	}
+	now := facts.Now
+	if now.IsZero() {
+		now = time.Now()
+	}
+	age := now.Sub(backup.Latest)
+	text := T("check.backup.latest", backup.Latest.Format(eventsTimeLayout), eventsDurationText(age.Truncate(time.Hour)))
+	var issues checkIssues
+	if age > checkBackupAge {
+		issues.add(StatusWarn, text)
+	}
+	return issues.result(id, text, "tmutil latestbackup")
 }

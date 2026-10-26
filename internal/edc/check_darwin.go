@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -31,6 +32,8 @@ func hostCheckSources() (checkSources, bool) {
 		containers:     readCheckContainers,
 		fileHandles:    readDarwinFileHandles,
 		kernel:         readDarwinDiagnosticReports,
+		thermal:        readDarwinThermal,
+		backup:         readDarwinBackup,
 		kernelNext:     "ls -lt /Library/Logs/DiagnosticReports ~/Library/Logs/DiagnosticReports",
 		// 사용자로 실행하면 gui domain의 agent를, sudo로 실행하면 system domain의 daemon을 본다.
 		serviceNext: "launchctl list %s",
@@ -161,4 +164,26 @@ func readDiagnosticHeader(path string) string {
 	defer file.Close()
 	line, _ := bufio.NewReader(io.LimitReader(file, checkDiagnosticHeaderBytes)).ReadString('\n')
 	return line
+}
+
+// readDarwinThermal은 OSThermalNotification.h의 kOSThermalNotificationPressureLevelName 값을 읽는다. 값은 0(nominal)부터
+// 4(sleeping)까지다. 권한이 필요 없다.
+func readDarwinThermal() (int, error) {
+	output, _, err := runDarwinCheckTool(context.Background(), "/usr/bin/notifyutil", "-g", "com.apple.system.thermalpressurelevel")
+	if err != nil {
+		return 0, err
+	}
+	return parseThermalLevel(output)
+}
+
+func readDarwinBackup() checkBackup {
+	destinations, _, err := runDarwinCheckTool(context.Background(), "/usr/bin/tmutil", "destinationinfo")
+	if err != nil && !strings.Contains(destinations, "No destinations configured") {
+		return checkBackup{Err: err}
+	}
+	if strings.Contains(destinations, "No destinations configured") {
+		return checkBackup{}
+	}
+	latest, _, _ := runDarwinCheckTool(context.Background(), "/usr/bin/tmutil", "latestbackup")
+	return parseBackup(destinations, latest)
 }

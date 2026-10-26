@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -22,7 +23,7 @@ const checkTestRemoteReport = `{
   ]
 }`
 
-const checkTestMacReport = `{"tool": {"version": "0.68.0"}, "results": [{"probe": "check", "status": "skip", "summary": "edc check runs on Linux hosts only"}]}`
+const checkTestMacReport = `{"tool": {"name": "edc", "version": "0.68.0"}, "results": [{"probe": "check", "status": "skip", "summary": "edc check runs on Linux hosts only"}]}`
 
 func TestCheckIDsFollowTheEvaluateOrder(t *testing.T) {
 	results := evaluateCheck(checkFacts{}, checkTestPolicy)
@@ -54,6 +55,8 @@ func TestCheckHostFromCaptureNamesTheReasonWithoutAReport(t *testing.T) {
 		{remoteCapture{Stderr: "bash: line 1: edc: command not found", ExitCode: 127, Err: errors.New("exit")}, checkHostMissing},
 		{remoteCapture{Stderr: "unknown command: check\nrun edc help to see the command list", ExitCode: 2, Err: errors.New("exit")}, checkHostUnsupported},
 		{remoteCapture{Stdout: "hello"}, checkHostInvalid},
+		{remoteCapture{Stdout: `{"results": [{"probe": "check.service", "status": "pass"}]}`}, checkHostInvalid},
+		{remoteCapture{Stdout: `{"tool": {"name": "edc"}, "results": [{"probe": "clean.scan", "status": "pass"}]}`}, checkHostInvalid},
 		{remoteCapture{Stderr: "boom", ExitCode: 3, Err: errors.New("exit")}, checkHostFailed},
 	} {
 		if row := checkHostFromCapture(test.capture); row.Status != test.want {
@@ -118,9 +121,13 @@ func checkTestInventory(t *testing.T) string {
 
 func TestRunCheckGroupReportsEveryHostAsJSONAndText(t *testing.T) {
 	inventory := checkTestInventory(t)
+	var mu sync.Mutex
 	var commands []string
 	run := func(_ context.Context, target, command string, timeout time.Duration) remoteCapture {
+		// 호스트는 parallel 2로 동시에 돈다.
+		mu.Lock()
 		commands = append(commands, command)
+		mu.Unlock()
 		if timeout != 15*time.Second+checkGroupSSHMargin {
 			t.Errorf("timeout = %s", timeout)
 		}

@@ -5,6 +5,7 @@ check:
     linux_only: "edc check runs on Linux hosts only"
     needs_root: "needs root to read %s"
     unreadable: "could not read %s: %s"
+    timed_out: "the source did not answer within --timeout"
   evidence:
     issues: "findings"
     events: "kernel signals"
@@ -14,6 +15,7 @@ check:
     changing: "%d units changing state: %s"
     ok: "%d running units, none failed"
   process:
+    unreadable: "%d processes could not be read (hidepid or permissions), so their state is not checked"
     zombie: "%d defunct processes, by parent: %s"
     blocked: "%d processes in uninterruptible I/O wait (D): %s"
     ok: "%d processes, no defunct or D state"
@@ -36,6 +38,7 @@ check:
     no_route: "no default route"
     no_resolv: "/etc/resolv.conf does not exist"
     no_nameserver: "/etc/resolv.conf has no nameserver"
+    resolv_unreadable: "could not read /etc/resolv.conf: %s"
     conntrack: "conntrack table %.0f%% full"
     tcp_memory: "TCP memory %.0f%% of tcp_mem"
     route_unknown: "route unknown"

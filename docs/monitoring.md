@@ -2,7 +2,7 @@
 
 # Live resource monitoring
 
-[Top thresholds](#top-thresholds) · [Top dashboard](#top-dashboard) · [Top events](#top-events) · [Top JSON output](#top-json-output) · [Filter processes in top](#filter-processes-in-top) · [AI tool usage](#ai-tool-usage)
+[Top thresholds](#top-thresholds) · [Top dashboard](#top-dashboard) · [Top events](#top-events) · [Top JSON output](#top-json-output) · [Filter processes in top](#filter-processes-in-top) · [AI tool usage](#ai-tool-usage) · [Read logs](#read-logs)
 
 ![Live resource dashboard](media/top.png)
 
@@ -437,3 +437,35 @@ The command changes only `statusLine.command` in `~/.claude/settings.json`. It k
 
 The values come from the last Claude Code request. The box shows their age. The text output adds an `updated` line when the values are 1 minute old or more. The macOS box does not show the plan name. The status line input does not include it.
 
+## Read logs
+
+`edc view <file>` reads a log with color. In a terminal, it opens a screen at the end of the file. The screen follows new lines as the file grows. You do not need `-f`.
+
+```bash
+# screen: the last 10,000 lines, then each new line
+edc view /var/log/nginx/access.log
+# keep more lines on the screen and in the stats
+edc view -n 50000 app.log
+# read another command's output
+kubectl logs -f deploy/api | edc view
+# pipe: the bytes stay unchanged, and -f follows like tail -F
+edc view -f app.log | grep timeout
+```
+
+`edc view` reads three formats. It selects the format from the first lines.
+
+| Format | Example | Color |
+| --- | --- | --- |
+| access | nginx and Apache common and combined logs | status class, time in gray |
+| json | one JSON object on each line | level, time in gray; other keys as `key=value` |
+| level | `2026-10-26 10:00:00 ERROR message` | level word, time in gray |
+
+The level must be an uppercase word such as `ERROR` or `WARN`, or a `level=` value. A lowercase "error" in the message is not a level. In the level format, a line without a level belongs to the line above it. This keeps a stack trace with its error.
+
+Press Up or PgUp to stop the list. The header then shows `paused` and counts the new lines. Press End, `l`, or Esc to follow again. Press `/` to filter the lines by text. Press Enter to show the fields of a line, the whole line, and the stack trace lines below it.
+
+The stats panel shows the lines per second, the errors, the status classes or the levels, the last error, and the top paths and clients. It counts only the lines that the screen keeps, 10,000 by default. If the terminal has 120 columns or more, the panel is on the right. If the terminal is narrower, the panel is below the list. Press `i` to hide the panel.
+
+If logrotate moves the file, `edc view` reads the rest of the old file. Then it marks the place and reads the new file from the start. If the file becomes smaller, it reads the file from the start again.
+
+If the output is not a terminal, or if `NO_COLOR` is set, `edc view` writes the bytes unchanged, like `cat`. `-n N` writes the last N lines. `-f` follows the file like `tail -F`. If you give `-f` without `-n`, it starts with the last 10 lines.

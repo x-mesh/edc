@@ -191,6 +191,21 @@ command:
     notes:
       - "edc asks for the public IP by default and drops the line after the time limit."
       - "Disk usage is the total size minus the available space."
+  view:
+    summary: "Read a log with color and follow it as it grows"
+    option:
+      lines: "last N lines; the screen keeps N lines (default 10,000)"
+      follow: "in a pipe, follow the file like tail -F; the screen always follows"
+    notes:
+      - "In a terminal, it opens a screen at the end of the file and follows new lines."
+      - "Up or PgUp stops the list, and the header counts the new lines. End, l, or Esc follows again."
+      - "It reads nginx and Apache access logs, JSON lines, and lines with a level such as ERROR or WARN."
+      - "The stats panel counts status classes or levels, top paths and clients, and the last error."
+      - "The stats count only the lines that the screen keeps. i hides the panel."
+      - "The panel sits on the right in 120 columns or more, and below the list otherwise."
+      - "Enter shows the fields and the whole line, with the stack trace lines below it."
+      - "When the file is rotated or truncated, it marks the place and reads the new file from the start."
+      - "In a pipe or with NO_COLOR, it writes the bytes unchanged, like cat. -f follows like tail -F."
   du:
     summary: "Disk usage under a directory, largest first (Linux and macOS)"
     option:

@@ -343,6 +343,15 @@ var commandDocs = []commandDoc{
 		},
 	},
 	{
+		name: "view", group: "observe",
+		usage: []string{"edc view [-n N] [-f] [file]", "<command> | edc view"},
+		options: []optionDoc{
+			{"-n N", "command.view.option.lines"},
+			{"-f, -F", "command.view.option.follow"},
+		},
+		examples: []string{"edc view /var/log/nginx/access.log", "edc view -n 50000 app.log", "kubectl logs -f deploy/api | edc view", "edc view -f app.log | grep timeout"},
+	},
+	{
 		name: "du", group: "observe",
 		usage: []string{"edc du [options] [path]"},
 		options: []optionDoc{

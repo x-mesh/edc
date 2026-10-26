@@ -1,0 +1,9 @@
+2026-10-26 10:00:00,120 INFO  [main] c.e.App - started in 2.1s
+2026-10-26 10:00:01,004 WARN  [pool-1] c.e.Db - pool 80% used
+2026-10-26 10:00:02,310 ERROR [http-7] c.e.Api - request failed
+java.lang.IllegalStateException: connection closed
+	at com.example.Db.query(Db.java:88)
+	at com.example.Api.handle(Api.java:41)
+Caused by: java.io.IOException: broken pipe
+	... 12 more
+2026-10-26 10:00:03,001 INFO  [http-8] c.e.Api - user reported an error page

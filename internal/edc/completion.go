@@ -279,6 +279,9 @@ _edc() {
             '(-l --list)'{-l,--list}'[inventory group과 host 출력]' \
             '1:group:_edc_remote_groups'
           ;;
+        view)
+          _arguments '-n[마지막 N줄]:count' '(-f -F)'{-f,-F}'[pipe에서 tail -F처럼 따라가기]' '1:file:_files'
+          ;;
         tunnel)
           _arguments $common \
             '--file[tunnels YAML 경로]:path:_files' \
@@ -486,6 +489,9 @@ _edc() {
       else
         COMPREPLY=($(compgen -W "$(edc completion groups 2>/dev/null)" -- "$cur"))
       fi ;;
+    view)
+      if [[ $cur == -* ]]; then COMPREPLY=($(compgen -W "-n -f -F" -- "$cur"))
+      elif [[ $prev != -n ]]; then COMPREPLY=($(compgen -f -- "$cur")); fi ;;
     tunnel)
       case "$prev" in
         --file|--json) COMPREPLY=($(compgen -f -- "$cur")); return ;;

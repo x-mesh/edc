@@ -43,9 +43,11 @@ func viewTailOffset(file io.ReaderAt, size int64, lines int) (int64, error) {
 			start = 0
 		}
 		chunk := block[:end-start]
-		if _, err := file.ReadAt(chunk, start); err != nil && !errors.Is(err, io.EOF) {
+		count, err := file.ReadAt(chunk, start)
+		if err != nil && !errors.Is(err, io.EOF) {
 			return 0, err
 		}
+		chunk = chunk[:count]
 		for index := len(chunk) - 1; index >= 0; index-- {
 			if chunk[index] != '\n' {
 				continue
@@ -222,17 +224,29 @@ func viewReadInitial(file io.ReaderAt, size int64, lines int, limit int64) ([]by
 		base = 0
 	}
 	offset, err := viewTailOffset(io.NewSectionReader(file, base, size-base), size-base, lines)
+	// 크기를 잰 뒤 파일이 잘렸다. 빈 화면에서 시작하면 따라가면서 truncate를 알아채고 처음부터 읽는다.
+	if errors.Is(err, io.EOF) {
+		return nil, nil
+	}
 	if err != nil {
 		return nil, err
 	}
 	data := make([]byte, size-base-offset)
-	if _, err := file.ReadAt(data, base+offset); err != nil && !errors.Is(err, io.EOF) {
+	count, err := file.ReadAt(data, base+offset)
+	if err != nil && !errors.Is(err, io.EOF) {
 		return nil, err
 	}
-	if base > 0 && offset == 0 {
+	data = data[:count]
+	if base > 0 && offset == 0 && !viewLineStartsAt(file, base) {
 		if newline := bytes.IndexByte(data, '\n'); newline >= 0 && newline < len(data)-1 {
 			data = data[newline+1:]
 		}
 	}
 	return data, nil
+}
+
+func viewLineStartsAt(file io.ReaderAt, offset int64) bool {
+	previous := make([]byte, 1)
+	_, err := file.ReadAt(previous, offset-1)
+	return err == nil && previous[0] == '\n'
 }

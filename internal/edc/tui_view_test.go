@@ -173,3 +173,16 @@ func TestViewScreenDetailQGoesBack(t *testing.T) {
 		t.Fatalf("q in the detail must go back: detail %d, quit %v", model.detail, cmd != nil)
 	}
 }
+
+// 통계는 보관한 줄만 센다. 마지막 오류가 밀려나면 LAST ERROR도 비운다.
+func TestViewScreenForgetsEvictedLastError(t *testing.T) {
+	model := newViewScreenModel("app", 3)
+	model.ingest([]string{"2026-10-26 10:00:00 ERROR boom", "2026-10-26 10:00:01 INFO ok"}, time.Now(), false)
+	if model.stats.lastError.text == "" {
+		t.Fatal("the error is still kept")
+	}
+	model.ingest([]string{"2026-10-26 10:00:02 INFO ok", "2026-10-26 10:00:03 INFO ok"}, time.Now(), false)
+	if model.stats.failures != 0 || model.stats.lastError.text != "" {
+		t.Fatalf("evicted error stays: failures %d last %q", model.stats.failures, model.stats.lastError.text)
+	}
+}

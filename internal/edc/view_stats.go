@@ -46,6 +46,10 @@ func (stats *viewStats) remove(line viewLine) {
 		return
 	}
 	stats.apply(line, -1)
+	// 오래된 줄부터 빠지므로, 가장 최근 오류가 빠졌다면 남은 오류가 없다.
+	if stats.failures == 0 {
+		stats.lastError = viewLine{}
+	}
 }
 
 func (stats *viewStats) apply(line viewLine, step int) {

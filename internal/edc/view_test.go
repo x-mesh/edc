@@ -297,3 +297,40 @@ func TestViewTailReaderKeepsOrderAcrossTheRing(t *testing.T) {
 		t.Fatalf("tail: %q", bytes.Join(got, nil))
 	}
 }
+
+// 창이 줄 경계에서 시작하면 첫 줄은 잘린 조각이 아니다.
+func TestViewReadInitialKeepsWholeFirstLine(t *testing.T) {
+	content := "x\nfirst\nsecond\n"
+	data, err := viewReadInitial(strings.NewReader(content), int64(len(content)), viewKeepLines, int64(len(content)-2))
+	if err != nil || string(data) != "first\nsecond\n" {
+		t.Fatalf("read %q %v", data, err)
+	}
+}
+
+// viewShrinkingFile은 첫 읽기 뒤에 잘리는 파일이다. 화면을 여는 도중 copytruncate가 일어난 경우다.
+type viewShrinkingFile struct {
+	before, after string
+	reads         int
+}
+
+func (file *viewShrinkingFile) ReadAt(buffer []byte, offset int64) (int, error) {
+	file.reads++
+	content := file.after
+	if file.reads == 1 {
+		content = file.before
+	}
+	return strings.NewReader(content).ReadAt(buffer, offset)
+}
+
+func TestViewReadInitialUsesOnlyBytesRead(t *testing.T) {
+	file := &viewShrinkingFile{before: "aaaa\nbbbb\n", after: "aaaa\n"}
+	data, err := viewReadInitial(file, int64(len(file.before)), viewKeepLines, viewScreenReadLimit)
+	if err != nil || string(data) != "aaaa\n" {
+		t.Fatalf("read %q %v", data, err)
+	}
+	// 크기를 잰 뒤 비어 버린 파일은 오류가 아니라 빈 화면이다. 따라가면서 truncate로 알아챈다.
+	data, err = viewReadInitial(&viewShrinkingFile{after: ""}, 10, viewKeepLines, viewScreenReadLimit)
+	if err != nil || len(data) != 0 {
+		t.Fatalf("emptied file: %q %v", data, err)
+	}
+}

@@ -1,0 +1,83 @@
+# check 명령의 한국어 메시지.
+check:
+  accepted_items: " (받아들임 %d개)"
+  skip:
+    linux_only: "check는 Linux에서만 동작합니다"
+    needs_root: "%s를 읽으려면 root가 필요합니다"
+    unreadable: "%s를 읽지 못했습니다: %s"
+    timed_out: "--timeout 안에 원천이 응답하지 않았습니다"
+  evidence:
+    output: "출력"
+    issues: "찾은 문제"
+    events: "커널 신호"
+  service:
+    required: "실행 중이 아닌 필수 unit %d개: %s"
+    failed: "failed unit %d개: %s"
+    changing: "상태가 바뀌는 중인 unit %d개: %s"
+    ok: "실행 중인 unit %d개, 실패 없음"
+  process:
+    unreadable: "process %d개를 읽지 못해(hidepid나 권한) 그 상태는 점검하지 않았습니다"
+    zombie: "defunct process %d개, 부모별: %s"
+    blocked: "I/O를 기다리며 멈춘(D) process %d개: %s"
+    ok: "process %d개, defunct와 D 상태 없음"
+  memory:
+    available: "가용 메모리 %s / %s (%.0f%%)"
+  disk:
+    usage: "%s 사용률 %.0f%%"
+    inodes: "%s inode 사용률 %.0f%%"
+    readonly: "%s가 읽기 전용으로 mount되어 있습니다"
+    ok: "mount %d개, 가장 높은 곳 %s %.0f%%"
+    none: "점검할 디스크 mount가 없습니다"
+  kernel:
+    none: "최근 %s 동안 커널 장애 신호 없음"
+    found: "최근 %s 동안 커널 장애 신호: %s"
+  time:
+    unknown: "커널 시계 상태를 읽지 못했습니다"
+    unsynced: "시계가 동기화되어 있지 않습니다"
+    synced: "시계 동기화됨"
+  network:
+    no_route: "default route가 없습니다"
+    no_resolv: "/etc/resolv.conf가 없습니다"
+    no_nameserver: "/etc/resolv.conf에 nameserver가 없습니다"
+    resolv_unreadable: "/etc/resolv.conf를 읽지 못했습니다: %s"
+    conntrack: "conntrack table %.0f%% 사용"
+    tcp_memory: "TCP 메모리가 tcp_mem의 %.0f%%"
+    route_unknown: "route 모름"
+    ok: "default route %s, nameserver %d개"
+  container:
+    unreachable: "Docker에 연결하지 못했습니다: %s"
+    failed: "실패한 container %d개: %s"
+    attention: "손볼 일이 있는 container %d개: %s"
+    ok: "container %d개, 실패 없음"
+  filehandles:
+    unlimited: "파일 핸들 %d개 사용 중, 시스템 한도 없음"
+    unknown: "파일 핸들 한도를 읽지 못했습니다"
+    usage: "파일 핸들 %d / %d (%.0f%%)"
+  reboot:
+    flag: "재부팅 필요: %s"
+    none: "비교할 설치 커널이 없습니다"
+    kernel: "커널 %s가 설치되어 있고 %s로 실행 중입니다"
+    ok: "가장 새 커널 %s로 실행 중"
+  group:
+    summary: "호스트 %d개, 점검 %d개, 결과 없음 %d개 · FAIL 호스트 %d개, WARN 호스트 %d개"
+    col:
+      host: "호스트"
+    status:
+      edc_missing: "edc가 없음, install.sh로 설치"
+      no_check: "이 edc에는 check가 없음, edc update로 업데이트"
+      unreachable: "SSH 실패"
+      timeout: "제한 시간 도달"
+      invalid_output: "check 결과가 아닌 출력"
+      failed: "edc check 실패"
+    error:
+      inventory_without_group: "--inventory는 --group과 함께 써야 합니다"
+  error:
+    routine_name: "%q는 루틴 이름이 아닙니다. a-z, 0-9, _, -만 쓰세요"
+    unknown_routine: "[check.routines]에 %q가 없습니다. 있는 루틴: %s"
+  cmd:
+    ok: "%s 만에 exit 0"
+    failed: "exit %d"
+    timeout: "%s 안에 끝나지 않아 명령과 자식 process를 멈췄습니다"
+    not_run: "명령을 실행하지 않았습니다: %s"
+    config_writable: "%s를 그룹이나 다른 사용자가 쓸 수 있습니다 (%s)"
+    config_owner: "%s의 주인이 다른 사용자입니다 (uid %d)"

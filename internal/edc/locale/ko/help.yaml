@@ -86,6 +86,20 @@ command:
     option:
       since: "얼마나 이전까지 볼지, 24h나 90m 같은 Go duration"
       verbose: "최근 50건에서 자르지 않고 모두 보기"
+  check:
+    summary: "지금 고장 난 곳을 한 번에 훑는 점검 (Linux)"
+    option:
+      routine: "config.toml의 [check.routines]에 있는 루틴을 실행"
+      group: "edc remote 그룹의 호스트마다 check를 실행"
+      inventory: "--group에 쓸 inventory 파일"
+    notes:
+      - "service, process, 메모리, 디스크, 커널 로그, 시간, 네트워크, container, 파일 핸들, 재부팅 필요 여부를 봅니다."
+      - "기본 점검은 아무것도 바꾸지 않고 외부로 보내지 않습니다."
+      - "문제마다 이어서 볼 edc 명령을 next로 알려 줍니다."
+      - "root가 아니면 일부 점검은 통과가 아니라 skip입니다."
+      - "점검은 Linux에서만 합니다. --group은 macOS에서도 실행할 수 있습니다."
+      - "--group은 SSH로 호스트마다 edc check를 실행합니다. 각 호스트에 check가 있는 edc가 필요합니다."
+      - "루틴은 config.toml의 unit 규칙, 기준값, 셸 명령을 더합니다. 명령은 0으로 끝나면 통과입니다."
   events:
     summary: "커널과 systemd의 장애 신호를 시간 순서로 정리 (Linux)"
     option:

@@ -159,6 +159,16 @@ var commandDocs = []commandDoc{
 		usesCommon: true,
 	},
 	{
+		name: "check", group: "diagnose",
+		usage: []string{"edc check [options] [routine]", "edc check --group <name> [--routine NAME] [--inventory FILE] [options]"},
+		options: []optionDoc{
+			{"--routine NAME", "command.check.option.routine"},
+			{"--group NAME", "command.check.option.group"},
+			{"--inventory FILE", "command.check.option.inventory"},
+		},
+		usesCommon: true,
+	},
+	{
 		name: "events", group: "diagnose",
 		usage:      []string{"edc events [--since 6h] [options]"},
 		options:    []optionDoc{{"--since 6h", "command.events.option.since"}},

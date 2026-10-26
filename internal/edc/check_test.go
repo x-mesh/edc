@@ -1,0 +1,421 @@
+package edc
+
+import (
+	"context"
+	"errors"
+	"io/fs"
+	"slices"
+	"strings"
+	"testing"
+	"time"
+)
+
+var checkTestPolicy = newCheckPolicy(checkConfig{}, "")
+
+func TestCheckServicesFailsOnFailedUnitsAndWarnsOnChangingOnes(t *testing.T) {
+	facts := checkFacts{Services: []svcListItem{
+		{Unit: "nginx.service", LoadState: "loaded", ActiveState: "failed", SubState: "failed"},
+		{Unit: "app.service", LoadState: "loaded", ActiveState: "activating", SubState: "auto-restart"},
+		{Unit: "sshd.service", LoadState: "loaded", ActiveState: "active", SubState: "running"},
+	}}
+	result := checkServices(facts, checkTestPolicy)
+	if result.Status != StatusFail || !strings.Contains(result.Summary, "nginx.service") || !strings.Contains(result.Summary, "app.service") {
+		t.Fatalf("result = %+v", result)
+	}
+	if result.Next != "edc svc nginx.service" || result.Error == nil {
+		t.Fatalf("next = %q, error = %+v", result.Next, result.Error)
+	}
+
+	facts.Services = facts.Services[1:]
+	if result := checkServices(facts, checkTestPolicy); result.Status != StatusWarn || result.Next != "edc svc app.service" {
+		t.Fatalf("changing unit = %+v", result)
+	}
+	facts.Services = facts.Services[1:]
+	if result := checkServices(facts, checkTestPolicy); result.Status != StatusPass || result.Next != "" {
+		t.Fatalf("healthy units = %+v", result)
+	}
+}
+
+func TestCheckServicesSkipsWithoutSystemd(t *testing.T) {
+	if result := checkServices(checkFacts{ServicesErr: errSvcNoSystemd}, checkTestPolicy); result.Status != StatusSkip {
+		t.Fatalf("no systemd = %+v", result)
+	}
+	if result := checkServices(checkFacts{ServicesErr: errors.New("exit status 1")}, checkTestPolicy); result.Status != StatusSkip {
+		t.Fatalf("systemctl error = %+v", result)
+	}
+}
+
+func TestCheckProcessesGroupsZombiesByParent(t *testing.T) {
+	facts := checkFacts{Processes: []checkProcess{
+		{PID: 1, PPID: 0, Command: "systemd", State: "S"},
+		{PID: 812, PPID: 1, Command: "python3", State: "S"},
+		{PID: 900, PPID: 812, Command: "worker", State: "Z"},
+		{PID: 901, PPID: 812, Command: "worker", State: "Z"},
+		{PID: 950, PPID: 1, Command: "cron", State: "Z"},
+	}}
+	result := checkProcesses(facts)
+	if result.Status != StatusWarn || result.Next != "edc top" {
+		t.Fatalf("result = %+v", result)
+	}
+	// 가장 많이 남긴 부모가 먼저 온다.
+	if first, second := strings.Index(result.Summary, "python3(812) ×2"), strings.Index(result.Summary, "systemd(1) ×1"); first < 0 || second < first {
+		t.Fatalf("summary = %q", result.Summary)
+	}
+
+	facts.Processes = append(facts.Processes[:2], checkProcess{PID: 77, PPID: 1, Command: "dd", State: "D"})
+	if result := checkProcesses(facts); result.Status != StatusWarn || !strings.Contains(result.Summary, "dd(77)") {
+		t.Fatalf("blocked process = %+v", result)
+	}
+	if result := checkProcesses(checkFacts{Processes: facts.Processes[:2]}); result.Status != StatusPass {
+		t.Fatalf("healthy processes = %+v", result)
+	}
+}
+
+func TestCheckMemoryUsesAvailableShare(t *testing.T) {
+	for _, test := range []struct {
+		available uint64
+		want      Status
+	}{{11, StatusPass}, {10, StatusPass}, {9, StatusWarn}, {5, StatusWarn}, {4, StatusFail}} {
+		facts := checkFacts{Memory: infoMemory{Total: 100 << 20, Available: test.available << 20}}
+		if result := checkMemory(facts, checkTestPolicy); result.Status != test.want {
+			t.Errorf("available %d%% = %s, want %s", test.available, result.Status, test.want)
+		}
+	}
+	if result := checkMemory(checkFacts{MemoryErr: fs.ErrPermission}, checkTestPolicy); result.Status != StatusSkip {
+		t.Fatalf("unreadable meminfo = %+v", result)
+	}
+}
+
+func TestCheckDisksFollowsTheInfoLimits(t *testing.T) {
+	for _, test := range []struct {
+		percent float64
+		want    Status
+	}{{89, StatusPass}, {90, StatusWarn}, {95, StatusFail}} {
+		facts := checkFacts{Disks: []checkDisk{{Mount: "/var", FSType: "ext4", Percent: test.percent}}}
+		if result := checkDisks(facts, checkTestPolicy); result.Status != test.want {
+			t.Errorf("usage %.0f%% = %s, want %s", test.percent, result.Status, test.want)
+		}
+	}
+	facts := checkFacts{Disks: []checkDisk{
+		{Mount: "/", FSType: "ext4", Percent: 40, InodesUsed: 96, InodesTotal: 100},
+		{Mount: "/var", FSType: "ext4", Percent: 96},
+	}}
+	if result := checkDisks(facts, checkTestPolicy); result.Status != StatusFail || result.Next != "edc du /var" || !strings.Contains(result.Summary, "/ inodes 96%") {
+		t.Fatalf("inode and usage = %+v", result)
+	}
+}
+
+func TestCheckDisksWarnsOnReadOnlyMountsExceptImages(t *testing.T) {
+	facts := checkFacts{Disks: []checkDisk{{Mount: "/media/cd", FSType: "iso9660", Percent: 100, ReadOnly: true}}}
+	if result := checkDisks(facts, checkTestPolicy); result.Status != StatusPass {
+		t.Fatalf("image file system = %+v", result)
+	}
+	facts.Disks = []checkDisk{{Mount: "/data", FSType: "xfs", Percent: 10, ReadOnly: true}}
+	if result := checkDisks(facts, checkTestPolicy); result.Status != StatusWarn || !strings.Contains(result.Summary, "/data") {
+		t.Fatalf("read-only data mount = %+v", result)
+	}
+}
+
+func TestCheckKernelUsesTheEventsLevels(t *testing.T) {
+	at := time.Date(2026, 10, 26, 9, 0, 0, 0, time.UTC)
+	facts := checkFacts{Kernel: eventsFacts{KernelSource: "journal", Signals: []eventsSignal{
+		{Kind: eventsSegfault, Time: at, Brief: "app segfault"},
+		{Kind: eventsLink, Time: at, Brief: "eth0 down"},
+	}}}
+	result := checkKernel(facts)
+	if result.Status != StatusWarn || strings.Contains(result.Summary, eventsLink) || result.Next != "edc events --since 1h" {
+		t.Fatalf("segfault only = %+v", result)
+	}
+	facts.Kernel.Signals = append(facts.Kernel.Signals, eventsSignal{Kind: eventsOOM, Time: at, Brief: "killed java"})
+	if result := checkKernel(facts); result.Status != StatusFail || !strings.Contains(result.Summary, "oom ×1") {
+		t.Fatalf("oom = %+v", result)
+	}
+	facts.Kernel.Signals = []eventsSignal{{Kind: eventsOops, Time: at, Brief: "WARNING"}}
+	if result := checkKernel(facts); result.Status != StatusWarn {
+		t.Fatalf("kernel warning = %+v", result)
+	}
+	facts.Kernel.Signals[0].Failed = true
+	if result := checkKernel(facts); result.Status != StatusFail {
+		t.Fatalf("oops = %+v", result)
+	}
+	if result := checkKernel(checkFacts{Kernel: eventsFacts{KernelErr: fs.ErrPermission}}); result.Status != StatusSkip {
+		t.Fatalf("unreadable kernel log = %+v", result)
+	}
+}
+
+func TestCheckTimeWarnsWhenUnsynced(t *testing.T) {
+	if result := checkTime(checkFacts{Clock: &infoClock{Synced: false}}); result.Status != StatusWarn {
+		t.Fatalf("unsynced = %+v", result)
+	}
+	if result := checkTime(checkFacts{Clock: &infoClock{Synced: true}}); result.Status != StatusPass {
+		t.Fatalf("synced = %+v", result)
+	}
+	if result := checkTime(checkFacts{}); result.Status != StatusSkip {
+		t.Fatalf("unknown clock = %+v", result)
+	}
+}
+
+func TestCheckNetworkDoesNotFailOnAnUnreadableRouteTable(t *testing.T) {
+	dns := infoDNS{Config: resolvConfig{Nameservers: []string{"10.0.0.2"}}}
+	if result := checkNetworkResult(checkFacts{Network: checkNetwork{RouteErr: fs.ErrPermission, DNS: dns}}, checkTestPolicy); result.Status != StatusPass {
+		t.Fatalf("unreadable route = %+v", result)
+	}
+	if result := checkNetworkResult(checkFacts{Network: checkNetwork{DNS: dns}}, checkTestPolicy); result.Status != StatusFail || result.Next != "ip route" {
+		t.Fatalf("no route = %+v", result)
+	}
+	route := "10.0.0.1 dev eth0"
+	if result := checkNetworkResult(checkFacts{Network: checkNetwork{Route: route, DNS: infoDNS{Err: fs.ErrNotExist}}}, checkTestPolicy); result.Status != StatusWarn {
+		t.Fatalf("no resolv.conf = %+v", result)
+	}
+	if result := checkNetworkResult(checkFacts{Network: checkNetwork{Route: route}}, checkTestPolicy); result.Status != StatusWarn {
+		t.Fatalf("no nameserver = %+v", result)
+	}
+	for _, test := range []struct {
+		percent float64
+		want    Status
+	}{{79, StatusPass}, {80, StatusWarn}, {90, StatusFail}} {
+		network := checkNetwork{Route: route, DNS: dns, Conntrack: test.percent, ConntrackOK: true}
+		if result := checkNetworkResult(checkFacts{Network: network}, checkTestPolicy); result.Status != test.want {
+			t.Errorf("conntrack %.0f%% = %s, want %s", test.percent, result.Status, test.want)
+		}
+		network = checkNetwork{Route: route, DNS: dns, TCPMemory: test.percent, TCPMemoryOK: true}
+		if result := checkNetworkResult(checkFacts{Network: network}, checkTestPolicy); result.Status != test.want {
+			t.Errorf("tcp memory %.0f%% = %s, want %s", test.percent, result.Status, test.want)
+		}
+	}
+}
+
+func TestCheckContainers(t *testing.T) {
+	if result := checkContainers(checkFacts{ContainersErr: errCtrNoDocker}, checkTestPolicy); result.Status != StatusSkip {
+		t.Fatalf("no docker = %+v", result)
+	}
+	denied := errors.New("dial unix /var/run/docker.sock: connect: permission denied")
+	if result := checkContainers(checkFacts{ContainersErr: denied}, checkTestPolicy); result.Status != StatusSkip {
+		t.Fatalf("no docker access = %+v", result)
+	}
+	refused := errors.New("dial unix /var/run/docker.sock: connect: connection refused")
+	if result := checkContainers(checkFacts{ContainersErr: refused}, checkTestPolicy); result.Status != StatusWarn || result.Next != "edc svc docker" {
+		t.Fatalf("docker down = %+v", result)
+	}
+	facts := checkFacts{Containers: []ctrListItem{
+		{Name: "web", Status: "running", Health: "unhealthy", State: "running (unhealthy)"},
+		{Name: "job", Status: "exited", ExitCode: 1, State: "exited (1)"},
+	}}
+	if result := checkContainers(facts, checkTestPolicy); result.Status != StatusFail || result.Next != "edc ctr job" || !strings.Contains(result.Summary, "web") {
+		t.Fatalf("failed container = %+v", result)
+	}
+	facts.Containers = facts.Containers[:1]
+	if result := checkContainers(facts, checkTestPolicy); result.Status != StatusWarn || result.Next != "edc ctr web" {
+		t.Fatalf("unhealthy container = %+v", result)
+	}
+	if result := checkContainers(checkFacts{}, checkTestPolicy); result.Status != StatusPass {
+		t.Fatalf("no containers = %+v", result)
+	}
+}
+
+func TestCheckFileHandles(t *testing.T) {
+	for _, test := range []struct {
+		used uint64
+		want Status
+	}{{79, StatusPass}, {80, StatusWarn}, {90, StatusFail}} {
+		if result := checkFileHandles(checkFacts{FileHandles: &infoFileHandles{Used: test.used, Max: 100}}, checkTestPolicy); result.Status != test.want {
+			t.Errorf("file handles %d%% = %s, want %s", test.used, result.Status, test.want)
+		}
+	}
+	unlimited := &infoFileHandles{Used: 3332, Max: 1<<63 - 1}
+	if result := checkFileHandles(checkFacts{FileHandles: unlimited}, checkTestPolicy); result.Status != StatusPass || strings.Contains(result.Summary, "9223372036854775807") {
+		t.Fatalf("unlimited file-max = %+v", result)
+	}
+	if result := checkFileHandles(checkFacts{}, checkTestPolicy); result.Status != StatusSkip {
+		t.Fatalf("unparsed file-nr = %+v", result)
+	}
+}
+
+func TestCheckReboot(t *testing.T) {
+	if result := checkRebootResult(checkFacts{Reboot: checkReboot{Flag: true, Packages: []string{"linux-image-6.8.0-50"}}}); result.Status != StatusWarn || !strings.Contains(result.Summary, "linux-image") {
+		t.Fatalf("reboot flag = %+v", result)
+	}
+	newer := checkReboot{Running: "6.8.0-45-generic", Kernels: []string{"6.8.0-45-generic", "6.8.0-50-generic"}}
+	if result := checkRebootResult(checkFacts{Reboot: newer}); result.Status != StatusWarn {
+		t.Fatalf("newer kernel = %+v", result)
+	}
+	newer.Kernels = newer.Kernels[:1]
+	if result := checkRebootResult(checkFacts{Reboot: newer}); result.Status != StatusPass {
+		t.Fatalf("newest kernel = %+v", result)
+	}
+	if result := checkRebootResult(checkFacts{Reboot: checkReboot{Running: "custom"}}); result.Status != StatusPass {
+		t.Fatalf("custom kernel = %+v", result)
+	}
+}
+
+func TestCollectCheckFactsReadsEverySourceInOrder(t *testing.T) {
+	sources := checkSources{
+		services:  func(context.Context) ([]svcListItem, error) { return nil, errSvcNoSystemd },
+		processes: func() ([]checkProcess, error) { return []checkProcess{{PID: 1, Command: "init", State: "S"}}, nil },
+		memory:    func() (infoMemory, error) { return infoMemory{Total: 100, Available: 50}, nil },
+		disks:     func() ([]checkDisk, error) { return nil, nil },
+		kernel: func(_ context.Context, since time.Duration) eventsFacts {
+			if since != checkKernelWindow {
+				t.Errorf("kernel window = %s", since)
+			}
+			return eventsFacts{KernelSource: "journal"}
+		},
+		clock:       func() *infoClock { return &infoClock{Synced: true} },
+		network:     func() checkNetwork { return checkNetwork{Route: "10.0.0.1 dev eth0"} },
+		containers:  func(context.Context) ([]ctrListItem, error) { return nil, errCtrNoDocker },
+		fileHandles: func() (*infoFileHandles, error) { return &infoFileHandles{Used: 1, Max: 100}, nil },
+		reboot:      func() checkReboot { return checkReboot{} },
+	}
+	results := evaluateCheck(collectCheckFacts(context.Background(), sources, nil), checkTestPolicy)
+	want := []string{"service", "process", "memory", "disk", "kernel", "time", "network", "container", "filehandles", "reboot"}
+	if len(results) != len(want) {
+		t.Fatalf("results = %d", len(results))
+	}
+	for index, id := range want {
+		if results[index].Probe != "check."+id {
+			t.Errorf("result %d = %s, want check.%s", index, results[index].Probe, id)
+		}
+	}
+	if code := exitCode(results); code != 0 {
+		t.Fatalf("exit code = %d; a warning (no nameserver) must not fail the run", code)
+	}
+}
+
+func TestCheckPolicyAcceptsNamedItemsAndKeepsThem(t *testing.T) {
+	policy := newCheckPolicy(checkConfig{
+		AcceptUnits: []string{"systemd-networkd-wait-online.service"}, AcceptContainers: []string{"job-*"}, AcceptMounts: []string{"/media/*"},
+	}, "")
+	services := checkFacts{Services: []svcListItem{{Unit: "systemd-networkd-wait-online.service", LoadState: "loaded", ActiveState: "failed"}}}
+	result := checkServices(services, policy)
+	if result.Status != StatusPass || !strings.Contains(result.Summary, "(accepted 1)") {
+		t.Fatalf("accepted unit = %+v", result)
+	}
+	if names, _ := result.Metrics["accepted"].([]string); len(names) != 1 || names[0] != "systemd-networkd-wait-online.service" {
+		t.Fatalf("accepted metrics = %#v", result.Metrics)
+	}
+	containers := checkFacts{Containers: []ctrListItem{
+		{Name: "job-nightly", Status: "exited", ExitCode: 1, State: "exited (1)"},
+		{Name: "web", Status: "exited", ExitCode: 1, State: "exited (1)"},
+	}}
+	if result := checkContainers(containers, policy); result.Status != StatusFail || strings.Contains(result.Summary, "job-nightly") || !strings.Contains(result.Summary, "(accepted 1)") {
+		t.Fatalf("accepted container = %+v", result)
+	}
+	disks := checkFacts{Disks: []checkDisk{{Mount: "/media/backup", FSType: "ext4", Percent: 99}, {Mount: "/", FSType: "ext4", Percent: 40}}}
+	if result := checkDisks(disks, policy); result.Status != StatusPass || !strings.Contains(result.Summary, "(accepted 1)") {
+		t.Fatalf("accepted mount = %+v", result)
+	}
+}
+
+func TestCheckPolicyRequiresUnits(t *testing.T) {
+	policy := newCheckPolicy(checkConfig{RequireUnits: []string{"nginx.service", "sshd.service"}}, "")
+	facts := checkFacts{Services: []svcListItem{{Unit: "sshd.service", LoadState: "loaded", ActiveState: "active", SubState: "running"}}}
+	result := checkServices(facts, policy)
+	if result.Status != StatusFail || !strings.Contains(result.Summary, "nginx.service") || strings.Contains(result.Summary, "sshd.service") || result.Next != "edc svc nginx.service" {
+		t.Fatalf("missing required unit = %+v", result)
+	}
+	// 시작하는 중인 필수 unit은 상태가 바뀌는 중이라는 경고 하나만 낸다.
+	facts.Services = append(facts.Services, svcListItem{Unit: "nginx.service", LoadState: "loaded", ActiveState: "activating", SubState: "start"})
+	if result := checkServices(facts, policy); result.Status != StatusWarn {
+		t.Fatalf("starting required unit = %+v", result)
+	}
+}
+
+func TestCheckPolicyLimitsAndWholeCheckAccept(t *testing.T) {
+	policy := newCheckPolicy(checkConfig{Limits: checkLimitsConfig{Disk: []float64{80, 90}, MemoryAvailable: []float64{20, 10}, Usage: []float64{50, 60}}}, "")
+	if result := checkDisks(checkFacts{Disks: []checkDisk{{Mount: "/", FSType: "ext4", Percent: 85}}}, policy); result.Status != StatusWarn {
+		t.Fatalf("disk limit = %+v", result)
+	}
+	if result := checkMemory(checkFacts{Memory: infoMemory{Total: 100, Available: 15}}, policy); result.Status != StatusWarn {
+		t.Fatalf("memory limit = %+v", result)
+	}
+	if result := checkFileHandles(checkFacts{FileHandles: &infoFileHandles{Used: 60, Max: 100}}, policy); result.Status != StatusFail {
+		t.Fatalf("usage limit = %+v", result)
+	}
+
+	accepted := evaluateCheck(checkFacts{Reboot: checkReboot{Flag: true}, ProcessesErr: fs.ErrPermission}, newCheckPolicy(checkConfig{Accept: []string{"reboot"}}, ""))
+	reboot := accepted[len(accepted)-1]
+	if reboot.Probe != "check.reboot" || reboot.Status != StatusSkip || reboot.Metrics["accepted_status"] != StatusWarn || exitCode([]Result{reboot}) != 0 {
+		t.Fatalf("accepted reboot = %+v", reboot)
+	}
+}
+
+func TestCollectCheckFactsDoesNotWaitPastTheTimeout(t *testing.T) {
+	block := make(chan struct{})
+	defer close(block)
+	sources := checkSources{
+		services:  func(context.Context) ([]svcListItem, error) { return nil, errSvcNoSystemd },
+		processes: func() ([]checkProcess, error) { return nil, nil },
+		memory:    func() (infoMemory, error) { return infoMemory{Total: 100, Available: 50}, nil },
+		// df는 ctx를 받지 않는다. 멈춘 NFS mount에서 돌아오지 않는 경우다.
+		disks:       func() ([]checkDisk, error) { <-block; return nil, nil },
+		kernel:      func(context.Context, time.Duration) eventsFacts { return eventsFacts{} },
+		clock:       func() *infoClock { return &infoClock{Synced: true} },
+		network:     func() checkNetwork { return checkNetwork{} },
+		containers:  func(context.Context) ([]ctrListItem, error) { return nil, errCtrNoDocker },
+		fileHandles: func() (*infoFileHandles, error) { return nil, nil },
+		reboot:      func() checkReboot { return checkReboot{} },
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	facts := collectCheckFacts(ctx, sources, nil)
+	if time.Since(started) > time.Second || len(facts.TimedOut) != 1 || facts.TimedOut[0] != "disk" {
+		t.Fatalf("timed out = %v after %s", facts.TimedOut, time.Since(started))
+	}
+	for _, result := range evaluateCheck(facts, checkTestPolicy) {
+		if result.Probe == "check.disk" && result.Status != StatusSkip {
+			t.Fatalf("disk = %+v", result)
+		}
+		if result.Probe == "check.memory" && result.Status != StatusPass {
+			t.Fatalf("a finished source lost its result: %+v", result)
+		}
+	}
+}
+
+func TestCheckDoesNotHideUnreadableSources(t *testing.T) {
+	dns := infoDNS{Err: fs.ErrPermission}
+	if result := checkNetworkResult(checkFacts{Network: checkNetwork{Route: "10.0.0.1 dev eth0", DNS: dns}}, checkTestPolicy); result.Status != StatusWarn {
+		t.Fatalf("unreadable resolv.conf = %+v", result)
+	}
+	if result := checkRebootResult(checkFacts{Reboot: checkReboot{Err: fs.ErrPermission}}); result.Status != StatusSkip {
+		t.Fatalf("unreadable reboot marker = %+v", result)
+	}
+}
+
+func TestCheckProcessesWarnsAboutUnreadableProcesses(t *testing.T) {
+	facts := checkFacts{Processes: []checkProcess{{PID: 1, Command: "systemd", State: "S"}}, ProcessesErr: checkPartialError{Unreadable: 12}}
+	result := checkProcesses(facts)
+	if result.Status != StatusPass || len(result.Warnings) != 1 || !strings.Contains(result.Warnings[0], "12") {
+		t.Fatalf("partial scan = %+v", result)
+	}
+	if result := checkProcesses(checkFacts{ProcessesErr: fs.ErrPermission}); result.Status != StatusSkip {
+		t.Fatalf("unreadable /proc = %+v", result)
+	}
+}
+
+func TestCheckAcceptTurnsAFailIntoSkip(t *testing.T) {
+	facts := checkFacts{Services: []svcListItem{{Unit: "nginx.service", LoadState: "loaded", ActiveState: "failed"}}}
+	results := evaluateCheck(facts, newCheckPolicy(checkConfig{Accept: []string{"service"}}, ""))
+	service := results[0]
+	if service.Probe != "check.service" || service.Status != StatusSkip || service.Metrics["accepted_status"] != StatusFail || service.Error != nil || exitCode(results[:1]) != 0 {
+		t.Fatalf("accepted fail = %+v", service)
+	}
+}
+
+func TestCollectCheckFactsKeepsResultsThatArriveWithTheDeadline(t *testing.T) {
+	// ctx가 이미 끝났어도 원천이 바로 답하면 그 결과를 써야 한다. select가 deadline을 먼저 고르는 경우를 여러 번 만든다.
+	sources := checkTestSources()
+	for range 50 {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		facts := collectCheckFacts(ctx, sources, nil)
+		for _, id := range facts.TimedOut {
+			if id == "memory" && facts.Memory.Total != 0 {
+				t.Fatalf("memory arrived but was marked timed out")
+			}
+		}
+		if facts.Memory.Total == 0 && !slices.Contains(facts.TimedOut, "memory") {
+			t.Fatalf("memory is neither collected nor timed out")
+		}
+	}
+}

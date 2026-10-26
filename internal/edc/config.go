@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"slices"
 	"strings"
@@ -73,6 +75,51 @@ type edcConfig struct {
 	Lang     string         `yaml:"lang,omitempty" toml:"lang,omitempty"`
 	Defaults configDefaults `yaml:"defaults,omitempty" toml:"defaults,omitempty"`
 	Audit    auditConfig    `yaml:"audit,omitempty" toml:"audit,omitempty"`
+	Check    checkConfig    `yaml:"check,omitempty" toml:"check,omitempty"`
+	// commandSafety는 읽은 설정 파일로 check 루틴의 셸 명령을 실행해도 되는지다. 파일을 열 때 정하고 파일에는 쓰지 않는다.
+	commandSafety error
+}
+
+// checkConfig는 check가 받아들일 결과와 반드시 확인할 unit, 판정 기준이다. 받아들인 항목도 숨기지 않고 개수와 이름을 남긴다.
+type checkConfig struct {
+	// Accept는 점검 하나를 통째로 받아들인다. 이름은 check. 뒤의 점검 이름이다.
+	Accept []string `yaml:"accept,omitempty" toml:"accept,omitempty"`
+	// AcceptUnits, AcceptContainers, AcceptMounts는 그 점검 안에서 판정하지 않을 이름이다. path.Match의 glob을 쓴다.
+	AcceptUnits      []string          `yaml:"accept_units,omitempty" toml:"accept_units,omitempty"`
+	AcceptContainers []string          `yaml:"accept_containers,omitempty" toml:"accept_containers,omitempty"`
+	AcceptMounts     []string          `yaml:"accept_mounts,omitempty" toml:"accept_mounts,omitempty"`
+	RequireUnits     []string          `yaml:"require_units,omitempty" toml:"require_units,omitempty"`
+	Limits           checkLimitsConfig `yaml:"limits,omitempty" toml:"limits,omitempty"`
+	// Routines는 edc check <이름>으로 고르는 묶음이다. 위의 값에 더해지고, limits는 루틴에 적은 값만 바꾼다.
+	Routines map[string]checkRoutineConfig `yaml:"routines,omitempty" toml:"routines,omitempty"`
+}
+
+type checkRoutineConfig struct {
+	// Checks가 비어 있으면 모든 점검을 한다.
+	Checks           []string             `yaml:"checks,omitempty" toml:"checks,omitempty"`
+	Accept           []string             `yaml:"accept,omitempty" toml:"accept,omitempty"`
+	AcceptUnits      []string             `yaml:"accept_units,omitempty" toml:"accept_units,omitempty"`
+	AcceptContainers []string             `yaml:"accept_containers,omitempty" toml:"accept_containers,omitempty"`
+	AcceptMounts     []string             `yaml:"accept_mounts,omitempty" toml:"accept_mounts,omitempty"`
+	RequireUnits     []string             `yaml:"require_units,omitempty" toml:"require_units,omitempty"`
+	Limits           checkLimitsConfig    `yaml:"limits,omitempty" toml:"limits,omitempty"`
+	Commands         []checkCommandConfig `yaml:"commands,omitempty" toml:"commands,omitempty"`
+}
+
+// checkCommandConfig는 루틴이 sh -c로 실행하는 사용자 명령이다. 종료 코드 0이 통과다.
+type checkCommandConfig struct {
+	Name    string          `yaml:"name" toml:"name"`
+	Run     string          `yaml:"run" toml:"run"`
+	Timeout *configDuration `yaml:"timeout,omitempty" toml:"timeout,omitempty"`
+	// Level은 0이 아닌 종료 코드의 판정이다. 비어 있으면 fail이다.
+	Level string `yaml:"level,omitempty" toml:"level,omitempty"`
+}
+
+// checkLimitsConfig는 [warn, fail] 백분율이다. memory_available은 남은 비율이라 warn이 fail보다 크다.
+type checkLimitsConfig struct {
+	Disk            []float64 `yaml:"disk,omitempty" toml:"disk,omitempty"`
+	MemoryAvailable []float64 `yaml:"memory_available,omitempty" toml:"memory_available,omitempty"`
+	Usage           []float64 `yaml:"usage,omitempty" toml:"usage,omitempty"`
 }
 
 // auditConfig는 사용자가 확인하고 받아들인 audit 결과다. 받아들인 결과도 숨기지 않고 accepted로 보인다.
@@ -243,6 +290,10 @@ func loadConfigAt(path string) (edcConfig, error) {
 		return config, err
 	}
 	defer file.Close()
+	opened, err := file.Stat()
+	if err != nil {
+		return config, err
+	}
 	data, err := io.ReadAll(io.LimitReader(file, maxConfigBytes+1))
 	if err != nil {
 		return config, err
@@ -274,6 +325,7 @@ func loadConfigAt(path string) (edcConfig, error) {
 	if err := validateConfig(config); err != nil {
 		return edcConfig{}, err
 	}
+	config.commandSafety = checkConfigSafe(path, opened)
 	return config, nil
 }
 
@@ -313,6 +365,85 @@ func validateConfigStringTypes(data []byte) error {
 
 func invalidConfig(field, rule string) error {
 	return fmt.Errorf("%s: %s", field, rule)
+}
+
+// checkNamePattern은 루틴과 사용자 명령의 이름이다. 결과 id(check.cmd.<이름>)와 명령행 인자에 그대로 쓴다.
+var checkNamePattern = regexp.MustCompile(`^[a-z0-9_-]+$`)
+
+func validateCheckConfig(config checkConfig) error {
+	if err := validateCheckRules("check", config.Accept, config.AcceptUnits, config.AcceptContainers, config.AcceptMounts, config.RequireUnits, config.Limits, nil); err != nil {
+		return err
+	}
+	for name, routine := range config.Routines {
+		prefix := "check.routines." + name
+		if !checkNamePattern.MatchString(name) {
+			return invalidConfig(prefix, "a routine name must use only a-z, 0-9, _ and -")
+		}
+		for _, id := range routine.Checks {
+			if !slices.Contains(checkIDs, id) {
+				return invalidConfig(prefix+".checks", fmt.Sprintf("%q is not a check name", id))
+			}
+		}
+		commands := map[string]bool{}
+		for index, command := range routine.Commands {
+			field := fmt.Sprintf("%s.commands[%d]", prefix, index)
+			switch {
+			case !checkNamePattern.MatchString(command.Name):
+				return invalidConfig(field+".name", "must use only a-z, 0-9, _ and -")
+			case commands[command.Name]:
+				return invalidConfig(field+".name", fmt.Sprintf("%q is used twice", command.Name))
+			case strings.TrimSpace(command.Run) == "":
+				return invalidConfig(field+".run", "must not be empty")
+			case command.Timeout != nil && command.Timeout.Duration <= 0:
+				return invalidConfig(field+".timeout", "must be greater than 0")
+			case command.Level != "" && command.Level != "fail" && command.Level != "warn":
+				return invalidConfig(field+".level", "must be fail or warn")
+			}
+			commands[command.Name] = true
+		}
+		if err := validateCheckRules(prefix, routine.Accept, routine.AcceptUnits, routine.AcceptContainers, routine.AcceptMounts, routine.RequireUnits, routine.Limits, commands); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// validateCheckRules는 전역 [check]와 루틴이 함께 쓰는 값을 검사한다. commands는 accept에 쓸 수 있는 cmd.<이름>이다.
+func validateCheckRules(prefix string, accept, units, containers, mounts, require []string, limits checkLimitsConfig, commands map[string]bool) error {
+	for _, id := range accept {
+		command, isCommand := strings.CutPrefix(id, "cmd.")
+		if !slices.Contains(checkIDs, id) && !(isCommand && commands[command]) {
+			return invalidConfig(prefix+".accept", fmt.Sprintf("%q is not a check name", id))
+		}
+	}
+	for field, patterns := range map[string][]string{".accept_units": units, ".accept_containers": containers, ".accept_mounts": mounts} {
+		for _, pattern := range patterns {
+			if _, err := path.Match(pattern, ""); err != nil || pattern == "" {
+				return invalidConfig(prefix+field, fmt.Sprintf("%q is not a valid glob", pattern))
+			}
+		}
+	}
+	for _, unit := range require {
+		if unit == "" {
+			return invalidConfig(prefix+".require_units", "a unit name must not be empty")
+		}
+	}
+	for field, values := range map[string][]float64{".limits.disk": limits.Disk, ".limits.memory_available": limits.MemoryAvailable, ".limits.usage": limits.Usage} {
+		if values == nil {
+			continue
+		}
+		// TOML은 nan을 숫자로 읽는다. NaN은 어떤 비교도 거짓이라 범위 검사를 지나고, 판정도 늘 통과가 된다.
+		if len(values) != 2 || !(values[0] >= 0 && values[0] <= 100) || !(values[1] >= 0 && values[1] <= 100) {
+			return invalidConfig(prefix+field, "must be [warn, fail] with two percentages from 0 to 100")
+		}
+		if field == ".limits.memory_available" && values[0] < values[1] {
+			return invalidConfig(prefix+field, "warn must be at least fail, because it is the share left")
+		}
+		if field != ".limits.memory_available" && values[0] > values[1] {
+			return invalidConfig(prefix+field, "warn must be at most fail")
+		}
+	}
+	return nil
 }
 
 func validateConfig(config edcConfig) error {
@@ -463,6 +594,9 @@ func validateConfig(config edcConfig) error {
 		if port < 1 || port > 65535 {
 			return invalidConfig("audit.allow_ports", fmt.Sprintf("%d must be between 1 and 65535", port))
 		}
+	}
+	if err := validateCheckConfig(config.Check); err != nil {
+		return err
 	}
 
 	if err := validateLogPolicy(logOptions{

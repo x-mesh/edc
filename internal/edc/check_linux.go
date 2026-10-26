@@ -135,7 +135,11 @@ func readCheckFileHandles() (*infoFileHandles, error) {
 
 func readCheckReboot() checkReboot {
 	var reboot checkReboot
-	if _, err := os.Stat("/var/run/reboot-required"); err == nil {
+	_, err := os.Stat("/var/run/reboot-required")
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		reboot.Err = err
+	}
+	if err == nil {
 		reboot.Flag = true
 		if data, err := os.ReadFile("/var/run/reboot-required.pkgs"); err == nil {
 			reboot.Packages = uniqueFields(string(data))

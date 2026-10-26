@@ -4,6 +4,7 @@ check:
     linux_only: "check は Linux でのみ動作します"
     needs_root: "%s を読むには root が必要です"
     unreadable: "%s を読めませんでした: %s"
+    timed_out: "--timeout 以内にソースが応答しませんでした"
   evidence:
     issues: "見つかった問題"
     events: "カーネルシグナル"
@@ -34,6 +35,7 @@ check:
     no_route: "default route がありません"
     no_resolv: "/etc/resolv.conf がありません"
     no_nameserver: "/etc/resolv.conf に nameserver がありません"
+    resolv_unreadable: "/etc/resolv.conf を読めませんでした: %s"
     conntrack: "conntrack table %.0f%% 使用"
     tcp_memory: "TCP メモリが tcp_mem の %.0f%%"
     route_unknown: "route 不明"

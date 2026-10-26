@@ -5,11 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"os"
 	"slices"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -61,6 +61,8 @@ type checkNetwork struct {
 }
 
 type checkReboot struct {
+	// Err는 재부팅 표시 파일을 확인하지 못한 이유다. 없는 파일은 오류가 아니다.
+	Err      error
 	Flag     bool
 	Packages []string
 	Running  string
@@ -98,6 +100,8 @@ type checkFacts struct {
 	FileHandles    *infoFileHandles
 	FileHandlesErr error
 	Reboot         checkReboot
+	// TimedOut은 --timeout 안에 끝나지 않은 원천의 점검 이름이다. 그 점검은 skip이다.
+	TimedOut []string
 }
 
 func runCheck(args []string, version string) int {
@@ -124,26 +128,77 @@ func runCheck(args []string, version string) int {
 }
 
 // collectCheckFacts는 원천을 함께 읽는다. systemctl, journalctl, docker socket이 각각 외부 호출이라 차례로 읽으면 느리다.
-// goroutine마다 facts의 다른 필드만 쓴다.
+// ctx가 끝나면 남은 원천을 기다리지 않고 TimedOut에 적는다. df처럼 ctx를 받지 않는 원천이 멈춘 NFS mount에 걸려도
+// --timeout 안에 끝나야 하기 때문이다. 늦게 끝난 원천은 버퍼가 있는 channel에 결과를 놓고 끝나므로 facts를 건드리지 않는다.
 func collectCheckFacts(ctx context.Context, sources checkSources) checkFacts {
+	type collected struct {
+		id    string
+		apply func(*checkFacts)
+	}
+	jobs := map[string]func() func(*checkFacts){
+		"service": func() func(*checkFacts) {
+			items, err := sources.services(ctx)
+			return func(facts *checkFacts) { facts.Services, facts.ServicesErr = items, err }
+		},
+		"process": func() func(*checkFacts) {
+			processes, err := sources.processes()
+			return func(facts *checkFacts) { facts.Processes, facts.ProcessesErr = processes, err }
+		},
+		"memory": func() func(*checkFacts) {
+			memory, err := sources.memory()
+			return func(facts *checkFacts) { facts.Memory, facts.MemoryErr = memory, err }
+		},
+		"disk": func() func(*checkFacts) {
+			disks, err := sources.disks()
+			return func(facts *checkFacts) { facts.Disks, facts.DisksErr = disks, err }
+		},
+		"kernel": func() func(*checkFacts) {
+			kernel := sources.kernel(ctx, checkKernelWindow)
+			return func(facts *checkFacts) { facts.Kernel = kernel }
+		},
+		"time": func() func(*checkFacts) {
+			clock := sources.clock()
+			return func(facts *checkFacts) { facts.Clock = clock }
+		},
+		"network": func() func(*checkFacts) {
+			network := sources.network()
+			return func(facts *checkFacts) { facts.Network = network }
+		},
+		"container": func() func(*checkFacts) {
+			items, err := sources.containers(ctx)
+			return func(facts *checkFacts) { facts.Containers, facts.ContainersErr = items, err }
+		},
+		"filehandles": func() func(*checkFacts) {
+			handles, err := sources.fileHandles()
+			return func(facts *checkFacts) { facts.FileHandles, facts.FileHandlesErr = handles, err }
+		},
+		"reboot": func() func(*checkFacts) {
+			reboot := sources.reboot()
+			return func(facts *checkFacts) { facts.Reboot = reboot }
+		},
+	}
+	done := make(chan collected, len(jobs))
+	pending := map[string]bool{}
+	for id, job := range jobs {
+		pending[id] = true
+		go func() { done <- collected{id: id, apply: job()} }()
+	}
 	var facts checkFacts
-	var group sync.WaitGroup
-	group.Go(func() { facts.Services, facts.ServicesErr = sources.services(ctx) })
-	group.Go(func() { facts.Processes, facts.ProcessesErr = sources.processes() })
-	group.Go(func() { facts.Memory, facts.MemoryErr = sources.memory() })
-	group.Go(func() { facts.Disks, facts.DisksErr = sources.disks() })
-	group.Go(func() { facts.Kernel = sources.kernel(ctx, checkKernelWindow) })
-	group.Go(func() { facts.Clock = sources.clock() })
-	group.Go(func() { facts.Network = sources.network() })
-	group.Go(func() { facts.Containers, facts.ContainersErr = sources.containers(ctx) })
-	group.Go(func() { facts.FileHandles, facts.FileHandlesErr = sources.fileHandles() })
-	group.Go(func() { facts.Reboot = sources.reboot() })
-	group.Wait()
+	for len(pending) > 0 {
+		select {
+		case result := <-done:
+			result.apply(&facts)
+			delete(pending, result.id)
+		case <-ctx.Done():
+			facts.TimedOut = slices.Sorted(maps.Keys(pending))
+			return facts
+		}
+	}
 	return facts
 }
 
 func evaluateCheck(facts checkFacts) []Result {
-	return []Result{
+	results := []Result{
 		checkServices(facts),
 		checkProcesses(facts),
 		checkMemory(facts),
@@ -155,6 +210,12 @@ func evaluateCheck(facts checkFacts) []Result {
 		checkFileHandles(facts),
 		checkRebootResult(facts),
 	}
+	for index, result := range results {
+		if id := strings.TrimPrefix(result.Probe, "check."); slices.Contains(facts.TimedOut, id) {
+			results[index] = checkResult(id, StatusSkip, T("check.skip.timed_out"))
+		}
+	}
+	return results
 }
 
 func checkResult(id string, status Status, summary string) Result {
@@ -450,7 +511,9 @@ func checkNetworkResult(facts checkFacts) Result {
 	switch {
 	case errors.Is(network.DNS.Err, fs.ErrNotExist):
 		issues.add(StatusWarn, T("check.network.no_resolv"))
-	case network.DNS.Err == nil && len(network.DNS.Config.Nameservers) == 0:
+	case network.DNS.Err != nil:
+		issues.add(StatusWarn, T("check.network.resolv_unreadable", infoSingleLine(network.DNS.Err.Error())))
+	case len(network.DNS.Config.Nameservers) == 0:
 		issues.add(StatusWarn, T("check.network.no_nameserver"))
 	}
 	if network.ConntrackOK {
@@ -533,6 +596,9 @@ func checkFileHandles(facts checkFacts) Result {
 func checkRebootResult(facts checkFacts) Result {
 	const id = "reboot"
 	reboot := facts.Reboot
+	if reboot.Err != nil {
+		return checkSkip(id, "/var/run/reboot-required", reboot.Err)
+	}
 	if reboot.Flag {
 		packages := "/var/run/reboot-required"
 		if len(reboot.Packages) > 0 {

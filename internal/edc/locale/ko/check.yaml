@@ -4,6 +4,7 @@ check:
     linux_only: "check는 Linux에서만 동작합니다"
     needs_root: "%s를 읽으려면 root가 필요합니다"
     unreadable: "%s를 읽지 못했습니다: %s"
+    timed_out: "--timeout 안에 원천이 응답하지 않았습니다"
   evidence:
     issues: "찾은 문제"
     events: "커널 신호"
@@ -34,6 +35,7 @@ check:
     no_route: "default route가 없습니다"
     no_resolv: "/etc/resolv.conf가 없습니다"
     no_nameserver: "/etc/resolv.conf에 nameserver가 없습니다"
+    resolv_unreadable: "/etc/resolv.conf를 읽지 못했습니다: %s"
     conntrack: "conntrack table %.0f%% 사용"
     tcp_memory: "TCP 메모리가 tcp_mem의 %.0f%%"
     route_unknown: "route 모름"

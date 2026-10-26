@@ -55,3 +55,16 @@ check:
     none: "no installed kernel to compare"
     kernel: "kernel %s is installed, %s is running"
     ok: "running the newest kernel %s"
+  group:
+    summary: "%d hosts, %d checked, %d without a result; FAIL on %d, WARN on %d"
+    col:
+      host: "host"
+    status:
+      edc_missing: "edc not found, install it with install.sh"
+      no_check: "this edc has no check, run edc update"
+      unreachable: "SSH failed"
+      timeout: "time limit reached"
+      invalid_output: "output is not a check result"
+      failed: "edc check failed"
+    error:
+      inventory_without_group: "--inventory needs --group"

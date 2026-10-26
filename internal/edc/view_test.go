@@ -252,3 +252,48 @@ func viewHasField(fields []viewField, name, value string) bool {
 	}
 	return false
 }
+
+// JSON 키도 로그 내용이다. 키에 든 escape가 목록 줄이나 상세 화면에 그대로 나가면 터미널을 조작한다.
+func TestParseViewJSONRemovesControlFromKeys(t *testing.T) {
+	line := parseViewLine(`{"level":"info","msg":"hi","\u001b[2J\u001b]0;title\u0007":"x"}`, viewFormatJSON, nil)
+	if strings.ContainsRune(line.message, 0x1b) {
+		t.Fatalf("message keeps an escape: %q", line.message)
+	}
+	for _, field := range line.fields {
+		if strings.ContainsRune(field.name, 0x1b) || strings.ContainsRune(field.name, 0x07) {
+			t.Fatalf("field name keeps a control character: %q", field.name)
+		}
+	}
+}
+
+// 줄바꿈이 없는 큰 파일을 열어도 limit보다 많이 읽지 않는다. 창이 줄 중간에서 시작하면 그 조각은 버린다.
+func TestViewReadInitialStaysWithinLimit(t *testing.T) {
+	content := strings.Repeat("z", 5000) + "\nlast\n"
+	reader := strings.NewReader(content)
+	data, err := viewReadInitial(reader, int64(len(content)), viewKeepLines, 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "last\n" {
+		t.Fatalf("read %d bytes: %q", len(data), data[:min(len(data), 40)])
+	}
+	data, err = viewReadInitial(reader, int64(len(content)), 0, 1024)
+	if err != nil || len(data) != 0 {
+		t.Fatalf("-n 0 reads nothing: %q %v", data, err)
+	}
+	noNewline := strings.Repeat("q", 5000)
+	data, _ = viewReadInitial(strings.NewReader(noNewline), int64(len(noNewline)), viewKeepLines, 1024)
+	if len(data) > 1024 {
+		t.Fatalf("a file without newlines read %d bytes", len(data))
+	}
+}
+
+func TestViewTailReaderKeepsOrderAcrossTheRing(t *testing.T) {
+	got, err := viewTailReader(strings.NewReader("1\n2\n3\n4\n5\n6\n7\n"), 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(bytes.Join(got, nil)) != "5\n6\n7\n" {
+		t.Fatalf("tail: %q", bytes.Join(got, nil))
+	}
+}

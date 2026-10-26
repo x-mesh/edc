@@ -137,6 +137,9 @@ func viewLooksJSON(line string) bool {
 
 // parseViewLine은 raw 한 줄을 format으로 읽는다. previous는 바로 앞 줄로, 이어지는 줄이 level을 물려받는 데 쓴다.
 func parseViewLine(raw string, format viewFormat, previous *viewLine) viewLine {
+	if len(raw) > viewStoreLimit {
+		raw = raw[:viewStoreLimit]
+	}
 	line := viewLine{text: viewSanitize(raw)}
 	if len(raw) > viewParseLimit || strings.TrimSpace(line.text) == "" {
 		return line
@@ -259,7 +262,7 @@ func viewParseJSON(raw string, line *viewLine) bool {
 			if value, ok := object[key]; ok && !used[key] {
 				used[key] = true
 				text := viewJSONText(value)
-				leading = append(leading, viewField{key, text})
+				leading = append(leading, viewField{viewSanitize(key), text})
 				return text
 			}
 		}
@@ -288,8 +291,9 @@ func viewParseJSON(raw string, line *viewLine) bool {
 	extra := make([]string, 0, len(keys))
 	for _, key := range keys {
 		value := viewJSONText(object[key])
-		line.fields = append(line.fields, viewField{key, value})
-		extra = append(extra, key+"="+viewSanitize(value))
+		name := viewSanitize(key)
+		line.fields = append(line.fields, viewField{name, value})
+		extra = append(extra, name+"="+viewSanitize(value))
 	}
 	line.message = strings.TrimSpace(message + "  " + strings.Join(extra, " "))
 	return true

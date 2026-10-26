@@ -66,21 +66,25 @@ func viewTailReader(reader io.Reader, lines int) ([][]byte, error) {
 		_, err := io.Copy(io.Discard, reader)
 		return nil, err
 	}
+	// 줄마다 ring을 당기면 줄 수 × lines만큼 복사해서, 다 차면 가장 오래된 자리에 덮어쓴다.
 	ring := make([][]byte, 0, min(lines, 1024))
+	next := 0
 	buffered := bufio.NewReaderSize(reader, viewBlockSize)
 	for {
 		line, err := buffered.ReadBytes('\n')
 		if len(line) != 0 {
-			if len(ring) == lines {
-				copy(ring, ring[1:])
-				ring = ring[:lines-1]
+			if len(ring) < lines {
+				ring = append(ring, line)
+			} else {
+				ring[next] = line
+				next = (next + 1) % lines
 			}
-			ring = append(ring, line)
-		}
-		if errors.Is(err, io.EOF) {
-			return ring, nil
 		}
 		if err != nil {
+			ring = append(ring[next:], ring[:next]...)
+			if errors.Is(err, io.EOF) {
+				return ring, nil
+			}
 			return ring, err
 		}
 	}
@@ -195,4 +199,40 @@ func viewSplitLines(pending, data []byte) ([]string, []byte) {
 		data = data[index+1:]
 	}
 	return lines, bytes.Clone(data)
+}
+
+const (
+	// viewScreenReadLimit는 화면을 열 때 파일 끝에서 읽는 최대 바이트다. 줄바꿈이 거의 없는 큰 파일(minified JSON, binary)에서
+	// 마지막 줄들의 시작이 파일 처음까지 가도 파일 전체를 메모리에 올리지 않는다.
+	viewScreenReadLimit = 64 << 20
+	// viewStoreLimit는 화면이 한 줄에서 보관하는 최대 바이트다. 이보다 긴 줄은 앞부분만 보관한다.
+	viewStoreLimit = 64 << 10
+	// viewPendingLimit는 줄바꿈을 기다리며 모아 두는 최대 바이트다. 넘으면 그때까지를 한 줄로 넣는다.
+	viewPendingLimit = 1 << 20
+)
+
+// viewReadInitial은 화면을 열 때 보여 줄 마지막 lines줄이다. 파일 끝의 limit바이트 안에서만 찾고, 그 창이 줄 중간에서
+// 시작하면 잘린 첫 조각을 버린다.
+func viewReadInitial(file io.ReaderAt, size int64, lines int, limit int64) ([]byte, error) {
+	if lines <= 0 || size == 0 {
+		return nil, nil
+	}
+	base := size - limit
+	if base < 0 {
+		base = 0
+	}
+	offset, err := viewTailOffset(io.NewSectionReader(file, base, size-base), size-base, lines)
+	if err != nil {
+		return nil, err
+	}
+	data := make([]byte, size-base-offset)
+	if _, err := file.ReadAt(data, base+offset); err != nil && !errors.Is(err, io.EOF) {
+		return nil, err
+	}
+	if base > 0 && offset == 0 {
+		if newline := bytes.IndexByte(data, '\n'); newline >= 0 && newline < len(data)-1 {
+			data = data[newline+1:]
+		}
+	}
+	return data, nil
 }

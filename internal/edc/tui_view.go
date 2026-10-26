@@ -118,6 +118,9 @@ func (model *viewScreenModel) receive(msg viewDataMsg, now time.Time) {
 		var lines []string
 		lines, model.pending = viewSplitLines(model.pending, msg.event.data)
 		model.ingest(lines, now, true)
+		if len(model.pending) > viewPendingLimit {
+			model.flushPending(now)
+		}
 		model.changed = now
 	}
 	if msg.eof {
@@ -354,10 +357,8 @@ func (model viewScreenModel) moveSelection(step, count int) int {
 func (model viewScreenModel) updateDetailKey(key string) (tea.Model, tea.Cmd) {
 	page := max(1, model.height-3)
 	switch key {
-	case "esc", "enter", "backspace":
+	case "esc", "enter", "q", "backspace":
 		model.detail = -1
-	case "q":
-		return model, tea.Quit
 	case "up", "k":
 		model.detailOffset--
 	case "down", "j":
@@ -685,7 +686,7 @@ func (model viewScreenModel) detailView(color bool) []string {
 	title = append(title, traceField("line ", groupThousands(int64(model.detail+1)), "")...)
 	header := []string{
 		traceTexts(title, model.width, color),
-		traceKeyHints("↑↓ scroll  esc back  q quit", model.width, color),
+		traceKeyHints("↑↓ scroll  esc back", model.width, color),
 	}
 	rows := model.detailRows(model.width)
 	page := max(1, model.height-len(header))

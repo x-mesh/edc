@@ -142,17 +142,14 @@ func runViewScreen(path string, lines int) int {
 		if err == nil && info.IsDir() {
 			err = fmt.Errorf("%s: %w", path, syscall.EISDIR)
 		}
-		var offset int64
-		if err == nil {
-			offset, err = viewTailOffset(file, info.Size(), keep)
+		// -n 0은 빈 화면에서 시작해 새 줄만 받는다.
+		initialLines := keep
+		if lines == 0 {
+			initialLines = 0
 		}
 		var initial []byte
 		if err == nil {
-			initial = make([]byte, info.Size()-offset)
-			_, err = file.ReadAt(initial, offset)
-			if errors.Is(err, io.EOF) {
-				err = nil
-			}
+			initial, err = viewReadInitial(file, info.Size(), initialLines, viewScreenReadLimit)
 		}
 		if err != nil {
 			file.Close()

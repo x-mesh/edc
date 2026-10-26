@@ -147,3 +147,29 @@ func TestViewScreenDetectsFormatAfterEmptyStart(t *testing.T) {
 		t.Fatalf("format %q errors %d", model.format, model.stats.failures)
 	}
 }
+
+// 한 줄이 아주 길거나 줄바꿈 없이 계속 쓰여도 보관하는 글자에 상한이 있다.
+func TestViewScreenBoundsLongLinesAndPendingBytes(t *testing.T) {
+	model := newViewScreenModel("app", viewKeepLines)
+	model.receive(viewDataMsg{event: viewFollowEvent{data: []byte(strings.Repeat("a", viewStoreLimit*2) + "\n")}}, time.Now())
+	if last, _ := model.line(model.last()); len(last.text) > viewStoreLimit {
+		t.Fatalf("stored %d bytes of one line", len(last.text))
+	}
+	chunk := []byte(strings.Repeat("b", 256<<10))
+	for range 8 {
+		model.receive(viewDataMsg{event: viewFollowEvent{data: chunk}}, time.Now())
+	}
+	if len(model.pending) > viewPendingLimit {
+		t.Fatalf("pending grew to %d bytes", len(model.pending))
+	}
+}
+
+// trace 상세 화면처럼 q는 목록으로 돌아간다.
+func TestViewScreenDetailQGoesBack(t *testing.T) {
+	model := viewPress(viewScreenWith(t, "app.log", 100, 30), "enter")
+	next, cmd := model.Update(tea.KeyPressMsg{Code: 'q', Text: "q"})
+	model = next.(viewScreenModel)
+	if model.detail != -1 || cmd != nil {
+		t.Fatalf("q in the detail must go back: detail %d, quit %v", model.detail, cmd != nil)
+	}
+}

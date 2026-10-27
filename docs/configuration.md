@@ -181,3 +181,18 @@ For zsh, you can also save the script as `_edc` in a directory of `fpath`.
 
 `edc completion groups` prints the group names of the inventory, one per line. The scripts call it.
 
+## Aliases
+
+`edc alias` prints short aliases for zsh or bash, grouped like `edc help`: logs (`eg`, `egs`, `ege`, `egr`, `ev`, `evn`, `evf`), diagnose (`edoc`, `echk`, `edns`, `etls`, `ehttp`, `eevt`), observe (`etop`, `einfo`, `esvc`, `ectr`, `edu`, `elsn`, `echg`, `ewf`, `ewh`, `eth`), and record and remote (`ehist`, `esnap`, `erep`, `erem`, `etun`). Without a shell name, it uses `$SHELL`. Each line ends with an example.
+
+```bash
+source <(edc alias zsh)
+echo 'source <(edc alias zsh)' >> ~/.zshrc
+```
+
+The script defines each alias through a guard. If a name is already an alias, a function, or a command in your shell, the guard skips it and prints how to use another name (`alias xeg='edc grep'`) or remove yours (`unalias eg`, `unset -f eg`). `edc alias` also marks a name that is a command on this host, for example `/usr/local/bin/edu`, in a comment above its line. `--plain` prints bare `alias` lines for pasting into a shell file, with such names commented out.
+
+`route`, `disk`, and `change` have no alias. A short name invites a mistake on a host change.
+
+An alias only adds options before your arguments, and the same option later on the line wins, so `ege --last 50 app.log` shows 50 errors. With `edc completion zsh` loaded, zsh completes the options of an alias.
+

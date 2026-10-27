@@ -147,6 +147,8 @@ func Run(args []string, version string) int {
 		return runTunnel(args[1:], version)
 	case "completion":
 		return runCompletion(args[1:])
+	case "alias":
+		return runAlias(args[1:])
 	case "update":
 		return runUpdate(args[1:], version)
 	default:

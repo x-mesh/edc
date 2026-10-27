@@ -348,12 +348,10 @@ func grepSearchFile(path string, options grepOptions, printer *grepPrinter, hint
 		report.index = grepIndexOutcomeLast
 		lines, read, err := scanner.scanLast(file, size, options.last)
 		report.lastRead = read
-		if err != nil {
-			return false, err
-		}
 		// 끝에서 읽은 줄은 번호를 모른다. -n이면 처음부터 첫 일치까지, 그 뒤로는 일치 사이의 줄바꿈을 세어 번호를 매긴다.
+		// 앞 블록에서 읽기가 실패했으면 처음부터 셀 수 없으므로 번호 없이 낸다.
 		numbers := make([]int64, len(lines))
-		if options.numbers {
+		if options.numbers && err == nil {
 			var number, from int64
 			for index, line := range lines {
 				counted, err := grepCountNewlines(file, from, line.offset)
@@ -370,7 +368,7 @@ func grepSearchFile(path string, options grepOptions, printer *grepPrinter, hint
 				break
 			}
 		}
-		return found, nil
+		return found, err
 	}
 	plan := grepPlanIndex(options, info, size, format, report)
 	if plan.open != nil {

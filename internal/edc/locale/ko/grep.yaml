@@ -8,9 +8,10 @@ grep:
   hint:
     prefix: "hint: "
     last: "%s: --last로 끝에서 %s를 읽었습니다"
+    since_whole: "%s: --since로 파일 전체를 읽었습니다. 로그가 시간 순서면 --ordered를 주면 이진 탐색합니다"
     seek: "%s: --since로 %s를 건너뛰고 %s를 읽었습니다"
     seek_failed: "%s: 줄이 시간 순서가 아니라 파일 전체를 읽었습니다"
     no_time: "%s: 시각을 찾지 못해 --since와 --until에 맞는 줄이 없습니다"
     counted: "%s: -n을 위해 건너뛴 %s줄을 셌습니다"
-    skipped_old: "%d개 파일은 --since 앞에서 끝나 건너뛰었습니다: %s"
+    skipped_old: "%d개 파일은 --since 앞에서 끝나 건너뛰었습니다(마지막 시각 기준, .gz는 수정 시각 기준): %s"
     binary: "%d개 binary 파일을 건너뛰었습니다: %s"

@@ -412,7 +412,7 @@ logrotate가 파일을 옮기면 옛 파일의 나머지를 읽은 뒤, 그 자�
 # 디렉터리에서 문자열 검색
 edc grep timeout /var/log/app/
 # 최근 10분의 5xx 응답
-edc grep --since 10m --status 5xx /var/log/nginx/access.log
+edc grep --since 10m --ordered --status 5xx /var/log/nginx/access.log
 # 가장 최근 오류 20건, stack trace 포함
 edc grep --level error --last 20 app.log
 # 정규식, 대소문자 무시, 앞뒤 2줄
@@ -427,7 +427,7 @@ kubectl logs deploy/api | edc grep -i refund
 
 | 옵션 | 건너뛰는 것 |
 | --- | --- |
-| `--since`, `--until` | 파일 안의 16곳을 찍어 시간 순서인지 확인합니다. 마지막 시각이 `--since`보다 이르면 파일을 건너뛰고, 아니면 시각을 이진 탐색해 `--since` 근처부터 읽으므로 수 GB 로그의 최근 구간도 수 MB만 읽습니다. `.gz`는 수정 시각으로 건너뜁니다. |
+| `--since`와 `--ordered` | `--since`와 `--until`은 시각으로 줄을 거릅니다. 로그가 시간 순서면 `--ordered`를 줍니다. 그러면 16곳을 찍어 순서를 확인하고, 마지막 시각이 `--since`보다 이른 파일을 건너뛰고(`.gz`는 수정 시각으로), 시각을 이진 탐색해 `--since` 근처부터 읽습니다. 수 GB 로그의 최근 구간도 수 MB만 읽습니다. `--ordered`가 없으면 파일 전체를 읽습니다. 몇 곳의 표본으로는 표본 사이의 짧은 역행을 알 수 없기 때문입니다. |
 | `--last N` | 파일 끝에서 거꾸로 읽어 N건을 찾으면 멈춥니다. |
 
 `--level warn`은 warn 이상인 줄입니다. stack trace 줄은 그 `ERROR` 줄의 level과 시각을 물려받습니다. `--status`는 `5xx`, `404`, `500-503`을 쉼표로 이어 받습니다. `--since`와 `--until`은 `10m`, `2h`, `1d`, `2026-10-27 09:00`, `09:00`을 받습니다.

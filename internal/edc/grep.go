@@ -39,7 +39,9 @@ type grepOptions struct {
 	since      time.Time
 	until      time.Time
 	last       int
-	now        time.Time
+	// ordered는 로그가 시간 순서라는 뜻이다. 그때만 --since가 파일을 이진 탐색하고 끝 시각으로 파일을 건너뛴다.
+	ordered bool
+	now     time.Time
 }
 
 func runGrep(args []string) int { return grepRun(args, os.Stdin, os.Stdout, os.Stderr) }
@@ -59,6 +61,7 @@ func parseGrepOptions(args []string, stderr io.Writer, now time.Time) (grepOptio
 	since := set.String("since", "", T("command.grep.option.since"))
 	until := set.String("until", "", T("command.grep.option.until"))
 	set.IntVar(&options.last, "last", 0, T("command.grep.option.last"))
+	set.BoolVar(&options.ordered, "ordered", false, T("command.grep.option.ordered"))
 	if err := parseReordered(set, args); err != nil {
 		return options, nil, err
 	}
@@ -213,6 +216,7 @@ type grepFileReport struct {
 	size       int64
 	bytesRead  int64
 	skipped    int64
+	unordered  bool
 	seekFailed bool
 	noTime     bool
 	lastRead   int64
@@ -234,8 +238,8 @@ func grepSearchFile(path string, options grepOptions, printer *grepPrinter, hint
 		return false, nil
 	}
 	if strings.HasSuffix(path, ".gz") {
-		// 회전된 .gz는 내용이 다 쓰인 뒤에 만들어지므로 수정 시각이 마지막 줄보다 뒤다. 풀지 않고 수정 시각으로 건너뛴다.
-		if !options.since.IsZero() && info.ModTime().Add(grepTolerance).Before(options.since) {
+		// 회전된 .gz는 내용이 다 쓰인 뒤에 만들어지므로 수정 시각이 마지막 줄보다 뒤다. --ordered면 풀지 않고 수정 시각으로 건너뛴다.
+		if options.ordered && !options.since.IsZero() && info.ModTime().Add(grepTolerance).Before(options.since) {
 			hints.skippedOld = append(hints.skippedOld, path)
 			return false, nil
 		}
@@ -261,8 +265,8 @@ func grepSearchFile(path string, options grepOptions, printer *grepPrinter, hint
 		return false, err
 	}
 	filter := grepFilterFor(format, options)
-	// 수정 시각은 시계가 틀린 로그에서 내용과 어긋날 수 있다. 파일 안의 마지막 시각이 --since 앞일 때만 건너뛴다.
-	if filter != nil && !options.since.IsZero() && filter.endsBefore(file, size, options.since.Add(-grepTolerance)) {
+	// 시간 순서라고 한 파일만, 안의 마지막 시각이 --since 앞일 때 건너뛴다. 표본으로 순서를 확인하므로 사용자가 보증해야 한다.
+	if options.ordered && filter != nil && !options.since.IsZero() && filter.endsBefore(file, size, options.since.Add(-grepTolerance)) {
 		hints.skippedOld = append(hints.skippedOld, path)
 		return false, nil
 	}
@@ -305,7 +309,12 @@ func grepSearchPlain(file *os.File, size int64, scanner grepScanner, filter *gre
 		return emit(ref)
 	}
 	from := int64(0)
-	if filter != nil && !options.since.IsZero() {
+	switch {
+	case filter == nil || options.since.IsZero():
+	case !options.ordered:
+		// 표본 몇 곳으로는 표본 사이의 역행을 알 수 없다. 사용자가 순서를 보증하지 않으면 전부 읽고 거른다.
+		report.unordered = true
+	default:
 		offset, _, ok := filter.seek(file, size, options.since.Add(-grepTolerance))
 		switch {
 		case ok:
@@ -657,6 +666,8 @@ func (hints *grepHints) render(out io.Writer, color bool) {
 			emit(T("grep.hint.no_time", name))
 		case report.seekFailed:
 			emit(T("grep.hint.seek_failed", name))
+		case report.unordered:
+			emit(T("grep.hint.since_whole", name))
 		}
 		if report.counted > 0 {
 			emit(T("grep.hint.counted", name, groupThousands(report.counted)))

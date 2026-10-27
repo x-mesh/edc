@@ -184,9 +184,61 @@ func TestGrepCommandSkipsFilesByTheirLastTimestamp(t *testing.T) {
 	if code != 0 || strings.Count(stdout, "\n") != 3 {
 		t.Fatalf("old mtime but recent lines: code %d stdout %q", code, stdout)
 	}
-	code, stdout, _ = grepCommand(t, "", "--since", "2027-01-01", "users", access)
-	if code != 1 || stdout != "" {
-		t.Fatalf("lines end before --since: code %d stdout %q", code, stdout)
+	for _, args := range [][]string{{"--since", "2027-01-01", "users", access}, {"--since", "2027-01-01", "--ordered", "users", access}} {
+		if code, stdout, _ = grepCommand(t, "", args...); code != 1 || stdout != "" {
+			t.Fatalf("%v: code %d stdout %q", args, code, stdout)
+		}
+	}
+}
+
+// 조건만 주고 경로를 주지 않으면 stdin을 읽는다.
+func TestGrepCommandFiltersStdinWithoutAPattern(t *testing.T) {
+	access, _ := os.ReadFile(filepath.Join("testdata", "view", "access.log"))
+	code, stdout, _ := grepCommand(t, string(access), "--status", "5xx")
+	if code != 0 || strings.Count(stdout, "\n") != 1 || !strings.Contains(stdout, " 502 ") {
+		t.Fatalf("stdin with --status: code %d stdout %q", code, stdout)
+	}
+}
+
+// --ordered가 없으면 --since는 파일 전체를 읽고 거른다. 두 로그를 이어 붙인 파일에서도 뒤쪽 범위 안 줄을 모두 낸다.
+// --ordered를 주면 순서 확인이 실패해 역시 전체를 읽고, 순서인 파일에서는 이진 탐색해도 같은 결과다.
+func TestGrepCommandSinceReadsUnorderedFilesWhole(t *testing.T) {
+	start := time.Date(2026, 10, 26, 0, 0, 0, 0, time.Local)
+	first := grepTimedAccessLog(6000, start)
+	joined := append(bytes.Clone(first), grepTimedAccessLog(6000, start.Add(30*time.Minute))...)
+	dir := t.TempDir()
+	joinedPath, sortedPath := filepath.Join(dir, "joined.log"), filepath.Join(dir, "sorted.log")
+	for path, data := range map[string][]byte{joinedPath: joined, sortedPath: first} {
+		if err := os.WriteFile(path, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	since := start.Add(45 * time.Minute)
+	count := func(data []byte) int {
+		filter := newGrepFilter(viewFormatAccess, nil, time.Now())
+		total := 0
+		for _, line := range bytes.Split(bytes.TrimSuffix(data, []byte{'\n'}), []byte{'\n'}) {
+			if at, ok := filter.timeOf(filter.track(line)); ok && !at.Before(since) {
+				total++
+			}
+		}
+		return total
+	}
+	when := since.Format("2006-01-02 15:04:05")
+	for _, scenario := range []struct {
+		path string
+		data []byte
+		args []string
+	}{
+		{joinedPath, joined, []string{"--since", when, joinedPath}},
+		{joinedPath, joined, []string{"--since", when, "--ordered", joinedPath}},
+		{sortedPath, first, []string{"--since", when, sortedPath}},
+		{sortedPath, first, []string{"--since", when, "--ordered", sortedPath}},
+	} {
+		code, stdout, _ := grepCommand(t, "", scenario.args...)
+		if want := count(scenario.data); code != 0 || strings.Count(stdout, "\n") != want {
+			t.Fatalf("%v: code %d, %d lines, want %d", scenario.args, code, strings.Count(stdout, "\n"), want)
+		}
 	}
 }
 

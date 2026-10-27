@@ -218,11 +218,12 @@ command:
       status: "HTTP status codes: 5xx, 404, 500-503, separated by commas"
       since: "lines at or after this time: 10m, 2h, 1d, 2026-10-27 09:00, 09:00"
       until: "lines at or before this time"
+      ordered: "the log is in time order: --since bisects the file and skips files that end before the time"
       last: "the newest N matches, read from the end of the file"
     notes:
       - "A directory is searched recursively. Binary files are skipped, and .gz files are read in order."
       - "The output matches grep: the path appears with several files, the line number with -n, and -C adds context lines."
-      - "--since bisects a file by its timestamps, so a recent window reads a few MB of a multi-GB log. Files last changed before --since are not opened."
+      - "--since and --until filter lines by their timestamps. With --ordered, --since bisects a file in time order and skips files that end before the time, so a recent window reads a few MB of a multi-GB log."
       - "--last reads the file from the end and stops after N matches."
       - "With --level, --status, --since, or --until, the pattern can be left out when the first argument is an existing file or directory."
       - "Lines of a stack trace carry the level and time of their ERROR line, so --level error returns the trace too."

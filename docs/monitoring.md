@@ -478,7 +478,7 @@ If the output is not a terminal, or if `NO_COLOR` is set, `edc view` writes the 
 # plain text in a directory
 edc grep timeout /var/log/app/
 # 5xx responses in the last 10 minutes
-edc grep --since 10m --status 5xx /var/log/nginx/access.log
+edc grep --since 10m --ordered --status 5xx /var/log/nginx/access.log
 # the newest 20 errors, with their stack traces
 edc grep --level error --last 20 app.log
 # regular expression, any case, two lines of context
@@ -493,7 +493,7 @@ With `--level`, `--status`, `--since`, or `--until`, you can leave out the patte
 
 | Option | What it skips |
 | --- | --- |
-| `--since`, `--until` | It checks that the file is in time order at 16 points. If the last timestamp is before `--since`, it skips the file. Otherwise it bisects the timestamps and starts near `--since`, so a recent window of a multi-GB log reads a few MB. A `.gz` file is skipped by its modification time. |
+| `--since` with `--ordered` | `--since` and `--until` filter lines by their timestamps. Add `--ordered` when the log is in time order. Then `edc grep` checks the order at 16 points, skips a file whose last timestamp is before `--since` (a `.gz` file by its modification time), and bisects the timestamps to start near `--since`. A recent window of a multi-GB log reads a few MB. Without `--ordered` it reads the file whole, because a few probes cannot see a short backward run between them. |
 | `--last N` | It reads the file from the end and stops after N matches. |
 
 `--level warn` matches lines at warn or above. Lines of a stack trace carry the level and the time of their `ERROR` line. `--status` accepts `5xx`, `404`, and `500-503`, separated by commas. `--since` and `--until` accept `10m`, `2h`, `1d`, `2026-10-27 09:00`, and `09:00`.

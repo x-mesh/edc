@@ -364,9 +364,10 @@ var commandDocs = []commandDoc{
 			{"--status <codes>", "command.grep.option.status"},
 			{"--since <time>", "command.grep.option.since"},
 			{"--until <time>", "command.grep.option.until"},
+			{"--ordered", "command.grep.option.ordered"},
 			{"--last N", "command.grep.option.last"},
 		},
-		examples: []string{"edc grep timeout /var/log/app/", "edc grep --since 10m --status 5xx /var/log/nginx/access.log", "edc grep --level error --last 20 app.log", "edc grep -n -C 2 'order=41' app.log*", "kubectl logs deploy/api | edc grep -i refund"},
+		examples: []string{"edc grep timeout /var/log/app/", "edc grep --since 10m --ordered --status 5xx /var/log/nginx/access.log", "edc grep --level error --last 20 app.log", "edc grep -n -C 2 'order=41' app.log*", "kubectl logs deploy/api | edc grep -i refund"},
 	},
 	{
 		name: "du", group: "observe",

@@ -38,6 +38,7 @@ func newFSNotifyWatchSource(options fsWatchOptions) (fsWatchSource, error) {
 		}
 	}
 	ignored := fsWatchIgnored(options)
+	ignoredEvent := fsWatchIgnoredEvent(options)
 	addTree := func(directory string, announce bool) error {
 		return filepath.WalkDir(directory, func(filename string, entry fs.DirEntry, err error) error {
 			if errors.Is(err, fs.ErrNotExist) {
@@ -98,6 +99,7 @@ func newFSNotifyWatchSource(options fsWatchOptions) (fsWatchSource, error) {
 		watcher.Close()
 		return fsWatchSource{}, err
 	}
+	overflow := newFSWatchDropNotice()
 	go func() {
 		defer close(finished)
 		defer close(events)
@@ -116,6 +118,11 @@ func newFSNotifyWatchSource(options fsWatchOptions) (fsWatchSource, error) {
 				if !ok {
 					return
 				}
+				// 커널 큐가 넘치면 그동안의 이벤트만 잃고 감시는 이어진다. 놓친 디렉터리 생성은 watch를 걸지 못하므로 그 아래는 보이지 않는다.
+				if errors.Is(err, fsnotify.ErrEventOverflow) {
+					overflow.notice("watchfs.overflow")
+					continue
+				}
 				fail(err)
 				return
 			case raw, ok := <-watcher.Events:
@@ -126,7 +133,15 @@ func newFSNotifyWatchSource(options fsWatchOptions) (fsWatchSource, error) {
 					fail(errors.New(T("watchfs.root_removed", options.root)))
 					return
 				}
-				if raw.Name == options.root || ignored(raw.Name, nil) {
+				if raw.Name == options.root {
+					continue
+				}
+				// Lstat 결과를 출력 파일 비교에도 넘겨 이벤트마다 stat을 두 번 하지 않는다.
+				var current fs.FileInfo
+				if info, err := os.Lstat(raw.Name); err == nil {
+					current = info
+				}
+				if ignoredEvent(raw.Name, current) {
 					continue
 				}
 				relative, err := filepath.Rel(options.root, raw.Name)
@@ -136,9 +151,9 @@ func newFSNotifyWatchSource(options fsWatchOptions) (fsWatchSource, error) {
 				}
 				isDir := directories[raw.Name]
 				symlink := false
-				if info, err := os.Lstat(raw.Name); err == nil {
-					isDir = info.IsDir()
-					symlink = info.Mode()&os.ModeSymlink != 0
+				if current != nil {
+					isDir = current.IsDir()
+					symlink = current.Mode()&os.ModeSymlink != 0
 					if isDir {
 						directories[raw.Name] = true
 					}

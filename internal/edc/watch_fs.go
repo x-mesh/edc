@@ -1,6 +1,7 @@
 package edc
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -83,6 +84,8 @@ func runFSWatch(args []string) int {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
+	// 감시 루프가 터미널 출력에 막혀도 드라이버는 계속 읽게 한다. 커널 큐는 몇 초면 넘치고 그동안의 변경을 잃는다.
+	source = fsWatchBuffered(source, fsWatchQueueLimit, fsWatchQueueResume)
 	defer source.close()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -126,9 +129,23 @@ func streamFSWatch(ctx context.Context, writer io.Writer, source fsWatchSource, 
 	}
 	// 기록 줄은 자르지 않으므로 폭이 필요 없다. 기록마다 터미널 폭을 묻지 않게 한 번만 만든다.
 	style := textStyle{color: options.color}
+	// 터미널이 아니면 기록을 모아 쓴다. 이벤트마다 write하면 그 syscall이 이벤트 처리 시간의 1/4에 가까웠다. 상태줄은 지우고
+	// 쓰고 다시 그리는 순서가 있어 바로 쓴다.
+	output := writer
+	var buffered *bufio.Writer
+	if options.status == nil {
+		buffered = bufio.NewWriterSize(writer, fsWatchOutputBuffer)
+		output = buffered
+	}
+	flush := func() error {
+		if buffered == nil {
+			return nil
+		}
+		return buffered.Flush()
+	}
 	write := func(record fsWatchRecord) error {
 		if options.status == nil {
-			return writeFSWatchRecord(writer, record, options.jsonPath != "", style)
+			return writeFSWatchRecord(output, record, options.jsonPath != "", style)
 		}
 		if record.Type == "summary" {
 			options.status.close()
@@ -267,6 +284,13 @@ func streamFSWatch(ctx context.Context, writer io.Writer, source fsWatchSource, 
 				smartC = smartTimer.C
 			}
 		}
+		// 모은 기록은 바로 받을 이벤트가 없을 때 쓴다. 이벤트가 쏟아지는 동안은 모아서 syscall을 줄이고, 뜸하면 바로 보인다.
+		if buffered != nil && buffered.Buffered() > 0 && len(events) == 0 {
+			if err := flush(); err != nil {
+				cancelActions()
+				return 2, err
+			}
+		}
 		select {
 		case <-contextDone:
 			stopping = true
@@ -370,10 +394,13 @@ func streamFSWatch(ctx context.Context, writer io.Writer, source fsWatchSource, 
 	// 요약 아래에 어느 디렉터리가 가장 시끄러웠는지 보인다. 묶어서 보일 때만 낸다.
 	if top != nil {
 		if text := fsWatchTopText(top.rows()); text != "" {
-			if _, err := io.WriteString(writer, text); err != nil {
+			if _, err := io.WriteString(output, text); err != nil {
 				return 2, err
 			}
 		}
+	}
+	if err := flush(); err != nil {
+		return 2, err
 	}
 	if failure != nil {
 		return 1, failure
@@ -443,6 +470,9 @@ func executeFSWatchAction(ctx context.Context, rule fsWatchRule, event fsWatchEv
 }
 
 const fsWatchOutputLimit = 64 << 10
+
+// fsWatchOutputBuffer는 터미널이 아닌 출력에서 기록을 모아 두는 크기다.
+const fsWatchOutputBuffer = 64 << 10
 
 type fsWatchActionOutput struct {
 	mutex     sync.Mutex

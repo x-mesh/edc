@@ -1,0 +1,8 @@
+2026-10-27T06:12:36.022173+00:00 web-1 sshd-session[222184]: Accepted publickey for root from 192.0.2.10 port 56889 ssh2: RSA SHA256:abc
+2026-10-27T06:12:36.024638+00:00 web-1 sshd-session[222184]: pam_unix(sshd:session): session opened for user root(uid=0) by (uid=0)
+2026-10-27T06:12:36.034554+00:00 web-1 systemd-logind[1217]: New session 94309 of user root.
+2026-10-27T06:12:36.211289+00:00 web-1 sshd-session[222254]: error: connect to /tmp/relay.sock port -2 failed: Connection refused
+2026-10-27T06:12:37.154496+00:00 web-1 sshd-session[222271]: Failed password for invalid user admin from 198.51.100.7 port 40022 ssh2
+2026-10-27T06:12:37.518108+00:00 web-1 sshd-session[222254]: Received disconnect from 192.0.2.10 port 56889:11: disconnected by user
+2026-10-27T06:12:38.000000+00:00 web-1 CRON[222300]: (root) CMD (command -v debian-sa1 > /dev/null && debian-sa1 1 1)
+2026-10-27T06:12:39.000000+00:00 web-1 sudo: pam_unix(sudo:session): session closed for user root

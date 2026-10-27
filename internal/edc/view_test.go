@@ -33,7 +33,7 @@ func parseViewFixture(t *testing.T, name string) (viewFormat, []viewLine) {
 }
 
 func TestDetectViewFormat(t *testing.T) {
-	for name, want := range map[string]viewFormat{"access.log": viewFormatAccess, "app.jsonl": viewFormatJSON, "app.log": viewFormatLevel} {
+	for name, want := range map[string]viewFormat{"access.log": viewFormatAccess, "app.jsonl": viewFormatJSON, "app.log": viewFormatLevel, "auth.log": viewFormatSyslog} {
 		if got := detectViewFormat(readViewFixture(t, name)); got != want {
 			t.Errorf("%s: format %q, want %q", name, got, want)
 		}
@@ -332,5 +332,94 @@ func TestViewReadInitialUsesOnlyBytesRead(t *testing.T) {
 	data, err = viewReadInitial(&viewShrinkingFile{after: ""}, 10, viewKeepLines, viewScreenReadLimit)
 	if err != nil || len(data) != 0 {
 		t.Fatalf("emptied file: %q %v", data, err)
+	}
+}
+
+func TestParseViewSyslogLine(t *testing.T) {
+	format, lines := parseViewFixture(t, "auth.log")
+	if format != viewFormatSyslog {
+		t.Fatalf("format %q", format)
+	}
+	line := lines[4]
+	if line.time != "2026-10-27T06:12:37.154496+00:00" || line.program != "sshd-session" || line.level != "error" || line.client != "198.51.100.7" || !strings.HasPrefix(line.message, "Failed password") {
+		t.Fatalf("syslog fields: %+v", line)
+	}
+	if !viewHasField(line.fields, "host", "web-1") || !viewHasField(line.fields, "pid", "222271") || !viewHasField(line.fields, "message", line.message) {
+		t.Fatalf("fields: %+v", line.fields)
+	}
+	// 성공 낱말은 level이 없고, "error:"로 시작하는 줄은 오류다. CRON과 pid 없는 sudo도 프로그램이다.
+	if lines[0].level != "" || lines[0].client != "192.0.2.10" || lines[3].level != "error" || lines[5].client != "192.0.2.10" || lines[6].program != "CRON" || lines[7].program != "sudo" {
+		t.Fatalf("lines: %+v", lines)
+	}
+	for _, field := range lines[7].fields {
+		if field.name == "pid" {
+			t.Fatalf("sudo line has a pid field: %+v", lines[7].fields)
+		}
+	}
+	for index, line := range lines {
+		if got := viewLinePlain(line, viewFormatSyslog); got != line.text {
+			t.Fatalf("line %d: colored text %q differs from %q", index, got, line.text)
+		}
+	}
+	// 프로그램은 청록, 오류 낱말은 굵은 빨강, 성공 낱말은 초록이다. 시각과 host는 회색이다.
+	spanColor := func(spans []traceText, text string) (string, bool) {
+		for _, span := range spans {
+			if span.text == text {
+				return span.color, span.bold
+			}
+		}
+		t.Fatalf("span %q missing in %+v", text, spans)
+		return "", false
+	}
+	failed := viewLineSpans(lines[4], viewFormatSyslog)
+	if color, bold := spanColor(failed, "Failed"); color != richRed || !bold {
+		t.Fatalf("Failed span %s bold %t", color, bold)
+	}
+	if color, _ := spanColor(failed, "sshd-session"); color != richCyan {
+		t.Fatalf("program span %s", color)
+	}
+	if color, _ := spanColor(failed, "2026-10-27T06:12:37.154496+00:00 web-1"); color != richGray {
+		t.Fatalf("time span %s", color)
+	}
+	if color, bold := spanColor(viewLineSpans(lines[0], viewFormatSyslog), "Accepted"); color != richGreen || bold {
+		t.Fatalf("Accepted span %s bold %t", color, bold)
+	}
+	// BSD 시각은 한 자리 날짜 앞에 공백이 하나 더 있다. 메시지의 대문자 level은 낱말보다 먼저다.
+	var bsd viewLine
+	bsd.text = "Oct  7 06:12:36 web-1 sshd[12]: Connection closed by 192.0.2.5 port 1 [preauth]"
+	if !viewParseSyslog(bsd.text, &bsd) || bsd.time != "Oct  7 06:12:36" || bsd.program != "sshd" || bsd.level != "" || bsd.client != "" {
+		t.Fatalf("bsd line: %+v", bsd)
+	}
+	var explicit viewLine
+	explicit.text = "2026-10-27T06:12:36+00:00 web-1 app[1]: WARN disk nearly full, write failed"
+	if !viewParseSyslog(explicit.text, &explicit) || explicit.level != "warn" {
+		t.Fatalf("explicit level: %+v", explicit)
+	}
+	var warned viewLine
+	warned.text = "Oct 27 06:12:36 web-1 app: request timed out after 30s"
+	if !viewParseSyslog(warned.text, &warned) || warned.level != "warn" {
+		t.Fatalf("warn word: %+v", warned)
+	}
+	// 메시지 안의 콜론은 tag를 끝내지 않는다.
+	var colon viewLine
+	if !viewParseSyslog("Oct 27 06:12:36 web-1 note: this is: fine", &colon) || colon.program != "note" || colon.message != "this is: fine" {
+		t.Fatalf("message with a colon: %+v", colon)
+	}
+	// level 형식, access 형식, tag 안에 공백이 있거나 pid가 숫자가 아닌 줄은 syslog가 아니다.
+	for _, text := range []string{
+		"2026-10-26 10:00:00 ERROR message",
+		"2026-10-26T10:00:00 ERROR message",
+		`192.0.2.1 - - [26/Oct/2026:10:00:00 +0900] "GET / HTTP/1.1" 200 1 "-" "x"`,
+		"Oct 27 06:12:36 web-1 two words: message",
+		"Oct 27 06:12:36 web-1 sshd[abc]: bad pid",
+		"hello: world",
+	} {
+		var line viewLine
+		if viewParseSyslog(text, &line) {
+			t.Fatalf("%q parsed as syslog: %+v", text, line)
+		}
+	}
+	if got := detectViewFormat([]string{"2026-10-26 10:00:00 ERROR a", "2026-10-26 10:00:01 WARN b"}); got != viewFormatLevel {
+		t.Fatalf("level lines detected as %q", got)
 	}
 }

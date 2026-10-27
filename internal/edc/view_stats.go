@@ -21,6 +21,7 @@ type viewStats struct {
 	classes  [6]int
 	paths    map[string]int
 	clients  map[string]int
+	programs map[string]int
 	// arrivals는 화면을 연 뒤 새로 들어온 줄 수를 초 단위로 모은 것이다. 처음 읽은 줄은 넣지 않는다. 그 줄들은 한꺼번에
 	// 읽혀서 초당 줄 수를 부풀린다.
 	arrivals  []viewArrival
@@ -28,7 +29,7 @@ type viewStats struct {
 }
 
 func newViewStats() viewStats {
-	return viewStats{levels: map[string]int{}, paths: map[string]int{}, clients: map[string]int{}}
+	return viewStats{levels: map[string]int{}, paths: map[string]int{}, clients: map[string]int{}, programs: map[string]int{}}
 }
 
 func (stats *viewStats) add(line viewLine) {
@@ -68,6 +69,9 @@ func (stats *viewStats) apply(line viewLine, step int) {
 	}
 	if line.client != "" {
 		viewCount(stats.clients, line.client, step)
+	}
+	if line.program != "" {
+		viewCount(stats.programs, line.program, step)
 	}
 }
 

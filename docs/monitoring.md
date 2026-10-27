@@ -452,19 +452,22 @@ kubectl logs -f deploy/api | edc view
 edc view -f app.log | grep timeout
 ```
 
-`edc view` reads three formats. It selects the format from the first lines.
+`edc view` reads four formats. It selects the format from the first lines.
 
 | Format | Example | Color |
 | --- | --- | --- |
 | access | nginx and Apache common and combined logs | status class, time in gray |
 | json | one JSON object on each line | level, time in gray; other keys as `key=value` |
 | level | `2026-10-26 10:00:00 ERROR message` | level word, time in gray |
+| syslog | `2026-10-27T06:12:36+00:00 host sshd[1]: message` or `Oct  7 06:12:36 host sshd[1]: message` | program in cyan, time and host in gray, one word of the message |
 
 The level must be an uppercase word such as `ERROR` or `WARN`, or a `level=` value. A lowercase "error" in the message is not a level. In the level format, a line without a level belongs to the line above it. This keeps a stack trace with its error.
 
+The syslog format reads `auth.log`, `syslog`, and the output of `journalctl`. The line has no level, so `edc` reads the level from a word of the message. `error`, `fail`, `failed`, `failure`, `invalid`, `refused`, `denied`, `fatal`, `panic`, and `segfault` make an error. `warning`, `warn`, `timeout`, `timed out`, and `deprecated` make a warning. `accepted` and `success` turn green and set no level. An uppercase level word in the message wins. This is the one format where a lowercase word sets the level. The address after `from`, as sshd writes it, fills the top clients, and the panel lists the top programs.
+
 Press Up or PgUp to stop the list. The header then shows `paused` and counts the new lines. Press End, `l`, or Esc to follow again. Press `/` to filter the lines by text. Press Enter to show the fields of a line, the whole line, and the stack trace lines below it.
 
-The stats panel shows the lines per second, the errors, the status classes or the levels, the last error, and the top paths and clients. It counts only the lines that the screen keeps, 10,000 by default. If the terminal has 120 columns or more, the panel is on the right. If the terminal is narrower, the panel is below the list. Press `i` to hide the panel.
+The stats panel shows the lines per second, the errors, the status classes or the levels, the last error, and the top paths, clients, and programs. It counts only the lines that the screen keeps, 10,000 by default. If the terminal has 120 columns or more, the panel is on the right. The panel is as wide as its longest row and at most 38 columns, so a log with few stats leaves more room for the lines. If the terminal is narrower, the panel is below the list. Press `i` to hide the panel.
 
 If logrotate moves the file, `edc view` reads the rest of the old file. Then it marks the place and reads the new file from the start. If the file becomes smaller, it reads the file from the start again.
 

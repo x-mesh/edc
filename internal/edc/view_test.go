@@ -151,7 +151,7 @@ func TestViewTailOffsetCrossesBlocks(t *testing.T) {
 }
 
 func TestViewTailReaderKeepsLastLines(t *testing.T) {
-	got, err := viewTailReader(strings.NewReader("a\nb\nc\nd"), 2)
+	got, _, err := viewTailReader(strings.NewReader("a\nb\nc\nd"), 2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -289,7 +289,7 @@ func TestViewReadInitialStaysWithinLimit(t *testing.T) {
 }
 
 func TestViewTailReaderKeepsOrderAcrossTheRing(t *testing.T) {
-	got, err := viewTailReader(strings.NewReader("1\n2\n3\n4\n5\n6\n7\n"), 3)
+	got, _, err := viewTailReader(strings.NewReader("1\n2\n3\n4\n5\n6\n7\n"), 3)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -332,5 +332,86 @@ func TestViewReadInitialUsesOnlyBytesRead(t *testing.T) {
 	data, err = viewReadInitial(&viewShrinkingFile{after: ""}, 10, viewKeepLines, viewScreenReadLimit)
 	if err != nil || len(data) != 0 {
 		t.Fatalf("emptied file: %q %v", data, err)
+	}
+}
+
+// pipe에 줄바꿈 없는 입력이 끝없이 와도 메모리는 한 줄 상한에서 멈춘다. 넘친 줄은 앞부분만 남기고 몇 줄이 잘렸는지 알린다.
+func TestViewTailReaderBoundsALine(t *testing.T) {
+	previous := viewTailLineLimit
+	viewTailLineLimit = 1024
+	defer func() { viewTailLineLimit = previous }()
+	input := strings.Repeat("x", 5000) + "\nlast\n"
+	lines, truncated, err := viewTailReader(strings.NewReader(input), 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(lines) != 2 || len(lines[0]) != 1025 || lines[0][1024] != '\n' || string(lines[1]) != "last\n" || truncated != 1 {
+		t.Fatalf("lines %d first %d bytes last %q truncated %d", len(lines), len(lines[0]), lines[len(lines)-1], truncated)
+	}
+	lines, truncated, err = viewTailReader(strings.NewReader("a\nb\n"), 5)
+	if err != nil || truncated != 0 || string(bytes.Join(lines, nil)) != "a\nb\n" {
+		t.Fatalf("short input: %q %d %v", bytes.Join(lines, nil), truncated, err)
+	}
+	// 내용이 정확히 상한 길이인 줄은 잘린 것이 아니다.
+	exact := strings.Repeat("y", 1024) + "\nz\n"
+	lines, truncated, err = viewTailReader(strings.NewReader(exact), 5)
+	if err != nil || truncated != 0 || string(bytes.Join(lines, nil)) != exact {
+		t.Fatalf("exact limit: %d bytes, truncated %d, %v", len(bytes.Join(lines, nil)), truncated, err)
+	}
+}
+
+// copytruncate 뒤 파일이 옛 offset보다 크게 다시 쓰이면 크기로는 알 수 없다. 마지막으로 읽은 바이트가 그 자리에 그대로
+// 있는지 비교해 알아채고 처음부터 다시 읽는다.
+func TestFollowViewFileDetectsARewriteThatRegrows(t *testing.T) {
+	directory := t.TempDir()
+	path := filepath.Join(directory, "app.log")
+	if err := os.WriteFile(path, []byte("one\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := make(chan viewFollowEvent, 32)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go followViewFile(ctx, path, file, 4, func(event viewFollowEvent) bool {
+		events <- event
+		return true
+	})
+	next := func() viewFollowEvent {
+		t.Helper()
+		select {
+		case event := <-events:
+			return event
+		case <-time.After(5 * time.Second):
+			t.Fatal("no follow event")
+		}
+		return viewFollowEvent{}
+	}
+	// 먼저 한 줄을 덧붙여 follower가 돌고 있고 마지막 바이트를 기억했음을 확인한다.
+	handle, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handle.WriteString("two\n")
+	handle.Close()
+	if event := next(); string(event.data) != "two\n" {
+		t.Fatalf("append: %+v", event)
+	}
+	// 같은 inode를 비우고 더 긴 내용을 쓴다. 크기(11)는 옛 offset(8)보다 크다.
+	if err := os.WriteFile(path, []byte("alpha\nbeta\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if event := next(); event.reset != viewResetTruncated {
+		t.Fatalf("rewrite must reset: %+v", event)
+	}
+	var got []byte
+	for string(got) != "alpha\nbeta\n" {
+		event := next()
+		if event.reset != "" || event.err != nil {
+			t.Fatalf("after rewrite: %+v (got %q)", event, got)
+		}
+		got = append(got, event.data...)
 	}
 }

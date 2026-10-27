@@ -134,6 +134,9 @@ _edc() {
       ;;
     args)
       case $words[1] in
+        shell)
+          _arguments "1:shell:(zsh bash)" "--no-alias[completion only]"
+          ;;
         top)
           _arguments '1::subcommand:(setup)' '--interval[sampling interval]:duration' '--count[출력 row 수]:count' '--no-header[header 생략]' '--process[process filter]:filter' '--split=-[박스 화면, =all은 전체]::views:(all none cpu mem disk net psi)' '--interface[net 값에 더할 interface]:interfaces:(all physical)' '--view[처음 보기]:view:(all cpu memory disk network pressure split)' '--panels[표 아래 패널]:panels:(none cpu mem disk net psi ai events)' '--columns[all 보기 열 그룹, +는 자세히]:columns:(all net net+ cpu cpu+ mem mem+ disk disk+ psi psi+ ai ai+)' '(-d --detail)'{-d,--detail}'[eBPF details]' '(-w --write)'{-w,--write}'[SQLite 기록, 경로 생략 시 기본 DB]::path:_files' '--json[sample당 한 줄 JSON 출력 경로]:path:_files'
           ;;
@@ -508,6 +511,7 @@ _edc() {
       esac
       if [[ $cur == -* ]]; then COMPREPLY=($(compgen -W "$common --file --name -L -R -D --save --all --connect-timeout" -- "$cur"))
       elif [[ $COMP_CWORD -eq 2 ]]; then COMPREPLY=($(compgen -W "list up test down" -- "$cur")); fi ;;
+    shell) COMPREPLY=($(compgen -W "zsh bash --no-alias" -- "$cur")) ;;
     completion) COMPREPLY=($(compgen -W "zsh bash groups" -- "$cur")) ;;
     setup)
       if [[ $prev == --inventory || $prev == --recipe ]]; then COMPREPLY=($(compgen -f -- "$cur"))

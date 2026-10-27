@@ -630,24 +630,10 @@ var commandDocs = []commandDoc{
 		},
 	},
 	{
-		name: "alias", group: "tool",
-		usage: []string{"edc alias [zsh|bash] [--plain]"},
-		subcommands: []subcommandDoc{
-			{"zsh", "edc alias zsh"},
-			{"bash", "edc alias bash"},
-		},
-		options: []optionDoc{
-			{"--plain", "command.alias.option.plain"},
-		},
-	},
-	{
-		name: "completion", group: "tool",
-		usage: []string{"edc completion <zsh|bash|groups>"},
-		subcommands: []subcommandDoc{
-			{"zsh", "edc completion zsh"},
-			{"bash", "edc completion bash"},
-			{"groups", "edc completion groups"},
-		},
+		name: "shell", group: "tool",
+		usage:    []string{"edc shell [zsh|bash] [--no-alias]"},
+		options:  []optionDoc{{"--no-alias", "command.shell.option.no_alias"}},
+		examples: []string{"source <(edc shell)", "source <(edc shell zsh)", "source <(edc shell bash)"},
 	},
 	{
 		name: "setup", group: "tool",
@@ -672,8 +658,36 @@ var commandDocs = []commandDoc{
 	},
 }
 
+var legacyCommandDocs = []commandDoc{
+	{
+		name: "alias", group: "tool",
+		usage: []string{"edc alias [zsh|bash] [--plain]"},
+		subcommands: []subcommandDoc{
+			{"zsh", "edc alias zsh"},
+			{"bash", "edc alias bash"},
+		},
+		options: []optionDoc{
+			{"--plain", "command.alias.option.plain"},
+		},
+	},
+	{
+		name: "completion", group: "tool",
+		usage: []string{"edc completion <zsh|bash|groups>"},
+		subcommands: []subcommandDoc{
+			{"zsh", "edc completion zsh"},
+			{"bash", "edc completion bash"},
+			{"groups", "edc completion groups"},
+		},
+	},
+}
+
 func findCommandDoc(name string) (commandDoc, bool) {
 	for _, doc := range commandDocs {
+		if doc.name == name {
+			return doc, true
+		}
+	}
+	for _, doc := range legacyCommandDocs {
 		if doc.name == name {
 			return doc, true
 		}

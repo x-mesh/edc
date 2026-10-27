@@ -636,6 +636,21 @@ command:
       - "포트는 127.0.0.1에 바인딩합니다. auto는 비어 있는 포트를 고릅니다."
       - "도달은 목적지가 연결을 유지하면 ok, 곧바로 끊으면 refused입니다. 역방향 터널은 -로 표시합니다."
       - "test는 로컬 포트, SSH 로그인, 호스트에서 본 목적지를 확인합니다. 역방향 터널은 원격 포트와 로컬 대상을 확인합니다. 터널은 시작하지 않습니다."
+  shell:
+    summary: "셸 자동완성과 단축 명령 출력"
+    option:
+      no_alias: "alias 없이 자동완성만 출력"
+    notes:
+      - "셸 이름을 생략하면 $SHELL을 사용합니다. zsh와 bash를 지원합니다."
+      - "source <(edc shell)을 실행하면 현재 셸에 적용합니다."
+      - "zsh에서 계속 쓰려면 ~/.zshrc 맨 끝에 source <(edc shell zsh)을 추가합니다."
+      - "bash에서 계속 쓰려면 ~/.bashrc 맨 끝에 source <(edc shell bash)을 추가합니다."
+      - "edc는 스크립트만 출력하며 시작 파일을 수정하지 않습니다. 추가한 줄을 지우면 다음 셸부터 적용되지 않습니다."
+      - "기존 alias, 함수, 명령과 겹치는 이름은 유지합니다."
+    unsupported_shell: "edc shell: %s은 지원하지 않습니다. zsh 또는 bash를 지정하세요."
+    current_session: "현재 세션에 적용: %s"
+    startup: "계속 쓰려면 %s 맨 끝에 다음 줄을 추가하세요:"
+    read_only: "스크립트만 출력하며 셸 시작 파일은 수정하지 않습니다."
   alias:
     summary: "셸용 짧은 alias 출력"
     sub:

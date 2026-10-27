@@ -145,6 +145,8 @@ func Run(args []string, version string) int {
 		return runRemote(args[1:], version)
 	case "tunnel":
 		return runTunnel(args[1:], version)
+	case "shell":
+		return runShell(args[1:])
 	case "completion":
 		return runCompletion(args[1:])
 	case "alias":

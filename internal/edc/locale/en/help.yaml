@@ -636,6 +636,21 @@ command:
       - "Ports bind to 127.0.0.1. auto picks a free port."
       - "reach is ok if the destination keeps the connection open, and refused if it closes at once. Reverse tunnels show -."
       - "test checks the local port, the SSH login, and the destination as the host sees it. For a reverse tunnel, it checks the remote port and the local target. It starts no tunnel."
+  shell:
+    summary: "Print shell completion and short aliases"
+    option:
+      no_alias: "print completion only, without aliases"
+    notes:
+      - "Without a shell name, edc uses $SHELL. Supports zsh and bash."
+      - "Run source <(edc shell) to apply to the current shell."
+      - "For future zsh sessions, add source <(edc shell zsh) at the end of ~/.zshrc."
+      - "For future bash sessions, add source <(edc shell bash) at the end of ~/.bashrc."
+      - "edc prints a script and does not edit startup files. Remove the line to disable it for future sessions."
+      - "Existing aliases, functions, and commands are preserved."
+    unsupported_shell: "edc shell: %s is not supported; use zsh or bash."
+    current_session: "Current session: %s"
+    startup: "For future sessions, add this line at the end of %s:"
+    read_only: "Prints a script only; startup files are not edited."
   alias:
     summary: "Print short aliases for the shell"
     sub:

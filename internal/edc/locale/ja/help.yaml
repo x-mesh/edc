@@ -216,6 +216,7 @@ command:
       ask_keyword: "--ask をモデルなしのキーワード順位付けで実行"
       semantic_init: "ローカル semantic index の作成・再作成"
       semantic_status: "semantic index の情報を表示"
+      semantic_files: "ファイルごとに index 済みのチャンク数と全チャンク数"
       semantic_clear: "semantic index を削除"
       semantic: "初期化済みのローカル embedding index でコードを検索 (--ask を含む)"
       ask: "ローカル embedding index で関連コードを検索"

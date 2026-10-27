@@ -216,6 +216,7 @@ command:
       ask_keyword: "use keyword ranking with --ask without a model"
       semantic_init: "build or rebuild the local semantic index"
       semantic_status: "show semantic index metadata"
+      semantic_files: "indexed and total chunks for each file"
       semantic_clear: "remove the semantic index"
       semantic: "search code with the initialized local embedding index (implies --ask)"
       ask: "search code by meaning with a local embedding index"

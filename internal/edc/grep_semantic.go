@@ -485,6 +485,9 @@ func grepSemanticLifecycleWithInput(args []string, input io.Reader, terminal boo
 		fmt.Fprintln(stderr, err)
 		return 2
 	}
+	if args[0] == "--semantic-files" {
+		return grepSemanticFiles(root, path, stdout, stderr)
+	}
 	if args[0] == "--semantic-status" {
 		dir, modelErr := grepModelDir()
 		if modelErr == nil {
@@ -573,5 +576,56 @@ func grepSemanticLifecycleWithInput(args []string, input io.Reader, terminal boo
 		return 2
 	}
 	fmt.Fprintf(stdout, "%s: %d chunks, %s\n", grepSemanticModel, len(chunks), path)
+	return 0
+}
+
+// grepSemanticFiles는 지금 수집되는 파일마다 index에 든 청크 수와 전체 청크 수를 보여 준다. index에는 경로가 없어 수집을 다시 한다.
+func grepSemanticFiles(root, path string, stdout, stderr io.Writer) int {
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		fmt.Fprintln(stderr, T("grep.semantic.init_required"))
+		return 1
+	}
+	index, err := grepSemanticRead(path, root)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 2
+	}
+	chunks, _, problems := grepAskCollect([]string{root}, grepOptions{})
+	for _, problem := range problems {
+		fmt.Fprintln(stderr, T("grep.failed", problem))
+	}
+	if len(problems) > 0 {
+		return 2
+	}
+	type fileChunks struct{ indexed, total int }
+	files := map[string]*fileChunks{}
+	var names []string
+	for _, chunk := range chunks {
+		file := files[chunk.rankPath]
+		if file == nil {
+			file = &fileChunks{}
+			files[chunk.rankPath] = file
+			names = append(names, chunk.rankPath)
+		}
+		file.total++
+		if _, ok := index.Vectors[grepSemanticKey(root, chunk)]; ok {
+			file.indexed++
+		}
+	}
+	sort.Strings(names)
+	terminal := false
+	if file, ok := stdout.(*os.File); ok {
+		terminal = isTerminal(file)
+	}
+	for _, name := range names {
+		file := files[name]
+		if terminal {
+			name = viewSanitize(name)
+		}
+		if _, err := fmt.Fprintf(stdout, "%d/%d\t%s\n", file.indexed, file.total, name); err != nil {
+			fmt.Fprintln(stderr, err)
+			return 2
+		}
+	}
 	return 0
 }

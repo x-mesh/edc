@@ -310,11 +310,12 @@ edc grep --semantic-init
 edc grep --ask 'Where is authentication configuration loaded?'
 edc grep --semantic 'Where is authentication configuration loaded?'
 edc grep --semantic-status
+edc grep --semantic-files
 edc grep --semantic-clear
 edc grep --model-clear
 ```
 
-`--semantic`은 `--ask`와 같습니다. `--ask`는 기본으로 semantic 검색을 사용합니다. `--semantic-init --yes`는 터미널 확인 없이 다운로드를 명시적으로 허용합니다. 모델과 runtime은 사용자 cache에 공유되며 프로젝트 index는 초기화할 때만 만듭니다. 다른 프로젝트에서는 모델을 재사용하고 index만 새로 만듭니다. `--semantic-clear`는 현재 프로젝트 index만, `--model-clear`는 공유 모델과 runtime만 삭제합니다. 작은 lock 파일은 남을 수 있습니다. `--semantic-status`는 모델과 저장된 index 상태를 보여 주며 파일 변경 여부는 검사하지 않습니다.
+`--semantic`은 `--ask`와 같습니다. `--ask`는 기본으로 semantic 검색을 사용합니다. `--semantic-init --yes`는 터미널 확인 없이 다운로드를 명시적으로 허용합니다. 모델과 runtime은 사용자 cache에 공유되며 프로젝트 index는 초기화할 때만 만듭니다. 다른 프로젝트에서는 모델을 재사용하고 index만 새로 만듭니다. `--semantic-clear`는 현재 프로젝트 index만, `--model-clear`는 공유 모델과 runtime만 삭제합니다. 작은 lock 파일은 남을 수 있습니다. `--semantic-status`는 모델과 저장된 index 상태를 보여 주며 파일 변경 여부는 검사하지 않습니다. `--semantic-files`는 현재 파일을 다시 읽어 파일마다 `index에 든 청크/전체 청크`와 경로를 출력합니다. 두 수가 다른 파일은 다음 검색 때 다시 벡터화합니다.
 
 디렉터리를 검색할 때 생성 파일, lock 파일, 테스트 fixture는 index에 넣지 않고 순위에서도 뺍니다. 생성 파일은 첫 줄 주석에 `Code generated ... DO NOT EDIT` 또는 `auto-generated`가 있는 파일입니다. lock 파일은 `go.sum`, `package-lock.json`, `yarn.lock`, `Cargo.lock` 등입니다. 테스트 fixture는 `testdata/` 아래 파일이며, `.md`와 `.txt`는 남깁니다. 이런 파일도 경로로 직접 지정하면 검색합니다.
 

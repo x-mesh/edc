@@ -296,3 +296,56 @@ func TestGrepSemanticFlagImpliesAsk(t *testing.T) {
 		t.Fatalf("keyword conflict code %d stderr %q", code, stderr)
 	}
 }
+
+func TestGrepSemanticFilesListsIndexedChunks(t *testing.T) {
+	oldRoot, oldEncode, oldEnsure := grepSemanticCacheRoot, grepSemanticEncode, grepSemanticEnsure
+	defer func() {
+		grepSemanticCacheRoot = oldRoot
+		grepSemanticEncode = oldEncode
+		grepSemanticEnsure = oldEnsure
+	}()
+	grepSemanticCacheRoot = t.TempDir()
+	grepSemanticEnsure = func(io.Reader, bool, bool, io.Writer) error { return nil }
+	grepSemanticEncode = func(texts []string, _ io.Writer) (grepSemanticEncoded, error) {
+		vectors := make([][]float32, len(texts))
+		for i := range vectors {
+			vectors[i] = make([]float32, 384)
+			vectors[i][0] = 1
+		}
+		return grepSemanticEncoded{Revision: "revision", Vectors: vectors}, nil
+	}
+	root := t.TempDir()
+	for name, content := range map[string]string{"a.go": "package p\nfunc A() {}\n", "docs/b.md": "# B\n"} {
+		path := filepath.Join(root, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var out, stderr bytes.Buffer
+	if code := grepSemanticLifecycle([]string{"--semantic-files", root}, &out, &stderr); code != 1 || !strings.Contains(stderr.String(), "--semantic-init") {
+		t.Fatalf("before init %d %q", code, stderr.String())
+	}
+	if code := grepSemanticLifecycle([]string{"--semantic-init", root}, &out, &stderr); code != 0 {
+		t.Fatalf("init %d: %s", code, stderr.String())
+	}
+	if err := os.WriteFile(filepath.Join(root, "c.go"), []byte("package p\nfunc C() {}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	stderr.Reset()
+	if code := grepSemanticLifecycle([]string{"--semantic-files", root}, &out, &stderr); code != 0 {
+		t.Fatalf("files %d: %s", code, stderr.String())
+	}
+	if want := "1/1\ta.go\n0/1\tc.go\n1/1\tdocs/b.md\n"; out.String() != want {
+		t.Fatalf("got %q want %q", out.String(), want)
+	}
+	if args, ok := grepLifecycleArgs([]string{root, "--semantic-files"}); !ok || args[0] != "--semantic-files" {
+		t.Fatalf("lifecycle args %v %v", args, ok)
+	}
+	if code := grepSemanticLifecycle([]string{"--semantic-files", "--yes", root}, &out, &stderr); code != 2 {
+		t.Fatalf("--yes accepted: %d", code)
+	}
+}

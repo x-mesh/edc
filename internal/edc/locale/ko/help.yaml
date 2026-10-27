@@ -216,6 +216,7 @@ command:
       ask_keyword: "--ask에서 모델 없이 키워드 순위화"
       semantic_init: "로컬 semantic index 생성 또는 재생성"
       semantic_status: "semantic index 정보 확인"
+      semantic_files: "파일마다 index에 든 청크와 전체 청크 수"
       semantic_clear: "semantic index 삭제"
       semantic: "초기화된 로컬 embedding index로 코드 검색 (--ask 포함)"
       ask: "로컬 embedding index로 관련 코드 검색"

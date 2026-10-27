@@ -62,18 +62,26 @@ func viewTailOffset(file io.ReaderAt, size int64, lines int) (int64, error) {
 	return 0, nil
 }
 
+// viewTailLineLimit는 pipe의 -n이 한 줄에서 보관하는 최대 바이트다. 줄바꿈 없는 입력이 끝없이 와도 메모리가 이 안에서
+// 멈춘다. 넘친 줄은 앞부분만 남는다. 변수인 것은 테스트가 작은 값으로 바꾸기 위해서다.
+var viewTailLineLimit = viewScreenReadLimit
+
 // viewTailReader는 stdin처럼 되감을 수 없는 입력의 마지막 lines줄이다. 줄마다 보관하지 않고 원문 바이트를 그대로 둔다.
-func viewTailReader(reader io.Reader, lines int) ([][]byte, error) {
+// viewTailLineLimit보다 긴 줄은 앞부분만 남기고, 그런 줄의 수를 함께 돌려준다.
+func viewTailReader(reader io.Reader, lines int) ([][]byte, int, error) {
 	if lines <= 0 {
 		_, err := io.Copy(io.Discard, reader)
-		return nil, err
+		return nil, 0, err
 	}
 	// 줄마다 ring을 당기면 줄 수 × lines만큼 복사해서, 다 차면 가장 오래된 자리에 덮어쓴다.
 	ring := make([][]byte, 0, min(lines, 1024))
-	next := 0
+	next, truncated := 0, 0
 	buffered := bufio.NewReaderSize(reader, viewBlockSize)
 	for {
-		line, err := buffered.ReadBytes('\n')
+		line, cut, err := viewReadLine(buffered, viewTailLineLimit)
+		if cut {
+			truncated++
+		}
 		if len(line) != 0 {
 			if len(ring) < lines {
 				ring = append(ring, line)
@@ -85,10 +93,42 @@ func viewTailReader(reader io.Reader, lines int) ([][]byte, error) {
 		if err != nil {
 			ring = append(ring[next:], ring[:next]...)
 			if errors.Is(err, io.EOF) {
-				return ring, nil
+				return ring, truncated, nil
 			}
-			return ring, err
+			return ring, truncated, err
 		}
+	}
+}
+
+// viewReadLine은 줄바꿈까지 한 줄을 읽는다. limit를 넘는 바이트는 버리고 cut을 true로 돌려주되, 줄바꿈까지는 계속 읽어
+// 다음 줄의 시작을 잃지 않는다.
+func viewReadLine(reader *bufio.Reader, limit int) ([]byte, bool, error) {
+	var line []byte
+	cut := false
+	for {
+		chunk, err := reader.ReadSlice('\n')
+		// 줄바꿈은 상한에 넣지 않는다. 내용이 정확히 limit 바이트인 줄은 잘린 것이 아니다.
+		content := len(chunk)
+		if content > 0 && chunk[content-1] == '\n' {
+			content--
+		}
+		switch {
+		case len(line)+content <= limit:
+			line = append(line, chunk...)
+		case len(line) < limit:
+			line = append(line, chunk[:limit-len(line)]...)
+			cut = true
+		default:
+			cut = true
+		}
+		if errors.Is(err, bufio.ErrBufferFull) {
+			continue
+		}
+		if cut && err == nil {
+			// 잘린 줄도 줄바꿈으로 끝나야 다음 줄과 붙지 않는다.
+			line = append(line, '\n')
+		}
+		return line, cut, err
 	}
 }
 
@@ -141,11 +181,21 @@ func followViewFile(ctx context.Context, path string, file *os.File, offset int6
 	ticker := time.NewTicker(viewPollInterval)
 	defer ticker.Stop()
 	buffer := make([]byte, viewBlockSize)
+	// tail은 offset 바로 앞의 마지막 바이트다. copytruncate 뒤 파일이 옛 offset보다 크게 다시 쓰이면 크기로는 알 수 없으므로,
+	// 읽기 전에 그 자리가 그대로인지 비교해 다시 쓰인 파일을 알아챈다.
+	tail := viewReadTail(file, offset)
 	for {
+		if offset > 0 && len(tail) != 0 && !viewTailIntact(file, offset, tail) {
+			offset, tail = 0, nil
+			if !emit(viewFollowEvent{reset: viewResetTruncated}) {
+				return
+			}
+		}
 		for {
 			count, err := file.ReadAt(buffer, offset)
 			if count > 0 {
 				offset += int64(count)
+				tail = viewKeepTail(tail, buffer[:count])
 				if !emit(viewFollowEvent{data: bytes.Clone(buffer[:count])}) {
 					return
 				}
@@ -167,13 +217,13 @@ func followViewFile(ctx context.Context, path string, file *os.File, offset int6
 				break
 			}
 			file.Close()
-			file, offset = next, 0
+			file, offset, tail = next, 0, nil
 			if !emit(viewFollowEvent{reset: viewResetReplaced}) {
 				return
 			}
 			continue
 		case openedErr == nil && opened.Size() < offset:
-			offset = 0
+			offset, tail = 0, nil
 			if !emit(viewFollowEvent{reset: viewResetTruncated}) {
 				return
 			}
@@ -186,6 +236,45 @@ func followViewFile(ctx context.Context, path string, file *os.File, offset int6
 		case <-ticker.C:
 		}
 	}
+}
+
+// viewTailCheck는 다시 쓰인 파일을 알아채기 위해 offset 앞에서 기억해 두는 바이트 수다.
+const viewTailCheck = 4096
+
+// viewReadTail은 offset 앞의 마지막 viewTailCheck 바이트다. 따라가기를 시작할 때 한 번 읽는다.
+func viewReadTail(file io.ReaderAt, offset int64) []byte {
+	if offset <= 0 {
+		return nil
+	}
+	start := offset - viewTailCheck
+	if start < 0 {
+		start = 0
+	}
+	tail := make([]byte, offset-start)
+	count, err := file.ReadAt(tail, start)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return nil
+	}
+	return tail[:count]
+}
+
+// viewKeepTail은 새로 읽은 data를 붙인 뒤 마지막 viewTailCheck 바이트만 남긴다.
+func viewKeepTail(tail, data []byte) []byte {
+	tail = append(tail, data...)
+	if len(tail) > viewTailCheck {
+		tail = append([]byte(nil), tail[len(tail)-viewTailCheck:]...)
+	}
+	return tail
+}
+
+// viewTailIntact는 offset 앞의 바이트가 기억해 둔 tail과 같은지다. 다르면 같은 inode가 다시 쓰인 것이다.
+func viewTailIntact(file io.ReaderAt, offset int64, tail []byte) bool {
+	check := make([]byte, len(tail))
+	count, err := file.ReadAt(check, offset-int64(len(tail)))
+	if err != nil && !errors.Is(err, io.EOF) {
+		return true
+	}
+	return count == len(tail) && bytes.Equal(check, tail)
 }
 
 // viewSplitLines는 따라가며 받은 바이트를 줄로 나눈다. 줄바꿈으로 끝나지 않은 나머지는 pending으로 돌려주어 다음 바이트와 잇는다.

@@ -1,6 +1,7 @@
 # English messages for the view command.
 view:
   failed: "edc view: %v"
+  truncated_lines: "edc view: %d lines were longer than %s; only their first part was kept"
   reset:
     replaced: "edc view: %s was replaced; following the new file"
     truncated: "edc view: %s was truncated; reading from the start"

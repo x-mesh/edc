@@ -474,9 +474,9 @@ Press Up or PgUp to stop the list. The header then shows `paused` and counts the
 
 The stats panel shows the lines per second, the errors, the status classes or the levels, the last error, and the top paths, clients, and programs. It counts only the lines that the screen keeps, 10,000 by default. If the terminal has 120 columns or more, the panel is on the right. The panel is as wide as its longest row and at most 38 columns, so a log with few stats leaves more room for the lines. If the terminal is narrower, the panel is below the list. Press `i` to hide the panel.
 
-If logrotate moves the file, `edc view` reads the rest of the old file. Then it marks the place and reads the new file from the start. If the file becomes smaller, it reads the file from the start again.
+If logrotate moves the file, `edc view` reads the rest of the old file. Then it marks the place and reads the new file from the start. If the file becomes smaller, or if the bytes it last read are no longer there because the file was rewritten in place, it reads the file from the start again.
 
-If the output is not a terminal, or if `NO_COLOR` is set, `edc view` writes the bytes unchanged, like `cat`. `-n N` writes the last N lines. `-f` follows the file like `tail -F`. If you give `-f` without `-n`, it starts with the last 10 lines.
+If the output is not a terminal, or if `NO_COLOR` is set, `edc view` writes the bytes unchanged, like `cat`. `-n N` writes the last N lines and keeps at most 64 MB of one line; a longer line keeps its first part, and stderr says how many lines were cut. `-f` follows the file like `tail -F`. If you give `-f` without `-n`, it starts with the last 10 lines.
 
 ## Search logs
 

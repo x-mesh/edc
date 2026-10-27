@@ -1,6 +1,7 @@
 # view 명령의 한국어 메시지.
 view:
   failed: "edc view: %v"
+  truncated_lines: "edc view: %d줄이 %s보다 길어 앞부분만 남겼습니다"
   reset:
     replaced: "edc view: %s 파일이 바뀌어 새 파일을 따라갑니다"
     truncated: "edc view: %s 파일이 잘려 처음부터 읽습니다"

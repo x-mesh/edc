@@ -59,11 +59,14 @@ func viewPassthrough(stdout, stderr io.Writer, path string, lines int, follow bo
 			_, err := io.Copy(stdout, os.Stdin)
 			return err
 		}
-		tail, err := viewTailReader(os.Stdin, lines)
+		tail, truncated, err := viewTailReader(os.Stdin, lines)
 		for _, line := range tail {
 			if _, writeErr := stdout.Write(line); writeErr != nil {
 				return writeErr
 			}
+		}
+		if truncated > 0 {
+			fmt.Fprintln(stderr, T("view.truncated_lines", truncated, formatSizeShort(uint64(viewTailLineLimit))))
 		}
 		return err
 	}

@@ -427,11 +427,12 @@ func TestFSWatchFanotifyReportsRootRemovalAndOverflow(t *testing.T) {
 	previous := fsWatchNotice.swap(&notice)
 	defer fsWatchNotice.swap(previous)
 	watch.paths[parent] = watch.options.root
+	watch.options.loss = &fsWatchLoss{}
 	if err := watch.handle(fsWatchFanotifyEvent{mask: unix.FAN_Q_OVERFLOW}); err != nil {
 		t.Fatalf("overflow error = %v", err)
 	}
-	if !strings.Contains(notice.String(), T("watchfs.overflow")) || len(watch.paths) != 0 {
-		t.Fatalf("overflow notice %q, cached paths %v", notice.String(), watch.paths)
+	if overflows, _, _ := watch.options.loss.counts(); !strings.Contains(notice.String(), T("watchfs.overflow")) || len(watch.paths) != 0 || overflows != 1 {
+		t.Fatalf("overflow notice %q, cached paths %v, overflows %d", notice.String(), watch.paths, overflows)
 	}
 	notice.Reset()
 	if err := watch.handle(fsWatchFanotifyEvent{mask: unix.FAN_Q_OVERFLOW}); err != nil || notice.Len() != 0 {

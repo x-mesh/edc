@@ -558,6 +558,7 @@ func (watch *fsWatchFanotify) handle(event fsWatchFanotifyEvent) error {
 	if event.mask&unix.FAN_Q_OVERFLOW != 0 {
 		// 큐가 찼던 동안의 이벤트는 커널이 버렸고 감시는 이어진다. 디렉터리 이름 변경을 놓쳤으면 기억한 경로가 틀리므로 비운다.
 		clear(watch.paths)
+		watch.options.loss.overflow()
 		watch.overflow.notice("watchfs.overflow")
 		return nil
 	}
@@ -617,6 +618,7 @@ func (watch *fsWatchFanotify) resolve(key string) (string, bool) {
 func (watch *fsWatchFanotify) wait(event fsWatchFanotifyEvent) {
 	if watch.waitingCount >= fsWatchFanotifyWaitingLimit {
 		fmt.Fprintln(fsWatchNotice, T("watchfs.fanotify.dropped", watch.waitingCount))
+		watch.options.loss.drop(watch.waitingCount)
 		clear(watch.waiting)
 		clear(watch.stale)
 		watch.waitingCount = 0

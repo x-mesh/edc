@@ -478,7 +478,7 @@ The stats panel shows the lines per second, the errors, the status classes or th
 
 If logrotate moves the file, `edc view` reads the rest of the old file. Then it marks the place and reads the new file from the start. If the file becomes smaller, or if the bytes it last read are no longer there because the file was rewritten in place, it reads the file from the start again.
 
-If the output is not a terminal, or if `NO_COLOR` is set, `edc view` writes the bytes unchanged, like `cat`. `-n N` writes the last N lines and keeps at most 64 MB of one line; a longer line keeps its first part, and stderr says how many lines were cut. `-f` follows the file like `tail -F`. If you give `-f` without `-n`, it starts with the last 10 lines.
+If the output is not a terminal, or if `NO_COLOR` is set, `edc view` writes the bytes unchanged, like `cat`. `-n N` writes the last N lines. When the input is a pipe, it keeps at most 64 MB of one line; a longer line keeps its first part, and stderr says how many lines were cut. `-f` follows the file like `tail -F`. If you give `-f` without `-n`, it starts with the last 10 lines.
 
 ## Search logs
 

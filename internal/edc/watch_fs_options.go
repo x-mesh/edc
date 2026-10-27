@@ -60,6 +60,8 @@ type fsWatchOptions struct {
 	outputPath string
 	outputInfo os.FileInfo
 	status     *fsWatchStatus
+	// loss는 놓친 변경의 수다. 요약에 싣기 위해 드라이버와 큐가 더한다.
+	loss *fsWatchLoss
 	// color는 기록 줄에 색을 쓰는지다. 상태줄과 같이 사람이 보는 터미널에서만 켠다.
 	color bool
 }

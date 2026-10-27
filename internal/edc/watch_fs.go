@@ -47,6 +47,12 @@ type fsWatchRecord struct {
 	Actions         int      `json:"actions,omitempty"`
 	Failed          int      `json:"failed,omitempty"`
 	StopReason      string   `json:"stop_reason,omitempty"`
+	// Incomplete는 감시가 변경을 놓쳤다는 뜻이다. Overflows는 커널 큐가 넘친 횟수, Dropped는 edc가 버린 이벤트 수, Rescans는
+	// macOS가 다시 훑은 횟수다. 요약에만 있다.
+	Incomplete bool `json:"incomplete,omitempty"`
+	Overflows  int  `json:"overflows,omitempty"`
+	Dropped    int  `json:"dropped,omitempty"`
+	Rescans    int  `json:"rescans,omitempty"`
 }
 
 type fsWatchRuleState struct {
@@ -79,13 +85,14 @@ func runFSWatch(args []string) int {
 	if file, ok := writer.(*os.File); ok {
 		options.outputInfo, _ = file.Stat()
 	}
+	options.loss = &fsWatchLoss{}
 	source, err := newFSWatchSource(options)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
 	// 감시 루프가 터미널 출력에 막혀도 드라이버는 계속 읽게 한다. 커널 큐는 몇 초면 넘치고 그동안의 변경을 잃는다.
-	source = fsWatchBuffered(source, fsWatchQueueLimit, fsWatchQueueResume)
+	source = fsWatchBuffered(source, fsWatchQueueLimit, fsWatchQueueResume, options.loss)
 	defer source.close()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -388,6 +395,8 @@ func streamFSWatch(ctx context.Context, writer io.Writer, source fsWatchSource, 
 	if failure != nil {
 		summary.StopReason, summary.Error = "watch_error", failure.Error()
 	}
+	summary.Overflows, summary.Dropped, summary.Rescans = options.loss.counts()
+	summary.Incomplete = summary.Overflows+summary.Dropped+summary.Rescans > 0
 	if err := emit(summary); err != nil {
 		return 2, err
 	}
@@ -500,9 +509,14 @@ func (output *fsWatchActionOutput) text() string {
 func writeFSWatchRecord(writer io.Writer, record fsWatchRecord, jsonOutput bool, style textStyle) error {
 	if jsonOutput {
 		if record.Type == "summary" {
-			summary := map[string]interface{}{"type": record.Type, "time": record.Time, "root": record.Root, "events": record.Events, "actions": record.Actions, "failed": record.Failed, "duration_ms": record.DurationMS, "stop_reason": record.StopReason}
+			summary := map[string]interface{}{"type": record.Type, "time": record.Time, "root": record.Root, "events": record.Events, "actions": record.Actions, "failed": record.Failed, "duration_ms": record.DurationMS, "stop_reason": record.StopReason, "incomplete": record.Incomplete}
 			if record.Error != "" {
 				summary["error"] = record.Error
+			}
+			for key, count := range map[string]int{"overflows": record.Overflows, "dropped": record.Dropped, "rescans": record.Rescans} {
+				if count > 0 {
+					summary[key] = count
+				}
 			}
 			return json.NewEncoder(writer).Encode(summary)
 		}
@@ -565,7 +579,11 @@ func writeFSWatchRecord(writer io.Writer, record fsWatchRecord, jsonOutput bool,
 			return err
 		}
 	case "summary":
-		_, err := fmt.Fprintf(writer, "%s  %s\n", stamp, T("watchfs.summary", record.Events, record.Actions, record.Failed, fsWatchStopLabel(record.StopReason)))
+		line := T("watchfs.summary", record.Events, record.Actions, record.Failed, fsWatchStopLabel(record.StopReason))
+		if record.Incomplete {
+			line += " · " + style.warn(fsWatchIncompleteText(record))
+		}
+		_, err := fmt.Fprintf(writer, "%s  %s\n", stamp, line)
 		return err
 	}
 	return nil
@@ -608,6 +626,20 @@ func fsWatchStopLabel(reason string) string {
 	default:
 		return reason
 	}
+}
+
+// fsWatchIncompleteText는 요약 줄에 붙는 놓친 변경의 설명이다. 0인 항목은 뺀다.
+func fsWatchIncompleteText(record fsWatchRecord) string {
+	var parts []string
+	for _, item := range []struct {
+		key   string
+		count int
+	}{{"watchfs.incomplete_overflows", record.Overflows}, {"watchfs.incomplete_dropped", record.Dropped}, {"watchfs.incomplete_rescans", record.Rescans}} {
+		if item.count > 0 {
+			parts = append(parts, T(item.key, item.count))
+		}
+	}
+	return T("watchfs.incomplete", strings.Join(parts, ", "))
 }
 
 // fsWatchEventRecord는 원본 이벤트를 기록으로 바꾼다. 일으킨 process는 JSON에만 싣는다. 묶지 않은 텍스트 출력은 이전과 같게 둔다.

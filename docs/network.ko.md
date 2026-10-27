@@ -140,7 +140,7 @@ edc watch fs --rules watch.yaml
 
 action의 stdin은 연결하지 않습니다. 기본 timeout은 30s이며 `--debounce`와 `--timeout`은 rule에 값이 없을 때의 기본값입니다. stdout·stderr를 합쳐 최대 64 KiB까지 결과에 표시합니다. 실패나 timeout 뒤에도 감시는 계속하며, 실패한 action이 있으면 감시 종료 코드가 `1`입니다. `Ctrl-C`나 `--duration` 만료 시 실행 중인 action의 process group을 종료하고 대기 중인 action은 실행하지 않습니다. 변경이 없는 정상 감시는 종료 코드 `0`, 옵션·출력 오류는 `2`입니다. 감시 루트 삭제·이름 변경, watcher 오류나 이벤트 overflow는 관측이 불완전하므로 오류로 종료합니다.
 
-`--json`은 `ready`, `event`, `action_start`, `action_result`, `summary`를 JSON Lines로 씁니다. action 출력은 `action_result.output` 안에 있어 JSON stream을 섞지 않습니다. 감시는 로컬 filesystem을 대상으로 하며 저장 방식에 따라 이벤트가 합쳐지거나 여러 번 발생할 수 있습니다. 모든 파일 작업을 기록하는 audit 기능은 아닙니다.
+`--json`은 `ready`, `event`, `action_start`, `action_result`, `summary`를 JSON Lines로 씁니다. `summary`에는 `incomplete`가 있습니다. 감시가 이벤트를 놓쳤으면 `true`이고, 그때 `overflows`(커널 큐가 넘친 횟수), `dropped`(`edc`가 버린 이벤트 수), `rescans`(macOS에서 다시 훑은 디렉터리 수)가 함께 나옵니다. 텍스트 요약 줄도 `불완전:` 뒤에 같은 수를 보입니다. 종료 코드는 바뀌지 않습니다. action 출력은 `action_result.output` 안에 있어 JSON stream을 섞지 않습니다. 감시는 로컬 filesystem을 대상으로 하며 저장 방식에 따라 이벤트가 합쳐지거나 여러 번 발생할 수 있습니다. 모든 파일 작업을 기록하는 audit 기능은 아닙니다.
 
 ### 경로와 interface
 

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -28,6 +29,42 @@ const (
 
 // fsWatchExcludeEntries는 제외 여부를 기억할 상위 디렉터리 수다. 이름이 매번 다른 디렉터리가 쌓이면 비운다.
 const fsWatchExcludeEntries = 4096
+
+// fsWatchLoss는 감시가 놓친 변경의 수다. 드라이버와 큐 goroutine이 더하고 감시 루프가 요약에 싣는다. nil이면 세지 않는다.
+type fsWatchLoss struct {
+	// overflows는 커널 큐가 넘친 횟수다. 커널은 그때 몇 건을 버렸는지 알려 주지 않는다.
+	overflows atomic.Int64
+	// dropped는 edc가 버린 이벤트 수다. 사용자 큐가 찼을 때와 fanotify가 경로를 찾지 못한 이벤트를 더한다.
+	dropped atomic.Int64
+	// rescans는 macOS가 이벤트를 버려 디렉터리를 다시 훑은 횟수다.
+	rescans atomic.Int64
+}
+
+func (loss *fsWatchLoss) overflow() {
+	if loss != nil {
+		loss.overflows.Add(1)
+	}
+}
+
+func (loss *fsWatchLoss) drop(count int) {
+	if loss != nil {
+		loss.dropped.Add(int64(count))
+	}
+}
+
+func (loss *fsWatchLoss) rescan() {
+	if loss != nil {
+		loss.rescans.Add(1)
+	}
+}
+
+// counts는 지금까지의 수다. nil이면 모두 0이다.
+func (loss *fsWatchLoss) counts() (overflows, dropped, rescans int) {
+	if loss == nil {
+		return 0, 0, 0
+	}
+	return int(loss.overflows.Load()), int(loss.dropped.Load()), int(loss.rescans.Load())
+}
 
 // fsWatchDropNoticeInterval은 이벤트 유실 안내 사이의 최소 간격이다. 커널은 큐가 찼다가 비는 한 번마다 overflow를
 // 하나 보내므로, 초당 수만 건이 흐르면 안내도 초당 여러 번 나온다.

@@ -56,7 +56,8 @@ func TestFSWatchBufferedQueueDropsWhenFullAndResumesAfterDraining(t *testing.T) 
 	var closeOnce sync.Once
 	failures := make(chan error, 1)
 	inner := fsWatchSource{events: in, errors: failures, driver: "test", driverReason: "reason", close: func() { closeOnce.Do(func() { close(in) }) }}
-	source := fsWatchBuffered(inner, 4, 2)
+	var loss fsWatchLoss
+	source := fsWatchBuffered(inner, 4, 2, &loss)
 	defer source.close()
 	if source.driver != "test" || source.driverReason != "reason" || source.errors != failures {
 		t.Fatalf("source = %+v", source)
@@ -78,6 +79,9 @@ func TestFSWatchBufferedQueueDropsWhenFullAndResumesAfterDraining(t *testing.T) 
 		}
 	}
 	notice.wait(t, T("watchfs.queue_dropped", 3))
+	if _, dropped, _ := loss.counts(); dropped != 3 {
+		t.Fatalf("dropped = %d, want 3", dropped)
+	}
 	// 다시 받기 시작한 뒤의 이벤트는 그대로 지나간다.
 	in <- fsWatchEvent{Event: "create", Path: "after"}
 	if event, ok := fsWatchTestReceive(t, source.events); !ok || event.Path != "after" {
@@ -99,7 +103,7 @@ func TestFSWatchBufferedQueueReportsTheDropCountWhenClosedWhileDropping(t *testi
 	defer fsWatchNotice.swap(previous)
 	in := make(chan fsWatchEvent)
 	inner := fsWatchSource{events: in, errors: make(chan error, 1), close: func() {}}
-	source := fsWatchBuffered(inner, 2, 1)
+	source := fsWatchBuffered(inner, 2, 1, nil)
 	for index := 0; index < fsWatchQueueHandoff+2+5; index++ {
 		in <- fsWatchEvent{Event: "modify", Path: fmt.Sprint(index)}
 	}
@@ -115,7 +119,7 @@ func TestFSWatchBufferedQueueDrainsWhenTheSourceCloses(t *testing.T) {
 	defer fsWatchNotice.swap(previous)
 	in := make(chan fsWatchEvent)
 	inner := fsWatchSource{events: in, errors: make(chan error, 1), close: func() {}}
-	source := fsWatchBuffered(inner, 2, 1)
+	source := fsWatchBuffered(inner, 2, 1, nil)
 	defer source.close()
 	for index := 0; index < fsWatchQueueHandoff+2; index++ {
 		in <- fsWatchEvent{Event: "modify", Path: fmt.Sprint(index)}

@@ -302,3 +302,48 @@ The log settings also accept defaults under `[defaults.log]`. Explicit CLI optio
 
 SIGKILL of the wrapper cannot produce an end record. Descendants outside the child's process group are outside its termination scope.
 
+
+## Search code and file paths
+
+In a terminal, `edc grep ValidateToken` searches code in the current directory with path and line number. Use `edc grep -f auth` (or `--files`) to find file paths containing `auth`; `--code` explicitly selects code search. Both default to the current directory, honor `.gitignore` in the repository and nested directories, and skip hidden entries and `.git`. Pass `--hidden` to include hidden entries and `--no-ignore` to bypass `.gitignore`; `.git` is still skipped. Explicit file paths are searched directly.
+
+`-i` ignores case and `-E` uses a regular expression. `--files` matches paths relative to each search root; `-l` with `--code` lists files whose contents match. Code search reads current files without the log index. Exit codes are 0 for matches, 1 for none, and 2 for errors.
+
+With piped or redirected stdin, a bare pattern reads stdin; an explicit path retains the existing log search. Log-specific flags also retain log search behavior.
+
+### Rank code by keywords
+
+`edc grep --ask --keyword 'remote inventory config'` ranks local code chunks using the words in the query. This is keyword ranking, not semantic search or answer generation: queries that use different words from the code, including Korean queries against English identifiers, can miss relevant results. Go declarations are split into chunks of at most 32 lines; other text uses 32-line chunks. The result prints the path, chunk line range, and up to three relevant lines.
+
+The search respects the same `.gitignore`, hidden-file, and explicit-path rules as `--code`. It performs no network requests and creates no index or cache. `--limit N` selects up to 100 results (default 10), and `--json` emits an object with `method`, `results` (including scores), and `skipped_files`. Binary files, invalid UTF-8, and files over 2 MiB are skipped. At 32 MiB of input or 50,000 chunks it stops, reports incomplete results on stderr, and returns exit code 2. A query with no keyword matches returns 1.
+
+To run the repository retrieval evaluation: `EDC_EVAL_GREP=1 go test ./internal/edc -run '^TestGrepAskEvaluation$' -count=1 -v`. The query set is in `internal/edc/testdata/grep-ask/queries.json`.
+
+For an offline development benchmark only (not edc runtime), install `sentence-transformers` and cache the selected model in advance, then run:
+
+```sh
+EDC_EVAL_GREP=1 EDC_EVAL_DUMP=/tmp/edc-grep-corpus.json EDC_EVAL_SCORES=/tmp/edc-grep-scores.json go test ./internal/edc -run '^TestGrepAskEvaluation$' -count=1 -v
+python3 scripts/eval-grep-embedding.py /tmp/edc-grep-corpus.json internal/edc/testdata/grep-ask/queries.json --keyword-scores /tmp/edc-grep-scores.json
+```
+
+The export contains local source text; remove it when finished. The evaluation script uses only cached models. `--ask` accepts at most 32 query words.
+
+### Local semantic search
+
+The pinned sources are [the MiniLM model](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/tree/c9745ed1d9f207416be6d2e6f8de32d1f16199bf) and [ONNX Runtime 1.23.2](https://github.com/microsoft/onnxruntime/releases/tag/v1.23.2). Runtime license notices are retained in the model cache.
+
+Semantic search uses the English `all-MiniLM-L6-v2` model and a native ONNX Runtime. Python is not needed for edc. The first initialization shows the download size and destination, then asks before downloading the pinned model and runtime from Hugging Face and Microsoft. The download is approximately 94–128 MiB depending on the platform; extracted files and the index need additional disk space. edc verifies the pinned SHA-256 values before installing anything.
+
+```sh
+edc grep --semantic-init
+edc grep --ask 'where is the auth configuration loaded?'
+edc grep --semantic-status
+edc grep --semantic-clear
+edc grep --model-clear
+```
+
+`--semantic-init --yes` explicitly permits downloading without a terminal prompt. The model and runtime are shared in the user cache; a project index is created only by initialization. Another project reuses the model but needs its own index. `--semantic-clear` removes only the current project index. `--model-clear` removes the shared model and runtime, leaving indexes intact; a small lock file may remain. `--semantic-status` reports the model and stored index, not whether source files have changed.
+
+Search is offline. It checks files and re-embeds changed chunks before returning results; when no file has changed, the index is not rewritten. Files that change during embedding cause an error instead of publishing stale results. `--semantic-init` rebuilds the current project's index, including indexes made by the earlier multilingual model. Failed or interrupted downloads never become a usable model. Use English queries: an agent can translate a user question before invoking edc. The English model may miss Korean-only comments or documents.
+
+Scores combine cosine similarity (95%) and normalized keyword relevance (5%); they are not probabilities. Each embedding uses at most 3,000 characters and 128 model tokens per chunk. File-size and search limits are shared with keyword search. The model and native runtime support Linux and macOS on amd64 and arm64. The official Linux runtime requires glibc and libstdc++; a musl-only environment such as Alpine is not supported by this runtime without compatible libraries.

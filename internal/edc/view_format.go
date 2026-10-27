@@ -3,6 +3,7 @@ package edc
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"sort"
 	"strconv"
 	"strings"
@@ -238,9 +239,16 @@ func viewParseAccess(text string, line *viewLine) bool {
 	}
 	method, target, _ := strings.Cut(request, " ")
 	path, protocol, _ := strings.Cut(target, " ")
+	host, client, forwarded := viewAccessPrefix(client, text[:len(client)+1+open])
 	line.client, line.time, line.status, line.method, line.path = client, timeText, status, method, path
 	bytesText, rest, _ := strings.Cut(rest, " ")
 	line.fields = []viewField{{"client", client}, {"time", timeText}, {"method", method}, {"path", path}, {"protocol", protocol}, {"status", statusText}, {"bytes", bytesText}}
+	if forwarded != "" {
+		line.fields = append([]viewField{{"forwarded for", forwarded}}, line.fields...)
+	}
+	if host != "" {
+		line.fields = append([]viewField{{"host", host}}, line.fields...)
+	}
 	// 요청을 따옴표 없이 적는 변형은 referrer 없이 user agent만 따옴표로 적는다.
 	names := []string{"referrer", "user agent"}
 	if !quotedRequest {
@@ -270,6 +278,31 @@ func viewParseAccess(text string, line *viewLine) bool {
 		}
 	}
 	return true
+}
+
+// viewAccessPrefix는 시각 앞의 낱말에서 host, client, 그 뒤의 IP를 가른다. common 형식은 "client ident user"다.
+// $host를 맨 앞에 두는 log_format은 첫 낱말이 IP가 아니고 둘째가 IP이므로, 첫 낱말을 host로 보고 둘째를 client로 읽는다.
+// ident와 user 앞에 남는 IP(X-Forwarded-For 등)는 forwarded로 돌려준다.
+func viewAccessPrefix(first, prefix string) (string, string, string) {
+	tokens := strings.Fields(prefix)
+	if len(tokens) < 4 {
+		return "", first, ""
+	}
+	host := ""
+	if !viewIPToken(tokens[0]) && viewIPToken(tokens[1]) {
+		host, tokens = tokens[0], tokens[1:]
+	}
+	var forwarded []string
+	for _, token := range tokens[1 : len(tokens)-2] {
+		if viewIPToken(token) {
+			forwarded = append(forwarded, strings.TrimRight(token, ","))
+		}
+	}
+	return host, tokens[0], strings.Join(forwarded, ", ")
+}
+
+func viewIPToken(token string) bool {
+	return net.ParseIP(strings.Trim(token, "[],")) != nil
 }
 
 // viewBareRequest는 따옴표 없는 "POST /api/v3 HTTP/1.1"이다. method는 대문자 낱말이고 세 번째 token은 HTTP/로 시작해야 한다.

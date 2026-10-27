@@ -355,6 +355,20 @@ var commandDocs = []commandDoc{
 		name: "grep", group: "observe",
 		usage: []string{"edc grep [options] <pattern> [path...]", "edc grep --level|--status|--since|--until ... [path...]", "<command> | edc grep [options] <pattern>"},
 		options: []optionDoc{
+			{"--ask", "command.grep.option.ask"},
+			{"--keyword", "command.grep.option.ask_keyword"},
+			{"--semantic", "command.grep.option.semantic"},
+			{"--semantic-init [dir]", "command.grep.option.semantic_init"},
+			{"--semantic-status [dir]", "command.grep.option.semantic_status"},
+			{"--semantic-clear [dir]", "command.grep.option.semantic_clear"},
+			{"--model-clear", "command.grep.option.model_clear"},
+			{"--yes", "command.grep.option.semantic_yes"},
+			{"--json", "command.grep.option.ask_json"},
+			{"--limit N", "command.grep.option.ask_limit"},
+			{"--code", "command.grep.option.code"},
+			{"-f, --files", "command.grep.option.paths"},
+			{"--hidden", "command.grep.option.hidden"},
+			{"--no-ignore", "command.grep.option.no_ignore"},
 			{"-i", "command.grep.option.ignore_case"},
 			{"-E", "command.grep.option.regex"},
 			{"-n", "command.grep.option.numbers"},
@@ -370,7 +384,7 @@ var commandDocs = []commandDoc{
 			{"--verify-index", "command.grep.option.verify"},
 			{"--last N", "command.grep.option.last"},
 		},
-		examples: []string{"edc grep timeout /var/log/app/", "edc grep --since 10m --ordered --status 5xx /var/log/nginx/access.log", "edc grep --level error --last 20 app.log", "edc grep -n -C 2 'order=41' app.log*", "kubectl logs deploy/api | edc grep -i refund"},
+		examples: []string{"edc grep -f auth", "edc grep ValidateToken", "edc grep --semantic-init", "edc grep --ask 'config loader'", "edc grep --ask --keyword 'config loader'", "edc grep timeout /var/log/app/", "edc grep --since 10m --ordered --status 5xx /var/log/nginx/access.log", "edc grep --level error --last 20 app.log", "edc grep -n -C 2 'order=41' app.log*", "kubectl logs deploy/api | edc grep -i refund"},
 	},
 	{
 		name: "du", group: "observe",
@@ -630,24 +644,10 @@ var commandDocs = []commandDoc{
 		},
 	},
 	{
-		name: "alias", group: "tool",
-		usage: []string{"edc alias [zsh|bash] [--plain]"},
-		subcommands: []subcommandDoc{
-			{"zsh", "edc alias zsh"},
-			{"bash", "edc alias bash"},
-		},
-		options: []optionDoc{
-			{"--plain", "command.alias.option.plain"},
-		},
-	},
-	{
-		name: "completion", group: "tool",
-		usage: []string{"edc completion <zsh|bash|groups>"},
-		subcommands: []subcommandDoc{
-			{"zsh", "edc completion zsh"},
-			{"bash", "edc completion bash"},
-			{"groups", "edc completion groups"},
-		},
+		name: "shell", group: "tool",
+		usage:    []string{"edc shell [zsh|bash] [--no-alias]"},
+		options:  []optionDoc{{"--no-alias", "command.shell.option.no_alias"}},
+		examples: []string{"source <(edc shell)", "source <(edc shell zsh)", "source <(edc shell bash)"},
 	},
 	{
 		name: "setup", group: "tool",
@@ -672,8 +672,36 @@ var commandDocs = []commandDoc{
 	},
 }
 
+var legacyCommandDocs = []commandDoc{
+	{
+		name: "alias", group: "tool",
+		usage: []string{"edc alias [zsh|bash] [--plain]"},
+		subcommands: []subcommandDoc{
+			{"zsh", "edc alias zsh"},
+			{"bash", "edc alias bash"},
+		},
+		options: []optionDoc{
+			{"--plain", "command.alias.option.plain"},
+		},
+	},
+	{
+		name: "completion", group: "tool",
+		usage: []string{"edc completion <zsh|bash|groups>"},
+		subcommands: []subcommandDoc{
+			{"zsh", "edc completion zsh"},
+			{"bash", "edc completion bash"},
+			{"groups", "edc completion groups"},
+		},
+	},
+}
+
 func findCommandDoc(name string) (commandDoc, bool) {
 	for _, doc := range commandDocs {
+		if doc.name == name {
+			return doc, true
+		}
+	}
+	for _, doc := range legacyCommandDocs {
 		if doc.name == name {
 			return doc, true
 		}

@@ -29,6 +29,10 @@ func viewPress(model viewScreenModel, keys ...string) viewScreenModel {
 			msg = tea.KeyPressMsg{Code: tea.KeyEnter}
 		case "esc":
 			msg = tea.KeyPressMsg{Code: tea.KeyEscape}
+		case "left":
+			msg = tea.KeyPressMsg{Code: tea.KeyLeft}
+		case "right":
+			msg = tea.KeyPressMsg{Code: tea.KeyRight}
 		default:
 			msg = tea.KeyPressMsg{Code: rune(key[0]), Text: key}
 		}
@@ -247,5 +251,63 @@ func TestViewScreenPanelWidthFitsTheContent(t *testing.T) {
 	joined = strings.Join(goloop.screen(false), "\n")
 	if !strings.Contains(joined, "TOP PROGRAMS") || !strings.Contains(joined, "CS") || goloop.stats.levels["debug"] != 5 || goloop.stats.levels["fatal"] != 1 || goloop.stats.failures != 2 {
 		t.Fatalf("goloop panel levels %v failures %d:\n%s", goloop.stats.levels, goloop.stats.failures, joined)
+	}
+}
+
+func viewHostLines(clients ...string) []string {
+	var raw []string
+	for index, client := range clients {
+		raw = append(raw, fmt.Sprintf(`int.example.com %s %s - - [27/Oct/2026:16:43:%02d +0900] "GET /board/%d HTTP/1.1" 200 %d "-" "curl"`, client, client, index, index, 100+index))
+	}
+	return raw
+}
+
+// 보관한 줄에서 값이 모두 같은 열은 compact 보기에서 숨기고, 머리 줄이 무엇을 숨겼는지 알린다.
+func TestViewScreenCompactHidesConstantColumns(t *testing.T) {
+	model := newViewScreenModel("access.log", viewKeepLines)
+	model.width, model.height = 100, 12
+	model.ingest(viewHostLines("203.0.113.9", "203.0.113.9", "203.0.113.9"), time.Now(), false)
+	screen := strings.Join(model.screen(false), "\n")
+	if strings.Contains(screen, "int.example.com 203") || !strings.Contains(screen, "16:43:02  200  GET     102  /board/2") {
+		t.Fatalf("compact rows:\n%s", screen)
+	}
+	wide := model
+	wide.width = 200
+	if header := strings.Join(wide.header(false), "\n"); !strings.Contains(header, "hidden: host int.example.com · client 203.0.113.9 · date 27/Oct/2026") {
+		t.Fatalf("header must name the hidden columns:\n%s", header)
+	}
+	// client가 여럿이면 그 열은 보인다.
+	model.ingest(viewHostLines("198.51.100.4"), time.Now(), false)
+	screen = strings.Join(model.screen(false), "\n")
+	if !strings.Contains(screen, "198.51.100.4  16:43:00") || !strings.Contains(screen, "203.0.113.9   16:43:02") {
+		t.Fatalf("varying client must show:\n%s", screen)
+	}
+	// c를 누르면 원문으로 돌아간다.
+	model = viewPress(model, "c")
+	if screen = strings.Join(model.screen(false), "\n"); !strings.Contains(screen, "int.example.com 203.0.113.9 203.0.113.9 - -") {
+		t.Fatalf("c must show the raw lines:\n%s", screen)
+	}
+	model.width = 200
+	if strings.Contains(strings.Join(model.header(false), "\n"), "hidden:") {
+		t.Fatal("the raw view hides nothing")
+	}
+}
+
+// ←/→는 목록을 가로로 민다. 잘린 오른쪽을 볼 수 있다.
+func TestViewScreenScrollsSideways(t *testing.T) {
+	model := newViewScreenModel("app", viewKeepLines)
+	model.width, model.height = 40, 8
+	model.ingest([]string{"0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJ"}, time.Now(), false)
+	if screen := strings.Join(model.screen(false), "\n"); !strings.Contains(screen, "0123456789abc") {
+		t.Fatalf("start:\n%s", screen)
+	}
+	model = viewPress(model, "right")
+	screen := strings.Join(model.screen(false), "\n")
+	if strings.Contains(screen, "0123456789") || !strings.Contains(screen, "abcdefghij") {
+		t.Fatalf("after right:\n%s", screen)
+	}
+	model = viewPress(model, "left", "left")
+	if model.scroll != 0 {
+		t.Fatalf("scroll %d", model.scroll)
 	}
 }

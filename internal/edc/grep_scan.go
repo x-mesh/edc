@@ -343,7 +343,8 @@ type grepLine struct {
 }
 
 // scanLast는 파일 끝에서 블록 단위로 거꾸로 읽어 가장 최근의 맞는 줄 count개를 찾는다. 결과는 파일 순서다.
-// 블록은 index와 같은 경계에 맞춰, 뒤 블록을 다 본 뒤에야 앞 블록으로 간다.
+// 블록은 index와 같은 경계에 맞춰, 뒤 블록을 다 본 뒤에야 앞 블록으로 간다. 앞 블록에서 읽기 오류가 나면 그때까지 찾은
+// 뒤쪽 줄을 오류와 함께 돌려준다.
 func (scanner grepScanner) scanLast(file io.ReaderAt, size int64, count int) ([]grepLine, int64, error) {
 	var found []grepLine
 	var read int64
@@ -352,7 +353,7 @@ func (scanner grepScanner) scanLast(file io.ReaderAt, size int64, count int) ([]
 		start := (end - 1) / int64(scanner.block) * int64(scanner.block)
 		if scanner.prepare != nil {
 			if err := scanner.prepare(file, start); err != nil {
-				return nil, read, err
+				return found, read, err
 			}
 		}
 		var block []grepLine
@@ -362,7 +363,7 @@ func (scanner grepScanner) scanLast(file io.ReaderAt, size int64, count int) ([]
 		})
 		read += n
 		if err != nil {
-			return nil, read, err
+			return found, read, err
 		}
 		if need := count - len(found); len(block) > need {
 			block = block[len(block)-need:]

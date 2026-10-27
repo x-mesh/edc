@@ -1,6 +1,7 @@
 package edc
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"os"
@@ -606,5 +607,37 @@ func TestParseViewAccessLineWithBareRequestAndBody(t *testing.T) {
 		if viewParseAccess(text, &line) {
 			t.Fatalf("%q parsed as access: %+v", text, line)
 		}
+	}
+}
+
+// $host를 앞에 두고 IP를 둘 남기는 nginx log_format이다. 첫 낱말은 client가 아니라 host다.
+func TestParseViewAccessLineWithHostPrefix(t *testing.T) {
+	text := `int.example.com 203.0.113.9 198.51.100.4 - - [27/Oct/2026:16:43:23 +0900] "GET /board/draft HTTP/1.1" 200 512 "-" "curl/8.4.0"`
+	line := parseViewLine(text, viewFormatAccess, nil)
+	if line.client != "203.0.113.9" || line.status != 200 || line.path != "/board/draft" {
+		t.Fatalf("fields: %+v", line)
+	}
+	if !viewHasField(line.fields, "host", "int.example.com") || !viewHasField(line.fields, "forwarded for", "198.51.100.4") {
+		t.Fatalf("host and forwarded fields: %+v", line.fields)
+	}
+	if detectViewFormat([]string{text, text}) != viewFormatAccess {
+		t.Fatal("the host prefix must still read as access")
+	}
+	// 흔한 common, combined 형식은 그대로 첫 낱말이 client다.
+	plain := parseViewLine(`203.0.113.9 - alice [27/Oct/2026:16:43:23 +0900] "GET / HTTP/1.1" 200 1 "-" "x"`, viewFormatAccess, nil)
+	if plain.client != "203.0.113.9" || viewHasField(plain.fields, "host", "203.0.113.9") {
+		t.Fatalf("common line: %+v", plain)
+	}
+}
+
+// 잘린 줄의 나머지가 버퍼 경계에서 끝나 줄바꿈이 따로 오면, 그 줄바꿈과 잘린 줄의 줄바꿈이 겹치면 안 된다.
+func TestViewReadLineAddsOneNewlineToACutLine(t *testing.T) {
+	reader := bufio.NewReaderSize(strings.NewReader(strings.Repeat("x", 32)+"\nnext\n"), 16)
+	line, cut, err := viewReadLine(reader, 16)
+	if err != nil || !cut || string(line) != strings.Repeat("x", 16)+"\n" {
+		t.Fatalf("cut line %q cut %v err %v", line, cut, err)
+	}
+	if line, cut, err = viewReadLine(reader, 16); err != nil || cut || string(line) != "next\n" {
+		t.Fatalf("next line %q cut %v err %v", line, cut, err)
 	}
 }

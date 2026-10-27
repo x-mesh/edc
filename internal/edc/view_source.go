@@ -124,8 +124,8 @@ func viewReadLine(reader *bufio.Reader, limit int) ([]byte, bool, error) {
 		if errors.Is(err, bufio.ErrBufferFull) {
 			continue
 		}
-		if cut && err == nil {
-			// 잘린 줄도 줄바꿈으로 끝나야 다음 줄과 붙지 않는다.
+		if cut && err == nil && line[len(line)-1] != '\n' {
+			// 잘린 줄도 줄바꿈으로 끝나야 다음 줄과 붙지 않는다. 나머지가 버퍼 경계에서 끝나 줄바꿈만 따로 오면 이미 붙어 있다.
 			line = append(line, '\n')
 		}
 		return line, cut, err

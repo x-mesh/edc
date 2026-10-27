@@ -470,13 +470,15 @@ The syslog format reads `auth.log`, `syslog`, and the output of `journalctl`. Th
 
 The goloop format is the log of an ICON goloop node: the level letter (`P`, `F`, `E`, `W`, `I`, `D`, or `T`), the time, the wallet, the chain id, and the module, with `|` between them, then the source location and the message. The module fills the top programs. A line that does not start with a level letter, such as a stack trace after a panic, belongs to the line above it.
 
-Press Up or PgUp to stop the list. The header then shows `paused` and counts the new lines. Press End, `l`, or Esc to follow again. Press `/` to filter the lines by text. Press Enter to show the fields of a line, the whole line, and the stack trace lines below it.
+Press Up or PgUp to stop the list. The header then shows `paused` and counts the new lines. Press End, `l`, or Esc to follow again. In an access log, the list shows the time, status, method, bytes, and path. A host, client, or date that is the same on every kept line is hidden, and the header names it, for example `hidden: host int.example.com · client 203.0.113.9`. Press `c` to show the raw lines. Press Left or Right to scroll the list sideways.
+
+Press `/` to filter the lines by text. Press Enter to show the fields of a line, the whole line, and the stack trace lines below it.
 
 The stats panel shows the lines per second, the errors, the status classes or the levels, the last error, and the top paths, clients, and programs. It counts only the lines that the screen keeps, 10,000 by default. If the terminal has 120 columns or more, the panel is on the right. The panel is as wide as its longest row and at most 38 columns, so a log with few stats leaves more room for the lines. If the terminal is narrower, the panel is below the list. Press `i` to hide the panel.
 
 If logrotate moves the file, `edc view` reads the rest of the old file. Then it marks the place and reads the new file from the start. If the file becomes smaller, or if the bytes it last read are no longer there because the file was rewritten in place, it reads the file from the start again.
 
-If the output is not a terminal, or if `NO_COLOR` is set, `edc view` writes the bytes unchanged, like `cat`. `-n N` writes the last N lines and keeps at most 64 MB of one line; a longer line keeps its first part, and stderr says how many lines were cut. `-f` follows the file like `tail -F`. If you give `-f` without `-n`, it starts with the last 10 lines.
+If the output is not a terminal, or if `NO_COLOR` is set, `edc view` writes the bytes unchanged, like `cat`. `-n N` writes the last N lines. When the input is a pipe, it keeps at most 64 MB of one line; a longer line keeps its first part, and stderr says how many lines were cut. `-f` follows the file like `tail -F`. If you give `-f` without `-n`, it starts with the last 10 lines.
 
 ## Search logs
 

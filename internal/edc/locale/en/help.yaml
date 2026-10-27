@@ -199,6 +199,7 @@ command:
     notes:
       - "In a terminal, it opens a screen at the end of the file and follows new lines."
       - "Up or PgUp stops the list, and the header counts the new lines. End, l, or Esc follows again."
+      - "In an access log, the list shows time, status, method, bytes, and path. A host, client, or date that is the same on every kept line is hidden and named in the header. c shows the raw lines, and ← → scroll the list sideways."
       - "It reads nginx and Apache access logs, JSON lines, and lines with a level such as ERROR or WARN."
       - "The stats panel counts status classes or levels, top paths and clients, and the last error."
       - "The stats count only the lines that the screen keeps. i hides the panel."
@@ -208,8 +209,22 @@ command:
       - "In a pipe or with NO_COLOR, it writes the bytes unchanged, like cat. -f follows like tail -F."
       - "edc alias prints short aliases such as ev, evn, and evf."
   grep:
-    summary: "Search logs; skip by time, read the newest first, and reuse an index"
+    summary: "Search logs, code, and file paths"
     option:
+      model_clear: "remove the shared model and runtime"
+      semantic_yes: "confirm the model download without a prompt"
+      ask_keyword: "use keyword ranking with --ask without a model"
+      semantic_init: "build or rebuild the local semantic index"
+      semantic_status: "show semantic index metadata"
+      semantic_clear: "remove the semantic index"
+      semantic: "use an initialized local embedding index with --ask"
+      ask: "search code by meaning with a local embedding index"
+      ask_json: "emit JSON for --ask"
+      ask_limit: "maximum --ask results (default 10, max 100)"
+      code: "search code contents with .gitignore rules"
+      paths: "search file paths instead of file contents"
+      hidden: "include hidden files in code or path searches"
+      no_ignore: "do not apply .gitignore rules"
       ignore_case: "ignore case"
       regex: "the pattern is a regular expression (default: plain text)"
       numbers: "show line numbers"
@@ -225,6 +240,12 @@ command:
       verify: "compare the index result with a whole read and remove a wrong index"
       last: "the newest N matches, read from the end of the file"
     notes:
+      - "Semantic search runs locally. --semantic-init downloads the English MiniLM model and runtime with your confirmation."
+      - "The index is stored in the user cache, not the project. Files that change are re-embedded on the next semantic query."
+      - "--ask --keyword uses local keyword ranking; it does not understand meaning or generate answers. Both modes skip binary, invalid UTF-8 and files larger than 2 MiB."
+      - "With a terminal and one pattern, grep searches code in the current directory. Pipes read stdin; an explicit path keeps log search behavior."
+      - "Code and path searches default to the current directory and skip hidden files and .git; --hidden includes hidden files, --no-ignore ignores .gitignore."
+      - "Code search reads current files without a log index and prints line numbers."
       - "A directory is searched recursively. Binary files are skipped, and .gz files are read in order."
       - "The output matches grep: the path appears with several files, the line number with -n, and -C adds context lines."
       - "--since and --until filter lines by their timestamps. With --ordered, --since bisects a file in time order and skips files that end before the time, so a recent window reads a few MB of a multi-GB log."
@@ -635,6 +656,21 @@ command:
       - "Ports bind to 127.0.0.1. auto picks a free port."
       - "reach is ok if the destination keeps the connection open, and refused if it closes at once. Reverse tunnels show -."
       - "test checks the local port, the SSH login, and the destination as the host sees it. For a reverse tunnel, it checks the remote port and the local target. It starts no tunnel."
+  shell:
+    summary: "Print shell completion and short aliases"
+    option:
+      no_alias: "print completion only, without aliases"
+    notes:
+      - "Without a shell name, edc uses $SHELL. Supports zsh and bash."
+      - "Run source <(edc shell) to apply to the current shell."
+      - "For future zsh sessions, add source <(edc shell zsh) at the end of ~/.zshrc."
+      - "For future bash sessions, add source <(edc shell bash) at the end of ~/.bashrc."
+      - "edc prints a script and does not edit startup files. Remove the line to disable it for future sessions."
+      - "Existing aliases, functions, and commands are preserved."
+    unsupported_shell: "edc shell: %s is not supported; use zsh or bash."
+    current_session: "Current session: %s"
+    startup: "For future sessions, add this line at the end of %s:"
+    read_only: "Prints a script only; startup files are not edited."
   alias:
     summary: "Print short aliases for the shell"
     sub:

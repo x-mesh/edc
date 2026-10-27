@@ -199,6 +199,7 @@ command:
     notes:
       - "端末ではファイル末尾で画面を開き、新しい行を追従します。"
       - "↑ や PgUp で一覧が止まり、見出し行に新しい行数を数えます。End、l、Esc で再び追従します。"
+      - "access log では一覧に時刻、status、method、bytes、path を表示します。保持した行ですべて同じ host、client、日付は隠し、見出し行にその値を示します。c は元の行を表示し、← → で一覧を横にずらします。"
       - "nginx と Apache の access log、JSON lines、ERROR や WARN などの level がある行を読みます。"
       - "統計パネルは status 区分や level 別の数、上位の path と client、最後のエラーを表示します。"
       - "統計は画面が保持する行だけを数えます。i でパネルを隠します。"
@@ -208,8 +209,22 @@ command:
       - "pipe や NO_COLOR では cat のようにバイトをそのまま出力します。-f は tail -F のように追従します。"
       - "edc alias は ev、evn、evf のような短い alias を出力します。"
   grep:
-    summary: "ログを検索し、時刻で読み飛ばし、新しい順に読み、index を再利用"
+    summary: "ログ、コード、ファイルパスを検索"
     option:
+      model_clear: "共有モデルと runtime を削除"
+      semantic_yes: "モデルのダウンロード確認を省略"
+      ask_keyword: "--ask をモデルなしのキーワード順位付けで実行"
+      semantic_init: "ローカル semantic index の作成・再作成"
+      semantic_status: "semantic index の情報を表示"
+      semantic_clear: "semantic index を削除"
+      semantic: "--ask で初期化済みのローカル embedding index を使用"
+      ask: "ローカル embedding index で関連コードを検索"
+      ask_json: "--ask の結果を JSON で出力"
+      ask_limit: "--ask の最大件数 (既定 10、最大 100)"
+      code: ".gitignore を適用してコードの内容を検索"
+      paths: "内容ではなくファイルのパスを検索"
+      hidden: "コード・パス検索に隠しファイルを含める"
+      no_ignore: ".gitignore の規則を適用しない"
       ignore_case: "大文字小文字を無視"
       regex: "パターンを正規表現として解釈 (既定: そのままの文字列)"
       numbers: "行番号を表示"
@@ -225,6 +240,12 @@ command:
       verify: "index の結果を全体読みと比較し、誤った index を削除"
       last: "最新の N 件、ファイル末尾から読む"
     notes:
+      - "semantic 検索はローカルで実行します。--semantic-init は確認後に英語 MiniLM モデルと runtime をダウンロードします。"
+      - "index はプロジェクト外のユーザー cache に保存します。変更したファイルは次の semantic 検索時に再ベクトル化します。"
+      - "--ask --keyword はローカルのキーワード順位付けで、意味の理解や回答の生成はしません。両モードとも binary、不正な UTF-8、2 MiB 超のファイルを除外します。"
+      - "端末でパターンだけを指定すると現在のディレクトリのコードを検索します。パイプは stdin を読み、パス指定時は従来のログ検索を使います。"
+      - "コード・パス検索は現在のディレクトリから隠しファイルと .git を除いて探します。--hidden と --no-ignore で対象を広げます。"
+      - "コード検索はログ index を使わず現在のファイルを読み、行番号を出力します。"
       - "ディレクトリは中のファイルをすべて探します。binary ファイルは飛ばし、.gz は展開しながら順に読みます。"
       - "出力は grep と同じです。ファイルが複数なら path を、-n なら行番号を付け、-C は前後の行を加えます。"
       - "--since と --until は時刻で行を絞ります。--ordered を付けると --since は時刻順のファイルを二分探索し、その時刻より前で終わるファイルを飛ばすため、数 GB のログでも最近の範囲なら数 MB しか読みません。"
@@ -635,6 +656,21 @@ command:
       - "ポートは 127.0.0.1 にバインドします。auto は空いているポートを選びます。"
       - "到達は、宛先が接続を維持すれば ok、すぐに切断すれば refused です。リバーストンネルは - を表示します。"
       - "test はローカルポート、SSH ログイン、ホストから見た宛先を確認します。リバーストンネルではリモートポートとローカル対象を確認します。トンネルは開始しません。"
+  shell:
+    summary: "シェル補完と短いエイリアスを出力"
+    option:
+      no_alias: "エイリアスを除き補完だけを出力"
+    notes:
+      - "シェル名を省略すると $SHELL を使います。zsh と bash に対応します。"
+      - "source <(edc shell) で現在のシェルに適用します。"
+      - "zsh で継続して使うには ~/.zshrc の末尾に source <(edc shell zsh) を追加します。"
+      - "bash で継続して使うには ~/.bashrc の末尾に source <(edc shell bash) を追加します。"
+      - "スクリプトを出力するだけで起動ファイルは変更しません。追加した行を削除すると次のシェルから無効になります。"
+      - "既存のエイリアス、関数、コマンドを保持します。"
+    unsupported_shell: "edc shell: %s は未対応です。zsh または bash を指定してください。"
+    current_session: "現在のセッションに適用: %s"
+    startup: "継続して使うには %s の末尾に次の行を追加してください:"
+    read_only: "スクリプトの出力のみでシェル起動ファイルは変更しません。"
   alias:
     summary: "shell 用の短い alias を出力"
     sub:

@@ -134,6 +134,9 @@ _edc() {
       ;;
     args)
       case $words[1] in
+        shell)
+          _arguments "1:shell:(zsh bash)" "--no-alias[completion only]"
+          ;;
         top)
           _arguments '1::subcommand:(setup)' '--interval[sampling interval]:duration' '--count[출력 row 수]:count' '--no-header[header 생략]' '--process[process filter]:filter' '--split=-[박스 화면, =all은 전체]::views:(all none cpu mem disk net psi)' '--interface[net 값에 더할 interface]:interfaces:(all physical)' '--view[처음 보기]:view:(all cpu memory disk network pressure split)' '--panels[표 아래 패널]:panels:(none cpu mem disk net psi ai events)' '--columns[all 보기 열 그룹, +는 자세히]:columns:(all net net+ cpu cpu+ mem mem+ disk disk+ psi psi+ ai ai+)' '(-d --detail)'{-d,--detail}'[eBPF details]' '(-w --write)'{-w,--write}'[SQLite 기록, 경로 생략 시 기본 DB]::path:_files' '--json[sample당 한 줄 JSON 출력 경로]:path:_files'
           ;;
@@ -283,7 +286,7 @@ _edc() {
           _arguments '-n[마지막 N줄]:count' '(-f -F)'{-f,-F}'[pipe에서 tail -F처럼 따라가기]' '1:file:_files'
           ;;
         grep)
-          _arguments '-i[대소문자 무시]' '-E[정규식]' '-n[줄 번호]' '-l[맞는 파일 이름만]' '-C[앞뒤 N줄]:count' '--level[이 level 이상]:level:(trace debug info warn error fatal)' '--status[HTTP status]:codes' '--since[이 시각 이후]:time' '--until[이 시각 이전]:time' '--last[최근 N건]:count' '--ordered[로그가 시간 순서]' '--index[index를 지금 만들기]' '--no-index[index를 쓰지 않기]' '--jobs[index worker 수]:count' '--verify-index[index 결과를 전체 읽기와 비교]' '1:pattern' '*:path:_files'
+          _arguments '-i[대소문자 무시]' '-E[정규식]' '-n[줄 번호]' '-l[맞는 파일 이름만]' '-C[앞뒤 N줄]:count' '--ask[rank code]' '--keyword[rank without a model]' '--semantic[local embedding search]' '--semantic-init[build semantic index]' '--semantic-status[index status]' '--semantic-clear[remove semantic index]' '--model-clear[remove shared model]' '--yes[confirm download]' '--json[output JSON with --ask]' '--limit[maximum results]:count' '--code[search code]' '(-f --files)'{-f,--files}'[search file paths]' '--hidden[include hidden files]' '--no-ignore[ignore .gitignore]' '--level[이 level 이상]:level:(trace debug info warn error fatal)' '--status[HTTP status]:codes' '--since[이 시각 이후]:time' '--until[이 시각 이전]:time' '--last[최근 N건]:count' '--ordered[로그가 시간 순서]' '--index[index를 지금 만들기]' '--no-index[index를 쓰지 않기]' '--jobs[index worker 수]:count' '--verify-index[index 결과를 전체 읽기와 비교]' '1:pattern' '*:path:_files'
           ;;
         tunnel)
           _arguments $common \
@@ -498,9 +501,9 @@ _edc() {
     grep)
       case "$prev" in
         --level) COMPREPLY=($(compgen -W "trace debug info warn error fatal" -- "$cur")); return ;;
-        -C|--status|--since|--until|--last|--jobs) COMPREPLY=(); return ;;
+        -C|--status|--since|--until|--last|--jobs|--limit) COMPREPLY=(); return ;;
       esac
-      if [[ $cur == -* ]]; then COMPREPLY=($(compgen -W "-i -E -n -l -C --level --status --since --until --last --ordered --index --no-index --jobs --verify-index" -- "$cur"))
+      if [[ $cur == -* ]]; then COMPREPLY=($(compgen -W "-i -E -n -l -C --ask --keyword --semantic --semantic-init --semantic-status --semantic-clear --model-clear --yes --json --limit --code -f --files --hidden --no-ignore --level --status --since --until --last --ordered --index --no-index --jobs --verify-index" -- "$cur"))
       else COMPREPLY=($(compgen -f -- "$cur")); fi ;;
     tunnel)
       case "$prev" in
@@ -508,6 +511,7 @@ _edc() {
       esac
       if [[ $cur == -* ]]; then COMPREPLY=($(compgen -W "$common --file --name -L -R -D --save --all --connect-timeout" -- "$cur"))
       elif [[ $COMP_CWORD -eq 2 ]]; then COMPREPLY=($(compgen -W "list up test down" -- "$cur")); fi ;;
+    shell) COMPREPLY=($(compgen -W "zsh bash --no-alias" -- "$cur")) ;;
     completion) COMPREPLY=($(compgen -W "zsh bash groups" -- "$cur")) ;;
     setup)
       if [[ $prev == --inventory || $prev == --recipe ]]; then COMPREPLY=($(compgen -f -- "$cur"))

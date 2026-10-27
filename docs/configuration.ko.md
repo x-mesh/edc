@@ -158,31 +158,30 @@ command별 값은 `defaults.common`을 덮습니다. positional target, URL, hos
 
 Setup wizard는 `edc log`의 저장 경로를 비워두고 실행별 파일을 자동 생성하도록 추천합니다. 직접 지정한 경로의 상위 디렉터리는 이미 있어야 합니다. 이전 추천값인 `edc.log` 경로는 상위 디렉터리 자동 생성을 계속 지원합니다.
 
+<a id="alias"></a>
+
 ## Shell completion
 
-`edc completion`은 completion script를 출력합니다. script는 command, option, 그리고 `edc`가 찾은 inventory의 group 이름을 완성합니다.
+`edc shell`은 자동완성과 단축 alias를 함께 출력합니다. 셸을 생략하면 `$SHELL`을 사용합니다. 현재 셸에 적용하려면 다음을 실행합니다.
 
-```bash
-source <(edc completion zsh)
-source <(edc completion bash)
+```sh
+source <(edc shell)
 ```
 
-zsh에서는 script를 `fpath`의 디렉터리에 `_edc`라는 이름으로 저장해도 됩니다.
+계속 사용하려면 **사용하는 셸에 맞는 한 줄만** 시작 파일 맨 끝에 직접 추가합니다.
 
-`edc completion groups`는 inventory의 group 이름을 한 줄에 하나씩 출력합니다. script가 이 command를 호출합니다.
+```sh
+# ~/.zshrc
+source <(edc shell zsh)
 
-## Alias
-
-`edc alias`는 zsh나 bash용 짧은 alias를 `edc help`와 같은 묶음으로 출력합니다. logs(`eg`, `egs`, `ege`, `egr`, `ev`, `evn`, `evf`), diagnose(`edoc`, `echk`, `edns`, `etls`, `ehttp`, `eevt`), observe(`etop`, `einfo`, `esvc`, `ectr`, `edu`, `elsn`, `echg`, `ewf`, `ewh`, `eth`), record and remote(`ehist`, `esnap`, `erep`, `erem`, `etun`)입니다. 셸 이름이 없으면 `$SHELL`을 씁니다. 줄마다 끝에 예가 붙습니다.
-
-```bash
-source <(edc alias zsh)
-echo 'source <(edc alias zsh)' >> ~/.zshrc
+# ~/.bashrc
+source <(edc shell bash)
 ```
 
-script는 alias를 guard를 거쳐 정의합니다. 이름이 이미 셸의 alias, 함수, 명령이면 그 이름은 건너뛰고, 다른 이름을 쓰는 방법(`alias xeg='edc grep'`)과 기존 것을 지우는 방법(`unalias eg`, `unset -f eg`)을 알립니다. 이 호스트에서 명령인 이름(예: `/usr/local/bin/edu`)은 `edc alias`가 그 줄 위에 주석으로 표시합니다. `--plain`은 guard 없이 `alias` 줄만 출력하고, 그런 이름의 줄은 주석으로 막아 둡니다. 셸 설정 파일에 붙여 넣을 때 씁니다.
+edc는 시작 파일을 수정하지 않습니다. 직접 실행한 `source`는 현재 세션에만 적용되고, 시작 파일에 넣으면 새 셸마다 적용됩니다. 등록한 줄을 지우면 다음 셸부터 적용되지 않습니다. zsh에서 `ZDOTDIR`을 사용하면 해당 디렉터리의 `.zshrc`에 추가합니다.
 
-`route`, `disk`, `change`는 alias가 없습니다. 짧은 이름은 호스트 변경에서 실수를 부릅니다.
+자동완성만 원하면 `source <(edc shell zsh --no-alias)`처럼 `--no-alias`를 붙입니다. 자동완성은 명령, 옵션, inventory group 이름을 제안합니다. zsh의 completion이 초기화되지 않았다면 캐시 파일 저장 없이 초기화합니다.
 
-alias는 인자 앞에 옵션만 붙이고, 같은 옵션을 뒤에 다시 주면 그 값이 이깁니다. 그래서 `ege --last 50 app.log`는 오류 50건을 보입니다. `edc completion zsh`를 불러 두면 zsh는 alias에서도 옵션을 완성합니다.
+alias는 `eg` → `edc grep`, `ev` → `edc view`, `etop` → `edc top` 같은 단축 명령입니다. 기존 alias, 함수, 명령과 겹치는 이름은 건너뛰고 안내합니다. `route`, `disk`, `change`는 호스트 변경 실수를 줄이기 위해 alias를 제공하지 않습니다. 옵션은 뒤에서 덮어쓸 수 있으므로 `ege --last 50 app.log`는 오류 50건을 출력합니다. zsh는 alias에서도 edc 옵션을 완성합니다.
 
+기존 `edc alias [zsh|bash] [--plain]`과 `edc completion <zsh|bash>`도 계속 동작합니다. `--plain`은 직접 편집할 alias 줄만 출력합니다. completion 스크립트가 사용하는 `edc completion groups`도 유지됩니다.

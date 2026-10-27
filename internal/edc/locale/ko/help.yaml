@@ -199,6 +199,7 @@ command:
     notes:
       - "터미널에서는 파일 끝에서 화면을 열고 새 줄을 따라갑니다."
       - "↑나 PgUp을 누르면 목록이 멈추고, 머리 줄에 새 줄 수를 셉니다. End, l, Esc를 누르면 다시 따라갑니다."
+      - "access log는 목록에 시각, status, method, bytes, path를 보입니다. 보관한 줄에서 모두 같은 host, client, 날짜는 숨기고 머리 줄에 그 값을 적습니다. c는 원문 줄을 보이고, ← →는 목록을 가로로 밉니다."
       - "nginx와 Apache access log, JSON lines, ERROR나 WARN 같은 level이 있는 줄을 읽습니다."
       - "통계 패널은 status 범주나 level별 수, 상위 path와 client, 마지막 오류를 보여 줍니다."
       - "통계는 화면이 보관한 줄만 셉니다. i로 패널을 숨깁니다."
@@ -208,8 +209,22 @@ command:
       - "pipe나 NO_COLOR에서는 cat처럼 바이트를 그대로 냅니다. -f는 tail -F처럼 따라갑니다."
       - "edc alias는 ev, evn, evf 같은 짧은 alias를 출력합니다."
   grep:
-    summary: "로그 검색, 시각으로 건너뛰고 최근 것부터 읽고 index를 다시 씀"
+    summary: "로그, 코드와 파일 경로 검색"
     option:
+      model_clear: "공유 모델과 runtime 삭제"
+      semantic_yes: "모델 다운로드 확인 생략"
+      ask_keyword: "--ask에서 모델 없이 키워드 순위화"
+      semantic_init: "로컬 semantic index 생성 또는 재생성"
+      semantic_status: "semantic index 정보 확인"
+      semantic_clear: "semantic index 삭제"
+      semantic: "--ask에서 초기화된 로컬 embedding index 사용"
+      ask: "로컬 embedding index로 관련 코드 검색"
+      ask_json: "--ask 결과를 JSON으로 출력"
+      ask_limit: "--ask 결과 수 (기본 10, 최대 100)"
+      code: ".gitignore를 적용해 코드 내용 검색"
+      paths: "내용 대신 파일 경로 검색"
+      hidden: "코드·경로 검색에서 숨김 파일 포함"
+      no_ignore: ".gitignore 규칙을 적용하지 않음"
       ignore_case: "대소문자 무시"
       regex: "패턴을 정규식으로 해석 (기본: 문자열 그대로)"
       numbers: "줄 번호 표시"
@@ -225,6 +240,12 @@ command:
       verify: "index 결과를 전체 읽기와 비교하고 틀린 index를 지움"
       last: "가장 최근 N건, 파일 끝에서 읽음"
     notes:
+      - "semantic 검색은 로컬에서 실행합니다. --semantic-init은 확인 후 영문 MiniLM 모델과 runtime을 내려받습니다."
+      - "index는 프로젝트가 아닌 사용자 cache에 저장합니다. 변경된 파일은 다음 semantic 검색 때 다시 벡터화합니다."
+      - "--ask --keyword는 로컬 키워드 순위화이며 의미를 이해하거나 답변을 생성하지 않습니다. 두 모드 모두 binary, 잘못된 UTF-8, 2 MiB 초과 파일을 건너뜁니다."
+      - "터미널에서 패턴만 입력하면 현재 디렉터리의 코드를 검색합니다. 파이프는 stdin을 읽고 경로를 지정하면 기존 로그 검색을 사용합니다."
+      - "코드·경로 검색은 기본으로 현재 디렉터리에서 숨김 파일과 .git을 제외합니다. --hidden과 --no-ignore로 범위를 넓힙니다."
+      - "코드 검색은 로그 index 없이 현재 파일을 읽고 줄 번호를 출력합니다."
       - "디렉터리는 안의 파일을 모두 찾습니다. binary 파일은 건너뛰고, .gz는 풀면서 차례로 읽습니다."
       - "출력은 grep과 같습니다. 파일이 여럿이면 경로를, -n이면 줄 번호를 붙이고, -C는 앞뒤 줄을 더합니다."
       - "--since와 --until은 시각으로 줄을 거릅니다. --ordered를 주면 --since가 시간 순서인 파일을 이진 탐색하고 그 시각 앞에서 끝나는 파일을 건너뛰어, 수 GB 로그의 최근 구간도 수 MB만 읽습니다."
@@ -635,6 +656,21 @@ command:
       - "포트는 127.0.0.1에 바인딩합니다. auto는 비어 있는 포트를 고릅니다."
       - "도달은 목적지가 연결을 유지하면 ok, 곧바로 끊으면 refused입니다. 역방향 터널은 -로 표시합니다."
       - "test는 로컬 포트, SSH 로그인, 호스트에서 본 목적지를 확인합니다. 역방향 터널은 원격 포트와 로컬 대상을 확인합니다. 터널은 시작하지 않습니다."
+  shell:
+    summary: "셸 자동완성과 단축 명령 출력"
+    option:
+      no_alias: "alias 없이 자동완성만 출력"
+    notes:
+      - "셸 이름을 생략하면 $SHELL을 사용합니다. zsh와 bash를 지원합니다."
+      - "source <(edc shell)을 실행하면 현재 셸에 적용합니다."
+      - "zsh에서 계속 쓰려면 ~/.zshrc 맨 끝에 source <(edc shell zsh)을 추가합니다."
+      - "bash에서 계속 쓰려면 ~/.bashrc 맨 끝에 source <(edc shell bash)을 추가합니다."
+      - "edc는 스크립트만 출력하며 시작 파일을 수정하지 않습니다. 추가한 줄을 지우면 다음 셸부터 적용되지 않습니다."
+      - "기존 alias, 함수, 명령과 겹치는 이름은 유지합니다."
+    unsupported_shell: "edc shell: %s은 지원하지 않습니다. zsh 또는 bash를 지정하세요."
+    current_session: "현재 세션에 적용: %s"
+    startup: "계속 쓰려면 %s 맨 끝에 다음 줄을 추가하세요:"
+    read_only: "스크립트만 출력하며 셸 시작 파일은 수정하지 않습니다."
   alias:
     summary: "셸용 짧은 alias 출력"
     sub:

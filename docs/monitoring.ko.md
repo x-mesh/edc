@@ -390,11 +390,13 @@ edc view -f app.log | grep timeout
 
 | 형식 | 예 | 색 |
 | --- | --- | --- |
-| access | nginx와 Apache의 common, combined 로그 | status 범주, 시각은 회색 |
+| access | nginx와 Apache의 common, combined 로그, 요청을 따옴표 없이 적고 본문을 붙인 변형 | status 범주, 시각은 회색, JSON-RPC method는 청록 |
 | json | 줄마다 JSON 객체 하나 | level, 시각은 회색, 나머지 키는 `key=value` |
 | level | `2026-10-26 10:00:00 ERROR message` | level 낱말, 시각은 회색 |
 | syslog | `2026-10-27T06:12:36+00:00 host sshd[1]: message` 또는 `Oct  7 06:12:36 host sshd[1]: message` | 프로그램은 청록, 시각과 host는 회색, 메시지의 낱말 하나 |
 | goloop | `D\|20260713-02:58:06.638211\|c248\|1\|CS\|syncer.go:210 message` | level 글자, module은 청록, 시각과 위치는 회색 |
+
+JSON-RPC 노드 앞의 nginx는 요청을 따옴표 없이 적고 요청 본문과 처리 시간을 붙이는 일이 많습니다: `127.0.0.1 127.0.0.1  [28/Aug/2026:10:54:19 +0900] POST /api/v3 HTTP/1.1 400 106  "curl/7.81.0"  {"method":"icx_sendTransaction"} HTTP/1.1 0.005`. `edc view`는 이 줄을 access 형식으로 읽습니다. JSON 본문의 `method`는 청록으로 칠하고, path만으로는 무엇을 요청했는지 알 수 없으므로 상위 path에서는 `/api/v3 icx_sendTransaction`처럼 path 뒤에 붙입니다. 상세 화면에는 `body`, `rpc method`, `request time`이 나옵니다.
 
 level은 `ERROR`, `WARN`처럼 대문자 낱말이거나 `level=` 값이어야 합니다. 본문에 나온 소문자 "error"는 level로 보지 않습니다. level 형식에서 level이 없는 줄은 바로 위 줄에 속합니다. 그래서 stack trace가 오류 줄과 함께 묶입니다.
 

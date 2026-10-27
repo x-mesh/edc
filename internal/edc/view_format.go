@@ -52,6 +52,8 @@ type viewLine struct {
 	path   string
 	// program은 syslog 줄의 프로그램 이름이다. 통계의 상위 프로그램에 쓴다.
 	program string
+	// rpc는 access 줄의 JSON-RPC 본문에 든 method다.
+	rpc string
 	// message는 JSON 줄을 "time level message key=value"로 줄여 보여 줄 때의 본문이다.
 	message string
 	fields  []viewField
@@ -200,6 +202,8 @@ func viewContinues(text string) bool {
 
 // viewParseAccess는 nginx와 Apache의 common, combined 형식이다.
 // 203.0.113.9 - - [26/Oct/2026:10:00:00 +0900] "GET /api HTTP/1.1" 200 512 "-" "curl/8.0"
+// 요청을 따옴표 없이 적고 user agent 뒤에 요청 본문과 처리 시간을 붙이는 nginx 변형도 읽는다. JSON-RPC 노드 앞의 nginx가 이렇게 적는다.
+// 127.0.0.1 127.0.0.1  [28/Aug/2026:10:54:19 +0900] POST /api/v3 HTTP/1.1 400 106  "curl/7.81.0"  {"method":"icx_sendTransaction"} HTTP/1.1 0.005
 func viewParseAccess(text string, line *viewLine) bool {
 	client, rest, found := strings.Cut(text, " ")
 	if !found || client == "" {
@@ -215,15 +219,18 @@ func viewParseAccess(text string, line *viewLine) bool {
 	}
 	timeText := rest[open+1 : open+closing]
 	rest = strings.TrimLeft(rest[open+closing+1:], " ")
-	if !strings.HasPrefix(rest, "\"") {
+	var request string
+	quotedRequest := strings.HasPrefix(rest, "\"")
+	if quotedRequest {
+		end := strings.IndexByte(rest[1:], '"')
+		if end < 0 {
+			return false
+		}
+		request = rest[1 : end+1]
+		rest = strings.TrimLeft(rest[end+2:], " ")
+	} else if request, rest = viewBareRequest(rest); request == "" {
 		return false
 	}
-	end := strings.IndexByte(rest[1:], '"')
-	if end < 0 {
-		return false
-	}
-	request := rest[1 : end+1]
-	rest = strings.TrimLeft(rest[end+2:], " ")
 	statusText, rest, _ := strings.Cut(rest, " ")
 	status, err := strconv.Atoi(statusText)
 	if err != nil || status < 100 || status > 999 {
@@ -234,13 +241,82 @@ func viewParseAccess(text string, line *viewLine) bool {
 	line.client, line.time, line.status, line.method, line.path = client, timeText, status, method, path
 	bytesText, rest, _ := strings.Cut(rest, " ")
 	line.fields = []viewField{{"client", client}, {"time", timeText}, {"method", method}, {"path", path}, {"protocol", protocol}, {"status", statusText}, {"bytes", bytesText}}
+	// 요청을 따옴표 없이 적는 변형은 referrer 없이 user agent만 따옴표로 적는다.
+	names := []string{"referrer", "user agent"}
+	if !quotedRequest {
+		names = []string{"user agent"}
+	}
 	quoted := viewQuoted(rest)
-	for index, name := range []string{"referrer", "user agent"} {
+	for index, name := range names {
 		if index < len(quoted) {
 			line.fields = append(line.fields, viewField{name, quoted[index]})
 		}
 	}
+	// 본문은 첫 '{'부터 마지막 '}'까지다. JSON-RPC의 method는 상위 path에서 요청을 가르도록 path 뒤에 붙인다.
+	if body := viewAccessBody(rest); body != "" {
+		line.fields = append(line.fields, viewField{"body", body})
+		if line.rpc = viewJSONRPCMethod(body); line.rpc != "" {
+			line.path = path + " " + line.rpc
+			line.fields = append(line.fields, viewField{"rpc method", line.rpc})
+		}
+		rest = rest[strings.LastIndexByte(rest, '}')+1:]
+	} else if len(quoted) > 0 {
+		rest = rest[strings.LastIndexByte(rest, '"')+1:]
+	}
+	// 줄 끝의 소수는 nginx의 $request_time이다.
+	if tokens := strings.Fields(rest); len(tokens) > 0 {
+		if last := tokens[len(tokens)-1]; strings.ContainsRune(last, '.') && viewDigits(strings.ReplaceAll(last, ".", "")) {
+			line.fields = append(line.fields, viewField{"request time", last})
+		}
+	}
 	return true
+}
+
+// viewBareRequest는 따옴표 없는 "POST /api/v3 HTTP/1.1"이다. method는 대문자 낱말이고 세 번째 token은 HTTP/로 시작해야 한다.
+// 요청과 그 뒤를 돌려주고, 아니면 빈 요청이다.
+func viewBareRequest(rest string) (string, string) {
+	method, after, ok := strings.Cut(rest, " ")
+	if !ok || method == "" || method != strings.ToUpper(method) || !viewLettersOnly(method) {
+		return "", rest
+	}
+	target, after, ok := strings.Cut(after, " ")
+	if !ok || target == "" {
+		return "", rest
+	}
+	protocol, after, _ := strings.Cut(after, " ")
+	if !strings.HasPrefix(protocol, "HTTP/") {
+		return "", rest
+	}
+	return method + " " + target + " " + protocol, strings.TrimLeft(after, " ")
+}
+
+func viewLettersOnly(text string) bool {
+	for index := 0; index < len(text); index++ {
+		if !viewWordByte(text[index]) {
+			return false
+		}
+	}
+	return text != ""
+}
+
+// viewAccessBody는 rest에 든 JSON 본문이다. 첫 '{'부터 마지막 '}'까지가 JSON이어야 하고, 아니면 빈 문자열이다.
+func viewAccessBody(rest string) string {
+	start, end := strings.IndexByte(rest, '{'), strings.LastIndexByte(rest, '}')
+	if start < 0 || end <= start || !json.Valid([]byte(rest[start:end+1])) {
+		return ""
+	}
+	return rest[start : end+1]
+}
+
+// viewJSONRPCMethod는 JSON-RPC 본문의 method다. 없으면 빈 문자열이다.
+func viewJSONRPCMethod(body string) string {
+	var request struct {
+		Method string `json:"method"`
+	}
+	if err := json.Unmarshal([]byte(body), &request); err != nil {
+		return ""
+	}
+	return request.Method
 }
 
 // viewQuoted는 rest에 든 큰따옴표 값을 차례로 꺼낸다.
@@ -473,10 +549,16 @@ func viewAccessSpans(line viewLine) []traceText {
 	}
 	statusText := strconv.Itoa(line.status)
 	requestEnd := -1
-	if quote := strings.IndexByte(text[closing+1:], '"'); quote >= 0 {
-		if end := strings.IndexByte(text[closing+quote+2:], '"'); end >= 0 {
-			requestEnd = closing + quote + 2 + end + 1
+	after := closing + 1
+	for after < len(text) && text[after] == ' ' {
+		after++
+	}
+	if after < len(text) && text[after] == '"' {
+		if end := strings.IndexByte(text[after+1:], '"'); end >= 0 {
+			requestEnd = after + 1 + end + 1
 		}
+	} else if request, _ := viewBareRequest(text[after:]); request != "" {
+		requestEnd = after + len(request)
 	}
 	statusAt := -1
 	if requestEnd >= 0 {
@@ -488,13 +570,27 @@ func viewAccessSpans(line viewLine) []traceText {
 		return []traceText{{text: text}}
 	}
 	statusEnd := statusAt + len(statusText)
-	return []traceText{
+	spans := []traceText{
 		{text: text[:open]},
 		{text: text[open : closing+1], color: richGray},
 		{text: text[closing+1 : statusAt]},
 		{text: statusText, color: richHTTPCodeColor(line.status), bold: line.status >= 500},
-		{text: text[statusEnd:], color: richGray},
 	}
+	// JSON-RPC 본문의 method 이름은 청록이다. 그 줄에서 무엇을 요청했는지는 path가 아니라 이것이 말한다.
+	tail := text[statusEnd:]
+	if line.rpc != "" {
+		if key := strings.Index(tail, "\"method\""); key >= 0 {
+			if at := strings.Index(tail[key:], "\""+line.rpc+"\""); at >= 0 {
+				start := statusEnd + key + at + 1
+				return append(spans,
+					traceText{text: text[statusEnd:start], color: richGray},
+					traceText{text: line.rpc, color: richCyan},
+					traceText{text: text[start+len(line.rpc):], color: richGray},
+				)
+			}
+		}
+	}
+	return append(spans, traceText{text: tail, color: richGray})
 }
 
 // viewLinePlain은 색 없이 그리는 한 줄이다. 칠한 줄과 글자가 같다.

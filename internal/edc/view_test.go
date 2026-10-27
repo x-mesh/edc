@@ -33,7 +33,7 @@ func parseViewFixture(t *testing.T, name string) (viewFormat, []viewLine) {
 }
 
 func TestDetectViewFormat(t *testing.T) {
-	for name, want := range map[string]viewFormat{"access.log": viewFormatAccess, "app.jsonl": viewFormatJSON, "app.log": viewFormatLevel, "auth.log": viewFormatSyslog, "goloop.log": viewFormatGoloop} {
+	for name, want := range map[string]viewFormat{"access.log": viewFormatAccess, "app.jsonl": viewFormatJSON, "app.log": viewFormatLevel, "auth.log": viewFormatSyslog, "goloop.log": viewFormatGoloop, "rpc.log": viewFormatAccess} {
 		if got := detectViewFormat(readViewFixture(t, name)); got != want {
 			t.Errorf("%s: format %q, want %q", name, got, want)
 		}
@@ -469,6 +469,61 @@ func TestParseViewGoloopLine(t *testing.T) {
 		var line viewLine
 		if viewParseGoloop(text, &line) {
 			t.Fatalf("%q parsed as goloop: %+v", text, line)
+		}
+	}
+}
+
+func TestParseViewAccessLineWithBareRequestAndBody(t *testing.T) {
+	format, lines := parseViewFixture(t, "rpc.log")
+	if format != viewFormatAccess {
+		t.Fatalf("format %q", format)
+	}
+	line := lines[0]
+	if line.client != "127.0.0.1" || line.status != 400 || line.method != "POST" || line.path != "/api/v3 icx_sendTransaction" || line.rpc != "icx_sendTransaction" || line.time != "28/Aug/2026:10:54:19 +0900" {
+		t.Fatalf("rpc fields: %+v", line)
+	}
+	if !viewHasField(line.fields, "path", "/api/v3") || !viewHasField(line.fields, "user agent", "curl/7.81.0") || !viewHasField(line.fields, "rpc method", "icx_sendTransaction") || !viewHasField(line.fields, "request time", "0.005") || !viewHasField(line.fields, "bytes", "106") {
+		t.Fatalf("fields: %+v", line.fields)
+	}
+	for _, field := range line.fields {
+		if field.name == "body" && (!strings.HasPrefix(field.value, `{"id":2848`) || !strings.HasSuffix(field.value, "}}")) {
+			t.Fatalf("body: %q", field.value)
+		}
+		if field.name == "referrer" {
+			t.Fatalf("bare request has no referrer: %+v", line.fields)
+		}
+	}
+	// 본문이 없는 줄은 path만 남고, 처리 시간은 그대로 읽는다.
+	if lines[2].path != "/api/v3/status" || lines[2].rpc != "" || !viewHasField(lines[2].fields, "request time", "0.001") {
+		t.Fatalf("line without a body: %+v", lines[2])
+	}
+	for index, line := range lines {
+		if got := viewLinePlain(line, viewFormatAccess); got != line.text {
+			t.Fatalf("line %d: colored text %q differs from %q", index, got, line.text)
+		}
+	}
+	// status는 범주 색, method 이름은 청록, 나머지 뒷부분은 회색이다.
+	spans := viewLineSpans(line, viewFormatAccess)
+	var sawStatus, sawMethod bool
+	for _, span := range spans {
+		if span.text == "400" && span.color == richHTTPCodeColor(400) {
+			sawStatus = true
+		}
+		if span.text == "icx_sendTransaction" && span.color == richCyan {
+			sawMethod = true
+		}
+	}
+	if !sawStatus || !sawMethod {
+		t.Fatalf("spans: %+v", spans)
+	}
+	// 따옴표 없는 요청은 대문자 method와 HTTP/ protocol이 있어야 한다.
+	for _, text := range []string{
+		"127.0.0.1 x [28/Aug/2026:10:54:19 +0900] hello world foo 200 1",
+		"127.0.0.1 x [28/Aug/2026:10:54:19 +0900] POST /api/v3 TCP 200 1",
+	} {
+		var line viewLine
+		if viewParseAccess(text, &line) {
+			t.Fatalf("%q parsed as access: %+v", text, line)
 		}
 	}
 }

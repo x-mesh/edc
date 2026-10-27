@@ -456,11 +456,13 @@ edc view -f app.log | grep timeout
 
 | Format | Example | Color |
 | --- | --- | --- |
-| access | nginx and Apache common and combined logs | status class, time in gray |
+| access | nginx and Apache common and combined logs, also with the request without quotes and a request body | status class, time in gray, the JSON-RPC method in cyan |
 | json | one JSON object on each line | level, time in gray; other keys as `key=value` |
 | level | `2026-10-26 10:00:00 ERROR message` | level word, time in gray |
 | syslog | `2026-10-27T06:12:36+00:00 host sshd[1]: message` or `Oct  7 06:12:36 host sshd[1]: message` | program in cyan, time and host in gray, one word of the message |
 | goloop | `D\|20260713-02:58:06.638211\|c248\|1\|CS\|syncer.go:210 message` | level letter, module in cyan, time and location in gray |
+
+An nginx in front of a JSON-RPC node often writes the request without quotes and adds the request body and the request time: `127.0.0.1 127.0.0.1  [28/Aug/2026:10:54:19 +0900] POST /api/v3 HTTP/1.1 400 106  "curl/7.81.0"  {"method":"icx_sendTransaction"} HTTP/1.1 0.005`. `edc view` reads this as the access format. The `method` of a JSON body is cyan and joins the path in the top paths, for example `/api/v3 icx_sendTransaction`, because the path alone does not say what the request did. The detail shows `body`, `rpc method`, and `request time`.
 
 The level must be an uppercase word such as `ERROR` or `WARN`, or a `level=` value. A lowercase "error" in the message is not a level. In the level format, a line without a level belongs to the line above it. This keeps a stack trace with its error.
 

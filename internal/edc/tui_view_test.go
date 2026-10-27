@@ -210,3 +210,42 @@ func TestViewScreenSidePanelWithFullListAndPartialLine(t *testing.T) {
 		}
 	}
 }
+
+func TestViewScreenPanelWidthFitsTheContent(t *testing.T) {
+	// 통계가 제목뿐이면 패널은 제목 폭이고, 구분선은 그만큼 오른쪽으로 간다.
+	plain := newViewScreenModel("plain", viewKeepLines)
+	plain.width, plain.height = 200, 20
+	plain.ingest([]string{"hello", "world"}, time.Now(), false)
+	if width := plain.panelWidth(); width != len("STATS  last 10,000 lines") {
+		t.Fatalf("plain panel width %d", width)
+	}
+	rows := plain.screen(false)
+	if at := strings.Index(rows[2], " │ "); at != 200-plain.panelWidth()-3 {
+		t.Fatalf("separator at %d in %q", at, rows[2])
+	}
+	// 상위 path가 길면 viewPanelWidth까지만 넓어지고, 마지막 오류도 그 안에서 줄을 바꾼다.
+	access := viewScreenWith(t, "access.log", 200, 30)
+	access.ingest([]string{`192.0.2.1 - - [26/Oct/2026:10:00:09 +0900] "GET /api/` + strings.Repeat("x", 60) + ` HTTP/1.1" 500 1 "-" "x"`}, time.Now(), false)
+	if width := access.panelWidth(); width != viewPanelWidth {
+		t.Fatalf("access panel width %d", width)
+	}
+	// syslog 로그는 상위 프로그램과 client를 보인다.
+	auth := viewScreenWith(t, "auth.log", 200, 40)
+	joined := strings.Join(auth.screen(false), "\n")
+	if !strings.Contains(joined, "TOP PROGRAMS") || !strings.Contains(joined, "sshd-session") || !strings.Contains(joined, "TOP CLIENTS") || !strings.Contains(joined, "192.0.2.10") || !strings.Contains(joined, "error ") {
+		t.Fatalf("auth panel:\n%s", joined)
+	}
+	if auth.stats.failures != 2 || auth.stats.levels["error"] != 2 {
+		t.Fatalf("auth failures %d levels %v", auth.stats.failures, auth.stats.levels)
+	}
+	narrow := strings.Join(viewScreenWith(t, "auth.log", 90, 40).screen(false), "\n")
+	if !strings.Contains(narrow, "top programs  sshd-session 5") || !strings.Contains(narrow, "top clients  192.0.2.10 2") {
+		t.Fatalf("narrow auth panel:\n%s", narrow)
+	}
+	// goloop 로그는 module이 상위 프로그램이고, level 글자가 LEVEL에 센다.
+	goloop := viewScreenWith(t, "goloop.log", 200, 40)
+	joined = strings.Join(goloop.screen(false), "\n")
+	if !strings.Contains(joined, "TOP PROGRAMS") || !strings.Contains(joined, "CS") || goloop.stats.levels["debug"] != 5 || goloop.stats.levels["fatal"] != 1 || goloop.stats.failures != 2 {
+		t.Fatalf("goloop panel levels %v failures %d:\n%s", goloop.stats.levels, goloop.stats.failures, joined)
+	}
+}

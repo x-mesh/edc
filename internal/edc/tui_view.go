@@ -15,7 +15,7 @@ import (
 const viewKeepLines = 10000
 
 const (
-	// viewPanelWidth는 오른쪽 통계 패널의 폭이다.
+	// viewPanelWidth는 오른쪽 통계 패널의 최대 폭이다. 실제 폭은 내용에 맞춘다.
 	viewPanelWidth = 38
 	// viewPanelSideWidth는 통계 패널을 오른쪽에 두는 최소 화면 폭이다. 그보다 좁으면 목록 아래에 둔다.
 	viewPanelSideWidth = 120
@@ -427,10 +427,11 @@ func (model viewScreenModel) screen(color bool) []string {
 		return append(header, model.listLines(model.width, available, color)...)
 	}
 	if model.width >= viewPanelSideWidth {
-		listWidth := model.width - viewPanelWidth - 3
+		panelWidth := model.panelWidth()
+		listWidth := model.width - panelWidth - 3
 		list := model.listLines(listWidth, available, color)
 		// 패널이 화면보다 길면 아래를 자른다. 위의 요약이 더 중요하다.
-		panel := model.panelColumn(viewPanelWidth, color)
+		panel := model.panelColumn(panelWidth, color)
 		panel = panel[:min(len(panel), available)]
 		for len(panel) < available {
 			panel = append(panel, "")
@@ -504,6 +505,28 @@ func (model viewScreenModel) changedText() string {
 	return fsWatchAgo(model.now.Sub(model.changed)) + " ago"
 }
 
+// panelWidth는 오른쪽 통계 패널의 폭이다. 내용 중 가장 긴 줄에 맞추고 viewPanelWidth를 넘지 않는다. 제목은 늘 있으므로 그보다
+// 좁아지지 않고, 마지막 오류와 상위 목록이 길면 그만큼 넓어진다. level과 status 막대는 제목 폭 안에 든다.
+func (model viewScreenModel) panelWidth() int {
+	width := len(model.panelTitle())
+	for _, value := range []string{groupThousands(int64(model.stats.lines)), fmt.Sprintf("%.1f", model.stats.rate(model.now)), model.changedText(), groupThousands(int64(model.stats.failures))} {
+		width = max(width, 10+len(value))
+	}
+	if last := model.stats.lastError; last.text != "" {
+		width = max(width, ansi.StringWidth(viewLinePlain(last, model.format)))
+	}
+	for _, counts := range []map[string]int{model.stats.paths, model.stats.clients, model.stats.programs} {
+		for _, entry := range viewTop(counts) {
+			width = max(width, 8+ansi.StringWidth(viewSanitize(entry.label)))
+		}
+	}
+	return min(width, viewPanelWidth)
+}
+
+func (model viewScreenModel) panelTitle() string {
+	return "STATS  last " + groupThousands(int64(model.keep)) + " lines"
+}
+
 // panelColumn은 오른쪽 통계 패널이다. 보관한 줄만 세므로 첫 줄에 그 범위를 밝힌다.
 func (model viewScreenModel) panelColumn(width int, color bool) []string {
 	dim := func(text string) string {
@@ -516,7 +539,7 @@ func (model viewScreenModel) panelColumn(width int, color bool) []string {
 		return traceFit(dim(fmt.Sprintf("%-10s", label))+value, width)
 	}
 	rows := []string{
-		dim(traceFit("STATS  last "+groupThousands(int64(model.keep))+" lines", width)),
+		dim(traceFit(model.panelTitle(), width)),
 		row("events", groupThousands(int64(model.stats.lines))),
 		row("lines/s", fmt.Sprintf("%.1f", model.stats.rate(model.now))),
 		row("changed", model.changedText()),
@@ -545,7 +568,7 @@ func (model viewScreenModel) panelColumn(width int, color bool) []string {
 	for _, top := range []struct {
 		title  string
 		counts map[string]int
-	}{{"TOP PATHS", model.stats.paths}, {"TOP CLIENTS", model.stats.clients}} {
+	}{{"TOP PATHS", model.stats.paths}, {"TOP CLIENTS", model.stats.clients}, {"TOP PROGRAMS", model.stats.programs}} {
 		entries := viewTop(top.counts)
 		if len(entries) == 0 {
 			continue
@@ -580,8 +603,15 @@ func (model viewScreenModel) panelRows(width int, color bool) []string {
 	if last := model.stats.lastError; last.text != "" {
 		rows = append(rows, traceTexts([]traceText{traceLabelSpan("last error  "), {text: viewLinePlain(last, model.format)}}, width, color))
 	}
-	if entries := viewTop(model.stats.paths); len(entries) != 0 {
-		spans := []traceText{traceLabelSpan("top paths  ")}
+	for _, top := range []struct {
+		title  string
+		counts map[string]int
+	}{{"top paths  ", model.stats.paths}, {"top clients  ", model.stats.clients}, {"top programs  ", model.stats.programs}} {
+		entries := viewTop(top.counts)
+		if len(entries) == 0 {
+			continue
+		}
+		spans := []traceText{traceLabelSpan(top.title)}
 		for index, entry := range entries {
 			if index > 0 {
 				spans = append(spans, traceSeparator)

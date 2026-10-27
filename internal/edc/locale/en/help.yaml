@@ -206,6 +206,7 @@ command:
       - "Enter shows the fields and the whole line, with the stack trace lines below it."
       - "When the file is rotated or truncated, it marks the place and reads the new file from the start."
       - "In a pipe or with NO_COLOR, it writes the bytes unchanged, like cat. -f follows like tail -F."
+      - "edc alias prints short aliases such as ev, evn, and evf."
   grep:
     summary: "Search logs; skip by time, read the newest first, and reuse an index"
     option:
@@ -230,6 +231,7 @@ command:
       - "--last reads the file from the end and stops after N matches."
       - "With --level, --status, --since, or --until, the pattern can be left out when the first argument is an existing file or directory."
       - "Lines of a stack trace carry the level and time of their ERROR line, so --level error returns the trace too."
+      - "edc alias prints short aliases such as eg, egs, and ege."
       - "Files of 64 MB or more get an index in the cache directory on the second search within 24h. It records which 1 MB blocks hold which letters, times, levels, and statuses, so later searches read only the blocks that can match. The index assumes a log that only grows: a file edited in place keeps its index until it shrinks or its first or last indexed block changes, so use --no-index or --verify-index for such a file."
       - "Every search tells on stderr whether it used, built, or skipped the index, when stderr is a terminal."
       - "In a pipe or with NO_COLOR, the bytes of a line stay unchanged. Exit codes: 0 found, 1 none, 2 error."
@@ -633,6 +635,19 @@ command:
       - "Ports bind to 127.0.0.1. auto picks a free port."
       - "reach is ok if the destination keeps the connection open, and refused if it closes at once. Reverse tunnels show -."
       - "test checks the local port, the SSH login, and the destination as the host sees it. For a reverse tunnel, it checks the remote port and the local target. It starts no tunnel."
+  alias:
+    summary: "Print short aliases for the shell"
+    sub:
+      zsh: "print the aliases for zsh"
+      bash: "print the aliases for bash"
+    option:
+      plain: "print bare alias lines without the guard, for pasting into a shell file"
+    notes:
+      - "source <(edc alias zsh) or source <(edc alias bash). Without a shell name, edc uses $SHELL."
+      - "The script skips a name that is already an alias, a function, or a command in your shell, and says how to rename it or remove yours."
+      - "An alias adds options before your arguments, and the same option later on the line wins: ege --last 50 app.log."
+      - "route, disk, and change have no alias, because a short name invites a mistake on a host change."
+    unsupported_shell: "edc alias: %s is not supported; use zsh or bash."
   completion:
     summary: "Print the shell completion script"
     sub:

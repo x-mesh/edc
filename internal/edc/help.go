@@ -630,6 +630,17 @@ var commandDocs = []commandDoc{
 		},
 	},
 	{
+		name: "alias", group: "tool",
+		usage: []string{"edc alias [zsh|bash] [--plain]"},
+		subcommands: []subcommandDoc{
+			{"zsh", "edc alias zsh"},
+			{"bash", "edc alias bash"},
+		},
+		options: []optionDoc{
+			{"--plain", "command.alias.option.plain"},
+		},
+	},
+	{
 		name: "completion", group: "tool",
 		usage: []string{"edc completion <zsh|bash|groups>"},
 		subcommands: []subcommandDoc{

@@ -1,0 +1,16 @@
+# grep 명령의 한국어 메시지.
+grep:
+  failed: "edc grep: %v"
+  stdin: "(표준 입력)"
+  bad_level: "edc grep: 모르는 level %q입니다. trace, debug, info, warn, error, fatal 중 하나를 쓰세요"
+  bad_status: "edc grep: status %q를 읽을 수 없습니다. 5xx, 404, 500-503을 쉼표로 이어 쓰세요"
+  bad_time: "edc grep: 시각 %q를 읽을 수 없습니다. 10m, 2h, 1d, 2026-10-27 09:00, 09:00처럼 쓰세요"
+  hint:
+    prefix: "hint: "
+    last: "%s: --last로 끝에서 %s를 읽었습니다"
+    seek: "%s: --since로 %s를 건너뛰고 %s를 읽었습니다"
+    seek_failed: "%s: 줄이 시간 순서가 아니라 파일 전체를 읽었습니다"
+    no_time: "%s: 시각을 찾지 못해 --since와 --until에 맞는 줄이 없습니다"
+    counted: "%s: -n을 위해 건너뛴 %s줄을 셌습니다"
+    skipped_old: "%d개 파일은 수정 시각이 --since보다 일러 열지 않았습니다: %s"
+    binary: "%d개 binary 파일을 건너뛰었습니다: %s"

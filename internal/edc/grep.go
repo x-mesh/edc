@@ -1,0 +1,664 @@
+package edc
+
+import (
+	"bufio"
+	"bytes"
+	"compress/gzip"
+	"errors"
+	"flag"
+	"fmt"
+	"io"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"time"
+)
+
+const grepUsage = "edc grep [options] <pattern> [path...]"
+
+const (
+	// grepBinaryProbe는 binary 파일인지 보는 앞부분 길이다. NUL이 있으면 건너뛴다.
+	grepBinaryProbe = 8 << 10
+	// grepContextWindow는 -C의 앞뒤 줄을 읽는 범위다.
+	grepContextWindow = 64 << 10
+	// grepHintNames는 건너뛴 파일 이름을 hint에 보여 주는 최대 수다.
+	grepHintNames = 5
+)
+
+type grepOptions struct {
+	pattern    string
+	regex      bool
+	ignoreCase bool
+	numbers    bool
+	listFiles  bool
+	context    int
+	minLevel   int
+	statuses   *grepStatusSet
+	since      time.Time
+	until      time.Time
+	last       int
+	now        time.Time
+}
+
+func runGrep(args []string) int { return grepRun(args, os.Stdin, os.Stdout, os.Stderr) }
+
+func parseGrepOptions(args []string, stderr io.Writer, now time.Time) (grepOptions, []string, error) {
+	set := newFlagSet("grep")
+	set.SetOutput(stderr)
+	options := grepOptions{minLevel: -1, now: now}
+	set.BoolVar(&options.ignoreCase, "i", false, T("command.grep.option.ignore_case"))
+	set.BoolVar(&options.regex, "E", false, T("command.grep.option.regex"))
+	set.BoolVar(&options.regex, "regex", false, T("command.grep.option.regex"))
+	set.BoolVar(&options.numbers, "n", false, T("command.grep.option.numbers"))
+	set.BoolVar(&options.listFiles, "l", false, T("command.grep.option.files"))
+	set.IntVar(&options.context, "C", 0, T("command.grep.option.context"))
+	level := set.String("level", "", T("command.grep.option.level"))
+	status := set.String("status", "", T("command.grep.option.status"))
+	since := set.String("since", "", T("command.grep.option.since"))
+	until := set.String("until", "", T("command.grep.option.until"))
+	set.IntVar(&options.last, "last", 0, T("command.grep.option.last"))
+	if err := parseReordered(set, args); err != nil {
+		return options, nil, err
+	}
+	if set.NArg() == 0 || options.context < 0 || options.last < 0 {
+		return options, nil, errors.New(T("cli.usage", grepUsage))
+	}
+	options.pattern = set.Arg(0)
+	if *level != "" {
+		if options.minLevel = grepLevelRank(viewNormalizeLevel(*level)); options.minLevel < 0 {
+			return options, nil, errors.New(T("grep.bad_level", *level))
+		}
+	}
+	if *status != "" {
+		set, err := parseGrepStatuses(*status)
+		if err != nil {
+			return options, nil, errors.New(T("grep.bad_status", *status))
+		}
+		options.statuses = set
+	}
+	var err error
+	if *since != "" {
+		if options.since, err = grepParseWhen(*since, now); err != nil {
+			return options, nil, errors.New(T("grep.bad_time", *since))
+		}
+	}
+	if *until != "" {
+		if options.until, err = grepParseWhen(*until, now); err != nil {
+			return options, nil, errors.New(T("grep.bad_time", *until))
+		}
+	}
+	return options, set.Args()[1:], nil
+}
+
+// grepRun은 grep의 본체다. stdout이 터미널이면 색을 쓰고, stderr가 터미널이면 hint를 낸다. 종료 코드는 grep과 같다.
+// 찾으면 0, 없으면 1, 오류가 있으면 2다.
+func grepRun(args []string, stdin, stdout, stderr *os.File) int {
+	options, paths, err := parseGrepOptions(args, stderr, time.Now())
+	if err != nil {
+		if !errors.Is(err, errFlagReported) && !errors.Is(err, flag.ErrHelp) {
+			fmt.Fprintln(stderr, err)
+		}
+		return 2
+	}
+	if len(paths) == 0 && isTerminal(stdin) {
+		fmt.Fprintln(stderr, T("cli.usage", grepUsage))
+		return 2
+	}
+	targets, directories, problems := grepTargets(paths)
+	failed := len(problems) != 0
+	for _, problem := range problems {
+		fmt.Fprintln(stderr, T("grep.failed", problem))
+	}
+	out := bufio.NewWriterSize(stdout, 64<<10)
+	printer := &grepPrinter{out: out, color: richEnabled(stdout), showPath: len(targets) > 1 || directories > 0, numbers: options.numbers, context: options.context}
+	hints := &grepHints{options: options}
+	found := false
+	if len(paths) == 0 {
+		ok, err := grepSequentialSearch(stdin, T("grep.stdin"), options, printer, hints)
+		found, failed = found || ok, failed || err != nil
+		if err != nil {
+			fmt.Fprintln(stderr, T("grep.failed", err))
+		}
+	}
+	for _, path := range targets {
+		ok, err := grepSearchFile(path, options, printer, hints)
+		found = found || ok
+		if err != nil {
+			failed = true
+			fmt.Fprintln(stderr, T("grep.failed", fmt.Sprintf("%s: %v", path, err)))
+		}
+	}
+	out.Flush()
+	if isTerminal(stderr) {
+		hints.render(stderr, richEnabled(stderr))
+	}
+	switch {
+	case failed:
+		return 2
+	case found:
+		return 0
+	}
+	return 1
+}
+
+// grepTargets는 경로를 파일 목록으로 푼다. 디렉터리는 안의 일반 파일을 이름 순서로 모두 넣고, 디렉터리로 가는 symlink는 따라가지
+// 않는다. 돌려주는 값은 파일, 디렉터리 수, 문제가 있던 경로다.
+func grepTargets(paths []string) ([]string, int, []string) {
+	var files, problems []string
+	directories := 0
+	for _, path := range paths {
+		info, err := os.Stat(path)
+		if err != nil {
+			problems = append(problems, err.Error())
+			continue
+		}
+		if !info.IsDir() {
+			files = append(files, path)
+			continue
+		}
+		directories++
+		filepath.WalkDir(path, func(entry string, dirent fs.DirEntry, err error) error {
+			if err != nil {
+				problems = append(problems, err.Error())
+				return nil
+			}
+			if dirent.Type().IsRegular() {
+				files = append(files, entry)
+			}
+			return nil
+		})
+	}
+	return files, directories, problems
+}
+
+// grepDetectFormat은 파일 앞부분으로 로그 형식을 정한다. 마지막 조각은 잘린 줄일 수 있어 빼고 본다.
+func grepDetectFormat(sample []byte, whole bool) viewFormat {
+	if !whole {
+		if last := bytes.LastIndexByte(sample, '\n'); last >= 0 {
+			sample = sample[:last]
+		}
+	}
+	return detectViewFormat(strings.Split(string(sample), "\n"))
+}
+
+// grepFilterFor는 패턴 밖의 조건이다. 조건이 하나도 없으면 nil이다.
+func grepFilterFor(format viewFormat, options grepOptions) *grepFilter {
+	filter := newGrepFilter(format, nil, options.now)
+	filter.minLevel = options.minLevel
+	if options.statuses != nil {
+		filter.setStatuses(options.statuses)
+	}
+	filter.since, filter.until = options.since, options.until
+	if !filter.active() {
+		return nil
+	}
+	return filter
+}
+
+// grepFileReport는 파일 하나의 검색이 어떻게 진행됐는지다. hint는 이 값으로 만든다.
+type grepFileReport struct {
+	path       string
+	size       int64
+	bytesRead  int64
+	skipped    int64
+	seekFailed bool
+	noTime     bool
+	lastRead   int64
+	counted    int64
+}
+
+// grepSearchFile은 파일 하나를 검색한다. .gz는 풀면서 차례로 읽고, 그 밖의 파일은 시각과 끝에서부터의 건너뛰기를 쓴다.
+func grepSearchFile(path string, options grepOptions, printer *grepPrinter, hints *grepHints) (bool, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return false, err
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return false, err
+	}
+	if info.IsDir() {
+		return false, nil
+	}
+	if !options.since.IsZero() && info.ModTime().Add(grepTolerance).Before(options.since) {
+		hints.skippedOld = append(hints.skippedOld, path)
+		return false, nil
+	}
+	if strings.HasSuffix(path, ".gz") {
+		reader, err := gzip.NewReader(bufio.NewReaderSize(file, 1<<20))
+		if err != nil {
+			return false, err
+		}
+		defer reader.Close()
+		return grepSequentialSearch(reader, path, options, printer, hints)
+	}
+	size := info.Size()
+	sample := make([]byte, min(size, int64(grepSampleSize)))
+	if _, err := io.ReadFull(io.NewSectionReader(file, 0, int64(len(sample))), sample); err != nil {
+		return false, err
+	}
+	if bytes.IndexByte(sample[:min(len(sample), grepBinaryProbe)], 0) >= 0 {
+		hints.binary = append(hints.binary, path)
+		return false, nil
+	}
+	format := grepDetectFormat(sample, int64(len(sample)) == size)
+	matcher, err := newGrepMatcher(options.pattern, options.regex, options.ignoreCase, sample)
+	if err != nil {
+		return false, err
+	}
+	filter := grepFilterFor(format, options)
+	scanner := newGrepScanner(matcher, filter)
+	printer.begin(path, matcher)
+	report := &grepFileReport{path: path, size: size}
+	defer func() { hints.reports = append(hints.reports, *report) }()
+	found := false
+	emit := func(ref grepLineRef) bool {
+		found = true
+		if options.listFiles {
+			return false
+		}
+		printer.match(ref, file)
+		return true
+	}
+	defer func() {
+		if found && options.listFiles {
+			printer.file(path)
+		}
+	}()
+	if options.last > 0 {
+		lines, read, err := scanner.scanLast(file, size, options.last)
+		report.lastRead = read
+		for _, line := range lines {
+			if !emit(grepLineRef{offset: line.offset, text: line.text}) {
+				break
+			}
+		}
+		return found, err
+	}
+	return grepSearchPlain(file, size, scanner, filter, options, report, emit)
+}
+
+// grepSearchPlain은 파일을 훑는다. --since가 있고 로그가 시간 순서면 그 자리를 이진 탐색해 앞부분을 건너뛴다.
+func grepSearchPlain(file *os.File, size int64, scanner grepScanner, filter *grepFilter, options grepOptions, report *grepFileReport, emit func(grepLineRef) bool) (bool, error) {
+	found := false
+	wrapped := func(ref grepLineRef) bool {
+		found = true
+		return emit(ref)
+	}
+	from := int64(0)
+	if filter != nil && !options.since.IsZero() {
+		offset, _, ok := filter.seek(file, size, options.since.Add(-grepTolerance))
+		switch {
+		case ok:
+			from = offset
+			report.skipped = offset
+		case filter.format == viewFormatPlain:
+			report.noTime = true
+		default:
+			report.seekFailed = true
+		}
+	}
+	lineBase := int64(-1)
+	if options.numbers {
+		lineBase = 0
+		if from > 0 {
+			counted, err := grepCountNewlines(file, 0, from)
+			if err != nil {
+				return false, err
+			}
+			lineBase, report.counted = counted, counted
+		}
+	}
+	if filter != nil {
+		if err := filter.prime(file, from); err != nil {
+			return false, err
+		}
+	}
+	read, err := scanner.scanRange(file, from, size, lineBase, wrapped)
+	report.bytesRead = read
+	return found, err
+}
+
+// grepSequentialSearch는 stdin과 .gz처럼 되감을 수 없는 입력이다. 줄을 차례로 읽으며 조건을 대고, -C는 앞 줄을 ring에 둔다.
+// --last는 마지막 N개만 남겨 끝에 낸다.
+func grepSequentialSearch(reader io.Reader, name string, options grepOptions, printer *grepPrinter, hints *grepHints) (bool, error) {
+	buffered := bufio.NewReaderSize(reader, 1<<20)
+	sample, _ := buffered.Peek(grepSampleSize)
+	if bytes.IndexByte(sample[:min(len(sample), grepBinaryProbe)], 0) >= 0 {
+		hints.binary = append(hints.binary, name)
+		return false, nil
+	}
+	format := grepDetectFormat(sample, len(sample) < grepSampleSize)
+	matcher, err := newGrepMatcher(options.pattern, options.regex, options.ignoreCase, sample)
+	if err != nil {
+		return false, err
+	}
+	filter := grepFilterFor(format, options)
+	accept := matcher.match
+	if filter != nil {
+		filter.matcher = matcher
+		accept = func(line []byte) bool { return filter.prefilter(line) && filter.accept(line) }
+	}
+	printer.begin(name, matcher)
+	var before [][]byte
+	var last []grepLine
+	after := 0
+	found := false
+	var offset, number int64
+	for {
+		line, consumed, err := grepReadLine(buffered, grepLineLimit)
+		if consumed == 0 && err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			return found, err
+		}
+		number++
+		ref := grepLineRef{offset: offset, number: number, text: line}
+		matched := accept(line)
+		switch {
+		case options.last > 0:
+			if matched {
+				last = append(last, grepLine{offset, bytes.Clone(line)})
+				if len(last) > options.last {
+					last = last[1:]
+				}
+				found = true
+			}
+		case matched:
+			found = true
+			if options.listFiles {
+				printer.file(name)
+				return true, nil
+			}
+			printer.matchWithContext(before, ref)
+			before, after = before[:0], options.context
+		case after > 0:
+			printer.after(ref)
+			after--
+		case options.context > 0:
+			before = append(before, bytes.Clone(line))
+			if len(before) > options.context {
+				before = before[1:]
+			}
+		}
+		offset += int64(consumed)
+		if err != nil || (filter != nil && filter.exhausted) {
+			break
+		}
+	}
+	for _, line := range last {
+		printer.match(grepLineRef{offset: line.offset, text: line.text}, nil)
+	}
+	if found && options.listFiles {
+		printer.file(name)
+	}
+	return found, nil
+}
+
+// grepReadLine은 줄 하나를 줄바꿈 없이 돌려준다. limit보다 긴 줄은 앞부분만 남기고 나머지는 버린다. consumed는 줄바꿈까지
+// 읽은 바이트다.
+func grepReadLine(reader *bufio.Reader, limit int) ([]byte, int, error) {
+	var line []byte
+	consumed := 0
+	for {
+		chunk, err := reader.ReadSlice('\n')
+		consumed += len(chunk)
+		if len(line)+len(chunk) <= limit {
+			line = append(line, chunk...)
+		} else if len(line) < limit {
+			line = append(line, chunk[:limit-len(line)]...)
+		}
+		if errors.Is(err, bufio.ErrBufferFull) {
+			continue
+		}
+		if len(line) != 0 && line[len(line)-1] == '\n' {
+			line = line[:len(line)-1]
+		}
+		return bytes.TrimSuffix(line, []byte("\r")), consumed, err
+	}
+}
+
+// grepPrinter는 grep과 같은 모양으로 줄을 낸다. 파일이 여럿이면 경로를, -n이면 줄 번호를 앞에 붙이고, -C의 앞뒤 줄은 ':' 대신
+// '-'로 잇는다. 색은 터미널에서만 쓰고, 그때는 제어 문자도 지운다.
+type grepPrinter struct {
+	out      *bufio.Writer
+	color    bool
+	showPath bool
+	numbers  bool
+	context  int
+	path     string
+	matcher  *grepMatcher
+	// lastEnd는 마지막으로 낸 줄의 끝 offset이다. 그 뒤에 바로 이어지지 않는 줄을 -C로 내기 전에 "--"를 둔다.
+	lastEnd int64
+	printed bool
+}
+
+func (printer *grepPrinter) begin(path string, matcher *grepMatcher) {
+	printer.path, printer.matcher, printer.lastEnd, printer.printed = path, matcher, -1, false
+}
+
+func (printer *grepPrinter) file(path string) {
+	if printer.color {
+		printer.out.WriteString(richPaint(path, richMagenta, false))
+	} else {
+		printer.out.WriteString(path)
+	}
+	printer.out.WriteByte('\n')
+}
+
+// match는 맞는 줄 하나를 낸다. file이 있으면 -C의 앞뒤 줄을 그 자리에서 읽는다.
+func (printer *grepPrinter) match(ref grepLineRef, file io.ReaderAt) {
+	if printer.context == 0 || file == nil {
+		printer.gap(ref.offset)
+		printer.write(ref.offset, ref.number, ref.text, ':', true)
+		return
+	}
+	before, after := grepContextLines(file, ref.offset, len(ref.text), printer.context)
+	printer.matchWithContext(before, ref)
+	offset := ref.offset + int64(len(ref.text)) + 1
+	for index, line := range after {
+		number := int64(0)
+		if ref.number > 0 {
+			number = ref.number + int64(index) + 1
+		}
+		printer.write(offset, number, line, '-', false)
+		offset += int64(len(line)) + 1
+	}
+}
+
+// matchWithContext는 앞 줄 before와 맞는 줄을 낸다. 이미 낸 줄과 겹치는 앞 줄은 다시 내지 않는다.
+func (printer *grepPrinter) matchWithContext(before [][]byte, ref grepLineRef) {
+	offset := ref.offset
+	for _, line := range before {
+		offset -= int64(len(line)) + 1
+	}
+	printer.gap(offset)
+	for index, line := range before {
+		if offset > printer.lastEnd || printer.lastEnd < 0 {
+			number := int64(0)
+			if ref.number > 0 {
+				number = ref.number - int64(len(before)-index)
+			}
+			printer.write(offset, number, line, '-', false)
+		}
+		offset += int64(len(line)) + 1
+	}
+	printer.write(ref.offset, ref.number, ref.text, ':', true)
+}
+
+func (printer *grepPrinter) after(ref grepLineRef) {
+	if ref.offset >= printer.lastEnd {
+		printer.write(ref.offset, ref.number, ref.text, '-', false)
+	}
+}
+
+// gap은 -C에서 앞 묶음과 이어지지 않을 때 "--"를 낸다.
+func (printer *grepPrinter) gap(offset int64) {
+	if printer.context > 0 && printer.printed && offset > printer.lastEnd {
+		if printer.color {
+			printer.out.WriteString(richDim("--"))
+		} else {
+			printer.out.WriteString("--")
+		}
+		printer.out.WriteByte('\n')
+	}
+}
+
+func (printer *grepPrinter) write(offset, number int64, text []byte, separator byte, matched bool) {
+	if offset < printer.lastEnd {
+		return
+	}
+	paint := func(value, color string) string {
+		if printer.color {
+			return richPaint(value, color, false)
+		}
+		return value
+	}
+	sep := string(separator)
+	if printer.color {
+		sep = richDim(sep)
+	}
+	if printer.showPath {
+		printer.out.WriteString(paint(printer.path, richMagenta) + sep)
+	}
+	if printer.numbers && number > 0 {
+		printer.out.WriteString(paint(strconv.FormatInt(number, 10), richGreen) + sep)
+	}
+	if printer.color {
+		printer.out.WriteString(printer.highlight(text, matched))
+	} else {
+		printer.out.Write(text)
+	}
+	printer.out.WriteByte('\n')
+	printer.lastEnd, printer.printed = offset+int64(len(text))+1, true
+}
+
+// highlight는 제어 문자를 지운 줄에서 패턴이 맞은 자리를 굵은 빨강으로 칠한다.
+func (printer *grepPrinter) highlight(text []byte, matched bool) string {
+	if !matched || printer.matcher == nil || (printer.matcher.regex == nil && len(printer.matcher.literal) == 0) {
+		return viewSanitize(string(text))
+	}
+	var ranges [][]int
+	if printer.matcher.regex != nil {
+		ranges = printer.matcher.regex.FindAllIndex(text, -1)
+	} else {
+		position := 0
+		for {
+			index := bytes.Index(text[position:], printer.matcher.literal)
+			if index < 0 {
+				break
+			}
+			ranges = append(ranges, []int{position + index, position + index + len(printer.matcher.literal)})
+			position += index + len(printer.matcher.literal)
+		}
+	}
+	var builder strings.Builder
+	position := 0
+	for _, span := range ranges {
+		if span[1] <= span[0] {
+			continue
+		}
+		builder.WriteString(viewSanitize(string(text[position:span[0]])))
+		builder.WriteString(richPaint(viewSanitize(string(text[span[0]:span[1]])), richRed, true))
+		position = span[1]
+	}
+	builder.WriteString(viewSanitize(string(text[position:])))
+	return builder.String()
+}
+
+// grepContextLines는 offset에서 시작하는 줄의 앞 count줄과 뒤 count줄이다. 앞뒤 grepContextWindow 안에서만 찾는다.
+func grepContextLines(file io.ReaderAt, offset int64, length, count int) ([][]byte, [][]byte) {
+	var before, after [][]byte
+	if offset > 0 {
+		start := offset - grepContextWindow
+		if start < 0 {
+			start = 0
+		}
+		buffer := make([]byte, offset-start)
+		n, _ := file.ReadAt(buffer, start)
+		buffer = buffer[:n]
+		if start > 0 {
+			if newline := bytes.IndexByte(buffer, '\n'); newline >= 0 {
+				buffer = buffer[newline+1:]
+			} else {
+				buffer = nil
+			}
+		}
+		lines := bytes.Split(bytes.TrimSuffix(buffer, []byte{'\n'}), []byte{'\n'})
+		if len(buffer) == 0 {
+			lines = nil
+		}
+		if len(lines) > count {
+			lines = lines[len(lines)-count:]
+		}
+		before = lines
+	}
+	next := offset + int64(length) + 1
+	buffer := make([]byte, grepContextWindow)
+	n, _ := file.ReadAt(buffer, next)
+	buffer = buffer[:n]
+	for len(after) < count && len(buffer) != 0 {
+		end := bytes.IndexByte(buffer, '\n')
+		if end < 0 {
+			if n < grepContextWindow {
+				after = append(after, buffer)
+			}
+			break
+		}
+		after = append(after, buffer[:end])
+		buffer = buffer[end+1:]
+	}
+	return before, after
+}
+
+// grepHints는 stderr가 터미널일 때 검색이 어떻게 진행됐는지 알리는 줄이다. 무엇을 건너뛰었는지 말해야 결과를 믿을 수 있다.
+type grepHints struct {
+	options    grepOptions
+	reports    []grepFileReport
+	skippedOld []string
+	binary     []string
+}
+
+func (hints *grepHints) render(out io.Writer, color bool) {
+	emit := func(text string) {
+		line := T("grep.hint.prefix") + text
+		if color {
+			line = richDim(line)
+		}
+		fmt.Fprintln(out, line)
+	}
+	for _, report := range hints.reports {
+		name := report.path
+		switch {
+		case report.skipped > 0:
+			emit(T("grep.hint.seek", name, formatSizeShort(uint64(report.skipped)), formatSizeShort(uint64(report.bytesRead))))
+		case report.noTime:
+			emit(T("grep.hint.no_time", name))
+		case report.seekFailed:
+			emit(T("grep.hint.seek_failed", name))
+		}
+		if report.counted > 0 {
+			emit(T("grep.hint.counted", name, groupThousands(report.counted)))
+		}
+		if report.lastRead > 0 {
+			emit(T("grep.hint.last", name, formatSizeShort(uint64(report.lastRead))))
+		}
+	}
+	if len(hints.skippedOld) > 0 {
+		emit(T("grep.hint.skipped_old", len(hints.skippedOld), grepJoinNames(hints.skippedOld)))
+	}
+	if len(hints.binary) > 0 {
+		emit(T("grep.hint.binary", len(hints.binary), grepJoinNames(hints.binary)))
+	}
+}
+
+func grepJoinNames(names []string) string {
+	if len(names) <= grepHintNames {
+		return strings.Join(names, ", ")
+	}
+	return strings.Join(names[:grepHintNames], ", ") + ", …"
+}

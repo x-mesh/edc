@@ -89,6 +89,8 @@ func Run(args []string, version string) int {
 		return runInfo(args[1:], version)
 	case "view":
 		return runView(args[1:])
+	case "grep":
+		return runGrep(args[1:])
 	case "du":
 		return runDu(args[1:], version)
 	case "clean":

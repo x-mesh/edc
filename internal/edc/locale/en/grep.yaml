@@ -1,0 +1,16 @@
+# English messages for the grep command.
+grep:
+  failed: "edc grep: %v"
+  stdin: "(standard input)"
+  bad_level: "edc grep: unknown level %q; use trace, debug, info, warn, error, or fatal"
+  bad_status: "edc grep: cannot read status %q; use 5xx, 404, or 500-503, separated by commas"
+  bad_time: "edc grep: cannot read time %q; use 10m, 2h, 1d, 2026-10-27 09:00, or 09:00"
+  hint:
+    prefix: "hint: "
+    last: "%s: --last read %s from the end"
+    seek: "%s: --since skipped %s and read %s"
+    seek_failed: "%s: lines are not in time order, so the file was read whole"
+    no_time: "%s: no timestamps found, so --since and --until matched nothing"
+    counted: "%s: counted %s skipped lines for -n"
+    skipped_old: "%d files last changed before --since were not opened: %s"
+    binary: "%d binary files skipped: %s"

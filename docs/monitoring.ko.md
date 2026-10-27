@@ -433,7 +433,7 @@ kubectl logs deploy/api | edc grep -i refund
 
 index는 1 MB 블록마다 글자 trigram, 시각 범위, level, status 범주를 기록하며 크기는 파일의 0.8%입니다. 파일의 첫 검색은 `grep`처럼 전체를 읽고 표시만 남깁니다. `--index`는 지금 만들고, `--no-index`는 쓰지 않습니다. 파일이 줄거나 첫 블록이나 마지막으로 index한 블록이 바뀌면 index를 버립니다. 블록이 checksum과 맞지 않으면 index를 버리고 파일 전체를 읽습니다. 블록의 20%보다 많이 맞을 수 있으면 파일을 순서대로 읽습니다.
 
-stderr가 터미널이면 검색마다 index를 썼는지, 만들었는지, 왜 쓰지 않았는지 알립니다. `--verify-index`는 index 결과를 전체 읽기와 비교합니다.
+index는 로그가 뒤에만 쌓인다고 가정합니다. 제자리에서 고친 파일은 크기가 줄거나 첫 블록이나 마지막 index 블록이 바뀌기 전까지 index를 그대로 쓰므로, 그런 파일에는 `--no-index`나 `--verify-index`를 쓰세요. stderr가 터미널이면 검색마다 index를 썼는지, 만들었는지, 왜 쓰지 않았는지 알립니다. `--verify-index`는 index 결과를 전체 읽기와 비교합니다.
 
 `--level warn`은 warn 이상인 줄입니다. stack trace 줄은 그 `ERROR` 줄의 level과 시각을 물려받습니다. `--status`는 `5xx`, `404`, `500-503`을 쉼표로 이어 받습니다. `--since`와 `--until`은 `10m`, `2h`, `1d`, `2026-10-27 09:00`, `09:00`을 받습니다.
 

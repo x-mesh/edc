@@ -3,6 +3,7 @@ package edc
 import (
 	"bytes"
 	"compress/gzip"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -362,6 +363,13 @@ func TestGrepCommandBuildsAndUsesAnIndex(t *testing.T) {
 	if code != 0 || indexed != plain {
 		t.Fatalf("indexed: code %d, output differs", code)
 	}
+	// -l은 첫 일치에서 멈추므로 전체 읽기와 건수가 다르다. 그래도 올바른 index를 지우면 안 된다.
+	if code, listed, _ := grepCommand(t, "", "-l", "--verify-index", "refunded", path); code != 0 || listed != path+"\n" {
+		t.Fatalf("-l with --verify-index: code %d output %q", code, listed)
+	}
+	if entries, _ := os.ReadDir(dir); len(entries) == 0 {
+		t.Fatal("-l with --verify-index removed the index")
+	}
 	code, errors, _ := grepCommand(t, "", "-n", "--verify-index", "--level", "error", "Db.java:3", path)
 	code2, errorsPlain, _ := grepCommand(t, "", "-n", "--no-index", "--level", "error", "Db.java:3", path)
 	if code != 0 || code2 != 0 || errors != errorsPlain || errors == "" {
@@ -400,5 +408,15 @@ func TestGrepHintsAlwaysStateTheIndex(t *testing.T) {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("hints miss %q:\n%s", want, out.String())
 		}
+	}
+}
+
+func TestGrepJobsAreCapped(t *testing.T) {
+	options, _, err := parseGrepOptions([]string{"--jobs", "100000", "x", "/dev/null"}, io.Discard, time.Now())
+	if err != nil || options.jobs != grepMaxJobs {
+		t.Fatalf("jobs %d err %v", options.jobs, err)
+	}
+	if _, _, err := parseGrepOptions([]string{"--jobs", "-1", "x", "/dev/null"}, io.Discard, time.Now()); err == nil {
+		t.Fatal("a negative --jobs must be a usage error")
 	}
 }

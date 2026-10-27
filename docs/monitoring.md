@@ -499,7 +499,7 @@ With `--level`, `--status`, `--since`, or `--until`, you can leave out the patte
 
 The index records, for each 1 MB block, the letter trigrams, the time range, the levels, and the status classes. It takes 0.8% of the file. The first search of a file reads the file whole, like `grep`, and leaves a marker. `--index` builds the index now, and `--no-index` ignores it. `edc grep` discards the index if the file shrinks or if its first or last indexed block changes. If a block does not match its checksum, the search drops the index and reads the file whole. When more than 20% of the blocks could match, the file is read in order instead.
 
-When stderr is a terminal, every search reports whether it used, built, or skipped the index. Use `--verify-index` to compare the index result with a whole read.
+The index assumes a log that only grows. A file edited in place keeps its index until it shrinks or its first or last indexed block changes. Use `--no-index` or `--verify-index` for such a file. When stderr is a terminal, every search reports whether it used, built, or skipped the index. Use `--verify-index` to compare the index result with a whole read.
 
 `--level warn` matches lines at warn or above. Lines of a stack trace carry the level and the time of their `ERROR` line. `--status` accepts `5xx`, `404`, and `500-503`, separated by commas. `--since` and `--until` accept `10m`, `2h`, `1d`, `2026-10-27 09:00`, and `09:00`.
 

@@ -126,6 +126,9 @@ func parseGrepOptions(args []string, stderr io.Writer, now time.Time) (grepOptio
 	if options.jobs == 0 {
 		options.jobs = grepSketchWorkers()
 	}
+	if options.jobs > grepMaxJobs {
+		options.jobs = grepMaxJobs
+	}
 	return options, paths, nil
 }
 
@@ -457,7 +460,6 @@ func grepSearchWithIndex(file *os.File, size int64, format viewFormat, matcher *
 	fresh, linesAt, err := search.run(pool, record)
 	report.blocks, report.blocksRead, report.bytesRead, report.indexBytes, report.sequential = int(plan.open.header.Blocks), search.blocksRead, search.bytesRead, plan.open.size, search.sequential
 	if errors.Is(err, errGrepIndexStale) {
-		pool.finish()
 		plan.open.close()
 		os.Remove(plan.path)
 		report.index = grepIndexOutcomeStale
@@ -476,7 +478,6 @@ func grepSearchWithIndex(file *os.File, size int64, format viewFormat, matcher *
 		return found, err
 	}
 	if err != nil {
-		pool.finish()
 		return found, err
 	}
 	report.index = grepIndexOutcomeUsed
@@ -490,7 +491,7 @@ func grepSearchWithIndex(file *os.File, size int64, format viewFormat, matcher *
 	now := time.Now()
 	os.Chtimes(plan.path, now, now)
 	if options.verify {
-		if err := grepVerifyIndex(file, size, scanner, filter, offsets, plan.path, report); err != nil {
+		if err := grepVerifyIndex(file, size, scanner, filter, offsets, plan.path, options.listFiles); err != nil {
 			return found, err
 		}
 	}
@@ -498,7 +499,8 @@ func grepSearchWithIndex(file *os.File, size int64, format viewFormat, matcher *
 }
 
 // grepVerifyIndex는 index를 거친 결과와 파일 전체를 훑은 결과를 비교한다. 다르면 index를 지우고 오류로 알린다.
-func grepVerifyIndex(file *os.File, size int64, scanner grepScanner, filter *grepFilter, indexed []int64, indexPath string, report *grepFileReport) error {
+// -l은 첫 일치에서 멈추므로 그때는 일치가 있는지만 비교한다.
+func grepVerifyIndex(file *os.File, size int64, scanner grepScanner, filter *grepFilter, indexed []int64, indexPath string, listFiles bool) error {
 	if filter != nil {
 		if err := filter.prime(file, 0); err != nil {
 			return err
@@ -512,7 +514,7 @@ func grepVerifyIndex(file *os.File, size int64, scanner grepScanner, filter *gre
 	}); err != nil {
 		return err
 	}
-	if fmt.Sprint(full) == fmt.Sprint(indexed) {
+	if fmt.Sprint(full) == fmt.Sprint(indexed) || (listFiles && (len(full) != 0) == (len(indexed) != 0)) {
 		return nil
 	}
 	os.Remove(indexPath)

@@ -369,3 +369,29 @@ func TestGrepScanBlocksEqualsScanRange(t *testing.T) {
 		}
 	}
 }
+
+// 검색이 일찍 끝나도(-l처럼 첫 일치에서 멈춤) sketch worker는 남지 않는다.
+func TestGrepIndexedSearchFinishesThePoolOnEarlyStop(t *testing.T) {
+	start := time.Date(2026, 10, 26, 0, 0, 0, 0, time.Local)
+	data := grepLevelLog(3000, start, 41)
+	path := filepath.Join(t.TempDir(), "level.idx")
+	grepBuildTestIndex(t, path, data, viewFormatLevel)
+	index, err := grepOpenIndex(path, grepTestBlock, viewFormatLevel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer index.close()
+	scanner, matcher, _ := grepTestScanner(t, "refunded", false, false, viewFormatLevel, nil, data)
+	search := &grepIndexedSearch{index: index, file: bytes.NewReader(data), size: int64(len(data)), scanner: scanner, query: newGrepIndexQuery(matcher, false, nil)}
+	pool := newGrepSketchPool(viewFormatLevel, time.Now(), 2, int(index.header.Blocks))
+	if _, _, err := search.run(pool, func(grepLineRef) bool { return false }); err != nil {
+		t.Fatal(err)
+	}
+	if _, open := <-pool.jobs; open {
+		t.Fatal("the pool must be closed after the search stops")
+	}
+	// 다시 불러도 닫힌 채로 같은 결과다.
+	if sketches := pool.finish(); len(sketches) != 0 {
+		t.Fatalf("finish after an early stop returned %d sketches", len(sketches))
+	}
+}

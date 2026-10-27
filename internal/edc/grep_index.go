@@ -679,6 +679,9 @@ func grepIndexTrim(dir string, limit int64) error {
 	return nil
 }
 
+// grepMaxJobs는 --jobs의 상한이다. worker마다 블록 복사본과 goroutine이 따르므로 큰 값은 메모리만 쓴다.
+const grepMaxJobs = 64
+
 // grepSketchWorkers는 블록 sketch를 만드는 goroutine 수다. 코어의 절반, 최대 4개라서 장애 중인 서버의 코어를 다 쓰지 않는다.
 func grepSketchWorkers() int {
 	workers := runtime.NumCPU() / 2
@@ -700,6 +703,9 @@ type grepSketchPool struct {
 	first   int
 	mutex   sync.Mutex
 	group   sync.WaitGroup
+	// once는 finish를 한 번만 실행한다. run이 어느 길로 끝나도 worker를 닫고, 호출한 쪽이 다시 불러도 같은 결과를 준다.
+	once     sync.Once
+	sketches []grepSketch
 }
 
 func newGrepSketchPool(format viewFormat, now time.Time, workers, firstBlock int) *grepSketchPool {
@@ -726,18 +732,20 @@ func (pool *grepSketchPool) submit(region grepBlockRegion) {
 	pool.jobs <- region
 }
 
-// finish는 worker를 끝내고 첫 블록부터 빈틈없이 이어진 sketch를 순서대로 돌려준다.
+// finish는 worker를 끝내고 첫 블록부터 빈틈없이 이어진 sketch를 순서대로 돌려준다. 여러 번 불러도 한 번만 닫는다.
 func (pool *grepSketchPool) finish() []grepSketch {
-	close(pool.jobs)
-	pool.group.Wait()
-	var sketches []grepSketch
-	for index := pool.first; ; index++ {
-		sketch, ok := pool.results[index]
-		if !ok {
-			return sketches
+	pool.once.Do(func() {
+		close(pool.jobs)
+		pool.group.Wait()
+		for index := pool.first; ; index++ {
+			sketch, ok := pool.results[index]
+			if !ok {
+				return
+			}
+			pool.sketches = append(pool.sketches, sketch)
 		}
-		sketches = append(sketches, sketch)
-	}
+	})
+	return pool.sketches
 }
 
 var errGrepIndexStale = errors.New("grep index stale")
@@ -807,6 +815,10 @@ const grepIndexSequentialPercent = 20
 // 블록마다 따로 읽으면 마지막 줄의 나머지를 읽는 비용과 버퍼가 블록 수만큼 든다. 읽은 블록의 checksum이 index와 다르면
 // errGrepIndexStale이다. 그 뒤 index 밖의 꼬리를 훑는다. 돌려주는 값은 꼬리에서 만든 sketch와 그 끝까지의 줄바꿈 수다.
 func (search *grepIndexedSearch) run(pool *grepSketchPool, emit func(grepLineRef) bool) ([]grepSketch, int64, error) {
+	// 일찍 끝나는 길(오류, -l, 이미 끝까지 index된 파일)에서도 worker를 남기지 않는다.
+	if pool != nil {
+		defer pool.finish()
+	}
 	header := search.index.header
 	block := int64(header.Block)
 	if int64(search.scanner.block) != block {

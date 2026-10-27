@@ -239,7 +239,7 @@ func TestViewScreenPanelWidthFitsTheContent(t *testing.T) {
 		t.Fatalf("auth failures %d levels %v", auth.stats.failures, auth.stats.levels)
 	}
 	narrow := strings.Join(viewScreenWith(t, "auth.log", 90, 40).screen(false), "\n")
-	if !strings.Contains(narrow, "top programs  sshd-session 5") {
+	if !strings.Contains(narrow, "top programs  sshd-session 5") || !strings.Contains(narrow, "top clients  192.0.2.10 2") {
 		t.Fatalf("narrow auth panel:\n%s", narrow)
 	}
 	// goloop 로그는 module이 상위 프로그램이고, level 글자가 LEVEL에 센다.

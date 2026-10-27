@@ -606,7 +606,7 @@ func (model viewScreenModel) panelRows(width int, color bool) []string {
 	for _, top := range []struct {
 		title  string
 		counts map[string]int
-	}{{"top paths  ", model.stats.paths}, {"top programs  ", model.stats.programs}} {
+	}{{"top paths  ", model.stats.paths}, {"top clients  ", model.stats.clients}, {"top programs  ", model.stats.programs}} {
 		entries := viewTop(top.counts)
 		if len(entries) == 0 {
 			continue

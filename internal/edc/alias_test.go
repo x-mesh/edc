@@ -3,7 +3,9 @@ package edc
 import (
 	"bytes"
 	"errors"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -91,5 +93,35 @@ func TestAliasScriptSkipsAnExistingAliasWhenSourced(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "echo mine") || !strings.Contains(stdout.String(), "edc view") {
 		t.Fatalf("stdout %q", stdout.String())
+	}
+}
+
+func TestAliasScriptSkipsAFunctionAndACommandWhenSourced(t *testing.T) {
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skip("bash is not installed")
+	}
+	// PATH에 있는 명령 edu와 셸 함수 edoc은 건너뛴다. 함수는 지우는 방법을 알리고, 명령은 이름을 바꾸는 방법만 알린다.
+	directory := t.TempDir()
+	if err := os.WriteFile(filepath.Join(directory, "edu"), []byte("#!/bin/sh\necho mine\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	command := exec.Command(bash, "-c", `edoc() { echo mine; }; eval "$(cat)"; type -t edoc; type -t edu; alias etop`)
+	command.Env = append(os.Environ(), "PATH="+directory+string(os.PathListSeparator)+os.Getenv("PATH"))
+	command.Stdin = strings.NewReader(renderAliases("bash", false, nil))
+	var stdout, stderr bytes.Buffer
+	command.Stdout, command.Stderr = &stdout, &stderr
+	if err := command.Run(); err != nil {
+		t.Fatalf("bash: %v\nstdout %s\nstderr %s", err, &stdout, &stderr)
+	}
+	if !strings.Contains(stderr.String(), "edc alias: edoc is already a function; skipped. Use another name: alias xedoc='edc doctor'  or remove yours: unset -f edoc") {
+		t.Fatalf("function notice: %q", stderr.String())
+	}
+	commandNotice := "edc alias: edu is already a command; skipped. Use another name: alias xedu='edc du'\n"
+	if !strings.Contains(stderr.String(), commandNotice) {
+		t.Fatalf("command notice: %q", stderr.String())
+	}
+	if got := stdout.String(); !strings.Contains(got, "function\nfile\n") || !strings.Contains(got, "alias etop='edc top'") {
+		t.Fatalf("stdout %q", got)
 	}
 }

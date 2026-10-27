@@ -98,15 +98,6 @@ func TestGrepModelDownloadConfirmationIntegrityAndCleanup(t *testing.T) {
 	if err := grepModelCheck(dir); err != nil {
 		t.Fatal(err)
 	}
-	if err := grepModelQuickCheck(dir); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(filepath.Join(dir, grepModelStampName)); err != nil {
-		t.Fatalf("verified stamp missing: %v", err)
-	}
-	if err := grepModelQuickCheck(dir); err != nil {
-		t.Fatalf("stamped check: %v", err)
-	}
 	for _, name := range []string{model.name, vocab.name, rt.libName} {
 		info, err := os.Stat(filepath.Join(dir, name))
 		if err != nil || info.Mode().Perm() != 0600 {
@@ -122,9 +113,6 @@ func TestGrepModelDownloadConfirmationIntegrityAndCleanup(t *testing.T) {
 	damaged := filepath.Join(dir, model.name)
 	if err := os.WriteFile(damaged, []byte("damaged"), 0600); err != nil {
 		t.Fatal(err)
-	}
-	if err := grepModelQuickCheck(dir); err == nil {
-		t.Fatal("stamp hid a changed model")
 	}
 	broken.Store(true)
 	if err := grepEnsureModel(strings.NewReader(""), false, true, &output); err == nil {

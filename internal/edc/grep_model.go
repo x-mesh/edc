@@ -146,66 +146,6 @@ func grepModelCheck(dir string) error {
 	return grepCheckModelAssets(dir, model, vocab, rt)
 }
 
-// 검색마다 약 100 MiB를 다시 해시하지 않도록, 전체 SHA-256 검증을 통과한 파일의 크기·mtime·inode를
-// 기록해 두고 그대로면 검증을 건너뛴다. 하나라도 다르면 전체 검증으로 돌아간다.
-// 캐시 디렉터리에 쓸 수 있는 사용자는 기록도 고칠 수 있으므로 이 기록은 우발적 손상만 막는다.
-func grepModelQuickCheck(dir string) error {
-	model, vocab, rt, err := grepModelManifest()
-	if err != nil {
-		return err
-	}
-	stamp, err := grepModelStamp(dir, model, vocab, rt)
-	if err == nil {
-		if saved, readErr := os.ReadFile(filepath.Join(dir, grepModelStampName)); readErr == nil && string(saved) == stamp {
-			return nil
-		}
-	}
-	if err := grepCheckModelAssets(dir, model, vocab, rt); err != nil {
-		return err
-	}
-	if stamp, err := grepModelStamp(dir, model, vocab, rt); err == nil {
-		// 기록 실패는 다음 검색에서 전체 검증을 한 번 더 할 뿐이라 검색을 실패시키지 않는다.
-		_ = grepWriteModelStamp(dir, stamp)
-	}
-	return nil
-}
-
-const grepModelStampName = "verified"
-
-func grepModelStamp(dir string, model, vocab grepModelAsset, rt grepRuntimeAsset) (string, error) {
-	var out strings.Builder
-	for _, name := range []string{model.name, vocab.name, rt.libName} {
-		info, err := os.Stat(filepath.Join(dir, name))
-		if err != nil {
-			return "", err
-		}
-		var inode uint64
-		if stat, ok := info.Sys().(*syscall.Stat_t); ok {
-			inode = uint64(stat.Ino)
-		}
-		fmt.Fprintf(&out, "%s %d %d %d\n", name, info.Size(), info.ModTime().UnixNano(), inode)
-	}
-	return out.String(), nil
-}
-
-func grepWriteModelStamp(dir, stamp string) error {
-	file, err := os.CreateTemp(dir, grepModelStampName+".*")
-	if err != nil {
-		return err
-	}
-	name := file.Name()
-	if _, err := file.WriteString(stamp); err != nil {
-		file.Close()
-		os.Remove(name)
-		return err
-	}
-	if err := file.Close(); err != nil {
-		os.Remove(name)
-		return err
-	}
-	return os.Rename(name, filepath.Join(dir, grepModelStampName))
-}
-
 func grepCheckModelAssets(dir string, model, vocab grepModelAsset, rt grepRuntimeAsset) error {
 	for _, asset := range []grepModelAsset{model, vocab, {rt.libName, "", rt.libSHA, rt.libSize}} {
 		if err := grepVerifyFile(filepath.Join(dir, asset.name), asset.sha, asset.size); err != nil {

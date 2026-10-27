@@ -47,7 +47,7 @@ func grepSemanticNative(texts []string, progress io.Writer) (grepSemanticEncoded
 		return grepSemanticEncoded{}, err
 	}
 	defer unlock()
-	if err := grepModelQuickCheck(dir); err != nil {
+	if err := grepModelCheck(dir); err != nil {
 		return grepSemanticEncoded{}, fmt.Errorf("%s: %w", T("grep.model.missing"), err)
 	}
 	_, _, rt, err := grepModelManifest()

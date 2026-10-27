@@ -348,12 +348,29 @@ func grepSearchFile(path string, options grepOptions, printer *grepPrinter, hint
 		report.index = grepIndexOutcomeLast
 		lines, read, err := scanner.scanLast(file, size, options.last)
 		report.lastRead = read
-		for _, line := range lines {
-			if !emit(grepLineRef{offset: line.offset, text: line.text}) {
+		if err != nil {
+			return false, err
+		}
+		// 끝에서 읽은 줄은 번호를 모른다. -n이면 처음부터 첫 일치까지, 그 뒤로는 일치 사이의 줄바꿈을 세어 번호를 매긴다.
+		numbers := make([]int64, len(lines))
+		if options.numbers {
+			var number, from int64
+			for index, line := range lines {
+				counted, err := grepCountNewlines(file, from, line.offset)
+				if err != nil {
+					return false, err
+				}
+				number += counted
+				numbers[index], from = number+1, line.offset
+			}
+			report.counted = number
+		}
+		for index, line := range lines {
+			if !emit(grepLineRef{offset: line.offset, number: numbers[index], text: line.text}) {
 				break
 			}
 		}
-		return found, err
+		return found, nil
 	}
 	plan := grepPlanIndex(options, info, size, format, report)
 	if plan.open != nil {
@@ -634,6 +651,8 @@ func grepSequentialSearch(reader io.Reader, name string, options grepOptions, pr
 	after := 0
 	found := false
 	var offset, number int64
+	// 마지막 줄과 함께 온 읽기 오류(잘린 gzip 등)는 줄을 처리한 뒤에 돌려준다. 성공으로 끝나면 잘린 입력을 온전한 결과로 믿게 된다.
+	var readErr error
 	for {
 		line, consumed, err := grepReadLine(buffered, grepLineLimit)
 		if consumed == 0 && err != nil {
@@ -673,6 +692,9 @@ func grepSequentialSearch(reader io.Reader, name string, options grepOptions, pr
 		}
 		offset += int64(consumed)
 		if err != nil {
+			if !errors.Is(err, io.EOF) {
+				readErr = err
+			}
 			break
 		}
 	}
@@ -682,7 +704,7 @@ func grepSequentialSearch(reader io.Reader, name string, options grepOptions, pr
 	if found && options.listFiles {
 		printer.file(name)
 	}
-	return found, nil
+	return found, readErr
 }
 
 // grepReadLine은 줄 하나를 줄바꿈 없이 돌려준다. limit보다 긴 줄은 앞부분만 남기고 나머지는 버린다. consumed는 줄바꿈까지

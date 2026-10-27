@@ -420,3 +420,28 @@ func TestGrepJobsAreCapped(t *testing.T) {
 		t.Fatal("a negative --jobs must be a usage error")
 	}
 }
+
+// --last는 끝에서 읽지만 -n이 있으면 줄 번호도 낸다. 그 번호는 처음부터 줄바꿈을 세어 얻는다.
+func TestGrepCommandLastPrintsLineNumbers(t *testing.T) {
+	dir := grepFixtureDir(t)
+	code, stdout, _ := grepCommand(t, "", "-n", "--last", "2", "users", filepath.Join(dir, "access.log"))
+	if code != 0 || !strings.HasPrefix(stdout, "4:198.51.100.4") || !strings.Contains(stdout, "\n6:192.0.2.77") {
+		t.Fatalf("-n --last 2:\n%s", stdout)
+	}
+}
+
+// gzip 꼬리가 잘린 파일은 마지막 줄을 낸 뒤라도 오류로 끝나야 한다. 성공으로 끝나면 잘린 입력을 완전한 결과로 믿게 된다.
+func TestGrepCommandReportsATruncatedGzip(t *testing.T) {
+	var zipped bytes.Buffer
+	writer := gzip.NewWriter(&zipped)
+	writer.Write([]byte("alpha\nbeta"))
+	writer.Close()
+	path := filepath.Join(t.TempDir(), "cut.log.gz")
+	if err := os.WriteFile(path, zipped.Bytes()[:zipped.Len()-8], 0o600); err != nil {
+		t.Fatal(err)
+	}
+	code, _, stderr := grepCommand(t, "", "beta", path)
+	if code != 2 || !strings.Contains(stderr, "cut.log.gz") {
+		t.Fatalf("truncated gzip: code %d stderr %q", code, stderr)
+	}
+}

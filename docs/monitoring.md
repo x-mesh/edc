@@ -470,7 +470,9 @@ The syslog format reads `auth.log`, `syslog`, and the output of `journalctl`. Th
 
 The goloop format is the log of an ICON goloop node: the level letter (`P`, `F`, `E`, `W`, `I`, `D`, or `T`), the time, the wallet, the chain id, and the module, with `|` between them, then the source location and the message. The module fills the top programs. A line that does not start with a level letter, such as a stack trace after a panic, belongs to the line above it.
 
-Press Up or PgUp to stop the list. The header then shows `paused` and counts the new lines. Press End, `l`, or Esc to follow again. Press `/` to filter the lines by text. Press Enter to show the fields of a line, the whole line, and the stack trace lines below it.
+Press Up or PgUp to stop the list. The header then shows `paused` and counts the new lines. Press End, `l`, or Esc to follow again. In an access log, the list shows the time, status, method, bytes, and path. A host, client, or date that is the same on every kept line is hidden, and the header names it, for example `hidden: host int.example.com · client 203.0.113.9`. Press `c` to show the raw lines. Press Left or Right to scroll the list sideways.
+
+Press `/` to filter the lines by text. Press Enter to show the fields of a line, the whole line, and the stack trace lines below it.
 
 The stats panel shows the lines per second, the errors, the status classes or the levels, the last error, and the top paths, clients, and programs. It counts only the lines that the screen keeps, 10,000 by default. If the terminal has 120 columns or more, the panel is on the right. The panel is as wide as its longest row and at most 38 columns, so a log with few stats leaves more room for the lines. If the terminal is narrower, the panel is below the list. Press `i` to hide the panel.
 

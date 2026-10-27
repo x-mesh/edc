@@ -199,6 +199,7 @@ command:
     notes:
       - "In a terminal, it opens a screen at the end of the file and follows new lines."
       - "Up or PgUp stops the list, and the header counts the new lines. End, l, or Esc follows again."
+      - "In an access log, the list shows time, status, method, bytes, and path. A host, client, or date that is the same on every kept line is hidden and named in the header. c shows the raw lines, and ← → scroll the list sideways."
       - "It reads nginx and Apache access logs, JSON lines, and lines with a level such as ERROR or WARN."
       - "The stats panel counts status classes or levels, top paths and clients, and the last error."
       - "The stats count only the lines that the screen keeps. i hides the panel."

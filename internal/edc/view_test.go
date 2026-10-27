@@ -608,3 +608,23 @@ func TestParseViewAccessLineWithBareRequestAndBody(t *testing.T) {
 		}
 	}
 }
+
+// $host를 앞에 두고 IP를 둘 남기는 nginx log_format이다. 첫 낱말은 client가 아니라 host다.
+func TestParseViewAccessLineWithHostPrefix(t *testing.T) {
+	text := `int.example.com 203.0.113.9 198.51.100.4 - - [27/Oct/2026:16:43:23 +0900] "GET /board/draft HTTP/1.1" 200 512 "-" "curl/8.4.0"`
+	line := parseViewLine(text, viewFormatAccess, nil)
+	if line.client != "203.0.113.9" || line.status != 200 || line.path != "/board/draft" {
+		t.Fatalf("fields: %+v", line)
+	}
+	if !viewHasField(line.fields, "host", "int.example.com") || !viewHasField(line.fields, "forwarded for", "198.51.100.4") {
+		t.Fatalf("host and forwarded fields: %+v", line.fields)
+	}
+	if detectViewFormat([]string{text, text}) != viewFormatAccess {
+		t.Fatal("the host prefix must still read as access")
+	}
+	// 흔한 common, combined 형식은 그대로 첫 낱말이 client다.
+	plain := parseViewLine(`203.0.113.9 - alice [27/Oct/2026:16:43:23 +0900] "GET / HTTP/1.1" 200 1 "-" "x"`, viewFormatAccess, nil)
+	if plain.client != "203.0.113.9" || viewHasField(plain.fields, "host", "203.0.113.9") {
+		t.Fatalf("common line: %+v", plain)
+	}
+}

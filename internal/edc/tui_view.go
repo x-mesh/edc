@@ -2,6 +2,7 @@ package edc
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -49,12 +50,16 @@ type viewScreenModel struct {
 	// detail은 상세 화면에 연 줄의 번호다. -1이면 목록이다.
 	detail       int
 	detailOffset int
-	width        int
-	height       int
-	changed      time.Time
-	ended        bool
-	err          error
-	now          time.Time
+	// compact는 access 줄을 필드 열로 그리고 값이 모두 같은 열을 숨긴다. c로 원문과 오간다.
+	compact bool
+	// scroll은 목록을 왼쪽으로 민 칸 수다.
+	scroll  int
+	width   int
+	height  int
+	changed time.Time
+	ended   bool
+	err     error
+	now     time.Time
 }
 
 func newViewScreenModel(title string, keep int) viewScreenModel {
@@ -72,6 +77,7 @@ func newViewScreenModel(title string, keep int) viewScreenModel {
 		selected: -1,
 		detail:   -1,
 		panel:    true,
+		compact:  true,
 		input:    input,
 		width:    80,
 		height:   24,
@@ -316,6 +322,15 @@ func (model viewScreenModel) updateKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd)
 	case "i":
 		model.panel = !model.panel
 		return model, nil
+	case "c":
+		model.compact = !model.compact
+		return model, nil
+	case "left":
+		model.scroll = max(0, model.scroll-viewScrollStep)
+		return model, nil
+	case "right":
+		model.scroll += viewScrollStep
+		return model, nil
 	case "enter":
 		number := model.selected
 		if number < 0 {
@@ -374,7 +389,7 @@ func (model viewScreenModel) updateDetailKey(key string) (tea.Model, tea.Cmd) {
 	return model, nil
 }
 
-const viewScreenHelp = "/ filter  ↑↓ select  enter detail  i stats  l live  esc clear  q quit"
+const viewScreenHelp = "/ filter  ↑↓ select  ←→ scroll  enter detail  c compact  i stats  l live  esc clear  q quit"
 
 func (model viewScreenModel) View() tea.View {
 	color := traceScreenColor()
@@ -405,9 +420,22 @@ func (model viewScreenModel) header(color bool) []string {
 	line = append(line, traceField("format ", string(model.format), "")...)
 	line = append(line, traceSeparator)
 	line = append(line, traceField("filter ", emptyAs(model.filter, "all"), "")...)
+	if model.scroll > 0 {
+		line = append(line, traceSeparator)
+		line = append(line, traceField("scroll ", "→"+strconv.Itoa(model.scroll), "")...)
+	}
+	if model.compactOn() {
+		if hidden := model.columns().hidden; len(hidden) > 0 {
+			line = append(line, traceSeparator)
+			line = append(line, traceField("hidden: ", strings.Join(hidden, " · "), "")...)
+		}
+	}
 	on := []string{}
 	if model.panel {
 		on = append(on, "i stats")
+	}
+	if model.compactOn() {
+		on = append(on, "c compact")
 	}
 	if model.selected < 0 {
 		on = append(on, "l live")
@@ -476,26 +504,45 @@ func (model viewScreenModel) listLines(width, available int, color bool) []strin
 	// 고른 줄 위에 줄이 모자라면 남는 자리에 아래 줄을 채운다.
 	stop := min(len(shown), start+available)
 	rows := make([]string, 0, available)
+	var columns *viewColumns
+	if model.compactOn() {
+		found := model.columns()
+		columns = &found
+	}
 	for _, number := range shown[start:stop] {
 		line, _ := model.line(number)
-		rows = append(rows, model.renderLine(line, number == model.selected, width, color))
+		rows = append(rows, model.renderLine(line, number == model.selected, width, color, columns))
 	}
 	if len(model.pending) != 0 && model.selected < 0 {
 		partial := viewLine{text: viewSanitize(string(model.pending))}
 		if model.matches(partial) {
-			rows = append(rows, model.renderLine(partial, false, width, color))
+			rows = append(rows, model.renderLine(partial, false, width, color, nil))
 		}
 	}
 	return traceScreenPadRows(rows, available)
 }
 
-func (model viewScreenModel) renderLine(line viewLine, selected bool, width int, color bool) string {
+// renderLine은 목록의 한 줄이다. columns가 있으면 compact 보기로 그리고, scroll만큼 왼쪽을 버린다.
+func (model viewScreenModel) renderLine(line viewLine, selected bool, width int, color bool, columns *viewColumns) string {
 	tableWidth := max(1, width-2)
-	if selected {
-		plain := "▸ " + traceFit(viewLinePlain(line, model.format), tableWidth)
-		return traceSelectedEvent(plain, width, color)
+	spans := viewLineSpans(line, model.format)
+	if columns != nil {
+		spans = viewCompactSpans(line, *columns)
 	}
-	return "  " + traceTexts(viewLineSpans(line, model.format), tableWidth, color)
+	spans = viewSkipCells(spans, model.scroll)
+	if selected {
+		var plain strings.Builder
+		for _, span := range spans {
+			plain.WriteString(span.text)
+		}
+		return traceSelectedEvent("▸ "+traceFit(plain.String(), tableWidth), width, color)
+	}
+	return "  " + traceTexts(spans, tableWidth, color)
+}
+
+// compactOn은 지금 compact 보기로 그리는지다. 필드 열은 access 형식에만 있다.
+func (model viewScreenModel) compactOn() bool {
+	return model.compact && model.format == viewFormatAccess
 }
 
 func (model viewScreenModel) changedText() string {

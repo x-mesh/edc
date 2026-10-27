@@ -129,7 +129,7 @@ func TestGrepSemanticRejectsModelRevisionChanges(t *testing.T) {
 		return grepSemanticEncoded{Revision: "new-revision", Vectors: out}, nil
 	}
 	index := &grepSemanticIndex{Revision: "old-revision", Vectors: map[string][]float32{}}
-	_, _, err := grepSemanticSync(t.TempDir(), nil, index, "a query", io.Discard)
+	_, _, _, err := grepSemanticSync(t.TempDir(), nil, index, "a query", io.Discard)
 	if err == nil || index.Revision != "old-revision" || len(index.Vectors) != 0 {
 		t.Fatalf("err %v index %+v", err, index)
 	}
@@ -241,5 +241,44 @@ func TestGrepSemanticReusesUnchangedChunksWhenLinesMove(t *testing.T) {
 	code, text, errtext := grepCommand(t, "", "--ask", "validate token", "--json", root)
 	if code != 0 || len(calls) != 1 || len(calls[0]) != 1 || !strings.Contains(text, `"start":4`) {
 		t.Fatalf("code %d calls %v text %s stderr %s", code, calls, text, errtext)
+	}
+}
+
+func TestGrepSemanticSkipsRecollectWhenNothingWasEmbedded(t *testing.T) {
+	oldRoot, oldEncode, oldEnsure := grepSemanticCacheRoot, grepSemanticEncode, grepSemanticEnsure
+	defer func() {
+		grepSemanticCacheRoot = oldRoot
+		grepSemanticEncode = oldEncode
+		grepSemanticEnsure = oldEnsure
+	}()
+	grepSemanticCacheRoot = t.TempDir()
+	grepSemanticEnsure = func(io.Reader, bool, bool, io.Writer) error { return nil }
+	root := t.TempDir()
+	path := filepath.Join(root, "a.go")
+	if err := os.WriteFile(path, []byte("package p\nfunc ValidateToken() {}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	searching := false
+	grepSemanticEncode = func(texts []string, _ io.Writer) (grepSemanticEncoded, error) {
+		if searching {
+			if err := os.WriteFile(path, []byte("package p\nfunc Changed() {}\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		vectors := make([][]float32, len(texts))
+		for i := range vectors {
+			vectors[i] = make([]float32, 384)
+			vectors[i][0] = 1
+		}
+		return grepSemanticEncoded{Revision: "revision", Vectors: vectors}, nil
+	}
+	var out, stderr bytes.Buffer
+	if code := grepSemanticLifecycle([]string{"--semantic-init", root}, &out, &stderr); code != 0 {
+		t.Fatalf("init %d: %s", code, stderr.String())
+	}
+	searching = true
+	code, text, errtext := grepCommand(t, "", "--ask", "validate token", "--json", root)
+	if code != 0 || !strings.Contains(text, "a.go") {
+		t.Fatalf("code %d text %s stderr %s", code, text, errtext)
 	}
 }

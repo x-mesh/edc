@@ -12,8 +12,10 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
+	"sync"
 	"unicode"
 	"unicode/utf8"
 )
@@ -337,10 +339,40 @@ func grepAsk(paths []string, options grepOptions, stdout, stderr io.Writer) int 
 	return 0
 }
 
+// grepAskFile은 읽기를 마친 파일이다. problems와 skipped는 이 파일을 읽은 직후의 값이라, 청크 한도에 걸린 파일 뒤의 결과를 버릴 때 쓴다.
+type grepAskFile struct {
+	path     string
+	data     []byte
+	problems int
+	skipped  int
+	chunks   []grepAskChunk
+}
+
+// grepAskChunkFiles는 파일마다 청크를 병렬로 나눈다. 수집 시간의 대부분이 Go 파싱과 토큰화이기 때문이다.
+func grepAskChunkFiles(files []grepAskFile) {
+	jobs := make(chan int)
+	var group sync.WaitGroup
+	for range min(runtime.GOMAXPROCS(0), len(files)) {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			for i := range jobs {
+				files[i].chunks = grepAskChunks(files[i].path, files[i].data)
+				files[i].data = nil
+			}
+		}()
+	}
+	for i := range files {
+		jobs <- i
+	}
+	close(jobs)
+	group.Wait()
+}
+
 func grepAskCollect(paths []string, options grepOptions) ([]grepAskChunk, int, []string) {
 	targets, _, problems := grepCodeTargets(paths, options)
 	roots := grepPathRoots(paths)
-	var chunks []grepAskChunk
+	var files []grepAskFile
 	skipped := 0
 	scanned := 0
 	for _, path := range targets {
@@ -390,7 +422,12 @@ func grepAskCollect(paths []string, options grepOptions) ([]grepAskChunk, int, [
 			problems = append(problems, T("grep.ask.budget"))
 			break
 		}
-		fileChunks := grepAskChunks(path, data)
+		files = append(files, grepAskFile{path: path, data: data, problems: len(problems), skipped: skipped})
+	}
+	grepAskChunkFiles(files)
+	var chunks []grepAskChunk
+	for _, file := range files {
+		path, fileChunks := file.path, file.chunks
 		for _, root := range roots {
 			relative := filepath.Base(path)
 			if root.directory {
@@ -408,8 +445,8 @@ func grepAskCollect(paths []string, options grepOptions) ([]grepAskChunk, int, [
 			break
 		}
 		if len(chunks)+len(fileChunks) > grepAskMaxChunks {
-			problems = append(problems, T("grep.ask.budget"))
-			break
+			// 파일을 하나씩 처리하던 때처럼 이 파일 뒤에서 생긴 문제와 건너뛴 파일은 결과에 넣지 않는다.
+			return chunks, file.skipped, append(problems[:file.problems], T("grep.ask.budget"))
 		}
 		chunks = append(chunks, fileChunks...)
 	}

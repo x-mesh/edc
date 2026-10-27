@@ -151,3 +151,28 @@ func TestGrepAskBudgetCountsOnlyAcceptedText(t *testing.T) {
 		t.Fatalf("chunks %d skipped %d problems %v", len(chunks), skipped, problems)
 	}
 }
+
+func TestGrepAskChunkBudgetStopsAtFirstOverflowingFile(t *testing.T) {
+	root := t.TempDir()
+	half := strings.Repeat("x\n", grepAskMaxChunks/2*grepAskChunkLines)
+	for _, name := range []string{"a.txt", "b.txt", "c.txt"} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte(half), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(root, "d.bin"), []byte("\x00"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	chunks, skipped, problems := grepAskCollect([]string{root}, grepOptions{})
+	if len(chunks) != grepAskMaxChunks || skipped != 0 || len(problems) != 1 || problems[0] != T("grep.ask.budget") {
+		t.Fatalf("chunks %d skipped %d problems %v", len(chunks), skipped, problems)
+	}
+	if first, last := chunks[0].result, chunks[len(chunks)-1].result; filepath.Base(first.Path) != "a.txt" || first.Start != 1 || filepath.Base(last.Path) != "b.txt" {
+		t.Fatalf("first %+v last %+v", first, last)
+	}
+	for i := 1; i < len(chunks); i++ {
+		if chunks[i].result.Path == chunks[i-1].result.Path && chunks[i].result.Start != chunks[i-1].result.End+1 {
+			t.Fatalf("chunk %d out of order: %+v after %+v", i, chunks[i].result, chunks[i-1].result)
+		}
+	}
+}

@@ -236,7 +236,7 @@ func grepFileLock(path string, mode int) (func(), error) {
 	return func() { syscall.Flock(int(file.Fd()), syscall.LOCK_UN); file.Close() }, nil
 }
 
-func grepSemanticSync(root string, chunks []grepAskChunk, index *grepSemanticIndex, query string, progress io.Writer) ([]float32, bool, error) {
+func grepSemanticSync(root string, chunks []grepAskChunk, index *grepSemanticIndex, query string, progress io.Writer) ([]float32, int, bool, error) {
 	texts := []string{}
 	if query != "" {
 		texts = append(texts, query)
@@ -264,15 +264,15 @@ func grepSemanticSync(root string, chunks []grepAskChunk, index *grepSemanticInd
 	}
 	encoded, err := grepSemanticEncode(texts, progress)
 	if err != nil {
-		return nil, false, err
+		return nil, 0, false, err
 	}
 	if encoded.Revision == "" || (index.Revision != "" && index.Revision != encoded.Revision) {
-		return nil, false, errors.New(T("grep.semantic.invalid"))
+		return nil, 0, false, errors.New(T("grep.semantic.invalid"))
 	}
 	index.Revision = encoded.Revision
 	vectors := encoded.Vectors
 	if len(vectors) != len(texts) {
-		return nil, false, errors.New("embedding count mismatch")
+		return nil, 0, false, errors.New("embedding count mismatch")
 	}
 	changed := len(missing) > 0 || len(index.Vectors) != len(active)
 	offset := 0
@@ -291,7 +291,7 @@ func grepSemanticSync(root string, chunks []grepAskChunk, index *grepSemanticInd
 			delete(index.Vectors, key)
 		}
 	}
-	return queryVector, changed, nil
+	return queryVector, len(missing), changed, nil
 }
 
 func grepSemanticVerify(root string, chunks []grepAskChunk, options grepOptions) error {
@@ -342,12 +342,15 @@ func grepSemanticRank(paths []string, options grepOptions, chunks []grepAskChunk
 		return nil, err
 	}
 	fmt.Fprintln(stderr, T("grep.semantic.loading"))
-	query, changed, err := grepSemanticSync(root, chunks, index, options.pattern, stderr)
+	query, embedded, changed, err := grepSemanticSync(root, chunks, index, options.pattern, stderr)
 	if err != nil {
 		return nil, err
 	}
-	if err := grepSemanticVerify(root, chunks, options); err != nil {
-		return nil, err
+	// 벡터는 경로와 내용으로 키를 만든다. 그래서 내용이 바뀐 사이에 벡터가 잘못 짝지어지는 경우는 새로 임베딩한 청크뿐이다.
+	if embedded > 0 {
+		if err := grepSemanticVerify(root, chunks, options); err != nil {
+			return nil, err
+		}
 	}
 	if changed {
 		if err := grepSemanticSave(path, index); err != nil {
@@ -371,7 +374,11 @@ func grepSemanticScore(root string, options grepOptions, chunks []grepAskChunk, 
 			maxKeyword = result.Score
 		}
 	}
-	results := make([]grepAskResult, 0, len(chunks))
+	type scoredChunk struct {
+		grepAskResult
+		lines []string
+	}
+	results := make([]scoredChunk, 0, len(chunks))
 	for _, chunk := range chunks {
 		vector := index.Vectors[grepSemanticKey(root, chunk)]
 		score := 0.0
@@ -383,15 +390,7 @@ func grepSemanticScore(root string, options grepOptions, chunks []grepAskChunk, 
 		if maxKeyword > 0 {
 			result.Score += 0.05 * keywordScores[chunkID{result.Path, result.Start, result.End}] / maxKeyword
 		}
-		lines := append([]string(nil), chunk.lines[:min(3, len(chunk.lines))]...)
-		for i, line := range lines {
-			runes := []rune(line)
-			if len(runes) > 300 {
-				lines[i] = string(runes[:300]) + "…"
-			}
-		}
-		result.Snippet = strings.Join(lines, "\n")
-		results = append(results, result)
+		results = append(results, scoredChunk{result, chunk.lines})
 	}
 	sort.Slice(results, func(i, j int) bool {
 		if results[i].Score != results[j].Score {
@@ -408,7 +407,15 @@ func grepSemanticScore(root string, options grepOptions, chunks []grepAskChunk, 
 		if counts[r.Path] >= 2 {
 			continue
 		}
-		selected = append(selected, r)
+		lines := append([]string(nil), r.lines[:min(3, len(r.lines))]...)
+		for i, line := range lines {
+			runes := []rune(line)
+			if len(runes) > 300 {
+				lines[i] = string(runes[:300]) + "…"
+			}
+		}
+		r.Snippet = strings.Join(lines, "\n")
+		selected = append(selected, r.grepAskResult)
 		counts[r.Path]++
 		if len(selected) == options.askLimit {
 			break
@@ -553,7 +560,7 @@ func grepSemanticLifecycleWithInput(args []string, input io.Reader, terminal boo
 	index := &grepSemanticIndex{Version: 1, Root: root, Model: grepSemanticModel, Vectors: map[string][]float32{}}
 
 	fmt.Fprintln(stderr, T("grep.semantic.loading"))
-	if _, _, err = grepSemanticSync(root, chunks, index, "", stderr); err != nil {
+	if _, _, _, err = grepSemanticSync(root, chunks, index, "", stderr); err != nil {
 		fmt.Fprintln(stderr, err)
 		return 2
 	}

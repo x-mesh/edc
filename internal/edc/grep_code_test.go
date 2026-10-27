@@ -170,3 +170,46 @@ func TestGrepFilePathHighlightsOnlyMatchingRelativePart(t *testing.T) {
 		t.Fatalf("root highlighted: %q", colored)
 	}
 }
+
+func TestGrepCodeHonorsIgnoreForUncleanRoots(t *testing.T) {
+	root := t.TempDir()
+	for _, dir := range []string{".git", "src/node_modules"} {
+		if err := os.MkdirAll(filepath.Join(root, dir), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte("node_modules/\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"src/keep.go", "src/node_modules/skip.go"} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte("needle\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	src := filepath.Join(root, "src")
+	for _, path := range []string{src, src + "/", root + "/./src", root + "//src/"} {
+		code, out, err := grepCommand(t, "", "--code", "needle", path)
+		if code != 0 || !strings.Contains(out, "keep.go") || strings.Contains(out, "skip.go") {
+			t.Fatalf("%s: code %d out %q err %q", path, code, out, err)
+		}
+	}
+}
+
+func TestGrepLifecycleFlagsDispatchInAnyPosition(t *testing.T) {
+	for _, tc := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"--semantic-init", "--yes"}, "--semantic-init --yes"},
+		{[]string{"--yes", "--semantic-init"}, "--semantic-init --yes"},
+		{[]string{"--yes", "--semantic-init", "dir"}, "--semantic-init --yes dir"},
+		{[]string{"dir", "--model-clear"}, "--model-clear dir"},
+		{[]string{"needle", "src"}, ""},
+		{[]string{"--", "--model-clear", "src"}, ""},
+	} {
+		got, ok := grepLifecycleArgs(tc.args)
+		if ok != (tc.want != "") || strings.Join(got, " ") != tc.want {
+			t.Fatalf("%v: got %v %t", tc.args, got, ok)
+		}
+	}
+}

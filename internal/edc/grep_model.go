@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -36,7 +37,10 @@ type grepRuntimeAsset struct {
 
 var errGrepModelCancelled = errors.New("model download cancelled")
 
-var grepModelHTTPClient = &http.Client{Timeout: 10 * time.Minute, CheckRedirect: func(req *http.Request, via []*http.Request) error {
+// 전체 다운로드 시간에는 상한을 두지 않는다. 느린 회선에서도 설치가 끝나도록, 데이터가 이 시간 동안 오지 않을 때만 중단한다.
+var grepModelIdleTimeout = time.Minute
+
+var grepModelHTTPClient = &http.Client{CheckRedirect: func(req *http.Request, via []*http.Request) error {
 	if req.URL.Scheme != "https" {
 		return errors.New("refusing non-HTTPS model redirect")
 	}
@@ -97,7 +101,15 @@ func grepModelLock() (func(), error) {
 	if err != nil {
 		return nil, err
 	}
-	return grepSemanticLock(filepath.Join(base, "model"))
+	return grepFileLock(filepath.Join(base, "model"), syscall.LOCK_EX)
+}
+
+func grepModelReadLock() (func(), error) {
+	base, err := grepModelBase()
+	if err != nil {
+		return nil, err
+	}
+	return grepFileLock(filepath.Join(base, "model"), syscall.LOCK_SH)
 }
 
 func grepVerifyFile(path, expected string, size int64) error {
@@ -134,6 +146,66 @@ func grepModelCheck(dir string) error {
 	return grepCheckModelAssets(dir, model, vocab, rt)
 }
 
+// 검색마다 약 100 MiB를 다시 해시하지 않도록, 전체 SHA-256 검증을 통과한 파일의 크기·mtime·inode를
+// 기록해 두고 그대로면 검증을 건너뛴다. 하나라도 다르면 전체 검증으로 돌아간다.
+// 캐시 디렉터리에 쓸 수 있는 사용자는 기록도 고칠 수 있으므로 이 기록은 우발적 손상만 막는다.
+func grepModelQuickCheck(dir string) error {
+	model, vocab, rt, err := grepModelManifest()
+	if err != nil {
+		return err
+	}
+	stamp, err := grepModelStamp(dir, model, vocab, rt)
+	if err == nil {
+		if saved, readErr := os.ReadFile(filepath.Join(dir, grepModelStampName)); readErr == nil && string(saved) == stamp {
+			return nil
+		}
+	}
+	if err := grepCheckModelAssets(dir, model, vocab, rt); err != nil {
+		return err
+	}
+	if stamp, err := grepModelStamp(dir, model, vocab, rt); err == nil {
+		// 기록 실패는 다음 검색에서 전체 검증을 한 번 더 할 뿐이라 검색을 실패시키지 않는다.
+		_ = grepWriteModelStamp(dir, stamp)
+	}
+	return nil
+}
+
+const grepModelStampName = "verified"
+
+func grepModelStamp(dir string, model, vocab grepModelAsset, rt grepRuntimeAsset) (string, error) {
+	var out strings.Builder
+	for _, name := range []string{model.name, vocab.name, rt.libName} {
+		info, err := os.Stat(filepath.Join(dir, name))
+		if err != nil {
+			return "", err
+		}
+		var inode uint64
+		if stat, ok := info.Sys().(*syscall.Stat_t); ok {
+			inode = uint64(stat.Ino)
+		}
+		fmt.Fprintf(&out, "%s %d %d %d\n", name, info.Size(), info.ModTime().UnixNano(), inode)
+	}
+	return out.String(), nil
+}
+
+func grepWriteModelStamp(dir, stamp string) error {
+	file, err := os.CreateTemp(dir, grepModelStampName+".*")
+	if err != nil {
+		return err
+	}
+	name := file.Name()
+	if _, err := file.WriteString(stamp); err != nil {
+		file.Close()
+		os.Remove(name)
+		return err
+	}
+	if err := file.Close(); err != nil {
+		os.Remove(name)
+		return err
+	}
+	return os.Rename(name, filepath.Join(dir, grepModelStampName))
+}
+
 func grepCheckModelAssets(dir string, model, vocab grepModelAsset, rt grepRuntimeAsset) error {
 	for _, asset := range []grepModelAsset{model, vocab, {rt.libName, "", rt.libSHA, rt.libSize}} {
 		if err := grepVerifyFile(filepath.Join(dir, asset.name), asset.sha, asset.size); err != nil {
@@ -144,6 +216,20 @@ func grepCheckModelAssets(dir string, model, vocab grepModelAsset, rt grepRuntim
 }
 
 func grepDownloadAsset(ctx context.Context, client *http.Client, asset grepModelAsset, dest string, progress io.Writer) error {
+	ctx, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil)
+	idle := time.AfterFunc(grepModelIdleTimeout, func() {
+		cancel(fmt.Errorf("%s: no data for %s", asset.name, grepModelIdleTimeout))
+	})
+	defer idle.Stop()
+	err := grepDownloadAssetBody(ctx, client, asset, dest, progress, func() { idle.Reset(grepModelIdleTimeout) })
+	if cause := context.Cause(ctx); err != nil && cause != nil && !errors.Is(cause, context.Canceled) {
+		return cause
+	}
+	return err
+}
+
+func grepDownloadAssetBody(ctx context.Context, client *http.Client, asset grepModelAsset, dest string, progress io.Writer, received func()) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, asset.url, nil)
 	if err != nil {
 		return err
@@ -180,6 +266,7 @@ func grepDownloadAsset(ctx context.Context, client *http.Client, asset grepModel
 	for {
 		n, readErr := reader.Read(buffer)
 		if n > 0 {
+			received()
 			if _, err := f.Write(buffer[:n]); err != nil {
 				return err
 			}
@@ -387,9 +474,7 @@ func grepEnsureModel(input io.Reader, terminal, yes bool, output io.Writer) erro
 	if err := grepModelCheck(dir); err == nil {
 		return nil
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-	defer cancel()
-	return grepInstallModel(ctx, grepModelHTTPClient, dir, model, vocab, rt, output)
+	return grepInstallModel(context.Background(), grepModelHTTPClient, dir, model, vocab, rt, output)
 }
 
 var grepSemanticEnsure = grepEnsureModel

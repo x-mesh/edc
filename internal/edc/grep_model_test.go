@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -16,6 +17,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestGrepModelDownloadConfirmationIntegrityAndCleanup(t *testing.T) {
@@ -96,6 +98,15 @@ func TestGrepModelDownloadConfirmationIntegrityAndCleanup(t *testing.T) {
 	if err := grepModelCheck(dir); err != nil {
 		t.Fatal(err)
 	}
+	if err := grepModelQuickCheck(dir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, grepModelStampName)); err != nil {
+		t.Fatalf("verified stamp missing: %v", err)
+	}
+	if err := grepModelQuickCheck(dir); err != nil {
+		t.Fatalf("stamped check: %v", err)
+	}
 	for _, name := range []string{model.name, vocab.name, rt.libName} {
 		info, err := os.Stat(filepath.Join(dir, name))
 		if err != nil || info.Mode().Perm() != 0600 {
@@ -111,6 +122,9 @@ func TestGrepModelDownloadConfirmationIntegrityAndCleanup(t *testing.T) {
 	damaged := filepath.Join(dir, model.name)
 	if err := os.WriteFile(damaged, []byte("damaged"), 0600); err != nil {
 		t.Fatal(err)
+	}
+	if err := grepModelQuickCheck(dir); err == nil {
+		t.Fatal("stamp hid a changed model")
 	}
 	broken.Store(true)
 	if err := grepEnsureModel(strings.NewReader(""), false, true, &output); err == nil {
@@ -227,5 +241,41 @@ func TestGrepOfficialRuntimeArchives(t *testing.T) {
 	}
 	if tested == 0 {
 		t.Skip("set EDC_TEST_ONNX_ARCHIVE or EDC_TEST_ONNX_LINUX_* archive paths")
+	}
+}
+
+func TestGrepModelDownloadStopsOnlyWhenIdle(t *testing.T) {
+	old := grepModelIdleTimeout
+	defer func() { grepModelIdleTimeout = old }()
+	grepModelIdleTimeout = 200 * time.Millisecond
+	payload := []byte("slow but steady model bytes")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		flusher := w.(http.Flusher)
+		if r.URL.Path == "/stall" {
+			w.Write(payload[:1])
+			flusher.Flush()
+			<-r.Context().Done()
+			return
+		}
+		for _, b := range payload {
+			w.Write([]byte{b})
+			flusher.Flush()
+			time.Sleep(20 * time.Millisecond)
+		}
+	}))
+	defer server.Close()
+	sum := sha256.Sum256(payload)
+	asset := grepModelAsset{"model.onnx", server.URL + "/slow", hex.EncodeToString(sum[:]), int64(len(payload))}
+	dir := t.TempDir()
+	if err := grepDownloadAsset(context.Background(), server.Client(), asset, filepath.Join(dir, "slow"), io.Discard); err != nil {
+		t.Fatalf("steady download longer than the idle timeout failed: %v", err)
+	}
+	asset.url = server.URL + "/stall"
+	err := grepDownloadAsset(context.Background(), server.Client(), asset, filepath.Join(dir, "stall"), io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "no data") {
+		t.Fatalf("stalled download error %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "stall")); !os.IsNotExist(err) {
+		t.Fatalf("partial download kept: %v", err)
 	}
 }

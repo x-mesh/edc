@@ -355,6 +355,11 @@ func grepAskCollect(paths []string, options grepOptions) ([]grepAskChunk, int, [
 			problems = append(problems, fmt.Sprintf("%s: %v", path, err))
 			continue
 		}
+		if before.Size() > grepAskMaxFileBytes {
+			file.Close()
+			skipped++
+			continue
+		}
 		data, err := io.ReadAll(io.LimitReader(file, grepAskMaxFileBytes+1))
 		after, statErr := file.Stat()
 		closeErr := file.Close()
@@ -376,14 +381,14 @@ func grepAskCollect(paths []string, options grepOptions) ([]grepAskChunk, int, [
 			problems = append(problems, fmt.Sprintf("%s: %v", path, err))
 			continue
 		}
+		if len(data) > grepAskMaxFileBytes || bytes.IndexByte(data, 0) >= 0 || !utf8.Valid(data) {
+			skipped++
+			continue
+		}
 		scanned += len(data)
 		if scanned > grepAskMaxScanBytes {
 			problems = append(problems, T("grep.ask.budget"))
 			break
-		}
-		if len(data) > grepAskMaxFileBytes || bytes.IndexByte(data, 0) >= 0 || !utf8.Valid(data) {
-			skipped++
-			continue
 		}
 		fileChunks := grepAskChunks(path, data)
 		for _, root := range roots {

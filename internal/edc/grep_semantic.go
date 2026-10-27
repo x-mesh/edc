@@ -42,12 +42,12 @@ func grepSemanticNative(texts []string, progress io.Writer) (grepSemanticEncoded
 	if _, err := os.Stat(dir); err != nil {
 		return grepSemanticEncoded{}, fmt.Errorf("%s: %w", T("grep.model.missing"), err)
 	}
-	unlock, err := grepModelLock()
+	unlock, err := grepModelReadLock()
 	if err != nil {
 		return grepSemanticEncoded{}, err
 	}
 	defer unlock()
-	if err := grepModelCheck(dir); err != nil {
+	if err := grepModelQuickCheck(dir); err != nil {
 		return grepSemanticEncoded{}, fmt.Errorf("%s: %w", T("grep.model.missing"), err)
 	}
 	_, _, rt, err := grepModelManifest()
@@ -218,6 +218,10 @@ func grepSemanticSave(path string, index *grepSemanticIndex) error {
 }
 
 func grepSemanticLock(path string) (func(), error) {
+	return grepFileLock(path, syscall.LOCK_EX)
+}
+
+func grepFileLock(path string, mode int) (func(), error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return nil, err
 	}
@@ -225,7 +229,7 @@ func grepSemanticLock(path string) (func(), error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX); err != nil {
+	if err := syscall.Flock(int(file.Fd()), mode); err != nil {
 		file.Close()
 		return nil, err
 	}

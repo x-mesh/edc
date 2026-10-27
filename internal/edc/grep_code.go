@@ -84,6 +84,8 @@ func grepCodeTargets(paths []string, options grepOptions) ([]string, int, []stri
 			continue
 		}
 		directories++
+		// WalkDir는 하위 경로를 정리된 형태로 만든다. levels의 루트 키도 같은 형태여야 부모 규칙을 찾는다.
+		root = filepath.Clean(root)
 		absolute, err := filepath.Abs(root)
 		if err != nil {
 			problems = append(problems, err.Error())

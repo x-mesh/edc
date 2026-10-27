@@ -67,10 +67,23 @@ type grepOptions struct {
 }
 
 func runGrep(args []string) int {
-	if len(args) > 0 && (args[0] == "--semantic-init" || args[0] == "--semantic-status" || args[0] == "--semantic-clear" || args[0] == "--model-clear") {
-		return grepSemanticLifecycle(args, os.Stdout, os.Stderr)
+	if lifecycle, ok := grepLifecycleArgs(args); ok {
+		return grepSemanticLifecycle(lifecycle, os.Stdout, os.Stderr)
 	}
 	return grepRun(args, os.Stdin, os.Stdout, os.Stderr)
+}
+
+func grepLifecycleArgs(args []string) ([]string, bool) {
+	for i, arg := range args {
+		switch arg {
+		case "--":
+			return nil, false
+		case "--semantic-init", "--semantic-status", "--semantic-clear", "--model-clear":
+			ordered := append([]string{arg}, args[:i]...)
+			return append(ordered, args[i+1:]...), true
+		}
+	}
+	return nil, false
 }
 
 func parseGrepOptions(args []string, stderr io.Writer, now time.Time) (grepOptions, []string, error) {

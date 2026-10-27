@@ -3,6 +3,7 @@ package edc
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -117,5 +118,36 @@ func TestGrepAskDoesNotRankSearchRootName(t *testing.T) {
 	code, out, _ := grepCommand(t, "", "--ask", "--keyword", "uniqueneedle", root)
 	if code != 1 || strings.Contains(out, "plain.txt") {
 		t.Fatalf("code=%d output=%q", code, out)
+	}
+}
+
+func TestGrepAskBudgetCountsOnlyAcceptedText(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	binaries := grepAskMaxScanBytes/grepAskMaxFileBytes + 2
+	for i := 0; i < binaries; i++ {
+		path := filepath.Join(root, fmt.Sprintf("asset%02d.bin", i))
+		if err := os.WriteFile(path, nil, 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Truncate(path, grepAskMaxFileBytes); err != nil {
+			t.Fatal(err)
+		}
+	}
+	large := filepath.Join(root, "large.txt")
+	if err := os.WriteFile(large, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Truncate(large, grepAskMaxFileBytes+1); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "auth.go"), []byte("package example\nfunc ValidateToken() {}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	chunks, skipped, problems := grepAskCollect([]string{root}, grepOptions{})
+	if len(problems) != 0 || skipped != binaries+1 || len(chunks) == 0 {
+		t.Fatalf("chunks %d skipped %d problems %v", len(chunks), skipped, problems)
 	}
 }

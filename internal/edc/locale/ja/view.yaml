@@ -1,0 +1,6 @@
+# view コマンドの日本語メッセージ。
+view:
+  failed: "edc view: %v"
+  reset:
+    replaced: "edc view: %s が置き換わったため、新しいファイルを追従します"
+    truncated: "edc view: %s が切り詰められたため、先頭から読みます"

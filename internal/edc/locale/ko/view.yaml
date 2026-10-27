@@ -1,0 +1,6 @@
+# view 명령의 한국어 메시지.
+view:
+  failed: "edc view: %v"
+  reset:
+    replaced: "edc view: %s 파일이 바뀌어 새 파일을 따라갑니다"
+    truncated: "edc view: %s 파일이 잘려 처음부터 읽습니다"

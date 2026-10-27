@@ -1,0 +1,6 @@
+# English messages for the view command.
+view:
+  failed: "edc view: %v"
+  reset:
+    replaced: "edc view: %s was replaced; following the new file"
+    truncated: "edc view: %s was truncated; reading from the start"

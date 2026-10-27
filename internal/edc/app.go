@@ -87,6 +87,8 @@ func Run(args []string, version string) int {
 		return runWatch(args[1:])
 	case "info":
 		return runInfo(args[1:], version)
+	case "view":
+		return runView(args[1:])
 	case "du":
 		return runDu(args[1:], version)
 	case "clean":

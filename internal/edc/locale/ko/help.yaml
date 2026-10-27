@@ -191,6 +191,21 @@ command:
     notes:
       - "public IP를 기본으로 조회하고, 제한 시간 안에 응답이 없으면 그 줄을 뺍니다."
       - "disk 사용량은 전체 크기에서 남은 공간을 뺀 값입니다."
+  view:
+    summary: "로그를 색으로 읽고, 파일이 늘어나면 따라감"
+    option:
+      lines: "마지막 N줄, 화면은 N줄을 보관 (기본 10,000)"
+      follow: "pipe에서 tail -F처럼 따라감, 화면은 항상 따라감"
+    notes:
+      - "터미널에서는 파일 끝에서 화면을 열고 새 줄을 따라갑니다."
+      - "↑나 PgUp을 누르면 목록이 멈추고, 머리 줄에 새 줄 수를 셉니다. End, l, Esc를 누르면 다시 따라갑니다."
+      - "nginx와 Apache access log, JSON lines, ERROR나 WARN 같은 level이 있는 줄을 읽습니다."
+      - "통계 패널은 status 범주나 level별 수, 상위 path와 client, 마지막 오류를 보여 줍니다."
+      - "통계는 화면이 보관한 줄만 셉니다. i로 패널을 숨깁니다."
+      - "화면이 120열 이상이면 패널을 오른쪽에, 그보다 좁으면 목록 아래에 둡니다."
+      - "Enter는 필드와 줄 전체, 그 아래로 이어지는 stack trace 줄을 보여 줍니다."
+      - "파일이 회전되거나 잘리면 그 자리를 표시하고 새 파일을 처음부터 읽습니다."
+      - "pipe나 NO_COLOR에서는 cat처럼 바이트를 그대로 냅니다. -f는 tail -F처럼 따라갑니다."
   du:
     summary: "디렉터리 아래 디스크 사용량, 큰 항목부터 (Linux와 macOS)"
     option:

@@ -2,7 +2,7 @@
 
 # 실시간 자원 관측
 
-[Top 임계값](#top-임계값) · [Top 대시보드](#top-대시보드) · [Top 이벤트](#top-이벤트) · [Top JSON 출력](#top-json-출력) · [Top process 필터](#top-process-필터) · [AI 도구 사용량](#ai-도구-사용량)
+[Top 임계값](#top-임계값) · [Top 대시보드](#top-대시보드) · [Top 이벤트](#top-이벤트) · [Top JSON 출력](#top-json-출력) · [Top process 필터](#top-process-필터) · [AI 도구 사용량](#ai-도구-사용량) · [로그 읽기](#로그-읽기)
 
 ![Live resource dashboard](media/top.png)
 
@@ -371,3 +371,35 @@ edc ai statusline install
 
 값은 Claude Code가 마지막으로 요청했을 때의 값입니다. 상자에는 경과 시간을 늘 보여 주고, 텍스트 출력은 1분 이상 지난 값에만 `updated` 줄을 더합니다. 상태 줄 입력에 요금제가 없으므로 macOS의 상자에는 요금제 이름이 나오지 않습니다.
 
+## 로그 읽기
+
+`edc view <file>`은 로그를 색으로 읽습니다. 터미널에서는 파일 끝에서 화면을 열고, 파일이 늘어나면 새 줄을 따라갑니다. `-f`는 필요 없습니다.
+
+```bash
+# 화면: 마지막 10,000줄, 이후 새 줄
+edc view /var/log/nginx/access.log
+# 화면과 통계에 더 많은 줄을 보관
+edc view -n 50000 app.log
+# 다른 명령의 출력 읽기
+kubectl logs -f deploy/api | edc view
+# pipe: 바이트를 그대로 내고, -f는 tail -F처럼 따라감
+edc view -f app.log | grep timeout
+```
+
+`edc view`는 세 가지 형식을 읽습니다. 형식은 처음 줄들을 보고 정합니다.
+
+| 형식 | 예 | 색 |
+| --- | --- | --- |
+| access | nginx와 Apache의 common, combined 로그 | status 범주, 시각은 회색 |
+| json | 줄마다 JSON 객체 하나 | level, 시각은 회색, 나머지 키는 `key=value` |
+| level | `2026-10-26 10:00:00 ERROR message` | level 낱말, 시각은 회색 |
+
+level은 `ERROR`, `WARN`처럼 대문자 낱말이거나 `level=` 값이어야 합니다. 본문에 나온 소문자 "error"는 level로 보지 않습니다. level 형식에서 level이 없는 줄은 바로 위 줄에 속합니다. 그래서 stack trace가 오류 줄과 함께 묶입니다.
+
+↑나 PgUp을 누르면 목록이 멈추고, 머리 줄에 `paused`와 새 줄 수가 나옵니다. End, `l`, Esc를 누르면 다시 따라갑니다. `/`로 글자 filter를 걸고, Enter로 줄의 필드와 줄 전체, 그 아래 stack trace 줄을 봅니다.
+
+통계 패널은 초당 줄 수, 오류 수, status 범주나 level별 수, 마지막 오류, 상위 path와 client를 보여 줍니다. 화면이 보관한 줄(기본 10,000줄)만 셉니다. 터미널이 120열 이상이면 패널을 오른쪽에, 그보다 좁으면 목록 아래에 둡니다. `i`로 패널을 숨깁니다.
+
+logrotate가 파일을 옮기면 옛 파일의 나머지를 읽은 뒤, 그 자리를 표시하고 새 파일을 처음부터 읽습니다. 파일이 작아지면 처음부터 다시 읽습니다.
+
+출력이 터미널이 아니거나 `NO_COLOR`가 설정되어 있으면 `cat`처럼 바이트를 그대로 냅니다. `-n N`은 마지막 N줄을 냅니다. `-f`는 `tail -F`처럼 파일을 따라가고, `-n` 없이 주면 마지막 10줄부터 시작합니다.

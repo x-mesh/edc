@@ -352,6 +352,12 @@ func TestViewTailReaderBoundsALine(t *testing.T) {
 	if err != nil || truncated != 0 || string(bytes.Join(lines, nil)) != "a\nb\n" {
 		t.Fatalf("short input: %q %d %v", bytes.Join(lines, nil), truncated, err)
 	}
+	// 내용이 정확히 상한 길이인 줄은 잘린 것이 아니다.
+	exact := strings.Repeat("y", 1024) + "\nz\n"
+	lines, truncated, err = viewTailReader(strings.NewReader(exact), 5)
+	if err != nil || truncated != 0 || string(bytes.Join(lines, nil)) != exact {
+		t.Fatalf("exact limit: %d bytes, truncated %d, %v", len(bytes.Join(lines, nil)), truncated, err)
+	}
 }
 
 // copytruncate 뒤 파일이 옛 offset보다 크게 다시 쓰이면 크기로는 알 수 없다. 마지막으로 읽은 바이트가 그 자리에 그대로

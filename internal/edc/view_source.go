@@ -107,8 +107,13 @@ func viewReadLine(reader *bufio.Reader, limit int) ([]byte, bool, error) {
 	cut := false
 	for {
 		chunk, err := reader.ReadSlice('\n')
+		// 줄바꿈은 상한에 넣지 않는다. 내용이 정확히 limit 바이트인 줄은 잘린 것이 아니다.
+		content := len(chunk)
+		if content > 0 && chunk[content-1] == '\n' {
+			content--
+		}
 		switch {
-		case len(line)+len(chunk) <= limit:
+		case len(line)+content <= limit:
 			line = append(line, chunk...)
 		case len(line) < limit:
 			line = append(line, chunk[:limit-len(line)]...)

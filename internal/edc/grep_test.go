@@ -440,8 +440,8 @@ func TestGrepCommandReportsATruncatedGzip(t *testing.T) {
 	if err := os.WriteFile(path, zipped.Bytes()[:zipped.Len()-8], 0o600); err != nil {
 		t.Fatal(err)
 	}
-	code, _, stderr := grepCommand(t, "", "beta", path)
-	if code != 2 || !strings.Contains(stderr, "cut.log.gz") {
-		t.Fatalf("truncated gzip: code %d stderr %q", code, stderr)
+	code, stdout, stderr := grepCommand(t, "", "beta", path)
+	if code != 2 || !strings.Contains(stderr, "cut.log.gz") || stdout != "beta\n" {
+		t.Fatalf("truncated gzip: code %d stdout %q stderr %q", code, stdout, stderr)
 	}
 }

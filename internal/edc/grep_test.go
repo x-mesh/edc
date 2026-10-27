@@ -328,3 +328,77 @@ func TestGrepCommandUntilReadsPastAnOutlier(t *testing.T) {
 		t.Fatalf("until past an outlier: code %d got %d lines, want %d", code, strings.Count(stdout, "\n"), want)
 	}
 }
+
+// --index는 작은 파일에도 index를 만들고, 다음 검색은 그 index를 써서 같은 결과를 낸다. --verify-index는 둘을 비교한다.
+func TestGrepCommandBuildsAndUsesAnIndex(t *testing.T) {
+	grepIndexRoot = t.TempDir()
+	defer func() { grepIndexRoot = "" }()
+	start := time.Date(2026, 10, 26, 0, 0, 0, 0, time.Local)
+	data := grepLevelLog(30000, start, 17)
+	path := filepath.Join(t.TempDir(), "app.log")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	code, plain, _ := grepCommand(t, "", "-n", "refunded", path)
+	if code != 0 || plain == "" {
+		t.Fatalf("plain: code %d", code)
+	}
+	code, built, _ := grepCommand(t, "", "-n", "--index", "refunded", path)
+	if code != 0 || built != plain {
+		t.Fatalf("--index: code %d, output differs", code)
+	}
+	dir, _ := grepIndexDir()
+	entries, _ := os.ReadDir(dir)
+	indexes := 0
+	for _, entry := range entries {
+		if strings.HasSuffix(entry.Name(), ".idx") {
+			indexes++
+		}
+	}
+	if indexes != 1 {
+		t.Fatalf("%d index files in %s", indexes, dir)
+	}
+	code, indexed, _ := grepCommand(t, "", "-n", "--verify-index", "refunded", path)
+	if code != 0 || indexed != plain {
+		t.Fatalf("indexed: code %d, output differs", code)
+	}
+	code, errors, _ := grepCommand(t, "", "-n", "--verify-index", "--level", "error", "Db.java:3", path)
+	code2, errorsPlain, _ := grepCommand(t, "", "-n", "--no-index", "--level", "error", "Db.java:3", path)
+	if code != 0 || code2 != 0 || errors != errorsPlain || errors == "" {
+		t.Fatalf("level with index: %d %d, same %v", code, code2, errors == errorsPlain)
+	}
+	// 파일이 늘어나면 index 밖도 읽고 index를 늘린다.
+	grown := append(bytes.Clone(data), grepLevelLog(5000, start.Add(20*time.Hour), 18)...)
+	if err := os.WriteFile(path, grown, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	code, after, _ := grepCommand(t, "", "-n", "--verify-index", "refunded", path)
+	code2, afterPlain, _ := grepCommand(t, "", "-n", "--no-index", "refunded", path)
+	if code != 0 || code2 != 0 || after != afterPlain || after == plain {
+		t.Fatalf("grown: %d %d same %v", code, code2, after == afterPlain)
+	}
+}
+
+// 모든 결과에는 index를 썼는지 말하는 hint가 있어야 한다. index 없이 나온 결과를 index를 거친 것으로 오해하지 않게 한다.
+func TestGrepHintsAlwaysStateTheIndex(t *testing.T) {
+	for outcome := grepIndexOutcomeNone; outcome <= grepIndexOutcomeNotBuilt; outcome++ {
+		hints := &grepHints{reports: []grepFileReport{{path: "app.log", size: 1 << 30, index: outcome, blocks: 3815, blocksRead: 26, bytesRead: 29 << 20, indexBytes: 30 << 20, built: 3 * time.Second, reason: "first block changed", lastRead: 46 << 20}}}
+		var out bytes.Buffer
+		hints.render(&out, false)
+		text := out.String()
+		if !strings.HasPrefix(text, "hint: ") || !strings.Contains(strings.ToLower(text), "index") {
+			t.Errorf("outcome %d: %q", outcome, text)
+		}
+		if strings.Contains(text, "%!") {
+			t.Errorf("outcome %d has a format error: %q", outcome, text)
+		}
+	}
+	hints := &grepHints{skippedOld: []string{"a.log", "b.log"}, binary: []string{"core"}, reports: []grepFileReport{{path: "x.log", index: grepIndexOutcomeSmall, skipped: 3 << 30, bytesRead: 2 << 20, counted: 32000}}}
+	var out bytes.Buffer
+	hints.render(&out, false)
+	for _, want := range []string{"a.log, b.log", "core", "--since", "-n", "64.0 MB"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("hints miss %q:\n%s", want, out.String())
+		}
+	}
+}

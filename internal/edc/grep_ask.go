@@ -12,6 +12,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"sort"
 	"strings"
@@ -24,6 +25,11 @@ const grepAskMaxFileBytes = 2 << 20
 const grepAskChunkLines = 32
 const grepAskMaxScanBytes = 32 << 20
 const grepAskMaxChunks = 50000
+
+// 디렉터리를 훑어 찾은 파일 중 아래 파일은 검색 결과를 흐리기만 하므로 수집하지 않는다. 경로로 직접 지정한 파일은 그대로 수집한다.
+var grepAskLockFiles = map[string]bool{"go.sum": true, "package-lock.json": true, "yarn.lock": true, "pnpm-lock.yaml": true, "Cargo.lock": true, "poetry.lock": true, "uv.lock": true, "composer.lock": true, "Gemfile.lock": true}
+
+var grepAskGeneratedHeader = regexp.MustCompile(`^\s*(//|/\*|#|--|<!--).*(?i:code generated .*do not edit|auto-?generated)`)
 
 type grepAskResult struct {
 	Path    string  `json:"path"`
@@ -369,6 +375,40 @@ func grepAskChunkFiles(files []grepAskFile) {
 	group.Wait()
 }
 
+// grepAskWalkedPath는 path가 디렉터리 root 아래에서 찾은 파일이면 root 기준 상대 경로를 돌려준다.
+func grepAskWalkedPath(roots []grepPathRoot, path string) (string, bool) {
+	for _, root := range roots {
+		if !root.directory {
+			continue
+		}
+		relative, err := filepath.Rel(root.path, path)
+		if err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+			return relative, true
+		}
+	}
+	return "", false
+}
+
+// grepAskExcludedPath는 lock 파일과 testdata 아래 fixture를 고른다. testdata의 .md와 .txt는 사람이 쓴 설명이라 남긴다.
+func grepAskExcludedPath(relative string) bool {
+	if grepAskLockFiles[filepath.Base(relative)] {
+		return true
+	}
+	parts := strings.Split(filepath.ToSlash(relative), "/")
+	for _, part := range parts[:len(parts)-1] {
+		if part == "testdata" {
+			extension := filepath.Ext(relative)
+			return extension != ".md" && extension != ".txt"
+		}
+	}
+	return false
+}
+
+func grepAskGenerated(data []byte) bool {
+	line, _, _ := bytes.Cut(data, []byte("\n"))
+	return grepAskGeneratedHeader.Match(line)
+}
+
 func grepAskCollect(paths []string, options grepOptions) ([]grepAskChunk, int, []string) {
 	targets, _, problems := grepCodeTargets(paths, options)
 	roots := grepPathRoots(paths)
@@ -376,6 +416,10 @@ func grepAskCollect(paths []string, options grepOptions) ([]grepAskChunk, int, [
 	skipped := 0
 	scanned := 0
 	for _, path := range targets {
+		relative, walked := grepAskWalkedPath(roots, path)
+		if walked && grepAskExcludedPath(relative) {
+			continue
+		}
 		file, err := os.Open(path)
 		if err != nil {
 			problems = append(problems, fmt.Sprintf("%s: %v", path, err))
@@ -415,6 +459,9 @@ func grepAskCollect(paths []string, options grepOptions) ([]grepAskChunk, int, [
 		}
 		if len(data) > grepAskMaxFileBytes || bytes.IndexByte(data, 0) >= 0 || !utf8.Valid(data) {
 			skipped++
+			continue
+		}
+		if walked && grepAskGenerated(data) {
 			continue
 		}
 		scanned += len(data)

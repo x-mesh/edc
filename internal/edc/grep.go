@@ -27,6 +27,14 @@ const (
 	grepHintNames = 5
 )
 
+type grepIndexMode int
+
+const (
+	grepIndexAuto grepIndexMode = iota
+	grepIndexForce
+	grepIndexOff
+)
+
 type grepOptions struct {
 	pattern    string
 	regex      bool
@@ -41,6 +49,9 @@ type grepOptions struct {
 	last       int
 	// ordered는 로그가 시간 순서라는 뜻이다. 그때만 --since가 파일을 이진 탐색하고 끝 시각으로 파일을 건너뛴다.
 	ordered bool
+	index   grepIndexMode
+	jobs    int
+	verify  bool
 	now     time.Time
 }
 
@@ -62,11 +73,15 @@ func parseGrepOptions(args []string, stderr io.Writer, now time.Time) (grepOptio
 	until := set.String("until", "", T("command.grep.option.until"))
 	set.IntVar(&options.last, "last", 0, T("command.grep.option.last"))
 	set.BoolVar(&options.ordered, "ordered", false, T("command.grep.option.ordered"))
+	index := set.Bool("index", false, T("command.grep.option.index"))
+	noIndex := set.Bool("no-index", false, T("command.grep.option.index"))
+	set.IntVar(&options.jobs, "jobs", 0, T("command.grep.option.jobs"))
+	set.BoolVar(&options.verify, "verify-index", false, T("command.grep.option.verify"))
 	if err := parseReordered(set, args); err != nil {
 		return options, nil, err
 	}
 	filtered := *level != "" || *status != "" || *since != "" || *until != ""
-	if (set.NArg() == 0 && !filtered) || options.context < 0 || options.last < 0 {
+	if (set.NArg() == 0 && !filtered) || options.context < 0 || options.last < 0 || options.jobs < 0 || (*index && *noIndex) {
 		return options, nil, errors.New(T("cli.usage", grepUsage))
 	}
 	paths := set.Args()
@@ -101,6 +116,18 @@ func parseGrepOptions(args []string, stderr io.Writer, now time.Time) (grepOptio
 		if options.until, err = grepParseWhen(*until, now); err != nil {
 			return options, nil, errors.New(T("grep.bad_time", *until))
 		}
+	}
+	switch {
+	case *index:
+		options.index = grepIndexForce
+	case *noIndex:
+		options.index = grepIndexOff
+	}
+	if options.jobs == 0 {
+		options.jobs = grepSketchWorkers()
+	}
+	if options.jobs > grepMaxJobs {
+		options.jobs = grepMaxJobs
 	}
 	return options, paths, nil
 }
@@ -144,6 +171,9 @@ func grepRun(args []string, stdin, stdout, stderr *os.File) int {
 		}
 	}
 	out.Flush()
+	if hints.verifyFailed {
+		failed = true
+	}
 	if isTerminal(stderr) {
 		hints.render(stderr, richEnabled(stderr))
 	}
@@ -214,7 +244,16 @@ func grepFilterFor(format viewFormat, options grepOptions) *grepFilter {
 type grepFileReport struct {
 	path       string
 	size       int64
+	index      grepIndexOutcome
+	reason     string
+	blocks     int
+	blocksRead int
 	bytesRead  int64
+	indexBytes int64
+	extended   int
+	built      time.Duration
+	noLetters  bool
+	sequential bool
 	skipped    int64
 	unordered  bool
 	seekFailed bool
@@ -223,7 +262,24 @@ type grepFileReport struct {
 	counted    int64
 }
 
-// grepSearchFile은 파일 하나를 검색한다. .gz는 풀면서 차례로 읽고, 그 밖의 파일은 시각과 끝에서부터의 건너뛰기를 쓴다.
+type grepIndexOutcome int
+
+const (
+	grepIndexOutcomeNone grepIndexOutcome = iota
+	grepIndexOutcomeOff
+	grepIndexOutcomeSmall
+	grepIndexOutcomeFirst
+	grepIndexOutcomeBuilt
+	grepIndexOutcomeUsed
+	grepIndexOutcomeInvalid
+	grepIndexOutcomeStale
+	grepIndexOutcomeLast
+	grepIndexOutcomeSequential
+	grepIndexOutcomeUnavailable
+	grepIndexOutcomeNotBuilt
+)
+
+// grepSearchFile은 파일 하나를 검색한다. .gz는 풀면서 차례로 읽고, 그 밖의 파일은 index와 건너뛰기를 쓴다.
 func grepSearchFile(path string, options grepOptions, printer *grepPrinter, hints *grepHints) (bool, error) {
 	file, err := os.Open(path)
 	if err != nil {
@@ -289,6 +345,7 @@ func grepSearchFile(path string, options grepOptions, printer *grepPrinter, hint
 		}
 	}()
 	if options.last > 0 {
+		report.index = grepIndexOutcomeLast
 		lines, read, err := scanner.scanLast(file, size, options.last)
 		report.lastRead = read
 		for _, line := range lines {
@@ -298,7 +355,210 @@ func grepSearchFile(path string, options grepOptions, printer *grepPrinter, hint
 		}
 		return found, err
 	}
+	plan := grepPlanIndex(options, info, size, format, report)
+	if plan.open != nil {
+		if err := grepIndexMatches(plan.open, file, size); err != nil {
+			plan.open.close()
+			os.Remove(plan.path)
+			plan.open, plan.build = nil, true
+			report.index, report.reason = grepIndexOutcomeInvalid, grepIndexReason(err)
+		}
+	}
+	if plan.open != nil {
+		defer plan.open.close()
+		return grepSearchWithIndex(file, size, format, matcher, filter, scanner, options, plan, report, emit)
+	}
+	if plan.build {
+		return grepSearchAndBuild(file, size, format, scanner, filter, options, plan, report, emit)
+	}
 	return grepSearchPlain(file, size, scanner, filter, options, report, emit)
+}
+
+type grepIndexPlan struct {
+	path  string
+	open  *grepIndexFile
+	build bool
+}
+
+// grepPlanIndex는 이 파일에 index를 쓸지, 만들지, 그냥 훑을지 정한다. 첫 검색은 index 없이 끝내고 표시만 남기며, 같은 파일을
+// grepIndexSeenWindow 안에 다시 검색하면 그때 만든다. 반복해서 찾는 파일에만 비용을 들이기 위해서다.
+func grepPlanIndex(options grepOptions, info os.FileInfo, size int64, format viewFormat, report *grepFileReport) grepIndexPlan {
+	var plan grepIndexPlan
+	if options.index == grepIndexOff {
+		report.index = grepIndexOutcomeOff
+		return plan
+	}
+	if size < grepIndexMinSize && options.index != grepIndexForce {
+		report.index = grepIndexOutcomeSmall
+		return plan
+	}
+	dir, err := grepIndexDir()
+	key, ok := grepFileKey(info)
+	if err != nil || !ok {
+		report.index = grepIndexOutcomeUnavailable
+		return plan
+	}
+	plan.path = filepath.Join(dir, key+".idx")
+	index, err := grepOpenIndex(plan.path, grepBlockSize, format)
+	switch {
+	case err == nil:
+		plan.open = index
+		return plan
+	case !errors.Is(err, fs.ErrNotExist):
+		os.Remove(plan.path)
+		report.index, report.reason = grepIndexOutcomeInvalid, grepIndexReason(err)
+		plan.build = true
+		return plan
+	}
+	marker := filepath.Join(dir, key+".seen")
+	if options.index == grepIndexForce {
+		plan.build = true
+		return plan
+	}
+	if seen, err := os.Stat(marker); err == nil && options.now.Sub(seen.ModTime()) < grepIndexSeenWindow {
+		plan.build = true
+		return plan
+	}
+	if err := os.MkdirAll(dir, 0o700); err == nil {
+		if touched, err := os.Create(marker); err == nil {
+			touched.Close()
+		}
+	}
+	report.index = grepIndexOutcomeFirst
+	return plan
+}
+
+func grepIndexReason(err error) string {
+	_, reason, found := strings.Cut(err.Error(), ": ")
+	if !found {
+		return err.Error()
+	}
+	return reason
+}
+
+// grepSearchWithIndex는 index로 블록을 건너뛰며 검색하고, 뒤에 쌓인 부분의 sketch로 index를 늘린다. 읽은 블록이 index와
+// 다르면 index를 버리고 파일 전체를 다시 훑되, 이미 낸 줄은 다시 내지 않는다.
+func grepSearchWithIndex(file *os.File, size int64, format viewFormat, matcher *grepMatcher, filter *grepFilter, scanner grepScanner, options grepOptions, plan grepIndexPlan, report *grepFileReport, emit func(grepLineRef) bool) (bool, error) {
+	query := newGrepIndexQuery(matcher, options.ignoreCase, filter)
+	report.noLetters = len(query.bits) == 0 && options.pattern != ""
+	emitted := map[int64]bool{}
+	var offsets []int64
+	found := false
+	search := &grepIndexedSearch{index: plan.open, file: file, size: size, scanner: scanner, filter: filter, query: query, numbers: options.numbers}
+	record := func(ref grepLineRef) bool {
+		found = true
+		// 순서대로 읽는 모드는 블록을 건너뛰지 않아 index가 틀려도 다시 읽을 일이 없다. 그때는 낸 줄을 기억하지 않는다.
+		if !search.sequential {
+			emitted[ref.offset] = true
+		}
+		if options.verify {
+			offsets = append(offsets, ref.offset)
+		}
+		return emit(ref)
+	}
+	pool := newGrepSketchPool(format, options.now, options.jobs, int(plan.open.header.Blocks))
+	fresh, linesAt, err := search.run(pool, record)
+	report.blocks, report.blocksRead, report.bytesRead, report.indexBytes, report.sequential = int(plan.open.header.Blocks), search.blocksRead, search.bytesRead, plan.open.size, search.sequential
+	if errors.Is(err, errGrepIndexStale) {
+		plan.open.close()
+		os.Remove(plan.path)
+		report.index = grepIndexOutcomeStale
+		lineBase := int64(-1)
+		if options.numbers {
+			lineBase = 0
+		}
+		again := scanner
+		again.verify = nil
+		_, err := again.scanRange(file, 0, size, lineBase, func(ref grepLineRef) bool {
+			if emitted[ref.offset] {
+				return true
+			}
+			return record(ref)
+		})
+		return found, err
+	}
+	if err != nil {
+		return found, err
+	}
+	report.index = grepIndexOutcomeUsed
+	if len(fresh) != 0 {
+		header := plan.open.header
+		header.FileSize, header.Indexed, header.Lines, header.LastCRC = size, header.Indexed+int64(len(fresh))*int64(header.Block), linesAt, fresh[len(fresh)-1].CRC
+		if err := grepWriteIndex(plan.path, header, plan.open.records(), int(plan.open.header.Blocks), fresh); err == nil {
+			report.extended = len(fresh)
+		}
+	}
+	now := time.Now()
+	os.Chtimes(plan.path, now, now)
+	if options.verify {
+		if err := grepVerifyIndex(file, size, scanner, filter, offsets, plan.path, options.listFiles); err != nil {
+			return found, err
+		}
+	}
+	return found, nil
+}
+
+// grepVerifyIndex는 index를 거친 결과와 파일 전체를 훑은 결과를 비교한다. 다르면 index를 지우고 오류로 알린다.
+// -l은 첫 일치에서 멈추므로 그때는 일치가 있는지만 비교한다.
+func grepVerifyIndex(file *os.File, size int64, scanner grepScanner, filter *grepFilter, indexed []int64, indexPath string, listFiles bool) error {
+	if filter != nil {
+		if err := filter.prime(file, 0); err != nil {
+			return err
+		}
+	}
+	var full []int64
+	scanner.verify = nil
+	if _, err := scanner.scanRange(file, 0, size, -1, func(ref grepLineRef) bool {
+		full = append(full, ref.offset)
+		return true
+	}); err != nil {
+		return err
+	}
+	if fmt.Sprint(full) == fmt.Sprint(indexed) || (listFiles && (len(full) != 0) == (len(indexed) != 0)) {
+		return nil
+	}
+	os.Remove(indexPath)
+	return fmt.Errorf("%s", T("grep.verify_failed", len(indexed), len(full)))
+}
+
+// grepSearchAndBuild는 파일 전체를 훑으면서 그 바이트로 index를 만든다. 검색이 어차피 읽는 I/O에 sketch 계산만 더한다.
+func grepSearchAndBuild(file *os.File, size int64, format viewFormat, scanner grepScanner, filter *grepFilter, options grepOptions, plan grepIndexPlan, report *grepFileReport, emit func(grepLineRef) bool) (bool, error) {
+	started := time.Now()
+	found := false
+	pool := newGrepSketchPool(format, options.now, options.jobs, 0)
+	read, indexed, linesAt, err := grepScanBlocks(file, size, scanner, filter, 0, 0, options.numbers, pool, func(ref grepLineRef) bool {
+		found = true
+		return emit(ref)
+	})
+	sketches := pool.finish()
+	report.bytesRead = read
+	if err != nil {
+		return found, err
+	}
+	marker := strings.TrimSuffix(plan.path, ".idx") + ".seen"
+	if indexed == 0 || len(sketches) != indexed {
+		// 가득 찬 블록이 하나도 없는 파일은 index에 넣을 것이 없다.
+		report.index, report.reason = grepIndexOutcomeNotBuilt, T("grep.reason.short")
+		os.Remove(marker)
+		return found, nil
+	}
+	header := grepIndexHeaderFor(format, scanner.block, size, &sketches[0], &sketches[len(sketches)-1], len(sketches), linesAt)
+	if err := grepWriteIndex(plan.path, header, nil, 0, sketches); err != nil {
+		// 표시를 지워 다음 검색이 또 9초를 들여 만들고 버리지 않게 한다.
+		report.index, report.reason = grepIndexOutcomeNotBuilt, err.Error()
+		os.Remove(marker)
+		return found, nil
+	}
+	os.Remove(marker)
+	if written, err := os.Stat(plan.path); err == nil {
+		report.indexBytes = written.Size()
+	}
+	if report.index != grepIndexOutcomeInvalid {
+		report.index = grepIndexOutcomeBuilt
+	}
+	report.blocks, report.built = indexed, time.Since(started)
+	grepIndexTrim(filepath.Dir(plan.path), grepIndexCacheCap)
+	return found, nil
 }
 
 // grepSearchPlain은 파일을 훑는다. --since가 있고 로그가 시간 순서면 그 자리를 이진 탐색해 앞부분을 건너뛴다.
@@ -368,6 +628,7 @@ func grepSequentialSearch(reader io.Reader, name string, options grepOptions, pr
 		accept = func(line []byte) bool { return filter.prefilter(line) && filter.accept(line) }
 	}
 	printer.begin(name, matcher)
+	hints.reports = append(hints.reports, grepFileReport{path: name, index: grepIndexOutcomeSequential})
 	var before [][]byte
 	var last []grepLine
 	after := 0
@@ -643,10 +904,11 @@ func grepContextLines(file io.ReaderAt, offset int64, length, count int) ([][]by
 
 // grepHints는 stderr가 터미널일 때 검색이 어떻게 진행됐는지 알리는 줄이다. 무엇을 건너뛰었는지 말해야 결과를 믿을 수 있다.
 type grepHints struct {
-	options    grepOptions
-	reports    []grepFileReport
-	skippedOld []string
-	binary     []string
+	options      grepOptions
+	reports      []grepFileReport
+	skippedOld   []string
+	binary       []string
+	verifyFailed bool
 }
 
 func (hints *grepHints) render(out io.Writer, color bool) {
@@ -657,8 +919,48 @@ func (hints *grepHints) render(out io.Writer, color bool) {
 		}
 		fmt.Fprintln(out, line)
 	}
+	small := 0
 	for _, report := range hints.reports {
 		name := report.path
+		switch report.index {
+		case grepIndexOutcomeOff:
+			emit(T("grep.hint.index_off", name))
+		case grepIndexOutcomeSmall:
+			small++
+		case grepIndexOutcomeFirst:
+			emit(T("grep.hint.index_first", name))
+		case grepIndexOutcomeBuilt:
+			emit(T("grep.hint.index_built", name, formatSizeShort(uint64(report.indexBytes)), grepPercent(report.indexBytes, report.size), report.built.Round(100*time.Millisecond)))
+		case grepIndexOutcomeUsed:
+			if report.sequential {
+				emit(T("grep.hint.index_sequential_read", name, grepIndexSequentialPercent))
+			} else {
+				emit(T("grep.hint.index_used", name, groupThousands(int64(report.blocksRead)), groupThousands(int64(report.blocks)), formatSizeShort(uint64(report.bytesRead))))
+			}
+			if report.extended > 0 {
+				emit(T("grep.hint.index_extended", name, groupThousands(int64(report.extended))))
+			}
+			if report.noLetters {
+				emit(T("grep.hint.index_no_letters", name))
+			}
+		case grepIndexOutcomeInvalid:
+			emit(T("grep.hint.index_invalid", name, report.reason))
+			if report.indexBytes != 0 {
+				emit(T("grep.hint.index_built", name, formatSizeShort(uint64(report.indexBytes)), grepPercent(report.indexBytes, report.size), report.built.Round(100*time.Millisecond)))
+			}
+		case grepIndexOutcomeStale:
+			emit(T("grep.hint.index_stale", name))
+		case grepIndexOutcomeLast:
+			emit(T("grep.hint.index_last", name, formatSizeShort(uint64(report.lastRead))))
+		case grepIndexOutcomeSequential:
+			emit(T("grep.hint.index_sequential", name))
+		case grepIndexOutcomeUnavailable:
+			emit(T("grep.hint.index_unavailable", name))
+		case grepIndexOutcomeNotBuilt:
+			emit(T("grep.hint.index_not_built", name, report.reason))
+		default:
+			emit(T("grep.hint.index_none", name))
+		}
 		switch {
 		case report.skipped > 0:
 			emit(T("grep.hint.seek", name, formatSizeShort(uint64(report.skipped)), formatSizeShort(uint64(report.bytesRead))))
@@ -676,6 +978,9 @@ func (hints *grepHints) render(out io.Writer, color bool) {
 			emit(T("grep.hint.last", name, formatSizeShort(uint64(report.lastRead))))
 		}
 	}
+	if small > 0 {
+		emit(T("grep.hint.index_small", small, formatSizeShort(grepIndexMinSize)))
+	}
 	if len(hints.skippedOld) > 0 {
 		emit(T("grep.hint.skipped_old", len(hints.skippedOld), grepJoinNames(hints.skippedOld)))
 	}
@@ -689,4 +994,11 @@ func grepJoinNames(names []string) string {
 		return strings.Join(names, ", ")
 	}
 	return strings.Join(names[:grepHintNames], ", ") + ", …"
+}
+
+func grepPercent(part, whole int64) float64 {
+	if whole <= 0 {
+		return 0
+	}
+	return 100 * float64(part) / float64(whole)
 }

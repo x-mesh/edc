@@ -27,6 +27,8 @@ type grepMatcher struct {
 	literal []byte
 	regex   *regexp.Regexp
 	needle  []byte
+	// indexNeedle은 index의 trigram에 대는 바이트다. bloom은 대소문자를 접어 두므로 -i 문자열 패턴도 패턴 전체를 쓴다.
+	indexNeedle []byte
 	// pivot은 needle에서 IndexByte로 찍는 바이트의 위치다. -1이면 bytes.Index를 쓴다. second는 전체 비교 전에 확인하는
 	// 두 번째 바이트다.
 	pivot, second int
@@ -39,6 +41,7 @@ func newGrepMatcher(pattern string, useRegex, ignoreCase bool, sample []byte) (*
 	case !useRegex && !ignoreCase:
 		matcher.literal = []byte(pattern)
 		matcher.needle = matcher.literal
+		matcher.indexNeedle = matcher.literal
 	default:
 		expr := pattern
 		if !useRegex {
@@ -54,9 +57,11 @@ func newGrepMatcher(pattern string, useRegex, ignoreCase bool, sample []byte) (*
 		matcher.regex = regex
 		prefix, _ := regex.LiteralPrefix()
 		matcher.needle = []byte(prefix)
+		matcher.indexNeedle = matcher.needle
 		if ignoreCase && !useRegex {
 			// 대소문자를 무시해도 글자가 아닌 바이트는 그대로다. 그중 가장 긴 구간이 모든 일치에 들어간다.
 			matcher.needle = grepLongestNonLetterRun(pattern)
+			matcher.indexNeedle = []byte(pattern)
 		}
 	}
 	matcher.pivot, matcher.second = grepChoosePivot(matcher.needle, sample)
@@ -157,6 +162,8 @@ type grepScanner struct {
 	buffers *grepBuffers
 	// prepare는 scanLast가 블록을 읽기 전에 부른다. 앞 줄의 level과 시각을 물려받는 필터가 그 블록 앞의 머리 줄을 찾는 데 쓴다.
 	prepare func(file io.ReaderAt, from int64) error
+	// verify는 읽은 조각마다 부른다. index 검색은 블록 원문의 checksum을 index와 맞춰 본다.
+	verify func(offset int64, chunk []byte) error
 }
 
 // newGrepScanner는 패턴과 조건으로 scanner를 만든다. 조건이 머리 줄의 level과 시각을 물려받는 형식이면 줄을 건너뛰지 않는다.
@@ -225,6 +232,11 @@ func (scanner grepScanner) scanRange(file io.ReaderAt, from, to, lineBase int64,
 			count, err := file.ReadAt(buffer[len(buffer):len(buffer)+want], readAt)
 			if err != nil && !errors.Is(err, io.EOF) {
 				return read, err
+			}
+			if scanner.verify != nil && count > 0 {
+				if err := scanner.verify(readAt, buffer[len(buffer):len(buffer)+count]); err != nil {
+					return read, err
+				}
 			}
 			buffer = buffer[:len(buffer)+count]
 			readAt += int64(count)

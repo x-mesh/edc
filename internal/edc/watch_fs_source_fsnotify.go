@@ -118,9 +118,15 @@ func newFSNotifyWatchSource(options fsWatchOptions) (fsWatchSource, error) {
 				if !ok {
 					return
 				}
-				// 커널 큐가 넘치면 그동안의 이벤트만 잃고 감시는 이어진다. 놓친 디렉터리 생성은 watch를 걸지 못하므로 그 아래는 보이지 않는다.
+				// 커널 큐가 넘치면 그동안의 이벤트만 잃고 감시는 이어진다. 놓친 디렉터리 생성은 watch를 걸지 못해 그 아래가 끝까지
+				// 보이지 않으므로, 알림을 낼 때마다(10초에 한 번) 트리를 다시 훑어 빠진 디렉터리에 watch를 건다.
 				if errors.Is(err, fsnotify.ErrEventOverflow) {
-					overflow.notice("watchfs.overflow")
+					if overflow.notice("watchfs.overflow") && options.recursive {
+						if err := addTree(options.root, false); err != nil && !errors.Is(err, fs.ErrClosed) {
+							fail(err)
+							return
+						}
+					}
 					continue
 				}
 				fail(err)

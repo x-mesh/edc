@@ -19,8 +19,8 @@ const fsWatchQueueHandoff = 256
 
 // fsWatchBuffered는 source의 이벤트를 limit까지 메모리에 모아 두는 source를 돌려준다. 감시 루프가 출력에 막혀 있는 동안에도
 // 드라이버에서 계속 받아 커널 큐가 넘치지 않게 한다. 다 차면 새 이벤트를 버리고, 처음 버릴 때와 resume까지 빠져 다시 받기
-// 시작할 때 각각 한 번 알린다. 오류 채널과 driver는 그대로 넘긴다.
-func fsWatchBuffered(source fsWatchSource, limit, resume int) fsWatchSource {
+// 시작할 때 각각 한 번 알리고, 버린 수를 loss에 더한다. 오류 채널과 driver는 그대로 넘긴다.
+func fsWatchBuffered(source fsWatchSource, limit, resume int, loss *fsWatchLoss) fsWatchSource {
 	out := make(chan fsWatchEvent, fsWatchQueueHandoff)
 	done, finished := make(chan struct{}), make(chan struct{})
 	go func() {
@@ -32,6 +32,7 @@ func fsWatchBuffered(source fsWatchSource, limit, resume int) fsWatchSource {
 		defer func() {
 			if dropped > 0 {
 				fmt.Fprintln(fsWatchNotice, T("watchfs.queue_dropped", dropped))
+				loss.drop(dropped)
 			}
 		}()
 		pop := func() {
@@ -44,6 +45,7 @@ func fsWatchBuffered(source fsWatchSource, limit, resume int) fsWatchSource {
 			if dropping && len(queue) <= resume {
 				dropping = false
 				fmt.Fprintln(fsWatchNotice, T("watchfs.queue_dropped", dropped))
+				loss.drop(dropped)
 				dropped = 0
 			}
 		}

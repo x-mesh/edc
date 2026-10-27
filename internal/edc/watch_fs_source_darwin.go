@@ -188,6 +188,7 @@ func (watch *fsWatchFSEvents) handle(batch []fsevents.Event, now time.Time) erro
 		if relative == "." {
 			shown = watch.options.root
 		}
+		watch.options.loss.rescan()
 		err := watch.rescan(relative, now)
 		switch {
 		case errors.Is(err, errFSWatchRescanLimit):

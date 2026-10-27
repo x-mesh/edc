@@ -2,7 +2,7 @@
 
 # Live resource monitoring
 
-[Top thresholds](#top-thresholds) · [Top dashboard](#top-dashboard) · [Top events](#top-events) · [Top JSON output](#top-json-output) · [Filter processes in top](#filter-processes-in-top) · [AI tool usage](#ai-tool-usage) · [Read logs](#read-logs)
+[Top thresholds](#top-thresholds) · [Top dashboard](#top-dashboard) · [Top events](#top-events) · [Top JSON output](#top-json-output) · [Filter processes in top](#filter-processes-in-top) · [AI tool usage](#ai-tool-usage) · [Read logs](#read-logs) · [Search logs](#search-logs)
 
 ![Live resource dashboard](media/top.png)
 
@@ -469,3 +469,33 @@ The stats panel shows the lines per second, the errors, the status classes or th
 If logrotate moves the file, `edc view` reads the rest of the old file. Then it marks the place and reads the new file from the start. If the file becomes smaller, it reads the file from the start again.
 
 If the output is not a terminal, or if `NO_COLOR` is set, `edc view` writes the bytes unchanged, like `cat`. `-n N` writes the last N lines. `-f` follows the file like `tail -F`. If you give `-f` without `-n`, it starts with the last 10 lines.
+
+## Search logs
+
+`edc grep <pattern> [path...]` searches logs. It prints lines like `grep`: the path when you give several files, the line number with `-n`, and context lines with `-C N`. It searches a directory recursively. It skips binary files and reads `.gz` files in order.
+
+```bash
+# plain text in a directory
+edc grep timeout /var/log/app/
+# 5xx responses in the last 10 minutes
+edc grep --since 10m --ordered --status 5xx /var/log/nginx/access.log
+# the newest 20 errors, with their stack traces
+edc grep --level error --last 20 app.log
+# regular expression, any case, two lines of context
+edc grep -E -i -C 2 'order=[0-9]+' app.log
+# another command's output
+kubectl logs deploy/api | edc grep -i refund
+```
+
+With `--level`, `--status`, `--since`, or `--until`, you can leave out the pattern when the first argument is an existing file or directory.
+
+`edc grep` reads less than `grep` in two ways.
+
+| Option | What it skips |
+| --- | --- |
+| `--since` with `--ordered` | `--since` and `--until` filter lines by their timestamps. Add `--ordered` when the log is in time order. Then `edc grep` checks the order at 16 points, skips a file whose last timestamp is before `--since` (a `.gz` file by its modification time), and bisects the timestamps to start near `--since`. A recent window of a multi-GB log reads a few MB. Without `--ordered` it reads the file whole, because a few probes cannot see a short backward run between them. |
+| `--last N` | It reads the file from the end and stops after N matches. |
+
+`--level warn` matches lines at warn or above. Lines of a stack trace carry the level and the time of their `ERROR` line. `--status` accepts `5xx`, `404`, and `500-503`, separated by commas. `--since` and `--until` accept `10m`, `2h`, `1d`, `2026-10-27 09:00`, and `09:00`.
+
+Exit codes: 0 when a line matched, 1 when no line matched, 2 on an error.

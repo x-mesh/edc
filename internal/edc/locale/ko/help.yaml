@@ -206,6 +206,28 @@ command:
       - "Enter는 필드와 줄 전체, 그 아래로 이어지는 stack trace 줄을 보여 줍니다."
       - "파일이 회전되거나 잘리면 그 자리를 표시하고 새 파일을 처음부터 읽습니다."
       - "pipe나 NO_COLOR에서는 cat처럼 바이트를 그대로 냅니다. -f는 tail -F처럼 따라갑니다."
+  grep:
+    summary: "로그 검색, 시각으로 건너뛰고 최근 것부터 읽고 index를 다시 씀"
+    option:
+      ignore_case: "대소문자 무시"
+      regex: "패턴을 정규식으로 해석 (기본: 문자열 그대로)"
+      numbers: "줄 번호 표시"
+      files: "맞는 줄이 있는 파일 이름만 출력"
+      context: "맞는 줄 앞뒤 N줄 표시"
+      level: "이 level 이상인 줄: trace, debug, info, warn, error, fatal"
+      status: "HTTP status: 5xx, 404, 500-503을 쉼표로 이음"
+      since: "이 시각 이후의 줄: 10m, 2h, 1d, 2026-10-27 09:00, 09:00"
+      until: "이 시각 이전의 줄"
+      ordered: "로그가 시간 순서임: --since가 파일을 이진 탐색하고 그 시각 앞에서 끝나는 파일을 건너뜀"
+      last: "가장 최근 N건, 파일 끝에서 읽음"
+    notes:
+      - "디렉터리는 안의 파일을 모두 찾습니다. binary 파일은 건너뛰고, .gz는 풀면서 차례로 읽습니다."
+      - "출력은 grep과 같습니다. 파일이 여럿이면 경로를, -n이면 줄 번호를 붙이고, -C는 앞뒤 줄을 더합니다."
+      - "--since와 --until은 시각으로 줄을 거릅니다. --ordered를 주면 --since가 시간 순서인 파일을 이진 탐색하고 그 시각 앞에서 끝나는 파일을 건너뛰어, 수 GB 로그의 최근 구간도 수 MB만 읽습니다."
+      - "--last는 파일 끝에서 거꾸로 읽어 N건을 찾으면 멈춥니다."
+      - "--level, --status, --since, --until이 있으면 첫 인자가 실제 파일이나 디렉터리일 때 패턴을 생략할 수 있습니다."
+      - "stack trace 줄은 그 ERROR 줄의 level과 시각을 물려받으므로, --level error는 trace도 함께 냅니다."
+      - "pipe나 NO_COLOR에서는 줄의 바이트를 그대로 냅니다. 종료 코드는 찾으면 0, 없으면 1, 오류면 2입니다."
   du:
     summary: "디렉터리 아래 디스크 사용량, 큰 항목부터 (Linux와 macOS)"
     option:

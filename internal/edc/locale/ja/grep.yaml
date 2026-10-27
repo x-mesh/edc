@@ -1,0 +1,17 @@
+# grep コマンドの日本語メッセージ。
+grep:
+  failed: "edc grep: %v"
+  stdin: "(標準入力)"
+  bad_level: "edc grep: 不明な level %q です。trace, debug, info, warn, error, fatal のいずれかを指定してください"
+  bad_status: "edc grep: status %q を読めません。5xx, 404, 500-503 をコンマで区切って指定してください"
+  bad_time: "edc grep: 時刻 %q を読めません。10m, 2h, 1d, 2026-10-27 09:00, 09:00 のように指定してください"
+  hint:
+    prefix: "hint: "
+    last: "%s: --last で末尾から %s を読みました"
+    since_whole: "%s: --since でファイル全体を読みました。ログが時刻順なら --ordered で二分探索します"
+    seek: "%s: --since で %s を読み飛ばし %s を読みました"
+    seek_failed: "%s: 行が時刻順でないためファイル全体を読みました"
+    no_time: "%s: 時刻が見つからず --since と --until に一致する行はありません"
+    counted: "%s: -n のため読み飛ばした %s 行を数えました"
+    skipped_old: "%d 個のファイルは --since より前で終わるため飛ばしました (最後の時刻、.gz は更新時刻で判定): %s"
+    binary: "%d 個の binary ファイルを飛ばしました: %s"

@@ -2,7 +2,7 @@
 
 # 실시간 자원 관측
 
-[Top 임계값](#top-임계값) · [Top 대시보드](#top-대시보드) · [Top 이벤트](#top-이벤트) · [Top JSON 출력](#top-json-출력) · [Top process 필터](#top-process-필터) · [AI 도구 사용량](#ai-도구-사용량) · [로그 읽기](#로그-읽기)
+[Top 임계값](#top-임계값) · [Top 대시보드](#top-대시보드) · [Top 이벤트](#top-이벤트) · [Top JSON 출력](#top-json-출력) · [Top process 필터](#top-process-필터) · [AI 도구 사용량](#ai-도구-사용량) · [로그 읽기](#로그-읽기) · [로그 검색](#로그-검색)
 
 ![Live resource dashboard](media/top.png)
 
@@ -403,3 +403,33 @@ level은 `ERROR`, `WARN`처럼 대문자 낱말이거나 `level=` 값이어야 �
 logrotate가 파일을 옮기면 옛 파일의 나머지를 읽은 뒤, 그 자리를 표시하고 새 파일을 처음부터 읽습니다. 파일이 작아지면 처음부터 다시 읽습니다.
 
 출력이 터미널이 아니거나 `NO_COLOR`가 설정되어 있으면 `cat`처럼 바이트를 그대로 냅니다. `-n N`은 마지막 N줄을 냅니다. `-f`는 `tail -F`처럼 파일을 따라가고, `-n` 없이 주면 마지막 10줄부터 시작합니다.
+
+## 로그 검색
+
+`edc grep <pattern> [path...]`는 로그를 검색합니다. 출력은 `grep`과 같습니다. 파일이 여럿이면 경로를, `-n`이면 줄 번호를 붙이고, `-C N`은 앞뒤 줄을 더합니다. 디렉터리는 안의 파일을 모두 찾고, binary 파일은 건너뛰며, `.gz`는 풀면서 차례로 읽습니다.
+
+```bash
+# 디렉터리에서 문자열 검색
+edc grep timeout /var/log/app/
+# 최근 10분의 5xx 응답
+edc grep --since 10m --ordered --status 5xx /var/log/nginx/access.log
+# 가장 최근 오류 20건, stack trace 포함
+edc grep --level error --last 20 app.log
+# 정규식, 대소문자 무시, 앞뒤 2줄
+edc grep -E -i -C 2 'order=[0-9]+' app.log
+# 다른 명령의 출력
+kubectl logs deploy/api | edc grep -i refund
+```
+
+`--level`, `--status`, `--since`, `--until`이 있으면 첫 인자가 실제 파일이나 디렉터리일 때 패턴을 생략할 수 있습니다.
+
+`edc grep`은 두 가지 방법으로 `grep`보다 적게 읽습니다.
+
+| 옵션 | 건너뛰는 것 |
+| --- | --- |
+| `--since`와 `--ordered` | `--since`와 `--until`은 시각으로 줄을 거릅니다. 로그가 시간 순서면 `--ordered`를 줍니다. 그러면 16곳을 찍어 순서를 확인하고, 마지막 시각이 `--since`보다 이른 파일을 건너뛰고(`.gz`는 수정 시각으로), 시각을 이진 탐색해 `--since` 근처부터 읽습니다. 수 GB 로그의 최근 구간도 수 MB만 읽습니다. `--ordered`가 없으면 파일 전체를 읽습니다. 몇 곳의 표본으로는 표본 사이의 짧은 역행을 알 수 없기 때문입니다. |
+| `--last N` | 파일 끝에서 거꾸로 읽어 N건을 찾으면 멈춥니다. |
+
+`--level warn`은 warn 이상인 줄입니다. stack trace 줄은 그 `ERROR` 줄의 level과 시각을 물려받습니다. `--status`는 `5xx`, `404`, `500-503`을 쉼표로 이어 받습니다. `--since`와 `--until`은 `10m`, `2h`, `1d`, `2026-10-27 09:00`, `09:00`을 받습니다.
+
+종료 코드는 맞는 줄이 있으면 0, 없으면 1, 오류가 나면 2입니다.

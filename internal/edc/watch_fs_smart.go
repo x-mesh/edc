@@ -2,6 +2,7 @@ package edc
 
 import (
 	"fmt"
+	"path"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -11,6 +12,11 @@ import (
 // fsWatchSmartWindow는 이벤트를 모으는 시간이다. 규칙의 debounce 기본값과 같다. 창의 첫 이벤트를 받은 뒤 이만큼 지나면
 // 모은 이벤트를 한꺼번에 낸다.
 const fsWatchSmartWindow = 200 * time.Millisecond
+
+// fsWatchSmartGroupMin은 한 창에서 같은 디렉터리의 같은 종류 줄을 한 줄로 묶기 시작하는 수다. rm -rf나 복사는 디렉터리마다
+// 수천 줄을 내는데, 터미널이 그 줄을 찍는 속도가 이벤트보다 느려 뒤의 이벤트를 잃는다. 이 수를 넘으면 `REMOVE "dir/..." ×N`처럼
+// 디렉터리 한 줄로 보인다. 경로는 터미널 출력이 ASCII 밖의 글자를 \u로 바꾸므로 …이 아니라 ...을 붙인다.
+const fsWatchSmartGroupMin = 50
 
 // fsWatchSmart는 짧은 창 안의 이벤트를 모아 결과만 보이는 기록으로 바꾼다. 임시 파일에 쓰고 이름을 바꿔 교체하는 저장은
 // create, modify, rename, create 네 줄이 되는데, 이것을 최종 이름 한 줄로 줄인다. 사람이 읽는 출력에만 쓴다. 규칙과 JSON은
@@ -196,25 +202,107 @@ func (smart *fsWatchSmart) flush(now time.Time) []fsWatchRecord {
 	return smart.flushAll()
 }
 
-// flushAll은 창과 상관없이 모은 이벤트를 모두 낸다. 감시를 멈출 때 쓴다.
+// flushAll은 창과 상관없이 모은 이벤트를 모두 낸다. 감시를 멈출 때 쓴다. 한 디렉터리에 같은 종류의 줄이
+// fsWatchSmartGroupMin개를 넘으면 그 줄들은 첫 줄의 자리에 디렉터리 한 줄로 낸다.
 func (smart *fsWatchSmart) flushAll() []fsWatchRecord {
+	groups := smart.groups()
 	var records []fsWatchRecord
 	for _, entry := range smart.entries {
 		if entry.hidden {
 			continue
 		}
-		record := fsWatchRecord{Type: "event", Time: entry.time, Event: entry.kind, Path: entry.path, IsDir: entry.isDir, PID: entry.pid, Process: fsWatchProcessNames(entry.processes)}
-		if entry.kind == "modify" && entry.count > 1 {
-			record.Count = entry.count
+		if group, ok := groups[fsWatchSmartGroupKey(entry)]; ok {
+			if group.first == entry {
+				records = append(records, group.record())
+			}
+			continue
 		}
-		if entry.origin != "" {
-			record.Origin = fsWatchSmartOrigin(entry.origin, entry.path)
-		}
-		records = append(records, record)
+		records = append(records, entry.record())
 	}
 	smart.opened, smart.entries, smart.renamed = time.Time{}, nil, nil
 	smart.byPath = map[string]*fsWatchSmartEntry{}
 	return records
+}
+
+// record는 줄 하나의 기록이다.
+func (entry *fsWatchSmartEntry) record() fsWatchRecord {
+	record := fsWatchRecord{Type: "event", Time: entry.time, Event: entry.kind, Path: entry.path, IsDir: entry.isDir, PID: entry.pid, Process: fsWatchProcessNames(entry.processes)}
+	if entry.kind == "modify" && entry.count > 1 {
+		record.Count = entry.count
+	}
+	if entry.origin != "" {
+		record.Origin = fsWatchSmartOrigin(entry.origin, entry.path)
+	}
+	return record
+}
+
+// fsWatchSmartGroup은 한 디렉터리에서 같은 종류로 묶인 줄들이다. first는 묶음이 나갈 자리를 정하는 첫 줄이다.
+type fsWatchSmartGroup struct {
+	directory string
+	kind      string
+	first     *fsWatchSmartEntry
+	count     int
+	time      time.Time
+	pid       int
+	processes []string
+	known     map[string]struct{}
+}
+
+// fsWatchSmartGroupKey는 줄이 속하는 묶음이다. 디렉터리와 종류가 같아야 한 묶음이다.
+func fsWatchSmartGroupKey(entry *fsWatchSmartEntry) string {
+	return path.Dir(entry.path) + "\x00" + entry.kind
+}
+
+// groups는 fsWatchSmartGroupMin개를 넘는 묶음을 찾는다. 줄이 그 수를 넘지 않으면 셀 필요가 없다.
+func (smart *fsWatchSmart) groups() map[string]*fsWatchSmartGroup {
+	if len(smart.entries) <= fsWatchSmartGroupMin {
+		return nil
+	}
+	counts := map[string]int{}
+	for _, entry := range smart.entries {
+		if !entry.hidden {
+			counts[fsWatchSmartGroupKey(entry)]++
+		}
+	}
+	groups := map[string]*fsWatchSmartGroup{}
+	for _, entry := range smart.entries {
+		key := fsWatchSmartGroupKey(entry)
+		if entry.hidden || counts[key] <= fsWatchSmartGroupMin {
+			continue
+		}
+		group, ok := groups[key]
+		if !ok {
+			group = &fsWatchSmartGroup{directory: path.Dir(entry.path), kind: entry.kind, first: entry, known: map[string]struct{}{}}
+			groups[key] = group
+		}
+		group.count++
+		if entry.time.After(group.time) {
+			group.time = entry.time
+		}
+		if entry.pid != 0 {
+			group.pid = entry.pid
+		}
+		for _, name := range entry.processes {
+			if _, seen := group.known[name]; !seen {
+				group.known[name] = struct{}{}
+				group.processes = append(group.processes, name)
+			}
+		}
+	}
+	return groups
+}
+
+// record는 묶음의 한 줄이다. 경로는 디렉터리 뒤에 ...을 붙이고, Count는 묶인 항목의 수다.
+func (group *fsWatchSmartGroup) record() fsWatchRecord {
+	return fsWatchRecord{Type: "event", Time: group.time, Event: group.kind, Path: fsWatchSmartGroupPath(group.directory), Count: group.count, PID: group.pid, Process: fsWatchProcessNames(group.processes)}
+}
+
+// fsWatchSmartGroupPath는 묶은 줄에 보일 경로다. 감시 루트 바로 아래는 "./..."이다.
+func fsWatchSmartGroupPath(directory string) string {
+	if directory == "." {
+		return "./..."
+	}
+	return directory + "/..."
 }
 
 // fsWatchSmartOrigin은 같은 디렉터리에서 바뀐 이름이면 이름만, 다른 디렉터리에서 옮겨 왔으면 경로 전체를 보인다.

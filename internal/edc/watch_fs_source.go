@@ -1,6 +1,7 @@
 package edc
 
 import (
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -27,6 +28,29 @@ const (
 
 // fsWatchExcludeEntries는 제외 여부를 기억할 상위 디렉터리 수다. 이름이 매번 다른 디렉터리가 쌓이면 비운다.
 const fsWatchExcludeEntries = 4096
+
+// fsWatchDropNoticeInterval은 이벤트 유실 안내 사이의 최소 간격이다. 커널은 큐가 찼다가 비는 한 번마다 overflow를
+// 하나 보내므로, 초당 수만 건이 흐르면 안내도 초당 여러 번 나온다.
+const fsWatchDropNoticeInterval = 10 * time.Second
+
+// fsWatchDropNotice는 이벤트가 유실됐다는 안내를 간격을 두고 낸다. 한 goroutine에서만 쓴다.
+type fsWatchDropNotice struct {
+	now  func() time.Time
+	last time.Time
+}
+
+func newFSWatchDropNotice() *fsWatchDropNotice { return &fsWatchDropNotice{now: time.Now} }
+
+// notice는 key의 안내를 낸다. 앞 안내가 fsWatchDropNoticeInterval 안이면 내지 않고 false를 돌려준다.
+func (drop *fsWatchDropNotice) notice(key string, args ...interface{}) bool {
+	now := drop.now()
+	if !drop.last.IsZero() && now.Sub(drop.last) < fsWatchDropNoticeInterval {
+		return false
+	}
+	drop.last = now
+	fmt.Fprintln(fsWatchNotice, T(key, args...))
+	return true
+}
 
 type fsWatchSource struct {
 	events <-chan fsWatchEvent
@@ -71,6 +95,33 @@ func fsWatchIgnored(options fsWatchOptions) func(string, fs.DirEntry) bool {
 			}
 		}
 		return fsWatchExcluded(options.exclude, filepath.ToSlash(relative))
+	}
+}
+
+// fsWatchIgnoredEvent는 이벤트의 경로를 fsWatchIgnored처럼 거른다. info는 드라이버가 그 경로를 지금 Lstat한 결과이고,
+// 지워진 경로는 nil이다. 그 결과로 출력 파일인지 비교해 이벤트마다 stat을 한 번 더 하지 않는다. 지워진 경로는 출력
+// 파일일 수 없고, symbolic link는 가리키는 파일이 출력일 수 있어 그때만 따라가 본다.
+func fsWatchIgnoredEvent(options fsWatchOptions) func(string, fs.FileInfo) bool {
+	return func(filename string, info fs.FileInfo) bool {
+		relative, err := filepath.Rel(options.root, filename)
+		if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+			return true
+		}
+		if options.outputPath != "" && fsWatchPathsEqual(options.outputPath, filename) {
+			return true
+		}
+		if fsWatchExcluded(options.exclude, filepath.ToSlash(relative)) {
+			return true
+		}
+		if info == nil || options.outputInfo == nil {
+			return false
+		}
+		if info.Mode()&fs.ModeSymlink != 0 {
+			if info, err = os.Stat(filename); err != nil {
+				return false
+			}
+		}
+		return os.SameFile(info, options.outputInfo)
 	}
 }
 

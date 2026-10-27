@@ -411,11 +411,14 @@ func newFSWatchTestSink() *fsWatchTestSink {
 func (sink *fsWatchTestSink) Write(data []byte) (int, error) {
 	sink.mutex.Lock()
 	defer sink.mutex.Unlock()
-	var record fsWatchRecord
-	if err := json.Unmarshal(data, &record); err != nil {
-		return 0, err
+	// 터미널이 아닌 출력은 기록을 모아 한 번에 쓰므로 줄마다 푼다.
+	for _, line := range bytes.Split(bytes.TrimSuffix(data, []byte("\n")), []byte("\n")) {
+		var record fsWatchRecord
+		if err := json.Unmarshal(line, &record); err != nil {
+			return 0, err
+		}
+		sink.records <- record
 	}
-	sink.records <- record
 	return sink.data.Write(data)
 }
 func (sink *fsWatchTestSink) wait(t *testing.T, kind string) fsWatchRecord {

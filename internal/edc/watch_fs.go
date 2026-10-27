@@ -395,6 +395,11 @@ func streamFSWatch(ctx context.Context, writer io.Writer, source fsWatchSource, 
 	if failure != nil {
 		summary.StopReason, summary.Error = "watch_error", failure.Error()
 	}
+	// 큐 goroutine은 버리는 중인 수를 끝날 때 loss에 더하고, 드라이버도 닫힌 뒤에야 더하지 않는다. 요약을 세기 전에
+	// source를 닫아 그 수를 모두 받는다. close는 한 번만 동작하므로 runFSWatch의 defer와 겹쳐도 된다.
+	if source.close != nil {
+		source.close()
+	}
 	summary.Overflows, summary.Dropped, summary.Rescans = options.loss.counts()
 	summary.Incomplete = summary.Overflows+summary.Dropped+summary.Rescans > 0
 	if err := emit(summary); err != nil {

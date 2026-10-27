@@ -103,14 +103,18 @@ func TestFSWatchBufferedQueueReportsTheDropCountWhenClosedWhileDropping(t *testi
 	defer fsWatchNotice.swap(previous)
 	in := make(chan fsWatchEvent)
 	inner := fsWatchSource{events: in, errors: make(chan error, 1), close: func() {}}
-	source := fsWatchBuffered(inner, 2, 1, nil)
+	var loss fsWatchLoss
+	source := fsWatchBuffered(inner, 2, 1, &loss)
 	for index := 0; index < fsWatchQueueHandoff+2+5; index++ {
 		in <- fsWatchEvent{Event: "modify", Path: fmt.Sprint(index)}
 	}
 	notice.wait(t, T("watchfs.queue_full", 2))
-	// 버리는 중에 닫혀도 버린 수를 알린다.
+	// 버리는 중에 닫혀도 버린 수를 알리고 loss에 더한다. close는 goroutine이 끝난 뒤 돌아오므로 바로 셀 수 있다.
 	source.close()
 	notice.wait(t, T("watchfs.queue_dropped", 5))
+	if _, dropped, _ := loss.counts(); dropped != 5 {
+		t.Fatalf("dropped = %d, want 5", dropped)
+	}
 }
 
 func TestFSWatchBufferedQueueDrainsWhenTheSourceCloses(t *testing.T) {

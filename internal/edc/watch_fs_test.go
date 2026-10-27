@@ -868,6 +868,36 @@ func TestFSWatchTerminalLines(t *testing.T) {
 	}
 }
 
+// 큐 goroutine은 버리는 중인 수를 닫힐 때 loss에 더한다. 요약은 source를 닫은 뒤에 세어야 그 수가 들어간다.
+func TestFSWatchSummaryCountsLossesAddedWhenTheSourceCloses(t *testing.T) {
+	loss := &fsWatchLoss{}
+	source := fsWatchSource{events: make(chan fsWatchEvent), errors: make(chan error), close: func() {
+		loss.drop(7)
+		loss.rescan()
+	}}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	var writer bytes.Buffer
+	if code, err := streamFSWatch(ctx, &writer, source, fsWatchOptions{jsonPath: "-", loss: loss}, nil); code != 0 || err != nil {
+		t.Fatalf("code=%d err=%v", code, err)
+	}
+	lines := strings.Split(strings.TrimSpace(writer.String()), "\n")
+	var summary map[string]any
+	if err := json.Unmarshal([]byte(lines[len(lines)-1]), &summary); err != nil {
+		t.Fatal(err)
+	}
+	if summary["incomplete"] != true || summary["dropped"] != 7.0 || summary["rescans"] != 1.0 {
+		t.Fatalf("summary = %v", summary)
+	}
+	var line bytes.Buffer
+	if err := writeFSWatchRecord(&line, fsWatchRecord{Type: "summary", StopReason: "cancelled", Incomplete: true, Dropped: 7, Rescans: 1}, false, textStyle{}); err != nil {
+		t.Fatal(err)
+	}
+	if want := T("watchfs.incomplete", T("watchfs.incomplete_dropped", 7)+", "+T("watchfs.incomplete_rescans", 1)); !strings.Contains(line.String(), want) {
+		t.Fatalf("line %q does not contain %q", line.String(), want)
+	}
+}
+
 func TestFSWatchSummaryReportsLostEvents(t *testing.T) {
 	// 드라이버와 큐가 더한 수가 요약에 실린다. 0인 항목은 JSON에 없고, 잃은 것이 없으면 incomplete만 false로 남는다.
 	var loss fsWatchLoss

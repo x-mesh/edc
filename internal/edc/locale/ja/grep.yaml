@@ -12,5 +12,5 @@ grep:
     seek_failed: "%s: 行が時刻順でないためファイル全体を読みました"
     no_time: "%s: 時刻が見つからず --since と --until に一致する行はありません"
     counted: "%s: -n のため読み飛ばした %s 行を数えました"
-    skipped_old: "%d 個のファイルは更新時刻が --since より前のため開きませんでした: %s"
+    skipped_old: "%d 個のファイルは --since より前で終わるため飛ばしました: %s"
     binary: "%d 個の binary ファイルを飛ばしました: %s"

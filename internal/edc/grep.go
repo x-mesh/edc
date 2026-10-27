@@ -62,10 +62,20 @@ func parseGrepOptions(args []string, stderr io.Writer, now time.Time) (grepOptio
 	if err := parseReordered(set, args); err != nil {
 		return options, nil, err
 	}
-	if set.NArg() == 0 || options.context < 0 || options.last < 0 {
+	filtered := *level != "" || *status != "" || *since != "" || *until != ""
+	if (set.NArg() == 0 && !filtered) || options.context < 0 || options.last < 0 {
 		return options, nil, errors.New(T("cli.usage", grepUsage))
 	}
-	options.pattern = set.Arg(0)
+	paths := set.Args()
+	if set.NArg() > 0 {
+		options.pattern, paths = set.Arg(0), set.Args()[1:]
+	}
+	// 조건이 있으면 패턴 없이 쓰는 일이 많다. 첫 인자가 실제 파일이나 디렉터리면 패턴을 생략한 것으로 본다.
+	if filtered && set.NArg() > 0 {
+		if _, err := os.Stat(set.Arg(0)); err == nil {
+			options.pattern, paths = "", set.Args()
+		}
+	}
 	if *level != "" {
 		if options.minLevel = grepLevelRank(viewNormalizeLevel(*level)); options.minLevel < 0 {
 			return options, nil, errors.New(T("grep.bad_level", *level))
@@ -89,7 +99,7 @@ func parseGrepOptions(args []string, stderr io.Writer, now time.Time) (grepOptio
 			return options, nil, errors.New(T("grep.bad_time", *until))
 		}
 	}
-	return options, set.Args()[1:], nil
+	return options, paths, nil
 }
 
 // grepRun은 grep의 본체다. stdout이 터미널이면 색을 쓰고, stderr가 터미널이면 hint를 낸다. 종료 코드는 grep과 같다.
@@ -223,11 +233,12 @@ func grepSearchFile(path string, options grepOptions, printer *grepPrinter, hint
 	if info.IsDir() {
 		return false, nil
 	}
-	if !options.since.IsZero() && info.ModTime().Add(grepTolerance).Before(options.since) {
-		hints.skippedOld = append(hints.skippedOld, path)
-		return false, nil
-	}
 	if strings.HasSuffix(path, ".gz") {
+		// 회전된 .gz는 내용이 다 쓰인 뒤에 만들어지므로 수정 시각이 마지막 줄보다 뒤다. 풀지 않고 수정 시각으로 건너뛴다.
+		if !options.since.IsZero() && info.ModTime().Add(grepTolerance).Before(options.since) {
+			hints.skippedOld = append(hints.skippedOld, path)
+			return false, nil
+		}
 		reader, err := gzip.NewReader(bufio.NewReaderSize(file, 1<<20))
 		if err != nil {
 			return false, err
@@ -250,6 +261,11 @@ func grepSearchFile(path string, options grepOptions, printer *grepPrinter, hint
 		return false, err
 	}
 	filter := grepFilterFor(format, options)
+	// 수정 시각은 시계가 틀린 로그에서 내용과 어긋날 수 있다. 파일 안의 마지막 시각이 --since 앞일 때만 건너뛴다.
+	if filter != nil && !options.since.IsZero() && filter.endsBefore(file, size, options.since.Add(-grepTolerance)) {
+		hints.skippedOld = append(hints.skippedOld, path)
+		return false, nil
+	}
 	scanner := newGrepScanner(matcher, filter)
 	printer.begin(path, matcher)
 	report := &grepFileReport{path: path, size: size}
@@ -386,7 +402,7 @@ func grepSequentialSearch(reader io.Reader, name string, options grepOptions, pr
 			}
 		}
 		offset += int64(consumed)
-		if err != nil || (filter != nil && filter.exhausted) {
+		if err != nil {
 			break
 		}
 	}
@@ -418,7 +434,8 @@ func grepReadLine(reader *bufio.Reader, limit int) ([]byte, int, error) {
 		if len(line) != 0 && line[len(line)-1] == '\n' {
 			line = line[:len(line)-1]
 		}
-		return bytes.TrimSuffix(line, []byte("\r")), consumed, err
+		// CR은 줄의 일부로 둔다. pipe 출력은 파일을 읽는 경로와 같이 원문 바이트를 지켜야 한다.
+		return line, consumed, err
 	}
 }
 

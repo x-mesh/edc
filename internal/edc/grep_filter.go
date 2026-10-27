@@ -17,6 +17,9 @@ const (
 	grepSeekStop = 64 << 10
 	// grepProbeBytes는 이진 탐색이 한 자리에서 시각을 찾으려고 읽는 양이다. 구간 앞의 마지막 event 줄을 찾을 때도 쓴다.
 	grepProbeBytes = 64 << 10
+	// grepOrderProbes는 파일이 시간 순서인지 볼 때 찍는 자리 수다. 처음과 끝만 보면 로그 둘을 이어 붙인 파일처럼 중간에서
+	// 시각이 되돌아가는 파일을 놓친다.
+	grepOrderProbes = 16
 )
 
 // grepTimeLayouts는 로그에서 보는 시각 표기다. 시간대가 없는 표기는 local time으로 읽는다. 초 뒤의 소수는 layout에
@@ -284,8 +287,6 @@ type grepFilter struct {
 	until    time.Time
 	times    grepTimeParser
 	event    grepEvent
-	// exhausted는 --until보다 tolerance만큼 더 지난 줄을 본 뒤다. 시간 순서인 로그에서는 그 뒤에 맞는 줄이 없다.
-	exhausted bool
 }
 
 func newGrepFilter(format viewFormat, matcher *grepMatcher, now time.Time) *grepFilter {
@@ -352,15 +353,6 @@ func (filter *grepFilter) inherited() grepLineFields {
 // accept는 scanner가 줄마다 부른다. 상태 갱신이 먼저라서 패턴에 맞지 않는 머리 줄도 뒤 줄에 level을 물려준다.
 func (filter *grepFilter) accept(line []byte) bool {
 	fields := filter.track(line)
-	// --until은 패턴과 상관없이 시각을 봐야 멈출 자리를 안다. --since만 있으면 패턴에 맞는 줄만 시각을 해석한다.
-	if !filter.until.IsZero() {
-		if at, ok := filter.timeOf(fields); ok && at.After(filter.until) {
-			if at.After(filter.until.Add(grepTolerance)) {
-				filter.exhausted = true
-			}
-			return false
-		}
-	}
 	if filter.matcher != nil && !filter.matcher.match(line) {
 		return false
 	}
@@ -370,9 +362,10 @@ func (filter *grepFilter) accept(line []byte) bool {
 	if filter.statuses != nil && !filter.statuses.match(fields.status) {
 		return false
 	}
+	// --until은 줄을 거르기만 하고 읽기를 멈추지 않는다. 시간 순서가 아닌 파일에서 뒤에 오는 범위 안 줄을 놓치지 않기 위해서다.
 	if !filter.since.IsZero() || !filter.until.IsZero() {
 		at, ok := filter.timeOf(fields)
-		if !ok || (!filter.since.IsZero() && at.Before(filter.since)) {
+		if !ok || (!filter.since.IsZero() && at.Before(filter.since)) || (!filter.until.IsZero() && at.After(filter.until)) {
 			return false
 		}
 	}
@@ -572,26 +565,83 @@ func grepLevelFields(line []byte) (string, []byte, bool) {
 	return level, bytes.TrimRight(head[:start], " [|-:"), true
 }
 
-// seek는 target 앞의 자리를 이진 탐색한다. 로그가 대체로 시간 순서라는 가정 아래 가운데를 찍어 그 줄의 시각을 보고,
-// 시각을 읽을 수 없거나 처음과 끝의 순서가 뒤집혀 있으면 포기한다(ok=false). 돌려준 offset은 줄 중간일 수 있다.
-func (filter *grepFilter) seek(file io.ReaderAt, size int64, target time.Time) (int64, int, bool) {
+// bounds는 파일이 시간 순서인지 grepOrderProbes 자리를 찍어 확인하고 처음과 끝의 시각을 돌려준다. 어느 자리에서 시각을
+// 읽지 못하거나 앞 자리보다 tolerance 넘게 이르면 순서가 아니라고 보고 ok=false다.
+func (filter *grepFilter) bounds(file io.ReaderAt, size int64) (time.Time, time.Time, int, bool) {
 	probe := *filter
 	probe.event = grepEvent{}
-	probes := 0
-	timeAt := func(offset int64) (time.Time, bool) {
-		probes++
-		return probe.timeAt(file, size, offset)
+	var first, previous time.Time
+	for index := 0; index < grepOrderProbes; index++ {
+		var at time.Time
+		var ok bool
+		if index == grepOrderProbes-1 {
+			at, ok = probe.lastTime(file, size)
+		} else {
+			at, ok = probe.timeAt(file, size, size*int64(index)/int64(grepOrderProbes-1))
+		}
+		if !ok || (index > 0 && at.Before(previous.Add(-grepTolerance))) {
+			return first, previous, index + 1, false
+		}
+		if index == 0 {
+			first = at
+		}
+		previous = at
 	}
-	first, ok := timeAt(0)
+	return first, previous, grepOrderProbes, true
+}
+
+// lastTime은 파일 끝 grepProbeBytes 안에서 시각이 있는 마지막 줄의 시각이다.
+func (filter *grepFilter) lastTime(file io.ReaderAt, size int64) (time.Time, bool) {
+	start := size - grepProbeBytes
+	if start < 0 {
+		start = 0
+	}
+	buffer := make([]byte, size-start)
+	count, err := file.ReadAt(buffer, start)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return time.Time{}, false
+	}
+	buffer = bytes.TrimSuffix(buffer[:count], []byte{'\n'})
+	if start > 0 {
+		newline := bytes.IndexByte(buffer, '\n')
+		if newline < 0 {
+			return time.Time{}, false
+		}
+		buffer = buffer[newline+1:]
+	}
+	// 이어지는 줄은 앞 줄의 시각을 물려받으므로 앞에서부터 추적하고 마지막으로 읽힌 시각을 남긴다.
+	var last time.Time
+	found := false
+	for _, line := range bytes.Split(buffer, []byte{'\n'}) {
+		fields := filter.track(line)
+		if at, ok := filter.timeOf(fields); ok {
+			last, found = at, true
+		}
+	}
+	return last, found
+}
+
+// endsBefore는 파일의 모든 줄이 target 앞인지다. 시간 순서인 파일의 마지막 시각으로 판단하고, 순서를 확인하지 못하면 false다.
+func (filter *grepFilter) endsBefore(file io.ReaderAt, size int64, target time.Time) bool {
+	_, last, _, ok := filter.bounds(file, size)
+	return ok && last.Before(target)
+}
+
+// seek는 target 앞의 자리를 이진 탐색한다. bounds로 시간 순서를 확인한 뒤 가운데를 찍어 그 줄의 시각을 보고, 시각을 읽을 수
+// 없으면 포기한다(ok=false). 돌려준 offset은 줄 중간일 수 있다.
+func (filter *grepFilter) seek(file io.ReaderAt, size int64, target time.Time) (int64, int, bool) {
+	first, _, probes, ok := filter.bounds(file, size)
 	if !ok {
-		return 0, probes, false
-	}
-	last, ok := timeAt(size - grepSeekStop)
-	if !ok || last.Before(first) {
 		return 0, probes, false
 	}
 	if !first.Before(target) {
 		return 0, probes, true
+	}
+	probe := *filter
+	probe.event = grepEvent{}
+	timeAt := func(offset int64) (time.Time, bool) {
+		probes++
+		return probe.timeAt(file, size, offset)
 	}
 	low, high := int64(0), size
 	for high-low > grepSeekStop {

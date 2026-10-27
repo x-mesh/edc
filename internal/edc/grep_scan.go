@@ -155,8 +155,8 @@ type grepScanner struct {
 	// buffers는 scanRange 호출 사이에 다시 쓰는 읽기 버퍼다. --last는 블록마다 scanRange를 부르므로 매번 만들면
 	// 블록 수만큼 메모리를 할당한다.
 	buffers *grepBuffers
-	// stop은 줄마다 확인해 true면 더 읽지 않는다. --until을 지난 뒤에 쓴다.
-	stop func() bool
+	// prepare는 scanLast가 블록을 읽기 전에 부른다. 앞 줄의 level과 시각을 물려받는 필터가 그 블록 앞의 머리 줄을 찾는 데 쓴다.
+	prepare func(file io.ReaderAt, from int64) error
 }
 
 // newGrepScanner는 패턴과 조건으로 scanner를 만든다. 조건이 머리 줄의 level과 시각을 물려받는 형식이면 줄을 건너뛰지 않는다.
@@ -175,7 +175,7 @@ func newGrepScanner(matcher *grepMatcher, filter *grepFilter) grepScanner {
 	}
 	filter.matcher = matcher
 	scanner.accept = func(line []byte) bool { return filter.prefilter(line) && filter.accept(line) }
-	scanner.stop = func() bool { return filter.exhausted }
+	scanner.prepare = filter.prime
 	if len(matcher.needle) != 0 && !filter.needsEveryLine() {
 		scanner.find = matcher.find
 	}
@@ -316,9 +316,6 @@ func (scanner grepScanner) scanRegion(region []byte, regionStart, to int64, numb
 				return errGrepStopped
 			}
 		}
-		if scanner.stop != nil && scanner.stop() {
-			return errGrepStopped
-		}
 		position = lineEnd + 1
 	}
 	if *number >= 0 {
@@ -341,6 +338,11 @@ func (scanner grepScanner) scanLast(file io.ReaderAt, size int64, count int) ([]
 	end := size
 	for end > 0 && len(found) < count {
 		start := (end - 1) / int64(scanner.block) * int64(scanner.block)
+		if scanner.prepare != nil {
+			if err := scanner.prepare(file, start); err != nil {
+				return nil, read, err
+			}
+		}
 		var block []grepLine
 		n, err := scanner.scanRange(file, start, end, -1, func(ref grepLineRef) bool {
 			block = append(block, grepLine{ref.offset, bytes.Clone(ref.text)})

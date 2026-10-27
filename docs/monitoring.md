@@ -487,11 +487,13 @@ edc grep -E -i -C 2 'order=[0-9]+' app.log
 kubectl logs deploy/api | edc grep -i refund
 ```
 
+With `--level`, `--status`, `--since`, or `--until`, you can leave out the pattern when the first argument is an existing file or directory.
+
 `edc grep` reads less than `grep` in two ways.
 
 | Option | What it skips |
 | --- | --- |
-| `--since`, `--until` | It does not open a file last changed before `--since`. In a file, it bisects the timestamps and starts near `--since`. A recent window of a multi-GB log reads a few MB. |
+| `--since`, `--until` | It checks that the file is in time order at 16 points. If the last timestamp is before `--since`, it skips the file. Otherwise it bisects the timestamps and starts near `--since`, so a recent window of a multi-GB log reads a few MB. A `.gz` file is skipped by its modification time. |
 | `--last N` | It reads the file from the end and stops after N matches. |
 
 `--level warn` matches lines at warn or above. Lines of a stack trace carry the level and the time of their `ERROR` line. `--status` accepts `5xx`, `404`, and `500-503`, separated by commas. `--since` and `--until` accept `10m`, `2h`, `1d`, `2026-10-27 09:00`, and `09:00`.

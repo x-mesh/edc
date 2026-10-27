@@ -172,16 +172,107 @@ func TestGrepHintsExplainSkips(t *testing.T) {
 	}
 }
 
-// --since보다 오래전에 바뀐 파일은 열지 않는다.
-func TestGrepCommandSkipsFilesOlderThanSince(t *testing.T) {
+// --since는 파일 안의 마지막 시각으로 건너뛴다. 수정 시각이 오래됐어도 내용이 범위 안이면 읽는다.
+func TestGrepCommandSkipsFilesByTheirLastTimestamp(t *testing.T) {
 	dir := grepFixtureDir(t)
-	old := filepath.Join(dir, "access.log")
+	access := filepath.Join(dir, "access.log")
 	when := time.Date(2020, 1, 1, 0, 0, 0, 0, time.Local)
-	if err := os.Chtimes(old, when, when); err != nil {
+	if err := os.Chtimes(access, when, when); err != nil {
 		t.Fatal(err)
 	}
-	code, stdout, _ := grepCommand(t, "", "--since", "2021-01-01", "users", old)
+	code, stdout, _ := grepCommand(t, "", "--since", "2026-10-26", "users", access)
+	if code != 0 || strings.Count(stdout, "\n") != 3 {
+		t.Fatalf("old mtime but recent lines: code %d stdout %q", code, stdout)
+	}
+	code, stdout, _ = grepCommand(t, "", "--since", "2027-01-01", "users", access)
 	if code != 1 || stdout != "" {
-		t.Fatalf("code %d stdout %q", code, stdout)
+		t.Fatalf("lines end before --since: code %d stdout %q", code, stdout)
+	}
+}
+
+// 조건이 있으면 첫 인자가 실제 파일일 때 패턴을 생략할 수 있다. 도움말과 문서의 예제가 그대로 동작한다.
+func TestGrepCommandPatternIsOptionalWithFilters(t *testing.T) {
+	dir := grepFixtureDir(t)
+	code, stdout, _ := grepCommand(t, "", "--status", "5xx", dir)
+	if code != 0 || strings.Count(stdout, "\n") != 2 {
+		t.Fatalf("--status without pattern:\n%s", stdout)
+	}
+	code, stdout, _ = grepCommand(t, "", "--level", "error", "--last", "2", filepath.Join(dir, "app.log"))
+	if code != 0 || stdout != "Caused by: java.io.IOException: broken pipe\n\t... 12 more\n" {
+		t.Fatalf("--level --last without pattern:\n%s", stdout)
+	}
+	// 첫 인자가 파일이 아니면 패턴이다.
+	code, stdout, _ = grepCommand(t, "", "--status", "5xx", "orders", dir)
+	if code != 0 || strings.Count(stdout, "\n") != 1 || !strings.Contains(stdout, "access.log:") {
+		t.Fatalf("--status with pattern:\n%s", stdout)
+	}
+}
+
+// pipe 출력은 원문 바이트를 지킨다. CRLF의 CR도 그대로 낸다.
+func TestGrepCommandKeepsCarriageReturns(t *testing.T) {
+	code, stdout, _ := grepCommand(t, "alpha\r\nbeta\r\n", "alpha")
+	if code != 0 || stdout != "alpha\r\n" {
+		t.Fatalf("stdin: %q", stdout)
+	}
+	path := filepath.Join(t.TempDir(), "crlf.log")
+	if err := os.WriteFile(path, []byte("alpha\r\nbeta\r\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if code, stdout, _ = grepCommand(t, "", "alpha", path); code != 0 || stdout != "alpha\r\n" {
+		t.Fatalf("file: %q", stdout)
+	}
+}
+
+func TestGrepCommandSearchesSubdirectories(t *testing.T) {
+	dir := grepFixtureDir(t)
+	nested := filepath.Join(dir, "nested", "deeper")
+	if err := os.MkdirAll(nested, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(nested, "more.log"), []byte("one more upstream line\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	code, stdout, _ := grepCommand(t, "", "upstream", dir)
+	if code != 0 || strings.Count(stdout, "\n") != 2 || !strings.Contains(stdout, filepath.Join(nested, "more.log")+":") {
+		t.Fatalf("recursive:\n%s", stdout)
+	}
+}
+
+// 손상된 .gz는 오류를 알리고 2로 끝난다. 다른 파일의 결과는 그대로 낸다.
+func TestGrepCommandReportsACorruptGzip(t *testing.T) {
+	dir := grepFixtureDir(t)
+	broken := filepath.Join(dir, "broken.log.gz")
+	if err := os.WriteFile(broken, []byte("not gzip at all"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	code, stdout, stderr := grepCommand(t, "", "upstream", broken, filepath.Join(dir, "app.jsonl"))
+	if code != 2 || !strings.Contains(stderr, "broken.log.gz") || strings.Count(stdout, "\n") != 1 {
+		t.Fatalf("code %d stdout %q stderr %q", code, stdout, stderr)
+	}
+}
+
+// 시계가 틀린 줄 하나가 미래 시각을 달고 있어도 --until은 그 뒤의 범위 안 줄을 모두 낸다.
+func TestGrepCommandUntilReadsPastAnOutlier(t *testing.T) {
+	start := time.Date(2026, 10, 26, 0, 0, 0, 0, time.Local)
+	data := grepTimedAccessLog(3000, start)
+	lines := bytes.SplitAfter(data, []byte{'\n'})
+	outlier := []byte("10.0.0.1 - - [" + start.Add(72*time.Hour).Format("02/Jan/2006:15:04:05 -0700") + "] \"GET /clock-skew HTTP/1.1\" 200 1 \"-\" \"curl\"\n")
+	lines = append(lines[:1000], append([][]byte{outlier}, lines[1000:]...)...)
+	path := filepath.Join(t.TempDir(), "access.log")
+	if err := os.WriteFile(path, bytes.Join(lines, nil), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	until := start.Add(40 * time.Minute)
+	code, stdout, _ := grepCommand(t, "", "--until", until.Format("2006-01-02 15:04:05"), "GET", path)
+	want := 0
+	filter := newGrepFilter(viewFormatAccess, nil, time.Now())
+	for _, line := range lines {
+		fields := filter.track(bytes.TrimSuffix(line, []byte{'\n'}))
+		if at, ok := filter.timeOf(fields); ok && !at.After(until) {
+			want++
+		}
+	}
+	if code != 0 || strings.Count(stdout, "\n") != want || want < 2300 {
+		t.Fatalf("until past an outlier: code %d got %d lines, want %d", code, strings.Count(stdout, "\n"), want)
 	}
 }

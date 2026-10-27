@@ -224,6 +224,7 @@ command:
       - "The output matches grep: the path appears with several files, the line number with -n, and -C adds context lines."
       - "--since bisects a file by its timestamps, so a recent window reads a few MB of a multi-GB log. Files last changed before --since are not opened."
       - "--last reads the file from the end and stops after N matches."
+      - "With --level, --status, --since, or --until, the pattern can be left out when the first argument is an existing file or directory."
       - "Lines of a stack trace carry the level and time of their ERROR line, so --level error returns the trace too."
       - "In a pipe or with NO_COLOR, the bytes of a line stay unchanged. Exit codes: 0 found, 1 none, 2 error."
   du:

@@ -240,11 +240,91 @@ func TestGrepSeekFindsTheSameLinesAsAFullScan(t *testing.T) {
 	if soughtRead*4 > fullRead {
 		t.Fatalf("seek read %d of %d bytes", soughtRead, fullRead)
 	}
-	// --until은 tolerance를 지난 줄에서 멈춰 파일 끝까지 읽지 않는다.
 	until := start.Add(10 * time.Minute)
-	withUntil, untilRead := grepCollect(t, data, viewFormatAccess, "", func(filter *grepFilter) { filter.until = until }, 0)
-	if len(withUntil) < 590 || len(withUntil) > 602 || untilRead*2 > int64(len(data)) {
-		t.Fatalf("until: %d lines, read %d of %d bytes", len(withUntil), untilRead, len(data))
+	withUntil, _ := grepCollect(t, data, viewFormatAccess, "", func(filter *grepFilter) { filter.until = until }, 0)
+	if len(withUntil) < 590 || len(withUntil) > 602 {
+		t.Fatalf("until: %d lines", len(withUntil))
+	}
+}
+
+// 두 로그를 이어 붙인 파일은 처음과 끝만 보면 순서 같지만 가운데에서 시각이 되돌아간다. 그런 파일은 이진 탐색하지 않는다.
+func TestGrepBoundsRejectConcatenatedLogs(t *testing.T) {
+	start := time.Date(2026, 10, 26, 0, 0, 0, 0, time.Local)
+	first := grepTimedAccessLog(6000, start)
+	second := grepTimedAccessLog(6000, start.Add(30*time.Minute))
+	joined := append(bytes.Clone(first), second...)
+	filter := newGrepFilter(viewFormatAccess, nil, time.Now())
+	if _, _, _, ok := filter.bounds(bytes.NewReader(joined), int64(len(joined))); ok {
+		t.Fatal("a concatenated log must not count as ordered")
+	}
+	if _, _, ok := filter.seek(bytes.NewReader(joined), int64(len(joined)), start.Add(time.Hour)); ok {
+		t.Fatal("a concatenated log must not be bisected")
+	}
+	if filter.endsBefore(bytes.NewReader(joined), int64(len(joined)), start.Add(48*time.Hour)) {
+		t.Fatal("endsBefore must not trust an unordered file")
+	}
+	if _, _, _, ok := filter.bounds(bytes.NewReader(first), int64(len(first))); !ok {
+		t.Fatal("an ordered log must count as ordered")
+	}
+	if !filter.endsBefore(bytes.NewReader(first), int64(len(first)), start.Add(48*time.Hour)) || filter.endsBefore(bytes.NewReader(first), int64(len(first)), start.Add(time.Minute)) {
+		t.Fatal("endsBefore must compare the last timestamp")
+	}
+}
+
+// grepLevelLog는 stack trace가 블록 경계를 넘을 만큼 긴 level 로그다. 시각은 늘어나고, 드문 낱말이 가끔 나온다.
+func grepLevelLog(lines int, start time.Time, seed int64) []byte {
+	random := rand.New(rand.NewSource(seed))
+	words := []string{"started in 2.1s", "pool 80% used", "request failed", "cache hit key=user:7", "slow query table=orders", "connection reset by peer"}
+	levels := []string{"INFO", "INFO", "INFO", "WARN", "ERROR", "DEBUG"}
+	var buffer bytes.Buffer
+	at := start
+	for index := 0; index < lines; index++ {
+		at = at.Add(time.Duration(random.Intn(3000)) * time.Millisecond)
+		level := levels[random.Intn(len(levels))]
+		message := words[random.Intn(len(words))]
+		if random.Intn(400) == 0 {
+			message = "payment refunded order=" + fmt.Sprint(random.Intn(100000))
+		}
+		fmt.Fprintf(&buffer, "%s %-5s [http-%d] c.e.Api - %s %d\n", at.Format("2006-01-02 15:04:05,000"), level, random.Intn(16), message, random.Intn(1000))
+		if level == "ERROR" && random.Intn(3) == 0 {
+			buffer.WriteString("java.lang.IllegalStateException: connection closed\n")
+			for depth := random.Intn(90); depth >= 0; depth-- {
+				fmt.Fprintf(&buffer, "\tat com.example.Db.query(Db.java:%d)\n", depth)
+			}
+			buffer.WriteString("Caused by: java.io.IOException: broken pipe\n\t... 12 more\n")
+		}
+	}
+	return buffer.Bytes()
+}
+
+// --last는 뒤 블록부터 읽는다. 블록 앞에서 시작하는 stack trace도 앞 블록의 ERROR 줄에서 level을 물려받아야 한다.
+func TestGrepLastKeepsTheTraceStateAcrossBlocks(t *testing.T) {
+	start := time.Date(2026, 10, 26, 0, 0, 0, 0, time.Local)
+	data := grepLevelLog(6000, start, 31)
+	configure := func(filter *grepFilter) { filter.minLevel = grepLevelRank("error") }
+	forward, _ := grepCollect(t, data, viewFormatLevel, "", configure, 0)
+	matcher, _ := newGrepMatcher("", false, false, data[:grepSampleSize/8])
+	filter := newGrepFilter(viewFormatLevel, nil, time.Now())
+	configure(filter)
+	scanner := newGrepScanner(matcher, filter)
+	scanner.block = 4096
+	for _, count := range []int{50, 500, 100000} {
+		got, _, err := scanner.scanLast(bytes.NewReader(data), int64(len(data)), count)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := forward
+		if len(want) > count {
+			want = want[len(want)-count:]
+		}
+		if len(got) != len(want) {
+			t.Fatalf("last %d: %d lines, want %d", count, len(got), len(want))
+		}
+		for index := range got {
+			if got[index].offset != want[index] {
+				t.Fatalf("last %d: line %d at %d, want %d", count, index, got[index].offset, want[index])
+			}
+		}
 	}
 }
 

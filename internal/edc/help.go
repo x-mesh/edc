@@ -353,7 +353,7 @@ var commandDocs = []commandDoc{
 	},
 	{
 		name: "grep", group: "observe",
-		usage: []string{"edc grep [options] <pattern> [path...]", "<command> | edc grep [options] <pattern>"},
+		usage: []string{"edc grep [options] <pattern> [path...]", "edc grep --level|--status|--since|--until ... [path...]", "<command> | edc grep [options] <pattern>"},
 		options: []optionDoc{
 			{"-i", "command.grep.option.ignore_case"},
 			{"-E", "command.grep.option.regex"},

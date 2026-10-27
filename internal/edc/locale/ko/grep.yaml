@@ -12,5 +12,5 @@ grep:
     seek_failed: "%s: 줄이 시간 순서가 아니라 파일 전체를 읽었습니다"
     no_time: "%s: 시각을 찾지 못해 --since와 --until에 맞는 줄이 없습니다"
     counted: "%s: -n을 위해 건너뛴 %s줄을 셌습니다"
-    skipped_old: "%d개 파일은 수정 시각이 --since보다 일러 열지 않았습니다: %s"
+    skipped_old: "%d개 파일은 --since 앞에서 끝나 건너뛰었습니다: %s"
     binary: "%d개 binary 파일을 건너뛰었습니다: %s"

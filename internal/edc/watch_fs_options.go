@@ -338,6 +338,10 @@ func validateFSWatchGlob(pattern string) error {
 }
 
 func matchFSWatchGlob(pattern, name string) bool {
+	// 기본 --match는 모든 경로에 맞는다. 이벤트마다 경로를 나누고 memo를 할당하지 않게 바로 돌려준다.
+	if pattern == "**" {
+		return true
+	}
 	if directory, ok := fsWatchAnyDepthName(pattern); ok {
 		for rest := name; ; {
 			part, next, found := strings.Cut(rest, "/")

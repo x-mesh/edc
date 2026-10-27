@@ -422,8 +422,24 @@ func TestFSWatchFanotifyReportsRootRemovalAndOverflow(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), watch.options.root) {
 		t.Fatalf("root move error = %v", err)
 	}
-	if err := watch.handle(fsWatchFanotifyEvent{mask: unix.FAN_Q_OVERFLOW}); err == nil || err.Error() != T("watchfs.overflow") {
+	// overflow는 감시를 끝내지 않는다. 안내를 내고, 놓친 이름 변경에 대비해 기억한 경로를 비우고, 같은 간격 안의 두 번째 안내는 내지 않는다.
+	var notice strings.Builder
+	previous := fsWatchNotice.swap(&notice)
+	defer fsWatchNotice.swap(previous)
+	watch.paths[parent] = watch.options.root
+	if err := watch.handle(fsWatchFanotifyEvent{mask: unix.FAN_Q_OVERFLOW}); err != nil {
 		t.Fatalf("overflow error = %v", err)
+	}
+	if !strings.Contains(notice.String(), T("watchfs.overflow")) || len(watch.paths) != 0 {
+		t.Fatalf("overflow notice %q, cached paths %v", notice.String(), watch.paths)
+	}
+	notice.Reset()
+	if err := watch.handle(fsWatchFanotifyEvent{mask: unix.FAN_Q_OVERFLOW}); err != nil || notice.Len() != 0 {
+		t.Fatalf("second overflow: err %v, notice %q", err, notice.String())
+	}
+	watch.overflow.now = func() time.Time { return time.Now().Add(fsWatchDropNoticeInterval) }
+	if err := watch.handle(fsWatchFanotifyEvent{mask: unix.FAN_Q_OVERFLOW}); err != nil || !strings.Contains(notice.String(), T("watchfs.overflow")) {
+		t.Fatalf("overflow after the interval: err %v, notice %q", err, notice.String())
 	}
 }
 

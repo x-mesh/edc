@@ -460,3 +460,88 @@ func fsWatchReadyLineForTest(t *testing.T, record fsWatchRecord) string {
 	}
 	return strings.TrimSpace(output.String())
 }
+
+func TestFSWatchSmartGroupsABurstInOneDirectory(t *testing.T) {
+	clock := newFSSmartClock()
+	// 한 디렉터리에서 한도를 넘는 삭제는 첫 줄의 자리에 디렉터리 한 줄로 나오고, 한도 안의 디렉터리와 디렉터리 자신의 삭제는 그대로다.
+	for index := 0; index <= fsWatchSmartGroupMin; index++ {
+		clock.add("remove", fmt.Sprintf("tree/d0/f%d", index), index)
+	}
+	for index := 0; index < 3; index++ {
+		clock.add("remove", fmt.Sprintf("tree/d1/g%d", index), 100+index)
+	}
+	clock.add("remove", "tree/d0", 150, true)
+	records := clock.flush()
+	if got := smartLines(records); !equalLines(got, fmt.Sprintf("remove tree/d0/... x%d", fsWatchSmartGroupMin+1), "remove tree/d1/g0", "remove tree/d1/g1", "remove tree/d1/g2", "remove tree/d0") {
+		t.Fatalf("lines = %q", got)
+	}
+	if want := clock.start.Add(time.Duration(fsWatchSmartGroupMin) * time.Millisecond); !records[0].Time.Equal(want) || records[0].IsDir {
+		t.Fatalf("group record = %+v, want time %v", records[0], want)
+	}
+	var line bytes.Buffer
+	if err := writeFSWatchRecord(&line, records[0], false, textStyle{}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(line.String(), `"tree/d0/..."`) || !strings.Contains(line.String(), fmt.Sprintf("×%d", fsWatchSmartGroupMin+1)) {
+		t.Fatalf("line = %q", line.String())
+	}
+}
+
+func TestFSWatchSmartGroupsOnlyAboveTheThresholdAndPerKind(t *testing.T) {
+	clock := newFSSmartClock()
+	// 한도까지는 줄마다 보이고, 같은 디렉터리라도 종류가 다르면 따로 묶인다. 감시 루트 바로 아래는 "./..."이다.
+	for index := 0; index < fsWatchSmartGroupMin; index++ {
+		clock.add("remove", fmt.Sprintf("a/f%d", index), index)
+	}
+	for index := 0; index <= fsWatchSmartGroupMin; index++ {
+		clock.add("create", fmt.Sprintf("b/n%d", index), index)
+		clock.add("modify", fmt.Sprintf("b/m%d", index), index)
+		clock.add("create", fmt.Sprintf("r%d", index), index)
+	}
+	records := clock.flush()
+	lines := smartLines(records)
+	if len(lines) != fsWatchSmartGroupMin+3 {
+		t.Fatalf("%d lines: %q", len(lines), lines)
+	}
+	for index := 0; index < fsWatchSmartGroupMin; index++ {
+		if lines[index] != fmt.Sprintf("remove a/f%d", index) {
+			t.Fatalf("line %d = %q", index, lines[index])
+		}
+	}
+	count := fsWatchSmartGroupMin + 1
+	if !equalLines(lines[fsWatchSmartGroupMin:], fmt.Sprintf("create b/... x%d", count), fmt.Sprintf("modify b/... x%d", count), fmt.Sprintf("create ./... x%d", count)) {
+		t.Fatalf("grouped lines = %q", lines[fsWatchSmartGroupMin:])
+	}
+}
+
+func TestFSWatchSmartGroupListsEveryProcess(t *testing.T) {
+	smart := newFSWatchSmart(fsWatchSmartWindow)
+	at := time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)
+	for index := 0; index <= fsWatchSmartGroupMin; index++ {
+		process, pid := "rm", 10
+		if index%2 == 1 {
+			process, pid = "find", 11
+		}
+		smart.add(fsWatchEvent{Time: at, Event: "remove", Path: fmt.Sprintf("logs/l%d", index), PID: pid, Process: process}, at)
+	}
+	records := smart.flushAll()
+	if len(records) != 1 || records[0].Process != "rm, find" || records[0].PID != 10 || records[0].Count != fsWatchSmartGroupMin+1 {
+		t.Fatalf("records = %+v", records)
+	}
+}
+
+func TestFSWatchSmartGroupedLinesAddUpInTheRepeater(t *testing.T) {
+	// 같은 디렉터리의 묶음이 다음 창에도 이어지면 앞의 줄을 고쳐 쓰고 항목 수를 더한다.
+	repeater := newFSWatchRepeater(func() int { return 120 }, textStyle{})
+	at := time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)
+	first := fsWatchRecord{Type: "event", Time: at, Event: "remove", Path: fsWatchSmartGroupPath("tree/d0"), Count: 700, Process: "rm"}
+	second := first
+	second.Time, second.Count = at.Add(fsWatchSmartWindow), 300
+	if _, rows := repeater.next(first); rows != 0 {
+		t.Fatalf("first line rows = %d", rows)
+	}
+	merged, rows := repeater.next(second)
+	if rows != 1 || merged.Count != 1000 || merged.Path != "tree/d0/..." {
+		t.Fatalf("merged = %+v rows %d", merged, rows)
+	}
+}

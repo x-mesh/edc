@@ -108,6 +108,7 @@ type fsWatchFanotify struct {
 	rootPrefix          string
 	rootParent          string
 	ignored             func(string, fs.DirEntry) bool
+	ignoredEvent        func(string, fs.FileInfo) bool
 	lookup              func(key string) (string, error)
 	emit                func(fsWatchEvent) bool
 	paths               map[string]string
@@ -120,6 +121,8 @@ type fsWatchFanotify struct {
 	// /proc을 한 번만 읽게 한다. 묶음이 바뀌면 비우므로 pid가 다른 process로 재사용되어도 몇 ms 뒤에는 새로 찾는다.
 	processName func(int32) string
 	processes   map[int32]string
+	// overflow는 커널이 이벤트를 버렸다는 안내다. 큐가 찼다가 비는 한 번마다 FAN_Q_OVERFLOW가 오므로 간격을 둔다.
+	overflow *fsWatchDropNotice
 }
 
 const fsWatchProcessEntries = 4096
@@ -160,11 +163,12 @@ func newFSWatchFanotify(options fsWatchOptions, lookup func(string) (string, err
 	}
 	return &fsWatchFanotify{
 		options: options, rootPrefix: rootPrefix, rootParent: filepath.Dir(options.root),
-		ignored: fsWatchIgnored(options), lookup: lookup, emit: emit,
+		ignored: fsWatchIgnored(options), ignoredEvent: fsWatchIgnoredEvent(options), lookup: lookup, emit: emit,
 		paths: map[string]string{}, stale: map[string]bool{}, waiting: map[string][]fsWatchFanotifyWaiting{},
 		excludedDirectories: map[string]bool{},
 		processName:         fsWatchProcessName,
 		processes:           map[int32]string{},
+		overflow:            newFSWatchDropNotice(),
 	}
 }
 
@@ -552,7 +556,10 @@ func parseFSWatchFanotify(buffer []byte) ([]fsWatchFanotifyEvent, error) {
 // 이벤트에서 기다리던 이벤트가 모두 이어진다.
 func (watch *fsWatchFanotify) handle(event fsWatchFanotifyEvent) error {
 	if event.mask&unix.FAN_Q_OVERFLOW != 0 {
-		return errors.New(T("watchfs.overflow"))
+		// 큐가 찼던 동안의 이벤트는 커널이 버렸고 감시는 이어진다. 디렉터리 이름 변경을 놓쳤으면 기억한 경로가 틀리므로 비운다.
+		clear(watch.paths)
+		watch.overflow.notice("watchfs.overflow")
+		return nil
 	}
 	if event.parent == "" || event.name == "" {
 		return nil
@@ -679,14 +686,19 @@ func (watch *fsWatchFanotify) report(directory string, event fsWatchFanotifyEven
 	if !watch.options.recursive && strings.Contains(relative, string(filepath.Separator)) {
 		return nil
 	}
-	if fsWatchUnderExcluded(watch.options.exclude, watch.excludedDirectories, relative) || watch.ignored(filename, nil) {
+	if fsWatchUnderExcluded(watch.options.exclude, watch.excludedDirectories, relative) {
 		return nil
 	}
 	isDir := event.mask&unix.FAN_ONDIR != 0
-	exists, symlink := false, false
+	// Lstat 결과를 출력 파일 비교에도 넘겨 이벤트마다 stat을 두 번 하지 않는다.
+	var current fs.FileInfo
 	if info, err := os.Lstat(filename); err == nil {
-		exists, symlink = true, info.Mode()&os.ModeSymlink != 0
+		current = info
 	}
+	if watch.ignoredEvent(filename, current) {
+		return nil
+	}
+	exists, symlink := current != nil, current != nil && current.Mode()&os.ModeSymlink != 0
 	process := watch.process(event.pid)
 	for _, name := range fsWatchFanotifyOperations(event.mask, exists, isDir) {
 		if symlink && name != "create" {

@@ -33,7 +33,7 @@ func parseViewFixture(t *testing.T, name string) (viewFormat, []viewLine) {
 }
 
 func TestDetectViewFormat(t *testing.T) {
-	for name, want := range map[string]viewFormat{"access.log": viewFormatAccess, "app.jsonl": viewFormatJSON, "app.log": viewFormatLevel, "auth.log": viewFormatSyslog} {
+	for name, want := range map[string]viewFormat{"access.log": viewFormatAccess, "app.jsonl": viewFormatJSON, "app.log": viewFormatLevel, "auth.log": viewFormatSyslog, "goloop.log": viewFormatGoloop} {
 		if got := detectViewFormat(readViewFixture(t, name)); got != want {
 			t.Errorf("%s: format %q, want %q", name, got, want)
 		}
@@ -421,5 +421,54 @@ func TestParseViewSyslogLine(t *testing.T) {
 	}
 	if got := detectViewFormat([]string{"2026-10-26 10:00:00 ERROR a", "2026-10-26 10:00:01 WARN b"}); got != viewFormatLevel {
 		t.Fatalf("level lines detected as %q", got)
+	}
+}
+
+func TestParseViewGoloopLine(t *testing.T) {
+	format, lines := parseViewFixture(t, "goloop.log")
+	if format != viewFormatGoloop {
+		t.Fatalf("format %q", format)
+	}
+	line := lines[6]
+	if line.level != "error" || line.time != "20260713-02:58:07.400000" || line.program != "CS" || line.message != "fail to import block err=timeout" {
+		t.Fatalf("goloop fields: %+v", line)
+	}
+	if !viewHasField(line.fields, "wallet", "c248") || !viewHasField(line.fields, "cid", "1") || !viewHasField(line.fields, "module", "CS") || !viewHasField(line.fields, "location", "consensus.go:520") {
+		t.Fatalf("fields: %+v", line.fields)
+	}
+	// level 글자는 goloop의 P F E W I D T 순서이고, P는 fatal이다. eid가 있으면 읽고, 위치가 없으면 메시지가 바로 온다.
+	if lines[0].level != "debug" || lines[3].level != "info" || lines[5].level != "warn" || lines[7].level != "fatal" || lines[7].message != "runtime error: index out of range" {
+		t.Fatalf("levels: %+v", lines)
+	}
+	if !viewHasField(lines[11].fields, "eid", "a1b2c3d4") || !viewHasField(lines[11].fields, "location", "transition.go:447") || lines[11].program != "SV" {
+		t.Fatalf("eid line: %+v", lines[11])
+	}
+	// panic 뒤의 stack trace 줄은 앞 줄에 이어지고 level을 물려받는다.
+	for _, index := range []int{8, 9, 10} {
+		if !lines[index].cont || lines[index].level != "fatal" {
+			t.Fatalf("line %d: %+v", index, lines[index])
+		}
+	}
+	for index, line := range lines {
+		if got := viewLinePlain(line, viewFormatGoloop); got != line.text {
+			t.Fatalf("line %d: colored text %q differs from %q", index, got, line.text)
+		}
+	}
+	spans := viewLineSpans(line, viewFormatGoloop)
+	if len(spans) != 5 || spans[0].text != "E" || spans[0].color != richRed || !spans[0].bold || spans[2].text != "CS" || spans[2].color != richCyan || spans[1].color != richGray || spans[3].text != "|consensus.go:520 " || spans[4].text != "fail to import block err=timeout" {
+		t.Fatalf("spans: %+v", spans)
+	}
+	for _, text := range []string{
+		"2026-10-26 10:00:00 ERROR message",
+		"Oct 27 06:12:36 web-1 sshd[12]: hello",
+		"X|20260713-02:58:07.400000|c248|1|CS|consensus.go:520 unknown level",
+		"E|2026-07-13 02:58:07|c248|1|CS|consensus.go:520 other time layout",
+		"E|20260713-02:58:07.400000|c248|1||consensus.go:520 empty module",
+		"E|20260713-02:58:07.400000|c2 48|1|CS|consensus.go:520 space in a field",
+	} {
+		var line viewLine
+		if viewParseGoloop(text, &line) {
+			t.Fatalf("%q parsed as goloop: %+v", text, line)
+		}
 	}
 }

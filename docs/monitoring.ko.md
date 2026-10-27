@@ -386,7 +386,7 @@ kubectl logs -f deploy/api | edc view
 edc view -f app.log | grep timeout
 ```
 
-`edc view`는 네 가지 형식을 읽습니다. 형식은 처음 줄들을 보고 정합니다.
+`edc view`는 다섯 가지 형식을 읽습니다. 형식은 처음 줄들을 보고 정합니다.
 
 | 형식 | 예 | 색 |
 | --- | --- | --- |
@@ -394,10 +394,13 @@ edc view -f app.log | grep timeout
 | json | 줄마다 JSON 객체 하나 | level, 시각은 회색, 나머지 키는 `key=value` |
 | level | `2026-10-26 10:00:00 ERROR message` | level 낱말, 시각은 회색 |
 | syslog | `2026-10-27T06:12:36+00:00 host sshd[1]: message` 또는 `Oct  7 06:12:36 host sshd[1]: message` | 프로그램은 청록, 시각과 host는 회색, 메시지의 낱말 하나 |
+| goloop | `D\|20260713-02:58:06.638211\|c248\|1\|CS\|syncer.go:210 message` | level 글자, module은 청록, 시각과 위치는 회색 |
 
 level은 `ERROR`, `WARN`처럼 대문자 낱말이거나 `level=` 값이어야 합니다. 본문에 나온 소문자 "error"는 level로 보지 않습니다. level 형식에서 level이 없는 줄은 바로 위 줄에 속합니다. 그래서 stack trace가 오류 줄과 함께 묶입니다.
 
 syslog 형식은 `auth.log`, `syslog`, `journalctl` 출력을 읽습니다. 이 줄에는 level이 없으므로 메시지의 낱말로 level을 정합니다. `error`, `fail`, `failed`, `failure`, `invalid`, `refused`, `denied`, `fatal`, `panic`, `segfault`는 오류이고, `warning`, `warn`, `timeout`, `timed out`, `deprecated`는 경고입니다. `accepted`와 `success`는 초록으로 칠하고 level은 두지 않습니다. 메시지에 대문자 level 낱말이 있으면 그것을 씁니다. 소문자 낱말이 level을 정하는 형식은 이것뿐입니다. sshd가 적는 `from` 뒤의 주소는 상위 client가 되고, 패널은 상위 프로그램도 보입니다.
+
+goloop 형식은 ICON goloop 노드의 로그입니다. level 글자(`P`, `F`, `E`, `W`, `I`, `D`, `T`), 시각, wallet, chain id, module을 `|`로 잇고, 그 뒤에 소스 위치와 메시지가 옵니다. module은 상위 프로그램이 됩니다. panic 뒤의 stack trace처럼 level 글자로 시작하지 않는 줄은 바로 위 줄에 속합니다.
 
 ↑나 PgUp을 누르면 목록이 멈추고, 머리 줄에 `paused`와 새 줄 수가 나옵니다. End, `l`, Esc를 누르면 다시 따라갑니다. `/`로 글자 filter를 걸고, Enter로 줄의 필드와 줄 전체, 그 아래 stack trace 줄을 봅니다.
 

@@ -452,7 +452,7 @@ kubectl logs -f deploy/api | edc view
 edc view -f app.log | grep timeout
 ```
 
-`edc view` reads four formats. It selects the format from the first lines.
+`edc view` reads five formats. It selects the format from the first lines.
 
 | Format | Example | Color |
 | --- | --- | --- |
@@ -460,10 +460,13 @@ edc view -f app.log | grep timeout
 | json | one JSON object on each line | level, time in gray; other keys as `key=value` |
 | level | `2026-10-26 10:00:00 ERROR message` | level word, time in gray |
 | syslog | `2026-10-27T06:12:36+00:00 host sshd[1]: message` or `Oct  7 06:12:36 host sshd[1]: message` | program in cyan, time and host in gray, one word of the message |
+| goloop | `D\|20260713-02:58:06.638211\|c248\|1\|CS\|syncer.go:210 message` | level letter, module in cyan, time and location in gray |
 
 The level must be an uppercase word such as `ERROR` or `WARN`, or a `level=` value. A lowercase "error" in the message is not a level. In the level format, a line without a level belongs to the line above it. This keeps a stack trace with its error.
 
 The syslog format reads `auth.log`, `syslog`, and the output of `journalctl`. The line has no level, so `edc` reads the level from a word of the message. `error`, `fail`, `failed`, `failure`, `invalid`, `refused`, `denied`, `fatal`, `panic`, and `segfault` make an error. `warning`, `warn`, `timeout`, `timed out`, and `deprecated` make a warning. `accepted` and `success` turn green and set no level. An uppercase level word in the message wins. This is the one format where a lowercase word sets the level. The address after `from`, as sshd writes it, fills the top clients, and the panel lists the top programs.
+
+The goloop format is the log of an ICON goloop node: the level letter (`P`, `F`, `E`, `W`, `I`, `D`, or `T`), the time, the wallet, the chain id, and the module, with `|` between them, then the source location and the message. The module fills the top programs. A line that does not start with a level letter, such as a stack trace after a panic, belongs to the line above it.
 
 Press Up or PgUp to stop the list. The header then shows `paused` and counts the new lines. Press End, `l`, or Esc to follow again. Press `/` to filter the lines by text. Press Enter to show the fields of a line, the whole line, and the stack trace lines below it.
 

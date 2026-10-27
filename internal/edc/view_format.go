@@ -19,6 +19,7 @@ const (
 	viewFormatJSON   viewFormat = "json"
 	viewFormatLevel  viewFormat = "level"
 	viewFormatSyslog viewFormat = "syslog"
+	viewFormatGoloop viewFormat = "goloop"
 )
 
 // viewParseLimit은 필드를 읽는 줄의 최대 길이다. 이보다 긴 줄은 minified JSON이나 dump라서, 읽어도 화면에 한 줄로
@@ -114,6 +115,8 @@ func detectViewFormat(lines []string) viewFormat {
 			counts[viewFormatJSON]++
 		case viewParseAccess(line, &viewLine{}):
 			counts[viewFormatAccess]++
+		case viewParseGoloop(line, &viewLine{}):
+			counts[viewFormatGoloop]++
 		case viewParseSyslog(line, &viewLine{}):
 			counts[viewFormatSyslog]++
 		case viewFindLevel(line) != "":
@@ -124,7 +127,7 @@ func detectViewFormat(lines []string) viewFormat {
 		return viewFormatPlain
 	}
 	best, bestCount := viewFormatPlain, 0
-	for _, format := range []viewFormat{viewFormatJSON, viewFormatAccess, viewFormatSyslog, viewFormatLevel} {
+	for _, format := range []viewFormat{viewFormatJSON, viewFormatAccess, viewFormatGoloop, viewFormatSyslog, viewFormatLevel} {
 		if counts[format] > bestCount {
 			best, bestCount = format, counts[format]
 		}
@@ -158,6 +161,11 @@ func parseViewLine(raw string, format viewFormat, previous *viewLine) viewLine {
 		}
 	case viewFormatSyslog:
 		if !viewParseSyslog(line.text, &line) && previous != nil && viewContinues(line.text) {
+			line.cont, line.level = true, previous.level
+		}
+	case viewFormatGoloop:
+		// goloop 줄은 모두 level로 시작하므로, 그렇지 않은 줄은 panic의 stack trace처럼 앞 줄에 이어지는 줄이다.
+		if !viewParseGoloop(line.text, &line) && previous != nil {
 			line.cont, line.level = true, previous.level
 		}
 	case viewFormatLevel:
@@ -427,6 +435,8 @@ func viewLineSpans(line viewLine, format viewFormat) []traceText {
 		return viewAccessSpans(line)
 	case format == viewFormatSyslog && line.program != "":
 		return viewSyslogSpans(line)
+	case format == viewFormatGoloop && line.program != "":
+		return viewGoloopSpans(line)
 	case format == viewFormatJSON && (line.time != "" || line.level != "" || line.message != ""):
 		spans := []traceText{}
 		if line.time != "" {
@@ -719,4 +729,120 @@ func viewSyslogSpans(line viewLine) []traceText {
 		traceText{text: text[start:end], color: color, bold: level == "error" || level == "fatal"},
 		traceText{text: text[end:]},
 	)
+}
+
+// viewParseGoloop은 goloop 노드의 "D|20260713-02:58:06.638211|c248|1|CS|syncer.go:210 message" 줄이다. goloop의
+// common/log/formatter.go가 level 글자, 시각, wallet, cid, module을 '|'로 잇고, 있을 때만 eid를 더한 뒤 위치와 메시지를 쓴다.
+func viewParseGoloop(text string, line *viewLine) bool {
+	layout, ok := viewGoloopParts(text)
+	if !ok {
+		return false
+	}
+	line.level = viewGoloopLevel(text[0])
+	line.time = text[layout.timeStart:layout.timeEnd]
+	line.program = text[layout.moduleStart:layout.moduleEnd]
+	line.message = text[layout.messageStart:]
+	line.fields = []viewField{{"level", text[:1]}, {"time", line.time}, {"wallet", text[layout.walletStart:layout.walletEnd]}, {"cid", text[layout.cidStart:layout.cidEnd]}, {"module", line.program}}
+	if layout.eidStart < layout.eidEnd {
+		line.fields = append(line.fields, viewField{"eid", text[layout.eidStart:layout.eidEnd]})
+	}
+	if layout.locationStart < layout.locationEnd {
+		line.fields = append(line.fields, viewField{"location", text[layout.locationStart:layout.locationEnd]})
+	}
+	line.fields = append(line.fields, viewField{"message", line.message})
+	return true
+}
+
+// viewGoloopLayout은 goloop 줄 앞부분의 위치다. 색을 칠할 때도 쓴다.
+type viewGoloopLayout struct {
+	timeStart, timeEnd, walletStart, walletEnd, cidStart, cidEnd, moduleStart, moduleEnd, eidStart, eidEnd, locationStart, locationEnd, messageStart int
+}
+
+// viewGoloopLevelNames는 goloop의 level 글자다. P는 panic, F는 fatal이다.
+const viewGoloopLevelNames = "PFEWIDT"
+
+func viewGoloopLevel(letter byte) string {
+	switch letter {
+	case 'P', 'F':
+		return "fatal"
+	case 'E':
+		return "error"
+	case 'W':
+		return "warn"
+	case 'I':
+		return "info"
+	case 'D':
+		return "debug"
+	}
+	return "trace"
+}
+
+func viewGoloopParts(text string) (viewGoloopLayout, bool) {
+	var layout viewGoloopLayout
+	if len(text) < 2 || text[1] != '|' || !strings.ContainsRune(viewGoloopLevelNames, rune(text[0])) {
+		return layout, false
+	}
+	// 시각은 20060102-15:04:05.000000이다. 소수점 아래는 있으면 읽는다.
+	timeStart := 2
+	timeEnd := timeStart + strings.IndexByte(text[timeStart:], '|')
+	if timeEnd < timeStart+17 || !viewDigits(text[timeStart:timeStart+8]) || text[timeStart+8] != '-' || !viewDigits(text[timeStart+9:timeStart+11]) || text[timeStart+11] != ':' || !viewDigits(text[timeStart+12:timeStart+14]) || text[timeStart+14] != ':' || !viewDigits(text[timeStart+15:timeStart+17]) {
+		return layout, false
+	}
+	if rest := text[timeStart+17 : timeEnd]; rest != "" && (rest[0] != '.' || !viewDigits(rest[1:])) {
+		return layout, false
+	}
+	field := func(start int) (int, int, bool) {
+		end := strings.IndexByte(text[start:], '|')
+		if end < 0 || strings.ContainsAny(text[start:start+end], " \t") {
+			return 0, 0, false
+		}
+		return start, start + end, true
+	}
+	walletStart, walletEnd, ok := field(timeEnd + 1)
+	if !ok {
+		return layout, false
+	}
+	cidStart, cidEnd, ok := field(walletEnd + 1)
+	if !ok {
+		return layout, false
+	}
+	moduleStart, moduleEnd, ok := field(cidEnd + 1)
+	if !ok || moduleStart == moduleEnd {
+		return layout, false
+	}
+	rest := moduleEnd + 1
+	eidStart, eidEnd := rest, rest
+	// eid는 8글자 뒤에 '|'가 온다. 위치와 메시지에는 공백이 먼저 오므로 '|'가 공백보다 앞에 있을 때만 eid다.
+	if bar := strings.IndexByte(text[rest:], '|'); bar == 8 && !strings.ContainsAny(text[rest:rest+8], " ") {
+		eidStart, eidEnd = rest, rest+8
+		rest = eidEnd + 1
+	}
+	locationStart, locationEnd := rest, rest
+	token, _, _ := strings.Cut(text[rest:], " ")
+	if colon := strings.LastIndex(token, ".go:"); colon > 0 && viewDigits(token[colon+4:]) {
+		locationStart, locationEnd = rest, rest+len(token)
+		rest = locationEnd
+	}
+	messageStart := rest
+	for messageStart < len(text) && text[messageStart] == ' ' {
+		messageStart++
+	}
+	return viewGoloopLayout{timeStart: timeStart, timeEnd: timeEnd, walletStart: walletStart, walletEnd: walletEnd, cidStart: cidStart, cidEnd: cidEnd, moduleStart: moduleStart, moduleEnd: moduleEnd, eidStart: eidStart, eidEnd: eidEnd, locationStart: locationStart, locationEnd: locationEnd, messageStart: messageStart}, true
+}
+
+// viewGoloopSpans는 goloop 한 줄이다. level 글자는 level 색, module은 청록이고, 시각과 wallet, cid, eid, 위치는 회색이다. 메시지는 칠하지 않는다.
+func viewGoloopSpans(line viewLine) []traceText {
+	text := line.text
+	layout, ok := viewGoloopParts(text)
+	if !ok {
+		return []traceText{{text: text}}
+	}
+	level := viewGoloopLevel(text[0])
+	return []traceText{
+		{text: text[:1], color: viewLevelColor(level), bold: level == "error" || level == "fatal"},
+		{text: text[1:layout.moduleStart], color: richGray},
+		{text: text[layout.moduleStart:layout.moduleEnd], color: richCyan},
+		{text: text[layout.moduleEnd:layout.messageStart], color: richGray},
+		{text: text[layout.messageStart:]},
+	}
 }

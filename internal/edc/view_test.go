@@ -1,6 +1,7 @@
 package edc
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"os"
@@ -606,5 +607,17 @@ func TestParseViewAccessLineWithBareRequestAndBody(t *testing.T) {
 		if viewParseAccess(text, &line) {
 			t.Fatalf("%q parsed as access: %+v", text, line)
 		}
+	}
+}
+
+// 잘린 줄의 나머지가 버퍼 경계에서 끝나 줄바꿈이 따로 오면, 그 줄바꿈과 잘린 줄의 줄바꿈이 겹치면 안 된다.
+func TestViewReadLineAddsOneNewlineToACutLine(t *testing.T) {
+	reader := bufio.NewReaderSize(strings.NewReader(strings.Repeat("x", 32)+"\nnext\n"), 16)
+	line, cut, err := viewReadLine(reader, 16)
+	if err != nil || !cut || string(line) != strings.Repeat("x", 16)+"\n" {
+		t.Fatalf("cut line %q cut %v err %v", line, cut, err)
+	}
+	if line, cut, err = viewReadLine(reader, 16); err != nil || cut || string(line) != "next\n" {
+		t.Fatalf("next line %q cut %v err %v", line, cut, err)
 	}
 }

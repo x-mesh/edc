@@ -2,6 +2,7 @@ package edc
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"math/rand"
 	"strings"
@@ -212,6 +213,51 @@ func TestGrepMatcherNeedles(t *testing.T) {
 		}
 		if string(matcher.needle) != scenario.needle {
 			t.Errorf("%q (regex %v, -i %v): needle %q, want %q", scenario.pattern, scenario.regex, scenario.ignoreCase, matcher.needle, scenario.needle)
+		}
+	}
+}
+
+// grepFailingReader는 limit 앞을 읽으면 실패하는 파일이다.
+type grepFailingReader struct {
+	data  []byte
+	limit int64
+}
+
+var errGrepTestRead = errors.New("test read failure")
+
+func (reader grepFailingReader) ReadAt(buffer []byte, offset int64) (int, error) {
+	if offset < reader.limit {
+		return 0, errGrepTestRead
+	}
+	return bytes.NewReader(reader.data).ReadAt(buffer, offset)
+}
+
+// --last가 앞 블록에서 읽기 오류를 만나도 이미 찾은 뒤쪽 일치는 돌려준다. 호출한 쪽이 그 줄을 낸 뒤 오류로 끝낸다.
+func TestGrepScanLastKeepsMatchesBeforeAReadError(t *testing.T) {
+	const lineLimit = 1000
+	data := grepFixture(lineLimit)
+	matcher, _ := newGrepMatcher("cancel", false, false, data[:grepSampleSize/8])
+	want := grepNaiveLines(data, lineLimit, matcher.match)
+	scanner := newGrepScanner(matcher, nil)
+	scanner.block, scanner.lineLimit = 4096, lineLimit
+	limit := int64(len(data)) - 3*4096
+	got, _, err := scanner.scanLast(grepFailingReader{data: data, limit: limit}, int64(len(data)), 100000)
+	if !errors.Is(err, errGrepTestRead) {
+		t.Fatalf("err %v", err)
+	}
+	var tail []grepLineRef
+	for _, ref := range want {
+		if ref.offset >= limit {
+			tail = append(tail, ref)
+		}
+	}
+	if len(got) == 0 || len(got) > len(tail) {
+		t.Fatalf("kept %d lines, %d matches lie after the failing offset", len(got), len(tail))
+	}
+	for index := range got {
+		expected := tail[len(tail)-len(got)+index]
+		if got[index].offset != expected.offset || !bytes.Equal(got[index].text, expected.text) {
+			t.Fatalf("line %d at %d, want %d", index, got[index].offset, expected.offset)
 		}
 	}
 }

@@ -33,7 +33,7 @@ func parseViewFixture(t *testing.T, name string) (viewFormat, []viewLine) {
 }
 
 func TestDetectViewFormat(t *testing.T) {
-	for name, want := range map[string]viewFormat{"access.log": viewFormatAccess, "app.jsonl": viewFormatJSON, "app.log": viewFormatLevel} {
+	for name, want := range map[string]viewFormat{"access.log": viewFormatAccess, "app.jsonl": viewFormatJSON, "app.log": viewFormatLevel, "auth.log": viewFormatSyslog, "goloop.log": viewFormatGoloop, "rpc.log": viewFormatAccess} {
 		if got := detectViewFormat(readViewFixture(t, name)); got != want {
 			t.Errorf("%s: format %q, want %q", name, got, want)
 		}
@@ -332,5 +332,198 @@ func TestViewReadInitialUsesOnlyBytesRead(t *testing.T) {
 	data, err = viewReadInitial(&viewShrinkingFile{after: ""}, 10, viewKeepLines, viewScreenReadLimit)
 	if err != nil || len(data) != 0 {
 		t.Fatalf("emptied file: %q %v", data, err)
+	}
+}
+
+func TestParseViewSyslogLine(t *testing.T) {
+	format, lines := parseViewFixture(t, "auth.log")
+	if format != viewFormatSyslog {
+		t.Fatalf("format %q", format)
+	}
+	line := lines[4]
+	if line.time != "2026-10-27T06:12:37.154496+00:00" || line.program != "sshd-session" || line.level != "error" || line.client != "198.51.100.7" || !strings.HasPrefix(line.message, "Failed password") {
+		t.Fatalf("syslog fields: %+v", line)
+	}
+	if !viewHasField(line.fields, "host", "web-1") || !viewHasField(line.fields, "pid", "222271") || !viewHasField(line.fields, "message", line.message) {
+		t.Fatalf("fields: %+v", line.fields)
+	}
+	// 성공 낱말은 level이 없고, "error:"로 시작하는 줄은 오류다. CRON과 pid 없는 sudo도 프로그램이다.
+	if lines[0].level != "" || lines[0].client != "192.0.2.10" || lines[3].level != "error" || lines[5].client != "192.0.2.10" || lines[6].program != "CRON" || lines[7].program != "sudo" {
+		t.Fatalf("lines: %+v", lines)
+	}
+	for _, field := range lines[7].fields {
+		if field.name == "pid" {
+			t.Fatalf("sudo line has a pid field: %+v", lines[7].fields)
+		}
+	}
+	for index, line := range lines {
+		if got := viewLinePlain(line, viewFormatSyslog); got != line.text {
+			t.Fatalf("line %d: colored text %q differs from %q", index, got, line.text)
+		}
+	}
+	// 프로그램은 청록, 오류 낱말은 굵은 빨강, 성공 낱말은 초록이다. 시각과 host는 회색이다.
+	spanColor := func(spans []traceText, text string) (string, bool) {
+		for _, span := range spans {
+			if span.text == text {
+				return span.color, span.bold
+			}
+		}
+		t.Fatalf("span %q missing in %+v", text, spans)
+		return "", false
+	}
+	failed := viewLineSpans(lines[4], viewFormatSyslog)
+	if color, bold := spanColor(failed, "Failed"); color != richRed || !bold {
+		t.Fatalf("Failed span %s bold %t", color, bold)
+	}
+	if color, _ := spanColor(failed, "sshd-session"); color != richCyan {
+		t.Fatalf("program span %s", color)
+	}
+	if color, _ := spanColor(failed, "2026-10-27T06:12:37.154496+00:00 web-1"); color != richGray {
+		t.Fatalf("time span %s", color)
+	}
+	if color, bold := spanColor(viewLineSpans(lines[0], viewFormatSyslog), "Accepted"); color != richGreen || bold {
+		t.Fatalf("Accepted span %s bold %t", color, bold)
+	}
+	// BSD 시각은 한 자리 날짜 앞에 공백이 하나 더 있다. 메시지의 대문자 level은 낱말보다 먼저다.
+	var bsd viewLine
+	bsd.text = "Oct  7 06:12:36 web-1 sshd[12]: Connection closed by 192.0.2.5 port 1 [preauth]"
+	if !viewParseSyslog(bsd.text, &bsd) || bsd.time != "Oct  7 06:12:36" || bsd.program != "sshd" || bsd.level != "" || bsd.client != "" {
+		t.Fatalf("bsd line: %+v", bsd)
+	}
+	var explicit viewLine
+	explicit.text = "2026-10-27T06:12:36+00:00 web-1 app[1]: WARN disk nearly full, write failed"
+	if !viewParseSyslog(explicit.text, &explicit) || explicit.level != "warn" {
+		t.Fatalf("explicit level: %+v", explicit)
+	}
+	var warned viewLine
+	warned.text = "Oct 27 06:12:36 web-1 app: request timed out after 30s"
+	if !viewParseSyslog(warned.text, &warned) || warned.level != "warn" {
+		t.Fatalf("warn word: %+v", warned)
+	}
+	// 메시지 안의 콜론은 tag를 끝내지 않는다.
+	var colon viewLine
+	if !viewParseSyslog("Oct 27 06:12:36 web-1 note: this is: fine", &colon) || colon.program != "note" || colon.message != "this is: fine" {
+		t.Fatalf("message with a colon: %+v", colon)
+	}
+	// level 형식, access 형식, tag 안에 공백이 있거나 pid가 숫자가 아닌 줄은 syslog가 아니다.
+	for _, text := range []string{
+		"2026-10-26 10:00:00 ERROR message",
+		"2026-10-26T10:00:00 ERROR message",
+		`192.0.2.1 - - [26/Oct/2026:10:00:00 +0900] "GET / HTTP/1.1" 200 1 "-" "x"`,
+		"Oct 27 06:12:36 web-1 two words: message",
+		"Oct 27 06:12:36 web-1 sshd[abc]: bad pid",
+		"hello: world",
+	} {
+		var line viewLine
+		if viewParseSyslog(text, &line) {
+			t.Fatalf("%q parsed as syslog: %+v", text, line)
+		}
+	}
+	if got := detectViewFormat([]string{"2026-10-26 10:00:00 ERROR a", "2026-10-26 10:00:01 WARN b"}); got != viewFormatLevel {
+		t.Fatalf("level lines detected as %q", got)
+	}
+}
+
+func TestParseViewGoloopLine(t *testing.T) {
+	format, lines := parseViewFixture(t, "goloop.log")
+	if format != viewFormatGoloop {
+		t.Fatalf("format %q", format)
+	}
+	line := lines[6]
+	if line.level != "error" || line.time != "20260713-02:58:07.400000" || line.program != "CS" || line.message != "fail to import block err=timeout" {
+		t.Fatalf("goloop fields: %+v", line)
+	}
+	if !viewHasField(line.fields, "wallet", "c248") || !viewHasField(line.fields, "cid", "1") || !viewHasField(line.fields, "module", "CS") || !viewHasField(line.fields, "location", "consensus.go:520") {
+		t.Fatalf("fields: %+v", line.fields)
+	}
+	// level 글자는 goloop의 P F E W I D T 순서이고, P는 fatal이다. eid가 있으면 읽고, 위치가 없으면 메시지가 바로 온다.
+	if lines[0].level != "debug" || lines[3].level != "info" || lines[5].level != "warn" || lines[7].level != "fatal" || lines[7].message != "runtime error: index out of range" {
+		t.Fatalf("levels: %+v", lines)
+	}
+	if !viewHasField(lines[11].fields, "eid", "a1b2c3d4") || !viewHasField(lines[11].fields, "location", "transition.go:447") || lines[11].program != "SV" {
+		t.Fatalf("eid line: %+v", lines[11])
+	}
+	// panic 뒤의 stack trace 줄은 앞 줄에 이어지고 level을 물려받는다.
+	for _, index := range []int{8, 9, 10} {
+		if !lines[index].cont || lines[index].level != "fatal" {
+			t.Fatalf("line %d: %+v", index, lines[index])
+		}
+	}
+	for index, line := range lines {
+		if got := viewLinePlain(line, viewFormatGoloop); got != line.text {
+			t.Fatalf("line %d: colored text %q differs from %q", index, got, line.text)
+		}
+	}
+	spans := viewLineSpans(line, viewFormatGoloop)
+	if len(spans) != 5 || spans[0].text != "E" || spans[0].color != richRed || !spans[0].bold || spans[2].text != "CS" || spans[2].color != richCyan || spans[1].color != richGray || spans[3].text != "|consensus.go:520 " || spans[4].text != "fail to import block err=timeout" {
+		t.Fatalf("spans: %+v", spans)
+	}
+	for _, text := range []string{
+		"2026-10-26 10:00:00 ERROR message",
+		"Oct 27 06:12:36 web-1 sshd[12]: hello",
+		"X|20260713-02:58:07.400000|c248|1|CS|consensus.go:520 unknown level",
+		"E|2026-07-13 02:58:07|c248|1|CS|consensus.go:520 other time layout",
+		"E|20260713-02:58:07.400000|c248|1||consensus.go:520 empty module",
+		"E|20260713-02:58:07.400000|c2 48|1|CS|consensus.go:520 space in a field",
+	} {
+		var line viewLine
+		if viewParseGoloop(text, &line) {
+			t.Fatalf("%q parsed as goloop: %+v", text, line)
+		}
+	}
+}
+
+func TestParseViewAccessLineWithBareRequestAndBody(t *testing.T) {
+	format, lines := parseViewFixture(t, "rpc.log")
+	if format != viewFormatAccess {
+		t.Fatalf("format %q", format)
+	}
+	line := lines[0]
+	if line.client != "127.0.0.1" || line.status != 400 || line.method != "POST" || line.path != "/api/v3 icx_sendTransaction" || line.rpc != "icx_sendTransaction" || line.time != "28/Aug/2026:10:54:19 +0900" {
+		t.Fatalf("rpc fields: %+v", line)
+	}
+	if !viewHasField(line.fields, "path", "/api/v3") || !viewHasField(line.fields, "user agent", "curl/7.81.0") || !viewHasField(line.fields, "rpc method", "icx_sendTransaction") || !viewHasField(line.fields, "request time", "0.005") || !viewHasField(line.fields, "bytes", "106") {
+		t.Fatalf("fields: %+v", line.fields)
+	}
+	for _, field := range line.fields {
+		if field.name == "body" && (!strings.HasPrefix(field.value, `{"id":2848`) || !strings.HasSuffix(field.value, "}}")) {
+			t.Fatalf("body: %q", field.value)
+		}
+		if field.name == "referrer" {
+			t.Fatalf("bare request has no referrer: %+v", line.fields)
+		}
+	}
+	// 본문이 없는 줄은 path만 남고, 처리 시간은 그대로 읽는다.
+	if lines[2].path != "/api/v3/status" || lines[2].rpc != "" || !viewHasField(lines[2].fields, "request time", "0.001") {
+		t.Fatalf("line without a body: %+v", lines[2])
+	}
+	for index, line := range lines {
+		if got := viewLinePlain(line, viewFormatAccess); got != line.text {
+			t.Fatalf("line %d: colored text %q differs from %q", index, got, line.text)
+		}
+	}
+	// status는 범주 색, method 이름은 청록, 나머지 뒷부분은 회색이다.
+	spans := viewLineSpans(line, viewFormatAccess)
+	var sawStatus, sawMethod bool
+	for _, span := range spans {
+		if span.text == "400" && span.color == richHTTPCodeColor(400) {
+			sawStatus = true
+		}
+		if span.text == "icx_sendTransaction" && span.color == richCyan {
+			sawMethod = true
+		}
+	}
+	if !sawStatus || !sawMethod {
+		t.Fatalf("spans: %+v", spans)
+	}
+	// 따옴표 없는 요청은 대문자 method와 HTTP/ protocol이 있어야 한다.
+	for _, text := range []string{
+		"127.0.0.1 x [28/Aug/2026:10:54:19 +0900] hello world foo 200 1",
+		"127.0.0.1 x [28/Aug/2026:10:54:19 +0900] POST /api/v3 TCP 200 1",
+	} {
+		var line viewLine
+		if viewParseAccess(text, &line) {
+			t.Fatalf("%q parsed as access: %+v", text, line)
+		}
 	}
 }

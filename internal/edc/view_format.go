@@ -18,6 +18,8 @@ const (
 	viewFormatAccess viewFormat = "access"
 	viewFormatJSON   viewFormat = "json"
 	viewFormatLevel  viewFormat = "level"
+	viewFormatSyslog viewFormat = "syslog"
+	viewFormatGoloop viewFormat = "goloop"
 )
 
 // viewParseLimit은 필드를 읽는 줄의 최대 길이다. 이보다 긴 줄은 minified JSON이나 dump라서, 읽어도 화면에 한 줄로
@@ -48,6 +50,10 @@ type viewLine struct {
 	client string
 	method string
 	path   string
+	// program은 syslog 줄의 프로그램 이름이다. 통계의 상위 프로그램에 쓴다.
+	program string
+	// rpc는 access 줄의 JSON-RPC 본문에 든 method다.
+	rpc string
 	// message는 JSON 줄을 "time level message key=value"로 줄여 보여 줄 때의 본문이다.
 	message string
 	fields  []viewField
@@ -111,6 +117,10 @@ func detectViewFormat(lines []string) viewFormat {
 			counts[viewFormatJSON]++
 		case viewParseAccess(line, &viewLine{}):
 			counts[viewFormatAccess]++
+		case viewParseGoloop(line, &viewLine{}):
+			counts[viewFormatGoloop]++
+		case viewParseSyslog(line, &viewLine{}):
+			counts[viewFormatSyslog]++
 		case viewFindLevel(line) != "":
 			counts[viewFormatLevel]++
 		}
@@ -119,7 +129,7 @@ func detectViewFormat(lines []string) viewFormat {
 		return viewFormatPlain
 	}
 	best, bestCount := viewFormatPlain, 0
-	for _, format := range []viewFormat{viewFormatJSON, viewFormatAccess, viewFormatLevel} {
+	for _, format := range []viewFormat{viewFormatJSON, viewFormatAccess, viewFormatGoloop, viewFormatSyslog, viewFormatLevel} {
 		if counts[format] > bestCount {
 			best, bestCount = format, counts[format]
 		}
@@ -149,6 +159,15 @@ func parseViewLine(raw string, format viewFormat, previous *viewLine) viewLine {
 		viewParseAccess(line.text, &line)
 	case viewFormatJSON:
 		if !viewParseJSON(raw, &line) && previous != nil && viewContinues(line.text) {
+			line.cont, line.level = true, previous.level
+		}
+	case viewFormatSyslog:
+		if !viewParseSyslog(line.text, &line) && previous != nil && viewContinues(line.text) {
+			line.cont, line.level = true, previous.level
+		}
+	case viewFormatGoloop:
+		// goloop 줄은 모두 level로 시작하므로, 그렇지 않은 줄은 panic의 stack trace처럼 앞 줄에 이어지는 줄이다.
+		if !viewParseGoloop(line.text, &line) && previous != nil {
 			line.cont, line.level = true, previous.level
 		}
 	case viewFormatLevel:
@@ -183,6 +202,8 @@ func viewContinues(text string) bool {
 
 // viewParseAccess는 nginx와 Apache의 common, combined 형식이다.
 // 203.0.113.9 - - [26/Oct/2026:10:00:00 +0900] "GET /api HTTP/1.1" 200 512 "-" "curl/8.0"
+// 요청을 따옴표 없이 적고 user agent 뒤에 요청 본문과 처리 시간을 붙이는 nginx 변형도 읽는다. JSON-RPC 노드 앞의 nginx가 이렇게 적는다.
+// 127.0.0.1 127.0.0.1  [28/Aug/2026:10:54:19 +0900] POST /api/v3 HTTP/1.1 400 106  "curl/7.81.0"  {"method":"icx_sendTransaction"} HTTP/1.1 0.005
 func viewParseAccess(text string, line *viewLine) bool {
 	client, rest, found := strings.Cut(text, " ")
 	if !found || client == "" {
@@ -198,15 +219,18 @@ func viewParseAccess(text string, line *viewLine) bool {
 	}
 	timeText := rest[open+1 : open+closing]
 	rest = strings.TrimLeft(rest[open+closing+1:], " ")
-	if !strings.HasPrefix(rest, "\"") {
+	var request string
+	quotedRequest := strings.HasPrefix(rest, "\"")
+	if quotedRequest {
+		end := strings.IndexByte(rest[1:], '"')
+		if end < 0 {
+			return false
+		}
+		request = rest[1 : end+1]
+		rest = strings.TrimLeft(rest[end+2:], " ")
+	} else if request, rest = viewBareRequest(rest); request == "" {
 		return false
 	}
-	end := strings.IndexByte(rest[1:], '"')
-	if end < 0 {
-		return false
-	}
-	request := rest[1 : end+1]
-	rest = strings.TrimLeft(rest[end+2:], " ")
 	statusText, rest, _ := strings.Cut(rest, " ")
 	status, err := strconv.Atoi(statusText)
 	if err != nil || status < 100 || status > 999 {
@@ -217,13 +241,82 @@ func viewParseAccess(text string, line *viewLine) bool {
 	line.client, line.time, line.status, line.method, line.path = client, timeText, status, method, path
 	bytesText, rest, _ := strings.Cut(rest, " ")
 	line.fields = []viewField{{"client", client}, {"time", timeText}, {"method", method}, {"path", path}, {"protocol", protocol}, {"status", statusText}, {"bytes", bytesText}}
+	// 요청을 따옴표 없이 적는 변형은 referrer 없이 user agent만 따옴표로 적는다.
+	names := []string{"referrer", "user agent"}
+	if !quotedRequest {
+		names = []string{"user agent"}
+	}
 	quoted := viewQuoted(rest)
-	for index, name := range []string{"referrer", "user agent"} {
+	for index, name := range names {
 		if index < len(quoted) {
 			line.fields = append(line.fields, viewField{name, quoted[index]})
 		}
 	}
+	// 본문은 첫 '{'부터 마지막 '}'까지다. JSON-RPC의 method는 상위 path에서 요청을 가르도록 path 뒤에 붙인다.
+	if body := viewAccessBody(rest); body != "" {
+		line.fields = append(line.fields, viewField{"body", body})
+		if line.rpc = viewJSONRPCMethod(body); line.rpc != "" {
+			line.path = path + " " + line.rpc
+			line.fields = append(line.fields, viewField{"rpc method", line.rpc})
+		}
+		rest = rest[strings.LastIndexByte(rest, '}')+1:]
+	} else if len(quoted) > 0 {
+		rest = rest[strings.LastIndexByte(rest, '"')+1:]
+	}
+	// 줄 끝의 소수는 nginx의 $request_time이다.
+	if tokens := strings.Fields(rest); len(tokens) > 0 {
+		if last := tokens[len(tokens)-1]; strings.ContainsRune(last, '.') && viewDigits(strings.ReplaceAll(last, ".", "")) {
+			line.fields = append(line.fields, viewField{"request time", last})
+		}
+	}
 	return true
+}
+
+// viewBareRequest는 따옴표 없는 "POST /api/v3 HTTP/1.1"이다. method는 대문자 낱말이고 세 번째 token은 HTTP/로 시작해야 한다.
+// 요청과 그 뒤를 돌려주고, 아니면 빈 요청이다.
+func viewBareRequest(rest string) (string, string) {
+	method, after, ok := strings.Cut(rest, " ")
+	if !ok || method == "" || method != strings.ToUpper(method) || !viewLettersOnly(method) {
+		return "", rest
+	}
+	target, after, ok := strings.Cut(after, " ")
+	if !ok || target == "" {
+		return "", rest
+	}
+	protocol, after, _ := strings.Cut(after, " ")
+	if !strings.HasPrefix(protocol, "HTTP/") {
+		return "", rest
+	}
+	return method + " " + target + " " + protocol, strings.TrimLeft(after, " ")
+}
+
+func viewLettersOnly(text string) bool {
+	for index := 0; index < len(text); index++ {
+		if !viewWordByte(text[index]) {
+			return false
+		}
+	}
+	return text != ""
+}
+
+// viewAccessBody는 rest에 든 JSON 본문이다. 첫 '{'부터 마지막 '}'까지가 JSON이어야 하고, 아니면 빈 문자열이다.
+func viewAccessBody(rest string) string {
+	start, end := strings.IndexByte(rest, '{'), strings.LastIndexByte(rest, '}')
+	if start < 0 || end <= start || !json.Valid([]byte(rest[start:end+1])) {
+		return ""
+	}
+	return rest[start : end+1]
+}
+
+// viewJSONRPCMethod는 JSON-RPC 본문의 method다. 없으면 빈 문자열이다.
+func viewJSONRPCMethod(body string) string {
+	var request struct {
+		Method string `json:"method"`
+	}
+	if err := json.Unmarshal([]byte(body), &request); err != nil {
+		return ""
+	}
+	return request.Method
 }
 
 // viewQuoted는 rest에 든 큰따옴표 값을 차례로 꺼낸다.
@@ -416,6 +509,10 @@ func viewLineSpans(line viewLine, format viewFormat) []traceText {
 	switch {
 	case format == viewFormatAccess && line.status != 0:
 		return viewAccessSpans(line)
+	case format == viewFormatSyslog && line.program != "":
+		return viewSyslogSpans(line)
+	case format == viewFormatGoloop && line.program != "":
+		return viewGoloopSpans(line)
 	case format == viewFormatJSON && (line.time != "" || line.level != "" || line.message != ""):
 		spans := []traceText{}
 		if line.time != "" {
@@ -452,10 +549,16 @@ func viewAccessSpans(line viewLine) []traceText {
 	}
 	statusText := strconv.Itoa(line.status)
 	requestEnd := -1
-	if quote := strings.IndexByte(text[closing+1:], '"'); quote >= 0 {
-		if end := strings.IndexByte(text[closing+quote+2:], '"'); end >= 0 {
-			requestEnd = closing + quote + 2 + end + 1
+	after := closing + 1
+	for after < len(text) && text[after] == ' ' {
+		after++
+	}
+	if after < len(text) && text[after] == '"' {
+		if end := strings.IndexByte(text[after+1:], '"'); end >= 0 {
+			requestEnd = after + 1 + end + 1
 		}
+	} else if request, _ := viewBareRequest(text[after:]); request != "" {
+		requestEnd = after + len(request)
 	}
 	statusAt := -1
 	if requestEnd >= 0 {
@@ -467,13 +570,27 @@ func viewAccessSpans(line viewLine) []traceText {
 		return []traceText{{text: text}}
 	}
 	statusEnd := statusAt + len(statusText)
-	return []traceText{
+	spans := []traceText{
 		{text: text[:open]},
 		{text: text[open : closing+1], color: richGray},
 		{text: text[closing+1 : statusAt]},
 		{text: statusText, color: richHTTPCodeColor(line.status), bold: line.status >= 500},
-		{text: text[statusEnd:], color: richGray},
 	}
+	// JSON-RPC 본문의 method 이름은 청록이다. 그 줄에서 무엇을 요청했는지는 path가 아니라 이것이 말한다.
+	tail := text[statusEnd:]
+	if line.rpc != "" {
+		if key := strings.Index(tail, "\"method\""); key >= 0 {
+			if at := strings.Index(tail[key:], "\""+line.rpc+"\""); at >= 0 {
+				start := statusEnd + key + at + 1
+				return append(spans,
+					traceText{text: text[statusEnd:start], color: richGray},
+					traceText{text: line.rpc, color: richCyan},
+					traceText{text: text[start+len(line.rpc):], color: richGray},
+				)
+			}
+		}
+	}
+	return append(spans, traceText{text: tail, color: richGray})
 }
 
 // viewLinePlain은 색 없이 그리는 한 줄이다. 칠한 줄과 글자가 같다.
@@ -483,4 +600,345 @@ func viewLinePlain(line viewLine, format viewFormat) string {
 		builder.WriteString(span.text)
 	}
 	return builder.String()
+}
+
+// viewParseSyslog는 rsyslog와 journald가 쓰는 "시각 host 프로그램[pid]: 메시지" 줄이다. auth.log, syslog, journalctl 출력이 이
+// 모양이다. 프로그램 token은 ':'로 끝나야 해서 "2026-10-26 10:00:00 ERROR message" 같은 level 줄과 겹치지 않는다.
+func viewParseSyslog(text string, line *viewLine) bool {
+	layout, ok := viewSyslogParts(text)
+	if !ok {
+		return false
+	}
+	message := text[layout.messageStart:]
+	line.time, line.program, line.message = text[:layout.timeEnd], text[layout.programStart:layout.programEnd], message
+	line.level, _, _ = viewSyslogLevel(message)
+	line.client = viewSyslogClient(message)
+	line.fields = []viewField{{"time", line.time}, {"host", text[layout.hostStart:layout.hostEnd]}, {"program", line.program}}
+	if layout.pidStart < layout.pidEnd {
+		line.fields = append(line.fields, viewField{"pid", text[layout.pidStart:layout.pidEnd]})
+	}
+	line.fields = append(line.fields, viewField{"message", message})
+	return true
+}
+
+// viewSyslogLayout은 syslog 줄 앞부분의 위치다. 색을 칠할 때도 쓰므로 글자를 새로 만들지 않고 위치만 둔다.
+type viewSyslogLayout struct {
+	timeEnd, hostStart, hostEnd, programStart, programEnd, pidStart, pidEnd, tagEnd, messageStart int
+}
+
+func viewSyslogParts(text string) (viewSyslogLayout, bool) {
+	var layout viewSyslogLayout
+	timeEnd := viewSyslogTimeEnd(text)
+	if timeEnd <= 0 || timeEnd >= len(text) || text[timeEnd] != ' ' {
+		return layout, false
+	}
+	hostStart := timeEnd + 1
+	hostEnd := strings.IndexByte(text[hostStart:], ' ')
+	if hostEnd <= 0 {
+		return layout, false
+	}
+	hostEnd += hostStart
+	tagStart := hostEnd + 1
+	colon := strings.IndexByte(text[tagStart:], ':')
+	if colon <= 0 {
+		return layout, false
+	}
+	tagEnd := tagStart + colon
+	// ':'이 메시지 안에 있으면 tag가 아니다. tag 뒤에는 공백이 오거나 줄이 끝난다.
+	tag := text[tagStart:tagEnd]
+	if strings.ContainsAny(tag, " \t") || (tagEnd+1 < len(text) && text[tagEnd+1] != ' ') {
+		return layout, false
+	}
+	programEnd, pidStart, pidEnd := tagEnd, tagEnd, tagEnd
+	if open := strings.IndexByte(tag, '['); open > 0 && strings.HasSuffix(tag, "]") {
+		programEnd, pidStart, pidEnd = tagStart+open, tagStart+open+1, tagEnd-1
+		if !viewDigits(text[pidStart:pidEnd]) {
+			return layout, false
+		}
+	}
+	if !viewProgramName(text[tagStart:programEnd]) {
+		return layout, false
+	}
+	messageStart := tagEnd + 1
+	for messageStart < len(text) && text[messageStart] == ' ' {
+		messageStart++
+	}
+	return viewSyslogLayout{timeEnd: timeEnd, hostStart: hostStart, hostEnd: hostEnd, programStart: tagStart, programEnd: programEnd, pidStart: pidStart, pidEnd: pidEnd, tagEnd: tagEnd, messageStart: messageStart}, true
+}
+
+// viewSyslogTimeEnd는 시각이 끝나는 위치다. ISO 8601(2026-10-27T06:12:36.022173+00:00)이거나 BSD(Oct  7 06:12:36)다. 둘 다
+// 아니면 0이다. BSD는 한 자리 날짜 앞에 공백이 하나 더 있다.
+func viewSyslogTimeEnd(text string) int {
+	if len(text) >= 19 && viewDigits(text[0:4]) && text[4] == '-' && viewDigits(text[5:7]) && text[7] == '-' && viewDigits(text[8:10]) && text[10] == 'T' && viewDigits(text[11:13]) && text[13] == ':' && viewDigits(text[14:16]) && text[16] == ':' && viewDigits(text[17:19]) {
+		return max(0, strings.IndexByte(text, ' '))
+	}
+	if len(text) < 15 || text[3] != ' ' {
+		return 0
+	}
+	switch text[:3] {
+	case "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec":
+	default:
+		return 0
+	}
+	index := 4
+	for index < len(text) && text[index] == ' ' {
+		index++
+	}
+	dayStart := index
+	for index < len(text) && text[index] >= '0' && text[index] <= '9' {
+		index++
+	}
+	if day := index - dayStart; day == 0 || day > 2 || index >= len(text) || text[index] != ' ' {
+		return 0
+	}
+	index++
+	if len(text) < index+8 || !viewDigits(text[index:index+2]) || text[index+2] != ':' || !viewDigits(text[index+3:index+5]) || text[index+5] != ':' || !viewDigits(text[index+6:index+8]) {
+		return 0
+	}
+	return index + 8
+}
+
+func viewDigits(text string) bool {
+	if text == "" {
+		return false
+	}
+	for index := 0; index < len(text); index++ {
+		if text[index] < '0' || text[index] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// viewProgramName은 syslog tag에 올 수 있는 이름인지 본다. sshd-session, systemd-logind, CRON, run-parts(/etc/cron.hourly) 같은 이름이다.
+func viewProgramName(name string) bool {
+	if name == "" {
+		return false
+	}
+	for index := 0; index < len(name); index++ {
+		char := name[index]
+		if !(viewWordByte(char) || char >= '0' && char <= '9' || char == '-' || char == '_' || char == '.' || char == '/' || char == '(' || char == ')') {
+			return false
+		}
+	}
+	return true
+}
+
+// viewSyslogWords는 syslog 메시지에서 level을 짐작하는 낱말이다. syslog는 level을 적지 않으므로 sshd와 pam이 쓰는 낱말로 본다.
+// error와 warn은 level이 되고, ok는 level 없이 초록으로만 칠한다.
+var viewSyslogWords = map[string]string{
+	"error": "error", "errors": "error", "fail": "error", "failed": "error", "failure": "error", "failures": "error",
+	"invalid": "error", "refused": "error", "denied": "error", "fatal": "error", "panic": "error", "segfault": "error",
+	"warning": "warn", "warn": "warn", "timeout": "warn", "timed": "warn", "deprecated": "warn",
+	"accepted": "ok", "success": "ok", "successful": "ok", "successfully": "ok", "succeeded": "ok",
+}
+
+// viewSyslogLevel은 메시지의 level과 그것을 정한 낱말의 위치다. 대문자 level이나 level= 값이 있으면 그것을 쓰고, 없으면
+// viewSyslogWords로 짐작한다. 오류 낱말이 경고 낱말보다, 경고 낱말이 성공 낱말보다 먼저다. 낱말이 없으면 level이 없고 위치는 0이다.
+func viewSyslogLevel(message string) (string, int, int) {
+	if level, start, end := viewLocateLevel(message); level != "" {
+		return level, start, end
+	}
+	found := map[string][2]int{}
+	for index := 0; index < len(message); {
+		if !viewWordByte(message[index]) {
+			index++
+			continue
+		}
+		end := index
+		for end < len(message) && viewWordByte(message[end]) {
+			end++
+		}
+		if kind := viewSyslogWords[strings.ToLower(message[index:end])]; kind != "" {
+			if _, seen := found[kind]; !seen {
+				found[kind] = [2]int{index, end}
+			}
+		}
+		index = end
+	}
+	for _, kind := range []string{"error", "warn", "ok"} {
+		if at, ok := found[kind]; ok {
+			if kind == "ok" {
+				return "", at[0], at[1]
+			}
+			return kind, at[0], at[1]
+		}
+	}
+	return "", 0, 0
+}
+
+// viewSyslogClient는 "from 192.0.2.10 port 56889"의 주소다. sshd가 접속 주소를 이렇게 적는다. 주소가 아니면 빈 문자열이다.
+func viewSyslogClient(message string) string {
+	rest := message
+	for {
+		at := strings.Index(rest, " from ")
+		if at < 0 {
+			return ""
+		}
+		rest = rest[at+len(" from "):]
+		token, _, _ := strings.Cut(rest, " ")
+		if viewLooksAddress(token) {
+			return token
+		}
+	}
+}
+
+func viewLooksAddress(token string) bool {
+	if !strings.ContainsAny(token, ".:") {
+		return false
+	}
+	for index := 0; index < len(token); index++ {
+		char := token[index]
+		if !(char >= '0' && char <= '9' || char >= 'a' && char <= 'f' || char >= 'A' && char <= 'F' || char == '.' || char == ':') {
+			return false
+		}
+	}
+	return true
+}
+
+// viewSyslogSpans는 syslog 한 줄이다. 시각과 host, pid는 회색, 프로그램은 청록이고, 메시지에서는 level을 정한 낱말만 칠한다.
+func viewSyslogSpans(line viewLine) []traceText {
+	text := line.text
+	layout, ok := viewSyslogParts(text)
+	if !ok {
+		return []traceText{{text: text}}
+	}
+	spans := []traceText{
+		{text: text[:layout.hostEnd], color: richGray},
+		{text: text[layout.hostEnd:layout.programStart]},
+		{text: text[layout.programStart:layout.programEnd], color: richCyan},
+	}
+	if layout.programEnd < layout.tagEnd {
+		spans = append(spans, traceText{text: text[layout.programEnd:layout.tagEnd], color: richGray})
+	}
+	level, start, end := viewSyslogLevel(text[layout.messageStart:])
+	if end == 0 {
+		return append(spans, traceText{text: text[layout.tagEnd:]})
+	}
+	color := richGreen
+	if level != "" {
+		color = viewLevelColor(level)
+	}
+	start, end = layout.messageStart+start, layout.messageStart+end
+	return append(spans,
+		traceText{text: text[layout.tagEnd:start]},
+		traceText{text: text[start:end], color: color, bold: level == "error" || level == "fatal"},
+		traceText{text: text[end:]},
+	)
+}
+
+// viewParseGoloop은 goloop 노드의 "D|20260713-02:58:06.638211|c248|1|CS|syncer.go:210 message" 줄이다. goloop의
+// common/log/formatter.go가 level 글자, 시각, wallet, cid, module을 '|'로 잇고, 있을 때만 eid를 더한 뒤 위치와 메시지를 쓴다.
+func viewParseGoloop(text string, line *viewLine) bool {
+	layout, ok := viewGoloopParts(text)
+	if !ok {
+		return false
+	}
+	line.level = viewGoloopLevel(text[0])
+	line.time = text[layout.timeStart:layout.timeEnd]
+	line.program = text[layout.moduleStart:layout.moduleEnd]
+	line.message = text[layout.messageStart:]
+	line.fields = []viewField{{"level", text[:1]}, {"time", line.time}, {"wallet", text[layout.walletStart:layout.walletEnd]}, {"cid", text[layout.cidStart:layout.cidEnd]}, {"module", line.program}}
+	if layout.eidStart < layout.eidEnd {
+		line.fields = append(line.fields, viewField{"eid", text[layout.eidStart:layout.eidEnd]})
+	}
+	if layout.locationStart < layout.locationEnd {
+		line.fields = append(line.fields, viewField{"location", text[layout.locationStart:layout.locationEnd]})
+	}
+	line.fields = append(line.fields, viewField{"message", line.message})
+	return true
+}
+
+// viewGoloopLayout은 goloop 줄 앞부분의 위치다. 색을 칠할 때도 쓴다.
+type viewGoloopLayout struct {
+	timeStart, timeEnd, walletStart, walletEnd, cidStart, cidEnd, moduleStart, moduleEnd, eidStart, eidEnd, locationStart, locationEnd, messageStart int
+}
+
+// viewGoloopLevelNames는 goloop의 level 글자다. P는 panic, F는 fatal이다.
+const viewGoloopLevelNames = "PFEWIDT"
+
+func viewGoloopLevel(letter byte) string {
+	switch letter {
+	case 'P', 'F':
+		return "fatal"
+	case 'E':
+		return "error"
+	case 'W':
+		return "warn"
+	case 'I':
+		return "info"
+	case 'D':
+		return "debug"
+	}
+	return "trace"
+}
+
+func viewGoloopParts(text string) (viewGoloopLayout, bool) {
+	var layout viewGoloopLayout
+	if len(text) < 2 || text[1] != '|' || !strings.ContainsRune(viewGoloopLevelNames, rune(text[0])) {
+		return layout, false
+	}
+	// 시각은 20060102-15:04:05.000000이다. 소수점 아래는 있으면 읽는다.
+	timeStart := 2
+	timeEnd := timeStart + strings.IndexByte(text[timeStart:], '|')
+	if timeEnd < timeStart+17 || !viewDigits(text[timeStart:timeStart+8]) || text[timeStart+8] != '-' || !viewDigits(text[timeStart+9:timeStart+11]) || text[timeStart+11] != ':' || !viewDigits(text[timeStart+12:timeStart+14]) || text[timeStart+14] != ':' || !viewDigits(text[timeStart+15:timeStart+17]) {
+		return layout, false
+	}
+	if rest := text[timeStart+17 : timeEnd]; rest != "" && (rest[0] != '.' || !viewDigits(rest[1:])) {
+		return layout, false
+	}
+	field := func(start int) (int, int, bool) {
+		end := strings.IndexByte(text[start:], '|')
+		if end < 0 || strings.ContainsAny(text[start:start+end], " \t") {
+			return 0, 0, false
+		}
+		return start, start + end, true
+	}
+	walletStart, walletEnd, ok := field(timeEnd + 1)
+	if !ok {
+		return layout, false
+	}
+	cidStart, cidEnd, ok := field(walletEnd + 1)
+	if !ok {
+		return layout, false
+	}
+	moduleStart, moduleEnd, ok := field(cidEnd + 1)
+	if !ok || moduleStart == moduleEnd {
+		return layout, false
+	}
+	rest := moduleEnd + 1
+	eidStart, eidEnd := rest, rest
+	// eid는 8글자 뒤에 '|'가 온다. 위치와 메시지에는 공백이 먼저 오므로 '|'가 공백보다 앞에 있을 때만 eid다.
+	if bar := strings.IndexByte(text[rest:], '|'); bar == 8 && !strings.ContainsAny(text[rest:rest+8], " ") {
+		eidStart, eidEnd = rest, rest+8
+		rest = eidEnd + 1
+	}
+	locationStart, locationEnd := rest, rest
+	token, _, _ := strings.Cut(text[rest:], " ")
+	if colon := strings.LastIndex(token, ".go:"); colon > 0 && viewDigits(token[colon+4:]) {
+		locationStart, locationEnd = rest, rest+len(token)
+		rest = locationEnd
+	}
+	messageStart := rest
+	for messageStart < len(text) && text[messageStart] == ' ' {
+		messageStart++
+	}
+	return viewGoloopLayout{timeStart: timeStart, timeEnd: timeEnd, walletStart: walletStart, walletEnd: walletEnd, cidStart: cidStart, cidEnd: cidEnd, moduleStart: moduleStart, moduleEnd: moduleEnd, eidStart: eidStart, eidEnd: eidEnd, locationStart: locationStart, locationEnd: locationEnd, messageStart: messageStart}, true
+}
+
+// viewGoloopSpans는 goloop 한 줄이다. level 글자는 level 색, module은 청록이고, 시각과 wallet, cid, eid, 위치는 회색이다. 메시지는 칠하지 않는다.
+func viewGoloopSpans(line viewLine) []traceText {
+	text := line.text
+	layout, ok := viewGoloopParts(text)
+	if !ok {
+		return []traceText{{text: text}}
+	}
+	level := viewGoloopLevel(text[0])
+	return []traceText{
+		{text: text[:1], color: viewLevelColor(level), bold: level == "error" || level == "fatal"},
+		{text: text[1:layout.moduleStart], color: richGray},
+		{text: text[layout.moduleStart:layout.moduleEnd], color: richCyan},
+		{text: text[layout.moduleEnd:layout.messageStart], color: richGray},
+		{text: text[layout.messageStart:]},
+	}
 }

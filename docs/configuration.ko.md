@@ -171,3 +171,18 @@ zsh에서는 script를 `fpath`의 디렉터리에 `_edc`라는 이름으로 저�
 
 `edc completion groups`는 inventory의 group 이름을 한 줄에 하나씩 출력합니다. script가 이 command를 호출합니다.
 
+## Alias
+
+`edc alias`는 zsh나 bash용 짧은 alias를 `edc help`와 같은 묶음으로 출력합니다. logs(`eg`, `egs`, `ege`, `egr`, `ev`, `evn`, `evf`), diagnose(`edoc`, `echk`, `edns`, `etls`, `ehttp`, `eevt`), observe(`etop`, `einfo`, `esvc`, `ectr`, `edu`, `elsn`, `echg`, `ewf`, `ewh`, `eth`), record and remote(`ehist`, `esnap`, `erep`, `erem`, `etun`)입니다. 셸 이름이 없으면 `$SHELL`을 씁니다. 줄마다 끝에 예가 붙습니다.
+
+```bash
+source <(edc alias zsh)
+echo 'source <(edc alias zsh)' >> ~/.zshrc
+```
+
+script는 alias를 guard를 거쳐 정의합니다. 이름이 이미 셸의 alias, 함수, 명령이면 그 이름은 건너뛰고, 다른 이름을 쓰는 방법(`alias xeg='edc grep'`)과 기존 것을 지우는 방법(`unalias eg`, `unset -f eg`)을 알립니다. 이 호스트에서 명령인 이름(예: `/usr/local/bin/edu`)은 `edc alias`가 그 줄 위에 주석으로 표시합니다. `--plain`은 guard 없이 `alias` 줄만 출력하고, 그런 이름의 줄은 주석으로 막아 둡니다. 셸 설정 파일에 붙여 넣을 때 씁니다.
+
+`route`, `disk`, `change`는 alias가 없습니다. 짧은 이름은 호스트 변경에서 실수를 부릅니다.
+
+alias는 인자 앞에 옵션만 붙이고, 같은 옵션을 뒤에 다시 주면 그 값이 이깁니다. 그래서 `ege --last 50 app.log`는 오류 50건을 보입니다. `edc completion zsh`를 불러 두면 zsh는 alias에서도 옵션을 완성합니다.
+

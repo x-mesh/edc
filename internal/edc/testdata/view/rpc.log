@@ -1,0 +1,4 @@
+127.0.0.1 127.0.0.1  [28/Aug/2026:10:54:19 +0900] POST /api/v3 HTTP/1.1 400 106  "curl/7.81.0"  {"id":2848,"jsonrpc":"2.0","method":"icx_sendTransaction","params":{"from":"hxeabaf54f10dd9980547f3ebb5dfeebea02318b91","to":"hx32b5704b766c535c34291c0d10ddd5bbd7b6b9fb","stepLimit":"0x989680","value":"0x38d7ea4c68000","nid":"0x1111","nonce":"0x5b","version":"0x3","timestamp":"0x65a11a75246f8","signature":"9O3auNvPHNodQB4hV+a941CCLvfFI22BGIQDFA1SjVkde7HSw+S+0cXwzUPHLm0/4IX6pdRaSnVDgtz3WFV8oAE="}} HTTP/1.1 0.005
+127.0.0.1 127.0.0.1  [28/Aug/2026:10:54:20 +0900] POST /api/v3 HTTP/1.1 200 1024  "curl/7.81.0"  {"id":2849,"jsonrpc":"2.0","method":"icx_getLastBlock"} HTTP/1.1 0.002
+192.0.2.10 -  [28/Aug/2026:10:54:21 +0900] GET /api/v3/status HTTP/1.1 200 55  "Go-http-client/1.1"  - HTTP/1.1 0.001
+127.0.0.1 127.0.0.1  [28/Aug/2026:10:54:22 +0900] POST /api/v3 HTTP/1.1 500 0  "curl/7.81.0"  {"id":2850,"jsonrpc":"2.0","method":"icx_getLastBlock"} HTTP/1.1 1.250

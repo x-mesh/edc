@@ -206,6 +206,7 @@ command:
       - "Enter는 필드와 줄 전체, 그 아래로 이어지는 stack trace 줄을 보여 줍니다."
       - "파일이 회전되거나 잘리면 그 자리를 표시하고 새 파일을 처음부터 읽습니다."
       - "pipe나 NO_COLOR에서는 cat처럼 바이트를 그대로 냅니다. -f는 tail -F처럼 따라갑니다."
+      - "edc alias는 ev, evn, evf 같은 짧은 alias를 출력합니다."
   grep:
     summary: "로그 검색, 시각으로 건너뛰고 최근 것부터 읽고 index를 다시 씀"
     option:
@@ -233,6 +234,7 @@ command:
       - "64 MB 이상인 파일은 24시간 안의 두 번째 검색에서 캐시 디렉터리에 index를 만듭니다. 1 MB 블록마다 어떤 글자, 시각, level, status가 있는지 적어 두어, 다음 검색은 맞을 수 있는 블록만 읽습니다. index는 로그가 뒤에만 쌓인다고 가정합니다. 제자리에서 고친 파일은 크기가 줄거나 첫 블록이나 마지막 index 블록이 바뀌기 전까지 index를 그대로 쓰므로, 그런 파일에는 --no-index나 --verify-index를 쓰세요."
       - "stderr가 터미널이면 검색마다 index를 썼는지, 만들었는지, 왜 쓰지 않았는지 알립니다."
       - "pipe나 NO_COLOR에서는 줄의 바이트를 그대로 냅니다. 종료 코드는 찾으면 0, 없으면 1, 오류면 2입니다."
+      - "edc alias는 eg, egs, ege 같은 짧은 alias를 출력합니다."
   du:
     summary: "디렉터리 아래 디스크 사용량, 큰 항목부터 (Linux와 macOS)"
     option:
@@ -633,6 +635,19 @@ command:
       - "포트는 127.0.0.1에 바인딩합니다. auto는 비어 있는 포트를 고릅니다."
       - "도달은 목적지가 연결을 유지하면 ok, 곧바로 끊으면 refused입니다. 역방향 터널은 -로 표시합니다."
       - "test는 로컬 포트, SSH 로그인, 호스트에서 본 목적지를 확인합니다. 역방향 터널은 원격 포트와 로컬 대상을 확인합니다. 터널은 시작하지 않습니다."
+  alias:
+    summary: "셸용 짧은 alias 출력"
+    sub:
+      zsh: "zsh용 alias 출력"
+      bash: "bash용 alias 출력"
+    option:
+      plain: "guard 없이 alias 줄만 출력합니다. 셸 설정 파일에 붙여 넣을 때 씁니다"
+    notes:
+      - "source <(edc alias zsh) 또는 source <(edc alias bash). 셸 이름이 없으면 $SHELL을 씁니다."
+      - "이미 alias, 함수, 명령인 이름은 건너뛰고, 이름을 바꾸거나 기존 것을 지우는 방법을 알립니다."
+      - "alias는 인자 앞에 옵션만 붙이고, 같은 옵션을 뒤에 다시 주면 그 값이 이깁니다: ege --last 50 app.log."
+      - "route, disk, change는 alias가 없습니다. 짧은 이름이 호스트 변경에서 실수를 부르기 때문입니다."
+    unsupported_shell: "edc alias: %s는 지원하지 않습니다. zsh나 bash를 쓰세요."
   completion:
     summary: "shell completion 출력"
     sub:

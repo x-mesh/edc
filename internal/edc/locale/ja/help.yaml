@@ -206,6 +206,7 @@ command:
       - "Enter はフィールドと行全体、その下に続く stack trace の行を表示します。"
       - "ファイルがローテートまたは切り詰められると、その位置を示し、新しいファイルを先頭から読みます。"
       - "pipe や NO_COLOR では cat のようにバイトをそのまま出力します。-f は tail -F のように追従します。"
+      - "edc alias は ev、evn、evf のような短い alias を出力します。"
   grep:
     summary: "ログを検索し、時刻で読み飛ばし、新しい順に読み、index を再利用"
     option:
@@ -233,6 +234,7 @@ command:
       - "64 MB 以上のファイルは 24 時間以内の 2 回目の検索でキャッシュディレクトリに index を作ります。1 MB ブロックごとにどの文字、時刻、level、status があるかを記録し、次の検索は一致し得るブロックだけ読みます。index はログが末尾にだけ伸びると仮定します。その場で書き換えたファイルは、縮むか先頭または最後の index 済み block が変わるまで index を使い続けるため、そのようなファイルには --no-index か --verify-index を使ってください。"
       - "stderr が端末なら、検索ごとに index を使ったか、作ったか、なぜ使わなかったかを知らせます。"
       - "pipe や NO_COLOR では行のバイトをそのまま出力します。終了コードは見つかれば 0、なければ 1、エラーなら 2 です。"
+      - "edc alias は eg、egs、ege のような短い alias を出力します。"
   du:
     summary: "ディレクトリ以下のディスク使用量、大きい順 (Linux と macOS)"
     option:
@@ -633,6 +635,19 @@ command:
       - "ポートは 127.0.0.1 にバインドします。auto は空いているポートを選びます。"
       - "到達は、宛先が接続を維持すれば ok、すぐに切断すれば refused です。リバーストンネルは - を表示します。"
       - "test はローカルポート、SSH ログイン、ホストから見た宛先を確認します。リバーストンネルではリモートポートとローカル対象を確認します。トンネルは開始しません。"
+  alias:
+    summary: "shell 用の短い alias を出力"
+    sub:
+      zsh: "zsh 用の alias を出力"
+      bash: "bash 用の alias を出力"
+    option:
+      plain: "guard なしで alias 行だけを出力します。shell の設定ファイルに貼るときに使います"
+    notes:
+      - "source <(edc alias zsh) または source <(edc alias bash)。shell 名がなければ $SHELL を使います。"
+      - "すでに alias、関数、コマンドである名前は飛ばし、名前を変えるか自分のものを消す方法を知らせます。"
+      - "alias は引数の前にオプションを足すだけで、同じオプションを後ろで指定するとその値が勝ちます: ege --last 50 app.log。"
+      - "route、disk、change に alias はありません。短い名前はホスト変更での誤操作を招くためです。"
+    unsupported_shell: "edc alias: %s は対応していません。zsh か bash を使ってください。"
   completion:
     summary: "shell completion の出力"
     sub:

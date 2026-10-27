@@ -191,6 +191,48 @@ command:
     notes:
       - "public IP를 기본으로 조회하고, 제한 시간 안에 응답이 없으면 그 줄을 뺍니다."
       - "disk 사용량은 전체 크기에서 남은 공간을 뺀 값입니다."
+  view:
+    summary: "로그를 색으로 읽고, 파일이 늘어나면 따라감"
+    option:
+      lines: "마지막 N줄, 화면은 N줄을 보관 (기본 10,000)"
+      follow: "pipe에서 tail -F처럼 따라감, 화면은 항상 따라감"
+    notes:
+      - "터미널에서는 파일 끝에서 화면을 열고 새 줄을 따라갑니다."
+      - "↑나 PgUp을 누르면 목록이 멈추고, 머리 줄에 새 줄 수를 셉니다. End, l, Esc를 누르면 다시 따라갑니다."
+      - "nginx와 Apache access log, JSON lines, ERROR나 WARN 같은 level이 있는 줄을 읽습니다."
+      - "통계 패널은 status 범주나 level별 수, 상위 path와 client, 마지막 오류를 보여 줍니다."
+      - "통계는 화면이 보관한 줄만 셉니다. i로 패널을 숨깁니다."
+      - "화면이 120열 이상이면 패널을 오른쪽에, 그보다 좁으면 목록 아래에 둡니다."
+      - "Enter는 필드와 줄 전체, 그 아래로 이어지는 stack trace 줄을 보여 줍니다."
+      - "파일이 회전되거나 잘리면 그 자리를 표시하고 새 파일을 처음부터 읽습니다."
+      - "pipe나 NO_COLOR에서는 cat처럼 바이트를 그대로 냅니다. -f는 tail -F처럼 따라갑니다."
+  grep:
+    summary: "로그 검색, 시각으로 건너뛰고 최근 것부터 읽고 index를 다시 씀"
+    option:
+      ignore_case: "대소문자 무시"
+      regex: "패턴을 정규식으로 해석 (기본: 문자열 그대로)"
+      numbers: "줄 번호 표시"
+      files: "맞는 줄이 있는 파일 이름만 출력"
+      context: "맞는 줄 앞뒤 N줄 표시"
+      level: "이 level 이상인 줄: trace, debug, info, warn, error, fatal"
+      status: "HTTP status: 5xx, 404, 500-503을 쉼표로 이음"
+      since: "이 시각 이후의 줄: 10m, 2h, 1d, 2026-10-27 09:00, 09:00"
+      until: "이 시각 이전의 줄"
+      ordered: "로그가 시간 순서임: --since가 파일을 이진 탐색하고 그 시각 앞에서 끝나는 파일을 건너뜀"
+      index: "index를 지금 만들거나 쓰지 않음 (기본: 24시간 안의 두 번째 검색에서 만듦)"
+      jobs: "index를 만드는 goroutine 수 (기본: 코어의 절반, 최대 4, 상한 64)"
+      verify: "index 결과를 전체 읽기와 비교하고 틀린 index를 지움"
+      last: "가장 최근 N건, 파일 끝에서 읽음"
+    notes:
+      - "디렉터리는 안의 파일을 모두 찾습니다. binary 파일은 건너뛰고, .gz는 풀면서 차례로 읽습니다."
+      - "출력은 grep과 같습니다. 파일이 여럿이면 경로를, -n이면 줄 번호를 붙이고, -C는 앞뒤 줄을 더합니다."
+      - "--since와 --until은 시각으로 줄을 거릅니다. --ordered를 주면 --since가 시간 순서인 파일을 이진 탐색하고 그 시각 앞에서 끝나는 파일을 건너뛰어, 수 GB 로그의 최근 구간도 수 MB만 읽습니다."
+      - "--last는 파일 끝에서 거꾸로 읽어 N건을 찾으면 멈춥니다."
+      - "--level, --status, --since, --until이 있으면 첫 인자가 실제 파일이나 디렉터리일 때 패턴을 생략할 수 있습니다."
+      - "stack trace 줄은 그 ERROR 줄의 level과 시각을 물려받으므로, --level error는 trace도 함께 냅니다."
+      - "64 MB 이상인 파일은 24시간 안의 두 번째 검색에서 캐시 디렉터리에 index를 만듭니다. 1 MB 블록마다 어떤 글자, 시각, level, status가 있는지 적어 두어, 다음 검색은 맞을 수 있는 블록만 읽습니다. index는 로그가 뒤에만 쌓인다고 가정합니다. 제자리에서 고친 파일은 크기가 줄거나 첫 블록이나 마지막 index 블록이 바뀌기 전까지 index를 그대로 쓰므로, 그런 파일에는 --no-index나 --verify-index를 쓰세요."
+      - "stderr가 터미널이면 검색마다 index를 썼는지, 만들었는지, 왜 쓰지 않았는지 알립니다."
+      - "pipe나 NO_COLOR에서는 줄의 바이트를 그대로 냅니다. 종료 코드는 찾으면 0, 없으면 1, 오류면 2입니다."
   du:
     summary: "디렉터리 아래 디스크 사용량, 큰 항목부터 (Linux와 macOS)"
     option:

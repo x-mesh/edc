@@ -2,7 +2,7 @@
 
 # Live resource monitoring
 
-[Top thresholds](#top-thresholds) · [Top dashboard](#top-dashboard) · [Top events](#top-events) · [Top JSON output](#top-json-output) · [Filter processes in top](#filter-processes-in-top) · [AI tool usage](#ai-tool-usage)
+[Top thresholds](#top-thresholds) · [Top dashboard](#top-dashboard) · [Top events](#top-events) · [Top JSON output](#top-json-output) · [Filter processes in top](#filter-processes-in-top) · [AI tool usage](#ai-tool-usage) · [Read logs](#read-logs) · [Search logs](#search-logs)
 
 ![Live resource dashboard](media/top.png)
 
@@ -437,3 +437,70 @@ The command changes only `statusLine.command` in `~/.claude/settings.json`. It k
 
 The values come from the last Claude Code request. The box shows their age. The text output adds an `updated` line when the values are 1 minute old or more. The macOS box does not show the plan name. The status line input does not include it.
 
+## Read logs
+
+`edc view <file>` reads a log with color. In a terminal, it opens a screen at the end of the file. The screen follows new lines as the file grows. You do not need `-f`.
+
+```bash
+# screen: the last 10,000 lines, then each new line
+edc view /var/log/nginx/access.log
+# keep more lines on the screen and in the stats
+edc view -n 50000 app.log
+# read another command's output
+kubectl logs -f deploy/api | edc view
+# pipe: the bytes stay unchanged, and -f follows like tail -F
+edc view -f app.log | grep timeout
+```
+
+`edc view` reads three formats. It selects the format from the first lines.
+
+| Format | Example | Color |
+| --- | --- | --- |
+| access | nginx and Apache common and combined logs | status class, time in gray |
+| json | one JSON object on each line | level, time in gray; other keys as `key=value` |
+| level | `2026-10-26 10:00:00 ERROR message` | level word, time in gray |
+
+The level must be an uppercase word such as `ERROR` or `WARN`, or a `level=` value. A lowercase "error" in the message is not a level. In the level format, a line without a level belongs to the line above it. This keeps a stack trace with its error.
+
+Press Up or PgUp to stop the list. The header then shows `paused` and counts the new lines. Press End, `l`, or Esc to follow again. Press `/` to filter the lines by text. Press Enter to show the fields of a line, the whole line, and the stack trace lines below it.
+
+The stats panel shows the lines per second, the errors, the status classes or the levels, the last error, and the top paths and clients. It counts only the lines that the screen keeps, 10,000 by default. If the terminal has 120 columns or more, the panel is on the right. If the terminal is narrower, the panel is below the list. Press `i` to hide the panel.
+
+If logrotate moves the file, `edc view` reads the rest of the old file. Then it marks the place and reads the new file from the start. If the file becomes smaller, it reads the file from the start again.
+
+If the output is not a terminal, or if `NO_COLOR` is set, `edc view` writes the bytes unchanged, like `cat`. `-n N` writes the last N lines. `-f` follows the file like `tail -F`. If you give `-f` without `-n`, it starts with the last 10 lines.
+
+## Search logs
+
+`edc grep <pattern> [path...]` searches logs. It prints lines like `grep`: the path when you give several files, the line number with `-n`, and context lines with `-C N`. It searches a directory recursively. It skips binary files and reads `.gz` files in order.
+
+```bash
+# plain text in a directory
+edc grep timeout /var/log/app/
+# 5xx responses in the last 10 minutes
+edc grep --since 10m --ordered --status 5xx /var/log/nginx/access.log
+# the newest 20 errors, with their stack traces
+edc grep --level error --last 20 app.log
+# regular expression, any case, two lines of context
+edc grep -E -i -C 2 'order=[0-9]+' app.log
+# another command's output
+kubectl logs deploy/api | edc grep -i refund
+```
+
+With `--level`, `--status`, `--since`, or `--until`, you can leave out the pattern when the first argument is an existing file or directory.
+
+`edc grep` reads less than `grep` in three ways.
+
+| Option | What it skips |
+| --- | --- |
+| `--since` with `--ordered` | `--since` and `--until` filter lines by their timestamps. Add `--ordered` when the log is in time order. Then `edc grep` checks the order at 16 points, skips a file whose last timestamp is before `--since` (a `.gz` file by its modification time), and bisects the timestamps to start near `--since`. A recent window of a multi-GB log reads a few MB. Without `--ordered` it reads the file whole, because a few probes cannot see a short backward run between them. |
+| `--last N` | It reads the file from the end and stops after N matches. |
+| index | On the second search of a file of 64 MB or more within 24 hours, it builds an index in the cache directory. Later searches read only the blocks that can hold the pattern, the time, the level, or the status. The time ranges in the index are exact, so this works without `--ordered`. |
+
+The index records, for each 1 MB block, the letter trigrams, the time range, the levels, and the status classes. It takes 0.8% of the file. The first search of a file reads the file whole, like `grep`, and leaves a marker. `--index` builds the index now, and `--no-index` ignores it. `edc grep` discards the index if the file shrinks or if its first or last indexed block changes. If a block does not match its checksum, the search drops the index and reads the file whole. When more than 20% of the blocks could match, the file is read in order instead.
+
+The index assumes a log that only grows. A file edited in place keeps its index until it shrinks or its first or last indexed block changes. Use `--no-index` or `--verify-index` for such a file. When stderr is a terminal, every search reports whether it used, built, or skipped the index. Use `--verify-index` to compare the index result with a whole read.
+
+`--level warn` matches lines at warn or above. Lines of a stack trace carry the level and the time of their `ERROR` line. `--status` accepts `5xx`, `404`, and `500-503`, separated by commas. `--since` and `--until` accept `10m`, `2h`, `1d`, `2026-10-27 09:00`, and `09:00`.
+
+Exit codes: 0 when a line matched, 1 when no line matched, 2 on an error.

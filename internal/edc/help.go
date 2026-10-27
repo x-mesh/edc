@@ -343,6 +343,36 @@ var commandDocs = []commandDoc{
 		},
 	},
 	{
+		name: "view", group: "observe",
+		usage: []string{"edc view [-n N] [-f] [file]", "<command> | edc view"},
+		options: []optionDoc{
+			{"-n N", "command.view.option.lines"},
+			{"-f, -F", "command.view.option.follow"},
+		},
+		examples: []string{"edc view /var/log/nginx/access.log", "edc view -n 50000 app.log", "kubectl logs -f deploy/api | edc view", "edc view -f app.log | grep timeout"},
+	},
+	{
+		name: "grep", group: "observe",
+		usage: []string{"edc grep [options] <pattern> [path...]", "edc grep --level|--status|--since|--until ... [path...]", "<command> | edc grep [options] <pattern>"},
+		options: []optionDoc{
+			{"-i", "command.grep.option.ignore_case"},
+			{"-E", "command.grep.option.regex"},
+			{"-n", "command.grep.option.numbers"},
+			{"-l", "command.grep.option.files"},
+			{"-C N", "command.grep.option.context"},
+			{"--level <level>", "command.grep.option.level"},
+			{"--status <codes>", "command.grep.option.status"},
+			{"--since <time>", "command.grep.option.since"},
+			{"--until <time>", "command.grep.option.until"},
+			{"--ordered", "command.grep.option.ordered"},
+			{"--index, --no-index", "command.grep.option.index"},
+			{"--jobs N", "command.grep.option.jobs"},
+			{"--verify-index", "command.grep.option.verify"},
+			{"--last N", "command.grep.option.last"},
+		},
+		examples: []string{"edc grep timeout /var/log/app/", "edc grep --since 10m --ordered --status 5xx /var/log/nginx/access.log", "edc grep --level error --last 20 app.log", "edc grep -n -C 2 'order=41' app.log*", "kubectl logs deploy/api | edc grep -i refund"},
+	},
+	{
 		name: "du", group: "observe",
 		usage: []string{"edc du [options] [path]"},
 		options: []optionDoc{

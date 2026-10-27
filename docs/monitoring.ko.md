@@ -2,7 +2,7 @@
 
 # 실시간 자원 관측
 
-[Top 임계값](#top-임계값) · [Top 대시보드](#top-대시보드) · [Top 이벤트](#top-이벤트) · [Top JSON 출력](#top-json-출력) · [Top process 필터](#top-process-필터) · [AI 도구 사용량](#ai-도구-사용량)
+[Top 임계값](#top-임계값) · [Top 대시보드](#top-대시보드) · [Top 이벤트](#top-이벤트) · [Top JSON 출력](#top-json-출력) · [Top process 필터](#top-process-필터) · [AI 도구 사용량](#ai-도구-사용량) · [로그 읽기](#로그-읽기) · [로그 검색](#로그-검색)
 
 ![Live resource dashboard](media/top.png)
 
@@ -371,3 +371,70 @@ edc ai statusline install
 
 값은 Claude Code가 마지막으로 요청했을 때의 값입니다. 상자에는 경과 시간을 늘 보여 주고, 텍스트 출력은 1분 이상 지난 값에만 `updated` 줄을 더합니다. 상태 줄 입력에 요금제가 없으므로 macOS의 상자에는 요금제 이름이 나오지 않습니다.
 
+## 로그 읽기
+
+`edc view <file>`은 로그를 색으로 읽습니다. 터미널에서는 파일 끝에서 화면을 열고, 파일이 늘어나면 새 줄을 따라갑니다. `-f`는 필요 없습니다.
+
+```bash
+# 화면: 마지막 10,000줄, 이후 새 줄
+edc view /var/log/nginx/access.log
+# 화면과 통계에 더 많은 줄을 보관
+edc view -n 50000 app.log
+# 다른 명령의 출력 읽기
+kubectl logs -f deploy/api | edc view
+# pipe: 바이트를 그대로 내고, -f는 tail -F처럼 따라감
+edc view -f app.log | grep timeout
+```
+
+`edc view`는 세 가지 형식을 읽습니다. 형식은 처음 줄들을 보고 정합니다.
+
+| 형식 | 예 | 색 |
+| --- | --- | --- |
+| access | nginx와 Apache의 common, combined 로그 | status 범주, 시각은 회색 |
+| json | 줄마다 JSON 객체 하나 | level, 시각은 회색, 나머지 키는 `key=value` |
+| level | `2026-10-26 10:00:00 ERROR message` | level 낱말, 시각은 회색 |
+
+level은 `ERROR`, `WARN`처럼 대문자 낱말이거나 `level=` 값이어야 합니다. 본문에 나온 소문자 "error"는 level로 보지 않습니다. level 형식에서 level이 없는 줄은 바로 위 줄에 속합니다. 그래서 stack trace가 오류 줄과 함께 묶입니다.
+
+↑나 PgUp을 누르면 목록이 멈추고, 머리 줄에 `paused`와 새 줄 수가 나옵니다. End, `l`, Esc를 누르면 다시 따라갑니다. `/`로 글자 filter를 걸고, Enter로 줄의 필드와 줄 전체, 그 아래 stack trace 줄을 봅니다.
+
+통계 패널은 초당 줄 수, 오류 수, status 범주나 level별 수, 마지막 오류, 상위 path와 client를 보여 줍니다. 화면이 보관한 줄(기본 10,000줄)만 셉니다. 터미널이 120열 이상이면 패널을 오른쪽에, 그보다 좁으면 목록 아래에 둡니다. `i`로 패널을 숨깁니다.
+
+logrotate가 파일을 옮기면 옛 파일의 나머지를 읽은 뒤, 그 자리를 표시하고 새 파일을 처음부터 읽습니다. 파일이 작아지면 처음부터 다시 읽습니다.
+
+출력이 터미널이 아니거나 `NO_COLOR`가 설정되어 있으면 `cat`처럼 바이트를 그대로 냅니다. `-n N`은 마지막 N줄을 냅니다. `-f`는 `tail -F`처럼 파일을 따라가고, `-n` 없이 주면 마지막 10줄부터 시작합니다.
+
+## 로그 검색
+
+`edc grep <pattern> [path...]`는 로그를 검색합니다. 출력은 `grep`과 같습니다. 파일이 여럿이면 경로를, `-n`이면 줄 번호를 붙이고, `-C N`은 앞뒤 줄을 더합니다. 디렉터리는 안의 파일을 모두 찾고, binary 파일은 건너뛰며, `.gz`는 풀면서 차례로 읽습니다.
+
+```bash
+# 디렉터리에서 문자열 검색
+edc grep timeout /var/log/app/
+# 최근 10분의 5xx 응답
+edc grep --since 10m --ordered --status 5xx /var/log/nginx/access.log
+# 가장 최근 오류 20건, stack trace 포함
+edc grep --level error --last 20 app.log
+# 정규식, 대소문자 무시, 앞뒤 2줄
+edc grep -E -i -C 2 'order=[0-9]+' app.log
+# 다른 명령의 출력
+kubectl logs deploy/api | edc grep -i refund
+```
+
+`--level`, `--status`, `--since`, `--until`이 있으면 첫 인자가 실제 파일이나 디렉터리일 때 패턴을 생략할 수 있습니다.
+
+`edc grep`은 세 가지 방법으로 `grep`보다 적게 읽습니다.
+
+| 옵션 | 건너뛰는 것 |
+| --- | --- |
+| `--since`와 `--ordered` | `--since`와 `--until`은 시각으로 줄을 거릅니다. 로그가 시간 순서면 `--ordered`를 줍니다. 그러면 16곳을 찍어 순서를 확인하고, 마지막 시각이 `--since`보다 이른 파일을 건너뛰고(`.gz`는 수정 시각으로), 시각을 이진 탐색해 `--since` 근처부터 읽습니다. 수 GB 로그의 최근 구간도 수 MB만 읽습니다. `--ordered`가 없으면 파일 전체를 읽습니다. 몇 곳의 표본으로는 표본 사이의 짧은 역행을 알 수 없기 때문입니다. |
+| `--last N` | 파일 끝에서 거꾸로 읽어 N건을 찾으면 멈춥니다. |
+| index | 64 MB 이상인 파일을 24시간 안에 두 번째로 검색하면 캐시 디렉터리에 index를 만듭니다. 다음 검색부터는 패턴, 시각, level, status가 있을 수 있는 블록만 읽습니다. index의 시각 범위는 정확하므로 `--ordered` 없이도 동작합니다. |
+
+index는 1 MB 블록마다 글자 trigram, 시각 범위, level, status 범주를 기록하며 크기는 파일의 0.8%입니다. 파일의 첫 검색은 `grep`처럼 전체를 읽고 표시만 남깁니다. `--index`는 지금 만들고, `--no-index`는 쓰지 않습니다. 파일이 줄거나 첫 블록이나 마지막으로 index한 블록이 바뀌면 index를 버립니다. 블록이 checksum과 맞지 않으면 index를 버리고 파일 전체를 읽습니다. 블록의 20%보다 많이 맞을 수 있으면 파일을 순서대로 읽습니다.
+
+index는 로그가 뒤에만 쌓인다고 가정합니다. 제자리에서 고친 파일은 크기가 줄거나 첫 블록이나 마지막 index 블록이 바뀌기 전까지 index를 그대로 쓰므로, 그런 파일에는 `--no-index`나 `--verify-index`를 쓰세요. stderr가 터미널이면 검색마다 index를 썼는지, 만들었는지, 왜 쓰지 않았는지 알립니다. `--verify-index`는 index 결과를 전체 읽기와 비교합니다.
+
+`--level warn`은 warn 이상인 줄입니다. stack trace 줄은 그 `ERROR` 줄의 level과 시각을 물려받습니다. `--status`는 `5xx`, `404`, `500-503`을 쉼표로 이어 받습니다. `--since`와 `--until`은 `10m`, `2h`, `1d`, `2026-10-27 09:00`, `09:00`을 받습니다.
+
+종료 코드는 맞는 줄이 있으면 0, 없으면 1, 오류가 나면 2입니다.

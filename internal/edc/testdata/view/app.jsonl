@@ -1,0 +1,4 @@
+{"time":"2026-10-26T10:00:00Z","level":"info","msg":"server started","port":8080}
+{"time":"2026-10-26T10:00:01Z","level":"warn","msg":"slow query","duration_ms":812,"table":"orders"}
+{"ts":"2026-10-26T10:00:02Z","severity":"ERROR","message":"upstream failed","status":502,"upstream":"10.0.0.3:9000"}
+{"time":"2026-10-26T10:00:03Z","level":"debug","msg":"cache hit","key":"user:7"}

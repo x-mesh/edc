@@ -279,6 +279,12 @@ _edc() {
             '(-l --list)'{-l,--list}'[inventory group과 host 출력]' \
             '1:group:_edc_remote_groups'
           ;;
+        view)
+          _arguments '-n[마지막 N줄]:count' '(-f -F)'{-f,-F}'[pipe에서 tail -F처럼 따라가기]' '1:file:_files'
+          ;;
+        grep)
+          _arguments '-i[대소문자 무시]' '-E[정규식]' '-n[줄 번호]' '-l[맞는 파일 이름만]' '-C[앞뒤 N줄]:count' '--level[이 level 이상]:level:(trace debug info warn error fatal)' '--status[HTTP status]:codes' '--since[이 시각 이후]:time' '--until[이 시각 이전]:time' '--last[최근 N건]:count' '--ordered[로그가 시간 순서]' '--index[index를 지금 만들기]' '--no-index[index를 쓰지 않기]' '--jobs[index worker 수]:count' '--verify-index[index 결과를 전체 읽기와 비교]' '1:pattern' '*:path:_files'
+          ;;
         tunnel)
           _arguments $common \
             '--file[tunnels YAML 경로]:path:_files' \
@@ -486,6 +492,16 @@ _edc() {
       else
         COMPREPLY=($(compgen -W "$(edc completion groups 2>/dev/null)" -- "$cur"))
       fi ;;
+    view)
+      if [[ $cur == -* ]]; then COMPREPLY=($(compgen -W "-n -f -F" -- "$cur"))
+      elif [[ $prev != -n ]]; then COMPREPLY=($(compgen -f -- "$cur")); fi ;;
+    grep)
+      case "$prev" in
+        --level) COMPREPLY=($(compgen -W "trace debug info warn error fatal" -- "$cur")); return ;;
+        -C|--status|--since|--until|--last|--jobs) COMPREPLY=(); return ;;
+      esac
+      if [[ $cur == -* ]]; then COMPREPLY=($(compgen -W "-i -E -n -l -C --level --status --since --until --last --ordered --index --no-index --jobs --verify-index" -- "$cur"))
+      else COMPREPLY=($(compgen -f -- "$cur")); fi ;;
     tunnel)
       case "$prev" in
         --file|--json) COMPREPLY=($(compgen -f -- "$cur")); return ;;

@@ -413,6 +413,8 @@ func TestFollowViewFileDetectsARewriteThatRegrows(t *testing.T) {
 			t.Fatalf("after rewrite: %+v (got %q)", event, got)
 		}
 		got = append(got, event.data...)
+	}
+}
 
 func TestParseViewSyslogLine(t *testing.T) {
 	format, lines := parseViewFixture(t, "auth.log")
